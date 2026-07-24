@@ -609,3 +609,52 @@ sudo ./easy_reality.sh install
 - `CF_API_TOKEN` 不会写入状态文件，但自动部署时会传给 Cloudflare API；建议优先使用交互输入，避免把真实 Token 写入 shell 历史。
 - `WORKER_TEMPLATE_SHA256` 是脚本内置 Worker 模板完整性校验值，不是用户配置项。
 - `uninstall` 只删除本机 Xray、状态文件和本机 Worker 文件，不会删除已部署的 Cloudflare Worker。
+
+## 个人服务器初始化脚本
+
+仓库中同时提供 `debian_init.sh`，这是个人使用的 Debian 服务器初始化脚本，和 Reality / Xray / Worker 部署流程无关。
+
+它面向新 Debian 服务器的基础加固和日常环境准备，主要做：
+
+- 使用初始 SSH 用户连接服务器，默认 `root`
+- 创建或更新用户输入的普通用户，并配置需要密码的 `sudo`
+- 写入同一把 SSH 公钥，让最终 `ssh_config` 默认以普通用户登录
+- 执行 `apt update` / `apt upgrade`
+- 安装基础包，包括 `vim`、`tmux`、`curl`、`wget`、`git`、`build-essential`、`sudo`、`ufw`、`systemd-timesyncd`
+- 按个人偏好安装 XanMod LTS、BBRv3 和 TCP 参数
+- 设置时区为 `Asia/Shanghai` 并启用时间同步
+- 为普通用户安装 `uv` 和 Python 3.12
+- 放行 TCP `80`、`443`、`8080`、`8443`、`8888`，以及当前和最终 SSH 端口
+- 禁用 SSH 密码登录，保留密钥登录
+
+使用方式：
+
+```bash
+chmod +x debian_init.sh
+./debian_init.sh
+```
+
+注意：`debian_init.sh` 是个人初始化脚本，不会安装 Reality 节点，不会生成订阅，不会部署 Cloudflare Worker。需要安装 Reality 时仍使用 `easy_reality.sh`。
+
+### 换电脑后的 SSH 处理
+
+如果新电脑还能拿到原来的 SSH 私钥，把私钥和 `~/.ssh/config` 恢复到新电脑即可。私钥权限需要保持为 `0600`：
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/id_ed25519
+```
+
+如果原私钥丢失，但旧电脑还有已登录的服务器会话，可以在新电脑生成新密钥，把新公钥追加到服务器普通用户的 `~/.ssh/authorized_keys`。
+
+如果原私钥丢失，也没有任何已登录会话，因为脚本会禁用 SSH 密码登录，需要通过 VPS 厂商控制台、VNC 或 Rescue Mode 进入系统，再把新公钥写入普通用户：
+
+```bash
+install -d -m 0700 -o v2yiz -g v2yiz /home/v2yiz/.ssh
+echo '你的新公钥内容' >> /home/v2yiz/.ssh/authorized_keys
+chown v2yiz:v2yiz /home/v2yiz/.ssh/authorized_keys
+chmod 0600 /home/v2yiz/.ssh/authorized_keys
+```
+
+建议把 SSH 私钥做加密离线备份。不要只保存在一台电脑上。
