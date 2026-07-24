@@ -32,7 +32,7 @@ readonly LEGACY_CRON_JOB="0 4 * * * /sbin/reboot"
 readonly CRON_REBOOT_COMMAND="/usr/bin/flock -n /run/daily-reboot.lock /sbin/reboot"
 readonly DEFAULT_REBOOT_HOUR="4"
 # 内置 Worker 模板的完整性校验值，不是部署参数；模板内容变更时才需要同步更新。
-readonly WORKER_TEMPLATE_SHA256="d5d0b5b5f50e2c0e1bce38964433ca8bd6a29df05eeb7715f4d702c4de5d79a5"
+readonly WORKER_TEMPLATE_SHA256="a4ee21cdfa4acf9e11f4735e41425876fac80759bdeef6b67334ee23837a4d0a"
 
 SCHEDULED_REBOOT_ENABLED=1
 SCHEDULED_REBOOT_HOUR="${DEFAULT_REBOOT_HOUR}"
@@ -117,6 +117,22 @@ validate_worker_name() {
 
 validate_sub_port_mode() {
     [[ "$1" == "443" || "$1" == "dynamic" ]]
+}
+
+has_dynamic_port_redirect() {
+    local pattern
+    pattern="tcp[[:space:]]+dport[[:space:]]+${PORT_BASE}-65535[[:space:]]+redirect[[:space:]]+to[[:space:]]+:${REALITY_PORT}"
+    if [[ -f "${NFT_CONFIG}" ]] && grep -Eq "${pattern}" "${NFT_CONFIG}"; then
+        return 0
+    fi
+    command -v nft >/dev/null 2>&1 \
+        && nft list ruleset 2>/dev/null | grep -Eq "${pattern}"
+}
+
+require_dynamic_port_redirect() {
+    [[ "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}" == "dynamic" ]] || return 0
+    has_dynamic_port_redirect && return 0
+    die "当前 nftables 未配置 ${PORT_BASE}-65535 到 ${REALITY_PORT} 的动态端口转发；请重新执行 install，或手动确认防火墙已放行并转发后再使用 SUB_PORT_MODE=dynamic update-sub"
 }
 
 normalize_sub_download_name() {
@@ -899,7 +915,14 @@ write_minimal_worker() {
         install -d -m 0700 "$(dirname "${destination}")"
     fi
     cat >"${destination}" <<EOF
-const VLESS_CONFIG = Object.freeze({
+const CONFIGS = [];
+
+function defineNode(config) {
+  CONFIGS.push(config);
+  return config;
+}
+
+const VLESS_CONFIG = defineNode({
   uuid: '${XRAY_UUID}',
   host: '${NODE_HOST}',
   name: 'MY_VLESS',
@@ -908,6 +931,7 @@ const VLESS_CONFIG = Object.freeze({
   pbk: '${REALITY_PUBLIC_KEY}',
   sid: '${REALITY_SHORT_ID}'
 });
+const DEFAULT_NODE = VLESS_CONFIG;
 const PORT_BASE = ${PORT_BASE};
 const PORT_MULTIPLIER = ${PORT_MULTIPLIER};
 const SUB_PORT_MODE = '${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}';
@@ -924,19 +948,19 @@ function dynamicPort() {
     Math.floor(Math.random() * PORT_MULTIPLIER) + 1;
 }
 
-function link(port) {
+function link(cfg, port) {
   const params = new URLSearchParams({
     encryption: 'none',
     security: 'reality',
     type: 'tcp',
-    sni: VLESS_CONFIG.sni,
-    fp: VLESS_CONFIG.fp,
-    pbk: VLESS_CONFIG.pbk,
-    sid: VLESS_CONFIG.sid,
+    sni: cfg.sni,
+    fp: cfg.fp,
+    pbk: cfg.pbk,
+    sid: cfg.sid,
     flow: 'xtls-rprx-vision',
     packetEncoding: 'xudp'
   });
-  return \`vless://\${VLESS_CONFIG.uuid}@\${VLESS_CONFIG.host}:\${port}?\${params}#\${VLESS_CONFIG.name}\`;
+  return \`vless://\${cfg.uuid}@\${cfg.host}:\${port}?\${params}#\${cfg.name}\`;
 }
 
 function encodeBase64(text) {
@@ -952,7 +976,29 @@ function clashDownloadFilename() {
   return SUB_DOWNLOAD_NAME;
 }
 
-function clash(port) {
+function clashProxyNode(cfg, port) {
+  return \`  - name: \${cfg.name}
+    type: vless
+    server: \${cfg.host}
+    port: \${port}
+    uuid: \${cfg.uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: \${cfg.sni}
+    reality-opts:
+      public-key: \${cfg.pbk}
+      short-id: \${cfg.sid}
+    client-fingerprint: \${cfg.fp}
+    packet-encoding: xudp
+    ip-version: ipv4-prefer
+\`;
+}
+
+function clash(configs, ports) {
+  const proxyNodes = configs.map((cfg, i) => clashProxyNode(cfg, ports[i])).join('');
+  const proxyNames = configs.map(cfg => cfg.name).join('\\n      - ');
   return \`mixed-port: 1080
 allow-lan: false
 mode: rule
@@ -967,27 +1013,12 @@ dns:
   fallback:
     - https://cloudflare-dns.com/dns-query
 proxies:
-  - name: \${VLESS_CONFIG.name}
-    type: vless
-    server: \${VLESS_CONFIG.host}
-    port: \${port}
-    uuid: \${VLESS_CONFIG.uuid}
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    servername: \${VLESS_CONFIG.sni}
-    reality-opts:
-      public-key: \${VLESS_CONFIG.pbk}
-      short-id: \${VLESS_CONFIG.sid}
-    client-fingerprint: \${VLESS_CONFIG.fp}
-    packet-encoding: xudp
-    ip-version: ipv4-prefer
+\${proxyNodes}
 proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - \${VLESS_CONFIG.name}
+      - \${proxyNames}
 rules:
   - DOMAIN-SUFFIX,local,DIRECT
   - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
@@ -1024,8 +1055,14 @@ export default {
       if (isClash) {
         headers.set('Content-Disposition', 'attachment; filename="' + clashDownloadFilename() + '"');
       }
-      const port = dynamicPort();
-      return new Response(isClash ? clash(port) : encodeBase64(link(port)), {
+      const targetConfigs = url.searchParams.get('node') === 'all'
+        ? CONFIGS
+        : [DEFAULT_NODE];
+      const ports = targetConfigs.map(() => dynamicPort());
+      const content = isClash
+        ? clash(targetConfigs, ports)
+        : encodeBase64(targetConfigs.map((cfg, i) => link(cfg, ports[i])).join('\\n'));
+      return new Response(content, {
         status: 200,
         headers
       });
@@ -1042,7 +1079,7 @@ write_worker() {
     local destination=$1
     local temp_dir template rendered
     local template_b64
-    template_b64='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'
+    template_b64='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'
     temp_dir=$(make_temp_dir)
     template="${temp_dir}/worker-template.js"
     rendered="${temp_dir}/worker.js"
@@ -1204,6 +1241,7 @@ configure_subscription() {
     choose_subscription_mode
     if [[ "${SUBSCRIBE_MODE}" != "vless" && "${SUB_PORT_MODE_LOCKED:-0}" != "1" ]]; then
         choose_subscription_port_mode
+        require_dynamic_port_redirect
     fi
     collect_node_state true
     case "${SUBSCRIBE_MODE}" in

@@ -1,0 +1,8 @@
+{
+  "name": "easy-reality-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/test_*.mjs && bash test/test_easy_reality.sh"
+  }
+}

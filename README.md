@@ -21,6 +21,8 @@
   - `auto`：自动部署 Cloudflare Worker
   - `worker`：输出 Worker 内容，手动部署
   - `vless`：只输出完整 VLESS 节点参数
+- Worker 订阅仅生成 VLESS Reality 节点，支持普通 base64 订阅和 Clash Meta / Mihomo 配置
+- Worker 节点使用 `defineNode({...})` 自动注册，手动扩展多节点时不需要维护单独的节点数组
 - 支持更新订阅、更新 Xray、查看状态和卸载
 
 ## 环境要求
@@ -91,7 +93,7 @@ sudo ./easy_reality.sh
 - Worker 内容；仅选择输出 Worker 内容时直接打印
 - 通用订阅 URL 和 Clash Meta 订阅 URL；仅自动部署成功后输出
 
-订阅中的节点名称固定为 `MY_VLESS`；Clash Meta 订阅下载显示名可通过 `SUB_DOWNLOAD_NAME` 配置，默认 `MY_SUB`，响应内容格式仍是 YAML。
+脚本自动生成的单节点名称默认为 `MY_VLESS`；手动维护 Worker 多节点时由各节点配置中的 `name` 控制。Clash Meta 订阅下载显示名可通过 `SUB_DOWNLOAD_NAME` 配置，默认 `MY_SUB`，响应内容格式仍是 YAML。
 
 ## 命令
 
@@ -220,7 +222,7 @@ sudo SUB_PORT_MODE=443 easy_reality update-sub
 sudo SUB_PORT_MODE=dynamic easy_reality update-sub
 ```
 
-`update-sub` 只更新订阅输出和 Worker 状态，不重写 nftables。若从 `443` 切换到 `dynamic`，需要重新执行安装流程或手动确认防火墙已放行并转发 TCP `10000-65535`。
+`update-sub` 只更新订阅输出和 Worker 状态，不重写 nftables。若从 `443` 切换到 `dynamic`，脚本会先检查本机 nftables 配置或当前 ruleset 是否已有 TCP `10000-65535` 到 443 的转发规则；缺失时会终止，避免生成不可用订阅。
 
 如果 VPS 供应商有独立安全组或云防火墙：
 
@@ -331,7 +333,41 @@ npx wrangler secret put SUB_TOKEN --name easy-reality
 ```text
 https://easy-reality.<你的 workers.dev 子域>.workers.dev/subscribe?token=<订阅 Token>
 https://easy-reality.<你的 workers.dev 子域>.workers.dev/subscribe?token=<订阅 Token>&flag=clash
+https://easy-reality.<你的 workers.dev 子域>.workers.dev/subscribe?token=<订阅 Token>&node=all
+https://easy-reality.<你的 workers.dev 子域>.workers.dev/subscribe?token=<订阅 Token>&node=all&flag=clash
 ```
+
+默认情况下，Worker 只输出 `DEFAULT_NODE` 指向的节点。追加 `node=all` 后会输出 `CONFIGS` 中自动注册的全部节点；普通订阅返回多条 VLESS 链接的 base64 内容，`flag=clash` 返回 Clash Meta / Mihomo YAML。
+
+### Worker 多节点维护
+
+生成的 Worker 模板使用自动注册模式：
+
+```js
+const CONFIGS = [];
+
+function defineNode(config) {
+    CONFIGS.push(config);
+    return config;
+}
+
+const NODE_A_CONFIG = defineNode({
+    type: 'vless',
+    uuid: '...',
+    host: 'node-a.example.com',
+    name: 'NODE_A',
+    fp: 'chrome',
+    sni: 'www.example.com',
+    pbk: '...',
+    sid: '0123456789abcdef'
+});
+
+const DEFAULT_NODE = NODE_A_CONFIG;
+```
+
+新增节点时只需要继续调用 `defineNode({...})`。`DEFAULT_NODE` 决定不带 `node=all` 时默认输出哪个节点；`node=all` 会输出所有已注册节点。
+
+仓库中的 `sample-worker.js` 是脱敏样例，保留了多节点、普通订阅、`flag=clash` 和 `node=all` 逻辑。公开分享或二次修改时建议以该文件为起点，不要直接发布包含真实 Token、UUID、Reality 公钥或域名的 Worker。
 
 ### 使用自定义域名、Worker 路由和 DNS
 
@@ -340,6 +376,8 @@ https://easy-reality.<你的 workers.dev 子域>.workers.dev/subscribe?token=<�
 ```text
 https://sub.example.com/subscribe?token=<订阅 Token>
 https://sub.example.com/subscribe?token=<订阅 Token>&flag=clash
+https://sub.example.com/subscribe?token=<订阅 Token>&node=all
+https://sub.example.com/subscribe?token=<订阅 Token>&node=all&flag=clash
 ```
 
 需要在 Cloudflare Dashboard 中额外配置 DNS 和 Worker 路由。脚本只负责生成或部署 Worker，不会自动创建自定义域名、DNS 记录或 Worker Route。
@@ -361,6 +399,8 @@ sub.example.com/*
 ```text
 https://sub.example.com/subscribe?token=<订阅 Token>
 https://sub.example.com/subscribe?token=<订阅 Token>&flag=clash
+https://sub.example.com/subscribe?token=<订阅 Token>&node=all
+https://sub.example.com/subscribe?token=<订阅 Token>&node=all&flag=clash
 ```
 
 注意：
@@ -390,6 +430,12 @@ https://sub.example.com/subscribe?token=<订阅 Token>&flag=clash
 | `/usr/local/lib/easy_reality/easy_reality.sh` | 注册系统命令时安装的脚本副本 |
 | `/usr/local/bin/easy_reality` | 系统命令入口 |
 
+仓库内还提供脱敏样例：
+
+| 路径 | 说明 |
+| --- | --- |
+| `sample-worker.js` | 脱敏 Worker 样例，适合公开参考或作为多节点手动维护模板 |
+
 ## 防火墙说明
 
 脚本会生成整机 nftables 配置，并启用 `nftables.service`，重启后自动加载。
@@ -404,7 +450,7 @@ https://sub.example.com/subscribe?token=<订阅 Token>&flag=clash
 - TCP 443
 - `SUB_PORT_MODE=dynamic` 时额外转发 TCP `10000-65535` 到 443
 
-安装流程会生成完整 nftables 配置。`update-sub` 不重写 nftables，只负责重新配置订阅输出。
+安装流程会生成完整 nftables 配置。`update-sub` 不重写 nftables，只负责重新配置订阅输出；切换到 `SUB_PORT_MODE=dynamic` 时会校验动态端口转发规则是否已存在。
 
 SSH 端口来源会合并：
 
@@ -529,6 +575,7 @@ sudo easy_reality show
 - 使用域名作为 `NODE_HOST` 时，确认已解析到 VPS；双栈访问需要同时配置 A 和 AAAA 记录
 - VPS 供应商安全组放行 443
 - 使用动态端口时安全组也放行 `10000-65535`
+- 如果通过 `update-sub` 从 `443` 切换到 `dynamic`，确认脚本没有提示缺少 `tcp dport 10000-65535 redirect to :443`
 
 ### 自动部署失败
 
