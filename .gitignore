@@ -1,0 +1,14 @@
+.DS_Store
+
+# Local secrets and generated deployment state
+.env
+*.env
+state.env
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.csr
+*.token
+subscribe-worker.js
