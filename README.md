@@ -333,6 +333,43 @@ https://easy-reality.<你的 workers.dev 子域>.workers.dev/subscribe?token=<�
 https://easy-reality.<你的 workers.dev 子域>.workers.dev/subscribe?token=<订阅 Token>&flag=clash
 ```
 
+### 使用自定义域名、Worker 路由和 DNS
+
+如果已经在 Cloudflare 托管域名，并希望使用自己的域名访问订阅地址，例如：
+
+```text
+https://sub.example.com/subscribe?token=<订阅 Token>
+https://sub.example.com/subscribe?token=<订阅 Token>&flag=clash
+```
+
+需要在 Cloudflare Dashboard 中额外配置 DNS 和 Worker 路由。脚本只负责生成或部署 Worker，不会自动创建自定义域名、DNS 记录或 Worker Route。
+
+推荐做法：
+
+1. 在 Cloudflare DNS 中添加订阅域名记录，例如 `sub.example.com`
+2. 记录类型可以使用 `CNAME`，目标填任意占位主机名，例如 `workers.dev`
+3. 确认该 DNS 记录开启代理，即橙色云朵 `Proxied`
+4. 进入 `Workers & Pages` → 选择已部署的 Worker，例如 `easy-reality`
+5. 打开 `Settings` → `Triggers` → `Routes`，添加路由：
+
+```text
+sub.example.com/*
+```
+
+6. 保存后，用自定义域名访问订阅路径：
+
+```text
+https://sub.example.com/subscribe?token=<订阅 Token>
+https://sub.example.com/subscribe?token=<订阅 Token>&flag=clash
+```
+
+注意：
+
+- Worker Route 必须匹配完整访问域名和路径。若只希望订阅路径进入 Worker，也可以配置为 `sub.example.com/subscribe*`
+- DNS 记录必须开启 Cloudflare 代理；如果是灰色云朵 `DNS only`，请求不会进入 Worker
+- 自定义域名只影响订阅入口，不改变客户端连接 Reality 节点使用的 `NODE_HOST`
+- 如果 `NODE_HOST` 也使用域名，请确保它解析到 VPS；订阅域名和节点域名可以相同，也可以分开
+
 ### 只输出 VLESS 参数
 
 选择 `SUBSCRIBE_MODE=vless` 时，脚本只输出完整 VLESS 节点链接，不生成 Worker 内容，也不部署 Cloudflare Worker。
