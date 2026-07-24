@@ -304,6 +304,8 @@ write_ssh_config() {
     echo "  Port $port"
     echo "  IdentityFile $identity_file"
     echo "  IdentitiesOnly yes"
+    echo "  ServerAliveInterval 30"
+    echo "  ServerAliveCountMax 3"
     echo "$end"
   } > "$SSH_CONFIG"
 

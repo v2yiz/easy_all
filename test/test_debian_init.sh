@@ -125,6 +125,8 @@ test_managed_ssh_config() {
     assert_contains "ssh_config writes normal user" "  User v2yiz" "${content}"
     assert_contains "ssh_config writes port" "  Port 2222" "${content}"
     assert_contains "ssh_config forces identity only" "  IdentitiesOnly yes" "${content}"
+    assert_contains "ssh_config keeps idle sessions alive" "  ServerAliveInterval 30" "${content}"
+    assert_contains "ssh_config limits dead keepalive probes" "  ServerAliveCountMax 3" "${content}"
 
     write_ssh_config "node-a" "198.51.100.20" "deploy" "2200" "${HOME}/.ssh/deploy"
     content="$(<"${SSH_CONFIG}")"
