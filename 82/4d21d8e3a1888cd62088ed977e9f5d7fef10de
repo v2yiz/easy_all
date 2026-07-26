@@ -1,0 +1,23 @@
+package.json
+  s_e63c875a84819b::t_9b9d8825d275d0 6
+test/test_easy_anytls.sh
+  s_e63c875a84819b::t_15c72832117ddd 1-297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "824d21d8e3a1888cd62088ed977e9f5d7fef10de",
+  "prompts": {},
+  "sessions": {
+    "s_e63c875a84819b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f9c28-6dd8-7032-86c7-bef18edf8c86",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
