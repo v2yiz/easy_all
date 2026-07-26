@@ -1238,9 +1238,10 @@ write_worker() {
     download_json=$(jq -cn --arg value \
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}" '$value')
     install -d -m 0700 "$(dirname "${destination}")"
-    cat >"${RUNTIME_TMP}/worker.js" <<EOF
-const CONFIG = Object.freeze(${config_json});
-const DOWNLOAD_NAME = ${download_json};
+    {
+        printf 'const CONFIG = Object.freeze(%s);\n' "${config_json}"
+        printf 'const DOWNLOAD_NAME = %s;\n' "${download_json}"
+        cat <<'EOF'
 
 function encodeBase64Utf8(value) {
   const bytes = new TextEncoder().encode(value);
@@ -1253,27 +1254,216 @@ function anytlsUri(config) {
   const auth = encodeURIComponent(config.password);
   const sni = encodeURIComponent(config.sni);
   const name = encodeURIComponent(config.name);
-  return \`anytls://\${auth}@\${config.server}:\${config.port}/?sni=\${sni}&insecure=0#\${name}\`;
+  return `anytls://${auth}@${config.server}:${config.port}/?sni=${sni}&insecure=0#${name}`;
 }
 
 function yamlQuote(value) {
   return JSON.stringify(String(value));
 }
 
-function mihomoYaml(config) {
+const FAKE_IP_FILTER = `      - '+.lan'
+      - '+.local'
+      - 'localhost'
+      - 'time.windows.com'
+      - 'time.apple.com'
+      - '*.ntp.org.cn'
+      - 'pool.ntp.org'`;
+
+const MIHOMO_RULES = `rules:
+  # ==================== 局域网直连 ====================
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN-SUFFIX,localhost,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
+  - IP-CIDR6,::1/128,DIRECT,no-resolve
+  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+
+  # ==================== AI 服务 ====================
+  - DOMAIN-SUFFIX,chatgpt.com,PROXY
+  - DOMAIN-SUFFIX,openai.com,PROXY
+  - DOMAIN-SUFFIX,oaistatic.com,PROXY
+  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
+  - DOMAIN-SUFFIX,anthropic.com,PROXY
+  - DOMAIN-SUFFIX,claude.ai,PROXY
+  - DOMAIN-SUFFIX,claude.com,PROXY
+  - DOMAIN-SUFFIX,claudeusercontent.com,PROXY
+  - DOMAIN,gemini.google.com,PROXY
+  - DOMAIN,aistudio.google.com,PROXY
+  - DOMAIN,ai.google.dev,PROXY
+  - DOMAIN-SUFFIX,generativeai.google,PROXY
+
+  # ==================== Apple 精确分流 ====================
+  - DOMAIN-SUFFIX,apple-relay.akamaized.net,PROXY
+  - DOMAIN-SUFFIX,apple-relay.apple.com,PROXY
+  - DOMAIN-SUFFIX,apple-relay.cloudflare.com,PROXY
+  - DOMAIN-SUFFIX,apple.com,DIRECT
+  - DOMAIN-SUFFIX,apple.co,DIRECT
+  - DOMAIN-SUFFIX,apple.com.cn,DIRECT
+  - DOMAIN-SUFFIX,aaplimg.com,DIRECT
+  - DOMAIN-SUFFIX,icloud.com,DIRECT
+  - DOMAIN-SUFFIX,mzstatic.com,DIRECT
+
+  # ==================== Microsoft 精确分流 ====================
+  - DOMAIN-SUFFIX,microsoft.com,PROXY
+  - DOMAIN-SUFFIX,bing.com,PROXY
+  - DOMAIN-SUFFIX,live.com,PROXY
+  - DOMAIN-SUFFIX,outlook.com,PROXY
+  - DOMAIN-SUFFIX,office.com,PROXY
+  - DOMAIN-SUFFIX,msftconnecttest.com,DIRECT
+  - DOMAIN-SUFFIX,windowsupdate.com,DIRECT
+
+  # ==================== Google / YouTube ====================
+  - DOMAIN-SUFFIX,google.com,PROXY
+  - DOMAIN-SUFFIX,googleapis.com,PROXY
+  - DOMAIN-SUFFIX,googleusercontent.com,PROXY
+  - DOMAIN-SUFFIX,gstatic.com,PROXY
+  - DOMAIN-SUFFIX,googlevideo.com,PROXY
+  - DOMAIN-SUFFIX,youtube.com,PROXY
+  - DOMAIN-SUFFIX,ytimg.com,PROXY
+
+  # ==================== Telegram IP 段 ====================
+  - IP-CIDR,91.105.192.0/23,PROXY,no-resolve
+  - IP-CIDR,91.108.4.0/22,PROXY,no-resolve
+  - IP-CIDR,91.108.8.0/22,PROXY,no-resolve
+  - IP-CIDR,91.108.12.0/22,PROXY,no-resolve
+  - IP-CIDR,91.108.16.0/22,PROXY,no-resolve
+  - IP-CIDR,91.108.20.0/22,PROXY,no-resolve
+  - IP-CIDR,91.108.56.0/22,PROXY,no-resolve
+  - IP-CIDR,149.154.160.0/20,PROXY,no-resolve
+  - IP-CIDR,185.76.151.0/24,PROXY,no-resolve
+
+  # ==================== GEOSITE / GEOIP 兜底 ====================
+  - GEOSITE,geolocation-!cn,PROXY
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT,no-resolve
+  - MATCH,PROXY
+`;
+
+const MIHOMO_TEMPLATE = `mixed-port: 1080
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: true
+external-controller: '127.0.0.1:9090'
+unified-delay: true
+profile:
+    store-selected: true
+
+sniffer:
+    enable: true
+    force-dns-mapping: true
+    parse-pure-ip: true
+    override-destination: true
+    sniff:
+      HTTP:
+        ports: [80, 8080-8880]
+        override-destination: true
+      TLS:
+        ports: [443, 8443]
+      QUIC:
+        ports: [443, 8443]
+
+tun:
+    enable: true
+    stack: mixed
+    auto-route: true
+    auto-detect-interface: true
+    inet4-address:
+      - 198.18.0.1/30
+    inet6-address:
+      - fdfe:dcba:9877::1/126
+    dns-hijack:
+      - any:53
+      - tcp://any:53
+    strict-route: false
+
+dns:
+    enable: true
+    ipv6: true
+    prefer-h3: false
+    use-hosts: true
+    use-system-hosts: true
+    respect-rules: true
+    listen: '127.0.0.1:5335'
+
+    default-nameserver:
+      - 223.5.5.5
+      - 119.29.29.29
+      - 8.8.8.8
+
+    proxy-server-nameserver:
+      - https://223.5.5.5/dns-query
+      - https://dns.alidns.com/dns-query
+
+    nameserver-policy:
+      '+.lan': system
+      '+.local': system
+
+    enhanced-mode: fake-ip
+    fake-ip-range: 198.18.0.1/16
+    fake-ip-range6: fdfe:dcba:9876::1/64
+    fake-ip-filter:
+{fake_ip_filter}
+
+    nameserver:
+      - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
+      - https://223.5.5.5/dns-query
+
+    fallback:
+      - https://1.1.1.1/dns-query
+      - https://1.0.0.1/dns-query
+      - https://dns.google/dns-query
+      - https://cloudflare-dns.com/dns-query
+
+    fallback-filter:
+        geoip: true
+        geoip-code: CN
+        ipcidr:
+          - 240.0.0.0/4
+          - 0.0.0.0/32
+          - 127.0.0.1/32
+        domain:
+          - '+.google.com'
+          - '+.googleapis.com'
+          - '+.youtube.com'
+          - '+.github.com'
+
+proxies:
+{proxy_node}
+
+proxy-groups:
+    - name: PROXY
+      type: select
+      proxies:
+        - {proxy_name}
+
+{rules}`;
+
+function mihomoProxyNode(config) {
   return [
-    'proxies:',
-    \`  - name: \${yamlQuote(config.name)}\`,
+    `  - name: ${yamlQuote(config.name)}`,
     '    type: anytls',
-    \`    server: \${yamlQuote(config.server)}\`,
-    \`    port: \${config.port}\`,
-    \`    password: \${yamlQuote(config.password)}\`,
-    \`    sni: \${yamlQuote(config.sni)}\`,
+    `    server: ${yamlQuote(config.server)}`,
+    `    port: ${config.port}`,
+    `    password: ${yamlQuote(config.password)}`,
+    `    sni: ${yamlQuote(config.sni)}`,
     '    client-fingerprint: chrome',
     '    udp: true',
-    '    skip-cert-verify: false',
-    ''
-  ].join('\\n');
+    '    skip-cert-verify: false'
+  ].join('\n');
+}
+
+function mihomoYaml(config) {
+  return MIHOMO_TEMPLATE
+    .replace('{fake_ip_filter}', FAKE_IP_FILTER)
+    .replace('{proxy_node}', mihomoProxyNode(config))
+    .replace('{proxy_name}', yamlQuote(config.name))
+    .replace('{rules}', MIHOMO_RULES);
 }
 
 export default {
@@ -1285,26 +1475,30 @@ export default {
     if (!env.SUB_TOKEN || url.searchParams.get('token') !== env.SUB_TOKEN) {
       return new Response('Forbidden', {status: 403});
     }
-    if (url.searchParams.get('flag') === 'clash') {
+    const isClash = url.searchParams.get('flag') === 'clash';
+    const headers = {
+      'cache-control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'pragma': 'no-cache',
+      'expires': '0',
+      'access-control-allow-origin': '*'
+    };
+    if (isClash) {
+      headers['content-type'] = 'text/yaml; charset=utf-8';
+      headers['content-disposition'] = `attachment; filename="${DOWNLOAD_NAME}.yaml"`;
       return new Response(mihomoYaml(CONFIG), {
         status: 200,
-        headers: {
-          'content-type': 'text/yaml; charset=utf-8',
-          'content-disposition': \`attachment; filename="\${DOWNLOAD_NAME}.yaml"\`,
-          'cache-control': 'no-store'
-        }
+        headers
       });
     }
+    headers['content-type'] = 'text/plain; charset=utf-8';
     return new Response(encodeBase64Utf8(anytlsUri(CONFIG)), {
       status: 200,
-      headers: {
-        'content-type': 'text/plain; charset=utf-8',
-        'cache-control': 'no-store'
-      }
+      headers
     });
   }
 };
 EOF
+    } >"${RUNTIME_TMP}/worker.js"
     install -m 0600 "${RUNTIME_TMP}/worker.js" "${destination}"
 }
 

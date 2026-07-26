@@ -54,6 +54,38 @@ file_mode() {
     stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
+worker_runtime_has_full_mihomo() {
+    node --input-type=module - "$1" <<'EOF'
+import fs from 'node:fs';
+
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const encoded = Buffer.from(source).toString('base64');
+const worker = await import(`data:text/javascript;base64,${encoded}`);
+const response = await worker.default.fetch(
+  new Request('https://worker.test/subscribe?token=test-token&flag=clash'),
+  {SUB_TOKEN: 'test-token'}
+);
+if (response.status !== 200) process.exit(1);
+const yaml = await response.text();
+for (const section of [
+  'mixed-port: 1080',
+  'tun:',
+  'dns:',
+  'proxies:',
+  'proxy-groups:',
+  'rules:',
+  'type: anytls',
+  'client-fingerprint: chrome'
+]) {
+  if (!yaml.includes(section)) process.exit(1);
+}
+if (yaml.includes('{proxy_') || yaml.includes('{rules}')) process.exit(1);
+if (!response.headers.get('content-disposition')?.includes('Team_Sub.yaml')) {
+  process.exit(1);
+}
+EOF
+}
+
 mkdir -p "${FAKE_BIN}" "${TMP_DIR}/state" "${TMP_DIR}/sing-box-config"
 sed \
     -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
@@ -155,8 +187,18 @@ test_worker_output() {
     assert_contains "Worker requires token" "env.SUB_TOKEN" "${content}"
     assert_contains "Worker verifies certificates" \
         "skip-cert-verify: false" "${content}"
+    assert_contains "Worker contains full Mihomo proxy groups" \
+        "proxy-groups:" "${content}"
+    assert_contains "Worker contains full Mihomo rules" \
+        "const MIHOMO_RULES" "${content}"
+    assert_contains "Worker contains Mihomo TUN configuration" \
+        "tun:" "${content}"
+    assert_contains "Worker contains Mihomo DNS configuration" \
+        "dns:" "${content}"
     assert_not_contains "Worker has no VLESS output" "vless://" "${content}"
     assert_success "Worker JavaScript syntax valid" node --check "${worker}"
+    assert_success "Worker returns complete Mihomo subscription" \
+        worker_runtime_has_full_mihomo "${worker}"
 }
 
 test_state_secret_boundary() {

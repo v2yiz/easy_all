@@ -610,7 +610,7 @@ link
 - 自动部署 Cloudflare Worker。
 - multipart 入口模块和上传文件名统一为 `worker.js`。
 - 输出通用 base64 订阅 URL。
-- 输出 Mihomo YAML 订阅 URL。
+- 输出完整 Mihomo YAML 订阅 URL。
 
 `worker`：
 
@@ -630,9 +630,19 @@ https://WORKER.workers.dev/subscribe?token=SUB_TOKEN
 https://WORKER.workers.dev/subscribe?token=SUB_TOKEN&flag=clash
 ```
 
-通用订阅响应为 base64 编码的 AnyTLS URI。
+通用订阅响应为 base64 编码的 AnyTLS URI。安装器只管理当前服务器的一个
+AnyTLS 节点，因此不会自动合并仓库中手工维护的其他节点。
 
-Mihomo 响应示例：
+Mihomo 响应与 Reality 完整模板保持同类结构，包含：
+
+- mixed 监听端口与运行模式。
+- sniffer、TUN 和 Fake-IP DNS。
+- 当前 AnyTLS 节点。
+- `PROXY` 代理组。
+- 局域网、AI、Apple、Microsoft、Google、Telegram、GEOSITE/GEOIP
+  及最终兜底规则。
+
+节点部分示例：
 
 ```yaml
 proxies:
