@@ -105,16 +105,14 @@ chmod +x easy_anytls.sh && \
 sudo env \
   ANYTLS_DOMAIN=node.example.com \
   SING_BOX_VERSION=latest \
-  ACME_EMAIL=admin@example.com \
   CF_DNS_API_TOKEN=your_dns_token \
-  CF_ZONE_ID=your_zone_id \
   SUBSCRIBE_MODE=auto \
   CF_WORKER_API_TOKEN=your_worker_token \
   CF_ACCOUNT_ID=your_account_id \
   ./easy_anytls.sh install
 ```
 
-真实 Token 直接写在命令行可能进入 shell 历史。更推荐只通过环境变量提供非敏感参数，在交互提示中输入两个 Token；输入不会回显。
+真实 Token 直接写在命令行可能进入 shell 历史。更推荐只通过环境变量提供非敏感参数，在交互提示中输入 Token；输入不会回显。只有自动部署 Worker 模式才会询问第二个 Worker Token。
 
 ### 下载后先审查再执行
 
@@ -335,29 +333,11 @@ Zone / DNS / Edit
 
 资源范围应只包含 AnyTLS 域名所在的 Zone。
 
-同时必须提供以下之一：
-
-```text
-CF_ZONE_ID
-CF_ACCOUNT_ID
-```
-
-优先推荐 `CF_ZONE_ID`，因为作用范围更明确：
+申请证书时只需要提供 DNS API Token，不需要填写 Zone ID、Account ID
+或 Let's Encrypt 账户邮箱。acme.sh 会使用 Token 查询域名所属 Zone：
 
 ```bash
 CF_DNS_API_TOKEN=... \
-CF_ZONE_ID=... \
-ACME_EMAIL=admin@example.com \
-ANYTLS_DOMAIN=node.example.com \
-easy_anytls install
-```
-
-如果同一个 Cloudflare Account 下管理多个 Zone，也可以使用：
-
-```bash
-CF_DNS_API_TOKEN=... \
-CF_ACCOUNT_ID=... \
-ACME_EMAIL=admin@example.com \
 ANYTLS_DOMAIN=node.example.com \
 easy_anytls install
 ```
@@ -520,6 +500,16 @@ sing-box check -c /etc/sing-box/config.json
 - systemd 状态为 active。
 - TCP 443 存在监听。
 
+脚本会等待最多 20 秒，不会在 `systemctl restart` 返回后立即把尚在初始化
+socket 的 sing-box 误判为失败。启动或监听验收失败时，会先输出并保存
+systemd 状态、服务日志、443 监听信息和配置检查结果，然后才执行安装回滚：
+
+```text
+/etc/easy_anytls/last-start-diagnostics.log
+```
+
+该诊断文件权限为 `0600`；下一次成功启动会自动删除，卸载 AnyTLS 时也会删除。
+
 ## 安装
 
 ```bash
@@ -553,10 +543,8 @@ sudo easy_anytls status
 2. sing-box 版本通道或具体版本。
 3. 订阅输出方式。
 4. 定时重启策略。
-5. Let's Encrypt 账户邮箱。
-6. Cloudflare DNS API Token。
-7. Cloudflare Zone ID 或 Account ID。
-8. Worker Token 和 Worker 名称，仅自动部署订阅时需要。
+5. Cloudflare DNS API Token。
+6. Cloudflare Account ID、Worker API Token 和 Worker 名称，仅自动部署订阅时需要。
 
 密码、订阅 Token 等连接凭据默认随机生成。
 
@@ -777,10 +765,8 @@ sudo DELETE_CLOUDFLARE_WORKER=1 \
 | `NODE_NAME` | 客户端节点显示名，默认 `MY_ANYTLS` |
 | `SING_BOX_VERSION` | `latest`、`alpha` 或具体官方版本 |
 | `SING_BOX_VERSION_OVERRIDE` | 指定版本更新时使用 |
-| `ACME_EMAIL` | Let's Encrypt 账户邮箱 |
 | `CF_DNS_API_TOKEN` | Cloudflare DNS-01 Token |
-| `CF_ZONE_ID` | 推荐；证书域名所在 Zone ID |
-| `CF_ACCOUNT_ID` | 可替代 Zone ID；自动部署 Worker 时必需 |
+| `CF_ACCOUNT_ID` | 仅自动部署 Worker 时必需 |
 | `SUBSCRIBE_MODE` | `auto`、`worker` 或 `link` |
 | `CF_WORKER_API_TOKEN` | 自动部署 Worker 时使用 |
 | `WORKER_NAME` | Worker 名称，默认 `easy-anytls` |
@@ -796,9 +782,7 @@ sudo DELETE_CLOUDFLARE_WORKER=1 \
 ```bash
 sudo ANYTLS_DOMAIN=node.example.com \
   SING_BOX_VERSION=latest \
-  ACME_EMAIL=admin@example.com \
   CF_DNS_API_TOKEN=your_dns_token \
-  CF_ZONE_ID=your_zone_id \
   SUBSCRIBE_MODE=auto \
   CF_WORKER_API_TOKEN=your_worker_token \
   CF_ACCOUNT_ID=your_account_id \
@@ -828,7 +812,6 @@ sudo ANYTLS_DOMAIN=node.example.com \
 - 节点名称。
 - Worker URL、名称和订阅 Token。
 - Cloudflare Account ID。
-- ACME 邮箱。
 - acme.sh 是否由 easy_anytls 安装，用于 `--purge` 时避免误删共享 acme.sh。
 
 不会保存：

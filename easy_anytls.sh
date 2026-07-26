@@ -22,6 +22,7 @@ readonly SING_BOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
 readonly SING_BOX_SERVICE="sing-box.service"
 readonly ACME_HOME="/root/.acme.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
+readonly SING_BOX_START_DIAGNOSTICS="${STATE_DIR}/last-start-diagnostics.log"
 readonly NFT_CONFIG="/etc/nftables.conf"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-bbrv3.conf"
 readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
@@ -36,6 +37,7 @@ readonly DEFAULT_REBOOT_HOUR="4"
 readonly LEGACY_CRON_JOB="0 4 * * * /sbin/reboot"
 readonly CRON_REBOOT_COMMAND="/usr/bin/flock -n /run/daily-reboot.lock /sbin/reboot"
 readonly MIN_SING_BOX_VERSION="1.12.0"
+readonly SING_BOX_START_TIMEOUT="20"
 readonly GITHUB_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases"
 
 INSTALL_ROLLBACK_ON_EXIT=0
@@ -117,6 +119,51 @@ validate_ipv4() {
     for octet in "${octets[@]}"; do
         ((10#${octet} >= 0 && 10#${octet} <= 255)) || return 1
     done
+}
+
+tcp_port_is_listening() {
+    local port=$1 listeners
+    listeners=$(ss -H -ltn "sport = :${port}" 2>/dev/null) || return 1
+    [[ -n "${listeners//[[:space:]]/}" ]]
+}
+
+wait_for_sing_box_ready() {
+    local timeout=${1:-${SING_BOX_START_TIMEOUT}} attempt
+    for ((attempt = 1; attempt <= timeout; attempt++)); do
+        if systemctl is-active --quiet "${SING_BOX_SERVICE}" 2>/dev/null \
+            && tcp_port_is_listening "${ANYTLS_PORT}"; then
+            return 0
+        fi
+        systemctl is-failed --quiet "${SING_BOX_SERVICE}" 2>/dev/null \
+            && return 1
+        sleep 1
+    done
+    return 1
+}
+
+capture_sing_box_start_diagnostics() {
+    local temp="${RUNTIME_TMP}/sing-box-start-diagnostics.log"
+    install -d -m 0700 "${STATE_DIR}"
+    {
+        printf 'easy_anytls sing-box startup diagnostics\n'
+        printf 'Captured: %s\n\n' "$(date --iso-8601=seconds 2>/dev/null || date)"
+        printf '[systemctl status]\n'
+        systemctl status "${SING_BOX_SERVICE}" --no-pager -l 2>&1 || true
+        printf '\n[systemctl properties]\n'
+        systemctl show "${SING_BOX_SERVICE}" \
+            -p ActiveState -p SubState -p Result -p MainPID \
+            -p ExecMainCode -p ExecMainStatus 2>&1 || true
+        printf '\n[journalctl]\n'
+        journalctl -u "${SING_BOX_SERVICE}" -b -n 100 --no-pager \
+            2>&1 || true
+        printf '\n[TCP %s listeners]\n' "${ANYTLS_PORT}"
+        ss -H -ltnp "sport = :${ANYTLS_PORT}" 2>&1 || true
+        printf '\n[configuration check]\n'
+        "${SING_BOX_BIN}" check -c "${SING_BOX_CONFIG}" 2>&1 || true
+    } >"${temp}"
+    install -m 0600 "${temp}" "${SING_BOX_START_DIAGNOSTICS}"
+    warn "sing-box 启动验收失败；以下诊断已保存在 ${SING_BOX_START_DIAGNOSTICS}"
+    sed -n '1,220p' "${temp}" >&2
 }
 
 validate_worker_name() {
@@ -203,7 +250,6 @@ load_state() {
     local env_account_id=${CF_ACCOUNT_ID:-}
     local env_deploy_mode=${DEPLOY_MODE:-}
     local env_sub_download_name=${SUB_DOWNLOAD_NAME:-}
-    local env_acme_email=${ACME_EMAIL:-}
 
     ANYTLS_DOMAIN=""
     ANYTLS_PASSWORD=""
@@ -217,7 +263,6 @@ load_state() {
     CF_ACCOUNT_ID=""
     DEPLOY_MODE=""
     SUB_DOWNLOAD_NAME=""
-    ACME_EMAIL=""
     ACME_INSTALLED_BY_EASY_ANYTLS=""
 
     if [[ -f "${STATE_FILE}" ]]; then
@@ -241,7 +286,6 @@ load_state() {
     SUB_DOWNLOAD_NAME=${env_sub_download_name:-${SUB_DOWNLOAD_NAME}}
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-    ACME_EMAIL=${env_acme_email:-${ACME_EMAIL}}
     ACME_INSTALLED_BY_EASY_ANYTLS=${ACME_INSTALLED_BY_EASY_ANYTLS:-0}
 }
 
@@ -264,7 +308,6 @@ save_state() {
         printf 'DEPLOY_MODE=%q\n' "${DEPLOY_MODE:-link}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
-        printf 'ACME_EMAIL=%q\n' "${ACME_EMAIL:-}"
         printf 'ACME_INSTALLED_BY_EASY_ANYTLS=%q\n' \
             "${ACME_INSTALLED_BY_EASY_ANYTLS:-0}"
     } >"${temp}"
@@ -438,7 +481,7 @@ check_service_conflicts() {
         die "检测到非 easy_anytls 管理的 sing-box 二进制、配置或 systemd 服务，拒绝覆盖"
     fi
     if [[ ! -f "${STATE_FILE}" ]] \
-        && ss -ltnH "sport = :${ANYTLS_PORT}" 2>/dev/null | grep -q .; then
+        && tcp_port_is_listening "${ANYTLS_PORT}"; then
         die "TCP ${ANYTLS_PORT} 已被其他服务占用"
     fi
 }
@@ -862,20 +905,16 @@ install_sing_box_binary() {
 }
 
 install_acme() {
-    local installer email
+    local installer
     if [[ -x "${ACME_BIN}" ]]; then
         ACME_INSTALLED_BY_EASY_ANYTLS=${ACME_INSTALLED_BY_EASY_ANYTLS:-0}
         ensure_acme_cron
         return 0
     fi
-    email=${ACME_EMAIL:-}
-    [[ -n "${email}" ]] || email=$(prompt_value "Let's Encrypt 账户邮箱" "")
-    [[ "${email}" == *@*.* ]] || die "ACME 邮箱格式无效"
-    ACME_EMAIL="${email}"
     installer="${RUNTIME_TMP}/get-acme.sh"
     curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" \
         || die "下载 acme.sh 安装器失败"
-    sh "${installer}" email="${email}" \
+    sh "${installer}" \
         || die "安装 acme.sh 失败"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后未找到 ${ACME_BIN}"
     ACME_INSTALLED_BY_EASY_ANYTLS=1
@@ -891,25 +930,12 @@ ensure_acme_cron() {
 
 collect_cloudflare_dns_credentials() {
     local token=${CF_DNS_API_TOKEN:-}
-    local zone_id=${CF_ZONE_ID:-}
-    local account_id=${CF_ACCOUNT_ID:-}
     if [[ -z "${token}" ]]; then
         token=$(prompt_secret "Cloudflare DNS API Token（输入不回显）") \
             || die "非交互模式必须设置 CF_DNS_API_TOKEN"
     fi
     [[ -n "${token}" ]] || die "CF_DNS_API_TOKEN 不能为空"
-    if [[ -z "${zone_id}" && -z "${account_id}" ]]; then
-        zone_id=$(prompt_value "Cloudflare Zone ID（推荐；可留空改用 Account ID）" "")
-        if [[ -z "${zone_id}" ]]; then
-            account_id=$(prompt_value "Cloudflare Account ID" "")
-        fi
-    fi
-    [[ -n "${zone_id}" || -n "${account_id}" ]] \
-        || die "必须提供 CF_ZONE_ID 或 CF_ACCOUNT_ID"
     CF_DNS_TOKEN_VALUE="${token}"
-    CF_DNS_ZONE_ID_VALUE="${zone_id}"
-    CF_DNS_ACCOUNT_ID_VALUE="${account_id}"
-    [[ -z "${account_id}" ]] || CF_ACCOUNT_ID="${account_id}"
 }
 
 validate_certificate() {
@@ -932,21 +958,11 @@ validate_certificate() {
 
 issue_certificate() {
     local domain=$1
-    local state_account_id=${CF_ACCOUNT_ID:-}
     info "[7/8] 使用 Let's Encrypt + Cloudflare DNS 签发单域名证书"
     install_acme
     collect_cloudflare_dns_credentials
+    unset CF_Zone_ID CF_Account_ID || true
     export CF_Token="${CF_DNS_TOKEN_VALUE}"
-    if [[ -n "${CF_DNS_ZONE_ID_VALUE}" ]]; then
-        export CF_Zone_ID="${CF_DNS_ZONE_ID_VALUE}"
-    else
-        unset CF_Zone_ID || true
-    fi
-    if [[ -n "${CF_DNS_ACCOUNT_ID_VALUE}" ]]; then
-        export CF_Account_ID="${CF_DNS_ACCOUNT_ID_VALUE}"
-    else
-        unset CF_Account_ID || true
-    fi
     "${ACME_BIN}" --set-default-ca --server letsencrypt
     "${ACME_BIN}" --issue --server letsencrypt --dns dns_cf \
         -d "${domain}" --keylength ec-256 \
@@ -960,8 +976,7 @@ issue_certificate() {
         --fullchain-file "${CERT_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" \
         || die "安装证书到 easy_anytls 目录失败"
-    unset CF_Token CF_Zone_ID CF_Account_ID CF_DNS_API_TOKEN
-    CF_ACCOUNT_ID=${state_account_id:-${CF_DNS_ACCOUNT_ID_VALUE}}
+    unset CF_Token CF_DNS_API_TOKEN
     CF_DNS_TOKEN_VALUE=""
     validate_certificate "${domain}"
     crontab -l 2>/dev/null | grep -Fq "${ACME_BIN}" \
@@ -979,10 +994,21 @@ install_certificate_reload_hook() {
     cat >"${RUNTIME_TMP}/reload-sing-box.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-if /usr/bin/systemctl is-active --quiet ${SING_BOX_SERVICE}; then
-    exec /usr/bin/systemctl restart ${SING_BOX_SERVICE}
+if ! /usr/bin/systemctl is-active --quiet ${SING_BOX_SERVICE}; then
+    exit 0
 fi
-exit 0
+/usr/bin/systemctl restart ${SING_BOX_SERVICE}
+for ((attempt = 1; attempt <= ${SING_BOX_START_TIMEOUT}; attempt++)); do
+    if /usr/bin/systemctl is-active --quiet ${SING_BOX_SERVICE} \
+        && [[ -n "\$(/usr/bin/ss -H -ltn 'sport = :${ANYTLS_PORT}' 2>/dev/null)" ]]; then
+        exit 0
+    fi
+    /usr/bin/systemctl is-failed --quiet ${SING_BOX_SERVICE} && break
+    sleep 1
+done
+/usr/bin/systemctl status ${SING_BOX_SERVICE} --no-pager -l >&2 || true
+/usr/bin/journalctl -u ${SING_BOX_SERVICE} -b -n 100 --no-pager >&2 || true
+exit 1
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-sing-box.sh" "${CERT_RELOAD_HOOK}"
 }
@@ -1082,7 +1108,7 @@ write_sing_box_config() {
 }
 
 install_sing_box_service() {
-    local previous_service=""
+    local previous_service="" failure_reason=""
     if [[ -f "${SING_BOX_SERVICE_FILE}" ]]; then
         previous_service="${BACKUP_DIR}/sing-box.service.$(date +%Y%m%d%H%M%S).bak"
         install -d -m 0700 "${BACKUP_DIR}"
@@ -1116,8 +1142,13 @@ EOF
     install -m 0644 "${RUNTIME_TMP}/sing-box.service" "${SING_BOX_SERVICE_FILE}"
     systemctl daemon-reload
     systemctl enable "${SING_BOX_SERVICE}" >/dev/null
-    if ! systemctl restart "${SING_BOX_SERVICE}" \
-        || ! systemctl is-active --quiet "${SING_BOX_SERVICE}"; then
+    if ! systemctl restart "${SING_BOX_SERVICE}"; then
+        failure_reason="systemctl restart 执行失败"
+    elif ! wait_for_sing_box_ready; then
+        failure_reason="服务未能在 ${SING_BOX_START_TIMEOUT} 秒内保持 active 并监听 TCP ${ANYTLS_PORT}"
+    fi
+    if [[ -n "${failure_reason}" ]]; then
+        capture_sing_box_start_diagnostics
         if [[ -n "${SING_BOX_CONFIG_BACKUP:-}" ]]; then
             install -m 0600 "${SING_BOX_CONFIG_BACKUP}" "${SING_BOX_CONFIG}"
         fi
@@ -1126,11 +1157,9 @@ EOF
         fi
         systemctl daemon-reload
         systemctl restart "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
-        systemctl status "${SING_BOX_SERVICE}" --no-pager || true
-        die "sing-box 启动失败，已尝试恢复原配置"
+        die "sing-box 启动失败：${failure_reason}；已尝试恢复原配置"
     fi
-    ss -ltnH "sport = :${ANYTLS_PORT}" | grep -q . \
-        || die "sing-box 未监听 TCP ${ANYTLS_PORT}"
+    rm -f -- "${SING_BOX_START_DIAGNOSTICS}"
 }
 
 build_anytls_link() {
@@ -1411,6 +1440,9 @@ show_status() {
     printf 'sing-box: '
     systemctl is-active --quiet "${SING_BOX_SERVICE}" 2>/dev/null \
         && printf 'active\n' || printf 'inactive\n'
+    printf 'TCP %s: ' "${ANYTLS_PORT}"
+    tcp_port_is_listening "${ANYTLS_PORT}" \
+        && printf 'listening\n' || printf 'not listening\n'
     printf 'sing-box 版本: %s\n' \
         "$("${SING_BOX_BIN}" version 2>/dev/null | head -n 1 || echo 未安装)"
     printf '版本通道: %s\n' "${SING_BOX_CHANNEL:-未知}"
@@ -1427,6 +1459,9 @@ show_status() {
     printf 'BBR: %s\n' \
         "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)"
     printf 'Worker URL: %s\n' "${WORKER_URL:-未记录}"
+    if [[ -f "${SING_BOX_START_DIAGNOSTICS}" ]]; then
+        printf '最近启动失败诊断: %s\n' "${SING_BOX_START_DIAGNOSTICS}"
+    fi
 }
 
 update_sing_box() {
@@ -1446,10 +1481,11 @@ update_sing_box() {
         || die "新 sing-box 与当前配置不兼容"
     install -m 0755 "${new_bin}" "${SING_BOX_BIN}"
     if ! systemctl restart "${SING_BOX_SERVICE}" \
-        || ! systemctl is-active --quiet "${SING_BOX_SERVICE}"; then
+        || ! wait_for_sing_box_ready; then
+        capture_sing_box_start_diagnostics
         install -m 0755 "${backup}" "${SING_BOX_BIN}"
         systemctl restart "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
-        die "sing-box 更新失败，已恢复旧版本"
+        die "sing-box 更新后未能通过启动验收，已恢复旧版本；诊断见 ${SING_BOX_START_DIAGNOSTICS}"
     fi
     SING_BOX_VERSION="${selector}"
     SING_BOX_INSTALLED_VERSION="${SING_BOX_RELEASE_VERSION}"
@@ -1464,7 +1500,12 @@ renew_certificate() {
     "${ACME_BIN}" --renew -d "${ANYTLS_DOMAIN}" --ecc --force \
         || die "证书续期失败"
     validate_certificate "${ANYTLS_DOMAIN}"
-    systemctl restart "${SING_BOX_SERVICE}"
+    systemctl restart "${SING_BOX_SERVICE}" \
+        || die "证书续期后重启 sing-box 失败"
+    if ! wait_for_sing_box_ready; then
+        capture_sing_box_start_diagnostics
+        die "证书已续期，但 sing-box 未能通过启动验收；诊断见 ${SING_BOX_START_DIAGNOSTICS}"
+    fi
     success "证书已续期并重启 sing-box"
 }
 
@@ -1539,7 +1580,8 @@ purge_anytls_backups() {
 remove_anytls_local_files() {
     systemctl disable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
     rm -f -- "${SING_BOX_SERVICE_FILE}" "${SING_BOX_CONFIG}" "${SING_BOX_BIN}"
-    rm -f -- "${STATE_FILE}" "${WORKER_FILE}" "${CERT_FILE}" "${KEY_FILE}"
+    rm -f -- "${STATE_FILE}" "${WORKER_FILE}" "${CERT_FILE}" "${KEY_FILE}" \
+        "${SING_BOX_START_DIAGNOSTICS}"
     rm -f -- "${COMMAND_PATH}" "${COMMAND_INSTALL_DIR}/easy_anytls.sh" \
         "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload
@@ -1643,8 +1685,7 @@ usage() {
 主要无人值守变量:
   ANYTLS_DOMAIN=node.example.com
   SING_BOX_VERSION=latest|alpha|具体版本
-  ACME_EMAIL=admin@example.com
-  CF_DNS_API_TOKEN=...  CF_ZONE_ID=... 或 CF_ACCOUNT_ID=...
+  CF_DNS_API_TOKEN=...
   SUBSCRIBE_MODE=auto|worker|link
   CF_WORKER_API_TOKEN=...  CF_ACCOUNT_ID=...
   WORKER_NAME=easy-anytls  SUB_DOWNLOAD_NAME=MY_SUB

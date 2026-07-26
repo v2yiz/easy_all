@@ -172,7 +172,6 @@ test_state_secret_boundary() {
     CF_ACCOUNT_ID="account-id"
     DEPLOY_MODE="worker"
     SUB_DOWNLOAD_NAME="MY_SUB"
-    ACME_EMAIL="admin@example.com"
     CF_DNS_API_TOKEN="dns-secret-must-not-be-saved"
     CF_WORKER_API_TOKEN="worker-secret-must-not-be-saved"
     save_state
@@ -190,6 +189,27 @@ test_state_secret_boundary() {
         "ACME_INSTALLED_BY_EASY_ANYTLS=0" "${content}"
     assert_equal "state file mode is 600" "600" \
         "$(file_mode "${STATE_FILE}")"
+}
+
+test_cloudflare_credential_boundaries() {
+    local certificate_body worker_body
+    CF_DNS_API_TOKEN="dns-token"
+    CF_DNS_TOKEN_VALUE=""
+    collect_cloudflare_dns_credentials
+    assert_equal "certificate collection accepts DNS token alone" \
+        "dns-token" "${CF_DNS_TOKEN_VALUE}"
+
+    certificate_body=$(declare -f collect_cloudflare_dns_credentials)
+    assert_not_contains "certificate collection does not request Account ID" \
+        "CF_ACCOUNT_ID" "${certificate_body}"
+    assert_not_contains "certificate collection does not request Zone ID" \
+        "CF_ZONE_ID" "${certificate_body}"
+
+    worker_body=$(declare -f deploy_worker)
+    assert_contains "automatic Worker deployment requests Account ID" \
+        "Cloudflare Account ID" "${worker_body}"
+    assert_contains "automatic Worker deployment requests Worker token" \
+        "Cloudflare Worker API Token" "${worker_body}"
 }
 
 test_release_resolution() {
@@ -280,10 +300,12 @@ test_reload_hook() {
     install_certificate_reload_hook
     local content
     content=$(<"${CERT_RELOAD_HOOK}")
-    assert_contains "reload hook only restarts active service" \
-        "is-active --quiet sing-box.service" "${content}"
-    assert_contains "reload hook propagates restart result" \
-        "exec /usr/bin/systemctl restart sing-box.service" "${content}"
+    assert_contains "reload hook only restarts an active service" \
+        "if ! /usr/bin/systemctl is-active --quiet sing-box.service" "${content}"
+    assert_contains "reload hook restarts sing-box" \
+        "/usr/bin/systemctl restart sing-box.service" "${content}"
+    assert_contains "reload hook waits for TCP 443" \
+        "sport = :443" "${content}"
     assert_equal "reload hook is executable" "755" \
         "$(file_mode "${CERT_RELOAD_HOOK}")"
 }
@@ -330,14 +352,40 @@ test_safe_uninstall_helpers() {
         test -d "${ACME_HOME}"
 }
 
+test_startup_readiness_wait() {
+    local checks=0
+    systemctl() {
+        case "${1:-}" in
+        is-active) return 0 ;;
+        is-failed) return 1 ;;
+        *) return 0 ;;
+        esac
+    }
+    tcp_port_is_listening() {
+        checks=$((checks + 1))
+        ((checks >= 3))
+    }
+    sleep() { :; }
+
+    assert_success "startup readiness waits for a delayed listener" \
+        wait_for_sing_box_ready 5
+    assert_equal "startup readiness retried the listener check" "3" "${checks}"
+
+    tcp_port_is_listening() { return 1; }
+    assert_failure "startup readiness fails after the listener timeout" \
+        wait_for_sing_box_ready 2
+}
+
 test_validators
 test_dns_set_validation
 test_links_and_client_config
 test_worker_output
 test_state_secret_boundary
+test_cloudflare_credential_boundaries
 test_release_resolution
 test_server_config
 test_reload_hook
 test_safe_uninstall_helpers
+test_startup_readiness_wait
 
 printf 'ok - easy_anytls shell tests passed (%s assertions)\n' "${TESTS_RUN}"
