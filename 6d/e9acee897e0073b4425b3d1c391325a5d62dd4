@@ -1,0 +1,31 @@
+README.md
+  s_e63c875a84819b::t_806737d416399d 156,159,162-172,212,510,629-630
+any_tls_readme.md
+  s_e63c875a84819b::t_e4ae3d55550b03 723,734,736,738-739,741-743,747-766,769,791-792,832
+easy_anytls.sh
+  s_e63c875a84819b::t_c708d8bc597dd5 221,245,268-269,867,881,1480-1514,1516-1524,1527-1536,1539-1547,1551,1553-1560,1564,1566-1569,1571,1573-1579,1581-1584,1586,1588-1591,1638-1640,1651-1654
+easy_reality.sh
+  s_e63c875a84819b::t_b619e152693021 1357-1372,1375-1377,1379-1386,1390,1392-1400,1403,1405-1408,1410-1414,1416,1418-1421,1459-1461,1468-1470
+test/test_easy_anytls.sh
+  s_e63c875a84819b::t_cfab7b72b9b234 63,189-190,291-332,341
+test/test_easy_reality.sh
+  s_e63c875a84819b::t_d750eecdc1cc3d 60-62,228-257,264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6de9acee897e0073b4425b3d1c391325a5d62dd4",
+  "prompts": {},
+  "sessions": {
+    "s_e63c875a84819b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f9c28-6dd8-7032-86c7-bef18edf8c86",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
