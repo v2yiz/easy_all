@@ -608,6 +608,7 @@ link
 `auto`：
 
 - 自动部署 Cloudflare Worker。
+- multipart 入口模块和上传文件名统一为 `worker.js`。
 - 输出通用 base64 订阅 URL。
 - 输出 Mihomo YAML 订阅 URL。
 

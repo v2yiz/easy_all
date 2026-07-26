@@ -1303,6 +1303,20 @@ cloudflare_api() {
         "https://api.cloudflare.com/client/v4${path}" "$@"
 }
 
+report_cloudflare_api_failure() {
+    local context=$1 response=$2 details
+    warn "${context}"
+    if details=$(jq -er '
+        [(.errors // [])[] |
+          if .code then "[\(.code)] \(.message)" else .message end] |
+        select(length > 0) | join("\n")
+    ' <<<"${response}"); then
+        printf '%s\n' "${details}" >&2
+    else
+        printf '%s\n' "${response}" >&2
+    fi
+}
+
 deploy_worker() {
     local metadata response subdomain worker_module_file
     CF_ACCOUNT_ID=${CF_ACCOUNT_ID:-$(prompt_value "Cloudflare Account ID" "")}
@@ -1334,19 +1348,30 @@ deploy_worker() {
     response=$(cloudflare_api PUT \
         "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" \
         -F "metadata=${metadata};type=application/json" \
-        -F "worker.js=@${worker_module_file};type=application/javascript+module") \
+        -F "worker.js=@${worker_module_file};filename=worker.js;type=application/javascript+module") \
         || return 1
     jq -e '.success == true' <<<"${response}" >/dev/null || {
-        jq -r '.errors[]?.message' <<<"${response}" >&2
+        report_cloudflare_api_failure "Cloudflare Worker module 上传失败" "${response}"
         return 1
     }
     response=$(cloudflare_api POST \
         "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/subdomain" \
+        -H "Content-Type: application/json" \
         --data '{"enabled":true}') || return 1
-    jq -e '.success == true' <<<"${response}" >/dev/null || return 1
+    jq -e '.success == true' <<<"${response}" >/dev/null || {
+        report_cloudflare_api_failure "启用 Worker workers.dev 地址失败" "${response}"
+        return 1
+    }
     response=$(cloudflare_api GET \
         "/accounts/${CF_ACCOUNT_ID}/workers/subdomain") || return 1
-    subdomain=$(jq -er '.result.subdomain' <<<"${response}") || return 1
+    jq -e '.success == true' <<<"${response}" >/dev/null || {
+        report_cloudflare_api_failure "读取账户 workers.dev 子域名失败" "${response}"
+        return 1
+    }
+    subdomain=$(jq -er '.result.subdomain' <<<"${response}") || {
+        report_cloudflare_api_failure "Cloudflare 响应缺少 workers.dev 子域名" "${response}"
+        return 1
+    }
     WORKER_URL="https://${WORKER_NAME}.${subdomain}.workers.dev"
     unset CF_WORKER_API_TOKEN
 }

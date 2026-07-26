@@ -210,6 +210,10 @@ test_cloudflare_credential_boundaries() {
         "Cloudflare Account ID" "${worker_body}"
     assert_contains "automatic Worker deployment requests Worker token" \
         "Cloudflare Worker API Token" "${worker_body}"
+    assert_contains "Worker multipart filename matches main_module" \
+        "filename=worker.js" "${worker_body}"
+    assert_contains "Worker subdomain request sends JSON" \
+        "Content-Type: application/json" "${worker_body}"
 }
 
 test_acme_issue_statuses() {
