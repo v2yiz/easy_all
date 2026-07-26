@@ -351,8 +351,12 @@ test_safe_uninstall_helpers() {
         'PURGE_SHARED_ACME:-0' "${script_content}"
     assert_not_contains "AnyTLS uninstall never restores system settings" \
         "restore_system_changes" "${uninstall_body}"
-    assert_not_contains "AnyTLS uninstall never removes reboot schedule" \
-        "remove_daily_reboot" "${uninstall_body}"
+    assert_contains "AnyTLS uninstall removes its reboot schedule" \
+        "remove_daily_reboot_schedule" "${uninstall_body}"
+    assert_contains "AnyTLS uninstall cleans its acme.sh installation" \
+        "purge_acme_installation" "${uninstall_body}"
+    assert_contains "AnyTLS records acme.sh ownership before install completes" \
+        "acme-installed-by-easy-anytls" "${script_content}"
     assert_not_contains "AnyTLS uninstall never purges XanMod" \
         "purge_xanmod" "${uninstall_body}"
 
@@ -363,6 +367,16 @@ test_safe_uninstall_helpers() {
     purge_acme_installation >/dev/null
     assert_success "AnyTLS purge preserves acme.sh with another domain" \
         test -d "${ACME_HOME}"
+
+    local cron_input cron_output
+    cron_input=$'15 3 * * * /usr/local/bin/backup\n0 4 * * * /sbin/reboot\n0 6 * * * /usr/bin/flock -n /run/daily-reboot.lock /sbin/reboot'
+    cron_output=$(filter_managed_reboot_cron <<<"${cron_input}")
+    assert_contains "reboot cleanup preserves unrelated cron" \
+        "/usr/local/bin/backup" "${cron_output}"
+    assert_not_contains "reboot cleanup removes legacy reboot cron" \
+        "0 4 * * * /sbin/reboot" "${cron_output}"
+    assert_not_contains "reboot cleanup removes managed reboot cron" \
+        "/run/daily-reboot.lock" "${cron_output}"
 }
 
 test_startup_readiness_wait() {

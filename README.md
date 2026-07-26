@@ -153,7 +153,7 @@ sudo ./easy_reality.sh register-command
 sudo easy_reality uninstall
 ```
 
-默认只删除 Reality/Xray 相关的本机服务、核心、当前配置、日志、状态文件、注册命令和本机 Worker 文件。不会改动服务器初始化产生的 nftables、BBR、IPv6、XanMod、时区、NTP、系统软件包或每日重启配置，也不会删除远端 Cloudflare Worker。
+默认删除 Reality/Xray 相关的本机服务、核心、当前配置、日志、状态文件、注册命令和本机 Worker 文件，同时删除 easy_reality 托管的每日重启 cron。使用动态订阅端口时，还会从 nftables 中精确移除 `10000-65535 → 443` 的 Reality 专属转发规则；其他 nftables 规则及 BBR、IPv6、XanMod、时区、NTP、系统软件包均不改动，也不会删除远端 Cloudflare Worker。
 
 ```bash
 sudo easy_reality uninstall --purge
@@ -169,7 +169,7 @@ sudo DELETE_CLOUDFLARE_WORKER=1 \
   easy_reality uninstall --purge
 ```
 
-`uninstall --restore-system` 仅作为旧命令兼容入口保留，现在不会恢复或删除任何服务器初始化配置。
+`uninstall --restore-system` 仅作为旧命令兼容入口保留，现在不会恢复服务器初始化配置。它与默认卸载相同，只清理 Reality 专属动态转发和 easy_reality 定时重启，不处理其他系统配置。
 
 ## 无人值守运行
 
@@ -626,7 +626,7 @@ sudo ./easy_reality.sh install
 - `SUB_TOKEN` 是订阅访问凭据，请不要公开。
 - `CF_API_TOKEN` 不会写入状态文件，但自动部署时会传给 Cloudflare API；建议优先使用交互输入，避免把真实 Token 写入 shell 历史。
 - `WORKER_TEMPLATE_SHA256` 是脚本内置 Worker 模板完整性校验值，不是用户配置项。
-- `uninstall` 和 `uninstall --purge` 都不会清理或恢复服务器初始化相关改动。
+- `uninstall` 和 `uninstall --purge` 不会恢复服务器初始化配置，只会额外清理可精确识别的 easy_reality 定时重启和 Reality 动态端口转发。
 - `uninstall --purge` 只额外清理 Reality/Xray 专属备份；远端 Worker 仍需显式设置 `DELETE_CLOUDFLARE_WORKER=1`。
 
 ## 个人服务器初始化脚本

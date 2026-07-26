@@ -22,6 +22,7 @@ readonly SING_BOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
 readonly SING_BOX_SERVICE="sing-box.service"
 readonly ACME_HOME="/root/.acme.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
+readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy-anytls"
 readonly SING_BOX_START_DIAGNOSTICS="${STATE_DIR}/last-start-diagnostics.log"
 readonly NFT_CONFIG="/etc/nftables.conf"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-bbrv3.conf"
@@ -287,6 +288,8 @@ load_state() {
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     ACME_INSTALLED_BY_EASY_ANYTLS=${ACME_INSTALLED_BY_EASY_ANYTLS:-0}
+    [[ ! -f "${ACME_OWNERSHIP_MARKER}" ]] \
+        || ACME_INSTALLED_BY_EASY_ANYTLS=1
 }
 
 save_state() {
@@ -656,15 +659,25 @@ configure_daily_reboot() {
     esac
 
     { crontab -l 2>/dev/null || true; } \
-        | awk -v legacy="${LEGACY_CRON_JOB}" -v cmd="${CRON_REBOOT_COMMAND}" '
-            $0 == legacy {next}
-            index($0, cmd) {next}
-            {print}
-        ' | crontab -
+        | filter_managed_reboot_cron | crontab -
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
         job="0 ${SCHEDULED_REBOOT_HOUR} * * * ${CRON_REBOOT_COMMAND}"
         { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
     fi
+}
+
+filter_managed_reboot_cron() {
+    awk -v legacy="${LEGACY_CRON_JOB}" -v cmd="${CRON_REBOOT_COMMAND}" '
+        $0 == legacy {next}
+        index($0, cmd) {next}
+        {print}
+    '
+}
+
+remove_daily_reboot_schedule() {
+    { crontab -l 2>/dev/null || true; } \
+        | filter_managed_reboot_cron | crontab - \
+        || warn "移除 easy_anytls 定时重启任务失败，请手动检查 root crontab"
 }
 
 configure_ipv6_compat() {
@@ -908,6 +921,10 @@ install_acme() {
     local installer
     if [[ -x "${ACME_BIN}" ]]; then
         ACME_INSTALLED_BY_EASY_ANYTLS=${ACME_INSTALLED_BY_EASY_ANYTLS:-0}
+        if [[ "${ACME_INSTALLED_BY_EASY_ANYTLS}" == "1" ]]; then
+            install -d -m 0700 "${STATE_DIR}"
+            install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
+        fi
         ensure_acme_cron
         return 0
     fi
@@ -918,6 +935,8 @@ install_acme() {
         || die "安装 acme.sh 失败"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后未找到 ${ACME_BIN}"
     ACME_INSTALLED_BY_EASY_ANYTLS=1
+    install -d -m 0700 "${STATE_DIR}"
+    install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
     ensure_acme_cron
 }
 
@@ -1576,14 +1595,14 @@ purge_acme_installation() {
     local profile other_domain_config=
     if [[ "${ACME_INSTALLED_BY_EASY_ANYTLS:-0}" != "1" \
         && "${PURGE_SHARED_ACME:-0}" != "1" ]]; then
-        warn "acme.sh 非 easy_anytls 专属或来源未知，未删除；确需删除可设置 PURGE_SHARED_ACME=1"
+        warn "acme.sh 非 easy_anytls 专属或来源未知，未删除；确需删除请使用 uninstall --purge 并设置 PURGE_SHARED_ACME=1"
         return
     fi
     if [[ "${PURGE_SHARED_ACME:-0}" != "1" && -d "${ACME_HOME}" ]]; then
         other_domain_config=$(find "${ACME_HOME}" -mindepth 2 -maxdepth 2 \
             -type f -name '*.conf' -print -quit 2>/dev/null || true)
         if [[ -n "${other_domain_config}" ]]; then
-            warn "acme.sh 中还有其他证书配置，按共享组件保留；确需全部删除可设置 PURGE_SHARED_ACME=1"
+            warn "acme.sh 中还有其他证书配置，按共享组件保留；确需全部删除请使用 uninstall --purge 并设置 PURGE_SHARED_ACME=1"
             return
         fi
     fi
@@ -1616,7 +1635,7 @@ remove_anytls_local_files() {
     systemctl disable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
     rm -f -- "${SING_BOX_SERVICE_FILE}" "${SING_BOX_CONFIG}" "${SING_BOX_BIN}"
     rm -f -- "${STATE_FILE}" "${WORKER_FILE}" "${CERT_FILE}" "${KEY_FILE}" \
-        "${SING_BOX_START_DIAGNOSTICS}"
+        "${SING_BOX_START_DIAGNOSTICS}" "${ACME_OWNERSHIP_MARKER}"
     rm -f -- "${COMMAND_PATH}" "${COMMAND_INSTALL_DIR}/easy_anytls.sh" \
         "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload
@@ -1626,6 +1645,8 @@ remove_anytls_local_files() {
 
 uninstall_anytls() {
     local mode=${1:-} answer= purge_mode=0
+    local purge_shared_acme_requested=${PURGE_SHARED_ACME:-0}
+    local PURGE_SHARED_ACME=0
     require_root
     case "${mode}" in
     "") ;;
@@ -1638,34 +1659,36 @@ uninstall_anytls() {
     load_state
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "无人值守卸载需要设置 FORCE=1"
-        read -r -p "确认删除 sing-box、AnyTLS 配置、证书和本机 Worker 文件？[y/N]: " answer
+        read -r -p "确认删除 AnyTLS 服务、证书、专属 acme.sh 内容、定时重启和本机 Worker 文件？[y/N]: " answer
         [[ "${answer}" == "y" || "${answer}" == "Y" ]] || return 0
         if [[ "${purge_mode}" == "1" ]]; then
-            read -r -p "彻底清理会额外删除 AnyTLS 专属备份及可确认归属的 acme.sh，输入 PURGE 继续: " answer
+            read -r -p "彻底清理会额外删除 AnyTLS 专属历史备份，输入 PURGE 继续: " answer
             [[ "${answer}" == "PURGE" ]] || return 0
         fi
     fi
     [[ "${purge_mode}" != "1" ]] || delete_remote_worker
     if [[ -n "${ANYTLS_DOMAIN:-}" && -x "${ACME_BIN}" ]]; then
-        if "${ACME_BIN}" --remove -d "${ANYTLS_DOMAIN}" --ecc \
-            >/dev/null 2>&1; then
-            rm -rf -- "${ACME_HOME}/${ANYTLS_DOMAIN}" \
-                "${ACME_HOME}/${ANYTLS_DOMAIN}_ecc"
-        else
-            warn "移除 ${ANYTLS_DOMAIN} 的 acme.sh 续期登记失败，保留其内部目录供手动处理"
-        fi
+        "${ACME_BIN}" --remove -d "${ANYTLS_DOMAIN}" --ecc \
+            >/dev/null 2>&1 \
+            || warn "acme.sh 未能正常取消 ${ANYTLS_DOMAIN} 的续期登记，将继续清理当前域名内部目录"
+        rm -rf -- "${ACME_HOME:?}/${ANYTLS_DOMAIN}" \
+            "${ACME_HOME:?}/${ANYTLS_DOMAIN}_ecc"
     fi
+    remove_daily_reboot_schedule
+    if [[ "${purge_mode}" == "1" ]]; then
+        PURGE_SHARED_ACME="${purge_shared_acme_requested}"
+    fi
+    purge_acme_installation
     remove_anytls_local_files
     if [[ "${purge_mode}" == "1" ]]; then
         purge_anytls_backups
-        purge_acme_installation
     else
-        warn "默认卸载保留 acme.sh 本体、历史备份和远端 Cloudflare Worker"
+        warn "默认卸载保留历史备份、共享 acme.sh 和远端 Cloudflare Worker"
     fi
     rmdir "${BACKUP_DIR}" "${STATE_DIR}" "${SING_BOX_CONFIG_DIR}" \
         "${COMMAND_INSTALL_DIR}" 2>/dev/null || true
     success "AnyTLS 本机服务、核心、当前配置和证书已删除"
-    warn "nftables、BBR、IPv6、XanMod、时区、NTP、系统软件包和每日重启均未改动"
+    warn "nftables、BBR、IPv6、XanMod、时区、NTP 和系统软件包均未改动"
 }
 
 install_all() {
@@ -1712,9 +1735,9 @@ usage() {
   status        显示服务、DNS、证书、续期和 Worker 状态
   register-command
                 注册系统命令 easy_anytls
-  uninstall     删除 AnyTLS 本机服务、核心、当前配置、证书和 Worker 文件
+  uninstall     删除 AnyTLS 服务、证书、acme.sh 专属内容、定时重启和 Worker 文件
   uninstall --purge
-                额外清理 AnyTLS 专属备份及可确认归属的 acme.sh
+                额外清理 AnyTLS 专属历史备份；可显式强制清理共享 acme.sh
   help          显示帮助
 
 主要无人值守变量:

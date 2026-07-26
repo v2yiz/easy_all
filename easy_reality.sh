@@ -490,18 +490,7 @@ configure_daily_reboot() {
     esac
 
     { crontab -l 2>/dev/null || true; } \
-        | awk -v legacy="${LEGACY_CRON_JOB}" -v cmd="${CRON_REBOOT_COMMAND}" '
-            $0 == legacy { next }
-            $1 == "0" && $2 ~ /^([0-9]|1[0-9]|2[0-3])$/ && $3 == "*" && $4 == "*" && $5 == "*" {
-                rest = ""
-                for (i = 6; i <= NF; i++) {
-                    rest = rest (i == 6 ? "" : " ") $i
-                }
-                if (rest == cmd) { next }
-            }
-            { print }
-        ' \
-        | crontab -
+        | filter_managed_reboot_cron | crontab -
 
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
         job="0 ${SCHEDULED_REBOOT_HOUR} * * * ${CRON_REBOOT_COMMAND}"
@@ -510,6 +499,26 @@ configure_daily_reboot() {
     else
         success "已选择不配置定时重启，并移除脚本托管的每日重启任务"
     fi
+}
+
+filter_managed_reboot_cron() {
+    awk -v legacy="${LEGACY_CRON_JOB}" -v cmd="${CRON_REBOOT_COMMAND}" '
+        $0 == legacy { next }
+        $1 == "0" && $2 ~ /^([0-9]|1[0-9]|2[0-3])$/ && $3 == "*" && $4 == "*" && $5 == "*" {
+            rest = ""
+            for (i = 6; i <= NF; i++) {
+                rest = rest (i == 6 ? "" : " ") $i
+            }
+            if (rest == cmd) { next }
+        }
+        { print }
+    '
+}
+
+remove_daily_reboot_schedule() {
+    { crontab -l 2>/dev/null || true; } \
+        | filter_managed_reboot_cron | crontab - \
+        || warn "移除 easy_reality 定时重启任务失败，请手动检查 root crontab"
 }
 
 configure_ipv6_compat() {
@@ -1376,6 +1385,37 @@ purge_reality_backups() {
     rm -f -- "${BACKUP_DIR}"/xray-config.*.bak
 }
 
+filter_reality_dynamic_redirect() {
+    awk -v first="${PORT_BASE}" -v target="${REALITY_PORT}" '
+        $0 ~ "^[[:space:]]*tcp[[:space:]]+dport[[:space:]]+" first \
+            "-65535[[:space:]]+redirect[[:space:]]+to[[:space:]]+:" target \
+            "[[:space:]]*$" { next }
+        { print }
+    '
+}
+
+remove_reality_dynamic_redirect() {
+    local original candidate
+    [[ -f "${NFT_CONFIG}" ]] || return 0
+    original="${RUNTIME_TMP}/nftables-before-reality-uninstall.conf"
+    candidate="${RUNTIME_TMP}/nftables-after-reality-uninstall.conf"
+    cp -a "${NFT_CONFIG}" "${original}"
+    filter_reality_dynamic_redirect <"${NFT_CONFIG}" >"${candidate}"
+    cmp -s "${NFT_CONFIG}" "${candidate}" && return 0
+    if ! nft -c -f "${candidate}"; then
+        warn "移除 Reality 动态端口转发后的 nftables 配置校验失败，保留原规则"
+        return 1
+    fi
+    install -m 0644 "${candidate}" "${NFT_CONFIG}"
+    if ! systemctl restart nftables; then
+        install -m 0644 "${original}" "${NFT_CONFIG}"
+        systemctl restart nftables >/dev/null 2>&1 || true
+        warn "重载 nftables 失败，已恢复 Reality 动态端口转发规则"
+        return 1
+    fi
+    success "已移除 Reality 专属动态端口转发 ${PORT_BASE}-65535 -> ${REALITY_PORT}"
+}
+
 remove_reality_local_files() {
     systemctl disable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
     rm -f -- "${XRAY_SERVICE_FILE}"
@@ -1400,7 +1440,7 @@ uninstall_reality() {
     load_state
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "无人值守卸载需要设置 FORCE=1"
-        read -r -p "确认删除 Xray、Reality 配置和本机 Worker 文件？[y/N]: " answer
+        read -r -p "确认删除 Reality/Xray、定时重启、动态端口转发和本机 Worker 文件？[y/N]: " answer
         [[ "${answer}" == "y" || "${answer}" == "Y" ]] || return 0
         if [[ "${purge_mode}" == "1" ]]; then
             read -r -p "彻底清理会额外删除 Reality/Xray 专属备份，输入 PURGE 继续: " answer
@@ -1408,6 +1448,9 @@ uninstall_reality() {
         fi
     fi
     [[ "${purge_mode}" != "1" ]] || delete_remote_worker
+    remove_daily_reboot_schedule
+    remove_reality_dynamic_redirect \
+        || warn "Reality 动态端口转发未能清理，请手动检查 ${NFT_CONFIG}"
     remove_reality_local_files
     if [[ "${purge_mode}" == "1" ]]; then
         purge_reality_backups
@@ -1418,7 +1461,7 @@ uninstall_reality() {
     rmdir "${BACKUP_DIR}" "${STATE_DIR}" "${COMMAND_INSTALL_DIR}" \
         /etc/v2ray-agent 2>/dev/null || true
     success "Reality 本机服务、核心、当前配置和 Worker 文件已删除"
-    warn "nftables、BBR、IPv6、XanMod、时区、NTP、系统软件包和每日重启均未改动"
+    warn "除 Reality 专属动态端口转发外，nftables、BBR、IPv6、XanMod、时区、NTP 和系统软件包均未改动"
 }
 
 install_all() {
@@ -1456,7 +1499,7 @@ usage() {
   status        显示服务状态
   register-command
                 注册系统命令 easy_reality
-  uninstall     删除 Reality 本机服务、核心、当前配置和 Worker 文件
+  uninstall     删除 Reality 服务、核心、配置、定时重启、动态转发和 Worker 文件
   uninstall --purge
                 额外清理 Reality/Xray 专属备份
   help          显示帮助

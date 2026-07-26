@@ -249,10 +249,29 @@ test_safe_uninstall_helpers() {
         'DELETE_CLOUDFLARE_WORKER:-0' "${script_content}"
     assert_not_contains "Reality uninstall never restores system settings" \
         "restore_system_changes" "${uninstall_body}"
-    assert_not_contains "Reality uninstall never removes reboot schedule" \
-        "remove_daily_reboot" "${uninstall_body}"
+    assert_contains "Reality uninstall removes its reboot schedule" \
+        "remove_daily_reboot_schedule" "${uninstall_body}"
+    assert_contains "Reality uninstall removes its dynamic redirect" \
+        "remove_reality_dynamic_redirect" "${uninstall_body}"
     assert_not_contains "Reality uninstall never purges XanMod" \
         "purge_xanmod" "${uninstall_body}"
+
+    local cron_input cron_output nft_input nft_output
+    cron_input=$'15 3 * * * /usr/local/bin/backup\n0 4 * * * /sbin/reboot\n0 6 * * * /usr/bin/flock -n /run/daily-reboot.lock /sbin/reboot'
+    cron_output=$(filter_managed_reboot_cron <<<"${cron_input}")
+    assert_contains "Reality reboot cleanup preserves unrelated cron" \
+        "/usr/local/bin/backup" "${cron_output}"
+    assert_not_contains "Reality reboot cleanup removes legacy cron" \
+        "0 4 * * * /sbin/reboot" "${cron_output}"
+    assert_not_contains "Reality reboot cleanup removes managed cron" \
+        "/run/daily-reboot.lock" "${cron_output}"
+
+    nft_input=$'table inet nat {\n chain prerouting {\n  type nat hook prerouting priority dstnat; policy accept;\n  tcp dport 10000-65535 redirect to :443\n  tcp dport 8443 redirect to :443\n }\n}'
+    nft_output=$(filter_reality_dynamic_redirect <<<"${nft_input}")
+    assert_not_contains "Reality cleanup removes only its dynamic range" \
+        "10000-65535" "${nft_output}"
+    assert_contains "Reality cleanup preserves unrelated nft redirect" \
+        "tcp dport 8443 redirect to :443" "${nft_output}"
 }
 
 test_validators
