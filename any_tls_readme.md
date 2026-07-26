@@ -720,7 +720,7 @@ easy_anytls status
 easy_anytls uninstall
 ```
 
-删除：
+默认只删除 AnyTLS 相关内容：
 
 - sing-box systemd 服务。
 - easy_anytls 安装的 sing-box 二进制。
@@ -731,21 +731,42 @@ easy_anytls uninstall
 - `easy_anytls` 注册命令及安装副本。
 - 证书续期使用的 sing-box reload hook。
 - 当前 AnyTLS 域名在 acme.sh 中的续期登记。
+- 当前域名的 acme.sh 内部证书目录（仅在成功取消续期登记后）。
 
-默认不删除：
+默认卸载明确不会改动：
 
+- nftables 防火墙。
+- BBR/sysctl 和 IPv6 配置。
 - XanMod 内核。
-- BBR/sysctl。
-- nftables 配置。
-- acme.sh 本体和全局 cron 检查任务；当前域名的续期登记会被移除。
-- acme.sh 内部证书和 Cloudflare DNS 凭据。
+- 时区、NTP、系统软件包和每日重启。
+- acme.sh 本体和全局 cron。
+- 历史备份。
 - 已部署的 Cloudflare Worker。
 
 ```bash
-easy_anytls uninstall --restore-system
+easy_anytls uninstall --purge
 ```
 
-额外恢复最近的 nftables/sysctl 备份并移除 easy_anytls 托管的每日重启任务。仍不会自动卸载 XanMod、acme.sh 或远端 Worker。
+彻底清理只会在默认卸载基础上额外处理 AnyTLS 专属内容：
+
+- 删除 sing-box 配置、服务、证书和私钥的历史备份。
+- 删除可确认由 easy_anytls 安装的 acme.sh 本体、全局 cron 和内部凭据。
+
+如果 acme.sh 不是由当前版本 easy_anytls 安装、旧版状态无法确认归属，或其中还存在其他域名证书，`--purge` 也不会删除共享 acme.sh。确实需要删除全部 acme.sh 数据时显式设置：
+
+```bash
+sudo PURGE_SHARED_ACME=1 easy_anytls uninstall --purge
+```
+
+远端 Cloudflare Worker 需要 Worker API Token，并且必须单独明确授权：
+
+```bash
+sudo DELETE_CLOUDFLARE_WORKER=1 \
+  CF_WORKER_API_TOKEN=your_worker_token \
+  easy_anytls uninstall --purge
+```
+
+`uninstall --restore-system` 仅作为旧命令兼容入口保留，现在不会恢复或删除任何服务器初始化配置。nftables、sysctl、crontab 等初始化备份在默认卸载和 `--purge` 中都会保留。
 
 ## 无人值守变量
 
@@ -767,7 +788,8 @@ easy_anytls uninstall --restore-system
 | `REBOOT_SCHEDULE_MODE` | `default`、`custom`、`none`，也支持数字 1/2/3 |
 | `REBOOT_HOUR` | 自定义每日重启小时，范围 0-23 |
 | `FORCE` | 无人值守卸载时设为 `1` |
-| `RESTORE_SYSTEM` | 卸载时设为 `1`，等价于 `--restore-system` |
+| `DELETE_CLOUDFLARE_WORKER` | `--purge` 时设为 `1`，同时删除远端 Worker；必须提供 Worker Token |
+| `PURGE_SHARED_ACME` | `--purge` 时设为 `1`，明确允许删除安装前已存在或来源未知的 acme.sh |
 
 完整无人值守示例：
 
@@ -807,6 +829,7 @@ sudo ANYTLS_DOMAIN=node.example.com \
 - Worker URL、名称和订阅 Token。
 - Cloudflare Account ID。
 - ACME 邮箱。
+- acme.sh 是否由 easy_anytls 安装，用于 `--purge` 时避免误删共享 acme.sh。
 
 不会保存：
 

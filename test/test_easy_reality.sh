@@ -57,7 +57,9 @@ source_script_copy() {
     if [[ "${SCRIPT_LOADED}" == "1" ]]; then
         return
     fi
-    sed "s|^readonly NFT_CONFIG=.*|readonly NFT_CONFIG=\"${nft_config}\"|" \
+    sed \
+        -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
+        -e "s|^readonly NFT_CONFIG=.*|readonly NFT_CONFIG=\"${nft_config}\"|" \
         "${ROOT_DIR}/easy_reality.sh" >"${script_copy}"
     # shellcheck source=/dev/null
     source "${script_copy}"
@@ -223,11 +225,42 @@ test_full_worker_template() {
     assert_not_contains "full Worker does not contain Trojan support" "trojan" "${content}"
 }
 
+test_safe_uninstall_helpers() {
+    source_script_copy "${TMP_DIR}/nftables.conf"
+    local script_content uninstall_body
+    mkdir -p "${BACKUP_DIR}"
+    touch \
+        "${BACKUP_DIR}/xray-config.1.bak" \
+        "${BACKUP_DIR}/install-nftables.conf.1.bak" \
+        "${BACKUP_DIR}/install-sysctl-bbrv3.1.bak"
+    purge_reality_backups
+    assert_failure "Reality purge removes Xray config backup" \
+        test -e "${BACKUP_DIR}/xray-config.1.bak"
+    assert_success "Reality purge preserves nftables initialization backup" \
+        test -e "${BACKUP_DIR}/install-nftables.conf.1.bak"
+    assert_success "Reality purge preserves sysctl initialization backup" \
+        test -e "${BACKUP_DIR}/install-sysctl-bbrv3.1.bak"
+
+    script_content=$(<"${ROOT_DIR}/easy_reality.sh")
+    uninstall_body=$(declare -f uninstall_reality)
+    assert_contains "Reality exposes purge uninstall mode" \
+        "uninstall --purge" "${script_content}"
+    assert_contains "Reality remote Worker deletion requires opt-in" \
+        'DELETE_CLOUDFLARE_WORKER:-0' "${script_content}"
+    assert_not_contains "Reality uninstall never restores system settings" \
+        "restore_system_changes" "${uninstall_body}"
+    assert_not_contains "Reality uninstall never removes reboot schedule" \
+        "remove_daily_reboot" "${uninstall_body}"
+    assert_not_contains "Reality uninstall never purges XanMod" \
+        "purge_xanmod" "${uninstall_body}"
+}
+
 test_validators
 test_normalizers_and_links
 test_dynamic_port_redirect_guard
 test_dynamic_port_redirect_ruleset_fallback
 test_minimal_worker_template
 test_full_worker_template
+test_safe_uninstall_helpers
 
 printf 'ok - easy_reality shell tests passed (%s assertions)\n' "${TESTS_RUN}"

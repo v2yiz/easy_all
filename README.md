@@ -153,13 +153,23 @@ sudo ./easy_reality.sh register-command
 sudo easy_reality uninstall
 ```
 
-删除 Xray、本机状态文件和本机 Worker 文件。不自动恢复 nftables、BBR、XanMod 或 Cloudflare Worker。
+默认只删除 Reality/Xray 相关的本机服务、核心、当前配置、日志、状态文件、注册命令和本机 Worker 文件。不会改动服务器初始化产生的 nftables、BBR、IPv6、XanMod、时区、NTP、系统软件包或每日重启配置，也不会删除远端 Cloudflare Worker。
 
 ```bash
-sudo easy_reality uninstall --restore-system
+sudo easy_reality uninstall --purge
 ```
 
-删除 Xray，并恢复最近备份的 nftables/sysctl，移除每日重启任务。XanMod 内核包不会自动卸载。
+在默认卸载基础上额外删除 `xray-config.*.bak` 等 Reality/Xray 专属历史备份。nftables、sysctl 和 crontab 等服务器初始化备份仍会保留。
+
+远端 Worker 必须单独明确授权，并临时提供 Token：
+
+```bash
+sudo DELETE_CLOUDFLARE_WORKER=1 \
+  CF_API_TOKEN=your_cloudflare_api_token \
+  easy_reality uninstall --purge
+```
+
+`uninstall --restore-system` 仅作为旧命令兼容入口保留，现在不会恢复或删除任何服务器初始化配置。
 
 ## 无人值守运行
 
@@ -199,7 +209,7 @@ sudo NODE_HOST=node.example.com \
 | `REBOOT_SCHEDULE_MODE` | 定时重启策略：`1` 或 `default` 为每天 4 点；`2` 或 `custom` 为自定义小时；`3`、`none`、`off`、`disable` 或 `disabled` 为不配置 |
 | `REBOOT_HOUR` | `REBOOT_SCHEDULE_MODE=2` 或 `custom` 时使用，范围 `0-23` |
 | `FORCE` | 无人值守卸载时设置为 `1`，跳过交互确认 |
-| `RESTORE_SYSTEM` | 卸载时设置为 `1`，等价于 `uninstall --restore-system` |
+| `DELETE_CLOUDFLARE_WORKER` | `--purge` 时设为 `1`，同时删除远端 Worker；必须提供 `CF_API_TOKEN` |
 
 ## 订阅端口模式
 
@@ -497,7 +507,7 @@ net.ipv4.tcp_notsent_lowat = 16384
 
 ## 安装回滚与完整性校验
 
-安装流程会在基础包安装和系统时间配置完成后创建快照，然后再修改 XanMod/BBR、定时重启、IPv6 兼容配置和 nftables。快照完成后的任一步失败，脚本会在退出前尝试恢复：
+安装流程会在基础包安装和系统时间配置完成后创建失败回滚快照。快照完成后的任一步失败，脚本会在退出前尝试恢复：
 
 - `/etc/nftables.conf`
 - 当前用户的 `crontab`
@@ -616,7 +626,8 @@ sudo ./easy_reality.sh install
 - `SUB_TOKEN` 是订阅访问凭据，请不要公开。
 - `CF_API_TOKEN` 不会写入状态文件，但自动部署时会传给 Cloudflare API；建议优先使用交互输入，避免把真实 Token 写入 shell 历史。
 - `WORKER_TEMPLATE_SHA256` 是脚本内置 Worker 模板完整性校验值，不是用户配置项。
-- `uninstall` 只删除本机 Xray、状态文件和本机 Worker 文件，不会删除已部署的 Cloudflare Worker。
+- `uninstall` 和 `uninstall --purge` 都不会清理或恢复服务器初始化相关改动。
+- `uninstall --purge` 只额外清理 Reality/Xray 专属备份；远端 Worker 仍需显式设置 `DELETE_CLOUDFLARE_WORKER=1`。
 
 ## 个人服务器初始化脚本
 

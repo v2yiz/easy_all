@@ -555,22 +555,6 @@ EOF
     fi
 }
 
-remove_daily_reboot() {
-    { crontab -l 2>/dev/null || true; } \
-        | awk -v legacy="${LEGACY_CRON_JOB}" -v cmd="${CRON_REBOOT_COMMAND}" '
-            $0 == legacy { next }
-            $1 == "0" && $2 ~ /^([0-9]|1[0-9]|2[0-3])$/ && $3 == "*" && $4 == "*" && $5 == "*" {
-                rest = ""
-                for (i = 6; i <= NF; i++) {
-                    rest = rest (i == 6 ? "" : " ") $i
-                }
-                if (rest == cmd) { next }
-            }
-            { print }
-        ' \
-        | crontab -
-}
-
 snapshot_system_state() {
     local stamp
     stamp=$(date +%Y%m%d%H%M%S)
@@ -1370,59 +1354,71 @@ update_xray() {
     success "Xray-core 已更新"
 }
 
-latest_backup() {
-    local pattern=$1
-    ls -t ${pattern} 2>/dev/null | head -n 1 || true
+delete_remote_worker() {
+    local response
+    [[ "${DELETE_CLOUDFLARE_WORKER:-0}" == "1" ]] || {
+        warn "远端 Cloudflare Worker 未删除；如需删除，请设置 DELETE_CLOUDFLARE_WORKER=1 并提供 CF_API_TOKEN"
+        return 0
+    }
+    [[ -n "${CF_ACCOUNT_ID:-}" && -n "${WORKER_NAME:-}" ]] \
+        || die "删除远端 Worker 需要 CF_ACCOUNT_ID 和 WORKER_NAME"
+    [[ -n "${CF_API_TOKEN:-}" ]] || die "删除远端 Worker 需要 CF_API_TOKEN"
+    response=$(cloudflare_api DELETE \
+        "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}") \
+        || die "Cloudflare Worker 删除请求失败"
+    jq -e '.success == true' <<<"${response}" >/dev/null \
+        || die "Cloudflare Worker 删除失败：$(jq -r '.errors[]?.message' <<<"${response}")"
+    unset CF_API_TOKEN
+    success "已删除远端 Cloudflare Worker：${WORKER_NAME}"
 }
 
-restore_system_changes() {
-    local nft_backup sysctl_backup
-    nft_backup=$(latest_backup "${BACKUP_DIR}/*nftables.conf.*.bak")
-    sysctl_backup=$(latest_backup "${BACKUP_DIR}/install-sysctl-bbrv3.*.bak")
-
-    if [[ -n "${nft_backup}" ]]; then
-        install -m 0644 "${nft_backup}" "${NFT_CONFIG}"
-        systemctl restart nftables >/dev/null 2>&1 \
-            || warn "nftables 配置已恢复，但服务重启失败，请手动检查"
-        success "已恢复 nftables：${nft_backup}"
-    else
-        warn "未找到 nftables 备份，跳过恢复"
-    fi
-
-    remove_daily_reboot || warn "移除每日重启任务失败，请手动检查 crontab"
-    success "已移除 easy_reality 每日重启任务"
-
-    if [[ -n "${sysctl_backup}" ]]; then
-        install -m 0644 "${sysctl_backup}" "${SYSCTL_CONFIG}"
-        sysctl -p "${SYSCTL_CONFIG}" >/dev/null 2>&1 \
-            || warn "sysctl 配置已恢复，但运行时应用失败，请手动检查"
-        success "已恢复 sysctl：${sysctl_backup}"
-    else
-        warn "未找到 sysctl 备份，跳过恢复"
-    fi
-    warn "XanMod 内核包不会自动卸载；如需移除，请手动确认当前启动内核后处理"
+purge_reality_backups() {
+    rm -f -- "${BACKUP_DIR}"/xray-config.*.bak
 }
 
-uninstall_reality() {
-    local mode=${1:-}
-    local answer=
-    require_root
-    if [[ "${FORCE:-0}" != "1" ]]; then
-        [[ -t 0 ]] || die "无人值守卸载需要设置 FORCE=1"
-        read -r -p "确认删除 Xray、订阅状态和本机 Worker 文件？[y/N]: " answer
-        [[ "${answer}" == "y" || "${answer}" == "Y" ]] || return 0
-    fi
+remove_reality_local_files() {
     systemctl disable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
     rm -f -- "${XRAY_SERVICE_FILE}"
     rm -f -- "${XRAY_CONFIG}" "${XRAY_BIN}" "${INSTALL_DIR}/error.log"
     rm -f -- "${STATE_FILE}" "${WORKER_FILE}"
+    rm -f -- "${COMMAND_PATH}" "${COMMAND_INSTALL_DIR}/easy_reality.sh"
     systemctl daemon-reload
-    success "Xray 与 easy_reality 本机状态已删除"
-    if [[ "${mode}" == "--restore-system" || "${RESTORE_SYSTEM:-0}" == "1" ]]; then
-        restore_system_changes
-    else
-        warn "nftables、XanMod、BBR、定时重启及已部署的 Cloudflare Worker 未改动；备份保留在 ${BACKUP_DIR}"
+    rmdir "${INSTALL_DIR}" "${COMMAND_INSTALL_DIR}" 2>/dev/null || true
+}
+
+uninstall_reality() {
+    local mode=${1:-} answer= purge_mode=0
+    require_root
+    case "${mode}" in
+    "") ;;
+    --restore-system)
+        warn "--restore-system 已废弃；卸载不会改动服务器初始化配置"
+        ;;
+    --purge) purge_mode=1 ;;
+    *) die "卸载参数无效：${mode}；仅支持 --purge 或兼容参数 --restore-system" ;;
+    esac
+    load_state
+    if [[ "${FORCE:-0}" != "1" ]]; then
+        [[ -t 0 ]] || die "无人值守卸载需要设置 FORCE=1"
+        read -r -p "确认删除 Xray、Reality 配置和本机 Worker 文件？[y/N]: " answer
+        [[ "${answer}" == "y" || "${answer}" == "Y" ]] || return 0
+        if [[ "${purge_mode}" == "1" ]]; then
+            read -r -p "彻底清理会额外删除 Reality/Xray 专属备份，输入 PURGE 继续: " answer
+            [[ "${answer}" == "PURGE" ]] || return 0
+        fi
     fi
+    [[ "${purge_mode}" != "1" ]] || delete_remote_worker
+    remove_reality_local_files
+    if [[ "${purge_mode}" == "1" ]]; then
+        purge_reality_backups
+        rm -rf -- "${INSTALL_DIR}"
+    else
+        warn "默认卸载保留历史备份和远端 Cloudflare Worker"
+    fi
+    rmdir "${BACKUP_DIR}" "${STATE_DIR}" "${COMMAND_INSTALL_DIR}" \
+        /etc/v2ray-agent 2>/dev/null || true
+    success "Reality 本机服务、核心、当前配置和 Worker 文件已删除"
+    warn "nftables、BBR、IPv6、XanMod、时区、NTP、系统软件包和每日重启均未改动"
 }
 
 install_all() {
@@ -1460,15 +1456,18 @@ usage() {
   status        显示服务状态
   register-command
                 注册系统命令 easy_reality
-  uninstall     删除 Xray 和本机订阅状态
-  uninstall --restore-system
-                删除 Xray，并恢复最近备份的 nftables/sysctl，移除每日重启
+  uninstall     删除 Reality 本机服务、核心、当前配置和 Worker 文件
+  uninstall --purge
+                额外清理 Reality/Xray 专属备份
   help          显示帮助
 
 无人值守变量:
   REALITY_TARGET, NODE_HOST, SUBSCRIBE_MODE=auto|worker|vless
   CF_ACCOUNT_ID, CF_API_TOKEN, WORKER_NAME, SUB_PORT_MODE=443|dynamic
   SUB_DOWNLOAD_NAME=MY_SUB
+  FORCE=1                  无人值守确认卸载
+  DELETE_CLOUDFLARE_WORKER=1
+                            --purge 时同时删除远端 Worker（需 CF_API_TOKEN）
 
 说明:
   NODE_HOST 为客户端连接本机 Reality 节点使用的公网 IPv4 或域名；不提供时默认探测当前机器公网 IPv4。

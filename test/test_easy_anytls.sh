@@ -60,6 +60,7 @@ sed \
     -e "s|^readonly COMMAND_INSTALL_DIR=.*|readonly COMMAND_INSTALL_DIR=\"${TMP_DIR}/command\"|" \
     -e "s|^readonly SING_BOX_BIN=.*|readonly SING_BOX_BIN=\"${FAKE_BIN}/sing-box\"|" \
     -e "s|^readonly SING_BOX_CONFIG_DIR=.*|readonly SING_BOX_CONFIG_DIR=\"${TMP_DIR}/sing-box-config\"|" \
+    -e "s|^readonly ACME_HOME=.*|readonly ACME_HOME=\"${TMP_DIR}/acme\"|" \
     "${ROOT_DIR}/easy_anytls.sh" >"${SCRIPT_COPY}"
 
 cat >"${FAKE_BIN}/sing-box" <<'EOF'
@@ -185,6 +186,8 @@ test_state_secret_boundary() {
         "dns-secret-must-not-be-saved" "${content}"
     assert_not_contains "state excludes Worker token" \
         "worker-secret-must-not-be-saved" "${content}"
+    assert_contains "state tracks acme.sh ownership" \
+        "ACME_INSTALLED_BY_EASY_ANYTLS=0" "${content}"
     assert_equal "state file mode is 600" "600" \
         "$(file_mode "${STATE_FILE}")"
 }
@@ -285,6 +288,48 @@ test_reload_hook() {
         "$(file_mode "${CERT_RELOAD_HOOK}")"
 }
 
+test_safe_uninstall_helpers() {
+    local script_content uninstall_body
+    mkdir -p "${BACKUP_DIR}"
+    touch \
+        "${BACKUP_DIR}/install-sing-box.1.bak" \
+        "${BACKUP_DIR}/sing-box-config.1.bak" \
+        "${BACKUP_DIR}/install-nftables.conf.1.bak" \
+        "${BACKUP_DIR}/install-sysctl-bbrv3.1.bak"
+    purge_anytls_backups
+    assert_failure "AnyTLS purge removes sing-box binary backup" \
+        test -e "${BACKUP_DIR}/install-sing-box.1.bak"
+    assert_failure "AnyTLS purge removes sing-box config backup" \
+        test -e "${BACKUP_DIR}/sing-box-config.1.bak"
+    assert_success "AnyTLS purge preserves nftables initialization backup" \
+        test -e "${BACKUP_DIR}/install-nftables.conf.1.bak"
+    assert_success "AnyTLS purge preserves sysctl initialization backup" \
+        test -e "${BACKUP_DIR}/install-sysctl-bbrv3.1.bak"
+
+    script_content=$(<"${ROOT_DIR}/easy_anytls.sh")
+    uninstall_body=$(declare -f uninstall_anytls)
+    assert_contains "AnyTLS exposes purge uninstall mode" \
+        "uninstall --purge" "${script_content}"
+    assert_contains "remote Worker deletion requires explicit opt-in" \
+        'DELETE_CLOUDFLARE_WORKER:-0' "${script_content}"
+    assert_contains "shared acme removal requires explicit opt-in" \
+        'PURGE_SHARED_ACME:-0' "${script_content}"
+    assert_not_contains "AnyTLS uninstall never restores system settings" \
+        "restore_system_changes" "${uninstall_body}"
+    assert_not_contains "AnyTLS uninstall never removes reboot schedule" \
+        "remove_daily_reboot" "${uninstall_body}"
+    assert_not_contains "AnyTLS uninstall never purges XanMod" \
+        "purge_xanmod" "${uninstall_body}"
+
+    mkdir -p "${ACME_HOME}/other.example_ecc"
+    touch "${ACME_HOME}/other.example_ecc/other.example.conf"
+    ACME_INSTALLED_BY_EASY_ANYTLS=1
+    PURGE_SHARED_ACME=0
+    purge_acme_installation >/dev/null
+    assert_success "AnyTLS purge preserves acme.sh with another domain" \
+        test -d "${ACME_HOME}"
+}
+
 test_validators
 test_dns_set_validation
 test_links_and_client_config
@@ -293,5 +338,6 @@ test_state_secret_boundary
 test_release_resolution
 test_server_config
 test_reload_hook
+test_safe_uninstall_helpers
 
 printf 'ok - easy_anytls shell tests passed (%s assertions)\n' "${TESTS_RUN}"
