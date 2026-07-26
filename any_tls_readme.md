@@ -432,6 +432,10 @@ Let's Encrypt
 
 acme.sh 安装器会创建每日 cron 检查任务。安装流程会验证 root crontab 中确实存在 acme.sh。
 
+安装重试时，如果 acme.sh 返回“域名未变化、尚未到续期时间”，脚本会把该
+状态识别为可继续使用，并将已有有效证书重新安装到 AnyTLS 证书目录，不会将
+正常的跳过续期误判为签发失败。
+
 证书通过 `--install-cert` 复制到 easy_anytls 固定目录，并保存 reload command：
 
 ```bash

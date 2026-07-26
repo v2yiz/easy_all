@@ -938,6 +938,11 @@ collect_cloudflare_dns_credentials() {
     CF_DNS_TOKEN_VALUE="${token}"
 }
 
+acme_issue_status_is_usable() {
+    local status=$1
+    [[ "${status}" == "0" || "${status}" == "2" ]]
+}
+
 validate_certificate() {
     local domain=$1
     [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" ]] \
@@ -957,7 +962,7 @@ validate_certificate() {
 }
 
 issue_certificate() {
-    local domain=$1
+    local domain=$1 issue_status=0
     info "[7/8] 使用 Let's Encrypt + Cloudflare DNS 签发单域名证书"
     install_acme
     collect_cloudflare_dns_credentials
@@ -965,8 +970,13 @@ issue_certificate() {
     export CF_Token="${CF_DNS_TOKEN_VALUE}"
     "${ACME_BIN}" --set-default-ca --server letsencrypt
     "${ACME_BIN}" --issue --server letsencrypt --dns dns_cf \
-        -d "${domain}" --keylength ec-256 \
-        || die "Let's Encrypt 证书申请失败"
+        -d "${domain}" --keylength ec-256 || issue_status=$?
+    if ! acme_issue_status_is_usable "${issue_status}"; then
+        die "Let's Encrypt 证书申请失败（acme.sh 返回码 ${issue_status}）"
+    fi
+    if [[ "${issue_status}" == "2" ]]; then
+        info "现有证书尚未到续期时间，继续安装 acme.sh 中的有效证书"
+    fi
     install_certificate_reload_hook
     install -d -m 0700 "${CERT_DIR}"
     touch "${CERT_FILE}" "${KEY_FILE}"

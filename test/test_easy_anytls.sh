@@ -212,6 +212,15 @@ test_cloudflare_credential_boundaries() {
         "Cloudflare Worker API Token" "${worker_body}"
 }
 
+test_acme_issue_statuses() {
+    assert_success "acme successful issuance is usable" \
+        acme_issue_status_is_usable 0
+    assert_success "acme unchanged-domain skip is usable" \
+        acme_issue_status_is_usable 2
+    assert_failure "acme API failure remains fatal" \
+        acme_issue_status_is_usable 1
+}
+
 test_release_resolution() {
     local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     curl() {
@@ -382,6 +391,7 @@ test_links_and_client_config
 test_worker_output
 test_state_secret_boundary
 test_cloudflare_credential_boundaries
+test_acme_issue_statuses
 test_release_resolution
 test_server_config
 test_reload_hook
