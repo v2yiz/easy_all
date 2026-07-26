@@ -1,0 +1,1615 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+readonly STATE_DIR="/etc/easy_anytls"
+readonly BACKUP_DIR="${STATE_DIR}/backups"
+readonly STATE_FILE="${STATE_DIR}/state.env"
+readonly WORKER_FILE="${STATE_DIR}/subscribe-worker.js"
+readonly CERT_DIR="${STATE_DIR}/certs"
+readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
+readonly KEY_FILE="${CERT_DIR}/private.key"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+readonly SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
+readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_anytls"
+readonly COMMAND_PATH="/usr/local/bin/easy_anytls"
+readonly CERT_RELOAD_HOOK="${COMMAND_INSTALL_DIR}/reload-sing-box.sh"
+readonly SING_BOX_BIN="/usr/local/bin/sing-box"
+readonly SING_BOX_CONFIG_DIR="/etc/sing-box"
+readonly SING_BOX_CONFIG="${SING_BOX_CONFIG_DIR}/config.json"
+readonly SING_BOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
+readonly SING_BOX_SERVICE="sing-box.service"
+readonly ACME_HOME="/root/.acme.sh"
+readonly ACME_BIN="${ACME_HOME}/acme.sh"
+readonly NFT_CONFIG="/etc/nftables.conf"
+readonly SYSCTL_CONFIG="/etc/sysctl.d/99-bbrv3.conf"
+readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
+readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
+readonly XANMOD_KEYRING="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
+readonly XANMOD_REPO="/etc/apt/sources.list.d/xanmod-release.list"
+readonly ANYTLS_PORT="443"
+readonly DEFAULT_NODE_NAME="MY_ANYTLS"
+readonly DEFAULT_WORKER_NAME="easy-anytls"
+readonly DEFAULT_SUB_DOWNLOAD_NAME="MY_SUB"
+readonly DEFAULT_REBOOT_HOUR="4"
+readonly LEGACY_CRON_JOB="0 4 * * * /sbin/reboot"
+readonly CRON_REBOOT_COMMAND="/usr/bin/flock -n /run/daily-reboot.lock /sbin/reboot"
+readonly MIN_SING_BOX_VERSION="1.12.0"
+readonly GITHUB_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases"
+
+INSTALL_ROLLBACK_ON_EXIT=0
+INSTALL_ROLLBACK_AVAILABLE=0
+SCHEDULED_REBOOT_ENABLED=1
+SCHEDULED_REBOOT_HOUR="${DEFAULT_REBOOT_HOUR}"
+
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+CYAN='\033[1;36m'
+RESET='\033[0m'
+
+info() { printf '%b%s%b\n' "${CYAN}" "$*" "${RESET}"; }
+success() { printf '%b%s%b\n' "${GREEN}" "$*" "${RESET}"; }
+warn() { printf '%b%s%b\n' "${YELLOW}" "$*" "${RESET}"; }
+fail() { printf '%b%s%b\n' "${RED}" "$*" "${RESET}" >&2; return 1; }
+die() { fail "$*"; exit 1; }
+
+RUNTIME_TMP=$(mktemp -d)
+cleanup_files=("${RUNTIME_TMP}")
+cleanup() {
+    local path
+    if [[ "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" \
+        && "${INSTALL_ROLLBACK_AVAILABLE:-0}" == "1" ]]; then
+        INSTALL_ROLLBACK_ON_EXIT=0
+        rollback_install_side_effects
+    fi
+    for path in "${cleanup_files[@]:-}"; do
+        [[ -n "${path}" ]] && rm -rf -- "${path}"
+    done
+}
+trap cleanup EXIT
+
+make_temp_dir() {
+    mktemp -d "${RUNTIME_TMP}/part.XXXXXX"
+}
+
+require_root() {
+    [[ "$(id -u)" -eq 0 ]] || die "请使用 root 用户运行此脚本"
+}
+
+require_systemd() {
+    command -v systemctl >/dev/null 2>&1 || die "仅支持使用 systemd 的 Linux 系统"
+    [[ -d /run/systemd/system ]] || die "当前系统未由 systemd 管理"
+}
+
+validate_domain() {
+    local domain=$1 label tld
+    local -a labels
+    [[ ${#domain} -ge 4 && ${#domain} -le 253 ]] || return 1
+    [[ "${domain}" == *.* ]] || return 1
+    [[ "${domain}" != \*.* ]] || return 1
+    [[ "${domain}" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
+    [[ "${domain}" != .* && "${domain}" != *. ]] || return 1
+    [[ "${domain}" != *..* ]] || return 1
+
+    IFS=. read -r -a labels <<<"${domain}"
+    for label in "${labels[@]}"; do
+        [[ ${#label} -ge 1 && ${#label} -le 63 ]] || return 1
+        [[ "${label}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] \
+            || return 1
+    done
+    tld=${labels[$((${#labels[@]} - 1))]}
+    [[ "${tld}" =~ ^[A-Za-z]{2,}$ ]]
+}
+
+normalize_domain() {
+    local domain=$1
+    domain=${domain%.}
+    tr '[:upper:]' '[:lower:]' <<<"${domain}" | tr -d '\n'
+}
+
+validate_ipv4() {
+    local ip=$1 octet
+    local -a octets
+    [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS=. read -r -a octets <<<"${ip}"
+    for octet in "${octets[@]}"; do
+        ((10#${octet} >= 0 && 10#${octet} <= 255)) || return 1
+    done
+}
+
+validate_worker_name() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]
+}
+
+normalize_sub_download_name() {
+    local name=${1:-}
+    name=${name%.[Yy][Aa][Mm][Ll]}
+    name=${name%.[Yy][Mm][Ll]}
+    printf '%s' "${name:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
+}
+
+validate_sub_download_name() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]
+}
+
+validate_subscribe_mode() {
+    [[ "$1" == "auto" || "$1" == "worker" || "$1" == "link" ]]
+}
+
+validate_sing_box_selector() {
+    local selector=${1#v}
+    [[ "${selector}" == "latest" || "${selector}" == "alpha" ]] && return 0
+    [[ "${selector}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+}
+
+version_core() {
+    local version=${1#v}
+    version=${version%%-*}
+    printf '%s' "${version}"
+}
+
+version_at_least() {
+    local actual required first
+    actual=$(version_core "$1")
+    required=$(version_core "$2")
+    [[ "${actual}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "${required}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    first=$(printf '%s\n%s\n' "${required}" "${actual}" | sort -V | head -n 1)
+    [[ "${first}" == "${required}" ]]
+}
+
+prompt_value() {
+    local prompt=$1 default_value=$2 value=
+    if [[ ! -t 0 ]]; then
+        printf '%s' "${default_value}"
+        return
+    fi
+    if [[ -n "${default_value}" ]]; then
+        read -r -p "${prompt} [${default_value}]（回车使用默认值）: " value
+    else
+        read -r -p "${prompt}: " value
+    fi
+    printf '%s' "${value:-${default_value}}"
+}
+
+prompt_secret() {
+    local prompt=$1 value=
+    [[ -t 0 ]] || return 1
+    read -r -s -p "${prompt}: " value
+    printf '\n' >&2
+    printf '%s' "${value}"
+}
+
+generate_secret() {
+    openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+}
+
+uri_encode() {
+    jq -rn --arg value "$1" '$value | @uri'
+}
+
+load_state() {
+    local env_domain=${ANYTLS_DOMAIN:-}
+    local env_password=${ANYTLS_PASSWORD:-}
+    local env_node_name=${NODE_NAME:-}
+    local env_selector=${SING_BOX_VERSION:-}
+    local env_channel=${SING_BOX_CHANNEL:-}
+    local env_installed=${SING_BOX_INSTALLED_VERSION:-}
+    local env_sub_token=${SUB_TOKEN:-}
+    local env_worker_name=${WORKER_NAME:-}
+    local env_worker_url=${WORKER_URL:-}
+    local env_account_id=${CF_ACCOUNT_ID:-}
+    local env_deploy_mode=${DEPLOY_MODE:-}
+    local env_sub_download_name=${SUB_DOWNLOAD_NAME:-}
+    local env_acme_email=${ACME_EMAIL:-}
+
+    ANYTLS_DOMAIN=""
+    ANYTLS_PASSWORD=""
+    NODE_NAME=""
+    SING_BOX_VERSION=""
+    SING_BOX_CHANNEL=""
+    SING_BOX_INSTALLED_VERSION=""
+    SUB_TOKEN=""
+    WORKER_NAME=""
+    WORKER_URL=""
+    CF_ACCOUNT_ID=""
+    DEPLOY_MODE=""
+    SUB_DOWNLOAD_NAME=""
+    ACME_EMAIL=""
+
+    if [[ -f "${STATE_FILE}" ]]; then
+        # The file is generated by save_state with shell-escaped values.
+        # shellcheck source=/dev/null
+        source "${STATE_FILE}"
+    fi
+    SAVED_ANYTLS_DOMAIN=${ANYTLS_DOMAIN:-}
+
+    ANYTLS_DOMAIN=${env_domain:-${ANYTLS_DOMAIN}}
+    ANYTLS_PASSWORD=${env_password:-${ANYTLS_PASSWORD}}
+    NODE_NAME=${env_node_name:-${NODE_NAME:-${DEFAULT_NODE_NAME}}}
+    SING_BOX_VERSION=${env_selector:-${SING_BOX_VERSION:-}}
+    SING_BOX_CHANNEL=${env_channel:-${SING_BOX_CHANNEL:-latest}}
+    SING_BOX_INSTALLED_VERSION=${env_installed:-${SING_BOX_INSTALLED_VERSION}}
+    SUB_TOKEN=${env_sub_token:-${SUB_TOKEN}}
+    WORKER_NAME=${env_worker_name:-${WORKER_NAME:-${DEFAULT_WORKER_NAME}}}
+    WORKER_URL=${env_worker_url:-${WORKER_URL}}
+    CF_ACCOUNT_ID=${env_account_id:-${CF_ACCOUNT_ID}}
+    DEPLOY_MODE=${env_deploy_mode:-${DEPLOY_MODE:-link}}
+    SUB_DOWNLOAD_NAME=${env_sub_download_name:-${SUB_DOWNLOAD_NAME}}
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+        "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
+    ACME_EMAIL=${env_acme_email:-${ACME_EMAIL}}
+}
+
+save_state() {
+    install -d -m 0700 "${STATE_DIR}"
+    local temp
+    temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX")
+    cleanup_files+=("${temp}")
+    {
+        printf 'ANYTLS_DOMAIN=%q\n' "${ANYTLS_DOMAIN}"
+        printf 'ANYTLS_PASSWORD=%q\n' "${ANYTLS_PASSWORD}"
+        printf 'NODE_NAME=%q\n' "${NODE_NAME:-${DEFAULT_NODE_NAME}}"
+        printf 'SING_BOX_VERSION=%q\n' "${SING_BOX_VERSION:-latest}"
+        printf 'SING_BOX_CHANNEL=%q\n' "${SING_BOX_CHANNEL:-latest}"
+        printf 'SING_BOX_INSTALLED_VERSION=%q\n' "${SING_BOX_INSTALLED_VERSION:-}"
+        printf 'SUB_TOKEN=%q\n' "${SUB_TOKEN:-}"
+        printf 'WORKER_NAME=%q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
+        printf 'WORKER_URL=%q\n' "${WORKER_URL:-}"
+        printf 'CF_ACCOUNT_ID=%q\n' "${CF_ACCOUNT_ID:-}"
+        printf 'DEPLOY_MODE=%q\n' "${DEPLOY_MODE:-link}"
+        printf 'SUB_DOWNLOAD_NAME=%q\n' \
+            "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
+        printf 'ACME_EMAIL=%q\n' "${ACME_EMAIL:-}"
+    } >"${temp}"
+    install -m 0600 "${temp}" "${STATE_FILE}"
+}
+
+choose_domain() {
+    local domain
+    domain=$(prompt_value "AnyTLS 单域名（必须已有 A 记录指向本机）" \
+        "${ANYTLS_DOMAIN:-}")
+    domain=$(normalize_domain "${domain}")
+    validate_domain "${domain}" \
+        || die "域名无效：${domain}；仅支持单个完整域名，不支持 IP 或泛域名"
+    if [[ -n "${SAVED_ANYTLS_DOMAIN:-}" \
+        && "${domain}" != "${SAVED_ANYTLS_DOMAIN}" ]]; then
+        die "已安装域名为 ${SAVED_ANYTLS_DOMAIN}；为避免遗留证书续期和订阅，请先卸载后再更换域名"
+    fi
+    ANYTLS_DOMAIN="${domain}"
+}
+
+choose_sing_box_version() {
+    local choice=${SING_BOX_VERSION:-}
+    if [[ -z "${choice}" && -t 0 ]]; then
+        printf '请选择 sing-box 版本：\n'
+        printf '  1. 最新稳定版 release（默认）\n'
+        printf '  2. 最新 alpha/pre-release\n'
+        printf '  3. 指定具体版本号\n'
+        read -r -p "请选择 [1]（回车默认 1）: " choice
+        choice=${choice:-1}
+        if [[ "${choice}" == "3" ]]; then
+            read -r -p "请输入版本号（例如 1.13.12 或 v1.14.0-alpha.26）: " choice
+        fi
+    fi
+    choice=${choice:-latest}
+    case "${choice}" in
+    1 | latest | stable) choice="latest" ;;
+    2 | alpha | prerelease) choice="alpha" ;;
+    esac
+    validate_sing_box_selector "${choice}" \
+        || die "sing-box 版本选择无效：${choice}"
+    SING_BOX_VERSION="${choice}"
+    if [[ "${choice}" == "alpha" ]]; then
+        warn "已选择最新 alpha/pre-release，可能包含未稳定的行为"
+    fi
+}
+
+choose_subscription_mode() {
+    local choice=${SUBSCRIBE_MODE:-}
+    if [[ -z "${choice}" && -t 0 ]]; then
+        printf '请选择订阅输出方式：\n'
+        printf '  1. 自动部署 Cloudflare Worker（默认）\n'
+        printf '  2. 输出 Worker 内容，手动部署\n'
+        printf '  3. 只输出 AnyTLS 配置和纯链接\n'
+        read -r -p "请选择 [1]（回车默认 1）: " choice
+        choice=${choice:-1}
+    fi
+    choice=${choice:-auto}
+    case "${choice}" in
+    1 | auto) SUBSCRIBE_MODE="auto" ;;
+    2 | worker | manual) SUBSCRIBE_MODE="worker" ;;
+    3 | link | anytls) SUBSCRIBE_MODE="link" ;;
+    *) die "订阅输出方式无效：${choice}" ;;
+    esac
+}
+
+choose_subscription_download_name() {
+    local name
+    name=$(prompt_value "Mihomo 下载基础名称（不含 .yaml）" \
+        "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
+    name=$(normalize_sub_download_name "${name}")
+    validate_sub_download_name "${name}" \
+        || die "下载基础名称无效：${name}"
+    SUB_DOWNLOAD_NAME="${name}"
+}
+
+detect_public_ipv4() {
+    local endpoint ip
+    local -a detected=()
+    for endpoint in \
+        https://api.ipify.org \
+        https://ipv4.icanhazip.com \
+        https://ifconfig.co/ip; do
+        ip=$(curl -fsS4 --max-time 8 "${endpoint}" 2>/dev/null \
+            | tr -d '[:space:]' || true)
+        if validate_ipv4 "${ip}"; then
+            detected+=("${ip}")
+        fi
+    done
+    ((${#detected[@]} >= 2)) \
+        || die "无法通过至少两个公网服务确认本机公网 IPv4"
+    ip=$(printf '%s\n' "${detected[@]}" | sort | uniq -c \
+        | sort -rn | awk 'NR == 1 {print $2}')
+    local count
+    count=$(printf '%s\n' "${detected[@]}" | awk -v target="${ip}" \
+        '$0 == target {count++} END {print count+0}')
+    ((count >= 2)) || die "公网 IPv4 探测结果不一致：${detected[*]}"
+    printf '%s' "${ip}"
+}
+
+query_a_records() {
+    local domain=$1 resolver=${2:-}
+    local -a args=(+time=5 +tries=2 +short A "${domain}")
+    [[ -z "${resolver}" ]] || args+=("@${resolver}")
+    dig "${args[@]}" 2>/dev/null \
+        | awk '/^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print}' \
+        | sort -u
+}
+
+validate_resolved_ipv4_set() {
+    local expected=$1 records=$2 record count=0
+    while IFS= read -r record; do
+        [[ -n "${record}" ]] || continue
+        validate_ipv4 "${record}" || return 1
+        [[ "${record}" == "${expected}" ]] || return 1
+        count=$((count + 1))
+    done <<<"${records}"
+    ((count >= 1))
+}
+
+verify_domain_dns() {
+    local domain=$1 public_ip=$2 resolver records
+    local -a resolvers=("" "1.1.1.1" "8.8.8.8")
+    for resolver in "${resolvers[@]}"; do
+        records=$(query_a_records "${domain}" "${resolver}")
+        if ! validate_resolved_ipv4_set "${public_ip}" "${records}"; then
+            [[ -n "${resolver}" ]] || resolver="系统解析器"
+            die "DNS A 记录校验失败：${domain} 经 ${resolver} 解析为 [${records:-无 A 记录}]，本机公网 IPv4 为 ${public_ip}。请关闭 Cloudflare 代理并等待 DNS 生效后重试"
+        fi
+    done
+    success "DNS 校验通过：${domain} -> ${public_ip}"
+}
+
+bootstrap_dns_dependencies() {
+    command -v curl >/dev/null 2>&1 \
+        || die "缺少 curl；请先安装 curl 后运行脚本"
+    if ! command -v dig >/dev/null 2>&1; then
+        info "首次 DNS 校验需要 dig，正在安装 dnsutils"
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y dnsutils ca-certificates
+    fi
+}
+
+preflight_debian() {
+    local major_version
+    require_root
+    require_systemd
+    [[ -r /etc/os-release ]] || die "无法识别操作系统"
+    # shellcheck source=/dev/null
+    source /etc/os-release
+    [[ "${ID:-}" == "debian" ]] || die "初始化仅支持 Debian"
+    [[ -n "${VERSION_CODENAME:-}" ]] || die "无法识别 Debian 发行版代号"
+    major_version=${VERSION_ID%%.*}
+    [[ "${major_version}" =~ ^[0-9]+$ ]] && ((major_version >= 12)) \
+        || die "初始化仅支持 Debian 12 及以上版本"
+    [[ "$(dpkg --print-architecture)" == "amd64" ]] \
+        || die "当前仅支持 Debian amd64"
+    ! systemd-detect-virt --container >/dev/null 2>&1 \
+        || die "容器不能执行内核与防火墙初始化"
+}
+
+check_service_conflicts() {
+    [[ -d /etc/easy_reality ]] \
+        && die "检测到 easy_reality 状态目录；easy_anytls 默认不与 Reality 共用专用 VPS"
+    if systemctl is-active --quiet xray.service 2>/dev/null; then
+        die "检测到运行中的 xray.service，可能占用 443 端口"
+    fi
+    if [[ ! -f "${STATE_FILE}" \
+        && ( -f "${SING_BOX_BIN}" || -f "${SING_BOX_CONFIG}" \
+            || -f "${SING_BOX_SERVICE_FILE}" ) ]]; then
+        die "检测到非 easy_anytls 管理的 sing-box 二进制、配置或 systemd 服务，拒绝覆盖"
+    fi
+    if [[ ! -f "${STATE_FILE}" ]] \
+        && ss -ltnH "sport = :${ANYTLS_PORT}" 2>/dev/null | grep -q .; then
+        die "TCP ${ANYTLS_PORT} 已被其他服务占用"
+    fi
+}
+
+install_base_packages() {
+    info "[1/8] 更新系统并安装基础依赖"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get upgrade -y
+    apt-get install -y \
+        vim curl wget nftables cron ca-certificates gnupg \
+        iproute2 iputils-ping tzdata systemd-timesyncd \
+        jq openssl dnsutils tar
+    timedatectl set-timezone Asia/Shanghai
+    timedatectl set-ntp true || die "无法启用网络时间同步"
+    success "当前时间：$(date)"
+}
+
+install_xanmod_bbr() {
+    local temp_dir key_file keyring_file repo_file
+    temp_dir=$(make_temp_dir)
+    key_file="${temp_dir}/archive.key"
+    keyring_file="${temp_dir}/archive.gpg"
+    repo_file="${temp_dir}/xanmod.list"
+
+    info "[2/8] 安装 XanMod LTS 并配置 BBR"
+    install -d -m 0755 /etc/apt/keyrings
+    wget -qO "${key_file}" https://dl.xanmod.org/archive.key \
+        || die "下载 XanMod 签名密钥失败"
+    gpg --batch --yes --dearmor --output "${keyring_file}" "${key_file}" \
+        || die "转换 XanMod 签名密钥失败"
+    install -m 0644 "${keyring_file}" "${XANMOD_KEYRING}"
+    printf 'deb [signed-by=%s] http://deb.xanmod.org %s main\n' \
+        "${XANMOD_KEYRING}" "${VERSION_CODENAME}" >"${repo_file}"
+    install -m 0644 "${repo_file}" "${XANMOD_REPO}"
+    apt-get update
+    apt-get install -y linux-xanmod-lts-x64v1
+
+    local sysctl_file="${temp_dir}/sysctl.conf"
+    cat >"${sysctl_file}" <<'EOF'
+net.core.default_qdisc = fq
+net.core.netdev_max_backlog = 250000
+net.core.somaxconn = 4096
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_notsent_lowat = 16384
+EOF
+    install -m 0644 "${sysctl_file}" "${SYSCTL_CONFIG}"
+    modprobe tcp_bbr 2>/dev/null || true
+    sysctl -p "${SYSCTL_CONFIG}" >/dev/null
+    [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
+        || die "拥塞控制算法未成功设置为 bbr"
+}
+
+append_ssh_port() {
+    local port=$1
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 0
+    ((10#${port} >= 1 && 10#${port} <= 65535)) || return 0
+    case ", ${SSH_PORTS}, " in
+    *", ${port}, "*) ;;
+    *)
+        [[ -z "${SSH_PORTS}" ]] || SSH_PORTS+=", "
+        SSH_PORTS+="${port}"
+        ;;
+    esac
+}
+
+detect_ssh_ports() {
+    local current_port sshd_bin config
+    SSH_PORTS=""
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        read -r _ _ _ current_port <<<"${SSH_CONNECTION}"
+        append_ssh_port "${current_port}"
+    fi
+    sshd_bin=$(command -v sshd 2>/dev/null || true)
+    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    if [[ -n "${sshd_bin}" ]]; then
+        while read -r current_port; do
+            append_ssh_port "${current_port}"
+        done < <("${sshd_bin}" -T 2>/dev/null | awk '$1 == "port" {print $2}')
+    fi
+    for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [[ -f "${config}" ]] || continue
+        while read -r current_port; do
+            append_ssh_port "${current_port}"
+        done < <(awk '
+            /^[[:space:]]*#/ {next}
+            tolower($1) == "port" {print $2}
+        ' "${config}")
+    done
+    [[ -n "${SSH_PORTS}" ]] || SSH_PORTS="22"
+}
+
+configure_nftables() {
+    local temp_dir candidate backup=""
+    temp_dir=$(make_temp_dir)
+    candidate="${temp_dir}/nftables.conf"
+    detect_ssh_ports
+    info "[5/8] 配置 nftables（SSH + TCP ${ANYTLS_PORT}）"
+    cat >"${candidate}" <<EOF
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iifname "lo" accept
+        ct state invalid drop
+        ct state { established, related } accept
+        meta l4proto { icmp, icmpv6 } accept
+        tcp dport { ${SSH_PORTS}, ${ANYTLS_PORT} } accept
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+EOF
+    nft -c -f "${candidate}" || die "nftables 配置校验失败"
+    if [[ -f "${NFT_CONFIG}" ]]; then
+        backup="${BACKUP_DIR}/nftables.conf.$(date +%Y%m%d%H%M%S).bak"
+        install -d -m 0700 "${BACKUP_DIR}"
+        cp -a "${NFT_CONFIG}" "${backup}"
+    fi
+    install -m 0644 "${candidate}" "${NFT_CONFIG}"
+    systemctl enable nftables >/dev/null
+    if ! systemctl restart nftables; then
+        [[ -z "${backup}" ]] || install -m 0644 "${backup}" "${NFT_CONFIG}"
+        systemctl restart nftables >/dev/null 2>&1 || true
+        die "nftables 启动失败，已尝试恢复原配置"
+    fi
+    systemctl is-active --quiet nftables || die "nftables 未运行"
+}
+
+configure_daily_reboot() {
+    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job
+    info "[3/8] 配置定时重启策略"
+    if [[ -z "${mode}" ]]; then
+        if [[ -t 0 ]]; then
+            printf '请选择定时重启策略：\n'
+            printf '  1. 每天凌晨 4 点重启（默认）\n'
+            printf '  2. 自定义每天几点重启（0-23）\n'
+            printf '  3. 不配置定时重启\n'
+            read -r -p "请选择 [1]: " mode
+            mode=${mode:-1}
+        else
+            mode=1
+        fi
+    fi
+    case "${mode}" in
+    1 | default)
+        SCHEDULED_REBOOT_ENABLED=1
+        SCHEDULED_REBOOT_HOUR="${DEFAULT_REBOOT_HOUR}"
+        ;;
+    2 | custom)
+        [[ -n "${hour}" ]] || hour=$(prompt_value "每天重启小时（0-23）" "")
+        [[ "${hour}" =~ ^[0-9]+$ ]] && ((10#${hour} <= 23)) \
+            || die "重启小时无效：${hour}"
+        SCHEDULED_REBOOT_ENABLED=1
+        SCHEDULED_REBOOT_HOUR="${hour}"
+        ;;
+    3 | none | off | disable | disabled) SCHEDULED_REBOOT_ENABLED=0 ;;
+    *) die "定时重启选项无效：${mode}" ;;
+    esac
+
+    { crontab -l 2>/dev/null || true; } \
+        | awk -v legacy="${LEGACY_CRON_JOB}" -v cmd="${CRON_REBOOT_COMMAND}" '
+            $0 == legacy {next}
+            index($0, cmd) {next}
+            {print}
+        ' | crontab -
+    if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
+        job="0 ${SCHEDULED_REBOOT_HOUR} * * * ${CRON_REBOOT_COMMAND}"
+        { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
+    fi
+}
+
+configure_ipv6_compat() {
+    local temp_dir ipv6_file
+    info "[4/8] 检查 IPv6 兼容状态"
+    [[ -d /proc/sys/net/ipv6 ]] || {
+        warn "当前内核未暴露 IPv6，继续 IPv4-only 安装"
+        return 0
+    }
+    temp_dir=$(make_temp_dir)
+    ipv6_file="${temp_dir}/99-enable-ipv6.conf"
+    [[ ! -f "${OLD_DISABLE_IPV6_CONF}" ]] || rm -f -- "${OLD_DISABLE_IPV6_CONF}"
+    cat >"${ipv6_file}" <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 0
+net.ipv6.conf.default.disable_ipv6 = 0
+net.ipv6.conf.lo.disable_ipv6 = 0
+EOF
+    install -m 0644 "${ipv6_file}" "${IPV6_SYSCTL_CONF}"
+    sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null \
+        || warn "IPv6 sysctl 应用失败，继续 IPv4-only 安装"
+}
+
+snapshot_system_state() {
+    local stamp
+    stamp=$(date +%Y%m%d%H%M%S)
+    install -d -m 0700 "${BACKUP_DIR}"
+    INSTALL_NFT_EXISTED=0
+    INSTALL_NFT_SNAPSHOT=""
+    INSTALL_CRON_SNAPSHOT="${BACKUP_DIR}/install-crontab.${stamp}.bak"
+    INSTALL_SYSCTL_SNAPSHOT=""
+    INSTALL_SING_BOX_BIN_EXISTED=0
+    INSTALL_SING_BOX_CONFIG_EXISTED=0
+    INSTALL_SING_BOX_SERVICE_EXISTED=0
+    INSTALL_CERT_EXISTED=0
+    INSTALL_KEY_EXISTED=0
+    INSTALL_RELOAD_HOOK_EXISTED=0
+    INSTALL_SING_BOX_WAS_ACTIVE=0
+    if [[ -f "${NFT_CONFIG}" ]]; then
+        INSTALL_NFT_EXISTED=1
+        INSTALL_NFT_SNAPSHOT="${BACKUP_DIR}/install-nftables.conf.${stamp}.bak"
+        cp -a "${NFT_CONFIG}" "${INSTALL_NFT_SNAPSHOT}"
+    fi
+    crontab -l >"${INSTALL_CRON_SNAPSHOT}" 2>/dev/null || :
+    if [[ -f "${SYSCTL_CONFIG}" ]]; then
+        INSTALL_SYSCTL_SNAPSHOT="${BACKUP_DIR}/install-sysctl-bbrv3.${stamp}.bak"
+        cp -a "${SYSCTL_CONFIG}" "${INSTALL_SYSCTL_SNAPSHOT}"
+    fi
+    if [[ -f "${SING_BOX_BIN}" ]]; then
+        INSTALL_SING_BOX_BIN_EXISTED=1
+        INSTALL_SING_BOX_BIN_SNAPSHOT="${BACKUP_DIR}/install-sing-box.${stamp}.bak"
+        cp -a "${SING_BOX_BIN}" "${INSTALL_SING_BOX_BIN_SNAPSHOT}"
+    fi
+    if [[ -f "${SING_BOX_CONFIG}" ]]; then
+        INSTALL_SING_BOX_CONFIG_EXISTED=1
+        INSTALL_SING_BOX_CONFIG_SNAPSHOT="${BACKUP_DIR}/install-sing-box-config.${stamp}.bak"
+        cp -a "${SING_BOX_CONFIG}" "${INSTALL_SING_BOX_CONFIG_SNAPSHOT}"
+    fi
+    if [[ -f "${SING_BOX_SERVICE_FILE}" ]]; then
+        INSTALL_SING_BOX_SERVICE_EXISTED=1
+        INSTALL_SING_BOX_SERVICE_SNAPSHOT="${BACKUP_DIR}/install-sing-box-service.${stamp}.bak"
+        cp -a "${SING_BOX_SERVICE_FILE}" "${INSTALL_SING_BOX_SERVICE_SNAPSHOT}"
+    fi
+    if [[ -f "${CERT_FILE}" ]]; then
+        INSTALL_CERT_EXISTED=1
+        INSTALL_CERT_SNAPSHOT="${BACKUP_DIR}/install-fullchain.${stamp}.bak"
+        cp -a "${CERT_FILE}" "${INSTALL_CERT_SNAPSHOT}"
+    fi
+    if [[ -f "${KEY_FILE}" ]]; then
+        INSTALL_KEY_EXISTED=1
+        INSTALL_KEY_SNAPSHOT="${BACKUP_DIR}/install-private-key.${stamp}.bak"
+        cp -a "${KEY_FILE}" "${INSTALL_KEY_SNAPSHOT}"
+    fi
+    if [[ -f "${CERT_RELOAD_HOOK}" ]]; then
+        INSTALL_RELOAD_HOOK_EXISTED=1
+        INSTALL_RELOAD_HOOK_SNAPSHOT="${BACKUP_DIR}/install-reload-hook.${stamp}.bak"
+        cp -a "${CERT_RELOAD_HOOK}" "${INSTALL_RELOAD_HOOK_SNAPSHOT}"
+    fi
+    if systemctl is-active --quiet "${SING_BOX_SERVICE}" 2>/dev/null; then
+        INSTALL_SING_BOX_WAS_ACTIVE=1
+    fi
+    INSTALL_ROLLBACK_AVAILABLE=1
+}
+
+rollback_install_side_effects() {
+    warn "安装未完成，正在恢复安装前的系统配置、sing-box 与生产证书"
+    if [[ "${INSTALL_NFT_EXISTED:-0}" == "1" \
+        && -n "${INSTALL_NFT_SNAPSHOT:-}" ]]; then
+        install -m 0644 "${INSTALL_NFT_SNAPSHOT}" "${NFT_CONFIG}"
+        systemctl restart nftables >/dev/null 2>&1 || true
+    elif [[ "${INSTALL_NFT_EXISTED:-0}" == "0" ]]; then
+        rm -f -- "${NFT_CONFIG}"
+        systemctl disable --now nftables >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${INSTALL_CRON_SNAPSHOT:-}" \
+        && -f "${INSTALL_CRON_SNAPSHOT}" ]]; then
+        crontab "${INSTALL_CRON_SNAPSHOT}" 2>/dev/null \
+            || crontab -r 2>/dev/null || true
+    fi
+    if [[ -n "${INSTALL_SYSCTL_SNAPSHOT:-}" \
+        && -f "${INSTALL_SYSCTL_SNAPSHOT}" ]]; then
+        install -m 0644 "${INSTALL_SYSCTL_SNAPSHOT}" "${SYSCTL_CONFIG}"
+        sysctl -p "${SYSCTL_CONFIG}" >/dev/null 2>&1 || true
+    fi
+    if [[ "${INSTALL_SING_BOX_BIN_EXISTED:-0}" == "1" ]]; then
+        install -m 0755 "${INSTALL_SING_BOX_BIN_SNAPSHOT}" "${SING_BOX_BIN}"
+    else
+        rm -f -- "${SING_BOX_BIN}"
+    fi
+    if [[ "${INSTALL_SING_BOX_CONFIG_EXISTED:-0}" == "1" ]]; then
+        install -d -m 0755 "${SING_BOX_CONFIG_DIR}"
+        install -m 0600 "${INSTALL_SING_BOX_CONFIG_SNAPSHOT}" "${SING_BOX_CONFIG}"
+    else
+        rm -f -- "${SING_BOX_CONFIG}"
+    fi
+    if [[ "${INSTALL_SING_BOX_SERVICE_EXISTED:-0}" == "1" ]]; then
+        install -m 0644 "${INSTALL_SING_BOX_SERVICE_SNAPSHOT}" \
+            "${SING_BOX_SERVICE_FILE}"
+    else
+        rm -f -- "${SING_BOX_SERVICE_FILE}"
+    fi
+    if [[ "${INSTALL_CERT_EXISTED:-0}" == "1" ]]; then
+        install -d -m 0700 "${CERT_DIR}"
+        install -m 0600 "${INSTALL_CERT_SNAPSHOT}" "${CERT_FILE}"
+    else
+        rm -f -- "${CERT_FILE}"
+    fi
+    if [[ "${INSTALL_KEY_EXISTED:-0}" == "1" ]]; then
+        install -d -m 0700 "${CERT_DIR}"
+        install -m 0600 "${INSTALL_KEY_SNAPSHOT}" "${KEY_FILE}"
+    else
+        rm -f -- "${KEY_FILE}"
+    fi
+    if [[ "${INSTALL_RELOAD_HOOK_EXISTED:-0}" == "1" ]]; then
+        install -d -m 0755 "${COMMAND_INSTALL_DIR}"
+        install -m 0755 "${INSTALL_RELOAD_HOOK_SNAPSHOT}" "${CERT_RELOAD_HOOK}"
+    else
+        rm -f -- "${CERT_RELOAD_HOOK}"
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [[ "${INSTALL_SING_BOX_WAS_ACTIVE:-0}" == "1" ]]; then
+        systemctl restart "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
+    else
+        systemctl disable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
+    fi
+}
+
+run_server_initialization() {
+    preflight_debian
+    check_service_conflicts
+    install_base_packages
+    snapshot_system_state
+    install_xanmod_bbr
+    configure_daily_reboot
+    configure_ipv6_compat
+    configure_nftables
+}
+
+resolve_sing_box_release() {
+    local selector=$1 response tag version asset_name
+    local api_url
+    case "${selector}" in
+    latest)
+        api_url="${GITHUB_RELEASES_API}/latest"
+        SING_BOX_CHANNEL="latest"
+        ;;
+    alpha)
+        api_url="${GITHUB_RELEASES_API}?per_page=100"
+        SING_BOX_CHANNEL="alpha"
+        ;;
+    *)
+        tag=${selector#v}
+        api_url="${GITHUB_RELEASES_API}/tags/v${tag}"
+        SING_BOX_CHANNEL="pinned"
+        ;;
+    esac
+    response=$(curl -fsSL --retry 3 \
+        -H "Accept: application/vnd.github+json" "${api_url}") \
+        || die "获取 sing-box release 信息失败"
+    if [[ "${selector}" == "alpha" ]]; then
+        response=$(jq -ec '
+            [
+              .[]
+              | select(.draft == false and .prerelease == true)
+              | select(.tag_name | test("-alpha\\.[0-9]+$"))
+            ][0] // empty
+        ' <<<"${response}") || die "未找到 sing-box alpha release"
+    fi
+    tag=$(jq -er '.tag_name' <<<"${response}") \
+        || die "sing-box release 缺少 tag_name"
+    version=${tag#v}
+    version_at_least "${version}" "${MIN_SING_BOX_VERSION}" \
+        || die "sing-box ${version} 低于 AnyTLS 最低版本 ${MIN_SING_BOX_VERSION}"
+    asset_name="sing-box-${version}-linux-amd64.tar.gz"
+    SING_BOX_RELEASE_TAG="${tag}"
+    SING_BOX_RELEASE_VERSION="${version}"
+    SING_BOX_ASSET_NAME="${asset_name}"
+    SING_BOX_ASSET_URL=$(jq -er --arg name "${asset_name}" \
+        '.assets[] | select(.name == $name) | .browser_download_url' \
+        <<<"${response}") || die "release 中未找到 ${asset_name}"
+    SING_BOX_ASSET_DIGEST=$(jq -er --arg name "${asset_name}" '
+        .assets[]
+        | select(.name == $name)
+        | .digest // empty
+    ' <<<"${response}") || die "release 未提供 ${asset_name} 的 SHA-256 digest"
+    [[ "${SING_BOX_ASSET_DIGEST}" =~ ^sha256:[a-fA-F0-9]{64}$ ]] \
+        || die "sing-box release digest 格式无效"
+}
+
+download_sing_box_binary() {
+    local selector=$1 destination=$2 temp_dir archive expected actual extracted
+    resolve_sing_box_release "${selector}"
+    temp_dir=$(make_temp_dir)
+    archive="${temp_dir}/${SING_BOX_ASSET_NAME}"
+    info "下载 sing-box ${SING_BOX_RELEASE_VERSION}（${SING_BOX_CHANNEL}）"
+    curl -fL --retry 3 "${SING_BOX_ASSET_URL}" -o "${archive}" \
+        || die "下载 sing-box 失败"
+    expected=${SING_BOX_ASSET_DIGEST#sha256:}
+    actual=$(sha256sum "${archive}" | awk '{print $1}')
+    actual=$(tr '[:upper:]' '[:lower:]' <<<"${actual}" | tr -d '\n')
+    expected=$(tr '[:upper:]' '[:lower:]' <<<"${expected}" | tr -d '\n')
+    [[ "${actual}" == "${expected}" ]] \
+        || die "sing-box SHA-256 校验失败"
+    tar -xzf "${archive}" -C "${temp_dir}" \
+        || die "解压 sing-box 失败"
+    extracted="${temp_dir}/sing-box-${SING_BOX_RELEASE_VERSION}-linux-amd64/sing-box"
+    [[ -x "${extracted}" ]] || die "sing-box release 包内未找到可执行文件"
+    install -m 0755 "${extracted}" "${destination}"
+}
+
+install_sing_box_binary() {
+    local temp_bin="${RUNTIME_TMP}/sing-box.new"
+    info "[6/8] 解析、校验并安装 sing-box"
+    download_sing_box_binary "${SING_BOX_VERSION}" "${temp_bin}"
+    "${temp_bin}" version | grep -Fq "${SING_BOX_RELEASE_VERSION}" \
+        || die "sing-box 二进制版本验收失败"
+    install -m 0755 "${temp_bin}" "${SING_BOX_BIN}"
+    SING_BOX_INSTALLED_VERSION="${SING_BOX_RELEASE_VERSION}"
+}
+
+install_acme() {
+    local installer email
+    if [[ -x "${ACME_BIN}" ]]; then
+        ensure_acme_cron
+        return 0
+    fi
+    email=${ACME_EMAIL:-}
+    [[ -n "${email}" ]] || email=$(prompt_value "Let's Encrypt 账户邮箱" "")
+    [[ "${email}" == *@*.* ]] || die "ACME 邮箱格式无效"
+    ACME_EMAIL="${email}"
+    installer="${RUNTIME_TMP}/get-acme.sh"
+    curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" \
+        || die "下载 acme.sh 安装器失败"
+    sh "${installer}" email="${email}" \
+        || die "安装 acme.sh 失败"
+    [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后未找到 ${ACME_BIN}"
+    ensure_acme_cron
+}
+
+ensure_acme_cron() {
+    local job
+    crontab -l 2>/dev/null | grep -Fq "${ACME_BIN}" && return 0
+    job="17 2 * * * \"${ACME_BIN}\" --cron --home \"${ACME_HOME}\" > /dev/null"
+    { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
+}
+
+collect_cloudflare_dns_credentials() {
+    local token=${CF_DNS_API_TOKEN:-}
+    local zone_id=${CF_ZONE_ID:-}
+    local account_id=${CF_ACCOUNT_ID:-}
+    if [[ -z "${token}" ]]; then
+        token=$(prompt_secret "Cloudflare DNS API Token（输入不回显）") \
+            || die "非交互模式必须设置 CF_DNS_API_TOKEN"
+    fi
+    [[ -n "${token}" ]] || die "CF_DNS_API_TOKEN 不能为空"
+    if [[ -z "${zone_id}" && -z "${account_id}" ]]; then
+        zone_id=$(prompt_value "Cloudflare Zone ID（推荐；可留空改用 Account ID）" "")
+        if [[ -z "${zone_id}" ]]; then
+            account_id=$(prompt_value "Cloudflare Account ID" "")
+        fi
+    fi
+    [[ -n "${zone_id}" || -n "${account_id}" ]] \
+        || die "必须提供 CF_ZONE_ID 或 CF_ACCOUNT_ID"
+    CF_DNS_TOKEN_VALUE="${token}"
+    CF_DNS_ZONE_ID_VALUE="${zone_id}"
+    CF_DNS_ACCOUNT_ID_VALUE="${account_id}"
+    [[ -z "${account_id}" ]] || CF_ACCOUNT_ID="${account_id}"
+}
+
+validate_certificate() {
+    local domain=$1
+    [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" ]] \
+        || die "证书或私钥文件为空"
+    openssl x509 -in "${CERT_FILE}" -noout -checkend 86400 \
+        || die "证书有效期不足 24 小时"
+    openssl x509 -in "${CERT_FILE}" -noout -checkhost "${domain}" \
+        >/dev/null || die "证书不覆盖域名 ${domain}"
+    local cert_key pub_key
+    cert_key=$(openssl x509 -in "${CERT_FILE}" -pubkey -noout \
+        | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum \
+        | awk '{print $1}')
+    pub_key=$(openssl pkey -in "${KEY_FILE}" -pubout -outform DER 2>/dev/null \
+        | sha256sum | awk '{print $1}')
+    [[ -n "${cert_key}" && "${cert_key}" == "${pub_key}" ]] \
+        || die "证书与私钥不匹配"
+}
+
+issue_certificate() {
+    local domain=$1
+    local state_account_id=${CF_ACCOUNT_ID:-}
+    info "[7/8] 使用 Let's Encrypt + Cloudflare DNS 签发单域名证书"
+    install_acme
+    collect_cloudflare_dns_credentials
+    export CF_Token="${CF_DNS_TOKEN_VALUE}"
+    if [[ -n "${CF_DNS_ZONE_ID_VALUE}" ]]; then
+        export CF_Zone_ID="${CF_DNS_ZONE_ID_VALUE}"
+    else
+        unset CF_Zone_ID || true
+    fi
+    if [[ -n "${CF_DNS_ACCOUNT_ID_VALUE}" ]]; then
+        export CF_Account_ID="${CF_DNS_ACCOUNT_ID_VALUE}"
+    else
+        unset CF_Account_ID || true
+    fi
+    "${ACME_BIN}" --set-default-ca --server letsencrypt
+    "${ACME_BIN}" --issue --server letsencrypt --dns dns_cf \
+        -d "${domain}" --keylength ec-256 \
+        || die "Let's Encrypt 证书申请失败"
+    install_certificate_reload_hook
+    install -d -m 0700 "${CERT_DIR}"
+    touch "${CERT_FILE}" "${KEY_FILE}"
+    chmod 0600 "${CERT_FILE}" "${KEY_FILE}"
+    "${ACME_BIN}" --install-cert -d "${domain}" --ecc \
+        --key-file "${KEY_FILE}" \
+        --fullchain-file "${CERT_FILE}" \
+        --reloadcmd "${CERT_RELOAD_HOOK}" \
+        || die "安装证书到 easy_anytls 目录失败"
+    unset CF_Token CF_Zone_ID CF_Account_ID CF_DNS_API_TOKEN
+    CF_ACCOUNT_ID=${state_account_id:-${CF_DNS_ACCOUNT_ID_VALUE}}
+    CF_DNS_TOKEN_VALUE=""
+    validate_certificate "${domain}"
+    crontab -l 2>/dev/null | grep -Fq "${ACME_BIN}" \
+        || die "未检测到 acme.sh 自动续期 cron"
+}
+
+ensure_anytls_password() {
+    ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
+    [[ ${#ANYTLS_PASSWORD} -ge 16 && ${#ANYTLS_PASSWORD} -le 256 ]] \
+        || die "ANYTLS_PASSWORD 长度必须为 16-256 个字符"
+}
+
+install_certificate_reload_hook() {
+    install -d -m 0755 "${COMMAND_INSTALL_DIR}"
+    cat >"${RUNTIME_TMP}/reload-sing-box.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if /usr/bin/systemctl is-active --quiet ${SING_BOX_SERVICE}; then
+    exec /usr/bin/systemctl restart ${SING_BOX_SERVICE}
+fi
+exit 0
+EOF
+    install -m 0755 "${RUNTIME_TMP}/reload-sing-box.sh" "${CERT_RELOAD_HOOK}"
+}
+
+write_sing_box_config() {
+    local candidate backup="" listen_addr
+    candidate="${RUNTIME_TMP}/sing-box-config.json"
+    if ip -6 addr show scope global 2>/dev/null | grep -q "inet6"; then
+        listen_addr="::"
+    else
+        listen_addr="0.0.0.0"
+    fi
+    jq -n \
+        --arg listen "${listen_addr}" \
+        --arg domain "${ANYTLS_DOMAIN}" \
+        --arg password "${ANYTLS_PASSWORD}" \
+        --arg cert "${CERT_FILE}" \
+        --arg key "${KEY_FILE}" \
+        --argjson port "${ANYTLS_PORT}" '
+        {
+          log: {
+            level: "warn",
+            timestamp: true
+          },
+          dns: {
+            servers: [
+              {
+                type: "local",
+                tag: "local"
+              }
+            ]
+          },
+          inbounds: [
+            {
+              type: "anytls",
+              tag: "anytls-in",
+              listen: $listen,
+              listen_port: $port,
+              users: [
+                {
+                  name: "default",
+                  password: $password
+                }
+              ],
+              tls: {
+                enabled: true,
+                server_name: $domain,
+                certificate_path: $cert,
+                key_path: $key
+              }
+            }
+          ],
+          outbounds: [
+            {
+              type: "direct",
+              tag: "direct"
+            }
+          ],
+          route: {
+            default_domain_resolver: "local",
+            rules: [
+              {
+                domain_suffix: [
+                  "claude.ai",
+                  "claude.com",
+                  "anthropic.com",
+                  "claudeusercontent.com",
+                  "gemini.google.com",
+                  "bard.google.com",
+                  "aistudio.google.com",
+                  "makersuite.google.com",
+                  "ai.google.dev",
+                  "generativelanguage.googleapis.com",
+                  "deepmind.com",
+                  "deepmind.google",
+                  "generativeai.google"
+                ],
+                action: "resolve",
+                server: "local",
+                strategy: "ipv4_only"
+              }
+            ],
+            final: "direct"
+          }
+        }
+    ' >"${candidate}"
+    "${SING_BOX_BIN}" check -c "${candidate}" \
+        || die "sing-box AnyTLS 配置校验失败"
+    install -d -m 0755 "${SING_BOX_CONFIG_DIR}"
+    if [[ -f "${SING_BOX_CONFIG}" ]]; then
+        backup="${BACKUP_DIR}/sing-box-config.$(date +%Y%m%d%H%M%S).bak"
+        install -d -m 0700 "${BACKUP_DIR}"
+        cp -a "${SING_BOX_CONFIG}" "${backup}"
+    fi
+    install -m 0600 "${candidate}" "${SING_BOX_CONFIG}"
+    SING_BOX_CONFIG_BACKUP="${backup}"
+}
+
+install_sing_box_service() {
+    local previous_service=""
+    if [[ -f "${SING_BOX_SERVICE_FILE}" ]]; then
+        previous_service="${BACKUP_DIR}/sing-box.service.$(date +%Y%m%d%H%M%S).bak"
+        install -d -m 0700 "${BACKUP_DIR}"
+        cp -a "${SING_BOX_SERVICE_FILE}" "${previous_service}"
+    fi
+    cat >"${RUNTIME_TMP}/sing-box.service" <<EOF
+[Unit]
+Description=sing-box AnyTLS managed by easy_anytls
+Documentation=https://sing-box.sagernet.org/
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=${SING_BOX_BIN} run -c ${SING_BOX_CONFIG}
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=${STATE_DIR}
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    install -m 0644 "${RUNTIME_TMP}/sing-box.service" "${SING_BOX_SERVICE_FILE}"
+    systemctl daemon-reload
+    systemctl enable "${SING_BOX_SERVICE}" >/dev/null
+    if ! systemctl restart "${SING_BOX_SERVICE}" \
+        || ! systemctl is-active --quiet "${SING_BOX_SERVICE}"; then
+        if [[ -n "${SING_BOX_CONFIG_BACKUP:-}" ]]; then
+            install -m 0600 "${SING_BOX_CONFIG_BACKUP}" "${SING_BOX_CONFIG}"
+        fi
+        if [[ -n "${previous_service}" ]]; then
+            install -m 0644 "${previous_service}" "${SING_BOX_SERVICE_FILE}"
+        fi
+        systemctl daemon-reload
+        systemctl restart "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
+        systemctl status "${SING_BOX_SERVICE}" --no-pager || true
+        die "sing-box 启动失败，已尝试恢复原配置"
+    fi
+    ss -ltnH "sport = :${ANYTLS_PORT}" | grep -q . \
+        || die "sing-box 未监听 TCP ${ANYTLS_PORT}"
+}
+
+build_anytls_link() {
+    local encoded_password encoded_domain encoded_name
+    encoded_password=$(uri_encode "${ANYTLS_PASSWORD}")
+    encoded_domain=$(uri_encode "${ANYTLS_DOMAIN}")
+    encoded_name=$(uri_encode "${NODE_NAME:-${DEFAULT_NODE_NAME}}")
+    printf 'anytls://%s@%s:%s/?sni=%s&insecure=0#%s' \
+        "${encoded_password}" "${ANYTLS_DOMAIN}" "${ANYTLS_PORT}" \
+        "${encoded_domain}" "${encoded_name}"
+}
+
+build_client_outbound_json() {
+    jq -n \
+        --arg tag "${NODE_NAME:-${DEFAULT_NODE_NAME}}" \
+        --arg server "${ANYTLS_DOMAIN}" \
+        --arg password "${ANYTLS_PASSWORD}" \
+        --argjson port "${ANYTLS_PORT}" '
+        {
+          type: "anytls",
+          tag: $tag,
+          server: $server,
+          server_port: $port,
+          password: $password,
+          tls: {
+            enabled: true,
+            server_name: $server,
+            insecure: false,
+            utls: {
+              enabled: true,
+              fingerprint: "chrome"
+            }
+          }
+        }
+    '
+}
+
+write_worker() {
+    local destination=$1 config_json download_json
+    config_json=$(jq -cn \
+        --arg name "${NODE_NAME:-${DEFAULT_NODE_NAME}}" \
+        --arg server "${ANYTLS_DOMAIN}" \
+        --arg password "${ANYTLS_PASSWORD}" \
+        --arg sni "${ANYTLS_DOMAIN}" \
+        --argjson port "${ANYTLS_PORT}" \
+        '{name: $name, server: $server, port: $port, password: $password, sni: $sni}')
+    download_json=$(jq -cn --arg value \
+        "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}" '$value')
+    install -d -m 0700 "$(dirname "${destination}")"
+    cat >"${RUNTIME_TMP}/worker.js" <<EOF
+const CONFIG = Object.freeze(${config_json});
+const DOWNLOAD_NAME = ${download_json};
+
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function anytlsUri(config) {
+  const auth = encodeURIComponent(config.password);
+  const sni = encodeURIComponent(config.sni);
+  const name = encodeURIComponent(config.name);
+  return \`anytls://\${auth}@\${config.server}:\${config.port}/?sni=\${sni}&insecure=0#\${name}\`;
+}
+
+function yamlQuote(value) {
+  return JSON.stringify(String(value));
+}
+
+function mihomoYaml(config) {
+  return [
+    'proxies:',
+    \`  - name: \${yamlQuote(config.name)}\`,
+    '    type: anytls',
+    \`    server: \${yamlQuote(config.server)}\`,
+    \`    port: \${config.port}\`,
+    \`    password: \${yamlQuote(config.password)}\`,
+    \`    sni: \${yamlQuote(config.sni)}\`,
+    '    client-fingerprint: chrome',
+    '    udp: true',
+    '    skip-cert-verify: false',
+    ''
+  ].join('\\n');
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname !== '/subscribe') {
+      return new Response('Not Found', {status: 404});
+    }
+    if (!env.SUB_TOKEN || url.searchParams.get('token') !== env.SUB_TOKEN) {
+      return new Response('Forbidden', {status: 403});
+    }
+    if (url.searchParams.get('flag') === 'clash') {
+      return new Response(mihomoYaml(CONFIG), {
+        status: 200,
+        headers: {
+          'content-type': 'text/yaml; charset=utf-8',
+          'content-disposition': \`attachment; filename="\${DOWNLOAD_NAME}.yaml"\`,
+          'cache-control': 'no-store'
+        }
+      });
+    }
+    return new Response(encodeBase64Utf8(anytlsUri(CONFIG)), {
+      status: 200,
+      headers: {
+        'content-type': 'text/plain; charset=utf-8',
+        'cache-control': 'no-store'
+      }
+    });
+  }
+};
+EOF
+    install -m 0600 "${RUNTIME_TMP}/worker.js" "${destination}"
+}
+
+cloudflare_api() {
+    local method=$1 path=$2
+    shift 2
+    local header_file="${RUNTIME_TMP}/cf-worker-headers"
+    {
+        printf 'Authorization: Bearer %s\n' "${CF_WORKER_API_TOKEN}"
+        printf 'Accept: application/json\n'
+    } >"${header_file}"
+    chmod 0600 "${header_file}"
+    curl -sS --retry 3 -X "${method}" \
+        -H "@${header_file}" \
+        "https://api.cloudflare.com/client/v4${path}" "$@"
+}
+
+deploy_worker() {
+    local metadata response subdomain worker_module_file
+    CF_ACCOUNT_ID=${CF_ACCOUNT_ID:-$(prompt_value "Cloudflare Account ID" "")}
+    [[ -n "${CF_ACCOUNT_ID}" ]] || {
+        warn "Cloudflare Account ID 为空"
+        return 1
+    }
+    if [[ -z "${CF_WORKER_API_TOKEN:-}" ]]; then
+        CF_WORKER_API_TOKEN=$(prompt_secret \
+            "Cloudflare Worker API Token（输入不回显）") || {
+            warn "非交互模式必须设置 CF_WORKER_API_TOKEN"
+            return 1
+        }
+    fi
+    WORKER_NAME=$(prompt_value "Cloudflare Worker 名称" \
+        "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}")
+    validate_worker_name "${WORKER_NAME}" || {
+        warn "Worker 名称无效：${WORKER_NAME}"
+        return 1
+    }
+    SUB_TOKEN=${SUB_TOKEN:-$(generate_secret)}
+    metadata=$(jq -cn --arg token "${SUB_TOKEN}" '{
+      main_module: "worker.js",
+      compatibility_date: "2026-01-01",
+      bindings: [{type: "secret_text", name: "SUB_TOKEN", text: $token}]
+    }')
+    worker_module_file="${RUNTIME_TMP}/worker-module.js"
+    install -m 0600 "${WORKER_FILE}" "${worker_module_file}"
+    response=$(cloudflare_api PUT \
+        "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" \
+        -F "metadata=${metadata};type=application/json" \
+        -F "worker.js=@${worker_module_file};type=application/javascript+module") \
+        || return 1
+    jq -e '.success == true' <<<"${response}" >/dev/null || {
+        jq -r '.errors[]?.message' <<<"${response}" >&2
+        return 1
+    }
+    response=$(cloudflare_api POST \
+        "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/subdomain" \
+        --data '{"enabled":true}') || return 1
+    jq -e '.success == true' <<<"${response}" >/dev/null || return 1
+    response=$(cloudflare_api GET \
+        "/accounts/${CF_ACCOUNT_ID}/workers/subdomain") || return 1
+    subdomain=$(jq -er '.result.subdomain' <<<"${response}") || return 1
+    WORKER_URL="https://${WORKER_NAME}.${subdomain}.workers.dev"
+    unset CF_WORKER_API_TOKEN
+}
+
+verify_subscription() {
+    local code attempt
+    [[ -n "${WORKER_URL:-}" ]] || return 1
+    for attempt in 1 2 3 4 5; do
+        code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            "${WORKER_URL}/subscribe?token=${SUB_TOKEN}" || true)
+        [[ "${code}" == "200" ]] && return 0
+        warn "订阅验收第 ${attempt} 次返回 HTTP ${code}"
+        sleep 2
+    done
+    return 1
+}
+
+configure_subscription() {
+    choose_subscription_mode
+    case "${SUBSCRIBE_MODE}" in
+    auto)
+        choose_subscription_download_name
+        write_worker "${WORKER_FILE}"
+        if deploy_worker; then
+            DEPLOY_MODE="auto"
+            verify_subscription \
+                || warn "Worker 已部署，但 HTTP 验收暂未通过"
+        else
+            WORKER_URL=""
+            DEPLOY_MODE="worker"
+            SUB_TOKEN=${SUB_TOKEN:-$(generate_secret)}
+            warn "自动部署失败，已保留 Worker 文件供手动部署"
+            print_worker_content
+        fi
+        unset CF_WORKER_API_TOKEN || true
+        ;;
+    worker)
+        choose_subscription_download_name
+        SUB_TOKEN=${SUB_TOKEN:-$(generate_secret)}
+        write_worker "${WORKER_FILE}"
+        WORKER_URL=""
+        DEPLOY_MODE="worker"
+        print_worker_content
+        ;;
+    link)
+        WORKER_URL=""
+        DEPLOY_MODE="link"
+        ;;
+    esac
+    save_state
+}
+
+print_worker_content() {
+    printf '\nWorker 内容如下，请复制到 Cloudflare Worker：\n'
+    printf '%s\n' '----- BEGIN easy_anytls Worker -----'
+    cat "${WORKER_FILE}"
+    printf '\n%s\n\n' '----- END easy_anytls Worker -----'
+}
+
+collect_anytls_state() {
+    load_state
+    [[ -n "${ANYTLS_DOMAIN}" && -n "${ANYTLS_PASSWORD}" ]] \
+        || die "AnyTLS 尚未完成安装"
+    validate_domain "${ANYTLS_DOMAIN}" || die "状态文件中的域名无效"
+}
+
+show_node() {
+    collect_anytls_state
+    printf '\nsing-box AnyTLS 客户端 outbound:\n'
+    build_client_outbound_json
+    printf '\nAnyTLS 纯链接:\n%s\n\n' "$(build_anytls_link)"
+}
+
+show_subscription() {
+    collect_anytls_state
+    show_node
+    if [[ "${DEPLOY_MODE:-link}" == "link" ]]; then
+        printf '当前模式：只输出配置与纯链接\n\n'
+        return
+    fi
+    printf 'Worker 文件: %s\n' "${WORKER_FILE}"
+    printf '订阅 Token: %s\n' "${SUB_TOKEN:-未生成}"
+    if [[ -n "${WORKER_URL:-}" ]]; then
+        printf '通用订阅: %s/subscribe?token=%s\n' \
+            "${WORKER_URL}" "${SUB_TOKEN}"
+        printf 'Mihomo: %s/subscribe?token=%s&flag=clash\n' \
+            "${WORKER_URL}" "${SUB_TOKEN}"
+    else
+        printf '部署方式：手动部署，并将 SUB_TOKEN 设置为 Worker 加密变量。\n'
+    fi
+    printf '\n'
+}
+
+show_status() {
+    collect_anytls_state
+    local public_ip="" records="" expires=""
+    public_ip=$(detect_public_ipv4 2>/dev/null || true)
+    records=$(query_a_records "${ANYTLS_DOMAIN}" "" | paste -sd, -)
+    expires=$(openssl x509 -in "${CERT_FILE}" -noout -enddate 2>/dev/null \
+        | cut -d= -f2- || true)
+    printf 'sing-box: '
+    systemctl is-active --quiet "${SING_BOX_SERVICE}" 2>/dev/null \
+        && printf 'active\n' || printf 'inactive\n'
+    printf 'sing-box 版本: %s\n' \
+        "$("${SING_BOX_BIN}" version 2>/dev/null | head -n 1 || echo 未安装)"
+    printf '版本通道: %s\n' "${SING_BOX_CHANNEL:-未知}"
+    printf 'AnyTLS 域名: %s\n' "${ANYTLS_DOMAIN}"
+    printf 'DNS A 记录: %s\n' "${records:-无}"
+    printf '本机公网 IPv4: %s\n' "${public_ip:-探测失败}"
+    printf '证书到期时间: %s\n' "${expires:-读取失败}"
+    printf 'acme.sh 自动续期: '
+    crontab -l 2>/dev/null | grep -Fq "${ACME_BIN}" \
+        && printf '已配置\n' || printf '未检测到\n'
+    printf 'nftables: '
+    systemctl is-active --quiet nftables 2>/dev/null \
+        && printf 'active\n' || printf 'inactive\n'
+    printf 'BBR: %s\n' \
+        "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)"
+    printf 'Worker URL: %s\n' "${WORKER_URL:-未记录}"
+}
+
+update_sing_box() {
+    require_root
+    collect_anytls_state
+    local selector=${SING_BOX_VERSION_OVERRIDE:-${SING_BOX_VERSION:-latest}}
+    local backup="${RUNTIME_TMP}/sing-box.backup"
+    local new_bin="${RUNTIME_TMP}/sing-box.update"
+    [[ -x "${SING_BOX_BIN}" ]] || die "sing-box 尚未安装"
+    if [[ "${SING_BOX_CHANNEL:-}" == "pinned" \
+        && -z "${SING_BOX_VERSION_OVERRIDE:-}" ]]; then
+        die "当前为指定版本锁定模式；请设置 SING_BOX_VERSION_OVERRIDE=新版本 后更新"
+    fi
+    cp -a "${SING_BOX_BIN}" "${backup}"
+    download_sing_box_binary "${selector}" "${new_bin}"
+    "${new_bin}" check -c "${SING_BOX_CONFIG}" \
+        || die "新 sing-box 与当前配置不兼容"
+    install -m 0755 "${new_bin}" "${SING_BOX_BIN}"
+    if ! systemctl restart "${SING_BOX_SERVICE}" \
+        || ! systemctl is-active --quiet "${SING_BOX_SERVICE}"; then
+        install -m 0755 "${backup}" "${SING_BOX_BIN}"
+        systemctl restart "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
+        die "sing-box 更新失败，已恢复旧版本"
+    fi
+    SING_BOX_VERSION="${selector}"
+    SING_BOX_INSTALLED_VERSION="${SING_BOX_RELEASE_VERSION}"
+    save_state
+    success "sing-box 已更新到 ${SING_BOX_INSTALLED_VERSION}"
+}
+
+renew_certificate() {
+    require_root
+    collect_anytls_state
+    [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
+    "${ACME_BIN}" --renew -d "${ANYTLS_DOMAIN}" --ecc --force \
+        || die "证书续期失败"
+    validate_certificate "${ANYTLS_DOMAIN}"
+    systemctl restart "${SING_BOX_SERVICE}"
+    success "证书已续期并重启 sing-box"
+}
+
+register_easy_anytls_command() {
+    require_root
+    [[ -f "${SCRIPT_FILE}" ]] || die "未找到脚本：${SCRIPT_FILE}"
+    install -d -m 0755 "${COMMAND_INSTALL_DIR}" "$(dirname "${COMMAND_PATH}")"
+    install -m 0755 "${SCRIPT_FILE}" "${COMMAND_INSTALL_DIR}/easy_anytls.sh"
+    ln -sfn "${COMMAND_INSTALL_DIR}/easy_anytls.sh" "${COMMAND_PATH}"
+    success "已注册命令：${COMMAND_PATH}"
+}
+
+remove_daily_reboot() {
+    { crontab -l 2>/dev/null || true; } \
+        | awk -v legacy="${LEGACY_CRON_JOB}" -v cmd="${CRON_REBOOT_COMMAND}" '
+            $0 == legacy {next}
+            index($0, cmd) {next}
+            {print}
+        ' | crontab -
+}
+
+latest_backup() {
+    local pattern=$1
+    ls -t ${pattern} 2>/dev/null | head -n 1 || true
+}
+
+restore_system_changes() {
+    local nft_backup sysctl_backup
+    nft_backup=$(latest_backup "${BACKUP_DIR}/*nftables.conf.*.bak")
+    sysctl_backup=$(latest_backup "${BACKUP_DIR}/install-sysctl-bbrv3.*.bak")
+    if [[ -n "${nft_backup}" ]]; then
+        install -m 0644 "${nft_backup}" "${NFT_CONFIG}"
+        systemctl restart nftables >/dev/null 2>&1 \
+            || warn "nftables 已恢复，但重启失败"
+    fi
+    remove_daily_reboot || warn "移除定时重启任务失败"
+    if [[ -n "${sysctl_backup}" ]]; then
+        install -m 0644 "${sysctl_backup}" "${SYSCTL_CONFIG}"
+        sysctl -p "${SYSCTL_CONFIG}" >/dev/null 2>&1 || true
+    fi
+    warn "XanMod 内核包不会自动卸载"
+}
+
+uninstall_anytls() {
+    local mode=${1:-} answer=
+    require_root
+    load_state
+    if [[ "${FORCE:-0}" != "1" ]]; then
+        [[ -t 0 ]] || die "无人值守卸载需要设置 FORCE=1"
+        read -r -p "确认删除 sing-box、AnyTLS 状态、证书和 Worker 文件？[y/N]: " answer
+        [[ "${answer}" == "y" || "${answer}" == "Y" ]] || return 0
+    fi
+    if [[ -n "${ANYTLS_DOMAIN:-}" && -x "${ACME_BIN}" ]]; then
+        "${ACME_BIN}" --remove -d "${ANYTLS_DOMAIN}" --ecc >/dev/null 2>&1 \
+            || warn "移除 ${ANYTLS_DOMAIN} 的 acme.sh 续期登记失败，请手动检查"
+    fi
+    systemctl disable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
+    rm -f -- "${SING_BOX_SERVICE_FILE}" "${SING_BOX_CONFIG}" "${SING_BOX_BIN}"
+    rm -f -- "${STATE_FILE}" "${WORKER_FILE}" "${CERT_FILE}" "${KEY_FILE}"
+    rm -f -- "${COMMAND_PATH}" "${COMMAND_INSTALL_DIR}/easy_anytls.sh" \
+        "${CERT_RELOAD_HOOK}"
+    systemctl daemon-reload
+    success "sing-box 与 easy_anytls 本机状态已删除"
+    if [[ "${mode}" == "--restore-system" || "${RESTORE_SYSTEM:-0}" == "1" ]]; then
+        restore_system_changes
+    else
+        warn "nftables、XanMod、BBR、acme.sh 本体/全局 cron 及 Cloudflare Worker 未改动"
+    fi
+}
+
+install_all() {
+    require_root
+    preflight_debian
+    load_state
+    choose_domain
+    choose_sing_box_version
+    choose_subscription_mode
+    bootstrap_dns_dependencies
+    local public_ip
+    public_ip=$(detect_public_ipv4)
+    verify_domain_dns "${ANYTLS_DOMAIN}" "${public_ip}"
+    INSTALL_ROLLBACK_ON_EXIT=1
+    run_server_initialization
+    verify_domain_dns "${ANYTLS_DOMAIN}" "${public_ip}"
+    install_sing_box_binary
+    issue_certificate "${ANYTLS_DOMAIN}"
+    info "[8/8] 写入 AnyTLS 配置、启动服务并配置订阅"
+    ensure_anytls_password
+    write_sing_box_config
+    install_sing_box_service
+    configure_subscription
+    INSTALL_ROLLBACK_ON_EXIT=0
+    register_easy_anytls_command
+    show_subscription
+    success "AnyTLS 一键安装完成"
+    if [[ "$(uname -r)" != *xanmod* ]]; then
+        warn "需要重启后才会进入 XanMod BBR 内核"
+    fi
+}
+
+usage() {
+    cat <<EOF
+用法: $0 [命令]
+
+  install       初始化服务器、申请单域名证书并安装 sing-box AnyTLS（默认）
+  show          显示 sing-box 客户端配置和 AnyTLS 纯链接
+  subscription  显示配置、纯链接和订阅信息
+  update-sub    重新配置 Worker 订阅输出
+  update-singbox
+                按已保存的 stable/alpha 通道更新 sing-box
+  renew-cert    立即强制续期单域名证书
+  status        显示服务、DNS、证书、续期和 Worker 状态
+  register-command
+                注册系统命令 easy_anytls
+  uninstall [--restore-system]
+                删除 AnyTLS；可选恢复 nftables/sysctl 并移除定时重启
+  help          显示帮助
+
+主要无人值守变量:
+  ANYTLS_DOMAIN=node.example.com
+  SING_BOX_VERSION=latest|alpha|具体版本
+  ACME_EMAIL=admin@example.com
+  CF_DNS_API_TOKEN=...  CF_ZONE_ID=... 或 CF_ACCOUNT_ID=...
+  SUBSCRIBE_MODE=auto|worker|link
+  CF_WORKER_API_TOKEN=...  CF_ACCOUNT_ID=...
+  WORKER_NAME=easy-anytls  SUB_DOWNLOAD_NAME=MY_SUB
+
+指定版本更新:
+  SING_BOX_VERSION_OVERRIDE=1.13.12 easy_anytls update-singbox
+
+一键下载:
+  curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_reality/main/easy_anytls.sh -o easy_anytls.sh && chmod +x easy_anytls.sh && sudo ./easy_anytls.sh install
+EOF
+}
+
+main() {
+    case "${1:-install}" in
+    install) install_all ;;
+    show) require_root; show_node ;;
+    subscription) require_root; show_subscription ;;
+    update-sub) require_root; collect_anytls_state; configure_subscription; show_subscription ;;
+    update-singbox) update_sing_box ;;
+    renew-cert) renew_certificate ;;
+    status) require_root; show_status ;;
+    register-command) register_easy_anytls_command ;;
+    uninstall) uninstall_anytls "${2:-}" ;;
+    help | -h | --help) usage ;;
+    *) usage; return 1 ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

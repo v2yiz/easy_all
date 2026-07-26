@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+TMP_DIR="$(mktemp -d)"
+SCRIPT_COPY="${TMP_DIR}/easy_anytls.test.sh"
+FAKE_BIN="${TMP_DIR}/bin"
+TESTS_RUN=0
+
+fail_test() {
+    printf 'not ok - %s\n' "$*" >&2
+    exit 1
+}
+
+assert_success() {
+    local description=$1
+    shift
+    TESTS_RUN=$((TESTS_RUN + 1))
+    "$@" || fail_test "${description}"
+}
+
+assert_failure() {
+    local description=$1
+    shift
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if "$@"; then
+        fail_test "${description}"
+    fi
+}
+
+assert_equal() {
+    local description=$1 expected=$2 actual=$3
+    TESTS_RUN=$((TESTS_RUN + 1))
+    [[ "${actual}" == "${expected}" ]] \
+        || fail_test "${description}: expected '${expected}', got '${actual}'"
+}
+
+assert_contains() {
+    local description=$1 needle=$2 haystack=$3
+    TESTS_RUN=$((TESTS_RUN + 1))
+    [[ "${haystack}" == *"${needle}"* ]] \
+        || fail_test "${description}: missing '${needle}'"
+}
+
+assert_not_contains() {
+    local description=$1 needle=$2 haystack=$3
+    TESTS_RUN=$((TESTS_RUN + 1))
+    [[ "${haystack}" != *"${needle}"* ]] \
+        || fail_test "${description}: unexpected '${needle}'"
+}
+
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+mkdir -p "${FAKE_BIN}" "${TMP_DIR}/state" "${TMP_DIR}/sing-box-config"
+sed \
+    -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
+    -e "s|^readonly COMMAND_INSTALL_DIR=.*|readonly COMMAND_INSTALL_DIR=\"${TMP_DIR}/command\"|" \
+    -e "s|^readonly SING_BOX_BIN=.*|readonly SING_BOX_BIN=\"${FAKE_BIN}/sing-box\"|" \
+    -e "s|^readonly SING_BOX_CONFIG_DIR=.*|readonly SING_BOX_CONFIG_DIR=\"${TMP_DIR}/sing-box-config\"|" \
+    "${ROOT_DIR}/easy_anytls.sh" >"${SCRIPT_COPY}"
+
+cat >"${FAKE_BIN}/sing-box" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+version) printf 'sing-box version 1.13.12\n' ;;
+check) exit 0 ;;
+*) exit 0 ;;
+esac
+EOF
+chmod +x "${FAKE_BIN}/sing-box"
+
+# shellcheck source=/dev/null
+source "${SCRIPT_COPY}"
+trap 'cleanup; rm -rf -- "${TMP_DIR}"' EXIT
+
+test_validators() {
+    assert_success "valid domain accepted" validate_domain "node.example.com"
+    assert_failure "IP is not accepted as domain" validate_domain "203.0.113.10"
+    assert_failure "wildcard domain rejected" validate_domain "*.example.com"
+    assert_failure "leading hyphen rejected" validate_domain "-node.example.com"
+    assert_failure "empty label rejected" validate_domain "node..example.com"
+    assert_equal "domain normalized" "node.example.com" \
+        "$(normalize_domain "Node.Example.COM.")"
+
+    assert_success "valid IPv4 accepted" validate_ipv4 "203.0.113.10"
+    assert_failure "invalid IPv4 rejected" validate_ipv4 "203.0.113.999"
+
+    assert_success "latest selector accepted" validate_sing_box_selector "latest"
+    assert_success "alpha selector accepted" validate_sing_box_selector "alpha"
+    assert_success "stable version accepted" validate_sing_box_selector "1.13.12"
+    assert_success "alpha version accepted" \
+        validate_sing_box_selector "v1.14.0-alpha.26"
+    assert_failure "partial version rejected" validate_sing_box_selector "1.13"
+
+    assert_success "minimum AnyTLS version accepted" \
+        version_at_least "1.12.0" "1.12.0"
+    assert_success "new alpha core accepted" \
+        version_at_least "v1.14.0-alpha.1" "1.12.0"
+    assert_failure "old version rejected" \
+        version_at_least "1.11.15" "1.12.0"
+}
+
+test_dns_set_validation() {
+    assert_success "single matching A accepted" \
+        validate_resolved_ipv4_set "203.0.113.10" "203.0.113.10"
+    assert_success "duplicate matching A accepted" \
+        validate_resolved_ipv4_set "203.0.113.10" \
+        $'203.0.113.10\n203.0.113.10'
+    assert_failure "empty A set rejected" \
+        validate_resolved_ipv4_set "203.0.113.10" ""
+    assert_failure "mismatching A rejected" \
+        validate_resolved_ipv4_set "203.0.113.10" "198.51.100.20"
+    assert_failure "mixed A set rejected" \
+        validate_resolved_ipv4_set "203.0.113.10" \
+        $'203.0.113.10\n198.51.100.20'
+}
+
+test_links_and_client_config() {
+    ANYTLS_DOMAIN="node.example.com"
+    ANYTLS_PASSWORD="pa ss/word+with?chars"
+    NODE_NAME="My AnyTLS"
+    local link config
+    link=$(build_anytls_link)
+    assert_contains "link uses AnyTLS scheme" "anytls://" "${link}"
+    assert_contains "password is URI encoded" \
+        "pa%20ss%2Fword%2Bwith%3Fchars@" "${link}"
+    assert_contains "link uses verified TLS" "insecure=0" "${link}"
+    assert_contains "node name is URI encoded" "#My%20AnyTLS" "${link}"
+
+    config=$(build_client_outbound_json)
+    assert_equal "client config is AnyTLS" "anytls" \
+        "$(jq -r '.type' <<<"${config}")"
+    assert_equal "client config uses domain as SNI" "node.example.com" \
+        "$(jq -r '.tls.server_name' <<<"${config}")"
+    assert_equal "client config verifies certificate" "false" \
+        "$(jq -r '.tls.insecure' <<<"${config}")"
+}
+
+test_worker_output() {
+    ANYTLS_DOMAIN="node.example.com"
+    ANYTLS_PASSWORD="safe-password-123456"
+    NODE_NAME="MY_ANYTLS"
+    SUB_DOWNLOAD_NAME="Team_Sub"
+    local worker="${TMP_DIR}/worker.js" content
+    write_worker "${worker}"
+    content=$(<"${worker}")
+    assert_contains "Worker contains AnyTLS URI" "anytls://" "${content}"
+    assert_contains "Worker contains AnyTLS Mihomo type" \
+        "type: anytls" "${content}"
+    assert_contains "Worker contains server" "node.example.com" "${content}"
+    assert_contains "Worker requires token" "env.SUB_TOKEN" "${content}"
+    assert_contains "Worker verifies certificates" \
+        "skip-cert-verify: false" "${content}"
+    assert_not_contains "Worker has no VLESS output" "vless://" "${content}"
+    assert_success "Worker JavaScript syntax valid" node --check "${worker}"
+}
+
+test_state_secret_boundary() {
+    ANYTLS_DOMAIN="node.example.com"
+    ANYTLS_PASSWORD="state-password-123456"
+    NODE_NAME="MY_ANYTLS"
+    SING_BOX_VERSION="alpha"
+    SING_BOX_CHANNEL="alpha"
+    SING_BOX_INSTALLED_VERSION="1.14.0-alpha.26"
+    SUB_TOKEN="subscription-token"
+    WORKER_NAME="easy-anytls"
+    WORKER_URL=""
+    CF_ACCOUNT_ID="account-id"
+    DEPLOY_MODE="worker"
+    SUB_DOWNLOAD_NAME="MY_SUB"
+    ACME_EMAIL="admin@example.com"
+    CF_DNS_API_TOKEN="dns-secret-must-not-be-saved"
+    CF_WORKER_API_TOKEN="worker-secret-must-not-be-saved"
+    save_state
+    local content
+    content=$(<"${STATE_FILE}")
+    assert_contains "state saves selected channel" \
+        "SING_BOX_CHANNEL=alpha" "${content}"
+    assert_contains "state saves AnyTLS password for show" \
+        "ANYTLS_PASSWORD=state-password-123456" "${content}"
+    assert_not_contains "state excludes DNS token" \
+        "dns-secret-must-not-be-saved" "${content}"
+    assert_not_contains "state excludes Worker token" \
+        "worker-secret-must-not-be-saved" "${content}"
+    assert_equal "state file mode is 600" "600" \
+        "$(file_mode "${STATE_FILE}")"
+}
+
+test_release_resolution() {
+    local digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    curl() {
+        case "$*" in
+        *"?per_page=100"*)
+            jq -cn --arg digest "${digest}" '[
+              {
+                draft: false,
+                prerelease: true,
+                tag_name: "v1.14.0-alpha.26",
+                assets: [{
+                  name: "sing-box-1.14.0-alpha.26-linux-amd64.tar.gz",
+                  browser_download_url: "https://example.test/alpha.tar.gz",
+                  digest: $digest
+                }]
+              },
+              {
+                draft: false,
+                prerelease: false,
+                tag_name: "v1.13.12",
+                assets: []
+              }
+            ]'
+            ;;
+        *"/latest"*)
+            jq -cn --arg digest "${digest}" '{
+              tag_name: "v1.13.12",
+              assets: [{
+                name: "sing-box-1.13.12-linux-amd64.tar.gz",
+                browser_download_url: "https://example.test/stable.tar.gz",
+                digest: $digest
+              }]
+            }'
+            ;;
+        *"/tags/v1.12.0"*)
+            jq -cn --arg digest "${digest}" '{
+              tag_name: "v1.12.0",
+              assets: [{
+                name: "sing-box-1.12.0-linux-amd64.tar.gz",
+                browser_download_url: "https://example.test/pinned.tar.gz",
+                digest: $digest
+              }]
+            }'
+            ;;
+        *) return 1 ;;
+        esac
+    }
+
+    resolve_sing_box_release latest
+    assert_equal "latest resolves stable version" "1.13.12" \
+        "${SING_BOX_RELEASE_VERSION}"
+    assert_equal "latest records stable channel" "latest" "${SING_BOX_CHANNEL}"
+
+    resolve_sing_box_release alpha
+    assert_equal "alpha resolves newest alpha" "1.14.0-alpha.26" \
+        "${SING_BOX_RELEASE_VERSION}"
+    assert_equal "alpha records alpha channel" "alpha" "${SING_BOX_CHANNEL}"
+
+    resolve_sing_box_release 1.12.0
+    assert_equal "specific version resolves exactly" "1.12.0" \
+        "${SING_BOX_RELEASE_VERSION}"
+    assert_equal "specific version records pinned channel" \
+        "pinned" "${SING_BOX_CHANNEL}"
+    unset -f curl
+}
+
+test_server_config() {
+    ANYTLS_DOMAIN="node.example.com"
+    ANYTLS_PASSWORD="server-password-123456"
+    write_sing_box_config
+    local content
+    content=$(<"${SING_BOX_CONFIG}")
+    assert_equal "server inbound is AnyTLS" "anytls" \
+        "$(jq -r '.inbounds[0].type' <<<"${content}")"
+    assert_equal "server listens on 443" "443" \
+        "$(jq -r '.inbounds[0].listen_port' <<<"${content}")"
+    assert_equal "server uses certificate path" "${CERT_FILE}" \
+        "$(jq -r '.inbounds[0].tls.certificate_path' <<<"${content}")"
+    assert_equal "server keeps AI IPv4 route action" "ipv4_only" \
+        "$(jq -r '.route.rules[0].strategy' <<<"${content}")"
+    assert_equal "server config file mode is 600" "600" \
+        "$(file_mode "${SING_BOX_CONFIG}")"
+}
+
+test_reload_hook() {
+    install_certificate_reload_hook
+    local content
+    content=$(<"${CERT_RELOAD_HOOK}")
+    assert_contains "reload hook only restarts active service" \
+        "is-active --quiet sing-box.service" "${content}"
+    assert_contains "reload hook propagates restart result" \
+        "exec /usr/bin/systemctl restart sing-box.service" "${content}"
+    assert_equal "reload hook is executable" "755" \
+        "$(file_mode "${CERT_RELOAD_HOOK}")"
+}
+
+test_validators
+test_dns_set_validation
+test_links_and_client_config
+test_worker_output
+test_state_secret_boundary
+test_release_resolution
+test_server_config
+test_reload_hook
+
+printf 'ok - easy_anytls shell tests passed (%s assertions)\n' "${TESTS_RUN}"

@@ -4,6 +4,14 @@
 
 安装流程会接管整机防火墙配置，生成完整 `/etc/nftables.conf`。请只在专用 VPS 上使用。
 
+仓库另提供基于 sing-box 的单域名 AnyTLS 安装脚本 `easy_anytls.sh`。它会强制校验域名 A 记录、通过 Cloudflare DNS-01 申请和自动续期 Let's Encrypt 证书，并支持 stable、alpha 或指定 sing-box 版本。完整差异、Token 权限与使用说明见 [`any_tls_readme.md`](any_tls_readme.md)。
+
+AnyTLS 一键下载并执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_reality/main/easy_anytls.sh -o easy_anytls.sh && chmod +x easy_anytls.sh && sudo ./easy_anytls.sh install
+```
+
 ## 功能
 
 - 支持 Debian 12/13 amd64 系统
