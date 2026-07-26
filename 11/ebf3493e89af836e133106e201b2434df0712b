@@ -1,0 +1,25 @@
+any_tls_readme.md
+  s_e63c875a84819b::t_2081ec5e502ce2 435-438
+easy_anytls.sh
+  s_e63c875a84819b::t_42d4f2b26ae6cd 941-945,965,973-979
+test/test_easy_anytls.sh
+  s_e63c875a84819b::t_0b72d67ae2af22 215-223,394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "11ebf3493e89af836e133106e201b2434df0712b",
+  "prompts": {},
+  "sessions": {
+    "s_e63c875a84819b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f9c28-6dd8-7032-86c7-bef18edf8c86",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
