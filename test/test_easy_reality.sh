@@ -195,6 +195,13 @@ test_minimal_worker_template() {
     assert_contains "minimal Worker emits VLESS links" "vless://" "${content}"
     assert_contains "minimal Worker embeds configured node host" "host: 'node.example.com'" "${content}"
     assert_contains "minimal Worker embeds configured download name" "const SUB_DOWNLOAD_NAME = 'Team_Sub';" "${content}"
+    assert_contains "minimal Worker marks Reality VLESS security" "security: 'reality'" "${content}"
+    assert_contains "minimal Worker includes TLS Vision sample" "security: 'tls'" "${content}"
+    assert_contains "minimal Worker can emit TLS VLESS links" "security," "${content}"
+    assert_contains "minimal Worker chooses 443 for TLS Vision" "vlessSecurity(cfg) === 'tls' ? 443" "${content}"
+    assert_contains "minimal Worker base64 subscription uses shared link builder" \
+        "encodeBase64(targetConfigs.map((cfg, i) => link(cfg, ports[i])).join('\\n'))" \
+        "${content}"
     assert_not_contains "minimal Worker does not contain Trojan support" "trojan" "${content}"
 }
 
@@ -220,6 +227,13 @@ test_full_worker_template() {
     assert_contains "full Worker replaces node host placeholder" "host: 'node.example.com'" "${content}"
     assert_contains "full Worker replaces download filename" "attachment; filename=\"Team_Sub\"" "${content}"
     assert_contains "full Worker rewrites 443 port mode" "const ports = targetConfigs.map(() => 443);" "${content}"
+    assert_contains "full Worker marks Reality VLESS security" "security: 'reality'" "${content}"
+    assert_contains "full Worker includes TLS Vision sample" "security: 'tls'" "${content}"
+    assert_contains "full Worker has TLS Vision Clash template" "buildClashVlessTlsVisionNodeTemplate" "${content}"
+    assert_contains "full Worker can emit TLS VLESS links" "security," "${content}"
+    assert_contains "full Worker base64 subscription uses shared link builder" \
+        "base64Encode(links.join('\\n'))" \
+        "${content}"
     assert_not_contains "full Worker has no unreplaced UUID placeholder" "__UUID__" "${content}"
     assert_not_contains "full Worker has no unreplaced host placeholder" "__HOST__" "${content}"
     assert_not_contains "full Worker does not contain Trojan support" "trojan" "${content}"
