@@ -1,0 +1,23 @@
+easy_reality.sh
+  s_28e667a76df43b::t_d85b5eb460ce8c 35,919-920,929-940,958-973,976,983-989,1005-1029,1132
+test/test_easy_reality.sh
+  s_28e667a76df43b::t_894464db8bbd47 198-204,230-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a96e33fd9b696d44eaf2ccb929b757a3cf4cbaa0",
+  "prompts": {},
+  "sessions": {
+    "s_28e667a76df43b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa24f-8aa8-7e12-a87f-3a6598e96504",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
