@@ -1,0 +1,25 @@
+any_tls_readme.md
+  s_28e667a76df43b::t_f0738a4cf6d6b2 19,25,636-639,797,899,907,909
+easy_anytls.sh
+  s_28e667a76df43b::t_7ad4e2458acec8 34-36,192-211,276,290,312-314,340,408-424,643-655,1254,1256,1261,1266-1267,1272,1292-1305,1313,1315-1326,1342-1353,1357,1625,1630,1639,1642,1664,1667,1672,1674,1787-1788,1838-1839,1841-1842,1853,1883,2014-2042,2091,2101,2111,2160-2161,2170-2173
+test/test_easy_anytls.sh
+  s_28e667a76df43b::t_fb686aedfc1de7 99-132,139,169-175,210,214,225-226,229-240,247,256-259,275-276,291,308-309,432-467,512-513,573
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6b4d8ff645f2b11605c57e61fd787f0dd653c849",
+  "prompts": {},
+  "sessions": {
+    "s_28e667a76df43b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa24f-8aa8-7e12-a87f-3a6598e96504",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
