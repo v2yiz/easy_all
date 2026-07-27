@@ -16,13 +16,13 @@
 | Cloudflare DNS | 不需要 | 申请和自动续期证书时必需 |
 | 证书类型 | 无公信证书 | 仅用户输入的单域名证书 |
 | 泛域名 | 不适用 | 明确不支持 |
-| 服务端端口 | TCP 443，可选动态端口转发 | 仅 TCP 443 |
+| 服务端端口 | TCP 443，可选动态端口转发 | TCP 443，订阅默认使用动态端口转发 |
 | 核心版本 | 最新 Xray release | 最新稳定版、最新 alpha 或指定 sing-box 版本 |
 | 核心更新 | 始终更新到最新 Xray | 跟随 stable/alpha 通道；指定版本保持锁定 |
 | 客户端链接 | `vless://` | `anytls://` |
 | 客户端配置 | VLESS Reality 参数 | sing-box AnyTLS outbound JSON |
 | Mihomo 节点类型 | `vless` | `anytls` |
-| 防火墙 | SSH、80、443，可选动态范围 | SSH 和 TCP 443；DNS-01 不开放 80 |
+| 防火墙 | SSH、80、443，可选动态范围 | SSH、TCP 443 和默认动态范围；DNS-01 不开放 80 |
 | 自动续期 | 不适用 | acme.sh cron 自动续期并重启 sing-box |
 | 状态目录 | `/etc/easy_reality` | `/etc/easy_anytls` |
 | 系统命令 | `easy_reality` | `easy_anytls` |
@@ -633,6 +633,10 @@ https://WORKER.workers.dev/subscribe?token=SUB_TOKEN&flag=clash
 通用订阅响应为 base64 编码的 AnyTLS URI。安装器只管理当前服务器的一个
 AnyTLS 节点，因此不会自动合并仓库中手工维护的其他节点。
 
+订阅暴露端口默认是 `dynamic`：Worker 和本机输出会按 UTC+8 当前小时在
+TCP `10000-65535` 范围内生成动态端口，服务器用 nftables 转发到本机
+AnyTLS 的 TCP 443。需要固定 443 时设置 `SUB_PORT_MODE=443`。
+
 Mihomo 响应与 Reality 完整模板保持同类结构，包含：
 
 - mixed 监听端口与运行模式。
@@ -790,6 +794,7 @@ sudo DELETE_CLOUDFLARE_WORKER=1 \
 | `CF_DNS_API_TOKEN` | Cloudflare DNS-01 Token |
 | `CF_ACCOUNT_ID` | 仅自动部署 Worker 时必需 |
 | `SUBSCRIBE_MODE` | `auto`、`worker` 或 `link` |
+| `SUB_PORT_MODE` | 订阅暴露端口模式：`dynamic` 或 `443`，默认 `dynamic` |
 | `CF_WORKER_API_TOKEN` | 自动部署 Worker 时使用 |
 | `WORKER_NAME` | Worker 名称，默认 `easy-anytls` |
 | `SUB_DOWNLOAD_NAME` | Mihomo 下载文件基础名称，默认 `MY_SUB` |
@@ -891,6 +896,7 @@ Cloudflare 外部状态具有不同边界：
 
 - 放行当前 SSH 有效端口。
 - 放行 TCP 443。
+- 默认 `SUB_PORT_MODE=dynamic` 时，配置 TCP `10000-65535 -> 443` 动态端口转发。
 - 放行 loopback。
 - 放行 established/related。
 - 放行 ICMP/ICMPv6。
@@ -898,9 +904,9 @@ Cloudflare 外部状态具有不同边界：
 
 因为使用 Cloudflare DNS-01，不开放 TCP 80。
 
-AnyTLS 当前方案不提供 Reality 的 `10000-65535` 动态端口转发。
+默认 `SUB_PORT_MODE=dynamic` 时，脚本会写入 `10000-65535 -> 443` 的动态端口转发；固定 443 可设置 `SUB_PORT_MODE=443`。
 
-如果 VPS 供应商还有独立安全组或云防火墙，也必须放行 SSH 和 TCP 443。
+如果 VPS 供应商还有独立安全组或云防火墙，也必须放行 SSH、TCP 443，以及使用默认动态模式时的 TCP `10000-65535`。
 
 ## 测试
 

@@ -96,12 +96,47 @@ if (!response.headers.get('content-disposition')?.includes('Team_Sub.yaml')) {
 EOF
 }
 
+worker_runtime_uses_dynamic_port() {
+    node --input-type=module - "$1" <<'EOF'
+import fs from 'node:fs';
+
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const encoded = Buffer.from(source).toString('base64');
+const originalNow = Date.now;
+const originalRandom = Math.random;
+Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 0);
+Math.random = () => 0;
+try {
+  const worker = await import(`data:text/javascript;base64,${encoded}`);
+  const plain = await worker.default.fetch(
+    new Request('https://worker.test/subscribe?token=test-token'),
+    {SUB_TOKEN: 'test-token'}
+  );
+  if (plain.status !== 200) process.exit(1);
+  const uri = Buffer.from(await plain.text(), 'base64').toString('utf8');
+  if (!uri.includes('@node.example.com:10049/')) process.exit(1);
+
+  const clash = await worker.default.fetch(
+    new Request('https://worker.test/subscribe?token=test-token&flag=clash'),
+    {SUB_TOKEN: 'test-token'}
+  );
+  if (clash.status !== 200) process.exit(1);
+  const yaml = await clash.text();
+  if (!yaml.includes('    port: 10049')) process.exit(1);
+} finally {
+  Date.now = originalNow;
+  Math.random = originalRandom;
+}
+EOF
+}
+
 mkdir -p "${FAKE_BIN}" "${TMP_DIR}/state" "${TMP_DIR}/sing-box-config"
 sed \
     -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
     -e "s|^readonly COMMAND_INSTALL_DIR=.*|readonly COMMAND_INSTALL_DIR=\"${TMP_DIR}/command\"|" \
     -e "s|^readonly SING_BOX_BIN=.*|readonly SING_BOX_BIN=\"${FAKE_BIN}/sing-box\"|" \
     -e "s|^readonly SING_BOX_CONFIG_DIR=.*|readonly SING_BOX_CONFIG_DIR=\"${TMP_DIR}/sing-box-config\"|" \
+    -e "s|^readonly NFT_CONFIG=.*|readonly NFT_CONFIG=\"${TMP_DIR}/nftables.conf\"|" \
     -e "s|^readonly ACME_HOME=.*|readonly ACME_HOME=\"${TMP_DIR}/acme\"|" \
     "${ROOT_DIR}/easy_anytls.sh" >"${SCRIPT_COPY}"
 
@@ -130,6 +165,13 @@ test_validators() {
 
     assert_success "valid IPv4 accepted" validate_ipv4 "203.0.113.10"
     assert_failure "invalid IPv4 rejected" validate_ipv4 "203.0.113.999"
+
+    assert_success "dynamic subscription port mode accepted" \
+        validate_sub_port_mode "dynamic"
+    assert_success "443 subscription port mode accepted" \
+        validate_sub_port_mode "443"
+    assert_failure "unknown subscription port mode rejected" \
+        validate_sub_port_mode "8443"
 
     assert_success "latest selector accepted" validate_sing_box_selector "latest"
     assert_success "alpha selector accepted" validate_sing_box_selector "alpha"
@@ -165,9 +207,11 @@ test_links_and_client_config() {
     ANYTLS_DOMAIN="node.example.com"
     ANYTLS_PASSWORD="pa ss/word+with?chars"
     NODE_NAME="My AnyTLS"
+    SUB_PORT_MODE="443"
     local link config
     link=$(build_anytls_link)
     assert_contains "link uses AnyTLS scheme" "anytls://" "${link}"
+    assert_contains "443 mode link uses fixed port" "@node.example.com:443/" "${link}"
     assert_contains "password is URI encoded" \
         "pa%20ss%2Fword%2Bwith%3Fchars@" "${link}"
     assert_contains "link uses verified TLS" "insecure=0" "${link}"
@@ -178,14 +222,29 @@ test_links_and_client_config() {
         "$(jq -r '.type' <<<"${config}")"
     assert_equal "client config uses domain as SNI" "node.example.com" \
         "$(jq -r '.tls.server_name' <<<"${config}")"
+    assert_equal "443 mode client config uses fixed port" "443" \
+        "$(jq -r '.server_port' <<<"${config}")"
     assert_equal "client config verifies certificate" "false" \
         "$(jq -r '.tls.insecure' <<<"${config}")"
+
+    SUB_PORT_MODE="dynamic"
+    link=$(build_anytls_link)
+    assert_contains "dynamic mode link uses AnyTLS host" \
+        "anytls://pa%20ss%2Fword%2Bwith%3Fchars@node.example.com:" \
+        "${link}"
+    assert_not_contains "dynamic mode link does not use fixed port" \
+        "@node.example.com:443/" "${link}"
+
+    config=$(build_client_outbound_json)
+    assert_success "dynamic mode client port is in dynamic range" \
+        test "$(jq -r '.server_port' <<<"${config}")" -ge 10000
 }
 
 test_worker_output() {
     ANYTLS_DOMAIN="node.example.com"
     ANYTLS_PASSWORD="safe-password-123456"
     NODE_NAME="MY_ANYTLS"
+    SUB_PORT_MODE="dynamic"
     SUB_DOWNLOAD_NAME="Team_Sub"
     local worker="${TMP_DIR}/worker.js" content
     write_worker "${worker}"
@@ -194,6 +253,10 @@ test_worker_output() {
     assert_contains "Worker contains AnyTLS Mihomo type" \
         "type: anytls" "${content}"
     assert_contains "Worker contains server" "node.example.com" "${content}"
+    assert_contains "Worker records dynamic port mode" \
+        "\"portMode\":\"dynamic\"" "${content}"
+    assert_contains "Worker contains dynamic port function" \
+        "function dynamicPort(config)" "${content}"
     assert_contains "Worker requires token" "env.SUB_TOKEN" "${content}"
     assert_contains "Worker verifies certificates" \
         "skip-cert-verify: false" "${content}"
@@ -209,6 +272,8 @@ test_worker_output() {
     assert_success "Worker JavaScript syntax valid" node --check "${worker}"
     assert_success "Worker returns complete Mihomo subscription" \
         worker_runtime_has_full_mihomo "${worker}"
+    assert_success "Worker returns dynamic ports in base64 and Mihomo" \
+        worker_runtime_uses_dynamic_port "${worker}"
 }
 
 test_state_secret_boundary() {
@@ -223,6 +288,7 @@ test_state_secret_boundary() {
     WORKER_URL=""
     CF_ACCOUNT_ID="account-id"
     DEPLOY_MODE="worker"
+    SUB_PORT_MODE="dynamic"
     SUB_DOWNLOAD_NAME="MY_SUB"
     CF_DNS_API_TOKEN="dns-secret-must-not-be-saved"
     CF_WORKER_API_TOKEN="worker-secret-must-not-be-saved"
@@ -239,6 +305,8 @@ test_state_secret_boundary() {
         "worker-secret-must-not-be-saved" "${content}"
     assert_contains "state tracks acme.sh ownership" \
         "ACME_INSTALLED_BY_EASY_ANYTLS=0" "${content}"
+    assert_contains "state saves subscription port mode" \
+        "SUB_PORT_MODE=dynamic" "${content}"
     assert_equal "state file mode is 600" "600" \
         "$(file_mode "${STATE_FILE}")"
 }
@@ -361,6 +429,42 @@ test_server_config() {
         "$(file_mode "${SING_BOX_CONFIG}")"
 }
 
+missing_dynamic_redirect_fails() (
+    SUB_PORT_MODE="dynamic"
+    : >"${NFT_CONFIG}"
+    require_dynamic_port_redirect >/dev/null 2>&1
+)
+
+test_dynamic_port_redirect() {
+    SUB_PORT_MODE="443"
+    assert_success "443 mode skips dynamic redirect requirement" \
+        require_dynamic_port_redirect
+
+    SUB_PORT_MODE="dynamic"
+    printf '%s\n' \
+        'table inet nat {' \
+        '  chain prerouting {' \
+        '    type nat hook prerouting priority dstnat; policy accept;' \
+        '    tcp dport 10000-65535 redirect to :443' \
+        '  }' \
+        '}' >"${NFT_CONFIG}"
+    assert_success "dynamic mode accepts configured redirect" \
+        require_dynamic_port_redirect
+    assert_success "dynamic redirect detector matches nftables config" \
+        has_dynamic_port_redirect
+
+    assert_failure "dynamic mode rejects missing redirect" \
+        missing_dynamic_redirect_fails
+
+    local nft_input nft_output
+    nft_input=$'table inet nat {\n chain prerouting {\n  type nat hook prerouting priority dstnat; policy accept;\n  tcp dport 10000-65535 redirect to :443\n  tcp dport 8443 redirect to :443\n }\n}'
+    nft_output=$(filter_anytls_dynamic_redirect <<<"${nft_input}")
+    assert_not_contains "AnyTLS cleanup removes its dynamic redirect" \
+        "tcp dport 10000-65535 redirect to :443" "${nft_output}"
+    assert_contains "AnyTLS cleanup preserves unrelated redirect" \
+        "tcp dport 8443 redirect to :443" "${nft_output}"
+}
+
 test_reload_hook() {
     install_certificate_reload_hook
     local content
@@ -405,6 +509,8 @@ test_safe_uninstall_helpers() {
         "restore_system_changes" "${uninstall_body}"
     assert_contains "AnyTLS uninstall removes its reboot schedule" \
         "remove_daily_reboot_schedule" "${uninstall_body}"
+    assert_contains "AnyTLS uninstall removes its dynamic redirect" \
+        "remove_anytls_dynamic_redirect" "${uninstall_body}"
     assert_contains "AnyTLS uninstall cleans its acme.sh installation" \
         "purge_acme_installation" "${uninstall_body}"
     assert_contains "AnyTLS records acme.sh ownership before install completes" \
@@ -464,6 +570,7 @@ test_cloudflare_credential_boundaries
 test_acme_issue_statuses
 test_release_resolution
 test_server_config
+test_dynamic_port_redirect
 test_reload_hook
 test_safe_uninstall_helpers
 test_startup_readiness_wait

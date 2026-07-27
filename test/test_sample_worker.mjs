@@ -71,6 +71,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /#NODE_A$/);
     assert.doesNotMatch(body, /NODE_B/);
     assert.doesNotMatch(body, /NODE_C_TLS_VISION/);
+    assert.doesNotMatch(body, /NODE_D_ANYTLS/);
     assert.doesNotMatch(body, /trojan/i);
   });
 
@@ -80,10 +81,11 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = body.split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 3);
+    assert.equal(links.length, 4);
     assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@node-a\.example\.com:10049\?/);
     assert.match(links[1], /^vless:\/\/00000000-0000-4000-8000-000000000002@node-b\.example\.com:10055\?/);
     assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000003@node-c\.example\.com:443\?/);
+    assert.match(links[3], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10067\/\?/);
     assert.match(links[0], /#NODE_A$/);
     assert.match(links[1], /#NODE_B$/);
     assert.match(links[2], /security=tls/);
@@ -91,6 +93,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(links[2], /pbk=/);
     assert.doesNotMatch(links[2], /sid=/);
     assert.match(links[2], /#NODE_C_TLS_VISION$/);
+    assert.match(links[3], /sni=anytls\.example\.com/);
+    assert.match(links[3], /insecure=0/);
+    assert.match(links[3], /#NODE_D_ANYTLS$/);
   });
 
   it('returns Clash YAML for the default node with normalized download filename', async () => {
@@ -138,7 +143,11 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /- name: NODE_C_TLS_VISION/);
     assert.match(body, /server: node-c\.example\.com/);
     assert.match(body, /port: 443/);
-    assert.match(body, /      - NODE_A\n        - NODE_B\n        - NODE_C_TLS_VISION/);
+    assert.match(body, /- name: "NODE_D_ANYTLS"/);
+    assert.match(body, /type: anytls/);
+    assert.match(body, /server: "anytls\.example\.com"/);
+    assert.match(body, /port: 10067/);
+    assert.match(body, /      - NODE_A\n        - NODE_B\n        - NODE_C_TLS_VISION\n        - NODE_D_ANYTLS/);
 
     const tlsNode = body.slice(body.indexOf('- name: NODE_C_TLS_VISION'));
     assert.match(tlsNode, /flow: xtls-rprx-vision/);

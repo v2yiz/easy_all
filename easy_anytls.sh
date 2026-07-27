@@ -31,6 +31,9 @@ readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly XANMOD_KEYRING="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
 readonly XANMOD_REPO="/etc/apt/sources.list.d/xanmod-release.list"
 readonly ANYTLS_PORT="443"
+readonly PORT_BASE="10000"
+readonly PORT_MULTIPLIER="6"
+readonly DEFAULT_SUB_PORT_MODE="dynamic"
 readonly DEFAULT_NODE_NAME="MY_ANYTLS"
 readonly DEFAULT_WORKER_NAME="easy-anytls"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="MY_SUB"
@@ -186,6 +189,26 @@ validate_subscribe_mode() {
     [[ "$1" == "auto" || "$1" == "worker" || "$1" == "link" ]]
 }
 
+validate_sub_port_mode() {
+    [[ "$1" == "443" || "$1" == "dynamic" ]]
+}
+
+has_dynamic_port_redirect() {
+    local pattern
+    pattern="tcp[[:space:]]+dport[[:space:]]+${PORT_BASE}-65535[[:space:]]+redirect[[:space:]]+to[[:space:]]+:${ANYTLS_PORT}"
+    if [[ -f "${NFT_CONFIG}" ]] && grep -Eq "${pattern}" "${NFT_CONFIG}"; then
+        return 0
+    fi
+    command -v nft >/dev/null 2>&1 \
+        && nft list ruleset 2>/dev/null | grep -Eq "${pattern}"
+}
+
+require_dynamic_port_redirect() {
+    [[ "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}" == "dynamic" ]] || return 0
+    has_dynamic_port_redirect && return 0
+    die "当前 nftables 未配置 ${PORT_BASE}-65535 到 ${ANYTLS_PORT} 的动态端口转发；请重新执行 install，手动确认防火墙已放行并转发后再使用 SUB_PORT_MODE=dynamic update-sub，或使用 SUB_PORT_MODE=443 继续固定 443"
+}
+
 validate_sing_box_selector() {
     local selector=${1#v}
     [[ "${selector}" == "latest" || "${selector}" == "alpha" ]] && return 0
@@ -250,6 +273,7 @@ load_state() {
     local env_worker_url=${WORKER_URL:-}
     local env_account_id=${CF_ACCOUNT_ID:-}
     local env_deploy_mode=${DEPLOY_MODE:-}
+    local env_sub_port_mode=${SUB_PORT_MODE:-}
     local env_sub_download_name=${SUB_DOWNLOAD_NAME:-}
 
     ANYTLS_DOMAIN=""
@@ -263,6 +287,7 @@ load_state() {
     WORKER_URL=""
     CF_ACCOUNT_ID=""
     DEPLOY_MODE=""
+    SUB_PORT_MODE=""
     SUB_DOWNLOAD_NAME=""
     ACME_INSTALLED_BY_EASY_ANYTLS=""
 
@@ -284,6 +309,9 @@ load_state() {
     WORKER_URL=${env_worker_url:-${WORKER_URL}}
     CF_ACCOUNT_ID=${env_account_id:-${CF_ACCOUNT_ID}}
     DEPLOY_MODE=${env_deploy_mode:-${DEPLOY_MODE:-link}}
+    SUB_PORT_MODE=${env_sub_port_mode:-${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}}
+    validate_sub_port_mode "${SUB_PORT_MODE}" \
+        || die "订阅暴露端口模式无效：${SUB_PORT_MODE}，只能是 443 或 dynamic"
     SUB_DOWNLOAD_NAME=${env_sub_download_name:-${SUB_DOWNLOAD_NAME}}
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -309,6 +337,7 @@ save_state() {
         printf 'WORKER_URL=%q\n' "${WORKER_URL:-}"
         printf 'CF_ACCOUNT_ID=%q\n' "${CF_ACCOUNT_ID:-}"
         printf 'DEPLOY_MODE=%q\n' "${DEPLOY_MODE:-link}"
+        printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
         printf 'ACME_INSTALLED_BY_EASY_ANYTLS=%q\n' \
@@ -373,6 +402,23 @@ choose_subscription_mode() {
     2 | worker | manual) SUBSCRIBE_MODE="worker" ;;
     3 | link | anytls) SUBSCRIBE_MODE="link" ;;
     *) die "订阅输出方式无效：${choice}" ;;
+    esac
+}
+
+choose_subscription_port_mode() {
+    local mode=${SUB_PORT_MODE:-}
+    if [[ -z "${mode}" && -t 0 ]]; then
+        printf '请选择订阅暴露端口模式：\n'
+        printf '  1. dynamic：10000-65535 动态端口转发到 443（默认）\n'
+        printf '  2. 443：固定使用 443\n'
+        read -r -p "请选择 [1]（回车默认 dynamic）: " mode
+        mode=${mode:-1}
+    fi
+    mode=${mode:-${DEFAULT_SUB_PORT_MODE}}
+    case "${mode}" in
+    1 | dynamic) SUB_PORT_MODE="dynamic" ;;
+    2 | 443) SUB_PORT_MODE="443" ;;
+    *) die "订阅暴露端口模式无效：${mode}，只能是 443 或 dynamic" ;;
     esac
 }
 
@@ -594,6 +640,19 @@ configure_nftables() {
 #!/usr/sbin/nft -f
 flush ruleset
 
+EOF
+    if [[ "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}" == "dynamic" ]]; then
+        cat >>"${candidate}" <<EOF
+table inet nat {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        tcp dport ${PORT_BASE}-65535 redirect to :${ANYTLS_PORT}
+    }
+}
+
+EOF
+    fi
+    cat >>"${candidate}" <<EOF
 table inet filter {
     chain input {
         type filter hook input priority filter; policy drop;
@@ -1192,21 +1251,25 @@ EOF
 }
 
 build_anytls_link() {
+    local port=${1:-}
     local encoded_password encoded_domain encoded_name
+    port=${port:-$(current_subscribe_port)}
     encoded_password=$(uri_encode "${ANYTLS_PASSWORD}")
     encoded_domain=$(uri_encode "${ANYTLS_DOMAIN}")
     encoded_name=$(uri_encode "${NODE_NAME:-${DEFAULT_NODE_NAME}}")
     printf 'anytls://%s@%s:%s/?sni=%s&insecure=0#%s' \
-        "${encoded_password}" "${ANYTLS_DOMAIN}" "${ANYTLS_PORT}" \
+        "${encoded_password}" "${ANYTLS_DOMAIN}" "${port}" \
         "${encoded_domain}" "${encoded_name}"
 }
 
 build_client_outbound_json() {
+    local port=${1:-}
+    port=${port:-$(current_subscribe_port)}
     jq -n \
         --arg tag "${NODE_NAME:-${DEFAULT_NODE_NAME}}" \
         --arg server "${ANYTLS_DOMAIN}" \
         --arg password "${ANYTLS_PASSWORD}" \
-        --argjson port "${ANYTLS_PORT}" '
+        --argjson port "${port}" '
         {
           type: "anytls",
           tag: $tag,
@@ -1226,6 +1289,20 @@ build_client_outbound_json() {
     '
 }
 
+current_subscribe_port() {
+    local mode=${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}
+    local day hour hour_count random_offset
+    if [[ "${mode}" == "443" ]]; then
+        printf '%s' "${ANYTLS_PORT}"
+        return
+    fi
+    day=$(TZ=Asia/Shanghai date +%j)
+    hour=$(TZ=Asia/Shanghai date +%H)
+    hour_count=$(((10#${day} - 1) * 24 + 10#${hour}))
+    random_offset=$((RANDOM % PORT_MULTIPLIER + 1))
+    printf '%s' "$((PORT_BASE + hour_count * PORT_MULTIPLIER + random_offset))"
+}
+
 write_worker() {
     local destination=$1 config_json download_json
     config_json=$(jq -cn \
@@ -1233,8 +1310,20 @@ write_worker() {
         --arg server "${ANYTLS_DOMAIN}" \
         --arg password "${ANYTLS_PASSWORD}" \
         --arg sni "${ANYTLS_DOMAIN}" \
+        --arg port_mode "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}" \
         --argjson port "${ANYTLS_PORT}" \
-        '{name: $name, server: $server, port: $port, password: $password, sni: $sni}')
+        --argjson port_base "${PORT_BASE}" \
+        --argjson port_multiplier "${PORT_MULTIPLIER}" \
+        '{
+          name: $name,
+          server: $server,
+          port: $port,
+          password: $password,
+          sni: $sni,
+          portMode: $port_mode,
+          portBase: $port_base,
+          portMultiplier: $port_multiplier
+        }')
     download_json=$(jq -cn --arg value \
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}" '$value')
     install -d -m 0700 "$(dirname "${destination}")"
@@ -1250,11 +1339,22 @@ function encodeBase64Utf8(value) {
   return btoa(binary);
 }
 
-function anytlsUri(config) {
+function dynamicPort(config) {
+  if (config.portMode === '443') {
+    return config.port;
+  }
+  const nowUtc8 = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const yearStart = Date.UTC(nowUtc8.getUTCFullYear(), 0, 1);
+  const hours = Math.floor((nowUtc8.getTime() - yearStart) / 3600000);
+  return config.portBase + hours * config.portMultiplier +
+    Math.floor(Math.random() * config.portMultiplier) + 1;
+}
+
+function anytlsUri(config, port) {
   const auth = encodeURIComponent(config.password);
   const sni = encodeURIComponent(config.sni);
   const name = encodeURIComponent(config.name);
-  return `anytls://${auth}@${config.server}:${config.port}/?sni=${sni}&insecure=0#${name}`;
+  return `anytls://${auth}@${config.server}:${port}/?sni=${sni}&insecure=0#${name}`;
 }
 
 function yamlQuote(value) {
@@ -1522,12 +1622,12 @@ proxy-groups:
 
 {rules}`;
 
-function mihomoProxyNode(config) {
+function mihomoProxyNode(config, port) {
   return [
     `  - name: ${yamlQuote(config.name)}`,
     '    type: anytls',
     `    server: ${yamlQuote(config.server)}`,
-    `    port: ${config.port}`,
+    `    port: ${port}`,
     `    password: ${yamlQuote(config.password)}`,
     `    sni: ${yamlQuote(config.sni)}`,
     '    client-fingerprint: chrome',
@@ -1536,10 +1636,10 @@ function mihomoProxyNode(config) {
   ].join('\n');
 }
 
-function mihomoYaml(config) {
+function mihomoYaml(config, port) {
   return MIHOMO_TEMPLATE
     .replace('{fake_ip_filter}', FAKE_IP_FILTER)
-    .replace('{proxy_node}', mihomoProxyNode(config))
+    .replace('{proxy_node}', mihomoProxyNode(config, port))
     .replace('{proxy_name}', yamlQuote(config.name))
     .replace('{rules}', MIHOMO_RULES);
 }
@@ -1561,15 +1661,17 @@ export default {
       'access-control-allow-origin': '*'
     };
     if (isClash) {
+      const port = dynamicPort(CONFIG);
       headers['content-type'] = 'text/yaml; charset=utf-8';
       headers['content-disposition'] = `attachment; filename="${DOWNLOAD_NAME}.yaml"`;
-      return new Response(mihomoYaml(CONFIG), {
+      return new Response(mihomoYaml(CONFIG, port), {
         status: 200,
         headers
       });
     }
+    const port = dynamicPort(CONFIG);
     headers['content-type'] = 'text/plain; charset=utf-8';
-    return new Response(encodeBase64Utf8(anytlsUri(CONFIG)), {
+    return new Response(encodeBase64Utf8(anytlsUri(CONFIG, port)), {
       status: 200,
       headers
     });
@@ -1682,6 +1784,8 @@ verify_subscription() {
 
 configure_subscription() {
     choose_subscription_mode
+    choose_subscription_port_mode
+    require_dynamic_port_redirect
     case "${SUBSCRIBE_MODE}" in
     auto)
         choose_subscription_download_name
@@ -1731,9 +1835,11 @@ collect_anytls_state() {
 
 show_node() {
     collect_anytls_state
+    local port
+    port=$(current_subscribe_port)
     printf '\nsing-box AnyTLS 客户端 outbound:\n'
-    build_client_outbound_json
-    printf '\nAnyTLS 纯链接:\n%s\n\n' "$(build_anytls_link)"
+    build_client_outbound_json "${port}"
+    printf '\nAnyTLS 纯链接:\n%s\n\n' "$(build_anytls_link "${port}")"
 }
 
 show_subscription() {
@@ -1744,6 +1850,7 @@ show_subscription() {
         return
     fi
     printf 'Worker 文件: %s\n' "${WORKER_FILE}"
+    printf '订阅暴露端口模式: %s\n' "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}"
     printf '订阅 Token: %s\n' "${SUB_TOKEN:-未生成}"
     if [[ -n "${WORKER_URL:-}" ]]; then
         printf '通用订阅: %s/subscribe?token=%s\n' \
@@ -1773,6 +1880,7 @@ show_status() {
         "$("${SING_BOX_BIN}" version 2>/dev/null | head -n 1 || echo 未安装)"
     printf '版本通道: %s\n' "${SING_BOX_CHANNEL:-未知}"
     printf 'AnyTLS 域名: %s\n' "${ANYTLS_DOMAIN}"
+    printf '订阅暴露端口模式: %s\n' "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}"
     printf 'DNS A 记录: %s\n' "${records:-无}"
     printf '本机公网 IPv4: %s\n' "${public_ip:-探测失败}"
     printf '证书到期时间: %s\n' "${expires:-读取失败}"
@@ -1903,6 +2011,35 @@ purge_anytls_backups() {
         "${BACKUP_DIR}"/sing-box.service.*.bak
 }
 
+filter_anytls_dynamic_redirect() {
+    awk -v first="${PORT_BASE}" -v target="${ANYTLS_PORT}" '
+        $0 ~ "^[[:space:]]*tcp[[:space:]]+dport[[:space:]]+" first \
+            "-65535[[:space:]]+redirect[[:space:]]+to[[:space:]]+:" target \
+            "([[:space:]]|$)" {next}
+        {print}
+    '
+}
+
+remove_anytls_dynamic_redirect() {
+    [[ -f "${NFT_CONFIG}" ]] || return 0
+    local temp_dir candidate
+    temp_dir=$(make_temp_dir)
+    candidate="${temp_dir}/nftables-after-anytls-uninstall.conf"
+    filter_anytls_dynamic_redirect <"${NFT_CONFIG}" >"${candidate}"
+    if cmp -s "${NFT_CONFIG}" "${candidate}"; then
+        return 0
+    fi
+    nft -c -f "${candidate}" \
+        || {
+            warn "移除 AnyTLS 动态端口转发后的 nftables 配置校验失败，已保留原配置"
+            return 0
+        }
+    install -m 0644 "${candidate}" "${NFT_CONFIG}"
+    systemctl restart nftables >/dev/null 2>&1 \
+        || warn "重启 nftables 失败，请手动检查 ${NFT_CONFIG}"
+    success "已移除 AnyTLS 专属动态端口转发 ${PORT_BASE}-65535 -> ${ANYTLS_PORT}"
+}
+
 remove_anytls_local_files() {
     systemctl disable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
     rm -f -- "${SING_BOX_SERVICE_FILE}" "${SING_BOX_CONFIG}" "${SING_BOX_BIN}"
@@ -1951,6 +2088,7 @@ uninstall_anytls() {
         PURGE_SHARED_ACME="${purge_shared_acme_requested}"
     fi
     purge_acme_installation
+    remove_anytls_dynamic_redirect
     remove_anytls_local_files
     if [[ "${purge_mode}" == "1" ]]; then
         purge_anytls_backups
@@ -1960,7 +2098,7 @@ uninstall_anytls() {
     rmdir "${BACKUP_DIR}" "${STATE_DIR}" "${SING_BOX_CONFIG_DIR}" \
         "${COMMAND_INSTALL_DIR}" 2>/dev/null || true
     success "AnyTLS 本机服务、核心、当前配置和证书已删除"
-    warn "nftables、BBR、IPv6、XanMod、时区、NTP 和系统软件包均未改动"
+    warn "除 AnyTLS 专属动态端口转发外，nftables、BBR、IPv6、XanMod、时区、NTP 和系统软件包均未改动"
 }
 
 install_all() {
@@ -1970,6 +2108,7 @@ install_all() {
     choose_domain
     choose_sing_box_version
     choose_subscription_mode
+    choose_subscription_port_mode
     bootstrap_dns_dependencies
     local public_ip
     public_ip=$(detect_public_ipv4)
@@ -2018,7 +2157,8 @@ usage() {
   CF_DNS_API_TOKEN=...
   SUBSCRIBE_MODE=auto|worker|link
   CF_WORKER_API_TOKEN=...  CF_ACCOUNT_ID=...
-  WORKER_NAME=easy-anytls  SUB_DOWNLOAD_NAME=MY_SUB
+  WORKER_NAME=easy-anytls  SUB_PORT_MODE=dynamic|443
+  SUB_DOWNLOAD_NAME=MY_SUB
   FORCE=1                  无人值守确认卸载
   DELETE_CLOUDFLARE_WORKER=1
                             --purge 时同时删除远端 Worker（需 Worker Token）
@@ -2026,6 +2166,10 @@ usage() {
 
 指定版本更新:
   SING_BOX_VERSION_OVERRIDE=1.13.12 easy_anytls update-singbox
+
+动态订阅端口:
+  SUB_PORT_MODE 默认 dynamic，会生成 10000-65535 动态端口并配置 nftables 转发到 443。
+  如需固定 443，可设置 SUB_PORT_MODE=443。
 
 一键下载:
   curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_reality/main/easy_anytls.sh -o easy_anytls.sh && chmod +x easy_anytls.sh && sudo ./easy_anytls.sh install
