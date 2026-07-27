@@ -1,10 +1,10 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS Reality 订阅、Clash Meta 配置
+ * 提供 VLESS Reality / VLESS TCP TLS Vision 订阅、Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、host、sni、pbk、sid
+ * 2. 节点配置中的 uuid、host、sni、pbk、sid 或 TLS 域名
  * 3. DEFAULT_NODE 指向你希望默认输出的节点
  */
 // ================= 配置常量 =================
@@ -27,6 +27,7 @@ function defineNode(config) {
 // ── 节点 A ──────────────────────────────────────────────────────
 const NODE_A_CONFIG = defineNode({
     type: 'vless',
+    security: 'reality',
     uuid: '00000000-0000-4000-8000-000000000001',
     host: 'node-a.example.com',
     name: 'NODE_A',
@@ -39,6 +40,7 @@ const NODE_A_CONFIG = defineNode({
 // ── 节点 B ──────────────────────────────────────────────────────
 const NODE_B_CONFIG = defineNode({
     type: 'vless',
+    security: 'reality',
     uuid: '00000000-0000-4000-8000-000000000002',
     host: 'node-b.example.com',
     name: 'NODE_B',
@@ -46,6 +48,18 @@ const NODE_B_CONFIG = defineNode({
     sni: 'www.example.com',
     pbk: 'REPLACE_WITH_REALITY_PUBLIC_KEY_B',
     sid: 'abcdef0123456789'
+});
+
+// ── 节点 C：VLESS TCP TLS Vision ─────────────────────────────────
+const NODE_C_CONFIG = defineNode({
+    type: 'vless',
+    security: 'tls',
+    uuid: '00000000-0000-4000-8000-000000000003',
+    host: 'node-c.example.com',
+    port: 443,
+    name: 'NODE_C_TLS_VISION',
+    fp: 'chrome',
+    sni: 'node-c.example.com'
 });
 
 const DEFAULT_NODE = NODE_A_CONFIG; // 控制默认输出的节点
@@ -318,7 +332,7 @@ proxy-groups:
 `;
 
 // ── VLESS 节点模板 ─────────────────
-function buildClashVlessNodeTemplate() {
+function buildClashVlessRealityNodeTemplate() {
     return `  - name: {name}
     type: vless
     server: {host}
@@ -333,6 +347,26 @@ function buildClashVlessNodeTemplate() {
     reality-opts:
       public-key: {pbk}
       short-id: {sid}
+    client-fingerprint: {fp}
+    packet-encoding: xudp
+    ip-version: ipv4-prefer
+    smux:
+      enabled: false
+`;
+}
+
+function buildClashVlessTlsVisionNodeTemplate() {
+    return `  - name: {name}
+    type: vless
+    server: {host}
+    port: {port}
+    uuid: {uuid}
+    network: tcp
+    tls: true
+    udp: true
+    skip-cert-verify: false
+    flow: xtls-rprx-vision
+    servername: {sni}
     client-fingerprint: {fp}
     packet-encoding: xudp
     ip-version: ipv4-prefer
@@ -357,22 +391,44 @@ function calculateDynamicPort(hourCount) {
 }
 
 function encodeURIComponentCustom(str) {
-    return encodeURIComponent(str).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
+    return encodeURIComponent(String(str)).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
+}
+
+function vlessSecurity(cfg) {
+    return cfg.security || 'reality';
+}
+
+function resolveNodePort(cfg, dynamicPort) {
+    if (cfg.port) {
+        return cfg.port;
+    }
+    return vlessSecurity(cfg) === 'tls' ? 443 : dynamicPort;
 }
 
 function createLink(cfg, port) {
+    if (cfg.type !== 'vless') {
+        throw new Error(`Unsupported node type: ${cfg.type}`);
+    }
+
+    const security = vlessSecurity(cfg);
     const params = new URLSearchParams({
         encryption: 'none',
-        security: 'reality',
+        security,
         type: 'tcp',
         sni: cfg.sni,
         fp: cfg.fp,
-        pbk: cfg.pbk,
-        sid: cfg.sid,
         flow: 'xtls-rprx-vision',
         packetEncoding: 'xudp'
     });
-    return `vless://${cfg.uuid}@${cfg.host}:${cfg.port || port}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
+
+    if (security === 'reality') {
+        params.set('pbk', cfg.pbk);
+        params.set('sid', cfg.sid);
+    } else if (security !== 'tls') {
+        throw new Error(`Unsupported VLESS security: ${security}`);
+    }
+
+    return `vless://${cfg.uuid}@${cfg.host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
 }
 
 function base64Encode(str) {
@@ -399,14 +455,28 @@ function clashDownloadFilename(env) {
 // ================= Clash 配置生成 =================
 
 function generateClashProxyNode(cfg, port) {
-    return buildClashVlessNodeTemplate()
+    if (cfg.type !== 'vless') {
+        throw new Error(`Unsupported node type: ${cfg.type}`);
+    }
+
+    const security = vlessSecurity(cfg);
+    let template;
+    if (security === 'reality') {
+        template = buildClashVlessRealityNodeTemplate();
+    } else if (security === 'tls') {
+        template = buildClashVlessTlsVisionNodeTemplate();
+    } else {
+        throw new Error(`Unsupported VLESS security: ${security}`);
+    }
+
+    return template
         .replace(/{name}/g, cfg.name)
         .replace(/{host}/g, cfg.host)
-        .replace(/{port}/g, String(cfg.port || port))
+        .replace(/{port}/g, String(resolveNodePort(cfg, port)))
         .replace(/{uuid}/g, cfg.uuid)
         .replace(/{sni}/g, cfg.sni)
-        .replace(/{pbk}/g, cfg.pbk)
-        .replace(/{sid}/g, cfg.sid)
+        .replace(/{pbk}/g, cfg.pbk || '')
+        .replace(/{sid}/g, cfg.sid || '')
         .replace(/{fp}/g, cfg.fp);
 }
 

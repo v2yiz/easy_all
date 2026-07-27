@@ -386,6 +386,7 @@ const DEFAULT_NODE = NODE_A_CONFIG;
 新增节点时只需要继续调用 `defineNode({...})`。`DEFAULT_NODE` 决定不带 `node=all` 时默认输出哪个节点；`node=all` 会输出所有已注册节点。
 
 仓库中的 `sample-worker.js` 是脱敏样例，保留了多节点、普通订阅、`flag=clash` 和 `node=all` 逻辑。公开分享或二次修改时建议以该文件为起点，不要直接发布包含真实 Token、UUID、Reality 公钥或域名的 Worker。
+样例同时演示了 `security: 'reality'` 的 VLESS Reality Vision 和 `security: 'tls'` 的 VLESS TCP TLS Vision 节点；TLS Vision 节点需要使用已配置证书的域名和 443 端口。
 
 ### 使用自定义域名、Worker 路由和 DNS
 

@@ -70,6 +70,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /packetEncoding=xudp/);
     assert.match(body, /#NODE_A$/);
     assert.doesNotMatch(body, /NODE_B/);
+    assert.doesNotMatch(body, /NODE_C_TLS_VISION/);
     assert.doesNotMatch(body, /trojan/i);
   });
 
@@ -79,11 +80,17 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = body.split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 2);
+    assert.equal(links.length, 3);
     assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@node-a\.example\.com:10049\?/);
     assert.match(links[1], /^vless:\/\/00000000-0000-4000-8000-000000000002@node-b\.example\.com:10055\?/);
+    assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000003@node-c\.example\.com:443\?/);
     assert.match(links[0], /#NODE_A$/);
     assert.match(links[1], /#NODE_B$/);
+    assert.match(links[2], /security=tls/);
+    assert.match(links[2], /flow=xtls-rprx-vision/);
+    assert.doesNotMatch(links[2], /pbk=/);
+    assert.doesNotMatch(links[2], /sid=/);
+    assert.match(links[2], /#NODE_C_TLS_VISION$/);
   });
 
   it('returns Clash YAML for the default node with normalized download filename', async () => {
@@ -128,6 +135,14 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /- name: NODE_B/);
     assert.match(body, /server: node-b\.example\.com/);
     assert.match(body, /port: 10055/);
-    assert.match(body, /      - NODE_A\n        - NODE_B/);
+    assert.match(body, /- name: NODE_C_TLS_VISION/);
+    assert.match(body, /server: node-c\.example\.com/);
+    assert.match(body, /port: 443/);
+    assert.match(body, /      - NODE_A\n        - NODE_B\n        - NODE_C_TLS_VISION/);
+
+    const tlsNode = body.slice(body.indexOf('- name: NODE_C_TLS_VISION'));
+    assert.match(tlsNode, /flow: xtls-rprx-vision/);
+    assert.match(tlsNode, /servername: node-c\.example\.com/);
+    assert.doesNotMatch(tlsNode, /reality-opts:/);
   });
 });
