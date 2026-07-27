@@ -115,6 +115,68 @@ test_validators_and_normalizers() {
     assert_equal "empty sanitized alias falls back" "server" "$(sanitize_alias "###")"
 }
 
+test_collected_ssh_ports() {
+    source_script_copy
+
+    local unchanged changed
+    unchanged="$(
+        collect_inputs >/dev/null <<'EOF'
+203.0.113.10
+root
+
+deploy
+secret
+secret
+node-a
+22
+no
+EOF
+        validate_collected_inputs
+        printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
+    )"
+    assert_equal "unchanged SSH port is always initialized" "22:22:no" "$unchanged"
+
+    changed="$(
+        collect_inputs >/dev/null <<'EOF'
+203.0.113.10
+root
+
+deploy
+secret
+secret
+node-b
+22
+yes
+2222
+EOF
+        validate_collected_inputs
+        printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
+    )"
+    assert_equal "changed SSH port is always initialized" "22:2222:yes" "$changed"
+
+    local same_port
+    same_port="$(
+        collect_inputs >/dev/null <<'EOF'
+203.0.113.10
+root
+
+deploy
+secret
+secret
+node-c
+22
+yes
+22
+EOF
+        validate_collected_inputs
+        printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
+    )"
+    assert_equal "same SSH port is normalized to no change" "22:22:no" "$same_port"
+
+    unset FINAL_PORT
+    assert_failure "missing final SSH port is rejected before remote changes" validate_collected_inputs
+}
+
 test_managed_ssh_config() {
     source_script_copy
 
@@ -180,6 +242,7 @@ test_script_surface_contract() {
 }
 
 test_validators_and_normalizers
+test_collected_ssh_ports
 test_managed_ssh_config
 test_remote_script_contract
 test_script_surface_contract

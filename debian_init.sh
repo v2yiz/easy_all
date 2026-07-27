@@ -100,6 +100,20 @@ validate_server_user() {
   [[ "$user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*[$]?$ ]] || die "服务器用户名格式不合法: $user"
 }
 
+validate_collected_inputs() {
+  [[ -n "${SERVER_HOST:-}" ]] || die "内部错误：服务器地址未设置"
+  [[ -n "${SERVER_USER:-}" ]] || die "内部错误：初始 SSH 登录用户未设置"
+  [[ -n "${NORMAL_USER:-}" ]] || die "内部错误：最终 SSH 登录用户未设置"
+  [[ -n "${HOST_ALIAS:-}" ]] || die "内部错误：SSH Host 别名未设置"
+  [[ -n "${CURRENT_PORT:-}" ]] || die "内部错误：服务器当前 SSH 端口未设置"
+  [[ -n "${FINAL_PORT:-}" ]] || die "内部错误：服务器最终 SSH 端口未设置"
+  [[ "${CHANGE_PORT:-}" == "yes" || "${CHANGE_PORT:-}" == "no" ]] \
+    || die "内部错误：SSH 端口修改状态无效"
+
+  validate_port "$CURRENT_PORT"
+  validate_port "$FINAL_PORT"
+}
+
 validate_linux_user() {
   local user="$1"
   [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "普通用户名格式不合法: $user"
@@ -750,7 +764,11 @@ collect_inputs() {
   if [[ "$change_port_answer" == "yes" ]]; then
     FINAL_PORT="$(prompt "新的 SSH 端口" "2222")"
     validate_port "$FINAL_PORT"
-    CHANGE_PORT="yes"
+    if [[ "$FINAL_PORT" != "$CURRENT_PORT" ]]; then
+      CHANGE_PORT="yes"
+    else
+      echo "新端口与当前端口相同，将按不修改 SSH 端口处理。"
+    fi
   fi
 }
 
@@ -758,9 +776,9 @@ configure_remote_stage() {
   local target="$1"
 
   if [[ "$CHANGE_PORT" == "yes" ]]; then
-    echo "端口迁移：先同时监听旧端口 $CURRENT_PORT 和新端口 $FINAL_PORT，验证成功后再询问是否移除旧端口。"
+    echo "端口迁移：先同时监听旧端口 ${CURRENT_PORT} 和新端口 ${FINAL_PORT}，验证成功后再询问是否移除旧端口。"
     run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" "yes" "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY"
-    echo "验证新端口 $FINAL_PORT 可用"
+    echo "验证新端口 ${FINAL_PORT} 可用"
     ssh \
       -o StrictHostKeyChecking=accept-new \
       "${SSH_PUBLIC_KEY_ONLY_OPTS[@]}" \
@@ -800,6 +818,7 @@ main() {
 
   print_intro
   collect_inputs
+  validate_collected_inputs
   select_or_create_key
 
   local target="${SERVER_USER}@${SERVER_HOST}"
