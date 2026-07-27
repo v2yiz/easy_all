@@ -240,7 +240,7 @@ sudo SUB_PORT_MODE=443 easy_reality update-sub
 sudo SUB_PORT_MODE=dynamic easy_reality update-sub
 ```
 
-`update-sub` 只更新订阅输出和 Worker 状态，不重写 nftables。若从 `443` 切换到 `dynamic`，脚本会先检查本机 nftables 配置或当前 ruleset 是否已有 TCP `10000-65535` 到 443 的转发规则；缺失时会终止，避免生成不可用订阅。
+`update-sub` 只更新订阅输出和 Worker 状态。若从 `443` 切换到 `dynamic`，脚本会先检查本机 nftables 配置或当前 ruleset 是否已有 TCP `10000-65535` 到 443 的转发规则；旧版脚本生成的固定 443 配置会自动补充这段标准转发。若检测到已有自定义 `table inet nat` 但缺少该规则，脚本会终止并提示手动合并，避免误改复杂 NAT 配置。
 
 如果 VPS 供应商有独立安全组或云防火墙：
 
@@ -469,7 +469,7 @@ https://sub.example.com/subscribe?token=<订阅 Token>&node=all&flag=clash
 - TCP 443
 - `SUB_PORT_MODE=dynamic` 时额外转发 TCP `10000-65535` 到 443
 
-安装流程会生成完整 nftables 配置。`update-sub` 不重写 nftables，只负责重新配置订阅输出；切换到 `SUB_PORT_MODE=dynamic` 时会校验动态端口转发规则是否已存在。
+安装流程会生成完整 nftables 配置。`update-sub` 只负责重新配置订阅输出；切换到 `SUB_PORT_MODE=dynamic` 时会校验动态端口转发规则是否已存在，旧版固定 443 配置缺失该规则时会自动补充。
 
 SSH 端口来源会合并：
 

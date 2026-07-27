@@ -904,7 +904,7 @@ Cloudflare 外部状态具有不同边界：
 
 因为使用 Cloudflare DNS-01，不开放 TCP 80。
 
-默认 `SUB_PORT_MODE=dynamic` 时，脚本会写入 `10000-65535 -> 443` 的动态端口转发；固定 443 可设置 `SUB_PORT_MODE=443`。
+默认 `SUB_PORT_MODE=dynamic` 时，脚本会写入 `10000-65535 -> 443` 的动态端口转发；固定 443 可设置 `SUB_PORT_MODE=443`。旧版固定 443 安装后执行 `SUB_PORT_MODE=dynamic easy_anytls update-sub`，脚本会自动补充标准动态转发；若已有自定义 `table inet nat` 但缺少该规则，会停止并要求手动合并。
 
 如果 VPS 供应商还有独立安全组或云防火墙，也必须放行 SSH、TCP 443，以及使用默认动态模式时的 TCP `10000-65535`。
 

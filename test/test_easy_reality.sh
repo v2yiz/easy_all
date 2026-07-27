@@ -138,16 +138,23 @@ test_dynamic_port_redirect_guard() {
         '}' >"${nft_config}"
     assert_success "dynamic mode accepts redirect from nftables config" require_dynamic_port_redirect
 
-    printf '%s\n' 'table inet filter { chain input { policy drop; } }' >"${nft_config}"
-    die() { return 42; }
-    TESTS_RUN=$((TESTS_RUN + 1))
-    set +e
-    require_dynamic_port_redirect
-    local status=$?
-    set -e
-    [[ "${status}" -eq 42 ]] \
-        || fail_test "dynamic mode fails without redirect: expected 42, got ${status}"
-    die() { printf 'die: %s\n' "$*" >&2; exit 1; }
+    printf '%s\n' \
+        'flush ruleset' \
+        'table inet filter { chain input { policy drop; } }' >"${nft_config}"
+    nft() { return 0; }
+    systemctl() { return 0; }
+    require_dynamic_port_redirect_quiet() {
+        require_dynamic_port_redirect >/dev/null
+    }
+    assert_success "dynamic mode patches old nftables config" \
+        require_dynamic_port_redirect_quiet
+    local content
+    content=$(<"${nft_config}")
+    assert_contains "dynamic patch inserts redirect" \
+        "tcp dport 10000-65535 redirect to :443" "${content}"
+    assert_contains "dynamic patch preserves filter table" \
+        "table inet filter" "${content}"
+    unset -f nft systemctl require_dynamic_port_redirect_quiet
 }
 
 test_dynamic_port_redirect_ruleset_fallback() {

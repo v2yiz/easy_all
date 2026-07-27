@@ -129,10 +129,73 @@ has_dynamic_port_redirect() {
         && nft list ruleset 2>/dev/null | grep -Eq "${pattern}"
 }
 
+write_dynamic_port_redirect_block() {
+    cat <<EOF
+table inet nat {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        tcp dport ${PORT_BASE}-65535 redirect to :${REALITY_PORT}
+    }
+}
+
+EOF
+}
+
+insert_dynamic_port_redirect_block() {
+    local source=$1 destination=$2 block_file=$3
+    awk -v block_file="${block_file}" '
+        function print_block() {
+            while ((getline line < block_file) > 0) {
+                print line
+            }
+            close(block_file)
+        }
+        !inserted && $0 ~ /^[[:space:]]*table[[:space:]]+inet[[:space:]]+filter[[:space:]]*\{/ {
+            print_block()
+            inserted = 1
+        }
+        {print}
+        END {
+            if (!inserted) {
+                print_block()
+            }
+        }
+    ' "${source}" >"${destination}"
+}
+
+install_dynamic_port_redirect() {
+    [[ -f "${NFT_CONFIG}" ]] \
+        || die "未找到 ${NFT_CONFIG}，无法自动补充动态端口转发"
+    if grep -Eq '^[[:space:]]*table[[:space:]]+inet[[:space:]]+nat[[:space:]]*\{' "${NFT_CONFIG}"; then
+        die "检测到 ${NFT_CONFIG} 已存在 table inet nat，但缺少 ${PORT_BASE}-65535 -> ${REALITY_PORT}；请手动合并动态端口转发规则后重试"
+    fi
+
+    local temp_dir block candidate backup
+    temp_dir=$(make_temp_dir)
+    block="${temp_dir}/dynamic-port-redirect.nft"
+    candidate="${temp_dir}/nftables-with-dynamic-port.conf"
+    backup="${BACKUP_DIR}/nftables.dynamic-port.$(date +%Y%m%d%H%M%S).bak"
+    write_dynamic_port_redirect_block >"${block}"
+    insert_dynamic_port_redirect_block "${NFT_CONFIG}" "${candidate}" "${block}"
+    nft -c -f "${candidate}" || die "动态端口转发后的 nftables 配置校验失败"
+
+    install -d -m 0700 "${BACKUP_DIR}"
+    cp -a "${NFT_CONFIG}" "${backup}"
+    install -m 0644 "${candidate}" "${NFT_CONFIG}"
+    if ! systemctl restart nftables; then
+        install -m 0644 "${backup}" "${NFT_CONFIG}"
+        systemctl restart nftables >/dev/null 2>&1 || true
+        die "重启 nftables 失败，已恢复原配置"
+    fi
+    success "已补充动态端口转发 ${PORT_BASE}-65535 -> ${REALITY_PORT}"
+}
+
 require_dynamic_port_redirect() {
     [[ "${SUB_PORT_MODE:-${DEFAULT_SUB_PORT_MODE}}" == "dynamic" ]] || return 0
     has_dynamic_port_redirect && return 0
-    die "当前 nftables 未配置 ${PORT_BASE}-65535 到 ${REALITY_PORT} 的动态端口转发；请重新执行 install，或手动确认防火墙已放行并转发后再使用 SUB_PORT_MODE=dynamic update-sub"
+    install_dynamic_port_redirect
+    has_dynamic_port_redirect && return 0
+    die "当前 nftables 未配置 ${PORT_BASE}-65535 到 ${REALITY_PORT} 的动态端口转发；请手动确认防火墙已放行并转发后再使用 SUB_PORT_MODE=dynamic update-sub"
 }
 
 normalize_sub_download_name() {

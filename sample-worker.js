@@ -56,7 +56,6 @@ const NODE_C_CONFIG = defineNode({
     security: 'tls',
     uuid: '00000000-0000-4000-8000-000000000003',
     host: 'node-c.example.com',
-    port: 443,
     name: 'NODE_C_TLS_VISION',
     fp: 'chrome',
     sni: 'node-c.example.com'
@@ -66,8 +65,6 @@ const NODE_C_CONFIG = defineNode({
 const NODE_D_CONFIG = defineNode({
     type: 'anytls',
     host: 'anytls.example.com',
-    port: 443,
-    portMode: 'dynamic',
     name: 'NODE_D_ANYTLS',
     password: 'REPLACE_WITH_ANYTLS_PASSWORD',
     sni: 'anytls.example.com',
@@ -426,13 +423,9 @@ function vlessSecurity(cfg) {
     return cfg.security || 'reality';
 }
 
-function anyTlsPortMode(cfg) {
-    return cfg.portMode || 'dynamic';
-}
-
 function resolveNodePort(cfg, dynamicPort) {
     if (cfg.type === 'anytls') {
-        return anyTlsPortMode(cfg) === '443' ? (cfg.port || 443) : dynamicPort;
+        return cfg.port || dynamicPort;
     }
     if (cfg.port) {
         return cfg.port;

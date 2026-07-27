@@ -253,8 +253,10 @@ test_worker_output() {
     assert_contains "Worker contains AnyTLS Mihomo type" \
         "type: anytls" "${content}"
     assert_contains "Worker contains server" "node.example.com" "${content}"
-    assert_contains "Worker records dynamic port mode" \
-        "\"portMode\":\"dynamic\"" "${content}"
+    assert_not_contains "Worker dynamic config omits fixed port" \
+        "\"port\":443" "${content}"
+    assert_not_contains "Worker does not need portMode for dynamic default" \
+        "portMode" "${content}"
     assert_contains "Worker contains dynamic port function" \
         "function dynamicPort(config)" "${content}"
     assert_contains "Worker requires token" "env.SUB_TOKEN" "${content}"
@@ -429,9 +431,14 @@ test_server_config() {
         "$(file_mode "${SING_BOX_CONFIG}")"
 }
 
-missing_dynamic_redirect_fails() (
+existing_nat_without_dynamic_redirect_fails() (
     SUB_PORT_MODE="dynamic"
-    : >"${NFT_CONFIG}"
+    printf '%s\n' \
+        'table inet nat {' \
+        '  chain prerouting {' \
+        '    type nat hook prerouting priority dstnat; policy accept;' \
+        '  }' \
+        '}' >"${NFT_CONFIG}"
     require_dynamic_port_redirect >/dev/null 2>&1
 )
 
@@ -453,8 +460,26 @@ test_dynamic_port_redirect() {
     assert_success "dynamic redirect detector matches nftables config" \
         has_dynamic_port_redirect
 
-    assert_failure "dynamic mode rejects missing redirect" \
-        missing_dynamic_redirect_fails
+    printf '%s\n' \
+        'flush ruleset' \
+        'table inet filter { chain input { policy drop; } }' >"${NFT_CONFIG}"
+    nft() { return 0; }
+    systemctl() { return 0; }
+    require_dynamic_port_redirect_quiet() {
+        require_dynamic_port_redirect >/dev/null
+    }
+    assert_success "dynamic mode patches old nftables config" \
+        require_dynamic_port_redirect_quiet
+    local content
+    content=$(<"${NFT_CONFIG}")
+    assert_contains "dynamic patch inserts redirect" \
+        "tcp dport 10000-65535 redirect to :443" "${content}"
+    assert_contains "dynamic patch preserves filter table" \
+        "table inet filter" "${content}"
+    unset -f nft systemctl require_dynamic_port_redirect_quiet
+
+    assert_failure "dynamic mode rejects custom nat without redirect" \
+        existing_nat_without_dynamic_redirect_fails
 
     local nft_input nft_output
     nft_input=$'table inet nat {\n chain prerouting {\n  type nat hook prerouting priority dstnat; policy accept;\n  tcp dport 10000-65535 redirect to :443\n  tcp dport 8443 redirect to :443\n }\n}'
