@@ -75,9 +75,19 @@ for (const section of [
   'proxy-groups:',
   'rules:',
   'type: anytls',
-  'client-fingerprint: chrome'
+  'client-fingerprint: chrome',
+  'DOMAIN-SUFFIX,bilibili.com,DIRECT',
+  'DOMAIN-SUFFIX,zhihu.com,DIRECT',
+  'DOMAIN-SUFFIX,douyin.com,DIRECT',
+  'GEOIP,CN,DIRECT,no-resolve'
 ]) {
   if (!yaml.includes(section)) process.exit(1);
+}
+if (
+  yaml.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') >
+  yaml.indexOf('GEOSITE,geolocation-!cn,PROXY')
+) {
+  process.exit(1);
 }
 if (yaml.includes('{proxy_') || yaml.includes('{rules}')) process.exit(1);
 if (!response.headers.get('content-disposition')?.includes('Team_Sub.yaml')) {

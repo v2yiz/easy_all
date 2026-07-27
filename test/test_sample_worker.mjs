@@ -102,6 +102,14 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /type: vless/);
     assert.match(body, /reality-opts:/);
     assert.match(body, /public-key: REPLACE_WITH_REALITY_PUBLIC_KEY_A/);
+    assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
+    assert.match(body, /GEOIP,CN,DIRECT,no-resolve/);
+    assert.ok(
+      body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
+      body.indexOf('GEOSITE,geolocation-!cn,PROXY')
+    );
     assert.doesNotMatch(body, /NODE_B/);
     assert.doesNotMatch(body, /trojan/i);
   });

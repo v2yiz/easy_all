@@ -639,8 +639,13 @@ Mihomo 响应与 Reality 完整模板保持同类结构，包含：
 - sniffer、TUN 和 Fake-IP DNS。
 - 当前 AnyTLS 节点。
 - `PROXY` 代理组。
-- 局域网、AI、Apple、Microsoft、Google、Telegram、GEOSITE/GEOIP
-  及最终兜底规则。
+- 局域网、国内高流量服务、AI、Apple、Microsoft、Google、Telegram、
+  GEOSITE/GEOIP 及最终兜底规则。
+
+国内高流量服务规则显式覆盖哔哩哔哩、知乎、抖音、爱奇艺、优酷、快手、
+小红书、腾讯、百度、网易以及常见电商和静态资源域名。域名规则同时适用于
+DNS A（IPv4）和 AAAA（IPv6）结果；纯 IP 连接继续由 `GEOIP,CN,DIRECT`
+兜底，因此无需维护容易过期的国内 IPv4/IPv6 地址段。
 
 节点部分示例：
 
