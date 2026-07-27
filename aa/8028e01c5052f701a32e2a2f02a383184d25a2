@@ -1,0 +1,21 @@
+sample-worker.js
+  s_28e667a76df43b::t_add6417430cc88 428
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "aa8028e01c5052f701a32e2a2f02a383184d25a2",
+  "prompts": {},
+  "sessions": {
+    "s_28e667a76df43b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa24f-8aa8-7e12-a87f-3a6598e96504",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
