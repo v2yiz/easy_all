@@ -1,0 +1,25 @@
+README.md
+  s_d11ce5d6e09471::t_a879a998095244 131
+easy_all.sh
+  s_d11ce5d6e09471::t_b5f272e8fc66e7 71,395-397,399,401,407-409,1478-1479,1481-1483,1488,1491-1499,1502,1805-1806,1808-1809
+test/test_easy_all.sh
+  s_d11ce5d6e09471::t_1845ee9a68893f 249-254,277-278,321-366,372
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "863848269b9b596ddfd8bbd8ff20a855e01059d7",
+  "prompts": {},
+  "sessions": {
+    "s_d11ce5d6e09471": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa6ad-7379-78f2-bb94-badb3ae7af55",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
