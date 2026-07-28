@@ -22,7 +22,7 @@
 ## 快速安装
 
 ```bash
-wget -q -P /root -N "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh && /root/easy_all.sh install
+wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh.new && mv -f /root/easy_all.sh.new /root/easy_all.sh && /root/easy_all.sh install
 ```
 
 也可以直接指定协议：
@@ -152,7 +152,7 @@ Worker 支持：
 VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sample-worker.js` 已发布到 `main`，再执行一行命令：
 
 ```bash
-wget -q -P /root -N "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh && /root/easy_all.sh update
+wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh.new && mv -f /root/easy_all.sh.new /root/easy_all.sh && /root/easy_all.sh update
 ```
 
 `update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，再更新 Worker。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`。原部署模式为 `auto` 时，若状态中没有 Account ID，脚本会先提示输入；随后会安全提示重新输入未保存的 Cloudflare Worker API Token。

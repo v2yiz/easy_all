@@ -78,11 +78,17 @@ cleanup_files=("${RUNTIME_TMP}")
 SWITCH_ROLLBACK_ON_EXIT=0
 SWITCH_BACKUP_DIR=""
 INSTALL_ROLLBACK_ON_EXIT=0
+UPDATE_SUB_ROLLBACK_ON_EXIT=0
+UPDATE_SUB_BACKUP_DIR=""
 cleanup() {
     local path
     if [[ "${SWITCH_ROLLBACK_ON_EXIT:-0}" == "1" && -n "${SWITCH_BACKUP_DIR:-}" ]]; then
         SWITCH_ROLLBACK_ON_EXIT=0
         rollback_protocol_switch || true
+    elif [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" \
+        && -n "${UPDATE_SUB_BACKUP_DIR:-}" ]]; then
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        rollback_subscription_update || true
     elif [[ "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
         INSTALL_ROLLBACK_ON_EXIT=0
         rollback_fresh_install || true
@@ -1554,7 +1560,10 @@ deploy_worker() {
 }
 
 verify_subscription() {
-    local code attempt delay token
+    local plain_code clash_code attempt delay token
+    local plain_body="${RUNTIME_TMP}/subscription-plain"
+    local decoded_body="${RUNTIME_TMP}/subscription-decoded"
+    local clash_body="${RUNTIME_TMP}/subscription-clash"
     local max_attempts=6
     [[ -n "${WORKER_URL:-}" ]] || return 1
     ensure_allowed_tokens
@@ -1562,25 +1571,33 @@ verify_subscription() {
     cloudflare_deploy_log "INFO" "Worker 部署完成，等待 5 秒后开始订阅 HTTP 验收"
     sleep 5
     for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-        code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+        plain_code=$(curl -sS -o "${plain_body}" -w '%{http_code}' --max-time 15 \
             "${WORKER_URL}/subscribe?token=${token}" || true)
-        if [[ "${code}" == "200" ]]; then
+        clash_code=$(curl -sS -o "${clash_body}" -w '%{http_code}' --max-time 15 \
+            "${WORKER_URL}/subscribe?token=${token}&flag=clash" || true)
+        if [[ "${plain_code}" == "200" && "${clash_code}" == "200" ]] \
+            && base64 -d <"${plain_body}" >"${decoded_body}" 2>/dev/null \
+            && [[ -s "${decoded_body}" ]] \
+            && grep -Eq '^(vless|anytls)://' "${decoded_body}" \
+            && grep -q '^proxies:' "${clash_body}" \
+            && grep -q '^proxy-groups:' "${clash_body}" \
+            && grep -q '^rules:' "${clash_body}"; then
             cloudflare_deploy_log "SUCCESS" \
-                "订阅 HTTP 验收成功：第 ${attempt}/${max_attempts} 次，HTTP 200"
+                "订阅内容验收成功：第 ${attempt}/${max_attempts} 次，base64 HTTP 200，Clash HTTP 200"
             return 0
         fi
         if ((attempt < max_attempts)); then
             delay=$((RANDOM % 3 + 1))
             cloudflare_deploy_log "WARN" \
-                "订阅 HTTP 验收：第 ${attempt}/${max_attempts} 次返回 HTTP ${code:-000}，${delay} 秒后重试"
+                "订阅内容验收：第 ${attempt}/${max_attempts} 次，base64 HTTP ${plain_code:-000}，Clash HTTP ${clash_code:-000}，${delay} 秒后重试"
             sleep "${delay}"
         else
             cloudflare_deploy_log "WARN" \
-                "订阅 HTTP 验收：第 ${attempt}/${max_attempts} 次返回 HTTP ${code:-000}"
+                "订阅内容验收：第 ${attempt}/${max_attempts} 次，base64 HTTP ${plain_code:-000}，Clash HTTP ${clash_code:-000}"
         fi
     done
     cloudflare_deploy_log "ERROR" \
-        "Worker API 部署成功，但订阅 HTTP 验收在 ${max_attempts} 次尝试后仍未通过"
+        "Worker API 部署成功，但订阅内容验收在 ${max_attempts} 次尝试后仍未通过"
     return 1
 }
 
@@ -1624,6 +1641,47 @@ configure_subscription() {
     save_state
 }
 
+snapshot_subscription_update() {
+    UPDATE_SUB_BACKUP_DIR="${RUNTIME_TMP}/update-sub-backup"
+    install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+    install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
+    if [[ -f "${NFT_CONFIG}" ]]; then
+        install -m 0644 "${NFT_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/nftables.conf"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/nftables.conf.missing"
+    fi
+    if [[ -f "${STATE_DIR}/nftables.sha256" ]]; then
+        install -m 0600 "${STATE_DIR}/nftables.sha256" \
+            "${UPDATE_SUB_BACKUP_DIR}/nftables.sha256"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/nftables.sha256.missing"
+    fi
+    WORKER_REPLACED=0
+    UPDATE_SUB_ROLLBACK_ON_EXIT=1
+}
+
+rollback_subscription_update() {
+    if [[ "${WORKER_REPLACED:-0}" == "1" ]]; then
+        warn "Worker 已完成 replace；为保持远端订阅与本机一致，不回滚订阅端口模式"
+        return 0
+    fi
+    warn "订阅更新失败，正在恢复原端口模式和 nftables"
+    install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nftables.conf" ]]; then
+        install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/nftables.conf" "${NFT_CONFIG}"
+        nft -f "${NFT_CONFIG}" >/dev/null 2>&1 || warn "恢复订阅更新前 nftables 失败"
+    else
+        rm -f -- "${NFT_CONFIG}"
+        nft flush ruleset >/dev/null 2>&1 || warn "清空订阅更新产生的 nftables 规则失败"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nftables.sha256" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/nftables.sha256" \
+            "${STATE_DIR}/nftables.sha256"
+    else
+        rm -f -- "${STATE_DIR}/nftables.sha256"
+    fi
+}
+
 update_subscription() {
     local requested_port_mode=${SUB_PORT_MODE:-} stored_port_mode
     require_root
@@ -1641,9 +1699,21 @@ update_subscription() {
         || die "VLESS WSS 不支持 dynamic 端口"
     if [[ "${SUB_PORT_MODE}" != "${stored_port_mode}" ]]; then
         info "订阅端口模式从 ${stored_port_mode} 切换为 ${SUB_PORT_MODE}，同步更新 nftables"
-        configure_nftables
+        snapshot_subscription_update
+        if ! configure_nftables; then
+            UPDATE_SUB_ROLLBACK_ON_EXIT=0
+            rollback_subscription_update
+            return 1
+        fi
     fi
-    configure_subscription
+    if ! configure_subscription; then
+        if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
+            UPDATE_SUB_ROLLBACK_ON_EXIT=0
+            rollback_subscription_update
+        fi
+        return 1
+    fi
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
 }
 

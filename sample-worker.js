@@ -636,7 +636,6 @@ function generateClashProxyNode(cfg, port) {
         }
 
         return template
-            .replace(/{name}/g, cfg.name)
             .replace(/{host}/g, cfg.host)
             .replace(/{port}/g, String(resolveNodePort(cfg, port)))
             .replace(/{uuid}/g, cfg.uuid)
@@ -645,19 +644,20 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{sid}/g, cfg.sid || '')
             .replace(/{fp}/g, cfg.fp)
             .replace(/{path}/g, cfg.path || '/')
-            .replace(/{ws_host}/g, cfg.wsHost || cfg.host);
+            .replace(/{ws_host}/g, cfg.wsHost || cfg.host)
+            .replace(/{name}/g, yamlString(cfg.name));
     }
 
     if (cfg.type === 'anytls') {
         return buildClashAnyTlsNodeTemplate()
-            .replace(/{name}/g, yamlString(cfg.name))
             .replace(/{host}/g, yamlString(cfg.host))
             .replace(/{port}/g, String(resolveNodePort(cfg, port)))
             .replace(/{password}/g, yamlString(cfg.password))
             .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
-            .replace(/{skip_cert_verify}/g, String(Boolean(cfg.insecure)));
+            .replace(/{skip_cert_verify}/g, String(Boolean(cfg.insecure)))
+            .replace(/{name}/g, yamlString(cfg.name));
     }
 
     throw new Error(`Unsupported node type: ${cfg.type}`);
@@ -669,14 +669,19 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
 
     for (let i = 0; i < configs.length; i++) {
         proxyNodes += generateClashProxyNode(configs[i], ports[i]);
-        proxyNames.push(configs[i].name);
+        proxyNames.push(yamlString(configs[i].name));
     }
 
-    return CLASH_CONFIG_TEMPLATE
-        .replace('{fake_ip_filter}', FAKE_IP_FILTER)
-        .replace('{proxy_nodes}', proxyNodes)
-        .replace('{proxy_names}', proxyNames.join('\n        - '))
-        .replace('{rules_section}', rulesStr);
+    const sections = {
+        fake_ip_filter: FAKE_IP_FILTER,
+        proxy_nodes: proxyNodes,
+        proxy_names: proxyNames.join('\n        - '),
+        rules_section: rulesStr
+    };
+    return CLASH_CONFIG_TEMPLATE.replace(
+        /{(fake_ip_filter|proxy_nodes|proxy_names|rules_section)}/g,
+        (_, section) => sections[section]
+    );
 }
 
 // ================= Workers 主入口 =================

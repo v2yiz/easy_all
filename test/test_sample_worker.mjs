@@ -171,7 +171,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-type'), 'text/yaml; charset=UTF-8');
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename="Team_Sub"');
     assert.match(body, /mixed-port: 1080/);
-    assert.match(body, /- name: NODE_REALITY/);
+    assert.match(body, /- name: "NODE_REALITY"/);
     assert.match(body, /server: reality\.example\.com/);
     assert.match(body, /port: 10049/);
     assert.match(body, /type: vless/);
@@ -202,23 +202,43 @@ describe('sample-worker Cloudflare Worker', () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename="EASY_ALL"');
-    assert.match(body, /- name: NODE_REALITY/);
+    assert.match(body, /- name: "NODE_REALITY"/);
     assert.match(body, /server: reality\.example\.com/);
     assert.match(body, /port: 10049/);
     assert.match(body, /- name: "NODE_ANYTLS"/);
     assert.match(body, /type: anytls/);
     assert.match(body, /server: "anytls\.example\.com"/);
     assert.match(body, /port: 10055/);
-    assert.match(body, /- name: NODE_VLESS_WSS/);
+    assert.match(body, /- name: "NODE_VLESS_WSS"/);
     assert.match(body, /server: wss\.example\.com/);
     assert.match(body, /network: ws/);
     assert.match(body, /path: \/randompath/);
     assert.match(body, /Host: wss\.example\.com/);
-    assert.match(body, /      - NODE_REALITY\n        - NODE_ANYTLS\n        - NODE_VLESS_WSS/);
+    assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_WSS"/);
 
-    const wsNode = body.slice(body.indexOf('- name: NODE_VLESS_WSS'));
+    const wsNode = body.slice(body.indexOf('- name: "NODE_VLESS_WSS"'));
     assert.match(wsNode, /network: ws/);
     assert.match(wsNode, /ws-opts:/);
     assert.doesNotMatch(wsNode, /flow: xtls-rprx-vision/);
+  });
+
+  it('quotes malicious VLESS names without injecting YAML list entries', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source.replace(
+        "name: 'NODE_REALITY',",
+        "name: 'bad\\n  - DIRECT {host} {rules_section}',"
+      )
+    );
+    const response = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&flag=clash`)),
+      {}
+    );
+    const body = await responseText(response);
+
+    assert.equal(response.status, 200);
+    assert.match(body, /- name: "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
+    assert.match(body, /      - "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
+    assert.doesNotMatch(body, /\n\s+- DIRECT reality\.example\.com/);
   });
 });

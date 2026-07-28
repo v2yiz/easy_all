@@ -441,6 +441,12 @@ test_state_and_lifecycle_guards() {
         "将 A、AAAA 一起切为 Proxied / 橙云" "${readme_content}"
     assert_contains "README documents Worker subscription verification retry policy" \
         "先等待 5 秒，再进行最多 6 次订阅 HTTP 验收" "${readme_content}"
+    assert_not_contains "README download commands do not reuse files based on timestamps" \
+        "wget -q -P /root -N" "${readme_content}"
+    assert_contains "README downloads updates to a protected temporary path" \
+        "wget -qO /root/easy_all.sh.new" "${readme_content}"
+    assert_contains "README atomically replaces the installed script" \
+        "mv -f /root/easy_all.sh.new /root/easy_all.sh" "${readme_content}"
 }
 
 test_acme_installer_arguments() {
@@ -495,13 +501,37 @@ test_subscription_retry_policy() {
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
 
     curl() {
-        local count
+        local count output="" url=""
         count=$(<"${call_file}")
         count=$((count + 1))
         printf '%s\n' "${count}" >"${call_file}"
-        if ((count < 4)); then
+        while (($#)); do
+            case "$1" in
+            -o)
+                output=$2
+                shift 2
+                ;;
+            -w | --max-time)
+                shift 2
+                ;;
+            -sS)
+                shift
+                ;;
+            *)
+                url=$1
+                shift
+                ;;
+            esac
+        done
+        [[ -n "${output}" && -n "${url}" ]] || return 1
+        if ((count <= 6)); then
+            printf 'Forbidden\n' >"${output}"
             printf '403'
+        elif [[ "${url}" == *"&flag=clash" ]]; then
+            printf 'proxies:\nproxy-groups:\nrules:\n' >"${output}"
+            printf '200'
         else
+            printf 'vless://test@example.com:443\n' | base64 >"${output}"
             printf '200'
         fi
     }
@@ -515,7 +545,7 @@ test_subscription_retry_policy() {
     calls=$(<"${call_file}")
     delays=$(<"${delay_file}")
     log_content=$(<"${CLOUDFLARE_DEPLOY_LOG}")
-    assert_equal "subscription verification retries until the fourth response" "4" "${calls}"
+    assert_equal "subscription verification requests both formats for four attempts" "8" "${calls}"
     assert_equal "subscription verification waits five seconds before its first request" \
         "5" "$(sed -n '1p' "${delay_file}")"
     assert_equal "subscription verification sleeps only before and between failed attempts" \
@@ -523,10 +553,53 @@ test_subscription_retry_policy() {
     assert_success "subscription retry intervals stay between one and three seconds" \
         awk 'NR == 1 {next} $1 < 1 || $1 > 3 {exit 1}' "${delay_file}"
     assert_contains "subscription verification logs six maximum attempts" \
-        "第 4/6 次，HTTP 200" "${log_content}"
+        "第 4/6 次，base64 HTTP 200，Clash HTTP 200" "${log_content}"
     assert_contains "subscription retry log includes its randomized delay" \
         "秒后重试" "${log_content}"
     assert_contains "captured subscription delays include retry intervals" $'5\n' "${delays}"
+}
+
+test_update_subscription_rolls_back_port_change() {
+    local status state_content nft_content nft_hash nft_calls="${TMP_DIR}/update-sub-nft-calls"
+    set_protocol_fixture "reality"
+    SUB_PORT_MODE="443"
+    WORKER_NAME="${DEFAULT_WORKER_NAME}"
+    WORKER_URL="https://old-worker.example.test"
+    CF_ACCOUNT_ID="account-id"
+    DEPLOY_MODE="auto"
+    save_state
+    printf 'old nftables\n' >"${NFT_CONFIG}"
+    printf 'old-hash\n' >"${STATE_DIR}/nftables.sha256"
+    : >"${nft_calls}"
+
+    require_root() { :; }
+    configure_nftables() {
+        printf 'new nftables\n' >"${NFT_CONFIG}"
+        printf 'new-hash\n' >"${STATE_DIR}/nftables.sha256"
+    }
+    configure_subscription() { return 1; }
+    nft() {
+        printf '%s\n' "$*" >>"${nft_calls}"
+    }
+
+    SUB_PORT_MODE="dynamic"
+    set +e
+    ( set -e; update_subscription ) >/dev/null 2>&1
+    status=$?
+    set -e
+
+    state_content=$(<"${STATE_FILE}")
+    nft_content=$(<"${NFT_CONFIG}")
+    nft_hash=$(<"${STATE_DIR}/nftables.sha256")
+    assert_equal "failed port update returns a failure" "1" "${status}"
+    assert_contains "failed port update restores the stored port mode" \
+        "SUB_PORT_MODE=443" "${state_content}"
+    assert_equal "failed port update restores nftables config" "old nftables" "${nft_content}"
+    assert_equal "failed port update restores nftables checksum" "old-hash" "${nft_hash}"
+    assert_contains "failed port update reloads restored active nftables rules" \
+        "-f ${NFT_CONFIG}" "$(<"${nft_calls}")"
+
+    unset -f require_root configure_nftables configure_subscription nft
 }
 
 test_update_command_orchestration() {
@@ -550,5 +623,6 @@ test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy
 test_update_command_orchestration
+test_update_subscription_rolls_back_port_change
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"
