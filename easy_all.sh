@@ -679,10 +679,11 @@ install_acme() {
     if [[ -x "${ACME_BIN}" ]]; then
         return 0
     fi
+    local cert_domain=${ANYTLS_DOMAIN:-${VLESS_WSS_DOMAIN:-example.com}}
+    local account_email=${ACME_EMAIL:-admin@${cert_domain}}
     local installer="${RUNTIME_TMP}/get-acme.sh"
     curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" || die "下载 acme.sh 安装器失败"
-    local cert_domain=${ANYTLS_DOMAIN:-${VLESS_WSS_DOMAIN:-example.com}}
-    sh "${installer}" --home "${ACME_HOME}" --accountemail "${ACME_EMAIL:-admin@${cert_domain}}" \
+    sh "${installer}" "email=${account_email}" --home "${ACME_HOME}" \
         || die "安装 acme.sh 失败"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后未找到 ${ACME_BIN}"
     install -d -m 0700 "${STATE_DIR}"
