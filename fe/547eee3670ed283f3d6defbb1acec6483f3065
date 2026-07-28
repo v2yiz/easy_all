@@ -1,0 +1,27 @@
+easy_all.sh
+  s_722a8d9b51ab0f::t_e412be3d95f47e 1183-1184,1190-1191,1197-1198,1207-1390,1392,1397-1484,1486-1487,1489-1517,1520-1538,1540-1560,1562-1606,1608-1622,1624-1810
+sample-worker.js
+  s_722a8d9b51ab0f::t_4e58880132942f 3,8,32-33,37-38,41,45-46,49,57-58,62-64,66-67,70-74,630
+test/test_easy_all.sh
+  s_722a8d9b51ab0f::t_09e2aab6036ab4 78-87,98,101,107,111,114,131-159,282-283,305-312
+test/test_sample_worker.mjs
+  s_722a8d9b51ab0f::t_3560bb46733725 2,9,24-29,78,82-84,88-107,114-121,123-127,140-141,145,154-155,167-168,170,173-175,177-179,181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fe547eee3670ed283f3d6defbb1acec6483f3065",
+  "prompts": {},
+  "sessions": {
+    "s_722a8d9b51ab0f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa6dd-0266-7520-877e-1e38a02a2dc3",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
