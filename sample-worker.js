@@ -10,18 +10,23 @@
 // ================= 配置常量 =================
 
 const ALLOWED_TOKENS = {
-    'REPLACE_WITH_TOKEN_1': 'user1',
-    'REPLACE_WITH_TOKEN_2': 'user2'
+    user1: 'REPLACE_WITH_TOKEN_1',
+    user2: 'REPLACE_WITH_TOKEN_2'
 };
+const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));
 
 const PORT_BASE = 10000;
 const PORT_MULTIPLIER = 6;
-const DEFAULT_SUB_DOWNLOAD_NAME = 'MY_SUB';
+const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
 const CONFIGS = [];
 
 function defineNode(config) {
     CONFIGS.push(config);
     return config;
+}
+
+function isAllowedToken(token) {
+    return Boolean(token && ALLOWED_TOKEN_VALUES.has(token));
 }
 
 // ── 节点 A ──────────────────────────────────────────────────────
@@ -630,7 +635,7 @@ export default {
             const params = url.searchParams;
             const token = params.get('token');
 
-            if (!token || !ALLOWED_TOKENS[token]) {
+            if (!isAllowedToken(token)) {
                 return new Response('403 Forbidden', { status: 403 });
             }
 

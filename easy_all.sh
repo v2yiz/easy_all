@@ -1214,11 +1214,14 @@ function downloadName(env) {
   const value = String(env && env.SUB_DOWNLOAD_NAME || DEFAULT_SUB_DOWNLOAD_NAME).trim().replace(/\.(ya?ml)$/i, '');
   return /^[A-Za-z0-9._-]{1,64}$/.test(value) ? value : DEFAULT_SUB_DOWNLOAD_NAME;
 }
+function isAllowedToken(token, env) {
+  return Boolean(token && env && token === env.SUB_TOKEN);
+}
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname !== '/subscribe') return new Response('Not Found', {status: 404});
-    if (!url.searchParams.get('token') || url.searchParams.get('token') !== env.SUB_TOKEN) {
+    if (!isAllowedToken(url.searchParams.get('token'), env)) {
       return new Response('403 Forbidden', {status: 403});
     }
     const isClash = url.searchParams.get('flag') === 'clash';

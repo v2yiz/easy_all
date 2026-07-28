@@ -49,11 +49,14 @@ describe('sample-worker Cloudflare Worker', () => {
   it('rejects missing or unknown tokens', async () => {
     const missing = await fetchSubscribe();
     const invalid = await fetchSubscribe('token=unknown');
+    const formerKey = await fetchSubscribe('token=user1');
 
     assert.equal(missing.status, 403);
     assert.equal(await responseText(missing), '403 Forbidden');
     assert.equal(invalid.status, 403);
     assert.equal(await responseText(invalid), '403 Forbidden');
+    assert.equal(formerKey.status, 403);
+    assert.equal(await responseText(formerKey), '403 Forbidden');
   });
 
   it('returns only DEFAULT_NODE in the default base64 subscription', async () => {
@@ -141,7 +144,7 @@ describe('sample-worker Cloudflare Worker', () => {
     const body = await responseText(response);
 
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get('content-disposition'), 'attachment; filename="MY_SUB"');
+    assert.equal(response.headers.get('content-disposition'), 'attachment; filename="EASY_ALL"');
     assert.match(body, /- name: NODE_A/);
     assert.match(body, /server: node-a\.example\.com/);
     assert.match(body, /port: 10049/);
