@@ -22,17 +22,15 @@
 ## 快速安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh -o easy_all.sh
-chmod +x easy_all.sh
-sudo ./easy_all.sh install
+wget -q -P /root -N "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh && /root/easy_all.sh install
 ```
 
 也可以直接指定协议：
 
 ```bash
-sudo ./easy_all.sh install reality
-sudo ./easy_all.sh install anytls
-sudo ./easy_all.sh install vless-wss
+/root/easy_all.sh install reality
+/root/easy_all.sh install anytls
+/root/easy_all.sh install vless-wss
 ```
 
 安装成功后会注册 `/usr/local/bin/easy_all`。
