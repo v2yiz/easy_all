@@ -1,0 +1,25 @@
+package.json
+  s_28e667a76df43b::t_5aa44fd3fa436c 2,6
+sample-worker.js
+  s_28e667a76df43b::t_19134f2836bf04 3,7,76-88,402-423,461-464,477,481,483,487-489,492-493,498-507,561,564-566,568,570-571,573,584-586
+test/test_sample_worker.mjs
+  s_28e667a76df43b::t_21efc5048f98db 75,85,90,101-106,158-163,169-173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c18a169d6270f5ec5c56a502105d1afa2c79cd75",
+  "prompts": {},
+  "sessions": {
+    "s_28e667a76df43b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa24f-8aa8-7e12-a87f-3a6598e96504",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
