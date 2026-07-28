@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import worker from '../sample-worker.js';
 
 const VALID_TOKEN = 'REPLACE_WITH_TOKEN_1';
 const FIXED_NOW = Date.UTC(2026, 0, 1, 0, 0, 0);
+let importCounter = 0;
 
 function subscribeUrl(search = '') {
   const query = search.startsWith('?') ? search.slice(1) : search;
@@ -17,6 +19,12 @@ async function fetchSubscribe(search = '', env = {}) {
 
 async function responseText(response) {
   return response.text();
+}
+
+async function importSampleWorkerWithSource(source) {
+  importCounter += 1;
+  const url = `data:text/javascript;charset=utf-8,${encodeURIComponent(`${source}\n//# sourceURL=sample-worker-variant-${importCounter}.mjs`)}`;
+  return import(url);
 }
 
 function decodeBase64Subscription(text) {
@@ -67,16 +75,34 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-type'), 'text/plain; charset=UTF-8');
     assert.match(response.headers.get('cache-control'), /no-store/);
     assert.equal(response.headers.get('content-disposition'), 'inline');
-    assert.match(body, /^vless:\/\/00000000-0000-4000-8000-000000000001@node-a\.example\.com:10049\?/);
+    assert.match(body, /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
     assert.match(body, /security=reality/);
     assert.match(body, /flow=xtls-rprx-vision/);
     assert.match(body, /packetEncoding=xudp/);
-    assert.match(body, /#NODE_A$/);
-    assert.doesNotMatch(body, /NODE_B/);
-    assert.doesNotMatch(body, /NODE_C_TLS_VISION/);
-    assert.doesNotMatch(body, /NODE_D_ANYTLS/);
-    assert.doesNotMatch(body, /NODE_E_WS_TLS/);
+    assert.match(body, /#NODE_REALITY$/);
+    assert.doesNotMatch(body, /NODE_ANYTLS/);
+    assert.doesNotMatch(body, /NODE_VLESS_WSS/);
     assert.doesNotMatch(body, /trojan/i);
+  });
+
+  it('accepts an array of DEFAULT_NODE configs in the default base64 subscription', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source.replace(
+        'const DEFAULT_NODE = NODE_REALITY_CONFIG;',
+        'const DEFAULT_NODE = [NODE_REALITY_CONFIG, NODE_ANYTLS_CONFIG];'
+      )
+    );
+    const response = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}`)),
+      {}
+    );
+    const links = decodeBase64Subscription(await responseText(response)).split('\n');
+
+    assert.equal(response.status, 200);
+    assert.equal(links.length, 2);
+    assert.match(links[0], /#NODE_REALITY$/);
+    assert.match(links[1], /#NODE_ANYTLS$/);
   });
 
   it('returns all registered nodes when node=all is requested', async () => {
@@ -85,28 +111,20 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = body.split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 5);
-    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@node-a\.example\.com:10049\?/);
-    assert.match(links[1], /^vless:\/\/00000000-0000-4000-8000-000000000002@node-b\.example\.com:10055\?/);
-    assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000003@node-c\.example\.com:443\?/);
-    assert.match(links[3], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10067\/\?/);
-    assert.match(links[4], /^vless:\/\/00000000-0000-4000-8000-000000000004@node-e\.example\.com:443\?/);
-    assert.match(links[0], /#NODE_A$/);
-    assert.match(links[1], /#NODE_B$/);
+    assert.equal(links.length, 3);
+    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
+    assert.match(links[1], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10055\/\?/);
+    assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000002@wss\.example\.com:443\?/);
+    assert.match(links[0], /#NODE_REALITY$/);
+    assert.match(links[1], /sni=anytls\.example\.com/);
+    assert.match(links[1], /insecure=0/);
+    assert.match(links[1], /#NODE_ANYTLS$/);
     assert.match(links[2], /security=tls/);
-    assert.match(links[2], /flow=xtls-rprx-vision/);
-    assert.doesNotMatch(links[2], /pbk=/);
-    assert.doesNotMatch(links[2], /sid=/);
-    assert.match(links[2], /#NODE_C_TLS_VISION$/);
-    assert.match(links[3], /sni=anytls\.example\.com/);
-    assert.match(links[3], /insecure=0/);
-    assert.match(links[3], /#NODE_D_ANYTLS$/);
-    assert.match(links[4], /security=tls/);
-    assert.match(links[4], /type=ws/);
-    assert.match(links[4], /path=%2Fhacxws/);
-    assert.match(links[4], /host=node-e\.example\.com/);
-    assert.doesNotMatch(links[4], /flow=xtls-rprx-vision/);
-    assert.match(links[4], /#NODE_E_WS_TLS$/);
+    assert.match(links[2], /type=ws/);
+    assert.match(links[2], /path=%2Frandompath/);
+    assert.match(links[2], /host=wss\.example\.com/);
+    assert.doesNotMatch(links[2], /flow=xtls-rprx-vision/);
+    assert.match(links[2], /#NODE_VLESS_WSS$/);
   });
 
   it('returns Clash YAML for the default node with normalized download filename', async () => {
@@ -119,12 +137,12 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-type'), 'text/yaml; charset=UTF-8');
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename="Team_Sub"');
     assert.match(body, /mixed-port: 1080/);
-    assert.match(body, /- name: NODE_A/);
-    assert.match(body, /server: node-a\.example\.com/);
+    assert.match(body, /- name: NODE_REALITY/);
+    assert.match(body, /server: reality\.example\.com/);
     assert.match(body, /port: 10049/);
     assert.match(body, /type: vless/);
     assert.match(body, /reality-opts:/);
-    assert.match(body, /public-key: REPLACE_WITH_REALITY_PUBLIC_KEY_A/);
+    assert.match(body, /public-key: REPLACE_WITH_REALITY_PUBLIC_KEY/);
     assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
@@ -133,7 +151,8 @@ describe('sample-worker Cloudflare Worker', () => {
       body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
       body.indexOf('GEOSITE,geolocation-!cn,PROXY')
     );
-    assert.doesNotMatch(body, /NODE_B/);
+    assert.doesNotMatch(body, /NODE_ANYTLS/);
+    assert.doesNotMatch(body, /NODE_VLESS_WSS/);
     assert.doesNotMatch(body, /trojan/i);
   });
 
@@ -145,32 +164,21 @@ describe('sample-worker Cloudflare Worker', () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename="EASY_ALL"');
-    assert.match(body, /- name: NODE_A/);
-    assert.match(body, /server: node-a\.example\.com/);
+    assert.match(body, /- name: NODE_REALITY/);
+    assert.match(body, /server: reality\.example\.com/);
     assert.match(body, /port: 10049/);
-    assert.match(body, /- name: NODE_B/);
-    assert.match(body, /server: node-b\.example\.com/);
-    assert.match(body, /port: 10055/);
-    assert.match(body, /- name: NODE_C_TLS_VISION/);
-    assert.match(body, /server: node-c\.example\.com/);
-    assert.match(body, /port: 443/);
-    assert.match(body, /- name: "NODE_D_ANYTLS"/);
+    assert.match(body, /- name: "NODE_ANYTLS"/);
     assert.match(body, /type: anytls/);
     assert.match(body, /server: "anytls\.example\.com"/);
-    assert.match(body, /port: 10067/);
-    assert.match(body, /- name: NODE_E_WS_TLS/);
-    assert.match(body, /server: node-e\.example\.com/);
+    assert.match(body, /port: 10055/);
+    assert.match(body, /- name: NODE_VLESS_WSS/);
+    assert.match(body, /server: wss\.example\.com/);
     assert.match(body, /network: ws/);
-    assert.match(body, /path: \/hacxws/);
-    assert.match(body, /Host: node-e\.example\.com/);
-    assert.match(body, /      - NODE_A\n        - NODE_B\n        - NODE_C_TLS_VISION\n        - NODE_D_ANYTLS\n        - NODE_E_WS_TLS/);
+    assert.match(body, /path: \/randompath/);
+    assert.match(body, /Host: wss\.example\.com/);
+    assert.match(body, /      - NODE_REALITY\n        - NODE_ANYTLS\n        - NODE_VLESS_WSS/);
 
-    const tlsNode = body.slice(body.indexOf('- name: NODE_C_TLS_VISION'));
-    assert.match(tlsNode, /flow: xtls-rprx-vision/);
-    assert.match(tlsNode, /servername: node-c\.example\.com/);
-    assert.doesNotMatch(tlsNode, /reality-opts:/);
-
-    const wsNode = body.slice(body.indexOf('- name: NODE_E_WS_TLS'));
+    const wsNode = body.slice(body.indexOf('- name: NODE_VLESS_WSS'));
     assert.match(wsNode, /network: ws/);
     assert.match(wsNode, /ws-opts:/);
     assert.doesNotMatch(wsNode, /flow: xtls-rprx-vision/);

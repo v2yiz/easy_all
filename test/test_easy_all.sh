@@ -75,6 +75,16 @@ if (clashResponse.headers.get('content-disposition') !== 'attachment; filename="
   process.exit(1);
 }
 const yaml = await clashResponse.text();
+for (const part of [
+  'external-controller:',
+  'DOMAIN-SUFFIX,bilibili.com,DIRECT',
+  'DOMAIN-SUFFIX,zhihu.com,DIRECT',
+  'DOMAIN-SUFFIX,douyin.com,DIRECT',
+  'GEOSITE,geolocation-!cn,PROXY',
+  'GEOIP,CN,DIRECT,no-resolve'
+]) {
+  if (!yaml.includes(part)) process.exit(1);
+}
 
 const formerKeyResponse = await worker.default.fetch(
   new Request('https://worker.test/subscribe?token=owner'),
@@ -85,23 +95,23 @@ if (formerKeyResponse.status !== 403) process.exit(1);
 const checks = {
   reality: {
     link: ['vless://00000000-0000-4000-8000-000000000001@203.0.113.10:',
-      'security=reality', 'type=tcp', 'flow=xtls-rprx-vision',
+      'security=reality', 'type=tcp', 'fp=chrome', 'flow=xtls-rprx-vision',
       'pbk=test-public-key', 'sid=0123456789abcdef', '#MY_REALITY'],
     yaml: ['type: vless', 'network: tcp', 'tls: true', 'reality-opts:',
-      'public-key: "test-public-key"', 'flow: xtls-rprx-vision']
+      'public-key: test-public-key', 'client-fingerprint: chrome', 'flow: xtls-rprx-vision']
   },
   anytls: {
     link: ['anytls://test-anytls-password@anytls.example.com:', 'sni=anytls.example.com',
       'insecure=0', '#MY_ANYTLS'],
     yaml: ['type: anytls', 'server: "anytls.example.com"',
-      'password: "test-anytls-password"', 'client-fingerprint: chrome']
+      'password: "test-anytls-password"', 'client-fingerprint: "chrome"']
   },
   'vless-wss': {
     link: ['vless://00000000-0000-4000-8000-000000000001@wss.example.com:443?',
-      'security=tls', 'type=ws', 'path=%2Fhacxws', 'host=wss.example.com',
+      'security=tls', 'type=ws', 'fp=chrome', 'path=%2Fhacxws', 'host=wss.example.com',
       '#MY_VLESS_WSS'],
     yaml: ['type: vless', 'network: ws', 'port: 443', 'ws-opts:',
-      'path: "/hacxws"', 'Host: "wss.example.com"']
+      'path: /hacxws', 'Host: wss.example.com']
   }
 };
 for (const part of checks[protocol].link) {
@@ -115,6 +125,35 @@ if (protocol !== 'vless-wss') {
   const port = Number(decoded.match(/@[^:]+:(\d+)/)?.[1]);
   if (!Number.isInteger(port) || port < 10000 || port > 65535) process.exit(1);
 }
+EOF
+}
+
+worker_runtime_accepts_default_node_array() {
+    node --input-type=module - "$1" <<'EOF'
+import fs from 'node:fs';
+
+const source = fs.readFileSync(process.argv[2], 'utf8')
+  .replace('const DEFAULT_NODE = NODE_CONFIG;', 'const DEFAULT_NODE = [NODE_CONFIG, NODE_CONFIG];');
+const encoded = Buffer.from(source).toString('base64');
+const worker = await import(`data:text/javascript;base64,${encoded}`);
+const env = {SUB_DOWNLOAD_NAME: 'Team.yaml'};
+
+const plainResponse = await worker.default.fetch(
+  new Request('https://worker.test/subscribe?token=test-token'),
+  env
+);
+if (plainResponse.status !== 200) process.exit(1);
+const links = Buffer.from(await plainResponse.text(), 'base64').toString('utf8').split('\n');
+if (links.length !== 2) process.exit(1);
+if (!links[0] || !links[1]) process.exit(1);
+
+const clashResponse = await worker.default.fetch(
+  new Request('https://worker.test/subscribe?token=test-token&flag=clash'),
+  env
+);
+if (clashResponse.status !== 200) process.exit(1);
+const yaml = await clashResponse.text();
+if ((yaml.match(/^  - name: /gm) || []).length !== 2) process.exit(1);
 EOF
 }
 
@@ -240,6 +279,8 @@ test_links_and_workers() {
         assert_success "${protocol} Worker JavaScript syntax valid" node --check "${worker}"
         assert_success "${protocol} Worker emits base64 and Mihomo outputs" \
             worker_runtime_matches_protocol "${worker}" "${protocol}"
+        assert_success "${protocol} Worker accepts DEFAULT_NODE array" \
+            worker_runtime_accepts_default_node_array "${worker}"
     done
 }
 
@@ -261,6 +302,14 @@ test_worker_only_subscription_branch() {
         "ALLOWED_TOKENS 已内嵌" "${output}"
     assert_contains "worker-only branch emits ALLOWED_TOKENS dict" \
         'const ALLOWED_TOKENS = {"owner":"test-token","friend":"friend-token"};' "${content}"
+    assert_contains "worker-only branch emits CONFIGS array" \
+        "const CONFIGS = [];" "${content}"
+    assert_contains "worker-only branch emits installed node config" \
+        "const NODE_CONFIG = defineNode(" "${content}"
+    assert_contains "worker-only branch emits DEFAULT_NODE selector" \
+        "const DEFAULT_NODE = NODE_CONFIG;" "${content}"
+    assert_contains "worker-only branch uses sample Clash rules" \
+        "DOMAIN-SUFFIX,bilibili.com,DIRECT" "${content}"
     assert_contains "worker-only branch authenticates by token values" \
         "ALLOWED_TOKEN_VALUES.has(token)" "${content}"
     assert_not_contains "worker-only branch does not depend on SUB_TOKEN secret" \

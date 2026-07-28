@@ -1,11 +1,11 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS Reality / VLESS TCP TLS Vision / VLESS WebSocket TLS / AnyTLS 订阅、Clash Meta 配置
+ * 提供 VLESS Reality / VLESS WebSocket TLS / AnyTLS 订阅、Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
  * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、WebSocket path 或 AnyTLS 密码
- * 3. DEFAULT_NODE 指向你希望默认输出的节点
+ * 3. DEFAULT_NODE 指向你希望默认输出的节点，支持单节点或节点数组
  */
 // ================= 配置常量 =================
 
@@ -29,48 +29,24 @@ function isAllowedToken(token) {
     return Boolean(token && ALLOWED_TOKEN_VALUES.has(token));
 }
 
-// ── 节点 A ──────────────────────────────────────────────────────
-const NODE_A_CONFIG = defineNode({
+// ── Reality 节点 ───────────────────────────────────────────────
+const NODE_REALITY_CONFIG = defineNode({
     type: 'vless',
     security: 'reality',
     uuid: '00000000-0000-4000-8000-000000000001',
-    host: 'node-a.example.com',
-    name: 'NODE_A',
+    host: 'reality.example.com',
+    name: 'NODE_REALITY',
     fp: 'chrome',
     sni: 'www.example.com',
-    pbk: 'REPLACE_WITH_REALITY_PUBLIC_KEY_A',
+    pbk: 'REPLACE_WITH_REALITY_PUBLIC_KEY',
     sid: '0123456789abcdef'
 });
 
-// ── 节点 B ──────────────────────────────────────────────────────
-const NODE_B_CONFIG = defineNode({
-    type: 'vless',
-    security: 'reality',
-    uuid: '00000000-0000-4000-8000-000000000002',
-    host: 'node-b.example.com',
-    name: 'NODE_B',
-    fp: 'chrome',
-    sni: 'www.example.com',
-    pbk: 'REPLACE_WITH_REALITY_PUBLIC_KEY_B',
-    sid: 'abcdef0123456789'
-});
-
-// ── 节点 C：VLESS TCP TLS Vision ─────────────────────────────────
-const NODE_C_CONFIG = defineNode({
-    type: 'vless',
-    security: 'tls',
-    uuid: '00000000-0000-4000-8000-000000000003',
-    host: 'node-c.example.com',
-    name: 'NODE_C_TLS_VISION',
-    fp: 'chrome',
-    sni: 'node-c.example.com'
-});
-
-// ── 节点 D：AnyTLS，默认使用 dynamic 订阅端口 ─────────────────────
-const NODE_D_CONFIG = defineNode({
+// ── AnyTLS 节点，默认使用 dynamic 订阅端口 ────────────────────────
+const NODE_ANYTLS_CONFIG = defineNode({
     type: 'anytls',
     host: 'anytls.example.com',
-    name: 'NODE_D_ANYTLS',
+    name: 'NODE_ANYTLS',
     password: 'REPLACE_WITH_ANYTLS_PASSWORD',
     sni: 'anytls.example.com',
     fp: 'chrome',
@@ -78,20 +54,24 @@ const NODE_D_CONFIG = defineNode({
     insecure: false
 });
 
-// ── 节点 E：VLESS WebSocket TLS ─────────────────────────────────
-const NODE_E_CONFIG = defineNode({
+// ── VLESS WebSocket TLS 节点 ────────────────────────────────────
+const NODE_VLESS_WSS_CONFIG = defineNode({
     type: 'vless',
     security: 'tls',
     network: 'ws',
-    uuid: '00000000-0000-4000-8000-000000000004',
-    host: 'node-e.example.com',
-    name: 'NODE_E_WS_TLS',
+    uuid: '00000000-0000-4000-8000-000000000002',
+    host: 'wss.example.com',
+    name: 'NODE_VLESS_WSS',
     fp: 'chrome',
-    sni: 'node-e.example.com',
-    path: '/hacxws'
+    sni: 'wss.example.com',
+    path: '/randompath'
 });
 
-const DEFAULT_NODE = NODE_A_CONFIG; // 控制默认输出的节点
+const DEFAULT_NODE = NODE_REALITY_CONFIG; // 控制默认输出的节点，支持 [NODE_REALITY_CONFIG, NODE_ANYTLS_CONFIG]
+
+function defaultNodeConfigs() {
+    return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
+}
 
 // ================= 规则与模板 =================
 
@@ -647,7 +627,7 @@ export default {
             if (node === 'all') {
                 targetConfigs = CONFIGS;
             } else {
-                targetConfigs = [DEFAULT_NODE];
+                targetConfigs = defaultNodeConfigs();
             }
             const ports = targetConfigs.map((_, i) => calculateDynamicPort(currentHourCount + i));
 
