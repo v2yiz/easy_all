@@ -47,6 +47,40 @@ describe('sample-worker Cloudflare Worker', () => {
     Math.random = originalRandom;
   });
 
+  it('keeps rule boundaries, priorities and rule types valid', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    for (const marker of [
+      '// EASY_ALL_CONFIG_START',
+      '// EASY_ALL_CONFIG_END',
+      '// EASY_ALL_RULES_START',
+      '// EASY_ALL_RULES_END'
+    ]) {
+      assert.equal(source.split(marker).length - 1, 1, `${marker} must occur exactly once`);
+    }
+
+    const rulesBlock = source.match(/const EMBEDDED_CLASH_RULES = `rules:\n([\s\S]*?)\n`;/)?.[1];
+    assert.ok(rulesBlock, 'embedded Clash rules must be present');
+    const rules = rulesBlock
+      .split('\n')
+      .map(line => line.trim().replace(/^-\s*/, ''))
+      .filter(line => /^(DOMAIN|DOMAIN-SUFFIX|DOMAIN-KEYWORD|IP-CIDR|IP-CIDR6|GEOIP|GEOSITE|MATCH),/.test(line));
+    const keys = rules.map(rule => rule.split(',').slice(0, 2).join(',').toLowerCase());
+
+    assert.equal(new Set(keys).size, keys.length, 'rules must not contain duplicate match keys');
+    assert.equal(rules.at(-1), 'MATCH,PROXY');
+    assert.ok(
+      rules.indexOf('DOMAIN-SUFFIX,apple-relay.apple.com,PROXY') <
+      rules.indexOf('DOMAIN-SUFFIX,apple.com,DIRECT')
+    );
+    assert.ok(
+      rules.indexOf('DOMAIN,copilot.microsoft.com,PROXY') <
+      rules.indexOf('DOMAIN-SUFFIX,microsoft.com,DIRECT')
+    );
+    assert.ok(rules.includes('IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve'));
+    assert.equal(rules.some(rule => /^IP-CIDR,[^,]*:/.test(rule)), false);
+    assert.equal(rules.some(rule => /24\.199\.123\.28|45\.76\.214\.191/.test(rule)), false);
+  });
+
   it('rejects non-subscribe paths', async () => {
     const response = await worker.fetch(new Request('https://worker.example.test/health'), {});
 
@@ -146,6 +180,10 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
+    assert.match(body, /DOMAIN,copilot\.microsoft\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,microsoft\.com,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,apple-relay\.fastly-edge\.com,PROXY/);
+    assert.match(body, /IP-CIDR6,2001:b28:f23d::\/48,PROXY,no-resolve/);
     assert.match(body, /GEOIP,CN,DIRECT,no-resolve/);
     assert.ok(
       body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <

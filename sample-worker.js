@@ -9,6 +9,7 @@
  */
 // ================= 配置常量 =================
 
+// EASY_ALL_CONFIG_START
 const ALLOWED_TOKENS = {
     user1: 'REPLACE_WITH_TOKEN_1',
     user2: 'REPLACE_WITH_TOKEN_2'
@@ -72,9 +73,11 @@ const DEFAULT_NODE = NODE_REALITY_CONFIG; // 控制默认输出的节点，支�
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
 }
+// EASY_ALL_CONFIG_END
 
 // ================= 规则与模板 =================
 
+// EASY_ALL_RULES_START
 const FAKE_IP_FILTER = `      - '+.lan'
       - '+.local'
       - 'localhost'
@@ -95,6 +98,17 @@ const EMBEDDED_CLASH_RULES = `rules:
   - IP-CIDR6,::1/128,DIRECT,no-resolve
   - IP-CIDR6,fc00::/7,DIRECT,no-resolve
   - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+
+  # ==================== 精确代理例外 ====================
+  # 必须位于 Apple、Microsoft 的直连规则之前。
+  - DOMAIN-SUFFIX,apple-relay.akamaized.net,PROXY
+  - DOMAIN-SUFFIX,apple-relay.apple.com,PROXY
+  - DOMAIN-SUFFIX,apple-relay.cloudflare.com,PROXY
+  - DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY
+  - DOMAIN-SUFFIX,apple-relay.mask.apple-dns.net,PROXY
+  - DOMAIN,copilot.microsoft.com,PROXY
+  - DOMAIN,copilot.bing.com,PROXY
+  - DOMAIN-SUFFIX,bing.com,PROXY
 
   # ==================== 国内高流量服务直连 ====================
   # DOMAIN-SUFFIX 同时覆盖域名解析得到的 IPv4（A）与 IPv6（AAAA）。
@@ -161,6 +175,8 @@ const EMBEDDED_CLASH_RULES = `rules:
   # 电商 / 本地生活及其静态资源
   - DOMAIN-SUFFIX,taobao.com,DIRECT
   - DOMAIN-SUFFIX,tmall.com,DIRECT
+  - DOMAIN-SUFFIX,alibaba.com,DIRECT
+  - DOMAIN-SUFFIX,alikunlun.com,DIRECT
   - DOMAIN-SUFFIX,alipay.com,DIRECT
   - DOMAIN-SUFFIX,alicdn.com,DIRECT
   - DOMAIN-SUFFIX,tbcdn.cn,DIRECT
@@ -172,6 +188,49 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,meituan.com,DIRECT
   - DOMAIN-SUFFIX,meituan.net,DIRECT
   - DOMAIN-SUFFIX,dianping.com,DIRECT
+
+  # 地图 / 出行 / 办公及常用国内服务
+  - DOMAIN-SUFFIX,amap.com,DIRECT
+  - DOMAIN-SUFFIX,autonavi.com,DIRECT
+  - DOMAIN-SUFFIX,ctrip.com,DIRECT
+  - DOMAIN-SUFFIX,dingtalk.com,DIRECT
+  - DOMAIN-SUFFIX,douban.com,DIRECT
+  - DOMAIN-SUFFIX,doubanio.com,DIRECT
+  - DOMAIN-SUFFIX,ksosoft.com,DIRECT
+  - DOMAIN-SUFFIX,mi-img.com,DIRECT
+  - DOMAIN-SUFFIX,miui.com,DIRECT
+  - DOMAIN-SUFFIX,xiaomi.com,DIRECT
+
+  # ==================== Apple 直连 ====================
+  - DOMAIN,www-cdn.icloud.com.akadns.net,DIRECT
+  - DOMAIN-SUFFIX,aaplimg.com,DIRECT
+  - DOMAIN-SUFFIX,apple-cloudkit.com,DIRECT
+  - DOMAIN-SUFFIX,apple.co,DIRECT
+  - DOMAIN-SUFFIX,apple.com,DIRECT
+  - DOMAIN-SUFFIX,apple.news,DIRECT
+  - DOMAIN-SUFFIX,apple.com.cn,DIRECT
+  - DOMAIN-SUFFIX,appstore.com,DIRECT
+  - DOMAIN-SUFFIX,cdn-apple.com,DIRECT
+  - DOMAIN-SUFFIX,icloud-content.com,DIRECT
+  - DOMAIN-SUFFIX,icloud.com,DIRECT
+  - DOMAIN-SUFFIX,icloud.com.cn,DIRECT
+  - DOMAIN-SUFFIX,me.com,DIRECT
+  - DOMAIN-SUFFIX,mzstatic.com,DIRECT
+  - IP-CIDR,17.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR6,2620:149::/32,DIRECT,no-resolve
+  - IP-CIDR6,2403:300::/32,DIRECT,no-resolve
+  - IP-CIDR6,2a01:b740::/32,DIRECT,no-resolve
+
+  # ==================== Microsoft 精确分流 ====================
+  - DOMAIN-SUFFIX,microsoft.com,DIRECT
+  - DOMAIN-SUFFIX,outlook.com,DIRECT
+  - DOMAIN-SUFFIX,office365.com,DIRECT
+  - DOMAIN-SUFFIX,visualstudio.com,DIRECT
+  - DOMAIN-SUFFIX,windows.com,DIRECT
+  - DOMAIN-SUFFIX,windowsupdate.com,DIRECT
+  - DOMAIN-SUFFIX,msftconnecttest.com,DIRECT
+  - DOMAIN-SUFFIX,live.com,PROXY
+  - DOMAIN-SUFFIX,office.com,PROXY
 
   # ==================== AI 服务 ====================
   - DOMAIN-SUFFIX,chatgpt.com,PROXY
@@ -186,26 +245,25 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN,aistudio.google.com,PROXY
   - DOMAIN,ai.google.dev,PROXY
   - DOMAIN-SUFFIX,generativeai.google,PROXY
-
-  # ==================== Apple 精确分流 ====================
-  - DOMAIN-SUFFIX,apple-relay.akamaized.net,PROXY
-  - DOMAIN-SUFFIX,apple-relay.apple.com,PROXY
-  - DOMAIN-SUFFIX,apple-relay.cloudflare.com,PROXY
-  - DOMAIN-SUFFIX,apple.com,DIRECT
-  - DOMAIN-SUFFIX,apple.co,DIRECT
-  - DOMAIN-SUFFIX,apple.com.cn,DIRECT
-  - DOMAIN-SUFFIX,aaplimg.com,DIRECT
-  - DOMAIN-SUFFIX,icloud.com,DIRECT
-  - DOMAIN-SUFFIX,mzstatic.com,DIRECT
-
-  # ==================== Microsoft 精确分流 ====================
-  - DOMAIN-SUFFIX,microsoft.com,PROXY
-  - DOMAIN-SUFFIX,bing.com,PROXY
-  - DOMAIN-SUFFIX,live.com,PROXY
-  - DOMAIN-SUFFIX,outlook.com,PROXY
-  - DOMAIN-SUFFIX,office.com,PROXY
-  - DOMAIN-SUFFIX,msftconnecttest.com,DIRECT
-  - DOMAIN-SUFFIX,windowsupdate.com,DIRECT
+  - DOMAIN,api.statsig.com,PROXY
+  - DOMAIN,browser-intake-datadoghq.com,PROXY
+  - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
+  - DOMAIN,openai-api.arkoselabs.com,PROXY
+  - DOMAIN-SUFFIX,auth0.com,PROXY
+  - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
+  - DOMAIN-SUFFIX,chatgpt.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,client-api.arkoselabs.com,PROXY
+  - DOMAIN-SUFFIX,events.statsigapi.net,PROXY
+  - DOMAIN-SUFFIX,featuregates.org,PROXY
+  - DOMAIN-SUFFIX,host.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,intercom.io,PROXY
+  - DOMAIN-SUFFIX,intercomcdn.com,PROXY
+  - DOMAIN-SUFFIX,launchdarkly.com,PROXY
+  - DOMAIN-SUFFIX,openaiapi-site.azureedge.net,PROXY
+  - DOMAIN-SUFFIX,openaicom.imgix.net,PROXY
+  - DOMAIN-SUFFIX,segment.io,PROXY
+  - DOMAIN-SUFFIX,sentry.io,PROXY
+  - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
 
   # ==================== Google / YouTube ====================
   - DOMAIN-SUFFIX,google.com,PROXY
@@ -216,7 +274,21 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,youtube.com,PROXY
   - DOMAIN-SUFFIX,ytimg.com,PROXY
 
-  # ==================== Telegram IP 段 ====================
+  # ==================== LINE ====================
+  - DOMAIN-SUFFIX,scdn.co,PROXY
+  - DOMAIN-SUFFIX,line.naver.jp,PROXY
+  - DOMAIN-SUFFIX,line.me,PROXY
+  - DOMAIN-SUFFIX,line-apps.com,PROXY
+  - DOMAIN-SUFFIX,line-cdn.net,PROXY
+  - DOMAIN-SUFFIX,line-scdn.net,PROXY
+
+  # ==================== Telegram ====================
+  - DOMAIN-SUFFIX,t.me,PROXY
+  - DOMAIN-SUFFIX,tdesktop.com,PROXY
+  - DOMAIN-SUFFIX,telegra.ph,PROXY
+  - DOMAIN-SUFFIX,telegram.me,PROXY
+  - DOMAIN-SUFFIX,telegram.org,PROXY
+  - DOMAIN-SUFFIX,telesco.pe,PROXY
   - IP-CIDR,91.105.192.0/23,PROXY,no-resolve
   - IP-CIDR,91.108.4.0/22,PROXY,no-resolve
   - IP-CIDR,91.108.8.0/22,PROXY,no-resolve
@@ -224,8 +296,12 @@ const EMBEDDED_CLASH_RULES = `rules:
   - IP-CIDR,91.108.16.0/22,PROXY,no-resolve
   - IP-CIDR,91.108.20.0/22,PROXY,no-resolve
   - IP-CIDR,91.108.56.0/22,PROXY,no-resolve
+  - IP-CIDR,109.239.140.0/24,PROXY,no-resolve
   - IP-CIDR,149.154.160.0/20,PROXY,no-resolve
   - IP-CIDR,185.76.151.0/24,PROXY,no-resolve
+  - IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve
+  - IP-CIDR6,2001:b28:f23f::/48,PROXY,no-resolve
+  - IP-CIDR6,2001:67c:4e8::/48,PROXY,no-resolve
 
   # ==================== GEOSITE / GEOIP 兜底 ====================
   - GEOSITE,geolocation-!cn,PROXY
@@ -234,6 +310,7 @@ const EMBEDDED_CLASH_RULES = `rules:
   - GEOIP,CN,DIRECT,no-resolve
   - MATCH,PROXY
 `;
+// EASY_ALL_RULES_END
 
 const CLASH_CONFIG_TEMPLATE = `mixed-port: 1080
 allow-lan: false

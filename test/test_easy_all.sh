@@ -80,6 +80,10 @@ for (const part of [
   'DOMAIN-SUFFIX,bilibili.com,DIRECT',
   'DOMAIN-SUFFIX,zhihu.com,DIRECT',
   'DOMAIN-SUFFIX,douyin.com,DIRECT',
+  'DOMAIN,copilot.microsoft.com,PROXY',
+  'DOMAIN-SUFFIX,microsoft.com,DIRECT',
+  'DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY',
+  'IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve',
   'GEOSITE,geolocation-!cn,PROXY',
   'GEOIP,CN,DIRECT,no-resolve'
 ]) {
@@ -193,6 +197,7 @@ source_script_copy() {
         "${ROOT_DIR}/easy_all.sh" >"${SCRIPT_COPY}"
     # shellcheck source=/dev/null
     source "${SCRIPT_COPY}"
+    SAMPLE_WORKER_SOURCE="${ROOT_DIR}/sample-worker.js"
 }
 
 set_protocol_fixture() {
@@ -267,7 +272,7 @@ test_validators_and_defaults() {
 }
 
 test_links_and_workers() {
-    local protocol link yaml worker
+    local protocol link yaml worker sample_rules generated_rules
     for protocol in reality anytls vless-wss; do
         set_protocol_fixture "${protocol}"
         link=$(build_node_link)
@@ -281,7 +286,41 @@ test_links_and_workers() {
             worker_runtime_matches_protocol "${worker}" "${protocol}"
         assert_success "${protocol} Worker accepts DEFAULT_NODE array" \
             worker_runtime_accepts_default_node_array "${worker}"
+        sample_rules=$(awk '
+            $0 == "// EASY_ALL_RULES_START" {capture = 1}
+            capture == 1 {print}
+            $0 == "// EASY_ALL_RULES_END" {exit}
+        ' "${ROOT_DIR}/sample-worker.js")
+        generated_rules=$(awk '
+            $0 == "// EASY_ALL_RULES_START" {capture = 1}
+            capture == 1 {print}
+            $0 == "// EASY_ALL_RULES_END" {exit}
+        ' "${worker}")
+        assert_equal "${protocol} Worker rules come unchanged from sample-worker.js" \
+            "${sample_rules}" "${generated_rules}"
     done
+}
+
+test_sample_worker_template_guards() {
+    local invalid_template="${TMP_DIR}/invalid-sample-worker.js"
+    awk '$0 != "// EASY_ALL_RULES_END"' \
+        "${ROOT_DIR}/sample-worker.js" >"${invalid_template}"
+    assert_success "sample Worker rejects a missing rules boundary" \
+        sample_worker_validation_fails "${invalid_template}"
+
+    assert_success "sample Worker source rejects plain HTTP" \
+        sample_worker_fetch_fails "http://example.com/sample-worker.js"
+}
+
+sample_worker_validation_fails() {
+    ! (validate_sample_worker "$1") >/dev/null 2>&1
+}
+
+sample_worker_fetch_fails() {
+    ! (
+        SAMPLE_WORKER_SOURCE=$1
+        fetch_sample_worker "${TMP_DIR}/invalid-fetched-worker.js"
+    ) >/dev/null 2>&1
 }
 
 test_worker_only_subscription_branch() {
@@ -348,6 +387,21 @@ test_state_and_lifecycle_guards() {
         "${STATE_SCHEMA_VERSION}" "${STATE_VERSION}"
 
     script_content=$(<"${ROOT_DIR}/easy_all.sh")
+    assert_not_contains "easy_all does not embed Clash rule contents" \
+        "DOMAIN-SUFFIX,bilibili.com,DIRECT" "${script_content}"
+    assert_not_contains "easy_all does not embed the fake IP filter" \
+        "const FAKE_IP_FILTER =" "${script_content}"
+    assert_contains "easy_all reads rules from the sample Worker" \
+        "fetch_sample_worker" "${script_content}"
+    assert_contains "easy_all validates the sample rules boundary" \
+        "// EASY_ALL_RULES_START" "${script_content}"
+    assert_contains "installed easy_all ignores legacy cached sample Workers" \
+        '"${SCRIPT_DIR}" != "${COMMAND_INSTALL_DIR}"' "${script_content}"
+    assert_contains "command registration removes legacy sample Worker caches" \
+        'rm -f -- "${COMMAND_INSTALL_DIR}/sample-worker.js"' "${script_content}"
+    assert_not_contains "easy_all never installs a sample Worker cache" \
+        'install -m 0644 "${destination}" "${COMMAND_INSTALL_DIR}/sample-worker.js"' \
+        "${script_content}"
     assert_contains "script warns DNS-only before install" "DNS only / 灰云" "${script_content}"
     assert_contains "script reminds proxied after install" "Proxied / 橙云" "${script_content}"
     assert_contains "script keeps AAAA DNS-only before install or switch" \
@@ -476,6 +530,7 @@ test_subscription_retry_policy() {
 source_script_copy
 test_validators_and_defaults
 test_links_and_workers
+test_sample_worker_template_guards
 test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments

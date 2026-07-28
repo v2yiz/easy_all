@@ -142,6 +142,38 @@ Worker 支持：
 - Mihomo/Clash YAML：`/subscribe?token=...&flag=clash`
 - 下载文件名：`SUB_DOWNLOAD_NAME`
 
+### Worker 模板与规则来源
+
+`sample-worker.js` 是 Worker 模板和 Mihomo 规则的唯一来源，`easy_all.sh` 不再内嵌规则。生成 Worker 时按以下顺序获取模板：
+
+1. `SAMPLE_WORKER_SOURCE` 指定的本地文件或 HTTPS URL。
+2. 从项目源码目录直接运行时，读取同目录的 `sample-worker.js`。
+3. `SAMPLE_WORKER_URL`，默认读取本仓库 `main` 分支的 `sample-worker.js`。
+
+模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换或 `update-sub` 时，每次生成 Worker 都会重新获取 `SAMPLE_WORKER_URL` 的最新内容；现有 Token 和节点信息从状态文件重新注入。模板缺少配置或规则边界标记时，脚本会立即停止，不会生成不完整 Worker。
+
+VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sample-worker.js` 已发布到 `main`，再执行：
+
+```bash
+EASY_ALL_UPDATE="$(mktemp)"
+curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh \
+  -o "${EASY_ALL_UPDATE}"
+chmod 0755 "${EASY_ALL_UPDATE}"
+sudo "${EASY_ALL_UPDATE}" register-command
+rm -f -- "${EASY_ALL_UPDATE}"
+unset EASY_ALL_UPDATE
+sudo easy_all update-sub
+```
+
+`update-sub` 会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`。原部署模式为 `auto` 时，若状态中没有 Account ID，脚本会先提示输入；随后会安全提示重新输入未保存的 Cloudflare Worker API Token。
+
+需要固定自定义模板时，可以显式指定：
+
+```bash
+sudo SAMPLE_WORKER_SOURCE=/root/easy_all/sample-worker.js \
+  easy_all update-sub
+```
+
 ### 订阅访问 Token
 
 `ALLOWED_TOKENS` 是 Worker 订阅入口的访问白名单，格式必须是 JSON object：key 是便于识别的用户名，value 才是订阅 URL 中使用的 token。
@@ -196,6 +228,8 @@ CF_DNS_API_TOKEN=...
 CF_ACCOUNT_ID=...
 CF_WORKER_API_TOKEN=...
 WORKER_NAME=easy-all
+SAMPLE_WORKER_SOURCE=/path/to/sample-worker.js|https://...
+SAMPLE_WORKER_URL=https://...
 SING_BOX_VERSION=latest|alpha|具体版本
 ```
 
