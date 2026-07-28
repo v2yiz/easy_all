@@ -246,6 +246,12 @@ test_state_and_lifecycle_guards() {
         "${script_content}"
     assert_contains "script switches A and AAAA to proxied together after WSS install" \
         "A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云" "${script_content}"
+    assert_contains "script renders pre-install Cloudflare notice in red" \
+        'alert "安装前请确认 Cloudflare DNS A 记录' "${script_content}"
+    assert_contains "script renders post-install SSL notice in red" \
+        'alert "Cloudflare SSL/TLS 模式请使用 Full' "${script_content}"
+    assert_contains "script renders post-install WebSockets notice in red" \
+        'alert "请确认 Cloudflare Network 中 WebSockets 已开启。"' "${script_content}"
     assert_contains "script fixes WSS to 443" "VLESS WSS 不支持 dynamic" "${script_content}"
     assert_contains "script warns WSS is recommended only for China Mobile broadband" \
         "仅推荐移动宽带用户选择" "${script_content}"
@@ -268,6 +274,8 @@ test_state_and_lifecycle_guards() {
         "AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6" "${readme_content}"
     assert_contains "README documents proxying A and AAAA together after WSS install" \
         "将 A、AAAA 一起切为 Proxied / 橙云" "${readme_content}"
+    assert_contains "README documents Worker subscription verification retry policy" \
+        "先等待 5 秒，再进行最多 6 次订阅 HTTP 验收" "${readme_content}"
 }
 
 test_acme_installer_arguments() {
@@ -310,10 +318,57 @@ test_acme_installer_arguments() {
         "--accountemail" "${installer_args}"
 }
 
+test_subscription_retry_policy() {
+    local call_file="${TMP_DIR}/subscription-curl-calls"
+    local delay_file="${TMP_DIR}/subscription-retry-delays"
+    local calls delays log_content
+    printf '0\n' >"${call_file}"
+    : >"${delay_file}"
+    install -d -m 0700 "${STATE_DIR}"
+    : >"${CLOUDFLARE_DEPLOY_LOG}"
+    WORKER_URL="https://worker.example.test"
+    SUB_TOKEN="test-token"
+
+    curl() {
+        local count
+        count=$(<"${call_file}")
+        count=$((count + 1))
+        printf '%s\n' "${count}" >"${call_file}"
+        if ((count < 4)); then
+            printf '403'
+        else
+            printf '200'
+        fi
+    }
+    sleep() {
+        printf '%s\n' "$1" >>"${delay_file}"
+    }
+
+    assert_success "subscription verification eventually succeeds" verify_subscription
+    unset -f curl sleep
+
+    calls=$(<"${call_file}")
+    delays=$(<"${delay_file}")
+    log_content=$(<"${CLOUDFLARE_DEPLOY_LOG}")
+    assert_equal "subscription verification retries until the fourth response" "4" "${calls}"
+    assert_equal "subscription verification waits five seconds before its first request" \
+        "5" "$(sed -n '1p' "${delay_file}")"
+    assert_equal "subscription verification sleeps only before and between failed attempts" \
+        "4" "$(wc -l <"${delay_file}" | tr -d '[:space:]')"
+    assert_success "subscription retry intervals stay between one and three seconds" \
+        awk 'NR == 1 {next} $1 < 1 || $1 > 3 {exit 1}' "${delay_file}"
+    assert_contains "subscription verification logs six maximum attempts" \
+        "第 4/6 次，HTTP 200" "${log_content}"
+    assert_contains "subscription retry log includes its randomized delay" \
+        "秒后重试" "${log_content}"
+    assert_contains "captured subscription delays include retry intervals" $'5\n' "${delays}"
+}
+
 source_script_copy
 test_validators_and_defaults
 test_links_and_workers
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
+test_subscription_retry_policy
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"

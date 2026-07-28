@@ -68,6 +68,7 @@ RESET='\033[0m'
 info() { printf '%b%s%b\n' "${CYAN}" "$*" "${RESET}"; }
 success() { printf '%b%s%b\n' "${GREEN}" "$*" "${RESET}"; }
 warn() { printf '%b%s%b\n' "${YELLOW}" "$*" "${RESET}"; }
+alert() { printf '%b%s%b\n' "${RED}" "$*" "${RESET}"; }
 fail() { printf '%b%s%b\n' "${RED}" "$*" "${RESET}" >&2; return 1; }
 die() { fail "$*"; exit 1; }
 
@@ -391,21 +392,21 @@ verify_domain_dns() {
 }
 
 print_dns_proxy_preinstall_notice() {
-    warn "安装前请确认 Cloudflare DNS A 记录为 DNS only / 灰云，不要开启代理。"
-    warn "域名 A 记录必须直接指向当前 VPS 公网 IPv4；脚本会强制校验。"
-    warn "如果配置了 AAAA 记录，安装成功前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
+    alert "安装前请确认 Cloudflare DNS A 记录为 DNS only / 灰云，不要开启代理。"
+    alert "域名 A 记录必须直接指向当前 VPS 公网 IPv4；脚本会强制校验。"
+    alert "如果配置了 AAAA 记录，安装成功前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     if [[ "${PROTOCOL}" == "vless-wss" ]]; then
-        warn "安装完成并验证成功后，使用 Cloudflare CDN 时再把 A、AAAA 记录一起切回 Proxied / 橙云。"
+        alert "安装完成并验证成功后，使用 Cloudflare CDN 时再把 A、AAAA 记录一起切回 Proxied / 橙云。"
     else
-        warn "AnyTLS 不能通过普通 Cloudflare CDN 代理，安装完成后也必须保持 DNS only / 灰云。"
+        alert "AnyTLS 不能通过普通 Cloudflare CDN 代理，安装完成后也必须保持 DNS only / 灰云。"
     fi
 }
 
 print_dns_proxy_postinstall_notice() {
     success "VLESS WebSocket TLS 安装和本机验证已完成"
-    warn "现在可以回 Cloudflare；使用 CDN 时请把 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
-    warn "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
-    warn "请确认 Cloudflare Network 中 WebSockets 已开启。"
+    alert "现在可以回 Cloudflare；使用 CDN 时请把 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
+    alert "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
+    alert "请确认 Cloudflare Network 中 WebSockets 已开启。"
 }
 
 source_state_file() {
@@ -1474,22 +1475,31 @@ deploy_worker() {
 }
 
 verify_subscription() {
-    local code attempt
+    local code attempt delay
+    local max_attempts=6
     [[ -n "${WORKER_URL:-}" ]] || return 1
-    for attempt in 1 2 3 4 5; do
+    cloudflare_deploy_log "INFO" "Worker 部署完成，等待 5 秒后开始订阅 HTTP 验收"
+    sleep 5
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
             "${WORKER_URL}/subscribe?token=${SUB_TOKEN}" || true)
         if [[ "${code}" == "200" ]]; then
             cloudflare_deploy_log "SUCCESS" \
-                "订阅 HTTP 验收成功：第 ${attempt}/5 次，HTTP 200"
+                "订阅 HTTP 验收成功：第 ${attempt}/${max_attempts} 次，HTTP 200"
             return 0
         fi
-        cloudflare_deploy_log "WARN" \
-            "订阅 HTTP 验收：第 ${attempt}/5 次返回 HTTP ${code:-000}"
-        sleep 2
+        if ((attempt < max_attempts)); then
+            delay=$((RANDOM % 3 + 1))
+            cloudflare_deploy_log "WARN" \
+                "订阅 HTTP 验收：第 ${attempt}/${max_attempts} 次返回 HTTP ${code:-000}，${delay} 秒后重试"
+            sleep "${delay}"
+        else
+            cloudflare_deploy_log "WARN" \
+                "订阅 HTTP 验收：第 ${attempt}/${max_attempts} 次返回 HTTP ${code:-000}"
+        fi
     done
     cloudflare_deploy_log "ERROR" \
-        "Worker API 部署成功，但订阅 HTTP 验收在 5 次尝试后仍未通过"
+        "Worker API 部署成功，但订阅 HTTP 验收在 ${max_attempts} 次尝试后仍未通过"
     return 1
 }
 
@@ -1792,11 +1802,11 @@ protocol_preflight() {
         && domain=${ANYTLS_DOMAIN} \
         || domain=${VLESS_WSS_DOMAIN}
     if [[ "${PROTOCOL}" == "anytls" ]]; then
-        warn "${domain} 的 Cloudflare A 记录必须始终保持 DNS only / 灰云。"
-        warn "如果配置了 AAAA 记录，也必须保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
+        alert "${domain} 的 Cloudflare A 记录必须始终保持 DNS only / 灰云。"
+        alert "如果配置了 AAAA 记录，也必须保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     else
-        warn "安装或切换前，${domain} 的 Cloudflare A 记录必须为 DNS only / 灰云。"
-        warn "如果配置了 AAAA 记录，安装或切换前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
+        alert "安装或切换前，${domain} 的 Cloudflare A 记录必须为 DNS only / 灰云。"
+        alert "如果配置了 AAAA 记录，安装或切换前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     fi
     public_ip=$(detect_public_ipv4) || die "无法探测本机公网 IPv4"
     verify_domain_dns "${domain}" "${public_ip}"
