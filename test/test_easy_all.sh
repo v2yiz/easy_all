@@ -57,7 +57,7 @@ const source = fs.readFileSync(process.argv[2], 'utf8');
 const protocol = process.argv[3];
 const encoded = Buffer.from(source).toString('base64');
 const worker = await import(`data:text/javascript;base64,${encoded}`);
-const env = {SUB_TOKEN: 'test-token', SUB_DOWNLOAD_NAME: 'Team.yaml'};
+const env = {SUB_DOWNLOAD_NAME: 'Team.yaml'};
 
 const plainResponse = await worker.default.fetch(
   new Request('https://worker.test/subscribe?token=test-token'),
@@ -75,6 +75,12 @@ if (clashResponse.headers.get('content-disposition') !== 'attachment; filename="
   process.exit(1);
 }
 const yaml = await clashResponse.text();
+
+const formerKeyResponse = await worker.default.fetch(
+  new Request('https://worker.test/subscribe?token=owner'),
+  env
+);
+if (formerKeyResponse.status !== 403) process.exit(1);
 
 const checks = {
   reality: {
@@ -112,6 +118,15 @@ if (protocol !== 'vless-wss') {
 EOF
 }
 
+invalid_allowed_tokens_rejected() {
+    ! normalize_allowed_tokens "$1" >/dev/null 2>&1
+}
+
+missing_allowed_tokens_rejected() {
+    (unset ALLOWED_TOKENS; ensure_allowed_tokens) >/dev/null 2>&1
+    [[ $? -ne 0 ]]
+}
+
 source_script_copy() {
     sed \
         -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
@@ -144,7 +159,7 @@ source_script_copy() {
 set_protocol_fixture() {
     PROTOCOL=$1
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
-    SUB_TOKEN="test-token"
+    ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
     SUB_DOWNLOAD_NAME="MY_SUB"
     SUB_PORT_MODE="dynamic"
     case "${PROTOCOL}" in
@@ -186,6 +201,19 @@ test_validators_and_defaults() {
     assert_failure "Worker name rejects underscore" validate_worker_name "easy_all"
     assert_equal "AnyTLS defaults to dynamic" "dynamic" "${DEFAULT_ANYTLS_PORT_MODE}"
     assert_equal "Reality defaults to 443" "443" "${DEFAULT_REALITY_PORT_MODE}"
+    assert_equal "ALLOWED_TOKENS trims user names and token values" \
+        '{"owner":"test-token"}' \
+        "$(normalize_allowed_tokens '{" owner ":" test-token "}')" 
+    assert_success "ALLOWED_TOKENS rejects arrays" \
+        invalid_allowed_tokens_rejected '["test-token"]'
+    assert_success "ALLOWED_TOKENS rejects duplicate token values" \
+        invalid_allowed_tokens_rejected '{"owner":"same-token","friend":"same-token"}'
+    assert_success "ALLOWED_TOKENS rejects unsafe token characters" \
+        invalid_allowed_tokens_rejected '{"owner":"bad token"}'
+    assert_success "ALLOWED_TOKENS rejects non-string token values" \
+        invalid_allowed_tokens_rejected '{"owner":12345678}'
+    assert_success "non-interactive mode requires ALLOWED_TOKENS" \
+        missing_allowed_tokens_rejected
 
     SSH_PORTS=""
     append_ssh_port "2222"
@@ -215,6 +243,36 @@ test_links_and_workers() {
     done
 }
 
+test_worker_only_subscription_branch() {
+    local output content output_file
+    set_protocol_fixture "reality"
+    WORKER_NAME="${DEFAULT_WORKER_NAME}"
+    WORKER_URL="https://old-worker.example.test"
+    DEPLOY_MODE="auto"
+    save_state
+
+    SUBSCRIBE_MODE="worker"
+    output_file="${TMP_DIR}/worker-only-output"
+    configure_subscription >"${output_file}"
+    output=$(<"${output_file}")
+    content=$(<"${WORKER_FILE}")
+
+    assert_contains "worker-only branch prints embedded-token notice" \
+        "ALLOWED_TOKENS 已内嵌" "${output}"
+    assert_contains "worker-only branch emits ALLOWED_TOKENS dict" \
+        'const ALLOWED_TOKENS = {"owner":"test-token","friend":"friend-token"};' "${content}"
+    assert_contains "worker-only branch authenticates by token values" \
+        "ALLOWED_TOKEN_VALUES.has(token)" "${content}"
+    assert_not_contains "worker-only branch does not depend on SUB_TOKEN secret" \
+        "env.SUB_TOKEN" "${content}"
+    assert_not_contains "worker-only branch does not print legacy secret command" \
+        "secret put SUB_TOKEN" "${output}"
+    assert_equal "worker-only branch clears deployed Worker URL" "" "${WORKER_URL}"
+    assert_equal "worker-only branch stores manual deploy mode" "worker" "${DEPLOY_MODE}"
+    assert_success "worker-only branch generated Worker works" \
+        worker_runtime_matches_protocol "${WORKER_FILE}" "reality"
+}
+
 test_state_and_lifecycle_guards() {
     set_protocol_fixture "vless-wss"
     XRAY_LOOPBACK_PORT="10085"
@@ -232,6 +290,8 @@ test_state_and_lifecycle_guards() {
     assert_contains "state saves selected protocol" "PROTOCOL=vless-wss" "${content}"
     assert_contains "state saves WS path" "WS_PATH=/hacxws" "${content}"
     assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
+    assert_contains "state saves allowed token dict" "ALLOWED_TOKENS=" "${content}"
+    assert_not_contains "state does not save SUB_TOKEN field" "SUB_TOKEN=" "${content}"
     assert_not_contains "state does not save DNS token" "dns-token-must-not-be-saved" "${content}"
     assert_not_contains "state does not save Worker token" "worker-token-must-not-be-saved" "${content}"
     assert_success "saved state reloads without readonly variable conflicts" load_state
@@ -327,7 +387,7 @@ test_subscription_retry_policy() {
     install -d -m 0700 "${STATE_DIR}"
     : >"${CLOUDFLARE_DEPLOY_LOG}"
     WORKER_URL="https://worker.example.test"
-    SUB_TOKEN="test-token"
+    ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
 
     curl() {
         local count
@@ -367,6 +427,7 @@ test_subscription_retry_policy() {
 source_script_copy
 test_validators_and_defaults
 test_links_and_workers
+test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy

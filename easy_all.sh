@@ -162,6 +162,60 @@ normalize_sub_download_name() {
     fi
 }
 
+normalize_allowed_tokens() {
+    local raw=$1
+    jq -cer '
+        def trim: sub("^\\s+"; "") | sub("\\s+$"; "");
+        if type != "object" then
+            error("ALLOWED_TOKENS 必须是 JSON object")
+        else
+            to_entries as $entries
+            | if ($entries | length) == 0 then
+                error("ALLOWED_TOKENS 不能为空")
+            else
+                if any($entries[]; (.value | type) != "string") then
+                    error("ALLOWED_TOKENS token 值必须是字符串")
+                else
+                    [ $entries[] | {key: (.key | trim), value: (.value | trim)} ] as $clean
+                    | if any($clean[]; .key == "" or .value == "") then
+                    error("ALLOWED_TOKENS 不允许空用户名或空 token")
+                    elif any($clean[]; (.key | test("^[A-Za-z0-9._-]{1,64}$") | not)) then
+                    error("ALLOWED_TOKENS 用户名只能包含字母、数字、点、下划线、短横线，长度 1-64")
+                    elif any($clean[]; (.value | test("^[A-Za-z0-9._~-]{8,128}$") | not)) then
+                    error("ALLOWED_TOKENS token 只能包含 URL 安全字符 A-Z a-z 0-9 . _ ~ -，长度 8-128")
+                    elif (($clean | map(.key) | unique | length) != ($clean | length)) then
+                    error("ALLOWED_TOKENS 清洗后存在重复用户名")
+                    elif (($clean | map(.value) | unique | length) != ($clean | length)) then
+                    error("ALLOWED_TOKENS 不允许重复 token")
+                    else
+                    $clean | from_entries
+                    end
+                end
+            end
+        end
+    ' <<<"${raw}"
+}
+
+first_allowed_token() {
+    jq -er 'to_entries[0].value' <<<"${ALLOWED_TOKENS}"
+}
+
+ensure_allowed_tokens() {
+    local raw prompt_default normalized
+    if [[ -n "${ALLOWED_TOKENS:-}" ]]; then
+        raw=${ALLOWED_TOKENS}
+    elif [[ -t 0 ]]; then
+        prompt_default=$(jq -cn --arg token "$(generate_secret)" '{owner: $token}')
+        raw=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}")
+    else
+        die "非交互模式必须设置 ALLOWED_TOKENS，例如 ALLOWED_TOKENS='{\"owner\":\"$(generate_secret)\"}'"
+    fi
+
+    normalized=$(normalize_allowed_tokens "${raw}") \
+        || die "ALLOWED_TOKENS 无效；请使用 JSON 对象，例如 {\"owner\":\"$(generate_secret)\"}"
+    ALLOWED_TOKENS=${normalized}
+}
+
 validate_ws_path() {
     local path=$1
     [[ ${#path} -ge 2 && ${#path} -le 96 ]] || return 1
@@ -424,7 +478,7 @@ load_state() {
         PROTOCOL NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT
-        ANYTLS_DOMAIN ANYTLS_PASSWORD SUB_PORT_MODE SUB_TOKEN
+        ANYTLS_DOMAIN ANYTLS_PASSWORD SUB_PORT_MODE ALLOWED_TOKENS
         WORKER_NAME WORKER_URL CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
     )
@@ -447,6 +501,8 @@ load_state() {
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     [[ "${DEPLOY_MODE}" == "manual" ]] && DEPLOY_MODE="worker"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
+    [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
+        || die "状态文件中的 ALLOWED_TOKENS 无效"
 }
 
 save_state() {
@@ -470,7 +526,7 @@ save_state() {
         printf 'ANYTLS_DOMAIN=%q\n' "${ANYTLS_DOMAIN:-}"
         printf 'ANYTLS_PASSWORD=%q\n' "${ANYTLS_PASSWORD:-}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-443}"
-        printf 'SUB_TOKEN=%q\n' "${SUB_TOKEN:-}"
+        printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'WORKER_NAME=%q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
         printf 'WORKER_URL=%q\n' "${WORKER_URL:-}"
         printf 'CF_ACCOUNT_ID=%q\n' "${CF_ACCOUNT_ID:-}"
@@ -563,7 +619,7 @@ collect_install_inputs() {
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
     [[ "${PROTOCOL}" != "vless-wss" || "${SUB_PORT_MODE}" == "443" ]] \
         || die "VLESS WSS 不支持 dynamic 端口"
-    SUB_TOKEN=${SUB_TOKEN:-$(generate_secret)}
+    ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     validate_worker_name "${WORKER_NAME}" || die "Worker 名称无效：${WORKER_NAME}"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -1112,8 +1168,11 @@ build_mihomo_node() {
 }
 
 write_worker() {
-    local destination=$1 config_json
+    local destination=$1 config_json allowed_tokens_json
     install -d -m 0700 "$(dirname "${destination}")"
+    ensure_allowed_tokens
+    allowed_tokens_json=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
+        || die "ALLOWED_TOKENS 无效"
     case "${PROTOCOL}" in
     reality)
         config_json=$(jq -cn \
@@ -1139,6 +1198,8 @@ write_worker() {
         ;;
     esac
     {
+        printf 'const ALLOWED_TOKENS = %s;\n' "${allowed_tokens_json}"
+        printf 'const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));\n'
         printf 'const CONFIG = %s;\n' "${config_json}"
         printf 'const DEFAULT_SUB_DOWNLOAD_NAME = %s;\n' \
             "$(jq -Rn --arg value "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}" '$value')"
@@ -1214,14 +1275,14 @@ function downloadName(env) {
   const value = String(env && env.SUB_DOWNLOAD_NAME || DEFAULT_SUB_DOWNLOAD_NAME).trim().replace(/\.(ya?ml)$/i, '');
   return /^[A-Za-z0-9._-]{1,64}$/.test(value) ? value : DEFAULT_SUB_DOWNLOAD_NAME;
 }
-function isAllowedToken(token, env) {
-  return Boolean(token && env && token === env.SUB_TOKEN);
+function isAllowedToken(token) {
+  return Boolean(token && ALLOWED_TOKEN_VALUES.has(token));
 }
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname !== '/subscribe') return new Response('Not Found', {status: 404});
-    if (!isAllowedToken(url.searchParams.get('token'), env)) {
+    if (!isAllowedToken(url.searchParams.get('token'))) {
       return new Response('403 Forbidden', {status: 403});
     }
     const isClash = url.searchParams.get('flag') === 'clash';
@@ -1263,11 +1324,16 @@ cloudflare_deploy_log() {
     local timestamp line message secret_name secret
     message=$*
     for secret_name in \
-        CF_API_TOKEN CF_WORKER_API_TOKEN SUB_TOKEN XRAY_UUID VLESS_UUID \
+        CF_API_TOKEN CF_WORKER_API_TOKEN XRAY_UUID VLESS_UUID \
         ANYTLS_PASSWORD REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID; do
         secret=${!secret_name:-}
         [[ -n "${secret}" ]] && message=${message//${secret}/[REDACTED]}
     done
+    if [[ -n "${ALLOWED_TOKENS:-}" ]]; then
+        while IFS= read -r secret; do
+            [[ -n "${secret}" ]] && message=${message//${secret}/[REDACTED]}
+        done < <(jq -r '.[]? | strings' <<<"${ALLOWED_TOKENS}" 2>/dev/null || true)
+    fi
     timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     line="[${timestamp}] [${level}] ${message}"
     printf '[Cloudflare Worker] %s\n' "${line}" >&2
@@ -1424,10 +1490,10 @@ deploy_worker() {
     prepare_cloudflare_deploy_log
     cloudflare_deploy_log "INFO" \
         "开始部署：Worker=${WORKER_NAME}，Account=$(mask_cloudflare_identifier "${CF_ACCOUNT_ID}")"
-    metadata=$(jq -cn --arg token "${SUB_TOKEN}" '{
+    ensure_allowed_tokens
+    metadata=$(jq -cn '{
       main_module: "worker.js",
-      compatibility_date: "2026-01-01",
-      bindings: [{type: "secret_text", name: "SUB_TOKEN", text: $token}]
+      compatibility_date: "2026-01-01"
     }')
     worker_module_file="${RUNTIME_TMP}/worker-module.js"
     install -m 0600 "${WORKER_FILE}" "${worker_module_file}"
@@ -1478,14 +1544,16 @@ deploy_worker() {
 }
 
 verify_subscription() {
-    local code attempt delay
+    local code attempt delay token
     local max_attempts=6
     [[ -n "${WORKER_URL:-}" ]] || return 1
+    ensure_allowed_tokens
+    token=$(first_allowed_token)
     cloudflare_deploy_log "INFO" "Worker 部署完成，等待 5 秒后开始订阅 HTTP 验收"
     sleep 5
     for ((attempt = 1; attempt <= max_attempts; attempt++)); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-            "${WORKER_URL}/subscribe?token=${SUB_TOKEN}" || true)
+            "${WORKER_URL}/subscribe?token=${token}" || true)
         if [[ "${code}" == "200" ]]; then
             cloudflare_deploy_log "SUCCESS" \
                 "订阅 HTTP 验收成功：第 ${attempt}/${max_attempts} 次，HTTP 200"
@@ -1570,7 +1638,7 @@ update_subscription() {
 }
 
 print_worker_content() {
-    printf '\nWorker 内容如下，请复制到 Cloudflare Worker：\n'
+    printf '\nWorker 内容如下，ALLOWED_TOKENS 已内嵌，请复制到 Cloudflare Worker：\n'
     printf '%s\n' '----- BEGIN easy_all Worker -----'
     cat "${WORKER_FILE}"
     printf '\n%s\n\n' '----- END easy_all Worker -----'
@@ -1595,7 +1663,7 @@ collect_installed_state() {
             || die "VLESS WSS 状态不完整"
         ;;
     esac
-    SUB_TOKEN=${SUB_TOKEN:-$(generate_secret)}
+    ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
 }
 
@@ -1608,18 +1676,20 @@ show_node() {
 }
 
 show_subscription() {
+    local user token
     collect_installed_state
     show_node
     printf 'Worker 名称: %s\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
     printf 'Clash 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
     if [[ -n "${WORKER_URL:-}" ]]; then
         printf '\n订阅地址:\n'
-        printf '通用订阅: %s/subscribe?token=%s\n' "${WORKER_URL}" "${SUB_TOKEN}"
-        printf 'Clash Meta: %s/subscribe?token=%s&flag=clash\n' "${WORKER_URL}" "${SUB_TOKEN}"
+        while IFS=$'\t' read -r user token; do
+            printf '通用订阅 (%s): %s/subscribe?token=%s\n' "${user}" "${WORKER_URL}" "${token}"
+            printf 'Clash Meta (%s): %s/subscribe?token=%s&flag=clash\n' "${user}" "${WORKER_URL}" "${token}"
+        done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"${ALLOWED_TOKENS}")
     elif [[ "${DEPLOY_MODE:-worker}" == "worker" ]]; then
-        printf '\n部署方式: 手动部署；请在 Worker 中设置加密变量 SUB_TOKEN。\n'
+        printf '\n部署方式: 手动部署；订阅 Token 字典已写入 Worker 文件的 ALLOWED_TOKENS。\n'
         printf '部署命令: npx wrangler deploy %q --name %q\n' "${WORKER_FILE}" "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
-        printf '密钥命令: npx wrangler secret put SUB_TOKEN --name %q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
     fi
     printf '\n'
 }
@@ -2092,6 +2162,7 @@ usage() {
   ANYTLS_DOMAIN=node.example.com  ANYTLS_PASSWORD=...
   VLESS_WSS_DOMAIN=node.example.com  WS_PATH=/随机路径
   SUB_PORT_MODE=443|dynamic
+  ALLOWED_TOKENS='{"owner":"token1","alice":"token2"}'
   CF_DNS_API_TOKEN=...
   SUBSCRIBE_MODE=auto|worker|link
   CF_WORKER_API_TOKEN=...    CF_ACCOUNT_ID=...

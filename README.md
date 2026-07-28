@@ -142,7 +142,7 @@ Worker 支持：
 - Mihomo/Clash YAML：`/subscribe?token=...&flag=clash`
 - 下载文件名：`SUB_DOWNLOAD_NAME`
 
-Cloudflare API Token、DNS Token 不写入状态文件；订阅访问用的 `SUB_TOKEN` 会保存到权限为 `0600` 的 `/etc/easy_all/state.env`。
+Cloudflare API Token、DNS Token 不写入状态文件；订阅访问用的 `ALLOWED_TOKENS` 字典会保存到权限为 `0600` 的 `/etc/easy_all/state.env`，并写入自动生成的 Worker。
 
 ## 无人值守变量
 
@@ -159,7 +159,7 @@ SUB_PORT_MODE=443|dynamic
 REBOOT_SCHEDULE_MODE=default|custom|none
 REBOOT_HOUR=0-23
 SUBSCRIBE_MODE=auto|worker|link
-SUB_TOKEN=...
+ALLOWED_TOKENS='{"owner":"token1","alice":"token2"}'
 SUB_DOWNLOAD_NAME=MY_SUB
 CF_DNS_API_TOKEN=...
 CF_ACCOUNT_ID=...
