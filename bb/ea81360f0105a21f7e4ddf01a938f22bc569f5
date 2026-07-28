@@ -1,0 +1,25 @@
+easy_all.sh
+  s_a008485eb072ad::t_0b0a16002fe290 1217-1219,1224
+sample-worker.js
+  s_a008485eb072ad::t_b50344d291808d 13-14,16,20,28-31,638
+test/test_sample_worker.mjs
+  s_a008485eb072ad::t_a830222f46b360 52,58-59,147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bbea81360f0105a21f7e4ddf01a938f22bc569f5",
+  "prompts": {},
+  "sessions": {
+    "s_a008485eb072ad": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa6cc-8d5f-7612-bf11-0f4c1fe5f354",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
