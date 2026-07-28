@@ -22,7 +22,7 @@
 ## 快速安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_reality/main/easy_all.sh -o easy_all.sh
+curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh -o easy_all.sh
 chmod +x easy_all.sh
 sudo ./easy_all.sh install
 ```
