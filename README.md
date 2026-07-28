@@ -142,6 +142,37 @@ Worker 支持：
 - Mihomo/Clash YAML：`/subscribe?token=...&flag=clash`
 - 下载文件名：`SUB_DOWNLOAD_NAME`
 
+### 订阅访问 Token
+
+`ALLOWED_TOKENS` 是 Worker 订阅入口的访问白名单，格式必须是 JSON object：key 是便于识别的用户名，value 才是订阅 URL 中使用的 token。
+
+```bash
+ALLOWED_TOKENS='{"owner":"owner-token-123","alice":"alice-token-456"}'
+```
+
+上面的配置会生成两组订阅地址：
+
+```text
+https://<worker>.workers.dev/subscribe?token=owner-token-123
+https://<worker>.workers.dev/subscribe?token=owner-token-123&flag=clash
+https://<worker>.workers.dev/subscribe?token=alice-token-456
+https://<worker>.workers.dev/subscribe?token=alice-token-456&flag=clash
+```
+
+规则：
+
+- 至少要包含一个用户；无人值守安装或 `update-sub` 必须显式设置 `ALLOWED_TOKENS`。
+- 用户名只允许 `A-Z a-z 0-9 . _ -`，长度 `1-64`。
+- token 只允许 URL 安全字符 `A-Z a-z 0-9 . _ ~ -`，长度 `8-128`。
+- 用户名和 token 都会去掉首尾空白；不允许空值、重复用户名或重复 token。
+- 订阅校验只匹配 token 值，不匹配用户名。访问 `/subscribe?token=owner` 不会通过，除非某个用户的 token 值正好是 `owner`。
+
+可以用下面的命令生成一个 URL 安全 token：
+
+```bash
+openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n'
+```
+
 Cloudflare API Token、DNS Token 不写入状态文件；订阅访问用的 `ALLOWED_TOKENS` 字典会保存到权限为 `0600` 的 `/etc/easy_all/state.env`，并写入自动生成的 Worker。
 
 ## 无人值守变量
