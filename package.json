@@ -1,8 +1,8 @@
 {
-  "name": "easy-reality-tests",
+  "name": "easy-all-tests",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/test_*.mjs && bash test/test_easy_reality.sh && bash test/test_easy_anytls.sh && bash test/test_debian_init.sh"
+    "test": "node --test test/test_*.mjs && bash test/test_easy_all.sh && bash test/test_debian_init.sh"
   }
 }

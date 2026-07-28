@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+TMP_DIR="$(mktemp -d)"
+SCRIPT_COPY="${TMP_DIR}/easy_all.test.sh"
+TESTS_RUN=0
+
+fail_test() {
+    printf 'not ok - %s\n' "$*" >&2
+    exit 1
+}
+
+assert_success() {
+    local description=$1
+    shift
+    TESTS_RUN=$((TESTS_RUN + 1))
+    "$@" || fail_test "${description}"
+}
+
+assert_failure() {
+    local description=$1
+    shift
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if "$@"; then
+        fail_test "${description}"
+    fi
+}
+
+assert_equal() {
+    local description=$1 expected=$2 actual=$3
+    TESTS_RUN=$((TESTS_RUN + 1))
+    [[ "${actual}" == "${expected}" ]] \
+        || fail_test "${description}: expected '${expected}', got '${actual}'"
+}
+
+assert_contains() {
+    local description=$1 needle=$2 haystack=$3
+    TESTS_RUN=$((TESTS_RUN + 1))
+    [[ "${haystack}" == *"${needle}"* ]] \
+        || fail_test "${description}: missing '${needle}'"
+}
+
+assert_not_contains() {
+    local description=$1 needle=$2 haystack=$3
+    TESTS_RUN=$((TESTS_RUN + 1))
+    [[ "${haystack}" != *"${needle}"* ]] \
+        || fail_test "${description}: unexpected '${needle}'"
+}
+
+worker_runtime_matches_protocol() {
+    node --input-type=module - "$1" "$2" <<'EOF'
+import fs from 'node:fs';
+
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const protocol = process.argv[3];
+const encoded = Buffer.from(source).toString('base64');
+const worker = await import(`data:text/javascript;base64,${encoded}`);
+const env = {SUB_TOKEN: 'test-token', SUB_DOWNLOAD_NAME: 'Team.yaml'};
+
+const plainResponse = await worker.default.fetch(
+  new Request('https://worker.test/subscribe?token=test-token'),
+  env
+);
+if (plainResponse.status !== 200) process.exit(1);
+const decoded = Buffer.from(await plainResponse.text(), 'base64').toString('utf8');
+
+const clashResponse = await worker.default.fetch(
+  new Request('https://worker.test/subscribe?token=test-token&flag=clash'),
+  env
+);
+if (clashResponse.status !== 200) process.exit(1);
+if (clashResponse.headers.get('content-disposition') !== 'attachment; filename="Team"') {
+  process.exit(1);
+}
+const yaml = await clashResponse.text();
+
+const checks = {
+  reality: {
+    link: ['vless://00000000-0000-4000-8000-000000000001@203.0.113.10:',
+      'security=reality', 'type=tcp', 'flow=xtls-rprx-vision',
+      'pbk=test-public-key', 'sid=0123456789abcdef', '#MY_REALITY'],
+    yaml: ['type: vless', 'network: tcp', 'tls: true', 'reality-opts:',
+      'public-key: "test-public-key"', 'flow: xtls-rprx-vision']
+  },
+  anytls: {
+    link: ['anytls://test-anytls-password@anytls.example.com:', 'sni=anytls.example.com',
+      'insecure=0', '#MY_ANYTLS'],
+    yaml: ['type: anytls', 'server: "anytls.example.com"',
+      'password: "test-anytls-password"', 'client-fingerprint: chrome']
+  },
+  'vless-wss': {
+    link: ['vless://00000000-0000-4000-8000-000000000001@wss.example.com:443?',
+      'security=tls', 'type=ws', 'path=%2Fhacxws', 'host=wss.example.com',
+      '#MY_VLESS_WSS'],
+    yaml: ['type: vless', 'network: ws', 'port: 443', 'ws-opts:',
+      'path: "/hacxws"', 'Host: "wss.example.com"']
+  }
+};
+for (const part of checks[protocol].link) {
+  if (!decoded.includes(part)) process.exit(1);
+}
+for (const part of checks[protocol].yaml) {
+  if (!yaml.includes(part)) process.exit(1);
+}
+if (protocol === 'vless-wss' && decoded.includes('flow=xtls-rprx-vision')) process.exit(1);
+if (protocol !== 'vless-wss') {
+  const port = Number(decoded.match(/@[^:]+:(\d+)/)?.[1]);
+  if (!Number.isInteger(port) || port < 10000 || port > 65535) process.exit(1);
+}
+EOF
+}
+
+source_script_copy() {
+    sed \
+        -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
+        -e "s|^readonly WORKER_FILE=.*|readonly WORKER_FILE=\"${TMP_DIR}/state/subscribe-worker.js\"|" \
+        -e "s|^readonly CERT_DIR=.*|readonly CERT_DIR=\"${TMP_DIR}/state/certs\"|" \
+        -e "s|^readonly CERT_FILE=.*|readonly CERT_FILE=\"${TMP_DIR}/state/certs/fullchain.pem\"|" \
+        -e "s|^readonly KEY_FILE=.*|readonly KEY_FILE=\"${TMP_DIR}/state/certs/private.key\"|" \
+        -e "s|^readonly WEB_ROOT=.*|readonly WEB_ROOT=\"${TMP_DIR}/www\"|" \
+        -e "s|^readonly COMMAND_INSTALL_DIR=.*|readonly COMMAND_INSTALL_DIR=\"${TMP_DIR}/cmd\"|" \
+        -e "s|^readonly COMMAND_PATH=.*|readonly COMMAND_PATH=\"${TMP_DIR}/bin/easy_all\"|" \
+        -e "s|^readonly CERT_RELOAD_HOOK=.*|readonly CERT_RELOAD_HOOK=\"${TMP_DIR}/cmd/reload-tls.sh\"|" \
+        -e "s|^readonly XRAY_DIR=.*|readonly XRAY_DIR=\"${TMP_DIR}/state/xray\"|" \
+        -e "s|^readonly XRAY_BIN=.*|readonly XRAY_BIN=\"${TMP_DIR}/state/xray/xray\"|" \
+        -e "s|^readonly XRAY_CONFIG=.*|readonly XRAY_CONFIG=\"${TMP_DIR}/state/xray/config.json\"|" \
+        -e "s|^readonly XRAY_SERVICE_FILE=.*|readonly XRAY_SERVICE_FILE=\"${TMP_DIR}/easy-all-xray.service\"|" \
+        -e "s|^readonly SING_BOX_DIR=.*|readonly SING_BOX_DIR=\"${TMP_DIR}/state/sing-box\"|" \
+        -e "s|^readonly SING_BOX_BIN=.*|readonly SING_BOX_BIN=\"${TMP_DIR}/state/sing-box/sing-box\"|" \
+        -e "s|^readonly SING_BOX_CONFIG=.*|readonly SING_BOX_CONFIG=\"${TMP_DIR}/state/sing-box/config.json\"|" \
+        -e "s|^readonly SING_BOX_SERVICE_FILE=.*|readonly SING_BOX_SERVICE_FILE=\"${TMP_DIR}/easy-all-sing-box.service\"|" \
+        -e "s|^readonly NGINX_CONFIG=.*|readonly NGINX_CONFIG=\"${TMP_DIR}/nginx.conf\"|" \
+        -e "s|^readonly ACME_HOME=.*|readonly ACME_HOME=\"${TMP_DIR}/acme\"|" \
+        -e "s|^readonly ACME_BIN=.*|readonly ACME_BIN=\"${TMP_DIR}/acme/acme.sh\"|" \
+        -e "s|^readonly ACME_OWNERSHIP_MARKER=.*|readonly ACME_OWNERSHIP_MARKER=\"${TMP_DIR}/state/acme-installed-by-easy-all\"|" \
+        -e "s|^readonly NFT_CONFIG=.*|readonly NFT_CONFIG=\"${TMP_DIR}/nftables.conf\"|" \
+        "${ROOT_DIR}/easy_all.sh" >"${SCRIPT_COPY}"
+    # shellcheck source=/dev/null
+    source "${SCRIPT_COPY}"
+}
+
+set_protocol_fixture() {
+    PROTOCOL=$1
+    VLESS_UUID="00000000-0000-4000-8000-000000000001"
+    SUB_TOKEN="test-token"
+    SUB_DOWNLOAD_NAME="MY_SUB"
+    SUB_PORT_MODE="dynamic"
+    case "${PROTOCOL}" in
+    reality)
+        NODE_NAME="MY_REALITY"
+        NODE_HOST="203.0.113.10"
+        REALITY_TARGET="www.cloudflare.com:443"
+        REALITY_PUBLIC_KEY="test-public-key"
+        REALITY_SHORT_ID="0123456789abcdef"
+        ;;
+    anytls)
+        NODE_NAME="MY_ANYTLS"
+        ANYTLS_DOMAIN="anytls.example.com"
+        ANYTLS_PASSWORD="test-anytls-password"
+        ;;
+    vless-wss)
+        NODE_NAME="MY_VLESS_WSS"
+        VLESS_WSS_DOMAIN="wss.example.com"
+        WS_PATH="/hacxws"
+        SUB_PORT_MODE="443"
+        ;;
+    esac
+}
+
+test_validators_and_defaults() {
+    assert_success "valid WS path is accepted" validate_ws_path "/hacxws"
+    assert_success "generated WS path is valid" validate_ws_path "$(generate_ws_path)"
+    assert_failure "WS path must start with slash" validate_ws_path "hacxws"
+    assert_failure "WS path rejects query" validate_ws_path "/hacxws?x=1"
+    assert_success "Reality target accepts host and port" validate_reality_target "www.cloudflare.com:443"
+    assert_failure "Reality target requires port" validate_reality_target "www.cloudflare.com"
+    assert_success "Reality protocol is accepted" validate_protocol "reality"
+    assert_success "AnyTLS protocol is accepted" validate_protocol "anytls"
+    assert_success "VLESS WSS protocol is accepted" validate_protocol "vless-wss"
+    assert_failure "unknown protocol is rejected" validate_protocol "trojan"
+
+    assert_equal "default Worker name is easy-all" "easy-all" "${DEFAULT_WORKER_NAME}"
+    assert_success "default Worker name is Cloudflare-compatible" validate_worker_name "${DEFAULT_WORKER_NAME}"
+    assert_failure "Worker name rejects underscore" validate_worker_name "easy_all"
+    assert_equal "AnyTLS defaults to dynamic" "dynamic" "${DEFAULT_ANYTLS_PORT_MODE}"
+    assert_equal "Reality defaults to 443" "443" "${DEFAULT_REALITY_PORT_MODE}"
+
+    SSH_PORTS=""
+    append_ssh_port "2222"
+    append_ssh_port "22"
+    append_ssh_port "2222"
+    assert_equal "SSH ports are deduplicated" "2222, 22" "${SSH_PORTS}"
+    assert_equal "managed reboot filter preserves unrelated jobs" \
+        "5 5 * * * /usr/local/bin/backup" \
+        "$(printf '%s\n%s\n' \
+            "0 4 * * * /usr/sbin/reboot ${CRON_REBOOT_MARKER}" \
+            "5 5 * * * /usr/local/bin/backup" | filter_managed_reboot_cron)"
+}
+
+test_links_and_workers() {
+    local protocol link yaml worker
+    for protocol in reality anytls vless-wss; do
+        set_protocol_fixture "${protocol}"
+        link=$(build_node_link)
+        yaml=$(build_mihomo_node)
+        assert_contains "${protocol} node link contains node name" "${NODE_NAME}" "${link}"
+        assert_contains "${protocol} Mihomo node contains name" "${NODE_NAME}" "${yaml}"
+        worker="${TMP_DIR}/worker-${protocol}.js"
+        write_worker "${worker}"
+        assert_success "${protocol} Worker JavaScript syntax valid" node --check "${worker}"
+        assert_success "${protocol} Worker emits base64 and Mihomo outputs" \
+            worker_runtime_matches_protocol "${worker}" "${protocol}"
+    done
+}
+
+test_state_and_lifecycle_guards() {
+    set_protocol_fixture "vless-wss"
+    XRAY_LOOPBACK_PORT="10085"
+    WORKER_NAME="${DEFAULT_WORKER_NAME}"
+    WORKER_URL=""
+    CF_ACCOUNT_ID="account-id"
+    DEPLOY_MODE="worker"
+    CF_DNS_API_TOKEN="dns-token-must-not-be-saved"
+    CF_WORKER_API_TOKEN="worker-token-must-not-be-saved"
+
+    save_state
+    local content script_content
+    content=$(<"${STATE_FILE}")
+    assert_contains "state saves version" "STATE_VERSION=1" "${content}"
+    assert_contains "state saves selected protocol" "PROTOCOL=vless-wss" "${content}"
+    assert_contains "state saves WS path" "WS_PATH=/hacxws" "${content}"
+    assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
+    assert_not_contains "state does not save DNS token" "dns-token-must-not-be-saved" "${content}"
+    assert_not_contains "state does not save Worker token" "worker-token-must-not-be-saved" "${content}"
+
+    script_content=$(<"${ROOT_DIR}/easy_all.sh")
+    assert_contains "script warns DNS-only before install" "DNS only / 灰云" "${script_content}"
+    assert_contains "script reminds proxied after install" "Proxied / 橙云" "${script_content}"
+    assert_contains "script fixes WSS to 443" "VLESS WSS 不支持 dynamic" "${script_content}"
+    assert_contains "script warns WSS is recommended only for China Mobile broadband" \
+        "仅推荐移动宽带用户选择" "${script_content}"
+    assert_contains "script contains nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
+    assert_contains "script retries Cloudflare rate limits" "408 | 429 | 500 | 502 | 503 | 504" "${script_content}"
+    assert_contains "script retries Cloudflare propagation errors" "10007" "${script_content}"
+    assert_contains "script retries concurrent Worker updates" "10035" "${script_content}"
+    assert_contains "script writes Worker deployment log" "last-worker-deploy.log" "${script_content}"
+    assert_contains "script snapshots protocol switches" "snapshot_protocol_switch" "${script_content}"
+    assert_contains "script rolls failed switches back" "rollback_protocol_switch" "${script_content}"
+    assert_contains "script avoids rollback after Worker replace" \
+        "Worker 已完成 replace" "${script_content}"
+    assert_contains "update-sub synchronizes changed ports to nftables" \
+        "同步更新 nftables" "${script_content}"
+    assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
+    assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
+}
+
+source_script_copy
+test_validators_and_defaults
+test_links_and_workers
+test_state_and_lifecycle_guards
+
+printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"

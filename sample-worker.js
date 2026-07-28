@@ -1,10 +1,10 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS Reality / VLESS TCP TLS Vision / AnyTLS 订阅、Clash Meta 配置
+ * 提供 VLESS Reality / VLESS TCP TLS Vision / VLESS WebSocket TLS / AnyTLS 订阅、Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名或 AnyTLS 密码
+ * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、WebSocket path 或 AnyTLS 密码
  * 3. DEFAULT_NODE 指向你希望默认输出的节点
  */
 // ================= 配置常量 =================
@@ -71,6 +71,19 @@ const NODE_D_CONFIG = defineNode({
     fp: 'chrome',
     udp: true,
     insecure: false
+});
+
+// ── 节点 E：VLESS WebSocket TLS ─────────────────────────────────
+const NODE_E_CONFIG = defineNode({
+    type: 'vless',
+    security: 'tls',
+    network: 'ws',
+    uuid: '00000000-0000-4000-8000-000000000004',
+    host: 'node-e.example.com',
+    name: 'NODE_E_WS_TLS',
+    fp: 'chrome',
+    sni: 'node-e.example.com',
+    path: '/hacxws'
 });
 
 const DEFAULT_NODE = NODE_A_CONFIG; // 控制默认输出的节点
@@ -386,6 +399,28 @@ function buildClashVlessTlsVisionNodeTemplate() {
 `;
 }
 
+function buildClashVlessWsTlsNodeTemplate() {
+    return `  - name: {name}
+    type: vless
+    server: {host}
+    port: {port}
+    uuid: {uuid}
+    network: ws
+    tls: true
+    udp: true
+    skip-cert-verify: false
+    servername: {sni}
+    client-fingerprint: {fp}
+    ws-opts:
+      path: {path}
+      headers:
+        Host: {ws_host}
+    ip-version: ipv4-prefer
+    smux:
+      enabled: false
+`;
+}
+
 // ── AnyTLS 节点模板 ─────────────────
 function buildClashAnyTlsNodeTemplate() {
     return `  - name: {name}
@@ -423,6 +458,10 @@ function vlessSecurity(cfg) {
     return cfg.security || 'reality';
 }
 
+function vlessNetwork(cfg) {
+    return cfg.network || 'tcp';
+}
+
 function resolveNodePort(cfg, dynamicPort) {
     if (cfg.type === 'anytls') {
         return cfg.port || dynamicPort;
@@ -435,21 +474,35 @@ function resolveNodePort(cfg, dynamicPort) {
 
 function createVlessLink(cfg, port) {
     const security = vlessSecurity(cfg);
+    const network = vlessNetwork(cfg);
     const params = new URLSearchParams({
         encryption: 'none',
         security,
-        type: 'tcp',
+        type: network,
         sni: cfg.sni,
-        fp: cfg.fp,
-        flow: 'xtls-rprx-vision',
-        packetEncoding: 'xudp'
+        fp: cfg.fp
     });
 
     if (security === 'reality') {
+        if (network !== 'tcp') {
+            throw new Error(`Unsupported VLESS Reality network: ${network}`);
+        }
         params.set('pbk', cfg.pbk);
         params.set('sid', cfg.sid);
+        params.set('flow', 'xtls-rprx-vision');
+        params.set('packetEncoding', 'xudp');
     } else if (security !== 'tls') {
         throw new Error(`Unsupported VLESS security: ${security}`);
+    }
+
+    if (security === 'tls' && network === 'tcp') {
+        params.set('flow', 'xtls-rprx-vision');
+        params.set('packetEncoding', 'xudp');
+    } else if (security === 'tls' && network === 'ws') {
+        params.set('path', cfg.path || '/');
+        params.set('host', cfg.wsHost || cfg.host);
+    } else if (network !== 'tcp') {
+        throw new Error(`Unsupported VLESS network: ${network}`);
     }
 
     return `vless://${cfg.uuid}@${cfg.host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
@@ -505,13 +558,19 @@ function yamlString(value) {
 function generateClashProxyNode(cfg, port) {
     if (cfg.type === 'vless') {
         const security = vlessSecurity(cfg);
+        const network = vlessNetwork(cfg);
         let template;
         if (security === 'reality') {
+            if (network !== 'tcp') {
+                throw new Error(`Unsupported VLESS Reality network: ${network}`);
+            }
             template = buildClashVlessRealityNodeTemplate();
-        } else if (security === 'tls') {
+        } else if (security === 'tls' && network === 'tcp') {
             template = buildClashVlessTlsVisionNodeTemplate();
+        } else if (security === 'tls' && network === 'ws') {
+            template = buildClashVlessWsTlsNodeTemplate();
         } else {
-            throw new Error(`Unsupported VLESS security: ${security}`);
+            throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
 
         return template
@@ -522,7 +581,9 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{sni}/g, cfg.sni)
             .replace(/{pbk}/g, cfg.pbk || '')
             .replace(/{sid}/g, cfg.sid || '')
-            .replace(/{fp}/g, cfg.fp);
+            .replace(/{fp}/g, cfg.fp)
+            .replace(/{path}/g, cfg.path || '/')
+            .replace(/{ws_host}/g, cfg.wsHost || cfg.host);
     }
 
     if (cfg.type === 'anytls') {
