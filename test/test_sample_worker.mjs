@@ -76,6 +76,23 @@ describe('sample-worker Cloudflare Worker', () => {
       rules.indexOf('DOMAIN,copilot.microsoft.com,PROXY') <
       rules.indexOf('DOMAIN-SUFFIX,microsoft.com,DIRECT')
     );
+    for (const googlePlayDomain of [
+      'googleapis.cn',
+      'gvt1.com',
+      'gvt2.com',
+      'gvt3.com',
+      'ggpht.com',
+      'xn--ngstr-lra8j.com'
+    ]) {
+      assert.ok(
+        rules.includes(`DOMAIN-SUFFIX,${googlePlayDomain},PROXY`),
+        `${googlePlayDomain} must use PROXY`
+      );
+      assert.ok(
+        source.includes(`          - '+.${googlePlayDomain}'`),
+        `${googlePlayDomain} must use fallback DNS`
+      );
+    }
     assert.ok(rules.includes('IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve'));
     assert.equal(rules.some(rule => /^IP-CIDR,[^,]*:/.test(rule)), false);
     assert.equal(rules.some(rule => /24\.199\.123\.28|45\.76\.214\.191/.test(rule)), false);

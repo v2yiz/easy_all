@@ -268,8 +268,15 @@ const EMBEDDED_CLASH_RULES = `rules:
   # ==================== Google / YouTube ====================
   - DOMAIN-SUFFIX,google.com,PROXY
   - DOMAIN-SUFFIX,googleapis.com,PROXY
+  - DOMAIN-SUFFIX,googleapis.cn,PROXY
   - DOMAIN-SUFFIX,googleusercontent.com,PROXY
   - DOMAIN-SUFFIX,gstatic.com,PROXY
+  # Google Play 的应用包、增量包与图片资源使用独立域名。
+  - DOMAIN-SUFFIX,gvt1.com,PROXY
+  - DOMAIN-SUFFIX,gvt2.com,PROXY
+  - DOMAIN-SUFFIX,gvt3.com,PROXY
+  - DOMAIN-SUFFIX,ggpht.com,PROXY
+  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY
   - DOMAIN-SUFFIX,googlevideo.com,PROXY
   - DOMAIN-SUFFIX,youtube.com,PROXY
   - DOMAIN-SUFFIX,ytimg.com,PROXY
@@ -402,6 +409,12 @@ dns:
         domain:
           - '+.google.com'
           - '+.googleapis.com'
+          - '+.googleapis.cn'
+          - '+.gvt1.com'
+          - '+.gvt2.com'
+          - '+.gvt3.com'
+          - '+.ggpht.com'
+          - '+.xn--ngstr-lra8j.com'
           - '+.youtube.com'
           - '+.github.com'
 
