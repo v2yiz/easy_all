@@ -57,7 +57,7 @@ readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases
 readonly SING_BOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_VERSION="1"
+readonly STATE_SCHEMA_VERSION="1"
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -393,8 +393,9 @@ verify_domain_dns() {
 print_dns_proxy_preinstall_notice() {
     warn "安装前请确认 Cloudflare DNS A 记录为 DNS only / 灰云，不要开启代理。"
     warn "域名 A 记录必须直接指向当前 VPS 公网 IPv4；脚本会强制校验。"
+    warn "如果配置了 AAAA 记录，安装成功前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     if [[ "${PROTOCOL}" == "vless-wss" ]]; then
-        warn "安装完成并验证成功后，再把该 DNS 记录切回 Proxied / 橙云。"
+        warn "安装完成并验证成功后，使用 Cloudflare CDN 时再把 A、AAAA 记录一起切回 Proxied / 橙云。"
     else
         warn "AnyTLS 不能通过普通 Cloudflare CDN 代理，安装完成后也必须保持 DNS only / 灰云。"
     fi
@@ -402,9 +403,18 @@ print_dns_proxy_preinstall_notice() {
 
 print_dns_proxy_postinstall_notice() {
     success "VLESS WebSocket TLS 安装和本机验证已完成"
-    warn "现在可以回 Cloudflare 把该 DNS A 记录从 DNS only / 灰云切换为 Proxied / 橙云。"
+    warn "现在可以回 Cloudflare；使用 CDN 时请把 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
     warn "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
     warn "请确认 Cloudflare Network 中 WebSockets 已开启。"
+}
+
+source_state_file() {
+    [[ -f "${STATE_FILE}" ]] || die "easy_all 状态文件不存在：${STATE_FILE}"
+    unset STATE_VERSION
+    # shellcheck source=/dev/null
+    source "${STATE_FILE}"
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
 }
 
 load_state() {
@@ -423,8 +433,7 @@ load_state() {
         printf -v "${variable}" '%s' ""
     done
     if [[ -f "${STATE_FILE}" ]]; then
-        # shellcheck source=/dev/null
-        source "${STATE_FILE}"
+        source_state_file
     fi
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
@@ -445,7 +454,7 @@ save_state() {
     temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX")
     cleanup_files+=("${temp}")
     {
-        printf 'STATE_VERSION=%q\n' "${STATE_VERSION}"
+        printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'NODE_NAME=%q\n' "${NODE_NAME}"
         printf 'NODE_HOST=%q\n' "${NODE_HOST:-}"
@@ -1530,8 +1539,7 @@ update_subscription() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     stored_port_mode=$(
         unset SUB_PORT_MODE
-        # shellcheck source=/dev/null
-        source "${STATE_FILE}"
+        source_state_file
         printf '%s' "${SUB_PORT_MODE:-443}"
     )
     collect_installed_state
@@ -1785,8 +1793,10 @@ protocol_preflight() {
         || domain=${VLESS_WSS_DOMAIN}
     if [[ "${PROTOCOL}" == "anytls" ]]; then
         warn "${domain} 的 Cloudflare A 记录必须始终保持 DNS only / 灰云。"
+        warn "如果配置了 AAAA 记录，也必须保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     else
         warn "安装或切换前，${domain} 的 Cloudflare A 记录必须为 DNS only / 灰云。"
+        warn "如果配置了 AAAA 记录，安装或切换前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     fi
     public_ip=$(detect_public_ipv4) || die "无法探测本机公网 IPv4"
     verify_domain_dns "${domain}" "${public_ip}"
@@ -1949,8 +1959,7 @@ rollback_protocol_switch() {
     restore_snapshot_path "${NGINX_CONFIG}" nginx.conf
     systemctl daemon-reload >/dev/null 2>&1 || true
     [[ -f "${NFT_CONFIG}" ]] && nft -f "${NFT_CONFIG}" >/dev/null 2>&1 || true
-    # shellcheck source=/dev/null
-    source "${STATE_FILE}"
+    source_state_file
     case "${PROTOCOL:-}" in
     anytls) restored_tls_domain=${ANYTLS_DOMAIN:-} ;;
     vless-wss) restored_tls_domain=${VLESS_WSS_DOMAIN:-} ;;
@@ -1993,8 +2002,7 @@ switch_protocol() {
     require_root
     require_systemd
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
-    # shellcheck source=/dev/null
-    source "${STATE_FILE}"
+    source_state_file
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
     old_protocol=${PROTOCOL}
     old_anytls_domain=${ANYTLS_DOMAIN:-}

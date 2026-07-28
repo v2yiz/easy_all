@@ -226,7 +226,7 @@ test_state_and_lifecycle_guards() {
     CF_WORKER_API_TOKEN="worker-token-must-not-be-saved"
 
     save_state
-    local content script_content
+    local content script_content readme_content
     content=$(<"${STATE_FILE}")
     assert_contains "state saves version" "STATE_VERSION=1" "${content}"
     assert_contains "state saves selected protocol" "PROTOCOL=vless-wss" "${content}"
@@ -234,10 +234,18 @@ test_state_and_lifecycle_guards() {
     assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
     assert_not_contains "state does not save DNS token" "dns-token-must-not-be-saved" "${content}"
     assert_not_contains "state does not save Worker token" "worker-token-must-not-be-saved" "${content}"
+    assert_success "saved state reloads without readonly variable conflicts" load_state
+    assert_equal "reloaded state version matches the schema" \
+        "${STATE_SCHEMA_VERSION}" "${STATE_VERSION}"
 
     script_content=$(<"${ROOT_DIR}/easy_all.sh")
     assert_contains "script warns DNS-only before install" "DNS only / 灰云" "${script_content}"
     assert_contains "script reminds proxied after install" "Proxied / 橙云" "${script_content}"
+    assert_contains "script keeps AAAA DNS-only before install or switch" \
+        "AAAA 记录，安装或切换前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6" \
+        "${script_content}"
+    assert_contains "script switches A and AAAA to proxied together after WSS install" \
+        "A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云" "${script_content}"
     assert_contains "script fixes WSS to 443" "VLESS WSS 不支持 dynamic" "${script_content}"
     assert_contains "script warns WSS is recommended only for China Mobile broadband" \
         "仅推荐移动宽带用户选择" "${script_content}"
@@ -254,11 +262,58 @@ test_state_and_lifecycle_guards() {
         "同步更新 nftables" "${script_content}"
     assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
     assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
+
+    readme_content=$(<"${ROOT_DIR}/README.md")
+    assert_contains "README documents AAAA as DNS-only before WSS install" \
+        "AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6" "${readme_content}"
+    assert_contains "README documents proxying A and AAAA together after WSS install" \
+        "将 A、AAAA 一起切为 Proxied / 橙云" "${readme_content}"
+}
+
+test_acme_installer_arguments() {
+    local installer_args=""
+    VLESS_WSS_DOMAIN="wss.example.com"
+    ACME_EMAIL="ops@example.com"
+
+    curl() {
+        local output=""
+        while (($#)); do
+            case "$1" in
+            -o)
+                output=$2
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+            esac
+        done
+        [[ -n "${output}" ]] || return 1
+        install -m 0600 /dev/null "${output}"
+    }
+    sh() {
+        installer_args=$(printf '%s\n' "$@")
+        install -d -m 0700 "${ACME_HOME}"
+        install -m 0755 /dev/null "${ACME_BIN}"
+    }
+
+    install_acme
+    unset -f curl sh
+
+    assert_equal "get.acme.sh receives email in its required first argument" \
+        "email=ops@example.com" "$(printf '%s\n' "${installer_args}" | sed -n '2p')"
+    assert_equal "get.acme.sh receives --home after the email argument" \
+        "--home" "$(printf '%s\n' "${installer_args}" | sed -n '3p')"
+    assert_equal "get.acme.sh receives the managed install directory" \
+        "${ACME_HOME}" "$(printf '%s\n' "${installer_args}" | sed -n '4p')"
+    assert_not_contains "get.acme.sh is not passed the obsolete accountemail option" \
+        "--accountemail" "${installer_args}"
 }
 
 source_script_copy
 test_validators_and_defaults
 test_links_and_workers
 test_state_and_lifecycle_guards
+test_acme_installer_arguments
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"

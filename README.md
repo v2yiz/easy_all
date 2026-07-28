@@ -17,7 +17,7 @@
 - 三种协议都使用 TCP 443，所以同一时间只能启用一种。
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
-- VLESS WSS 仅推荐移动宽带用户选择。安装前必须把域名 A 记录设为 DNS only / 灰云并直指 VPS；安装成功后，脚本会提醒开启 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
+- VLESS WSS 仅推荐移动宽带用户选择。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 Cloudflare CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
 ## 快速安装
 
@@ -105,6 +105,8 @@ sudo PROTOCOL=vless-wss \
 ```
 
 `WS_PATH` 默认随机生成，也可显式设置为以 `/` 开头的路径。该协议固定走 443，不接受 `SUB_PORT_MODE=dynamic`。
+
+安装或切换到 VLESS WSS 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后若使用 Cloudflare CDN，请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。
 
 输出同时包含 VLESS URI、Mihomo `network: ws`/`ws-opts` 节点以及 base64 订阅内容。
 
