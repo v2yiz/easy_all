@@ -1,0 +1,21 @@
+README.md
+  s_722a8d9b51ab0f::t_64224b565fa8a4 145-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "85f4f626a3d24dd2b17ea483a3070376567457cc",
+  "prompts": {},
+  "sessions": {
+    "s_722a8d9b51ab0f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa6dd-0266-7520-877e-1e38a02a2dc3",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
