@@ -1193,7 +1193,7 @@ validate_sample_worker() {
 }
 
 fetch_sample_worker() {
-    local destination=$1 source=${SAMPLE_WORKER_SOURCE:-} url local_sample
+    local destination=$1 source=${SAMPLE_WORKER_SOURCE:-} url
     if [[ -n "${source}" ]]; then
         if [[ -f "${source}" ]]; then
             install -m 0600 "${source}" "${destination}"
@@ -1204,13 +1204,6 @@ fetch_sample_worker() {
         else
             die "SAMPLE_WORKER_SOURCE 必须是本地文件或 HTTPS URL：${source}"
         fi
-        validate_sample_worker "${destination}"
-        return
-    fi
-
-    local_sample="${SCRIPT_DIR}/sample-worker.js"
-    if [[ "${SCRIPT_DIR}" != "${COMMAND_INSTALL_DIR}" && -f "${local_sample}" ]]; then
-        install -m 0600 "${local_sample}" "${destination}"
         validate_sample_worker "${destination}"
         return
     fi
@@ -1652,6 +1645,12 @@ update_subscription() {
     fi
     configure_subscription
     show_subscription
+}
+
+update_easy_all() {
+    require_root
+    register_easy_all_command
+    update_subscription
 }
 
 print_worker_content() {
@@ -2163,6 +2162,7 @@ usage() {
   switch <协议> 在 easy_all 创建的安装中切换协议，失败自动回滚
   show          显示当前协议节点和 Mihomo 节点
   subscription  显示链接、订阅和 Worker 信息
+  update        注册当前脚本并更新 Worker 订阅
   update-sub    重新配置 Worker 订阅输出
   update-core   更新当前协议核心
   renew-cert    立即续期 AnyTLS/WSS 证书
@@ -2243,6 +2243,7 @@ main() {
         ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
+    update) update_easy_all ;;
     update-sub) update_subscription ;;
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;

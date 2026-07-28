@@ -395,8 +395,10 @@ test_state_and_lifecycle_guards() {
         "fetch_sample_worker" "${script_content}"
     assert_contains "easy_all validates the sample rules boundary" \
         "// EASY_ALL_RULES_START" "${script_content}"
-    assert_contains "installed easy_all ignores legacy cached sample Workers" \
-        '"${SCRIPT_DIR}" != "${COMMAND_INSTALL_DIR}"' "${script_content}"
+    assert_contains "easy_all defaults to the repository sample Worker URL" \
+        'url=${SAMPLE_WORKER_URL:-${DEFAULT_SAMPLE_WORKER_URL}}' "${script_content}"
+    assert_not_contains "easy_all never auto-loads an adjacent sample Worker" \
+        'local_sample="${SCRIPT_DIR}/sample-worker.js"' "${script_content}"
     assert_contains "command registration removes legacy sample Worker caches" \
         'rm -f -- "${COMMAND_INSTALL_DIR}/sample-worker.js"' "${script_content}"
     assert_not_contains "easy_all never installs a sample Worker cache" \
@@ -527,6 +529,18 @@ test_subscription_retry_policy() {
     assert_contains "captured subscription delays include retry intervals" $'5\n' "${delays}"
 }
 
+test_update_command_orchestration() {
+    local calls
+    calls=$(
+        require_root() { printf 'root\n'; }
+        register_easy_all_command() { printf 'register\n'; }
+        update_subscription() { printf 'subscription\n'; }
+        update_easy_all
+    )
+    assert_equal "update command registers the script before updating subscription" \
+        $'root\nregister\nsubscription' "${calls}"
+}
+
 source_script_copy
 test_validators_and_defaults
 test_links_and_workers
@@ -535,5 +549,6 @@ test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy
+test_update_command_orchestration
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"
