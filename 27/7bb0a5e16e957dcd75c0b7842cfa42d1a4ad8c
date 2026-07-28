@@ -1,0 +1,21 @@
+easy_all.sh
+  s_d11ce5d6e09471::t_808669750762c6 682-683,686
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "277bb0a5e16e957dcd75c0b7842cfa42d1a4ad8c",
+  "prompts": {},
+  "sessions": {
+    "s_d11ce5d6e09471": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa6ad-7379-78f2-bb94-badb3ae7af55",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
