@@ -68,10 +68,20 @@ readonly IPV4_ONLY_DOMAIN_SUFFIXES_JSON='[
   "claude.ai",
   "claude.com",
   "claudeusercontent.com",
-  "gemini.google.com",
-  "aistudio.google.com",
   "ai.google.dev",
   "generativeai.google",
+  "google.com",
+  "googleapis.com",
+  "googleusercontent.com",
+  "gstatic.com",
+  "ggpht.com",
+  "googlevideo.com",
+  "youtube.com",
+  "ytimg.com",
+  "doubleclick.net",
+  "google-analytics.com",
+  "googletagmanager.com",
+  "withgoogle.com",
   "api.statsig.com",
   "browser-intake-datadoghq.com",
   "chat.openai.com.cdn.cloudflare.net",
@@ -90,50 +100,7 @@ readonly IPV4_ONLY_DOMAIN_SUFFIXES_JSON='[
   "openaicom.imgix.net",
   "segment.io",
   "sentry.io",
-  "turn.livekit.cloud",
-  "mega.nz",
-  "mega.co.nz",
-  "mega.io",
-  "mega.app"
-]'
-readonly GEMINI_IPV4_EXACT_DOMAINS_JSON='[
-  "accounts.google.com",
-  "myaccount.google.com",
-  "lh5.googleusercontent.com",
-  "www.googleapis.com",
-  "ssl.gstatic.com",
-  "fonts.googleapis.com",
-  "play.google.com",
-  "ogs.google.com",
-  "www.google.com",
-  "apis.google.com",
-  "jnn-pa.googleapis.com",
-  "waa-pa.clients6.google.com",
-  "alkalimakersuite-pa.clients6.google.com",
-  "ogads-pa.clients6.google.com",
-  "generativelanguage.googleapis.com",
-  "i.ytimg.com",
-  "yt3.ggpht.com",
-  "lh3.googleusercontent.com",
-  "maps.gstatic.com",
-  "lh3.google.com",
-  "csp.withgoogle.com",
-  "www.googletagmanager.com",
-  "www.youtube.com",
-  "fonts.gstatic.com",
-  "maps.googleapis.com",
-  "static.doubleclick.net",
-  "www.gstatic.com",
-  "td.doubleclick.net",
-  "googleads.g.doubleclick.net",
-  "www.google-analytics.com",
-  "optimizationguide-pa.googleapis.com",
-  "encrypted-tbn0.gstatic.com",
-  "encrypted-tbn1.gstatic.com",
-  "encrypted-tbn2.gstatic.com",
-  "encrypted-tbn3.gstatic.com",
-  "streetviewpixels-pa.googleapis.com",
-  "content-autofill.googleapis.com"
+  "turn.livekit.cloud"
 ]'
 
 RED='\033[31m'
@@ -939,8 +906,7 @@ write_xray_config() {
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
             --arg sni "${REALITY_TARGET%:*}" \
-            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" \
-            --argjson gemini_exact_domains "${GEMINI_IPV4_EXACT_DOMAINS_JSON}" '
+            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
@@ -982,9 +948,7 @@ write_xray_config() {
                 domainStrategy: "AsIs",
                 rules: [{
                   type: "field",
-                  domain:
-                    ($ipv4_only_domain_suffixes | map("domain:" + .))
-                    + ($gemini_exact_domains | map("full:" + .)),
+                  domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
                   outboundTag: "ipv4-only"
                 }]
               }
@@ -996,8 +960,7 @@ write_xray_config() {
             --arg uuid "${VLESS_UUID}" \
             --arg node_name "${NODE_NAME}" \
             --arg path "${WS_PATH}" \
-            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" \
-            --argjson gemini_exact_domains "${GEMINI_IPV4_EXACT_DOMAINS_JSON}" '
+            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
@@ -1031,9 +994,7 @@ write_xray_config() {
                 domainStrategy: "AsIs",
                 rules: [{
                   type: "field",
-                  domain:
-                    ($ipv4_only_domain_suffixes | map("domain:" + .))
-                    + ($gemini_exact_domains | map("full:" + .)),
+                  domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
                   outboundTag: "ipv4-only"
                 }]
               }
@@ -1121,8 +1082,7 @@ write_sing_box_config() {
         --arg password "${ANYTLS_PASSWORD}" \
         --arg cert "${CERT_FILE}" \
         --arg key "${KEY_FILE}" \
-        --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" \
-        --argjson gemini_exact_domains "${GEMINI_IPV4_EXACT_DOMAINS_JSON}" '
+        --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" '
         {
           log: {level: "warn", timestamp: true},
           dns: {
@@ -1158,7 +1118,6 @@ write_sing_box_config() {
             rules: [
               {action: "sniff"},
               {
-                domain: $gemini_exact_domains,
                 domain_suffix: $ipv4_only_domain_suffixes,
                 action: "route",
                 outbound: "ipv4-only"

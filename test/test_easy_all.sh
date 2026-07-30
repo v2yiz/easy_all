@@ -340,15 +340,18 @@ test_ipv4_only_server_configs() {
                 '.inbounds[0].sniffing.enabled == true
                  and (.inbounds[0].sniffing.destOverride == ["http", "tls", "quic"])' \
                 <<<"${config}"
-        assert_success "${protocol} Xray routes AI services and MEGA Sync to IPv4 only" \
+        assert_success "${protocol} Xray routes AI services but not MEGA Sync to IPv4 only" \
             jq -e \
                 '.routing.rules[0].outboundTag == "ipv4-only"
                  and (.routing.rules[0].domain | index("domain:openai.com"))
                  and (.routing.rules[0].domain | index("domain:claude.ai"))
-                 and (.routing.rules[0].domain | index("domain:gemini.google.com"))
-                 and (.routing.rules[0].domain | index("domain:mega.nz"))
-                 and (.routing.rules[0].domain | index("domain:mega.app"))
-                 and (.routing.rules[0].domain | index("full:waa-pa.clients6.google.com"))' \
+                 and (.routing.rules[0].domain | index("domain:google.com"))
+                 and (.routing.rules[0].domain | index("domain:googleapis.com"))
+                 and ((.routing.rules[0].domain | index("domain:mega.nz")) == null)
+                 and ((.routing.rules[0].domain | index("domain:mega.co.nz")) == null)
+                 and ((.routing.rules[0].domain | index("domain:mega.io")) == null)
+                 and ((.routing.rules[0].domain | index("domain:mega.app")) == null)
+                 and ((.routing.rules[0].domain | map(startswith("full:")) | any) == false)' \
                 <<<"${config}"
     done
 
@@ -367,14 +370,17 @@ test_ipv4_only_server_configs() {
              and .route.rules[1].action == "route"
              and .route.rules[1].outbound == "ipv4-only"' \
             <<<"${config}"
-    assert_success "sing-box routes AI services and MEGA Sync to IPv4 only" \
+    assert_success "sing-box routes AI services but not MEGA Sync to IPv4 only" \
         jq -e \
             '(.route.rules[1].domain_suffix | index("openai.com"))
              and (.route.rules[1].domain_suffix | index("claude.ai"))
-             and (.route.rules[1].domain_suffix | index("gemini.google.com"))
-             and (.route.rules[1].domain_suffix | index("mega.nz"))
-             and (.route.rules[1].domain_suffix | index("mega.app"))
-             and (.route.rules[1].domain | index("waa-pa.clients6.google.com"))' \
+             and (.route.rules[1].domain_suffix | index("google.com"))
+             and (.route.rules[1].domain_suffix | index("googleapis.com"))
+             and ((.route.rules[1].domain_suffix | index("mega.nz")) == null)
+             and ((.route.rules[1].domain_suffix | index("mega.co.nz")) == null)
+             and ((.route.rules[1].domain_suffix | index("mega.io")) == null)
+             and ((.route.rules[1].domain_suffix | index("mega.app")) == null)
+             and (.route.rules[1] | has("domain") | not)' \
             <<<"${config}"
 }
 

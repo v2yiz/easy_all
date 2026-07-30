@@ -211,7 +211,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(body, /trojan/i);
   });
 
-  it('restricts AI services and MEGA Sync to IPv4 without disabling IPv6 globally', async () => {
+  it('restricts AI services to IPv4 while keeping MEGA Sync dual-stack', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`);
     const body = await responseText(response);
 
@@ -221,19 +221,21 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /'\+\.chatgpt\.com': &ipv4_only_dns/);
     assert.match(body, /'\+\.openai\.com': \*ipv4_only_dns/);
     assert.match(body, /'\+\.claude\.ai': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.gemini\.google\.com': \*ipv4_only_dns/);
-    assert.match(body, /'waa-pa\.clients6\.google\.com': \*ipv4_only_dns/);
-    assert.match(body, /'alkalimakersuite-pa\.clients6\.google\.com': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.mega\.nz': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.mega\.co\.nz': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.mega\.io': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.mega\.app': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.google\.com': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.googleapis\.com': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.gstatic\.com': \*ipv4_only_dns/);
+    assert.doesNotMatch(body, /'\+\.mega\.nz': \*ipv4_only_dns/);
+    assert.doesNotMatch(body, /'\+\.mega\.co\.nz': \*ipv4_only_dns/);
+    assert.doesNotMatch(body, /'\+\.mega\.io': \*ipv4_only_dns/);
+    assert.doesNotMatch(body, /'\+\.mega\.app': \*ipv4_only_dns/);
     assert.match(body, /dns-query#disable-ipv6=true&disable-qtype-65=true/);
+    assert.match(body, /^\s+strict-route: true$/m);
     assert.match(body, /^\s+- '\+\.openai\.com'$/m);
     assert.match(body, /^\s+- '\+\.claude\.ai'$/m);
-    assert.match(body, /^\s+- '\+\.gemini\.google\.com'$/m);
-    assert.match(body, /^\s+- '\+\.mega\.nz'$/m);
-    assert.match(body, /^\s+- '\+\.mega\.app'$/m);
+    assert.match(body, /^\s+- '\+\.google\.com'$/m);
+    assert.match(body, /^\s+- '\+\.googleapis\.com'$/m);
+    assert.doesNotMatch(body, /^\s+- '\+\.mega\.nz'$/m);
+    assert.doesNotMatch(body, /^\s+- '\+\.mega\.app'$/m);
     assert.match(body, /DOMAIN-SUFFIX,mega\.nz,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,mega\.co\.nz,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,mega\.io,PROXY/);

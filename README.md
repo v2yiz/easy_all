@@ -16,7 +16,7 @@
 - 脚本适用于专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
 - 三种协议都使用 TCP 443，所以同一时间只能启用一种。
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
-- Gemini、Claude、OpenAI 和 MEGA Sync 相关域名在 Mihomo 客户端与 VPS 服务端都被限制为仅使用 IPv4；其他站点仍可使用 IPv6。
+- Gemini、Claude 和 OpenAI 相关域名在 Mihomo 客户端与 VPS 服务端都被限制为仅使用 IPv4；其他站点仍可使用 IPv6。MEGA Sync 保持双栈，但固定通过代理节点访问。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
 - VLESS WSS 仅推荐移动宽带用户选择。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 Cloudflare CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
@@ -92,7 +92,9 @@ sudo PROTOCOL=anytls \
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI、MEGA Sync 及其必要辅助域名命中后，Xray 使用 `ForceIPv4` 出站，sing-box 使用 `ipv4_only` 域名解析器；未命中的流量继续使用普通双栈直连出站。MEGA Sync 当前覆盖 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名。Mihomo 订阅同时让这些域名退出 Fake-IP，并通过专用 DNS 策略丢弃 AAAA 与 HTTPS/SVCB（TYPE 65）响应，避免客户端通过 IPv6 或 `ipv6hint` 把 IPv6 目标传给服务端。
+三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI 及其必要辅助域名命中后，Xray 使用 `ForceIPv4` 出站，sing-box 使用 `ipv4_only` 域名解析器；未命中的流量继续使用普通双栈直连出站。Gemini 的 Google 共享依赖按 `google.com`、`googleapis.com`、`googleusercontent.com`、`gstatic.com`、`ggpht.com`、YouTube 及相关统计域名后缀覆盖，避免新增子域名遗漏。Mihomo 订阅同时让这些 AI 域名退出 Fake-IP，通过专用 DNS 策略丢弃 AAAA 与 HTTPS/SVCB（TYPE 65）响应，并启用 TUN `strict-route` 降低 DNS 和地址泄漏风险。MEGA Sync 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名仍固定走 `PROXY`，但不再限制地址族，以便客户端和有 IPv6 的 VPS 正常使用双栈。
+
+为确保上述客户端限制生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能绕过按域名丢弃 AAAA 和 TYPE 65 的策略。
 
 ### VLESS WebSocket TLS
 

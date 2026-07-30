@@ -78,6 +78,7 @@ function defaultNodeConfigs() {
 // ================= 规则与模板 =================
 
 // EASY_ALL_RULES_START
+// Gemini 使用 Google 共享基础设施；按相关后缀强制 IPv4，避免新增子域名漏出 IPv6。
 const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze([
     'chatgpt.com',
     'openai.com',
@@ -87,10 +88,20 @@ const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze([
     'claude.ai',
     'claude.com',
     'claudeusercontent.com',
-    'gemini.google.com',
-    'aistudio.google.com',
     'ai.google.dev',
     'generativeai.google',
+    'google.com',
+    'googleapis.com',
+    'googleusercontent.com',
+    'gstatic.com',
+    'ggpht.com',
+    'googlevideo.com',
+    'youtube.com',
+    'ytimg.com',
+    'doubleclick.net',
+    'google-analytics.com',
+    'googletagmanager.com',
+    'withgoogle.com',
     'api.statsig.com',
     'browser-intake-datadoghq.com',
     'chat.openai.com.cdn.cloudflare.net',
@@ -109,52 +120,7 @@ const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze([
     'openaicom.imgix.net',
     'segment.io',
     'sentry.io',
-    'turn.livekit.cloud',
-    'mega.nz',
-    'mega.co.nz',
-    'mega.io',
-    'mega.app'
-]);
-
-// Google 官方 Gemini 防火墙清单中的共享主机使用精确匹配，避免扩大到整个 Google。
-const GEMINI_IPV4_EXACT_DOMAINS = Object.freeze([
-    'accounts.google.com',
-    'myaccount.google.com',
-    'lh5.googleusercontent.com',
-    'www.googleapis.com',
-    'ssl.gstatic.com',
-    'fonts.googleapis.com',
-    'play.google.com',
-    'ogs.google.com',
-    'www.google.com',
-    'apis.google.com',
-    'jnn-pa.googleapis.com',
-    'waa-pa.clients6.google.com',
-    'alkalimakersuite-pa.clients6.google.com',
-    'ogads-pa.clients6.google.com',
-    'generativelanguage.googleapis.com',
-    'i.ytimg.com',
-    'yt3.ggpht.com',
-    'lh3.googleusercontent.com',
-    'maps.gstatic.com',
-    'lh3.google.com',
-    'csp.withgoogle.com',
-    'www.googletagmanager.com',
-    'www.youtube.com',
-    'fonts.gstatic.com',
-    'maps.googleapis.com',
-    'static.doubleclick.net',
-    'www.gstatic.com',
-    'td.doubleclick.net',
-    'googleads.g.doubleclick.net',
-    'www.google-analytics.com',
-    'optimizationguide-pa.googleapis.com',
-    'encrypted-tbn0.gstatic.com',
-    'encrypted-tbn1.gstatic.com',
-    'encrypted-tbn2.gstatic.com',
-    'encrypted-tbn3.gstatic.com',
-    'streetviewpixels-pa.googleapis.com',
-    'content-autofill.googleapis.com'
+    'turn.livekit.cloud'
 ]);
 
 const BASE_FAKE_IP_FILTER = [
@@ -170,13 +136,11 @@ const BASE_FAKE_IP_FILTER = [
 // AI 域名返回真实 IPv4，避免 Fake-IP 模式为 AAAA 查询生成 fake IPv6。
 const FAKE_IP_FILTER = [
     ...BASE_FAKE_IP_FILTER,
-    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`),
-    ...GEMINI_IPV4_EXACT_DOMAINS
+    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`)
 ].map(domain => `      - '${domain}'`).join('\n');
 
 const IPV4_ONLY_NAMESERVER_POLICY = [
-    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`),
-    ...GEMINI_IPV4_EXACT_DOMAINS
+    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`)
 ].map((domain, index) => {
     if (index === 0) {
         return `      '${domain}': &ipv4_only_dns
@@ -461,7 +425,7 @@ tun:
     dns-hijack:
       - any:53
       - tcp://any:53
-    strict-route: false
+    strict-route: true
     # 如需绕过 TUN 自动路由，在这里添加：
     # route-exclude-address:
     #   - 10.0.0.0/8
