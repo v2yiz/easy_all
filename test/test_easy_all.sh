@@ -303,10 +303,37 @@ test_links_and_workers() {
 
 test_sample_worker_template_guards() {
     local invalid_template="${TMP_DIR}/invalid-sample-worker.js"
+    local duplicate_policy="${TMP_DIR}/duplicate-policy-worker.js"
+    local uppercase_policy="${TMP_DIR}/uppercase-policy-worker.js"
+    local policy
     awk '$0 != "// EASY_ALL_RULES_END"' \
         "${ROOT_DIR}/sample-worker.js" >"${invalid_template}"
     assert_success "sample Worker rejects a missing rules boundary" \
         sample_worker_validation_fails "${invalid_template}"
+
+    awk '$0 != "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */"' \
+        "${ROOT_DIR}/sample-worker.js" >"${invalid_template}"
+    assert_success "sample Worker rejects a missing IPv4-only policy boundary" \
+        sample_worker_validation_fails "${invalid_template}"
+
+    sed 's/"openai.com"/"chatgpt.com"/' \
+        "${ROOT_DIR}/sample-worker.js" >"${duplicate_policy}"
+    assert_success "sample Worker rejects duplicate IPv4-only domains" \
+        sample_worker_validation_fails "${duplicate_policy}"
+
+    sed 's/"openai.com"/"OpenAI.com"/' \
+        "${ROOT_DIR}/sample-worker.js" >"${uppercase_policy}"
+    assert_success "sample Worker rejects non-normalized IPv4-only domains" \
+        sample_worker_validation_fails "${uppercase_policy}"
+
+    policy=$(extract_ipv4_only_domain_suffixes "${ROOT_DIR}/sample-worker.js")
+    assert_success "sample Worker exposes AI domains but excludes MEGA from IPv4-only policy" \
+        jq -e \
+            'index("openai.com")
+             and index("claude.ai")
+             and index("googleapis.com")
+             and (index("mega.nz") == null)' \
+            <<<"${policy}"
 
     assert_success "sample Worker source rejects plain HTTP" \
         sample_worker_fetch_fails "http://example.com/sample-worker.js"
@@ -335,6 +362,8 @@ test_ipv4_only_server_configs() {
                 <<<"${config}")"
         assert_equal "${protocol} Xray keeps a separate normal direct outbound" \
             "direct" "$(jq -r '.outbounds[] | select(.tag == "direct") | .tag' <<<"${config}")"
+        assert_equal "${protocol} Xray uses normal direct as the default outbound" \
+            "direct" "$(jq -r '.outbounds[0].tag' <<<"${config}")"
         assert_success "${protocol} Xray enables HTTP TLS and QUIC sniffing" \
             jq -e \
                 '.inbounds[0].sniffing.enabled == true
@@ -353,6 +382,14 @@ test_ipv4_only_server_configs() {
                  and ((.routing.rules[0].domain | index("domain:mega.app")) == null)
                  and ((.routing.rules[0].domain | map(startswith("full:")) | any) == false)' \
                 <<<"${config}"
+        assert_success "${protocol} Xray explicitly sends every unmatched flow to normal direct" \
+            jq -e \
+                '(.routing.rules | length) == 2
+                 and .routing.rules[1].type == "field"
+                 and .routing.rules[1].network == "tcp,udp"
+                 and .routing.rules[1].outboundTag == "direct"
+                 and (.routing.rules[1] | has("domain") | not)' \
+                <<<"${config}"
     done
 
     set_protocol_fixture "anytls"
@@ -368,7 +405,8 @@ test_ipv4_only_server_configs() {
         jq -e \
             '.route.rules[0].action == "sniff"
              and .route.rules[1].action == "route"
-             and .route.rules[1].outbound == "ipv4-only"' \
+             and .route.rules[1].outbound == "ipv4-only"
+             and .route.final == "direct"' \
             <<<"${config}"
     assert_success "sing-box routes AI services but not MEGA Sync to IPv4 only" \
         jq -e \
@@ -382,6 +420,9 @@ test_ipv4_only_server_configs() {
              and ((.route.rules[1].domain_suffix | index("mega.app")) == null)
              and (.route.rules[1] | has("domain") | not)' \
             <<<"${config}"
+
+    assert_success "one fetched Worker policy drives both server and generated Worker" \
+        custom_worker_policy_drives_server_and_worker
 }
 
 sample_worker_validation_fails() {
@@ -394,6 +435,29 @@ sample_worker_fetch_fails() {
         fetch_sample_worker "${TMP_DIR}/invalid-fetched-worker.js"
     ) >/dev/null 2>&1
 }
+
+custom_worker_policy_drives_server_and_worker() (
+    local custom_template="${TMP_DIR}/custom-policy-worker.js"
+    local generated_worker="${TMP_DIR}/custom-policy-generated-worker.js"
+    sed 's/"openai.com"/"policy-source.example"/' \
+        "${ROOT_DIR}/sample-worker.js" >"${custom_template}"
+    SAMPLE_WORKER_TEMPLATE_FILE=""
+    IPV4_ONLY_DOMAIN_SUFFIXES_JSON=""
+    SAMPLE_WORKER_SOURCE=${custom_template}
+    set_protocol_fixture "reality"
+    REALITY_PRIVATE_KEY="test-private-key"
+
+    write_xray_config
+    SAMPLE_WORKER_SOURCE="${TMP_DIR}/source-must-not-be-fetched-again.js"
+    write_worker "${generated_worker}"
+
+    jq -e \
+        '(.routing.rules[0].domain | index("domain:policy-source.example"))
+         and ((.routing.rules[0].domain | index("domain:openai.com")) == null)' \
+        "${XRAY_CONFIG}" >/dev/null \
+        && grep -Fq '"policy-source.example"' "${generated_worker}" \
+        && ! grep -Fq '"openai.com"' "${generated_worker}"
+)
 
 test_worker_only_subscription_branch() {
     local output content output_file
@@ -465,8 +529,14 @@ test_state_and_lifecycle_guards() {
         "const FAKE_IP_FILTER =" "${script_content}"
     assert_contains "easy_all reads rules from the sample Worker" \
         "fetch_sample_worker" "${script_content}"
+    assert_not_contains "easy_all does not embed a second IPv4-only domain list" \
+        'readonly IPV4_ONLY_DOMAIN_SUFFIXES_JSON=' "${script_content}"
+    assert_contains "easy_all extracts the IPv4-only policy from the sample Worker" \
+        "extract_ipv4_only_domain_suffixes" "${script_content}"
     assert_contains "easy_all validates the sample rules boundary" \
         "// EASY_ALL_RULES_START" "${script_content}"
+    assert_contains "easy_all validates the IPv4-only policy boundary" \
+        "EASY_ALL_IPV4_ONLY_DOMAINS_START" "${script_content}"
     assert_contains "easy_all defaults to the repository sample Worker URL" \
         'url=${SAMPLE_WORKER_URL:-${DEFAULT_SAMPLE_WORKER_URL}}' "${script_content}"
     assert_not_contains "easy_all never auto-loads an adjacent sample Worker" \
@@ -503,6 +573,8 @@ test_state_and_lifecycle_guards() {
         "Worker 已完成 replace" "${script_content}"
     assert_contains "update-sub synchronizes changed ports to nftables" \
         "同步更新 nftables" "${script_content}"
+    assert_contains "update-sub refreshes the server policy before the Worker" \
+        "refresh_protocol_runtime_config" "${script_content}"
     assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
     assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
 
@@ -632,7 +704,8 @@ test_subscription_retry_policy() {
 }
 
 test_update_subscription_rolls_back_port_change() {
-    local status state_content nft_content nft_hash nft_calls="${TMP_DIR}/update-sub-nft-calls"
+    local status state_content nft_content nft_hash
+    local nft_calls="${TMP_DIR}/update-sub-nft-calls"
     set_protocol_fixture "reality"
     SUB_PORT_MODE="443"
     WORKER_NAME="${DEFAULT_WORKER_NAME}"
@@ -640,16 +713,27 @@ test_update_subscription_rolls_back_port_change() {
     CF_ACCOUNT_ID="account-id"
     DEPLOY_MODE="auto"
     save_state
+    install -d -m 0755 "$(dirname "${XRAY_CONFIG}")"
+    printf 'old runtime\n' >"${XRAY_CONFIG}"
+    printf 'old worker\n' >"${WORKER_FILE}"
     printf 'old nftables\n' >"${NFT_CONFIG}"
     printf 'old-hash\n' >"${STATE_DIR}/nftables.sha256"
     : >"${nft_calls}"
 
     require_root() { :; }
+    prepare_sample_worker_template() { :; }
     configure_nftables() {
         printf 'new nftables\n' >"${NFT_CONFIG}"
         printf 'new-hash\n' >"${STATE_DIR}/nftables.sha256"
     }
-    configure_subscription() { return 1; }
+    refresh_protocol_runtime_config() {
+        printf 'new runtime\n' >"${XRAY_CONFIG}"
+    }
+    configure_subscription() {
+        printf 'new worker\n' >"${WORKER_FILE}"
+        return 1
+    }
+    systemctl() { return 0; }
     nft() {
         printf '%s\n' "$*" >>"${nft_calls}"
     }
@@ -668,10 +752,38 @@ test_update_subscription_rolls_back_port_change() {
         "SUB_PORT_MODE=443" "${state_content}"
     assert_equal "failed port update restores nftables config" "old nftables" "${nft_content}"
     assert_equal "failed port update restores nftables checksum" "old-hash" "${nft_hash}"
+    assert_equal "failed Worker update restores the previous runtime config" \
+        "old runtime" "$(<"${XRAY_CONFIG}")"
+    assert_equal "failed Worker update restores the previous local Worker" \
+        "old worker" "$(<"${WORKER_FILE}")"
     assert_contains "failed port update reloads restored active nftables rules" \
         "-f ${NFT_CONFIG}" "$(<"${nft_calls}")"
 
-    unset -f require_root configure_nftables configure_subscription nft
+    unset -f require_root prepare_sample_worker_template configure_nftables
+    unset -f refresh_protocol_runtime_config configure_subscription systemctl nft
+}
+
+test_update_subscription_orchestration() {
+    local calls
+    set_protocol_fixture "reality"
+    SUB_PORT_MODE="443"
+    WORKER_NAME="${DEFAULT_WORKER_NAME}"
+    DEPLOY_MODE="worker"
+    save_state
+    calls=$(
+        require_root() { printf 'root\n'; }
+        prepare_sample_worker_template() { printf 'template\n'; }
+        snapshot_subscription_update() {
+            printf 'snapshot\n'
+            UPDATE_SUB_ROLLBACK_ON_EXIT=1
+        }
+        refresh_protocol_runtime_config() { printf 'runtime\n'; }
+        configure_subscription() { printf 'worker\n'; }
+        show_subscription() { printf 'show\n'; }
+        update_subscription
+    )
+    assert_equal "update-sub uses one template before server and Worker refresh" \
+        $'root\ntemplate\nsnapshot\nruntime\nworker\nshow' "${calls}"
 }
 
 test_update_command_orchestration() {
@@ -679,12 +791,11 @@ test_update_command_orchestration() {
     calls=$(
         require_root() { printf 'root\n'; }
         register_easy_all_command() { printf 'register\n'; }
-        refresh_protocol_runtime_config() { printf 'runtime\n'; }
         update_subscription() { printf 'subscription\n'; }
         update_easy_all
     )
-    assert_equal "update command refreshes runtime before updating subscription" \
-        $'root\nregister\nruntime\nsubscription' "${calls}"
+    assert_equal "update command delegates the synchronized refresh to update-sub" \
+        $'root\nregister\nsubscription' "${calls}"
 }
 
 test_runtime_refresh_rolls_back_invalid_config() {
@@ -726,6 +837,7 @@ test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy
+test_update_subscription_orchestration
 test_update_command_orchestration
 test_runtime_refresh_rolls_back_invalid_config
 test_update_subscription_rolls_back_port_change

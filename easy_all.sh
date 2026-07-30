@@ -59,49 +59,6 @@ readonly SING_BOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/r
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="1"
-readonly IPV4_ONLY_DOMAIN_SUFFIXES_JSON='[
-  "chatgpt.com",
-  "openai.com",
-  "oaistatic.com",
-  "oaiusercontent.com",
-  "anthropic.com",
-  "claude.ai",
-  "claude.com",
-  "claudeusercontent.com",
-  "ai.google.dev",
-  "generativeai.google",
-  "google.com",
-  "googleapis.com",
-  "googleusercontent.com",
-  "gstatic.com",
-  "ggpht.com",
-  "googlevideo.com",
-  "youtube.com",
-  "ytimg.com",
-  "doubleclick.net",
-  "google-analytics.com",
-  "googletagmanager.com",
-  "withgoogle.com",
-  "api.statsig.com",
-  "browser-intake-datadoghq.com",
-  "chat.openai.com.cdn.cloudflare.net",
-  "openai-api.arkoselabs.com",
-  "auth0.com",
-  "challenges.cloudflare.com",
-  "chatgpt.livekit.cloud",
-  "client-api.arkoselabs.com",
-  "events.statsigapi.net",
-  "featuregates.org",
-  "host.livekit.cloud",
-  "intercom.io",
-  "intercomcdn.com",
-  "launchdarkly.com",
-  "openaiapi-site.azureedge.net",
-  "openaicom.imgix.net",
-  "segment.io",
-  "sentry.io",
-  "turn.livekit.cloud"
-]'
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -123,6 +80,8 @@ SWITCH_BACKUP_DIR=""
 INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
+SAMPLE_WORKER_TEMPLATE_FILE=""
+IPV4_ONLY_DOMAIN_SUFFIXES_JSON=""
 cleanup() {
     local path
     if [[ "${SWITCH_ROLLBACK_ON_EXIT:-0}" == "1" && -n "${SWITCH_BACKUP_DIR:-}" ]]; then
@@ -885,6 +844,7 @@ download_xray() {
 }
 
 write_xray_config() {
+    prepare_sample_worker_template
     install -d -m 0755 "${XRAY_DIR}"
     case "${PROTOCOL}" in
     reality)
@@ -937,20 +897,27 @@ write_xray_config() {
                 }
               }],
               outbounds: [
+                {protocol: "freedom", tag: "direct"},
                 {
                   protocol: "freedom",
                   tag: "ipv4-only",
                   settings: {domainStrategy: "ForceIPv4"}
-                },
-                {protocol: "freedom", tag: "direct"}
+                }
               ],
               routing: {
                 domainStrategy: "AsIs",
-                rules: [{
-                  type: "field",
-                  domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
-                  outboundTag: "ipv4-only"
-                }]
+                rules: [
+                  {
+                    type: "field",
+                    domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
+                    outboundTag: "ipv4-only"
+                  },
+                  {
+                    type: "field",
+                    network: "tcp,udp",
+                    outboundTag: "direct"
+                  }
+                ]
               }
             }' >"${RUNTIME_TMP}/xray-config.json"
         ;;
@@ -983,20 +950,27 @@ write_xray_config() {
                 }
               }],
               outbounds: [
+                {protocol: "freedom", tag: "direct"},
                 {
                   protocol: "freedom",
                   tag: "ipv4-only",
                   settings: {domainStrategy: "ForceIPv4"}
-                },
-                {protocol: "freedom", tag: "direct"}
+                }
               ],
               routing: {
                 domainStrategy: "AsIs",
-                rules: [{
-                  type: "field",
-                  domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
-                  outboundTag: "ipv4-only"
-                }]
+                rules: [
+                  {
+                    type: "field",
+                    domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
+                    outboundTag: "ipv4-only"
+                  },
+                  {
+                    type: "field",
+                    network: "tcp,udp",
+                    outboundTag: "direct"
+                  }
+                ]
               }
             }' >"${RUNTIME_TMP}/xray-config.json"
         ;;
@@ -1075,6 +1049,7 @@ download_sing_box() {
 
 write_sing_box_config() {
     local listen_addr="0.0.0.0"
+    prepare_sample_worker_template
     ip -6 addr show scope global 2>/dev/null | grep -q "inet6" && listen_addr="::"
     install -d -m 0755 "${SING_BOX_DIR}"
     jq -n \
@@ -1289,12 +1264,15 @@ build_mihomo_node() {
 
 validate_sample_worker() {
     local source=$1 marker count config_start config_end rules_start rules_end
+    local policy_start policy_end
     [[ -s "${source}" ]] || die "sample-worker.js 为空：${source}"
     for marker in \
         "// EASY_ALL_CONFIG_START" \
         "// EASY_ALL_CONFIG_END" \
         "// EASY_ALL_RULES_START" \
-        "// EASY_ALL_RULES_END"; do
+        "// EASY_ALL_RULES_END" \
+        "/* EASY_ALL_IPV4_ONLY_DOMAINS_START */" \
+        "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \
             || die "sample-worker.js 模板标记无效：${marker} 应且只能出现一次"
@@ -1307,8 +1285,15 @@ validate_sample_worker() {
     config_end=$(grep -Fn "// EASY_ALL_CONFIG_END" "${source}" | cut -d: -f1)
     rules_start=$(grep -Fn "// EASY_ALL_RULES_START" "${source}" | cut -d: -f1)
     rules_end=$(grep -Fn "// EASY_ALL_RULES_END" "${source}" | cut -d: -f1)
-    ((config_start < config_end && config_end < rules_start && rules_start < rules_end)) \
+    policy_start=$(grep -Fn "/* EASY_ALL_IPV4_ONLY_DOMAINS_START */" "${source}" | cut -d: -f1)
+    policy_end=$(grep -Fn "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */" "${source}" | cut -d: -f1)
+    ((config_start < config_end
+        && config_end < rules_start
+        && rules_start < policy_start
+        && policy_start < policy_end
+        && policy_end < rules_end)) \
         || die "sample-worker.js 模板区块顺序无效"
+    extract_ipv4_only_domain_suffixes "${source}" >/dev/null
 }
 
 fetch_sample_worker() {
@@ -1334,6 +1319,55 @@ fetch_sample_worker() {
         || die "下载 sample-worker.js 失败：${url}"
     chmod 0600 "${destination}"
     validate_sample_worker "${destination}"
+}
+
+extract_ipv4_only_domain_suffixes() {
+    local source=$1 json domain normalized compact
+    json=$(awk '
+        $0 == "/* EASY_ALL_IPV4_ONLY_DOMAINS_START */" {
+            capture = 1
+            next
+        }
+        $0 == "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */" {
+            capture = 0
+            exit
+        }
+        capture == 1 {
+            print
+        }
+    ' "${source}") || die "无法提取 Worker IPv4-only 域名策略"
+    jq -e '
+        type == "array"
+        and length > 0
+        and all(.[]; type == "string")
+        and length == (unique | length)
+    ' <<<"${json}" >/dev/null \
+        || die "Worker IPv4-only 域名策略必须是非空且不重复的字符串数组"
+    while IFS= read -r domain; do
+        validate_domain "${domain}" \
+            || die "Worker IPv4-only 域名策略包含无效域名：${domain}"
+        normalized=$(normalize_domain "${domain}")
+        [[ "${normalized}" == "${domain}" ]] \
+            || die "Worker IPv4-only 域名必须使用小写规范格式：${domain}"
+    done < <(jq -r '.[]' <<<"${json}")
+    compact=$(jq -c '.' <<<"${json}") \
+        || die "无法规范化 Worker IPv4-only 域名策略"
+    printf '%s\n' "${compact}"
+}
+
+prepare_sample_worker_template() {
+    local template
+    if [[ -n "${SAMPLE_WORKER_TEMPLATE_FILE:-}" \
+        && -s "${SAMPLE_WORKER_TEMPLATE_FILE}" \
+        && -n "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON:-}" ]]; then
+        return 0
+    fi
+    template="${RUNTIME_TMP}/sample-worker.js"
+    fetch_sample_worker "${template}"
+    IPV4_ONLY_DOMAIN_SUFFIXES_JSON=$(
+        extract_ipv4_only_domain_suffixes "${template}"
+    )
+    SAMPLE_WORKER_TEMPLATE_FILE=${template}
 }
 
 render_worker_from_sample() {
@@ -1362,6 +1396,7 @@ render_worker_from_sample() {
 
 write_worker() {
     local destination=$1 config_json allowed_tokens_json template_file config_file output_file
+    prepare_sample_worker_template
     install -d -m 0700 "$(dirname "${destination}")"
     ensure_allowed_tokens
     allowed_tokens_json=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
@@ -1392,10 +1427,9 @@ write_worker() {
         ;;
     esac
 
-    template_file="${RUNTIME_TMP}/sample-worker.js"
+    template_file=${SAMPLE_WORKER_TEMPLATE_FILE}
     config_file="${RUNTIME_TMP}/worker-config.js"
     output_file="${RUNTIME_TMP}/worker.js"
-    fetch_sample_worker "${template_file}"
     {
         printf 'const ALLOWED_TOKENS = %s;\n' "${allowed_tokens_json}"
         printf 'const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));\n\n'
@@ -1755,9 +1789,27 @@ configure_subscription() {
 }
 
 snapshot_subscription_update() {
-    UPDATE_SUB_BACKUP_DIR="${RUNTIME_TMP}/update-sub-backup"
-    install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+    local runtime_config
+    UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
     install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
+    case "${PROTOCOL}" in
+    anytls) runtime_config=${SING_BOX_CONFIG} ;;
+    reality | vless-wss) runtime_config=${XRAY_CONFIG} ;;
+    esac
+    if [[ -f "${runtime_config}" ]]; then
+        install -m 0600 "${runtime_config}" \
+            "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json"
+    else
+        install -m 0600 /dev/null \
+            "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json.missing"
+    fi
+    if [[ -f "${WORKER_FILE}" ]]; then
+        install -m 0600 "${WORKER_FILE}" \
+            "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js"
+    else
+        install -m 0600 /dev/null \
+            "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js.missing"
+    fi
     if [[ -f "${NFT_CONFIG}" ]]; then
         install -m 0644 "${NFT_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/nftables.conf"
     else
@@ -1774,12 +1826,37 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
+    local runtime_config service
     if [[ "${WORKER_REPLACED:-0}" == "1" ]]; then
-        warn "Worker 已完成 replace；为保持远端订阅与本机一致，不回滚订阅端口模式"
+        warn "Worker 已完成 replace；为保持远端订阅与本机一致，不回滚服务端配置"
         return 0
     fi
-    warn "订阅更新失败，正在恢复原端口模式和 nftables"
+    warn "订阅更新失败，正在恢复服务端配置、Worker、端口模式和 nftables"
     install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
+    case "${PROTOCOL}" in
+    anytls)
+        runtime_config=${SING_BOX_CONFIG}
+        service=${SING_BOX_SERVICE}
+        ;;
+    reality | vless-wss)
+        runtime_config=${XRAY_CONFIG}
+        service=${XRAY_SERVICE}
+        ;;
+    esac
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" \
+            "${runtime_config}"
+        systemctl restart "${service}" >/dev/null 2>&1 \
+            || warn "恢复订阅更新前 ${service} 失败"
+    else
+        rm -f -- "${runtime_config}"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js" \
+            "${WORKER_FILE}"
+    else
+        rm -f -- "${WORKER_FILE}"
+    fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nftables.conf" ]]; then
         install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/nftables.conf" "${NFT_CONFIG}"
         nft -f "${NFT_CONFIG}" >/dev/null 2>&1 || warn "恢复订阅更新前 nftables 失败"
@@ -1810,20 +1887,24 @@ update_subscription() {
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
     [[ "${PROTOCOL}" != "vless-wss" || "${SUB_PORT_MODE}" == "443" ]] \
         || die "VLESS WSS 不支持 dynamic 端口"
+    prepare_sample_worker_template
+    snapshot_subscription_update
     if [[ "${SUB_PORT_MODE}" != "${stored_port_mode}" ]]; then
         info "订阅端口模式从 ${stored_port_mode} 切换为 ${SUB_PORT_MODE}，同步更新 nftables"
-        snapshot_subscription_update
         if ! configure_nftables; then
             UPDATE_SUB_ROLLBACK_ON_EXIT=0
             rollback_subscription_update
             return 1
         fi
     fi
+    if ! refresh_protocol_runtime_config; then
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        rollback_subscription_update
+        return 1
+    fi
     if ! configure_subscription; then
-        if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
-            UPDATE_SUB_ROLLBACK_ON_EXIT=0
-            rollback_subscription_update
-        fi
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        rollback_subscription_update
         return 1
     fi
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -1833,7 +1914,6 @@ update_subscription() {
 update_easy_all() {
     require_root
     register_easy_all_command
-    refresh_protocol_runtime_config
     update_subscription
 }
 
@@ -2386,7 +2466,7 @@ usage() {
   show          显示当前协议节点和 Mihomo 节点
   subscription  显示链接、订阅和 Worker 信息
   update        注册当前脚本、刷新服务端配置并更新 Worker 订阅
-  update-sub    重新配置 Worker 订阅输出
+  update-sub    从同一模板刷新服务端策略与 Worker 订阅
   update-core   更新当前协议核心
   renew-cert    立即续期 AnyTLS/WSS 证书
   status        显示当前协议、服务、端口和 Worker 状态

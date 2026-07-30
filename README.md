@@ -53,7 +53,7 @@ easy_all uninstall
 
 `switch` 只支持由 `easy_all` 创建的安装。切换过程会先保存原协议的状态、服务配置、证书、核心和 nftables；新协议本机验收成功后才更新 Worker。若核心启动或 Worker API 上传失败，会自动恢复原协议。
 
-Reality 或 AnyTLS 已安装后，可以直接切换订阅端口模式；`update-sub` 会同步更新 nftables 和 Worker：
+Reality 或 AnyTLS 已安装后，可以直接切换订阅端口模式；`update-sub` 会从同一份 Worker 模板同步刷新服务端域名策略、nftables 和 Worker：
 
 ```bash
 sudo SUB_PORT_MODE=dynamic easy_all update-sub
@@ -92,7 +92,7 @@ sudo PROTOCOL=anytls \
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI 及其必要辅助域名命中后，Xray 使用 `ForceIPv4` 出站，sing-box 使用 `ipv4_only` 域名解析器；未命中的流量继续使用普通双栈直连出站。Gemini 的 Google 共享依赖按 `google.com`、`googleapis.com`、`googleusercontent.com`、`gstatic.com`、`ggpht.com`、YouTube 及相关统计域名后缀覆盖，避免新增子域名遗漏。Mihomo 订阅同时让这些 AI 域名退出 Fake-IP，通过专用 DNS 策略丢弃 AAAA 与 HTTPS/SVCB（TYPE 65）响应，并启用 TUN `strict-route` 降低 DNS 和地址泄漏风险。MEGA Sync 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名仍固定走 `PROXY`，但不再限制地址族，以便客户端和有 IPv6 的 VPS 正常使用双栈。
+三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI 及其必要辅助域名命中后，Xray 使用 `ForceIPv4` 出站，sing-box 使用 `ipv4_only` 域名解析器。Xray 将普通 `direct` 置于默认出站，并用最后一条 TCP/UDP 规则把所有未命中流量明确送往 `direct`；sing-box 使用 `route.final: direct`，因此 Reality、VLESS WSS、AnyTLS 的行为一致。Gemini 的 Google 共享依赖按 `google.com`、`googleapis.com`、`googleusercontent.com`、`gstatic.com`、`ggpht.com`、YouTube 及相关统计域名后缀覆盖，避免新增子域名遗漏。Mihomo 订阅同时让这些 AI 域名退出 Fake-IP，通过专用 DNS 策略丢弃 AAAA 与 HTTPS/SVCB（TYPE 65）响应，并启用 TUN `strict-route` 降低 DNS 和地址泄漏风险。MEGA Sync 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名仍固定走 `PROXY`，但不再限制地址族，以便客户端和有 IPv6 的 VPS 正常使用双栈。
 
 为确保上述客户端限制生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能绕过按域名丢弃 AAAA 和 TYPE 65 的策略。
 
@@ -147,12 +147,12 @@ Worker 支持：
 
 ### Worker 模板与规则来源
 
-`sample-worker.js` 是 Worker 模板和 Mihomo 规则的唯一来源，`easy_all.sh` 不再内嵌规则。生成 Worker 时按以下顺序获取模板：
+`sample-worker.js` 是 Worker 模板、Mihomo 规则和 IPv4-only 域名列表的唯一来源，`easy_all.sh` 不再保存第二份域名列表。脚本会从模板的 `EASY_ALL_IPV4_ONLY_DOMAINS_START/END` JSON 区块提取域名，并将同一列表写入 Xray 或 sing-box 服务端配置。模板按以下顺序获取：
 
 1. `SAMPLE_WORKER_SOURCE` 指定的本地文件或 HTTPS URL。
 2. `SAMPLE_WORKER_URL`，默认读取本仓库 `main` 分支的 `sample-worker.js`。
 
-模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换或 `update-sub` 时，每次生成 Worker 都会重新获取 `SAMPLE_WORKER_URL` 的最新内容；现有 Token 和节点信息从状态文件重新注入。模板缺少配置或规则边界标记时，脚本会立即停止，不会生成不完整 Worker。
+模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换、`update` 或 `update-sub` 时，每次操作都会重新获取 `SAMPLE_WORKER_URL` 的最新内容，但一次操作只获取一次；服务端配置和 Worker 都复用这份已校验模板。现有 Token 和节点信息从状态文件重新注入。模板缺少配置、规则或 IPv4-only 域名边界，或者域名 JSON 非法、重复、未规范化时，脚本会立即停止，不会生成不一致的配置。
 
 VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sample-worker.js` 已发布到 `main`，再执行一行命令：
 
@@ -160,7 +160,7 @@ VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sa
 wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh.new && mv -f /root/easy_all.sh.new /root/easy_all.sh && /root/easy_all.sh update
 ```
 
-`update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，安全重写并验收当前 Xray/sing-box 服务端配置，再更新 Worker；如果新服务端配置无法启动，会自动恢复旧配置。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`。原部署模式为 `auto` 时，若状态中没有 Account ID，脚本会先提示输入；随后会安全提示重新输入未保存的 Cloudflare Worker API Token。
+`update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，然后调用与 `update-sub` 相同的同步更新流程：安全重写并验收当前 Xray/sing-box 服务端配置，再生成或部署 Worker。Worker replace 前若任何一步失败，会恢复旧服务端配置、本地 Worker、端口模式和 nftables；replace 已完成后则保留新服务端配置，避免远端订阅与 VPS 回滚后不一致。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`。原部署模式为 `auto` 时，若状态中没有 Account ID，脚本会先提示输入；随后会安全提示重新输入未保存的 Cloudflare Worker API Token。
 
 需要固定自定义模板时，可以显式指定：
 
