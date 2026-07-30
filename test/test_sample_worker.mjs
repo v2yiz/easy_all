@@ -211,6 +211,36 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(body, /trojan/i);
   });
 
+  it('restricts AI services and MEGA Sync to IPv4 without disabling IPv6 globally', async () => {
+    const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`);
+    const body = await responseText(response);
+
+    assert.equal(response.status, 200);
+    assert.match(body, /^ipv6: true$/m);
+    assert.match(body, /^\s+ipv6: true$/m);
+    assert.match(body, /'\+\.chatgpt\.com': &ipv4_only_dns/);
+    assert.match(body, /'\+\.openai\.com': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.claude\.ai': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.gemini\.google\.com': \*ipv4_only_dns/);
+    assert.match(body, /'waa-pa\.clients6\.google\.com': \*ipv4_only_dns/);
+    assert.match(body, /'alkalimakersuite-pa\.clients6\.google\.com': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.mega\.nz': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.mega\.co\.nz': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.mega\.io': \*ipv4_only_dns/);
+    assert.match(body, /'\+\.mega\.app': \*ipv4_only_dns/);
+    assert.match(body, /dns-query#disable-ipv6=true&disable-qtype-65=true/);
+    assert.match(body, /^\s+- '\+\.openai\.com'$/m);
+    assert.match(body, /^\s+- '\+\.claude\.ai'$/m);
+    assert.match(body, /^\s+- '\+\.gemini\.google\.com'$/m);
+    assert.match(body, /^\s+- '\+\.mega\.nz'$/m);
+    assert.match(body, /^\s+- '\+\.mega\.app'$/m);
+    assert.match(body, /DOMAIN-SUFFIX,mega\.nz,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,mega\.co\.nz,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,mega\.io,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,mega\.app,PROXY/);
+    assert.doesNotMatch(body, /'\+\.bilibili\.com': \*ipv4_only_dns/);
+  });
+
   it('returns all Clash proxy nodes for node=all and falls back invalid filenames', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&node=all&flag=clash`, {
       SUB_DOWNLOAD_NAME: '../bad/name.yaml'

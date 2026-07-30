@@ -59,6 +59,82 @@ readonly SING_BOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/r
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="1"
+readonly IPV4_ONLY_DOMAIN_SUFFIXES_JSON='[
+  "chatgpt.com",
+  "openai.com",
+  "oaistatic.com",
+  "oaiusercontent.com",
+  "anthropic.com",
+  "claude.ai",
+  "claude.com",
+  "claudeusercontent.com",
+  "gemini.google.com",
+  "aistudio.google.com",
+  "ai.google.dev",
+  "generativeai.google",
+  "api.statsig.com",
+  "browser-intake-datadoghq.com",
+  "chat.openai.com.cdn.cloudflare.net",
+  "openai-api.arkoselabs.com",
+  "auth0.com",
+  "challenges.cloudflare.com",
+  "chatgpt.livekit.cloud",
+  "client-api.arkoselabs.com",
+  "events.statsigapi.net",
+  "featuregates.org",
+  "host.livekit.cloud",
+  "intercom.io",
+  "intercomcdn.com",
+  "launchdarkly.com",
+  "openaiapi-site.azureedge.net",
+  "openaicom.imgix.net",
+  "segment.io",
+  "sentry.io",
+  "turn.livekit.cloud",
+  "mega.nz",
+  "mega.co.nz",
+  "mega.io",
+  "mega.app"
+]'
+readonly GEMINI_IPV4_EXACT_DOMAINS_JSON='[
+  "accounts.google.com",
+  "myaccount.google.com",
+  "lh5.googleusercontent.com",
+  "www.googleapis.com",
+  "ssl.gstatic.com",
+  "fonts.googleapis.com",
+  "play.google.com",
+  "ogs.google.com",
+  "www.google.com",
+  "apis.google.com",
+  "jnn-pa.googleapis.com",
+  "waa-pa.clients6.google.com",
+  "alkalimakersuite-pa.clients6.google.com",
+  "ogads-pa.clients6.google.com",
+  "generativelanguage.googleapis.com",
+  "i.ytimg.com",
+  "yt3.ggpht.com",
+  "lh3.googleusercontent.com",
+  "maps.gstatic.com",
+  "lh3.google.com",
+  "csp.withgoogle.com",
+  "www.googletagmanager.com",
+  "www.youtube.com",
+  "fonts.gstatic.com",
+  "maps.googleapis.com",
+  "static.doubleclick.net",
+  "www.gstatic.com",
+  "td.doubleclick.net",
+  "googleads.g.doubleclick.net",
+  "www.google-analytics.com",
+  "optimizationguide-pa.googleapis.com",
+  "encrypted-tbn0.gstatic.com",
+  "encrypted-tbn1.gstatic.com",
+  "encrypted-tbn2.gstatic.com",
+  "encrypted-tbn3.gstatic.com",
+  "streetviewpixels-pa.googleapis.com",
+  "content-autofill.googleapis.com"
+]'
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -862,7 +938,9 @@ write_xray_config() {
             --arg target "${REALITY_TARGET}" \
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
-            --arg sni "${REALITY_TARGET%:*}" '
+            --arg sni "${REALITY_TARGET%:*}" \
+            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" \
+            --argjson gemini_exact_domains "${GEMINI_IPV4_EXACT_DOMAINS_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
@@ -885,9 +963,31 @@ write_xray_config() {
                     privateKey: $private_key,
                     shortIds: [$short_id]
                   }
+                },
+                sniffing: {
+                  enabled: true,
+                  destOverride: ["http", "tls", "quic"],
+                  routeOnly: false
                 }
               }],
-              outbounds: [{protocol: "freedom", tag: "direct"}]
+              outbounds: [
+                {
+                  protocol: "freedom",
+                  tag: "ipv4-only",
+                  settings: {domainStrategy: "ForceIPv4"}
+                },
+                {protocol: "freedom", tag: "direct"}
+              ],
+              routing: {
+                domainStrategy: "AsIs",
+                rules: [{
+                  type: "field",
+                  domain:
+                    ($ipv4_only_domain_suffixes | map("domain:" + .))
+                    + ($gemini_exact_domains | map("full:" + .)),
+                  outboundTag: "ipv4-only"
+                }]
+              }
             }' >"${RUNTIME_TMP}/xray-config.json"
         ;;
     vless-wss)
@@ -895,7 +995,9 @@ write_xray_config() {
             --argjson port "${XRAY_LOOPBACK_PORT}" \
             --arg uuid "${VLESS_UUID}" \
             --arg node_name "${NODE_NAME}" \
-            --arg path "${WS_PATH}" '
+            --arg path "${WS_PATH}" \
+            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" \
+            --argjson gemini_exact_domains "${GEMINI_IPV4_EXACT_DOMAINS_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
@@ -910,9 +1012,31 @@ write_xray_config() {
                 streamSettings: {
                   network: "ws",
                   wsSettings: {path: $path}
+                },
+                sniffing: {
+                  enabled: true,
+                  destOverride: ["http", "tls", "quic"],
+                  routeOnly: false
                 }
               }],
-              outbounds: [{protocol: "freedom", tag: "direct"}]
+              outbounds: [
+                {
+                  protocol: "freedom",
+                  tag: "ipv4-only",
+                  settings: {domainStrategy: "ForceIPv4"}
+                },
+                {protocol: "freedom", tag: "direct"}
+              ],
+              routing: {
+                domainStrategy: "AsIs",
+                rules: [{
+                  type: "field",
+                  domain:
+                    ($ipv4_only_domain_suffixes | map("domain:" + .))
+                    + ($gemini_exact_domains | map("full:" + .)),
+                  outboundTag: "ipv4-only"
+                }]
+              }
             }' >"${RUNTIME_TMP}/xray-config.json"
         ;;
     *) die "协议 ${PROTOCOL} 不使用 Xray" ;;
@@ -996,9 +1120,17 @@ write_sing_box_config() {
         --arg listen "${listen_addr}" \
         --arg password "${ANYTLS_PASSWORD}" \
         --arg cert "${CERT_FILE}" \
-        --arg key "${KEY_FILE}" '
+        --arg key "${KEY_FILE}" \
+        --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" \
+        --argjson gemini_exact_domains "${GEMINI_IPV4_EXACT_DOMAINS_JSON}" '
         {
           log: {level: "warn", timestamp: true},
+          dns: {
+            servers: [{
+              type: "local",
+              tag: "local"
+            }]
+          },
           inbounds: [{
             type: "anytls",
             tag: "anytls-in",
@@ -1011,7 +1143,29 @@ write_sing_box_config() {
               key_path: $key
             }
           }],
-          outbounds: [{type: "direct", tag: "direct"}]
+          outbounds: [
+            {
+              type: "direct",
+              tag: "ipv4-only",
+              domain_resolver: {
+                server: "local",
+                strategy: "ipv4_only"
+              }
+            },
+            {type: "direct", tag: "direct"}
+          ],
+          route: {
+            rules: [
+              {action: "sniff"},
+              {
+                domain: $gemini_exact_domains,
+                domain_suffix: $ipv4_only_domain_suffixes,
+                action: "route",
+                outbound: "ipv4-only"
+              }
+            ],
+            final: "direct"
+          }
         }' >"${RUNTIME_TMP}/sing-box-config.json"
     "${SING_BOX_BIN}" check -c "${RUNTIME_TMP}/sing-box-config.json" >/dev/null \
         || die "sing-box AnyTLS 配置校验失败"
@@ -1720,6 +1874,7 @@ update_subscription() {
 update_easy_all() {
     require_root
     register_easy_all_command
+    refresh_protocol_runtime_config
     update_subscription
 }
 
@@ -1751,6 +1906,45 @@ collect_installed_state() {
     esac
     ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
+}
+
+refresh_protocol_runtime_config() {
+    local config_path service backup_dir backup_config
+    collect_installed_state
+    backup_dir=$(make_temp_dir)
+    case "${PROTOCOL}" in
+    anytls)
+        config_path=${SING_BOX_CONFIG}
+        service=${SING_BOX_SERVICE}
+        ;;
+    reality | vless-wss)
+        config_path=${XRAY_CONFIG}
+        service=${XRAY_SERVICE}
+        ;;
+    esac
+    [[ -f "${config_path}" ]] || die "当前协议配置不存在：${config_path}"
+    backup_config="${backup_dir}/config.json"
+    install -m 0600 "${config_path}" "${backup_config}"
+
+    if (
+        if [[ "${PROTOCOL}" == "anytls" ]]; then
+            write_sing_box_config
+        else
+            write_xray_config
+        fi
+        systemctl restart "${service}"
+        validate_protocol_runtime
+    ); then
+        success "${PROTOCOL} 运行时配置已刷新"
+        return 0
+    fi
+
+    warn "新运行时配置验收失败，正在恢复旧配置"
+    install -m 0600 "${backup_config}" "${config_path}"
+    systemctl restart "${service}" \
+        || die "恢复旧配置后无法重启 ${service}"
+    validate_protocol_runtime
+    die "运行时配置更新失败，已恢复旧配置"
 }
 
 show_node() {
@@ -2232,7 +2426,7 @@ usage() {
   switch <协议> 在 easy_all 创建的安装中切换协议，失败自动回滚
   show          显示当前协议节点和 Mihomo 节点
   subscription  显示链接、订阅和 Worker 信息
-  update        注册当前脚本并更新 Worker 订阅
+  update        注册当前脚本、刷新服务端配置并更新 Worker 订阅
   update-sub    重新配置 Worker 订阅输出
   update-core   更新当前协议核心
   renew-cert    立即续期 AnyTLS/WSS 证书

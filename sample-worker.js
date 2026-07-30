@@ -78,13 +78,113 @@ function defaultNodeConfigs() {
 // ================= 规则与模板 =================
 
 // EASY_ALL_RULES_START
-const FAKE_IP_FILTER = `      - '+.lan'
-      - '+.local'
-      - 'localhost'
-      - 'time.windows.com'
-      - 'time.apple.com'
-      - '*.ntp.org.cn'
-      - 'pool.ntp.org'`;
+const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze([
+    'chatgpt.com',
+    'openai.com',
+    'oaistatic.com',
+    'oaiusercontent.com',
+    'anthropic.com',
+    'claude.ai',
+    'claude.com',
+    'claudeusercontent.com',
+    'gemini.google.com',
+    'aistudio.google.com',
+    'ai.google.dev',
+    'generativeai.google',
+    'api.statsig.com',
+    'browser-intake-datadoghq.com',
+    'chat.openai.com.cdn.cloudflare.net',
+    'openai-api.arkoselabs.com',
+    'auth0.com',
+    'challenges.cloudflare.com',
+    'chatgpt.livekit.cloud',
+    'client-api.arkoselabs.com',
+    'events.statsigapi.net',
+    'featuregates.org',
+    'host.livekit.cloud',
+    'intercom.io',
+    'intercomcdn.com',
+    'launchdarkly.com',
+    'openaiapi-site.azureedge.net',
+    'openaicom.imgix.net',
+    'segment.io',
+    'sentry.io',
+    'turn.livekit.cloud',
+    'mega.nz',
+    'mega.co.nz',
+    'mega.io',
+    'mega.app'
+]);
+
+// Google 官方 Gemini 防火墙清单中的共享主机使用精确匹配，避免扩大到整个 Google。
+const GEMINI_IPV4_EXACT_DOMAINS = Object.freeze([
+    'accounts.google.com',
+    'myaccount.google.com',
+    'lh5.googleusercontent.com',
+    'www.googleapis.com',
+    'ssl.gstatic.com',
+    'fonts.googleapis.com',
+    'play.google.com',
+    'ogs.google.com',
+    'www.google.com',
+    'apis.google.com',
+    'jnn-pa.googleapis.com',
+    'waa-pa.clients6.google.com',
+    'alkalimakersuite-pa.clients6.google.com',
+    'ogads-pa.clients6.google.com',
+    'generativelanguage.googleapis.com',
+    'i.ytimg.com',
+    'yt3.ggpht.com',
+    'lh3.googleusercontent.com',
+    'maps.gstatic.com',
+    'lh3.google.com',
+    'csp.withgoogle.com',
+    'www.googletagmanager.com',
+    'www.youtube.com',
+    'fonts.gstatic.com',
+    'maps.googleapis.com',
+    'static.doubleclick.net',
+    'www.gstatic.com',
+    'td.doubleclick.net',
+    'googleads.g.doubleclick.net',
+    'www.google-analytics.com',
+    'optimizationguide-pa.googleapis.com',
+    'encrypted-tbn0.gstatic.com',
+    'encrypted-tbn1.gstatic.com',
+    'encrypted-tbn2.gstatic.com',
+    'encrypted-tbn3.gstatic.com',
+    'streetviewpixels-pa.googleapis.com',
+    'content-autofill.googleapis.com'
+]);
+
+const BASE_FAKE_IP_FILTER = [
+    '+.lan',
+    '+.local',
+    'localhost',
+    'time.windows.com',
+    'time.apple.com',
+    '*.ntp.org.cn',
+    'pool.ntp.org'
+];
+
+// AI 域名返回真实 IPv4，避免 Fake-IP 模式为 AAAA 查询生成 fake IPv6。
+const FAKE_IP_FILTER = [
+    ...BASE_FAKE_IP_FILTER,
+    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`),
+    ...GEMINI_IPV4_EXACT_DOMAINS
+].map(domain => `      - '${domain}'`).join('\n');
+
+const IPV4_ONLY_NAMESERVER_POLICY = [
+    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`),
+    ...GEMINI_IPV4_EXACT_DOMAINS
+].map((domain, index) => {
+    if (index === 0) {
+        return `      '${domain}': &ipv4_only_dns
+        - 'https://1.1.1.1/dns-query#disable-ipv6=true&disable-qtype-65=true'
+        - 'https://8.8.8.8/dns-query#disable-ipv6=true&disable-qtype-65=true'`;
+    }
+    return `      '${domain}': *ipv4_only_dns`;
+}).join('\n');
 
 const EMBEDDED_CLASH_RULES = `rules:
   # ==================== 局域网直连 ====================
@@ -265,6 +365,12 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,sentry.io,PROXY
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
 
+  # ==================== MEGA Sync ====================
+  - DOMAIN-SUFFIX,mega.nz,PROXY
+  - DOMAIN-SUFFIX,mega.co.nz,PROXY
+  - DOMAIN-SUFFIX,mega.io,PROXY
+  - DOMAIN-SUFFIX,mega.app,PROXY
+
   # ==================== Google / YouTube ====================
   - DOMAIN-SUFFIX,google.com,PROXY
   - DOMAIN-SUFFIX,googleapis.com,PROXY
@@ -381,6 +487,7 @@ dns:
     nameserver-policy:
       '+.lan': system
       '+.local': system
+${IPV4_ONLY_NAMESERVER_POLICY}
 
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16

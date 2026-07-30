@@ -312,6 +312,72 @@ test_sample_worker_template_guards() {
         sample_worker_fetch_fails "http://example.com/sample-worker.js"
 }
 
+test_ipv4_only_server_configs() {
+    local protocol config
+    install -d -m 0755 "${XRAY_DIR}" "${SING_BOX_DIR}"
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'if [ "$1" = "x25519" ]; then printf "PublicKey: test-public-key\\n"; fi' \
+        'exit 0' >"${XRAY_BIN}"
+    printf '%s\n' '#!/bin/sh' 'exit 0' >"${SING_BOX_BIN}"
+    chmod 0755 "${XRAY_BIN}" "${SING_BOX_BIN}"
+
+    for protocol in reality vless-wss; do
+        set_protocol_fixture "${protocol}"
+        XRAY_LOOPBACK_PORT="10085"
+        REALITY_PRIVATE_KEY="test-private-key"
+        write_xray_config
+        config=$(<"${XRAY_CONFIG}")
+
+        assert_equal "${protocol} Xray selected-domain outbound strictly forces IPv4" \
+            "ForceIPv4" \
+            "$(jq -r '.outbounds[] | select(.tag == "ipv4-only") | .settings.domainStrategy' \
+                <<<"${config}")"
+        assert_equal "${protocol} Xray keeps a separate normal direct outbound" \
+            "direct" "$(jq -r '.outbounds[] | select(.tag == "direct") | .tag' <<<"${config}")"
+        assert_success "${protocol} Xray enables HTTP TLS and QUIC sniffing" \
+            jq -e \
+                '.inbounds[0].sniffing.enabled == true
+                 and (.inbounds[0].sniffing.destOverride == ["http", "tls", "quic"])' \
+                <<<"${config}"
+        assert_success "${protocol} Xray routes AI services and MEGA Sync to IPv4 only" \
+            jq -e \
+                '.routing.rules[0].outboundTag == "ipv4-only"
+                 and (.routing.rules[0].domain | index("domain:openai.com"))
+                 and (.routing.rules[0].domain | index("domain:claude.ai"))
+                 and (.routing.rules[0].domain | index("domain:gemini.google.com"))
+                 and (.routing.rules[0].domain | index("domain:mega.nz"))
+                 and (.routing.rules[0].domain | index("domain:mega.app"))
+                 and (.routing.rules[0].domain | index("full:waa-pa.clients6.google.com"))' \
+                <<<"${config}"
+    done
+
+    set_protocol_fixture "anytls"
+    write_sing_box_config
+    config=$(<"${SING_BOX_CONFIG}")
+    assert_equal "sing-box AI direct outbound resolves IPv4 only" \
+        "ipv4_only" \
+        "$(jq -r '.outbounds[] | select(.tag == "ipv4-only") | .domain_resolver.strategy' \
+            <<<"${config}")"
+    assert_equal "sing-box keeps a separate normal direct outbound" \
+        "direct" "$(jq -r '.outbounds[] | select(.tag == "direct") | .tag' <<<"${config}")"
+    assert_success "sing-box sniffs before applying the IPv4-only domain route" \
+        jq -e \
+            '.route.rules[0].action == "sniff"
+             and .route.rules[1].action == "route"
+             and .route.rules[1].outbound == "ipv4-only"' \
+            <<<"${config}"
+    assert_success "sing-box routes AI services and MEGA Sync to IPv4 only" \
+        jq -e \
+            '(.route.rules[1].domain_suffix | index("openai.com"))
+             and (.route.rules[1].domain_suffix | index("claude.ai"))
+             and (.route.rules[1].domain_suffix | index("gemini.google.com"))
+             and (.route.rules[1].domain_suffix | index("mega.nz"))
+             and (.route.rules[1].domain_suffix | index("mega.app"))
+             and (.route.rules[1].domain | index("waa-pa.clients6.google.com"))' \
+            <<<"${config}"
+}
+
 sample_worker_validation_fails() {
     ! (validate_sample_worker "$1") >/dev/null 2>&1
 }
@@ -607,22 +673,55 @@ test_update_command_orchestration() {
     calls=$(
         require_root() { printf 'root\n'; }
         register_easy_all_command() { printf 'register\n'; }
+        refresh_protocol_runtime_config() { printf 'runtime\n'; }
         update_subscription() { printf 'subscription\n'; }
         update_easy_all
     )
-    assert_equal "update command registers the script before updating subscription" \
-        $'root\nregister\nsubscription' "${calls}"
+    assert_equal "update command refreshes runtime before updating subscription" \
+        $'root\nregister\nruntime\nsubscription' "${calls}"
+}
+
+test_runtime_refresh_rolls_back_invalid_config() {
+    local status
+    set_protocol_fixture "reality"
+    WORKER_NAME="${DEFAULT_WORKER_NAME}"
+    WORKER_URL=""
+    DEPLOY_MODE="worker"
+    REALITY_PRIVATE_KEY="test-private-key"
+    save_state
+    install -d -m 0755 "$(dirname "${XRAY_CONFIG}")"
+    printf 'old-runtime-config\n' >"${XRAY_CONFIG}"
+
+    write_xray_config() {
+        printf 'invalid-new-runtime-config\n' >"${XRAY_CONFIG}"
+    }
+    systemctl() { return 0; }
+    validate_protocol_runtime() {
+        [[ "$(<"${XRAY_CONFIG}")" == "old-runtime-config" ]]
+    }
+
+    set +e
+    ( set -e; refresh_protocol_runtime_config ) >/dev/null 2>&1
+    status=$?
+    set -e
+
+    assert_equal "failed runtime refresh returns a failure" "1" "${status}"
+    assert_equal "failed runtime refresh restores the old config" \
+        "old-runtime-config" "$(<"${XRAY_CONFIG}")"
+    unset -f write_xray_config systemctl validate_protocol_runtime
 }
 
 source_script_copy
 test_validators_and_defaults
 test_links_and_workers
 test_sample_worker_template_guards
+test_ipv4_only_server_configs
 test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy
 test_update_command_orchestration
+test_runtime_refresh_rolls_back_invalid_config
 test_update_subscription_rolls_back_port_change
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"

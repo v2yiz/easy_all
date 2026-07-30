@@ -16,6 +16,7 @@
 - 脚本适用于专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
 - 三种协议都使用 TCP 443，所以同一时间只能启用一种。
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
+- Gemini、Claude、OpenAI 和 MEGA Sync 相关域名在 Mihomo 客户端与 VPS 服务端都被限制为仅使用 IPv4；其他站点仍可使用 IPv6。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
 - VLESS WSS 仅推荐移动宽带用户选择。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 Cloudflare CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
@@ -91,6 +92,8 @@ sudo PROTOCOL=anytls \
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
+三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI、MEGA Sync 及其必要辅助域名命中后，Xray 使用 `ForceIPv4` 出站，sing-box 使用 `ipv4_only` 域名解析器；未命中的流量继续使用普通双栈直连出站。MEGA Sync 当前覆盖 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名。Mihomo 订阅同时让这些域名退出 Fake-IP，并通过专用 DNS 策略丢弃 AAAA 与 HTTPS/SVCB（TYPE 65）响应，避免客户端通过 IPv6 或 `ipv6hint` 把 IPv6 目标传给服务端。
+
 ### VLESS WebSocket TLS
 
 > 该协议仅推荐移动宽带用户选择。
@@ -155,7 +158,7 @@ VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sa
 wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh.new && mv -f /root/easy_all.sh.new /root/easy_all.sh && /root/easy_all.sh update
 ```
 
-`update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，再更新 Worker。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`。原部署模式为 `auto` 时，若状态中没有 Account ID，脚本会先提示输入；随后会安全提示重新输入未保存的 Cloudflare Worker API Token。
+`update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，安全重写并验收当前 Xray/sing-box 服务端配置，再更新 Worker；如果新服务端配置无法启动，会自动恢复旧配置。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`。原部署模式为 `auto` 时，若状态中没有 Account ID，脚本会先提示输入；随后会安全提示重新输入未保存的 Cloudflare Worker API Token。
 
 需要固定自定义模板时，可以显式指定：
 
