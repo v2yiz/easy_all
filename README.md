@@ -192,8 +192,10 @@ easy_all 仅在当前命令进程中使用它们，不会保存到状态文件�
 
 如果希望使用 `https://sub.example.com/subscribe?...` 而不是 `workers.dev`，并准备通过
 **Worker Route** 绑定域名，必须先在对应 Zone 的 **DNS → Records** 中为该主机名创建
-一条 **Proxied / 橙云** 记录。没有真实源站时可使用 `AAAA` 记录 `100::` 作为占位地址；
-匹配路由的请求会在 Cloudflare 边缘进入 Worker，不会访问该占位地址。
+一条 **Proxied / 橙云** `A` 记录。没有真实源站时可使用 `2.2.2.2` 作为占位地址；它
+不是 VPS 的真实地址，匹配路由的请求会在 Cloudflare 边缘进入 Worker，不会访问该
+占位地址。没有可用 IPv6 地址时不需要创建 `AAAA` 记录；只有确实需要并拥有可用
+IPv6 地址时，才额外添加同名的橙云 `AAAA` 记录。
 
 ![Cloudflare Worker 域名 DNS 代理解析示意图](docs/images/cloudflare-worker-dns-route.svg)
 
