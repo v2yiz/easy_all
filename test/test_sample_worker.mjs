@@ -211,36 +211,48 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(body, /trojan/i);
   });
 
-  it('restricts AI services to IPv4 while keeping MEGA Sync dual-stack', async () => {
+  it('keeps Gemini proxied and IPv4-only without Fake-IP targets', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`);
     const body = await responseText(response);
+    const nameserverPolicy = body.match(
+      /    nameserver-policy:\n([\s\S]*?)\n    enhanced-mode:/
+    )?.[1];
+    const fakeIpFilter = body.match(
+      /    fake-ip-filter:\n([\s\S]*?)\n    nameserver:/
+    )?.[1];
 
     assert.equal(response.status, 200);
+    assert.ok(nameserverPolicy, 'nameserver-policy must be present');
+    assert.ok(fakeIpFilter, 'fake-ip-filter must be present');
     assert.match(body, /^ipv6: true$/m);
     assert.match(body, /^\s+ipv6: true$/m);
-    assert.match(body, /'\+\.chatgpt\.com': &ipv4_only_dns/);
-    assert.match(body, /'\+\.openai\.com': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.claude\.ai': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.google\.com': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.googleapis\.com': \*ipv4_only_dns/);
-    assert.match(body, /'\+\.gstatic\.com': \*ipv4_only_dns/);
-    assert.doesNotMatch(body, /'\+\.mega\.nz': \*ipv4_only_dns/);
-    assert.doesNotMatch(body, /'\+\.mega\.co\.nz': \*ipv4_only_dns/);
-    assert.doesNotMatch(body, /'\+\.mega\.io': \*ipv4_only_dns/);
-    assert.doesNotMatch(body, /'\+\.mega\.app': \*ipv4_only_dns/);
-    assert.match(body, /dns-query#disable-ipv6=true&disable-qtype-65=true/);
+    assert.match(nameserverPolicy, /'\+\.chatgpt\.com': &ipv4_only_dns/);
+    assert.match(nameserverPolicy, /'\+\.openai\.com': \*ipv4_only_dns/);
+    assert.match(nameserverPolicy, /'\+\.claude\.ai': \*ipv4_only_dns/);
+    assert.match(nameserverPolicy, /'\+\.google\.com': \*ipv4_only_dns/);
+    assert.match(nameserverPolicy, /'\+\.googleapis\.com': \*ipv4_only_dns/);
+    assert.match(nameserverPolicy, /'\+\.gstatic\.com': \*ipv4_only_dns/);
+    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.nz': \*ipv4_only_dns/);
+    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.co\.nz': \*ipv4_only_dns/);
+    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.io': \*ipv4_only_dns/);
+    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.app': \*ipv4_only_dns/);
+    assert.match(nameserverPolicy, /dns-query#disable-ipv6=true&disable-qtype-65=true/);
     assert.match(body, /^\s+strict-route: true$/m);
-    assert.match(body, /^\s+- '\+\.openai\.com'$/m);
-    assert.match(body, /^\s+- '\+\.claude\.ai'$/m);
-    assert.match(body, /^\s+- '\+\.google\.com'$/m);
-    assert.match(body, /^\s+- '\+\.googleapis\.com'$/m);
-    assert.doesNotMatch(body, /^\s+- '\+\.mega\.nz'$/m);
-    assert.doesNotMatch(body, /^\s+- '\+\.mega\.app'$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.openai\.com'$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.claude\.ai'$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.google\.com'$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.googleapis\.com'$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.gstatic\.com'$/m);
+    assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
+    assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.match(body, /DOMAIN-SUFFIX,mega\.nz,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,mega\.co\.nz,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,mega\.io,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,mega\.app,PROXY/);
-    assert.doesNotMatch(body, /'\+\.bilibili\.com': \*ipv4_only_dns/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
+    assert.doesNotMatch(nameserverPolicy, /'\+\.bilibili\.com': \*ipv4_only_dns/);
   });
 
   it('returns all Clash proxy nodes for node=all and falls back invalid filenames', async () => {

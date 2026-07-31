@@ -893,7 +893,7 @@ write_xray_config() {
                 sniffing: {
                   enabled: true,
                   destOverride: ["http", "tls", "quic"],
-                  routeOnly: false
+                  routeOnly: true
                 }
               }],
               outbounds: [
@@ -946,7 +946,7 @@ write_xray_config() {
                 sniffing: {
                   enabled: true,
                   destOverride: ["http", "tls", "quic"],
-                  routeOnly: false
+                  routeOnly: true
                 }
               }],
               outbounds: [

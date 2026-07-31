@@ -78,7 +78,7 @@ function defaultNodeConfigs() {
 // ================= 规则与模板 =================
 
 // EASY_ALL_RULES_START
-// Gemini 使用 Google 共享基础设施；按相关后缀强制 IPv4，避免新增子域名漏出 IPv6。
+// 客户端先为这些域名解析真实 IPv4；服务端仅在收到域名目标时强制 IPv4 兜底。
 const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze(
 /* EASY_ALL_IPV4_ONLY_DOMAINS_START */
 [
@@ -137,7 +137,7 @@ const BASE_FAKE_IP_FILTER = [
     'pool.ntp.org'
 ];
 
-// AI 域名返回真实 IPv4，避免 Fake-IP 模式为 AAAA 查询生成 fake IPv6。
+// 这些域名退出 Fake-IP 并只返回 IPv4，使客户端把数字 IPv4 目标传给 VPS。
 const FAKE_IP_FILTER = [
     ...BASE_FAKE_IP_FILTER,
     ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`)

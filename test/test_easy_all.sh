@@ -327,10 +327,11 @@ test_sample_worker_template_guards() {
         sample_worker_validation_fails "${uppercase_policy}"
 
     policy=$(extract_ipv4_only_domain_suffixes "${ROOT_DIR}/sample-worker.js")
-    assert_success "sample Worker exposes AI domains but excludes MEGA from IPv4-only policy" \
+    assert_success "sample Worker includes Gemini/Google but excludes MEGA from IPv4-only policy" \
         jq -e \
             'index("openai.com")
              and index("claude.ai")
+             and index("google.com")
              and index("googleapis.com")
              and (index("mega.nz") == null)' \
             <<<"${policy}"
@@ -367,9 +368,10 @@ test_ipv4_only_server_configs() {
         assert_success "${protocol} Xray enables HTTP TLS and QUIC sniffing" \
             jq -e \
                 '.inbounds[0].sniffing.enabled == true
-                 and (.inbounds[0].sniffing.destOverride == ["http", "tls", "quic"])' \
+                 and (.inbounds[0].sniffing.destOverride == ["http", "tls", "quic"])
+                 and .inbounds[0].sniffing.routeOnly == true' \
                 <<<"${config}"
-        assert_success "${protocol} Xray routes AI services but not MEGA Sync to IPv4 only" \
+        assert_success "${protocol} Xray routes AI services but not MEGA to IPv4-only fallback" \
             jq -e \
                 '.routing.rules[0].outboundTag == "ipv4-only"
                  and (.routing.rules[0].domain | index("domain:openai.com"))
@@ -408,7 +410,7 @@ test_ipv4_only_server_configs() {
              and .route.rules[1].outbound == "ipv4-only"
              and .route.final == "direct"' \
             <<<"${config}"
-    assert_success "sing-box routes AI services but not MEGA Sync to IPv4 only" \
+    assert_success "sing-box routes AI services but not MEGA to IPv4-only fallback" \
         jq -e \
             '(.route.rules[1].domain_suffix | index("openai.com"))
              and (.route.rules[1].domain_suffix | index("claude.ai"))
