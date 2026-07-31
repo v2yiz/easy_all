@@ -132,7 +132,7 @@ sudo PROTOCOL=vless-xhttp \
 - Request body buffering：`None`。
 - Response body buffering：`None`。
 
-使用具有 Zone Read、Zone Settings Edit 和 Configuration Rules Edit 权限的
+使用具有 DNS Edit、Zone Read、Zone Settings Edit 和 Config Rules Edit 权限的
 `CF_DNS_API_TOKEN` 安装时，脚本会尝试自动完成 gRPC 与双向无缓冲配置；权限不足只会
 给出警告，不会中断部署。已安装节点也可以通过
 `sudo CF_DNS_API_TOKEN=... easy_all update` 补配，然后重新拉取订阅。
@@ -151,6 +151,51 @@ FLClash 应使用支持 XHTTP `stream-one` 的当前稳定 Mihomo 内核。
 现有 `vless-wss` 安装执行 `easy_all update` 时会自动迁移为 `vless-xhttp`，复用原域名、
 UUID、证书和路径，并同步改写 Xray、Nginx 与 Worker。命令行仍接受 `vless-wss`/`wss`
 作为兼容别名，但新状态只保存 `vless-xhttp`、`VLESS_XHTTP_DOMAIN` 和 `XHTTP_PATH`。
+
+## Cloudflare 凭据图解
+
+自动部署需要一个 Account ID 和两个彼此独立的 API Token。推荐在
+**My Profile → API Tokens** 创建 User API Token，并将资源限制到 easy_all 使用的单个
+账户或 Zone。Token Secret 创建后只显示一次，不要写入脚本、README、截图或 Git；
+easy_all 仅在当前命令进程中使用它们，不会保存到状态文件。Cloudflare 的
+[Token 创建流程](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
+和[权限清单](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
+可用于核对界面名称。
+
+### 1. CF_ACCOUNT_ID
+
+进入 Cloudflare Dashboard，选择账户并打开 **Account home**。复制地址栏中账户名后、
+`/home` 前的 32 位字符；不要误用域名页面的 Zone ID。
+
+![Cloudflare Account ID 获取示意图](docs/images/cloudflare-account-id.svg)
+
+### 2. CF_DNS_API_TOKEN
+
+选择 **Create Custom Token**，资源限制为实际使用的单个 Zone，添加以下权限：
+
+- Zone → DNS → Edit
+- Zone → Zone → Read
+- Zone → Zone Settings → Edit
+- Zone → Config Rules → Edit
+
+![Cloudflare Zone Token 配置示意图](docs/images/cloudflare-zone-token.svg)
+
+### 3. CF_WORKER_API_TOKEN
+
+选择 **Create Custom Token**，资源限制为实际使用的单个 Account，只添加
+**Account → Workers Scripts → Edit**。也可以使用 **Edit Cloudflare Workers** 模板，
+但模板默认包含 Workers Routes、KV、R2 等 easy_all 不需要的额外权限。
+
+![Cloudflare Worker Token 配置示意图](docs/images/cloudflare-worker-token.svg)
+
+无人值守更新示例：
+
+```bash
+CF_ACCOUNT_ID='32位Account ID' \
+CF_DNS_API_TOKEN='cfut_...' \
+CF_WORKER_API_TOKEN='cfut_...' \
+easy_all update
+```
 
 ## Worker 订阅
 
@@ -199,7 +244,7 @@ VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sa
 wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh.new && mv -f /root/easy_all.sh.new /root/easy_all.sh && /root/easy_all.sh update
 ```
 
-`update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，然后调用与 `update-sub` 相同的同步更新流程：安全重写并验收当前 Xray/sing-box 服务端配置，再生成或部署 Worker。Worker replace 前若任何一步失败，会恢复旧服务端配置、本地 Worker、端口模式和 nftables；replace 已完成后则保留新服务端配置，避免远端订阅与 VPS 回滚后不一致。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`。原部署模式为 `auto` 时，若状态中没有 Account ID，脚本会先提示输入；随后会安全提示重新输入未保存的 Cloudflare Worker API Token。
+`update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，然后调用与 `update-sub` 相同的同步更新流程：安全重写并验收当前 Xray/sing-box 服务端配置，再强制自动 replace Worker。Worker replace 前若任何一步失败，会恢复旧服务端配置、本地 Worker、端口模式和 nftables；replace 已完成后则保留新服务端配置，避免远端订阅与 VPS 回滚后不一致。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`；若状态中没有 Account ID，脚本会先提示输入，随后安全提示重新输入未保存的 Cloudflare Worker API Token。
 
 需要固定自定义模板时，可以显式指定：
 

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980" role="img" aria-labelledby="title desc">
+  <title id="title">Cloudflare Zone Token 配置示意图</title>
+  <desc id="desc">创建用于 DNS、Zone 设置和 Configuration Rules 的最小权限 Token。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="14" flood-opacity=".12"/></filter>
+    <style>
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#1f2937}.small{font-size:21px}.body{font-size:25px}.label{font-size:24px;font-weight:680}.title{font-size:42px;font-weight:760}.muted{fill:#6b7280}.orange{fill:#f48120}.green{fill:#0f9d72}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    </style>
+  </defs>
+  <rect width="1400" height="980" fill="#f5f7fb"/>
+  <text x="70" y="72" class="title">② 创建 CF_DNS_API_TOKEN</text>
+  <text x="70" y="114" class="body muted">My Profile → API Tokens → Create Token → Create Custom Token</text>
+  <rect x="70" y="152" width="1260" height="738" rx="24" fill="#fff" filter="url(#shadow)"/>
+  <rect x="70" y="152" width="1260" height="64" rx="24" fill="#1f2937"/>
+  <text x="110" y="194" class="small" fill="#fff" style="fill:#fff">My Profile  ›  API Tokens  ›  Create Custom Token</text>
+  <text x="110" y="270" class="label">Token name</text>
+  <rect x="320" y="235" width="520" height="52" rx="10" fill="#fff" stroke="#cfd6df" stroke-width="2"/>
+  <text x="344" y="269" class="body mono">easy-all-zone</text>
+  <text x="110" y="340" class="label">Permissions</text>
+  <rect x="110" y="370" width="1170" height="300" rx="15" fill="#fafbfc" stroke="#dbe1ea" stroke-width="2"/>
+  <text x="145" y="413" class="small muted">Resource</text><text x="430" y="413" class="small muted">Permission</text><text x="915" y="413" class="small muted">Level</text>
+  <line x1="130" y1="430" x2="1260" y2="430" stroke="#dbe1ea"/>
+  <text x="145" y="472" class="body">Zone</text><text x="430" y="472" class="body">DNS</text><rect x="900" y="442" width="126" height="45" rx="9" fill="#fff1e7"/><text x="931" y="472" class="body orange">Edit</text><text x="1065" y="472" class="small green">✓ DNS-01</text>
+  <text x="145" y="529" class="body">Zone</text><text x="430" y="529" class="body">Zone</text><rect x="900" y="499" width="126" height="45" rx="9" fill="#edf7ff"/><text x="929" y="529" class="body" fill="#1677aa" style="fill:#1677aa">Read</text><text x="1065" y="529" class="small green">✓ 查 Zone ID</text>
+  <text x="145" y="586" class="body">Zone</text><text x="430" y="586" class="body">Zone Settings</text><rect x="900" y="556" width="126" height="45" rx="9" fill="#fff1e7"/><text x="931" y="586" class="body orange">Edit</text><text x="1065" y="586" class="small green">✓ 开启 gRPC</text>
+  <text x="145" y="643" class="body">Zone</text><text x="430" y="643" class="body">Config Rules</text><rect x="900" y="613" width="126" height="45" rx="9" fill="#fff1e7"/><text x="931" y="643" class="body orange">Edit</text><text x="1065" y="643" class="small green">✓ 双向无缓冲</text>
+  <text x="110" y="731" class="label">Zone Resources</text>
+  <rect x="340" y="696" width="235" height="52" rx="10" fill="#fff" stroke="#cfd6df" stroke-width="2"/><text x="370" y="730" class="body">Include</text>
+  <rect x="595" y="696" width="500" height="52" rx="10" fill="#fff" stroke="#f48120" stroke-width="3"/><text x="625" y="730" class="body">Specific zone: example.com</text>
+  <rect x="110" y="786" width="1170" height="70" rx="14" fill="#fff8f1"/>
+  <text x="145" y="818" class="label orange">创建后只显示一次 Secret</text>
+  <text x="145" y="846" class="small">复制整段 cfut_…，运行脚本时填入 CF_DNS_API_TOKEN；不要截图或提交到 Git。</text>
+  <text x="70" y="940" class="small muted">也可以先选 “Edit zone DNS” 模板，再补 Zone Read、Zone Settings Edit、Config Rules Edit。</text>
+</svg>
