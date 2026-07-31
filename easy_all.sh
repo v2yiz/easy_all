@@ -470,7 +470,9 @@ print_dns_proxy_postinstall_notice() {
     success "VLESS XHTTP TLS 安装和本机验证已完成"
     alert "现在可以回 Cloudflare；使用 CDN 时请把 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
     alert "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
-    alert "XHTTP 使用 packet-up，不需要开启 Cloudflare gRPC 或 WebSockets。"
+    alert "Cloudflare Network 中必须开启 gRPC；XHTTP 不需要开启 WebSockets。"
+    alert "Configuration Rule 必须让 ${VLESS_XHTTP_DOMAIN}${XHTTP_PATH}* 的 Request/Response body buffering 都为 None。"
+    alert "如果安装时提供的 CF_DNS_API_TOKEN 没有 Zone Settings 与 Configuration Rules 编辑权限，请在控制台手动完成以上两项。"
 }
 
 source_state_file() {
@@ -581,7 +583,7 @@ choose_protocol() {
     *) die "不支持的协议：${requested}" ;;
     esac
     if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
-        info "VLESS XHTTP TLS 使用 Cloudflare 兼容的 packet-up 模式。"
+        info "VLESS XHTTP TLS 使用 Cloudflare gRPC 兼容的 HTTP/2 stream-one 模式。"
     fi
 }
 
@@ -787,6 +789,99 @@ collect_cloudflare_dns_credentials() {
     [[ -n "${CF_DNS_API_TOKEN}" ]] || die "Cloudflare DNS API Token 不能为空"
 }
 
+cloudflare_zone_api() {
+    local method=$1 path=$2
+    shift 2
+    local header_file="${RUNTIME_TMP}/cf-zone-headers"
+    {
+        printf 'Authorization: Bearer %s\n' "${CF_DNS_API_TOKEN}"
+        printf 'Accept: application/json\n'
+    } >"${header_file}"
+    chmod 0600 "${header_file}"
+    curl -sS --connect-timeout 10 --max-time 45 --retry 2 \
+        -X "${method}" -H "@${header_file}" \
+        "https://api.cloudflare.com/client/v4${path}" "$@"
+}
+
+find_cloudflare_zone_id() {
+    local candidate=$1 response zone_id
+    while [[ "${candidate}" == *.* ]]; do
+        response=$(cloudflare_zone_api GET "/zones?name=${candidate}&status=active&per_page=1") \
+            || return 1
+        zone_id=$(jq -r '.result[0].id // empty' <<<"${response}" 2>/dev/null || true)
+        if [[ -n "${zone_id}" ]]; then
+            printf '%s\n' "${zone_id}"
+            return 0
+        fi
+        candidate=${candidate#*.}
+    done
+    return 1
+}
+
+configure_cloudflare_xhttp_streaming() {
+    [[ "${PROTOCOL}" == "vless-xhttp" && -n "${CF_DNS_API_TOKEN:-}" ]] || return 0
+    local zone_id response ruleset_id rule_id rule_payload create_payload expression
+    zone_id=$(find_cloudflare_zone_id "${VLESS_XHTTP_DOMAIN}") || {
+        warn "Cloudflare Zone 查询失败；请手动开启 gRPC，并把 XHTTP 路径的双向 body buffering 设为 None"
+        return 0
+    }
+
+    response=$(cloudflare_zone_api PATCH "/zones/${zone_id}/settings/grpc" \
+        -H "Content-Type: application/json" --data '{"value":"on"}') || response=""
+    if jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
+        success "Cloudflare gRPC 已开启"
+    else
+        warn "无法自动开启 Cloudflare gRPC；DNS Token 还需要 Zone Settings 编辑权限，请在 Network 页面手动开启"
+    fi
+
+    expression=$(jq -nr --arg host "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" \
+        '"(http.host eq \"" + $host + "\" and starts_with(http.request.uri.path, \"" + $path + "\"))"')
+    rule_payload=$(jq -cn --arg expression "${expression}" '{
+      action: "set_config",
+      action_parameters: {
+        request_body_buffering: "none",
+        response_body_buffering: "none"
+      },
+      expression: $expression,
+      description: "easy_all XHTTP bidirectional streaming",
+      enabled: true,
+      ref: "easy_all_xhttp_streaming"
+    }')
+
+    response=$(cloudflare_zone_api GET \
+        "/zones/${zone_id}/rulesets/phases/http_config_settings/entrypoint") \
+        || response=""
+    ruleset_id=$(jq -r '.result.id // empty' <<<"${response}" 2>/dev/null || true)
+    if [[ -z "${ruleset_id}" ]]; then
+        create_payload=$(jq -cn --argjson rule "${rule_payload}" '{
+          name: "easy_all configuration rules",
+          description: "Configuration overrides managed by easy_all",
+          kind: "zone",
+          phase: "http_config_settings",
+          rules: [$rule]
+        }')
+        response=$(cloudflare_zone_api POST "/zones/${zone_id}/rulesets" \
+            -H "Content-Type: application/json" --data "${create_payload}") || response=""
+    else
+        rule_id=$(jq -r '.result.rules[]? | select(.ref == "easy_all_xhttp_streaming") | .id' \
+            <<<"${response}" 2>/dev/null | head -n 1)
+        if [[ -n "${rule_id}" ]]; then
+            response=$(cloudflare_zone_api PATCH \
+                "/zones/${zone_id}/rulesets/${ruleset_id}/rules/${rule_id}" \
+                -H "Content-Type: application/json" --data "${rule_payload}") || response=""
+        else
+            response=$(cloudflare_zone_api POST \
+                "/zones/${zone_id}/rulesets/${ruleset_id}/rules" \
+                -H "Content-Type: application/json" --data "${rule_payload}") || response=""
+        fi
+    fi
+    if jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
+        success "Cloudflare XHTTP 双向无缓冲规则已配置"
+    else
+        warn "无法自动配置 Cloudflare 双向无缓冲；DNS Token 还需要 Configuration Rules 编辑权限，请在控制台手动设置"
+    fi
+}
+
 issue_certificate() {
     local cert_domain
     case "${PROTOCOL}" in
@@ -820,6 +915,7 @@ EOF
         --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" \
         || die "安装证书到 easy_all 目录失败"
+    configure_cloudflare_xhttp_streaming
     unset CF_Token CF_DNS_API_TOKEN
 }
 
@@ -964,7 +1060,7 @@ write_xray_config() {
                   network: "xhttp",
                   xhttpSettings: {
                     path: $path,
-                    mode: "packet-up"
+                    mode: "stream-one"
                   }
                 },
                 sniffing: {
@@ -1204,17 +1300,20 @@ server {
     index index.html;
 
     location ^~ ${XHTTP_PATH} {
-        proxy_redirect off;
-        proxy_pass http://127.0.0.1:${XRAY_LOOPBACK_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
+        grpc_pass grpc://127.0.0.1:${XRAY_LOOPBACK_PORT};
+        grpc_set_header Connection "";
+        grpc_set_header Host \$host;
+        grpc_set_header X-Real-IP \$remote_addr;
+        grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        grpc_set_header X-Forwarded-Proto \$scheme;
+        grpc_set_header X-Forwarded-Port \$server_port;
+        grpc_set_header X-Forwarded-Host \$host;
+        grpc_buffer_size 16k;
+        grpc_socket_keepalive on;
+        grpc_read_timeout 1h;
+        grpc_send_timeout 1h;
+        client_body_buffer_size 1m;
+        client_body_timeout 1h;
         client_max_body_size 0;
         add_header Cache-Control "no-store" always;
         access_log off;
@@ -1238,7 +1337,7 @@ uri_encode() {
 build_vless_xhttp_link() {
     local path
     path=$(uri_encode "${XHTTP_PATH}")
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h3&path=%s&mode=packet-up&packetEncoding=xudp#%s' \
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&path=%s&mode=stream-one&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${VLESS_XHTTP_DOMAIN}" "${VLESS_XHTTP_DOMAIN}" \
         "${path}" "$(uri_encode "${NODE_NAME}")"
 }
@@ -1291,10 +1390,8 @@ build_mihomo_node() {
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    packet-encoding: xudp\n    alpn:\n      - h3\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
-            "      mode: packet-up\n      reuse-settings:\n        max-concurrency: \"16-32\"\n" +
-            "        c-max-reuse-times: \"0\"\n        h-max-reusable-secs: \"1800-3000\"\n" +
-            "        h-keep-alive-period: 0\n    smux:\n      enabled: false\n"'
+            "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
+            "      mode: stream-one\n    smux:\n      enabled: false\n"'
         ;;
     esac
 }
@@ -1520,7 +1617,7 @@ write_worker() {
             --arg type vless --arg security tls --arg network xhttp \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" --arg name "${NODE_NAME}" \
             --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"packet-up",udp:true,portMode:"443"}')
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-one",udp:true,portMode:"443"}')
         ;;
     esac
 
@@ -2009,6 +2106,10 @@ update_subscription() {
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
     [[ "${PROTOCOL}" != "vless-xhttp" || "${SUB_PORT_MODE}" == "443" ]] \
         || die "VLESS XHTTP 不支持 dynamic 端口"
+    if [[ "${PROTOCOL}" == "vless-xhttp" && -n "${CF_DNS_API_TOKEN:-}" ]]; then
+        configure_cloudflare_xhttp_streaming
+        unset CF_DNS_API_TOKEN
+    fi
     prepare_sample_worker_template
     snapshot_subscription_update
     if [[ "${SUB_PORT_MODE}" != "${stored_port_mode}" ]]; then

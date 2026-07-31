@@ -6,7 +6,7 @@
 |---|---|---|---|
 | VLESS TCP Reality Vision | Xray | 默认 `443`，可选 `dynamic` | 不要求代理 |
 | AnyTLS | sing-box | 默认 `dynamic`，可选 `443` | 必须始终保持灰云 |
-| VLESS XHTTP TLS (`packet-up`) | Xray + Nginx | 固定 `443` | 安装时灰云，成功后可开橙云 |
+| VLESS XHTTP TLS (`stream-one`) | Xray + Nginx | 固定 `443` | 安装时灰云，成功后可开橙云 |
 
 旧的 `easy_reality.sh`、`easy_anytls.sh` 和 `easy_vless_wss.sh` 已下线，也不提供旧状态迁移。检测到 `/etc/easy_reality`、`/etc/easy_anytls` 或 `/etc/easy_vless_wss` 时，新脚本会停止安装；请先用旧脚本的卸载命令清理。
 
@@ -105,8 +105,9 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 ### VLESS XHTTP TLS
 
 该模式面向必须经过 Cloudflare CDN 的线路。它使用普通 HTTPS 可代理的 XHTTP
-`packet-up`：上行使用分块 POST、下行使用流式响应，并通过 HTTP/3/XMUX 复用连接，
-避免 WSS 为浏览器大量并发请求频繁建立独立 TLS/WebSocket 连接。
+`stream-one`：一个 HTTP/2 POST 同时承载双向流量，Cloudflare 到 Nginx 再通过
+`grpc_pass` 将同一条流交给 Xray。对上海移动这类源站 IP 被阻断、只能经 CDN 接入的
+线路，外层始终是 TLS/HTTP/2/TCP，不依赖 UDP/QUIC。
 
 ```bash
 sudo PROTOCOL=vless-xhttp \
@@ -118,19 +119,29 @@ sudo PROTOCOL=vless-xhttp \
 
 `XHTTP_PATH` 默认随机生成，也可显式设置为以 `/` 开头的路径。该协议固定走 443，不接受 `SUB_PORT_MODE=dynamic`。
 
-安装或切换到 VLESS XHTTP 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。`packet-up` 不要求在 Cloudflare 后台开启 gRPC 或 WebSockets。
+安装或切换到 VLESS XHTTP 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。Cloudflare SSL/TLS 必须为 Full 或 Full (Strict)，Network 页面必须开启 gRPC；不需要开启 WebSockets。
+
+还需要在 Cloudflare **Rules > Configuration Rules** 为当前 XHTTP 路径建立规则：
+
+- 条件：Hostname 等于 `VLESS_XHTTP_DOMAIN`，URI Path 以 `XHTTP_PATH` 开头。
+- Request body buffering：`None`。
+- Response body buffering：`None`。
+
+使用具有 Zone Read、Zone Settings Edit 和 Configuration Rules Edit 权限的
+`CF_DNS_API_TOKEN` 安装时，脚本会尝试自动完成 gRPC 与双向无缓冲配置；权限不足只会
+给出警告，不会中断部署。已安装节点也可以通过
+`sudo CF_DNS_API_TOKEN=... easy_all update` 补配，然后重新拉取订阅。
 
 Nginx 会为 XHTTP 响应添加 `Cache-Control: no-store`。如果 Cloudflare 上已有会强制缓存
 所有内容的 Cache Rule，请为 `VLESS_XHTTP_DOMAIN/XHTTP_PATH*` 单独增加 Bypass Cache
 规则，避免缓存 XHTTP 下行响应；默认 Cloudflare 缓存策略通常不需要额外修改。
 
 输出同时包含 VLESS URI、Mihomo `network: xhttp`/`xhttp-opts` 节点以及 base64
-订阅内容。Mihomo 节点显式启用 XHTTP `reuse-settings`、`alpn: [h3]`、
-`packet-encoding: xudp` 和 `udp: true`；不会额外启用 `smux`，避免与 XHTTP 自带的
-XMUX 叠加。HTTP/3 使用 QUIC 独立流，并以 `max-concurrency: "16-32"` 控制每条主连接
-承载的代理请求数，避免 HTTP/2/TCP 丢包时所有流一起阻塞。Cloudflare 域名应启用
-HTTP/3（响应会包含 `alt-svc: h3`）；FLClash 使用的 Mihomo 内核需要至少 `v1.19.24`，
-建议更新到当前稳定版。
+订阅内容。Mihomo 节点使用 `alpn: [h2]`、`mode: stream-one`、
+`packet-encoding: xudp` 和 `udp: true`；不写入自定义 `reuse-settings`，让 XHTTP/XMUX
+使用内核默认复用策略，也不会额外启用 `smux`。其中 `udp: true` 只允许代理内层 UDP；
+这些数据仍封装在外层 HTTP/2/TCP 中，不会要求上海移动直连 Cloudflare UDP 443。
+FLClash 应使用支持 XHTTP `stream-one` 的当前稳定 Mihomo 内核。
 
 现有 `vless-wss` 安装执行 `easy_all update` 时会自动迁移为 `vless-xhttp`，复用原域名、
 UUID、证书和路径，并同步改写 Xray、Nginx 与 Worker。命令行仍接受 `vless-wss`/`wss`

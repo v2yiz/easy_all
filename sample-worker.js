@@ -55,7 +55,7 @@ const NODE_ANYTLS_CONFIG = defineNode({
     insecure: false
 });
 
-// ── VLESS XHTTP TLS 节点（Cloudflare CDN / packet-up）────────────
+// ── VLESS XHTTP TLS 节点（Cloudflare CDN / H2 stream-one）────────
 const NODE_VLESS_XHTTP_CONFIG = defineNode({
     type: 'vless',
     security: 'tls',
@@ -66,7 +66,7 @@ const NODE_VLESS_XHTTP_CONFIG = defineNode({
     fp: 'chrome',
     sni: 'xhttp.example.com',
     path: '/randompath',
-    mode: 'packet-up',
+    mode: 'stream-one',
     udp: true
 });
 
@@ -543,16 +543,11 @@ function buildClashVlessXhttpTlsNodeTemplate() {
     client-fingerprint: {fp}
     packet-encoding: xudp
     alpn:
-      - h3
+      - h2
     xhttp-opts:
       host: {xhttp_host}
       path: {path}
       mode: {mode}
-      reuse-settings:
-        max-concurrency: "16-32"
-        c-max-reuse-times: "0"
-        h-max-reusable-secs: "1800-3000"
-        h-keep-alive-period: 0
     smux:
       enabled: false
 `;
@@ -636,9 +631,9 @@ function createVlessLink(cfg, port) {
         params.set('flow', 'xtls-rprx-vision');
         params.set('packetEncoding', 'xudp');
     } else if (security === 'tls' && network === 'xhttp') {
-        params.set('alpn', 'h3');
+        params.set('alpn', 'h2');
         params.set('path', cfg.path || '/');
-        params.set('mode', cfg.mode || 'packet-up');
+        params.set('mode', cfg.mode || 'stream-one');
         params.set('packetEncoding', 'xudp');
     } else if (network !== 'tcp') {
         throw new Error(`Unsupported VLESS network: ${network}`);
@@ -721,7 +716,7 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{sid}/g, cfg.sid || '')
             .replace(/{fp}/g, cfg.fp)
             .replace(/{path}/g, cfg.path || '/')
-            .replace(/{mode}/g, cfg.mode || 'packet-up')
+            .replace(/{mode}/g, cfg.mode || 'stream-one')
             .replace(/{xhttp_host}/g, yamlString(cfg.xhttpHost || cfg.host))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));

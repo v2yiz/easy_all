@@ -112,12 +112,11 @@ const checks = {
   },
   'vless-xhttp': {
     link: ['vless://00000000-0000-4000-8000-000000000001@xhttp.example.com:443?',
-      'security=tls', 'type=xhttp', 'fp=chrome', 'alpn=h3', 'path=%2Fhacxhttp', 'mode=packet-up',
+      'security=tls', 'type=xhttp', 'fp=chrome', 'alpn=h2', 'path=%2Fhacxhttp', 'mode=stream-one',
       'packetEncoding=xudp', '#MY_VLESS_XHTTP'],
     yaml: ['type: vless', 'network: xhttp', 'port: 443', 'xhttp-opts:',
-      'udp: true', 'path: /hacxhttp', 'mode: packet-up', 'reuse-settings:',
-      'host: "xhttp.example.com"', 'max-concurrency: "16-32"',
-      'h-max-reusable-secs: "1800-3000"',
+      'udp: true', 'path: /hacxhttp', 'mode: stream-one',
+      'host: "xhttp.example.com"',
       'alpn:', 'packet-encoding: xudp']
   }
 };
@@ -433,10 +432,10 @@ test_server_egress_family_configs() {
                  and (.routing.rules[1] | has("domain") | not)' \
                 <<<"${config}"
         if [[ "${protocol}" == "vless-xhttp" ]]; then
-            assert_success "XHTTP server uses Cloudflare-compatible packet-up transport" \
+            assert_success "XHTTP server uses Cloudflare-compatible stream-one transport" \
                 jq -e \
                     '.inbounds[0].streamSettings.network == "xhttp"
-                     and .inbounds[0].streamSettings.xhttpSettings.mode == "packet-up"
+                     and .inbounds[0].streamSettings.xhttpSettings.mode == "stream-one"
                      and .inbounds[0].streamSettings.xhttpSettings.path == "/hacxhttp"' \
                     <<<"${config}"
         fi
@@ -664,16 +663,19 @@ EOF
         'alert "安装前请确认 Cloudflare DNS A 记录' "${script_content}"
     assert_contains "script renders post-install SSL notice in red" \
         'alert "Cloudflare SSL/TLS 模式请使用 Full' "${script_content}"
-    assert_contains "script documents no Cloudflare gRPC requirement" \
-        '不需要开启 Cloudflare gRPC 或 WebSockets' "${script_content}"
+    assert_contains "script requires Cloudflare gRPC for H2 stream-one" \
+        '必须开启 gRPC；XHTTP 不需要开启 WebSockets' "${script_content}"
     assert_contains "script fixes XHTTP to 443" "VLESS XHTTP 不支持 dynamic" "${script_content}"
-    assert_contains "script contains nginx XHTTP streaming proxy" 'proxy_request_buffering off;' "${script_content}"
+    assert_contains "script contains nginx gRPC XHTTP streaming proxy" \
+        'grpc_pass grpc://127.0.0.1:' "${script_content}"
     assert_contains "script prevents Cloudflare from caching XHTTP responses" \
         'add_header Cache-Control "no-store" always;' "${script_content}"
-    assert_contains "XHTTP uses H3 stream concurrency without TCP head-of-line blocking" \
-        'max-concurrency: \"16-32\"' "${script_content}"
-    assert_contains "XHTTP subscription selects H3 for Cloudflare CDN" \
-        'alpn=h3' "${script_content}"
+    assert_contains "XHTTP subscription selects H2 for Cloudflare CDN" \
+        'alpn=h2' "${script_content}"
+    assert_contains "XHTTP subscription selects one bidirectional H2 stream" \
+        'mode=stream-one' "${script_content}"
+    assert_not_contains "XHTTP leaves XMUX tuning at upstream defaults" \
+        'reuse-settings:' "${script_content}"
     assert_not_contains "client proxy nodes keep the local default address family" \
         'ip-version: ipv4-prefer' "${script_content}"
     assert_not_contains "script removes nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
@@ -839,6 +841,51 @@ test_cloudflare_api_retry_policy() {
         "$(cloudflare_retry_delay 4 '')"
 }
 
+test_cloudflare_xhttp_streaming_configuration() {
+    local calls="${TMP_DIR}/cloudflare-xhttp-calls" original_cloudflare_zone_api output
+    original_cloudflare_zone_api=$(declare -f cloudflare_zone_api)
+    : >"${calls}"
+    set_protocol_fixture "vless-xhttp"
+    CF_DNS_API_TOKEN="test-zone-token"
+    cloudflare_zone_api() {
+        local method=$1 path=$2
+        printf '%s %s\n' "${method}" "${path}" >>"${calls}"
+        case "${method} ${path}" in
+        "GET /zones?name=xhttp.example.com&status=active&per_page=1")
+            printf '%s' '{"success":true,"result":[]}'
+            ;;
+        "GET /zones?name=example.com&status=active&per_page=1")
+            printf '%s' '{"success":true,"result":[{"id":"zone-id"}]}'
+            ;;
+        "PATCH /zones/zone-id/settings/grpc")
+            printf '%s' '{"success":true,"result":{"id":"grpc","value":"on"}}'
+            ;;
+        "GET /zones/zone-id/rulesets/phases/http_config_settings/entrypoint")
+            printf '%s' '{"success":true,"result":{"id":"ruleset-id","rules":[{"id":"rule-id","ref":"easy_all_xhttp_streaming"}]}}'
+            ;;
+        "PATCH /zones/zone-id/rulesets/ruleset-id/rules/rule-id")
+            printf '%s' '{"success":true,"result":{"id":"rule-id"}}'
+            ;;
+        *)
+            printf '%s' '{"success":false,"errors":[{"code":1000,"message":"unexpected test request"}]}'
+            ;;
+        esac
+    }
+
+    output=$(configure_cloudflare_xhttp_streaming)
+    assert_contains "Cloudflare XHTTP setup discovers the parent zone" \
+        'GET /zones?name=example.com&status=active&per_page=1' "$(<"${calls}")"
+    assert_contains "Cloudflare XHTTP setup enables the zone gRPC switch" \
+        'PATCH /zones/zone-id/settings/grpc' "$(<"${calls}")"
+    assert_contains "Cloudflare XHTTP setup updates its existing no-buffer rule" \
+        'PATCH /zones/zone-id/rulesets/ruleset-id/rules/rule-id' "$(<"${calls}")"
+    assert_contains "Cloudflare XHTTP setup reports the gRPC result" \
+        'Cloudflare gRPC 已开启' "${output}"
+    assert_contains "Cloudflare XHTTP setup reports the streaming rule result" \
+        'Cloudflare XHTTP 双向无缓冲规则已配置' "${output}"
+    eval "${original_cloudflare_zone_api}"
+}
+
 test_update_subscription_rolls_back_port_change() {
     local status state_content nft_content nft_hash
     local nft_calls="${TMP_DIR}/update-sub-nft-calls"
@@ -975,6 +1022,7 @@ test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy
 test_cloudflare_api_retry_policy
+test_cloudflare_xhttp_streaming_configuration
 test_update_subscription_orchestration
 test_update_command_orchestration
 test_runtime_refresh_rolls_back_invalid_config

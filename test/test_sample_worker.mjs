@@ -176,9 +176,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[1], /#NODE_ANYTLS$/);
     assert.match(links[2], /security=tls/);
     assert.match(links[2], /type=xhttp/);
-    assert.match(links[2], /alpn=h3/);
+    assert.match(links[2], /alpn=h2/);
     assert.match(links[2], /path=%2Frandompath/);
-    assert.match(links[2], /mode=packet-up/);
+    assert.match(links[2], /mode=stream-one/);
     assert.match(links[2], /packetEncoding=xudp/);
     assert.doesNotMatch(links[2], /flow=xtls-rprx-vision/);
     assert.match(links[2], /#NODE_VLESS_XHTTP$/);
@@ -282,13 +282,11 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /network: xhttp/);
     assert.match(body, /udp: true/);
     assert.match(body, /path: \/randompath/);
-    assert.match(body, /mode: packet-up/);
+    assert.match(body, /mode: stream-one/);
     assert.match(body, /host: "xhttp\.example\.com"/);
-    assert.match(body, /reuse-settings:/);
-    assert.match(body, /max-concurrency: "16-32"/);
-    assert.match(body, /h-max-reusable-secs: "1800-3000"/);
+    assert.doesNotMatch(body, /reuse-settings:/);
     assert.match(body, /packet-encoding: xudp/);
-    assert.match(body, /alpn:\n      - h3/);
+    assert.match(body, /alpn:\n      - h2/);
     assert.doesNotMatch(body, /ip-version:/);
     assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_XHTTP"/);
 
