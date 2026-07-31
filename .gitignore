@@ -12,3 +12,4 @@ state.env
 *.csr
 *.token
 subscribe-worker.js
+worker.js
