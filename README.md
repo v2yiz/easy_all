@@ -64,6 +64,11 @@ sudo SUB_PORT_MODE=443 easy_all update-sub
 
 远端 Cloudflare Worker 不属于卸载范围。每次自动安装或切换都以 replace 方式覆盖同名 Worker，因此保留远端 Worker 不影响下次安装。
 
+`easy_all update` 始终以自动模式 replace 当前同名 Worker，不继承历史的手动输出模式。
+API Token 不会保存到状态文件：交互运行会提示输入 `CF_WORKER_API_TOKEN`；无人值守更新
+必须通过环境变量提供该 Token。若 Worker replace 失败，更新会明确失败，不会静默改成
+手动部署。仅执行 `easy_all update-sub` 时才继续沿用已保存的订阅部署模式。
+
 ## 协议参数
 
 ### Reality

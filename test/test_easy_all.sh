@@ -974,11 +974,13 @@ test_update_command_orchestration() {
     calls=$(
         require_root() { printf 'root\n'; }
         register_easy_all_command() { printf 'register\n'; }
-        update_subscription() { printf 'subscription\n'; }
+        update_subscription() {
+            printf 'subscription:%s:%s\n' "${SUBSCRIBE_MODE:-}" "${STRICT_WORKER_DEPLOY:-0}"
+        }
         update_easy_all
     )
-    assert_equal "update command delegates the synchronized refresh to update-sub" \
-        $'root\nregister\nsubscription' "${calls}"
+    assert_equal "update command forces a strict automatic Worker replace" \
+        $'root\nregister\nsubscription:auto:1' "${calls}"
 }
 
 test_runtime_refresh_rolls_back_invalid_config() {

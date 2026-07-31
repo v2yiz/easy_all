@@ -2145,7 +2145,10 @@ update_easy_all() {
         info "检测到旧 VLESS WSS 状态；先更新 Xray 核心，再迁移到 VLESS XHTTP"
         update_current_core
     fi
+    SUBSCRIBE_MODE="auto"
+    STRICT_WORKER_DEPLOY=1
     update_subscription
+    STRICT_WORKER_DEPLOY=0
 }
 
 print_worker_content() {
