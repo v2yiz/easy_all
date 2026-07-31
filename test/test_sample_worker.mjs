@@ -235,7 +235,10 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /^\s+ipv6: true$/m);
     assert.doesNotMatch(nameserverPolicy, /ipv4_only_dns/);
     assert.doesNotMatch(nameserverPolicy, /disable-ipv6=true/);
-    assert.match(body, /^\s+strict-route: true$/m);
+    assert.match(body, /^\s+strict-route: false$/m);
+    assert.match(body, /^\s+route-exclude-address:$/m);
+    assert.match(body, /^\s+- 10\.0\.0\.0\/8$/m);
+    assert.match(body, /^\s+- fdbd::\/16$/m);
     assert.match(body, /^    override-destination: false$/m);
     assert.doesNotMatch(body, /^    override-destination: true$/m);
     assert.doesNotMatch(body, /^        override-destination: true$/m);
@@ -246,14 +249,17 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.gstatic\.com'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
-    assert.match(body, /DOMAIN-SUFFIX,mega\.nz,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,mega\.co\.nz,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,mega\.io,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,mega\.app,PROXY/);
+    assert.doesNotMatch(body, /DOMAIN-SUFFIX,mega\.(?:nz|co\.nz|io|app),/);
     assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.bytedance\.net'$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.larkoffice\.com'$/m);
+    assert.match(nameserverPolicy, /^\s+'\+\.bytedance\.net': 'dhcp:\/\/en0'$/m);
+    assert.match(nameserverPolicy, /^\s+'\+\.larkoffice\.com': 'dhcp:\/\/en0'$/m);
+    assert.match(body, /DOMAIN-SUFFIX,bytedance\.net,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,larkoffice\.com,DIRECT/);
   });
 
   it('returns all Clash proxy nodes for node=all and falls back invalid filenames', async () => {

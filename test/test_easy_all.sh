@@ -202,6 +202,7 @@ source_script_copy() {
 
 set_protocol_fixture() {
     PROTOCOL=$1
+    GEMINI_IP_FAMILY="ipv4"
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
     SUB_DOWNLOAD_NAME="MY_SUB"
@@ -305,45 +306,80 @@ test_sample_worker_template_guards() {
     local invalid_template="${TMP_DIR}/invalid-sample-worker.js"
     local duplicate_policy="${TMP_DIR}/duplicate-policy-worker.js"
     local uppercase_policy="${TMP_DIR}/uppercase-policy-worker.js"
-    local policy
+    local gemini_policy
     awk '$0 != "// EASY_ALL_RULES_END"' \
         "${ROOT_DIR}/sample-worker.js" >"${invalid_template}"
     assert_success "sample Worker rejects a missing rules boundary" \
         sample_worker_validation_fails "${invalid_template}"
 
-    awk '$0 != "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */"' \
+    awk '$0 != "/* EASY_ALL_GEMINI_DOMAINS_END */"' \
         "${ROOT_DIR}/sample-worker.js" >"${invalid_template}"
-    assert_success "sample Worker rejects a missing IPv4-only policy boundary" \
+    assert_success "sample Worker rejects a missing Gemini policy boundary" \
         sample_worker_validation_fails "${invalid_template}"
 
-    sed 's/"openai.com"/"chatgpt.com"/' \
+    sed 's/"googleapis.com"/"google.com"/' \
         "${ROOT_DIR}/sample-worker.js" >"${duplicate_policy}"
-    assert_success "sample Worker rejects duplicate IPv4-only domains" \
+    assert_success "sample Worker rejects duplicate Gemini domains" \
         sample_worker_validation_fails "${duplicate_policy}"
 
-    sed 's/"openai.com"/"OpenAI.com"/' \
+    sed 's/"google.com"/"Google.com"/' \
         "${ROOT_DIR}/sample-worker.js" >"${uppercase_policy}"
-    assert_success "sample Worker rejects non-normalized IPv4-only domains" \
+    assert_success "sample Worker rejects non-normalized Gemini domains" \
         sample_worker_validation_fails "${uppercase_policy}"
 
-    policy=$(extract_ipv4_only_domain_suffixes "${ROOT_DIR}/sample-worker.js")
-    assert_success "sample Worker includes Gemini/Google and MEGA in IPv4-only policy" \
+    gemini_policy=$(extract_gemini_domain_suffixes "${ROOT_DIR}/sample-worker.js")
+    assert_success "sample Worker limits the family policy to Gemini and Google dependencies" \
         jq -e \
-            'index("openai.com")
-             and index("claude.ai")
-             and index("google.com")
+            'index("google.com")
              and index("googleapis.com")
-             and index("mega.nz")
-             and index("mega.co.nz")
-             and index("mega.io")
-             and index("mega.app")' \
-            <<<"${policy}"
+             and index("gstatic.com")
+             and (index("openai.com") | not)
+             and (index("claude.ai") | not)
+             and (index("mega.nz") | not)' \
+            <<<"${gemini_policy}"
 
     assert_success "sample Worker source rejects plain HTTP" \
         sample_worker_fetch_fails "http://example.com/sample-worker.js"
 }
 
-test_ipv4_only_server_configs() {
+test_local_worker_matches_sample_outside_private_values() {
+    local sample_content worker_content
+    [[ -f "${ROOT_DIR}/worker.js" ]] || return 0
+    sample_content=$(awk '
+        /^const ALLOWED_TOKENS =/ {
+            print "<TOKENS>"
+            if ($0 !~ /;[[:space:]]*$/) tokens = 1
+            next
+        }
+        tokens == 1 {if ($0 ~ /;[[:space:]]*$/) tokens = 0; next}
+        /^\/\/ ── .*节点/ {print "<NODES>"; nodes = 1; next}
+        nodes == 1 && /^const DEFAULT_NODE =/ {
+            print "<DEFAULT_NODE>"
+            nodes = 0
+            next
+        }
+        nodes != 1 {print}
+    ' "${ROOT_DIR}/sample-worker.js")
+    worker_content=$(awk '
+        /^const ALLOWED_TOKENS =/ {
+            print "<TOKENS>"
+            if ($0 !~ /;[[:space:]]*$/) tokens = 1
+            next
+        }
+        tokens == 1 {if ($0 ~ /;[[:space:]]*$/) tokens = 0; next}
+        /^\/\/ ── .*节点/ {print "<NODES>"; nodes = 1; next}
+        nodes == 1 && /^const DEFAULT_NODE =/ {
+            print "<DEFAULT_NODE>"
+            nodes = 0
+            next
+        }
+        nodes != 1 {print}
+    ' "${ROOT_DIR}/worker.js")
+    assert_equal "local worker differs from sample only in tokens and node definitions" \
+        "${sample_content}" "${worker_content}"
+}
+
+test_server_egress_family_configs() {
     local protocol config
     install -d -m 0755 "${XRAY_DIR}" "${SING_BOX_DIR}"
     printf '%s\n' \
@@ -360,9 +396,9 @@ test_ipv4_only_server_configs() {
         write_xray_config
         config=$(<"${XRAY_CONFIG}")
 
-        assert_equal "${protocol} Xray selected-domain outbound strictly forces IPv4" \
+        assert_equal "${protocol} Xray Gemini outbound follows the selected IPv4 family" \
             "ForceIPv4" \
-            "$(jq -r '.outbounds[] | select(.tag == "ipv4-only") | .settings.domainStrategy' \
+            "$(jq -r '.outbounds[] | select(.tag == "gemini-family") | .settings.domainStrategy' \
                 <<<"${config}")"
         assert_equal "${protocol} Xray keeps a separate normal direct outbound" \
             "direct" "$(jq -r '.outbounds[] | select(.tag == "direct") | .tag' <<<"${config}")"
@@ -374,17 +410,14 @@ test_ipv4_only_server_configs() {
                  and (.inbounds[0].sniffing.destOverride == ["http", "tls", "quic"])
                  and .inbounds[0].sniffing.routeOnly == true' \
                 <<<"${config}"
-        assert_success "${protocol} Xray routes AI services and MEGA to IPv4-only fallback" \
+        assert_success "${protocol} Xray routes only Gemini through the fixed-family outbound" \
             jq -e \
-                '.routing.rules[0].outboundTag == "ipv4-only"
-                 and (.routing.rules[0].domain | index("domain:openai.com"))
-                 and (.routing.rules[0].domain | index("domain:claude.ai"))
+                '.routing.rules[0].outboundTag == "gemini-family"
+                 and ((.routing.rules[0].domain | index("domain:openai.com")) == null)
+                 and ((.routing.rules[0].domain | index("domain:claude.ai")) == null)
                  and (.routing.rules[0].domain | index("domain:google.com"))
                  and (.routing.rules[0].domain | index("domain:googleapis.com"))
-                 and (.routing.rules[0].domain | index("domain:mega.nz"))
-                 and (.routing.rules[0].domain | index("domain:mega.co.nz"))
-                 and (.routing.rules[0].domain | index("domain:mega.io"))
-                 and (.routing.rules[0].domain | index("domain:mega.app"))
+                 and ((.routing.rules[0].domain | index("domain:mega.nz")) == null)
                  and ((.routing.rules[0].domain | map(startswith("full:")) | any) == false)' \
                 <<<"${config}"
         assert_success "${protocol} Xray explicitly sends every unmatched flow to normal direct" \
@@ -397,34 +430,74 @@ test_ipv4_only_server_configs() {
                 <<<"${config}"
     done
 
+    set_protocol_fixture "reality"
+    REALITY_PRIVATE_KEY="test-private-key"
+    GEMINI_IP_FAMILY="ipv6"
+    write_xray_config
+    config=$(<"${XRAY_CONFIG}")
+    assert_equal "Xray strictly fixes Gemini to IPv6 when selected" \
+        "ForceIPv6" \
+        "$(jq -r '.outbounds[] | select(.tag == "gemini-family") | .settings.domainStrategy' \
+            <<<"${config}")"
     set_protocol_fixture "anytls"
     write_sing_box_config
     config=$(<"${SING_BOX_CONFIG}")
-    assert_equal "sing-box selected-domain direct outbound resolves IPv4 only" \
+    assert_equal "sing-box Gemini outbound follows the selected IPv4 family" \
         "ipv4_only" \
-        "$(jq -r '.outbounds[] | select(.tag == "ipv4-only") | .domain_resolver.strategy' \
+        "$(jq -r '.outbounds[] | select(.tag == "gemini-family") | .domain_resolver.strategy' \
             <<<"${config}")"
     assert_equal "sing-box keeps a separate normal direct outbound" \
         "direct" "$(jq -r '.outbounds[] | select(.tag == "direct") | .tag' <<<"${config}")"
-    assert_success "sing-box sniffs before applying the IPv4-only domain route" \
+    assert_success "sing-box sniffs before applying the Gemini route" \
         jq -e \
             '.route.rules[0].action == "sniff"
              and .route.rules[1].action == "route"
-             and .route.rules[1].outbound == "ipv4-only"
+             and .route.rules[1].outbound == "gemini-family"
+             and (.route.rules | length) == 2
              and .route.final == "direct"' \
             <<<"${config}"
-    assert_success "sing-box routes AI services and MEGA to IPv4-only fallback" \
+    assert_success "sing-box routes only Gemini through the fixed-family outbound" \
         jq -e \
-            '(.route.rules[1].domain_suffix | index("openai.com"))
-             and (.route.rules[1].domain_suffix | index("claude.ai"))
+            '((.route.rules[1].domain_suffix | index("openai.com")) == null)
+             and ((.route.rules[1].domain_suffix | index("claude.ai")) == null)
              and (.route.rules[1].domain_suffix | index("google.com"))
              and (.route.rules[1].domain_suffix | index("googleapis.com"))
-             and (.route.rules[1].domain_suffix | index("mega.nz"))
-             and (.route.rules[1].domain_suffix | index("mega.co.nz"))
-             and (.route.rules[1].domain_suffix | index("mega.io"))
-             and (.route.rules[1].domain_suffix | index("mega.app"))
+             and ((.route.rules[1].domain_suffix | index("mega.nz")) == null)
              and (.route.rules[1] | has("domain") | not)' \
             <<<"${config}"
+
+    GEMINI_IP_FAMILY="ipv6"
+    write_sing_box_config
+    config=$(<"${SING_BOX_CONFIG}")
+    assert_equal "sing-box strictly fixes Gemini to IPv6 when selected" \
+        "ipv6_only" \
+        "$(jq -r '.outbounds[] | select(.tag == "gemini-family") | .domain_resolver.strategy' \
+            <<<"${config}")"
+    assert_success "auto Gemini family selects the faster IPv6 route on a dual-stack VPS" \
+        bash -c '
+            source "$1"
+            ip() {
+                case "$*" in
+                "-6 addr show scope global") printf "inet6 2001:db8::1/64 scope global\n" ;;
+                "-6 route show default") printf "default via 2001:db8::ffff dev eth0\n" ;;
+                esac
+            }
+            measure_gemini_ip_family() {
+                [[ "$1" == "ipv6" ]] && printf "1.0\n" || printf "2.0\n"
+            }
+            GEMINI_IP_FAMILY=auto
+            resolve_gemini_ip_family
+            [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]]
+        ' _ "${SCRIPT_COPY}"
+    assert_success "auto Gemini family selects IPv4 when the VPS has no usable IPv6 route" \
+        bash -c '
+            source "$1"
+            ip() { :; }
+            measure_gemini_ip_family() { [[ "$1" == "ipv4" ]] && printf "1.0\n"; }
+            GEMINI_IP_FAMILY=auto
+            resolve_gemini_ip_family
+            [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv4" ]]
+        ' _ "${SCRIPT_COPY}"
 
     assert_success "one fetched Worker policy drives both server and generated Worker" \
         custom_worker_policy_drives_server_and_worker
@@ -444,10 +517,10 @@ sample_worker_fetch_fails() {
 custom_worker_policy_drives_server_and_worker() (
     local custom_template="${TMP_DIR}/custom-policy-worker.js"
     local generated_worker="${TMP_DIR}/custom-policy-generated-worker.js"
-    sed 's/"openai.com"/"policy-source.example"/' \
+    sed 's/"googleapis.com"/"policy-source.example"/' \
         "${ROOT_DIR}/sample-worker.js" >"${custom_template}"
     SAMPLE_WORKER_TEMPLATE_FILE=""
-    IPV4_ONLY_DOMAIN_SUFFIXES_JSON=""
+    GEMINI_DOMAIN_SUFFIXES_JSON=""
     SAMPLE_WORKER_SOURCE=${custom_template}
     set_protocol_fixture "reality"
     REALITY_PRIVATE_KEY="test-private-key"
@@ -458,10 +531,10 @@ custom_worker_policy_drives_server_and_worker() (
 
     jq -e \
         '(.routing.rules[0].domain | index("domain:policy-source.example"))
-         and ((.routing.rules[0].domain | index("domain:openai.com")) == null)' \
+         and ((.routing.rules[0].domain | index("domain:googleapis.com")) == null)' \
         "${XRAY_CONFIG}" >/dev/null \
         && grep -Fq '"policy-source.example"' "${generated_worker}" \
-        && ! grep -Fq '"openai.com"' "${generated_worker}"
+        && ! grep -Fq '"googleapis.com"' "${generated_worker}"
 )
 
 test_worker_only_subscription_branch() {
@@ -519,6 +592,8 @@ test_state_and_lifecycle_guards() {
     assert_contains "state saves selected protocol" "PROTOCOL=vless-wss" "${content}"
     assert_contains "state saves WS path" "WS_PATH=/hacxws" "${content}"
     assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
+    assert_contains "state saves the Gemini address-family preference" \
+        "GEMINI_IP_FAMILY=ipv4" "${content}"
     assert_contains "state saves allowed token dict" "ALLOWED_TOKENS=" "${content}"
     assert_not_contains "state does not save SUB_TOKEN field" "SUB_TOKEN=" "${content}"
     assert_not_contains "state does not save DNS token" "dns-token-must-not-be-saved" "${content}"
@@ -534,14 +609,12 @@ test_state_and_lifecycle_guards() {
         "const FAKE_IP_FILTER =" "${script_content}"
     assert_contains "easy_all reads rules from the sample Worker" \
         "fetch_sample_worker" "${script_content}"
-    assert_not_contains "easy_all does not embed a second IPv4-only domain list" \
-        'readonly IPV4_ONLY_DOMAIN_SUFFIXES_JSON=' "${script_content}"
-    assert_contains "easy_all extracts the IPv4-only policy from the sample Worker" \
-        "extract_ipv4_only_domain_suffixes" "${script_content}"
+    assert_not_contains "easy_all does not contain a MEGA IPv4-only policy" \
+        'IPV4_ONLY_DOMAIN_SUFFIXES_JSON' "${script_content}"
+    assert_contains "easy_all extracts the Gemini family policy from the sample Worker" \
+        "extract_gemini_domain_suffixes" "${script_content}"
     assert_contains "easy_all validates the sample rules boundary" \
         "// EASY_ALL_RULES_START" "${script_content}"
-    assert_contains "easy_all validates the IPv4-only policy boundary" \
-        "EASY_ALL_IPV4_ONLY_DOMAINS_START" "${script_content}"
     assert_contains "easy_all defaults to the repository sample Worker URL" \
         'url=${SAMPLE_WORKER_URL:-${DEFAULT_SAMPLE_WORKER_URL}}' "${script_content}"
     assert_not_contains "easy_all never auto-loads an adjacent sample Worker" \
@@ -837,7 +910,8 @@ source_script_copy
 test_validators_and_defaults
 test_links_and_workers
 test_sample_worker_template_guards
-test_ipv4_only_server_configs
+test_local_worker_matches_sample_outside_private_values
+test_server_egress_family_configs
 test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments

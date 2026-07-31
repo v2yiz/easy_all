@@ -2,7 +2,7 @@
  * 订阅服务样例 - Cloudflare Workers
  * 提供 VLESS Reality / VLESS WebSocket TLS / AnyTLS 订阅、Clash Meta 配置
  *
- * 使用前请替换:
+ * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
  * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、WebSocket path 或 AnyTLS 密码
  * 3. DEFAULT_NODE 指向你希望默认输出的节点，支持单节点或节点数组
@@ -79,57 +79,19 @@ function defaultNodeConfigs() {
 // ================= 规则与模板 =================
 
 // EASY_ALL_RULES_START
-// 服务端对这些域名统一选择 IPv4 出口；客户端保留 Fake-IP，把域名交给 VPS 解析。
-const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze(
-/* EASY_ALL_IPV4_ONLY_DOMAINS_START */
+// 服务端为 Gemini 及其必要 Google 依赖固定同一出口族；其他 AI 服务保持默认双栈行为。
+const GEMINI_DOMAIN_SUFFIXES = Object.freeze(
+/* EASY_ALL_GEMINI_DOMAINS_START */
 [
-    "chatgpt.com",
-    "openai.com",
-    "oaistatic.com",
-    "oaiusercontent.com",
-    "anthropic.com",
-    "claude.ai",
-    "claude.com",
-    "claudeusercontent.com",
     "ai.google.dev",
     "generativeai.google",
     "google.com",
     "googleapis.com",
     "googleusercontent.com",
     "gstatic.com",
-    "ggpht.com",
-    "googlevideo.com",
-    "youtube.com",
-    "ytimg.com",
-    "doubleclick.net",
-    "google-analytics.com",
-    "googletagmanager.com",
-    "withgoogle.com",
-    "mega.nz",
-    "mega.co.nz",
-    "mega.io",
-    "mega.app",
-    "api.statsig.com",
-    "browser-intake-datadoghq.com",
-    "chat.openai.com.cdn.cloudflare.net",
-    "openai-api.arkoselabs.com",
-    "auth0.com",
-    "challenges.cloudflare.com",
-    "chatgpt.livekit.cloud",
-    "client-api.arkoselabs.com",
-    "events.statsigapi.net",
-    "featuregates.org",
-    "host.livekit.cloud",
-    "intercom.io",
-    "intercomcdn.com",
-    "launchdarkly.com",
-    "openaiapi-site.azureedge.net",
-    "openaicom.imgix.net",
-    "segment.io",
-    "sentry.io",
-    "turn.livekit.cloud"
+    "ggpht.com"
 ]
-/* EASY_ALL_IPV4_ONLY_DOMAINS_END */
+/* EASY_ALL_GEMINI_DOMAINS_END */
 );
 
 const BASE_FAKE_IP_FILTER = [
@@ -139,7 +101,17 @@ const BASE_FAKE_IP_FILTER = [
     'time.windows.com',
     'time.apple.com',
     '*.ntp.org.cn',
-    'pool.ntp.org'
+    'pool.ntp.org',
+    // ==================== 字节内网域名 START（临时）====================
+    '+.bytedance.net',
+    '+.tiktok-row.net',
+    '+.zijieapi.com',
+    '+.bytetcc.com',
+    '+.feelgood.cn',
+    '+.bytegoofy.com',
+    '+.byted.org',
+    '+.larkoffice.com',
+    // ==================== 字节内网域名 END ====================
 ];
 
 const FAKE_IP_FILTER = BASE_FAKE_IP_FILTER
@@ -264,6 +236,17 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,miui.com,DIRECT
   - DOMAIN-SUFFIX,xiaomi.com,DIRECT
 
+  # ==================== 字节内网域名 START（临时）====================
+  - DOMAIN-SUFFIX,bytedance.net,DIRECT
+  - DOMAIN-SUFFIX,tiktok-row.net,DIRECT
+  - DOMAIN-SUFFIX,zijieapi.com,DIRECT
+  - DOMAIN-SUFFIX,bytetcc.com,DIRECT
+  - DOMAIN-SUFFIX,feelgood.cn,DIRECT
+  - DOMAIN-SUFFIX,bytegoofy.com,DIRECT
+  - DOMAIN-SUFFIX,byted.org,DIRECT
+  - DOMAIN-SUFFIX,larkoffice.com,DIRECT
+  # ==================== 字节内网域名 END ====================
+
   # ==================== Apple 直连 ====================
   - DOMAIN,www-cdn.icloud.com.akadns.net,DIRECT
   - DOMAIN-SUFFIX,aaplimg.com,DIRECT
@@ -327,12 +310,6 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,segment.io,PROXY
   - DOMAIN-SUFFIX,sentry.io,PROXY
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
-
-  # ==================== MEGA Sync ====================
-  - DOMAIN-SUFFIX,mega.nz,PROXY
-  - DOMAIN-SUFFIX,mega.co.nz,PROXY
-  - DOMAIN-SUFFIX,mega.io,PROXY
-  - DOMAIN-SUFFIX,mega.app,PROXY
 
   # ==================== Google / YouTube ====================
   - DOMAIN-SUFFIX,google.com,PROXY
@@ -425,10 +402,12 @@ tun:
     dns-hijack:
       - any:53
       - tcp://any:53
-    strict-route: true
-    # 如需绕过 TUN 自动路由，在这里添加：
-    # route-exclude-address:
-    #   - 10.0.0.0/8
+    strict-route: false
+    # ==================== 字节内网路由 START（临时）====================
+    route-exclude-address:
+      - 10.0.0.0/8
+      - fdbd::/16
+    # ==================== 字节内网路由 END ====================
 
 dns:
     enable: true
@@ -451,6 +430,16 @@ dns:
     nameserver-policy:
       '+.lan': system
       '+.local': system
+      # ==================== 字节内网 DNS START（临时）====================
+      '+.bytedance.net': 'dhcp://en0'
+      '+.tiktok-row.net': 'dhcp://en0'
+      '+.zijieapi.com': 'dhcp://en0'
+      '+.bytetcc.com': 'dhcp://en0'
+      '+.feelgood.cn': 'dhcp://en0'
+      '+.bytegoofy.com': 'dhcp://en0'
+      '+.byted.org': 'dhcp://en0'
+      '+.larkoffice.com': 'dhcp://en0'
+      # ==================== 字节内网 DNS END ====================
 
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16

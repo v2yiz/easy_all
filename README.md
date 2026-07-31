@@ -16,7 +16,7 @@
 - 脚本适用于专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
 - 三种协议都使用 TCP 443，所以同一时间只能启用一种。
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
-- Gemini、Claude、OpenAI 和 MEGA Sync 相关域名在客户端保留 Fake-IP，由 VPS 统一使用 IPv4 出口；这既避免 AI 服务检测到不同地址族，也确保没有 IPv6 的 VPS 可以正常连接 MEGA 上传节点。MEGA Desktop 还必须将自定义 HTTP 代理设为 `127.0.0.1:1080`。
+- 只有 Gemini 及其必要 Google 依赖会由每台 VPS 固定选择单一地址族；`auto` 模式实测 Gemini 的 IPv4/IPv6 后选择更快的一侧，避免 `IPv4 != IPv6` 且不牺牲速度。Claude、OpenAI、MEGA 及其他服务保持服务端默认双栈行为。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
 - VLESS WSS 仅推荐移动宽带用户选择。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 Cloudflare CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
@@ -92,9 +92,11 @@ sudo PROTOCOL=anytls \
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI、MEGA Sync 及其必要辅助域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端 DNS 选出的地址不适合所选 VPS 出口。Xray 服务端通过 `ForceIPv4` 为整组域名统一选择 IPv4 出口，sing-box 使用 `ipv4_only` 解析器；普通 `direct` 仍保持双栈。Mihomo 客户端设置 `sniffer.override-destination: false`，嗅探结果只用于分流，不覆写 Fake-IP 映射或原始目标。这样 Gemini 的相关连接都从同一 VPS 地址族出站，不会在客户端 IPv4 和 VPS IPv6 之间漂移；MEGA 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名也固定使用服务端 IPv4。
+三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。相关域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端先确定与所选 VPS 不匹配的目标地址。只有 Gemini 及其必要 Google 依赖进入固定地址族策略；ChatGPT、Claude 及其辅助域名直接使用普通 `direct` 的默认双栈行为。`GEMINI_IP_FAMILY=auto`（默认）会分别请求三次 `https://gemini.google.com/`，比较可用地址族的中位耗时后固定选择更快的一侧。Xray 使用 `ForceIPv4` 或 `ForceIPv6`，sing-box 使用 `ipv4_only` 或 `ipv6_only`，因此同一台 VPS 上的 Gemini 请求不会在 IPv4/IPv6 之间漂移。没有全局 IPv6 地址或默认 IPv6 路由的 VPS 不执行 IPv6 测试并固定使用 IPv4。
 
-MEGA Desktop 的上传 API 会直接向客户端下发存储节点的 IPv4/IPv6 地址对，而不是完全依赖 DNS；只在服务端设置 `ForceIPv4` 无法改写客户端已经选中的 IPv6 地址。为只约束 MEGA 而不关闭系统或其他应用的 IPv6，请在 MEGA Desktop 的代理设置中选择自定义代理，协议使用 HTTP，服务器填写 `127.0.0.1`，端口填写 `1080`。该端口是订阅配置中的 Mihomo `mixed-port`，会把 MEGA 的 CONNECT 域名交给所选代理节点，再由 VPS 的 IPv4-only 出站连接存储服务器。TUN 同时启用 `strict-route` 降低 DNS 和地址泄漏风险。
+自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，也可以在安装或更新时用 `GEMINI_IP_FAMILY=ipv4 easy_all update` 或 `GEMINI_IP_FAMILY=ipv6 easy_all update` 显式覆盖。模式选择会写入 `/etc/easy_all/state.env`，后续更新继续沿用。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
+
+模板保留字节内网适配：相关域名使用 DHCP DNS、加入 Fake-IP 过滤并显式直连，同时从 TUN 自动路由中排除 `10.0.0.0/8` 和 `fdbd::/16`。因此模板使用 `strict-route: false`；这些设置会原样同步到生成的 Worker。
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
 
@@ -152,12 +154,12 @@ Worker 支持：
 
 ### Worker 模板与规则来源
 
-`sample-worker.js` 是 Worker 模板、Mihomo 规则和 IPv4-only 策略的唯一来源，`easy_all.sh` 不再保存第二份域名列表。脚本会从模板的 `EASY_ALL_IPV4_ONLY_DOMAINS_START/END` JSON 区块提取需要固定 IPv4 的 AI 与 Google 域名，并将同一列表写入 Xray 或 sing-box 服务端配置和 Mihomo 客户端 DNS 策略。模板按以下顺序获取：
+`sample-worker.js` 是 Worker 模板、Mihomo 规则和 Gemini 地址族策略的唯一来源，`easy_all.sh` 不再保存第二份域名列表。脚本会从模板的 `EASY_ALL_GEMINI_DOMAINS_START/END` JSON 区块提取域名，并写入 Xray 或 sing-box 服务端配置。模板按以下顺序获取：
 
 1. `SAMPLE_WORKER_SOURCE` 指定的本地文件或 HTTPS URL。
 2. `SAMPLE_WORKER_URL`，默认读取本仓库 `main` 分支的 `sample-worker.js`。
 
-模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换、`update` 或 `update-sub` 时，每次操作都会重新获取 `SAMPLE_WORKER_URL` 的最新内容，但一次操作只获取一次；服务端配置和 Worker 都复用这份已校验模板。现有 Token 和节点信息从状态文件重新注入。模板缺少配置、规则或 IPv4-only 域名边界，或者域名 JSON 非法、重复、未规范化时，脚本会立即停止，不会生成不一致的配置。
+模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换、`update` 或 `update-sub` 时，每次操作都会重新获取 `SAMPLE_WORKER_URL` 的最新内容，但一次操作只获取一次；服务端配置和 Worker 都复用这份已校验模板。现有 Token 和节点信息从状态文件重新注入。模板缺少配置、规则或 Gemini 域名边界，或者域名 JSON 非法、重复、未规范化时，脚本会立即停止，不会生成不一致的配置。
 
 VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sample-worker.js` 已发布到 `main`，再执行一行命令：
 

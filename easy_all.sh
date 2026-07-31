@@ -81,7 +81,8 @@ INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 SAMPLE_WORKER_TEMPLATE_FILE=""
-IPV4_ONLY_DOMAIN_SUFFIXES_JSON=""
+GEMINI_DOMAIN_SUFFIXES_JSON=""
+GEMINI_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
     if [[ "${SWITCH_ROLLBACK_ON_EXIT:-0}" == "1" && -n "${SWITCH_BACKUP_DIR:-}" ]]; then
@@ -489,7 +490,7 @@ load_state() {
         VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT
         ANYTLS_DOMAIN ANYTLS_PASSWORD SUB_PORT_MODE ALLOWED_TOKENS
         WORKER_NAME WORKER_URL CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME
-        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
     )
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
@@ -508,6 +509,9 @@ load_state() {
     done
     XRAY_LOOPBACK_PORT=${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
+    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
+    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
+        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     [[ "${DEPLOY_MODE}" == "manual" ]] && DEPLOY_MODE="worker"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
@@ -543,6 +547,7 @@ save_state() {
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
+        printf 'GEMINI_IP_FAMILY=%q\n' "${GEMINI_IP_FAMILY:-auto}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -844,7 +849,12 @@ download_xray() {
 }
 
 write_xray_config() {
+    local gemini_domain_strategy
     prepare_sample_worker_template
+    resolve_gemini_ip_family
+    [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
+        && gemini_domain_strategy="ForceIPv6" \
+        || gemini_domain_strategy="ForceIPv4"
     install -d -m 0755 "${XRAY_DIR}"
     case "${PROTOCOL}" in
     reality)
@@ -866,7 +876,8 @@ write_xray_config() {
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
             --arg sni "${REALITY_TARGET%:*}" \
-            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" '
+            --arg gemini_domain_strategy "${gemini_domain_strategy}" \
+            --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
@@ -900,8 +911,8 @@ write_xray_config() {
                 {protocol: "freedom", tag: "direct"},
                 {
                   protocol: "freedom",
-                  tag: "ipv4-only",
-                  settings: {domainStrategy: "ForceIPv4"}
+                  tag: "gemini-family",
+                  settings: {domainStrategy: $gemini_domain_strategy}
                 }
               ],
               routing: {
@@ -909,8 +920,8 @@ write_xray_config() {
                 rules: [
                   {
                     type: "field",
-                    domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
-                    outboundTag: "ipv4-only"
+                    domain: ($gemini_domain_suffixes | map("domain:" + .)),
+                    outboundTag: "gemini-family"
                   },
                   {
                     type: "field",
@@ -927,7 +938,8 @@ write_xray_config() {
             --arg uuid "${VLESS_UUID}" \
             --arg node_name "${NODE_NAME}" \
             --arg path "${WS_PATH}" \
-            --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" '
+            --arg gemini_domain_strategy "${gemini_domain_strategy}" \
+            --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
@@ -953,8 +965,8 @@ write_xray_config() {
                 {protocol: "freedom", tag: "direct"},
                 {
                   protocol: "freedom",
-                  tag: "ipv4-only",
-                  settings: {domainStrategy: "ForceIPv4"}
+                  tag: "gemini-family",
+                  settings: {domainStrategy: $gemini_domain_strategy}
                 }
               ],
               routing: {
@@ -962,8 +974,8 @@ write_xray_config() {
                 rules: [
                   {
                     type: "field",
-                    domain: ($ipv4_only_domain_suffixes | map("domain:" + .)),
-                    outboundTag: "ipv4-only"
+                    domain: ($gemini_domain_suffixes | map("domain:" + .)),
+                    outboundTag: "gemini-family"
                   },
                   {
                     type: "field",
@@ -1048,8 +1060,12 @@ download_sing_box() {
 }
 
 write_sing_box_config() {
-    local listen_addr="0.0.0.0"
+    local listen_addr="0.0.0.0" gemini_dns_strategy
     prepare_sample_worker_template
+    resolve_gemini_ip_family
+    [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
+        && gemini_dns_strategy="ipv6_only" \
+        || gemini_dns_strategy="ipv4_only"
     ip -6 addr show scope global 2>/dev/null | grep -q "inet6" && listen_addr="::"
     install -d -m 0755 "${SING_BOX_DIR}"
     jq -n \
@@ -1057,7 +1073,8 @@ write_sing_box_config() {
         --arg password "${ANYTLS_PASSWORD}" \
         --arg cert "${CERT_FILE}" \
         --arg key "${KEY_FILE}" \
-        --argjson ipv4_only_domain_suffixes "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON}" '
+        --arg gemini_dns_strategy "${gemini_dns_strategy}" \
+        --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
         {
           log: {level: "warn", timestamp: true},
           dns: {
@@ -1081,10 +1098,10 @@ write_sing_box_config() {
           outbounds: [
             {
               type: "direct",
-              tag: "ipv4-only",
+              tag: "gemini-family",
               domain_resolver: {
                 server: "local",
-                strategy: "ipv4_only"
+                strategy: $gemini_dns_strategy
               }
             },
             {type: "direct", tag: "direct"}
@@ -1093,9 +1110,9 @@ write_sing_box_config() {
             rules: [
               {action: "sniff"},
               {
-                domain_suffix: $ipv4_only_domain_suffixes,
+                domain_suffix: $gemini_domain_suffixes,
                 action: "route",
-                outbound: "ipv4-only"
+                outbound: "gemini-family"
               }
             ],
             final: "direct"
@@ -1264,15 +1281,15 @@ build_mihomo_node() {
 
 validate_sample_worker() {
     local source=$1 marker count config_start config_end rules_start rules_end
-    local policy_start policy_end
+    local gemini_policy_start gemini_policy_end
     [[ -s "${source}" ]] || die "sample-worker.js 为空：${source}"
     for marker in \
         "// EASY_ALL_CONFIG_START" \
         "// EASY_ALL_CONFIG_END" \
         "// EASY_ALL_RULES_START" \
         "// EASY_ALL_RULES_END" \
-        "/* EASY_ALL_IPV4_ONLY_DOMAINS_START */" \
-        "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */"; do
+        "/* EASY_ALL_GEMINI_DOMAINS_START */" \
+        "/* EASY_ALL_GEMINI_DOMAINS_END */"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \
             || die "sample-worker.js 模板标记无效：${marker} 应且只能出现一次"
@@ -1285,15 +1302,15 @@ validate_sample_worker() {
     config_end=$(grep -Fn "// EASY_ALL_CONFIG_END" "${source}" | cut -d: -f1)
     rules_start=$(grep -Fn "// EASY_ALL_RULES_START" "${source}" | cut -d: -f1)
     rules_end=$(grep -Fn "// EASY_ALL_RULES_END" "${source}" | cut -d: -f1)
-    policy_start=$(grep -Fn "/* EASY_ALL_IPV4_ONLY_DOMAINS_START */" "${source}" | cut -d: -f1)
-    policy_end=$(grep -Fn "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */" "${source}" | cut -d: -f1)
+    gemini_policy_start=$(grep -Fn "/* EASY_ALL_GEMINI_DOMAINS_START */" "${source}" | cut -d: -f1)
+    gemini_policy_end=$(grep -Fn "/* EASY_ALL_GEMINI_DOMAINS_END */" "${source}" | cut -d: -f1)
     ((config_start < config_end
         && config_end < rules_start
-        && rules_start < policy_start
-        && policy_start < policy_end
-        && policy_end < rules_end)) \
+        && rules_start < gemini_policy_start
+        && gemini_policy_start < gemini_policy_end
+        && gemini_policy_end < rules_end)) \
         || die "sample-worker.js 模板区块顺序无效"
-    extract_ipv4_only_domain_suffixes "${source}" >/dev/null
+    extract_gemini_domain_suffixes "${source}" >/dev/null
 }
 
 fetch_sample_worker() {
@@ -1321,52 +1338,112 @@ fetch_sample_worker() {
     validate_sample_worker "${destination}"
 }
 
-extract_ipv4_only_domain_suffixes() {
-    local source=$1 json domain normalized compact
-    json=$(awk '
-        $0 == "/* EASY_ALL_IPV4_ONLY_DOMAINS_START */" {
+extract_domain_suffix_policy() {
+    local source=$1 start_marker=$2 end_marker=$3 description=$4
+    local json domain normalized compact
+    json=$(awk -v start_marker="${start_marker}" -v end_marker="${end_marker}" '
+        $0 == start_marker {
             capture = 1
             next
         }
-        $0 == "/* EASY_ALL_IPV4_ONLY_DOMAINS_END */" {
+        $0 == end_marker {
             capture = 0
             exit
         }
         capture == 1 {
             print
         }
-    ' "${source}") || die "无法提取 Worker IPv4-only 域名策略"
+    ' "${source}") || die "无法提取 Worker ${description} 域名策略"
     jq -e '
         type == "array"
         and length > 0
         and all(.[]; type == "string")
         and length == (unique | length)
     ' <<<"${json}" >/dev/null \
-        || die "Worker IPv4-only 域名策略必须是非空且不重复的字符串数组"
+        || die "Worker ${description} 域名策略必须是非空且不重复的字符串数组"
     while IFS= read -r domain; do
         validate_domain "${domain}" \
-            || die "Worker IPv4-only 域名策略包含无效域名：${domain}"
+            || die "Worker ${description} 域名策略包含无效域名：${domain}"
         normalized=$(normalize_domain "${domain}")
         [[ "${normalized}" == "${domain}" ]] \
-            || die "Worker IPv4-only 域名必须使用小写规范格式：${domain}"
+            || die "Worker ${description} 域名必须使用小写规范格式：${domain}"
     done < <(jq -r '.[]' <<<"${json}")
     compact=$(jq -c '.' <<<"${json}") \
-        || die "无法规范化 Worker IPv4-only 域名策略"
+        || die "无法规范化 Worker ${description} 域名策略"
     printf '%s\n' "${compact}"
+}
+
+extract_gemini_domain_suffixes() {
+    extract_domain_suffix_policy "$1" \
+        "/* EASY_ALL_GEMINI_DOMAINS_START */" \
+        "/* EASY_ALL_GEMINI_DOMAINS_END */" \
+        "Gemini"
+}
+
+measure_gemini_ip_family() {
+    local family=$1 flag result attempt
+    local -a timings=()
+    [[ "${family}" == "ipv6" ]] && flag="-6" || flag="-4"
+    for attempt in 1 2 3; do
+        result=$(curl "${flag}" --noproxy '*' --silent --show-error \
+            --output /dev/null --connect-timeout 5 --max-time 10 \
+            --write-out '%{time_total}' 'https://gemini.google.com/' 2>/dev/null) \
+            || continue
+        [[ "${result}" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
+        timings+=("${result}")
+    done
+    ((${#timings[@]} > 0)) || return 1
+    printf '%s\n' "${timings[@]}" | sort -n | awk '
+        { values[NR] = $1 }
+        END { print values[int((NR + 1) / 2)] }
+    '
+}
+
+resolve_gemini_ip_family() {
+    local requested=${GEMINI_IP_FAMILY:-auto} ipv4_time="" ipv6_time=""
+    local ipv4_display ipv6_display
+    case "${requested}" in
+    ipv4 | ipv6)
+        GEMINI_IP_FAMILY_RESOLVED=${requested}
+        ;;
+    auto)
+        ipv4_time=$(measure_gemini_ip_family ipv4 || true)
+        if command -v ip >/dev/null 2>&1 \
+            && ip -6 addr show scope global 2>/dev/null | grep -q 'inet6 ' \
+            && ip -6 route show default 2>/dev/null | grep -q '^default'; then
+            ipv6_time=$(measure_gemini_ip_family ipv6 || true)
+        fi
+        if [[ -z "${ipv4_time}" && -z "${ipv6_time}" ]]; then
+            GEMINI_IP_FAMILY_RESOLVED="ipv4"
+            warn "Gemini IPv4/IPv6 测速均失败，保守选择 IPv4"
+        elif [[ -z "${ipv4_time}" ]]; then
+            GEMINI_IP_FAMILY_RESOLVED="ipv6"
+        elif [[ -z "${ipv6_time}" ]]; then
+            GEMINI_IP_FAMILY_RESOLVED="ipv4"
+        elif awk -v ipv4="${ipv4_time}" -v ipv6="${ipv6_time}" \
+            'BEGIN { exit !(ipv6 < ipv4) }'; then
+            GEMINI_IP_FAMILY_RESOLVED="ipv6"
+        else
+            GEMINI_IP_FAMILY_RESOLVED="ipv4"
+        fi
+        [[ -n "${ipv4_time}" ]] && ipv4_display="${ipv4_time}s" || ipv4_display="不可用"
+        [[ -n "${ipv6_time}" ]] && ipv6_display="${ipv6_time}s" || ipv6_display="不可用"
+        info "Gemini 出口测速：IPv4 ${ipv4_display}，IPv6 ${ipv6_display}；固定使用 ${GEMINI_IP_FAMILY_RESOLVED}"
+        ;;
+    *) die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6" ;;
+    esac
 }
 
 prepare_sample_worker_template() {
     local template
     if [[ -n "${SAMPLE_WORKER_TEMPLATE_FILE:-}" \
         && -s "${SAMPLE_WORKER_TEMPLATE_FILE}" \
-        && -n "${IPV4_ONLY_DOMAIN_SUFFIXES_JSON:-}" ]]; then
+        && -n "${GEMINI_DOMAIN_SUFFIXES_JSON:-}" ]]; then
         return 0
     fi
     template="${RUNTIME_TMP}/sample-worker.js"
     fetch_sample_worker "${template}"
-    IPV4_ONLY_DOMAIN_SUFFIXES_JSON=$(
-        extract_ipv4_only_domain_suffixes "${template}"
-    )
+    GEMINI_DOMAIN_SUFFIXES_JSON=$(extract_gemini_domain_suffixes "${template}")
     SAMPLE_WORKER_TEMPLATE_FILE=${template}
 }
 
@@ -2028,10 +2105,41 @@ renew_certificate() {
     success "证书已续期并重载当前 TLS 服务"
 }
 
+active_gemini_ip_family() {
+    local strategy=""
+    case "${PROTOCOL}" in
+    reality | vless-wss)
+        [[ -s "${XRAY_CONFIG}" ]] || return 1
+        strategy=$(jq -r \
+            '.outbounds[]? | select(.tag == "gemini-family") | .settings.domainStrategy' \
+            "${XRAY_CONFIG}")
+        ;;
+    anytls)
+        [[ -s "${SING_BOX_CONFIG}" ]] || return 1
+        strategy=$(jq -r \
+            '.outbounds[]? | select(.tag == "gemini-family") | .domain_resolver.strategy' \
+            "${SING_BOX_CONFIG}")
+        ;;
+    esac
+    case "${strategy}" in
+    ForceIPv6 | ipv6_only) printf 'ipv6\n' ;;
+    ForceIPv4 | ipv4_only) printf 'ipv4\n' ;;
+    *) return 1 ;;
+    esac
+}
+
 show_status() {
+    local active_family
     require_root
     collect_installed_state
+    active_family=$(active_gemini_ip_family || true)
+    if [[ -z "${active_family}" ]]; then
+        resolve_gemini_ip_family
+        active_family=${GEMINI_IP_FAMILY_RESOLVED}
+    fi
     printf '协议: %s\n' "${PROTOCOL}"
+    printf 'Gemini 出口族: %s（配置: %s）\n' \
+        "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
     case "${PROTOCOL}" in
     reality)
         printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
@@ -2483,6 +2591,7 @@ usage() {
   ANYTLS_DOMAIN=node.example.com  ANYTLS_PASSWORD=...
   VLESS_WSS_DOMAIN=node.example.com  WS_PATH=/随机路径
   SUB_PORT_MODE=443|dynamic
+  GEMINI_IP_FAMILY=auto|ipv4|ipv6  Gemini 出口族；auto 实测后固定选择更快的一侧
   ALLOWED_TOKENS='{"owner":"token1","alice":"token2"}'
   CF_DNS_API_TOKEN=...
   SUBSCRIBE_MODE=auto|worker|link
