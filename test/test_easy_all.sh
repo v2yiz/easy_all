@@ -116,7 +116,7 @@ const checks = {
       'packetEncoding=xudp', '#MY_VLESS_XHTTP'],
     yaml: ['type: vless', 'network: xhttp', 'port: 443', 'xhttp-opts:',
       'udp: true', 'path: /hacxhttp', 'mode: packet-up', 'reuse-settings:',
-      'host: "xhttp.example.com"', 'max-concurrency: "16-32"',
+      'host: "xhttp.example.com"', 'max-connections: "4-8"',
       'h-max-reusable-secs: "1800-3000"',
       'alpn:', 'packet-encoding: xudp']
   }
@@ -670,6 +670,8 @@ EOF
     assert_contains "script contains nginx XHTTP streaming proxy" 'proxy_request_buffering off;' "${script_content}"
     assert_contains "script prevents Cloudflare from caching XHTTP responses" \
         'add_header Cache-Control "no-store" always;' "${script_content}"
+    assert_contains "XHTTP uses a small H2 connection pool to limit head-of-line blocking" \
+        'max-connections: \"4-8\"' "${script_content}"
     assert_not_contains "script removes nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
     assert_contains "script retries Cloudflare rate limits" "408 | 429 | 500 | 502 | 503 | 504" "${script_content}"
     assert_contains "script retries Cloudflare propagation errors" "10007" "${script_content}"

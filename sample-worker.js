@@ -551,7 +551,7 @@ function buildClashVlessXhttpTlsNodeTemplate() {
       path: {path}
       mode: {mode}
       reuse-settings:
-        max-concurrency: "16-32"
+        max-connections: "4-8"
         c-max-reuse-times: "0"
         h-max-reusable-secs: "1800-3000"
         h-keep-alive-period: 0

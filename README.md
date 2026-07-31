@@ -125,7 +125,9 @@ Nginx 会为 XHTTP 响应添加 `Cache-Control: no-store`。如果 Cloudflare �
 输出同时包含 VLESS URI、Mihomo `network: xhttp`/`xhttp-opts` 节点以及 base64
 订阅内容。Mihomo 节点显式启用 XHTTP `reuse-settings`、`alpn: [h2]`、
 `packet-encoding: xudp` 和 `udp: true`；不会额外启用 `smux`，避免与 XHTTP 自带的
-XMUX 叠加。FLClash 使用的 Mihomo 内核需要至少 `v1.19.23`，建议更新到当前稳定版。
+XMUX 叠加。连接池使用 `max-connections: "4-8"`，将浏览器并发分散到少量 H2 主连接，
+避免高丢包线路把大量请求压在单条 TCP 上产生队头阻塞。FLClash 使用的 Mihomo 内核
+需要至少 `v1.19.23`，建议更新到当前稳定版。
 
 现有 `vless-wss` 安装执行 `easy_all update` 时会自动迁移为 `vless-xhttp`，复用原域名、
 UUID、证书和路径，并同步改写 Xray、Nginx 与 Worker。命令行仍接受 `vless-wss`/`wss`

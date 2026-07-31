@@ -285,7 +285,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /mode: packet-up/);
     assert.match(body, /host: "xhttp\.example\.com"/);
     assert.match(body, /reuse-settings:/);
-    assert.match(body, /max-concurrency: "16-32"/);
+    assert.match(body, /max-connections: "4-8"/);
     assert.match(body, /h-max-reusable-secs: "1800-3000"/);
     assert.match(body, /packet-encoding: xudp/);
     assert.match(body, /alpn:\n      - h2/);

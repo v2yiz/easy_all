@@ -1292,7 +1292,7 @@ build_mihomo_node() {
             "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
             "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
-            "      mode: packet-up\n      reuse-settings:\n        max-concurrency: \"16-32\"\n" +
+            "      mode: packet-up\n      reuse-settings:\n        max-connections: \"4-8\"\n" +
             "        c-max-reuse-times: \"0\"\n        h-max-reusable-secs: \"1800-3000\"\n" +
             "        h-keep-alive-period: 0\n    ip-version: ipv4-prefer\n    smux:\n      enabled: false\n"'
         ;;
