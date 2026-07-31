@@ -188,6 +188,41 @@ easy_all 仅在当前命令进程中使用它们，不会保存到状态文件�
 
 ![Cloudflare Worker Token 配置示意图](docs/images/cloudflare-worker-token.svg)
 
+### 4. 为订阅域名添加 Proxied DNS 记录
+
+如果希望使用 `https://sub.example.com/subscribe?...` 而不是 `workers.dev`，并准备通过
+**Worker Route** 绑定域名，必须先在对应 Zone 的 **DNS → Records** 中为该主机名创建
+一条 **Proxied / 橙云** 记录。没有真实源站时可使用 `AAAA` 记录 `100::` 作为占位地址；
+匹配路由的请求会在 Cloudflare 边缘进入 Worker，不会访问该占位地址。
+
+![Cloudflare Worker 域名 DNS 代理解析示意图](docs/images/cloudflare-worker-dns-route.svg)
+
+示例中的 Zone 是 `example.com`，Worker 域名是 `sub.example.com`。DNS 名称只填写
+`sub`，代理状态必须显示 **Proxied**，不能是 **DNS only**。Cloudflare 要求 Route 使用的
+域名或子域名已经存在橙云 DNS 记录，详见
+[Workers Routes 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)。
+
+### 5. 将域名路由到 easy-all Worker
+
+进入 **Workers & Pages → easy-all → Settings → Domains & Routes → Add → Route**，选择
+`example.com` Zone，并填写 `sub.example.com/*`。末尾的 `/*` 会覆盖 `/subscribe` 以及带
+查询参数的订阅 URL；不要把 token 或查询参数写进 Route pattern。
+
+![Cloudflare Worker Route 配置示意图](docs/images/cloudflare-worker-route.svg)
+
+添加成功后可使用：
+
+```text
+https://sub.example.com/subscribe?token=owner-token-123
+https://sub.example.com/subscribe?token=owner-token-123&flag=clash
+```
+
+以上是手工 **Route + Proxied DNS** 方案，不会改变脚本记录的 `workers.dev` 地址，也不
+需要把 Workers Routes 权限加入 `CF_WORKER_API_TOKEN`。如果 Worker 是该主机名唯一的
+源站，也可以在同一菜单选择 **Custom Domain**；Cloudflare 会自动创建 DNS 记录和证书，
+此时不要再重复添加同主机名的 Route。Cloudflare 当前对纯 Worker 源站更推荐 Custom
+Domain，二者选择一种即可。
+
 无人值守更新示例：
 
 ```bash
