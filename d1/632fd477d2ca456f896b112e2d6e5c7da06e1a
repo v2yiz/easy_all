@@ -1,0 +1,23 @@
+README.md
+  s_5c40f6dbd6da1a::t_909f2ad862034a 195-198
+docs/images/cloudflare-worker-dns-route.svg
+  s_5c40f6dbd6da1a::t_5093c61018fd96 3,19,27,29-30,45-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d1632fd477d2ca456f896b112e2d6e5c7da06e1a",
+  "prompts": {},
+  "sessions": {
+    "s_5c40f6dbd6da1a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb6ac-5898-7220-8c73-a05f98de69d3",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
