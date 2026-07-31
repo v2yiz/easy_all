@@ -111,7 +111,9 @@ sudo PROTOCOL=vless-wss \
 
 安装或切换到 VLESS WSS 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后若使用 Cloudflare CDN，请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。
 
-输出同时包含 VLESS URI、Mihomo `network: ws`/`ws-opts` 节点以及 base64 订阅内容。
+输出同时包含 VLESS URI、Mihomo `network: ws`/`ws-opts` 节点以及 base64 订阅内容。Mihomo
+节点默认设置 `udp: false`，避免浏览器把 HTTP/3（QUIC/UDP 443）封装进 WebSocket/TCP
+导致队头阻塞；网页会直接回退到 HTTP/2/TCP。Reality 和 AnyTLS 节点仍保留 UDP 支持。
 
 ## Worker 订阅
 

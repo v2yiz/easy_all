@@ -273,6 +273,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /- name: "NODE_VLESS_WSS"/);
     assert.match(body, /server: wss\.example\.com/);
     assert.match(body, /network: ws/);
+    assert.match(body, /udp: false/);
     assert.match(body, /path: \/randompath/);
     assert.match(body, /Host: wss\.example\.com/);
     assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_WSS"/);

@@ -65,7 +65,8 @@ const NODE_VLESS_WSS_CONFIG = defineNode({
     name: 'NODE_VLESS_WSS',
     fp: 'chrome',
     sni: 'wss.example.com',
-    path: '/randompath'
+    path: '/randompath',
+    udp: false
 });
 
 const DEFAULT_NODE = NODE_REALITY_CONFIG; // 控制默认输出的节点，支持 [NODE_REALITY_CONFIG, NODE_ANYTLS_CONFIG]
@@ -557,7 +558,7 @@ function buildClashVlessWsTlsNodeTemplate() {
     uuid: {uuid}
     network: ws
     tls: true
-    udp: true
+    udp: {udp}
     skip-cert-verify: false
     servername: {sni}
     client-fingerprint: {fp}
@@ -733,6 +734,7 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{fp}/g, cfg.fp)
             .replace(/{path}/g, cfg.path || '/')
             .replace(/{ws_host}/g, cfg.wsHost || cfg.host)
+            .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));
     }
 

@@ -1255,7 +1255,7 @@ build_mihomo_node() {
             --arg name "${NODE_NAME}" --arg server "${VLESS_WSS_DOMAIN}" \
             --arg uuid "${VLESS_UUID}" --arg path "${WS_PATH}" '
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-            "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
+            "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: false\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
             "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n"'
         ;;
@@ -1423,7 +1423,7 @@ write_worker() {
             --arg type vless --arg security tls --arg network ws \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_WSS_DOMAIN}" --arg name "${NODE_NAME}" \
             --arg sni "${VLESS_WSS_DOMAIN}" --arg path "${WS_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,portMode:"443"}')
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,udp:false,portMode:"443"}')
         ;;
     esac
 
