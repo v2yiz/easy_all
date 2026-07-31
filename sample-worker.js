@@ -1,10 +1,10 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS Reality / VLESS WebSocket TLS / AnyTLS 订阅、Clash Meta 配置
+ * 提供 VLESS Reality / VLESS XHTTP TLS / AnyTLS 订阅、Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、WebSocket path 或 AnyTLS 密码
+ * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、XHTTP path 或 AnyTLS 密码
  * 3. DEFAULT_NODE 指向你希望默认输出的节点，支持单节点或节点数组
  */
 // ================= 配置常量 =================
@@ -55,17 +55,18 @@ const NODE_ANYTLS_CONFIG = defineNode({
     insecure: false
 });
 
-// ── VLESS WebSocket TLS 节点 ────────────────────────────────────
-const NODE_VLESS_WSS_CONFIG = defineNode({
+// ── VLESS XHTTP TLS 节点（Cloudflare CDN / packet-up）────────────
+const NODE_VLESS_XHTTP_CONFIG = defineNode({
     type: 'vless',
     security: 'tls',
-    network: 'ws',
+    network: 'xhttp',
     uuid: '00000000-0000-4000-8000-000000000002',
-    host: 'wss.example.com',
-    name: 'NODE_VLESS_WSS',
+    host: 'xhttp.example.com',
+    name: 'NODE_VLESS_XHTTP',
     fp: 'chrome',
-    sni: 'wss.example.com',
+    sni: 'xhttp.example.com',
     path: '/randompath',
+    mode: 'packet-up',
     udp: true
 });
 
@@ -119,9 +120,6 @@ const FAKE_IP_FILTER = BASE_FAKE_IP_FILTER
     .join('\n');
 
 const EMBEDDED_CLASH_RULES = `rules:
-  # WebSocket 节点不承载 QUIC。显式拒绝 UDP/443，避免不支持 UDP 时回落到 DIRECT。
-  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
-
   # ==================== 局域网直连 ====================
   - DOMAIN-SUFFIX,local,DIRECT
   - DOMAIN-SUFFIX,localhost,DIRECT
@@ -533,22 +531,30 @@ function buildClashVlessTlsVisionNodeTemplate() {
 `;
 }
 
-function buildClashVlessWsTlsNodeTemplate() {
+function buildClashVlessXhttpTlsNodeTemplate() {
     return `  - name: {name}
     type: vless
     server: {host}
     port: {port}
     uuid: {uuid}
-    network: ws
+    network: xhttp
     tls: true
     udp: {udp}
     skip-cert-verify: false
     servername: {sni}
     client-fingerprint: {fp}
-    ws-opts:
+    packet-encoding: xudp
+    alpn:
+      - h2
+    xhttp-opts:
+      host: {xhttp_host}
       path: {path}
-      headers:
-        Host: {ws_host}
+      mode: {mode}
+      reuse-settings:
+        max-concurrency: "16-32"
+        c-max-reuse-times: "0"
+        h-max-reusable-secs: "1800-3000"
+        h-keep-alive-period: 0
     ip-version: ipv4-prefer
     smux:
       enabled: false
@@ -632,9 +638,11 @@ function createVlessLink(cfg, port) {
     if (security === 'tls' && network === 'tcp') {
         params.set('flow', 'xtls-rprx-vision');
         params.set('packetEncoding', 'xudp');
-    } else if (security === 'tls' && network === 'ws') {
+    } else if (security === 'tls' && network === 'xhttp') {
+        params.set('alpn', 'h2');
         params.set('path', cfg.path || '/');
-        params.set('host', cfg.wsHost || cfg.host);
+        params.set('mode', cfg.mode || 'packet-up');
+        params.set('packetEncoding', 'xudp');
     } else if (network !== 'tcp') {
         throw new Error(`Unsupported VLESS network: ${network}`);
     }
@@ -701,8 +709,8 @@ function generateClashProxyNode(cfg, port) {
             template = buildClashVlessRealityNodeTemplate();
         } else if (security === 'tls' && network === 'tcp') {
             template = buildClashVlessTlsVisionNodeTemplate();
-        } else if (security === 'tls' && network === 'ws') {
-            template = buildClashVlessWsTlsNodeTemplate();
+        } else if (security === 'tls' && network === 'xhttp') {
+            template = buildClashVlessXhttpTlsNodeTemplate();
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
@@ -716,7 +724,8 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{sid}/g, cfg.sid || '')
             .replace(/{fp}/g, cfg.fp)
             .replace(/{path}/g, cfg.path || '/')
-            .replace(/{ws_host}/g, cfg.wsHost || cfg.host)
+            .replace(/{mode}/g, cfg.mode || 'packet-up')
+            .replace(/{xhttp_host}/g, yamlString(cfg.xhttpHost || cfg.host))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));
     }

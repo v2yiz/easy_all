@@ -6,7 +6,7 @@
 |---|---|---|---|
 | VLESS TCP Reality Vision | Xray | 默认 `443`，可选 `dynamic` | 不要求代理 |
 | AnyTLS | sing-box | 默认 `dynamic`，可选 `443` | 必须始终保持灰云 |
-| VLESS WebSocket TLS（仅推荐移动宽带选择） | Xray + Nginx | 固定 `443` | 安装时灰云，成功后可开橙云 |
+| VLESS XHTTP TLS (`packet-up`) | Xray + Nginx | 固定 `443` | 安装时灰云，成功后可开橙云 |
 
 旧的 `easy_reality.sh`、`easy_anytls.sh` 和 `easy_vless_wss.sh` 已下线，也不提供旧状态迁移。检测到 `/etc/easy_reality`、`/etc/easy_anytls` 或 `/etc/easy_vless_wss` 时，新脚本会停止安装；请先用旧脚本的卸载命令清理。
 
@@ -18,7 +18,7 @@
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
 - 只有 Gemini 及其必要 Google 依赖会由每台 VPS 固定选择单一地址族；`auto` 模式实测 Gemini 的 IPv4/IPv6 后选择更快的一侧，避免 `IPv4 != IPv6` 且不牺牲速度。Claude、OpenAI、MEGA 及其他服务保持服务端默认双栈行为。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
-- VLESS WSS 仅推荐移动宽带用户选择。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 Cloudflare CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
+- VLESS XHTTP 适合源站 IP 被运营商阻断、必须经 Cloudflare CDN 接入的节点。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
 ## 快速安装
 
@@ -31,7 +31,7 @@ wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all
 ```bash
 /root/easy_all.sh install reality
 /root/easy_all.sh install anytls
-/root/easy_all.sh install vless-wss
+/root/easy_all.sh install vless-xhttp
 ```
 
 安装成功后会注册 `/usr/local/bin/easy_all`。
@@ -47,7 +47,7 @@ easy_all update-core
 easy_all renew-cert
 easy_all switch reality
 easy_all switch anytls
-easy_all switch vless-wss
+easy_all switch vless-xhttp
 easy_all uninstall
 ```
 
@@ -100,25 +100,36 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
 
-### VLESS WebSocket TLS
+### VLESS XHTTP TLS
 
-> 该协议仅推荐移动宽带用户选择。
+该模式面向必须经过 Cloudflare CDN 的线路。它使用普通 HTTPS 可代理的 XHTTP
+`packet-up`：上行使用分块 POST、下行使用流式响应，并通过 HTTP/2/XMUX 复用连接，
+避免 WSS 为浏览器大量并发请求频繁建立独立 TLS/WebSocket 连接。
 
 ```bash
-sudo PROTOCOL=vless-wss \
-  VLESS_WSS_DOMAIN=wss.example.com \
+sudo PROTOCOL=vless-xhttp \
+  VLESS_XHTTP_DOMAIN=xhttp.example.com \
+  XHTTP_PATH=/randompath \
   CF_DNS_API_TOKEN=... \
   ./easy_all.sh install
 ```
 
-`WS_PATH` 默认随机生成，也可显式设置为以 `/` 开头的路径。该协议固定走 443，不接受 `SUB_PORT_MODE=dynamic`。
+`XHTTP_PATH` 默认随机生成，也可显式设置为以 `/` 开头的路径。该协议固定走 443，不接受 `SUB_PORT_MODE=dynamic`。
 
-安装或切换到 VLESS WSS 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后若使用 Cloudflare CDN，请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。
+安装或切换到 VLESS XHTTP 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。`packet-up` 不要求在 Cloudflare 后台开启 gRPC 或 WebSockets。
 
-输出同时包含 VLESS URI、Mihomo `network: ws`/`ws-opts` 节点以及 base64 订阅内容。Mihomo
-节点保留 `udp: true`，但规则首部显式 `REJECT` UDP/443，避免浏览器把 HTTP/3
-（QUIC/UDP 443）封装进 WebSocket/TCP，也防止不支持 UDP 时回落到 `DIRECT`；浏览器会
-改用 HTTP/2/TCP。非 443 端口的必要 UDP 仍可通过节点转发。
+Nginx 会为 XHTTP 响应添加 `Cache-Control: no-store`。如果 Cloudflare 上已有会强制缓存
+所有内容的 Cache Rule，请为 `VLESS_XHTTP_DOMAIN/XHTTP_PATH*` 单独增加 Bypass Cache
+规则，避免缓存 XHTTP 下行响应；默认 Cloudflare 缓存策略通常不需要额外修改。
+
+输出同时包含 VLESS URI、Mihomo `network: xhttp`/`xhttp-opts` 节点以及 base64
+订阅内容。Mihomo 节点显式启用 XHTTP `reuse-settings`、`alpn: [h2]`、
+`packet-encoding: xudp` 和 `udp: true`；不会额外启用 `smux`，避免与 XHTTP 自带的
+XMUX 叠加。FLClash 使用的 Mihomo 内核需要至少 `v1.19.23`，建议更新到当前稳定版。
+
+现有 `vless-wss` 安装执行 `easy_all update` 时会自动迁移为 `vless-xhttp`，复用原域名、
+UUID、证书和路径，并同步改写 Xray、Nginx 与 Worker。命令行仍接受 `vless-wss`/`wss`
+作为兼容别名，但新状态只保存 `vless-xhttp`、`VLESS_XHTTP_DOMAIN` 和 `XHTTP_PATH`。
 
 ## Worker 订阅
 
@@ -212,14 +223,14 @@ Cloudflare API Token、DNS Token 不写入状态文件；订阅访问用的 `ALL
 ## 无人值守变量
 
 ```text
-PROTOCOL=reality|anytls|vless-wss
+PROTOCOL=reality|anytls|vless-xhttp
 NODE_NAME=...
 NODE_HOST=...
 REALITY_TARGET=swdist.apple.com:443
 ANYTLS_DOMAIN=...
 ANYTLS_PASSWORD=...
-VLESS_WSS_DOMAIN=...
-WS_PATH=/...
+VLESS_XHTTP_DOMAIN=...
+XHTTP_PATH=/...
 SUB_PORT_MODE=443|dynamic
 REBOOT_SCHEDULE_MODE=default|custom|none
 REBOOT_HOUR=0-23

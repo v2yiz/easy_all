@@ -110,12 +110,15 @@ const checks = {
     yaml: ['type: anytls', 'server: "anytls.example.com"',
       'password: "test-anytls-password"', 'client-fingerprint: "chrome"']
   },
-  'vless-wss': {
-    link: ['vless://00000000-0000-4000-8000-000000000001@wss.example.com:443?',
-      'security=tls', 'type=ws', 'fp=chrome', 'path=%2Fhacxws', 'host=wss.example.com',
-      '#MY_VLESS_WSS'],
-    yaml: ['type: vless', 'network: ws', 'port: 443', 'ws-opts:',
-      'udp: true', 'path: /hacxws', 'Host: wss.example.com']
+  'vless-xhttp': {
+    link: ['vless://00000000-0000-4000-8000-000000000001@xhttp.example.com:443?',
+      'security=tls', 'type=xhttp', 'fp=chrome', 'alpn=h2', 'path=%2Fhacxhttp', 'mode=packet-up',
+      'packetEncoding=xudp', '#MY_VLESS_XHTTP'],
+    yaml: ['type: vless', 'network: xhttp', 'port: 443', 'xhttp-opts:',
+      'udp: true', 'path: /hacxhttp', 'mode: packet-up', 'reuse-settings:',
+      'host: "xhttp.example.com"', 'max-concurrency: "16-32"',
+      'h-max-reusable-secs: "1800-3000"',
+      'alpn:', 'packet-encoding: xudp']
   }
 };
 for (const part of checks[protocol].link) {
@@ -124,8 +127,8 @@ for (const part of checks[protocol].link) {
 for (const part of checks[protocol].yaml) {
   if (!yaml.includes(part)) process.exit(1);
 }
-if (protocol === 'vless-wss' && decoded.includes('flow=xtls-rprx-vision')) process.exit(1);
-if (protocol !== 'vless-wss') {
+if (protocol === 'vless-xhttp' && decoded.includes('flow=xtls-rprx-vision')) process.exit(1);
+if (protocol !== 'vless-xhttp') {
   const port = Number(decoded.match(/@[^:]+:(\d+)/)?.[1]);
   if (!Number.isInteger(port) || port < 10000 || port > 65535) process.exit(1);
 }
@@ -220,25 +223,26 @@ set_protocol_fixture() {
         ANYTLS_DOMAIN="anytls.example.com"
         ANYTLS_PASSWORD="test-anytls-password"
         ;;
-    vless-wss)
-        NODE_NAME="MY_VLESS_WSS"
-        VLESS_WSS_DOMAIN="wss.example.com"
-        WS_PATH="/hacxws"
+    vless-xhttp)
+        NODE_NAME="MY_VLESS_XHTTP"
+        VLESS_XHTTP_DOMAIN="xhttp.example.com"
+        XHTTP_PATH="/hacxhttp"
         SUB_PORT_MODE="443"
         ;;
     esac
 }
 
 test_validators_and_defaults() {
-    assert_success "valid WS path is accepted" validate_ws_path "/hacxws"
-    assert_success "generated WS path is valid" validate_ws_path "$(generate_ws_path)"
-    assert_failure "WS path must start with slash" validate_ws_path "hacxws"
-    assert_failure "WS path rejects query" validate_ws_path "/hacxws?x=1"
+    assert_success "valid XHTTP path is accepted" validate_xhttp_path "/hacxhttp"
+    assert_success "generated XHTTP path is valid" validate_xhttp_path "$(generate_xhttp_path)"
+    assert_failure "XHTTP path must start with slash" validate_xhttp_path "hacxhttp"
+    assert_failure "XHTTP path rejects query" validate_xhttp_path "/hacxhttp?x=1"
     assert_success "Reality target accepts host and port" validate_reality_target "www.cloudflare.com:443"
     assert_failure "Reality target requires port" validate_reality_target "www.cloudflare.com"
     assert_success "Reality protocol is accepted" validate_protocol "reality"
     assert_success "AnyTLS protocol is accepted" validate_protocol "anytls"
-    assert_success "VLESS WSS protocol is accepted" validate_protocol "vless-wss"
+    assert_success "VLESS XHTTP protocol is accepted" validate_protocol "vless-xhttp"
+    assert_failure "legacy WSS is only a CLI alias, not canonical state" validate_protocol "vless-wss"
     assert_failure "unknown protocol is rejected" validate_protocol "trojan"
 
     assert_equal "default Worker name is easy-all" "easy-all" "${DEFAULT_WORKER_NAME}"
@@ -274,7 +278,7 @@ test_validators_and_defaults() {
 
 test_links_and_workers() {
     local protocol link yaml worker sample_rules generated_rules
-    for protocol in reality anytls vless-wss; do
+    for protocol in reality anytls vless-xhttp; do
         set_protocol_fixture "${protocol}"
         link=$(build_node_link)
         yaml=$(build_mihomo_node)
@@ -389,7 +393,7 @@ test_server_egress_family_configs() {
     printf '%s\n' '#!/bin/sh' 'exit 0' >"${SING_BOX_BIN}"
     chmod 0755 "${XRAY_BIN}" "${SING_BOX_BIN}"
 
-    for protocol in reality vless-wss; do
+    for protocol in reality vless-xhttp; do
         set_protocol_fixture "${protocol}"
         XRAY_LOOPBACK_PORT="10085"
         REALITY_PRIVATE_KEY="test-private-key"
@@ -428,6 +432,14 @@ test_server_egress_family_configs() {
                  and .routing.rules[1].outboundTag == "direct"
                  and (.routing.rules[1] | has("domain") | not)' \
                 <<<"${config}"
+        if [[ "${protocol}" == "vless-xhttp" ]]; then
+            assert_success "XHTTP server uses Cloudflare-compatible packet-up transport" \
+                jq -e \
+                    '.inbounds[0].streamSettings.network == "xhttp"
+                     and .inbounds[0].streamSettings.xhttpSettings.mode == "packet-up"
+                     and .inbounds[0].streamSettings.xhttpSettings.path == "/hacxhttp"' \
+                    <<<"${config}"
+        fi
     done
 
     set_protocol_fixture "reality"
@@ -576,7 +588,7 @@ test_worker_only_subscription_branch() {
 }
 
 test_state_and_lifecycle_guards() {
-    set_protocol_fixture "vless-wss"
+    set_protocol_fixture "vless-xhttp"
     XRAY_LOOPBACK_PORT="10085"
     WORKER_NAME="${DEFAULT_WORKER_NAME}"
     WORKER_URL=""
@@ -589,8 +601,11 @@ test_state_and_lifecycle_guards() {
     local content script_content readme_content
     content=$(<"${STATE_FILE}")
     assert_contains "state saves version" "STATE_VERSION=1" "${content}"
-    assert_contains "state saves selected protocol" "PROTOCOL=vless-wss" "${content}"
-    assert_contains "state saves WS path" "WS_PATH=/hacxws" "${content}"
+    assert_contains "state saves selected protocol" "PROTOCOL=vless-xhttp" "${content}"
+    assert_contains "state saves XHTTP domain" "VLESS_XHTTP_DOMAIN=xhttp.example.com" "${content}"
+    assert_contains "state saves XHTTP path" "XHTTP_PATH=/hacxhttp" "${content}"
+    assert_not_contains "state no longer saves legacy WSS domain key" "VLESS_WSS_DOMAIN=" "${content}"
+    assert_not_contains "state no longer saves legacy WS path key" "WS_PATH=" "${content}"
     assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
     assert_contains "state saves the Gemini address-family preference" \
         "GEMINI_IP_FAMILY=ipv4" "${content}"
@@ -601,6 +616,20 @@ test_state_and_lifecycle_guards() {
     assert_success "saved state reloads without readonly variable conflicts" load_state
     assert_equal "reloaded state version matches the schema" \
         "${STATE_SCHEMA_VERSION}" "${STATE_VERSION}"
+
+    cat >"${STATE_FILE}" <<'EOF'
+STATE_VERSION=1
+PROTOCOL=vless-wss
+VLESS_WSS_DOMAIN=legacy.example.com
+WS_PATH=/legacyws
+EOF
+    source_state_file
+    assert_equal "legacy WSS state migrates to canonical XHTTP protocol" \
+        "vless-xhttp" "${PROTOCOL}"
+    assert_equal "legacy WSS domain is retained during XHTTP migration" \
+        "legacy.example.com" "${VLESS_XHTTP_DOMAIN}"
+    assert_equal "legacy WS path is retained during XHTTP migration" \
+        "/legacyws" "${XHTTP_PATH}"
 
     script_content=$(<"${ROOT_DIR}/easy_all.sh")
     assert_not_contains "easy_all does not embed Clash rule contents" \
@@ -629,18 +658,19 @@ test_state_and_lifecycle_guards() {
     assert_contains "script keeps AAAA DNS-only before install or switch" \
         "AAAA 记录，安装或切换前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6" \
         "${script_content}"
-    assert_contains "script switches A and AAAA to proxied together after WSS install" \
+    assert_contains "script switches A and AAAA to proxied together after XHTTP install" \
         "A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云" "${script_content}"
     assert_contains "script renders pre-install Cloudflare notice in red" \
         'alert "安装前请确认 Cloudflare DNS A 记录' "${script_content}"
     assert_contains "script renders post-install SSL notice in red" \
         'alert "Cloudflare SSL/TLS 模式请使用 Full' "${script_content}"
-    assert_contains "script renders post-install WebSockets notice in red" \
-        'alert "请确认 Cloudflare Network 中 WebSockets 已开启。"' "${script_content}"
-    assert_contains "script fixes WSS to 443" "VLESS WSS 不支持 dynamic" "${script_content}"
-    assert_contains "script warns WSS is recommended only for China Mobile broadband" \
-        "仅推荐移动宽带用户选择" "${script_content}"
-    assert_contains "script contains nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
+    assert_contains "script documents no Cloudflare gRPC requirement" \
+        '不需要开启 Cloudflare gRPC 或 WebSockets' "${script_content}"
+    assert_contains "script fixes XHTTP to 443" "VLESS XHTTP 不支持 dynamic" "${script_content}"
+    assert_contains "script contains nginx XHTTP streaming proxy" 'proxy_request_buffering off;' "${script_content}"
+    assert_contains "script prevents Cloudflare from caching XHTTP responses" \
+        'add_header Cache-Control "no-store" always;' "${script_content}"
+    assert_not_contains "script removes nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
     assert_contains "script retries Cloudflare rate limits" "408 | 429 | 500 | 502 | 503 | 504" "${script_content}"
     assert_contains "script retries Cloudflare propagation errors" "10007" "${script_content}"
     assert_contains "script retries concurrent Worker updates" "10035" "${script_content}"
@@ -653,13 +683,15 @@ test_state_and_lifecycle_guards() {
         "同步更新 nftables" "${script_content}"
     assert_contains "update-sub refreshes the server policy before the Worker" \
         "refresh_protocol_runtime_config" "${script_content}"
+    assert_contains "update migrates legacy WSS only after updating Xray" \
+        "先更新 Xray 核心，再迁移到 VLESS XHTTP" "${script_content}"
     assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
     assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
 
     readme_content=$(<"${ROOT_DIR}/README.md")
-    assert_contains "README documents AAAA as DNS-only before WSS install" \
+    assert_contains "README documents AAAA as DNS-only before XHTTP install" \
         "AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6" "${readme_content}"
-    assert_contains "README documents proxying A and AAAA together after WSS install" \
+    assert_contains "README documents proxying A and AAAA together after XHTTP install" \
         "将 A、AAAA 一起切为 Proxied / 橙云" "${readme_content}"
     assert_contains "README documents Worker subscription verification retry policy" \
         "先等待 5 秒，再进行最多 6 次订阅 HTTP 验收" "${readme_content}"
@@ -673,7 +705,7 @@ test_state_and_lifecycle_guards() {
 
 test_acme_installer_arguments() {
     local installer_args=""
-    VLESS_WSS_DOMAIN="wss.example.com"
+    VLESS_XHTTP_DOMAIN="xhttp.example.com"
     ACME_EMAIL="ops@example.com"
 
     curl() {

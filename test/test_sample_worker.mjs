@@ -65,14 +65,12 @@ describe('sample-worker Cloudflare Worker', () => {
       .map(line => line.trim().replace(/^-\s*/, ''))
       .filter(line => /^(DOMAIN|DOMAIN-SUFFIX|DOMAIN-KEYWORD|IP-CIDR|IP-CIDR6|GEOIP|GEOSITE|MATCH),/.test(line));
     const keys = rules.map(rule => rule.split(',').slice(0, 2).join(',').toLowerCase());
-    const quicRejectRule = 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT';
-
     assert.equal(new Set(keys).size, keys.length, 'rules must not contain duplicate match keys');
     assert.equal(rules.at(-1), 'MATCH,PROXY');
-    assert.ok(rulesBlock.includes(quicRejectRule), 'UDP/443 must be rejected before routing');
-    assert.ok(
-      rulesBlock.indexOf(quicRejectRule) <
-      rulesBlock.indexOf('DOMAIN-SUFFIX,local,DIRECT')
+    assert.doesNotMatch(
+      rulesBlock,
+      /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/,
+      'QUIC must not be rejected globally because Reality and AnyTLS support UDP'
     );
     assert.ok(
       rules.indexOf('DOMAIN-SUFFIX,apple-relay.apple.com,PROXY') <
@@ -138,7 +136,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /packetEncoding=xudp/);
     assert.match(body, /#NODE_REALITY$/);
     assert.doesNotMatch(body, /NODE_ANYTLS/);
-    assert.doesNotMatch(body, /NODE_VLESS_WSS/);
+    assert.doesNotMatch(body, /NODE_VLESS_XHTTP/);
     assert.doesNotMatch(body, /trojan/i);
   });
 
@@ -171,17 +169,19 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(links.length, 3);
     assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
     assert.match(links[1], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10055\/\?/);
-    assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000002@wss\.example\.com:443\?/);
+    assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
     assert.match(links[0], /#NODE_REALITY$/);
     assert.match(links[1], /sni=anytls\.example\.com/);
     assert.match(links[1], /insecure=0/);
     assert.match(links[1], /#NODE_ANYTLS$/);
     assert.match(links[2], /security=tls/);
-    assert.match(links[2], /type=ws/);
+    assert.match(links[2], /type=xhttp/);
+    assert.match(links[2], /alpn=h2/);
     assert.match(links[2], /path=%2Frandompath/);
-    assert.match(links[2], /host=wss\.example\.com/);
+    assert.match(links[2], /mode=packet-up/);
+    assert.match(links[2], /packetEncoding=xudp/);
     assert.doesNotMatch(links[2], /flow=xtls-rprx-vision/);
-    assert.match(links[2], /#NODE_VLESS_WSS$/);
+    assert.match(links[2], /#NODE_VLESS_XHTTP$/);
   });
 
   it('returns Clash YAML for the default node with normalized download filename', async () => {
@@ -208,13 +208,13 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN-SUFFIX,apple-relay\.fastly-edge\.com,PROXY/);
     assert.match(body, /IP-CIDR6,2001:b28:f23d::\/48,PROXY,no-resolve/);
     assert.match(body, /GEOIP,CN,DIRECT,no-resolve/);
-    assert.match(body, /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/);
+    assert.doesNotMatch(body, /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/);
     assert.ok(
       body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
       body.indexOf('GEOSITE,geolocation-!cn,PROXY')
     );
     assert.doesNotMatch(body, /NODE_ANYTLS/);
-    assert.doesNotMatch(body, /NODE_VLESS_WSS/);
+    assert.doesNotMatch(body, /NODE_VLESS_XHTTP/);
     assert.doesNotMatch(body, /trojan/i);
   });
 
@@ -277,18 +277,25 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /type: anytls/);
     assert.match(body, /server: "anytls\.example\.com"/);
     assert.match(body, /port: 10055/);
-    assert.match(body, /- name: "NODE_VLESS_WSS"/);
-    assert.match(body, /server: wss\.example\.com/);
-    assert.match(body, /network: ws/);
+    assert.match(body, /- name: "NODE_VLESS_XHTTP"/);
+    assert.match(body, /server: xhttp\.example\.com/);
+    assert.match(body, /network: xhttp/);
     assert.match(body, /udp: true/);
     assert.match(body, /path: \/randompath/);
-    assert.match(body, /Host: wss\.example\.com/);
-    assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_WSS"/);
+    assert.match(body, /mode: packet-up/);
+    assert.match(body, /host: "xhttp\.example\.com"/);
+    assert.match(body, /reuse-settings:/);
+    assert.match(body, /max-concurrency: "16-32"/);
+    assert.match(body, /h-max-reusable-secs: "1800-3000"/);
+    assert.match(body, /packet-encoding: xudp/);
+    assert.match(body, /alpn:\n      - h2/);
+    assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_XHTTP"/);
 
-    const wsNode = body.slice(body.indexOf('- name: "NODE_VLESS_WSS"'));
-    assert.match(wsNode, /network: ws/);
-    assert.match(wsNode, /ws-opts:/);
-    assert.doesNotMatch(wsNode, /flow: xtls-rprx-vision/);
+    const xhttpNode = body.slice(body.indexOf('- name: "NODE_VLESS_XHTTP"'));
+    assert.match(xhttpNode, /network: xhttp/);
+    assert.match(xhttpNode, /xhttp-opts:/);
+    assert.match(xhttpNode, /smux:\n      enabled: false/);
+    assert.doesNotMatch(xhttpNode, /flow: xtls-rprx-vision/);
   });
 
   it('quotes malicious VLESS names without injecting YAML list entries', async () => {

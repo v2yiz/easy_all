@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Unified installer for Reality, AnyTLS, and VLESS WebSocket TLS.
+# Unified installer for Reality, AnyTLS, and VLESS XHTTP TLS.
 
 set -Eeuo pipefail
 umask 077
@@ -48,7 +48,7 @@ readonly DEFAULT_REALITY_PORT_MODE="443"
 readonly DEFAULT_ANYTLS_PORT_MODE="dynamic"
 readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
 readonly DEFAULT_ANYTLS_NODE_NAME="MY_ANYTLS"
-readonly DEFAULT_WSS_NODE_NAME="MY_VLESS_WSS"
+readonly DEFAULT_XHTTP_NODE_NAME="MY_VLESS_XHTTP"
 readonly DEFAULT_WORKER_NAME="easy-all"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/sample-worker.js"
@@ -226,7 +226,7 @@ ensure_allowed_tokens() {
     ALLOWED_TOKENS=${normalized}
 }
 
-validate_ws_path() {
+validate_xhttp_path() {
     local path=$1
     [[ ${#path} -ge 2 && ${#path} -le 96 ]] || return 1
     [[ "${path}" == /* ]] || return 1
@@ -234,8 +234,8 @@ validate_ws_path() {
     [[ "${path}" =~ ^/[A-Za-z0-9._~:@%+-]+$ ]]
 }
 
-generate_ws_path() {
-    printf '/%sws' "$(openssl rand -hex 8)"
+generate_xhttp_path() {
+    printf '/%sxhttp' "$(openssl rand -hex 8)"
 }
 
 generate_secret() {
@@ -459,7 +459,7 @@ print_dns_proxy_preinstall_notice() {
     alert "安装前请确认 Cloudflare DNS A 记录为 DNS only / 灰云，不要开启代理。"
     alert "域名 A 记录必须直接指向当前 VPS 公网 IPv4；脚本会强制校验。"
     alert "如果配置了 AAAA 记录，安装成功前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
-    if [[ "${PROTOCOL}" == "vless-wss" ]]; then
+    if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
         alert "安装完成并验证成功后，使用 Cloudflare CDN 时再把 A、AAAA 记录一起切回 Proxied / 橙云。"
     else
         alert "AnyTLS 不能通过普通 Cloudflare CDN 代理，安装完成后也必须保持 DNS only / 灰云。"
@@ -467,19 +467,24 @@ print_dns_proxy_preinstall_notice() {
 }
 
 print_dns_proxy_postinstall_notice() {
-    success "VLESS WebSocket TLS 安装和本机验证已完成"
+    success "VLESS XHTTP TLS 安装和本机验证已完成"
     alert "现在可以回 Cloudflare；使用 CDN 时请把 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
     alert "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
-    alert "请确认 Cloudflare Network 中 WebSockets 已开启。"
+    alert "XHTTP 使用 packet-up，不需要开启 Cloudflare gRPC 或 WebSockets。"
 }
 
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 状态文件不存在：${STATE_FILE}"
-    unset STATE_VERSION
+    unset STATE_VERSION VLESS_XHTTP_DOMAIN XHTTP_PATH VLESS_WSS_DOMAIN WS_PATH
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
+    # Migrate legacy WSS state in place while preserving domain, UUID and path.
+    [[ "${PROTOCOL:-}" != "vless-wss" ]] || PROTOCOL="vless-xhttp"
+    VLESS_XHTTP_DOMAIN=${VLESS_XHTTP_DOMAIN:-${VLESS_WSS_DOMAIN:-}}
+    XHTTP_PATH=${XHTTP_PATH:-${WS_PATH:-}}
+    unset VLESS_WSS_DOMAIN WS_PATH
 }
 
 load_state() {
@@ -487,7 +492,7 @@ load_state() {
     local -a variables=(
         PROTOCOL NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
-        VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT
+        VLESS_XHTTP_DOMAIN XHTTP_PATH VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT
         ANYTLS_DOMAIN ANYTLS_PASSWORD SUB_PORT_MODE ALLOWED_TOKENS
         WORKER_NAME WORKER_URL CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
@@ -508,6 +513,9 @@ load_state() {
         unset "${env_name}"
     done
     XRAY_LOOPBACK_PORT=${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}
+    VLESS_XHTTP_DOMAIN=${VLESS_XHTTP_DOMAIN:-${VLESS_WSS_DOMAIN:-}}
+    XHTTP_PATH=${XHTTP_PATH:-${WS_PATH:-}}
+    unset VLESS_WSS_DOMAIN WS_PATH
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
@@ -533,8 +541,8 @@ save_state() {
         printf 'REALITY_PRIVATE_KEY=%q\n' "${REALITY_PRIVATE_KEY:-}"
         printf 'REALITY_PUBLIC_KEY=%q\n' "${REALITY_PUBLIC_KEY:-}"
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
-        printf 'VLESS_WSS_DOMAIN=%q\n' "${VLESS_WSS_DOMAIN:-}"
-        printf 'WS_PATH=%q\n' "${WS_PATH:-}"
+        printf 'VLESS_XHTTP_DOMAIN=%q\n' "${VLESS_XHTTP_DOMAIN:-}"
+        printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH:-}"
         printf 'XRAY_LOOPBACK_PORT=%q\n' "${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}"
         printf 'ANYTLS_DOMAIN=%q\n' "${ANYTLS_DOMAIN:-}"
         printf 'ANYTLS_PASSWORD=%q\n' "${ANYTLS_PASSWORD:-}"
@@ -553,7 +561,7 @@ save_state() {
 }
 
 validate_protocol() {
-    [[ "$1" == "reality" || "$1" == "anytls" || "$1" == "vless-wss" ]]
+    [[ "$1" == "reality" || "$1" == "anytls" || "$1" == "vless-xhttp" ]]
 }
 
 choose_protocol() {
@@ -562,18 +570,18 @@ choose_protocol() {
         printf '请选择协议：\n'
         printf '  1. VLESS Reality Vision\n'
         printf '  2. AnyTLS\n'
-        printf '  3. VLESS WebSocket TLS（仅推荐移动宽带选择）\n'
+        printf '  3. VLESS XHTTP TLS（支持 Cloudflare CDN）\n'
         read -r -p "请选择 [1]: " requested
     fi
     requested=${requested:-reality}
     case "${requested}" in
     1 | reality) PROTOCOL="reality" ;;
     2 | anytls) PROTOCOL="anytls" ;;
-    3 | vless-wss | wss) PROTOCOL="vless-wss" ;;
+    3 | vless-xhttp | xhttp | vless-wss | wss) PROTOCOL="vless-xhttp" ;;
     *) die "不支持的协议：${requested}" ;;
     esac
-    if [[ "${PROTOCOL}" == "vless-wss" ]]; then
-        warn "VLESS WebSocket TLS 仅推荐移动宽带用户选择。"
+    if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
+        info "VLESS XHTTP TLS 使用 Cloudflare 兼容的 packet-up 模式。"
     fi
 }
 
@@ -581,7 +589,7 @@ protocol_default_node_name() {
     case "${PROTOCOL}" in
     reality) printf '%s' "${DEFAULT_REALITY_NODE_NAME}" ;;
     anytls) printf '%s' "${DEFAULT_ANYTLS_NODE_NAME}" ;;
-    vless-wss) printf '%s' "${DEFAULT_WSS_NODE_NAME}" ;;
+    vless-xhttp) printf '%s' "${DEFAULT_XHTTP_NODE_NAME}" ;;
     esac
 }
 
@@ -616,12 +624,13 @@ collect_install_inputs() {
         ((${#ANYTLS_PASSWORD} >= 16)) || die "ANYTLS_PASSWORD 至少需要 16 个字符"
         SUB_PORT_MODE=${SUB_PORT_MODE:-${DEFAULT_ANYTLS_PORT_MODE}}
         ;;
-    vless-wss)
-        VLESS_WSS_DOMAIN=${VLESS_WSS_DOMAIN:-$(prompt_value "VLESS WSS 域名（安装前必须灰云）" "")}
-        VLESS_WSS_DOMAIN=$(normalize_domain "${VLESS_WSS_DOMAIN}")
-        validate_domain "${VLESS_WSS_DOMAIN}" || die "VLESS WSS 域名无效：${VLESS_WSS_DOMAIN}"
-        WS_PATH=${WS_PATH:-$(generate_ws_path)}
-        validate_ws_path "${WS_PATH}" || die "WS_PATH 无效：${WS_PATH}"
+    vless-xhttp)
+        VLESS_XHTTP_DOMAIN=${VLESS_XHTTP_DOMAIN:-${VLESS_WSS_DOMAIN:-$(prompt_value "VLESS XHTTP 域名（安装前必须灰云）" "")}}
+        VLESS_XHTTP_DOMAIN=$(normalize_domain "${VLESS_XHTTP_DOMAIN}")
+        validate_domain "${VLESS_XHTTP_DOMAIN}" || die "VLESS XHTTP 域名无效：${VLESS_XHTTP_DOMAIN}"
+        XHTTP_PATH=${XHTTP_PATH:-${WS_PATH:-$(generate_xhttp_path)}}
+        validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
+        unset VLESS_WSS_DOMAIN WS_PATH
         XRAY_LOOPBACK_PORT=${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}
         [[ "${XRAY_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
             && ((XRAY_LOOPBACK_PORT >= 1024 && XRAY_LOOPBACK_PORT <= 65535)) \
@@ -631,8 +640,8 @@ collect_install_inputs() {
     esac
     [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
-    [[ "${PROTOCOL}" != "vless-wss" || "${SUB_PORT_MODE}" == "443" ]] \
-        || die "VLESS WSS 不支持 dynamic 端口"
+    [[ "${PROTOCOL}" != "vless-xhttp" || "${SUB_PORT_MODE}" == "443" ]] \
+        || die "VLESS XHTTP 不支持 dynamic 端口"
     ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     validate_worker_name "${WORKER_NAME}" || die "Worker 名称无效：${WORKER_NAME}"
@@ -696,7 +705,7 @@ configure_nftables() {
     detect_ssh_ports
     ssh_ports=${SSH_PORTS}
     extra_port=""
-    [[ "${PROTOCOL}" == "vless-wss" ]] && extra_port=", 80"
+    [[ "${PROTOCOL}" == "vless-xhttp" ]] && extra_port=", 80"
     install -d -m 0700 "${BACKUP_DIR}"
     if [[ ! -e "${BACKUP_DIR}/pre-install-nftables.conf" \
         && ! -e "${BACKUP_DIR}/pre-install-nftables.missing" ]]; then
@@ -759,7 +768,7 @@ install_acme() {
     if [[ -x "${ACME_BIN}" ]]; then
         return 0
     fi
-    local cert_domain=${ANYTLS_DOMAIN:-${VLESS_WSS_DOMAIN:-example.com}}
+    local cert_domain=${ANYTLS_DOMAIN:-${VLESS_XHTTP_DOMAIN:-example.com}}
     local account_email=${ACME_EMAIL:-admin@${cert_domain}}
     local installer="${RUNTIME_TMP}/get-acme.sh"
     curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" || die "下载 acme.sh 安装器失败"
@@ -782,7 +791,7 @@ issue_certificate() {
     local cert_domain
     case "${PROTOCOL}" in
     anytls) cert_domain=${ANYTLS_DOMAIN} ;;
-    vless-wss) cert_domain=${VLESS_WSS_DOMAIN} ;;
+    vless-xhttp) cert_domain=${VLESS_XHTTP_DOMAIN} ;;
     *) die "Reality 不需要 TLS 证书" ;;
     esac
     install_acme
@@ -932,18 +941,18 @@ write_xray_config() {
               }
             }' >"${RUNTIME_TMP}/xray-config.json"
         ;;
-    vless-wss)
+    vless-xhttp)
         jq -n \
             --argjson port "${XRAY_LOOPBACK_PORT}" \
             --arg uuid "${VLESS_UUID}" \
             --arg node_name "${NODE_NAME}" \
-            --arg path "${WS_PATH}" \
+            --arg path "${XHTTP_PATH}" \
             --arg gemini_domain_strategy "${gemini_domain_strategy}" \
             --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
-                tag: "vless-ws-in",
+                tag: "vless-xhttp-in",
                 listen: "127.0.0.1",
                 port: $port,
                 protocol: "vless",
@@ -952,8 +961,11 @@ write_xray_config() {
                   decryption: "none"
                 },
                 streamSettings: {
-                  network: "ws",
-                  wsSettings: {path: $path}
+                  network: "xhttp",
+                  xhttpSettings: {
+                    path: $path,
+                    mode: "packet-up"
+                  }
                 },
                 sniffing: {
                   enabled: true,
@@ -1174,14 +1186,14 @@ write_nginx_config() {
 server {
     listen 80;
     listen [::]:80;
-    server_name ${VLESS_WSS_DOMAIN};
+    server_name ${VLESS_XHTTP_DOMAIN};
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name ${VLESS_WSS_DOMAIN};
+    server_name ${VLESS_XHTTP_DOMAIN};
 
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -1191,16 +1203,21 @@ server {
     root ${WEB_ROOT};
     index index.html;
 
-    location = ${WS_PATH} {
+    location ^~ ${XHTTP_PATH} {
         proxy_redirect off;
         proxy_pass http://127.0.0.1:${XRAY_LOOPBACK_PORT};
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        client_max_body_size 0;
+        add_header Cache-Control "no-store" always;
+        access_log off;
     }
 
     location / {
@@ -1218,12 +1235,12 @@ uri_encode() {
     jq -nr --arg v "$1" '$v|@uri'
 }
 
-build_vless_wss_link() {
+build_vless_xhttp_link() {
     local path
-    path=$(uri_encode "${WS_PATH}")
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&path=%s&host=%s#%s' \
-        "${VLESS_UUID}" "${VLESS_WSS_DOMAIN}" "${VLESS_WSS_DOMAIN}" \
-        "${path}" "${VLESS_WSS_DOMAIN}" "$(uri_encode "${NODE_NAME}")"
+    path=$(uri_encode "${XHTTP_PATH}")
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&path=%s&mode=packet-up&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${VLESS_XHTTP_DOMAIN}" "${VLESS_XHTTP_DOMAIN}" \
+        "${path}" "$(uri_encode "${NODE_NAME}")"
 }
 
 build_reality_link() {
@@ -1243,7 +1260,7 @@ build_node_link() {
     case "${PROTOCOL}" in
     reality) build_reality_link ;;
     anytls) build_anytls_link ;;
-    vless-wss) build_vless_wss_link ;;
+    vless-xhttp) build_vless_xhttp_link ;;
     esac
 }
 
@@ -1267,14 +1284,17 @@ build_mihomo_node() {
             "    password: \($password|@json)\n    udp: true\n    sni: \($server|@json)\n" +
             "    client-fingerprint: chrome\n    skip-cert-verify: false\n"'
         ;;
-    vless-wss)
+    vless-xhttp)
         jq -nr \
-            --arg name "${NODE_NAME}" --arg server "${VLESS_WSS_DOMAIN}" \
-            --arg uuid "${VLESS_UUID}" --arg path "${WS_PATH}" '
+            --arg name "${NODE_NAME}" --arg server "${VLESS_XHTTP_DOMAIN}" \
+            --arg uuid "${VLESS_UUID}" --arg path "${XHTTP_PATH}" '
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-            "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
+            "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n"'
+            "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
+            "      mode: packet-up\n      reuse-settings:\n        max-concurrency: \"16-32\"\n" +
+            "        c-max-reuse-times: \"0\"\n        h-max-reusable-secs: \"1800-3000\"\n" +
+            "        h-keep-alive-period: 0\n    ip-version: ipv4-prefer\n    smux:\n      enabled: false\n"'
         ;;
     esac
 }
@@ -1495,12 +1515,12 @@ write_worker() {
             --arg port_mode "${SUB_PORT_MODE}" --arg fp chrome \
             '{type:$type,host:$host,name:$name,password:$password,sni:$sni,fp:$fp,udp:true,insecure:false,portMode:$port_mode}')
         ;;
-    vless-wss)
+    vless-xhttp)
         config_json=$(jq -cn \
-            --arg type vless --arg security tls --arg network ws \
-            --arg uuid "${VLESS_UUID}" --arg host "${VLESS_WSS_DOMAIN}" --arg name "${NODE_NAME}" \
-            --arg sni "${VLESS_WSS_DOMAIN}" --arg path "${WS_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,udp:true,portMode:"443"}')
+            --arg type vless --arg security tls --arg network xhttp \
+            --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" --arg name "${NODE_NAME}" \
+            --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"packet-up",udp:true,portMode:"443"}')
         ;;
     esac
 
@@ -1871,7 +1891,7 @@ snapshot_subscription_update() {
     install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
     case "${PROTOCOL}" in
     anytls) runtime_config=${SING_BOX_CONFIG} ;;
-    reality | vless-wss) runtime_config=${XRAY_CONFIG} ;;
+    reality | vless-xhttp) runtime_config=${XRAY_CONFIG} ;;
     esac
     if [[ -f "${runtime_config}" ]]; then
         install -m 0600 "${runtime_config}" \
@@ -1886,6 +1906,11 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null \
             "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js.missing"
+    fi
+    if [[ -f "${NGINX_CONFIG}" ]]; then
+        install -m 0644 "${NGINX_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/nginx.conf"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/nginx.conf.missing"
     fi
     if [[ -f "${NFT_CONFIG}" ]]; then
         install -m 0644 "${NFT_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/nftables.conf"
@@ -1915,7 +1940,7 @@ rollback_subscription_update() {
         runtime_config=${SING_BOX_CONFIG}
         service=${SING_BOX_SERVICE}
         ;;
-    reality | vless-wss)
+    reality | vless-xhttp)
         runtime_config=${XRAY_CONFIG}
         service=${XRAY_SERVICE}
         ;;
@@ -1933,6 +1958,14 @@ rollback_subscription_update() {
             "${WORKER_FILE}"
     else
         rm -f -- "${WORKER_FILE}"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" ]]; then
+        install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" "${NGINX_CONFIG}"
+        systemctl reload nginx >/dev/null 2>&1 \
+            || systemctl restart nginx >/dev/null 2>&1 \
+            || warn "恢复订阅更新前 Nginx 配置失败"
+    else
+        rm -f -- "${NGINX_CONFIG}"
     fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nftables.conf" ]]; then
         install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/nftables.conf" "${NFT_CONFIG}"
@@ -1962,8 +1995,8 @@ update_subscription() {
     SUB_PORT_MODE=${requested_port_mode:-${SUB_PORT_MODE:-${stored_port_mode}}}
     [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
-    [[ "${PROTOCOL}" != "vless-wss" || "${SUB_PORT_MODE}" == "443" ]] \
-        || die "VLESS WSS 不支持 dynamic 端口"
+    [[ "${PROTOCOL}" != "vless-xhttp" || "${SUB_PORT_MODE}" == "443" ]] \
+        || die "VLESS XHTTP 不支持 dynamic 端口"
     prepare_sample_worker_template
     snapshot_subscription_update
     if [[ "${SUB_PORT_MODE}" != "${stored_port_mode}" ]]; then
@@ -1989,8 +2022,16 @@ update_subscription() {
 }
 
 update_easy_all() {
+    local migrate_legacy_wss=0
     require_root
+    if [[ -f "${STATE_FILE}" ]] && grep -Eq '^PROTOCOL=vless-wss$' "${STATE_FILE}"; then
+        migrate_legacy_wss=1
+    fi
     register_easy_all_command
+    if [[ "${migrate_legacy_wss}" == "1" ]]; then
+        info "检测到旧 VLESS WSS 状态；先更新 Xray 核心，再迁移到 VLESS XHTTP"
+        update_current_core
+    fi
     update_subscription
 }
 
@@ -2015,9 +2056,9 @@ collect_installed_state() {
         [[ -n "${ANYTLS_DOMAIN:-}" && -n "${ANYTLS_PASSWORD:-}" ]] \
             || die "AnyTLS 状态不完整"
         ;;
-    vless-wss)
-        [[ -n "${VLESS_WSS_DOMAIN:-}" && -n "${VLESS_UUID:-}" && -n "${WS_PATH:-}" ]] \
-            || die "VLESS WSS 状态不完整"
+    vless-xhttp)
+        [[ -n "${VLESS_XHTTP_DOMAIN:-}" && -n "${VLESS_UUID:-}" && -n "${XHTTP_PATH:-}" ]] \
+            || die "VLESS XHTTP 状态不完整"
         ;;
     esac
     ensure_allowed_tokens
@@ -2033,7 +2074,7 @@ refresh_protocol_runtime_config() {
         config_path=${SING_BOX_CONFIG}
         service=${SING_BOX_SERVICE}
         ;;
-    reality | vless-wss)
+    reality | vless-xhttp)
         config_path=${XRAY_CONFIG}
         service=${XRAY_SERVICE}
         ;;
@@ -2047,6 +2088,7 @@ refresh_protocol_runtime_config() {
             write_sing_box_config
         else
             write_xray_config
+            [[ "${PROTOCOL}" != "vless-xhttp" ]] || write_nginx_config
         fi
         systemctl restart "${service}"
         validate_protocol_runtime
@@ -2098,7 +2140,7 @@ renew_certificate() {
     local cert_domain
     [[ "${PROTOCOL}" == "anytls" ]] \
         && cert_domain=${ANYTLS_DOMAIN} \
-        || cert_domain=${VLESS_WSS_DOMAIN}
+        || cert_domain=${VLESS_XHTTP_DOMAIN}
     "${ACME_BIN}" --renew -d "${cert_domain}" --ecc --force \
         || die "证书续期失败"
     "${CERT_RELOAD_HOOK}" || true
@@ -2108,7 +2150,7 @@ renew_certificate() {
 active_gemini_ip_family() {
     local strategy=""
     case "${PROTOCOL}" in
-    reality | vless-wss)
+    reality | vless-xhttp)
         [[ -s "${XRAY_CONFIG}" ]] || return 1
         strategy=$(jq -r \
             '.outbounds[]? | select(.tag == "gemini-family") | .settings.domainStrategy' \
@@ -2147,8 +2189,8 @@ show_status() {
     anytls)
         printf '域名: %s\n' "${ANYTLS_DOMAIN}"
         ;;
-    vless-wss)
-        printf '域名: %s\nWS Path: %s\n' "${VLESS_WSS_DOMAIN}" "${WS_PATH}"
+    vless-xhttp)
+        printf '域名: %s\nXHTTP Path: %s\n' "${VLESS_XHTTP_DOMAIN}" "${XHTTP_PATH}"
         ;;
     esac
     printf '核心服务: '
@@ -2159,7 +2201,7 @@ show_status() {
         systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
             && printf 'active\n' || printf 'inactive\n'
     fi
-    if [[ "${PROTOCOL}" == "vless-wss" ]]; then
+    if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
         printf 'Nginx: '
         systemctl is-active --quiet nginx 2>/dev/null && printf 'active\n' || printf 'inactive\n'
     fi
@@ -2186,7 +2228,7 @@ register_easy_all_command() {
 stop_protocol_services() {
     systemctl disable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
     systemctl disable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
-    if [[ "${PROTOCOL:-}" == "vless-wss" || -f "${NGINX_CONFIG}" ]]; then
+    if [[ "${PROTOCOL:-}" == "vless-xhttp" || -f "${NGINX_CONFIG}" ]]; then
         systemctl disable --now nginx >/dev/null 2>&1 || true
     fi
 }
@@ -2253,8 +2295,8 @@ uninstall_all() {
     restore_preinstall_nftables
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${ANYTLS_DOMAIN:-}"
-    if [[ "${VLESS_WSS_DOMAIN:-}" != "${ANYTLS_DOMAIN:-}" ]]; then
-        remove_managed_acme_domain "${VLESS_WSS_DOMAIN:-}"
+    if [[ "${VLESS_XHTTP_DOMAIN:-}" != "${ANYTLS_DOMAIN:-}" ]]; then
+        remove_managed_acme_domain "${VLESS_XHTTP_DOMAIN:-}"
     fi
     purge_owned_acme_if_unused
     rm -f -- "${XRAY_SERVICE_FILE}" "${SING_BOX_SERVICE_FILE}" \
@@ -2285,8 +2327,8 @@ rollback_fresh_install() {
         crontab -r >/dev/null 2>&1 || true
     fi
     remove_managed_acme_domain "${ANYTLS_DOMAIN:-}"
-    if [[ "${VLESS_WSS_DOMAIN:-}" != "${ANYTLS_DOMAIN:-}" ]]; then
-        remove_managed_acme_domain "${VLESS_WSS_DOMAIN:-}"
+    if [[ "${VLESS_XHTTP_DOMAIN:-}" != "${ANYTLS_DOMAIN:-}" ]]; then
+        remove_managed_acme_domain "${VLESS_XHTTP_DOMAIN:-}"
     fi
     purge_owned_acme_if_unused
     rm -f -- "${XRAY_SERVICE_FILE}" "${SING_BOX_SERVICE_FILE}" \
@@ -2301,7 +2343,7 @@ protocol_preflight() {
     local domain public_ip
     [[ "${PROTOCOL}" == "anytls" ]] \
         && domain=${ANYTLS_DOMAIN} \
-        || domain=${VLESS_WSS_DOMAIN}
+        || domain=${VLESS_XHTTP_DOMAIN}
     if [[ "${PROTOCOL}" == "anytls" ]]; then
         alert "${domain} 的 Cloudflare A 记录必须始终保持 DNS only / 灰云。"
         alert "如果配置了 AAAA 记录，也必须保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
@@ -2317,7 +2359,7 @@ prepare_protocol_assets() {
     case "${PROTOCOL}" in
     reality) download_xray ;;
     anytls) issue_certificate; download_sing_box ;;
-    vless-wss) issue_certificate; download_xray ;;
+    vless-xhttp) issue_certificate; download_xray ;;
     esac
 }
 
@@ -2331,7 +2373,7 @@ install_protocol_runtime() {
         write_sing_box_config
         install_sing_box_service
         ;;
-    vless-wss)
+    vless-xhttp)
         write_xray_config
         install_xray_service
         write_nginx_config
@@ -2347,7 +2389,7 @@ validate_protocol_runtime() {
             anytls)
                 systemctl is-active --quiet "${SING_BOX_SERVICE}" && return 0
                 ;;
-            vless-wss)
+            vless-xhttp)
                 systemctl is-active --quiet "${XRAY_SERVICE}" \
                     && systemctl is-active --quiet nginx && return 0
                 ;;
@@ -2373,7 +2415,7 @@ cleanup_obsolete_protocol_artifacts() {
         rm -rf -- "${SING_BOX_DIR}" "${CERT_DIR}" "${WEB_ROOT}"
         rm -f -- "${SING_BOX_SERVICE_FILE}" "${NGINX_CONFIG}"
         ;;
-    vless-wss)
+    vless-xhttp)
         rm -rf -- "${SING_BOX_DIR}"
         rm -f -- "${SING_BOX_SERVICE_FILE}"
         ;;
@@ -2417,7 +2459,7 @@ install_all() {
     configure_subscription
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
-    [[ "${PROTOCOL}" != "vless-wss" ]] || print_dns_proxy_postinstall_notice
+    [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice
     success "easy_all ${PROTOCOL} 安装完成"
 }
 
@@ -2458,7 +2500,7 @@ rollback_protocol_switch() {
     fi
     case "${PROTOCOL:-}" in
     anytls) failed_tls_domain=${ANYTLS_DOMAIN:-} ;;
-    vless-wss) failed_tls_domain=${VLESS_WSS_DOMAIN:-} ;;
+    vless-xhttp) failed_tls_domain=${VLESS_XHTTP_DOMAIN:-} ;;
     esac
     warn "协议切换失败，正在恢复原协议"
     stop_protocol_services
@@ -2473,7 +2515,7 @@ rollback_protocol_switch() {
     source_state_file
     case "${PROTOCOL:-}" in
     anytls) restored_tls_domain=${ANYTLS_DOMAIN:-} ;;
-    vless-wss) restored_tls_domain=${VLESS_WSS_DOMAIN:-} ;;
+    vless-xhttp) restored_tls_domain=${VLESS_XHTTP_DOMAIN:-} ;;
     esac
     if [[ -n "${failed_tls_domain}" && "${failed_tls_domain}" != "${restored_tls_domain}" ]]; then
         remove_managed_acme_domain "${failed_tls_domain}"
@@ -2481,7 +2523,7 @@ rollback_protocol_switch() {
     case "${PROTOCOL:-}" in
     anytls) systemctl enable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true ;;
     reality) systemctl enable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true ;;
-    vless-wss)
+    vless-xhttp)
         systemctl enable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
         systemctl enable --now nginx >/dev/null 2>&1 || true
         ;;
@@ -2496,8 +2538,8 @@ reset_protocol_fields() {
     REALITY_PRIVATE_KEY=""
     REALITY_PUBLIC_KEY=""
     REALITY_SHORT_ID=""
-    VLESS_WSS_DOMAIN=""
-    WS_PATH=""
+    VLESS_XHTTP_DOMAIN=""
+    XHTTP_PATH=""
     ANYTLS_DOMAIN=""
     ANYTLS_PASSWORD=""
     SUB_PORT_MODE=""
@@ -2505,11 +2547,12 @@ reset_protocol_fields() {
 
 switch_protocol() {
     local requested=${1:-${PROTOCOL:-}}
-    local old_protocol old_anytls_domain old_wss_domain new_tls_domain=""
+    local old_protocol old_anytls_domain old_xhttp_domain new_tls_domain=""
     local requested_node_name=${NODE_NAME:-} requested_node_host=${NODE_HOST:-}
     local requested_target=${REALITY_TARGET:-} requested_anytls_domain=${ANYTLS_DOMAIN:-}
-    local requested_anytls_password=${ANYTLS_PASSWORD:-} requested_wss_domain=${VLESS_WSS_DOMAIN:-}
-    local requested_ws_path=${WS_PATH:-} requested_port_mode=${SUB_PORT_MODE:-}
+    local requested_anytls_password=${ANYTLS_PASSWORD:-}
+    local requested_xhttp_domain=${VLESS_XHTTP_DOMAIN:-${VLESS_WSS_DOMAIN:-}}
+    local requested_xhttp_path=${XHTTP_PATH:-${WS_PATH:-}} requested_port_mode=${SUB_PORT_MODE:-}
     require_root
     require_systemd
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
@@ -2517,15 +2560,15 @@ switch_protocol() {
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
     old_protocol=${PROTOCOL}
     old_anytls_domain=${ANYTLS_DOMAIN:-}
-    old_wss_domain=${VLESS_WSS_DOMAIN:-}
+    old_xhttp_domain=${VLESS_XHTTP_DOMAIN:-}
     reset_protocol_fields
     NODE_NAME=${requested_node_name}
     NODE_HOST=${requested_node_host}
     REALITY_TARGET=${requested_target}
     ANYTLS_DOMAIN=${requested_anytls_domain}
     ANYTLS_PASSWORD=${requested_anytls_password}
-    VLESS_WSS_DOMAIN=${requested_wss_domain}
-    WS_PATH=${requested_ws_path}
+    VLESS_XHTTP_DOMAIN=${requested_xhttp_domain}
+    XHTTP_PATH=${requested_xhttp_path}
     SUB_PORT_MODE=${requested_port_mode}
     PROTOCOL=""
     choose_protocol "${requested}"
@@ -2552,15 +2595,15 @@ switch_protocol() {
     SWITCH_ROLLBACK_ON_EXIT=0
     case "${PROTOCOL}" in
     anytls) new_tls_domain=${ANYTLS_DOMAIN} ;;
-    vless-wss) new_tls_domain=${VLESS_WSS_DOMAIN} ;;
+    vless-xhttp) new_tls_domain=${VLESS_XHTTP_DOMAIN} ;;
     esac
     if [[ "${old_protocol}" == "anytls" && "${old_anytls_domain}" != "${new_tls_domain}" ]]; then
         remove_managed_acme_domain "${old_anytls_domain}"
-    elif [[ "${old_protocol}" == "vless-wss" && "${old_wss_domain}" != "${new_tls_domain}" ]]; then
-        remove_managed_acme_domain "${old_wss_domain}"
+    elif [[ "${old_protocol}" == "vless-xhttp" && "${old_xhttp_domain}" != "${new_tls_domain}" ]]; then
+        remove_managed_acme_domain "${old_xhttp_domain}"
     fi
     register_easy_all_command
-    [[ "${PROTOCOL}" != "vless-wss" ]] || print_dns_proxy_postinstall_notice
+    [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice
     success "协议已从 ${old_protocol} 切换为 ${PROTOCOL}"
 }
 
@@ -2568,7 +2611,7 @@ usage() {
     cat <<EOF
 用法: $0 [命令]
 
-  install [reality|anytls|vless-wss]
+  install [reality|anytls|vless-xhttp]
                 选择并安装一种协议（默认 Reality）
   switch <协议> 在 easy_all 创建的安装中切换协议，失败自动回滚
   show          显示当前协议节点和 Mihomo 节点
@@ -2576,7 +2619,7 @@ usage() {
   update        注册当前脚本、刷新服务端配置并更新 Worker 订阅
   update-sub    从同一模板刷新服务端策略与 Worker 订阅
   update-core   更新当前协议核心
-  renew-cert    立即续期 AnyTLS/WSS 证书
+  renew-cert    立即续期 AnyTLS/XHTTP 证书
   status        显示当前协议、服务、端口和 Worker 状态
   register-command
                 注册系统命令 easy_all
@@ -2584,12 +2627,12 @@ usage() {
   help          显示帮助
 
 主要无人值守变量:
-  PROTOCOL=reality|anytls|vless-wss
+  PROTOCOL=reality|anytls|vless-xhttp
   NODE_NAME=...
   NODE_HOST=...              Reality 节点地址
   REALITY_TARGET=swdist.apple.com:443
   ANYTLS_DOMAIN=node.example.com  ANYTLS_PASSWORD=...
-  VLESS_WSS_DOMAIN=node.example.com  WS_PATH=/随机路径
+  VLESS_XHTTP_DOMAIN=node.example.com  XHTTP_PATH=/随机路径
   SUB_PORT_MODE=443|dynamic
   GEMINI_IP_FAMILY=auto|ipv4|ipv6  Gemini 出口族；auto 实测后固定选择更快的一侧
   ALLOWED_TOKENS='{"owner":"token1","alice":"token2"}'
@@ -2599,7 +2642,7 @@ usage() {
   WORKER_NAME=easy-all       SUB_DOWNLOAD_NAME=MY_SUB
   SAMPLE_WORKER_URL=https://...  默认读取本仓库 main/sample-worker.js
 
-Reality 默认 443；AnyTLS 默认 dynamic；VLESS WSS 固定 443，且仅推荐移动宽带用户选择。
+Reality 默认 443；AnyTLS 默认 dynamic；VLESS XHTTP 固定 443，可通过 Cloudflare CDN。
 远端 Worker 始终 replace，uninstall 不删除远端 Worker。
 EOF
 }
@@ -2650,7 +2693,7 @@ main() {
     case "${1:-install}" in
     install) install_all "${2:-${PROTOCOL:-}}" ;;
     switch)
-        [[ -n "${2:-}" ]] || die "switch 必须指定 reality、anytls 或 vless-wss"
+        [[ -n "${2:-}" ]] || die "switch 必须指定 reality、anytls 或 vless-xhttp"
         switch_protocol "${2}"
         ;;
     show) require_root; show_node ;;
