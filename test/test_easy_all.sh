@@ -327,13 +327,16 @@ test_sample_worker_template_guards() {
         sample_worker_validation_fails "${uppercase_policy}"
 
     policy=$(extract_ipv4_only_domain_suffixes "${ROOT_DIR}/sample-worker.js")
-    assert_success "sample Worker includes Gemini/Google but excludes MEGA from IPv4-only policy" \
+    assert_success "sample Worker includes Gemini/Google and MEGA in IPv4-only policy" \
         jq -e \
             'index("openai.com")
              and index("claude.ai")
              and index("google.com")
              and index("googleapis.com")
-             and (index("mega.nz") == null)' \
+             and index("mega.nz")
+             and index("mega.co.nz")
+             and index("mega.io")
+             and index("mega.app")' \
             <<<"${policy}"
 
     assert_success "sample Worker source rejects plain HTTP" \
@@ -371,17 +374,17 @@ test_ipv4_only_server_configs() {
                  and (.inbounds[0].sniffing.destOverride == ["http", "tls", "quic"])
                  and .inbounds[0].sniffing.routeOnly == true' \
                 <<<"${config}"
-        assert_success "${protocol} Xray routes AI services but not MEGA to IPv4-only fallback" \
+        assert_success "${protocol} Xray routes AI services and MEGA to IPv4-only fallback" \
             jq -e \
                 '.routing.rules[0].outboundTag == "ipv4-only"
                  and (.routing.rules[0].domain | index("domain:openai.com"))
                  and (.routing.rules[0].domain | index("domain:claude.ai"))
                  and (.routing.rules[0].domain | index("domain:google.com"))
                  and (.routing.rules[0].domain | index("domain:googleapis.com"))
-                 and ((.routing.rules[0].domain | index("domain:mega.nz")) == null)
-                 and ((.routing.rules[0].domain | index("domain:mega.co.nz")) == null)
-                 and ((.routing.rules[0].domain | index("domain:mega.io")) == null)
-                 and ((.routing.rules[0].domain | index("domain:mega.app")) == null)
+                 and (.routing.rules[0].domain | index("domain:mega.nz"))
+                 and (.routing.rules[0].domain | index("domain:mega.co.nz"))
+                 and (.routing.rules[0].domain | index("domain:mega.io"))
+                 and (.routing.rules[0].domain | index("domain:mega.app"))
                  and ((.routing.rules[0].domain | map(startswith("full:")) | any) == false)' \
                 <<<"${config}"
         assert_success "${protocol} Xray explicitly sends every unmatched flow to normal direct" \
@@ -397,7 +400,7 @@ test_ipv4_only_server_configs() {
     set_protocol_fixture "anytls"
     write_sing_box_config
     config=$(<"${SING_BOX_CONFIG}")
-    assert_equal "sing-box AI direct outbound resolves IPv4 only" \
+    assert_equal "sing-box selected-domain direct outbound resolves IPv4 only" \
         "ipv4_only" \
         "$(jq -r '.outbounds[] | select(.tag == "ipv4-only") | .domain_resolver.strategy' \
             <<<"${config}")"
@@ -410,16 +413,16 @@ test_ipv4_only_server_configs() {
              and .route.rules[1].outbound == "ipv4-only"
              and .route.final == "direct"' \
             <<<"${config}"
-    assert_success "sing-box routes AI services but not MEGA to IPv4-only fallback" \
+    assert_success "sing-box routes AI services and MEGA to IPv4-only fallback" \
         jq -e \
             '(.route.rules[1].domain_suffix | index("openai.com"))
              and (.route.rules[1].domain_suffix | index("claude.ai"))
              and (.route.rules[1].domain_suffix | index("google.com"))
              and (.route.rules[1].domain_suffix | index("googleapis.com"))
-             and ((.route.rules[1].domain_suffix | index("mega.nz")) == null)
-             and ((.route.rules[1].domain_suffix | index("mega.co.nz")) == null)
-             and ((.route.rules[1].domain_suffix | index("mega.io")) == null)
-             and ((.route.rules[1].domain_suffix | index("mega.app")) == null)
+             and (.route.rules[1].domain_suffix | index("mega.nz"))
+             and (.route.rules[1].domain_suffix | index("mega.co.nz"))
+             and (.route.rules[1].domain_suffix | index("mega.io"))
+             and (.route.rules[1].domain_suffix | index("mega.app"))
              and (.route.rules[1] | has("domain") | not)' \
             <<<"${config}"
 

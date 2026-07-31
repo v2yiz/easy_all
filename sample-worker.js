@@ -2,7 +2,7 @@
  * 订阅服务样例 - Cloudflare Workers
  * 提供 VLESS Reality / VLESS WebSocket TLS / AnyTLS 订阅、Clash Meta 配置
  *
- * 使用前请替换：
+ * 使用前请替换:
  * 1. ALLOWED_TOKENS 中的订阅 token
  * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、WebSocket path 或 AnyTLS 密码
  * 3. DEFAULT_NODE 指向你希望默认输出的节点，支持单节点或节点数组
@@ -105,6 +105,10 @@ const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze(
     "google-analytics.com",
     "googletagmanager.com",
     "withgoogle.com",
+    "mega.nz",
+    "mega.co.nz",
+    "mega.io",
+    "mega.app",
     "api.statsig.com",
     "browser-intake-datadoghq.com",
     "chat.openai.com.cdn.cloudflare.net",
