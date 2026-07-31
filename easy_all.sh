@@ -1238,7 +1238,7 @@ uri_encode() {
 build_vless_xhttp_link() {
     local path
     path=$(uri_encode "${XHTTP_PATH}")
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&path=%s&mode=packet-up&packetEncoding=xudp#%s' \
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h3&path=%s&mode=packet-up&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${VLESS_XHTTP_DOMAIN}" "${VLESS_XHTTP_DOMAIN}" \
         "${path}" "$(uri_encode "${NODE_NAME}")"
 }
@@ -1291,10 +1291,10 @@ build_mihomo_node() {
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
-            "      mode: packet-up\n      reuse-settings:\n        max-connections: \"4-8\"\n" +
+            "    packet-encoding: xudp\n    alpn:\n      - h3\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
+            "      mode: packet-up\n      reuse-settings:\n        max-concurrency: \"16-32\"\n" +
             "        c-max-reuse-times: \"0\"\n        h-max-reusable-secs: \"1800-3000\"\n" +
-            "        h-keep-alive-period: 0\n    ip-version: ipv4-prefer\n    smux:\n      enabled: false\n"'
+            "        h-keep-alive-period: 0\n    smux:\n      enabled: false\n"'
         ;;
     esac
 }

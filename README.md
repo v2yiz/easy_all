@@ -96,6 +96,8 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 
 自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，也可以在安装或更新时用 `GEMINI_IP_FAMILY=ipv4 easy_all update` 或 `GEMINI_IP_FAMILY=ipv6 easy_all update` 显式覆盖。模式选择会写入 `/etc/easy_all/state.env`，后续更新继续沿用。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
 
+订阅中的代理节点不设置 Mihomo `ip-version`，由本机按默认 Happy Eyeballs/地址族策略连接代理或 Cloudflare；Gemini 的地址族固定只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude、MEGA 或客户端到 CDN 的链路。
+
 模板保留字节内网适配：相关域名使用 DHCP DNS、加入 Fake-IP 过滤并显式直连，同时从 TUN 自动路由中排除 `10.0.0.0/8` 和 `fdbd::/16`。因此模板使用 `strict-route: false`；这些设置会原样同步到生成的 Worker。
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
@@ -103,7 +105,7 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 ### VLESS XHTTP TLS
 
 该模式面向必须经过 Cloudflare CDN 的线路。它使用普通 HTTPS 可代理的 XHTTP
-`packet-up`：上行使用分块 POST、下行使用流式响应，并通过 HTTP/2/XMUX 复用连接，
+`packet-up`：上行使用分块 POST、下行使用流式响应，并通过 HTTP/3/XMUX 复用连接，
 避免 WSS 为浏览器大量并发请求频繁建立独立 TLS/WebSocket 连接。
 
 ```bash
@@ -123,11 +125,12 @@ Nginx 会为 XHTTP 响应添加 `Cache-Control: no-store`。如果 Cloudflare �
 规则，避免缓存 XHTTP 下行响应；默认 Cloudflare 缓存策略通常不需要额外修改。
 
 输出同时包含 VLESS URI、Mihomo `network: xhttp`/`xhttp-opts` 节点以及 base64
-订阅内容。Mihomo 节点显式启用 XHTTP `reuse-settings`、`alpn: [h2]`、
+订阅内容。Mihomo 节点显式启用 XHTTP `reuse-settings`、`alpn: [h3]`、
 `packet-encoding: xudp` 和 `udp: true`；不会额外启用 `smux`，避免与 XHTTP 自带的
-XMUX 叠加。连接池使用 `max-connections: "4-8"`，将浏览器并发分散到少量 H2 主连接，
-避免高丢包线路把大量请求压在单条 TCP 上产生队头阻塞。FLClash 使用的 Mihomo 内核
-需要至少 `v1.19.23`，建议更新到当前稳定版。
+XMUX 叠加。HTTP/3 使用 QUIC 独立流，并以 `max-concurrency: "16-32"` 控制每条主连接
+承载的代理请求数，避免 HTTP/2/TCP 丢包时所有流一起阻塞。Cloudflare 域名应启用
+HTTP/3（响应会包含 `alt-svc: h3`）；FLClash 使用的 Mihomo 内核需要至少 `v1.19.24`，
+建议更新到当前稳定版。
 
 现有 `vless-wss` 安装执行 `easy_all update` 时会自动迁移为 `vless-xhttp`，复用原域名、
 UUID、证书和路径，并同步改写 Xray、Nginx 与 Worker。命令行仍接受 `vless-wss`/`wss`

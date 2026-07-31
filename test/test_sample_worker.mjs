@@ -176,7 +176,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[1], /#NODE_ANYTLS$/);
     assert.match(links[2], /security=tls/);
     assert.match(links[2], /type=xhttp/);
-    assert.match(links[2], /alpn=h2/);
+    assert.match(links[2], /alpn=h3/);
     assert.match(links[2], /path=%2Frandompath/);
     assert.match(links[2], /mode=packet-up/);
     assert.match(links[2], /packetEncoding=xudp/);
@@ -285,10 +285,11 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /mode: packet-up/);
     assert.match(body, /host: "xhttp\.example\.com"/);
     assert.match(body, /reuse-settings:/);
-    assert.match(body, /max-connections: "4-8"/);
+    assert.match(body, /max-concurrency: "16-32"/);
     assert.match(body, /h-max-reusable-secs: "1800-3000"/);
     assert.match(body, /packet-encoding: xudp/);
-    assert.match(body, /alpn:\n      - h2/);
+    assert.match(body, /alpn:\n      - h3/);
+    assert.doesNotMatch(body, /ip-version:/);
     assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_XHTTP"/);
 
     const xhttpNode = body.slice(body.indexOf('- name: "NODE_VLESS_XHTTP"'));

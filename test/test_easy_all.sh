@@ -112,11 +112,11 @@ const checks = {
   },
   'vless-xhttp': {
     link: ['vless://00000000-0000-4000-8000-000000000001@xhttp.example.com:443?',
-      'security=tls', 'type=xhttp', 'fp=chrome', 'alpn=h2', 'path=%2Fhacxhttp', 'mode=packet-up',
+      'security=tls', 'type=xhttp', 'fp=chrome', 'alpn=h3', 'path=%2Fhacxhttp', 'mode=packet-up',
       'packetEncoding=xudp', '#MY_VLESS_XHTTP'],
     yaml: ['type: vless', 'network: xhttp', 'port: 443', 'xhttp-opts:',
       'udp: true', 'path: /hacxhttp', 'mode: packet-up', 'reuse-settings:',
-      'host: "xhttp.example.com"', 'max-connections: "4-8"',
+      'host: "xhttp.example.com"', 'max-concurrency: "16-32"',
       'h-max-reusable-secs: "1800-3000"',
       'alpn:', 'packet-encoding: xudp']
   }
@@ -670,8 +670,12 @@ EOF
     assert_contains "script contains nginx XHTTP streaming proxy" 'proxy_request_buffering off;' "${script_content}"
     assert_contains "script prevents Cloudflare from caching XHTTP responses" \
         'add_header Cache-Control "no-store" always;' "${script_content}"
-    assert_contains "XHTTP uses a small H2 connection pool to limit head-of-line blocking" \
-        'max-connections: \"4-8\"' "${script_content}"
+    assert_contains "XHTTP uses H3 stream concurrency without TCP head-of-line blocking" \
+        'max-concurrency: \"16-32\"' "${script_content}"
+    assert_contains "XHTTP subscription selects H3 for Cloudflare CDN" \
+        'alpn=h3' "${script_content}"
+    assert_not_contains "client proxy nodes keep the local default address family" \
+        'ip-version: ipv4-prefer' "${script_content}"
     assert_not_contains "script removes nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
     assert_contains "script retries Cloudflare rate limits" "408 | 429 | 500 | 502 | 503 | 504" "${script_content}"
     assert_contains "script retries Cloudflare propagation errors" "10007" "${script_content}"

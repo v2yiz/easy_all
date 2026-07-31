@@ -505,7 +505,6 @@ function buildClashVlessRealityNodeTemplate() {
       short-id: {sid}
     client-fingerprint: {fp}
     packet-encoding: xudp
-    ip-version: ipv4-prefer
     smux:
       enabled: false
 `;
@@ -525,7 +524,6 @@ function buildClashVlessTlsVisionNodeTemplate() {
     servername: {sni}
     client-fingerprint: {fp}
     packet-encoding: xudp
-    ip-version: ipv4-prefer
     smux:
       enabled: false
 `;
@@ -545,17 +543,16 @@ function buildClashVlessXhttpTlsNodeTemplate() {
     client-fingerprint: {fp}
     packet-encoding: xudp
     alpn:
-      - h2
+      - h3
     xhttp-opts:
       host: {xhttp_host}
       path: {path}
       mode: {mode}
       reuse-settings:
-        max-connections: "4-8"
+        max-concurrency: "16-32"
         c-max-reuse-times: "0"
         h-max-reusable-secs: "1800-3000"
         h-keep-alive-period: 0
-    ip-version: ipv4-prefer
     smux:
       enabled: false
 `;
@@ -639,7 +636,7 @@ function createVlessLink(cfg, port) {
         params.set('flow', 'xtls-rprx-vision');
         params.set('packetEncoding', 'xudp');
     } else if (security === 'tls' && network === 'xhttp') {
-        params.set('alpn', 'h2');
+        params.set('alpn', 'h3');
         params.set('path', cfg.path || '/');
         params.set('mode', cfg.mode || 'packet-up');
         params.set('packetEncoding', 'xudp');
