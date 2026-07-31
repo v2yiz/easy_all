@@ -100,6 +100,11 @@ describe('sample-worker Cloudflare Worker', () => {
       );
     }
     assert.ok(rules.includes('IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve'));
+    assert.ok(rules.includes('IP-CIDR6,2a0b:e40::/29,REJECT,no-resolve'));
+    assert.ok(
+      rules.indexOf('IP-CIDR6,2a0b:e40::/29,REJECT,no-resolve') <
+      rules.indexOf('DOMAIN-SUFFIX,mega.nz,PROXY')
+    );
     assert.equal(rules.some(rule => /^IP-CIDR,[^,]*:/.test(rule)), false);
     assert.equal(rules.some(rule => /24\.199\.123\.28|45\.76\.214\.191/.test(rule)), false);
   });

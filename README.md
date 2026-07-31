@@ -92,7 +92,7 @@ sudo PROTOCOL=anytls \
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI、MEGA Sync 及其必要辅助域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端 DNS 选出的地址不适合所选 VPS 出口。Xray 服务端通过 `ForceIPv4` 为整组域名统一选择 IPv4 出口，sing-box 使用 `ipv4_only` 解析器；普通 `direct` 仍保持双栈。Mihomo 客户端设置 `sniffer.override-destination: false`，嗅探结果只用于分流，不覆写 Fake-IP 映射或原始目标。这样 Gemini 的相关连接都从同一 VPS 地址族出站，不会在客户端 IPv4 和 VPS IPv6 之间漂移；MEGA 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名也固定使用服务端 IPv4，确保所选 VPS 没有 IPv6 时仍能上传。TUN 同时启用 `strict-route` 降低 DNS 和地址泄漏风险。
+三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI、MEGA Sync 及其必要辅助域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端 DNS 选出的地址不适合所选 VPS 出口。Xray 服务端通过 `ForceIPv4` 为整组域名统一选择 IPv4 出口，sing-box 使用 `ipv4_only` 解析器；普通 `direct` 仍保持双栈。Mihomo 客户端设置 `sniffer.override-destination: false`，嗅探结果只用于分流，不覆写 Fake-IP 映射或原始目标。这样 Gemini 的相关连接都从同一 VPS 地址族出站，不会在客户端 IPv4 和 VPS IPv6 之间漂移；MEGA 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名也固定使用服务端 IPv4。由于 MEGA 还会直接下发无法在 VPS 端重新解析的 IPv6 传输节点，Mihomo 会快速拒绝其自有网段 `2a0b:e40::/29`，促使 MEGA Sync 回退 IPv4，确保所选 VPS 没有 IPv6 时仍能上传。TUN 同时启用 `strict-route` 降低 DNS 和地址泄漏风险。
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
 
