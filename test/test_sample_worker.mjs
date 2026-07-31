@@ -65,9 +65,15 @@ describe('sample-worker Cloudflare Worker', () => {
       .map(line => line.trim().replace(/^-\s*/, ''))
       .filter(line => /^(DOMAIN|DOMAIN-SUFFIX|DOMAIN-KEYWORD|IP-CIDR|IP-CIDR6|GEOIP|GEOSITE|MATCH),/.test(line));
     const keys = rules.map(rule => rule.split(',').slice(0, 2).join(',').toLowerCase());
+    const quicRejectRule = 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT';
 
     assert.equal(new Set(keys).size, keys.length, 'rules must not contain duplicate match keys');
     assert.equal(rules.at(-1), 'MATCH,PROXY');
+    assert.ok(rulesBlock.includes(quicRejectRule), 'UDP/443 must be rejected before routing');
+    assert.ok(
+      rulesBlock.indexOf(quicRejectRule) <
+      rulesBlock.indexOf('DOMAIN-SUFFIX,local,DIRECT')
+    );
     assert.ok(
       rules.indexOf('DOMAIN-SUFFIX,apple-relay.apple.com,PROXY') <
       rules.indexOf('DOMAIN-SUFFIX,apple.com,DIRECT')
@@ -202,6 +208,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN-SUFFIX,apple-relay\.fastly-edge\.com,PROXY/);
     assert.match(body, /IP-CIDR6,2001:b28:f23d::\/48,PROXY,no-resolve/);
     assert.match(body, /GEOIP,CN,DIRECT,no-resolve/);
+    assert.match(body, /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/);
     assert.ok(
       body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
       body.indexOf('GEOSITE,geolocation-!cn,PROXY')
@@ -211,7 +218,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(body, /trojan/i);
   });
 
-  it('keeps Gemini proxied and IPv4-only without Fake-IP targets', async () => {
+  it('keeps Gemini proxied through Fake-IP and leaves address-family selection to the VPS', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`);
     const body = await responseText(response);
     const nameserverPolicy = body.match(
@@ -226,23 +233,17 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.ok(fakeIpFilter, 'fake-ip-filter must be present');
     assert.match(body, /^ipv6: true$/m);
     assert.match(body, /^\s+ipv6: true$/m);
-    assert.match(nameserverPolicy, /'\+\.chatgpt\.com': &ipv4_only_dns/);
-    assert.match(nameserverPolicy, /'\+\.openai\.com': \*ipv4_only_dns/);
-    assert.match(nameserverPolicy, /'\+\.claude\.ai': \*ipv4_only_dns/);
-    assert.match(nameserverPolicy, /'\+\.google\.com': \*ipv4_only_dns/);
-    assert.match(nameserverPolicy, /'\+\.googleapis\.com': \*ipv4_only_dns/);
-    assert.match(nameserverPolicy, /'\+\.gstatic\.com': \*ipv4_only_dns/);
-    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.nz': \*ipv4_only_dns/);
-    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.co\.nz': \*ipv4_only_dns/);
-    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.io': \*ipv4_only_dns/);
-    assert.doesNotMatch(nameserverPolicy, /'\+\.mega\.app': \*ipv4_only_dns/);
-    assert.match(nameserverPolicy, /dns-query#disable-ipv6=true&disable-qtype-65=true/);
+    assert.doesNotMatch(nameserverPolicy, /ipv4_only_dns/);
+    assert.doesNotMatch(nameserverPolicy, /disable-ipv6=true/);
     assert.match(body, /^\s+strict-route: true$/m);
-    assert.match(fakeIpFilter, /^\s+- '\+\.openai\.com'$/m);
-    assert.match(fakeIpFilter, /^\s+- '\+\.claude\.ai'$/m);
-    assert.match(fakeIpFilter, /^\s+- '\+\.google\.com'$/m);
-    assert.match(fakeIpFilter, /^\s+- '\+\.googleapis\.com'$/m);
-    assert.match(fakeIpFilter, /^\s+- '\+\.gstatic\.com'$/m);
+    assert.match(body, /^    override-destination: false$/m);
+    assert.doesNotMatch(body, /^    override-destination: true$/m);
+    assert.doesNotMatch(body, /^        override-destination: true$/m);
+    assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.openai\.com'$/m);
+    assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.claude\.ai'$/m);
+    assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.google\.com'$/m);
+    assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.googleapis\.com'$/m);
+    assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.gstatic\.com'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.match(body, /DOMAIN-SUFFIX,mega\.nz,PROXY/);
@@ -252,7 +253,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
-    assert.doesNotMatch(nameserverPolicy, /'\+\.bilibili\.com': \*ipv4_only_dns/);
+    assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
   });
 
   it('returns all Clash proxy nodes for node=all and falls back invalid filenames', async () => {
@@ -273,7 +274,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /- name: "NODE_VLESS_WSS"/);
     assert.match(body, /server: wss\.example\.com/);
     assert.match(body, /network: ws/);
-    assert.match(body, /udp: false/);
+    assert.match(body, /udp: true/);
     assert.match(body, /path: \/randompath/);
     assert.match(body, /Host: wss\.example\.com/);
     assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_WSS"/);

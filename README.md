@@ -16,7 +16,7 @@
 - 脚本适用于专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
 - 三种协议都使用 TCP 443，所以同一时间只能启用一种。
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
-- Gemini、Claude 和 OpenAI 相关域名都被限制为仅使用 IPv4；Mihomo 客户端先解析真实 IPv4，VPS 使用嗅探域名分流但保留该数字 IP，避免不同地址族出口和服务端重复 DNS。MEGA Sync 保持双栈，但固定通过代理节点访问。
+- Gemini、Claude 和 OpenAI 相关域名在客户端保留 Fake-IP，由 VPS 统一使用 IPv4 出口，避免客户端与服务端选择不同地址族。MEGA Sync 保持双栈，但固定通过代理节点访问。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
 - VLESS WSS 仅推荐移动宽带用户选择。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 Cloudflare CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
@@ -92,9 +92,9 @@ sudo PROTOCOL=anytls \
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI 及其必要辅助域名在 Mihomo 客户端退出 Fake-IP，通过专用 DNS 策略丢弃 AAAA 与 HTTPS/SVCB（TYPE 65）响应，因此代理请求携带真实数字 IPv4。Xray 服务端设置 `routeOnly: true`，只用嗅探域名匹配 IPv4-only 规则而不覆盖客户端传入的 IPv4 目标；`ForceIPv4` 仅在客户端仍传入域名时兜底，避免 VPS 对每条连接重新解析 Google 域名。sing-box 的 sniff 路由同样保留原始 IP，域名目标才使用 `ipv4_only` 解析器。普通 `direct` 仍是默认出站，所有未命中流量显式送往 `direct`。这样可保证 Gemini 只观察到 VPS IPv4，又避免 RackNerd 服务端 DNS 重解析造成的冷启动延迟。TUN 同时启用 `strict-route` 降低 DNS 和地址泄漏风险。MEGA Sync 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名仍固定走 `PROXY`，但不限制地址族，以便客户端和有 IPv6 的 VPS 正常使用双栈。
+三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI 及其必要辅助域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端 DNS 选出的 Google 地址不适合 RackNerd 出口。Xray 服务端通过 `ForceIPv4` 为整组 AI 域名统一选择 IPv4 出口，sing-box 使用 `ipv4_only` 解析器；普通 `direct` 仍保持双栈。Mihomo 客户端设置 `sniffer.override-destination: false`，嗅探结果只用于分流，不覆写 Fake-IP 映射或原始目标。这样 Gemini 的相关连接都从同一 VPS 地址族出站，不会在客户端 IPv4 和 VPS IPv6 之间漂移。TUN 同时启用 `strict-route` 降低 DNS 和地址泄漏风险。MEGA Sync 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名仍固定走 `PROXY`，但不限制地址族，以便客户端和有 IPv6 的 VPS 正常使用双栈。
 
-为确保上述客户端限制生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能绕过按域名丢弃 AAAA 和 TYPE 65 的策略。
+为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
 
 ### VLESS WebSocket TLS
 
@@ -112,8 +112,9 @@ sudo PROTOCOL=vless-wss \
 安装或切换到 VLESS WSS 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后若使用 Cloudflare CDN，请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。
 
 输出同时包含 VLESS URI、Mihomo `network: ws`/`ws-opts` 节点以及 base64 订阅内容。Mihomo
-节点默认设置 `udp: false`，避免浏览器把 HTTP/3（QUIC/UDP 443）封装进 WebSocket/TCP
-导致队头阻塞；网页会直接回退到 HTTP/2/TCP。Reality 和 AnyTLS 节点仍保留 UDP 支持。
+节点保留 `udp: true`，但规则首部显式 `REJECT` UDP/443，避免浏览器把 HTTP/3
+（QUIC/UDP 443）封装进 WebSocket/TCP，也防止不支持 UDP 时回落到 `DIRECT`；浏览器会
+改用 HTTP/2/TCP。非 443 端口的必要 UDP 仍可通过节点转发。
 
 ## Worker 订阅
 

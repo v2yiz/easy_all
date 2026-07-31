@@ -115,7 +115,7 @@ const checks = {
       'security=tls', 'type=ws', 'fp=chrome', 'path=%2Fhacxws', 'host=wss.example.com',
       '#MY_VLESS_WSS'],
     yaml: ['type: vless', 'network: ws', 'port: 443', 'ws-opts:',
-      'udp: false', 'path: /hacxws', 'Host: wss.example.com']
+      'udp: true', 'path: /hacxws', 'Host: wss.example.com']
   }
 };
 for (const part of checks[protocol].link) {

@@ -66,7 +66,7 @@ const NODE_VLESS_WSS_CONFIG = defineNode({
     fp: 'chrome',
     sni: 'wss.example.com',
     path: '/randompath',
-    udp: false
+    udp: true
 });
 
 const DEFAULT_NODE = NODE_REALITY_CONFIG; // 控制默认输出的节点，支持 [NODE_REALITY_CONFIG, NODE_ANYTLS_CONFIG]
@@ -79,7 +79,7 @@ function defaultNodeConfigs() {
 // ================= 规则与模板 =================
 
 // EASY_ALL_RULES_START
-// 客户端先为这些域名解析真实 IPv4；服务端仅在收到域名目标时强制 IPv4 兜底。
+// 服务端对这些域名统一选择 IPv4 出口；客户端保留 Fake-IP，把域名交给 VPS 解析。
 const IPV4_ONLY_DOMAIN_SUFFIXES = Object.freeze(
 /* EASY_ALL_IPV4_ONLY_DOMAINS_START */
 [
@@ -138,24 +138,14 @@ const BASE_FAKE_IP_FILTER = [
     'pool.ntp.org'
 ];
 
-// 这些域名退出 Fake-IP 并只返回 IPv4，使客户端把数字 IPv4 目标传给 VPS。
-const FAKE_IP_FILTER = [
-    ...BASE_FAKE_IP_FILTER,
-    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`)
-].map(domain => `      - '${domain}'`).join('\n');
-
-const IPV4_ONLY_NAMESERVER_POLICY = [
-    ...IPV4_ONLY_DOMAIN_SUFFIXES.map(domain => `+.${domain}`)
-].map((domain, index) => {
-    if (index === 0) {
-        return `      '${domain}': &ipv4_only_dns
-        - 'https://1.1.1.1/dns-query#disable-ipv6=true&disable-qtype-65=true'
-        - 'https://8.8.8.8/dns-query#disable-ipv6=true&disable-qtype-65=true'`;
-    }
-    return `      '${domain}': *ipv4_only_dns`;
-}).join('\n');
+const FAKE_IP_FILTER = BASE_FAKE_IP_FILTER
+    .map(domain => `      - '${domain}'`)
+    .join('\n');
 
 const EMBEDDED_CLASH_RULES = `rules:
+  # WebSocket 节点不承载 QUIC。显式拒绝 UDP/443，避免不支持 UDP 时回落到 DIRECT。
+  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
+
   # ==================== 局域网直连 ====================
   - DOMAIN-SUFFIX,local,DIRECT
   - DOMAIN-SUFFIX,localhost,DIRECT
@@ -408,11 +398,12 @@ sniffer:
     enable: true
     force-dns-mapping: true
     parse-pure-ip: true
-    override-destination: true
+    # 嗅探结果只用于域名分流；不覆写 Fake-IP 映射或原始目标。
+    override-destination: false
     sniff:
       HTTP:
         ports: [80, 8080-8880]
-        override-destination: true
+        override-destination: false
       TLS:
         ports: [443, 8443]
       QUIC:
@@ -456,7 +447,6 @@ dns:
     nameserver-policy:
       '+.lan': system
       '+.local': system
-${IPV4_ONLY_NAMESERVER_POLICY}
 
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
