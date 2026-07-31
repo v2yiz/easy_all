@@ -815,6 +815,26 @@ test_subscription_retry_policy() {
     assert_contains "captured subscription delays include retry intervals" $'5\n' "${delays}"
 }
 
+test_cloudflare_api_retry_policy() {
+    local headers="${TMP_DIR}/cloudflare-response-headers"
+    : >"${headers}"
+
+    assert_equal "Cloudflare Retry-After header takes priority" "120" \
+        "$(printf 'Retry-After: 120\r\n' >"${headers}"; \
+            cloudflare_retry_after "${headers}" '{"retry_after":60}')"
+    : >"${headers}"
+    assert_equal "Cloudflare structured error body supplies Retry-After fallback" "60" \
+        "$(cloudflare_retry_after "${headers}" '{"retry_after":60}')"
+    assert_equal "Cloudflare retry delay honors a 520 backoff" "60" \
+        "$(cloudflare_retry_delay 1 60)"
+    assert_equal "Cloudflare retry delay honors a 521 backoff" "120" \
+        "$(cloudflare_retry_delay 1 120)"
+    assert_equal "Cloudflare retry delay caps unreasonable values" "300" \
+        "$(cloudflare_retry_delay 1 3600)"
+    assert_equal "Cloudflare retry delay keeps exponential fallback" "8" \
+        "$(cloudflare_retry_delay 4 '')"
+}
+
 test_update_subscription_rolls_back_port_change() {
     local status state_content nft_content nft_hash
     local nft_calls="${TMP_DIR}/update-sub-nft-calls"
@@ -950,6 +970,7 @@ test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy
+test_cloudflare_api_retry_policy
 test_update_subscription_orchestration
 test_update_command_orchestration
 test_runtime_refresh_rolls_back_invalid_config

@@ -151,7 +151,7 @@ sudo SUBSCRIBE_MODE=auto \
   ./easy_all.sh install reality
 ```
 
-默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试。Worker 部署完成后会先等待 5 秒，再进行最多 6 次订阅 HTTP 验收；失败后的重试间隔随机为 1–3 秒。最近一次部署日志位于：
+默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Worker 部署完成后会先等待 5 秒，再进行最多 6 次订阅 HTTP 验收；失败后的重试间隔随机为 1–3 秒。最近一次部署日志位于：
 
 ```text
 /etc/easy_all/last-worker-deploy.log

@@ -1628,8 +1628,22 @@ cloudflare_retry_delay() {
     else
         delay=$((1 << (attempt - 1)))
     fi
-    ((delay > 30)) && delay=30
+    ((delay > 300)) && delay=300
     printf '%s\n' "${delay}"
+}
+
+cloudflare_retry_after() {
+    local response_headers=$1 response=$2 retry_after
+    retry_after=$(tr -d '\r' <"${response_headers}" \
+        | sed -n 's/^[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]:[[:space:]]*//p' \
+        | head -n 1)
+    if ! [[ "${retry_after}" =~ ^[0-9]+$ ]] || ((retry_after <= 0)); then
+        retry_after=$(jq -r '(.retry_after // empty) | tostring' \
+            <<<"${response}" 2>/dev/null || true)
+    fi
+    if [[ "${retry_after}" =~ ^[0-9]+$ ]] && ((retry_after > 0)); then
+        printf '%s\n' "${retry_after}"
+    fi
 }
 
 cloudflare_api() {
@@ -1669,9 +1683,7 @@ cloudflare_api() {
         fi
         response=$(<"${body_file}")
         IFS=$'\t' read -r http_code elapsed <<<"${http_meta:-000	0}"
-        retry_after=$(tr -d '\r' <"${response_headers}" \
-            | sed -n 's/^[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]:[[:space:]]*//p' \
-            | head -n 1)
+        retry_after=$(cloudflare_retry_after "${response_headers}" "${response}")
         cf_ray=$(tr -d '\r' <"${response_headers}" \
             | sed -n 's/^[Cc][Ff]-[Rr][Aa][Yy]:[[:space:]]*//p' \
             | head -n 1)
