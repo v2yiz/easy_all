@@ -329,8 +329,6 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
 
   # ==================== MEGA Sync ====================
-  # MEGA 会直接下发自有 IPv6 传输节点；快速拒绝后由客户端回退 IPv4。
-  - IP-CIDR6,2a0b:e40::/29,REJECT,no-resolve
   - DOMAIN-SUFFIX,mega.nz,PROXY
   - DOMAIN-SUFFIX,mega.co.nz,PROXY
   - DOMAIN-SUFFIX,mega.io,PROXY

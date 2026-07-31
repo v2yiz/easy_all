@@ -16,7 +16,7 @@
 - 脚本适用于专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
 - 三种协议都使用 TCP 443，所以同一时间只能启用一种。
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
-- Gemini、Claude、OpenAI 和 MEGA Sync 相关域名在客户端保留 Fake-IP，由 VPS 统一使用 IPv4 出口；这既避免 AI 服务检测到不同地址族，也确保没有 IPv6 的 VPS 可以正常连接 MEGA 上传节点。
+- Gemini、Claude、OpenAI 和 MEGA Sync 相关域名在客户端保留 Fake-IP，由 VPS 统一使用 IPv4 出口；这既避免 AI 服务检测到不同地址族，也确保没有 IPv6 的 VPS 可以正常连接 MEGA 上传节点。MEGA Desktop 还必须将自定义 HTTP 代理设为 `127.0.0.1:1080`。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
 - VLESS WSS 仅推荐移动宽带用户选择。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 Cloudflare CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
@@ -92,7 +92,9 @@ sudo PROTOCOL=anytls \
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI、MEGA Sync 及其必要辅助域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端 DNS 选出的地址不适合所选 VPS 出口。Xray 服务端通过 `ForceIPv4` 为整组域名统一选择 IPv4 出口，sing-box 使用 `ipv4_only` 解析器；普通 `direct` 仍保持双栈。Mihomo 客户端设置 `sniffer.override-destination: false`，嗅探结果只用于分流，不覆写 Fake-IP 映射或原始目标。这样 Gemini 的相关连接都从同一 VPS 地址族出站，不会在客户端 IPv4 和 VPS IPv6 之间漂移；MEGA 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名也固定使用服务端 IPv4。由于 MEGA 还会直接下发无法在 VPS 端重新解析的 IPv6 传输节点，Mihomo 会快速拒绝其自有网段 `2a0b:e40::/29`，促使 MEGA Sync 回退 IPv4，确保所选 VPS 没有 IPv6 时仍能上传。TUN 同时启用 `strict-route` 降低 DNS 和地址泄漏风险。
+三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。Gemini、Claude、OpenAI、MEGA Sync 及其必要辅助域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端 DNS 选出的地址不适合所选 VPS 出口。Xray 服务端通过 `ForceIPv4` 为整组域名统一选择 IPv4 出口，sing-box 使用 `ipv4_only` 解析器；普通 `direct` 仍保持双栈。Mihomo 客户端设置 `sniffer.override-destination: false`，嗅探结果只用于分流，不覆写 Fake-IP 映射或原始目标。这样 Gemini 的相关连接都从同一 VPS 地址族出站，不会在客户端 IPv4 和 VPS IPv6 之间漂移；MEGA 的 `mega.nz`、`mega.co.nz`、`mega.io`、`mega.app` 四个域名后缀及其全部子域名也固定使用服务端 IPv4。
+
+MEGA Desktop 的上传 API 会直接向客户端下发存储节点的 IPv4/IPv6 地址对，而不是完全依赖 DNS；只在服务端设置 `ForceIPv4` 无法改写客户端已经选中的 IPv6 地址。为只约束 MEGA 而不关闭系统或其他应用的 IPv6，请在 MEGA Desktop 的代理设置中选择自定义代理，协议使用 HTTP，服务器填写 `127.0.0.1`，端口填写 `1080`。该端口是订阅配置中的 Mihomo `mixed-port`，会把 MEGA 的 CONNECT 域名交给所选代理节点，再由 VPS 的 IPv4-only 出站连接存储服务器。TUN 同时启用 `strict-route` 降低 DNS 和地址泄漏风险。
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
 
