@@ -1,0 +1,27 @@
+README.md
+  s_5c40f6dbd6da1a::t_d2dbafb43a5ba9 135,155-199,247
+docs/images/cloudflare-account-id.svg
+  s_5c40f6dbd6da1a::t_75477dcdd5a113 1-40
+docs/images/cloudflare-worker-token.svg
+  s_5c40f6dbd6da1a::t_bdc69a35c0ddf1 1-31
+docs/images/cloudflare-zone-token.svg
+  s_5c40f6dbd6da1a::t_84f9469ebfd84e 1-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9dbac5b1ed1173a2e496fd61aa0506601a32c030",
+  "prompts": {},
+  "sessions": {
+    "s_5c40f6dbd6da1a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb6ac-5898-7220-8c73-a05f98de69d3",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
