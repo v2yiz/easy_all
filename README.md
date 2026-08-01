@@ -8,6 +8,13 @@
 | AnyTLS | sing-box | 默认 `dynamic`，可选 `443` | 必须始终保持灰云 |
 | VLESS XHTTP TLS (`stream-one`) | Xray + Nginx | 固定 `443` | 安装时灰云，成功后可开橙云 |
 
+仓库同时提供两个明确的使用入口：
+
+- `easy_all.sh`：BWG、VM 等通用 VPS，使用 Reality 或 AnyTLS，并部署通用 Worker `easy-all`。
+- `easy_cmcc.sh`：RackNerd 等上海移动需经 Cloudflare CDN 的 VPS，固定部署 VLESS XHTTP + WSS，并部署独立 Worker `easy-cmcc`。Gemini 固定走 XHTTP，GitHub 下载固定走 WSS。
+
+两个入口共用经验证的安装核心，但 Worker 名称、协议范围和订阅用途彼此隔离；不要让不同服务器自动部署到同一个 Worker 名称。
+
 旧的 `easy_reality.sh`、`easy_anytls.sh` 和 `easy_vless_wss.sh` 已下线，也不提供旧状态迁移。检测到 `/etc/easy_reality`、`/etc/easy_anytls` 或 `/etc/easy_vless_wss` 时，新脚本会停止安装；请先用旧脚本的卸载命令清理。
 
 ## 安装前须知
@@ -35,6 +42,25 @@ wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all
 ```
 
 安装成功后会注册 `/usr/local/bin/easy_all`。
+
+## 上海移动 / RackNerd 专用入口
+
+`easy_cmcc.sh` 不提供 Reality、AnyTLS 或协议切换，避免误将 RN 的 CDN 专用配置覆盖为通用节点。首次安装需要同时下载共享核心与 CMCC 入口：
+
+```bash
+wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" \
+  && wget -qO /root/easy_cmcc.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_cmcc.sh" \
+  && chmod 700 /root/easy_all.sh.new /root/easy_cmcc.sh.new \
+  && mv -f /root/easy_all.sh.new /root/easy_all.sh \
+  && mv -f /root/easy_cmcc.sh.new /root/easy_cmcc.sh \
+  && /root/easy_cmcc.sh install
+```
+
+安装后使用 `easy_cmcc update` 更新 RN 的 XHTTP/WSS、Nginx 和独立 `easy-cmcc` Worker。更新入口脚本本身时，也应重新下载上面的两个文件后再执行：
+
+```bash
+/root/easy_cmcc.sh update
+```
 
 ## 常用命令
 

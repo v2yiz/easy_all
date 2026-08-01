@@ -5,6 +5,12 @@
 set -Eeuo pipefail
 umask 077
 
+readonly EASY_ALL_PROFILE="${EASY_ALL_PROFILE:-general}"
+case "${EASY_ALL_PROFILE}" in
+general | cmcc) ;;
+*) die "EASY_ALL_PROFILE 仅支持 general 或 cmcc" ;;
+esac
+
 readonly STATE_DIR="/etc/easy_all"
 readonly BACKUP_DIR="${STATE_DIR}/backups"
 readonly STATE_FILE="${STATE_DIR}/state.env"
@@ -51,7 +57,11 @@ readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
 readonly DEFAULT_ANYTLS_NODE_NAME="MY_ANYTLS"
 readonly DEFAULT_XHTTP_NODE_NAME="MY_VLESS_XHTTP"
 readonly DEFAULT_WS_NODE_NAME="MY_VLESS_WS"
-readonly DEFAULT_WORKER_NAME="easy-all"
+if [[ "${EASY_ALL_PROFILE}" == "cmcc" ]]; then
+    readonly DEFAULT_WORKER_NAME="easy-cmcc"
+else
+    readonly DEFAULT_WORKER_NAME="easy-all"
+fi
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/sample-worker.js"
 readonly DEFAULT_REBOOT_HOUR="4"
@@ -586,6 +596,15 @@ validate_protocol() {
 
 choose_protocol() {
     local requested=${1:-${PROTOCOL:-}}
+    if [[ "${EASY_ALL_PROFILE}" == "cmcc" ]]; then
+        requested=${requested:-vless-xhttp}
+        case "${requested}" in
+        3 | vless-xhttp | xhttp | vless-wss | wss) PROTOCOL="vless-xhttp" ;;
+        *) die "easy_cmcc 只支持 VLESS XHTTP + WSS" ;;
+        esac
+        info "easy_cmcc 使用 VLESS XHTTP（Gemini）与 WSS（下载）的 Cloudflare CDN 双传输模式。"
+        return 0
+    fi
     if [[ -z "${requested}" && -t 0 ]]; then
         printf '请选择协议：\n'
         printf '  1. VLESS Reality Vision\n'
@@ -2272,6 +2291,8 @@ collect_installed_state() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     load_state
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
+    [[ "${EASY_ALL_PROFILE}" != "cmcc" || "${PROTOCOL}" == "vless-xhttp" ]] \
+        || die "easy_cmcc 只能管理 VLESS XHTTP + WSS 安装"
     case "${PROTOCOL}" in
     reality)
         [[ -n "${NODE_HOST:-}" && -n "${VLESS_UUID:-}" \
