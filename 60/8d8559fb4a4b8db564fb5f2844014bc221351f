@@ -1,0 +1,21 @@
+.gitignore
+  s_5c40f6dbd6da1a::t_1bd647d2320572 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "608d8559fb4a4b8db564fb5f2844014bc221351f",
+  "prompts": {},
+  "sessions": {
+    "s_5c40f6dbd6da1a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb6ac-5898-7220-8c73-a05f98de69d3",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
