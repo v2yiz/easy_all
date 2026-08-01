@@ -13,3 +13,4 @@ state.env
 *.token
 subscribe-worker.js
 worker.js
+easy_cmcc.js
