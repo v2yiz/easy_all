@@ -1,0 +1,23 @@
+sample-worker.js
+  s_5c40f6dbd6da1a::t_048e77e811907d 328-335,485-486
+test/test_sample_worker.mjs
+  s_5c40f6dbd6da1a::t_c133d7d00f439d 100-120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0a59c3ebe84f00aded8b61e616af891bb585f69a",
+  "prompts": {},
+  "sessions": {
+    "s_5c40f6dbd6da1a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb6ac-5898-7220-8c73-a05f98de69d3",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
