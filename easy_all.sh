@@ -40,6 +40,7 @@ readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly XANMOD_KEYRING="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
 readonly XANMOD_REPO="/etc/apt/sources.list.d/xanmod-release.list"
 readonly DEFAULT_XRAY_LOOPBACK_PORT="10085"
+readonly DEFAULT_XRAY_WS_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly PORT_BASE="10000"
 readonly PORT_MULTIPLIER="6"
@@ -49,6 +50,7 @@ readonly DEFAULT_ANYTLS_PORT_MODE="dynamic"
 readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
 readonly DEFAULT_ANYTLS_NODE_NAME="MY_ANYTLS"
 readonly DEFAULT_XHTTP_NODE_NAME="MY_VLESS_XHTTP"
+readonly DEFAULT_WS_NODE_NAME="MY_VLESS_WS"
 readonly DEFAULT_WORKER_NAME="easy-all"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/sample-worker.js"
@@ -236,6 +238,14 @@ validate_xhttp_path() {
 
 generate_xhttp_path() {
     printf '/%sxhttp' "$(openssl rand -hex 8)"
+}
+
+generate_ws_path() {
+    printf '/%sws' "$(openssl rand -hex 8)"
+}
+
+validate_ws_path() {
+    validate_xhttp_path "$1"
 }
 
 generate_secret() {
@@ -470,14 +480,14 @@ print_dns_proxy_postinstall_notice() {
     success "VLESS XHTTP TLS 安装和本机验证已完成"
     alert "现在可以回 Cloudflare；使用 CDN 时请把 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
     alert "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
-    alert "Cloudflare Network 中必须开启 gRPC；XHTTP 不需要开启 WebSockets。"
-    alert "Configuration Rule 必须让 ${VLESS_XHTTP_DOMAIN}${XHTTP_PATH}* 的 Request/Response body buffering 都为 None。"
+    alert "Cloudflare Network 中必须开启 gRPC 与 WebSockets。XHTTP 使用 gRPC；并行 WSS 下载节点使用 WebSockets。"
+    alert "Configuration Rule 必须让 ${VLESS_XHTTP_DOMAIN}${XHTTP_PATH}* 的 Request/Response body buffering 都为 None。WSS 路径 ${VLESS_WS_PATH} 不需要 body-buffering 规则。"
     alert "如果安装时提供的 CF_DNS_API_TOKEN 没有 Zone Settings 与 Configuration Rules 编辑权限，请在控制台手动完成以上两项。"
 }
 
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 状态文件不存在：${STATE_FILE}"
-    unset STATE_VERSION VLESS_XHTTP_DOMAIN XHTTP_PATH VLESS_WSS_DOMAIN WS_PATH
+    unset STATE_VERSION VLESS_XHTTP_DOMAIN XHTTP_PATH VLESS_WS_PATH VLESS_WS_NODE_NAME VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT XRAY_WS_LOOPBACK_PORT
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
@@ -494,7 +504,7 @@ load_state() {
     local -a variables=(
         PROTOCOL NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
-        VLESS_XHTTP_DOMAIN XHTTP_PATH VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT
+        VLESS_XHTTP_DOMAIN XHTTP_PATH VLESS_WS_PATH VLESS_WS_NODE_NAME VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT XRAY_WS_LOOPBACK_PORT
         ANYTLS_DOMAIN ANYTLS_PASSWORD SUB_PORT_MODE ALLOWED_TOKENS
         WORKER_NAME WORKER_URL CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
@@ -515,9 +525,14 @@ load_state() {
         unset "${env_name}"
     done
     XRAY_LOOPBACK_PORT=${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}
+    XRAY_WS_LOOPBACK_PORT=${XRAY_WS_LOOPBACK_PORT:-${DEFAULT_XRAY_WS_LOOPBACK_PORT}}
+    VLESS_WS_NODE_NAME=${VLESS_WS_NODE_NAME:-${DEFAULT_WS_NODE_NAME}}
     VLESS_XHTTP_DOMAIN=${VLESS_XHTTP_DOMAIN:-${VLESS_WSS_DOMAIN:-}}
     XHTTP_PATH=${XHTTP_PATH:-${WS_PATH:-}}
     unset VLESS_WSS_DOMAIN WS_PATH
+    if [[ "${PROTOCOL:-}" == "vless-xhttp" && -z "${VLESS_WS_PATH:-}" ]]; then
+        VLESS_WS_PATH=$(generate_ws_path)
+    fi
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
@@ -546,6 +561,9 @@ save_state() {
         printf 'VLESS_XHTTP_DOMAIN=%q\n' "${VLESS_XHTTP_DOMAIN:-}"
         printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH:-}"
         printf 'XRAY_LOOPBACK_PORT=%q\n' "${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}"
+        printf 'VLESS_WS_PATH=%q\n' "${VLESS_WS_PATH:-}"
+        printf 'VLESS_WS_NODE_NAME=%q\n' "${VLESS_WS_NODE_NAME:-${DEFAULT_WS_NODE_NAME}}"
+        printf 'XRAY_WS_LOOPBACK_PORT=%q\n' "${XRAY_WS_LOOPBACK_PORT:-${DEFAULT_XRAY_WS_LOOPBACK_PORT}}"
         printf 'ANYTLS_DOMAIN=%q\n' "${ANYTLS_DOMAIN:-}"
         printf 'ANYTLS_PASSWORD=%q\n' "${ANYTLS_PASSWORD:-}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-443}"
@@ -632,11 +650,22 @@ collect_install_inputs() {
         validate_domain "${VLESS_XHTTP_DOMAIN}" || die "VLESS XHTTP 域名无效：${VLESS_XHTTP_DOMAIN}"
         XHTTP_PATH=${XHTTP_PATH:-${WS_PATH:-$(generate_xhttp_path)}}
         validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
+        VLESS_WS_PATH=${VLESS_WS_PATH:-$(generate_ws_path)}
+        validate_ws_path "${VLESS_WS_PATH}" || die "VLESS_WS_PATH 无效：${VLESS_WS_PATH}"
+        [[ "${VLESS_WS_PATH}" != "${XHTTP_PATH}" ]] || die "VLESS_WS_PATH 不能与 XHTTP_PATH 相同"
+        VLESS_WS_NODE_NAME=${VLESS_WS_NODE_NAME:-${DEFAULT_WS_NODE_NAME}}
+        [[ -n "${VLESS_WS_NODE_NAME}" ]] || die "VLESS_WS_NODE_NAME 不能为空"
         unset VLESS_WSS_DOMAIN WS_PATH
         XRAY_LOOPBACK_PORT=${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}
         [[ "${XRAY_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
             && ((XRAY_LOOPBACK_PORT >= 1024 && XRAY_LOOPBACK_PORT <= 65535)) \
             || die "XRAY_LOOPBACK_PORT 无效：${XRAY_LOOPBACK_PORT}"
+        XRAY_WS_LOOPBACK_PORT=${XRAY_WS_LOOPBACK_PORT:-${DEFAULT_XRAY_WS_LOOPBACK_PORT}}
+        [[ "${XRAY_WS_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
+            && ((XRAY_WS_LOOPBACK_PORT >= 1024 && XRAY_WS_LOOPBACK_PORT <= 65535)) \
+            || die "XRAY_WS_LOOPBACK_PORT 无效：${XRAY_WS_LOOPBACK_PORT}"
+        [[ "${XRAY_WS_LOOPBACK_PORT}" != "${XRAY_LOOPBACK_PORT}" ]] \
+            || die "XRAY_WS_LOOPBACK_PORT 不能与 XRAY_LOOPBACK_PORT 相同"
         SUB_PORT_MODE="443"
         ;;
     esac
@@ -832,6 +861,14 @@ configure_cloudflare_xhttp_streaming() {
         success "Cloudflare gRPC 已开启"
     else
         warn "无法自动开启 Cloudflare gRPC；DNS Token 还需要 Zone Settings 编辑权限，请在 Network 页面手动开启"
+    fi
+
+    response=$(cloudflare_zone_api PATCH "/zones/${zone_id}/settings/websockets" \
+        -H "Content-Type: application/json" --data '{"value":"on"}') || response=""
+    if jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
+        success "Cloudflare WebSockets 已开启"
+    else
+        warn "无法自动开启 Cloudflare WebSockets；DNS Token 还需要 Zone Settings 编辑权限，请在 Network 页面手动开启"
     fi
 
     expression=$(jq -nr --arg host "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" \
@@ -1040,35 +1077,59 @@ write_xray_config() {
     vless-xhttp)
         jq -n \
             --argjson port "${XRAY_LOOPBACK_PORT}" \
+            --argjson ws_port "${XRAY_WS_LOOPBACK_PORT}" \
             --arg uuid "${VLESS_UUID}" \
             --arg node_name "${NODE_NAME}" \
             --arg path "${XHTTP_PATH}" \
+            --arg ws_node_name "${VLESS_WS_NODE_NAME}" \
+            --arg ws_path "${VLESS_WS_PATH}" \
             --arg gemini_domain_strategy "${gemini_domain_strategy}" \
             --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
-              inbounds: [{
-                tag: "vless-xhttp-in",
-                listen: "127.0.0.1",
-                port: $port,
-                protocol: "vless",
-                settings: {
-                  clients: [{id: $uuid, email: $node_name}],
-                  decryption: "none"
-                },
-                streamSettings: {
-                  network: "xhttp",
-                  xhttpSettings: {
-                    path: $path,
-                    mode: "stream-one"
+              inbounds: [
+                {
+                  tag: "vless-xhttp-in",
+                  listen: "127.0.0.1",
+                  port: $port,
+                  protocol: "vless",
+                  settings: {
+                    clients: [{id: $uuid, email: $node_name}],
+                    decryption: "none"
+                  },
+                  streamSettings: {
+                    network: "xhttp",
+                    xhttpSettings: {
+                      path: $path,
+                      mode: "stream-one"
+                    }
+                  },
+                  sniffing: {
+                    enabled: true,
+                    destOverride: ["http", "tls", "quic"],
+                    routeOnly: true
                   }
                 },
-                sniffing: {
-                  enabled: true,
-                  destOverride: ["http", "tls", "quic"],
-                  routeOnly: true
+                {
+                  tag: "vless-ws-in",
+                  listen: "127.0.0.1",
+                  port: $ws_port,
+                  protocol: "vless",
+                  settings: {
+                    clients: [{id: $uuid, email: $ws_node_name}],
+                    decryption: "none"
+                  },
+                  streamSettings: {
+                    network: "ws",
+                    wsSettings: {path: $ws_path}
+                  },
+                  sniffing: {
+                    enabled: true,
+                    destOverride: ["http", "tls", "quic"],
+                    routeOnly: true
+                  }
                 }
-              }],
+              ],
               outbounds: [
                 {protocol: "freedom", tag: "direct"},
                 {
@@ -1319,6 +1380,24 @@ server {
         access_log off;
     }
 
+    location = ${VLESS_WS_PATH} {
+        proxy_pass http://127.0.0.1:${XRAY_WS_LOOPBACK_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        client_max_body_size 0;
+        add_header Cache-Control "no-store" always;
+        access_log off;
+    }
+
     location / {
         try_files \$uri \$uri/ /index.html;
     }
@@ -1342,6 +1421,14 @@ build_vless_xhttp_link() {
         "${path}" "$(uri_encode "${NODE_NAME}")"
 }
 
+build_vless_ws_link() {
+    local path
+    path=$(uri_encode "${VLESS_WS_PATH}")
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&host=%s&path=%s&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${VLESS_XHTTP_DOMAIN}" "${VLESS_XHTTP_DOMAIN}" \
+        "${VLESS_XHTTP_DOMAIN}" "${path}" "$(uri_encode "${VLESS_WS_NODE_NAME}")"
+}
+
 build_reality_link() {
     printf 'vless://%s@%s:443?encryption=none&security=reality&type=tcp&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${NODE_HOST}" "${REALITY_TARGET%:*}" \
@@ -1359,7 +1446,11 @@ build_node_link() {
     case "${PROTOCOL}" in
     reality) build_reality_link ;;
     anytls) build_anytls_link ;;
-    vless-xhttp) build_vless_xhttp_link ;;
+    vless-xhttp)
+        build_vless_xhttp_link
+        printf '\n'
+        build_vless_ws_link
+        ;;
     esac
 }
 
@@ -1392,6 +1483,14 @@ build_mihomo_node() {
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
             "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
             "      mode: stream-one\n    smux:\n      enabled: false\n"'
+        jq -nr \
+            --arg name "${VLESS_WS_NODE_NAME}" --arg server "${VLESS_XHTTP_DOMAIN}" \
+            --arg uuid "${VLESS_UUID}" --arg path "${VLESS_WS_PATH}" '
+            "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+            "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
+            "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
+            "    packet-encoding: xudp\n    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n" +
+            "    smux:\n      enabled: false\n"'
         ;;
     esac
 }
@@ -1589,7 +1688,7 @@ render_worker_from_sample() {
 }
 
 write_worker() {
-    local destination=$1 config_json allowed_tokens_json template_file config_file output_file
+    local destination=$1 config_json ws_config_json allowed_tokens_json template_file config_file output_file
     prepare_sample_worker_template
     install -d -m 0700 "$(dirname "${destination}")"
     ensure_allowed_tokens
@@ -1618,6 +1717,11 @@ write_worker() {
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" --arg name "${NODE_NAME}" \
             --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
             '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-one",udp:true,portMode:"443"}')
+        ws_config_json=$(jq -cn \
+            --arg type vless --arg security tls --arg network ws \
+            --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" --arg name "${VLESS_WS_NODE_NAME}" \
+            --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${VLESS_WS_PATH}" --arg fp chrome \
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,udp:true,portMode:"443"}')
         ;;
     esac
 
@@ -1644,9 +1748,15 @@ function isAllowedToken(token) {
 }
 EOF
         printf '\nconst NODE_CONFIG = defineNode(%s);\n' "${config_json}"
+        if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
+            printf 'const WS_NODE_CONFIG = defineNode(%s);\n' "${ws_config_json}"
+        fi
+        if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
+            printf '\nconst DEFAULT_NODE = [NODE_CONFIG, WS_NODE_CONFIG]; // XHTTP for AI, WSS for downloads\n'
+        else
+            printf '\nconst DEFAULT_NODE = NODE_CONFIG; // 控制默认输出的节点，支持 [NODE_CONFIG, ...]\n'
+        fi
         cat <<'EOF'
-
-const DEFAULT_NODE = NODE_CONFIG; // 控制默认输出的节点，支持 [NODE_CONFIG, ...]
 
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
@@ -2173,7 +2283,8 @@ collect_installed_state() {
             || die "AnyTLS 状态不完整"
         ;;
     vless-xhttp)
-        [[ -n "${VLESS_XHTTP_DOMAIN:-}" && -n "${VLESS_UUID:-}" && -n "${XHTTP_PATH:-}" ]] \
+        [[ -n "${VLESS_XHTTP_DOMAIN:-}" && -n "${VLESS_UUID:-}" && -n "${XHTTP_PATH:-}" \
+            && -n "${VLESS_WS_PATH:-}" && -n "${VLESS_WS_NODE_NAME:-}" ]] \
             || die "VLESS XHTTP 状态不完整"
         ;;
     esac
@@ -2306,7 +2417,8 @@ show_status() {
         printf '域名: %s\n' "${ANYTLS_DOMAIN}"
         ;;
     vless-xhttp)
-        printf '域名: %s\nXHTTP Path: %s\n' "${VLESS_XHTTP_DOMAIN}" "${XHTTP_PATH}"
+        printf '域名: %s\nXHTTP Path: %s\nWSS Path: %s\n' \
+            "${VLESS_XHTTP_DOMAIN}" "${XHTTP_PATH}" "${VLESS_WS_PATH}"
         ;;
     esac
     printf '核心服务: '
@@ -2656,6 +2768,9 @@ reset_protocol_fields() {
     REALITY_SHORT_ID=""
     VLESS_XHTTP_DOMAIN=""
     XHTTP_PATH=""
+    VLESS_WS_PATH=""
+    VLESS_WS_NODE_NAME=""
+    XRAY_WS_LOOPBACK_PORT=""
     ANYTLS_DOMAIN=""
     ANYTLS_PASSWORD=""
     SUB_PORT_MODE=""
@@ -2668,7 +2783,9 @@ switch_protocol() {
     local requested_target=${REALITY_TARGET:-} requested_anytls_domain=${ANYTLS_DOMAIN:-}
     local requested_anytls_password=${ANYTLS_PASSWORD:-}
     local requested_xhttp_domain=${VLESS_XHTTP_DOMAIN:-${VLESS_WSS_DOMAIN:-}}
-    local requested_xhttp_path=${XHTTP_PATH:-${WS_PATH:-}} requested_port_mode=${SUB_PORT_MODE:-}
+    local requested_xhttp_path=${XHTTP_PATH:-${WS_PATH:-}} requested_ws_path=${VLESS_WS_PATH:-}
+    local requested_ws_node_name=${VLESS_WS_NODE_NAME:-} requested_ws_loopback_port=${XRAY_WS_LOOPBACK_PORT:-}
+    local requested_port_mode=${SUB_PORT_MODE:-}
     require_root
     require_systemd
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
@@ -2685,6 +2802,9 @@ switch_protocol() {
     ANYTLS_PASSWORD=${requested_anytls_password}
     VLESS_XHTTP_DOMAIN=${requested_xhttp_domain}
     XHTTP_PATH=${requested_xhttp_path}
+    VLESS_WS_PATH=${requested_ws_path}
+    VLESS_WS_NODE_NAME=${requested_ws_node_name}
+    XRAY_WS_LOOPBACK_PORT=${requested_ws_loopback_port}
     SUB_PORT_MODE=${requested_port_mode}
     PROTOCOL=""
     choose_protocol "${requested}"

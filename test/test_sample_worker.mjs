@@ -89,8 +89,8 @@ describe('sample-worker Cloudflare Worker', () => {
       'xn--ngstr-lra8j.com'
     ]) {
       assert.ok(
-        rules.includes(`DOMAIN-SUFFIX,${googlePlayDomain},PROXY`),
-        `${googlePlayDomain} must use PROXY`
+        rules.includes(`DOMAIN-SUFFIX,${googlePlayDomain},AI_GEMINI`),
+        `${googlePlayDomain} must use AI_GEMINI`
       );
       assert.ok(
         source.includes(`          - '+.${googlePlayDomain}'`),
@@ -104,8 +104,8 @@ describe('sample-worker Cloudflare Worker', () => {
       'githubstatus.com'
     ]) {
       assert.ok(
-        rules.includes(`DOMAIN-SUFFIX,${githubDomain},PROXY`),
-        `${githubDomain} must use PROXY`
+        rules.includes(`DOMAIN-SUFFIX,${githubDomain},DOWNLOAD`),
+        `${githubDomain} must use DOWNLOAD`
       );
     }
     for (const githubDownloadDomain of [
@@ -187,7 +187,7 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = body.split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 3);
+    assert.equal(links.length, 4);
     assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
     assert.match(links[1], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10055\/\?/);
     assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
@@ -203,6 +203,12 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[2], /packetEncoding=xudp/);
     assert.doesNotMatch(links[2], /flow=xtls-rprx-vision/);
     assert.match(links[2], /#NODE_VLESS_XHTTP$/);
+    assert.match(links[3], /^vless:\/\/00000000-0000-4000-8000-000000000003@xhttp\.example\.com:443\?/);
+    assert.match(links[3], /security=tls/);
+    assert.match(links[3], /type=ws/);
+    assert.match(links[3], /path=%2Frandomws/);
+    assert.match(links[3], /host=xhttp\.example\.com/);
+    assert.match(links[3], /#NODE_VLESS_WS$/);
   });
 
   it('returns Clash YAML for the default node with normalized download filename', async () => {
@@ -271,9 +277,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.doesNotMatch(body, /DOMAIN-SUFFIX,mega\.(?:nz|co\.nz|io|app),/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN-SUFFIX,google\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,AI_GEMINI/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.bytedance\.net'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.larkoffice\.com'$/m);
@@ -308,8 +314,13 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(body, /reuse-settings:/);
     assert.match(body, /packet-encoding: xudp/);
     assert.match(body, /alpn:\n      - h2/);
+    assert.match(body, /- name: "NODE_VLESS_WS"/);
+    assert.match(body, /network: ws/);
+    assert.match(body, /path: \/randomws/);
     assert.doesNotMatch(body, /ip-version:/);
-    assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_XHTTP"/);
+    assert.match(body, /      - "NODE_REALITY"\n        - "NODE_ANYTLS"\n        - "NODE_VLESS_XHTTP"\n        - "NODE_VLESS_WS"/);
+    assert.match(body, /- name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP"/);
+    assert.match(body, /- name: DOWNLOAD\n      type: select\n      proxies:\n        - "NODE_VLESS_WS"/);
 
     const xhttpNode = body.slice(body.indexOf('- name: "NODE_VLESS_XHTTP"'));
     assert.match(xhttpNode, /network: xhttp/);

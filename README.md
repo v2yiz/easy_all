@@ -124,7 +124,7 @@ sudo PROTOCOL=vless-xhttp \
 
 `XHTTP_PATH` 默认随机生成，也可显式设置为以 `/` 开头的路径。该协议固定走 443，不接受 `SUB_PORT_MODE=dynamic`。
 
-安装或切换到 VLESS XHTTP 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。Cloudflare SSL/TLS 必须为 Full 或 Full (Strict)，Network 页面必须开启 gRPC；不需要开启 WebSockets。
+安装或切换到 VLESS XHTTP 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。Cloudflare SSL/TLS 必须为 Full 或 Full (Strict)，Network 页面必须开启 gRPC 和 WebSockets。
 
 还需要在 Cloudflare **Rules > Configuration Rules** 为当前 XHTTP 路径建立规则：
 
@@ -133,7 +133,7 @@ sudo PROTOCOL=vless-xhttp \
 - Response body buffering：`None`。
 
 使用具有 DNS Edit、Zone Read、Zone Settings Edit 和 Config Rules Edit 权限的
-`CF_DNS_API_TOKEN` 安装时，脚本会尝试自动完成 gRPC 与双向无缓冲配置；权限不足只会
+`CF_DNS_API_TOKEN` 安装时，脚本会尝试自动完成 gRPC、WebSockets 与双向无缓冲配置；权限不足只会
 给出警告，不会中断部署。已安装节点也可以通过
 `sudo CF_DNS_API_TOKEN=... easy_all update` 补配，然后重新拉取订阅。
 
@@ -141,12 +141,17 @@ Nginx 会为 XHTTP 响应添加 `Cache-Control: no-store`。如果 Cloudflare �
 所有内容的 Cache Rule，请为 `VLESS_XHTTP_DOMAIN/XHTTP_PATH*` 单独增加 Bypass Cache
 规则，避免缓存 XHTTP 下行响应；默认 Cloudflare 缓存策略通常不需要额外修改。
 
-输出同时包含 VLESS URI、Mihomo `network: xhttp`/`xhttp-opts` 节点以及 base64
-订阅内容。Mihomo 节点使用 `alpn: [h2]`、`mode: stream-one`、
-`packet-encoding: xudp` 和 `udp: true`；不写入自定义 `reuse-settings`，让 XHTTP/XMUX
-使用内核默认复用策略，也不会额外启用 `smux`。其中 `udp: true` 只允许代理内层 UDP；
-这些数据仍封装在外层 HTTP/2/TCP 中，不会要求上海移动直连 Cloudflare UDP 443。
-FLClash 应使用支持 XHTTP `stream-one` 的当前稳定 Mihomo 内核。
+当前 `vless-xhttp` 安装会在同一域名下自动生成两个随机路径并行提供节点：XHTTP 用于
+`AI_GEMINI`，WSS 用于 `DOWNLOAD`。GitHub 及其下载域名默认进入 `DOWNLOAD`，它会优先选择
+WSS；`PROXY` 保持所有节点可选。两个入口都使用同一台服务器、同一个 UUID 和同一套
+Gemini 服务端固定地址族策略，因此只有 Gemini 会避免 IPv4/IPv6 出口不一致，ChatGPT、Claude
+和 MEGA 保持默认双栈行为。
+
+输出同时包含 VLESS URI、Mihomo `network: xhttp`/`xhttp-opts` 与 `network: ws`/`ws-opts`
+节点以及 base64 订阅内容。XHTTP 节点使用 `alpn: [h2]`、`mode: stream-one`、
+`packet-encoding: xudp` 和 `udp: true`；WSS 也只经 TLS/TCP 443 接入 Cloudflare。两者均不写入
+自定义 `reuse-settings`，也不会额外启用 `smux`。FLClash 应使用支持 XHTTP `stream-one` 的当前稳定
+Mihomo 内核。
 
 现有 `vless-wss` 安装执行 `easy_all update` 时会自动迁移为 `vless-xhttp`，复用原域名、
 UUID、证书和路径，并同步改写 Xray、Nginx 与 Worker。命令行仍接受 `vless-wss`/`wss`

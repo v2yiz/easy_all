@@ -1,10 +1,10 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS Reality / VLESS XHTTP TLS / AnyTLS 订阅、Clash Meta 配置
+ * 提供 VLESS Reality / VLESS XHTTP TLS / VLESS WS TLS / AnyTLS 订阅、Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、XHTTP path 或 AnyTLS 密码
+ * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、XHTTP/WS path 或 AnyTLS 密码
  * 3. DEFAULT_NODE 指向你希望默认输出的节点，支持单节点或节点数组
  */
 // ================= 配置常量 =================
@@ -67,6 +67,20 @@ const NODE_VLESS_XHTTP_CONFIG = defineNode({
     sni: 'xhttp.example.com',
     path: '/randompath',
     mode: 'stream-one',
+    udp: true
+});
+
+// ── VLESS WebSocket TLS 节点（Cloudflare CDN / 下载测速）──────────
+const NODE_VLESS_WS_CONFIG = defineNode({
+    type: 'vless',
+    security: 'tls',
+    network: 'ws',
+    uuid: '00000000-0000-4000-8000-000000000003',
+    host: 'xhttp.example.com',
+    name: 'NODE_VLESS_WS',
+    fp: 'chrome',
+    sni: 'xhttp.example.com',
+    path: '/randomws',
     udp: true
 });
 
@@ -285,10 +299,10 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,claude.ai,PROXY
   - DOMAIN-SUFFIX,claude.com,PROXY
   - DOMAIN-SUFFIX,claudeusercontent.com,PROXY
-  - DOMAIN,gemini.google.com,PROXY
-  - DOMAIN,aistudio.google.com,PROXY
-  - DOMAIN,ai.google.dev,PROXY
-  - DOMAIN-SUFFIX,generativeai.google,PROXY
+  - DOMAIN,gemini.google.com,AI_GEMINI
+  - DOMAIN,aistudio.google.com,AI_GEMINI
+  - DOMAIN,ai.google.dev,AI_GEMINI
+  - DOMAIN-SUFFIX,generativeai.google,AI_GEMINI
   - DOMAIN,api.statsig.com,PROXY
   - DOMAIN,browser-intake-datadoghq.com,PROXY
   - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
@@ -309,29 +323,30 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,sentry.io,PROXY
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
 
-  # ==================== Google / YouTube ====================
-  - DOMAIN-SUFFIX,google.com,PROXY
-  - DOMAIN-SUFFIX,googleapis.com,PROXY
-  - DOMAIN-SUFFIX,googleapis.cn,PROXY
-  - DOMAIN-SUFFIX,googleusercontent.com,PROXY
-  - DOMAIN-SUFFIX,gstatic.com,PROXY
+  # ==================== Gemini / Google ====================
+  # Gemini 依赖的 Google 域名统一进入 AI_GEMINI，默认优先 XHTTP。
+  - DOMAIN-SUFFIX,google.com,AI_GEMINI
+  - DOMAIN-SUFFIX,googleapis.com,AI_GEMINI
+  - DOMAIN-SUFFIX,googleapis.cn,AI_GEMINI
+  - DOMAIN-SUFFIX,googleusercontent.com,AI_GEMINI
+  - DOMAIN-SUFFIX,gstatic.com,AI_GEMINI
   # Google Play 的应用包、增量包与图片资源使用独立域名。
-  - DOMAIN-SUFFIX,gvt1.com,PROXY
-  - DOMAIN-SUFFIX,gvt2.com,PROXY
-  - DOMAIN-SUFFIX,gvt3.com,PROXY
-  - DOMAIN-SUFFIX,ggpht.com,PROXY
-  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY
-  - DOMAIN-SUFFIX,googlevideo.com,PROXY
-  - DOMAIN-SUFFIX,youtube.com,PROXY
-  - DOMAIN-SUFFIX,ytimg.com,PROXY
+  - DOMAIN-SUFFIX,gvt1.com,AI_GEMINI
+  - DOMAIN-SUFFIX,gvt2.com,AI_GEMINI
+  - DOMAIN-SUFFIX,gvt3.com,AI_GEMINI
+  - DOMAIN-SUFFIX,ggpht.com,AI_GEMINI
+  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,AI_GEMINI
+  - DOMAIN-SUFFIX,googlevideo.com,AI_GEMINI
+  - DOMAIN-SUFFIX,youtube.com,AI_GEMINI
+  - DOMAIN-SUFFIX,ytimg.com,AI_GEMINI
 
   # ==================== GitHub ====================
   # GitHub 下载会跳转到 codeload.github.com、release-assets.githubusercontent.com
   # 或 objects.githubusercontent.com；显式代理，避免依赖 GEOSITE / MATCH 兜底。
-  - DOMAIN-SUFFIX,github.com,PROXY
-  - DOMAIN-SUFFIX,githubusercontent.com,PROXY
-  - DOMAIN-SUFFIX,githubassets.com,PROXY
-  - DOMAIN-SUFFIX,githubstatus.com,PROXY
+  - DOMAIN-SUFFIX,github.com,DOWNLOAD
+  - DOMAIN-SUFFIX,githubusercontent.com,DOWNLOAD
+  - DOMAIN-SUFFIX,githubassets.com,DOWNLOAD
+  - DOMAIN-SUFFIX,githubstatus.com,DOWNLOAD
 
   # ==================== LINE ====================
   - DOMAIN-SUFFIX,scdn.co,PROXY
@@ -489,6 +504,14 @@ proxies:
 {proxy_nodes}
 
 proxy-groups:
+    - name: AI_GEMINI
+      type: select
+      proxies:
+        - {ai_gemini_proxy_names}
+    - name: DOWNLOAD
+      type: select
+      proxies:
+        - {download_proxy_names}
     - name: PROXY
       type: select
       proxies:
@@ -558,6 +581,28 @@ function buildClashVlessXhttpTlsNodeTemplate() {
       host: {xhttp_host}
       path: {path}
       mode: {mode}
+    smux:
+      enabled: false
+`;
+}
+
+function buildClashVlessWsTlsNodeTemplate() {
+    return `  - name: {name}
+    type: vless
+    server: {host}
+    port: {port}
+    uuid: {uuid}
+    network: ws
+    tls: true
+    udp: {udp}
+    skip-cert-verify: false
+    servername: {sni}
+    client-fingerprint: {fp}
+    packet-encoding: xudp
+    ws-opts:
+      path: {path}
+      headers:
+        Host: {ws_host}
     smux:
       enabled: false
 `;
@@ -645,6 +690,10 @@ function createVlessLink(cfg, port) {
         params.set('path', cfg.path || '/');
         params.set('mode', cfg.mode || 'stream-one');
         params.set('packetEncoding', 'xudp');
+    } else if (security === 'tls' && network === 'ws') {
+        params.set('path', cfg.path || '/');
+        params.set('host', cfg.wsHost || cfg.host);
+        params.set('packetEncoding', 'xudp');
     } else if (network !== 'tcp') {
         throw new Error(`Unsupported VLESS network: ${network}`);
     }
@@ -713,6 +762,8 @@ function generateClashProxyNode(cfg, port) {
             template = buildClashVlessTlsVisionNodeTemplate();
         } else if (security === 'tls' && network === 'xhttp') {
             template = buildClashVlessXhttpTlsNodeTemplate();
+        } else if (security === 'tls' && network === 'ws') {
+            template = buildClashVlessWsTlsNodeTemplate();
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
@@ -728,6 +779,7 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{path}/g, cfg.path || '/')
             .replace(/{mode}/g, cfg.mode || 'stream-one')
             .replace(/{xhttp_host}/g, yamlString(cfg.xhttpHost || cfg.host))
+            .replace(/{ws_host}/g, yamlString(cfg.wsHost || cfg.host))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));
     }
@@ -750,6 +802,10 @@ function generateClashProxyNode(cfg, port) {
 function generateClashConfigMulti(configs, ports, rulesStr) {
     let proxyNodes = '';
     const proxyNames = [];
+    const xhttpConfigs = configs.filter(cfg => vlessSecurity(cfg) === 'tls' && vlessNetwork(cfg) === 'xhttp');
+    const wsConfigs = configs.filter(cfg => vlessSecurity(cfg) === 'tls' && vlessNetwork(cfg) === 'ws');
+    const xhttpNames = xhttpConfigs.map(cfg => yamlString(cfg.name));
+    const wsNames = wsConfigs.map(cfg => yamlString(cfg.name));
 
     for (let i = 0; i < configs.length; i++) {
         proxyNodes += generateClashProxyNode(configs[i], ports[i]);
@@ -759,11 +815,15 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
     const sections = {
         fake_ip_filter: FAKE_IP_FILTER,
         proxy_nodes: proxyNodes,
+        ai_gemini_proxy_names: (xhttpNames.length ? xhttpNames : proxyNames).join('\n        - '),
+        download_proxy_names: (wsNames.length
+            ? [...wsNames, ...proxyNames.filter(name => !wsNames.includes(name))]
+            : proxyNames).join('\n        - '),
         proxy_names: proxyNames.join('\n        - '),
         rules_section: rulesStr
     };
     return CLASH_CONFIG_TEMPLATE.replace(
-        /{(fake_ip_filter|proxy_nodes|proxy_names|rules_section)}/g,
+        /{(fake_ip_filter|proxy_nodes|ai_gemini_proxy_names|download_proxy_names|proxy_names|rules_section)}/g,
         (_, section) => sections[section]
     );
 }

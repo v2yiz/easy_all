@@ -83,6 +83,8 @@ for (const part of [
   'DOMAIN,copilot.microsoft.com,PROXY',
   'DOMAIN-SUFFIX,microsoft.com,DIRECT',
   'DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY',
+  'DOMAIN,gemini.google.com,AI_GEMINI',
+  'DOMAIN-SUFFIX,github.com,DOWNLOAD',
   'IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve',
   'GEOSITE,geolocation-!cn,PROXY',
   'GEOIP,CN,DIRECT,no-resolve'
@@ -113,11 +115,13 @@ const checks = {
   'vless-xhttp': {
     link: ['vless://00000000-0000-4000-8000-000000000001@xhttp.example.com:443?',
       'security=tls', 'type=xhttp', 'fp=chrome', 'alpn=h2', 'path=%2Fhacxhttp', 'mode=stream-one',
-      'packetEncoding=xudp', '#MY_VLESS_XHTTP'],
+      'packetEncoding=xudp', '#MY_VLESS_XHTTP', 'type=ws', 'path=%2Fhacws',
+      'host=xhttp.example.com', '#MY_VLESS_WS'],
     yaml: ['type: vless', 'network: xhttp', 'port: 443', 'xhttp-opts:',
       'udp: true', 'path: /hacxhttp', 'mode: stream-one',
       'host: "xhttp.example.com"',
-      'alpn:', 'packet-encoding: xudp']
+      'alpn:', 'packet-encoding: xudp', 'network: ws', 'path: /hacws',
+      '- name: AI_GEMINI', '- name: DOWNLOAD']
   }
 };
 for (const part of checks[protocol].link) {
@@ -139,7 +143,7 @@ worker_runtime_accepts_default_node_array() {
 import fs from 'node:fs';
 
 const source = fs.readFileSync(process.argv[2], 'utf8')
-  .replace('const DEFAULT_NODE = NODE_CONFIG;', 'const DEFAULT_NODE = [NODE_CONFIG, NODE_CONFIG];');
+  .replace(/const DEFAULT_NODE = .*?;/, 'const DEFAULT_NODE = [NODE_CONFIG, NODE_CONFIG];');
 const encoded = Buffer.from(source).toString('base64');
 const worker = await import(`data:text/javascript;base64,${encoded}`);
 const env = {SUB_DOWNLOAD_NAME: 'Team.yaml'};
@@ -226,6 +230,9 @@ set_protocol_fixture() {
         NODE_NAME="MY_VLESS_XHTTP"
         VLESS_XHTTP_DOMAIN="xhttp.example.com"
         XHTTP_PATH="/hacxhttp"
+        VLESS_WS_PATH="/hacws"
+        VLESS_WS_NODE_NAME="MY_VLESS_WS"
+        XRAY_WS_LOOPBACK_PORT="10086"
         SUB_PORT_MODE="443"
         ;;
     esac
@@ -349,13 +356,15 @@ test_local_worker_matches_sample_outside_private_values() {
     local sample_content worker_content
     [[ -f "${ROOT_DIR}/worker.js" ]] || return 0
     sample_content=$(awk '
+        /^\/\/ EASY_ALL_CONFIG_START/ {in_config = 1; print; next}
+        /^\/\/ EASY_ALL_CONFIG_END/ {in_config = 0; print; next}
         /^const ALLOWED_TOKENS =/ {
             print "<TOKENS>"
             if ($0 !~ /;[[:space:]]*$/) tokens = 1
             next
         }
         tokens == 1 {if ($0 ~ /;[[:space:]]*$/) tokens = 0; next}
-        /^\/\/ ── .*节点/ {print "<NODES>"; nodes = 1; next}
+        in_config == 1 && /^\/\/ ── .*节点/ {if (nodes != 1) print "<NODES>"; nodes = 1; next}
         nodes == 1 && /^const DEFAULT_NODE =/ {
             print "<DEFAULT_NODE>"
             nodes = 0
@@ -364,13 +373,15 @@ test_local_worker_matches_sample_outside_private_values() {
         nodes != 1 {print}
     ' "${ROOT_DIR}/sample-worker.js")
     worker_content=$(awk '
+        /^\/\/ EASY_ALL_CONFIG_START/ {in_config = 1; print; next}
+        /^\/\/ EASY_ALL_CONFIG_END/ {in_config = 0; print; next}
         /^const ALLOWED_TOKENS =/ {
             print "<TOKENS>"
             if ($0 !~ /;[[:space:]]*$/) tokens = 1
             next
         }
         tokens == 1 {if ($0 ~ /;[[:space:]]*$/) tokens = 0; next}
-        /^\/\/ ── .*节点/ {print "<NODES>"; nodes = 1; next}
+        in_config == 1 && /^\/\/ ── .*节点/ {if (nodes != 1) print "<NODES>"; nodes = 1; next}
         nodes == 1 && /^const DEFAULT_NODE =/ {
             print "<DEFAULT_NODE>"
             nodes = 0
@@ -432,11 +443,16 @@ test_server_egress_family_configs() {
                  and (.routing.rules[1] | has("domain") | not)' \
                 <<<"${config}"
         if [[ "${protocol}" == "vless-xhttp" ]]; then
-            assert_success "XHTTP server uses Cloudflare-compatible stream-one transport" \
+            assert_success "XHTTP server exposes parallel Cloudflare-compatible XHTTP and WSS transports" \
                 jq -e \
-                    '.inbounds[0].streamSettings.network == "xhttp"
+                    '(.inbounds | length) == 2
+                     and .inbounds[0].streamSettings.network == "xhttp"
                      and .inbounds[0].streamSettings.xhttpSettings.mode == "stream-one"
-                     and .inbounds[0].streamSettings.xhttpSettings.path == "/hacxhttp"' \
+                     and .inbounds[0].streamSettings.xhttpSettings.path == "/hacxhttp"
+                     and .inbounds[1].streamSettings.network == "ws"
+                     and .inbounds[1].streamSettings.wsSettings.path == "/hacws"
+                     and .inbounds[1].port == 10086
+                     and .inbounds[1].sniffing.destOverride == ["http", "tls", "quic"]' \
                     <<<"${config}"
         fi
     done
@@ -603,8 +619,10 @@ test_state_and_lifecycle_guards() {
     assert_contains "state saves selected protocol" "PROTOCOL=vless-xhttp" "${content}"
     assert_contains "state saves XHTTP domain" "VLESS_XHTTP_DOMAIN=xhttp.example.com" "${content}"
     assert_contains "state saves XHTTP path" "XHTTP_PATH=/hacxhttp" "${content}"
+    assert_contains "state saves parallel WSS path" "VLESS_WS_PATH=/hacws" "${content}"
+    assert_contains "state saves parallel WSS node name" "VLESS_WS_NODE_NAME=MY_VLESS_WS" "${content}"
     assert_not_contains "state no longer saves legacy WSS domain key" "VLESS_WSS_DOMAIN=" "${content}"
-    assert_not_contains "state no longer saves legacy WS path key" "WS_PATH=" "${content}"
+    assert_not_contains "state no longer saves legacy WS path key" $'\nWS_PATH=' "${content}"
     assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
     assert_contains "state saves the Gemini address-family preference" \
         "GEMINI_IP_FAMILY=ipv4" "${content}"
@@ -663,8 +681,8 @@ EOF
         'alert "安装前请确认 Cloudflare DNS A 记录' "${script_content}"
     assert_contains "script renders post-install SSL notice in red" \
         'alert "Cloudflare SSL/TLS 模式请使用 Full' "${script_content}"
-    assert_contains "script requires Cloudflare gRPC for H2 stream-one" \
-        '必须开启 gRPC；XHTTP 不需要开启 WebSockets' "${script_content}"
+    assert_contains "script enables Cloudflare WebSockets for the download transport" \
+        'Cloudflare WebSockets 已开启' "${script_content}"
     assert_contains "script fixes XHTTP to 443" "VLESS XHTTP 不支持 dynamic" "${script_content}"
     assert_contains "script contains nginx gRPC XHTTP streaming proxy" \
         'grpc_pass grpc://127.0.0.1:' "${script_content}"
@@ -678,7 +696,7 @@ EOF
         'reuse-settings:' "${script_content}"
     assert_not_contains "client proxy nodes keep the local default address family" \
         'ip-version: ipv4-prefer' "${script_content}"
-    assert_not_contains "script removes nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
+    assert_contains "script configures nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
     assert_contains "script retries Cloudflare rate limits" "408 | 429 | 500 | 502 | 503 | 504" "${script_content}"
     assert_contains "script retries Cloudflare propagation errors" "10007" "${script_content}"
     assert_contains "script retries concurrent Worker updates" "10035" "${script_content}"
@@ -860,6 +878,9 @@ test_cloudflare_xhttp_streaming_configuration() {
         "PATCH /zones/zone-id/settings/grpc")
             printf '%s' '{"success":true,"result":{"id":"grpc","value":"on"}}'
             ;;
+        "PATCH /zones/zone-id/settings/websockets")
+            printf '%s' '{"success":true,"result":{"id":"websockets","value":"on"}}'
+            ;;
         "GET /zones/zone-id/rulesets/phases/http_config_settings/entrypoint")
             printf '%s' '{"success":true,"result":{"id":"ruleset-id","rules":[{"id":"rule-id","ref":"easy_all_xhttp_streaming"}]}}'
             ;;
@@ -877,10 +898,14 @@ test_cloudflare_xhttp_streaming_configuration() {
         'GET /zones?name=example.com&status=active&per_page=1' "$(<"${calls}")"
     assert_contains "Cloudflare XHTTP setup enables the zone gRPC switch" \
         'PATCH /zones/zone-id/settings/grpc' "$(<"${calls}")"
+    assert_contains "Cloudflare XHTTP setup enables the zone WebSockets switch" \
+        'PATCH /zones/zone-id/settings/websockets' "$(<"${calls}")"
     assert_contains "Cloudflare XHTTP setup updates its existing no-buffer rule" \
         'PATCH /zones/zone-id/rulesets/ruleset-id/rules/rule-id' "$(<"${calls}")"
     assert_contains "Cloudflare XHTTP setup reports the gRPC result" \
         'Cloudflare gRPC 已开启' "${output}"
+    assert_contains "Cloudflare XHTTP setup reports the WebSockets result" \
+        'Cloudflare WebSockets 已开启' "${output}"
     assert_contains "Cloudflare XHTTP setup reports the streaming rule result" \
         'Cloudflare XHTTP 双向无缓冲规则已配置' "${output}"
     eval "${original_cloudflare_zone_api}"
