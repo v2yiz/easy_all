@@ -325,6 +325,14 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,youtube.com,PROXY
   - DOMAIN-SUFFIX,ytimg.com,PROXY
 
+  # ==================== GitHub ====================
+  # GitHub 下载会跳转到 codeload.github.com、release-assets.githubusercontent.com
+  # 或 objects.githubusercontent.com；显式代理，避免依赖 GEOSITE / MATCH 兜底。
+  - DOMAIN-SUFFIX,github.com,PROXY
+  - DOMAIN-SUFFIX,githubusercontent.com,PROXY
+  - DOMAIN-SUFFIX,githubassets.com,PROXY
+  - DOMAIN-SUFFIX,githubstatus.com,PROXY
+
   # ==================== LINE ====================
   - DOMAIN-SUFFIX,scdn.co,PROXY
   - DOMAIN-SUFFIX,line.naver.jp,PROXY
@@ -474,6 +482,8 @@ dns:
           - '+.xn--ngstr-lra8j.com'
           - '+.youtube.com'
           - '+.github.com'
+          - '+.githubusercontent.com'
+          - '+.githubassets.com'
 
 proxies:
 {proxy_nodes}

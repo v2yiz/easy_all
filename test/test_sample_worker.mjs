@@ -97,6 +97,27 @@ describe('sample-worker Cloudflare Worker', () => {
         `${googlePlayDomain} must use fallback DNS`
       );
     }
+    for (const githubDomain of [
+      'github.com',
+      'githubusercontent.com',
+      'githubassets.com',
+      'githubstatus.com'
+    ]) {
+      assert.ok(
+        rules.includes(`DOMAIN-SUFFIX,${githubDomain},PROXY`),
+        `${githubDomain} must use PROXY`
+      );
+    }
+    for (const githubDownloadDomain of [
+      'github.com',
+      'githubusercontent.com',
+      'githubassets.com'
+    ]) {
+      assert.ok(
+        source.includes(`          - '+.${githubDownloadDomain}'`),
+        `${githubDownloadDomain} must use fallback DNS`
+      );
+    }
     assert.ok(rules.includes('IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve'));
     assert.equal(rules.some(rule => /^IP-CIDR,[^,]*:/.test(rule)), false);
     assert.equal(rules.some(rule => /24\.199\.123\.28|45\.76\.214\.191/.test(rule)), false);
