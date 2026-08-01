@@ -1,6 +1,6 @@
 # easy_all.sh
 
-`easy_all.sh` 是面向专用 Debian VPS 的统一安装脚本，一次只运行一种协议：
+`easy_all.sh` 与 `easy_cmcc.sh` 是轻量入口脚本；每次运行都会从本仓库下载并加载同一份 `easy_core.sh` 安装核心。核心一次只运行一种协议：
 
 | 协议 | 服务端 | 端口模式 | Cloudflare DNS |
 |---|---|---|---|
@@ -45,18 +45,16 @@ wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all
 
 ## 上海移动 / RackNerd 专用入口
 
-`easy_cmcc.sh` 不提供 Reality、AnyTLS 或协议切换，避免误将 RN 的 CDN 专用配置覆盖为通用节点。首次安装需要同时下载共享核心与 CMCC 入口：
+`easy_cmcc.sh` 不提供 Reality、AnyTLS 或协议切换，避免误将 RN 的 CDN 专用配置覆盖为通用节点。入口会自行下载共享核心，首次安装只需下载 CMCC 入口：
 
 ```bash
-wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" \
-  && wget -qO /root/easy_cmcc.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_cmcc.sh" \
-  && chmod 700 /root/easy_all.sh.new /root/easy_cmcc.sh.new \
-  && mv -f /root/easy_all.sh.new /root/easy_all.sh \
+wget -qO /root/easy_cmcc.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_cmcc.sh" \
+  && chmod 700 /root/easy_cmcc.sh.new \
   && mv -f /root/easy_cmcc.sh.new /root/easy_cmcc.sh \
   && /root/easy_cmcc.sh install
 ```
 
-安装后使用 `easy_cmcc update` 更新 RN 的 XHTTP/WSS、Nginx 和独立 `easy-cmcc` Worker。更新入口脚本本身时，也应重新下载上面的两个文件后再执行：
+安装后使用 `easy_cmcc update` 更新 RN 的 XHTTP/WSS、Nginx 和独立 `easy-cmcc` Worker。共享核心会自动更新；只有入口脚本本身变更时，才需要重新下载上面的 `easy_cmcc.sh`：
 
 ```bash
 /root/easy_cmcc.sh update

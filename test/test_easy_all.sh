@@ -200,8 +200,11 @@ source_script_copy() {
         -e "s|^readonly ACME_BIN=.*|readonly ACME_BIN=\"${TMP_DIR}/acme/acme.sh\"|" \
         -e "s|^readonly ACME_OWNERSHIP_MARKER=.*|readonly ACME_OWNERSHIP_MARKER=\"${TMP_DIR}/state/acme-installed-by-easy-all\"|" \
         -e "s|^readonly NFT_CONFIG=.*|readonly NFT_CONFIG=\"${TMP_DIR}/nftables.conf\"|" \
-        "${ROOT_DIR}/easy_all.sh" >"${SCRIPT_COPY}"
+        "${ROOT_DIR}/easy_core.sh" >"${SCRIPT_COPY}"
     # shellcheck source=/dev/null
+    EASY_ALL_PROFILE=general
+    EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_all.sh"
+    EASY_ALL_ENTRY_COMMAND=easy_all
     source "${SCRIPT_COPY}"
     SAMPLE_WORKER_SOURCE="${ROOT_DIR}/sample-worker.js"
 }
@@ -648,7 +651,7 @@ EOF
     assert_equal "legacy WS path is retained during XHTTP migration" \
         "/legacyws" "${XHTTP_PATH}"
 
-    script_content=$(<"${ROOT_DIR}/easy_all.sh")
+    script_content=$(<"${ROOT_DIR}/easy_core.sh")
     assert_not_contains "easy_all does not embed Clash rule contents" \
         "DOMAIN-SUFFIX,bilibili.com,DIRECT" "${script_content}"
     assert_not_contains "easy_all does not embed the fake IP filter" \

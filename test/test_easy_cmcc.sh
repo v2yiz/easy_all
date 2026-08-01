@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 TMP_DIR="$(mktemp -d)"
-FAKE_CORE="${TMP_DIR}/easy_all.sh"
+FAKE_CORE="${TMP_DIR}/easy_core.sh"
 
 cleanup() {
     rm -rf -- "${TMP_DIR}"
@@ -21,29 +21,24 @@ assert_equal() {
 }
 
 printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    'printf "profile=%s worker=%s args=%s\\n" "$EASY_ALL_PROFILE" "$WORKER_NAME" "$*"' \
+    'main() {' \
+    '  printf "profile=%s entry=%s worker=%s args=%s\\n" "$EASY_ALL_PROFILE" "$EASY_ALL_ENTRY_COMMAND" "${WORKER_NAME:-}" "$*"' \
+    '}' \
     >"${FAKE_CORE}"
-chmod 755 "${FAKE_CORE}"
 
-output=$(EASY_CMCC_CORE="${FAKE_CORE}" EASY_CMCC_REGISTER_COMMAND=0 \
+output=$(EASY_ALL_CORE_SOURCE="${FAKE_CORE}" "${ROOT_DIR}/easy_all.sh" update)
+assert_equal "generic entry downloads and loads the generic profile core" \
+    "profile=general entry=easy_all worker= args=update" "${output}"
+
+output=$(EASY_ALL_CORE_SOURCE="${FAKE_CORE}" WORKER_NAME=wrong-name \
     "${ROOT_DIR}/easy_cmcc.sh" install)
-assert_equal "install forces the CMCC profile and XHTTP" \
-    "profile=cmcc worker=easy-cmcc args=install vless-xhttp" "${output}"
+assert_equal "CMCC entry loads the dedicated profile and Worker name" \
+    "profile=cmcc entry=easy_cmcc worker=easy-cmcc args=install" "${output}"
 
-output=$(EASY_CMCC_CORE="${FAKE_CORE}" EASY_CMCC_REGISTER_COMMAND=0 WORKER_NAME=wrong-name \
-    "${ROOT_DIR}/easy_cmcc.sh" update)
-assert_equal "update keeps the dedicated Worker name" \
-    "profile=cmcc worker=easy-cmcc args=update" "${output}"
-
-if EASY_CMCC_CORE="${FAKE_CORE}" EASY_CMCC_REGISTER_COMMAND=0 \
-    "${ROOT_DIR}/easy_cmcc.sh" switch reality >/dev/null 2>&1; then
-    fail "CMCC entrypoint must reject protocol switching"
+if EASY_ALL_PROFILE=cmcc EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_cmcc.sh" \
+    EASY_ALL_ENTRY_COMMAND=easy_cmcc bash -c 'source "$1"; choose_protocol reality' \
+    _ "${ROOT_DIR}/easy_core.sh" >/dev/null 2>&1; then
+    fail "CMCC core must reject Reality"
 fi
 
-if EASY_CMCC_CORE="${FAKE_CORE}" EASY_CMCC_REGISTER_COMMAND=0 \
-    "${ROOT_DIR}/easy_cmcc.sh" install reality >/dev/null 2>&1; then
-    fail "CMCC entrypoint must reject an install protocol override"
-fi
-
-printf 'ok - easy_cmcc wrapper tests passed\n'
+printf 'ok - easy entrypoint tests passed\n'
