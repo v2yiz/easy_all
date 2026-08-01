@@ -355,45 +355,22 @@ test_sample_worker_template_guards() {
         sample_worker_fetch_fails "http://example.com/sample-worker.js"
 }
 
-test_local_worker_matches_sample_outside_private_values() {
-    local sample_content worker_content
+test_local_worker_is_single_proxy_profile() {
+    local worker_content
     [[ -f "${ROOT_DIR}/worker.js" ]] || return 0
-    sample_content=$(awk '
-        /^\/\/ EASY_ALL_CONFIG_START/ {in_config = 1; print; next}
-        /^\/\/ EASY_ALL_CONFIG_END/ {in_config = 0; print; next}
-        /^const ALLOWED_TOKENS =/ {
-            print "<TOKENS>"
-            if ($0 !~ /;[[:space:]]*$/) tokens = 1
-            next
-        }
-        tokens == 1 {if ($0 ~ /;[[:space:]]*$/) tokens = 0; next}
-        in_config == 1 && /^\/\/ ── .*节点/ {if (nodes != 1) print "<NODES>"; nodes = 1; next}
-        nodes == 1 && /^const DEFAULT_NODE =/ {
-            print "<DEFAULT_NODE>"
-            nodes = 0
-            next
-        }
-        nodes != 1 {print}
-    ' "${ROOT_DIR}/sample-worker.js")
-    worker_content=$(awk '
-        /^\/\/ EASY_ALL_CONFIG_START/ {in_config = 1; print; next}
-        /^\/\/ EASY_ALL_CONFIG_END/ {in_config = 0; print; next}
-        /^const ALLOWED_TOKENS =/ {
-            print "<TOKENS>"
-            if ($0 !~ /;[[:space:]]*$/) tokens = 1
-            next
-        }
-        tokens == 1 {if ($0 ~ /;[[:space:]]*$/) tokens = 0; next}
-        in_config == 1 && /^\/\/ ── .*节点/ {if (nodes != 1) print "<NODES>"; nodes = 1; next}
-        nodes == 1 && /^const DEFAULT_NODE =/ {
-            print "<DEFAULT_NODE>"
-            nodes = 0
-            next
-        }
-        nodes != 1 {print}
-    ' "${ROOT_DIR}/worker.js")
-    assert_equal "local worker differs from sample only in tokens and node definitions" \
-        "${sample_content}" "${worker_content}"
+    worker_content=$(<"${ROOT_DIR}/worker.js")
+    assert_contains "generic Worker uses BWG and VM nodes only" \
+        'const DEFAULT_NODE = [BWG_CONFIG, VM_CONFIG];' "${worker_content}"
+    assert_not_contains "generic Worker contains no CMCC node" \
+        'RN_CONFIG' "${worker_content}"
+    assert_not_contains "generic Worker contains no Gemini group" \
+        'name: AI_GEMINI' "${worker_content}"
+    assert_not_contains "generic Worker contains no download group" \
+        'name: DOWNLOAD' "${worker_content}"
+    assert_contains "generic Worker sends Gemini to PROXY" \
+        'DOMAIN,gemini.google.com,PROXY' "${worker_content}"
+    assert_contains "generic Worker sends GitHub to PROXY" \
+        'DOMAIN-SUFFIX,github.com,PROXY' "${worker_content}"
 }
 
 test_server_egress_family_configs() {
@@ -1045,7 +1022,7 @@ source_script_copy
 test_validators_and_defaults
 test_links_and_workers
 test_sample_worker_template_guards
-test_local_worker_matches_sample_outside_private_values
+test_local_worker_is_single_proxy_profile
 test_server_egress_family_configs
 test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
