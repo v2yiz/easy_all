@@ -1,0 +1,25 @@
+for_cmcc/README.md
+  s_eecd84e07bd2d7::t_6a4e2c212182ca 318
+for_cmcc/easy_cmcc
+  s_eecd84e07bd2d7::t_da62ae695c29e2 1875-1876,1878,1895-1911,1913-1914,1921-1923,1950-1952,1955,1958-1960,1971-1972,1974-1978
+for_cmcc/test/test_easy_cmcc.sh
+  s_eecd84e07bd2d7::t_26a410dcb988d9 301-304,314-320,380-389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b0dd57802e66c077aae1901029f789b2dc0e421f",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
