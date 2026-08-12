@@ -104,6 +104,16 @@ assert_contains "README documents Custom Domain conflict protection" "${readme}"
     "拒绝抢占已经绑定到其他 Worker"
 assert_contains "README documents idempotent Custom Domain updates" "${readme}" \
     '已绑定到当前 `easy-cmcc` 时直接复用，不重复创建'
+assert_contains "README distinguishes node and subscription domains" "${readme}" \
+    "两个域名不能相同"
+assert_contains "README documents the recommended interactive Worker choice" "${readme}" \
+    '订阅输出方式 | `1`，自动部署 Worker'
+assert_contains "README documents client import" "${readme}" \
+    "客户端导入与验收"
+assert_contains "README documents IPv4 and IPv6 LAN bypass" "${readme}" \
+    "RFC1918 IPv4、IPv4 链路本地、IPv6 ULA、IPv6 链路本地"
+assert_contains "README provides standalone troubleshooting" "${readme}" \
+    "## 故障排查"
 [[ -s "${ROOT_DIR}/docs/images/cloudflare-worker-custom-domain.svg" ]] \
     || fail "README Worker Custom Domain figure is missing"
 [[ "${readme}" != *"方案 B"* ]] \

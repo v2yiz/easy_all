@@ -18,6 +18,26 @@
 
 公网接入始终是 TLS/TCP，不依赖 QUIC。订阅中的 `udp: true` 和 `packet-encoding: xudp` 表示代理内部可以承载 UDP，不代表客户端使用 UDP 连接 Cloudflare。
 
+## 部署对象与准备清单
+
+一套完整部署使用两个不同用途的域名。以下用 `node.example.com` 和 `sub.example.com` 举例：
+
+| 域名 | 用途 | 安装前 | 安装后 |
+|---|---|---|---|
+| `node.example.com` | XHTTP/WSS 节点入口 | 自己创建 A；有可用公网 IPv6 时再创建 AAAA；全部保持灰云并指向 VPS | 本机验收通过后把 A、AAAA 一起切为橙云 |
+| `sub.example.com` | Worker 订阅入口 | 推荐使用没有现有 A/AAAA/CNAME 的新主机名，不要提前创建解析 | 选择自动部署后，由 Worker Custom Domain 自动创建橙云 DNS 和边缘证书 |
+
+两个域名不能相同。节点域名连接 VPS，订阅域名只提供配置文件；把它们混用会导致 Custom Domain 接管节点请求。
+
+开始前准备：
+
+- 一台可使用 root 登录的独立 VPS，系统为 Debian 12/13 amd64；TCP 80、443 未被其他服务占用。
+- 一个已接入 Cloudflare、状态为 Active 的 Zone，以及节点域名和独立订阅域名。最简单的是放在同一个 Zone；订阅域名也可以位于同一账户下的另一个 Active Zone。
+- VPS 公网 IPv4；只有 VPS 确实拥有可用公网 IPv6 和默认 IPv6 路由时才创建 AAAA。
+- Cloudflare DNS API Token；推荐自动部署时还要准备 Account ID 和 Worker API Token。三者的用途与最小权限见下文“Cloudflare 凭据”。
+- 支持 VLESS、TLS、XHTTP 和 WebSocket 的近期 Mihomo/Clash Meta 客户端。旧客户端无法使用 XHTTP 时仍可手动选择 WSS 节点。
+- 在安装过程中保持当前 SSH 会话，不要提前切换节点域名为橙云。
+
 ## 安装前须知
 
 - 只支持 Debian 12/13、amd64、systemd 和 root，不支持容器。
@@ -40,11 +60,31 @@ wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/m
 
 交互安装会询问节点域名、Cloudflare DNS Token、订阅 Token 和 Worker 部署方式。选择自动部署时，还会询问独立的 Worker Custom Domain；填写后脚本会自动绑定，并由 Cloudflare 创建橙云 DNS 与证书。安装成功后会注册 `/usr/local/bin/easy_cmcc`。
 
-安装和本机验收成功后，再回到 Cloudflare 将节点域名的 A、AAAA 一起切为橙云。
+交互项按以下方式选择即可完成推荐部署：
+
+| 交互项 | 推荐选择 | 说明 |
+|---|---|---|
+| 定时重启 | `1`，每天凌晨 4 点 | 也可选择自定义小时或不配置；只管理带有 `easy_cmcc-managed-reboot` 标记的 root crontab 项 |
+| VLESS XHTTP 域名 | `node.example.com` | 安装时必须灰云，A 必须解析到当前 VPS 公网 IPv4 |
+| 订阅用户 Token 字典 | 使用自动生成值或填写自己的 JSON | URL 中使用的是 JSON 的 value，不是用户名 key |
+| Cloudflare DNS API Token | 输入准备好的 Zone Token | 输入不回显，用于 DNS-01 证书和节点 Zone 配置 |
+| 订阅输出方式 | `1`，自动部署 Worker | 提示的默认值是手动输出；要使用 Custom Domain 必须主动选择 `1` |
+| Worker 独立自定义订阅域名 | `sub.example.com` | 不得与节点域名相同，推荐使用没有现有 DNS 记录的新主机名 |
+| Cloudflare Account ID | 当前 Zone 所属账户的 Account ID | 不是 Zone ID |
+| Cloudflare Worker API Token | 输入准备好的 Account Token | 输入不回显，只用于部署 `easy-cmcc` Worker 和绑定 Custom Domain |
+
+安装和本机验收成功后：
+
+1. 回到 Cloudflare，把节点域名的 A、AAAA 一起切为 Proxied / 橙云。
+2. 确认 SSL/TLS 为 Full (Strict)，gRPC 与 WebSockets 已开启，XHTTP 双向 body buffering 均为 `None`。
+3. 执行 `easy_cmcc status` 和 `easy_cmcc subscription`，确认服务与首选订阅地址。
+4. 把 Clash Meta 地址导入 Mihomo/Clash Verge；不要把带 Token 的订阅 URL 公开或写入仓库。
+5. 安装 XanMod 后需要重启一次才能切换到新内核。可等待已配置的定时重启，也可以在确认 SSH 和服务正常后手动 `reboot`；重启后用 `uname -r` 检查当前内核。
 
 ## 常用命令
 
 ```bash
+easy_cmcc help
 easy_cmcc show
 easy_cmcc subscription
 easy_cmcc status
@@ -56,6 +96,7 @@ easy_cmcc register-command
 easy_cmcc uninstall
 ```
 
+- `help`：显示当前单文件支持的命令。
 - `show`：显示 XHTTP `stream-up`、XHTTP `stream-one`、WSS 节点链接和 Mihomo 节点片段。
 - `subscription`：同时显示节点、Worker 名称、Custom Domain、`workers.dev` 备用地址和首选订阅地址。
 - `status`：显示域名、两个路径、Gemini 出口地址族、Xray/Nginx、TCP 443 和 Worker Custom Domain 状态。
@@ -63,6 +104,7 @@ easy_cmcc uninstall
 - `update-sub`：刷新服务端策略和订阅，可选择自动部署、输出 Worker 或只输出链接。
 - `update-core`：更新 Xray；新版本启动验收失败时自动恢复旧版本。
 - `renew-cert`：强制续期当前域名证书并重载服务。
+- `register-command`：把当前单文件重新注册到 `/usr/local/bin/easy_cmcc`，通常不需要单独执行。
 - `uninstall`：彻底删除 easy_cmcc 管理的本机服务、状态、证书、命令和备份，不删除远端 Worker。
 
 `easy_cmcc update` 使用当前单文件更新配置，不会下载新版安装器。安装器本身有更新时，请重新执行上面的原子下载命令，并把最后的 `install` 改为 `update`：
@@ -74,6 +116,31 @@ wget -qO /root/easy_cmcc.new \
   && mv -f /root/easy_cmcc.new /root/easy_cmcc \
   && /root/easy_cmcc update
 ```
+
+证书由独立的 `/root/.acme-cmcc.sh/` 管理。acme.sh 的续期任务成功更新证书后会自动重载 Nginx；`renew-cert` 用于需要立即强制续期和验收的场景。定时重启与证书续期是两套独立任务。
+
+## 客户端导入与验收
+
+执行：
+
+```bash
+easy_cmcc subscription
+```
+
+输出中包含两类订阅：
+
+- `通用订阅`：base64 编码的三个 VLESS 节点，适合支持这些节点参数的通用客户端。
+- `Clash Meta`：完整 Mihomo YAML，包含三个节点、DNS、TUN、规则集以及 `PROXY`、`GITHUB`、`GOOGLE` 分组；Clash Verge 应优先导入这一条。
+
+导入后使用“规则”模式。配置默认启用 TUN，局域网仍按 IPv4/IPv6 私网范围直连：RFC1918 IPv4、IPv4 链路本地、IPv6 ULA、IPv6 链路本地以及 `.lan`、`.local` 不经过代理。国内常用服务和中国 IP 直连，其余未命中流量进入 `PROXY`。
+
+首次验收建议：
+
+1. 在 `PROXY` 中保留默认 `stream-up`，分别测试普通网页与下载。
+2. 测试 GitHub 下载时查看 `GITHUB`；如果现场 WSS 持续更快，只切换这个组即可。
+3. 测试 Gemini/Google/YouTube 时查看 `GOOGLE`，不要用其他组的选择结果判断 Google 链路。
+4. 如果 XHTTP 在当前客户端不可用，先升级客户端核心；也可暂时将相应分组切到 WSS。
+5. 浏览器“安全 DNS”使用当前服务提供商或关闭，避免自定义 DoH/DoT 绕过 Mihomo DNS 劫持。
 
 ## 最优兼容模式与分流
 
@@ -113,7 +180,7 @@ CDN 拨号使用双栈竞速：Mihomo 顶层启用 `ipv6: true`、`tcp-concurren
 
 节点域名例如 `rn.example.com`：
 
-1. A 记录填写低价无优化VPSVPS 公网 IPv4，代理状态设为 DNS only。
+1. A 记录填写当前 VPS 公网 IPv4，代理状态设为 DNS only。
 2. 只有 VPS 确实拥有可用公网 IPv6 时才添加 AAAA；它也必须为 DNS only。
 3. 等待本地 DNS、`1.1.1.1` 和 `8.8.8.8` 都解析到源站后再安装。
 
@@ -144,6 +211,8 @@ WSS 路径不需要 body-buffering Configuration Rule。脚本会为 XHTTP 和 W
 
 这是 Cloudflare 账户的 Account ID，不是域名的 Zone ID。它用于部署 Worker，会保存到权限为 `0600` 的状态文件中，供后续更新复用。
 
+在 Cloudflare Dashboard 进入节点域名所属账户的 **Account home**，复制页面显示的 Account ID；也可以从账户主页 URL 中核对。不要复制域名 Overview 页面中的 Zone ID。
+
 ### CF_DNS_API_TOKEN
 
 资源建议限制到节点域名所在的单个 Zone，并授予：
@@ -155,6 +224,8 @@ WSS 路径不需要 body-buffering Configuration Rule。脚本会为 XHTTP 和 W
 
 DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 gRPC/WebSockets；Config Rules Edit 用于配置 XHTTP 双向无缓冲。
 
+创建时选择 **Create Custom Token**，把 Zone Resources 限制到节点域名所在的单个 Zone。脚本不会使用 Global API Key。
+
 ### CF_WORKER_API_TOKEN
 
 资源建议限制到实际使用的单个 Account，只授予：
@@ -163,6 +234,8 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 
 脚本使用它 replace Worker module、启用 workers.dev、读取账户子域名，并创建或复用 Worker Custom Domain。Custom Domain API 同样只要求 Workers Scripts Edit，不需要给这个 Token 增加 DNS 或 Workers Routes 权限。`easy_cmcc` 不会把两个 API Token 写入 `/etc/easy_cmcc/state.env`；为自动续期证书，acme.sh 的 `dns_cf` 插件可能把 DNS 凭据保存在权限受限的 `/root/.acme-cmcc.sh/` 中。Worker Token 不会持久保存，交互更新时会重新提示输入。
 
+创建时同样选择 **Create Custom Token**，把 Account Resources 限制到实际部署 Worker 的单个账户。DNS Token 与 Worker Token 应分开创建，不要为了省事给同一个 Token 同时授予 Zone 和 Account 的宽权限。
+
 ## Worker 订阅
 
 安装或 `update-sub` 支持三种模式：
@@ -170,6 +243,8 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 1. 自动部署：通过 Cloudflare API replace Worker，并可自动绑定独立 Custom Domain。
 2. 手动部署：输出完整 Worker 源码。
 3. 只输出三个 XHTTP/WSS 节点链接。
+
+自动部署是推荐模式，也是脚本自动创建/复用 Custom Domain 和执行订阅 HTTP 验收的唯一模式。手动模式会把源码保存到 `/etc/easy_cmcc/subscribe-worker.js` 并输出到终端，可按提示使用 Wrangler 或 Cloudflare Dashboard 部署，但脚本不会自动绑定域名或记录订阅 URL；只输出链接模式不会部署 Worker。以后要改用自动部署，可执行 `easy_cmcc update-sub` 并选择 `1`。
 
 默认 Worker 名称为 `easy-cmcc`，默认 Clash 下载文件名为 `EASY_CMCC`。未配置 Custom Domain 时，自动部署成功后提供：
 
@@ -251,6 +326,9 @@ Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflar
 | `/etc/easy_cmcc/backups/` | 安装前及更新过程备份 |
 | `/etc/easy_cmcc/xray/` | Xray 二进制、版本与配置 |
 | `/etc/easy_cmcc/certs/` | 当前域名证书副本 |
+| `/etc/sysctl.d/99-easy-cmcc-bbr.conf` | `fq + BBR` 与 32 MiB TCP 缓冲配置 |
+| `/etc/sysctl.d/99-easy-cmcc-enable-ipv6.conf` | 保持内核 IPv6 能力开启，不代表 VPS 一定拥有公网 IPv6 |
+| `/etc/nftables.conf` | 完整防火墙配置；放行检测到的 SSH 端口、TCP 80/443 与 ICMP/ICMPv6 |
 | `/usr/local/lib/easy_cmcc/easy_cmcc` | 注册后的单文件安装器 |
 | `/usr/local/bin/easy_cmcc` | 命令软链接 |
 | `/etc/systemd/system/easy-cmcc-xray.service` | 独立 Xray 服务 |
@@ -263,6 +341,34 @@ Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflar
 `uninstall` 默认就是完整本机 purge，不需要 `--purge`：它停止并移除 easy_cmcc 服务、恢复未被用户再次修改的安装前 nftables、删除专属定时重启任务、状态、证书、命令和备份。XanMod、已安装软件包及系统级 BBR/IPv6 初始化不会降级，远端 Cloudflare Worker 及其 Custom Domain 不会删除。
 
 旧版 CMCC 若仍使用 `/etc/easy_all`、`easy-all-xray.service` 或旧入口，本套件不会自动接管。迁移前先保存订阅和 Cloudflare 凭据，使用旧入口卸载，再安装当前 `easy_cmcc`，避免两套服务争用 TCP 443 和 `/etc/nftables.conf`。
+
+状态文件、生成的 Worker 和订阅 URL 都包含敏感信息。不要公开 `/etc/easy_cmcc/state.env`、`subscribe-worker.js`、完整订阅 URL 或未经检查的终端输出。部署日志会主动脱敏，但分享前仍应自行检查。
+
+## 故障排查
+
+先执行以下只读检查：
+
+```bash
+easy_cmcc status
+systemctl status easy-cmcc-xray nginx --no-pager
+journalctl -u easy-cmcc-xray -u nginx -n 100 --no-pager
+nginx -t
+nft list ruleset
+```
+
+常见问题：
+
+- 安装提示 A 记录不是本机公网 IPv4：节点域名仍是橙云、DNS 尚未传播，或者存在多个指向其他地址的 A 记录。切回灰云后分别用 `dig +short A node.example.com`、`dig +short A node.example.com @1.1.1.1` 和 `dig +short A node.example.com @8.8.8.8` 核对。
+- Let's Encrypt 申请失败：确认系统时间正确，DNS Token 至少具备 DNS Edit 与 Zone Read，并且 Token 资源包含节点域名所在 Zone。脚本固定使用独立 acme.sh home 和 Let's Encrypt，不需要 ZeroSSL EAB。
+- 橙云后所有节点不可用：确认 A、AAAA 都已橙云，SSL/TLS 不是 Flexible，TCP 443 可达；如果存在 AAAA，它必须指向这台 VPS 的真实公网 IPv6。
+- WSS 可用但 XHTTP 不可用：优先检查客户端核心是否支持 XHTTP、Cloudflare gRPC 是否开启，以及 XHTTP 路径的 Request/Response body buffering 是否都为 `None`。
+- XHTTP 可用但 WSS 不可用：检查 Cloudflare WebSockets 开关，并确认没有 Cache Rule 或其他 Configuration Rule 改写 WSS 路径。
+- 订阅返回 HTTP 403：URL 中的 token 不在 Token 字典的 value 中；用户名 key 不能代替 token。
+- 订阅返回 HTTP 404：必须访问 `/subscribe`，同时检查 Custom Domain 是否确实绑定到 `easy-cmcc`，且没有把节点域名误当成订阅域名。
+- Worker API 部署成功但脚本验收暂时出现 404/500：先等待 Cloudflare 发布和 Custom Domain 证书传播，再查看 `/etc/easy_cmcc/last-worker-deploy.log`。执行 `easy_cmcc subscription` 核对当前首选地址；需要重新发布时运行 `easy_cmcc update`，或运行 `easy_cmcc update-sub` 后选择自动部署。
+- 重启后无法连接：从 VPS 控制台检查 `nft list ruleset` 和 SSH 实际监听端口。脚本会自动识别并放行 SSH 端口，但它接管完整 `/etc/nftables.conf`，安装前存在的自定义规则不会合并进新规则。
+
+首次安装在完成 Worker 前失败时，会恢复安装前的服务、nftables、crontab 与 BBR 配置，并清理本次服务数据；已经升级的软件包和已经安装的内核不会降级。更新订阅时，Worker replace 前失败会回滚本机配置；replace 完成后则保留与远端 Worker 匹配的新配置。
 
 ## 本地测试
 
