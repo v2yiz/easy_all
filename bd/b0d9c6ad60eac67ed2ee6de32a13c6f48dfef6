@@ -1,0 +1,37 @@
+README.md
+  s_eecd84e07bd2d7::t_e7f12b128ab7f5 261-267
+for_cmcc/README.md
+  s_eecd84e07bd2d7::t_2c33677c42221f 263-269
+for_cmcc/package.json
+  s_eecd84e07bd2d7::t_2cc158e50eb3b5 6-7
+for_cmcc/sample-worker.js
+  s_eecd84e07bd2d7::t_9cb6a188cd679b 3,7-8,46-47,63-64,79-80,83-87,464,681-699,701,709-713,715-716,718-723,729-731,736-737,740,744,749,753,757,799,810-811,813-817,869-888,892-895,898,905,920,930,935-936,938-939
+for_cmcc/test/test_sample_worker.mjs
+  s_eecd84e07bd2d7::t_6a14b4a279721c 2-5,37-66,198-239,253,255,261-271,278-279,289-291,300-316,319,329-333,335-339,359,422,425-426,431,433,436-437,441-442,451,458,471-506
+package.json
+  s_eecd84e07bd2d7::t_7e44e486fa17af 6-7
+sample-worker.js
+  s_eecd84e07bd2d7::t_d37e000a370833 43-44,56-57,648-666,676-680,682-689,691-693,699-701,706-707,729,739,796,798-802,845-864,868-871,874,881,896,906,911-912,914-915
+test/test_easy_all.sh
+  s_eecd84e07bd2d7::t_5aa0c4570aa3f1 53,58,118,134-138,274,281-302,538
+test/test_sample_worker.mjs
+  s_eecd84e07bd2d7::t_492e0f9f2ab286 2-5,37-66,198-239,261,297,316-317,320,403-404,426,436-492
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bdb0d9c6ad60eac67ed2ee6de32a13c6f48dfef6",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
