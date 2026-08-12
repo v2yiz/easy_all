@@ -572,6 +572,42 @@ validate_reality_target() {
     [[ "${port}" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
 }
 
+collect_reality_node_host() {
+    local detected_ip=""
+    [[ -z "${NODE_HOST:-}" ]] || return 0
+
+    if detected_ip=$(detect_public_ipv4); then
+        if [[ -t 0 ]]; then
+            info "已自动检测本机公网 IPv4：${detected_ip}；直接回车使用，或输入其他入站 IPv4/灰云域名"
+            NODE_HOST=$(prompt_value \
+                "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" \
+                "${detected_ip}")
+        else
+            NODE_HOST=${detected_ip}
+        fi
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        warn "无法自动检测本机公网 IPv4，请手动填写客户端可连接的入站地址"
+        NODE_HOST=$(prompt_value \
+            "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" "")
+        return 0
+    fi
+    die "无法自动检测 Reality 节点公网 IPv4；非交互模式请设置 NODE_HOST"
+}
+
+collect_reality_target() {
+    [[ -z "${REALITY_TARGET:-}" ]] || return 0
+    if [[ -t 0 ]]; then
+        REALITY_TARGET=$(prompt_value \
+            "Reality SNI / 伪装目标（域名:端口）" \
+            "${DEFAULT_REALITY_TARGET}")
+    else
+        REALITY_TARGET=${DEFAULT_REALITY_TARGET}
+    fi
+}
+
 collect_install_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
     NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
@@ -579,10 +615,10 @@ collect_install_inputs() {
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
     case "${PROTOCOL}" in
     reality)
-        NODE_HOST=${NODE_HOST:-$(prompt_value "Reality 节点公网 IPv4 或域名" "")}
+        collect_reality_node_host
         validate_domain "${NODE_HOST}" || validate_ipv4 "${NODE_HOST}" \
             || die "Reality 节点地址无效：${NODE_HOST}"
-        REALITY_TARGET=${REALITY_TARGET:-${DEFAULT_REALITY_TARGET}}
+        collect_reality_target
         validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
         SUB_PORT_MODE=${SUB_PORT_MODE:-${DEFAULT_REALITY_PORT_MODE}}
         ;;

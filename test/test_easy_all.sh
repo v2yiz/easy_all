@@ -280,6 +280,43 @@ test_validators_and_defaults() {
             "5 5 * * * /usr/local/bin/backup" | filter_managed_reboot_cron)"
 }
 
+test_reality_node_host_detection() {
+    local detected preserved default_target explicit_target
+    detected=$(
+        NODE_HOST=""
+        detect_public_ipv4() { printf '%s\n' "198.51.100.23"; }
+        collect_reality_node_host
+        printf '%s' "${NODE_HOST}"
+    )
+    assert_equal "Reality defaults to the detected public IPv4" \
+        "198.51.100.23" "${detected}"
+
+    preserved=$(
+        NODE_HOST="reality.example.com"
+        detect_public_ipv4() { return 1; }
+        collect_reality_node_host
+        printf '%s' "${NODE_HOST}"
+    )
+    assert_equal "explicit Reality node domain overrides auto-detection" \
+        "reality.example.com" "${preserved}"
+
+    default_target=$(
+        REALITY_TARGET=""
+        collect_reality_target
+        printf '%s' "${REALITY_TARGET}"
+    )
+    assert_equal "Reality target defaults non-interactively" \
+        "${DEFAULT_REALITY_TARGET}" "${default_target}"
+
+    explicit_target=$(
+        REALITY_TARGET="cdn.example.com:443"
+        collect_reality_target
+        printf '%s' "${REALITY_TARGET}"
+    )
+    assert_equal "explicit Reality SNI target overrides the default" \
+        "cdn.example.com:443" "${explicit_target}"
+}
+
 test_links_and_workers() {
     local protocol port_mode link yaml worker sample_rules generated_rules
     for protocol in reality anytls; do
@@ -652,6 +689,10 @@ EOF
         "sysctl -q -w net.ipv4.tcp_fastopen=1" "${script_content}"
     assert_contains "easy_all resets legacy unsent queue override" \
         "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295" "${script_content}"
+    assert_contains "Reality node prompt offers detected IPv4 as its default" \
+        '"${detected_ip}"' "${script_content}"
+    assert_contains "Reality setup exposes an SNI target prompt" \
+        "Reality SNI / 伪装目标（域名:端口）" "${script_content}"
     assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
     assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
 
@@ -963,6 +1004,7 @@ test_runtime_refresh_rolls_back_invalid_config() {
 
 source_script_copy
 test_validators_and_defaults
+test_reality_node_host_detection
 test_links_and_workers
 test_sample_worker_template_guards
 test_server_egress_family_configs

@@ -73,7 +73,11 @@ easy_all uninstall
 sudo ./easy_all install reality
 ```
 
-安装时会询问节点地址、Reality 目标和订阅端口模式。输出为 VLESS TCP Reality Vision，包含 `security=reality`、`type=tcp`、`flow=xtls-rprx-vision`、public key 和 short ID。
+脚本会自动探测 VPS 公网 IPv4，并把它作为 Reality 客户端连接地址的默认值；直接回车即可采用。若服务器使用 NAT、浮动 IP、额外入站 IP，或者希望订阅显示域名，可以手动覆盖为客户端实际可达的 IPv4 或域名。域名必须直接解析到 VPS，托管在 Cloudflare 时保持 DNS only / 灰云，不能通过普通橙云 CDN 代理 Reality。
+
+下一项会单独询问 `Reality SNI / 伪装目标（域名:端口）`，默认是 `swdist.apple.com:443`，直接回车即可采用，也可以输入其他可用的 TLS 1.3 站点。脚本将冒号前的域名同时写入服务端 `serverNames` 和客户端 SNI，并把完整的 `域名:端口` 写入 Reality `dest`；因此客户端连接地址与 SNI 是两个不同参数。
+
+输出为 VLESS TCP Reality Vision，包含 `security=reality`、`type=tcp`、`flow=xtls-rprx-vision`、public key 和 short ID。Reality 的订阅端口模式默认为 `443`；需要 `dynamic` 时可通过 `SUB_PORT_MODE=dynamic` 指定。
 
 ### AnyTLS
 
