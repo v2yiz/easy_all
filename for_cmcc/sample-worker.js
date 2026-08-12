@@ -335,11 +335,12 @@ const EMBEDDED_CLASH_RULES = `rules:
 const CLASH_CONFIG_TEMPLATE = `mixed-port: 1080
 allow-lan: false
 mode: rule
-log-level: warning
+log-level: error
 ipv6: true
 external-controller: '127.0.0.1:9090'
 unified-delay: true
 tcp-concurrent: false
+find-process-mode: off
 profile:
     store-selected: true
 
@@ -457,6 +458,9 @@ function buildClashVlessXhttpTlsNodeTemplate() {
       host: {xhttp_host}
       path: {path}
       mode: {mode}
+      reuse-settings:
+        max-concurrency: "8"
+        h-keep-alive-period: -1
     smux:
       enabled: false
 `;

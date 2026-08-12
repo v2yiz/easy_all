@@ -1409,7 +1409,7 @@ build_mihomo_node() {
             "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
             "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
-            "      mode: stream-one\n    smux:\n      enabled: false\n"'
+            "      mode: stream-one\n      reuse-settings:\n        max-concurrency: \"8\"\n        h-keep-alive-period: -1\n    smux:\n      enabled: false\n"'
         ;;
     esac
 }

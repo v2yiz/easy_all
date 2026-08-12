@@ -345,10 +345,11 @@ const EMBEDDED_CLASH_RULES = `rules:
 const CLASH_CONFIG_TEMPLATE = `mixed-port: 1080
 allow-lan: false
 mode: rule
-log-level: info
+log-level: error
 ipv6: false
 external-controller: '127.0.0.1:9090'
 unified-delay: true
+find-process-mode: off
 profile:
     store-selected: true
 

@@ -359,7 +359,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /^ipv6: true$/m);
     assert.match(body, /^\s+ipv6: false$/m);
     assert.match(body, /^tcp-concurrent: false$/m);
-    assert.match(body, /^log-level: warning$/m);
+    assert.match(body, /^find-process-mode: off$/m);
+    assert.match(body, /^log-level: error$/m);
     assert.match(body, /^sniffer:\n    enable: false$/m);
     assert.match(body, /^    stack: system$/m);
     assert.doesNotMatch(body, /fake-ip-range6:/);
@@ -425,7 +426,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /path: "\/randompath"/);
     assert.match(body, /mode: "stream-one"/);
     assert.match(body, /host: "xhttp\.example\.com"/);
-    assert.doesNotMatch(body, /reuse-settings:/);
+    assert.match(body, /reuse-settings:\n        max-concurrency: "8"\n        h-keep-alive-period: -1/);
     assert.match(body, /packet-encoding: xudp/);
     assert.match(body, /alpn:\n      - h2/);
     assert.match(body, /ip-version: "dual"/);
@@ -444,6 +445,7 @@ describe('sample-worker Cloudflare Worker', () => {
     const xhttpNode = body.slice(body.indexOf('- name: "VLESS_XHTTP"'));
     assert.match(xhttpNode, /network: xhttp/);
     assert.match(xhttpNode, /xhttp-opts:/);
+    assert.match(xhttpNode, /reuse-settings:/);
     assert.match(xhttpNode, /smux:\n      enabled: false/);
     assert.doesNotMatch(xhttpNode, /flow: xtls-rprx-vision/);
     assert.doesNotMatch(body, /reality|anytls|trojan/i);

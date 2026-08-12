@@ -969,6 +969,10 @@ EOF
         "先等待 10 秒，再进行最多 12 次订阅 HTTP 验收" "${readme_content}"
     assert_contains "README documents automatic Custom Domain reuse" \
         "已经绑定当前 Worker 时直接复用" "${readme_content}"
+    assert_contains "README documents reduced client logging" \
+        '日志使用 `error` 级别' "${readme_content}"
+    assert_contains "README documents disabled process matching" \
+        '`find-process-mode: off`' "${readme_content}"
     assert_contains "README removes placeholder DNS setup" \
         "不创建占位 DNS，也不配置 Worker Route" "${readme_content}"
     assert_not_contains "README no longer recommends the 2.2.2.2 placeholder" \

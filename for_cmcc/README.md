@@ -146,11 +146,13 @@ easy_cmcc subscription
 - `mode: stream-one`
 - `alpn: [h2]`
 - `packet-encoding: xudp`
+- `xhttp-opts.reuse-settings.max-concurrency: "8"`
+- `xhttp-opts.reuse-settings.h-keep-alive-period: -1`
 - `smux.enabled: false`
 
 Xray 服务端也固定为 `mode: stream-one`。Mihomo 只提供一个 `PROXY` 手动选择组，ChatGPT、Claude、Gemini、Google、GitHub 和其余代理流量都进入该组。
 
-客户端采用省电取向：`tcp-concurrent: false`，不对 Cloudflare 多地址并发建连；关闭客户端域名嗅探；日志降为 `warning`；TUN 使用资源占用更低的 `system` 栈。节点仍使用 `ip-version: dual`，保留中国移动蜂窝 IPv6 可用时的正常连接能力；应用侧 DNS 保持 `dns.ipv6: false`，避免向不完整 IPv6 网络下的应用返回不可达 Fake IPv6。
+客户端采用省电取向：`tcp-concurrent: false`，不对 Cloudflare 多地址并发建连；`find-process-mode: off` 关闭当前规则不需要的进程匹配；关闭客户端域名嗅探；日志降为 `error`；TUN 使用资源占用更低的 `system` 栈。XHTTP 每条 H2 底层连接最多复用 8 个并发代理请求，并以 `h-keep-alive-period: -1` 关闭空闲 H2 保活包，减少活跃使用时的重复 TCP/TLS/H2 建连，同时避免息屏后由空闲保活周期性唤醒移动网络。节点仍使用 `ip-version: dual`，保留中国移动蜂窝 IPv6 可用时的正常连接能力；应用侧 DNS 保持 `dns.ipv6: false`，避免向不完整 IPv6 网络下的应用返回不可达 Fake IPv6。
 
 配置不再加载与现有分流重复的远程 `private`、`proxy`、`direct`、`telegramcidr`、`lancidr`、`cncidr` provider。局域网与 Telegram IP 继续由显式规则处理，其他流量由 `GEOSITE`、`GEOIP` 和最终 `MATCH` 兜底，减少规则解析、内存和后台更新开销。
 

@@ -393,6 +393,8 @@ describe('sample-worker Cloudflare Worker', () => {
     );
     assert.match(body, /^ipv6: false$/m);
     assert.match(body, /^\s+ipv6: false$/m);
+    assert.match(body, /^log-level: error$/m);
+    assert.match(body, /^find-process-mode: off$/m);
     assert.doesNotMatch(body, /fake-ip-range6:/);
     assert.doesNotMatch(body, /inet6-address:/);
     assert.match(body, /^\s+mtu: 1500$/m);

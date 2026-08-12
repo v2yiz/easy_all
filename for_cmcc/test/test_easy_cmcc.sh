@@ -98,6 +98,12 @@ assert_contains "README documents the single PROXY group" "${readme}" \
     '只提供一个 `PROXY` 手动选择组'
 assert_contains "README documents power-conscious client settings" "${readme}" \
     '`tcp-concurrent: false`'
+assert_contains "README documents disabled process matching" "${readme}" \
+    '`find-process-mode: off`'
+assert_contains "README documents XHTTP connection reuse" "${readme}" \
+    '`xhttp-opts.reuse-settings.max-concurrency: "8"`'
+assert_contains "README documents disabled idle H2 keepalive" "${readme}" \
+    '`xhttp-opts.reuse-settings.h-keep-alive-period: -1`'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
     "DNS only / 灰云"
 assert_contains "README documents enabling the CDN after install" "${readme}" \
@@ -338,6 +344,10 @@ EOF
     mihomo_nodes=$(build_mihomo_node)
     assert_contains "Mihomo nodes race dual-stack CDN addresses" "${mihomo_nodes}" \
         "ip-version: dual"
+    assert_contains "Mihomo nodes reuse XHTTP connections" "${mihomo_nodes}" \
+        'max-concurrency: "8"'
+    assert_contains "Mihomo nodes disable idle H2 keepalive" "${mihomo_nodes}" \
+        "h-keep-alive-period: -1"
 
     custom_domain_api_calls="${TMP_DIR}/cmcc-custom-domain-api-calls"
     custom_domain_get_count="${TMP_DIR}/cmcc-custom-domain-get-count"
