@@ -315,7 +315,7 @@ https://sub.example.com/subscribe?token=owner-token-123&flag=clash
 
 ![为 easy-cmcc Worker 添加 Custom Domain](docs/images/cloudflare-worker-custom-domain.svg)
 
-Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflare 推荐的纯 Worker 自定义域名方式。每次安装或更新都会先按 hostname 查询：已绑定到当前 `easy-cmcc` 时直接复用，不重复创建；不存在时才创建；绑定到其他 Worker 时拒绝抢占。若绑定接口遇到 DNS 冲突，脚本会在回退前以指数退避再次查询；绑定冲突后会再次查询，确认已经绑定到当前 Worker 也视同成功。若多次复核仍没有当前 Worker 绑定，脚本会明确提示该主机名仍有外部 A/AAAA/CNAME 记录，回退到 `workers.dev`，不会删除或覆盖未知 DNS 记录；请清理冲突记录或改用没有现有解析的新主机名。脚本绑定后会直接把它作为 `easy_cmcc subscription` 的首选地址，同时保留 `workers.dev` 作为验收/排障备用地址。旧安装尚未保存 Custom Domain 时，执行 `easy_cmcc update` 会提示填写；如果之前已在控制台绑定，填写同一个域名即可自动识别并复用；如果留空，则继续只使用 `workers.dev`。Cloudflare 的 [Custom Domains 文档](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) 可用于核对机制与控制台状态。
+Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflare 推荐的纯 Worker 自定义域名方式。脚本不创建占位 DNS，也不配置 Worker Route：每次安装或更新只按 hostname 查询，已绑定到当前 `easy-cmcc` 时直接复用，不重复创建；不存在时才创建；绑定到其他 Worker 时拒绝抢占。若创建请求与另一次安装并发冲突，脚本会再查询一次，确认已绑定当前 Worker 也视同成功。脚本不会删除或覆盖 DNS。绑定后会直接把 Custom Domain 作为 `easy_cmcc subscription` 的首选地址，同时保留 `workers.dev` 作为验收/排障备用地址。旧安装尚未保存 Custom Domain 时，执行 `easy_cmcc update` 会提示填写；如果之前已在控制台绑定，填写同一个域名即可自动识别并复用；如果留空，则继续只使用 `workers.dev`。Cloudflare 的 [Custom Domains 文档](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) 可用于核对机制与控制台状态。
 
 ## 状态、隔离与卸载
 

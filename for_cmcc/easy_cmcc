@@ -1872,10 +1872,10 @@ report_cloudflare_api_failure() {
     fi
 }
 
-worker_custom_domain_service_query() {
-    local query=$1 stage=${2:-查询 Worker Custom Domain} response
+worker_custom_domain_service() {
+    local stage=${1:-查询 Worker Custom Domain} response
     response=$(cloudflare_api GET \
-        "/accounts/${CF_ACCOUNT_ID}/workers/domains?${query}" \
+        "/accounts/${CF_ACCOUNT_ID}/workers/domains?hostname=${WORKER_CUSTOM_DOMAIN}" \
         "${stage}") || {
         cloudflare_deploy_log "ERROR" "${stage}：网络层重试耗尽"
         return 1
@@ -1892,25 +1892,8 @@ worker_custom_domain_service_query() {
     ' <<<"${response}"
 }
 
-worker_custom_domain_service() {
-    local service
-    # The hostname-filtered list is the normal and least expensive lookup.
-    service=$(worker_custom_domain_service_query \
-        "hostname=${WORKER_CUSTOM_DOMAIN}" "${1:-查询 Worker Custom Domain}") || return 1
-    [[ -n "${service}" ]] && {
-        printf '%s' "${service}"
-        return 0
-    }
-
-    # Cloudflare's list endpoint is eventually consistent and, in some cases,
-    # the hostname filter lags behind the service index. A second lookup by
-    # the current Worker avoids attempting a duplicate attach in that window.
-    worker_custom_domain_service_query \
-        "service=${WORKER_NAME}" "${1:-查询 Worker Custom Domain}（按 Worker 复核）"
-}
-
 attach_worker_custom_domain() {
-    local response existing_service payload api_codes delay verification_failures=0
+    local response existing_service payload
     local normalized_existing normalized_worker
     [[ -n "${WORKER_CUSTOM_DOMAIN:-}" ]] || return 0
 
@@ -1943,37 +1926,19 @@ attach_worker_custom_domain() {
         return 1
     }
     jq -e '.success == true' <<<"${response}" >/dev/null || {
-        api_codes=$(jq -r '[.errors[]?.code | tostring] | join(",")' <<<"${response}" 2>/dev/null || true)
-        if [[ ",${api_codes}," == *,100117,* ]]; then
-            # Custom Domain API may report a DNS race while the binding has
-            # already become visible. Re-read before falling back to workers.dev.
-            # The list endpoint is eventually consistent, so use exponential
-            # backoff long enough to cover normal certificate/domain propagation.
-            for delay in 1 2 4 8 16; do
-                sleep "${delay}"
-                if ! existing_service=$(worker_custom_domain_service "复核 Worker Custom Domain"); then
-                    verification_failures=$((verification_failures + 1))
-                    continue
-                fi
-                normalized_existing=$(tr '[:upper:]' '[:lower:]' <<<"${existing_service}")
-                normalized_worker=$(tr '[:upper:]' '[:lower:]' <<<"${WORKER_NAME}")
-                if [[ "${normalized_existing}" == "${normalized_worker}" ]]; then
-                    WORKER_URL="https://${WORKER_CUSTOM_DOMAIN}"
-                    cloudflare_deploy_log "SUCCESS" \
-                        "Custom Domain 绑定请求返回冲突，但复核已确认已绑定当前 Worker：${WORKER_URL}"
-                    return 0
-                fi
-                if [[ -n "${existing_service}" ]]; then
-                    cloudflare_deploy_log "ERROR" \
-                        "Custom Domain ${WORKER_CUSTOM_DOMAIN} 已绑定到其他 Worker：${existing_service}；拒绝自动抢占"
-                    return 1
-                fi
-                cloudflare_deploy_log "INFO" \
-                    "复核 Worker Custom Domain：当前尚未发现绑定，继续等待下一次复核"
-            done
-            if ((verification_failures == 0)); then
+        # Cover concurrent/repeated installs with one final authoritative read.
+        if existing_service=$(worker_custom_domain_service "复核 Worker Custom Domain"); then
+            normalized_existing=$(tr '[:upper:]' '[:lower:]' <<<"${existing_service}")
+            normalized_worker=$(tr '[:upper:]' '[:lower:]' <<<"${WORKER_NAME}")
+            if [[ "${normalized_existing}" == "${normalized_worker}" ]]; then
+                WORKER_URL="https://${WORKER_CUSTOM_DOMAIN}"
+                cloudflare_deploy_log "SUCCESS" \
+                    "Custom Domain 已由当前 Worker 占用，直接复用：${WORKER_URL}"
+                return 0
+            fi
+            if [[ -n "${existing_service}" ]]; then
                 cloudflare_deploy_log "ERROR" \
-                    "Custom Domain ${WORKER_CUSTOM_DOMAIN} 未绑定到当前 Worker，且该主机名已有外部 DNS 记录；请删除该主机名的 A/AAAA/CNAME 后重试，或改用没有现有解析的新主机名"
+                    "Custom Domain ${WORKER_CUSTOM_DOMAIN} 已绑定到其他 Worker：${existing_service}；拒绝自动抢占"
                 return 1
             fi
         fi
