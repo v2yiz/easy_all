@@ -1,0 +1,25 @@
+for_cmcc/README.md
+  s_1b124f9d80d87b::t_705d410e559643 225,234,236,240
+for_cmcc/docs/images/cloudflare-worker-custom-domain.svg
+  s_1b124f9d80d87b::t_c96c797d45d5f1 3,12,24-25
+for_cmcc/test/test_easy_cmcc.sh
+  s_1b124f9d80d87b::t_e741ffba3cd71d 86,91-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "756710728d4304dcc132415f104ec09b73c7114f",
+  "prompts": {},
+  "sessions": {
+    "s_1b124f9d80d87b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff4de-146f-7850-86b6-ca6c89a1cd88",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
