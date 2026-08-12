@@ -178,7 +178,7 @@ https://easy-cmcc.<account-subdomain>.workers.dev/subscribe?token=owner-token-12
 https://easy-cmcc.<account-subdomain>.workers.dev/subscribe?token=owner-token-123&flag=clash
 ```
 
-第一条返回 base64 节点订阅，第二条返回 Mihomo/Clash YAML。
+第一条返回 base64 节点订阅，第二条返回 Mihomo/Clash YAML。这两个 `workers.dev` 地址主要用于脚本发布后的自动验收和临时排障；`*.workers.dev` 在中国大陆网络中存在较高的被阻断或不可达风险，**不建议作为长期订阅地址，推荐安装后立即为 Worker 绑定独立的自定义订阅域名**。
 
 Cloudflare API 请求会对网络错误、HTTP 408/429/5xx 和 Cloudflare `10007`、`10035` 做有限次数退避重试。Worker 部署完成后先等待 10 秒，再进行最多 12 次 base64 与 Clash HTTP 验收；每轮两个请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间命中不同版本。最近一次部署日志位于：
 
@@ -222,9 +222,38 @@ openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n'
 
 Token 字典会保存到 `/etc/easy_cmcc/state.env` 并写入生成的 Worker，因此该状态文件和 Worker 文件权限均为 `0600`。
 
-### 自定义订阅域名
+### 推荐：使用 Worker 自定义订阅域名
 
-默认 workers.dev 地址可以直接使用。如果需要 `https://sub.example.com/subscribe?...`，可在 Cloudflare 为 `easy-cmcc` Worker 配置 Custom Domain；或者创建一个橙云 DNS 记录后，再添加匹配 `sub.example.com/*` 的 Worker Route。订阅域名与节点域名可以不同，不要把 token 或查询参数写入 Route pattern。
+由于默认 `*.workers.dev` 被阻断或不可达的概率较高，推荐直接给 `easy-cmcc` Worker 绑定自己托管在 Cloudflare 的域名，例如 `sub.example.com`，不要等到默认域名失效后再切换。订阅路径和参数不变，只需把 URL 中的 Worker 主机名换掉：
+
+```text
+https://sub.example.com/subscribe?token=owner-token-123
+https://sub.example.com/subscribe?token=owner-token-123&flag=clash
+```
+
+`sub.example.com` 应是专门用于订阅的新主机名，**不要与 XHTTP/WSS 节点域名（例如 `rn.example.com`）共用**。Custom Domain 会接管该主机名的全部路径，而 `rn.example.com/*` 形式的 Worker Route 会截获节点的 XHTTP/WSS 请求，导致节点不可用。
+
+#### 方案 A：Custom Domain（推荐）
+
+进入 **Workers & Pages → easy-cmcc → Settings → Domains & Routes → Add → Custom Domain**，填写 `sub.example.com` 并确认。Cloudflare 会自动创建指向 Worker 的 DNS 记录并签发边缘证书，不需要先添加占位 DNS，也不要再为同一主机名重复添加 Route。
+
+![为 easy-cmcc Worker 添加 Custom Domain](docs/images/cloudflare-worker-custom-domain.svg)
+
+Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflare 当前推荐的纯 Worker 自定义域名方式。配置完成并显示 Active 后，直接使用上面的两个自定义订阅 URL。
+
+#### 方案 B：Proxied DNS + Worker Route
+
+如果需要使用 Route，先进入订阅域名所在 Zone 的 **DNS → Records → Add record**，为 `sub.example.com` 创建一条 **Proxied / 橙云** DNS 记录。没有真实源站时可添加 `AAAA` 记录并用 `100::` 作为占位地址；匹配 Route 的请求会在 Cloudflare 边缘进入 Worker，不会访问该占位地址。
+
+![为 easy-cmcc Worker Route 添加橙云 DNS](docs/images/cloudflare-worker-dns-route.svg)
+
+然后进入 **Workers & Pages → easy-cmcc → Settings → Domains & Routes → Add → Route**，选择 `example.com` Zone，Route 填写 `sub.example.com/*`。末尾的 `/*` 用于匹配 `/subscribe` 和带查询参数的完整订阅 URL；Route pattern 不支持查询参数，因此不要写入 `?token=...` 或 `&flag=clash`。
+
+![将自定义订阅域名路由到 easy-cmcc Worker](docs/images/cloudflare-worker-route.svg)
+
+保存后，将现有订阅 URL 中的 `easy-cmcc.<account-subdomain>.workers.dev` 替换成 `sub.example.com` 即可。手工添加 Custom Domain 或 Route 不会改变 `easy_cmcc subscription` 中记录的 `workers.dev` 地址，也不需要为脚本使用的 `CF_WORKER_API_TOKEN` 增加 Workers Routes 权限。
+
+两种方案只选一种。Cloudflare 的 [Custom Domains 文档](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) 和 [Workers Routes 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/) 可用于核对最新控制台入口和路由规则。
 
 ## 状态、隔离与卸载
 

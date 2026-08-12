@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
+  <title id="title">为 easy-cmcc Worker Route 添加橙云 DNS</title>
+  <desc id="desc">为 sub.example.com 创建指向占位地址 100:: 的橙云 AAAA 记录，供后续 Worker Route 使用。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="14" flood-opacity=".12"/></filter>
+    <style>
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#1f2937}.small{font-size:21px}.body{font-size:25px}.label{font-size:24px;font-weight:680}.title{font-size:42px;font-weight:760}.muted{fill:#6b7280}.orange{fill:#f48120}.green{fill:#0f9d72}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    </style>
+  </defs>
+  <rect width="1400" height="900" fill="#f5f7fb"/>
+  <text x="70" y="72" class="title">方案 B-1：先为 Route 创建橙云 DNS</text>
+  <text x="70" y="114" class="body muted">Zone: example.com → DNS → Records → Add record</text>
+  <rect x="70" y="152" width="1260" height="650" rx="24" fill="#fff" filter="url(#shadow)"/>
+  <rect x="70" y="152" width="1260" height="64" rx="24" fill="#1f2937"/>
+  <text x="110" y="194" class="small" style="fill:#fff">example.com  ›  DNS  ›  Records  ›  Add record</text>
+
+  <text x="110" y="285" class="label">Type</text>
+  <rect x="285" y="245" width="225" height="58" rx="10" fill="#fff" stroke="#cfd6df" stroke-width="2"/>
+  <text x="320" y="283" class="body mono">AAAA</text>
+  <text x="470" y="283" class="body muted">⌄</text>
+
+  <text x="110" y="375" class="label">Name</text>
+  <rect x="285" y="335" width="500" height="58" rx="10" fill="#fff" stroke="#f48120" stroke-width="3"/>
+  <text x="320" y="373" class="body mono">sub</text>
+  <text x="815" y="373" class="small muted">→ sub.example.com</text>
+
+  <text x="110" y="465" class="label">IPv6 address</text>
+  <rect x="285" y="425" width="500" height="58" rx="10" fill="#fff" stroke="#cfd6df" stroke-width="2"/>
+  <text x="320" y="463" class="body mono">100::</text>
+  <text x="815" y="463" class="small muted">仅作无源站 Route 占位</text>
+
+  <text x="110" y="555" class="label">Proxy status</text>
+  <rect x="285" y="515" width="500" height="58" rx="10" fill="#fff8f1" stroke="#f48120" stroke-width="3"/>
+  <circle cx="330" cy="544" r="18" fill="#f48120"/>
+  <path d="M318 549c-10-1-13-14-4-20 2-12 20-15 26-5 12-1 17 15 7 22-3 3-7 4-12 4z" fill="#fff"/>
+  <text x="370" y="553" class="body orange">Proxied</text>
+  <text x="815" y="553" class="small green">✓ 必须是橙云</text>
+
+  <text x="110" y="645" class="label">TTL</text>
+  <rect x="285" y="605" width="500" height="58" rx="10" fill="#fff" stroke="#cfd6df" stroke-width="2"/>
+  <text x="320" y="643" class="body">Auto</text>
+
+  <rect x="110" y="704" width="1170" height="66" rx="14" fill="#eefaf6"/>
+  <text x="145" y="746" class="body green">✓ 保存后确认 sub 显示橙色云朵，再添加 easy-cmcc Worker Route。</text>
+  <text x="70" y="842" class="small muted">100:: 是无源站场景的占位地址；Route 命中后请求在 Cloudflare 边缘进入 Worker，不会回源。</text>
+  <text x="70" y="874" class="small muted">订阅域名必须与 rn.example.com 节点域名不同，避免 Route 截获 XHTTP/WSS 节点流量。</text>
+</svg>
