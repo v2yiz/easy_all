@@ -298,6 +298,10 @@ EOF
                 ;;
             late-existing)
                 local get_count
+                if [[ "${path}" == *"service="* ]]; then
+                    printf '%s' '{"success":true,"result":[]}'
+                    return 0
+                fi
                 get_count=$(<"${custom_domain_get_count}")
                 get_count=$((get_count + 1))
                 printf '%s\n' "${get_count}" >"${custom_domain_get_count}"
@@ -305,6 +309,13 @@ EOF
                     printf '%s' '{"success":true,"result":[]}'
                 else
                     printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"easy-cmcc"}]}'
+                fi
+                ;;
+            service-fallback)
+                if [[ "${path}" == *"service="* ]]; then
+                    printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"easy-cmcc"}]}'
+                else
+                    printf '%s' '{"success":true,"result":[]}'
                 fi
                 ;;
             *) printf '%s' '{"success":true,"result":[]}' ;;
@@ -365,6 +376,16 @@ EOF
         "2" "$(<"${custom_domain_get_count}")"
     [[ "$(grep -c $'^PUT\t' "${custom_domain_api_calls}" || true)" == "1" ]] \
         || fail "CMCC must issue one bind request before confirming the race"
+
+    CUSTOM_DOMAIN_API_MODE="service-fallback"
+    : >"${custom_domain_api_calls}"
+    WORKER_URL=${WORKER_DEV_URL}
+    attach_worker_custom_domain \
+        || fail "CMCC must find a current Worker binding through the service index"
+    assert_equal "CMCC reuses a binding found through the service index" \
+        "https://sub.example.com" "${WORKER_URL}"
+    [[ "$(grep -c $'^PUT\t' "${custom_domain_api_calls}" || true)" == "0" ]] \
+        || fail "CMCC must not recreate a binding found through the service index"
 
     verify_calls_file="${TMP_DIR}/cmcc-verify-calls"
     verify_keys_file="${TMP_DIR}/cmcc-verify-version-keys"
