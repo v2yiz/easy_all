@@ -48,6 +48,12 @@ assert_contains "CMCC resets legacy unsent queue overrides" "${installer}" \
     "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295"
 assert_contains "CMCC update reapplies TCP tuning" "${installer}" \
     'info "刷新 BBR 与 TCP 参数"'
+assert_contains "CMCC persists the Worker Custom Domain" "${installer}" \
+    "WORKER_CUSTOM_DOMAIN=%q"
+assert_contains "CMCC uses the Custom Domain API" "${installer}" \
+    '/accounts/${CF_ACCOUNT_ID}/workers/domains'
+[[ "${installer}" != *'/workers/routes'* ]] \
+    || fail "CMCC must use Custom Domain instead of a classic Worker Route"
 assert_contains "CMCC acme.sh wrapper pins the isolated home" "${installer}" \
     '"${ACME_BIN}" "$@" --home "${ACME_HOME}"'
 for acme_action in set-default-ca issue install-cert renew remove list; do
@@ -78,8 +84,8 @@ assert_contains "README documents enabling the CDN after install" "${readme}" \
     "Proxied / 橙云"
 assert_contains "README documents isolated state" "${readme}" \
     "/etc/easy_cmcc/state.env"
-assert_contains "README documents that uninstall leaves the remote Worker" "${readme}" \
-    "远端 Cloudflare Worker 不会删除"
+assert_contains "README documents that uninstall leaves remote Cloudflare resources" "${readme}" \
+    "远端 Cloudflare Worker 及其 Custom Domain 不会删除"
 assert_contains "README documents the expanded Worker verification window" "${readme}" \
     "先等待 10 秒，再进行最多 12 次"
 assert_contains "README recommends the custom subscription domain" "${readme}" \
@@ -90,6 +96,14 @@ assert_contains "README keeps subscription and node domains separate" "${readme}
     "不要与 XHTTP/WSS 节点域名"
 assert_contains "README documents automatic CDN setup for Custom Domain" "${readme}" \
     "相当于自动完成 Cloudflare CDN 接入"
+assert_contains "README documents automatic Custom Domain attachment" "${readme}" \
+    "脚本会调用 Cloudflare Custom Domain API"
+assert_contains "README documents the workers.dev fallback" "${readme}" \
+    '回退到 `workers.dev`'
+assert_contains "README documents Custom Domain conflict protection" "${readme}" \
+    "拒绝抢占已经绑定到其他 Worker"
+assert_contains "README documents idempotent Custom Domain updates" "${readme}" \
+    '已绑定到当前 `easy-cmcc` 时直接复用，不重复创建'
 [[ -s "${ROOT_DIR}/docs/images/cloudflare-worker-custom-domain.svg" ]] \
     || fail "README Worker Custom Domain figure is missing"
 [[ "${readme}" != *"方案 B"* ]] \
@@ -126,6 +140,28 @@ fi
     XHTTP_PATH="/cmcc-xhttp"
     VLESS_WS_NODE_NAME="CMCC_WSS"
     VLESS_WS_PATH="/cmcc-wss"
+    WORKER_CUSTOM_DOMAIN="SUB.EXAMPLE.COM"
+    collect_worker_custom_domain
+    assert_equal "CMCC normalizes the Worker Custom Domain" \
+        "sub.example.com" "${WORKER_CUSTOM_DOMAIN}"
+    if (
+        WORKER_CUSTOM_DOMAIN="cmcc.example.com"
+        collect_worker_custom_domain
+    ) >/dev/null 2>&1; then
+        fail "CMCC must reject reusing the XHTTP/WSS node domain"
+    fi
+    if (
+        WORKER_CUSTOM_DOMAIN="easy-cmcc.example.workers.dev"
+        collect_worker_custom_domain
+    ) >/dev/null 2>&1; then
+        fail "CMCC must reject workers.dev as a Custom Domain"
+    fi
+    if (
+        WORKER_CUSTOM_DOMAIN="workers.dev"
+        collect_worker_custom_domain
+    ) >/dev/null 2>&1; then
+        fail "CMCC must reject the workers.dev apex as a Custom Domain"
+    fi
     links=$(build_node_link)
     assert_contains "subscription contains XHTTP" "${links}" "type=xhttp"
     assert_contains "XHTTP prefers stream-up" "${links}" "mode=stream-up"
@@ -177,6 +213,69 @@ EOF
     mihomo_nodes=$(build_mihomo_node)
     assert_contains "Mihomo nodes race dual-stack CDN addresses" "${mihomo_nodes}" \
         "ip-version: dual"
+
+    custom_domain_api_calls="${TMP_DIR}/cmcc-custom-domain-api-calls"
+    : >"${custom_domain_api_calls}"
+    CF_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
+    WORKER_NAME="easy-cmcc"
+    WORKER_CUSTOM_DOMAIN="sub.example.com"
+    WORKER_DEV_URL="https://easy-cmcc.account.workers.dev"
+    WORKER_URL=${WORKER_DEV_URL}
+    CUSTOM_DOMAIN_API_MODE="create"
+    cloudflare_deploy_log() { :; }
+    cloudflare_api() {
+        local method=$1 path=$2
+        shift 3
+        printf '%s\t%s\t%s\n' "${method}" "${path}" "$*" \
+            >>"${custom_domain_api_calls}"
+        if [[ "${method}" == "GET" ]]; then
+            case "${CUSTOM_DOMAIN_API_MODE}" in
+            existing)
+                printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"easy-cmcc"}]}'
+                ;;
+            conflict)
+                printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"another-worker"}]}'
+                ;;
+            *) printf '%s' '{"success":true,"result":[]}' ;;
+            esac
+        else
+            printf '%s' '{"success":true,"result":{"hostname":"sub.example.com","service":"easy-cmcc"}}'
+        fi
+    }
+    attach_worker_custom_domain \
+        || fail "CMCC must create a new Worker Custom Domain"
+    assert_equal "CMCC prefers the attached Custom Domain" \
+        "https://sub.example.com" "${WORKER_URL}"
+    grep -Fq $'GET\t/accounts/0123456789abcdef0123456789abcdef/workers/domains?hostname=sub.example.com' \
+        "${custom_domain_api_calls}" \
+        || fail "CMCC must query the exact Custom Domain before attaching it"
+    grep -Fq $'PUT\t/accounts/0123456789abcdef0123456789abcdef/workers/domains' \
+        "${custom_domain_api_calls}" \
+        || fail "CMCC must attach the Custom Domain through the account API"
+    grep -Fq '"hostname":"sub.example.com","service":"easy-cmcc"' \
+        "${custom_domain_api_calls}" \
+        || fail "CMCC must bind the requested hostname to easy-cmcc"
+
+    CUSTOM_DOMAIN_API_MODE="existing"
+    : >"${custom_domain_api_calls}"
+    WORKER_URL=${WORKER_DEV_URL}
+    attach_worker_custom_domain \
+        || fail "CMCC must reuse an existing Custom Domain owned by easy-cmcc"
+    assert_equal "CMCC reuses its existing Custom Domain" \
+        "https://sub.example.com" "${WORKER_URL}"
+    [[ "$(grep -c $'^PUT\t' "${custom_domain_api_calls}" || true)" == "0" ]] \
+        || fail "CMCC must not recreate an existing correct Custom Domain"
+
+    CUSTOM_DOMAIN_API_MODE="conflict"
+    : >"${custom_domain_api_calls}"
+    WORKER_URL=${WORKER_DEV_URL}
+    if attach_worker_custom_domain; then
+        fail "CMCC must not take over a Custom Domain owned by another Worker"
+    fi
+    assert_equal "CMCC keeps workers.dev after a Custom Domain conflict" \
+        "${WORKER_DEV_URL}" "${WORKER_URL}"
+    [[ "$(grep -c $'^PUT\t' "${custom_domain_api_calls}" || true)" == "0" ]] \
+        || fail "CMCC must not write after detecting a Custom Domain conflict"
 
     verify_calls_file="${TMP_DIR}/cmcc-verify-calls"
     verify_keys_file="${TMP_DIR}/cmcc-verify-version-keys"

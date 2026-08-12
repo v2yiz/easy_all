@@ -38,7 +38,7 @@
 wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/easy_cmcc" && chmod 700 /root/easy_cmcc.new && mv -f /root/easy_cmcc.new /root/easy_cmcc && /root/easy_cmcc install
 ```
 
-交互安装会询问节点域名、Cloudflare DNS Token、订阅 Token 和 Worker 部署方式。安装成功后会注册 `/usr/local/bin/easy_cmcc`。
+交互安装会询问节点域名、Cloudflare DNS Token、订阅 Token 和 Worker 部署方式。选择自动部署时，还会询问独立的 Worker Custom Domain；填写后脚本会自动绑定，并由 Cloudflare 创建橙云 DNS 与证书。安装成功后会注册 `/usr/local/bin/easy_cmcc`。
 
 安装和本机验收成功后，再回到 Cloudflare 将节点域名的 A、AAAA 一起切为橙云。
 
@@ -57,9 +57,9 @@ easy_cmcc uninstall
 ```
 
 - `show`：显示 XHTTP `stream-up`、XHTTP `stream-one`、WSS 节点链接和 Mihomo 节点片段。
-- `subscription`：同时显示节点、Worker 名称和订阅地址。
-- `status`：显示域名、两个路径、Gemini 出口地址族、Xray/Nginx 和 TCP 443 状态。
-- `update`：注册当前单文件，重新应用 BBR/TCP 参数，并刷新 Xray、Nginx、Worker 模板和 `easy-cmcc` Worker；该命令强制使用自动部署模式。
+- `subscription`：同时显示节点、Worker 名称、Custom Domain、`workers.dev` 备用地址和首选订阅地址。
+- `status`：显示域名、两个路径、Gemini 出口地址族、Xray/Nginx、TCP 443 和 Worker Custom Domain 状态。
+- `update`：注册当前单文件，重新应用 BBR/TCP 参数，并刷新 Xray、Nginx、Worker 模板、`easy-cmcc` Worker 和 Custom Domain；该命令强制使用自动部署模式。
 - `update-sub`：刷新服务端策略和订阅，可选择自动部署、输出 Worker 或只输出链接。
 - `update-core`：更新 Xray；新版本启动验收失败时自动恢复旧版本。
 - `renew-cert`：强制续期当前域名证书并重载服务。
@@ -161,32 +161,32 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 
 - Account → Workers Scripts → Edit
 
-脚本使用它 replace Worker module、启用 workers.dev 并读取账户子域名。`easy_cmcc` 不会把两个 API Token 写入 `/etc/easy_cmcc/state.env`；为自动续期证书，acme.sh 的 `dns_cf` 插件可能把 DNS 凭据保存在权限受限的 `/root/.acme-cmcc.sh/` 中。Worker Token 不会持久保存，交互更新时会重新提示输入。
+脚本使用它 replace Worker module、启用 workers.dev、读取账户子域名，并创建或复用 Worker Custom Domain。Custom Domain API 同样只要求 Workers Scripts Edit，不需要给这个 Token 增加 DNS 或 Workers Routes 权限。`easy_cmcc` 不会把两个 API Token 写入 `/etc/easy_cmcc/state.env`；为自动续期证书，acme.sh 的 `dns_cf` 插件可能把 DNS 凭据保存在权限受限的 `/root/.acme-cmcc.sh/` 中。Worker Token 不会持久保存，交互更新时会重新提示输入。
 
 ## Worker 订阅
 
 安装或 `update-sub` 支持三种模式：
 
-1. 自动部署：通过 Cloudflare API replace Worker。
+1. 自动部署：通过 Cloudflare API replace Worker，并可自动绑定独立 Custom Domain。
 2. 手动部署：输出完整 Worker 源码。
 3. 只输出三个 XHTTP/WSS 节点链接。
 
-默认 Worker 名称为 `easy-cmcc`，默认 Clash 下载文件名为 `EASY_CMCC`。自动部署成功后提供：
+默认 Worker 名称为 `easy-cmcc`，默认 Clash 下载文件名为 `EASY_CMCC`。未配置 Custom Domain 时，自动部署成功后提供：
 
 ```text
 https://easy-cmcc.<account-subdomain>.workers.dev/subscribe?token=owner-token-123
 https://easy-cmcc.<account-subdomain>.workers.dev/subscribe?token=owner-token-123&flag=clash
 ```
 
-第一条返回 base64 节点订阅，第二条返回 Mihomo/Clash YAML。这两个 `workers.dev` 地址主要用于脚本发布后的自动验收和临时排障；`*.workers.dev` 在中国大陆网络中存在较高的被阻断或不可达风险，**不建议作为长期订阅地址，推荐安装后立即为 Worker 绑定独立的自定义订阅域名**。
+第一条返回 base64 节点订阅，第二条返回 Mihomo/Clash YAML。这两个 `workers.dev` 地址主要用于脚本发布后的自动验收和临时排障；`*.workers.dev` 在中国大陆网络中存在较高的被阻断或不可达风险，**不建议作为长期订阅地址，推荐在自动部署时填写独立 Custom Domain**。
 
-Cloudflare API 请求会对网络错误、HTTP 408/429/5xx 和 Cloudflare `10007`、`10035` 做有限次数退避重试。Worker 部署完成后先等待 10 秒，再进行最多 12 次 base64 与 Clash HTTP 验收；每轮两个请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间命中不同版本。最近一次部署日志位于：
+Cloudflare API 请求会对网络错误、HTTP 408/429/5xx 和 Cloudflare `10007`、`10035` 做有限次数退避重试。Worker 与 Custom Domain 配置完成后，脚本会对首选订阅地址先等待 10 秒，再进行最多 12 次 base64 与 Clash HTTP 验收；每轮两个请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间命中不同版本。最近一次部署日志位于：
 
 ```text
 /etc/easy_cmcc/last-worker-deploy.log
 ```
 
-日志权限为 `0600`，UUID、订阅 Token 和 Cloudflare Token 会脱敏。Worker module 已 replace、但后续 workers.dev 查询或公网验收暂时失败时，脚本会优先保留已经与远端 Worker 匹配的新本机配置，避免错误回滚造成订阅与服务器不一致。
+日志权限为 `0600`，UUID、订阅 Token 和 Cloudflare Token 会脱敏。Worker module 已 replace、但后续 workers.dev 查询或公网验收暂时失败时，脚本会优先保留已经与远端 Worker 匹配的新本机配置，避免错误回滚造成订阅与服务器不一致。Custom Domain 绑定失败时不会删除或覆盖现有 DNS，也不会抢占其他 Worker 的域名；脚本会回退到 `workers.dev`，保存待绑定域名，并在下次自动更新时重试。
 
 ### Worker 模板与规则来源
 
@@ -224,20 +224,20 @@ Token 字典会保存到 `/etc/easy_cmcc/state.env` 并写入生成的 Worker，
 
 ### 推荐：使用 Worker Custom Domain
 
-由于默认 `*.workers.dev` 被阻断或不可达的概率较高，推荐直接给 `easy-cmcc` Worker 绑定自己托管在 Cloudflare 的域名，例如 `sub.example.com`，不要等到默认域名失效后再切换。订阅路径和参数不变，只需把 URL 中的 Worker 主机名换掉：
+由于默认 `*.workers.dev` 被阻断或不可达的概率较高，自动部署时应填写自己托管在 Cloudflare 的独立域名，例如 `sub.example.com`。脚本会调用 Cloudflare Custom Domain API，把它绑定到 `easy-cmcc` Worker；订阅路径和参数不变：
 
 ```text
 https://sub.example.com/subscribe?token=owner-token-123
 https://sub.example.com/subscribe?token=owner-token-123&flag=clash
 ```
 
-`sub.example.com` 应是专门用于订阅的新主机名，**不要与 XHTTP/WSS 节点域名（例如 `rn.example.com`）共用**，因为 Custom Domain 会接管该主机名的全部路径。
+`sub.example.com` 应是专门用于订阅的新主机名，**不要与 XHTTP/WSS 节点域名（例如 `rn.example.com`）共用**，因为 Custom Domain 会接管该主机名的全部路径。脚本会拒绝相同的节点域名，也会拒绝抢占已经绑定到其他 Worker 的 Custom Domain。
 
-进入 **Workers & Pages → easy-cmcc → Settings → Domains & Routes → Add → Custom Domain**，填写 `sub.example.com` 并确认。Cloudflare 会自动创建只读的 **Proxied / 橙云** DNS 记录并签发边缘证书，相当于自动完成 Cloudflare CDN 接入；无需手工创建 A/AAAA/CNAME、开启橙云或配置源站，也不要将记录改成 DNS only / 灰云。
+该订阅主机名应位于当前 Cloudflare 账户中的 Active Zone，建议使用一个没有现有 A/AAAA/CNAME 的新主机名。绑定成功后，Cloudflare 会自动创建只读的 **Proxied / 橙云** DNS 记录并签发边缘证书，相当于自动完成 Cloudflare CDN 接入；无需手工创建解析、开启橙云、配置 Route 或设置源站，也不要将自动记录改成 DNS only / 灰云。
 
 ![为 easy-cmcc Worker 添加 Custom Domain](docs/images/cloudflare-worker-custom-domain.svg)
 
-Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflare 当前推荐的纯 Worker 自定义域名方式。配置完成并显示 Active 后，将现有订阅 URL 中的 `easy-cmcc.<account-subdomain>.workers.dev` 替换成 `sub.example.com` 即可。手工添加 Custom Domain 不会改变 `easy_cmcc subscription` 中记录的 `workers.dev` 验收地址，也不需要为脚本使用的 `CF_WORKER_API_TOKEN` 增加 DNS 或 Workers Routes 权限。Cloudflare 的 [Custom Domains 文档](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) 可用于核对最新控制台入口。
+Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflare 推荐的纯 Worker 自定义域名方式。每次安装或更新都会先按 hostname 查询：已绑定到当前 `easy-cmcc` 时直接复用，不重复创建；不存在时才创建；绑定到其他 Worker 时拒绝抢占。脚本绑定后会直接把它作为 `easy_cmcc subscription` 的首选地址，同时保留 `workers.dev` 作为验收/排障备用地址。旧安装尚未保存 Custom Domain 时，执行 `easy_cmcc update` 会提示填写；如果之前已在控制台绑定，填写同一个域名即可自动识别并复用；如果留空，则继续只使用 `workers.dev`。Cloudflare 的 [Custom Domains 文档](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) 可用于核对机制与控制台状态。
 
 ## 状态、隔离与卸载
 
@@ -260,7 +260,7 @@ Custom Domain 适合 Worker 本身就是订阅源站的场景，也是 Cloudflar
 
 `update-sub` 会先备份状态、Xray、Nginx、Worker 和 nftables。Worker replace 前发生错误时自动恢复；Worker 已 replace 后则保留新本机配置，以远端订阅一致性为优先。
 
-`uninstall` 默认就是完整本机 purge，不需要 `--purge`：它停止并移除 easy_cmcc 服务、恢复未被用户再次修改的安装前 nftables、删除专属定时重启任务、状态、证书、命令和备份。XanMod、已安装软件包及系统级 BBR/IPv6 初始化不会降级，远端 Cloudflare Worker 不会删除。
+`uninstall` 默认就是完整本机 purge，不需要 `--purge`：它停止并移除 easy_cmcc 服务、恢复未被用户再次修改的安装前 nftables、删除专属定时重启任务、状态、证书、命令和备份。XanMod、已安装软件包及系统级 BBR/IPv6 初始化不会降级，远端 Cloudflare Worker 及其 Custom Domain 不会删除。
 
 旧版 CMCC 若仍使用 `/etc/easy_all`、`easy-all-xray.service` 或旧入口，本套件不会自动接管。迁移前先保存订阅和 Cloudflare 凭据，使用旧入口卸载，再安装当前 `easy_cmcc`，避免两套服务争用 TCP 443 和 `/etc/nftables.conf`。
 
