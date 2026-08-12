@@ -1,0 +1,31 @@
+README.md
+  s_eecd84e07bd2d7::t_1742796b4163d5 181
+easy_all
+  s_eecd84e07bd2d7::t_2e5298a67bbf24 735-738,753-754,756,769,1613,1617-1618,1622-1625,1627-1637,1650,1934,2020,2027
+for_cmcc/README.md
+  s_eecd84e07bd2d7::t_32ccf8a51909a2 184
+for_cmcc/easy_cmcc
+  s_eecd84e07bd2d7::t_ec223a00355e87 2058,2062-2063,2067-2070,2072-2082,2095
+for_cmcc/test/test_easy_cmcc.sh
+  s_eecd84e07bd2d7::t_2b5eaf38fc3f88 81-82,103-106,144-162,166-223
+test/test_easy_all.sh
+  s_eecd84e07bd2d7::t_08f5ca243ed9a0 618-629,652,664,693-701,710-715,721,725,732,742-748,761,765,784-785,788-797,800
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3160312ad6c7f959b7de9e6ef7f12bb38f4449a1",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
