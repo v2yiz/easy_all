@@ -66,6 +66,8 @@ assert_contains "CMCC persists the Worker Custom Domain" "${installer}" \
     "WORKER_CUSTOM_DOMAIN=%q"
 assert_contains "CMCC exposes a Worker name prompt" "${installer}" \
     "Cloudflare Worker 名称"
+assert_contains "CMCC exposes a Mihomo download filename prompt" "${installer}" \
+    "Mihomo 下载文件名（不含 .yaml）"
 assert_contains "CMCC update-sub enables the first-auto Worker name choice" "${installer}" \
     "update-sub) update_subscription 1"
 assert_contains "CMCC uses the Custom Domain API" "${installer}" \
@@ -136,6 +138,8 @@ assert_contains "README provides standalone troubleshooting" "${readme}" \
     "## 故障排查"
 assert_contains "README documents conditional subscription Token prompts" "${readme}" \
     "选择自动或手动部署后才会询问订阅 Token"
+assert_contains "README documents customizable Mihomo download filenames" "${readme}" \
+    '输入时不含 `.yaml`'
 assert_contains "README documents token-free link-only mode" "${readme}" \
     "只输出链接不生成 Worker"
 [[ -s "${ROOT_DIR}/docs/images/cloudflare-worker-custom-domain.svg" ]] \
@@ -206,17 +210,18 @@ fi
             choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
             choose_worker_name() { printf 'worker:%s\n' "$1"; }
             collect_worker_custom_domain() { printf 'domain\n'; }
+            choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
             write_worker() { :; }
             deploy_worker() { return 0; }
             verify_subscription() { return 0; }
             save_state() { :; }
             DEPLOY_MODE=""
             WORKER_URL=""
-            configure_subscription 1
+            configure_subscription 1 1
         )
     )
-    assert_equal "CMCC first automatic deployment prompts for Worker name and domain" \
-        $'worker:1\ndomain' "${first_auto_output}"
+    assert_equal "CMCC first automatic deployment prompts for Worker, domain and download names" \
+        $'worker:1\ndomain\ndownload:1' "${first_auto_output}"
 
     existing_auto_output=$(
         (
@@ -224,17 +229,39 @@ fi
             choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
             choose_worker_name() { printf 'worker:%s\n' "$1"; }
             collect_worker_custom_domain() { printf 'domain\n'; }
+            choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
             write_worker() { :; }
             deploy_worker() { return 0; }
             verify_subscription() { return 0; }
             save_state() { :; }
             DEPLOY_MODE="auto"
             WORKER_URL="https://existing.example.test"
-            configure_subscription 1
+            configure_subscription 1 1
         )
     )
     assert_equal "CMCC existing automatic deployment reuses its Worker name" \
-        $'worker:0\ndomain' "${existing_auto_output}"
+        $'worker:0\ndomain\ndownload:1' "${existing_auto_output}"
+
+    manual_output=$(
+        (
+            collect_installed_state() { :; }
+            choose_subscription_mode() { SUBSCRIBE_MODE="worker"; }
+            choose_worker_name() { printf 'unexpected-worker\n'; }
+            collect_worker_custom_domain() { printf 'unexpected-domain\n'; }
+            choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
+            write_worker() { :; }
+            print_worker_content() { :; }
+            save_state() { :; }
+            configure_subscription 0 1
+        )
+    )
+    assert_equal "CMCC manual Worker mode prompts only for its download filename" \
+        "download:1" "${manual_output}"
+
+    SUB_DOWNLOAD_NAME="Team.yaml"
+    choose_subscription_download_name 0
+    assert_equal "CMCC normalizes a custom Mihomo download filename" \
+        "Team" "${SUB_DOWNLOAD_NAME}"
 
     choose_protocol vless-xhttp >/dev/null
     VLESS_UUID="00000000-0000-4000-8000-000000000001"

@@ -1702,6 +1702,16 @@ choose_worker_name() {
     WORKER_NAME=${name}
 }
 
+choose_subscription_download_name() {
+    local allow_prompt=${1:-0} name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
+    if [[ "${allow_prompt}" == "1" && -t 0 ]]; then
+        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}")
+    fi
+    name=$(normalize_sub_download_name "${name}")
+    validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
+    SUB_DOWNLOAD_NAME=${name}
+}
+
 collect_worker_custom_domain() {
     local domain=${WORKER_CUSTOM_DOMAIN:-}
     if [[ -z "${domain}" && -t 0 ]]; then
@@ -2095,7 +2105,8 @@ verify_subscription() {
 }
 
 configure_subscription() {
-    local prompt_worker_name=${1:-0} worker_name_prompt
+    local prompt_worker_name=${1:-0} prompt_download_name=${2:-0}
+    local worker_name_prompt
     collect_installed_state
     choose_subscription_mode
     case "${SUBSCRIBE_MODE}" in
@@ -2106,6 +2117,7 @@ configure_subscription() {
         fi
         choose_worker_name "${worker_name_prompt}"
         collect_worker_custom_domain
+        choose_subscription_download_name "${prompt_download_name}"
         write_worker "${WORKER_FILE}"
         if deploy_worker; then
             DEPLOY_MODE="auto"
@@ -2128,6 +2140,7 @@ configure_subscription() {
         unset CF_WORKER_API_TOKEN || true
         ;;
     worker)
+        choose_subscription_download_name "${prompt_download_name}"
         write_worker "${WORKER_FILE}"
         WORKER_URL=""
         DEPLOY_MODE="worker"
@@ -2241,7 +2254,8 @@ rollback_subscription_update() {
 update_subscription() {
     local prompt_options=${1:-0}
     local requested_port_mode=${SUB_PORT_MODE:-} requested_worker_name=${WORKER_NAME:-}
-    local stored_port_mode prompt_worker_name=0
+    local requested_download_name=${SUB_DOWNLOAD_NAME:-}
+    local stored_port_mode prompt_worker_name=0 prompt_download_name=0
     require_root
     [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
     stored_port_mode=$(
@@ -2252,6 +2266,9 @@ update_subscription() {
     collect_installed_state
     if [[ "${prompt_options}" == "1" && -z "${requested_worker_name}" ]]; then
         prompt_worker_name=1
+    fi
+    if [[ "${prompt_options}" == "1" && -z "${requested_download_name}" ]]; then
+        prompt_download_name=1
     fi
     SUB_PORT_MODE=${requested_port_mode:-${SUB_PORT_MODE:-${stored_port_mode}}}
     [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
@@ -2277,7 +2294,7 @@ update_subscription() {
         rollback_subscription_update
         return 1
     fi
-    if ! configure_subscription "${prompt_worker_name}"; then
+    if ! configure_subscription "${prompt_worker_name}" "${prompt_download_name}"; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
         return 1
@@ -2707,8 +2724,9 @@ cleanup_obsolete_protocol_artifacts() {
 }
 
 install_all() {
-    local requested=${1:-} prompt_worker_name=0
+    local requested=${1:-} prompt_worker_name=0 prompt_download_name=0
     [[ -n "${WORKER_NAME:-}" ]] || prompt_worker_name=1
+    [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || prompt_download_name=1
     require_root
     require_systemd
     [[ ! -f "${STATE_FILE}" ]] || die "easy_cmcc 已安装；请使用 easy_cmcc update，或卸载后重装"
@@ -2740,7 +2758,7 @@ install_all() {
     info "[8/9] 注册 easy_cmcc 命令"
     register_easy_cmcc_command
     info "[9/9] 配置 Worker 订阅"
-    configure_subscription "${prompt_worker_name}"
+    configure_subscription "${prompt_worker_name}" "${prompt_download_name}"
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
     [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice

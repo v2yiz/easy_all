@@ -54,7 +54,7 @@
 wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/easy_cmcc" && chmod 700 /root/easy_cmcc.new && mv -f /root/easy_cmcc.new /root/easy_cmcc && /root/easy_cmcc install
 ```
 
-交互安装先询问节点域名和 Cloudflare DNS Token；配置订阅时先选择 Worker 部署方式。选择自动或手动部署后才会询问订阅 Token；选择只输出节点链接时不需要订阅 Token。首次自动部署会询问 Worker 名称，随后询问独立的 Worker Custom Domain；填写后脚本会自动绑定，并由 Cloudflare 创建橙云 DNS 与证书。安装成功后会注册 `/usr/local/bin/easy_cmcc`。
+交互安装先询问节点域名和 Cloudflare DNS Token；配置订阅时先选择 Worker 部署方式。选择自动或手动部署后才会询问订阅 Token 和 Mihomo 下载文件名；选择只输出节点链接时不需要这些内容。首次自动部署会询问 Worker 名称，随后询问独立的 Worker Custom Domain；填写后脚本会自动绑定，并由 Cloudflare 创建橙云 DNS 与证书。安装成功后会注册 `/usr/local/bin/easy_cmcc`。
 
 交互项按以下方式选择即可完成推荐部署：
 
@@ -67,6 +67,7 @@ wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/m
 | 订阅用户 Token 字典 | 使用自动生成值或填写自己的 JSON | 仅自动/手动 Worker 模式询问；URL 中使用的是 JSON 的 value，不是用户名 key |
 | Cloudflare Worker 名称 | `easy-cmcc` | 首次自动部署可修改；后续更新复用已保存名称，避免产生第二个 Worker |
 | Worker 独立自定义订阅域名 | `sub.example.com` | 不得与节点域名相同，推荐使用没有现有 DNS 记录的新主机名 |
+| Mihomo 下载文件名 | `EASY_CMCC` | 自动/手动 Worker 模式可修改，输入时不含 `.yaml`；普通更新复用已保存值 |
 | Cloudflare Account ID | 当前 Zone 所属账户的 Account ID | 不是 Zone ID |
 | Cloudflare Worker API Token | 输入准备好的 Account Token | 输入不回显，只用于部署 `easy-cmcc` Worker 和绑定 Custom Domain |
 
@@ -250,7 +251,7 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 
 脚本会先选择以上模式，再决定是否收集凭据：自动部署需要订阅 Token、Account ID 和 Worker API Token；手动部署只需要订阅 Token，因为它会内嵌到 Worker 的 `ALLOWED_TOKENS`；只输出链接不生成 Worker，因此不会询问订阅 Token、Account ID、Worker API Token 或 Custom Domain。
 
-默认 Worker 名称为 `easy-cmcc`，首次自动部署可修改；后续更新会复用已保存名称。默认 Clash 下载文件名为 `EASY_CMCC`。未配置 Custom Domain 时，自动部署成功后提供：
+默认 Worker 名称为 `easy-cmcc`，首次自动部署可修改；后续更新会复用已保存名称。默认 Mihomo/Clash 下载文件名为 `EASY_CMCC`，首次自动或手动部署以及交互式 `update-sub` 均可修改，输入时不含 `.yaml`。未配置 Custom Domain 时，自动部署成功后提供：
 
 ```text
 https://easy-cmcc.<account-subdomain>.workers.dev/subscribe?token=owner-token-123
