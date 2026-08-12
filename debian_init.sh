@@ -444,21 +444,22 @@ configure_xanmod_bbrv3_and_tcp() {
 
   cat >"$sysctl_config" <<'SYSCTL'
 net.core.default_qdisc = fq
-net.core.netdev_max_backlog = 250000
+net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 4096
 net.ipv4.tcp_congestion_control = bbr
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.ipv4.tcp_rmem = 4096 87380 67108864
-net.ipv4.tcp_wmem = 4096 65536 67108864
-net.ipv4.tcp_fastopen = 3
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_rmem = 4096 131072 33554432
+net.ipv4.tcp_wmem = 4096 65536 33554432
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_notsent_lowat = 16384
 SYSCTL
 
   modprobe tcp_bbr 2>/dev/null || true
   sysctl -p "$sysctl_config" >/dev/null
+  # 撤销旧版 debian_init 的全局覆盖，恢复 Linux 默认行为。
+  sysctl -q -w net.ipv4.tcp_fastopen=1 >/dev/null
+  sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295 >/dev/null
   if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf unknown)" != "bbr" ]; then
     printf '%s\n' "错误: 拥塞控制算法未成功设置为 bbr" >&2
     exit 1
