@@ -58,7 +58,7 @@
 wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/easy_cmcc" && chmod 700 /root/easy_cmcc.new && mv -f /root/easy_cmcc.new /root/easy_cmcc && /root/easy_cmcc install
 ```
 
-交互安装会询问节点域名、Cloudflare DNS Token、订阅 Token 和 Worker 部署方式。选择自动部署时，还会询问独立的 Worker Custom Domain；填写后脚本会自动绑定，并由 Cloudflare 创建橙云 DNS 与证书。安装成功后会注册 `/usr/local/bin/easy_cmcc`。
+交互安装先询问节点域名和 Cloudflare DNS Token；配置订阅时先选择 Worker 部署方式。选择自动或手动部署后才会询问订阅 Token；选择只输出节点链接时不需要订阅 Token。自动部署还会询问独立的 Worker Custom Domain，填写后脚本会自动绑定，并由 Cloudflare 创建橙云 DNS 与证书。安装成功后会注册 `/usr/local/bin/easy_cmcc`。
 
 交互项按以下方式选择即可完成推荐部署：
 
@@ -66,9 +66,9 @@ wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/m
 |---|---|---|
 | 定时重启 | `1`，每天凌晨 4 点 | 也可选择自定义小时或不配置；只管理带有 `easy_cmcc-managed-reboot` 标记的 root crontab 项 |
 | VLESS XHTTP 域名 | `node.example.com` | 安装时必须灰云，A 必须解析到当前 VPS 公网 IPv4 |
-| 订阅用户 Token 字典 | 使用自动生成值或填写自己的 JSON | URL 中使用的是 JSON 的 value，不是用户名 key |
 | Cloudflare DNS API Token | 输入准备好的 Zone Token | 输入不回显，用于 DNS-01 证书和节点 Zone 配置 |
 | 订阅输出方式 | `1`，自动部署 Worker | 提示的默认值是手动输出；要使用 Custom Domain 必须主动选择 `1` |
+| 订阅用户 Token 字典 | 使用自动生成值或填写自己的 JSON | 仅自动/手动 Worker 模式询问；URL 中使用的是 JSON 的 value，不是用户名 key |
 | Worker 独立自定义订阅域名 | `sub.example.com` | 不得与节点域名相同，推荐使用没有现有 DNS 记录的新主机名 |
 | Cloudflare Account ID | 当前 Zone 所属账户的 Account ID | 不是 Zone ID |
 | Cloudflare Worker API Token | 输入准备好的 Account Token | 输入不回显，只用于部署 `easy-cmcc` Worker 和绑定 Custom Domain |
@@ -265,6 +265,8 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 
 自动部署是推荐模式，也是脚本自动创建/复用 Custom Domain 和执行订阅 HTTP 验收的唯一模式。手动模式会把源码保存到 `/etc/easy_cmcc/subscribe-worker.js` 并输出到终端，可按提示使用 Wrangler 或 Cloudflare Dashboard 部署，但脚本不会自动绑定域名或记录订阅 URL；只输出链接模式不会部署 Worker。以后要改用自动部署，可执行 `easy_cmcc update-sub` 并选择 `1`。
 
+脚本会先选择以上模式，再决定是否收集凭据：自动部署需要订阅 Token、Account ID 和 Worker API Token；手动部署只需要订阅 Token，因为它会内嵌到 Worker 的 `ALLOWED_TOKENS`；只输出链接不生成 Worker，因此不会询问订阅 Token、Account ID、Worker API Token 或 Custom Domain。
+
 默认 Worker 名称为 `easy-cmcc`，默认 Clash 下载文件名为 `EASY_CMCC`。未配置 Custom Domain 时，自动部署成功后提供：
 
 ```text
@@ -294,7 +296,7 @@ https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js
 
 ### 订阅访问 Token
 
-Worker `/subscribe` 入口使用 Token 字典作为访问白名单，格式必须是 JSON object；key 是用户名，value 才是 URL 中使用的 token：
+自动或手动 Worker 模式的 `/subscribe` 入口使用 Token 字典作为访问白名单，格式必须是 JSON object；key 是用户名，value 才是 URL 中使用的 token。只输出节点链接模式不需要这一项：
 
 ```json
 {"owner":"owner-token-123","alice":"alice-token-456"}

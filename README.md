@@ -184,6 +184,8 @@ Domain，二者选择一种即可。
 2. 手动部署：输出完整 Worker 源码。
 3. 只输出当前节点链接。
 
+脚本会先询问订阅输出方式。选择自动部署或手动部署后，才会询问订阅用户 Token 字典，因为两种方式都会生成带访问保护的 Worker；选择“只输出当前节点链接”时不生成 Worker，也不会要求订阅 Token、Account ID 或 Worker API Token。手动部署仍然需要订阅 Token，它会直接内嵌到输出 Worker 的 `ALLOWED_TOKENS` 中。
+
 默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Worker 部署完成后会先等待 10 秒，再进行最多 12 次订阅 HTTP 验收；失败后的重试间隔随机为 2–5 秒。每轮 base64 与 Clash 请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间两个格式命中不同版本。最近一次部署日志位于：
 
 ```text
@@ -214,7 +216,7 @@ wget -qO /root/easy_all.new "https://raw.githubusercontent.com/v2yiz/easy_all/ma
 
 ### 订阅访问 Token
 
-Worker 订阅入口使用 Token 字典作为访问白名单，格式必须是 JSON object：key 是便于识别的用户名，value 才是订阅 URL 中使用的 token。
+自动或手动 Worker 模式的订阅入口使用 Token 字典作为访问白名单，格式必须是 JSON object：key 是便于识别的用户名，value 才是订阅 URL 中使用的 token。只输出节点链接模式不需要这一项。
 
 ```json
 {"owner":"owner-token-123","alice":"alice-token-456"}

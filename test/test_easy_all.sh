@@ -585,6 +585,24 @@ test_worker_only_subscription_branch() {
         worker_runtime_matches_protocol "${WORKER_FILE}" "reality" "${SUB_PORT_MODE}"
 }
 
+test_link_only_subscription_skips_tokens() {
+    local content
+    set_protocol_fixture "reality"
+    ALLOWED_TOKENS=""
+    WORKER_URL=""
+    DEPLOY_MODE="link"
+    SUBSCRIBE_MODE="link"
+    save_state
+
+    assert_success "link-only subscription works without ALLOWED_TOKENS" \
+        configure_subscription
+    content=$(<"${STATE_FILE}")
+    assert_contains "link-only mode persists its deployment choice" \
+        "DEPLOY_MODE=link" "${content}"
+    assert_contains "link-only mode keeps the token field empty" \
+        "ALLOWED_TOKENS=''" "${content}"
+}
+
 test_state_and_lifecycle_guards() {
     set_protocol_fixture "anytls"
     WORKER_NAME="${DEFAULT_WORKER_NAME}"
@@ -1009,6 +1027,7 @@ test_links_and_workers
 test_sample_worker_template_guards
 test_server_egress_family_configs
 test_worker_only_subscription_branch
+test_link_only_subscription_skips_tokens
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy

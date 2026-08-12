@@ -48,6 +48,20 @@ assert_contains "CMCC resets legacy unsent queue overrides" "${installer}" \
     "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295"
 assert_contains "CMCC update reapplies TCP tuning" "${installer}" \
     'info "刷新 BBR 与 TCP 参数"'
+collect_inputs_function=$(awk '
+    /^collect_install_inputs\(\) \{/ {capture=1}
+    capture {print}
+    capture && /^}/ {exit}
+' "${ROOT_DIR}/easy_cmcc")
+[[ "${collect_inputs_function}" != *"ensure_allowed_tokens"* ]] \
+    || fail "CMCC must choose the subscription mode before requesting tokens"
+collect_state_function=$(awk '
+    /^collect_installed_state\(\) \{/ {capture=1}
+    capture {print}
+    capture && /^}/ {exit}
+' "${ROOT_DIR}/easy_cmcc")
+[[ "${collect_state_function}" != *"ensure_allowed_tokens"* ]] \
+    || fail "CMCC link-only state inspection must not require tokens"
 assert_contains "CMCC persists the Worker Custom Domain" "${installer}" \
     "WORKER_CUSTOM_DOMAIN=%q"
 assert_contains "CMCC uses the Custom Domain API" "${installer}" \
@@ -114,6 +128,10 @@ assert_contains "README documents IPv4 and IPv6 LAN bypass" "${readme}" \
     "RFC1918 IPv4、IPv4 链路本地、IPv6 ULA、IPv6 链路本地"
 assert_contains "README provides standalone troubleshooting" "${readme}" \
     "## 故障排查"
+assert_contains "README documents conditional subscription Token prompts" "${readme}" \
+    "选择自动或手动部署后才会询问订阅 Token"
+assert_contains "README documents token-free link-only mode" "${readme}" \
+    "只输出链接不生成 Worker"
 [[ -s "${ROOT_DIR}/docs/images/cloudflare-worker-custom-domain.svg" ]] \
     || fail "README Worker Custom Domain figure is missing"
 for credential_figure in \
@@ -155,6 +173,21 @@ fi
         "$(<"${ROOT_DIR}/easy_cmcc")" "Cloudflare-Workers-Version-Key"
     assert_contains "CMCC subscription verification bypasses intermediary caches" \
         "$(<"${ROOT_DIR}/easy_cmcc")" "Cache-Control: no-cache"
+
+    link_only_output=$(
+        (
+            collect_installed_state() { :; }
+            ensure_allowed_tokens() { fail "link-only mode requested subscription tokens"; }
+            save_state() { printf 'saved:%s:%s\n' "${DEPLOY_MODE}" "${ALLOWED_TOKENS:-}"; }
+            SUBSCRIBE_MODE="link"
+            DEPLOY_MODE=""
+            ALLOWED_TOKENS=""
+            WORKER_URL="https://old-worker.example.test"
+            configure_subscription
+        )
+    )
+    assert_equal "CMCC link-only mode skips tokens and clears the Worker URL" \
+        "saved:link:" "${link_only_output}"
 
     choose_protocol vless-xhttp >/dev/null
     VLESS_UUID="00000000-0000-4000-8000-000000000001"

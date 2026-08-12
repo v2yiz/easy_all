@@ -701,7 +701,6 @@ collect_install_inputs() {
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
     [[ "${PROTOCOL}" != "vless-xhttp" || "${SUB_PORT_MODE}" == "443" ]] \
         || die "VLESS XHTTP 不支持 dynamic 端口"
-    ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     validate_worker_name "${WORKER_NAME}" || die "Worker 名称无效：${WORKER_NAME}"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -2429,7 +2428,6 @@ collect_installed_state() {
             || die "VLESS XHTTP 状态不完整"
         ;;
     esac
-    ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
 }
 
@@ -2498,6 +2496,8 @@ show_subscription() {
     [[ -z "${WORKER_DEV_URL:-}" ]] \
         || printf 'workers.dev 验收/备用地址: %s\n' "${WORKER_DEV_URL}"
     if [[ -n "${WORKER_URL:-}" ]]; then
+        [[ -n "${ALLOWED_TOKENS:-}" ]] \
+            || die "Worker 订阅地址存在，但订阅 Token 字典缺失；请执行 easy_cmcc update-sub 重新生成"
         printf '\n订阅地址:\n'
         while IFS=$'\t' read -r user token; do
             printf '通用订阅 (%s): %s/subscribe?token=%s\n' "${user}" "${WORKER_URL}" "${token}"

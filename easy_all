@@ -633,7 +633,6 @@ collect_install_inputs() {
     esac
     [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
-    ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     validate_worker_name "${WORKER_NAME}" || die "Worker 名称无效：${WORKER_NAME}"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -1891,7 +1890,6 @@ collect_installed_state() {
             || die "AnyTLS 状态不完整"
         ;;
     esac
-    ensure_allowed_tokens
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
 }
 
@@ -1949,6 +1947,8 @@ show_subscription() {
     printf 'Worker 名称: %s\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
     printf 'Clash 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
     if [[ -n "${WORKER_URL:-}" ]]; then
+        [[ -n "${ALLOWED_TOKENS:-}" ]] \
+            || die "Worker 订阅地址存在，但订阅 Token 字典缺失；请执行 easy_all update-sub 重新生成"
         printf '\n订阅地址:\n'
         while IFS=$'\t' read -r user token; do
             printf '通用订阅 (%s): %s/subscribe?token=%s\n' "${user}" "${WORKER_URL}" "${token}"
