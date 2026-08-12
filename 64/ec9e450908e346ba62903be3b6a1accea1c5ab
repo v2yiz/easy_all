@@ -1,0 +1,25 @@
+for_cmcc/README.md
+  s_eecd84e07bd2d7::t_7fc129e102d5d1 318
+for_cmcc/easy_cmcc
+  s_eecd84e07bd2d7::t_cb83429463ad1b 1875-1876,1878,1896,1929-1939,1941
+for_cmcc/test/test_easy_cmcc.sh
+  s_eecd84e07bd2d7::t_f505390cf6d295 122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "64ec9e450908e346ba62903be3b6a1accea1c5ab",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
