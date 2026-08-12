@@ -268,6 +268,10 @@ const EMBEDDED_CLASH_RULES = `rules:
 
   # ==================== Gemini / Google ====================
   # Gemini 依赖的 Google 域名统一进入 PROXY。
+  # XHTTP 公网链路固定为 H2/TCP；先拒绝 YouTube QUIC，让浏览器回退到 TCP，
+  # 避免把 QUIC/UDP 经 XUDP 封装进 TCP 后产生嵌套重传和队头阻塞。
+  - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,googlevideo.com)),REJECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,youtube.com)),REJECT
   - DOMAIN-SUFFIX,google.com,PROXY
   - DOMAIN-SUFFIX,googleapis.com,PROXY
   - DOMAIN-SUFFIX,googleapis.cn,PROXY
@@ -326,7 +330,7 @@ const EMBEDDED_CLASH_RULES = `rules:
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
   - GEOIP,CN,DIRECT,no-resolve
-  # 与 xflash 保持相同优先级：仅拒绝前述规则均未命中的 UDP/443，避免误伤国内直连。
+  # 仅拒绝前述规则均未命中的其他 UDP/443，避免误伤国内直连。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - MATCH,PROXY
 `;

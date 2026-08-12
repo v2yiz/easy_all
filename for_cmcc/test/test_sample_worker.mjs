@@ -97,7 +97,11 @@ describe('sample-worker Cloudflare Worker', () => {
       .split('\n')
       .map(line => line.trim().replace(/^-\s*/, ''))
       .filter(line => /^(DOMAIN|DOMAIN-SUFFIX|DOMAIN-KEYWORD|IP-CIDR|IP-CIDR6|GEOIP|GEOSITE|RULE-SET|AND|MATCH),/.test(line));
-    const keys = rules.map(rule => rule.split(',').slice(0, 2).join(',').toLowerCase());
+    const keys = rules.map(rule =>
+      rule.startsWith('AND,')
+        ? rule.toLowerCase()
+        : rule.split(',').slice(0, 2).join(',').toLowerCase()
+    );
     assert.equal(new Set(keys).size, keys.length, 'rules must not contain duplicate match keys');
     assert.equal(rules.at(-1), 'MATCH,PROXY');
     assert.match(
@@ -105,6 +109,15 @@ describe('sample-worker Cloudflare Worker', () => {
       /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/,
       'unmatched QUIC must fail fast to TCP on Windows'
     );
+    for (const youtubeDomain of ['googlevideo.com', 'youtube.com']) {
+      const rejectRule = `AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,${youtubeDomain})),REJECT`;
+      const proxyRule = `DOMAIN-SUFFIX,${youtubeDomain},PROXY`;
+      assert.ok(rules.includes(rejectRule), `${youtubeDomain} QUIC must be rejected`);
+      assert.ok(
+        rules.indexOf(rejectRule) < rules.indexOf(proxyRule),
+        `${youtubeDomain} QUIC rejection must precede its proxy rule`
+      );
+    }
     assert.ok(
       rulesBlock.indexOf('GEOIP,CN,DIRECT,no-resolve') <
         rulesBlock.indexOf('AND,((NETWORK,UDP),(DST-PORT,443)),REJECT') &&
