@@ -1,0 +1,23 @@
+debian_init.sh
+  s_eecd84e07bd2d7::t_a5fd6e98d43248 447,450-453,460-462
+test/test_debian_init.sh
+  s_eecd84e07bd2d7::t_ac22d6c1557cb0 221-229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "03481a47e4494fc108ce0364623833029f11653e",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
