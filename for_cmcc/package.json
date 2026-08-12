@@ -1,0 +1,8 @@
+{
+  "name": "easy-cmcc-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/test_sample_worker.mjs && bash test/test_easy_cmcc.sh"
+  }
+}

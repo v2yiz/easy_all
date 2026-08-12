@@ -1,64 +1,44 @@
-# easy_all.sh
+# easy_all
 
-`easy_all.sh` 与 `easy_cmcc.sh` 是轻量入口脚本；每次运行都会从本仓库下载并加载同一份 `easy_core.sh` 安装核心。核心一次只运行一种协议：
+`easy_all` 是包含完整安装核心的单文件安装器，一次只运行一种协议：
 
 | 协议 | 服务端 | 端口模式 | Cloudflare DNS |
 |---|---|---|---|
 | VLESS TCP Reality Vision | Xray | 默认 `443`，可选 `dynamic` | 不要求代理 |
 | AnyTLS | sing-box | 默认 `dynamic`，可选 `443` | 必须始终保持灰云 |
-| VLESS XHTTP TLS (`stream-one`) | Xray + Nginx | 固定 `443` | 安装时灰云，成功后可开橙云 |
 
-仓库同时提供两个明确的使用入口：
+该入口面向通用 VPS，只提供 Reality 与 AnyTLS，并部署 Worker `easy-all`。需要 XHTTP/WSS 和 Cloudflare CDN 时，请使用独立的 [`for_cmcc/easy_cmcc`](for_cmcc/README.md)。
 
-- `easy_all.sh`：BWG、VM 等通用 VPS，使用 Reality 或 AnyTLS，并部署通用 Worker `easy-all`。
-- `easy_cmcc.sh`：RackNerd 等上海移动需经 Cloudflare CDN 的 VPS，固定部署 VLESS XHTTP + WSS，并部署独立 Worker `easy-cmcc`。Gemini 固定走 XHTTP，GitHub 下载固定走 WSS。
+如果服务器当前仍是旧版 `easy_all` 创建的 XHTTP/WSS 安装，请先用原有旧版命令执行 `easy_all uninstall`，再安装 `easy_cmcc`。新版 `easy_all` 会拒绝读取 XHTTP/WSS 状态，不再迁移、更新或接管这类安装。
 
-两个入口共用经验证的安装核心，但 Worker 名称、协议范围和订阅用途彼此隔离；不要让不同服务器自动部署到同一个 Worker 名称。
-
-旧的 `easy_reality.sh`、`easy_anytls.sh` 和 `easy_vless_wss.sh` 已下线，也不提供旧状态迁移。检测到 `/etc/easy_reality`、`/etc/easy_anytls` 或 `/etc/easy_vless_wss` 时，新脚本会停止安装；请先用旧脚本的卸载命令清理。
+旧的 `easy_reality.sh` 和 `easy_anytls.sh` 已下线，也不提供旧状态迁移。检测到 `/etc/easy_reality` 或 `/etc/easy_anytls` 时，新脚本会停止安装；请先用旧脚本的卸载命令清理。
 
 ## 安装前须知
 
 - 只支持 Debian 12/13、amd64、systemd 和 root。
 - 脚本适用于专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
-- 三种协议都使用 TCP 443，所以同一时间只能启用一种。
+- TCP 使用 `fq + BBR`，收发自动调优上限为 32 MiB，接收积压为 16384，并启用 MTU 黑洞探测。
+- 两种协议都使用 TCP 443，所以同一时间只能启用一种。
 - Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
 - 只有 Gemini 及其必要 Google 依赖会由每台 VPS 固定选择单一地址族；`auto` 模式实测 Gemini 的 IPv4/IPv6 后选择更快的一侧，避免 `IPv4 != IPv6` 且不牺牲速度。Claude、OpenAI、MEGA 及其他服务保持服务端默认双栈行为。
 - AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
-- VLESS XHTTP 适合源站 IP 被运营商阻断、必须经 Cloudflare CDN 接入的节点。安装成功前，域名 A 记录必须保持 DNS only / 灰云并指向 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6。安装成功后使用 CDN 时，再将 A、AAAA 一起切为 Proxied / 橙云。SSL/TLS 模式建议使用 Full (Strict)。
 
 ## 快速安装
 
 ```bash
-wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh.new && mv -f /root/easy_all.sh.new /root/easy_all.sh && /root/easy_all.sh install
+wget -qO /root/easy_all.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all" && chmod 700 /root/easy_all.new && mv -f /root/easy_all.new /root/easy_all && /root/easy_all install
 ```
 
 也可以直接指定协议：
 
 ```bash
-/root/easy_all.sh install reality
-/root/easy_all.sh install anytls
-/root/easy_all.sh install vless-xhttp
+/root/easy_all install reality
+/root/easy_all install anytls
 ```
 
 安装成功后会注册 `/usr/local/bin/easy_all`。
 
-## 上海移动 / RackNerd 专用入口
-
-`easy_cmcc.sh` 不提供 Reality、AnyTLS 或协议切换，避免误将 RN 的 CDN 专用配置覆盖为通用节点。入口会自行下载共享核心，首次安装只需下载 CMCC 入口：
-
-```bash
-wget -qO /root/easy_cmcc.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_cmcc.sh" \
-  && chmod 700 /root/easy_cmcc.sh.new \
-  && mv -f /root/easy_cmcc.sh.new /root/easy_cmcc.sh \
-  && /root/easy_cmcc.sh install
-```
-
-安装后使用 `easy_cmcc update` 更新 RN 的 XHTTP/WSS、Nginx 和独立 `easy-cmcc` Worker。共享核心会自动更新；只有入口脚本本身变更时，才需要重新下载上面的 `easy_cmcc.sh`：
-
-```bash
-/root/easy_cmcc.sh update
-```
+`easy_all update` 使用当前单文件刷新服务端配置和 Worker；安装器本身有更新时，请重新执行上面的原子下载命令。
 
 ## 常用命令
 
@@ -71,115 +51,53 @@ easy_all update-core
 easy_all renew-cert
 easy_all switch reality
 easy_all switch anytls
-easy_all switch vless-xhttp
 easy_all uninstall
 ```
 
 `switch` 只支持由 `easy_all` 创建的安装。切换过程会先保存原协议的状态、服务配置、证书、核心和 nftables；新协议本机验收成功后才更新 Worker。若核心启动或 Worker API 上传失败，会自动恢复原协议。
-
-Reality 或 AnyTLS 已安装后，可以直接切换订阅端口模式；`update-sub` 会从同一份 Worker 模板同步刷新服务端域名策略、nftables 和 Worker：
-
-```bash
-sudo SUB_PORT_MODE=dynamic easy_all update-sub
-sudo SUB_PORT_MODE=443 easy_all update-sub
-```
 
 `uninstall` 默认就是完整本机 purge，不再需要 `--purge`：删除 easy_all 的服务、核心、配置、证书副本、状态、日志、命令入口和备份，尝试恢复安装前的 nftables，并从 root crontab 精确移除 easy_all 托管的重启任务。若 acme.sh 确认由 easy_all 安装且已无其他证书，也会一并清理；共享 acme.sh 会保留。XanMod、已安装软件包和系统级 BBR/IPv6 初始化不会降级。
 
 远端 Cloudflare Worker 不属于卸载范围。每次自动安装或切换都以 replace 方式覆盖同名 Worker，因此保留远端 Worker 不影响下次安装。
 
 `easy_all update` 始终以自动模式 replace 当前同名 Worker，不继承历史的手动输出模式。
-API Token 不会保存到状态文件：交互运行会提示输入 `CF_WORKER_API_TOKEN`；无人值守更新
-必须通过环境变量提供该 Token。若 Worker replace 失败，更新会明确失败，不会静默改成
-手动部署。仅执行 `easy_all update-sub` 时才继续沿用已保存的订阅部署模式。
+交互更新会重新提示输入未保存的 Cloudflare Worker API Token。若 Worker replace 失败，
+更新会明确失败，不会静默改成手动部署。仅执行 `easy_all update-sub` 时才继续沿用已保存
+的订阅部署模式。
 
-## 协议参数
+## 协议说明
 
 ### Reality
 
 ```bash
-sudo PROTOCOL=reality \
-  NODE_HOST=203.0.113.10 \
-  REALITY_TARGET=swdist.apple.com:443 \
-  SUB_PORT_MODE=443 \
-  ./easy_all.sh install
+sudo ./easy_all install reality
 ```
 
-输出为 VLESS TCP Reality Vision，包含 `security=reality`、`type=tcp`、`flow=xtls-rprx-vision`、public key 和 short ID。
+安装时会询问节点地址、Reality 目标和订阅端口模式。输出为 VLESS TCP Reality Vision，包含 `security=reality`、`type=tcp`、`flow=xtls-rprx-vision`、public key 和 short ID。
 
 ### AnyTLS
 
 ```bash
-sudo PROTOCOL=anytls \
-  ANYTLS_DOMAIN=anytls.example.com \
-  CF_DNS_API_TOKEN=... \
-  SUB_PORT_MODE=dynamic \
-  ./easy_all.sh install
+sudo ./easy_all install anytls
 ```
 
-脚本通过 acme.sh、Let's Encrypt 和 Cloudflare DNS-01 签发证书。`ANYTLS_PASSWORD` 未指定时自动生成；sing-box 可通过 `SING_BOX_VERSION=latest|alpha|具体版本` 选择版本。
+安装时会询问完整域名、Cloudflare DNS Token 和订阅端口模式。脚本通过 acme.sh、Let's Encrypt 和 Cloudflare DNS-01 签发证书，AnyTLS 密码会自动生成，并默认安装最新稳定版 sing-box。
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-三种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。相关域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端先确定与所选 VPS 不匹配的目标地址。只有 Gemini 及其必要 Google 依赖进入固定地址族策略；ChatGPT、Claude 及其辅助域名直接使用普通 `direct` 的默认双栈行为。`GEMINI_IP_FAMILY=auto`（默认）会分别请求三次 `https://gemini.google.com/`，比较可用地址族的中位耗时后固定选择更快的一侧。Xray 使用 `ForceIPv4` 或 `ForceIPv6`，sing-box 使用 `ipv4_only` 或 `ipv6_only`，因此同一台 VPS 上的 Gemini 请求不会在 IPv4/IPv6 之间漂移。没有全局 IPv6 地址或默认 IPv6 路由的 VPS 不执行 IPv6 测试并固定使用 IPv4。
+两种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。相关域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端先确定与所选 VPS 不匹配的目标地址。只有 Gemini 及其必要 Google 依赖进入固定地址族策略；ChatGPT、Claude 及其辅助域名直接使用普通 `direct` 的默认双栈行为。默认模式会分别请求三次 `https://gemini.google.com/`，比较可用地址族的中位耗时后固定选择更快的一侧。Xray 使用 `ForceIPv4` 或 `ForceIPv6`，sing-box 使用 `ipv4_only` 或 `ipv6_only`，因此同一台 VPS 上的 Gemini 请求不会在 IPv4/IPv6 之间漂移。没有全局 IPv6 地址或默认 IPv6 路由的 VPS 不执行 IPv6 测试并固定使用 IPv4。
 
-自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，也可以在安装或更新时用 `GEMINI_IP_FAMILY=ipv4 easy_all update` 或 `GEMINI_IP_FAMILY=ipv6 easy_all update` 显式覆盖。模式选择会写入 `/etc/easy_all/state.env`，后续更新继续沿用。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
+自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，选择结果会写入 `/etc/easy_all/state.env`，后续更新继续沿用。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
 
-订阅中的代理节点不设置 Mihomo `ip-version`，由本机按默认 Happy Eyeballs/地址族策略连接代理或 Cloudflare；Gemini 的地址族固定只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude、MEGA 或客户端到 CDN 的链路。
+订阅中的代理节点不设置 Mihomo `ip-version`；但为避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6，客户端模板默认使用 IPv4 DNS/Fake-IP/TUN。Gemini 的地址族固定仍只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude 或 MEGA 的服务端出口策略。
 
-模板保留字节内网适配：相关域名使用 DHCP DNS、加入 Fake-IP 过滤并显式直连，同时从 TUN 自动路由中排除 `10.0.0.0/8` 和 `fdbd::/16`。因此模板使用 `strict-route: false`；这些设置会原样同步到生成的 Worker。
+模板保留字节内网适配：相关域名使用跨平台的系统 DNS、加入 Fake-IP 过滤并显式直连，同时从 TUN 自动路由中排除 `10.0.0.0/8` 和 `fdbd::/16`。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、规则集和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
+
+飞书客户端官方网络白名单中的消息长连接、API、静态资源和 CDN 域名全部在外部规则集之前显式 `DIRECT`，避免 Mac TUN 下同一飞书会话在本地网络与 BWG 之间分流。公开飞书域名继续使用 Fake-IP，只有既有的字节内网域名使用系统 DNS。
+
+Mihomo 订阅通过 Loyalsoldier 官方源加载精简的 `private`、`proxy`、`direct`、`telegramcidr`、`lancidr` 和 `cncidr` 规则集；规则集经 `PROXY` 更新，不依赖第三方 GitHub 镜像。DNS 保留国内主解析器和境外 fallback，但不在 `nameserver-policy` 中引用代理策略组，避免 Windows 客户端启动时形成 DNS 与代理初始化依赖。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
-
-### VLESS XHTTP TLS
-
-该模式面向必须经过 Cloudflare CDN 的线路。它使用普通 HTTPS 可代理的 XHTTP
-`stream-one`：一个 HTTP/2 POST 同时承载双向流量，Cloudflare 到 Nginx 再通过
-`grpc_pass` 将同一条流交给 Xray。对上海移动这类源站 IP 被阻断、只能经 CDN 接入的
-线路，外层始终是 TLS/HTTP/2/TCP，不依赖 UDP/QUIC。
-
-```bash
-sudo PROTOCOL=vless-xhttp \
-  VLESS_XHTTP_DOMAIN=xhttp.example.com \
-  XHTTP_PATH=/randompath \
-  CF_DNS_API_TOKEN=... \
-  ./easy_all.sh install
-```
-
-`XHTTP_PATH` 默认随机生成，也可显式设置为以 `/` 开头的路径。该协议固定走 443，不接受 `SUB_PORT_MODE=dynamic`。
-
-安装或切换到 VLESS XHTTP 前，A 记录必须为 DNS only / 灰云并指向当前 VPS 公网 IPv4；AAAA 若存在，也应保持灰云并指向当前 VPS 公网 IPv6。安装成功后请将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。Cloudflare SSL/TLS 必须为 Full 或 Full (Strict)，Network 页面必须开启 gRPC 和 WebSockets。
-
-还需要在 Cloudflare **Rules > Configuration Rules** 为当前 XHTTP 路径建立规则：
-
-- 条件：Hostname 等于 `VLESS_XHTTP_DOMAIN`，URI Path 以 `XHTTP_PATH` 开头。
-- Request body buffering：`None`。
-- Response body buffering：`None`。
-
-使用具有 DNS Edit、Zone Read、Zone Settings Edit 和 Config Rules Edit 权限的
-`CF_DNS_API_TOKEN` 安装时，脚本会尝试自动完成 gRPC、WebSockets 与双向无缓冲配置；权限不足只会
-给出警告，不会中断部署。已安装节点也可以通过
-`sudo CF_DNS_API_TOKEN=... easy_all update` 补配，然后重新拉取订阅。
-
-Nginx 会为 XHTTP 响应添加 `Cache-Control: no-store`。如果 Cloudflare 上已有会强制缓存
-所有内容的 Cache Rule，请为 `VLESS_XHTTP_DOMAIN/XHTTP_PATH*` 单独增加 Bypass Cache
-规则，避免缓存 XHTTP 下行响应；默认 Cloudflare 缓存策略通常不需要额外修改。
-
-当前 `vless-xhttp` 安装会在同一域名下自动生成两个随机路径并行提供节点：XHTTP 用于
-`AI_GEMINI`，WSS 用于 `DOWNLOAD`。GitHub 及其下载域名默认进入 `DOWNLOAD`，它会优先选择
-WSS；`PROXY` 保持所有节点可选。两个入口都使用同一台服务器、同一个 UUID 和同一套
-Gemini 服务端固定地址族策略，因此只有 Gemini 会避免 IPv4/IPv6 出口不一致，ChatGPT、Claude
-和 MEGA 保持默认双栈行为。
-
-输出同时包含 VLESS URI、Mihomo `network: xhttp`/`xhttp-opts` 与 `network: ws`/`ws-opts`
-节点以及 base64 订阅内容。XHTTP 节点使用 `alpn: [h2]`、`mode: stream-one`、
-`packet-encoding: xudp` 和 `udp: true`；WSS 也只经 TLS/TCP 443 接入 Cloudflare。两者均不写入
-自定义 `reuse-settings`，也不会额外启用 `smux`。FLClash 应使用支持 XHTTP `stream-one` 的当前稳定
-Mihomo 内核。
-
-现有 `vless-wss` 安装执行 `easy_all update` 时会自动迁移为 `vless-xhttp`，复用原域名、
-UUID、证书和路径，并同步改写 Xray、Nginx 与 Worker。命令行仍接受 `vless-wss`/`wss`
-作为兼容别名，但新状态只保存 `vless-xhttp`、`VLESS_XHTTP_DOMAIN` 和 `XHTTP_PATH`。
 
 ## Cloudflare 凭据图解
 
@@ -204,8 +122,6 @@ easy_all 仅在当前命令进程中使用它们，不会保存到状态文件�
 
 - Zone → DNS → Edit
 - Zone → Zone → Read
-- Zone → Zone Settings → Edit
-- Zone → Config Rules → Edit
 
 ![Cloudflare Zone Token 配置示意图](docs/images/cloudflare-zone-token.svg)
 
@@ -254,32 +170,13 @@ https://sub.example.com/subscribe?token=owner-token-123&flag=clash
 此时不要再重复添加同主机名的 Route。Cloudflare 当前对纯 Worker 源站更推荐 Custom
 Domain，二者选择一种即可。
 
-无人值守更新示例：
-
-```bash
-CF_ACCOUNT_ID='32位Account ID' \
-CF_DNS_API_TOKEN='cfut_...' \
-CF_WORKER_API_TOKEN='cfut_...' \
-easy_all update
-```
-
 ## Worker 订阅
 
 安装或 `update-sub` 时可选择：
 
-1. `auto`：通过 Cloudflare API 自动 replace Worker。
-2. `worker`：输出完整 Worker 源码，供手动部署。
-3. `link`：只输出当前节点链接。
-
-无人值守自动部署示例：
-
-```bash
-sudo SUBSCRIBE_MODE=auto \
-  CF_ACCOUNT_ID=... \
-  CF_WORKER_API_TOKEN=... \
-  WORKER_NAME=easy-all \
-  ./easy_all.sh install reality
-```
+1. 自动部署：通过 Cloudflare API replace Worker。
+2. 手动部署：输出完整 Worker 源码。
+3. 只输出当前节点链接。
 
 默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Worker 部署完成后会先等待 5 秒，再进行最多 6 次订阅 HTTP 验收；失败后的重试间隔随机为 1–3 秒。最近一次部署日志位于：
 
@@ -293,38 +190,28 @@ Worker 支持：
 
 - 默认 base64 节点订阅：`/subscribe?token=...`
 - Mihomo/Clash YAML：`/subscribe?token=...&flag=clash`
-- 下载文件名：`SUB_DOWNLOAD_NAME`
+- 可自定义 Clash 下载文件名。
 
 ### Worker 模板与规则来源
 
-`sample-worker.js` 是 Worker 模板、Mihomo 规则和 Gemini 地址族策略的唯一来源，`easy_all.sh` 不再保存第二份域名列表。脚本会从模板的 `EASY_ALL_GEMINI_DOMAINS_START/END` JSON 区块提取域名，并写入 Xray 或 sing-box 服务端配置。模板按以下顺序获取：
+`sample-worker.js` 是 Worker 模板、Mihomo 规则和 Gemini 地址族策略的唯一来源，`easy_all` 不再保存第二份域名列表。脚本会从模板的 `EASY_ALL_GEMINI_DOMAINS_START/END` JSON 区块提取域名，并写入 Xray 或 sing-box 服务端配置。默认读取本仓库 `main` 分支的 `sample-worker.js`。
 
-1. `SAMPLE_WORKER_SOURCE` 指定的本地文件或 HTTPS URL。
-2. `SAMPLE_WORKER_URL`，默认读取本仓库 `main` 分支的 `sample-worker.js`。
+模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换、`update` 或 `update-sub` 时，每次操作都会重新获取最新模板，但一次操作只获取一次；服务端配置和 Worker 都复用这份已校验模板。现有 Token 和节点信息从状态文件重新注入。模板缺少配置、规则或 Gemini 域名边界，或者域名 JSON 非法、重复、未规范化时，脚本会立即停止，不会生成不一致的配置。
 
-模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换、`update` 或 `update-sub` 时，每次操作都会重新获取 `SAMPLE_WORKER_URL` 的最新内容，但一次操作只获取一次；服务端配置和 Worker 都复用这份已校验模板。现有 Token 和节点信息从状态文件重新注入。模板缺少配置、规则或 Gemini 域名边界，或者域名 JSON 非法、重复、未规范化时，脚本会立即停止，不会生成不一致的配置。
-
-VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all.sh` 与 `sample-worker.js` 已发布到 `main`，再执行一行命令：
+VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all` 与 `sample-worker.js` 已发布到 `main`，再执行一行命令：
 
 ```bash
-wget -qO /root/easy_all.sh.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all.sh" && chmod 700 /root/easy_all.sh.new && mv -f /root/easy_all.sh.new /root/easy_all.sh && /root/easy_all.sh update
+wget -qO /root/easy_all.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all" && chmod 700 /root/easy_all.new && mv -f /root/easy_all.new /root/easy_all && /root/easy_all update
 ```
 
-`update` 会先把当前脚本注册为 `/usr/local/bin/easy_all`，然后调用与 `update-sub` 相同的同步更新流程：安全重写并验收当前 Xray/sing-box 服务端配置，再强制自动 replace Worker。Worker replace 前若任何一步失败，会恢复旧服务端配置、本地 Worker、端口模式和 nftables；replace 已完成后则保留新服务端配置，避免远端订阅与 VPS 回滚后不一致。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`；若状态中没有 Account ID，脚本会先提示输入，随后安全提示重新输入未保存的 Cloudflare Worker API Token。
-
-需要固定自定义模板时，可以显式指定：
-
-```bash
-sudo SAMPLE_WORKER_SOURCE=/root/easy_all/sample-worker.js \
-  easy_all update-sub
-```
+`update` 会先重新应用 BBR/TCP 参数，把当前脚本注册为 `/usr/local/bin/easy_all`，然后调用与 `update-sub` 相同的同步更新流程：安全重写并验收当前 Xray/sing-box 服务端配置，再强制自动 replace Worker。Worker replace 前若任何一步失败，会恢复旧服务端配置、本地 Worker、端口模式和 nftables；replace 已完成后则保留新服务端配置，避免远端订阅与 VPS 回滚后不一致。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`；若状态中没有 Account ID，脚本会先提示输入，随后安全提示重新输入未保存的 Cloudflare Worker API Token。
 
 ### 订阅访问 Token
 
-`ALLOWED_TOKENS` 是 Worker 订阅入口的访问白名单，格式必须是 JSON object：key 是便于识别的用户名，value 才是订阅 URL 中使用的 token。
+Worker 订阅入口使用 Token 字典作为访问白名单，格式必须是 JSON object：key 是便于识别的用户名，value 才是订阅 URL 中使用的 token。
 
-```bash
-ALLOWED_TOKENS='{"owner":"owner-token-123","alice":"alice-token-456"}'
+```json
+{"owner":"owner-token-123","alice":"alice-token-456"}
 ```
 
 上面的配置会生成两组订阅地址：
@@ -338,7 +225,7 @@ https://<worker>.workers.dev/subscribe?token=alice-token-456&flag=clash
 
 规则：
 
-- 至少要包含一个用户；无人值守安装或 `update-sub` 必须显式设置 `ALLOWED_TOKENS`。
+- 至少要包含一个用户。
 - 用户名只允许 `A-Z a-z 0-9 . _ -`，长度 `1-64`。
 - token 只允许 URL 安全字符 `A-Z a-z 0-9 . _ ~ -`，长度 `8-128`。
 - 用户名和 token 都会去掉首尾空白；不允许空值、重复用户名或重复 token。
@@ -350,45 +237,19 @@ https://<worker>.workers.dev/subscribe?token=alice-token-456&flag=clash
 openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n'
 ```
 
-Cloudflare API Token、DNS Token 不写入状态文件；订阅访问用的 `ALLOWED_TOKENS` 字典会保存到权限为 `0600` 的 `/etc/easy_all/state.env`，并写入自动生成的 Worker。
-
-## 无人值守变量
-
-```text
-PROTOCOL=reality|anytls|vless-xhttp
-NODE_NAME=...
-NODE_HOST=...
-REALITY_TARGET=swdist.apple.com:443
-ANYTLS_DOMAIN=...
-ANYTLS_PASSWORD=...
-VLESS_XHTTP_DOMAIN=...
-XHTTP_PATH=/...
-SUB_PORT_MODE=443|dynamic
-REBOOT_SCHEDULE_MODE=default|custom|none
-REBOOT_HOUR=0-23
-SUBSCRIBE_MODE=auto|worker|link
-ALLOWED_TOKENS='{"owner":"token1","alice":"token2"}'
-SUB_DOWNLOAD_NAME=MY_SUB
-CF_DNS_API_TOKEN=...
-CF_ACCOUNT_ID=...
-CF_WORKER_API_TOKEN=...
-WORKER_NAME=easy-all
-SAMPLE_WORKER_SOURCE=/path/to/sample-worker.js|https://...
-SAMPLE_WORKER_URL=https://...
-SING_BOX_VERSION=latest|alpha|具体版本
-```
+Cloudflare API Token、DNS Token 不写入状态文件；订阅访问用的 Token 字典会保存到权限为 `0600` 的 `/etc/easy_all/state.env`，并写入自动生成的 Worker。
 
 ## 状态与验证
 
 主要文件：
 
-| 路径 | 用途 |
-|---|---|
-| `/etc/easy_all/state.env` | 当前协议及订阅状态，权限 `0600` |
-| `/etc/easy_all/subscribe-worker.js` | 当前协议生成的 Worker |
-| `/etc/easy_all/last-worker-deploy.log` | Worker 分阶段部署日志 |
-| `/etc/easy_all/backups/` | 安装前与更新过程备份 |
-| `/usr/local/bin/easy_all` | 注册命令 |
+| 路径                                     | 用途                             |
+| ---------------------------------------- | -------------------------------- |
+| `/etc/easy_all/state.env`              | 当前协议及订阅状态，权限`0600` |
+| `/etc/easy_all/subscribe-worker.js`    | 当前协议生成的 Worker            |
+| `/etc/easy_all/last-worker-deploy.log` | Worker 分阶段部署日志            |
+| `/etc/easy_all/backups/`               | 安装前与更新过程备份             |
+| `/usr/local/bin/easy_all`              | 注册命令                         |
 
 本地测试：
 
@@ -396,4 +257,4 @@ SING_BOX_VERSION=latest|alpha|具体版本
 npm test
 ```
 
-测试覆盖三个协议的节点链接、Mihomo 输出、Worker base64 输出、状态安全、协议切换/回滚守卫，以及 `sample-worker.js`。
+测试覆盖 Reality/AnyTLS 节点链接、Mihomo 输出、Worker base64 输出、状态安全、协议切换/回滚守卫，以及 `sample-worker.js`。

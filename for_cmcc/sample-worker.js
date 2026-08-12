@@ -1,15 +1,15 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS Reality / AnyTLS 订阅与 Clash Meta 配置
+ * 提供 VLESS Reality / VLESS XHTTP TLS / VLESS WS TLS / AnyTLS 订阅、Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、host、sni、pbk、sid 或 AnyTLS 密码
+ * 2. 节点配置中的 uuid、host、sni、pbk、sid、TLS 域名、XHTTP/WS path 或 AnyTLS 密码
  * 3. DEFAULT_NODE 指向你希望默认输出的节点，支持单节点或节点数组
  */
 // ================= 配置常量 =================
 
-// EASY_ALL_CONFIG_START
+// EASY_CMCC_CONFIG_START
 const ALLOWED_TOKENS = {
     user1: 'REPLACE_WITH_TOKEN_1',
     user2: 'REPLACE_WITH_TOKEN_2'
@@ -18,7 +18,7 @@ const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));
 
 const PORT_BASE = 10000;
 const PORT_MULTIPLIER = 6;
-const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
+const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_CMCC';
 const CONFIGS = [];
 
 function defineNode(config) {
@@ -55,19 +55,66 @@ const NODE_ANYTLS_CONFIG = defineNode({
     insecure: false
 });
 
+// ── VLESS XHTTP TLS 主节点（Cloudflare CDN / H2 stream-up）────────
+const NODE_VLESS_XHTTP_CONFIG = defineNode({
+    type: 'vless',
+    security: 'tls',
+    network: 'xhttp',
+    uuid: '00000000-0000-4000-8000-000000000002',
+    host: 'xhttp.example.com',
+    name: 'NODE_VLESS_XHTTP_STREAM_UP',
+    fp: 'chrome',
+    sni: 'xhttp.example.com',
+    path: '/randompath',
+    mode: 'stream-up',
+    ipVersion: 'dual',
+    udp: true
+});
+
+// ── VLESS XHTTP TLS 兼容回退（同入口 / H2 stream-one）────────────
+const NODE_VLESS_XHTTP_STREAM_ONE_CONFIG = defineNode({
+    type: 'vless',
+    security: 'tls',
+    network: 'xhttp',
+    uuid: '00000000-0000-4000-8000-000000000002',
+    host: 'xhttp.example.com',
+    name: 'NODE_VLESS_XHTTP_STREAM_ONE',
+    fp: 'chrome',
+    sni: 'xhttp.example.com',
+    path: '/randompath',
+    mode: 'stream-one',
+    ipVersion: 'dual',
+    udp: true
+});
+
+// ── VLESS WebSocket TLS 节点（Cloudflare CDN / 下载测速）──────────
+const NODE_VLESS_WS_CONFIG = defineNode({
+    type: 'vless',
+    security: 'tls',
+    network: 'ws',
+    uuid: '00000000-0000-4000-8000-000000000002',
+    host: 'xhttp.example.com',
+    name: 'NODE_VLESS_WS',
+    fp: 'chrome',
+    sni: 'xhttp.example.com',
+    path: '/randomws',
+    ipVersion: 'dual',
+    udp: true
+});
+
 const DEFAULT_NODE = NODE_REALITY_CONFIG; // 控制默认输出的节点，支持 [NODE_REALITY_CONFIG, NODE_ANYTLS_CONFIG]
 
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
 }
-// EASY_ALL_CONFIG_END
+// EASY_CMCC_CONFIG_END
 
 // ================= 规则与模板 =================
 
-// EASY_ALL_RULES_START
+// EASY_CMCC_RULES_START
 // 服务端为 Gemini 及其必要 Google 依赖固定同一出口族；其他 AI 服务保持默认双栈行为。
 const GEMINI_DOMAIN_SUFFIXES = Object.freeze(
-/* EASY_ALL_GEMINI_DOMAINS_START */
+/* EASY_CMCC_GEMINI_DOMAINS_START */
 [
     "ai.google.dev",
     "generativeai.google",
@@ -77,7 +124,7 @@ const GEMINI_DOMAIN_SUFFIXES = Object.freeze(
     "gstatic.com",
     "ggpht.com"
 ]
-/* EASY_ALL_GEMINI_DOMAINS_END */
+/* EASY_CMCC_GEMINI_DOMAINS_END */
 );
 
 const BASE_FAKE_IP_FILTER = [
@@ -324,7 +371,7 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,turn.livekit.cloud,AI
 
   # ==================== Gemini / Google ====================
-  # Gemini 依赖的 Google 域名统一进入 AI_GEMINI，生成订阅时归并到 PROXY。
+  # Gemini 依赖的 Google 域名统一进入 AI_GEMINI，默认优先 XHTTP。
   - DOMAIN-SUFFIX,google.com,AI_GEMINI
   - DOMAIN-SUFFIX,googleapis.com,AI_GEMINI
   - DOMAIN-SUFFIX,googleapis.cn,AI_GEMINI
@@ -393,15 +440,16 @@ const EMBEDDED_CLASH_RULES = `rules:
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - MATCH,PROXY
 `;
-// EASY_ALL_RULES_END
+// EASY_CMCC_RULES_END
 
 const CLASH_CONFIG_TEMPLATE = `mixed-port: 1080
 allow-lan: false
 mode: rule
 log-level: info
-ipv6: false
+ipv6: true
 external-controller: '127.0.0.1:9090'
 unified-delay: true
+tcp-concurrent: true
 profile:
     store-selected: true
 
@@ -560,6 +608,18 @@ proxies:
 {proxy_nodes}
 
 proxy-groups:
+    - name: AI_GEMINI
+      type: select
+      proxies:
+        - {ai_gemini_proxy_names}
+    - name: DOWNLOAD
+      type: select
+      proxies:
+        - {download_proxy_names}
+    - name: AI
+      type: select
+      proxies:
+        - {proxy_names}
     - name: PROXY
       type: select
       proxies:
@@ -605,6 +665,54 @@ function buildClashVlessTlsVisionNodeTemplate() {
     servername: {sni}
     client-fingerprint: {fp}
     packet-encoding: xudp
+    smux:
+      enabled: false
+`;
+}
+
+function buildClashVlessXhttpTlsNodeTemplate() {
+    return `  - name: {name}
+    type: vless
+    server: {host}
+    port: {port}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: {udp}
+    skip-cert-verify: false
+    servername: {sni}
+    client-fingerprint: {fp}
+    ip-version: {ip_version}
+    packet-encoding: xudp
+    alpn:
+      - h2
+    xhttp-opts:
+      host: {xhttp_host}
+      path: {path}
+      mode: {mode}
+    smux:
+      enabled: false
+`;
+}
+
+function buildClashVlessWsTlsNodeTemplate() {
+    return `  - name: {name}
+    type: vless
+    server: {host}
+    port: {port}
+    uuid: {uuid}
+    network: ws
+    tls: true
+    udp: {udp}
+    skip-cert-verify: false
+    servername: {sni}
+    client-fingerprint: {fp}
+    ip-version: {ip_version}
+    packet-encoding: xudp
+    ws-opts:
+      path: {path}
+      headers:
+        Host: {ws_host}
     smux:
       enabled: false
 `;
@@ -687,6 +795,15 @@ function createVlessLink(cfg, port) {
     if (security === 'tls' && network === 'tcp') {
         params.set('flow', 'xtls-rprx-vision');
         params.set('packetEncoding', 'xudp');
+    } else if (security === 'tls' && network === 'xhttp') {
+        params.set('alpn', 'h2');
+        params.set('path', cfg.path || '/');
+        params.set('mode', cfg.mode || 'stream-up');
+        params.set('packetEncoding', 'xudp');
+    } else if (security === 'tls' && network === 'ws') {
+        params.set('path', cfg.path || '/');
+        params.set('host', cfg.wsHost || cfg.host);
+        params.set('packetEncoding', 'xudp');
     } else if (network !== 'tcp') {
         throw new Error(`Unsupported VLESS network: ${network}`);
     }
@@ -753,6 +870,10 @@ function generateClashProxyNode(cfg, port) {
             template = buildClashVlessRealityNodeTemplate();
         } else if (security === 'tls' && network === 'tcp') {
             template = buildClashVlessTlsVisionNodeTemplate();
+        } else if (security === 'tls' && network === 'xhttp') {
+            template = buildClashVlessXhttpTlsNodeTemplate();
+        } else if (security === 'tls' && network === 'ws') {
+            template = buildClashVlessWsTlsNodeTemplate();
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
@@ -765,6 +886,11 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{pbk}/g, cfg.pbk || '')
             .replace(/{sid}/g, cfg.sid || '')
             .replace(/{fp}/g, cfg.fp)
+            .replace(/{path}/g, cfg.path || '/')
+            .replace(/{mode}/g, cfg.mode || 'stream-up')
+            .replace(/{ip_version}/g, cfg.ipVersion || 'dual')
+            .replace(/{xhttp_host}/g, yamlString(cfg.xhttpHost || cfg.host))
+            .replace(/{ws_host}/g, yamlString(cfg.wsHost || cfg.host))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));
     }
@@ -787,6 +913,15 @@ function generateClashProxyNode(cfg, port) {
 function generateClashConfigMulti(configs, ports, rulesStr) {
     let proxyNodes = '';
     const proxyNames = [];
+    const xhttpConfigs = configs.filter(cfg => vlessSecurity(cfg) === 'tls' && vlessNetwork(cfg) === 'xhttp');
+    const wsConfigs = configs.filter(cfg => vlessSecurity(cfg) === 'tls' && vlessNetwork(cfg) === 'ws');
+    const streamUpNames = xhttpConfigs
+        .filter(cfg => (cfg.mode || 'stream-up') === 'stream-up')
+        .map(cfg => yamlString(cfg.name));
+    const streamOneNames = xhttpConfigs
+        .filter(cfg => cfg.mode === 'stream-one')
+        .map(cfg => yamlString(cfg.name));
+    const wsNames = wsConfigs.map(cfg => yamlString(cfg.name));
 
     for (let i = 0; i < configs.length; i++) {
         proxyNodes += generateClashProxyNode(configs[i], ports[i]);
@@ -796,11 +931,23 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
     const sections = {
         fake_ip_filter: FAKE_IP_FILTER,
         proxy_nodes: proxyNodes,
+        ai_gemini_proxy_names: [
+            ...streamUpNames,
+            ...streamOneNames,
+            ...wsNames,
+            ...proxyNames.filter(name => ![...streamUpNames, ...streamOneNames, ...wsNames].includes(name))
+        ].join('\n        - '),
+        download_proxy_names: [
+            ...streamUpNames,
+            ...wsNames,
+            ...streamOneNames,
+            ...proxyNames.filter(name => ![...streamUpNames, ...wsNames, ...streamOneNames].includes(name))
+        ].join('\n        - '),
         proxy_names: proxyNames.join('\n        - '),
-        rules_section: rulesStr.replaceAll(/\b(?:AI_GEMINI|DOWNLOAD|AI)\b/g, 'PROXY')
+        rules_section: rulesStr
     };
     return CLASH_CONFIG_TEMPLATE.replace(
-        /{(fake_ip_filter|proxy_nodes|proxy_names|rules_section)}/g,
+        /{(fake_ip_filter|proxy_nodes|ai_gemini_proxy_names|download_proxy_names|proxy_names|rules_section)}/g,
         (_, section) => sections[section]
     );
 }

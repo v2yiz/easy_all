@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 
-# Unified installer for Reality, AnyTLS, and VLESS XHTTP TLS.
+# Standalone CMCC/RackNerd installer for XHTTP stream-up/stream-one + WSS over Cloudflare CDN.
 
 set -Eeuo pipefail
 umask 077
 
-readonly EASY_ALL_PROFILE="${EASY_ALL_PROFILE:-general}"
-case "${EASY_ALL_PROFILE}" in
-general | cmcc) ;;
-*) die "EASY_ALL_PROFILE 仅支持 general 或 cmcc" ;;
-esac
+readonly EASY_CMCC_PROFILE="cmcc"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+readonly SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
 
-readonly STATE_DIR="/etc/easy_all"
+readonly STATE_DIR="/etc/easy_cmcc"
 readonly BACKUP_DIR="${STATE_DIR}/backups"
 readonly STATE_FILE="${STATE_DIR}/state.env"
 readonly WORKER_FILE="${STATE_DIR}/subscribe-worker.js"
@@ -19,29 +17,29 @@ readonly CLOUDFLARE_DEPLOY_LOG="${STATE_DIR}/last-worker-deploy.log"
 readonly CERT_DIR="${STATE_DIR}/certs"
 readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
 readonly KEY_FILE="${CERT_DIR}/private.key"
-readonly WEB_ROOT="/var/www/easy_all"
-readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
-readonly ENTRY_SCRIPT_FILE="${EASY_ALL_ENTRY_SCRIPT:-}"
-readonly ENTRY_COMMAND_NAME="${EASY_ALL_ENTRY_COMMAND:-easy_all}"
+readonly WEB_ROOT="/var/www/easy_cmcc"
+readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_cmcc"
+readonly ENTRY_SCRIPT_FILE="${EASY_CMCC_ENTRY_SCRIPT:-${SCRIPT_FILE}}"
+readonly ENTRY_COMMAND_NAME="${EASY_CMCC_ENTRY_COMMAND:-easy_cmcc}"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
 readonly CERT_RELOAD_HOOK="${COMMAND_INSTALL_DIR}/reload-tls-service.sh"
 readonly XRAY_DIR="${STATE_DIR}/xray"
 readonly XRAY_BIN="${XRAY_DIR}/xray"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
-readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy-all-xray.service"
-readonly XRAY_SERVICE="easy-all-xray.service"
+readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy-cmcc-xray.service"
+readonly XRAY_SERVICE="easy-cmcc-xray.service"
 readonly SING_BOX_DIR="${STATE_DIR}/sing-box"
 readonly SING_BOX_BIN="${SING_BOX_DIR}/sing-box"
 readonly SING_BOX_CONFIG="${SING_BOX_DIR}/config.json"
-readonly SING_BOX_SERVICE_FILE="/etc/systemd/system/easy-all-sing-box.service"
-readonly SING_BOX_SERVICE="easy-all-sing-box.service"
-readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
-readonly ACME_HOME="/root/.acme.sh"
+readonly SING_BOX_SERVICE_FILE="/etc/systemd/system/easy-cmcc-sing-box.service"
+readonly SING_BOX_SERVICE="easy-cmcc-sing-box.service"
+readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_cmcc.conf"
+readonly ACME_HOME="/root/.acme-cmcc.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
-readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy-all"
+readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy-cmcc"
 readonly NFT_CONFIG="/etc/nftables.conf"
-readonly SYSCTL_CONFIG="/etc/sysctl.d/99-bbrv3.conf"
-readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
+readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy-cmcc-bbr.conf"
+readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-easy-cmcc-enable-ipv6.conf"
 readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly XANMOD_KEYRING="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
 readonly XANMOD_REPO="/etc/apt/sources.list.d/xanmod-release.list"
@@ -57,15 +55,11 @@ readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
 readonly DEFAULT_ANYTLS_NODE_NAME="MY_ANYTLS"
 readonly DEFAULT_XHTTP_NODE_NAME="MY_VLESS_XHTTP"
 readonly DEFAULT_WS_NODE_NAME="MY_VLESS_WS"
-if [[ "${EASY_ALL_PROFILE}" == "cmcc" ]]; then
-    readonly DEFAULT_WORKER_NAME="easy-cmcc"
-else
-    readonly DEFAULT_WORKER_NAME="easy-all"
-fi
-readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
-readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/sample-worker.js"
+readonly DEFAULT_WORKER_NAME="easy-cmcc"
+readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_CMCC"
+readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js"
 readonly DEFAULT_REBOOT_HOUR="4"
-readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
+readonly CRON_REBOOT_MARKER="# easy_cmcc-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly SING_BOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
@@ -111,11 +105,6 @@ cleanup() {
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"
     done
-    case "${EASY_ALL_DOWNLOADED_CORE_FILE:-}" in
-    /tmp/easy-all-core.* | /tmp/easy-cmcc-core.*)
-        rm -f -- "${EASY_ALL_DOWNLOADED_CORE_FILE}"
-        ;;
-    esac
 }
 trap cleanup EXIT
 
@@ -334,6 +323,31 @@ snapshot_fresh_install() {
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 
+configure_bbr_tcp() {
+    cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
+net.core.default_qdisc = fq
+net.core.netdev_max_backlog = 16384
+net.core.somaxconn = 4096
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_rmem = 4096 131072 33554432
+net.ipv4.tcp_wmem = 4096 65536 33554432
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+EOF
+    install -m 0644 "${RUNTIME_TMP}/bbr.conf" "${SYSCTL_CONFIG}"
+    modprobe tcp_bbr >/dev/null 2>&1 || true
+    sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "应用 BBR sysctl 配置失败"
+    # 撤销旧版 easy_cmcc 的全局覆盖，恢复 Linux 默认行为。
+    sysctl -q -w net.ipv4.tcp_fastopen=1 >/dev/null \
+        || die "恢复 TCP Fast Open 默认值失败"
+    sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295 >/dev/null \
+        || die "恢复 TCP 未发送队列默认值失败"
+    [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
+        || die "拥塞控制算法未成功设置为 bbr"
+}
+
 install_xanmod_bbr() {
     local key_file keyring_file repo_file
     key_file="${RUNTIME_TMP}/xanmod-archive.key"
@@ -350,25 +364,7 @@ install_xanmod_bbr() {
     install -m 0644 "${repo_file}" "${XANMOD_REPO}"
     apt-get update
     apt-get install -y linux-xanmod-lts-x64v1
-    cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
-net.core.default_qdisc = fq
-net.core.netdev_max_backlog = 250000
-net.core.somaxconn = 4096
-net.ipv4.tcp_congestion_control = bbr
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.ipv4.tcp_rmem = 4096 87380 67108864
-net.ipv4.tcp_wmem = 4096 65536 67108864
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_notsent_lowat = 16384
-EOF
-    install -m 0644 "${RUNTIME_TMP}/bbr.conf" "${SYSCTL_CONFIG}"
-    modprobe tcp_bbr >/dev/null 2>&1 || true
-    sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "应用 BBR sysctl 配置失败"
-    [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
-        || die "拥塞控制算法未成功设置为 bbr"
+    configure_bbr_tcp
 }
 
 filter_managed_reboot_cron() {
@@ -412,7 +408,7 @@ configure_daily_reboot() {
 
 remove_daily_reboot_schedule() {
     { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab - \
-        || warn "移除 easy_all 定时重启任务失败，请手动检查 root crontab"
+        || warn "移除 easy_cmcc 定时重启任务失败，请手动检查 root crontab"
 }
 
 configure_ipv6_compat() {
@@ -501,12 +497,12 @@ print_dns_proxy_postinstall_notice() {
 }
 
 source_state_file() {
-    [[ -f "${STATE_FILE}" ]] || die "easy_all 状态文件不存在：${STATE_FILE}"
+    [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 状态文件不存在：${STATE_FILE}"
     unset STATE_VERSION VLESS_XHTTP_DOMAIN XHTTP_PATH VLESS_WS_PATH VLESS_WS_NODE_NAME VLESS_WSS_DOMAIN WS_PATH XRAY_LOOPBACK_PORT XRAY_WS_LOOPBACK_PORT
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
-        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
+        || die "不支持的 easy_cmcc 状态版本：${STATE_VERSION:-缺失}"
     # Migrate legacy WSS state in place while preserving domain, UUID and path.
     [[ "${PROTOCOL:-}" != "vless-wss" ]] || PROTOCOL="vless-xhttp"
     VLESS_XHTTP_DOMAIN=${VLESS_XHTTP_DOMAIN:-${VLESS_WSS_DOMAIN:-}}
@@ -525,7 +521,7 @@ load_state() {
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
     )
     for variable in "${variables[@]}"; do
-        env_name="EASY_ALL_ENV_${variable}"
+        env_name="EASY_CMCC_ENV_${variable}"
         printf -v "${env_name}" '%s' "${!variable:-}"
         printf -v "${variable}" '%s' ""
     done
@@ -533,7 +529,7 @@ load_state() {
         source_state_file
     fi
     for variable in "${variables[@]}"; do
-        env_name="EASY_ALL_ENV_${variable}"
+        env_name="EASY_CMCC_ENV_${variable}"
         if [[ -n "${!env_name:-}" ]]; then
             printf -v "${variable}" '%s' "${!env_name}"
         fi
@@ -596,37 +592,17 @@ save_state() {
 }
 
 validate_protocol() {
-    [[ "$1" == "reality" || "$1" == "anytls" || "$1" == "vless-xhttp" ]]
+    [[ "$1" == "vless-xhttp" ]]
 }
 
 choose_protocol() {
     local requested=${1:-${PROTOCOL:-}}
-    if [[ "${EASY_ALL_PROFILE}" == "cmcc" ]]; then
-        requested=${requested:-vless-xhttp}
-        case "${requested}" in
-        3 | vless-xhttp | xhttp | vless-wss | wss) PROTOCOL="vless-xhttp" ;;
-        *) die "easy_cmcc 只支持 VLESS XHTTP + WSS" ;;
-        esac
-        info "easy_cmcc 使用 VLESS XHTTP（Gemini）与 WSS（下载）的 Cloudflare CDN 双传输模式。"
-        return 0
-    fi
-    if [[ -z "${requested}" && -t 0 ]]; then
-        printf '请选择协议：\n'
-        printf '  1. VLESS Reality Vision\n'
-        printf '  2. AnyTLS\n'
-        printf '  3. VLESS XHTTP TLS（支持 Cloudflare CDN）\n'
-        read -r -p "请选择 [1]: " requested
-    fi
-    requested=${requested:-reality}
+    requested=${requested:-vless-xhttp}
     case "${requested}" in
-    1 | reality) PROTOCOL="reality" ;;
-    2 | anytls) PROTOCOL="anytls" ;;
     3 | vless-xhttp | xhttp | vless-wss | wss) PROTOCOL="vless-xhttp" ;;
-    *) die "不支持的协议：${requested}" ;;
+    *) die "easy_cmcc 只支持 VLESS XHTTP + WSS" ;;
     esac
-    if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
-        info "VLESS XHTTP TLS 使用 Cloudflare gRPC 兼容的 HTTP/2 stream-one 模式。"
-    fi
+    info "easy_cmcc 使用 XHTTP stream-up 主链路、stream-one 与 WSS 回退的 Cloudflare CDN 模式。"
 }
 
 protocol_default_node_name() {
@@ -635,6 +611,10 @@ protocol_default_node_name() {
     anytls) printf '%s' "${DEFAULT_ANYTLS_NODE_NAME}" ;;
     vless-xhttp) printf '%s' "${DEFAULT_XHTTP_NODE_NAME}" ;;
     esac
+}
+
+xhttp_stream_one_node_name() {
+    printf '%s_STREAM_ONE' "${NODE_NAME}"
 }
 
 validate_reality_target() {
@@ -679,6 +659,10 @@ collect_install_inputs() {
         [[ "${VLESS_WS_PATH}" != "${XHTTP_PATH}" ]] || die "VLESS_WS_PATH 不能与 XHTTP_PATH 相同"
         VLESS_WS_NODE_NAME=${VLESS_WS_NODE_NAME:-${DEFAULT_WS_NODE_NAME}}
         [[ -n "${VLESS_WS_NODE_NAME}" ]] || die "VLESS_WS_NODE_NAME 不能为空"
+        [[ "${VLESS_WS_NODE_NAME}" != "${NODE_NAME}" ]] \
+            || die "VLESS_WS_NODE_NAME 不能与 XHTTP 主节点名称相同"
+        [[ "${VLESS_WS_NODE_NAME}" != "$(xhttp_stream_one_node_name)" ]] \
+            || die "VLESS_WS_NODE_NAME 不能与 XHTTP stream-one 回退节点名称相同"
         unset VLESS_WSS_DOMAIN WS_PATH
         XRAY_LOOPBACK_PORT=${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}
         [[ "${XRAY_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
@@ -711,7 +695,7 @@ check_install_conflicts() {
     done
     [[ "${SWITCH_IN_PROGRESS:-0}" == "1" ]] && return 0
     if ss -H -ltn "sport = :${SERVICE_PORT}" 2>/dev/null | grep -q .; then
-        die "TCP ${SERVICE_PORT} 已被占用；easy_all 仅支持专用 VPS"
+        die "TCP ${SERVICE_PORT} 已被占用；easy_cmcc 仅支持专用 VPS"
     fi
 }
 
@@ -904,9 +888,9 @@ configure_cloudflare_xhttp_streaming() {
         response_body_buffering: "none"
       },
       expression: $expression,
-      description: "easy_all XHTTP bidirectional streaming",
+      description: "easy_cmcc XHTTP bidirectional streaming",
       enabled: true,
-      ref: "easy_all_xhttp_streaming"
+      ref: "easy_cmcc_xhttp_streaming"
     }')
 
     response=$(cloudflare_zone_api GET \
@@ -915,8 +899,8 @@ configure_cloudflare_xhttp_streaming() {
     ruleset_id=$(jq -r '.result.id // empty' <<<"${response}" 2>/dev/null || true)
     if [[ -z "${ruleset_id}" ]]; then
         create_payload=$(jq -cn --argjson rule "${rule_payload}" '{
-          name: "easy_all configuration rules",
-          description: "Configuration overrides managed by easy_all",
+          name: "easy_cmcc configuration rules",
+          description: "Configuration overrides managed by easy_cmcc",
           kind: "zone",
           phase: "http_config_settings",
           rules: [$rule]
@@ -924,7 +908,7 @@ configure_cloudflare_xhttp_streaming() {
         response=$(cloudflare_zone_api POST "/zones/${zone_id}/rulesets" \
             -H "Content-Type: application/json" --data "${create_payload}") || response=""
     else
-        rule_id=$(jq -r '.result.rules[]? | select(.ref == "easy_all_xhttp_streaming") | .id' \
+        rule_id=$(jq -r '.result.rules[]? | select(.ref == "easy_cmcc_xhttp_streaming") | .id' \
             <<<"${response}" 2>/dev/null | head -n 1)
         if [[ -n "${rule_id}" ]]; then
             response=$(cloudflare_zone_api PATCH \
@@ -966,8 +950,8 @@ set -Eeuo pipefail
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files nginx.service >/dev/null 2>&1; then
     systemctl reload nginx.service >/dev/null 2>&1 || systemctl restart nginx.service >/dev/null 2>&1 || true
 fi
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files easy-all-sing-box.service >/dev/null 2>&1; then
-    systemctl restart easy-all-sing-box.service >/dev/null 2>&1 || true
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files easy-cmcc-sing-box.service >/dev/null 2>&1; then
+    systemctl restart easy-cmcc-sing-box.service >/dev/null 2>&1 || true
 fi
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
@@ -975,7 +959,7 @@ EOF
         --fullchain-file "${CERT_FILE}" \
         --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" \
-        || die "安装证书到 easy_all 目录失败"
+        || die "安装证书到 easy_cmcc 目录失败"
     configure_cloudflare_xhttp_streaming
     unset CF_Token CF_DNS_API_TOKEN
 }
@@ -1125,7 +1109,7 @@ write_xray_config() {
                     network: "xhttp",
                     xhttpSettings: {
                       path: $path,
-                      mode: "stream-one"
+                      mode: "auto"
                     }
                   },
                   sniffing: {
@@ -1187,9 +1171,9 @@ write_xray_config() {
 }
 
 install_xray_service() {
-    cat >"${RUNTIME_TMP}/easy-all-xray.service" <<EOF
+    cat >"${RUNTIME_TMP}/easy-cmcc-xray.service" <<EOF
 [Unit]
-Description=Xray ${PROTOCOL} managed by easy_all
+Description=Xray ${PROTOCOL} managed by easy_cmcc
 Documentation=https://github.com/XTLS/Xray-core
 After=network-online.target
 Wants=network-online.target
@@ -1205,7 +1189,7 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-    install -m 0644 "${RUNTIME_TMP}/easy-all-xray.service" "${XRAY_SERVICE_FILE}"
+    install -m 0644 "${RUNTIME_TMP}/easy-cmcc-xray.service" "${XRAY_SERVICE_FILE}"
     systemctl daemon-reload
     systemctl enable --now "${XRAY_SERVICE}" >/dev/null || die "启动 Xray 服务失败"
 }
@@ -1317,9 +1301,9 @@ write_sing_box_config() {
 }
 
 install_sing_box_service() {
-    cat >"${RUNTIME_TMP}/easy-all-sing-box.service" <<EOF
+    cat >"${RUNTIME_TMP}/easy-cmcc-sing-box.service" <<EOF
 [Unit]
-Description=sing-box AnyTLS managed by easy_all
+Description=sing-box AnyTLS managed by easy_cmcc
 Documentation=https://sing-box.sagernet.org/
 After=network-online.target
 Wants=network-online.target
@@ -1335,7 +1319,7 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-    install -m 0644 "${RUNTIME_TMP}/easy-all-sing-box.service" "${SING_BOX_SERVICE_FILE}"
+    install -m 0644 "${RUNTIME_TMP}/easy-cmcc-sing-box.service" "${SING_BOX_SERVICE_FILE}"
     systemctl daemon-reload
     systemctl enable --now "${SING_BOX_SERVICE}" >/dev/null \
         || die "启动 sing-box 服务失败"
@@ -1363,7 +1347,7 @@ EOF
 
 write_nginx_config() {
     write_web_root
-    cat >"${RUNTIME_TMP}/easy_all.conf" <<EOF
+    cat >"${RUNTIME_TMP}/easy_cmcc.conf" <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -1372,8 +1356,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl http2 backlog=4096;
+    listen [::]:443 ssl http2 backlog=4096;
     server_name ${VLESS_XHTTP_DOMAIN};
 
     ssl_certificate ${CERT_FILE};
@@ -1427,7 +1411,7 @@ server {
     }
 }
 EOF
-    install -m 0644 "${RUNTIME_TMP}/easy_all.conf" "${NGINX_CONFIG}"
+    install -m 0644 "${RUNTIME_TMP}/easy_cmcc.conf" "${NGINX_CONFIG}"
     nginx -t >/dev/null || die "Nginx 配置校验失败"
     systemctl enable --now nginx >/dev/null
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
@@ -1438,11 +1422,11 @@ uri_encode() {
 }
 
 build_vless_xhttp_link() {
-    local path
+    local mode=${1:-stream-up} node_name=${2:-${NODE_NAME}} path
     path=$(uri_encode "${XHTTP_PATH}")
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&path=%s&mode=stream-one&packetEncoding=xudp#%s' \
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&path=%s&mode=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${VLESS_XHTTP_DOMAIN}" "${VLESS_XHTTP_DOMAIN}" \
-        "${path}" "$(uri_encode "${NODE_NAME}")"
+        "${path}" "${mode}" "$(uri_encode "${node_name}")"
 }
 
 build_vless_ws_link() {
@@ -1471,7 +1455,9 @@ build_node_link() {
     reality) build_reality_link ;;
     anytls) build_anytls_link ;;
     vless-xhttp)
-        build_vless_xhttp_link
+        build_vless_xhttp_link stream-up "${NODE_NAME}"
+        printf '\n'
+        build_vless_xhttp_link stream-one "$(xhttp_stream_one_node_name)"
         printf '\n'
         build_vless_ws_link
         ;;
@@ -1505,7 +1491,15 @@ build_mihomo_node() {
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
+            "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
+            "      mode: stream-up\n    smux:\n      enabled: false\n"'
+        jq -nr \
+            --arg name "$(xhttp_stream_one_node_name)" --arg server "${VLESS_XHTTP_DOMAIN}" \
+            --arg uuid "${VLESS_UUID}" --arg path "${XHTTP_PATH}" '
+            "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+            "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
+            "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
+            "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
             "      mode: stream-one\n    smux:\n      enabled: false\n"'
         jq -nr \
             --arg name "${VLESS_WS_NODE_NAME}" --arg server "${VLESS_XHTTP_DOMAIN}" \
@@ -1513,7 +1507,7 @@ build_mihomo_node() {
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    packet-encoding: xudp\n    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n" +
+            "    ip-version: dual\n    packet-encoding: xudp\n    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n" +
             "    smux:\n      enabled: false\n"'
         ;;
     esac
@@ -1524,12 +1518,12 @@ validate_sample_worker() {
     local gemini_policy_start gemini_policy_end
     [[ -s "${source}" ]] || die "sample-worker.js 为空：${source}"
     for marker in \
-        "// EASY_ALL_CONFIG_START" \
-        "// EASY_ALL_CONFIG_END" \
-        "// EASY_ALL_RULES_START" \
-        "// EASY_ALL_RULES_END" \
-        "/* EASY_ALL_GEMINI_DOMAINS_START */" \
-        "/* EASY_ALL_GEMINI_DOMAINS_END */"; do
+        "// EASY_CMCC_CONFIG_START" \
+        "// EASY_CMCC_CONFIG_END" \
+        "// EASY_CMCC_RULES_START" \
+        "// EASY_CMCC_RULES_END" \
+        "/* EASY_CMCC_GEMINI_DOMAINS_START */" \
+        "/* EASY_CMCC_GEMINI_DOMAINS_END */"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \
             || die "sample-worker.js 模板标记无效：${marker} 应且只能出现一次"
@@ -1538,12 +1532,12 @@ validate_sample_worker() {
         || die "sample-worker.js 缺少 Mihomo 规则"
     grep -Fq "export default {" "${source}" \
         || die "sample-worker.js 缺少 Worker module 入口"
-    config_start=$(grep -Fn "// EASY_ALL_CONFIG_START" "${source}" | cut -d: -f1)
-    config_end=$(grep -Fn "// EASY_ALL_CONFIG_END" "${source}" | cut -d: -f1)
-    rules_start=$(grep -Fn "// EASY_ALL_RULES_START" "${source}" | cut -d: -f1)
-    rules_end=$(grep -Fn "// EASY_ALL_RULES_END" "${source}" | cut -d: -f1)
-    gemini_policy_start=$(grep -Fn "/* EASY_ALL_GEMINI_DOMAINS_START */" "${source}" | cut -d: -f1)
-    gemini_policy_end=$(grep -Fn "/* EASY_ALL_GEMINI_DOMAINS_END */" "${source}" | cut -d: -f1)
+    config_start=$(grep -Fn "// EASY_CMCC_CONFIG_START" "${source}" | cut -d: -f1)
+    config_end=$(grep -Fn "// EASY_CMCC_CONFIG_END" "${source}" | cut -d: -f1)
+    rules_start=$(grep -Fn "// EASY_CMCC_RULES_START" "${source}" | cut -d: -f1)
+    rules_end=$(grep -Fn "// EASY_CMCC_RULES_END" "${source}" | cut -d: -f1)
+    gemini_policy_start=$(grep -Fn "/* EASY_CMCC_GEMINI_DOMAINS_START */" "${source}" | cut -d: -f1)
+    gemini_policy_end=$(grep -Fn "/* EASY_CMCC_GEMINI_DOMAINS_END */" "${source}" | cut -d: -f1)
     ((config_start < config_end
         && config_end < rules_start
         && rules_start < gemini_policy_start
@@ -1615,8 +1609,8 @@ extract_domain_suffix_policy() {
 
 extract_gemini_domain_suffixes() {
     extract_domain_suffix_policy "$1" \
-        "/* EASY_ALL_GEMINI_DOMAINS_START */" \
-        "/* EASY_ALL_GEMINI_DOMAINS_END */" \
+        "/* EASY_CMCC_GEMINI_DOMAINS_START */" \
+        "/* EASY_CMCC_GEMINI_DOMAINS_END */" \
         "Gemini"
 }
 
@@ -1690,7 +1684,7 @@ prepare_sample_worker_template() {
 render_worker_from_sample() {
     local template=$1 config=$2 destination=$3
     awk -v config="${config}" '
-        $0 == "// EASY_ALL_CONFIG_START" {
+        $0 == "// EASY_CMCC_CONFIG_START" {
             print
             while ((getline line < config) > 0) {
                 print line
@@ -1699,7 +1693,7 @@ render_worker_from_sample() {
             replacing = 1
             next
         }
-        $0 == "// EASY_ALL_CONFIG_END" {
+        $0 == "// EASY_CMCC_CONFIG_END" {
             replacing = 0
             print
             next
@@ -1712,7 +1706,8 @@ render_worker_from_sample() {
 }
 
 write_worker() {
-    local destination=$1 config_json ws_config_json allowed_tokens_json template_file config_file output_file
+    local destination=$1 config_json xhttp_stream_one_config_json ws_config_json
+    local allowed_tokens_json template_file config_file output_file
     prepare_sample_worker_template
     install -d -m 0700 "$(dirname "${destination}")"
     ensure_allowed_tokens
@@ -1740,12 +1735,18 @@ write_worker() {
             --arg type vless --arg security tls --arg network xhttp \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" --arg name "${NODE_NAME}" \
             --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-one",udp:true,portMode:"443"}')
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-up",ipVersion:"dual",udp:true,portMode:"443"}')
+        xhttp_stream_one_config_json=$(jq -cn \
+            --arg type vless --arg security tls --arg network xhttp \
+            --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" \
+            --arg name "$(xhttp_stream_one_node_name)" \
+            --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-one",ipVersion:"dual",udp:true,portMode:"443"}')
         ws_config_json=$(jq -cn \
             --arg type vless --arg security tls --arg network ws \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" --arg name "${VLESS_WS_NODE_NAME}" \
             --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${VLESS_WS_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,udp:true,portMode:"443"}')
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,ipVersion:"dual",udp:true,portMode:"443"}')
         ;;
     esac
 
@@ -1773,10 +1774,12 @@ function isAllowedToken(token) {
 EOF
         printf '\nconst NODE_CONFIG = defineNode(%s);\n' "${config_json}"
         if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
+            printf 'const XHTTP_STREAM_ONE_NODE_CONFIG = defineNode(%s);\n' \
+                "${xhttp_stream_one_config_json}"
             printf 'const WS_NODE_CONFIG = defineNode(%s);\n' "${ws_config_json}"
         fi
         if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
-            printf '\nconst DEFAULT_NODE = [NODE_CONFIG, WS_NODE_CONFIG]; // XHTTP for AI, WSS for downloads\n'
+            printf '\nconst DEFAULT_NODE = [NODE_CONFIG, XHTTP_STREAM_ONE_NODE_CONFIG, WS_NODE_CONFIG]; // stream-up 优先，stream-one 与 WSS 回退\n'
         else
             printf '\nconst DEFAULT_NODE = NODE_CONFIG; // 控制默认输出的节点，支持 [NODE_CONFIG, ...]\n'
         fi
@@ -2228,7 +2231,7 @@ rollback_subscription_update() {
 update_subscription() {
     local requested_port_mode=${SUB_PORT_MODE:-} stored_port_mode
     require_root
-    [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
+    [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
     stored_port_mode=$(
         unset SUB_PORT_MODE
         source_state_file
@@ -2268,13 +2271,15 @@ update_subscription() {
     show_subscription
 }
 
-update_easy_all() {
+update_easy_cmcc() {
     local migrate_legacy_wss=0
     require_root
     if [[ -f "${STATE_FILE}" ]] && grep -Eq '^PROTOCOL=vless-wss$' "${STATE_FILE}"; then
         migrate_legacy_wss=1
     fi
-    register_easy_all_command
+    info "刷新 BBR 与 TCP 参数"
+    configure_bbr_tcp
+    register_easy_cmcc_command
     if [[ "${migrate_legacy_wss}" == "1" ]]; then
         info "检测到旧 VLESS WSS 状态；先更新 Xray 核心，再迁移到 VLESS XHTTP"
         update_current_core
@@ -2287,16 +2292,16 @@ update_easy_all() {
 
 print_worker_content() {
     printf '\nWorker 内容如下，ALLOWED_TOKENS 已内嵌，请复制到 Cloudflare Worker：\n'
-    printf '%s\n' '----- BEGIN easy_all Worker -----'
+    printf '%s\n' '----- BEGIN easy_cmcc Worker -----'
     cat "${WORKER_FILE}"
-    printf '\n%s\n\n' '----- END easy_all Worker -----'
+    printf '\n%s\n\n' '----- END easy_cmcc Worker -----'
 }
 
 collect_installed_state() {
-    [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
+    [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
     load_state
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
-    [[ "${EASY_ALL_PROFILE}" != "cmcc" || "${PROTOCOL}" == "vless-xhttp" ]] \
+    [[ "${PROTOCOL}" == "vless-xhttp" ]] \
         || die "easy_cmcc 只能管理 VLESS XHTTP + WSS 安装"
     case "${PROTOCOL}" in
     reality)
@@ -2464,8 +2469,8 @@ show_status() {
     printf 'Worker: %s\n' "${WORKER_URL:-未自动部署}"
 }
 
-register_easy_all_command() {
-    local destination="${COMMAND_INSTALL_DIR}/${ENTRY_COMMAND_NAME}.sh"
+register_easy_cmcc_command() {
+    local destination="${COMMAND_INSTALL_DIR}/${ENTRY_COMMAND_NAME}"
     require_root
     [[ -n "${ENTRY_SCRIPT_FILE}" && -f "${ENTRY_SCRIPT_FILE}" ]] \
         || die "未找到入口脚本：${ENTRY_SCRIPT_FILE:-缺失}"
@@ -2477,7 +2482,7 @@ register_easy_all_command() {
     fi
     rm -f -- "${COMMAND_INSTALL_DIR}/sample-worker.js"
     ln -sfn "${destination}" "${COMMAND_PATH}"
-    success "已注册命令：${COMMAND_PATH}（启动时下载共享安装核心）"
+    success "已注册单文件命令：${COMMAND_PATH}"
 }
 
 stop_protocol_services() {
@@ -2503,7 +2508,7 @@ purge_owned_acme_if_unused() {
         return 0
     fi
     if ((certificate_rows > 0)); then
-        warn "acme.sh 中仍有其他证书，保留共享目录 ${ACME_HOME}"
+        warn "acme.sh 中仍有其他证书，保留证书账户目录 ${ACME_HOME}"
         return 0
     fi
     if command -v crontab >/dev/null 2>&1; then
@@ -2537,13 +2542,13 @@ uninstall_all() {
     [[ -z "${mode}" || "${mode}" == "--purge" ]] \
         || die "uninstall 不支持参数 ${mode}；当前默认即为 purge"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" || -L "${COMMAND_PATH}" ]] \
-        || die "easy_all 尚未安装"
+        || die "easy_cmcc 尚未安装"
     if [[ -f "${STATE_FILE}" ]]; then
         load_state
     fi
     if [[ "${FORCE:-0}" != "1" && -t 0 ]]; then
         local answer
-        read -r -p "确认彻底删除 easy_all 本机服务、状态、证书和备份？[y/N]: " answer
+        read -r -p "确认彻底删除 easy_cmcc 本机服务、状态、证书和备份？[y/N]: " answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_protocol_services
@@ -2558,7 +2563,7 @@ uninstall_all() {
         "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
-    success "easy_all 已彻底卸载；远端 Cloudflare Worker 未处理"
+    success "easy_cmcc 已彻底卸载；远端 Cloudflare Worker 未处理"
 }
 
 rollback_fresh_install() {
@@ -2682,7 +2687,7 @@ install_all() {
     local requested=${1:-}
     require_root
     require_systemd
-    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；切换协议请使用 easy_all switch <协议>"
+    [[ ! -f "${STATE_FILE}" ]] || die "easy_cmcc 已安装；请使用 easy_cmcc update，或卸载后重装"
     info "[1/9] 检查系统并选择协议"
     check_platform
     choose_protocol "${requested}"
@@ -2708,14 +2713,14 @@ install_all() {
     cleanup_obsolete_protocol_artifacts
     info "[7/9] 保存状态"
     save_state
-    info "[8/9] 注册 easy_all 命令"
-    register_easy_all_command
+    info "[8/9] 注册 easy_cmcc 命令"
+    register_easy_cmcc_command
     info "[9/9] 配置 Worker 订阅"
     configure_subscription
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
     [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice
-    success "easy_all ${PROTOCOL} 安装完成"
+    success "easy_cmcc ${PROTOCOL} 安装完成"
 }
 
 snapshot_path() {
@@ -2815,7 +2820,7 @@ switch_protocol() {
     local requested_port_mode=${SUB_PORT_MODE:-}
     require_root
     require_systemd
-    [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
+    [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
     source_state_file
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
     old_protocol=${PROTOCOL}
@@ -2865,62 +2870,22 @@ switch_protocol() {
     elif [[ "${old_protocol}" == "vless-xhttp" && "${old_xhttp_domain}" != "${new_tls_domain}" ]]; then
         remove_managed_acme_domain "${old_xhttp_domain}"
     fi
-    register_easy_all_command
+    register_easy_cmcc_command
     [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice
     success "协议已从 ${old_protocol} 切换为 ${PROTOCOL}"
 }
 
 usage() {
-    if [[ "${EASY_ALL_PROFILE}" == "cmcc" ]]; then
-        cat <<EOF
+    cat <<EOF
 用法: ${ENTRY_COMMAND_NAME} [命令]
 
-  install       安装 RackNerd / 上海移动专用 VLESS XHTTP + WSS
-  update        刷新 RN 双传输、Nginx 与独立 easy-cmcc Worker
+  install       安装中国移动访问美西普通线路专用 XHTTP 优先 + WSS 回退
+  update        刷新 RN 最优兼容模式、Nginx 与独立 easy-cmcc Worker
   update-sub    刷新服务端与订阅
   show|subscription|status|update-core|renew-cert|uninstall
 
-该入口固定使用 VLESS XHTTP + WSS，Worker 名称固定为 easy-cmcc。
-BWG/VM 的 Reality 或 AnyTLS 请使用 easy_all。
-EOF
-        return 0
-    fi
-    cat <<EOF
-用法: $0 [命令]
-
-  install [reality|anytls|vless-xhttp]
-                选择并安装一种协议（默认 Reality）
-  switch <协议> 在 easy_all 创建的安装中切换协议，失败自动回滚
-  show          显示当前协议节点和 Mihomo 节点
-  subscription  显示链接、订阅和 Worker 信息
-  update        注册当前脚本、刷新服务端配置并更新 Worker 订阅
-  update-sub    从同一模板刷新服务端策略与 Worker 订阅
-  update-core   更新当前协议核心
-  renew-cert    立即续期 AnyTLS/XHTTP 证书
-  status        显示当前协议、服务、端口和 Worker 状态
-  register-command
-                注册系统命令 easy_all
-  uninstall     默认彻底删除所有 easy_all 本机数据；不处理远端 Worker
-  help          显示帮助
-
-主要无人值守变量:
-  PROTOCOL=reality|anytls|vless-xhttp
-  NODE_NAME=...
-  NODE_HOST=...              Reality 节点地址
-  REALITY_TARGET=swdist.apple.com:443
-  ANYTLS_DOMAIN=node.example.com  ANYTLS_PASSWORD=...
-  VLESS_XHTTP_DOMAIN=node.example.com  XHTTP_PATH=/随机路径
-  SUB_PORT_MODE=443|dynamic
-  GEMINI_IP_FAMILY=auto|ipv4|ipv6  Gemini 出口族；auto 实测后固定选择更快的一侧
-  ALLOWED_TOKENS='{"owner":"token1","alice":"token2"}'
-  CF_DNS_API_TOKEN=...
-  SUBSCRIBE_MODE=auto|worker|link
-  CF_WORKER_API_TOKEN=...    CF_ACCOUNT_ID=...
-  WORKER_NAME=easy-all       SUB_DOWNLOAD_NAME=MY_SUB
-  SAMPLE_WORKER_URL=https://...  默认读取本仓库 main/sample-worker.js
-
-Reality 默认 443；AnyTLS 默认 dynamic；VLESS XHTTP 固定 443，可通过 Cloudflare CDN。
-远端 Worker 始终 replace，uninstall 不删除远端 Worker。
+该入口固定发布 XHTTP stream-up、stream-one 与 WSS 三个 CDN 节点，Worker 名称固定为 easy-cmcc。
+通用 VPS 的 Reality 或 AnyTLS 请使用仓库根目录的 easy_all。
 EOF
 }
 
@@ -2967,8 +2932,8 @@ update_current_core() {
 }
 
 main() {
-    if [[ "${EASY_ALL_PROFILE}" == "cmcc" && "${1:-install}" == "switch" ]]; then
-        die "easy_cmcc 固定使用 VLESS XHTTP + WSS；BWG/VM 协议切换请使用 easy_all switch"
+    if [[ "${1:-install}" == "switch" ]]; then
+        die "easy_cmcc 固定使用 VLESS XHTTP + WSS；协议切换请使用仓库根目录的 easy_all"
     fi
     case "${1:-install}" in
     install) install_all "${2:-${PROTOCOL:-}}" ;;
@@ -2978,14 +2943,18 @@ main() {
         ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
-    update) update_easy_all ;;
+    update) update_easy_cmcc ;;
     update-sub) update_subscription ;;
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;
     status) show_status ;;
-    register-command) register_easy_all_command ;;
+    register-command) register_easy_cmcc_command ;;
     uninstall) uninstall_all "${2:-}" ;;
     help | -h | --help) usage ;;
     *) usage; return 1 ;;
     esac
 }
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

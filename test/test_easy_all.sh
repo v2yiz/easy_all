@@ -71,7 +71,7 @@ const clashResponse = await worker.default.fetch(
   env
 );
 if (clashResponse.status !== 200) process.exit(1);
-if (clashResponse.headers.get('content-disposition') !== 'attachment; filename="Team"') {
+if (clashResponse.headers.get('content-disposition') !== 'attachment; filename=Team') {
   process.exit(1);
 }
 const yaml = await clashResponse.text();
@@ -80,17 +80,27 @@ for (const part of [
   'DOMAIN-SUFFIX,bilibili.com,DIRECT',
   'DOMAIN-SUFFIX,zhihu.com,DIRECT',
   'DOMAIN-SUFFIX,douyin.com,DIRECT',
+  'DOMAIN-SUFFIX,feishu.cn,DIRECT',
+  'DOMAIN-SUFFIX,feishucdn.com,DIRECT',
+  'DOMAIN-SUFFIX,bytedance.com,DIRECT',
+  'DOMAIN-SUFFIX,larkenterprise.com,DIRECT',
   'DOMAIN,copilot.microsoft.com,PROXY',
   'DOMAIN-SUFFIX,microsoft.com,DIRECT',
   'DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY',
-  'DOMAIN,gemini.google.com,AI_GEMINI',
-  'DOMAIN-SUFFIX,github.com,DOWNLOAD',
+  'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT',
+  'RULE-SET,direct,DIRECT',
+  'RULE-SET,cncidr,DIRECT,no-resolve',
+  'DOMAIN,gemini.google.com,PROXY',
+  'DOMAIN-SUFFIX,github.com,PROXY',
   'IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve',
   'GEOSITE,geolocation-!cn,PROXY',
   'GEOIP,CN,DIRECT,no-resolve'
 ]) {
   if (!yaml.includes(part)) process.exit(1);
 }
+if (!/^proxy-groups:$/m.test(yaml)) process.exit(1);
+if ((yaml.match(/^\s+- name: PROXY$/gm) || []).length !== 1) process.exit(1);
+if (/^\s+- name: (?:AI|AI_GEMINI|DOWNLOAD)$/m.test(yaml)) process.exit(1);
 
 const formerKeyResponse = await worker.default.fetch(
   new Request('https://worker.test/subscribe?token=owner'),
@@ -111,17 +121,6 @@ const checks = {
       'insecure=0', '#MY_ANYTLS'],
     yaml: ['type: anytls', 'server: "anytls.example.com"',
       'password: "test-anytls-password"', 'client-fingerprint: "chrome"']
-  },
-  'vless-xhttp': {
-    link: ['vless://00000000-0000-4000-8000-000000000001@xhttp.example.com:443?',
-      'security=tls', 'type=xhttp', 'fp=chrome', 'alpn=h2', 'path=%2Fhacxhttp', 'mode=stream-one',
-      'packetEncoding=xudp', '#MY_VLESS_XHTTP', 'type=ws', 'path=%2Fhacws',
-      'host=xhttp.example.com', '#MY_VLESS_WS'],
-    yaml: ['type: vless', 'network: xhttp', 'port: 443', 'xhttp-opts:',
-      'udp: true', 'path: /hacxhttp', 'mode: stream-one',
-      'host: "xhttp.example.com"',
-      'alpn:', 'packet-encoding: xudp', 'network: ws', 'path: /hacws',
-      '- name: AI_GEMINI', '- name: DOWNLOAD']
   }
 };
 for (const part of checks[protocol].link) {
@@ -130,11 +129,8 @@ for (const part of checks[protocol].link) {
 for (const part of checks[protocol].yaml) {
   if (!yaml.includes(part)) process.exit(1);
 }
-if (protocol === 'vless-xhttp' && decoded.includes('flow=xtls-rprx-vision')) process.exit(1);
-if (protocol !== 'vless-xhttp') {
-  const port = Number(decoded.match(/@[^:]+:(\d+)/)?.[1]);
-  if (!Number.isInteger(port) || port < 10000 || port > 65535) process.exit(1);
-}
+const port = Number(decoded.match(/@[^:]+:(\d+)/)?.[1]);
+if (!Number.isInteger(port) || port < 10000 || port > 65535) process.exit(1);
 EOF
 }
 
@@ -183,7 +179,6 @@ source_script_copy() {
         -e "s|^readonly CERT_DIR=.*|readonly CERT_DIR=\"${TMP_DIR}/state/certs\"|" \
         -e "s|^readonly CERT_FILE=.*|readonly CERT_FILE=\"${TMP_DIR}/state/certs/fullchain.pem\"|" \
         -e "s|^readonly KEY_FILE=.*|readonly KEY_FILE=\"${TMP_DIR}/state/certs/private.key\"|" \
-        -e "s|^readonly WEB_ROOT=.*|readonly WEB_ROOT=\"${TMP_DIR}/www\"|" \
         -e "s|^readonly COMMAND_INSTALL_DIR=.*|readonly COMMAND_INSTALL_DIR=\"${TMP_DIR}/cmd\"|" \
         -e "s|^readonly COMMAND_PATH=.*|readonly COMMAND_PATH=\"${TMP_DIR}/bin/easy_all\"|" \
         -e "s|^readonly CERT_RELOAD_HOOK=.*|readonly CERT_RELOAD_HOOK=\"${TMP_DIR}/cmd/reload-tls.sh\"|" \
@@ -195,15 +190,13 @@ source_script_copy() {
         -e "s|^readonly SING_BOX_BIN=.*|readonly SING_BOX_BIN=\"${TMP_DIR}/state/sing-box/sing-box\"|" \
         -e "s|^readonly SING_BOX_CONFIG=.*|readonly SING_BOX_CONFIG=\"${TMP_DIR}/state/sing-box/config.json\"|" \
         -e "s|^readonly SING_BOX_SERVICE_FILE=.*|readonly SING_BOX_SERVICE_FILE=\"${TMP_DIR}/easy-all-sing-box.service\"|" \
-        -e "s|^readonly NGINX_CONFIG=.*|readonly NGINX_CONFIG=\"${TMP_DIR}/nginx.conf\"|" \
         -e "s|^readonly ACME_HOME=.*|readonly ACME_HOME=\"${TMP_DIR}/acme\"|" \
         -e "s|^readonly ACME_BIN=.*|readonly ACME_BIN=\"${TMP_DIR}/acme/acme.sh\"|" \
         -e "s|^readonly ACME_OWNERSHIP_MARKER=.*|readonly ACME_OWNERSHIP_MARKER=\"${TMP_DIR}/state/acme-installed-by-easy-all\"|" \
         -e "s|^readonly NFT_CONFIG=.*|readonly NFT_CONFIG=\"${TMP_DIR}/nftables.conf\"|" \
-        "${ROOT_DIR}/easy_core.sh" >"${SCRIPT_COPY}"
+        "${ROOT_DIR}/easy_all" >"${SCRIPT_COPY}"
     # shellcheck source=/dev/null
-    EASY_ALL_PROFILE=general
-    EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_all.sh"
+    EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_all"
     EASY_ALL_ENTRY_COMMAND=easy_all
     source "${SCRIPT_COPY}"
     SAMPLE_WORKER_SOURCE="${ROOT_DIR}/sample-worker.js"
@@ -229,29 +222,16 @@ set_protocol_fixture() {
         ANYTLS_DOMAIN="anytls.example.com"
         ANYTLS_PASSWORD="test-anytls-password"
         ;;
-    vless-xhttp)
-        NODE_NAME="MY_VLESS_XHTTP"
-        VLESS_XHTTP_DOMAIN="xhttp.example.com"
-        XHTTP_PATH="/hacxhttp"
-        VLESS_WS_PATH="/hacws"
-        VLESS_WS_NODE_NAME="MY_VLESS_WS"
-        XRAY_WS_LOOPBACK_PORT="10086"
-        SUB_PORT_MODE="443"
-        ;;
     esac
 }
 
 test_validators_and_defaults() {
-    assert_success "valid XHTTP path is accepted" validate_xhttp_path "/hacxhttp"
-    assert_success "generated XHTTP path is valid" validate_xhttp_path "$(generate_xhttp_path)"
-    assert_failure "XHTTP path must start with slash" validate_xhttp_path "hacxhttp"
-    assert_failure "XHTTP path rejects query" validate_xhttp_path "/hacxhttp?x=1"
     assert_success "Reality target accepts host and port" validate_reality_target "www.cloudflare.com:443"
     assert_failure "Reality target requires port" validate_reality_target "www.cloudflare.com"
     assert_success "Reality protocol is accepted" validate_protocol "reality"
     assert_success "AnyTLS protocol is accepted" validate_protocol "anytls"
-    assert_success "VLESS XHTTP protocol is accepted" validate_protocol "vless-xhttp"
-    assert_failure "legacy WSS is only a CLI alias, not canonical state" validate_protocol "vless-wss"
+    assert_failure "VLESS XHTTP protocol is rejected" validate_protocol "vless-xhttp"
+    assert_failure "legacy WSS protocol is rejected" validate_protocol "vless-wss"
     assert_failure "unknown protocol is rejected" validate_protocol "trojan"
 
     assert_equal "default Worker name is easy-all" "easy-all" "${DEFAULT_WORKER_NAME}"
@@ -287,7 +267,7 @@ test_validators_and_defaults() {
 
 test_links_and_workers() {
     local protocol link yaml worker sample_rules generated_rules
-    for protocol in reality anytls vless-xhttp; do
+    for protocol in reality anytls; do
         set_protocol_fixture "${protocol}"
         link=$(build_node_link)
         yaml=$(build_mihomo_node)
@@ -355,24 +335,6 @@ test_sample_worker_template_guards() {
         sample_worker_fetch_fails "http://example.com/sample-worker.js"
 }
 
-test_local_worker_is_single_proxy_profile() {
-    local worker_content
-    [[ -f "${ROOT_DIR}/worker.js" ]] || return 0
-    worker_content=$(<"${ROOT_DIR}/worker.js")
-    assert_contains "generic Worker uses BWG and VM nodes only" \
-        'const DEFAULT_NODE = [BWG_CONFIG, VM_CONFIG];' "${worker_content}"
-    assert_not_contains "generic Worker contains no CMCC node" \
-        'RN_CONFIG' "${worker_content}"
-    assert_not_contains "generic Worker contains no Gemini group" \
-        'name: AI_GEMINI' "${worker_content}"
-    assert_not_contains "generic Worker contains no download group" \
-        'name: DOWNLOAD' "${worker_content}"
-    assert_contains "generic Worker sends Gemini to PROXY" \
-        'DOMAIN,gemini.google.com,PROXY' "${worker_content}"
-    assert_contains "generic Worker sends GitHub to PROXY" \
-        'DOMAIN-SUFFIX,github.com,PROXY' "${worker_content}"
-}
-
 test_server_egress_family_configs() {
     local protocol config
     install -d -m 0755 "${XRAY_DIR}" "${SING_BOX_DIR}"
@@ -383,9 +345,8 @@ test_server_egress_family_configs() {
     printf '%s\n' '#!/bin/sh' 'exit 0' >"${SING_BOX_BIN}"
     chmod 0755 "${XRAY_BIN}" "${SING_BOX_BIN}"
 
-    for protocol in reality vless-xhttp; do
+    for protocol in reality; do
         set_protocol_fixture "${protocol}"
-        XRAY_LOOPBACK_PORT="10085"
         REALITY_PRIVATE_KEY="test-private-key"
         write_xray_config
         config=$(<"${XRAY_CONFIG}")
@@ -422,19 +383,6 @@ test_server_egress_family_configs() {
                  and .routing.rules[1].outboundTag == "direct"
                  and (.routing.rules[1] | has("domain") | not)' \
                 <<<"${config}"
-        if [[ "${protocol}" == "vless-xhttp" ]]; then
-            assert_success "XHTTP server exposes parallel Cloudflare-compatible XHTTP and WSS transports" \
-                jq -e \
-                    '(.inbounds | length) == 2
-                     and .inbounds[0].streamSettings.network == "xhttp"
-                     and .inbounds[0].streamSettings.xhttpSettings.mode == "stream-one"
-                     and .inbounds[0].streamSettings.xhttpSettings.path == "/hacxhttp"
-                     and .inbounds[1].streamSettings.network == "ws"
-                     and .inbounds[1].streamSettings.wsSettings.path == "/hacws"
-                     and .inbounds[1].port == 10086
-                     and .inbounds[1].sniffing.destOverride == ["http", "tls", "quic"]' \
-                    <<<"${config}"
-        fi
     done
 
     set_protocol_fixture "reality"
@@ -583,8 +531,7 @@ test_worker_only_subscription_branch() {
 }
 
 test_state_and_lifecycle_guards() {
-    set_protocol_fixture "vless-xhttp"
-    XRAY_LOOPBACK_PORT="10085"
+    set_protocol_fixture "anytls"
     WORKER_NAME="${DEFAULT_WORKER_NAME}"
     WORKER_URL=""
     CF_ACCOUNT_ID="account-id"
@@ -596,13 +543,11 @@ test_state_and_lifecycle_guards() {
     local content script_content readme_content
     content=$(<"${STATE_FILE}")
     assert_contains "state saves version" "STATE_VERSION=1" "${content}"
-    assert_contains "state saves selected protocol" "PROTOCOL=vless-xhttp" "${content}"
-    assert_contains "state saves XHTTP domain" "VLESS_XHTTP_DOMAIN=xhttp.example.com" "${content}"
-    assert_contains "state saves XHTTP path" "XHTTP_PATH=/hacxhttp" "${content}"
-    assert_contains "state saves parallel WSS path" "VLESS_WS_PATH=/hacws" "${content}"
-    assert_contains "state saves parallel WSS node name" "VLESS_WS_NODE_NAME=MY_VLESS_WS" "${content}"
-    assert_not_contains "state no longer saves legacy WSS domain key" "VLESS_WSS_DOMAIN=" "${content}"
-    assert_not_contains "state no longer saves legacy WS path key" $'\nWS_PATH=' "${content}"
+    assert_contains "state saves selected protocol" "PROTOCOL=anytls" "${content}"
+    assert_contains "state saves AnyTLS domain" "ANYTLS_DOMAIN=anytls.example.com" "${content}"
+    assert_contains "state saves AnyTLS password" "ANYTLS_PASSWORD=test-anytls-password" "${content}"
+    assert_not_contains "state does not save XHTTP domain" "VLESS_XHTTP_DOMAIN=" "${content}"
+    assert_not_contains "state does not save XHTTP path" "XHTTP_PATH=" "${content}"
     assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
     assert_contains "state saves the Gemini address-family preference" \
         "GEMINI_IP_FAMILY=ipv4" "${content}"
@@ -620,15 +565,10 @@ PROTOCOL=vless-wss
 VLESS_WSS_DOMAIN=legacy.example.com
 WS_PATH=/legacyws
 EOF
-    source_state_file
-    assert_equal "legacy WSS state migrates to canonical XHTTP protocol" \
-        "vless-xhttp" "${PROTOCOL}"
-    assert_equal "legacy WSS domain is retained during XHTTP migration" \
-        "legacy.example.com" "${VLESS_XHTTP_DOMAIN}"
-    assert_equal "legacy WS path is retained during XHTTP migration" \
-        "/legacyws" "${XHTTP_PATH}"
+    assert_failure "legacy WSS state is rejected and redirected to easy_cmcc" \
+        bash -c 'source "$1"; source_state_file' _ "${SCRIPT_COPY}"
 
-    script_content=$(<"${ROOT_DIR}/easy_core.sh")
+    script_content=$(<"${ROOT_DIR}/easy_all")
     assert_not_contains "easy_all does not embed Clash rule contents" \
         "DOMAIN-SUFFIX,bilibili.com,DIRECT" "${script_content}"
     assert_not_contains "easy_all does not embed the fake IP filter" \
@@ -651,32 +591,18 @@ EOF
         'install -m 0644 "${destination}" "${COMMAND_INSTALL_DIR}/sample-worker.js"' \
         "${script_content}"
     assert_contains "script warns DNS-only before install" "DNS only / 灰云" "${script_content}"
-    assert_contains "script reminds proxied after install" "Proxied / 橙云" "${script_content}"
     assert_contains "script keeps AAAA DNS-only before install or switch" \
-        "AAAA 记录，安装或切换前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6" \
+        "AAAA 记录，也必须保持 DNS only / 灰云并指向当前 VPS 公网 IPv6" \
         "${script_content}"
-    assert_contains "script switches A and AAAA to proxied together after XHTTP install" \
-        "A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云" "${script_content}"
     assert_contains "script renders pre-install Cloudflare notice in red" \
-        'alert "安装前请确认 Cloudflare DNS A 记录' "${script_content}"
-    assert_contains "script renders post-install SSL notice in red" \
-        'alert "Cloudflare SSL/TLS 模式请使用 Full' "${script_content}"
-    assert_contains "script enables Cloudflare WebSockets for the download transport" \
-        'Cloudflare WebSockets 已开启' "${script_content}"
-    assert_contains "script fixes XHTTP to 443" "VLESS XHTTP 不支持 dynamic" "${script_content}"
-    assert_contains "script contains nginx gRPC XHTTP streaming proxy" \
-        'grpc_pass grpc://127.0.0.1:' "${script_content}"
-    assert_contains "script prevents Cloudflare from caching XHTTP responses" \
-        'add_header Cache-Control "no-store" always;' "${script_content}"
-    assert_contains "XHTTP subscription selects H2 for Cloudflare CDN" \
-        'alpn=h2' "${script_content}"
-    assert_contains "XHTTP subscription selects one bidirectional H2 stream" \
-        'mode=stream-one' "${script_content}"
-    assert_not_contains "XHTTP leaves XMUX tuning at upstream defaults" \
-        'reuse-settings:' "${script_content}"
+        'alert "AnyTLS 安装前请确认 Cloudflare DNS A 记录' "${script_content}"
+    assert_contains "script rejects XHTTP and points to easy_cmcc" \
+        "XHTTP/WSS 请使用 for_cmcc/easy_cmcc" "${script_content}"
+    assert_not_contains "script has no Nginx XHTTP proxy" "grpc_pass" "${script_content}"
+    assert_not_contains "script has no XHTTP transport implementation" 'network: xhttp' "${script_content}"
+    assert_not_contains "script has no WSS transport implementation" 'network: ws' "${script_content}"
     assert_not_contains "client proxy nodes keep the local default address family" \
         'ip-version: ipv4-prefer' "${script_content}"
-    assert_contains "script configures nginx WebSocket upgrade" 'proxy_set_header Upgrade \$http_upgrade;' "${script_content}"
     assert_contains "script retries Cloudflare rate limits" "408 | 429 | 500 | 502 | 503 | 504" "${script_content}"
     assert_contains "script retries Cloudflare propagation errors" "10007" "${script_content}"
     assert_contains "script retries concurrent Worker updates" "10035" "${script_content}"
@@ -689,29 +615,34 @@ EOF
         "同步更新 nftables" "${script_content}"
     assert_contains "update-sub refreshes the server policy before the Worker" \
         "refresh_protocol_runtime_config" "${script_content}"
-    assert_contains "update migrates legacy WSS only after updating Xray" \
-        "先更新 Xray 核心，再迁移到 VLESS XHTTP" "${script_content}"
+    assert_contains "easy_all bounds receive backlog" "net.core.netdev_max_backlog = 16384" "${script_content}"
+    assert_contains "easy_all bounds receive buffers at 32 MiB" "net.core.rmem_max = 33554432" "${script_content}"
+    assert_contains "easy_all bounds send buffers at 32 MiB" "net.core.wmem_max = 33554432" "${script_content}"
+    assert_contains "easy_all resets legacy TCP Fast Open override" \
+        "sysctl -q -w net.ipv4.tcp_fastopen=1" "${script_content}"
+    assert_contains "easy_all resets legacy unsent queue override" \
+        "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295" "${script_content}"
     assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
     assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
 
     readme_content=$(<"${ROOT_DIR}/README.md")
-    assert_contains "README documents AAAA as DNS-only before XHTTP install" \
-        "AAAA 若存在，也应保持灰云并指向 VPS 公网 IPv6" "${readme_content}"
-    assert_contains "README documents proxying A and AAAA together after XHTTP install" \
-        "将 A、AAAA 一起切为 Proxied / 橙云" "${readme_content}"
+    assert_contains "README redirects XHTTP to the CMCC suite" \
+        "for_cmcc/easy_cmcc" "${readme_content}"
     assert_contains "README documents Worker subscription verification retry policy" \
         "先等待 5 秒，再进行最多 6 次订阅 HTTP 验收" "${readme_content}"
     assert_not_contains "README download commands do not reuse files based on timestamps" \
         "wget -q -P /root -N" "${readme_content}"
     assert_contains "README downloads updates to a protected temporary path" \
-        "wget -qO /root/easy_all.sh.new" "${readme_content}"
+        "wget -qO /root/easy_all.new" "${readme_content}"
     assert_contains "README atomically replaces the installed script" \
-        "mv -f /root/easy_all.sh.new /root/easy_all.sh" "${readme_content}"
+        "mv -f /root/easy_all.new /root/easy_all" "${readme_content}"
+    assert_not_contains "README omits unattended-operation documentation" \
+        "无人值守" "${readme_content}"
 }
 
 test_acme_installer_arguments() {
     local installer_args=""
-    VLESS_XHTTP_DOMAIN="xhttp.example.com"
+    ANYTLS_DOMAIN="anytls.example.com"
     ACME_EMAIL="ops@example.com"
 
     curl() {
@@ -839,58 +770,6 @@ test_cloudflare_api_retry_policy() {
         "$(cloudflare_retry_delay 4 '')"
 }
 
-test_cloudflare_xhttp_streaming_configuration() {
-    local calls="${TMP_DIR}/cloudflare-xhttp-calls" original_cloudflare_zone_api output
-    original_cloudflare_zone_api=$(declare -f cloudflare_zone_api)
-    : >"${calls}"
-    set_protocol_fixture "vless-xhttp"
-    CF_DNS_API_TOKEN="test-zone-token"
-    cloudflare_zone_api() {
-        local method=$1 path=$2
-        printf '%s %s\n' "${method}" "${path}" >>"${calls}"
-        case "${method} ${path}" in
-        "GET /zones?name=xhttp.example.com&status=active&per_page=1")
-            printf '%s' '{"success":true,"result":[]}'
-            ;;
-        "GET /zones?name=example.com&status=active&per_page=1")
-            printf '%s' '{"success":true,"result":[{"id":"zone-id"}]}'
-            ;;
-        "PATCH /zones/zone-id/settings/grpc")
-            printf '%s' '{"success":true,"result":{"id":"grpc","value":"on"}}'
-            ;;
-        "PATCH /zones/zone-id/settings/websockets")
-            printf '%s' '{"success":true,"result":{"id":"websockets","value":"on"}}'
-            ;;
-        "GET /zones/zone-id/rulesets/phases/http_config_settings/entrypoint")
-            printf '%s' '{"success":true,"result":{"id":"ruleset-id","rules":[{"id":"rule-id","ref":"easy_all_xhttp_streaming"}]}}'
-            ;;
-        "PATCH /zones/zone-id/rulesets/ruleset-id/rules/rule-id")
-            printf '%s' '{"success":true,"result":{"id":"rule-id"}}'
-            ;;
-        *)
-            printf '%s' '{"success":false,"errors":[{"code":1000,"message":"unexpected test request"}]}'
-            ;;
-        esac
-    }
-
-    output=$(configure_cloudflare_xhttp_streaming)
-    assert_contains "Cloudflare XHTTP setup discovers the parent zone" \
-        'GET /zones?name=example.com&status=active&per_page=1' "$(<"${calls}")"
-    assert_contains "Cloudflare XHTTP setup enables the zone gRPC switch" \
-        'PATCH /zones/zone-id/settings/grpc' "$(<"${calls}")"
-    assert_contains "Cloudflare XHTTP setup enables the zone WebSockets switch" \
-        'PATCH /zones/zone-id/settings/websockets' "$(<"${calls}")"
-    assert_contains "Cloudflare XHTTP setup updates its existing no-buffer rule" \
-        'PATCH /zones/zone-id/rulesets/ruleset-id/rules/rule-id' "$(<"${calls}")"
-    assert_contains "Cloudflare XHTTP setup reports the gRPC result" \
-        'Cloudflare gRPC 已开启' "${output}"
-    assert_contains "Cloudflare XHTTP setup reports the WebSockets result" \
-        'Cloudflare WebSockets 已开启' "${output}"
-    assert_contains "Cloudflare XHTTP setup reports the streaming rule result" \
-        'Cloudflare XHTTP 双向无缓冲规则已配置' "${output}"
-    eval "${original_cloudflare_zone_api}"
-}
-
 test_update_subscription_rolls_back_port_change() {
     local status state_content nft_content nft_hash
     local nft_calls="${TMP_DIR}/update-sub-nft-calls"
@@ -978,6 +857,8 @@ test_update_command_orchestration() {
     local calls
     calls=$(
         require_root() { printf 'root\n'; }
+        info() { :; }
+        configure_bbr_tcp() { printf 'tcp\n'; }
         register_easy_all_command() { printf 'register\n'; }
         update_subscription() {
             printf 'subscription:%s:%s\n' "${SUBSCRIBE_MODE:-}" "${STRICT_WORKER_DEPLOY:-0}"
@@ -985,7 +866,7 @@ test_update_command_orchestration() {
         update_easy_all
     )
     assert_equal "update command forces a strict automatic Worker replace" \
-        $'root\nregister\nsubscription:auto:1' "${calls}"
+        $'root\ntcp\nregister\nsubscription:auto:1' "${calls}"
 }
 
 test_runtime_refresh_rolls_back_invalid_config() {
@@ -1022,14 +903,12 @@ source_script_copy
 test_validators_and_defaults
 test_links_and_workers
 test_sample_worker_template_guards
-test_local_worker_is_single_proxy_profile
 test_server_egress_family_configs
 test_worker_only_subscription_branch
 test_state_and_lifecycle_guards
 test_acme_installer_arguments
 test_subscription_retry_policy
 test_cloudflare_api_retry_policy
-test_cloudflare_xhttp_streaming_configuration
 test_update_subscription_orchestration
 test_update_command_orchestration
 test_runtime_refresh_rolls_back_invalid_config

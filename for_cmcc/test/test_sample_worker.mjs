@@ -50,10 +50,10 @@ describe('sample-worker Cloudflare Worker', () => {
   it('keeps rule boundaries, priorities and rule types valid', async () => {
     const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
     for (const marker of [
-      '// EASY_ALL_CONFIG_START',
-      '// EASY_ALL_CONFIG_END',
-      '// EASY_ALL_RULES_START',
-      '// EASY_ALL_RULES_END'
+      '// EASY_CMCC_CONFIG_START',
+      '// EASY_CMCC_CONFIG_END',
+      '// EASY_CMCC_RULES_START',
+      '// EASY_CMCC_RULES_END'
     ]) {
       assert.equal(source.split(marker).length - 1, 1, `${marker} must occur exactly once`);
     }
@@ -189,7 +189,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /packetEncoding=xudp/);
     assert.match(body, /#NODE_REALITY$/);
     assert.doesNotMatch(body, /NODE_ANYTLS/);
-    assert.doesNotMatch(body, /NODE_ANYTLS/);
+    assert.doesNotMatch(body, /NODE_VLESS_XHTTP/);
     assert.doesNotMatch(body, /trojan/i);
   });
 
@@ -219,13 +219,34 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = body.split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 2);
+    assert.equal(links.length, 5);
     assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
     assert.match(links[1], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10055\/\?/);
+    assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
     assert.match(links[0], /#NODE_REALITY$/);
     assert.match(links[1], /sni=anytls\.example\.com/);
     assert.match(links[1], /insecure=0/);
     assert.match(links[1], /#NODE_ANYTLS$/);
+    assert.match(links[2], /security=tls/);
+    assert.match(links[2], /type=xhttp/);
+    assert.match(links[2], /alpn=h2/);
+    assert.match(links[2], /path=%2Frandompath/);
+    assert.match(links[2], /mode=stream-up/);
+    assert.match(links[2], /packetEncoding=xudp/);
+    assert.doesNotMatch(links[2], /flow=xtls-rprx-vision/);
+    assert.match(links[2], /#NODE_VLESS_XHTTP_STREAM_UP$/);
+    assert.match(links[3], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
+    assert.match(links[3], /security=tls/);
+    assert.match(links[3], /type=xhttp/);
+    assert.match(links[3], /path=%2Frandompath/);
+    assert.match(links[3], /mode=stream-one/);
+    assert.match(links[3], /#NODE_VLESS_XHTTP_STREAM_ONE$/);
+    assert.match(links[4], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
+    assert.match(links[4], /security=tls/);
+    assert.match(links[4], /type=ws/);
+    assert.match(links[4], /path=%2Frandomws/);
+    assert.match(links[4], /host=xhttp\.example\.com/);
+    assert.match(links[4], /#NODE_VLESS_WS$/);
   });
 
   it('returns Clash YAML for the default node with normalized download filename', async () => {
@@ -264,11 +285,11 @@ describe('sample-worker Cloudflare Worker', () => {
       body.indexOf('GEOSITE,geolocation-!cn,PROXY')
     );
     assert.doesNotMatch(body, /NODE_ANYTLS/);
-    assert.doesNotMatch(body, /NODE_ANYTLS/);
+    assert.doesNotMatch(body, /NODE_VLESS_XHTTP/);
     assert.doesNotMatch(body, /trojan/i);
   });
 
-  it('uses portable IPv4 DNS/TUN routing while keeping proxy domains on Fake-IP', async () => {
+  it('races dual-stack CDN connections while keeping application DNS/TUN on IPv4', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`);
     const body = await responseText(response);
     const nameserverPolicy = body.match(
@@ -281,8 +302,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.status, 200);
     assert.ok(nameserverPolicy, 'nameserver-policy must be present');
     assert.ok(fakeIpFilter, 'fake-ip-filter must be present');
-    assert.match(body, /^ipv6: false$/m);
+    assert.match(body, /^ipv6: true$/m);
     assert.match(body, /^\s+ipv6: false$/m);
+    assert.match(body, /^tcp-concurrent: true$/m);
     assert.doesNotMatch(body, /fake-ip-range6:/);
     assert.doesNotMatch(body, /inet6-address:/);
     assert.match(body, /^\s+mtu: 1500$/m);
@@ -301,9 +323,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.doesNotMatch(body, /DOMAIN-SUFFIX,mega\.(?:nz|co\.nz|io|app),/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN-SUFFIX,google\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,AI_GEMINI/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.bytedance\.net'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.larkoffice\.com'$/m);
@@ -325,7 +347,7 @@ describe('sample-worker Cloudflare Worker', () => {
     const body = await responseText(response);
 
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get('content-disposition'), 'attachment; filename=EASY_ALL');
+    assert.equal(response.headers.get('content-disposition'), 'attachment; filename=EASY_CMCC');
     assert.match(body, /- name: "NODE_REALITY"/);
     assert.match(body, /server: reality\.example\.com/);
     assert.match(body, /port: 10049/);
@@ -333,12 +355,36 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /type: anytls/);
     assert.match(body, /server: "anytls\.example\.com"/);
     assert.match(body, /port: 10055/);
-    assert.doesNotMatch(body, /ip-version:/);
+    assert.match(body, /- name: "NODE_VLESS_XHTTP_STREAM_UP"/);
+    assert.match(body, /server: xhttp\.example\.com/);
+    assert.match(body, /network: xhttp/);
+    assert.match(body, /udp: true/);
+    assert.match(body, /path: \/randompath/);
+    assert.match(body, /mode: stream-up/);
+    assert.match(body, /host: "xhttp\.example\.com"/);
+    assert.doesNotMatch(body, /reuse-settings:/);
+    assert.match(body, /packet-encoding: xudp/);
+    assert.match(body, /alpn:\n      - h2/);
+    assert.match(body, /ip-version: dual/);
+    assert.match(body, /- name: "NODE_VLESS_XHTTP_STREAM_ONE"/);
+    assert.match(body, /mode: stream-one/);
+    assert.match(body, /- name: "NODE_VLESS_WS"/);
+    assert.match(body, /network: ws/);
+    assert.match(body, /path: \/randomws/);
+    assert.equal((body.match(/ip-version: dual/g) || []).length, 3);
     assert.match(body, /^proxy-groups:$/m);
+    assert.match(body, /- name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
+    assert.match(body, /- name: DOWNLOAD\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_WS"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"/);
+    assert.match(body, /- name: AI\n      type: select\n      proxies:\n        - "NODE_REALITY"/);
     assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "NODE_REALITY"/);
-    assert.doesNotMatch(body, /- name: (?:AI|AI_GEMINI|DOWNLOAD)$/m);
-    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN-SUFFIX,github\.com,DOWNLOAD/);
+
+    const xhttpNode = body.slice(body.indexOf('- name: "NODE_VLESS_XHTTP_STREAM_UP"'));
+    assert.match(xhttpNode, /network: xhttp/);
+    assert.match(xhttpNode, /xhttp-opts:/);
+    assert.match(xhttpNode, /smux:\n      enabled: false/);
+    assert.doesNotMatch(xhttpNode, /flow: xtls-rprx-vision/);
   });
 
   it('quotes malicious node names without injecting YAML list entries', async () => {
