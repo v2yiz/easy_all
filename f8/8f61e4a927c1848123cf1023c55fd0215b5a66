@@ -1,0 +1,29 @@
+for_cmcc/README.md
+  s_1b124f9d80d87b::t_618a9c76bc85c2 181,225,227-256
+for_cmcc/docs/images/cloudflare-worker-custom-domain.svg
+  s_1b124f9d80d87b::t_edf89897fe1091 1-43
+for_cmcc/docs/images/cloudflare-worker-dns-route.svg
+  s_1b124f9d80d87b::t_f134598cf01743 1-47
+for_cmcc/docs/images/cloudflare-worker-route.svg
+  s_1b124f9d80d87b::t_d8ffb85d83a58d 1-47
+for_cmcc/test/test_easy_cmcc.sh
+  s_1b124f9d80d87b::t_baa260ec3c6b01 85-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f88f61e4a927c1848123cf1023c55fd0215b5a66",
+  "prompts": {},
+  "sessions": {
+    "s_1b124f9d80d87b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff4de-146f-7850-86b6-ca6c89a1cd88",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
