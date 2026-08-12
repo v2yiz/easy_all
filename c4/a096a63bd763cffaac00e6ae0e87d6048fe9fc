@@ -1,0 +1,37 @@
+README.md
+  s_8906b604a9499d::t_9b3b2241e9da9d 99
+for_cmcc/README.md
+  s_8906b604a9499d::t_499dac4a9fbd96 149-150,155
+for_cmcc/easy_cmcc
+  s_8906b604a9499d::t_a3ef4981ce9049 1412
+for_cmcc/sample-worker.js
+  s_8906b604a9499d::t_95e0f19ee17d25 338,343,461-463
+for_cmcc/test/test_easy_cmcc.sh
+  s_8906b604a9499d::t_656284c2828ef2 101-106,347-350
+for_cmcc/test/test_sample_worker.mjs
+  s_8906b604a9499d::t_f1db28586cbf31 362-363,429,448
+sample-worker.js
+  s_8906b604a9499d::t_af2c9b6b80cef3 348,352
+test/test_easy_all.sh
+  s_8906b604a9499d::t_99c1a7f10e2b03 972-975
+test/test_sample_worker.mjs
+  s_8906b604a9499d::t_fe2805f315ee88 396-397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c4a096a63bd763cffaac00e6ae0e87d6048fe9fc",
+  "prompts": {},
+  "sessions": {
+    "s_8906b604a9499d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff613-b256-7d30-ac96-5f71f6bd7d83",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
