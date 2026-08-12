@@ -1,0 +1,31 @@
+README.md
+  s_eecd84e07bd2d7::t_0b8ff2eecc9d14 187-188,219
+easy_all
+  s_eecd84e07bd2d7::t_3d41528043de17 1950-1951
+for_cmcc/README.md
+  s_eecd84e07bd2d7::t_b3a4af1d56126a 61,71,268-269,299
+for_cmcc/easy_cmcc
+  s_eecd84e07bd2d7::t_8c97fcbba3fd51 2499-2500
+for_cmcc/test/test_easy_cmcc.sh
+  s_eecd84e07bd2d7::t_0ad79bf3e31049 51-64,131-134,177-191
+test/test_easy_all.sh
+  s_eecd84e07bd2d7::t_92734f178e5b4a 588-605,1030
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a346dff88310b17003359c8e96785e108e214e9c",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
