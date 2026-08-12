@@ -156,6 +156,21 @@ validate_worker_name() {
     [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
+validate_worker_custom_domain() {
+    local domain=$1 node_domain=""
+    validate_domain "${domain}" || return 1
+    [[ "${domain}" != "workers.dev" && "${domain}" != *.workers.dev ]] || return 1
+    case "${PROTOCOL:-}" in
+    anytls) node_domain=${ANYTLS_DOMAIN:-} ;;
+    reality)
+        if validate_domain "${NODE_HOST:-}"; then
+            node_domain=$(normalize_domain "${NODE_HOST}")
+        fi
+        ;;
+    esac
+    [[ -z "${node_domain}" || "${domain}" != "$(normalize_domain "${node_domain}")" ]]
+}
+
 validate_sub_download_name() {
     [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]
 }
@@ -456,7 +471,7 @@ print_dns_proxy_preinstall_notice() {
 
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 状态文件不存在：${STATE_FILE}"
-    unset STATE_VERSION
+    unset STATE_VERSION WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
@@ -474,7 +489,8 @@ load_state() {
         PROTOCOL NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         ANYTLS_DOMAIN ANYTLS_PASSWORD SUB_PORT_MODE ALLOWED_TOKENS
-        WORKER_NAME WORKER_URL CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME
+        WORKER_NAME WORKER_URL WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
+        CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
     )
     for variable in "${variables[@]}"; do
@@ -493,6 +509,14 @@ load_state() {
         unset "${env_name}"
     done
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
+    if [[ -z "${WORKER_DEV_URL:-}" && "${WORKER_URL:-}" == https://*.workers.dev ]]; then
+        WORKER_DEV_URL=${WORKER_URL}
+    fi
+    if [[ -n "${WORKER_CUSTOM_DOMAIN:-}" ]]; then
+        WORKER_CUSTOM_DOMAIN=$(normalize_domain "${WORKER_CUSTOM_DOMAIN}")
+        validate_worker_custom_domain "${WORKER_CUSTOM_DOMAIN}" \
+            || die "状态文件中的 WORKER_CUSTOM_DOMAIN 无效：${WORKER_CUSTOM_DOMAIN}"
+    fi
     GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
         || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
@@ -523,6 +547,8 @@ save_state() {
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'WORKER_NAME=%q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
         printf 'WORKER_URL=%q\n' "${WORKER_URL:-}"
+        printf 'WORKER_DEV_URL=%q\n' "${WORKER_DEV_URL:-}"
+        printf 'WORKER_CUSTOM_DOMAIN=%q\n' "${WORKER_CUSTOM_DOMAIN:-}"
         printf 'CF_ACCOUNT_ID=%q\n' "${CF_ACCOUNT_ID:-}"
         printf 'DEPLOY_MODE=%q\n' "${DEPLOY_MODE:-}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
@@ -1487,6 +1513,23 @@ choose_subscription_download_name() {
     SUB_DOWNLOAD_NAME=${name}
 }
 
+collect_worker_custom_domain() {
+    local domain=${WORKER_CUSTOM_DOMAIN:-}
+    if [[ -z "${domain}" && -t 0 ]]; then
+        domain=$(prompt_value \
+            "Worker 独立自定义订阅域名（推荐，例如 sub.example.com；留空仅使用 workers.dev）" "")
+    fi
+    if [[ -z "${domain}" ]]; then
+        WORKER_CUSTOM_DOMAIN=""
+        warn "未配置 Worker Custom Domain；workers.dev 仅建议用于验收和临时排障"
+        return 0
+    fi
+    domain=$(normalize_domain "${domain}")
+    validate_worker_custom_domain "${domain}" \
+        || die "Worker 自定义订阅域名无效或与节点域名冲突：${domain}"
+    WORKER_CUSTOM_DOMAIN=${domain}
+}
+
 cloudflare_deploy_log() {
     local level=$1
     shift
@@ -1649,6 +1692,84 @@ report_cloudflare_api_failure() {
     fi
 }
 
+worker_custom_domain_service() {
+    local stage=${1:-查询 Worker Custom Domain} response
+    response=$(cloudflare_api GET \
+        "/accounts/${CF_ACCOUNT_ID}/workers/domains?hostname=${WORKER_CUSTOM_DOMAIN}" \
+        "${stage}") || {
+        cloudflare_deploy_log "ERROR" "${stage}：网络层重试耗尽"
+        return 1
+    }
+    jq -e '.success == true' <<<"${response}" >/dev/null || {
+        report_cloudflare_api_failure "${stage} 失败" "${response}"
+        return 1
+    }
+    jq -r --arg hostname "${WORKER_CUSTOM_DOMAIN}" '
+        [.result[]?
+            | select((.hostname // "" | ascii_downcase) == ($hostname | ascii_downcase))
+            | (.service // "")]
+        | .[0] // empty
+    ' <<<"${response}"
+}
+
+attach_worker_custom_domain() {
+    local response existing_service payload
+    local normalized_existing normalized_worker
+    [[ -n "${WORKER_CUSTOM_DOMAIN:-}" ]] || return 0
+
+    if ! existing_service=$(worker_custom_domain_service "查询 Worker Custom Domain"); then
+        return 1
+    fi
+    if [[ -n "${existing_service}" ]]; then
+        normalized_existing=$(tr '[:upper:]' '[:lower:]' <<<"${existing_service}")
+        normalized_worker=$(tr '[:upper:]' '[:lower:]' <<<"${WORKER_NAME}")
+        if [[ "${normalized_existing}" != "${normalized_worker}" ]]; then
+            cloudflare_deploy_log "ERROR" \
+                "Custom Domain ${WORKER_CUSTOM_DOMAIN} 已绑定到其他 Worker：${existing_service}；拒绝自动抢占"
+            return 1
+        fi
+        WORKER_URL="https://${WORKER_CUSTOM_DOMAIN}"
+        cloudflare_deploy_log "SUCCESS" \
+            "Custom Domain 已存在且绑定正确：${WORKER_URL}"
+        return 0
+    fi
+
+    payload=$(jq -cn \
+        --arg hostname "${WORKER_CUSTOM_DOMAIN}" \
+        --arg service "${WORKER_NAME}" \
+        '{hostname: $hostname, service: $service}')
+    response=$(cloudflare_api PUT \
+        "/accounts/${CF_ACCOUNT_ID}/workers/domains" \
+        "绑定 Worker Custom Domain" \
+        -H "Content-Type: application/json" --data "${payload}") || {
+        cloudflare_deploy_log "ERROR" "绑定 Worker Custom Domain：网络层重试耗尽"
+        return 1
+    }
+    jq -e '.success == true' <<<"${response}" >/dev/null || {
+        # Cover concurrent/repeated installs with one final authoritative read.
+        if existing_service=$(worker_custom_domain_service "复核 Worker Custom Domain"); then
+            normalized_existing=$(tr '[:upper:]' '[:lower:]' <<<"${existing_service}")
+            normalized_worker=$(tr '[:upper:]' '[:lower:]' <<<"${WORKER_NAME}")
+            if [[ "${normalized_existing}" == "${normalized_worker}" ]]; then
+                WORKER_URL="https://${WORKER_CUSTOM_DOMAIN}"
+                cloudflare_deploy_log "SUCCESS" \
+                    "Custom Domain 已由当前 Worker 占用，直接复用：${WORKER_URL}"
+                return 0
+            fi
+            if [[ -n "${existing_service}" ]]; then
+                cloudflare_deploy_log "ERROR" \
+                    "Custom Domain ${WORKER_CUSTOM_DOMAIN} 已绑定到其他 Worker：${existing_service}；拒绝自动抢占"
+                return 1
+            fi
+        fi
+        report_cloudflare_api_failure "绑定 Worker Custom Domain 失败" "${response}"
+        return 1
+    }
+    WORKER_URL="https://${WORKER_CUSTOM_DOMAIN}"
+    cloudflare_deploy_log "SUCCESS" \
+        "Custom Domain 已绑定，Cloudflare 正在自动配置橙云 DNS 与证书：${WORKER_URL}"
+}
+
 deploy_worker() {
     local metadata response subdomain worker_module_file
     WORKER_REPLACED=0
@@ -1719,7 +1840,15 @@ deploy_worker() {
         report_cloudflare_api_failure "读取账户 workers.dev 子域名失败" "${response}"
         return 1
     }
-    WORKER_URL="https://${WORKER_NAME}.${subdomain}.workers.dev"
+    WORKER_DEV_URL="https://${WORKER_NAME}.${subdomain}.workers.dev"
+    WORKER_URL=${WORKER_DEV_URL}
+    cloudflare_deploy_log "SUCCESS" "workers.dev 验收地址已启用：${WORKER_DEV_URL}"
+    if [[ -n "${WORKER_CUSTOM_DOMAIN:-}" ]]; then
+        if ! attach_worker_custom_domain; then
+            WORKER_URL=${WORKER_DEV_URL}
+            warn "Worker 已部署，但 Custom Domain 自动绑定失败；暂时使用 workers.dev，并将在下次更新时重试"
+        fi
+    fi
     cloudflare_deploy_log "SUCCESS" "部署完成：${WORKER_URL}"
     unset CF_WORKER_API_TOKEN
 }
@@ -1788,6 +1917,7 @@ configure_subscription() {
             worker_name_prompt=0
         fi
         choose_worker_name "${worker_name_prompt}"
+        collect_worker_custom_domain
         choose_subscription_download_name "${prompt_download_name}"
         write_worker "${WORKER_FILE}"
         if deploy_worker; then
@@ -2045,6 +2175,16 @@ show_subscription() {
     show_node
     printf 'Worker 名称: %s\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
     printf 'Clash 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
+    if [[ -n "${WORKER_CUSTOM_DOMAIN:-}" ]]; then
+        if [[ "${WORKER_URL:-}" == "https://${WORKER_CUSTOM_DOMAIN}" ]]; then
+            printf 'Worker Custom Domain: %s（已绑定）\n' "${WORKER_CUSTOM_DOMAIN}"
+        else
+            printf 'Worker Custom Domain: %s（尚未绑定成功，下次更新会重试）\n' \
+                "${WORKER_CUSTOM_DOMAIN}"
+        fi
+    fi
+    [[ -z "${WORKER_DEV_URL:-}" ]] \
+        || printf 'workers.dev 验收/备用地址: %s\n' "${WORKER_DEV_URL}"
     if [[ -n "${WORKER_URL:-}" ]]; then
         [[ -n "${ALLOWED_TOKENS:-}" ]] \
             || die "Worker 订阅地址存在，但订阅 Token 字典缺失；请执行 easy_all update-sub 重新生成"
@@ -2125,7 +2265,13 @@ show_status() {
     fi
     printf 'TCP 443: '
     ss -H -ltn "sport = :443" 2>/dev/null | grep -q . && printf 'listening\n' || printf 'not listening\n'
-    printf 'Worker: %s\n' "${WORKER_URL:-未自动部署}"
+    printf 'Worker 订阅地址: %s\n' "${WORKER_URL:-未自动部署}"
+    if [[ -n "${WORKER_CUSTOM_DOMAIN:-}" \
+        && "${WORKER_URL:-}" != "https://${WORKER_CUSTOM_DOMAIN}" ]]; then
+        printf 'Worker Custom Domain: %s（待重试）\n' "${WORKER_CUSTOM_DOMAIN}"
+    fi
+    [[ -z "${WORKER_DEV_URL:-}" ]] \
+        || printf 'workers.dev 验收/备用地址: %s\n' "${WORKER_DEV_URL}"
 }
 
 register_easy_all_command() {
@@ -2216,7 +2362,7 @@ uninstall_all() {
         "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${COMMAND_INSTALL_DIR}"
-    success "easy_all 已彻底卸载；远端 Cloudflare Worker 未处理"
+    success "easy_all 已彻底卸载；远端 Cloudflare Worker 与 Custom Domain 未处理"
 }
 
 rollback_fresh_install() {
@@ -2488,7 +2634,7 @@ usage() {
   status        显示当前协议、服务、端口和 Worker 状态
   register-command
                 注册系统命令 easy_all
-  uninstall     默认彻底删除所有 easy_all 本机数据；不处理远端 Worker
+  uninstall     默认彻底删除所有 easy_all 本机数据；不处理远端 Worker 与 Custom Domain
   help          显示帮助
 
 主要无人值守变量:
@@ -2504,11 +2650,12 @@ usage() {
   CF_DNS_API_TOKEN=...
   SUBSCRIBE_MODE=auto|worker|link
   CF_WORKER_API_TOKEN=...    CF_ACCOUNT_ID=...
-  WORKER_NAME=easy-all       SUB_DOWNLOAD_NAME=MY_SUB
+  WORKER_NAME=easy-all       WORKER_CUSTOM_DOMAIN=sub.example.com
+  SUB_DOWNLOAD_NAME=MY_SUB
   SAMPLE_WORKER_URL=https://...  默认读取本仓库 main/sample-worker.js
 
 Reality 默认 dynamic；AnyTLS 默认 443。XHTTP/WSS 请使用 for_cmcc/easy_cmcc。
-远端 Worker 始终 replace，uninstall 不删除远端 Worker。
+远端 Worker 始终 replace，uninstall 不删除远端 Worker 或 Custom Domain。
 EOF
 }
 

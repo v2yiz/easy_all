@@ -1693,6 +1693,15 @@ choose_subscription_mode() {
     esac
 }
 
+choose_worker_name() {
+    local allow_prompt=${1:-0} name=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
+    if [[ "${allow_prompt}" == "1" && -t 0 ]]; then
+        name=$(prompt_value "Cloudflare Worker 名称" "${name}")
+    fi
+    validate_worker_name "${name}" || die "Worker 名称无效：${name}"
+    WORKER_NAME=${name}
+}
+
 collect_worker_custom_domain() {
     local domain=${WORKER_CUSTOM_DOMAIN:-}
     if [[ -z "${domain}" && -t 0 ]]; then
@@ -2086,10 +2095,16 @@ verify_subscription() {
 }
 
 configure_subscription() {
+    local prompt_worker_name=${1:-0} worker_name_prompt
     collect_installed_state
     choose_subscription_mode
     case "${SUBSCRIBE_MODE}" in
     auto)
+        worker_name_prompt=${prompt_worker_name}
+        if [[ "${DEPLOY_MODE:-}" == "auto" || -n "${WORKER_URL:-}" ]]; then
+            worker_name_prompt=0
+        fi
+        choose_worker_name "${worker_name_prompt}"
         collect_worker_custom_domain
         write_worker "${WORKER_FILE}"
         if deploy_worker; then
@@ -2224,7 +2239,9 @@ rollback_subscription_update() {
 }
 
 update_subscription() {
-    local requested_port_mode=${SUB_PORT_MODE:-} stored_port_mode
+    local prompt_options=${1:-0}
+    local requested_port_mode=${SUB_PORT_MODE:-} requested_worker_name=${WORKER_NAME:-}
+    local stored_port_mode prompt_worker_name=0
     require_root
     [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
     stored_port_mode=$(
@@ -2233,6 +2250,9 @@ update_subscription() {
         printf '%s' "${SUB_PORT_MODE:-443}"
     )
     collect_installed_state
+    if [[ "${prompt_options}" == "1" && -z "${requested_worker_name}" ]]; then
+        prompt_worker_name=1
+    fi
     SUB_PORT_MODE=${requested_port_mode:-${SUB_PORT_MODE:-${stored_port_mode}}}
     [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
@@ -2257,7 +2277,7 @@ update_subscription() {
         rollback_subscription_update
         return 1
     fi
-    if ! configure_subscription; then
+    if ! configure_subscription "${prompt_worker_name}"; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
         return 1
@@ -2687,7 +2707,8 @@ cleanup_obsolete_protocol_artifacts() {
 }
 
 install_all() {
-    local requested=${1:-}
+    local requested=${1:-} prompt_worker_name=0
+    [[ -n "${WORKER_NAME:-}" ]] || prompt_worker_name=1
     require_root
     require_systemd
     [[ ! -f "${STATE_FILE}" ]] || die "easy_cmcc 已安装；请使用 easy_cmcc update，或卸载后重装"
@@ -2719,7 +2740,7 @@ install_all() {
     info "[8/9] 注册 easy_cmcc 命令"
     register_easy_cmcc_command
     info "[9/9] 配置 Worker 订阅"
-    configure_subscription
+    configure_subscription "${prompt_worker_name}"
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
     [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice
@@ -2880,7 +2901,7 @@ usage() {
   update-sub    刷新服务端与订阅
   show|subscription|status|update-core|renew-cert|uninstall
 
-该入口只发布 XHTTP stream-one CDN 节点，并放入 PROXY 组；Worker 名称固定为 easy-cmcc。
+该入口只发布 XHTTP stream-one CDN 节点，并放入 PROXY 组；首次自动部署可选择 Worker 名称，默认 easy-cmcc。
 自动部署可绑定独立 Worker Custom Domain，并由 Cloudflare 自动创建橙云 DNS 与证书。
 通用 VPS 的 Reality 或 AnyTLS 请使用仓库根目录的 easy_all。
 EOF
@@ -2941,7 +2962,7 @@ main() {
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
     update) update_easy_cmcc ;;
-    update-sub) update_subscription ;;
+    update-sub) update_subscription 1 ;;
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;
     status) show_status ;;

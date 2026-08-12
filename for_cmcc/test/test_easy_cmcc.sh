@@ -64,6 +64,10 @@ collect_state_function=$(awk '
     || fail "CMCC link-only state inspection must not require tokens"
 assert_contains "CMCC persists the Worker Custom Domain" "${installer}" \
     "WORKER_CUSTOM_DOMAIN=%q"
+assert_contains "CMCC exposes a Worker name prompt" "${installer}" \
+    "Cloudflare Worker 名称"
+assert_contains "CMCC update-sub enables the first-auto Worker name choice" "${installer}" \
+    "update-sub) update_subscription 1"
 assert_contains "CMCC uses the Custom Domain API" "${installer}" \
     '/accounts/${CF_ACCOUNT_ID}/workers/domains'
 [[ "${installer}" != *'/workers/routes'* ]] \
@@ -195,6 +199,42 @@ fi
     )
     assert_equal "CMCC link-only mode skips tokens and clears the Worker URL" \
         "saved:link:" "${link_only_output}"
+
+    first_auto_output=$(
+        (
+            collect_installed_state() { :; }
+            choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
+            choose_worker_name() { printf 'worker:%s\n' "$1"; }
+            collect_worker_custom_domain() { printf 'domain\n'; }
+            write_worker() { :; }
+            deploy_worker() { return 0; }
+            verify_subscription() { return 0; }
+            save_state() { :; }
+            DEPLOY_MODE=""
+            WORKER_URL=""
+            configure_subscription 1
+        )
+    )
+    assert_equal "CMCC first automatic deployment prompts for Worker name and domain" \
+        $'worker:1\ndomain' "${first_auto_output}"
+
+    existing_auto_output=$(
+        (
+            collect_installed_state() { :; }
+            choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
+            choose_worker_name() { printf 'worker:%s\n' "$1"; }
+            collect_worker_custom_domain() { printf 'domain\n'; }
+            write_worker() { :; }
+            deploy_worker() { return 0; }
+            verify_subscription() { return 0; }
+            save_state() { :; }
+            DEPLOY_MODE="auto"
+            WORKER_URL="https://existing.example.test"
+            configure_subscription 1
+        )
+    )
+    assert_equal "CMCC existing automatic deployment reuses its Worker name" \
+        $'worker:0\ndomain' "${existing_auto_output}"
 
     choose_protocol vless-xhttp >/dev/null
     VLESS_UUID="00000000-0000-4000-8000-000000000001"

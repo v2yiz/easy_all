@@ -251,6 +251,19 @@ test_validators_and_defaults() {
     assert_equal "default Worker name is easy-all" "easy-all" "${DEFAULT_WORKER_NAME}"
     assert_success "default Worker name is Cloudflare-compatible" validate_worker_name "${DEFAULT_WORKER_NAME}"
     assert_failure "Worker name rejects underscore" validate_worker_name "easy_all"
+    PROTOCOL="reality"
+    NODE_HOST="203.0.113.10"
+    assert_success "Worker Custom Domain accepts an independent hostname" \
+        validate_worker_custom_domain "sub.example.com"
+    assert_failure "Worker Custom Domain rejects workers.dev" \
+        validate_worker_custom_domain "test.workers.dev"
+    NODE_HOST="sub.example.com"
+    assert_failure "Worker Custom Domain cannot reuse the Reality node hostname" \
+        validate_worker_custom_domain "sub.example.com"
+    PROTOCOL="anytls"
+    ANYTLS_DOMAIN="tls.example.com"
+    assert_failure "Worker Custom Domain cannot reuse the AnyTLS node hostname" \
+        validate_worker_custom_domain "tls.example.com"
     assert_equal "AnyTLS defaults to 443" "443" "${DEFAULT_ANYTLS_PORT_MODE}"
     assert_equal "Reality defaults to dynamic" "dynamic" "${DEFAULT_REALITY_PORT_MODE}"
     PROTOCOL="reality"
@@ -392,6 +405,7 @@ test_subscription_prompt_routing() {
         collect_installed_state() { :; }
         choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
         choose_worker_name() { printf 'worker:%s\n' "$1"; }
+        collect_worker_custom_domain() { printf 'domain\n'; }
         choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
         write_worker() { :; }
         deploy_worker() { return 0; }
@@ -401,13 +415,14 @@ test_subscription_prompt_routing() {
         WORKER_URL=""
         configure_subscription 1 1
     )
-    assert_equal "first automatic deployment prompts for Worker and download names" \
-        $'worker:1\ndownload:1' "${output}"
+    assert_equal "first automatic deployment prompts for Worker, domain and download names" \
+        $'worker:1\ndomain\ndownload:1' "${output}"
 
     output=$(
         collect_installed_state() { :; }
         choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
         choose_worker_name() { printf 'worker:%s\n' "$1"; }
+        collect_worker_custom_domain() { printf 'domain\n'; }
         choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
         write_worker() { :; }
         deploy_worker() { return 0; }
@@ -417,8 +432,8 @@ test_subscription_prompt_routing() {
         WORKER_URL="https://existing-worker.example.test"
         configure_subscription 1 1
     )
-    assert_equal "existing automatic deployment reuses its Worker name" \
-        $'worker:0\ndownload:1' "${output}"
+    assert_equal "existing automatic deployment reuses its Worker and collects its domain" \
+        $'worker:0\ndomain\ndownload:1' "${output}"
 
     output=$(
         collect_installed_state() { :; }
@@ -432,6 +447,95 @@ test_subscription_prompt_routing() {
     )
     assert_equal "manual deployment asks only for the download name" \
         "download:1" "${output}"
+}
+
+test_worker_custom_domain_lifecycle() {
+    local api_calls="${TMP_DIR}/custom-domain-api-calls"
+    local get_count_file="${TMP_DIR}/custom-domain-get-count"
+    local original_cloudflare_api original_cloudflare_deploy_log
+    original_cloudflare_api=$(declare -f cloudflare_api)
+    original_cloudflare_deploy_log=$(declare -f cloudflare_deploy_log)
+    : >"${api_calls}"
+    printf '0\n' >"${get_count_file}"
+    CF_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
+    WORKER_NAME="easy-all"
+    WORKER_CUSTOM_DOMAIN="sub.example.com"
+    WORKER_DEV_URL="https://easy-all.account.workers.dev"
+    WORKER_URL=${WORKER_DEV_URL}
+    CUSTOM_DOMAIN_API_MODE="create"
+    cloudflare_deploy_log() { :; }
+    cloudflare_api() {
+        local method=$1 path=$2
+        shift 3
+        printf '%s\t%s\t%s\n' "${method}" "${path}" "$*" >>"${api_calls}"
+        if [[ "${method}" == "GET" ]]; then
+            case "${CUSTOM_DOMAIN_API_MODE}" in
+            existing)
+                printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"easy-all"}]}'
+                ;;
+            conflict)
+                printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"another-worker"}]}'
+                ;;
+            late-existing)
+                local get_count
+                get_count=$(<"${get_count_file}")
+                get_count=$((get_count + 1))
+                printf '%s\n' "${get_count}" >"${get_count_file}"
+                if ((get_count == 1)); then
+                    printf '%s' '{"success":true,"result":[]}'
+                else
+                    printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"easy-all"}]}'
+                fi
+                ;;
+            *) printf '%s' '{"success":true,"result":[]}' ;;
+            esac
+        elif [[ "${CUSTOM_DOMAIN_API_MODE}" == "late-existing" ]]; then
+            printf '%s' '{"success":false,"errors":[{"code":100117,"message":"conflict"}]}'
+        else
+            printf '%s' '{"success":true,"result":{"hostname":"sub.example.com","service":"easy-all"}}'
+        fi
+    }
+
+    assert_success "new automatic deployment creates its Custom Domain" \
+        attach_worker_custom_domain
+    assert_equal "new Custom Domain becomes the preferred Worker URL" \
+        "https://sub.example.com" "${WORKER_URL}"
+    assert_success "Custom Domain attach uses the account domains API" \
+        grep -Fq $'PUT\t/accounts/0123456789abcdef0123456789abcdef/workers/domains' \
+        "${api_calls}"
+
+    CUSTOM_DOMAIN_API_MODE="existing"
+    : >"${api_calls}"
+    WORKER_URL=${WORKER_DEV_URL}
+    assert_success "repeated deployment reuses its existing Custom Domain" \
+        attach_worker_custom_domain
+    assert_equal "reused Custom Domain remains the preferred Worker URL" \
+        "https://sub.example.com" "${WORKER_URL}"
+    assert_equal "reused Custom Domain is not attached again" \
+        "0" "$(grep -c $'^PUT\t' "${api_calls}" || true)"
+
+    CUSTOM_DOMAIN_API_MODE="conflict"
+    : >"${api_calls}"
+    WORKER_URL=${WORKER_DEV_URL}
+    assert_failure "deployment refuses a Custom Domain owned by another Worker" \
+        attach_worker_custom_domain
+    assert_equal "foreign Custom Domain does not replace workers.dev" \
+        "${WORKER_DEV_URL}" "${WORKER_URL}"
+
+    CUSTOM_DOMAIN_API_MODE="late-existing"
+    : >"${api_calls}"
+    printf '0\n' >"${get_count_file}"
+    WORKER_URL=${WORKER_DEV_URL}
+    assert_success "concurrent attach reuses a domain confirmed on final read" \
+        attach_worker_custom_domain
+    assert_equal "concurrently attached domain becomes the preferred URL" \
+        "https://sub.example.com" "${WORKER_URL}"
+    assert_equal "concurrent attach performs one final hostname query" \
+        "2" "$(<"${get_count_file}")"
+
+    unset -f cloudflare_api cloudflare_deploy_log
+    eval "${original_cloudflare_api}"
+    eval "${original_cloudflare_deploy_log}"
 }
 
 test_links_and_workers() {
@@ -723,7 +827,9 @@ test_link_only_subscription_skips_tokens() {
 test_state_and_lifecycle_guards() {
     set_protocol_fixture "anytls"
     WORKER_NAME="${DEFAULT_WORKER_NAME}"
-    WORKER_URL=""
+    WORKER_URL="https://sub.example.com"
+    WORKER_DEV_URL="https://easy-all.account.workers.dev"
+    WORKER_CUSTOM_DOMAIN="sub.example.com"
     CF_ACCOUNT_ID="account-id"
     DEPLOY_MODE="worker"
     CF_DNS_API_TOKEN="dns-token-must-not-be-saved"
@@ -739,6 +845,12 @@ test_state_and_lifecycle_guards() {
     assert_not_contains "state does not save XHTTP domain" "VLESS_XHTTP_DOMAIN=" "${content}"
     assert_not_contains "state does not save XHTTP path" "XHTTP_PATH=" "${content}"
     assert_contains "state saves default Worker" "WORKER_NAME=easy-all" "${content}"
+    assert_contains "state saves the preferred Worker URL" \
+        "WORKER_URL=https://sub.example.com" "${content}"
+    assert_contains "state saves the workers.dev fallback" \
+        "WORKER_DEV_URL=https://easy-all.account.workers.dev" "${content}"
+    assert_contains "state saves the Worker Custom Domain" \
+        "WORKER_CUSTOM_DOMAIN=sub.example.com" "${content}"
     assert_contains "state saves the Gemini address-family preference" \
         "GEMINI_IP_FAMILY=ipv4" "${content}"
     assert_contains "state saves allowed token dict" "ALLOWED_TOKENS=" "${content}"
@@ -834,11 +946,18 @@ EOF
         "请选择 sing-box 版本" "${script_content}"
     assert_contains "automatic setup exposes a Worker name prompt" \
         "Cloudflare Worker 名称" "${script_content}"
+    assert_contains "automatic setup exposes a Worker Custom Domain prompt" \
+        "Worker 独立自定义订阅域名" "${script_content}"
+    assert_contains "automatic setup uses the Custom Domain API" \
+        '/accounts/${CF_ACCOUNT_ID}/workers/domains' "${script_content}"
+    assert_not_contains "automatic setup does not configure Worker Routes" \
+        '/workers/routes' "${script_content}"
     assert_contains "Worker modes expose a Mihomo download name prompt" \
         "Mihomo 下载文件名（不含 .yaml）" "${script_content}"
     assert_contains "update-sub enables its interactive option menus" \
         "update-sub) update_subscription 1" "${script_content}"
-    assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
+    assert_contains "uninstall explicitly leaves remote Worker and Custom Domain" \
+        "远端 Cloudflare Worker 与 Custom Domain 未处理" "${script_content}"
     assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
 
     readme_content=$(<"${ROOT_DIR}/README.md")
@@ -848,6 +967,12 @@ EOF
         "Zone Settings → Edit" "${readme_content}"
     assert_contains "README documents Worker subscription verification retry policy" \
         "先等待 10 秒，再进行最多 12 次订阅 HTTP 验收" "${readme_content}"
+    assert_contains "README documents automatic Custom Domain reuse" \
+        "已经绑定当前 Worker 时直接复用" "${readme_content}"
+    assert_contains "README removes placeholder DNS setup" \
+        "不创建占位 DNS，也不配置 Worker Route" "${readme_content}"
+    assert_not_contains "README no longer recommends the 2.2.2.2 placeholder" \
+        "2.2.2.2" "${readme_content}"
     assert_not_contains "README download commands do not reuse files based on timestamps" \
         "wget -q -P /root -N" "${readme_content}"
     assert_contains "README downloads updates to a protected temporary path" \
@@ -1181,6 +1306,7 @@ test_reality_node_host_detection
 test_subscription_port_mode_selection
 test_restored_interactive_choices
 test_subscription_prompt_routing
+test_worker_custom_domain_lifecycle
 test_links_and_workers
 test_sample_worker_template_guards
 test_server_egress_family_configs

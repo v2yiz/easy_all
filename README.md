@@ -58,7 +58,7 @@ easy_all uninstall
 
 `uninstall` 默认就是完整本机 purge，不再需要 `--purge`：删除 easy_all 的服务、核心、配置、证书副本、状态、日志、命令入口和备份，尝试恢复安装前的 nftables，并从 root crontab 精确移除 easy_all 托管的重启任务。若 acme.sh 确认由 easy_all 安装且已无其他证书，也会一并清理；共享 acme.sh 会保留。XanMod、已安装软件包和系统级 BBR/IPv6 初始化不会降级。
 
-远端 Cloudflare Worker 不属于卸载范围。每次自动安装或切换都以 replace 方式覆盖同名 Worker，因此保留远端 Worker 不影响下次安装。
+远端 Cloudflare Worker 及其 Custom Domain 不属于卸载范围。每次自动安装或切换都以 replace 方式覆盖同名 Worker，并复用已经绑定到该 Worker 的 Custom Domain，因此保留远端资源不影响下次安装。
 
 `easy_all update` 始终以自动模式 replace 当前同名 Worker，不继承历史的手动输出模式。
 交互更新会重新提示输入未保存的 Cloudflare Worker API Token。若 Worker replace 失败，
@@ -140,62 +140,49 @@ gRPC、WebSockets 与 XHTTP 双向无缓冲规则，`easy_all` 不需要添加�
 
 ![Cloudflare Worker Token 配置示意图](docs/images/cloudflare-worker-token.svg)
 
-### 4. 为订阅域名添加 Proxied DNS 记录
+### 4. Worker Custom Domain
 
-如果希望使用 `https://sub.example.com/subscribe?...` 而不是 `workers.dev`，并准备通过
-**Worker Route** 绑定域名，必须先在对应 Zone 的 **DNS → Records** 中为该主机名创建
-一条 **Proxied / 橙云** `A` 记录。没有真实源站时可使用 `2.2.2.2` 作为占位地址；它
-不是 VPS 的真实地址，匹配路由的请求会在 Cloudflare 边缘进入 Worker，不会访问该
-占位地址。没有可用 IPv6 地址时不需要创建 `AAAA` 记录；只有确实需要并拥有可用
-IPv6 地址时，才额外添加同名的橙云 `AAAA` 记录。
+自动部署时可以填写独立的订阅域名，例如 `sub.example.com`。该主机名必须位于当前
+Cloudflare 账户中的 Active Zone，并且不能与 Reality/AnyTLS 节点域名相同。请使用一个
+没有现有 A、AAAA 或 CNAME 的主机名，**不要提前创建 DNS 记录，也不要配置 Worker
+Route**。脚本会调用 Custom Domain API；Cloudflare 自动创建橙云 DNS、签发边缘证书并
+把请求直接交给 `easy-all` Worker。
 
-![Cloudflare Worker 域名 DNS 代理解析示意图](docs/images/cloudflare-worker-dns-route.svg)
+![为 Worker 添加 Custom Domain](for_cmcc/docs/images/cloudflare-worker-custom-domain.svg)
 
-示例中的 Zone 是 `example.com`，Worker 域名是 `sub.example.com`。DNS 名称只填写
-`sub`，代理状态必须显示 **Proxied**，不能是 **DNS only**。Cloudflare 要求 Route 使用的
-域名或子域名已经存在橙云 DNS 记录，详见
-[Workers Routes 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)。
-
-### 5. 将域名路由到 easy-all Worker
-
-进入 **Workers & Pages → easy-all → Settings → Domains & Routes → Add → Route**，选择
-`example.com` Zone，并填写 `sub.example.com/*`。末尾的 `/*` 会覆盖 `/subscribe` 以及带
-查询参数的订阅 URL；不要把 token 或查询参数写进 Route pattern。
-
-![Cloudflare Worker Route 配置示意图](docs/images/cloudflare-worker-route.svg)
-
-添加成功后可使用：
+绑定成功后可使用：
 
 ```text
 https://sub.example.com/subscribe?token=owner-token-123
 https://sub.example.com/subscribe?token=owner-token-123&flag=clash
 ```
 
-以上是手工 **Route + Proxied DNS** 方案，不会改变脚本记录的 `workers.dev` 地址，也不
-需要把 Workers Routes 权限加入 `CF_WORKER_API_TOKEN`。如果 Worker 是该主机名唯一的
-源站，也可以在同一菜单选择 **Custom Domain**；Cloudflare 会自动创建 DNS 记录和证书，
-此时不要再重复添加同主机名的 Route。Cloudflare 当前对纯 Worker 源站更推荐 Custom
-Domain，二者选择一种即可。
+脚本不创建占位 DNS，也不配置 Worker Route：每次安装或更新先按 hostname 查询，已经绑定当前 Worker 时直接复用，
+不存在时才创建，绑定到其他 Worker 时拒绝抢占。若创建
+请求与另一次安装并发冲突，会再查询一次；确认已绑定当前 Worker 也视同成功。脚本不会
+删除或覆盖 DNS。`Account → Workers Scripts → Edit` 已覆盖 Custom Domain API，不需要
+额外授予 DNS 或 Workers Routes 权限。机制可参考 Cloudflare 的
+[Custom Domains 文档](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
 
 ## Worker 订阅
 
 安装或 `update-sub` 时可选择：
 
-1. 自动部署：通过 Cloudflare API replace Worker。
+1. 自动部署：通过 Cloudflare API replace Worker，并可自动创建或复用 Custom Domain。
 2. 手动部署：输出完整 Worker 源码。
 3. 只输出当前节点链接。
 
 脚本会先询问订阅输出方式。选择自动部署或手动部署后，才会询问订阅用户 Token 字典，因为两种方式都会生成带访问保护的 Worker；选择“只输出当前节点链接”时不生成 Worker，也不会要求订阅 Token、Account ID 或 Worker API Token。手动部署仍然需要订阅 Token，它会直接内嵌到输出 Worker 的 `ALLOWED_TOKENS` 中。
 
-自动和手动 Worker 模式都会询问 Mihomo 下载文件名，默认是 `EASY_ALL`，输入时不需要 `.yaml` 后缀。首次选择自动部署且本地尚无已部署 Worker 时，还会询问 Worker 名称，默认是 `easy-all`；后续 `update`、协议切换和已有 Worker 的 `update-sub` 会复用状态中的名称，避免意外部署出第二个 Worker。由手动/仅链接模式首次改为自动部署时，也会询问一次 Worker 名称。
+自动和手动 Worker 模式都会询问 Mihomo 下载文件名，默认是 `EASY_ALL`，输入时不需要 `.yaml` 后缀。首次选择自动部署且本地尚无已部署 Worker 时，还会询问 Worker 名称，默认是 `easy-all`；自动部署随后询问独立的 Worker Custom Domain，留空则仅使用 `workers.dev`。后续 `update`、协议切换和已有 Worker 的 `update-sub` 会复用状态中的 Worker 名称和 Custom Domain，避免创建重复资源。由手动/仅链接模式首次改为自动部署时，也会询问一次 Worker 名称。
 
-默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Worker 部署完成后会先等待 10 秒，再进行最多 12 次订阅 HTTP 验收；失败后的重试间隔随机为 2–5 秒。每轮 base64 与 Clash 请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间两个格式命中不同版本。最近一次部署日志位于：
+默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Custom Domain 成功后作为首选订阅地址，`workers.dev` 保留为验收和临时排障备用地址。Worker 部署完成后会先等待 10 秒，再进行最多 12 次订阅 HTTP 验收；失败后的重试间隔随机为 2–5 秒。每轮 base64 与 Clash 请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间两个格式命中不同版本。最近一次部署日志位于：
 
 ```text
 /etc/easy_all/last-worker-deploy.log
 ```
 
-日志权限为 `0600`，并对 UUID、密码、Token 和 Reality 密钥做脱敏。Worker API 上传成功但 workers.dev 公网验收暂时未通过时，脚本会保留新协议并给出警告，避免错误地回滚到与远端订阅不一致的旧协议。
+日志权限为 `0600`，并对 UUID、密码、Token 和 Reality 密钥做脱敏。Worker API 上传成功但公网验收暂时未通过时，脚本会保留新协议并给出警告，避免错误地回滚到与远端订阅不一致的旧协议。Custom Domain 绑定失败时暂时回退到 `workers.dev`，保存待绑定域名，并在下次自动更新时重试。
 
 Worker 支持：
 
@@ -228,10 +215,10 @@ wget -qO /root/easy_all.new "https://raw.githubusercontent.com/v2yiz/easy_all/ma
 上面的配置会生成两组订阅地址：
 
 ```text
-https://<worker>.workers.dev/subscribe?token=owner-token-123
-https://<worker>.workers.dev/subscribe?token=owner-token-123&flag=clash
-https://<worker>.workers.dev/subscribe?token=alice-token-456
-https://<worker>.workers.dev/subscribe?token=alice-token-456&flag=clash
+https://<custom-domain>/subscribe?token=owner-token-123
+https://<custom-domain>/subscribe?token=owner-token-123&flag=clash
+https://<custom-domain>/subscribe?token=alice-token-456
+https://<custom-domain>/subscribe?token=alice-token-456&flag=clash
 ```
 
 规则：
