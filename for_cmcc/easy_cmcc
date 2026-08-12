@@ -1872,23 +1872,33 @@ report_cloudflare_api_failure() {
     fi
 }
 
-attach_worker_custom_domain() {
-    local response existing_service payload
-    [[ -n "${WORKER_CUSTOM_DOMAIN:-}" ]] || return 0
-
+worker_custom_domain_service() {
+    local stage=${1:-查询 Worker Custom Domain} response
     response=$(cloudflare_api GET \
         "/accounts/${CF_ACCOUNT_ID}/workers/domains?hostname=${WORKER_CUSTOM_DOMAIN}" \
-        "查询 Worker Custom Domain") || {
-        cloudflare_deploy_log "ERROR" "查询 Worker Custom Domain：网络层重试耗尽"
+        "${stage}") || {
+        cloudflare_deploy_log "ERROR" "${stage}：网络层重试耗尽"
         return 1
     }
     jq -e '.success == true' <<<"${response}" >/dev/null || {
-        report_cloudflare_api_failure "查询 Worker Custom Domain 失败" "${response}"
+        report_cloudflare_api_failure "${stage} 失败" "${response}"
         return 1
     }
-    existing_service=$(jq -r --arg hostname "${WORKER_CUSTOM_DOMAIN}" \
-        '.result[]? | select((.hostname | ascii_downcase) == $hostname) | .service' \
-        <<<"${response}" 2>/dev/null | head -n 1)
+    jq -r --arg hostname "${WORKER_CUSTOM_DOMAIN}" '
+        [.result[]?
+            | select((.hostname // "" | ascii_downcase) == ($hostname | ascii_downcase))
+            | (.service // "")]
+        | .[0] // empty
+    ' <<<"${response}"
+}
+
+attach_worker_custom_domain() {
+    local response existing_service payload api_codes delay
+    [[ -n "${WORKER_CUSTOM_DOMAIN:-}" ]] || return 0
+
+    if ! existing_service=$(worker_custom_domain_service "查询 Worker Custom Domain"); then
+        return 1
+    fi
     if [[ -n "${existing_service}" ]]; then
         if [[ "${existing_service}" != "${WORKER_NAME}" ]]; then
             cloudflare_deploy_log "ERROR" \
@@ -1913,6 +1923,28 @@ attach_worker_custom_domain() {
         return 1
     }
     jq -e '.success == true' <<<"${response}" >/dev/null || {
+        api_codes=$(jq -r '[.errors[]?.code | tostring] | join(",")' <<<"${response}" 2>/dev/null || true)
+        if [[ ",${api_codes}," == *,100117,* ]]; then
+            # Custom Domain API may report a DNS race while the binding has
+            # already become visible. Re-read before falling back to workers.dev.
+            for delay in 1 2 4; do
+                sleep "${delay}"
+                if ! existing_service=$(worker_custom_domain_service "复核 Worker Custom Domain"); then
+                    continue
+                fi
+                if [[ "${existing_service}" == "${WORKER_NAME}" ]]; then
+                    WORKER_URL="https://${WORKER_CUSTOM_DOMAIN}"
+                    cloudflare_deploy_log "SUCCESS" \
+                        "Custom Domain 绑定请求返回冲突，但复核已确认已绑定当前 Worker：${WORKER_URL}"
+                    return 0
+                fi
+                if [[ -n "${existing_service}" ]]; then
+                    cloudflare_deploy_log "ERROR" \
+                        "Custom Domain ${WORKER_CUSTOM_DOMAIN} 已绑定到其他 Worker：${existing_service}；拒绝自动抢占"
+                    return 1
+                fi
+            done
+        fi
         report_cloudflare_api_failure "绑定 Worker Custom Domain 失败" "${response}"
         return 1
     }

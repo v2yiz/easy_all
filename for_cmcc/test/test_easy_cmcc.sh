@@ -118,6 +118,8 @@ assert_contains "README documents Custom Domain conflict protection" "${readme}"
     "拒绝抢占已经绑定到其他 Worker"
 assert_contains "README documents idempotent Custom Domain updates" "${readme}" \
     '已绑定到当前 `easy-cmcc` 时直接复用，不重复创建'
+assert_contains "README documents post-conflict Custom Domain verification" "${readme}" \
+    '绑定冲突后会再次查询'
 assert_contains "README distinguishes node and subscription domains" "${readme}" \
     "两个域名不能相同"
 assert_contains "README documents the recommended interactive Worker choice" "${readme}" \
@@ -271,7 +273,9 @@ EOF
         "ip-version: dual"
 
     custom_domain_api_calls="${TMP_DIR}/cmcc-custom-domain-api-calls"
+    custom_domain_get_count="${TMP_DIR}/cmcc-custom-domain-get-count"
     : >"${custom_domain_api_calls}"
+    printf '0\n' >"${custom_domain_get_count}"
     CF_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
     WORKER_NAME="easy-cmcc"
     WORKER_CUSTOM_DOMAIN="sub.example.com"
@@ -292,10 +296,25 @@ EOF
             conflict)
                 printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"another-worker"}]}'
                 ;;
+            late-existing)
+                local get_count
+                get_count=$(<"${custom_domain_get_count}")
+                get_count=$((get_count + 1))
+                printf '%s\n' "${get_count}" >"${custom_domain_get_count}"
+                if ((get_count == 1)); then
+                    printf '%s' '{"success":true,"result":[]}'
+                else
+                    printf '%s' '{"success":true,"result":[{"hostname":"sub.example.com","service":"easy-cmcc"}]}'
+                fi
+                ;;
             *) printf '%s' '{"success":true,"result":[]}' ;;
             esac
         else
-            printf '%s' '{"success":true,"result":{"hostname":"sub.example.com","service":"easy-cmcc"}}'
+            if [[ "${CUSTOM_DOMAIN_API_MODE}" == "late-existing" ]]; then
+                printf '%s' '{"success":false,"errors":[{"code":100117,"message":"Hostname already has externally managed DNS records"}]}'
+            else
+                printf '%s' '{"success":true,"result":{"hostname":"sub.example.com","service":"easy-cmcc"}}'
+            fi
         fi
     }
     attach_worker_custom_domain \
@@ -332,6 +351,20 @@ EOF
         "${WORKER_DEV_URL}" "${WORKER_URL}"
     [[ "$(grep -c $'^PUT\t' "${custom_domain_api_calls}" || true)" == "0" ]] \
         || fail "CMCC must not write after detecting a Custom Domain conflict"
+
+    CUSTOM_DOMAIN_API_MODE="late-existing"
+    : >"${custom_domain_api_calls}"
+    printf '0\n' >"${custom_domain_get_count}"
+    WORKER_URL=${WORKER_DEV_URL}
+    sleep() { :; }
+    attach_worker_custom_domain \
+        || fail "CMCC must treat a post-conflict binding to the current Worker as success"
+    assert_equal "CMCC accepts a binding confirmed after a 100117 race" \
+        "https://sub.example.com" "${WORKER_URL}"
+    assert_equal "CMCC rechecks Custom Domain after a binding conflict" \
+        "2" "$(<"${custom_domain_get_count}")"
+    [[ "$(grep -c $'^PUT\t' "${custom_domain_api_calls}" || true)" == "1" ]] \
+        || fail "CMCC must issue one bind request before confirming the race"
 
     verify_calls_file="${TMP_DIR}/cmcc-verify-calls"
     verify_keys_file="${TMP_DIR}/cmcc-verify-version-keys"
