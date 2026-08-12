@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
   <title id="title">为 easy-cmcc Worker 添加 Custom Domain</title>
-  <desc id="desc">在 easy-cmcc 的 Domains and Routes 中添加 sub.example.com，自定义域名的 DNS 和证书由 Cloudflare 自动配置。</desc>
+  <desc id="desc">在 easy-cmcc 的 Domains and Routes 中添加 sub.example.com，Cloudflare 自动创建只读的 Proxied DNS、接入 CDN 并签发证书。</desc>
   <defs>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="14" flood-opacity=".12"/></filter>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#f48120"/></marker>
@@ -9,7 +9,7 @@
     </style>
   </defs>
   <rect width="1400" height="900" fill="#f5f7fb"/>
-  <text x="70" y="72" class="title">方案 A：添加订阅 Custom Domain（推荐）</text>
+  <text x="70" y="72" class="title">推荐：添加 Worker Custom Domain</text>
   <text x="70" y="114" class="body muted">Workers &amp; Pages → easy-cmcc → Settings → Domains &amp; Routes → Add → Custom Domain</text>
   <rect x="70" y="152" width="1260" height="650" rx="24" fill="#fff" filter="url(#shadow)"/>
   <rect x="70" y="152" width="1260" height="64" rx="24" fill="#1f2937"/>
@@ -21,8 +21,8 @@
   <text x="1080" y="284" class="small green">✓ 独立订阅域名</text>
 
   <rect x="110" y="350" width="1170" height="108" rx="14" fill="#eefaf6"/>
-  <text x="145" y="390" class="label green">Cloudflare 自动完成</text>
-  <text x="145" y="428" class="small">创建 Worker DNS 记录并签发边缘证书；无需再手工添加占位 DNS 或同名 Route。</text>
+  <text x="145" y="390" class="label green">Cloudflare 自动完成 CDN 接入</text>
+  <text x="145" y="428" class="small">创建只读的 Proxied / 橙云 DNS 并签发证书；无需手工添加 DNS、源站或 Route。</text>
 
   <rect x="110" y="510" width="340" height="115" rx="18" fill="#eef3ff" stroke="#cfd9ef" stroke-width="2"/>
   <text x="145" y="551" class="small muted">订阅客户端</text>

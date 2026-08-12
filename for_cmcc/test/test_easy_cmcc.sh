@@ -83,20 +83,17 @@ assert_contains "README documents that uninstall leaves the remote Worker" "${re
 assert_contains "README documents the expanded Worker verification window" "${readme}" \
     "先等待 10 秒，再进行最多 12 次"
 assert_contains "README recommends the custom subscription domain" "${readme}" \
-    "推荐：使用 Worker 自定义订阅域名"
+    "推荐：使用 Worker Custom Domain"
 assert_contains "README warns against long-term workers.dev subscriptions" "${readme}" \
     "不建议作为长期订阅地址"
 assert_contains "README keeps subscription and node domains separate" "${readme}" \
     "不要与 XHTTP/WSS 节点域名"
-assert_contains "README documents the CMCC Worker Route pattern" "${readme}" \
-    'sub.example.com/*'
-for worker_route_figure in \
-    cloudflare-worker-custom-domain.svg \
-    cloudflare-worker-dns-route.svg \
-    cloudflare-worker-route.svg; do
-    [[ -s "${ROOT_DIR}/docs/images/${worker_route_figure}" ]] \
-        || fail "README Worker routing figure is missing: ${worker_route_figure}"
-done
+assert_contains "README documents automatic CDN setup for Custom Domain" "${readme}" \
+    "相当于自动完成 Cloudflare CDN 接入"
+[[ -s "${ROOT_DIR}/docs/images/cloudflare-worker-custom-domain.svg" ]] \
+    || fail "README Worker Custom Domain figure is missing"
+[[ "${readme}" != *"方案 B"* ]] \
+    || fail "README must present only the recommended Worker Custom Domain flow"
 [[ "${readme}" != *"无人值守"* ]] \
     || fail "README must omit unattended-operation documentation"
 
