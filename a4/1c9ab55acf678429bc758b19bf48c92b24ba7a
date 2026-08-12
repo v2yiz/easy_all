@@ -1,0 +1,21 @@
+for_cmcc/sample-worker.js
+  s_eecd84e07bd2d7::t_0c7d4f2fc5ba48 417
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a41c9ab55acf678429bc758b19bf48c92b24ba7a",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
