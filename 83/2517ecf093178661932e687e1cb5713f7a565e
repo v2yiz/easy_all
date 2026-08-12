@@ -1,0 +1,21 @@
+easy_all
+  s_eecd84e07bd2d7::t_642cc2b7cf00a2 159-173,474,492-493,512-519,550-551,1516-1532,1695-1772,1843-1851,1920,2178-2187,2268-2274,2365,2637,2653-2654,2658
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "832517ecf093178661932e687e1cb5713f7a565e",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
