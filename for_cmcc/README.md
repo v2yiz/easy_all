@@ -1,19 +1,15 @@
 # easy_cmcc
 
-`easy_cmcc` 是面向中国移动访问美西普通线路、需要经过 Cloudflare CDN 的独立单文件安装器。它固定安装 VLESS XHTTP + WSS，不提供 Reality、AnyTLS 或协议切换；客户端发布三个节点，在性能和兼容性之间按以下顺序取舍：
+`easy_cmcc` 是面向中国移动访问美西普通线路、需要经过 Cloudflare CDN 的独立单文件安装器。它固定安装 VLESS XHTTP `stream-one`，不提供 Reality、AnyTLS、WSS、其他 XHTTP 模式或协议切换。客户端只发布一个名为 `VLESS_XHTTP` 的节点，优先降低手机蜂窝网络的后台连接、CPU 和耗电：
 
 | 客户端节点 | 定位 | 公网链路 | Cloudflare 要求 |
 |---|---|---|---|
-| XHTTP `stream-up` | 默认主节点，兼顾交互与下载 | HTTPS / HTTP/2 / TCP 443 | gRPC 开启，XHTTP 路径双向不缓冲 |
-| XHTTP `stream-one` | 旧客户端或特殊网络的兼容回退 | HTTPS / HTTP/2 / TCP 443 | 与主节点共用配置 |
-| WSS | CDN/客户端兼容回退，下载组第二选择 | HTTPS / WebSocket / TCP 443 | WebSockets 开启 |
+| XHTTP `stream-one` | 唯一节点，兼顾移动端省电、交互和下载 | HTTPS / HTTP/2 / TCP 443 | gRPC 开启，XHTTP 路径双向不缓冲 |
 
-三个客户端节点共用同一个域名、UUID、证书和 Cloudflare CDN。两个 XHTTP 节点共用随机 XHTTP 路径，WSS 使用另一个随机路径；服务端 XHTTP 使用 `auto`，可同时接受两种模式。`stream-up` 作为主节点，WSS 保留更广的 CDN/客户端兼容性。实际速度仍取决于中国移动到 Cloudflare 边缘、Cloudflare 回源和 VPS 当时的线路质量，不存在对所有时段都固定最快的单一协议。
+节点使用一个随机 XHTTP 路径，客户端和服务端都固定为 `stream-one`。相比持续维护上下行分离连接的 `stream-up`，该模式更适合手机蜂窝网络。实际速度仍取决于中国移动到 Cloudflare 边缘、Cloudflare 回源和 VPS 当时的线路质量。
 
 ```text
-客户端 -> Cloudflare CDN -> Nginx :443
-                            |- XHTTP auto -> Xray 127.0.0.1:10085
-                            `- WSS   -> Xray 127.0.0.1:10086
+客户端 -> Cloudflare CDN -> Nginx :443 -> XHTTP stream-one -> Xray 127.0.0.1:10085
 ```
 
 公网接入始终是 TLS/TCP，不依赖 QUIC。订阅中的 `udp: true` 和 `packet-encoding: xudp` 表示代理内部可以承载 UDP，不代表客户端使用 UDP 连接 Cloudflare。
@@ -24,7 +20,7 @@
 
 | 域名 | 用途 | 安装前 | 安装后 |
 |---|---|---|---|
-| `node.example.com` | XHTTP/WSS 节点入口 | 自己创建 A；有可用公网 IPv6 时再创建 AAAA；全部保持灰云并指向 VPS | 本机验收通过后把 A、AAAA 一起切为橙云 |
+| `node.example.com` | XHTTP 节点入口 | 自己创建 A；有可用公网 IPv6 时再创建 AAAA；全部保持灰云并指向 VPS | 本机验收通过后把 A、AAAA 一起切为橙云 |
 | `sub.example.com` | Worker 订阅入口 | 推荐使用没有现有 A/AAAA/CNAME 的新主机名，不要提前创建解析 | 选择自动部署后，由 Worker Custom Domain 自动创建橙云 DNS 和边缘证书 |
 
 两个域名不能相同。节点域名连接 VPS，订阅域名只提供配置文件；把它们混用会导致 Custom Domain 接管节点请求。
@@ -35,7 +31,7 @@
 - 一个已接入 Cloudflare、状态为 Active 的 Zone，以及节点域名和独立订阅域名。最简单的是放在同一个 Zone；订阅域名也可以位于同一账户下的另一个 Active Zone。
 - VPS 公网 IPv4；只有 VPS 确实拥有可用公网 IPv6 和默认 IPv6 路由时才创建 AAAA。
 - Cloudflare DNS API Token；推荐自动部署时还要准备 Account ID 和 Worker API Token。三者的用途与最小权限见下文“Cloudflare 凭据”。
-- 支持 VLESS、TLS、XHTTP 和 WebSocket 的近期 Mihomo/Clash Meta 客户端。旧客户端无法使用 XHTTP 时仍可手动选择 WSS 节点。
+- 支持 VLESS、TLS 和 XHTTP `stream-one` 的近期 Mihomo/Clash Meta 客户端。
 - 在安装过程中保持当前 SSH 会话，不要提前切换节点域名为橙云。
 
 ## 安装前须知
@@ -43,11 +39,11 @@
 - 只支持 Debian 12/13、amd64、systemd 和 root，不支持容器。
 - 脚本面向专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
 - TCP 使用 `fq + BBR`，收发自动调优上限为 32 MiB，接收积压为 16384，并启用 MTU 黑洞探测；Nginx TCP 443 的监听 backlog 与 `somaxconn=4096` 对齐。
-- TCP 80 和 443 必须可用。80 用于 Nginx 伪装站点，443 用于 XHTTP 与 WSS 的统一 TLS 入口。
+- TCP 80 和 443 必须可用。80 用于 Nginx 伪装站点，443 用于 XHTTP TLS 入口。
 - 安装前，节点域名的 A 记录必须为 DNS only / 灰云并直接指向 VPS 公网 IPv4；脚本会使用本机 DNS、`1.1.1.1` 和 `8.8.8.8` 强制校验。
 - 如果存在 AAAA，安装前也必须保持灰云并指向当前 VPS 公网 IPv6。安装成功后应将 A、AAAA 一起切为 Proxied / 橙云，避免 IPv6 绕过 CDN。
 - Cloudflare SSL/TLS 模式必须使用 Full 或 Full (Strict)，推荐 Full (Strict)，不能使用 Flexible。
-- Cloudflare Network 必须开启 gRPC 和 WebSockets；XHTTP 路径还需要 Request/Response body buffering 均为 `None`。
+- Cloudflare Network 必须开启 gRPC；XHTTP 路径还需要 Request/Response body buffering 均为 `None`。
 - `easy_cmcc` 与根目录的 `easy_all` 使用不同状态、服务和命令，但仍会争用 Nginx、TCP 80/443 和 `/etc/nftables.conf`，不能在同一台 VPS 上同时安装。
 
 ## 快速安装
@@ -76,7 +72,7 @@ wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/m
 安装和本机验收成功后：
 
 1. 回到 Cloudflare，把节点域名的 A、AAAA 一起切为 Proxied / 橙云。
-2. 确认 SSL/TLS 为 Full (Strict)，gRPC 与 WebSockets 已开启，XHTTP 双向 body buffering 均为 `None`。
+2. 确认 SSL/TLS 为 Full (Strict)，gRPC 已开启，XHTTP 双向 body buffering 均为 `None`。
 3. 执行 `easy_cmcc status` 和 `easy_cmcc subscription`，确认服务与首选订阅地址。
 4. 把 Clash Meta 地址导入 Mihomo/Clash Verge；不要把带 Token 的订阅 URL 公开或写入仓库。
 5. 安装 XanMod 后需要重启一次才能切换到新内核。可等待已配置的定时重启，也可以在确认 SSH 和服务正常后手动 `reboot`；重启后用 `uname -r` 检查当前内核。
@@ -97,9 +93,9 @@ easy_cmcc uninstall
 ```
 
 - `help`：显示当前单文件支持的命令。
-- `show`：显示 XHTTP `stream-up`、XHTTP `stream-one`、WSS 节点链接和 Mihomo 节点片段。
+- `show`：显示 XHTTP `stream-one` 节点链接和 Mihomo 节点片段。
 - `subscription`：同时显示节点、Worker 名称、Custom Domain、`workers.dev` 备用地址和首选订阅地址。
-- `status`：显示域名、两个路径、Gemini 出口地址族、Xray/Nginx、TCP 443 和 Worker Custom Domain 状态。
+- `status`：显示域名、XHTTP 路径、模式、Gemini 出口地址族、Xray/Nginx、TCP 443 和 Worker Custom Domain 状态。
 - `update`：注册当前单文件，重新应用 BBR/TCP 参数，并刷新 Xray、Nginx、Worker 模板、`easy-cmcc` Worker 和 Custom Domain；该命令强制使用自动部署模式。
 - `update-sub`：刷新服务端策略和订阅，可选择自动部署、输出 Worker 或只输出链接。
 - `update-core`：更新 Xray；新版本启动验收失败时自动恢复旧版本。
@@ -129,46 +125,32 @@ easy_cmcc subscription
 
 输出中包含两类订阅：
 
-- `通用订阅`：base64 编码的三个 VLESS 节点，适合支持这些节点参数的通用客户端。
-- `Clash Meta`：完整 Mihomo YAML，包含三个节点、DNS、TUN、规则集以及 `PROXY`、`GITHUB`、`GOOGLE` 分组；Clash Verge 应优先导入这一条。
+- `通用订阅`：base64 编码的单个 VLESS XHTTP `stream-one` 节点。
+- `Clash Meta`：完整 Mihomo YAML，包含一个节点、DNS、TUN、内置规则以及唯一的 `PROXY` 分组；Clash Verge 应优先导入这一条。
 
 导入后使用“规则”模式。配置默认启用 TUN，局域网仍按 IPv4/IPv6 私网范围直连：RFC1918 IPv4、IPv4 链路本地、IPv6 ULA、IPv6 链路本地以及 `.lan`、`.local` 不经过代理。国内常用服务和中国 IP 直连，其余未命中流量进入 `PROXY`。
 
 首次验收建议：
 
-1. 在 `PROXY` 中保留默认 `stream-up`，分别测试普通网页与下载。
-2. 测试 GitHub 下载时查看 `GITHUB`；如果现场 WSS 持续更快，只切换这个组即可。
-3. 测试 Gemini/Google/YouTube 时查看 `GOOGLE`，不要用其他组的选择结果判断 Google 链路。
-4. 如果 XHTTP 在当前客户端不可用，先升级客户端核心；也可暂时将相应分组切到 WSS。
-5. 浏览器“安全 DNS”使用当前服务提供商或关闭，避免自定义 DoH/DoT 绕过 Mihomo DNS 劫持。
+1. 确认 `PROXY` 中只有 XHTTP `stream-one` 节点，并测试普通网页与下载。
+2. 如果 XHTTP 在当前客户端不可用，先升级客户端核心。
+3. 浏览器“安全 DNS”使用当前服务提供商或关闭，避免自定义 DoH/DoT 绕过 Mihomo DNS 劫持。
 
-## 最优兼容模式与分流
+## 移动端省电模式与分流
 
-XHTTP 主节点使用：
+唯一的 XHTTP 节点使用：
 
 - `network: xhttp`
-- `mode: stream-up`
+- `mode: stream-one`
 - `alpn: [h2]`
 - `packet-encoding: xudp`
 - `smux.enabled: false`
 
-同一入口额外发布 `mode: stream-one` 的兼容节点；Xray 服务端为 `mode: auto`，无需增加端口或路径。WSS 回退节点使用：
+Xray 服务端也固定为 `mode: stream-one`。Mihomo 只提供一个 `PROXY` 手动选择组，ChatGPT、Claude、Gemini、Google、GitHub 和其余代理流量都进入该组。
 
-- `network: ws`
-- 独立的随机 WebSocket 路径
-- TLS SNI 和 Host 均为节点域名
-- `packet-encoding: xudp`
-- `smux.enabled: false`
+客户端采用省电取向：`tcp-concurrent: false`，不对 Cloudflare 多地址并发建连；关闭客户端域名嗅探；日志降为 `warning`；TUN 使用资源占用更低的 `system` 栈。节点仍使用 `ip-version: dual`，保留中国移动蜂窝 IPv6 可用时的正常连接能力；应用侧 DNS 保持 `dns.ipv6: false`，避免向不完整 IPv6 网络下的应用返回不可达 Fake IPv6。
 
-Mihomo 订阅提供三个手动选择组，列表第一项为默认值：
-
-- `PROXY`：`stream-up` → `stream-one` → WSS；承接 ChatGPT、Claude 和其余代理流量。
-- `GITHUB`：`stream-up` → WSS → `stream-one`；承接 GitHub 及相关下载域名。
-- `GOOGLE`：`stream-up` → `stream-one` → WSS；承接 Gemini、Google 和 YouTube 域名。
-
-这里不使用自动延迟测试切换：XHTTP `stream-up` 的健康检查在部分 Mihomo 版本或链路上可能超时，自动组可能把可用且更快的节点误判为不可用。若现场网络中 WSS 下载持续更快，可在 `GITHUB` 组手动切换，不影响其他流量。
-
-CDN 拨号使用双栈竞速：Mihomo 顶层启用 `ipv6: true`、`tcp-concurrent: true`，三个 CDN 节点使用 `ip-version: dual`，让客户端同时利用当时更快的 Cloudflare IPv4/IPv6 边缘。应用侧 DNS 仍保持 `dns.ipv6: false`，避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6。
+配置不再加载与现有分流重复的远程 `private`、`proxy`、`direct`、`telegramcidr`、`lancidr`、`cncidr` provider。局域网与 Telegram IP 继续由显式规则处理，其他流量由 `GEOSITE`、`GEOIP` 和最终 `MATCH` 兜底，减少规则解析、内存和后台更新开销。
 
 服务端只为 Gemini 及其必要 Google 依赖固定一个出口地址族。默认会分别测速 IPv4/IPv6，并固定选择更快且可用的一侧。ChatGPT、Claude、MEGA 及其他服务保持 VPS 默认双栈行为。
 
@@ -192,16 +174,16 @@ CDN 拨号使用双栈竞速：Mihomo 顶层启用 `ipv6: true`、`tcp-concurren
 
 1. 将 A、AAAA 一起切为 Proxied。
 2. SSL/TLS 设为 Full (Strict)。
-3. Network 页面开启 gRPC 和 WebSockets。
+3. Network 页面开启 gRPC。
 4. 为 XHTTP 路径创建 Configuration Rule：
    - Hostname 等于 `VLESS_XHTTP_DOMAIN`。
    - URI Path 以 `XHTTP_PATH` 开头。
    - Request body buffering 为 `None`。
    - Response body buffering 为 `None`。
 
-WSS 路径不需要 body-buffering Configuration Rule。脚本会为 XHTTP 和 WSS 响应写入 `Cache-Control: no-store`；如果 Zone 已有“缓存所有内容”的 Cache Rule，还应为两个节点路径单独配置 Bypass Cache。
+脚本会为 XHTTP 响应写入 `Cache-Control: no-store`；如果 Zone 已有“缓存所有内容”的 Cache Rule，还应为 XHTTP 节点路径配置 Bypass Cache。
 
-安装时提供具备相应权限的 Cloudflare DNS Token，脚本会尝试自动开启 gRPC、WebSockets，并创建或更新引用名为 `easy_cmcc_xhttp_streaming` 的双向无缓冲规则。权限不足只会提示警告，仍可在 Cloudflare 控制台手动完成。
+安装时提供具备相应权限的 Cloudflare DNS Token，脚本会尝试自动开启 gRPC，并创建或更新引用名为 `easy_cmcc_xhttp_streaming` 的双向无缓冲规则。权限不足只会提示警告，仍可在 Cloudflare 控制台手动完成。
 
 ## Cloudflare 凭据
 
@@ -226,7 +208,7 @@ WSS 路径不需要 body-buffering Configuration Rule。脚本会为 XHTTP 和 W
 - Zone → Zone Settings → Edit
 - Zone → Config Rules → Edit
 
-DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 gRPC/WebSockets；Config Rules Edit 用于配置 XHTTP 双向无缓冲。
+DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 gRPC；Config Rules Edit 用于配置 XHTTP 双向无缓冲。
 
 创建时选择 **Create Custom Token**，把 Zone Resources 限制到节点域名所在的单个 Zone。脚本不会使用 Global API Key。
 
@@ -236,7 +218,7 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 
 - `DNS → Edit`：让 acme.sh 创建和清理 DNS-01 TXT 记录。
 - `Zone → Read`：按节点域名查询正确的 Zone ID。
-- `Zone Settings → Edit`：自动开启 gRPC 与 WebSockets。
+- `Zone Settings → Edit`：自动开启 gRPC。
 - `Config Rules → Edit`：创建或更新 XHTTP Request/Response body buffering 为 `None` 的 Configuration Rule。Cloudflare 的部分新界面或 API 文档将它显示为 `Config Settings → Write`。
 
 如果只授予前两项，证书申请仍可工作，但后两项 Cloudflare 优化需要手动配置。Cloudflare 的[权限清单](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)和[Configuration Rules API 说明](https://developers.cloudflare.com/rules/configuration-rules/create-api/)可用于核对新旧界面名称。
@@ -261,7 +243,7 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 
 1. 自动部署：通过 Cloudflare API replace Worker，并可自动绑定独立 Custom Domain。
 2. 手动部署：输出完整 Worker 源码。
-3. 只输出三个 XHTTP/WSS 节点链接。
+3. 只输出一个 XHTTP `stream-one` 节点链接。
 
 自动部署是推荐模式，也是脚本自动创建/复用 Custom Domain 和执行订阅 HTTP 验收的唯一模式。手动模式会把源码保存到 `/etc/easy_cmcc/subscribe-worker.js` 并输出到终端，可按提示使用 Wrangler 或 Cloudflare Dashboard 部署，但脚本不会自动绑定域名或记录订阅 URL；只输出链接模式不会部署 Worker。以后要改用自动部署，可执行 `easy_cmcc update-sub` 并选择 `1`。
 
@@ -327,7 +309,7 @@ https://sub.example.com/subscribe?token=owner-token-123
 https://sub.example.com/subscribe?token=owner-token-123&flag=clash
 ```
 
-`sub.example.com` 应是专门用于订阅的新主机名，**不要与 XHTTP/WSS 节点域名（例如 `rn.example.com`）共用**，因为 Custom Domain 会接管该主机名的全部路径。脚本会拒绝相同的节点域名，也会拒绝抢占已经绑定到其他 Worker 的 Custom Domain。
+`sub.example.com` 应是专门用于订阅的新主机名，**不要与 XHTTP 节点域名（例如 `rn.example.com`）共用**，因为 Custom Domain 会接管该主机名的全部路径。脚本会拒绝相同的节点域名，也会拒绝抢占已经绑定到其他 Worker 的 Custom Domain。
 
 该订阅主机名应位于当前 Cloudflare 账户中的 Active Zone，建议使用一个没有现有 A/AAAA/CNAME 的新主机名。绑定成功后，Cloudflare 会自动创建只读的 **Proxied / 橙云** DNS 记录并签发边缘证书，相当于自动完成 Cloudflare CDN 接入；无需手工创建解析、开启橙云、配置 Route 或设置源站，也不要将自动记录改成 DNS only / 灰云。
 
@@ -381,9 +363,8 @@ nft list ruleset
 
 - 安装提示 A 记录不是本机公网 IPv4：节点域名仍是橙云、DNS 尚未传播，或者存在多个指向其他地址的 A 记录。切回灰云后分别用 `dig +short A node.example.com`、`dig +short A node.example.com @1.1.1.1` 和 `dig +short A node.example.com @8.8.8.8` 核对。
 - Let's Encrypt 申请失败：确认系统时间正确，DNS Token 至少具备 DNS Edit 与 Zone Read，并且 Token 资源包含节点域名所在 Zone。脚本固定使用独立 acme.sh home 和 Let's Encrypt，不需要 ZeroSSL EAB。
-- 橙云后所有节点不可用：确认 A、AAAA 都已橙云，SSL/TLS 不是 Flexible，TCP 443 可达；如果存在 AAAA，它必须指向这台 VPS 的真实公网 IPv6。
-- WSS 可用但 XHTTP 不可用：优先检查客户端核心是否支持 XHTTP、Cloudflare gRPC 是否开启，以及 XHTTP 路径的 Request/Response body buffering 是否都为 `None`。
-- XHTTP 可用但 WSS 不可用：检查 Cloudflare WebSockets 开关，并确认没有 Cache Rule 或其他 Configuration Rule 改写 WSS 路径。
+- 橙云后节点不可用：确认 A、AAAA 都已橙云，SSL/TLS 不是 Flexible，TCP 443 可达；如果存在 AAAA，它必须指向这台 VPS 的真实公网 IPv6。
+- XHTTP 不可用：优先检查客户端核心是否支持 XHTTP `stream-one`、Cloudflare gRPC 是否开启，以及 XHTTP 路径的 Request/Response body buffering 是否都为 `None`。
 - 订阅返回 HTTP 403：URL 中的 token 不在 Token 字典的 value 中；用户名 key 不能代替 token。
 - 订阅返回 HTTP 404：必须访问 `/subscribe`，同时检查 Custom Domain 是否确实绑定到 `easy-cmcc`，且没有把节点域名误当成订阅域名。
 - Worker API 部署成功但脚本验收暂时出现 404/500：先等待 Cloudflare 发布和 Custom Domain 证书传播，再查看 `/etc/easy_cmcc/last-worker-deploy.log`。执行 `easy_cmcc subscription` 核对当前首选地址；需要重新发布时运行 `easy_cmcc update`，或运行 `easy_cmcc update-sub` 后选择自动部署。
@@ -398,7 +379,7 @@ cd for_cmcc
 npm test
 ```
 
-测试覆盖单文件入口、隔离路径、固定协议守卫、XHTTP/WSS 三节点输出、双栈 CDN 拨号、Cloudflare 配置、订阅 Token、Worker base64/Mihomo 输出及策略顺序。
+测试覆盖单文件入口、隔离路径、固定协议守卫、XHTTP `stream-one` 单节点输出、客户端省电参数、Cloudflare 配置、订阅 Token、Worker base64/Mihomo 输出及策略顺序。
 若本机已安装 Mihomo，可额外执行真实配置校验：
 
 ```bash

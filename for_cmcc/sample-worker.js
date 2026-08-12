@@ -1,11 +1,11 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS XHTTP TLS / VLESS WS TLS 订阅与 Clash Meta 配置
+ * 提供 VLESS XHTTP TLS stream-one 订阅与 Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、TLS 域名和 XHTTP/WS path
- * 3. DEFAULT_NODE 中三个 CDN 节点的默认顺序
+ * 2. 节点配置中的 uuid、TLS 域名和 XHTTP path
+ * 3. DEFAULT_NODE 指向唯一的 XHTTP stream-one 节点
  */
 // ================= 配置常量 =================
 
@@ -30,31 +30,14 @@ function isAllowedToken(token) {
     return Boolean(token && ALLOWED_TOKEN_VALUES.has(token));
 }
 
-// ── VLESS XHTTP TLS 主节点（Cloudflare CDN / H2 stream-up）────────
+// ── VLESS XHTTP TLS 节点（Cloudflare CDN / H2 stream-one）─────────
 const NODE_VLESS_XHTTP_CONFIG = defineNode({
     type: 'vless',
     security: 'tls',
     network: 'xhttp',
     uuid: '00000000-0000-4000-8000-000000000002',
     host: 'xhttp.example.com',
-    name: 'NODE_VLESS_XHTTP_STREAM_UP',
-    fp: 'chrome',
-    sni: 'xhttp.example.com',
-    path: '/randompath',
-    mode: 'stream-up',
-    ipVersion: 'dual',
-    udp: true,
-    portMode: '443'
-});
-
-// ── VLESS XHTTP TLS 兼容回退（同入口 / H2 stream-one）────────────
-const NODE_VLESS_XHTTP_STREAM_ONE_CONFIG = defineNode({
-    type: 'vless',
-    security: 'tls',
-    network: 'xhttp',
-    uuid: '00000000-0000-4000-8000-000000000002',
-    host: 'xhttp.example.com',
-    name: 'NODE_VLESS_XHTTP_STREAM_ONE',
+    name: 'VLESS_XHTTP',
     fp: 'chrome',
     sni: 'xhttp.example.com',
     path: '/randompath',
@@ -64,27 +47,7 @@ const NODE_VLESS_XHTTP_STREAM_ONE_CONFIG = defineNode({
     portMode: '443'
 });
 
-// ── VLESS WebSocket TLS 节点（Cloudflare CDN / 下载测速）──────────
-const NODE_VLESS_WS_CONFIG = defineNode({
-    type: 'vless',
-    security: 'tls',
-    network: 'ws',
-    uuid: '00000000-0000-4000-8000-000000000002',
-    host: 'xhttp.example.com',
-    name: 'NODE_VLESS_WS',
-    fp: 'chrome',
-    sni: 'xhttp.example.com',
-    path: '/randomws',
-    ipVersion: 'dual',
-    udp: true,
-    portMode: '443'
-});
-
-const DEFAULT_NODE = [
-    NODE_VLESS_XHTTP_CONFIG,
-    NODE_VLESS_XHTTP_STREAM_ONE_CONFIG,
-    NODE_VLESS_WS_CONFIG
-]; // stream-up 优先，stream-one 与 WSS 回退
+const DEFAULT_NODE = NODE_VLESS_XHTTP_CONFIG;
 
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
@@ -279,10 +242,10 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,claude.ai,PROXY
   - DOMAIN-SUFFIX,claude.com,PROXY
   - DOMAIN-SUFFIX,claudeusercontent.com,PROXY
-  - DOMAIN,gemini.google.com,GOOGLE
-  - DOMAIN,aistudio.google.com,GOOGLE
-  - DOMAIN,ai.google.dev,GOOGLE
-  - DOMAIN-SUFFIX,generativeai.google,GOOGLE
+  - DOMAIN,gemini.google.com,PROXY
+  - DOMAIN,aistudio.google.com,PROXY
+  - DOMAIN,ai.google.dev,PROXY
+  - DOMAIN-SUFFIX,generativeai.google,PROXY
   - DOMAIN,api.statsig.com,PROXY
   - DOMAIN,browser-intake-datadoghq.com,PROXY
   - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
@@ -304,29 +267,29 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
 
   # ==================== Gemini / Google ====================
-  # Gemini 依赖的 Google 域名统一进入 GOOGLE，默认优先 XHTTP。
-  - DOMAIN-SUFFIX,google.com,GOOGLE
-  - DOMAIN-SUFFIX,googleapis.com,GOOGLE
-  - DOMAIN-SUFFIX,googleapis.cn,GOOGLE
-  - DOMAIN-SUFFIX,googleusercontent.com,GOOGLE
-  - DOMAIN-SUFFIX,gstatic.com,GOOGLE
+  # Gemini 依赖的 Google 域名统一进入 PROXY。
+  - DOMAIN-SUFFIX,google.com,PROXY
+  - DOMAIN-SUFFIX,googleapis.com,PROXY
+  - DOMAIN-SUFFIX,googleapis.cn,PROXY
+  - DOMAIN-SUFFIX,googleusercontent.com,PROXY
+  - DOMAIN-SUFFIX,gstatic.com,PROXY
   # Google Play 的应用包、增量包与图片资源使用独立域名。
-  - DOMAIN-SUFFIX,gvt1.com,GOOGLE
-  - DOMAIN-SUFFIX,gvt2.com,GOOGLE
-  - DOMAIN-SUFFIX,gvt3.com,GOOGLE
-  - DOMAIN-SUFFIX,ggpht.com,GOOGLE
-  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,GOOGLE
-  - DOMAIN-SUFFIX,googlevideo.com,GOOGLE
-  - DOMAIN-SUFFIX,youtube.com,GOOGLE
-  - DOMAIN-SUFFIX,ytimg.com,GOOGLE
+  - DOMAIN-SUFFIX,gvt1.com,PROXY
+  - DOMAIN-SUFFIX,gvt2.com,PROXY
+  - DOMAIN-SUFFIX,gvt3.com,PROXY
+  - DOMAIN-SUFFIX,ggpht.com,PROXY
+  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY
+  - DOMAIN-SUFFIX,googlevideo.com,PROXY
+  - DOMAIN-SUFFIX,youtube.com,PROXY
+  - DOMAIN-SUFFIX,ytimg.com,PROXY
 
   # ==================== GitHub ====================
   # GitHub 下载会跳转到 codeload.github.com、release-assets.githubusercontent.com
   # 或 objects.githubusercontent.com；显式代理，避免依赖 GEOSITE / MATCH 兜底。
-  - DOMAIN-SUFFIX,github.com,GITHUB
-  - DOMAIN-SUFFIX,githubusercontent.com,GITHUB
-  - DOMAIN-SUFFIX,githubassets.com,GITHUB
-  - DOMAIN-SUFFIX,githubstatus.com,GITHUB
+  - DOMAIN-SUFFIX,github.com,PROXY
+  - DOMAIN-SUFFIX,githubusercontent.com,PROXY
+  - DOMAIN-SUFFIX,githubassets.com,PROXY
+  - DOMAIN-SUFFIX,githubstatus.com,PROXY
 
   # ==================== LINE ====================
   - DOMAIN-SUFFIX,scdn.co,PROXY
@@ -357,17 +320,11 @@ const EMBEDDED_CLASH_RULES = `rules:
   - IP-CIDR6,2001:b28:f23f::/48,PROXY,no-resolve
   - IP-CIDR6,2001:67c:4e8::/48,PROXY,no-resolve
 
-  # ==================== 动态规则集与 GEOSITE / GEOIP 兜底 ====================
-  # 域名规则先于 IP 规则，避免为尚未命中的域名触发多余解析。
-  - RULE-SET,private,DIRECT
-  - RULE-SET,proxy,PROXY
-  - RULE-SET,direct,DIRECT
+  # ==================== GEOSITE / GEOIP 兜底 ====================
+  # 显式域名规则先于兜底规则；不再重复加载同类远程 rule-provider。
   - GEOSITE,geolocation-!cn,PROXY
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
-  - RULE-SET,telegramcidr,PROXY,no-resolve
-  - RULE-SET,lancidr,DIRECT,no-resolve
-  - RULE-SET,cncidr,DIRECT,no-resolve
   - GEOIP,CN,DIRECT,no-resolve
   # 与 xflash 保持相同优先级：仅拒绝前述规则均未命中的 UDP/443，避免误伤国内直连。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
@@ -378,32 +335,20 @@ const EMBEDDED_CLASH_RULES = `rules:
 const CLASH_CONFIG_TEMPLATE = `mixed-port: 1080
 allow-lan: false
 mode: rule
-log-level: info
+log-level: warning
 ipv6: true
 external-controller: '127.0.0.1:9090'
 unified-delay: true
-tcp-concurrent: true
+tcp-concurrent: false
 profile:
     store-selected: true
 
 sniffer:
-    enable: true
-    force-dns-mapping: true
-    parse-pure-ip: true
-    # 嗅探结果只用于域名分流；不覆写 Fake-IP 映射或原始目标。
-    override-destination: false
-    sniff:
-      HTTP:
-        ports: [80, 8080-8880]
-        override-destination: false
-      TLS:
-        ports: [443, 8443]
-      QUIC:
-        ports: [443, 8443]
+    enable: false
 
 tun:
     enable: true
-    stack: mixed
+    stack: system
     mtu: 1500
     auto-route: true
     auto-detect-interface: true
@@ -417,7 +362,11 @@ tun:
     # 局域网 IPv4/IPv6 地址绕过 TUN，保留内网直连能力。
     route-exclude-address:
       - 10.0.0.0/8
-      - fdbd::/16
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+      - fc00::/7
+      - fe80::/10
 
 dns:
     enable: true
@@ -476,56 +425,6 @@ dns:
           - '+.githubusercontent.com'
           - '+.githubassets.com'
 
-rule-providers:
-    private:
-      type: http
-      behavior: domain
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
-      path: ./ruleset/private.yaml
-      interval: 86400
-      proxy: PROXY
-    proxy:
-      type: http
-      behavior: domain
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
-      path: ./ruleset/proxy.yaml
-      interval: 86400
-      proxy: PROXY
-    direct:
-      type: http
-      behavior: domain
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt
-      path: ./ruleset/direct.yaml
-      interval: 86400
-      proxy: PROXY
-    telegramcidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/telegramcidr.txt
-      path: ./ruleset/telegramcidr.yaml
-      interval: 86400
-      proxy: PROXY
-    lancidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
-      path: ./ruleset/lancidr.yaml
-      interval: 86400
-      proxy: PROXY
-    cncidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
-      path: ./ruleset/cncidr.yaml
-      interval: 86400
-      proxy: PROXY
-
 proxies:
 {proxy_nodes}
 
@@ -534,15 +433,6 @@ proxy-groups:
       type: select
       proxies:
         - {proxy_names}
-    - name: GITHUB
-      type: select
-      proxies:
-        - {github_proxy_names}
-    - name: GOOGLE
-      type: select
-      proxies:
-        - {google_proxy_names}
-
 {rules_section}
 `;
 
@@ -567,29 +457,6 @@ function buildClashVlessXhttpTlsNodeTemplate() {
       host: {xhttp_host}
       path: {path}
       mode: {mode}
-    smux:
-      enabled: false
-`;
-}
-
-function buildClashVlessWsTlsNodeTemplate() {
-    return `  - name: {name}
-    type: vless
-    server: {host}
-    port: {port}
-    uuid: {uuid}
-    network: ws
-    tls: true
-    udp: {udp}
-    skip-cert-verify: false
-    servername: {sni}
-    client-fingerprint: {fp}
-    ip-version: {ip_version}
-    packet-encoding: xudp
-    ws-opts:
-      path: {path}
-      headers:
-        Host: {ws_host}
     smux:
       enabled: false
 `;
@@ -680,11 +547,7 @@ function createVlessLink(cfg, port) {
     if (network === 'xhttp') {
         params.set('alpn', 'h2');
         params.set('path', cfg.path || '/');
-        params.set('mode', cfg.mode || 'stream-up');
-        params.set('packetEncoding', 'xudp');
-    } else if (network === 'ws') {
-        params.set('path', cfg.path || '/');
-        params.set('host', cfg.wsHost || cfg.host);
+        params.set('mode', cfg.mode || 'stream-one');
         params.set('packetEncoding', 'xudp');
     } else {
         throw new Error(`Unsupported VLESS network: ${network}`);
@@ -734,8 +597,6 @@ function generateClashProxyNode(cfg, port) {
         let template;
         if (security === 'tls' && network === 'xhttp') {
             template = buildClashVlessXhttpTlsNodeTemplate();
-        } else if (security === 'tls' && network === 'ws') {
-            template = buildClashVlessWsTlsNodeTemplate();
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
@@ -747,10 +608,9 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
             .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
             .replace(/{path}/g, yamlString(cfg.path || '/'))
-            .replace(/{mode}/g, yamlString(cfg.mode || 'stream-up'))
+            .replace(/{mode}/g, yamlString(cfg.mode || 'stream-one'))
             .replace(/{ip_version}/g, yamlString(cfg.ipVersion || 'dual'))
             .replace(/{xhttp_host}/g, yamlString(cfg.xhttpHost || cfg.host))
-            .replace(/{ws_host}/g, yamlString(cfg.wsHost || cfg.host))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));
     }
@@ -761,15 +621,6 @@ function generateClashProxyNode(cfg, port) {
 function generateClashConfigMulti(configs, ports, rulesStr) {
     let proxyNodes = '';
     const proxyNames = [];
-    const xhttpConfigs = configs.filter(cfg => vlessSecurity(cfg) === 'tls' && vlessNetwork(cfg) === 'xhttp');
-    const wsConfigs = configs.filter(cfg => vlessSecurity(cfg) === 'tls' && vlessNetwork(cfg) === 'ws');
-    const streamUpNames = xhttpConfigs
-        .filter(cfg => (cfg.mode || 'stream-up') === 'stream-up')
-        .map(cfg => yamlString(cfg.name));
-    const streamOneNames = xhttpConfigs
-        .filter(cfg => cfg.mode === 'stream-one')
-        .map(cfg => yamlString(cfg.name));
-    const wsNames = wsConfigs.map(cfg => yamlString(cfg.name));
 
     for (let i = 0; i < configs.length; i++) {
         proxyNodes += generateClashProxyNode(configs[i], ports[i]);
@@ -779,23 +630,11 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
     const sections = {
         fake_ip_filter: FAKE_IP_FILTER,
         proxy_nodes: proxyNodes,
-        google_proxy_names: [
-            ...streamUpNames,
-            ...streamOneNames,
-            ...wsNames,
-            ...proxyNames.filter(name => ![...streamUpNames, ...streamOneNames, ...wsNames].includes(name))
-        ].join('\n        - '),
-        github_proxy_names: [
-            ...streamUpNames,
-            ...wsNames,
-            ...streamOneNames,
-            ...proxyNames.filter(name => ![...streamUpNames, ...wsNames, ...streamOneNames].includes(name))
-        ].join('\n        - '),
         proxy_names: proxyNames.join('\n        - '),
         rules_section: rulesStr
     };
     return CLASH_CONFIG_TEMPLATE.replace(
-        /{(fake_ip_filter|proxy_nodes|google_proxy_names|github_proxy_names|proxy_names|rules_section)}/g,
+        /{(fake_ip_filter|proxy_nodes|proxy_names|rules_section)}/g,
         (_, section) => sections[section]
     );
 }

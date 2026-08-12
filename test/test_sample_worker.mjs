@@ -342,9 +342,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /IP-CIDR6,2001:b28:f23d::\/48,PROXY,no-resolve/);
     assert.match(body, /GEOIP,CN,DIRECT,no-resolve/);
     assert.match(body, /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/);
-    assert.match(body, /RULE-SET,direct,DIRECT/);
-    assert.match(body, /RULE-SET,cncidr,DIRECT,no-resolve/);
-    assert.match(body, /url: https:\/\/raw\.githubusercontent\.com\/Loyalsoldier\/clash-rules\/release\/direct\.txt/);
+    assert.doesNotMatch(body, /RULE-SET,|rule-providers:|Loyalsoldier\/clash-rules/);
     assert.doesNotMatch(body, /edgeone\.gh-proxy\.org/);
     assert.doesNotMatch(body, /DOMAIN-KEYWORD,/);
     assert.doesNotMatch(body, /PROCESS-NAME,/);

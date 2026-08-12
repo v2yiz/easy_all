@@ -96,9 +96,9 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 
 订阅中的代理节点不设置 Mihomo `ip-version`；但为避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6，客户端模板默认使用 IPv4 DNS/Fake-IP/TUN。Gemini 的地址族固定仍只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude 或 MEGA 的服务端出口策略。
 
-模板只保留通用局域网适配：`.lan`、`.local` 使用系统 DNS，RFC1918 IPv4、链路本地 IPv4、IPv6 ULA 与链路本地地址显式直连并绕过 TUN。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、规则集和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
+模板只保留通用局域网适配：`.lan`、`.local` 使用系统 DNS，RFC1918 IPv4、链路本地 IPv4、IPv6 ULA 与链路本地地址显式直连并绕过 TUN。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、显式规则和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
 
-Mihomo 订阅通过 Loyalsoldier 官方源加载精简的 `private`、`proxy`、`direct`、`telegramcidr`、`lancidr` 和 `cncidr` 规则集；规则集经 `PROXY` 更新，不依赖第三方 GitHub 镜像。DNS 保留国内主解析器和境外 fallback，但不在 `nameserver-policy` 中引用代理策略组，避免 Windows 客户端启动时形成 DNS 与代理初始化依赖。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
+Mihomo 订阅不再加载与现有分流重复的远程 `private`、`proxy`、`direct`、`telegramcidr`、`lancidr` 和 `cncidr` provider。局域网与 Telegram IP 继续由显式规则处理，其他流量使用 `GEOSITE`、`GEOIP` 和最终 `MATCH` 兜底，减少规则解析、内存与后台更新开销。DNS 保留国内主解析器和境外 fallback，但不在 `nameserver-policy` 中引用代理策略组，避免 Windows 客户端启动时形成 DNS 与代理初始化依赖。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
 

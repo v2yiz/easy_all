@@ -90,8 +90,6 @@ for (const part of [
   'DOMAIN-SUFFIX,microsoft.com,DIRECT',
   'DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY',
   'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT',
-  'RULE-SET,direct,DIRECT',
-  'RULE-SET,cncidr,DIRECT,no-resolve',
   'DOMAIN,gemini.google.com,PROXY',
   'DOMAIN-SUFFIX,github.com,PROXY',
   'IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve',
@@ -100,6 +98,7 @@ for (const part of [
 ]) {
   if (!yaml.includes(part)) process.exit(1);
 }
+if (/RULE-SET,|rule-providers:|Loyalsoldier\/clash-rules/.test(yaml)) process.exit(1);
 for (const removedDomain of [
   'bytedance.net',
   'larkoffice.com',

@@ -330,17 +330,11 @@ const EMBEDDED_CLASH_RULES = `rules:
   - IP-CIDR6,2001:b28:f23f::/48,PROXY,no-resolve
   - IP-CIDR6,2001:67c:4e8::/48,PROXY,no-resolve
 
-  # ==================== 动态规则集与 GEOSITE / GEOIP 兜底 ====================
-  # 域名规则先于 IP 规则，避免为尚未命中的域名触发多余解析。
-  - RULE-SET,private,DIRECT
-  - RULE-SET,proxy,PROXY
-  - RULE-SET,direct,DIRECT
+  # ==================== GEOSITE / GEOIP 兜底 ====================
+  # 显式域名规则先于兜底规则；不再重复加载同类远程 rule-provider。
   - GEOSITE,geolocation-!cn,PROXY
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
-  - RULE-SET,telegramcidr,PROXY,no-resolve
-  - RULE-SET,lancidr,DIRECT,no-resolve
-  - RULE-SET,cncidr,DIRECT,no-resolve
   - GEOIP,CN,DIRECT,no-resolve
   # 与 xflash 保持相同优先级：仅拒绝前述规则均未命中的 UDP/443，避免误伤国内直连。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
@@ -451,56 +445,6 @@ dns:
           - '+.github.com'
           - '+.githubusercontent.com'
           - '+.githubassets.com'
-
-rule-providers:
-    private:
-      type: http
-      behavior: domain
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
-      path: ./ruleset/private.yaml
-      interval: 86400
-      proxy: PROXY
-    proxy:
-      type: http
-      behavior: domain
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
-      path: ./ruleset/proxy.yaml
-      interval: 86400
-      proxy: PROXY
-    direct:
-      type: http
-      behavior: domain
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt
-      path: ./ruleset/direct.yaml
-      interval: 86400
-      proxy: PROXY
-    telegramcidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/telegramcidr.txt
-      path: ./ruleset/telegramcidr.yaml
-      interval: 86400
-      proxy: PROXY
-    lancidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
-      path: ./ruleset/lancidr.yaml
-      interval: 86400
-      proxy: PROXY
-    cncidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
-      path: ./ruleset/cncidr.yaml
-      interval: 86400
-      proxy: PROXY
 
 proxies:
 {proxy_nodes}

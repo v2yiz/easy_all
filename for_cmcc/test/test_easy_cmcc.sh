@@ -26,7 +26,7 @@ assert_contains() {
 bash -n "${ROOT_DIR}/easy_cmcc"
 installer=$(<"${ROOT_DIR}/easy_cmcc")
 output=$("${ROOT_DIR}/easy_cmcc" help)
-assert_contains "standalone executable exposes CMCC usage" "${output}" "XHTTP stream-up、stream-one 与 WSS"
+assert_contains "standalone executable exposes CMCC usage" "${output}" "XHTTP stream-one"
 
 assert_contains "CMCC uses fq" "${installer}" "net.core.default_qdisc = fq"
 assert_contains "CMCC uses BBR" "${installer}" "net.ipv4.tcp_congestion_control = bbr"
@@ -86,12 +86,12 @@ assert_contains "README downloads the CMCC monolith" "${readme}" \
     "main/for_cmcc/easy_cmcc"
 assert_contains "README uses the aligned one-line install command" "${readme}" \
     'wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/easy_cmcc" && chmod 700 /root/easy_cmcc.new && mv -f /root/easy_cmcc.new /root/easy_cmcc && /root/easy_cmcc install'
-assert_contains "README documents optimized default proxy order" "${readme}" \
-    '`PROXY`：`stream-up` → `stream-one` → WSS'
-assert_contains "README documents optimized GitHub order" "${readme}" \
-    '`GITHUB`：`stream-up` → WSS → `stream-one`'
-assert_contains "README documents optimized Google order" "${readme}" \
-    '`GOOGLE`：`stream-up` → `stream-one` → WSS'
+assert_contains "README documents the single stream-one node" "${readme}" \
+    '客户端只发布一个名为 `VLESS_XHTTP` 的节点'
+assert_contains "README documents the single PROXY group" "${readme}" \
+    '只提供一个 `PROXY` 手动选择组'
+assert_contains "README documents power-conscious client settings" "${readme}" \
+    '`tcp-concurrent: false`'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
     "DNS only / 灰云"
 assert_contains "README documents enabling the CDN after install" "${readme}" \
@@ -107,7 +107,7 @@ assert_contains "README recommends the custom subscription domain" "${readme}" \
 assert_contains "README warns against long-term workers.dev subscriptions" "${readme}" \
     "不建议作为长期订阅地址"
 assert_contains "README keeps subscription and node domains separate" "${readme}" \
-    "不要与 XHTTP/WSS 节点域名"
+    "不要与 XHTTP 节点域名"
 assert_contains "README documents automatic CDN setup for Custom Domain" "${readme}" \
     "相当于自动完成 Cloudflare CDN 接入"
 assert_contains "README documents automatic Custom Domain attachment" "${readme}" \
@@ -156,6 +156,10 @@ if bash -c 'source "$1"; choose_protocol reality' _ "${ROOT_DIR}/easy_cmcc" \
     >/dev/null 2>&1; then
     fail "standalone executable must reject Reality"
 fi
+if bash -c 'source "$1"; choose_protocol wss' _ "${ROOT_DIR}/easy_cmcc" \
+    >/dev/null 2>&1; then
+    fail "standalone executable must reject WSS"
+fi
 
 (
     # shellcheck source=/dev/null
@@ -168,6 +172,7 @@ fi
     assert_equal "Nginx config is isolated" "/etc/nginx/conf.d/easy_cmcc.conf" "${NGINX_CONFIG}"
     assert_equal "acme.sh home is isolated" "/root/.acme-cmcc.sh" "${ACME_HOME}"
     assert_equal "Worker name is isolated" "easy-cmcc" "${DEFAULT_WORKER_NAME}"
+    assert_equal "CMCC uses the requested default node name" "VLESS_XHTTP" "${DEFAULT_XHTTP_NODE_NAME}"
     assert_contains "Worker URL uses the CMCC subtree" "${DEFAULT_SAMPLE_WORKER_URL}" "/for_cmcc/sample-worker.js"
     assert_contains "CMCC subscription verification uses Worker version affinity" \
         "$(<"${ROOT_DIR}/easy_cmcc")" "Cloudflare-Workers-Version-Key"
@@ -194,8 +199,6 @@ fi
     VLESS_XHTTP_DOMAIN="cmcc.example.com"
     NODE_NAME="CMCC_XHTTP"
     XHTTP_PATH="/cmcc-xhttp"
-    VLESS_WS_NODE_NAME="CMCC_WSS"
-    VLESS_WS_PATH="/cmcc-wss"
     WORKER_CUSTOM_DOMAIN="SUB.EXAMPLE.COM"
     collect_worker_custom_domain
     assert_equal "CMCC normalizes the Worker Custom Domain" \
@@ -204,7 +207,7 @@ fi
         WORKER_CUSTOM_DOMAIN="cmcc.example.com"
         collect_worker_custom_domain
     ) >/dev/null 2>&1; then
-        fail "CMCC must reject reusing the XHTTP/WSS node domain"
+        fail "CMCC must reject reusing the XHTTP node domain"
     fi
     if (
         WORKER_CUSTOM_DOMAIN="easy-cmcc.example.workers.dev"
@@ -220,12 +223,11 @@ fi
     fi
     links=$(build_node_link)
     assert_contains "subscription contains XHTTP" "${links}" "type=xhttp"
-    assert_contains "XHTTP prefers stream-up" "${links}" "mode=stream-up"
-    assert_contains "XHTTP retains stream-one fallback" "${links}" "mode=stream-one"
-    assert_contains "XHTTP fallback gets a distinct name" "${links}" "CMCC_XHTTP_STREAM_ONE"
+    assert_contains "XHTTP uses stream-one" "${links}" "mode=stream-one"
     assert_contains "XHTTP forces HTTP/2" "${links}" "alpn=h2"
-    assert_contains "subscription contains WSS" "${links}" "type=ws"
-    assert_contains "both transports use TCP 443" "${links}" "@cmcc.example.com:443"
+    assert_contains "XHTTP uses TCP 443" "${links}" "@cmcc.example.com:443"
+    [[ "${links}" != *"mode=stream-up"* && "${links}" != *"type=ws"* ]] \
+        || fail "subscription must contain only XHTTP stream-one"
 
     ALLOWED_TOKENS='{"owner":"test-token"}'
     SUB_DOWNLOAD_NAME="CMCC_TEST"
@@ -235,18 +237,16 @@ fi
     write_worker "${worker_output}"
     grep -Fq '"network":"xhttp"' "${worker_output}" \
         || fail "rendered Worker must include XHTTP"
-    [[ "$(grep -Fo '"network":"xhttp"' "${worker_output}" | wc -l | tr -d ' ')" == "2" ]] \
-        || fail "rendered Worker must include stream-up and stream-one XHTTP nodes"
-    grep -Fq '"mode":"stream-up"' "${worker_output}" \
-        || fail "rendered Worker must prefer XHTTP stream-up"
+    [[ "$(grep -Fo '"network":"xhttp"' "${worker_output}" | wc -l | tr -d ' ')" == "1" ]] \
+        || fail "rendered Worker must include exactly one XHTTP node"
     grep -Fq '"mode":"stream-one"' "${worker_output}" \
-        || fail "rendered Worker must retain XHTTP stream-one fallback"
-    grep -Fq '"network":"ws"' "${worker_output}" \
-        || fail "rendered Worker must include WSS"
-    grep -Fq 'const DEFAULT_NODE = [NODE_CONFIG, XHTTP_STREAM_ONE_NODE_CONFIG, WS_NODE_CONFIG]' "${worker_output}" \
-        || fail "rendered Worker must publish all three optimized nodes"
-    grep -Fq 'mode: "auto"' "${ROOT_DIR}/easy_cmcc" \
-        || fail "Xray server must accept all XHTTP upload modes"
+        || fail "rendered Worker must use XHTTP stream-one"
+    grep -Fq 'const DEFAULT_NODE = NODE_CONFIG;' "${worker_output}" \
+        || fail "rendered Worker must publish only the configured stream-one node"
+    [[ "$(<"${worker_output}")" != *'"network":"ws"'* && "$(<"${worker_output}")" != *'"mode":"stream-up"'* ]] \
+        || fail "rendered Worker must not publish WSS or stream-up"
+    grep -Fq 'mode: "stream-one"' "${ROOT_DIR}/easy_cmcc" \
+        || fail "Xray server must require XHTTP stream-one"
     node --input-type=module - "${worker_output}" <<'EOF'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -258,7 +258,7 @@ const baseUrl = 'https://worker.test/subscribe?token=test-token';
 const plain = await worker.fetch(new Request(baseUrl), {});
 assert.equal(plain.status, 200);
 const links = Buffer.from(await plain.text(), 'base64').toString('utf8').split('\n');
-assert.equal(links.length, 3);
+assert.equal(links.length, 1);
 const clash = await worker.fetch(new Request(`${baseUrl}&flag=clash`), {});
 assert.equal(clash.status, 200);
 const yaml = await clash.text();
