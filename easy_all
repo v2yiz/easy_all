@@ -44,8 +44,8 @@ readonly SERVICE_PORT="443"
 readonly PORT_BASE="10000"
 readonly PORT_MULTIPLIER="6"
 readonly DEFAULT_REALITY_TARGET="swdist.apple.com:443"
-readonly DEFAULT_REALITY_PORT_MODE="443"
-readonly DEFAULT_ANYTLS_PORT_MODE="dynamic"
+readonly DEFAULT_REALITY_PORT_MODE="dynamic"
+readonly DEFAULT_ANYTLS_PORT_MODE="443"
 readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
 readonly DEFAULT_ANYTLS_NODE_NAME="MY_ANYTLS"
 readonly DEFAULT_WORKER_NAME="easy-all"
@@ -519,7 +519,7 @@ save_state() {
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
         printf 'ANYTLS_DOMAIN=%q\n' "${ANYTLS_DOMAIN:-}"
         printf 'ANYTLS_PASSWORD=%q\n' "${ANYTLS_PASSWORD:-}"
-        printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-443}"
+        printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'WORKER_NAME=%q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
         printf 'WORKER_URL=%q\n' "${WORKER_URL:-}"
@@ -560,6 +560,14 @@ protocol_default_node_name() {
     case "${PROTOCOL}" in
     reality) printf '%s' "${DEFAULT_REALITY_NODE_NAME}" ;;
     anytls) printf '%s' "${DEFAULT_ANYTLS_NODE_NAME}" ;;
+    esac
+}
+
+protocol_default_port_mode() {
+    case "${PROTOCOL}" in
+    reality) printf '%s' "${DEFAULT_REALITY_PORT_MODE}" ;;
+    anytls) printf '%s' "${DEFAULT_ANYTLS_PORT_MODE}" ;;
+    *) die "无法确定未知协议的默认订阅端口模式：${PROTOCOL:-空}" ;;
     esac
 }
 
@@ -608,6 +616,61 @@ collect_reality_target() {
     fi
 }
 
+collect_sub_port_mode() {
+    local default_mode=${1:-$(protocol_default_port_mode)}
+    local requested=${SUB_PORT_MODE:-} default_choice
+    case "${default_mode}" in
+    443) default_choice=1 ;;
+    dynamic) default_choice=2 ;;
+    *) die "默认订阅端口模式无效：${default_mode}" ;;
+    esac
+
+    if [[ -z "${requested}" && -t 0 ]]; then
+        printf '请选择订阅端口模式：\n'
+        printf '  1. 固定 443（AnyTLS 默认）\n'
+        printf '  2. dynamic（订阅随机端口 10000-65535，Reality 默认）\n'
+        read -r -p "请选择 [${default_choice}]: " requested
+    fi
+    requested=${requested:-${default_mode}}
+    case "${requested}" in
+    1 | 443) SUB_PORT_MODE="443" ;;
+    2 | dynamic) SUB_PORT_MODE="dynamic" ;;
+    *) die "SUB_PORT_MODE 无效：${requested}" ;;
+    esac
+}
+
+validate_sing_box_selector() {
+    case "$1" in
+    latest | stable | alpha | prerelease) return 0 ;;
+    esac
+    [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.-]+)?$ ]]
+}
+
+choose_sing_box_version() {
+    local choice=${SING_BOX_VERSION:-}
+    if [[ -z "${choice}" && -t 0 ]]; then
+        printf '请选择 sing-box 版本：\n'
+        printf '  1. 最新稳定版 release（默认）\n'
+        printf '  2. 最新 Alpha / pre-release\n'
+        printf '  3. 指定具体版本号\n'
+        read -r -p "请选择 [1]: " choice
+        choice=${choice:-1}
+        if [[ "${choice}" == "3" ]]; then
+            choice=$(prompt_value "sing-box 版本号（例如 1.13.12 或 v1.14.0-alpha.26）" "")
+        fi
+    fi
+    choice=${choice:-latest}
+    case "${choice}" in
+    1 | latest | stable) choice="latest" ;;
+    2 | alpha | prerelease) choice="alpha" ;;
+    esac
+    validate_sing_box_selector "${choice}" \
+        || die "sing-box 版本选择无效：${choice}"
+    SING_BOX_VERSION=${choice}
+    [[ "${choice}" != "alpha" ]] \
+        || warn "已选择最新 Alpha / pre-release，可能包含未稳定的行为"
+}
+
 collect_install_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
     NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
@@ -620,7 +683,6 @@ collect_install_inputs() {
             || die "Reality 节点地址无效：${NODE_HOST}"
         collect_reality_target
         validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
-        SUB_PORT_MODE=${SUB_PORT_MODE:-${DEFAULT_REALITY_PORT_MODE}}
         ;;
     anytls)
         ANYTLS_DOMAIN=${ANYTLS_DOMAIN:-$(prompt_value "AnyTLS 完整域名（A 记录必须灰云直连本机）" "")}
@@ -628,11 +690,10 @@ collect_install_inputs() {
         validate_domain "${ANYTLS_DOMAIN}" || die "AnyTLS 域名无效：${ANYTLS_DOMAIN}"
         ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
         ((${#ANYTLS_PASSWORD} >= 16)) || die "ANYTLS_PASSWORD 至少需要 16 个字符"
-        SUB_PORT_MODE=${SUB_PORT_MODE:-${DEFAULT_ANYTLS_PORT_MODE}}
+        choose_sing_box_version
         ;;
     esac
-    [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
-        || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
+    collect_sub_port_mode
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     validate_worker_name "${WORKER_NAME}" || die "Worker 名称无效：${WORKER_NAME}"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -1407,6 +1468,25 @@ choose_subscription_mode() {
     esac
 }
 
+choose_worker_name() {
+    local allow_prompt=${1:-0} name=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
+    if [[ "${allow_prompt}" == "1" && -t 0 ]]; then
+        name=$(prompt_value "Cloudflare Worker 名称" "${name}")
+    fi
+    validate_worker_name "${name}" || die "Worker 名称无效：${name}"
+    WORKER_NAME=${name}
+}
+
+choose_subscription_download_name() {
+    local allow_prompt=${1:-0} name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
+    if [[ "${allow_prompt}" == "1" && -t 0 ]]; then
+        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}")
+    fi
+    name=$(normalize_sub_download_name "${name}")
+    validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
+    SUB_DOWNLOAD_NAME=${name}
+}
+
 cloudflare_deploy_log() {
     local level=$1
     shift
@@ -1697,10 +1777,18 @@ verify_subscription() {
 }
 
 configure_subscription() {
+    local prompt_worker_name=${1:-0} prompt_download_name=${2:-0}
+    local worker_name_prompt
     collect_installed_state
     choose_subscription_mode
     case "${SUBSCRIBE_MODE}" in
     auto)
+        worker_name_prompt=${prompt_worker_name}
+        if [[ "${DEPLOY_MODE:-}" == "auto" || -n "${WORKER_URL:-}" ]]; then
+            worker_name_prompt=0
+        fi
+        choose_worker_name "${worker_name_prompt}"
+        choose_subscription_download_name "${prompt_download_name}"
         write_worker "${WORKER_FILE}"
         if deploy_worker; then
             DEPLOY_MODE="auto"
@@ -1723,6 +1811,7 @@ configure_subscription() {
         unset CF_WORKER_API_TOKEN || true
         ;;
     worker)
+        choose_subscription_download_name "${prompt_download_name}"
         write_worker "${WORKER_FILE}"
         WORKER_URL=""
         DEPLOY_MODE="worker"
@@ -1821,18 +1910,28 @@ rollback_subscription_update() {
 }
 
 update_subscription() {
-    local requested_port_mode=${SUB_PORT_MODE:-} stored_port_mode
+    local prompt_options=${1:-0}
+    local requested_port_mode=${SUB_PORT_MODE:-} requested_worker_name=${WORKER_NAME:-}
+    local requested_download_name=${SUB_DOWNLOAD_NAME:-} stored_port_mode
+    local prompt_worker_name=0 prompt_download_name=0
     require_root
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     stored_port_mode=$(
         unset SUB_PORT_MODE
         source_state_file
-        printf '%s' "${SUB_PORT_MODE:-443}"
+        printf '%s' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
     )
     collect_installed_state
-    SUB_PORT_MODE=${requested_port_mode:-${SUB_PORT_MODE:-${stored_port_mode}}}
-    [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
-        || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
+    if [[ "${prompt_options}" == "1" ]]; then
+        SUB_PORT_MODE=${requested_port_mode}
+        collect_sub_port_mode "${stored_port_mode}"
+        [[ -n "${requested_worker_name}" ]] || prompt_worker_name=1
+        [[ -n "${requested_download_name}" ]] || prompt_download_name=1
+    else
+        SUB_PORT_MODE=${requested_port_mode:-${SUB_PORT_MODE:-${stored_port_mode}}}
+        [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
+            || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
+    fi
     prepare_sample_worker_template
     snapshot_subscription_update
     if [[ "${SUB_PORT_MODE}" != "${stored_port_mode}" ]]; then
@@ -1848,7 +1947,7 @@ update_subscription() {
         rollback_subscription_update
         return 1
     fi
-    if ! configure_subscription; then
+    if ! configure_subscription "${prompt_worker_name}" "${prompt_download_name}"; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
         return 1
@@ -2206,7 +2305,9 @@ cleanup_obsolete_protocol_artifacts() {
 }
 
 install_all() {
-    local requested=${1:-}
+    local requested=${1:-} prompt_worker_name=0 prompt_download_name=0
+    [[ -n "${WORKER_NAME:-}" ]] || prompt_worker_name=1
+    [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || prompt_download_name=1
     require_root
     require_systemd
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；切换协议请使用 easy_all switch <协议>"
@@ -2238,7 +2339,7 @@ install_all() {
     info "[8/9] 注册 easy_all 命令"
     register_easy_all_command
     info "[9/9] 配置 Worker 订阅"
-    configure_subscription
+    configure_subscription "${prompt_worker_name}" "${prompt_download_name}"
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
     success "easy_all ${PROTOCOL} 安装完成"
@@ -2321,6 +2422,8 @@ switch_protocol() {
     local requested_target=${REALITY_TARGET:-} requested_anytls_domain=${ANYTLS_DOMAIN:-}
     local requested_anytls_password=${ANYTLS_PASSWORD:-}
     local requested_port_mode=${SUB_PORT_MODE:-}
+    local requested_download_name=${SUB_DOWNLOAD_NAME:-} prompt_download_name=0
+    [[ -n "${requested_download_name}" ]] || prompt_download_name=1
     require_root
     require_systemd
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
@@ -2334,6 +2437,7 @@ switch_protocol() {
     REALITY_TARGET=${requested_target}
     ANYTLS_DOMAIN=${requested_anytls_domain}
     ANYTLS_PASSWORD=${requested_anytls_password}
+    SUB_DOWNLOAD_NAME=${requested_download_name:-${SUB_DOWNLOAD_NAME:-}}
     SUB_PORT_MODE=${requested_port_mode}
     PROTOCOL=""
     choose_protocol "${requested}"
@@ -2354,7 +2458,7 @@ switch_protocol() {
     cleanup_obsolete_protocol_artifacts
     save_state
     STRICT_WORKER_DEPLOY=1
-    configure_subscription
+    configure_subscription 0 "${prompt_download_name}"
     STRICT_WORKER_DEPLOY=0
     save_state
     SWITCH_ROLLBACK_ON_EXIT=0
@@ -2393,6 +2497,7 @@ usage() {
   NODE_HOST=...              Reality 节点地址
   REALITY_TARGET=swdist.apple.com:443
   ANYTLS_DOMAIN=node.example.com  ANYTLS_PASSWORD=...
+  SING_BOX_VERSION=latest|alpha|具体版本号
   SUB_PORT_MODE=443|dynamic
   GEMINI_IP_FAMILY=auto|ipv4|ipv6  Gemini 出口族；auto 实测后固定选择更快的一侧
   ALLOWED_TOKENS='{"owner":"token1","alice":"token2"}'
@@ -2402,7 +2507,7 @@ usage() {
   WORKER_NAME=easy-all       SUB_DOWNLOAD_NAME=MY_SUB
   SAMPLE_WORKER_URL=https://...  默认读取本仓库 main/sample-worker.js
 
-Reality 默认 443；AnyTLS 默认 dynamic。XHTTP/WSS 请使用 for_cmcc/easy_cmcc。
+Reality 默认 dynamic；AnyTLS 默认 443。XHTTP/WSS 请使用 for_cmcc/easy_cmcc。
 远端 Worker 始终 replace，uninstall 不删除远端 Worker。
 EOF
 }
@@ -2459,7 +2564,7 @@ main() {
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
     update) update_easy_all ;;
-    update-sub) update_subscription ;;
+    update-sub) update_subscription 1 ;;
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;
     status) show_status ;;

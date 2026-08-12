@@ -4,8 +4,8 @@
 
 | 协议 | 服务端 | 端口模式 | Cloudflare DNS |
 |---|---|---|---|
-| VLESS TCP Reality Vision | Xray | 默认 `443`，可选 `dynamic` | 不要求代理 |
-| AnyTLS | sing-box | 默认 `dynamic`，可选 `443` | 必须始终保持灰云 |
+| VLESS TCP Reality Vision | Xray | 默认 `dynamic`，可选 `443` | 不要求代理 |
+| AnyTLS | sing-box | 默认 `443`，可选 `dynamic` | 必须始终保持灰云 |
 
 该入口面向通用 VPS，只提供 Reality 与 AnyTLS，并部署 Worker `easy-all`。需要 XHTTP/WSS 和 Cloudflare CDN 时，请使用独立的 [`for_cmcc/easy_cmcc`](for_cmcc/README.md)。
 
@@ -63,7 +63,8 @@ easy_all uninstall
 `easy_all update` 始终以自动模式 replace 当前同名 Worker，不继承历史的手动输出模式。
 交互更新会重新提示输入未保存的 Cloudflare Worker API Token。若 Worker replace 失败，
 更新会明确失败，不会静默改成手动部署。仅执行 `easy_all update-sub` 时才继续沿用已保存
-的订阅部署模式。
+的订阅部署模式，并先显示端口模式菜单；直接回车沿用当前模式，改变模式时会同步更新
+nftables、服务端配置和 Worker。
 
 ## 协议说明
 
@@ -77,7 +78,7 @@ sudo ./easy_all install reality
 
 下一项会单独询问 `Reality SNI / 伪装目标（域名:端口）`，默认是 `swdist.apple.com:443`，直接回车即可采用，也可以输入其他可用的 TLS 1.3 站点。脚本将冒号前的域名同时写入服务端 `serverNames` 和客户端 SNI，并把完整的 `域名:端口` 写入 Reality `dest`；因此客户端连接地址与 SNI 是两个不同参数。
 
-输出为 VLESS TCP Reality Vision，包含 `security=reality`、`type=tcp`、`flow=xtls-rprx-vision`、public key 和 short ID。Reality 的订阅端口模式默认为 `443`；需要 `dynamic` 时可通过 `SUB_PORT_MODE=dynamic` 指定。
+输出为 VLESS TCP Reality Vision，包含 `security=reality`、`type=tcp`、`flow=xtls-rprx-vision`、public key 和 short ID。交互安装会询问订阅端口模式，Reality 默认选择 `dynamic`；此模式会为订阅节点随机生成 `10000-65535` 端口，并由服务端 nftables 转发到 443，也可以选择固定 `443`。显式设置 `SUB_PORT_MODE=443|dynamic` 时不再询问。
 
 ### AnyTLS
 
@@ -85,7 +86,7 @@ sudo ./easy_all install reality
 sudo ./easy_all install anytls
 ```
 
-安装时会询问完整域名、Cloudflare DNS Token 和订阅端口模式。脚本通过 acme.sh、Let's Encrypt 和 Cloudflare DNS-01 签发证书，AnyTLS 密码会自动生成，并默认安装最新稳定版 sing-box。
+安装时会询问完整域名、Cloudflare DNS Token、sing-box 版本和订阅端口模式，AnyTLS 默认选择固定 `443`，也可以选择 `dynamic`。sing-box 可选最新稳定版、最新 Alpha/pre-release 或指定具体版本号，默认使用最新稳定版；Alpha 可能包含未稳定行为。脚本通过 acme.sh、Let's Encrypt 和 Cloudflare DNS-01 签发证书，AnyTLS 密码会自动生成。
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
@@ -185,6 +186,8 @@ Domain，二者选择一种即可。
 3. 只输出当前节点链接。
 
 脚本会先询问订阅输出方式。选择自动部署或手动部署后，才会询问订阅用户 Token 字典，因为两种方式都会生成带访问保护的 Worker；选择“只输出当前节点链接”时不生成 Worker，也不会要求订阅 Token、Account ID 或 Worker API Token。手动部署仍然需要订阅 Token，它会直接内嵌到输出 Worker 的 `ALLOWED_TOKENS` 中。
+
+自动和手动 Worker 模式都会询问 Mihomo 下载文件名，默认是 `EASY_ALL`，输入时不需要 `.yaml` 后缀。首次选择自动部署且本地尚无已部署 Worker 时，还会询问 Worker 名称，默认是 `easy-all`；后续 `update`、协议切换和已有 Worker 的 `update-sub` 会复用状态中的名称，避免意外部署出第二个 Worker。由手动/仅链接模式首次改为自动部署时，也会询问一次 Worker 名称。
 
 默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Worker 部署完成后会先等待 10 秒，再进行最多 12 次订阅 HTTP 验收；失败后的重试间隔随机为 2–5 秒。每轮 base64 与 Clash 请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间两个格式命中不同版本。最近一次部署日志位于：
 

@@ -252,8 +252,14 @@ test_validators_and_defaults() {
     assert_equal "default Worker name is easy-all" "easy-all" "${DEFAULT_WORKER_NAME}"
     assert_success "default Worker name is Cloudflare-compatible" validate_worker_name "${DEFAULT_WORKER_NAME}"
     assert_failure "Worker name rejects underscore" validate_worker_name "easy_all"
-    assert_equal "AnyTLS defaults to dynamic" "dynamic" "${DEFAULT_ANYTLS_PORT_MODE}"
-    assert_equal "Reality defaults to 443" "443" "${DEFAULT_REALITY_PORT_MODE}"
+    assert_equal "AnyTLS defaults to 443" "443" "${DEFAULT_ANYTLS_PORT_MODE}"
+    assert_equal "Reality defaults to dynamic" "dynamic" "${DEFAULT_REALITY_PORT_MODE}"
+    PROTOCOL="reality"
+    assert_equal "Reality protocol fallback resolves to dynamic" \
+        "dynamic" "$(protocol_default_port_mode)"
+    PROTOCOL="anytls"
+    assert_equal "AnyTLS protocol fallback resolves to 443" \
+        "443" "$(protocol_default_port_mode)"
     assert_equal "ALLOWED_TOKENS trims user names and token values" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')" 
@@ -315,6 +321,118 @@ test_reality_node_host_detection() {
     )
     assert_equal "explicit Reality SNI target overrides the default" \
         "cdn.example.com:443" "${explicit_target}"
+}
+
+test_subscription_port_mode_selection() {
+    PROTOCOL="reality"
+    SUB_PORT_MODE=""
+    collect_sub_port_mode
+    assert_equal "Reality non-interactive port mode defaults to dynamic" \
+        "dynamic" "${SUB_PORT_MODE}"
+
+    PROTOCOL="anytls"
+    SUB_PORT_MODE=""
+    collect_sub_port_mode
+    assert_equal "AnyTLS non-interactive port mode defaults to 443" \
+        "443" "${SUB_PORT_MODE}"
+
+    PROTOCOL="reality"
+    SUB_PORT_MODE="2"
+    collect_sub_port_mode
+    assert_equal "port mode menu choice 2 selects dynamic" \
+        "dynamic" "${SUB_PORT_MODE}"
+
+    PROTOCOL="anytls"
+    SUB_PORT_MODE="1"
+    collect_sub_port_mode
+    assert_equal "port mode menu choice 1 selects fixed 443" \
+        "443" "${SUB_PORT_MODE}"
+}
+
+test_restored_interactive_choices() {
+    SING_BOX_VERSION=""
+    choose_sing_box_version
+    assert_equal "sing-box defaults non-interactively to the latest stable release" \
+        "latest" "${SING_BOX_VERSION}"
+
+    SING_BOX_VERSION="stable"
+    choose_sing_box_version
+    assert_equal "sing-box stable alias selects the latest stable release" \
+        "latest" "${SING_BOX_VERSION}"
+
+    SING_BOX_VERSION="prerelease"
+    choose_sing_box_version >/dev/null
+    assert_equal "sing-box prerelease alias selects Alpha" \
+        "alpha" "${SING_BOX_VERSION}"
+
+    assert_success "sing-box accepts an exact stable version" \
+        validate_sing_box_selector "1.13.12"
+    assert_success "sing-box accepts an exact prerelease version" \
+        validate_sing_box_selector "v1.14.0-alpha.26"
+    assert_failure "sing-box rejects an invalid version selector" \
+        validate_sing_box_selector "newest"
+
+    WORKER_NAME=""
+    choose_worker_name 0
+    assert_equal "Worker name keeps the easy-all default without a prompt" \
+        "${DEFAULT_WORKER_NAME}" "${WORKER_NAME}"
+
+    SUB_DOWNLOAD_NAME="Team.yaml"
+    choose_subscription_download_name 0
+    assert_equal "Mihomo download prompt normalizes the yaml suffix" \
+        "Team" "${SUB_DOWNLOAD_NAME}"
+
+    SING_BOX_VERSION=""
+    WORKER_NAME="${DEFAULT_WORKER_NAME}"
+    SUB_DOWNLOAD_NAME="${DEFAULT_SUB_DOWNLOAD_NAME}"
+}
+
+test_subscription_prompt_routing() {
+    local output
+    output=$(
+        collect_installed_state() { :; }
+        choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
+        choose_worker_name() { printf 'worker:%s\n' "$1"; }
+        choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
+        write_worker() { :; }
+        deploy_worker() { return 0; }
+        verify_subscription() { return 0; }
+        save_state() { :; }
+        DEPLOY_MODE=""
+        WORKER_URL=""
+        configure_subscription 1 1
+    )
+    assert_equal "first automatic deployment prompts for Worker and download names" \
+        $'worker:1\ndownload:1' "${output}"
+
+    output=$(
+        collect_installed_state() { :; }
+        choose_subscription_mode() { SUBSCRIBE_MODE="auto"; }
+        choose_worker_name() { printf 'worker:%s\n' "$1"; }
+        choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
+        write_worker() { :; }
+        deploy_worker() { return 0; }
+        verify_subscription() { return 0; }
+        save_state() { :; }
+        DEPLOY_MODE="auto"
+        WORKER_URL="https://existing-worker.example.test"
+        configure_subscription 1 1
+    )
+    assert_equal "existing automatic deployment reuses its Worker name" \
+        $'worker:0\ndownload:1' "${output}"
+
+    output=$(
+        collect_installed_state() { :; }
+        choose_subscription_mode() { SUBSCRIBE_MODE="worker"; }
+        choose_worker_name() { printf 'unexpected-worker\n'; }
+        choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
+        write_worker() { :; }
+        print_worker_content() { :; }
+        save_state() { :; }
+        configure_subscription 1 1
+    )
+    assert_equal "manual deployment asks only for the download name" \
+        "download:1" "${output}"
 }
 
 test_links_and_workers() {
@@ -711,6 +829,16 @@ EOF
         '"${detected_ip}"' "${script_content}"
     assert_contains "Reality setup exposes an SNI target prompt" \
         "Reality SNI / 伪装目标（域名:端口）" "${script_content}"
+    assert_contains "interactive setup exposes a subscription port mode prompt" \
+        "请选择订阅端口模式" "${script_content}"
+    assert_contains "AnyTLS setup exposes a sing-box version menu" \
+        "请选择 sing-box 版本" "${script_content}"
+    assert_contains "automatic setup exposes a Worker name prompt" \
+        "Cloudflare Worker 名称" "${script_content}"
+    assert_contains "Worker modes expose a Mihomo download name prompt" \
+        "Mihomo 下载文件名（不含 .yaml）" "${script_content}"
+    assert_contains "update-sub enables its interactive option menus" \
+        "update-sub) update_subscription 1" "${script_content}"
     assert_contains "uninstall explicitly leaves remote Worker" "远端 Cloudflare Worker 未处理" "${script_content}"
     assert_not_contains "script never deletes remote Worker through API" "DELETE_CLOUDFLARE_WORKER" "${script_content}"
 
@@ -966,12 +1094,39 @@ test_update_subscription_orchestration() {
             UPDATE_SUB_ROLLBACK_ON_EXIT=1
         }
         refresh_protocol_runtime_config() { printf 'runtime\n'; }
-        configure_subscription() { printf 'worker\n'; }
+        configure_subscription() { printf 'worker:%s:%s\n' "${1:-0}" "${2:-0}"; }
         show_subscription() { printf 'show\n'; }
         update_subscription
     )
     assert_equal "update-sub uses one template before server and Worker refresh" \
-        $'root\ntemplate\nsnapshot\nruntime\nworker\nshow' "${calls}"
+        $'root\ntemplate\nsnapshot\nruntime\nworker:0:0\nshow' "${calls}"
+}
+
+test_update_subscription_interactive_options() {
+    local calls
+    set_protocol_fixture "reality"
+    SUB_PORT_MODE="443"
+    WORKER_NAME=""
+    SUB_DOWNLOAD_NAME=""
+    DEPLOY_MODE="worker"
+    SUBSCRIBE_MODE=""
+    save_state
+    SUB_PORT_MODE=""
+    calls=$(
+        require_root() { printf 'root\n'; }
+        collect_sub_port_mode() {
+            printf 'port:%s\n' "$1"
+            SUB_PORT_MODE=$1
+        }
+        prepare_sample_worker_template() { printf 'template\n'; }
+        snapshot_subscription_update() { printf 'snapshot\n'; }
+        refresh_protocol_runtime_config() { printf 'runtime\n'; }
+        configure_subscription() { printf 'worker:%s:%s\n' "$1" "$2"; }
+        show_subscription() { printf 'show\n'; }
+        update_subscription 1
+    )
+    assert_equal "interactive update-sub routes port, Worker and download choices" \
+        $'root\nport:443\ntemplate\nsnapshot\nruntime\nworker:1:1\nshow' "${calls}"
 }
 
 test_update_command_orchestration() {
@@ -982,12 +1137,13 @@ test_update_command_orchestration() {
         configure_bbr_tcp() { printf 'tcp\n'; }
         register_easy_all_command() { printf 'register\n'; }
         update_subscription() {
-            printf 'subscription:%s:%s\n' "${SUBSCRIBE_MODE:-}" "${STRICT_WORKER_DEPLOY:-0}"
+            printf 'subscription:%s:%s:%s\n' \
+                "${SUBSCRIBE_MODE:-}" "${STRICT_WORKER_DEPLOY:-0}" "$#"
         }
         update_easy_all
     )
     assert_equal "update command forces a strict automatic Worker replace" \
-        $'root\ntcp\nregister\nsubscription:auto:1' "${calls}"
+        $'root\ntcp\nregister\nsubscription:auto:1:0' "${calls}"
 }
 
 test_runtime_refresh_rolls_back_invalid_config() {
@@ -1023,6 +1179,9 @@ test_runtime_refresh_rolls_back_invalid_config() {
 source_script_copy
 test_validators_and_defaults
 test_reality_node_host_detection
+test_subscription_port_mode_selection
+test_restored_interactive_choices
+test_subscription_prompt_routing
 test_links_and_workers
 test_sample_worker_template_guards
 test_server_egress_family_configs
@@ -1033,6 +1192,7 @@ test_acme_installer_arguments
 test_subscription_retry_policy
 test_cloudflare_api_retry_policy
 test_update_subscription_orchestration
+test_update_subscription_interactive_options
 test_update_command_orchestration
 test_runtime_refresh_rolls_back_invalid_config
 test_update_subscription_rolls_back_port_change
