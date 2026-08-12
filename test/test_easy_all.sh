@@ -81,10 +81,11 @@ for (const part of [
   'DOMAIN-SUFFIX,bilibili.com,DIRECT',
   'DOMAIN-SUFFIX,zhihu.com,DIRECT',
   'DOMAIN-SUFFIX,douyin.com,DIRECT',
-  'DOMAIN-SUFFIX,feishu.cn,DIRECT',
-  'DOMAIN-SUFFIX,feishucdn.com,DIRECT',
-  'DOMAIN-SUFFIX,bytedance.com,DIRECT',
-  'DOMAIN-SUFFIX,larkenterprise.com,DIRECT',
+  'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
+  'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
+  'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
+  'IP-CIDR6,fc00::/7,DIRECT,no-resolve',
+  'IP-CIDR6,fe80::/10,DIRECT,no-resolve',
   'DOMAIN,copilot.microsoft.com,PROXY',
   'DOMAIN-SUFFIX,microsoft.com,DIRECT',
   'DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY',
@@ -98,6 +99,15 @@ for (const part of [
   'GEOIP,CN,DIRECT,no-resolve'
 ]) {
   if (!yaml.includes(part)) process.exit(1);
+}
+for (const removedDomain of [
+  'bytedance.net',
+  'larkoffice.com',
+  'feishu.cn',
+  'bytedance.com',
+  'larkenterprise.com'
+]) {
+  if (yaml.includes(removedDomain)) process.exit(1);
 }
 if (!/^proxy-groups:$/m.test(yaml)) process.exit(1);
 if ((yaml.match(/^\s+- name: PROXY$/gm) || []).length !== 1) process.exit(1);

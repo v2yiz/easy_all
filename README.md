@@ -91,9 +91,7 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 
 订阅中的代理节点不设置 Mihomo `ip-version`；但为避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6，客户端模板默认使用 IPv4 DNS/Fake-IP/TUN。Gemini 的地址族固定仍只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude 或 MEGA 的服务端出口策略。
 
-模板保留字节内网适配：相关域名使用跨平台的系统 DNS、加入 Fake-IP 过滤并显式直连，同时从 TUN 自动路由中排除 `10.0.0.0/8` 和 `fdbd::/16`。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、规则集和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
-
-飞书客户端官方网络白名单中的消息长连接、API、静态资源和 CDN 域名全部在外部规则集之前显式 `DIRECT`，避免 Mac TUN 下同一飞书会话在本地网络与 BWG 之间分流。公开飞书域名继续使用 Fake-IP，只有既有的字节内网域名使用系统 DNS。
+模板只保留通用局域网适配：`.lan`、`.local` 使用系统 DNS，RFC1918 IPv4、链路本地 IPv4、IPv6 ULA 与链路本地地址显式直连并绕过 TUN。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、规则集和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
 
 Mihomo 订阅通过 Loyalsoldier 官方源加载精简的 `private`、`proxy`、`direct`、`telegramcidr`、`lancidr` 和 `cncidr` 规则集；规则集经 `PROXY` 更新，不依赖第三方 GitHub 镜像。DNS 保留国内主解析器和境外 fallback，但不在 `nameserver-policy` 中引用代理策略组，避免 Windows 客户端启动时形成 DNS 与代理初始化依赖。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
 

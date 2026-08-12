@@ -9,6 +9,43 @@ import worker from '../sample-worker.js';
 
 const VALID_TOKEN = 'REPLACE_WITH_TOKEN_1';
 const FIXED_NOW = Date.UTC(2026, 0, 1, 0, 0, 0);
+const REMOVED_BYTEDANCE_DOMAINS = [
+  'bytedance.net',
+  'tiktok-row.net',
+  'zijieapi.com',
+  'bytetcc.com',
+  'feelgood.cn',
+  'bytegoofy.com',
+  'byted.org',
+  'larkoffice.com',
+  'feishu.net',
+  'feishu.cn',
+  'feishucdn.com',
+  'zjurl.cn',
+  'bytedance.com',
+  'byted-static.com',
+  'feishu-3rd-party-services.com',
+  'bytehwm.com',
+  'ttwebview.com',
+  'bytegecko.com',
+  'bytescm.com',
+  'kundou.cn',
+  'bytetos.com',
+  'byteeffecttos.com',
+  'bytednsdoc.com',
+  'bytedanceapi.com',
+  'volcvideo.com',
+  'feishuimg.com',
+  'feishuapp.cn',
+  'getfeishu.cn',
+  'feishupkg.com',
+  'baseopendev.com',
+  'bytedapm.com',
+  'ibytedapm.com',
+  'larkenterprise.com',
+  'aiforce.cloud',
+  'aiforce.run'
+];
 let importCounter = 0;
 
 function subscribeUrl(search = '') {
@@ -120,30 +157,8 @@ describe('sample-worker Cloudflare Worker', () => {
       rules.indexOf('DOMAIN,copilot.microsoft.com,PROXY') <
       rules.indexOf('DOMAIN-SUFFIX,microsoft.com,DIRECT')
     );
-    const proxyRuleSetIndex = rules.indexOf('RULE-SET,proxy,PROXY');
-    for (const feishuDomain of [
-      'feishu.net',
-      'feishu.cn',
-      'feishucdn.com',
-      'bytedance.com',
-      'byted-static.com',
-      'feishu-3rd-party-services.com',
-      'bytehwm.com',
-      'ttwebview.com',
-      'bytegecko.com',
-      'bytescm.com',
-      'bytetos.com',
-      'bytedanceapi.com',
-      'volcvideo.com',
-      'feishuimg.com',
-      'feishuapp.cn',
-      'getfeishu.cn',
-      'feishupkg.com',
-      'larkenterprise.com'
-    ]) {
-      const ruleIndex = rules.indexOf(`DOMAIN-SUFFIX,${feishuDomain},DIRECT`);
-      assert.ok(ruleIndex >= 0, `${feishuDomain} must use DIRECT`);
-      assert.ok(ruleIndex < proxyRuleSetIndex, `${feishuDomain} must precede proxy rule-set`);
+    for (const domain of REMOVED_BYTEDANCE_DOMAINS) {
+      assert.equal(source.includes(domain), false, `${domain} must be completely removed`);
     }
     for (const googlePlayDomain of [
       'googleapis.cn',
@@ -354,6 +369,30 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.status, 200);
     assert.ok(nameserverPolicy, 'nameserver-policy must be present');
     assert.ok(fakeIpFilter, 'fake-ip-filter must be present');
+    assert.deepEqual(
+      fakeIpFilter
+        .split('\n')
+        .map(line => line.trim().match(/^- '(.+)'$/)?.[1])
+        .filter(Boolean),
+      [
+        '+.lan',
+        '+.local',
+        'localhost',
+        'time.windows.com',
+        'time.apple.com',
+        '*.ntp.org.cn',
+        'pool.ntp.org'
+      ],
+      'Fake-IP exclusions must contain only generic local/time domains'
+    );
+    assert.deepEqual(
+      nameserverPolicy
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#')),
+      ["'+.lan': system", "'+.local': system"],
+      'system DNS policy must contain only generic local domains'
+    );
     assert.match(body, /^ipv6: false$/m);
     assert.match(body, /^\s+ipv6: false$/m);
     assert.doesNotMatch(body, /fake-ip-range6:/);
@@ -362,7 +401,12 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /^\s+strict-route: false$/m);
     assert.match(body, /^\s+route-exclude-address:$/m);
     assert.match(body, /^\s+- 10\.0\.0\.0\/8$/m);
-    assert.match(body, /^\s+- fdbd::\/16$/m);
+    assert.match(body, /^\s+- 172\.16\.0\.0\/12$/m);
+    assert.match(body, /^\s+- 192\.168\.0\.0\/16$/m);
+    assert.match(body, /^\s+- 169\.254\.0\.0\/16$/m);
+    assert.match(body, /^\s+- fc00::\/7$/m);
+    assert.match(body, /^\s+- fe80::\/10$/m);
+    assert.doesNotMatch(body, /^\s+- fdbd::\/16$/m);
     assert.match(body, /^    override-destination: false$/m);
     assert.doesNotMatch(body, /^    override-destination: true$/m);
     assert.doesNotMatch(body, /^        override-destination: true$/m);
@@ -378,17 +422,26 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
-    assert.match(fakeIpFilter, /^\s+- '\+\.bytedance\.net'$/m);
-    assert.match(fakeIpFilter, /^\s+- '\+\.larkoffice\.com'$/m);
-    assert.match(nameserverPolicy, /^\s+'\+\.bytedance\.net': system$/m);
-    assert.match(nameserverPolicy, /^\s+'\+\.larkoffice\.com': system$/m);
+    assert.match(fakeIpFilter, /^\s+- '\+\.local'$/m);
+    assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
+    assert.match(nameserverPolicy, /^\s+'\+\.local': system$/m);
     assert.doesNotMatch(nameserverPolicy, /rule-set:/);
     assert.doesNotMatch(body, /direct-nameserver-follow-policy:/);
     assert.doesNotMatch(body, /dns-query#PROXY/);
     assert.match(body, /^\s+fallback-lazy-query: true$/m);
     assert.doesNotMatch(body, /\bdhcp:\/\/en0\b/);
-    assert.match(body, /DOMAIN-SUFFIX,bytedance\.net,DIRECT/);
-    assert.match(body, /DOMAIN-SUFFIX,larkoffice\.com,DIRECT/);
+    for (const privateRule of [
+      'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
+      'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
+      'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
+      'IP-CIDR6,fc00::/7,DIRECT,no-resolve',
+      'IP-CIDR6,fe80::/10,DIRECT,no-resolve'
+    ]) {
+      assert.ok(body.includes(privateRule), `${privateRule} must remain direct`);
+    }
+    for (const domain of REMOVED_BYTEDANCE_DOMAINS) {
+      assert.equal(body.includes(domain), false, `${domain} must stay removed from Clash YAML`);
+    }
   });
 
   it('returns all Clash proxy nodes for node=all and falls back invalid filenames', async () => {
