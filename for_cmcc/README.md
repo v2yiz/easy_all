@@ -181,7 +181,7 @@ https://easy-cmcc.<account-subdomain>.workers.dev/subscribe?token=owner-token-12
 
 第一条返回 base64 节点订阅，第二条返回 Mihomo/Clash YAML。
 
-Cloudflare API 请求会对网络错误、HTTP 408/429/5xx 和 Cloudflare `10007`、`10035` 做有限次数退避重试。Worker 部署完成后先等待 5 秒，再进行最多 6 次 base64 与 Clash HTTP 验收。最近一次部署日志位于：
+Cloudflare API 请求会对网络错误、HTTP 408/429/5xx 和 Cloudflare `10007`、`10035` 做有限次数退避重试。Worker 部署完成后先等待 10 秒，再进行最多 12 次 base64 与 Clash HTTP 验收；每轮两个请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间命中不同版本。最近一次部署日志位于：
 
 ```text
 /etc/easy_cmcc/last-worker-deploy.log

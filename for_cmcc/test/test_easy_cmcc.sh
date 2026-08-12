@@ -78,6 +78,8 @@ assert_contains "README documents isolated state" "${readme}" \
     "/etc/easy_cmcc/state.env"
 assert_contains "README documents that uninstall leaves the remote Worker" "${readme}" \
     "远端 Cloudflare Worker 不会删除"
+assert_contains "README documents the expanded Worker verification window" "${readme}" \
+    "先等待 10 秒，再进行最多 12 次"
 [[ "${readme}" != *"无人值守"* ]] \
     || fail "README must omit unattended-operation documentation"
 
@@ -98,6 +100,10 @@ fi
     assert_equal "acme.sh home is isolated" "/root/.acme-cmcc.sh" "${ACME_HOME}"
     assert_equal "Worker name is isolated" "easy-cmcc" "${DEFAULT_WORKER_NAME}"
     assert_contains "Worker URL uses the CMCC subtree" "${DEFAULT_SAMPLE_WORKER_URL}" "/for_cmcc/sample-worker.js"
+    assert_contains "CMCC subscription verification uses Worker version affinity" \
+        "$(<"${ROOT_DIR}/easy_cmcc")" "Cloudflare-Workers-Version-Key"
+    assert_contains "CMCC subscription verification bypasses intermediary caches" \
+        "$(<"${ROOT_DIR}/easy_cmcc")" "Cache-Control: no-cache"
 
     choose_protocol vless-xhttp >/dev/null
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
@@ -135,9 +141,86 @@ fi
         || fail "rendered Worker must publish all three optimized nodes"
     grep -Fq 'mode: "auto"' "${ROOT_DIR}/easy_cmcc" \
         || fail "Xray server must accept all XHTTP upload modes"
+    node --input-type=module - "${worker_output}" <<'EOF'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const source = readFileSync(process.argv[2], 'utf8');
+const encoded = Buffer.from(source).toString('base64');
+const worker = (await import(`data:text/javascript;base64,${encoded}`)).default;
+const baseUrl = 'https://worker.test/subscribe?token=test-token';
+const plain = await worker.fetch(new Request(baseUrl), {});
+assert.equal(plain.status, 200);
+const links = Buffer.from(await plain.text(), 'base64').toString('utf8').split('\n');
+assert.equal(links.length, 3);
+const clash = await worker.fetch(new Request(`${baseUrl}&flag=clash`), {});
+assert.equal(clash.status, 200);
+const yaml = await clash.text();
+assert.match(yaml, /^proxies:$/m);
+assert.match(yaml, /^proxy-groups:$/m);
+assert.match(yaml, /^rules:$/m);
+EOF
     mihomo_nodes=$(build_mihomo_node)
     assert_contains "Mihomo nodes race dual-stack CDN addresses" "${mihomo_nodes}" \
         "ip-version: dual"
+
+    verify_calls_file="${TMP_DIR}/cmcc-verify-calls"
+    verify_keys_file="${TMP_DIR}/cmcc-verify-version-keys"
+    printf '0\n' >"${verify_calls_file}"
+    : >"${verify_keys_file}"
+    WORKER_URL="https://worker.example.test"
+    curl() {
+        local count output="" url="" version_key=""
+        count=$(<"${verify_calls_file}")
+        count=$((count + 1))
+        printf '%s\n' "${count}" >"${verify_calls_file}"
+        while (($#)); do
+            case "$1" in
+            -o)
+                output=$2
+                shift 2
+                ;;
+            -w | --max-time | --connect-timeout)
+                shift 2
+                ;;
+            -H)
+                case "$2" in
+                'Cloudflare-Workers-Version-Key: '*) version_key=${2#*: } ;;
+                esac
+                shift 2
+                ;;
+            -sS)
+                shift
+                ;;
+            *)
+                url=$1
+                shift
+                ;;
+            esac
+        done
+        printf '%s\n' "${version_key}" >>"${verify_keys_file}"
+        if ((count <= 4)); then
+            printf 'Not Found\n' >"${output}"
+            printf '404'
+        elif [[ "${url}" == *"&flag=clash"* ]]; then
+            printf 'proxies:\nproxy-groups:\nrules:\n' >"${output}"
+            printf '200'
+        else
+            printf 'vless://test@example.com:443\n' | base64 >"${output}"
+            printf '200'
+        fi
+    }
+    sleep() { :; }
+    cloudflare_deploy_log() { :; }
+    verify_subscription || fail "CMCC subscription verification must survive propagation errors"
+    assert_equal "CMCC verification retries both formats three times" \
+        "6" "$(<"${verify_calls_file}")"
+    assert_equal "CMCC first base64/Clash pair uses one version key" \
+        "$(sed -n '1p' "${verify_keys_file}")" "$(sed -n '2p' "${verify_keys_file}")"
+    assert_equal "CMCC successful base64/Clash pair uses one version key" \
+        "$(sed -n '5p' "${verify_keys_file}")" "$(sed -n '6p' "${verify_keys_file}")"
+    [[ "$(sed -n '1p' "${verify_keys_file}")" != "$(sed -n '3p' "${verify_keys_file}")" ]] \
+        || fail "CMCC verification attempts must sample different version keys"
 )
 
 printf 'ok - standalone CMCC monolith tests passed\n'

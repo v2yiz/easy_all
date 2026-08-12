@@ -615,6 +615,18 @@ EOF
     assert_contains "script retries Cloudflare propagation errors" "10007" "${script_content}"
     assert_contains "script retries concurrent Worker updates" "10035" "${script_content}"
     assert_contains "script writes Worker deployment log" "last-worker-deploy.log" "${script_content}"
+    assert_contains "script pins acme.sh to its managed home" \
+        '"${ACME_BIN}" "$@" --home "${ACME_HOME}"' "${script_content}"
+    for acme_action in set-default-ca issue install-cert renew remove list; do
+        assert_contains "${acme_action} uses the managed acme.sh wrapper" \
+            "run_acme --${acme_action}" "${script_content}"
+    done
+    assert_not_contains "acme.sh operations do not bypass the managed-home wrapper" \
+        '"${ACME_BIN}" --set-default-ca' "${script_content}"
+    assert_contains "subscription verification uses Worker version affinity" \
+        "Cloudflare-Workers-Version-Key" "${script_content}"
+    assert_contains "subscription verification bypasses intermediary caches" \
+        "Cache-Control: no-cache" "${script_content}"
     assert_contains "script snapshots protocol switches" "snapshot_protocol_switch" "${script_content}"
     assert_contains "script rolls failed switches back" "rollback_protocol_switch" "${script_content}"
     assert_contains "script avoids rollback after Worker replace" \
@@ -637,7 +649,7 @@ EOF
     assert_contains "README redirects XHTTP to the CMCC suite" \
         "for_cmcc/easy_cmcc" "${readme_content}"
     assert_contains "README documents Worker subscription verification retry policy" \
-        "先等待 5 秒，再进行最多 6 次订阅 HTTP 验收" "${readme_content}"
+        "先等待 10 秒，再进行最多 12 次订阅 HTTP 验收" "${readme_content}"
     assert_not_contains "README download commands do not reuse files based on timestamps" \
         "wget -q -P /root -N" "${readme_content}"
     assert_contains "README downloads updates to a protected temporary path" \
@@ -649,7 +661,7 @@ EOF
 }
 
 test_acme_installer_arguments() {
-    local installer_args=""
+    local installer_args="" acme_args_file="${TMP_DIR}/acme-command-args"
     ANYTLS_DOMAIN="anytls.example.com"
     ACME_EMAIL="ops@example.com"
 
@@ -678,6 +690,15 @@ test_acme_installer_arguments() {
     install_acme
     unset -f curl sh
 
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'printf "%s\n" "$@" >"${ACME_ARGS_FILE}"'
+    } >"${ACME_BIN}"
+    chmod 0755 "${ACME_BIN}"
+    export ACME_ARGS_FILE="${acme_args_file}"
+    run_acme --set-default-ca --server letsencrypt
+    unset ACME_ARGS_FILE
+
     assert_equal "get.acme.sh receives email in its required first argument" \
         "email=ops@example.com" "$(printf '%s\n' "${installer_args}" | sed -n '2p')"
     assert_equal "get.acme.sh receives --home after the email argument" \
@@ -686,21 +707,29 @@ test_acme_installer_arguments() {
         "${ACME_HOME}" "$(printf '%s\n' "${installer_args}" | sed -n '4p')"
     assert_not_contains "get.acme.sh is not passed the obsolete accountemail option" \
         "--accountemail" "${installer_args}"
+    assert_equal "acme.sh wrapper preserves the requested action" \
+        "--set-default-ca" "$(sed -n '1p' "${acme_args_file}")"
+    assert_equal "acme.sh wrapper appends the home option" \
+        "--home" "$(tail -n 2 "${acme_args_file}" | head -n 1)"
+    assert_equal "acme.sh wrapper pins the configured home directory" \
+        "${ACME_HOME}" "$(tail -n 1 "${acme_args_file}")"
 }
 
 test_subscription_retry_policy() {
     local call_file="${TMP_DIR}/subscription-curl-calls"
     local delay_file="${TMP_DIR}/subscription-retry-delays"
+    local version_key_file="${TMP_DIR}/subscription-version-keys"
     local calls delays log_content
     printf '0\n' >"${call_file}"
     : >"${delay_file}"
+    : >"${version_key_file}"
     install -d -m 0700 "${STATE_DIR}"
     : >"${CLOUDFLARE_DEPLOY_LOG}"
     WORKER_URL="https://worker.example.test"
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
 
     curl() {
-        local count output="" url=""
+        local count output="" url="" version_key=""
         count=$(<"${call_file}")
         count=$((count + 1))
         printf '%s\n' "${count}" >"${call_file}"
@@ -710,7 +739,13 @@ test_subscription_retry_policy() {
                 output=$2
                 shift 2
                 ;;
-            -w | --max-time)
+            -w | --max-time | --connect-timeout)
+                shift 2
+                ;;
+            -H)
+                case "$2" in
+                'Cloudflare-Workers-Version-Key: '*) version_key=${2#*: } ;;
+                esac
                 shift 2
                 ;;
             -sS)
@@ -723,10 +758,11 @@ test_subscription_retry_policy() {
             esac
         done
         [[ -n "${output}" && -n "${url}" ]] || return 1
+        printf '%s\n' "${version_key}" >>"${version_key_file}"
         if ((count <= 6)); then
             printf 'Forbidden\n' >"${output}"
             printf '403'
-        elif [[ "${url}" == *"&flag=clash" ]]; then
+        elif [[ "${url}" == *"&flag=clash"* ]]; then
             printf 'proxies:\nproxy-groups:\nrules:\n' >"${output}"
             printf '200'
         else
@@ -745,17 +781,23 @@ test_subscription_retry_policy() {
     delays=$(<"${delay_file}")
     log_content=$(<"${CLOUDFLARE_DEPLOY_LOG}")
     assert_equal "subscription verification requests both formats for four attempts" "8" "${calls}"
-    assert_equal "subscription verification waits five seconds before its first request" \
-        "5" "$(sed -n '1p' "${delay_file}")"
+    assert_equal "subscription verification waits ten seconds before its first request" \
+        "10" "$(sed -n '1p' "${delay_file}")"
     assert_equal "subscription verification sleeps only before and between failed attempts" \
         "4" "$(wc -l <"${delay_file}" | tr -d '[:space:]')"
-    assert_success "subscription retry intervals stay between one and three seconds" \
-        awk 'NR == 1 {next} $1 < 1 || $1 > 3 {exit 1}' "${delay_file}"
-    assert_contains "subscription verification logs six maximum attempts" \
-        "第 4/6 次，base64 HTTP 200，Clash HTTP 200" "${log_content}"
+    assert_success "subscription retry intervals stay between two and five seconds" \
+        awk 'NR == 1 {next} $1 < 2 || $1 > 5 {exit 1}' "${delay_file}"
+    assert_equal "base64 and Clash use the same version key in attempt one" \
+        "$(sed -n '1p' "${version_key_file}")" "$(sed -n '2p' "${version_key_file}")"
+    assert_equal "base64 and Clash use the same version key in attempt four" \
+        "$(sed -n '7p' "${version_key_file}")" "$(sed -n '8p' "${version_key_file}")"
+    assert_failure "different attempts use different Worker version keys" \
+        test "$(sed -n '1p' "${version_key_file}")" = "$(sed -n '3p' "${version_key_file}")"
+    assert_contains "subscription verification logs twelve maximum attempts" \
+        "第 4/12 次，base64 HTTP 200，Clash HTTP 200" "${log_content}"
     assert_contains "subscription retry log includes its randomized delay" \
         "秒后重试" "${log_content}"
-    assert_contains "captured subscription delays include retry intervals" $'5\n' "${delays}"
+    assert_contains "captured subscription delays include retry intervals" $'10\n' "${delays}"
 }
 
 test_cloudflare_api_retry_policy() {

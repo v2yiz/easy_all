@@ -732,6 +732,10 @@ install_acme() {
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
 }
 
+run_acme() {
+    "${ACME_BIN}" "$@" --home "${ACME_HOME}"
+}
+
 collect_cloudflare_dns_credentials() {
     if [[ -z "${CF_DNS_API_TOKEN:-}" ]]; then
         CF_DNS_API_TOKEN=$(prompt_secret "Cloudflare DNS API Token（用于 acme.sh DNS-01，输入不回显）") \
@@ -746,9 +750,10 @@ issue_certificate() {
     install_acme
     collect_cloudflare_dns_credentials
     export CF_Token="${CF_DNS_API_TOKEN}"
-    "${ACME_BIN}" --set-default-ca --server letsencrypt >/dev/null
+    run_acme --set-default-ca --server letsencrypt >/dev/null \
+        || die "设置 acme.sh 默认 CA 为 Let's Encrypt 失败"
     local issue_status=0
-    "${ACME_BIN}" --issue --dns dns_cf -d "${cert_domain}" --keylength ec-256 \
+    run_acme --issue --dns dns_cf -d "${cert_domain}" --keylength ec-256 \
         || issue_status=$?
     [[ "${issue_status}" == "0" || "${issue_status}" == "2" ]] \
         || die "Let's Encrypt 证书申请失败（acme.sh 返回码 ${issue_status}）"
@@ -761,7 +766,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files easy-all-si
 fi
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
-    "${ACME_BIN}" --install-cert -d "${cert_domain}" --ecc \
+    run_acme --install-cert -d "${cert_domain}" --ecc \
         --fullchain-file "${CERT_FILE}" \
         --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" \
@@ -1605,21 +1610,31 @@ deploy_worker() {
 }
 
 verify_subscription() {
-    local plain_code clash_code attempt delay token
+    local plain_code clash_code attempt delay token probe_id version_key
     local plain_body="${RUNTIME_TMP}/subscription-plain"
     local decoded_body="${RUNTIME_TMP}/subscription-decoded"
     local clash_body="${RUNTIME_TMP}/subscription-clash"
-    local max_attempts=6
+    local max_attempts=12
+    local initial_wait=10
     [[ -n "${WORKER_URL:-}" ]] || return 1
     ensure_allowed_tokens
     token=$(first_allowed_token)
-    cloudflare_deploy_log "INFO" "Worker 部署完成，等待 5 秒后开始订阅 HTTP 验收"
-    sleep 5
+    probe_id="$(date +%s)-${RANDOM}"
+    cloudflare_deploy_log "INFO" \
+        "Worker 部署完成，等待 ${initial_wait} 秒后开始最多 ${max_attempts} 次订阅 HTTP 验收"
+    sleep "${initial_wait}"
     for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-        plain_code=$(curl -sS -o "${plain_body}" -w '%{http_code}' --max-time 15 \
-            "${WORKER_URL}/subscribe?token=${token}" || true)
-        clash_code=$(curl -sS -o "${clash_body}" -w '%{http_code}' --max-time 15 \
-            "${WORKER_URL}/subscribe?token=${token}&flag=clash" || true)
+        version_key="${WORKER_NAME:-worker}-${probe_id}-${attempt}"
+        plain_code=$(curl -sS -o "${plain_body}" -w '%{http_code}' \
+            --connect-timeout 5 --max-time 15 \
+            -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+            -H "Cloudflare-Workers-Version-Key: ${version_key}" \
+            "${WORKER_URL}/subscribe?token=${token}&verify=${probe_id}-${attempt}-plain" || true)
+        clash_code=$(curl -sS -o "${clash_body}" -w '%{http_code}' \
+            --connect-timeout 5 --max-time 15 \
+            -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+            -H "Cloudflare-Workers-Version-Key: ${version_key}" \
+            "${WORKER_URL}/subscribe?token=${token}&flag=clash&verify=${probe_id}-${attempt}-clash" || true)
         if [[ "${plain_code}" == "200" && "${clash_code}" == "200" ]] \
             && base64 -d <"${plain_body}" >"${decoded_body}" 2>/dev/null \
             && [[ -s "${decoded_body}" ]] \
@@ -1632,7 +1647,7 @@ verify_subscription() {
             return 0
         fi
         if ((attempt < max_attempts)); then
-            delay=$((RANDOM % 3 + 1))
+            delay=$((RANDOM % 4 + 2))
             cloudflare_deploy_log "WARN" \
                 "订阅内容验收：第 ${attempt}/${max_attempts} 次，base64 HTTP ${plain_code:-000}，Clash HTTP ${clash_code:-000}，${delay} 秒后重试"
             sleep "${delay}"
@@ -1916,7 +1931,7 @@ renew_certificate() {
     [[ "${PROTOCOL}" == "anytls" ]] || die "Reality 不使用 TLS 证书"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
     local cert_domain=${ANYTLS_DOMAIN}
-    "${ACME_BIN}" --renew -d "${cert_domain}" --ecc --force \
+    run_acme --renew -d "${cert_domain}" --ecc --force \
         || die "证书续期失败"
     "${CERT_RELOAD_HOOK}" || true
     success "证书已续期并重载当前 TLS 服务"
@@ -2002,14 +2017,14 @@ stop_protocol_services() {
 remove_managed_acme_domain() {
     local domain=${1:-}
     [[ -n "${domain}" && -x "${ACME_BIN}" ]] || return 0
-    "${ACME_BIN}" --remove -d "${domain}" --ecc >/dev/null 2>&1 || true
+    run_acme --remove -d "${domain}" --ecc >/dev/null 2>&1 || true
     rm -rf -- "${ACME_HOME:?}/${domain}" "${ACME_HOME:?}/${domain}_ecc"
 }
 
 purge_owned_acme_if_unused() {
     local certificate_rows
     [[ -f "${ACME_OWNERSHIP_MARKER}" && -x "${ACME_BIN}" ]] || return 0
-    if ! certificate_rows=$("${ACME_BIN}" --list 2>/dev/null | tail -n +2 | awk 'NF {count++} END {print count+0}'); then
+    if ! certificate_rows=$(run_acme --list 2>/dev/null | tail -n +2 | awk 'NF {count++} END {print count+0}'); then
         warn "无法确认 acme.sh 是否仍有其他证书，保留 ${ACME_HOME}"
         return 0
     fi

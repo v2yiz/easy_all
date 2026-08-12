@@ -178,7 +178,7 @@ Domain，二者选择一种即可。
 2. 手动部署：输出完整 Worker 源码。
 3. 只输出当前节点链接。
 
-默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Worker 部署完成后会先等待 5 秒，再进行最多 6 次订阅 HTTP 验收；失败后的重试间隔随机为 1–3 秒。最近一次部署日志位于：
+默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Worker 部署完成后会先等待 10 秒，再进行最多 12 次订阅 HTTP 验收；失败后的重试间隔随机为 2–5 秒。每轮 base64 与 Clash 请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间两个格式命中不同版本。最近一次部署日志位于：
 
 ```text
 /etc/easy_all/last-worker-deploy.log

@@ -2055,21 +2055,31 @@ deploy_worker() {
 }
 
 verify_subscription() {
-    local plain_code clash_code attempt delay token
+    local plain_code clash_code attempt delay token probe_id version_key
     local plain_body="${RUNTIME_TMP}/subscription-plain"
     local decoded_body="${RUNTIME_TMP}/subscription-decoded"
     local clash_body="${RUNTIME_TMP}/subscription-clash"
-    local max_attempts=6
+    local max_attempts=12
+    local initial_wait=10
     [[ -n "${WORKER_URL:-}" ]] || return 1
     ensure_allowed_tokens
     token=$(first_allowed_token)
-    cloudflare_deploy_log "INFO" "Worker 部署完成，等待 5 秒后开始订阅 HTTP 验收"
-    sleep 5
+    probe_id="$(date +%s)-${RANDOM}"
+    cloudflare_deploy_log "INFO" \
+        "Worker 部署完成，等待 ${initial_wait} 秒后开始最多 ${max_attempts} 次订阅 HTTP 验收"
+    sleep "${initial_wait}"
     for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-        plain_code=$(curl -sS -o "${plain_body}" -w '%{http_code}' --max-time 15 \
-            "${WORKER_URL}/subscribe?token=${token}" || true)
-        clash_code=$(curl -sS -o "${clash_body}" -w '%{http_code}' --max-time 15 \
-            "${WORKER_URL}/subscribe?token=${token}&flag=clash" || true)
+        version_key="${WORKER_NAME:-worker}-${probe_id}-${attempt}"
+        plain_code=$(curl -sS -o "${plain_body}" -w '%{http_code}' \
+            --connect-timeout 5 --max-time 15 \
+            -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+            -H "Cloudflare-Workers-Version-Key: ${version_key}" \
+            "${WORKER_URL}/subscribe?token=${token}&verify=${probe_id}-${attempt}-plain" || true)
+        clash_code=$(curl -sS -o "${clash_body}" -w '%{http_code}' \
+            --connect-timeout 5 --max-time 15 \
+            -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+            -H "Cloudflare-Workers-Version-Key: ${version_key}" \
+            "${WORKER_URL}/subscribe?token=${token}&flag=clash&verify=${probe_id}-${attempt}-clash" || true)
         if [[ "${plain_code}" == "200" && "${clash_code}" == "200" ]] \
             && base64 -d <"${plain_body}" >"${decoded_body}" 2>/dev/null \
             && [[ -s "${decoded_body}" ]] \
@@ -2082,7 +2092,7 @@ verify_subscription() {
             return 0
         fi
         if ((attempt < max_attempts)); then
-            delay=$((RANDOM % 3 + 1))
+            delay=$((RANDOM % 4 + 2))
             cloudflare_deploy_log "WARN" \
                 "订阅内容验收：第 ${attempt}/${max_attempts} 次，base64 HTTP ${plain_code:-000}，Clash HTTP ${clash_code:-000}，${delay} 秒后重试"
             sleep "${delay}"
