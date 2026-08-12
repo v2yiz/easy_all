@@ -1,0 +1,23 @@
+for_cmcc/easy_cmcc
+  s_eecd84e07bd2d7::t_6931d81321787e 821-824,944-945,947,963,2407,2504,2511
+for_cmcc/test/test_easy_cmcc.sh
+  s_eecd84e07bd2d7::t_771bcf98510ebe 51-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cd5b05fd6f42e901af609bb51ba80be392ad7a29",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
