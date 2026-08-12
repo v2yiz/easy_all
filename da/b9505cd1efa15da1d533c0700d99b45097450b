@@ -1,0 +1,25 @@
+for_cmcc/README.md
+  s_eecd84e07bd2d7::t_1e17300febc637 41,60-62,164,170,174,181,183,189,227,234,236,240,263
+for_cmcc/easy_cmcc
+  s_eecd84e07bd2d7::t_322101c6ea0be7 166-172,508-510,529-530,558-565,602-603,1840-1856,2019-2067,2138-2146,2208,2490-2499,2589-2595,2692,3009,3014
+for_cmcc/test/test_easy_cmcc.sh
+  s_eecd84e07bd2d7::t_38ff286702e737 51-56,87-88,99-106,143-164,217-279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dab9505cd1efa15da1d533c0700d99b45097450b",
+  "prompts": {},
+  "sessions": {
+    "s_eecd84e07bd2d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d3-5b97-70f1-86a7-1c803917e7bc",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
