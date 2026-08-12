@@ -213,6 +213,10 @@ WSS 路径不需要 body-buffering Configuration Rule。脚本会为 XHTTP 和 W
 
 在 Cloudflare Dashboard 进入节点域名所属账户的 **Account home**，复制页面显示的 Account ID；也可以从账户主页 URL 中核对。不要复制域名 Overview 页面中的 Zone ID。
 
+![获取 easy_cmcc 使用的 Cloudflare Account ID](../docs/images/cloudflare-account-id.svg)
+
+图中高亮的是账户主页 URL 里、`/home` 前的 32 位账户标识。填写时只复制这 32 位字符，不包含前后斜杠。它决定 Worker 部署到哪个账户，也决定 Worker Token 的 Account Resources 应限制到哪个账户。
+
 ### CF_DNS_API_TOKEN
 
 资源建议限制到节点域名所在的单个 Zone，并授予：
@@ -226,6 +230,17 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 
 创建时选择 **Create Custom Token**，把 Zone Resources 限制到节点域名所在的单个 Zone。脚本不会使用 Global API Key。
 
+![创建 easy_cmcc 使用的 Cloudflare DNS Token](../docs/images/cloudflare-zone-token.svg)
+
+图中的四行权限对应四项独立操作：
+
+- `DNS → Edit`：让 acme.sh 创建和清理 DNS-01 TXT 记录。
+- `Zone → Read`：按节点域名查询正确的 Zone ID。
+- `Zone Settings → Edit`：自动开启 gRPC 与 WebSockets。
+- `Config Rules → Edit`：创建或更新 XHTTP Request/Response body buffering 为 `None` 的 Configuration Rule。Cloudflare 的部分新界面或 API 文档将它显示为 `Config Settings → Write`。
+
+如果只授予前两项，证书申请仍可工作，但后两项 Cloudflare 优化需要手动配置。Cloudflare 的[权限清单](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)和[Configuration Rules API 说明](https://developers.cloudflare.com/rules/configuration-rules/create-api/)可用于核对新旧界面名称。
+
 ### CF_WORKER_API_TOKEN
 
 资源建议限制到实际使用的单个 Account，只授予：
@@ -235,6 +250,10 @@ DNS Edit 和 Zone Read 用于 acme.sh DNS-01；Zone Settings Edit 用于开启 g
 脚本使用它 replace Worker module、启用 workers.dev、读取账户子域名，并创建或复用 Worker Custom Domain。Custom Domain API 同样只要求 Workers Scripts Edit，不需要给这个 Token 增加 DNS 或 Workers Routes 权限。`easy_cmcc` 不会把两个 API Token 写入 `/etc/easy_cmcc/state.env`；为自动续期证书，acme.sh 的 `dns_cf` 插件可能把 DNS 凭据保存在权限受限的 `/root/.acme-cmcc.sh/` 中。Worker Token 不会持久保存，交互更新时会重新提示输入。
 
 创建时同样选择 **Create Custom Token**，把 Account Resources 限制到实际部署 Worker 的单个账户。DNS Token 与 Worker Token 应分开创建，不要为了省事给同一个 Token 同时授予 Zone 和 Account 的宽权限。
+
+![创建 easy_cmcc 使用的 Cloudflare Worker Token](../docs/images/cloudflare-worker-token.svg)
+
+这里仅添加 `Account → Workers Scripts → Edit` 一行，并选择与 `CF_ACCOUNT_ID` 对应的指定账户。Cloudflare API 文档也把该权限称为 `Workers Scripts Write`；它已经覆盖 Worker module replace、启用 `workers.dev` 和绑定 Custom Domain，不需要 `Workers Routes`、DNS、KV 或 R2 权限。可通过 Cloudflare 的 [Attach Domain API](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)核对 Custom Domain 所需权限。
 
 ## Worker 订阅
 

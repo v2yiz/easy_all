@@ -116,6 +116,19 @@ assert_contains "README provides standalone troubleshooting" "${readme}" \
     "## 故障排查"
 [[ -s "${ROOT_DIR}/docs/images/cloudflare-worker-custom-domain.svg" ]] \
     || fail "README Worker Custom Domain figure is missing"
+for credential_figure in \
+    cloudflare-account-id.svg cloudflare-zone-token.svg cloudflare-worker-token.svg; do
+    [[ -s "${ROOT_DIR}/../docs/images/${credential_figure}" ]] \
+        || fail "README credential figure is missing: ${credential_figure}"
+    assert_contains "README references credential figure ${credential_figure}" "${readme}" \
+        "../docs/images/${credential_figure}"
+done
+assert_contains "README explains all four DNS Token permissions" "${readme}" \
+    '图中的四行权限对应四项独立操作'
+assert_contains "README documents Config Rules naming compatibility" "${readme}" \
+    'Config Settings → Write'
+assert_contains "README documents minimal Worker Token scope" "${readme}" \
+    '不需要 `Workers Routes`、DNS、KV 或 R2 权限'
 [[ "${readme}" != *"方案 B"* ]] \
     || fail "README must present only the recommended Worker Custom Domain flow"
 [[ "${readme}" != *"无人值守"* ]] \

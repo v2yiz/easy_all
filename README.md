@@ -123,6 +123,10 @@ easy_all 仅在当前命令进程中使用它们，不会保存到状态文件�
 
 ![Cloudflare Zone Token 配置示意图](docs/images/cloudflare-zone-token.svg)
 
+上图为 `easy_all` 与 `easy_cmcc` 共用图例：`easy_all` 只需要前两行；图中的
+`Zone Settings → Edit` 和 `Config Rules → Edit` 仅供 `easy_cmcc` 自动配置
+gRPC、WebSockets 与 XHTTP 双向无缓冲规则，`easy_all` 不需要添加。
+
 ### 3. CF_WORKER_API_TOKEN
 
 选择 **Create Custom Token**，资源限制为实际使用的单个 Account，只添加

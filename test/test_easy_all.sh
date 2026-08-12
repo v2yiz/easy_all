@@ -658,6 +658,8 @@ EOF
     readme_content=$(<"${ROOT_DIR}/README.md")
     assert_contains "README redirects XHTTP to the CMCC suite" \
         "for_cmcc/easy_cmcc" "${readme_content}"
+    assert_contains "README distinguishes shared CMCC-only Zone Token permissions" \
+        "Zone Settings → Edit" "${readme_content}"
     assert_contains "README documents Worker subscription verification retry policy" \
         "先等待 10 秒，再进行最多 12 次订阅 HTTP 验收" "${readme_content}"
     assert_not_contains "README download commands do not reuse files based on timestamps" \
