@@ -66,10 +66,12 @@ assert_contains "README downloads the CMCC monolith" "${readme}" \
     "main/for_cmcc/easy_cmcc"
 assert_contains "README uses the aligned one-line install command" "${readme}" \
     'wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/easy_cmcc" && chmod 700 /root/easy_cmcc.new && mv -f /root/easy_cmcc.new /root/easy_cmcc && /root/easy_cmcc install'
-assert_contains "README documents optimized Gemini order" "${readme}" \
-    '`AI_GEMINI`：`stream-up` → `stream-one` → WSS'
-assert_contains "README documents optimized download order" "${readme}" \
-    '`DOWNLOAD`：`stream-up` → WSS → `stream-one`'
+assert_contains "README documents optimized default proxy order" "${readme}" \
+    '`PROXY`：`stream-up` → `stream-one` → WSS'
+assert_contains "README documents optimized GitHub order" "${readme}" \
+    '`GITHUB`：`stream-up` → WSS → `stream-one`'
+assert_contains "README documents optimized Google order" "${readme}" \
+    '`GOOGLE`：`stream-up` → `stream-one` → WSS'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
     "DNS only / 灰云"
 assert_contains "README documents enabling the CDN after install" "${readme}" \

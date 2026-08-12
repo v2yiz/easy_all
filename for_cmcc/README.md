@@ -93,14 +93,13 @@ XHTTP 主节点使用：
 - `packet-encoding: xudp`
 - `smux.enabled: false`
 
-Mihomo 订阅提供四个手动选择组，列表第一项为默认值：
+Mihomo 订阅提供三个手动选择组，列表第一项为默认值：
 
-- `AI_GEMINI`：`stream-up` → `stream-one` → WSS；Gemini 和必要的 Google 域名进入该组。
-- `DOWNLOAD`：`stream-up` → WSS → `stream-one`；GitHub 及相关下载域名进入该组。
-- `AI`：三个节点均可选，供 ChatGPT、Claude 等非 Gemini AI 服务使用。
-- `PROXY`：三个节点均可选，承接其余代理流量。
+- `PROXY`：`stream-up` → `stream-one` → WSS；承接 ChatGPT、Claude 和其余代理流量。
+- `GITHUB`：`stream-up` → WSS → `stream-one`；承接 GitHub 及相关下载域名。
+- `GOOGLE`：`stream-up` → `stream-one` → WSS；承接 Gemini、Google 和 YouTube 域名。
 
-这里不使用自动延迟测试切换：XHTTP `stream-up` 的健康检查在部分 Mihomo 版本或链路上可能超时，自动组可能把可用且更快的节点误判为不可用。若现场网络中 WSS 下载持续更快，可在 `DOWNLOAD` 组手动切换，不影响其他流量。
+这里不使用自动延迟测试切换：XHTTP `stream-up` 的健康检查在部分 Mihomo 版本或链路上可能超时，自动组可能把可用且更快的节点误判为不可用。若现场网络中 WSS 下载持续更快，可在 `GITHUB` 组手动切换，不影响其他流量。
 
 CDN 拨号使用双栈竞速：Mihomo 顶层启用 `ipv6: true`、`tcp-concurrent: true`，三个 CDN 节点使用 `ip-version: dual`，让客户端同时利用当时更快的 Cloudflare IPv4/IPv6 边缘。应用侧 DNS 仍保持 `dns.ipv6: false`，避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6。
 

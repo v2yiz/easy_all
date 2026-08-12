@@ -129,8 +129,8 @@ describe('sample-worker Cloudflare Worker', () => {
       'xn--ngstr-lra8j.com'
     ]) {
       assert.ok(
-        rules.includes(`DOMAIN-SUFFIX,${googlePlayDomain},AI_GEMINI`),
-        `${googlePlayDomain} must use AI_GEMINI`
+        rules.includes(`DOMAIN-SUFFIX,${googlePlayDomain},GOOGLE`),
+        `${googlePlayDomain} must use GOOGLE`
       );
       assert.ok(
         source.includes(`          - '+.${googlePlayDomain}'`),
@@ -144,8 +144,8 @@ describe('sample-worker Cloudflare Worker', () => {
       'githubstatus.com'
     ]) {
       assert.ok(
-        rules.includes(`DOMAIN-SUFFIX,${githubDomain},DOWNLOAD`),
-        `${githubDomain} must use DOWNLOAD`
+        rules.includes(`DOMAIN-SUFFIX,${githubDomain},GITHUB`),
+        `${githubDomain} must use GITHUB`
       );
     }
     for (const githubDownloadDomain of [
@@ -392,9 +392,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.doesNotMatch(body, /DOMAIN-SUFFIX,mega\.(?:nz|co\.nz|io|app),/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
-    assert.match(body, /DOMAIN-SUFFIX,google\.com,AI_GEMINI/);
-    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,GOOGLE/);
+    assert.match(body, /DOMAIN-SUFFIX,google\.com,GOOGLE/);
+    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,GOOGLE/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.local'$/m);
     assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
@@ -441,12 +441,18 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /path: "\/randomws"/);
     assert.equal((body.match(/ip-version: "dual"/g) || []).length, 3);
     assert.match(body, /^proxy-groups:$/m);
-    assert.match(body, /- name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
-    assert.match(body, /- name: DOWNLOAD\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_WS"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"/);
-    assert.match(body, /- name: AI\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
     assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
-    assert.match(body, /DOMAIN-SUFFIX,github\.com,DOWNLOAD/);
+    assert.match(body, /- name: GITHUB\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_WS"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"/);
+    assert.match(body, /- name: GOOGLE\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
+    const proxyGroups = body.slice(body.indexOf('proxy-groups:'), body.indexOf('\nrules:'));
+    assert.equal((proxyGroups.match(/^    - name:/gm) || []).length, 3);
+    assert.ok(proxyGroups.indexOf('- name: PROXY') < proxyGroups.indexOf('- name: GITHUB'));
+    assert.ok(proxyGroups.indexOf('- name: GITHUB') < proxyGroups.indexOf('- name: GOOGLE'));
+    assert.doesNotMatch(proxyGroups, /- name: (?:AI_GEMINI|DOWNLOAD|AI)$/m);
+    assert.match(body, /DOMAIN-SUFFIX,chatgpt\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,claude\.ai,PROXY/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,GOOGLE/);
+    assert.match(body, /DOMAIN-SUFFIX,github\.com,GITHUB/);
 
     const xhttpNode = body.slice(body.indexOf('- name: "NODE_VLESS_XHTTP_STREAM_UP"'));
     assert.match(xhttpNode, /network: xhttp/);

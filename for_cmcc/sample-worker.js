@@ -270,63 +270,63 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,office.com,PROXY
 
   # ==================== AI 服务 ====================
-  - DOMAIN-SUFFIX,chatgpt.com,AI
-  - DOMAIN-SUFFIX,openai.com,AI
-  - DOMAIN-SUFFIX,oaistatic.com,AI
-  - DOMAIN-SUFFIX,oaiusercontent.com,AI
-  - DOMAIN-SUFFIX,sora.com,AI
-  - DOMAIN-SUFFIX,anthropic.com,AI
-  - DOMAIN-SUFFIX,claude.ai,AI
-  - DOMAIN-SUFFIX,claude.com,AI
-  - DOMAIN-SUFFIX,claudeusercontent.com,AI
-  - DOMAIN,gemini.google.com,AI_GEMINI
-  - DOMAIN,aistudio.google.com,AI_GEMINI
-  - DOMAIN,ai.google.dev,AI_GEMINI
-  - DOMAIN-SUFFIX,generativeai.google,AI_GEMINI
-  - DOMAIN,api.statsig.com,AI
-  - DOMAIN,browser-intake-datadoghq.com,AI
-  - DOMAIN,chat.openai.com.cdn.cloudflare.net,AI
-  - DOMAIN,openai-api.arkoselabs.com,AI
-  - DOMAIN-SUFFIX,auth0.com,AI
-  - DOMAIN-SUFFIX,challenges.cloudflare.com,AI
-  - DOMAIN-SUFFIX,chatgpt.livekit.cloud,AI
-  - DOMAIN-SUFFIX,client-api.arkoselabs.com,AI
-  - DOMAIN-SUFFIX,events.statsigapi.net,AI
-  - DOMAIN-SUFFIX,featuregates.org,AI
-  - DOMAIN-SUFFIX,host.livekit.cloud,AI
-  - DOMAIN-SUFFIX,intercom.io,AI
-  - DOMAIN-SUFFIX,intercomcdn.com,AI
-  - DOMAIN-SUFFIX,launchdarkly.com,AI
-  - DOMAIN-SUFFIX,openaiapi-site.azureedge.net,AI
-  - DOMAIN-SUFFIX,openaicom.imgix.net,AI
-  - DOMAIN-SUFFIX,segment.io,AI
-  - DOMAIN-SUFFIX,sentry.io,AI
-  - DOMAIN-SUFFIX,turn.livekit.cloud,AI
+  - DOMAIN-SUFFIX,chatgpt.com,PROXY
+  - DOMAIN-SUFFIX,openai.com,PROXY
+  - DOMAIN-SUFFIX,oaistatic.com,PROXY
+  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
+  - DOMAIN-SUFFIX,sora.com,PROXY
+  - DOMAIN-SUFFIX,anthropic.com,PROXY
+  - DOMAIN-SUFFIX,claude.ai,PROXY
+  - DOMAIN-SUFFIX,claude.com,PROXY
+  - DOMAIN-SUFFIX,claudeusercontent.com,PROXY
+  - DOMAIN,gemini.google.com,GOOGLE
+  - DOMAIN,aistudio.google.com,GOOGLE
+  - DOMAIN,ai.google.dev,GOOGLE
+  - DOMAIN-SUFFIX,generativeai.google,GOOGLE
+  - DOMAIN,api.statsig.com,PROXY
+  - DOMAIN,browser-intake-datadoghq.com,PROXY
+  - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
+  - DOMAIN,openai-api.arkoselabs.com,PROXY
+  - DOMAIN-SUFFIX,auth0.com,PROXY
+  - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
+  - DOMAIN-SUFFIX,chatgpt.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,client-api.arkoselabs.com,PROXY
+  - DOMAIN-SUFFIX,events.statsigapi.net,PROXY
+  - DOMAIN-SUFFIX,featuregates.org,PROXY
+  - DOMAIN-SUFFIX,host.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,intercom.io,PROXY
+  - DOMAIN-SUFFIX,intercomcdn.com,PROXY
+  - DOMAIN-SUFFIX,launchdarkly.com,PROXY
+  - DOMAIN-SUFFIX,openaiapi-site.azureedge.net,PROXY
+  - DOMAIN-SUFFIX,openaicom.imgix.net,PROXY
+  - DOMAIN-SUFFIX,segment.io,PROXY
+  - DOMAIN-SUFFIX,sentry.io,PROXY
+  - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
 
   # ==================== Gemini / Google ====================
-  # Gemini 依赖的 Google 域名统一进入 AI_GEMINI，默认优先 XHTTP。
-  - DOMAIN-SUFFIX,google.com,AI_GEMINI
-  - DOMAIN-SUFFIX,googleapis.com,AI_GEMINI
-  - DOMAIN-SUFFIX,googleapis.cn,AI_GEMINI
-  - DOMAIN-SUFFIX,googleusercontent.com,AI_GEMINI
-  - DOMAIN-SUFFIX,gstatic.com,AI_GEMINI
+  # Gemini 依赖的 Google 域名统一进入 GOOGLE，默认优先 XHTTP。
+  - DOMAIN-SUFFIX,google.com,GOOGLE
+  - DOMAIN-SUFFIX,googleapis.com,GOOGLE
+  - DOMAIN-SUFFIX,googleapis.cn,GOOGLE
+  - DOMAIN-SUFFIX,googleusercontent.com,GOOGLE
+  - DOMAIN-SUFFIX,gstatic.com,GOOGLE
   # Google Play 的应用包、增量包与图片资源使用独立域名。
-  - DOMAIN-SUFFIX,gvt1.com,AI_GEMINI
-  - DOMAIN-SUFFIX,gvt2.com,AI_GEMINI
-  - DOMAIN-SUFFIX,gvt3.com,AI_GEMINI
-  - DOMAIN-SUFFIX,ggpht.com,AI_GEMINI
-  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,AI_GEMINI
-  - DOMAIN-SUFFIX,googlevideo.com,AI_GEMINI
-  - DOMAIN-SUFFIX,youtube.com,AI_GEMINI
-  - DOMAIN-SUFFIX,ytimg.com,AI_GEMINI
+  - DOMAIN-SUFFIX,gvt1.com,GOOGLE
+  - DOMAIN-SUFFIX,gvt2.com,GOOGLE
+  - DOMAIN-SUFFIX,gvt3.com,GOOGLE
+  - DOMAIN-SUFFIX,ggpht.com,GOOGLE
+  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,GOOGLE
+  - DOMAIN-SUFFIX,googlevideo.com,GOOGLE
+  - DOMAIN-SUFFIX,youtube.com,GOOGLE
+  - DOMAIN-SUFFIX,ytimg.com,GOOGLE
 
   # ==================== GitHub ====================
   # GitHub 下载会跳转到 codeload.github.com、release-assets.githubusercontent.com
   # 或 objects.githubusercontent.com；显式代理，避免依赖 GEOSITE / MATCH 兜底。
-  - DOMAIN-SUFFIX,github.com,DOWNLOAD
-  - DOMAIN-SUFFIX,githubusercontent.com,DOWNLOAD
-  - DOMAIN-SUFFIX,githubassets.com,DOWNLOAD
-  - DOMAIN-SUFFIX,githubstatus.com,DOWNLOAD
+  - DOMAIN-SUFFIX,github.com,GITHUB
+  - DOMAIN-SUFFIX,githubusercontent.com,GITHUB
+  - DOMAIN-SUFFIX,githubassets.com,GITHUB
+  - DOMAIN-SUFFIX,githubstatus.com,GITHUB
 
   # ==================== LINE ====================
   - DOMAIN-SUFFIX,scdn.co,PROXY
@@ -530,22 +530,18 @@ proxies:
 {proxy_nodes}
 
 proxy-groups:
-    - name: AI_GEMINI
-      type: select
-      proxies:
-        - {ai_gemini_proxy_names}
-    - name: DOWNLOAD
-      type: select
-      proxies:
-        - {download_proxy_names}
-    - name: AI
-      type: select
-      proxies:
-        - {proxy_names}
     - name: PROXY
       type: select
       proxies:
         - {proxy_names}
+    - name: GITHUB
+      type: select
+      proxies:
+        - {github_proxy_names}
+    - name: GOOGLE
+      type: select
+      proxies:
+        - {google_proxy_names}
 
 {rules_section}
 `;
@@ -783,13 +779,13 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
     const sections = {
         fake_ip_filter: FAKE_IP_FILTER,
         proxy_nodes: proxyNodes,
-        ai_gemini_proxy_names: [
+        google_proxy_names: [
             ...streamUpNames,
             ...streamOneNames,
             ...wsNames,
             ...proxyNames.filter(name => ![...streamUpNames, ...streamOneNames, ...wsNames].includes(name))
         ].join('\n        - '),
-        download_proxy_names: [
+        github_proxy_names: [
             ...streamUpNames,
             ...wsNames,
             ...streamOneNames,
@@ -799,7 +795,7 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
         rules_section: rulesStr
     };
     return CLASH_CONFIG_TEMPLATE.replace(
-        /{(fake_ip_filter|proxy_nodes|ai_gemini_proxy_names|download_proxy_names|proxy_names|rules_section)}/g,
+        /{(fake_ip_filter|proxy_nodes|google_proxy_names|github_proxy_names|proxy_names|rules_section)}/g,
         (_, section) => sections[section]
     );
 }
