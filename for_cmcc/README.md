@@ -260,3 +260,10 @@ npm test
 ```
 
 测试覆盖单文件入口、隔离路径、固定协议守卫、XHTTP/WSS 三节点输出、双栈 CDN 拨号、Cloudflare 配置、订阅 Token、Worker base64/Mihomo 输出及策略顺序。
+若本机已安装 Mihomo，可额外执行真实配置校验：
+
+```bash
+MIHOMO_BIN=/path/to/mihomo MIHOMO_DATA_DIR=/path/to/mihomo-data npm run test:mihomo
+```
+
+`MIHOMO_DATA_DIR` 应包含 Mihomo 校验 `GEOSITE`、`GEOIP` 规则所需的 `GeoSite.dat` 与 `Country.mmdb`；若省略，Mihomo 会按自身配置尝试下载。

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import worker from '../sample-worker.js';
@@ -29,6 +32,36 @@ async function importSampleWorkerWithSource(source) {
 
 function decodeBase64Subscription(text) {
   return Buffer.from(text, 'base64').toString('utf8');
+}
+
+function findMihomoBinary() {
+  const candidates = [process.env.MIHOMO_BIN, 'mihomo', 'clash-meta'].filter(Boolean);
+  return candidates.find(candidate => !spawnSync(candidate, ['-v'], { stdio: 'ignore' }).error);
+}
+
+async function assertMihomoAccepts(yaml) {
+  const binary = findMihomoBinary();
+  if (!binary) {
+    if (process.env.REQUIRE_MIHOMO_TESTS === '1') {
+      assert.fail('Mihomo binary is required; set MIHOMO_BIN=/path/to/mihomo');
+    }
+    return false;
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), 'easy-cmcc-mihomo-'));
+  try {
+    const config = join(directory, 'config.yaml');
+    const dataDirectory = process.env.MIHOMO_DATA_DIR || directory;
+    await writeFile(config, yaml);
+    const result = spawnSync(binary, ['-t', '-d', dataDirectory, '-f', config], {
+      encoding: 'utf8',
+      timeout: 120_000
+    });
+    assert.equal(result.status, 0, `${result.stdout || ''}${result.stderr || ''}`);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  return true;
 }
 
 describe('sample-worker Cloudflare Worker', () => {
@@ -162,6 +195,48 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(await responseText(response), 'Not Found');
   });
 
+  it('only accepts GET and HEAD and returns hardened response headers', async () => {
+    const post = await worker.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}`), { method: 'POST' }),
+      {}
+    );
+    const head = await worker.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&flag=clash`), { method: 'HEAD' }),
+      {}
+    );
+
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET, HEAD');
+    assert.equal(await post.text(), 'Method Not Allowed');
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+    assert.equal(head.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(head.headers.get('x-robots-tag'), 'noindex, nofollow, noarchive');
+    assert.equal(head.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(head.headers.get('access-control-allow-origin'), null);
+  });
+
+  it('does not expose internal error details in 500 responses', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source.replace("portMode: '443'", "portMode: 'invalid'")
+    );
+    const originalConsoleError = console.error;
+    console.error = () => {};
+    try {
+      const response = await module.default.fetch(
+        new Request(subscribeUrl(`token=${VALID_TOKEN}`)),
+        {}
+      );
+
+      assert.equal(response.status, 500);
+      assert.equal(await response.text(), 'Internal Server Error');
+      assert.match(response.headers.get('cache-control'), /no-store/);
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
   it('rejects missing or unknown tokens', async () => {
     const missing = await fetchSubscribe();
     const invalid = await fetchSubscribe('token=unknown');
@@ -175,30 +250,33 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(await responseText(formerKey), '403 Forbidden');
   });
 
-  it('returns only DEFAULT_NODE in the default base64 subscription', async () => {
+  it('returns the three CDN-capable DEFAULT_NODE entries in the default base64 subscription', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}`);
-    const body = decodeBase64Subscription(await responseText(response));
+    const links = decodeBase64Subscription(await responseText(response)).split('\n');
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'text/plain; charset=UTF-8');
     assert.match(response.headers.get('cache-control'), /no-store/);
     assert.equal(response.headers.get('content-disposition'), 'inline');
-    assert.match(body, /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
-    assert.match(body, /security=reality/);
-    assert.match(body, /flow=xtls-rprx-vision/);
-    assert.match(body, /packetEncoding=xudp/);
-    assert.match(body, /#NODE_REALITY$/);
-    assert.doesNotMatch(body, /NODE_ANYTLS/);
-    assert.doesNotMatch(body, /NODE_VLESS_XHTTP/);
-    assert.doesNotMatch(body, /trojan/i);
+    assert.equal(links.length, 3);
+    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
+    assert.match(links[0], /type=xhttp/);
+    assert.match(links[0], /mode=stream-up/);
+    assert.match(links[0], /#NODE_VLESS_XHTTP_STREAM_UP$/);
+    assert.match(links[1], /type=xhttp/);
+    assert.match(links[1], /mode=stream-one/);
+    assert.match(links[1], /#NODE_VLESS_XHTTP_STREAM_ONE$/);
+    assert.match(links[2], /type=ws/);
+    assert.match(links[2], /#NODE_VLESS_WS$/);
+    assert.doesNotMatch(links.join('\n'), /reality|anytls|trojan/i);
   });
 
   it('accepts an array of DEFAULT_NODE configs in the default base64 subscription', async () => {
     const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
     const module = await importSampleWorkerWithSource(
       source.replace(
-        'const DEFAULT_NODE = NODE_REALITY_CONFIG;',
-        'const DEFAULT_NODE = [NODE_REALITY_CONFIG, NODE_ANYTLS_CONFIG];'
+        'const DEFAULT_NODE = [\n    NODE_VLESS_XHTTP_CONFIG,\n    NODE_VLESS_XHTTP_STREAM_ONE_CONFIG,\n    NODE_VLESS_WS_CONFIG\n];',
+        'const DEFAULT_NODE = NODE_VLESS_WS_CONFIG;'
       )
     );
     const response = await module.default.fetch(
@@ -208,9 +286,9 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = decodeBase64Subscription(await responseText(response)).split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 2);
-    assert.match(links[0], /#NODE_REALITY$/);
-    assert.match(links[1], /#NODE_ANYTLS$/);
+    assert.equal(links.length, 1);
+    assert.match(links[0], /type=ws/);
+    assert.match(links[0], /#NODE_VLESS_WS$/);
   });
 
   it('returns all registered nodes when node=all is requested', async () => {
@@ -219,37 +297,26 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = body.split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 5);
-    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
-    assert.match(links[1], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10055\/\?/);
-    assert.match(links[2], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
-    assert.match(links[0], /#NODE_REALITY$/);
-    assert.match(links[1], /sni=anytls\.example\.com/);
-    assert.match(links[1], /insecure=0/);
-    assert.match(links[1], /#NODE_ANYTLS$/);
-    assert.match(links[2], /security=tls/);
-    assert.match(links[2], /type=xhttp/);
-    assert.match(links[2], /alpn=h2/);
-    assert.match(links[2], /path=%2Frandompath/);
-    assert.match(links[2], /mode=stream-up/);
-    assert.match(links[2], /packetEncoding=xudp/);
-    assert.doesNotMatch(links[2], /flow=xtls-rprx-vision/);
-    assert.match(links[2], /#NODE_VLESS_XHTTP_STREAM_UP$/);
-    assert.match(links[3], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
-    assert.match(links[3], /security=tls/);
-    assert.match(links[3], /type=xhttp/);
-    assert.match(links[3], /path=%2Frandompath/);
-    assert.match(links[3], /mode=stream-one/);
-    assert.match(links[3], /#NODE_VLESS_XHTTP_STREAM_ONE$/);
-    assert.match(links[4], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
-    assert.match(links[4], /security=tls/);
-    assert.match(links[4], /type=ws/);
-    assert.match(links[4], /path=%2Frandomws/);
-    assert.match(links[4], /host=xhttp\.example\.com/);
-    assert.match(links[4], /#NODE_VLESS_WS$/);
+    assert.equal(links.length, 3);
+    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000002@xhttp\.example\.com:443\?/);
+    assert.match(links[0], /security=tls/);
+    assert.match(links[0], /type=xhttp/);
+    assert.match(links[0], /alpn=h2/);
+    assert.match(links[0], /path=%2Frandompath/);
+    assert.match(links[0], /mode=stream-up/);
+    assert.match(links[0], /packetEncoding=xudp/);
+    assert.match(links[0], /#NODE_VLESS_XHTTP_STREAM_UP$/);
+    assert.match(links[1], /type=xhttp/);
+    assert.match(links[1], /mode=stream-one/);
+    assert.match(links[1], /#NODE_VLESS_XHTTP_STREAM_ONE$/);
+    assert.match(links[2], /type=ws/);
+    assert.match(links[2], /path=%2Frandomws/);
+    assert.match(links[2], /host=xhttp\.example\.com/);
+    assert.match(links[2], /#NODE_VLESS_WS$/);
+    assert.doesNotMatch(body, /reality|anytls|trojan/i);
   });
 
-  it('returns Clash YAML for the default node with normalized download filename', async () => {
+  it('returns Clash YAML for the default CDN nodes with normalized download filename', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`, {
       SUB_DOWNLOAD_NAME: 'Team_Sub.yaml'
     });
@@ -259,12 +326,17 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-type'), 'text/yaml; charset=UTF-8');
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=Team_Sub');
     assert.match(body, /mixed-port: 1080/);
-    assert.match(body, /- name: "NODE_REALITY"/);
-    assert.match(body, /server: reality\.example\.com/);
-    assert.match(body, /port: 10049/);
+    assert.match(body, /- name: "NODE_VLESS_XHTTP_STREAM_UP"/);
+    assert.match(body, /- name: "NODE_VLESS_XHTTP_STREAM_ONE"/);
+    assert.match(body, /- name: "NODE_VLESS_WS"/);
+    assert.match(body, /server: "xhttp\.example\.com"/);
+    assert.match(body, /port: 443/);
     assert.match(body, /type: vless/);
-    assert.match(body, /reality-opts:/);
-    assert.match(body, /public-key: REPLACE_WITH_REALITY_PUBLIC_KEY/);
+    assert.match(body, /network: xhttp/);
+    assert.match(body, /path: "\/randompath"/);
+    assert.match(body, /mode: "stream-up"/);
+    assert.match(body, /mode: "stream-one"/);
+    assert.match(body, /network: ws/);
     assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
@@ -284,9 +356,7 @@ describe('sample-worker Cloudflare Worker', () => {
       body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
       body.indexOf('GEOSITE,geolocation-!cn,PROXY')
     );
-    assert.doesNotMatch(body, /NODE_ANYTLS/);
-    assert.doesNotMatch(body, /NODE_VLESS_XHTTP/);
-    assert.doesNotMatch(body, /trojan/i);
+    assert.doesNotMatch(body, /reality|anytls|trojan/i);
   });
 
   it('races dual-stack CDN connections while keeping application DNS/TUN on IPv4', async () => {
@@ -348,35 +418,28 @@ describe('sample-worker Cloudflare Worker', () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=EASY_CMCC');
-    assert.match(body, /- name: "NODE_REALITY"/);
-    assert.match(body, /server: reality\.example\.com/);
-    assert.match(body, /port: 10049/);
-    assert.match(body, /- name: "NODE_ANYTLS"/);
-    assert.match(body, /type: anytls/);
-    assert.match(body, /server: "anytls\.example\.com"/);
-    assert.match(body, /port: 10055/);
     assert.match(body, /- name: "NODE_VLESS_XHTTP_STREAM_UP"/);
-    assert.match(body, /server: xhttp\.example\.com/);
+    assert.match(body, /server: "xhttp\.example\.com"/);
     assert.match(body, /network: xhttp/);
     assert.match(body, /udp: true/);
-    assert.match(body, /path: \/randompath/);
-    assert.match(body, /mode: stream-up/);
+    assert.match(body, /path: "\/randompath"/);
+    assert.match(body, /mode: "stream-up"/);
     assert.match(body, /host: "xhttp\.example\.com"/);
     assert.doesNotMatch(body, /reuse-settings:/);
     assert.match(body, /packet-encoding: xudp/);
     assert.match(body, /alpn:\n      - h2/);
-    assert.match(body, /ip-version: dual/);
+    assert.match(body, /ip-version: "dual"/);
     assert.match(body, /- name: "NODE_VLESS_XHTTP_STREAM_ONE"/);
-    assert.match(body, /mode: stream-one/);
+    assert.match(body, /mode: "stream-one"/);
     assert.match(body, /- name: "NODE_VLESS_WS"/);
     assert.match(body, /network: ws/);
-    assert.match(body, /path: \/randomws/);
-    assert.equal((body.match(/ip-version: dual/g) || []).length, 3);
+    assert.match(body, /path: "\/randomws"/);
+    assert.equal((body.match(/ip-version: "dual"/g) || []).length, 3);
     assert.match(body, /^proxy-groups:$/m);
     assert.match(body, /- name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
     assert.match(body, /- name: DOWNLOAD\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_WS"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"/);
-    assert.match(body, /- name: AI\n      type: select\n      proxies:\n        - "NODE_REALITY"/);
-    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "NODE_REALITY"/);
+    assert.match(body, /- name: AI\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
+    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "NODE_VLESS_XHTTP_STREAM_UP"\n        - "NODE_VLESS_XHTTP_STREAM_ONE"\n        - "NODE_VLESS_WS"/);
     assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
     assert.match(body, /DOMAIN-SUFFIX,github\.com,DOWNLOAD/);
 
@@ -385,13 +448,14 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(xhttpNode, /xhttp-opts:/);
     assert.match(xhttpNode, /smux:\n      enabled: false/);
     assert.doesNotMatch(xhttpNode, /flow: xtls-rprx-vision/);
+    assert.doesNotMatch(body, /reality|anytls|trojan/i);
   });
 
   it('quotes malicious node names without injecting YAML list entries', async () => {
     const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
     const module = await importSampleWorkerWithSource(
       source.replace(
-        "name: 'NODE_REALITY',",
+        "name: 'NODE_VLESS_XHTTP_STREAM_UP',",
         "name: 'bad\\n  - DIRECT {host} {rules_section}',"
       )
     );
@@ -404,6 +468,41 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.status, 200);
     assert.match(body, /- name: "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
     assert.match(body, /      - "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
-    assert.doesNotMatch(body, /\n\s+- DIRECT reality\.example\.com/);
+    assert.doesNotMatch(body, /\n\s+- DIRECT xhttp\.example\.com/);
+  });
+
+  it('quotes YAML scalars and brackets IPv6 hosts in subscription URIs', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source
+        .replaceAll("host: 'xhttp.example.com'", "host: '2001:db8::20'")
+        .replaceAll("sni: 'xhttp.example.com'", "sni: 'safe\\nfield: value'")
+    );
+    const uriResponse = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}`)),
+      {}
+    );
+    const yamlResponse = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&flag=clash`)),
+      {}
+    );
+    const links = decodeBase64Subscription(await uriResponse.text()).split('\n');
+    const yaml = await yamlResponse.text();
+
+    assert.equal(uriResponse.status, 200);
+    assert.match(links[0], /@\[2001:db8::20\]:443\?/);
+    assert.match(links[0], /sni=safe%0Afield%3A\+value/);
+    assert.match(yaml, /server: "2001:db8::20"/);
+    assert.match(yaml, /servername: "safe\\nfield: value"/);
+    assert.doesNotMatch(yaml, /^field: value$/m);
+  });
+
+  it('validates generated Clash YAML with Mihomo when its binary is available', async context => {
+    const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`);
+    const yaml = await response.text();
+
+    if (!(await assertMihomoAccepts(yaml))) {
+      context.skip('Mihomo binary is not installed; use REQUIRE_MIHOMO_TESTS=1 in CI');
+    }
   });
 });

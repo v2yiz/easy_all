@@ -50,11 +50,12 @@ assert_not_contains() {
 }
 
 worker_runtime_matches_protocol() {
-    node --input-type=module - "$1" "$2" <<'EOF'
+    node --input-type=module - "$1" "$2" "$3" <<'EOF'
 import fs from 'node:fs';
 
 const source = fs.readFileSync(process.argv[2], 'utf8');
 const protocol = process.argv[3];
+const portMode = process.argv[4];
 const encoded = Buffer.from(source).toString('base64');
 const worker = await import(`data:text/javascript;base64,${encoded}`);
 const env = {SUB_DOWNLOAD_NAME: 'Team.yaml'};
@@ -114,7 +115,7 @@ const checks = {
       'security=reality', 'type=tcp', 'fp=chrome', 'flow=xtls-rprx-vision',
       'pbk=test-public-key', 'sid=0123456789abcdef', '#MY_REALITY'],
     yaml: ['type: vless', 'network: tcp', 'tls: true', 'reality-opts:',
-      'public-key: test-public-key', 'client-fingerprint: chrome', 'flow: xtls-rprx-vision']
+      'public-key: "test-public-key"', 'client-fingerprint: "chrome"', 'flow: xtls-rprx-vision']
   },
   anytls: {
     link: ['anytls://test-anytls-password@anytls.example.com:', 'sni=anytls.example.com',
@@ -130,7 +131,11 @@ for (const part of checks[protocol].yaml) {
   if (!yaml.includes(part)) process.exit(1);
 }
 const port = Number(decoded.match(/@[^:]+:(\d+)/)?.[1]);
-if (!Number.isInteger(port) || port < 10000 || port > 65535) process.exit(1);
+if (portMode === '443') {
+  if (port !== 443) process.exit(1);
+} else if (!Number.isInteger(port) || port < 10000 || port > 65535) {
+  process.exit(1);
+}
 EOF
 }
 
@@ -266,32 +271,35 @@ test_validators_and_defaults() {
 }
 
 test_links_and_workers() {
-    local protocol link yaml worker sample_rules generated_rules
+    local protocol port_mode link yaml worker sample_rules generated_rules
     for protocol in reality anytls; do
         set_protocol_fixture "${protocol}"
         link=$(build_node_link)
         yaml=$(build_mihomo_node)
         assert_contains "${protocol} node link contains node name" "${NODE_NAME}" "${link}"
         assert_contains "${protocol} Mihomo node contains name" "${NODE_NAME}" "${yaml}"
-        worker="${TMP_DIR}/worker-${protocol}.js"
-        write_worker "${worker}"
-        assert_success "${protocol} Worker JavaScript syntax valid" node --check "${worker}"
-        assert_success "${protocol} Worker emits base64 and Mihomo outputs" \
-            worker_runtime_matches_protocol "${worker}" "${protocol}"
-        assert_success "${protocol} Worker accepts DEFAULT_NODE array" \
-            worker_runtime_accepts_default_node_array "${worker}"
-        sample_rules=$(awk '
-            $0 == "// EASY_ALL_RULES_START" {capture = 1}
-            capture == 1 {print}
-            $0 == "// EASY_ALL_RULES_END" {exit}
-        ' "${ROOT_DIR}/sample-worker.js")
-        generated_rules=$(awk '
-            $0 == "// EASY_ALL_RULES_START" {capture = 1}
-            capture == 1 {print}
-            $0 == "// EASY_ALL_RULES_END" {exit}
-        ' "${worker}")
-        assert_equal "${protocol} Worker rules come unchanged from sample-worker.js" \
-            "${sample_rules}" "${generated_rules}"
+        for port_mode in dynamic 443; do
+            SUB_PORT_MODE="${port_mode}"
+            worker="${TMP_DIR}/worker-${protocol}-${port_mode}.js"
+            write_worker "${worker}"
+            assert_success "${protocol}/${port_mode} Worker JavaScript syntax valid" node --check "${worker}"
+            assert_success "${protocol}/${port_mode} Worker emits base64 and Mihomo outputs" \
+                worker_runtime_matches_protocol "${worker}" "${protocol}" "${port_mode}"
+            assert_success "${protocol}/${port_mode} Worker accepts DEFAULT_NODE array" \
+                worker_runtime_accepts_default_node_array "${worker}"
+            sample_rules=$(awk '
+                $0 == "// EASY_ALL_RULES_START" {capture = 1}
+                capture == 1 {print}
+                $0 == "// EASY_ALL_RULES_END" {exit}
+            ' "${ROOT_DIR}/sample-worker.js")
+            generated_rules=$(awk '
+                $0 == "// EASY_ALL_RULES_START" {capture = 1}
+                capture == 1 {print}
+                $0 == "// EASY_ALL_RULES_END" {exit}
+            ' "${worker}")
+            assert_equal "${protocol}/${port_mode} Worker rules come unchanged from sample-worker.js" \
+                "${sample_rules}" "${generated_rules}"
+        done
     done
 }
 
@@ -527,7 +535,7 @@ test_worker_only_subscription_branch() {
     assert_equal "worker-only branch clears deployed Worker URL" "" "${WORKER_URL}"
     assert_equal "worker-only branch stores manual deploy mode" "worker" "${DEPLOY_MODE}"
     assert_success "worker-only branch generated Worker works" \
-        worker_runtime_matches_protocol "${WORKER_FILE}" "reality"
+        worker_runtime_matches_protocol "${WORKER_FILE}" "reality" "${SUB_PORT_MODE}"
 }
 
 test_state_and_lifecycle_guards() {

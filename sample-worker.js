@@ -40,7 +40,8 @@ const NODE_REALITY_CONFIG = defineNode({
     fp: 'chrome',
     sni: 'www.example.com',
     pbk: 'REPLACE_WITH_REALITY_PUBLIC_KEY',
-    sid: '0123456789abcdef'
+    sid: '0123456789abcdef',
+    portMode: '443'
 });
 
 // ── AnyTLS 节点，默认使用 dynamic 订阅端口 ────────────────────────
@@ -52,7 +53,8 @@ const NODE_ANYTLS_CONFIG = defineNode({
     sni: 'anytls.example.com',
     fp: 'chrome',
     udp: true,
-    insecure: false
+    insecure: false,
+    portMode: 'dynamic'
 });
 
 const DEFAULT_NODE = NODE_REALITY_CONFIG; // 控制默认输出的节点，支持 [NODE_REALITY_CONFIG, NODE_ANYTLS_CONFIG]
@@ -643,6 +645,25 @@ function encodeURIComponentCustom(str) {
     return encodeURIComponent(String(str)).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
 }
 
+function formatUriHost(value) {
+    const host = String(value || '');
+    if (!host || /[\s/?#@]/.test(host)) {
+        throw new Error('Invalid node host');
+    }
+    if (host.startsWith('[') && host.endsWith(']')) {
+        return host;
+    }
+    return host.includes(':') ? `[${host}]` : host;
+}
+
+function validatePort(value, field) {
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`Invalid ${field}: ${value}`);
+    }
+    return port;
+}
+
 function vlessSecurity(cfg) {
     return cfg.security || 'reality';
 }
@@ -652,24 +673,38 @@ function vlessNetwork(cfg) {
 }
 
 function resolveNodePort(cfg, dynamicPort) {
+    if (cfg.port !== undefined && cfg.port !== null && cfg.port !== '') {
+        return validatePort(cfg.port, 'node port');
+    }
+    if (cfg.portMode === '443') {
+        return 443;
+    }
+    if (cfg.portMode === 'dynamic') {
+        return validatePort(dynamicPort, 'dynamic port');
+    }
+    if (cfg.portMode !== undefined) {
+        throw new Error(`Unsupported port mode: ${cfg.portMode}`);
+    }
     if (cfg.type === 'anytls') {
-        return cfg.port || dynamicPort;
+        return validatePort(dynamicPort, 'dynamic port');
     }
-    if (cfg.port) {
-        return cfg.port;
-    }
-    return vlessSecurity(cfg) === 'tls' ? 443 : dynamicPort;
+    return vlessSecurity(cfg) === 'tls'
+        ? 443
+        : validatePort(dynamicPort, 'dynamic port');
 }
 
 function createVlessLink(cfg, port) {
     const security = vlessSecurity(cfg);
     const network = vlessNetwork(cfg);
+    const host = formatUriHost(cfg.host);
+    const sni = cfg.sni || cfg.host;
+    const fp = cfg.fp || 'chrome';
     const params = new URLSearchParams({
         encryption: 'none',
         security,
         type: network,
-        sni: cfg.sni,
-        fp: cfg.fp
+        sni,
+        fp
     });
 
     if (security === 'reality') {
@@ -691,7 +726,7 @@ function createVlessLink(cfg, port) {
         throw new Error(`Unsupported VLESS network: ${network}`);
     }
 
-    return `vless://${cfg.uuid}@${cfg.host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
+    return `vless://${cfg.uuid}@${host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
 }
 
 function createAnyTlsLink(cfg, port) {
@@ -701,7 +736,7 @@ function createAnyTlsLink(cfg, port) {
     });
     const password = encodeURIComponentCustom(cfg.password);
     const name = encodeURIComponentCustom(cfg.name);
-    return `anytls://${password}@${cfg.host}:${resolveNodePort(cfg, port)}/?${params.toString()}#${name}`;
+    return `anytls://${password}@${formatUriHost(cfg.host)}:${resolveNodePort(cfg, port)}/?${params.toString()}#${name}`;
 }
 
 function createLink(cfg, port) {
@@ -758,13 +793,13 @@ function generateClashProxyNode(cfg, port) {
         }
 
         return template
-            .replace(/{host}/g, cfg.host)
+            .replace(/{host}/g, yamlString(cfg.host))
             .replace(/{port}/g, String(resolveNodePort(cfg, port)))
-            .replace(/{uuid}/g, cfg.uuid)
-            .replace(/{sni}/g, cfg.sni)
-            .replace(/{pbk}/g, cfg.pbk || '')
-            .replace(/{sid}/g, cfg.sid || '')
-            .replace(/{fp}/g, cfg.fp)
+            .replace(/{uuid}/g, yamlString(cfg.uuid))
+            .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
+            .replace(/{pbk}/g, yamlString(cfg.pbk || ''))
+            .replace(/{sid}/g, yamlString(cfg.sid || ''))
+            .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));
     }
@@ -807,19 +842,43 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
 
 // ================= Workers 主入口 =================
 
+function createResponseHeaders(extra = {}) {
+    return new Headers({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Robots-Tag': 'noindex, nofollow, noarchive',
+        'Referrer-Policy': 'no-referrer',
+        ...extra
+    });
+}
+
+function textResponse(request, body, status, extraHeaders = {}) {
+    const headers = createResponseHeaders({
+        'Content-Type': 'text/plain; charset=UTF-8',
+        ...extraHeaders
+    });
+    return new Response(request.method === 'HEAD' ? null : body, { status, headers });
+}
+
 export default {
     async fetch(request, env) {
         try {
+            if (request.method !== 'GET' && request.method !== 'HEAD') {
+                return textResponse(request, 'Method Not Allowed', 405, { Allow: 'GET, HEAD' });
+            }
+
             const url = new URL(request.url);
             if (url.pathname !== '/subscribe') {
-                return new Response('Not Found', { status: 404 });
+                return textResponse(request, 'Not Found', 404);
             }
 
             const params = url.searchParams;
             const token = params.get('token');
 
             if (!isAllowedToken(token)) {
-                return new Response('403 Forbidden', { status: 403 });
+                return textResponse(request, '403 Forbidden', 403);
             }
 
             const flag = params.get('flag') || '';
@@ -834,11 +893,8 @@ export default {
             }
             const ports = targetConfigs.map((_, i) => calculateDynamicPort(currentHourCount + i));
 
-            const headers = new Headers({
+            const headers = createResponseHeaders({
                 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-                'Pragma': 'no-cache',
-                'Expires': '0',
-                'Access-Control-Allow-Origin': '*',
                 'Content-Disposition': flag === 'clash'
                 ? `attachment; filename=${clashDownloadFilename(env)}`
                 : 'inline'
@@ -847,14 +903,16 @@ export default {
             if (flag === 'clash') {
                 const clashContent = generateClashConfigMulti(targetConfigs, ports, EMBEDDED_CLASH_RULES);
                 headers.set('Content-Type', 'text/yaml; charset=UTF-8');
-                return new Response(clashContent, { headers });
+                return new Response(request.method === 'HEAD' ? null : clashContent, { headers });
             }
 
             const links = targetConfigs.map((cfg, i) => createLink(cfg, ports[i]));
             headers.set('Content-Type', 'text/plain; charset=UTF-8');
-            return new Response(base64Encode(links.join('\n')), { headers });
+            const content = base64Encode(links.join('\n'));
+            return new Response(request.method === 'HEAD' ? null : content, { headers });
         } catch (error) {
-            return new Response(`Error: ${error.message}`, { status: 500 });
+            console.error('Subscription generation failed', error);
+            return textResponse(request, 'Internal Server Error', 500);
         }
     }
 };

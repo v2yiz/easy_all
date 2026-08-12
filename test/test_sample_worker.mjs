@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import worker from '../sample-worker.js';
@@ -29,6 +32,36 @@ async function importSampleWorkerWithSource(source) {
 
 function decodeBase64Subscription(text) {
   return Buffer.from(text, 'base64').toString('utf8');
+}
+
+function findMihomoBinary() {
+  const candidates = [process.env.MIHOMO_BIN, 'mihomo', 'clash-meta'].filter(Boolean);
+  return candidates.find(candidate => !spawnSync(candidate, ['-v'], { stdio: 'ignore' }).error);
+}
+
+async function assertMihomoAccepts(yaml) {
+  const binary = findMihomoBinary();
+  if (!binary) {
+    if (process.env.REQUIRE_MIHOMO_TESTS === '1') {
+      assert.fail('Mihomo binary is required; set MIHOMO_BIN=/path/to/mihomo');
+    }
+    return false;
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), 'easy-all-mihomo-'));
+  try {
+    const config = join(directory, 'config.yaml');
+    const dataDirectory = process.env.MIHOMO_DATA_DIR || directory;
+    await writeFile(config, yaml);
+    const result = spawnSync(binary, ['-t', '-d', dataDirectory, '-f', config], {
+      encoding: 'utf8',
+      timeout: 120_000
+    });
+    assert.equal(result.status, 0, `${result.stdout || ''}${result.stderr || ''}`);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  return true;
 }
 
 describe('sample-worker Cloudflare Worker', () => {
@@ -162,6 +195,48 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(await responseText(response), 'Not Found');
   });
 
+  it('only accepts GET and HEAD and returns hardened response headers', async () => {
+    const post = await worker.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}`), { method: 'POST' }),
+      {}
+    );
+    const head = await worker.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&flag=clash`), { method: 'HEAD' }),
+      {}
+    );
+
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET, HEAD');
+    assert.equal(await post.text(), 'Method Not Allowed');
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+    assert.equal(head.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(head.headers.get('x-robots-tag'), 'noindex, nofollow, noarchive');
+    assert.equal(head.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(head.headers.get('access-control-allow-origin'), null);
+  });
+
+  it('does not expose internal error details in 500 responses', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source.replace("portMode: '443'", "portMode: 'invalid'")
+    );
+    const originalConsoleError = console.error;
+    console.error = () => {};
+    try {
+      const response = await module.default.fetch(
+        new Request(subscribeUrl(`token=${VALID_TOKEN}`)),
+        {}
+      );
+
+      assert.equal(response.status, 500);
+      assert.equal(await response.text(), 'Internal Server Error');
+      assert.match(response.headers.get('cache-control'), /no-store/);
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
   it('rejects missing or unknown tokens', async () => {
     const missing = await fetchSubscribe();
     const invalid = await fetchSubscribe('token=unknown');
@@ -183,12 +258,11 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-type'), 'text/plain; charset=UTF-8');
     assert.match(response.headers.get('cache-control'), /no-store/);
     assert.equal(response.headers.get('content-disposition'), 'inline');
-    assert.match(body, /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
+    assert.match(body, /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:443\?/);
     assert.match(body, /security=reality/);
     assert.match(body, /flow=xtls-rprx-vision/);
     assert.match(body, /packetEncoding=xudp/);
     assert.match(body, /#NODE_REALITY$/);
-    assert.doesNotMatch(body, /NODE_ANYTLS/);
     assert.doesNotMatch(body, /NODE_ANYTLS/);
     assert.doesNotMatch(body, /trojan/i);
   });
@@ -220,7 +294,7 @@ describe('sample-worker Cloudflare Worker', () => {
 
     assert.equal(response.status, 200);
     assert.equal(links.length, 2);
-    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:10049\?/);
+    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000001@reality\.example\.com:443\?/);
     assert.match(links[1], /^anytls:\/\/REPLACE_WITH_ANYTLS_PASSWORD@anytls\.example\.com:10055\/\?/);
     assert.match(links[0], /#NODE_REALITY$/);
     assert.match(links[1], /sni=anytls\.example\.com/);
@@ -239,11 +313,11 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=Team_Sub');
     assert.match(body, /mixed-port: 1080/);
     assert.match(body, /- name: "NODE_REALITY"/);
-    assert.match(body, /server: reality\.example\.com/);
-    assert.match(body, /port: 10049/);
+    assert.match(body, /server: "reality\.example\.com"/);
+    assert.match(body, /port: 443/);
     assert.match(body, /type: vless/);
     assert.match(body, /reality-opts:/);
-    assert.match(body, /public-key: REPLACE_WITH_REALITY_PUBLIC_KEY/);
+    assert.match(body, /public-key: "REPLACE_WITH_REALITY_PUBLIC_KEY"/);
     assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
@@ -263,7 +337,6 @@ describe('sample-worker Cloudflare Worker', () => {
       body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
       body.indexOf('GEOSITE,geolocation-!cn,PROXY')
     );
-    assert.doesNotMatch(body, /NODE_ANYTLS/);
     assert.doesNotMatch(body, /NODE_ANYTLS/);
     assert.doesNotMatch(body, /trojan/i);
   });
@@ -327,8 +400,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=EASY_ALL');
     assert.match(body, /- name: "NODE_REALITY"/);
-    assert.match(body, /server: reality\.example\.com/);
-    assert.match(body, /port: 10049/);
+    assert.match(body, /server: "reality\.example\.com"/);
+    assert.match(body, /port: 443/);
     assert.match(body, /- name: "NODE_ANYTLS"/);
     assert.match(body, /type: anytls/);
     assert.match(body, /server: "anytls\.example\.com"/);
@@ -350,7 +423,7 @@ describe('sample-worker Cloudflare Worker', () => {
       )
     );
     const response = await module.default.fetch(
-      new Request(subscribeUrl(`token=${VALID_TOKEN}&flag=clash`)),
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&node=all&flag=clash`)),
       {}
     );
     const body = await responseText(response);
@@ -359,5 +432,62 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /- name: "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
     assert.match(body, /      - "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
     assert.doesNotMatch(body, /\n\s+- DIRECT reality\.example\.com/);
+  });
+
+  it('honors both 443 and dynamic port modes for Reality and AnyTLS', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source
+        .replace("sid: '0123456789abcdef',\n    portMode: '443'", "sid: '0123456789abcdef',\n    portMode: 'dynamic'")
+        .replace("insecure: false,\n    portMode: 'dynamic'", "insecure: false,\n    portMode: '443'")
+    );
+    const response = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&node=all`)),
+      {}
+    );
+    const links = decodeBase64Subscription(await responseText(response)).split('\n');
+
+    assert.match(links[0], /@reality\.example\.com:10049\?/);
+    assert.match(links[1], /@anytls\.example\.com:443\/\?/);
+  });
+
+  it('quotes every VLESS scalar and brackets IPv6 URI hosts', async () => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source
+        .replace("host: 'reality.example.com'", "host: '2001:db8::10'")
+        .replace("sni: 'www.example.com'", "sni: 'safe\\nfield: value'")
+    );
+    const plain = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}`)),
+      {}
+    );
+    const clash = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&flag=clash`)),
+      {}
+    );
+    const link = decodeBase64Subscription(await responseText(plain));
+    const yaml = await responseText(clash);
+
+    assert.match(link, /@\[2001:db8::10\]:443\?/);
+    assert.match(yaml, /server: "2001:db8::10"/);
+    assert.match(yaml, /servername: "safe\\nfield: value"/);
+    assert.doesNotMatch(yaml, /^field: value$/m);
+  });
+
+  it('can validate generated YAML with a real Mihomo binary', async (context) => {
+    const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
+    const module = await importSampleWorkerWithSource(
+      source.replace(
+        'REPLACE_WITH_REALITY_PUBLIC_KEY',
+        'Ovep-pmhaM4KmKTU55eLpXrlvTyVu6x8zQAc_e0yHT0'
+      )
+    );
+    const response = await module.default.fetch(
+      new Request(subscribeUrl(`token=${VALID_TOKEN}&flag=clash`)),
+      {}
+    );
+    const validated = await assertMihomoAccepts(await responseText(response));
+    if (!validated) context.skip('Mihomo is not installed; set MIHOMO_BIN to enable schema validation');
   });
 });

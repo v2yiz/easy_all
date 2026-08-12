@@ -258,3 +258,10 @@ npm test
 ```
 
 测试覆盖 Reality/AnyTLS 节点链接、Mihomo 输出、Worker base64 输出、状态安全、协议切换/回滚守卫，以及 `sample-worker.js`。
+若本机已安装 Mihomo，可额外执行真实配置校验：
+
+```bash
+MIHOMO_BIN=/path/to/mihomo MIHOMO_DATA_DIR=/path/to/mihomo-data npm run test:mihomo
+```
+
+`MIHOMO_DATA_DIR` 应包含 Mihomo 校验 `GEOSITE`、`GEOIP` 规则所需的 `GeoSite.dat` 与 `Country.mmdb`；若省略，Mihomo 会按自身配置尝试下载。
