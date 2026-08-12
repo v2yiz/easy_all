@@ -818,6 +818,10 @@ install_acme() {
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
 }
 
+run_acme() {
+    "${ACME_BIN}" "$@" --home "${ACME_HOME}"
+}
+
 collect_cloudflare_dns_credentials() {
     if [[ -z "${CF_DNS_API_TOKEN:-}" ]]; then
         CF_DNS_API_TOKEN=$(prompt_secret "Cloudflare DNS API Token（用于 acme.sh DNS-01，输入不回显）") \
@@ -937,9 +941,10 @@ issue_certificate() {
     install_acme
     collect_cloudflare_dns_credentials
     export CF_Token="${CF_DNS_API_TOKEN}"
-    "${ACME_BIN}" --set-default-ca --server letsencrypt >/dev/null
+    run_acme --set-default-ca --server letsencrypt >/dev/null \
+        || die "设置 acme.sh 默认 CA 为 Let's Encrypt 失败"
     local issue_status=0
-    "${ACME_BIN}" --issue --dns dns_cf -d "${cert_domain}" --keylength ec-256 \
+    run_acme --issue --dns dns_cf -d "${cert_domain}" --keylength ec-256 \
         || issue_status=$?
     [[ "${issue_status}" == "0" || "${issue_status}" == "2" ]] \
         || die "Let's Encrypt 证书申请失败（acme.sh 返回码 ${issue_status}）"
@@ -955,7 +960,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files easy-cmcc-s
 fi
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
-    "${ACME_BIN}" --install-cert -d "${cert_domain}" --ecc \
+    run_acme --install-cert -d "${cert_domain}" --ecc \
         --fullchain-file "${CERT_FILE}" \
         --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" \
@@ -2399,7 +2404,7 @@ renew_certificate() {
     [[ "${PROTOCOL}" == "anytls" ]] \
         && cert_domain=${ANYTLS_DOMAIN} \
         || cert_domain=${VLESS_XHTTP_DOMAIN}
-    "${ACME_BIN}" --renew -d "${cert_domain}" --ecc --force \
+    run_acme --renew -d "${cert_domain}" --ecc --force \
         || die "证书续期失败"
     "${CERT_RELOAD_HOOK}" || true
     success "证书已续期并重载当前 TLS 服务"
@@ -2496,14 +2501,14 @@ stop_protocol_services() {
 remove_managed_acme_domain() {
     local domain=${1:-}
     [[ -n "${domain}" && -x "${ACME_BIN}" ]] || return 0
-    "${ACME_BIN}" --remove -d "${domain}" --ecc >/dev/null 2>&1 || true
+    run_acme --remove -d "${domain}" --ecc >/dev/null 2>&1 || true
     rm -rf -- "${ACME_HOME:?}/${domain}" "${ACME_HOME:?}/${domain}_ecc"
 }
 
 purge_owned_acme_if_unused() {
     local certificate_rows
     [[ -f "${ACME_OWNERSHIP_MARKER}" && -x "${ACME_BIN}" ]] || return 0
-    if ! certificate_rows=$("${ACME_BIN}" --list 2>/dev/null | tail -n +2 | awk 'NF {count++} END {print count+0}'); then
+    if ! certificate_rows=$(run_acme --list 2>/dev/null | tail -n +2 | awk 'NF {count++} END {print count+0}'); then
         warn "无法确认 acme.sh 是否仍有其他证书，保留 ${ACME_HOME}"
         return 0
     fi

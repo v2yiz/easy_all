@@ -48,6 +48,16 @@ assert_contains "CMCC resets legacy unsent queue overrides" "${installer}" \
     "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295"
 assert_contains "CMCC update reapplies TCP tuning" "${installer}" \
     'info "刷新 BBR 与 TCP 参数"'
+assert_contains "CMCC acme.sh wrapper pins the isolated home" "${installer}" \
+    '"${ACME_BIN}" "$@" --home "${ACME_HOME}"'
+for acme_action in set-default-ca issue install-cert renew remove list; do
+    assert_contains "CMCC ${acme_action} uses the isolated acme.sh wrapper" "${installer}" \
+        "run_acme --${acme_action}"
+done
+if grep -Eq '"\$\{ACME_BIN\}" --(set-default-ca|issue|install-cert|renew|remove|list)' \
+    <<<"${installer}"; then
+    fail "CMCC acme.sh operations must not bypass the isolated-home wrapper"
+fi
 
 readme=$(<"${ROOT_DIR}/README.md")
 assert_contains "README identifies the standalone installer" "${readme}" \
