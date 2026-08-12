@@ -117,16 +117,6 @@ const BASE_FAKE_IP_FILTER = [
     'time.apple.com',
     '*.ntp.org.cn',
     'pool.ntp.org',
-    // ==================== 字节内网域名 START（临时）====================
-    '+.bytedance.net',
-    '+.tiktok-row.net',
-    '+.zijieapi.com',
-    '+.bytetcc.com',
-    '+.feelgood.cn',
-    '+.bytegoofy.com',
-    '+.byted.org',
-    '+.larkoffice.com',
-    // ==================== 字节内网域名 END ====================
 ];
 
 const FAKE_IP_FILTER = BASE_FAKE_IP_FILTER
@@ -247,45 +237,6 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,mi-img.com,DIRECT
   - DOMAIN-SUFFIX,miui.com,DIRECT
   - DOMAIN-SUFFIX,xiaomi.com,DIRECT
-
-  # ==================== 字节内网域名 START（临时）====================
-  - DOMAIN-SUFFIX,bytedance.net,DIRECT
-  - DOMAIN-SUFFIX,tiktok-row.net,DIRECT
-  - DOMAIN-SUFFIX,zijieapi.com,DIRECT
-  - DOMAIN-SUFFIX,bytetcc.com,DIRECT
-  - DOMAIN-SUFFIX,feelgood.cn,DIRECT
-  - DOMAIN-SUFFIX,bytegoofy.com,DIRECT
-  - DOMAIN-SUFFIX,byted.org,DIRECT
-  - DOMAIN-SUFFIX,larkoffice.com,DIRECT
-  # 飞书官方客户端网络白名单：消息长连接、API、静态资源与 CDN 统一直连，避免会话分流。
-  - DOMAIN-SUFFIX,feishu.net,DIRECT
-  - DOMAIN-SUFFIX,feishu.cn,DIRECT
-  - DOMAIN-SUFFIX,feishucdn.com,DIRECT
-  - DOMAIN-SUFFIX,zjurl.cn,DIRECT
-  - DOMAIN-SUFFIX,bytedance.com,DIRECT
-  - DOMAIN-SUFFIX,byted-static.com,DIRECT
-  - DOMAIN-SUFFIX,feishu-3rd-party-services.com,DIRECT
-  - DOMAIN-SUFFIX,bytehwm.com,DIRECT
-  - DOMAIN-SUFFIX,ttwebview.com,DIRECT
-  - DOMAIN-SUFFIX,bytegecko.com,DIRECT
-  - DOMAIN-SUFFIX,bytescm.com,DIRECT
-  - DOMAIN-SUFFIX,kundou.cn,DIRECT
-  - DOMAIN-SUFFIX,bytetos.com,DIRECT
-  - DOMAIN-SUFFIX,byteeffecttos.com,DIRECT
-  - DOMAIN-SUFFIX,bytednsdoc.com,DIRECT
-  - DOMAIN-SUFFIX,bytedanceapi.com,DIRECT
-  - DOMAIN-SUFFIX,volcvideo.com,DIRECT
-  - DOMAIN-SUFFIX,feishuimg.com,DIRECT
-  - DOMAIN-SUFFIX,feishuapp.cn,DIRECT
-  - DOMAIN-SUFFIX,getfeishu.cn,DIRECT
-  - DOMAIN-SUFFIX,feishupkg.com,DIRECT
-  - DOMAIN-SUFFIX,baseopendev.com,DIRECT
-  - DOMAIN-SUFFIX,bytedapm.com,DIRECT
-  - DOMAIN-SUFFIX,ibytedapm.com,DIRECT
-  - DOMAIN-SUFFIX,larkenterprise.com,DIRECT
-  - DOMAIN-SUFFIX,aiforce.cloud,DIRECT
-  - DOMAIN-SUFFIX,aiforce.run,DIRECT
-  # ==================== 字节内网域名 END ====================
 
   # ==================== Apple 直连 ====================
   - DOMAIN,www-cdn.icloud.com.akadns.net,DIRECT
@@ -463,11 +414,10 @@ tun:
       - tcp://any:53
     # Windows TUN + Cloudflare CDN 使用兼容模式，避免严格路由与现有网络栈冲突。
     strict-route: false
-    # ==================== 字节内网路由 START（临时）====================
+    # 局域网 IPv4/IPv6 地址绕过 TUN，保留内网直连能力。
     route-exclude-address:
       - 10.0.0.0/8
       - fdbd::/16
-    # ==================== 字节内网路由 END ====================
 
 dns:
     enable: true
@@ -489,16 +439,6 @@ dns:
     nameserver-policy:
       '+.lan': system
       '+.local': system
-      # ==================== 字节内网 DNS START（临时）====================
-      '+.bytedance.net': system
-      '+.tiktok-row.net': system
-      '+.zijieapi.com': system
-      '+.bytetcc.com': system
-      '+.feelgood.cn': system
-      '+.bytegoofy.com': system
-      '+.byted.org': system
-      '+.larkoffice.com': system
-      # ==================== 字节内网 DNS END ====================
 
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
