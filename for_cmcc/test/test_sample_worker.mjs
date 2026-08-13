@@ -238,7 +238,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(await responseText(formerKey), '403 Forbidden');
   });
 
-  it('returns the single gRPC DEFAULT_NODE entry in the default base64 subscription', async () => {
+  it('returns both WebSocket DEFAULT_NODE entries in the default base64 subscription', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}`);
     const links = decodeBase64Subscription(await responseText(response)).split('\n');
 
@@ -246,21 +246,24 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-type'), 'text/plain; charset=UTF-8');
     assert.match(response.headers.get('cache-control'), /no-store/);
     assert.equal(response.headers.get('content-disposition'), 'inline');
-    assert.equal(links.length, 1);
-    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000002@grpc\.example\.com:443\?/);
-    assert.match(links[0], /type=grpc/);
-    assert.match(links[0], /serviceName=random-service/);
-    assert.match(links[0], /#VLESS_GRPC$/);
-    assert.doesNotMatch(links[0], /type=xhttp|type=ws/);
-    assert.doesNotMatch(links.join('\n'), /reality|anytls|trojan/i);
+    assert.equal(links.length, 2);
+    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000002@ws\.example\.com:443\?/);
+    assert.match(links[0], /type=ws/);
+    assert.match(links[0], /path=%2Fvless-change-me/);
+    assert.match(links[0], /#VLESS_WS$/);
+    assert.match(links[1], /^trojan:\/\/replace-with-a-long-random-password@ws\.example\.com:443\?/);
+    assert.match(links[1], /type=ws/);
+    assert.match(links[1], /path=%2Ftrojan-change-me/);
+    assert.match(links[1], /#TROJAN_WS$/);
+    assert.doesNotMatch(links.join('\n'), /type=grpc|type=xhttp|reality|anytls/i);
   });
 
   it('accepts a one-item DEFAULT_NODE array in the default base64 subscription', async () => {
     const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
     const module = await importSampleWorkerWithSource(
       source.replace(
-        'const DEFAULT_NODE = NODE_VLESS_GRPC_CONFIG;',
-        'const DEFAULT_NODE = [NODE_VLESS_GRPC_CONFIG];'
+        'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];',
+        'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG];'
       )
     );
     const response = await module.default.fetch(
@@ -271,8 +274,8 @@ describe('sample-worker Cloudflare Worker', () => {
 
     assert.equal(response.status, 200);
     assert.equal(links.length, 1);
-    assert.match(links[0], /type=grpc/);
-    assert.match(links[0], /serviceName=random-service/);
+    assert.match(links[0], /type=ws/);
+    assert.match(links[0], /path=%2Fvless-change-me/);
   });
 
   it('returns all registered nodes when node=all is requested', async () => {
@@ -281,19 +284,21 @@ describe('sample-worker Cloudflare Worker', () => {
     const links = body.split('\n');
 
     assert.equal(response.status, 200);
-    assert.equal(links.length, 1);
-    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000002@grpc\.example\.com:443\?/);
+    assert.equal(links.length, 2);
+    assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000002@ws\.example\.com:443\?/);
     assert.match(links[0], /security=tls/);
-    assert.match(links[0], /type=grpc/);
-    assert.match(links[0], /alpn=h2/);
-    assert.match(links[0], /serviceName=random-service/);
+    assert.match(links[0], /type=ws/);
+    assert.match(links[0], /alpn=http%2F1.1/);
+    assert.match(links[0], /path=%2Fvless-change-me/);
     assert.match(links[0], /packetEncoding=xudp/);
-    assert.match(links[0], /#VLESS_GRPC$/);
-    assert.doesNotMatch(body, /type=xhttp|type=ws/);
-    assert.doesNotMatch(body, /reality|anytls|trojan/i);
+    assert.match(links[0], /#VLESS_WS$/);
+    assert.match(links[1], /^trojan:/);
+    assert.match(links[1], /path=%2Ftrojan-change-me/);
+    assert.match(links[1], /#TROJAN_WS$/);
+    assert.doesNotMatch(body, /type=xhttp|type=grpc|reality|anytls/i);
   });
 
-  it('returns Clash YAML for the gRPC node with normalized download filename', async () => {
+  it('returns Clash YAML for both WebSocket nodes with normalized download filename', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`, {
       SUB_DOWNLOAD_NAME: 'Team_Sub.yaml'
     });
@@ -303,15 +308,16 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-type'), 'text/yaml; charset=UTF-8');
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=Team_Sub');
     assert.match(body, /mixed-port: 1080/);
-    assert.match(body, /- name: "VLESS_GRPC"/);
-    assert.match(body, /server: "grpc\.example\.com"/);
+    assert.match(body, /- name: "VLESS_WS"/);
+    assert.match(body, /- name: "TROJAN_WS"/);
+    assert.match(body, /server: "ws\.example\.com"/);
     assert.match(body, /port: 443/);
     assert.match(body, /type: vless/);
-    assert.match(body, /network: grpc/);
-    assert.match(body, /grpc-service-name: "random-service"/);
-    assert.match(body, /ping-interval: 0/);
-    assert.match(body, /max-connections: 1/);
-    assert.doesNotMatch(body, /network: xhttp|network: ws/);
+    assert.equal((body.match(/network: ws/g) || []).length, 2);
+    assert.match(body, /path: "\/vless-change-me"/);
+    assert.match(body, /path: "\/trojan-change-me"/);
+    assert.match(body, /password: "replace-with-a-long-random-password"/);
+    assert.doesNotMatch(body, /network: xhttp|network: grpc/);
     assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
@@ -329,7 +335,7 @@ describe('sample-worker Cloudflare Worker', () => {
       body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
       body.indexOf('GEOSITE,geolocation-!cn,PROXY')
     );
-    assert.doesNotMatch(body, /reality|anytls|trojan/i);
+    assert.doesNotMatch(body, /reality|anytls/i);
   });
 
   it('uses power-conscious client settings and complete LAN bypasses', async () => {
@@ -424,7 +430,7 @@ describe('sample-worker Cloudflare Worker', () => {
     }
   });
 
-  it('keeps node=all limited to gRPC and falls back invalid filenames', async () => {
+  it('keeps node=all limited to both WebSocket nodes and falls back invalid filenames', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&node=all&flag=clash`, {
       SUB_DOWNLOAD_NAME: '../bad/name.yaml'
     });
@@ -432,20 +438,19 @@ describe('sample-worker Cloudflare Worker', () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=EASY_CMCC');
-    assert.match(body, /- name: "VLESS_GRPC"/);
-    assert.match(body, /server: "grpc\.example\.com"/);
-    assert.match(body, /network: grpc/);
+    assert.match(body, /- name: "VLESS_WS"/);
+    assert.match(body, /- name: "TROJAN_WS"/);
+    assert.match(body, /server: "ws\.example\.com"/);
+    assert.equal((body.match(/network: ws/g) || []).length, 2);
     assert.match(body, /udp: true/);
-    assert.match(body, /grpc-service-name: "random-service"/);
-    assert.match(body, /ping-interval: 0/);
-    assert.match(body, /max-connections: 1/);
+    assert.match(body, /path: "\/vless-change-me"/);
+    assert.match(body, /path: "\/trojan-change-me"/);
     assert.match(body, /packet-encoding: xudp/);
-    assert.match(body, /alpn:\n      - h2/);
-    assert.match(body, /ip-version: "dual"/);
-    assert.doesNotMatch(body, /network: xhttp|- name: "NODE_VLESS_WS"|network: ws/);
-    assert.equal((body.match(/ip-version: "dual"/g) || []).length, 1);
+    assert.equal((body.match(/alpn:\n      - http\/1\.1/g) || []).length, 2);
+    assert.equal((body.match(/ip-version: "dual"/g) || []).length, 2);
+    assert.doesNotMatch(body, /network: xhttp|network: grpc/);
     assert.match(body, /^proxy-groups:$/m);
-    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "VLESS_GRPC"/);
+    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "VLESS_WS"\n        - "TROJAN_WS"/);
     const proxyGroups = body.slice(body.indexOf('proxy-groups:'), body.indexOf('\nrules:'));
     assert.equal((proxyGroups.match(/^    - name:/gm) || []).length, 1);
     assert.doesNotMatch(proxyGroups, /- name: (?:GITHUB|GOOGLE|AI_GEMINI|DOWNLOAD|AI)$/m);
@@ -454,20 +459,17 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
 
-    const grpcNode = body.slice(body.indexOf('- name: "VLESS_GRPC"'));
-    assert.match(grpcNode, /network: grpc/);
-    assert.match(grpcNode, /grpc-opts:/);
-    assert.match(grpcNode, /ping-interval: 0/);
-    assert.match(grpcNode, /smux:\n      enabled: false/);
-    assert.doesNotMatch(grpcNode, /flow: xtls-rprx-vision/);
-    assert.doesNotMatch(body, /reality|anytls|trojan/i);
+    assert.equal((body.match(/smux:\n      enabled: false/g) || []).length, 2);
+    assert.doesNotMatch(proxyGroups, /health-check|url-test|fallback/);
+    assert.doesNotMatch(body, /flow: xtls-rprx-vision/);
+    assert.doesNotMatch(body, /reality|anytls/i);
   });
 
   it('quotes malicious node names without injecting YAML list entries', async () => {
     const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
     const module = await importSampleWorkerWithSource(
       source.replace(
-        "name: 'VLESS_GRPC',",
+        "name: 'VLESS_WS',",
         "name: 'bad\\n  - DIRECT {host} {rules_section}',"
       )
     );
@@ -480,15 +482,15 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.status, 200);
     assert.match(body, /- name: "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
     assert.match(body, /      - "bad\\n  - DIRECT \{host\} \{rules_section\}"/);
-    assert.doesNotMatch(body, /\n\s+- DIRECT grpc\.example\.com/);
+    assert.doesNotMatch(body, /\n\s+- DIRECT ws\.example\.com/);
   });
 
   it('quotes YAML scalars and brackets IPv6 hosts in subscription URIs', async () => {
     const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
     const module = await importSampleWorkerWithSource(
       source
-        .replaceAll("host: 'grpc.example.com'", "host: '2001:db8::20'")
-        .replaceAll("sni: 'grpc.example.com'", "sni: 'safe\\nfield: value'")
+        .replaceAll("host: 'ws.example.com'", "host: '2001:db8::20'")
+        .replaceAll("sni: 'ws.example.com'", "sni: 'safe\\nfield: value'")
     );
     const uriResponse = await module.default.fetch(
       new Request(subscribeUrl(`token=${VALID_TOKEN}`)),
@@ -506,6 +508,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[0], /sni=safe%0Afield%3A\+value/);
     assert.match(yaml, /server: "2001:db8::20"/);
     assert.match(yaml, /servername: "safe\\nfield: value"/);
+    assert.match(yaml, /sni: "safe\\nfield: value"/);
     assert.doesNotMatch(yaml, /^field: value$/m);
   });
 

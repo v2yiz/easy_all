@@ -1,11 +1,11 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS gRPC TLS + Cloudflare CDN 订阅与 Clash Meta 配置
+ * 同时提供 VLESS WebSocket TLS 与 Trojan WebSocket TLS 的 Cloudflare CDN 订阅
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、TLS 域名和 gRPC service name
- * 3. DEFAULT_NODE 指向唯一的 gRPC 节点
+ * 2. 两个节点的认证信息、TLS 域名和各自 WebSocket 路径
+ * 3. DEFAULT_NODE 保留两个节点，以便同一订阅同时输出
  */
 // ================= 配置常量 =================
 
@@ -30,23 +30,39 @@ function isAllowedToken(token) {
     return Boolean(token && ALLOWED_TOKEN_VALUES.has(token));
 }
 
-// ── VLESS gRPC TLS 节点（Cloudflare CDN / HTTP/2）────────────────
-const NODE_VLESS_GRPC_CONFIG = defineNode({
+// ── 两个节点共用 CDN 域名，但使用独立认证与 WebSocket 路径 ────────
+const NODE_VLESS_WS_CONFIG = defineNode({
     type: 'vless',
     security: 'tls',
-    network: 'grpc',
+    network: 'ws',
     uuid: '00000000-0000-4000-8000-000000000002',
-    host: 'grpc.example.com',
-    name: 'VLESS_GRPC',
+    host: 'ws.example.com',
+    name: 'VLESS_WS',
     fp: 'chrome',
-    sni: 'grpc.example.com',
-    serviceName: 'random-service',
+    sni: 'ws.example.com',
+    path: '/vless-change-me',
+    ipVersion: 'dual',
+    udp: true,
+    packetEncoding: 'xudp',
+    portMode: '443'
+});
+
+const NODE_TROJAN_WS_CONFIG = defineNode({
+    type: 'trojan',
+    security: 'tls',
+    network: 'ws',
+    password: 'replace-with-a-long-random-password',
+    host: 'ws.example.com',
+    name: 'TROJAN_WS',
+    fp: 'chrome',
+    sni: 'ws.example.com',
+    path: '/trojan-change-me',
     ipVersion: 'dual',
     udp: true,
     portMode: '443'
 });
 
-const DEFAULT_NODE = NODE_VLESS_GRPC_CONFIG;
+const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];
 
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
@@ -267,8 +283,8 @@ const EMBEDDED_CLASH_RULES = `rules:
 
   # ==================== Gemini / Google ====================
   # Gemini 依赖的 Google 域名统一进入 PROXY。
-  # gRPC 公网链路固定为 H2/TCP；先拒绝 YouTube QUIC，让浏览器回退到 TCP，
-  # 避免把 QUIC/UDP 经 XUDP 封装进 H2/TCP 后产生嵌套重传和队头阻塞。
+  # WebSocket 公网链路固定为 HTTP/1.1/TCP；先拒绝 YouTube QUIC，让浏览器回退到 TCP，
+  # 避免把 QUIC/UDP 经代理封装进 TCP 后产生嵌套重传和队头阻塞。
   - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,googlevideo.com)),REJECT
   - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,youtube.com)),REJECT
   - DOMAIN-SUFFIX,google.com,PROXY
@@ -440,14 +456,14 @@ proxy-groups:
 {rules_section}
 `;
 
-// ── VLESS 节点模板 ─────────────────
-function buildClashVlessGrpcTlsNodeTemplate() {
+// ── WebSocket 节点模板 ─────────────────
+function buildClashVlessWsTlsNodeTemplate() {
     return `  - name: {name}
     type: vless
     server: {host}
     port: {port}
     uuid: {uuid}
-    network: grpc
+    network: ws
     tls: true
     udp: {udp}
     skip-cert-verify: false
@@ -456,11 +472,35 @@ function buildClashVlessGrpcTlsNodeTemplate() {
     ip-version: {ip_version}
     packet-encoding: xudp
     alpn:
-      - h2
-    grpc-opts:
-      grpc-service-name: {service_name}
-      ping-interval: 0
-      max-connections: 1
+      - http/1.1
+    ws-opts:
+      path: {path}
+      headers:
+        Host: {host}
+    smux:
+      enabled: false
+`;
+}
+
+function buildClashTrojanWsTlsNodeTemplate() {
+    return `  - name: {name}
+    type: trojan
+    server: {host}
+    port: {port}
+    password: {password}
+    network: ws
+    tls: true
+    udp: {udp}
+    skip-cert-verify: false
+    sni: {sni}
+    client-fingerprint: {fp}
+    ip-version: {ip_version}
+    alpn:
+      - http/1.1
+    ws-opts:
+      path: {path}
+      headers:
+        Host: {host}
     smux:
       enabled: false
 `;
@@ -504,11 +544,11 @@ function validatePort(value, field) {
     return port;
 }
 
-function vlessSecurity(cfg) {
+function nodeSecurity(cfg) {
     return cfg.security || 'tls';
 }
 
-function vlessNetwork(cfg) {
+function nodeNetwork(cfg) {
     return cfg.network || 'tcp';
 }
 
@@ -525,14 +565,14 @@ function resolveNodePort(cfg, dynamicPort) {
     if (cfg.portMode !== undefined) {
         throw new Error(`Unsupported port mode: ${cfg.portMode}`);
     }
-    return vlessSecurity(cfg) === 'tls'
+    return nodeSecurity(cfg) === 'tls'
         ? 443
         : validatePort(dynamicPort, 'dynamic port');
 }
 
 function createVlessLink(cfg, port) {
-    const security = vlessSecurity(cfg);
-    const network = vlessNetwork(cfg);
+    const security = nodeSecurity(cfg);
+    const network = nodeNetwork(cfg);
     const host = formatUriHost(cfg.host);
     const sni = cfg.sni || cfg.host;
     const fp = cfg.fp || 'chrome';
@@ -548,10 +588,11 @@ function createVlessLink(cfg, port) {
         throw new Error(`Unsupported VLESS security: ${security}`);
     }
 
-    if (network === 'grpc') {
-        params.set('alpn', 'h2');
-        params.set('serviceName', cfg.serviceName || 'grpc');
-        params.set('packetEncoding', 'xudp');
+    if (network === 'ws') {
+        params.set('alpn', 'http/1.1');
+        params.set('host', cfg.host);
+        params.set('path', cfg.path || '/');
+        params.set('packetEncoding', cfg.packetEncoding || 'xudp');
     } else {
         throw new Error(`Unsupported VLESS network: ${network}`);
     }
@@ -559,9 +600,31 @@ function createVlessLink(cfg, port) {
     return `vless://${cfg.uuid}@${host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
 }
 
+function createTrojanLink(cfg, port) {
+    const security = nodeSecurity(cfg);
+    const network = nodeNetwork(cfg);
+    if (security !== 'tls' || network !== 'ws') {
+        throw new Error(`Unsupported Trojan mode: security=${security}, network=${network}`);
+    }
+    const host = formatUriHost(cfg.host);
+    const params = new URLSearchParams({
+        security: 'tls',
+        type: 'ws',
+        sni: cfg.sni || cfg.host,
+        fp: cfg.fp || 'chrome',
+        alpn: 'http/1.1',
+        host: cfg.host,
+        path: cfg.path || '/'
+    });
+    return `trojan://${encodeURIComponentCustom(cfg.password)}@${host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
+}
+
 function createLink(cfg, port) {
     if (cfg.type === 'vless') {
         return createVlessLink(cfg, port);
+    }
+    if (cfg.type === 'trojan') {
+        return createTrojanLink(cfg, port);
     }
     throw new Error(`Unsupported node type: ${cfg.type}`);
 }
@@ -595,11 +658,11 @@ function yamlString(value) {
 
 function generateClashProxyNode(cfg, port) {
     if (cfg.type === 'vless') {
-        const security = vlessSecurity(cfg);
-        const network = vlessNetwork(cfg);
+        const security = nodeSecurity(cfg);
+        const network = nodeNetwork(cfg);
         let template;
-        if (security === 'tls' && network === 'grpc') {
-            template = buildClashVlessGrpcTlsNodeTemplate();
+        if (security === 'tls' && network === 'ws') {
+            template = buildClashVlessWsTlsNodeTemplate();
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
@@ -610,7 +673,25 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{uuid}/g, yamlString(cfg.uuid))
             .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
             .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
-            .replace(/{service_name}/g, yamlString(cfg.serviceName || 'grpc'))
+            .replace(/{path}/g, yamlString(cfg.path || '/'))
+            .replace(/{ip_version}/g, yamlString(cfg.ipVersion || 'dual'))
+            .replace(/{udp}/g, String(cfg.udp !== false))
+            .replace(/{name}/g, yamlString(cfg.name));
+    }
+
+    if (cfg.type === 'trojan') {
+        const security = nodeSecurity(cfg);
+        const network = nodeNetwork(cfg);
+        if (security !== 'tls' || network !== 'ws') {
+            throw new Error(`Unsupported Trojan mode: security=${security}, network=${network}`);
+        }
+        return buildClashTrojanWsTlsNodeTemplate()
+            .replace(/{host}/g, yamlString(cfg.host))
+            .replace(/{port}/g, String(resolveNodePort(cfg, port)))
+            .replace(/{password}/g, yamlString(cfg.password))
+            .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
+            .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
+            .replace(/{path}/g, yamlString(cfg.path || '/'))
             .replace(/{ip_version}/g, yamlString(cfg.ipVersion || 'dual'))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));

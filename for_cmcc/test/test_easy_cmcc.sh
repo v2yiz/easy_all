@@ -26,7 +26,7 @@ assert_contains() {
 bash -n "${ROOT_DIR}/easy_cmcc"
 installer=$(<"${ROOT_DIR}/easy_cmcc")
 output=$("${ROOT_DIR}/easy_cmcc" help)
-assert_contains "standalone executable exposes CMCC usage" "${output}" "VLESS gRPC TLS"
+assert_contains "standalone executable exposes CMCC usage" "${output}" "VLESS WS TLS"
 
 assert_contains "CMCC uses fq" "${installer}" "net.core.default_qdisc = fq"
 assert_contains "CMCC uses BBR" "${installer}" "net.ipv4.tcp_congestion_control = bbr"
@@ -90,18 +90,18 @@ assert_contains "README identifies the standalone installer" "${readme}" \
     "独立安装器"
 assert_contains "README downloads the CMCC monolith" "${readme}" \
     "main/for_cmcc/easy_cmcc"
-assert_contains "README documents the single gRPC node" "${readme}" \
-    '仅包含一个 `VLESS_GRPC` 节点'
+assert_contains "README documents both WebSocket nodes" "${readme}" \
+    '`VLESS_WS` 和 `TROJAN_WS`'
 assert_contains "README documents the single PROXY group" "${readme}" \
     '一个 `PROXY` 选择组'
 assert_contains "README documents power-conscious client settings" "${readme}" \
     '`tcp-concurrent: false`'
 assert_contains "README documents disabled process matching" "${readme}" \
     '`find-process-mode: off`'
-assert_contains "README documents disabled gRPC ping" "${readme}" \
-    '`grpc-opts.ping-interval: 0`'
-assert_contains "README documents one gRPC connection" "${readme}" \
-    '`grpc-opts.max-connections: 1`'
+assert_contains "README documents disabled WebSocket heartbeat" "${readme}" \
+    '`heartbeatPeriod: 0`'
+assert_contains "README documents disabled multiplexing" "${readme}" \
+    '`smux.enabled: false`'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
     "DNS only / 灰云"
 assert_contains "README documents enabling the CDN after install" "${readme}" \
@@ -122,8 +122,8 @@ assert_contains "README documents customizable Mihomo download filenames" "${rea
     '不含 `.yaml`'
 assert_contains "README documents token-free link-only mode" "${readme}" \
     "只显示节点链接，不生成 Worker"
-assert_contains "README states XHTTP config permission is unnecessary" "${readme}" \
-    "不再需要 XHTTP Configuration Rules 权限"
+assert_contains "README documents Cloudflare WebSockets" "${readme}" \
+    "开启 WebSockets"
 assert_contains "README documents minimal Worker Token scope" "${readme}" \
     "Workers Scripts → Edit"
 
@@ -131,9 +131,9 @@ if bash -c 'source "$1"; choose_protocol reality' _ "${ROOT_DIR}/easy_cmcc" \
     >/dev/null 2>&1; then
     fail "standalone executable must reject Reality"
 fi
-if bash -c 'source "$1"; choose_protocol wss' _ "${ROOT_DIR}/easy_cmcc" \
+if bash -c 'source "$1"; choose_protocol vless-grpc' _ "${ROOT_DIR}/easy_cmcc" \
     >/dev/null 2>&1; then
-    fail "standalone executable must reject WSS"
+    fail "standalone executable must reject the retired gRPC mode"
 fi
 if bash -c 'source "$1"; choose_protocol vless-xhttp' _ "${ROOT_DIR}/easy_cmcc" \
     >/dev/null 2>&1; then
@@ -151,7 +151,9 @@ fi
     assert_equal "Nginx config is isolated" "/etc/nginx/conf.d/easy_cmcc.conf" "${NGINX_CONFIG}"
     assert_equal "acme.sh home is isolated" "/root/.acme-cmcc.sh" "${ACME_HOME}"
     assert_equal "Worker name is isolated" "easy-cmcc" "${DEFAULT_WORKER_NAME}"
-    assert_equal "CMCC uses the requested default node name" "VLESS_GRPC" "${DEFAULT_GRPC_NODE_NAME}"
+    assert_equal "CMCC uses state schema v2 without old-protocol migration" "2" "${STATE_SCHEMA_VERSION}"
+    assert_equal "CMCC uses the requested VLESS node name" "VLESS_WS" "${DEFAULT_VLESS_NODE_NAME}"
+    assert_equal "CMCC uses the requested Trojan node name" "TROJAN_WS" "${DEFAULT_TROJAN_NODE_NAME}"
     assert_contains "Worker URL uses the CMCC subtree" "${DEFAULT_SAMPLE_WORKER_URL}" "/for_cmcc/sample-worker.js"
     assert_contains "CMCC subscription verification uses Worker version affinity" \
         "$(<"${ROOT_DIR}/easy_cmcc")" "Cloudflare-Workers-Version-Key"
@@ -232,11 +234,14 @@ fi
     assert_equal "CMCC normalizes a custom Mihomo download filename" \
         "Team" "${SUB_DOWNLOAD_NAME}"
 
-    choose_protocol vless-grpc >/dev/null
+    choose_protocol dual-ws >/dev/null
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
+    TROJAN_PASSWORD="test-trojan-password-123456"
     VLESS_CDN_DOMAIN="cmcc.example.com"
-    NODE_NAME="CMCC_GRPC"
-    GRPC_SERVICE_NAME="cmcc-grpc"
+    VLESS_NODE_NAME="CMCC_VLESS_WS"
+    TROJAN_NODE_NAME="CMCC_TROJAN_WS"
+    VLESS_WS_PATH="/cmcc-vless-ws"
+    TROJAN_WS_PATH="/cmcc-trojan-ws"
     WORKER_CUSTOM_DOMAIN="SUB.EXAMPLE.COM"
     collect_worker_custom_domain
     assert_equal "CMCC normalizes the Worker Custom Domain" \
@@ -245,7 +250,7 @@ fi
         WORKER_CUSTOM_DOMAIN="cmcc.example.com"
         collect_worker_custom_domain
     ) >/dev/null 2>&1; then
-        fail "CMCC must reject reusing the gRPC node domain"
+        fail "CMCC must reject reusing the node domain"
     fi
     if (
         WORKER_CUSTOM_DOMAIN="easy-cmcc.example.workers.dev"
@@ -260,12 +265,15 @@ fi
         fail "CMCC must reject the workers.dev apex as a Custom Domain"
     fi
     links=$(build_node_link)
-    assert_contains "subscription contains gRPC" "${links}" "type=grpc"
-    assert_contains "gRPC includes service name" "${links}" "serviceName=cmcc-grpc"
-    assert_contains "gRPC forces HTTP/2" "${links}" "alpn=h2"
-    assert_contains "gRPC uses TCP 443" "${links}" "@cmcc.example.com:443"
-    [[ "${links}" != *"type=xhttp"* && "${links}" != *"type=ws"* ]] \
-        || fail "subscription must contain only gRPC"
+    assert_contains "subscription contains VLESS" "${links}" "vless://"
+    assert_contains "subscription contains Trojan" "${links}" "trojan://"
+    assert_contains "both nodes use WebSocket" "${links}" "type=ws"
+    assert_contains "VLESS includes its path" "${links}" "path=%2Fcmcc-vless-ws"
+    assert_contains "Trojan includes its path" "${links}" "path=%2Fcmcc-trojan-ws"
+    assert_contains "nodes force HTTP/1.1" "${links}" "alpn=http%2F1.1"
+    assert_equal "subscription contains exactly two links" "2" "$(wc -l <<<"${links}" | tr -d ' ')"
+    [[ "${links}" != *"type=xhttp"* && "${links}" != *"type=grpc"* ]] \
+        || fail "subscription must contain only WebSocket transports"
 
     ALLOWED_TOKENS='{"owner":"test-token"}'
     SUB_DOWNLOAD_NAME="CMCC_TEST"
@@ -273,18 +281,34 @@ fi
     WORKER_NAME="easy-cmcc"
     worker_output="${TMP_DIR}/subscribe-worker.js"
     write_worker "${worker_output}"
-    grep -Fq '"network":"grpc"' "${worker_output}" \
-        || fail "rendered Worker must include gRPC"
-    [[ "$(grep -Fo '"network":"grpc"' "${worker_output}" | wc -l | tr -d ' ')" == "1" ]] \
-        || fail "rendered Worker must include exactly one gRPC node"
-    grep -Fq '"serviceName":"cmcc-grpc"' "${worker_output}" \
-        || fail "rendered Worker must include the gRPC service name"
-    grep -Fq 'const DEFAULT_NODE = NODE_CONFIG;' "${worker_output}" \
-        || fail "rendered Worker must publish only the configured gRPC node"
-    [[ "$(<"${worker_output}")" != *'"network":"ws"'* && "$(<"${worker_output}")" != *'"network":"xhttp"'* ]] \
-        || fail "rendered Worker must not publish WSS or XHTTP"
-    grep -Fq 'network: "grpc"' "${ROOT_DIR}/easy_cmcc" \
-        || fail "Xray server must require gRPC"
+    [[ "$(grep -Fo '"network":"ws"' "${worker_output}" | wc -l | tr -d ' ')" == "2" ]] \
+        || fail "rendered Worker must include exactly two WebSocket nodes"
+    grep -Fq '"type":"vless"' "${worker_output}" \
+        || fail "rendered Worker must include VLESS"
+    grep -Fq '"type":"trojan"' "${worker_output}" \
+        || fail "rendered Worker must include Trojan"
+    grep -Fq '"path":"/cmcc-vless-ws"' "${worker_output}" \
+        || fail "rendered Worker must include the VLESS path"
+    grep -Fq '"path":"/cmcc-trojan-ws"' "${worker_output}" \
+        || fail "rendered Worker must include the Trojan path"
+    grep -Fq 'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];' "${worker_output}" \
+        || fail "rendered Worker must publish both configured nodes"
+    [[ "$(<"${worker_output}")" != *'"network":"grpc"'* && "$(<"${worker_output}")" != *'"network":"xhttp"'* ]] \
+        || fail "rendered Worker must not publish gRPC or XHTTP"
+    grep -Fq 'network: "ws"' "${ROOT_DIR}/easy_cmcc" \
+        || fail "Xray server must require WebSocket"
+    assert_contains "Xray server includes a VLESS inbound" "${installer}" \
+        'protocol: "vless"'
+    assert_contains "Xray server includes a Trojan inbound" "${installer}" \
+        'protocol: "trojan"'
+    [[ "$(grep -Fc 'heartbeatPeriod: 0' <<<"${installer}")" == "2" ]] \
+        || fail "both Xray WebSocket inbounds must disable periodic heartbeat"
+    assert_contains "Nginx matches the VLESS path exactly" "${installer}" \
+        'location = ${VLESS_WS_PATH}'
+    assert_contains "Nginx matches the Trojan path exactly" "${installer}" \
+        'location = ${TROJAN_WS_PATH}'
+    [[ "$(grep -Fc 'proxy_buffering off;' <<<"${installer}")" == "2" ]] \
+        || fail "both Nginx WebSocket paths must disable response buffering"
     node --input-type=module - "${worker_output}" <<'EOF'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -296,7 +320,9 @@ const baseUrl = 'https://worker.test/subscribe?token=test-token';
 const plain = await worker.fetch(new Request(baseUrl), {});
 assert.equal(plain.status, 200);
 const links = Buffer.from(await plain.text(), 'base64').toString('utf8').split('\n');
-assert.equal(links.length, 1);
+assert.equal(links.length, 2);
+assert.match(links[0], /^vless:/);
+assert.match(links[1], /^trojan:/);
 const clash = await worker.fetch(new Request(`${baseUrl}&flag=clash`), {});
 assert.equal(clash.status, 200);
 const yaml = await clash.text();
@@ -307,10 +333,12 @@ EOF
     mihomo_nodes=$(build_mihomo_node)
     assert_contains "Mihomo nodes race dual-stack CDN addresses" "${mihomo_nodes}" \
         "ip-version: dual"
-    assert_contains "Mihomo nodes disable gRPC ping" "${mihomo_nodes}" \
-        'ping-interval: 0'
-    assert_contains "Mihomo nodes use one gRPC connection" "${mihomo_nodes}" \
-        "max-connections: 1"
+    assert_contains "Mihomo nodes use WebSocket options" "${mihomo_nodes}" \
+        'ws-opts:'
+    [[ "$(grep -c 'enabled: false' <<<"${mihomo_nodes}")" == "2" ]] \
+        || fail "both Mihomo nodes must disable smux"
+    [[ "${mihomo_nodes}" != *"health-check"* ]] \
+        || fail "Mihomo nodes must not enable health checks"
 
     dns_proxy_calls="${TMP_DIR}/cmcc-dns-proxy-calls"
     : >"${dns_proxy_calls}"
@@ -331,7 +359,12 @@ EOF
     }
     enable_cloudflare_proxy >/dev/null
     grep -Fq $'PATCH\t/zones/zone-id/dns_records/record-a' "${dns_proxy_calls}" \
-        || fail "CMCC must automatically proxy the gRPC node DNS record"
+        || fail "CMCC must automatically proxy the dual WebSocket node DNS record"
+
+    : >"${dns_proxy_calls}"
+    enable_cloudflare_websockets >/dev/null
+    grep -Fq $'PATCH\t/zones/zone-id/settings/websockets' "${dns_proxy_calls}" \
+        || fail "CMCC must automatically enable Cloudflare WebSockets"
 
     : >"${dns_proxy_calls}"
     CF_PROXY_MODE="manual"
