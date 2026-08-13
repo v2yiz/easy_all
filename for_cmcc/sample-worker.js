@@ -1,11 +1,11 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 提供 VLESS XHTTP TLS stream-one 订阅与 Clash Meta 配置
+ * 提供 VLESS gRPC TLS + Cloudflare CDN 订阅与 Clash Meta 配置
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 节点配置中的 uuid、TLS 域名和 XHTTP path
- * 3. DEFAULT_NODE 指向唯一的 XHTTP stream-one 节点
+ * 2. 节点配置中的 uuid、TLS 域名和 gRPC service name
+ * 3. DEFAULT_NODE 指向唯一的 gRPC 节点
  */
 // ================= 配置常量 =================
 
@@ -30,24 +30,23 @@ function isAllowedToken(token) {
     return Boolean(token && ALLOWED_TOKEN_VALUES.has(token));
 }
 
-// ── VLESS XHTTP TLS 节点（Cloudflare CDN / H2 stream-one）─────────
-const NODE_VLESS_XHTTP_CONFIG = defineNode({
+// ── VLESS gRPC TLS 节点（Cloudflare CDN / HTTP/2）────────────────
+const NODE_VLESS_GRPC_CONFIG = defineNode({
     type: 'vless',
     security: 'tls',
-    network: 'xhttp',
+    network: 'grpc',
     uuid: '00000000-0000-4000-8000-000000000002',
-    host: 'xhttp.example.com',
-    name: 'VLESS_XHTTP',
+    host: 'grpc.example.com',
+    name: 'VLESS_GRPC',
     fp: 'chrome',
-    sni: 'xhttp.example.com',
-    path: '/randompath',
-    mode: 'stream-one',
+    sni: 'grpc.example.com',
+    serviceName: 'random-service',
     ipVersion: 'dual',
     udp: true,
     portMode: '443'
 });
 
-const DEFAULT_NODE = NODE_VLESS_XHTTP_CONFIG;
+const DEFAULT_NODE = NODE_VLESS_GRPC_CONFIG;
 
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
@@ -268,8 +267,8 @@ const EMBEDDED_CLASH_RULES = `rules:
 
   # ==================== Gemini / Google ====================
   # Gemini 依赖的 Google 域名统一进入 PROXY。
-  # XHTTP 公网链路固定为 H2/TCP；先拒绝 YouTube QUIC，让浏览器回退到 TCP，
-  # 避免把 QUIC/UDP 经 XUDP 封装进 TCP 后产生嵌套重传和队头阻塞。
+  # gRPC 公网链路固定为 H2/TCP；先拒绝 YouTube QUIC，让浏览器回退到 TCP，
+  # 避免把 QUIC/UDP 经 XUDP 封装进 H2/TCP 后产生嵌套重传和队头阻塞。
   - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,googlevideo.com)),REJECT
   - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,youtube.com)),REJECT
   - DOMAIN-SUFFIX,google.com,PROXY
@@ -442,13 +441,13 @@ proxy-groups:
 `;
 
 // ── VLESS 节点模板 ─────────────────
-function buildClashVlessXhttpTlsNodeTemplate() {
+function buildClashVlessGrpcTlsNodeTemplate() {
     return `  - name: {name}
     type: vless
     server: {host}
     port: {port}
     uuid: {uuid}
-    network: xhttp
+    network: grpc
     tls: true
     udp: {udp}
     skip-cert-verify: false
@@ -458,13 +457,10 @@ function buildClashVlessXhttpTlsNodeTemplate() {
     packet-encoding: xudp
     alpn:
       - h2
-    xhttp-opts:
-      host: {xhttp_host}
-      path: {path}
-      mode: {mode}
-      reuse-settings:
-        max-concurrency: "8"
-        h-keep-alive-period: -1
+    grpc-opts:
+      grpc-service-name: {service_name}
+      ping-interval: 0
+      max-connections: 1
     smux:
       enabled: false
 `;
@@ -552,10 +548,9 @@ function createVlessLink(cfg, port) {
         throw new Error(`Unsupported VLESS security: ${security}`);
     }
 
-    if (network === 'xhttp') {
+    if (network === 'grpc') {
         params.set('alpn', 'h2');
-        params.set('path', cfg.path || '/');
-        params.set('mode', cfg.mode || 'stream-one');
+        params.set('serviceName', cfg.serviceName || 'grpc');
         params.set('packetEncoding', 'xudp');
     } else {
         throw new Error(`Unsupported VLESS network: ${network}`);
@@ -603,8 +598,8 @@ function generateClashProxyNode(cfg, port) {
         const security = vlessSecurity(cfg);
         const network = vlessNetwork(cfg);
         let template;
-        if (security === 'tls' && network === 'xhttp') {
-            template = buildClashVlessXhttpTlsNodeTemplate();
+        if (security === 'tls' && network === 'grpc') {
+            template = buildClashVlessGrpcTlsNodeTemplate();
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
@@ -615,10 +610,8 @@ function generateClashProxyNode(cfg, port) {
             .replace(/{uuid}/g, yamlString(cfg.uuid))
             .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
             .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
-            .replace(/{path}/g, yamlString(cfg.path || '/'))
-            .replace(/{mode}/g, yamlString(cfg.mode || 'stream-one'))
+            .replace(/{service_name}/g, yamlString(cfg.serviceName || 'grpc'))
             .replace(/{ip_version}/g, yamlString(cfg.ipVersion || 'dual'))
-            .replace(/{xhttp_host}/g, yamlString(cfg.xhttpHost || cfg.host))
             .replace(/{udp}/g, String(cfg.udp !== false))
             .replace(/{name}/g, yamlString(cfg.name));
     }

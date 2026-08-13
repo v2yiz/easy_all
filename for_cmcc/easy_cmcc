@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Standalone CMCC installer for XHTTP stream-one over Cloudflare CDN.
+# Standalone CMCC installer for VLESS gRPC over Cloudflare CDN.
 
 set -Eeuo pipefail
 umask 077
@@ -28,11 +28,6 @@ readonly XRAY_BIN="${XRAY_DIR}/xray"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
 readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy-cmcc-xray.service"
 readonly XRAY_SERVICE="easy-cmcc-xray.service"
-readonly SING_BOX_DIR="${STATE_DIR}/sing-box"
-readonly SING_BOX_BIN="${SING_BOX_DIR}/sing-box"
-readonly SING_BOX_CONFIG="${SING_BOX_DIR}/config.json"
-readonly SING_BOX_SERVICE_FILE="/etc/systemd/system/easy-cmcc-sing-box.service"
-readonly SING_BOX_SERVICE="easy-cmcc-sing-box.service"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_cmcc.conf"
 readonly ACME_HOME="/root/.acme-cmcc.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
@@ -47,19 +42,13 @@ readonly DEFAULT_XRAY_LOOPBACK_PORT="10085"
 readonly SERVICE_PORT="443"
 readonly PORT_BASE="10000"
 readonly PORT_MULTIPLIER="6"
-readonly DEFAULT_REALITY_TARGET="swdist.apple.com:443"
-readonly DEFAULT_REALITY_PORT_MODE="443"
-readonly DEFAULT_ANYTLS_PORT_MODE="dynamic"
-readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
-readonly DEFAULT_ANYTLS_NODE_NAME="MY_ANYTLS"
-readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP"
+readonly DEFAULT_GRPC_NODE_NAME="VLESS_GRPC"
 readonly DEFAULT_WORKER_NAME="easy-cmcc"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_CMCC"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js"
 readonly DEFAULT_REBOOT_HOUR="4"
 readonly CRON_REBOOT_MARKER="# easy_cmcc-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-readonly SING_BOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="1"
@@ -79,8 +68,6 @@ die() { fail "$*"; exit 1; }
 
 RUNTIME_TMP=$(mktemp -d)
 cleanup_files=("${RUNTIME_TMP}")
-SWITCH_ROLLBACK_ON_EXIT=0
-SWITCH_BACKUP_DIR=""
 INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
@@ -89,10 +76,7 @@ GEMINI_DOMAIN_SUFFIXES_JSON=""
 GEMINI_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
-    if [[ "${SWITCH_ROLLBACK_ON_EXIT:-0}" == "1" && -n "${SWITCH_BACKUP_DIR:-}" ]]; then
-        SWITCH_ROLLBACK_ON_EXIT=0
-        rollback_protocol_switch || true
-    elif [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" \
+    if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" \
         && -n "${UPDATE_SUB_BACKUP_DIR:-}" ]]; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update || true
@@ -165,7 +149,7 @@ validate_worker_custom_domain() {
     local domain=$1
     validate_domain "${domain}" || return 1
     [[ "${domain}" != "workers.dev" && "${domain}" != *.workers.dev ]] || return 1
-    [[ "${domain}" != "${VLESS_XHTTP_DOMAIN:-}" ]]
+    [[ "${domain}" != "${VLESS_CDN_DOMAIN:-}" ]]
 }
 
 validate_sub_download_name() {
@@ -237,16 +221,18 @@ ensure_allowed_tokens() {
     ALLOWED_TOKENS=${normalized}
 }
 
-validate_xhttp_path() {
-    local path=$1
-    [[ ${#path} -ge 2 && ${#path} -le 96 ]] || return 1
-    [[ "${path}" == /* ]] || return 1
-    [[ "${path}" != *"?"* && "${path}" != *"#"* ]] || return 1
-    [[ "${path}" =~ ^/[A-Za-z0-9._~:@%+-]+$ ]]
+validate_grpc_service_name() {
+    local name=$1
+    [[ ${#name} -ge 1 && ${#name} -le 96 ]] || return 1
+    [[ "${name}" =~ ^[A-Za-z0-9._~-]+$ ]]
 }
 
-generate_xhttp_path() {
-    printf '/%sxhttp' "$(openssl rand -hex 8)"
+generate_grpc_service_name() {
+    printf '%sgrpc' "$(openssl rand -hex 8)"
+}
+
+is_cdn_protocol() {
+    [[ "$1" == "vless-grpc" ]]
 }
 
 generate_secret() {
@@ -277,6 +263,22 @@ prompt_secret() {
 interactive_pause() {
     [[ -t 0 ]] || return 0
     read -r -p "确认后按回车继续，Ctrl+C 退出: " _
+}
+
+choose_cloudflare_proxy_mode() {
+    local mode=${CF_PROXY_MODE:-}
+    if [[ -z "${mode}" && -t 0 ]]; then
+        printf '安装完成后如何切换节点 DNS 代理：\n'
+        printf '  1. 自动把节点 A/AAAA 切为 Proxied / 橙云（默认）\n'
+        printf '  2. 保持 DNS only / 灰云，由我手动切换\n'
+        read -r -p "请选择 [1]: " mode
+    fi
+    mode=${mode:-auto}
+    case "${mode}" in
+    1 | auto) CF_PROXY_MODE="auto" ;;
+    2 | manual) CF_PROXY_MODE="manual" ;;
+    *) die "CF_PROXY_MODE 必须是 auto 或 manual" ;;
+    esac
 }
 
 install_packages() {
@@ -477,25 +479,24 @@ print_dns_proxy_preinstall_notice() {
     alert "安装前请确认 Cloudflare DNS A 记录为 DNS only / 灰云，不要开启代理。"
     alert "域名 A 记录必须直接指向当前 VPS 公网 IPv4；脚本会强制校验。"
     alert "如果配置了 AAAA 记录，安装成功前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
-    if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
-        alert "安装完成并验证成功后，使用 Cloudflare CDN 时再把 A、AAAA 记录一起切回 Proxied / 橙云。"
-    else
-        alert "AnyTLS 不能通过普通 Cloudflare CDN 代理，安装完成后也必须保持 DNS only / 灰云。"
-    fi
+    alert "安装完成并验证成功后，再把 A、AAAA 记录一起切回 Proxied / 橙云。"
 }
 
 print_dns_proxy_postinstall_notice() {
-    success "VLESS XHTTP TLS 安装和本机验证已完成"
-    alert "现在可以回 Cloudflare；使用 CDN 时请把 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
+    success "${PROTOCOL} TLS 安装和本机验证已完成"
+    if [[ "${CF_PROXY_MODE:-auto}" == "auto" ]]; then
+        success "脚本已请求把节点 A/AAAA 切为 Proxied / 橙云，请在 Cloudflare 控制台确认状态"
+    else
+        alert "请把节点 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
+    fi
     alert "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
     alert "Cloudflare Network 中必须开启 gRPC。"
-    alert "Configuration Rule 必须让 ${VLESS_XHTTP_DOMAIN}${XHTTP_PATH}* 的 Request/Response body buffering 都为 None。"
-    alert "如果安装时提供的 CF_DNS_API_TOKEN 没有 Zone Settings 与 Configuration Rules 编辑权限，请在控制台手动完成以上两项。"
+    alert "如果 CF_DNS_API_TOKEN 没有 Zone Settings 编辑权限，请在控制台手动开启 gRPC。"
 }
 
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 状态文件不存在：${STATE_FILE}"
-    unset STATE_VERSION VLESS_XHTTP_DOMAIN XHTTP_PATH XRAY_LOOPBACK_PORT \
+    unset STATE_VERSION VLESS_CDN_DOMAIN GRPC_SERVICE_NAME XRAY_LOOPBACK_PORT \
         WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
@@ -506,12 +507,11 @@ source_state_file() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
-        REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
-        VLESS_XHTTP_DOMAIN XHTTP_PATH XRAY_LOOPBACK_PORT
-        ANYTLS_DOMAIN ANYTLS_PASSWORD SUB_PORT_MODE ALLOWED_TOKENS
+        PROTOCOL NODE_NAME VLESS_UUID
+        VLESS_CDN_DOMAIN GRPC_SERVICE_NAME XRAY_LOOPBACK_PORT
+        SUB_PORT_MODE ALLOWED_TOKENS
         WORKER_NAME WORKER_URL WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
-        CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME
+        CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME CF_PROXY_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
     )
     for variable in "${variables[@]}"; do
@@ -557,17 +557,10 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'NODE_NAME=%q\n' "${NODE_NAME}"
-        printf 'NODE_HOST=%q\n' "${NODE_HOST:-}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID:-}"
-        printf 'REALITY_TARGET=%q\n' "${REALITY_TARGET:-}"
-        printf 'REALITY_PRIVATE_KEY=%q\n' "${REALITY_PRIVATE_KEY:-}"
-        printf 'REALITY_PUBLIC_KEY=%q\n' "${REALITY_PUBLIC_KEY:-}"
-        printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
-        printf 'VLESS_XHTTP_DOMAIN=%q\n' "${VLESS_XHTTP_DOMAIN:-}"
-        printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH:-}"
+        printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN:-}"
+        printf 'GRPC_SERVICE_NAME=%q\n' "${GRPC_SERVICE_NAME:-}"
         printf 'XRAY_LOOPBACK_PORT=%q\n' "${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}"
-        printf 'ANYTLS_DOMAIN=%q\n' "${ANYTLS_DOMAIN:-}"
-        printf 'ANYTLS_PASSWORD=%q\n' "${ANYTLS_PASSWORD:-}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-443}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'WORKER_NAME=%q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
@@ -577,6 +570,7 @@ save_state() {
         printf 'CF_ACCOUNT_ID=%q\n' "${CF_ACCOUNT_ID:-}"
         printf 'DEPLOY_MODE=%q\n' "${DEPLOY_MODE:-}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
+        printf 'CF_PROXY_MODE=%q\n' "${CF_PROXY_MODE:-auto}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
         printf 'GEMINI_IP_FAMILY=%q\n' "${GEMINI_IP_FAMILY:-auto}"
@@ -585,34 +579,21 @@ save_state() {
 }
 
 validate_protocol() {
-    [[ "$1" == "vless-xhttp" ]]
+    [[ "$1" == "vless-grpc" ]]
 }
 
 choose_protocol() {
     local requested=${1:-${PROTOCOL:-}}
-    requested=${requested:-vless-xhttp}
+    requested=${requested:-vless-grpc}
     case "${requested}" in
-    3 | vless-xhttp | xhttp) PROTOCOL="vless-xhttp" ;;
-    *) die "easy_cmcc 只支持 VLESS XHTTP stream-one" ;;
+    1 | vless-grpc | grpc) PROTOCOL="vless-grpc" ;;
+    *) die "easy_cmcc 只支持 VLESS gRPC TLS + Cloudflare CDN" ;;
     esac
-    info "easy_cmcc 使用 XHTTP stream-one 的 Cloudflare CDN 省电模式。"
+    info "easy_cmcc 使用 ${PROTOCOL} 的 Cloudflare CDN 模式。"
 }
 
 protocol_default_node_name() {
-    case "${PROTOCOL}" in
-    reality) printf '%s' "${DEFAULT_REALITY_NODE_NAME}" ;;
-    anytls) printf '%s' "${DEFAULT_ANYTLS_NODE_NAME}" ;;
-    vless-xhttp) printf '%s' "${DEFAULT_XHTTP_NODE_NAME}" ;;
-    esac
-}
-
-validate_reality_target() {
-    local target=$1 host port
-    [[ "${target}" == *:* ]] || return 1
-    host=${target%:*}
-    port=${target##*:}
-    validate_domain "${host}" || return 1
-    [[ "${port}" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
+    printf '%s' "${DEFAULT_GRPC_NODE_NAME}"
 }
 
 collect_install_inputs() {
@@ -621,39 +602,25 @@ collect_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
     case "${PROTOCOL}" in
-    reality)
-        NODE_HOST=${NODE_HOST:-$(prompt_value "Reality 节点公网 IPv4 或域名" "")}
-        validate_domain "${NODE_HOST}" || validate_ipv4 "${NODE_HOST}" \
-            || die "Reality 节点地址无效：${NODE_HOST}"
-        REALITY_TARGET=${REALITY_TARGET:-${DEFAULT_REALITY_TARGET}}
-        validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
-        SUB_PORT_MODE=${SUB_PORT_MODE:-${DEFAULT_REALITY_PORT_MODE}}
-        ;;
-    anytls)
-        ANYTLS_DOMAIN=${ANYTLS_DOMAIN:-$(prompt_value "AnyTLS 完整域名（A 记录必须灰云直连本机）" "")}
-        ANYTLS_DOMAIN=$(normalize_domain "${ANYTLS_DOMAIN}")
-        validate_domain "${ANYTLS_DOMAIN}" || die "AnyTLS 域名无效：${ANYTLS_DOMAIN}"
-        ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
-        ((${#ANYTLS_PASSWORD} >= 16)) || die "ANYTLS_PASSWORD 至少需要 16 个字符"
-        SUB_PORT_MODE=${SUB_PORT_MODE:-${DEFAULT_ANYTLS_PORT_MODE}}
-        ;;
-    vless-xhttp)
-        VLESS_XHTTP_DOMAIN=${VLESS_XHTTP_DOMAIN:-$(prompt_value "VLESS XHTTP 域名（安装前必须灰云）" "")}
-        VLESS_XHTTP_DOMAIN=$(normalize_domain "${VLESS_XHTTP_DOMAIN}")
-        validate_domain "${VLESS_XHTTP_DOMAIN}" || die "VLESS XHTTP 域名无效：${VLESS_XHTTP_DOMAIN}"
-        XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
-        validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
+    vless-grpc)
+        VLESS_CDN_DOMAIN=${VLESS_CDN_DOMAIN:-$(prompt_value "VLESS CDN 域名（安装前必须灰云）" "")}
+        VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN}")
+        validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS CDN 域名无效：${VLESS_CDN_DOMAIN}"
+        GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME:-$(generate_grpc_service_name)}
+        validate_grpc_service_name "${GRPC_SERVICE_NAME}" \
+            || die "GRPC_SERVICE_NAME 无效：${GRPC_SERVICE_NAME}"
         XRAY_LOOPBACK_PORT=${XRAY_LOOPBACK_PORT:-${DEFAULT_XRAY_LOOPBACK_PORT}}
         [[ "${XRAY_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
             && ((XRAY_LOOPBACK_PORT >= 1024 && XRAY_LOOPBACK_PORT <= 65535)) \
             || die "XRAY_LOOPBACK_PORT 无效：${XRAY_LOOPBACK_PORT}"
         SUB_PORT_MODE="443"
+        choose_cloudflare_proxy_mode
         ;;
     esac
     [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
-    [[ "${PROTOCOL}" != "vless-xhttp" || "${SUB_PORT_MODE}" == "443" ]] \
-        || die "VLESS XHTTP 不支持 dynamic 端口"
+    ! is_cdn_protocol "${PROTOCOL}" || [[ "${SUB_PORT_MODE}" == "443" ]] \
+        || die "VLESS CDN 协议不支持 dynamic 端口"
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     validate_worker_name "${WORKER_NAME}" || die "Worker 名称无效：${WORKER_NAME}"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -716,7 +683,7 @@ configure_nftables() {
     detect_ssh_ports
     ssh_ports=${SSH_PORTS}
     extra_port=""
-    [[ "${PROTOCOL}" == "vless-xhttp" ]] && extra_port=", 80"
+    is_cdn_protocol "${PROTOCOL}" && extra_port=", 80"
     install -d -m 0700 "${BACKUP_DIR}"
     if [[ ! -e "${BACKUP_DIR}/pre-install-nftables.conf" \
         && ! -e "${BACKUP_DIR}/pre-install-nftables.missing" ]]; then
@@ -779,7 +746,7 @@ install_acme() {
     if [[ -x "${ACME_BIN}" ]]; then
         return 0
     fi
-    local cert_domain=${ANYTLS_DOMAIN:-${VLESS_XHTTP_DOMAIN:-example.com}}
+    local cert_domain=${VLESS_CDN_DOMAIN:-example.com}
     local account_email=${ACME_EMAIL:-admin@${cert_domain}}
     local installer="${RUNTIME_TMP}/get-acme.sh"
     curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" || die "下载 acme.sh 安装器失败"
@@ -831,14 +798,13 @@ find_cloudflare_zone_id() {
     return 1
 }
 
-configure_cloudflare_xhttp_streaming() {
-    [[ "${PROTOCOL}" == "vless-xhttp" && -n "${CF_DNS_API_TOKEN:-}" ]] || return 0
-    local zone_id response ruleset_id rule_id rule_payload create_payload expression
-    zone_id=$(find_cloudflare_zone_id "${VLESS_XHTTP_DOMAIN}") || {
-        warn "Cloudflare Zone 查询失败；请手动开启 gRPC，并把 XHTTP 路径的双向 body buffering 设为 None"
+enable_cloudflare_grpc() {
+    is_cdn_protocol "${PROTOCOL}" && [[ -n "${CF_DNS_API_TOKEN:-}" ]] || return 0
+    local zone_id response
+    zone_id=$(find_cloudflare_zone_id "${VLESS_CDN_DOMAIN}") || {
+        warn "Cloudflare Zone 查询失败；请在 Network 页面手动开启 gRPC"
         return 0
     }
-
     response=$(cloudflare_zone_api PATCH "/zones/${zone_id}/settings/grpc" \
         -H "Content-Type: application/json" --data '{"value":"on"}') || response=""
     if jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
@@ -846,62 +812,58 @@ configure_cloudflare_xhttp_streaming() {
     else
         warn "无法自动开启 Cloudflare gRPC；DNS Token 还需要 Zone Settings 编辑权限，请在 Network 页面手动开启"
     fi
+}
 
-    expression=$(jq -nr --arg host "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" \
-        '"(http.host eq \"" + $host + "\" and starts_with(http.request.uri.path, \"" + $path + "\"))"')
-    rule_payload=$(jq -cn --arg expression "${expression}" '{
-      action: "set_config",
-      action_parameters: {
-        request_body_buffering: "none",
-        response_body_buffering: "none"
-      },
-      expression: $expression,
-      description: "easy_cmcc XHTTP bidirectional streaming",
-      enabled: true,
-      ref: "easy_cmcc_xhttp_streaming"
-    }')
-
-    response=$(cloudflare_zone_api GET \
-        "/zones/${zone_id}/rulesets/phases/http_config_settings/entrypoint") \
-        || response=""
-    ruleset_id=$(jq -r '.result.id // empty' <<<"${response}" 2>/dev/null || true)
-    if [[ -z "${ruleset_id}" ]]; then
-        create_payload=$(jq -cn --argjson rule "${rule_payload}" '{
-          name: "easy_cmcc configuration rules",
-          description: "Configuration overrides managed by easy_cmcc",
-          kind: "zone",
-          phase: "http_config_settings",
-          rules: [$rule]
-        }')
-        response=$(cloudflare_zone_api POST "/zones/${zone_id}/rulesets" \
-            -H "Content-Type: application/json" --data "${create_payload}") || response=""
-    else
-        rule_id=$(jq -r '.result.rules[]? | select(.ref == "easy_cmcc_xhttp_streaming") | .id' \
-            <<<"${response}" 2>/dev/null | head -n 1)
-        if [[ -n "${rule_id}" ]]; then
-            response=$(cloudflare_zone_api PATCH \
-                "/zones/${zone_id}/rulesets/${ruleset_id}/rules/${rule_id}" \
-                -H "Content-Type: application/json" --data "${rule_payload}") || response=""
-        else
-            response=$(cloudflare_zone_api POST \
-                "/zones/${zone_id}/rulesets/${ruleset_id}/rules" \
-                -H "Content-Type: application/json" --data "${rule_payload}") || response=""
+enable_cloudflare_proxy() {
+    [[ "${CF_PROXY_MODE:-auto}" == "auto" && -n "${CF_DNS_API_TOKEN:-}" ]] || {
+        warn "节点 DNS 保持灰云；请在确认服务正常后手动切为 Proxied / 橙云"
+        return 0
+    }
+    local zone_id response record_id proxied updated=0 failed=0 record_type
+    zone_id=$(find_cloudflare_zone_id "${VLESS_CDN_DOMAIN}") || {
+        warn "Cloudflare Zone 查询失败；请手动把节点 A/AAAA 切为橙云"
+        return 0
+    }
+    for record_type in A AAAA; do
+        response=$(cloudflare_zone_api GET \
+            "/zones/${zone_id}/dns_records?type=${record_type}&name=${VLESS_CDN_DOMAIN}&per_page=100") \
+            || response=""
+        if ! jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
+            failed=$((failed + 1))
+            continue
         fi
-    fi
-    if jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
-        success "Cloudflare XHTTP 双向无缓冲规则已配置"
+        while IFS=$'\t' read -r record_id proxied; do
+            [[ -n "${record_id}" ]] || continue
+            if [[ "${proxied}" == "true" ]]; then
+                updated=$((updated + 1))
+                continue
+            fi
+            response=$(cloudflare_zone_api PATCH "/zones/${zone_id}/dns_records/${record_id}" \
+                -H "Content-Type: application/json" --data '{"proxied":true}') || response=""
+            if jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
+                updated=$((updated + 1))
+            else
+                failed=$((failed + 1))
+            fi
+        done < <(jq -r '.result[]? | [.id, (.proxied | tostring)] | @tsv' \
+            <<<"${response}" 2>/dev/null || true)
+    done
+    if ((updated > 0 && failed == 0)); then
+        success "Cloudflare 节点 A/AAAA 已自动切为 Proxied / 橙云"
+    elif ((failed > 0)); then
+        warn "部分节点 DNS 查询或更新失败；请在 Cloudflare 控制台确认 A/AAAA 均为橙云"
     else
-        warn "无法自动配置 Cloudflare 双向无缓冲；DNS Token 还需要 Configuration Rules 编辑权限，请在控制台手动设置"
+        warn "没有找到可切换的节点 A/AAAA；请在 Cloudflare 控制台手动确认橙云"
     fi
 }
 
+configure_cloudflare_cdn() {
+    is_cdn_protocol "${PROTOCOL}" && [[ -n "${CF_DNS_API_TOKEN:-}" ]] || return 0
+    enable_cloudflare_grpc
+}
+
 issue_certificate() {
-    local cert_domain
-    case "${PROTOCOL}" in
-    anytls) cert_domain=${ANYTLS_DOMAIN} ;;
-    vless-xhttp) cert_domain=${VLESS_XHTTP_DOMAIN} ;;
-    *) die "Reality 不需要 TLS 证书" ;;
-    esac
+    local cert_domain=${VLESS_CDN_DOMAIN}
     install_acme
     collect_cloudflare_dns_credentials
     export CF_Token="${CF_DNS_API_TOKEN}"
@@ -919,9 +881,6 @@ set -Eeuo pipefail
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files nginx.service >/dev/null 2>&1; then
     systemctl reload nginx.service >/dev/null 2>&1 || systemctl restart nginx.service >/dev/null 2>&1 || true
 fi
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files easy-cmcc-sing-box.service >/dev/null 2>&1; then
-    systemctl restart easy-cmcc-sing-box.service >/dev/null 2>&1 || true
-fi
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
     run_acme --install-cert -d "${cert_domain}" --ecc \
@@ -929,8 +888,8 @@ EOF
         --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" \
         || die "安装证书到 easy_cmcc 目录失败"
-    configure_cloudflare_xhttp_streaming
-    unset CF_Token CF_DNS_API_TOKEN
+    configure_cloudflare_cdn
+    unset CF_Token
 }
 
 download_xray() {
@@ -976,94 +935,19 @@ write_xray_config() {
         || gemini_domain_strategy="ForceIPv4"
     install -d -m 0755 "${XRAY_DIR}"
     case "${PROTOCOL}" in
-    reality)
-        if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
-            local pair
-            pair=$("${XRAY_BIN}" x25519)
-            REALITY_PRIVATE_KEY=$(awk '/PrivateKey/ {print $NF}' <<<"${pair}")
-        fi
-        REALITY_SHORT_ID=${REALITY_SHORT_ID:-$(openssl rand -hex 8)}
-        REALITY_PUBLIC_KEY=$("${XRAY_BIN}" x25519 -i "${REALITY_PRIVATE_KEY}" \
-            | awk '/Password|PublicKey/ {print $NF; exit}')
-        [[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] \
-            || die "生成 Reality X25519 密钥失败"
-        [[ "${REALITY_SHORT_ID}" =~ ^[0-9a-fA-F]{2,16}$ ]] \
-            || die "Reality Short ID 无效"
-        jq -n \
-            --arg uuid "${VLESS_UUID}" \
-            --arg target "${REALITY_TARGET}" \
-            --arg private_key "${REALITY_PRIVATE_KEY}" \
-            --arg short_id "${REALITY_SHORT_ID}" \
-            --arg sni "${REALITY_TARGET%:*}" \
-            --arg gemini_domain_strategy "${gemini_domain_strategy}" \
-            --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
-            {
-              log: {loglevel: "warning"},
-              inbounds: [{
-                tag: "vless-reality-in",
-                listen: "0.0.0.0",
-                port: 443,
-                protocol: "vless",
-                settings: {
-                  clients: [{id: $uuid, flow: "xtls-rprx-vision"}],
-                  decryption: "none"
-                },
-                streamSettings: {
-                  network: "raw",
-                  security: "reality",
-                  realitySettings: {
-                    show: false,
-                    target: $target,
-                    xver: 0,
-                    serverNames: [$sni],
-                    privateKey: $private_key,
-                    shortIds: [$short_id]
-                  }
-                },
-                sniffing: {
-                  enabled: true,
-                  destOverride: ["http", "tls", "quic"],
-                  routeOnly: true
-                }
-              }],
-              outbounds: [
-                {protocol: "freedom", tag: "direct"},
-                {
-                  protocol: "freedom",
-                  tag: "gemini-family",
-                  settings: {domainStrategy: $gemini_domain_strategy}
-                }
-              ],
-              routing: {
-                domainStrategy: "AsIs",
-                rules: [
-                  {
-                    type: "field",
-                    domain: ($gemini_domain_suffixes | map("domain:" + .)),
-                    outboundTag: "gemini-family"
-                  },
-                  {
-                    type: "field",
-                    network: "tcp,udp",
-                    outboundTag: "direct"
-                  }
-                ]
-              }
-            }' >"${RUNTIME_TMP}/xray-config.json"
-        ;;
-    vless-xhttp)
+    vless-grpc)
         jq -n \
             --argjson port "${XRAY_LOOPBACK_PORT}" \
             --arg uuid "${VLESS_UUID}" \
             --arg node_name "${NODE_NAME}" \
-            --arg path "${XHTTP_PATH}" \
+            --arg service_name "${GRPC_SERVICE_NAME}" \
             --arg gemini_domain_strategy "${gemini_domain_strategy}" \
             --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [
                 {
-                  tag: "vless-xhttp-in",
+                  tag: "vless-grpc-in",
                   listen: "127.0.0.1",
                   port: $port,
                   protocol: "vless",
@@ -1072,11 +956,8 @@ write_xray_config() {
                     decryption: "none"
                   },
                   streamSettings: {
-                    network: "xhttp",
-                    xhttpSettings: {
-                      path: $path,
-                      mode: "stream-one"
-                    }
+                    network: "grpc",
+                    grpcSettings: {serviceName: $service_name}
                   },
                   sniffing: {
                     enabled: true,
@@ -1141,137 +1022,6 @@ EOF
     systemctl enable --now "${XRAY_SERVICE}" >/dev/null || die "启动 Xray 服务失败"
 }
 
-resolve_sing_box_version() {
-    local selector=${SING_BOX_VERSION:-latest} releases
-    case "${selector}" in
-    latest)
-        curl -fsSL --retry 3 "${SING_BOX_RELEASES_API}" | jq -er '.tag_name | ltrimstr("v")'
-        ;;
-    alpha)
-        releases=$(curl -fsSL --retry 3 \
-            "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=20")
-        jq -er '[.[] | select(.prerelease == true)][0].tag_name | ltrimstr("v")' <<<"${releases}"
-        ;;
-    v*) printf '%s\n' "${selector#v}" ;;
-    *) printf '%s\n' "${selector}" ;;
-    esac
-}
-
-download_sing_box() {
-    local version archive_name base_url temp_dir archive checksums expected actual
-    version=$(resolve_sing_box_version) || die "无法解析 sing-box 版本"
-    [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.-]+)?$ ]] \
-        || die "sing-box 版本无效：${version}"
-    archive_name="sing-box-${version}-linux-amd64.tar.gz"
-    base_url="https://github.com/SagerNet/sing-box/releases/download/v${version}"
-    temp_dir=$(make_temp_dir)
-    archive="${temp_dir}/${archive_name}"
-    checksums="${temp_dir}/checksums.txt"
-    curl -fL --retry 3 "${base_url}/${archive_name}" -o "${archive}" \
-        || die "下载 sing-box ${version} 失败"
-    curl -fL --retry 3 "${base_url}/sing-box-${version}-checksums.txt" -o "${checksums}" \
-        || die "下载 sing-box 校验文件失败"
-    expected=$(awk -v name="${archive_name}" '$2 == name || $2 == "*" name {print $1; exit}' "${checksums}")
-    actual=$(sha256sum "${archive}" | awk '{print $1}')
-    [[ -n "${expected}" && "${expected,,}" == "${actual,,}" ]] \
-        || die "sing-box SHA256 校验失败"
-    tar -xzf "${archive}" -C "${temp_dir}"
-    install -d -m 0755 "${SING_BOX_DIR}"
-    install -m 0755 \
-        "${temp_dir}/sing-box-${version}-linux-amd64/sing-box" \
-        "${SING_BOX_BIN}"
-    printf '%s\n' "${version}" >"${SING_BOX_DIR}/version"
-}
-
-write_sing_box_config() {
-    local listen_addr="0.0.0.0" gemini_dns_strategy
-    prepare_sample_worker_template
-    resolve_gemini_ip_family
-    [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
-        && gemini_dns_strategy="ipv6_only" \
-        || gemini_dns_strategy="ipv4_only"
-    ip -6 addr show scope global 2>/dev/null | grep -q "inet6" && listen_addr="::"
-    install -d -m 0755 "${SING_BOX_DIR}"
-    jq -n \
-        --arg listen "${listen_addr}" \
-        --arg password "${ANYTLS_PASSWORD}" \
-        --arg cert "${CERT_FILE}" \
-        --arg key "${KEY_FILE}" \
-        --arg gemini_dns_strategy "${gemini_dns_strategy}" \
-        --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
-        {
-          log: {level: "warn", timestamp: true},
-          dns: {
-            servers: [{
-              type: "local",
-              tag: "local"
-            }]
-          },
-          inbounds: [{
-            type: "anytls",
-            tag: "anytls-in",
-            listen: $listen,
-            listen_port: 443,
-            users: [{name: "default", password: $password}],
-            tls: {
-              enabled: true,
-              certificate_path: $cert,
-              key_path: $key
-            }
-          }],
-          outbounds: [
-            {
-              type: "direct",
-              tag: "gemini-family",
-              domain_resolver: {
-                server: "local",
-                strategy: $gemini_dns_strategy
-              }
-            },
-            {type: "direct", tag: "direct"}
-          ],
-          route: {
-            rules: [
-              {action: "sniff"},
-              {
-                domain_suffix: $gemini_domain_suffixes,
-                action: "route",
-                outbound: "gemini-family"
-              }
-            ],
-            final: "direct"
-          }
-        }' >"${RUNTIME_TMP}/sing-box-config.json"
-    "${SING_BOX_BIN}" check -c "${RUNTIME_TMP}/sing-box-config.json" >/dev/null \
-        || die "sing-box AnyTLS 配置校验失败"
-    install -m 0600 "${RUNTIME_TMP}/sing-box-config.json" "${SING_BOX_CONFIG}"
-}
-
-install_sing_box_service() {
-    cat >"${RUNTIME_TMP}/easy-cmcc-sing-box.service" <<EOF
-[Unit]
-Description=sing-box AnyTLS managed by easy_cmcc
-Documentation=https://sing-box.sagernet.org/
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=${SING_BOX_BIN} run -c ${SING_BOX_CONFIG}
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    install -m 0644 "${RUNTIME_TMP}/easy-cmcc-sing-box.service" "${SING_BOX_SERVICE_FILE}"
-    systemctl daemon-reload
-    systemctl enable --now "${SING_BOX_SERVICE}" >/dev/null \
-        || die "启动 sing-box 服务失败"
-}
-
 write_web_root() {
     install -d -m 0755 "${WEB_ROOT}"
     cat >"${RUNTIME_TMP}/index.html" <<'EOF'
@@ -1293,19 +1043,20 @@ EOF
 }
 
 write_nginx_config() {
+    local transport_path="/${GRPC_SERVICE_NAME}"
     write_web_root
     cat >"${RUNTIME_TMP}/easy_cmcc.conf" <<EOF
 server {
     listen 80;
     listen [::]:80;
-    server_name ${VLESS_XHTTP_DOMAIN};
+    server_name ${VLESS_CDN_DOMAIN};
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl http2 backlog=4096;
     listen [::]:443 ssl http2 backlog=4096;
-    server_name ${VLESS_XHTTP_DOMAIN};
+    server_name ${VLESS_CDN_DOMAIN};
 
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -1315,7 +1066,7 @@ server {
     root ${WEB_ROOT};
     index index.html;
 
-    location ^~ ${XHTTP_PATH} {
+    location ^~ ${transport_path} {
         grpc_pass grpc://127.0.0.1:${XRAY_LOOPBACK_PORT};
         grpc_set_header Connection "";
         grpc_set_header Host \$host;
@@ -1350,66 +1101,28 @@ uri_encode() {
     jq -nr --arg v "$1" '$v|@uri'
 }
 
-build_vless_xhttp_link() {
-    local path
-    path=$(uri_encode "${XHTTP_PATH}")
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&path=%s&mode=stream-one&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${VLESS_XHTTP_DOMAIN}" "${VLESS_XHTTP_DOMAIN}" \
-        "${path}" "$(uri_encode "${NODE_NAME}")"
-}
-
-build_reality_link() {
-    printf 'vless://%s@%s:443?encryption=none&security=reality&type=tcp&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${NODE_HOST}" "${REALITY_TARGET%:*}" \
-        "$(uri_encode "${REALITY_PUBLIC_KEY}")" "$(uri_encode "${REALITY_SHORT_ID}")" \
-        "$(uri_encode "${NODE_NAME}")"
-}
-
-build_anytls_link() {
-    printf 'anytls://%s@%s:443/?sni=%s&insecure=0#%s' \
-        "$(uri_encode "${ANYTLS_PASSWORD}")" "${ANYTLS_DOMAIN}" \
-        "$(uri_encode "${ANYTLS_DOMAIN}")" "$(uri_encode "${NODE_NAME}")"
+build_vless_grpc_link() {
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=grpc&sni=%s&fp=chrome&alpn=h2&serviceName=%s&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "$(uri_encode "${GRPC_SERVICE_NAME}")" "$(uri_encode "${NODE_NAME}")"
 }
 
 build_node_link() {
-    case "${PROTOCOL}" in
-    reality) build_reality_link ;;
-    anytls) build_anytls_link ;;
-    vless-xhttp)
-        build_vless_xhttp_link
-        ;;
-    esac
+    build_vless_grpc_link
 }
 
 build_mihomo_node() {
     case "${PROTOCOL}" in
-    reality)
+    vless-grpc)
         jq -nr \
-            --arg name "${NODE_NAME}" --arg server "${NODE_HOST}" \
-            --arg uuid "${VLESS_UUID}" --arg sni "${REALITY_TARGET%:*}" \
-            --arg pbk "${REALITY_PUBLIC_KEY}" --arg sid "${REALITY_SHORT_ID}" '
+            --arg name "${NODE_NAME}" --arg server "${VLESS_CDN_DOMAIN}" \
+            --arg uuid "${VLESS_UUID}" --arg service_name "${GRPC_SERVICE_NAME}" '
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-            "    uuid: \($uuid|@json)\n    network: tcp\n    tls: true\n    udp: true\n" +
-            "    servername: \($sni|@json)\n    client-fingerprint: chrome\n    reality-opts:\n" +
-            "      public-key: \($pbk|@json)\n      short-id: \($sid|@json)\n    flow: xtls-rprx-vision\n"'
-        ;;
-    anytls)
-        jq -nr \
-            --arg name "${NODE_NAME}" --arg server "${ANYTLS_DOMAIN}" \
-            --arg password "${ANYTLS_PASSWORD}" '
-            "  - name: \($name|@json)\n    type: anytls\n    server: \($server|@json)\n    port: 443\n" +
-            "    password: \($password|@json)\n    udp: true\n    sni: \($server|@json)\n" +
-            "    client-fingerprint: chrome\n    skip-cert-verify: false\n"'
-        ;;
-    vless-xhttp)
-        jq -nr \
-            --arg name "${NODE_NAME}" --arg server "${VLESS_XHTTP_DOMAIN}" \
-            --arg uuid "${VLESS_UUID}" --arg path "${XHTTP_PATH}" '
-            "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-            "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
+            "    uuid: \($uuid|@json)\n    network: grpc\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n      host: \($server|@json)\n      path: \($path|@json)\n" +
-            "      mode: stream-one\n      reuse-settings:\n        max-concurrency: \"8\"\n        h-keep-alive-period: -1\n    smux:\n      enabled: false\n"'
+            "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - h2\n    grpc-opts:\n" +
+            "      grpc-service-name: \($service_name|@json)\n      ping-interval: 0\n      max-connections: 1\n" +
+            "    smux:\n      enabled: false\n"'
         ;;
     esac
 }
@@ -1615,28 +1328,12 @@ write_worker() {
     allowed_tokens_json=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "ALLOWED_TOKENS 无效"
     case "${PROTOCOL}" in
-    reality)
+    vless-grpc)
         config_json=$(jq -cn \
-            --arg type vless --arg security reality --arg network tcp \
-            --arg uuid "${VLESS_UUID}" --arg host "${NODE_HOST}" --arg name "${NODE_NAME}" \
-            --arg sni "${REALITY_TARGET%:*}" --arg pbk "${REALITY_PUBLIC_KEY}" \
-            --arg sid "${REALITY_SHORT_ID}" --arg port_mode "${SUB_PORT_MODE}" \
-            --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,pbk:$pbk,sid:$sid,portMode:$port_mode}')
-        ;;
-    anytls)
-        config_json=$(jq -cn \
-            --arg type anytls --arg host "${ANYTLS_DOMAIN}" --arg name "${NODE_NAME}" \
-            --arg password "${ANYTLS_PASSWORD}" --arg sni "${ANYTLS_DOMAIN}" \
-            --arg port_mode "${SUB_PORT_MODE}" --arg fp chrome \
-            '{type:$type,host:$host,name:$name,password:$password,sni:$sni,fp:$fp,udp:true,insecure:false,portMode:$port_mode}')
-        ;;
-    vless-xhttp)
-        config_json=$(jq -cn \
-            --arg type vless --arg security tls --arg network xhttp \
-            --arg uuid "${VLESS_UUID}" --arg host "${VLESS_XHTTP_DOMAIN}" --arg name "${NODE_NAME}" \
-            --arg sni "${VLESS_XHTTP_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-one",ipVersion:"dual",udp:true,portMode:"443"}')
+            --arg type vless --arg security tls --arg network grpc \
+            --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${NODE_NAME}" \
+            --arg sni "${VLESS_CDN_DOMAIN}" --arg service_name "${GRPC_SERVICE_NAME}" --arg fp chrome \
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,serviceName:$service_name,ipVersion:"dual",udp:true,portMode:"443"}')
         ;;
     esac
 
@@ -1734,9 +1431,7 @@ cloudflare_deploy_log() {
     shift
     local timestamp line message secret_name secret
     message=$*
-    for secret_name in \
-        CF_API_TOKEN CF_WORKER_API_TOKEN XRAY_UUID VLESS_UUID \
-        ANYTLS_PASSWORD REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID; do
+    for secret_name in CF_API_TOKEN CF_WORKER_API_TOKEN XRAY_UUID VLESS_UUID; do
         secret=${!secret_name:-}
         [[ -n "${secret}" ]] && message=${message//${secret}/[REDACTED]}
     done
@@ -2081,7 +1776,7 @@ verify_subscription() {
         if [[ "${plain_code}" == "200" && "${clash_code}" == "200" ]] \
             && base64 -d <"${plain_body}" >"${decoded_body}" 2>/dev/null \
             && [[ -s "${decoded_body}" ]] \
-            && grep -Eq '^(vless|anytls)://' "${decoded_body}" \
+            && grep -Eq '^vless://' "${decoded_body}" \
             && grep -q '^proxies:' "${clash_body}" \
             && grep -q '^proxy-groups:' "${clash_body}" \
             && grep -q '^rules:' "${clash_body}"; then
@@ -2155,13 +1850,9 @@ configure_subscription() {
 }
 
 snapshot_subscription_update() {
-    local runtime_config
+    local runtime_config=${XRAY_CONFIG}
     UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
     install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
-    case "${PROTOCOL}" in
-    anytls) runtime_config=${SING_BOX_CONFIG} ;;
-    reality | vless-xhttp) runtime_config=${XRAY_CONFIG} ;;
-    esac
     if [[ -f "${runtime_config}" ]]; then
         install -m 0600 "${runtime_config}" \
             "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json"
@@ -2197,23 +1888,13 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
-    local runtime_config service
+    local runtime_config=${XRAY_CONFIG} service=${XRAY_SERVICE}
     if [[ "${WORKER_REPLACED:-0}" == "1" ]]; then
         warn "Worker 已完成 replace；为保持远端订阅与本机一致，不回滚服务端配置"
         return 0
     fi
     warn "订阅更新失败，正在恢复服务端配置、Worker、端口模式和 nftables"
     install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
-    case "${PROTOCOL}" in
-    anytls)
-        runtime_config=${SING_BOX_CONFIG}
-        service=${SING_BOX_SERVICE}
-        ;;
-    reality | vless-xhttp)
-        runtime_config=${XRAY_CONFIG}
-        service=${XRAY_SERVICE}
-        ;;
-    esac
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" \
             "${runtime_config}"
@@ -2273,10 +1954,11 @@ update_subscription() {
     SUB_PORT_MODE=${requested_port_mode:-${SUB_PORT_MODE:-${stored_port_mode}}}
     [[ "${SUB_PORT_MODE}" == "443" || "${SUB_PORT_MODE}" == "dynamic" ]] \
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
-    [[ "${PROTOCOL}" != "vless-xhttp" || "${SUB_PORT_MODE}" == "443" ]] \
-        || die "VLESS XHTTP 不支持 dynamic 端口"
-    if [[ "${PROTOCOL}" == "vless-xhttp" && -n "${CF_DNS_API_TOKEN:-}" ]]; then
-        configure_cloudflare_xhttp_streaming
+    ! is_cdn_protocol "${PROTOCOL}" || [[ "${SUB_PORT_MODE}" == "443" ]] \
+        || die "VLESS CDN 协议不支持 dynamic 端口"
+    if is_cdn_protocol "${PROTOCOL}" && [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+        configure_cloudflare_cdn
+        enable_cloudflare_proxy
         unset CF_DNS_API_TOKEN
     fi
     prepare_sample_worker_template
@@ -2325,23 +2007,11 @@ collect_installed_state() {
     [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
     load_state
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
-    [[ "${PROTOCOL}" == "vless-xhttp" ]] \
-        || die "easy_cmcc 只能管理 VLESS XHTTP stream-one 安装"
-    case "${PROTOCOL}" in
-    reality)
-        [[ -n "${NODE_HOST:-}" && -n "${VLESS_UUID:-}" \
-            && -n "${REALITY_PUBLIC_KEY:-}" && -n "${REALITY_SHORT_ID:-}" ]] \
-            || die "Reality 状态不完整"
-        ;;
-    anytls)
-        [[ -n "${ANYTLS_DOMAIN:-}" && -n "${ANYTLS_PASSWORD:-}" ]] \
-            || die "AnyTLS 状态不完整"
-        ;;
-    vless-xhttp)
-        [[ -n "${VLESS_XHTTP_DOMAIN:-}" && -n "${VLESS_UUID:-}" && -n "${XHTTP_PATH:-}" ]] \
-            || die "VLESS XHTTP 状态不完整"
-        ;;
-    esac
+    is_cdn_protocol "${PROTOCOL}" \
+        || die "easy_cmcc 只能管理 VLESS gRPC TLS + Cloudflare CDN 安装"
+    [[ -n "${VLESS_CDN_DOMAIN:-}" && -n "${VLESS_UUID:-}" \
+        && -n "${GRPC_SERVICE_NAME:-}" ]] \
+        || die "VLESS gRPC 状态不完整"
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
 }
 
@@ -2349,27 +2019,15 @@ refresh_protocol_runtime_config() {
     local config_path service backup_dir backup_config
     collect_installed_state
     backup_dir=$(make_temp_dir)
-    case "${PROTOCOL}" in
-    anytls)
-        config_path=${SING_BOX_CONFIG}
-        service=${SING_BOX_SERVICE}
-        ;;
-    reality | vless-xhttp)
-        config_path=${XRAY_CONFIG}
-        service=${XRAY_SERVICE}
-        ;;
-    esac
+    config_path=${XRAY_CONFIG}
+    service=${XRAY_SERVICE}
     [[ -f "${config_path}" ]] || die "当前协议配置不存在：${config_path}"
     backup_config="${backup_dir}/config.json"
     install -m 0600 "${config_path}" "${backup_config}"
 
     if (
-        if [[ "${PROTOCOL}" == "anytls" ]]; then
-            write_sing_box_config
-        else
-            write_xray_config
-            [[ "${PROTOCOL}" != "vless-xhttp" ]] || write_nginx_config
-        fi
+        write_xray_config
+        write_nginx_config
         systemctl restart "${service}"
         validate_protocol_runtime
     ); then
@@ -2427,12 +2085,8 @@ show_subscription() {
 renew_certificate() {
     require_root
     collect_installed_state
-    [[ "${PROTOCOL}" != "reality" ]] || die "Reality 不使用 TLS 证书"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
-    local cert_domain
-    [[ "${PROTOCOL}" == "anytls" ]] \
-        && cert_domain=${ANYTLS_DOMAIN} \
-        || cert_domain=${VLESS_XHTTP_DOMAIN}
+    local cert_domain=${VLESS_CDN_DOMAIN}
     run_acme --renew -d "${cert_domain}" --ecc --force \
         || die "证书续期失败"
     "${CERT_RELOAD_HOOK}" || true
@@ -2441,20 +2095,10 @@ renew_certificate() {
 
 active_gemini_ip_family() {
     local strategy=""
-    case "${PROTOCOL}" in
-    reality | vless-xhttp)
-        [[ -s "${XRAY_CONFIG}" ]] || return 1
-        strategy=$(jq -r \
-            '.outbounds[]? | select(.tag == "gemini-family") | .settings.domainStrategy' \
-            "${XRAY_CONFIG}")
-        ;;
-    anytls)
-        [[ -s "${SING_BOX_CONFIG}" ]] || return 1
-        strategy=$(jq -r \
-            '.outbounds[]? | select(.tag == "gemini-family") | .domain_resolver.strategy' \
-            "${SING_BOX_CONFIG}")
-        ;;
-    esac
+    [[ -s "${XRAY_CONFIG}" ]] || return 1
+    strategy=$(jq -r \
+        '.outbounds[]? | select(.tag == "gemini-family") | .settings.domainStrategy' \
+        "${XRAY_CONFIG}")
     case "${strategy}" in
     ForceIPv6 | ipv6_only) printf 'ipv6\n' ;;
     ForceIPv4 | ipv4_only) printf 'ipv4\n' ;;
@@ -2474,27 +2118,12 @@ show_status() {
     printf '协议: %s\n' "${PROTOCOL}"
     printf 'Gemini 出口族: %s（配置: %s）\n' \
         "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
-    case "${PROTOCOL}" in
-    reality)
-        printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
-        ;;
-    anytls)
-        printf '域名: %s\n' "${ANYTLS_DOMAIN}"
-        ;;
-    vless-xhttp)
-        printf '域名: %s\nXHTTP Path: %s\n模式: stream-one\n' \
-            "${VLESS_XHTTP_DOMAIN}" "${XHTTP_PATH}"
-        ;;
-    esac
+    printf '域名: %s\ngRPC Service Name: %s\n' \
+        "${VLESS_CDN_DOMAIN}" "${GRPC_SERVICE_NAME}"
     printf '核心服务: '
-    if [[ "${PROTOCOL}" == "anytls" ]]; then
-        systemctl is-active --quiet "${SING_BOX_SERVICE}" 2>/dev/null \
-            && printf 'active\n' || printf 'inactive\n'
-    else
-        systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
-            && printf 'active\n' || printf 'inactive\n'
-    fi
-    if [[ "${PROTOCOL}" == "vless-xhttp" ]]; then
+    systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
+        && printf 'active\n' || printf 'inactive\n'
+    if is_cdn_protocol "${PROTOCOL}"; then
         printf 'Nginx: '
         systemctl is-active --quiet nginx 2>/dev/null && printf 'active\n' || printf 'inactive\n'
     fi
@@ -2527,8 +2156,7 @@ register_easy_cmcc_command() {
 
 stop_protocol_services() {
     systemctl disable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
-    systemctl disable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true
-    if [[ "${PROTOCOL:-}" == "vless-xhttp" || -f "${NGINX_CONFIG}" ]]; then
+    if is_cdn_protocol "${PROTOCOL:-}" || [[ -f "${NGINX_CONFIG}" ]]; then
         systemctl disable --now nginx >/dev/null 2>&1 || true
     fi
 }
@@ -2594,13 +2222,10 @@ uninstall_all() {
     stop_protocol_services
     restore_preinstall_nftables
     remove_daily_reboot_schedule
-    remove_managed_acme_domain "${ANYTLS_DOMAIN:-}"
-    if [[ "${VLESS_XHTTP_DOMAIN:-}" != "${ANYTLS_DOMAIN:-}" ]]; then
-        remove_managed_acme_domain "${VLESS_XHTTP_DOMAIN:-}"
-    fi
+    remove_managed_acme_domain "${VLESS_CDN_DOMAIN:-}"
     purge_owned_acme_if_unused
-    rm -f -- "${XRAY_SERVICE_FILE}" "${SING_BOX_SERVICE_FILE}" \
-        "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" \
+        "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
     success "easy_cmcc 已彻底卸载；远端 Cloudflare Worker 与 Custom Domain 未处理"
@@ -2626,77 +2251,40 @@ rollback_fresh_install() {
     elif [[ -f "${BACKUP_DIR}/pre-install-crontab.missing" ]]; then
         crontab -r >/dev/null 2>&1 || true
     fi
-    remove_managed_acme_domain "${ANYTLS_DOMAIN:-}"
-    if [[ "${VLESS_XHTTP_DOMAIN:-}" != "${ANYTLS_DOMAIN:-}" ]]; then
-        remove_managed_acme_domain "${VLESS_XHTTP_DOMAIN:-}"
-    fi
+    remove_managed_acme_domain "${VLESS_CDN_DOMAIN:-}"
     purge_owned_acme_if_unused
-    rm -f -- "${XRAY_SERVICE_FILE}" "${SING_BOX_SERVICE_FILE}" \
-        "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" \
+        "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
     warn "首次安装产生的服务数据已清理；系统软件包和已安装内核不会降级"
 }
 
 protocol_preflight() {
-    [[ "${PROTOCOL}" != "reality" ]] || return 0
-    local domain public_ip
-    [[ "${PROTOCOL}" == "anytls" ]] \
-        && domain=${ANYTLS_DOMAIN} \
-        || domain=${VLESS_XHTTP_DOMAIN}
-    if [[ "${PROTOCOL}" == "anytls" ]]; then
-        alert "${domain} 的 Cloudflare A 记录必须始终保持 DNS only / 灰云。"
-        alert "如果配置了 AAAA 记录，也必须保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
-    else
-        alert "安装或切换前，${domain} 的 Cloudflare A 记录必须为 DNS only / 灰云。"
-        alert "如果配置了 AAAA 记录，安装或切换前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
-    fi
+    local domain=${VLESS_CDN_DOMAIN} public_ip
+    alert "安装前，${domain} 的 Cloudflare A 记录必须为 DNS only / 灰云。"
+    alert "如果配置了 AAAA 记录，安装前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     public_ip=$(detect_public_ipv4) || die "无法探测本机公网 IPv4"
     verify_domain_dns "${domain}" "${public_ip}"
 }
 
 prepare_protocol_assets() {
-    case "${PROTOCOL}" in
-    reality) download_xray ;;
-    anytls) issue_certificate; download_sing_box ;;
-    vless-xhttp) issue_certificate; download_xray ;;
-    esac
+    issue_certificate
+    download_xray
 }
 
 install_protocol_runtime() {
-    case "${PROTOCOL}" in
-    reality)
-        write_xray_config
-        install_xray_service
-        ;;
-    anytls)
-        write_sing_box_config
-        install_sing_box_service
-        ;;
-    vless-xhttp)
-        write_xray_config
-        install_xray_service
-        write_nginx_config
-        ;;
-    esac
+    write_xray_config
+    install_xray_service
+    write_nginx_config
 }
 
 validate_protocol_runtime() {
     local attempt
     for attempt in 1 2 3 4 5; do
         if ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
-            case "${PROTOCOL}" in
-            anytls)
-                systemctl is-active --quiet "${SING_BOX_SERVICE}" && return 0
-                ;;
-            vless-xhttp)
-                systemctl is-active --quiet "${XRAY_SERVICE}" \
-                    && systemctl is-active --quiet nginx && return 0
-                ;;
-            reality)
-                systemctl is-active --quiet "${XRAY_SERVICE}" && return 0
-                ;;
-            esac
+            systemctl is-active --quiet "${XRAY_SERVICE}" \
+                && systemctl is-active --quiet nginx && return 0
         fi
         sleep 2
     done
@@ -2704,22 +2292,6 @@ validate_protocol_runtime() {
 }
 
 cleanup_obsolete_protocol_artifacts() {
-    case "${PROTOCOL}" in
-    anytls)
-        systemctl disable --now nginx >/dev/null 2>&1 || true
-        rm -rf -- "${XRAY_DIR}" "${WEB_ROOT}"
-        rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}"
-        ;;
-    reality)
-        systemctl disable --now nginx >/dev/null 2>&1 || true
-        rm -rf -- "${SING_BOX_DIR}" "${CERT_DIR}" "${WEB_ROOT}"
-        rm -f -- "${SING_BOX_SERVICE_FILE}" "${NGINX_CONFIG}"
-        ;;
-    vless-xhttp)
-        rm -rf -- "${SING_BOX_DIR}"
-        rm -f -- "${SING_BOX_SERVICE_FILE}"
-        ;;
-    esac
     systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
@@ -2734,10 +2306,8 @@ install_all() {
     check_platform
     choose_protocol "${requested}"
     check_install_conflicts
-    if [[ "${PROTOCOL}" != "reality" ]]; then
-        print_dns_proxy_preinstall_notice
-        interactive_pause
-    fi
+    print_dns_proxy_preinstall_notice
+    interactive_pause
     info "[2/9] 安装依赖并初始化服务器"
     snapshot_fresh_install
     install_packages
@@ -2752,6 +2322,8 @@ install_all() {
     info "[6/9] 安装并启动 ${PROTOCOL}"
     install_protocol_runtime
     validate_protocol_runtime
+    enable_cloudflare_proxy
+    unset CF_DNS_API_TOKEN
     cleanup_obsolete_protocol_artifacts
     info "[7/9] 保存状态"
     save_state
@@ -2761,167 +2333,21 @@ install_all() {
     configure_subscription "${prompt_worker_name}" "${prompt_download_name}"
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
-    [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice
+    ! is_cdn_protocol "${PROTOCOL}" || print_dns_proxy_postinstall_notice
     success "easy_cmcc ${PROTOCOL} 安装完成"
-}
-
-snapshot_path() {
-    local source=$1 name=$2
-    if [[ -e "${source}" || -L "${source}" ]]; then
-        cp -a "${source}" "${SWITCH_BACKUP_DIR}/${name}"
-    else
-        : >"${SWITCH_BACKUP_DIR}/${name}.missing"
-    fi
-}
-
-restore_snapshot_path() {
-    local destination=$1 name=$2
-    rm -rf -- "${destination}"
-    if [[ -e "${SWITCH_BACKUP_DIR}/${name}" || -L "${SWITCH_BACKUP_DIR}/${name}" ]]; then
-        cp -a "${SWITCH_BACKUP_DIR}/${name}" "${destination}"
-    fi
-}
-
-snapshot_protocol_switch() {
-    SWITCH_BACKUP_DIR="${RUNTIME_TMP}/switch-backup"
-    install -d -m 0700 "${SWITCH_BACKUP_DIR}"
-    snapshot_path "${STATE_DIR}" state
-    snapshot_path "${WEB_ROOT}" web-root
-    snapshot_path "${NFT_CONFIG}" nftables.conf
-    snapshot_path "${XRAY_SERVICE_FILE}" xray.service
-    snapshot_path "${SING_BOX_SERVICE_FILE}" sing-box.service
-    snapshot_path "${NGINX_CONFIG}" nginx.conf
-    SWITCH_ROLLBACK_ON_EXIT=1
-}
-
-rollback_protocol_switch() {
-    local failed_tls_domain="" restored_tls_domain=""
-    if [[ "${WORKER_REPLACED:-0}" == "1" ]]; then
-        warn "Worker 已完成 replace；为保持远端订阅与本机一致，不再回滚已验收的新协议"
-        return 0
-    fi
-    case "${PROTOCOL:-}" in
-    anytls) failed_tls_domain=${ANYTLS_DOMAIN:-} ;;
-    vless-xhttp) failed_tls_domain=${VLESS_XHTTP_DOMAIN:-} ;;
-    esac
-    warn "协议切换失败，正在恢复原协议"
-    stop_protocol_services
-    restore_snapshot_path "${STATE_DIR}" state
-    restore_snapshot_path "${WEB_ROOT}" web-root
-    restore_snapshot_path "${NFT_CONFIG}" nftables.conf
-    restore_snapshot_path "${XRAY_SERVICE_FILE}" xray.service
-    restore_snapshot_path "${SING_BOX_SERVICE_FILE}" sing-box.service
-    restore_snapshot_path "${NGINX_CONFIG}" nginx.conf
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    [[ -f "${NFT_CONFIG}" ]] && nft -f "${NFT_CONFIG}" >/dev/null 2>&1 || true
-    source_state_file
-    case "${PROTOCOL:-}" in
-    anytls) restored_tls_domain=${ANYTLS_DOMAIN:-} ;;
-    vless-xhttp) restored_tls_domain=${VLESS_XHTTP_DOMAIN:-} ;;
-    esac
-    if [[ -n "${failed_tls_domain}" && "${failed_tls_domain}" != "${restored_tls_domain}" ]]; then
-        remove_managed_acme_domain "${failed_tls_domain}"
-    fi
-    case "${PROTOCOL:-}" in
-    anytls) systemctl enable --now "${SING_BOX_SERVICE}" >/dev/null 2>&1 || true ;;
-    reality) systemctl enable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true ;;
-    vless-xhttp)
-        systemctl enable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
-        systemctl enable --now nginx >/dev/null 2>&1 || true
-        ;;
-    esac
-    warn "原协议恢复完成；Worker 上传未成功，远端 Worker 保持原状"
-}
-
-reset_protocol_fields() {
-    NODE_NAME=""
-    NODE_HOST=""
-    REALITY_TARGET=""
-    REALITY_PRIVATE_KEY=""
-    REALITY_PUBLIC_KEY=""
-    REALITY_SHORT_ID=""
-    VLESS_XHTTP_DOMAIN=""
-    XHTTP_PATH=""
-    ANYTLS_DOMAIN=""
-    ANYTLS_PASSWORD=""
-    SUB_PORT_MODE=""
-}
-
-switch_protocol() {
-    local requested=${1:-${PROTOCOL:-}}
-    local old_protocol old_anytls_domain old_xhttp_domain new_tls_domain=""
-    local requested_node_name=${NODE_NAME:-} requested_node_host=${NODE_HOST:-}
-    local requested_target=${REALITY_TARGET:-} requested_anytls_domain=${ANYTLS_DOMAIN:-}
-    local requested_anytls_password=${ANYTLS_PASSWORD:-}
-    local requested_xhttp_domain=${VLESS_XHTTP_DOMAIN:-}
-    local requested_xhttp_path=${XHTTP_PATH:-}
-    local requested_port_mode=${SUB_PORT_MODE:-}
-    require_root
-    require_systemd
-    [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
-    source_state_file
-    validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
-    old_protocol=${PROTOCOL}
-    old_anytls_domain=${ANYTLS_DOMAIN:-}
-    old_xhttp_domain=${VLESS_XHTTP_DOMAIN:-}
-    reset_protocol_fields
-    NODE_NAME=${requested_node_name}
-    NODE_HOST=${requested_node_host}
-    REALITY_TARGET=${requested_target}
-    ANYTLS_DOMAIN=${requested_anytls_domain}
-    ANYTLS_PASSWORD=${requested_anytls_password}
-    VLESS_XHTTP_DOMAIN=${requested_xhttp_domain}
-    XHTTP_PATH=${requested_xhttp_path}
-    SUB_PORT_MODE=${requested_port_mode}
-    PROTOCOL=""
-    choose_protocol "${requested}"
-    [[ "${PROTOCOL}" != "${old_protocol}" ]] || die "当前已经是 ${PROTOCOL}"
-    collect_install_inputs
-    protocol_preflight
-    WORKER_REPLACED=0
-    snapshot_protocol_switch
-    SWITCH_IN_PROGRESS=1
-    info "准备从 ${old_protocol} 切换到 ${PROTOCOL}"
-    stop_protocol_services
-    rm -f -- "${XRAY_SERVICE_FILE}" "${SING_BOX_SERVICE_FILE}" "${NGINX_CONFIG}"
-    systemctl daemon-reload
-    prepare_protocol_assets
-    configure_nftables
-    install_protocol_runtime
-    validate_protocol_runtime
-    cleanup_obsolete_protocol_artifacts
-    save_state
-    STRICT_WORKER_DEPLOY=1
-    configure_subscription
-    STRICT_WORKER_DEPLOY=0
-    save_state
-    SWITCH_ROLLBACK_ON_EXIT=0
-    case "${PROTOCOL}" in
-    anytls) new_tls_domain=${ANYTLS_DOMAIN} ;;
-    vless-xhttp) new_tls_domain=${VLESS_XHTTP_DOMAIN} ;;
-    esac
-    if [[ "${old_protocol}" == "anytls" && "${old_anytls_domain}" != "${new_tls_domain}" ]]; then
-        remove_managed_acme_domain "${old_anytls_domain}"
-    elif [[ "${old_protocol}" == "vless-xhttp" && "${old_xhttp_domain}" != "${new_tls_domain}" ]]; then
-        remove_managed_acme_domain "${old_xhttp_domain}"
-    fi
-    register_easy_cmcc_command
-    [[ "${PROTOCOL}" != "vless-xhttp" ]] || print_dns_proxy_postinstall_notice
-    success "协议已从 ${old_protocol} 切换为 ${PROTOCOL}"
 }
 
 usage() {
     cat <<EOF
 用法: ${ENTRY_COMMAND_NAME} [命令]
 
-  install       安装中国移动访问美西普通线路专用 XHTTP stream-one
+  install       安装 VLESS gRPC TLS + Cloudflare CDN
   update        刷新 CMCC 省电模式、Nginx、Worker 与 Custom Domain
   update-sub    刷新服务端与订阅
   show|subscription|status|update-core|renew-cert|uninstall
 
-该入口只发布 XHTTP stream-one CDN 节点，并放入 PROXY 组；首次自动部署可选择 Worker 名称，默认 easy-cmcc。
+该入口只发布 VLESS gRPC TLS CDN 节点，并放入 PROXY 组；首次自动部署可选择 Worker 名称，默认 easy-cmcc。
 自动部署可绑定独立 Worker Custom Domain，并由 Cloudflare 自动创建橙云 DNS 与证书。
-通用 VPS 的 Reality 或 AnyTLS 请使用仓库根目录的 easy_all。
 EOF
 }
 
@@ -2929,54 +2355,32 @@ update_current_core() {
     local backup_bin="${RUNTIME_TMP}/core-backup" backup_version="${RUNTIME_TMP}/version-backup"
     require_root
     collect_installed_state
-    if [[ "${PROTOCOL}" == "anytls" ]]; then
-        install -m 0755 "${SING_BOX_BIN}" "${backup_bin}"
-        [[ ! -f "${SING_BOX_DIR}/version" ]] \
-            || install -m 0644 "${SING_BOX_DIR}/version" "${backup_version}"
-    else
-        install -m 0755 "${XRAY_BIN}" "${backup_bin}"
-        [[ ! -f "${XRAY_DIR}/version" ]] \
-            || install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
-    fi
+    install -m 0755 "${XRAY_BIN}" "${backup_bin}"
+    [[ ! -f "${XRAY_DIR}/version" ]] \
+        || install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
     if (
-        if [[ "${PROTOCOL}" == "anytls" ]]; then
-            download_sing_box
-            systemctl restart "${SING_BOX_SERVICE}"
-        else
-            download_xray
-            systemctl restart "${XRAY_SERVICE}"
-        fi
+        download_xray
+        systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
     ); then
         success "${PROTOCOL} 核心已更新"
         return 0
     fi
     warn "新核心验收失败，正在恢复旧版本"
-    if [[ "${PROTOCOL}" == "anytls" ]]; then
-        install -m 0755 "${backup_bin}" "${SING_BOX_BIN}"
-        [[ ! -f "${backup_version}" ]] \
-            || install -m 0644 "${backup_version}" "${SING_BOX_DIR}/version"
-        systemctl restart "${SING_BOX_SERVICE}"
-    else
-        install -m 0755 "${backup_bin}" "${XRAY_BIN}"
-        [[ ! -f "${backup_version}" ]] \
-            || install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
-        systemctl restart "${XRAY_SERVICE}"
-    fi
+    install -m 0755 "${backup_bin}" "${XRAY_BIN}"
+    [[ ! -f "${backup_version}" ]] \
+        || install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
+    systemctl restart "${XRAY_SERVICE}"
     validate_protocol_runtime
     die "核心更新失败，已恢复旧版本"
 }
 
 main() {
     if [[ "${1:-install}" == "switch" ]]; then
-        die "easy_cmcc 固定使用 VLESS XHTTP stream-one；协议切换请使用仓库根目录的 easy_all"
+        die "easy_cmcc 固定使用 VLESS gRPC TLS + Cloudflare CDN，不提供协议切换"
     fi
     case "${1:-install}" in
     install) install_all "${2:-${PROTOCOL:-}}" ;;
-    switch)
-        [[ -n "${2:-}" ]] || die "switch 必须指定 reality、anytls 或 vless-xhttp"
-        switch_protocol "${2}"
-        ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
     update) update_easy_cmcc ;;

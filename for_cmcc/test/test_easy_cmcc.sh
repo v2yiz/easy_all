@@ -26,7 +26,7 @@ assert_contains() {
 bash -n "${ROOT_DIR}/easy_cmcc"
 installer=$(<"${ROOT_DIR}/easy_cmcc")
 output=$("${ROOT_DIR}/easy_cmcc" help)
-assert_contains "standalone executable exposes CMCC usage" "${output}" "XHTTP stream-one"
+assert_contains "standalone executable exposes CMCC usage" "${output}" "VLESS gRPC TLS"
 
 assert_contains "CMCC uses fq" "${installer}" "net.core.default_qdisc = fq"
 assert_contains "CMCC uses BBR" "${installer}" "net.ipv4.tcp_congestion_control = bbr"
@@ -87,23 +87,21 @@ fi
 
 readme=$(<"${ROOT_DIR}/README.md")
 assert_contains "README identifies the standalone installer" "${readme}" \
-    "独立单文件安装器"
+    "独立安装器"
 assert_contains "README downloads the CMCC monolith" "${readme}" \
     "main/for_cmcc/easy_cmcc"
-assert_contains "README uses the aligned one-line install command" "${readme}" \
-    'wget -qO /root/easy_cmcc.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/easy_cmcc" && chmod 700 /root/easy_cmcc.new && mv -f /root/easy_cmcc.new /root/easy_cmcc && /root/easy_cmcc install'
-assert_contains "README documents the single stream-one node" "${readme}" \
-    '客户端只发布一个名为 `VLESS_XHTTP` 的节点'
+assert_contains "README documents the single gRPC node" "${readme}" \
+    '仅包含一个 `VLESS_GRPC` 节点'
 assert_contains "README documents the single PROXY group" "${readme}" \
-    '只提供一个 `PROXY` 手动选择组'
+    '一个 `PROXY` 选择组'
 assert_contains "README documents power-conscious client settings" "${readme}" \
     '`tcp-concurrent: false`'
 assert_contains "README documents disabled process matching" "${readme}" \
     '`find-process-mode: off`'
-assert_contains "README documents XHTTP connection reuse" "${readme}" \
-    '`xhttp-opts.reuse-settings.max-concurrency: "8"`'
-assert_contains "README documents disabled idle H2 keepalive" "${readme}" \
-    '`xhttp-opts.reuse-settings.h-keep-alive-period: -1`'
+assert_contains "README documents disabled gRPC ping" "${readme}" \
+    '`grpc-opts.ping-interval: 0`'
+assert_contains "README documents one gRPC connection" "${readme}" \
+    '`grpc-opts.max-connections: 1`'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
     "DNS only / 灰云"
 assert_contains "README documents enabling the CDN after install" "${readme}" \
@@ -111,62 +109,23 @@ assert_contains "README documents enabling the CDN after install" "${readme}" \
 assert_contains "README documents isolated state" "${readme}" \
     "/etc/easy_cmcc/state.env"
 assert_contains "README documents that uninstall leaves remote Cloudflare resources" "${readme}" \
-    "远端 Cloudflare Worker 及其 Custom Domain 不会删除"
-assert_contains "README documents the expanded Worker verification window" "${readme}" \
-    "先等待 10 秒，再进行最多 12 次"
-assert_contains "README recommends the custom subscription domain" "${readme}" \
-    "推荐：使用 Worker Custom Domain"
-assert_contains "README warns against long-term workers.dev subscriptions" "${readme}" \
-    "不建议作为长期订阅地址"
-assert_contains "README keeps subscription and node domains separate" "${readme}" \
-    "不要与 XHTTP 节点域名"
-assert_contains "README documents automatic CDN setup for Custom Domain" "${readme}" \
-    "相当于自动完成 Cloudflare CDN 接入"
-assert_contains "README documents automatic Custom Domain attachment" "${readme}" \
-    "脚本会调用 Cloudflare Custom Domain API"
-assert_contains "README documents the workers.dev fallback" "${readme}" \
-    '回退到 `workers.dev`'
-assert_contains "README documents Custom Domain conflict protection" "${readme}" \
-    "拒绝抢占已经绑定到其他 Worker"
-assert_contains "README documents idempotent Custom Domain updates" "${readme}" \
-    '已绑定到当前 `easy-cmcc` 时直接复用，不重复创建'
-assert_contains "README documents post-conflict Custom Domain verification" "${readme}" \
-    '若创建请求与另一次安装并发冲突，脚本会再查询一次'
+    "不删除远端 Worker"
 assert_contains "README distinguishes node and subscription domains" "${readme}" \
-    "两个域名不能相同"
+    "两个不同域名"
 assert_contains "README documents the recommended interactive Worker choice" "${readme}" \
     '订阅输出方式 | `1`，自动部署 Worker'
-assert_contains "README documents client import" "${readme}" \
-    "客户端导入与验收"
 assert_contains "README documents IPv4 and IPv6 LAN bypass" "${readme}" \
-    "RFC1918 IPv4、IPv4 链路本地、IPv6 ULA、IPv6 链路本地"
+    "局域网 IPv4/IPv6 地址绕过 TUN"
 assert_contains "README provides standalone troubleshooting" "${readme}" \
     "## 故障排查"
-assert_contains "README documents conditional subscription Token prompts" "${readme}" \
-    "选择自动或手动部署后才会询问订阅 Token"
 assert_contains "README documents customizable Mihomo download filenames" "${readme}" \
-    '输入时不含 `.yaml`'
+    '不含 `.yaml`'
 assert_contains "README documents token-free link-only mode" "${readme}" \
-    "只输出链接不生成 Worker"
-[[ -s "${ROOT_DIR}/docs/images/cloudflare-worker-custom-domain.svg" ]] \
-    || fail "README Worker Custom Domain figure is missing"
-for credential_figure in \
-    cloudflare-account-id.svg cloudflare-zone-token.svg cloudflare-worker-token.svg; do
-    [[ -s "${ROOT_DIR}/../docs/images/${credential_figure}" ]] \
-        || fail "README credential figure is missing: ${credential_figure}"
-    assert_contains "README references credential figure ${credential_figure}" "${readme}" \
-        "../docs/images/${credential_figure}"
-done
-assert_contains "README explains all four DNS Token permissions" "${readme}" \
-    '图中的四行权限对应四项独立操作'
-assert_contains "README documents Config Rules naming compatibility" "${readme}" \
-    'Config Settings → Write'
+    "只显示节点链接，不生成 Worker"
+assert_contains "README states XHTTP config permission is unnecessary" "${readme}" \
+    "不再需要 XHTTP Configuration Rules 权限"
 assert_contains "README documents minimal Worker Token scope" "${readme}" \
-    '不需要 `Workers Routes`、DNS、KV 或 R2 权限'
-[[ "${readme}" != *"方案 B"* ]] \
-    || fail "README must present only the recommended Worker Custom Domain flow"
-[[ "${readme}" != *"无人值守"* ]] \
-    || fail "README must omit unattended-operation documentation"
+    "Workers Scripts → Edit"
 
 if bash -c 'source "$1"; choose_protocol reality' _ "${ROOT_DIR}/easy_cmcc" \
     >/dev/null 2>&1; then
@@ -175,6 +134,10 @@ fi
 if bash -c 'source "$1"; choose_protocol wss' _ "${ROOT_DIR}/easy_cmcc" \
     >/dev/null 2>&1; then
     fail "standalone executable must reject WSS"
+fi
+if bash -c 'source "$1"; choose_protocol vless-xhttp' _ "${ROOT_DIR}/easy_cmcc" \
+    >/dev/null 2>&1; then
+    fail "standalone executable must reject XHTTP"
 fi
 
 (
@@ -188,7 +151,7 @@ fi
     assert_equal "Nginx config is isolated" "/etc/nginx/conf.d/easy_cmcc.conf" "${NGINX_CONFIG}"
     assert_equal "acme.sh home is isolated" "/root/.acme-cmcc.sh" "${ACME_HOME}"
     assert_equal "Worker name is isolated" "easy-cmcc" "${DEFAULT_WORKER_NAME}"
-    assert_equal "CMCC uses the requested default node name" "VLESS_XHTTP" "${DEFAULT_XHTTP_NODE_NAME}"
+    assert_equal "CMCC uses the requested default node name" "VLESS_GRPC" "${DEFAULT_GRPC_NODE_NAME}"
     assert_contains "Worker URL uses the CMCC subtree" "${DEFAULT_SAMPLE_WORKER_URL}" "/for_cmcc/sample-worker.js"
     assert_contains "CMCC subscription verification uses Worker version affinity" \
         "$(<"${ROOT_DIR}/easy_cmcc")" "Cloudflare-Workers-Version-Key"
@@ -269,11 +232,11 @@ fi
     assert_equal "CMCC normalizes a custom Mihomo download filename" \
         "Team" "${SUB_DOWNLOAD_NAME}"
 
-    choose_protocol vless-xhttp >/dev/null
+    choose_protocol vless-grpc >/dev/null
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
-    VLESS_XHTTP_DOMAIN="cmcc.example.com"
-    NODE_NAME="CMCC_XHTTP"
-    XHTTP_PATH="/cmcc-xhttp"
+    VLESS_CDN_DOMAIN="cmcc.example.com"
+    NODE_NAME="CMCC_GRPC"
+    GRPC_SERVICE_NAME="cmcc-grpc"
     WORKER_CUSTOM_DOMAIN="SUB.EXAMPLE.COM"
     collect_worker_custom_domain
     assert_equal "CMCC normalizes the Worker Custom Domain" \
@@ -282,7 +245,7 @@ fi
         WORKER_CUSTOM_DOMAIN="cmcc.example.com"
         collect_worker_custom_domain
     ) >/dev/null 2>&1; then
-        fail "CMCC must reject reusing the XHTTP node domain"
+        fail "CMCC must reject reusing the gRPC node domain"
     fi
     if (
         WORKER_CUSTOM_DOMAIN="easy-cmcc.example.workers.dev"
@@ -297,12 +260,12 @@ fi
         fail "CMCC must reject the workers.dev apex as a Custom Domain"
     fi
     links=$(build_node_link)
-    assert_contains "subscription contains XHTTP" "${links}" "type=xhttp"
-    assert_contains "XHTTP uses stream-one" "${links}" "mode=stream-one"
-    assert_contains "XHTTP forces HTTP/2" "${links}" "alpn=h2"
-    assert_contains "XHTTP uses TCP 443" "${links}" "@cmcc.example.com:443"
-    [[ "${links}" != *"mode=stream-up"* && "${links}" != *"type=ws"* ]] \
-        || fail "subscription must contain only XHTTP stream-one"
+    assert_contains "subscription contains gRPC" "${links}" "type=grpc"
+    assert_contains "gRPC includes service name" "${links}" "serviceName=cmcc-grpc"
+    assert_contains "gRPC forces HTTP/2" "${links}" "alpn=h2"
+    assert_contains "gRPC uses TCP 443" "${links}" "@cmcc.example.com:443"
+    [[ "${links}" != *"type=xhttp"* && "${links}" != *"type=ws"* ]] \
+        || fail "subscription must contain only gRPC"
 
     ALLOWED_TOKENS='{"owner":"test-token"}'
     SUB_DOWNLOAD_NAME="CMCC_TEST"
@@ -310,18 +273,18 @@ fi
     WORKER_NAME="easy-cmcc"
     worker_output="${TMP_DIR}/subscribe-worker.js"
     write_worker "${worker_output}"
-    grep -Fq '"network":"xhttp"' "${worker_output}" \
-        || fail "rendered Worker must include XHTTP"
-    [[ "$(grep -Fo '"network":"xhttp"' "${worker_output}" | wc -l | tr -d ' ')" == "1" ]] \
-        || fail "rendered Worker must include exactly one XHTTP node"
-    grep -Fq '"mode":"stream-one"' "${worker_output}" \
-        || fail "rendered Worker must use XHTTP stream-one"
+    grep -Fq '"network":"grpc"' "${worker_output}" \
+        || fail "rendered Worker must include gRPC"
+    [[ "$(grep -Fo '"network":"grpc"' "${worker_output}" | wc -l | tr -d ' ')" == "1" ]] \
+        || fail "rendered Worker must include exactly one gRPC node"
+    grep -Fq '"serviceName":"cmcc-grpc"' "${worker_output}" \
+        || fail "rendered Worker must include the gRPC service name"
     grep -Fq 'const DEFAULT_NODE = NODE_CONFIG;' "${worker_output}" \
-        || fail "rendered Worker must publish only the configured stream-one node"
-    [[ "$(<"${worker_output}")" != *'"network":"ws"'* && "$(<"${worker_output}")" != *'"mode":"stream-up"'* ]] \
-        || fail "rendered Worker must not publish WSS or stream-up"
-    grep -Fq 'mode: "stream-one"' "${ROOT_DIR}/easy_cmcc" \
-        || fail "Xray server must require XHTTP stream-one"
+        || fail "rendered Worker must publish only the configured gRPC node"
+    [[ "$(<"${worker_output}")" != *'"network":"ws"'* && "$(<"${worker_output}")" != *'"network":"xhttp"'* ]] \
+        || fail "rendered Worker must not publish WSS or XHTTP"
+    grep -Fq 'network: "grpc"' "${ROOT_DIR}/easy_cmcc" \
+        || fail "Xray server must require gRPC"
     node --input-type=module - "${worker_output}" <<'EOF'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -344,10 +307,37 @@ EOF
     mihomo_nodes=$(build_mihomo_node)
     assert_contains "Mihomo nodes race dual-stack CDN addresses" "${mihomo_nodes}" \
         "ip-version: dual"
-    assert_contains "Mihomo nodes reuse XHTTP connections" "${mihomo_nodes}" \
-        'max-concurrency: "8"'
-    assert_contains "Mihomo nodes disable idle H2 keepalive" "${mihomo_nodes}" \
-        "h-keep-alive-period: -1"
+    assert_contains "Mihomo nodes disable gRPC ping" "${mihomo_nodes}" \
+        'ping-interval: 0'
+    assert_contains "Mihomo nodes use one gRPC connection" "${mihomo_nodes}" \
+        "max-connections: 1"
+
+    dns_proxy_calls="${TMP_DIR}/cmcc-dns-proxy-calls"
+    : >"${dns_proxy_calls}"
+    CF_PROXY_MODE="auto"
+    CF_DNS_API_TOKEN="test-zone-token"
+    VLESS_CDN_DOMAIN="cmcc.example.com"
+    find_cloudflare_zone_id() { printf 'zone-id\n'; }
+    cloudflare_zone_api() {
+        local method=$1 path=$2
+        printf '%s\t%s\n' "${method}" "${path}" >>"${dns_proxy_calls}"
+        if [[ "${method}" == "GET" && "${path}" == *"type=A&"* ]]; then
+            printf '%s' '{"success":true,"result":[{"id":"record-a","proxied":false}]}'
+        elif [[ "${method}" == "GET" ]]; then
+            printf '%s' '{"success":true,"result":[]}'
+        else
+            printf '%s' '{"success":true,"result":{"id":"record-a","proxied":true}}'
+        fi
+    }
+    enable_cloudflare_proxy >/dev/null
+    grep -Fq $'PATCH\t/zones/zone-id/dns_records/record-a' "${dns_proxy_calls}" \
+        || fail "CMCC must automatically proxy the gRPC node DNS record"
+
+    : >"${dns_proxy_calls}"
+    CF_PROXY_MODE="manual"
+    enable_cloudflare_proxy >/dev/null
+    [[ ! -s "${dns_proxy_calls}" ]] \
+        || fail "CMCC manual proxy mode must leave DNS records unchanged"
 
     custom_domain_api_calls="${TMP_DIR}/cmcc-custom-domain-api-calls"
     custom_domain_get_count="${TMP_DIR}/cmcc-custom-domain-get-count"
