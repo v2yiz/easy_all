@@ -1,0 +1,31 @@
+README.md
+  s_dfe11a446e546b::t_2e4d3ab4b335b5 97,101
+for_cmcc/sample-worker.js
+  s_dfe11a446e546b::t_56d848218bca60 406,411-414,455-462,466
+for_cmcc/test/test_easy_cmcc.sh
+  s_dfe11a446e546b::t_d87db6ce7aef52 95-96
+for_cmcc/test/test_sample_worker.mjs
+  s_dfe11a446e546b::t_aeeb96222897c0 350-355,360-376,393-398,441-442,476,478,486
+sample-worker.js
+  s_dfe11a446e546b::t_420e570c71ece4 339,408,413-416,457-464,468
+test/test_sample_worker.mjs
+  s_dfe11a446e546b::t_a15edd39fd801c 357,366-371,376-392,409-414,452-453,470-482,500
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0a299f278dec1266f9e37402d1c3c38449edc6d1",
+  "prompts": {},
+  "sessions": {
+    "s_dfe11a446e546b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffdf5-ddb7-7630-9599-7eaa8167bc31",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
