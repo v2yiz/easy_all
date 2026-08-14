@@ -467,6 +467,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(body, /fake-ip-range6:/);
     assert.doesNotMatch(body, /inet6-address:/);
     assert.match(body, /^\s+mtu: 1500$/m);
+    assert.match(body, /^\s+udp-timeout: 7200$/m);
     assert.match(body, /^\s+strict-route: false$/m);
     assert.match(body, /^\s+route-exclude-address:$/m);
     assert.match(body, /^\s+- 10\.0\.0\.0\/8$/m);

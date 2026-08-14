@@ -431,6 +431,8 @@ tun:
     enable: true
     stack: system
     mtu: 1500
+    # 默认 UDP NAT 会话仅保留 5 分钟；行情客户端的低频 UDP 长连接保留 2 小时。
+    udp-timeout: 7200
     auto-route: true
     auto-detect-interface: true
     inet4-address:
