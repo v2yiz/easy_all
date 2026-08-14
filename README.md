@@ -2,12 +2,12 @@
 
 `easy_all` 是包含完整安装核心的单文件安装器，一次只运行一种协议：
 
-| 协议 | 服务端 | 端口模式 | Cloudflare DNS |
-|---|---|---|---|
-| VLESS TCP Reality Vision | Xray | 默认 `dynamic`，可选 `443` | 不要求代理 |
-| AnyTLS | sing-box | 默认 `443`，可选 `dynamic` | 必须始终保持灰云 |
+| 协议                     | 服务端   | 端口模式                      | Cloudflare DNS   |
+| ------------------------ | -------- | ----------------------------- | ---------------- |
+| VLESS TCP Reality Vision | Xray     | 默认`dynamic`，可选 `443` | 不要求代理       |
+| AnyTLS                   | sing-box | 默认`443`，可选 `dynamic` | 必须始终保持灰云 |
 
-该入口面向通用 VPS，只提供 Reality 与 AnyTLS，并部署 Worker `easy-all`。需要 XHTTP/WSS 和 Cloudflare CDN 时，请使用独立的 [`for_cmcc/easy_cmcc`](for_cmcc/README.md)。
+该入口面向通用 VPS，只提供 Reality 与 AnyTLS，并部署 Worker `easy-all`。中国移动+非优化线路的VPS，请使用独立的 [`for_cmcc/easy_cmcc`](for_cmcc/README.md)。
 
 如果服务器当前仍是旧版 `easy_all` 创建的 XHTTP/WSS 安装，请先用原有旧版命令执行 `easy_all uninstall`，再安装 `easy_cmcc`。新版 `easy_all` 会拒绝读取 XHTTP/WSS 状态，不再迁移、更新或接管这类安装。
 
