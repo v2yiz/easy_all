@@ -386,9 +386,56 @@ describe('sample-worker Cloudflare Worker', () => {
         'time.windows.com',
         'time.apple.com',
         '*.ntp.org.cn',
-        'pool.ntp.org'
+        'pool.ntp.org',
+        '+.10jqka.com.cn',
+        '+.hexin.cn',
+        '+.hexin.com.cn',
+        '+.myhexin.com',
+        '+.ths123.com',
+        '+.iwencai.com',
+        '+.iwencai.cn',
+        '+.51ifind.com',
+        '+.51ifind.com.cn',
+        '+.eastmoney.com',
+        '+.eastmoney.cn',
+        '+.eastmoney.com.cn',
+        '+.eastmoneysec.com',
+        '+.dfcfw.com',
+        '+.guba.com.cn',
+        '+.18.cn',
+        '+.tdx.com.cn',
+        '+.nesc.cn',
+        '+.citics.com',
+        '+.citics.com.cn',
+        '+.citicsinfo.com',
+        '+.cs.ecitic.com',
+        '+.csc108.com',
+        '+.gtht.com',
+        '+.gtja.com',
+        '+.gtjas.com',
+        '+.htsec.com',
+        '+.htsec.com.cn',
+        '+.haitong.com',
+        '+.haitong.com.cn',
+        '+.htsc.com',
+        '+.htsc.com.cn',
+        '+.cmschina.com',
+        '+.cmschina.com.cn',
+        '+.gf.com.cn',
+        '+.guosen.com.cn',
+        '+.chinastock.com.cn',
+        '+.xyzq.com.cn'
       ],
-      'Fake-IP exclusions must contain only generic local/time domains'
+      'Fake-IP exclusions must include generic local/time and specified securities domains'
+    );
+    assert.match(body, /DOMAIN-SUFFIX,10jqka\.com\.cn,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,eastmoney\.com,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,tdx\.com\.cn,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,nesc\.cn,DIRECT/);
+    assert.ok(
+      body.indexOf('DOMAIN-SUFFIX,10jqka.com.cn,DIRECT') <
+      body.indexOf('GEOSITE,geolocation-!cn,PROXY'),
+      'explicit securities rules must take precedence over GeoSite fallbacks'
     );
     assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
     assert.match(nameserverPolicy, /^\s+'\+\.local': system$/m);

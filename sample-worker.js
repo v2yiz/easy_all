@@ -92,8 +92,65 @@ const BASE_FAKE_IP_FILTER = [
     'pool.ntp.org',
 ];
 
-const FAKE_IP_FILTER = BASE_FAKE_IP_FILTER
+// 行情/交易客户端常有自定义长连接和非标准端口。使其获得真实 IPv4，避免
+// TUN Fake-IP 映射在连接重建时影响行情刷新；同时在规则中显式直连，不依赖
+// GeoSite 数据版本是否收录其域名。
+const CN_SECURITIES_DOMAIN_SUFFIXES = Object.freeze([
+    // 同花顺 / iFinD
+    '10jqka.com.cn',
+    'hexin.cn',
+    'hexin.com.cn',
+    'myhexin.com',
+    'ths123.com',
+    'iwencai.com',
+    'iwencai.cn',
+    '51ifind.com',
+    '51ifind.com.cn',
+
+    // 东方财富 / 东方财富证券
+    'eastmoney.com',
+    'eastmoney.cn',
+    'eastmoney.com.cn',
+    'eastmoneysec.com',
+    'dfcfw.com',
+    'guba.com.cn',
+    '18.cn',
+
+    // 通达信、东北证券
+    'tdx.com.cn',
+    'nesc.cn',
+
+    // 常用券商客户端
+    'citics.com',
+    'citics.com.cn',
+    'citicsinfo.com',
+    'cs.ecitic.com',
+    'csc108.com',
+    'gtht.com',
+    'gtja.com',
+    'gtjas.com',
+    'htsec.com',
+    'htsec.com.cn',
+    'haitong.com',
+    'haitong.com.cn',
+    'htsc.com',
+    'htsc.com.cn',
+    'cmschina.com',
+    'cmschina.com.cn',
+    'gf.com.cn',
+    'guosen.com.cn',
+    'chinastock.com.cn',
+    'xyzq.com.cn',
+]);
+
+const FAKE_IP_FILTER = [...BASE_FAKE_IP_FILTER,
+    ...CN_SECURITIES_DOMAIN_SUFFIXES.map(domain => `+.${domain}`),
+]
     .map(domain => `      - '${domain}'`)
+    .join('\n');
+
+const CN_SECURITIES_DIRECT_RULES = CN_SECURITIES_DOMAIN_SUFFIXES
+    .map(domain => `  - DOMAIN-SUFFIX,${domain},DIRECT`)
     .join('\n');
 
 const EMBEDDED_CLASH_RULES = `rules:
@@ -210,6 +267,10 @@ const EMBEDDED_CLASH_RULES = `rules:
   - DOMAIN-SUFFIX,mi-img.com,DIRECT
   - DOMAIN-SUFFIX,miui.com,DIRECT
   - DOMAIN-SUFFIX,xiaomi.com,DIRECT
+
+  # ==================== 行情 / 证券客户端直连 ====================
+  # 这些域名同时位于 Fake-IP 豁免列表，避免专有长连接依赖虚拟地址映射。
+${CN_SECURITIES_DIRECT_RULES}
 
   # ==================== Apple 直连 ====================
   - DOMAIN,www-cdn.icloud.com.akadns.net,DIRECT
