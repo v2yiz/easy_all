@@ -1,0 +1,27 @@
+for_cmcc/sample-worker.js
+  s_6217a90fcf0990::t_727afc8210f2fb 100-153,157-160,174-177
+for_cmcc/test/test_sample_worker.mjs
+  s_6217a90fcf0990::t_a3cf614f47a0ed 389-427,429-438
+sample-worker.js
+  s_6217a90fcf0990::t_ecf13f5914f22e 95-148,152-155,271-274
+test/test_sample_worker.mjs
+  s_6217a90fcf0990::t_e1c346c9947f56 405-443,445-454
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e82606f5819f4fb66ab59b36284f935523b3e2a6",
+  "prompts": {},
+  "sessions": {
+    "s_6217a90fcf0990": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffe50-0412-7152-aa37-0423dd29b006",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
