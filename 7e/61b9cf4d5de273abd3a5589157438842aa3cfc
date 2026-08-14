@@ -1,0 +1,27 @@
+for_cmcc/sample-worker.js
+  s_6217a90fcf0990::t_83391de6aff431 434-435
+for_cmcc/test/test_sample_worker.mjs
+  s_6217a90fcf0990::t_85345c36335134 457
+sample-worker.js
+  s_6217a90fcf0990::t_6ff63cd02faeef 436-437
+test/test_sample_worker.mjs
+  s_6217a90fcf0990::t_f6b492758378ea 470
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7e61b9cf4d5de273abd3a5589157438842aa3cfc",
+  "prompts": {},
+  "sessions": {
+    "s_6217a90fcf0990": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffe50-0412-7152-aa37-0423dd29b006",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
