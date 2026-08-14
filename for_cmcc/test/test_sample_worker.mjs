@@ -347,10 +347,33 @@ describe('sample-worker Cloudflare Worker', () => {
     const fakeIpFilter = body.match(
       /    fake-ip-filter:\n([\s\S]*?)\n    nameserver:/
     )?.[1];
+    const proxyServerNameserver = body.match(
+      /    proxy-server-nameserver:\n([\s\S]*?)\n    nameserver-policy:/
+    )?.[1];
+    const domesticNameserver = body.match(
+      /    nameserver:\n([\s\S]*?)\n    fallback:/
+    )?.[1];
 
     assert.equal(response.status, 200);
     assert.ok(nameserverPolicy, 'nameserver-policy must be present');
     assert.ok(fakeIpFilter, 'fake-ip-filter must be present');
+    assert.ok(proxyServerNameserver, 'proxy-server-nameserver must be present');
+    assert.ok(domesticNameserver, 'nameserver must be present');
+    const expectedDomesticDoH = [
+      '- https://dns.alidns.com/dns-query',
+      '- https://doh.pub/dns-query'
+    ];
+    assert.deepEqual(
+      proxyServerNameserver.split('\n').map(line => line.trim()).filter(Boolean),
+      expectedDomesticDoH,
+      'proxy node hostnames must use independent Alibaba and Tencent DoH resolvers'
+    );
+    assert.deepEqual(
+      domesticNameserver.split('\n').map(line => line.trim()).filter(Boolean),
+      expectedDomesticDoH,
+      'normal domestic lookups must use independent Alibaba and Tencent DoH resolvers'
+    );
+    assert.doesNotMatch(body, /https:\/\/223\.5\.5\.5\/dns-query/);
     assert.deepEqual(
       fakeIpFilter
         .split('\n')
@@ -367,13 +390,12 @@ describe('sample-worker Cloudflare Worker', () => {
       ],
       'Fake-IP exclusions must contain only generic local/time domains'
     );
-    assert.deepEqual(
-      nameserverPolicy
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#')),
-      ["'+.lan': system", "'+.local': system"],
-      'system DNS policy must contain only generic local domains'
+    assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
+    assert.match(nameserverPolicy, /^\s+'\+\.local': system$/m);
+    assert.match(
+      nameserverPolicy,
+      /^\s+'geosite:geolocation-!cn':\n\s+- https:\/\/1\.1\.1\.1\/dns-query#PROXY\n\s+- https:\/\/dns\.google\/dns-query#PROXY$/m,
+      'all confirmed foreign domains, including Google/Gemini, must use proxy DNS'
     );
     assert.match(body, /^ipv6: true$/m);
     assert.match(body, /^\s+ipv6: false$/m);
@@ -416,7 +438,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(nameserverPolicy, /^\s+'\+\.local': system$/m);
     assert.doesNotMatch(nameserverPolicy, /rule-set:/);
     assert.doesNotMatch(body, /direct-nameserver-follow-policy:/);
-    assert.doesNotMatch(body, /dns-query#PROXY/);
+    assert.match(body, /https:\/\/1\.1\.1\.1\/dns-query#PROXY/);
+    assert.match(body, /https:\/\/dns\.google\/dns-query#PROXY/);
     assert.match(body, /^\s+fallback-lazy-query: true$/m);
     assert.doesNotMatch(body, /\bdhcp:\/\/en0\b/);
     for (const privateRule of [
@@ -450,9 +473,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal((body.match(/ip-version: "dual"/g) || []).length, 2);
     assert.doesNotMatch(body, /network: xhttp|network: grpc/);
     assert.match(body, /^proxy-groups:$/m);
-    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "VLESS_WS"\n        - "TROJAN_WS"/);
+    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - AUTO\n        - "VLESS_WS"\n        - "TROJAN_WS"/);
     const proxyGroups = body.slice(body.indexOf('proxy-groups:'), body.indexOf('\nrules:'));
-    assert.equal((proxyGroups.match(/^    - name:/gm) || []).length, 1);
+    assert.equal((proxyGroups.match(/^    - name:/gm) || []).length, 2);
     assert.doesNotMatch(proxyGroups, /- name: (?:GITHUB|GOOGLE|AI_GEMINI|DOWNLOAD|AI)$/m);
     assert.match(body, /DOMAIN-SUFFIX,chatgpt\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,claude\.ai,PROXY/);
@@ -460,7 +483,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
 
     assert.equal((body.match(/smux:\n      enabled: false/g) || []).length, 2);
-    assert.doesNotMatch(proxyGroups, /health-check|url-test|fallback/);
+    assert.match(proxyGroups, /- name: AUTO\n      type: url-test\n      url: 'https:\/\/www\.gstatic\.com\/generate_204'/);
     assert.doesNotMatch(body, /flow: xtls-rprx-vision/);
     assert.doesNotMatch(body, /reality|anytls/i);
   });

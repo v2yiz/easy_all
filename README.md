@@ -94,11 +94,11 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 
 自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，选择结果会写入 `/etc/easy_all/state.env`，后续更新继续沿用。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
 
-订阅中的代理节点不设置 Mihomo `ip-version`；但为避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6，客户端模板默认使用 IPv4 DNS/Fake-IP/TUN。Gemini 的地址族固定仍只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude 或 MEGA 的服务端出口策略。
+订阅中的代理节点不设置 Mihomo `ip-version`；但为避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6，客户端模板默认使用 IPv4 DNS/Fake-IP/TUN。下发的 TUN 使用 `stack: mixed`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。Gemini 的地址族固定仍只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude 或 MEGA 的服务端出口策略。
 
 模板只保留通用局域网适配：`.lan`、`.local` 使用系统 DNS，RFC1918 IPv4、链路本地 IPv4、IPv6 ULA 与链路本地地址显式直连并绕过 TUN。客户端日志使用 `error` 级别，并通过 `find-process-mode: off` 关闭当前规则不需要的进程匹配，减少后台处理开销。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、显式规则和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
 
-Mihomo 订阅不再加载与现有分流重复的远程 `private`、`proxy`、`direct`、`telegramcidr`、`lancidr` 和 `cncidr` provider。局域网与 Telegram IP 继续由显式规则处理，其他流量使用 `GEOSITE`、`GEOIP` 和最终 `MATCH` 兜底，减少规则解析、内存与后台更新开销。DNS 保留国内主解析器和境外 fallback，但不在 `nameserver-policy` 中引用代理策略组，避免 Windows 客户端启动时形成 DNS 与代理初始化依赖。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
+Mihomo 订阅使用阿里与腾讯的 DoH 作为两家独立的国内解析器，阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；不再重复配置同属阿里的 DoH 地址。`AUTO` 是 `url-test` 组，使用 `https://www.gstatic.com/generate_204`、`interval: 300` 和 `lazy: true`；`PROXY` 选择组将 `AUTO` 置于首位，同时保留每个节点供手动切换。`geosite:geolocation-!cn` 覆盖的已确认境外域名（包括 Google/Gemini）会在 `nameserver-policy` 中固定使用经 `PROXY` 的境外 DoH，避免解析结果受国内 DoH 影响。代理节点本身仍由国内 `proxy-server-nameserver` 解析，避免启动循环。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
 
 为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
 

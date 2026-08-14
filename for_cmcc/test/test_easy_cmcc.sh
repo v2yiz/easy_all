@@ -92,8 +92,8 @@ assert_contains "README downloads the CMCC monolith" "${readme}" \
     "main/for_cmcc/easy_cmcc"
 assert_contains "README documents both WebSocket nodes" "${readme}" \
     '`VLESS_WS` 和 `TROJAN_WS`'
-assert_contains "README documents the single PROXY group" "${readme}" \
-    '一个 `PROXY` 选择组'
+assert_contains "README documents the AUTO and PROXY groups" "${readme}" \
+    '一个 `AUTO` 自动测速组和一个 `PROXY` 选择组'
 assert_contains "README documents power-conscious client settings" "${readme}" \
     '`tcp-concurrent: false`'
 assert_contains "README documents disabled process matching" "${readme}" \

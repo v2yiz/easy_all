@@ -336,7 +336,7 @@ const EMBEDDED_CLASH_RULES = `rules:
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
   - GEOIP,CN,DIRECT,no-resolve
-  # 与 xflash 保持相同优先级：仅拒绝前述规则均未命中的 UDP/443，避免误伤国内直连。
+  # 仅拒绝前述规则均未命中的 UDP/443，避免误伤国内直连。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - MATCH,PROXY
 `;
@@ -404,12 +404,16 @@ dns:
       - 119.29.29.29
 
     proxy-server-nameserver:
-      - https://223.5.5.5/dns-query
       - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
 
     nameserver-policy:
       '+.lan': system
       '+.local': system
+      # 已确认的境外域名（包括 Google/Gemini）经代理使用境外 DoH。
+      'geosite:geolocation-!cn':
+        - https://1.1.1.1/dns-query#PROXY
+        - https://dns.google/dns-query#PROXY
 
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
@@ -419,7 +423,6 @@ dns:
     nameserver:
       - https://dns.alidns.com/dns-query
       - https://doh.pub/dns-query
-      - https://223.5.5.5/dns-query
 
     fallback:
       - https://1.1.1.1/dns-query
@@ -451,9 +454,18 @@ proxies:
 {proxy_nodes}
 
 proxy-groups:
+    - name: AUTO
+      type: url-test
+      url: 'https://www.gstatic.com/generate_204'
+      interval: 300
+      lazy: true
+      proxies:
+        - {proxy_names}
+
     - name: PROXY
       type: select
       proxies:
+        - AUTO
         - {proxy_names}
 
 {rules_section}

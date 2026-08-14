@@ -15,7 +15,9 @@ Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
 
 ## 省电与性能取舍
 
-生成的 Mihomo 配置只创建一个手动 `PROXY` 选择组，不创建 `url-test`、`fallback` 或健康检查任务，因此两个节点不会在后台周期性测速。
+生成的 Mihomo 配置有一个 `AUTO` 自动测速组和一个 `PROXY` 选择组。`AUTO` 使用 `https://www.gstatic.com/generate_204`、`interval: 300` 与 `lazy: true`；`PROXY` 将 `AUTO` 置于首位，并保留两个节点供手动选择。
+
+> **仅建议在电脑端使用。** 此配置启用 TUN，并包含 `AUTO` 的节点测速；手机端会因此产生持续的后台网络活动、CPU 唤醒和额外耗电。手机上如必须使用，应关闭 TUN 并在 `PROXY` 中手动选择节点，但这不属于本方案的推荐使用方式。
 
 客户端固定使用：
 
@@ -26,7 +28,7 @@ Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
 - `smux.enabled: false`
 - `alpn: [http/1.1]`
 
-Xray 的两个入站均设置 `heartbeatPeriod: 0`，不主动发送 WebSocket Ping。服务端使用同一个 Xray 进程，Nginx 关闭代理缓冲和请求缓冲，并保留一小时读写超时；系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这里刻意不启用 smux、自动测速和额外心跳，减少 Android 后台 CPU、无线电唤醒与耗电；实际速度仍取决于中国移动到 Cloudflare 边缘、Cloudflare 回源和 VPS 线路。
+Xray 的两个入站均设置 `heartbeatPeriod: 0`，不主动发送 WebSocket Ping。服务端使用同一个 Xray 进程，Nginx 关闭代理缓冲和请求缓冲，并保留一小时读写超时；系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这里刻意不启用 smux 和额外心跳；`AUTO` 的测速会带来少量后台网络活动，实际速度仍取决于中国移动到 Cloudflare 边缘、Cloudflare 回源和 VPS 线路。
 
 ## 准备清单
 
@@ -133,15 +135,15 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 2. 输出完整 Worker 源码供手动部署。
 3. 只显示节点链接，不生成 Worker，也不询问 Token。
 
-通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `TROJAN_WS`，并放入一个 `PROXY` 选择组。没有后台健康检查；用户仍可在客户端菜单中随时手动切换。
+通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `TROJAN_WS`。二者同时进入 `AUTO` 和 `PROXY`：默认 `PROXY → AUTO` 自动选择，也可在客户端菜单中改为任一节点。
 
-局域网 IPv4/IPv6 地址绕过 TUN，国内常用服务直连，其余规则进入 `PROXY`。YouTube 与 `googlevideo.com` 的 UDP/443 会先被拒绝，让客户端快速回退到 TCP，避免 WebSocket/TCP 外再叠加 QUIC 重传。节点使用 `ip-version: dual`，应用 DNS 保持 `ipv6: false`，兼顾中国移动蜂窝 IPv6 与不完整 IPv6 网络。
+局域网 IPv4/IPv6 地址绕过 TUN，国内常用服务直连，其余规则进入 `PROXY`。下发的 TUN 使用 `stack: system`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。国内 DNS 使用阿里与腾讯两家独立 DoH（`dns.alidns.com`、`doh.pub`），阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；已确认的境外域名则经 `PROXY` 使用境外 DoH。YouTube 与 `googlevideo.com` 的 UDP/443 会先被拒绝，让客户端快速回退到 TCP，避免 WebSocket/TCP 外再叠加 QUIC 重传。节点使用 `ip-version: dual`，顶层 `ipv6: true`，但应用 DNS 保持 `ipv6: false`，兼顾中国移动蜂窝 IPv6 与不完整 IPv6 网络。
 
 ## 故障排查
 
 - 两个节点都连接失败：确认节点域名已经橙云、SSL/TLS 为 Full (Strict)、Cloudflare WebSockets 已开启、证书域名与 SNI 一致。
 - 只有一个节点失败：核对该节点订阅路径与 `VLESS_WS_PATH` 或 `TROJAN_WS_PATH` 是否一致，确认客户端没有合并旧配置。
-- Android 仍耗电：确认最终配置只有手动 `select` 组，两个节点均为 `smux.enabled: false`，且不存在 `url-test`、`fallback` 或 provider 健康检查。
+- Android 仍耗电：确认 `AUTO` 的周期测速是否符合预期；两个节点均为 `smux.enabled: false`，且不存在 provider 健康检查。
 - YouTube 慢：确认最终配置保留 UDP/443 拒绝规则，使浏览器回退到 TCP；同时测试不同 Cloudflare 边缘与 VPS 回源线路。
 - Worker 自动部署失败：查看 `/etc/easy_cmcc/last-worker-deploy.log`，或执行 `easy_cmcc update-sub` 改用手动输出。
 
