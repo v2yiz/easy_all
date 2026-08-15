@@ -1,0 +1,29 @@
+XFLASH
+  s_b599accf31103e::t_48e1c4318c18b9 1-201
+for_cmcc/test/test_sample_worker.mjs
+  s_b599accf31103e::t_c3561c0b3ac58e 9,331,427-428
+test/support/assert_rule_providers.mjs
+  s_b599accf31103e::t_ec18a0666ffa37 1-71
+test/test_easy_all.sh
+  s_b599accf31103e::t_595db147949354 96-103,109
+test/test_sample_worker.mjs
+  s_b599accf31103e::t_6d2c1f0dd8d235 9,346,443-444
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8ce4f0cb8eea72babd10d740aaab15d42932653d",
+  "prompts": {},
+  "sessions": {
+    "s_b599accf31103e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a00410-a1f2-7123-92e0-d961fbccedca",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
