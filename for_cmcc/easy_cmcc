@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Standalone CMCC installer for VLESS WebSocket and Trojan WebSocket over Cloudflare CDN.
+# Standalone CMCC installer for two WebSocket CDN nodes and one direct Mieru node.
 
 set -Eeuo pipefail
 umask 077
@@ -28,6 +28,12 @@ readonly XRAY_BIN="${XRAY_DIR}/xray"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
 readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy-cmcc-xray.service"
 readonly XRAY_SERVICE="easy-cmcc-xray.service"
+readonly MIERU_DIR="${STATE_DIR}/mieru"
+readonly MIERU_PACKAGE_FILE="${MIERU_DIR}/mita.deb"
+readonly MIERU_VERSION_FILE="${MIERU_DIR}/version"
+readonly MIERU_SYSTEM_CONFIG_DIR="/etc/mita"
+readonly MIERU_SERVICE="mita.service"
+readonly MIERU_OWNERSHIP_MARKER="${STATE_DIR}/mita-installed-by-easy-cmcc"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_cmcc.conf"
 readonly ACME_HOME="/root/.acme-cmcc.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
@@ -45,12 +51,19 @@ readonly PORT_BASE="10000"
 readonly PORT_MULTIPLIER="6"
 readonly DEFAULT_VLESS_NODE_NAME="VLESS_WS"
 readonly DEFAULT_TROJAN_NODE_NAME="TROJAN_WS"
+readonly DEFAULT_MIERU_NODE_NAME="MIERU"
+readonly DEFAULT_MIERU_PORT="8443"
+readonly DEFAULT_MIERU_USERNAME="easycmcc"
+readonly DEFAULT_MIERU_TRANSPORT="TCP"
+readonly DEFAULT_MIERU_MULTIPLEXING="MULTIPLEXING_LOW"
+readonly DEFAULT_MIERU_HANDSHAKE_MODE="HANDSHAKE_STANDARD"
 readonly DEFAULT_WORKER_NAME="easy-cmcc"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_CMCC"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js"
 readonly DEFAULT_REBOOT_HOUR="4"
 readonly CRON_REBOOT_MARKER="# easy_cmcc-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+readonly MIERU_RELEASES_API="https://api.github.com/repos/enfein/mieru/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="2"
@@ -501,6 +514,8 @@ source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 状态文件不存在：${STATE_FILE}"
     unset STATE_VERSION VLESS_CDN_DOMAIN VLESS_WS_PATH TROJAN_WS_PATH \
         XRAY_VLESS_LOOPBACK_PORT XRAY_TROJAN_LOOPBACK_PORT \
+        MIERU_NODE_NAME MIERU_SERVER MIERU_PORT MIERU_USERNAME MIERU_PASSWORD \
+        MIERU_TRANSPORT MIERU_MULTIPLEXING MIERU_HANDSHAKE_MODE \
         WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
@@ -514,6 +529,8 @@ load_state() {
         PROTOCOL VLESS_NODE_NAME TROJAN_NODE_NAME VLESS_UUID TROJAN_PASSWORD
         VLESS_CDN_DOMAIN VLESS_WS_PATH TROJAN_WS_PATH
         XRAY_VLESS_LOOPBACK_PORT XRAY_TROJAN_LOOPBACK_PORT
+        MIERU_NODE_NAME MIERU_SERVER MIERU_PORT MIERU_USERNAME MIERU_PASSWORD
+        MIERU_TRANSPORT MIERU_MULTIPLEXING MIERU_HANDSHAKE_MODE
         SUB_PORT_MODE ALLOWED_TOKENS
         WORKER_NAME WORKER_URL WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
         CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME CF_PROXY_MODE
@@ -536,6 +553,12 @@ load_state() {
     done
     XRAY_VLESS_LOOPBACK_PORT=${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}
     XRAY_TROJAN_LOOPBACK_PORT=${XRAY_TROJAN_LOOPBACK_PORT:-${DEFAULT_XRAY_TROJAN_LOOPBACK_PORT}}
+    MIERU_NODE_NAME=${MIERU_NODE_NAME:-${DEFAULT_MIERU_NODE_NAME}}
+    MIERU_PORT=${MIERU_PORT:-${DEFAULT_MIERU_PORT}}
+    MIERU_USERNAME=${MIERU_USERNAME:-${DEFAULT_MIERU_USERNAME}}
+    MIERU_TRANSPORT=${MIERU_TRANSPORT:-${DEFAULT_MIERU_TRANSPORT}}
+    MIERU_MULTIPLEXING=${MIERU_MULTIPLEXING:-${DEFAULT_MIERU_MULTIPLEXING}}
+    MIERU_HANDSHAKE_MODE=${MIERU_HANDSHAKE_MODE:-${DEFAULT_MIERU_HANDSHAKE_MODE}}
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     if [[ -z "${WORKER_DEV_URL:-}" && "${WORKER_URL:-}" == https://*.workers.dev ]]; then
         WORKER_DEV_URL=${WORKER_URL}
@@ -571,6 +594,14 @@ save_state() {
         printf 'TROJAN_WS_PATH=%q\n' "${TROJAN_WS_PATH:-}"
         printf 'XRAY_VLESS_LOOPBACK_PORT=%q\n' "${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}"
         printf 'XRAY_TROJAN_LOOPBACK_PORT=%q\n' "${XRAY_TROJAN_LOOPBACK_PORT:-${DEFAULT_XRAY_TROJAN_LOOPBACK_PORT}}"
+        printf 'MIERU_NODE_NAME=%q\n' "${MIERU_NODE_NAME:-${DEFAULT_MIERU_NODE_NAME}}"
+        printf 'MIERU_SERVER=%q\n' "${MIERU_SERVER:-}"
+        printf 'MIERU_PORT=%q\n' "${MIERU_PORT:-${DEFAULT_MIERU_PORT}}"
+        printf 'MIERU_USERNAME=%q\n' "${MIERU_USERNAME:-${DEFAULT_MIERU_USERNAME}}"
+        printf 'MIERU_PASSWORD=%q\n' "${MIERU_PASSWORD:-}"
+        printf 'MIERU_TRANSPORT=%q\n' "${MIERU_TRANSPORT:-${DEFAULT_MIERU_TRANSPORT}}"
+        printf 'MIERU_MULTIPLEXING=%q\n' "${MIERU_MULTIPLEXING:-${DEFAULT_MIERU_MULTIPLEXING}}"
+        printf 'MIERU_HANDSHAKE_MODE=%q\n' "${MIERU_HANDSHAKE_MODE:-${DEFAULT_MIERU_HANDSHAKE_MODE}}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-443}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'WORKER_NAME=%q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
@@ -597,13 +628,72 @@ choose_protocol() {
     requested=${requested:-dual-ws}
     case "${requested}" in
     1 | dual-ws | ws) PROTOCOL="dual-ws" ;;
-    *) die "easy_cmcc 只同时部署 VLESS WebSocket TLS 与 Trojan WebSocket TLS" ;;
+    *) die "easy_cmcc 固定同时部署 VLESS WS、Trojan WS 与 Mieru" ;;
     esac
-    info "easy_cmcc 将同时部署 VLESS WebSocket TLS 与 Trojan WebSocket TLS。"
+    info "easy_cmcc 将部署两个 WebSocket CDN 节点与一个 Mieru TCP 直连节点。"
 }
 
 validate_loopback_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 1024 && 10#$1 <= 65535))
+}
+
+validate_mieru_port() {
+    [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 1025 && 10#$1 <= 65535))
+}
+
+validate_mieru_credential() {
+    local value=$1 minimum=$2
+    [[ ${#value} -ge ${minimum} && ${#value} -le 64 ]] \
+        && [[ "${value}" =~ ^[A-Za-z0-9._~-]+$ ]]
+}
+
+collect_mieru_server() {
+    local detected_ip=""
+    [[ -z "${MIERU_SERVER:-}" ]] || return 0
+    if detected_ip=$(detect_public_ipv4); then
+        if [[ -t 0 ]]; then
+            info "已自动检测 mita 直连公网 IPv4：${detected_ip}"
+            MIERU_SERVER=$(prompt_value \
+                "Mieru 客户端连接地址（公网 IPv4 或独立 DNS only / 灰云域名）" \
+                "${detected_ip}")
+        else
+            MIERU_SERVER=${detected_ip}
+        fi
+        return 0
+    fi
+    if [[ -t 0 ]]; then
+        warn "无法自动检测本机公网 IPv4，请手动填写 mita 直连接入地址"
+        MIERU_SERVER=$(prompt_value \
+            "Mieru 客户端连接地址（公网 IPv4 或独立 DNS only / 灰云域名）" "")
+        return 0
+    fi
+    die "无法自动检测 Mieru 节点公网 IPv4；非交互模式请设置 MIERU_SERVER"
+}
+
+ensure_mieru_state() {
+    MIERU_NODE_NAME=${MIERU_NODE_NAME:-${DEFAULT_MIERU_NODE_NAME}}
+    collect_mieru_server
+    validate_ipv4 "${MIERU_SERVER}" || validate_domain "${MIERU_SERVER}" \
+        || die "MIERU_SERVER 必须是公网 IPv4 或 DNS only / 灰云域名：${MIERU_SERVER}"
+    [[ "$(normalize_domain "${MIERU_SERVER}")" != "${VLESS_CDN_DOMAIN}" ]] \
+        || die "Mieru 不能复用安装后会切为橙云的 CDN 域名；请使用公网 IPv4 或独立灰云域名"
+    MIERU_PORT=${MIERU_PORT:-${DEFAULT_MIERU_PORT}}
+    validate_mieru_port "${MIERU_PORT}" || die "MIERU_PORT 必须在 1025-65535"
+    MIERU_USERNAME=${MIERU_USERNAME:-${DEFAULT_MIERU_USERNAME}}
+    validate_mieru_credential "${MIERU_USERNAME}" 1 \
+        || die "MIERU_USERNAME 只能使用 URL 安全字符，长度 1-64"
+    MIERU_PASSWORD=${MIERU_PASSWORD:-$(generate_secret)}
+    validate_mieru_credential "${MIERU_PASSWORD}" 16 \
+        || die "MIERU_PASSWORD 只能使用 URL 安全字符，长度 16-64"
+    MIERU_TRANSPORT=${MIERU_TRANSPORT:-${DEFAULT_MIERU_TRANSPORT}}
+    [[ "${MIERU_TRANSPORT}" == "TCP" ]] \
+        || die "CMCC 到 RackNerd DC2 的 Mieru 入站固定使用 TCP"
+    MIERU_MULTIPLEXING=${MIERU_MULTIPLEXING:-${DEFAULT_MIERU_MULTIPLEXING}}
+    [[ "${MIERU_MULTIPLEXING}" =~ ^MULTIPLEXING_(OFF|LOW|MIDDLE|HIGH)$ ]] \
+        || die "MIERU_MULTIPLEXING 无效"
+    MIERU_HANDSHAKE_MODE=${MIERU_HANDSHAKE_MODE:-${DEFAULT_MIERU_HANDSHAKE_MODE}}
+    [[ "${MIERU_HANDSHAKE_MODE}" =~ ^HANDSHAKE_(STANDARD|NO_WAIT)$ ]] \
+        || die "MIERU_HANDSHAKE_MODE 无效"
 }
 
 collect_install_inputs() {
@@ -618,6 +708,7 @@ collect_install_inputs() {
     VLESS_CDN_DOMAIN=${VLESS_CDN_DOMAIN:-$(prompt_value "Cloudflare CDN 域名（安装前必须灰云）" "")}
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "Cloudflare CDN 域名无效：${VLESS_CDN_DOMAIN}"
+    ensure_mieru_state
     VLESS_WS_PATH=${VLESS_WS_PATH:-$(generate_ws_path vless)}
     TROJAN_WS_PATH=${TROJAN_WS_PATH:-$(generate_ws_path trojan)}
     validate_ws_path "${VLESS_WS_PATH}" || die "VLESS_WS_PATH 无效：${VLESS_WS_PATH}"
@@ -643,14 +734,21 @@ collect_install_inputs() {
 }
 
 check_install_conflicts() {
-    local legacy
+    local legacy mieru_port=${MIERU_PORT:-${DEFAULT_MIERU_PORT}}
     for legacy in /etc/easy_reality /etc/easy_anytls /etc/easy_vless_wss; do
         [[ ! -d "${legacy}" ]] \
             || die "检测到不兼容的旧安装 ${legacy}；请先使用对应旧命令卸载"
     done
     [[ "${SWITCH_IN_PROGRESS:-0}" == "1" ]] && return 0
+    ! dpkg-query -W -f='${Status}' mita 2>/dev/null | grep -q 'install ok installed' \
+        || die "检测到已有 mita 软件包；easy_cmcc 需要独占管理 Mieru，请先卸载现有 mita"
+    [[ ! -d "${MIERU_SYSTEM_CONFIG_DIR}" ]] \
+        || die "检测到已有 ${MIERU_SYSTEM_CONFIG_DIR}；请先备份并移除现有 mita 配置"
     if ss -H -ltn "sport = :${SERVICE_PORT}" 2>/dev/null | grep -q .; then
         die "TCP ${SERVICE_PORT} 已被占用；easy_cmcc 仅支持专用 VPS"
+    fi
+    if ss -H -ltn "sport = :${mieru_port}" 2>/dev/null | grep -q .; then
+        die "TCP ${mieru_port} 已被占用；无法部署 Mieru"
     fi
 }
 
@@ -738,7 +836,7 @@ table inet filter {
         ct state invalid drop
         ct state { established, related } accept
         meta l4proto { icmp, ipv6-icmp } accept
-        tcp dport { ${ssh_ports}, ${SERVICE_PORT}${extra_port} } accept
+        tcp dport { ${ssh_ports}, ${SERVICE_PORT}, ${MIERU_PORT:-${DEFAULT_MIERU_PORT}}${extra_port} } accept
     }
 
     chain forward {
@@ -940,6 +1038,84 @@ download_xray() {
     install -d -m 0755 "${XRAY_DIR}"
     install -m 0755 "${temp_dir}/xray/xray" "${XRAY_BIN}"
     printf '%s\n' "${version}" >"${XRAY_DIR}/version"
+}
+
+download_mita_package() {
+    local destination=$1 version_destination=$2 release tag version package_name checksum_name
+    local package_url checksum_url checksum_file expected actual
+    release=$(curl -fsSL --retry 3 "${MIERU_RELEASES_API}") \
+        || die "读取 mieru 最新版本失败"
+    tag=$(jq -er '.tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' \
+        <<<"${release}") || die "mieru 最新版本标签无效"
+    version=${tag#v}
+    package_name="mita_${version}_amd64.deb"
+    checksum_name="${package_name}.sha256.txt"
+    package_url=$(jq -er --arg name "${package_name}" \
+        '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release}") \
+        || die "mieru ${tag} 缺少 ${package_name}"
+    checksum_url=$(jq -er --arg name "${checksum_name}" \
+        '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release}") \
+        || die "mieru ${tag} 缺少 ${checksum_name}"
+    checksum_file="${RUNTIME_TMP}/${checksum_name}"
+    curl -fL --retry 3 "${package_url}" -o "${destination}" \
+        || die "下载 mita ${tag} 失败"
+    curl -fL --retry 3 "${checksum_url}" -o "${checksum_file}" \
+        || die "下载 mita ${tag} 校验文件失败"
+    expected=$(awk 'match($0, /^[A-Fa-f0-9]{64}([[:space:]]|$)/) {print tolower(substr($0, 1, 64)); exit}' \
+        "${checksum_file}")
+    actual=$(sha256sum "${destination}" | awk '{print $1}')
+    [[ -n "${expected}" && "${expected}" == "${actual,,}" ]] \
+        || die "mita ${tag} SHA256 校验失败"
+    printf '%s\n' "${tag}" >"${version_destination}"
+}
+
+install_mita_package() {
+    local package=$1
+    install -d -m 0700 "${MIERU_DIR}"
+    install -m 0600 /dev/null "${MIERU_OWNERSHIP_MARKER}"
+    dpkg -i "${package}" >/dev/null || die "安装 mita 软件包失败"
+}
+
+download_mita() {
+    local package="${RUNTIME_TMP}/mita.deb" version_file="${RUNTIME_TMP}/mita-version"
+    download_mita_package "${package}" "${version_file}"
+    install_mita_package "${package}"
+    install -m 0600 "${package}" "${MIERU_PACKAGE_FILE}"
+    install -m 0600 "${version_file}" "${MIERU_VERSION_FILE}"
+}
+
+ensure_mita_installed() {
+    if dpkg-query -W -f='${Status}' mita 2>/dev/null | grep -q 'install ok installed'; then
+        [[ -f "${MIERU_OWNERSHIP_MARKER}" ]] \
+            || die "检测到非 easy_cmcc 管理的 mita 软件包，拒绝接管"
+        return 0
+    fi
+    [[ ! -d "${MIERU_SYSTEM_CONFIG_DIR}" ]] \
+        || die "检测到非 easy_cmcc 管理的 ${MIERU_SYSTEM_CONFIG_DIR}，拒绝接管"
+    info "当前安装尚无 Mieru，正在补装 mita"
+    download_mita
+}
+
+write_mita_config() {
+    local config="${MIERU_DIR}/server-config.json"
+    command -v mita >/dev/null 2>&1 || die "mita 可执行文件不存在"
+    install -d -m 0700 "${MIERU_DIR}"
+    jq -n \
+        --argjson port "${MIERU_PORT}" \
+        --arg protocol "${MIERU_TRANSPORT}" \
+        --arg username "${MIERU_USERNAME}" \
+        --arg password "${MIERU_PASSWORD}" '
+        {
+          portBindings: [{port: $port, protocol: $protocol}],
+          users: [{name: $username, password: $password}],
+          loggingLevel: "INFO"
+        }' >"${RUNTIME_TMP}/mita-config.json"
+    install -m 0600 "${RUNTIME_TMP}/mita-config.json" "${config}"
+    systemctl enable --now "${MIERU_SERVICE}" >/dev/null \
+        || die "启动 mita 守护进程失败"
+    mita apply config "${config}" >/dev/null || die "写入 mita 配置失败"
+    mita stop >/dev/null 2>&1 || true
+    mita start >/dev/null || die "启动 Mieru 代理服务失败"
 }
 
 write_xray_config() {
@@ -1165,10 +1341,19 @@ build_trojan_ws_link() {
         "${VLESS_CDN_DOMAIN}" "$(uri_encode "${TROJAN_WS_PATH}")" "$(uri_encode "${TROJAN_NODE_NAME}")"
 }
 
+build_mieru_link() {
+    printf 'mierus://%s:%s@%s?profile=%s&port=%s&protocol=%s&multiplexing=%s&handshake-mode=%s' \
+        "$(uri_encode "${MIERU_USERNAME}")" "$(uri_encode "${MIERU_PASSWORD}")" \
+        "${MIERU_SERVER}" "$(uri_encode "${MIERU_NODE_NAME}")" "${MIERU_PORT}" \
+        "${MIERU_TRANSPORT}" "${MIERU_MULTIPLEXING}" "${MIERU_HANDSHAKE_MODE}"
+}
+
 build_node_link() {
     build_vless_ws_link
     printf '\n'
     build_trojan_ws_link
+    printf '\n'
+    build_mieru_link
 }
 
 build_mihomo_node() {
@@ -1178,7 +1363,12 @@ build_mihomo_node() {
             --arg vless_name "${VLESS_NODE_NAME}" --arg trojan_name "${TROJAN_NODE_NAME}" \
             --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
             --arg password "${TROJAN_PASSWORD}" --arg vless_path "${VLESS_WS_PATH}" \
-            --arg trojan_path "${TROJAN_WS_PATH}" '
+            --arg trojan_path "${TROJAN_WS_PATH}" \
+            --arg mieru_name "${MIERU_NODE_NAME}" --arg mieru_server "${MIERU_SERVER}" \
+            --argjson mieru_port "${MIERU_PORT}" --arg mieru_username "${MIERU_USERNAME}" \
+            --arg mieru_password "${MIERU_PASSWORD}" --arg mieru_transport "${MIERU_TRANSPORT}" \
+            --arg mieru_multiplexing "${MIERU_MULTIPLEXING}" \
+            --arg mieru_handshake_mode "${MIERU_HANDSHAKE_MODE}" '
             "  - name: \($vless_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
@@ -1190,7 +1380,11 @@ build_mihomo_node() {
             "    skip-cert-verify: false\n    sni: \($server|@json)\n    client-fingerprint: chrome\n" +
             "    ip-version: dual\n    alpn:\n      - http/1.1\n    ws-opts:\n" +
             "      path: \($trojan_path|@json)\n      headers:\n        Host: \($server|@json)\n" +
-            "    smux:\n      enabled: false\n"'
+            "    smux:\n      enabled: false\n" +
+            "  - name: \($mieru_name|@json)\n    type: mieru\n    server: \($mieru_server|@json)\n" +
+            "    port: \($mieru_port)\n    transport: \($mieru_transport)\n    udp: true\n" +
+            "    username: \($mieru_username|@json)\n    password: \($mieru_password|@json)\n" +
+            "    multiplexing: \($mieru_multiplexing)\n    handshake-mode: \($mieru_handshake_mode)\n"'
         ;;
     esac
 }
@@ -1388,7 +1582,7 @@ render_worker_from_sample() {
 }
 
 write_worker() {
-    local destination=$1 vless_config_json trojan_config_json
+    local destination=$1 vless_config_json trojan_config_json mieru_config_json
     local allowed_tokens_json template_file config_file output_file
     prepare_sample_worker_template
     install -d -m 0700 "$(dirname "${destination}")"
@@ -1407,6 +1601,13 @@ write_worker() {
             --arg password "${TROJAN_PASSWORD}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${TROJAN_NODE_NAME}" \
             --arg sni "${VLESS_CDN_DOMAIN}" --arg path "${TROJAN_WS_PATH}" --arg fp chrome \
             '{type:$type,security:$security,network:$network,password:$password,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,ipVersion:"dual",udp:true,portMode:"443"}')
+        mieru_config_json=$(jq -cn \
+            --arg type mieru --arg name "${MIERU_NODE_NAME}" --arg host "${MIERU_SERVER}" \
+            --argjson port "${MIERU_PORT}" --arg username "${MIERU_USERNAME}" \
+            --arg password "${MIERU_PASSWORD}" --arg transport "${MIERU_TRANSPORT}" \
+            --arg multiplexing "${MIERU_MULTIPLEXING}" \
+            --arg handshakeMode "${MIERU_HANDSHAKE_MODE}" \
+            '{type:$type,name:$name,host:$host,port:$port,username:$username,password:$password,transport:$transport,multiplexing:$multiplexing,handshakeMode:$handshakeMode,udp:true}')
         ;;
     esac
 
@@ -1434,7 +1635,8 @@ function isAllowedToken(token) {
 EOF
         printf '\nconst NODE_VLESS_WS_CONFIG = defineNode(%s);\n' "${vless_config_json}"
         printf 'const NODE_TROJAN_WS_CONFIG = defineNode(%s);\n' "${trojan_config_json}"
-        printf '\nconst DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];\n'
+        printf 'const NODE_MIERU_CONFIG = defineNode(%s);\n' "${mieru_config_json}"
+        printf '\nconst DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG, NODE_MIERU_CONFIG];\n'
         cat <<'EOF'
 
 function defaultNodeConfigs() {
@@ -1851,7 +2053,10 @@ verify_subscription() {
             && base64 -d <"${plain_body}" >"${decoded_body}" 2>/dev/null \
             && [[ -s "${decoded_body}" ]] \
             && grep -Eq '^vless://' "${decoded_body}" \
+            && grep -Eq '^trojan://' "${decoded_body}" \
+            && grep -Eq '^mierus://' "${decoded_body}" \
             && grep -q '^proxies:' "${clash_body}" \
+            && grep -q 'type: mieru' "${clash_body}" \
             && grep -q '^proxy-groups:' "${clash_body}" \
             && grep -q '^rules:' "${clash_body}"; then
             cloudflare_deploy_log "SUCCESS" \
@@ -1934,6 +2139,16 @@ snapshot_subscription_update() {
         install -m 0600 /dev/null \
             "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json.missing"
     fi
+    if [[ -f "${MIERU_OWNERSHIP_MARKER}" ]] \
+        && dpkg-query -W -f='${Status}' mita 2>/dev/null | grep -q 'install ok installed'; then
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/mita-installed"
+        if [[ -f "${MIERU_DIR}/server-config.json" ]]; then
+            install -m 0600 "${MIERU_DIR}/server-config.json" \
+                "${UPDATE_SUB_BACKUP_DIR}/mita-config.json"
+        fi
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/mita.missing"
+    fi
     if [[ -f "${WORKER_FILE}" ]]; then
         install -m 0600 "${WORKER_FILE}" \
             "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js"
@@ -1977,6 +2192,17 @@ rollback_subscription_update() {
     else
         rm -f -- "${runtime_config}"
     fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/mita.missing" ]]; then
+        purge_managed_mita
+    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/mita-config.json" ]]; then
+        install -d -m 0700 "${MIERU_DIR}"
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/mita-config.json" \
+            "${MIERU_DIR}/server-config.json"
+        mita apply config "${MIERU_DIR}/server-config.json" >/dev/null 2>&1 \
+            && { mita stop >/dev/null 2>&1 || true; } \
+            && mita start >/dev/null 2>&1 \
+            || warn "恢复订阅更新前 Mieru 配置失败"
+    fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/subscribe-worker.js" \
             "${WORKER_FILE}"
@@ -2013,6 +2239,7 @@ update_subscription() {
     local stored_port_mode prompt_worker_name=0 prompt_download_name=0
     require_root
     [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
+    upgrade_mieru_state_if_needed
     stored_port_mode=$(
         unset SUB_PORT_MODE
         source_state_file
@@ -2039,11 +2266,13 @@ update_subscription() {
     snapshot_subscription_update
     if [[ "${SUB_PORT_MODE}" != "${stored_port_mode}" ]]; then
         info "订阅端口模式从 ${stored_port_mode} 切换为 ${SUB_PORT_MODE}，同步更新 nftables"
-        if ! configure_nftables; then
-            UPDATE_SUB_ROLLBACK_ON_EXIT=0
-            rollback_subscription_update
-            return 1
-        fi
+    else
+        info "刷新 nftables，并确保放行 Mieru TCP ${MIERU_PORT}"
+    fi
+    if ! configure_nftables; then
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        rollback_subscription_update
+        return 1
     fi
     if ! refresh_protocol_runtime_config; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -2087,7 +2316,20 @@ collect_installed_state() {
         && -n "${TROJAN_PASSWORD:-}" && -n "${VLESS_WS_PATH:-}" \
         && -n "${TROJAN_WS_PATH:-}" ]] \
         || die "VLESS WS + Trojan WS 状态不完整"
+    [[ -n "${MIERU_SERVER:-}" && -n "${MIERU_PASSWORD:-}" ]] \
+        || die "Mieru 状态不完整；请执行 easy_cmcc update 完成三节点升级"
+    ensure_mieru_state
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
+}
+
+upgrade_mieru_state_if_needed() {
+    load_state
+    validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
+    if [[ -z "${MIERU_SERVER:-}" || -z "${MIERU_PASSWORD:-}" ]]; then
+        info "检测到双节点旧状态，正在生成 Mieru 直连节点参数"
+        ensure_mieru_state
+        save_state
+    fi
 }
 
 refresh_protocol_runtime_config() {
@@ -2101,8 +2343,10 @@ refresh_protocol_runtime_config() {
     install -m 0600 "${config_path}" "${backup_config}"
 
     if (
+        ensure_mita_installed
         write_xray_config
         write_nginx_config
+        write_mita_config
         systemctl restart "${service}"
         validate_protocol_runtime
     ); then
@@ -2195,6 +2439,9 @@ show_status() {
         "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
     printf '域名: %s\nVLESS WebSocket 路径: %s\nTrojan WebSocket 路径: %s\n' \
         "${VLESS_CDN_DOMAIN}" "${VLESS_WS_PATH}" "${TROJAN_WS_PATH}"
+    printf 'Mieru 直连节点: %s:%s (%s, %s, %s)\n' \
+        "${MIERU_SERVER}" "${MIERU_PORT}" "${MIERU_TRANSPORT}" \
+        "${MIERU_MULTIPLEXING}" "${MIERU_HANDSHAKE_MODE}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
         && printf 'active\n' || printf 'inactive\n'
@@ -2202,8 +2449,14 @@ show_status() {
         printf 'Nginx: '
         systemctl is-active --quiet nginx 2>/dev/null && printf 'active\n' || printf 'inactive\n'
     fi
+    printf 'Mita: '
+    systemctl is-active --quiet "${MIERU_SERVICE}" 2>/dev/null \
+        && printf 'active\n' || printf 'inactive\n'
     printf 'TCP 443: '
     ss -H -ltn "sport = :443" 2>/dev/null | grep -q . && printf 'listening\n' || printf 'not listening\n'
+    printf 'TCP %s: ' "${MIERU_PORT}"
+    ss -H -ltn "sport = :${MIERU_PORT}" 2>/dev/null | grep -q . \
+        && printf 'listening\n' || printf 'not listening\n'
     printf 'Worker 订阅地址: %s\n' "${WORKER_URL:-未自动部署}"
     if [[ -n "${WORKER_CUSTOM_DOMAIN:-}" \
         && "${WORKER_URL:-}" != "https://${WORKER_CUSTOM_DOMAIN}" ]]; then
@@ -2231,9 +2484,24 @@ register_easy_cmcc_command() {
 
 stop_protocol_services() {
     systemctl disable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
+    if command -v mita >/dev/null 2>&1; then
+        mita stop >/dev/null 2>&1 || true
+    fi
+    systemctl disable --now "${MIERU_SERVICE}" >/dev/null 2>&1 || true
     if is_cdn_protocol "${PROTOCOL:-}" || [[ -f "${NGINX_CONFIG}" ]]; then
         systemctl disable --now nginx >/dev/null 2>&1 || true
     fi
+}
+
+purge_managed_mita() {
+    [[ -f "${MIERU_OWNERSHIP_MARKER}" ]] || return 0
+    if command -v mita >/dev/null 2>&1; then
+        mita stop >/dev/null 2>&1 || true
+    fi
+    systemctl disable --now "${MIERU_SERVICE}" >/dev/null 2>&1 || true
+    dpkg --purge mita >/dev/null 2>&1 || warn "卸载 mita 软件包失败，请手动执行 dpkg --purge mita"
+    rm -rf -- "${MIERU_SYSTEM_CONFIG_DIR}" /var/lib/mita /var/run/mita "${MIERU_DIR}"
+    rm -f -- "${MIERU_OWNERSHIP_MARKER}"
 }
 
 remove_managed_acme_domain() {
@@ -2299,6 +2567,7 @@ uninstall_all() {
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${VLESS_CDN_DOMAIN:-}"
     purge_owned_acme_if_unused
+    purge_managed_mita
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" \
         "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -2328,6 +2597,7 @@ rollback_fresh_install() {
     fi
     remove_managed_acme_domain "${VLESS_CDN_DOMAIN:-}"
     purge_owned_acme_if_unused
+    purge_managed_mita
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" \
         "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -2341,29 +2611,39 @@ protocol_preflight() {
     alert "如果配置了 AAAA 记录，安装前也请保持 DNS only / 灰云并指向当前 VPS 公网 IPv6。"
     public_ip=$(detect_public_ipv4) || die "无法探测本机公网 IPv4"
     verify_domain_dns "${domain}" "${public_ip}"
+    if validate_domain "${MIERU_SERVER}"; then
+        alert "Mieru 域名 ${MIERU_SERVER} 必须始终保持 DNS only / 灰云。"
+        verify_domain_dns "${MIERU_SERVER}" "${public_ip}"
+    fi
 }
 
 prepare_protocol_assets() {
     issue_certificate
     download_xray
+    download_mita
 }
 
 install_protocol_runtime() {
     write_xray_config
     install_xray_service
     write_nginx_config
+    write_mita_config
 }
 
 validate_protocol_runtime() {
     local attempt
     for attempt in 1 2 3 4 5; do
-        if ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
+        if ss -H -ltn "sport = :443" 2>/dev/null | grep -q . \
+            && ss -H -ltn "sport = :${MIERU_PORT}" 2>/dev/null | grep -q .; then
             systemctl is-active --quiet "${XRAY_SERVICE}" \
-                && systemctl is-active --quiet nginx && return 0
+                && systemctl is-active --quiet nginx \
+                && systemctl is-active --quiet "${MIERU_SERVICE}" \
+                && mita status 2>/dev/null | grep -q 'RUNNING' \
+                && return 0
         fi
         sleep 2
     done
-    die "${PROTOCOL} 服务启动验收失败"
+    die "${PROTOCOL} + Mieru 服务启动验收失败"
 }
 
 cleanup_obsolete_protocol_artifacts() {
@@ -2416,44 +2696,63 @@ usage() {
     cat <<EOF
 用法: ${ENTRY_COMMAND_NAME} [命令]
 
-  install       同时安装 VLESS WS TLS 与 Trojan WS TLS + Cloudflare CDN
-  update        刷新 CMCC 省电模式、Nginx、Worker 与 Custom Domain
+  install       安装两个 WebSocket CDN 节点与 Mieru 8443/TCP 直连节点
+  update        刷新 CMCC 参数、三节点运行时、Worker 与 Custom Domain
   update-sub    刷新服务端与订阅
   show|subscription|status|update-core|renew-cert|uninstall
 
-该入口固定同时发布 VLESS WebSocket TLS 与 Trojan WebSocket TLS 两个 CDN 节点，并放入手动 PROXY 组。
-不会生成自动测速组，两个节点均关闭 smux，以降低 Android 后台 CPU 与耗电。
+该入口固定发布 VLESS WebSocket TLS、Trojan WebSocket TLS 与 Mieru 三个节点，并放入 AUTO/PROXY 组。
+Mieru 使用公网 IP 或独立灰云域名直连 TCP 8443，不经过 Cloudflare CDN。
 自动部署可绑定独立 Worker Custom Domain，并由 Cloudflare 自动创建橙云 DNS 与证书。
 EOF
 }
 
 update_current_core() {
     local backup_bin="${RUNTIME_TMP}/core-backup" backup_version="${RUNTIME_TMP}/version-backup"
+    local backup_mita_package="${RUNTIME_TMP}/mita-backup.deb"
+    local backup_mita_version="${RUNTIME_TMP}/mita-version-backup"
     require_root
+    [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 尚未安装"
+    upgrade_mieru_state_if_needed
     collect_installed_state
+    ensure_mita_installed
+    write_mita_config
+    [[ -f "${MIERU_PACKAGE_FILE}" ]] \
+        || die "缺少 mita 回滚包 ${MIERU_PACKAGE_FILE}；请先执行 easy_cmcc update"
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
+    install -m 0600 "${MIERU_PACKAGE_FILE}" "${backup_mita_package}"
     [[ ! -f "${XRAY_DIR}/version" ]] \
         || install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
+    [[ ! -f "${MIERU_VERSION_FILE}" ]] \
+        || install -m 0600 "${MIERU_VERSION_FILE}" "${backup_mita_version}"
     if (
         download_xray
+        download_mita
+        write_mita_config
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
     ); then
-        success "${PROTOCOL} 核心已更新"
+        success "Xray 与 mita 核心已更新"
         return 0
     fi
-    warn "新核心验收失败，正在恢复旧版本"
+    warn "新核心验收失败，正在恢复 Xray 与 mita 旧版本"
     install -m 0755 "${backup_bin}" "${XRAY_BIN}"
+    dpkg -i "${backup_mita_package}" >/dev/null \
+        || die "恢复旧 mita 软件包失败"
+    install -m 0600 "${backup_mita_package}" "${MIERU_PACKAGE_FILE}"
     [[ ! -f "${backup_version}" ]] \
         || install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
+    [[ ! -f "${backup_mita_version}" ]] \
+        || install -m 0600 "${backup_mita_version}" "${MIERU_VERSION_FILE}"
+    write_mita_config
     systemctl restart "${XRAY_SERVICE}"
     validate_protocol_runtime
-    die "核心更新失败，已恢复旧版本"
+    die "核心更新失败，已恢复 Xray 与 mita 旧版本"
 }
 
 main() {
     if [[ "${1:-install}" == "switch" ]]; then
-        die "easy_cmcc 固定同时使用 VLESS WS TLS 与 Trojan WS TLS，不提供协议切换"
+        die "easy_cmcc 固定使用 VLESS WS、Trojan WS 与 Mieru 三节点，不提供协议切换"
     fi
     case "${1:-install}" in
     install) install_all "${2:-${PROTOCOL:-}}" ;;

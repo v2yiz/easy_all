@@ -26,7 +26,7 @@ assert_contains() {
 bash -n "${ROOT_DIR}/easy_cmcc"
 installer=$(<"${ROOT_DIR}/easy_cmcc")
 output=$("${ROOT_DIR}/easy_cmcc" help)
-assert_contains "standalone executable exposes CMCC usage" "${output}" "VLESS WS TLS"
+assert_contains "standalone executable exposes CMCC usage" "${output}" "Mieru"
 
 assert_contains "CMCC uses fq" "${installer}" "net.core.default_qdisc = fq"
 assert_contains "CMCC uses BBR" "${installer}" "net.ipv4.tcp_congestion_control = bbr"
@@ -48,6 +48,21 @@ assert_contains "CMCC resets legacy unsent queue overrides" "${installer}" \
     "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295"
 assert_contains "CMCC update reapplies TCP tuning" "${installer}" \
     'info "刷新 BBR 与 TCP 参数"'
+assert_contains "CMCC downloads mita from the official release API" "${installer}" \
+    'api.github.com/repos/enfein/mieru/releases/latest'
+assert_contains "CMCC verifies the mita package checksum" "${installer}" \
+    'mita ${tag} SHA256 校验失败'
+assert_contains "CMCC opens the managed Mieru port" "${installer}" \
+    '${MIERU_PORT:-${DEFAULT_MIERU_PORT}}'
+assert_contains "CMCC validates mita runtime state" "${installer}" \
+    "mita status 2>/dev/null | grep -q 'RUNNING'"
+install_mita_function=$(awk '
+    /^install_mita_package\(\) \{/ {capture=1}
+    capture {print}
+    capture && /^}/ {exit}
+' "${ROOT_DIR}/easy_cmcc")
+[[ "${install_mita_function}" == *'MIERU_OWNERSHIP_MARKER'*'dpkg -i'* ]] \
+    || fail "CMCC must mark Mita ownership before package installation for rollback"
 collect_inputs_function=$(awk '
     /^collect_install_inputs\(\) \{/ {capture=1}
     capture {print}
@@ -90,8 +105,8 @@ assert_contains "README identifies the standalone installer" "${readme}" \
     "独立安装器"
 assert_contains "README downloads the CMCC monolith" "${readme}" \
     "main/for_cmcc/easy_cmcc"
-assert_contains "README documents both WebSocket nodes" "${readme}" \
-    '`VLESS_WS` 和 `TROJAN_WS`'
+assert_contains "README documents all three nodes" "${readme}" \
+    '`VLESS_WS`、`TROJAN_WS` 和 `MIERU`'
 assert_contains "README documents the AUTO and PROXY groups" "${readme}" \
     '一个 `AUTO` 自动测速组和一个 `PROXY` 选择组'
 assert_contains "README documents power-conscious client settings" "${readme}" \
@@ -102,6 +117,14 @@ assert_contains "README documents disabled WebSocket heartbeat" "${readme}" \
     '`heartbeatPeriod: 0`'
 assert_contains "README documents disabled multiplexing" "${readme}" \
     '`smux.enabled: false`'
+assert_contains "README documents the third Mieru node" "${readme}" \
+    'Mieru + TCP'
+assert_contains "README documents the direct Mieru path" "${readme}" \
+    '不经过 Nginx 或 Cloudflare CDN'
+assert_contains "README documents the Mieru port" "${readme}" \
+    'TCP 80/443/8443'
+assert_contains "README documents the balanced Mieru defaults" "${readme}" \
+    '`multiplexing: MULTIPLEXING_LOW`'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
     "DNS only / 灰云"
 assert_contains "README documents enabling the CDN after install" "${readme}" \
@@ -111,7 +134,7 @@ assert_contains "README documents isolated state" "${readme}" \
 assert_contains "README documents that uninstall leaves remote Cloudflare resources" "${readme}" \
     "不删除远端 Worker"
 assert_contains "README distinguishes node and subscription domains" "${readme}" \
-    "两个不同域名"
+    "两个不同的 Cloudflare 域名"
 assert_contains "README documents the recommended interactive Worker choice" "${readme}" \
     '订阅输出方式 | `1`，自动部署 Worker'
 assert_contains "README documents IPv4 and IPv6 LAN bypass" "${readme}" \
@@ -154,6 +177,12 @@ fi
     assert_equal "CMCC uses state schema v2 without old-protocol migration" "2" "${STATE_SCHEMA_VERSION}"
     assert_equal "CMCC uses the requested VLESS node name" "VLESS_WS" "${DEFAULT_VLESS_NODE_NAME}"
     assert_equal "CMCC uses the requested Trojan node name" "TROJAN_WS" "${DEFAULT_TROJAN_NODE_NAME}"
+    assert_equal "CMCC uses the requested Mieru node name" "MIERU" "${DEFAULT_MIERU_NODE_NAME}"
+    assert_equal "CMCC defaults Mieru to direct TCP 8443" "8443" "${DEFAULT_MIERU_PORT}"
+    assert_equal "CMCC uses balanced Mieru multiplexing" \
+        "MULTIPLEXING_LOW" "${DEFAULT_MIERU_MULTIPLEXING}"
+    assert_equal "CMCC uses replay-safe Mieru handshakes" \
+        "HANDSHAKE_STANDARD" "${DEFAULT_MIERU_HANDSHAKE_MODE}"
     assert_contains "Worker URL uses the CMCC subtree" "${DEFAULT_SAMPLE_WORKER_URL}" "/for_cmcc/sample-worker.js"
     assert_contains "CMCC subscription verification uses Worker version affinity" \
         "$(<"${ROOT_DIR}/easy_cmcc")" "Cloudflare-Workers-Version-Key"
@@ -240,6 +269,14 @@ fi
     VLESS_CDN_DOMAIN="cmcc.example.com"
     VLESS_NODE_NAME="CMCC_VLESS_WS"
     TROJAN_NODE_NAME="CMCC_TROJAN_WS"
+    MIERU_NODE_NAME="CMCC_MIERU"
+    MIERU_SERVER="192.0.2.10"
+    MIERU_PORT="8443"
+    MIERU_USERNAME="easycmcc"
+    MIERU_PASSWORD="test-mieru-password-123456"
+    MIERU_TRANSPORT="TCP"
+    MIERU_MULTIPLEXING="MULTIPLEXING_LOW"
+    MIERU_HANDSHAKE_MODE="HANDSHAKE_STANDARD"
     VLESS_WS_PATH="/cmcc-vless-ws"
     TROJAN_WS_PATH="/cmcc-trojan-ws"
     WORKER_CUSTOM_DOMAIN="SUB.EXAMPLE.COM"
@@ -267,11 +304,14 @@ fi
     links=$(build_node_link)
     assert_contains "subscription contains VLESS" "${links}" "vless://"
     assert_contains "subscription contains Trojan" "${links}" "trojan://"
+    assert_contains "subscription contains Mieru" "${links}" "mierus://"
     assert_contains "both nodes use WebSocket" "${links}" "type=ws"
     assert_contains "VLESS includes its path" "${links}" "path=%2Fcmcc-vless-ws"
     assert_contains "Trojan includes its path" "${links}" "path=%2Fcmcc-trojan-ws"
     assert_contains "nodes force HTTP/1.1" "${links}" "alpn=http%2F1.1"
-    assert_equal "subscription contains exactly two links" "2" "$(wc -l <<<"${links}" | tr -d ' ')"
+    assert_contains "Mieru link uses direct TCP 8443" "${links}" \
+        "port=8443&protocol=TCP&multiplexing=MULTIPLEXING_LOW&handshake-mode=HANDSHAKE_STANDARD"
+    assert_equal "subscription contains exactly three links" "3" "$(wc -l <<<"${links}" | tr -d ' ')"
     [[ "${links}" != *"type=xhttp"* && "${links}" != *"type=grpc"* ]] \
         || fail "subscription must contain only WebSocket transports"
 
@@ -287,12 +327,16 @@ fi
         || fail "rendered Worker must include VLESS"
     grep -Fq '"type":"trojan"' "${worker_output}" \
         || fail "rendered Worker must include Trojan"
+    grep -Fq '"type":"mieru"' "${worker_output}" \
+        || fail "rendered Worker must include Mieru"
+    grep -Fq '"host":"192.0.2.10"' "${worker_output}" \
+        || fail "rendered Worker must use the direct Mieru address"
     grep -Fq '"path":"/cmcc-vless-ws"' "${worker_output}" \
         || fail "rendered Worker must include the VLESS path"
     grep -Fq '"path":"/cmcc-trojan-ws"' "${worker_output}" \
         || fail "rendered Worker must include the Trojan path"
-    grep -Fq 'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];' "${worker_output}" \
-        || fail "rendered Worker must publish both configured nodes"
+    grep -Fq 'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG, NODE_MIERU_CONFIG];' "${worker_output}" \
+        || fail "rendered Worker must publish all three configured nodes"
     [[ "$(<"${worker_output}")" != *'"network":"grpc"'* && "$(<"${worker_output}")" != *'"network":"xhttp"'* ]] \
         || fail "rendered Worker must not publish gRPC or XHTTP"
     grep -Fq 'network: "ws"' "${ROOT_DIR}/easy_cmcc" \
@@ -320,9 +364,10 @@ const baseUrl = 'https://worker.test/subscribe?token=test-token';
 const plain = await worker.fetch(new Request(baseUrl), {});
 assert.equal(plain.status, 200);
 const links = Buffer.from(await plain.text(), 'base64').toString('utf8').split('\n');
-assert.equal(links.length, 2);
+assert.equal(links.length, 3);
 assert.match(links[0], /^vless:/);
 assert.match(links[1], /^trojan:/);
+assert.match(links[2], /^mierus:/);
 const clash = await worker.fetch(new Request(`${baseUrl}&flag=clash`), {});
 assert.equal(clash.status, 200);
 const yaml = await clash.text();
@@ -335,6 +380,10 @@ EOF
         "ip-version: dual"
     assert_contains "Mihomo nodes use WebSocket options" "${mihomo_nodes}" \
         'ws-opts:'
+    assert_contains "Mihomo nodes include Mieru" "${mihomo_nodes}" \
+        'type: mieru'
+    assert_contains "Mihomo Mieru uses balanced multiplexing" "${mihomo_nodes}" \
+        'multiplexing: MULTIPLEXING_LOW'
     [[ "$(grep -c 'enabled: false' <<<"${mihomo_nodes}")" == "2" ]] \
         || fail "both Mihomo nodes must disable smux"
     [[ "${mihomo_nodes}" != *"health-check"* ]] \
@@ -505,10 +554,11 @@ EOF
             printf 'Not Found\n' >"${output}"
             printf '404'
         elif [[ "${url}" == *"&flag=clash"* ]]; then
-            printf 'proxies:\nproxy-groups:\nrules:\n' >"${output}"
+            printf 'proxies:\n  - type: mieru\nproxy-groups:\nrules:\n' >"${output}"
             printf '200'
         else
-            printf 'vless://test@example.com:443\n' | base64 >"${output}"
+            printf 'vless://test@example.com:443\ntrojan://test@example.com:443\nmierus://user:password@example.com?port=8443&protocol=TCP\n' \
+                | base64 >"${output}"
             printf '200'
         fi
     }

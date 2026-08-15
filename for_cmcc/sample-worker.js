@@ -1,11 +1,11 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 同时提供 VLESS WebSocket TLS 与 Trojan WebSocket TLS 的 Cloudflare CDN 订阅
+ * 同时提供两个 Cloudflare CDN WebSocket 节点与一个直连 Mieru 节点
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 两个节点的认证信息、TLS 域名和各自 WebSocket 路径
- * 3. DEFAULT_NODE 保留两个节点，以便同一订阅同时输出
+ * 2. 三个节点的认证信息、接入地址和 WebSocket 路径
+ * 3. DEFAULT_NODE 保留三个节点，以便同一订阅同时输出
  */
 // ================= 配置常量 =================
 
@@ -62,7 +62,21 @@ const NODE_TROJAN_WS_CONFIG = defineNode({
     portMode: '443'
 });
 
-const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];
+// Mieru 不经过 Cloudflare；host 必须是 VPS 公网 IP 或独立的 DNS only / 灰云域名。
+const NODE_MIERU_CONFIG = defineNode({
+    type: 'mieru',
+    host: '192.0.2.10',
+    port: 8443,
+    name: 'MIERU',
+    username: 'easycmcc',
+    password: 'replace-with-a-long-random-mieru-password',
+    transport: 'TCP',
+    multiplexing: 'MULTIPLEXING_LOW',
+    handshakeMode: 'HANDSHAKE_STANDARD',
+    udp: true
+});
+
+const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG, NODE_MIERU_CONFIG];
 
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
@@ -669,6 +683,18 @@ const CLASH_TROJAN_WS_TLS_NODE_TEMPLATE = `  - name: {name}
       enabled: false
 `;
 
+const CLASH_MIERU_NODE_TEMPLATE = `  - name: {name}
+    type: mieru
+    server: {host}
+    port: {port}
+    transport: {transport}
+    udp: {udp}
+    username: {username}
+    password: {password}
+    multiplexing: {multiplexing}
+    handshake-mode: {handshake_mode}
+`;
+
 // ================= 辅助函数 =================
 
 function getHourCount() {
@@ -782,12 +808,33 @@ function createTrojanLink(cfg, port) {
     return `trojan://${encodeURIComponentCustom(cfg.password)}@${host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
 }
 
+function createMieruLink(cfg, port) {
+    const host = formatUriHost(cfg.host);
+    const transport = cfg.transport || 'TCP';
+    const multiplexing = cfg.multiplexing || 'MULTIPLEXING_LOW';
+    const handshakeMode = cfg.handshakeMode || 'HANDSHAKE_STANDARD';
+    if (transport !== 'TCP' && transport !== 'UDP') {
+        throw new Error(`Unsupported Mieru transport: ${transport}`);
+    }
+    const params = new URLSearchParams({
+        profile: cfg.name || 'MIERU',
+        port: String(resolveNodePort(cfg, port)),
+        protocol: transport,
+        multiplexing,
+        'handshake-mode': handshakeMode
+    });
+    return `mierus://${encodeURIComponentCustom(cfg.username)}:${encodeURIComponentCustom(cfg.password)}@${host}?${params.toString()}`;
+}
+
 function createLink(cfg, port) {
     if (cfg.type === 'vless') {
         return createVlessLink(cfg, port);
     }
     if (cfg.type === 'trojan') {
         return createTrojanLink(cfg, port);
+    }
+    if (cfg.type === 'mieru') {
+        return createMieruLink(cfg, port);
     }
     throw new Error(`Unsupported node type: ${cfg.type}`);
 }
@@ -826,11 +873,15 @@ function renderClashNode(template, cfg, port) {
         port: String(resolveNodePort(cfg, port)),
         uuid: yamlString(cfg.uuid || ''),
         password: yamlString(cfg.password || ''),
+        username: yamlString(cfg.username || ''),
         sni: yamlString(cfg.sni || cfg.host),
         fp: yamlString(cfg.fp || 'chrome'),
         path: yamlString(cfg.path || '/'),
         ip_version: yamlString(cfg.ipVersion || 'dual'),
-        udp: String(cfg.udp !== false)
+        udp: String(cfg.udp !== false),
+        transport: String(cfg.transport || 'TCP'),
+        multiplexing: String(cfg.multiplexing || 'MULTIPLEXING_LOW'),
+        handshake_mode: String(cfg.handshakeMode || 'HANDSHAKE_STANDARD')
     };
     return template.replace(/{([a-z_]+)}/g, (_, key) => values[key]);
 }
@@ -856,6 +907,10 @@ function generateClashProxyNode(cfg, port) {
             throw new Error(`Unsupported Trojan mode: security=${security}, network=${network}`);
         }
         return renderClashNode(CLASH_TROJAN_WS_TLS_NODE_TEMPLATE, cfg, port);
+    }
+
+    if (cfg.type === 'mieru') {
+        return renderClashNode(CLASH_MIERU_NODE_TEMPLATE, cfg, port);
     }
 
     throw new Error(`Unsupported node type: ${cfg.type}`);
