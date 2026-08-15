@@ -146,6 +146,7 @@ const CN_SECURITIES_DOMAIN_SUFFIXES = Object.freeze([
     'guosen.com.cn',
     'chinastock.com.cn',
     'xyzq.com.cn',
+    'futooncdn.com',
 ]);
 
 const FAKE_IP_FILTER = [...BASE_FAKE_IP_FILTER,
@@ -157,6 +158,37 @@ const FAKE_IP_FILTER = [...BASE_FAKE_IP_FILTER,
 const CN_SECURITIES_DIRECT_RULES = CN_SECURITIES_DOMAIN_SUFFIXES
     .map(domain => `  - DOMAIN-SUFFIX,${domain},DIRECT`)
     .join('\n');
+
+// 官方远程规则经现有代理组更新，避免使用第三方 GitHub 代理；逐项 size-limit
+// 可防止异常响应耗尽客户端内存。applications 依赖已关闭的进程探测，故不加载。
+const OFFICIAL_CLASH_RULES_BASE_URL =
+    'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release';
+const EXTERNAL_RULE_PROVIDER_SPECS = Object.freeze([
+    ['private', 'domain', 262144],
+    ['icloud', 'domain', 262144],
+    ['apple', 'domain', 262144],
+    ['google', 'domain', 262144],
+    ['gfw', 'domain', 524288],
+    ['greatfire', 'domain', 262144],
+    ['proxy', 'domain', 4194304],
+    ['direct', 'domain', 4194304],
+    ['tld-not-cn', 'domain', 1048576],
+    ['telegramcidr', 'ipcidr', 262144],
+    ['lancidr', 'ipcidr', 262144],
+    ['cncidr', 'ipcidr', 1048576],
+]);
+const EXTERNAL_RULE_PROVIDERS = `rule-providers:\n${EXTERNAL_RULE_PROVIDER_SPECS
+    .map(([name, behavior, sizeLimit]) => `    ${name}:
+      type: http
+      behavior: ${behavior}
+      format: yaml
+      url: '${OFFICIAL_CLASH_RULES_BASE_URL}/${name}.txt'
+      path: ./ruleset/loyalsoldier/${name}.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: ${sizeLimit}
+`)
+    .join('')}`;
 
 const EMBEDDED_CLASH_RULES = `rules:
   # ==================== 局域网直连 ====================
@@ -184,7 +216,20 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN-SUFFIX,apple-relay.mask.apple-dns.net,PROXY
   - DOMAIN,copilot.microsoft.com,PROXY
   - DOMAIN,copilot.bing.com,PROXY
+  - DOMAIN,api.msn.com,PROXY
+  - DOMAIN,assets.msn.com,PROXY
+  - DOMAIN,gateway.bingviz.microsoft.net,PROXY
+  - DOMAIN,gateway.bingviz.microsoftapp.net,PROXY
+  - DOMAIN,in.appcenter.ms,PROXY
+  - DOMAIN,location.microsoft.com,PROXY
+  - DOMAIN,odc.officeapps.live.com,PROXY
+  - DOMAIN,self.events.data.microsoft.com,PROXY
+  - DOMAIN,services.bingapis.com,PROXY
   - DOMAIN-SUFFIX,bing.com,PROXY
+  - DOMAIN-SUFFIX,githubcopilot.com,PROXY
+  - DOMAIN-SUFFIX,api.microsoftapp.net,PROXY
+  - DOMAIN-SUFFIX,edgeservices.bing.com,PROXY
+  - DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY
 
   # ==================== 国内高流量服务直连 ====================
   # DOMAIN-SUFFIX 覆盖主域及其所有子域；客户端模板默认只请求 IPv4。
@@ -308,7 +353,28 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN-SUFFIX,live.com,PROXY
   - DOMAIN-SUFFIX,office.com,PROXY
 
+  # ==================== 出口 / DNS 隐私检测 ====================
+  # 检测站必须始终观察代理出口，不能被远程 DIRECT 规则抢先命中。
+  - DOMAIN-SUFFIX,ipleak.net,PROXY
+  - DOMAIN-SUFFIX,browserscan.net,PROXY
+  - DOMAIN-SUFFIX,surfsharkdns.com,PROXY
+  - DOMAIN-SUFFIX,edns.ip-api.com,PROXY
+  - DOMAIN-SUFFIX,dnsleaktest.com,PROXY
+  - DOMAIN-SUFFIX,dnsleak.com,PROXY
+  - DOMAIN-SUFFIX,browserleaks.com,PROXY
+  - DOMAIN-SUFFIX,browserleaks.org,PROXY
+  - DOMAIN-SUFFIX,browserleaks.net,PROXY
+  - DOMAIN-SUFFIX,expressvpn.com,PROXY
+  - DOMAIN-SUFFIX,nordvpn.com,PROXY
+  - DOMAIN-SUFFIX,surfshark.com,PROXY
+  - DOMAIN-SUFFIX,perfect-privacy.com,PROXY
+  - DOMAIN-SUFFIX,vpnunlimited.com,PROXY
+  - DOMAIN-SUFFIX,whoer.net,PROXY
+  - DOMAIN-SUFFIX,whrq.net,PROXY
+
   # ==================== AI 服务 ====================
+  - DOMAIN-SUFFIX,ai.com,PROXY
+  - DOMAIN-SUFFIX,algolia.net,PROXY
   - DOMAIN-SUFFIX,chatgpt.com,PROXY
   - DOMAIN-SUFFIX,openai.com,PROXY
   - DOMAIN-SUFFIX,oaistatic.com,PROXY
@@ -318,6 +384,10 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN-SUFFIX,claude.ai,PROXY
   - DOMAIN-SUFFIX,claude.com,PROXY
   - DOMAIN-SUFFIX,claudeusercontent.com,PROXY
+  - DOMAIN-SUFFIX,jetbrains.ai,PROXY
+  - DOMAIN-SUFFIX,razie.ai,PROXY
+  - DOMAIN-SUFFIX,razie.aws.intellij.net,PROXY
+  - DOMAIN-SUFFIX,meta.com,PROXY
   - DOMAIN,gemini.google.com,PROXY
   - DOMAIN,aistudio.google.com,PROXY
   - DOMAIN,ai.google.dev,PROXY
@@ -326,6 +396,9 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN,browser-intake-datadoghq.com,PROXY
   - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
   - DOMAIN,openai-api.arkoselabs.com,PROXY
+  - DOMAIN,openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net,PROXY
+  - DOMAIN,openaicomproductionae4b.blob.core.windows.net,PROXY
+  - DOMAIN,production-openaicom-storage.azureedge.net,PROXY
   - DOMAIN-SUFFIX,auth0.com,PROXY
   - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
   - DOMAIN-SUFFIX,chatgpt.livekit.cloud,PROXY
@@ -336,10 +409,12 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN-SUFFIX,intercom.io,PROXY
   - DOMAIN-SUFFIX,intercomcdn.com,PROXY
   - DOMAIN-SUFFIX,launchdarkly.com,PROXY
+  - DOMAIN-SUFFIX,observeit.net,PROXY
   - DOMAIN-SUFFIX,openaiapi-site.azureedge.net,PROXY
   - DOMAIN-SUFFIX,openaicom.imgix.net,PROXY
   - DOMAIN-SUFFIX,segment.io,PROXY
   - DOMAIN-SUFFIX,sentry.io,PROXY
+  - DOMAIN-SUFFIX,stripe.com,PROXY
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
 
   # ==================== Gemini / Google ====================
@@ -400,8 +475,23 @@ ${CN_SECURITIES_DIRECT_RULES}
   - IP-CIDR6,2001:b28:f23f::/48,PROXY,no-resolve
   - IP-CIDR6,2001:67c:4e8::/48,PROXY,no-resolve
 
+  # ==================== 外部规则集 ====================
+  # 精确与高频规则优先；官方远程规则补齐长尾，IP 规则禁止额外 DNS 解析。
+  - RULE-SET,private,DIRECT
+  - RULE-SET,icloud,DIRECT
+  - RULE-SET,apple,DIRECT
+  - RULE-SET,google,PROXY
+  - RULE-SET,gfw,PROXY
+  - RULE-SET,greatfire,PROXY
+  - RULE-SET,proxy,PROXY
+  - RULE-SET,direct,DIRECT
+  - RULE-SET,tld-not-cn,PROXY
+  - RULE-SET,telegramcidr,PROXY,no-resolve
+  - RULE-SET,lancidr,DIRECT,no-resolve
+  - RULE-SET,cncidr,DIRECT,no-resolve
+
   # ==================== GEOSITE / GEOIP 兜底 ====================
-  # 显式域名规则先于兜底规则；不再重复加载同类远程 rule-provider。
+  # 客户端内置数据用于远程规则首次下载失败或缓存不可用时的离线兜底。
   - GEOSITE,geolocation-!cn,PROXY
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
@@ -528,12 +618,13 @@ proxy-groups:
       proxies:
         - AUTO
         - {proxy_names}
+{rule_providers}
+
 {rules_section}
 `;
 
 // ── WebSocket 节点模板 ─────────────────
-function buildClashVlessWsTlsNodeTemplate() {
-    return `  - name: {name}
+const CLASH_VLESS_WS_TLS_NODE_TEMPLATE = `  - name: {name}
     type: vless
     server: {host}
     port: {port}
@@ -555,10 +646,8 @@ function buildClashVlessWsTlsNodeTemplate() {
     smux:
       enabled: false
 `;
-}
 
-function buildClashTrojanWsTlsNodeTemplate() {
-    return `  - name: {name}
+const CLASH_TROJAN_WS_TLS_NODE_TEMPLATE = `  - name: {name}
     type: trojan
     server: {host}
     port: {port}
@@ -579,7 +668,6 @@ function buildClashTrojanWsTlsNodeTemplate() {
     smux:
       enabled: false
 `;
-}
 
 // ================= 辅助函数 =================
 
@@ -731,27 +819,34 @@ function yamlString(value) {
     return JSON.stringify(String(value));
 }
 
+function renderClashNode(template, cfg, port) {
+    const values = {
+        name: yamlString(cfg.name),
+        host: yamlString(cfg.host),
+        port: String(resolveNodePort(cfg, port)),
+        uuid: yamlString(cfg.uuid || ''),
+        password: yamlString(cfg.password || ''),
+        sni: yamlString(cfg.sni || cfg.host),
+        fp: yamlString(cfg.fp || 'chrome'),
+        path: yamlString(cfg.path || '/'),
+        ip_version: yamlString(cfg.ipVersion || 'dual'),
+        udp: String(cfg.udp !== false)
+    };
+    return template.replace(/{([a-z_]+)}/g, (_, key) => values[key]);
+}
+
 function generateClashProxyNode(cfg, port) {
     if (cfg.type === 'vless') {
         const security = nodeSecurity(cfg);
         const network = nodeNetwork(cfg);
         let template;
         if (security === 'tls' && network === 'ws') {
-            template = buildClashVlessWsTlsNodeTemplate();
+            template = CLASH_VLESS_WS_TLS_NODE_TEMPLATE;
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
 
-        return template
-            .replace(/{host}/g, yamlString(cfg.host))
-            .replace(/{port}/g, String(resolveNodePort(cfg, port)))
-            .replace(/{uuid}/g, yamlString(cfg.uuid))
-            .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
-            .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
-            .replace(/{path}/g, yamlString(cfg.path || '/'))
-            .replace(/{ip_version}/g, yamlString(cfg.ipVersion || 'dual'))
-            .replace(/{udp}/g, String(cfg.udp !== false))
-            .replace(/{name}/g, yamlString(cfg.name));
+        return renderClashNode(template, cfg, port);
     }
 
     if (cfg.type === 'trojan') {
@@ -760,22 +855,13 @@ function generateClashProxyNode(cfg, port) {
         if (security !== 'tls' || network !== 'ws') {
             throw new Error(`Unsupported Trojan mode: security=${security}, network=${network}`);
         }
-        return buildClashTrojanWsTlsNodeTemplate()
-            .replace(/{host}/g, yamlString(cfg.host))
-            .replace(/{port}/g, String(resolveNodePort(cfg, port)))
-            .replace(/{password}/g, yamlString(cfg.password))
-            .replace(/{sni}/g, yamlString(cfg.sni || cfg.host))
-            .replace(/{fp}/g, yamlString(cfg.fp || 'chrome'))
-            .replace(/{path}/g, yamlString(cfg.path || '/'))
-            .replace(/{ip_version}/g, yamlString(cfg.ipVersion || 'dual'))
-            .replace(/{udp}/g, String(cfg.udp !== false))
-            .replace(/{name}/g, yamlString(cfg.name));
+        return renderClashNode(CLASH_TROJAN_WS_TLS_NODE_TEMPLATE, cfg, port);
     }
 
     throw new Error(`Unsupported node type: ${cfg.type}`);
 }
 
-function generateClashConfigMulti(configs, ports, rulesStr) {
+function generateClashConfigMulti(configs, ports) {
     let proxyNodes = '';
     const proxyNames = [];
 
@@ -788,10 +874,11 @@ function generateClashConfigMulti(configs, ports, rulesStr) {
         fake_ip_filter: FAKE_IP_FILTER,
         proxy_nodes: proxyNodes,
         proxy_names: proxyNames.join('\n        - '),
-        rules_section: rulesStr
+        rule_providers: EXTERNAL_RULE_PROVIDERS,
+        rules_section: EMBEDDED_CLASH_RULES
     };
     return CLASH_CONFIG_TEMPLATE.replace(
-        /{(fake_ip_filter|proxy_nodes|proxy_names|rules_section)}/g,
+        /{(fake_ip_filter|proxy_nodes|proxy_names|rule_providers|rules_section)}/g,
         (_, section) => sections[section]
     );
 }
@@ -839,33 +926,30 @@ export default {
 
             const flag = params.get('flag') || '';
             const node = params.get('node') || '';
-            const currentHourCount = getHourCount();
-
-            let targetConfigs;
-            if (node === 'all') {
-                targetConfigs = CONFIGS;
-            } else {
-                targetConfigs = defaultNodeConfigs();
-            }
-            const ports = targetConfigs.map((_, i) => calculateDynamicPort(currentHourCount + i));
-
             const headers = createResponseHeaders({
-                'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
                 'Content-Disposition': flag === 'clash'
                 ? `attachment; filename=${clashDownloadFilename(env)}`
-                : 'inline'
+                : 'inline',
+                'Content-Type': flag === 'clash'
+                ? 'text/yaml; charset=UTF-8'
+                : 'text/plain; charset=UTF-8'
             });
+            if (request.method === 'HEAD') {
+                return new Response(null, { headers });
+            }
+
+            const targetConfigs = node === 'all' ? CONFIGS : defaultNodeConfigs();
+            const currentHourCount = getHourCount();
+            const ports = targetConfigs.map((_, i) => calculateDynamicPort(currentHourCount + i));
 
             if (flag === 'clash') {
-                const clashContent = generateClashConfigMulti(targetConfigs, ports, EMBEDDED_CLASH_RULES);
-                headers.set('Content-Type', 'text/yaml; charset=UTF-8');
-                return new Response(request.method === 'HEAD' ? null : clashContent, { headers });
+                const clashContent = generateClashConfigMulti(targetConfigs, ports);
+                return new Response(clashContent, { headers });
             }
 
             const links = targetConfigs.map((cfg, i) => createLink(cfg, ports[i]));
-            headers.set('Content-Type', 'text/plain; charset=UTF-8');
             const content = base64Encode(links.join('\n'));
-            return new Response(request.method === 'HEAD' ? null : content, { headers });
+            return new Response(content, { headers });
         } catch (error) {
             console.error('Subscription generation failed', error);
             return textResponse(request, 'Internal Server Error', 500);

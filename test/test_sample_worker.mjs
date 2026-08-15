@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import worker from '../sample-worker.js';
+import { assertExternalRuleProviders } from './support/assert_rule_providers.mjs';
 
 const VALID_TOKEN = 'REPLACE_WITH_TOKEN_1';
 const FIXED_NOW = Date.UTC(2026, 0, 1, 0, 0, 0);
@@ -342,8 +343,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /IP-CIDR6,2001:b28:f23d::\/48,PROXY,no-resolve/);
     assert.match(body, /GEOIP,CN,DIRECT,no-resolve/);
     assert.match(body, /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/);
-    assert.doesNotMatch(body, /RULE-SET,|rule-providers:|Loyalsoldier\/clash-rules/);
-    assert.doesNotMatch(body, /edgeone\.gh-proxy\.org/);
+    assertExternalRuleProviders(body);
     assert.doesNotMatch(body, /DOMAIN-KEYWORD,/);
     assert.doesNotMatch(body, /PROCESS-NAME,/);
     assert.ok(
@@ -440,7 +440,8 @@ describe('sample-worker Cloudflare Worker', () => {
         '+.gf.com.cn',
         '+.guosen.com.cn',
         '+.chinastock.com.cn',
-        '+.xyzq.com.cn'
+        '+.xyzq.com.cn',
+        '+.futooncdn.com'
       ],
       'Fake-IP exclusions must include generic local/time and specified securities domains'
     );

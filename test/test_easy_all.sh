@@ -93,12 +93,20 @@ for (const part of [
   'DOMAIN,gemini.google.com,PROXY',
   'DOMAIN-SUFFIX,github.com,PROXY',
   'IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve',
+  'rule-providers:',
+  'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt',
+  'size-limit: 4194304',
+  'RULE-SET,private,DIRECT',
+  'RULE-SET,google,PROXY',
+  'RULE-SET,direct,DIRECT',
+  'RULE-SET,telegramcidr,PROXY,no-resolve',
+  'RULE-SET,cncidr,DIRECT,no-resolve',
   'GEOSITE,geolocation-!cn,PROXY',
   'GEOIP,CN,DIRECT,no-resolve'
 ]) {
   if (!yaml.includes(part)) process.exit(1);
 }
-if (/RULE-SET,|rule-providers:|Loyalsoldier\/clash-rules/.test(yaml)) process.exit(1);
+if (/edgeone\.gh-proxy\.org|RULE-SET,applications,|^    applications:/m.test(yaml)) process.exit(1);
 for (const removedDomain of [
   'bytedance.net',
   'larkoffice.com',
