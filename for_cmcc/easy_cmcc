@@ -1031,10 +1031,7 @@ write_xray_config() {
                     xhttpSettings: {
                       host: $xhttp_host,
                       path: $xhttp_path,
-                      mode: "stream-up",
-                      extra: {
-                        scStreamUpServerSecs: "20-80"
-                      }
+                      mode: "stream-one"
                     }
                   },
                   sniffing: {
@@ -1199,21 +1196,9 @@ build_vless_ws_link() {
 }
 
 build_vless_xhttp_link() {
-    local extra
-    extra=$(jq -cn '{
-        scStreamUpServerSecs: "20-80",
-        xmux: {
-            maxConnections: 2,
-            cMaxReuseTimes: 0,
-            hMaxRequestTimes: "600-900",
-            hMaxReusableSecs: "1800-2400",
-            hKeepAlivePeriod: 0
-        }
-    }')
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-one&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "${VLESS_CDN_DOMAIN}" "$(uri_encode "${XHTTP_PATH}")" "$(uri_encode "${extra}")" \
-        "$(uri_encode "${XHTTP_NODE_NAME}")"
+        "${VLESS_CDN_DOMAIN}" "$(uri_encode "${XHTTP_PATH}")" "$(uri_encode "${XHTTP_NODE_NAME}")"
 }
 
 build_node_link() {
@@ -1239,10 +1224,7 @@ build_mihomo_node() {
             "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
             "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
-            "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
-            "      no-grpc-header: false\n      reuse-settings:\n        max-connections: \"2\"\n" +
-            "        c-max-reuse-times: \"0\"\n        h-max-request-times: \"600-900\"\n" +
-            "        h-max-reusable-secs: \"1800-2400\"\n        h-keep-alive-period: 0\n"'
+            "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-one\n"'
         ;;
     esac
 }
@@ -1458,7 +1440,7 @@ write_worker() {
             --arg type vless --arg security tls --arg network xhttp \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${XHTTP_NODE_NAME}" \
             --arg sni "${VLESS_CDN_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-up",ipVersion:"dual",udp:true,portMode:"443",packetEncoding:"xudp",scStreamUpServerSecs:"20-80",xmux:{maxConnections:2,cMaxReuseTimes:0,hMaxRequestTimes:"600-900",hMaxReusableSecs:"1800-2400",hKeepAlivePeriod:0}}')
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-one",ipVersion:"dual",udp:true,portMode:"443",packetEncoding:"xudp"}')
         ;;
     esac
 
@@ -2481,7 +2463,7 @@ usage() {
   show|subscription|status|update-core|renew-cert|uninstall
 
 该入口固定同时发布 VLESS WebSocket TLS 与 VLESS XHTTP TLS/H2 两个 CDN 节点，并放入手动 PROXY 组。
-XHTTP 使用 stream-up 和两条 XMUX 连接；WebSocket 关闭 smux，以控制 Android 后台 CPU 与耗电。
+XHTTP 使用 stream-one 且不启用 XMUX；WebSocket 关闭 smux，以控制 Android 后台 CPU 与耗电。
 自动部署可绑定独立 Worker Custom Domain，并由 Cloudflare 自动创建橙云 DNS 与证书。
 EOF
 }

@@ -57,18 +57,10 @@ const NODE_VLESS_XHTTP_CONFIG = defineNode({
     fp: 'chrome',
     sni: 'ws.example.com',
     path: '/xhttp-change-me',
-    mode: 'stream-up',
+    mode: 'stream-one',
     ipVersion: 'dual',
     udp: true,
     packetEncoding: 'xudp',
-    scStreamUpServerSecs: '20-80',
-    xmux: {
-        maxConnections: 2,
-        cMaxReuseTimes: 0,
-        hMaxRequestTimes: '600-900',
-        hMaxReusableSecs: '1800-2400',
-        hKeepAlivePeriod: 0
-    },
     portMode: '443'
 });
 
@@ -676,13 +668,6 @@ const CLASH_VLESS_XHTTP_TLS_NODE_TEMPLATE = `  - name: {name}
       host: {host}
       path: {path}
       mode: {xhttp_mode}
-      no-grpc-header: false
-      reuse-settings:
-        max-connections: {xmux_max_connections}
-        c-max-reuse-times: {xmux_c_max_reuse_times}
-        h-max-request-times: {xmux_h_max_request_times}
-        h-max-reusable-secs: {xmux_h_max_reusable_secs}
-        h-keep-alive-period: {xmux_h_keep_alive_period}
 `;
 
 // ================= 辅助函数 =================
@@ -773,21 +758,10 @@ function createVlessLink(cfg, port) {
         params.set('path', cfg.path || '/');
         params.set('packetEncoding', cfg.packetEncoding || 'xudp');
     } else if (network === 'xhttp') {
-        const xmux = cfg.xmux || {};
         params.set('alpn', 'h2');
         params.set('host', cfg.host);
         params.set('path', cfg.path || '/');
-        params.set('mode', cfg.mode || 'stream-up');
-        params.set('extra', JSON.stringify({
-            scStreamUpServerSecs: cfg.scStreamUpServerSecs || '20-80',
-            xmux: {
-                maxConnections: xmux.maxConnections ?? 2,
-                cMaxReuseTimes: xmux.cMaxReuseTimes ?? 0,
-                hMaxRequestTimes: xmux.hMaxRequestTimes || '600-900',
-                hMaxReusableSecs: xmux.hMaxReusableSecs || '1800-2400',
-                hKeepAlivePeriod: xmux.hKeepAlivePeriod ?? 0
-            }
-        }));
+        params.set('mode', cfg.mode || 'stream-one');
         params.set('packetEncoding', cfg.packetEncoding || 'xudp');
     } else {
         throw new Error(`Unsupported VLESS network: ${network}`);
@@ -831,11 +805,6 @@ function yamlString(value) {
 }
 
 function renderClashNode(template, cfg, port) {
-    const xmux = cfg.xmux || {};
-    const keepAlivePeriod = Number(xmux.hKeepAlivePeriod ?? 0);
-    if (!Number.isInteger(keepAlivePeriod)) {
-        throw new Error(`Invalid XMUX hKeepAlivePeriod: ${xmux.hKeepAlivePeriod}`);
-    }
     const values = {
         name: yamlString(cfg.name),
         host: yamlString(cfg.host),
@@ -846,12 +815,7 @@ function renderClashNode(template, cfg, port) {
         path: yamlString(cfg.path || '/'),
         ip_version: yamlString(cfg.ipVersion || 'dual'),
         udp: String(cfg.udp !== false),
-        xhttp_mode: yamlString(cfg.mode || 'stream-up'),
-        xmux_max_connections: yamlString(xmux.maxConnections ?? 2),
-        xmux_c_max_reuse_times: yamlString(xmux.cMaxReuseTimes ?? 0),
-        xmux_h_max_request_times: yamlString(xmux.hMaxRequestTimes || '600-900'),
-        xmux_h_max_reusable_secs: yamlString(xmux.hMaxReusableSecs || '1800-2400'),
-        xmux_h_keep_alive_period: String(keepAlivePeriod)
+        xhttp_mode: yamlString(cfg.mode || 'stream-one')
     };
     return template.replace(/{([a-z_]+)}/g, (_, key) => values[key]);
 }

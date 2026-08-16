@@ -102,8 +102,10 @@ assert_contains "README documents disabled WebSocket heartbeat" "${readme}" \
     '`heartbeatPeriod: 0`'
 assert_contains "README documents disabled WebSocket multiplexing" "${readme}" \
     '`smux.enabled: false`'
-    assert_contains "README documents XHTTP XMUX sizing" "${readme}" \
-    '`max-connections: "2"`'
+assert_contains "README documents XHTTP stream-one mode" "${readme}" \
+    '`mode: stream-one`'
+assert_contains "README documents disabled XHTTP XMUX" "${readme}" \
+    '不配置 `extra` 或 XMUX'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
     "DNS only / 灰云"
 assert_contains "README documents enabling the CDN after install" "${readme}" \
@@ -293,8 +295,9 @@ assert_equal "standalone executable accepts its XHTTP profile" \
     assert_contains "XHTTP includes its path" "${links}" "path=%2Fcmcc-xhttp"
     assert_contains "WebSocket forces HTTP/1.1" "${links}" "alpn=http%2F1.1"
     assert_contains "XHTTP forces HTTP/2" "${links}" "alpn=h2"
-    assert_contains "XHTTP uses stream-up" "${links}" "mode=stream-up"
-    assert_contains "XHTTP URI carries its XMUX config" "${links}" "extra="
+    assert_contains "XHTTP uses stream-one" "${links}" "mode=stream-one"
+    [[ "${links}" != *"extra="* ]] \
+        || fail "XHTTP URI must not carry extra or XMUX settings"
     assert_equal "subscription contains exactly two links" "2" "$(wc -l <<<"${links}" | tr -d ' ')"
     [[ "${links}" != *"type=grpc"* && "${links}" != *"trojan://"* ]] \
         || fail "subscription must contain only VLESS WS and XHTTP transports"
@@ -327,10 +330,10 @@ assert_equal "standalone executable accepts its XHTTP profile" \
         || fail "Xray server must include two VLESS inbounds"
     assert_contains "Xray server includes an XHTTP inbound" "${installer}" \
         'network: "xhttp"'
-    assert_contains "Xray server uses stream-up" "${installer}" \
-        'mode: "stream-up"'
-    assert_contains "Xray server pads idle stream-up responses" "${installer}" \
-        'scStreamUpServerSecs: "20-80"'
+    assert_contains "Xray server uses stream-one" "${installer}" \
+        'mode: "stream-one"'
+    [[ "${installer}" != *"scStreamUpServerSecs"* && "${installer}" != *"xmux"* ]] \
+        || fail "Xray server must not configure XHTTP extra or XMUX"
     [[ "$(grep -Fc 'heartbeatPeriod: 0' <<<"${installer}")" == "1" ]] \
         || fail "the WebSocket inbound must disable periodic heartbeat"
     assert_contains "Nginx matches the VLESS path exactly" "${installer}" \
@@ -368,8 +371,10 @@ EOF
         'ws-opts:'
     assert_contains "Mihomo nodes use XHTTP options" "${mihomo_nodes}" \
         'xhttp-opts:'
-    assert_contains "Mihomo XHTTP uses two XMUX connections" "${mihomo_nodes}" \
-        'max-connections: "2"'
+    assert_contains "Mihomo XHTTP uses stream-one" "${mihomo_nodes}" \
+        'mode: stream-one'
+    [[ "${mihomo_nodes}" != *"reuse-settings:"* ]] \
+        || fail "Mihomo XHTTP must not configure XMUX reuse settings"
     [[ "$(grep -c 'enabled: false' <<<"${mihomo_nodes}")" == "1" ]] \
         || fail "the WebSocket node must disable smux"
     [[ "${mihomo_nodes}" != *"health-check"* ]] \

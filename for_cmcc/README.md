@@ -3,7 +3,7 @@
 `easy_cmcc` 是面向中国移动网络的独立安装器，固定同时部署以下两个 Cloudflare CDN 节点：
 
 - VLESS + WebSocket + TLS
-- VLESS + XHTTP (`stream-up`) + TLS + HTTP/2
+- VLESS + XHTTP (`stream-one`) + TLS + HTTP/2
 
 不再提供 Trojan、Reality、AnyTLS 或协议切换。两个节点共用一个 CDN 域名、TLS 证书和 VLESS UUID，但使用独立的随机路径和 Xray 本机端口。已有 v2 的 Trojan WebSocket 状态会在 `update` 时自动迁移：原路径的随机后缀会保留，但 `/trojan-` 前缀改为 `/xhttp-`；原本机端口用于新的 XHTTP 入站，认证改用现有 VLESS UUID。已经生成过 v3、但路径仍带旧前缀的状态也会在更新时自动修正。
 
@@ -26,12 +26,9 @@ Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
 - `sniffer.enable: false`
 - `log-level: error`
 - WebSocket：`smux.enabled: false`、`alpn: [http/1.1]`
-- XHTTP：`mode: stream-up`、`alpn: [h2]`
-- XHTTP XMUX：`max-connections: "2"`、`c-max-reuse-times: "0"`
-- XHTTP 连接轮换：`h-max-request-times: "600-900"`、`h-max-reusable-secs: "1800-2400"`
-- XHTTP H2 空闲保活：`h-keep-alive-period: 0`
+- XHTTP：`mode: stream-one`、`alpn: [h2]`，不配置 `extra` 或 XMUX
 
-WebSocket 入站设置 `heartbeatPeriod: 0`。XHTTP 服务端设置 `scStreamUpServerSecs: "20-80"`，让长时间无下行数据时仍有随机间隔的填充数据，避免 Cloudflare 提前回收连接；客户端只使用两条 XMUX 连接，并让底层实现采用默认 H2 keepalive。Nginx 按 Xray 官方方案通过 `grpc_pass` 回源。系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这组参数偏向上海移动到 Cloudflare 边缘、再回源 RackNerd DC2 的高时延链路，避免连接数过多，同时允许连接定期轮换。
+WebSocket 入站设置 `heartbeatPeriod: 0`。XHTTP 使用精简的 `stream-one` 双向流，不下发 `extra`、XMUX 或连接复用参数；Nginx 仍通过 `grpc_pass` 回源，以匹配 HTTP/2 传输。系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这组配置减少额外复用层与连接调度，适用于上海移动经 Cloudflare 边缘回源 RackNerd DC2 的场景。
 
 ## 准备清单
 
@@ -48,7 +45,7 @@ WebSocket 入站设置 `heartbeatPeriod: 0`。XHTTP 服务端设置 `scStreamUpS
 - VPS 公网 IPv4；只有确认 VPS IPv6 可用时才添加 AAAA。
 - 已接入 Cloudflare 的 Active Zone。
 - Cloudflare DNS API Token；自动部署 Worker 时还需要 Account ID 和 Worker API Token。
-- 支持 VLESS XHTTP 的近期 Mihomo 客户端；XMUX 订阅字段至少需要 Mihomo v1.19.23。
+- 支持 VLESS XHTTP 的近期 Mihomo 客户端。
 
 脚本会升级系统包、安装 XanMod LTS、启用 BBR、管理 root 定时重启任务，并接管 `/etc/nftables.conf`。它适合专用 VPS，不应与根目录 `easy_all` 在同一台机器同时安装。
 
@@ -153,9 +150,9 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 ## 故障排查
 
 - 两个节点都连接失败：确认节点域名已经橙云、SSL/TLS 为 Full (Strict)、证书域名与 SNI 一致。
-- XHTTP 返回 403 或超时：确认 Cloudflare Network 的 HTTP/2 和 gRPC 已开启，客户端版本支持 XHTTP/XMUX，订阅中的 `alpn` 只有 `h2`。
+- XHTTP 返回 403 或超时：确认 Cloudflare Network 的 HTTP/2 和 gRPC 已开启，客户端版本支持 XHTTP，订阅中的 `mode` 为 `stream-one` 且 `alpn` 只有 `h2`。
 - 只有一个节点失败：核对该节点订阅路径与 `VLESS_WS_PATH` 或 `XHTTP_PATH` 是否一致，确认客户端没有合并旧配置。
-- Android 仍耗电：确认 `AUTO` 的周期测速是否符合预期；WebSocket 的 smux 已关闭，XHTTP 只保留两条 XMUX 连接，且不存在 provider 健康检查。
+- Android 仍耗电：确认 `AUTO` 的周期测速是否符合预期；WebSocket 的 smux 已关闭，XHTTP 未启用 XMUX，且不存在 provider 健康检查。
 - YouTube 慢：确认最终配置保留 UDP/443 拒绝规则，使浏览器回退到 TCP；同时测试不同 Cloudflare 边缘与 VPS 回源线路。
 - Worker 自动部署失败：查看 `/etc/easy_cmcc/last-worker-deploy.log`，或执行 `easy_cmcc update-sub` 改用手动输出。
 

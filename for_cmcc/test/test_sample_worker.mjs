@@ -256,18 +256,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[1], /type=xhttp/);
     assert.match(links[1], /alpn=h2/);
     assert.match(links[1], /path=%2Fxhttp-change-me/);
-    assert.match(links[1], /mode=stream-up/);
-    assert.match(links[1], /extra=/);
+    assert.match(links[1], /mode=stream-one/);
+    assert.equal(new URL(links[1]).searchParams.has('extra'), false);
     assert.match(links[1], /#VLESS_XHTTP_H2$/);
-    const xhttpExtra = JSON.parse(new URL(links[1]).searchParams.get('extra'));
-    assert.equal(xhttpExtra.scStreamUpServerSecs, '20-80');
-    assert.deepEqual(xhttpExtra.xmux, {
-      maxConnections: 2,
-      cMaxReuseTimes: 0,
-      hMaxRequestTimes: '600-900',
-      hMaxReusableSecs: '1800-2400',
-      hKeepAlivePeriod: 0
-    });
     assert.doesNotMatch(links.join('\n'), /type=grpc|trojan|reality|anytls/i);
   });
 
@@ -309,7 +300,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[1], /type=xhttp/);
     assert.match(links[1], /alpn=h2/);
     assert.match(links[1], /path=%2Fxhttp-change-me/);
-    assert.match(links[1], /mode=stream-up/);
+    assert.match(links[1], /mode=stream-one/);
+    assert.equal(new URL(links[1]).searchParams.has('extra'), false);
     assert.match(links[1], /packetEncoding=xudp/);
     assert.match(links[1], /#VLESS_XHTTP_H2$/);
     assert.doesNotMatch(body, /type=grpc|trojan|reality|anytls/i);
@@ -334,13 +326,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal((body.match(/network: xhttp/g) || []).length, 1);
     assert.match(body, /path: "\/vless-change-me"/);
     assert.match(body, /path: "\/xhttp-change-me"/);
-    assert.match(body, /mode: "stream-up"/);
+    assert.match(body, /mode: "stream-one"/);
     assert.match(body, /alpn:\n      - h2/);
-    assert.match(body, /max-connections: "2"/);
-    assert.match(body, /c-max-reuse-times: "0"/);
-    assert.match(body, /h-max-request-times: "600-900"/);
-    assert.match(body, /h-max-reusable-secs: "1800-2400"/);
-    assert.match(body, /h-keep-alive-period: 0/);
+    assert.doesNotMatch(body, /reuse-settings:|max-connections:|c-max-reuse-times:|h-max-request-times:|h-max-reusable-secs:|h-keep-alive-period:/);
     assert.doesNotMatch(body, /network: grpc|type: trojan/);
     assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
@@ -557,7 +545,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
 
     assert.equal((body.match(/smux:\n      enabled: false/g) || []).length, 1);
-    assert.match(body, /reuse-settings:\n        max-connections: "2"/);
+    assert.doesNotMatch(body, /reuse-settings:/);
     assert.match(proxyGroups, /- name: AUTO\n      type: url-test\n      url: 'https:\/\/www\.gstatic\.com\/generate_204'/);
     assert.doesNotMatch(body, /flow: xtls-rprx-vision/);
     assert.doesNotMatch(body, /reality|anytls/i);
