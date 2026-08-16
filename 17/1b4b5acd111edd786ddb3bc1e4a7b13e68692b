@@ -1,0 +1,29 @@
+for_cmcc/README.md
+  s_8975c3f620d455::t_ecab12d1f0e76d 6,29,31,48,153,155
+for_cmcc/easy_cmcc
+  s_8975c3f620d455::t_364f84dcd2401e 1034,1199,1201,1227,1443,2466
+for_cmcc/sample-worker.js
+  s_8975c3f620d455::t_d64e8ba1439119 60,764,818
+for_cmcc/test/test_easy_cmcc.sh
+  s_8975c3f620d455::t_ae3916b138b8b6 105-108,298-300,333-336,374-377
+for_cmcc/test/test_sample_worker.mjs
+  s_8975c3f620d455::t_6afb95a29b91ac 259-260,303-304,329,331,548
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "171b4b5acd111edd786ddb3bc1e4a7b13e68692b",
+  "prompts": {},
+  "sessions": {
+    "s_8975c3f620d455": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a005f8-8311-7081-bae9-2af93bbd0f92",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
