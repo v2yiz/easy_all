@@ -59,7 +59,7 @@ const NODE_VLESS_XHTTP_CONFIG = defineNode({
     fp: 'chrome',
     sni: 'ws.example.com',
     path: '/xhttp-change-me',
-    mode: 'stream-one',
+    mode: 'auto',
     ipVersion: 'dual',
     udp: true,
     packetEncoding: 'xudp',
@@ -789,7 +789,7 @@ function createVlessLink(cfg, port) {
         params.set('alpn', 'h2');
         params.set('host', cfg.host);
         params.set('path', cfg.path || '/');
-        params.set('mode', cfg.mode || 'stream-one');
+        params.set('mode', cfg.mode || 'auto');
         params.set('packetEncoding', cfg.packetEncoding || 'xudp');
     } else {
         throw new Error(`Unsupported VLESS network: ${network}`);
@@ -843,7 +843,7 @@ function renderClashNode(template, cfg, port) {
         path: yamlString(cfg.path || '/'),
         ip_version: yamlString(cfg.ipVersion || 'dual'),
         udp: String(cfg.udp !== false),
-        xhttp_mode: yamlString(cfg.mode || 'stream-one'),
+        xhttp_mode: yamlString(cfg.mode || 'auto'),
         ws_early_data_config: webSocketEarlyDataConfig(cfg)
     };
     return template.replace(/{([a-z_]+)}/g, (_, key) => values[key]);

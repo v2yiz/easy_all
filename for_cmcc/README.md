@@ -3,7 +3,7 @@
 `easy_cmcc` 是面向中国移动网络的独立安装器，固定同时部署以下两个 Cloudflare CDN 节点：
 
 - VLESS + WebSocket + TLS
-- VLESS + XHTTP (`stream-one`) + TLS + HTTP/2
+- VLESS + XHTTP (`auto`) + TLS + HTTP/2
 
 不再提供 Trojan、Reality、AnyTLS 或协议切换。两个节点共用一个 CDN 域名、TLS 证书和 VLESS UUID，但使用独立的随机路径和 Xray 本机端口。已有 v2 的 Trojan WebSocket 状态会在 `update` 时自动迁移：原路径的随机后缀会保留，但 `/trojan-` 前缀改为 `/xhttp-`；原本机端口用于新的 XHTTP 入站，认证改用现有 VLESS UUID。已经生成过 v3、但路径仍带旧前缀的状态也会在更新时自动修正。
 
@@ -26,9 +26,9 @@ Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
 - `sniffer.enable: false`
 - `log-level: error`
 - WebSocket：`max-early-data: 2560`、`early-data-header-name: Sec-WebSocket-Protocol`、`ip-version: ipv4`、`smux.enabled: false`、`alpn: [http/1.1]`
-- XHTTP：`mode: stream-one`、`alpn: [h2]`，不配置 `extra` 或 XMUX
+- XHTTP：`mode: auto`、`alpn: [h2]`，不配置 `extra` 或 XMUX
 
-WebSocket 入站设置 `heartbeatPeriod: 0`。Early Data 是客户端功能：通用订阅在 WS 路径追加 `?ed=2560`，Mihomo 订阅下发对应的 `max-early-data` 和 `Sec-WebSocket-Protocol` 请求头，服务端和 Nginx 仍匹配不带查询参数的原始路径。XHTTP 使用精简的 `stream-one` 双向流，不下发 `extra`、XMUX 或连接复用参数；Nginx 仍通过 `grpc_pass` 回源，以匹配 HTTP/2 传输。系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这组配置减少额外复用层与连接调度，适用于上海移动经 Cloudflare 边缘回源 RackNerd DC2 的场景。
+WebSocket 入站设置 `heartbeatPeriod: 0`。Early Data 是客户端功能：通用订阅在 WS 路径追加 `?ed=2560`，Mihomo 订阅下发对应的 `max-early-data` 和 `Sec-WebSocket-Protocol` 请求头，服务端和 Nginx 仍匹配不带查询参数的原始路径。XHTTP 使用 `auto` 模式，不下发 `extra`、XMUX 或连接复用参数；Nginx 仍通过 `grpc_pass` 回源，以匹配 HTTP/2 传输。系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这组配置减少额外复用层与连接调度，适用于上海移动经 Cloudflare 边缘回源 RackNerd DC2 的场景。
 
 ## 准备清单
 
@@ -150,7 +150,7 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 ## 故障排查
 
 - 两个节点都连接失败：确认节点域名已经橙云、SSL/TLS 为 Full (Strict)、证书域名与 SNI 一致。
-- XHTTP 返回 403 或超时：确认 Cloudflare Network 的 HTTP/2 和 gRPC 已开启，客户端版本支持 XHTTP，订阅中的 `mode` 为 `stream-one` 且 `alpn` 只有 `h2`。
+- XHTTP 返回 403 或超时：确认 Cloudflare Network 的 HTTP/2 和 gRPC 已开启，客户端版本支持 XHTTP，订阅中的 `mode` 为 `auto` 且 `alpn` 只有 `h2`。
 - 只有一个节点失败：核对该节点订阅路径与 `VLESS_WS_PATH` 或 `XHTTP_PATH` 是否一致，确认客户端没有合并旧配置。
 - Android 仍耗电：确认 `AUTO` 的周期测速是否符合预期；WebSocket 的 smux 已关闭，XHTTP 未启用 XMUX，且不存在 provider 健康检查。
 - YouTube 慢：确认最终配置保留 UDP/443 拒绝规则，使浏览器回退到 TCP；同时测试不同 Cloudflare 边缘与 VPS 回源线路。

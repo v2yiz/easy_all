@@ -252,7 +252,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[1], /type=xhttp/);
     assert.match(links[1], /alpn=h2/);
     assert.match(links[1], /path=%2Fxhttp-change-me/);
-    assert.match(links[1], /mode=stream-one/);
+    assert.match(links[1], /mode=auto/);
     assert.equal(new URL(links[1]).searchParams.has('extra'), false);
     assert.match(links[1], /#VLESS_XHTTP_H2$/);
     assert.doesNotMatch(links.join('\n'), /type=grpc|trojan|reality|anytls/i);
@@ -296,7 +296,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[1], /type=xhttp/);
     assert.match(links[1], /alpn=h2/);
     assert.match(links[1], /path=%2Fxhttp-change-me/);
-    assert.match(links[1], /mode=stream-one/);
+    assert.match(links[1], /mode=auto/);
     assert.equal(new URL(links[1]).searchParams.has('extra'), false);
     assert.match(links[1], /packetEncoding=xudp/);
     assert.match(links[1], /#VLESS_XHTTP_H2$/);
@@ -325,7 +325,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /early-data-header-name: "Sec-WebSocket-Protocol"/);
     assert.match(body, /ip-version: "ipv4"/);
     assert.match(body, /path: "\/xhttp-change-me"/);
-    assert.match(body, /mode: "stream-one"/);
+    assert.match(body, /mode: "auto"/);
     assert.match(body, /alpn:\n      - h2/);
     assert.doesNotMatch(body, /reuse-settings:|max-connections:|c-max-reuse-times:|h-max-request-times:|h-max-reusable-secs:|h-keep-alive-period:/);
     assert.doesNotMatch(body, /network: grpc|type: trojan/);

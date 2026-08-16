@@ -106,8 +106,8 @@ assert_contains "README documents WebSocket Early Data" "${readme}" \
     '`max-early-data: 2560`'
 assert_contains "README documents the IPv4-only WebSocket node" "${readme}" \
     '`ip-version: ipv4`'
-assert_contains "README documents XHTTP stream-one mode" "${readme}" \
-    '`mode: stream-one`'
+assert_contains "README documents XHTTP auto mode" "${readme}" \
+    '`mode: auto`'
 assert_contains "README documents disabled XHTTP XMUX" "${readme}" \
     '不配置 `extra` 或 XMUX'
 assert_contains "README documents the DNS-only precondition" "${readme}" \
@@ -300,7 +300,7 @@ assert_equal "standalone executable accepts its XHTTP profile" \
     assert_contains "XHTTP includes its path" "${links}" "path=%2Fcmcc-xhttp"
     assert_contains "WebSocket forces HTTP/1.1" "${links}" "alpn=http%2F1.1"
     assert_contains "XHTTP forces HTTP/2" "${links}" "alpn=h2"
-    assert_contains "XHTTP uses stream-one" "${links}" "mode=stream-one"
+    assert_contains "XHTTP uses auto mode" "${links}" "mode=auto"
     [[ "${links}" != *"extra="* ]] \
         || fail "XHTTP URI must not carry extra or XMUX settings"
     assert_equal "subscription contains exactly two links" "2" "$(wc -l <<<"${links}" | tr -d ' ')"
@@ -341,8 +341,8 @@ assert_equal "standalone executable accepts its XHTTP profile" \
         || fail "Xray server must include two VLESS inbounds"
     assert_contains "Xray server includes an XHTTP inbound" "${installer}" \
         'network: "xhttp"'
-    assert_contains "Xray server uses stream-one" "${installer}" \
-        'mode: "stream-one"'
+    assert_contains "Xray server uses auto mode" "${installer}" \
+        'mode: "auto"'
     [[ "${installer}" != *"scStreamUpServerSecs"* && "${installer}" != *"xmux"* ]] \
         || fail "Xray server must not configure XHTTP extra or XMUX"
     [[ "$(grep -Fc 'heartbeatPeriod: 0' <<<"${installer}")" == "1" ]] \
@@ -389,8 +389,8 @@ EOF
         'ws-opts:'
     assert_contains "Mihomo nodes use XHTTP options" "${mihomo_nodes}" \
         'xhttp-opts:'
-    assert_contains "Mihomo XHTTP uses stream-one" "${mihomo_nodes}" \
-        'mode: stream-one'
+    assert_contains "Mihomo XHTTP uses auto mode" "${mihomo_nodes}" \
+        'mode: auto'
     [[ "${mihomo_nodes}" != *"reuse-settings:"* ]] \
         || fail "Mihomo XHTTP must not configure XMUX reuse settings"
     [[ "$(grep -c 'enabled: false' <<<"${mihomo_nodes}")" == "1" ]] \
