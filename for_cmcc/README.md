@@ -3,14 +3,14 @@
 `easy_cmcc` 是面向中国移动网络的独立安装器，固定同时部署以下两个 Cloudflare CDN 节点：
 
 - VLESS + WebSocket + TLS
-- Trojan + WebSocket + TLS
+- VLESS + XHTTP (`stream-up`) + TLS + HTTP/2
 
-不再提供 gRPC、Reality、AnyTLS、XHTTP 或协议切换，也不迁移旧协议状态。两个节点共用一个 CDN 域名和 TLS 证书，但使用独立的随机 WebSocket 路径、认证信息和 Xray 本机端口。
+不再提供 Trojan、Reality、AnyTLS 或协议切换。两个节点共用一个 CDN 域名、TLS 证书和 VLESS UUID，但使用独立的随机路径和 Xray 本机端口。已有 v2 的 Trojan WebSocket 状态会在 `update` 时自动迁移：原 Trojan 路径和本机端口直接用于新的 XHTTP 入站，认证改用现有 VLESS UUID。
 
 ```text
 Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
                                                |-> VLESS WS  -> Xray 127.0.0.1:10085
-                                               `-> Trojan WS -> Xray 127.0.0.1:10086
+                                               `-> VLESS XHTTP/H2 -> Xray 127.0.0.1:10086
 ```
 
 ## 省电与性能取舍
@@ -25,10 +25,13 @@ Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
 - `find-process-mode: off`
 - `sniffer.enable: false`
 - `log-level: error`
-- `smux.enabled: false`
-- `alpn: [http/1.1]`
+- WebSocket：`smux.enabled: false`、`alpn: [http/1.1]`
+- XHTTP：`mode: stream-up`、`alpn: [h2]`
+- XHTTP XMUX：`max-connections: "2"`、`c-max-reuse-times: "0"`
+- XHTTP 连接轮换：`h-max-request-times: "600-900"`、`h-max-reusable-secs: "1800-2400"`
+- XHTTP H2 空闲保活：`h-keep-alive-period: 0`
 
-Xray 的两个入站均设置 `heartbeatPeriod: 0`，不主动发送 WebSocket Ping。服务端使用同一个 Xray 进程，Nginx 关闭代理缓冲和请求缓冲，并保留一小时读写超时；系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这里刻意不启用 smux 和额外心跳；`AUTO` 的测速会带来少量后台网络活动，实际速度仍取决于中国移动到 Cloudflare 边缘、Cloudflare 回源和 VPS 线路。
+WebSocket 入站设置 `heartbeatPeriod: 0`。XHTTP 服务端设置 `scStreamUpServerSecs: "20-80"`，让长时间无下行数据时仍有随机间隔的填充数据，避免 Cloudflare 提前回收连接；客户端只使用两条 XMUX 连接，并让底层实现采用默认 H2 keepalive。Nginx 按 Xray 官方方案通过 `grpc_pass` 回源。系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这组参数偏向上海移动到 Cloudflare 边缘、再回源 RackNerd DC2 的高时延链路，避免连接数过多，同时允许连接定期轮换。
 
 ## 准备清单
 
@@ -36,7 +39,7 @@ Xray 的两个入站均设置 `heartbeatPeriod: 0`，不主动发送 WebSocket P
 
 | 域名 | 用途 | 安装前 | 安装后 |
 |---|---|---|---|
-| `node.example.com` | 两个 WebSocket 节点入口 | A 指向 VPS，保持 DNS only / 灰云 | 本机验收后切为 Proxied / 橙云 |
+| `node.example.com` | WS 与 XHTTP 节点入口 | A 指向 VPS，保持 DNS only / 灰云 | 本机验收后切为 Proxied / 橙云 |
 | `sub.example.com` | Worker 订阅入口 | 使用没有现有记录的新主机名 | 自动部署时由 Worker Custom Domain 创建 |
 
 还需要：
@@ -45,7 +48,7 @@ Xray 的两个入站均设置 `heartbeatPeriod: 0`，不主动发送 WebSocket P
 - VPS 公网 IPv4；只有确认 VPS IPv6 可用时才添加 AAAA。
 - 已接入 Cloudflare 的 Active Zone。
 - Cloudflare DNS API Token；自动部署 Worker 时还需要 Account ID 和 Worker API Token。
-- 支持 VLESS/Trojan WebSocket TLS 的近期 Mihomo / Clash Meta 客户端。
+- 支持 VLESS XHTTP 的近期 Mihomo 客户端；XMUX 订阅字段至少需要 Mihomo v1.19.23。
 
 脚本会升级系统包、安装 XanMod LTS、启用 BBR、管理 root 定时重启任务，并接管 `/etc/nftables.conf`。它适合专用 VPS，不应与根目录 `easy_all` 在同一台机器同时安装。
 
@@ -61,7 +64,7 @@ wget -qO /root/easy_cmcc.new \
   && /root/easy_cmcc install
 ```
 
-协议固定为双 WebSocket，不再询问协议。为兼顾自动执行与用户自选，交互安装仍保留以下菜单与输入：
+协议固定为 VLESS WS + VLESS XHTTP/H2，不再询问协议。为兼顾自动执行与用户自选，交互安装仍保留以下菜单与输入：
 
 | 交互项 | 推荐选择 |
 |---|---|
@@ -76,13 +79,13 @@ wget -qO /root/easy_cmcc.new \
 | Mihomo 下载文件名 | 默认 `EASY_CMCC`，不含 `.yaml` |
 | Account ID / Worker Token | 自动部署时填写 |
 
-可以通过环境变量减少交互，例如 `VLESS_CDN_DOMAIN`、`VLESS_WS_PATH`、`TROJAN_WS_PATH`、`VLESS_UUID`、`TROJAN_PASSWORD`、`CF_DNS_API_TOKEN`、`CF_PROXY_MODE=auto|manual`、`ALLOWED_TOKENS`、`CF_ACCOUNT_ID` 和 `CF_WORKER_API_TOKEN`。未指定的路径、UUID 和 Trojan 密码会自动随机生成。
+可以通过环境变量减少交互，例如 `VLESS_CDN_DOMAIN`、`VLESS_WS_PATH`、`XHTTP_PATH`、`VLESS_UUID`、`CF_DNS_API_TOKEN`、`CF_PROXY_MODE=auto|manual`、`ALLOWED_TOKENS`、`CF_ACCOUNT_ID` 和 `CF_WORKER_API_TOKEN`。未指定的路径和 UUID 会自动随机生成。
 
 安装完成并通过本机验收后：
 
 1. 默认情况下脚本已把节点域名的 A、AAAA 一起切为橙云；若选择手动模式，请自行切换。
 2. Cloudflare SSL/TLS 使用 Full (Strict)。
-3. 确认 Network → WebSockets 已开启；具备权限时脚本会自动开启 WebSockets。
+3. 确认 Network → WebSockets、HTTP/2、gRPC 均已开启；具备 Zone Settings 编辑权限时脚本会自动开启。
 4. 执行 `easy_cmcc status` 和 `easy_cmcc subscription`。
 5. 将 Clash Meta 订阅导入 FLClash、Clash Verge 或其他 Mihomo 客户端，在 `PROXY` 中手动选择节点。
 
@@ -103,14 +106,22 @@ easy_cmcc uninstall
 
 - `show`：同时显示两个节点链接和 Mihomo 节点片段。
 - `subscription`：显示两个节点与 Worker 订阅地址。
-- `status`：显示域名、两个 WebSocket 路径、Xray/Nginx 和 TCP 443 状态。
+- `status`：显示域名、WebSocket/XHTTP 路径、Xray/Nginx 和 TCP 443 状态。
 - `update`：重新应用省电参数并刷新 Xray、Nginx 和 Worker。
 - `update-sub`：重新选择订阅部署方式并刷新订阅。
 - `update-core`：更新 Xray，验收失败时恢复旧版本。
 - `renew-cert`：强制续期证书并重载 Nginx。
 - `uninstall`：删除本机服务、状态、证书、命令和备份，不删除远端 Worker。
 
-`switch` 不可用。状态格式已经升级为 v2；旧 gRPC 或其他协议安装不做兼容迁移，请先卸载旧安装，再用当前脚本安装。
+`switch` 不可用。状态格式已经升级为 v3；当前脚本会把本项目的 v2（VLESS WS + Trojan WS）状态迁移为 v3。其他旧协议安装不做兼容迁移。
+
+从 v2 升级时，建议给这一次更新传入 Zone Token，让脚本同时打开 Cloudflare gRPC 与 HTTP/2：
+
+```bash
+CF_DNS_API_TOKEN='你的 Zone Token' easy_cmcc update
+```
+
+如果不传 Token，服务端与订阅仍会完成迁移，但必须先在 Cloudflare 控制台手动打开这两个 Network 开关，否则 XHTTP 会返回 403 或表现为超时。
 
 ## Cloudflare 权限
 
@@ -118,7 +129,7 @@ easy_cmcc uninstall
 
 - Zone → DNS → Edit：acme.sh DNS-01 和自动切换橙云。
 - Zone → Zone → Read：查询 Zone ID。
-- Zone → Zone Settings → Edit：自动开启 WebSockets。
+- Zone → Zone Settings → Edit：自动开启 WebSockets、HTTP/2 和 gRPC。
 
 自动部署 Worker 还需要：
 
@@ -135,15 +146,16 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 2. 输出完整 Worker 源码供手动部署。
 3. 只显示节点链接，不生成 Worker，也不询问 Token。
 
-通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `TROJAN_WS`。二者同时进入 `AUTO` 和 `PROXY`：默认 `PROXY → AUTO` 自动选择，也可在客户端菜单中改为任一节点。
+通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `VLESS_XHTTP_H2`。二者同时进入 `AUTO` 和 `PROXY`：默认 `PROXY → AUTO` 自动选择，也可在客户端菜单中改为任一节点。
 
 局域网 IPv4/IPv6 地址绕过 TUN，国内常用服务直连，其余规则进入 `PROXY`。下发的 TUN 使用 `stack: system`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。国内 DNS 使用阿里与腾讯两家独立 DoH（`dns.alidns.com`、`doh.pub`），阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；已确认的境外域名则经 `PROXY` 使用境外 DoH。YouTube 与 `googlevideo.com` 的 UDP/443 会先被拒绝，让客户端快速回退到 TCP，避免 WebSocket/TCP 外再叠加 QUIC 重传。节点使用 `ip-version: dual`，顶层 `ipv6: true`，但应用 DNS 保持 `ipv6: false`，兼顾中国移动蜂窝 IPv6 与不完整 IPv6 网络。
 
 ## 故障排查
 
-- 两个节点都连接失败：确认节点域名已经橙云、SSL/TLS 为 Full (Strict)、Cloudflare WebSockets 已开启、证书域名与 SNI 一致。
-- 只有一个节点失败：核对该节点订阅路径与 `VLESS_WS_PATH` 或 `TROJAN_WS_PATH` 是否一致，确认客户端没有合并旧配置。
-- Android 仍耗电：确认 `AUTO` 的周期测速是否符合预期；两个节点均为 `smux.enabled: false`，且不存在 provider 健康检查。
+- 两个节点都连接失败：确认节点域名已经橙云、SSL/TLS 为 Full (Strict)、证书域名与 SNI 一致。
+- XHTTP 返回 403 或超时：确认 Cloudflare Network 的 HTTP/2 和 gRPC 已开启，客户端版本支持 XHTTP/XMUX，订阅中的 `alpn` 只有 `h2`。
+- 只有一个节点失败：核对该节点订阅路径与 `VLESS_WS_PATH` 或 `XHTTP_PATH` 是否一致，确认客户端没有合并旧配置。
+- Android 仍耗电：确认 `AUTO` 的周期测速是否符合预期；WebSocket 的 smux 已关闭，XHTTP 只保留两条 XMUX 连接，且不存在 provider 健康检查。
 - YouTube 慢：确认最终配置保留 UDP/443 拒绝规则，使浏览器回退到 TCP；同时测试不同 Cloudflare 边缘与 VPS 回源线路。
 - Worker 自动部署失败：查看 `/etc/easy_cmcc/last-worker-deploy.log`，或执行 `easy_cmcc update-sub` 改用手动输出。
 

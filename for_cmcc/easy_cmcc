@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Standalone CMCC installer for VLESS WebSocket and Trojan WebSocket over Cloudflare CDN.
+# Standalone CMCC installer for VLESS WebSocket and VLESS XHTTP/H2 over Cloudflare CDN.
 
 set -Eeuo pipefail
 umask 077
@@ -39,12 +39,12 @@ readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly XANMOD_KEYRING="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
 readonly XANMOD_REPO="/etc/apt/sources.list.d/xanmod-release.list"
 readonly DEFAULT_XRAY_VLESS_LOOPBACK_PORT="10085"
-readonly DEFAULT_XRAY_TROJAN_LOOPBACK_PORT="10086"
+readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly PORT_BASE="10000"
 readonly PORT_MULTIPLIER="6"
 readonly DEFAULT_VLESS_NODE_NAME="VLESS_WS"
-readonly DEFAULT_TROJAN_NODE_NAME="TROJAN_WS"
+readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
 readonly DEFAULT_WORKER_NAME="easy-cmcc"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_CMCC"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js"
@@ -53,7 +53,8 @@ readonly CRON_REBOOT_MARKER="# easy_cmcc-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="2"
+readonly STATE_SCHEMA_VERSION="3"
+readonly LEGACY_STATE_SCHEMA_VERSION="2"
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -235,7 +236,7 @@ generate_ws_path() {
 }
 
 is_cdn_protocol() {
-    [[ "$1" == "dual-ws" ]]
+    [[ "$1" == "vless-ws-xhttp" ]]
 }
 
 generate_secret() {
@@ -493,27 +494,37 @@ print_dns_proxy_postinstall_notice() {
         alert "请把节点 A、AAAA 记录一起从 DNS only / 灰云切换为 Proxied / 橙云。"
     fi
     alert "Cloudflare SSL/TLS 模式请使用 Full 或 Full (Strict)，推荐 Full (Strict)；不要使用 Flexible。"
-    alert "Cloudflare Network 中必须开启 WebSockets。"
-    alert "如果 CF_DNS_API_TOKEN 没有 Zone Settings 编辑权限，请在控制台手动开启 WebSockets。"
+    alert "Cloudflare Network 中必须同时开启 WebSockets、HTTP/2 和 gRPC。"
+    alert "如果 CF_DNS_API_TOKEN 没有 Zone Settings 编辑权限，请在控制台手动开启这些开关。"
 }
 
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_cmcc 状态文件不存在：${STATE_FILE}"
-    unset STATE_VERSION VLESS_CDN_DOMAIN VLESS_WS_PATH TROJAN_WS_PATH \
-        XRAY_VLESS_LOOPBACK_PORT XRAY_TROJAN_LOOPBACK_PORT \
+    unset STATE_VERSION VLESS_CDN_DOMAIN VLESS_WS_PATH XHTTP_PATH TROJAN_WS_PATH \
+        XRAY_VLESS_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT XRAY_TROJAN_LOOPBACK_PORT \
         WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" \
+        || "${STATE_VERSION:-}" == "${LEGACY_STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 easy_cmcc 状态版本：${STATE_VERSION:-缺失}"
 }
 
+migrate_legacy_state() {
+    local loaded_state_version=$1
+    [[ "${loaded_state_version}" == "${LEGACY_STATE_SCHEMA_VERSION}" ]] || return 0
+    PROTOCOL="vless-ws-xhttp"
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
+    XHTTP_PATH=${XHTTP_PATH:-${TROJAN_WS_PATH:-}}
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${XRAY_TROJAN_LOOPBACK_PORT:-}}
+}
+
 load_state() {
-    local variable env_name
+    local variable env_name loaded_state_version=""
     local -a variables=(
-        PROTOCOL VLESS_NODE_NAME TROJAN_NODE_NAME VLESS_UUID TROJAN_PASSWORD
-        VLESS_CDN_DOMAIN VLESS_WS_PATH TROJAN_WS_PATH
-        XRAY_VLESS_LOOPBACK_PORT XRAY_TROJAN_LOOPBACK_PORT
+        PROTOCOL VLESS_NODE_NAME XHTTP_NODE_NAME VLESS_UUID
+        VLESS_CDN_DOMAIN VLESS_WS_PATH XHTTP_PATH
+        XRAY_VLESS_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT
         SUB_PORT_MODE ALLOWED_TOKENS
         WORKER_NAME WORKER_URL WORKER_DEV_URL WORKER_CUSTOM_DOMAIN
         CF_ACCOUNT_ID DEPLOY_MODE SUB_DOWNLOAD_NAME CF_PROXY_MODE
@@ -526,6 +537,7 @@ load_state() {
     done
     if [[ -f "${STATE_FILE}" ]]; then
         source_state_file
+        loaded_state_version=${STATE_VERSION}
     fi
     for variable in "${variables[@]}"; do
         env_name="EASY_CMCC_ENV_${variable}"
@@ -534,8 +546,9 @@ load_state() {
         fi
         unset "${env_name}"
     done
+    migrate_legacy_state "${loaded_state_version}"
     XRAY_VLESS_LOOPBACK_PORT=${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}
-    XRAY_TROJAN_LOOPBACK_PORT=${XRAY_TROJAN_LOOPBACK_PORT:-${DEFAULT_XRAY_TROJAN_LOOPBACK_PORT}}
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     if [[ -z "${WORKER_DEV_URL:-}" && "${WORKER_URL:-}" == https://*.workers.dev ]]; then
         WORKER_DEV_URL=${WORKER_URL}
@@ -563,14 +576,13 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'VLESS_NODE_NAME=%q\n' "${VLESS_NODE_NAME}"
-        printf 'TROJAN_NODE_NAME=%q\n' "${TROJAN_NODE_NAME}"
+        printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID:-}"
-        printf 'TROJAN_PASSWORD=%q\n' "${TROJAN_PASSWORD:-}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN:-}"
         printf 'VLESS_WS_PATH=%q\n' "${VLESS_WS_PATH:-}"
-        printf 'TROJAN_WS_PATH=%q\n' "${TROJAN_WS_PATH:-}"
+        printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH:-}"
         printf 'XRAY_VLESS_LOOPBACK_PORT=%q\n' "${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}"
-        printf 'XRAY_TROJAN_LOOPBACK_PORT=%q\n' "${XRAY_TROJAN_LOOPBACK_PORT:-${DEFAULT_XRAY_TROJAN_LOOPBACK_PORT}}"
+        printf 'XRAY_XHTTP_LOOPBACK_PORT=%q\n' "${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-443}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'WORKER_NAME=%q\n' "${WORKER_NAME:-${DEFAULT_WORKER_NAME}}"
@@ -589,17 +601,17 @@ save_state() {
 }
 
 validate_protocol() {
-    [[ "$1" == "dual-ws" ]]
+    [[ "$1" == "vless-ws-xhttp" ]]
 }
 
 choose_protocol() {
     local requested=${1:-${PROTOCOL:-}}
-    requested=${requested:-dual-ws}
+    requested=${requested:-vless-ws-xhttp}
     case "${requested}" in
-    1 | dual-ws | ws) PROTOCOL="dual-ws" ;;
-    *) die "easy_cmcc 只同时部署 VLESS WebSocket TLS 与 Trojan WebSocket TLS" ;;
+    1 | vless-ws-xhttp | xhttp) PROTOCOL="vless-ws-xhttp" ;;
+    *) die "easy_cmcc 只同时部署 VLESS WebSocket TLS 与 VLESS XHTTP TLS/H2" ;;
     esac
-    info "easy_cmcc 将同时部署 VLESS WebSocket TLS 与 Trojan WebSocket TLS。"
+    info "easy_cmcc 将同时部署 VLESS WebSocket TLS 与 VLESS XHTTP TLS/H2。"
 }
 
 validate_loopback_port() {
@@ -609,27 +621,24 @@ validate_loopback_port() {
 collect_install_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
     VLESS_NODE_NAME=${VLESS_NODE_NAME:-${DEFAULT_VLESS_NODE_NAME}}
-    TROJAN_NODE_NAME=${TROJAN_NODE_NAME:-${DEFAULT_TROJAN_NODE_NAME}}
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
-    TROJAN_PASSWORD=${TROJAN_PASSWORD:-$(generate_secret)}
-    [[ ${#TROJAN_PASSWORD} -ge 16 && ${#TROJAN_PASSWORD} -le 128 ]] \
-        || die "TROJAN_PASSWORD 长度必须是 16-128 字符"
     VLESS_CDN_DOMAIN=${VLESS_CDN_DOMAIN:-$(prompt_value "Cloudflare CDN 域名（安装前必须灰云）" "")}
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "Cloudflare CDN 域名无效：${VLESS_CDN_DOMAIN}"
     VLESS_WS_PATH=${VLESS_WS_PATH:-$(generate_ws_path vless)}
-    TROJAN_WS_PATH=${TROJAN_WS_PATH:-$(generate_ws_path trojan)}
+    XHTTP_PATH=${XHTTP_PATH:-$(generate_ws_path xhttp)}
     validate_ws_path "${VLESS_WS_PATH}" || die "VLESS_WS_PATH 无效：${VLESS_WS_PATH}"
-    validate_ws_path "${TROJAN_WS_PATH}" || die "TROJAN_WS_PATH 无效：${TROJAN_WS_PATH}"
-    [[ "${VLESS_WS_PATH}" != "${TROJAN_WS_PATH}" ]] || die "两个 WebSocket 路径不能相同"
+    validate_ws_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
+    [[ "${VLESS_WS_PATH}" != "${XHTTP_PATH}" ]] || die "WebSocket 与 XHTTP 路径不能相同"
     XRAY_VLESS_LOOPBACK_PORT=${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}
-    XRAY_TROJAN_LOOPBACK_PORT=${XRAY_TROJAN_LOOPBACK_PORT:-${DEFAULT_XRAY_TROJAN_LOOPBACK_PORT}}
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
     validate_loopback_port "${XRAY_VLESS_LOOPBACK_PORT}" \
         || die "XRAY_VLESS_LOOPBACK_PORT 无效：${XRAY_VLESS_LOOPBACK_PORT}"
-    validate_loopback_port "${XRAY_TROJAN_LOOPBACK_PORT}" \
-        || die "XRAY_TROJAN_LOOPBACK_PORT 无效：${XRAY_TROJAN_LOOPBACK_PORT}"
-    [[ "${XRAY_VLESS_LOOPBACK_PORT}" != "${XRAY_TROJAN_LOOPBACK_PORT}" ]] \
+    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+        || die "XRAY_XHTTP_LOOPBACK_PORT 无效：${XRAY_XHTTP_LOOPBACK_PORT}"
+    [[ "${XRAY_VLESS_LOOPBACK_PORT}" != "${XRAY_XHTTP_LOOPBACK_PORT}" ]] \
         || die "两个 Xray 本机端口不能相同"
     SUB_PORT_MODE="443"
     choose_cloudflare_proxy_mode
@@ -814,20 +823,32 @@ find_cloudflare_zone_id() {
     return 1
 }
 
-enable_cloudflare_websockets() {
+enable_cloudflare_zone_setting() {
     is_cdn_protocol "${PROTOCOL}" && [[ -n "${CF_DNS_API_TOKEN:-}" ]] || return 0
-    local zone_id response
+    local setting=$1 label=$2 zone_id response
     zone_id=$(find_cloudflare_zone_id "${VLESS_CDN_DOMAIN}") || {
-        warn "Cloudflare Zone 查询失败；请在 Network 页面手动开启 WebSockets"
+        warn "Cloudflare Zone 查询失败；请在 Network 页面手动开启 ${label}"
         return 0
     }
-    response=$(cloudflare_zone_api PATCH "/zones/${zone_id}/settings/websockets" \
+    response=$(cloudflare_zone_api PATCH "/zones/${zone_id}/settings/${setting}" \
         -H "Content-Type: application/json" --data '{"value":"on"}') || response=""
     if jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
-        success "Cloudflare WebSockets 已开启"
+        success "Cloudflare ${label} 已开启"
     else
-        warn "无法自动开启 Cloudflare WebSockets；DNS Token 还需要 Zone Settings 编辑权限，请在 Network 页面手动开启"
+        warn "无法自动开启 Cloudflare ${label}；DNS Token 还需要 Zone Settings 编辑权限，请在 Network 页面手动开启"
     fi
+}
+
+enable_cloudflare_websockets() {
+    enable_cloudflare_zone_setting websockets WebSockets
+}
+
+enable_cloudflare_http2() {
+    enable_cloudflare_zone_setting http2 HTTP/2
+}
+
+enable_cloudflare_grpc() {
+    enable_cloudflare_zone_setting grpc gRPC
 }
 
 enable_cloudflare_proxy() {
@@ -876,6 +897,8 @@ enable_cloudflare_proxy() {
 configure_cloudflare_cdn() {
     is_cdn_protocol "${PROTOCOL}" && [[ -n "${CF_DNS_API_TOKEN:-}" ]] || return 0
     enable_cloudflare_websockets
+    enable_cloudflare_http2
+    enable_cloudflare_grpc
 }
 
 issue_certificate() {
@@ -951,16 +974,16 @@ write_xray_config() {
         || gemini_domain_strategy="ForceIPv4"
     install -d -m 0755 "${XRAY_DIR}"
     case "${PROTOCOL}" in
-    dual-ws)
+    vless-ws-xhttp)
         jq -n \
             --argjson vless_port "${XRAY_VLESS_LOOPBACK_PORT}" \
-            --argjson trojan_port "${XRAY_TROJAN_LOOPBACK_PORT}" \
+            --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
             --arg uuid "${VLESS_UUID}" \
-            --arg password "${TROJAN_PASSWORD}" \
             --arg vless_node_name "${VLESS_NODE_NAME}" \
-            --arg trojan_node_name "${TROJAN_NODE_NAME}" \
+            --arg xhttp_node_name "${XHTTP_NODE_NAME}" \
+            --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
             --arg vless_path "${VLESS_WS_PATH}" \
-            --arg trojan_path "${TROJAN_WS_PATH}" \
+            --arg xhttp_path "${XHTTP_PATH}" \
             --arg gemini_domain_strategy "${gemini_domain_strategy}" \
             --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
@@ -986,16 +1009,24 @@ write_xray_config() {
                   }
                 },
                 {
-                  tag: "trojan-ws-in",
+                  tag: "vless-xhttp-h2-in",
                   listen: "127.0.0.1",
-                  port: $trojan_port,
-                  protocol: "trojan",
+                  port: $xhttp_port,
+                  protocol: "vless",
                   settings: {
-                    clients: [{password: $password, email: $trojan_node_name}]
+                    clients: [{id: $uuid, email: $xhttp_node_name}],
+                    decryption: "none"
                   },
                   streamSettings: {
-                    network: "ws",
-                    wsSettings: {path: $trojan_path, heartbeatPeriod: 0}
+                    network: "xhttp",
+                    xhttpSettings: {
+                      host: $xhttp_host,
+                      path: $xhttp_path,
+                      mode: "stream-up",
+                      extra: {
+                        scStreamUpServerSecs: "20-80"
+                      }
+                    }
                   },
                   sniffing: {
                     enabled: true,
@@ -1100,6 +1131,8 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
     tcp_nodelay on;
+    client_header_timeout 5m;
+    keepalive_timeout 5m;
 
     root ${WEB_ROOT};
     index index.html;
@@ -1121,20 +1154,17 @@ server {
         access_log off;
     }
 
-    location = ${TROJAN_WS_PATH} {
-        proxy_pass http://127.0.0.1:${XRAY_TROJAN_LOOPBACK_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        add_header Cache-Control "no-store" always;
+    location ^~ ${XHTTP_PATH}/ {
+        client_max_body_size 0;
+        client_body_timeout 5m;
+        grpc_set_header Host \$host;
+        grpc_set_header X-Real-IP \$remote_addr;
+        grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        grpc_set_header X-Forwarded-Proto https;
+        grpc_socket_keepalive on;
+        grpc_read_timeout 1h;
+        grpc_send_timeout 5m;
+        grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
         access_log off;
     }
 
@@ -1159,38 +1189,51 @@ build_vless_ws_link() {
         "${VLESS_CDN_DOMAIN}" "$(uri_encode "${VLESS_WS_PATH}")" "$(uri_encode "${VLESS_NODE_NAME}")"
 }
 
-build_trojan_ws_link() {
-    printf 'trojan://%s@%s:443?security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s#%s' \
-        "$(uri_encode "${TROJAN_PASSWORD}")" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "${VLESS_CDN_DOMAIN}" "$(uri_encode "${TROJAN_WS_PATH}")" "$(uri_encode "${TROJAN_NODE_NAME}")"
+build_vless_xhttp_link() {
+    local extra
+    extra=$(jq -cn '{
+        scStreamUpServerSecs: "20-80",
+        xmux: {
+            maxConnections: 2,
+            cMaxReuseTimes: 0,
+            hMaxRequestTimes: "600-900",
+            hMaxReusableSecs: "1800-2400",
+            hKeepAlivePeriod: 0
+        }
+    }')
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "${VLESS_CDN_DOMAIN}" "$(uri_encode "${XHTTP_PATH}")" "$(uri_encode "${extra}")" \
+        "$(uri_encode "${XHTTP_NODE_NAME}")"
 }
 
 build_node_link() {
     build_vless_ws_link
     printf '\n'
-    build_trojan_ws_link
+    build_vless_xhttp_link
 }
 
 build_mihomo_node() {
     case "${PROTOCOL}" in
-    dual-ws)
+    vless-ws-xhttp)
         jq -nr \
-            --arg vless_name "${VLESS_NODE_NAME}" --arg trojan_name "${TROJAN_NODE_NAME}" \
+            --arg vless_name "${VLESS_NODE_NAME}" --arg xhttp_name "${XHTTP_NODE_NAME}" \
             --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-            --arg password "${TROJAN_PASSWORD}" --arg vless_path "${VLESS_WS_PATH}" \
-            --arg trojan_path "${TROJAN_WS_PATH}" '
+            --arg vless_path "${VLESS_WS_PATH}" --arg xhttp_path "${XHTTP_PATH}" '
             "  - name: \($vless_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
             "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - http/1.1\n    ws-opts:\n" +
             "      path: \($vless_path|@json)\n      headers:\n        Host: \($server|@json)\n" +
             "    smux:\n      enabled: false\n" +
-            "  - name: \($trojan_name|@json)\n    type: trojan\n    server: \($server|@json)\n    port: 443\n" +
-            "    password: \($password|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
-            "    skip-cert-verify: false\n    sni: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    ip-version: dual\n    alpn:\n      - http/1.1\n    ws-opts:\n" +
-            "      path: \($trojan_path|@json)\n      headers:\n        Host: \($server|@json)\n" +
-            "    smux:\n      enabled: false\n"'
+            "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+            "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
+            "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
+            "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
+            "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
+            "      no-grpc-header: false\n      reuse-settings:\n        max-connections: \"2\"\n" +
+            "        c-max-reuse-times: \"0\"\n        h-max-request-times: \"600-900\"\n" +
+            "        h-max-reusable-secs: \"1800-2400\"\n        h-keep-alive-period: 0\n"'
         ;;
     esac
 }
@@ -1388,7 +1431,7 @@ render_worker_from_sample() {
 }
 
 write_worker() {
-    local destination=$1 vless_config_json trojan_config_json
+    local destination=$1 vless_config_json xhttp_config_json
     local allowed_tokens_json template_file config_file output_file
     prepare_sample_worker_template
     install -d -m 0700 "$(dirname "${destination}")"
@@ -1396,17 +1439,17 @@ write_worker() {
     allowed_tokens_json=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "ALLOWED_TOKENS 无效"
     case "${PROTOCOL}" in
-    dual-ws)
+    vless-ws-xhttp)
         vless_config_json=$(jq -cn \
             --arg type vless --arg security tls --arg network ws \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${VLESS_NODE_NAME}" \
             --arg sni "${VLESS_CDN_DOMAIN}" --arg path "${VLESS_WS_PATH}" --arg fp chrome \
             '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,ipVersion:"dual",udp:true,portMode:"443",packetEncoding:"xudp"}')
-        trojan_config_json=$(jq -cn \
-            --arg type trojan --arg security tls --arg network ws \
-            --arg password "${TROJAN_PASSWORD}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${TROJAN_NODE_NAME}" \
-            --arg sni "${VLESS_CDN_DOMAIN}" --arg path "${TROJAN_WS_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,password:$password,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,ipVersion:"dual",udp:true,portMode:"443"}')
+        xhttp_config_json=$(jq -cn \
+            --arg type vless --arg security tls --arg network xhttp \
+            --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${XHTTP_NODE_NAME}" \
+            --arg sni "${VLESS_CDN_DOMAIN}" --arg path "${XHTTP_PATH}" --arg fp chrome \
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,mode:"stream-up",ipVersion:"dual",udp:true,portMode:"443",packetEncoding:"xudp",scStreamUpServerSecs:"20-80",xmux:{maxConnections:2,cMaxReuseTimes:0,hMaxRequestTimes:"600-900",hMaxReusableSecs:"1800-2400",hKeepAlivePeriod:0}}')
         ;;
     esac
 
@@ -1433,8 +1476,8 @@ function isAllowedToken(token) {
 }
 EOF
         printf '\nconst NODE_VLESS_WS_CONFIG = defineNode(%s);\n' "${vless_config_json}"
-        printf 'const NODE_TROJAN_WS_CONFIG = defineNode(%s);\n' "${trojan_config_json}"
-        printf '\nconst DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];\n'
+        printf 'const NODE_VLESS_XHTTP_CONFIG = defineNode(%s);\n' "${xhttp_config_json}"
+        printf '\nconst DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_VLESS_XHTTP_CONFIG];\n'
         cat <<'EOF'
 
 function defaultNodeConfigs() {
@@ -1850,8 +1893,11 @@ verify_subscription() {
         if [[ "${plain_code}" == "200" && "${clash_code}" == "200" ]] \
             && base64 -d <"${plain_body}" >"${decoded_body}" 2>/dev/null \
             && [[ -s "${decoded_body}" ]] \
-            && grep -Eq '^vless://' "${decoded_body}" \
+            && [[ "$(grep -Ec '^vless://' "${decoded_body}")" == "2" ]] \
+            && grep -q 'type=xhttp' "${decoded_body}" \
+            && ! grep -Eq '^trojan://' "${decoded_body}" \
             && grep -q '^proxies:' "${clash_body}" \
+            && grep -q 'network: xhttp' "${clash_body}" \
             && grep -q '^proxy-groups:' "${clash_body}" \
             && grep -q '^rules:' "${clash_body}"; then
             cloudflare_deploy_log "SUCCESS" \
@@ -2030,10 +2076,14 @@ update_subscription() {
         || die "SUB_PORT_MODE 无效：${SUB_PORT_MODE}"
     ! is_cdn_protocol "${PROTOCOL}" || [[ "${SUB_PORT_MODE}" == "443" ]] \
         || die "VLESS CDN 协议不支持 dynamic 端口"
-    if is_cdn_protocol "${PROTOCOL}" && [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
-        configure_cloudflare_cdn
-        enable_cloudflare_proxy
-        unset CF_DNS_API_TOKEN
+    if is_cdn_protocol "${PROTOCOL}"; then
+        if [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+            configure_cloudflare_cdn
+            enable_cloudflare_proxy
+            unset CF_DNS_API_TOKEN
+        else
+            warn "VLESS XHTTP/H2 要求 Cloudflare Network 开启 HTTP/2 和 gRPC；本次未提供 CF_DNS_API_TOKEN，请在控制台确认"
+        fi
     fi
     prepare_sample_worker_template
     snapshot_subscription_update
@@ -2082,11 +2132,10 @@ collect_installed_state() {
     load_state
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
     is_cdn_protocol "${PROTOCOL}" \
-        || die "easy_cmcc 只能管理 VLESS WS + Trojan WS 的 Cloudflare CDN 安装"
+        || die "easy_cmcc 只能管理 VLESS WS + VLESS XHTTP/H2 的 Cloudflare CDN 安装"
     [[ -n "${VLESS_CDN_DOMAIN:-}" && -n "${VLESS_UUID:-}" \
-        && -n "${TROJAN_PASSWORD:-}" && -n "${VLESS_WS_PATH:-}" \
-        && -n "${TROJAN_WS_PATH:-}" ]] \
-        || die "VLESS WS + Trojan WS 状态不完整"
+        && -n "${VLESS_WS_PATH:-}" && -n "${XHTTP_PATH:-}" ]] \
+        || die "VLESS WS + VLESS XHTTP/H2 状态不完整"
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
 }
 
@@ -2193,8 +2242,8 @@ show_status() {
     printf '协议: %s\n' "${PROTOCOL}"
     printf 'Gemini 出口族: %s（配置: %s）\n' \
         "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
-    printf '域名: %s\nVLESS WebSocket 路径: %s\nTrojan WebSocket 路径: %s\n' \
-        "${VLESS_CDN_DOMAIN}" "${VLESS_WS_PATH}" "${TROJAN_WS_PATH}"
+    printf '域名: %s\nVLESS WebSocket 路径: %s\nVLESS XHTTP/H2 路径: %s\n' \
+        "${VLESS_CDN_DOMAIN}" "${VLESS_WS_PATH}" "${XHTTP_PATH}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
         && printf 'active\n' || printf 'inactive\n'
@@ -2416,13 +2465,13 @@ usage() {
     cat <<EOF
 用法: ${ENTRY_COMMAND_NAME} [命令]
 
-  install       同时安装 VLESS WS TLS 与 Trojan WS TLS + Cloudflare CDN
+  install       同时安装 VLESS WS TLS 与 VLESS XHTTP TLS/H2 + Cloudflare CDN
   update        刷新 CMCC 省电模式、Nginx、Worker 与 Custom Domain
   update-sub    刷新服务端与订阅
   show|subscription|status|update-core|renew-cert|uninstall
 
-该入口固定同时发布 VLESS WebSocket TLS 与 Trojan WebSocket TLS 两个 CDN 节点，并放入手动 PROXY 组。
-不会生成自动测速组，两个节点均关闭 smux，以降低 Android 后台 CPU 与耗电。
+该入口固定同时发布 VLESS WebSocket TLS 与 VLESS XHTTP TLS/H2 两个 CDN 节点，并放入手动 PROXY 组。
+XHTTP 使用 stream-up 和两条 XMUX 连接；WebSocket 关闭 smux，以控制 Android 后台 CPU 与耗电。
 自动部署可绑定独立 Worker Custom Domain，并由 Cloudflare 自动创建橙云 DNS 与证书。
 EOF
 }
@@ -2453,7 +2502,7 @@ update_current_core() {
 
 main() {
     if [[ "${1:-install}" == "switch" ]]; then
-        die "easy_cmcc 固定同时使用 VLESS WS TLS 与 Trojan WS TLS，不提供协议切换"
+        die "easy_cmcc 固定同时使用 VLESS WS TLS 与 VLESS XHTTP TLS/H2，不提供协议切换"
     fi
     case "${1:-install}" in
     install) install_all "${2:-${PROTOCOL:-}}" ;;

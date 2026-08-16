@@ -1,10 +1,10 @@
 /**
  * 订阅服务样例 - Cloudflare Workers
- * 同时提供 VLESS WebSocket TLS 与 Trojan WebSocket TLS 的 Cloudflare CDN 订阅
+ * 同时提供 VLESS WebSocket TLS 与 VLESS XHTTP TLS/H2 的 Cloudflare CDN 订阅
  *
  * 使用前请替换：
  * 1. ALLOWED_TOKENS 中的订阅 token
- * 2. 两个节点的认证信息、TLS 域名和各自 WebSocket 路径
+ * 2. 节点认证信息、TLS 域名、WebSocket 路径和 XHTTP 路径
  * 3. DEFAULT_NODE 保留两个节点，以便同一订阅同时输出
  */
 // ================= 配置常量 =================
@@ -30,7 +30,7 @@ function isAllowedToken(token) {
     return Boolean(token && ALLOWED_TOKEN_VALUES.has(token));
 }
 
-// ── 两个节点共用 CDN 域名，但使用独立认证与 WebSocket 路径 ────────
+// ── 两个节点共用 CDN 域名与 UUID，使用独立传输路径 ──────────────
 const NODE_VLESS_WS_CONFIG = defineNode({
     type: 'vless',
     security: 'tls',
@@ -47,22 +47,32 @@ const NODE_VLESS_WS_CONFIG = defineNode({
     portMode: '443'
 });
 
-const NODE_TROJAN_WS_CONFIG = defineNode({
-    type: 'trojan',
+const NODE_VLESS_XHTTP_CONFIG = defineNode({
+    type: 'vless',
     security: 'tls',
-    network: 'ws',
-    password: 'replace-with-a-long-random-password',
+    network: 'xhttp',
+    uuid: '00000000-0000-4000-8000-000000000002',
     host: 'ws.example.com',
-    name: 'TROJAN_WS',
+    name: 'VLESS_XHTTP_H2',
     fp: 'chrome',
     sni: 'ws.example.com',
-    path: '/trojan-change-me',
+    path: '/xhttp-change-me',
+    mode: 'stream-up',
     ipVersion: 'dual',
     udp: true,
+    packetEncoding: 'xudp',
+    scStreamUpServerSecs: '20-80',
+    xmux: {
+        maxConnections: 2,
+        cMaxReuseTimes: 0,
+        hMaxRequestTimes: '600-900',
+        hMaxReusableSecs: '1800-2400',
+        hKeepAlivePeriod: 0
+    },
     portMode: '443'
 });
 
-const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];
+const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_VLESS_XHTTP_CONFIG];
 
 function defaultNodeConfigs() {
     return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE];
@@ -623,7 +633,7 @@ proxy-groups:
 {rules_section}
 `;
 
-// ── WebSocket 节点模板 ─────────────────
+// ── 节点模板 ──────────────────────────
 const CLASH_VLESS_WS_TLS_NODE_TEMPLATE = `  - name: {name}
     type: vless
     server: {host}
@@ -647,26 +657,32 @@ const CLASH_VLESS_WS_TLS_NODE_TEMPLATE = `  - name: {name}
       enabled: false
 `;
 
-const CLASH_TROJAN_WS_TLS_NODE_TEMPLATE = `  - name: {name}
-    type: trojan
+const CLASH_VLESS_XHTTP_TLS_NODE_TEMPLATE = `  - name: {name}
+    type: vless
     server: {host}
     port: {port}
-    password: {password}
-    network: ws
+    uuid: {uuid}
+    network: xhttp
     tls: true
     udp: {udp}
     skip-cert-verify: false
-    sni: {sni}
+    servername: {sni}
     client-fingerprint: {fp}
     ip-version: {ip_version}
+    packet-encoding: xudp
     alpn:
-      - http/1.1
-    ws-opts:
+      - h2
+    xhttp-opts:
+      host: {host}
       path: {path}
-      headers:
-        Host: {host}
-    smux:
-      enabled: false
+      mode: {xhttp_mode}
+      no-grpc-header: false
+      reuse-settings:
+        max-connections: {xmux_max_connections}
+        c-max-reuse-times: {xmux_c_max_reuse_times}
+        h-max-request-times: {xmux_h_max_request_times}
+        h-max-reusable-secs: {xmux_h_max_reusable_secs}
+        h-keep-alive-period: {xmux_h_keep_alive_period}
 `;
 
 // ================= 辅助函数 =================
@@ -756,6 +772,23 @@ function createVlessLink(cfg, port) {
         params.set('host', cfg.host);
         params.set('path', cfg.path || '/');
         params.set('packetEncoding', cfg.packetEncoding || 'xudp');
+    } else if (network === 'xhttp') {
+        const xmux = cfg.xmux || {};
+        params.set('alpn', 'h2');
+        params.set('host', cfg.host);
+        params.set('path', cfg.path || '/');
+        params.set('mode', cfg.mode || 'stream-up');
+        params.set('extra', JSON.stringify({
+            scStreamUpServerSecs: cfg.scStreamUpServerSecs || '20-80',
+            xmux: {
+                maxConnections: xmux.maxConnections ?? 2,
+                cMaxReuseTimes: xmux.cMaxReuseTimes ?? 0,
+                hMaxRequestTimes: xmux.hMaxRequestTimes || '600-900',
+                hMaxReusableSecs: xmux.hMaxReusableSecs || '1800-2400',
+                hKeepAlivePeriod: xmux.hKeepAlivePeriod ?? 0
+            }
+        }));
+        params.set('packetEncoding', cfg.packetEncoding || 'xudp');
     } else {
         throw new Error(`Unsupported VLESS network: ${network}`);
     }
@@ -763,31 +796,9 @@ function createVlessLink(cfg, port) {
     return `vless://${cfg.uuid}@${host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
 }
 
-function createTrojanLink(cfg, port) {
-    const security = nodeSecurity(cfg);
-    const network = nodeNetwork(cfg);
-    if (security !== 'tls' || network !== 'ws') {
-        throw new Error(`Unsupported Trojan mode: security=${security}, network=${network}`);
-    }
-    const host = formatUriHost(cfg.host);
-    const params = new URLSearchParams({
-        security: 'tls',
-        type: 'ws',
-        sni: cfg.sni || cfg.host,
-        fp: cfg.fp || 'chrome',
-        alpn: 'http/1.1',
-        host: cfg.host,
-        path: cfg.path || '/'
-    });
-    return `trojan://${encodeURIComponentCustom(cfg.password)}@${host}:${resolveNodePort(cfg, port)}?${params.toString()}#${encodeURIComponentCustom(cfg.name)}`;
-}
-
 function createLink(cfg, port) {
     if (cfg.type === 'vless') {
         return createVlessLink(cfg, port);
-    }
-    if (cfg.type === 'trojan') {
-        return createTrojanLink(cfg, port);
     }
     throw new Error(`Unsupported node type: ${cfg.type}`);
 }
@@ -820,17 +831,27 @@ function yamlString(value) {
 }
 
 function renderClashNode(template, cfg, port) {
+    const xmux = cfg.xmux || {};
+    const keepAlivePeriod = Number(xmux.hKeepAlivePeriod ?? 0);
+    if (!Number.isInteger(keepAlivePeriod)) {
+        throw new Error(`Invalid XMUX hKeepAlivePeriod: ${xmux.hKeepAlivePeriod}`);
+    }
     const values = {
         name: yamlString(cfg.name),
         host: yamlString(cfg.host),
         port: String(resolveNodePort(cfg, port)),
         uuid: yamlString(cfg.uuid || ''),
-        password: yamlString(cfg.password || ''),
         sni: yamlString(cfg.sni || cfg.host),
         fp: yamlString(cfg.fp || 'chrome'),
         path: yamlString(cfg.path || '/'),
         ip_version: yamlString(cfg.ipVersion || 'dual'),
-        udp: String(cfg.udp !== false)
+        udp: String(cfg.udp !== false),
+        xhttp_mode: yamlString(cfg.mode || 'stream-up'),
+        xmux_max_connections: yamlString(xmux.maxConnections ?? 2),
+        xmux_c_max_reuse_times: yamlString(xmux.cMaxReuseTimes ?? 0),
+        xmux_h_max_request_times: yamlString(xmux.hMaxRequestTimes || '600-900'),
+        xmux_h_max_reusable_secs: yamlString(xmux.hMaxReusableSecs || '1800-2400'),
+        xmux_h_keep_alive_period: String(keepAlivePeriod)
     };
     return template.replace(/{([a-z_]+)}/g, (_, key) => values[key]);
 }
@@ -842,20 +863,13 @@ function generateClashProxyNode(cfg, port) {
         let template;
         if (security === 'tls' && network === 'ws') {
             template = CLASH_VLESS_WS_TLS_NODE_TEMPLATE;
+        } else if (security === 'tls' && network === 'xhttp') {
+            template = CLASH_VLESS_XHTTP_TLS_NODE_TEMPLATE;
         } else {
             throw new Error(`Unsupported VLESS mode: security=${security}, network=${network}`);
         }
 
         return renderClashNode(template, cfg, port);
-    }
-
-    if (cfg.type === 'trojan') {
-        const security = nodeSecurity(cfg);
-        const network = nodeNetwork(cfg);
-        if (security !== 'tls' || network !== 'ws') {
-            throw new Error(`Unsupported Trojan mode: security=${security}, network=${network}`);
-        }
-        return renderClashNode(CLASH_TROJAN_WS_TLS_NODE_TEMPLATE, cfg, port);
     }
 
     throw new Error(`Unsupported node type: ${cfg.type}`);

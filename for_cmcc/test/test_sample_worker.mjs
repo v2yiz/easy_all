@@ -239,7 +239,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(await responseText(formerKey), '403 Forbidden');
   });
 
-  it('returns both WebSocket DEFAULT_NODE entries in the default base64 subscription', async () => {
+  it('returns the WebSocket and XHTTP DEFAULT_NODE entries in the default base64 subscription', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}`);
     const links = decodeBase64Subscription(await responseText(response)).split('\n');
 
@@ -252,18 +252,30 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[0], /type=ws/);
     assert.match(links[0], /path=%2Fvless-change-me/);
     assert.match(links[0], /#VLESS_WS$/);
-    assert.match(links[1], /^trojan:\/\/replace-with-a-long-random-password@ws\.example\.com:443\?/);
-    assert.match(links[1], /type=ws/);
-    assert.match(links[1], /path=%2Ftrojan-change-me/);
-    assert.match(links[1], /#TROJAN_WS$/);
-    assert.doesNotMatch(links.join('\n'), /type=grpc|type=xhttp|reality|anytls/i);
+    assert.match(links[1], /^vless:\/\/00000000-0000-4000-8000-000000000002@ws\.example\.com:443\?/);
+    assert.match(links[1], /type=xhttp/);
+    assert.match(links[1], /alpn=h2/);
+    assert.match(links[1], /path=%2Fxhttp-change-me/);
+    assert.match(links[1], /mode=stream-up/);
+    assert.match(links[1], /extra=/);
+    assert.match(links[1], /#VLESS_XHTTP_H2$/);
+    const xhttpExtra = JSON.parse(new URL(links[1]).searchParams.get('extra'));
+    assert.equal(xhttpExtra.scStreamUpServerSecs, '20-80');
+    assert.deepEqual(xhttpExtra.xmux, {
+      maxConnections: 2,
+      cMaxReuseTimes: 0,
+      hMaxRequestTimes: '600-900',
+      hMaxReusableSecs: '1800-2400',
+      hKeepAlivePeriod: 0
+    });
+    assert.doesNotMatch(links.join('\n'), /type=grpc|trojan|reality|anytls/i);
   });
 
   it('accepts a one-item DEFAULT_NODE array in the default base64 subscription', async () => {
     const source = await readFile(new URL('../sample-worker.js', import.meta.url), 'utf8');
     const module = await importSampleWorkerWithSource(
       source.replace(
-        'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_TROJAN_WS_CONFIG];',
+        'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_VLESS_XHTTP_CONFIG];',
         'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG];'
       )
     );
@@ -293,13 +305,17 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[0], /path=%2Fvless-change-me/);
     assert.match(links[0], /packetEncoding=xudp/);
     assert.match(links[0], /#VLESS_WS$/);
-    assert.match(links[1], /^trojan:/);
-    assert.match(links[1], /path=%2Ftrojan-change-me/);
-    assert.match(links[1], /#TROJAN_WS$/);
-    assert.doesNotMatch(body, /type=xhttp|type=grpc|reality|anytls/i);
+    assert.match(links[1], /^vless:/);
+    assert.match(links[1], /type=xhttp/);
+    assert.match(links[1], /alpn=h2/);
+    assert.match(links[1], /path=%2Fxhttp-change-me/);
+    assert.match(links[1], /mode=stream-up/);
+    assert.match(links[1], /packetEncoding=xudp/);
+    assert.match(links[1], /#VLESS_XHTTP_H2$/);
+    assert.doesNotMatch(body, /type=grpc|trojan|reality|anytls/i);
   });
 
-  it('returns Clash YAML for both WebSocket nodes with normalized download filename', async () => {
+  it('returns Clash YAML for WebSocket and XHTTP with normalized download filename', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`, {
       SUB_DOWNLOAD_NAME: 'Team_Sub.yaml'
     });
@@ -310,15 +326,22 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=Team_Sub');
     assert.match(body, /mixed-port: 1080/);
     assert.match(body, /- name: "VLESS_WS"/);
-    assert.match(body, /- name: "TROJAN_WS"/);
+    assert.match(body, /- name: "VLESS_XHTTP_H2"/);
     assert.match(body, /server: "ws\.example\.com"/);
     assert.match(body, /port: 443/);
     assert.match(body, /type: vless/);
-    assert.equal((body.match(/network: ws/g) || []).length, 2);
+    assert.equal((body.match(/network: ws/g) || []).length, 1);
+    assert.equal((body.match(/network: xhttp/g) || []).length, 1);
     assert.match(body, /path: "\/vless-change-me"/);
-    assert.match(body, /path: "\/trojan-change-me"/);
-    assert.match(body, /password: "replace-with-a-long-random-password"/);
-    assert.doesNotMatch(body, /network: xhttp|network: grpc/);
+    assert.match(body, /path: "\/xhttp-change-me"/);
+    assert.match(body, /mode: "stream-up"/);
+    assert.match(body, /alpn:\n      - h2/);
+    assert.match(body, /max-connections: "2"/);
+    assert.match(body, /c-max-reuse-times: "0"/);
+    assert.match(body, /h-max-request-times: "600-900"/);
+    assert.match(body, /h-max-reusable-secs: "1800-2400"/);
+    assert.match(body, /h-keep-alive-period: 0/);
+    assert.doesNotMatch(body, /network: grpc|type: trojan/);
     assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
@@ -502,7 +525,7 @@ describe('sample-worker Cloudflare Worker', () => {
     }
   });
 
-  it('keeps node=all limited to both WebSocket nodes and falls back invalid filenames', async () => {
+  it('keeps node=all limited to both configured nodes and falls back invalid filenames', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&node=all&flag=clash`, {
       SUB_DOWNLOAD_NAME: '../bad/name.yaml'
     });
@@ -511,18 +534,20 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename=EASY_CMCC');
     assert.match(body, /- name: "VLESS_WS"/);
-    assert.match(body, /- name: "TROJAN_WS"/);
+    assert.match(body, /- name: "VLESS_XHTTP_H2"/);
     assert.match(body, /server: "ws\.example\.com"/);
-    assert.equal((body.match(/network: ws/g) || []).length, 2);
+    assert.equal((body.match(/network: ws/g) || []).length, 1);
+    assert.equal((body.match(/network: xhttp/g) || []).length, 1);
     assert.match(body, /udp: true/);
     assert.match(body, /path: "\/vless-change-me"/);
-    assert.match(body, /path: "\/trojan-change-me"/);
+    assert.match(body, /path: "\/xhttp-change-me"/);
     assert.match(body, /packet-encoding: xudp/);
-    assert.equal((body.match(/alpn:\n      - http\/1\.1/g) || []).length, 2);
+    assert.equal((body.match(/alpn:\n      - http\/1\.1/g) || []).length, 1);
+    assert.equal((body.match(/alpn:\n      - h2/g) || []).length, 1);
     assert.equal((body.match(/ip-version: "dual"/g) || []).length, 2);
-    assert.doesNotMatch(body, /network: xhttp|network: grpc/);
+    assert.doesNotMatch(body, /network: grpc|type: trojan/);
     assert.match(body, /^proxy-groups:$/m);
-    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - AUTO\n        - "VLESS_WS"\n        - "TROJAN_WS"/);
+    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - AUTO\n        - "VLESS_WS"\n        - "VLESS_XHTTP_H2"/);
     const proxyGroups = body.slice(body.indexOf('proxy-groups:'), body.indexOf('\nrules:'));
     assert.equal((proxyGroups.match(/^    - name:/gm) || []).length, 2);
     assert.doesNotMatch(proxyGroups, /- name: (?:GITHUB|GOOGLE|AI_GEMINI|DOWNLOAD|AI)$/m);
@@ -531,7 +556,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
 
-    assert.equal((body.match(/smux:\n      enabled: false/g) || []).length, 2);
+    assert.equal((body.match(/smux:\n      enabled: false/g) || []).length, 1);
+    assert.match(body, /reuse-settings:\n        max-connections: "2"/);
     assert.match(proxyGroups, /- name: AUTO\n      type: url-test\n      url: 'https:\/\/www\.gstatic\.com\/generate_204'/);
     assert.doesNotMatch(body, /flow: xtls-rprx-vision/);
     assert.doesNotMatch(body, /reality|anytls/i);
@@ -580,7 +606,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[0], /sni=safe%0Afield%3A\+value/);
     assert.match(yaml, /server: "2001:db8::20"/);
     assert.match(yaml, /servername: "safe\\nfield: value"/);
-    assert.match(yaml, /sni: "safe\\nfield: value"/);
+    assert.equal((yaml.match(/servername: "safe\\nfield: value"/g) || []).length, 2);
+    assert.doesNotMatch(yaml, /^\s+sni:/m);
     assert.doesNotMatch(yaml, /^field: value$/m);
   });
 
