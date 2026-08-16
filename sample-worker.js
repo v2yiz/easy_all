@@ -413,7 +413,7 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN-SUFFIX,turn.livekit.cloud,AI
 
   # ==================== Gemini / Google ====================
-  # Gemini 依赖的 Google 域名统一进入 AI_GEMINI，生成订阅时归并到 PROXY。
+  # Gemini 依赖的 Google 域名统一进入 AI_GEMINI，并固定使用默认首节点。
   - DOMAIN-SUFFIX,google.com,AI_GEMINI
   - DOMAIN-SUFFIX,googleapis.com,AI_GEMINI
   - DOMAIN-SUFFIX,googleapis.cn,AI_GEMINI
@@ -508,12 +508,12 @@ sniffer:
     enable: true
     force-dns-mapping: true
     parse-pure-ip: true
-    # 嗅探结果只用于域名分流；不覆写 Fake-IP 映射或原始目标。
-    override-destination: false
+    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保服务端能重新按固定地址族解析。
+    override-destination: true
     sniff:
       HTTP:
         ports: [80, 8080-8880]
-        override-destination: false
+        override-destination: true
       TLS:
         ports: [443, 8443]
       QUIC:
@@ -620,6 +620,12 @@ proxy-groups:
       proxies:
         - AUTO
         - {proxy_names}
+
+    # Gemini 必须始终使用同一台具备固定出口族策略的服务端。
+    - name: AI_GEMINI
+      type: select
+      proxies:
+        - {gemini_proxy_name}
 
 {rule_providers}
 
@@ -878,15 +884,21 @@ function generateClashConfigMulti(configs, ports) {
         proxyNames.push(yamlString(configs[i].name));
     }
 
+    const preferredGeminiConfig = defaultNodeConfigs()[0];
+    const geminiConfig = configs.includes(preferredGeminiConfig)
+        ? preferredGeminiConfig
+        : configs[0];
+
     const sections = {
         fake_ip_filter: FAKE_IP_FILTER,
         proxy_nodes: proxyNodes,
         proxy_names: proxyNames.join('\n        - '),
+        gemini_proxy_name: yamlString(geminiConfig.name),
         rule_providers: EXTERNAL_RULE_PROVIDERS,
-        rules_section: EMBEDDED_CLASH_RULES.replaceAll(/\b(?:AI_GEMINI|DOWNLOAD|AI)\b/g, 'PROXY')
+        rules_section: EMBEDDED_CLASH_RULES.replaceAll(/\b(?:DOWNLOAD|AI)\b/g, 'PROXY')
     };
     return CLASH_CONFIG_TEMPLATE.replace(
-        /{(fake_ip_filter|proxy_nodes|proxy_names|rule_providers|rules_section)}/g,
+        /{(fake_ip_filter|proxy_nodes|proxy_names|gemini_proxy_name|rule_providers|rules_section)}/g,
         (_, section) => sections[section]
     );
 }

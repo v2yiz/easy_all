@@ -478,9 +478,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /^\s+- fc00::\/7$/m);
     assert.match(body, /^\s+- fe80::\/10$/m);
     assert.doesNotMatch(body, /^\s+- fdbd::\/16$/m);
-    assert.match(body, /^    override-destination: false$/m);
-    assert.doesNotMatch(body, /^    override-destination: true$/m);
-    assert.doesNotMatch(body, /^        override-destination: true$/m);
+    assert.match(body, /^    override-destination: true$/m);
+    assert.match(body, /^        override-destination: true$/m);
+    assert.doesNotMatch(body, /^    override-destination: false$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.openai\.com'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.claude\.ai'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.google\.com'$/m);
@@ -489,9 +489,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.doesNotMatch(body, /DOMAIN-SUFFIX,mega\.(?:nz|co\.nz|io|app),/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN-SUFFIX,google\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,AI_GEMINI/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.local'$/m);
     assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
@@ -527,6 +527,10 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /^      interval: 300$/m);
     assert.match(body, /^      lazy: true$/m);
     assert.match(body, /^    - name: PROXY\n      type: select\n      proxies:\n        - AUTO$/m);
+    assert.match(
+      body,
+      /^    - name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_REALITY"$/m
+    );
   });
 
   it('returns all Clash proxy nodes for node=all and falls back invalid filenames', async () => {
@@ -547,8 +551,12 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(body, /ip-version:/);
     assert.match(body, /^proxy-groups:$/m);
     assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - AUTO\n        - "NODE_REALITY"/);
-    assert.doesNotMatch(body, /- name: (?:AI|AI_GEMINI|DOWNLOAD)$/m);
-    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
+    assert.doesNotMatch(body, /- name: (?:AI|DOWNLOAD)$/m);
+    assert.match(
+      body,
+      /- name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_REALITY"/
+    );
+    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
     assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
   });
 

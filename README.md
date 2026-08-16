@@ -90,17 +90,17 @@ sudo ./easy_all install anytls
 
 Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
 
-两种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。相关域名在 Mihomo 客户端保留 Fake-IP，由代理把域名交给 VPS 解析，避免客户端先确定与所选 VPS 不匹配的目标地址。只有 Gemini 及其必要 Google 依赖进入固定地址族策略；ChatGPT、Claude 及其辅助域名直接使用普通 `direct` 的默认双栈行为。默认模式会分别请求三次 `https://gemini.google.com/`，比较可用地址族的中位耗时后固定选择更快的一侧。Xray 使用 `ForceIPv4` 或 `ForceIPv6`，sing-box 使用 `ipv4_only` 或 `ipv6_only`，因此同一台 VPS 上的 Gemini 请求不会在 IPv4/IPv6 之间漂移。没有全局 IPv6 地址或默认 IPv6 路由的 VPS 不执行 IPv6 测试并固定使用 IPv4。
+两种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。相关域名在 Mihomo 客户端保留 Fake-IP；客户端同时启用 `sniffer.override-destination`，将浏览器自行解析的可嗅探数字 IP 恢复成域名后再交给 VPS。Xray 服务端使用 `routeOnly: false`，也会用嗅探域名覆盖原数字目标，确保后续 `ForceIPv4` 或 `ForceIPv6` 真正参与目标解析；sing-box 使用 `ipv4_only` 或 `ipv6_only`。只有 Gemini 及其必要 Google 依赖进入固定地址族策略；ChatGPT、Claude 及其辅助域名直接使用普通 `direct` 的默认双栈行为。默认模式会分别请求三次 `https://gemini.google.com/`，比较可用地址族的中位耗时后固定选择更快的一侧。没有全局 IPv6 地址或默认 IPv6 路由的 VPS 不执行 IPv6 测试并固定使用 IPv4。
 
-自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，选择结果会写入 `/etc/easy_all/state.env`，后续更新继续沿用。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
+自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，选择结果写入当前 Xray/sing-box 运行时配置；状态文件保留 `auto` 偏好，后续更新会重新测速。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
 
 订阅中的代理节点不设置 Mihomo `ip-version`；但为避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6，客户端模板默认使用 IPv4 DNS/Fake-IP/TUN。下发的 TUN 使用 `stack: mixed`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。Gemini 的地址族固定仍只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude 或 MEGA 的服务端出口策略。
 
 模板只保留通用局域网适配：`.lan`、`.local` 使用系统 DNS，RFC1918 IPv4、链路本地 IPv4、IPv6 ULA 与链路本地地址显式直连并绕过 TUN。客户端日志使用 `error` 级别，并通过 `find-process-mode: off` 关闭当前规则不需要的进程匹配，减少后台处理开销。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、显式规则和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
 
-Mihomo 订阅使用阿里与腾讯的 DoH 作为两家独立的国内解析器，阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；不再重复配置同属阿里的 DoH 地址。`AUTO` 是 `url-test` 组，使用 `https://www.gstatic.com/generate_204`、`interval: 300` 和 `lazy: true`；`PROXY` 选择组将 `AUTO` 置于首位，同时保留每个节点供手动切换。`geosite:geolocation-!cn` 覆盖的已确认境外域名（包括 Google/Gemini）会在 `nameserver-policy` 中固定使用经 `PROXY` 的境外 DoH，避免解析结果受国内 DoH 影响。代理节点本身仍由国内 `proxy-server-nameserver` 解析，避免启动循环。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
+Mihomo 订阅使用阿里与腾讯的 DoH 作为两家独立的国内解析器，阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；不再重复配置同属阿里的 DoH 地址。`AUTO` 是 `url-test` 组，使用 `https://www.gstatic.com/generate_204`、`interval: 300` 和 `lazy: true`；`PROXY` 选择组将 `AUTO` 置于首位，同时保留每个节点供手动切换。单独的 `AI_GEMINI` 组只包含 `DEFAULT_NODE` 的首节点，防止测速切换或上游订阅刷新让同一 Gemini 会话跨 VPS。`geosite:geolocation-!cn` 覆盖的已确认境外域名（包括 Google/Gemini）会在 `nameserver-policy` 中固定使用经 `PROXY` 的境外 DoH，避免解析结果受国内 DoH 影响。代理节点本身仍由国内 `proxy-server-nameserver` 解析，避免启动循环。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
 
-为确保 Fake-IP 和服务端统一出口生效，浏览器的“安全 DNS/使用安全 DNS”应设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。自定义 DoH/DoT 不经过 Mihomo 的 53 端口 DNS 劫持，可能把真实 IPv4/IPv6 目标直接交给代理，重新造成出口族漂移。
+仍建议把浏览器的“安全 DNS/使用安全 DNS”设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。客户端和 Xray 会通过普通 HTTP/TLS/QUIC 嗅探修复可见域名的数字 IP 目标，但自定义 DoH/DoT 配合 ECH 时可能同时绕过 DNS 劫持和真实域名嗅探，无法保证固定出口族。
 
 ## Cloudflare 凭据图解
 
