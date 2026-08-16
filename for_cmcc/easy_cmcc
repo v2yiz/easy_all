@@ -517,6 +517,15 @@ migrate_legacy_state() {
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     XHTTP_PATH=${XHTTP_PATH:-${TROJAN_WS_PATH:-}}
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${XRAY_TROJAN_LOOPBACK_PORT:-}}
+    normalize_legacy_xhttp_path
+}
+
+normalize_legacy_xhttp_path() {
+    case "${XHTTP_PATH:-}" in
+    /trojan-*)
+        XHTTP_PATH="/xhttp-${XHTTP_PATH#/trojan-}"
+        ;;
+    esac
 }
 
 load_state() {
@@ -2065,6 +2074,7 @@ update_subscription() {
         printf '%s' "${SUB_PORT_MODE:-443}"
     )
     collect_installed_state
+    normalize_legacy_xhttp_path
     if [[ "${prompt_options}" == "1" && -z "${requested_worker_name}" ]]; then
         prompt_worker_name=1
     fi

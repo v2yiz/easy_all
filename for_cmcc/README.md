@@ -5,7 +5,7 @@
 - VLESS + WebSocket + TLS
 - VLESS + XHTTP (`stream-up`) + TLS + HTTP/2
 
-不再提供 Trojan、Reality、AnyTLS 或协议切换。两个节点共用一个 CDN 域名、TLS 证书和 VLESS UUID，但使用独立的随机路径和 Xray 本机端口。已有 v2 的 Trojan WebSocket 状态会在 `update` 时自动迁移：原 Trojan 路径和本机端口直接用于新的 XHTTP 入站，认证改用现有 VLESS UUID。
+不再提供 Trojan、Reality、AnyTLS 或协议切换。两个节点共用一个 CDN 域名、TLS 证书和 VLESS UUID，但使用独立的随机路径和 Xray 本机端口。已有 v2 的 Trojan WebSocket 状态会在 `update` 时自动迁移：原路径的随机后缀会保留，但 `/trojan-` 前缀改为 `/xhttp-`；原本机端口用于新的 XHTTP 入站，认证改用现有 VLESS UUID。已经生成过 v3、但路径仍带旧前缀的状态也会在更新时自动修正。
 
 ```text
 Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443

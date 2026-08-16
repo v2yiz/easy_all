@@ -160,16 +160,20 @@ assert_equal "standalone executable accepts its XHTTP profile" \
     (
         unset XHTTP_NODE_NAME XHTTP_PATH XRAY_XHTTP_LOOPBACK_PORT
         PROTOCOL="dual-ws"
-        TROJAN_WS_PATH="/legacy-trojan-path"
+        TROJAN_WS_PATH="/trojan-legacy-path"
         XRAY_TROJAN_LOOPBACK_PORT="10086"
         migrate_legacy_state "2"
         assert_equal "CMCC migrates the v2 protocol" "vless-ws-xhttp" "${PROTOCOL}"
-        assert_equal "CMCC reuses the v2 Trojan path for XHTTP" \
-            "/legacy-trojan-path" "${XHTTP_PATH}"
+        assert_equal "CMCC converts the v2 Trojan path prefix for XHTTP" \
+            "/xhttp-legacy-path" "${XHTTP_PATH}"
         assert_equal "CMCC reuses the v2 Trojan loopback port for XHTTP" \
             "10086" "${XRAY_XHTTP_LOOPBACK_PORT}"
         assert_equal "CMCC assigns the new XHTTP node name during migration" \
             "VLESS_XHTTP_H2" "${XHTTP_NODE_NAME}"
+        XHTTP_PATH="/trojan-1024265f98bef6e2f9f0b92f"
+        normalize_legacy_xhttp_path
+        assert_equal "CMCC preserves path entropy while replacing the legacy prefix" \
+            "/xhttp-1024265f98bef6e2f9f0b92f" "${XHTTP_PATH}"
     )
     assert_contains "Worker URL uses the CMCC subtree" "${DEFAULT_SAMPLE_WORKER_URL}" "/for_cmcc/sample-worker.js"
     assert_contains "CMCC subscription verification uses Worker version affinity" \
