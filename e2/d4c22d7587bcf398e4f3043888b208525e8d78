@@ -1,0 +1,35 @@
+README.md
+  s_fa4973e674776f::t_8a24fed3f2a05d 101
+for_cmcc/README.md
+  s_fa4973e674776f::t_3f39a0aad4e42e 16,18,20,146,155
+for_cmcc/easy_cmcc
+  s_fa4973e674776f::t_2205e600d4ef12 1018,1041
+for_cmcc/test/test_easy_cmcc.sh
+  s_fa4973e674776f::t_e76bdad3073813 95-96,350-351
+for_cmcc/test/test_sample_worker.mjs
+  s_fa4973e674776f::t_5b73722445b72d 538,540-542
+sample-worker.js
+  s_fa4973e674776f::t_4faf2daf363da5 416,877,880
+test/test_easy_all.sh
+  s_fa4973e674776f::t_118b1f601f676d 93,121-122
+test/test_sample_worker.mjs
+  s_fa4973e674776f::t_987dd226bea5ec 492-494,519,524-527,530,551-554
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e2d4c22d7587bcf398e4f3043888b208525e8d78",
+  "prompts": {},
+  "sessions": {
+    "s_fa4973e674776f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a00aba-9d2c-78f3-92b9-58a5d144f62f",
+        "model": "unknown"
+      },
+      "human_author": "v2yiz <v2yiz@outlook.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
