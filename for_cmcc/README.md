@@ -13,11 +13,11 @@ Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
                                                `-> VLESS XHTTP/H2 -> Xray 127.0.0.1:10086
 ```
 
-## 省电与性能取舍
+## 手动节点选择与省电设置
 
-生成的 Mihomo 配置有一个 `AUTO` 自动测速组和一个 `PROXY` 选择组。`AUTO` 使用 `https://www.gstatic.com/generate_204`、`interval: 300` 与 `lazy: true`；`PROXY` 将 `AUTO` 置于首位，并保留两个节点供手动选择。
+生成的 Mihomo 配置只包含一个 `PROXY` 手动选择组，不生成 `AUTO`、`url-test` 或其他周期测速。`VLESS_WS` 位于首项，用户可在客户端手动切换到 `VLESS_XHTTP_H2`；当前选择由 Mihomo 保存。
 
-> **仅建议在电脑端使用。** 此配置启用 TUN，并包含 `AUTO` 的节点测速；手机端会因此产生持续的后台网络活动、CPU 唤醒和额外耗电。手机上如必须使用，应关闭 TUN 并在 `PROXY` 中手动选择节点，但这不属于本方案的推荐使用方式。
+> **主要建议在电脑端使用。** 配置仍默认启用 TUN；移除周期测速后，手机端不会再由自动节点探测产生持续的后台请求与 CPU 唤醒。手机上如需进一步省电，可关闭 TUN。
 
 客户端固定使用：
 
@@ -143,7 +143,7 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 2. 输出完整 Worker 源码供手动部署。
 3. 只显示节点链接，不生成 Worker，也不询问 Token。
 
-通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `VLESS_XHTTP_H2`。二者同时进入 `AUTO` 和 `PROXY`：默认 `PROXY → AUTO` 自动选择，也可在客户端菜单中改为任一节点。
+通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `VLESS_XHTTP_H2`，并只进入一个 `PROXY` 手动选择组；首次加载默认选中列表首项 `VLESS_WS`，之后沿用用户保存的选择。
 
 局域网 IPv4/IPv6 地址绕过 TUN；紧随其后的规则拒绝所有公网 UDP/443，让应用快速回退到 TCP，避免在 WebSocket/H2 的 TCP 链路外再叠加 QUIC。国内常用服务直连，其余规则进入 `PROXY`。下发的 TUN 使用 `stack: system`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。国内 DNS 使用阿里与腾讯两家独立 DoH（`dns.alidns.com`、`doh.pub`），阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；已确认的境外域名则经 `PROXY` 使用境外 DoH。WS 节点固定使用 `ip-version: ipv4`，XHTTP 节点保留 `ip-version: dual`；顶层 `ipv6: true`，但应用 DNS 保持 `ipv6: false`。
 
@@ -152,7 +152,7 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 - 两个节点都连接失败：确认节点域名已经橙云、SSL/TLS 为 Full (Strict)、证书域名与 SNI 一致。
 - XHTTP 返回 403 或超时：确认 Cloudflare Network 的 HTTP/2 和 gRPC 已开启，客户端版本支持 XHTTP，订阅中的 `mode` 为 `auto` 且 `alpn` 只有 `h2`。
 - 只有一个节点失败：核对该节点订阅路径与 `VLESS_WS_PATH` 或 `XHTTP_PATH` 是否一致，确认客户端没有合并旧配置。
-- Android 仍耗电：确认 `AUTO` 的周期测速是否符合预期；WebSocket 的 smux 已关闭，XHTTP 未启用 XMUX，且不存在 provider 健康检查。
+- Android 仍耗电：确认没有被客户端覆写出 `url-test` 或 provider 健康检查；WebSocket 的 smux 已关闭，XHTTP 未启用 XMUX。
 - YouTube 慢：确认最终配置保留 UDP/443 拒绝规则，使浏览器回退到 TCP；同时测试不同 Cloudflare 边缘与 VPS 回源线路。
 - Worker 自动部署失败：查看 `/etc/easy_cmcc/last-worker-deploy.log`，或执行 `easy_cmcc update-sub` 改用手动输出。
 

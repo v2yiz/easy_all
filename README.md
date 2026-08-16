@@ -98,7 +98,7 @@ Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`u
 
 模板只保留通用局域网适配：`.lan`、`.local` 使用系统 DNS，RFC1918 IPv4、链路本地 IPv4、IPv6 ULA 与链路本地地址显式直连并绕过 TUN。客户端日志使用 `error` 级别，并通过 `find-process-mode: off` 关闭当前规则不需要的进程匹配，减少后台处理开销。TUN 固定使用 `mtu: 1500`；为兼容 Windows TUN + Reality/BWG，使用 `strict-route: false`。UDP/443 拒绝规则位于国内直连、显式规则和 GEOIP 规则之后，仅对尚未命中的流量生效，让浏览器回退到 TCP，同时避免误伤国内直连。
 
-Mihomo 订阅使用阿里与腾讯的 DoH 作为两家独立的国内解析器，阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；不再重复配置同属阿里的 DoH 地址。`AUTO` 是 `url-test` 组，使用 `https://www.gstatic.com/generate_204`、`interval: 300` 和 `lazy: true`；`PROXY` 选择组将 `AUTO` 置于首位，同时保留每个节点供手动切换。单独的 `AI_GEMINI` 组只包含 `DEFAULT_NODE` 的首节点，防止测速切换或上游订阅刷新让同一 Gemini 会话跨 VPS。`geosite:geolocation-!cn` 覆盖的已确认境外域名（包括 Google/Gemini）会在 `nameserver-policy` 中固定使用经 `PROXY` 的境外 DoH，避免解析结果受国内 DoH 影响。代理节点本身仍由国内 `proxy-server-nameserver` 解析，避免启动循环。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
+Mihomo 订阅使用阿里与腾讯的 DoH 作为两家独立的国内解析器，阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；不再重复配置同属阿里的 DoH 地址。订阅不生成 `AUTO` 或其他自动测速组，只保留一个 `PROXY` 手动选择组；列表首项是 `DEFAULT_NODE` 的首节点，当前选择会由 Mihomo 保存。Gemini、其他代理规则和境外 DoH 都跟随这个手动选择，使用 Gemini 时不要中途切换节点。`geosite:geolocation-!cn` 覆盖的已确认境外域名（包括 Google/Gemini）会在 `nameserver-policy` 中固定使用经 `PROXY` 的境外 DoH，避免解析结果受国内 DoH 影响。代理节点本身仍由国内 `proxy-server-nameserver` 解析，避免启动循环。IP 类规则附带 `no-resolve` 并排在域名规则之后，避免额外解析。
 
 仍建议把浏览器的“安全 DNS/使用安全 DNS”设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。客户端和 Xray 会通过普通 HTTP/TLS/QUIC 嗅探修复可见域名的数字 IP 目标，但自定义 DoH/DoT 配合 ECH 时可能同时绕过 DNS 劫持和真实域名嗅探，无法保证固定出口族。
 

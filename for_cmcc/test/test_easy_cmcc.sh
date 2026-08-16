@@ -92,8 +92,8 @@ assert_contains "README downloads the CMCC monolith" "${readme}" \
     "main/for_cmcc/easy_cmcc"
 assert_contains "README documents both CDN nodes" "${readme}" \
     '`VLESS_WS` 和 `VLESS_XHTTP_H2`'
-assert_contains "README documents the AUTO and PROXY groups" "${readme}" \
-    '一个 `AUTO` 自动测速组和一个 `PROXY` 选择组'
+assert_contains "README documents the manual PROXY group" "${readme}" \
+    '只包含一个 `PROXY` 手动选择组'
 assert_contains "README documents power-conscious client settings" "${readme}" \
     '`tcp-concurrent: false`'
 assert_contains "README documents disabled process matching" "${readme}" \
@@ -347,6 +347,8 @@ assert_equal "standalone executable accepts its XHTTP profile" \
         || fail "Xray server must not configure XHTTP extra or XMUX"
     [[ "$(grep -Fc 'heartbeatPeriod: 0' <<<"${installer}")" == "1" ]] \
         || fail "the WebSocket inbound must disable periodic heartbeat"
+    [[ "$(grep -Fc 'routeOnly: false' <<<"${installer}")" == "2" ]] \
+        || fail "both CMCC Xray inbounds must let sniffed Gemini domains replace IP targets"
     assert_contains "Nginx matches the VLESS path exactly" "${installer}" \
         'location = ${VLESS_WS_PATH}'
     assert_contains "Nginx routes the XHTTP path prefix" "${installer}" \

@@ -535,10 +535,11 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal((body.match(/ip-version: "dual"/g) || []).length, 1);
     assert.doesNotMatch(body, /network: grpc|type: trojan/);
     assert.match(body, /^proxy-groups:$/m);
-    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - AUTO\n        - "VLESS_WS"\n        - "VLESS_XHTTP_H2"/);
+    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "VLESS_WS"\n        - "VLESS_XHTTP_H2"/);
     const proxyGroups = body.slice(body.indexOf('proxy-groups:'), body.indexOf('\nrules:'));
-    assert.equal((proxyGroups.match(/^    - name:/gm) || []).length, 2);
-    assert.doesNotMatch(proxyGroups, /- name: (?:GITHUB|GOOGLE|AI_GEMINI|DOWNLOAD|AI)$/m);
+    assert.equal((proxyGroups.match(/^    - name:/gm) || []).length, 1);
+    assert.doesNotMatch(proxyGroups, /- name: (?:AUTO|GITHUB|GOOGLE|AI_GEMINI|DOWNLOAD|AI)$/m);
+    assert.doesNotMatch(proxyGroups, /type: url-test|generate_204/);
     assert.match(body, /DOMAIN-SUFFIX,chatgpt\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,claude\.ai,PROXY/);
     assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
@@ -546,7 +547,6 @@ describe('sample-worker Cloudflare Worker', () => {
 
     assert.equal((body.match(/smux:\n      enabled: false/g) || []).length, 1);
     assert.doesNotMatch(body, /reuse-settings:/);
-    assert.match(proxyGroups, /- name: AUTO\n      type: url-test\n      url: 'https:\/\/www\.gstatic\.com\/generate_204'/);
     assert.doesNotMatch(body, /flow: xtls-rprx-vision/);
     assert.doesNotMatch(body, /reality|anytls/i);
   });

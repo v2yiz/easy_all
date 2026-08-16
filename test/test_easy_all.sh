@@ -90,7 +90,7 @@ for (const part of [
   'DOMAIN-SUFFIX,microsoft.com,DIRECT',
   'DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY',
   'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT',
-  'DOMAIN,gemini.google.com,AI_GEMINI',
+  'DOMAIN,gemini.google.com,PROXY',
   'DOMAIN-SUFFIX,github.com,PROXY',
   'IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve',
   'rule-providers:',
@@ -118,8 +118,8 @@ for (const removedDomain of [
 }
 if (!/^proxy-groups:$/m.test(yaml)) process.exit(1);
 if ((yaml.match(/^\s+- name: PROXY$/gm) || []).length !== 1) process.exit(1);
-if ((yaml.match(/^\s+- name: AI_GEMINI$/gm) || []).length !== 1) process.exit(1);
-if (/^\s+- name: (?:AI|DOWNLOAD)$/m.test(yaml)) process.exit(1);
+if (/^\s+- name: (?:AUTO|AI|AI_GEMINI|DOWNLOAD)$/m.test(yaml)) process.exit(1);
+if (/^\s+type: url-test$/m.test(yaml)) process.exit(1);
 
 const formerKeyResponse = await worker.default.fetch(
   new Request('https://worker.test/subscribe?token=owner'),

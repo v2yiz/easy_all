@@ -489,9 +489,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.doesNotMatch(body, /DOMAIN-SUFFIX,mega\.(?:nz|co\.nz|io|app),/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
-    assert.match(body, /DOMAIN-SUFFIX,google\.com,AI_GEMINI/);
-    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,AI_GEMINI/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.local'$/m);
     assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
@@ -516,20 +516,18 @@ describe('sample-worker Cloudflare Worker', () => {
     }
   });
 
-  it('uses the gstatic generate_204 endpoint for automatic node probing', async () => {
+  it('uses one manual PROXY group without automatic node probing', async () => {
     const response = await fetchSubscribe(`token=${VALID_TOKEN}&flag=clash`);
     const body = await responseText(response);
 
     assert.equal(response.status, 200);
-    assert.match(body, /^    - name: AUTO$/m);
-    assert.match(body, /^      type: url-test$/m);
-    assert.match(body, /^      url: 'https:\/\/www\.gstatic\.com\/generate_204'$/m);
-    assert.match(body, /^      interval: 300$/m);
-    assert.match(body, /^      lazy: true$/m);
-    assert.match(body, /^    - name: PROXY\n      type: select\n      proxies:\n        - AUTO$/m);
+    assert.doesNotMatch(body, /^    - name: AUTO$/m);
+    assert.doesNotMatch(body, /^      type: url-test$/m);
+    assert.doesNotMatch(body, /generate_204/);
+    assert.doesNotMatch(body, /^    - name: AI_GEMINI$/m);
     assert.match(
       body,
-      /^    - name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_REALITY"$/m
+      /^    - name: PROXY\n      type: select\n      proxies:\n        - "NODE_REALITY"$/m
     );
   });
 
@@ -550,13 +548,10 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /port: 10055/);
     assert.doesNotMatch(body, /ip-version:/);
     assert.match(body, /^proxy-groups:$/m);
-    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - AUTO\n        - "NODE_REALITY"/);
-    assert.doesNotMatch(body, /- name: (?:AI|DOWNLOAD)$/m);
-    assert.match(
-      body,
-      /- name: AI_GEMINI\n      type: select\n      proxies:\n        - "NODE_REALITY"/
-    );
-    assert.match(body, /DOMAIN,gemini\.google\.com,AI_GEMINI/);
+    assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - "NODE_REALITY"\n        - "NODE_ANYTLS"/);
+    assert.doesNotMatch(body, /- name: (?:AUTO|AI|AI_GEMINI|DOWNLOAD)$/m);
+    assert.doesNotMatch(body, /type: url-test/);
+    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
   });
 

@@ -413,7 +413,7 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN-SUFFIX,turn.livekit.cloud,AI
 
   # ==================== Gemini / Google ====================
-  # Gemini 依赖的 Google 域名统一进入 AI_GEMINI，并固定使用默认首节点。
+  # Gemini 依赖的 Google 域名统一进入手动选择的 PROXY 组。
   - DOMAIN-SUFFIX,google.com,AI_GEMINI
   - DOMAIN-SUFFIX,googleapis.com,AI_GEMINI
   - DOMAIN-SUFFIX,googleapis.cn,AI_GEMINI
@@ -607,25 +607,10 @@ proxies:
 {proxy_nodes}
 
 proxy-groups:
-    - name: AUTO
-      type: url-test
-      url: 'https://www.gstatic.com/generate_204'
-      interval: 300
-      lazy: true
-      proxies:
-        - {proxy_names}
-
     - name: PROXY
       type: select
       proxies:
-        - AUTO
         - {proxy_names}
-
-    # Gemini 必须始终使用同一台具备固定出口族策略的服务端。
-    - name: AI_GEMINI
-      type: select
-      proxies:
-        - {gemini_proxy_name}
 
 {rule_providers}
 
@@ -884,21 +869,15 @@ function generateClashConfigMulti(configs, ports) {
         proxyNames.push(yamlString(configs[i].name));
     }
 
-    const preferredGeminiConfig = defaultNodeConfigs()[0];
-    const geminiConfig = configs.includes(preferredGeminiConfig)
-        ? preferredGeminiConfig
-        : configs[0];
-
     const sections = {
         fake_ip_filter: FAKE_IP_FILTER,
         proxy_nodes: proxyNodes,
         proxy_names: proxyNames.join('\n        - '),
-        gemini_proxy_name: yamlString(geminiConfig.name),
         rule_providers: EXTERNAL_RULE_PROVIDERS,
-        rules_section: EMBEDDED_CLASH_RULES.replaceAll(/\b(?:DOWNLOAD|AI)\b/g, 'PROXY')
+        rules_section: EMBEDDED_CLASH_RULES.replaceAll(/\b(?:AI_GEMINI|DOWNLOAD|AI)\b/g, 'PROXY')
     };
     return CLASH_CONFIG_TEMPLATE.replace(
-        /{(fake_ip_filter|proxy_nodes|proxy_names|gemini_proxy_name|rule_providers|rules_section)}/g,
+        /{(fake_ip_filter|proxy_nodes|proxy_names|rule_providers|rules_section)}/g,
         (_, section) => sections[section]
     );
 }

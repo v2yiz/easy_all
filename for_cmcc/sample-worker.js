@@ -607,18 +607,9 @@ proxies:
 {proxy_nodes}
 
 proxy-groups:
-    - name: AUTO
-      type: url-test
-      url: 'https://www.gstatic.com/generate_204'
-      interval: 300
-      lazy: true
-      proxies:
-        - {proxy_names}
-
     - name: PROXY
       type: select
       proxies:
-        - AUTO
         - {proxy_names}
 {rule_providers}
 
