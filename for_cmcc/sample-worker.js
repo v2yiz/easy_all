@@ -41,7 +41,9 @@ const NODE_VLESS_WS_CONFIG = defineNode({
     fp: 'chrome',
     sni: 'ws.example.com',
     path: '/vless-change-me',
-    ipVersion: 'dual',
+    maxEarlyData: 2560,
+    earlyDataHeaderName: 'Sec-WebSocket-Protocol',
+    ipVersion: 'ipv4',
     udp: true,
     packetEncoding: 'xudp',
     portMode: '443'
@@ -204,6 +206,9 @@ const EMBEDDED_CLASH_RULES = `rules:
   - IP-CIDR6,::1/128,DIRECT,no-resolve
   - IP-CIDR6,fc00::/7,DIRECT,no-resolve
   - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+
+  # WebSocket/H2 节点均以 TCP 承载；禁止公网 QUIC，强制应用回退到 TCP。
+  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
 
   # ==================== 行情 / 证券客户端直连 ====================
   # 这些域名同时位于 Fake-IP 豁免列表，避免专有长连接依赖虚拟地址映射。
@@ -421,10 +426,7 @@ ${CN_SECURITIES_DIRECT_RULES}
 
   # ==================== Gemini / Google ====================
   # Gemini 依赖的 Google 域名统一进入 PROXY。
-  # WebSocket 公网链路固定为 HTTP/1.1/TCP；先拒绝 YouTube QUIC，让浏览器回退到 TCP，
-  # 避免把 QUIC/UDP 经代理封装进 TCP 后产生嵌套重传和队头阻塞。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,googlevideo.com)),REJECT
-  - AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,youtube.com)),REJECT
+  # WebSocket 公网链路固定为 HTTP/1.1/TCP；顶部规则已禁止公网 UDP/443。
   - DOMAIN-SUFFIX,google.com,PROXY
   - DOMAIN-SUFFIX,googleapis.com,PROXY
   - DOMAIN-SUFFIX,googleapis.cn,PROXY
@@ -498,8 +500,6 @@ ${CN_SECURITIES_DIRECT_RULES}
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
   - GEOIP,CN,DIRECT,no-resolve
-  # 仅拒绝前述规则均未命中的其他 UDP/443，避免误伤国内直连。
-  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - MATCH,PROXY
 `;
 // EASY_CMCC_RULES_END
@@ -645,7 +645,7 @@ const CLASH_VLESS_WS_TLS_NODE_TEMPLATE = `  - name: {name}
       path: {path}
       headers:
         Host: {host}
-    smux:
+{ws_early_data_config}    smux:
       enabled: false
 `;
 
@@ -716,6 +716,34 @@ function nodeNetwork(cfg) {
     return cfg.network || 'tcp';
 }
 
+function webSocketMaxEarlyData(cfg) {
+    const value = Number(cfg.maxEarlyData ?? 0);
+    if (!Number.isInteger(value) || value < 0 || value > 8192) {
+        throw new Error(`Invalid WebSocket maxEarlyData: ${cfg.maxEarlyData}`);
+    }
+    return value;
+}
+
+function webSocketClientPath(cfg) {
+    const path = cfg.path || '/';
+    const maxEarlyData = webSocketMaxEarlyData(cfg);
+    if (maxEarlyData === 0) {
+        return path;
+    }
+    return `${path}${path.includes('?') ? '&' : '?'}ed=${maxEarlyData}`;
+}
+
+function webSocketEarlyDataConfig(cfg) {
+    const maxEarlyData = webSocketMaxEarlyData(cfg);
+    if (maxEarlyData === 0) {
+        return '';
+    }
+    const headerName = yamlString(
+        cfg.earlyDataHeaderName || 'Sec-WebSocket-Protocol'
+    );
+    return `      max-early-data: ${maxEarlyData}\n      early-data-header-name: ${headerName}\n`;
+}
+
 function resolveNodePort(cfg, dynamicPort) {
     if (cfg.port !== undefined && cfg.port !== null && cfg.port !== '') {
         return validatePort(cfg.port, 'node port');
@@ -755,7 +783,7 @@ function createVlessLink(cfg, port) {
     if (network === 'ws') {
         params.set('alpn', 'http/1.1');
         params.set('host', cfg.host);
-        params.set('path', cfg.path || '/');
+        params.set('path', webSocketClientPath(cfg));
         params.set('packetEncoding', cfg.packetEncoding || 'xudp');
     } else if (network === 'xhttp') {
         params.set('alpn', 'h2');
@@ -815,7 +843,8 @@ function renderClashNode(template, cfg, port) {
         path: yamlString(cfg.path || '/'),
         ip_version: yamlString(cfg.ipVersion || 'dual'),
         udp: String(cfg.udp !== false),
-        xhttp_mode: yamlString(cfg.mode || 'stream-one')
+        xhttp_mode: yamlString(cfg.mode || 'stream-one'),
+        ws_early_data_config: webSocketEarlyDataConfig(cfg)
     };
     return template.replace(/{([a-z_]+)}/g, (_, key) => values[key]);
 }

@@ -102,6 +102,10 @@ assert_contains "README documents disabled WebSocket heartbeat" "${readme}" \
     '`heartbeatPeriod: 0`'
 assert_contains "README documents disabled WebSocket multiplexing" "${readme}" \
     '`smux.enabled: false`'
+assert_contains "README documents WebSocket Early Data" "${readme}" \
+    '`max-early-data: 2560`'
+assert_contains "README documents the IPv4-only WebSocket node" "${readme}" \
+    '`ip-version: ipv4`'
 assert_contains "README documents XHTTP stream-one mode" "${readme}" \
     '`mode: stream-one`'
 assert_contains "README documents disabled XHTTP XMUX" "${readme}" \
@@ -292,6 +296,7 @@ assert_equal "standalone executable accepts its XHTTP profile" \
     assert_contains "subscription contains WebSocket" "${links}" "type=ws"
     assert_contains "subscription contains XHTTP" "${links}" "type=xhttp"
     assert_contains "WebSocket includes its path" "${links}" "path=%2Fcmcc-vless-ws"
+    assert_contains "WebSocket enables 2560-byte Early Data" "${links}" "%3Fed%3D2560"
     assert_contains "XHTTP includes its path" "${links}" "path=%2Fcmcc-xhttp"
     assert_contains "WebSocket forces HTTP/1.1" "${links}" "alpn=http%2F1.1"
     assert_contains "XHTTP forces HTTP/2" "${links}" "alpn=h2"
@@ -316,6 +321,12 @@ assert_equal "standalone executable accepts its XHTTP profile" \
         || fail "rendered Worker must include XHTTP"
     grep -Fq '"path":"/cmcc-vless-ws"' "${worker_output}" \
         || fail "rendered Worker must include the VLESS path"
+    grep -Fq '"maxEarlyData":2560' "${worker_output}" \
+        || fail "rendered Worker must configure 2560-byte WebSocket Early Data"
+    grep -Fq '"earlyDataHeaderName":"Sec-WebSocket-Protocol"' "${worker_output}" \
+        || fail "rendered Worker must configure the WebSocket Early Data header"
+    grep -Fq '"ipVersion":"ipv4"' "${worker_output}" \
+        || fail "rendered Worker must pin the WebSocket node to IPv4"
     grep -Fq '"path":"/cmcc-xhttp"' "${worker_output}" \
         || fail "rendered Worker must include the XHTTP path"
     grep -Fq 'const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_VLESS_XHTTP_CONFIG];' "${worker_output}" \
@@ -355,6 +366,7 @@ assert.equal(plain.status, 200);
 const links = Buffer.from(await plain.text(), 'base64').toString('utf8').split('\n');
 assert.equal(links.length, 2);
 assert.match(links[0], /^vless:/);
+assert.equal(new URL(links[0]).searchParams.get('path'), '/cmcc-vless-ws?ed=2560');
 assert.match(links[1], /^vless:/);
 assert.match(links[1], /type=xhttp/);
 const clash = await worker.fetch(new Request(`${baseUrl}&flag=clash`), {});
@@ -365,8 +377,14 @@ assert.match(yaml, /^proxy-groups:$/m);
 assert.match(yaml, /^rules:$/m);
 EOF
     mihomo_nodes=$(build_mihomo_node)
-    assert_contains "Mihomo nodes race dual-stack CDN addresses" "${mihomo_nodes}" \
+    assert_contains "Mihomo WebSocket node uses IPv4" "${mihomo_nodes}" \
+        "ip-version: ipv4"
+    assert_contains "Mihomo XHTTP node keeps dual stack" "${mihomo_nodes}" \
         "ip-version: dual"
+    assert_contains "Mihomo WebSocket enables Early Data" "${mihomo_nodes}" \
+        "max-early-data: 2560"
+    assert_contains "Mihomo WebSocket uses the standard Early Data header" "${mihomo_nodes}" \
+        "early-data-header-name: Sec-WebSocket-Protocol"
     assert_contains "Mihomo nodes use WebSocket options" "${mihomo_nodes}" \
         'ws-opts:'
     assert_contains "Mihomo nodes use XHTTP options" "${mihomo_nodes}" \

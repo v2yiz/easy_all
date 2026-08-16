@@ -45,6 +45,7 @@ readonly PORT_BASE="10000"
 readonly PORT_MULTIPLIER="6"
 readonly DEFAULT_VLESS_NODE_NAME="VLESS_WS"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
+readonly WS_EARLY_DATA_BYTES="2560"
 readonly DEFAULT_WORKER_NAME="easy-cmcc"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_CMCC"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js"
@@ -1192,7 +1193,7 @@ uri_encode() {
 build_vless_ws_link() {
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "${VLESS_CDN_DOMAIN}" "$(uri_encode "${VLESS_WS_PATH}")" "$(uri_encode "${VLESS_NODE_NAME}")"
+        "${VLESS_CDN_DOMAIN}" "$(uri_encode "${VLESS_WS_PATH}?ed=${WS_EARLY_DATA_BYTES}")" "$(uri_encode "${VLESS_NODE_NAME}")"
 }
 
 build_vless_xhttp_link() {
@@ -1217,8 +1218,9 @@ build_mihomo_node() {
             "  - name: \($vless_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-            "    ip-version: dual\n    packet-encoding: xudp\n    alpn:\n      - http/1.1\n    ws-opts:\n" +
+            "    ip-version: ipv4\n    packet-encoding: xudp\n    alpn:\n      - http/1.1\n    ws-opts:\n" +
             "      path: \($vless_path|@json)\n      headers:\n        Host: \($server|@json)\n" +
+            "      max-early-data: 2560\n      early-data-header-name: Sec-WebSocket-Protocol\n" +
             "    smux:\n      enabled: false\n" +
             "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
             "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
@@ -1435,7 +1437,8 @@ write_worker() {
             --arg type vless --arg security tls --arg network ws \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${VLESS_NODE_NAME}" \
             --arg sni "${VLESS_CDN_DOMAIN}" --arg path "${VLESS_WS_PATH}" --arg fp chrome \
-            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,ipVersion:"dual",udp:true,portMode:"443",packetEncoding:"xudp"}')
+            --argjson max_early_data "${WS_EARLY_DATA_BYTES}" \
+            '{type:$type,security:$security,network:$network,uuid:$uuid,host:$host,name:$name,fp:$fp,sni:$sni,path:$path,maxEarlyData:$max_early_data,earlyDataHeaderName:"Sec-WebSocket-Protocol",ipVersion:"ipv4",udp:true,portMode:"443",packetEncoding:"xudp"}')
         xhttp_config_json=$(jq -cn \
             --arg type vless --arg security tls --arg network xhttp \
             --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" --arg name "${XHTTP_NODE_NAME}" \
@@ -2463,7 +2466,8 @@ usage() {
   show|subscription|status|update-core|renew-cert|uninstall
 
 该入口固定同时发布 VLESS WebSocket TLS 与 VLESS XHTTP TLS/H2 两个 CDN 节点，并放入手动 PROXY 组。
-XHTTP 使用 stream-one 且不启用 XMUX；WebSocket 关闭 smux，以控制 Android 后台 CPU 与耗电。
+XHTTP 使用 stream-one 且不启用 XMUX；WebSocket 使用 2560 字节 Early Data、固定 IPv4 并关闭 smux。
+订阅规则在局域网直连规则之后拒绝所有公网 UDP/443，使应用回退到 TCP。
 自动部署可绑定独立 Worker Custom Domain，并由 Cloudflare 自动创建橙云 DNS 与证书。
 EOF
 }

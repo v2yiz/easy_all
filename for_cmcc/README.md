@@ -25,10 +25,10 @@ Mihomo / FLClash -> Cloudflare CDN :443 -> Nginx :443
 - `find-process-mode: off`
 - `sniffer.enable: false`
 - `log-level: error`
-- WebSocket：`smux.enabled: false`、`alpn: [http/1.1]`
+- WebSocket：`max-early-data: 2560`、`early-data-header-name: Sec-WebSocket-Protocol`、`ip-version: ipv4`、`smux.enabled: false`、`alpn: [http/1.1]`
 - XHTTP：`mode: stream-one`、`alpn: [h2]`，不配置 `extra` 或 XMUX
 
-WebSocket 入站设置 `heartbeatPeriod: 0`。XHTTP 使用精简的 `stream-one` 双向流，不下发 `extra`、XMUX 或连接复用参数；Nginx 仍通过 `grpc_pass` 回源，以匹配 HTTP/2 传输。系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这组配置减少额外复用层与连接调度，适用于上海移动经 Cloudflare 边缘回源 RackNerd DC2 的场景。
+WebSocket 入站设置 `heartbeatPeriod: 0`。Early Data 是客户端功能：通用订阅在 WS 路径追加 `?ed=2560`，Mihomo 订阅下发对应的 `max-early-data` 和 `Sec-WebSocket-Protocol` 请求头，服务端和 Nginx 仍匹配不带查询参数的原始路径。XHTTP 使用精简的 `stream-one` 双向流，不下发 `extra`、XMUX 或连接复用参数；Nginx 仍通过 `grpc_pass` 回源，以匹配 HTTP/2 传输。系统侧启用 BBR、`fq`、MTU 探测和长连接拥塞窗口保持。这组配置减少额外复用层与连接调度，适用于上海移动经 Cloudflare 边缘回源 RackNerd DC2 的场景。
 
 ## 准备清单
 
@@ -145,7 +145,7 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 
 通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `VLESS_XHTTP_H2`。二者同时进入 `AUTO` 和 `PROXY`：默认 `PROXY → AUTO` 自动选择，也可在客户端菜单中改为任一节点。
 
-局域网 IPv4/IPv6 地址绕过 TUN，国内常用服务直连，其余规则进入 `PROXY`。下发的 TUN 使用 `stack: system`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。国内 DNS 使用阿里与腾讯两家独立 DoH（`dns.alidns.com`、`doh.pub`），阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；已确认的境外域名则经 `PROXY` 使用境外 DoH。YouTube 与 `googlevideo.com` 的 UDP/443 会先被拒绝，让客户端快速回退到 TCP，避免 WebSocket/TCP 外再叠加 QUIC 重传。节点使用 `ip-version: dual`，顶层 `ipv6: true`，但应用 DNS 保持 `ipv6: false`，兼顾中国移动蜂窝 IPv6 与不完整 IPv6 网络。
+局域网 IPv4/IPv6 地址绕过 TUN；紧随其后的规则拒绝所有公网 UDP/443，让应用快速回退到 TCP，避免在 WebSocket/H2 的 TCP 链路外再叠加 QUIC。国内常用服务直连，其余规则进入 `PROXY`。下发的 TUN 使用 `stack: system`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。国内 DNS 使用阿里与腾讯两家独立 DoH（`dns.alidns.com`、`doh.pub`），阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；已确认的境外域名则经 `PROXY` 使用境外 DoH。WS 节点固定使用 `ip-version: ipv4`，XHTTP 节点保留 `ip-version: dual`；顶层 `ipv6: true`，但应用 DNS 保持 `ipv6: false`。
 
 ## 故障排查
 

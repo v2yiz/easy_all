@@ -108,23 +108,19 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(
       rulesBlock,
       /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/,
-      'unmatched QUIC must fail fast to TCP on Windows'
+      'public QUIC must fail fast to TCP'
     );
-    for (const youtubeDomain of ['googlevideo.com', 'youtube.com']) {
-      const rejectRule = `AND,((NETWORK,UDP),(DST-PORT,443),(DOMAIN-SUFFIX,${youtubeDomain})),REJECT`;
-      const proxyRule = `DOMAIN-SUFFIX,${youtubeDomain},PROXY`;
-      assert.ok(rules.includes(rejectRule), `${youtubeDomain} QUIC must be rejected`);
-      assert.ok(
-        rules.indexOf(rejectRule) < rules.indexOf(proxyRule),
-        `${youtubeDomain} QUIC rejection must precede its proxy rule`
-      );
-    }
+    assert.equal(
+      rules.filter(rule => rule === 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT').length,
+      1,
+      'the global UDP/443 rejection rule must occur exactly once'
+    );
     assert.ok(
-      rulesBlock.indexOf('GEOIP,CN,DIRECT,no-resolve') <
-        rulesBlock.indexOf('AND,((NETWORK,UDP),(DST-PORT,443)),REJECT') &&
-        rulesBlock.indexOf('AND,((NETWORK,UDP),(DST-PORT,443)),REJECT') <
-        rulesBlock.indexOf('MATCH,PROXY'),
-      'QUIC rejection must only be the final fallback before MATCH'
+      rules.indexOf('IP-CIDR6,fe80::/10,DIRECT,no-resolve') <
+        rules.indexOf('AND,((NETWORK,UDP),(DST-PORT,443)),REJECT') &&
+        rules.indexOf('AND,((NETWORK,UDP),(DST-PORT,443)),REJECT') <
+        rules.indexOf('DOMAIN-SUFFIX,apple-relay.apple.com,PROXY'),
+      'UDP/443 rejection must follow LAN bypasses and precede public routing rules'
     );
     assert.ok(
       rules.indexOf('DOMAIN-SUFFIX,apple-relay.apple.com,PROXY') <
@@ -250,7 +246,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(links.length, 2);
     assert.match(links[0], /^vless:\/\/00000000-0000-4000-8000-000000000002@ws\.example\.com:443\?/);
     assert.match(links[0], /type=ws/);
-    assert.match(links[0], /path=%2Fvless-change-me/);
+    assert.equal(new URL(links[0]).searchParams.get('path'), '/vless-change-me?ed=2560');
     assert.match(links[0], /#VLESS_WS$/);
     assert.match(links[1], /^vless:\/\/00000000-0000-4000-8000-000000000002@ws\.example\.com:443\?/);
     assert.match(links[1], /type=xhttp/);
@@ -279,7 +275,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal(response.status, 200);
     assert.equal(links.length, 1);
     assert.match(links[0], /type=ws/);
-    assert.match(links[0], /path=%2Fvless-change-me/);
+    assert.equal(new URL(links[0]).searchParams.get('path'), '/vless-change-me?ed=2560');
   });
 
   it('returns all registered nodes when node=all is requested', async () => {
@@ -293,7 +289,7 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(links[0], /security=tls/);
     assert.match(links[0], /type=ws/);
     assert.match(links[0], /alpn=http%2F1.1/);
-    assert.match(links[0], /path=%2Fvless-change-me/);
+    assert.equal(new URL(links[0]).searchParams.get('path'), '/vless-change-me?ed=2560');
     assert.match(links[0], /packetEncoding=xudp/);
     assert.match(links[0], /#VLESS_WS$/);
     assert.match(links[1], /^vless:/);
@@ -325,6 +321,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.equal((body.match(/network: ws/g) || []).length, 1);
     assert.equal((body.match(/network: xhttp/g) || []).length, 1);
     assert.match(body, /path: "\/vless-change-me"/);
+    assert.match(body, /max-early-data: 2560/);
+    assert.match(body, /early-data-header-name: "Sec-WebSocket-Protocol"/);
+    assert.match(body, /ip-version: "ipv4"/);
     assert.match(body, /path: "\/xhttp-change-me"/);
     assert.match(body, /mode: "stream-one"/);
     assert.match(body, /alpn:\n      - h2/);
@@ -532,7 +531,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /packet-encoding: xudp/);
     assert.equal((body.match(/alpn:\n      - http\/1\.1/g) || []).length, 1);
     assert.equal((body.match(/alpn:\n      - h2/g) || []).length, 1);
-    assert.equal((body.match(/ip-version: "dual"/g) || []).length, 2);
+    assert.equal((body.match(/ip-version: "ipv4"/g) || []).length, 1);
+    assert.equal((body.match(/ip-version: "dual"/g) || []).length, 1);
     assert.doesNotMatch(body, /network: grpc|type: trojan/);
     assert.match(body, /^proxy-groups:$/m);
     assert.match(body, /- name: PROXY\n      type: select\n      proxies:\n        - AUTO\n        - "VLESS_WS"\n        - "VLESS_XHTTP_H2"/);
