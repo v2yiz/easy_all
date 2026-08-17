@@ -195,7 +195,7 @@ const EXTERNAL_RULE_PROVIDERS = `rule-providers:\n${EXTERNAL_RULE_PROVIDER_SPECS
     .join('')}`;
 
 const EMBEDDED_CLASH_RULES = `rules:
-  # ==================== 局域网直连 ====================
+  # ==================== 本地安全前置规则 ====================
   - DOMAIN-SUFFIX,local,DIRECT
   - DOMAIN-SUFFIX,localhost,DIRECT
   - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
@@ -207,15 +207,13 @@ const EMBEDDED_CLASH_RULES = `rules:
   - IP-CIDR6,fc00::/7,DIRECT,no-resolve
   - IP-CIDR6,fe80::/10,DIRECT,no-resolve
 
-  # WebSocket/H2 节点均以 TCP 承载；禁止公网 QUIC，强制应用回退到 TCP。
+  # WS/XHTTP 均以 TCP 承载；公网 QUIC 必须先于所有代理规则拒绝。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
 
-  # ==================== 行情 / 证券客户端直连 ====================
-  # 这些域名同时位于 Fake-IP 豁免列表，避免专有长连接依赖虚拟地址映射。
+  # 行情域名同时保留 Fake-IP 豁免与显式直连。
 ${CN_SECURITIES_DIRECT_RULES}
 
-  # ==================== 精确代理例外 ====================
-  # 必须位于 Apple、Microsoft 的直连规则之前。
+  # Apple Relay 与 Copilot 例外必须先于 Apple/Microsoft 远程规则。
   - DOMAIN-SUFFIX,apple-relay.akamaized.net,PROXY
   - DOMAIN-SUFFIX,apple-relay.apple.com,PROXY
   - DOMAIN-SUFFIX,apple-relay.cloudflare.com,PROXY
@@ -238,249 +236,90 @@ ${CN_SECURITIES_DIRECT_RULES}
   - DOMAIN-SUFFIX,edgeservices.bing.com,PROXY
   - DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY
 
-  # ==================== 国内高流量服务直连 ====================
-  # DOMAIN-SUFFIX 覆盖主域及其所有子域；客户端模板默认只请求 IPv4。
-  # 视频 / 直播：哔哩哔哩、爱奇艺、优酷、抖音、西瓜、快手
-  - DOMAIN-SUFFIX,bilibili.com,DIRECT
-  - DOMAIN-SUFFIX,b23.tv,DIRECT
-  - DOMAIN-SUFFIX,bilivideo.com,DIRECT
-  - DOMAIN-SUFFIX,bilivideo.cn,DIRECT
-  - DOMAIN-SUFFIX,hdslb.com,DIRECT
-  - DOMAIN-SUFFIX,biliapi.net,DIRECT
-  - DOMAIN-SUFFIX,biliapi.com,DIRECT
-  - DOMAIN-SUFFIX,acgvideo.com,DIRECT
-  - DOMAIN-SUFFIX,iqiyi.com,DIRECT
-  - DOMAIN-SUFFIX,qiyi.com,DIRECT
-  - DOMAIN-SUFFIX,qiyipic.com,DIRECT
-  - DOMAIN-SUFFIX,iqiyipic.com,DIRECT
-  - DOMAIN-SUFFIX,youku.com,DIRECT
-  - DOMAIN-SUFFIX,ykimg.com,DIRECT
-  - DOMAIN-SUFFIX,douyin.com,DIRECT
-  - DOMAIN-SUFFIX,douyincdn.com,DIRECT
-  - DOMAIN-SUFFIX,douyinpic.com,DIRECT
-  - DOMAIN-SUFFIX,douyinstatic.com,DIRECT
-  - DOMAIN-SUFFIX,byteimg.com,DIRECT
-  - DOMAIN-SUFFIX,pstatp.com,DIRECT
-  - DOMAIN-SUFFIX,snssdk.com,DIRECT
-  - DOMAIN-SUFFIX,toutiao.com,DIRECT
-  - DOMAIN-SUFFIX,ixigua.com,DIRECT
-  - DOMAIN-SUFFIX,ixiguavideo.com,DIRECT
-  - DOMAIN-SUFFIX,kuaishou.com,DIRECT
-  - DOMAIN-SUFFIX,gifshow.com,DIRECT
-  - DOMAIN-SUFFIX,ks-cdn.com,DIRECT
-  - DOMAIN-SUFFIX,kwaicdn.com,DIRECT
-
-  # 社区 / 图片：知乎、小红书、微博
-  - DOMAIN-SUFFIX,zhihu.com,DIRECT
-  - DOMAIN-SUFFIX,zhimg.com,DIRECT
-  - DOMAIN-SUFFIX,xiaohongshu.com,DIRECT
-  - DOMAIN-SUFFIX,xhscdn.com,DIRECT
-  - DOMAIN-SUFFIX,xhslink.com,DIRECT
-  - DOMAIN-SUFFIX,weibo.com,DIRECT
-  - DOMAIN-SUFFIX,weibo.cn,DIRECT
-  - DOMAIN-SUFFIX,sina.com.cn,DIRECT
-  - DOMAIN-SUFFIX,sinaimg.cn,DIRECT
-
-  # 腾讯 / 百度 / 网易及常用云 CDN
-  - DOMAIN-SUFFIX,qq.com,DIRECT
-  - DOMAIN-SUFFIX,gtimg.com,DIRECT
-  - DOMAIN-SUFFIX,gtimg.cn,DIRECT
-  - DOMAIN-SUFFIX,qpic.cn,DIRECT
-  - DOMAIN-SUFFIX,qlogo.cn,DIRECT
-  - DOMAIN-SUFFIX,weixin.qq.com,DIRECT
-  - DOMAIN-SUFFIX,wechat.com,DIRECT
-  - DOMAIN-SUFFIX,myqcloud.com,DIRECT
-  - DOMAIN-SUFFIX,qcloud.com,DIRECT
-  - DOMAIN-SUFFIX,baidu.com,DIRECT
-  - DOMAIN-SUFFIX,bdimg.com,DIRECT
-  - DOMAIN-SUFFIX,bdstatic.com,DIRECT
-  - DOMAIN-SUFFIX,bcebos.com,DIRECT
-  - DOMAIN-SUFFIX,163.com,DIRECT
-  - DOMAIN-SUFFIX,126.com,DIRECT
-  - DOMAIN-SUFFIX,126.net,DIRECT
-  - DOMAIN-SUFFIX,127.net,DIRECT
-
-  # 电商 / 本地生活及其静态资源
-  - DOMAIN-SUFFIX,taobao.com,DIRECT
-  - DOMAIN-SUFFIX,tmall.com,DIRECT
-  - DOMAIN-SUFFIX,alibaba.com,DIRECT
-  - DOMAIN-SUFFIX,alikunlun.com,DIRECT
-  - DOMAIN-SUFFIX,alipay.com,DIRECT
-  - DOMAIN-SUFFIX,alicdn.com,DIRECT
-  - DOMAIN-SUFFIX,tbcdn.cn,DIRECT
-  - DOMAIN-SUFFIX,jd.com,DIRECT
-  - DOMAIN-SUFFIX,jdcdn.com,DIRECT
-  - DOMAIN-SUFFIX,360buyimg.com,DIRECT
-  - DOMAIN-SUFFIX,pinduoduo.com,DIRECT
-  - DOMAIN-SUFFIX,yangkeduo.com,DIRECT
-  - DOMAIN-SUFFIX,meituan.com,DIRECT
-  - DOMAIN-SUFFIX,meituan.net,DIRECT
-  - DOMAIN-SUFFIX,dianping.com,DIRECT
-
-  # 地图 / 出行 / 办公及常用国内服务
-  - DOMAIN-SUFFIX,amap.com,DIRECT
-  - DOMAIN-SUFFIX,autonavi.com,DIRECT
-  - DOMAIN-SUFFIX,ctrip.com,DIRECT
-  - DOMAIN-SUFFIX,dingtalk.com,DIRECT
-  - DOMAIN-SUFFIX,douban.com,DIRECT
-  - DOMAIN-SUFFIX,doubanio.com,DIRECT
-  - DOMAIN-SUFFIX,ksosoft.com,DIRECT
-  - DOMAIN-SUFFIX,mi-img.com,DIRECT
-  - DOMAIN-SUFFIX,miui.com,DIRECT
-  - DOMAIN-SUFFIX,xiaomi.com,DIRECT
-
-  # ==================== Apple 直连 ====================
-  - DOMAIN,www-cdn.icloud.com.akadns.net,DIRECT
-  - DOMAIN-SUFFIX,aaplimg.com,DIRECT
-  - DOMAIN-SUFFIX,apple-cloudkit.com,DIRECT
-  - DOMAIN-SUFFIX,apple.co,DIRECT
-  - DOMAIN-SUFFIX,apple.com,DIRECT
-  - DOMAIN-SUFFIX,apple.news,DIRECT
-  - DOMAIN-SUFFIX,apple.com.cn,DIRECT
-  - DOMAIN-SUFFIX,appstore.com,DIRECT
-  - DOMAIN-SUFFIX,cdn-apple.com,DIRECT
-  - DOMAIN-SUFFIX,icloud-content.com,DIRECT
-  - DOMAIN-SUFFIX,icloud.com,DIRECT
-  - DOMAIN-SUFFIX,icloud.com.cn,DIRECT
-  - DOMAIN-SUFFIX,me.com,DIRECT
-  - DOMAIN-SUFFIX,mzstatic.com,DIRECT
-  - IP-CIDR,17.0.0.0/8,DIRECT,no-resolve
-  - IP-CIDR6,2620:149::/32,DIRECT,no-resolve
-  - IP-CIDR6,2403:300::/32,DIRECT,no-resolve
-  - IP-CIDR6,2a01:b740::/32,DIRECT,no-resolve
-
-  # ==================== Microsoft 精确分流 ====================
-  - DOMAIN-SUFFIX,microsoft.com,DIRECT
-  - DOMAIN-SUFFIX,outlook.com,DIRECT
-  - DOMAIN-SUFFIX,office365.com,DIRECT
-  - DOMAIN-SUFFIX,visualstudio.com,DIRECT
-  - DOMAIN-SUFFIX,windows.com,DIRECT
-  - DOMAIN-SUFFIX,windowsupdate.com,DIRECT
-  - DOMAIN-SUFFIX,msftconnecttest.com,DIRECT
-  - DOMAIN-SUFFIX,live.com,PROXY
-  - DOMAIN-SUFFIX,office.com,PROXY
-
-  # ==================== 出口 / DNS 隐私检测 ====================
-  # 检测站必须始终观察代理出口，不能被远程 DIRECT 规则抢先命中。
+  # ==================== XFLASH 主体规则 ====================
+  - DOMAIN,www.xflash.work,DIRECT
+  - DOMAIN,ssl.gstatic.com,DIRECT
+  - DOMAIN-SUFFIX,gstatic.com,PROXY
   - DOMAIN-SUFFIX,ipleak.net,PROXY
   - DOMAIN-SUFFIX,browserscan.net,PROXY
   - DOMAIN-SUFFIX,surfsharkdns.com,PROXY
   - DOMAIN-SUFFIX,edns.ip-api.com,PROXY
   - DOMAIN-SUFFIX,dnsleaktest.com,PROXY
   - DOMAIN-SUFFIX,dnsleak.com,PROXY
-  - DOMAIN-SUFFIX,browserleaks.com,PROXY
-  - DOMAIN-SUFFIX,browserleaks.org,PROXY
-  - DOMAIN-SUFFIX,browserleaks.net,PROXY
   - DOMAIN-SUFFIX,expressvpn.com,PROXY
   - DOMAIN-SUFFIX,nordvpn.com,PROXY
   - DOMAIN-SUFFIX,surfshark.com,PROXY
   - DOMAIN-SUFFIX,perfect-privacy.com,PROXY
+  - DOMAIN-SUFFIX,browserleaks.com,PROXY
+  - DOMAIN-SUFFIX,browserleaks.org,PROXY
+  - DOMAIN-SUFFIX,browserleaks.net,PROXY
   - DOMAIN-SUFFIX,vpnunlimited.com,PROXY
   - DOMAIN-SUFFIX,whoer.net,PROXY
   - DOMAIN-SUFFIX,whrq.net,PROXY
-
-  # ==================== AI 服务 ====================
-  - DOMAIN-SUFFIX,ai.com,PROXY
-  - DOMAIN-SUFFIX,algolia.net,PROXY
-  - DOMAIN-SUFFIX,chatgpt.com,PROXY
-  - DOMAIN-SUFFIX,openai.com,PROXY
-  - DOMAIN-SUFFIX,oaistatic.com,PROXY
-  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
-  - DOMAIN-SUFFIX,sora.com,PROXY
-  - DOMAIN-SUFFIX,anthropic.com,PROXY
-  - DOMAIN-SUFFIX,claude.ai,PROXY
-  - DOMAIN-SUFFIX,claude.com,PROXY
-  - DOMAIN-SUFFIX,claudeusercontent.com,PROXY
-  - DOMAIN-SUFFIX,jetbrains.ai,PROXY
-  - DOMAIN-SUFFIX,razie.ai,PROXY
-  - DOMAIN-SUFFIX,razie.aws.intellij.net,PROXY
-  - DOMAIN-SUFFIX,meta.com,PROXY
-  - DOMAIN,gemini.google.com,PROXY
-  - DOMAIN,aistudio.google.com,PROXY
-  - DOMAIN,ai.google.dev,PROXY
-  - DOMAIN-SUFFIX,generativeai.google,PROXY
-  - DOMAIN,api.statsig.com,PROXY
+  - DOMAIN-SUFFIX,asmr.one,PROXY
   - DOMAIN,browser-intake-datadoghq.com,PROXY
   - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
   - DOMAIN,openai-api.arkoselabs.com,PROXY
   - DOMAIN,openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net,PROXY
   - DOMAIN,openaicomproductionae4b.blob.core.windows.net,PROXY
   - DOMAIN,production-openaicom-storage.azureedge.net,PROXY
+  - DOMAIN,static.cloudflareinsights.com,PROXY
+  - DOMAIN-SUFFIX,ai.com,PROXY
+  - DOMAIN-SUFFIX,algolia.net,PROXY
+  - DOMAIN-SUFFIX,api.statsig.com,PROXY
   - DOMAIN-SUFFIX,auth0.com,PROXY
-  - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
+  - DOMAIN-SUFFIX,chatgpt.com,PROXY
   - DOMAIN-SUFFIX,chatgpt.livekit.cloud,PROXY
   - DOMAIN-SUFFIX,client-api.arkoselabs.com,PROXY
   - DOMAIN-SUFFIX,events.statsigapi.net,PROXY
   - DOMAIN-SUFFIX,featuregates.org,PROXY
   - DOMAIN-SUFFIX,host.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,identrust.com,PROXY
   - DOMAIN-SUFFIX,intercom.io,PROXY
   - DOMAIN-SUFFIX,intercomcdn.com,PROXY
   - DOMAIN-SUFFIX,launchdarkly.com,PROXY
+  - DOMAIN-SUFFIX,oaistatic.com,PROXY
+  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
   - DOMAIN-SUFFIX,observeit.net,PROXY
+  - DOMAIN-SUFFIX,openai.com,PROXY
   - DOMAIN-SUFFIX,openaiapi-site.azureedge.net,PROXY
   - DOMAIN-SUFFIX,openaicom.imgix.net,PROXY
   - DOMAIN-SUFFIX,segment.io,PROXY
   - DOMAIN-SUFFIX,sentry.io,PROXY
   - DOMAIN-SUFFIX,stripe.com,PROXY
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
-
-  # ==================== Gemini / Google ====================
-  # Gemini 依赖的 Google 域名统一进入 PROXY。
-  # WebSocket 公网链路固定为 HTTP/1.1/TCP；顶部规则已禁止公网 UDP/443。
-  - DOMAIN-SUFFIX,google.com,PROXY
-  - DOMAIN-SUFFIX,googleapis.com,PROXY
-  - DOMAIN-SUFFIX,googleapis.cn,PROXY
-  - DOMAIN-SUFFIX,googleusercontent.com,PROXY
-  - DOMAIN-SUFFIX,gstatic.com,PROXY
-  # Google Play 的应用包、增量包与图片资源使用独立域名。
-  - DOMAIN-SUFFIX,gvt1.com,PROXY
+  - DOMAIN-SUFFIX,sora.com,PROXY
+  - DOMAIN-KEYWORD,openai,PROXY
+  - DOMAIN,r.bing.com,PROXY
+  - DOMAIN,sydney.bing.com,PROXY
+  - DOMAIN,www.bing.com,PROXY
+  - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
+  - DOMAIN-KEYWORD,openaicom-api,PROXY
   - DOMAIN-SUFFIX,gvt2.com,PROXY
-  - DOMAIN-SUFFIX,gvt3.com,PROXY
-  - DOMAIN-SUFFIX,ggpht.com,PROXY
+  - DOMAIN,ai.google.dev,PROXY
+  - DOMAIN,alkalimakersuite-pa.clients6.google.com,PROXY
+  - DOMAIN,makersuite.google.com,PROXY
+  - DOMAIN-SUFFIX,bard.google.com,PROXY
+  - DOMAIN-SUFFIX,deepmind.com,PROXY
+  - DOMAIN-SUFFIX,deepmind.google,PROXY
+  - DOMAIN-SUFFIX,gemini.google.com,PROXY
+  - DOMAIN-SUFFIX,generativeai.google,PROXY
+  - DOMAIN-SUFFIX,proactivebackend-pa.googleapis.com,PROXY
+  - DOMAIN-SUFFIX,apis.google.com,PROXY
+  - DOMAIN-KEYWORD,colab,PROXY
+  - DOMAIN-KEYWORD,developerprofiles,PROXY
+  - DOMAIN-KEYWORD,generativelanguage,PROXY
+  - DOMAIN,cdn.usefathom.com,PROXY
+  - DOMAIN-SUFFIX,anthropic.com,PROXY
+  - DOMAIN-SUFFIX,claude.ai,PROXY
+  - DOMAIN-SUFFIX,razie.ai,PROXY
+  - DOMAIN-SUFFIX,razie.aws.intellij.net,PROXY
+  - DOMAIN-SUFFIX,jetbrains.ai,PROXY
+  - DOMAIN-SUFFIX,meta.com,PROXY
+  - DOMAIN-SUFFIX,services.googleapis.cn,PROXY
   - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY
-  - DOMAIN-SUFFIX,googlevideo.com,PROXY
-  - DOMAIN-SUFFIX,youtube.com,PROXY
-  - DOMAIN-SUFFIX,ytimg.com,PROXY
-
-  # ==================== GitHub ====================
-  # GitHub 下载会跳转到 codeload.github.com、release-assets.githubusercontent.com
-  # 或 objects.githubusercontent.com；显式代理，避免依赖 GEOSITE / MATCH 兜底。
-  - DOMAIN-SUFFIX,github.com,PROXY
-  - DOMAIN-SUFFIX,githubusercontent.com,PROXY
-  - DOMAIN-SUFFIX,githubassets.com,PROXY
-  - DOMAIN-SUFFIX,githubstatus.com,PROXY
-
-  # ==================== LINE ====================
-  - DOMAIN-SUFFIX,scdn.co,PROXY
-  - DOMAIN-SUFFIX,line.naver.jp,PROXY
-  - DOMAIN-SUFFIX,line.me,PROXY
-  - DOMAIN-SUFFIX,line-apps.com,PROXY
-  - DOMAIN-SUFFIX,line-cdn.net,PROXY
-  - DOMAIN-SUFFIX,line-scdn.net,PROXY
-
-  # ==================== Telegram ====================
-  - DOMAIN-SUFFIX,t.me,PROXY
-  - DOMAIN-SUFFIX,tdesktop.com,PROXY
-  - DOMAIN-SUFFIX,telegra.ph,PROXY
-  - DOMAIN-SUFFIX,telegram.me,PROXY
-  - DOMAIN-SUFFIX,telegram.org,PROXY
-  - DOMAIN-SUFFIX,telesco.pe,PROXY
-  - IP-CIDR,91.105.192.0/23,PROXY,no-resolve
-  - IP-CIDR,91.108.4.0/22,PROXY,no-resolve
-  - IP-CIDR,91.108.8.0/22,PROXY,no-resolve
-  - IP-CIDR,91.108.12.0/22,PROXY,no-resolve
-  - IP-CIDR,91.108.16.0/22,PROXY,no-resolve
-  - IP-CIDR,91.108.20.0/22,PROXY,no-resolve
-  - IP-CIDR,91.108.56.0/22,PROXY,no-resolve
-  - IP-CIDR,109.239.140.0/24,PROXY,no-resolve
-  - IP-CIDR,149.154.160.0/20,PROXY,no-resolve
-  - IP-CIDR,185.76.151.0/24,PROXY,no-resolve
-  - IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve
-  - IP-CIDR6,2001:b28:f23f::/48,PROXY,no-resolve
-  - IP-CIDR6,2001:67c:4e8::/48,PROXY,no-resolve
-
-  # ==================== 外部规则集 ====================
-  # 精确与高频规则优先；官方远程规则补齐长尾，IP 规则禁止额外 DNS 解析。
+  - DOMAIN,clash.razord.top,DIRECT
+  - DOMAIN,yacd.haishan.me,DIRECT
   - RULE-SET,private,DIRECT
   - RULE-SET,icloud,DIRECT
   - RULE-SET,apple,DIRECT
@@ -493,13 +332,10 @@ ${CN_SECURITIES_DIRECT_RULES}
   - RULE-SET,telegramcidr,PROXY,no-resolve
   - RULE-SET,lancidr,DIRECT,no-resolve
   - RULE-SET,cncidr,DIRECT,no-resolve
-
-  # ==================== GEOSITE / GEOIP 兜底 ====================
-  # 客户端内置数据用于远程规则首次下载失败或缓存不可用时的离线兜底。
-  - GEOSITE,geolocation-!cn,PROXY
+  - GEOIP,LAN,DIRECT,no-resolve
+  - GEOIP,CN,DIRECT,no-resolve
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
-  - GEOIP,CN,DIRECT,no-resolve
   - MATCH,PROXY
 `;
 // EASY_CMCC_RULES_END

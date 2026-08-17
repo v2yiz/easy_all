@@ -145,7 +145,7 @@ DNS Token 和 Worker Token 都不会写入 `/etc/easy_cmcc/state.env`。acme.sh 
 
 通用订阅和 Clash Meta 订阅都会同时输出 `VLESS_WS` 和 `VLESS_XHTTP_H2`，并只进入一个 `PROXY` 手动选择组；首次加载默认选中列表首项 `VLESS_WS`，之后沿用用户保存的选择。
 
-局域网 IPv4/IPv6 地址绕过 TUN；紧随其后的规则拒绝所有公网 UDP/443，让应用快速回退到 TCP，避免在 WebSocket/H2 的 TCP 链路外再叠加 QUIC。国内常用服务直连，其余规则进入 `PROXY`。下发的 TUN 使用 `stack: system`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。国内 DNS 使用阿里与腾讯两家独立 DoH（`dns.alidns.com`、`doh.pub`），阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；已确认的境外域名则经 `PROXY` 使用境外 DoH。WS 节点固定使用 `ip-version: ipv4`，XHTTP 节点保留 `ip-version: dual`；顶层 `ipv6: true`，但应用 DNS 保持 `ipv6: false`。
+客户端路由以 XFLASH 规则为主体，并统一把其 `XFLASH` 策略改为单一 `PROXY` 组；关闭进程探测后无效的 `PROCESS-NAME` 和 `applications` 规则不会下发。局域网 IPv4/IPv6 地址绕过 TUN，证券行情域名、Apple Relay 和 Copilot 规则保留为本地前置覆盖。CMCC 的 WS/XHTTP 均由 TCP 承载，因此 XFLASH 尾部的 UDP/443 拒绝被提升到局域网规则之后、所有公网代理规则之前，让应用快速回退到 TCP。下发的 TUN 使用 `stack: system`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。远程规则集继续使用官方 GitHub 地址并保留代理下载与大小限制；国内 DNS 使用阿里与腾讯两家独立 DoH，境外域名经 `PROXY` 使用境外 DoH。WS 节点固定使用 `ip-version: ipv4`，XHTTP 节点保留 `ip-version: dual`；顶层 `ipv6: true`，但应用 DNS 保持 `ipv6: false`。
 
 ## 故障排查
 

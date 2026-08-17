@@ -78,21 +78,19 @@ if (clashResponse.headers.get('content-disposition') !== 'attachment; filename=T
 const yaml = await clashResponse.text();
 for (const part of [
   'external-controller:',
-  'DOMAIN-SUFFIX,bilibili.com,DIRECT',
-  'DOMAIN-SUFFIX,zhihu.com,DIRECT',
-  'DOMAIN-SUFFIX,douyin.com,DIRECT',
+  'DOMAIN,ssl.gstatic.com,DIRECT',
+  'DOMAIN-SUFFIX,gstatic.com,PROXY',
+  'DOMAIN-SUFFIX,chatgpt.com,PROXY',
+  'DOMAIN-KEYWORD,openai,PROXY',
   'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
   'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
   'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
   'IP-CIDR6,fc00::/7,DIRECT,no-resolve',
   'IP-CIDR6,fe80::/10,DIRECT,no-resolve',
   'DOMAIN,copilot.microsoft.com,PROXY',
-  'DOMAIN-SUFFIX,microsoft.com,DIRECT',
   'DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY',
   'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT',
-  'DOMAIN,gemini.google.com,PROXY',
-  'DOMAIN-SUFFIX,github.com,PROXY',
-  'IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve',
+  'DOMAIN-SUFFIX,gemini.google.com,PROXY',
   'rule-providers:',
   'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt',
   'size-limit: 4194304',
@@ -101,12 +99,11 @@ for (const part of [
   'RULE-SET,direct,DIRECT',
   'RULE-SET,telegramcidr,PROXY,no-resolve',
   'RULE-SET,cncidr,DIRECT,no-resolve',
-  'GEOSITE,geolocation-!cn,PROXY',
   'GEOIP,CN,DIRECT,no-resolve'
 ]) {
   if (!yaml.includes(part)) process.exit(1);
 }
-if (/edgeone\.gh-proxy\.org|RULE-SET,applications,|^    applications:/m.test(yaml)) process.exit(1);
+if (/edgeone\.gh-proxy\.org|RULE-SET,applications,|^    applications:|PROCESS-NAME,/m.test(yaml)) process.exit(1);
 for (const removedDomain of [
   'bytedance.net',
   'larkoffice.com',
@@ -802,7 +799,7 @@ test_worker_only_subscription_branch() {
     assert_contains "worker-only branch emits DEFAULT_NODE selector" \
         "const DEFAULT_NODE = NODE_CONFIG;" "${content}"
     assert_contains "worker-only branch uses sample Clash rules" \
-        "DOMAIN-SUFFIX,bilibili.com,DIRECT" "${content}"
+        "DOMAIN,ssl.gstatic.com,DIRECT" "${content}"
     assert_contains "worker-only branch authenticates by token values" \
         "ALLOWED_TOKEN_VALUES.has(token)" "${content}"
     assert_not_contains "worker-only branch does not depend on SUB_TOKEN secret" \

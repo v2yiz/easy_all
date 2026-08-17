@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/test_*.mjs && bash test/test_easy_all.sh && bash test/test_debian_init.sh",
+    "test": "node --test test/test_*.mjs && bash test/test_easy_all.sh && bash test/test_debian_init.sh && bash easy_aws/test/test_easy_aws.sh",
     "test:mihomo": "REQUIRE_MIHOMO_TESTS=1 node --test test/test_sample_worker.mjs"
   }
 }

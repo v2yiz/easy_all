@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="690" viewBox="0 0 1200 690" role="img" aria-labelledby="title desc">
+  <title id="title">Create an AWS IAM access key safely</title>
+  <desc id="desc">Do not create a root access key. Create a customer managed policy, attach it to a group, add a dedicated IAM user to that group, then create a CLI access key.</desc>
+  <defs>
+    <filter id="s"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-opacity=".12"/></filter>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#344563"/></marker>
+    <style>.ttl{font:700 31px system-ui,sans-serif;fill:#172b4d}.sub{font:16px system-ui,sans-serif;fill:#5e6c84}.h{font:700 19px system-ui,sans-serif;fill:#172b4d}.t{font:15px system-ui,sans-serif;fill:#344563}.n{font:700 18px system-ui,sans-serif;fill:white}.box{filter:url(#s);stroke-width:2}.arrow{stroke:#344563;stroke-width:3;fill:none;marker-end:url(#a)}</style>
+  </defs>
+  <rect width="1200" height="690" fill="#f7f9fc"/>
+  <text x="58" y="62" class="ttl">AWS IAM 访问密钥：安全创建路径</text>
+  <text x="58" y="92" class="sub">AWS 凭证是 Access Key ID + Secret Access Key，不是 Cloudflare 式单 Token</text>
+
+  <rect x="58" y="130" width="1084" height="92" rx="16" fill="#ffebe6" stroke="#de350b" stroke-width="2"/>
+  <circle cx="107" cy="176" r="25" fill="#de350b"/><text x="107" y="183" class="n" text-anchor="middle">!</text>
+  <text x="150" y="165" class="h">停止：不要在“我的安全凭证 · 根用户”中点击创建访问密钥</text>
+  <text x="150" y="192" class="t">根密钥拥有整个账户权限。回到 IAM，创建没有控制台密码的专用部署用户。</text>
+
+  <g>
+    <rect class="box" x="40" y="275" width="200" height="180" rx="16" fill="white" stroke="#4c9aff"/>
+    <circle cx="70" cy="309" r="19" fill="#0052cc"/><text x="70" y="316" class="n" text-anchor="middle">1</text>
+    <text x="100" y="315" class="h">创建策略</text><text x="62" y="353" class="t">IAM → 策略</text><text x="62" y="381" class="t">创建策略 → JSON</text><text x="62" y="409" class="sub">EasyAwsDeployPolicy</text><text x="62" y="435" class="sub">限制目标 Zone ID</text>
+
+    <rect class="box" x="270" y="275" width="200" height="180" rx="16" fill="white" stroke="#6554c0"/>
+    <circle cx="300" cy="309" r="19" fill="#6554c0"/><text x="300" y="316" class="n" text-anchor="middle">2</text>
+    <text x="330" y="315" class="h">创建用户组</text><text x="292" y="353" class="t">IAM → 用户组</text><text x="292" y="381" class="t">easy-aws-deployers</text><text x="292" y="409" class="sub">附加上一步策略</text>
+
+    <rect class="box" x="500" y="275" width="200" height="180" rx="16" fill="white" stroke="#ff9900"/>
+    <circle cx="530" cy="309" r="19" fill="#cc7a00"/><text x="530" y="316" class="n" text-anchor="middle">3</text>
+    <text x="560" y="315" class="h">创建用户</text><text x="522" y="353" class="t">easy-aws-deployer</text><text x="522" y="381" class="t">选择“添加用户到组”</text><text x="522" y="409" class="sub">不启用控制台访问</text><text x="522" y="435" class="sub">不设置权限边界</text>
+
+    <rect class="box" x="730" y="275" width="200" height="180" rx="16" fill="white" stroke="#36b37e"/>
+    <circle cx="760" cy="309" r="19" fill="#00875a"/><text x="760" y="316" class="n" text-anchor="middle">4</text>
+    <text x="790" y="315" class="h">安全凭证</text><text x="752" y="353" class="t">访问密钥</text><text x="752" y="381" class="t">创建访问密钥</text><text x="752" y="409" class="sub">用例选择 CLI</text>
+
+    <rect class="box" x="960" y="275" width="200" height="180" rx="16" fill="white" stroke="#36b37e"/>
+    <circle cx="990" cy="309" r="19" fill="#00875a"/><text x="990" y="316" class="n" text-anchor="middle">5</text>
+    <text x="1020" y="315" class="h">安全保存</text><text x="982" y="353" class="t">Access Key ID</text><text x="982" y="381" class="t">Secret Access Key</text><text x="982" y="409" class="sub">Secret 仅显示一次</text>
+  </g>
+  <path class="arrow" d="M240 365h18"/><path class="arrow" d="M470 365h18"/><path class="arrow" d="M700 365h18"/><path class="arrow" d="M930 365h18"/>
+
+  <rect x="158" y="515" width="884" height="116" rx="18" fill="#e3fcef" stroke="#36b37e" stroke-width="2"/>
+  <text x="600" y="554" class="h" text-anchor="middle">交给 easy_aws 的当前进程</text>
+  <text x="600" y="583" class="t" text-anchor="middle">交互输入不回显，或临时导出 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY</text>
+  <text x="600" y="609" class="sub" text-anchor="middle">凭证不会写入 state.env、Worker、README、截图或 Git</text>
+</svg>

@@ -62,10 +62,10 @@ export function assertExternalRuleProviders(yaml) {
   }
   assert.match(yaml, /^      - '\+\.futooncdn\.com'$/m);
   assert.ok(
-    yaml.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') < yaml.indexOf('RULE-SET,private,DIRECT') &&
+    yaml.indexOf('DOMAIN-SUFFIX,10jqka.com.cn,DIRECT') < yaml.indexOf('RULE-SET,private,DIRECT') &&
       yaml.indexOf('DOMAIN-SUFFIX,ipleak.net,PROXY') < yaml.indexOf('RULE-SET,direct,DIRECT') &&
       yaml.indexOf('RULE-SET,cncidr,DIRECT,no-resolve') <
-        yaml.indexOf('GEOSITE,geolocation-!cn,PROXY'),
-    'embedded hot-path rules must precede providers, and geodata must remain the offline fallback'
+        yaml.indexOf('GEOIP,CN,DIRECT,no-resolve'),
+    'local safety rules must precede XFLASH providers and geodata fallbacks'
   );
 }

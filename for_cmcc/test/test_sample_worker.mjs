@@ -124,11 +124,11 @@ describe('sample-worker Cloudflare Worker', () => {
     );
     assert.ok(
       rules.indexOf('DOMAIN-SUFFIX,apple-relay.apple.com,PROXY') <
-      rules.indexOf('DOMAIN-SUFFIX,apple.com,DIRECT')
+      rules.indexOf('RULE-SET,apple,DIRECT')
     );
     assert.ok(
       rules.indexOf('DOMAIN,copilot.microsoft.com,PROXY') <
-      rules.indexOf('DOMAIN-SUFFIX,microsoft.com,DIRECT')
+      rules.indexOf('RULE-SET,direct,DIRECT')
     );
     for (const googlePlayDomain of [
       'googleapis.cn',
@@ -139,25 +139,12 @@ describe('sample-worker Cloudflare Worker', () => {
       'xn--ngstr-lra8j.com'
     ]) {
       assert.ok(
-        rules.includes(`DOMAIN-SUFFIX,${googlePlayDomain},PROXY`),
-        `${googlePlayDomain} must use PROXY`
-      );
-      assert.ok(
         source.includes(`          - '+.${googlePlayDomain}'`),
         `${googlePlayDomain} must use fallback DNS`
       );
     }
-    for (const githubDomain of [
-      'github.com',
-      'githubusercontent.com',
-      'githubassets.com',
-      'githubstatus.com'
-    ]) {
-      assert.ok(
-        rules.includes(`DOMAIN-SUFFIX,${githubDomain},PROXY`),
-        `${githubDomain} must use PROXY`
-      );
-    }
+    assert.ok(rules.includes('DOMAIN-SUFFIX,gvt2.com,PROXY'));
+    assert.ok(rules.includes('DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY'));
     for (const githubDownloadDomain of [
       'github.com',
       'githubusercontent.com',
@@ -168,7 +155,12 @@ describe('sample-worker Cloudflare Worker', () => {
         `${githubDownloadDomain} must use fallback DNS`
       );
     }
-    assert.ok(rules.includes('IP-CIDR6,2001:b28:f23d::/48,PROXY,no-resolve'));
+    assert.ok(rules.includes('RULE-SET,telegramcidr,PROXY,no-resolve'));
+    assert.ok(rules.includes('DOMAIN,ssl.gstatic.com,DIRECT'));
+    assert.ok(rules.includes('DOMAIN-SUFFIX,gstatic.com,PROXY'));
+    assert.ok(rules.includes('DOMAIN-KEYWORD,openai,PROXY'));
+    assert.equal(rules.some(rule => rule.startsWith('PROCESS-NAME,')), false);
+    assert.equal(rules.includes('RULE-SET,applications,DIRECT'), false);
     assert.equal(rules.some(rule => /^IP-CIDR,[^,]*:/.test(rule)), false);
     assert.equal(rules.some(rule => /24\.199\.123\.28|45\.76\.214\.191/.test(rule)), false);
   });
@@ -329,21 +321,20 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /alpn:\n      - h2/);
     assert.doesNotMatch(body, /reuse-settings:|max-connections:|c-max-reuse-times:|h-max-request-times:|h-max-reusable-secs:|h-keep-alive-period:/);
     assert.doesNotMatch(body, /network: grpc|type: trojan/);
-    assert.match(body, /DOMAIN-SUFFIX,bilibili\.com,DIRECT/);
-    assert.match(body, /DOMAIN-SUFFIX,zhihu\.com,DIRECT/);
-    assert.match(body, /DOMAIN-SUFFIX,douyin\.com,DIRECT/);
+    assert.match(body, /DOMAIN,ssl\.gstatic\.com,DIRECT/);
+    assert.match(body, /DOMAIN-SUFFIX,gstatic\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,chatgpt\.com,PROXY/);
     assert.match(body, /DOMAIN,copilot\.microsoft\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,microsoft\.com,DIRECT/);
     assert.match(body, /DOMAIN-SUFFIX,apple-relay\.fastly-edge\.com,PROXY/);
-    assert.match(body, /IP-CIDR6,2001:b28:f23d::\/48,PROXY,no-resolve/);
+    assert.match(body, /RULE-SET,telegramcidr,PROXY,no-resolve/);
     assert.match(body, /GEOIP,CN,DIRECT,no-resolve/);
     assert.match(body, /AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT/);
     assertExternalRuleProviders(body);
-    assert.doesNotMatch(body, /DOMAIN-KEYWORD,/);
+    assert.match(body, /DOMAIN-KEYWORD,openai,PROXY/);
     assert.doesNotMatch(body, /PROCESS-NAME,/);
     assert.ok(
-      body.indexOf('DOMAIN-SUFFIX,bilibili.com,DIRECT') <
-      body.indexOf('GEOSITE,geolocation-!cn,PROXY')
+      body.indexOf('DOMAIN-SUFFIX,10jqka.com.cn,DIRECT') <
+      body.indexOf('RULE-SET,private,DIRECT')
     );
     assert.doesNotMatch(body, /reality|anytls/i);
   });
@@ -445,8 +436,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.match(body, /DOMAIN-SUFFIX,nesc\.cn,DIRECT/);
     assert.ok(
       body.indexOf('DOMAIN-SUFFIX,10jqka.com.cn,DIRECT') <
-      body.indexOf('GEOSITE,geolocation-!cn,PROXY'),
-      'explicit securities rules must take precedence over GeoSite fallbacks'
+      body.indexOf('RULE-SET,private,DIRECT'),
+      'explicit securities rules must take precedence over XFLASH providers'
     );
     assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
     assert.match(nameserverPolicy, /^\s+'\+\.local': system$/m);
@@ -488,9 +479,9 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.nz'$/m);
     assert.doesNotMatch(fakeIpFilter, /^\s+- '\+\.mega\.app'$/m);
     assert.doesNotMatch(body, /DOMAIN-SUFFIX,mega\.(?:nz|co\.nz|io|app),/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,googleapis\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,gemini\.google\.com,PROXY/);
+    assert.match(body, /DOMAIN,ai\.google\.dev,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,generativeai\.google,PROXY/);
     assert.match(fakeIpFilter, /^\s+- '\+\.lan'$/m);
     assert.match(fakeIpFilter, /^\s+- '\+\.local'$/m);
     assert.match(nameserverPolicy, /^\s+'\+\.lan': system$/m);
@@ -542,8 +533,8 @@ describe('sample-worker Cloudflare Worker', () => {
     assert.doesNotMatch(proxyGroups, /type: url-test|generate_204/);
     assert.match(body, /DOMAIN-SUFFIX,chatgpt\.com,PROXY/);
     assert.match(body, /DOMAIN-SUFFIX,claude\.ai,PROXY/);
-    assert.match(body, /DOMAIN,gemini\.google\.com,PROXY/);
-    assert.match(body, /DOMAIN-SUFFIX,github\.com,PROXY/);
+    assert.match(body, /DOMAIN-SUFFIX,gemini\.google\.com,PROXY/);
+    assert.match(body, /RULE-SET,proxy,PROXY/);
 
     assert.equal((body.match(/smux:\n      enabled: false/g) || []).length, 1);
     assert.doesNotMatch(body, /reuse-settings:/);

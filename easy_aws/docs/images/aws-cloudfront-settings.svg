@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">CloudFront settings for VLESS WebSocket</title>
+  <desc id="desc">Viewer, cache behavior, and custom origin settings required for VLESS WebSocket through CloudFront.</desc>
+  <defs><filter id="s"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-opacity=".11"/></filter><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#344563"/></marker><style>.ttl{font:700 31px system-ui,sans-serif;fill:#172b4d}.sub{font:16px system-ui,sans-serif;fill:#5e6c84}.h{font:700 20px system-ui,sans-serif;fill:#172b4d}.t{font:15px system-ui,sans-serif;fill:#344563}.mono{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#172b4d}.box{filter:url(#s);stroke-width:2}.arrow{stroke:#344563;stroke-width:3;fill:none;marker-end:url(#a)}</style></defs>
+  <rect width="1200" height="760" fill="#f7f9fc"/>
+  <text x="58" y="62" class="ttl">CloudFront · VLESS WebSocket 必要设置</text>
+  <text x="58" y="93" class="sub">脚本通过 AWS CLI 自动生成同等配置</text>
+
+  <rect class="box" x="50" y="148" width="305" height="450" rx="18" fill="#fff" stroke="#4c9aff"/>
+  <rect x="50" y="148" width="305" height="65" rx="18" fill="#deebff"/><text x="202" y="189" class="h" text-anchor="middle">Viewer / General</text>
+  <text x="78" y="252" class="t">Alternate domain name</text><text x="78" y="278" class="mono">node.example.com</text>
+  <text x="78" y="323" class="t">Custom SSL certificate</text><text x="78" y="349" class="mono">ACM · us-east-1</text>
+  <text x="78" y="394" class="t">Security policy</text><text x="78" y="420" class="mono">TLSv1.2_2021</text>
+  <text x="78" y="465" class="t">Viewer protocol policy</text><text x="78" y="491" class="mono">HTTPS only</text>
+  <text x="78" y="536" class="t">Supported HTTP</text><text x="78" y="562" class="mono">HTTP/2 + HTTP/1.1</text>
+
+  <rect class="box" x="448" y="115" width="305" height="515" rx="18" fill="#fff" stroke="#ff9900"/>
+  <rect x="448" y="115" width="305" height="65" rx="18" fill="#fff0d5"/><text x="600" y="156" class="h" text-anchor="middle">Default Behavior</text>
+  <text x="476" y="220" class="t">Allowed HTTP methods</text><text x="476" y="246" class="mono">GET HEAD</text><text x="476" y="269" class="sub">WebSocket 握手使用 GET</text>
+  <text x="476" y="314" class="t">Cache policy</text><text x="476" y="340" class="mono">CachingDisabled</text>
+  <text x="476" y="385" class="t">Origin request policy</text><text x="476" y="411" class="mono">AllViewerExceptHostHeader</text>
+  <rect x="474" y="448" width="252" height="112" rx="12" fill="#e3fcef" stroke="#36b37e"/>
+  <text x="600" y="477" class="h" text-anchor="middle">WebSocket 关键</text><text x="600" y="505" class="t" text-anchor="middle">转发 Sec-WebSocket-*</text><text x="600" y="531" class="t" text-anchor="middle">保留 Early Data 请求头</text>
+  <text x="600" y="600" class="sub" text-anchor="middle">Viewer Host 不回源</text>
+
+  <rect class="box" x="845" y="148" width="305" height="450" rx="18" fill="#fff" stroke="#36b37e"/>
+  <rect x="845" y="148" width="305" height="65" rx="18" fill="#e3fcef"/><text x="997" y="189" class="h" text-anchor="middle">Custom Origin</text>
+  <text x="873" y="252" class="t">Origin domain</text><text x="873" y="278" class="mono">origin.example.com</text>
+  <text x="873" y="323" class="t">Protocol / Port</text><text x="873" y="349" class="mono">HTTPS only · 443</text>
+  <text x="873" y="394" class="t">Minimum origin SSL</text><text x="873" y="420" class="mono">TLSv1.2</text>
+  <text x="873" y="465" class="t">Origin custom header</text><text x="873" y="491" class="mono">X-Easy-Aws-Origin-Key</text>
+  <text x="873" y="536" class="t">Origin Host / SNI</text><text x="873" y="562" class="mono">origin.example.com</text>
+
+  <path class="arrow" d="M355 374h81"/><path class="arrow" d="M753 374h80"/>
+  <rect x="190" y="680" width="820" height="48" rx="12" fill="#ffebe6" stroke="#de350b"/>
+  <text x="600" y="710" class="t" text-anchor="middle">不要选择会缓存动态请求的策略，也不要把 Viewer Host 原样转发到 HTTPS 源站</text>
+</svg>
