@@ -13,3 +13,4 @@ state.env
 *.token
 subscribe-worker.js
 worker.js
+worker_follow.js
