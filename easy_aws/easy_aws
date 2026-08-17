@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Standalone installer for VLESS WebSocket over AWS CloudFront.
+# Standalone installer for VLESS WebSocket and XHTTP over AWS CloudFront.
 
 set -Eeuo pipefail
 umask 077
@@ -36,8 +36,10 @@ readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy-aws-bbr.conf"
 readonly XANMOD_KEYRING="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
 readonly XANMOD_REPO="/etc/apt/sources.list.d/xanmod-release.list"
 readonly DEFAULT_XRAY_VLESS_LOOPBACK_PORT="10085"
+readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_VLESS_NODE_NAME="VLESS_AWS_WS"
+readonly DEFAULT_XHTTP_NODE_NAME="VLESS_AWS_XHTTP_H2"
 readonly DEFAULT_WORKER_NAME="easy-aws"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_AWS"
 readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js"
@@ -218,8 +220,9 @@ ensure_allowed_tokens() {
 }
 
 collect_install_inputs() {
-    PROTOCOL="vless-ws"
+    PROTOCOL="vless-ws-xhttp"
     VLESS_NODE_NAME=${VLESS_NODE_NAME:-${DEFAULT_VLESS_NODE_NAME}}
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
 
@@ -233,10 +236,19 @@ collect_install_inputs() {
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
 
     VLESS_WS_PATH=${VLESS_WS_PATH:-$(generate_ws_path)}
+    XHTTP_PATH=${XHTTP_PATH:-$(generate_ws_path)}
+    XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
     validate_ws_path "${VLESS_WS_PATH}" || die "VLESS_WS_PATH 无效：${VLESS_WS_PATH}"
+    validate_ws_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
+    [[ "${VLESS_WS_PATH}" != "${XHTTP_PATH}" ]] || die "WebSocket 与 XHTTP 路径不能相同"
     XRAY_VLESS_LOOPBACK_PORT=${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
     validate_loopback_port "${XRAY_VLESS_LOOPBACK_PORT}" \
         || die "XRAY_VLESS_LOOPBACK_PORT 无效：${XRAY_VLESS_LOOPBACK_PORT}"
+    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+        || die "XRAY_XHTTP_LOOPBACK_PORT 无效：${XRAY_XHTTP_LOOPBACK_PORT}"
+    [[ "${XRAY_VLESS_LOOPBACK_PORT}" != "${XRAY_XHTTP_LOOPBACK_PORT}" ]] \
+        || die "WebSocket 与 XHTTP 本机端口不能相同"
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "ORIGIN_HEADER_SECRET 格式无效"
@@ -257,8 +269,9 @@ source_state_file() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL VLESS_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN VLESS_WS_PATH
-        AWS_ORIGIN_DOMAIN XRAY_VLESS_LOOPBACK_PORT ORIGIN_HEADER_SECRET
+        PROTOCOL VLESS_NODE_NAME XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
+        VLESS_WS_PATH XHTTP_PATH AWS_ORIGIN_DOMAIN
+        XRAY_VLESS_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET
         AWS_ORIGIN_ROUTE53_ZONE_ID AWS_ROUTE53_ZONE_ID AWS_ACM_CERTIFICATE_ARN
         AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_CLOUDFRONT_DOMAIN
         ALLOWED_TOKENS WORKER_NAME SUB_DOWNLOAD_NAME
@@ -277,8 +290,15 @@ load_state() {
         fi
         unset "${env_name}"
     done
-    [[ "${PROTOCOL}" == "vless-ws" ]] || die "状态协议不是 vless-ws"
+    [[ "${PROTOCOL}" == "vless-ws" || "${PROTOCOL}" == "vless-ws-xhttp" ]] \
+        || die "状态协议不是 easy_aws 支持的 VLESS 模式"
+    PROTOCOL="vless-ws-xhttp"
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
+    if [[ -z "${XHTTP_PATH:-}" ]]; then
+        XHTTP_PATH="/xhttp-${VLESS_WS_PATH#/vless-}"
+    fi
     XRAY_VLESS_LOOPBACK_PORT=${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
     WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
@@ -295,11 +315,14 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'VLESS_NODE_NAME=%q\n' "${VLESS_NODE_NAME}"
+        printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
         printf 'VLESS_WS_PATH=%q\n' "${VLESS_WS_PATH}"
+        printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH}"
         printf 'AWS_ORIGIN_DOMAIN=%q\n' "${AWS_ORIGIN_DOMAIN}"
         printf 'XRAY_VLESS_LOOPBACK_PORT=%q\n' "${XRAY_VLESS_LOOPBACK_PORT}"
+        printf 'XRAY_XHTTP_LOOPBACK_PORT=%q\n' "${XRAY_XHTTP_LOOPBACK_PORT}"
         printf 'ORIGIN_HEADER_SECRET=%q\n' "${ORIGIN_HEADER_SECRET}"
         printf 'AWS_ORIGIN_ROUTE53_ZONE_ID=%q\n' "${AWS_ORIGIN_ROUTE53_ZONE_ID:-}"
         printf 'AWS_ROUTE53_ZONE_ID=%q\n' "${AWS_ROUTE53_ZONE_ID:-}"
@@ -322,6 +345,9 @@ collect_installed_state() {
     validate_domain "${VLESS_CDN_DOMAIN}" || die "状态中的 CDN 域名无效"
     validate_uuid "${VLESS_UUID}" || die "状态中的 VLESS UUID 无效"
     validate_ws_path "${VLESS_WS_PATH}" || die "状态中的 WebSocket 路径无效"
+    validate_ws_path "${XHTTP_PATH}" || die "状态中的 XHTTP 路径无效"
+    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+        || die "状态中的 XHTTP 本机端口无效"
 }
 
 check_platform() {
@@ -645,16 +671,30 @@ download_xray() {
 
 write_xray_config() {
     install -d -m 0755 "${XRAY_DIR}"
-    jq -n --argjson port "${XRAY_VLESS_LOOPBACK_PORT}" --arg uuid "${VLESS_UUID}" \
-        --arg name "${VLESS_NODE_NAME}" --arg path "${VLESS_WS_PATH}" '
+    jq -n --argjson ws_port "${XRAY_VLESS_LOOPBACK_PORT}" \
+        --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+        --arg uuid "${VLESS_UUID}" --arg ws_name "${VLESS_NODE_NAME}" \
+        --arg xhttp_name "${XHTTP_NODE_NAME}" --arg ws_path "${VLESS_WS_PATH}" \
+        --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" '
         {
           log:{loglevel:"warning"},
-          inbounds:[{
-            tag:"vless-ws-in", listen:"127.0.0.1", port:$port, protocol:"vless",
-            settings:{clients:[{id:$uuid,email:$name}],decryption:"none"},
-            streamSettings:{network:"ws",wsSettings:{path:$path,heartbeatPeriod:0}},
-            sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}
-          }],
+          inbounds:[
+            {
+              tag:"vless-ws-in", listen:"127.0.0.1", port:$ws_port, protocol:"vless",
+              settings:{clients:[{id:$uuid,email:$ws_name}],decryption:"none"},
+              streamSettings:{network:"ws",wsSettings:{path:$ws_path,heartbeatPeriod:60}},
+              sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}
+            },
+            {
+              tag:"vless-xhttp-h2-in", listen:"127.0.0.1", port:$xhttp_port, protocol:"vless",
+              settings:{clients:[{id:$uuid,email:$xhttp_name}],decryption:"none"},
+              streamSettings:{
+                network:"xhttp",
+                xhttpSettings:{host:$xhttp_host,path:$xhttp_path,mode:"auto"}
+              },
+              sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}
+            }
+          ],
           outbounds:[{protocol:"freedom",tag:"direct"}],
           routing:{domainStrategy:"AsIs",rules:[{type:"field",network:"tcp,udp",outboundTag:"direct"}]}
         }' >"${RUNTIME_TMP}/xray-config.json"
@@ -666,7 +706,7 @@ write_xray_config() {
 install_xray_service() {
     cat >"${RUNTIME_TMP}/easy-aws-xray.service" <<EOF
 [Unit]
-Description=Xray VLESS WebSocket managed by easy_aws
+Description=Xray VLESS WebSocket and XHTTP managed by easy_aws
 After=network-online.target
 Wants=network-online.target
 
@@ -730,6 +770,22 @@ server {
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
         add_header Cache-Control "no-store" always;
+        access_log off;
+    }
+
+    location ^~ ${XHTTP_PATH}/ {
+        if (\$http_x_easy_aws_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
+        client_max_body_size 0;
+        client_body_timeout 5m;
+        grpc_set_header Host ${VLESS_CDN_DOMAIN};
+        grpc_set_header X-Real-IP \$remote_addr;
+        grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        grpc_set_header X-Forwarded-Proto https;
+        grpc_set_header X-Easy-Aws-Origin-Key \$http_x_easy_aws_origin_key;
+        grpc_socket_keepalive on;
+        grpc_read_timeout 1h;
+        grpc_send_timeout 1h;
+        grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
         access_log off;
     }
 
@@ -961,15 +1017,16 @@ build_distribution_config() {
             CustomHeaders:{Quantity:1,Items:[{HeaderName:"X-Easy-Aws-Origin-Key",HeaderValue:$origin_key}]},
             CustomOriginConfig:{HTTPPort:80,HTTPSPort:443,OriginProtocolPolicy:"https-only",
               OriginSslProtocols:{Quantity:1,Items:["TLSv1.2"]},OriginReadTimeout:60,OriginKeepaliveTimeout:60},
-            ConnectionAttempts:3,ConnectionTimeout:10,OriginShield:{Enabled:false}
+            ConnectionAttempts:2,ConnectionTimeout:3,OriginShield:{Enabled:false}
           }]},
           OriginGroups:{Quantity:0},
           DefaultCacheBehavior:{
             TargetOriginId:$origin_id,
             TrustedSigners:{Enabled:false,Quantity:0},TrustedKeyGroups:{Enabled:false,Quantity:0},
             ViewerProtocolPolicy:"https-only",
-            AllowedMethods:{Quantity:2,Items:["GET","HEAD"],
+            AllowedMethods:{Quantity:7,Items:["GET","HEAD","OPTIONS","PUT","POST","PATCH","DELETE"],
               CachedMethods:{Quantity:2,Items:["GET","HEAD"]}},
+            GrpcConfig:{Enabled:true},
             SmoothStreaming:false,Compress:false,
             LambdaFunctionAssociations:{Quantity:0},FunctionAssociations:{Quantity:0},
             FieldLevelEncryptionId:"",CachePolicyId:$cache_policy,OriginRequestPolicyId:$origin_policy
@@ -1097,20 +1154,50 @@ build_vless_ws_link() {
         "$(uri_encode "${VLESS_WS_PATH}?ed=${WS_EARLY_DATA_BYTES}")" "$(uri_encode "${VLESS_NODE_NAME}")"
 }
 
+build_vless_xhttp_link() {
+    local extra
+    extra=$(jq -cn '{
+        noGRPCHeader:false,
+        uplinkMethod:"POST",
+        xmux:{
+            maxConcurrency:"8-16",
+            cMaxReuseTimes:0,
+            hMaxRequestTimes:"600-900",
+            hMaxReusableSecs:"1800-3000",
+            hKeepAlivePeriod:60
+        }
+    }')
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "$(uri_encode "${XHTTP_PATH}")" "$(uri_encode "${extra}")" "$(uri_encode "${XHTTP_NODE_NAME}")"
+}
+
 build_node_link() {
     build_vless_ws_link
+    printf '\n'
+    build_vless_xhttp_link
 }
 
 build_mihomo_node() {
-    jq -nr --arg name "${VLESS_NODE_NAME}" --arg server "${VLESS_CDN_DOMAIN}" \
-        --arg uuid "${VLESS_UUID}" --arg path "${VLESS_WS_PATH}" '
-        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+    jq -nr --arg ws_name "${VLESS_NODE_NAME}" --arg xhttp_name "${XHTTP_NODE_NAME}" \
+        --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
+        --arg ws_path "${VLESS_WS_PATH}" --arg xhttp_path "${XHTTP_PATH}" '
+        "  - name: \($ws_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
         "    ip-version: ipv4\n    packet-encoding: xudp\n    alpn:\n      - http/1.1\n    ws-opts:\n" +
-        "      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n" +
+        "      path: \($ws_path|@json)\n      headers:\n        Host: \($server|@json)\n" +
         "      max-early-data: 2560\n      early-data-header-name: Sec-WebSocket-Protocol\n" +
-        "    smux:\n      enabled: false\n"'
+        "    smux:\n      enabled: false\n" +
+        "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+        "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
+        "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
+        "    ip-version: ipv4\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
+        "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
+        "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
+        "        max-concurrency: \"8-16\"\n        c-max-reuse-times: 0\n" +
+        "        h-max-request-times: \"600-900\"\n        h-max-reusable-secs: \"1800-3000\"\n" +
+        "        h-keep-alive-period: 60\n"'
 }
 
 validate_sample_worker() {
@@ -1153,19 +1240,25 @@ render_worker_from_sample() {
 }
 
 write_worker() {
-    local destination=$1 template config output node_json tokens
+    local destination=$1 template config output ws_node_json xhttp_node_json tokens
     ensure_allowed_tokens
     tokens=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") || die "ALLOWED_TOKENS 无效"
     template="${RUNTIME_TMP}/sample-worker.js"
     config="${RUNTIME_TMP}/worker-config.js"
     output="${RUNTIME_TMP}/worker-output.js"
     fetch_sample_worker "${template}"
-    node_json=$(jq -cn --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" \
+    ws_node_json=$(jq -cn --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" \
         --arg name "${VLESS_NODE_NAME}" --arg path "${VLESS_WS_PATH}" \
         --argjson early "${WS_EARLY_DATA_BYTES}" \
         '{type:"vless",security:"tls",network:"ws",uuid:$uuid,host:$host,name:$name,fp:"chrome",sni:$host,
           path:$path,maxEarlyData:$early,earlyDataHeaderName:"Sec-WebSocket-Protocol",ipVersion:"ipv4",
           udp:true,portMode:"443",packetEncoding:"xudp"}')
+    xhttp_node_json=$(jq -cn --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg name "${XHTTP_NODE_NAME}" --arg path "${XHTTP_PATH}" \
+        '{type:"vless",security:"tls",network:"xhttp",uuid:$uuid,host:$host,name:$name,fp:"chrome",sni:$host,
+          path:$path,mode:"stream-up",ipVersion:"ipv4",udp:true,portMode:"443",packetEncoding:"xudp",
+          reuseSettings:{maxConcurrency:"8-16",cMaxReuseTimes:0,hMaxRequestTimes:"600-900",
+            hMaxReusableSecs:"1800-3000",hKeepAlivePeriod:60}}')
     {
         printf 'const ALLOWED_TOKENS = %s;\n' "${tokens}"
         printf 'const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));\n\n'
@@ -1177,9 +1270,10 @@ const CONFIGS = [];
 function defineNode(config) { CONFIGS.push(config); return config; }
 function isAllowedToken(token) { return Boolean(token && ALLOWED_TOKEN_VALUES.has(token)); }
 EOF
-        printf '\nconst NODE_VLESS_WS_CONFIG = defineNode(%s);\n' "${node_json}"
+        printf '\nconst NODE_VLESS_WS_CONFIG = defineNode(%s);\n' "${ws_node_json}"
+        printf 'const NODE_VLESS_XHTTP_CONFIG = defineNode(%s);\n' "${xhttp_node_json}"
         cat <<'EOF'
-const DEFAULT_NODE = NODE_VLESS_WS_CONFIG;
+const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_VLESS_XHTTP_CONFIG];
 function defaultNodeConfigs() { return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE]; }
 EOF
     } >"${config}"
@@ -1197,7 +1291,7 @@ print_worker_content() {
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS WebSocket TLS over AWS CloudFront\n节点链接:\n%s\n\n' "$(build_node_link)"
+    printf '\n协议: VLESS WebSocket TLS + VLESS XHTTP stream-up/H2 over AWS CloudFront\n节点链接:\n%s\n\n' "$(build_node_link)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_node
     printf '\n'
@@ -1214,8 +1308,8 @@ show_subscription() {
 show_status() {
     require_root
     collect_installed_state
-    printf '协议: vless-ws\n源站域名: %s\nCDN 域名: %s\nWebSocket 路径: %s\n' \
-        "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_WS_PATH}"
+    printf '协议: vless-ws-xhttp\n源站域名: %s\nCDN 域名: %s\nWebSocket 路径: %s\nXHTTP 路径: %s\n' \
+        "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_WS_PATH}" "${XHTTP_PATH}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\n' \
@@ -1420,7 +1514,7 @@ usage() {
     cat <<EOF
 用法: ${ENTRY_COMMAND_NAME} [命令]
 
-  install          安装 VLESS WebSocket TLS + Route 53 + CloudFront
+  install          安装 VLESS WS/XHTTP TLS + Route 53 + CloudFront
   update           刷新 Route 53、运行时、CloudFront 与手动 Worker 源码
   update-sub       仅重新生成并输出 Worker 源码
   show             显示 VLESS 链接与 Mihomo 节点
@@ -1431,8 +1525,8 @@ usage() {
   register-command 重新注册 /usr/local/bin/easy_aws
   uninstall        删除本机内容，保留远端 AWS 资源
 
-只发布一个 VLESS + WebSocket 节点。节点 DNS 全部由 Route 53 管理；CloudFront 使用 HTTPS
-回源、禁用缓存，并转发除 Host 外的全部查看器请求头，以保留 WebSocket 与 Early Data 请求头。
+发布 VLESS WebSocket 与 XHTTP stream-up/H2 两个节点。节点 DNS 全部由 Route 53 管理；
+CloudFront 使用 HTTPS 回源、禁用缓存、启用 gRPC，并转发除 Host 外的全部查看器请求头。
 脚本不会调用 Cloudflare Worker API。
 EOF
 }

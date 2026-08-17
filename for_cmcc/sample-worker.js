@@ -495,6 +495,7 @@ const CLASH_VLESS_XHTTP_TLS_NODE_TEMPLATE = `  - name: {name}
       host: {host}
       path: {path}
       mode: {xhttp_mode}
+{xhttp_extra_config}
 `;
 
 // ================= 辅助函数 =================
@@ -571,6 +572,40 @@ function webSocketEarlyDataConfig(cfg) {
     return `      max-early-data: ${maxEarlyData}\n      early-data-header-name: ${headerName}\n`;
 }
 
+function xhttpExtraConfig(cfg) {
+    if (cfg.mode !== 'stream-up') {
+        return '';
+    }
+    const reuse = cfg.reuseSettings || {};
+    return `      no-grpc-header: false
+      uplink-http-method: POST
+      reuse-settings:
+        max-concurrency: ${yamlString(reuse.maxConcurrency || '8-16')}
+        c-max-reuse-times: ${Number(reuse.cMaxReuseTimes ?? 0)}
+        h-max-request-times: ${yamlString(reuse.hMaxRequestTimes || '600-900')}
+        h-max-reusable-secs: ${yamlString(reuse.hMaxReusableSecs || '1800-3000')}
+        h-keep-alive-period: ${Number(reuse.hKeepAlivePeriod ?? 60)}
+`;
+}
+
+function xhttpExtraObject(cfg) {
+    if (cfg.mode !== 'stream-up') {
+        return null;
+    }
+    const reuse = cfg.reuseSettings || {};
+    return {
+        noGRPCHeader: false,
+        uplinkMethod: 'POST',
+        xmux: {
+            maxConcurrency: reuse.maxConcurrency || '8-16',
+            cMaxReuseTimes: Number(reuse.cMaxReuseTimes ?? 0),
+            hMaxRequestTimes: reuse.hMaxRequestTimes || '600-900',
+            hMaxReusableSecs: reuse.hMaxReusableSecs || '1800-3000',
+            hKeepAlivePeriod: Number(reuse.hKeepAlivePeriod ?? 60),
+        },
+    };
+}
+
 function resolveNodePort(cfg, dynamicPort) {
     if (cfg.port !== undefined && cfg.port !== null && cfg.port !== '') {
         return validatePort(cfg.port, 'node port');
@@ -617,6 +652,10 @@ function createVlessLink(cfg, port) {
         params.set('host', cfg.host);
         params.set('path', cfg.path || '/');
         params.set('mode', cfg.mode || 'auto');
+        const extra = xhttpExtraObject(cfg);
+        if (extra) {
+            params.set('extra', JSON.stringify(extra));
+        }
         params.set('packetEncoding', cfg.packetEncoding || 'xudp');
     } else {
         throw new Error(`Unsupported VLESS network: ${network}`);
@@ -671,6 +710,7 @@ function renderClashNode(template, cfg, port) {
         ip_version: yamlString(cfg.ipVersion || 'dual'),
         udp: String(cfg.udp !== false),
         xhttp_mode: yamlString(cfg.mode || 'auto'),
+        xhttp_extra_config: xhttpExtraConfig(cfg),
         ws_early_data_config: webSocketEarlyDataConfig(cfg)
     };
     return template.replace(/{([a-z_]+)}/g, (_, key) => values[key]);

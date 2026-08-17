@@ -2,11 +2,13 @@
 
 `easy_aws` 是仿照 `easy_cmcc` 拆出的独立安装器，但边界不同：
 
-它只输出一个 VLESS + WebSocket 节点，避免订阅中混入其他传输协议。
+它同时输出 WebSocket 与 XHTTP 两个 VLESS 节点，两者共用域名、UUID 和 CloudFront 分配，
+使用独立路径和 Xray 本机端口。
 
 - DNS 使用 AWS Route 53，CDN 使用 AWS CloudFront；节点链路不使用 Cloudflare DNS/CDN。
-- 服务端和订阅只输出一个 **VLESS + WebSocket + TLS** 节点。
-- 不安装 XHTTP、gRPC、Trojan、Reality 或 AnyTLS。
+- WebSocket 节点使用 HTTP/1.1、Early Data 2560，服务端心跳周期为 60 秒。
+- XHTTP 节点使用 `stream-up`、HTTP/2、gRPC header 与 XMUX；服务端保持 `mode: auto`。
+- 不安装 Trojan、Reality 或 AnyTLS。
 - 生成完整 Cloudflare Worker 订阅源码，但**不会调用 Cloudflare Worker API**；由用户手动粘贴或使用 Wrangler 部署。
 - AWS 侧自动配置源站 A 记录、ACM、CloudFront 和 CDN CNAME，使用 HTTPS 443 回源。
 
@@ -19,10 +21,11 @@ AWS Route 53 DNS:
 
 节点数据链路:
   Mihomo / FLClash
-        -> VLESS + WebSocket + TLS :443
+        -> VLESS + WebSocket/HTTP1.1 或 XHTTP stream-up/H2 :443
         -> AWS CloudFront (AWS CDN)
         -> HTTPS :443 + X-Easy-Aws-Origin-Key
-        -> Nginx -> Xray 127.0.0.1:10085
+        -> Nginx -> Xray WS 127.0.0.1:10085
+                    XHTTP 127.0.0.1:10086
 
 Cloudflare Worker：只生成源码，手动部署，仅用于订阅分发
 ```
@@ -213,16 +216,19 @@ Hosted Zone ID。最常见的情况是两个子域名位于同一个根域，例
 | Origin domain         | `origin.example.com`                                 |
 | Origin protocol       | HTTPS only，端口 443，最低 TLS 1.2                     |
 | Viewer protocol       | HTTPS only                                             |
-| Allowed methods       | GET、HEAD（WebSocket 握手只需要 GET）                  |
+| Allowed methods       | GET、HEAD、OPTIONS、PUT、POST、PATCH、DELETE            |
+| gRPC                  | 启用；XHTTP stream-up 使用 HTTP/2 POST                  |
 | Cache policy          | AWS Managed`CachingDisabled`                         |
 | Origin request policy | AWS Managed`AllViewerExceptHostHeader`               |
 | Viewer certificate    | ACM`us-east-1`，SNI only，TLSv1.2_2021               |
-| HTTP versions         | HTTP/2 + HTTP/1.1；客户端 WS 节点固定 ALPN`http/1.1` |
+| HTTP versions         | HTTP/2 + HTTP/1.1；WS 固定 HTTP/1.1，XHTTP 固定 H2      |
 | Origin protection     | CloudFront 自动添加随机`X-Easy-Aws-Origin-Key`       |
+| Origin retry          | 连接尝试 2 次，每次超时 3 秒                            |
 
 `AllViewerExceptHostHeader` 会转发除 Viewer `Host` 外的请求头，包括 WebSocket 握手与
 `Sec-WebSocket-Protocol` Early Data，并把回源 `Host` 改成源站域名，使 Nginx 证书和 SNI
-保持一致。`CachingDisabled` 避免升级请求或健康检查被边缘缓存。
+保持一致。`CachingDisabled` 避免升级请求、XHTTP 流或健康检查被边缘缓存。CloudFront 的
+gRPC 支持要求 HTTP/2、HTTPS 回源和包含 POST 的完整方法集，脚本会一次性配置。
 
 ![CloudFront WebSocket 设置](docs/images/aws-cloudfront-settings.svg)
 
@@ -280,7 +286,7 @@ REBOOT_SCHEDULE_MODE=none \
 临时 `read -s` 后导出，或使用 EC2 IAM Role / 短期凭证和
 `AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1`。
 
-AWS 凭证不会写入 `/etc/easy_aws/state.env`。状态文件保存 VLESS UUID、随机路径、Route 53
+AWS 凭证不会写入 `/etc/easy_aws/state.env`。状态文件保存 VLESS UUID、WS/XHTTP 随机路径、Route 53
 Zone ID、CloudFront 资源 ID、订阅 Token 和源站防直连随机请求头，权限为 `0600`。
 
 ## 4. 手动部署 Cloudflare Worker
@@ -291,7 +297,7 @@ Zone ID、CloudFront 资源 ID、订阅 Token 和源站防直连随机请求头�
 /etc/easy_aws/subscribe-worker.js
 ```
 
-它只包含一个 `VLESS_AWS_WS` 节点。可以选择以下任一手动方式：
+它包含 `VLESS_AWS_WS` 与 `VLESS_AWS_XHTTP_H2` 两个节点。可以选择以下任一手动方式：
 
 ### Cloudflare Dashboard
 
@@ -332,7 +338,7 @@ easy_aws register-command
 easy_aws uninstall
 ```
 
-- `show`：显示唯一的 VLESS WS 链接和 Mihomo 节点片段。
+- `show`：显示 VLESS WS、XHTTP 链接和 Mihomo 节点片段。
 - `subscription`：显示节点、本地 Worker 文件和手动 Wrangler 命令。
 - `update`：校验/刷新 Route 53 记录、本机配置、CloudFront 分配和 Worker 源码；会重新要求 AWS 凭证。
 - `update-sub`：不碰 AWS/Cloudflare 远端资源，只刷新 Worker 源码。
@@ -353,6 +359,9 @@ easy_aws uninstall
   CloudFront Origin Custom Header。
 - **普通 HTTPS 健康检查成功但 WS 失败**：确认 Behavior 使用 `CachingDisabled` 和
   `AllViewerExceptHostHeader`，客户端网络为 `ws`、ALPN 为 `http/1.1`、路径完全一致。
+- **XHTTP 返回 403、EOF 或超时**：确认 CloudFront Behavior 已启用 gRPC，允许 POST，
+  客户端使用最新 Mihomo/Xray 内核，网络为 `xhttp`、模式为 `stream-up`、ALPN 只有 `h2`。
+  某些 Android 客户端版本存在 stream-up/H2 兼容问题；遇到时继续使用同订阅中的 WS 节点。
 - **创建分配提示 CNAMEAlreadyExists**：该 CDN 域名仍绑定其他 CloudFront 分配；不要盲目覆盖，
   先在控制台确认所有权，再解除旧关联或使用显式 adopt 参数。
 - **IAM AccessDenied**：核对策略中的 Hosted Zone ID；同一根域只需一个，不同 Zone 才需两个。
@@ -366,5 +375,5 @@ cd easy_aws
 npm test
 ```
 
-测试会校验单一 VLESS/WS 输出、Mihomo 节点、CloudFront JSON、Worker 注入、脚本语法和文档
+测试会校验 VLESS WS/XHTTP 双节点、心跳与 XMUX、CloudFront gRPC JSON、Worker 注入、脚本语法和文档
 安全约束，不会调用真实 AWS 或 Cloudflare API。
