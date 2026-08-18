@@ -246,6 +246,9 @@ set_protocol_fixture() {
 }
 
 test_validators_and_defaults() {
+    local script_content
+    script_content=$(<"${ROOT_DIR}/easy_all")
+
     assert_success "Reality target accepts host and port" validate_reality_target "www.cloudflare.com:443"
     assert_failure "Reality target requires port" validate_reality_target "www.cloudflare.com"
     assert_success "Reality protocol is accepted" validate_protocol "reality"
@@ -302,6 +305,12 @@ test_validators_and_defaults() {
         "$(printf '%s\n%s\n' \
             "0 4 * * * /usr/sbin/reboot ${CRON_REBOOT_MARKER}" \
             "5 5 * * * /usr/local/bin/backup" | filter_managed_reboot_cron)"
+    assert_contains "installer validates sshd before scheduled reboot" \
+        '"${sshd_bin}" -t' "${script_content}"
+    assert_contains "installer enables SSH at boot" \
+        'systemctl enable --now "${unit}"' "${script_content}"
+    assert_contains "installer verifies SSH boot enablement" \
+        'systemctl is-enabled --quiet "${unit}"' "${script_content}"
 }
 
 test_reality_node_host_detection() {

@@ -33,6 +33,12 @@ assert_contains "Xray accepts XHTTP client modes" "$(<"${ROOT_DIR}/easy_aws")" \
     'xhttpSettings:{host:$xhttp_host,path:$xhttp_path,mode:"auto"}'
 assert_contains "Nginx proxies XHTTP over gRPC" "$(<"${ROOT_DIR}/easy_aws")" \
     'grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT}'
+assert_contains "installer validates sshd before scheduled reboot" "$(<"${ROOT_DIR}/easy_aws")" \
+    '"${sshd_bin}" -t'
+assert_contains "installer enables SSH at boot" "$(<"${ROOT_DIR}/easy_aws")" \
+    'systemctl enable --now "${unit}"'
+assert_contains "installer verifies SSH boot enablement" "$(<"${ROOT_DIR}/easy_aws")" \
+    'systemctl is-enabled --quiet "${unit}"'
 
 (
     # shellcheck source=/dev/null

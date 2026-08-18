@@ -48,6 +48,12 @@ assert_contains "CMCC resets legacy unsent queue overrides" "${installer}" \
     "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295"
 assert_contains "CMCC update reapplies TCP tuning" "${installer}" \
     'info "刷新 BBR 与 TCP 参数"'
+assert_contains "CMCC validates sshd before scheduled reboot" "${installer}" \
+    '"${sshd_bin}" -t'
+assert_contains "CMCC enables SSH at boot" "${installer}" \
+    'systemctl enable --now "${unit}"'
+assert_contains "CMCC verifies SSH boot enablement" "${installer}" \
+    'systemctl is-enabled --quiet "${unit}"'
 collect_inputs_function=$(awk '
     /^collect_install_inputs\(\) \{/ {capture=1}
     capture {print}

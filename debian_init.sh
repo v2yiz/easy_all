@@ -630,9 +630,30 @@ configure_firewall_ports() {
   allow_nftables_ports "$ports" || true
 }
 
+enable_ssh_at_boot() {
+  ssh_unit=""
+  for candidate in ssh.service sshd.service; do
+    if systemctl cat "$candidate" >/dev/null 2>&1; then
+      ssh_unit="$candidate"
+      break
+    fi
+  done
+  if [ -z "$ssh_unit" ]; then
+    printf '%s\n' "错误: 未找到 ssh.service 或 sshd.service" >&2
+    exit 1
+  fi
+
+  systemctl unmask "$ssh_unit" >/dev/null 2>&1 || true
+  systemctl enable --now "$ssh_unit"
+  systemctl is-enabled --quiet "$ssh_unit"
+  systemctl is-active --quiet "$ssh_unit"
+  log "[remote 7/7] SSH 已设置开机启动并处于运行状态: ${ssh_unit}"
+}
+
 # SSH 加固放在最后执行：只有包安装、普通用户、公钥、防火墙都完成后，才关闭密码登录。
 mkdir -p "$config_dir"
 install_base_packages
+enable_ssh_at_boot
 configure_xanmod_bbrv3_and_tcp
 configure_timezone_and_time_sync
 configure_sudo_user
@@ -672,7 +693,9 @@ fi
 
 "$sshd_bin" -t
 configure_firewall_ports "$sshd_bin"
+enable_ssh_at_boot
 systemctl reload ssh 2>/dev/null || systemctl reload sshd
+systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd
 
 "$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|port) '
 REMOTE

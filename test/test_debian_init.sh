@@ -232,6 +232,9 @@ test_remote_script_contract() {
     assert_contains "remote writes nftables input chain" "nft insert rule" "${content}"
     assert_contains "remote disables SSH password login" "PasswordAuthentication no" "${content}"
     assert_contains "remote keeps root key-only login policy" "PermitRootLogin prohibit-password" "${content}"
+    assert_contains "remote enables SSH at boot" 'systemctl enable --now "$ssh_unit"' "${content}"
+    assert_contains "remote verifies SSH boot enablement" 'systemctl is-enabled --quiet "$ssh_unit"' "${content}"
+    assert_contains "remote verifies SSH is active" 'systemctl is-active --quiet "$ssh_unit"' "${content}"
 }
 
 test_script_surface_contract() {

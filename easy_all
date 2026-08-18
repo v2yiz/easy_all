@@ -114,6 +114,28 @@ require_systemd() {
     [[ -d /run/systemd/system ]] || die "当前系统未由 systemd 管理"
 }
 
+ensure_ssh_boot_service() {
+    local sshd_bin unit
+    sshd_bin=$(command -v sshd 2>/dev/null || true)
+    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    [[ -n "${sshd_bin}" ]] || die "未找到 sshd；无法保证重启后 SSH 可用"
+    "${sshd_bin}" -t || die "sshd 配置校验失败；拒绝配置定时重启"
+
+    for unit in ssh.service sshd.service; do
+        systemctl cat "${unit}" >/dev/null 2>&1 || continue
+        systemctl unmask "${unit}" >/dev/null 2>&1 || true
+        systemctl enable --now "${unit}" >/dev/null \
+            || die "无法启用 SSH 开机启动：${unit}"
+        systemctl is-enabled --quiet "${unit}" \
+            || die "SSH 服务未设置为开机启动：${unit}"
+        systemctl is-active --quiet "${unit}" \
+            || die "SSH 服务未运行：${unit}"
+        info "SSH 已设置开机启动并处于运行状态：${unit}"
+        return 0
+    done
+    die "未找到 ssh.service 或 sshd.service；拒绝配置定时重启"
+}
+
 validate_domain() {
     local domain=$1 label tld
     local -a labels
@@ -414,6 +436,7 @@ EOF
 }
 
 initialize_server() {
+    ensure_ssh_boot_service
     info "配置 XanMod LTS 与 BBR"
     install_xanmod_bbr
     info "配置每日重启与 IPv6"
