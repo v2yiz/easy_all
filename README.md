@@ -438,11 +438,10 @@ XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHT
 | CloudFront | 按稳定标记 `easy_all:xhttp:<CDN域名>` 找回原分配，保留 Caller Reference 并更新为当前配置，不创建第二个分配。 |
 | Route 53 CDN CNAME | 已指向找回的 CloudFront 分配时直接复用；其他同名记录默认停止，确认后设置 `AWS_DNS_REPLACE=1`。 |
 
-没有 `easy_all` 标记但 CDN 别名完全一致的旧 CloudFront 分配，安装器会自动查找并展示其详情；
-确认后直接接管并更新，无需手工查询分配 ID。若拒绝确认则不修改旧分配。非交互接管需设置
-`AWS_ADOPT_DISTRIBUTION=1`。若同一 CDN 域名异常存在多个带相同管理标记或同名别名的分配，
-脚本会停止并要求先消除歧义。重装会重新生成 UUID、XHTTP 路径、Origin Key 和订阅 Token；
-需要保留这些节点参数时应使用 `easy_all update`，不要先卸载。
+没有 `easy_all` 标记但 CDN 别名完全一致的旧 CloudFront 分配，安装器也会自动查找、输出 ID
+并直接复用，完整更新为当前 easy_all 配置，无需手工查询或确认。若同一 CDN 域名异常存在多个
+带相同管理标记或同名别名的分配，脚本会停止并要求先消除歧义。重装会重新生成 UUID、XHTTP
+路径、Origin Key 和订阅 Token；需要保留这些节点参数时应使用 `easy_all update`，不要先卸载。
 
 CloudFront + Nginx 订阅接口同时校验：
 

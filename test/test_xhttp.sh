@@ -63,6 +63,8 @@ assert_contains "CloudFront health failures are fatal" "$(<"${PROFILE}")" \
     'die "CloudFront 公网验收失败'
 assert_contains "CloudFront reinstallation discovers an existing alias before creation" \
     "$(<"${PROFILE}")" 'alias_conflicts=$(find_distribution_by_alias || true)'
+assert_contains "CloudFront reinstallation automatically adopts a unique alias match" \
+    "$(<"${PROFILE}")" 'AWS_ADOPT_DISTRIBUTION=1'
 assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     '非交互卸载必须显式设置 FORCE=1'
 
@@ -209,12 +211,6 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         $'CONFLICT123\td111111abcdef8.cloudfront.net\tDeployed\tlegacy distribution' \
         "$(find_distribution_by_alias)"
     unset -f aws
-
-    AWS_ADOPT_DISTRIBUTION=1
-    confirm_distribution_adoption "CONFLICT123" "d111111abcdef8.cloudfront.net" \
-        "Deployed" "legacy distribution" \
-        || fail "explicit CloudFront adoption should skip the interactive confirmation"
-    unset AWS_ADOPT_DISTRIBUTION
 
     PROTOCOL="xhttp"
     XHTTP_NODE_NAME="EASY_ALL_XHTTP_TEST"

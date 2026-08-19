@@ -1336,20 +1336,6 @@ find_distribution_by_alias() {
           [.Id, .DomainName, .Status, .Comment] | @tsv] | .[]' <<<"${distributions}"
 }
 
-confirm_distribution_adoption() {
-    local id=$1 domain=$2 status=$3 comment=$4 answer
-    [[ "${AWS_ADOPT_DISTRIBUTION:-0}" == "1" ]] && return 0
-    [[ -t 0 ]] || die "发现未标记的 CloudFront 分配 ${id}；非交互接管需设置 AWS_ADOPT_DISTRIBUTION=1"
-    alert "CDN 域名 ${VLESS_CDN_DOMAIN} 已绑定旧 CloudFront 分配："
-    printf '  ID: %s\n  域名: %s\n  状态: %s\n  Comment: %s\n' \
-        "${id}" "${domain}" "${status}" "${comment:-无}"
-    read -r -p "确认接管并完整改写该分配 [N]（直接回车使用默认值）: " answer
-    case "${answer}" in
-    y | Y | yes | YES) AWS_ADOPT_DISTRIBUTION=1 ;;
-    *) die "未接管旧 CloudFront 分配；安装已停止，未修改该分配" ;;
-    esac
-}
-
 configure_cloudfront_distribution() {
     local id=${AWS_CLOUDFRONT_DISTRIBUTION_ID:-} existing config etag caller response comment
     local create_error alias_conflicts alias_count alias_domain alias_status alias_comment
@@ -1361,7 +1347,8 @@ configure_cloudfront_distribution() {
         [[ -z "${alias_conflicts}" ]] || alias_count=$(wc -l <<<"${alias_conflicts}")
         if ((alias_count == 1)); then
             IFS=$'\t' read -r id alias_domain alias_status alias_comment <<<"${alias_conflicts}"
-            confirm_distribution_adoption "${id}" "${alias_domain}" "${alias_status}" "${alias_comment}"
+            info "复用 CDN 域名 ${VLESS_CDN_DOMAIN} 的 CloudFront 分配：${id}（${alias_domain}，${alias_status}）"
+            AWS_ADOPT_DISTRIBUTION=1
         elif ((alias_count > 1)); then
             alert "CDN 域名 ${VLESS_CDN_DOMAIN} 命中多个 CloudFront 分配："
             printf '%s\n' "${alias_conflicts}"
@@ -1440,6 +1427,8 @@ ensure_viewer_cname() {
 
 wait_for_cloudfront() {
     info "等待 CloudFront 分配完成（可能需要 5-20 分钟）"
+    info "分配 ID: ${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
+    info "控制台: https://console.aws.amazon.com/cloudfront/v4/home#/distributions/${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
     if timeout 1200 aws cloudfront wait distribution-deployed \
         --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}"; then
         success "CloudFront 分配已部署"

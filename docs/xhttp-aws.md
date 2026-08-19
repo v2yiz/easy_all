@@ -232,17 +232,9 @@ gRPC 支持要求 HTTP/2、HTTPS 回源和包含 POST 的完整方法集，脚�
 
 ![CloudFront XHTTP 设置](aws/aws-cloudfront-settings.svg)
 
-如果 CDN 域名已经绑定一个旧 CloudFront 分配，脚本会按别名自动查找它，显示 ID、CloudFront
-域名、状态和 Comment，并在交互安装中请求一次确认。确认后会将该分配**完整改写**为
-easy_all XHTTP 配置，无需手动查询或传入分配 ID。若不是你要复用的分配，拒绝确认即可停止，
-不会修改它。
-
-非交互运行时，仍必须显式确认接管：
-
-```bash
-AWS_ADOPT_DISTRIBUTION=1 \
-./easy_all install
-```
+如果 CDN 域名已经绑定一个旧 CloudFront 分配，脚本会按别名自动查找并直接复用它，输出 ID、
+CloudFront 域名和状态。该分配会被**完整改写**为 easy_all XHTTP 配置，覆盖源站、行为、证书、
+缓存、日志和 WAF 配置；无需手动查询、传入分配 ID 或二次确认。
 
 如果 CDN 域名已有其他 Route 53 记录，脚本会拒绝覆盖。请先确认旧记录可以移除；
 `AWS_DNS_REPLACE=1` 会替换同名 CNAME，或删除其他同名记录后创建 CNAME，只能在你已经
@@ -261,8 +253,8 @@ AWS_ADOPT_DISTRIBUTION=1 \
 
 保护规则仍然生效。源站 IP 已改变时需确认后设置 `AWS_ORIGIN_DNS_REPLACE=1`；CDN 域名指向
 其他目标时需确认后设置 `AWS_DNS_REPLACE=1`。没有 easy_all 管理标记、但别名与 CDN 域名
-完全一致的 CloudFront 分配会在交互安装中显示详情并请求确认接管。发现多个相同管理标记或
-多个同名别名时脚本会停止，不会猜测应使用哪一个。
+完全一致的 CloudFront 分配会被自动复用。发现多个相同管理标记或多个同名别名时脚本会停止，
+不会猜测应使用哪一个。
 
 AWS 资源会复用，但卸载已删除了本机状态。重装仍会生成新的 UUID、XHTTP 路径、Origin Key
 和订阅 Token。仅需刷新配置时应使用 `easy_all update`，它会保留这些节点参数。
