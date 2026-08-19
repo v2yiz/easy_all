@@ -261,6 +261,8 @@ test_script_surface_contract() {
     assert_contains "script intro identifies Debian init" "Debian 服务器初始化与 SSH 密钥登录配置脚本" "${content}"
     assert_contains "prompt distinguishes initial SSH user" "初始 SSH 登录用户" "${content}"
     assert_contains "prompt distinguishes final normal user" "最终 SSH 登录的普通用户名" "${content}"
+    assert_contains "default prompt explains the enter default" \
+        '[${default}]（直接回车使用默认值）' "${content}"
     assert_contains "prompt asks for explicit extra UFW ports" \
         "UFW 额外放行 TCP 端口" "${content}"
     assert_contains "intro documents Google BBR" \

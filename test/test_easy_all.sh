@@ -105,8 +105,12 @@ test_syntax_and_worker_removal() {
         "SUBSCRIPTION_MODE=\${SUBSCRIBE_MODE}" "${script}"
     assert_contains "Reality rejects AAAA node domains" \
         "Reality 节点域名不能发布 AAAA" "${script}"
+    assert_contains "Reality default prompts explain the enter default" \
+        '[${default}]（直接回车使用默认值）' "${script}"
     assert_contains "non-interactive uninstall requires FORCE" \
         "非交互卸载必须显式设置 FORCE=1" "${script}"
+    assert_contains "Reality uninstall can preserve ACME state for reinstall" \
+        'PRESERVE_ACME=1' "${script}"
     assert_not_contains "installer no longer downloads XanMod" "dl.xanmod.org" "${script}"
     assert_contains "installer persists Google BBR module loading" \
         "BBR_MODULES_CONFIG" "${script}"
@@ -230,6 +234,54 @@ EOF
     unset -f nginx systemctl detect_ssh_ports ufw iptables-restore
 }
 
+test_acme_reinstall_and_rate_limit_guidance() {
+    local rate_log="${TMP_DIR}/acme-rate-limit.log"
+    local generic_log="${TMP_DIR}/acme-generic-error.log"
+    local message
+    printf '%s\n' \
+        '429 urn:ietf:params:acme:error:rateLimited: too many certificates already issued for this exact set of identifiers, retry after 2026-08-20 12:00:00 UTC' \
+        >"${rate_log}"
+    message=$(describe_acme_issue_failure "${rate_log}" 1)
+    assert_contains "ACME rate limit guidance tells the user to wait" \
+        "请等待 CA 指定时间后再试" "${message}"
+    assert_contains "ACME rate limit guidance includes retry-after" \
+        "retry after 2026-08-20 12:00:00 UTC" "${message}"
+    assert_contains "ACME duplicate certificate guidance allows a new domain" \
+        "全新订阅域名" "${message}"
+
+    printf '%s\n' 'Invalid response from http://sub.example.com/.well-known/acme-challenge' \
+        >"${generic_log}"
+    message=$(describe_acme_issue_failure "${generic_log}" 1)
+    assert_contains "generic ACME failures retain DNS and port guidance" \
+        "DNS、CAA 和 TCP 80" "${message}"
+    assert_not_contains "generic ACME failures are not mislabeled as rate limits" \
+        "触发签发限流" "${message}"
+
+    run_acme() {
+        if [[ "$*" == *"--set-default-ca"* ]]; then
+            return 0
+        fi
+        printf '%s\n' \
+            '429 rateLimited: too many certificates for this exact set of identifiers, retry after 2026-08-20 12:00:00 UTC'
+        return 17
+    }
+    install_acme() { :; }
+    if message=$(issue_subscription_certificate 2>&1); then
+        fail_test "rate-limited certificate issuance must fail"
+    fi
+    assert_contains "certificate issuance reports parsed rate-limit guidance" \
+        "Let's Encrypt 触发签发限流（acme.sh 返回 17）" "${message}"
+    unset -f run_acme install_acme
+
+    install -d -m 0700 "${ACME_HOME}/sub.example.com_ecc"
+    install -m 0700 /dev/null "${ACME_BIN}"
+    PRESERVE_ACME=1
+    remove_managed_acme_domain "sub.example.com"
+    assert_success "PRESERVE_ACME keeps the reusable ACME certificate directory" \
+        test -d "${ACME_HOME}/sub.example.com_ecc"
+    unset PRESERVE_ACME
+}
+
 test_legacy_firewall_migration() {
     install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
     printf 'managed legacy rules\n' >"${LEGACY_NFT_CONFIG}"
@@ -290,6 +342,7 @@ test_validators_and_modes
 test_mihomo_template
 test_subscription_generation
 test_nginx_and_firewall
+test_acme_reinstall_and_rate_limit_guidance
 test_legacy_firewall_migration
 test_state_and_xray
 

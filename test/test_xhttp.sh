@@ -76,6 +76,8 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "CloudFront origin response timeout" "60" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
     assert_contains "XHTTP prompts for the Mihomo download filename" \
         "$(<"${PROFILE}")" 'Mihomo 下载文件名（不含 .yaml）'
+    assert_contains "XHTTP default prompts explain the enter default" \
+        "$(<"${PROFILE}")" '[${default}]（直接回车使用默认值）'
 
     SUB_DOWNLOAD_NAME="CUSTOM_SUB.yaml"
     choose_subscription_download_name
@@ -143,6 +145,43 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         "$(find_route53_zone_for_domain node.example.com "${zones}")"
     assert_equal "Route 53 boundary-safe matching" $'/hostedzone/ZBOUNDARY\tnotexample.com.' \
         "$(find_route53_zone_for_domain node.notexample.com "${zones}")"
+
+    VLESS_CDN_DOMAIN="node.example.com"
+    certificates='{"CertificateSummaryList":[
+      {"CertificateArn":"arn:pending-exact","DomainName":"node.example.com","Status":"PENDING_VALIDATION"},
+      {"CertificateArn":"arn:issued-wildcard","DomainName":"*.example.com","Status":"ISSUED"},
+      {"CertificateArn":"arn:unrelated","DomainName":"other.example.net","Status":"ISSUED"},
+      {"CertificateArn":"arn:issued-san","DomainName":"service.example.net","Status":"ISSUED",
+       "SubjectAlternativeNameSummaries":["san.example.org"]}
+    ]}'
+    assert_equal "ACM reuse prefers an issued covering certificate" "arn:issued-wildcard" \
+        "$(select_reusable_acm_certificate "${certificates}")"
+    VLESS_CDN_DOMAIN="deep.node.example.com"
+    assert_equal "ACM wildcard reuse is limited to one label" "" \
+        "$(select_reusable_acm_certificate "${certificates}")"
+    VLESS_CDN_DOMAIN="san.example.org"
+    assert_equal "ACM reuse considers certificate SANs" "arn:issued-san" \
+        "$(select_reusable_acm_certificate "${certificates}")"
+
+    VLESS_CDN_DOMAIN="node.example.com"
+    aws() {
+        printf '%s\n' '{"DistributionList":{"Items":[
+          {"Id":"EASYALL123","Comment":"easy_all:xhttp:node.example.com"},
+          {"Id":"OTHER123","Comment":"unrelated"}
+        ]}}'
+    }
+    assert_equal "reinstall discovers the managed CloudFront distribution" "EASYALL123" \
+        "$(find_managed_distribution)"
+    aws() {
+        printf '%s\n' '{"DistributionList":{"Items":[
+          {"Id":"EASYALL123","Comment":"easy_all:xhttp:node.example.com"},
+          {"Id":"EASYALL456","Comment":"easy_all:xhttp:node.example.com"}
+        ]}}'
+    }
+    if (find_managed_distribution) >/dev/null 2>&1; then
+        fail "duplicate managed CloudFront distributions must be rejected"
+    fi
+    unset -f aws
 
     PROTOCOL="xhttp"
     XHTTP_NODE_NAME="EASY_ALL_XHTTP_TEST"

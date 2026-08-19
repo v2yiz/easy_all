@@ -36,6 +36,8 @@ guide=$(show_install_guide 2>&1)
 [[ "${guide}" == *"公共步骤"* && "${guide}" == *"[1 默认] 直连 Reality"* \
     && "${guide}" == *"CDN XHTTP"* && "${guide}" == *"订阅服务：默认部署"* ]] \
     || fail "install guide does not describe both branches and defaults"
+[[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \
+    || fail "install mode prompt must explain the enter default"
 
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 

@@ -192,6 +192,28 @@ https://sub.example.com:8443/subscribe?token=owner-token
 https://sub.example.com:8443/subscribe?token=owner-token&flag=clash
 ```
 
+### Reality 重装与证书幂等
+
+`easy_all update` 是 Reality 的幂等刷新入口：它保留 UUID、Reality 密钥、订阅域名、Token
+和 acme.sh 证书状态；证书尚未到续期时间时 acme.sh 不会重复签发。不要通过反复卸载、安装
+代替更新。
+
+Reality 的 `uninstall` 默认彻底删除本机状态和专用 acme.sh 目录。若准备使用同一个订阅域名
+重装，可显式保留 ACME 账户、订单和证书：
+
+```bash
+sudo env PRESERVE_ACME=1 easy_all uninstall
+```
+
+随后使用相同订阅域名安装，acme.sh 会复用尚有效的证书，避免再次占用 Let’s Encrypt
+签发次数。该开关只保留 `/root/.acme-easy_all.sh`；Reality UUID、密钥和订阅 Token 仍会在
+重装时重新生成。无需重装时应继续使用 `easy_all update`。
+
+证书申请失败时脚本会保留并显示 acme.sh/Let’s Encrypt 原始输出。检测到 HTTP 429、
+`rateLimited`、`too many certificates` 或 `retry after` 时，会提示按 CA 给出的时间等待。
+只有明确属于“重复证书/相同域名集合”限流时，才可改用已经解析到当前 VPS 的全新订阅域名；
+账户、IP 或失败验证次数限流不能靠换域名绕过，应停止重试并等待。
+
 ## CDN XHTTP
 
 XHTTP 使用 `stream-up + HTTP/2 + XMUX`。当前链路为：
@@ -230,6 +252,22 @@ XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHT
 | -------------------- | ----------------------------------------- |
 | `origin.example.com` | CloudFront HTTPS 源站，A 记录指向 VPS     |
 | `node.example.com`   | 客户端和订阅入口，CNAME 指向 CloudFront   |
+
+### CDN 重装与 AWS 幂等
+
+卸载后使用相同的源站域名和 CDN 域名重装时，脚本会收敛到已有 AWS 资源：
+
+| AWS 资源 | 重装行为 |
+| --- | --- |
+| Route 53 源站 A | 已准确指向当前 VPS 时直接复用；不存在时创建。指向其他地址或存在 AAAA/CNAME 时默认停止，确认后设置 `AWS_ORIGIN_DNS_REPLACE=1`。 |
+| ACM 证书 | 复用覆盖 CDN 域名的已签发或待验证证书，优先已签发证书；支持复用单级通配符证书。找不到时才申请新证书。 |
+| CloudFront | 按稳定标记 `easy_all:xhttp:<CDN域名>` 找回原分配，保留 Caller Reference 并更新为当前配置，不创建第二个分配。 |
+| Route 53 CDN CNAME | 已指向找回的 CloudFront 分配时直接复用；其他同名记录默认停止，确认后设置 `AWS_DNS_REPLACE=1`。 |
+
+没有 `easy_all` 标记的既有 CloudFront 分配不会自动接管。需要显式指定
+`AWS_CLOUDFRONT_DISTRIBUTION_ID` 和 `AWS_ADOPT_DISTRIBUTION=1`。若同一 CDN 域名异常存在多个
+带相同管理标记的分配，脚本会停止并要求先消除歧义。重装会重新生成 UUID、XHTTP 路径、
+Origin Key 和订阅 Token；需要保留这些节点参数时应使用 `easy_all update`，不要先卸载。
 
 CloudFront + Nginx 订阅接口同时校验：
 

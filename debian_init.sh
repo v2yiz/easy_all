@@ -44,7 +44,7 @@ prompt() {
   local default="${2:-}"
   local value
   if [[ -n "$default" ]]; then
-    read -r -p "${label} [${default}]: " value
+    read -r -p "${label} [${default}]（直接回车使用默认值）: " value
     printf '%s' "${value:-$default}"
   else
     read -r -p "${label}: " value
@@ -262,7 +262,7 @@ select_or_create_key() {
   echo "  m) 手动输入密钥路径"
 
   local choice
-  read -r -p "请选择 [g]: " choice
+  read -r -p "请选择 [g]（直接回车使用默认值）: " choice
   choice="${choice:-g}"
 
   if [[ "$choice" == "g" ]]; then

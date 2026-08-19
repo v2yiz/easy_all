@@ -200,7 +200,7 @@ generate_xhttp_path() {
 prompt_value() {
     local label=$1 default=${2:-} value
     if [[ -n "${default}" ]]; then
-        read -r -p "${label} [${default}]: " value
+        read -r -p "${label} [${default}]（直接回车使用默认值）: " value
         printf '%s' "${value:-${default}}"
     else
         read -r -p "${label}: " value
@@ -258,7 +258,7 @@ choose_subscription_mode() {
             printf '请选择是否部署订阅服务：\n'
             printf '  1. 部署订阅服务（CloudFront + Nginx）\n'
             printf '  2. 不部署，仅输出节点信息\n'
-            read -r -p "请选择 [${default_choice}]: " mode
+            read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " mode
             mode=${mode:-${current_mode}}
         elif [[ -z "${mode}" ]]; then
             die "非交互模式必须设置 SUBSCRIBE_MODE=deploy 或 SUBSCRIBE_MODE=link"
@@ -505,7 +505,7 @@ configure_daily_reboot() {
     local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job
     if [[ -z "${mode}" && -t 0 ]]; then
         printf '请选择定时重启策略：\n  1. 每天凌晨 4 点重启（默认）\n  2. 自定义小时\n  3. 不配置\n'
-        read -r -p "请选择 [1]: " mode
+        read -r -p "请选择 [1]（直接回车使用默认值）: " mode
     fi
     mode=${mode:-1}
     case "${mode}" in
@@ -1110,6 +1110,19 @@ certificate_covers_domain() {
         | any(.[]; covers(.))' <<<"${description}" >/dev/null
 }
 
+select_reusable_acm_certificate() {
+    local certificates=$1
+    jq -r --arg domain "${VLESS_CDN_DOMAIN}" '
+        def covers($name):
+            $name == $domain or
+            ($name|startswith("*.") and ($domain|endswith($name[1:])) and
+             (($domain|split(".")|length) == ($name|split(".")|length)));
+        [.CertificateSummaryList[]? |
+          select(any(([.DomainName] + (.SubjectAlternativeNameSummaries // []))[]; covers(.)))]
+        | sort_by((if .Status == "ISSUED" then 0 else 1 end), .DomainName, .CertificateArn)
+        | first.CertificateArn // empty' <<<"${certificates}"
+}
+
 find_or_request_acm_certificate() {
     local certificates description arn status token attempt record_name record_type record_value change
     if [[ -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]]; then
@@ -1118,9 +1131,7 @@ find_or_request_acm_certificate() {
         certificates=$(aws acm list-certificates --region "${AWS_CONTROL_REGION}" \
             --certificate-statuses ISSUED PENDING_VALIDATION --output json) \
             || die "列出 ACM 证书失败"
-        arn=$(jq -r --arg domain "${VLESS_CDN_DOMAIN}" \
-            '.CertificateSummaryList[]?|select(.DomainName==$domain)|.CertificateArn' \
-            <<<"${certificates}" | head -n1)
+        arn=$(select_reusable_acm_certificate "${certificates}")
         if [[ -z "${arn}" ]]; then
             token=$(printf '%s' "${VLESS_CDN_DOMAIN}" | sha256sum | cut -c1-32)
             arn=$(aws acm request-certificate --region "${AWS_CONTROL_REGION}" \
@@ -1226,12 +1237,15 @@ build_distribution_config() {
 }
 
 find_managed_distribution() {
-    local distributions marker
+    local distributions marker ids count
     marker=$(cloudfront_marker)
     distributions=$(aws cloudfront list-distributions --output json) || die "列出 CloudFront 分配失败"
-    jq -r --arg marker "${marker}" \
-        '.DistributionList.Items[]?|select(.Comment==$marker)|.Id' \
-        <<<"${distributions}" | head -n1
+    ids=$(jq -c --arg marker "${marker}" \
+        '[.DistributionList.Items[]?|select(.Comment==$marker)|.Id]' <<<"${distributions}")
+    count=$(jq 'length' <<<"${ids}")
+    ((count <= 1)) \
+        || die "发现多个带有 ${marker} 标记的 CloudFront 分配；请清理重复资源或显式设置 AWS_CLOUDFRONT_DISTRIBUTION_ID"
+    jq -r 'first // empty' <<<"${ids}"
 }
 
 configure_cloudfront_distribution() {
@@ -1720,7 +1734,7 @@ uninstall_all() {
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
         local answer
-        read -r -p "确认删除 easy_all XHTTP 本机服务、状态和证书？远端 AWS 资源会保留。[y/N]: " answer
+        read -r -p "确认删除 easy_all XHTTP 本机服务、状态和证书？远端 AWS 资源会保留。[y/N]（直接回车取消）: " answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_services

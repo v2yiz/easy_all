@@ -238,7 +238,7 @@ generate_secret() {
 prompt_value() {
     local label=$1 default=${2:-} value
     if [[ -n "${default}" ]]; then
-        read -r -p "${label} [${default}]: " value
+        read -r -p "${label} [${default}]（直接回车使用默认值）: " value
         printf '%s' "${value:-${default}}"
     else
         read -r -p "${label}: " value
@@ -355,7 +355,7 @@ configure_daily_reboot() {
         printf '  1. 每天凌晨 4 点重启（默认）\n'
         printf '  2. 自定义每天几点重启（0-23）\n'
         printf '  3. 不配置定时重启\n'
-        read -r -p "请选择 [1]: " mode
+        read -r -p "请选择 [1]（直接回车使用默认值）: " mode
     fi
     mode=${mode:-1}
     case "${mode}" in
@@ -592,7 +592,7 @@ collect_sub_port_mode() {
         printf '请选择订阅端口模式：\n'
         printf '  1. 固定 443\n'
         printf '  2. dynamic（订阅随机端口 10000-65535，默认）\n'
-        read -r -p "请选择 [${default_choice}]: " requested
+        read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " requested
     fi
     requested=${requested:-${default_mode}}
     case "${requested}" in
@@ -1233,6 +1233,8 @@ verify_acme_renewal_setup() {
 
 install_acme() {
     if [[ -x "${ACME_BIN}" ]]; then
+        install -d -m 0700 "${STATE_DIR}"
+        install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
         verify_acme_renewal_setup
         return 0
     fi
@@ -1250,15 +1252,40 @@ run_acme() {
     "${ACME_BIN}" "$@" --home "${ACME_HOME}"
 }
 
+describe_acme_issue_failure() {
+    local log_file=$1 issue_status=$2 retry_hint="" duplicate_set=0
+    if grep -Eqi \
+        'rate.?limit|rateLimited|too many (certificates|registrations|new orders|failed authorizations)|HTTP[^0-9]*429|status[^0-9]*429|retry after' \
+        "${log_file}"; then
+        retry_hint=$(grep -Eio 'retry after[^,;]*' "${log_file}" | head -n1 || true)
+        grep -Eqi 'exact set of identifiers|duplicate certificate' "${log_file}" \
+            && duplicate_set=1
+        printf "Let's Encrypt 触发签发限流（acme.sh 返回 %s）。" "${issue_status}"
+        [[ -z "${retry_hint}" ]] || printf 'CA 提示：%s。' "${retry_hint}"
+        if [[ "${duplicate_set}" == "1" ]]; then
+            printf '请等待 CA 指定时间后再试，或改用已解析到本机且未用于该证书集合的全新订阅域名；不要连续重试。'
+        else
+            printf '请等待 CA 指定时间后再试，不要连续重试；当前限流不应假设换子域名可以绕过。'
+        fi
+        return 0
+    fi
+    printf '订阅证书申请失败（acme.sh 返回 %s）；请检查上方 acme.sh 输出、DNS、CAA 和 TCP 80。' \
+        "${issue_status}"
+}
+
 issue_subscription_certificate() {
-    local issue_status=0
+    local issue_status=0 issue_log="${RUNTIME_TMP}/acme-issue.log"
     install_acme
     run_acme --set-default-ca --server letsencrypt >/dev/null \
         || die "设置 Let's Encrypt 为默认 CA 失败"
-    run_acme --issue --webroot "${WEB_ROOT}" -d "${SUBSCRIPTION_DOMAIN}" --keylength ec-256 \
-        || issue_status=$?
+    if run_acme --issue --webroot "${WEB_ROOT}" -d "${SUBSCRIPTION_DOMAIN}" \
+        --keylength ec-256 2>&1 | tee "${issue_log}"; then
+        issue_status=0
+    else
+        issue_status=${PIPESTATUS[0]}
+    fi
     [[ "${issue_status}" == "0" || "${issue_status}" == "2" ]] \
-        || die "订阅证书申请失败（acme.sh 返回 ${issue_status}）"
+        || die "$(describe_acme_issue_failure "${issue_log}" "${issue_status}")"
     install -d -m 0700 "${CERT_DIR}" "${COMMAND_INSTALL_DIR}"
     cat >"${RUNTIME_TMP}/reload-subscription-nginx.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -1417,7 +1444,7 @@ choose_subscription_mode() {
             printf '请选择是否部署订阅服务：\n'
             printf '  1. 部署订阅服务（Nginx HTTPS :8443）\n'
             printf '  2. 不部署，仅输出节点信息\n'
-            read -r -p "请选择 [${default_choice}]: " mode
+            read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " mode
             mode=${mode:-${current_mode}}
         elif [[ -z "${mode}" ]]; then
             die "非交互模式必须设置 SUBSCRIBE_MODE=selfhost 或 SUBSCRIBE_MODE=link"
@@ -1750,6 +1777,10 @@ stop_protocol_services() {
 
 remove_managed_acme_domain() {
     [[ -n "${1:-}" && -x "${ACME_BIN}" ]] || return 0
+    if [[ "${PRESERVE_ACME:-0}" == "1" ]]; then
+        warn "已按 PRESERVE_ACME=1 保留 ${ACME_HOME}，同域名重装可复用 ACME 账户和证书"
+        return 0
+    fi
     run_acme --remove -d "$1" --ecc >/dev/null 2>&1 || true
     rm -rf -- "${ACME_HOME:?}/$1" "${ACME_HOME:?}/${1}_ecc"
     if [[ -f "${ACME_OWNERSHIP_MARKER}" ]]; then
@@ -1817,7 +1848,7 @@ uninstall_all() {
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
         local answer
-        read -r -p "确认彻底删除 easy_all 本机服务、状态和备份？[y/N]: " answer
+        read -r -p "确认彻底删除 easy_all 本机服务、状态和备份？[y/N]（直接回车取消）: " answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_protocol_services

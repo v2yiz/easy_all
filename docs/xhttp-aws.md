@@ -249,6 +249,21 @@ AWS_ADOPT_DISTRIBUTION=1 \
 存在其他 A、AAAA 或 CNAME 时默认停止。只有逐条核对后才可用
 `AWS_ORIGIN_DNS_REPLACE=1` 删除这些冲突记录并创建新的 A 记录。TXT、CAA 等非冲突记录会保留。
 
+### 卸载后重装
+
+使用相同源站域名和 CDN 域名重装是幂等的：正确的源站 A 记录会直接复用；ACM 会优先复用
+覆盖 CDN 域名的已签发证书（包括单级通配符证书）；CloudFront 会通过稳定的
+`easy_all:xhttp:<CDN域名>` Comment 找回并更新原分配；正确的 CDN CNAME 也不会重复写入。
+因此正常重装不会创建第二个 ACM 证书或 CloudFront 分配。
+
+保护规则仍然生效。源站 IP 已改变时需确认后设置 `AWS_ORIGIN_DNS_REPLACE=1`；CDN 域名指向
+其他目标时需确认后设置 `AWS_DNS_REPLACE=1`。没有 easy_all 管理标记的 CloudFront 分配只可
+通过 `AWS_CLOUDFRONT_DISTRIBUTION_ID` 加 `AWS_ADOPT_DISTRIBUTION=1` 显式接管。发现多个相同
+管理标记时脚本会停止，不会猜测应使用哪一个。
+
+AWS 资源会复用，但卸载已删除了本机状态。重装仍会生成新的 UUID、XHTTP 路径、Origin Key
+和订阅 Token。仅需刷新配置时应使用 `easy_all update`，它会保留这些节点参数。
+
 ## 3. 快速安装
 
 先确认 `origin.example.com` 和 `node.example.com` 的权威 DNS 都是 AWS Route 53。无需预建
