@@ -22,17 +22,20 @@ Provider 单独记录为 `aws`，以后接入其他 CDN 时不改变安装模式
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
 ```
 
-项目代码更新后，一条命令下载最新完整项目并更新现有部署：
+安装完成后，使用系统命令更新 easy_all 项目代码本身：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/update.sh)
+sudo easy_all self-update
 ```
 
-该命令使用最新代码执行当前模式的 `easy_all update`，更新成功后会将最新入口、两个 Profile
-和 Mihomo 模板注册到 `/usr/local/lib/easy_all`。CDN XHTTP 更新仍会在当前终端中询问
-AWS 凭证。它不会切换 Reality/CDN 模式；更新 Xray 核心请使用 `easy_all update-core`。
+`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、两个 Profile、配额模块和
+Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或 AWS 资源。代码包含配置生成变化时，
+再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
-不要改成 `curl ... | sudo bash`：安装器需要从当前终端读取模式、域名和订阅选项。引导脚本会：
+更新 Xray 核心请使用 `sudo easy_all update-core`。
+
+不要把安装命令改成 `curl ... | sudo bash`：安装器需要从当前终端读取模式、域名和订阅选项。
+安装引导脚本会：
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
 2. 浅克隆 `main` 分支完整项目到权限受限的临时目录。
@@ -108,7 +111,9 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
 | `status` | 显示当前协议、服务、端口及订阅状态；CDN XHTTP 额外显示 Route 53 与 CloudFront 状态摘要。 |
-| `update` | 使用 VPS 已安装的脚本按当前状态重建并验收当前部署，不下载 GitHub 项目代码；具体步骤见下方。 |
+| `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或 AWS。 |
+| `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS。 |
+| `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并显式同步 Route 53、ACM 和 CloudFront。 |
 | `update-sub` | 重新选择“部署订阅服务”或“仅输出节点”，并更新对应订阅配置。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的证书：Reality 为自托管订阅证书，CDN XHTTP 为源站证书。 |
@@ -118,47 +123,80 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | `uninstall` | 卸载当前模式的本机资源。XHTTP 保留 CloudFront、ACM 和 Route 53 资源，需在 AWS Console 中自行确认是否清理。 |
 | `help` | 显示命令帮助。 |
 
-项目脚本升级请使用上方的 `update.sh` 一条命令，不要将 `easy_all update` 误认为代码下载更新。
+项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
+AWS 云资源时才使用 `easy_all apply-cloud`。
 
-### `update` 的具体操作
+### `apply` 的具体操作
 
-默认执行 `easy_all update` 不会改变 Reality/CDN 模式、UUID、节点域名或 XHTTP 路径，也不会
+默认执行 `easy_all apply` 不会改变 Reality/CDN 模式、UUID、节点域名或 XHTTP 路径，也不会
 重新询问订阅模式。它读取 `/etc/easy_all/state.env` 中已有状态，以当前保存的参数重新生成配置。
 
-| 当前模式 | `easy_all update` 的执行步骤 |
+| 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
 | Reality | 1. 重写并加载 Google BBR/TCP 参数。<br>2. 备份当前状态、Xray 配置、Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 依照已保存的订阅端口模式同步 UFW，重新生成 Xray 配置并重启、验收 Xray。<br>4. 按已保存的订阅方式重建订阅：自托管模式会校验 DNS、更新证书/Nginx 和订阅文件；仅节点模式会清理订阅服务。<br>5. 显示更新后的节点和订阅地址。 |
-| CDN XHTTP | 1. 备份当前状态、Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 使用当前终端提供的 AWS 凭证校验/更新 Route 53 源站记录、ACM/CloudFront 配置和 CDN DNS 记录。<br>4. 重新生成并验收 Xray 与 Nginx 运行时配置。<br>5. 按已保存的订阅方式重建订阅文件，或在仅节点模式下删除订阅文件。<br>6. 保存状态，显示更新后的节点和订阅地址。 |
+| CDN XHTTP | 1. 备份当前状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重新生成并验收 Xray 与 Nginx 运行时配置。<br>4. 按已保存的订阅方式重建订阅文件，或在仅节点模式下删除订阅文件。<br>5. 保存状态、注册当前代码并显示节点和订阅地址。整个过程不读取 AWS 凭证、不修改 Route 53、ACM 或 CloudFront。 |
 
-Reality 在订阅或运行时配置更新失败时会恢复备份；CDN XHTTP 在订阅文件或 Nginx 配置更新失败时
-会恢复对应备份。AWS 已成功创建或变更的云资源不自动回滚，因此执行 CDN 更新前应确认 AWS
-凭证和 Route 53 配置正确。
+Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时都会恢复本机备份。
+
+### `apply-cloud` 的具体操作
+
+`easy_all apply-cloud` 仅适用于 CDN XHTTP。它在执行上述本机应用前，使用当前终端提供的 AWS
+凭证校验/更新 Route 53 源站记录、ACM/CloudFront 配置和 CDN DNS 记录，并等待 CloudFront
+部署及公网健康检查。AWS 已成功创建或变更的云资源不自动回滚，因此只有云端配置确实需要同步时
+才应执行该命令，并应提前确认 AWS 凭证、DNS、源站证书和 Origin Key 配置正确。
 
 ### 轮换 UUID
 
-`update` 不会交互询问 UUID；需要轮换时，通过环境变量显式传入新值。以下命令会自动生成一个
+`apply` 不会交互询问 UUID；需要轮换时，通过环境变量显式传入新值。以下命令会自动生成一个
 新 UUID，重建当前模式的 Xray 和订阅配置，并将新 UUID 保存到状态文件：
 
 ```bash
-sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all update
+sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 ```
 
 也可将命令中的值替换为指定的标准 UUID。更新成功后，旧 UUID 立即失效；请从
-`easy_all show` 获取新节点，或在已部署订阅服务时让客户端重新拉取订阅。CDN XHTTP 执行该
-命令仍会要求输入 AWS 凭证。
+`easy_all show` 获取新节点，或在已部署订阅服务时让客户端重新拉取订阅。CDN XHTTP 的普通
+`apply` 不要求 AWS 凭证。
 
-### 更新订阅 Token
+### 新增、删除或修改订阅用户
 
-通过 `update-sub` 可以重新设置整组订阅 Token。将下面 JSON 中的示例值替换为实际 Token；
-用户名仅用于识别，客户端订阅地址使用对应的 Token 值：
+用户清单统一通过 `easy_all update-sub` 管理。该命令接收的是**完整用户清单**：保留的用户必须
+继续写入，新增用户名会创建用户，省略已有用户名会删除用户。操作完成后运行
+`sudo easy_all subscription` 查看每个用户名对应的新订阅地址。
+
+#### 未启用月度配额
+
+未启用配额时，用户由 `ALLOWED_TOKENS` JSON 定义。先运行 `sudo easy_all subscription` 找到
+需要保留的现有 Token，再提交包含所有用户的完整字典。例如保留 `owner` 并新增 `user1`：
 
 ```bash
-sudo env ALLOWED_TOKENS='{"owner":"replace-with-owner-token","user1":"replace-with-user1-token"}' easy_all update-sub
+sudo env ALLOWED_TOKENS='{"owner":"existing-owner-token","user1":"new-user1-token"}' \
+  easy_all update-sub
 ```
 
-命令会显示当前订阅模式；直接回车保留当前模式。Token 只能使用 URL 安全字符
-`A-Z`、`a-z`、`0-9`、`.`、`_`、`~`、`-`，长度为 `8-128`，且每个用户和 Token 都必须唯一。
-成功后旧 Token 立即失效；CDN XHTTP 仍会在当前终端要求 AWS 凭证。
+在订阅模式、下载文件名和配额提示中直接回车即可保留当前选择。若要删除 `user1`，再次执行命令
+并从完整 JSON 中移除 `user1`。这种模式下每个用户有独立订阅 Token，但共享同一个 VLESS UUID；
+如需独立 UUID 和独立流量统计，应启用月度配额，额度可设为 `0` 表示不限量。
+
+用户名只能包含字母、数字、点、下划线和短横线，长度为 `1-64`。Token 只能使用 URL 安全字符
+`A-Z`、`a-z`、`0-9`、`.`、`_`、`~`、`-`，长度为 `8-128`，且必须唯一。环境变量中的 Token
+可能进入 shell history；在共享服务器上应先关闭历史记录或改用安全的交互环境。
+
+#### 已启用月度配额
+
+运行 `sudo easy_all update-sub`，保留当前订阅选择，在“用户与月度配额 JSON”中提交完整用户
+清单即可新增或删除用户。例如保留 `owner`、`user1`，并新增每月 `50 GB` 的 `user2`：
+
+```bash
+sudo env ENABLE_MONTHLY_QUOTA=2 \
+  MONTHLY_QUOTAS_GB='{"owner":0,"user1":100,"user2":50}' \
+  easy_all update-sub
+```
+
+脚本会为 `user2` 自动生成 Token、UUID 和 `easy_all.user2` email；同名已有用户会复用原 Token
+和 UUID。需要指定新用户 Token 时增加
+`QUOTA_TOKEN_OVERRIDES='{"user2":"new-user2-token"}'`。从完整配额 JSON 中省略用户会删除该用户。
+`quota-set` 只能修改已有用户额度，不能新增用户。
 
 ### 可选的用户月度流量配额
 
@@ -320,7 +358,7 @@ Nginx Token 映射。重置只影响指定用户，不影响其他用户，也�
 `easy_all quota-status` 记录当前用量。
 
 通过 `easy_all update-sub` 可以重新选择是否启用配额或调整额度。非交互执行
-`easy_all update` 会保留当前配额配置。该机制按一分钟周期执行，属于近实时配额控制，不是
+`easy_all apply` 会保留当前配额配置。该机制按一分钟周期执行，属于近实时配额控制，不是
 精确计费系统；定时任务执行间隔内可能有少量超额流量。CDN XHTTP 统计的是 Xray 看到的用户
 载荷，不等同于 CloudFront 账单中的请求、协议开销或总传输字节。
 
@@ -368,7 +406,7 @@ https://sub.example.com:8443/subscribe?token=owner-token&flag=clash
 
 ### Reality 重装与证书幂等
 
-`easy_all update` 是 Reality 的幂等刷新入口：它保留 UUID、Reality 密钥、订阅域名、Token
+`easy_all apply` 是 Reality 的幂等应用入口：它保留 UUID、Reality 密钥、订阅域名、Token
 和 acme.sh 证书状态；证书尚未到续期时间时 acme.sh 不会重复签发。不要通过反复卸载、安装
 代替更新。
 
@@ -381,7 +419,7 @@ sudo env PRESERVE_ACME=1 easy_all uninstall
 
 随后使用相同订阅域名安装，acme.sh 会复用尚有效的证书，避免再次占用 Let’s Encrypt
 签发次数。该开关只保留 `/root/.acme-easy_all.sh`；Reality UUID、密钥和订阅 Token 仍会在
-重装时重新生成。无需重装时应继续使用 `easy_all update`。
+重装时重新生成。无需重装时应继续使用 `easy_all apply`。
 
 证书申请失败时脚本会保留并显示 acme.sh/Let’s Encrypt 原始输出。检测到 HTTP 429、
 `rateLimited`、`too many certificates` 或 `retry after` 时，会提示按 CA 给出的时间等待。
@@ -397,8 +435,11 @@ XMUX 默认使用 `4-8` 并发和按存活时间轮换连接，不设置 Mihomo 
 
 安装和 `easy_all update-sub` 都提供两个订阅选项：
 
-1. 部署 CloudFront + Nginx 订阅服务，并输出节点信息。
+1. 启用通过 CloudFront + Nginx 提供的订阅服务，并输出节点信息。
 2. 不部署订阅服务，仅输出节点信息。
+
+安装阶段会创建或同步 CloudFront；`update-sub` 只调整本机订阅文件与 Nginx，并复用现有
+CloudFront，不会修改 AWS 资源。
 
 CDN XHTTP 交互选项：
 
@@ -406,7 +447,7 @@ CDN XHTTP 交互选项：
 | --- | --- | --- |
 | Route 53 源站域名 | 无 | 不允许为空 |
 | CloudFront CDN 域名 | 无 | 不允许为空 |
-| 订阅输出 | 部署 CloudFront + Nginx | 部署订阅服务 |
+| 订阅输出 | 启用 CloudFront + Nginx 订阅 | 启用订阅服务 |
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
 | AWS Access Key ID | 无 | 不允许为空 |
@@ -417,6 +458,8 @@ XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHT
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
 都会把当前值显示在方括号中，直接回车沿用当前状态。
+
+Mihomo 响应的下载文件名严格使用保存值；默认下载为 `EASY_ALL`，不会自动追加 `.yaml`。
 
 ```text
 客户端 -> CloudFront HTTPS 443 -> Nginx gRPC -> Xray 127.0.0.1:10086
@@ -443,7 +486,7 @@ XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHT
 没有 `easy_all` 标记但 CDN 别名完全一致的旧 CloudFront 分配，安装器也会自动查找、输出 ID
 并直接复用，完整更新为当前 easy_all 配置，无需手工查询或确认。若同一 CDN 域名异常存在多个
 带相同管理标记或同名别名的分配，脚本会停止并要求先消除歧义。重装会重新生成 UUID、XHTTP
-路径、Origin Key 和订阅 Token；需要保留这些节点参数时应使用 `easy_all update`，不要先卸载。
+路径、Origin Key 和订阅 Token；需要保留这些节点参数时应使用 `easy_all apply`，不要先卸载。
 
 CloudFront + Nginx 订阅接口同时校验：
 

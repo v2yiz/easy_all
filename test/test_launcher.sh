@@ -32,6 +32,18 @@ export EASY_ALL_STATE_FILE_OVERRIDE="${TMP_DIR}/state.env"
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/easy_all"
 
+launcher_content=$(<"${ROOT_DIR}/easy_all")
+[[ "${launcher_content}" == *'self-update      只更新 easy_all 项目代码'* \
+    && "${launcher_content}" == *'git clone --depth 1 --branch main'* \
+    && "${launcher_content}" == *'"${repo_dir}/easy_all" register-command'* ]] \
+    || fail "self-update must download and register the complete project"
+[[ "${launcher_content}" == *'apply-cloud)'* \
+    && "${launcher_content}" == *'apply_cloud_resources'* ]] \
+    || fail "launcher must expose the explicit XHTTP cloud apply"
+[[ "${launcher_content}" != *$'\n    update)'* \
+    && "${launcher_content}" != *$'\n    update-cloud)'* ]] \
+    || fail "launcher must not expose the removed update commands"
+
 guide=$(show_install_guide 2>&1)
 [[ "${guide}" == *"公共步骤"* && "${guide}" == *"[1 默认] 直连 Reality"* \
     && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \

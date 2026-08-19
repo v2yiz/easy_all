@@ -332,6 +332,10 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     quota_locations=$(write_subscription_nginx_locations)
     assert_contains "quota subscription uses a token-selected base64 file" \
         "${quota_locations}" '$easy_all_subscription_allowed/base64.txt'
+    assert_contains "Mihomo download keeps the configured filename without an extension" \
+        "${quota_locations}" 'Content-Disposition "attachment; filename=EASY_ALL_TEST"'
+    assert_not_contains "Mihomo download does not append yaml to the filename" \
+        "${quota_locations}" 'filename=EASY_ALL_TEST.yaml'
     QUOTA_ENABLED=0
     USER_ACCOUNTS=""
 
@@ -343,7 +347,15 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "link-only mode omits subscription Nginx routes" "" "${link_nginx}"
     SUBSCRIPTION_MODE="deploy"
 
-    update_calls=$(
+    subscription_output=$(
+        collect_installed_state() { :; }
+        show_node() { :; }
+        show_subscription
+    )
+    assert_contains "XHTTP subscription output labels the owner" \
+        "${subscription_output}" "通用订阅 (owner):"
+
+    local_apply_calls=$(
         require_root() { printf 'root\n'; }
         begin_quota_maintenance() { :; }
         end_quota_maintenance() { :; }
@@ -363,10 +375,35 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         register_easy_all_command() { printf 'register\n'; }
         show_subscription() { printf 'show\n'; }
         success() { :; }
-        update_easy_all
+        apply_easy_all
     )
-    assert_equal "AWS update completes CDN before switching runtime and subscription" \
-        $'root\nstate\nsnapshot\nbbr\nufw\ndns\ncdn\nruntime\nsubscriptions\nvalidate-subscription\nsave\nregister\nshow' "${update_calls}"
+    assert_equal "default XHTTP apply stays local" \
+        $'root\nstate\nsnapshot\nbbr\nufw\nruntime\nsubscriptions\nvalidate-subscription\nsave\nregister\nshow' "${local_apply_calls}"
+
+    cloud_apply_calls=$(
+        require_root() { printf 'root\n'; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
+        collect_installed_state() { printf 'state\n'; }
+        snapshot_subscription_update() {
+            printf 'snapshot\n'
+            UPDATE_SUB_ROLLBACK_ON_EXIT=1
+        }
+        configure_bbr_tcp() { printf 'bbr\n'; }
+        configure_ufw() { printf 'ufw\n'; }
+        prepare_aws_origin_dns() { printf 'dns\n'; }
+        configure_aws_cdn() { printf 'cdn\n'; }
+        refresh_runtime() { printf 'runtime\n'; }
+        write_subscriptions() { printf 'subscriptions\n'; }
+        validate_subscription_runtime() { printf 'validate-subscription\n'; }
+        save_state() { printf 'save\n'; }
+        register_easy_all_command() { printf 'register\n'; }
+        show_subscription() { printf 'show\n'; }
+        success() { :; }
+        apply_cloud_resources
+    )
+    assert_equal "explicit cloud apply completes CDN before switching runtime" \
+        $'root\nstate\nsnapshot\nbbr\nufw\ndns\ncdn\nruntime\nsubscriptions\nvalidate-subscription\nsave\nregister\nshow' "${cloud_apply_calls}"
 )
 
 readme=$(cat "${ROOT_DIR}/README.md" "${ROOT_DIR}/docs/xhttp-aws.md")

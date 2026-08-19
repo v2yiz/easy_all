@@ -960,7 +960,7 @@ write_subscription_nginx_locations() {
         internal;
         alias ${mihomo_alias};
         default_type text/yaml;
-        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}.yaml" always;
+        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;
         add_header X-Content-Type-Options "nosniff" always;
@@ -1633,13 +1633,14 @@ show_subscription() {
         printf '订阅服务: 未部署，仅输出节点信息\n\n'
         return 0
     fi
-    printf 'Mihomo 下载文件名: %s.yaml\n' "${SUB_DOWNLOAD_NAME}"
-    local token
-    while IFS= read -r token; do
-        printf '通用订阅: https://%s/subscribe?token=%s\n' "${VLESS_CDN_DOMAIN}" "${token}"
-        printf 'Mihomo:  https://%s/subscribe?token=%s&flag=clash\n' \
-            "${VLESS_CDN_DOMAIN}" "${token}"
-    done < <(jq -r '.[]' <<<"${ALLOWED_TOKENS}")
+    printf 'Mihomo 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME}"
+    local user token
+    while IFS=$'\t' read -r user token; do
+        printf '通用订阅 (%s): https://%s/subscribe?token=%s\n' \
+            "${user}" "${VLESS_CDN_DOMAIN}" "${token}"
+        printf 'Mihomo (%s):  https://%s/subscribe?token=%s&flag=clash\n' \
+            "${user}" "${VLESS_CDN_DOMAIN}" "${token}"
+    done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
     printf '\n'
 }
 
@@ -1747,6 +1748,7 @@ update_subscription() {
     begin_quota_maintenance
     collect_installed_state
     snapshot_subscription_update
+    info "update-sub 只更新本机订阅与 Nginx，并复用现有 CloudFront；不会修改 AWS 资源"
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
@@ -1772,15 +1774,7 @@ update_subscription() {
     success "Nginx 订阅已刷新"
 }
 
-update_easy_all() {
-    require_root
-    begin_quota_maintenance
-    collect_installed_state
-    snapshot_subscription_update
-    configure_bbr_tcp
-    configure_ufw
-    cdn_prepare_origin
-    cdn_apply
+finish_xhttp_apply() {
     refresh_runtime
     if subscription_enabled; then
         ensure_allowed_tokens
@@ -1795,7 +1789,30 @@ update_easy_all() {
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
-    success "easy_all CDN XHTTP 已更新"
+}
+
+apply_easy_all() {
+    require_root
+    begin_quota_maintenance
+    collect_installed_state
+    snapshot_subscription_update
+    configure_bbr_tcp
+    configure_ufw
+    finish_xhttp_apply
+    success "easy_all CDN XHTTP 本机配置与订阅已应用；未修改 AWS 资源"
+}
+
+apply_cloud_resources() {
+    require_root
+    begin_quota_maintenance
+    collect_installed_state
+    snapshot_subscription_update
+    configure_bbr_tcp
+    configure_ufw
+    cdn_prepare_origin
+    cdn_apply
+    finish_xhttp_apply
+    success "easy_all CDN XHTTP 本机配置、Route 53 与 CloudFront 已应用"
 }
 
 update_current_core() {
@@ -1905,7 +1922,7 @@ install_all() {
     CDN_PROVIDER="aws"
     require_root
     require_systemd
-    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all update"
+    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
     check_install_conflicts
     snapshot_fresh_install
@@ -1950,7 +1967,9 @@ usage() {
 用法: ${ENTRY_COMMAND_NAME} [命令]
 
   install          安装 VLESS XHTTP TLS + Route 53 + CloudFront
-  update           刷新 Route 53、运行时、CloudFront 与当前订阅模式
+  self-update      只更新 easy_all 项目代码，不刷新部署
+  apply            按当前状态应用本机运行时与订阅，不修改 AWS
+  apply-cloud      应用本机并同步 Route 53、ACM 与 CloudFront
   update-sub       选择部署订阅服务或仅输出节点
   show             显示 VLESS 链接与 Mihomo 节点
   subscription     显示节点与订阅状态
@@ -1960,7 +1979,6 @@ usage() {
   quota-status     显示每个用户的本月流量与配额状态
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
-  register-command 重新注册 /usr/local/bin/easy_all
   uninstall        删除本机内容，保留远端 AWS 资源
 
 发布单个 VLESS XHTTP stream-up/H2 节点。节点 DNS 全部由 Route 53 管理；
@@ -1972,7 +1990,8 @@ EOF
 main() {
     case "${1:-install}" in
     install) install_all ;;
-    update) update_easy_all ;;
+    apply) apply_easy_all ;;
+    apply-cloud) apply_cloud_resources ;;
     update-sub) update_subscription ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;

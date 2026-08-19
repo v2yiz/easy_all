@@ -258,7 +258,8 @@ CloudFront 域名和状态。该分配会被**完整改写**为 easy_all XHTTP �
 不会猜测应使用哪一个。
 
 AWS 资源会复用，但卸载已删除了本机状态。重装仍会生成新的 UUID、XHTTP 路径、Origin Key
-和订阅 Token。仅需刷新配置时应使用 `easy_all update`，它会保留这些节点参数。
+和订阅 Token。仅需应用本机配置时应使用 `easy_all apply`，它会保留这些节点参数且不调用
+AWS；需要把已保存状态重新同步到云端时才使用 `easy_all apply-cloud`。
 
 ## 3. 快速安装
 
@@ -310,6 +311,9 @@ Nginx 同时校验 CloudFront 注入的源站密钥和查询参数中的订阅 T
 `404`，Token 缺失或无效返回 `403`。响应禁止缓存；Mihomo 订阅使用配置的下载文件名。
 `easy_all update-sub` 会重新询问 Mihomo 下载文件名，默认沿用当前值；随后重新生成两个文件、
 刷新 Nginx 并执行本机验收，不修改 AWS 资源。
+默认响应下载名为 `EASY_ALL`，不会自动追加 `.yaml`。
+新增或删除用户时也使用 `update-sub`，并提交包含所有保留用户的完整 Token 或配额 JSON；具体
+命令见主 README 的“新增、删除或修改订阅用户”。
 该命令也会重新显示以下两个选择：
 
 1. 部署订阅服务。
@@ -324,17 +328,21 @@ easy_all help
 easy_all show
 easy_all subscription
 easy_all status
-easy_all update
+easy_all self-update
+easy_all apply
+easy_all apply-cloud
 easy_all update-sub
 easy_all update-core
 easy_all renew-cert
-easy_all register-command
 easy_all uninstall
 ```
 
 - `show`：显示 VLESS XHTTP 链接和 Mihomo 节点片段。
 - `subscription`：显示节点和每个 Token 对应的两种订阅地址。
-- `update`：校验/刷新 Route 53、本机配置、CloudFront 和静态订阅；会重新要求 AWS 凭证。
+- `self-update`：只下载并替换 easy_all 项目代码，不修改运行中配置、订阅或 AWS。
+- `apply`：使用已安装代码重新生成并验收本机 Xray、Nginx 和静态订阅，不读取 AWS 凭证。
+- `apply-cloud`：应用本机配置并显式同步 Route 53、ACM 和 CloudFront；会要求 AWS 凭证并等待
+  CloudFront 公网验收，已成功修改的 AWS 资源不会自动回滚。
 - `update-sub`：不修改 AWS 资源，只重新生成订阅并刷新 Nginx。
 - `uninstall`：删除本机服务、证书、状态和备份，但不删除 CloudFront、ACM 或 Route 53 记录。
 
@@ -349,7 +357,8 @@ easy_all uninstall
   并检查 VPS 探测到的公网 IPv4 是否正确。
 - **CloudFront 返回 502**：检查 Route 53 源站 A 直连 VPS、443 可达、源站证书覆盖源站域名；
   CloudFront 回源必须是 HTTPS only + TLS 1.2。
-- **CloudFront 返回 404**：通常是源站保护请求头未同步。执行 `easy_all update`，不要手动移除
+- **CloudFront 返回 404**：通常是源站保护请求头未同步。核对当前状态后执行
+  `easy_all apply-cloud`，不要手动移除
   CloudFront Origin Custom Header。
 - **XHTTP 返回 403、EOF 或超时**：确认 CloudFront Behavior 已启用 gRPC，允许 POST，
   客户端使用最新 Mihomo/Xray 内核，网络为 `xhttp`、模式为 `stream-up`、ALPN 只有 `h2`。

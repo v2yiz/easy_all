@@ -13,6 +13,7 @@ readonly EASY_ALL_ROOT="$(cd -- "$(dirname -- "${EASY_ALL_SOURCE}")" >/dev/null 
 readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}"
 readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
+readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
 
 launcher_die() {
     printf '\033[31m%s\033[0m\n' "$*" >&2
@@ -26,7 +27,9 @@ launcher_usage() {
   install          交互选择“直连 Reality”或“CDN XHTTP”
   show             显示当前节点
   subscription     显示节点与订阅信息
-  update           刷新当前模式
+  self-update      只更新 easy_all 项目代码
+  apply            将已安装代码应用到本机配置
+  apply-cloud      应用本机配置并同步 XHTTP 云资源
   update-sub       重新选择订阅模式与月度用户配额
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
@@ -151,6 +154,28 @@ unified_register_easy_all_command() {
     success "已注册命令：${EASY_ALL_COMMAND_PATH}"
 }
 
+unified_self_update() {
+    local temp_dir repo_dir
+    require_root
+    command -v git >/dev/null 2>&1 || die "缺少 git；请先安装 git 与 ca-certificates"
+
+    temp_dir=$(make_temp_dir)
+    repo_dir="${temp_dir}/easy_all"
+    git clone --depth 1 --branch main "${EASY_ALL_REPOSITORY_URL}" "${repo_dir}" \
+        || die "克隆 easy_all 仓库失败"
+    [[ -f "${repo_dir}/easy_all" \
+        && -f "${repo_dir}/lib/reality.sh" \
+        && -f "${repo_dir}/lib/xhttp.sh" \
+        && -f "${repo_dir}/lib/quota.sh" \
+        && -f "${repo_dir}/sample-mihomo.yaml" ]] \
+        || die "下载的 easy_all 项目不完整"
+
+    chmod 0700 "${repo_dir}/easy_all"
+    "${repo_dir}/easy_all" register-command
+    rm -rf -- "${temp_dir}"
+    success "easy_all 项目代码已更新；未修改 Xray、Nginx、订阅或 AWS 资源"
+}
+
 dispatch_profile_command() {
     local mode=$1 command=$2
     shift 2
@@ -158,12 +183,13 @@ dispatch_profile_command() {
     install) install_all ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
-    update)
-        if [[ "${mode}" == "reality" ]]; then
-            update_easy_all
-        else
-            update_easy_all
-        fi
+    apply)
+        apply_easy_all
+        ;;
+    apply-cloud)
+        [[ "${mode}" == "xhttp" ]] \
+            || launcher_die "apply-cloud 仅适用于 CDN XHTTP 模式"
+        apply_cloud_resources
         ;;
     update-sub)
         if [[ "${mode}" == "reality" ]]; then
@@ -185,6 +211,7 @@ dispatch_profile_command() {
     quota-set) quota_set_user "$@" ;;
     quota-reset) quota_reset_user "$@" ;;
     status) show_status ;;
+    self-update) unified_self_update ;;
     register-command) register_easy_all_command ;;
     uninstall) uninstall_all "$@" ;;
     help | -h | --help) usage ;;

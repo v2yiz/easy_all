@@ -1469,7 +1469,7 @@ server {
         internal;
         alias ${mihomo_alias};
         default_type text/yaml;
-        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}.yaml" always;
+        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;
         add_header X-Content-Type-Options "nosniff" always;
@@ -1735,7 +1735,7 @@ update_subscription() {
     show_subscription
 }
 
-update_easy_all() {
+apply_easy_all() {
     require_root
     info "刷新 BBR 与 TCP 参数"
     configure_bbr_tcp
@@ -2040,7 +2040,7 @@ install_all() {
     [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || prompt_download_name=1
     require_root
     require_systemd
-    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all update 更新"
+    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     info "[1/9] 检查系统"
     check_platform
     choose_protocol "${requested}"
@@ -2078,7 +2078,8 @@ usage() {
   install       交互安装 VLESS Reality Vision
   show          显示当前协议节点和 Mihomo 节点
   subscription  显示节点与订阅信息
-  update        注册当前脚本并刷新服务端与当前订阅模式
+  self-update   只更新 easy_all 项目代码，不刷新部署
+  apply         将已安装代码应用到服务端与当前订阅模式
   update-sub    选择部署订阅服务或仅输出节点
   update-core   更新 Xray 核心
   renew-cert    强制续期自托管订阅证书
@@ -2086,8 +2087,6 @@ usage() {
   quota-set     修改指定用户的月度额度
   quota-reset   清零指定用户的本月已用量
   status        显示当前协议、服务、端口和订阅状态
-  register-command
-                注册系统命令 easy_all
   uninstall     默认彻底删除所有 easy_all 本机数据
   help          显示帮助
 
@@ -2127,7 +2126,7 @@ main() {
     install) install_all "${2:-${PROTOCOL:-}}" ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
-    update) update_easy_all ;;
+    apply) apply_easy_all ;;
     update-sub) update_subscription 1 ;;
     update-core) update_current_core ;;
     renew-cert) renew_subscription_certificate ;;
