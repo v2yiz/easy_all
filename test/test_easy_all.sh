@@ -302,16 +302,18 @@ EOF
         if [[ "${1:-}" == "-l" ]]; then
             printf '%s\n' "${cron_state}"
         else
-            cron_state='17 2 * * * "'"${ACME_BIN}"'" --cron --home "'"${ACME_HOME}"'"'
+            cron_state=$(<"$1")
         fi
     }
     run_acme() {
         [[ "$*" == *"--install-cronjob"* ]] || return 1
-        cron_state='17 2 * * * "'"${ACME_BIN}"'" --cron --home "'"${ACME_HOME}"'"'
+        return 0
     }
     install_acme
     assert_contains "existing acme.sh repairs its missing renewal entry" \
         "--cron" "${cron_state}"
+    assert_contains "existing acme.sh falls back to an easy_all managed renewal entry" \
+        "easy_all-acme-renewal" "${cron_state}"
     unset -f systemctl crontab run_acme
 }
 
