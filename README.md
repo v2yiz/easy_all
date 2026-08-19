@@ -50,12 +50,12 @@ sudo ./easy_all install
 
 ```mermaid
 flowchart TD
-    A[easy_all install] --> S[订阅：默认部署 / 可仅输出节点]
-    S --> B[公共初始化]
+    A[easy_all install] --> B[公共初始化]
     B --> B1[系统与端口检查]
     B1 --> B2[依赖 / BBR / UFW / Xray]
     B2 --> B3[重启策略：默认每日 04:00]
-    B3 --> C{安装模式}
+    B3 --> S[订阅：默认部署 / 可仅输出节点]
+    S --> C{安装模式}
 
     C -->|1 默认| R[直连 Reality]
     R --> R1[连接地址：默认自动探测 IPv4]

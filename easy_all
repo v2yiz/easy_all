@@ -42,14 +42,13 @@ show_install_guide() {
     cat >&2 <<'EOF'
 安装流程概览：
 easy_all install
-├─ 订阅服务：默认部署；也可仅输出节点
-├─ 安装模式：[1 默认] 直连 Reality / [2] CDN XHTTP
 ├─ 公共步骤：系统检查 → 依赖/BBR/重启策略 → UFW → Xray → 状态/命令
-├─ 直连 Reality
+├─ 订阅服务：默认部署；也可仅输出节点
+├─ [1 默认] 直连 Reality
 │  ├─ 连接地址（默认自动探测公网 IPv4）
 │  ├─ SNI（默认 swdist.apple.com:443）
 │  └─ 订阅端口（默认 dynamic）
-└─ CDN XHTTP（AWS）
+└─ [2] CDN XHTTP（AWS）
    ├─ Route 53 源站域名（必填）
    ├─ CloudFront CDN 域名（必填）
    └─ AWS IAM 凭证（必填，不持久化）
@@ -93,19 +92,6 @@ choose_install_mode() {
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'xhttp\n' ;;
-    *) launcher_die "无效选择：${choice}" ;;
-    esac
-}
-
-choose_install_subscription_mode() {
-    local choice
-    [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
-    printf '请选择是否部署订阅服务：\n' >&2
-    printf '  1. 部署订阅服务\n' >&2
-    printf '  2. 不部署，仅输出节点信息\n' >&2
-    read -r -p "请选择 [1]: " choice
-    case "${choice:-1}" in
-    1 | 2) printf '%s\n' "${choice:-1}" ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -206,8 +192,6 @@ main() {
         mode=$(detect_installed_mode)
         [[ -z "${mode}" ]] || launcher_die "已安装 ${mode}；一台 VPS 只允许一种模式"
         show_install_guide
-        SUBSCRIBE_MODE=$(choose_install_subscription_mode)
-        export SUBSCRIBE_MODE
         mode=$(choose_install_mode)
     else
         mode=$(detect_installed_mode)
