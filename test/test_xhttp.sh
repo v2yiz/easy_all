@@ -413,6 +413,10 @@ assert_contains "README matches current IAM group option" "${readme}" "添加用
 assert_contains "README names managed policy" "${readme}" "easy_all_deploy_policy"
 assert_contains "AWS guide highlights the required Route 53 zone replacement" \
     "${readme}" "REPLACE_WITH_YOUR_ROUTE53_HOSTED_ZONE_ID"
+assert_contains "AWS guide requires the global AWS account partition" \
+    "${readme}" "AWS 中国区域账号"
+assert_contains "AWS guide documents CloudFront's monthly free transfer allowance" \
+    "${readme}" "1 TB 向互联网传出"
 assert_contains "README includes top-down Mermaid install flow" "${readme}" 'flowchart TD'
 assert_contains "README documents direct-enter semantics" "${readme}" \
     "直接回车会采用该值"
