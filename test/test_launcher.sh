@@ -34,7 +34,7 @@ source "${ROOT_DIR}/easy_all"
 
 guide=$(show_install_guide 2>&1)
 [[ "${guide}" == *"公共步骤"* && "${guide}" == *"[1 默认] 直连 Reality"* \
-    && "${guide}" == *"CDN XHTTP"* ]] \
+    && "${guide}" == *"CDN XHTTP"* && "${guide}" == *"订阅服务：默认部署"* ]] \
     || fail "install guide does not describe both branches and defaults"
 
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
@@ -70,6 +70,22 @@ if command -v script >/dev/null 2>&1; then
     )
     [[ "${pty_output}" == *"MODE=<reality>"* ]] \
         || fail "interactive menu output polluted the selected mode: ${pty_output}"
+
+    pty_output=$(
+        printf '\n' | script -q /dev/null bash -c \
+            'source "$1"; mode=$(choose_install_subscription_mode); printf "SUB=<%s>\n" "$mode"' \
+            _ "${ROOT_DIR}/easy_all"
+    )
+    [[ "${pty_output}" == *"SUB=<1>"* ]] \
+        || fail "subscription menu does not default to deploy: ${pty_output}"
+
+    pty_output=$(
+        script -q /dev/null bash -c \
+            'read() { printf -v "${!#}" 2; }; source "$1"; mode=$(choose_install_subscription_mode); printf "SUB=<%s>\n" "$mode"' \
+            _ "${ROOT_DIR}/easy_all"
+    )
+    [[ "${pty_output}" == *"SUB=<2>"* ]] \
+        || fail "subscription menu cannot select link-only mode: ${pty_output}"
 fi
 
 printf 'ok - easy_all launcher tests passed\n'

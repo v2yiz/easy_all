@@ -49,8 +49,9 @@ sudo ./easy_all install
 ## 安装脑图
 
 ```mermaid
-flowchart TD
-    A[easy_all install] --> B[公共初始化]
+flowchart LR
+    A[easy_all install] --> S[订阅：默认部署 / 可仅输出节点]
+    S --> B[公共初始化]
     B --> B1[系统与端口检查]
     B1 --> B2[依赖 / BBR / UFW / Xray]
     B2 --> B3[重启策略：默认每日 04:00]
@@ -60,21 +61,20 @@ flowchart TD
     R --> R1[连接地址：默认自动探测 IPv4]
     R1 --> R2[SNI：默认 swdist.apple.com:443]
     R2 --> R3[端口：默认 dynamic]
-    R3 --> R4[订阅：默认部署 / 可仅输出节点]
-    R4 --> Z[保存状态并注册 easy_all]
+    R3 --> Z[保存状态并注册 easy_all]
 
     C -->|2| X[CDN XHTTP]
     X --> X1[源站域名 + CDN 域名：必填]
-    X1 --> X2[订阅：默认部署 / 可仅输出节点]
-    X2 --> X3[AWS IAM 凭证：必填且不持久化]
-    X3 --> X4[Route 53 / 证书 / CloudFront]
-    X4 --> Z
+    X1 --> X2[AWS IAM 凭证：必填且不持久化]
+    X2 --> X3[Route 53 / 证书 / CloudFront]
+    X3 --> Z
 ```
 
 公共交互选项：
 
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
+| 订阅输出 | `1` 部署 / `2` 仅输出节点 | `1` | 部署当前模式对应的订阅服务 |
 | 安装模式 | `1` Reality / `2` CDN XHTTP | `1` | 安装 Reality |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 写入每日 04:00 的 root crontab |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
