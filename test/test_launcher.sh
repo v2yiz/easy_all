@@ -34,10 +34,14 @@ source "${ROOT_DIR}/easy_all"
 
 guide=$(show_install_guide 2>&1)
 [[ "${guide}" == *"公共步骤"* && "${guide}" == *"[1 默认] 直连 Reality"* \
+    && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \
     && "${guide}" == *"CDN XHTTP"* && "${guide}" == *"订阅服务：默认部署"* ]] \
     || fail "install guide does not describe both branches and defaults"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \
     || fail "install mode prompt must explain the enter default"
+[[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'CDN - XHTTP（非优化线路推荐）'* ]] \
+    || fail "install mode prompt must explain line recommendations"
 
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 

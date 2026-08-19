@@ -45,10 +45,12 @@ easy_all install
 ├─ 公共步骤：系统检查 → 依赖/BBR/重启策略 → UFW → Xray → 状态/命令
 ├─ 订阅服务：默认部署；也可仅输出节点
 ├─ [1 默认] 直连 Reality
+│  ├─ 适用线路：优化线路
 │  ├─ 连接地址（默认自动探测公网 IPv4）
 │  ├─ SNI（默认 swdist.apple.com:443）
 │  └─ 订阅端口（默认 dynamic）
 └─ [2] CDN XHTTP（AWS）
+   ├─ 适用线路：非优化线路
    ├─ Route 53 源站域名（必填）
    ├─ CloudFront CDN 域名（必填）
    └─ AWS IAM 凭证（必填，不持久化）
@@ -86,8 +88,8 @@ choose_install_mode() {
     local choice
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
-    printf '  1. 直连 - Reality\n' >&2
-    printf '  2. CDN - XHTTP\n' >&2
+    printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
+    printf '  2. CDN - XHTTP（非优化线路推荐）\n' >&2
     read -r -p "请选择 [1]（直接回车使用默认值）: " choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
