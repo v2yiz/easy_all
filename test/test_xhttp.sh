@@ -74,6 +74,14 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "XMUX max concurrency" "8-16" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     assert_equal "CloudFront origin response timeout" "60" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
+    assert_contains "XHTTP prompts for the Mihomo download filename" \
+        "$(<"${PROFILE}")" 'Mihomo 下载文件名（不含 .yaml）'
+
+    SUB_DOWNLOAD_NAME="CUSTOM_SUB.yaml"
+    choose_subscription_download_name
+    assert_equal "XHTTP normalizes a custom download filename" \
+        "CUSTOM_SUB" "${SUB_DOWNLOAD_NAME}"
+    SUB_DOWNLOAD_NAME=""
 
     SUBSCRIBE_MODE="1"
     SUBSCRIPTION_MODE=""

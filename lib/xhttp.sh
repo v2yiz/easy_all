@@ -276,6 +276,16 @@ subscription_enabled() {
     [[ "${SUBSCRIPTION_MODE:-deploy}" == "deploy" ]]
 }
 
+choose_subscription_download_name() {
+    local name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
+    if [[ -t 0 ]]; then
+        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}")
+    fi
+    name=$(normalize_sub_download_name "${name}")
+    validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
+    SUB_DOWNLOAD_NAME=${name}
+}
+
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="aws"
@@ -302,10 +312,12 @@ collect_install_inputs() {
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "ORIGIN_HEADER_SECRET 格式无效"
     choose_subscription_mode
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     if subscription_enabled; then
+        choose_subscription_download_name
         ensure_allowed_tokens
     else
+        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+            "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
     fi
 }
@@ -1471,6 +1483,7 @@ show_subscription() {
         printf '订阅服务: 未部署，仅输出节点信息\n\n'
         return 0
     fi
+    printf 'Mihomo 下载文件名: %s.yaml\n' "${SUB_DOWNLOAD_NAME}"
     local token
     while IFS= read -r token; do
         printf '通用订阅: https://%s/subscribe?token=%s\n' "${VLESS_CDN_DOMAIN}" "${token}"
@@ -1581,11 +1594,13 @@ update_subscription() {
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     if subscription_enabled; then
+        choose_subscription_download_name
         ensure_allowed_tokens
         write_subscriptions
     else
+        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+            "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         remove_subscriptions
     fi

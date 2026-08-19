@@ -154,6 +154,7 @@ CDN XHTTP 交互选项：
 | Route 53 源站域名 | 无 | 不允许为空 |
 | CloudFront CDN 域名 | 无 | 不允许为空 |
 | 订阅输出 | 部署 CloudFront + Nginx | 部署订阅服务 |
+| Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
 | AWS Access Key ID | 无 | 不允许为空 |
 | AWS Secret Access Key | 无 | 不允许为空 |

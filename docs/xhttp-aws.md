@@ -267,6 +267,7 @@ sudo ./easy_all install
 - 定时重启策略；
 - 源站域名与 CloudFront CDN 域名；
 - 是否部署订阅服务；
+- 选择部署时询问 Mihomo 下载文件名，默认 `EASY_ALL`，直接回车采用默认值；
 - 选择部署时再询问订阅访问 Token 字典；
 - AWS IAM Access Key ID 与 Secret Access Key，输入不回显。
 
@@ -296,7 +297,8 @@ https://node.example.com/subscribe?token=owner-token-123&flag=clash
 
 Nginx 同时校验 CloudFront 注入的源站密钥和查询参数中的订阅 Token。直接访问源站返回
 `404`，Token 缺失或无效返回 `403`。响应禁止缓存；Mihomo 订阅使用配置的下载文件名。
-`easy_all update-sub` 会重新生成两个文件、刷新 Nginx 并执行本机验收，不修改 AWS 资源。
+`easy_all update-sub` 会重新询问 Mihomo 下载文件名，默认沿用当前值；随后重新生成两个文件、
+刷新 Nginx 并执行本机验收，不修改 AWS 资源。
 该命令也会重新显示以下两个选择：
 
 1. 部署订阅服务。
