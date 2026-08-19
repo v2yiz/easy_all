@@ -497,9 +497,8 @@ CloudFront + Nginx 订阅接口同时校验：
 不会暴露源站域名。
 
 AWS Access Key ID 与 Secret Access Key 仅在当前命令进程中使用，不写入状态文件。不要为根用户创建访问密钥，应创建
-权限受限的专用 IAM 用户。完整 IAM 权限、CloudFront 参数和故障排查见
-[CDN XHTTP 的 AWS 配置](docs/xhttp-aws.md)。
-推荐创建 `easy_all_deploy_policy`，并通过“添加用户到组”授予专用部署用户。
+权限受限的专用 IAM 用户。AWS 注册、最小权限策略、IAM 用户和 Access Key 获取步骤见
+[AWS 账户与 IAM 凭证准备](docs/aws-guide.md)。
 
 ## 状态与边界
 

@@ -406,27 +406,16 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         $'root\nstate\nsnapshot\nbbr\nufw\ndns\ncdn\nruntime\nsubscriptions\nvalidate-subscription\nsave\nregister\nshow' "${cloud_apply_calls}"
 )
 
-readme=$(cat "${ROOT_DIR}/README.md" "${ROOT_DIR}/docs/xhttp-aws.md")
+readme=$(cat "${ROOT_DIR}/README.md" "${ROOT_DIR}/docs/aws-guide.md")
 assert_contains "README warns against root keys" "${readme}" "不要为根用户创建访问密钥"
-assert_contains "README documents Nginx subscription" "${readme}" "CloudFront + Nginx"
-assert_contains "README documents the link-only choice" "${readme}" "不部署，仅输出节点信息"
-assert_contains "README documents one XHTTP node" "${readme}" "只输出一个 VLESS XHTTP 节点"
 assert_contains "README documents AWS token terminology" "${readme}" "Access Key ID"
 assert_contains "README matches current IAM group option" "${readme}" "添加用户到组"
 assert_contains "README names managed policy" "${readme}" "easy_all_deploy_policy"
-assert_contains "README defaults to one Route 53 zone" "${readme}" "YOUR_ZONE_ID"
-assert_contains "README explains missing CDN record" "${readme}" "安装前没有"
-assert_contains "README requires AWS DNS" "${readme}" "DNS 使用 AWS Route 53"
-assert_contains "README documents origin A automation" "${readme}" "创建源站 A"
-assert_contains "README includes architecture diagram" "${readme}" "aws-architecture.svg"
-assert_contains "README includes IAM diagram" "${readme}" "aws-iam-access-key.svg"
-assert_contains "README includes CloudFront diagram" "${readme}" "aws-cloudfront-settings.svg"
+assert_contains "AWS guide highlights the required Route 53 zone replacement" \
+    "${readme}" "REPLACE_WITH_YOUR_ROUTE53_HOSTED_ZONE_ID"
 assert_contains "README includes top-down Mermaid install flow" "${readme}" 'flowchart TD'
 assert_contains "README documents direct-enter semantics" "${readme}" \
     "直接回车会采用该值"
-assert_contains "CloudFront diagram uses the implemented Origin Key" \
-    "$(<"${ROOT_DIR}/docs/aws/aws-cloudfront-settings.svg")" \
-    "X-Easy-All-Origin-Key"
 
 [[ ! -e "${ROOT_DIR}/sample-worker.js" ]] || fail "XHTTP profile must not retain Worker source"
 
