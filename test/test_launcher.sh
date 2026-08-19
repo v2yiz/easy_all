@@ -35,7 +35,9 @@ source "${ROOT_DIR}/easy_all"
 guide=$(show_install_guide 2>&1)
 [[ "${guide}" == *"公共步骤"* && "${guide}" == *"[1 默认] 直连 Reality"* \
     && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \
-    && "${guide}" == *"CDN XHTTP"* && "${guide}" == *"订阅服务：默认部署"* ]] \
+    && "${guide}" == *"只有当前服务器：推荐部署订阅服务"* \
+    && "${guide}" == *"多节点聚合或已有订阅服务器：推荐仅输出节点信息"* \
+    && "${guide}" == *"CDN XHTTP"* ]] \
     || fail "install guide does not describe both branches and defaults"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \
     || fail "install mode prompt must explain the enter default"

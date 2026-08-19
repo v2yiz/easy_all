@@ -78,6 +78,10 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         "$(<"${PROFILE}")" 'Mihomo 下载文件名（不含 .yaml）'
     assert_contains "XHTTP default prompts explain the enter default" \
         "$(<"${PROFILE}")" '[${default}]（直接回车使用默认值）'
+    assert_contains "XHTTP subscription prompt recommends self-hosting for one server" \
+        "$(<"${PROFILE}")" "只有当前服务器时推荐"
+    assert_contains "XHTTP subscription prompt recommends node output for aggregation" \
+        "$(<"${PROFILE}")" "多节点聚合或已有订阅服务器时推荐"
 
     SUB_DOWNLOAD_NAME="CUSTOM_SUB.yaml"
     choose_subscription_download_name

@@ -256,8 +256,8 @@ choose_subscription_mode() {
             current_mode=${mode:-deploy}
             [[ "${current_mode}" == "link" ]] && default_choice=2
             printf '请选择是否部署订阅服务：\n'
-            printf '  1. 部署订阅服务（CloudFront + Nginx）\n'
-            printf '  2. 不部署，仅输出节点信息\n'
+            printf '  1. 部署订阅服务（CloudFront + Nginx；只有当前服务器时推荐）\n'
+            printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
             read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " mode
             mode=${mode:-${current_mode}}
         elif [[ -z "${mode}" ]]; then

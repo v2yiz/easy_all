@@ -107,6 +107,10 @@ test_syntax_and_worker_removal() {
         "Reality 节点域名不能发布 AAAA" "${script}"
     assert_contains "Reality default prompts explain the enter default" \
         '[${default}]（直接回车使用默认值）' "${script}"
+    assert_contains "Reality subscription prompt recommends self-hosting for one server" \
+        "只有当前服务器时推荐" "${script}"
+    assert_contains "Reality subscription prompt recommends node output for aggregation" \
+        "多节点聚合或已有订阅服务器时推荐" "${script}"
     assert_contains "non-interactive uninstall requires FORCE" \
         "非交互卸载必须显式设置 FORCE=1" "${script}"
     assert_contains "Reality uninstall can preserve ACME state for reinstall" \
