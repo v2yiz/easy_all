@@ -49,7 +49,7 @@ sudo ./easy_all install
 ## 安装脑图
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[easy_all install] --> B[公共初始化]
     B --> B1[系统与端口检查]
     B1 --> B2[依赖 / BBR / UFW / Xray]
