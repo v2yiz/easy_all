@@ -92,18 +92,63 @@ flowchart TD
 脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。
 UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
 
-安装成功后统一使用：
+## 命令说明
+
+安装成功后统一使用 `easy_all <命令>`：
+
+| 命令 | 功能说明 |
+| --- | --- |
+| `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
+| `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
+| `status` | 显示当前协议、服务、端口及订阅状态；CDN XHTTP 额外显示 Route 53 与 CloudFront 状态摘要。 |
+| `update` | 使用 VPS 已安装的脚本按当前状态重建并验收当前部署，不下载 GitHub 项目代码；具体步骤见下方。 |
+| `update-sub` | 重新选择“部署订阅服务”或“仅输出节点”，并更新对应订阅配置。 |
+| `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
+| `renew-cert` | 强制续期当前模式使用的证书：Reality 为自托管订阅证书，CDN XHTTP 为源站证书。 |
+| `uninstall` | 卸载当前模式的本机资源。XHTTP 保留 CloudFront、ACM 和 Route 53 资源，需在 AWS Console 中自行确认是否清理。 |
+| `help` | 显示命令帮助。 |
+
+项目脚本升级请使用上方的 `update.sh` 一条命令，不要将 `easy_all update` 误认为代码下载更新。
+
+### `update` 的具体操作
+
+默认执行 `easy_all update` 不会改变 Reality/CDN 模式、UUID、节点域名或 XHTTP 路径，也不会
+重新询问订阅模式。它读取 `/etc/easy_all/state.env` 中已有状态，以当前保存的参数重新生成配置。
+
+| 当前模式 | `easy_all update` 的执行步骤 |
+| --- | --- |
+| Reality | 1. 重写并加载 Google BBR/TCP 参数。<br>2. 备份当前状态、Xray 配置、Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 依照已保存的订阅端口模式同步 UFW，重新生成 Xray 配置并重启、验收 Xray。<br>4. 按已保存的订阅方式重建订阅：自托管模式会校验 DNS、更新证书/Nginx 和订阅文件；仅节点模式会清理订阅服务。<br>5. 显示更新后的节点和订阅地址。 |
+| CDN XHTTP | 1. 备份当前状态、Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 使用当前终端提供的 AWS 凭证校验/更新 Route 53 源站记录、ACM/CloudFront 配置和 CDN DNS 记录。<br>4. 重新生成并验收 Xray 与 Nginx 运行时配置。<br>5. 按已保存的订阅方式重建订阅文件，或在仅节点模式下删除订阅文件。<br>6. 保存状态，显示更新后的节点和订阅地址。 |
+
+Reality 在订阅或运行时配置更新失败时会恢复备份；CDN XHTTP 在订阅文件或 Nginx 配置更新失败时
+会恢复对应备份。AWS 已成功创建或变更的云资源不自动回滚，因此执行 CDN 更新前应确认 AWS
+凭证和 Route 53 配置正确。
+
+### 轮换 UUID
+
+`update` 不会交互询问 UUID；需要轮换时，通过环境变量显式传入新值。以下命令会自动生成一个
+新 UUID，重建当前模式的 Xray 和订阅配置，并将新 UUID 保存到状态文件：
 
 ```bash
-easy_all show
-easy_all subscription
-easy_all status
-easy_all update
-easy_all update-sub
-easy_all update-core
-easy_all renew-cert
-easy_all uninstall
+sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all update
 ```
+
+也可将命令中的值替换为指定的标准 UUID。更新成功后，旧 UUID 立即失效；请从
+`easy_all show` 获取新节点，或在已部署订阅服务时让客户端重新拉取订阅。CDN XHTTP 执行该
+命令仍会要求输入 AWS 凭证。
+
+### 更新订阅 Token
+
+通过 `update-sub` 可以重新设置整组订阅 Token。将下面 JSON 中的示例值替换为实际 Token；
+用户名仅用于识别，客户端订阅地址使用对应的 Token 值：
+
+```bash
+sudo env ALLOWED_TOKENS='{"owner":"replace-with-owner-token","user1":"replace-with-user1-token"}' easy_all update-sub
+```
+
+命令会显示当前订阅模式；直接回车保留当前模式。Token 只能使用 URL 安全字符
+`A-Z`、`a-z`、`0-9`、`.`、`_`、`~`、`-`，长度为 `8-128`，且每个用户和 Token 都必须唯一。
+成功后旧 Token 立即失效；CDN XHTTP 仍会在当前终端要求 AWS 凭证。
 
 ## 直连 Reality
 

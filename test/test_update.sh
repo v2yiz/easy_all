@@ -28,5 +28,11 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "README must document the one-command project update"
 [[ "${readme}" == *'main/debian_init.sh)'* ]] \
     || fail "README must document the one-command debian_init launch"
+[[ "${readme}" == *'## 命令说明'* && "${readme}" == *'不下载 GitHub 项目代码'* ]] \
+    || fail "README must distinguish deployment refresh from project code updates"
+[[ "${readme}" == *'### 轮换 UUID'* && "${readme}" == *'sudo env VLESS_UUID='* ]] \
+    || fail "README must document UUID rotation through update"
+[[ "${readme}" == *'### 更新订阅 Token'* && "${readme}" == *'sudo env ALLOWED_TOKENS='* ]] \
+    || fail "README must document subscription token updates"
 
 printf 'ok - update bootstrap tests passed\n'
