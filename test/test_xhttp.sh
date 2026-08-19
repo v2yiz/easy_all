@@ -281,7 +281,7 @@ assert_contains "README documents origin A automation" "${readme}" "创建源站
 assert_contains "README includes architecture diagram" "${readme}" "aws-architecture.svg"
 assert_contains "README includes IAM diagram" "${readme}" "aws-iam-access-key.svg"
 assert_contains "README includes CloudFront diagram" "${readme}" "aws-cloudfront-settings.svg"
-assert_contains "README includes Mermaid install mindmap" "${readme}" 'mindmap'
+assert_contains "README includes left-to-right Mermaid install flow" "${readme}" 'flowchart LR'
 assert_contains "README documents direct-enter semantics" "${readme}" \
     "直接回车会采用该值"
 assert_contains "CloudFront diagram uses the implemented Origin Key" \

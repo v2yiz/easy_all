@@ -49,46 +49,26 @@ sudo ./easy_all install
 ## 安装脑图
 
 ```mermaid
-mindmap
-  root((easy_all install))
-    公共步骤
-      平台与端口检查
-      安装依赖
-      Google BBR 与 TCP
-      定时重启
-        默认：每天 04:00
-        可选：自定义小时
-        可选：不配置
-      UFW
-      Xray 核心
-      保存状态并注册命令
-    直连 Reality
-      连接地址
-        默认：自动探测公网 IPv4
-      SNI
-        默认：swdist.apple.com:443
-      订阅端口
-        默认：dynamic
-        可选：443
-      订阅输出
-        默认：部署 Nginx HTTPS 8443
-        可选：仅输出节点
-    CDN XHTTP
-      Route 53 源站域名
-        必填
-      CloudFront CDN 域名
-        必填
-      订阅输出
-        默认：部署 CloudFront + Nginx
-        可选：仅输出节点
-      AWS IAM 凭证
-        必填
-        不写入状态文件
-      AWS 资源
-        Route 53 A/CNAME
-        Let's Encrypt 源站证书
-        ACM Viewer 证书
-        CloudFront
+flowchart LR
+    A[easy_all install] --> B[公共初始化]
+    B --> B1[系统与端口检查]
+    B1 --> B2[依赖 / BBR / UFW / Xray]
+    B2 --> B3[重启策略：默认每日 04:00]
+    B3 --> C{安装模式}
+
+    C -->|1 默认| R[直连 Reality]
+    R --> R1[连接地址：默认自动探测 IPv4]
+    R1 --> R2[SNI：默认 swdist.apple.com:443]
+    R2 --> R3[端口：默认 dynamic]
+    R3 --> R4[订阅：默认部署 / 可仅输出节点]
+    R4 --> Z[保存状态并注册 easy_all]
+
+    C -->|2| X[CDN XHTTP]
+    X --> X1[源站域名 + CDN 域名：必填]
+    X1 --> X2[订阅：默认部署 / 可仅输出节点]
+    X2 --> X3[AWS IAM 凭证：必填且不持久化]
+    X3 --> X4[Route 53 / 证书 / CloudFront]
+    X4 --> Z
 ```
 
 公共交互选项：
