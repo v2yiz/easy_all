@@ -85,6 +85,9 @@ flowchart TD
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
+| 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
+| 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
+| VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
 | 安装模式 | `1` Reality（优化线路推荐） / `2` CDN XHTTP（非优化线路推荐） | `1` | 安装 Reality |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 写入每日 04:00 的 root crontab |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
@@ -105,6 +108,9 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | `update-sub` | 重新选择“部署订阅服务”或“仅输出节点”，并更新对应订阅配置。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的证书：Reality 为自托管订阅证书，CDN XHTTP 为源站证书。 |
+| `quota-status` | 显示启用月度配额后每个订阅用户的本月上下行总流量、额度和停用状态。 |
+| `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
+| `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
 | `uninstall` | 卸载当前模式的本机资源。XHTTP 保留 CloudFront、ACM 和 Route 53 资源，需在 AWS Console 中自行确认是否清理。 |
 | `help` | 显示命令帮助。 |
 
@@ -149,6 +155,170 @@ sudo env ALLOWED_TOKENS='{"owner":"replace-with-owner-token","user1":"replace-wi
 命令会显示当前订阅模式；直接回车保留当前模式。Token 只能使用 URL 安全字符
 `A-Z`、`a-z`、`0-9`、`.`、`_`、`~`、`-`，长度为 `8-128`，且每个用户和 Token 都必须唯一。
 成功后旧 Token 立即失效；CDN XHTTP 仍会在当前终端要求 AWS 凭证。
+
+### 可选的用户月度流量配额
+
+部署订阅服务时，Reality 和 CDN XHTTP 都会询问是否启用按用户月度流量配额，默认不启用：
+
+```text
+是否启用按用户月度流量配额（按 VPS 开通日计算 UTC 月度账期）？
+  1. 不启用（共用单个节点 UUID）
+  2. 启用（每个订阅用户使用独立 UUID，超额自动停用）
+请选择 [1]（直接回车使用默认值）:
+```
+
+选择启用后，只需填写“用户名到月度 GB 配额”的 JSON。这个 JSON 同时定义用户清单：
+
+```json
+{"owner": 0, "user1": 100, "user2": 250}
+```
+
+`0` 表示不限量。脚本会为每个新增用户名自动生成：
+
+- 一个 URL 安全的订阅 Token；
+- 一个独立的 VLESS UUID；
+- 一个 `easy_all.<用户名>` 格式的 Xray `email`。
+
+#### 覆盖自动生成的 Token
+
+脚本生成或复用 Token 后会显示完整 Token 字典，并允许输入可选覆盖表。只填写需要覆盖的用户：
+
+```text
+已生成或复用用户 Token：{"owner":"自动Token1","user1":"自动Token2","user2":"自动Token3"}
+可选 Token 覆盖 JSON（仅填写要覆盖的用户，直接回车不覆盖） [{}]:
+```
+
+例如只覆盖 `user1`：
+
+```json
+{"user1": "my-user1-token"}
+```
+
+最终结果中 `user1` 使用指定 Token，其他用户继续使用自动生成或原有 Token。覆盖表不能包含用户
+清单之外的用户名；Token 必须使用 URL 安全字符且长度为 `8-128`，所有 Token 必须唯一。直接
+回车采用 `{}`，即不覆盖。也可以非交互传入：
+
+```bash
+sudo env ENABLE_MONTHLY_QUOTA=2 \
+  MONTHLY_QUOTAS_GB='{"owner":0,"user1":100}' \
+  QUOTA_TOKEN_OVERRIDES='{"user1":"my-user1-token"}' \
+  QUOTA_START_DATE='2026-08-15' \
+  easy_all update-sub
+```
+
+不需要手工填写 UUID 或 email。安装完成后，`easy_all subscription` 会显示每个用户的最终
+订阅地址。通过 `easy_all update-sub` 调整配额时，同名用户会复用原 Token 和 UUID；新增用户
+名自动生成新凭据，删除用户名会移除对应凭据。`owner` 保留当前主 UUID，其他用户使用独立
+UUID。启用或关闭配额会使受影响用户之前取得的共享节点配置失效，应重新拉取订阅。
+
+#### VPS 开通日期与账期
+
+启用配额时还会询问 VPS 开通日期：
+
+```text
+VPS 开通日期（YYYY-MM-DD，作为每月配额周期起点） [2026-08-19]（直接回车使用默认值）:
+```
+
+必须填写有效且不晚于当前 UTC 日期的日期。完整日期会保存到状态中，其中“日”作为以后每个月
+的账期边界。例如开通日期为 `2026-01-15`：
+
+```text
+2026-08-15 至 2026-09-15
+2026-09-15 至 2026-10-15
+```
+
+边界时间按 UTC 计算。若开通日为 29、30 或 31，而某个月没有该日期，则该月使用最后一天：
+例如开通日为 31 日，2026 年 2 月的边界为 `2026-02-28`，下一个边界为 `2026-03-31`。
+升级已有配额部署但状态中没有开通日期时，首次加载会使用升级当天，之后持久化保留。
+
+#### 用户鉴权与流量归属
+
+启用配额后，每个用户名对应一组 Token、UUID 和 Xray `email`，三者职责不同：
+
+| 字段 | 使用位置 | 作用 |
+| --- | --- | --- |
+| Token | Nginx `/subscribe?token=...` | 鉴权订阅请求，并选择该用户专属的订阅文件。 |
+| UUID | Xray VLESS `clients[].id` | 节点连接的实际认证凭据；每个用户必须不同。 |
+| `email` | Xray VLESS `clients[].email` | Xray 内部的用户标识和流量计数器名称，不参与连接鉴权。 |
+
+脚本根据用户名自动生成 Xray `email`，例如用户 `user1` 对应：
+
+```json
+{
+  "id": "user1 的独立 UUID",
+  "email": "easy_all.user1"
+}
+```
+
+完整链路为：
+
+```text
+user1 的订阅 Token
+  -> Nginx 只返回 user1 的订阅文件
+  -> 客户端使用 user1 的独立 UUID 连接
+  -> Xray 使用 UUID 完成 VLESS 鉴权
+  -> Xray 将流量记入 email=easy_all.user1
+```
+
+Xray `StatsService` 生成以下计数器：
+
+```text
+user>>>easy_all.user1>>>traffic>>>uplink
+user>>>easy_all.user1>>>traffic>>>downlink
+```
+
+因此，流量在 Xray 中是**按 email 标识统计**，但用户实际是**按 UUID 鉴权**。不能让多个用户
+共用 UUID、只配置不同 email，否则 Xray 无法判断一次连接属于哪个用户。用户分享自己的 UUID
+或订阅地址时，产生的流量仍全部计入该用户。
+
+`StatsService` 仅监听 `127.0.0.1:10085`。systemd timer 每分钟累计各 email 的上下行流量到
+`/etc/easy_all/quota-usage.json`。达到配额后，脚本从 Xray 客户端列表中移除该用户 UUID，
+同时从 Nginx 订阅 Token 映射中移除该用户；进入下一个开通日账期后自动清零并恢复。状态文件
+和统计文件权限均为 `0600`。
+
+查看当前用量：
+
+```bash
+sudo easy_all quota-status
+```
+
+#### 单独修改用户额度
+
+先通过 `quota-status` 确认用户名，再设置该用户的新月度额度：
+
+```bash
+sudo easy_all quota-set user1 200
+```
+
+该命令只把 `user1` 的月度额度改为 `200 GB`，不会清零本月已用量，也不会修改 Token、UUID
+或 email。新额度立即参与判断：
+
+- 新额度低于或等于本月已用量：用户立即停用；
+- 调高额度后本月已用量低于新额度：用户立即恢复；
+- 设置为 `0`：改为不限量并立即恢复。
+
+用户名必须已经存在，额度必须是 `0-1000000` 的整数 GB。未知用户或未启用配额时命令会
+fail-fast，不会隐式创建用户。新增或删除用户仍应使用 `easy_all update-sub` 修改完整用户清单。
+
+#### 单独重置用户本月流量
+
+需要保留额度和凭据、只把某个用户本月用量归零时执行：
+
+```bash
+sudo easy_all quota-reset user1
+```
+
+该命令会把 `user1` 的本月上下行累计值清零，但保持原月度额度、Token、UUID 和
+`email=easy_all.user1` 不变。如果该用户因超额已停用，会立即重新加入 Xray 客户端列表和
+Nginx Token 映射。重置只影响指定用户，不影响其他用户，也不会改变开通日账期。
+
+重置是管理操作，执行后不会保留可恢复的旧累计值。执行前建议先运行
+`easy_all quota-status` 记录当前用量。
+
+通过 `easy_all update-sub` 可以重新选择是否启用配额或调整额度。非交互执行
+`easy_all update` 会保留当前配额配置。该机制按一分钟周期执行，属于近实时配额控制，不是
+精确计费系统；定时任务执行间隔内可能有少量超额流量。CDN XHTTP 统计的是 Xray 看到的用户
+载荷，不等同于 CloudFront 账单中的请求、协议开销或总传输字节。
 
 ## 直连 Reality
 
@@ -288,10 +458,12 @@ AWS Access Key ID 与 Secret Access Key 仅在当前命令进程中使用，不�
 
 ```text
 /etc/easy_all/state.env
+/etc/easy_all/quota-usage.json
 /etc/easy_all/xray/config.json
 /var/www/easy_all/subscriptions/
 /etc/nginx/conf.d/easy_all.conf
 /etc/systemd/system/easy_all-xray.service
+/etc/systemd/system/easy_all-quota.timer
 ```
 
 状态字段包括：
@@ -316,11 +488,12 @@ Access Key 不会持久化。
 easy_all
 lib/reality.sh
 lib/xhttp.sh
+lib/quota.sh
 sample-mihomo.yaml
 ```
 
-入口只负责模式选择和命令分发。两个 Profile 不互相调用；XHTTP 状态通过
-`CDN_PROVIDER` 与具体 CDN 实现解耦。
+入口只负责模式选择和命令分发。两个 Profile 不互相调用；`quota.sh` 提供两种模式共用的可选
+用户配额能力；XHTTP 状态通过 `CDN_PROVIDER` 与具体 CDN 实现解耦。
 
 ## 测试
 
@@ -328,8 +501,8 @@ sample-mihomo.yaml
 npm test
 ```
 
-测试覆盖统一入口、Reality、XHTTP、Xray 配置、CloudFront JSON、Route 53、订阅渲染、
-Token 鉴权、证书续期检查和更新顺序。
+测试覆盖统一入口、Reality、XHTTP、用户凭据与月度配额、Xray 配置、CloudFront JSON、
+Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 
 ## 独立工具：debian_init
 

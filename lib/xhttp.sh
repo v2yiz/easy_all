@@ -62,6 +62,9 @@ readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="600-900"
 readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="1800-3000"
 readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 
+# shellcheck source=lib/quota.sh
+source "${SCRIPT_DIR}/quota.sh"
+
 RED='\033[31m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
@@ -314,11 +317,13 @@ collect_install_inputs() {
     choose_subscription_mode
     if subscription_enabled; then
         choose_subscription_download_name
-        ensure_allowed_tokens
+        choose_monthly_quota 1
+        quota_enabled || ensure_allowed_tokens
     else
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
+        choose_monthly_quota 0
     fi
 }
 
@@ -340,6 +345,7 @@ load_state() {
         AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_CLOUDFRONT_DOMAIN
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+        QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
@@ -368,6 +374,19 @@ load_state() {
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
+    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
+    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
+        || die "状态文件中的 QUOTA_ENABLED 无效"
+    if quota_enabled; then
+        validate_user_accounts "${USER_ACCOUNTS:-}" \
+            || die "状态文件中的 USER_ACCOUNTS 无效"
+        QUOTA_START_DATE=${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}
+        validate_quota_start_date "${QUOTA_START_DATE}" \
+            || die "状态文件中的 QUOTA_START_DATE 无效：${QUOTA_START_DATE}"
+    else
+        USER_ACCOUNTS=""
+        QUOTA_START_DATE=""
+    fi
 }
 
 save_state() {
@@ -392,6 +411,9 @@ save_state() {
         printf 'AWS_CLOUDFRONT_DISTRIBUTION_ID=%q\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}"
         printf 'AWS_CLOUDFRONT_DOMAIN=%q\n' "${AWS_CLOUDFRONT_DOMAIN:-}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
+        printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
+        printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
+        printf 'QUOTA_START_DATE=%q\n' "${QUOTA_START_DATE:-}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME}"
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
@@ -791,17 +813,24 @@ download_xray() {
 }
 
 write_xray_config() {
+    local clients
     install -d -m 0755 "${XRAY_DIR}"
+    if quota_enabled; then
+        clients=$(quota_active_clients_json)
+    else
+        clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" \
+            '[{id:$id,email:$email}]')
+    fi
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
-        --arg uuid "${VLESS_UUID}" \
-        --arg xhttp_name "${XHTTP_NODE_NAME}" \
+        --argjson clients "${clients}" \
+        --argjson quota_enabled "$([[ "${QUOTA_ENABLED:-0}" == "1" ]] && printf true || printf false)" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" '
         {
           log:{loglevel:"warning"},
           inbounds:[{
               tag:"vless-xhttp-h2-in", listen:"127.0.0.1", port:$xhttp_port, protocol:"vless",
-              settings:{clients:[{id:$uuid,email:$xhttp_name}],decryption:"none"},
+              settings:{clients:$clients,decryption:"none"},
               streamSettings:{
                 network:"xhttp",
                 xhttpSettings:{
@@ -815,7 +844,12 @@ write_xray_config() {
           }],
           outbounds:[{protocol:"freedom",tag:"direct"}],
           routing:{domainStrategy:"AsIs",rules:[{type:"field",network:"tcp,udp",outboundTag:"direct"}]}
-        }' >"${RUNTIME_TMP}/xray-config.json"
+        }
+        + (if $quota_enabled then {
+            api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
+            stats:{},
+            policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}
+          } else {} end)' >"${RUNTIME_TMP}/xray-config.json"
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null \
         || die "Xray 配置校验失败"
     install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
@@ -845,6 +879,11 @@ EOF
 }
 
 write_subscription_token_map() {
+    if quota_enabled; then
+        jq -r 'to_entries[] | "    \"" + .value.token + "\" \"" + .key + "\";"' \
+            <<<"$(quota_active_accounts_json)"
+        return 0
+    fi
     jq -r '.[] | "    \"" + . + "\" 1;"' <<<"${ALLOWED_TOKENS}"
 }
 
@@ -852,7 +891,7 @@ write_subscription_nginx_maps() {
     subscription_enabled || return 0
     cat <<'EOF'
 map $arg_token $easy_all_subscription_allowed {
-    default 0;
+    default __denied__;
 EOF
     write_subscription_token_map
     cat <<'EOF'
@@ -867,18 +906,24 @@ EOF
 }
 
 write_subscription_nginx_locations() {
+    local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
+    local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
     subscription_enabled || return 0
+    if quota_enabled; then
+        base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
+        mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.yaml"
+    fi
     cat <<EOF
     location = /subscribe {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         if (\$request_method !~ ^(GET|HEAD)$) { return 405; }
-        if (\$easy_all_subscription_allowed = 0) { return 403; }
+        if (\$easy_all_subscription_allowed = __denied__) { return 403; }
         rewrite ^ \$easy_all_subscription_uri last;
     }
 
     location = /_easy_all_subscription/base64 {
         internal;
-        alias ${SUBSCRIPTION_BASE64_FILE};
+        alias ${base64_alias};
         default_type text/plain;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;
@@ -888,7 +933,7 @@ write_subscription_nginx_locations() {
 
     location = /_easy_all_subscription/mihomo {
         internal;
-        alias ${SUBSCRIPTION_MIHOMO_FILE};
+        alias ${mihomo_alias};
         default_type text/yaml;
         add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}.yaml" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
@@ -969,7 +1014,10 @@ validate_protocol_runtime() {
             response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
                 -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
                 "https://${AWS_ORIGIN_DOMAIN}/easy_all-health" || true)
-            [[ "${response}" == "easy_all ok" ]] && return 0
+            if [[ "${response}" == "easy_all ok" ]]; then
+                validate_quota_api
+                return 0
+            fi
         fi
         sleep 2
     done
@@ -978,7 +1026,12 @@ validate_protocol_runtime() {
 
 validate_subscription_runtime() {
     local token base64_response mihomo_response
-    token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+    if quota_enabled; then
+        token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
+        [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
+    else
+        token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+    fi
     base64_response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" \
@@ -1459,13 +1512,36 @@ render_mihomo_subscription() {
 }
 
 write_subscriptions() {
-    local template node_file base64_file mihomo_file
+    local template node_file base64_file mihomo_file user uuid user_dir
     template="${RUNTIME_TMP}/sample-mihomo.yaml"
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
 
     fetch_mihomo_template "${template}"
+    if quota_enabled; then
+        rm -rf -- "${SUBSCRIPTION_DIR}"
+        install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
+        while IFS=$'\t' read -r user uuid; do
+            user_dir="${SUBSCRIPTION_DIR}/${user}"
+            (
+                VLESS_UUID=${uuid}
+                build_mihomo_node >"${node_file}.${user}"
+                printf '%s' "$(build_node_link)" | openssl base64 -A >"${base64_file}.${user}"
+                printf '\n' >>"${base64_file}.${user}"
+                render_mihomo_subscription "${template}" "${node_file}.${user}" \
+                    "${mihomo_file}.${user}"
+            )
+            grep -Fq 'network: xhttp' "${mihomo_file}.${user}" \
+                || die "Mihomo 订阅缺少 XHTTP 节点：${user}"
+            install -d -o root -g www-data -m 0750 "${user_dir}"
+            install -o root -g www-data -m 0640 \
+                "${base64_file}.${user}" "${user_dir}/base64.txt"
+            install -o root -g www-data -m 0640 \
+                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml"
+        done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
+        return 0
+    fi
     build_mihomo_node >"${node_file}"
     printf '%s' "$(build_node_link)" | openssl base64 -A >"${base64_file}"
     printf '\n' >>"${base64_file}"
@@ -1473,6 +1549,7 @@ write_subscriptions() {
 
     grep -Fq 'network: xhttp' "${mihomo_file}" || die "Mihomo 订阅缺少 XHTTP 节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
+    rm -rf -- "${SUBSCRIPTION_DIR}"
     install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
     install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
     install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
@@ -1527,6 +1604,7 @@ show_status() {
     else
         printf '订阅服务: disabled（仅节点）\n'
     fi
+    show_quota_status
 }
 
 register_easy_all_command() {
@@ -1559,6 +1637,10 @@ refresh_runtime() {
     systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 || true
     systemctl reload nginx >/dev/null 2>&1 || true
     die "运行时刷新失败"
+}
+
+quota_rebuild_runtime() {
+    refresh_runtime
 }
 
 snapshot_subscription_update() {
@@ -1603,6 +1685,7 @@ rollback_subscription_update() {
 
 update_subscription() {
     require_root
+    begin_quota_maintenance
     collect_installed_state
     snapshot_subscription_update
     PROMPT_SUBSCRIPTION_MODE=1
@@ -1610,17 +1693,21 @@ update_subscription() {
     PROMPT_SUBSCRIPTION_MODE=0
     if subscription_enabled; then
         choose_subscription_download_name
-        ensure_allowed_tokens
+        choose_monthly_quota 1
+        quota_enabled || ensure_allowed_tokens
         write_subscriptions
     else
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
+        choose_monthly_quota 0
         remove_subscriptions
     fi
-    write_nginx_config
-    subscription_enabled && validate_subscription_runtime
     save_state
+    refresh_runtime
+    install_quota_timer
+    end_quota_maintenance
+    subscription_enabled && validate_subscription_runtime
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
     success "Nginx 订阅已刷新"
@@ -1628,6 +1715,7 @@ update_subscription() {
 
 update_easy_all() {
     require_root
+    begin_quota_maintenance
     collect_installed_state
     snapshot_subscription_update
     configure_bbr_tcp
@@ -1644,6 +1732,8 @@ update_easy_all() {
     fi
     save_state
     register_easy_all_command
+    install_quota_timer
+    end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
     success "easy_all CDN XHTTP 已更新"
@@ -1652,9 +1742,11 @@ update_easy_all() {
 update_current_core() {
     local backup_bin="${RUNTIME_TMP}/xray-backup"
     require_root
+    begin_quota_maintenance
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
     if download_xray && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime; then
+        end_quota_maintenance
         success "Xray 已更新"
         return 0
     fi
@@ -1701,6 +1793,7 @@ stop_services() {
 rollback_fresh_install() {
     warn "安装失败，正在恢复本机服务与防火墙；已创建的 AWS 资源不会自动删除"
     stop_services
+    remove_quota_timer
     restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
@@ -1738,6 +1831,7 @@ uninstall_all() {
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_services
+    remove_quota_timer
     restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${AWS_ORIGIN_DOMAIN:-}"
@@ -1785,6 +1879,7 @@ install_all() {
     info "[8/9] 保存状态并注册命令"
     save_state
     register_easy_all_command
+    install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     info "[9/9] 输出节点与订阅"
     show_subscription
@@ -1803,6 +1898,9 @@ usage() {
   status           显示本机、Route 53 与 CloudFront 状态摘要
   update-core      更新 Xray，失败时恢复旧版本
   renew-cert       强制续期源站 Let's Encrypt 证书
+  quota-status     显示每个用户的本月流量与配额状态
+  quota-set        修改指定用户的月度额度
+  quota-reset      清零指定用户的本月已用量
   register-command 重新注册 /usr/local/bin/easy_all
   uninstall        删除本机内容，保留远端 AWS 资源
 
@@ -1822,6 +1920,10 @@ main() {
     status) show_status ;;
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;
+    quota-sync) quota_sync_usage ;;
+    quota-status) require_root; collect_installed_state; show_quota_status ;;
+    quota-set) shift; quota_set_user "$@" ;;
+    quota-reset) shift; quota_reset_user "$@" ;;
     register-command) register_easy_all_command ;;
     uninstall) uninstall_all ;;
     help | -h | --help) usage ;;

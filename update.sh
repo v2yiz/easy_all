@@ -38,6 +38,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
 [[ -f "${REPO_DIR}/easy_all" \
     && -f "${REPO_DIR}/lib/reality.sh" \
     && -f "${REPO_DIR}/lib/xhttp.sh" \
+    && -f "${REPO_DIR}/lib/quota.sh" \
     && -f "${REPO_DIR}/sample-mihomo.yaml" ]] \
     || die "下载的 easy_all 项目不完整"
 

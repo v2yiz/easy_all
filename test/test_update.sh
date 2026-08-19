@@ -18,6 +18,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "updater must shallow-clone main"
 [[ "${content}" == *'&& -f "${REPO_DIR}/lib/reality.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/sample-mihomo.yaml"'* ]] \
     || fail "updater must validate the complete project"
 [[ "${content}" == *'"${SUDO[@]}" "${REPO_DIR}/easy_all" update'* ]] \

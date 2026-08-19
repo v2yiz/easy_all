@@ -27,9 +27,12 @@ launcher_usage() {
   show             显示当前节点
   subscription     显示节点与订阅信息
   update           刷新当前模式
-  update-sub       重新选择订阅模式
+  update-sub       重新选择订阅模式与月度用户配额
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
+  quota-status     显示月度用户流量配额
+  quota-set        修改指定用户的月度额度
+  quota-reset      清零指定用户的本月已用量
   status           显示运行状态
   uninstall        卸载当前模式
   help             显示帮助
@@ -118,6 +121,7 @@ unified_register_easy_all_command() {
     [[ -f "${source_root}/easy_all" ]] || die "缺少统一入口：${source_root}/easy_all"
     [[ -f "${source_root}/lib/reality.sh" ]] || die "缺少 Reality Profile"
     [[ -f "${source_root}/lib/xhttp.sh" ]] || die "缺少 XHTTP Profile"
+    [[ -f "${source_root}/lib/quota.sh" ]] || die "缺少流量配额模块"
 
     install -d -m 0755 "$(dirname "${EASY_ALL_INSTALL_DIR}")" "$(dirname "${EASY_ALL_COMMAND_PATH}")"
     stage=$(mktemp -d "${EASY_ALL_INSTALL_DIR}.stage.XXXXXX")
@@ -128,9 +132,11 @@ unified_register_easy_all_command() {
     install -m 0755 "${source_root}/easy_all" "${stage}/easy_all"
     install -m 0644 "${source_root}/lib/reality.sh" "${stage}/lib/reality.sh"
     install -m 0644 "${source_root}/lib/xhttp.sh" "${stage}/lib/xhttp.sh"
+    install -m 0644 "${source_root}/lib/quota.sh" "${stage}/lib/quota.sh"
     [[ ! -f "${source_root}/sample-mihomo.yaml" ]] \
         || install -m 0644 "${source_root}/sample-mihomo.yaml" "${stage}/sample-mihomo.yaml"
     bash -n "${stage}/easy_all" "${stage}/lib/reality.sh" "${stage}/lib/xhttp.sh" \
+        "${stage}/lib/quota.sh" \
         || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
 
     rm -rf -- "${backup}"
@@ -174,6 +180,10 @@ dispatch_profile_command() {
             renew_certificate
         fi
         ;;
+    quota-sync) quota_sync_usage ;;
+    quota-status) require_root; collect_installed_state; show_quota_status ;;
+    quota-set) quota_set_user "$@" ;;
+    quota-reset) quota_reset_user "$@" ;;
     status) show_status ;;
     register-command) register_easy_all_command ;;
     uninstall) uninstall_all "$@" ;;

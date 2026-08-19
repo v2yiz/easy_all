@@ -57,6 +57,9 @@ readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="2"
 
+# shellcheck source=lib/quota.sh
+source "${SCRIPT_DIR}/quota.sh"
+
 RED='\033[31m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
@@ -447,6 +450,7 @@ load_state() {
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
+        QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
@@ -478,6 +482,19 @@ load_state() {
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
+    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
+    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
+        || die "状态文件中的 QUOTA_ENABLED 无效"
+    if quota_enabled; then
+        validate_user_accounts "${USER_ACCOUNTS:-}" \
+            || die "状态文件中的 USER_ACCOUNTS 无效"
+        QUOTA_START_DATE=${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}
+        validate_quota_start_date "${QUOTA_START_DATE}" \
+            || die "状态文件中的 QUOTA_START_DATE 无效：${QUOTA_START_DATE}"
+    else
+        USER_ACCOUNTS=""
+        QUOTA_START_DATE=""
+    fi
 }
 
 save_state() {
@@ -498,6 +515,9 @@ save_state() {
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
+        printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
+        printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
+        printf 'QUOTA_START_DATE=%q\n' "${QUOTA_START_DATE:-}"
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-link}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
         printf 'SUBSCRIPTION_DOMAIN=%q\n' "${SUBSCRIPTION_DOMAIN:-}"
@@ -836,7 +856,7 @@ download_xray() {
 }
 
 write_xray_config() {
-    local gemini_domain_strategy
+    local gemini_domain_strategy clients
     prepare_mihomo_template
     resolve_gemini_ip_family
     [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
@@ -855,8 +875,15 @@ write_xray_config() {
         || die "生成 Reality X25519 密钥失败"
     [[ "${REALITY_SHORT_ID}" =~ ^[0-9a-fA-F]{2,16}$ ]] \
         || die "Reality Short ID 无效"
+    if quota_enabled; then
+        clients=$(quota_active_clients_json "xtls-rprx-vision")
+    else
+        clients=$(jq -cn --arg id "${VLESS_UUID}" \
+            '[{id:$id,email:"easy_all.owner",flow:"xtls-rprx-vision"}]')
+    fi
     jq -n \
-            --arg uuid "${VLESS_UUID}" \
+            --argjson clients "${clients}" \
+            --argjson quota_enabled "$([[ "${QUOTA_ENABLED:-0}" == "1" ]] && printf true || printf false)" \
             --arg target "${REALITY_TARGET}" \
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
@@ -871,7 +898,7 @@ write_xray_config() {
                 port: 443,
                 protocol: "vless",
                 settings: {
-                  clients: [{id: $uuid, flow: "xtls-rprx-vision"}],
+                  clients: $clients,
                   decryption: "none"
                 },
                 streamSettings: {
@@ -915,7 +942,12 @@ write_xray_config() {
                   }
                 ]
               }
-            }' >"${RUNTIME_TMP}/xray-config.json"
+            }
+            + (if $quota_enabled then {
+                api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
+                stats:{},
+                policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}
+              } else {} end)' >"${RUNTIME_TMP}/xray-config.json"
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null \
         || die "Xray ${PROTOCOL} 配置校验失败"
     install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
@@ -1318,22 +1350,52 @@ generate_subscription_files() {
 install_static_subscriptions() {
     local base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
+    local user uuid user_dir
+    if quota_enabled; then
+        rm -rf -- "${SUBSCRIPTION_DIR}"
+        install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
+        while IFS=$'\t' read -r user uuid; do
+            user_dir="${SUBSCRIPTION_DIR}/${user}"
+            (
+                VLESS_UUID=${uuid}
+                generate_subscription_files "${base64_file}.${user}" "${mihomo_file}.${user}"
+            )
+            install -d -o root -g www-data -m 0750 "${user_dir}"
+            install -o root -g www-data -m 0640 \
+                "${base64_file}.${user}" "${user_dir}/base64.txt"
+            install -o root -g www-data -m 0640 \
+                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml"
+        done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
+        return 0
+    fi
     generate_subscription_files "${base64_file}" "${mihomo_file}"
+    rm -rf -- "${SUBSCRIPTION_DIR}"
     install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
     install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
     install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
 }
 
 write_subscription_token_map() {
+    if quota_enabled; then
+        jq -r 'to_entries[] | "    \"" + .value.token + "\" \"" + .key + "\";"' \
+            <<<"$(quota_active_accounts_json)"
+        return 0
+    fi
     jq -r '.[] | "    \"" + . + "\" 1;"' <<<"${ALLOWED_TOKENS}"
 }
 
 write_subscription_nginx_config() {
+    local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
+    local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
+    if quota_enabled; then
+        base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
+        mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.yaml"
+    fi
     write_subscription_web_root
     {
         cat <<'EOF'
 map $arg_token $easy_all_subscription_allowed {
-    default 0;
+    default __denied__;
 EOF
         write_subscription_token_map
         cat <<EOF
@@ -1363,13 +1425,13 @@ server {
 
     location = /subscribe {
         if (\$request_method !~ ^(GET|HEAD)$) { return 405; }
-        if (\$easy_all_subscription_allowed = 0) { return 403; }
+        if (\$easy_all_subscription_allowed = __denied__) { return 403; }
         rewrite ^ \$easy_all_subscription_uri last;
     }
 
     location = /_easy_all_subscription/base64 {
         internal;
-        alias ${SUBSCRIPTION_BASE64_FILE};
+        alias ${base64_alias};
         default_type text/plain;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;
@@ -1379,7 +1441,7 @@ server {
 
     location = /_easy_all_subscription/mihomo {
         internal;
-        alias ${SUBSCRIPTION_MIHOMO_FILE};
+        alias ${mihomo_alias};
         default_type text/yaml;
         add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}.yaml" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
@@ -1400,7 +1462,12 @@ EOF
 
 validate_selfhosted_subscription() {
     local token status base64_response mihomo_response
-    token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+    if quota_enabled; then
+        token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
+        [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
+    else
+        token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+    fi
     status=$(curl -ksS --noproxy '*' -o /dev/null -w '%{http_code}' \
         --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe?token=invalid")
@@ -1423,7 +1490,8 @@ validate_selfhosted_subscription() {
 configure_selfhosted_subscription() {
     collect_subscription_domain
     choose_subscription_download_name "$1"
-    ensure_allowed_tokens
+    choose_monthly_quota 1
+    quota_enabled || ensure_allowed_tokens
     SUBSCRIPTION_MODE="selfhost"
     install_selfhost_dependencies
     configure_ufw
@@ -1477,6 +1545,7 @@ configure_subscription() {
         disable_selfhosted_subscription
         SUBSCRIPTION_MODE="link"
         ALLOWED_TOKENS=""
+        choose_monthly_quota 0
         ;;
     selfhost)
         configure_selfhosted_subscription "${prompt_download_name}"
@@ -1590,6 +1659,7 @@ update_subscription() {
     local requested_download_name=${SUB_DOWNLOAD_NAME:-} stored_port_mode target_port_mode
     local prompt_download_name=0
     require_root
+    begin_quota_maintenance
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     stored_port_mode=$(
         unset SUB_PORT_MODE
@@ -1621,11 +1691,6 @@ update_subscription() {
             return 1
         fi
     fi
-    if ! refresh_protocol_runtime_config; then
-        UPDATE_SUB_ROLLBACK_ON_EXIT=0
-        rollback_subscription_update
-        return 1
-    fi
     [[ "${prompt_options}" == "1" ]] && PROMPT_SUBSCRIPTION_MODE=1
     if ! configure_subscription "${prompt_download_name}"; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -1633,6 +1698,13 @@ update_subscription() {
         return 1
     fi
     PROMPT_SUBSCRIPTION_MODE=0
+    if ! refresh_protocol_runtime_config; then
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        rollback_subscription_update
+        return 1
+    fi
+    install_quota_timer
+    end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
 }
@@ -1679,6 +1751,26 @@ refresh_protocol_runtime_config() {
         || die "恢复旧配置后无法重启 ${XRAY_SERVICE}"
     validate_protocol_runtime
     die "运行时配置更新失败，已恢复旧配置"
+}
+
+quota_rebuild_runtime() {
+    local backup
+    backup=$(make_temp_dir)
+    install -m 0600 "${XRAY_CONFIG}" "${backup}/xray.json"
+    install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
+    if (
+        write_xray_config
+        write_subscription_nginx_config
+        systemctl restart "${XRAY_SERVICE}"
+        validate_protocol_runtime
+    ); then
+        return 0
+    fi
+    install -m 0600 "${backup}/xray.json" "${XRAY_CONFIG}"
+    install -m 0600 "${backup}/nginx.conf" "${NGINX_CONFIG}"
+    systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 || true
+    systemctl reload nginx >/dev/null 2>&1 || true
+    return 1
 }
 
 show_node() {
@@ -1750,6 +1842,7 @@ show_status() {
     else
         printf '订阅服务: disabled（仅节点）\n'
     fi
+    show_quota_status
 }
 
 register_easy_all_command() {
@@ -1852,6 +1945,7 @@ uninstall_all() {
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_protocol_services
+    remove_quota_timer
     restore_preinstall_firewall
     restore_preinstall_ipv6
     remove_daily_reboot_schedule
@@ -1865,6 +1959,7 @@ uninstall_all() {
 rollback_fresh_install() {
     warn "首次安装失败，正在恢复本机服务、UFW、crontab 与 BBR 配置"
     stop_protocol_services
+    remove_quota_timer
     restore_preinstall_firewall
     restore_preinstall_ipv6
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
@@ -1905,6 +2000,7 @@ validate_protocol_runtime() {
     for attempt in 1 2 3 4 5; do
         if ss -H -ltn "sport = :443" 2>/dev/null | grep -q . \
             && systemctl is-active --quiet "${XRAY_SERVICE}"; then
+            validate_quota_api
             return 0
         fi
         sleep 2
@@ -1942,6 +2038,8 @@ install_all() {
     register_easy_all_command
     info "[9/9] 配置订阅输出"
     configure_subscription "${prompt_download_name}"
+    refresh_protocol_runtime_config
+    install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
     success "easy_all ${PROTOCOL} 安装完成"
@@ -1958,6 +2056,9 @@ usage() {
   update-sub    选择部署订阅服务或仅输出节点
   update-core   更新 Xray 核心
   renew-cert    强制续期自托管订阅证书
+  quota-status  显示每个用户的本月流量与配额状态
+  quota-set     修改指定用户的月度额度
+  quota-reset   清零指定用户的本月已用量
   status        显示当前协议、服务、端口和订阅状态
   register-command
                 注册系统命令 easy_all
@@ -1972,6 +2073,7 @@ EOF
 update_current_core() {
     local backup_bin="${RUNTIME_TMP}/core-backup" backup_version="${RUNTIME_TMP}/version-backup"
     require_root
+    begin_quota_maintenance
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
     [[ ! -f "${XRAY_DIR}/version" ]] \
@@ -1981,6 +2083,7 @@ update_current_core() {
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
     ); then
+        end_quota_maintenance
         success "${PROTOCOL} 核心已更新"
         return 0
     fi
@@ -2002,6 +2105,10 @@ main() {
     update-sub) update_subscription 1 ;;
     update-core) update_current_core ;;
     renew-cert) renew_subscription_certificate ;;
+    quota-sync) quota_sync_usage ;;
+    quota-status) require_root; collect_installed_state; show_quota_status ;;
+    quota-set) shift; quota_set_user "$@" ;;
+    quota-reset) shift; quota_reset_user "$@" ;;
     status) show_status ;;
     register-command) register_easy_all_command ;;
     uninstall) uninstall_all "${2:-}" ;;

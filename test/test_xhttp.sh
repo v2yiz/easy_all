@@ -29,6 +29,10 @@ assert_contains "Xray XHTTP inbound" "$(<"${PROFILE}")" \
     'tag:"vless-xhttp-h2-in"'
 assert_contains "Xray fixes XHTTP to stream-up" "$(<"${PROFILE}")" \
     'mode:"stream-up"'
+assert_contains "quota mode exposes Stats API only on loopback" "$(<"${PROFILE}")" \
+    'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
+assert_contains "XHTTP state persists the quota start date" "$(<"${PROFILE}")" \
+    'QUOTA_START_DATE=%q'
 assert_contains "Xray keepalive stays below CloudFront response timeout" "$(<"${PROFILE}")" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
 assert_contains "Nginx proxies XHTTP over gRPC" "$(<"${PROFILE}")" \
@@ -38,7 +42,7 @@ assert_contains "Nginx validates subscription tokens" "$(<"${PROFILE}")" \
 assert_contains "Nginx protects direct-origin subscription access" "$(<"${PROFILE}")" \
     'if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }'
 assert_contains "Nginx serves internal Mihomo subscription" "$(<"${PROFILE}")" \
-    'alias ${SUBSCRIPTION_MIHOMO_FILE}'
+    'mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"'
 assert_contains "installer validates sshd before scheduled reboot" "$(<"${PROFILE}")" \
     '"${sshd_bin}" -t'
 assert_contains "installer enables SSH at boot" "$(<"${PROFILE}")" \
@@ -285,6 +289,20 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "Nginx token map contains only token values" \
         '    "owner-token-123" 1;' "${token_map}"
 
+    QUOTA_ENABLED=1
+    USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":0},"friend":{"token":"friend-token-123","uuid":"00000000-0000-4000-8000-000000000002","quota_gb":100}}'
+    quota_token_map=$(write_subscription_token_map)
+    assert_contains "quota token map selects the owner subscription directory" \
+        "${quota_token_map}" '"owner-token-123" "owner";'
+    assert_contains "quota token map selects the friend subscription directory" \
+        "${quota_token_map}" '"friend-token-123" "friend";'
+    SUBSCRIPTION_MODE="deploy"
+    quota_locations=$(write_subscription_nginx_locations)
+    assert_contains "quota subscription uses a token-selected base64 file" \
+        "${quota_locations}" '$easy_all_subscription_allowed/base64.txt'
+    QUOTA_ENABLED=0
+    USER_ACCOUNTS=""
+
     SUBSCRIPTION_MODE="link"
     link_nginx=$(
         write_subscription_nginx_maps
@@ -295,6 +313,8 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
 
     update_calls=$(
         require_root() { printf 'root\n'; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
         collect_installed_state() { printf 'state\n'; }
         snapshot_subscription_update() {
             printf 'snapshot\n'

@@ -51,6 +51,7 @@ assert_failure() {
 }
 
 source_script_copy() {
+    install -m 0644 "${ROOT_DIR}/lib/quota.sh" "${TMP_DIR}/quota.sh"
     sed \
         -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
         -e "s|^readonly WEB_ROOT=.*|readonly WEB_ROOT=\"${TMP_DIR}/www\"|" \
@@ -314,6 +315,8 @@ test_state_and_xray() {
         "SUBSCRIPTION_MODE=selfhost" "${state}"
     assert_contains "state persists subscription domain" \
         "SUBSCRIPTION_DOMAIN=sub.example.com" "${state}"
+    assert_contains "state supports persisting the quota start date" \
+        "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Worker name" "WORKER_NAME=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
 
@@ -337,6 +340,21 @@ EOF
         jq -e \
         '(.routing.rules[0].domain | index("domain:google.com"))
          and ((.routing.rules[0].domain | index("domain:openai.com")) == null)' \
+        <<<"${config}"
+
+    QUOTA_ENABLED=1
+    USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":0},"friend":{"token":"friend-token-123","uuid":"00000000-0000-4000-8000-000000000002","quota_gb":100}}'
+    rm -f -- "${QUOTA_USAGE_FILE}"
+    write_xray_config
+    config=$(<"${XRAY_CONFIG}")
+    assert_success "quota mode emits independent Xray users and local stats API" \
+        jq -e \
+        '.api.listen == "127.0.0.1:10085"
+         and .api.services == ["StatsService"]
+         and .policy.levels["0"].statsUserUplink == true
+         and .policy.levels["0"].statsUserDownlink == true
+         and (.inbounds[0].settings.clients | map(.email) | sort)
+             == ["easy_all.friend","easy_all.owner"]' \
         <<<"${config}"
 }
 

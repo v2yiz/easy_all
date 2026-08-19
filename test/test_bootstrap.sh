@@ -19,6 +19,7 @@ content=$(<"${SCRIPT}")
     || fail "bootstrap must shallow-clone main"
 [[ "${content}" == *'&& -f "${REPO_DIR}/lib/reality.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/sample-mihomo.yaml"'* ]] \
     || fail "bootstrap must validate the complete project"
 [[ "${content}" == *'"${SUDO[@]}" "${REPO_DIR}/easy_all" install'* ]] \
