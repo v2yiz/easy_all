@@ -22,6 +22,16 @@ Provider 单独记录为 `aws`，以后接入其他 CDN 时不改变安装模式
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
 ```
 
+项目代码更新后，一条命令下载最新完整项目并更新现有部署：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/update.sh)
+```
+
+该命令使用最新代码执行当前模式的 `easy_all update`，更新成功后会将最新入口、两个 Profile
+和 Mihomo 模板注册到 `/usr/local/lib/easy_all`。CDN XHTTP 更新仍会在当前终端中询问
+AWS 凭证。它不会切换 Reality/CDN 模式；更新 Xray 核心请使用 `easy_all update-core`。
+
 不要改成 `curl ... | sudo bash`：安装器需要从当前终端读取模式、域名和订阅选项。引导脚本会：
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
@@ -244,12 +254,13 @@ Token 鉴权、证书续期检查和更新顺序。
 也不会安装、更新或卸载代理节点。
 
 它应在本地管理机交互运行，通过 SSH 初始化一台全新的 Debian 12/13 amd64、systemd、
-非容器服务器：
+非容器服务器。一条命令下载并执行：
 
 ```bash
-chmod 700 debian_init.sh
-./debian_init.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/debian_init.sh)
 ```
+
+不要改成 `curl ... | bash`，脚本需要从当前终端持续读取服务器信息、密码和确认选项。
 
 本地需要 `ssh`、`scp` 和 `ssh-keygen`；安装 `sshpass` 后可自动提交首次 SSH 密码，
 否则按 SSH 提示交互输入。脚本会明确询问服务器地址、初始登录用户、普通用户名及 sudo
