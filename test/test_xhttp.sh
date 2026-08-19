@@ -123,6 +123,16 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         "link" "${SUBSCRIPTION_MODE}"
     PROMPT_SUBSCRIPTION_MODE=0
 
+    dig() {
+        case "$*" in
+            *"@1.1.1.1"*) return 0 ;;
+            *"@8.8.8.8"*) printf '%s\n' '198.51.100.10' ;;
+        esac
+    }
+    AWS_ORIGIN_DOMAIN="origin.example.com"
+    VPS_PUBLIC_IPV4="198.51.100.10"
+    verify_origin_dns
+
     (
         crontab() {
             printf '17 2 * * * "%s" --cron --home "%s"\n' "${ACME_BIN}" "${ACME_HOME}"
