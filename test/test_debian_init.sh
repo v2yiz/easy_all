@@ -88,6 +88,10 @@ test_validators_and_normalizers() {
     assert_success "highest port is accepted" validate_port "65535"
     assert_failure "zero port is rejected" validate_port "0"
     assert_failure "non-numeric port is rejected" validate_port "ssh"
+    assert_equal "port list accepts commas and removes duplicates" \
+        "80 443" "$(normalize_port_list "80,443,80")"
+    assert_equal "empty port list remains empty" "" "$(normalize_port_list "")"
+    assert_failure "port list rejects invalid ports" normalize_port_list "80,70000"
 
     assert_success "valid host alias is accepted" validate_host_alias "v2yiz-node_1"
     assert_failure "host alias starting with dash is rejected" validate_host_alias "-bad"
@@ -218,39 +222,92 @@ test_remote_script_contract() {
     assert_contains "remote writes sudoers with password sudo" "ALL=(ALL:ALL) ALL" "${content}"
     assert_contains "remote configures Shanghai timezone" "timedatectl set-timezone Asia/Shanghai" "${content}"
     assert_contains "remote enables time sync" "systemd-timesyncd" "${content}"
-    assert_contains "remote bounds receive backlog" "net.core.netdev_max_backlog = 16384" "${content}"
-    assert_contains "remote bounds receive buffers at 32 MiB" "net.core.rmem_max = 33554432" "${content}"
-    assert_contains "remote bounds send buffers at 32 MiB" "net.core.wmem_max = 33554432" "${content}"
-    assert_contains "remote tunes TCP receive buffers" "net.ipv4.tcp_rmem = 4096 131072 33554432" "${content}"
-    assert_contains "remote tunes TCP send buffers" "net.ipv4.tcp_wmem = 4096 65536 33554432" "${content}"
-    assert_not_contains "remote does not persist legacy TCP Fast Open override" "net.ipv4.tcp_fastopen = 3" "${content}"
-    assert_not_contains "remote does not persist legacy unsent queue override" "net.ipv4.tcp_notsent_lowat = 16384" "${content}"
-    assert_contains "remote resets legacy TCP Fast Open override" "sysctl -q -w net.ipv4.tcp_fastopen=1" "${content}"
-    assert_contains "remote resets legacy unsent queue override" "sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295" "${content}"
-    assert_contains "remote opens fixed HTTP ports" "80 443 8080 8443 8888" "${content}"
+    assert_contains "remote uses fq" "net.core.default_qdisc = fq" "${content}"
+    assert_contains "remote uses Google BBR" "net.ipv4.tcp_congestion_control = bbr" "${content}"
+    assert_contains "remote bounds receive buffers at 16 MiB" "net.core.rmem_max = 16777216" "${content}"
+    assert_contains "remote bounds send buffers at 16 MiB" "net.core.wmem_max = 16777216" "${content}"
+    assert_contains "remote tunes TCP receive buffers" "net.ipv4.tcp_rmem = 4096 131072 16777216" "${content}"
+    assert_contains "remote tunes TCP send buffers" "net.ipv4.tcp_wmem = 4096 16384 16777216" "${content}"
+    assert_contains "remote keeps receive autotuning" "net.ipv4.tcp_moderate_rcvbuf = 1" "${content}"
+    assert_contains "remote keeps PMTU probing disabled" "net.ipv4.tcp_mtu_probing = 0" "${content}"
+    assert_contains "remote restores idle slow start" "net.ipv4.tcp_slow_start_after_idle = 1" "${content}"
+    assert_contains "remote persists the BBR module" "debian-init-bbr.conf" "${content}"
+    assert_not_contains "remote does not install XanMod" "dl.xanmod.org" "${content}"
+    assert_not_contains "remote does not hardcode application ports" "80 443 8080 8443 8888" "${content}"
     assert_contains "remote reads sshd effective ports" "sshd_bin\" -T" "${content}"
-    assert_contains "remote writes nftables input chain" "nft insert rule" "${content}"
+    assert_contains "remote includes explicit extra ports" 'printf '\''%s\n'\'' $extra_tcp_ports' "${content}"
+    assert_contains "remote defaults UFW incoming to deny" "ufw default deny incoming" "${content}"
+    assert_contains "remote defaults UFW routed to deny" "ufw default deny routed" "${content}"
+    assert_contains "remote enables UFW" "ufw --force enable" "${content}"
+    assert_contains "remote marks managed UFW rules" "debian-init-managed" "${content}"
+    assert_not_contains "remote does not touch firewalld" "firewall-cmd" "${content}"
+    assert_not_contains "remote does not touch nftables" "nft insert rule" "${content}"
     assert_contains "remote disables SSH password login" "PasswordAuthentication no" "${content}"
     assert_contains "remote keeps root key-only login policy" "PermitRootLogin prohibit-password" "${content}"
+    assert_contains "remote always persists the final SSH port" \
+        'echo "Port $final_port"' "${content}"
+    assert_contains "remote snapshots old managed rules before adding replacements" \
+        'old_rule_numbers="$(managed_ufw_rule_numbers)"' "${content}"
     assert_contains "remote enables SSH at boot" 'systemctl enable --now "$ssh_unit"' "${content}"
     assert_contains "remote verifies SSH boot enablement" 'systemctl is-enabled --quiet "$ssh_unit"' "${content}"
     assert_contains "remote verifies SSH is active" 'systemctl is-active --quiet "$ssh_unit"' "${content}"
 }
 
 test_script_surface_contract() {
-    local content
+    local content readme
     content="$(<"${ROOT_DIR}/debian_init.sh")"
+    readme="$(<"${ROOT_DIR}/README.md")"
 
     assert_contains "script intro identifies Debian init" "Debian 服务器初始化与 SSH 密钥登录配置脚本" "${content}"
     assert_contains "prompt distinguishes initial SSH user" "初始 SSH 登录用户" "${content}"
     assert_contains "prompt distinguishes final normal user" "最终 SSH 登录的普通用户名" "${content}"
+    assert_contains "prompt asks for explicit extra UFW ports" \
+        "UFW 额外放行 TCP 端口" "${content}"
+    assert_contains "intro documents Google BBR" \
+        "Debian 官方内核 Google BBR/TCP" "${content}"
     assert_not_contains "normal user has no default constant" "DEFAULT_NORMAL_USER" "${content}"
     assert_contains "remote stage failure probes final login" "第 3 步 SSH 连接中断或远端命令返回失败" "${content}"
     assert_contains "remote stage fallback verifies normal user" 'verify_key_login "${NORMAL_USER}@${SERVER_HOST}" "$FINAL_PORT"' "${content}"
+    assert_contains "remote stage propagates initialization failures" \
+        '"$PUBLIC_KEY" "$EXTRA_TCP_PORTS" \' "${content}"
+    assert_contains "local temporary cleanup returns success" "cleanup_local_temp_files" "${content}"
     assert_contains "final ssh_config uses normal user" 'write_ssh_config "$HOST_ALIAS" "$SERVER_HOST" "$NORMAL_USER"' "${content}"
     assert_contains "local steps use normalized print_step" 'print_step "1/5"' "${content}"
     local old_name="init""_server.sh"
     assert_not_contains "script does not mention old filename" "${old_name}" "${content}"
+    assert_contains "README labels debian_init as independent" \
+        "独立工具：debian_init" "${readme}"
+    assert_contains "README says debian_init is not an easy_all prerequisite" \
+        '不是 `easy_all` 的组成部分或安装前置步骤' "${readme}"
+    assert_contains "README documents explicit extra UFW ports" \
+        "用户显式输入的额外 TCP 端口" "${readme}"
+}
+
+test_bbr_matches_easy_all() {
+    local debian_content reality_content xhttp_content setting
+    debian_content="$(<"${ROOT_DIR}/debian_init.sh")"
+    reality_content="$(<"${ROOT_DIR}/lib/reality.sh")"
+    xhttp_content="$(<"${ROOT_DIR}/lib/xhttp.sh")"
+    local -a settings=(
+        "net.core.default_qdisc = fq"
+        "net.ipv4.tcp_congestion_control = bbr"
+        "net.core.rmem_max = 16777216"
+        "net.core.wmem_max = 16777216"
+        "net.ipv4.tcp_rmem = 4096 131072 16777216"
+        "net.ipv4.tcp_wmem = 4096 16384 16777216"
+        "net.ipv4.tcp_moderate_rcvbuf = 1"
+        "net.ipv4.tcp_mtu_probing = 0"
+        "net.ipv4.tcp_slow_start_after_idle = 1"
+        "net.core.somaxconn = 4096"
+    )
+    for setting in "${settings[@]}"; do
+        assert_contains "debian_init has shared BBR setting ${setting}" \
+            "${setting}" "${debian_content}"
+        assert_contains "Reality has shared BBR setting ${setting}" \
+            "${setting}" "${reality_content}"
+        assert_contains "XHTTP has shared BBR setting ${setting}" \
+            "${setting}" "${xhttp_content}"
+    done
 }
 
 test_validators_and_normalizers
@@ -258,5 +315,6 @@ test_collected_ssh_ports
 test_managed_ssh_config
 test_remote_script_contract
 test_script_surface_contract
+test_bbr_matches_easy_all
 
 printf 'ok - debian_init shell tests passed (%s assertions)\n' "${TESTS_RUN}"

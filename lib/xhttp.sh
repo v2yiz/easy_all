@@ -1,59 +1,66 @@
 #!/usr/bin/env bash
 
-# Standalone installer for VLESS WebSocket and XHTTP over AWS CloudFront.
+# CDN XHTTP profile. Currently backed by AWS CloudFront.
 
 set -Eeuo pipefail
 umask 077
 
-readonly EASY_AWS_PROFILE="aws"
+readonly EASY_ALL_PROFILE="xhttp"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 readonly SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
 
-readonly STATE_DIR="/etc/easy_aws"
+readonly STATE_DIR="/etc/easy_all"
 readonly BACKUP_DIR="${STATE_DIR}/backups"
 readonly STATE_FILE="${STATE_DIR}/state.env"
-readonly WORKER_FILE="${STATE_DIR}/subscribe-worker.js"
 readonly CERT_DIR="${STATE_DIR}/certs"
 readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
 readonly KEY_FILE="${CERT_DIR}/private.key"
-readonly WEB_ROOT="/var/www/easy_aws"
-readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_aws"
-readonly ENTRY_SCRIPT_FILE="${EASY_AWS_ENTRY_SCRIPT:-${SCRIPT_FILE}}"
-readonly ENTRY_COMMAND_NAME="${EASY_AWS_ENTRY_COMMAND:-easy_aws}"
+readonly WEB_ROOT="/var/www/easy_all"
+readonly SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
+readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
+readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
+readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
+readonly ENTRY_SCRIPT_FILE="${EASY_ALL_ENTRY_SCRIPT:-${SCRIPT_FILE}}"
+readonly ENTRY_COMMAND_NAME="easy_all"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
 readonly CERT_RELOAD_HOOK="${COMMAND_INSTALL_DIR}/reload-tls-service.sh"
 readonly XRAY_DIR="${STATE_DIR}/xray"
 readonly XRAY_BIN="${XRAY_DIR}/xray"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
-readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy-aws-xray.service"
-readonly XRAY_SERVICE="easy-aws-xray.service"
-readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_aws.conf"
+readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
+readonly XRAY_SERVICE="easy_all-xray.service"
+readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
 readonly ACME_HOME="/root/.acme-aws.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
-readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy-aws"
-readonly NFT_CONFIG="/etc/nftables.conf"
-readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy-aws-bbr.conf"
-readonly XANMOD_KEYRING="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
-readonly XANMOD_REPO="/etc/apt/sources.list.d/xanmod-release.list"
-readonly DEFAULT_XRAY_VLESS_LOOPBACK_PORT="10085"
+readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy_all"
+readonly UFW_RULE_COMMENT="easy_all-managed"
+readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
+readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
 readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
-readonly DEFAULT_VLESS_NODE_NAME="VLESS_AWS_WS"
-readonly DEFAULT_XHTTP_NODE_NAME="VLESS_AWS_XHTTP_H2"
-readonly DEFAULT_WORKER_NAME="easy-aws"
-readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_AWS"
-readonly DEFAULT_SAMPLE_WORKER_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/for_cmcc/sample-worker.js"
+readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
+readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
+readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/sample-mihomo.yaml"
 readonly DEFAULT_REBOOT_HOUR="4"
-readonly CRON_REBOOT_MARKER="# easy_aws-managed-reboot"
+readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="1"
-readonly WS_EARLY_DATA_BYTES="2560"
+readonly STATE_SCHEMA_VERSION="2"
 readonly AWS_CONTROL_REGION="us-east-1"
 readonly CLOUDFRONT_CACHE_POLICY_ID="4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
 readonly CLOUDFRONT_ORIGIN_REQUEST_POLICY_ID="b689b0a8-53d0-40ab-baf2-68738e2966ac"
-readonly CLOUDFRONT_ORIGIN_ID="easy-aws-origin"
+readonly CLOUDFRONT_ORIGIN_ID="easy_all-xhttp-origin"
+readonly CLOUDFRONT_CONNECTION_ATTEMPTS="2"
+readonly CLOUDFRONT_CONNECTION_TIMEOUT="3"
+readonly CLOUDFRONT_ORIGIN_READ_TIMEOUT="60"
+readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="60"
+readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"
+readonly XHTTP_XMUX_MAX_CONCURRENCY="8-16"
+readonly XHTTP_XMUX_C_MAX_REUSE_TIMES="0"
+readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="600-900"
+readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="1800-3000"
+readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -71,9 +78,14 @@ die() { fail "$*"; exit 1; }
 RUNTIME_TMP=$(mktemp -d)
 cleanup_files=("${RUNTIME_TMP}")
 INSTALL_ROLLBACK_ON_EXIT=0
+UPDATE_SUB_ROLLBACK_ON_EXIT=0
+UPDATE_SUB_BACKUP_DIR=""
 cleanup() {
     local path
-    if [[ "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
+    if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        rollback_subscription_update || true
+    elif [[ "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
         INSTALL_ROLLBACK_ON_EXIT=0
         rollback_fresh_install || true
     fi
@@ -154,16 +166,12 @@ validate_uuid() {
     [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
 }
 
-validate_ws_path() {
+validate_xhttp_path() {
     [[ ${#1} -ge 9 && ${#1} -le 96 && "$1" =~ ^/[A-Za-z0-9._~-]+$ ]]
 }
 
 validate_loopback_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 1024 && 10#$1 <= 65535))
-}
-
-validate_worker_name() {
-    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
 validate_sub_download_name() {
@@ -185,7 +193,7 @@ generate_secret() {
     openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n'
 }
 
-generate_ws_path() {
+generate_xhttp_path() {
     printf '/vless-%s' "$(openssl rand -hex 12)"
 }
 
@@ -241,9 +249,36 @@ ensure_allowed_tokens() {
     ALLOWED_TOKENS=${normalized}
 }
 
+choose_subscription_mode() {
+    local mode=${SUBSCRIBE_MODE:-${SUBSCRIPTION_MODE:-}} current_mode default_choice=1
+    if [[ "${PROMPT_SUBSCRIPTION_MODE:-0}" == "1" || -z "${mode}" ]]; then
+        if [[ -t 0 ]]; then
+            current_mode=${mode:-deploy}
+            [[ "${current_mode}" == "link" ]] && default_choice=2
+            printf '请选择是否部署订阅服务：\n'
+            printf '  1. 部署订阅服务（CloudFront + Nginx）\n'
+            printf '  2. 不部署，仅输出节点信息\n'
+            read -r -p "请选择 [${default_choice}]: " mode
+            mode=${mode:-${current_mode}}
+        elif [[ -z "${mode}" ]]; then
+            die "非交互模式必须设置 SUBSCRIBE_MODE=deploy 或 SUBSCRIBE_MODE=link"
+        fi
+    fi
+    mode=${mode:-deploy}
+    case "${mode}" in
+    1 | deploy | selfhost | nginx) SUBSCRIPTION_MODE="deploy" ;;
+    2 | link | node) SUBSCRIPTION_MODE="link" ;;
+    *) die "订阅服务选项无效：${mode}" ;;
+    esac
+}
+
+subscription_enabled() {
+    [[ "${SUBSCRIPTION_MODE:-deploy}" == "deploy" ]]
+}
+
 collect_install_inputs() {
-    PROTOCOL="vless-ws-xhttp"
-    VLESS_NODE_NAME=${VLESS_NODE_NAME:-${DEFAULT_VLESS_NODE_NAME}}
+    PROTOCOL="xhttp"
+    CDN_PROVIDER="aws"
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -257,72 +292,67 @@ collect_install_inputs() {
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
 
-    VLESS_WS_PATH=${VLESS_WS_PATH:-$(generate_ws_path)}
-    XHTTP_PATH=${XHTTP_PATH:-$(generate_ws_path)}
+    XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
     XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
-    validate_ws_path "${VLESS_WS_PATH}" || die "VLESS_WS_PATH 无效：${VLESS_WS_PATH}"
-    validate_ws_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
-    [[ "${VLESS_WS_PATH}" != "${XHTTP_PATH}" ]] || die "WebSocket 与 XHTTP 路径不能相同"
-    XRAY_VLESS_LOOPBACK_PORT=${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}
+    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
-    validate_loopback_port "${XRAY_VLESS_LOOPBACK_PORT}" \
-        || die "XRAY_VLESS_LOOPBACK_PORT 无效：${XRAY_VLESS_LOOPBACK_PORT}"
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         || die "XRAY_XHTTP_LOOPBACK_PORT 无效：${XRAY_XHTTP_LOOPBACK_PORT}"
-    [[ "${XRAY_VLESS_LOOPBACK_PORT}" != "${XRAY_XHTTP_LOOPBACK_PORT}" ]] \
-        || die "WebSocket 与 XHTTP 本机端口不能相同"
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "ORIGIN_HEADER_SECRET 格式无效"
-    WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
-    validate_worker_name "${WORKER_NAME}" || die "WORKER_NAME 无效：${WORKER_NAME}"
+    choose_subscription_mode
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-    ensure_allowed_tokens
+    if subscription_enabled; then
+        ensure_allowed_tokens
+    else
+        ALLOWED_TOKENS=""
+    fi
 }
 
 source_state_file() {
-    [[ -f "${STATE_FILE}" ]] || die "easy_aws 状态文件不存在：${STATE_FILE}"
+    [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 状态文件不存在：${STATE_FILE}"
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
-        || die "不支持的 easy_aws 状态版本：${STATE_VERSION:-缺失}"
+    [[ "${STATE_VERSION:-}" == "1" || "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
 }
 
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL VLESS_NODE_NAME XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
-        VLESS_WS_PATH XHTTP_PATH AWS_ORIGIN_DOMAIN
-        XRAY_VLESS_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET
+        PROTOCOL CDN_PROVIDER XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
+        XHTTP_PATH AWS_ORIGIN_DOMAIN
+        XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET
         AWS_ORIGIN_ROUTE53_ZONE_ID AWS_ROUTE53_ZONE_ID AWS_ACM_CERTIFICATE_ARN
         AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_CLOUDFRONT_DOMAIN
-        ALLOWED_TOKENS WORKER_NAME SUB_DOWNLOAD_NAME
+        ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
     )
     for variable in "${variables[@]}"; do
-        env_name="EASY_AWS_ENV_${variable}"
+        env_name="EASY_ALL_ENV_${variable}"
         printf -v "${env_name}" '%s' "${!variable:-}"
         printf -v "${variable}" '%s' ""
     done
     source_state_file
     for variable in "${variables[@]}"; do
-        env_name="EASY_AWS_ENV_${variable}"
+        env_name="EASY_ALL_ENV_${variable}"
         if [[ -n "${!env_name:-}" ]]; then
             printf -v "${variable}" '%s' "${!env_name}"
         fi
         unset "${env_name}"
     done
-    [[ "${PROTOCOL}" == "vless-ws" || "${PROTOCOL}" == "vless-ws-xhttp" ]] \
-        || die "状态协议不是 easy_aws 支持的 VLESS 模式"
-    PROTOCOL="vless-ws-xhttp"
+    [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
+    CDN_PROVIDER=${CDN_PROVIDER:-aws}
+    [[ "${CDN_PROVIDER}" == "aws" ]] \
+        || die "当前版本不支持 CDN Provider：${CDN_PROVIDER}"
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
-    if [[ -z "${XHTTP_PATH:-}" ]]; then
-        XHTTP_PATH="/xhttp-${VLESS_WS_PATH#/vless-}"
-    fi
-    XRAY_VLESS_LOOPBACK_PORT=${XRAY_VLESS_LOOPBACK_PORT:-${DEFAULT_XRAY_VLESS_LOOPBACK_PORT}}
+    [[ -n "${XHTTP_PATH:-}" ]] || die "状态中缺少 XHTTP_PATH；请卸载后重新安装"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
-    WORKER_NAME=${WORKER_NAME:-${DEFAULT_WORKER_NAME}}
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
+    SUBSCRIPTION_MODE=${SUBSCRIPTION_MODE:-$([[ -n "${ALLOWED_TOKENS:-}" ]] && printf deploy || printf link)}
+    [[ "${SUBSCRIPTION_MODE}" == "deploy" || "${SUBSCRIPTION_MODE}" == "link" ]] \
+        || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
@@ -336,14 +366,12 @@ save_state() {
     {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
-        printf 'VLESS_NODE_NAME=%q\n' "${VLESS_NODE_NAME}"
+        printf 'CDN_PROVIDER=%q\n' "${CDN_PROVIDER:-aws}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
-        printf 'VLESS_WS_PATH=%q\n' "${VLESS_WS_PATH}"
         printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH}"
         printf 'AWS_ORIGIN_DOMAIN=%q\n' "${AWS_ORIGIN_DOMAIN}"
-        printf 'XRAY_VLESS_LOOPBACK_PORT=%q\n' "${XRAY_VLESS_LOOPBACK_PORT}"
         printf 'XRAY_XHTTP_LOOPBACK_PORT=%q\n' "${XRAY_XHTTP_LOOPBACK_PORT}"
         printf 'ORIGIN_HEADER_SECRET=%q\n' "${ORIGIN_HEADER_SECRET}"
         printf 'AWS_ORIGIN_ROUTE53_ZONE_ID=%q\n' "${AWS_ORIGIN_ROUTE53_ZONE_ID:-}"
@@ -352,8 +380,8 @@ save_state() {
         printf 'AWS_CLOUDFRONT_DISTRIBUTION_ID=%q\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}"
         printf 'AWS_CLOUDFRONT_DOMAIN=%q\n' "${AWS_CLOUDFRONT_DOMAIN:-}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
-        printf 'WORKER_NAME=%q\n' "${WORKER_NAME}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME}"
+        printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
     } >"${temp}"
@@ -361,15 +389,16 @@ save_state() {
 }
 
 collect_installed_state() {
-    [[ -f "${STATE_FILE}" ]] || die "easy_aws 尚未安装"
+    [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 尚未安装"
     load_state
     validate_domain "${AWS_ORIGIN_DOMAIN}" || die "状态中的源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN}" || die "状态中的 CDN 域名无效"
     validate_uuid "${VLESS_UUID}" || die "状态中的 VLESS UUID 无效"
-    validate_ws_path "${VLESS_WS_PATH}" || die "状态中的 WebSocket 路径无效"
-    validate_ws_path "${XHTTP_PATH}" || die "状态中的 XHTTP 路径无效"
+    validate_xhttp_path "${XHTTP_PATH}" || die "状态中的 XHTTP 路径无效"
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         || die "状态中的 XHTTP 本机端口无效"
+    [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+        || die "状态中的源站保护密钥无效"
 }
 
 check_platform() {
@@ -388,11 +417,11 @@ check_install_conflicts() {
     local port
     for port in 80 443; do
         if ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .; then
-            die "TCP ${port} 已被占用；easy_aws 仅支持专用 VPS"
+            die "TCP ${port} 已被占用；easy_all 仅支持专用 VPS"
         fi
     done
-    [[ ! -d /etc/easy_cmcc && ! -d /etc/easy_all ]] \
-        || die "检测到 easy_cmcc/easy_all 安装；请使用独立 VPS"
+    [[ ! -d /etc/easy_all ]] \
+        || die "检测到已有 easy_all 安装；一台 VPS 只允许一种模式"
 }
 
 install_packages() {
@@ -400,7 +429,7 @@ install_packages() {
     apt-get update
     apt-get upgrade -y
     apt-get install -y --no-install-recommends \
-        ca-certificates curl wget gnupg jq unzip openssl dnsutils nftables nginx \
+        ca-certificates curl wget jq unzip openssl dnsutils ufw nginx \
         socat cron iproute2 iputils-ping tzdata systemd-timesyncd tar
     timedatectl set-timezone Asia/Shanghai
     timedatectl set-ntp true || die "无法启用网络时间同步"
@@ -420,42 +449,40 @@ install_aws_cli() {
 }
 
 configure_bbr_tcp() {
+    [[ "$(uname -r)" != *xanmod* ]] \
+        || die "当前仍在运行 XanMod 内核；请先切换到 Debian 官方内核并重启"
     cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
+# BBR
 net.core.default_qdisc = fq
-net.core.netdev_max_backlog = 16384
-net.core.somaxconn = 4096
 net.ipv4.tcp_congestion_control = bbr
-net.core.rmem_max = 33554432
-net.core.wmem_max = 33554432
-net.ipv4.tcp_rmem = 4096 131072 33554432
-net.ipv4.tcp_wmem = 4096 65536 33554432
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_slow_start_after_idle = 0
+
+# TCP buffer
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 131072 16777216
+net.ipv4.tcp_wmem = 4096 16384 16777216
+net.ipv4.tcp_moderate_rcvbuf = 1
+
+# PMTU
+net.ipv4.tcp_mtu_probing = 0
+
+# Idle connection
+net.ipv4.tcp_slow_start_after_idle = 1
+
+# Listen queue
+net.core.somaxconn = 4096
 EOF
+    modprobe tcp_bbr >/dev/null 2>&1 || die "当前 Debian 内核不支持 Google BBR (tcp_bbr)"
+    grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control \
+        || die "Google BBR 模块已加载，但内核未将其注册为可用拥塞控制算法"
+    printf '%s\n' tcp_bbr >"${RUNTIME_TMP}/easy_all-bbr.conf"
+    install -m 0644 "${RUNTIME_TMP}/easy_all-bbr.conf" "${BBR_MODULES_CONFIG}"
     install -m 0644 "${RUNTIME_TMP}/bbr.conf" "${SYSCTL_CONFIG}"
-    modprobe tcp_bbr >/dev/null 2>&1 || true
     sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "应用 BBR sysctl 配置失败"
     [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
         || die "拥塞控制算法未成功设置为 bbr"
-}
-
-install_xanmod_bbr() {
-    local key_file keyring_file repo_file
-    key_file="${RUNTIME_TMP}/xanmod-archive.key"
-    keyring_file="${RUNTIME_TMP}/xanmod-archive-keyring.gpg"
-    repo_file="${RUNTIME_TMP}/xanmod-release.list"
-    curl -fsSL --retry 3 https://dl.xanmod.org/archive.key -o "${key_file}" \
-        || die "下载 XanMod 签名密钥失败"
-    gpg --batch --yes --dearmor --output "${keyring_file}" "${key_file}" \
-        || die "转换 XanMod 签名密钥失败"
-    install -d -m 0755 /etc/apt/keyrings
-    install -m 0644 "${keyring_file}" "${XANMOD_KEYRING}"
-    printf 'deb [signed-by=%s] http://deb.xanmod.org %s main\n' \
-        "${XANMOD_KEYRING}" "${VERSION_CODENAME}" >"${repo_file}"
-    install -m 0644 "${repo_file}" "${XANMOD_REPO}"
-    apt-get update
-    apt-get install -y linux-xanmod-lts-x64v1
-    configure_bbr_tcp
+    [[ -f "${BBR_MODULES_CONFIG}" && -f "${SYSCTL_CONFIG}" ]] \
+        || die "Google BBR 开机配置写入失败"
 }
 
 filter_managed_reboot_cron() {
@@ -488,20 +515,21 @@ configure_daily_reboot() {
 
 remove_daily_reboot_schedule() {
     { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab - \
-        || warn "移除 easy_aws 定时重启任务失败"
+        || warn "移除 easy_all 定时重启任务失败"
 }
 
 snapshot_fresh_install() {
     install -d -m 0700 "${BACKUP_DIR}"
-    if [[ -f "${NFT_CONFIG}" ]]; then
-        install -m 0644 "${NFT_CONFIG}" "${BACKUP_DIR}/pre-install-nftables.conf"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-nftables.missing"
-    fi
+    snapshot_ufw_state
     if [[ -f "${SYSCTL_CONFIG}" ]]; then
         install -m 0644 "${SYSCTL_CONFIG}" "${BACKUP_DIR}/pre-install-bbr.conf"
     else
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-bbr.missing"
+    fi
+    if [[ -f "${BBR_MODULES_CONFIG}" ]]; then
+        install -m 0644 "${BBR_MODULES_CONFIG}" "${BACKUP_DIR}/pre-install-bbr-module.conf"
+    else
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-bbr-module.missing"
     fi
     if crontab -l >"${BACKUP_DIR}/pre-install-crontab" 2>/dev/null; then
         chmod 0600 "${BACKUP_DIR}/pre-install-crontab"
@@ -511,13 +539,30 @@ snapshot_fresh_install() {
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 
+snapshot_ufw_state() {
+    [[ ! -e "${BACKUP_DIR}/pre-install-ufw.active" \
+        && ! -e "${BACKUP_DIR}/pre-install-ufw.inactive" \
+        && ! -e "${BACKUP_DIR}/pre-install-ufw.missing" ]] || return 0
+    install -d -m 0700 "${BACKUP_DIR}"
+    if ! command -v ufw >/dev/null 2>&1; then
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.missing"
+    elif LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.active"
+    else
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive"
+    fi
+    if [[ -f /etc/default/ufw ]]; then
+        install -m 0600 /etc/default/ufw "${BACKUP_DIR}/pre-install-ufw-default"
+    fi
+}
+
 append_ssh_port() {
     local port=$1
     [[ "${port}" =~ ^[0-9]+$ ]] || return 0
     ((10#${port} >= 1 && 10#${port} <= 65535)) || return 0
-    case ", ${SSH_PORTS:-}, " in
-    *", ${port}, "*) ;;
-    *) [[ -z "${SSH_PORTS:-}" ]] || SSH_PORTS+=", "; SSH_PORTS+="${port}" ;;
+    case " ${SSH_PORTS:-} " in
+    *" ${port} "*) ;;
+    *) [[ -z "${SSH_PORTS:-}" ]] || SSH_PORTS+=" "; SSH_PORTS+="${port}" ;;
     esac
 }
 
@@ -542,33 +587,53 @@ detect_ssh_ports() {
     [[ -n "${SSH_PORTS}" ]] || SSH_PORTS=22
 }
 
-configure_nftables() {
-    local candidate
-    detect_ssh_ports
-    candidate="${RUNTIME_TMP}/nftables.conf"
-    cat >"${candidate}" <<EOF
-#!/usr/sbin/nft -f
-flush ruleset
-
-table inet filter {
-    chain input {
-        type filter hook input priority filter; policy drop;
-        iifname "lo" accept
-        ct state invalid drop
-        ct state { established, related } accept
-        meta l4proto { icmp, ipv6-icmp } accept
-        tcp dport { ${SSH_PORTS}, 80, 443 } accept
-    }
-    chain forward { type filter hook forward priority filter; policy drop; }
-    chain output { type filter hook output priority filter; policy accept; }
+managed_ufw_rule_numbers() {
+    command -v ufw >/dev/null 2>&1 || return 0
+    LC_ALL=C ufw status numbered 2>/dev/null \
+        | sed -n "/${UFW_RULE_COMMENT}/s/^[[:space:]]*\\[[[:space:]]*\\([0-9][0-9]*\\)\\].*/\\1/p" \
+        | sort -rn
 }
-EOF
-    nft -c -f "${candidate}" || die "nftables 配置校验失败"
-    install -m 0644 "${candidate}" "${NFT_CONFIG}"
-    sha256sum "${candidate}" | awk '{print $1}' >"${STATE_DIR}/nftables.sha256"
-    chmod 0600 "${STATE_DIR}/nftables.sha256"
-    systemctl enable --now nftables >/dev/null 2>&1 || die "启用 nftables 失败"
-    nft -f "${NFT_CONFIG}" || die "加载 nftables 配置失败"
+
+remove_managed_ufw_rules() {
+    local rule_number
+    command -v ufw >/dev/null 2>&1 || return 0
+    while read -r rule_number; do
+        [[ -n "${rule_number}" ]] || continue
+        ufw --force delete "${rule_number}" >/dev/null \
+            || warn "删除 UFW 规则 ${rule_number} 失败"
+    done < <(managed_ufw_rule_numbers)
+}
+
+configure_ufw() {
+    local port rule_number old_rule_numbers
+    snapshot_ufw_state
+    if ! command -v ufw >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y --no-install-recommends ufw
+    fi
+    detect_ssh_ports
+    old_rule_numbers=$(managed_ufw_rule_numbers)
+    ufw default deny incoming >/dev/null
+    ufw default allow outgoing >/dev/null
+    ufw default deny routed >/dev/null
+    for port in ${SSH_PORTS}; do
+        ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
+            || die "添加 SSH UFW 规则失败：TCP ${port}"
+    done
+    ufw allow 80/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
+        || die "添加 HTTP UFW 规则失败"
+    ufw allow 443/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
+        || die "添加 HTTPS UFW 规则失败"
+    while read -r rule_number; do
+        [[ -n "${rule_number}" ]] || continue
+        ufw --force delete "${rule_number}" >/dev/null \
+            || die "删除旧 UFW 规则失败：${rule_number}"
+    done <<<"${old_rule_numbers}"
+
+    ufw --force enable >/dev/null || die "启用 UFW 失败"
+    systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
+    LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
 }
 
 detect_public_ipv4() {
@@ -619,7 +684,7 @@ write_web_root() {
 write_bootstrap_nginx_config() {
     write_web_root
     rm -f -- /etc/nginx/sites-enabled/default
-    cat >"${RUNTIME_TMP}/easy_aws-bootstrap.conf" <<EOF
+    cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -629,20 +694,40 @@ server {
     location / { return 404; }
 }
 EOF
-    install -m 0644 "${RUNTIME_TMP}/easy_aws-bootstrap.conf" "${NGINX_CONFIG}"
+    install -m 0600 "${RUNTIME_TMP}/easy_all-bootstrap.conf" "${NGINX_CONFIG}"
     nginx -t >/dev/null || die "Nginx HTTP 引导配置校验失败"
     systemctl enable --now nginx >/dev/null || die "启动 Nginx 失败"
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
+verify_acme_renewal_setup() {
+    local crontab_content
+    command -v crontab >/dev/null 2>&1 || die "未找到 crontab；无法配置证书自动续期"
+    systemctl enable --now cron.service >/dev/null 2>&1 \
+        || die "无法启用证书自动续期所需的 cron.service"
+    systemctl is-enabled --quiet cron.service \
+        || die "cron.service 未设置为开机启动"
+    systemctl is-active --quiet cron.service \
+        || die "cron.service 未运行"
+    crontab_content=$(crontab -l 2>/dev/null || true)
+    awk -v acme_bin="${ACME_BIN}" '
+        index($0, acme_bin) && $0 ~ /(^|[[:space:]])--cron([[:space:]]|$)/ { found=1 }
+        END { exit !found }
+    ' <<<"${crontab_content}" || die "未找到 acme.sh 自动续期定时任务"
+}
+
 install_acme() {
-    [[ -x "${ACME_BIN}" ]] && return 0
+    if [[ -x "${ACME_BIN}" ]]; then
+        verify_acme_renewal_setup
+        return 0
+    fi
     local installer="${RUNTIME_TMP}/get-acme.sh"
     local account_email=${ACME_EMAIL:-admin@${AWS_ORIGIN_DOMAIN}}
     curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" || die "下载 acme.sh 失败"
     sh "${installer}" "email=${account_email}" --home "${ACME_HOME}" || die "安装 acme.sh 失败"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后不可用"
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
+    verify_acme_renewal_setup
 }
 
 run_acme() {
@@ -662,12 +747,14 @@ issue_origin_certificate() {
     cat >"${RUNTIME_TMP}/reload-tls-service.sh" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-systemctl reload nginx.service >/dev/null 2>&1 || systemctl restart nginx.service >/dev/null 2>&1 || true
+systemctl reload nginx.service >/dev/null 2>&1 || systemctl restart nginx.service >/dev/null 2>&1
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
     run_acme --install-cert -d "${AWS_ORIGIN_DOMAIN}" --ecc \
         --fullchain-file "${CERT_FILE}" --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" || die "安装源站证书失败"
+    [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" && -x "${CERT_RELOAD_HOOK}" ]] \
+        || die "源站证书、私钥或续期重载钩子安装不完整"
 }
 
 download_xray() {
@@ -693,30 +780,27 @@ download_xray() {
 
 write_xray_config() {
     install -d -m 0755 "${XRAY_DIR}"
-    jq -n --argjson ws_port "${XRAY_VLESS_LOOPBACK_PORT}" \
-        --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
-        --arg uuid "${VLESS_UUID}" --arg ws_name "${VLESS_NODE_NAME}" \
-        --arg xhttp_name "${XHTTP_NODE_NAME}" --arg ws_path "${VLESS_WS_PATH}" \
-        --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" '
+    jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+        --arg uuid "${VLESS_UUID}" \
+        --arg xhttp_name "${XHTTP_NODE_NAME}" \
+        --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
+        --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" '
         {
           log:{loglevel:"warning"},
-          inbounds:[
-            {
-              tag:"vless-ws-in", listen:"127.0.0.1", port:$ws_port, protocol:"vless",
-              settings:{clients:[{id:$uuid,email:$ws_name}],decryption:"none"},
-              streamSettings:{network:"ws",wsSettings:{path:$ws_path,heartbeatPeriod:60}},
-              sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}
-            },
-            {
+          inbounds:[{
               tag:"vless-xhttp-h2-in", listen:"127.0.0.1", port:$xhttp_port, protocol:"vless",
               settings:{clients:[{id:$uuid,email:$xhttp_name}],decryption:"none"},
               streamSettings:{
                 network:"xhttp",
-                xhttpSettings:{host:$xhttp_host,path:$xhttp_path,mode:"auto"}
+                xhttpSettings:{
+                  host:$xhttp_host,
+                  path:$xhttp_path,
+                  mode:"stream-up",
+                  scStreamUpServerSecs:$stream_up_server_secs
+                }
               },
               sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}
-            }
-          ],
+          }],
           outbounds:[{protocol:"freedom",tag:"direct"}],
           routing:{domainStrategy:"AsIs",rules:[{type:"field",network:"tcp,udp",outboundTag:"direct"}]}
         }' >"${RUNTIME_TMP}/xray-config.json"
@@ -726,9 +810,9 @@ write_xray_config() {
 }
 
 install_xray_service() {
-    cat >"${RUNTIME_TMP}/easy-aws-xray.service" <<EOF
+    cat >"${RUNTIME_TMP}/easy_all-xray.service" <<EOF
 [Unit]
-Description=Xray VLESS WebSocket and XHTTP managed by easy_aws
+Description=Xray VLESS XHTTP managed by easy_all
 After=network-online.target
 Wants=network-online.target
 
@@ -743,14 +827,72 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-    install -m 0644 "${RUNTIME_TMP}/easy-aws-xray.service" "${XRAY_SERVICE_FILE}"
+    install -m 0644 "${RUNTIME_TMP}/easy_all-xray.service" "${XRAY_SERVICE_FILE}"
     systemctl daemon-reload
     systemctl enable --now "${XRAY_SERVICE}" >/dev/null || die "启动 Xray 失败"
 }
 
+write_subscription_token_map() {
+    jq -r '.[] | "    \"" + . + "\" 1;"' <<<"${ALLOWED_TOKENS}"
+}
+
+write_subscription_nginx_maps() {
+    subscription_enabled || return 0
+    cat <<'EOF'
+map $arg_token $easy_all_subscription_allowed {
+    default 0;
+EOF
+    write_subscription_token_map
+    cat <<'EOF'
+}
+
+map $arg_flag $easy_all_subscription_uri {
+    default /_easy_all_subscription/base64;
+    clash /_easy_all_subscription/mihomo;
+}
+
+EOF
+}
+
+write_subscription_nginx_locations() {
+    subscription_enabled || return 0
+    cat <<EOF
+    location = /subscribe {
+        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
+        if (\$request_method !~ ^(GET|HEAD)$) { return 405; }
+        if (\$easy_all_subscription_allowed = 0) { return 403; }
+        rewrite ^ \$easy_all_subscription_uri last;
+    }
+
+    location = /_easy_all_subscription/base64 {
+        internal;
+        alias ${SUBSCRIPTION_BASE64_FILE};
+        default_type text/plain;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+        add_header Pragma "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+    }
+
+    location = /_easy_all_subscription/mihomo {
+        internal;
+        alias ${SUBSCRIPTION_MIHOMO_FILE};
+        default_type text/yaml;
+        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}.yaml" always;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+        add_header Pragma "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+    }
+
+EOF
+}
+
 write_nginx_config() {
     write_web_root
-    cat >"${RUNTIME_TMP}/easy_aws.conf" <<EOF
+    {
+        write_subscription_nginx_maps
+        cat <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -770,40 +912,25 @@ server {
     tcp_nodelay on;
     keepalive_timeout 5m;
 
-    location = /easy-aws-health {
-        if (\$http_x_easy_aws_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
+    location = /easy_all-health {
+        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         default_type text/plain;
         add_header Cache-Control "no-store" always;
-        return 200 "easy_aws ok\n";
+        return 200 "easy_all ok\n";
     }
 
-    location = ${VLESS_WS_PATH} {
-        if (\$http_x_easy_aws_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
-        proxy_pass http://127.0.0.1:${XRAY_VLESS_LOOPBACK_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        add_header Cache-Control "no-store" always;
-        access_log off;
-    }
-
+EOF
+        write_subscription_nginx_locations
+        cat <<EOF
     location ^~ ${XHTTP_PATH}/ {
-        if (\$http_x_easy_aws_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
+        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         client_max_body_size 0;
         client_body_timeout 5m;
         grpc_set_header Host ${VLESS_CDN_DOMAIN};
         grpc_set_header X-Real-IP \$remote_addr;
         grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         grpc_set_header X-Forwarded-Proto https;
-        grpc_set_header X-Easy-Aws-Origin-Key \$http_x_easy_aws_origin_key;
+        grpc_set_header X-Easy-All-Origin-Key \$http_x_easy_all_origin_key;
         grpc_socket_keepalive on;
         grpc_read_timeout 1h;
         grpc_send_timeout 1h;
@@ -814,7 +941,8 @@ server {
     location / { return 404; }
 }
 EOF
-    install -m 0644 "${RUNTIME_TMP}/easy_aws.conf" "${NGINX_CONFIG}"
+    } >"${RUNTIME_TMP}/easy_all.conf"
+    install -m 0600 "${RUNTIME_TMP}/easy_all.conf" "${NGINX_CONFIG}"
     nginx -t >/dev/null || die "Nginx 配置校验失败"
     systemctl enable --now nginx >/dev/null
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
@@ -827,13 +955,28 @@ validate_protocol_runtime() {
             && systemctl is-active --quiet nginx \
             && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
             response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
-                -H "X-Easy-Aws-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
-                "https://${AWS_ORIGIN_DOMAIN}/easy-aws-health" || true)
-            [[ "${response}" == "easy_aws ok" ]] && return 0
+                -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
+                "https://${AWS_ORIGIN_DOMAIN}/easy_all-health" || true)
+            [[ "${response}" == "easy_all ok" ]] && return 0
         fi
         sleep 2
     done
-    die "VLESS WebSocket 本机运行时验收失败"
+    die "VLESS XHTTP 本机运行时验收失败"
+}
+
+validate_subscription_runtime() {
+    local token base64_response mihomo_response
+    token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+    base64_response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
+        --get --data-urlencode "token=${token}" \
+        "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
+    [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
+    mihomo_response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
+        --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
+        "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
+    grep -Fq 'network: xhttp' <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
 }
 
 collect_aws_credentials() {
@@ -889,14 +1032,14 @@ find_route53_zones() {
     AWS_ORIGIN_ROUTE53_ZONE_ID=${AWS_ORIGIN_ROUTE53_ZONE_ID#/hostedzone/}
     AWS_ROUTE53_ZONE_ID=${AWS_ROUTE53_ZONE_ID#/hostedzone/}
     [[ "${VLESS_CDN_DOMAIN}." != "${AWS_ROUTE53_ZONE_NAME}" ]] \
-        || die "easy_aws 当前要求 CDN 使用子域名，不能直接使用 Hosted Zone 根域"
+        || die "easy_all CDN XHTTP 当前要求使用子域名，不能直接使用 Hosted Zone 根域"
 }
 
 build_origin_a_change_batch() {
     local destination=$1 conflicts=$2 public_ip=$3
     jq -n --arg name "${AWS_ORIGIN_DOMAIN}." --arg value "${public_ip}" \
         --argjson conflicts "${conflicts}" '
-        {Comment:"easy_aws Route 53 origin A",
+        {Comment:"easy_all Route 53 origin A",
          Changes:(if ($conflicts|length)==0 then
            [{Action:"CREATE",ResourceRecordSet:{Name:$name,Type:"A",TTL:300,
              ResourceRecords:[{Value:$value}]}}]
@@ -1002,7 +1145,7 @@ find_or_request_acm_certificate() {
     done
     [[ -n "${record_name:-}" && -n "${record_value:-}" ]] || die "ACM 尚未生成 DNS 验证记录"
     change=$(jq -cn --arg name "${record_name}" --arg type "${record_type}" --arg value "${record_value}" \
-        '{Comment:"easy_aws ACM DNS validation",Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$name,Type:$type,TTL:300,ResourceRecords:[{Value:$value}]}}]}')
+        '{Comment:"easy_all ACM DNS validation",Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$name,Type:$type,TTL:300,ResourceRecords:[{Value:$value}]}}]}')
     aws route53 change-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
         --change-batch "${change}" >/dev/null || die "写入 ACM DNS 验证记录失败"
     info "等待 ACM 证书签发（通常几分钟）"
@@ -1018,7 +1161,7 @@ find_or_request_acm_certificate() {
 }
 
 cloudfront_marker() {
-    printf 'easy_aws:%s' "${VLESS_CDN_DOMAIN}"
+    printf 'easy_all:xhttp:%s' "${VLESS_CDN_DOMAIN}"
 }
 
 build_distribution_config() {
@@ -1029,6 +1172,10 @@ build_distribution_config() {
         --arg origin_key "${ORIGIN_HEADER_SECRET}" --arg comment "$(cloudfront_marker)" \
         --arg cache_policy "${CLOUDFRONT_CACHE_POLICY_ID}" \
         --arg origin_policy "${CLOUDFRONT_ORIGIN_REQUEST_POLICY_ID}" \
+        --argjson connection_attempts "${CLOUDFRONT_CONNECTION_ATTEMPTS}" \
+        --argjson connection_timeout "${CLOUDFRONT_CONNECTION_TIMEOUT}" \
+        --argjson origin_read_timeout "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}" \
+        --argjson origin_keepalive_timeout "${CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT}" \
         --arg certificate "${AWS_ACM_CERTIFICATE_ARN}" '
         {
           CallerReference:$caller,
@@ -1036,10 +1183,12 @@ build_distribution_config() {
           DefaultRootObject:"",
           Origins:{Quantity:1,Items:[{
             Id:$origin_id,DomainName:$origin,OriginPath:"",
-            CustomHeaders:{Quantity:1,Items:[{HeaderName:"X-Easy-Aws-Origin-Key",HeaderValue:$origin_key}]},
+            CustomHeaders:{Quantity:1,Items:[{HeaderName:"X-Easy-All-Origin-Key",HeaderValue:$origin_key}]},
             CustomOriginConfig:{HTTPPort:80,HTTPSPort:443,OriginProtocolPolicy:"https-only",
-              OriginSslProtocols:{Quantity:1,Items:["TLSv1.2"]},OriginReadTimeout:60,OriginKeepaliveTimeout:60},
-            ConnectionAttempts:2,ConnectionTimeout:3,OriginShield:{Enabled:false}
+              OriginSslProtocols:{Quantity:1,Items:["TLSv1.2"]},
+              OriginReadTimeout:$origin_read_timeout,OriginKeepaliveTimeout:$origin_keepalive_timeout},
+            ConnectionAttempts:$connection_attempts,ConnectionTimeout:$connection_timeout,
+            OriginShield:{Enabled:false}
           }]},
           OriginGroups:{Quantity:0},
           DefaultCacheBehavior:{
@@ -1069,7 +1218,8 @@ find_managed_distribution() {
     marker=$(cloudfront_marker)
     distributions=$(aws cloudfront list-distributions --output json) || die "列出 CloudFront 分配失败"
     jq -r --arg marker "${marker}" \
-        '.DistributionList.Items[]?|select(.Comment==$marker)|.Id' <<<"${distributions}" | head -n1
+        '.DistributionList.Items[]?|select(.Comment==$marker)|.Id' \
+        <<<"${distributions}" | head -n1
 }
 
 configure_cloudfront_distribution() {
@@ -1080,8 +1230,9 @@ configure_cloudfront_distribution() {
         existing=$(aws cloudfront get-distribution-config --id "${id}" --output json) \
             || die "读取 CloudFront 分配 ${id} 失败"
         comment=$(jq -r '.DistributionConfig.Comment' <<<"${existing}")
-        if [[ "${comment}" != "$(cloudfront_marker)" && "${AWS_ADOPT_DISTRIBUTION:-0}" != "1" ]]; then
-            die "CloudFront 分配 ${id} 不是 easy_aws 管理；若确定要完整改写，请设置 AWS_ADOPT_DISTRIBUTION=1"
+        if [[ "${comment}" != "$(cloudfront_marker)" \
+            && "${AWS_ADOPT_DISTRIBUTION:-0}" != "1" ]]; then
+            die "CloudFront 分配 ${id} 不是 easy_all XHTTP 管理；若确定要完整改写，请设置 AWS_ADOPT_DISTRIBUTION=1"
         fi
         etag=$(jq -r '.ETag' <<<"${existing}")
         caller=$(jq -r '.DistributionConfig.CallerReference' <<<"${existing}")
@@ -1090,7 +1241,7 @@ configure_cloudfront_distribution() {
             --distribution-config "file://${config}" --output json) \
             || die "更新 CloudFront 分配失败"
     else
-        caller="easy-aws-$(date +%s)-$(openssl rand -hex 6)"
+        caller="easy_all-xhttp-$(date +%s)-$(openssl rand -hex 6)"
         build_distribution_config "${config}" "${caller}"
         response=$(aws cloudfront create-distribution --distribution-config "file://${config}" --output json) \
             || die "创建 CloudFront 分配失败；若域名已绑定其他分配，请显式采用或先解除冲突"
@@ -1121,11 +1272,11 @@ ensure_viewer_cname() {
     existing_type=$(jq -r 'if length==1 then .[0].Type else "MULTIPLE" end' <<<"${conflicts}")
     if [[ "$(jq 'length' <<<"${conflicts}")" -eq 0 || "${existing_type}" == "CNAME" ]]; then
         change=$(jq -cn --arg name "${VLESS_CDN_DOMAIN}." --arg target "${target}" \
-            '{Comment:"easy_aws CloudFront CNAME",Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$name,Type:"CNAME",TTL:300,ResourceRecords:[{Value:$target}]}}]}')
+            '{Comment:"easy_all CloudFront CNAME",Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$name,Type:"CNAME",TTL:300,ResourceRecords:[{Value:$target}]}}]}')
     else
         change=$(jq -cn --arg name "${VLESS_CDN_DOMAIN}." --arg target "${target}" \
             --argjson conflicts "${conflicts}" '
-            {Comment:"easy_aws replace conflicting DNS records",
+            {Comment:"easy_all replace conflicting DNS records",
              Changes:(($conflicts|map({Action:"DELETE",ResourceRecordSet:.})) +
                [{Action:"CREATE",ResourceRecordSet:{Name:$name,Type:"CNAME",TTL:300,ResourceRecords:[{Value:$target}]}}])}')
     fi
@@ -1139,7 +1290,7 @@ wait_for_cloudfront() {
         --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}"; then
         success "CloudFront 分配已部署"
     else
-        warn "CloudFront 仍在部署；本机配置已完成，可稍后执行 easy_aws status"
+        die "等待 CloudFront 分配部署超时"
     fi
 }
 
@@ -1147,11 +1298,11 @@ validate_cloudfront_health() {
     local attempt response
     for attempt in {1..20}; do
         response=$(curl -fsS --connect-timeout 5 --max-time 15 \
-            "https://${VLESS_CDN_DOMAIN}/easy-aws-health" 2>/dev/null || true)
-        [[ "${response}" == "easy_aws ok" ]] && { success "CloudFront 回源验收通过"; return 0; }
+            "https://${VLESS_CDN_DOMAIN}/easy_all-health" 2>/dev/null || true)
+        [[ "${response}" == "easy_all ok" ]] && { success "CloudFront 回源验收通过"; return 0; }
         sleep 10
     done
-    warn "CloudFront 公网验收暂未通过；请等待分配与 DNS 生效后再测试节点"
+    die "CloudFront 公网验收失败；请检查 DNS、源站证书、Origin Key 与 gRPC 配置"
 }
 
 configure_aws_cdn() {
@@ -1166,27 +1317,47 @@ configure_aws_cdn() {
     clear_aws_credentials
 }
 
+cdn_install_dependencies() {
+    case "${CDN_PROVIDER:-aws}" in
+    aws) install_aws_cli ;;
+    *) die "不支持的 CDN Provider：${CDN_PROVIDER:-缺失}" ;;
+    esac
+}
+
+cdn_prepare_origin() {
+    case "${CDN_PROVIDER:-aws}" in
+    aws) prepare_aws_origin_dns ;;
+    *) die "不支持的 CDN Provider：${CDN_PROVIDER:-缺失}" ;;
+    esac
+}
+
+cdn_apply() {
+    case "${CDN_PROVIDER:-aws}" in
+    aws) configure_aws_cdn ;;
+    *) die "不支持的 CDN Provider：${CDN_PROVIDER:-缺失}" ;;
+    esac
+}
+
 uri_encode() {
     jq -nr --arg value "$1" '$value|@uri'
 }
 
-build_vless_ws_link() {
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${VLESS_WS_PATH}?ed=${WS_EARLY_DATA_BYTES}")" "$(uri_encode "${VLESS_NODE_NAME}")"
-}
-
 build_vless_xhttp_link() {
     local extra
-    extra=$(jq -cn '{
+    extra=$(jq -cn \
+        --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
+        --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
+        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
+        --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
+        --argjson h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '{
         noGRPCHeader:false,
         uplinkMethod:"POST",
         xmux:{
-            maxConcurrency:"8-16",
-            cMaxReuseTimes:0,
-            hMaxRequestTimes:"600-900",
-            hMaxReusableSecs:"1800-3000",
-            hKeepAlivePeriod:60
+            maxConcurrency:$max_concurrency,
+            cMaxReuseTimes:$c_max_reuse_times,
+            hMaxRequestTimes:$h_max_request_times,
+            hMaxReusableSecs:$h_max_reusable_secs,
+            hKeepAlivePeriod:$h_keep_alive_period
         }
     }')
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
@@ -1195,125 +1366,99 @@ build_vless_xhttp_link() {
 }
 
 build_node_link() {
-    build_vless_ws_link
-    printf '\n'
     build_vless_xhttp_link
 }
 
 build_mihomo_node() {
-    jq -nr --arg ws_name "${VLESS_NODE_NAME}" --arg xhttp_name "${XHTTP_NODE_NAME}" \
+    jq -nr --arg xhttp_name "${XHTTP_NODE_NAME}" \
         --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg ws_path "${VLESS_WS_PATH}" --arg xhttp_path "${XHTTP_PATH}" '
-        "  - name: \($ws_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-        "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-        "    ip-version: ipv4\n    packet-encoding: xudp\n    alpn:\n      - http/1.1\n    ws-opts:\n" +
-        "      path: \($ws_path|@json)\n      headers:\n        Host: \($server|@json)\n" +
-        "      max-early-data: 2560\n      early-data-header-name: Sec-WebSocket-Protocol\n" +
-        "    smux:\n      enabled: false\n" +
+        --arg xhttp_path "${XHTTP_PATH}" \
+        --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
+        --arg c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
+        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
+        --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
+        --arg h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
         "    ip-version: ipv4\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
         "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
-        "        max-concurrency: \"8-16\"\n        c-max-reuse-times: 0\n" +
-        "        h-max-request-times: \"600-900\"\n        h-max-reusable-secs: \"1800-3000\"\n" +
-        "        h-keep-alive-period: 60\n"'
+        "        max-concurrency: \($max_concurrency|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
+        "        h-max-request-times: \($h_max_request_times|@json)\n" +
+        "        h-max-reusable-secs: \($h_max_reusable_secs|@json)\n" +
+        "        h-keep-alive-period: \($h_keep_alive_period)\n"'
 }
 
-validate_sample_worker() {
+validate_mihomo_template() {
     local source=$1 marker
-    [[ -s "${source}" ]] || die "sample-worker.js 为空"
-    for marker in "// EASY_CMCC_CONFIG_START" "// EASY_CMCC_CONFIG_END" \
-        "// EASY_CMCC_RULES_START" "// EASY_CMCC_RULES_END"; do
+    [[ -s "${source}" ]] || die "Mihomo 模板为空"
+    for marker in "# EASY_ALL_PROXY_NODE" "# EASY_ALL_PROXY_NAME"; do
         [[ "$(grep -Fxc "${marker}" "${source}" || true)" == 1 ]] \
-            || die "sample-worker.js 模板标记无效：${marker}"
+            || die "Mihomo 模板标记无效：${marker}"
     done
-    grep -Fq 'export default {' "${source}" || die "sample-worker.js 缺少 Worker module 入口"
 }
 
-fetch_sample_worker() {
-    local destination=$1 source=${SAMPLE_WORKER_SOURCE:-} url
+fetch_mihomo_template() {
+    local destination=$1 source=${MIHOMO_TEMPLATE_SOURCE:-} url
     if [[ -n "${source}" ]]; then
         if [[ -f "${source}" ]]; then
             install -m 0600 "${source}" "${destination}"
         elif [[ "${source}" =~ ^https:// ]]; then
-            curl -fsSL --retry 3 "${source}" -o "${destination}" || die "下载 Worker 模板失败"
+            curl -fsSL --retry 3 "${source}" -o "${destination}" || die "下载 Mihomo 模板失败"
         else
-            die "SAMPLE_WORKER_SOURCE 必须是本地文件或 HTTPS URL"
+            die "MIHOMO_TEMPLATE_SOURCE 必须是本地文件或 HTTPS URL"
         fi
+    elif [[ -f "${SCRIPT_DIR}/sample-mihomo.yaml" ]]; then
+        install -m 0600 "${SCRIPT_DIR}/sample-mihomo.yaml" "${destination}"
     else
-        url=${SAMPLE_WORKER_URL:-${DEFAULT_SAMPLE_WORKER_URL}}
-        curl -fsSL --retry 3 "${url}" -o "${destination}" || die "下载 Worker 模板失败"
+        url=${MIHOMO_TEMPLATE_URL:-${DEFAULT_MIHOMO_TEMPLATE_URL}}
+        curl -fsSL --retry 3 "${url}" -o "${destination}" || die "下载 Mihomo 模板失败"
     fi
-    validate_sample_worker "${destination}"
+    validate_mihomo_template "${destination}"
 }
 
-render_worker_from_sample() {
-    local template=$1 config=$2 destination=$3
-    awk -v config="${config}" '
-        $0 == "// EASY_CMCC_CONFIG_START" {
-            print; while ((getline line < config) > 0) print line; close(config); replacing=1; next
+render_mihomo_subscription() {
+    local template=$1 node_file=$2 destination=$3 node_name
+    node_name=$(jq -Rn --arg value "${XHTTP_NODE_NAME}" '$value')
+    awk -v node_file="${node_file}" -v node_name="${node_name}" '
+        $0 == "# EASY_ALL_PROXY_NODE" {
+            while ((getline line < node_file) > 0) print line
+            close(node_file)
+            next
         }
-        $0 == "// EASY_CMCC_CONFIG_END" { replacing=0; print; next }
-        replacing != 1 { print }
-    ' "${template}" >"${destination}" || die "生成 Worker 失败"
+        $0 == "# EASY_ALL_PROXY_NAME" { print "        - " node_name; next }
+        { print }
+    ' "${template}" >"${destination}" || die "生成 Mihomo 订阅失败"
 }
 
-write_worker() {
-    local destination=$1 template config output ws_node_json xhttp_node_json tokens
-    ensure_allowed_tokens
-    tokens=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") || die "ALLOWED_TOKENS 无效"
-    template="${RUNTIME_TMP}/sample-worker.js"
-    config="${RUNTIME_TMP}/worker-config.js"
-    output="${RUNTIME_TMP}/worker-output.js"
-    fetch_sample_worker "${template}"
-    ws_node_json=$(jq -cn --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" \
-        --arg name "${VLESS_NODE_NAME}" --arg path "${VLESS_WS_PATH}" \
-        --argjson early "${WS_EARLY_DATA_BYTES}" \
-        '{type:"vless",security:"tls",network:"ws",uuid:$uuid,host:$host,name:$name,fp:"chrome",sni:$host,
-          path:$path,maxEarlyData:$early,earlyDataHeaderName:"Sec-WebSocket-Protocol",ipVersion:"ipv4",
-          udp:true,portMode:"443",packetEncoding:"xudp"}')
-    xhttp_node_json=$(jq -cn --arg uuid "${VLESS_UUID}" --arg host "${VLESS_CDN_DOMAIN}" \
-        --arg name "${XHTTP_NODE_NAME}" --arg path "${XHTTP_PATH}" \
-        '{type:"vless",security:"tls",network:"xhttp",uuid:$uuid,host:$host,name:$name,fp:"chrome",sni:$host,
-          path:$path,mode:"stream-up",ipVersion:"ipv4",udp:true,portMode:"443",packetEncoding:"xudp",
-          reuseSettings:{maxConcurrency:"8-16",cMaxReuseTimes:0,hMaxRequestTimes:"600-900",
-            hMaxReusableSecs:"1800-3000",hKeepAlivePeriod:60}}')
-    {
-        printf 'const ALLOWED_TOKENS = %s;\n' "${tokens}"
-        printf 'const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));\n\n'
-        printf 'const PORT_BASE = 10000;\nconst PORT_MULTIPLIER = 6;\n'
-        printf 'const DEFAULT_SUB_DOWNLOAD_NAME = %s;\n' \
-            "$(jq -Rn --arg value "${SUB_DOWNLOAD_NAME}" '$value')"
-        cat <<'EOF'
-const CONFIGS = [];
-function defineNode(config) { CONFIGS.push(config); return config; }
-function isAllowedToken(token) { return Boolean(token && ALLOWED_TOKEN_VALUES.has(token)); }
-EOF
-        printf '\nconst NODE_VLESS_WS_CONFIG = defineNode(%s);\n' "${ws_node_json}"
-        printf 'const NODE_VLESS_XHTTP_CONFIG = defineNode(%s);\n' "${xhttp_node_json}"
-        cat <<'EOF'
-const DEFAULT_NODE = [NODE_VLESS_WS_CONFIG, NODE_VLESS_XHTTP_CONFIG];
-function defaultNodeConfigs() { return Array.isArray(DEFAULT_NODE) ? DEFAULT_NODE : [DEFAULT_NODE]; }
-EOF
-    } >"${config}"
-    render_worker_from_sample "${template}" "${config}" "${output}"
-    install -d -m 0700 "$(dirname "${destination}")"
-    install -m 0600 "${output}" "${destination}"
+write_subscriptions() {
+    local template node_file base64_file mihomo_file
+    template="${RUNTIME_TMP}/sample-mihomo.yaml"
+    node_file="${RUNTIME_TMP}/mihomo-node.yaml"
+    base64_file="${RUNTIME_TMP}/subscription-base64.txt"
+    mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
+
+    fetch_mihomo_template "${template}"
+    build_mihomo_node >"${node_file}"
+    printf '%s' "$(build_node_link)" | openssl base64 -A >"${base64_file}"
+    printf '\n' >>"${base64_file}"
+    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}"
+
+    grep -Fq 'network: xhttp' "${mihomo_file}" || die "Mihomo 订阅缺少 XHTTP 节点"
+    grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
+    install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
+    install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
+    install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
 }
 
-print_worker_content() {
-    printf '\nWorker 内容如下（只生成，不调用 Cloudflare API）：\n'
-    printf '%s\n' '----- BEGIN easy_aws Worker -----'
-    cat "${WORKER_FILE}"
-    printf '\n%s\n\n' '----- END easy_aws Worker -----'
+remove_subscriptions() {
+    rm -rf -- "${SUBSCRIPTION_DIR}"
 }
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS WebSocket TLS + VLESS XHTTP stream-up/H2 over AWS CloudFront\n节点链接:\n%s\n\n' "$(build_node_link)"
+    printf '\n协议: VLESS XHTTP stream-up/H2 over AWS CloudFront\n节点链接:\n%s\n\n' "$(build_node_link)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_node
     printf '\n'
@@ -1322,28 +1467,42 @@ show_node() {
 show_subscription() {
     collect_installed_state
     show_node
-    printf 'Worker 文件: %s\n' "${WORKER_FILE}"
-    printf 'Cloudflare Worker 未自动部署。手动部署命令：\n'
-    printf 'npx wrangler deploy %q --name %q\n\n' "${WORKER_FILE}" "${WORKER_NAME}"
+    if ! subscription_enabled; then
+        printf '订阅服务: 未部署，仅输出节点信息\n\n'
+        return 0
+    fi
+    local token
+    while IFS= read -r token; do
+        printf '通用订阅: https://%s/subscribe?token=%s\n' "${VLESS_CDN_DOMAIN}" "${token}"
+        printf 'Mihomo:  https://%s/subscribe?token=%s&flag=clash\n' \
+            "${VLESS_CDN_DOMAIN}" "${token}"
+    done < <(jq -r '.[]' <<<"${ALLOWED_TOKENS}")
+    printf '\n'
 }
 
 show_status() {
     require_root
     collect_installed_state
-    printf '协议: vless-ws-xhttp\n源站域名: %s\nCDN 域名: %s\nWebSocket 路径: %s\nXHTTP 路径: %s\n' \
-        "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_WS_PATH}" "${XHTTP_PATH}"
+    printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
+        "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\n' \
         "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
     printf 'Nginx: '; systemctl is-active --quiet nginx && printf 'active\n' || printf 'inactive\n'
+    printf 'UFW: '; LC_ALL=C ufw status 2>/dev/null | sed -n 's/^Status: //p'
     printf 'TCP 443: '; ss -H -ltn 'sport = :443' 2>/dev/null | grep -q . \
         && printf 'listening\n' || printf 'not listening\n'
-    printf 'Worker: 仅本地生成，未自动部署\n'
+    if subscription_enabled; then
+        printf '订阅服务: enabled\n订阅文件: %s, %s\n' \
+            "${SUBSCRIPTION_BASE64_FILE}" "${SUBSCRIPTION_MIHOMO_FILE}"
+    else
+        printf '订阅服务: disabled（仅节点）\n'
+    fi
 }
 
-register_easy_aws_command() {
+register_easy_all_command() {
     local destination="${COMMAND_INSTALL_DIR}/${ENTRY_COMMAND_NAME}"
     require_root
     [[ -f "${ENTRY_SCRIPT_FILE}" ]] || die "未找到入口脚本：${ENTRY_SCRIPT_FILE}"
@@ -1361,7 +1520,7 @@ refresh_runtime() {
     collect_installed_state
     backup=$(make_temp_dir)
     install -m 0600 "${XRAY_CONFIG}" "${backup}/config.json"
-    install -m 0644 "${NGINX_CONFIG}" "${backup}/nginx.conf"
+    install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
     if write_xray_config && write_nginx_config \
         && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime; then
         success "运行时配置已刷新"
@@ -1369,35 +1528,96 @@ refresh_runtime() {
     fi
     warn "刷新失败，恢复旧配置"
     install -m 0600 "${backup}/config.json" "${XRAY_CONFIG}"
-    install -m 0644 "${backup}/nginx.conf" "${NGINX_CONFIG}"
+    install -m 0600 "${backup}/nginx.conf" "${NGINX_CONFIG}"
     systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 || true
     systemctl reload nginx >/dev/null 2>&1 || true
     die "运行时刷新失败"
 }
 
+snapshot_subscription_update() {
+    UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
+    install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
+    install -m 0600 "${XRAY_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/xray-config.json"
+    if [[ -f "${NGINX_CONFIG}" ]]; then
+        install -m 0600 "${NGINX_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/nginx.conf"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/nginx.conf.missing"
+    fi
+    if [[ -d "${SUBSCRIPTION_DIR}" ]]; then
+        cp -a "${SUBSCRIPTION_DIR}" "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/subscriptions.missing"
+    fi
+    UPDATE_SUB_ROLLBACK_ON_EXIT=1
+}
+
+rollback_subscription_update() {
+    warn "订阅更新失败，正在恢复状态、Nginx 配置与订阅文件"
+    [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
+        && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" "${XRAY_CONFIG}"
+        systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 \
+            || warn "恢复订阅更新前 Xray 配置失败"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" "${NGINX_CONFIG}"
+    else
+        rm -f -- "${NGINX_CONFIG}"
+    fi
+    rm -rf -- "${SUBSCRIPTION_DIR}"
+    if [[ -d "${UPDATE_SUB_BACKUP_DIR}/subscriptions" ]]; then
+        install -d -o root -g www-data -m 0750 "$(dirname "${SUBSCRIPTION_DIR}")"
+        cp -a "${UPDATE_SUB_BACKUP_DIR}/subscriptions" "${SUBSCRIPTION_DIR}"
+    fi
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 \
+        || warn "恢复订阅更新前 Nginx 配置失败"
+}
+
 update_subscription() {
     require_root
     collect_installed_state
-    ensure_allowed_tokens
+    snapshot_subscription_update
+    PROMPT_SUBSCRIPTION_MODE=1
+    choose_subscription_mode
+    PROMPT_SUBSCRIPTION_MODE=0
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-    write_worker "${WORKER_FILE}"
+    if subscription_enabled; then
+        ensure_allowed_tokens
+        write_subscriptions
+    else
+        ALLOWED_TOKENS=""
+        remove_subscriptions
+    fi
+    write_nginx_config
+    subscription_enabled && validate_subscription_runtime
     save_state
-    print_worker_content
-    success "Worker 源码已刷新；未调用 Cloudflare API"
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    show_subscription
+    success "Nginx 订阅已刷新"
 }
 
-update_easy_aws() {
+update_easy_all() {
     require_root
     collect_installed_state
+    snapshot_subscription_update
     configure_bbr_tcp
-    prepare_aws_origin_dns
+    configure_ufw
+    cdn_prepare_origin
+    cdn_apply
     refresh_runtime
-    configure_aws_cdn
-    write_worker "${WORKER_FILE}"
+    if subscription_enabled; then
+        ensure_allowed_tokens
+        write_subscriptions
+        validate_subscription_runtime
+    else
+        remove_subscriptions
+    fi
     save_state
-    register_easy_aws_command
+    register_easy_all_command
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
-    success "easy_aws 已更新"
+    success "easy_all CDN XHTTP 已更新"
 }
 
 update_current_core() {
@@ -1419,24 +1639,22 @@ renew_certificate() {
     collect_installed_state
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
     run_acme --renew -d "${AWS_ORIGIN_DOMAIN}" --ecc --force || die "源站证书续期失败"
-    "${CERT_RELOAD_HOOK}" || true
+    "${CERT_RELOAD_HOOK}" || die "证书已续期，但 Nginx 重载失败"
     success "源站证书已续期"
 }
 
-restore_preinstall_nftables() {
-    local expected="" actual=""
-    [[ -f "${STATE_DIR}/nftables.sha256" ]] && expected=$(<"${STATE_DIR}/nftables.sha256")
-    [[ -f "${NFT_CONFIG}" ]] && actual=$(sha256sum "${NFT_CONFIG}" | awk '{print $1}')
-    if [[ -n "${expected}" && "${expected}" != "${actual}" ]]; then
-        warn "nftables 已被用户修改，不自动覆盖"
-        return 0
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-nftables.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-nftables.conf" "${NFT_CONFIG}"
-        nft -f "${NFT_CONFIG}" >/dev/null 2>&1 || true
-    elif [[ -f "${BACKUP_DIR}/pre-install-nftables.missing" ]]; then
-        rm -f -- "${NFT_CONFIG}"
-        nft flush ruleset >/dev/null 2>&1 || true
+restore_preinstall_firewall() {
+    remove_managed_ufw_rules
+    [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
+        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" /etc/default/ufw
+    if command -v ufw >/dev/null 2>&1 \
+        && LC_ALL=C ufw status numbered 2>/dev/null | grep -q '^[[:space:]]*\['; then
+        ufw --force enable >/dev/null 2>&1 || true
+        info "检测到其他 UFW 规则，保留 UFW 启用状态"
+    elif [[ -f "${BACKUP_DIR}/pre-install-ufw.active" ]]; then
+        ufw --force enable >/dev/null 2>&1 || true
+    elif command -v ufw >/dev/null 2>&1; then
+        ufw --force disable >/dev/null 2>&1 || true
     fi
 }
 
@@ -1454,11 +1672,16 @@ stop_services() {
 rollback_fresh_install() {
     warn "安装失败，正在恢复本机服务与防火墙；已创建的 AWS 资源不会自动删除"
     stop_services
-    restore_preinstall_nftables
+    restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
     elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
         rm -f -- "${SYSCTL_CONFIG}"
+    fi
+    if [[ -f "${BACKUP_DIR}/pre-install-bbr-module.conf" ]]; then
+        install -m 0644 "${BACKUP_DIR}/pre-install-bbr-module.conf" "${BBR_MODULES_CONFIG}"
+    elif [[ -f "${BACKUP_DIR}/pre-install-bbr-module.missing" ]]; then
+        rm -f -- "${BBR_MODULES_CONFIG}"
     fi
     if [[ -f "${BACKUP_DIR}/pre-install-crontab" ]]; then
         crontab "${BACKUP_DIR}/pre-install-crontab" >/dev/null 2>&1 || true
@@ -1472,99 +1695,105 @@ rollback_fresh_install() {
 }
 
 uninstall_all() {
+    local mode=${1:-}
     require_root
-    [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_aws 尚未安装"
+    [[ -z "${mode}" ]] || die "uninstall 不支持参数：${mode}"
+    [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all XHTTP 尚未安装"
     [[ ! -f "${STATE_FILE}" ]] || load_state
-    if [[ "${FORCE:-0}" != "1" && -t 0 ]]; then
+    if [[ "${FORCE:-0}" != "1" && ! -t 0 ]]; then
+        die "非交互卸载必须显式设置 FORCE=1"
+    fi
+    if [[ "${FORCE:-0}" != "1" ]]; then
         local answer
-        read -r -p "确认删除 easy_aws 本机服务、状态和证书？远端 AWS 资源会保留。[y/N]: " answer
+        read -r -p "确认删除 easy_all XHTTP 本机服务、状态和证书？远端 AWS 资源会保留。[y/N]: " answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_services
-    restore_preinstall_nftables
+    restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${AWS_ORIGIN_DOMAIN:-}"
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
-    success "easy_aws 本机内容已卸载；CloudFront、ACM 与 Route 53 记录未删除"
+    success "easy_all XHTTP 本机内容已卸载；CloudFront、ACM 与 Route 53 记录未删除"
 }
 
 install_all() {
+    [[ -t 0 ]] || die "安装必须在交互终端中执行"
+    CDN_PROVIDER="aws"
     require_root
     require_systemd
-    [[ ! -f "${STATE_FILE}" ]] || die "easy_aws 已安装；请使用 easy_aws update"
+    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all update"
     check_platform
     check_install_conflicts
     snapshot_fresh_install
-    info "[1/10] 安装系统依赖"
+    info "[1/9] 安装系统依赖"
     install_packages
     ensure_ssh_boot_service
-    install_aws_cli
-    info "[2/10] 初始化 XanMod、BBR 与定时重启"
-    install_xanmod_bbr
+    cdn_install_dependencies
+    info "[2/9] 初始化 Google BBR 与定时重启"
+    configure_bbr_tcp
     configure_daily_reboot
-    info "[3/10] 收集域名与 VLESS 参数"
+    info "[3/9] 收集域名与 VLESS 参数"
     collect_install_inputs
     alert "源站域名与 CDN 域名都必须位于 AWS Route 53 Public Hosted Zone。"
-    info "[4/10] 创建并验证 Route 53 源站 A 记录"
-    prepare_aws_origin_dns
-    info "[5/10] 配置防火墙与 HTTP-01 入口"
-    configure_nftables
+    info "[4/9] 创建并验证 Route 53 源站 A 记录"
+    cdn_prepare_origin
+    info "[5/9] 配置防火墙与 HTTP-01 入口"
+    configure_ufw
     write_bootstrap_nginx_config
-    info "[6/10] 申请源站证书并安装 Xray"
+    info "[6/9] 申请源站证书并安装 Xray"
     issue_origin_certificate
     download_xray
     write_xray_config
     install_xray_service
+    subscription_enabled && write_subscriptions
     write_nginx_config
     validate_protocol_runtime
-    info "[7/10] 生成 Cloudflare Worker 源码（不部署）"
-    write_worker "${WORKER_FILE}"
-    info "[8/10] 配置 ACM、CloudFront 与 Route 53 CDN 记录"
-    configure_aws_cdn
-    info "[9/10] 保存状态并注册命令"
+    subscription_enabled && validate_subscription_runtime
+    info "[7/9] 配置 ACM、CloudFront 与 Route 53 CDN 记录"
+    cdn_apply
+    info "[8/9] 保存状态并注册命令"
     save_state
-    register_easy_aws_command
+    register_easy_all_command
     INSTALL_ROLLBACK_ON_EXIT=0
-    info "[10/10] 输出节点与 Worker"
+    info "[9/9] 输出节点与订阅"
     show_subscription
-    print_worker_content
-    success "easy_aws 安装完成；Cloudflare Worker 需手动部署"
+    success "easy_all CDN XHTTP 安装完成"
 }
 
 usage() {
     cat <<EOF
 用法: ${ENTRY_COMMAND_NAME} [命令]
 
-  install          安装 VLESS WS/XHTTP TLS + Route 53 + CloudFront
-  update           刷新 Route 53、运行时、CloudFront 与手动 Worker 源码
-  update-sub       仅重新生成并输出 Worker 源码
+  install          安装 VLESS XHTTP TLS + Route 53 + CloudFront
+  update           刷新 Route 53、运行时、CloudFront 与当前订阅模式
+  update-sub       选择部署订阅服务或仅输出节点
   show             显示 VLESS 链接与 Mihomo 节点
-  subscription     显示节点与手动 Worker 部署命令
+  subscription     显示节点与订阅状态
   status           显示本机、Route 53 与 CloudFront 状态摘要
   update-core      更新 Xray，失败时恢复旧版本
   renew-cert       强制续期源站 Let's Encrypt 证书
-  register-command 重新注册 /usr/local/bin/easy_aws
+  register-command 重新注册 /usr/local/bin/easy_all
   uninstall        删除本机内容，保留远端 AWS 资源
 
-发布 VLESS WebSocket 与 XHTTP stream-up/H2 两个节点。节点 DNS 全部由 Route 53 管理；
+发布单个 VLESS XHTTP stream-up/H2 节点。节点 DNS 全部由 Route 53 管理；
 CloudFront 使用 HTTPS 回源、禁用缓存、启用 gRPC，并转发除 Host 外的全部查看器请求头。
-脚本不会调用 Cloudflare Worker API。
+可选择部署 CloudFront + Nginx Token 订阅，或仅输出节点信息。
 EOF
 }
 
 main() {
     case "${1:-install}" in
     install) install_all ;;
-    update) update_easy_aws ;;
+    update) update_easy_all ;;
     update-sub) update_subscription ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
     status) show_status ;;
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;
-    register-command) register_easy_aws_command ;;
+    register-command) register_easy_all_command ;;
     uninstall) uninstall_all ;;
     help | -h | --help) usage ;;
     *) usage; return 1 ;;

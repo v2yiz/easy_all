@@ -1,0 +1,466 @@
+# EASY_ALL_GEMINI_DOMAINS_START
+# [
+#   "ai.google.dev",
+#   "generativeai.google",
+#   "google.com",
+#   "googleapis.com",
+#   "googleusercontent.com",
+#   "gstatic.com",
+#   "ggpht.com"
+# ]
+# EASY_ALL_GEMINI_DOMAINS_END
+
+mixed-port: 1080
+allow-lan: false
+mode: rule
+log-level: error
+ipv6: false
+external-controller: '127.0.0.1:9090'
+unified-delay: true
+find-process-mode: off
+profile:
+    store-selected: true
+
+sniffer:
+    enable: true
+    force-dns-mapping: true
+    parse-pure-ip: true
+    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保服务端能重新按固定地址族解析。
+    override-destination: true
+    sniff:
+      HTTP:
+        ports: [80, 8080-8880]
+        override-destination: true
+      TLS:
+        ports: [443, 8443]
+      QUIC:
+        ports: [443, 8443]
+
+tun:
+    enable: true
+    stack: mixed
+    mtu: 1500
+    # 默认 UDP NAT 会话仅保留 5 分钟；行情客户端的低频 UDP 长连接保留 2 小时。
+    udp-timeout: 7200
+    auto-route: true
+    auto-detect-interface: true
+    inet4-address:
+      - 198.18.0.1/30
+    dns-hijack:
+      - any:53
+      - tcp://any:53
+    # Windows TUN + Reality/BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
+    strict-route: false
+    # 通用局域网 IPv4/IPv6 地址绕过 TUN，保留内网直连能力。
+    route-exclude-address:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+      - fc00::/7
+      - fe80::/10
+
+dns:
+    enable: true
+    ipv6: false
+    prefer-h3: false
+    use-hosts: true
+    use-system-hosts: true
+    respect-rules: true
+    listen: '127.0.0.1:5335'
+
+    default-nameserver:
+      - 223.5.5.5
+      - 119.29.29.29
+
+    proxy-server-nameserver:
+      - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
+
+    nameserver-policy:
+      '+.lan': system
+      '+.local': system
+      # 已确认的境外域名（包括 Google/Gemini）经代理使用境外 DoH。
+      'geosite:geolocation-!cn':
+        - https://1.1.1.1/dns-query#PROXY
+        - https://dns.google/dns-query#PROXY
+
+    enhanced-mode: fake-ip
+    fake-ip-range: 198.18.0.1/16
+    fake-ip-filter:
+      - '+.lan'
+      - '+.local'
+      - 'localhost'
+      - 'time.windows.com'
+      - 'time.apple.com'
+      - '*.ntp.org.cn'
+      - 'pool.ntp.org'
+      - '+.10jqka.com.cn'
+      - '+.hexin.cn'
+      - '+.hexin.com.cn'
+      - '+.myhexin.com'
+      - '+.ths123.com'
+      - '+.iwencai.com'
+      - '+.iwencai.cn'
+      - '+.51ifind.com'
+      - '+.51ifind.com.cn'
+      - '+.eastmoney.com'
+      - '+.eastmoney.cn'
+      - '+.eastmoney.com.cn'
+      - '+.eastmoneysec.com'
+      - '+.dfcfw.com'
+      - '+.guba.com.cn'
+      - '+.18.cn'
+      - '+.tdx.com.cn'
+      - '+.nesc.cn'
+      - '+.citics.com'
+      - '+.citics.com.cn'
+      - '+.citicsinfo.com'
+      - '+.cs.ecitic.com'
+      - '+.csc108.com'
+      - '+.gtht.com'
+      - '+.gtja.com'
+      - '+.gtjas.com'
+      - '+.htsec.com'
+      - '+.htsec.com.cn'
+      - '+.haitong.com'
+      - '+.haitong.com.cn'
+      - '+.htsc.com'
+      - '+.htsc.com.cn'
+      - '+.cmschina.com'
+      - '+.cmschina.com.cn'
+      - '+.gf.com.cn'
+      - '+.guosen.com.cn'
+      - '+.chinastock.com.cn'
+      - '+.xyzq.com.cn'
+      - '+.futooncdn.com'
+
+    nameserver:
+      - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
+
+    fallback:
+      - https://1.1.1.1/dns-query
+      - https://dns.google/dns-query
+    fallback-lazy-query: true
+
+    fallback-filter:
+        geoip: true
+        geoip-code: CN
+        ipcidr:
+          - 240.0.0.0/4
+          - 0.0.0.0/32
+          - 127.0.0.1/32
+        domain:
+          - '+.google.com'
+          - '+.googleapis.com'
+          - '+.googleapis.cn'
+          - '+.gvt1.com'
+          - '+.gvt2.com'
+          - '+.gvt3.com'
+          - '+.ggpht.com'
+          - '+.xn--ngstr-lra8j.com'
+          - '+.youtube.com'
+          - '+.github.com'
+          - '+.githubusercontent.com'
+          - '+.githubassets.com'
+
+proxies:
+# EASY_ALL_PROXY_NODE
+
+proxy-groups:
+    - name: PROXY
+      type: select
+      proxies:
+# EASY_ALL_PROXY_NAME
+
+rule-providers:
+    private:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt'
+      path: ./ruleset/loyalsoldier/private.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 262144
+    icloud:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/icloud.txt'
+      path: ./ruleset/loyalsoldier/icloud.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 262144
+    apple:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/apple.txt'
+      path: ./ruleset/loyalsoldier/apple.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 262144
+    google:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/google.txt'
+      path: ./ruleset/loyalsoldier/google.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 262144
+    gfw:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt'
+      path: ./ruleset/loyalsoldier/gfw.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 524288
+    greatfire:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/greatfire.txt'
+      path: ./ruleset/loyalsoldier/greatfire.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 262144
+    proxy:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt'
+      path: ./ruleset/loyalsoldier/proxy.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 4194304
+    direct:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt'
+      path: ./ruleset/loyalsoldier/direct.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 4194304
+    tld-not-cn:
+      type: http
+      behavior: domain
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt'
+      path: ./ruleset/loyalsoldier/tld-not-cn.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 1048576
+    telegramcidr:
+      type: http
+      behavior: ipcidr
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/telegramcidr.txt'
+      path: ./ruleset/loyalsoldier/telegramcidr.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 262144
+    lancidr:
+      type: http
+      behavior: ipcidr
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt'
+      path: ./ruleset/loyalsoldier/lancidr.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 262144
+    cncidr:
+      type: http
+      behavior: ipcidr
+      format: yaml
+      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt'
+      path: ./ruleset/loyalsoldier/cncidr.yaml
+      interval: 86400
+      proxy: PROXY
+      size-limit: 1048576
+
+
+rules:
+  # ==================== 本地安全前置规则 ====================
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN-SUFFIX,localhost,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
+  - IP-CIDR6,::1/128,DIRECT,no-resolve
+  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+
+  # 行情域名同时保留 Fake-IP 豁免与显式直连。
+  - DOMAIN-SUFFIX,10jqka.com.cn,DIRECT
+  - DOMAIN-SUFFIX,hexin.cn,DIRECT
+  - DOMAIN-SUFFIX,hexin.com.cn,DIRECT
+  - DOMAIN-SUFFIX,myhexin.com,DIRECT
+  - DOMAIN-SUFFIX,ths123.com,DIRECT
+  - DOMAIN-SUFFIX,iwencai.com,DIRECT
+  - DOMAIN-SUFFIX,iwencai.cn,DIRECT
+  - DOMAIN-SUFFIX,51ifind.com,DIRECT
+  - DOMAIN-SUFFIX,51ifind.com.cn,DIRECT
+  - DOMAIN-SUFFIX,eastmoney.com,DIRECT
+  - DOMAIN-SUFFIX,eastmoney.cn,DIRECT
+  - DOMAIN-SUFFIX,eastmoney.com.cn,DIRECT
+  - DOMAIN-SUFFIX,eastmoneysec.com,DIRECT
+  - DOMAIN-SUFFIX,dfcfw.com,DIRECT
+  - DOMAIN-SUFFIX,guba.com.cn,DIRECT
+  - DOMAIN-SUFFIX,18.cn,DIRECT
+  - DOMAIN-SUFFIX,tdx.com.cn,DIRECT
+  - DOMAIN-SUFFIX,nesc.cn,DIRECT
+  - DOMAIN-SUFFIX,citics.com,DIRECT
+  - DOMAIN-SUFFIX,citics.com.cn,DIRECT
+  - DOMAIN-SUFFIX,citicsinfo.com,DIRECT
+  - DOMAIN-SUFFIX,cs.ecitic.com,DIRECT
+  - DOMAIN-SUFFIX,csc108.com,DIRECT
+  - DOMAIN-SUFFIX,gtht.com,DIRECT
+  - DOMAIN-SUFFIX,gtja.com,DIRECT
+  - DOMAIN-SUFFIX,gtjas.com,DIRECT
+  - DOMAIN-SUFFIX,htsec.com,DIRECT
+  - DOMAIN-SUFFIX,htsec.com.cn,DIRECT
+  - DOMAIN-SUFFIX,haitong.com,DIRECT
+  - DOMAIN-SUFFIX,haitong.com.cn,DIRECT
+  - DOMAIN-SUFFIX,htsc.com,DIRECT
+  - DOMAIN-SUFFIX,htsc.com.cn,DIRECT
+  - DOMAIN-SUFFIX,cmschina.com,DIRECT
+  - DOMAIN-SUFFIX,cmschina.com.cn,DIRECT
+  - DOMAIN-SUFFIX,gf.com.cn,DIRECT
+  - DOMAIN-SUFFIX,guosen.com.cn,DIRECT
+  - DOMAIN-SUFFIX,chinastock.com.cn,DIRECT
+  - DOMAIN-SUFFIX,xyzq.com.cn,DIRECT
+  - DOMAIN-SUFFIX,futooncdn.com,DIRECT
+
+  # Apple Relay 与 Copilot 例外必须先于 Apple/Microsoft 远程规则。
+  - DOMAIN-SUFFIX,apple-relay.akamaized.net,PROXY
+  - DOMAIN-SUFFIX,apple-relay.apple.com,PROXY
+  - DOMAIN-SUFFIX,apple-relay.cloudflare.com,PROXY
+  - DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY
+  - DOMAIN-SUFFIX,apple-relay.mask.apple-dns.net,PROXY
+  - DOMAIN,copilot.microsoft.com,PROXY
+  - DOMAIN,copilot.bing.com,PROXY
+  - DOMAIN,api.msn.com,PROXY
+  - DOMAIN,assets.msn.com,PROXY
+  - DOMAIN,gateway.bingviz.microsoft.net,PROXY
+  - DOMAIN,gateway.bingviz.microsoftapp.net,PROXY
+  - DOMAIN,in.appcenter.ms,PROXY
+  - DOMAIN,location.microsoft.com,PROXY
+  - DOMAIN,odc.officeapps.live.com,PROXY
+  - DOMAIN,self.events.data.microsoft.com,PROXY
+  - DOMAIN,services.bingapis.com,PROXY
+  - DOMAIN-SUFFIX,bing.com,PROXY
+  - DOMAIN-SUFFIX,githubcopilot.com,PROXY
+  - DOMAIN-SUFFIX,api.microsoftapp.net,PROXY
+  - DOMAIN-SUFFIX,edgeservices.bing.com,PROXY
+  - DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY
+
+  # ==================== XFLASH 主体规则 ====================
+  - DOMAIN,www.xflash.work,DIRECT
+  - DOMAIN,ssl.gstatic.com,DIRECT
+  - DOMAIN-SUFFIX,gstatic.com,PROXY
+  - DOMAIN-SUFFIX,ipleak.net,PROXY
+  - DOMAIN-SUFFIX,browserscan.net,PROXY
+  - DOMAIN-SUFFIX,surfsharkdns.com,PROXY
+  - DOMAIN-SUFFIX,edns.ip-api.com,PROXY
+  - DOMAIN-SUFFIX,dnsleaktest.com,PROXY
+  - DOMAIN-SUFFIX,dnsleak.com,PROXY
+  - DOMAIN-SUFFIX,expressvpn.com,PROXY
+  - DOMAIN-SUFFIX,nordvpn.com,PROXY
+  - DOMAIN-SUFFIX,surfshark.com,PROXY
+  - DOMAIN-SUFFIX,perfect-privacy.com,PROXY
+  - DOMAIN-SUFFIX,browserleaks.com,PROXY
+  - DOMAIN-SUFFIX,browserleaks.org,PROXY
+  - DOMAIN-SUFFIX,browserleaks.net,PROXY
+  - DOMAIN-SUFFIX,vpnunlimited.com,PROXY
+  - DOMAIN-SUFFIX,whoer.net,PROXY
+  - DOMAIN-SUFFIX,whrq.net,PROXY
+  - DOMAIN-SUFFIX,asmr.one,PROXY
+  - DOMAIN,browser-intake-datadoghq.com,PROXY
+  - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
+  - DOMAIN,openai-api.arkoselabs.com,PROXY
+  - DOMAIN,openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net,PROXY
+  - DOMAIN,openaicomproductionae4b.blob.core.windows.net,PROXY
+  - DOMAIN,production-openaicom-storage.azureedge.net,PROXY
+  - DOMAIN,static.cloudflareinsights.com,PROXY
+  - DOMAIN-SUFFIX,ai.com,PROXY
+  - DOMAIN-SUFFIX,algolia.net,PROXY
+  - DOMAIN-SUFFIX,api.statsig.com,PROXY
+  - DOMAIN-SUFFIX,auth0.com,PROXY
+  - DOMAIN-SUFFIX,chatgpt.com,PROXY
+  - DOMAIN-SUFFIX,chatgpt.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,client-api.arkoselabs.com,PROXY
+  - DOMAIN-SUFFIX,events.statsigapi.net,PROXY
+  - DOMAIN-SUFFIX,featuregates.org,PROXY
+  - DOMAIN-SUFFIX,host.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,identrust.com,PROXY
+  - DOMAIN-SUFFIX,intercom.io,PROXY
+  - DOMAIN-SUFFIX,intercomcdn.com,PROXY
+  - DOMAIN-SUFFIX,launchdarkly.com,PROXY
+  - DOMAIN-SUFFIX,oaistatic.com,PROXY
+  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
+  - DOMAIN-SUFFIX,observeit.net,PROXY
+  - DOMAIN-SUFFIX,openai.com,PROXY
+  - DOMAIN-SUFFIX,openaiapi-site.azureedge.net,PROXY
+  - DOMAIN-SUFFIX,openaicom.imgix.net,PROXY
+  - DOMAIN-SUFFIX,segment.io,PROXY
+  - DOMAIN-SUFFIX,sentry.io,PROXY
+  - DOMAIN-SUFFIX,stripe.com,PROXY
+  - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
+  - DOMAIN-SUFFIX,sora.com,PROXY
+  - DOMAIN-KEYWORD,openai,PROXY
+  - DOMAIN,r.bing.com,PROXY
+  - DOMAIN,sydney.bing.com,PROXY
+  - DOMAIN,www.bing.com,PROXY
+  - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
+  - DOMAIN-KEYWORD,openaicom-api,PROXY
+  - DOMAIN-SUFFIX,gvt2.com,PROXY
+  - DOMAIN,ai.google.dev,PROXY
+  - DOMAIN,alkalimakersuite-pa.clients6.google.com,PROXY
+  - DOMAIN,makersuite.google.com,PROXY
+  - DOMAIN-SUFFIX,bard.google.com,PROXY
+  - DOMAIN-SUFFIX,deepmind.com,PROXY
+  - DOMAIN-SUFFIX,deepmind.google,PROXY
+  - DOMAIN-SUFFIX,gemini.google.com,PROXY
+  - DOMAIN-SUFFIX,generativeai.google,PROXY
+  - DOMAIN-SUFFIX,proactivebackend-pa.googleapis.com,PROXY
+  - DOMAIN-SUFFIX,apis.google.com,PROXY
+  - DOMAIN-KEYWORD,colab,PROXY
+  - DOMAIN-KEYWORD,developerprofiles,PROXY
+  - DOMAIN-KEYWORD,generativelanguage,PROXY
+  - DOMAIN,cdn.usefathom.com,PROXY
+  - DOMAIN-SUFFIX,anthropic.com,PROXY
+  - DOMAIN-SUFFIX,claude.ai,PROXY
+  - DOMAIN-SUFFIX,razie.ai,PROXY
+  - DOMAIN-SUFFIX,razie.aws.intellij.net,PROXY
+  - DOMAIN-SUFFIX,jetbrains.ai,PROXY
+  - DOMAIN-SUFFIX,meta.com,PROXY
+  - DOMAIN-SUFFIX,services.googleapis.cn,PROXY
+  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY
+  - DOMAIN,clash.razord.top,DIRECT
+  - DOMAIN,yacd.haishan.me,DIRECT
+  - RULE-SET,private,DIRECT
+  - RULE-SET,icloud,DIRECT
+  - RULE-SET,apple,DIRECT
+  - RULE-SET,google,PROXY
+  - RULE-SET,gfw,PROXY
+  - RULE-SET,greatfire,PROXY
+  - RULE-SET,proxy,PROXY
+  - RULE-SET,direct,DIRECT
+  - RULE-SET,tld-not-cn,PROXY
+  - RULE-SET,telegramcidr,PROXY,no-resolve
+  - RULE-SET,lancidr,DIRECT,no-resolve
+  - RULE-SET,cncidr,DIRECT,no-resolve
+  - GEOIP,LAN,DIRECT,no-resolve
+  - GEOIP,CN,DIRECT,no-resolve
+  - GEOSITE,CN,DIRECT
+  - GEOSITE,private,DIRECT
+  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
+  - MATCH,PROXY

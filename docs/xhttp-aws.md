@@ -1,18 +1,18 @@
-# easy_aws
+# CDN XHTTP：AWS Provider
 
-`easy_aws` 是仿照 `easy_cmcc` 拆出的独立安装器，但边界不同：
+本文说明 `easy_all` 的 CDN XHTTP 模式当前使用的 AWS Provider：
 
-它同时输出 WebSocket 与 XHTTP 两个 VLESS 节点，两者共用域名、UUID 和 CloudFront 分配，
-使用独立路径和 Xray 本机端口。
+它只输出一个 VLESS XHTTP 节点，通过 AWS CloudFront 连接到 Xray。
 
 - DNS 使用 AWS Route 53，CDN 使用 AWS CloudFront；节点链路不使用 Cloudflare DNS/CDN。
-- WebSocket 节点使用 HTTP/1.1、Early Data 2560，服务端心跳周期为 60 秒。
-- XHTTP 节点使用 `stream-up`、HTTP/2、gRPC header 与 XMUX；服务端保持 `mode: auto`。
-- 不安装 Trojan、Reality 或 AnyTLS。
-- 生成完整 Cloudflare Worker 订阅源码，但**不会调用 Cloudflare Worker API**；由用户手动粘贴或使用 Wrangler 部署。
+- XHTTP 使用 `stream-up`、HTTP/2、gRPC header 与 XMUX；服务端固定 `mode: stream-up`。
+- 服务端每 `20-40` 秒发送流式保活数据，短于 CloudFront 60 秒回源空闲超时。
+- XMUX 使用 `8-16` 并发、定期轮换 H2 连接和 Chrome 风格 H2 保活，适配移动网络。
+- 不安装其他代理协议。
+- 可选择部署 CloudFront + Nginx 订阅，或只输出节点信息。
 - AWS 侧自动配置源站 A 记录、ACM、CloudFront 和 CDN CNAME，使用 HTTPS 443 回源。
 
-![easy_aws 架构](docs/images/aws-architecture.svg)
+![CDN XHTTP AWS 架构](aws/aws-architecture.svg)
 
 ```text
 AWS Route 53 DNS:
@@ -21,13 +21,13 @@ AWS Route 53 DNS:
 
 节点数据链路:
   Mihomo / FLClash
-        -> VLESS + WebSocket/HTTP1.1 或 XHTTP stream-up/H2 :443
+        -> VLESS XHTTP stream-up/H2 :443
         -> AWS CloudFront (AWS CDN)
-        -> HTTPS :443 + X-Easy-Aws-Origin-Key
-        -> Nginx -> Xray WS 127.0.0.1:10085
-                    XHTTP 127.0.0.1:10086
+        -> HTTPS :443 + X-Easy-All-Origin-Key
+        -> Nginx -> Xray XHTTP 127.0.0.1:10086
 
-Cloudflare Worker：只生成源码，手动部署，仅用于订阅分发
+订阅链路:
+  客户端 -> CloudFront /subscribe?token=... -> Nginx -> 静态订阅文件
 ```
 
 ## 部署前准备
@@ -45,10 +45,10 @@ Cloudflare Worker：只生成源码，手动部署，仅用于订阅分发
 - 两个域名所在父域都已托管到 Route 53 的 **Public Hosted Zone**；可以位于同一个或不同 Zone。
 - AWS IAM 专用部署用户的访问密钥；不要使用根用户密钥。
 - AWS 账户可创建 ACM 公有证书和 CloudFront 分配，并已了解相应费用。
-- Cloudflare 账户只用于你之后手动部署订阅 Worker；本脚本不需要 Cloudflare Account ID 或 API Token，也不让 Cloudflare 管理节点 DNS/CDN。
+- 不需要 Cloudflare 账户、Cloudflare API Token 或 Worker。
 
-安装器会升级系统包、安装 XanMod LTS、启用 BBR、管理 root 定时重启任务，并接管
-`/etc/nftables.conf`。它只适合专用 VPS，不应与 `easy_all` 或 `easy_cmcc` 共存。
+安装器会升级系统包、启用 Debian 官方内核中的 Google BBR、配置 UFW，并管理 root 定时重启任务。
+它只适合专用 VPS，不应与其他代理安装器共存。
 
 例如源站使用 `direct.1988088.xyz`、CDN 入口使用 `node.1988088.xyz` 时，两者都属于
 `1988088.xyz` 这一个 Hosted Zone，因此只需要一个 Hosted Zone ID。安装前没有
@@ -70,13 +70,13 @@ AWS 没有与 Cloudflare Bearer Token 完全对应的一串通用 API Token。�
 
 > **不要为根用户创建访问密钥。** Chrome 只读核对时，当前控制台显示的是根用户的
 > “我的安全凭证”页面；这里的“创建访问密钥”按钮不应使用。请先进入 IAM → IAM 用户，
-> 创建专用的 `easy-aws-deployer`。脚本和文档都不会记录、截图或输出真实密钥。
+> 创建专用的 `easy_all_deployer`。脚本和文档都不会记录、截图或输出真实密钥。
 
 AWS 官方参考：
 
 - [根用户安全最佳实践](https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html)
 - [IAM 用户访问密钥](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)
-- [CloudFront WebSocket 要求](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-working-with.websockets.html)
+- [CloudFront gRPC 要求](https://aws.amazon.com/cloudfront/faqs/)
 - [ACM DNS 验证](https://docs.aws.amazon.com/acm/latest/userguide/dns-validation.html)
 
 ## 1. 创建专用 IAM 用户与访问密钥
@@ -122,7 +122,7 @@ Hosted Zone ID。最常见的情况是两个子域名位于同一个根域，例
       "Resource": "*"
     },
     {
-      "Sid": "ManageEasyAwsHostedZones",
+      "Sid": "Route53HostedZones",
       "Effect": "Allow",
       "Action": [
         "route53:ListResourceRecordSets",
@@ -141,7 +141,7 @@ Hosted Zone ID。最常见的情况是两个子域名位于同一个根域，例
       "Resource": "*"
     },
     {
-      "Sid": "ManageEasyAwsDistribution",
+      "Sid": "CloudFrontDistribution",
       "Effect": "Allow",
       "Action": [
         "cloudfront:ListDistributions",
@@ -165,7 +165,7 @@ Hosted Zone ID。最常见的情况是两个子域名位于同一个根域，例
 ]
 ```
 
-![IAM 最小权限组成](docs/images/aws-iam-policy.svg)
+![IAM 最小权限组成](aws/aws-iam-policy.svg)
 
 > IAM 的部分 `List*`、`Create*` 操作不能预先绑定到尚不存在的资源，因此策略中仍有
 > `Resource: "*"`；真正的 DNS 写权限只限源站和 CDN 对应的 Hosted Zone。脚本不请求删除权限。
@@ -174,22 +174,22 @@ Hosted Zone ID。最常见的情况是两个子域名位于同一个根域，例
 
 1. 打开 **IAM → 访问管理 → 策略**，选择 **创建策略**。
 2. 进入 **JSON** 编辑器，用上面的完整 JSON 替换示例内容。
-3. 选择 **下一步**，策略名称填写 `EasyAwsDeployPolicy`。
+3. 选择 **下一步**，策略名称填写 `easy_all_deploy_policy`。
 4. 检查一个或两个 Hosted Zone ID 已正确替换且没有多余权限，然后选择 **创建策略**。
 
 ### 1.2 创建用户组并附加策略
 
 1. 打开 **IAM → 访问管理 → 用户组**，选择 **创建组**。
-2. 用户组名称填写 `easy-aws-deployers`。
-3. 在“将权限策略附加到组”中搜索并勾选刚创建的 `EasyAwsDeployPolicy`。
+2. 用户组名称填写 `easy_all_deployers`。
+3. 在“将权限策略附加到组”中搜索并勾选刚创建的 `easy_all_deploy_policy`。
 4. 选择 **创建组**。
 
 ### 1.3 创建专用 IAM 用户
 
 1. 打开 **IAM → 访问管理 → IAM 用户**，选择 **创建用户**。
-2. 用户名填写 `easy-aws-deployer`，不要勾选“提供对 AWS 管理控制台的用户访问权限”。
+2. 用户名填写 `easy_all_deployer`，不要勾选“提供对 AWS 管理控制台的用户访问权限”。
 3. 在你截图的 **设置权限** 页面保持 **添加用户到组**。
-4. 在下方用户组表格中勾选 `easy-aws-deployers`；“设置权限边界”保持不勾选。
+4. 在下方用户组表格中勾选 `easy_all_deployers`；“设置权限边界”保持不勾选。
 5. 选择 **下一步 → 创建用户**。
 
 “复制权限”会继承其他用户的全部权限；“直接附加策略”主要用于选择已经存在的托管策略。
@@ -197,18 +197,18 @@ Hosted Zone ID。最常见的情况是两个子域名位于同一个根域，例
 
 ### 1.4 创建 CLI 访问密钥
 
-1. 打开 `easy-aws-deployer` 用户详情 → **安全凭证**。
+1. 打开 `easy_all_deployer` 用户详情 → **安全凭证**。
 2. 在“访问密钥”区域选择 **创建访问密钥**。
 3. 用例选择 **命令行界面 (CLI)**，确认提示并继续。
 4. 创建后立即复制或下载 Access Key ID 和 Secret Access Key。
 5. Secret Access Key 关闭页面后无法再次查看；丢失时应停用旧密钥并重新创建。
 
-![IAM 用户与访问密钥路径](docs/images/aws-iam-access-key.svg)
+![IAM 用户与访问密钥路径](aws/aws-iam-access-key.svg)
 
 ## 2. CloudFront 会自动采用的设置
 
 脚本自动请求或复用 `us-east-1` 的 ACM 证书，然后创建带有
-`easy_aws:<CDN 域名>` 标记的 CloudFront 分配：
+`easy_all:xhttp:<CDN 域名>` 标记的 CloudFront 分配：
 
 | 项目                  | 值                                                     |
 | --------------------- | ------------------------------------------------------ |
@@ -221,24 +221,24 @@ Hosted Zone ID。最常见的情况是两个子域名位于同一个根域，例
 | Cache policy          | AWS Managed`CachingDisabled`                         |
 | Origin request policy | AWS Managed`AllViewerExceptHostHeader`               |
 | Viewer certificate    | ACM`us-east-1`，SNI only，TLSv1.2_2021               |
-| HTTP versions         | HTTP/2 + HTTP/1.1；WS 固定 HTTP/1.1，XHTTP 固定 H2      |
-| Origin protection     | CloudFront 自动添加随机`X-Easy-Aws-Origin-Key`       |
+| HTTP versions         | Viewer 与回源均使用 HTTP/2                              |
+| Origin protection     | CloudFront 自动添加随机`X-Easy-All-Origin-Key`  |
 | Origin retry          | 连接尝试 2 次，每次超时 3 秒                            |
 
-`AllViewerExceptHostHeader` 会转发除 Viewer `Host` 外的请求头，包括 WebSocket 握手与
-`Sec-WebSocket-Protocol` Early Data，并把回源 `Host` 改成源站域名，使 Nginx 证书和 SNI
-保持一致。`CachingDisabled` 避免升级请求、XHTTP 流或健康检查被边缘缓存。CloudFront 的
+`AllViewerExceptHostHeader` 会转发除 Viewer `Host` 外的请求头，并把回源 `Host` 改成
+源站域名，使 Nginx 证书和 SNI 保持一致。Nginx 再把 gRPC `Host` 设置为 CDN 域名，
+与 Xray 的 XHTTP `host` 校验一致。`CachingDisabled` 避免 XHTTP 流或健康检查被边缘缓存。CloudFront 的
 gRPC 支持要求 HTTP/2、HTTPS 回源和包含 POST 的完整方法集，脚本会一次性配置。
 
-![CloudFront WebSocket 设置](docs/images/aws-cloudfront-settings.svg)
+![CloudFront XHTTP 设置](aws/aws-cloudfront-settings.svg)
 
 如果已经有手动创建的 CloudFront 分配，脚本默认拒绝接管，防止覆盖别人的源、行为、日志或
-WAF。确定要把某个分配**完整改写**成 easy_aws 配置时才使用：
+WAF。确定要把某个分配**完整改写**成 easy_all XHTTP 配置时才使用：
 
 ```bash
 AWS_CLOUDFRONT_DISTRIBUTION_ID='E123456789EXAMPLE' \
 AWS_ADOPT_DISTRIBUTION=1 \
-/root/easy_aws install
+./easy_all install
 ```
 
 如果 CDN 域名已有其他 Route 53 记录，脚本会拒绝覆盖。请先确认旧记录可以移除；
@@ -253,95 +253,76 @@ AWS_ADOPT_DISTRIBUTION=1 \
 
 先确认 `origin.example.com` 和 `node.example.com` 的权威 DNS 都是 AWS Route 53。无需预建
 A 或 CNAME；安装器会探测 VPS 公网 IPv4，创建源站 A，等待公共 DNS 生效，再继续申请证书。
-然后在 VPS 上执行：
+然后在 VPS 上执行并选择“CDN - XHTTP”：
 
 ```bash
-wget -qO /root/easy_aws.new \
-  "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_aws/easy_aws" \
-  && chmod 700 /root/easy_aws.new \
-  && mv -f /root/easy_aws.new /root/easy_aws \
-  && /root/easy_aws install
+git clone https://github.com/v2yiz/easy_all.git
+cd easy_all
+chmod 700 easy_all
+sudo ./easy_all install
 ```
 
 交互安装依次询问：
 
 - 定时重启策略；
 - 源站域名与 CloudFront CDN 域名；
-- 订阅访问 Token 字典；
+- 是否部署订阅服务；
+- 选择部署时再询问订阅访问 Token 字典；
 - AWS IAM Access Key ID 与 Secret Access Key，输入不回显。
 
-非交互示例：
-
-```bash
-AWS_ORIGIN_DOMAIN='origin.example.com' \
-VLESS_CDN_DOMAIN='node.example.com' \
-ALLOWED_TOKENS='{"owner":"owner-token-123"}' \
-AWS_ACCESS_KEY_ID='AKIA_REPLACE_ME' \
-AWS_SECRET_ACCESS_KEY='REPLACE_ME' \
-REBOOT_SCHEDULE_MODE=none \
-/root/easy_aws install
-```
-
 不要把真实密钥写进 shell history、脚本、README、截图或 Git。更安全的做法是在当前 shell
-临时 `read -s` 后导出，或使用 EC2 IAM Role / 短期凭证和
-`AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1`。
+中使用 EC2 IAM Role 或短期凭证。
 
-AWS 凭证不会写入 `/etc/easy_aws/state.env`。状态文件保存 VLESS UUID、WS/XHTTP 随机路径、Route 53
+AWS 凭证不会写入 `/etc/easy_all/state.env`。状态文件保存 VLESS UUID、XHTTP 随机路径、Route 53
 Zone ID、CloudFront 资源 ID、订阅 Token 和源站防直连随机请求头，权限为 `0600`。
 
-## 4. 手动部署 Cloudflare Worker
+源站域名、CDN 域名和 CloudFront 分配属于基础设施标识，建议通过重新安装修改。
 
-安装完成后，脚本会把完整 Worker 源码输出到终端并保存为：
+## 4. Nginx 订阅接口
 
-```text
-/etc/easy_aws/subscribe-worker.js
-```
-
-它包含 `VLESS_AWS_WS` 与 `VLESS_AWS_XHTTP_H2` 两个节点。可以选择以下任一手动方式：
-
-### Cloudflare Dashboard
-
-1. Workers & Pages → Create → Worker。
-2. 进入 Edit code。
-3. 用 `/etc/easy_aws/subscribe-worker.js` 的完整内容替换示例代码。
-4. 手动 Deploy。
-5. 可直接使用 Worker 的 `workers.dev` 地址；它与 AWS 节点域名和 CDN 链路相互独立。
-
-### Wrangler
-
-```bash
-npx wrangler deploy /etc/easy_aws/subscribe-worker.js --name easy-aws
-```
-
-部署后的订阅地址格式：
+选择 `1. 部署订阅服务` 后会生成两个静态订阅文件：
 
 ```text
-https://<你的 Worker 域名>/subscribe?token=owner-token-123
-https://<你的 Worker 域名>/subscribe?token=owner-token-123&flag=clash
+/var/www/easy_all/subscriptions/base64.txt
+/var/www/easy_all/subscriptions/mihomo.yaml
 ```
 
-`easy_aws update-sub` 只重新生成并显示 Worker 源码；它不会创建、更新或删除任何远端
-Cloudflare Worker、Route 或 Custom Domain。
+订阅通过现有 CloudFront CDN 域名访问：
+
+```text
+https://node.example.com/subscribe?token=owner-token-123
+https://node.example.com/subscribe?token=owner-token-123&flag=clash
+```
+
+Nginx 同时校验 CloudFront 注入的源站密钥和查询参数中的订阅 Token。直接访问源站返回
+`404`，Token 缺失或无效返回 `403`。响应禁止缓存；Mihomo 订阅使用配置的下载文件名。
+`easy_all update-sub` 会重新生成两个文件、刷新 Nginx 并执行本机验收，不修改 AWS 资源。
+该命令也会重新显示以下两个选择：
+
+1. 部署订阅服务。
+2. 不部署，仅输出节点信息。
+
+选择第二项会删除已有静态订阅文件和 Nginx `/subscribe` 路由，但保留 XHTTP 节点服务。
 
 ## 常用命令
 
 ```bash
-easy_aws help
-easy_aws show
-easy_aws subscription
-easy_aws status
-easy_aws update
-easy_aws update-sub
-easy_aws update-core
-easy_aws renew-cert
-easy_aws register-command
-easy_aws uninstall
+easy_all help
+easy_all show
+easy_all subscription
+easy_all status
+easy_all update
+easy_all update-sub
+easy_all update-core
+easy_all renew-cert
+easy_all register-command
+easy_all uninstall
 ```
 
-- `show`：显示 VLESS WS、XHTTP 链接和 Mihomo 节点片段。
-- `subscription`：显示节点、本地 Worker 文件和手动 Wrangler 命令。
-- `update`：校验/刷新 Route 53 记录、本机配置、CloudFront 分配和 Worker 源码；会重新要求 AWS 凭证。
-- `update-sub`：不碰 AWS/Cloudflare 远端资源，只刷新 Worker 源码。
+- `show`：显示 VLESS XHTTP 链接和 Mihomo 节点片段。
+- `subscription`：显示节点和每个 Token 对应的两种订阅地址。
+- `update`：校验/刷新 Route 53、本机配置、CloudFront 和静态订阅；会重新要求 AWS 凭证。
+- `update-sub`：不修改 AWS 资源，只重新生成订阅并刷新 Nginx。
 - `uninstall`：删除本机服务、证书、状态和备份，但不删除 CloudFront、ACM 或 Route 53 记录。
 
 卸载后应在 AWS Console 手动确认并清理不再使用的 CloudFront 分配、ACM 证书及 Route 53
@@ -355,25 +336,24 @@ easy_aws uninstall
   并检查 VPS 探测到的公网 IPv4 是否正确。
 - **CloudFront 返回 502**：检查 Route 53 源站 A 直连 VPS、443 可达、源站证书覆盖源站域名；
   CloudFront 回源必须是 HTTPS only + TLS 1.2。
-- **CloudFront 返回 404**：通常是源站保护请求头未同步。执行 `easy_aws update`，不要手动移除
+- **CloudFront 返回 404**：通常是源站保护请求头未同步。执行 `easy_all update`，不要手动移除
   CloudFront Origin Custom Header。
-- **普通 HTTPS 健康检查成功但 WS 失败**：确认 Behavior 使用 `CachingDisabled` 和
-  `AllViewerExceptHostHeader`，客户端网络为 `ws`、ALPN 为 `http/1.1`、路径完全一致。
 - **XHTTP 返回 403、EOF 或超时**：确认 CloudFront Behavior 已启用 gRPC，允许 POST，
   客户端使用最新 Mihomo/Xray 内核，网络为 `xhttp`、模式为 `stream-up`、ALPN 只有 `h2`。
-  某些 Android 客户端版本存在 stream-up/H2 兼容问题；遇到时继续使用同订阅中的 WS 节点。
+  同时确认 Xray 服务端 `scStreamUpServerSecs` 最大值小于 CloudFront `OriginReadTimeout`。
 - **创建分配提示 CNAMEAlreadyExists**：该 CDN 域名仍绑定其他 CloudFront 分配；不要盲目覆盖，
   先在控制台确认所有权，再解除旧关联或使用显式 adopt 参数。
 - **IAM AccessDenied**：核对策略中的 Hosted Zone ID；同一根域只需一个，不同 Zone 才需两个。
   不要临时改用根访问密钥。
-- **Worker 地址不可用**：本脚本从不部署 Worker；必须按上一节在 Cloudflare 手动 Deploy。
+- **订阅返回 403**：确认 URL 中使用的是 `ALLOWED_TOKENS` 的值，而不是用户名。
+- **订阅返回 404**：必须通过 CloudFront CDN 域名访问；源站域名会因缺少 CloudFront 密钥而拒绝。
 
 ## 测试
 
 ```bash
-cd easy_aws
-npm test
+cd easy_all
+bash test/test_xhttp.sh
 ```
 
-测试会校验 VLESS WS/XHTTP 双节点、心跳与 XMUX、CloudFront gRPC JSON、Worker 注入、脚本语法和文档
-安全约束，不会调用真实 AWS 或 Cloudflare API。
+测试会校验 VLESS XHTTP 单节点、流式保活与 XMUX、CloudFront gRPC JSON、静态订阅渲染、
+Nginx Token 映射、脚本语法和文档安全约束，不会调用真实 AWS API。

@@ -1,265 +1,298 @@
 # easy_all
 
-`easy_all` 是包含完整安装核心的单文件安装器，一次只运行一种协议：
+`easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点安装器。一个项目、一个命令，
+安装时只能选择一种模式：
 
-| 协议                     | 服务端   | 端口模式                      | Cloudflare DNS   |
-| ------------------------ | -------- | ----------------------------- | ---------------- |
-| VLESS TCP Reality Vision | Xray     | 默认`dynamic`，可选 `443` | 不要求代理       |
-| AnyTLS                   | sing-box | 默认`443`，可选 `dynamic` | 必须始终保持灰云 |
+| 安装模式       | 协议                         | 入口              |
+| -------------- | ---------------------------- | ----------------- |
+| 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443       |
+| CDN - XHTTP    | VLESS XHTTP stream-up / HTTP2 | CDN HTTPS 443     |
 
-该入口面向通用 VPS，只提供 Reality 与 AnyTLS，并部署 Worker `easy-all`。中国移动+非优化线路的VPS，请使用独立的 [`for_cmcc/easy_cmcc`](for_cmcc/README.md)。只需要单一 VLESS WebSocket、使用 AWS Route 53 DNS + CloudFront CDN，并由自己手动部署订阅 Worker 时，请使用 [`easy_aws/easy_aws`](easy_aws/README.md)。
+CDN XHTTP 当前使用 AWS Route 53、ACM 和 CloudFront。协议状态使用 `xhttp`，
+Provider 单独记录为 `aws`，以后接入其他 CDN 时不改变安装模式和 XHTTP 实现。
 
-如果服务器当前仍是旧版 `easy_all` 创建的 XHTTP/WSS 安装，请先用原有旧版命令执行 `easy_all uninstall`，再安装 `easy_cmcc`。新版 `easy_all` 会拒绝读取 XHTTP/WSS 状态，不再迁移、更新或接管这类安装。
+同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
+只适合专用 VPS。
 
-旧的 `easy_reality.sh` 和 `easy_anytls.sh` 已下线，也不提供旧状态迁移。检测到 `/etc/easy_reality` 或 `/etc/easy_anytls` 时，新脚本会停止安装；请先用旧脚本的卸载命令清理。
+## 安装
 
-## 安装前须知
-
-- 只支持 Debian 12/13、amd64、systemd 和 root。
-- 脚本适用于专用 VPS，会升级系统软件包、安装 XanMod LTS、启用 BBR、管理 root 每日重启任务，并接管完整 `/etc/nftables.conf`。
-- TCP 使用 `fq + BBR`，收发自动调优上限为 32 MiB，接收积压为 16384，并启用 MTU 黑洞探测。
-- 两种协议都使用 TCP 443，所以同一时间只能启用一种。
-- Reality 和 AnyTLS 的 `dynamic` 是订阅端口：服务器仍监听 443，nftables 将 TCP `10000-65535` 转发到 443。
-- 只有 Gemini 及其必要 Google 依赖会由每台 VPS 固定选择单一地址族；`auto` 模式实测 Gemini 的 IPv4/IPv6 后选择更快的一侧，避免 `IPv4 != IPv6` 且不牺牲速度。Claude、OpenAI、MEGA 及其他服务保持服务端默认双栈行为。
-- AnyTLS 不是 WebSocket，普通 Cloudflare CDN 不能代理它；域名安装前后都要保持 DNS only / 灰云。
-
-## 快速安装
+克隆或下载完整项目后执行：
 
 ```bash
-wget -qO /root/easy_all.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all" && chmod 700 /root/easy_all.new && mv -f /root/easy_all.new /root/easy_all && /root/easy_all install
+chmod 700 easy_all
+sudo ./easy_all install
 ```
 
-也可以直接指定协议：
+安装器只支持交互安装，不接受 `install reality` 或 `install xhttp` 参数：
 
-```bash
-/root/easy_all install reality
-/root/easy_all install anytls
+```text
+请选择安装模式：
+  1. 直连 - Reality
+  2. CDN - XHTTP
+请选择 [1]:
 ```
 
-安装成功后会注册 `/usr/local/bin/easy_all`。
+## 安装脑图
 
-`easy_all update` 使用当前单文件刷新服务端配置和 Worker；安装器本身有更新时，请重新执行上面的原子下载命令。
+```mermaid
+mindmap
+  root((easy_all install))
+    公共步骤
+      平台与端口检查
+      安装依赖
+      Google BBR 与 TCP
+      定时重启
+        默认：每天 04:00
+        可选：自定义小时
+        可选：不配置
+      UFW
+      Xray 核心
+      保存状态并注册命令
+    直连 Reality
+      连接地址
+        默认：自动探测公网 IPv4
+      SNI
+        默认：swdist.apple.com:443
+      订阅端口
+        默认：dynamic
+        可选：443
+      订阅输出
+        默认：部署 Nginx HTTPS 8443
+        可选：仅输出节点
+    CDN XHTTP
+      Route 53 源站域名
+        必填
+      CloudFront CDN 域名
+        必填
+      订阅输出
+        默认：部署 CloudFront + Nginx
+        可选：仅输出节点
+      AWS IAM 凭证
+        必填
+        不写入状态文件
+      AWS 资源
+        Route 53 A/CNAME
+        Let's Encrypt 源站证书
+        ACM Viewer 证书
+        CloudFront
+```
 
-## 常用命令
+公共交互选项：
+
+| 输入 | 选项/格式 | 默认值 | 直接回车 |
+| --- | --- | --- | --- |
+| 安装模式 | `1` Reality / `2` CDN XHTTP | `1` | 安装 Reality |
+| 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 写入每日 04:00 的 root crontab |
+| 自定义重启小时 | `0-23` | 无 | 不允许为空 |
+
+脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。
+UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
+
+安装成功后统一使用：
 
 ```bash
 easy_all show
 easy_all subscription
 easy_all status
+easy_all update
 easy_all update-sub
 easy_all update-core
 easy_all renew-cert
-easy_all switch reality
-easy_all switch anytls
 easy_all uninstall
 ```
 
-`switch` 只支持由 `easy_all` 创建的安装。切换过程会先保存原协议的状态、服务配置、证书、核心和 nftables；新协议本机验收成功后才更新 Worker。若核心启动或 Worker API 上传失败，会自动恢复原协议。
+## 直连 Reality
 
-`uninstall` 默认就是完整本机 purge，不再需要 `--purge`：删除 easy_all 的服务、核心、配置、证书副本、状态、日志、命令入口和备份，尝试恢复安装前的 nftables，并从 root crontab 精确移除 easy_all 托管的重启任务。若 acme.sh 确认由 easy_all 安装且已无其他证书，也会一并清理；共享 acme.sh 会保留。XanMod、已安装软件包和系统级 BBR/IPv6 初始化不会降级。
+Reality 使用 Xray 监听 TCP `443`，客户端节点包含：
 
-远端 Cloudflare Worker 及其 Custom Domain 不属于卸载范围。每次自动安装或切换都以 replace 方式覆盖同名 Worker，并复用已经绑定到该 Worker 的 Custom Domain，因此保留远端资源不影响下次安装。
+- `security=reality`
+- `flow=xtls-rprx-vision`
+- `type=tcp`
+- Chrome 指纹、Reality public key 和 short ID
 
-`easy_all update` 始终以自动模式 replace 当前同名 Worker，不继承历史的手动输出模式。
-交互更新会重新提示输入未保存的 Cloudflare Worker API Token。若 Worker replace 失败，
-更新会明确失败，不会静默改成手动部署。仅执行 `easy_all update-sub` 时才继续沿用已保存
-的订阅部署模式，并先显示端口模式菜单；直接回车沿用当前模式，改变模式时会同步更新
-nftables、服务端配置和 Worker。
+安装时需要确认客户端连接地址和 Reality SNI/伪装目标。默认伪装目标为
+`swdist.apple.com:443`。
 
-## 协议说明
+订阅支持固定 `443` 或动态端口。动态模式从 `10000-65535` 生成订阅端口，并由本机
+UFW 受管 NAT 区块转发到 Xray `443`。UFW 默认拒绝入站与转发，只放行 SSH、Reality
+和已启用的订阅端口。
 
-### Reality
+Reality 的订阅模式：
 
-```bash
-sudo ./easy_all install reality
-```
+1. 部署 Nginx HTTPS `8443` 订阅。
+2. 不部署，仅输出节点信息。
 
-脚本会自动探测 VPS 公网 IPv4，并把它作为 Reality 客户端连接地址的默认值；直接回车即可采用。若服务器使用 NAT、浮动 IP、额外入站 IP，或者希望订阅显示域名，可以手动覆盖为客户端实际可达的 IPv4 或域名。域名必须直接解析到 VPS，托管在 Cloudflare 时保持 DNS only / 灰云，不能通过普通橙云 CDN 代理 Reality。
+Reality 交互选项：
 
-下一项会单独询问 `Reality SNI / 伪装目标（域名:端口）`，默认是 `swdist.apple.com:443`，直接回车即可采用，也可以输入其他可用的 TLS 1.3 站点。脚本将冒号前的域名同时写入服务端 `serverNames` 和客户端 SNI，并把完整的 `域名:端口` 写入 Reality `dest`；因此客户端连接地址与 SNI 是两个不同参数。
+| 输入 | 默认值 | 直接回车 |
+| --- | --- | --- |
+| 客户端连接地址 | 自动探测到的公网 IPv4 | 使用探测值；探测失败时必须手填 |
+| Reality SNI/目标 | `swdist.apple.com:443` | 使用默认目标 |
+| 订阅端口 | `dynamic` | 随机生成 `10000-65535` 端口 |
+| 订阅输出 | 部署 Nginx HTTPS `8443` | 部署订阅服务 |
+| 自托管订阅域名 | 无 | 不允许为空 |
+| Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
+| Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
 
-输出为 VLESS TCP Reality Vision，包含 `security=reality`、`type=tcp`、`flow=xtls-rprx-vision`、public key 和 short ID。交互安装会询问订阅端口模式，Reality 默认选择 `dynamic`；此模式会为订阅节点随机生成 `10000-65535` 端口，并由服务端 nftables 转发到 443，也可以选择固定 `443`。显式设置 `SUB_PORT_MODE=443|dynamic` 时不再询问。
+Reality 入站只监听 IPv4。使用域名作为连接地址时不得发布 AAAA，否则安装会 fail-fast。
 
-### AnyTLS
-
-```bash
-sudo ./easy_all install anytls
-```
-
-安装时会询问完整域名、Cloudflare DNS Token、sing-box 版本和订阅端口模式，AnyTLS 默认选择固定 `443`，也可以选择 `dynamic`。sing-box 可选最新稳定版、最新 Alpha/pre-release 或指定具体版本号，默认使用最新稳定版；Alpha 可能包含未稳定行为。脚本通过 acme.sh、Let's Encrypt 和 Cloudflare DNS-01 签发证书，AnyTLS 密码会自动生成。
-
-Mihomo 节点包含 `type: anytls`、TLS SNI、Chrome 指纹和 `udp: true`。`udp: true` 只表示客户端允许通过节点转发 UDP，不会把 AnyTLS 服务端监听改为 UDP。
-
-两种协议的服务端都会嗅探 HTTP、TLS 和 QUIC 目标域名。相关域名在 Mihomo 客户端保留 Fake-IP；客户端同时启用 `sniffer.override-destination`，将浏览器自行解析的可嗅探数字 IP 恢复成域名后再交给 VPS。Xray 服务端使用 `routeOnly: false`，也会用嗅探域名覆盖原数字目标，确保后续 `ForceIPv4` 或 `ForceIPv6` 真正参与目标解析；sing-box 使用 `ipv4_only` 或 `ipv6_only`。只有 Gemini 及其必要 Google 依赖进入固定地址族策略；ChatGPT、Claude 及其辅助域名直接使用普通 `direct` 的默认双栈行为。默认模式会分别请求三次 `https://gemini.google.com/`，比较可用地址族的中位耗时后固定选择更快的一侧。没有全局 IPv6 地址或默认 IPv6 路由的 VPS 不执行 IPv6 测试并固定使用 IPv4。
-
-自动测速通常适合“RN 双栈、VM 只有 IPv4”的组合，选择结果写入当前 Xray/sing-box 运行时配置；状态文件保留 `auto` 偏好，后续更新会重新测速。MEGA 不包含显式域名规则或地址族策略，按通用规则和普通 `direct` 出口处理。
-
-订阅中的代理节点不设置 Mihomo `ip-version`；但为避免 Windows TUN 在不完整 IPv6 网络上向浏览器下发不可达的 Fake IPv6，客户端模板默认使用 IPv4 DNS/Fake-IP/TUN。下发的 TUN 使用 `stack: mixed`、`auto-route: true`、`auto-detect-interface: true`、`strict-route: false` 和 `mtu: 1500`。Gemini 的地址族固定仍只发生在 VPS 到 Google 的出口侧，不会连带限制 ChatGPT、Claude 或 MEGA 的服务端出口策略。
-
-客户端路由以 XFLASH 规则为主体，并统一把其 `XFLASH` 策略改为单一 `PROXY` 组。模板通过 `find-process-mode: off` 关闭进程探测，因此过滤 `PROCESS-NAME` 和 `applications` 规则；远程规则集继续使用官方 GitHub 地址，并保留 `proxy: PROXY` 与 `size-limit` 防护。局域网、证券行情域名、Apple Relay 和 Copilot 规则作为本地安全前置覆盖，避免远程规则首次下载失败或宽泛 Apple/Microsoft 规则抢先命中。`.lan`、`.local` 使用系统 DNS，RFC1918 IPv4、链路本地 IPv4、IPv6 ULA 与链路本地地址显式直连并绕过 TUN。客户端日志使用 `error` 级别，TUN 固定使用 `mtu: 1500` 和 `strict-route: false`。UDP/443 拒绝规则保持在 XFLASH 主体尾部，仅对此前未命中的流量生效。
-
-Mihomo 订阅使用阿里与腾讯的 DoH 作为两家独立的国内解析器，阿里/腾讯的 IPv4 公共 DNS 仅用于引导解析；不再重复配置同属阿里的 DoH 地址。订阅不生成 `AUTO` 或其他自动测速组，只保留一个 `PROXY` 手动选择组；列表首项是 `DEFAULT_NODE` 的首节点，当前选择会由 Mihomo 保存。Gemini、其他代理规则和境外 DoH 都跟随这个手动选择，使用 Gemini 时不要中途切换节点。DNS 的 `geosite:geolocation-!cn` 策略仍固定使用经 `PROXY` 的境外 DoH；它只控制 DNS 解析器选择，不额外插入客户端路由规则。代理节点本身仍由国内 `proxy-server-nameserver` 解析，避免启动循环。IP 类远程规则附带 `no-resolve`，避免额外解析。
-
-仍建议把浏览器的“安全 DNS/使用安全 DNS”设为“使用当前服务提供商”或关闭，不要指定自定义 DoH；Android 的“私人 DNS”也应关闭或设为自动。客户端和 Xray 会通过普通 HTTP/TLS/QUIC 嗅探修复可见域名的数字 IP 目标，但自定义 DoH/DoT 配合 ECH 时可能同时绕过 DNS 劫持和真实域名嗅探，无法保证固定出口族。
-
-## Cloudflare 凭据图解
-
-自动部署需要一个 Account ID 和两个彼此独立的 API Token。推荐在
-**My Profile → API Tokens** 创建 User API Token，并将资源限制到 easy_all 使用的单个
-账户或 Zone。Token Secret 创建后只显示一次，不要写入脚本、README、截图或 Git；
-easy_all 仅在当前命令进程中使用它们，不会保存到状态文件。Cloudflare 的
-[Token 创建流程](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
-和[权限清单](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
-可用于核对界面名称。
-
-### 1. CF_ACCOUNT_ID
-
-进入 Cloudflare Dashboard，选择账户并打开 **Account home**。复制地址栏中账户名后、
-`/home` 前的 32 位字符；不要误用域名页面的 Zone ID。
-
-![Cloudflare Account ID 获取示意图](docs/images/cloudflare-account-id.svg)
-
-### 2. CF_DNS_API_TOKEN
-
-选择 **Create Custom Token**，资源限制为实际使用的单个 Zone，添加以下权限：
-
-- Zone → DNS → Edit
-- Zone → Zone → Read
-
-![Cloudflare Zone Token 配置示意图](docs/images/cloudflare-zone-token.svg)
-
-上图为 `easy_all` 与 `easy_cmcc` 共用图例：`easy_all` 只需要前两行；图中的
-`Zone Settings → Edit` 和 `Config Rules → Edit` 仅供 `easy_cmcc` 自动配置
-gRPC、WebSockets 与 XHTTP 双向无缓冲规则，`easy_all` 不需要添加。
-
-### 3. CF_WORKER_API_TOKEN
-
-选择 **Create Custom Token**，资源限制为实际使用的单个 Account，只添加
-**Account → Workers Scripts → Edit**。也可以使用 **Edit Cloudflare Workers** 模板，
-但模板默认包含 Workers Routes、KV、R2 等 easy_all 不需要的额外权限。
-
-![Cloudflare Worker Token 配置示意图](docs/images/cloudflare-worker-token.svg)
-
-### 4. Worker Custom Domain
-
-自动部署时可以填写独立的订阅域名，例如 `sub.example.com`。该主机名必须位于当前
-Cloudflare 账户中的 Active Zone，并且不能与 Reality/AnyTLS 节点域名相同。请使用一个
-没有现有 A、AAAA 或 CNAME 的主机名，**不要提前创建 DNS 记录，也不要配置 Worker
-Route**。脚本会调用 Custom Domain API；Cloudflare 自动创建橙云 DNS、签发边缘证书并
-把请求直接交给 `easy-all` Worker。
-
-![为 Worker 添加 Custom Domain](for_cmcc/docs/images/cloudflare-worker-custom-domain.svg)
-
-绑定成功后可使用：
+自托管订阅域名必须直接解析到 VPS：
 
 ```text
-https://sub.example.com/subscribe?token=owner-token-123
-https://sub.example.com/subscribe?token=owner-token-123&flag=clash
+https://sub.example.com:8443/subscribe?token=owner-token
+https://sub.example.com:8443/subscribe?token=owner-token&flag=clash
 ```
 
-脚本不创建占位 DNS，也不配置 Worker Route：每次安装或更新先按 hostname 查询，已经绑定当前 Worker 时直接复用，
-不存在时才创建，绑定到其他 Worker 时拒绝抢占。若创建
-请求与另一次安装并发冲突，会再查询一次；确认已绑定当前 Worker 也视同成功。脚本不会
-删除或覆盖 DNS。`Account → Workers Scripts → Edit` 已覆盖 Custom Domain API，不需要
-额外授予 DNS 或 Workers Routes 权限。机制可参考 Cloudflare 的
-[Custom Domains 文档](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
+## CDN XHTTP
 
-## Worker 订阅
+XHTTP 使用 `stream-up + HTTP/2 + XMUX`。当前链路为：
+CDN 模式只输出一个 VLESS XHTTP 节点，不混入其他协议。
 
-安装或 `update-sub` 时可选择：
+安装和 `easy_all update-sub` 都提供两个订阅选项：
 
-1. 自动部署：通过 Cloudflare API replace Worker，并可自动创建或复用 Custom Domain。
-2. 手动部署：输出完整 Worker 源码。
-3. 只输出当前节点链接。
+1. 部署 CloudFront + Nginx 订阅服务，并输出节点信息。
+2. 不部署订阅服务，仅输出节点信息。
 
-脚本会先询问订阅输出方式。选择自动部署或手动部署后，才会询问订阅用户 Token 字典，因为两种方式都会生成带访问保护的 Worker；选择“只输出当前节点链接”时不生成 Worker，也不会要求订阅 Token、Account ID 或 Worker API Token。手动部署仍然需要订阅 Token，它会直接内嵌到输出 Worker 的 `ALLOWED_TOKENS` 中。
+CDN XHTTP 交互选项：
 
-自动和手动 Worker 模式都会询问 Mihomo 下载文件名，默认是 `EASY_ALL`，输入时不需要 `.yaml` 后缀。首次选择自动部署且本地尚无已部署 Worker 时，还会询问 Worker 名称，默认是 `easy-all`；自动部署随后询问独立的 Worker Custom Domain，留空则仅使用 `workers.dev`。后续 `update`、协议切换和已有 Worker 的 `update-sub` 会复用状态中的 Worker 名称和 Custom Domain，避免创建重复资源。由手动/仅链接模式首次改为自动部署时，也会询问一次 Worker 名称。
+| 输入 | 默认值 | 直接回车 |
+| --- | --- | --- |
+| Route 53 源站域名 | 无 | 不允许为空 |
+| CloudFront CDN 域名 | 无 | 不允许为空 |
+| 订阅输出 | 部署 CloudFront + Nginx | 部署订阅服务 |
+| Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
+| AWS Access Key ID | 无 | 不允许为空 |
+| AWS Secret Access Key | 无 | 不允许为空 |
 
-默认 Worker 名称是 `easy-all`。API 请求会对网络错误、HTTP 408/429/5xx、Cloudflare `10007` 和 `10035` 做有限次数退避重试；Cloudflare 返回 `Retry-After` 响应头或结构化错误体中的 `retry_after` 时会优先遵守（单次最多等待 300 秒）。Custom Domain 成功后作为首选订阅地址，`workers.dev` 保留为验收和临时排障备用地址。Worker 部署完成后会先等待 10 秒，再进行最多 12 次订阅 HTTP 验收；失败后的重试间隔随机为 2–5 秒。每轮 base64 与 Clash 请求使用同一个 Worker 版本亲和键并附带防缓存参数，避免发布传播期间两个格式命中不同版本。最近一次部署日志位于：
+XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
+自动生成，不需要用户输入。
+
+`easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
+都会把当前值显示在方括号中，直接回车沿用当前状态。
 
 ```text
-/etc/easy_all/last-worker-deploy.log
+客户端 -> CloudFront HTTPS 443 -> Nginx gRPC -> Xray 127.0.0.1:10086
 ```
 
-日志权限为 `0600`，并对 UUID、密码、Token 和 Reality 密钥做脱敏。Worker API 上传成功但公网验收暂时未通过时，脚本会保留新协议并给出警告，避免错误地回滚到与远端订阅不一致的旧协议。Custom Domain 绑定失败时暂时回退到 `workers.dev`，保存待绑定域名，并在下次自动更新时重试。
+需要两个位于 Route 53 Public Hosted Zone 的域名：
 
-Worker 支持：
+| 域名示例             | 用途                                      |
+| -------------------- | ----------------------------------------- |
+| `origin.example.com` | CloudFront HTTPS 源站，A 记录指向 VPS     |
+| `node.example.com`   | 客户端和订阅入口，CNAME 指向 CloudFront   |
 
-- 默认 base64 节点订阅：`/subscribe?token=...`
-- Mihomo/Clash YAML：`/subscribe?token=...&flag=clash`
-- 可自定义 Clash 下载文件名。
+CloudFront + Nginx 订阅接口同时校验：
 
-### Worker 模板与规则来源
+- CloudFront 注入的 `X-Easy-All-Origin-Key`
+- URL 查询参数中的用户 Token
 
-`sample-worker.js` 是 Worker 模板、Mihomo 规则和 Gemini 地址族策略的唯一来源，`easy_all` 不再保存第二份域名列表。脚本会从模板的 `EASY_ALL_GEMINI_DOMAINS_START/END` JSON 区块提取域名，并写入 Xray 或 sing-box 服务端配置。默认读取本仓库 `main` 分支的 `sample-worker.js`。
+订阅响应设置 `Cache-Control: no-store`。所有客户端节点和订阅地址只使用 CDN 域名，
+不会暴露源站域名。
 
-模板不会缓存到安装目录。通过 `/usr/local/bin/easy_all` 运行安装、切换、`update` 或 `update-sub` 时，每次操作都会重新获取最新模板，但一次操作只获取一次；服务端配置和 Worker 都复用这份已校验模板。现有 Token 和节点信息从状态文件重新注入。模板缺少配置、规则或 Gemini 域名边界，或者域名 JSON 非法、重复、未规范化时，脚本会立即停止，不会生成不一致的配置。
+AWS Access Key ID 与 Secret Access Key 仅在当前命令进程中使用，不写入状态文件。不要为根用户创建访问密钥，应创建
+权限受限的专用 IAM 用户。完整 IAM 权限、CloudFront 参数和故障排查见
+[CDN XHTTP 的 AWS 配置](docs/xhttp-aws.md)。
+推荐创建 `easy_all_deploy_policy`，并通过“添加用户到组”授予专用部署用户。
 
-VPS 只保留单个脚本文件时，先确保仓库中的 `easy_all` 与 `sample-worker.js` 已发布到 `main`，再执行一行命令：
+## 状态与边界
 
-```bash
-wget -qO /root/easy_all.new "https://raw.githubusercontent.com/v2yiz/easy_all/main/easy_all" && chmod 700 /root/easy_all.new && mv -f /root/easy_all.new /root/easy_all && /root/easy_all update
-```
-
-`update` 会先重新应用 BBR/TCP 参数，把当前脚本注册为 `/usr/local/bin/easy_all`，然后调用与 `update-sub` 相同的同步更新流程：安全重写并验收当前 Xray/sing-box 服务端配置，再强制自动 replace Worker。Worker replace 前若任何一步失败，会恢复旧服务端配置、本地 Worker、端口模式和 nftables；replace 已完成后则保留新服务端配置，避免远端订阅与 VPS 回滚后不一致。它会沿用状态文件中的 `ALLOWED_TOKENS`、节点信息和 `CF_ACCOUNT_ID`；若状态中没有 Account ID，脚本会先提示输入，随后安全提示重新输入未保存的 Cloudflare Worker API Token。
-
-### 订阅访问 Token
-
-自动或手动 Worker 模式的订阅入口使用 Token 字典作为访问白名单，格式必须是 JSON object：key 是便于识别的用户名，value 才是订阅 URL 中使用的 token。只输出节点链接模式不需要这一项。
-
-```json
-{"owner":"owner-token-123","alice":"alice-token-456"}
-```
-
-上面的配置会生成两组订阅地址：
+统一状态目录：
 
 ```text
-https://<custom-domain>/subscribe?token=owner-token-123
-https://<custom-domain>/subscribe?token=owner-token-123&flag=clash
-https://<custom-domain>/subscribe?token=alice-token-456
-https://<custom-domain>/subscribe?token=alice-token-456&flag=clash
+/etc/easy_all/state.env
+/etc/easy_all/xray/config.json
+/var/www/easy_all/subscriptions/
+/etc/nginx/conf.d/easy_all.conf
+/etc/systemd/system/easy_all-xray.service
 ```
 
-规则：
+状态字段包括：
 
-- 至少要包含一个用户。
-- 用户名只允许 `A-Z a-z 0-9 . _ -`，长度 `1-64`。
-- token 只允许 URL 安全字符 `A-Z a-z 0-9 . _ ~ -`，长度 `8-128`。
-- 用户名和 token 都会去掉首尾空白；不允许空值、重复用户名或重复 token。
-- 订阅校验只匹配 token 值，不匹配用户名。访问 `/subscribe?token=owner` 不会通过，除非某个用户的 token 值正好是 `owner`。
-
-可以用下面的命令生成一个 URL 安全 token：
-
-```bash
-openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n'
+```text
+STATE_VERSION=2
+PROTOCOL=reality|xhttp
+CDN_PROVIDER=aws
 ```
 
-Cloudflare API Token、DNS Token 不写入状态文件；订阅访问用的 Token 字典会保存到权限为 `0600` 的 `/etc/easy_all/state.env`，并写入自动生成的 Worker。
+Reality 的 `CDN_PROVIDER` 为空。XHTTP 当前固定为 `aws`。AWS Access Key 和 Secret
+Access Key 不会持久化。
 
-## 状态与验证
+卸载 XHTTP 时只删除本机资源，保留 CloudFront、ACM 和 Route 53 资源，避免误删共享的
+云资源。卸载完成后应在 AWS Console 中人工确认是否清理。
 
-主要文件：
+## 模块
 
-| 路径                                     | 用途                             |
-| ---------------------------------------- | -------------------------------- |
-| `/etc/easy_all/state.env`              | 当前协议及订阅状态，权限`0600` |
-| `/etc/easy_all/subscribe-worker.js`    | 当前协议生成的 Worker            |
-| `/etc/easy_all/last-worker-deploy.log` | Worker 分阶段部署日志            |
-| `/etc/easy_all/backups/`               | 安装前与更新过程备份             |
-| `/usr/local/bin/easy_all`              | 注册命令                         |
+用户始终只运行 `easy_all`。内部按粗粒度拆分：
 
-本地测试：
+```text
+easy_all
+lib/reality.sh
+lib/xhttp.sh
+sample-mihomo.yaml
+```
+
+入口只负责模式选择和命令分发。两个 Profile 不互相调用；XHTTP 状态通过
+`CDN_PROVIDER` 与具体 CDN 实现解耦。
+
+## 测试
 
 ```bash
 npm test
 ```
 
-测试覆盖 Reality/AnyTLS 节点链接、Mihomo 输出、Worker base64 输出、状态安全、协议切换/回滚守卫，以及 `sample-worker.js`。
-若本机已安装 Mihomo，可额外执行真实配置校验：
+测试覆盖统一入口、Reality、XHTTP、Xray 配置、CloudFront JSON、Route 53、订阅渲染、
+Token 鉴权、证书续期检查和更新顺序。
+
+## 独立工具：debian_init
+
+`debian_init.sh` 是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分或安装前置步骤，
+也不会安装、更新或卸载代理节点。
+
+它应在本地管理机交互运行，通过 SSH 初始化一台全新的 Debian 12/13 amd64、systemd、
+非容器服务器：
 
 ```bash
-MIHOMO_BIN=/path/to/mihomo MIHOMO_DATA_DIR=/path/to/mihomo-data npm run test:mihomo
+chmod 700 debian_init.sh
+./debian_init.sh
 ```
 
-`MIHOMO_DATA_DIR` 应包含 Mihomo 校验 `GEOSITE`、`GEOIP` 规则所需的 `GeoSite.dat` 与 `Country.mmdb`；若省略，Mihomo 会按自身配置尝试下载。
+本地需要 `ssh`、`scp` 和 `ssh-keygen`；安装 `sshpass` 后可自动提交首次 SSH 密码，
+否则按 SSH 提示交互输入。脚本会明确询问服务器地址、初始登录用户、普通用户名及 sudo
+密码、SSH key、本地 Host 别名、当前/最终 SSH 端口，以及需要由 UFW 额外放行的 TCP 端口。
+
+`debian_init` 交互选项：
+
+| 输入 | 默认值 | 直接回车 |
+| --- | --- | --- |
+| 服务器 IP/域名 | 无 | 不允许为空 |
+| 初始 SSH 用户 | `root` | 使用 `root` |
+| 初始用户密码 | 无 | 交给 SSH 自己交互询问 |
+| 最终普通用户名 | 无 | 不允许为空 |
+| 普通用户 sudo 密码 | 无 | 不允许为空，必须输入两次 |
+| 本地 SSH Host 别名 | `<普通用户>-<服务器>` | 使用生成值 |
+| 当前 SSH 端口 | `22` | 使用 `22` |
+| 是否修改 SSH 端口 | `no` | 不修改 |
+| 新 SSH 端口 | `2222` | 仅选择修改时采用 `2222` |
+| UFW 额外 TCP 端口 | 空 | 仅放行 SSH 相关端口 |
+| SSH key 选择 | `g` | 生成新的 ed25519 key |
+| 新 key 文件名 | `id_ed25519_<Host别名>` | 使用生成名称 |
+| 新私钥 passphrase | 空 | 创建无 passphrase 私钥 |
+| 是否移除旧 SSH 端口 | `no` | 保留旧端口 |
+
+远端操作包括：
+
+- 执行 `apt-get upgrade` 并安装基础工具。
+- 使用 Debian 官方内核的 Google BBR，TCP 参数与 `easy_all` 保持一致；拒绝 XanMod。
+- 配置并启用 UFW：默认拒绝入站和转发、允许出站，并为 SSH 当前/最终端口及用户显式输入的额外 TCP 端口添加受管规则；已有的其他 UFW 规则保持不变。
+- 设置 `Asia/Shanghai` 时区并启用时间同步。
+- 创建或更新普通用户、sudo 密码和 SSH 公钥。
+- 为普通用户安装 `uv` 和 Python 3.12。
+- 写入独立的 `sshd_config.d` 配置，禁用密码及键盘交互认证，root 仅允许密钥登录。
+- 在本地 `~/.ssh/config` 写入带保活参数的受管 Host 配置。
+
+BBR 配置写入 `/etc/sysctl.d/99-debian-init-bbr.conf`，模块加载配置写入
+`/etc/modules-load.d/debian-init-bbr.conf`。UFW 规则使用 `debian-init-managed` 注释，
+重复执行时只替换该工具管理的规则，不删除用户自己的其他 UFW 规则。
+
+该工具没有完整卸载或系统回滚命令。执行前应确认目标是可由它接管 SSH、安全策略、软件包、
+时区和用户配置的个人服务器，并保留当前 SSH 会话，直到新的普通用户密钥登录验证成功。

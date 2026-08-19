@@ -1,8 +1,0 @@
-{
-  "name": "easy-aws-tests",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "bash test/test_easy_aws.sh"
-  }
-}

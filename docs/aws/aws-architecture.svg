@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
-  <title id="title">easy_aws architecture</title>
-  <desc id="desc">AWS Route 53 manages both DNS records. VLESS WebSocket and XHTTP clients connect through AWS CloudFront to Nginx and separate Xray inbounds.</desc>
+  <title id="title">easy_all CDN XHTTP architecture</title>
+  <desc id="desc">AWS Route 53 manages both DNS records. A VLESS XHTTP client connects through AWS CloudFront to Nginx and Xray.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f7f9fc"/><stop offset="1" stop-color="#edf3ff"/></linearGradient>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-opacity=".12"/></filter>
@@ -13,21 +13,21 @@
     </style>
   </defs>
   <rect width="1200" height="720" fill="url(#bg)"/>
-  <text x="60" y="68" class="title">easy_aws · VLESS WS + XHTTP over AWS CloudFront</text>
-  <text x="60" y="98" class="sub">双传输节点链路与手动订阅分发完全分离</text>
+  <text x="60" y="68" class="title">easy_all · VLESS XHTTP over AWS CloudFront</text>
+  <text x="60" y="98" class="sub">XHTTP 节点与订阅共用 CloudFront HTTPS 入口</text>
 
   <rect class="box" x="55" y="190" width="245" height="170" fill="#fff" stroke="#4c9aff"/>
   <circle cx="105" cy="240" r="28" fill="#deebff"/><path d="M88 248h34M94 235h22M101 222h8" stroke="#0052cc" stroke-width="4" stroke-linecap="round"/>
   <text x="145" y="232" class="h">Mihomo / FLClash</text>
-  <text x="145" y="261" class="t">VLESS WS / XHTTP + TLS</text>
+  <text x="145" y="261" class="t">VLESS XHTTP + TLS</text>
   <text x="83" y="316" class="small">SNI / Host: node.example.com</text>
-  <text x="83" y="340" class="small">WS: HTTP/1.1 · XHTTP: H2 + XMUX</text>
+  <text x="83" y="340" class="small">stream-up · H2 + XMUX</text>
 
   <rect class="box" x="475" y="168" width="250" height="215" fill="#fff8ea" stroke="#ff9900"/>
   <path d="M535 218l30-18 30 18v36l-30 18-30-18z" fill="#ff9900" opacity=".18" stroke="#cc7a00" stroke-width="2"/>
   <text x="615" y="222" class="h" text-anchor="middle">AWS CloudFront</text>
   <text x="600" y="302" class="t" text-anchor="middle">CDN: node.example.com</text>
-  <text x="600" y="329" class="small" text-anchor="middle">禁用缓存 · WebSocket + gRPC</text>
+  <text x="600" y="329" class="small" text-anchor="middle">禁用缓存 · gRPC / HTTP/2</text>
   <text x="600" y="352" class="small" text-anchor="middle">HTTPS 443 回源 + 随机保护头</text>
 
   <rect class="box" x="900" y="190" width="245" height="170" fill="#fff" stroke="#36b37e"/>
@@ -35,10 +35,9 @@
   <text x="1022" y="266" class="t" text-anchor="middle">Nginx :443</text>
   <text x="1022" y="294" class="small" text-anchor="middle">origin.example.com</text>
   <path d="M948 324h148" stroke="#dfe1e6" stroke-width="2"/>
-  <text x="1022" y="340" class="small" text-anchor="middle">WS 127.0.0.1:10085</text>
-  <text x="1022" y="358" class="small" text-anchor="middle">XHTTP 127.0.0.1:10086</text>
+  <text x="1022" y="348" class="small" text-anchor="middle">XHTTP 127.0.0.1:10086</text>
 
-  <path class="flow" d="M300 275H465"/><text x="382" y="253" class="small" text-anchor="middle">WS / XHTTP :443</text>
+  <path class="flow" d="M300 275H465"/><text x="382" y="253" class="small" text-anchor="middle">XHTTP / H2 :443</text>
   <path class="flow" d="M725 275H890"/><text x="807" y="253" class="small" text-anchor="middle">HTTPS + H2</text>
 
   <rect x="330" y="405" width="540" height="52" rx="14" fill="#fff8ea" stroke="#ff9900" stroke-width="2"/>
@@ -46,13 +45,13 @@
   <text x="600" y="448" class="small" text-anchor="middle">node.example.com CNAME → CloudFront　·　origin.example.com A → VPS</text>
 
   <rect x="55" y="475" width="1090" height="165" rx="20" fill="#f4f0ff" stroke="#6554c0" stroke-width="2"/>
-  <text x="85" y="516" class="h">订阅分发（独立流程）</text>
+  <text x="85" y="516" class="h">订阅分发</text>
   <rect x="85" y="540" width="260" height="66" rx="12" fill="#fff" stroke="#b3a6e8"/>
-  <text x="215" y="568" class="t" text-anchor="middle">easy_aws 生成 Worker 源码</text><text x="215" y="590" class="small" text-anchor="middle">/etc/easy_aws/subscribe-worker.js</text>
+  <text x="215" y="568" class="t" text-anchor="middle">预生成静态订阅</text><text x="215" y="590" class="small" text-anchor="middle">Base64 + Mihomo YAML</text>
   <rect x="470" y="540" width="260" height="66" rx="12" fill="#fff" stroke="#b3a6e8"/>
-  <text x="600" y="568" class="t" text-anchor="middle">用户手动 Deploy</text><text x="600" y="590" class="small" text-anchor="middle">Dashboard 或 Wrangler</text>
+  <text x="600" y="568" class="t" text-anchor="middle">AWS CloudFront</text><text x="600" y="590" class="small" text-anchor="middle">HTTPS + 源站保护头</text>
   <rect x="855" y="540" width="260" height="66" rx="12" fill="#fff" stroke="#b3a6e8"/>
-  <text x="985" y="568" class="t" text-anchor="middle">Cloudflare Worker</text><text x="985" y="590" class="small" text-anchor="middle">仅提供订阅，不承载节点流量</text>
+  <text x="985" y="568" class="t" text-anchor="middle">Nginx 订阅接口</text><text x="985" y="590" class="small" text-anchor="middle">Token 鉴权 · 禁止缓存</text>
   <path class="dash" d="M345 573H458"/><path class="dash" d="M730 573H843"/>
-  <text x="600" y="680" class="small" text-anchor="middle">Cloudflare 仅用于用户手动部署订阅 Worker；不参与节点 DNS 或 CDN</text>
+  <text x="600" y="680" class="small" text-anchor="middle">/subscribe?token=... · 添加 flag=clash 获取 Mihomo YAML</text>
 </svg>

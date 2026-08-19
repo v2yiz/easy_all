@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
-  <title id="title">Least privilege IAM policy for easy_aws</title>
+  <title id="title">Least privilege IAM policy for easy_all</title>
   <desc id="desc">The deployer can discover Route 53, edit the origin and viewer hosted zones, request ACM certificates, and create or update CloudFront, but cannot delete resources.</desc>
   <defs><filter id="s"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-opacity=".12"/></filter><style>.ttl{font:700 31px system-ui,sans-serif;fill:#172b4d}.sub{font:16px system-ui,sans-serif;fill:#5e6c84}.h{font:700 20px system-ui,sans-serif;fill:#172b4d}.t{font:15px system-ui,sans-serif;fill:#344563}.mono{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#172b4d}.box{filter:url(#s);stroke-width:2}</style></defs>
   <rect width="1200" height="680" fill="#f7f9fc"/>
-  <text x="58" y="62" class="ttl">easy-aws-deployer · 最小权限拆分</text>
+  <text x="58" y="62" class="ttl">easy_all_deployer · 最小权限拆分</text>
   <text x="58" y="93" class="sub">创建/读取/更新，不授予删除权限</text>
 
   <rect class="box" x="65" y="155" width="250" height="310" rx="18" fill="#fff" stroke="#4c9aff"/>
@@ -19,7 +19,7 @@
   <rect class="box" x="625" y="155" width="285" height="310" rx="18" fill="#fff" stroke="#ff9900"/>
   <rect x="625" y="155" width="285" height="62" rx="18" fill="#fff0d5"/><text x="768" y="194" class="h" text-anchor="middle">CloudFront</text>
   <text x="650" y="252" class="t">✓ ListDistributions</text><text x="650" y="283" class="t">✓ GetDistribution</text><text x="650" y="314" class="t">✓ GetDistributionConfig</text><text x="650" y="345" class="t">✓ CreateDistribution</text><text x="650" y="376" class="t">✓ UpdateDistribution</text>
-  <text x="768" y="422" class="sub" text-anchor="middle">只接管 easy_aws 标记资源</text>
+  <text x="768" y="422" class="sub" text-anchor="middle">只接管 easy_all 标记资源</text>
 
   <rect class="box" x="960" y="155" width="175" height="310" rx="18" fill="#ffebe6" stroke="#de350b"/>
   <rect x="960" y="155" width="175" height="62" rx="18" fill="#ffbdad"/><text x="1048" y="194" class="h" text-anchor="middle">明确没有</text>

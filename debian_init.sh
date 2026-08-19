@@ -16,6 +16,16 @@ SSH_PUBLIC_KEY_ONLY_OPTS=(
   -o PasswordAuthentication=no
   -o KbdInteractiveAuthentication=no
 )
+LOCAL_TEMP_FILES=()
+
+cleanup_local_temp_files() {
+  local file
+  for file in "${LOCAL_TEMP_FILES[@]:-}"; do
+    [[ -n "$file" ]] && rm -f -- "$file"
+  done
+  return 0
+}
+trap cleanup_local_temp_files EXIT INT TERM
 
 die() {
   echo "错误: $*" >&2
@@ -83,6 +93,19 @@ validate_port() {
   (( port >= 1 && port <= 65535 )) || die "端口范围必须是 1-65535: $port"
 }
 
+normalize_port_list() {
+  local raw="${1//,/ }"
+  local port normalized=""
+  for port in $raw; do
+    validate_port "$port"
+    case " ${normalized} " in
+      *" ${port} "*) ;;
+      *) normalized="${normalized:+${normalized} }${port}" ;;
+    esac
+  done
+  printf '%s' "$normalized"
+}
+
 validate_host_alias() {
   local alias="$1"
   [[ "$alias" =~ ^[A-Za-z0-9._-]+$ ]] || die "Host 名称只能包含字母、数字、点、下划线和短横线: $alias"
@@ -112,6 +135,7 @@ validate_collected_inputs() {
 
   validate_port "$CURRENT_PORT"
   validate_port "$FINAL_PORT"
+  EXTRA_TCP_PORTS="$(normalize_port_list "${EXTRA_TCP_PORTS:-}")"
 }
 
 validate_linux_user() {
@@ -337,6 +361,7 @@ run_remote_initialization() {
   local normal_user="$5"
   local normal_user_password="$6"
   local public_key="$7"
+  local extra_tcp_ports="$8"
   local remote_script="/tmp/setup_debian_ssh_key_only_$$.sh"
   local remote_password_file="/tmp/setup_debian_normal_user_password_$$.txt"
   local remote_public_key_file="/tmp/setup_debian_normal_user_authorized_key_$$.pub"
@@ -344,6 +369,7 @@ run_remote_initialization() {
   local local_password_file
   local_script="$(mktemp)"
   local_password_file="$(mktemp)"
+  LOCAL_TEMP_FILES+=("$local_script" "$local_password_file")
   # 普通用户 sudo 密码只走临时文件：不写入脚本正文，也不落入 ssh 命令参数。
   printf '%s' "$normal_user_password" >"$local_password_file"
 
@@ -357,12 +383,12 @@ keep_current_port="$3"
 normal_user="$4"
 normal_user_password_file="$5"
 normal_user_public_key_file="$6"
+extra_tcp_ports="$7"
 
 config_dir="/etc/ssh/sshd_config.d"
 config_file="${config_dir}/99-key-only.conf"
-sysctl_config="/etc/sysctl.d/99-bbrv3.conf"
-xanmod_keyring="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
-xanmod_repo="/etc/apt/sources.list.d/xanmod-release.list"
+sysctl_config="/etc/sysctl.d/99-debian-init-bbr.conf"
+bbr_modules_config="/etc/modules-load.d/debian-init-bbr.conf"
 
 cleanup_sensitive_files() {
   rm -f "$normal_user_password_file" "$normal_user_public_key_file"
@@ -394,79 +420,86 @@ install_base_packages() {
 
   log "[remote 2/7] 安装基础包"
   apt-get install -y \
-    vim tmux curl wget ca-certificates gnupg lsb-release sudo git build-essential \
+    vim tmux curl wget ca-certificates sudo git build-essential \
     openssh-server ufw systemd-timesyncd kmod procps
 }
 
-configure_xanmod_bbrv3_and_tcp() {
-  temp_dir="$(mktemp -d)"
-  key_file="${temp_dir}/archive.key"
-  keyring_file="${temp_dir}/archive.gpg"
-  repo_file="${temp_dir}/xanmod.list"
-
+configure_google_bbr_and_tcp() {
   if [ ! -r /etc/os-release ]; then
     printf '%s\n' "错误: 无法识别操作系统" >&2
     exit 1
   fi
   . /etc/os-release
   if [ "${ID:-}" != "debian" ]; then
-    printf '%s\n' "错误: XanMod BBRv3 初始化仅支持 Debian" >&2
+    printf '%s\n' "错误: Google BBR 初始化仅支持 Debian" >&2
     exit 1
   fi
+  case "${VERSION_ID:-}" in
+    12|13) ;;
+    *)
+      printf '%s\n' "错误: Google BBR 初始化仅支持 Debian 12/13" >&2
+      exit 1
+      ;;
+  esac
+  case "$(uname -r)" in
+  *xanmod*)
+    printf '%s\n' "错误: 当前运行 XanMod 内核；请先切换到 Debian 官方内核并重启" >&2
+    exit 1
+    ;;
+  esac
   if [ "$(dpkg --print-architecture)" != "amd64" ]; then
-    printf '%s\n' "错误: XanMod BBRv3 初始化仅支持 amd64" >&2
+    printf '%s\n' "错误: Google BBR 初始化仅支持 amd64" >&2
     exit 1
   fi
   if command -v systemd-detect-virt >/dev/null 2>&1 \
     && systemd-detect-virt --container >/dev/null 2>&1; then
-    printf '%s\n' "错误: 容器不能更换宿主机内核" >&2
+    printf '%s\n' "错误: 容器不能执行内核与网络初始化" >&2
     exit 1
   fi
-  if [ -z "${VERSION_CODENAME:-}" ]; then
-    printf '%s\n' "错误: 无法识别 Debian 发行版代号" >&2
-    exit 1
-  fi
-
-  log "[remote 3/7] 安装 XanMod LTS 并配置 BBRv3 / TCP 优化"
-  install -d -m 0755 /etc/apt/keyrings
-  wget -qO "$key_file" https://dl.xanmod.org/archive.key
-  gpg --batch --yes --dearmor --output "$keyring_file" "$key_file"
-  install -m 0644 "$keyring_file" "$xanmod_keyring"
-  printf 'deb [signed-by=%s] http://deb.xanmod.org %s main\n' \
-    "$xanmod_keyring" "$VERSION_CODENAME" >"$repo_file"
-  install -m 0644 "$repo_file" "$xanmod_repo"
-  apt-get update
-  apt-get install -y linux-xanmod-lts-x64v1
-
+  log "[remote 3/7] 配置 Debian 官方内核 Google BBR / TCP 参数"
   if [ -f "$sysctl_config" ] && [ ! -f "${sysctl_config}.debian_init.bak" ]; then
     cp -a "$sysctl_config" "${sysctl_config}.debian_init.bak"
   fi
 
   cat >"$sysctl_config" <<'SYSCTL'
+# BBR
 net.core.default_qdisc = fq
-net.core.netdev_max_backlog = 16384
-net.core.somaxconn = 4096
 net.ipv4.tcp_congestion_control = bbr
-net.core.rmem_max = 33554432
-net.core.wmem_max = 33554432
-net.ipv4.tcp_rmem = 4096 131072 33554432
-net.ipv4.tcp_wmem = 4096 65536 33554432
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_slow_start_after_idle = 0
+
+# TCP buffer
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 131072 16777216
+net.ipv4.tcp_wmem = 4096 16384 16777216
+net.ipv4.tcp_moderate_rcvbuf = 1
+
+# PMTU
+net.ipv4.tcp_mtu_probing = 0
+
+# Idle connection
+net.ipv4.tcp_slow_start_after_idle = 1
+
+# Listen queue
+net.core.somaxconn = 4096
 SYSCTL
 
-  modprobe tcp_bbr 2>/dev/null || true
+  modprobe tcp_bbr 2>/dev/null || {
+    printf '%s\n' "错误: 当前 Debian 内核不支持 Google BBR (tcp_bbr)" >&2
+    exit 1
+  }
+  grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control || {
+    printf '%s\n' "错误: Google BBR 模块未注册为可用拥塞控制算法" >&2
+    exit 1
+  }
+  printf '%s\n' tcp_bbr >"$bbr_modules_config"
+  chmod 0644 "$bbr_modules_config"
   sysctl -p "$sysctl_config" >/dev/null
-  # 撤销旧版 debian_init 的全局覆盖，恢复 Linux 默认行为。
-  sysctl -q -w net.ipv4.tcp_fastopen=1 >/dev/null
-  sysctl -q -w net.ipv4.tcp_notsent_lowat=4294967295 >/dev/null
   if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf unknown)" != "bbr" ]; then
     printf '%s\n' "错误: 拥塞控制算法未成功设置为 bbr" >&2
     exit 1
   fi
 
-  rm -rf "$temp_dir"
-  log "[remote 3/7] BBRv3 / TCP 优化配置完成；如刚安装 XanMod 内核，重启后生效"
+  log "[remote 3/7] Google BBR / TCP 参数配置完成"
 }
 
 configure_timezone_and_time_sync() {
@@ -549,85 +582,46 @@ install_normal_user_authorized_key() {
 collect_allowed_ports() {
   sshd_bin="$1"
   {
-    printf '%s\n' 80 443 8080 8443 8888
     printf '%s\n' "$current_port" "$final_port"
+    [ -z "$extra_tcp_ports" ] || printf '%s\n' $extra_tcp_ports
     "$sshd_bin" -T 2>/dev/null | awk '/^port[[:space:]]+/ {print $2}' || true
   } | awk '
     /^[0-9]+$/ && $1 >= 1 && $1 <= 65535 && !seen[$1]++ { print $1 }
   '
 }
 
-allow_ufw_ports() {
-  ports="$1"
-  command -v ufw >/dev/null 2>&1 || return 1
-  log "[remote 7/7] 写入 ufw 放行规则"
-  for port in $ports; do
-    ufw allow "${port}/tcp" >/dev/null || true
-  done
-  return 0
+managed_ufw_rule_numbers() {
+  LC_ALL=C ufw status numbered 2>/dev/null \
+    | sed -n '/debian-init-managed/s/^[[:space:]]*\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' \
+    | sort -rn
 }
 
-allow_firewalld_ports() {
-  ports="$1"
-  command -v firewall-cmd >/dev/null 2>&1 || return 1
-  firewall-cmd --state >/dev/null 2>&1 || return 1
-  log "[remote 7/7] 写入 firewalld 放行规则"
-  for port in $ports; do
-    firewall-cmd --add-port="${port}/tcp" >/dev/null || true
-    firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null || true
-  done
-  firewall-cmd --reload >/dev/null || true
-  return 0
-}
-
-allow_nftables_ports() {
-  ports="$1"
-  command -v nft >/dev/null 2>&1 || return 1
-  command -v systemctl >/dev/null 2>&1 || return 1
-  systemctl is-active --quiet nftables 2>/dev/null || return 1
-
-  input_chains="$(nft -a list ruleset | awk '
-    /^table[[:space:]]+/ {
-      family = $2
-      table = $3
-      next
-    }
-    /^[[:space:]]*chain[[:space:]]+/ {
-      chain = $2
-      in_chain = 1
-      next
-    }
-    in_chain && /hook[[:space:]]+input/ {
-      print family, table, chain
-    }
-    in_chain && /^[[:space:]]*}/ {
-      in_chain = 0
-    }
-  ')"
-  [ -n "$input_chains" ] || return 0
-
-  log "[remote 7/7] 写入 nftables 实际 input base chain 放行规则"
-  printf '%s\n' "$input_chains" | while read -r family table chain; do
-    [ -n "$family" ] && [ -n "$table" ] && [ -n "$chain" ] || continue
-    for port in $ports; do
-      if ! nft list chain "$family" "$table" "$chain" 2>/dev/null \
-        | grep -Eq "tcp dport ${port} accept.*setup_debian_ssh_key_only"; then
-        nft insert rule "$family" "$table" "$chain" tcp dport "$port" accept comment "setup_debian_ssh_key_only"
-      fi
-    done
-  done
-  return 0
-}
-
-configure_firewall_ports() {
+configure_ufw() {
   sshd_bin="$1"
   ports="$(collect_allowed_ports "$sshd_bin")"
+  old_rule_numbers="$(managed_ufw_rule_numbers)"
   [ -n "$ports" ] || return 0
 
-  log "[remote 7/7] 放行 TCP 端口: $(printf '%s' "$ports" | tr '\n' ' ')"
-  allow_ufw_ports "$ports" || true
-  allow_firewalld_ports "$ports" || true
-  allow_nftables_ports "$ports" || true
+  command -v ufw >/dev/null 2>&1 || {
+    printf '%s\n' "错误: UFW 安装后不可用" >&2
+    exit 1
+  }
+  log "[remote 7/7] 配置 UFW，放行 TCP 端口: $(printf '%s' "$ports" | tr '\n' ' ')"
+  ufw default deny incoming >/dev/null
+  ufw default allow outgoing >/dev/null
+  ufw default deny routed >/dev/null
+  for port in $ports; do
+    ufw allow "${port}/tcp" comment "debian-init-managed" >/dev/null
+  done
+  for rule_number in $old_rule_numbers; do
+    ufw --force delete "$rule_number" >/dev/null
+  done
+  ufw --force enable >/dev/null
+  systemctl enable ufw >/dev/null 2>&1
+  LC_ALL=C ufw status | grep -q '^Status: active' || {
+    printf '%s\n' "错误: UFW 未处于 active 状态" >&2
+    exit 1
+  }
 }
 
 enable_ssh_at_boot() {
@@ -654,7 +648,7 @@ enable_ssh_at_boot() {
 mkdir -p "$config_dir"
 install_base_packages
 enable_ssh_at_boot
-configure_xanmod_bbrv3_and_tcp
+configure_google_bbr_and_tcp
 configure_timezone_and_time_sync
 configure_sudo_user
 install_uv_for_normal_user
@@ -673,17 +667,9 @@ fi
   echo "PermitRootLogin prohibit-password"
   if [ "$keep_current_port" = "yes" ] && [ "$current_port" != "$final_port" ]; then
     echo "Port $current_port"
-    echo "Port $final_port"
-  elif [ "$current_port" != "$final_port" ]; then
-    echo "Port $final_port"
   fi
+  echo "Port $final_port"
 } > "$config_file"
-
-if [ "$current_port" != "$final_port" ] && command -v ufw >/dev/null 2>&1; then
-  if ufw status 2>/dev/null | grep -qi "Status: active"; then
-    ufw allow "${final_port}/tcp" >/dev/null || true
-  fi
-fi
 
 if [ -x /usr/sbin/sshd ]; then
   sshd_bin="/usr/sbin/sshd"
@@ -692,7 +678,7 @@ else
 fi
 
 "$sshd_bin" -t
-configure_firewall_ports "$sshd_bin"
+configure_ufw "$sshd_bin"
 enable_ssh_at_boot
 systemctl reload ssh 2>/dev/null || systemctl reload sshd
 systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd
@@ -700,9 +686,19 @@ systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd
 "$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|port) '
 REMOTE
 
-  scp_with_password_if_possible "$current_port" "$local_script" "${target}:${remote_script}"
-  scp_with_password_if_possible "$current_port" "$local_password_file" "${target}:${remote_password_file}"
-  scp_with_password_if_possible "$current_port" "$public_key" "${target}:${remote_public_key_file}"
+  if ! scp_with_password_if_possible "$current_port" "$local_script" "${target}:${remote_script}"; then
+    return 1
+  fi
+  if ! scp_with_password_if_possible "$current_port" "$local_password_file" "${target}:${remote_password_file}"; then
+    ssh_with_password_if_possible "$current_port" "$target" \
+      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'" >/dev/null 2>&1 || true
+    return 1
+  fi
+  if ! scp_with_password_if_possible "$current_port" "$public_key" "${target}:${remote_public_key_file}"; then
+    ssh_with_password_if_possible "$current_port" "$target" \
+      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'" >/dev/null 2>&1 || true
+    return 1
+  fi
   rm -f "$local_script"
   rm -f "$local_password_file"
 
@@ -711,14 +707,14 @@ REMOTE
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo -S sh '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'; exit \$rc"
+      "sudo -S sh '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'; exit \$rc"
   else
     ssh \
       -tt \
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo sh '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'; exit \$rc"
+      "sudo sh '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'; exit \$rc"
   fi
 }
 
@@ -744,7 +740,7 @@ print_intro() {
   echo
   echo "将执行以下操作："
   echo "  1. 使用初始 SSH 用户连接服务器，默认 root。"
-  echo "  2. 安装基础包、XanMod BBRv3/TCP 优化、uv 和 Python 3.12。"
+  echo "  2. 安装基础包、配置 Debian 官方内核 Google BBR/TCP、UFW、uv 和 Python 3.12。"
   echo "  3. 创建或更新普通用户，并把同一把 SSH 公钥写入该用户。"
   echo "  4. 禁用 SSH 密码登录，最终本地 ssh_config 使用普通用户登录。"
   echo
@@ -794,6 +790,11 @@ collect_inputs() {
       echo "新端口与当前端口相同，将按不修改 SSH 端口处理。"
     fi
   fi
+
+  local extra_tcp_ports_raw
+  read -r -p "UFW 额外放行 TCP 端口（逗号或空格分隔，留空则仅放行 SSH）: " \
+    extra_tcp_ports_raw || true
+  EXTRA_TCP_PORTS="$(normalize_port_list "${extra_tcp_ports_raw:-}")"
 }
 
 configure_remote_stage() {
@@ -801,7 +802,9 @@ configure_remote_stage() {
 
   if [[ "$CHANGE_PORT" == "yes" ]]; then
     echo "端口迁移：先同时监听旧端口 ${CURRENT_PORT} 和新端口 ${FINAL_PORT}，验证成功后再询问是否移除旧端口。"
-    run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" "yes" "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY"
+    run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" "yes" \
+      "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY" "$EXTRA_TCP_PORTS" \
+      || return 1
     echo "验证新端口 ${FINAL_PORT} 可用"
     ssh \
       -o StrictHostKeyChecking=accept-new \
@@ -809,9 +812,11 @@ configure_remote_stage() {
       -i "$PRIVATE_KEY" \
       -p "$FINAL_PORT" \
       "$target" \
-      'echo "新端口验证成功"'
+      'echo "新端口验证成功"' || return 1
   else
-    run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" "no" "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY"
+    run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" "no" \
+      "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY" "$EXTRA_TCP_PORTS" \
+      || return 1
   fi
 }
 
@@ -826,7 +831,8 @@ maybe_remove_old_ssh_port() {
   if [[ "$remove_old_port" == "yes" ]]; then
     echo "移除旧端口前再次确认新端口可登录。"
     verify_final_host_login
-    run_remote_initialization "$target" "$FINAL_PORT" "$FINAL_PORT" "no" "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY"
+    run_remote_initialization "$target" "$FINAL_PORT" "$FINAL_PORT" "no" \
+      "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY" "$EXTRA_TCP_PORTS"
     verify_final_host_login
   else
     echo "已保留旧端口 $CURRENT_PORT 监听；确认新端口长期稳定后，可再次运行脚本或手动移除。"
