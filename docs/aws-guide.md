@@ -38,7 +38,68 @@ Hosted Zone、超额 CloudFront 流量或请求，以及其他未包含服务都
 AWS 官方参考：[CloudFront 免费额度与按量计费说明](https://aws.amazon.com/cloudfront/faqs/)、
 [CloudFront 中文活动页](https://aws.amazon.com/cn/campaigns/goglobal-mall/access-acceleration-and-content-distribution/cloudfront/)。
 
-## 3. 创建最小权限策略
+## 3. 必做：为节点域名配置 Route 53 DNS
+
+这是 CDN XHTTP 的**必要条件**。脚本会调用 Route 53 API 自动创建和更新源站 A、ACM 验证及
+CloudFront CNAME 记录；因此，安装时填写的源站域名和 CDN 域名必须归属某个已正确委派的
+**Route 53 Public Hosted Zone**。Private Hosted Zone 不能用于公网解析。
+
+域名的**注册商不必迁入 AWS**：可以继续在原注册商续费。需要交给 AWS 的只是用于节点的权威 DNS
+区域。根据现有业务选择以下一种方式。
+
+### 方式 A：整个主域名交给 Route 53
+
+适合没有现有网站或邮件业务的域名。例如安装时准备使用 `origin.example.com` 和
+`node.example.com`：
+
+1. 在 **Route 53 → Hosted zones → Create hosted zone** 输入 `example.com`，选择
+   **Public hosted zone** 后创建。
+2. 打开新 Zone 的 **NS** 记录，复制其中显示的四条 `ns-...awsdns-...` 名称服务器。
+3. 在当前域名注册商的“Nameservers / DNS 服务器”页面，选择自定义名称服务器，**完整替换为这四条
+   Route 53 名称服务器**。不要只在旧 DNS 服务商添加一条普通 NS 记录。
+4. 等待委派生效后，再安装并填写上述两个子域名；脚本会自行写入它们的 A、CNAME 和证书验证记录。
+
+### 方式 B：仅将专用子域名交给 Route 53（已有网站/邮箱时推荐）
+
+这样不会改变主域名当前的网站和邮件解析。例如主域名 `example.com` 继续由原 DNS 服务商管理，而
+节点专用 `edge.example.com` 由 Route 53 管理：
+
+1. 在 Route 53 创建名称为 `edge.example.com` 的 **Public hosted zone**。
+2. 记录其 **NS** 记录中的四条 Route 53 名称服务器。
+3. 回到原 DNS 服务商的 `example.com` Zone，创建一条名称为 `edge`（完整域名
+   `edge.example.com`）的 **NS 记录集**，值为上一步的四条名称服务器。它是对子域的委派，**不要**
+   更换 `example.com` 在注册商处的名称服务器。
+4. 安装时使用该 Zone 下的两个不同主机名，例如 `origin.edge.example.com` 与
+   `node.edge.example.com`。
+
+### 迁移前检查与验证
+
+1. 若采用方式 A，先导出或记录现有 DNS；在切换名称服务器前，将网站所需的 A/AAAA/CNAME、邮件
+   所需的 MX/TXT（包括 SPF、DKIM、DMARC）及 CAA 记录复制到 Route 53。脚本只管理自己使用的
+   节点、证书记录，**不会迁移或补齐既有业务记录**。
+2. 若主域名已启用 DNSSEC 且采用方式 A，先按注册商要求移除旧 DNS 服务商对应的 DS 记录；待
+   Route 53 DNSSEC 签名和新的 DS 链配置完成后再重新启用。保留旧 DS 而直接换 NS 会导致解析校验
+   失败。
+3. 不要创建同名的多个 Public Hosted Zone；若已有多个，注册商或父 Zone 的 NS 必须指向实际保存
+   记录的那一个 Zone。
+4. 委派变更可能需要传播时间。以下命令中的 NS 应与目标 Route 53 Zone 的四条记录一致后，再运行
+   安装器：
+
+   ```bash
+   dig +short NS edge.example.com
+   dig +short NS edge.example.com @1.1.1.1
+   ```
+
+   采用方式 A 时，将上面的 `edge.example.com` 换成主域名。安装器创建源站 A 记录后，可再检查：
+
+   ```bash
+   dig +short A origin.edge.example.com @1.1.1.1
+   ```
+
+AWS 官方参考：[创建 Public Hosted Zone](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/CreatingHostedZone.html)、
+[将既有域名的 DNS 迁入 Route 53](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/migrate-dns-domain-in-use.html)。
+
+## 4. 创建最小权限策略
 
 脚本会读取 Route 53 Hosted Zone、写入所选 Zone 的 DNS 记录、申请 ACM 证书并创建或更新
 CloudFront 分配。先在 **Route 53 → Hosted zones** 复制将用于安装时两个域名的 Public Hosted
@@ -126,7 +187,7 @@ arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHI
 该策略没有删除 CloudFront、ACM 或 Route 53 资源的权限。部分 AWS 的查询和创建操作无法限定到
 尚不存在的资源，因此需要 `Resource: "*"`；DNS 写入权限仍限定在指定 Hosted Zone。
 
-## 4. 创建 IAM 用户
+## 5. 创建 IAM 用户
 
 1. 在 **IAM → 访问管理 → 用户组** 创建用户组，例如 `easy_all_deployers`。
 2. 将 `easy_all_deploy_policy` 附加到该用户组。
@@ -136,7 +197,7 @@ arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHI
 
 使用用户组可使权限来源和撤销操作更清晰，也避免把权限直接散落在个人用户上。
 
-## 5. 获取 Access Key
+## 6. 获取 Access Key
 
 1. 打开刚创建的 IAM 用户 → **安全凭证**。
 2. 在“访问密钥”区域选择 **创建访问密钥**。

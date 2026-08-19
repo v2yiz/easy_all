@@ -465,7 +465,10 @@ Mihomo 响应的下载文件名严格使用保存值；默认下载为 `EASY_ALL
 客户端 -> CloudFront HTTPS 443 -> Nginx gRPC -> Xray 127.0.0.1:10086
 ```
 
-需要两个位于 Route 53 Public Hosted Zone 的域名：
+需要两个位于 Route 53 Public Hosted Zone 的域名。这是必需条件：域名注册商可保留在原处，但这两个
+域名所属的权威 DNS Zone 必须委派到 Route 53，脚本才能自动创建 A、ACM 验证和 CloudFront CNAME
+记录。已有网站或邮件业务时，建议只委派专用子域名；完整操作、DNSSEC 注意事项和验证命令见
+[AWS 账户与 IAM 凭证准备](docs/aws-guide.md#3-必做为节点域名配置-route-53-dns)。
 
 | 域名示例             | 用途                                      |
 | -------------------- | ----------------------------------------- |

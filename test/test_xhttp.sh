@@ -427,6 +427,11 @@ assert_contains "AWS guide requires the global AWS account partition" \
     "${readme}" "AWS 中国区域账号"
 assert_contains "AWS guide documents CloudFront's monthly free transfer allowance" \
     "${readme}" "1 TB 向互联网传出"
+assert_contains "AWS guide requires Route 53 public DNS delegation for XHTTP" \
+    "${readme}" "这是 CDN XHTTP 的**必要条件**"
+assert_contains "AWS guide distinguishes DNS delegation from domain registration transfer" \
+    "${readme}" "注册商不必迁入 AWS"
+assert_contains "AWS guide protects DNSSEC migrations" "${readme}" "DNSSEC"
 assert_contains "README includes top-down Mermaid install flow" "${readme}" 'flowchart TD'
 assert_contains "README documents direct-enter semantics" "${readme}" \
     "直接回车会采用该值"
