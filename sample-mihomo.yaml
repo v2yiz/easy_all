@@ -362,8 +362,7 @@ rules:
   - DOMAIN-SUFFIX,edgeservices.bing.com,PROXY
   - DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY
 
-  # ==================== XFLASH 主体规则 ====================
-  - DOMAIN,www.xflash.work,DIRECT
+  # ==================== 主体规则 ====================
   - DOMAIN,ssl.gstatic.com,DIRECT
   - DOMAIN-SUFFIX,gstatic.com,PROXY
   - DOMAIN-SUFFIX,ipleak.net,PROXY
