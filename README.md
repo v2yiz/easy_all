@@ -16,7 +16,21 @@ Provider 单独记录为 `aws`，以后接入其他 CDN 时不改变安装模式
 
 ## 安装
 
-克隆或下载完整项目后执行：
+一条命令下载完整项目并进入交互安装：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
+```
+
+不要改成 `curl ... | sudo bash`：安装器需要从当前终端读取模式、域名和订阅选项。引导脚本会：
+
+1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
+2. 浅克隆 `main` 分支完整项目到权限受限的临时目录。
+3. 校验入口、两个 Profile 和 Mihomo 模板均存在。
+4. 通过 `sudo` 启动交互安装。
+5. 安装结束后删除临时下载目录。
+
+也可以克隆或下载完整项目后手动执行：
 
 ```bash
 chmod 700 easy_all
