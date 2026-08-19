@@ -392,6 +392,8 @@ sudo env PRESERVE_ACME=1 easy_all uninstall
 
 XHTTP 使用 `stream-up + HTTP/2 + XMUX`。当前链路为：
 CDN 模式只输出一个 VLESS XHTTP 节点，不混入其他协议。
+XMUX 默认使用 `4-8` 并发和按存活时间轮换连接，不设置 Mihomo 不建议填写的
+`h-max-request-times`，避免连接计数轮换导致客户端链路异常。
 
 安装和 `easy_all update-sub` 都提供两个订阅选项：
 

@@ -22,6 +22,11 @@ assert_contains() {
     [[ "${text}" == *"${expected}"* ]] || fail "${label}: missing [${expected}]"
 }
 
+assert_not_contains() {
+    local label=$1 text=$2 unexpected=$3
+    [[ "${text}" != *"${unexpected}"* ]] || fail "${label}: unexpected [${unexpected}]"
+}
+
 bash -n "${ROOT_DIR}/easy_all" "${PROFILE}"
 assert_contains "installer refuses root credentials" "$(<"${PROFILE}")" \
     "拒绝使用 AWS 根用户访问密钥"
@@ -83,7 +88,7 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "all viewer except host policy" \
         "b689b0a8-53d0-40ab-baf2-68738e2966ac" "${CLOUDFRONT_ORIGIN_REQUEST_POLICY_ID}"
     assert_equal "stream-up server keepalive" "20-40" "${XHTTP_STREAM_UP_SERVER_SECS}"
-    assert_equal "XMUX max concurrency" "8-16" "${XHTTP_XMUX_MAX_CONCURRENCY}"
+    assert_equal "XMUX max concurrency" "4-8" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     assert_equal "CloudFront origin response timeout" "60" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
     assert_contains "XHTTP prompts for the Mihomo download filename" \
@@ -231,6 +236,8 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_contains "XHTTP stream-up" "${link}" "mode=stream-up"
     assert_contains "XHTTP path" "${link}" "path=%2Fxhttp-test-path"
     assert_contains "XHTTP XMUX extra" "${link}" "extra="
+    assert_not_contains "XHTTP XMUX omits request-count rotation" \
+        "${link}" "hMaxRequestTimes"
     [[ "${link}" != *"trojan"* ]] || fail "links must contain only VLESS"
     assert_equal "exactly one link" "1" "$(wc -l <<<"${link}" | tr -d ' ')"
 
@@ -238,6 +245,10 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_contains "Mihomo XHTTP" "${mihomo}" "network: xhttp"
     assert_contains "Mihomo stream-up" "${mihomo}" "mode: stream-up"
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
+    assert_contains "Mihomo XMUX uses conservative concurrency" \
+        "${mihomo}" 'max-concurrency: "4-8"'
+    assert_not_contains "Mihomo XMUX omits request-count rotation" \
+        "${mihomo}" "h-max-request-times"
     assert_contains "Mihomo XMUX uses browser-like keepalive" "${mihomo}" "h-keep-alive-period: 0"
 
     distribution="${TMP_DIR}/distribution.json"

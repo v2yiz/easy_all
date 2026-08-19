@@ -56,9 +56,8 @@ readonly CLOUDFRONT_CONNECTION_TIMEOUT="3"
 readonly CLOUDFRONT_ORIGIN_READ_TIMEOUT="60"
 readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="60"
 readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"
-readonly XHTTP_XMUX_MAX_CONCURRENCY="8-16"
+readonly XHTTP_XMUX_MAX_CONCURRENCY="4-8"
 readonly XHTTP_XMUX_C_MAX_REUSE_TIMES="0"
-readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="600-900"
 readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="1800-3000"
 readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 
@@ -1490,7 +1489,6 @@ build_vless_xhttp_link() {
     extra=$(jq -cn \
         --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
         --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
-        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
         --argjson h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '{
         noGRPCHeader:false,
@@ -1498,7 +1496,6 @@ build_vless_xhttp_link() {
         xmux:{
             maxConcurrency:$max_concurrency,
             cMaxReuseTimes:$c_max_reuse_times,
-            hMaxRequestTimes:$h_max_request_times,
             hMaxReusableSecs:$h_max_reusable_secs,
             hKeepAlivePeriod:$h_keep_alive_period
         }
@@ -1518,7 +1515,6 @@ build_mihomo_node() {
         --arg xhttp_path "${XHTTP_PATH}" \
         --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
         --arg c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
-        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
         --arg h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
@@ -1528,7 +1524,6 @@ build_mihomo_node() {
         "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
         "        max-concurrency: \($max_concurrency|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
-        "        h-max-request-times: \($h_max_request_times|@json)\n" +
         "        h-max-reusable-secs: \($h_max_reusable_secs|@json)\n" +
         "        h-keep-alive-period: \($h_keep_alive_period)\n"'
 }

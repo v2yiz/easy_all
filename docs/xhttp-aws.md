@@ -7,7 +7,8 @@
 - DNS 使用 AWS Route 53，CDN 使用 AWS CloudFront；节点链路不使用 Cloudflare DNS/CDN。
 - XHTTP 使用 `stream-up`、HTTP/2、gRPC header 与 XMUX；服务端固定 `mode: stream-up`。
 - 服务端每 `20-40` 秒发送流式保活数据，短于 CloudFront 60 秒回源空闲超时。
-- XMUX 使用 `8-16` 并发、定期轮换 H2 连接和 Chrome 风格 H2 保活，适配移动网络。
+- XMUX 使用 `4-8` 并发、按连接存活时间轮换 H2 连接和 Chrome 风格 H2 保活，适配多用户与移动网络。
+  Mihomo 订阅不设置计数不严格且官方不建议填写的 `h-max-request-times`。
 - 不安装其他代理协议。
 - 可选择部署 CloudFront + Nginx 订阅，或只输出节点信息。
 - AWS 侧自动配置源站 A 记录、ACM、CloudFront 和 CDN CNAME，使用 HTTPS 443 回源。
