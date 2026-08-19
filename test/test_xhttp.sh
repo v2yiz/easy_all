@@ -51,6 +51,8 @@ assert_contains "installer verifies SSH boot enablement" "$(<"${PROFILE}")" \
     'systemctl is-enabled --quiet "${unit}"'
 assert_contains "installer verifies ACME renewal cron" "$(<"${PROFILE}")" \
     'die "未找到 acme.sh 自动续期定时任务"'
+assert_contains "XHTTP repairs a missing ACME renewal cron job" "$(<"${PROFILE}")" \
+    'run_acme --install-cronjob'
 assert_contains "installer verifies renewal reload hook" "$(<"${PROFILE}")" \
     '源站证书、私钥或续期重载钩子安装不完整'
 assert_contains "subscription updates enable rollback" "$(<"${PROFILE}")" \

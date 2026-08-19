@@ -39,6 +39,8 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"多节点聚合或已有订阅服务器：推荐仅输出节点信息"* \
     && "${guide}" == *"CDN XHTTP"* ]] \
     || fail "install guide does not describe both branches and defaults"
+[[ "$(<"${ROOT_DIR}/README.md")" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
+    || fail "README install flow must choose the mode before profile initialization"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \
     || fail "install mode prompt must explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \

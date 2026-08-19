@@ -116,6 +116,8 @@ test_syntax_and_worker_removal() {
         "非交互卸载必须显式设置 FORCE=1" "${script}"
     assert_contains "Reality uninstall can preserve ACME state for reinstall" \
         'PRESERVE_ACME=1' "${script}"
+    assert_contains "Reality repairs a missing ACME renewal cron job" \
+        'run_acme --install-cronjob' "${script}"
     assert_not_contains "installer no longer downloads XanMod" "dl.xanmod.org" "${script}"
     assert_contains "installer persists Google BBR module loading" \
         "BBR_MODULES_CONFIG" "${script}"
@@ -287,6 +289,32 @@ test_acme_reinstall_and_rate_limit_guidance() {
     unset PRESERVE_ACME
 }
 
+test_acme_renewal_repair() {
+    local cron_state=""
+    install -d -m 0700 "${ACME_HOME}"
+    cat >"${ACME_BIN}" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    chmod 0700 "${ACME_BIN}"
+    systemctl() { return 0; }
+    crontab() {
+        if [[ "${1:-}" == "-l" ]]; then
+            printf '%s\n' "${cron_state}"
+        else
+            cron_state='17 2 * * * "'"${ACME_BIN}"'" --cron --home "'"${ACME_HOME}"'"'
+        fi
+    }
+    run_acme() {
+        [[ "$*" == *"--install-cronjob"* ]] || return 1
+        cron_state='17 2 * * * "'"${ACME_BIN}"'" --cron --home "'"${ACME_HOME}"'"'
+    }
+    install_acme
+    assert_contains "existing acme.sh repairs its missing renewal entry" \
+        "--cron" "${cron_state}"
+    unset -f systemctl crontab run_acme
+}
+
 test_legacy_firewall_migration() {
     install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
     printf 'managed legacy rules\n' >"${LEGACY_NFT_CONFIG}"
@@ -364,6 +392,7 @@ test_validators_and_modes
 test_mihomo_template
 test_subscription_generation
 test_nginx_and_firewall
+test_acme_renewal_repair
 test_acme_reinstall_and_rate_limit_guidance
 test_legacy_firewall_migration
 test_state_and_xray

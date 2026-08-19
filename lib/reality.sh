@@ -1263,11 +1263,17 @@ verify_acme_renewal_setup() {
     ' <<<"${crontab_content}" || die "未找到 acme.sh 自动续期任务"
 }
 
+ensure_acme_renewal_setup() {
+    run_acme --install-cronjob >/dev/null \
+        || die "创建 acme.sh 自动续期定时任务失败"
+    verify_acme_renewal_setup
+}
+
 install_acme() {
     if [[ -x "${ACME_BIN}" ]]; then
         install -d -m 0700 "${STATE_DIR}"
         install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
-        verify_acme_renewal_setup
+        ensure_acme_renewal_setup
         return 0
     fi
     local installer="${RUNTIME_TMP}/get-acme.sh"
@@ -1277,7 +1283,7 @@ install_acme() {
         --home "${ACME_HOME}" || die "安装 acme.sh 失败"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后不可用"
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
-    verify_acme_renewal_setup
+    ensure_acme_renewal_setup
 }
 
 run_acme() {

@@ -60,24 +60,28 @@ sudo ./easy_all install
 
 ```mermaid
 flowchart TD
-    A[easy_all install] --> B[公共初始化]
-    B --> B1[系统与端口检查]
-    B1 --> B2[依赖 / BBR / UFW / Xray]
-    B2 --> B3[重启策略：默认每日 04:00]
-    B3 --> S[订阅：仅当前服务器推荐部署；多节点聚合或已有订阅服务器推荐仅输出]
-    S --> C{安装模式}
+    A[easy_all install] --> B{先选择安装模式}
 
-    C -->|1 默认| R[直连 Reality]
-    R --> R1[连接地址：默认自动探测 IPv4]
-    R1 --> R2[SNI：默认 swdist.apple.com:443]
-    R2 --> R3[端口：默认 dynamic]
-    R3 --> Z[保存状态并注册 easy_all]
+    B -->|1 默认| R0[直连 Reality]
+    R0 --> R1[系统检查 / 依赖 / BBR / 重启策略]
+    R1 --> R2[连接地址 / SNI / 订阅端口]
+    R2 --> R3{订阅输出选择}
+    R3 -->|部署| R4[订阅域名 / Token 或用户配额]
+    R3 -->|仅节点| R5[仅输出节点]
+    R4 --> R6[安装 Xray / Nginx / 证书]
+    R5 --> R6
+    R6 --> Z[保存状态并注册 easy_all]
 
-    C -->|2| X[CDN XHTTP]
-    X --> X1[源站域名 + CDN 域名：必填]
-    X1 --> X2[AWS IAM 凭证：必填且不持久化]
-    X2 --> X3[Route 53 / 证书 / CloudFront]
-    X3 --> Z
+    B -->|2| X0[CDN XHTTP]
+    X0 --> X1[系统检查 / 依赖 / BBR / 重启策略]
+    X1 --> X2[源站域名 / CDN 域名]
+    X2 --> X3{订阅输出选择}
+    X3 -->|部署| X4[Token 或用户配额]
+    X3 -->|仅节点| X5[仅输出节点]
+    X4 --> X6[AWS IAM / Route 53 / 证书 / CloudFront]
+    X5 --> X6
+    X6 --> X7[安装 Xray / Nginx]
+    X7 --> Z
 ```
 
 公共交互选项：
