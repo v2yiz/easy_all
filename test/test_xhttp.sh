@@ -61,6 +61,8 @@ assert_contains "subscription updates enable rollback" "$(<"${PROFILE}")" \
     'UPDATE_SUB_ROLLBACK_ON_EXIT=1'
 assert_contains "CloudFront health failures are fatal" "$(<"${PROFILE}")" \
     'die "CloudFront 公网验收失败'
+assert_contains "CloudFront reinstallation discovers an existing alias before creation" \
+    "$(<"${PROFILE}")" 'alias_conflicts=$(find_distribution_by_alias || true)'
 assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     '非交互卸载必须显式设置 FORCE=1'
 
@@ -194,6 +196,25 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         fail "duplicate managed CloudFront distributions must be rejected"
     fi
     unset -f aws
+
+    aws() {
+        printf '%s\n' '{"DistributionList":{"Items":[
+          {"Id":"CONFLICT123","DomainName":"d111111abcdef8.cloudfront.net","Status":"Deployed",
+           "Comment":"legacy distribution","Aliases":{"Quantity":1,"Items":["node.example.com"]}},
+          {"Id":"OTHER123","DomainName":"d222222abcdef8.cloudfront.net","Status":"Deployed",
+           "Comment":"unrelated","Aliases":{"Quantity":1,"Items":["other.example.com"]}}
+        ]}}'
+    }
+    assert_equal "CloudFront alias conflict discovery reports the owning distribution" \
+        $'CONFLICT123\td111111abcdef8.cloudfront.net\tDeployed\tlegacy distribution' \
+        "$(find_distribution_by_alias)"
+    unset -f aws
+
+    AWS_ADOPT_DISTRIBUTION=1
+    confirm_distribution_adoption "CONFLICT123" "d111111abcdef8.cloudfront.net" \
+        "Deployed" "legacy distribution" \
+        || fail "explicit CloudFront adoption should skip the interactive confirmation"
+    unset AWS_ADOPT_DISTRIBUTION
 
     PROTOCOL="xhttp"
     XHTTP_NODE_NAME="EASY_ALL_XHTTP_TEST"

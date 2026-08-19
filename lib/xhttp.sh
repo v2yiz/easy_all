@@ -1327,10 +1327,47 @@ find_managed_distribution() {
     jq -r 'first // empty' <<<"${ids}"
 }
 
+find_distribution_by_alias() {
+    local distributions
+    distributions=$(aws cloudfront list-distributions --output json) || return 1
+    jq -r --arg alias "${VLESS_CDN_DOMAIN}" '
+        [.DistributionList.Items[]? |
+          select(any(.Aliases.Items[]?; . == $alias)) |
+          [.Id, .DomainName, .Status, .Comment] | @tsv] | .[]' <<<"${distributions}"
+}
+
+confirm_distribution_adoption() {
+    local id=$1 domain=$2 status=$3 comment=$4 answer
+    [[ "${AWS_ADOPT_DISTRIBUTION:-0}" == "1" ]] && return 0
+    [[ -t 0 ]] || die "发现未标记的 CloudFront 分配 ${id}；非交互接管需设置 AWS_ADOPT_DISTRIBUTION=1"
+    alert "CDN 域名 ${VLESS_CDN_DOMAIN} 已绑定旧 CloudFront 分配："
+    printf '  ID: %s\n  域名: %s\n  状态: %s\n  Comment: %s\n' \
+        "${id}" "${domain}" "${status}" "${comment:-无}"
+    read -r -p "确认接管并完整改写该分配 [N]（直接回车使用默认值）: " answer
+    case "${answer}" in
+    y | Y | yes | YES) AWS_ADOPT_DISTRIBUTION=1 ;;
+    *) die "未接管旧 CloudFront 分配；安装已停止，未修改该分配" ;;
+    esac
+}
+
 configure_cloudfront_distribution() {
     local id=${AWS_CLOUDFRONT_DISTRIBUTION_ID:-} existing config etag caller response comment
+    local create_error alias_conflicts alias_count alias_domain alias_status alias_comment
     config="${RUNTIME_TMP}/cloudfront-distribution.json"
     if [[ -z "${id}" ]]; then id=$(find_managed_distribution); fi
+    if [[ -z "${id}" ]]; then
+        alias_conflicts=$(find_distribution_by_alias || true)
+        alias_count=0
+        [[ -z "${alias_conflicts}" ]] || alias_count=$(wc -l <<<"${alias_conflicts}")
+        if ((alias_count == 1)); then
+            IFS=$'\t' read -r id alias_domain alias_status alias_comment <<<"${alias_conflicts}"
+            confirm_distribution_adoption "${id}" "${alias_domain}" "${alias_status}" "${alias_comment}"
+        elif ((alias_count > 1)); then
+            alert "CDN 域名 ${VLESS_CDN_DOMAIN} 命中多个 CloudFront 分配："
+            printf '%s\n' "${alias_conflicts}"
+            die "无法安全自动选择 CloudFront 分配；请先在 AWS 清理重复别名"
+        fi
+    fi
     if [[ -n "${id}" ]]; then
         existing=$(aws cloudfront get-distribution-config --id "${id}" --output json) \
             || die "读取 CloudFront 分配 ${id} 失败"
@@ -1348,8 +1385,20 @@ configure_cloudfront_distribution() {
     else
         caller="easy_all-xhttp-$(date +%s)-$(openssl rand -hex 6)"
         build_distribution_config "${config}" "${caller}"
-        response=$(aws cloudfront create-distribution --distribution-config "file://${config}" --output json) \
-            || die "创建 CloudFront 分配失败；若域名已绑定其他分配，请显式采用或先解除冲突"
+        create_error="${RUNTIME_TMP}/cloudfront-create.stderr"
+        if ! response=$(aws cloudfront create-distribution --distribution-config "file://${config}" \
+            --output json 2>"${create_error}"); then
+            if grep -Fq "CNAMEAlreadyExists" "${create_error}"; then
+                alias_conflicts=$(find_distribution_by_alias || true)
+                if [[ -n "${alias_conflicts}" ]]; then
+                    alert "CDN 域名 ${VLESS_CDN_DOMAIN} 已被以下 CloudFront 分配占用："
+                    printf '%s\n' "${alias_conflicts}"
+                    die "CloudFront 别名在创建期间发生冲突；请重新运行安装器以自动发现并确认接管旧分配"
+                fi
+            fi
+            cat "${create_error}" >&2
+            die "创建 CloudFront 分配失败；若域名已绑定其他分配，请显式采用或先解除冲突"
+        fi
     fi
     AWS_CLOUDFRONT_DISTRIBUTION_ID=$(jq -r '.Distribution.Id' <<<"${response}")
     AWS_CLOUDFRONT_DOMAIN=$(jq -r '.Distribution.DomainName' <<<"${response}")
