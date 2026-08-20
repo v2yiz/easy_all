@@ -65,6 +65,8 @@ source_script_copy() {
         -e "s|^readonly ACME_HOME=.*|readonly ACME_HOME=\"${TMP_DIR}/acme\"|" \
         -e "s|^readonly ACME_BIN=.*|readonly ACME_BIN=\"${TMP_DIR}/acme/acme.sh\"|" \
         -e "s|^readonly UFW_BEFORE_RULES=.*|readonly UFW_BEFORE_RULES=\"${TMP_DIR}/before.rules\"|" \
+        -e "s|^readonly UFW_BEFORE6_RULES=.*|readonly UFW_BEFORE6_RULES=\"${TMP_DIR}/before6.rules\"|" \
+        -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
         -e "s|^readonly LEGACY_NFT_CONFIG=.*|readonly LEGACY_NFT_CONFIG=\"${TMP_DIR}/nftables.conf\"|" \
         "${ROOT_DIR}/lib/reality.sh" >"${SCRIPT_COPY}"
     EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_all"
@@ -83,6 +85,8 @@ set_fixture() {
     REALITY_PRIVATE_KEY="test-private-key"
     REALITY_PUBLIC_KEY="test-public-key"
     REALITY_SHORT_ID="0123456789abcdef"
+    REALITY_INBOUND_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="selfhost"
     SUBSCRIPTION_DOMAIN="sub.example.com"
@@ -110,8 +114,10 @@ test_syntax_and_worker_removal() {
         "deploy_subscription_output()" "${script}"
     assert_not_contains "legacy coupled subscription configurator is removed" \
         "configure_subscription()" "${script}"
-    assert_contains "Reality rejects AAAA node domains" \
-        "Reality 节点域名不能发布 AAAA" "${script}"
+    assert_contains "Reality validates AAAA against detected server IPv6" \
+        "的 AAAA \${mismatch} 未指向本机公网 IPv6" "${script}"
+    assert_contains "Reality keeps Gemini outbound family selection independent" \
+        'gemini_domain_strategy="ForceIPv6"' "${script}"
     assert_contains "Reality default prompts explain the enter default" \
         '[${default}]（直接回车使用默认值）' "${script}"
     assert_contains "Reality subscription prompt recommends self-hosting for one server" \
@@ -139,6 +145,11 @@ test_validators_and_modes() {
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
+    assert_success "compressed IPv6 is accepted" validate_ipv6 "2001:db8::10"
+    assert_success "loopback IPv6 is accepted" validate_ipv6 "::1"
+    assert_failure "multiple IPv6 compression markers are rejected" \
+        validate_ipv6 "2001::db8::10"
+    assert_failure "non-IPv6 text is rejected" validate_ipv6 "not-an-ip"
 
     SUBSCRIBE_MODE="1"
     SUBSCRIPTION_MODE=""
@@ -156,6 +167,51 @@ test_validators_and_modes() {
     assert_equal "update-sub keeps the current link mode by default" \
         "link" "${SUBSCRIPTION_MODE}"
     PROMPT_SUBSCRIPTION_MODE=0
+}
+
+test_reality_inbound_family_and_dns() {
+    local detected
+    detected=$(
+        ip() {
+            if [[ "$*" == "-6 -o addr show scope global" ]]; then
+                printf '2: eth0 inet6 2001:db8::10/64 scope global\n'
+            elif [[ "$*" == "-6 route show default" ]]; then
+                printf 'default via 2001:db8::1 dev eth0\n'
+            elif [[ "$*" == "-6 route get 2001:db8::10" ]]; then
+                printf '2001:db8::10 dev eth0 src 2001:db8::10\n'
+            fi
+        }
+        curl() { printf '2001:db8::10\n'; }
+        detect_public_ipv6
+    )
+    assert_equal "public IPv6 detection requires and returns usable IPv6" \
+        "2001:db8::10" "${detected}"
+
+    detected=$(
+        detect_public_ipv6() { printf '2001:db8::10\n'; }
+        unset REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6
+        info() { :; }
+        detect_reality_inbound_family
+        printf '%s|%s\n' "${REALITY_INBOUND_IP_FAMILY}" "${VPS_PUBLIC_IPV6}"
+    )
+    assert_equal "detected public IPv6 enables Reality dual stack" \
+        "dual|2001:db8::10" "${detected}"
+
+    NODE_HOST="node.example.com"
+    REALITY_INBOUND_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
+    dig() { printf '2001:db8::10\n'; }
+    assert_failure "AAAA is rejected when the server has no public IPv6" \
+        validate_reality_node_dns
+
+    REALITY_INBOUND_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    assert_success "matching AAAA is accepted in dual-stack mode" \
+        validate_reality_node_dns
+    dig() { printf '2001:db8::20\n'; }
+    assert_failure "mismatched AAAA is rejected in dual-stack mode" \
+        validate_reality_node_dns
+    unset -f dig
 }
 
 test_subscription_stage_dispatch() {
@@ -225,6 +281,8 @@ test_subscription_generation() {
         "port: ${port}" "${yaml}"
     assert_contains "Mihomo subscription contains Reality options" \
         "reality-opts:" "${yaml}"
+    assert_contains "Reality Mihomo subscription is pinned to IPv4" \
+        "ip-version: ipv4" "${yaml}"
     assert_contains "Mihomo subscription contains complete rules" \
         "RULE-SET,telegramcidr,PROXY,no-resolve" "${yaml}"
     assert_not_contains "rendered subscription removes proxy marker" \
@@ -240,7 +298,7 @@ test_subscription_generation() {
 }
 
 test_nginx_and_firewall() {
-    local config ufw_config ufw_log="${TMP_DIR}/ufw.log"
+    local config ufw_config ufw6_config ufw_log="${TMP_DIR}/ufw.log"
     set_fixture
     install -d -m 0700 "${STATE_DIR}" "${CERT_DIR}"
     install -m 0600 /dev/null "${CERT_FILE}"
@@ -268,21 +326,35 @@ test_nginx_and_firewall() {
         fi
     }
     iptables-restore() { cat >/dev/null; }
+    ip6tables-restore() { cat >/dev/null; }
     cat >"${UFW_BEFORE_RULES}" <<'EOF'
 *filter
 :ufw-before-input - [0:0]
 COMMIT
 EOF
+    cat >"${UFW_BEFORE6_RULES}" <<'EOF'
+*filter
+:ufw6-before-input - [0:0]
+COMMIT
+EOF
+    printf 'IPV6=no\n' >"${UFW_DEFAULT_CONFIG}"
     SUBSCRIBE_MODE="selfhost"
+    REALITY_INBOUND_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
     configure_ufw
     ufw_config=$(<"${UFW_BEFORE_RULES}")
+    ufw6_config=$(<"${UFW_BEFORE6_RULES}")
     assert_contains "self-hosting opens HTTP" \
         "allow 80/tcp comment easy_all-managed" "$(<"${ufw_log}")"
     assert_contains "self-hosting opens 8443" \
         "allow 8443/tcp comment easy_all-managed" "$(<"${ufw_log}")"
     assert_contains "dynamic Reality forwarding remains active" \
         "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw_config}"
-    unset -f nginx systemctl detect_ssh_ports ufw iptables-restore
+    assert_contains "dynamic Reality forwarding supports IPv6" \
+        "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw6_config}"
+    assert_contains "dual-stack Reality enables UFW IPv6" \
+        "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
+    unset -f nginx systemctl detect_ssh_ports ufw iptables-restore ip6tables-restore
 }
 
 test_acme_reinstall_and_rate_limit_guidance() {
@@ -389,6 +461,8 @@ test_state_and_xray() {
         "SUBSCRIPTION_MODE=selfhost" "${state}"
     assert_contains "state persists subscription domain" \
         "SUBSCRIPTION_DOMAIN=sub.example.com" "${state}"
+    assert_contains "state persists Reality inbound family" \
+        "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Worker name" "WORKER_NAME=" "${state}"
@@ -407,7 +481,8 @@ EOF
     config=$(<"${XRAY_CONFIG}")
     assert_success "Xray uses Reality Vision" \
         jq -e \
-        '.inbounds[0].streamSettings.security == "reality"
+        '.inbounds[0].listen == "0.0.0.0"
+         and .inbounds[0].streamSettings.security == "reality"
          and .inbounds[0].settings.clients[0].flow == "xtls-rprx-vision"' \
         <<<"${config}"
     assert_success "Xray Gemini policy comes from Mihomo template" \
@@ -415,6 +490,28 @@ EOF
         '(.routing.rules[0].domain | index("domain:google.com"))
          and ((.routing.rules[0].domain | index("domain:openai.com")) == null)' \
         <<<"${config}"
+
+    REALITY_INBOUND_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    write_xray_config
+    config=$(<"${XRAY_CONFIG}")
+    assert_success "dual-stack Reality listens on IPv4 and IPv6" \
+        jq -e \
+        '.inbounds[0].listen == "::"
+         and (.outbounds[] | select(.tag == "gemini-family")
+             | .settings.domainStrategy) == "ForceIPv4"' \
+        <<<"${config}"
+
+    GEMINI_IP_FAMILY="ipv6"
+    write_xray_config
+    config=$(<"${XRAY_CONFIG}")
+    assert_success "dual-stack inbound does not override Gemini IPv6 outbound" \
+        jq -e \
+        '.inbounds[0].listen == "::"
+         and (.outbounds[] | select(.tag == "gemini-family")
+             | .settings.domainStrategy) == "ForceIPv6"' \
+        <<<"${config}"
+    GEMINI_IP_FAMILY="ipv4"
 
     QUOTA_ENABLED=1
     USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":0},"friend":{"token":"friend-token-123","uuid":"00000000-0000-4000-8000-000000000002","quota_gb":100}}'
@@ -467,6 +564,7 @@ test_install_pipeline_order() {
 source_script_copy
 test_syntax_and_worker_removal
 test_validators_and_modes
+test_reality_inbound_family_and_dns
 test_subscription_stage_dispatch
 test_mihomo_template
 test_subscription_generation

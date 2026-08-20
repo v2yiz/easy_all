@@ -33,9 +33,13 @@ readonly ACME_BIN="${ACME_HOME}/acme.sh"
 readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy_all"
 readonly CERT_RELOAD_HOOK="${COMMAND_INSTALL_DIR}/reload-subscription-nginx.sh"
 readonly UFW_BEFORE_RULES="/etc/ufw/before.rules"
+readonly UFW_BEFORE6_RULES="/etc/ufw/before6.rules"
+readonly UFW_DEFAULT_CONFIG="/etc/default/ufw"
 readonly UFW_RULE_COMMENT="easy_all-managed"
 readonly UFW_NAT_START="# easy_all-nat-start"
 readonly UFW_NAT_END="# easy_all-nat-end"
+readonly UFW_NAT6_START="# easy_all-nat6-start"
+readonly UFW_NAT6_END="# easy_all-nat6-end"
 readonly LEGACY_NFT_CONFIG="/etc/nftables.conf"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
@@ -163,6 +167,36 @@ validate_ipv4() {
     for octet in "${octets[@]}"; do
         ((10#${octet} >= 0 && 10#${octet} <= 255)) || return 1
     done
+}
+
+validate_ipv6() {
+    local ip=${1%%%*} segment rest colons
+    [[ -n "${ip}" && ${#ip} -le 39 && "${ip}" == *:* \
+        && "${ip}" =~ ^[0-9A-Fa-f:]+$ && "${ip}" != *:::* ]] || return 1
+    colons=${ip//[^:]/}
+    if [[ "${ip}" == *::* ]]; then
+        rest=${ip#*::}
+        [[ "${rest}" != *::* ]] || return 1
+        ((${#colons} >= 2 && ${#colons} <= 8)) || return 1
+    else
+        ((${#colons} == 7)) || return 1
+    fi
+    for segment in ${ip//:/ }; do
+        [[ ${#segment} -ge 1 && ${#segment} -le 4 \
+            && "${segment}" =~ ^[0-9A-Fa-f]+$ ]] || return 1
+    done
+}
+
+canonicalize_ipv6() {
+    local ip=${1%%%*} canonical=""
+    validate_ipv6 "${ip}" || return 1
+    if command -v ip >/dev/null 2>&1; then
+        canonical=$(ip -6 route get "${ip}" 2>/dev/null \
+            | awk 'NR == 1 {for (i=1; i<=NF; i++) if ($i ~ /:/) {print $i; exit}}' \
+            || true)
+    fi
+    [[ -n "${canonical}" ]] || canonical=${ip}
+    tr '[:upper:]' '[:lower:]' <<<"${canonical}" | tr -d '\n'
 }
 
 validate_uuid() {
@@ -433,6 +467,92 @@ detect_public_ipv4() {
     return 1
 }
 
+detect_public_ipv6() {
+    local service candidate canonical
+    command -v ip >/dev/null 2>&1 || return 1
+    ip -6 -o addr show scope global 2>/dev/null | grep -q 'inet6 ' || return 1
+    ip -6 route show default 2>/dev/null | grep -q '^default' || return 1
+    local -a services=(
+        "https://api6.ipify.org"
+        "https://ipv6.icanhazip.com"
+        "https://ifconfig.co/ip"
+    )
+    for service in "${services[@]}"; do
+        candidate=$(curl -6fsS --noproxy '*' --max-time 10 "${service}" 2>/dev/null \
+            | tr -d '[:space:]' || true)
+        validate_ipv6 "${candidate}" || continue
+        canonical=$(canonicalize_ipv6 "${candidate}") || continue
+        printf '%s\n' "${canonical}"
+        return 0
+    done
+    return 1
+}
+
+detect_reality_inbound_family() {
+    local detected=""
+    case "${REALITY_INBOUND_IP_FAMILY:-}" in
+    ipv4)
+        VPS_PUBLIC_IPV6=""
+        info "未启用 Reality IPv6 入站；使用 IPv4 监听"
+        return 0
+        ;;
+    dual)
+        detected=${VPS_PUBLIC_IPV6:-$(detect_public_ipv6 || true)}
+        validate_ipv6 "${detected}" \
+            || die "REALITY_INBOUND_IP_FAMILY=dual 但未检测到可用公网 IPv6"
+        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${detected}")
+        info "已启用 Reality IPv4/IPv6 双栈入站：${VPS_PUBLIC_IPV6}"
+        return 0
+        ;;
+    "") ;;
+    *) die "REALITY_INBOUND_IP_FAMILY 必须是 ipv4 或 dual" ;;
+    esac
+
+    if [[ -n "${VPS_PUBLIC_IPV6:-}" ]]; then
+        validate_ipv6 "${VPS_PUBLIC_IPV6}" \
+            || die "VPS_PUBLIC_IPV6 无效：${VPS_PUBLIC_IPV6}"
+        detected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
+    else
+        detected=$(detect_public_ipv6 || true)
+    fi
+    if [[ -n "${detected}" ]]; then
+        REALITY_INBOUND_IP_FAMILY="dual"
+        VPS_PUBLIC_IPV6=${detected}
+        info "检测到公网 IPv6，Reality 将启用 IPv4/IPv6 双栈入站：${VPS_PUBLIC_IPV6}"
+    else
+        REALITY_INBOUND_IP_FAMILY="ipv4"
+        VPS_PUBLIC_IPV6=""
+        info "未检测到可用公网 IPv6，Reality 将保持 IPv4 入站"
+    fi
+}
+
+validate_reality_node_dns() {
+    local record canonical expected records="" mismatch=""
+    validate_domain "${NODE_HOST}" || return 0
+    while IFS= read -r record; do
+        validate_ipv6 "${record}" || continue
+        canonical=$(canonicalize_ipv6 "${record}") || continue
+        [[ -z "${records}" ]] || records+=$'\n'
+        records+=${canonical}
+    done < <(dig +short AAAA "${NODE_HOST}" 2>/dev/null || true)
+
+    if [[ -z "${records}" ]]; then
+        if [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]]; then
+            info "${NODE_HOST} 尚未发布 AAAA；当前可先使用 IPv4，添加 AAAA=${VPS_PUBLIC_IPV6} 后即可双栈连接"
+        fi
+        return 0
+    fi
+    [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
+        || die "${NODE_HOST} 发布了 AAAA（${records//$'\n'/, }），但服务器没有可用公网 IPv6；请删除 AAAA 或为 VPS 配置 IPv6"
+    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
+    while IFS= read -r record; do
+        [[ "${record}" == "${expected}" ]] || mismatch=${record}
+    done <<<"${records}"
+    [[ -z "${mismatch}" ]] \
+        || die "${NODE_HOST} 的 AAAA ${mismatch} 未指向本机公网 IPv6 ${expected}"
+    success "Reality 域名 AAAA 已匹配本机公网 IPv6：${expected}"
+}
+
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 状态文件不存在：${STATE_FILE}"
     unset STATE_VERSION
@@ -447,6 +567,7 @@ load_state() {
     local -a variables=(
         PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
+        REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
@@ -468,9 +589,20 @@ load_state() {
         unset "${env_name}"
     done
     GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
+    REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
     CDN_PROVIDER=""
     [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
         || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
+    [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
+        || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
+        || die "状态文件中的 REALITY_INBOUND_IP_FAMILY 无效：${REALITY_INBOUND_IP_FAMILY}"
+    if [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]]; then
+        validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
+            || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
+        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
+    else
+        VPS_PUBLIC_IPV6=""
+    fi
     SUBSCRIPTION_MODE=${SUBSCRIPTION_MODE:-link}
     [[ "${SUBSCRIPTION_MODE}" == "selfhost" || "${SUBSCRIPTION_MODE}" == "link" ]] \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
@@ -513,6 +645,8 @@ save_state() {
         printf 'REALITY_PRIVATE_KEY=%q\n' "${REALITY_PRIVATE_KEY:-}"
         printf 'REALITY_PUBLIC_KEY=%q\n' "${REALITY_PUBLIC_KEY:-}"
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
+        printf 'REALITY_INBOUND_IP_FAMILY=%q\n' "${REALITY_INBOUND_IP_FAMILY:-ipv4}"
+        printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -636,19 +770,17 @@ collect_subscription_domain() {
 
 collect_reality_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
+    detect_reality_inbound_family
     NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
     collect_reality_node_host
     validate_domain "${NODE_HOST}" || validate_ipv4 "${NODE_HOST}" \
         || die "Reality 节点地址无效：${NODE_HOST}"
+    validate_reality_node_dns
     collect_reality_target
     validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
     collect_sub_port_mode
-    if validate_domain "${NODE_HOST}" \
-        && dig +short AAAA "${NODE_HOST}" 2>/dev/null | grep -q .; then
-        die "Reality 节点域名不能发布 AAAA；当前 Xray 入站仅监听 IPv4"
-    fi
 }
 
 check_install_conflicts() {
@@ -714,8 +846,13 @@ snapshot_ufw_state() {
     else
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw-before.missing"
     fi
-    if [[ -f /etc/default/ufw ]]; then
-        install -m 0600 /etc/default/ufw "${BACKUP_DIR}/pre-install-ufw-default"
+    if [[ -f "${UFW_BEFORE6_RULES}" ]]; then
+        install -m 0600 "${UFW_BEFORE6_RULES}" "${BACKUP_DIR}/pre-install-ufw-before6.rules"
+    else
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw-before6.missing"
+    fi
+    if [[ -f "${UFW_DEFAULT_CONFIG}" ]]; then
+        install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
     fi
 }
 
@@ -736,30 +873,62 @@ remove_managed_ufw_rules() {
     done < <(managed_ufw_rule_numbers)
 }
 
-write_ufw_nat_rules() {
-    local candidate="${RUNTIME_TMP}/ufw-before.rules"
-    [[ -f "${UFW_BEFORE_RULES}" ]] || die "UFW before.rules 不存在：${UFW_BEFORE_RULES}"
-    awk -v start="${UFW_NAT_START}" -v end="${UFW_NAT_END}" '
+write_ufw_nat_rules_for_family() {
+    local source=$1 restore_command=$2 start=$3 end=$4 enabled=$5 label=$6
+    local candidate="${RUNTIME_TMP}/ufw-${label}.rules"
+    [[ -f "${source}" ]] || die "UFW ${label} 规则不存在：${source}"
+    awk -v start="${start}" -v end="${end}" '
         $0 == start {skip=1; next}
         $0 == end {skip=0; next}
         !skip {print}
-    ' "${UFW_BEFORE_RULES}" >"${candidate}"
-    if [[ "${SUB_PORT_MODE}" == "dynamic" ]]; then
+    ' "${source}" >"${candidate}"
+    if [[ "${enabled}" == "1" ]]; then
         {
-            printf '%s\n' "${UFW_NAT_START}"
+            printf '%s\n' "${start}"
             printf '*nat\n'
             printf ':PREROUTING ACCEPT [0:0]\n'
             printf -- '-A PREROUTING -p tcp --dport %s:65535 -j REDIRECT --to-ports %s\n' \
                 "${PORT_BASE}" "${SERVICE_PORT}"
             printf 'COMMIT\n'
-            printf '%s\n\n' "${UFW_NAT_END}"
+            printf '%s\n\n' "${end}"
             cat "${candidate}"
         } >"${candidate}.new"
         mv "${candidate}.new" "${candidate}"
     fi
-    iptables-restore --test <"${candidate}" \
-        || die "UFW NAT 规则校验失败"
-    install -m 0644 "${candidate}" "${UFW_BEFORE_RULES}"
+    "${restore_command}" --test <"${candidate}" \
+        || die "UFW ${label} NAT 规则校验失败"
+    install -m 0644 "${candidate}" "${source}"
+}
+
+write_ufw_nat_rules() {
+    local dynamic=0 dual_dynamic=0
+    [[ "${SUB_PORT_MODE}" != "dynamic" ]] || dynamic=1
+    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] \
+        || dual_dynamic=${dynamic}
+    write_ufw_nat_rules_for_family "${UFW_BEFORE_RULES}" iptables-restore \
+        "${UFW_NAT_START}" "${UFW_NAT_END}" "${dynamic}" "IPv4"
+    if [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]]; then
+        write_ufw_nat_rules_for_family "${UFW_BEFORE6_RULES}" ip6tables-restore \
+            "${UFW_NAT6_START}" "${UFW_NAT6_END}" "${dual_dynamic}" "IPv6"
+    elif [[ -f "${UFW_BEFORE6_RULES}" ]] \
+        && grep -Fq "${UFW_NAT6_START}" "${UFW_BEFORE6_RULES}"; then
+        write_ufw_nat_rules_for_family "${UFW_BEFORE6_RULES}" ip6tables-restore \
+            "${UFW_NAT6_START}" "${UFW_NAT6_END}" 0 "IPv6"
+    fi
+}
+
+enable_ufw_ipv6() {
+    local candidate="${RUNTIME_TMP}/ufw-default"
+    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] || return 0
+    [[ -f "${UFW_DEFAULT_CONFIG}" ]] \
+        || die "双栈模式缺少 UFW 默认配置：${UFW_DEFAULT_CONFIG}"
+    awk '
+        BEGIN {updated=0}
+        /^IPV6=/ {print "IPV6=yes"; updated=1; next}
+        {print}
+        END {if (!updated) print "IPV6=yes"}
+    ' "${UFW_DEFAULT_CONFIG}" >"${candidate}"
+    install -m 0644 "${candidate}" "${UFW_DEFAULT_CONFIG}"
 }
 
 retire_legacy_nftables() {
@@ -789,6 +958,7 @@ configure_ufw() {
         apt-get update
         apt-get install -y --no-install-recommends ufw
     fi
+    enable_ufw_ipv6
     old_rule_numbers=$(managed_ufw_rule_numbers)
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
@@ -853,12 +1023,13 @@ download_xray() {
 }
 
 write_xray_config() {
-    local gemini_domain_strategy clients
+    local gemini_domain_strategy clients listen_address="0.0.0.0"
     prepare_mihomo_template
     resolve_gemini_ip_family
     [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
         && gemini_domain_strategy="ForceIPv6" \
         || gemini_domain_strategy="ForceIPv4"
+    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] || listen_address="::"
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
         local pair
@@ -885,13 +1056,14 @@ write_xray_config() {
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
             --arg sni "${REALITY_TARGET%:*}" \
+            --arg listen_address "${listen_address}" \
             --arg gemini_domain_strategy "${gemini_domain_strategy}" \
             --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
                 tag: "vless-reality-in",
-                listen: "0.0.0.0",
+                listen: $listen_address,
                 port: 443,
                 protocol: "vless",
                 settings: {
@@ -999,7 +1171,7 @@ build_mihomo_node() {
             --argjson port "${port}" '
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: \($port)\n" +
             "    uuid: \($uuid|@json)\n    network: tcp\n    tls: true\n    udp: true\n" +
-            "    skip-cert-verify: false\n    flow: xtls-rprx-vision\n    servername: \($sni|@json)\n" +
+            "    skip-cert-verify: false\n    ip-version: ipv4\n    flow: xtls-rprx-vision\n    servername: \($sni|@json)\n" +
             "    reality-opts:\n      public-key: \($pbk|@json)\n      short-id: \($sid|@json)\n" +
             "    client-fingerprint: chrome\n    packet-encoding: xudp\n    smux:\n      enabled: false\n"'
 }
@@ -1646,6 +1818,20 @@ snapshot_subscription_update() {
         install -m 0600 /dev/null \
             "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules.missing"
     fi
+    if [[ -f "${UFW_BEFORE6_RULES}" ]]; then
+        install -m 0600 "${UFW_BEFORE6_RULES}" \
+            "${UPDATE_SUB_BACKUP_DIR}/ufw-before6.rules"
+    else
+        install -m 0600 /dev/null \
+            "${UPDATE_SUB_BACKUP_DIR}/ufw-before6.rules.missing"
+    fi
+    if [[ -f "${UFW_DEFAULT_CONFIG}" ]]; then
+        install -m 0600 "${UFW_DEFAULT_CONFIG}" \
+            "${UPDATE_SUB_BACKUP_DIR}/ufw-default"
+    else
+        install -m 0600 /dev/null \
+            "${UPDATE_SUB_BACKUP_DIR}/ufw-default.missing"
+    fi
     UPDATE_SUB_ROLLBACK_ON_EXIT=1
 }
 
@@ -1685,6 +1871,15 @@ rollback_subscription_update() {
     [[ ! -f "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules" ]] \
         || install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules" \
             "${UFW_BEFORE_RULES}"
+    [[ ! -f "${UPDATE_SUB_BACKUP_DIR}/ufw-before6.rules" ]] \
+        || install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/ufw-before6.rules" \
+            "${UFW_BEFORE6_RULES}"
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/ufw-default" ]]; then
+        install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/ufw-default" \
+            "${UFW_DEFAULT_CONFIG}"
+    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/ufw-default.missing" ]]; then
+        rm -f -- "${UFW_DEFAULT_CONFIG}"
+    fi
     unset SUB_PORT_MODE SUBSCRIPTION_MODE SUBSCRIBE_MODE
     source_state_file
     SUBSCRIBE_MODE=${SUBSCRIPTION_MODE}
@@ -1857,6 +2052,11 @@ show_status() {
     printf '协议: %s\n' "${PROTOCOL}"
     printf 'Gemini 出口族: %s（配置: %s）\n' \
         "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
+    if [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]]; then
+        printf 'Reality 入站族: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
+    else
+        printf 'Reality 入站族: IPv4\n'
+    fi
     printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
@@ -1914,7 +2114,8 @@ remove_managed_acme_domain() {
 restore_preinstall_firewall() {
     remove_managed_ufw_rules
     [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
-        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" /etc/default/ufw
+        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" \
+            "${UFW_DEFAULT_CONFIG}"
     if [[ -f "${BACKUP_DIR}/pre-install-ufw-before.rules" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-ufw-before.rules" \
             "${UFW_BEFORE_RULES}"
@@ -1926,6 +2127,18 @@ restore_preinstall_firewall() {
         ' "${UFW_BEFORE_RULES}" >"${RUNTIME_TMP}/ufw-before-restored.rules"
         install -m 0644 "${RUNTIME_TMP}/ufw-before-restored.rules" \
             "${UFW_BEFORE_RULES}"
+    fi
+    if [[ -f "${BACKUP_DIR}/pre-install-ufw-before6.rules" ]]; then
+        install -m 0644 "${BACKUP_DIR}/pre-install-ufw-before6.rules" \
+            "${UFW_BEFORE6_RULES}"
+    elif [[ -f "${UFW_BEFORE6_RULES}" ]]; then
+        awk -v start="${UFW_NAT6_START}" -v end="${UFW_NAT6_END}" '
+            $0 == start {skip=1; next}
+            $0 == end {skip=0; next}
+            !skip {print}
+        ' "${UFW_BEFORE6_RULES}" >"${RUNTIME_TMP}/ufw-before6-restored.rules"
+        install -m 0644 "${RUNTIME_TMP}/ufw-before6-restored.rules" \
+            "${UFW_BEFORE6_RULES}"
     fi
     if command -v ufw >/dev/null 2>&1 \
         && LC_ALL=C ufw status numbered 2>/dev/null | grep -q '^[[:space:]]*\['; then

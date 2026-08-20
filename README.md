@@ -66,7 +66,7 @@ flowchart TD
     A[easy_all install] --> B{先选择安装模式}
 
     B -->|1 默认| R0[直连 Reality]
-    R0 --> R1[系统检查 / 依赖 / BBR / 重启策略]
+    R0 --> R1[系统检查 / 依赖 / BBR / 重启策略 / 公网 IPv6 探测]
     R1 --> R2[连接地址 / SNI / 订阅端口]
     R2 --> R3{订阅输出选择}
     R3 -->|部署| R4[订阅域名、文件名、Token 或用户配额]
@@ -391,6 +391,8 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
+Reality 生成的 Mihomo/Clash 节点固定使用 `ip-version: ipv4`。这只限制客户端节点的出站连接选择；服务器仍会在检测到可用公网 IPv6 时保持双栈入站，便于后续调整。
+
 Reality 交互选项：
 
 | 输入 | 默认值 | 直接回车 |
@@ -403,7 +405,13 @@ Reality 交互选项：
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
 
-Reality 入站只监听 IPv4。使用域名作为连接地址时不得发布 AAAA，否则安装会 fail-fast。
+安装器会先检查服务器是否具有全局 IPv6 地址、IPv6 默认路由和可用的公网 IPv6 出口：
+
+- 检测成功时，Reality 入站使用 `::` 显式启用 IPv4/IPv6 双栈，UFW 启用 IPv6；动态订阅端口同时写入 IPv4 与 IPv6 NAT 转发规则。
+- 使用域名作为连接地址时，AAAA 可以不发布；未发布时客户端暂时使用 A 记录。发布 AAAA 后，其地址必须与检测到的 VPS 公网 IPv6 一致。
+- 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
+
+Reality 入站双栈只影响客户端如何连接服务器。Gemini 出口仍按原有测速结果固定使用 `ForceIPv4` 或 `ForceIPv6`，不会因为入站启用双栈而改变。
 
 自托管订阅域名必须直接解析到 VPS：
 
