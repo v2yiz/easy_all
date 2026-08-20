@@ -79,14 +79,14 @@ easy_all install
 │  │  ├─ 部署：先询问订阅域名、文件名、Token/配额
 │  │  └─ 仅节点：不收集订阅服务参数
 │  ├─ 下载 Xray → UFW → 安装并验收 Xray
-│  └─ 应用订阅输出配置 → 保存最终状态 → 注册命令/配额任务
+│  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
 └─ [2] CDN XHTTP（AWS）
    ├─ 适用线路：非优化线路
    ├─ 系统检查 → 依赖/BBR/重启策略
    ├─ Route 53 源站域名（必填）→ CloudFront CDN 域名（必填）
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
-   ├─ AWS IAM 凭证（必填，不持久化）→ Route 53 源站 A 记录
-   └─ UFW/源站证书/Xray/Nginx → ACM/CloudFront/CDN CNAME → 状态/命令/配额任务
+   ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A 记录
+   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/CloudFront/CDN CNAME → 状态/命令/配额任务
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 

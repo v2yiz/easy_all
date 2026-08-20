@@ -1370,7 +1370,7 @@ update_subscription() {
     begin_quota_maintenance
     collect_installed_state
     snapshot_subscription_update
-    info "update-sub 只更新本机订阅与 Nginx，并复用现有 CloudFront；不会修改 AWS 资源"
+    info "update-sub 只更新本机 Xray、订阅与 Nginx，并复用现有 CloudFront；不会修改 AWS 资源"
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
@@ -1592,10 +1592,10 @@ usage() {
   self-update      只更新 easy_all 项目代码，不刷新部署
   apply            按当前状态应用本机运行时与订阅，不修改 AWS
   apply-cloud      应用本机并同步 Route 53、ACM 与 CloudFront
-  update-sub       选择部署订阅服务或仅输出节点
+  update-sub       更新订阅选择、配额与本机运行时
   show             显示 VLESS 链接与 Mihomo 节点
   subscription     显示节点与订阅状态
-  status           显示本机、Route 53 与 CloudFront 状态摘要
+  status           显示本机状态与已保存的 AWS 资源 ID
   update-core      更新 Xray，失败时恢复旧版本
   renew-cert       强制续期源站 Let's Encrypt 证书
   quota-status     显示每个用户的本月流量与配额状态

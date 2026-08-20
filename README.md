@@ -66,34 +66,35 @@ flowchart TD
     A[easy_all install] --> B{先选择安装模式}
 
     B -->|1 默认| R0[直连 Reality]
-    R0 --> R1[系统检查 / 依赖 / BBR / 重启策略 / 公网 IPv6 探测]
-    R1 --> R2[连接地址 / SNI / 订阅端口]
-    R2 --> R3{订阅输出选择}
-    R3 -->|部署| R4[订阅域名、文件名、Token 或用户配额]
-    R3 -->|仅节点| R5[准备仅节点输出]
-    R4 --> R6D[公共运行时：下载 Xray / 配置 UFW / 安装并验收 Xray]
-    R5 --> R6L[公共运行时：下载 Xray / 配置 UFW / 安装并验收 Xray]
-    R6D --> R8[安装 Nginx / 申请订阅证书 / 生成并验收订阅]
-    R6L --> R9[仅输出节点，不安装订阅服务]
-    R8 --> R10[保存最终状态 / 注册 easy_all / 配置配额任务]
-    R9 --> R10
-    R10 --> Z[输出节点与订阅信息]
+    R0 --> R1[系统预检 / 端口与旧安装冲突检查]
+    R1 --> R2[备份 / 依赖 / SSH 启动保障 / BBR / 重启策略]
+    R2 --> R3[公网 IPv6 探测 / 连接地址 / SNI / 订阅端口]
+    R3 --> R4{订阅输出选择}
+    R4 -->|部署| R5[订阅域名、文件名、Token 或用户配额]
+    R4 -->|仅节点| R6[不收集订阅服务参数]
+    R5 --> R7[公共运行时：下载 Xray / 配置 UFW / 安装并验收 Xray]
+    R6 --> R7
+    R7 --> R8[应用已选输出：部署 Nginx/证书/订阅，或清理订阅服务]
+    R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]
+    R9 --> Z[输出节点与订阅信息]
 
     B -->|2| X0[CDN XHTTP]
-    X0 --> X1[系统检查 / 依赖 / BBR / 重启策略]
-    X1 --> X2[源站域名 / CDN 域名]
-    X2 --> X3{订阅输出选择}
-    X3 -->|部署| X4[文件名、Token 或用户配额]
-    X3 -->|仅节点| X5[仅输出节点]
-    X4 --> X6[AWS IAM / Route 53 源站 A 记录]
-    X5 --> X6
-    X6 --> X7[配置 UFW / Nginx HTTP-01 / 源站证书 / 安装 Xray 与 Nginx]
-    X7 --> X8[ACM 证书 / CloudFront / Route 53 CDN CNAME]
-    X8 --> X9[保存状态 / 注册 easy_all / 配置配额任务]
-    X9 --> Z
+    X0 --> X1[系统预检 / 冲突检查 / 备份]
+    X1 --> X2[依赖 / SSH 启动保障 / AWS CLI / BBR / 重启策略]
+    X2 --> X3[源站域名 / CDN 域名 / VLESS 自动参数]
+    X3 --> X4{订阅输出选择}
+    X4 -->|部署| X5[文件名、Token 或用户配额]
+    X4 -->|仅节点| X6[不生成订阅文件]
+    X5 --> X7[AWS IAM 授权（同一命令内复用）/ Route 53 源站 A]
+    X6 --> X7
+    X7 --> X8[UFW / Nginx HTTP-01]
+    X8 --> X9[源站证书 / Xray / Nginx / 已选订阅输出验收]
+    X9 --> X10[ACM / CloudFront / Route 53 CDN CNAME / 公网验收]
+    X10 --> X11[保存状态 / 注册 easy_all / 配置配额任务]
+    X11 --> Z
 ```
 
-图中是安装器的实际执行顺序。Reality 只选择一次订阅输出，之后沿所选路径执行到底；图中两个“公共运行时”节点表示同一个复用模块，并非两套实现。两条路径完成后统一保存最终状态、注册命令和配置配额任务。CDN XHTTP 则先创建 Route 53 源站记录，再配置本机源站，最后创建并验收 CloudFront。
+图中是安装器的实际执行顺序。Reality 和 CDN XHTTP 都只询问一次订阅输出；两条选项随后合流到同一套运行时，并由后续步骤应用已保存的选择，不会再次询问。XHTTP 会先创建 Route 53 源站 A 记录，再配置本机源站，最后创建并验收 CloudFront。AWS 授权在同一次安装进程中复用，不写入状态文件。
 
 公共交互选项：
 
@@ -118,13 +119,13 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
-| `status` | 显示当前协议、服务、端口及订阅状态；CDN XHTTP 额外显示 Route 53 与 CloudFront 状态摘要。 |
+| `status` | 显示当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示状态文件中保存的 Route 53 Zone ID 和 CloudFront 分配信息，不调用 AWS API。 |
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或 AWS。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS。 |
 | `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并显式同步 Route 53、ACM 和 CloudFront。 |
-| `update-sub` | 重新选择“部署订阅服务”或“仅输出节点”，并更新对应订阅配置。 |
+| `update-sub` | 重新选择订阅输出并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件，不修改 AWS。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
-| `renew-cert` | 强制续期当前模式使用的证书：Reality 为自托管订阅证书，CDN XHTTP 为源站证书。 |
+| `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
 | `quota-status` | 显示启用月度配额后每个订阅用户的本月上下行总流量、额度和停用状态。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
@@ -141,17 +142,18 @@ AWS 云资源时才使用 `easy_all apply-cloud`。
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 重写并加载 Google BBR/TCP 参数。<br>2. 备份当前状态、Xray 配置、Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 依照已保存的订阅端口模式同步 UFW，重新生成 Xray 配置并重启、验收 Xray。<br>4. 按已保存的订阅方式重建订阅：自托管模式会校验 DNS、更新证书/Nginx 和订阅文件；仅节点模式会清理订阅服务。<br>5. 显示更新后的节点和订阅地址。 |
-| CDN XHTTP | 1. 备份当前状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重新生成并验收 Xray 与 Nginx 运行时配置。<br>4. 按已保存的订阅方式重建订阅文件，或在仅节点模式下删除订阅文件。<br>5. 保存状态、注册当前代码并显示节点和订阅地址。整个过程不读取 AWS 凭证、不修改 Route 53、ACM 或 CloudFront。 |
+| Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 UFW；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
+| CDN XHTTP | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重新生成 Xray 与 Nginx 配置，重启并验收本机 Xray 运行时。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复配额任务并显示输出。整个过程不读取 AWS 授权、不修改 Route 53、ACM 或 CloudFront。 |
 
-Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时都会恢复本机备份。
+Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的
+状态、Xray/Nginx 配置和订阅文件。这不等于回滚已加载的 TCP 参数或已成功的 AWS 变更。
 
 ### `apply-cloud` 的具体操作
 
-`easy_all apply-cloud` 仅适用于 CDN XHTTP。它在执行上述本机应用前，使用当前终端提供的 AWS
-凭证校验/更新 Route 53 源站记录、ACM/CloudFront 配置和 CDN DNS 记录，并等待 CloudFront
-部署及公网健康检查。AWS 已成功创建或变更的云资源不自动回滚，因此只有云端配置确实需要同步时
-才应执行该命令，并应提前确认 AWS 凭证、DNS、源站证书和 Origin Key 配置正确。
+`easy_all apply-cloud` 仅适用于 CDN XHTTP。它按“读取状态与备份 → BBR/UFW → Route 53
+源站 A 记录 → ACM/CloudFront/CDN CNAME 与公网健康检查 → 重建本机 Xray/Nginx/订阅
+→ 保存状态”执行。默认使用当前终端提供的 Access Key；也可显式启用 AWS 默认凭证链。
+AWS 已成功创建或变更的云资源不自动回滚，因此只有云端配置确实需要同步时才应执行该命令。
 
 ### 轮换 UUID
 
@@ -187,7 +189,8 @@ sudo env ALLOWED_TOKENS='{"owner":"existing-owner-token","user1":"new-user1-toke
 如需独立 UUID 和独立流量统计，应启用月度配额，额度可设为 `0` 表示不限量。
 
 用户名只能包含字母、数字、点、下划线和短横线，长度为 `1-64`。Token 只能使用 URL 安全字符
-`A-Z`、`a-z`、`0-9`、`.`、`_`、`~`、`-`，长度为 `8-128`，且必须唯一。环境变量中的 Token
+`A-Z`、`a-z`、`0-9`、`.`、`_`、`~`、`-`，长度为 `8-128`，且必须唯一。
+`ALLOWED_TOKENS` 和 `QUOTA_TOKEN_OVERRIDES` 中的 Token 值必须是 JSON 字符串，不接受数字、布尔值或 `null`。环境变量中的 Token
 可能进入 shell history；在共享服务器上应先关闭历史记录或改用安全的交互环境。
 
 #### 已启用月度配额
@@ -382,9 +385,10 @@ Reality 使用 Xray 监听 TCP `443`，客户端节点包含：
 安装时需要确认客户端连接地址和 Reality SNI/伪装目标。默认伪装目标为
 `swdist.apple.com:443`。
 
-订阅支持固定 `443` 或动态端口。动态模式从 `10000-65535` 生成订阅端口，并由本机
-UFW 受管 NAT 区块转发到 Xray `443`。UFW 默认拒绝入站与转发，只放行 SSH、Reality
-和已启用的订阅端口。
+订阅支持固定 `443` 或动态端口。动态模式从 `10000-65535` 生成客户端端口，并在
+UFW 的 `before.rules` 受管 NAT 区块中将该范围重定向到 Xray `443`；不会生成数万条
+UFW allow 规则。UFW 过滤规则默认拒绝入站与转发，始终放行检测到的 SSH 端口和 Reality
+TCP `443`；自托管订阅时另外放行 TCP `80` 和 `8443`。
 
 Reality 的订阅模式：
 
@@ -454,8 +458,8 @@ XMUX 默认使用 `4-8` 并发和按存活时间轮换连接，不设置 Mihomo 
 1. 启用通过 CloudFront + Nginx 提供的订阅服务，并输出节点信息。
 2. 不部署订阅服务，仅输出节点信息。
 
-安装阶段会创建或同步 CloudFront；`update-sub` 只调整本机订阅文件与 Nginx，并复用现有
-CloudFront，不会修改 AWS 资源。
+安装阶段会创建或同步 CloudFront；`update-sub` 会按新的用户/配额重建本机 Xray、
+Nginx 和订阅文件，并复用现有 CloudFront，不会修改 AWS 资源。
 
 CDN XHTTP 交互选项：
 
@@ -466,11 +470,12 @@ CDN XHTTP 交互选项：
 | 订阅输出 | 启用 CloudFront + Nginx 订阅 | 启用订阅服务 |
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
-| AWS Access Key ID | 无 | 不允许为空 |
-| AWS Secret Access Key | 无 | 不允许为空 |
+| AWS Access Key ID | 无 | 默认授权方式下不允许为空 |
+| AWS Secret Access Key | 无 | 默认授权方式下不允许为空 |
 
 XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
-自动生成，不需要用户输入。
+自动生成，不需要用户输入。生成的 Mihomo/Clash 节点与 Reality 一样固定使用
+`ip-version: ipv4`。
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
 都会把当前值显示在方括号中，直接回车沿用当前状态。
@@ -480,6 +485,11 @@ Mihomo 响应的下载文件名严格使用保存值；默认下载为 `EASY_ALL
 ```text
 客户端 -> CloudFront HTTPS 443 -> Nginx gRPC -> Xray 127.0.0.1:10086
 ```
+
+CloudFront 源站链路固定使用 IPv4：脚本探测 VPS 公网 IPv4，并只为源站域名创建 Route 53
+A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆盖时设置
+`AWS_ORIGIN_DNS_REPLACE=1`。Nginx 同时写入 IPv4/IPv6 监听，但不会把 CloudFront 的源站 DNS
+链路改为 AAAA。
 
 需要两个位于 Route 53 Public Hosted Zone 的域名。这是必需条件：域名注册商可保留在原处，但这两个
 域名所属的权威 DNS Zone 必须委派到 Route 53，脚本才能自动创建 A、ACM 验证和 CloudFront CNAME
@@ -515,8 +525,11 @@ CloudFront + Nginx 订阅接口同时校验：
 订阅响应设置 `Cache-Control: no-store`。所有客户端节点和订阅地址只使用 CDN 域名，
 不会暴露源站域名。
 
-AWS Access Key ID 与 Secret Access Key 仅在当前命令进程中使用，不写入状态文件。不要为根用户创建访问密钥，应创建
-权限受限的专用 IAM 用户。AWS 注册、最小权限策略、IAM 用户和 Access Key 获取步骤见
+AWS 默认交互授权使用 Access Key ID 与 Secret Access Key；它们仅在当前命令进程中使用，
+不写入状态文件。在 VPS 已配置可用的 IAM Role 或 AWS CLI 默认凭证链时，可执行
+`sudo env AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1 easy_all apply-cloud`，这时不询问两项 Access Key。
+不要使用 AWS 根用户凭证；默认方式应创建权限受限的专用 IAM 用户。AWS 注册、最小权限策略、
+IAM 用户、Access Key 与默认凭证链说明见
 [AWS 账户与 IAM 凭证准备](docs/aws-guide.md)。
 
 ## 状态与边界
@@ -527,9 +540,11 @@ AWS Access Key ID 与 Secret Access Key 仅在当前命令进程中使用，不�
 /etc/easy_all/state.env
 /etc/easy_all/quota-usage.json
 /etc/easy_all/xray/config.json
+/etc/easy_all/certs/
 /var/www/easy_all/subscriptions/
 /etc/nginx/conf.d/easy_all.conf
 /etc/systemd/system/easy_all-xray.service
+/etc/systemd/system/easy_all-quota.service
 /etc/systemd/system/easy_all-quota.timer
 ```
 
@@ -541,8 +556,8 @@ PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws
 ```
 
-Reality 的 `CDN_PROVIDER` 为空。XHTTP 当前固定为 `aws`。AWS Access Key 和 Secret
-Access Key 不会持久化。
+Reality 的 `CDN_PROVIDER` 为空。XHTTP 当前固定为 `aws`。easy_all 不会将 AWS Access Key、
+Secret Access Key 或 Session Token 持久化到状态文件。
 
 卸载 XHTTP 时只删除本机资源，保留 CloudFront、ACM 和 Route 53 资源，避免误删共享的
 云资源。卸载完成后应在 AWS Console 中人工确认是否清理。

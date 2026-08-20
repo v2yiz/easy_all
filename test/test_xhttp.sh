@@ -472,7 +472,7 @@ EOF
 )
 
 readme=$(cat "${ROOT_DIR}/README.md" "${ROOT_DIR}/docs/aws-guide.md")
-assert_contains "README warns against root keys" "${readme}" "不要为根用户创建访问密钥"
+assert_contains "README rejects AWS root credentials" "${readme}" "不要使用 AWS 根用户凭证"
 assert_contains "README documents AWS token terminology" "${readme}" "Access Key ID"
 assert_contains "README matches current IAM group option" "${readme}" "添加用户到组"
 assert_contains "README names managed policy" "${readme}" "easy_all_deploy_policy"

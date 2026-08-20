@@ -1,7 +1,8 @@
 # AWS 账户与 IAM 凭证准备
 
-CDN XHTTP 安装时需要 AWS IAM 程序化访问凭证。本文只说明如何注册 AWS 全球商业区账号、创建
-受限 IAM 用户，以及获取 `AWS_ACCESS_KEY_ID` 和 `AWS_SECRET_ACCESS_KEY`。
+CDN XHTTP 安装及 `easy_all apply-cloud` 需要 AWS IAM 授权。默认交互路径使用受限
+IAM 用户的 `AWS_ACCESS_KEY_ID` 和 `AWS_SECRET_ACCESS_KEY`；已给 VPS 配置 IAM Role 或
+AWS CLI 默认凭证链时，也可以不创建长期 Access Key。本文说明这两种方式。
 
 > 不要为 AWS 根用户创建访问密钥，也不要把任何密钥提交到 Git、写入脚本、截图或发送到聊天中。
 
@@ -126,11 +127,7 @@ Zone ID。
     {
       "Sid": "DiscoverRoute53",
       "Effect": "Allow",
-      "Action": [
-        "route53:ListHostedZones",
-        "route53:ListHostedZonesByName",
-        "route53:GetChange"
-      ],
+      "Action": "route53:ListHostedZones",
       "Resource": "*"
     },
     {
@@ -184,10 +181,13 @@ Zone ID。
 arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHI
 ```
 
-该策略没有删除 CloudFront、ACM 或 Route 53 资源的权限。部分 AWS 的查询和创建操作无法限定到
-尚不存在的资源，因此需要 `Resource: "*"`；DNS 写入权限仍限定在指定 Hosted Zone。
+该策略与当前代码调用保持一致：Route 53 仅列出 Hosted Zone、读写记录；ACM 仅列出、
+申请和查询证书；CloudFront 仅列出、创建、读取和更新分配。`GetDistribution`
+供 CloudFront 部署等待器读取状态。策略没有删除 CloudFront、ACM 或 Route 53 资源的权限。
+部分查询和创建操作无法限定到尚不存在的资源，因此需要 `Resource: "*"`；DNS 写入权限
+仍限定在指定 Hosted Zone。可将同一策略附加到专用 IAM 用户或 VPS 使用的 IAM Role。
 
-## 5. 创建 IAM 用户
+## 5. 创建 IAM 用户（Access Key 方式）
 
 1. 在 **IAM → 访问管理 → 用户组** 创建用户组，例如 `easy_all_deployers`。
 2. 将 `easy_all_deploy_policy` 附加到该用户组。
@@ -213,3 +213,31 @@ AWS_SECRET_ACCESS_KEY
 安装器会在当前终端以不回显方式询问两项值，不会将它们写入 `/etc/easy_all/state.env`。
 
 AWS 官方参考：[IAM 用户访问密钥](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)。
+
+## 7. 使用 IAM Role 或 AWS 默认凭证链
+
+如果 root 用户执行的 AWS CLI 已能通过 EC2 Instance Profile、容器凭证或本机 AWS
+配置取得受限 Role，先验证：
+
+```bash
+sudo aws sts get-caller-identity
+```
+
+返回的 ARN 不得是 AWS 根用户。然后在已安装的 CDN XHTTP 上同步云资源：
+
+```bash
+sudo env AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1 easy_all apply-cloud
+```
+
+全新安装时，先克隆完整项目，在项目目录中执行：
+
+```bash
+sudo env AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1 ./easy_all install
+```
+
+设置该开关后，脚本不询问 Access Key ID 或 Secret Access Key，但仍会用
+`sts:GetCallerIdentity` 验证当前身份，并拒绝 root ARN。easy_all 不创建、复制或持久化
+默认凭证链中的任何凭证。
+
+AWS 官方参考：[AWS CLI 授权方式与凭证优先级](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-authentication.html)、
+[AWS CLI 使用 IAM Role](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-role.html)。
