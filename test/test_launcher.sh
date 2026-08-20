@@ -54,9 +54,11 @@ guide=$(show_install_guide 2>&1)
 readme=$(<"${ROOT_DIR}/README.md")
 [[ "${readme}" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
     || fail "README install flow must choose the mode before profile initialization"
-[[ "${readme}" == *'R3 --> R4[下载 Xray / 配置 UFW / 安装并启动 Xray]'* \
-    && "${readme}" == *'R5[保存基础状态并注册 easy_all]'* \
-    && "${readme}" == *'R5 --> R6{按已选订阅输出方式配置}'* \
+[[ "${readme}" == *'R3 -->|部署| R4[订阅域名、文件名、Token 或用户配额]'* \
+    && "${readme}" == *'R3 -->|仅节点| R5[准备仅节点输出]'* \
+    && "${readme}" == *'R4 --> R6[下载 Xray / 配置 UFW / 安装并验收 Xray]'* \
+    && "${readme}" == *'R6 --> R7{执行已选订阅分支}'* \
+    && "${readme}" == *'R8 --> R10[保存最终状态 / 注册 easy_all / 配置配额任务]'* \
     && "${readme}" == *'X4 --> X6[AWS IAM / Route 53 源站 A 记录]'* \
     && "${readme}" == *'X6 --> X7[配置 UFW / Nginx HTTP-01 / 源站证书 / 安装 Xray 与 Nginx]'* \
     && "${readme}" == *'X7 --> X8[ACM 证书 / CloudFront / Route 53 CDN CNAME]'* \

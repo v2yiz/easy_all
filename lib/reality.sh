@@ -634,7 +634,7 @@ collect_subscription_domain() {
     SUBSCRIPTION_DOMAIN=${domain}
 }
 
-collect_install_inputs() {
+collect_reality_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
     NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
@@ -649,9 +649,6 @@ collect_install_inputs() {
         && dig +short AAAA "${NODE_HOST}" 2>/dev/null | grep -q .; then
         die "Reality 节点域名不能发布 AAAA；当前 Xray 入站仅监听 IPv4"
     fi
-    choose_subscription_mode
-    SUBSCRIPTION_MODE=${SUBSCRIBE_MODE}
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
 }
 
 check_install_conflicts() {
@@ -1513,22 +1510,6 @@ validate_selfhosted_subscription() {
     grep -Fq 'reality-opts:' <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
 }
 
-configure_selfhosted_subscription() {
-    collect_subscription_domain
-    choose_subscription_download_name "$1"
-    choose_monthly_quota 1
-    quota_enabled || ensure_allowed_tokens
-    SUBSCRIPTION_MODE="selfhost"
-    install_selfhost_dependencies
-    configure_ufw
-    verify_subscription_dns
-    write_subscription_bootstrap_nginx
-    issue_subscription_certificate
-    install_static_subscriptions
-    write_subscription_nginx_config
-    validate_selfhosted_subscription
-}
-
 choose_subscription_mode() {
     local mode=${SUBSCRIBE_MODE:-${SUBSCRIPTION_MODE:-}} current_mode default_choice=1
     if [[ "${PROMPT_SUBSCRIPTION_MODE:-0}" == "1" || -z "${mode}" ]]; then
@@ -1562,31 +1543,62 @@ choose_subscription_download_name() {
     SUB_DOWNLOAD_NAME=${name}
 }
 
-configure_subscription() {
-    local prompt_download_name=${1:-0}
-    collect_installed_state
-    choose_subscription_mode
-    case "${SUBSCRIBE_MODE}" in
-    link)
-        disable_selfhosted_subscription
-        SUBSCRIPTION_MODE="link"
-        ALLOWED_TOKENS=""
-        choose_monthly_quota 0
-        ;;
-    selfhost)
-        configure_selfhosted_subscription "${prompt_download_name}"
-        ;;
-    esac
-    save_state
+collect_selfhosted_subscription_inputs() {
+    local prompt_options=${1:-1} prompt_download_name=${2:-0}
+    collect_subscription_domain
+    choose_subscription_download_name "${prompt_download_name}"
+    if [[ "${prompt_options}" == "1" ]]; then
+        choose_monthly_quota 1
+    fi
+    quota_enabled || ensure_allowed_tokens
+    SUBSCRIPTION_MODE="selfhost"
 }
 
-disable_selfhosted_subscription() {
-    if [[ "${SUBSCRIPTION_MODE:-}" == "selfhost" || -f "${NGINX_CONFIG}" ]]; then
+collect_link_subscription_inputs() {
+    SUBSCRIPTION_MODE="link"
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+        "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
+    ALLOWED_TOKENS=""
+    choose_monthly_quota 0
+}
+
+collect_subscription_inputs() {
+    local prompt_options=${1:-1} prompt_download_name=${2:-0}
+    choose_subscription_mode
+    case "${SUBSCRIBE_MODE}" in
+    selfhost)
+        collect_selfhosted_subscription_inputs \
+            "${prompt_options}" "${prompt_download_name}"
+        ;;
+    link) collect_link_subscription_inputs ;;
+    *) die "无法收集未知订阅输出方式：${SUBSCRIBE_MODE:-空}" ;;
+    esac
+}
+
+deploy_selfhosted_subscription() {
+    install_selfhost_dependencies
+    verify_subscription_dns
+    write_subscription_bootstrap_nginx
+    issue_subscription_certificate
+    install_static_subscriptions
+    write_subscription_nginx_config
+    validate_selfhosted_subscription
+}
+
+remove_selfhosted_subscription_runtime() {
+    if [[ -f "${NGINX_CONFIG}" || -d "${WEB_ROOT}" ]]; then
         systemctl disable --now nginx >/dev/null 2>&1 || true
         rm -f -- "${NGINX_CONFIG}"
         rm -rf -- "${WEB_ROOT}"
-        configure_ufw
     fi
+}
+
+deploy_subscription_output() {
+    case "${SUBSCRIPTION_MODE:-}" in
+    selfhost) deploy_selfhosted_subscription ;;
+    link) remove_selfhosted_subscription_runtime ;;
+    *) die "无法部署未知订阅输出方式：${SUBSCRIPTION_MODE:-空}" ;;
+    esac
 }
 
 renew_subscription_certificate() {
@@ -1682,7 +1694,7 @@ rollback_subscription_update() {
 update_subscription() {
     local prompt_options=${1:-0}
     local requested_port_mode=${SUB_PORT_MODE:-}
-    local requested_download_name=${SUB_DOWNLOAD_NAME:-} stored_port_mode target_port_mode
+    local requested_download_name=${SUB_DOWNLOAD_NAME:-} stored_port_mode
     local prompt_download_name=0
     require_root
     begin_quota_maintenance
@@ -1704,26 +1716,18 @@ update_subscription() {
     fi
     prepare_mihomo_template
     snapshot_subscription_update
-    target_port_mode=${SUB_PORT_MODE}
-    SUB_PORT_MODE=${stored_port_mode}
-    SUBSCRIBE_MODE=${SUBSCRIPTION_MODE}
-    configure_ufw
-    SUB_PORT_MODE=${target_port_mode}
+    [[ "${prompt_options}" == "1" ]] && PROMPT_SUBSCRIPTION_MODE=1
+    collect_subscription_inputs "${prompt_options}" "${prompt_download_name}"
+    PROMPT_SUBSCRIPTION_MODE=0
     if [[ "${SUB_PORT_MODE}" != "${stored_port_mode}" ]]; then
         info "订阅端口模式从 ${stored_port_mode} 切换为 ${SUB_PORT_MODE}，同步更新 UFW"
-        if ! configure_ufw; then
-            UPDATE_SUB_ROLLBACK_ON_EXIT=0
-            rollback_subscription_update
-            return 1
-        fi
     fi
-    [[ "${prompt_options}" == "1" ]] && PROMPT_SUBSCRIPTION_MODE=1
-    if ! configure_subscription "${prompt_download_name}"; then
+    if ! configure_ufw || ! deploy_subscription_output; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
         return 1
     fi
-    PROMPT_SUBSCRIPTION_MODE=0
+    save_state
     if ! refresh_protocol_runtime_config; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
@@ -2034,10 +2038,8 @@ validate_protocol_runtime() {
     die "${PROTOCOL} 服务启动验收失败"
 }
 
-install_all() {
-    local requested=${1:-} prompt_download_name=0
-    [[ -t 0 ]] || die "安装必须在交互终端中执行"
-    [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || prompt_download_name=1
+run_reality_install_pipeline() {
+    local requested=${1:-} prompt_download_name=${2:-0}
     require_root
     require_systemd
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
@@ -2049,26 +2051,33 @@ install_all() {
     snapshot_fresh_install
     install_packages
     initialize_server
-    info "[3/9] 收集 ${PROTOCOL} 参数"
-    collect_install_inputs
-    info "[4/9] 准备核心"
+    info "[3/9] 收集 Reality 节点参数"
+    collect_reality_inputs
+    info "[4/9] 选择并收集订阅输出参数"
+    collect_subscription_inputs 1 "${prompt_download_name}"
+    info "[5/9] 准备核心"
     prepare_protocol_assets
-    info "[5/9] 配置 UFW"
+    info "[6/9] 配置 UFW"
     configure_ufw
-    info "[6/9] 安装并启动 ${PROTOCOL}"
+    info "[7/9] 安装并启动 ${PROTOCOL}"
     install_protocol_runtime
     validate_protocol_runtime
-    info "[7/9] 保存状态"
+    info "[8/9] 部署订阅输出分支"
+    deploy_subscription_output
+    info "[9/9] 保存状态并注册 easy_all 命令"
     save_state
-    info "[8/9] 注册 easy_all 命令"
     register_easy_all_command
-    info "[9/9] 配置订阅输出"
-    configure_subscription "${prompt_download_name}"
-    refresh_protocol_runtime_config
     install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
     success "easy_all ${PROTOCOL} 安装完成"
+}
+
+install_all() {
+    local requested=${1:-} prompt_download_name=0
+    [[ -t 0 ]] || die "安装必须在交互终端中执行"
+    [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || prompt_download_name=1
+    run_reality_install_pipeline "${requested}" "${prompt_download_name}"
 }
 
 usage() {

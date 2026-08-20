@@ -102,8 +102,14 @@ test_syntax_and_worker_removal() {
         "api.cloudflare.com/client/v4" "${script}"
     assert_not_contains "installer has no sample Worker source" "sample-worker.js" "${script}"
     assert_success "root sample Worker was deleted" test ! -e "${ROOT_DIR}/sample-worker.js"
-    assert_contains "install input collection asks for subscription mode" \
-        "SUBSCRIPTION_MODE=\${SUBSCRIBE_MODE}" "${script}"
+    assert_contains "Reality input collection is a separate stage" \
+        "collect_reality_inputs()" "${script}"
+    assert_contains "subscription input collection is a separate stage" \
+        "collect_subscription_inputs()" "${script}"
+    assert_contains "subscription deployment is a separate stage" \
+        "deploy_subscription_output()" "${script}"
+    assert_not_contains "legacy coupled subscription configurator is removed" \
+        "configure_subscription()" "${script}"
     assert_contains "Reality rejects AAAA node domains" \
         "Reality 节点域名不能发布 AAAA" "${script}"
     assert_contains "Reality default prompts explain the enter default" \
@@ -150,6 +156,40 @@ test_validators_and_modes() {
     assert_equal "update-sub keeps the current link mode by default" \
         "link" "${SUBSCRIPTION_MODE}"
     PROMPT_SUBSCRIPTION_MODE=0
+}
+
+test_subscription_stage_dispatch() {
+    local calls input_calls
+    calls=$(
+        deploy_selfhosted_subscription() { printf 'selfhost\n'; }
+        remove_selfhosted_subscription_runtime() { printf 'link\n'; }
+        SUBSCRIPTION_MODE="selfhost"
+        deploy_subscription_output
+        SUBSCRIPTION_MODE="link"
+        deploy_subscription_output
+    )
+    assert_equal "subscription deployment dispatches exactly one selected branch" \
+        $'selfhost\nlink' "${calls}"
+
+    input_calls=$(
+        collect_subscription_domain() { printf 'domain\n'; }
+        choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
+        choose_monthly_quota() { printf 'quota\n'; }
+        quota_enabled() { return 0; }
+        collect_selfhosted_subscription_inputs 0 0
+    )
+    assert_equal "apply reuses subscription inputs without reopening quota prompts" \
+        $'domain\ndownload:0' "${input_calls}"
+
+    input_calls=$(
+        collect_subscription_domain() { printf 'domain\n'; }
+        choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
+        choose_monthly_quota() { printf 'quota\n'; }
+        quota_enabled() { return 0; }
+        collect_selfhosted_subscription_inputs 1 1
+    )
+    assert_equal "interactive install collects all self-hosted subscription inputs" \
+        $'domain\ndownload:1\nquota' "${input_calls}"
 }
 
 test_mihomo_template() {
@@ -392,9 +432,42 @@ EOF
         <<<"${config}"
 }
 
+test_install_pipeline_order() {
+    local calls
+    rm -f -- "${STATE_FILE}"
+    calls=$(
+        info() { :; }
+        success() { :; }
+        require_root() { printf 'root\n'; }
+        require_systemd() { printf 'systemd\n'; }
+        check_platform() { printf 'platform\n'; }
+        choose_protocol() { PROTOCOL="reality"; printf 'protocol\n'; }
+        check_install_conflicts() { printf 'conflicts\n'; }
+        snapshot_fresh_install() { printf 'snapshot\n'; INSTALL_ROLLBACK_ON_EXIT=1; }
+        install_packages() { printf 'packages\n'; }
+        initialize_server() { printf 'initialize\n'; }
+        collect_reality_inputs() { printf 'reality-inputs\n'; }
+        collect_subscription_inputs() { printf 'subscription-inputs:%s:%s\n' "$1" "$2"; }
+        prepare_protocol_assets() { printf 'assets\n'; }
+        configure_ufw() { printf 'ufw\n'; }
+        install_protocol_runtime() { printf 'runtime\n'; }
+        validate_protocol_runtime() { printf 'validate-runtime\n'; }
+        deploy_subscription_output() { printf 'subscription-runtime\n'; }
+        save_state() { printf 'save\n'; }
+        register_easy_all_command() { printf 'register\n'; }
+        install_quota_timer() { printf 'quota-timer\n'; }
+        show_subscription() { printf 'show\n'; }
+        run_reality_install_pipeline "reality" 1
+    )
+    assert_equal "Reality install pipeline follows input, common runtime, branch, persistence order" \
+        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\nquota-timer\nshow' \
+        "${calls}"
+}
+
 source_script_copy
 test_syntax_and_worker_removal
 test_validators_and_modes
+test_subscription_stage_dispatch
 test_mihomo_template
 test_subscription_generation
 test_nginx_and_firewall
@@ -402,5 +475,6 @@ test_acme_renewal_repair
 test_acme_reinstall_and_rate_limit_guidance
 test_legacy_firewall_migration
 test_state_and_xray
+test_install_pipeline_order
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"
