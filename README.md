@@ -493,8 +493,8 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 
 需要两个位于 Route 53 Public Hosted Zone 的域名。这是必需条件：域名注册商可保留在原处，但这两个
 域名所属的权威 DNS Zone 必须委派到 Route 53，脚本才能自动创建 A、ACM 验证和 CloudFront CNAME
-记录。已有网站或邮件业务时，建议只委派专用子域名；完整操作、DNSSEC 注意事项和验证命令见
-[AWS 账户与 IAM 凭证准备](docs/aws-guide.md#3-必做为节点域名配置-route-53-dns)。
+记录。已有网站或邮件业务时，建议只委派专用子域名；完整操作、DNSSEC 注意事项和委派检查要点见
+[AWS 一次性准备指南](docs/aws-guide.md#3-配置-route-53-权威-dns)。
 
 | 域名示例             | 用途                                      |
 | -------------------- | ----------------------------------------- |
@@ -529,8 +529,9 @@ AWS 默认交互授权使用 Access Key ID 与 Secret Access Key；它们仅在�
 不写入状态文件。在 VPS 已配置可用的 IAM Role 或 AWS CLI 默认凭证链时，可执行
 `sudo env AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1 easy_all apply-cloud`，这时不询问两项 Access Key。
 不要使用 AWS 根用户凭证；默认方式应创建权限受限的专用 IAM 用户。AWS 注册、最小权限策略、
-IAM 用户、Access Key 与默认凭证链说明见
-[AWS 账户与 IAM 凭证准备](docs/aws-guide.md)。
+IAM 用户与两项 Access Key 获取步骤见
+[获取 AWS Access Key](docs/aws-guide.md#6-创建-access-key)。该文档只包含 AWS 控制台和域名注册商操作，不包含 VPS 命令；
+默认凭证链的 VPS 用法仅在本 README 中说明。
 
 ## 状态与边界
 

@@ -56,9 +56,24 @@ if [[ "${XHTTP_CONTENT}" == *'AWS_USE_DEFAULT_CREDENTIAL_CHAIN'* ]]; then
         '也可用默认凭证链'
     assert_contains "README documents AWS default chain" "${README_CONTENT}" \
         'AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1'
-    assert_contains "AWS guide documents AWS default chain" "${AWS_GUIDE_CONTENT}" \
-        'AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1'
+    assert_not_contains "Access Key guide excludes default-chain VPS usage" \
+        "${AWS_GUIDE_CONTENT}" 'AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1'
 fi
+
+assert_contains "Access Key guide names access key ID" "${AWS_GUIDE_CONTENT}" \
+    'AWS_ACCESS_KEY_ID'
+assert_contains "Access Key guide names secret access key" "${AWS_GUIDE_CONTENT}" \
+    'AWS_SECRET_ACCESS_KEY'
+for vps_marker in 'sudo ' 'dig +short' 'easy_all apply' './easy_all install'; do
+    assert_not_contains "AWS guide excludes VPS marker ${vps_marker}" \
+        "${AWS_GUIDE_CONTENT}" "${vps_marker}"
+done
+assert_contains "AWS guide includes Route 53 delegation" \
+    "${AWS_GUIDE_CONTENT}" '这是 CDN XHTTP 的**必要条件**'
+assert_contains "AWS guide includes CloudFront cost boundary" \
+    "${AWS_GUIDE_CONTENT}" '1 TB 向互联网传出'
+aws_markdown_count=$(find "${ROOT_DIR}/docs" -maxdepth 1 -type f -name 'aws*.md' | wc -l | tr -d ' ')
+[[ "${aws_markdown_count}" == "1" ]] || fail "AWS user guidance must stay in one Markdown file"
 
 for action in \
     'sts:GetCallerIdentity' \
