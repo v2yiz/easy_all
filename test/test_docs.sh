@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
+GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/lib/xhttp.sh")
 
@@ -100,8 +101,32 @@ assert_contains "AWS guide pins CloudFront control operations to us-east-1" \
     "${AWS_GUIDE_CONTENT}" 'AWS 控制区域：选择 `us-east-1`（美国·弗吉尼亚北部）'
 assert_contains "AWS guide explains that the control region is not the traffic region" \
     "${AWS_GUIDE_CONTENT}" '这不是节点的落地位置选择'
+assert_contains "Gcore guide is explicitly a pre-implementation review draft" \
+    "${GCORE_GUIDE_CONTENT}" '当前状态：仅供评审，不可用于部署。'
+assert_contains "Gcore guide accepts one future API token" \
+    "${GCORE_GUIDE_CONTENT}" 'GCORE_API_TOKEN'
+assert_contains "Gcore guide records the Free CDN monthly allowance" \
+    "${GCORE_GUIDE_CONTENT}" '1 TB'
+assert_contains "Gcore guide records the Free CDN request allowance" \
+    "${GCORE_GUIDE_CONTENT}" '10 亿'
+assert_contains "Gcore guide keeps the 980 GB safety boundary as future work" \
+    "${GCORE_GUIDE_CONTENT}" '该保护尚未实现'
+assert_contains "Gcore guide uses only full-domain delegation" \
+    "${GCORE_GUIDE_CONTENT}" '只采用**整个主域名**交给'
+assert_contains "Gcore guide requires least-privilege CDN role" \
+    "${GCORE_GUIDE_CONTENT}" 'CDN Editor'
+assert_contains "Gcore guide requires least-privilege DNS role" \
+    "${GCORE_GUIDE_CONTENT}" 'DNS Editor'
+assert_contains "Gcore guide blocks unvalidated XHTTP implementation" \
+    "${GCORE_GUIDE_CONTENT}" '实现前必须通过的门槛'
+for vps_marker in 'sudo ' 'dig +short' 'easy_all apply' './easy_all install'; do
+    assert_not_contains "Gcore guide excludes VPS marker ${vps_marker}" \
+        "${GCORE_GUIDE_CONTENT}" "${vps_marker}"
+done
 aws_markdown_count=$(find "${ROOT_DIR}/docs" -maxdepth 1 -type f -name 'aws*.md' | wc -l | tr -d ' ')
 [[ "${aws_markdown_count}" == "1" ]] || fail "AWS user guidance must stay in one Markdown file"
+gcore_markdown_count=$(find "${ROOT_DIR}/docs" -maxdepth 1 -type f -name 'gcore*.md' | wc -l | tr -d ' ')
+[[ "${gcore_markdown_count}" == "1" ]] || fail "Gcore user guidance must stay in one Markdown file"
 
 for action in \
     'sts:GetCallerIdentity' \

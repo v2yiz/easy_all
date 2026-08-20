@@ -59,8 +59,10 @@ readonly CLOUDFRONT_ORIGIN_ID="easy_all-xhttp-origin"
 readonly CLOUDFRONT_ROUTE53_ZONE_ID="Z2FDTNDATAQYW2"
 readonly CLOUDFRONT_CONNECTION_ATTEMPTS="2"
 readonly CLOUDFRONT_CONNECTION_TIMEOUT="3"
-readonly CLOUDFRONT_ORIGIN_READ_TIMEOUT="60"
+readonly CLOUDFRONT_ORIGIN_READ_TIMEOUT="120"
 readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="60"
+readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
+readonly XHTTP_X_PADDING_BYTES="100-1000"
 readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"
 readonly XHTTP_XMUX_MAX_CONCURRENCY="4-8"
 readonly XHTTP_XMUX_C_MAX_REUSE_TIMES="0"
@@ -588,6 +590,7 @@ write_xray_config() {
         --argjson clients "${clients}" \
         --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
+        --arg x_padding_bytes "${XHTTP_X_PADDING_BYTES}" \
         --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" '
         {
           log:{loglevel:"warning"},
@@ -600,6 +603,7 @@ write_xray_config() {
                   host:$xhttp_host,
                   path:$xhttp_path,
                   mode:"stream-up",
+                  xPaddingBytes:$x_padding_bytes,
                   scStreamUpServerSecs:$stream_up_server_secs
                 }
               },
@@ -713,15 +717,15 @@ EOF
     location ^~ ${XHTTP_PATH}/ {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         client_max_body_size 0;
-        client_body_timeout 5m;
+        client_body_timeout ${XHTTP_NGINX_STREAM_TIMEOUT};
         grpc_set_header Host ${VLESS_CDN_DOMAIN};
         grpc_set_header X-Real-IP \$remote_addr;
         grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         grpc_set_header X-Forwarded-Proto https;
         grpc_set_header X-Easy-All-Origin-Key \$http_x_easy_all_origin_key;
         grpc_socket_keepalive on;
-        grpc_read_timeout 1h;
-        grpc_send_timeout 1h;
+        grpc_read_timeout ${XHTTP_NGINX_STREAM_TIMEOUT};
+        grpc_send_timeout ${XHTTP_NGINX_STREAM_TIMEOUT};
         grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
         access_log off;
     }
@@ -1450,12 +1454,14 @@ uri_encode() {
 build_vless_xhttp_link() {
     local extra
     extra=$(jq -cn \
+        --arg x_padding_bytes "${XHTTP_X_PADDING_BYTES}" \
         --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
         --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
         --argjson h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '{
         noGRPCHeader:false,
-        uplinkMethod:"POST",
+        xPaddingBytes:$x_padding_bytes,
+        uplinkHTTPMethod:"POST",
         xmux:{
             maxConcurrency:$max_concurrency,
             cMaxReuseTimes:$c_max_reuse_times,
@@ -1476,6 +1482,7 @@ build_mihomo_node() {
     jq -nr --arg xhttp_name "${XHTTP_NODE_NAME}" \
         --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
         --arg xhttp_path "${XHTTP_PATH}" \
+        --arg x_padding_bytes "${XHTTP_X_PADDING_BYTES}" \
         --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
         --arg c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
@@ -1485,7 +1492,8 @@ build_mihomo_node() {
         "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
         "    ip-version: ipv4\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
         "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
-        "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
+        "      no-grpc-header: false\n      x-padding-bytes: \($x_padding_bytes|@json)\n" +
+        "      x-padding-obfs-mode: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
         "        max-concurrency: \($max_concurrency|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
         "        h-max-reusable-secs: \($h_max_reusable_secs|@json)\n" +
         "        h-keep-alive-period: \($h_keep_alive_period)\n"'

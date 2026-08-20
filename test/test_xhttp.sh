@@ -42,6 +42,12 @@ assert_contains "XHTTP state persists the quota start date" "$(<"${PROFILE}")" \
     'QUOTA_START_DATE=%q'
 assert_contains "Xray keepalive stays below CloudFront response timeout" "$(<"${PROFILE}")" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
+assert_contains "XHTTP keeps request padding explicit across clients" "$(<"${PROFILE}")" \
+    'readonly XHTTP_X_PADDING_BYTES="100-1000"'
+assert_contains "Xray server consumes the explicit padding range" "$(<"${PROFILE}")" \
+    'xPaddingBytes:$x_padding_bytes'
+assert_contains "Nginx stream timeout covers long-lived XHTTP requests" "$(<"${PROFILE}")" \
+    'readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"'
 assert_contains "Nginx proxies XHTTP over gRPC" "$(<"${PROFILE}")" \
     'grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT}'
 assert_contains "Nginx validates subscription tokens" "$(<"${PROFILE}")" \
@@ -119,9 +125,11 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "all viewer except host policy" \
         "b689b0a8-53d0-40ab-baf2-68738e2966ac" "${CLOUDFRONT_ORIGIN_REQUEST_POLICY_ID}"
     assert_equal "stream-up server keepalive" "20-40" "${XHTTP_STREAM_UP_SERVER_SECS}"
+    assert_equal "XHTTP request padding" "100-1000" "${XHTTP_X_PADDING_BYTES}"
+    assert_equal "Nginx XHTTP stream timeout" "1h" "${XHTTP_NGINX_STREAM_TIMEOUT}"
     assert_equal "XMUX max concurrency" "4-8" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
-    assert_equal "CloudFront origin response timeout" "60" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
+    assert_equal "CloudFront origin response timeout" "120" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
 
     ufw_state="${TMP_DIR}/xhttp-ufw-state"
     cat >"${ufw_state}" <<'EOF'
@@ -353,6 +361,16 @@ EOF
     assert_contains "XHTTP stream-up" "${link}" "mode=stream-up"
     assert_contains "XHTTP path" "${link}" "path=%2Fxhttp-test-path"
     assert_contains "XHTTP XMUX extra" "${link}" "extra="
+    assert_contains "XHTTP link pins padding compatibility" "${link}" "xPaddingBytes"
+    assert_contains "XHTTP link uses the supported uplink method key" "${link}" "uplinkHTTPMethod"
+    assert_not_contains "XHTTP link omits the ignored legacy uplink key" "${link}" "uplinkMethod"
+    encoded_extra=$(sed -n 's/.*[?&]extra=\([^&]*\).*/\1/p' <<<"${link}")
+    extra_json=$(printf '%b' "${encoded_extra//%/\\x}")
+    jq -e '
+        .noGRPCHeader == false and
+        .xPaddingBytes == "100-1000" and
+        .uplinkHTTPMethod == "POST"
+    ' <<<"${extra_json}" >/dev/null || fail "XHTTP URI extra is invalid"
     assert_not_contains "XHTTP XMUX omits request-count rotation" \
         "${link}" "hMaxRequestTimes"
     [[ "${link}" != *"trojan"* ]] || fail "links must contain only VLESS"
@@ -364,6 +382,10 @@ EOF
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
     assert_contains "Mihomo XMUX uses conservative concurrency" \
         "${mihomo}" 'max-concurrency: "4-8"'
+    assert_contains "Mihomo pins XHTTP padding compatibility" \
+        "${mihomo}" 'x-padding-bytes: "100-1000"'
+    assert_contains "Mihomo keeps legacy padding mode" \
+        "${mihomo}" 'x-padding-obfs-mode: false'
     assert_not_contains "Mihomo XMUX omits request-count rotation" \
         "${mihomo}" "h-max-request-times"
     assert_contains "Mihomo XMUX uses browser-like keepalive" "${mihomo}" "h-keep-alive-period: 0"
@@ -377,7 +399,7 @@ EOF
         .Origins.Items[0].DomainName == "origin.example.com" and
         .Origins.Items[0].CustomOriginConfig.OriginProtocolPolicy == "https-only" and
         .Origins.Items[0].CustomOriginConfig.OriginSslProtocols.Items == ["TLSv1.2"] and
-        .Origins.Items[0].CustomOriginConfig.OriginReadTimeout == 60 and
+        .Origins.Items[0].CustomOriginConfig.OriginReadTimeout == 120 and
         .Origins.Items[0].CustomOriginConfig.OriginKeepaliveTimeout == 60 and
         .Origins.Items[0].ConnectionAttempts == 2 and
         .Origins.Items[0].ConnectionTimeout == 3 and
