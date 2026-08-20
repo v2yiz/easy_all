@@ -50,9 +50,12 @@ readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="2"
 readonly AWS_CONTROL_REGION="us-east-1"
+readonly AWS_CLOUDFRONT_PLAN_FAMILY="CloudFront"
+readonly AWS_CLOUDFRONT_PLAN_TIER="FREE"
 readonly CLOUDFRONT_CACHE_POLICY_ID="4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
 readonly CLOUDFRONT_ORIGIN_REQUEST_POLICY_ID="b689b0a8-53d0-40ab-baf2-68738e2966ac"
 readonly CLOUDFRONT_ORIGIN_ID="easy_all-xhttp-origin"
+readonly CLOUDFRONT_ROUTE53_ZONE_ID="Z2FDTNDATAQYW2"
 readonly CLOUDFRONT_CONNECTION_ATTEMPTS="2"
 readonly CLOUDFRONT_CONNECTION_TIMEOUT="3"
 readonly CLOUDFRONT_ORIGIN_READ_TIMEOUT="60"
@@ -229,7 +232,9 @@ load_state() {
         XHTTP_PATH AWS_ORIGIN_DOMAIN
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET
         AWS_ORIGIN_ROUTE53_ZONE_ID AWS_ROUTE53_ZONE_ID AWS_ACM_CERTIFICATE_ARN
-        AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_CLOUDFRONT_DOMAIN
+        AWS_WAF_WEB_ACL_ARN AWS_CLOUDFRONT_DISTRIBUTION_ID
+        AWS_CLOUDFRONT_DISTRIBUTION_ARN AWS_CLOUDFRONT_DOMAIN
+        AWS_CLOUDFRONT_PRICING_PLAN_ARN
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
@@ -295,8 +300,11 @@ save_state() {
         printf 'AWS_ORIGIN_ROUTE53_ZONE_ID=%q\n' "${AWS_ORIGIN_ROUTE53_ZONE_ID:-}"
         printf 'AWS_ROUTE53_ZONE_ID=%q\n' "${AWS_ROUTE53_ZONE_ID:-}"
         printf 'AWS_ACM_CERTIFICATE_ARN=%q\n' "${AWS_ACM_CERTIFICATE_ARN:-}"
+        printf 'AWS_WAF_WEB_ACL_ARN=%q\n' "${AWS_WAF_WEB_ACL_ARN:-}"
         printf 'AWS_CLOUDFRONT_DISTRIBUTION_ID=%q\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}"
+        printf 'AWS_CLOUDFRONT_DISTRIBUTION_ARN=%q\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ARN:-}"
         printf 'AWS_CLOUDFRONT_DOMAIN=%q\n' "${AWS_CLOUDFRONT_DOMAIN:-}"
+        printf 'AWS_CLOUDFRONT_PRICING_PLAN_ARN=%q\n' "${AWS_CLOUDFRONT_PRICING_PLAN_ARN:-}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
         printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
@@ -344,9 +352,20 @@ install_packages() {
     timedatectl set-ntp true || die "无法启用网络时间同步"
 }
 
+aws_cli_supports_flat_rate_plans() {
+    aws --version 2>&1 | grep -q '^aws-cli/2\.' \
+        && aws freetier get-account-plan-state --generate-cli-skeleton input \
+            >/dev/null 2>&1 \
+        && aws pricing-plan-manager list-subscriptions --generate-cli-skeleton input \
+            >/dev/null 2>&1
+}
+
 install_aws_cli() {
-    command -v aws >/dev/null 2>&1 && return 0
+    if command -v aws >/dev/null 2>&1 && aws_cli_supports_flat_rate_plans; then
+        return 0
+    fi
     local temp_dir archive
+    info "安装或更新支持 CloudFront 固定套餐的 AWS CLI v2"
     temp_dir=$(make_temp_dir)
     archive="${temp_dir}/awscliv2.zip"
     curl -fsSL --retry 3 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "${archive}" \
@@ -354,7 +373,9 @@ install_aws_cli() {
     unzip -q "${archive}" -d "${temp_dir}"
     "${temp_dir}/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update \
         || die "安装 AWS CLI v2 失败"
-    command -v aws >/dev/null 2>&1 || die "AWS CLI v2 安装后不可用"
+    hash -r
+    command -v aws >/dev/null 2>&1 && aws_cli_supports_flat_rate_plans \
+        || die "AWS CLI v2 安装后仍不支持 CloudFront 固定套餐 API"
 }
 
 snapshot_fresh_install() {
@@ -712,6 +733,8 @@ collect_aws_credentials() {
         identity=$(aws sts get-caller-identity --output json) || die "AWS 默认凭证链不可用"
         arn=$(jq -r '.Arn // empty' <<<"${identity}")
         [[ "${arn}" != *":root" ]] || die "拒绝使用 AWS 根用户凭证；请改用专用 IAM 用户或 Role"
+        AWS_ACCOUNT_ID=$(jq -r '.Account // empty' <<<"${identity}")
+        [[ "${AWS_ACCOUNT_ID}" =~ ^[0-9]{12}$ ]] || die "AWS STS 未返回有效账号 ID"
         return 0
     fi
     if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
@@ -729,10 +752,57 @@ collect_aws_credentials() {
     identity=$(aws sts get-caller-identity --output json) || die "AWS 凭证验证失败"
     arn=$(jq -r '.Arn // empty' <<<"${identity}")
     [[ "${arn}" != *":root" ]] || die "拒绝使用 AWS 根用户访问密钥；请改用专用 IAM 用户"
+    AWS_ACCOUNT_ID=$(jq -r '.Account // empty' <<<"${identity}")
+    [[ "${AWS_ACCOUNT_ID}" =~ ^[0-9]{12}$ ]] || die "AWS STS 未返回有效账号 ID"
 }
 
 clear_aws_credentials() {
     unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+}
+
+confirm_aws_paid_account_upgrade() {
+    local answer
+    [[ "${AWS_ACCOUNT_PLAN_UPGRADE:-0}" == "1" ]] && return 0
+    if [[ ! -t 0 ]]; then
+        die "AWS 账号仍是 Free account plan；非交互执行必须显式设置 AWS_ACCOUNT_PLAN_UPGRADE=1"
+    fi
+    alert "CloudFront Free 固定套餐要求 AWS 账号先升级为 Paid account plan。"
+    warn "升级不会清空正常剩余的 Free Tier Credit，但超出 Credit 或套餐范围的资源可能扣费。"
+    read -r -p "确认由脚本将 AWS 账号 ${AWS_ACCOUNT_ID} 升级为 Paid account plan？[y/N]（直接回车取消）: " answer
+    [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消 AWS 账号计划升级"
+}
+
+ensure_aws_paid_account_plan() {
+    local state plan_type plan_status response attempt
+    state=$(aws freetier get-account-plan-state --region "${AWS_CONTROL_REGION}" --output json) \
+        || die "查询 AWS account plan 失败；请确认 IAM 包含 freetier:GetAccountPlanState"
+    plan_type=$(jq -r '.accountPlanType // empty' <<<"${state}")
+    plan_status=$(jq -r '.accountPlanStatus // empty' <<<"${state}")
+    case "${plan_type}" in
+    PAID)
+        info "AWS account plan 已是 Paid（${plan_status:-UNKNOWN}）"
+        return 0
+        ;;
+    FREE)
+        confirm_aws_paid_account_upgrade
+        response=$(aws freetier upgrade-account-plan --region "${AWS_CONTROL_REGION}" \
+            --account-plan-type PAID --output json) \
+            || die "AWS account plan 升级失败；请确认 IAM 包含 freetier:UpgradeAccountPlan"
+        [[ "$(jq -r '.accountPlanType // empty' <<<"${response}")" == "PAID" ]] \
+            || die "AWS API 未确认 account plan 已升级为 Paid"
+        for attempt in {1..12}; do
+            state=$(aws freetier get-account-plan-state --region "${AWS_CONTROL_REGION}" \
+                --output json) || die "复核 AWS account plan 失败"
+            [[ "$(jq -r '.accountPlanType // empty' <<<"${state}")" == "PAID" ]] \
+                && { success "AWS account plan 已升级为 Paid；剩余 Free Tier Credit 保留至原到期日"; return 0; }
+            sleep 5
+        done
+        die "AWS account plan 升级已提交，但等待 Paid 状态超时"
+        ;;
+    *)
+        die "AWS API 返回未知 account plan：${plan_type:-缺失}（状态 ${plan_status:-缺失}）"
+        ;;
+    esac
 }
 
 find_route53_zone_for_domain() {
@@ -900,6 +970,62 @@ cloudfront_marker() {
     printf 'easy_all:xhttp:%s' "${VLESS_CDN_DOMAIN}"
 }
 
+waf_web_acl_name() {
+    local suffix
+    suffix=$(printf '%s' "${VLESS_CDN_DOMAIN}" | sha256sum | cut -c1-16)
+    printf 'easy-all-xhttp-%s' "${suffix}"
+}
+
+list_cloudfront_web_acls() {
+    local marker="" response web_acls='[]'
+    local -a arguments
+    while true; do
+        arguments=(wafv2 list-web-acls --scope CLOUDFRONT --region "${AWS_CONTROL_REGION}"
+            --limit 100 --no-paginate --output json)
+        [[ -z "${marker}" ]] || arguments+=(--next-marker "${marker}")
+        response=$(aws "${arguments[@]}") || die "列出 CloudFront WAF Web ACL 失败"
+        web_acls=$(jq -cn --argjson existing "${web_acls}" \
+            --argjson page "$(jq -c '.WebACLs // []' <<<"${response}")" \
+            '$existing + $page')
+        marker=$(jq -r '.NextMarker // empty' <<<"${response}")
+        [[ -n "${marker}" ]] || break
+    done
+    jq -cn --argjson web_acls "${web_acls}" '{WebACLs:$web_acls}'
+}
+
+ensure_cloudfront_web_acl() {
+    local web_acls matches count response name
+    name=$(waf_web_acl_name)
+    web_acls=$(list_cloudfront_web_acls)
+
+    if [[ -n "${AWS_WAF_WEB_ACL_ARN:-}" ]] \
+        && jq -e --arg arn "${AWS_WAF_WEB_ACL_ARN}" \
+            'any(.WebACLs[]?; .ARN == $arn)' <<<"${web_acls}" >/dev/null; then
+        info "复用 CloudFront Free 套餐 WAF：${AWS_WAF_WEB_ACL_ARN}"
+        return 0
+    fi
+
+    matches=$(jq -c --arg name "${name}" '[.WebACLs[]? | select(.Name == $name)]' <<<"${web_acls}")
+    count=$(jq 'length' <<<"${matches}")
+    ((count <= 1)) || die "发现多个同名 WAF Web ACL：${name}"
+    if ((count == 1)); then
+        AWS_WAF_WEB_ACL_ARN=$(jq -r '.[0].ARN' <<<"${matches}")
+        info "复用 easy_all CloudFront WAF：${AWS_WAF_WEB_ACL_ARN}"
+        return 0
+    fi
+
+    response=$(aws wafv2 create-web-acl --scope CLOUDFRONT --region "${AWS_CONTROL_REGION}" \
+        --name "${name}" --description "Dedicated to easy_all CloudFront Free plan" \
+        --default-action 'Allow={}' \
+        --visibility-config \
+            "SampledRequestsEnabled=false,CloudWatchMetricsEnabled=true,MetricName=${name}" \
+        --output json) || die "创建 CloudFront Free 套餐所需 WAF Web ACL 失败"
+    AWS_WAF_WEB_ACL_ARN=$(jq -r '.Summary.ARN // empty' <<<"${response}")
+    [[ "${AWS_WAF_WEB_ACL_ARN}" == arn:aws:wafv2:${AWS_CONTROL_REGION}:*:global/webacl/* ]] \
+        || die "WAF API 未返回有效的 CloudFront Web ACL ARN"
+    success "已创建默认放行的独占 WAF Web ACL；不会改变 XHTTP 请求路径"
+}
+
 build_distribution_config() {
     local destination=$1 caller_reference=$2
     jq -n \
@@ -912,7 +1038,8 @@ build_distribution_config() {
         --argjson connection_timeout "${CLOUDFRONT_CONNECTION_TIMEOUT}" \
         --argjson origin_read_timeout "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}" \
         --argjson origin_keepalive_timeout "${CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT}" \
-        --arg certificate "${AWS_ACM_CERTIFICATE_ARN}" '
+        --arg certificate "${AWS_ACM_CERTIFICATE_ARN}" \
+        --arg web_acl "${AWS_WAF_WEB_ACL_ARN}" '
         {
           CallerReference:$caller,
           Aliases:{Quantity:1,Items:[$alias]},
@@ -944,7 +1071,7 @@ build_distribution_config() {
           ViewerCertificate:{CloudFrontDefaultCertificate:false,ACMCertificateArn:$certificate,
             SSLSupportMethod:"sni-only",MinimumProtocolVersion:"TLSv1.2_2021"},
           Restrictions:{GeoRestriction:{RestrictionType:"none",Quantity:0}},
-          WebACLId:"",HttpVersion:"http2",IsIPV6Enabled:true,Staging:false,
+          WebACLId:$web_acl,HttpVersion:"http2",IsIPV6Enabled:true,Staging:false,
           ContinuousDeploymentPolicyId:""
         }' >"${destination}"
 }
@@ -961,42 +1088,17 @@ find_managed_distribution() {
     jq -r 'first // empty' <<<"${ids}"
 }
 
-find_distribution_by_alias() {
-    local distributions
-    distributions=$(aws cloudfront list-distributions --output json) || return 1
-    jq -r --arg alias "${VLESS_CDN_DOMAIN}" '
-        [.DistributionList.Items[]? |
-          select(any(.Aliases.Items[]?; . == $alias)) |
-          [.Id, .DomainName, .Status, .Comment] | @tsv] | .[]' <<<"${distributions}"
-}
-
 configure_cloudfront_distribution() {
     local id=${AWS_CLOUDFRONT_DISTRIBUTION_ID:-} existing config etag caller response comment
-    local create_error alias_conflicts alias_count alias_domain alias_status alias_comment
+    local create_error
     config="${RUNTIME_TMP}/cloudfront-distribution.json"
     if [[ -z "${id}" ]]; then id=$(find_managed_distribution); fi
-    if [[ -z "${id}" ]]; then
-        alias_conflicts=$(find_distribution_by_alias || true)
-        alias_count=0
-        [[ -z "${alias_conflicts}" ]] || alias_count=$(wc -l <<<"${alias_conflicts}")
-        if ((alias_count == 1)); then
-            IFS=$'\t' read -r id alias_domain alias_status alias_comment <<<"${alias_conflicts}"
-            info "复用 CDN 域名 ${VLESS_CDN_DOMAIN} 的 CloudFront 分配：${id}（${alias_domain}，${alias_status}）"
-            AWS_ADOPT_DISTRIBUTION=1
-        elif ((alias_count > 1)); then
-            alert "CDN 域名 ${VLESS_CDN_DOMAIN} 命中多个 CloudFront 分配："
-            printf '%s\n' "${alias_conflicts}"
-            die "无法安全自动选择 CloudFront 分配；请先在 AWS 清理重复别名"
-        fi
-    fi
     if [[ -n "${id}" ]]; then
         existing=$(aws cloudfront get-distribution-config --id "${id}" --output json) \
             || die "读取 CloudFront 分配 ${id} 失败"
         comment=$(jq -r '.DistributionConfig.Comment' <<<"${existing}")
-        if [[ "${comment}" != "$(cloudfront_marker)" \
-            && "${AWS_ADOPT_DISTRIBUTION:-0}" != "1" ]]; then
-            die "CloudFront 分配 ${id} 不是 easy_all XHTTP 管理；若确定要完整改写，请设置 AWS_ADOPT_DISTRIBUTION=1"
-        fi
+        [[ "${comment}" == "$(cloudfront_marker)" ]] \
+            || die "CloudFront 分配 ${id} 不是当前 easy_all XHTTP 管理，拒绝接管旧部署或其他分配"
         etag=$(jq -r '.ETag' <<<"${existing}")
         caller=$(jq -r '.DistributionConfig.CallerReference' <<<"${existing}")
         build_distribution_config "${config}" "${caller}"
@@ -1010,53 +1112,69 @@ configure_cloudfront_distribution() {
         if ! response=$(aws cloudfront create-distribution --distribution-config "file://${config}" \
             --output json 2>"${create_error}"); then
             if grep -Fq "CNAMEAlreadyExists" "${create_error}"; then
-                alias_conflicts=$(find_distribution_by_alias || true)
-                if [[ -n "${alias_conflicts}" ]]; then
-                    alert "CDN 域名 ${VLESS_CDN_DOMAIN} 已被以下 CloudFront 分配占用："
-                    printf '%s\n' "${alias_conflicts}"
-                    die "CloudFront 别名在创建期间发生冲突；请重新运行安装器以自动发现并确认接管旧分配"
-                fi
+                die "CDN 域名 ${VLESS_CDN_DOMAIN} 已绑定其他 CloudFront 分配；脚本不会接管旧部署，请先删除旧分配或解除该别名"
             fi
             cat "${create_error}" >&2
-            die "创建 CloudFront 分配失败；若域名已绑定其他分配，请显式采用或先解除冲突"
+            die "创建 CloudFront 分配失败"
         fi
     fi
     AWS_CLOUDFRONT_DISTRIBUTION_ID=$(jq -r '.Distribution.Id' <<<"${response}")
+    AWS_CLOUDFRONT_DISTRIBUTION_ARN=$(jq -r '.Distribution.ARN // empty' <<<"${response}")
     AWS_CLOUDFRONT_DOMAIN=$(jq -r '.Distribution.DomainName' <<<"${response}")
     [[ -n "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" && "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" != null ]] \
         || die "CloudFront API 未返回分配 ID"
+    if [[ -z "${AWS_CLOUDFRONT_DISTRIBUTION_ARN}" ]]; then
+        AWS_CLOUDFRONT_DISTRIBUTION_ARN="arn:aws:cloudfront::${AWS_ACCOUNT_ID}:distribution/${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
+    fi
 }
 
-ensure_viewer_cname() {
-    local records conflicts change target existing_type
+build_viewer_alias_change_batch() {
+    local destination=$1 conflicts=$2 target=$3
+    jq -n --arg name "${VLESS_CDN_DOMAIN}." --arg target "${target}" \
+        --arg target_zone "${CLOUDFRONT_ROUTE53_ZONE_ID}" --argjson conflicts "${conflicts}" '
+        def alias_record($type):
+          {Action:"CREATE",ResourceRecordSet:{Name:$name,Type:$type,
+            AliasTarget:{HostedZoneId:$target_zone,DNSName:$target,EvaluateTargetHealth:false}}};
+        {Comment:"easy_all CloudFront Alias A/AAAA",
+         Changes:(($conflicts | map({Action:"DELETE",ResourceRecordSet:.})) +
+           [alias_record("A"),alias_record("AAAA")])}' >"${destination}"
+}
+
+viewer_records_are_alias_target() {
+    local conflicts=$1 target=$2 require_both=${3:-0}
+    jq -e --arg target "${target}" --arg zone "${CLOUDFRONT_ROUTE53_ZONE_ID}" \
+        --argjson require_both "${require_both}" '
+        (length >= 1 and length <= 2) and
+        (all(.[];
+          (.Type == "A" or .Type == "AAAA") and
+          .AliasTarget.HostedZoneId == $zone and
+          .AliasTarget.EvaluateTargetHealth == false and
+          ((.AliasTarget.DNSName | rtrimstr(".")) == ($target | rtrimstr("."))))) and
+        ((map(.Type) | unique | length) == length) and
+        (($require_both == 0) or ((map(.Type) | sort) == ["A","AAAA"]))' \
+        <<<"${conflicts}" >/dev/null
+}
+
+ensure_viewer_alias_records() {
+    local records conflicts change target
     target="${AWS_CLOUDFRONT_DOMAIN}."
     records=$(aws route53 list-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
         --output json) || die "查询 Route 53 记录失败"
     conflicts=$(jq -c --arg name "${VLESS_CDN_DOMAIN}." \
         '[.ResourceRecordSets[]|select(.Name==$name and .Type!="NS" and .Type!="SOA")]' <<<"${records}")
+    if viewer_records_are_alias_target "${conflicts}" "${target}" 1; then
+        info "Route 53 CDN Alias A/AAAA 已指向当前 CloudFront 分配"
+        return 0
+    fi
     if [[ "$(jq 'length' <<<"${conflicts}")" -gt 0 ]]; then
-        if jq -e --arg target "${target}" \
-            'length==1 and .[0].Type=="CNAME" and
-             ((.[0].ResourceRecords[0].Value|rtrimstr(".")) == ($target|rtrimstr(".")))' \
-            <<<"${conflicts}" >/dev/null; then
-            return 0
-        fi
         [[ "${AWS_DNS_REPLACE:-0}" == "1" ]] \
             || die "${VLESS_CDN_DOMAIN} 已有 DNS 记录；拒绝覆盖。确认后可设置 AWS_DNS_REPLACE=1"
     fi
-    existing_type=$(jq -r 'if length==1 then .[0].Type else "MULTIPLE" end' <<<"${conflicts}")
-    if [[ "$(jq 'length' <<<"${conflicts}")" -eq 0 || "${existing_type}" == "CNAME" ]]; then
-        change=$(jq -cn --arg name "${VLESS_CDN_DOMAIN}." --arg target "${target}" \
-            '{Comment:"easy_all CloudFront CNAME",Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$name,Type:"CNAME",TTL:300,ResourceRecords:[{Value:$target}]}}]}')
-    else
-        change=$(jq -cn --arg name "${VLESS_CDN_DOMAIN}." --arg target "${target}" \
-            --argjson conflicts "${conflicts}" '
-            {Comment:"easy_all replace conflicting DNS records",
-             Changes:(($conflicts|map({Action:"DELETE",ResourceRecordSet:.})) +
-               [{Action:"CREATE",ResourceRecordSet:{Name:$name,Type:"CNAME",TTL:300,ResourceRecords:[{Value:$target}]}}])}')
-    fi
+    change="${RUNTIME_TMP}/route53-viewer-alias.json"
+    build_viewer_alias_change_batch "${change}" "${conflicts}" "${target}"
     aws route53 change-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
-        --change-batch "${change}" >/dev/null || die "写入 CloudFront CNAME 失败"
+        --change-batch "file://${change}" >/dev/null || die "写入 CloudFront Alias A/AAAA 失败"
+    success "Route 53 CDN 记录已收敛为免查询费的 CloudFront Alias A/AAAA"
 }
 
 wait_for_cloudfront() {
@@ -1068,6 +1186,110 @@ wait_for_cloudfront() {
         success "CloudFront 分配已部署"
     else
         die "等待 CloudFront 分配部署超时"
+    fi
+}
+
+select_cloudfront_pricing_subscription() {
+    local subscriptions=$1 distribution_arn=$2
+    jq -c --arg distribution "${distribution_arn}" '
+        [.subscriptionSummaries[]? |
+          select(any(.resourceArns[]?; . == $distribution))]' <<<"${subscriptions}"
+}
+
+wait_for_cloudfront_pricing_plan() {
+    local attempt details status reason get_error
+    get_error="${RUNTIME_TMP}/pricing-plan-get.stderr"
+    info "等待 CloudFront Free 固定套餐生效（通常 2-5 分钟）"
+    for attempt in {1..120}; do
+        if ! details=$(aws pricing-plan-manager get-subscription --region "${AWS_CONTROL_REGION}" \
+            --arn "${AWS_CLOUDFRONT_PRICING_PLAN_ARN}" --output json 2>"${get_error}"); then
+            if ((attempt <= 6)) && grep -Fq 'ResourceNotFoundException' "${get_error}"; then
+                sleep 5
+                continue
+            fi
+            [[ ! -s "${get_error}" ]] || cat "${get_error}" >&2
+            die "查询 CloudFront 固定套餐状态失败"
+        fi
+        status=$(jq -r '.subscription.status // .status // empty' <<<"${details}")
+        case "${status}" in
+        ACTIVE)
+            success "CloudFront Free 固定套餐已生效"
+            return 0
+            ;;
+        FAILED)
+            reason=$(jq -r '.subscription.statusReason // .statusReason // "AWS 未返回原因"' \
+                <<<"${details}")
+            die "CloudFront Free 固定套餐同步失败：${reason}"
+            ;;
+        SYNC_IN_PROGRESS) sleep 5 ;;
+        PENDING_APPROVAL)
+            die "FREE 固定套餐异常进入 PENDING_APPROVAL；拒绝自动批准任何付费套餐"
+            ;;
+        *) die "CloudFront 固定套餐返回未知状态：${status:-缺失}" ;;
+        esac
+    done
+    die "等待 CloudFront Free 固定套餐生效超时"
+}
+
+ensure_cloudfront_free_pricing_plan() {
+    local distribution_arn zone_arn subscriptions matches count response details
+    local tier actual_waf resources etag token
+    distribution_arn=${AWS_CLOUDFRONT_DISTRIBUTION_ARN:-}
+    if [[ -z "${distribution_arn}" ]]; then
+        distribution_arn="arn:aws:cloudfront::${AWS_ACCOUNT_ID}:distribution/${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
+        AWS_CLOUDFRONT_DISTRIBUTION_ARN=${distribution_arn}
+    fi
+    zone_arn="arn:aws:route53:::hostedzone/${AWS_ROUTE53_ZONE_ID}"
+    subscriptions=$(aws pricing-plan-manager list-subscriptions --region "${AWS_CONTROL_REGION}" \
+        --output json) || die "列出 CloudFront 固定套餐失败"
+    matches=$(select_cloudfront_pricing_subscription "${subscriptions}" "${distribution_arn}")
+    count=$(jq 'length' <<<"${matches}")
+    ((count <= 1)) || die "当前 CloudFront 分配关联了多个固定套餐；拒绝继续修改"
+
+    if ((count == 0)); then
+        token="easyall-free-$(printf '%s' "${distribution_arn}" | sha256sum | cut -c1-32)"
+        response=$(aws pricing-plan-manager create-subscription --region "${AWS_CONTROL_REGION}" \
+            --plan-family "${AWS_CLOUDFRONT_PLAN_FAMILY}" \
+            --plan-tier "${AWS_CLOUDFRONT_PLAN_TIER}" \
+            --resource-arns "${distribution_arn}" "${AWS_WAF_WEB_ACL_ARN}" "${zone_arn}" \
+            --approval-mode IMMEDIATE --client-token "${token}" --output json) \
+            || die "创建 CloudFront Free 固定套餐失败"
+        AWS_CLOUDFRONT_PRICING_PLAN_ARN=$(jq -r \
+            '.subscription.arn // .arn // empty' <<<"${response}")
+        [[ -n "${AWS_CLOUDFRONT_PRICING_PLAN_ARN}" ]] \
+            || die "PricingPlanManager 未返回订阅 ARN"
+        success "已创建 CloudFront Free 固定套餐，并加入 Route 53 Hosted Zone"
+    else
+        AWS_CLOUDFRONT_PRICING_PLAN_ARN=$(jq -r '.[0].arn' <<<"${matches}")
+        tier=$(jq -r '.[0].planTier // empty' <<<"${matches}")
+        [[ "${tier}" == "${AWS_CLOUDFRONT_PLAN_TIER}" ]] \
+            || die "当前 CloudFront 分配已使用 ${tier:-未知} 固定套餐；为避免计费变化，脚本不会自动改为 FREE"
+        info "复用已有 CloudFront Free 固定套餐：${AWS_CLOUDFRONT_PRICING_PLAN_ARN}"
+    fi
+
+    wait_for_cloudfront_pricing_plan
+    details=$(aws pricing-plan-manager get-subscription --region "${AWS_CONTROL_REGION}" \
+        --arn "${AWS_CLOUDFRONT_PRICING_PLAN_ARN}" --output json) \
+        || die "读取 CloudFront Free 固定套餐详情失败"
+    resources=$(jq -c '.subscription.resourceArns // .resourceArns // []' <<<"${details}")
+    actual_waf=$(jq -r '[.[] | select(startswith("arn:aws:wafv2:"))] | first // empty' \
+        <<<"${resources}")
+    [[ "${actual_waf}" == "${AWS_WAF_WEB_ACL_ARN}" ]] \
+        || die "CloudFront Free 固定套餐关联的 WAF 与当前分配不一致"
+
+    if ! jq -e --arg zone "${zone_arn}" 'any(.[]; . == $zone)' <<<"${resources}" >/dev/null; then
+        etag=$(jq -r '.eTag // empty' <<<"${details}")
+        [[ -n "${etag}" ]] || die "PricingPlanManager 未返回关联 Route 53 所需 ETag"
+        token="easyall-zone-$(printf '%s' "${AWS_CLOUDFRONT_PRICING_PLAN_ARN}:${zone_arn}" \
+            | sha256sum | cut -c1-32)"
+        aws pricing-plan-manager associate-resources-to-subscription \
+            --region "${AWS_CONTROL_REGION}" --arn "${AWS_CLOUDFRONT_PRICING_PLAN_ARN}" \
+            --if-match "${etag}" --resource-arns "${zone_arn}" --client-token "${token}" \
+            --output json >/dev/null || die "将 Route 53 Hosted Zone 加入 CloudFront Free 固定套餐失败"
+        wait_for_cloudfront_pricing_plan
+        success "Route 53 Hosted Zone 已由 CloudFront Free 固定套餐覆盖标准费用"
+    else
+        info "Route 53 Hosted Zone 已在 CloudFront Free 固定套餐中"
     fi
 }
 
@@ -1087,9 +1309,12 @@ configure_aws_cdn() {
     collect_aws_credentials
     find_route53_zones
     find_or_request_acm_certificate
+    ensure_aws_paid_account_plan
+    ensure_cloudfront_web_acl
     configure_cloudfront_distribution
-    ensure_viewer_cname
+    ensure_viewer_alias_records
     wait_for_cloudfront
+    ensure_cloudfront_free_pricing_plan
     validate_cloudfront_health
     clear_aws_credentials
 }
@@ -1434,7 +1659,7 @@ apply_cloud_resources() {
     cdn_prepare_origin
     cdn_apply
     finish_xhttp_apply
-    success "easy_all CDN XHTTP 本机配置、Route 53 与 CloudFront 已应用"
+    success "easy_all CDN XHTTP 本机配置、Route 53、WAF、CloudFront 与 Free 固定套餐已应用"
 }
 
 update_current_core() {
@@ -1536,7 +1761,7 @@ uninstall_all() {
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
-    success "easy_all XHTTP 本机内容已卸载；CloudFront、ACM 与 Route 53 记录未删除"
+    success "easy_all XHTTP 本机内容已卸载；CloudFront、WAF、Free 固定套餐、ACM 与 Route 53 记录未删除"
 }
 
 install_all() {
@@ -1572,7 +1797,7 @@ install_all() {
     write_nginx_config
     validate_protocol_runtime
     subscription_enabled && validate_subscription_runtime
-    info "[7/9] 配置 ACM、CloudFront 与 Route 53 CDN 记录"
+    info "[7/9] 配置 ACM、确认 AWS Paid plan、WAF、CloudFront Free 固定套餐与 Route 53 CDN Alias"
     cdn_apply
     info "[8/9] 保存状态并注册命令"
     save_state

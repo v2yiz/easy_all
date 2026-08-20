@@ -85,8 +85,8 @@ easy_all install
    ├─ 系统检查 → 依赖/BBR/重启策略
    ├─ Route 53 源站域名（必填）→ CloudFront CDN 域名（必填）
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
-   ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A 记录
-   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/CloudFront/CDN CNAME → 状态/命令/配额任务
+   ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A
+   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/WAF/CloudFront/Free 套餐/CDN Alias → 状态/命令/配额任务
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 

@@ -64,7 +64,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" == *'X5 --> X7[AWS IAM 授权（同一命令内复用）/ Route 53 源站 A]'* \
     && "${readme}" == *'X7 --> X8[UFW / Nginx HTTP-01]'* \
     && "${readme}" == *'X8 --> X9[源站证书 / Xray / Nginx / 已选订阅输出验收]'* \
-    && "${readme}" == *'X9 --> X10[ACM / CloudFront / Route 53 CDN CNAME / 公网验收]'* \
+    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级 / WAF / CloudFront / Free 固定套餐 / Route 53 Alias A/AAAA / 公网验收]'* \
     && "${readme}" == *'X10 --> X11[保存状态 / 注册 easy_all / 配置配额任务]'* ]] \
     || fail "README install flow must match the installer execution order"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \

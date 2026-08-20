@@ -1,7 +1,7 @@
 # AWS 一次性准备指南
 
-按本文顺序操作，可一次完成 AWS 账号确认、CloudFront 费用边界、Route 53 DNS 委派、
-IAM 最小权限和 Access Key 创建，最终取得：
+按本文顺序操作，可一次完成 AWS 账号确认、CloudFront Free 固定套餐费用边界、Route 53 DNS
+委派、IAM 最小权限和 Access Key 创建。安装时你只需要向脚本提供：
 
 ```text
 AWS_ACCESS_KEY_ID
@@ -18,16 +18,36 @@ AWS_SECRET_ACCESS_KEY
 [AWS 全球商业区注册页](https://signin.aws.amazon.com/signup?request_type=register)
 完成注册，并为根用户启用 MFA。
 
-## 2. 确认 CloudFront 费用边界
+## 2. 确认账号升级与 CloudFront Free 固定套餐
 
-CloudFront 按 AWS 账户汇总的免费额度为每月 **1 TB 向互联网传出的数据**，并包含每月
-**1,000 万次 HTTP/HTTPS 请求**。该额度按账户汇总，不是每个分配、域名或 Region 分别计算。
+这里使用的是 **CloudFront flat-rate Free plan**，不是 AWS 注册时选择的 **Free account
+plan**。CloudFront 固定套餐要求账号为 Paid account plan。脚本读取两项 Access Key 后会：
 
-这不代表整套部署一定零费用：服务器、域名、Route 53 Hosted Zone、超额 CloudFront
-流量或请求仍可能产生费用。建议在 **Billing and Cost Management → Budgets** 创建预算和
-邮件告警。
+1. 查询当前 AWS account plan；已经是 Paid 时直接继续。
+2. 检测到 Free 时说明计费边界并要求确认，然后通过官方 API 升级为 Paid，不要求你回到 AWS
+   控制台操作。
+3. 创建独占且默认放行的 WAF Web ACL，创建或更新 CloudFront 分配。
+4. 为该分配订阅每月 **US$0** 的 CloudFront Free 固定套餐，并把 CDN 域名所属 Route 53
+   Hosted Zone 加入套餐。
+5. 把 CDN 域名写成 CloudFront Alias A/AAAA；Route 53 不对指向 CloudFront 的 Alias 查询收费。
 
-AWS 官方参考：[CloudFront 免费额度与按量计费](https://aws.amazon.com/cloudfront/faqs/)。
+正常通过 Upgrade Plan/API 升级不会清空剩余 Free Tier Credit；Credit 会继续用于符合条件的
+后续账单直至原到期日。不要为了升级而加入 AWS Organizations 或启用 Control Tower，这两种
+路径会使剩余 Free Tier Credit 立即失效。
+
+CloudFront Free 固定套餐包含每月 **100 GB 数据传输**和 **100 万次请求**的基准用量，并且
+没有突发流量或攻击带来的超额费；每个 AWS 账号最多可有三个 Free 固定套餐。套餐还覆盖与该
+分配绑定的 WAF，以及已加入套餐的 Route 53 Hosted Zone 的标准 Hosted Zone、记录和查询费用。
+
+套餐不覆盖 VPS、域名注册、未加入套餐的第二个 Hosted Zone、Route 53 DNSSEC 的 KMS、Health
+Check、DNS Query Logs、Lambda@Edge 等额外功能。若源站域名和 CDN 域名位于同一个 Hosted
+Zone，脚本加入一次即可同时覆盖；位于两个 Zone 时，脚本只加入 CDN 域名所在 Zone，另一个仍按
+Route 53 标准价格计费。套餐生效前已经记入的费用也不应视为必然追溯减免。
+
+AWS 官方参考：
+[CloudFront 固定套餐](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/flat-rate-pricing-plan.html)、
+[Free 与 Paid account plan](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-FAQ.html)、
+[Route 53 指向 CloudFront](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-to-cloudfront-distribution.html)。
 
 ## 3. 配置 Route 53 权威 DNS
 
@@ -89,6 +109,15 @@ AWS 官方参考：
       "Resource": "*"
     },
     {
+      "Sid": "UpgradeAccountPlanForCloudFrontFreePlan",
+      "Effect": "Allow",
+      "Action": [
+        "freetier:GetAccountPlanState",
+        "freetier:UpgradeAccountPlan"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "DiscoverRoute53",
       "Effect": "Allow",
       "Action": "route53:ListHostedZones",
@@ -124,6 +153,27 @@ AWS 官方参考：
         "cloudfront:UpdateDistribution"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "CloudFrontDedicatedWebACL",
+      "Effect": "Allow",
+      "Action": [
+        "wafv2:ListWebACLs",
+        "wafv2:GetWebACL",
+        "wafv2:CreateWebACL"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudFrontFreeFlatRatePlan",
+      "Effect": "Allow",
+      "Action": [
+        "pricingplanmanager:ListSubscriptions",
+        "pricingplanmanager:GetSubscription",
+        "pricingplanmanager:CreateSubscription",
+        "pricingplanmanager:AssociateResourcesToSubscription"
+      ],
+      "Resource": "*"
     }
   ]
 }
@@ -139,8 +189,10 @@ AWS 官方参考：
 ]
 ```
 
-提交前检查 JSON 中不再出现 `REPLACE_`。该策略没有删除 CloudFront、ACM 或 Route 53
-资源的权限；DNS 写入权限仅限定在指定 Hosted Zone。
+提交前检查 JSON 中不再出现 `REPLACE_`。该策略没有删除 CloudFront、WAF、ACM、固定套餐或
+Route 53 资源的权限；DNS 写入权限仅限定在指定 Hosted Zone。策略也故意不授予
+`pricingplanmanager:ApprovePaidSubscription`，脚本只能激活免费的 CloudFront `FREE` 套餐，
+不能批准 Pro、Business 或 Premium 的付费套餐。
 
 ## 5. 创建 IAM 用户
 

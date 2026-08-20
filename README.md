@@ -89,7 +89,7 @@ flowchart TD
     X6 --> X7
     X7 --> X8[UFW / Nginx HTTP-01]
     X8 --> X9[源站证书 / Xray / Nginx / 已选订阅输出验收]
-    X9 --> X10[ACM / CloudFront / Route 53 CDN CNAME / 公网验收]
+    X9 --> X10[ACM / Paid account plan 检查或确认升级 / WAF / CloudFront / Free 固定套餐 / Route 53 Alias A/AAAA / 公网验收]
     X10 --> X11[保存状态 / 注册 easy_all / 配置配额任务]
     X11 --> Z
 ```
@@ -151,7 +151,7 @@ Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已�
 ### `apply-cloud` 的具体操作
 
 `easy_all apply-cloud` 仅适用于 CDN XHTTP。它按“读取状态与备份 → BBR/UFW → Route 53
-源站 A 记录 → ACM/CloudFront/CDN CNAME 与公网健康检查 → 重建本机 Xray/Nginx/订阅
+源站 A 记录 → ACM → AWS account plan 检查 → WAF/CloudFront/Free 固定套餐/CDN Alias A/AAAA 与公网健康检查 → 重建本机 Xray/Nginx/订阅
 → 保存状态”执行。默认使用当前终端提供的 Access Key；也可显式启用 AWS 默认凭证链。
 AWS 已成功创建或变更的云资源不自动回滚，因此只有云端配置确实需要同步时才应执行该命令。
 
@@ -492,30 +492,31 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 链路改为 AAAA。
 
 需要两个位于 Route 53 Public Hosted Zone 的域名。这是必需条件：域名注册商可保留在原处，但这两个
-域名所属的权威 DNS Zone 必须委派到 Route 53，脚本才能自动创建 A、ACM 验证和 CloudFront CNAME
+域名所属的权威 DNS Zone 必须委派到 Route 53，脚本才能自动创建 A、ACM 验证和 CloudFront Alias
 记录。已有网站或邮件业务时，建议只委派专用子域名；完整操作、DNSSEC 注意事项和委派检查要点见
 [AWS 一次性准备指南](docs/aws-guide.md#3-配置-route-53-权威-dns)。
 
 | 域名示例             | 用途                                      |
 | -------------------- | ----------------------------------------- |
 | `origin.example.com` | CloudFront HTTPS 源站，A 记录指向 VPS     |
-| `node.example.com`   | 客户端和订阅入口，CNAME 指向 CloudFront   |
+| `node.example.com`   | 客户端和订阅入口，Alias A/AAAA 指向 CloudFront |
 
-### CDN 重装与 AWS 幂等
+### CDN 安装重试与 AWS 幂等
 
-卸载后使用相同的源站域名和 CDN 域名重装时，脚本会收敛到已有 AWS 资源：
+安装中断后重新执行时，脚本会收敛到本次安装已经创建的受管 AWS 资源：
 
-| AWS 资源 | 重装行为 |
+| AWS 资源 | 重试行为 |
 | --- | --- |
 | Route 53 源站 A | 已准确指向当前 VPS 时直接复用；不存在时创建。指向其他地址或存在 AAAA/CNAME 时默认停止，确认后设置 `AWS_ORIGIN_DNS_REPLACE=1`。 |
 | ACM 证书 | 复用覆盖 CDN 域名的已签发或待验证证书，优先已签发证书；支持复用单级通配符证书。找不到时才申请新证书。 |
+| WAF Web ACL | 按 CDN 域名的稳定哈希复用独占 Web ACL；找不到时创建默认放行的 ACL，不额外拦截 XHTTP。 |
 | CloudFront | 按稳定标记 `easy_all:xhttp:<CDN域名>` 找回原分配，保留 Caller Reference 并更新为当前配置，不创建第二个分配。 |
-| Route 53 CDN CNAME | 已指向找回的 CloudFront 分配时直接复用；其他同名记录默认停止，确认后设置 `AWS_DNS_REPLACE=1`。 |
+| CloudFront Free 固定套餐 | 按分配 ARN 查找并复用 `FREE` 套餐；缺失时创建，并确保 CDN Hosted Zone 已加入套餐。检测到付费档位时停止，不自动改变计费套餐。 |
+| Route 53 CDN Alias | 已指向当前分配的 A/AAAA 直接复用；不存在时创建。任何其他同名记录都默认停止，不自动迁移旧部署；确认覆盖时设置 `AWS_DNS_REPLACE=1`。 |
 
-没有 `easy_all` 标记但 CDN 别名完全一致的旧 CloudFront 分配，安装器也会自动查找、输出 ID
-并直接复用，完整更新为当前 easy_all 配置，无需手工查询或确认。若同一 CDN 域名异常存在多个
-带相同管理标记或同名别名的分配，脚本会停止并要求先消除歧义。重装会重新生成 UUID、XHTTP
-路径、Origin Key 和订阅 Token；需要保留这些节点参数时应使用 `easy_all apply`，不要先卸载。
+脚本只复用带有当前稳定管理标记的 CloudFront 分配，不会自动接管无标记的旧部署或其他分配。
+若 CDN 域名仍被旧 CloudFront 分配占用，安装会停止，需先删除旧分配或解除别名。若同一 CDN
+域名异常存在多个带相同管理标记的分配，脚本也会停止并要求先消除歧义。
 
 CloudFront + Nginx 订阅接口同时校验：
 
@@ -528,6 +529,9 @@ CloudFront + Nginx 订阅接口同时校验：
 AWS 默认交互授权使用 Access Key ID 与 Secret Access Key；它们仅在当前命令进程中使用，
 不写入状态文件。在 VPS 已配置可用的 IAM Role 或 AWS CLI 默认凭证链时，可执行
 `sudo env AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1 easy_all apply-cloud`，这时不询问两项 Access Key。
+脚本检测到 Free account plan 时会在终端说明计费边界并要求一次确认，确认后调用 AWS API 升级
+为 Paid；剩余 Free Tier Credit 仍保留至原到期日。随后脚本只创建 CloudFront `FREE` 固定套餐，
+不会批准任何付费档位。非交互执行只有显式设置 `AWS_ACCOUNT_PLAN_UPGRADE=1` 才允许账号升级。
 不要使用 AWS 根用户凭证；默认方式应创建权限受限的专用 IAM 用户。AWS 注册、最小权限策略、
 IAM 用户与两项 Access Key 获取步骤见
 [获取 AWS Access Key](docs/aws-guide.md#6-创建-access-key)。该文档只包含 AWS 控制台和域名注册商操作，不包含 VPS 命令；

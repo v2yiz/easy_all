@@ -71,7 +71,9 @@ done
 assert_contains "AWS guide includes Route 53 delegation" \
     "${AWS_GUIDE_CONTENT}" '这是 CDN XHTTP 的**必要条件**'
 assert_contains "AWS guide includes CloudFront cost boundary" \
-    "${AWS_GUIDE_CONTENT}" '1 TB 向互联网传出'
+    "${AWS_GUIDE_CONTENT}" '100 GB 数据传输'
+assert_contains "AWS guide says only two credentials are supplied to the script" \
+    "${AWS_GUIDE_CONTENT}" '安装时你只需要向脚本提供'
 aws_markdown_count=$(find "${ROOT_DIR}/docs" -maxdepth 1 -type f -name 'aws*.md' | wc -l | tr -d ' ')
 [[ "${aws_markdown_count}" == "1" ]] || fail "AWS user guidance must stay in one Markdown file"
 
@@ -87,12 +89,23 @@ for action in \
     'cloudfront:GetDistribution' \
     'cloudfront:GetDistributionConfig' \
     'cloudfront:CreateDistribution' \
-    'cloudfront:UpdateDistribution'; do
+    'cloudfront:UpdateDistribution' \
+    'freetier:GetAccountPlanState' \
+    'freetier:UpgradeAccountPlan' \
+    'wafv2:ListWebACLs' \
+    'wafv2:GetWebACL' \
+    'wafv2:CreateWebACL' \
+    'pricingplanmanager:ListSubscriptions' \
+    'pricingplanmanager:GetSubscription' \
+    'pricingplanmanager:CreateSubscription' \
+    'pricingplanmanager:AssociateResourcesToSubscription'; do
     assert_contains "AWS guide permission ${action}" "${AWS_GUIDE_CONTENT}" "${action}"
 done
 assert_not_contains "AWS guide excludes unused Route 53 lookup" \
     "${AWS_GUIDE_CONTENT}" 'route53:ListHostedZonesByName'
 assert_not_contains "AWS guide excludes unused Route 53 waiter" \
     "${AWS_GUIDE_CONTENT}" 'route53:GetChange'
+assert_contains "AWS guide refuses paid flat-rate approval" \
+    "${AWS_GUIDE_CONTENT}" '不能批准 Pro、Business 或 Premium'
 
 printf 'ok - documentation alignment tests passed\n'

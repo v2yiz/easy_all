@@ -68,10 +68,10 @@ assert_contains "subscription updates enable rollback" "$(<"${PROFILE}")" \
     'UPDATE_SUB_ROLLBACK_ON_EXIT=1'
 assert_contains "CloudFront health failures are fatal" "$(<"${PROFILE}")" \
     'die "CloudFront 公网验收失败'
-assert_contains "CloudFront reinstallation discovers an existing alias before creation" \
-    "$(<"${PROFILE}")" 'alias_conflicts=$(find_distribution_by_alias || true)'
-assert_contains "CloudFront reinstallation automatically adopts a unique alias match" \
+assert_not_contains "CloudFront installation does not auto-adopt unmarked legacy distributions" \
     "$(<"${PROFILE}")" 'AWS_ADOPT_DISTRIBUTION=1'
+assert_contains "CloudFront alias conflicts require explicit old-resource cleanup" \
+    "$(<"${PROFILE}")" '脚本不会接管旧部署，请先删除旧分配或解除该别名'
 assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     '非交互卸载必须显式设置 FORCE=1'
 
@@ -269,18 +269,32 @@ EOF
     fi
     unset -f aws
 
+    AWS_ACCOUNT_ID="111122223333"
+    AWS_ACCOUNT_PLAN_UPGRADE=1
+    account_plan_counter_file="${TMP_DIR}/account-plan-counter"
+    printf '0\n' >"${account_plan_counter_file}"
     aws() {
-        printf '%s\n' '{"DistributionList":{"Items":[
-          {"Id":"CONFLICT123","DomainName":"d111111abcdef8.cloudfront.net","Status":"Deployed",
-           "Comment":"legacy distribution","Aliases":{"Quantity":1,"Items":["node.example.com"]}},
-          {"Id":"OTHER123","DomainName":"d222222abcdef8.cloudfront.net","Status":"Deployed",
-           "Comment":"unrelated","Aliases":{"Quantity":1,"Items":["other.example.com"]}}
-        ]}}'
+        local count
+        if [[ "$*" == *"freetier get-account-plan-state"* ]]; then
+            count=$(<"${account_plan_counter_file}")
+            count=$((count + 1))
+            printf '%s\n' "${count}" >"${account_plan_counter_file}"
+            if ((count == 1)); then
+                printf '%s\n' '{"accountPlanType":"FREE","accountPlanStatus":"ACTIVE"}'
+            else
+                printf '%s\n' '{"accountPlanType":"PAID","accountPlanStatus":"ACTIVE"}'
+            fi
+        elif [[ "$*" == *"freetier upgrade-account-plan"* ]]; then
+            printf '%s\n' '{"accountPlanType":"PAID","accountPlanStatus":"ACTIVE"}'
+        else
+            return 1
+        fi
     }
-    assert_equal "CloudFront alias conflict discovery reports the owning distribution" \
-        $'CONFLICT123\td111111abcdef8.cloudfront.net\tDeployed\tlegacy distribution' \
-        "$(find_distribution_by_alias)"
+    paid_upgrade_output=$(ensure_aws_paid_account_plan)
+    assert_contains "Free AWS accounts are upgraded through the API" \
+        "${paid_upgrade_output}" "已升级为 Paid"
     unset -f aws
+    unset AWS_ACCOUNT_PLAN_UPGRADE
 
     PROTOCOL="xhttp"
     XHTTP_NODE_NAME="EASY_ALL_XHTTP_TEST"
@@ -291,6 +305,7 @@ EOF
     XRAY_XHTTP_LOOPBACK_PORT="10086"
     ORIGIN_HEADER_SECRET="test-origin-header-secret"
     AWS_ACM_CERTIFICATE_ARN="arn:aws:acm:us-east-1:111122223333:certificate/test"
+    AWS_WAF_WEB_ACL_ARN="arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test"
     ALLOWED_TOKENS='{"owner":"owner-token-123"}'
     SUB_DOWNLOAD_NAME="EASY_ALL_TEST"
 
@@ -337,6 +352,7 @@ EOF
         .DefaultCacheBehavior.GrpcConfig.Enabled == true and
         .HttpVersion == "http2" and
         .ViewerCertificate.ACMCertificateArn == "arn:aws:acm:us-east-1:111122223333:certificate/test" and
+        .WebACLId == "arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test" and
         .Comment == "easy_all:xhttp:node.example.com"
     ' "${distribution}" >/dev/null || fail "CloudFront distribution config is invalid"
 
@@ -360,6 +376,58 @@ EOF
         .[2].Action == "CREATE" and .[2].ResourceRecordSet.Type == "A" and
         .[2].ResourceRecordSet.ResourceRecords == [{"Value":"203.0.113.10"}]
     ' "${origin_replace}" >/dev/null || fail "Route 53 origin A replacement batch is invalid"
+
+    viewer_alias="${TMP_DIR}/viewer-alias.json"
+    build_viewer_alias_change_batch "${viewer_alias}" '[]' \
+        "d111111abcdef8.cloudfront.net."
+    jq -e '
+        .Changes|length == 2 and
+        .[0].Action == "CREATE" and .[0].ResourceRecordSet.Type == "A" and
+        .[1].Action == "CREATE" and .[1].ResourceRecordSet.Type == "AAAA" and
+        .[0].ResourceRecordSet.AliasTarget.HostedZoneId == "Z2FDTNDATAQYW2" and
+        .[1].ResourceRecordSet.AliasTarget.DNSName == "d111111abcdef8.cloudfront.net."
+    ' "${viewer_alias}" >/dev/null || fail "Route 53 viewer Alias creation batch is invalid"
+
+    subscriptions='{"subscriptionSummaries":[
+      {"arn":"arn:plan:other","planTier":"FREE","resourceArns":["arn:distribution:other"]},
+      {"arn":"arn:plan:easy-all","planTier":"FREE","resourceArns":["arn:distribution:easy-all","arn:waf:easy-all"]}
+    ]}'
+    assert_equal "pricing plan selection is scoped to the CloudFront distribution" \
+        '[{"arn":"arn:plan:easy-all","planTier":"FREE","resourceArns":["arn:distribution:easy-all","arn:waf:easy-all"]}]' \
+        "$(select_cloudfront_pricing_subscription "${subscriptions}" "arn:distribution:easy-all")"
+
+    AWS_ACCOUNT_ID="111122223333"
+    AWS_CLOUDFRONT_DISTRIBUTION_ID="EASYALL123"
+    AWS_CLOUDFRONT_DISTRIBUTION_ARN="arn:aws:cloudfront::111122223333:distribution/EASYALL123"
+    AWS_WAF_WEB_ACL_ARN="arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test"
+    AWS_ROUTE53_ZONE_ID="ZVIEWER123"
+    AWS_CLOUDFRONT_PRICING_PLAN_ARN=""
+    pricing_calls="${TMP_DIR}/pricing-plan-calls"
+    : >"${pricing_calls}"
+    aws() {
+        printf '%s\n' "$*" >>"${pricing_calls}"
+        case "$*" in
+        *"pricing-plan-manager list-subscriptions"*)
+            printf '%s\n' '{"subscriptionSummaries":[]}'
+            ;;
+        *"pricing-plan-manager create-subscription"*)
+            printf '%s\n' '{"subscription":{"arn":"arn:aws:pricingplanmanager:us-east-1:111122223333:subscription/easy-all","status":"SYNC_IN_PROGRESS"},"eTag":"v1"}'
+            ;;
+        *"pricing-plan-manager get-subscription"*)
+            printf '%s\n' '{"subscription":{"arn":"arn:aws:pricingplanmanager:us-east-1:111122223333:subscription/easy-all","planTier":"FREE","status":"ACTIVE","resourceArns":["arn:aws:cloudfront::111122223333:distribution/EASYALL123","arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test","arn:aws:route53:::hostedzone/ZVIEWER123"]},"eTag":"v2"}'
+            ;;
+        *) return 1 ;;
+        esac
+    }
+    ensure_cloudfront_free_pricing_plan >/dev/null
+    pricing_call_text=$(<"${pricing_calls}")
+    assert_contains "pricing plan creation is hard-coded to the FREE tier" \
+        "${pricing_call_text}" "--plan-tier FREE"
+    assert_contains "pricing plan creation includes the viewer Route 53 zone" \
+        "${pricing_call_text}" "arn:aws:route53:::hostedzone/ZVIEWER123"
+    assert_not_contains "pricing plan automation never approves a paid subscription" \
+        "${pricing_call_text}" "approve-paid-subscription"
+    unset -f aws
 
     template="${ROOT_DIR}/sample-mihomo.yaml"
     node_file="${TMP_DIR}/mihomo-node.yaml"
@@ -481,7 +549,7 @@ assert_contains "AWS guide highlights the required Route 53 zone replacement" \
 assert_contains "AWS guide requires the global AWS account partition" \
     "${readme}" "AWS 中国区域账号"
 assert_contains "AWS guide documents CloudFront's monthly free transfer allowance" \
-    "${readme}" "1 TB 向互联网传出"
+    "${readme}" "100 GB 数据传输"
 assert_contains "AWS guide requires Route 53 public DNS delegation for XHTTP" \
     "${readme}" "这是 CDN XHTTP 的**必要条件**"
 assert_contains "AWS guide distinguishes DNS delegation from domain registration transfer" \
