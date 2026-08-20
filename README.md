@@ -89,7 +89,7 @@ flowchart TD
     X5 --> X6
     X6 --> X7[配置 UFW / Nginx HTTP-01 / 源站证书 / 安装 Xray 与 Nginx]
     X7 --> X8[ACM 证书 / CloudFront / Route 53 CDN CNAME]
-    X8 --> X9[保存状态并注册 easy_all]
+    X8 --> X9[保存状态 / 注册 easy_all / 配置配额任务]
     X9 --> Z
 ```
 
