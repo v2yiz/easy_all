@@ -82,15 +82,17 @@ flowchart TD
     X0 --> X1[系统预检 / 冲突检查 / 备份]
     X1 --> X2[依赖 / SSH 启动保障 / AWS CLI / BBR / 重启策略]
     X2 --> X3[源站域名 / CDN 域名 / VLESS 自动参数]
-    X3 --> X4{订阅输出选择}
+    X3 --> X3A{CloudFront 计费模式选择}
+    X3A -->|Free 固定套餐| X4{订阅输出选择}
+    X3A -->|按量付费| X4
     X4 -->|部署| X5[文件名、Token 或用户配额]
     X4 -->|仅节点| X6[不生成订阅文件]
     X5 --> X7[AWS IAM 授权（同一命令内复用）/ Route 53 源站 A]
     X6 --> X7
     X7 --> X8[UFW / Nginx HTTP-01]
     X8 --> X9[源站证书 / Xray / Nginx / 已选订阅输出验收]
-    X9 --> X10[ACM / Paid account plan 检查或确认升级 / WAF / CloudFront / Free 固定套餐 / Route 53 Alias A/AAAA / 公网验收]
-    X10 --> X11[保存状态 / 注册 easy_all / 配置配额任务]
+    X9 --> X10[ACM / Paid account plan 检查或确认升级 / CloudFront / 按选择配置 WAF 与固定套餐或按量付费 / Route 53 Alias A/AAAA / 公网验收]
+    X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]
     X11 --> Z
 ```
 
@@ -100,6 +102,7 @@ flowchart TD
 
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
+| CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费 | `2` | 使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
 | 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
@@ -119,14 +122,14 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
-| `status` | 显示当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示状态文件中保存的 Route 53 Zone ID 和 CloudFront 分配信息，不调用 AWS API。 |
+| `status` | 显示当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示 Route 53、CloudFront 分配以及全局费用保护状态，不调用 AWS API。 |
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或 AWS。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS。 |
 | `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并显式同步 Route 53、ACM 和 CloudFront。 |
 | `update-sub` | 重新选择订阅输出并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件，不修改 AWS。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
-| `quota-status` | 显示启用月度配额后每个订阅用户的本月上下行总流量、额度和停用状态。 |
+| `quota-status` | 显示每用户月度配额；CDN XHTTP 按量付费模式同时显示独立的 CloudFront 全局费用保护用量。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
 | `uninstall` | 卸载当前模式的本机资源。XHTTP 保留 CloudFront、ACM 和 Route 53 资源，需在 AWS Console 中自行确认是否清理。 |
@@ -143,7 +146,7 @@ AWS 云资源时才使用 `easy_all apply-cloud`。
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
 | Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 UFW；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
-| CDN XHTTP | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重新生成 Xray 与 Nginx 配置，重启并验收本机 Xray 运行时。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复配额任务并显示输出。整个过程不读取 AWS 授权、不修改 Route 53、ACM 或 CloudFront。 |
+| CDN XHTTP | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取 AWS 授权、不修改 Route 53、ACM 或 CloudFront。 |
 
 Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的
 状态、Xray/Nginx 配置和订阅文件。这不等于回滚已加载的 TCP 参数或已成功的 AWS 变更。
@@ -151,7 +154,7 @@ Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已�
 ### `apply-cloud` 的具体操作
 
 `easy_all apply-cloud` 仅适用于 CDN XHTTP。它按“读取状态与备份 → BBR/UFW → Route 53
-源站 A 记录 → ACM → AWS account plan 检查 → WAF/CloudFront/Free 固定套餐/CDN Alias A/AAAA 与公网健康检查 → 重建本机 Xray/Nginx/订阅
+源站 A 记录 → ACM → AWS account plan 检查 → CloudFront/已选计费模式/CDN Alias A/AAAA 与公网健康检查 → 重建本机 Xray/Nginx/订阅
 → 保存状态”执行。默认使用当前终端提供的 Access Key；也可显式启用 AWS 默认凭证链。
 AWS 已成功创建或变更的云资源不自动回滚，因此只有云端配置确实需要同步时才应执行该命令。
 
@@ -501,6 +504,37 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 | `origin.example.com` | CloudFront HTTPS 源站，A 记录指向 VPS     |
 | `node.example.com`   | 客户端和订阅入口，Alias A/AAAA 指向 CloudFront |
 
+### CloudFront 计费选择与估算
+
+安装时必须选择一种计费模式，选择结果写入状态，后续 `apply-cloud` 沿用该选择：
+
+| 模式 | CloudFront 月度额度与超额 | Route 53/WAF 估算 |
+| --- | --- | --- |
+| Free 固定套餐 | `$0/月`，基准 100 GB + 100 万请求。超过基准仍无超额费，费用估算为 `$0`；持续明显超额时 AWS 可能减少或调整边缘交付能力。 | 脚本创建的 WAF，以及加入套餐的 CDN Hosted Zone、CloudFront Alias 和额度内其他 DNS 查询由套餐覆盖。若源站使用另一个 Hosted Zone，该 Zone 仍约 `$0.50/月 + $0.40/百万次标准查询`。 |
+| 按量付费（默认） | 每月免费 1 TB + 1000 万请求。脚本自动启用独立的 980 GB 本机全局费用保护；超过 1 TB 后，以常见美国/欧洲至亚太边缘价格估算，每多 100 GB 约 `$8.50-$12.00`，超额请求另按实际边缘区域计费。 | 脚本不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；指向 CloudFront 的 Alias A/AAAA 查询免费，其他标准查询约 `$0.04/10万次`、`$0.40/百万次`。同一 Zone 约 `$0.50/月`，源站与 CDN 分属两个 Zone 时约 `$1.00/月`，再加少量标准查询费。 |
+
+两种 CloudFront 计费优惠不能叠加。按量付费的估算不包含 VPS 自身的 1 TB 上行流量、域名注册、
+DNSSEC KMS、Health Check、Query Logs 等费用；最终金额还取决于实际边缘区域与 AWS 当期价格。
+
+### 按量付费全局费用保护
+
+选择 XHTTP + CloudFront 按量付费时，脚本自动启用一个独立于“每用户月度配额”的全局安全阀，
+不再增加交互选项：
+
+- 固定阈值为 `980 GB`，统计所有 Xray 用户的上行与下行总和；即使选择“仅输出节点”或没有启用
+  每用户配额也会工作。
+- 账期固定为 AWS 的 UTC 自然月：每月 1 日 `00:00 UTC` 重置；北京时间为每月 1 日 `08:00`。
+- 本机 `StatsService` 只监听 `127.0.0.1:10085`，独立定时器每 15 秒结算一次。脚本主动重启
+  Xray 前也会先结算，避免应用配置或更新核心时丢失尚未落盘的流量。
+- 达到阈值后把 Xray 客户端列表整体置空并重启 Xray，从而终止现有连接并阻止新连接；进入下一
+  UTC 自然月后自动恢复。
+- 全局账本保存在 `/etc/easy_all/cloudfront-fee-usage.json`，权限为 `0600`。AWS Access Key
+  不会写入 VPS，也不参与这项本机定时统计。
+
+该保护统计的是到达 Xray 的上下行字节，不是 CloudFront 精确账单，也不统计 CloudFront 已处理
+但未到达 Xray 的请求、TLS/HTTP 开销或请求次数。因此它是带 20 GB 缓冲的费用安全阀，不是 AWS
+侧硬额度；`1000 万次请求`仍不能通过 Xray 字节统计提前精确阻断。
+
 ### CDN 安装重试与 AWS 幂等
 
 安装中断后重新执行时，脚本会收敛到本次安装已经创建的受管 AWS 资源：
@@ -509,9 +543,9 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 | --- | --- |
 | Route 53 源站 A | 已准确指向当前 VPS 时直接复用；不存在时创建。指向其他地址或存在 AAAA/CNAME 时默认停止，确认后设置 `AWS_ORIGIN_DNS_REPLACE=1`。 |
 | ACM 证书 | 复用覆盖 CDN 域名的已签发或待验证证书，优先已签发证书；支持复用单级通配符证书。找不到时才申请新证书。 |
-| WAF Web ACL | 按 CDN 域名的稳定哈希复用独占 Web ACL；找不到时创建默认放行的 ACL，不额外拦截 XHTTP。 |
+| WAF Web ACL | 仅 Free 固定套餐创建并复用默认放行的独占 Web ACL；按量付费不创建，避免 WAF 基础费。 |
 | CloudFront | 按稳定标记 `easy_all:xhttp:<CDN域名>` 找回原分配，保留 Caller Reference 并更新为当前配置，不创建第二个分配。 |
-| CloudFront Free 固定套餐 | 按分配 ARN 查找并复用 `FREE` 套餐；缺失时创建，并确保 CDN Hosted Zone 已加入套餐。检测到付费档位时停止，不自动改变计费套餐。 |
+| CloudFront 计费 | Free 固定套餐按分配 ARN 复用 `FREE` 套餐，并确保 CDN Hosted Zone 已加入；按量付费会确认分配没有关联固定套餐。检测到与已选模式冲突时停止，不自动切换计费。 |
 | Route 53 CDN Alias | 已指向当前分配的 A/AAAA 直接复用；不存在时创建。任何其他同名记录都默认停止，不自动迁移旧部署；确认覆盖时设置 `AWS_DNS_REPLACE=1`。 |
 
 脚本只复用带有当前稳定管理标记的 CloudFront 分配，不会自动接管无标记的旧部署或其他分配。
@@ -530,8 +564,9 @@ AWS 默认交互授权使用 Access Key ID 与 Secret Access Key；它们仅在�
 不写入状态文件。在 VPS 已配置可用的 IAM Role 或 AWS CLI 默认凭证链时，可执行
 `sudo env AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1 easy_all apply-cloud`，这时不询问两项 Access Key。
 脚本检测到 Free account plan 时会在终端说明计费边界并要求一次确认，确认后调用 AWS API 升级
-为 Paid；剩余 Free Tier Credit 仍保留至原到期日。随后脚本只创建 CloudFront `FREE` 固定套餐，
-不会批准任何付费档位。非交互执行只有显式设置 `AWS_ACCOUNT_PLAN_UPGRADE=1` 才允许账号升级。
+为 Paid；剩余 Free Tier Credit 仍保留至原到期日。脚本随后按安装时的选择创建 CloudFront
+`FREE` 固定套餐，或保持按量付费且不创建 WAF；不会批准 Pro、Business 或 Premium 套餐。
+非交互执行只有显式设置 `AWS_ACCOUNT_PLAN_UPGRADE=1` 才允许账号升级。
 不要使用 AWS 根用户凭证；默认方式应创建权限受限的专用 IAM 用户。AWS 注册、最小权限策略、
 IAM 用户与两项 Access Key 获取步骤见
 [获取 AWS Access Key](docs/aws-guide.md#6-创建-access-key)。该文档只包含 AWS 控制台和域名注册商操作，不包含 VPS 命令；
@@ -544,6 +579,7 @@ IAM 用户与两项 Access Key 获取步骤见
 ```text
 /etc/easy_all/state.env
 /etc/easy_all/quota-usage.json
+/etc/easy_all/cloudfront-fee-usage.json
 /etc/easy_all/xray/config.json
 /etc/easy_all/certs/
 /var/www/easy_all/subscriptions/
@@ -551,14 +587,19 @@ IAM 用户与两项 Access Key 获取步骤见
 /etc/systemd/system/easy_all-xray.service
 /etc/systemd/system/easy_all-quota.service
 /etc/systemd/system/easy_all-quota.timer
+/etc/systemd/system/easy_all-cloudfront-fee.service
+/etc/systemd/system/easy_all-cloudfront-fee.timer
 ```
 
 状态字段包括：
 
 ```text
-STATE_VERSION=2
+STATE_VERSION=2  # Reality
+STATE_VERSION=4  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws
+AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg  # 仅 XHTTP
+CLOUDFRONT_FEE_PROTECTION_GB=0|980           # XHTTP 固定套餐|按量付费
 ```
 
 Reality 的 `CDN_PROVIDER` 为空。XHTTP 当前固定为 `aws`。easy_all 不会将 AWS Access Key、
@@ -577,6 +618,7 @@ easy_all
    ├─ reality.sh             Reality 编排与专属配置
    ├─ xhttp.sh               XHTTP/AWS 编排与专属配置
    ├─ quota.sh               用户配额与统计
+   ├─ cloudfront-fee-protection.sh  按量付费全局流量保护与 UTC 月度账本
    ├─ platform.sh            root/systemd/SSH 启动保障
    ├─ profile-runtime.sh     Profile 临时目录、交互和注册桥接
    ├─ network.sh             公网 IPv4 探测

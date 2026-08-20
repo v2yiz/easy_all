@@ -48,10 +48,11 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="2"
+readonly STATE_SCHEMA_VERSION="4"
 readonly AWS_CONTROL_REGION="us-east-1"
 readonly AWS_CLOUDFRONT_PLAN_FAMILY="CloudFront"
 readonly AWS_CLOUDFRONT_PLAN_TIER="FREE"
+readonly DEFAULT_AWS_CLOUDFRONT_BILLING_MODE="payg"
 readonly CLOUDFRONT_CACHE_POLICY_ID="4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
 readonly CLOUDFRONT_ORIGIN_REQUEST_POLICY_ID="b689b0a8-53d0-40ab-baf2-68738e2966ac"
 readonly CLOUDFRONT_ORIGIN_ID="easy_all-xhttp-origin"
@@ -68,6 +69,8 @@ readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
+# shellcheck source=lib/cloudfront-fee-protection.sh
+source "${SCRIPT_DIR}/cloudfront-fee-protection.sh"
 # shellcheck source=lib/platform.sh
 source "${SCRIPT_DIR}/platform.sh"
 # shellcheck source=lib/profile-runtime.sh
@@ -169,6 +172,44 @@ subscription_enabled() {
     [[ "${SUBSCRIPTION_MODE:-deploy}" == "deploy" ]]
 }
 
+validate_cloudfront_billing_mode() {
+    [[ "$1" == "flat-free" || "$1" == "payg" ]]
+}
+
+cloudfront_flat_rate_enabled() {
+    [[ "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "flat-free" ]]
+}
+
+choose_cloudfront_billing_mode() {
+    local mode=${AWS_CLOUDFRONT_BILLING_MODE:-} current_mode choice default_choice=2
+    current_mode=${mode:-${DEFAULT_AWS_CLOUDFRONT_BILLING_MODE}}
+    case "${current_mode}" in
+    1 | flat-free | free | fixed) current_mode="flat-free"; default_choice=1 ;;
+    2 | payg | on-demand) current_mode="payg"; default_choice=2 ;;
+    *) die "CloudFront 计费模式无效：${current_mode}" ;;
+    esac
+    if [[ -t 0 ]]; then
+        printf '请选择 CloudFront 计费模式：\n'
+        printf '  1. Free 固定套餐：$0/月，基准 100 GB + 100 万请求\n'
+        printf '     超出费用估算：$0；无超额费，但长期明显超额可能降低边缘性能\n'
+        printf '     套餐包含 WAF；加入套餐的 1 个 Route 53 Hosted Zone 及额度内查询也由套餐覆盖\n'
+        printf '  2. 按量付费（1 TB 稳定月流量推荐）：每月免费 1 TB + 1000 万请求\n'
+        printf '     自动启用独立的 980 GB 全局费用保护（UTC 自然月，每 15 秒检查）\n'
+        printf '     1 个 Hosted Zone 估算 $0.50/月；CloudFront Alias 查询 $0，其他标准 DNS 查询 $0.40/百万次\n'
+        printf '     超过 1 TB 后，每多 100 GB 流量约 $8.50-$12.00，另计超额请求（实际按边缘区域）\n'
+        read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " choice
+        mode=${choice:-${current_mode}}
+    elif [[ -z "${mode}" ]]; then
+        die "非交互模式必须设置 AWS_CLOUDFRONT_BILLING_MODE=flat-free 或 payg"
+    fi
+    case "${mode}" in
+    1 | flat-free | free | fixed) AWS_CLOUDFRONT_BILLING_MODE="flat-free" ;;
+    2 | payg | on-demand) AWS_CLOUDFRONT_BILLING_MODE="payg" ;;
+    *) die "CloudFront 计费模式无效：${mode}" ;;
+    esac
+    configure_cloudfront_fee_protection
+}
+
 choose_subscription_download_name() {
     local name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
     if [[ -t 0 ]]; then
@@ -194,6 +235,7 @@ collect_install_inputs() {
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
+    choose_cloudfront_billing_mode
 
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
     XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
@@ -221,20 +263,21 @@ source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 状态文件不存在：${STATE_FILE}"
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "1" || "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
 }
 
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL CDN_PROVIDER XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
+        PROTOCOL CDN_PROVIDER AWS_CLOUDFRONT_BILLING_MODE XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
         XHTTP_PATH AWS_ORIGIN_DOMAIN
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET
         AWS_ORIGIN_ROUTE53_ZONE_ID AWS_ROUTE53_ZONE_ID AWS_ACM_CERTIFICATE_ARN
         AWS_WAF_WEB_ACL_ARN AWS_CLOUDFRONT_DISTRIBUTION_ID
         AWS_CLOUDFRONT_DISTRIBUTION_ARN AWS_CLOUDFRONT_DOMAIN
         AWS_CLOUDFRONT_PRICING_PLAN_ARN
+        CLOUDFRONT_FEE_PROTECTION_GB
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
@@ -256,6 +299,9 @@ load_state() {
     CDN_PROVIDER=${CDN_PROVIDER:-aws}
     [[ "${CDN_PROVIDER}" == "aws" ]] \
         || die "当前版本不支持 CDN Provider：${CDN_PROVIDER}"
+    validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
+        || die "状态文件中的 CloudFront 计费模式无效：${AWS_CLOUDFRONT_BILLING_MODE:-缺失}"
+    configure_cloudfront_fee_protection
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     [[ -n "${XHTTP_PATH:-}" ]] || die "状态中缺少 XHTTP_PATH；请卸载后重新安装"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
@@ -290,6 +336,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'CDN_PROVIDER=%q\n' "${CDN_PROVIDER:-aws}"
+        printf 'AWS_CLOUDFRONT_BILLING_MODE=%q\n' "${AWS_CLOUDFRONT_BILLING_MODE}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
@@ -305,6 +352,7 @@ save_state() {
         printf 'AWS_CLOUDFRONT_DISTRIBUTION_ARN=%q\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ARN:-}"
         printf 'AWS_CLOUDFRONT_DOMAIN=%q\n' "${AWS_CLOUDFRONT_DOMAIN:-}"
         printf 'AWS_CLOUDFRONT_PRICING_PLAN_ARN=%q\n' "${AWS_CLOUDFRONT_PRICING_PLAN_ARN:-}"
+        printf 'CLOUDFRONT_FEE_PROTECTION_GB=%q\n' "${CLOUDFRONT_FEE_PROTECTION_GB:-0}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
         printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
@@ -365,7 +413,7 @@ install_aws_cli() {
         return 0
     fi
     local temp_dir archive
-    info "安装或更新支持 CloudFront 固定套餐的 AWS CLI v2"
+    info "安装或更新支持 AWS account plan 与 CloudFront 固定套餐 API 的 AWS CLI v2"
     temp_dir=$(make_temp_dir)
     archive="${temp_dir}/awscliv2.zip"
     curl -fsSL --retry 3 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "${archive}" \
@@ -526,7 +574,7 @@ EOF
 }
 
 write_xray_config() {
-    local clients
+    local clients stats_enabled=false
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -534,9 +582,11 @@ write_xray_config() {
         clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" \
             '[{id:$id,email:$email}]')
     fi
+    cloudfront_fee_protection_blocked && clients='[]'
+    traffic_stats_enabled && stats_enabled=true
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" \
-        --argjson quota_enabled "$([[ "${QUOTA_ENABLED:-0}" == "1" ]] && printf true || printf false)" \
+        --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" '
         {
@@ -558,7 +608,7 @@ write_xray_config() {
           outbounds:[{protocol:"freedom",tag:"direct"}],
           routing:{domainStrategy:"AsIs",rules:[{type:"field",network:"tcp,udp",outboundTag:"direct"}]}
         }
-        + (if $quota_enabled then {
+        + (if $stats_enabled then {
             api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
             stats:{},
             policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}
@@ -766,7 +816,11 @@ confirm_aws_paid_account_upgrade() {
     if [[ ! -t 0 ]]; then
         die "AWS 账号仍是 Free account plan；非交互执行必须显式设置 AWS_ACCOUNT_PLAN_UPGRADE=1"
     fi
-    alert "CloudFront Free 固定套餐要求 AWS 账号先升级为 Paid account plan。"
+    if cloudfront_flat_rate_enabled; then
+        alert "CloudFront Free 固定套餐要求 AWS 账号先升级为 Paid account plan。"
+    else
+        alert "按量付费模式需要 Paid account plan 才能在免费额度外持续使用并正常结算。"
+    fi
     warn "升级不会清空正常剩余的 Free Tier Credit，但超出 Credit 或套餐范围的资源可能扣费。"
     read -r -p "确认由脚本将 AWS 账号 ${AWS_ACCOUNT_ID} 升级为 Paid account plan？[y/N]（直接回车取消）: " answer
     [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消 AWS 账号计划升级"
@@ -828,6 +882,27 @@ find_route53_zones() {
     AWS_ROUTE53_ZONE_ID=${AWS_ROUTE53_ZONE_ID#/hostedzone/}
     [[ "${VLESS_CDN_DOMAIN}." != "${AWS_ROUTE53_ZONE_NAME}" ]] \
         || die "easy_all CDN XHTTP 当前要求使用子域名，不能直接使用 Hosted Zone 根域"
+}
+
+show_cloudfront_billing_estimate() {
+    local hosted_zone_count=2 hosted_zone_cost='1.00'
+    if [[ "${AWS_ORIGIN_ROUTE53_ZONE_ID}" == "${AWS_ROUTE53_ZONE_ID}" ]]; then
+        hosted_zone_count=1
+        hosted_zone_cost='0.50'
+    fi
+    if cloudfront_flat_rate_enabled; then
+        info "已选 CloudFront Free 固定套餐：CloudFront、套餐 WAF 和 CDN Hosted Zone 估算 \$0/月"
+        warn "固定套餐基准 100 GB + 100 万请求；超出费用仍为 \$0，但持续明显超额可能降低边缘性能"
+        if ((hosted_zone_count == 2)); then
+            warn "源站与 CDN 使用两个 Hosted Zone：套餐只覆盖 CDN Zone；源站 Zone 另估 \$0.50/月 + 标准 DNS 查询 \$0.40/百万次"
+        fi
+    else
+        info "已选 CloudFront 按量付费：免费 1 TB + 1000 万请求；不创建 WAF"
+        info "已启用 ${CLOUDFRONT_FEE_PROTECTION_GB} GB 全局费用保护：按 UTC 自然月统计，每 15 秒检查"
+        info "当前使用 ${hosted_zone_count} 个 Hosted Zone：固定费用估算 \$${hosted_zone_cost}/月"
+        info "CloudFront Alias A/AAAA 查询 \$0；其他标准 DNS 查询每 10 万次约 \$0.04、每 100 万次约 \$0.40"
+        warn "超过 1 TB 后，每多 100 GB 流量约 \$8.50-\$12.00，另计超过 1000 万次后的请求费；实际按边缘区域结算"
+    fi
 }
 
 build_origin_a_change_batch() {
@@ -1293,6 +1368,25 @@ ensure_cloudfront_free_pricing_plan() {
     fi
 }
 
+ensure_cloudfront_payg_mode() {
+    local distribution_arn subscriptions matches count tier
+    distribution_arn=${AWS_CLOUDFRONT_DISTRIBUTION_ARN:-}
+    if [[ -z "${distribution_arn}" ]]; then
+        distribution_arn="arn:aws:cloudfront::${AWS_ACCOUNT_ID}:distribution/${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
+        AWS_CLOUDFRONT_DISTRIBUTION_ARN=${distribution_arn}
+    fi
+    subscriptions=$(aws pricing-plan-manager list-subscriptions --region "${AWS_CONTROL_REGION}" \
+        --output json) || die "确认 CloudFront 按量付费状态失败"
+    matches=$(select_cloudfront_pricing_subscription "${subscriptions}" "${distribution_arn}")
+    count=$(jq 'length' <<<"${matches}")
+    if ((count > 0)); then
+        tier=$(jq -r '.[0].planTier // "未知"' <<<"${matches}")
+        die "已选择按量付费，但当前 CloudFront 分配仍关联 ${tier} 固定套餐；请先在 AWS 取消套餐后重新安装"
+    fi
+    AWS_CLOUDFRONT_PRICING_PLAN_ARN=""
+    success "CloudFront 已使用按量付费；未创建 WAF 或固定套餐"
+}
+
 validate_cloudfront_health() {
     local attempt response
     for attempt in {1..20}; do
@@ -1308,13 +1402,22 @@ configure_aws_cdn() {
     install_aws_cli
     collect_aws_credentials
     find_route53_zones
+    show_cloudfront_billing_estimate
     find_or_request_acm_certificate
     ensure_aws_paid_account_plan
-    ensure_cloudfront_web_acl
+    if cloudfront_flat_rate_enabled; then
+        ensure_cloudfront_web_acl
+    else
+        AWS_WAF_WEB_ACL_ARN=""
+    fi
     configure_cloudfront_distribution
     ensure_viewer_alias_records
     wait_for_cloudfront
-    ensure_cloudfront_free_pricing_plan
+    if cloudfront_flat_rate_enabled; then
+        ensure_cloudfront_free_pricing_plan
+    else
+        ensure_cloudfront_payg_mode
+    fi
     validate_cloudfront_health
     clear_aws_credentials
 }
@@ -1511,6 +1614,8 @@ show_status() {
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
+    printf 'CloudFront 计费模式: %s\n' \
+        "$([[ "${AWS_CLOUDFRONT_BILLING_MODE}" == "flat-free" ]] && printf 'Free 固定套餐' || printf '按量付费')"
     printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\n' \
         "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
@@ -1525,16 +1630,19 @@ show_status() {
         printf '订阅服务: disabled（仅节点）\n'
     fi
     show_quota_status
+    show_cloudfront_fee_protection_status
 }
 
 refresh_runtime() {
     local backup
     collect_installed_state
+    cloudfront_fee_protection_checkpoint
     backup=$(make_temp_dir)
     install -m 0600 "${XRAY_CONFIG}" "${backup}/config.json"
     install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
     if write_xray_config && write_nginx_config \
-        && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime; then
+        && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
+        && cloudfront_fee_mark_enforced; then
         success "运行时配置已刷新"
         return 0
     fi
@@ -1546,7 +1654,7 @@ refresh_runtime() {
     die "运行时刷新失败"
 }
 
-quota_rebuild_runtime() {
+rebuild_traffic_runtime() {
     refresh_runtime
 }
 
@@ -1614,6 +1722,7 @@ update_subscription() {
     save_state
     refresh_runtime
     install_quota_timer
+    install_cloudfront_fee_protection_timer
     end_quota_maintenance
     subscription_enabled && validate_subscription_runtime
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -1633,6 +1742,7 @@ finish_xhttp_apply() {
     save_state
     register_easy_all_command
     install_quota_timer
+    install_cloudfront_fee_protection_timer
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
@@ -1659,7 +1769,7 @@ apply_cloud_resources() {
     cdn_prepare_origin
     cdn_apply
     finish_xhttp_apply
-    success "easy_all CDN XHTTP 本机配置、Route 53、WAF、CloudFront 与 Free 固定套餐已应用"
+    success "easy_all CDN XHTTP 本机配置、Route 53、CloudFront 与已选计费模式已应用"
 }
 
 update_current_core() {
@@ -1668,10 +1778,17 @@ update_current_core() {
     begin_quota_maintenance
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
-    if download_xray && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime; then
-        end_quota_maintenance
-        success "Xray 已更新"
-        return 0
+    if download_xray; then
+        cloudfront_fee_protection_checkpoint
+        if cloudfront_fee_protection_needs_apply; then
+            write_xray_config
+        fi
+        if systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
+            && cloudfront_fee_mark_enforced; then
+            end_quota_maintenance
+            success "Xray 已更新"
+            return 0
+        fi
     fi
     install -m 0755 "${backup_bin}" "${XRAY_BIN}"
     systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 || true
@@ -1717,6 +1834,7 @@ rollback_fresh_install() {
     warn "安装失败，正在恢复本机服务与防火墙；已创建的 AWS 资源不会自动删除"
     stop_services
     remove_quota_timer
+    remove_cloudfront_fee_protection_timer
     restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
@@ -1755,13 +1873,14 @@ uninstall_all() {
     fi
     stop_services
     remove_quota_timer
+    remove_cloudfront_fee_protection_timer
     restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${AWS_ORIGIN_DOMAIN:-}"
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
-    success "easy_all XHTTP 本机内容已卸载；CloudFront、WAF、Free 固定套餐、ACM 与 Route 53 记录未删除"
+    success "easy_all XHTTP 本机内容已卸载；CloudFront、ACM、Route 53 记录及可能存在的 WAF/固定套餐未删除"
 }
 
 install_all() {
@@ -1780,7 +1899,7 @@ install_all() {
     info "[2/9] 初始化 Google BBR 与定时重启"
     configure_bbr_tcp
     configure_daily_reboot
-    info "[3/9] 收集域名与 VLESS 参数"
+    info "[3/9] 收集域名、CloudFront 计费模式与 VLESS 参数"
     collect_install_inputs
     alert "源站域名与 CDN 域名都必须位于 AWS Route 53 Public Hosted Zone。"
     info "[4/9] 创建并验证 Route 53 源站 A 记录"
@@ -1797,12 +1916,13 @@ install_all() {
     write_nginx_config
     validate_protocol_runtime
     subscription_enabled && validate_subscription_runtime
-    info "[7/9] 配置 ACM、确认 AWS Paid plan、WAF、CloudFront Free 固定套餐与 Route 53 CDN Alias"
+    info "[7/9] 配置 ACM、确认 AWS Paid plan、CloudFront 已选计费模式与 Route 53 CDN Alias"
     cdn_apply
     info "[8/9] 保存状态并注册命令"
     save_state
     register_easy_all_command
     install_quota_timer
+    install_cloudfront_fee_protection_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     info "[9/9] 输出节点与订阅"
     show_subscription
@@ -1823,7 +1943,7 @@ usage() {
   status           显示本机状态与已保存的 AWS 资源 ID
   update-core      更新 Xray，失败时恢复旧版本
   renew-cert       强制续期源站 Let's Encrypt 证书
-  quota-status     显示每个用户的本月流量与配额状态
+  quota-status     显示用户配额与 CloudFront 全局费用保护状态
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
   uninstall        删除本机内容，保留远端 AWS 资源
@@ -1846,7 +1966,13 @@ main() {
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;
     quota-sync) quota_sync_usage ;;
-    quota-status) require_root; collect_installed_state; show_quota_status ;;
+    cloudfront-fee-sync) cloudfront_fee_protection_sync ;;
+    quota-status)
+        require_root
+        collect_installed_state
+        show_quota_status
+        show_cloudfront_fee_protection_status
+        ;;
     quota-set) shift; quota_set_user "$@" ;;
     quota-reset) shift; quota_reset_user "$@" ;;
     register-command) register_easy_all_command ;;

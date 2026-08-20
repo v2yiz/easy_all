@@ -40,6 +40,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/lib/reality.sh" \
     && -f "${REPO_DIR}/lib/xhttp.sh" \
     && -f "${REPO_DIR}/lib/quota.sh" \
+    && -f "${REPO_DIR}/lib/cloudfront-fee-protection.sh" \
     && -f "${REPO_DIR}/lib/platform.sh" \
     && -f "${REPO_DIR}/lib/profile-runtime.sh" \
     && -f "${REPO_DIR}/lib/network.sh" \

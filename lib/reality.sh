@@ -1552,7 +1552,7 @@ refresh_protocol_runtime_config() {
     die "运行时配置更新失败，已恢复旧配置"
 }
 
-quota_rebuild_runtime() {
+rebuild_traffic_runtime() {
     local backup
     backup=$(make_temp_dir)
     install -m 0600 "${XRAY_CONFIG}" "${backup}/xray.json"

@@ -14,6 +14,14 @@ quota_enabled() {
     [[ "${QUOTA_ENABLED:-0}" == "1" ]]
 }
 
+traffic_stats_enabled() {
+    quota_enabled && return 0
+    if declare -F cloudfront_fee_protection_enabled >/dev/null 2>&1; then
+        cloudfront_fee_protection_enabled && return 0
+    fi
+    return 1
+}
+
 begin_quota_maintenance() {
     install -d -m 0700 "${STATE_DIR}"
     install -m 0600 /dev/null "${QUOTA_MAINTENANCE_FILE}"
@@ -344,7 +352,7 @@ EOF
 
 validate_quota_api() {
     local attempt
-    quota_enabled || return 0
+    traffic_stats_enabled || return 0
     for attempt in 1 2 3 4 5; do
         if "${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}" \
             >/dev/null 2>&1; then
@@ -352,7 +360,7 @@ validate_quota_api() {
         fi
         sleep 1
     done
-    die "Xray 用户流量统计 API 验收失败：${QUOTA_API_LISTEN}"
+    die "Xray 流量统计 API 验收失败：${QUOTA_API_LISTEN}"
 }
 
 remove_quota_timer() {
@@ -427,7 +435,7 @@ quota_sync_usage() {
     printf '%s\n' "${usage}" >"${temp}"
     install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
     if [[ "${changed}" == "1" ]]; then
-        if ! (quota_rebuild_runtime); then
+        if ! (rebuild_traffic_runtime); then
             printf '%s\n' "${original_usage}" >"${temp}"
             install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
             rm -rf -- "${lock_dir}"
@@ -514,7 +522,7 @@ quota_set_user() {
     printf '%s\n' "${usage}" >"${temp}"
     install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
     save_state
-    if [[ "${old_disabled}" != "${new_disabled}" ]] && ! (quota_rebuild_runtime); then
+    if [[ "${old_disabled}" != "${new_disabled}" ]] && ! (rebuild_traffic_runtime); then
         USER_ACCOUNTS=${old_accounts}
         save_state
         printf '%s\n' "${old_usage}" >"${temp}"
@@ -558,7 +566,7 @@ quota_reset_user() {
     cleanup_files+=("${temp}")
     printf '%s\n' "${usage}" >"${temp}"
     install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
-    if [[ "${old_disabled}" == "true" ]] && ! (quota_rebuild_runtime); then
+    if [[ "${old_disabled}" == "true" ]] && ! (rebuild_traffic_runtime); then
         printf '%s\n' "${old_usage}" >"${temp}"
         install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
         release_quota_command_lock

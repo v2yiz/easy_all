@@ -36,7 +36,7 @@ assert_contains "Xray XHTTP inbound" "$(<"${PROFILE}")" \
     'tag:"vless-xhttp-h2-in"'
 assert_contains "Xray fixes XHTTP to stream-up" "$(<"${PROFILE}")" \
     'mode:"stream-up"'
-assert_contains "quota mode exposes Stats API only on loopback" "$(<"${PROFILE}")" \
+assert_contains "traffic accounting exposes Stats API only on loopback" "$(<"${PROFILE}")" \
     'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
 assert_contains "XHTTP state persists the quota start date" "$(<"${PROFILE}")" \
     'QUOTA_START_DATE=%q'
@@ -72,6 +72,14 @@ assert_not_contains "CloudFront installation does not auto-adopt unmarked legacy
     "$(<"${PROFILE}")" 'AWS_ADOPT_DISTRIBUTION=1'
 assert_contains "CloudFront alias conflicts require explicit old-resource cleanup" \
     "$(<"${PROFILE}")" '脚本不会接管旧部署，请先删除旧分配或解除该别名'
+assert_contains "CloudFront billing mode is persisted" "$(<"${PROFILE}")" \
+    'AWS_CLOUDFRONT_BILLING_MODE=%q'
+assert_contains "CloudFront fee protection threshold is persisted" "$(<"${PROFILE}")" \
+    'CLOUDFRONT_FEE_PROTECTION_GB=%q'
+assert_contains "global fee protection can remove every Xray client" "$(<"${PROFILE}")" \
+    "cloudfront_fee_protection_blocked && clients='[]'"
+assert_contains "pay-as-you-go clears WAF association" "$(<"${PROFILE}")" \
+    'AWS_WAF_WEB_ACL_ARN=""'
 assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     '非交互卸载必须显式设置 FORCE=1'
 
@@ -83,8 +91,29 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "unified state" "/etc/easy_all" "${STATE_DIR}"
     assert_equal "unified service" "easy_all-xray.service" "${XRAY_SERVICE}"
     assert_equal "unified nginx config" "/etc/nginx/conf.d/easy_all.conf" "${NGINX_CONFIG}"
-    assert_equal "schema" "2" "${STATE_SCHEMA_VERSION}"
+    assert_equal "schema" "4" "${STATE_SCHEMA_VERSION}"
     assert_equal "AWS control region" "us-east-1" "${AWS_CONTROL_REGION}"
+    assert_equal "default CloudFront billing mode" "payg" \
+        "${DEFAULT_AWS_CLOUDFRONT_BILLING_MODE}"
+    validate_cloudfront_billing_mode flat-free \
+        || fail "flat-free CloudFront billing mode must be valid"
+    validate_cloudfront_billing_mode payg \
+        || fail "payg CloudFront billing mode must be valid"
+    if validate_cloudfront_billing_mode invalid; then
+        fail "unknown CloudFront billing modes must be rejected"
+    fi
+    AWS_CLOUDFRONT_BILLING_MODE=1
+    choose_cloudfront_billing_mode
+    assert_equal "CloudFront billing choice 1 selects flat-free" "flat-free" \
+        "${AWS_CLOUDFRONT_BILLING_MODE}"
+    assert_equal "flat-free mode disables global fee protection" "0" \
+        "${CLOUDFRONT_FEE_PROTECTION_GB}"
+    AWS_CLOUDFRONT_BILLING_MODE=2
+    choose_cloudfront_billing_mode
+    assert_equal "CloudFront billing choice 2 selects pay-as-you-go" "payg" \
+        "${AWS_CLOUDFRONT_BILLING_MODE}"
+    assert_equal "pay-as-you-go enables the 980 GB global fee protection" "980" \
+        "${CLOUDFRONT_FEE_PROTECTION_GB}"
     assert_equal "caching disabled policy" \
         "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" "${CLOUDFRONT_CACHE_POLICY_ID}"
     assert_equal "all viewer except host policy" \
@@ -205,8 +234,9 @@ EOF
 
     (
         source_state_file() {
-            STATE_VERSION="1"
+            STATE_VERSION="4"
             PROTOCOL="xhttp"
+            AWS_CLOUDFRONT_BILLING_MODE="flat-free"
             VLESS_UUID="00000000-0000-4000-8000-000000000001"
             VLESS_CDN_DOMAIN="node.example.com"
             XHTTP_NODE_NAME="STORED_XHTTP"
@@ -225,6 +255,12 @@ EOF
         assert_equal "XHTTP path environment override wins during update" \
             "/xhttp-updated-suffix" "${XHTTP_PATH}"
     )
+    if (
+        source_state_file() { STATE_VERSION="3"; }
+        load_state
+    ) >/dev/null 2>&1; then
+        fail "XHTTP v4 must reject old state without global protection state"
+    fi
 
     zones='{"HostedZones":[{"Id":"/hostedzone/ZBASE","Name":"example.com.","Config":{"PrivateZone":false}},{"Id":"/hostedzone/ZPRIVATE","Name":"node.example.com.","Config":{"PrivateZone":true}},{"Id":"/hostedzone/ZBOUNDARY","Name":"notexample.com.","Config":{"PrivateZone":false}}]}'
     assert_equal "Route 53 public parent zone" $'/hostedzone/ZBASE\texample.com.' \
@@ -305,6 +341,7 @@ EOF
     XRAY_XHTTP_LOOPBACK_PORT="10086"
     ORIGIN_HEADER_SECRET="test-origin-header-secret"
     AWS_ACM_CERTIFICATE_ARN="arn:aws:acm:us-east-1:111122223333:certificate/test"
+    AWS_CLOUDFRONT_BILLING_MODE="flat-free"
     AWS_WAF_WEB_ACL_ARN="arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test"
     ALLOWED_TOKENS='{"owner":"owner-token-123"}'
     SUB_DOWNLOAD_NAME="EASY_ALL_TEST"
@@ -355,6 +392,16 @@ EOF
         .WebACLId == "arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test" and
         .Comment == "easy_all:xhttp:node.example.com"
     ' "${distribution}" >/dev/null || fail "CloudFront distribution config is invalid"
+
+    payg_distribution="${TMP_DIR}/distribution-payg.json"
+    AWS_CLOUDFRONT_BILLING_MODE="payg"
+    AWS_WAF_WEB_ACL_ARN=""
+    build_distribution_config "${payg_distribution}" "payg-caller-reference"
+    jq -e '.CallerReference == "payg-caller-reference" and .WebACLId == ""' \
+        "${payg_distribution}" >/dev/null \
+        || fail "pay-as-you-go CloudFront config must not attach WAF"
+    AWS_CLOUDFRONT_BILLING_MODE="flat-free"
+    AWS_WAF_WEB_ACL_ARN="arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test"
 
     origin_change="${TMP_DIR}/origin-a-create.json"
     build_origin_a_change_batch "${origin_change}" '[]' '203.0.113.10'
@@ -428,6 +475,91 @@ EOF
     assert_not_contains "pricing plan automation never approves a paid subscription" \
         "${pricing_call_text}" "approve-paid-subscription"
     unset -f aws
+
+    AWS_CLOUDFRONT_BILLING_MODE="payg"
+    AWS_CLOUDFRONT_PRICING_PLAN_ARN="stale-value"
+    payg_calls="${TMP_DIR}/payg-calls"
+    : >"${payg_calls}"
+    aws() {
+        printf '%s\n' "$*" >>"${payg_calls}"
+        [[ "$*" == *"pricing-plan-manager list-subscriptions"* ]] || return 1
+        printf '%s\n' '{"subscriptionSummaries":[]}'
+    }
+    ensure_cloudfront_payg_mode >/dev/null
+    assert_equal "pay-as-you-go mode clears pricing plan state" "" \
+        "${AWS_CLOUDFRONT_PRICING_PLAN_ARN}"
+    assert_not_contains "pay-as-you-go mode never creates a fixed plan" \
+        "$(<"${payg_calls}")" "create-subscription"
+    aws() {
+        [[ "$*" == *"pricing-plan-manager list-subscriptions"* ]] || return 1
+        printf '%s\n' '{"subscriptionSummaries":[{"arn":"arn:plan:legacy","planTier":"FREE","resourceArns":["arn:aws:cloudfront::111122223333:distribution/EASYALL123"]}]}'
+    }
+    if (ensure_cloudfront_payg_mode) >/dev/null 2>&1; then
+        fail "pay-as-you-go mode must reject a distribution with a fixed plan"
+    fi
+    unset -f aws
+
+    AWS_ORIGIN_ROUTE53_ZONE_ID="ZSAME"
+    AWS_ROUTE53_ZONE_ID="ZSAME"
+    payg_estimate=$(show_cloudfront_billing_estimate)
+    assert_contains "pay-as-you-go estimate includes one hosted zone" \
+        "${payg_estimate}" '1 个 Hosted Zone：固定费用估算 $0.50/月'
+    assert_contains "pay-as-you-go estimate includes DNS query pricing" \
+        "${payg_estimate}" '每 100 万次约 $0.40'
+    AWS_CLOUDFRONT_BILLING_MODE="flat-free"
+    AWS_ORIGIN_ROUTE53_ZONE_ID="ZORIGIN"
+    AWS_ROUTE53_ZONE_ID="ZVIEWER"
+    flat_estimate=$(show_cloudfront_billing_estimate)
+    assert_contains "flat-free estimate has no overage charge" \
+        "${flat_estimate}" '超出费用仍为 $0'
+    assert_contains "flat-free estimate prices a separate origin hosted zone" \
+        "${flat_estimate}" '源站 Zone 另估 $0.50/月'
+
+    payg_flow=$(
+        AWS_CLOUDFRONT_BILLING_MODE="payg"
+        AWS_WAF_WEB_ACL_ARN="stale-waf"
+        install_aws_cli() { printf 'cli\n'; }
+        collect_aws_credentials() { printf 'credentials\n'; }
+        find_route53_zones() { printf 'zones\n'; }
+        show_cloudfront_billing_estimate() { printf 'estimate\n'; }
+        find_or_request_acm_certificate() { printf 'acm\n'; }
+        ensure_aws_paid_account_plan() { printf 'paid\n'; }
+        ensure_cloudfront_web_acl() { printf 'waf\n'; }
+        configure_cloudfront_distribution() {
+            printf 'cloudfront:%s\n' "${AWS_WAF_WEB_ACL_ARN:-empty}"
+        }
+        ensure_viewer_alias_records() { printf 'alias\n'; }
+        wait_for_cloudfront() { printf 'wait\n'; }
+        ensure_cloudfront_free_pricing_plan() { printf 'flat-plan\n'; }
+        ensure_cloudfront_payg_mode() { printf 'payg\n'; }
+        validate_cloudfront_health() { printf 'health\n'; }
+        clear_aws_credentials() { printf 'clear\n'; }
+        configure_aws_cdn
+    )
+    assert_equal "pay-as-you-go cloud flow omits WAF and fixed plan" \
+        $'cli\ncredentials\nzones\nestimate\nacm\npaid\ncloudfront:empty\nalias\nwait\npayg\nhealth\nclear' \
+        "${payg_flow}"
+
+    flat_flow=$(
+        AWS_CLOUDFRONT_BILLING_MODE="flat-free"
+        install_aws_cli() { :; }
+        collect_aws_credentials() { :; }
+        find_route53_zones() { :; }
+        show_cloudfront_billing_estimate() { :; }
+        find_or_request_acm_certificate() { :; }
+        ensure_aws_paid_account_plan() { :; }
+        ensure_cloudfront_web_acl() { printf 'waf\n'; AWS_WAF_WEB_ACL_ARN='flat-waf'; }
+        configure_cloudfront_distribution() { printf 'cloudfront:%s\n' "${AWS_WAF_WEB_ACL_ARN}"; }
+        ensure_viewer_alias_records() { :; }
+        wait_for_cloudfront() { :; }
+        ensure_cloudfront_free_pricing_plan() { printf 'flat-plan\n'; }
+        ensure_cloudfront_payg_mode() { printf 'payg\n'; }
+        validate_cloudfront_health() { :; }
+        clear_aws_credentials() { :; }
+        configure_aws_cdn
+    )
+    assert_equal "flat-free cloud flow creates WAF and Free plan" \
+        $'waf\ncloudfront:flat-waf\nflat-plan' "${flat_flow}"
 
     template="${ROOT_DIR}/sample-mihomo.yaml"
     node_file="${TMP_DIR}/mihomo-node.yaml"
@@ -549,7 +681,11 @@ assert_contains "AWS guide highlights the required Route 53 zone replacement" \
 assert_contains "AWS guide requires the global AWS account partition" \
     "${readme}" "AWS 中国区域账号"
 assert_contains "AWS guide documents CloudFront's monthly free transfer allowance" \
-    "${readme}" "100 GB 数据传输"
+    "${readme}" "100 GB + 100 万次请求"
+assert_contains "AWS guide documents CloudFront pay-as-you-go free allowance" \
+    "${readme}" "1 TB + 1000 万次请求"
+assert_contains "AWS guide estimates standard Route 53 queries" \
+    "${readme}" '$0.40/百万次'
 assert_contains "AWS guide requires Route 53 public DNS delegation for XHTTP" \
     "${readme}" "这是 CDN XHTTP 的**必要条件**"
 assert_contains "AWS guide distinguishes DNS delegation from domain registration transfer" \

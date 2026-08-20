@@ -20,6 +20,7 @@ content=$(<"${SCRIPT}")
 [[ "${content}" == *'&& -f "${REPO_DIR}/lib/reality.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/lib/cloudfront-fee-protection.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/platform.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/profile-runtime.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/network.sh"'* \

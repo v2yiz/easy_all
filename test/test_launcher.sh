@@ -49,6 +49,7 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \
     && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
+    && "${guide}" == *"选择 CloudFront 计费：Free 固定套餐，或按量付费 1 TB 免费额度 + 980 GB 全局保护"* \
     && "${guide}" == *"CDN XHTTP"* ]] \
     || fail "install guide does not describe both branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
@@ -64,8 +65,11 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" == *'X5 --> X7[AWS IAM 授权（同一命令内复用）/ Route 53 源站 A]'* \
     && "${readme}" == *'X7 --> X8[UFW / Nginx HTTP-01]'* \
     && "${readme}" == *'X8 --> X9[源站证书 / Xray / Nginx / 已选订阅输出验收]'* \
-    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级 / WAF / CloudFront / Free 固定套餐 / Route 53 Alias A/AAAA / 公网验收]'* \
-    && "${readme}" == *'X10 --> X11[保存状态 / 注册 easy_all / 配置配额任务]'* ]] \
+    && "${readme}" == *'X3 --> X3A{CloudFront 计费模式选择}'* \
+    && "${readme}" == *'X3A -->|Free 固定套餐| X4{订阅输出选择}'* \
+    && "${readme}" == *'X3A -->|按量付费| X4'* \
+    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级 / CloudFront / 按选择配置 WAF 与固定套餐或按量付费 / Route 53 Alias A/AAAA / 公网验收]'* \
+    && "${readme}" == *'X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]'* ]] \
     || fail "README install flow must match the installer execution order"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \
     || fail "install mode prompt must explain the enter default"
@@ -78,7 +82,7 @@ assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 printf 'STATE_VERSION=2\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Reality state selects Reality profile" "reality" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=2\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=4\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "XHTTP state selects XHTTP profile" "xhttp" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"

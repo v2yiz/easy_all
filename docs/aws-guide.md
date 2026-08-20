@@ -1,6 +1,6 @@
 # AWS 一次性准备指南
 
-按本文顺序操作，可一次完成 AWS 账号确认、CloudFront Free 固定套餐费用边界、Route 53 DNS
+按本文顺序操作，可一次完成 AWS 账号确认、CloudFront 两种计费模式的费用边界、Route 53 DNS
 委派、IAM 最小权限和 Access Key 创建。安装时你只需要向脚本提供：
 
 ```text
@@ -18,34 +18,49 @@ AWS_SECRET_ACCESS_KEY
 [AWS 全球商业区注册页](https://signin.aws.amazon.com/signup?request_type=register)
 完成注册，并为根用户启用 MFA。
 
-## 2. 确认账号升级与 CloudFront Free 固定套餐
+## 2. 确认账号升级与 CloudFront 计费模式
 
-这里使用的是 **CloudFront flat-rate Free plan**，不是 AWS 注册时选择的 **Free account
-plan**。CloudFront 固定套餐要求账号为 Paid account plan。脚本读取两项 Access Key 后会：
+AWS 注册时选择的 **Free account plan** 与 CloudFront 计费方式不是一回事。脚本支持
+**CloudFront flat-rate Free plan** 和 **CloudFront pay-as-you-go**，并在安装时让用户选择。
+脚本读取两项 Access Key 后会：
 
 1. 查询当前 AWS account plan；已经是 Paid 时直接继续。
 2. 检测到 Free 时说明计费边界并要求确认，然后通过官方 API 升级为 Paid，不要求你回到 AWS
    控制台操作。
-3. 创建独占且默认放行的 WAF Web ACL，创建或更新 CloudFront 分配。
-4. 为该分配订阅每月 **US$0** 的 CloudFront Free 固定套餐，并把 CDN 域名所属 Route 53
-   Hosted Zone 加入套餐。
-5. 把 CDN 域名写成 CloudFront Alias A/AAAA；Route 53 不对指向 CloudFront 的 Alias 查询收费。
+3. 选择 Free 固定套餐时，创建默认放行的独占 WAF、CloudFront 分配和每月 **US$0** 的固定
+   套餐，并把 CDN 域名所属 Route 53 Hosted Zone 加入套餐。
+4. 选择按量付费时，创建不关联 WAF 和固定套餐的 CloudFront 分配，使用按量付费永久免费额度，
+   并在 VPS 上自动启用 `980 GB` 全局费用保护。
+5. 把 CDN 域名写成 CloudFront Alias A/AAAA；Route 53 不对直接指向 CloudFront 的 Alias 查询收费。
 
 正常通过 Upgrade Plan/API 升级不会清空剩余 Free Tier Credit；Credit 会继续用于符合条件的
 后续账单直至原到期日。不要为了升级而加入 AWS Organizations 或启用 Control Tower，这两种
 路径会使剩余 Free Tier Credit 立即失效。
 
-CloudFront Free 固定套餐包含每月 **100 GB 数据传输**和 **100 万次请求**的基准用量，并且
-没有突发流量或攻击带来的超额费；每个 AWS 账号最多可有三个 Free 固定套餐。套餐还覆盖与该
-分配绑定的 WAF，以及已加入套餐的 Route 53 Hosted Zone 的标准 Hosted Zone、记录和查询费用。
+两种模式的月度估算如下；这也是安装菜单显示的计费边界：
 
-套餐不覆盖 VPS、域名注册、未加入套餐的第二个 Hosted Zone、Route 53 DNSSEC 的 KMS、Health
+| 模式 | CloudFront 额度及超出估算 | Route 53 与 WAF 估算 |
+| --- | --- | --- |
+| Free 固定套餐 | `$0/月`，基准 **100 GB + 100 万次请求**。超过基准仍无超额费，因此超出费用估算仍为 `$0`；若长期明显超额，AWS 可能调整边缘交付性能。 | 套餐覆盖对应 WAF，以及加入套餐的 CDN Hosted Zone、记录和额度内查询。源站若位于另一个 Hosted Zone，该 Zone 另约 `$0.50/月 + $0.40/百万次标准查询`。 |
+| 按量付费（脚本默认） | 每月免费 **1 TB + 1000 万次请求**。脚本按 UTC 自然月累计 Xray 上下行总流量并在 **980 GB** 阻断；超过 1 TB 后按边缘区域计价，每多 100 GB 约 `$8.50-$12.00`，超额请求另计。 | 不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；CloudFront Alias A/AAAA 查询免费，其他标准 DNS 查询约 `$0.04/10万次`、`$0.40/百万次`。一个 Zone 通常约 `$0.50/月`，两个 Zone 约 `$1.00/月`，再加少量普通查询费。 |
+
+固定套餐不能与按量付费的 1 TB 免费额度叠加。Free 固定套餐每个 AWS 账号最多可有三个；其
+基准额度不是硬性断流上限，但不适合作为长期 1 TB 性能保证。按量付费模式不创建 WAF，因为
+WAF 在该模式下会产生独立的 Web ACL 和请求费用。
+
+按量付费保护只使用 VPS 本机 Xray 统计，不需要保存 AWS Access Key。它独立于每用户配额，
+按 UTC 每月 1 日 `00:00` 重置，并以 15 秒周期检查。该数值不等同于 CloudFront 精确账单，不能
+统计未到达 Xray 的请求及协议开销，因此 20 GB 是安全缓冲而不是 AWS 侧硬上限。
+
+Free 固定套餐不覆盖 VPS、域名注册、未加入套餐的第二个 Hosted Zone、Route 53 DNSSEC 的 KMS、Health
 Check、DNS Query Logs、Lambda@Edge 等额外功能。若源站域名和 CDN 域名位于同一个 Hosted
 Zone，脚本加入一次即可同时覆盖；位于两个 Zone 时，脚本只加入 CDN 域名所在 Zone，另一个仍按
 Route 53 标准价格计费。套餐生效前已经记入的费用也不应视为必然追溯减免。
 
 AWS 官方参考：
 [CloudFront 固定套餐](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/flat-rate-pricing-plan.html)、
+[CloudFront 按量付费与永久免费额度](https://aws.amazon.com/cloudfront/faqs/)、
+[Route 53 定价](https://aws.amazon.com/route53/pricing/)、
 [Free 与 Paid account plan](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-FAQ.html)、
 [Route 53 指向 CloudFront](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-to-cloudfront-distribution.html)。
 

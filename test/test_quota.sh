@@ -162,7 +162,7 @@ EOF
 chmod 0755 "${XRAY_BIN}"
 require_root() { :; }
 collect_installed_state() { :; }
-quota_rebuild_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
+rebuild_traffic_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
 quota_sync_usage
 assert_equal "quota sync accumulates uplink and downlink" "1100000000" \
     "$(jq -r '.users.owner.used_bytes' "${QUOTA_USAGE_FILE}")"
@@ -175,13 +175,13 @@ cat >"${QUOTA_USAGE_FILE}" <<EOF
   "owner":{"used_bytes":0,"last_uplink":0,"last_downlink":0,"disabled":false}
 }}
 EOF
-quota_rebuild_runtime() { return 1; }
+rebuild_traffic_runtime() { return 1; }
 if (quota_sync_usage) >/dev/null 2>&1; then
     fail "quota sync must fail when the runtime transition fails"
 fi
 assert_equal "failed runtime transition restores previous accounting state" "0" \
     "$(jq -r '.users.owner.used_bytes' "${QUOTA_USAGE_FILE}")"
-quota_rebuild_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
+rebuild_traffic_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
 
 cat >"${QUOTA_USAGE_FILE}" <<'EOF'
 {"period":"2000-01","runtime_id":"","users":{
@@ -205,7 +205,7 @@ EOF
 save_state() { :; }
 success() { :; }
 show_quota_status() { :; }
-quota_rebuild_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
+rebuild_traffic_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
 rm -f -- "${TMP_DIR}/rebuilt"
 quota_set_user owner 2
 assert_equal "quota-set changes only the selected user quota" "2" \

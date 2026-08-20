@@ -33,6 +33,12 @@ shared_modules=(
     reboot-schedule.sh
 )
 
+[[ "$(<"${XHTTP_PROFILE}")" == *'source "${SCRIPT_DIR}/cloudfront-fee-protection.sh"'* ]] \
+    || fail "XHTTP does not source its CloudFront fee protection module"
+[[ "${LAUNCHER_CONTENT}" == *'"lib/cloudfront-fee-protection.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'lib/cloudfront-fee-protection.sh'* ]] \
+    || fail "CloudFront fee protection module is missing from runtime packaging"
+
 for module in "${shared_modules[@]}"; do
     [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
         || fail "Reality does not source shared module ${module}"

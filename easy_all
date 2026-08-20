@@ -18,6 +18,7 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "lib/reality.sh"
     "lib/xhttp.sh"
     "lib/quota.sh"
+    "lib/cloudfront-fee-protection.sh"
     "lib/platform.sh"
     "lib/profile-runtime.sh"
     "lib/network.sh"
@@ -56,7 +57,7 @@ launcher_usage() {
   update-sub       重新选择订阅模式与月度用户配额
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
-  quota-status     显示月度用户流量配额
+  quota-status     显示用户配额与 XHTTP 全局费用保护
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
   status           显示运行状态
@@ -84,9 +85,10 @@ easy_all install
    ├─ 适用线路：非优化线路
    ├─ 系统检查 → 依赖/BBR/重启策略
    ├─ Route 53 源站域名（必填）→ CloudFront CDN 域名（必填）
+   ├─ 选择 CloudFront 计费：Free 固定套餐，或按量付费 1 TB 免费额度 + 980 GB 全局保护
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
    ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A
-   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/WAF/CloudFront/Free 套餐/CDN Alias → 状态/命令/配额任务
+   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/CloudFront/已选计费模式/CDN Alias → 状态/命令/配额任务
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
@@ -232,7 +234,17 @@ dispatch_profile_command() {
         fi
         ;;
     quota-sync) quota_sync_usage ;;
-    quota-status) require_root; collect_installed_state; show_quota_status ;;
+    cloudfront-fee-sync)
+        [[ "${mode}" == "xhttp" ]] \
+            || launcher_die "cloudfront-fee-sync 仅适用于 CDN XHTTP 模式"
+        cloudfront_fee_protection_sync
+        ;;
+    quota-status)
+        require_root
+        collect_installed_state
+        show_quota_status
+        [[ "${mode}" != "xhttp" ]] || show_cloudfront_fee_protection_status
+        ;;
     quota-set) quota_set_user "$@" ;;
     quota-reset) quota_reset_user "$@" ;;
     status) show_status ;;
