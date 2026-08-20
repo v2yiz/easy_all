@@ -286,10 +286,9 @@ test_script_surface_contract() {
 }
 
 test_bbr_matches_easy_all() {
-    local debian_content reality_content xhttp_content setting
+    local debian_content tcp_tuning_content setting
     debian_content="$(<"${ROOT_DIR}/debian_init.sh")"
-    reality_content="$(<"${ROOT_DIR}/lib/reality.sh")"
-    xhttp_content="$(<"${ROOT_DIR}/lib/xhttp.sh")"
+    tcp_tuning_content="$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
     local -a settings=(
         "net.core.default_qdisc = fq"
         "net.ipv4.tcp_congestion_control = bbr"
@@ -305,10 +304,8 @@ test_bbr_matches_easy_all() {
     for setting in "${settings[@]}"; do
         assert_contains "debian_init has shared BBR setting ${setting}" \
             "${setting}" "${debian_content}"
-        assert_contains "Reality has shared BBR setting ${setting}" \
-            "${setting}" "${reality_content}"
-        assert_contains "XHTTP has shared BBR setting ${setting}" \
-            "${setting}" "${xhttp_content}"
+        assert_contains "easy_all has shared BBR setting ${setting}" \
+            "${setting}" "${tcp_tuning_content}"
     done
 }
 

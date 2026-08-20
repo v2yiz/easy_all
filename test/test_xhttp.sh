@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/lib/xhttp.sh"
+PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
+ACME_RENEWAL_MODULE="${ROOT_DIR}/lib/acme-renewal.sh"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
@@ -27,7 +29,7 @@ assert_not_contains() {
     [[ "${text}" != *"${unexpected}"* ]] || fail "${label}: unexpected [${unexpected}]"
 }
 
-bash -n "${ROOT_DIR}/easy_all" "${PROFILE}"
+bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
 assert_contains "installer refuses root credentials" "$(<"${PROFILE}")" \
     "拒绝使用 AWS 根用户访问密钥"
 assert_contains "Xray XHTTP inbound" "$(<"${PROFILE}")" \
@@ -48,17 +50,17 @@ assert_contains "Nginx protects direct-origin subscription access" "$(<"${PROFIL
     'if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }'
 assert_contains "Nginx serves internal Mihomo subscription" "$(<"${PROFILE}")" \
     'mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"'
-assert_contains "installer validates sshd before scheduled reboot" "$(<"${PROFILE}")" \
+assert_contains "installer validates sshd before scheduled reboot" "$(<"${PLATFORM_MODULE}")" \
     '"${sshd_bin}" -t'
-assert_contains "installer enables SSH at boot" "$(<"${PROFILE}")" \
+assert_contains "installer enables SSH at boot" "$(<"${PLATFORM_MODULE}")" \
     'systemctl enable --now "${unit}"'
-assert_contains "installer verifies SSH boot enablement" "$(<"${PROFILE}")" \
+assert_contains "installer verifies SSH boot enablement" "$(<"${PLATFORM_MODULE}")" \
     'systemctl is-enabled --quiet "${unit}"'
-assert_contains "installer verifies ACME renewal cron" "$(<"${PROFILE}")" \
+assert_contains "installer verifies ACME renewal cron" "$(<"${ACME_RENEWAL_MODULE}")" \
     'die "未找到 acme.sh 自动续期定时任务"'
-assert_contains "XHTTP repairs a missing ACME renewal cron job" "$(<"${PROFILE}")" \
+assert_contains "XHTTP repairs a missing ACME renewal cron job" "$(<"${ACME_RENEWAL_MODULE}")" \
     'run_acme --install-cronjob'
-assert_contains "XHTTP writes a managed cron fallback when acme.sh does not" "$(<"${PROFILE}")" \
+assert_contains "XHTTP writes a managed cron fallback when acme.sh does not" "$(<"${ACME_RENEWAL_MODULE}")" \
     "easy_all-acme-renewal"
 assert_contains "installer verifies renewal reload hook" "$(<"${PROFILE}")" \
     '源站证书、私钥或续期重载钩子安装不完整'
@@ -91,10 +93,63 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "XMUX max concurrency" "4-8" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     assert_equal "CloudFront origin response timeout" "60" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
+
+    ufw_state="${TMP_DIR}/xhttp-ufw-state"
+    cat >"${ufw_state}" <<'EOF'
+22/tcp|ALLOW IN|Anywhere|easy_all-managed
+8443/tcp|ALLOW IN|Anywhere|easy_all-managed
+80/tcp|ALLOW IN|Anywhere|debian-init-managed
+9999/tcp|ALLOW IN|Anywhere|user-rule
+EOF
+    ufw() {
+        local endpoint number temp="${ufw_state}.new"
+        if [[ "${1:-}" == "status" && "${2:-}" == "numbered" ]]; then
+            printf 'Status: active\n'
+            awk -F'|' '{printf "[ %d] %s %s %s # %s\n", NR, $1, $2, $3, $4}' "${ufw_state}"
+            return 0
+        fi
+        if [[ "${1:-}" == "allow" ]]; then
+            endpoint=$2
+            if awk -F'|' -v endpoint="${endpoint}" \
+                '$1 == endpoint && $2 == "ALLOW IN" {found=1} END {exit(found ? 0 : 1)}' \
+                "${ufw_state}"; then
+                return 0
+            fi
+            printf '%s|ALLOW IN|Anywhere|%s\n' "${endpoint}" "${4:-}" >>"${ufw_state}"
+            return 0
+        fi
+        if [[ "${1:-}" == "--force" && "${2:-}" == "delete" ]]; then
+            number=$3
+            awk -v number="${number}" 'NR != number' "${ufw_state}" >"${temp}"
+            mv "${temp}" "${ufw_state}"
+            return 0
+        fi
+        [[ "${1:-}" == "--force" && "${2:-}" == "enable" ]] && return 0
+        [[ "${1:-}" == "reload" ]] && return 0
+        return 1
+    }
+    apply_managed_ufw_tcp_ports "22 80 443"
+    apply_managed_ufw_tcp_ports "22 80 443"
+    ufw_state_text=$(<"${ufw_state}")
+    xhttp_ssh_count=$(awk -F'|' '$1 == "22/tcp" && $2 == "ALLOW IN" {count++} END {print count+0}' "${ufw_state}")
+    assert_equal "XHTTP UFW reapply keeps exactly one SSH allow rule" "1" "${xhttp_ssh_count}"
+    assert_contains "XHTTP UFW reapply keeps the existing managed SSH rule" \
+        "${ufw_state_text}" "22/tcp|ALLOW IN|Anywhere|easy_all-managed"
+    assert_contains "XHTTP UFW accepts an existing external HTTP allow rule" \
+        "${ufw_state_text}" "80/tcp|ALLOW IN|Anywhere|debian-init-managed"
+    assert_contains "XHTTP UFW adds a missing HTTPS rule" \
+        "${ufw_state_text}" "443/tcp|ALLOW IN|Anywhere|easy_all-managed"
+    assert_not_contains "XHTTP UFW removes only a stale managed rule" \
+        "${ufw_state_text}" "8443/tcp|ALLOW IN|Anywhere|easy_all-managed"
+    assert_contains "XHTTP UFW preserves unrelated user rules" \
+        "${ufw_state_text}" "9999/tcp|ALLOW IN|Anywhere|user-rule"
+    unset -f ufw
+
     assert_contains "XHTTP prompts for the Mihomo download filename" \
         "$(<"${PROFILE}")" 'Mihomo 下载文件名（不含 .yaml）'
     assert_contains "XHTTP default prompts explain the enter default" \
-        "$(<"${PROFILE}")" '[${default}]（直接回车使用默认值）'
+        "$(<"${ROOT_DIR}/lib/profile-runtime.sh")" \
+        '[${default}]（直接回车使用默认值）'
     assert_contains "XHTTP subscription prompt recommends self-hosting for one server" \
         "$(<"${PROFILE}")" "只有当前服务器时推荐"
     assert_contains "XHTTP subscription prompt recommends node output for aggregation" \

@@ -14,10 +14,33 @@ readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/stat
 readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
 readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
+readonly -a EASY_ALL_RUNTIME_MODULES=(
+    "lib/reality.sh"
+    "lib/xhttp.sh"
+    "lib/quota.sh"
+    "lib/platform.sh"
+    "lib/profile-runtime.sh"
+    "lib/network.sh"
+    "lib/firewall.sh"
+    "lib/xray-core.sh"
+    "lib/acme-renewal.sh"
+    "lib/subscription-auth.sh"
+    "lib/validation.sh"
+    "lib/tcp-tuning.sh"
+    "lib/reboot-schedule.sh"
+)
 
 launcher_die() {
     printf '\033[31m%s\033[0m\n' "$*" >&2
     exit 1
+}
+
+runtime_tree_is_complete() {
+    local root=$1 relative_path
+    [[ -f "${root}/easy_all" ]] || return 1
+    for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+        [[ -f "${root}/${relative_path}" ]] || return 1
+    done
 }
 
 launcher_usage() {
@@ -123,12 +146,11 @@ profile_file() {
 
 unified_register_easy_all_command() {
     local source_root=${EASY_ALL_ROOT} destination="${EASY_ALL_INSTALL_DIR}/easy_all"
-    local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$"
+    local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$" relative_path
+    local -a syntax_files
     require_root
-    [[ -f "${source_root}/easy_all" ]] || die "缺少统一入口：${source_root}/easy_all"
-    [[ -f "${source_root}/lib/reality.sh" ]] || die "缺少 Reality Profile"
-    [[ -f "${source_root}/lib/xhttp.sh" ]] || die "缺少 XHTTP Profile"
-    [[ -f "${source_root}/lib/quota.sh" ]] || die "缺少流量配额模块"
+    runtime_tree_is_complete "${source_root}" \
+        || die "easy_all 运行时文件不完整：${source_root}"
 
     install -d -m 0755 "$(dirname "${EASY_ALL_INSTALL_DIR}")" "$(dirname "${EASY_ALL_COMMAND_PATH}")"
     stage=$(mktemp -d "${EASY_ALL_INSTALL_DIR}.stage.XXXXXX")
@@ -137,13 +159,15 @@ unified_register_easy_all_command() {
     fi
     install -d -m 0755 "${stage}/lib"
     install -m 0755 "${source_root}/easy_all" "${stage}/easy_all"
-    install -m 0644 "${source_root}/lib/reality.sh" "${stage}/lib/reality.sh"
-    install -m 0644 "${source_root}/lib/xhttp.sh" "${stage}/lib/xhttp.sh"
-    install -m 0644 "${source_root}/lib/quota.sh" "${stage}/lib/quota.sh"
+    syntax_files=("${stage}/easy_all")
+    for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+        install -m 0644 "${source_root}/${relative_path}" \
+            "${stage}/${relative_path}"
+        syntax_files+=("${stage}/${relative_path}")
+    done
     [[ ! -f "${source_root}/sample-mihomo.yaml" ]] \
         || install -m 0644 "${source_root}/sample-mihomo.yaml" "${stage}/sample-mihomo.yaml"
-    bash -n "${stage}/easy_all" "${stage}/lib/reality.sh" "${stage}/lib/xhttp.sh" \
-        "${stage}/lib/quota.sh" \
+    bash -n "${syntax_files[@]}" \
         || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
 
     rm -rf -- "${backup}"
@@ -167,11 +191,8 @@ unified_self_update() {
     repo_dir="${temp_dir}/easy_all"
     git clone --depth 1 --branch main "${EASY_ALL_REPOSITORY_URL}" "${repo_dir}" \
         || die "克隆 easy_all 仓库失败"
-    [[ -f "${repo_dir}/easy_all" \
-        && -f "${repo_dir}/lib/reality.sh" \
-        && -f "${repo_dir}/lib/xhttp.sh" \
-        && -f "${repo_dir}/lib/quota.sh" \
-        && -f "${repo_dir}/sample-mihomo.yaml" ]] \
+    [[ -f "${repo_dir}/sample-mihomo.yaml" ]] \
+        && runtime_tree_is_complete "${repo_dir}" \
         || die "下载的 easy_all 项目不完整"
 
     chmod 0700 "${repo_dir}/easy_all"

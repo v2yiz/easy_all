@@ -28,7 +28,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 sudo easy_all self-update
 ```
 
-`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、两个 Profile、配额模块和
+`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、两个 Profile、公共模块和
 Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或 AWS 资源。代码包含配置生成变化时，
 再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
@@ -39,7 +39,7 @@ Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或 AWS 资�
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
 2. 浅克隆 `main` 分支完整项目到权限受限的临时目录。
-3. 校验入口、两个 Profile 和 Mihomo 模板均存在。
+3. 校验入口、两个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
 4. 通过 `sudo` 启动交互安装。
 5. 安装结束后删除临时下载目录。
 
@@ -549,18 +549,30 @@ Access Key 不会持久化。
 
 ## 模块
 
-用户始终只运行 `easy_all`。内部按粗粒度拆分：
+用户始终只运行 `easy_all`。依赖方向固定为“统一入口 → Profile → 公共模块”：
 
 ```text
 easy_all
-lib/reality.sh
-lib/xhttp.sh
-lib/quota.sh
+└─ lib/
+   ├─ reality.sh             Reality 编排与专属配置
+   ├─ xhttp.sh               XHTTP/AWS 编排与专属配置
+   ├─ quota.sh               用户配额与统计
+   ├─ platform.sh            root/systemd/SSH 启动保障
+   ├─ profile-runtime.sh     Profile 临时目录、交互和注册桥接
+   ├─ network.sh             公网 IPv4 探测
+   ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
+   ├─ xray-core.sh           Xray 下载、校验与安装
+   ├─ acme-renewal.sh        acme.sh 调用与续期任务保障
+   ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
+   ├─ validation.sh          公共字段校验与规范化
+   ├─ tcp-tuning.sh          Google BBR 与保守 TCP 参数
+   └─ reboot-schedule.sh     可选定时重启任务
 sample-mihomo.yaml
 ```
 
-入口只负责模式选择和命令分发。两个 Profile 不互相调用；`quota.sh` 提供两种模式共用的可选
-用户配额能力；XHTTP 状态通过 `CDN_PROVIDER` 与具体 CDN 实现解耦。
+入口负责模式选择、命令分发和完整运行时的原子注册。两个 Profile 不互相调用，只保留协议编排
+和协议专属策略；公共模块不反向依赖 Profile。Reality 的 UFW NAT/双栈策略与 XHTTP 的 AWS
+资源管理仍分别留在对应 Profile 中。XHTTP 状态通过 `CDN_PROVIDER` 与具体 CDN 实现解耦。
 
 ## 测试
 
@@ -568,8 +580,8 @@ sample-mihomo.yaml
 npm test
 ```
 
-测试覆盖统一入口、Reality、XHTTP、用户凭据与月度配额、Xray 配置、CloudFront JSON、
-Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
+测试覆盖统一入口、公共模块归属与安装完整性、Reality、XHTTP、用户凭据与月度配额、Xray
+配置、CloudFront JSON、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 
 ## 独立工具：debian_init
 

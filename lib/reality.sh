@@ -27,6 +27,7 @@ readonly XRAY_BIN="${XRAY_DIR}/xray"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
 readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
 readonly XRAY_SERVICE="easy_all-xray.service"
+readonly XRAY_SERVICE_DESCRIPTION="Xray VLESS Reality managed by easy_all"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
 readonly ACME_HOME="/root/.acme-easy_all.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
@@ -43,6 +44,7 @@ readonly UFW_NAT6_END="# easy_all-nat6-end"
 readonly LEGACY_NFT_CONFIG="/etc/nftables.conf"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
+readonly BBR_ALLOW_EXISTING_XANMOD="1"
 readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
 readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly SERVICE_PORT="443"
@@ -63,6 +65,26 @@ readonly STATE_SCHEMA_VERSION="2"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
+# shellcheck source=lib/platform.sh
+source "${SCRIPT_DIR}/platform.sh"
+# shellcheck source=lib/profile-runtime.sh
+source "${SCRIPT_DIR}/profile-runtime.sh"
+# shellcheck source=lib/network.sh
+source "${SCRIPT_DIR}/network.sh"
+# shellcheck source=lib/firewall.sh
+source "${SCRIPT_DIR}/firewall.sh"
+# shellcheck source=lib/xray-core.sh
+source "${SCRIPT_DIR}/xray-core.sh"
+# shellcheck source=lib/acme-renewal.sh
+source "${SCRIPT_DIR}/acme-renewal.sh"
+# shellcheck source=lib/subscription-auth.sh
+source "${SCRIPT_DIR}/subscription-auth.sh"
+# shellcheck source=lib/validation.sh
+source "${SCRIPT_DIR}/validation.sh"
+# shellcheck source=lib/tcp-tuning.sh
+source "${SCRIPT_DIR}/tcp-tuning.sh"
+# shellcheck source=lib/reboot-schedule.sh
+source "${SCRIPT_DIR}/reboot-schedule.sh"
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -100,75 +122,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-make_temp_dir() {
-    mktemp -d "${RUNTIME_TMP}/part.XXXXXX"
-}
-
-require_root() {
-    [[ "$(id -u)" -eq 0 ]] || die "请使用 root 用户运行此脚本"
-}
-
-require_systemd() {
-    command -v systemctl >/dev/null 2>&1 || die "仅支持使用 systemd 的 Linux 系统"
-    [[ -d /run/systemd/system ]] || die "当前系统未由 systemd 管理"
-}
-
-ensure_ssh_boot_service() {
-    local sshd_bin unit
-    sshd_bin=$(command -v sshd 2>/dev/null || true)
-    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
-    [[ -n "${sshd_bin}" ]] || die "未找到 sshd；无法保证重启后 SSH 可用"
-    "${sshd_bin}" -t || die "sshd 配置校验失败；拒绝配置定时重启"
-
-    for unit in ssh.service sshd.service; do
-        systemctl cat "${unit}" >/dev/null 2>&1 || continue
-        systemctl unmask "${unit}" >/dev/null 2>&1 || true
-        systemctl enable --now "${unit}" >/dev/null \
-            || die "无法启用 SSH 开机启动：${unit}"
-        systemctl is-enabled --quiet "${unit}" \
-            || die "SSH 服务未设置为开机启动：${unit}"
-        systemctl is-active --quiet "${unit}" \
-            || die "SSH 服务未运行：${unit}"
-        info "SSH 已设置开机启动并处于运行状态：${unit}"
-        return 0
-    done
-    die "未找到 ssh.service 或 sshd.service；拒绝配置定时重启"
-}
-
-validate_domain() {
-    local domain=$1 label tld
-    local -a labels
-    [[ ${#domain} -ge 4 && ${#domain} -le 253 ]] || return 1
-    [[ "${domain}" == *.* ]] || return 1
-    [[ "${domain}" != \*.* ]] || return 1
-    [[ "${domain}" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
-    [[ "${domain}" != .* && "${domain}" != *. ]] || return 1
-    [[ "${domain}" != *..* ]] || return 1
-    IFS=. read -r -a labels <<<"${domain}"
-    for label in "${labels[@]}"; do
-        [[ ${#label} -ge 1 && ${#label} -le 63 ]] || return 1
-        [[ "${label}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || return 1
-    done
-    tld=${labels[$((${#labels[@]} - 1))]}
-    [[ "${tld}" =~ ^[A-Za-z]{2,}$ ]]
-}
-
-normalize_domain() {
-    local domain=$1
-    domain=${domain%.}
-    tr '[:upper:]' '[:lower:]' <<<"${domain}" | tr -d '\n'
-}
-
-validate_ipv4() {
-    local ip=$1 octet
-    local -a octets
-    [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-    IFS=. read -r -a octets <<<"${ip}"
-    for octet in "${octets[@]}"; do
-        ((10#${octet} >= 0 && 10#${octet} <= 255)) || return 1
-    done
-}
-
 validate_ipv6() {
     local ip=${1%%%*} segment rest colons
     [[ -n "${ip}" && ${#ip} -le 39 && "${ip}" == *:* \
@@ -199,90 +152,6 @@ canonicalize_ipv6() {
     tr '[:upper:]' '[:lower:]' <<<"${canonical}" | tr -d '\n'
 }
 
-validate_uuid() {
-    [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
-}
-
-validate_sub_download_name() {
-    [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]
-}
-
-normalize_sub_download_name() {
-    local name=${1:-}
-    name=${name%.[Yy][Aa][Mm][Ll]}
-    name=${name%.[Yy][Mm][Ll]}
-    if validate_sub_download_name "${name}"; then
-        printf '%s' "${name}"
-    else
-        printf '%s' "${DEFAULT_SUB_DOWNLOAD_NAME}"
-    fi
-}
-
-normalize_allowed_tokens() {
-    local raw=$1
-    jq -cer '
-        def trim: sub("^\\s+"; "") | sub("\\s+$"; "");
-        if type != "object" then
-            error("ALLOWED_TOKENS 必须是 JSON object")
-        else
-            to_entries as $entries
-            | if ($entries | length) == 0 then
-                error("ALLOWED_TOKENS 不能为空")
-            else
-                if any($entries[]; (.value | type) != "string") then
-                    error("ALLOWED_TOKENS token 值必须是字符串")
-                else
-                    [ $entries[] | {key: (.key | trim), value: (.value | trim)} ] as $clean
-                    | if any($clean[]; .key == "" or .value == "") then
-                    error("ALLOWED_TOKENS 不允许空用户名或空 token")
-                    elif any($clean[]; (.key | test("^[A-Za-z0-9._-]{1,64}$") | not)) then
-                    error("ALLOWED_TOKENS 用户名只能包含字母、数字、点、下划线、短横线，长度 1-64")
-                    elif any($clean[]; (.value | test("^[A-Za-z0-9._~-]{8,128}$") | not)) then
-                    error("ALLOWED_TOKENS token 只能包含 URL 安全字符 A-Z a-z 0-9 . _ ~ -，长度 8-128")
-                    elif (($clean | map(.key) | unique | length) != ($clean | length)) then
-                    error("ALLOWED_TOKENS 清洗后存在重复用户名")
-                    elif (($clean | map(.value) | unique | length) != ($clean | length)) then
-                    error("ALLOWED_TOKENS 不允许重复 token")
-                    else
-                    $clean | from_entries
-                    end
-                end
-            end
-        end
-    ' <<<"${raw}"
-}
-
-ensure_allowed_tokens() {
-    local raw prompt_default normalized
-    if [[ -n "${ALLOWED_TOKENS:-}" ]]; then
-        raw=${ALLOWED_TOKENS}
-    elif [[ -t 0 ]]; then
-        prompt_default=$(jq -cn --arg token "$(generate_secret)" '{owner: $token}')
-        raw=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}")
-    else
-        die "非交互模式必须设置 ALLOWED_TOKENS，例如 ALLOWED_TOKENS='{\"owner\":\"$(generate_secret)\"}'"
-    fi
-
-    normalized=$(normalize_allowed_tokens "${raw}") \
-        || die "ALLOWED_TOKENS 无效；请使用 JSON 对象，例如 {\"owner\":\"$(generate_secret)\"}"
-    ALLOWED_TOKENS=${normalized}
-}
-
-generate_secret() {
-    openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n'
-}
-
-prompt_value() {
-    local label=$1 default=${2:-} value
-    if [[ -n "${default}" ]]; then
-        read -r -p "${label} [${default}]（直接回车使用默认值）: " value
-        printf '%s' "${value:-${default}}"
-    else
-        read -r -p "${label}: " value
-        printf '%s' "${value}"
-    fi
-}
-
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
@@ -292,18 +161,6 @@ install_packages() {
         socat cron iproute2 iputils-ping tzdata systemd-timesyncd tar
     timedatectl set-timezone Asia/Shanghai
     timedatectl set-ntp true || die "无法启用网络时间同步"
-}
-
-check_platform() {
-    [[ -r /etc/os-release ]] || die "无法识别系统版本"
-    # shellcheck source=/dev/null
-    source /etc/os-release
-    [[ "${ID:-}" == "debian" ]] || die "仅支持 Debian"
-    [[ "${VERSION_ID:-}" =~ ^(12|13)$ ]] || die "仅支持 Debian 12/13"
-    [[ -n "${VERSION_CODENAME:-}" ]] || die "无法识别 Debian 发行版代号"
-    [[ "$(dpkg --print-architecture)" == "amd64" ]] || die "仅支持 amd64"
-    ! systemd-detect-virt --container >/dev/null 2>&1 \
-        || die "容器不能执行内核与防火墙初始化"
 }
 
 snapshot_fresh_install() {
@@ -340,91 +197,6 @@ snapshot_fresh_install() {
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 
-configure_bbr_tcp() {
-    if [[ "$(uname -r)" == *xanmod* ]]; then
-        [[ -f "${STATE_FILE}" ]] \
-            || die "当前运行 XanMod 内核；全新安装前请切换到 Debian 官方内核并重启"
-        warn "旧安装仍运行 XanMod；本次保留现有 BBR，切换到 Debian 官方内核后再次执行 update"
-        return 0
-    fi
-    cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
-# BBR
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-
-# TCP buffer
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.ipv4.tcp_rmem = 4096 131072 16777216
-net.ipv4.tcp_wmem = 4096 16384 16777216
-net.ipv4.tcp_moderate_rcvbuf = 1
-
-# PMTU
-net.ipv4.tcp_mtu_probing = 0
-
-# Idle connection
-net.ipv4.tcp_slow_start_after_idle = 1
-
-# Listen queue
-net.core.somaxconn = 4096
-EOF
-    modprobe tcp_bbr >/dev/null 2>&1 || die "当前 Debian 内核不支持 Google BBR (tcp_bbr)"
-    grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control \
-        || die "Google BBR 模块已加载，但内核未将其注册为可用拥塞控制算法"
-    printf '%s\n' tcp_bbr >"${RUNTIME_TMP}/easy_all-bbr.conf"
-    install -m 0644 "${RUNTIME_TMP}/easy_all-bbr.conf" "${BBR_MODULES_CONFIG}"
-    install -m 0644 "${RUNTIME_TMP}/bbr.conf" "${SYSCTL_CONFIG}"
-    sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "应用 BBR sysctl 配置失败"
-    [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
-        || die "拥塞控制算法未成功设置为 bbr"
-    [[ -f "${BBR_MODULES_CONFIG}" && -f "${SYSCTL_CONFIG}" ]] \
-        || die "Google BBR 开机配置写入失败"
-}
-
-filter_managed_reboot_cron() {
-    awk -v marker="${CRON_REBOOT_MARKER}" 'index($0, marker) == 0'
-}
-
-configure_daily_reboot() {
-    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job
-    if [[ -z "${mode}" && -t 0 ]]; then
-        printf '请选择定时重启策略：\n'
-        printf '  1. 每天凌晨 4 点重启（默认）\n'
-        printf '  2. 自定义每天几点重启（0-23）\n'
-        printf '  3. 不配置定时重启\n'
-        read -r -p "请选择 [1]（直接回车使用默认值）: " mode
-    fi
-    mode=${mode:-1}
-    case "${mode}" in
-    1 | default)
-        SCHEDULED_REBOOT_ENABLED=1
-        SCHEDULED_REBOOT_HOUR="${DEFAULT_REBOOT_HOUR}"
-        ;;
-    2 | custom)
-        [[ -n "${hour}" ]] || hour=$(prompt_value "每天重启小时（0-23）" "")
-        [[ "${hour}" =~ ^[0-9]+$ ]] && ((10#${hour} <= 23)) \
-            || die "重启小时无效：${hour}"
-        SCHEDULED_REBOOT_ENABLED=1
-        SCHEDULED_REBOOT_HOUR="${hour}"
-        ;;
-    3 | none | off | disabled)
-        SCHEDULED_REBOOT_ENABLED=0
-        SCHEDULED_REBOOT_HOUR=""
-        ;;
-    *) die "定时重启选项无效：${mode}" ;;
-    esac
-    { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab -
-    if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
-        job="0 ${SCHEDULED_REBOOT_HOUR} * * * /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
-        { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
-    fi
-}
-
-remove_daily_reboot_schedule() {
-    { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab - \
-        || warn "移除 easy_all 定时重启任务失败，请手动检查 root crontab"
-}
-
 configure_ipv6_compat() {
     [[ -d /proc/sys/net/ipv6 ]] || {
         warn "当前内核未暴露 IPv6，继续 IPv4-only 安装"
@@ -448,23 +220,6 @@ initialize_server() {
     info "配置每日重启与 IPv6"
     configure_daily_reboot
     configure_ipv6_compat
-}
-
-detect_public_ipv4() {
-    local service ip
-    local -a services=(
-        "https://api.ipify.org"
-        "https://ipv4.icanhazip.com"
-        "https://ifconfig.co"
-    )
-    for service in "${services[@]}"; do
-        ip=$(curl -4fsS --max-time 10 "${service}" 2>/dev/null | tr -d '[:space:]' || true)
-        if validate_ipv4 "${ip}"; then
-            printf '%s\n' "${ip}"
-            return 0
-        fi
-    done
-    return 1
 }
 
 detect_public_ipv6() {
@@ -789,46 +544,6 @@ check_install_conflicts() {
     fi
 }
 
-append_ssh_port() {
-    local port=$1
-    [[ "${port}" =~ ^[0-9]+$ ]] || return 0
-    ((10#${port} >= 1 && 10#${port} <= 65535)) || return 0
-    case ", ${SSH_PORTS:-}, " in
-    *", ${port}, "*) ;;
-    *)
-        [[ -z "${SSH_PORTS:-}" ]] || SSH_PORTS+=", "
-        SSH_PORTS+="${port}"
-        ;;
-    esac
-}
-
-detect_ssh_ports() {
-    local current_port sshd_bin config
-    SSH_PORTS=""
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        read -r _ _ _ current_port <<<"${SSH_CONNECTION}"
-        append_ssh_port "${current_port}"
-    fi
-    sshd_bin=$(command -v sshd 2>/dev/null || true)
-    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
-    if [[ -n "${sshd_bin}" ]]; then
-        while read -r current_port; do
-            append_ssh_port "${current_port}"
-        done < <("${sshd_bin}" -T 2>/dev/null | awk '$1 == "port" {print $2}')
-    fi
-    for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
-        [[ -f "${config}" ]] || continue
-        while read -r current_port; do
-            append_ssh_port "${current_port}"
-        done < <(awk '
-            /^[[:space:]]*#/ {next}
-            tolower($1) == "port" {print $2}
-        ' "${config}")
-    done
-    [[ -n "${SSH_PORTS}" ]] || SSH_PORTS="22"
-    info "UFW 将放行 SSH 端口：${SSH_PORTS}"
-}
-
 snapshot_ufw_state() {
     [[ ! -e "${BACKUP_DIR}/pre-install-ufw.active" \
         && ! -e "${BACKUP_DIR}/pre-install-ufw.inactive" \
@@ -854,23 +569,6 @@ snapshot_ufw_state() {
     if [[ -f "${UFW_DEFAULT_CONFIG}" ]]; then
         install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
     fi
-}
-
-managed_ufw_rule_numbers() {
-    command -v ufw >/dev/null 2>&1 || return 0
-    LC_ALL=C ufw status numbered 2>/dev/null \
-        | sed -n "/${UFW_RULE_COMMENT}/s/^[[:space:]]*\\[[[:space:]]*\\([0-9][0-9]*\\)\\].*/\\1/p" \
-        | sort -rn
-}
-
-remove_managed_ufw_rules() {
-    local rule_number
-    command -v ufw >/dev/null 2>&1 || return 0
-    while read -r rule_number; do
-        [[ -n "${rule_number}" ]] || continue
-        ufw --force delete "${rule_number}" >/dev/null \
-            || warn "删除 UFW 规则 ${rule_number} 失败"
-    done < <(managed_ufw_rule_numbers)
 }
 
 write_ufw_nat_rules_for_family() {
@@ -950,76 +648,27 @@ retire_legacy_nftables() {
 }
 
 configure_ufw() {
-    local port rule_number old_rule_numbers
+    local desired_ports
     retire_legacy_nftables
     detect_ssh_ports
+    info "UFW 将放行 SSH 端口：${SSH_PORTS}"
     snapshot_ufw_state
     if ! command -v ufw >/dev/null 2>&1; then
         apt-get update
         apt-get install -y --no-install-recommends ufw
     fi
     enable_ufw_ipv6
-    old_rule_numbers=$(managed_ufw_rule_numbers)
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
-    IFS=',' read -ra ports <<<"${SSH_PORTS// /}"
-    for port in "${ports[@]}"; do
-        ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
-            || die "添加 SSH UFW 规则失败：TCP ${port}"
-    done
-    ufw allow "${SERVICE_PORT}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
-        || die "添加 Reality UFW 规则失败"
+    desired_ports="${SSH_PORTS//,/ } ${SERVICE_PORT}"
     if [[ "${SUBSCRIBE_MODE:-${SUBSCRIPTION_MODE:-}}" == "selfhost" ]]; then
-        ufw allow 80/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
-            || die "添加 ACME HTTP UFW 规则失败"
-        ufw allow "${SUBSCRIPTION_HTTPS_PORT}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
-            || die "添加订阅 UFW 规则失败"
+        desired_ports+=" 80 ${SUBSCRIPTION_HTTPS_PORT}"
     fi
-    while read -r rule_number; do
-        [[ -n "${rule_number}" ]] || continue
-        ufw --force delete "${rule_number}" >/dev/null \
-            || die "删除旧 UFW 规则失败：${rule_number}"
-    done <<<"${old_rule_numbers}"
+    apply_managed_ufw_tcp_ports "${desired_ports}"
     write_ufw_nat_rules
-    ufw --force enable >/dev/null || die "启用 UFW 失败"
-    ufw reload >/dev/null || die "重载 UFW 失败"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
     LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
-}
-
-download_xray() {
-    local release archive_url dgst_url version temp_dir archive dgst expected actual
-    temp_dir=$(make_temp_dir)
-    release=$(curl -fsSL --retry 3 "${XRAY_RELEASES_API}") || die "读取 Xray 最新版本失败"
-    version=$(jq -r '.tag_name' <<<"${release}")
-    archive_url=$(jq -r --arg name "${XRAY_ARCHIVE}" '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release}")
-    dgst_url=$(jq -r --arg name "${XRAY_DGST}" '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release}")
-    [[ -n "${archive_url}" && "${archive_url}" != "null" ]] || die "未找到 ${XRAY_ARCHIVE}"
-    [[ -n "${dgst_url}" && "${dgst_url}" != "null" ]] || die "未找到 ${XRAY_DGST}"
-    archive="${temp_dir}/${XRAY_ARCHIVE}"
-    dgst="${temp_dir}/${XRAY_DGST}"
-    curl -fL --retry 3 "${archive_url}" -o "${archive}" || die "下载 Xray 失败"
-    curl -fL --retry 3 "${dgst_url}" -o "${dgst}" || die "下载 Xray 校验文件失败"
-    expected=$(awk '
-        BEGIN { IGNORECASE = 1 }
-        /SHA256|SHA2-256/ {
-            for (i = 1; i <= NF; i++) {
-                token = $i
-                gsub(/[^A-Fa-f0-9]/, "", token)
-                if (token ~ /^[A-Fa-f0-9]{64}$/) {
-                    print tolower(token)
-                    exit
-                }
-            }
-        }
-    ' "${dgst}")
-    actual=$(sha256sum "${archive}" | awk '{print $1}')
-    [[ -n "${expected}" && "${expected,,}" == "${actual,,}" ]] || die "Xray SHA256 校验失败"
-    unzip -qo "${archive}" -d "${temp_dir}/xray"
-    install -d -m 0755 "${XRAY_DIR}"
-    install -m 0755 "${temp_dir}/xray/xray" "${XRAY_BIN}"
-    printf '%s\n' "${version}" >"${XRAY_DIR}/version"
 }
 
 write_xray_config() {
@@ -1120,30 +769,6 @@ write_xray_config() {
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null \
         || die "Xray ${PROTOCOL} 配置校验失败"
     install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
-}
-
-install_xray_service() {
-    cat >"${RUNTIME_TMP}/easy_all-xray.service" <<EOF
-[Unit]
-Description=Xray ${PROTOCOL} managed by easy_all
-Documentation=https://github.com/XTLS/Xray-core
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=${XRAY_BIN} run -config ${XRAY_CONFIG}
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    install -m 0644 "${RUNTIME_TMP}/easy_all-xray.service" "${XRAY_SERVICE_FILE}"
-    systemctl daemon-reload
-    systemctl enable --now "${XRAY_SERVICE}" >/dev/null || die "启动 Xray 服务失败"
 }
 
 uri_encode() {
@@ -1420,44 +1045,6 @@ EOF
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
-has_acme_renewal_cron() {
-    local crontab_content
-    crontab_content=$(crontab -l 2>/dev/null || true)
-    awk -v acme_bin="${ACME_BIN}" '
-        index($0, acme_bin) && $0 ~ /(^|[[:space:]])--cron([[:space:]]|$)/ { found=1 }
-        END { exit !found }
-    ' <<<"${crontab_content}"
-}
-
-verify_acme_renewal_setup() {
-    command -v crontab >/dev/null 2>&1 || die "未找到 crontab"
-    systemctl enable --now cron.service >/dev/null 2>&1 \
-        || die "无法启用证书自动续期所需的 cron.service"
-    has_acme_renewal_cron || die "未找到 acme.sh 自动续期定时任务"
-}
-
-install_managed_acme_renewal_cron() {
-    local crontab_content cron_file
-    crontab_content=$(crontab -l 2>/dev/null || true)
-    cron_file="${RUNTIME_TMP}/acme-renewal.cron"
-    awk -v acme_bin="${ACME_BIN}" '
-        !(index($0, acme_bin) && $0 ~ /(^|[[:space:]])--cron([[:space:]]|$)/) { print }
-    ' <<<"${crontab_content}" >"${cron_file}"
-    printf '17 2 * * * "%s" --cron --home "%s" >/dev/null 2>&1 # easy_all-acme-renewal\n' \
-        "${ACME_BIN}" "${ACME_HOME}" >>"${cron_file}"
-    crontab "${cron_file}" || die "写入 easy_all acme.sh 自动续期定时任务失败"
-}
-
-ensure_acme_renewal_setup() {
-    run_acme --install-cronjob >/dev/null 2>&1 \
-        || warn "acme.sh --install-cronjob 失败，改用 easy_all 受管 cron"
-    if ! has_acme_renewal_cron; then
-        warn "acme.sh 未写入续期任务，正在写入 easy_all 受管 cron"
-        install_managed_acme_renewal_cron
-    fi
-    verify_acme_renewal_setup
-}
-
 install_acme() {
     if [[ -x "${ACME_BIN}" ]]; then
         install -d -m 0700 "${STATE_DIR}"
@@ -1473,10 +1060,6 @@ install_acme() {
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后不可用"
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
     ensure_acme_renewal_setup
-}
-
-run_acme() {
-    "${ACME_BIN}" "$@" --home "${ACME_HOME}"
 }
 
 describe_acme_issue_failure() {
@@ -1568,15 +1151,6 @@ install_static_subscriptions() {
     install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
     install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
     install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
-}
-
-write_subscription_token_map() {
-    if quota_enabled; then
-        jq -r 'to_entries[] | "    \"" + .value.token + "\" \"" + .key + "\";"' \
-            <<<"$(quota_active_accounts_json)"
-        return 0
-    fi
-    jq -r '.[] | "    \"" + . + "\" 1;"' <<<"${ALLOWED_TOKENS}"
 }
 
 write_subscription_nginx_config() {
@@ -2073,21 +1647,6 @@ show_status() {
         printf '订阅服务: disabled（仅节点）\n'
     fi
     show_quota_status
-}
-
-register_easy_all_command() {
-    local destination="${COMMAND_INSTALL_DIR}/${ENTRY_COMMAND_NAME}"
-    require_root
-    [[ -n "${ENTRY_SCRIPT_FILE}" && -f "${ENTRY_SCRIPT_FILE}" ]] \
-        || die "未找到入口脚本：${ENTRY_SCRIPT_FILE:-缺失}"
-    install -d -m 0755 "${COMMAND_INSTALL_DIR}" "$(dirname "${COMMAND_PATH}")"
-    if [[ "${ENTRY_SCRIPT_FILE}" == "${destination}" ]]; then
-        chmod 0755 "${destination}"
-    elif [[ ! -f "${destination}" ]] || ! cmp -s "${ENTRY_SCRIPT_FILE}" "${destination}"; then
-        install -m 0755 "${ENTRY_SCRIPT_FILE}" "${destination}"
-    fi
-    ln -sfn "${destination}" "${COMMAND_PATH}"
-    success "已注册单文件命令：${COMMAND_PATH}"
 }
 
 stop_protocol_services() {

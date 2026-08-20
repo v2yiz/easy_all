@@ -51,7 +51,10 @@ assert_failure() {
 }
 
 source_script_copy() {
-    install -m 0644 "${ROOT_DIR}/lib/quota.sh" "${TMP_DIR}/quota.sh"
+    local module
+    for module in quota.sh platform.sh profile-runtime.sh network.sh firewall.sh xray-core.sh acme-renewal.sh subscription-auth.sh validation.sh tcp-tuning.sh reboot-schedule.sh; do
+        install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/${module}"
+    done
     sed \
         -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
         -e "s|^readonly WEB_ROOT=.*|readonly WEB_ROOT=\"${TMP_DIR}/www\"|" \
@@ -97,7 +100,7 @@ set_fixture() {
 
 test_syntax_and_worker_removal() {
     local script
-    bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/lib/reality.sh" "${ROOT_DIR}/lib/xhttp.sh"
+    bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
     script=$(<"${ROOT_DIR}/lib/reality.sh")
     assert_not_contains "installer has no Worker API token" "CF_WORKER_API_TOKEN" "${script}"
     assert_not_contains "installer has no Worker deployment mode" "DEPLOY_MODE" "${script}"
@@ -119,7 +122,8 @@ test_syntax_and_worker_removal() {
     assert_contains "Reality keeps Gemini outbound family selection independent" \
         'gemini_domain_strategy="ForceIPv6"' "${script}"
     assert_contains "Reality default prompts explain the enter default" \
-        '[${default}]（直接回车使用默认值）' "${script}"
+        '[${default}]（直接回车使用默认值）' \
+        "$(<"${ROOT_DIR}/lib/profile-runtime.sh")"
     assert_contains "Reality subscription prompt recommends self-hosting for one server" \
         "只有当前服务器时推荐" "${script}"
     assert_contains "Reality subscription prompt recommends node output for aggregation" \
@@ -128,11 +132,13 @@ test_syntax_and_worker_removal() {
         "非交互卸载必须显式设置 FORCE=1" "${script}"
     assert_contains "Reality uninstall can preserve ACME state for reinstall" \
         'PRESERVE_ACME=1' "${script}"
-    assert_contains "Reality repairs a missing ACME renewal cron job" \
-        'run_acme --install-cronjob' "${script}"
+    assert_contains "Reality uses the shared ACME renewal module" \
+        'source "${SCRIPT_DIR}/acme-renewal.sh"' "${script}"
     assert_not_contains "installer no longer downloads XanMod" "dl.xanmod.org" "${script}"
-    assert_contains "installer persists Google BBR module loading" \
-        "BBR_MODULES_CONFIG" "${script}"
+    assert_contains "installer uses the shared TCP tuning module" \
+        'source "${SCRIPT_DIR}/tcp-tuning.sh"' "${script}"
+    assert_contains "shared TCP tuning persists Google BBR module loading" \
+        "BBR_MODULES_CONFIG" "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
 }
 
 test_validators_and_modes() {
@@ -318,6 +324,9 @@ test_nginx_and_firewall() {
         'filename=MY_SUB.yaml' "${config}"
 
     detect_ssh_ports() { SSH_PORTS="22"; }
+    apply_managed_ufw_tcp_ports() {
+        printf 'managed-ports %s\n' "$1" >>"${ufw_log}"
+    }
     ufw() {
         if [[ "${1:-}" == "status" ]]; then
             printf 'Status: active\n'
@@ -345,16 +354,72 @@ EOF
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
     assert_contains "self-hosting opens HTTP" \
-        "allow 80/tcp comment easy_all-managed" "$(<"${ufw_log}")"
+        "managed-ports 22 443 80 8443" "$(<"${ufw_log}")"
     assert_contains "self-hosting opens 8443" \
-        "allow 8443/tcp comment easy_all-managed" "$(<"${ufw_log}")"
+        "managed-ports 22 443 80 8443" "$(<"${ufw_log}")"
     assert_contains "dynamic Reality forwarding remains active" \
         "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw_config}"
     assert_contains "dynamic Reality forwarding supports IPv6" \
         "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw6_config}"
     assert_contains "dual-stack Reality enables UFW IPv6" \
         "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
-    unset -f nginx systemctl detect_ssh_ports ufw iptables-restore ip6tables-restore
+    unset -f nginx systemctl detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
+        iptables-restore ip6tables-restore
+}
+
+test_ufw_reapply_preserves_existing_ssh() {
+    local state="${TMP_DIR}/ufw-state" state_text ssh_count
+    set_fixture
+    cat >"${state}" <<'EOF'
+22/tcp|ALLOW IN|Anywhere|easy_all-managed
+8443/tcp|ALLOW IN|Anywhere|easy_all-managed
+80/tcp|ALLOW IN|Anywhere|debian-init-managed
+9999/tcp|ALLOW IN|Anywhere|user-rule
+EOF
+    ufw() {
+        local endpoint number temp="${state}.new"
+        if [[ "${1:-}" == "status" && "${2:-}" == "numbered" ]]; then
+            printf 'Status: active\n'
+            awk -F'|' '{printf "[ %d] %s %s %s # %s\n", NR, $1, $2, $3, $4}' "${state}"
+            return 0
+        fi
+        if [[ "${1:-}" == "allow" ]]; then
+            endpoint=$2
+            if awk -F'|' -v endpoint="${endpoint}" \
+                '$1 == endpoint && $2 == "ALLOW IN" {found=1} END {exit(found ? 0 : 1)}' \
+                "${state}"; then
+                return 0
+            fi
+            printf '%s|ALLOW IN|Anywhere|%s\n' "${endpoint}" "${4:-}" >>"${state}"
+            return 0
+        fi
+        if [[ "${1:-}" == "--force" && "${2:-}" == "delete" ]]; then
+            number=$3
+            awk -v number="${number}" 'NR != number' "${state}" >"${temp}"
+            mv "${temp}" "${state}"
+            return 0
+        fi
+        [[ "${1:-}" == "--force" && "${2:-}" == "enable" ]] && return 0
+        [[ "${1:-}" == "reload" ]] && return 0
+        return 1
+    }
+
+    apply_managed_ufw_tcp_ports "22 80 443"
+    apply_managed_ufw_tcp_ports "22 80 443"
+    state_text=$(<"${state}")
+    ssh_count=$(awk -F'|' '$1 == "22/tcp" && $2 == "ALLOW IN" {count++} END {print count+0}' "${state}")
+    assert_equal "Reality UFW reapply keeps exactly one SSH allow rule" "1" "${ssh_count}"
+    assert_contains "Reality UFW reapply keeps the existing managed SSH rule" \
+        "22/tcp|ALLOW IN|Anywhere|easy_all-managed" "${state_text}"
+    assert_contains "Reality UFW accepts an existing external HTTP allow rule" \
+        "80/tcp|ALLOW IN|Anywhere|debian-init-managed" "${state_text}"
+    assert_contains "Reality UFW adds a missing service rule" \
+        "443/tcp|ALLOW IN|Anywhere|easy_all-managed" "${state_text}"
+    assert_not_contains "Reality UFW removes only a stale managed rule" \
+        "8443/tcp|ALLOW IN|Anywhere|easy_all-managed" "${state_text}"
+    assert_contains "Reality UFW preserves unrelated user rules" \
+        "9999/tcp|ALLOW IN|Anywhere|user-rule" "${state_text}"
+    unset -f ufw
 }
 
 test_acme_reinstall_and_rate_limit_guidance() {
@@ -568,6 +633,7 @@ test_reality_inbound_family_and_dns
 test_subscription_stage_dispatch
 test_mihomo_template
 test_subscription_generation
+test_ufw_reapply_preserves_existing_ssh
 test_nginx_and_firewall
 test_acme_renewal_repair
 test_acme_reinstall_and_rate_limit_guidance
