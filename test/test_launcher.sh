@@ -45,14 +45,23 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
     || fail "launcher must not expose the removed update commands"
 
 guide=$(show_install_guide 2>&1)
-[[ "${guide}" == *"公共步骤"* && "${guide}" == *"[1 默认] 直连 Reality"* \
+[[ "${guide}" == *"[1 默认] 直连 Reality"* \
     && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \
-    && "${guide}" == *"只有当前服务器：推荐部署订阅服务"* \
-    && "${guide}" == *"多节点聚合或已有订阅服务器：推荐仅输出节点信息"* \
+    && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
+    && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
     && "${guide}" == *"CDN XHTTP"* ]] \
     || fail "install guide does not describe both branches and defaults"
-[[ "$(<"${ROOT_DIR}/README.md")" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
+readme=$(<"${ROOT_DIR}/README.md")
+[[ "${readme}" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
     || fail "README install flow must choose the mode before profile initialization"
+[[ "${readme}" == *'R3 --> R4[下载 Xray / 配置 UFW / 安装并启动 Xray]'* \
+    && "${readme}" == *'R5[保存基础状态并注册 easy_all]'* \
+    && "${readme}" == *'R5 --> R6{按已选订阅输出方式配置}'* \
+    && "${readme}" == *'X4 --> X6[AWS IAM / Route 53 源站 A 记录]'* \
+    && "${readme}" == *'X6 --> X7[配置 UFW / Nginx HTTP-01 / 源站证书 / 安装 Xray 与 Nginx]'* \
+    && "${readme}" == *'X7 --> X8[ACM 证书 / CloudFront / Route 53 CDN CNAME]'* \
+    && "${readme}" == *'X8 --> X9[保存状态并注册 easy_all]'* ]] \
+    || fail "README install flow must match the installer execution order"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \
     || fail "install mode prompt must explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \

@@ -69,23 +69,30 @@ flowchart TD
     R0 --> R1[系统检查 / 依赖 / BBR / 重启策略]
     R1 --> R2[连接地址 / SNI / 订阅端口]
     R2 --> R3{订阅输出选择}
-    R3 -->|部署| R4[订阅域名 / Token 或用户配额]
-    R3 -->|仅节点| R5[仅输出节点]
-    R4 --> R6[安装 Xray / Nginx / 证书]
-    R5 --> R6
-    R6 --> Z[保存状态并注册 easy_all]
+    R3 --> R4[下载 Xray / 配置 UFW / 安装并启动 Xray]
+    R4 --> R5[保存基础状态并注册 easy_all]
+    R5 --> R6{按已选订阅输出方式配置}
+    R6 -->|部署| R7[询问订阅域名、文件名、Token 或用户配额]
+    R7 --> R8[安装 Nginx / 申请订阅证书 / 生成订阅]
+    R6 -->|仅节点| R9[仅输出节点]
+    R8 --> Z[输出节点与订阅信息]
+    R9 --> Z
 
     B -->|2| X0[CDN XHTTP]
     X0 --> X1[系统检查 / 依赖 / BBR / 重启策略]
     X1 --> X2[源站域名 / CDN 域名]
     X2 --> X3{订阅输出选择}
-    X3 -->|部署| X4[Token 或用户配额]
+    X3 -->|部署| X4[文件名、Token 或用户配额]
     X3 -->|仅节点| X5[仅输出节点]
-    X4 --> X6[AWS IAM / Route 53 / 证书 / CloudFront]
+    X4 --> X6[AWS IAM / Route 53 源站 A 记录]
     X5 --> X6
-    X6 --> X7[安装 Xray / Nginx]
-    X7 --> Z
+    X6 --> X7[配置 UFW / Nginx HTTP-01 / 源站证书 / 安装 Xray 与 Nginx]
+    X7 --> X8[ACM 证书 / CloudFront / Route 53 CDN CNAME]
+    X8 --> X9[保存状态并注册 easy_all]
+    X9 --> Z
 ```
+
+图中是安装器的实际执行顺序。特别是 Reality 会先完成 Xray 的基础运行时并注册命令，随后才按已选的订阅输出方式部署或清理订阅服务；CDN XHTTP 则先创建 Route 53 源站记录，再配置本机源站，最后创建并验收 CloudFront。
 
 公共交互选项：
 
