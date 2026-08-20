@@ -56,8 +56,10 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "README install flow must choose the mode before profile initialization"
 [[ "${readme}" == *'R3 -->|部署| R4[订阅域名、文件名、Token 或用户配额]'* \
     && "${readme}" == *'R3 -->|仅节点| R5[准备仅节点输出]'* \
-    && "${readme}" == *'R4 --> R6[下载 Xray / 配置 UFW / 安装并验收 Xray]'* \
-    && "${readme}" == *'R6 --> R7{执行已选订阅分支}'* \
+    && "${readme}" == *'R4 --> R6D[公共运行时：下载 Xray / 配置 UFW / 安装并验收 Xray]'* \
+    && "${readme}" == *'R5 --> R6L[公共运行时：下载 Xray / 配置 UFW / 安装并验收 Xray]'* \
+    && "${readme}" == *'R6D --> R8[安装 Nginx / 申请订阅证书 / 生成并验收订阅]'* \
+    && "${readme}" == *'R6L --> R9[仅输出节点，不安装订阅服务]'* \
     && "${readme}" == *'R8 --> R10[保存最终状态 / 注册 easy_all / 配置配额任务]'* \
     && "${readme}" == *'X4 --> X6[AWS IAM / Route 53 源站 A 记录]'* \
     && "${readme}" == *'X6 --> X7[配置 UFW / Nginx HTTP-01 / 源站证书 / 安装 Xray 与 Nginx]'* \

@@ -2062,7 +2062,7 @@ run_reality_install_pipeline() {
     info "[7/9] 安装并启动 ${PROTOCOL}"
     install_protocol_runtime
     validate_protocol_runtime
-    info "[8/9] 部署订阅输出分支"
+    info "[8/9] 应用订阅输出配置"
     deploy_subscription_output
     info "[9/9] 保存状态并注册 easy_all 命令"
     save_state
