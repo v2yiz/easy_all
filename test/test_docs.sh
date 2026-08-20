@@ -96,6 +96,10 @@ assert_contains "AWS guide documents the 980 GB safety buffer" \
     "${AWS_GUIDE_CONTENT}" '980 GB'
 assert_contains "AWS guide says only two credentials are supplied to the script" \
     "${AWS_GUIDE_CONTENT}" '安装时你只需要向脚本提供'
+assert_contains "AWS guide pins CloudFront control operations to us-east-1" \
+    "${AWS_GUIDE_CONTENT}" 'AWS 控制区域：选择 `us-east-1`（美国·弗吉尼亚北部）'
+assert_contains "AWS guide explains that the control region is not the traffic region" \
+    "${AWS_GUIDE_CONTENT}" '这不是节点的落地位置选择'
 aws_markdown_count=$(find "${ROOT_DIR}/docs" -maxdepth 1 -type f -name 'aws*.md' | wc -l | tr -d ' ')
 [[ "${aws_markdown_count}" == "1" ]] || fail "AWS user guidance must stay in one Markdown file"
 

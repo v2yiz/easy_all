@@ -18,6 +18,20 @@ AWS_SECRET_ACCESS_KEY
 [AWS 全球商业区注册页](https://signin.aws.amazon.com/signup?request_type=register)
 完成注册，并为根用户启用 MFA。
 
+### AWS 控制区域：选择 `us-east-1`（美国·弗吉尼亚北部）
+
+控制台右上角的区域请选择截图中的 **美国（弗吉尼亚北部）`us-east-1`**。本项目所有 AWS
+控制面调用均固定使用该区域；尤其是 CloudFront 的自定义域名证书必须在这个区域申请或导入 ACM，
+否则 CloudFront 无法关联它。
+
+这不是节点的落地位置选择：Route 53 和 CloudFront 是全球服务，用户会由 CloudFront 的边缘站点接入，
+再回源到你的 VPS。因此不要为了降低延迟改选东京、新加坡或其他区域；本项目没有创建 EC2 等区域型
+AWS 计算资源，实际延迟主要取决于用户到 CloudFront 边缘的网络，以及边缘到 VPS 的回源链路。
+
+AWS 官方参考：
+[CloudFront 的 ACM 证书区域要求](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html)、
+[Route 53 的全球服务边界](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/disaster-recovery-resiliency.html)。
+
 ## 2. 确认账号升级与 CloudFront 计费模式
 
 AWS 注册时选择的 **Free account plan** 与 CloudFront 计费方式不是一回事。脚本支持
