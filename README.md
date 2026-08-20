@@ -496,8 +496,15 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 
 需要两个位于 Route 53 Public Hosted Zone 的域名。这是必需条件：域名注册商可保留在原处，但这两个
 域名所属的权威 DNS Zone 必须委派到 Route 53，脚本才能自动创建 A、ACM 验证和 CloudFront Alias
-记录。已有网站或邮件业务时，建议只委派专用子域名；完整操作、DNSSEC 注意事项和委派检查要点见
+记录。本项目仅说明将整个主域名委派到 Route 53；如已有网站或邮件业务，请先迁移现有 DNS 记录。
+完整操作、DNSSEC 注意事项和委派检查要点见
 [AWS 一次性准备指南](docs/aws-guide.md#3-配置-route-53-权威-dns)。
+
+> **DNS 操作边界：手动一次，后续自动。** 你只需手动创建 Route 53 Public Hosted Zone，并在域名
+> 注册商将整个主域名的 NS 委派到 Route 53。之后安装脚本会探测 VPS 公网 IPv4，自动创建源站 A 记录、
+> ACM DNS 验证记录，以及指向 CloudFront 的 Alias A/AAAA；无需手动创建这些节点记录。脚本不会
+> 创建 Hosted Zone、修改注册商 NS，或接管已有记录。VPS IPv4 变化后，执行 `easy_all apply-cloud`
+> 即可重新探测并同步源站 A 记录。
 
 | 域名示例             | 用途                                      |
 | -------------------- | ----------------------------------------- |

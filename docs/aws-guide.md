@@ -68,11 +68,14 @@ AWS 官方参考：
 
 这是 CDN XHTTP 的**必要条件**。源站域名和 CDN 域名必须属于已正确委派的
 **Route 53 Public Hosted Zone**；Private Hosted Zone 不能用于公网解析。域名注册商不必迁入 AWS，
-需要交给 AWS 的只是节点域名的权威 DNS 区域。
+需要交给 AWS 的是整个主域名的权威 DNS 区域。本指南只保留这一种流程，避免同时维护多个
+委派方案。
 
-### 方式 A：整个主域名交给 Route 53
+完成上述委派后，不需要手动创建 `origin` 的 A 记录、ACM 验证记录或 `node` 的
+CloudFront Alias A/AAAA：安装脚本会自动写入这些节点记录。脚本不会替你创建 Hosted Zone、修改
+注册商的 NS，或接管已有 DNS 记录；这一步仍需在 AWS 和当前 DNS 服务商处完成。
 
-例如准备使用 `origin.example.com` 和 `node.example.com`：
+例如准备使用 `origin.example.com` 和 `node.example.com`，统一将 `example.com` 交给 Route 53：
 
 1. 在 **Route 53 → Hosted zones → Create hosted zone** 输入 `example.com`，选择
    **Public hosted zone** 后创建。
@@ -80,25 +83,13 @@ AWS 官方参考：
 3. 在当前域名注册商的 Nameservers 页面，将现有名称服务器完整替换为这四条。
 4. 等待委派生效后，再继续后续步骤。
 
-### 方式 B：只委派专用子域名
-
-已有网站或邮箱时推荐该方式。例如主域名 `example.com` 保持原 DNS，仅将
-`edge.example.com` 委派到 Route 53：
-
-1. 在 Route 53 创建 `edge.example.com` Public Hosted Zone。
-2. 复制其 NS 记录中的四条名称服务器。
-3. 在原 DNS 服务商的 `example.com` Zone 中创建名为 `edge` 的 NS 记录集，值为上一步的四条
-   名称服务器。不要更换 `example.com` 在注册商处的名称服务器。
-4. 后续使用 `origin.edge.example.com` 和 `node.edge.example.com`。
-
 ### 委派前检查
 
 1. 整个主域名迁入前，先复制现有 A/AAAA/CNAME、MX/TXT、SPF、DKIM、DMARC 和 CAA
    记录。easy_all 只管理节点和证书记录，不会迁移既有业务记录。
 2. 主域名已启用 DNSSEC 时，先移除旧 DNS 服务商对应的 DS 记录；Route 53 DNSSEC 和新 DS
    链完成后再重新启用。
-3. 不要创建同名的多个 Public Hosted Zone；父 Zone 或注册商的 NS 必须指向实际保存记录的
-   那一个 Zone。
+3. 不要创建同名的多个 Public Hosted Zone；注册商的 NS 必须指向实际保存记录的那一个 Zone。
 
 AWS 官方参考：
 [Route 53 Public Hosted Zone](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/CreatingHostedZone.html)、

@@ -70,6 +70,14 @@ for vps_marker in 'sudo ' 'dig +short' 'easy_all apply' './easy_all install'; do
 done
 assert_contains "AWS guide includes Route 53 delegation" \
     "${AWS_GUIDE_CONTENT}" '这是 CDN XHTTP 的**必要条件**'
+assert_contains "README clearly separates one-time delegation from automatic records" \
+    "${README_CONTENT}" 'DNS 操作边界：手动一次，后续自动。'
+assert_contains "AWS guide says the script writes node records automatically" \
+    "${AWS_GUIDE_CONTENT}" '安装脚本会自动写入这些节点记录'
+assert_not_contains "AWS guide omits the confusing subdomain-only delegation branch" \
+    "${AWS_GUIDE_CONTENT}" '方式 B：只委派专用子域名'
+assert_not_contains "README omits subdomain-only delegation guidance" \
+    "${README_CONTENT}" '建议只委派专用子域名'
 assert_contains "AWS guide includes CloudFront cost boundary" \
     "${AWS_GUIDE_CONTENT}" '100 GB + 100 万次请求'
 assert_contains "AWS guide includes pay-as-you-go perpetual free usage" \
