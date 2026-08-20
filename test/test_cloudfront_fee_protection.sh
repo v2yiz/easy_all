@@ -43,6 +43,7 @@ assert_equal "UTC calendar month extraction" "2026-08" \
     "$(cloudfront_fee_current_period "2026-08-20")"
 
 PROTOCOL="xhttp"
+CDN_PROVIDER="aws"
 AWS_CLOUDFRONT_BILLING_MODE="payg"
 CLOUDFRONT_FEE_PROTECTION_GB=""
 configure_cloudfront_fee_protection
@@ -151,6 +152,18 @@ assert_equal "flat-rate mode disables the pay-as-you-go guard" "0" \
 if cloudfront_fee_protection_enabled; then
     fail "flat-rate mode must not enable the pay-as-you-go guard"
 fi
+
+CDN_PROVIDER="gcore"
+AWS_CLOUDFRONT_BILLING_MODE="flat-free"
+CLOUDFRONT_FEE_PROTECTION_GB=""
+configure_cloudfront_fee_protection
+assert_equal "Gcore Free CDN enables the same 980 GB global guard" "980" \
+    "${CLOUDFRONT_FEE_PROTECTION_GB}"
+cloudfront_fee_protection_enabled \
+    || fail "Gcore Free CDN must enable the global guard independently of AWS billing"
+assert_equal "Gcore guard labels its operator output" "Gcore" "$(cdn_fee_provider_label)"
+assert_equal "Gcore guard uses its private sync command" "gcore-fee-sync" \
+    "$(cdn_fee_sync_command)"
 
 module_content=$(<"${ROOT_DIR}/lib/cloudfront-fee-protection.sh")
 [[ "${module_content}" == *'OnUnitActiveSec=15s'* \

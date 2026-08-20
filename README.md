@@ -3,13 +3,15 @@
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点安装器。一个项目、一个命令，
 安装时只能选择一种模式：
 
-| 安装模式       | 协议                         | 入口              |
-| -------------- | ---------------------------- | ----------------- |
-| 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443       |
-| CDN - XHTTP    | VLESS XHTTP stream-up / HTTP2 | CDN HTTPS 443     |
+| 安装模式       | 协议                         | CDN Provider / 入口 |
+| -------------- | ---------------------------- | ------------------- |
+| 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
+| AWS CDN - XHTTP | VLESS XHTTP stream-up / HTTP2 | Route 53 + ACM + CloudFront |
+| Gcore CDN - XHTTP | VLESS XHTTP stream-up / HTTP2 | Gcore Managed DNS + CDN |
 
-CDN XHTTP 当前使用 AWS Route 53、ACM 和 CloudFront。协议状态使用 `xhttp`，
-Provider 单独记录为 `aws`，以后接入其他 CDN 时不改变安装模式和 XHTTP 实现。
+两条 CDN XHTTP 链路复用同一套 Xray、Nginx、订阅与用户配额运行时，Provider 单独记录为
+`aws` 或 `gcore`。每条链路只管理自己的云端资源，不会混用 AWS Access Key、Gcore Token
+或 DNS/CDN 对象。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合专用 VPS。
@@ -28,8 +30,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 sudo easy_all self-update
 ```
 
-`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、两个 Profile、公共模块和
-Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或 AWS 资源。代码包含配置生成变化时，
+`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、三个 Profile、公共模块和
+Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或云端 CDN 资源。代码包含配置生成变化时，
 再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
 更新 Xray 核心请使用 `sudo easy_all update-core`。
@@ -39,7 +41,7 @@ Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或 AWS 资�
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
 2. 浅克隆 `main` 分支完整项目到权限受限的临时目录。
-3. 校验入口、两个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
+3. 校验入口、三个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
 4. 通过 `sudo` 启动交互安装。
 5. 安装结束后删除临时下载目录。
 
@@ -55,7 +57,8 @@ sudo ./easy_all install
 ```text
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
-  2. CDN - XHTTP（非优化线路推荐）
+  2. AWS CDN - XHTTP（非优化线路推荐）
+  3. Gcore CDN - XHTTP（非优化线路推荐）
 请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -78,7 +81,7 @@ flowchart TD
     R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]
     R9 --> Z[输出节点与订阅信息]
 
-    B -->|2| X0[CDN XHTTP]
+    B -->|2| X0[AWS CDN XHTTP]
     X0 --> X1[系统预检 / 冲突检查 / 备份]
     X1 --> X2[依赖 / SSH 启动保障 / AWS CLI / BBR / 重启策略]
     X2 --> X3[源站域名 / CDN 域名 / VLESS 自动参数]
@@ -94,20 +97,36 @@ flowchart TD
     X9 --> X10[ACM / Paid account plan 检查或确认升级 / CloudFront / 按选择配置 WAF 与固定套餐或按量付费 / Route 53 Alias A/AAAA / 公网验收]
     X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]
     X11 --> Z
+
+    B -->|3| G0[Gcore CDN XHTTP]
+    G0 --> G1[系统预检 / 冲突检查 / 备份]
+    G1 --> G2[依赖 / SSH 启动保障 / BBR / 重启策略]
+    G2 --> G3[Gcore 源站域名 / CDN 域名 / VLESS 自动参数]
+    G3 --> G4{订阅输出选择}
+    G4 -->|部署| G5[文件名、Token 或用户配额]
+    G4 -->|仅节点| G6[不生成订阅文件]
+    G5 --> G7[GCORE_API_TOKEN / Gcore DNS 委派验证 / 源站 A]
+    G6 --> G7
+    G7 --> G8[UFW / Nginx HTTP-01]
+    G8 --> G9[源站证书 / Xray / Nginx / 已选订阅输出验收]
+    G9 --> G10[源组 / Gcore CDN / CNAME / 免费 Let's Encrypt / 公网验收]
+    G10 --> G11[保存状态 / 注册 easy_all / 配置用户配额与 980 GB 费用保护]
+    G11 --> Z
 ```
 
-图中是安装器的实际执行顺序。Reality 和 CDN XHTTP 都只询问一次订阅输出；两条选项随后合流到同一套运行时，并由后续步骤应用已保存的选择，不会再次询问。XHTTP 会先创建 Route 53 源站 A 记录，再配置本机源站，最后创建并验收 CloudFront。AWS 授权在同一次安装进程中复用，不写入状态文件。
+图中是安装器的实际执行顺序。Reality、AWS CDN 和 Gcore CDN 都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。两条 CDN 链路均先写源站 A 记录，再配置本机源站，最后创建并验收各自的 CDN。AWS 凭证与 Gcore Token 仅在当前安装或 `apply-cloud` 进程中使用，不写入状态文件。
 
 公共交互选项：
 
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
 | CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费 | `2` | 使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
+| Gcore CDN 费用保护 | 固定 `980 GB` | `980 GB` | Gcore Free CDN 使用本机 UTC 自然月保护，不创建付费套餐或 WAAP |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
 | 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
-| 安装模式 | `1` Reality（优化线路推荐） / `2` CDN XHTTP（非优化线路推荐） | `1` | 安装 Reality |
+| 安装模式 | `1` Reality（优化线路推荐） / `2` AWS CDN XHTTP / `3` Gcore CDN XHTTP | `1` | 安装 Reality |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 写入每日 04:00 的 root crontab |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
@@ -122,21 +141,21 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
-| `status` | 显示当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示 Route 53、CloudFront 分配以及全局费用保护状态，不调用 AWS API。 |
-| `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或 AWS。 |
-| `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS。 |
-| `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并显式同步 Route 53、ACM 和 CloudFront。 |
-| `update-sub` | 重新选择订阅输出并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件，不修改 AWS。 |
+| `status` | 显示当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示当前 Provider 的云端资源 ID 和全局费用保护状态，不调用云 API。 |
+| `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
+| `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS 或 Gcore。 |
+| `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并同步当前 Provider 的云资源：AWS 同步 Route 53/ACM/CloudFront，Gcore 同步 Managed DNS/CDN/边缘证书。 |
+| `update-sub` | 重新选择订阅输出并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件，不修改 AWS 或 Gcore。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
-| `quota-status` | 显示每用户月度配额；CDN XHTTP 按量付费模式同时显示独立的 CloudFront 全局费用保护用量。 |
+| `quota-status` | 显示每用户月度配额；AWS 按量付费和 Gcore Free CDN 同时显示独立的 CDN 全局费用保护用量。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
-| `uninstall` | 卸载当前模式的本机资源。XHTTP 保留 CloudFront、ACM 和 Route 53 资源，需在 AWS Console 中自行确认是否清理。 |
+| `uninstall` | 卸载当前模式的本机资源。CDN XHTTP 保留远端 AWS 或 Gcore 资源，需在对应 Console 中自行确认是否清理。 |
 | `help` | 显示命令帮助。 |
 
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
-AWS 云资源时才使用 `easy_all apply-cloud`。
+云资源时才使用 `easy_all apply-cloud`。
 
 ### `apply` 的具体操作
 
@@ -146,17 +165,18 @@ AWS 云资源时才使用 `easy_all apply-cloud`。
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
 | Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 UFW；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
-| CDN XHTTP | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取 AWS 授权、不修改 Route 53、ACM 或 CloudFront。 |
+| CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
 
 Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的
-状态、Xray/Nginx 配置和订阅文件。这不等于回滚已加载的 TCP 参数或已成功的 AWS 变更。
+状态、Xray/Nginx 配置和订阅文件。这不等于回滚已加载的 TCP 参数或已成功的云端变更。
 
 ### `apply-cloud` 的具体操作
 
-`easy_all apply-cloud` 仅适用于 CDN XHTTP。它按“读取状态与备份 → BBR/UFW → Route 53
-源站 A 记录 → ACM → AWS account plan 检查 → CloudFront/已选计费模式/CDN Alias A/AAAA 与公网健康检查 → 重建本机 Xray/Nginx/订阅
-→ 保存状态”执行。默认使用当前终端提供的 Access Key；也可显式启用 AWS 默认凭证链。
-AWS 已成功创建或变更的云资源不自动回滚，因此只有云端配置确实需要同步时才应执行该命令。
+`easy_all apply-cloud` 仅适用于 CDN XHTTP。它先读取状态与备份并更新本机 BBR/UFW，然后：
+AWS 链路同步 Route 53 源站 A、ACM、账号套餐检查与 CloudFront；Gcore 链路同步 Managed DNS
+源站 A、源组、CDN、CNAME 和边缘 Let's Encrypt。AWS 默认读取当前终端提供的 Access Key（也可
+显式启用默认凭证链）；Gcore 只提示输入 `GCORE_API_TOKEN`。已成功创建或变更的云资源不自动回滚，
+因此只有云端配置确实需要同步时才应执行该命令。
 
 ### 轮换 UUID
 
@@ -169,7 +189,7 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 
 也可将命令中的值替换为指定的标准 UUID。更新成功后，旧 UUID 立即失效；请从
 `easy_all show` 获取新节点，或在已部署订阅服务时让客户端重新拉取订阅。CDN XHTTP 的普通
-`apply` 不要求 AWS 凭证。
+`apply` 不要求 AWS 凭证或 Gcore Token。
 
 ### 新增、删除或修改订阅用户
 
@@ -449,21 +469,26 @@ sudo env PRESERVE_ACME=1 easy_all uninstall
 只有明确属于“重复证书/相同域名集合”限流时，才可改用已经解析到当前 VPS 的全新订阅域名；
 账户、IP 或失败验证次数限流不能靠换域名绕过，应停止重试并等待。
 
-## CDN XHTTP
+## AWS CDN XHTTP
 
 XHTTP 使用 `stream-up + HTTP/2 + XMUX`。当前链路为：
 CDN 模式只输出一个 VLESS XHTTP 节点，不混入其他协议。
 XMUX 默认使用 `4-8` 并发和按存活时间轮换连接，不设置 Mihomo 不建议填写的
 `h-max-request-times`，避免连接计数轮换导致客户端链路异常。
 
-为避免长时间流式输出在中途被截断，服务端与订阅显式统一使用 `100-1000` 字节的
-XHTTP 兼容 padding，服务端每 `20-40` 秒发送上行响应保活；Nginx 对流式请求体和
-gRPC 上下游统一使用 1 小时的读写空闲超时，CloudFront 源站响应包间超时设为 120 秒。
-这些超时只限制连续无数据的空闲间隔，不限制一次请求的总时长。
+为避免长时间流式输出在中途被截断，Nginx 会在受 Origin Key 保护的 XHTTP 回源位置补充一个
+合法的服务端 padding 标记，确保 Xray 实际启动 `scStreamUpServerSecs`，并每 `20-40` 秒发送
+上行响应保活。该标记只存在于 CDN 到源站的内部链路，不会写入 VLESS URI 或 Mihomo/Clash
+节点；客户端仍使用自身兼容的 padding 默认值。Nginx 对流式请求体和 gRPC 上下游统一使用
+1 小时的读写空闲超时，CloudFront 源站响应包间超时设为 120 秒，且不设置请求总完成时限。
+
+这项保活可减少长工具调用期间的中途重连，但不能承诺消除所有网络重连：如果下行响应连续超过
+CloudFront 包间超时仍没有任何应用数据，CloudFront 仍可能关闭该请求。客户端应继续保留自动
+重连能力。
 
 安装和 `easy_all update-sub` 都提供两个订阅选项：
 
-1. 启用通过 CloudFront + Nginx 提供的订阅服务，并输出节点信息。
+1. 启用通过 AWS CloudFront + Nginx 提供的订阅服务，并输出节点信息。
 2. 不部署订阅服务，仅输出节点信息。
 
 安装阶段会创建或同步 CloudFront；`update-sub` 会按新的用户/配额重建本机 Xray、
@@ -584,6 +609,35 @@ IAM 用户与两项 Access Key 获取步骤见
 [获取 AWS Access Key](docs/aws-guide.md#6-创建-access-key)。该文档只包含 AWS 控制台和域名注册商操作，不包含 VPS 命令；
 默认凭证链的 VPS 用法仅在本 README 中说明。
 
+## Gcore CDN XHTTP
+
+Gcore 是菜单中的第三项：它复用 XHTTP 本机运行时，但只使用 `GCORE_API_TOKEN` 管理 Gcore
+Managed DNS、源组、CDN 资源和边缘 Let's Encrypt，不读取 AWS 凭证。安装前须将**整个主域名**
+委派到 Gcore Managed DNS；脚本会验证该委派，再自动创建源站 A 记录和节点 CNAME。详细的一次性
+账号、委派与最小权限准备见 [Gcore 一次性准备指南](docs/gcore-guide.md)。
+
+链路为：
+
+```text
+客户端 -> Gcore CDN HTTPS 443 -> Nginx gRPC -> Xray 127.0.0.1:10086
+```
+
+源站固定用 IPv4 A 记录；节点域名使用 Gcore CDN 分配的 `*.gcdn.co` CNAME，不能同时存在
+节点 A/AAAA。检测到冲突记录时脚本默认停止；确认该记录可替换后才设置
+`GCORE_DNS_REPLACE=1`。CDN 强制 HTTPS 回源、源站 SNI/Host，并注入 `X-Easy-All-Origin-Key`；
+边缘和浏览器缓存均设为 `0s`，从而避免把 XHTTP、订阅或健康检查缓存为静态内容。
+
+Gcore 对源站读取超时的上限为 30 秒，因此此 Provider 将 XHTTP `stream-up` 服务端窗口收紧为
+`20-25` 秒；Nginx 仍使用 1 小时流式读写超时。安装会等待 CNAME、边缘证书和 HTTPS 健康检查，
+但无法在不接入真实客户端网络的情况下替你证明所有移动网络下的长期 XHTTP 稳定性；首次安装后应
+用目标客户端做实际连接、切网和长连接测试。
+
+Gcore Free CDN 采用本机 `980 GB` UTC 自然月全局保护，与 AWS 按量付费的保护机制相同：每 15 秒
+统计 Xray 用户上下行、达到阈值即清空客户端并在下一个 UTC 自然月恢复。它不是 Gcore 账单的精确
+硬额度，仍保留 20 GB 缓冲，也不按请求次数计量。脚本不创建 WAAP、付费 CDN 套餐或支付方式。
+Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为，见其
+[自定义域名说明](https://gcore.com/learning/cut-egress-costs)。
+
 ## 状态与边界
 
 统一状态目录：
@@ -609,16 +663,19 @@ IAM 用户与两项 Access Key 获取步骤见
 STATE_VERSION=2  # Reality
 STATE_VERSION=4  # XHTTP
 PROTOCOL=reality|xhttp
-CDN_PROVIDER=aws
-AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg  # 仅 XHTTP
-CLOUDFRONT_FEE_PROTECTION_GB=0|980           # XHTTP 固定套餐|按量付费
+CDN_PROVIDER=aws|gcore
+AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
+CLOUDFRONT_FEE_PROTECTION_GB=0|980            # AWS 固定套餐|AWS 按量付费
+GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
+GCORE_CDN_RESOURCE_ID=12345                   # 仅 Gcore CDN XHTTP
+GCORE_FEE_PROTECTION_GB=980                   # 仅 Gcore CDN XHTTP
 ```
 
-Reality 的 `CDN_PROVIDER` 为空。XHTTP 当前固定为 `aws`。easy_all 不会将 AWS Access Key、
-Secret Access Key 或 Session Token 持久化到状态文件。
+Reality 的 `CDN_PROVIDER` 为空。easy_all 不会将 AWS Access Key、Secret Access Key、Session
+Token 或 `GCORE_API_TOKEN` 持久化到状态文件。
 
-卸载 XHTTP 时只删除本机资源，保留 CloudFront、ACM 和 Route 53 资源，避免误删共享的
-云资源。卸载完成后应在 AWS Console 中人工确认是否清理。
+卸载 CDN XHTTP 时只删除本机资源，保留 AWS 或 Gcore 远端资源，避免误删共享的云资源。卸载完成
+后应在对应 Console 中人工确认是否清理。
 
 ## 模块
 
@@ -626,9 +683,10 @@ Secret Access Key 或 Session Token 持久化到状态文件。
 
 ```text
 easy_all
+├─ xhttp_gcore.sh            Gcore CDN XHTTP Provider 编排
 └─ lib/
    ├─ reality.sh             Reality 编排与专属配置
-   ├─ xhttp.sh               XHTTP/AWS 编排与专属配置
+   ├─ xhttp_aws.sh           XHTTP/AWS 编排与专属配置
    ├─ quota.sh               用户配额与统计
    ├─ cloudfront-fee-protection.sh  按量付费全局流量保护与 UTC 月度账本
    ├─ platform.sh            root/systemd/SSH 启动保障
@@ -644,9 +702,9 @@ easy_all
 sample-mihomo.yaml
 ```
 
-入口负责模式选择、命令分发和完整运行时的原子注册。两个 Profile 不互相调用，只保留协议编排
-和协议专属策略；公共模块不反向依赖 Profile。Reality 的 UFW NAT/双栈策略与 XHTTP 的 AWS
-资源管理仍分别留在对应 Profile 中。XHTTP 状态通过 `CDN_PROVIDER` 与具体 CDN 实现解耦。
+入口负责模式选择、命令分发和完整运行时的原子注册。Reality、AWS XHTTP 与 Gcore XHTTP Profile
+只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。Gcore Profile 复用 XHTTP
+本机运行时，并以 `CDN_PROVIDER` 与 AWS 云端实现解耦。
 
 ## 测试
 
@@ -654,8 +712,8 @@ sample-mihomo.yaml
 npm test
 ```
 
-测试覆盖统一入口、公共模块归属与安装完整性、Reality、XHTTP、用户凭据与月度配额、Xray
-配置、CloudFront JSON、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
+测试覆盖统一入口、公共模块归属与安装完整性、Reality、AWS/Gcore XHTTP、用户凭据与月度配额、
+Xray 配置、CloudFront JSON、Gcore API 载荷、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 
 ## 独立工具：debian_init
 

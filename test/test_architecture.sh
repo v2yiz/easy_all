@@ -4,7 +4,8 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 REALITY_PROFILE="${ROOT_DIR}/lib/reality.sh"
-XHTTP_PROFILE="${ROOT_DIR}/lib/xhttp.sh"
+XHTTP_PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
+GCORE_PROFILE="${ROOT_DIR}/xhttp_gcore.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
 
@@ -17,7 +18,7 @@ module_functions() {
     sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
 }
 
-bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" "${ROOT_DIR}"/lib/*.sh
+bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" "${GCORE_PROFILE}" "${ROOT_DIR}"/lib/*.sh
 
 shared_modules=(
     quota.sh
@@ -38,6 +39,10 @@ shared_modules=(
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cloudfront-fee-protection.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cloudfront-fee-protection.sh'* ]] \
     || fail "CloudFront fee protection module is missing from runtime packaging"
+[[ "${LAUNCHER_CONTENT}" == *'"xhttp_gcore.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'xhttp_gcore.sh'* \
+    && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_GCORE_PROFILE_ROOT}/lib/xhttp_aws.sh"'* ]] \
+    || fail "Gcore CDN profile must be packaged and reuse the XHTTP runtime"
 
 for module in "${shared_modules[@]}"; do
     [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \

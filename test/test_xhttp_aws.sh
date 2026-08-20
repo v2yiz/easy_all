@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
-PROFILE="${ROOT_DIR}/lib/xhttp.sh"
+PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
 PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
 ACME_RENEWAL_MODULE="${ROOT_DIR}/lib/acme-renewal.sh"
 TMP_DIR=$(mktemp -d)
@@ -42,8 +42,12 @@ assert_contains "XHTTP state persists the quota start date" "$(<"${PROFILE}")" \
     'QUOTA_START_DATE=%q'
 assert_contains "Xray keepalive stays below CloudFront response timeout" "$(<"${PROFILE}")" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
-assert_not_contains "XHTTP relies on the compatible core padding defaults" "$(<"${PROFILE}")" \
+assert_not_contains "XHTTP client output relies on compatible padding defaults" "$(<"${PROFILE}")" \
     'XHTTP_X_PADDING_BYTES'
+assert_contains "Xray accepts the server-side keepalive marker padding" "$(<"${PROFILE}")" \
+    'xPaddingBytes:$x_padding_bytes'
+assert_contains "Nginx guarantees that Xray activates stream-up keepalive" "$(<"${PROFILE}")" \
+    'grpc_set_header Referer "${keepalive_referer}"'
 assert_contains "Nginx stream timeout covers long-lived XHTTP requests" "$(<"${PROFILE}")" \
     'readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"'
 assert_contains "Nginx proxies XHTTP over gRPC" "$(<"${PROFILE}")" \
@@ -123,6 +127,10 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "all viewer except host policy" \
         "b689b0a8-53d0-40ab-baf2-68738e2966ac" "${CLOUDFRONT_ORIGIN_REQUEST_POLICY_ID}"
     assert_equal "stream-up server keepalive" "20-40" "${XHTTP_STREAM_UP_SERVER_SECS}"
+    assert_equal "server keepalive padding range" "100-1000" \
+        "${XHTTP_SERVER_PADDING_BYTES}"
+    assert_equal "server keepalive marker length" "100" \
+        "${XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH}"
     assert_equal "Nginx XHTTP stream timeout" "1h" "${XHTTP_NGINX_STREAM_TIMEOUT}"
     assert_equal "XMUX max concurrency" "4-8" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
@@ -351,6 +359,16 @@ EOF
     ALLOWED_TOKENS='{"owner":"owner-token-123"}'
     SUB_DOWNLOAD_NAME="EASY_ALL_TEST"
 
+    keepalive_referer=$(xhttp_server_keepalive_referer)
+    keepalive_padding=${keepalive_referer##*x_padding=}
+    assert_equal "server keepalive Referer path" \
+        "https://node.example.com/xhttp-test-path/?x_padding=${keepalive_padding}" \
+        "${keepalive_referer}"
+    assert_equal "server keepalive padding has the configured length" "100" \
+        "${#keepalive_padding}"
+    assert_equal "server keepalive padding contains only valid marker bytes" \
+        "${keepalive_padding}" "${keepalive_padding//[^X]/}"
+
     link=$(build_node_link)
     assert_contains "VLESS scheme" "${link}" "vless://"
     assert_contains "CloudFront hostname" "${link}" "@node.example.com:443"
@@ -396,6 +414,7 @@ EOF
         .Origins.Items[0].CustomOriginConfig.OriginSslProtocols.Items == ["TLSv1.2"] and
         .Origins.Items[0].CustomOriginConfig.OriginReadTimeout == 120 and
         .Origins.Items[0].CustomOriginConfig.OriginKeepaliveTimeout == 60 and
+        (.Origins.Items[0] | has("ResponseCompletionTimeout") | not) and
         .Origins.Items[0].ConnectionAttempts == 2 and
         .Origins.Items[0].ConnectionTimeout == 3 and
         .Origins.Items[0].CustomHeaders.Items[0].HeaderName == "X-Easy-All-Origin-Key" and

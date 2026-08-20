@@ -7,7 +7,7 @@ README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
 GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
-XHTTP_CONTENT=$(<"${ROOT_DIR}/lib/xhttp.sh")
+XHTTP_CONTENT=$(<"${ROOT_DIR}/lib/xhttp_aws.sh")
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -41,6 +41,12 @@ assert_contains "README Reality stage count" "${README_CONTENT}" \
     '保存最终状态 / 注册 easy_all / 配置配额任务'
 assert_contains "README XHTTP stage count" "${README_CONTENT}" \
     '源站证书 / Xray / Nginx / 已选订阅输出验收'
+assert_contains "README documents the third Gcore installation branch" "${README_CONTENT}" \
+    'Gcore CDN XHTTP'
+assert_contains "README documents Gcore as a token-only provider" "${README_CONTENT}" \
+    'GCORE_API_TOKEN'
+assert_contains "README documents Gcore's reduced XHTTP window" "${README_CONTENT}" \
+    '`20-25` 秒'
 assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
@@ -101,24 +107,26 @@ assert_contains "AWS guide pins CloudFront control operations to us-east-1" \
     "${AWS_GUIDE_CONTENT}" 'AWS 控制区域：选择 `us-east-1`（美国·弗吉尼亚北部）'
 assert_contains "AWS guide explains that the control region is not the traffic region" \
     "${AWS_GUIDE_CONTENT}" '这不是节点的落地位置选择'
-assert_contains "Gcore guide is explicitly a pre-implementation review draft" \
-    "${GCORE_GUIDE_CONTENT}" '当前状态：仅供评审，不可用于部署。'
-assert_contains "Gcore guide accepts one future API token" \
+assert_contains "Gcore guide documents the implemented third installation option" \
+    "${GCORE_GUIDE_CONTENT}" '已实现 Gcore CDN XHTTP 安装链路'
+assert_contains "Gcore guide accepts one API token" \
     "${GCORE_GUIDE_CONTENT}" 'GCORE_API_TOKEN'
 assert_contains "Gcore guide records the Free CDN monthly allowance" \
     "${GCORE_GUIDE_CONTENT}" '1 TB'
 assert_contains "Gcore guide records the Free CDN request allowance" \
     "${GCORE_GUIDE_CONTENT}" '10 亿'
-assert_contains "Gcore guide keeps the 980 GB safety boundary as future work" \
-    "${GCORE_GUIDE_CONTENT}" '该保护尚未实现'
+assert_contains "Gcore guide documents the active 980 GB safety boundary" \
+    "${GCORE_GUIDE_CONTENT}" '在 **980 GB** 时阻断'
 assert_contains "Gcore guide uses only full-domain delegation" \
     "${GCORE_GUIDE_CONTENT}" '只采用**整个主域名**交给'
 assert_contains "Gcore guide requires least-privilege CDN role" \
     "${GCORE_GUIDE_CONTENT}" 'CDN Editor'
 assert_contains "Gcore guide requires least-privilege DNS role" \
     "${GCORE_GUIDE_CONTENT}" 'DNS Editor'
-assert_contains "Gcore guide blocks unvalidated XHTTP implementation" \
-    "${GCORE_GUIDE_CONTENT}" '实现前必须通过的门槛'
+assert_contains "Gcore guide retains real-network XHTTP validation boundary" \
+    "${GCORE_GUIDE_CONTENT}" '上线前的实际连通性检查'
+assert_contains "Gcore guide documents no-card no-paid-resource boundary" \
+    "${GCORE_GUIDE_CONTENT}" '不绑定信用卡'
 for vps_marker in 'sudo ' 'dig +short' 'easy_all apply' './easy_all install'; do
     assert_not_contains "Gcore guide excludes VPS marker ${vps_marker}" \
         "${GCORE_GUIDE_CONTENT}" "${vps_marker}"

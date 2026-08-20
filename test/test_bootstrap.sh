@@ -18,7 +18,8 @@ content=$(<"${SCRIPT}")
 [[ "${content}" == *'git clone --depth 1 --branch main'* ]] \
     || fail "bootstrap must shallow-clone main"
 [[ "${content}" == *'&& -f "${REPO_DIR}/lib/reality.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp_aws.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/xhttp_gcore.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/cloudfront-fee-protection.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/platform.sh"'* \

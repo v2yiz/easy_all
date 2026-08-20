@@ -50,8 +50,10 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
     && "${guide}" == *"选择 CloudFront 计费：Free 固定套餐，或按量付费 1 TB 免费额度 + 980 GB 全局保护"* \
+    && "${guide}" == *"[3] CDN XHTTP（Gcore）"* \
+    && "${guide}" == *"仅输入 GCORE_API_TOKEN"* \
     && "${guide}" == *"CDN XHTTP"* ]] \
-    || fail "install guide does not describe both branches and defaults"
+    || fail "install guide does not describe all installation branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
 [[ "${readme}" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
     || fail "README install flow must choose the mode before profile initialization"
@@ -74,7 +76,8 @@ readme=$(<"${ROOT_DIR}/README.md")
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）: '* ]] \
     || fail "install mode prompt must explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'CDN - XHTTP（非优化线路推荐）'* ]] \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'AWS CDN - XHTTP（非优化线路推荐）'* \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN - XHTTP（非优化线路推荐）'* ]] \
     || fail "install mode prompt must explain line recommendations"
 
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
@@ -84,6 +87,9 @@ assert_equal "Reality state selects Reality profile" "reality" "$(detect_install
 
 printf 'STATE_VERSION=4\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "XHTTP state selects XHTTP profile" "xhttp" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=4\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\nGCORE_CDN_RESOURCE_ID=1\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "Gcore state selects Gcore profile" "gcore" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \
