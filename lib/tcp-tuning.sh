@@ -29,7 +29,7 @@ net.ipv4.tcp_wmem = 4096 16384 16777216
 net.ipv4.tcp_moderate_rcvbuf = 1
 
 # PMTU
-net.ipv4.tcp_mtu_probing = 0
+net.ipv4.tcp_mtu_probing = 1
 
 # Idle connection
 net.ipv4.tcp_slow_start_after_idle = 1

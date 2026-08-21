@@ -60,6 +60,18 @@ assert_contains "Nginx serves internal Mihomo subscription" "$(<"${PROFILE}")" \
     'mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"'
 assert_contains "installer validates sshd before scheduled reboot" "$(<"${PLATFORM_MODULE}")" \
     '"${sshd_bin}" -t'
+assert_contains "installer adds the shared SSH port" "$(<"${PLATFORM_MODULE}")" \
+    'readonly EASY_ALL_ADDITIONAL_SSH_PORT="65533"'
+assert_contains "installer keeps detected SSH ports" "$(<"${PLATFORM_MODULE}")" \
+    'for port in ${SSH_PORTS}'
+assert_contains "installer verifies the new SSH listener" "$(<"${PLATFORM_MODULE}")" \
+    'ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}"'
+assert_contains "AWS and Gcore installs include Fail2ban" "$(<"${PROFILE}")" \
+    'fail2ban python3-systemd'
+assert_contains "AWS and Gcore enable shared Fail2ban after UFW" "$(<"${PROFILE}")" \
+    'ensure_ssh_fail2ban'
+assert_contains "shared Fail2ban enables incremental bans" "$(<"${PLATFORM_MODULE}")" \
+    'bantime.increment = true'
 assert_contains "installer enables SSH at boot" "$(<"${PLATFORM_MODULE}")" \
     'systemctl enable --now "${unit}"'
 assert_contains "installer verifies SSH boot enablement" "$(<"${PLATFORM_MODULE}")" \
@@ -135,6 +147,112 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "XMUX max concurrency" "4-8" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     assert_equal "CloudFront origin response timeout" "120" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
+
+    (
+        EASY_ALL_SSH_PORT_CONFIG="${TMP_DIR}/sshd_config.d/00-easy-all-ports.conf"
+        reload_marker="${TMP_DIR}/ssh-reloaded"
+        reload_count="${TMP_DIR}/ssh-reload-count"
+        printf '0\n' >"${reload_count}"
+        sshd() {
+            case "${1:-}" in
+            -t) return 0 ;;
+            -T)
+                printf 'addressfamily any\n'
+                if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]]; then
+                    awk '
+                        $1 == "Port" {print "port " $2}
+                        $1 == "ListenAddress" {print "listenaddress " $2}
+                    ' "${EASY_ALL_SSH_PORT_CONFIG}"
+                else
+                    printf 'port 22\nlistenaddress 0.0.0.0:22\n'
+                fi
+                ;;
+            *) return 1 ;;
+            esac
+        }
+        ss() {
+            if [[ -f "${reload_marker}" && "$*" == *':65533'* ]]; then
+                printf 'LISTEN 0 128 0.0.0.0:65533 0.0.0.0:* users:(("sshd",pid=10,fd=3))\n'
+            fi
+        }
+        systemctl() {
+            if [[ "${1:-}" == "reload" ]]; then
+                printf '%s\n' "$(( $(<"${reload_count}") + 1 ))" >"${reload_count}"
+                : >"${reload_marker}"
+            fi
+            return 0
+        }
+        ensure_additional_ssh_port sshd ssh.service
+        assert_contains "shared SSH config retains port 22" \
+            "$(<"${EASY_ALL_SSH_PORT_CONFIG}")" "Port 22"
+        assert_contains "shared SSH config adds port 65533" \
+            "$(<"${EASY_ALL_SSH_PORT_CONFIG}")" "Port 65533"
+        assert_contains "shared SSH config binds the new IPv4 listener" \
+            "$(<"${EASY_ALL_SSH_PORT_CONFIG}")" "ListenAddress 0.0.0.0:65533"
+        ensure_additional_ssh_port sshd ssh.service
+        assert_equal "shared SSH configuration is idempotent" "1" "$(<"${reload_count}")"
+    )
+
+    (
+        EASY_ALL_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-easy-all-sshd.local"
+        EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-debian-init-sshd.local"
+        fail2ban_active="${TMP_DIR}/fail2ban-active"
+        restart_count="${TMP_DIR}/fail2ban-restart-count"
+        install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")"
+        : >"${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
+        printf '0\n' >"${restart_count}"
+        install_fail2ban_dependencies() { return 0; }
+        detect_ssh_ports() { SSH_PORTS="22 65533"; }
+        ufw() { return 0; }
+        fail2ban-client() {
+            [[ "${1:-}" == "-t" || "${1:-} ${2:-}" == "status sshd" ]]
+        }
+        systemctl() {
+            case "${1:-}" in
+            enable) return 0 ;;
+            restart)
+                printf '%s\n' "$(( $(<"${restart_count}") + 1 ))" >"${restart_count}"
+                : >"${fail2ban_active}"
+                ;;
+            is-enabled | is-active) [[ -f "${fail2ban_active}" ]] ;;
+            *) return 1 ;;
+            esac
+        }
+        ensure_ssh_fail2ban
+        assert_contains "shared Fail2ban monitors both SSH ports" \
+            "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "port = 22,65533"
+        assert_contains "shared Fail2ban uses the requested retry window" \
+            "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "findtime = 3m"
+        assert_contains "shared Fail2ban starts at a three-hour ban" \
+            "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "bantime = 3h"
+        assert_contains "shared Fail2ban enables incremental bans" \
+            "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "bantime.increment = true"
+        assert_contains "shared Fail2ban caps bans at one week" \
+            "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "bantime.maxtime = 1w"
+        [[ ! -e "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}" ]] \
+            || fail "shared Fail2ban did not retire the duplicated legacy config"
+        ensure_ssh_fail2ban
+        assert_equal "shared Fail2ban configuration is idempotent" \
+            "1" "$(<"${restart_count}")"
+    )
+
+    fail2ban_rollback_config="${TMP_DIR}/fail2ban-rollback/99-easy-all-sshd.local"
+    install -d -m 0755 "$(dirname -- "${fail2ban_rollback_config}")"
+    printf 'previous-config\n' >"${fail2ban_rollback_config}"
+    if (
+        EASY_ALL_FAIL2BAN_CONFIG="${fail2ban_rollback_config}"
+        EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban-rollback/legacy.local"
+        install_fail2ban_dependencies() { return 0; }
+        detect_ssh_ports() { SSH_PORTS="22 65533"; }
+        ufw() { return 0; }
+        fail2ban-client() { return 1; }
+        systemctl() { return 1; }
+        ensure_ssh_fail2ban
+    ) >/dev/null 2>&1; then
+        fail "shared Fail2ban accepted an invalid generated configuration"
+    fi
+    assert_equal "shared Fail2ban validation failure restores the previous config" \
+        "previous-config" "$(<"${fail2ban_rollback_config}")"
 
     ufw_state="${TMP_DIR}/xhttp-ufw-state"
     cat >"${ufw_state}" <<'EOF'

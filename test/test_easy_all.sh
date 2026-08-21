@@ -323,7 +323,9 @@ test_nginx_and_firewall() {
     assert_not_contains "Mihomo download does not append yaml to the filename" \
         'filename=MY_SUB.yaml' "${config}"
 
-    detect_ssh_ports() { SSH_PORTS="22"; }
+    ensure_ssh_boot_service() { return 0; }
+    ensure_ssh_fail2ban() { printf 'fail2ban-sshd\n' >>"${ufw_log}"; }
+    detect_ssh_ports() { SSH_PORTS="22 65533"; }
     apply_managed_ufw_tcp_ports() {
         printf 'managed-ports %s\n' "$1" >>"${ufw_log}"
     }
@@ -354,16 +356,18 @@ EOF
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
     assert_contains "self-hosting opens HTTP" \
-        "managed-ports 22 443 80 8443" "$(<"${ufw_log}")"
+        "managed-ports 22 65533 443 80 8443" "$(<"${ufw_log}")"
     assert_contains "self-hosting opens 8443" \
-        "managed-ports 22 443 80 8443" "$(<"${ufw_log}")"
+        "managed-ports 22 65533 443 80 8443" "$(<"${ufw_log}")"
+    assert_contains "Reality enables shared Fail2ban after UFW" \
+        "fail2ban-sshd" "$(<"${ufw_log}")"
     assert_contains "dynamic Reality forwarding remains active" \
         "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw_config}"
     assert_contains "dynamic Reality forwarding supports IPv6" \
         "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw6_config}"
     assert_contains "dual-stack Reality enables UFW IPv6" \
         "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
-    unset -f nginx systemctl detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
+    unset -f nginx systemctl ensure_ssh_boot_service ensure_ssh_fail2ban detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
         iptables-restore ip6tables-restore
 }
 

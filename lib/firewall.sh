@@ -5,45 +5,6 @@
 # The calling profile provides UFW_RULE_COMMENT plus info/warn/die. Profile
 # modules remain responsible for their own snapshots, NAT rules and IPv6 policy.
 
-append_ssh_port() {
-    local port=$1
-    [[ "${port}" =~ ^[0-9]+$ ]] || return 0
-    ((10#${port} >= 1 && 10#${port} <= 65535)) || return 0
-    case " ${SSH_PORTS:-} " in
-    *" ${port} "*) ;;
-    *)
-        [[ -z "${SSH_PORTS:-}" ]] || SSH_PORTS+=" "
-        SSH_PORTS+="${port}"
-        ;;
-    esac
-}
-
-detect_ssh_ports() {
-    local current_port sshd_bin config
-    SSH_PORTS=""
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        read -r _ _ _ current_port <<<"${SSH_CONNECTION}"
-        append_ssh_port "${current_port}"
-    fi
-    sshd_bin=$(command -v sshd 2>/dev/null || true)
-    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
-    if [[ -n "${sshd_bin}" ]]; then
-        while read -r current_port; do
-            append_ssh_port "${current_port}"
-        done < <("${sshd_bin}" -T 2>/dev/null | awk '$1 == "port" {print $2}')
-    fi
-    for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
-        [[ -f "${config}" ]] || continue
-        while read -r current_port; do
-            append_ssh_port "${current_port}"
-        done < <(awk '
-            /^[[:space:]]*#/ {next}
-            tolower($1) == "port" {print $2}
-        ' "${config}")
-    done
-    [[ -n "${SSH_PORTS}" ]] || SSH_PORTS="22"
-}
-
 managed_ufw_rule_numbers() {
     command -v ufw >/dev/null 2>&1 || return 0
     LC_ALL=C ufw status numbered 2>/dev/null \

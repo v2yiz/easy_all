@@ -64,6 +64,8 @@ source_script_copy() {
         "${ROOT_DIR}/debian_init.sh" >"${script_copy}"
     # shellcheck source=/dev/null
     source "${script_copy}"
+    EASY_ALL_PLATFORM_MODULE_SOURCE="${ROOT_DIR}/lib/platform.sh"
+    load_platform_module
     SCRIPT_LOADED=1
 }
 
@@ -156,7 +158,7 @@ EOF
         printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
     )"
     assert_equal "additional SSH port is deterministic" "22:65533:yes" "$changed"
-    assert_equal "additional SSH port" "65533" "$ADDITIONAL_SSH_PORT"
+    assert_equal "additional SSH port" "65533" "$EASY_ALL_ADDITIONAL_SSH_PORT"
 
     local same_port
     same_port="$(
@@ -211,10 +213,11 @@ test_remote_script_contract() {
     local remote_script="${TMP_DIR}/remote.sh"
     extract_remote_script >"${remote_script}"
 
-    assert_success "embedded remote script is valid POSIX sh" sh -n "${remote_script}"
+    assert_success "embedded remote script is valid Bash" bash -n "${remote_script}"
 
-    local content
+    local content platform_content
     content="$(<"${remote_script}")"
+    platform_content="$(<"${ROOT_DIR}/lib/platform.sh")"
     assert_contains "remote installs tmux" "vim tmux curl wget" "${content}"
     assert_contains "remote installs build-essential" "git build-essential" "${content}"
     assert_contains "remote installs Fail2ban systemd backend" \
@@ -233,7 +236,7 @@ test_remote_script_contract() {
     assert_contains "remote tunes TCP receive buffers" "net.ipv4.tcp_rmem = 4096 131072 16777216" "${content}"
     assert_contains "remote tunes TCP send buffers" "net.ipv4.tcp_wmem = 4096 16384 16777216" "${content}"
     assert_contains "remote keeps receive autotuning" "net.ipv4.tcp_moderate_rcvbuf = 1" "${content}"
-    assert_contains "remote keeps PMTU probing disabled" "net.ipv4.tcp_mtu_probing = 0" "${content}"
+    assert_contains "remote enables PMTU black-hole recovery" "net.ipv4.tcp_mtu_probing = 1" "${content}"
     assert_contains "remote restores idle slow start" "net.ipv4.tcp_slow_start_after_idle = 1" "${content}"
     assert_contains "remote persists the BBR module" "debian-init-bbr.conf" "${content}"
     assert_not_contains "remote does not install XanMod" "dl.xanmod.org" "${content}"
@@ -253,34 +256,57 @@ test_remote_script_contract() {
     assert_contains "remote preserves legitimate pre-auth capacity" "MaxStartups 20:30:100" "${content}"
     assert_contains "remote limits each scanning source" "PerSourceMaxStartups 3" "${content}"
     assert_contains "remote groups IPv6 scanners by source prefix" "PerSourceNetBlockSize 32:64" "${content}"
-    assert_contains "remote pins SSH to explicit IPv4 listen addresses" \
-        'ListenAddress 0.0.0.0:$listen_port' "${content}"
-    assert_contains "remote pins SSH to explicit IPv6 listen addresses when available" \
-        'ListenAddress [::]:$listen_port' "${content}"
-    assert_contains "remote enables Fail2ban SSH jail" "fail2ban-client status sshd" "${content}"
-    assert_contains "Fail2ban monitors SSH ports instead of application ports" \
-        'ports_csv="$(collect_ssh_ports "$sshd_bin" | paste -sd, -)"' "${content}"
-    assert_contains "remote uses UFW for Fail2ban bans" "banaction = ufw" "${content}"
-    assert_contains "Fail2ban avoids reverse DNS under scan load" "usedns = no" "${content}"
-    assert_contains "remote increments repeated-source bans" "bantime.increment = true" "${content}"
-    assert_contains "remote counts failures in a three-minute window" "findtime = 3m" "${content}"
-    assert_contains "remote starts with a three-hour ban" "bantime = 3h" "${content}"
-    assert_contains "remote caps repeated-source bans" "bantime.maxtime = 1w" "${content}"
+    assert_contains "remote sources the shared platform module" \
+        'source "$platform_module"' "${content}"
+    assert_contains "remote preserves all previously detected SSH ports" \
+        'EASY_ALL_SSH_PRESERVE_PORTS="${SSH_PORTS} ${current_port}"' "${content}"
+    assert_contains "remote delegates SSH listeners to the shared platform module" \
+        'ensure_ssh_boot_service' "${content}"
+    assert_contains "remote delegates Fail2ban to the shared platform module" \
+        'ensure_ssh_fail2ban' "${content}"
+    assert_not_contains "remote does not duplicate SSH port detection" \
+        'collect_ssh_ports()' "${content}"
+    assert_not_contains "remote does not duplicate Fail2ban implementation" \
+        'configure_fail2ban_ssh()' "${content}"
+    assert_contains "shared platform pins SSH to explicit IPv4 listen addresses" \
+        "printf 'ListenAddress 0.0.0.0:%s" "${platform_content}"
+    assert_contains "shared platform pins SSH to explicit IPv6 listen addresses when available" \
+        "printf 'ListenAddress [::]:%s" "${platform_content}"
+    assert_contains "shared platform enables Fail2ban SSH jail" \
+        "fail2ban-client status sshd" "${platform_content}"
+    assert_contains "shared Fail2ban monitors detected SSH ports" \
+        'ports_csv=${SSH_PORTS// /,}' "${platform_content}"
+    assert_contains "shared platform uses UFW for Fail2ban bans" \
+        "banaction = ufw" "${platform_content}"
+    assert_contains "shared Fail2ban avoids reverse DNS under scan load" \
+        "usedns = no" "${platform_content}"
+    assert_contains "shared platform increments repeated-source bans" \
+        "bantime.increment = true" "${platform_content}"
+    assert_contains "shared Fail2ban counts failures in a three-minute window" \
+        "findtime = 3m" "${platform_content}"
+    assert_contains "shared platform starts with a three-hour ban" \
+        "bantime = 3h" "${platform_content}"
+    assert_contains "shared platform caps repeated-source bans" \
+        "bantime.maxtime = 1w" "${platform_content}"
     assert_contains "remote removes the legacy late-priority SSH config" \
         'rm -f "$legacy_config_file"' "${content}"
-    assert_contains "remote always persists the final SSH listener" \
-        'write_ssh_listen_port "$final_port"' "${content}"
+    assert_contains "shared platform always persists the additional SSH listener" \
+        'append_ssh_port "${EASY_ALL_ADDITIONAL_SSH_PORT}"' "${platform_content}"
     assert_contains "remote snapshots old managed rules before adding replacements" \
         'old_rule_numbers="$(managed_ufw_rule_numbers)"' "${content}"
-    assert_contains "remote enables SSH at boot" 'systemctl enable --now "$ssh_unit"' "${content}"
-    assert_contains "remote verifies SSH boot enablement" 'systemctl is-enabled --quiet "$ssh_unit"' "${content}"
-    assert_contains "remote verifies SSH is active" 'systemctl is-active --quiet "$ssh_unit"' "${content}"
+    assert_contains "shared platform enables SSH at boot" \
+        'systemctl enable --now "${unit}"' "${platform_content}"
+    assert_contains "shared platform verifies SSH boot enablement" \
+        'systemctl is-enabled --quiet "${unit}"' "${platform_content}"
+    assert_contains "shared platform verifies SSH is active" \
+        'systemctl is-active --quiet "${unit}"' "${platform_content}"
 }
 
 test_script_surface_contract() {
-    local content readme
+    local content readme platform_content
     content="$(<"${ROOT_DIR}/debian_init.sh")"
     readme="$(<"${ROOT_DIR}/README.md")"
+    platform_content="$(<"${ROOT_DIR}/lib/platform.sh")"
 
     assert_contains "script intro identifies Debian init" "Debian 服务器初始化与 SSH 密钥登录配置脚本" "${content}"
     assert_contains "prompt distinguishes initial SSH user" "初始 SSH 登录用户" "${content}"
@@ -289,8 +315,12 @@ test_script_surface_contract() {
         '[${default}]（直接回车使用默认值）' "${content}"
     assert_contains "prompt asks for explicit extra UFW ports" \
         "UFW 额外放行 TCP 端口" "${content}"
-    assert_contains "65533 is the additional SSH port" \
-        'readonly ADDITIONAL_SSH_PORT=65533' "${content}"
+    assert_contains "65533 is owned by the shared platform module" \
+        'readonly EASY_ALL_ADDITIONAL_SSH_PORT="65533"' "${platform_content}"
+    assert_contains "standalone init loads the shared platform module" \
+        'load_platform_module' "${content}"
+    assert_contains "standalone init uploads the shared platform module" \
+        '"$PLATFORM_MODULE_FILE" "${target}:${remote_platform_module}"' "${content}"
     assert_contains "current SSH port is retained" \
         '保留当前 SSH 端口 ${CURRENT_PORT}' "${content}"
     assert_contains "intro documents Google BBR" \
@@ -329,7 +359,7 @@ test_bbr_matches_easy_all() {
         "net.ipv4.tcp_rmem = 4096 131072 16777216"
         "net.ipv4.tcp_wmem = 4096 16384 16777216"
         "net.ipv4.tcp_moderate_rcvbuf = 1"
-        "net.ipv4.tcp_mtu_probing = 0"
+        "net.ipv4.tcp_mtu_probing = 1"
         "net.ipv4.tcp_slow_start_after_idle = 1"
         "net.core.somaxconn = 4096"
     )

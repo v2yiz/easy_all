@@ -398,7 +398,8 @@ install_packages() {
     apt-get upgrade -y
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget jq unzip openssl dnsutils ufw nginx \
-        socat cron iproute2 iputils-ping tzdata systemd-timesyncd tar
+        fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
+        systemd-timesyncd tar
     timedatectl set-timezone Asia/Shanghai
     timedatectl set-ntp true || die "无法启用网络时间同步"
 }
@@ -475,6 +476,7 @@ configure_ufw() {
         apt-get update
         apt-get install -y --no-install-recommends ufw
     fi
+    ensure_ssh_boot_service
     detect_ssh_ports
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
@@ -483,6 +485,7 @@ configure_ufw() {
     apply_managed_ufw_tcp_ports "${desired_ports}"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
     LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
+    ensure_ssh_fail2ban
 }
 
 verify_origin_dns() {

@@ -158,7 +158,8 @@ install_packages() {
     apt-get upgrade -y
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw \
-        socat cron iproute2 iputils-ping tzdata systemd-timesyncd tar
+        fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
+        systemd-timesyncd tar
     timedatectl set-timezone Asia/Shanghai
     timedatectl set-ntp true || die "无法启用网络时间同步"
 }
@@ -650,6 +651,7 @@ retire_legacy_nftables() {
 configure_ufw() {
     local desired_ports
     retire_legacy_nftables
+    ensure_ssh_boot_service
     detect_ssh_ports
     info "UFW 将放行 SSH 端口：${SSH_PORTS}"
     snapshot_ufw_state
@@ -669,6 +671,7 @@ configure_ufw() {
     write_ufw_nat_rules
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
     LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
+    ensure_ssh_fail2ban
 }
 
 write_xray_config() {

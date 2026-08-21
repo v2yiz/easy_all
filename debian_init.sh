@@ -17,7 +17,8 @@ SSH_PUBLIC_KEY_ONLY_OPTS=(
   -o KbdInteractiveAuthentication=no
 )
 LOCAL_TEMP_FILES=()
-readonly ADDITIONAL_SSH_PORT=65533
+readonly DEFAULT_PLATFORM_MODULE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/lib/platform.sh"
+PLATFORM_MODULE_FILE=""
 
 cleanup_local_temp_files() {
   local file
@@ -158,6 +159,34 @@ sanitize_alias() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"
+}
+
+load_platform_module() {
+  local script_dir candidate downloaded
+  [[ -z "${PLATFORM_MODULE_FILE}" ]] || return 0
+
+  if [[ -n "${EASY_ALL_PLATFORM_MODULE_SOURCE:-}" ]]; then
+    candidate="${EASY_ALL_PLATFORM_MODULE_SOURCE}"
+  else
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+    candidate="${script_dir}/lib/platform.sh"
+  fi
+  if [[ -r "${candidate}" ]]; then
+    PLATFORM_MODULE_FILE="${candidate}"
+  else
+    downloaded="$(mktemp)"
+    LOCAL_TEMP_FILES+=("${downloaded}")
+    curl -fsSL --retry 3 "${DEFAULT_PLATFORM_MODULE_URL}" -o "${downloaded}" \
+      || die "下载公共平台模块失败：${DEFAULT_PLATFORM_MODULE_URL}"
+    PLATFORM_MODULE_FILE="${downloaded}"
+  fi
+  bash -n "${PLATFORM_MODULE_FILE}" || die "公共平台模块语法校验失败"
+  # shellcheck source=lib/platform.sh
+  source "${PLATFORM_MODULE_FILE}"
+  declare -F ensure_ssh_boot_service >/dev/null \
+    && declare -F ensure_ssh_fail2ban >/dev/null \
+    && [[ "${EASY_ALL_ADDITIONAL_SSH_PORT:-}" =~ ^[0-9]+$ ]] \
+    || die "公共平台模块缺少 SSH 端口或 Fail2ban 实现"
 }
 
 # ================= SSH 连接与本地配置 =================
@@ -368,6 +397,7 @@ run_remote_initialization() {
   local remote_script="/tmp/setup_debian_ssh_key_only_$$.sh"
   local remote_password_file="/tmp/setup_debian_normal_user_password_$$.txt"
   local remote_public_key_file="/tmp/setup_debian_normal_user_authorized_key_$$.pub"
+  local remote_platform_module="/tmp/easy_all_platform_$$.sh"
   local local_script
   local local_password_file
   local_script="$(mktemp)"
@@ -377,8 +407,8 @@ run_remote_initialization() {
   printf '%s' "$normal_user_password" >"$local_password_file"
 
   cat > "$local_script" <<'REMOTE'
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
 current_port="$1"
 final_port="$2"
@@ -387,22 +417,37 @@ normal_user="$4"
 normal_user_password_file="$5"
 normal_user_public_key_file="$6"
 extra_tcp_ports="$7"
+platform_module="$8"
 
 config_dir="/etc/ssh/sshd_config.d"
 config_file="${config_dir}/00-debian-init-hardening.conf"
 legacy_config_file="${config_dir}/99-key-only.conf"
-fail2ban_config="/etc/fail2ban/jail.d/99-debian-init-sshd.local"
 sysctl_config="/etc/sysctl.d/99-debian-init-bbr.conf"
 bbr_modules_config="/etc/modules-load.d/debian-init-bbr.conf"
 
 cleanup_sensitive_files() {
-  rm -f "$normal_user_password_file" "$normal_user_public_key_file"
+  rm -f "$normal_user_password_file" "$normal_user_public_key_file" "$platform_module"
 }
 trap cleanup_sensitive_files EXIT INT TERM
 
 log() {
   printf '%s\n' "$*"
 }
+
+die() {
+  printf '%s\n' "错误: $*" >&2
+  exit 1
+}
+
+info() {
+  log "$*"
+}
+
+# shellcheck source=lib/platform.sh
+source "$platform_module"
+EASY_ALL_SSH_PRESERVE_PORTS="$current_port"
+[[ "$final_port" == "$EASY_ALL_ADDITIONAL_SSH_PORT" ]] \
+  || die "远端新增 SSH 端口与公共平台模块不一致"
 
 validate_normal_user() {
 case "$normal_user" in
@@ -479,7 +524,7 @@ net.ipv4.tcp_wmem = 4096 16384 16777216
 net.ipv4.tcp_moderate_rcvbuf = 1
 
 # PMTU
-net.ipv4.tcp_mtu_probing = 0
+net.ipv4.tcp_mtu_probing = 1
 
 # Idle connection
 net.ipv4.tcp_slow_start_after_idle = 1
@@ -584,31 +629,10 @@ install_normal_user_authorized_key() {
   chmod 0600 "${user_home}/.ssh/authorized_keys"
 }
 
-collect_ssh_ports() {
-  sshd_bin="$1"
-  {
-    printf '%s\n' "$current_port" "$final_port"
-    "$sshd_bin" -T 2>/dev/null | awk '
-      $1 == "listenaddress" {
-        address=$2
-        if (address ~ /^\[[^]]+\]:[0-9]+$/) {
-          sub(/^.*\]:/, "", address)
-          print address
-        } else if (address ~ /:[0-9]+$/) {
-          sub(/^.*:/, "", address)
-          print address
-        }
-      }
-    ' || true
-  } | awk '
-    /^[0-9]+$/ && $1 >= 1 && $1 <= 65535 && !seen[$1]++ { print $1 }
-  '
-}
-
 collect_allowed_ports() {
-  sshd_bin="$1"
+  detect_ssh_ports
   {
-    collect_ssh_ports "$sshd_bin"
+    printf '%s\n' $SSH_PORTS
     [ -z "$extra_tcp_ports" ] || printf '%s\n' $extra_tcp_ports
   } | awk '
     /^[0-9]+$/ && $1 >= 1 && $1 <= 65535 && !seen[$1]++ { print $1 }
@@ -622,8 +646,7 @@ managed_ufw_rule_numbers() {
 }
 
 configure_ufw() {
-  sshd_bin="$1"
-  ports="$(collect_allowed_ports "$sshd_bin")"
+  ports="$(collect_allowed_ports)"
   old_rule_numbers="$(managed_ufw_rule_numbers)"
   [ -n "$ports" ] || return 0
 
@@ -649,103 +672,16 @@ configure_ufw() {
   }
 }
 
-restore_fail2ban_config() {
-  backup_file="$1"
-  if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
-    cp -a "$backup_file" "$fail2ban_config"
-  else
-    rm -f "$fail2ban_config"
-  fi
-}
-
-configure_fail2ban_ssh() {
-  sshd_bin="$1"
-  ports_csv="$(collect_ssh_ports "$sshd_bin" | paste -sd, -)"
-  backup_file=""
-  candidate_file="${fail2ban_config}.new"
-  [ -n "$ports_csv" ] || {
-    printf '%s\n' "错误: 无法确定 Fail2ban 需要保护的 SSH 端口" >&2
-    exit 1
-  }
-
-  install -d -m 0755 /etc/fail2ban/jail.d
-  if [ -f "$fail2ban_config" ]; then
-    backup_file="$(mktemp)"
-    cp -a "$fail2ban_config" "$backup_file"
-  fi
-  cat >"$candidate_file" <<EOF
-[DEFAULT]
-banaction = ufw
-usedns = no
-ignoreip = 127.0.0.1/8 ::1
-bantime = 3h
-findtime = 3m
-maxretry = 6
-bantime.increment = true
-bantime.maxtime = 1w
-
-[sshd]
-enabled = true
-backend = systemd
-port = ${ports_csv}
-EOF
-  chmod 0644 "$candidate_file"
-  mv "$candidate_file" "$fail2ban_config"
-
-  if ! fail2ban-client -t >/dev/null 2>&1; then
-    restore_fail2ban_config "$backup_file"
-    [ -z "$backup_file" ] || rm -f "$backup_file"
-    printf '%s\n' "错误: Fail2ban SSH 防护配置校验失败，已恢复原配置" >&2
-    exit 1
-  fi
-  if ! systemctl enable fail2ban >/dev/null 2>&1 \
-    || ! systemctl restart fail2ban \
-    || ! systemctl is-active --quiet fail2ban \
-    || ! fail2ban-client status sshd >/dev/null 2>&1; then
-    restore_fail2ban_config "$backup_file"
-    fail2ban-client -t >/dev/null 2>&1 && systemctl restart fail2ban >/dev/null 2>&1 || true
-    [ -z "$backup_file" ] || rm -f "$backup_file"
-    printf '%s\n' "错误: Fail2ban SSH 防护启动失败，已恢复原配置" >&2
-    exit 1
-  fi
-  [ -z "$backup_file" ] || rm -f "$backup_file"
-  log "[remote 7/7] Fail2ban SSH 防护已启用：3 分钟内失败 6 次封禁 3 小时，重复来源递增至 1 周"
-}
-
-enable_ssh_at_boot() {
-  ssh_unit=""
-  for candidate in ssh.service sshd.service; do
-    if systemctl cat "$candidate" >/dev/null 2>&1; then
-      ssh_unit="$candidate"
-      break
-    fi
-  done
-  if [ -z "$ssh_unit" ]; then
-    printf '%s\n' "错误: 未找到 ssh.service 或 sshd.service" >&2
-    exit 1
-  fi
-
-  systemctl unmask "$ssh_unit" >/dev/null 2>&1 || true
-  systemctl enable --now "$ssh_unit"
-  systemctl is-enabled --quiet "$ssh_unit"
-  systemctl is-active --quiet "$ssh_unit"
-  log "[remote 7/7] SSH 已设置开机启动并处于运行状态: ${ssh_unit}"
-}
-
-write_ssh_listen_port() {
-  listen_port="$1"
-  echo "Port $listen_port"
-  echo "ListenAddress 0.0.0.0:$listen_port"
-  if [ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 ] \
-    && [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = "0" ]; then
-    echo "ListenAddress [::]:$listen_port"
-  fi
-}
-
 # SSH 配置放在最后执行：只有包安装、普通用户、公钥和防火墙准备完成后才重载服务。
 mkdir -p "$config_dir"
 install_base_packages
-enable_ssh_at_boot
+if [ -x /usr/sbin/sshd ]; then
+  sshd_bin="/usr/sbin/sshd"
+else
+  sshd_bin="$(command -v sshd)"
+fi
+detect_ssh_ports
+EASY_ALL_SSH_PRESERVE_PORTS="${SSH_PORTS} ${current_port}"
 configure_google_bbr_and_tcp
 configure_timezone_and_time_sync
 configure_sudo_user
@@ -768,41 +704,34 @@ fi
   echo "MaxStartups 20:30:100"
   echo "PerSourceMaxStartups 3"
   echo "PerSourceNetBlockSize 32:64"
-  if [ "$keep_current_port" = "yes" ] && [ "$current_port" != "$final_port" ]; then
-    write_ssh_listen_port "$current_port"
-  fi
-  write_ssh_listen_port "$final_port"
 } > "$config_file"
-
-if [ -x /usr/sbin/sshd ]; then
-  sshd_bin="/usr/sbin/sshd"
-else
-  sshd_bin="$(command -v sshd)"
-fi
 
 "$sshd_bin" -t
 rm -f "$legacy_config_file"
 "$sshd_bin" -t
-configure_ufw "$sshd_bin"
-enable_ssh_at_boot
-systemctl reload ssh 2>/dev/null || systemctl reload sshd
-systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd
-configure_fail2ban_ssh "$sshd_bin"
+ensure_ssh_boot_service
+configure_ufw
+ensure_ssh_fail2ban
 
-"$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|logingracetime|maxauthtries|maxstartups|persourcemaxstartups|persourcenetblocksize|port) '
+"$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|logingracetime|maxauthtries|maxstartups|persourcemaxstartups|persourcenetblocksize|port|listenaddress) '
 REMOTE
 
   if ! scp_with_password_if_possible "$current_port" "$local_script" "${target}:${remote_script}"; then
     return 1
   fi
+  if ! scp_with_password_if_possible "$current_port" "$PLATFORM_MODULE_FILE" "${target}:${remote_platform_module}"; then
+    ssh_with_password_if_possible "$current_port" "$target" \
+      "rm -f '$remote_script' '$remote_platform_module'" >/dev/null 2>&1 || true
+    return 1
+  fi
   if ! scp_with_password_if_possible "$current_port" "$local_password_file" "${target}:${remote_password_file}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'" >/dev/null 2>&1 || true
+      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'" >/dev/null 2>&1 || true
     return 1
   fi
   if ! scp_with_password_if_possible "$current_port" "$public_key" "${target}:${remote_public_key_file}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'" >/dev/null 2>&1 || true
+      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'" >/dev/null 2>&1 || true
     return 1
   fi
   rm -f "$local_script"
@@ -813,14 +742,14 @@ REMOTE
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo -S sh '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'; exit \$rc"
+      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'; exit \$rc"
   else
     ssh \
       -tt \
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo sh '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file'; exit \$rc"
+      "sudo bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'; exit \$rc"
   fi
 }
 
@@ -848,7 +777,7 @@ print_intro() {
   echo "  1. 使用初始 SSH 用户连接服务器，默认 root。"
   echo "  2. 安装基础包、配置 Debian 官方内核 Google BBR/TCP、UFW、uv 和 Python 3.12。"
   echo "  3. 创建或更新普通用户，并把同一把 SSH 公钥写入该用户。"
-  echo "  4. 保留 SSH 密码和密钥登录，新增 TCP ${ADDITIONAL_SSH_PORT} 作为低扫描量 SSH 入口。"
+  echo "  4. 保留 SSH 密码和密钥登录，新增 TCP ${EASY_ALL_ADDITIONAL_SSH_PORT} 作为低扫描量 SSH 入口。"
   echo
   echo "敏感信息说明：服务器当前密码和普通用户 sudo 密码只在本次执行中使用。"
   if ! command -v sshpass >/dev/null 2>&1; then
@@ -883,12 +812,12 @@ collect_inputs() {
   CURRENT_PORT="$(prompt "服务器当前 SSH 端口" "22")"
   validate_port "$CURRENT_PORT"
 
-  FINAL_PORT="$ADDITIONAL_SSH_PORT"
+  FINAL_PORT="$EASY_ALL_ADDITIONAL_SSH_PORT"
   validate_port "$FINAL_PORT"
   CHANGE_PORT="yes"
   if [[ "$FINAL_PORT" == "$CURRENT_PORT" ]]; then
     CHANGE_PORT="no"
-    echo "当前 SSH 端口已经是 ${ADDITIONAL_SSH_PORT}，不会重复添加。"
+    echo "当前 SSH 端口已经是 ${EASY_ALL_ADDITIONAL_SSH_PORT}，不会重复添加。"
   else
     echo "将保留当前 SSH 端口 ${CURRENT_PORT}，并新增 ${FINAL_PORT}。"
   fi
@@ -928,6 +857,8 @@ main() {
   require_cmd ssh
   require_cmd scp
   require_cmd ssh-keygen
+  require_cmd curl
+  load_platform_module
 
   print_intro
   collect_inputs

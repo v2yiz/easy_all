@@ -16,6 +16,12 @@
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合专用 VPS。
 
+三种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
+UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。安装与 `easy_all apply`
+都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。三种模式还会
+通过同一公共模块安装并启用 Fail2ban：同一来源 3 分钟内失败 6 次，首次封禁 3 小时，
+重复来源递增封禁且最长 1 周；`sshd` jail 始终跟随实际 SSH 端口列表。
+
 ## 安装
 
 一条命令下载完整项目并进入交互安装：
@@ -164,8 +170,8 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 UFW；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
-| CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 UFW。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
+| Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 SSH 监听、UFW 与 Fail2ban；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
+| CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
 
 Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的
 状态、Xray/Nginx 配置和订阅文件。这不等于回滚已加载的 TCP 参数或已成功的云端变更。
@@ -728,6 +734,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/debian_i
 ```
 
 不要改成 `curl ... | bash`，脚本需要从当前终端持续读取服务器信息、密码和确认选项。
+单文件入口会下载并校验项目的 `lib/platform.sh`，再将它与远端初始化脚本一起上传；因此
+`debian_init.sh` 与直连、AWS CDN、Gcore CDN 使用完全相同的 SSH 端口和 Fail2ban 实现。
 
 本地需要 `ssh`、`scp` 和 `ssh-keygen`；安装 `sshpass` 后可自动提交首次 SSH 密码，
 否则按 SSH 提示交互输入。脚本会明确询问服务器地址、初始登录用户、普通用户名及 sudo

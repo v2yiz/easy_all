@@ -81,7 +81,7 @@ if normalize_allowed_tokens \
     fail "shared subscription auth accepts duplicate normalized usernames"
 fi
 
-[[ "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_mtu_probing = 0'* \
+[[ "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_mtu_probing = 1'* \
     && "$(<"${REALITY_PROFILE}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="1"'* \
     && "$(<"${XHTTP_PROFILE}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="0"'* ]] \
     || fail "shared TCP tuning or profile XanMod policies drifted"
