@@ -144,7 +144,7 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "server keepalive marker length" "100" \
         "${XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH}"
     assert_equal "Nginx XHTTP stream timeout" "1h" "${XHTTP_NGINX_STREAM_TIMEOUT}"
-    assert_equal "XMUX max concurrency" "4-8" "${XHTTP_XMUX_MAX_CONCURRENCY}"
+    assert_equal "XMUX max concurrency" "8-16" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     assert_equal "CloudFront origin response timeout" "120" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
 
@@ -513,8 +513,8 @@ EOF
     assert_contains "Mihomo XHTTP" "${mihomo}" "network: xhttp"
     assert_contains "Mihomo stream-up" "${mihomo}" "mode: stream-up"
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
-    assert_contains "Mihomo XMUX uses conservative concurrency" \
-        "${mihomo}" 'max-concurrency: "4-8"'
+    assert_contains "Mihomo XMUX uses expanded concurrency" \
+        "${mihomo}" 'max-concurrency: "8-16"'
     assert_not_contains "Mihomo relies on its compatible padding defaults" \
         "${mihomo}" 'x-padding-'
     assert_not_contains "Mihomo XMUX omits request-count rotation" \

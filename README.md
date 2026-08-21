@@ -479,7 +479,7 @@ sudo env PRESERVE_ACME=1 easy_all uninstall
 
 XHTTP 使用 `stream-up + HTTP/2 + XMUX`。当前链路为：
 CDN 模式只输出一个 VLESS XHTTP 节点，不混入其他协议。
-XMUX 默认使用 `4-8` 并发和按存活时间轮换连接，不设置 Mihomo 不建议填写的
+XMUX 默认使用 `8-16` 并发和按存活时间轮换连接，不设置 Mihomo 不建议填写的
 `h-max-request-times`，避免连接计数轮换导致客户端链路异常。
 
 为避免长时间流式输出在中途被截断，Nginx 会在受 Origin Key 保护的 XHTTP 回源位置补充一个
