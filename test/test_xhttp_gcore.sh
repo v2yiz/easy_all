@@ -52,6 +52,10 @@ assert_contains "Gcore profile limits XHTTP stream-up for its origin timeout" \
     "${profile_content}" 'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="20-25"'
 assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
+assert_contains "Gcore profile persists the Gemini egress family" \
+    "${profile_content}" 'GEMINI_IP_FAMILY=%q'
+assert_contains "Gcore routes Gemini domains through a dedicated outbound" \
+    "${profile_content}" 'outboundTag:"gemini-family"'
 assert_contains "Gcore profile enables an origin-only secret header" \
     "${profile_content}" '"X-Easy-All-Origin-Key"'
 assert_not_contains "Gcore profile never persists the API token" \

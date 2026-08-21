@@ -51,8 +51,14 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
-assert_contains "README documents both Mihomo profiles as IPv4" "${README_CONTENT}" \
-    '生成的 Mihomo/Clash 节点与 Reality 一样固定使用'
+assert_contains "README documents client-controlled Mihomo IP family" "${README_CONTENT}" \
+    '生成的 Mihomo/Clash 节点不写入 `ip-version`'
+assert_contains "README documents Gemini egress policy for all profiles" "${README_CONTENT}" \
+    '三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站'
+assert_contains "README documents client connection racing" "${README_CONTENT}" \
+    '内置 Mihomo 模板启用 `tcp-concurrent`'
+assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
+    '`tcp_slow_start_after_idle`'
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" \
     '同步重建本机 Xray、Nginx 和订阅文件'
 assert_contains "XHTTP command message includes Xray" "${XHTTP_CONTENT}" \

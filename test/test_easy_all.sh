@@ -257,6 +257,10 @@ test_subscription_stage_dispatch() {
 test_mihomo_template() {
     local policy invalid="${TMP_DIR}/invalid.yaml"
     validate_mihomo_template "${ROOT_DIR}/sample-mihomo.yaml"
+    assert_contains "Mihomo races resolved proxy addresses" \
+        "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_contains "Mihomo preserves fake-IP mappings across restarts" \
+        "store-fake-ip: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     policy=$(extract_gemini_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
     assert_success "Gemini policy contains Google dependencies only" \
         jq -e \
@@ -298,8 +302,8 @@ test_subscription_generation() {
         "port: ${port}" "${yaml}"
     assert_contains "Mihomo subscription contains Reality options" \
         "reality-opts:" "${yaml}"
-    assert_contains "Reality Mihomo subscription is pinned to IPv4" \
-        "ip-version: ipv4" "${yaml}"
+    assert_not_contains "Reality Mihomo subscription does not pin the client IP family" \
+        "ip-version:" "${yaml}"
     assert_contains "Mihomo subscription contains complete rules" \
         "RULE-SET,telegramcidr,PROXY,no-resolve" "${yaml}"
     assert_not_contains "rendered subscription removes proxy marker" \

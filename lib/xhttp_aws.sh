@@ -60,7 +60,7 @@ readonly CLOUDFRONT_ROUTE53_ZONE_ID="Z2FDTNDATAQYW2"
 readonly CLOUDFRONT_CONNECTION_ATTEMPTS="2"
 readonly CLOUDFRONT_CONNECTION_TIMEOUT="3"
 readonly CLOUDFRONT_ORIGIN_READ_TIMEOUT="120"
-readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="60"
+readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="120"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"
 readonly XHTTP_SERVER_PADDING_BYTES="100-1000"
@@ -113,6 +113,9 @@ cleanup_files=("${RUNTIME_TMP}")
 INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
+MIHOMO_TEMPLATE_FILE=""
+GEMINI_DOMAIN_SUFFIXES_JSON=""
+GEMINI_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
     if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
@@ -226,6 +229,9 @@ choose_subscription_download_name() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="aws"
+    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
+    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
+        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -282,7 +288,7 @@ load_state() {
         AWS_CLOUDFRONT_PRICING_PLAN_ARN
         CLOUDFRONT_FEE_PROTECTION_GB
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
-        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -300,8 +306,11 @@ load_state() {
     done
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
     CDN_PROVIDER=${CDN_PROVIDER:-aws}
+    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     [[ "${CDN_PROVIDER}" == "aws" ]] \
         || die "当前版本不支持 CDN Provider：${CDN_PROVIDER}"
+    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
+        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
         || die "状态文件中的 CloudFront 计费模式无效：${AWS_CLOUDFRONT_BILLING_MODE:-缺失}"
     configure_cloudfront_fee_protection
@@ -364,6 +373,7 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
+        printf 'GEMINI_IP_FAMILY=%q\n' "${GEMINI_IP_FAMILY:-auto}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -580,7 +590,12 @@ EOF
 }
 
 write_xray_config() {
-    local clients stats_enabled=false
+    local gemini_domain_strategy clients stats_enabled=false
+    prepare_mihomo_template
+    resolve_gemini_ip_family
+    [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
+        && gemini_domain_strategy="ForceIPv6" \
+        || gemini_domain_strategy="ForceIPv4"
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -595,7 +610,9 @@ write_xray_config() {
         --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg x_padding_bytes "${XHTTP_SERVER_PADDING_BYTES}" \
-        --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" '
+        --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" \
+        --arg gemini_domain_strategy "${gemini_domain_strategy}" \
+        --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
         {
           log:{loglevel:"warning"},
           inbounds:[{
@@ -613,8 +630,16 @@ write_xray_config() {
               },
               sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}
           }],
-          outbounds:[{protocol:"freedom",tag:"direct"}],
-          routing:{domainStrategy:"AsIs",rules:[{type:"field",network:"tcp,udp",outboundTag:"direct"}]}
+          outbounds:[
+            {protocol:"freedom",tag:"direct"},
+            {protocol:"freedom",tag:"gemini-family",
+             settings:{domainStrategy:$gemini_domain_strategy}}
+          ],
+          routing:{domainStrategy:"AsIs",rules:[
+            {type:"field",domain:($gemini_domain_suffixes | map("domain:" + .)),
+             outboundTag:"gemini-family"},
+            {type:"field",network:"tcp,udp",outboundTag:"direct"}
+          ]}
         }
         + (if $stats_enabled then {
             api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
@@ -1504,7 +1529,7 @@ build_mihomo_node() {
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-        "    ip-version: ipv4\n    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
+        "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
         "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
         "        max-concurrency: \($max_concurrency|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
@@ -1513,12 +1538,19 @@ build_mihomo_node() {
 }
 
 validate_mihomo_template() {
-    local source=$1 marker
+    local source=$1 marker count
     [[ -s "${source}" ]] || die "Mihomo 模板为空"
-    for marker in "# EASY_ALL_PROXY_NODE" "# EASY_ALL_PROXY_NAME"; do
-        [[ "$(grep -Fxc "${marker}" "${source}" || true)" == 1 ]] \
-            || die "Mihomo 模板标记无效：${marker}"
+    for marker in \
+        "# EASY_ALL_PROXY_NODE" \
+        "# EASY_ALL_PROXY_NAME" \
+        "# EASY_ALL_GEMINI_DOMAINS_START" \
+        "# EASY_ALL_GEMINI_DOMAINS_END"; do
+        count=$(grep -Fxc "${marker}" "${source}" || true)
+        [[ "${count}" == "1" ]] \
+            || die "Mihomo 模板标记无效：${marker} 应且只能出现一次"
     done
+    grep -q '^rules:' "${source}" || die "sample-mihomo.yaml 缺少规则"
+    extract_gemini_domain_suffixes "${source}" >/dev/null
 }
 
 fetch_mihomo_template() {
@@ -1556,12 +1588,12 @@ render_mihomo_subscription() {
 
 write_subscriptions() {
     local template node_file base64_file mihomo_file user uuid user_dir
-    template="${RUNTIME_TMP}/sample-mihomo.yaml"
+    prepare_mihomo_template
+    template=${MIHOMO_TEMPLATE_FILE}
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
 
-    fetch_mihomo_template "${template}"
     if quota_enabled; then
         rm -rf -- "${SUBSCRIPTION_DIR}"
         install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
@@ -1629,10 +1661,18 @@ show_subscription() {
 }
 
 show_status() {
+    local active_family
     require_root
     collect_installed_state
+    active_family=$(active_gemini_ip_family || true)
+    if [[ -z "${active_family}" ]]; then
+        resolve_gemini_ip_family
+        active_family=${GEMINI_IP_FAMILY_RESOLVED}
+    fi
     printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
+    printf 'Gemini 出口族: %s（配置: %s）\n' \
+        "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'CloudFront 计费模式: %s\n' \

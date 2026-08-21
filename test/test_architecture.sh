@@ -82,6 +82,7 @@ if normalize_allowed_tokens \
 fi
 
 [[ "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_mtu_probing = 1'* \
+    && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_slow_start_after_idle = 0'* \
     && "$(<"${REALITY_PROFILE}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="1"'* \
     && "$(<"${XHTTP_PROFILE}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="0"'* ]] \
     || fail "shared TCP tuning or profile XanMod policies drifted"

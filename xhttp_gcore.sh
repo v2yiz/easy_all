@@ -360,6 +360,9 @@ configure_gcore_fee_protection() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
+    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
+    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
+        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -409,7 +412,7 @@ load_state() {
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
         GCORE_SSL_CERT_ID GCORE_CDN_TARGET GCORE_FEE_PROTECTION_GB
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
-        SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+        SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -427,6 +430,9 @@ load_state() {
     done
     [[ "${PROTOCOL}" == "xhttp" && "${CDN_PROVIDER:-}" == "gcore" ]] \
         || die "状态不是 Gcore CDN XHTTP；请重新安装"
+    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
+    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
+        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
     [[ "${GCORE_DNS_ZONE:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "状态中缺少 Gcore DNS Zone"
@@ -495,6 +501,7 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
+        printf 'GEMINI_IP_FAMILY=%q\n' "${GEMINI_IP_FAMILY:-auto}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -508,7 +515,12 @@ collect_installed_state() {
 # stream-up server window strictly below that edge limit instead of inheriting
 # CloudFront's 20-40-second range.
 write_xray_config() {
-    local clients stats_enabled=false
+    local gemini_domain_strategy clients stats_enabled=false
+    prepare_mihomo_template
+    resolve_gemini_ip_family
+    [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
+        && gemini_domain_strategy="ForceIPv6" \
+        || gemini_domain_strategy="ForceIPv4"
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -521,14 +533,24 @@ write_xray_config() {
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
-        --arg stream_up_server_secs "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}" '
+        --arg stream_up_server_secs "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}" \
+        --arg gemini_domain_strategy "${gemini_domain_strategy}" \
+        --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
         {log:{loglevel:"warning"},
          inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$xhttp_port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
           streamSettings:{network:"xhttp",xhttpSettings:{host:$xhttp_host,path:$xhttp_path,mode:"stream-up",scStreamUpServerSecs:$stream_up_server_secs}},
           sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],
-         outbounds:[{protocol:"freedom",tag:"direct"}],
-         routing:{domainStrategy:"AsIs",rules:[{type:"field",network:"tcp,udp",outboundTag:"direct"}]}}
+         outbounds:[
+           {protocol:"freedom",tag:"direct"},
+           {protocol:"freedom",tag:"gemini-family",
+            settings:{domainStrategy:$gemini_domain_strategy}}
+         ],
+         routing:{domainStrategy:"AsIs",rules:[
+           {type:"field",domain:($gemini_domain_suffixes | map("domain:" + .)),
+            outboundTag:"gemini-family"},
+           {type:"field",network:"tcp,udp",outboundTag:"direct"}
+         ]}}
         + (if $stats_enabled then {api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},stats:{},policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}} else {} end)
     ' >"${RUNTIME_TMP}/xray-config.json"
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null \
@@ -545,10 +567,18 @@ show_node() {
 }
 
 show_status() {
+    local active_family
     require_root
     collect_installed_state
+    active_family=$(active_gemini_ip_family || true)
+    if [[ -z "${active_family}" ]]; then
+        resolve_gemini_ip_family
+        active_family=${GEMINI_IP_FAMILY_RESOLVED}
+    fi
     printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
+    printf 'Gemini 出口族: %s（配置: %s）\n' \
+        "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
     printf 'Gcore DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'

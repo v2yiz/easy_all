@@ -17,9 +17,11 @@ log-level: error
 ipv6: false
 external-controller: '127.0.0.1:9090'
 unified-delay: true
+tcp-concurrent: true
 find-process-mode: off
 profile:
     store-selected: true
+    store-fake-ip: true
 
 sniffer:
     enable: true

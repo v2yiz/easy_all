@@ -32,7 +32,7 @@ net.ipv4.tcp_moderate_rcvbuf = 1
 net.ipv4.tcp_mtu_probing = 1
 
 # Idle connection
-net.ipv4.tcp_slow_start_after_idle = 1
+net.ipv4.tcp_slow_start_after_idle = 0
 
 # Listen queue
 net.core.somaxconn = 4096

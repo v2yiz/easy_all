@@ -140,6 +140,14 @@ flowchart TD
 脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。
 UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
 
+三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站，并通过
+`GEMINI_IP_FAMILY=auto|ipv4|ipv6` 控制地址族。默认 `auto` 在 VPS 上分别测速后固定使用较快的
+`ForceIPv4` 或 `ForceIPv6`；该选择与客户端连接节点时使用 IPv4 还是 IPv6 无关。
+
+内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
+尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + BBR`，并关闭
+`tcp_slow_start_after_idle`，避免复用的空闲 TCP 连接恢复传输时重新进入慢启动。
+
 ## 命令说明
 
 安装成功后统一使用 `easy_all <命令>`：
@@ -425,7 +433,8 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Reality 生成的 Mihomo/Clash 节点固定使用 `ip-version: ipv4`。这只限制客户端节点的出站连接选择；服务器仍会在检测到可用公网 IPv6 时保持双栈入站，便于后续调整。
+Reality 生成的 Mihomo/Clash 节点不固定客户端连接地址族，由客户端自身的 IPv4/IPv6 与 DNS
+策略决定。Gemini 目标域名在 VPS 的 Xray 出口按公共策略固定地址族。
 
 Reality 交互选项：
 
@@ -487,7 +496,8 @@ XMUX 默认使用 `8-16` 并发和按存活时间轮换连接，不设置 Mihomo
 合法的服务端 padding 标记，确保 Xray 实际启动 `scStreamUpServerSecs`，并每 `20-40` 秒发送
 上行响应保活。该标记只存在于 CDN 到源站的内部链路，不会写入 VLESS URI 或 Mihomo/Clash
 节点；客户端仍使用自身兼容的 padding 默认值。Nginx 对流式请求体和 gRPC 上下游统一使用
-1 小时的读写空闲超时，CloudFront 源站响应包间超时设为 120 秒，且不设置请求总完成时限。
+1 小时的读写空闲超时，CloudFront 源站响应包间超时与空闲连接复用时间均设为 120 秒，
+且不设置请求总完成时限。
 
 这项保活可减少长工具调用期间的中途重连，但不能承诺消除所有网络重连：如果下行响应连续超过
 CloudFront 包间超时仍没有任何应用数据，CloudFront 仍可能关闭该请求。客户端应继续保留自动
@@ -514,8 +524,9 @@ CDN XHTTP 交互选项：
 | AWS Secret Access Key | 无 | 默认授权方式下不允许为空 |
 
 XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
-自动生成，不需要用户输入。生成的 Mihomo/Clash 节点与 Reality 一样固定使用
-`ip-version: ipv4`。
+自动生成，不需要用户输入。生成的 Mihomo/Clash 节点不写入 `ip-version`；实际连接地址族由
+客户端配置决定。内置完整模板仍默认关闭 IPv6，使用外部模板或聚合订阅时可自行启用双栈。
+Gemini 目标域名与 Reality 相同，统一在 VPS 的 Xray 出口固定为选定的 IPv4 或 IPv6。
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
 都会把当前值显示在方括号中，直接回车沿用当前状态。
@@ -638,6 +649,7 @@ Gcore 对源站读取超时的上限为 30 秒，因此此 Provider 将 XHTTP `s
 `20-25` 秒；Nginx 仍使用 1 小时流式读写超时。安装会等待 CNAME、边缘证书和 HTTPS 健康检查，
 但无法在不接入真实客户端网络的情况下替你证明所有移动网络下的长期 XHTTP 稳定性；首次安装后应
 用目标客户端做实际连接、切网和长连接测试。
+Gemini 目标域名同样通过 VPS 的专用 Xray 出站固定地址族，不依赖客户端节点的连接地址族。
 
 Gcore Free CDN 采用本机 `980 GB` UTC 自然月全局保护，与 AWS 按量付费的保护机制相同：每 15 秒
 统计 Xray 用户上下行、达到阈值即清空客户端并在下一个 UTC 自然月恢复。它不是 Gcore 账单的精确
@@ -671,6 +683,7 @@ STATE_VERSION=2  # Reality
 STATE_VERSION=4  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
+GEMINI_IP_FAMILY=auto|ipv4|ipv6               # 三种模式的 VPS Gemini 出口
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
 CLOUDFRONT_FEE_PROTECTION_GB=0|980            # AWS 固定套餐|AWS 按量付费
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
@@ -698,7 +711,7 @@ easy_all
    ├─ cloudfront-fee-protection.sh  按量付费全局流量保护与 UTC 月度账本
    ├─ platform.sh            root/systemd/SSH 启动保障
    ├─ profile-runtime.sh     Profile 临时目录、交互和注册桥接
-   ├─ network.sh             公网 IPv4 探测
+   ├─ network.sh             公网 IPv4 探测与 Gemini 出口地址族策略
    ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
    ├─ xray-core.sh           Xray 下载、校验与安装
    ├─ acme-renewal.sh        acme.sh 调用与续期任务保障

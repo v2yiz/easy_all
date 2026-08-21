@@ -237,7 +237,7 @@ test_remote_script_contract() {
     assert_contains "remote tunes TCP send buffers" "net.ipv4.tcp_wmem = 4096 16384 16777216" "${content}"
     assert_contains "remote keeps receive autotuning" "net.ipv4.tcp_moderate_rcvbuf = 1" "${content}"
     assert_contains "remote enables PMTU black-hole recovery" "net.ipv4.tcp_mtu_probing = 1" "${content}"
-    assert_contains "remote restores idle slow start" "net.ipv4.tcp_slow_start_after_idle = 1" "${content}"
+    assert_contains "remote avoids idle slow start" "net.ipv4.tcp_slow_start_after_idle = 0" "${content}"
     assert_contains "remote persists the BBR module" "debian-init-bbr.conf" "${content}"
     assert_not_contains "remote does not install XanMod" "dl.xanmod.org" "${content}"
     assert_not_contains "remote does not hardcode application ports" "80 443 8080 8443 8888" "${content}"
@@ -362,7 +362,7 @@ test_bbr_matches_easy_all() {
         "net.ipv4.tcp_wmem = 4096 16384 16777216"
         "net.ipv4.tcp_moderate_rcvbuf = 1"
         "net.ipv4.tcp_mtu_probing = 1"
-        "net.ipv4.tcp_slow_start_after_idle = 1"
+        "net.ipv4.tcp_slow_start_after_idle = 0"
         "net.core.somaxconn = 4096"
     )
     for setting in "${settings[@]}"; do

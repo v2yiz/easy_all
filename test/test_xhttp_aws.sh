@@ -40,6 +40,10 @@ assert_contains "traffic accounting exposes Stats API only on loopback" "$(<"${P
     'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
 assert_contains "XHTTP state persists the quota start date" "$(<"${PROFILE}")" \
     'QUOTA_START_DATE=%q'
+assert_contains "XHTTP state persists the Gemini egress family" "$(<"${PROFILE}")" \
+    'GEMINI_IP_FAMILY=%q'
+assert_contains "XHTTP routes Gemini domains through a dedicated outbound" "$(<"${PROFILE}")" \
+    'outboundTag:"gemini-family"'
 assert_contains "Xray keepalive stays below CloudFront response timeout" "$(<"${PROFILE}")" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
 assert_not_contains "XHTTP client output relies on compatible padding defaults" "$(<"${PROFILE}")" \
@@ -147,6 +151,8 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     assert_equal "XMUX max concurrency" "8-16" "${XHTTP_XMUX_MAX_CONCURRENCY}"
     assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     assert_equal "CloudFront origin response timeout" "120" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
+    assert_equal "CloudFront origin keepalive timeout" "120" \
+        "${CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT}"
 
     (
         EASY_ALL_SSH_PORT_CONFIG="${TMP_DIR}/sshd_config.d/00-easy-all-ports.conf"
@@ -421,6 +427,8 @@ EOF
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
         load_state
+        assert_equal "old XHTTP state defaults Gemini egress family to auto" \
+            "auto" "${GEMINI_IP_FAMILY}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
         assert_equal "node name environment override wins during update" \
@@ -555,6 +563,8 @@ EOF
     assert_contains "Mihomo XHTTP" "${mihomo}" "network: xhttp"
     assert_contains "Mihomo stream-up" "${mihomo}" "mode: stream-up"
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
+    assert_not_contains "Mihomo XHTTP does not pin the client IP family" \
+        "${mihomo}" "ip-version:"
     assert_contains "Mihomo XMUX uses expanded concurrency" \
         "${mihomo}" 'max-concurrency: "8-16"'
     assert_not_contains "Mihomo relies on its compatible padding defaults" \
@@ -573,7 +583,7 @@ EOF
         .Origins.Items[0].CustomOriginConfig.OriginProtocolPolicy == "https-only" and
         .Origins.Items[0].CustomOriginConfig.OriginSslProtocols.Items == ["TLSv1.2"] and
         .Origins.Items[0].CustomOriginConfig.OriginReadTimeout == 120 and
-        .Origins.Items[0].CustomOriginConfig.OriginKeepaliveTimeout == 60 and
+        .Origins.Items[0].CustomOriginConfig.OriginKeepaliveTimeout == 120 and
         (.Origins.Items[0] | has("ResponseCompletionTimeout") | not) and
         .Origins.Items[0].ConnectionAttempts == 2 and
         .Origins.Items[0].ConnectionTimeout == 3 and
