@@ -20,11 +20,13 @@ content=$(<"${SCRIPT}")
 [[ "${content}" == *'&& -f "${REPO_DIR}/lib/reality.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp_aws.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/xhttp_gcore.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp-runtime.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/cloudfront-fee-protection.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/platform.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/profile-runtime.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/network.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/lib/mihomo-template.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/firewall.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xray-core.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/acme-renewal.sh"'* \

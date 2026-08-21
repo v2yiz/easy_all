@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 REALITY_PROFILE="${ROOT_DIR}/lib/reality.sh"
 XHTTP_PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
+XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 GCORE_PROFILE="${ROOT_DIR}/xhttp_gcore.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
@@ -25,6 +26,7 @@ shared_modules=(
     platform.sh
     profile-runtime.sh
     network.sh
+    mihomo-template.sh
     firewall.sh
     xray-core.sh
     acme-renewal.sh
@@ -34,36 +36,57 @@ shared_modules=(
     reboot-schedule.sh
 )
 
-[[ "$(<"${XHTTP_PROFILE}")" == *'source "${SCRIPT_DIR}/cloudfront-fee-protection.sh"'* ]] \
-    || fail "XHTTP does not source its CloudFront fee protection module"
+[[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/cloudfront-fee-protection.sh"'* ]] \
+    || fail "XHTTP runtime does not source its CDN fee protection module"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cloudfront-fee-protection.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cloudfront-fee-protection.sh'* ]] \
     || fail "CloudFront fee protection module is missing from runtime packaging"
 [[ "${LAUNCHER_CONTENT}" == *'"xhttp_gcore.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'xhttp_gcore.sh'* \
-    && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_GCORE_PROFILE_ROOT}/lib/xhttp_aws.sh"'* ]] \
+    && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
+    && "$(<"${GCORE_PROFILE}")" != *'source "${XHTTP_GCORE_PROFILE_ROOT}/lib/xhttp_aws.sh"'* ]] \
     || fail "Gcore CDN profile must be packaged and reuse the XHTTP runtime"
+[[ "${LAUNCHER_CONTENT}" == *'"lib/xhttp-runtime.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
+    && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
+    || fail "shared XHTTP runtime is missing from Profile packaging"
 
 for module in "${shared_modules[@]}"; do
     [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
         || fail "Reality does not source shared module ${module}"
-    [[ "$(<"${XHTTP_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
-        || fail "XHTTP does not source shared module ${module}"
+    [[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
+        || fail "XHTTP runtime does not source shared module ${module}"
     [[ "${LAUNCHER_CONTENT}" == *'"lib/'"${module}"'"'* ]] \
         || fail "runtime installer does not register ${module}"
     [[ "${BOOTSTRAP_CONTENT}" == *'lib/'"${module}"* ]] \
         || fail "bootstrap does not validate ${module}"
 done
 
-for module in platform.sh profile-runtime.sh network.sh firewall.sh xray-core.sh acme-renewal.sh subscription-auth.sh validation.sh tcp-tuning.sh reboot-schedule.sh; do
+for module in platform.sh profile-runtime.sh network.sh mihomo-template.sh firewall.sh xray-core.sh acme-renewal.sh subscription-auth.sh validation.sh tcp-tuning.sh reboot-schedule.sh; do
     while read -r function_name; do
         [[ -n "${function_name}" ]] || continue
         ! grep -Eq "^${function_name}\\(\\)" "${REALITY_PROFILE}" \
             || fail "Reality redefines shared function ${function_name}"
-        ! grep -Eq "^${function_name}\\(\\)" "${XHTTP_PROFILE}" \
-            || fail "XHTTP redefines shared function ${function_name}"
+        ! grep -Eq "^${function_name}\\(\\)" "${XHTTP_RUNTIME}" \
+            || fail "XHTTP runtime redefines shared function ${function_name}"
     done < <(module_functions "${ROOT_DIR}/lib/${module}")
 done
+
+while read -r function_name; do
+    [[ -n "${function_name}" ]] || continue
+    ! grep -Eq "^${function_name}\\(\\)" "${XHTTP_PROFILE}" \
+        || fail "AWS Profile redefines XHTTP runtime function ${function_name}"
+    ! grep -Eq "^${function_name}\\(\\)" "${GCORE_PROFILE}" \
+        || fail "Gcore Profile redefines XHTTP runtime function ${function_name}"
+done < <(module_functions "${XHTTP_RUNTIME}")
+
+grep -Eq '^xhttp_render_xray_config\(\)' "${XHTTP_PROFILE}" \
+    || fail "AWS Profile does not implement the XHTTP render hook"
+grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
+    || fail "Gcore Profile does not implement the XHTTP render hook"
+
+[[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
+    || fail "network module must not depend on Profile template functions"
 
 [[ "$(<"${ROOT_DIR}/lib/acme-renewal.sh")" == *'systemctl is-enabled --quiet cron.service'* \
     && "$(<"${ROOT_DIR}/lib/acme-renewal.sh")" == *'systemctl is-active --quiet cron.service'* ]] \
@@ -84,12 +107,43 @@ fi
 [[ "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_mtu_probing = 1'* \
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_slow_start_after_idle = 0'* \
     && "$(<"${REALITY_PROFILE}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="1"'* \
-    && "$(<"${XHTTP_PROFILE}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="0"'* ]] \
+    && "$(<"${XHTTP_RUNTIME}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="0"'* ]] \
     || fail "shared TCP tuning or profile XanMod policies drifted"
 
 [[ "$(<"${ROOT_DIR}/lib/profile-runtime.sh")" == *'bash "${launcher}" register-command'* ]] \
     || fail "profiles must delegate command registration to the unified launcher"
 [[ "$(<"${ROOT_DIR}/lib/profile-runtime.sh")" != *'已注册单文件命令'* ]] \
     || fail "profiles must not install an incomplete single-file command"
+
+(
+    BACKUP_DIR=$(mktemp -d)
+    restored="${BACKUP_DIR}/restored.conf"
+    trap 'rm -rf -- "${BACKUP_DIR}"' EXIT
+    warn() { :; }
+    sysctl() {
+        case "$1" in
+        -n) printf 'before-%s\n' "$2" ;;
+        -p) cp "$2" "${restored}" ;;
+        *) return 1 ;;
+        esac
+    }
+    # shellcheck source=/dev/null
+    source "${ROOT_DIR}/lib/tcp-tuning.sh"
+    snapshot_tcp_runtime
+    grep -Fq 'net.ipv4.tcp_slow_start_after_idle = before-net.ipv4.tcp_slow_start_after_idle' \
+        "${BACKUP_DIR}/pre-install-tcp-runtime.conf" \
+        || fail "TCP runtime snapshot omits slow-start state"
+    restore_tcp_runtime
+    cmp -s "${BACKUP_DIR}/pre-install-tcp-runtime.conf" "${restored}" \
+        || fail "TCP runtime rollback does not reload the snapshot"
+)
+
+(
+    XRAY_CONFIG="/definitely/missing/easy_all-xray.json"
+    # shellcheck source=/dev/null
+    source "${ROOT_DIR}/lib/network.sh"
+    [[ "$(gemini_ip_family_status)" == "未应用，请执行 easy_all apply" ]] \
+        || fail "Gemini status must not report an unapplied measurement"
+)
 
 printf 'ok - shared architecture tests passed\n'

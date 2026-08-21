@@ -6,21 +6,27 @@
 # choice.  It reuses the XHTTP runtime (Xray, Nginx, subscriptions and quotas)
 # and owns only the Gcore DNS/CDN adapter and its state.
 
+set -Eeuo pipefail
+umask 077
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     printf 'xhttp_gcore.sh 是 easy_all 的 Gcore CDN Profile；请使用：easy_all install\n' >&2
     exit 2
 fi
 
 readonly XHTTP_GCORE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+readonly XHTTP_PROFILE_ROOT="${XHTTP_GCORE_PROFILE_ROOT}/lib"
+readonly XHTTP_PROFILE_FILE="${XHTTP_GCORE_PROFILE_ROOT}/xhttp_gcore.sh"
+XHTTP_CDN_NAME_OVERRIDE="Gcore CDN"
+XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Gcore Managed DNS"
+
 readonly GCORE_API_BASE="https://api.gcore.com"
 readonly GCORE_DNS_TTL="300"
 readonly DEFAULT_GCORE_FEE_PROTECTION_GB="980"
-readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="20-25"
+readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"
 
-# The shared XHTTP runtime is sourced first.  All provider-facing functions are
-# overridden below; no AWS credential or AWS API function is used by this Profile.
-# shellcheck source=lib/xhttp_aws.sh
-source "${XHTTP_GCORE_PROFILE_ROOT}/lib/xhttp_aws.sh"
+# shellcheck source=lib/xhttp-runtime.sh
+source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 
 gcore_api_request() {
     local method=$1 path=$2 payload=${3:-}
@@ -514,7 +520,7 @@ collect_installed_state() {
 # Gcore currently limits an origin read timeout to 30 seconds.  Keep XHTTP's
 # stream-up server window strictly below that edge limit instead of inheriting
 # CloudFront's 20-40-second range.
-write_xray_config() {
+xhttp_render_xray_config() {
     local gemini_domain_strategy clients stats_enabled=false
     prepare_mihomo_template
     resolve_gemini_ip_family
@@ -570,11 +576,7 @@ show_status() {
     local active_family
     require_root
     collect_installed_state
-    active_family=$(active_gemini_ip_family || true)
-    if [[ -z "${active_family}" ]]; then
-        resolve_gemini_ip_family
-        active_family=${GEMINI_IP_FAMILY_RESOLVED}
-    fi
+    active_family=$(gemini_ip_family_status)
     printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
     printf 'Gemini 出口族: %s（配置: %s）\n' \
@@ -655,6 +657,7 @@ rollback_fresh_install() {
     elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
         rm -f -- "${SYSCTL_CONFIG}"
     fi
+    restore_tcp_runtime
     if [[ -f "${BACKUP_DIR}/pre-install-bbr-module.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr-module.conf" "${BBR_MODULES_CONFIG}"
     elif [[ -f "${BACKUP_DIR}/pre-install-bbr-module.missing" ]]; then

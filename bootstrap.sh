@@ -40,11 +40,13 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/lib/reality.sh" \
     && -f "${REPO_DIR}/lib/xhttp_aws.sh" \
     && -f "${REPO_DIR}/xhttp_gcore.sh" \
+    && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \
     && -f "${REPO_DIR}/lib/quota.sh" \
     && -f "${REPO_DIR}/lib/cloudfront-fee-protection.sh" \
     && -f "${REPO_DIR}/lib/platform.sh" \
     && -f "${REPO_DIR}/lib/profile-runtime.sh" \
     && -f "${REPO_DIR}/lib/network.sh" \
+    && -f "${REPO_DIR}/lib/mihomo-template.sh" \
     && -f "${REPO_DIR}/lib/firewall.sh" \
     && -f "${REPO_DIR}/lib/xray-core.sh" \
     && -f "${REPO_DIR}/lib/acme-renewal.sh" \

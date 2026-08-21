@@ -3,6 +3,40 @@
 # Shared Google BBR and conservative TCP tuning. Profiles configure only the
 # legacy XanMod policy through BBR_ALLOW_EXISTING_XANMOD.
 
+tcp_runtime_keys() {
+    cat <<'EOF'
+net.core.default_qdisc
+net.ipv4.tcp_congestion_control
+net.core.rmem_max
+net.core.wmem_max
+net.ipv4.tcp_rmem
+net.ipv4.tcp_wmem
+net.ipv4.tcp_moderate_rcvbuf
+net.ipv4.tcp_mtu_probing
+net.ipv4.tcp_slow_start_after_idle
+net.core.somaxconn
+EOF
+}
+
+snapshot_tcp_runtime() {
+    local destination="${BACKUP_DIR}/pre-install-tcp-runtime.conf"
+    local key value
+    [[ ! -e "${destination}" ]] || return 0
+    install -d -m 0700 "${BACKUP_DIR}"
+    install -m 0600 /dev/null "${destination}"
+    while IFS= read -r key; do
+        value=$(sysctl -n "${key}" 2>/dev/null) || continue
+        printf '%s = %s\n' "${key}" "${value}" >>"${destination}"
+    done < <(tcp_runtime_keys)
+}
+
+restore_tcp_runtime() {
+    local source="${BACKUP_DIR}/pre-install-tcp-runtime.conf"
+    [[ -s "${source}" ]] || return 0
+    sysctl -p "${source}" >/dev/null 2>&1 \
+        || warn "恢复安装前 TCP 运行参数失败，请检查 ${source}"
+}
+
 configure_bbr_tcp() {
     if [[ "$(uname -r)" == *xanmod* ]]; then
         case "${BBR_ALLOW_EXISTING_XANMOD:-0}" in

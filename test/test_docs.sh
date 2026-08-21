@@ -46,7 +46,7 @@ assert_contains "README documents the third Gcore installation branch" "${README
 assert_contains "README documents Gcore as a token-only provider" "${README_CONTENT}" \
     'GCORE_API_TOKEN'
 assert_contains "README documents Gcore's reduced XHTTP window" "${README_CONTENT}" \
-    '`20-25` 秒'
+    '`10-14` 秒'
 assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \

@@ -52,7 +52,7 @@ assert_failure() {
 
 source_script_copy() {
     local module
-    for module in quota.sh platform.sh profile-runtime.sh network.sh firewall.sh xray-core.sh acme-renewal.sh subscription-auth.sh validation.sh tcp-tuning.sh reboot-schedule.sh; do
+    for module in quota.sh platform.sh profile-runtime.sh validation.sh network.sh mihomo-template.sh firewall.sh xray-core.sh acme-renewal.sh subscription-auth.sh tcp-tuning.sh reboot-schedule.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/${module}"
     done
     sed \

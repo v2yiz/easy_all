@@ -69,8 +69,12 @@ source "${SCRIPT_DIR}/quota.sh"
 source "${SCRIPT_DIR}/platform.sh"
 # shellcheck source=lib/profile-runtime.sh
 source "${SCRIPT_DIR}/profile-runtime.sh"
+# shellcheck source=lib/validation.sh
+source "${SCRIPT_DIR}/validation.sh"
 # shellcheck source=lib/network.sh
 source "${SCRIPT_DIR}/network.sh"
+# shellcheck source=lib/mihomo-template.sh
+source "${SCRIPT_DIR}/mihomo-template.sh"
 # shellcheck source=lib/firewall.sh
 source "${SCRIPT_DIR}/firewall.sh"
 # shellcheck source=lib/xray-core.sh
@@ -79,8 +83,6 @@ source "${SCRIPT_DIR}/xray-core.sh"
 source "${SCRIPT_DIR}/acme-renewal.sh"
 # shellcheck source=lib/subscription-auth.sh
 source "${SCRIPT_DIR}/subscription-auth.sh"
-# shellcheck source=lib/validation.sh
-source "${SCRIPT_DIR}/validation.sh"
 # shellcheck source=lib/tcp-tuning.sh
 source "${SCRIPT_DIR}/tcp-tuning.sh"
 # shellcheck source=lib/reboot-schedule.sh
@@ -195,6 +197,7 @@ snapshot_fresh_install() {
     else
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-disable-ipv6.missing"
     fi
+    snapshot_tcp_runtime
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 
@@ -803,46 +806,6 @@ build_mihomo_node() {
             "    skip-cert-verify: false\n    flow: xtls-rprx-vision\n    servername: \($sni|@json)\n" +
             "    reality-opts:\n      public-key: \($pbk|@json)\n      short-id: \($sid|@json)\n" +
             "    client-fingerprint: chrome\n    packet-encoding: xudp\n    smux:\n      enabled: false\n"'
-}
-
-validate_mihomo_template() {
-    local source=$1 marker count
-    [[ -s "${source}" ]] || die "sample-mihomo.yaml 为空：${source}"
-    for marker in \
-        "# EASY_ALL_PROXY_NODE" \
-        "# EASY_ALL_PROXY_NAME" \
-        "# EASY_ALL_GEMINI_DOMAINS_START" \
-        "# EASY_ALL_GEMINI_DOMAINS_END"; do
-        count=$(grep -Fxc "${marker}" "${source}" || true)
-        [[ "${count}" == "1" ]] \
-            || die "sample-mihomo.yaml 模板标记无效：${marker} 应且只能出现一次"
-    done
-    grep -q '^rules:' "${source}" || die "sample-mihomo.yaml 缺少规则"
-    extract_gemini_domain_suffixes "${source}" >/dev/null
-}
-
-fetch_mihomo_template() {
-    local destination=$1 source=${MIHOMO_TEMPLATE_SOURCE:-} url
-    if [[ -n "${source}" ]]; then
-        if [[ -f "${source}" ]]; then
-            install -m 0600 "${source}" "${destination}"
-        elif [[ "${source}" =~ ^https:// ]]; then
-            curl -fsSL --retry 3 "${source}" -o "${destination}" \
-                || die "下载 sample-mihomo.yaml 失败：${source}"
-            chmod 0600 "${destination}"
-        else
-            die "MIHOMO_TEMPLATE_SOURCE 必须是本地文件或 HTTPS URL：${source}"
-        fi
-    elif [[ -f "${SCRIPT_DIR}/sample-mihomo.yaml" ]]; then
-        install -m 0600 "${SCRIPT_DIR}/sample-mihomo.yaml" "${destination}"
-    else
-        url=${MIHOMO_TEMPLATE_URL:-${DEFAULT_MIHOMO_TEMPLATE_URL}}
-        [[ "${url}" =~ ^https:// ]] \
-            || die "MIHOMO_TEMPLATE_URL 必须使用 HTTPS：${url}"
-        curl -fsSL --retry 3 "${url}" -o "${destination}" \
-            || die "下载 sample-mihomo.yaml 失败：${url}"
-    fi
-    validate_mihomo_template "${destination}"
 }
 
 render_mihomo_subscription() {
@@ -1499,11 +1462,7 @@ show_status() {
     local active_family
     require_root
     collect_installed_state
-    active_family=$(active_gemini_ip_family || true)
-    if [[ -z "${active_family}" ]]; then
-        resolve_gemini_ip_family
-        active_family=${GEMINI_IP_FAMILY_RESOLVED}
-    fi
+    active_family=$(gemini_ip_family_status)
     printf '协议: %s\n' "${PROTOCOL}"
     printf 'Gemini 出口族: %s（配置: %s）\n' \
         "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
@@ -1651,6 +1610,7 @@ rollback_fresh_install() {
     elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
         rm -f -- "${SYSCTL_CONFIG}"
     fi
+    restore_tcp_runtime
     if [[ -f "${BACKUP_DIR}/pre-install-bbr-module.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr-module.conf" \
             "${BBR_MODULES_CONFIG}"

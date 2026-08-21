@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 # Shared public network discovery and VPS-side Gemini egress family selection.
-# Protocol-specific inbound and DNS-provider policy remain in the owning Profile.
 
 detect_public_ipv4() {
     local service ip
@@ -18,49 +17,6 @@ detect_public_ipv4() {
         fi
     done
     return 1
-}
-
-extract_domain_suffix_policy() {
-    local source=$1 start_marker=$2 end_marker=$3 description=$4
-    local json domain normalized compact
-    json=$(awk -v start_marker="${start_marker}" -v end_marker="${end_marker}" '
-        $0 == start_marker {
-            capture = 1
-            next
-        }
-        $0 == end_marker {
-            capture = 0
-            exit
-        }
-        capture == 1 {
-            print
-        }
-    ' "${source}" | sed 's/^#[[:space:]]*//') \
-        || die "无法提取 Mihomo ${description} 域名策略"
-    jq -e '
-        type == "array"
-        and length > 0
-        and all(.[]; type == "string")
-        and length == (unique | length)
-    ' <<<"${json}" >/dev/null \
-        || die "Mihomo ${description} 域名策略必须是非空且不重复的字符串数组"
-    while IFS= read -r domain; do
-        validate_domain "${domain}" \
-            || die "Mihomo ${description} 域名策略包含无效域名：${domain}"
-        normalized=$(normalize_domain "${domain}")
-        [[ "${normalized}" == "${domain}" ]] \
-            || die "Mihomo ${description} 域名必须使用小写规范格式：${domain}"
-    done < <(jq -r '.[]' <<<"${json}")
-    compact=$(jq -c '.' <<<"${json}") \
-        || die "无法规范化 Mihomo ${description} 域名策略"
-    printf '%s\n' "${compact}"
-}
-
-extract_gemini_domain_suffixes() {
-    extract_domain_suffix_policy "$1" \
-        "# EASY_ALL_GEMINI_DOMAINS_START" \
-        "# EASY_ALL_GEMINI_DOMAINS_END" \
-        "Gemini"
 }
 
 measure_gemini_ip_family() {
@@ -117,19 +73,6 @@ resolve_gemini_ip_family() {
     esac
 }
 
-prepare_mihomo_template() {
-    local template
-    if [[ -n "${MIHOMO_TEMPLATE_FILE:-}" \
-        && -s "${MIHOMO_TEMPLATE_FILE}" \
-        && -n "${GEMINI_DOMAIN_SUFFIXES_JSON:-}" ]]; then
-        return 0
-    fi
-    template="${RUNTIME_TMP}/sample-mihomo.yaml"
-    fetch_mihomo_template "${template}"
-    GEMINI_DOMAIN_SUFFIXES_JSON=$(extract_gemini_domain_suffixes "${template}")
-    MIHOMO_TEMPLATE_FILE=${template}
-}
-
 active_gemini_ip_family() {
     local strategy=""
     [[ -s "${XRAY_CONFIG}" ]] || return 1
@@ -141,4 +84,9 @@ active_gemini_ip_family() {
     ForceIPv4) printf 'ipv4\n' ;;
     *) return 1 ;;
     esac
+}
+
+gemini_ip_family_status() {
+    active_gemini_ip_family \
+        || printf '未应用，请执行 easy_all apply\n'
 }

@@ -4,8 +4,10 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
+XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
 ACME_RENEWAL_MODULE="${ROOT_DIR}/lib/acme-renewal.sh"
+XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
@@ -30,37 +32,37 @@ assert_not_contains() {
 }
 
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
-assert_contains "installer refuses root credentials" "$(<"${PROFILE}")" \
+assert_contains "installer refuses root credentials" "${XHTTP_CONTENT}" \
     "拒绝使用 AWS 根用户访问密钥"
-assert_contains "Xray XHTTP inbound" "$(<"${PROFILE}")" \
+assert_contains "Xray XHTTP inbound" "${XHTTP_CONTENT}" \
     'tag:"vless-xhttp-h2-in"'
-assert_contains "Xray fixes XHTTP to stream-up" "$(<"${PROFILE}")" \
+assert_contains "Xray fixes XHTTP to stream-up" "${XHTTP_CONTENT}" \
     'mode:"stream-up"'
-assert_contains "traffic accounting exposes Stats API only on loopback" "$(<"${PROFILE}")" \
+assert_contains "traffic accounting exposes Stats API only on loopback" "${XHTTP_CONTENT}" \
     'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
-assert_contains "XHTTP state persists the quota start date" "$(<"${PROFILE}")" \
+assert_contains "XHTTP state persists the quota start date" "${XHTTP_CONTENT}" \
     'QUOTA_START_DATE=%q'
-assert_contains "XHTTP state persists the Gemini egress family" "$(<"${PROFILE}")" \
+assert_contains "XHTTP state persists the Gemini egress family" "${XHTTP_CONTENT}" \
     'GEMINI_IP_FAMILY=%q'
-assert_contains "XHTTP routes Gemini domains through a dedicated outbound" "$(<"${PROFILE}")" \
+assert_contains "XHTTP routes Gemini domains through a dedicated outbound" "${XHTTP_CONTENT}" \
     'outboundTag:"gemini-family"'
-assert_contains "Xray keepalive stays below CloudFront response timeout" "$(<"${PROFILE}")" \
+assert_contains "Xray keepalive stays below CloudFront response timeout" "${XHTTP_CONTENT}" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
-assert_not_contains "XHTTP client output relies on compatible padding defaults" "$(<"${PROFILE}")" \
+assert_not_contains "XHTTP client output relies on compatible padding defaults" "${XHTTP_CONTENT}" \
     'XHTTP_X_PADDING_BYTES'
-assert_contains "Xray accepts the server-side keepalive marker padding" "$(<"${PROFILE}")" \
+assert_contains "Xray accepts the server-side keepalive marker padding" "${XHTTP_CONTENT}" \
     'xPaddingBytes:$x_padding_bytes'
-assert_contains "Nginx guarantees that Xray activates stream-up keepalive" "$(<"${PROFILE}")" \
+assert_contains "Nginx guarantees that Xray activates stream-up keepalive" "${XHTTP_CONTENT}" \
     'grpc_set_header Referer "${keepalive_referer}"'
-assert_contains "Nginx stream timeout covers long-lived XHTTP requests" "$(<"${PROFILE}")" \
+assert_contains "Nginx stream timeout covers long-lived XHTTP requests" "${XHTTP_CONTENT}" \
     'readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"'
-assert_contains "Nginx proxies XHTTP over gRPC" "$(<"${PROFILE}")" \
+assert_contains "Nginx proxies XHTTP over gRPC" "${XHTTP_CONTENT}" \
     'grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT}'
-assert_contains "Nginx validates subscription tokens" "$(<"${PROFILE}")" \
+assert_contains "Nginx validates subscription tokens" "${XHTTP_CONTENT}" \
     'map $arg_token $easy_all_subscription_allowed'
-assert_contains "Nginx protects direct-origin subscription access" "$(<"${PROFILE}")" \
+assert_contains "Nginx protects direct-origin subscription access" "${XHTTP_CONTENT}" \
     'if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }'
-assert_contains "Nginx serves internal Mihomo subscription" "$(<"${PROFILE}")" \
+assert_contains "Nginx serves internal Mihomo subscription" "${XHTTP_CONTENT}" \
     'mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"'
 assert_contains "installer validates sshd before scheduled reboot" "$(<"${PLATFORM_MODULE}")" \
     '"${sshd_bin}" -t'
@@ -70,9 +72,9 @@ assert_contains "installer keeps detected SSH ports" "$(<"${PLATFORM_MODULE}")" 
     'for port in ${SSH_PORTS}'
 assert_contains "installer verifies the new SSH listener" "$(<"${PLATFORM_MODULE}")" \
     'ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}"'
-assert_contains "AWS and Gcore installs include Fail2ban" "$(<"${PROFILE}")" \
+assert_contains "AWS and Gcore installs include Fail2ban" "${XHTTP_CONTENT}" \
     'fail2ban python3-systemd'
-assert_contains "AWS and Gcore enable shared Fail2ban after UFW" "$(<"${PROFILE}")" \
+assert_contains "AWS and Gcore enable shared Fail2ban after UFW" "${XHTTP_CONTENT}" \
     'ensure_ssh_fail2ban'
 assert_contains "shared Fail2ban enables incremental bans" "$(<"${PLATFORM_MODULE}")" \
     'bantime.increment = true'
@@ -86,25 +88,25 @@ assert_contains "XHTTP repairs a missing ACME renewal cron job" "$(<"${ACME_RENE
     'run_acme --install-cronjob'
 assert_contains "XHTTP writes a managed cron fallback when acme.sh does not" "$(<"${ACME_RENEWAL_MODULE}")" \
     "easy_all-acme-renewal"
-assert_contains "installer verifies renewal reload hook" "$(<"${PROFILE}")" \
+assert_contains "installer verifies renewal reload hook" "${XHTTP_CONTENT}" \
     '源站证书、私钥或续期重载钩子安装不完整'
-assert_contains "subscription updates enable rollback" "$(<"${PROFILE}")" \
+assert_contains "subscription updates enable rollback" "${XHTTP_CONTENT}" \
     'UPDATE_SUB_ROLLBACK_ON_EXIT=1'
-assert_contains "CloudFront health failures are fatal" "$(<"${PROFILE}")" \
+assert_contains "CloudFront health failures are fatal" "${XHTTP_CONTENT}" \
     'die "CloudFront 公网验收失败'
 assert_not_contains "CloudFront installation does not auto-adopt unmarked legacy distributions" \
-    "$(<"${PROFILE}")" 'AWS_ADOPT_DISTRIBUTION=1'
+    "${XHTTP_CONTENT}" 'AWS_ADOPT_DISTRIBUTION=1'
 assert_contains "CloudFront alias conflicts require explicit old-resource cleanup" \
-    "$(<"${PROFILE}")" '脚本不会接管旧部署，请先删除旧分配或解除该别名'
-assert_contains "CloudFront billing mode is persisted" "$(<"${PROFILE}")" \
+    "${XHTTP_CONTENT}" '脚本不会接管旧部署，请先删除旧分配或解除该别名'
+assert_contains "CloudFront billing mode is persisted" "${XHTTP_CONTENT}" \
     'AWS_CLOUDFRONT_BILLING_MODE=%q'
-assert_contains "CloudFront fee protection threshold is persisted" "$(<"${PROFILE}")" \
+assert_contains "CloudFront fee protection threshold is persisted" "${XHTTP_CONTENT}" \
     'CLOUDFRONT_FEE_PROTECTION_GB=%q'
-assert_contains "global fee protection can remove every Xray client" "$(<"${PROFILE}")" \
+assert_contains "global fee protection can remove every Xray client" "${XHTTP_CONTENT}" \
     "cloudfront_fee_protection_blocked && clients='[]'"
-assert_contains "pay-as-you-go clears WAF association" "$(<"${PROFILE}")" \
+assert_contains "pay-as-you-go clears WAF association" "${XHTTP_CONTENT}" \
     'AWS_WAF_WEB_ACL_ARN=""'
-assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
+assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     '非交互卸载必须显式设置 FORCE=1'
 
 (
@@ -354,14 +356,14 @@ EOF
     unset -f ufw
 
     assert_contains "XHTTP prompts for the Mihomo download filename" \
-        "$(<"${PROFILE}")" 'Mihomo 下载文件名（不含 .yaml）'
+        "${XHTTP_CONTENT}" 'Mihomo 下载文件名（不含 .yaml）'
     assert_contains "XHTTP default prompts explain the enter default" \
         "$(<"${ROOT_DIR}/lib/profile-runtime.sh")" \
         '[${default}]（直接回车使用默认值）'
     assert_contains "XHTTP subscription prompt recommends self-hosting for one server" \
-        "$(<"${PROFILE}")" "只有当前服务器时推荐"
+        "${XHTTP_CONTENT}" "只有当前服务器时推荐"
     assert_contains "XHTTP subscription prompt recommends node output for aggregation" \
-        "$(<"${PROFILE}")" "多节点聚合或已有订阅服务器时推荐"
+        "${XHTTP_CONTENT}" "多节点聚合或已有订阅服务器时推荐"
 
     SUB_DOWNLOAD_NAME="CUSTOM_SUB.yaml"
     choose_subscription_download_name

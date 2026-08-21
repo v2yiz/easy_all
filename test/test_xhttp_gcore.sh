@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/xhttp_gcore.sh"
+XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -35,7 +36,7 @@ fi
 assert_contains "standalone profile directs users to unified entry" \
     "${standalone_output}" "easy_all install"
 
-profile_content=$(<"${PROFILE}")
+profile_content="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"
 assert_contains "Gcore profile uses permanent API token authentication" \
     "${profile_content}" "Authorization: APIKey"
 assert_contains "Gcore profile manages DNS zones" \
@@ -49,7 +50,7 @@ assert_contains "Gcore profile requests edge certificates" \
 assert_contains "Gcore profile validates Let's Encrypt before issuing" \
     "${profile_content}" "/ssl/le/pre-validate"
 assert_contains "Gcore profile limits XHTTP stream-up for its origin timeout" \
-    "${profile_content}" 'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="20-25"'
+    "${profile_content}" 'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"'
 assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
 assert_contains "Gcore profile persists the Gemini egress family" \
@@ -67,7 +68,12 @@ assert_not_contains "Gcore profile never persists the API token" \
 
     assert_equal "Gcore reuses the XHTTP runtime" "xhttp" "${EASY_ALL_PROFILE}"
     assert_equal "Gcore fee protection default" "980" "${DEFAULT_GCORE_FEE_PROTECTION_GB}"
-    assert_equal "Gcore stream-up upper bound" "20-25" "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}"
+    assert_equal "Gcore stream-up stays below HTTP/2 idle timeout" \
+        "10-14" "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}"
+    ! declare -F install_aws_cli >/dev/null \
+        || fail "Gcore profile must not load the AWS provider"
+    ! declare -F configure_aws_cdn >/dev/null \
+        || fail "Gcore profile must not expose CloudFront operations"
 
     GCORE_API_TOKEN='gcore$token-with-a-special-character'
     gcore_collect_api_token

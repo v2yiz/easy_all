@@ -645,10 +645,10 @@ Managed DNS、源组、CDN 资源和边缘 Let's Encrypt，不读取 AWS 凭证�
 `GCORE_DNS_REPLACE=1`。CDN 强制 HTTPS 回源、源站 SNI/Host，并注入 `X-Easy-All-Origin-Key`；
 边缘和浏览器缓存均设为 `0s`，从而避免把 XHTTP、订阅或健康检查缓存为静态内容。
 
-Gcore 对源站读取超时的上限为 30 秒，因此此 Provider 将 XHTTP `stream-up` 服务端窗口收紧为
-`20-25` 秒；Nginx 仍使用 1 小时流式读写超时。安装会等待 CNAME、边缘证书和 HTTPS 健康检查，
-但无法在不接入真实客户端网络的情况下替你证明所有移动网络下的长期 XHTTP 稳定性；首次安装后应
-用目标客户端做实际连接、切网和长连接测试。
+Gcore 的默认源站读取超时为 30 秒、HTTP/2 空闲超时为 15 秒，因此此 Provider 将 XHTTP
+`stream-up` 服务端窗口收紧为 `10-14` 秒；Nginx 仍使用 1 小时流式读写超时。安装会等待
+CNAME、边缘证书和 HTTPS 健康检查，但无法在不接入真实客户端网络的情况下替你证明所有移动
+网络下的长期 XHTTP 稳定性；首次安装后应用目标客户端做实际连接、切网和长连接测试。
 Gemini 目标域名同样通过 VPS 的专用 Xray 出站固定地址族，不依赖客户端节点的连接地址族。
 
 Gcore Free CDN 采用本机 `980 GB` UTC 自然月全局保护，与 AWS 按量付费的保护机制相同：每 15 秒
@@ -703,15 +703,17 @@ Token 或 `GCORE_API_TOKEN` 持久化到状态文件。
 
 ```text
 easy_all
-├─ xhttp_gcore.sh            Gcore CDN XHTTP Provider 编排
+├─ xhttp_gcore.sh            Gcore CDN Provider、状态与安装编排
 └─ lib/
    ├─ reality.sh             Reality 编排与专属配置
-   ├─ xhttp_aws.sh           XHTTP/AWS 编排与专属配置
+   ├─ xhttp_aws.sh           AWS Provider、状态与安装编排
+   ├─ xhttp-runtime.sh       AWS/Gcore 共用的 XHTTP 本机运行时
    ├─ quota.sh               用户配额与统计
    ├─ cloudfront-fee-protection.sh  按量付费全局流量保护与 UTC 月度账本
    ├─ platform.sh            root/systemd/SSH 启动保障
    ├─ profile-runtime.sh     Profile 临时目录、交互和注册桥接
-   ├─ network.sh             公网 IPv4 探测与 Gemini 出口地址族策略
+   ├─ network.sh             公网 IPv4 探测与 Gemini 出口地址族测速
+   ├─ mihomo-template.sh     Mihomo 模板加载、校验与路由元数据
    ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
    ├─ xray-core.sh           Xray 下载、校验与安装
    ├─ acme-renewal.sh        acme.sh 调用与续期任务保障
@@ -723,8 +725,9 @@ sample-mihomo.yaml
 ```
 
 入口负责模式选择、命令分发和完整运行时的原子注册。Reality、AWS XHTTP 与 Gcore XHTTP Profile
-只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。Gcore Profile 复用 XHTTP
-本机运行时，并以 `CDN_PROVIDER` 与 AWS 云端实现解耦。
+只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。AWS 与 Gcore 分别加载
+`xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现，彼此不加载对方的 Provider
+代码。
 
 ## 测试
 
