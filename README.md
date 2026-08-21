@@ -744,24 +744,31 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/debian_i
 | 普通用户 sudo 密码 | 无 | 不允许为空，必须输入两次 |
 | 本地 SSH Host 别名 | `<普通用户>-<服务器>` | 使用生成值 |
 | 当前 SSH 端口 | `22` | 使用 `22` |
-| 是否修改 SSH 端口 | `no` | 不修改 |
-| 新 SSH 端口 | `2222` | 仅选择修改时采用 `2222` |
+| 新增 SSH 端口 | 固定 `65533` | 保留当前端口；当前端口使用默认值时同时监听 `22` 和 `65533` |
 | UFW 额外 TCP 端口 | 空 | 仅放行 SSH 相关端口 |
 | SSH key 选择 | `g` | 生成新的 ed25519 key |
 | 新 key 文件名 | `id_ed25519_<Host别名>` | 使用生成名称 |
 | 新私钥 passphrase | 空 | 创建无 passphrase 私钥 |
-| 是否移除旧 SSH 端口 | `no` | 保留旧端口 |
 
 远端操作包括：
 
-- 执行 `apt-get upgrade` 并安装基础工具。
+- 执行 `apt-get upgrade` 并安装基础工具及 Fail2ban。
 - 使用 Debian 官方内核的 Google BBR，TCP 参数与 `easy_all` 保持一致；拒绝 XanMod。
 - 配置并启用 UFW：默认拒绝入站和转发、允许出站，并为 SSH 当前/最终端口及用户显式输入的额外 TCP 端口添加受管规则；已有的其他 UFW 规则保持不变。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
 - 创建或更新普通用户、sudo 密码和 SSH 公钥。
 - 为普通用户安装 `uv` 和 Python 3.12。
-- 写入独立的 `sshd_config.d` 配置，禁用密码及键盘交互认证，root 仅允许密钥登录。
-- 在本地 `~/.ssh/config` 写入带保活参数的受管 Host 配置。
+- 写入优先级明确的独立 `sshd_config.d` 配置，保留普通用户和 root 的密码登录，也保留密钥登录；
+  同时缩短未认证连接宽限时间，限制单一来源与全局预认证连接，避免扫描占满 sshd 队列。
+- 启用 Fail2ban 的 `sshd` jail：同一来源 3 分钟内失败 6 次后先封禁 3 小时，重复来源递增封禁，
+  最长 1 周；Fail2ban 永久监控当前 SSH 端口和新增的 `65533`，并通过 UFW 执行封禁。
+- 在本地 `~/.ssh/config` 写入连接重试和保活参数的受管 Host 配置。
+
+`worker.js` 的动态端口最高为 `62710`；新增 SSH 端口 `65533` 位于该范围之外，不会冲突。
+当前 SSH 端口不会删除；使用默认当前端口 `22` 时，sshd、UFW 和 Fail2ban 都会同时覆盖
+`22` 与 `65533`。新增端口使用普通用户密钥登录验收成功后写入本地 Host 配置。
+由于密码认证和 root 密码登录仍然开放，必须使用足够长且不复用的随机密码；Fail2ban 可以压制
+重复失败来源，但不能代替强密码，也不能完全阻断分布式低频尝试。
 
 BBR 配置写入 `/etc/sysctl.d/99-debian-init-bbr.conf`，模块加载配置写入
 `/etc/modules-load.d/debian-init-bbr.conf`。UFW 规则使用 `debian-init-managed` 注释，

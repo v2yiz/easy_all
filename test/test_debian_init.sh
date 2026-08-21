@@ -133,12 +133,12 @@ secret
 secret
 node-a
 22
-no
+
 EOF
         validate_collected_inputs
         printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
     )"
-    assert_equal "unchanged SSH port is always initialized" "22:22:no" "$unchanged"
+    assert_equal "current SSH port is retained while 65533 is added" "22:65533:yes" "$unchanged"
 
     changed="$(
         collect_inputs >/dev/null <<'EOF'
@@ -150,13 +150,13 @@ secret
 secret
 node-b
 22
-yes
-2222
+
 EOF
         validate_collected_inputs
         printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
     )"
-    assert_equal "changed SSH port is always initialized" "22:2222:yes" "$changed"
+    assert_equal "additional SSH port is deterministic" "22:65533:yes" "$changed"
+    assert_equal "additional SSH port" "65533" "$ADDITIONAL_SSH_PORT"
 
     local same_port
     same_port="$(
@@ -168,14 +168,13 @@ deploy
 secret
 secret
 node-c
-22
-yes
-22
+65533
+
 EOF
         validate_collected_inputs
         printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
     )"
-    assert_equal "same SSH port is normalized to no change" "22:22:no" "$same_port"
+    assert_equal "existing 65533 SSH port is not duplicated" "65533:65533:no" "$same_port"
 
     unset FINAL_PORT
     assert_failure "missing final SSH port is rejected before remote changes" validate_collected_inputs
@@ -191,6 +190,9 @@ test_managed_ssh_config() {
     assert_contains "ssh_config writes normal user" "  User v2yiz" "${content}"
     assert_contains "ssh_config writes port" "  Port 2222" "${content}"
     assert_contains "ssh_config forces identity only" "  IdentitiesOnly yes" "${content}"
+    assert_contains "ssh_config retries connections dropped by pre-auth throttling" \
+        "  ConnectionAttempts 3" "${content}"
+    assert_contains "ssh_config bounds each connection attempt" "  ConnectTimeout 10" "${content}"
     assert_contains "ssh_config keeps idle sessions alive" "  ServerAliveInterval 30" "${content}"
     assert_contains "ssh_config limits dead keepalive probes" "  ServerAliveCountMax 3" "${content}"
 
@@ -215,6 +217,8 @@ test_remote_script_contract() {
     content="$(<"${remote_script}")"
     assert_contains "remote installs tmux" "vim tmux curl wget" "${content}"
     assert_contains "remote installs build-essential" "git build-essential" "${content}"
+    assert_contains "remote installs Fail2ban systemd backend" \
+        "openssh-server ufw fail2ban python3-systemd" "${content}"
     assert_contains "remote installs uv as normal user" "su - \"\$normal_user\" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'" "${content}"
     assert_contains "remote installs Python 3.12 with uv" "python install 3.12" "${content}"
     assert_contains "remote updates existing user password" "chpasswd" "${content}"
@@ -242,10 +246,30 @@ test_remote_script_contract() {
     assert_contains "remote marks managed UFW rules" "debian-init-managed" "${content}"
     assert_not_contains "remote does not touch firewalld" "firewall-cmd" "${content}"
     assert_not_contains "remote does not touch nftables" "nft insert rule" "${content}"
-    assert_contains "remote disables SSH password login" "PasswordAuthentication no" "${content}"
-    assert_contains "remote keeps root key-only login policy" "PermitRootLogin prohibit-password" "${content}"
-    assert_contains "remote always persists the final SSH port" \
-        'echo "Port $final_port"' "${content}"
+    assert_contains "remote preserves SSH password login" "PasswordAuthentication yes" "${content}"
+    assert_contains "remote preserves root password login" "PermitRootLogin yes" "${content}"
+    assert_contains "remote shortens unauthenticated SSH lifetime" "LoginGraceTime 30" "${content}"
+    assert_contains "remote preserves password fallback after key attempts" "MaxAuthTries 6" "${content}"
+    assert_contains "remote preserves legitimate pre-auth capacity" "MaxStartups 20:30:100" "${content}"
+    assert_contains "remote limits each scanning source" "PerSourceMaxStartups 3" "${content}"
+    assert_contains "remote groups IPv6 scanners by source prefix" "PerSourceNetBlockSize 32:64" "${content}"
+    assert_contains "remote pins SSH to explicit IPv4 listen addresses" \
+        'ListenAddress 0.0.0.0:$listen_port' "${content}"
+    assert_contains "remote pins SSH to explicit IPv6 listen addresses when available" \
+        'ListenAddress [::]:$listen_port' "${content}"
+    assert_contains "remote enables Fail2ban SSH jail" "fail2ban-client status sshd" "${content}"
+    assert_contains "Fail2ban monitors SSH ports instead of application ports" \
+        'ports_csv="$(collect_ssh_ports "$sshd_bin" | paste -sd, -)"' "${content}"
+    assert_contains "remote uses UFW for Fail2ban bans" "banaction = ufw" "${content}"
+    assert_contains "Fail2ban avoids reverse DNS under scan load" "usedns = no" "${content}"
+    assert_contains "remote increments repeated-source bans" "bantime.increment = true" "${content}"
+    assert_contains "remote counts failures in a three-minute window" "findtime = 3m" "${content}"
+    assert_contains "remote starts with a three-hour ban" "bantime = 3h" "${content}"
+    assert_contains "remote caps repeated-source bans" "bantime.maxtime = 1w" "${content}"
+    assert_contains "remote removes the legacy late-priority SSH config" \
+        'rm -f "$legacy_config_file"' "${content}"
+    assert_contains "remote always persists the final SSH listener" \
+        'write_ssh_listen_port "$final_port"' "${content}"
     assert_contains "remote snapshots old managed rules before adding replacements" \
         'old_rule_numbers="$(managed_ufw_rule_numbers)"' "${content}"
     assert_contains "remote enables SSH at boot" 'systemctl enable --now "$ssh_unit"' "${content}"
@@ -265,6 +289,10 @@ test_script_surface_contract() {
         '[${default}]（直接回车使用默认值）' "${content}"
     assert_contains "prompt asks for explicit extra UFW ports" \
         "UFW 额外放行 TCP 端口" "${content}"
+    assert_contains "65533 is the additional SSH port" \
+        'readonly ADDITIONAL_SSH_PORT=65533' "${content}"
+    assert_contains "current SSH port is retained" \
+        '保留当前 SSH 端口 ${CURRENT_PORT}' "${content}"
     assert_contains "intro documents Google BBR" \
         "Debian 官方内核 Google BBR/TCP" "${content}"
     assert_not_contains "normal user has no default constant" "DEFAULT_NORMAL_USER" "${content}"
@@ -283,6 +311,10 @@ test_script_surface_contract() {
         '不是 `easy_all` 的组成部分或安装前置步骤' "${readme}"
     assert_contains "README documents explicit extra UFW ports" \
         "用户显式输入的额外 TCP 端口" "${readme}"
+    assert_contains "README documents Fail2ban SSH protection" \
+        '启用 Fail2ban 的 `sshd` jail' "${readme}"
+    assert_contains "README documents that SSH 65533 avoids the Worker range" \
+        '新增 SSH 端口 `65533` 位于该范围之外' "${readme}"
 }
 
 test_bbr_matches_easy_all() {
