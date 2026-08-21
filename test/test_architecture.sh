@@ -24,23 +24,21 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" "${GCORE_PROFILE}" "${
 shared_modules=(
     quota.sh
     platform.sh
-    profile-runtime.sh
+    profile-common.sh
     network.sh
     mihomo-template.sh
     firewall.sh
     xray-core.sh
-    acme-renewal.sh
+    scheduled-maintenance.sh
     subscription-auth.sh
-    validation.sh
     tcp-tuning.sh
-    reboot-schedule.sh
 )
 
-[[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/cloudfront-fee-protection.sh"'* ]] \
-    || fail "XHTTP runtime does not source its CDN fee protection module"
-[[ "${LAUNCHER_CONTENT}" == *'"lib/cloudfront-fee-protection.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'lib/cloudfront-fee-protection.sh'* ]] \
-    || fail "CloudFront fee protection module is missing from runtime packaging"
+[[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/cdn-traffic-guard.sh"'* ]] \
+    || fail "XHTTP runtime does not source its CDN traffic guard"
+[[ "${LAUNCHER_CONTENT}" == *'"lib/cdn-traffic-guard.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'lib/cdn-traffic-guard.sh'* ]] \
+    || fail "CDN traffic guard is missing from runtime packaging"
 [[ "${LAUNCHER_CONTENT}" == *'"xhttp_gcore.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'xhttp_gcore.sh'* \
     && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
@@ -50,6 +48,12 @@ shared_modules=(
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
+
+for obsolete_module in \
+    profile-support.sh validation.sh acme-renewal.sh reboot-schedule.sh; do
+    [[ ! -e "${ROOT_DIR}/lib/${obsolete_module}" ]] \
+        || fail "obsolete split module still exists: ${obsolete_module}"
+done
 
 for module in "${shared_modules[@]}"; do
     [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
@@ -62,7 +66,7 @@ for module in "${shared_modules[@]}"; do
         || fail "bootstrap does not validate ${module}"
 done
 
-for module in platform.sh profile-runtime.sh network.sh mihomo-template.sh firewall.sh xray-core.sh acme-renewal.sh subscription-auth.sh validation.sh tcp-tuning.sh reboot-schedule.sh; do
+for module in platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
     while read -r function_name; do
         [[ -n "${function_name}" ]] || continue
         ! grep -Eq "^${function_name}\\(\\)" "${REALITY_PROFILE}" \
@@ -88,9 +92,10 @@ grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
     || fail "network module must not depend on Profile template functions"
 
-[[ "$(<"${ROOT_DIR}/lib/acme-renewal.sh")" == *'systemctl is-enabled --quiet cron.service'* \
-    && "$(<"${ROOT_DIR}/lib/acme-renewal.sh")" == *'systemctl is-active --quiet cron.service'* ]] \
-    || fail "shared ACME renewal must verify cron boot and runtime state"
+[[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-enabled --quiet cron.service'* \
+    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-active --quiet cron.service'* \
+    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* ]] \
+    || fail "scheduled maintenance must cover ACME renewal and reboot policy"
 
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/lib/subscription-auth.sh"
@@ -110,10 +115,11 @@ fi
     && "$(<"${XHTTP_RUNTIME}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="0"'* ]] \
     || fail "shared TCP tuning or profile XanMod policies drifted"
 
-[[ "$(<"${ROOT_DIR}/lib/profile-runtime.sh")" == *'bash "${launcher}" register-command'* ]] \
+[[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" == *'bash "${launcher}" register-command'* ]] \
     || fail "profiles must delegate command registration to the unified launcher"
-[[ "$(<"${ROOT_DIR}/lib/profile-runtime.sh")" != *'已注册单文件命令'* ]] \
-    || fail "profiles must not install an incomplete single-file command"
+[[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" != *'已注册单文件命令'* \
+    && "$(<"${ROOT_DIR}/lib/profile-common.sh")" == *'validate_domain()'* ]] \
+    || fail "profile common helpers must include validation without legacy registration"
 
 (
     BACKUP_DIR=$(mktemp -d)

@@ -37,9 +37,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 sudo easy_all self-update
 ```
 
-`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、三个 Profile、公共模块和
-Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或云端 CDN 资源。代码包含配置生成变化时，
-再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
+`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、三个 Profile、XHTTP 公共
+运行时、公共支持模块和 Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或云端 CDN 资源。
+代码包含配置生成变化时，再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
 更新 Xray 核心请使用 `sudo easy_all update-core`。
 
@@ -182,8 +182,9 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 SSH 监听、UFW 与 Fail2ban；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
 | CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
 
-Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的
-状态、Xray/Nginx 配置和订阅文件。这不等于回滚已加载的 TCP 参数或已成功的云端变更。
+Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的状态、Xray/Nginx 配置和
+订阅文件。首次安装还会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
+BBR/TCP 参数。已经成功创建或修改的云端资源不会自动回滚。
 
 ### `apply-cloud` 的具体操作
 
@@ -694,6 +695,11 @@ GCORE_FEE_PROTECTION_GB=980                   # 仅 Gcore CDN XHTTP
 Reality 的 `CDN_PROVIDER` 为空。easy_all 不会将 AWS Access Key、Secret Access Key、Session
 Token 或 `GCORE_API_TOKEN` 持久化到状态文件。
 
+源码中的全局保护模块已经统一命名为 `cdn-traffic-guard.sh`。为兼容已有安装，磁盘上的
+`cloudfront-fee-usage.json`、`easy_all-cloudfront-fee.service`、
+`easy_all-cloudfront-fee.timer`、状态字段 `CLOUDFRONT_FEE_PROTECTION_GB` 及内部同步命令继续
+保留原名称；升级不会重建账本或产生第二套定时器。
+
 卸载 CDN XHTTP 时只删除本机资源，保留 AWS 或 Gcore 远端资源，避免误删共享的云资源。卸载完成
 后应在对应 Console 中人工确认是否清理。
 
@@ -709,25 +715,27 @@ easy_all
    ├─ xhttp_aws.sh           AWS Provider、状态与安装编排
    ├─ xhttp-runtime.sh       AWS/Gcore 共用的 XHTTP 本机运行时
    ├─ quota.sh               用户配额与统计
-   ├─ cloudfront-fee-protection.sh  按量付费全局流量保护与 UTC 月度账本
+   ├─ cdn-traffic-guard.sh    CDN 全局流量保护与 UTC 月度账本
    ├─ platform.sh            root/systemd/SSH 启动保障
-   ├─ profile-runtime.sh     Profile 临时目录、交互和注册桥接
+   ├─ profile-common.sh      Profile 公共辅助、交互与字段校验
    ├─ network.sh             公网 IPv4 探测与 Gemini 出口地址族测速
    ├─ mihomo-template.sh     Mihomo 模板加载、校验与路由元数据
    ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
    ├─ xray-core.sh           Xray 下载、校验与安装
-   ├─ acme-renewal.sh        acme.sh 调用与续期任务保障
+   ├─ scheduled-maintenance.sh  证书续期与可选定时重启
    ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
-   ├─ validation.sh          公共字段校验与规范化
-   ├─ tcp-tuning.sh          Google BBR 与保守 TCP 参数
-   └─ reboot-schedule.sh     可选定时重启任务
+   └─ tcp-tuning.sh          Google BBR 与保守 TCP 参数
 sample-mihomo.yaml
 ```
 
 入口负责模式选择、命令分发和完整运行时的原子注册。Reality、AWS XHTTP 与 Gcore XHTTP Profile
 只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。AWS 与 Gcore 分别加载
 `xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现，彼此不加载对方的 Provider
-代码。
+代码。两个 XHTTP Profile 通过 `xhttp_render_xray_config` 实现各自的服务端传输参数。
+
+`profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
+`scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`network.sh` 只负责只读网络
+探测，`firewall.sh` 负责具有系统副作用的 UFW 修改，两者刻意保持独立。
 
 ## 测试
 
@@ -735,8 +743,9 @@ sample-mihomo.yaml
 npm test
 ```
 
-测试覆盖统一入口、公共模块归属与安装完整性、Reality、AWS/Gcore XHTTP、用户凭据与月度配额、
-Xray 配置、CloudFront JSON、Gcore API 载荷、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
+测试覆盖统一入口、公共模块归属与安装完整性、XHTTP Runtime/Provider 隔离、Reality、
+AWS/Gcore XHTTP、用户凭据与月度配额、TCP 参数回滚、Xray 配置、CloudFront JSON、Gcore API
+载荷、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 
 ## 独立工具：debian_init
 

@@ -52,7 +52,7 @@ assert_failure() {
 
 source_script_copy() {
     local module
-    for module in quota.sh platform.sh profile-runtime.sh validation.sh network.sh mihomo-template.sh firewall.sh xray-core.sh acme-renewal.sh subscription-auth.sh tcp-tuning.sh reboot-schedule.sh; do
+    for module in quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/${module}"
     done
     sed \
@@ -123,7 +123,7 @@ test_syntax_and_worker_removal() {
         'gemini_domain_strategy="ForceIPv6"' "${script}"
     assert_contains "Reality default prompts explain the enter default" \
         '[${default}]（直接回车使用默认值）' \
-        "$(<"${ROOT_DIR}/lib/profile-runtime.sh")"
+        "$(<"${ROOT_DIR}/lib/profile-common.sh")"
     assert_contains "Reality subscription prompt recommends self-hosting for one server" \
         "只有当前服务器时推荐" "${script}"
     assert_contains "Reality subscription prompt recommends node output for aggregation" \
@@ -132,8 +132,8 @@ test_syntax_and_worker_removal() {
         "非交互卸载必须显式设置 FORCE=1" "${script}"
     assert_contains "Reality uninstall can preserve ACME state for reinstall" \
         'PRESERVE_ACME=1' "${script}"
-    assert_contains "Reality uses the shared ACME renewal module" \
-        'source "${SCRIPT_DIR}/acme-renewal.sh"' "${script}"
+    assert_contains "Reality uses the shared scheduled maintenance module" \
+        'source "${SCRIPT_DIR}/scheduled-maintenance.sh"' "${script}"
     assert_not_contains "installer no longer downloads XanMod" "dl.xanmod.org" "${script}"
     assert_contains "installer uses the shared TCP tuning module" \
         'source "${SCRIPT_DIR}/tcp-tuning.sh"' "${script}"

@@ -58,14 +58,12 @@ readonly XHTTP_ORIGIN_DNS_NAME="${XHTTP_ORIGIN_DNS_NAME_OVERRIDE:-Route 53}"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
-# shellcheck source=lib/cloudfront-fee-protection.sh
-source "${SCRIPT_DIR}/cloudfront-fee-protection.sh"
+# shellcheck source=lib/cdn-traffic-guard.sh
+source "${SCRIPT_DIR}/cdn-traffic-guard.sh"
 # shellcheck source=lib/platform.sh
 source "${SCRIPT_DIR}/platform.sh"
-# shellcheck source=lib/profile-runtime.sh
-source "${SCRIPT_DIR}/profile-runtime.sh"
-# shellcheck source=lib/validation.sh
-source "${SCRIPT_DIR}/validation.sh"
+# shellcheck source=lib/profile-common.sh
+source "${SCRIPT_DIR}/profile-common.sh"
 # shellcheck source=lib/network.sh
 source "${SCRIPT_DIR}/network.sh"
 # shellcheck source=lib/mihomo-template.sh
@@ -74,14 +72,12 @@ source "${SCRIPT_DIR}/mihomo-template.sh"
 source "${SCRIPT_DIR}/firewall.sh"
 # shellcheck source=lib/xray-core.sh
 source "${SCRIPT_DIR}/xray-core.sh"
-# shellcheck source=lib/acme-renewal.sh
-source "${SCRIPT_DIR}/acme-renewal.sh"
+# shellcheck source=lib/scheduled-maintenance.sh
+source "${SCRIPT_DIR}/scheduled-maintenance.sh"
 # shellcheck source=lib/subscription-auth.sh
 source "${SCRIPT_DIR}/subscription-auth.sh"
 # shellcheck source=lib/tcp-tuning.sh
 source "${SCRIPT_DIR}/tcp-tuning.sh"
-# shellcheck source=lib/reboot-schedule.sh
-source "${SCRIPT_DIR}/reboot-schedule.sh"
 
 RED='\033[31m'
 GREEN='\033[32m'

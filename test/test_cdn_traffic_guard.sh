@@ -32,7 +32,7 @@ assert_equal() {
 }
 
 # shellcheck source=/dev/null
-source "${ROOT_DIR}/lib/cloudfront-fee-protection.sh"
+source "${ROOT_DIR}/lib/cdn-traffic-guard.sh"
 
 validate_cloudfront_fee_protection_gb 980 \
     || fail "980 GB protection threshold must be valid"
@@ -165,9 +165,9 @@ assert_equal "Gcore guard labels its operator output" "Gcore" "$(cdn_fee_provide
 assert_equal "Gcore guard uses its private sync command" "gcore-fee-sync" \
     "$(cdn_fee_sync_command)"
 
-module_content=$(<"${ROOT_DIR}/lib/cloudfront-fee-protection.sh")
+module_content=$(<"${ROOT_DIR}/lib/cdn-traffic-guard.sh")
 [[ "${module_content}" == *'OnUnitActiveSec=15s'* \
     && "${module_content}" == *'AccuracySec=1s'* ]] \
     || fail "global fee protection must poll within the 20 GB safety buffer"
 
-printf 'easy_all CloudFront fee protection tests passed\n'
+printf 'easy_all CDN traffic guard tests passed\n'

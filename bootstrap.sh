@@ -42,18 +42,16 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/xhttp_gcore.sh" \
     && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \
     && -f "${REPO_DIR}/lib/quota.sh" \
-    && -f "${REPO_DIR}/lib/cloudfront-fee-protection.sh" \
+    && -f "${REPO_DIR}/lib/cdn-traffic-guard.sh" \
     && -f "${REPO_DIR}/lib/platform.sh" \
-    && -f "${REPO_DIR}/lib/profile-runtime.sh" \
+    && -f "${REPO_DIR}/lib/profile-common.sh" \
     && -f "${REPO_DIR}/lib/network.sh" \
     && -f "${REPO_DIR}/lib/mihomo-template.sh" \
     && -f "${REPO_DIR}/lib/firewall.sh" \
     && -f "${REPO_DIR}/lib/xray-core.sh" \
-    && -f "${REPO_DIR}/lib/acme-renewal.sh" \
+    && -f "${REPO_DIR}/lib/scheduled-maintenance.sh" \
     && -f "${REPO_DIR}/lib/subscription-auth.sh" \
-    && -f "${REPO_DIR}/lib/validation.sh" \
     && -f "${REPO_DIR}/lib/tcp-tuning.sh" \
-    && -f "${REPO_DIR}/lib/reboot-schedule.sh" \
     && -f "${REPO_DIR}/sample-mihomo.yaml" ]] \
     || die "下载的 easy_all 项目不完整"
 

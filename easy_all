@@ -20,18 +20,16 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "xhttp_gcore.sh"
     "lib/xhttp-runtime.sh"
     "lib/quota.sh"
-    "lib/cloudfront-fee-protection.sh"
+    "lib/cdn-traffic-guard.sh"
     "lib/platform.sh"
-    "lib/profile-runtime.sh"
+    "lib/profile-common.sh"
     "lib/network.sh"
     "lib/mihomo-template.sh"
     "lib/firewall.sh"
     "lib/xray-core.sh"
-    "lib/acme-renewal.sh"
+    "lib/scheduled-maintenance.sh"
     "lib/subscription-auth.sh"
-    "lib/validation.sh"
     "lib/tcp-tuning.sh"
-    "lib/reboot-schedule.sh"
 )
 
 launcher_die() {

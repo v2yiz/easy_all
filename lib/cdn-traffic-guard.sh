@@ -2,10 +2,10 @@
 
 # XHTTP CDN global traffic safety guard.
 #
-# The file and function names retain their original CloudFront spelling so existing
-# AWS installations keep working.  The guard itself is provider-neutral: Gcore's
-# Free CDN allowance has the same 1 TB boundary and therefore uses the same local
-# 980 GB fail-closed counter.
+# Function, state and systemd unit names retain their original CloudFront spelling
+# so existing installations keep working. The module itself is provider-neutral:
+# Gcore's Free CDN allowance has the same 1 TB boundary and therefore uses the
+# same local 980 GB fail-closed counter.
 
 readonly CLOUDFRONT_FEE_USAGE_FILE="${STATE_DIR}/cloudfront-fee-usage.json"
 readonly CLOUDFRONT_FEE_SERVICE_FILE="/etc/systemd/system/easy_all-cloudfront-fee.service"

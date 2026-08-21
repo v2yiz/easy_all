@@ -47,6 +47,16 @@ assert_contains "README documents Gcore as a token-only provider" "${README_CONT
     'GCORE_API_TOKEN'
 assert_contains "README documents Gcore's reduced XHTTP window" "${README_CONTENT}" \
     '`10-14` 秒'
+assert_contains "Gcore guide documents the active XHTTP window" "${GCORE_GUIDE_CONTENT}" \
+    '`10-14` 秒'
+assert_contains "README documents the generic CDN traffic guard module" "${README_CONTENT}" \
+    'cdn-traffic-guard.sh'
+assert_contains "README documents legacy traffic guard artifact compatibility" "${README_CONTENT}" \
+    'easy_all-cloudfront-fee.service'
+assert_contains "README documents merged Profile helpers" "${README_CONTENT}" \
+    'profile-common.sh'
+assert_contains "README documents merged scheduled maintenance" "${README_CONTENT}" \
+    'scheduled-maintenance.sh'
 assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
