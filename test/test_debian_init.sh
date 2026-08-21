@@ -276,8 +276,10 @@ test_remote_script_contract() {
         "fail2ban-client status sshd" "${platform_content}"
     assert_contains "shared Fail2ban monitors detected SSH ports" \
         'ports_csv=${SSH_PORTS// /,}' "${platform_content}"
-    assert_contains "shared platform uses UFW for Fail2ban bans" \
-        "banaction = ufw" "${platform_content}"
+    assert_contains "shared platform uses CIDR-aware UFW Fail2ban bans" \
+        "banaction = easy-all-ufw-cidr" "${platform_content}"
+    assert_contains "shared platform aggregates IPv4 Fail2ban bans by C segment" \
+        'NETWORK="$((10#${first})).$((10#${second})).$((10#${third})).0/24"' "${platform_content}"
     assert_contains "shared Fail2ban avoids reverse DNS under scan load" \
         "usedns = no" "${platform_content}"
     assert_contains "shared platform increments repeated-source bans" \

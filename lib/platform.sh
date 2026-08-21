@@ -5,6 +5,9 @@
 readonly EASY_ALL_ADDITIONAL_SSH_PORT="65533"
 EASY_ALL_SSH_PORT_CONFIG="${EASY_ALL_SSH_PORT_CONFIG:-/etc/ssh/sshd_config.d/00-easy-all-ports.conf}"
 EASY_ALL_FAIL2BAN_CONFIG="${EASY_ALL_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-easy-all-sshd.local}"
+EASY_ALL_FAIL2BAN_ACTION_CONFIG="${EASY_ALL_FAIL2BAN_ACTION_CONFIG:-/etc/fail2ban/action.d/easy-all-ufw-cidr.conf}"
+EASY_ALL_FAIL2BAN_CIDR_HELPER="${EASY_ALL_FAIL2BAN_CIDR_HELPER:-/usr/local/lib/easy_all/fail2ban-ufw-cidr.sh}"
+EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR:-/var/lib/easy_all/fail2ban-ufw-cidr}"
 EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${EASY_ALL_LEGACY_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-debian-init-sshd.local}"
 
 check_platform() {
@@ -204,20 +207,163 @@ install_fail2ban_dependencies() {
         || die "Fail2ban 安装后仍不可用"
 }
 
-restore_managed_fail2ban_config() {
-    local backup_file=$1 had_config=$2
+restore_managed_fail2ban_file() {
+    local destination=$1 backup_file=$2 had_config=$3 mode=$4
     if [[ "${had_config}" == "1" ]]; then
-        install -m 0644 "${backup_file}" "${EASY_ALL_FAIL2BAN_CONFIG}"
+        install -m "${mode}" "${backup_file}" "${destination}"
     else
-        rm -f -- "${EASY_ALL_FAIL2BAN_CONFIG}"
+        rm -f -- "${destination}"
     fi
+}
+
+restore_managed_fail2ban_config() {
+    local jail_backup=$1 jail_had_config=$2 action_backup=$3 action_had_config=$4
+    local helper_backup=$5 helper_had_config=$6
+    restore_managed_fail2ban_file "${EASY_ALL_FAIL2BAN_CONFIG}" "${jail_backup}" \
+        "${jail_had_config}" 0644
+    restore_managed_fail2ban_file "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" "${action_backup}" \
+        "${action_had_config}" 0644
+    restore_managed_fail2ban_file "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" "${helper_backup}" \
+        "${helper_had_config}" 0755
     if fail2ban-client -t >/dev/null 2>&1; then
         systemctl restart fail2ban.service >/dev/null 2>&1 || true
     fi
 }
 
+write_fail2ban_cidr_ufw_helper() {
+    local destination=$1
+    cat >"${destination}" <<'EOF'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+fail2ban_cidr_usage() {
+    printf 'usage: %s ban|unban IP [state-directory]\n' "${0##*/}" >&2
+    exit 2
+}
+
+fail2ban_cidr_network_for_ip() {
+    local address=$1 first second third fourth octet
+    if [[ "${address}" == *:* ]]; then
+        [[ "${address}" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
+        NETWORK="${address}"
+        STATE_KEY="v6-${address//:/-}"
+        return 0
+    fi
+
+    IFS=. read -r first second third fourth <<<"${address}"
+    [[ -n "${first}" && -n "${second}" && -n "${third}" && -n "${fourth}" ]] || return 1
+    for octet in "${first}" "${second}" "${third}" "${fourth}"; do
+        [[ "${octet}" =~ ^[0-9]{1,3}$ ]] || return 1
+        ((10#${octet} <= 255)) || return 1
+    done
+    NETWORK="$((10#${first})).$((10#${second})).$((10#${third})).0/24"
+    STATE_KEY="v4-$((10#${first}))-$((10#${second}))-$((10#${third}))"
+}
+
+fail2ban_cidr_acquire_lock() {
+    local attempt owner
+    for attempt in {1..100}; do
+        if mkdir "${LOCK_DIR}" 2>/dev/null; then
+            printf '%s\n' "$$" >"${LOCK_DIR}/pid"
+            return 0
+        fi
+        if [[ -r "${LOCK_DIR}/pid" ]]; then
+            read -r owner <"${LOCK_DIR}/pid" || owner=""
+            if [[ "${owner}" =~ ^[0-9]+$ ]] && ! kill -0 "${owner}" 2>/dev/null; then
+                rm -f -- "${LOCK_DIR}/pid"
+                rmdir "${LOCK_DIR}" 2>/dev/null || true
+                continue
+            fi
+        fi
+        sleep 0.1
+    done
+    printf 'timed out waiting for Fail2ban CIDR ban lock\n' >&2
+    return 1
+}
+
+fail2ban_cidr_release_lock() {
+    rm -f -- "${LOCK_DIR}/pid"
+    rmdir "${LOCK_DIR}" 2>/dev/null || true
+}
+
+fail2ban_cidr_read_count() {
+    local value=0
+    if [[ -f "${COUNT_FILE}" ]]; then
+        read -r value <"${COUNT_FILE}" || value=""
+        [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
+            printf 'invalid Fail2ban CIDR ban state: %s\n' "${COUNT_FILE}" >&2
+            return 1
+        }
+    fi
+    printf '%s\n' "${value}"
+}
+
+fail2ban_cidr_main() {
+    local action=${1:-} address=${2:-} state_dir=${3:-/var/lib/easy_all/fail2ban-ufw-cidr}
+    local count temporary
+    [[ "${action}" == "ban" || "${action}" == "unban" ]] || fail2ban_cidr_usage
+    [[ -n "${address}" && "${state_dir}" == /* && "${state_dir}" != *[[:space:]]* ]] || fail2ban_cidr_usage
+    fail2ban_cidr_network_for_ip "${address}" || {
+        printf 'invalid IP address: %s\n' "${address}" >&2
+        exit 2
+    }
+
+    UFW_BIN=${EASY_ALL_FAIL2BAN_UFW_BIN:-ufw}
+    command -v "${UFW_BIN}" >/dev/null 2>&1 || {
+        printf 'ufw command is unavailable: %s\n' "${UFW_BIN}" >&2
+        exit 1
+    }
+    install -d -m 0700 "${state_dir}"
+    LOCK_DIR="${state_dir}/.lock"
+    COUNT_FILE="${state_dir}/${STATE_KEY}.count"
+    fail2ban_cidr_acquire_lock
+    trap fail2ban_cidr_release_lock EXIT
+    count=$(fail2ban_cidr_read_count)
+
+    case "${action}" in
+    ban)
+        if ((count == 0)); then
+            "${UFW_BIN}" insert 1 deny from "${NETWORK}" to any \
+                comment easy_all-fail2ban-cidr >/dev/null
+        fi
+        temporary=$(mktemp "${COUNT_FILE}.XXXXXX")
+        printf '%s\n' "$((count + 1))" >"${temporary}"
+        mv -f -- "${temporary}" "${COUNT_FILE}"
+        ;;
+    unban)
+        ((count > 0)) || return 0
+        if ((count == 1)); then
+            "${UFW_BIN}" --force delete deny from "${NETWORK}" to any >/dev/null
+            rm -f -- "${COUNT_FILE}"
+        else
+            temporary=$(mktemp "${COUNT_FILE}.XXXXXX")
+            printf '%s\n' "$((count - 1))" >"${temporary}"
+            mv -f -- "${temporary}" "${COUNT_FILE}"
+        fi
+        ;;
+    esac
+}
+
+fail2ban_cidr_main "$@"
+EOF
+    chmod 0755 "${destination}"
+}
+
+write_fail2ban_cidr_action_config() {
+    local destination=$1
+    cat >"${destination}" <<EOF
+[Definition]
+actionban = ${EASY_ALL_FAIL2BAN_CIDR_HELPER} ban <ip> ${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}
+actionunban = ${EASY_ALL_FAIL2BAN_CIDR_HELPER} unban <ip> ${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}
+EOF
+}
+
 ensure_ssh_fail2ban() {
-    local candidate backup ports_csv had_config=0
+    local jail_candidate action_candidate helper_candidate
+    local jail_backup action_backup helper_backup ports_csv
+    local jail_had_config=0 action_had_config=0 helper_had_config=0
 
     install_fail2ban_dependencies
     command -v ufw >/dev/null 2>&1 || die "未找到 UFW；无法启用 Fail2ban SSH 防护"
@@ -226,16 +372,30 @@ ensure_ssh_fail2ban() {
     ports_csv=${SSH_PORTS// /,}
     [[ -n "${ports_csv}" ]] || die "无法确定 Fail2ban 需要保护的 SSH 端口"
 
-    install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")"
-    candidate=$(mktemp "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")/.easy-all-fail2ban.XXXXXX")
-    backup=$(mktemp "${RUNTIME_TMP:-/tmp}/easy-all-fail2ban-backup.XXXXXX")
+    install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")" \
+        "$(dirname -- "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")" \
+        "$(dirname -- "${EASY_ALL_FAIL2BAN_CIDR_HELPER}")"
+    jail_candidate=$(mktemp "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")/.easy-all-fail2ban.XXXXXX")
+    action_candidate=$(mktemp "$(dirname -- "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")/.easy-all-fail2ban-action.XXXXXX")
+    helper_candidate=$(mktemp "$(dirname -- "${EASY_ALL_FAIL2BAN_CIDR_HELPER}")/.easy-all-fail2ban-helper.XXXXXX")
+    jail_backup=$(mktemp "${RUNTIME_TMP:-/tmp}/easy-all-fail2ban-jail-backup.XXXXXX")
+    action_backup=$(mktemp "${RUNTIME_TMP:-/tmp}/easy-all-fail2ban-action-backup.XXXXXX")
+    helper_backup=$(mktemp "${RUNTIME_TMP:-/tmp}/easy-all-fail2ban-helper-backup.XXXXXX")
     if [[ -f "${EASY_ALL_FAIL2BAN_CONFIG}" ]]; then
-        install -m 0600 "${EASY_ALL_FAIL2BAN_CONFIG}" "${backup}"
-        had_config=1
+        install -m 0600 "${EASY_ALL_FAIL2BAN_CONFIG}" "${jail_backup}"
+        jail_had_config=1
     fi
-    cat >"${candidate}" <<EOF
+    if [[ -f "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" ]]; then
+        install -m 0600 "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" "${action_backup}"
+        action_had_config=1
+    fi
+    if [[ -f "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]]; then
+        install -m 0700 "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" "${helper_backup}"
+        helper_had_config=1
+    fi
+    cat >"${jail_candidate}" <<EOF
 [DEFAULT]
-banaction = ufw
+banaction = easy-all-ufw-cidr
 usedns = no
 ignoreip = 127.0.0.1/8 ::1
 bantime = 3h
@@ -249,35 +409,63 @@ enabled = true
 backend = systemd
 port = ${ports_csv}
 EOF
-    chmod 0644 "${candidate}"
+    chmod 0644 "${jail_candidate}"
+    write_fail2ban_cidr_action_config "${action_candidate}"
+    chmod 0644 "${action_candidate}"
+    write_fail2ban_cidr_ufw_helper "${helper_candidate}"
+    bash -n "${helper_candidate}" || {
+        rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
+            "${jail_backup}" "${action_backup}" "${helper_backup}"
+        die "Fail2ban CIDR 封禁辅助脚本语法校验失败"
+    }
 
     if [[ -f "${EASY_ALL_FAIL2BAN_CONFIG}" ]] \
-        && cmp -s "${candidate}" "${EASY_ALL_FAIL2BAN_CONFIG}" \
+        && cmp -s "${jail_candidate}" "${EASY_ALL_FAIL2BAN_CONFIG}" \
+        && [[ -f "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" ]] \
+        && cmp -s "${action_candidate}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" \
+        && [[ -x "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] \
+        && cmp -s "${helper_candidate}" "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" \
         && fail2ban-client -t >/dev/null 2>&1 \
         && systemctl is-enabled --quiet fail2ban.service \
         && systemctl is-active --quiet fail2ban.service \
         && fail2ban-client status sshd >/dev/null 2>&1; then
-        rm -f -- "${candidate}" "${backup}" "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
-        info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
+        rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
+            "${jail_backup}" "${action_backup}" "${helper_backup}" \
+            "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
+        info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按 /24 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
         return 0
     fi
 
-    mv -f -- "${candidate}" "${EASY_ALL_FAIL2BAN_CONFIG}"
+    if ! install -m 0755 "${helper_candidate}" "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" \
+        || ! install -m 0644 "${action_candidate}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" \
+        || ! install -m 0644 "${jail_candidate}" "${EASY_ALL_FAIL2BAN_CONFIG}"; then
+        restore_managed_fail2ban_config "${jail_backup}" "${jail_had_config}" \
+            "${action_backup}" "${action_had_config}" "${helper_backup}" "${helper_had_config}"
+        rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
+            "${jail_backup}" "${action_backup}" "${helper_backup}"
+        die "Fail2ban SSH 防护配置写入失败，已恢复原配置"
+    fi
     if ! fail2ban-client -t >/dev/null 2>&1; then
-        restore_managed_fail2ban_config "${backup}" "${had_config}"
-        rm -f -- "${backup}"
+        restore_managed_fail2ban_config "${jail_backup}" "${jail_had_config}" \
+            "${action_backup}" "${action_had_config}" "${helper_backup}" "${helper_had_config}"
+        rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
+            "${jail_backup}" "${action_backup}" "${helper_backup}"
         die "Fail2ban SSH 防护配置校验失败，已恢复原配置"
     fi
     if ! systemctl enable fail2ban.service >/dev/null 2>&1 \
         || ! systemctl restart fail2ban.service \
         || ! systemctl is-active --quiet fail2ban.service \
         || ! fail2ban-client status sshd >/dev/null 2>&1; then
-        restore_managed_fail2ban_config "${backup}" "${had_config}"
-        rm -f -- "${backup}"
+        restore_managed_fail2ban_config "${jail_backup}" "${jail_had_config}" \
+            "${action_backup}" "${action_had_config}" "${helper_backup}" "${helper_had_config}"
+        rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
+            "${jail_backup}" "${action_backup}" "${helper_backup}"
         die "Fail2ban SSH 防护启动失败，已恢复原配置"
     fi
-    rm -f -- "${backup}" "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
-    info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
+    rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
+        "${jail_backup}" "${action_backup}" "${helper_backup}" \
+        "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
+    info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按 /24 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
 }
 
 ensure_ssh_boot_service() {

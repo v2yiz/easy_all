@@ -195,6 +195,9 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
 
     (
         EASY_ALL_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-easy-all-sshd.local"
+        EASY_ALL_FAIL2BAN_ACTION_CONFIG="${TMP_DIR}/fail2ban/action.d/easy-all-ufw-cidr.conf"
+        EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/fail2ban/bin/fail2ban-ufw-cidr.sh"
+        EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban/state"
         EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-debian-init-sshd.local"
         fail2ban_active="${TMP_DIR}/fail2ban-active"
         restart_count="${TMP_DIR}/fail2ban-restart-count"
@@ -221,6 +224,12 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         ensure_ssh_fail2ban
         assert_contains "shared Fail2ban monitors both SSH ports" \
             "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "port = 22,65533"
+        assert_contains "shared Fail2ban uses the CIDR-aware UFW action" \
+            "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "banaction = easy-all-ufw-cidr"
+        assert_contains "shared Fail2ban action delegates IPv4 CIDR bans to its helper" \
+            "$(<"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")" "ban <ip> ${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        [[ -x "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] \
+            || fail "shared Fail2ban CIDR helper is not executable"
         assert_contains "shared Fail2ban uses the requested retry window" \
             "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "findtime = 3m"
         assert_contains "shared Fail2ban starts at a three-hour ban" \
@@ -234,6 +243,36 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
         ensure_ssh_fail2ban
         assert_equal "shared Fail2ban configuration is idempotent" \
             "1" "$(<"${restart_count}")"
+
+        fake_ufw="${TMP_DIR}/fake-ufw"
+        fake_ufw_log="${TMP_DIR}/fake-ufw.log"
+        printf '%s\n' '#!/usr/bin/env bash' \
+            'printf "%s\\n" "$*" >>"${EASY_ALL_TEST_UFW_LOG:?}"' >"${fake_ufw}"
+        chmod 0755 "${fake_ufw}"
+        : >"${fake_ufw_log}"
+        EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
+            EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \
+            "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ban 198.51.100.19 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
+            EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \
+            "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ban 198.51.100.77 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
+            EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \
+            "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" unban 198.51.100.19 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        assert_equal "shared Fail2ban keeps one UFW rule while a C segment has active bans" \
+            "insert 1 deny from 198.51.100.0/24 to any comment easy_all-fail2ban-cidr" \
+            "$(<"${fake_ufw_log}")"
+        EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
+            EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \
+            "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" unban 198.51.100.77 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        assert_equal "shared Fail2ban removes a C segment only after its final active ban expires" \
+            $'insert 1 deny from 198.51.100.0/24 to any comment easy_all-fail2ban-cidr\n--force delete deny from 198.51.100.0/24 to any' \
+            "$(<"${fake_ufw_log}")"
+        EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
+            EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \
+            "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ban 2001:db8::1 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        assert_contains "shared Fail2ban retains exact-address IPv6 bans" \
+            "$(<"${fake_ufw_log}")" "insert 1 deny from 2001:db8::1 to any"
     )
 
     fail2ban_rollback_config="${TMP_DIR}/fail2ban-rollback/99-easy-all-sshd.local"
@@ -241,6 +280,9 @@ assert_contains "non-interactive uninstall requires FORCE" "$(<"${PROFILE}")" \
     printf 'previous-config\n' >"${fail2ban_rollback_config}"
     if (
         EASY_ALL_FAIL2BAN_CONFIG="${fail2ban_rollback_config}"
+        EASY_ALL_FAIL2BAN_ACTION_CONFIG="${TMP_DIR}/fail2ban-rollback/action.d/easy-all-ufw-cidr.conf"
+        EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/fail2ban-rollback/bin/fail2ban-ufw-cidr.sh"
+        EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban-rollback/state"
         EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban-rollback/legacy.local"
         install_fail2ban_dependencies() { return 0; }
         detect_ssh_ports() { SSH_PORTS="22 65533"; }
