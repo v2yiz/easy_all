@@ -50,7 +50,7 @@ readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly SERVICE_PORT="443"
 readonly SUBSCRIPTION_HTTPS_PORT="8443"
 readonly PORT_BASE="10000"
-readonly PORT_MULTIPLIER="6"
+readonly DYNAMIC_PORT_MAX="62710"
 readonly DEFAULT_REALITY_TARGET="swdist.apple.com:443"
 readonly DEFAULT_REALITY_PORT_MODE="dynamic"
 readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
@@ -501,7 +501,8 @@ collect_sub_port_mode() {
     if [[ -z "${requested}" && -t 0 ]]; then
         printf '请选择订阅端口模式：\n'
         printf '  1. 固定 443\n'
-        printf '  2. dynamic（订阅随机端口 10000-65535，默认）\n'
+        printf '  2. dynamic（订阅随机端口 %s-%s，默认）\n' \
+            "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
         read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " requested
     fi
     requested=${requested:-${default_mode}}
@@ -586,8 +587,8 @@ write_ufw_nat_rules_for_family() {
             printf '%s\n' "${start}"
             printf '*nat\n'
             printf ':PREROUTING ACCEPT [0:0]\n'
-            printf -- '-A PREROUTING -p tcp --dport %s:65535 -j REDIRECT --to-ports %s\n' \
-                "${PORT_BASE}" "${SERVICE_PORT}"
+            printf -- '-A PREROUTING -p tcp --dport %s:%s -j REDIRECT --to-ports %s\n' \
+                "${PORT_BASE}" "${DYNAMIC_PORT_MAX}" "${SERVICE_PORT}"
             printf 'COMMIT\n'
             printf '%s\n\n' "${end}"
             cat "${candidate}"
@@ -978,7 +979,7 @@ generate_subscription_port() {
         return 0
     fi
     value=$((16#$(openssl rand -hex 4)))
-    printf '%s\n' "$((PORT_BASE + value % (65536 - PORT_BASE)))"
+    printf '%s\n' "$((PORT_BASE + value % (DYNAMIC_PORT_MAX - PORT_BASE + 1)))"
 }
 
 install_selfhost_dependencies() {

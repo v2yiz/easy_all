@@ -274,6 +274,16 @@ test_subscription_generation() {
     local mihomo_file="${TMP_DIR}/mihomo.yaml"
     local decoded port yaml
     set_fixture
+    openssl() { printf '00000000\n'; }
+    assert_equal "dynamic subscription port can use its lower bound" \
+        "${PORT_BASE}" "$(generate_subscription_port)"
+    openssl() { printf '%08x\n' "$((DYNAMIC_PORT_MAX - PORT_BASE))"; }
+    assert_equal "dynamic subscription port can use its upper bound" \
+        "${DYNAMIC_PORT_MAX}" "$(generate_subscription_port)"
+    unset -f openssl
+    assert_success "dynamic port range excludes the additional SSH port" \
+        bash -c '(( $1 < $2 ))' _ \
+        "${DYNAMIC_PORT_MAX}" "${EASY_ALL_ADDITIONAL_SSH_PORT}"
     MIHOMO_TEMPLATE_FILE=""
     GEMINI_DOMAIN_SUFFIXES_JSON=""
     generate_subscription_files "${base64_file}" "${mihomo_file}"
@@ -282,7 +292,8 @@ test_subscription_generation() {
     assert_contains "Base64 subscription contains Reality" "security=reality" "${decoded}"
     port=$(sed -E 's#.*@[^:]+:([0-9]+)\\?.*#\1#' <<<"${decoded}")
     assert_success "dynamic subscription port is in the redirected range" \
-        bash -c '(( $1 >= 10000 && $1 <= 65535 ))' _ "${port}"
+        bash -c '(( $1 >= $2 && $1 <= $3 ))' _ \
+        "${port}" "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
     assert_contains "Mihomo subscription contains the same port" \
         "port: ${port}" "${yaml}"
     assert_contains "Mihomo subscription contains Reality options" \
@@ -362,9 +373,11 @@ EOF
     assert_contains "Reality enables shared Fail2ban after UFW" \
         "fail2ban-sshd" "$(<"${ufw_log}")"
     assert_contains "dynamic Reality forwarding remains active" \
-        "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw_config}"
+        "--dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT --to-ports ${SERVICE_PORT}" \
+        "${ufw_config}"
     assert_contains "dynamic Reality forwarding supports IPv6" \
-        "--dport 10000:65535 -j REDIRECT --to-ports 443" "${ufw6_config}"
+        "--dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT --to-ports ${SERVICE_PORT}" \
+        "${ufw6_config}"
     assert_contains "dual-stack Reality enables UFW IPv6" \
         "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
     unset -f nginx systemctl ensure_ssh_boot_service ensure_ssh_fail2ban detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
