@@ -69,9 +69,6 @@ choose_cloudfront_billing_mode() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="aws"
-    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
-    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
-        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     configure_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
@@ -121,7 +118,7 @@ load_state() {
         AWS_CLOUDFRONT_PRICING_PLAN_ARN
         CLOUDFRONT_FEE_PROTECTION_GB
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
-        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
+        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         CDN_CLIENT_IP_FAMILY
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
@@ -131,6 +128,7 @@ load_state() {
         printf -v "${variable}" '%s' ""
     done
     source_state_file
+    unset GEMINI_IP_FAMILY
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
         if [[ -n "${!env_name:-}" ]]; then
@@ -140,12 +138,9 @@ load_state() {
     done
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
     CDN_PROVIDER=${CDN_PROVIDER:-aws}
-    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     configure_cdn_client_ip_family
     [[ "${CDN_PROVIDER}" == "aws" ]] \
         || die "当前版本不支持 CDN Provider：${CDN_PROVIDER}"
-    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
-        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
         || die "状态文件中的 CloudFront 计费模式无效：${AWS_CLOUDFRONT_BILLING_MODE:-缺失}"
     configure_cloudfront_fee_protection
@@ -208,7 +203,6 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-        printf 'GEMINI_IP_FAMILY=%q\n' "${GEMINI_IP_FAMILY:-auto}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY:-auto}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
@@ -254,12 +248,8 @@ install_aws_cli() {
 }
 
 xhttp_render_xray_config() {
-    local gemini_domain_strategy clients stats_enabled=false
+    local clients stats_enabled=false
     prepare_mihomo_template
-    resolve_gemini_ip_family
-    [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
-        && gemini_domain_strategy="ForceIPv6" \
-        || gemini_domain_strategy="ForceIPv4"
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -275,7 +265,7 @@ xhttp_render_xray_config() {
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg x_padding_bytes "${XHTTP_SERVER_PADDING_BYTES}" \
         --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" \
-        --arg gemini_domain_strategy "${gemini_domain_strategy}" \
+        --arg gemini_domain_strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" \
         --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
         {
           log:{loglevel:"warning"},
@@ -999,8 +989,7 @@ show_status() {
     resolve_cdn_client_ip_family
     printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
-    printf 'Gemini 出口族: %s（配置: %s）\n' \
-        "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
+    printf 'Gemini 出口族: %s（固定）\n' "${active_family}"
     printf 'CDN 客户端节点族: %s（配置: %s）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}" "${CDN_CLIENT_IP_FAMILY:-auto}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \

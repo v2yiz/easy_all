@@ -55,12 +55,14 @@ assert_contains "Gcore profile limits XHTTP stream-up for its origin timeout" \
     "${profile_content}" 'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"'
 assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
-assert_contains "Gcore profile persists the Gemini egress family" \
+assert_not_contains "Gcore profile no longer persists a configurable Gemini egress family" \
     "${profile_content}" 'GEMINI_IP_FAMILY=%q'
 assert_contains "Gcore profile persists the CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "Gcore routes Gemini domains through a dedicated outbound" \
     "${profile_content}" 'outboundTag:"gemini-family"'
+assert_contains "Gcore fixes Google and Gemini egress to the shared IPv4 policy" \
+    "${XRAY_RENDER_CONTENT}" '${GEMINI_OUTBOUND_DOMAIN_STRATEGY}'
 assert_contains "Gcore client family resolution stays in the shared XHTTP runtime" \
     "${profile_content}" 'resolve_cdn_client_ip_family'
 assert_not_contains "Gcore Xray egress does not depend on the client family" \
@@ -69,6 +71,8 @@ assert_not_contains "Gcore client rendering does not depend on Gemini egress" \
     "${MIHOMO_RENDER_CONTENT}" "GEMINI_IP_FAMILY"
 assert_contains "Gcore profile enables an origin-only secret header" \
     "${profile_content}" '"X-Easy-All-Origin-Key"'
+assert_contains "Gcore profile enables explicit gRPC pass-through" \
+    "${profile_content}" 'grpc_passthrough:{enabled:true,value:true}'
 assert_not_contains "Gcore profile never persists the API token" \
     "${profile_content}" "GCORE_API_TOKEN=%q"
 
@@ -80,6 +84,8 @@ assert_not_contains "Gcore profile never persists the API token" \
     assert_equal "Gcore fee protection default" "980" "${DEFAULT_GCORE_FEE_PROTECTION_GB}"
     assert_equal "Gcore stream-up stays below HTTP/2 idle timeout" \
         "10-14" "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}"
+    assert_equal "Gcore client H2 ping stays below HTTP/2 idle timeout" \
+        "10" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     ! declare -F install_aws_cli >/dev/null \
         || fail "Gcore profile must not load the AWS provider"
     ! declare -F configure_aws_cdn >/dev/null \
@@ -106,11 +112,22 @@ assert_not_contains "Gcore profile never persists the API token" \
     GCORE_ORIGIN_DOMAIN="origin.example.com"
     GCORE_ORIGIN_GROUP_ID="42"
     ORIGIN_HEADER_SECRET="0123456789abcdef"
+    VLESS_UUID="00000000-0000-4000-8000-000000000001"
+    XHTTP_NODE_NAME="GCORE_XHTTP_TEST"
+    XHTTP_PATH="/xhttp-test-path"
+    CDN_CLIENT_IP_FAMILY="ipv4"
+    CDN_CLIENT_IP_FAMILY_RESOLVED=""
+    mihomo=$(build_mihomo_node)
+    assert_contains "Gcore Mihomo node pings before the edge H2 idle timeout" \
+        "${mihomo}" "h-keep-alive-period: 10"
     resource_payload=$(gcore_resource_payload)
     assert_equal "resource is HTTPS-to-origin" "HTTPS" \
         "$(jq -r '.originProtocol' <<<"${resource_payload}")"
     assert_equal "resource disables edge cache" "0s" \
         "$(jq -r '.options.edge_cache_settings.value' <<<"${resource_payload}")"
+    assert_equal "resource enables gRPC pass-through" "true" \
+        "$(jq -r '.options.grpc_passthrough.enabled and .options.grpc_passthrough.value' \
+            <<<"${resource_payload}")"
     assert_equal "resource keeps request queries" "false" \
         "$(jq -r '.options.ignoreQueryString.value' <<<"${resource_payload}")"
     assert_equal "resource protects origin requests" "0123456789abcdef" \

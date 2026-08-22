@@ -148,8 +148,12 @@ fi
     XRAY_CONFIG="/definitely/missing/easy_all-xray.json"
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/lib/network.sh"
-    [[ "$(gemini_ip_family_status)" == "未应用，请执行 easy_all apply" ]] \
-        || fail "Gemini status must not report an unapplied measurement"
+    [[ "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" == "ForceIPv4" ]] \
+        || fail "Google and Gemini egress must be fixed to IPv4"
+    ! declare -F measure_gemini_ip_family >/dev/null \
+        || fail "fixed Google and Gemini egress must not retain latency probing"
+    [[ "$(gemini_ip_family_status)" == "ipv4（未应用，请执行 easy_all apply）" ]] \
+        || fail "Gemini status must report the fixed unapplied family"
 )
 
 printf 'ok - shared architecture tests passed\n'

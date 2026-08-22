@@ -97,7 +97,6 @@ set_fixture() {
     SUBSCRIPTION_DOMAIN="sub.example.com"
     SUB_DOWNLOAD_NAME="MY_SUB"
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
-    GEMINI_IP_FAMILY="ipv4"
 }
 
 test_syntax_and_worker_removal() {
@@ -121,8 +120,10 @@ test_syntax_and_worker_removal() {
         "configure_subscription()" "${script}"
     assert_contains "Reality validates AAAA against detected server IPv6" \
         "的 AAAA \${mismatch} 未指向本机公网 IPv6" "${script}"
-    assert_contains "Reality keeps Gemini outbound family selection independent" \
-        'gemini_domain_strategy="ForceIPv6"' "${script}"
+    assert_contains "Reality fixes Google and Gemini egress to IPv4" \
+        '--arg gemini_domain_strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}"' "${script}"
+    assert_not_contains "Reality no longer measures Gemini egress families" \
+        'resolve_gemini_ip_family' "${script}"
     assert_contains "Reality blocks private destinations before direct egress" \
         '"169.254.0.0/16"' "${script}"
     assert_contains "Reality validates its camouflage target with Xray" \
@@ -633,6 +634,8 @@ test_state_and_xray() {
         "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
+    assert_not_contains "state no longer persists a configurable Gemini family" \
+        "GEMINI_IP_FAMILY=" "${state}"
     assert_not_contains "state has no Worker name" "WORKER_NAME=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
 
@@ -665,6 +668,8 @@ EOF
         '(.routing.rules[] | select(.outboundTag == "gemini-family").domain
              | index("domain:google.com"))
          and ((.routing.rules[] | select(.outboundTag == "gemini-family").domain
+             | index("domain:gstatic.com")) == null)
+         and ((.routing.rules[] | select(.outboundTag == "gemini-family").domain
              | index("domain:openai.com")) == null)' \
         <<<"${config}"
 
@@ -682,13 +687,13 @@ EOF
     GEMINI_IP_FAMILY="ipv6"
     write_xray_config
     config=$(<"${XRAY_CONFIG}")
-    assert_success "dual-stack inbound does not override Gemini IPv6 outbound" \
+    assert_success "legacy Gemini family overrides cannot disable fixed IPv4 egress" \
         jq -e \
         '.inbounds[0].listen == "::"
          and (.outbounds[] | select(.tag == "gemini-family")
-             | .settings.domainStrategy) == "ForceIPv6"' \
+             | .settings.domainStrategy) == "ForceIPv4"' \
         <<<"${config}"
-    GEMINI_IP_FAMILY="ipv4"
+    unset GEMINI_IP_FAMILY
 
     QUOTA_ENABLED=1
     USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":0},"friend":{"token":"friend-token-123","uuid":"00000000-0000-4000-8000-000000000002","quota_gb":100}}'

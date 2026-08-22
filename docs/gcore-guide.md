@@ -96,8 +96,7 @@ Token 只会完整显示一次；立刻放入密码管理器。安装时输入 `
 
 `CDN_CLIENT_IP_FAMILY=auto|ipv4|dual` 只控制客户端到 Gcore 边缘的连接地址族。默认 `auto`
 根据节点 CNAME 在公共 DNS 中最终返回的 A/AAAA 自动选择；源站回源仍固定使用 IPv4 A。
-`GEMINI_IP_FAMILY` 与之独立，Xray 始终只为 Gemini 选择一个 `ForceIPv4` 或 `ForceIPv6`
-出口。
+Xray 的 Gemini 专用出口始终固定为 `ForceIPv4`。
 
 ## 5. 上线前的实际连通性检查
 
@@ -111,9 +110,9 @@ Token 只会完整显示一次；立刻放入密码管理器。安装时输入 `
 5. 980 GB 阻断与下一个 UTC 自然月恢复符合预期；它仍与 Gcore 用量报表保留缓冲差异。
 
 Gcore 的默认源站读取超时为 30 秒、HTTP/2 空闲超时为 15 秒，安装器会将该 Provider 的 XHTTP
-`stream-up` 服务端窗口设为 `10-14` 秒，避免继承 AWS 链路可用但对 Gcore 过长的 `20-40`
-秒窗口。若任一项不稳定，应先停用
-该节点进行排查，不要通过关闭 TLS、缓存动态请求或放宽 Origin Key 来“兼容”。
+`stream-up` 服务端窗口设为 `10-14` 秒，并把客户端 H2 PING 设为 10 秒，避免默认 45 秒 PING
+晚于 Gcore 空闲断连。CDN 资源同时显式启用 gRPC passthrough。若任一项不稳定，应先停用该节点
+进行排查，不要通过关闭 TLS、缓存动态请求或放宽 Origin Key 来“兼容”。
 
 官方参考：[动态 CDN 缓存边界](https://gcore.com/learning/dynamic-cdn-cache-rules)、
 [Gcore TLS on CDN](https://gcore.com/learning/tls-on-cdn)。

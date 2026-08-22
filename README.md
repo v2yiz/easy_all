@@ -140,10 +140,10 @@ flowchart TD
 脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。
 UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
 
-三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站，并通过
-`GEMINI_IP_FAMILY=auto|ipv4|ipv6` 控制地址族。默认 `auto` 在 VPS 上分别测速后固定使用较快的
-`ForceIPv4` 或 `ForceIPv6`。每份生效的 Xray 配置始终只选择其中一个 Gemini 出口地址族，
-不会同时放行 IPv4/IPv6；该选择与客户端连接节点时使用 IPv4 还是 IPv6 无关。
+三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站，并固定使用
+`ForceIPv4`，不再执行 IPv4/IPv6 测速，也不提供地址族切换配置。`gstatic.com` 不属于该专用
+域名集合，因此经代理访问 `www.gstatic.com/generate_204` 时会落入 Xray 的普通 `direct`
+出站，由 VPS 系统网络栈正常解析和连接；该行为与客户端连接节点时使用 IPv4 还是 IPv6 无关。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + BBR`，并关闭
@@ -466,7 +466,7 @@ Reality 交互选项：
 - 使用域名作为连接地址时，AAAA 可以不发布；未发布时客户端暂时使用 A 记录。发布 AAAA 后，其地址必须与检测到的 VPS 公网 IPv6 一致。
 - 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
 
-Reality 入站双栈只影响客户端如何连接服务器。Gemini 出口仍按原有测速结果固定使用 `ForceIPv4` 或 `ForceIPv6`，不会因为入站启用双栈而改变。
+Reality 入站双栈只影响客户端如何连接服务器。Gemini 出口始终固定使用 `ForceIPv4`，不会因为入站启用双栈而改变。
 
 默认自动选择通常不需要额外操作。需要强制只连接 IPv4，或要求完整的节点双栈条件时，可执行：
 
@@ -563,8 +563,8 @@ sudo env CDN_CLIENT_IP_FAMILY=dual easy_all apply
 sudo env CDN_CLIENT_IP_FAMILY=auto easy_all apply
 ```
 
-`dual` 要求 CDN 域名在公共 DNS 同时提供 A 和 AAAA，否则停止应用并恢复旧状态。该配置与
-`GEMINI_IP_FAMILY` 正交：后者仍只生成一个 `ForceIPv4` 或 `ForceIPv6` 的 Gemini 专用出站。
+`dual` 要求 CDN 域名在公共 DNS 同时提供 A 和 AAAA，否则停止应用并恢复旧状态。该配置仅影响
+客户端到 CDN 边缘的连接；VPS 上的 Gemini 专用出站始终固定为 `ForceIPv4`。
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
 都会把当前值显示在方括号中，直接回车沿用当前状态。
@@ -681,13 +681,15 @@ Managed DNS、源组、CDN 资源和边缘 Let's Encrypt，不读取 AWS 凭证�
 源站固定用 IPv4 A 记录；节点域名使用 Gcore CDN 分配的 `*.gcdn.co` CNAME，不能同时存在
 节点 A/AAAA。检测到冲突记录时脚本默认停止；确认该记录可替换后才设置
 `GCORE_DNS_REPLACE=1`。CDN 强制 HTTPS 回源、源站 SNI/Host，并注入 `X-Easy-All-Origin-Key`；
-边缘和浏览器缓存均设为 `0s`，从而避免把 XHTTP、订阅或健康检查缓存为静态内容。
+显式启用 gRPC passthrough，边缘和浏览器缓存均设为 `0s`，从而避免把 XHTTP、订阅或健康检查
+缓存为静态内容。
 
 Gcore 的默认源站读取超时为 30 秒、HTTP/2 空闲超时为 15 秒，因此此 Provider 将 XHTTP
-`stream-up` 服务端窗口收紧为 `10-14` 秒；Nginx 仍使用 1 小时流式读写超时。安装会等待
-CNAME、边缘证书和 HTTPS 健康检查，但无法在不接入真实客户端网络的情况下替你证明所有移动
-网络下的长期 XHTTP 稳定性；首次安装后应用目标客户端做实际连接、切网和长连接测试。
-Gemini 目标域名同样通过 VPS 的专用 Xray 出站固定地址族，不依赖客户端节点的连接地址族。
+`stream-up` 服务端窗口收紧为 `10-14` 秒，并将客户端 H2 PING 固定为 10 秒，避免默认 45 秒
+PING 晚于 Gcore 空闲断连；Nginx 仍使用 1 小时流式读写超时。安装会等待 CNAME、边缘证书和
+HTTPS 健康检查，但无法在不接入真实客户端网络的情况下替你证明所有移动网络下的长期 XHTTP
+稳定性；首次安装后应用目标客户端做实际连接、切网和长连接测试。Gemini 目标域名同样通过 VPS
+的专用 Xray 出站固定使用 IPv4，不依赖客户端节点的连接地址族。
 
 Gcore Free CDN 采用本机 `980 GB` UTC 自然月全局保护，与 AWS 按量付费的保护机制相同：每 15 秒
 统计 Xray 用户上下行、达到阈值即清空客户端并在下一个 UTC 自然月恢复。它不是 Gcore 账单的精确
@@ -721,7 +723,6 @@ STATE_VERSION=2  # Reality
 STATE_VERSION=4  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
-GEMINI_IP_FAMILY=auto|ipv4|ipv6               # 三种模式的 VPS Gemini 出口
 REALITY_CLIENT_IP_FAMILY=auto|ipv4|dual       # 仅 Reality 的客户端节点连接地址族
 CDN_CLIENT_IP_FAMILY=auto|ipv4|dual           # 仅 CDN 的客户端到边缘连接地址族
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP

@@ -64,7 +64,7 @@ assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}
 assert_contains "README documents CDN client IP family" "${README_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
 assert_contains "README keeps CDN client and Gemini families independent" "${README_CONTENT}" \
-    '后者仍只生成一个 `ForceIPv4` 或 `ForceIPv6` 的 Gemini 专用出站'
+    'VPS 上的 Gemini 专用出站始终固定为 `ForceIPv4`'
 assert_contains "AWS guide documents CDN client dual stack" "${AWS_GUIDE_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
 assert_contains "Gcore guide documents CDN client dual stack" "${GCORE_GUIDE_CONTENT}" \
@@ -77,6 +77,14 @@ assert_contains "README documents Reality private destination blocking" "${READM
     '避免订阅凭据泄露后被用于访问 VPS 内网或云元数据'
 assert_contains "README documents Gemini egress policy for all profiles" "${README_CONTENT}" \
     '三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站'
+assert_contains "README documents fixed Gemini IPv4 egress" "${README_CONTENT}" \
+    '不再执行 IPv4/IPv6 测速，也不提供地址族切换配置'
+assert_contains "README documents ordinary gstatic egress" "${README_CONTENT}" \
+    '`www.gstatic.com/generate_204` 时会落入 Xray 的普通 `direct`'
+assert_contains "README documents Gcore client H2 keepalive" "${README_CONTENT}" \
+    '客户端 H2 PING 固定为 10 秒'
+assert_contains "Gcore guide documents explicit gRPC pass-through" "${GCORE_GUIDE_CONTENT}" \
+    '显式启用 gRPC passthrough'
 assert_contains "README documents client connection racing" "${README_CONTENT}" \
     '内置 Mihomo 模板启用 `tcp-concurrent`'
 assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \

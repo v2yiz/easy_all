@@ -104,7 +104,6 @@ UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 GEMINI_DOMAIN_SUFFIXES_JSON=""
-GEMINI_IP_FAMILY_RESOLVED=""
 REALITY_CLIENT_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
@@ -373,7 +372,7 @@ load_state() {
         REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6 REALITY_CLIENT_IP_FAMILY
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
-        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
+        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -384,6 +383,7 @@ load_state() {
     if [[ -f "${STATE_FILE}" ]]; then
         source_state_file
     fi
+    unset GEMINI_IP_FAMILY
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
         if [[ -n "${!env_name:-}" ]]; then
@@ -391,13 +391,10 @@ load_state() {
         fi
         unset "${env_name}"
     done
-    GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
     REALITY_CLIENT_IP_FAMILY=${REALITY_CLIENT_IP_FAMILY:-auto}
     REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     CDN_PROVIDER=""
-    [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
-        || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
         || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
         || die "状态文件中的 REALITY_INBOUND_IP_FAMILY 无效：${REALITY_INBOUND_IP_FAMILY}"
@@ -467,7 +464,6 @@ save_state() {
         printf 'SUBSCRIPTION_DOMAIN=%q\n' "${SUBSCRIPTION_DOMAIN:-}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-        printf 'GEMINI_IP_FAMILY=%q\n' "${GEMINI_IP_FAMILY:-auto}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -802,12 +798,8 @@ configure_ufw() {
 }
 
 write_xray_config() {
-    local gemini_domain_strategy clients listen_address="0.0.0.0"
+    local clients listen_address="0.0.0.0"
     prepare_mihomo_template
-    resolve_gemini_ip_family
-    [[ "${GEMINI_IP_FAMILY_RESOLVED}" == "ipv6" ]] \
-        && gemini_domain_strategy="ForceIPv6" \
-        || gemini_domain_strategy="ForceIPv4"
     [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] || listen_address="::"
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
@@ -836,7 +828,7 @@ write_xray_config() {
             --arg short_id "${REALITY_SHORT_ID}" \
             --arg sni "${REALITY_TARGET%:*}" \
             --arg listen_address "${listen_address}" \
-            --arg gemini_domain_strategy "${gemini_domain_strategy}" \
+            --arg gemini_domain_strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" \
             --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
             {
               log: {loglevel: "warning"},
@@ -1623,8 +1615,7 @@ show_status() {
     collect_installed_state
     active_family=$(gemini_ip_family_status)
     printf '协议: %s\n' "${PROTOCOL}"
-    printf 'Gemini 出口族: %s（配置: %s）\n' \
-        "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
+    printf 'Gemini 出口族: %s（固定）\n' "${active_family}"
     if [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]]; then
         printf 'Reality 入站族: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
     else

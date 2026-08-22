@@ -44,12 +44,14 @@ assert_contains "traffic accounting exposes Stats API only on loopback" "${XHTTP
     'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
 assert_contains "XHTTP state persists the quota start date" "${XHTTP_CONTENT}" \
     'QUOTA_START_DATE=%q'
-assert_contains "XHTTP state persists the Gemini egress family" "${XHTTP_CONTENT}" \
-    'GEMINI_IP_FAMILY=%q'
+assert_not_contains "XHTTP state no longer persists a configurable Gemini egress family" \
+    "${XHTTP_CONTENT}" 'GEMINI_IP_FAMILY=%q'
 assert_contains "XHTTP state persists the CDN client family" "${XHTTP_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "XHTTP routes Gemini domains through a dedicated outbound" "${XHTTP_CONTENT}" \
     'outboundTag:"gemini-family"'
+assert_contains "CloudFront fixes Google and Gemini egress to the shared IPv4 policy" \
+    "${XRAY_RENDER_CONTENT}" '${GEMINI_OUTBOUND_DOMAIN_STRATEGY}'
 assert_not_contains "CloudFront Xray egress does not depend on the client family" \
     "${XRAY_RENDER_CONTENT}" "CDN_CLIENT_IP_FAMILY"
 assert_not_contains "CloudFront client rendering does not depend on Gemini egress" \
@@ -432,13 +434,14 @@ EOF
             XHTTP_PATH="/xhttp-stored-suffix"
             AWS_ORIGIN_DOMAIN="origin.example.com"
             XRAY_XHTTP_LOOPBACK_PORT="10086"
+            GEMINI_IP_FAMILY="ipv6"
         }
         VLESS_UUID="00000000-0000-4000-8000-000000000002"
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
         load_state
-        assert_equal "old XHTTP state defaults Gemini egress family to auto" \
-            "auto" "${GEMINI_IP_FAMILY}"
+        [[ -z "${GEMINI_IP_FAMILY+x}" ]] \
+            || fail "legacy Gemini family state must be discarded"
         assert_equal "old XHTTP state defaults CDN client family to auto" \
             "auto" "${CDN_CLIENT_IP_FAMILY}"
         assert_equal "UUID environment override wins during update" \
