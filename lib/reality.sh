@@ -62,6 +62,7 @@ readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="2"
+readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
@@ -104,6 +105,7 @@ UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 GEMINI_DOMAIN_SUFFIXES_JSON=""
 GEMINI_IP_FAMILY_RESOLVED=""
+REALITY_CLIENT_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
     if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" \
@@ -308,6 +310,52 @@ validate_reality_node_dns() {
     success "Reality 域名 AAAA 已匹配本机公网 IPv6：${expected}"
 }
 
+reality_node_has_matching_aaaa() {
+    local record canonical expected found=0
+    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] || return 1
+    validate_domain "${NODE_HOST:-}" || return 1
+    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6:-}") || return 1
+    while IFS= read -r record; do
+        validate_ipv6 "${record}" || continue
+        canonical=$(canonicalize_ipv6 "${record}") || continue
+        [[ "${canonical}" == "${expected}" ]] || return 1
+        found=1
+    done < <(dig +short AAAA "${NODE_HOST}" 2>/dev/null || true)
+    [[ "${found}" == "1" ]]
+}
+
+resolve_reality_client_ip_family() {
+    local requested=${REALITY_CLIENT_IP_FAMILY:-auto}
+    case "${requested}" in
+    ipv4)
+        REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+        ;;
+    dual)
+        [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] \
+            || die "REALITY_CLIENT_IP_FAMILY=dual 需要服务器具备公网 IPv6"
+        validate_domain "${NODE_HOST:-}" \
+            || die "REALITY_CLIENT_IP_FAMILY=dual 需要使用同时发布 A/AAAA 的节点域名"
+        REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
+        ;;
+    auto)
+        if reality_node_has_matching_aaaa; then
+            REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
+        else
+            REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+        fi
+        ;;
+    *) die "REALITY_CLIENT_IP_FAMILY 必须是 auto、ipv4 或 dual" ;;
+    esac
+}
+
+validate_reality_client_ip_family_runtime() {
+    resolve_reality_client_ip_family
+    if [[ "${REALITY_CLIENT_IP_FAMILY:-auto}" == "dual" ]]; then
+        reality_node_has_matching_aaaa \
+            || die "REALITY_CLIENT_IP_FAMILY=dual 需要节点 AAAA 指向本机公网 IPv6"
+    fi
+}
+
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 状态文件不存在：${STATE_FILE}"
     unset STATE_VERSION
@@ -322,7 +370,7 @@ load_state() {
     local -a variables=(
         PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
-        REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6
+        REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6 REALITY_CLIENT_IP_FAMILY
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
@@ -345,12 +393,18 @@ load_state() {
     done
     GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
+    REALITY_CLIENT_IP_FAMILY=${REALITY_CLIENT_IP_FAMILY:-auto}
+    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     CDN_PROVIDER=""
     [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
         || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
         || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
         || die "状态文件中的 REALITY_INBOUND_IP_FAMILY 无效：${REALITY_INBOUND_IP_FAMILY}"
+    [[ "${REALITY_CLIENT_IP_FAMILY}" == "auto" \
+        || "${REALITY_CLIENT_IP_FAMILY}" == "ipv4" \
+        || "${REALITY_CLIENT_IP_FAMILY}" == "dual" ]] \
+        || die "状态文件中的 REALITY_CLIENT_IP_FAMILY 无效：${REALITY_CLIENT_IP_FAMILY}"
     if [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]]; then
         validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
             || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
@@ -402,6 +456,7 @@ save_state() {
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
         printf 'REALITY_INBOUND_IP_FAMILY=%q\n' "${REALITY_INBOUND_IP_FAMILY:-ipv4}"
         printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
+        printf 'REALITY_CLIENT_IP_FAMILY=%q\n' "${REALITY_CLIENT_IP_FAMILY:-auto}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -450,6 +505,77 @@ validate_reality_target() {
     port=${target##*:}
     validate_domain "${host}" || return 1
     [[ "${port}" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
+}
+
+reality_tls_ping_succeeded() {
+    awk '
+        /Pinging with SNI/ {in_sni=1; next}
+        in_sni && /Handshake succeeded/ {handshake=1}
+        in_sni && /TLS Version:[[:space:]]*TLS 1\.3/ {tls13=1}
+        END {exit !(handshake && tls13)}
+    '
+}
+
+lookup_ip_asns() {
+    local ip=$1 response
+    response=$(curl --noproxy '*' -fsS --retry 2 \
+        --connect-timeout 5 --max-time 10 --get \
+        --data-urlencode "resource=${ip}" "${RIPE_PREFIX_OVERVIEW_API}" \
+        2>/dev/null) || return 1
+    jq -r '.data.asns // [] | map(tostring) | join(" ")' <<<"${response}"
+}
+
+resolve_reality_target_ipv4s() {
+    local host=${REALITY_TARGET%:*} record
+    while IFS= read -r record; do
+        validate_ipv4 "${record}" && printf '%s\n' "${record}"
+    done < <(dig +short A "${host}" 2>/dev/null || true)
+}
+
+validate_reality_target_asn() {
+    local vps_ip vps_asns target_ip target_asns vps_asn target_asn
+    local target_asn_summary="" matched=0
+    vps_ip=$(detect_public_ipv4 || true)
+    [[ -n "${vps_ip}" ]] || {
+        warn "无法检测 VPS 公网 IPv4，跳过 Reality 同 ASN 检查"
+        return 0
+    }
+    vps_asns=$(lookup_ip_asns "${vps_ip}" || true)
+    [[ -n "${vps_asns}" ]] || {
+        warn "无法查询 VPS ASN，跳过 Reality 同 ASN 检查"
+        return 0
+    }
+    while IFS= read -r target_ip; do
+        [[ -n "${target_ip}" ]] || continue
+        target_asns=$(lookup_ip_asns "${target_ip}" || true)
+        [[ -n "${target_asns}" ]] || continue
+        [[ -z "${target_asn_summary}" ]] || target_asn_summary+=", "
+        target_asn_summary+="${target_ip}=AS${target_asns// /,AS}"
+        for vps_asn in ${vps_asns}; do
+            for target_asn in ${target_asns}; do
+                [[ "${vps_asn}" != "${target_asn}" ]] || matched=1
+            done
+        done
+        [[ "${matched}" != "1" ]] || break
+    done < <(resolve_reality_target_ipv4s | head -n 4)
+    if [[ "${matched}" == "1" ]]; then
+        success "Reality 目标与 VPS 命中同 ASN（AS${vps_asns// /,AS}）"
+    elif [[ -n "${target_asn_summary}" ]]; then
+        warn "Reality 目标与 VPS 不同 ASN（VPS AS${vps_asns// /,AS}；${target_asn_summary}）；同 ASN 目标的伪装一致性更好"
+    else
+        warn "无法解析 Reality 目标 IPv4/ASN，跳过同 ASN 检查"
+    fi
+}
+
+validate_reality_target_runtime() {
+    local output
+    info "验收 Reality 目标 TLS 1.3：${REALITY_TARGET}"
+    output=$(timeout 25 "${XRAY_BIN}" tls ping "${REALITY_TARGET}" 2>&1) \
+        || die "Reality 目标不可达或 TLS 探测失败：${REALITY_TARGET}"
+    reality_tls_ping_succeeded <<<"${output}" \
+        || die "Reality 目标未通过带 SNI 的 TLS 1.3 握手：${REALITY_TARGET}"
+    success "Reality 目标已通过带 SNI 的 TLS 1.3 握手"
+    validate_reality_target_asn
 }
 
 collect_reality_node_host() {
@@ -534,6 +660,7 @@ collect_reality_inputs() {
     validate_domain "${NODE_HOST}" || validate_ipv4 "${NODE_HOST}" \
         || die "Reality 节点地址无效：${NODE_HOST}"
     validate_reality_node_dns
+    validate_reality_client_ip_family_runtime
     collect_reality_target
     validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
     collect_sub_port_mode
@@ -746,11 +873,34 @@ write_xray_config() {
                   protocol: "freedom",
                   tag: "gemini-family",
                   settings: {domainStrategy: $gemini_domain_strategy}
-                }
+                },
+                {protocol: "blackhole", tag: "block"}
               ],
               routing: {
-                domainStrategy: "AsIs",
+                domainStrategy: "IPOnDemand",
                 rules: [
+                  {
+                    type: "field",
+                    ip: [
+                      "0.0.0.0/8",
+                      "10.0.0.0/8",
+                      "100.64.0.0/10",
+                      "127.0.0.0/8",
+                      "169.254.0.0/16",
+                      "172.16.0.0/12",
+                      "192.0.0.0/24",
+                      "192.168.0.0/16",
+                      "198.18.0.0/15",
+                      "224.0.0.0/4",
+                      "240.0.0.0/4",
+                      "::/128",
+                      "::1/128",
+                      "fc00::/7",
+                      "fe80::/10",
+                      "ff00::/8"
+                    ],
+                    outboundTag: "block"
+                  },
                   {
                     type: "field",
                     domain: ($gemini_domain_suffixes | map("domain:" + .)),
@@ -792,25 +942,35 @@ build_node_link() {
 
 build_mihomo_node() {
     local port=${1:-443}
+    resolve_reality_client_ip_family
     jq -nr \
             --arg name "${NODE_NAME}" --arg server "${NODE_HOST}" \
             --arg uuid "${VLESS_UUID}" --arg sni "${REALITY_TARGET%:*}" \
             --arg pbk "${REALITY_PUBLIC_KEY}" --arg sid "${REALITY_SHORT_ID}" \
+            --arg ip_version "${REALITY_CLIENT_IP_FAMILY_RESOLVED}" \
             --argjson port "${port}" '
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: \($port)\n" +
             "    uuid: \($uuid|@json)\n    network: tcp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    flow: xtls-rprx-vision\n    servername: \($sni|@json)\n" +
             "    reality-opts:\n      public-key: \($pbk|@json)\n      short-id: \($sid|@json)\n" +
-            "    client-fingerprint: chrome\n    packet-encoding: xudp\n    smux:\n      enabled: false\n"'
+            "    client-fingerprint: chrome\n    packet-encoding: xudp\n    ip-version: \($ip_version)\n" +
+            "    smux:\n      enabled: false\n"'
 }
 
 render_mihomo_subscription() {
-    local template=$1 node_file=$2 destination=$3 node_name
+    local template=$1 node_file=$2 destination=$3 node_name ipv6_enabled=false
+    resolve_reality_client_ip_family
+    [[ "${REALITY_CLIENT_IP_FAMILY_RESOLVED}" != "dual" ]] || ipv6_enabled=true
     node_name=$(jq -Rn --arg value "${NODE_NAME}" '$value')
-    awk -v node_file="${node_file}" -v node_name="${node_name}" '
+    awk -v node_file="${node_file}" -v node_name="${node_name}" \
+        -v ipv6_enabled="${ipv6_enabled}" '
         $0 == "# EASY_ALL_GEMINI_DOMAINS_START" { metadata=1; next }
         $0 == "# EASY_ALL_GEMINI_DOMAINS_END" { metadata=0; next }
         metadata == 1 { next }
+        $0 ~ /^ipv6: (true|false)$/ {
+            print "ipv6: " ipv6_enabled
+            next
+        }
         $0 == "# EASY_ALL_PROXY_NODE" {
             while ((getline line < node_file) > 0) print line
             close(node_file)
@@ -1389,6 +1549,9 @@ refresh_protocol_runtime_config() {
     install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
 
     if (
+        validate_reality_node_dns
+        validate_reality_client_ip_family_runtime
+        validate_reality_target_runtime
         write_xray_config
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
@@ -1467,6 +1630,9 @@ show_status() {
     else
         printf 'Reality 入站族: IPv4\n'
     fi
+    resolve_reality_client_ip_family
+    printf 'Reality 客户端节点族: %s（配置: %s）\n' \
+        "${REALITY_CLIENT_IP_FAMILY_RESOLVED}" "${REALITY_CLIENT_IP_FAMILY:-auto}"
     printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
@@ -1627,6 +1793,7 @@ rollback_fresh_install() {
 
 prepare_protocol_assets() {
     download_xray
+    validate_reality_target_runtime
 }
 
 install_protocol_runtime() {

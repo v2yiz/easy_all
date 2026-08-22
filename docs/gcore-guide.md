@@ -94,6 +94,11 @@ Token 只会完整显示一次；立刻放入密码管理器。安装时输入 `
 `node.example.com`。动态链路的边缘与浏览器缓存都设置为 `0s`，并保留查询参数；源站只接受
 包含 `X-Easy-All-Origin-Key` 的 CDN 请求。
 
+`CDN_CLIENT_IP_FAMILY=auto|ipv4|dual` 只控制客户端到 Gcore 边缘的连接地址族。默认 `auto`
+根据节点 CNAME 在公共 DNS 中最终返回的 A/AAAA 自动选择；源站回源仍固定使用 IPv4 A。
+`GEMINI_IP_FAMILY` 与之独立，Xray 始终只为 Gemini 选择一个 `ForceIPv4` 或 `ForceIPv6`
+出口。
+
 ## 5. 上线前的实际连通性检查
 
 安装器可验证 DNS、边缘 HTTPS 和 HTTP 回源，但无法代替真实客户端网络的长期 XHTTP 测试。首次

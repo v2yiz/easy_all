@@ -40,7 +40,7 @@ done
 assert_contains "README Reality stage count" "${README_CONTENT}" \
     '保存最终状态 / 注册 easy_all / 配置配额任务'
 assert_contains "README XHTTP stage count" "${README_CONTENT}" \
-    '源站证书 / Xray / Nginx / 已选订阅输出验收'
+    '源站证书 / Xray / Nginx / 本机运行时验收'
 assert_contains "README documents the third Gcore installation branch" "${README_CONTENT}" \
     'Gcore CDN XHTTP'
 assert_contains "README documents Gcore as a token-only provider" "${README_CONTENT}" \
@@ -61,8 +61,20 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
-assert_contains "README documents client-controlled Mihomo IP family" "${README_CONTENT}" \
-    '生成的 Mihomo/Clash 节点不写入 `ip-version`'
+assert_contains "README documents CDN client IP family" "${README_CONTENT}" \
+    'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
+assert_contains "README keeps CDN client and Gemini families independent" "${README_CONTENT}" \
+    '后者仍只生成一个 `ForceIPv4` 或 `ForceIPv6` 的 Gemini 专用出站'
+assert_contains "AWS guide documents CDN client dual stack" "${AWS_GUIDE_CONTENT}" \
+    'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
+assert_contains "Gcore guide documents CDN client dual stack" "${GCORE_GUIDE_CONTENT}" \
+    'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
+assert_contains "README documents the Reality endpoint family policy" "${README_CONTENT}" \
+    'REALITY_CLIENT_IP_FAMILY=auto|ipv4|dual'
+assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \
+    '带 SNI 的 TLS 1.3 握手验收'
+assert_contains "README documents Reality private destination blocking" "${README_CONTENT}" \
+    '避免订阅凭据泄露后被用于访问 VPS 内网或云元数据'
 assert_contains "README documents Gemini egress policy for all profiles" "${README_CONTENT}" \
     '三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站'
 assert_contains "README documents client connection racing" "${README_CONTENT}" \

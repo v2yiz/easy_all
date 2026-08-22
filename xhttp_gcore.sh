@@ -369,6 +369,7 @@ collect_install_inputs() {
     GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
     [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
         || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
+    configure_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -419,6 +420,7 @@ load_state() {
         GCORE_SSL_CERT_ID GCORE_CDN_TARGET GCORE_FEE_PROTECTION_GB
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR GEMINI_IP_FAMILY
+        CDN_CLIENT_IP_FAMILY
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -437,6 +439,7 @@ load_state() {
     [[ "${PROTOCOL}" == "xhttp" && "${CDN_PROVIDER:-}" == "gcore" ]] \
         || die "状态不是 Gcore CDN XHTTP；请重新安装"
     GEMINI_IP_FAMILY=${GEMINI_IP_FAMILY:-auto}
+    configure_cdn_client_ip_family
     [[ "${GEMINI_IP_FAMILY}" =~ ^(auto|ipv4|ipv6)$ ]] \
         || die "GEMINI_IP_FAMILY 必须是 auto、ipv4 或 ipv6"
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
@@ -508,6 +511,7 @@ save_state() {
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
         printf 'GEMINI_IP_FAMILY=%q\n' "${GEMINI_IP_FAMILY:-auto}"
+        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY:-auto}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -577,10 +581,13 @@ show_status() {
     require_root
     collect_installed_state
     active_family=$(gemini_ip_family_status)
+    resolve_cdn_client_ip_family
     printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
     printf 'Gemini 出口族: %s（配置: %s）\n' \
         "${active_family}" "${GEMINI_IP_FAMILY:-auto}"
+    printf 'CDN 客户端节点族: %s（配置: %s）\n' \
+        "${CDN_CLIENT_IP_FAMILY_RESOLVED}" "${CDN_CLIENT_IP_FAMILY:-auto}"
     printf 'Gcore DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
@@ -599,6 +606,7 @@ update_subscription() {
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
+    validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         choose_subscription_download_name
         choose_monthly_quota 1
@@ -728,12 +736,15 @@ install_all() {
     download_xray
     write_xray_config
     install_xray_service
-    subscription_enabled && write_subscriptions
     write_nginx_config
     validate_protocol_runtime
-    subscription_enabled && validate_subscription_runtime
     info "[7/9] 配置 Gcore 源组、CDN、CNAME 与免费 Let's Encrypt"
     gcore_apply_cdn
+    validate_cdn_client_ip_family_runtime
+    if subscription_enabled; then
+        write_subscriptions
+        validate_subscription_runtime
+    fi
     info "[8/9] 保存状态并注册命令"
     save_state
     register_easy_all_command

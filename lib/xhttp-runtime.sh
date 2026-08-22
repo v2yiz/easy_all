@@ -100,6 +100,7 @@ UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 GEMINI_DOMAIN_SUFFIXES_JSON=""
 GEMINI_IP_FAMILY_RESOLVED=""
+CDN_CLIENT_IP_FAMILY_RESOLVED=""
 
 cleanup() {
     local path
@@ -118,6 +119,61 @@ trap cleanup EXIT
 
 validate_xhttp_path() {
     [[ ${#1} -ge 9 && ${#1} -le 96 && "$1" =~ ^/[A-Za-z0-9._~-]+$ ]]
+}
+
+configure_cdn_client_ip_family() {
+    CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-auto}
+    CDN_CLIENT_IP_FAMILY_RESOLVED=""
+    [[ "${CDN_CLIENT_IP_FAMILY}" =~ ^(auto|ipv4|dual)$ ]] \
+        || die "CDN_CLIENT_IP_FAMILY 必须是 auto、ipv4 或 dual"
+}
+
+cdn_domain_has_address_record() {
+    local type=$1 resolver record
+    for resolver in 1.1.1.1 8.8.8.8; do
+        while IFS= read -r record; do
+            case "${type}" in
+            A)
+                validate_ipv4 "${record}" && return 0
+                ;;
+            AAAA)
+                [[ "${record}" == *:* \
+                    && "${record}" =~ ^[0-9A-Fa-f:]+$ ]] && return 0
+                ;;
+            *) return 1 ;;
+            esac
+        done < <(dig +short "${type}" "${VLESS_CDN_DOMAIN}" @"${resolver}" \
+            2>/dev/null || true)
+    done
+    return 1
+}
+
+cdn_domain_is_dual_stack() {
+    cdn_domain_has_address_record A && cdn_domain_has_address_record AAAA
+}
+
+resolve_cdn_client_ip_family() {
+    [[ -n "${CDN_CLIENT_IP_FAMILY_RESOLVED:-}" ]] && return 0
+    configure_cdn_client_ip_family
+    case "${CDN_CLIENT_IP_FAMILY}" in
+    ipv4) CDN_CLIENT_IP_FAMILY_RESOLVED="ipv4" ;;
+    dual) CDN_CLIENT_IP_FAMILY_RESOLVED="dual" ;;
+    auto)
+        if cdn_domain_is_dual_stack; then
+            CDN_CLIENT_IP_FAMILY_RESOLVED="dual"
+        else
+            CDN_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+        fi
+        ;;
+    esac
+}
+
+validate_cdn_client_ip_family_runtime() {
+    resolve_cdn_client_ip_family
+    if [[ "${CDN_CLIENT_IP_FAMILY}" == "dual" ]] \
+        && ! cdn_domain_is_dual_stack; then
+        die "CDN_CLIENT_IP_FAMILY=dual 需要 ${VLESS_CDN_DOMAIN} 在公共 DNS 同时提供 A 和 AAAA"
+    fi
 }
 
 validate_loopback_port() {
@@ -558,9 +614,11 @@ build_node_link() {
 }
 
 build_mihomo_node() {
+    resolve_cdn_client_ip_family
     jq -nr --arg xhttp_name "${XHTTP_NODE_NAME}" \
         --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
         --arg xhttp_path "${XHTTP_PATH}" \
+        --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
         --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
         --arg c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
@@ -568,7 +626,7 @@ build_mihomo_node() {
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    alpn:\n      - h2\n    xhttp-opts:\n" +
+        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n    xhttp-opts:\n" +
         "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
         "        max-concurrency: \($max_concurrency|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
@@ -577,9 +635,16 @@ build_mihomo_node() {
 }
 
 render_mihomo_subscription() {
-    local template=$1 node_file=$2 destination=$3 node_name
+    local template=$1 node_file=$2 destination=$3 node_name ipv6_enabled=false
+    resolve_cdn_client_ip_family
+    [[ "${CDN_CLIENT_IP_FAMILY_RESOLVED}" != "dual" ]] || ipv6_enabled=true
     node_name=$(jq -Rn --arg value "${XHTTP_NODE_NAME}" '$value')
-    awk -v node_file="${node_file}" -v node_name="${node_name}" '
+    awk -v node_file="${node_file}" -v node_name="${node_name}" \
+        -v ipv6_enabled="${ipv6_enabled}" '
+        $0 ~ /^ipv6: (true|false)$/ {
+            print "ipv6: " ipv6_enabled
+            next
+        }
         $0 == "# EASY_ALL_PROXY_NODE" {
             while ((getline line < node_file) > 0) print line
             close(node_file)
@@ -597,6 +662,7 @@ write_subscriptions() {
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
+    resolve_cdn_client_ip_family
 
     if quota_enabled; then
         rm -rf -- "${SUBSCRIPTION_DIR}"
@@ -723,6 +789,7 @@ rollback_subscription_update() {
 
 finish_xhttp_apply() {
     refresh_runtime
+    validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         ensure_allowed_tokens
         write_subscriptions

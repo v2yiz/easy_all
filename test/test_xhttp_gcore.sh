@@ -5,6 +5,8 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/xhttp_gcore.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
+XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
+MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -55,8 +57,16 @@ assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
 assert_contains "Gcore profile persists the Gemini egress family" \
     "${profile_content}" 'GEMINI_IP_FAMILY=%q'
+assert_contains "Gcore profile persists the CDN client family" \
+    "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "Gcore routes Gemini domains through a dedicated outbound" \
     "${profile_content}" 'outboundTag:"gemini-family"'
+assert_contains "Gcore client family resolution stays in the shared XHTTP runtime" \
+    "${profile_content}" 'resolve_cdn_client_ip_family'
+assert_not_contains "Gcore Xray egress does not depend on the client family" \
+    "${XRAY_RENDER_CONTENT}" "CDN_CLIENT_IP_FAMILY"
+assert_not_contains "Gcore client rendering does not depend on Gemini egress" \
+    "${MIHOMO_RENDER_CONTENT}" "GEMINI_IP_FAMILY"
 assert_contains "Gcore profile enables an origin-only secret header" \
     "${profile_content}" '"X-Easy-All-Origin-Key"'
 assert_not_contains "Gcore profile never persists the API token" \

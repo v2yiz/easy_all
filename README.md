@@ -100,8 +100,8 @@ flowchart TD
     X5 --> X7[AWS IAM 授权（同一命令内复用）/ Route 53 源站 A]
     X6 --> X7
     X7 --> X8[UFW / Nginx HTTP-01]
-    X8 --> X9[源站证书 / Xray / Nginx / 已选订阅输出验收]
-    X9 --> X10[ACM / Paid account plan 检查或确认升级 / CloudFront / 按选择配置 WAF 与固定套餐或按量付费 / Route 53 Alias A/AAAA / 公网验收]
+    X8 --> X9[源站证书 / Xray / Nginx / 本机运行时验收]
+    X9 --> X10[ACM / Paid account plan 检查或确认升级 / CloudFront / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]
     X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]
     X11 --> Z
 
@@ -115,8 +115,8 @@ flowchart TD
     G5 --> G7[GCORE_API_TOKEN / Gcore DNS 委派验证 / 源站 A]
     G6 --> G7
     G7 --> G8[UFW / Nginx HTTP-01]
-    G8 --> G9[源站证书 / Xray / Nginx / 已选订阅输出验收]
-    G9 --> G10[源组 / Gcore CDN / CNAME / 免费 Let's Encrypt / 公网验收]
+    G8 --> G9[源站证书 / Xray / Nginx / 本机运行时验收]
+    G9 --> G10[源组 / Gcore CDN / CNAME / 免费 Let's Encrypt / 公网验收 / 生成订阅]
     G10 --> G11[保存状态 / 注册 easy_all / 配置用户配额与 980 GB 费用保护]
     G11 --> Z
 ```
@@ -142,7 +142,8 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 
 三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站，并通过
 `GEMINI_IP_FAMILY=auto|ipv4|ipv6` 控制地址族。默认 `auto` 在 VPS 上分别测速后固定使用较快的
-`ForceIPv4` 或 `ForceIPv6`；该选择与客户端连接节点时使用 IPv4 还是 IPv6 无关。
+`ForceIPv4` 或 `ForceIPv6`。每份生效的 Xray 配置始终只选择其中一个 Gemini 出口地址族，
+不会同时放行 IPv4/IPv6；该选择与客户端连接节点时使用 IPv4 还是 IPv6 无关。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + BBR`，并关闭
@@ -422,7 +423,10 @@ Reality 使用 Xray 监听 TCP `443`，客户端节点包含：
 - Chrome 指纹、Reality public key 和 short ID
 
 安装时需要确认客户端连接地址和 Reality SNI/伪装目标。默认伪装目标为
-`swdist.apple.com:443`。
+`swdist.apple.com:443`。安装器会使用当前 Xray 执行带 SNI 的 TLS 1.3 握手验收；握手失败
+会中止应用。随后通过 RIPE Stat 尝试比较 VPS 与目标 IPv4 的 ASN：同 ASN 会确认通过，不同
+ASN 会给出警告但不会阻止安装，查询不可用时同样只警告。Reality 官方建议优先选择与 VPS
+同 ASN、证书和 TLS 行为稳定的目标。
 
 订阅支持固定 `443` 或动态端口。动态模式从 `10000-62710` 生成客户端端口，并在
 UFW 的 `before.rules` 受管 NAT 区块中将该范围重定向到 Xray `443`；不会生成数万条
@@ -434,8 +438,15 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Reality 生成的 Mihomo/Clash 节点不固定客户端连接地址族，由客户端自身的 IPv4/IPv6 与 DNS
-策略决定。Gemini 目标域名在 VPS 的 Xray 出口按公共策略固定地址族。
+Reality 生成的 Mihomo/Clash 节点通过
+`REALITY_CLIENT_IP_FAMILY=auto|ipv4|dual` 显式控制节点服务器的连接地址族。默认 `auto`
+仅在 Reality 入站已启用双栈、节点使用域名且其 AAAA 与本机公网 IPv6 完全一致时输出
+`ip-version: dual` 并启用 Mihomo 的 IPv6 解析；否则输出 `ip-version: ipv4`。该设置只用于
+Reality 节点自身的 A/AAAA 连接选择；模板中的业务 DNS 仍保持 `ipv6: false`，也不配置 TUN
+IPv6 地址。Gemini 目标域名在 VPS 的 Xray 出口仍按公共策略固定地址族。
+
+Reality 服务端使用 `IPOnDemand` 在遇到 IP 规则时解析目标地址，并阻断 IPv4/IPv6
+私网、链路本地、回环、组播及保留地址，避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
 
 Reality 交互选项：
 
@@ -456,6 +467,16 @@ Reality 交互选项：
 - 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
 
 Reality 入站双栈只影响客户端如何连接服务器。Gemini 出口仍按原有测速结果固定使用 `ForceIPv4` 或 `ForceIPv6`，不会因为入站启用双栈而改变。
+
+默认自动选择通常不需要额外操作。需要强制只连接 IPv4，或要求完整的节点双栈条件时，可执行：
+
+```bash
+sudo env REALITY_CLIENT_IP_FAMILY=ipv4 easy_all apply
+sudo env REALITY_CLIENT_IP_FAMILY=dual easy_all apply
+```
+
+`dual` 会严格要求节点域名 AAAA 指向检测到的本机公网 IPv6，不满足条件时直接停止应用并保留
+旧配置。恢复自动模式使用 `sudo env REALITY_CLIENT_IP_FAMILY=auto easy_all apply`。
 
 自托管订阅域名必须直接解析到 VPS：
 
@@ -525,9 +546,25 @@ CDN XHTTP 交互选项：
 | AWS Secret Access Key | 无 | 默认授权方式下不允许为空 |
 
 XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
-自动生成，不需要用户输入。生成的 Mihomo/Clash 节点不写入 `ip-version`；实际连接地址族由
-客户端配置决定。内置完整模板仍默认关闭 IPv6，使用外部模板或聚合订阅时可自行启用双栈。
-Gemini 目标域名与 Reality 相同，统一在 VPS 的 Xray 出口固定为选定的 IPv4 或 IPv6。
+自动生成，不需要用户输入。生成的 Mihomo/Clash 节点通过
+`CDN_CLIENT_IP_FAMILY=auto|ipv4|dual` 独立控制客户端到 CDN 边缘的连接地址族。默认 `auto`
+在公共 DNS 同时存在 A 和 AAAA 时输出 `ip-version: dual` 并启用 Mihomo 的 IPv6 节点解析，
+否则输出 `ip-version: ipv4`。模板中的业务 DNS 仍保持 `ipv6: false`，不会因为 CDN 节点双栈
+而向应用返回 AAAA。`ip-version` 是 Mihomo 节点字段；通用 VLESS URI 不携带该偏好，由导入
+它的客户端自行选择地址族。
+
+CloudFront 分配本身启用 IPv6，并由 Route 53 创建 Alias A/AAAA；Gcore 根据 CDN CNAME
+在公共 DNS 中的实际 A/AAAA 决定。两种 Provider 的源站记录仍固定为 IPv4 A，客户端地址族
+不会改变 CDN 回源。需要强制策略时执行：
+
+```bash
+sudo env CDN_CLIENT_IP_FAMILY=ipv4 easy_all apply
+sudo env CDN_CLIENT_IP_FAMILY=dual easy_all apply
+sudo env CDN_CLIENT_IP_FAMILY=auto easy_all apply
+```
+
+`dual` 要求 CDN 域名在公共 DNS 同时提供 A 和 AAAA，否则停止应用并恢复旧状态。该配置与
+`GEMINI_IP_FAMILY` 正交：后者仍只生成一个 `ForceIPv4` 或 `ForceIPv6` 的 Gemini 专用出站。
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
 都会把当前值显示在方括号中，直接回车沿用当前状态。
@@ -685,6 +722,8 @@ STATE_VERSION=4  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
 GEMINI_IP_FAMILY=auto|ipv4|ipv6               # 三种模式的 VPS Gemini 出口
+REALITY_CLIENT_IP_FAMILY=auto|ipv4|dual       # 仅 Reality 的客户端节点连接地址族
+CDN_CLIENT_IP_FAMILY=auto|ipv4|dual           # 仅 CDN 的客户端到边缘连接地址族
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
 CLOUDFRONT_FEE_PROTECTION_GB=0|980            # AWS 固定套餐|AWS 按量付费
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
@@ -743,7 +782,8 @@ sample-mihomo.yaml
 npm test
 ```
 
-测试覆盖统一入口、公共模块归属与安装完整性、XHTTP Runtime/Provider 隔离、Reality、
+测试覆盖统一入口、公共模块归属与安装完整性、XHTTP Runtime/Provider 隔离、Reality 目标验收、
+私网目标阻断、Reality 客户端地址族策略、
 AWS/Gcore XHTTP、用户凭据与月度配额、TCP 参数回滚、Xray 配置、CloudFront JSON、Gcore API
 载荷、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 

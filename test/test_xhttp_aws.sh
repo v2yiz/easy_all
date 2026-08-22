@@ -8,6 +8,8 @@ XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
 SCHEDULED_MAINTENANCE_MODULE="${ROOT_DIR}/lib/scheduled-maintenance.sh"
 XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"
+XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
+MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
@@ -44,8 +46,14 @@ assert_contains "XHTTP state persists the quota start date" "${XHTTP_CONTENT}" \
     'QUOTA_START_DATE=%q'
 assert_contains "XHTTP state persists the Gemini egress family" "${XHTTP_CONTENT}" \
     'GEMINI_IP_FAMILY=%q'
+assert_contains "XHTTP state persists the CDN client family" "${XHTTP_CONTENT}" \
+    'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "XHTTP routes Gemini domains through a dedicated outbound" "${XHTTP_CONTENT}" \
     'outboundTag:"gemini-family"'
+assert_not_contains "CloudFront Xray egress does not depend on the client family" \
+    "${XRAY_RENDER_CONTENT}" "CDN_CLIENT_IP_FAMILY"
+assert_not_contains "CloudFront client rendering does not depend on Gemini egress" \
+    "${MIHOMO_RENDER_CONTENT}" "GEMINI_IP_FAMILY"
 assert_contains "Xray keepalive stays below CloudFront response timeout" "${XHTTP_CONTENT}" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
 assert_not_contains "XHTTP client output relies on compatible padding defaults" "${XHTTP_CONTENT}" \
@@ -431,6 +439,8 @@ EOF
         load_state
         assert_equal "old XHTTP state defaults Gemini egress family to auto" \
             "auto" "${GEMINI_IP_FAMILY}"
+        assert_equal "old XHTTP state defaults CDN client family to auto" \
+            "auto" "${CDN_CLIENT_IP_FAMILY}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
         assert_equal "node name environment override wins during update" \
@@ -452,6 +462,8 @@ EOF
         "$(find_route53_zone_for_domain node.notexample.com "${zones}")"
 
     VLESS_CDN_DOMAIN="node.example.com"
+    CDN_CLIENT_IP_FAMILY="ipv4"
+    CDN_CLIENT_IP_FAMILY_RESOLVED=""
     certificates='{"CertificateSummaryList":[
       {"CertificateArn":"arn:pending-exact","DomainName":"node.example.com","Status":"PENDING_VALIDATION"},
       {"CertificateArn":"arn:issued-wildcard","DomainName":"*.example.com","Status":"ISSUED"},
@@ -565,8 +577,8 @@ EOF
     assert_contains "Mihomo XHTTP" "${mihomo}" "network: xhttp"
     assert_contains "Mihomo stream-up" "${mihomo}" "mode: stream-up"
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
-    assert_not_contains "Mihomo XHTTP does not pin the client IP family" \
-        "${mihomo}" "ip-version:"
+    assert_contains "Mihomo XHTTP pins the selected client IP family" \
+        "${mihomo}" "ip-version: ipv4"
     assert_contains "Mihomo XMUX uses expanded concurrency" \
         "${mihomo}" 'max-concurrency: "8-16"'
     assert_not_contains "Mihomo relies on its compatible padding defaults" \
@@ -783,6 +795,40 @@ EOF
     assert_contains "Mihomo subscription node name" "$(<"${mihomo_file}")" "EASY_ALL_XHTTP_TEST"
     assert_contains "Mihomo subscription rules" "$(<"${mihomo_file}")" "RULE-SET,telegramcidr,PROXY,no-resolve"
     assert_contains "Mihomo subscription XMUX" "$(<"${mihomo_file}")" "h-keep-alive-period: 0"
+    assert_contains "IPv4 CDN endpoint keeps Mihomo IPv6 disabled" \
+        "$(<"${mihomo_file}")" $'\nipv6: false\n'
+
+    (
+        CDN_CLIENT_IP_FAMILY="auto"
+        CDN_CLIENT_IP_FAMILY_RESOLVED=""
+        dig() {
+            case "$*" in
+            *"+short A "*) printf '198.51.100.20\n' ;;
+            *"+short AAAA "*) printf '2001:db8::20\n' ;;
+            esac
+        }
+        resolve_cdn_client_ip_family
+        assert_equal "public A and AAAA enable dual-stack CDN endpoint racing" \
+            "dual" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+        build_mihomo_node >"${node_file}.dual"
+        render_mihomo_subscription "${template}" "${node_file}.dual" \
+            "${mihomo_file}.dual"
+        assert_contains "dual-stack CDN node is explicit in Mihomo" \
+            "$(<"${node_file}.dual")" "ip-version: dual"
+        assert_contains "dual-stack CDN endpoint enables Mihomo IPv6 resolution" \
+            "$(<"${mihomo_file}.dual")" $'\nipv6: true\n'
+        assert_contains "CDN endpoint dual-stack leaves application AAAA disabled" \
+            "$(<"${mihomo_file}.dual")" $'\n    ipv6: false\n'
+    )
+
+    if (
+        CDN_CLIENT_IP_FAMILY="dual"
+        CDN_CLIENT_IP_FAMILY_RESOLVED=""
+        dig() { [[ "$*" == *"+short A "* ]] && printf '198.51.100.20\n'; }
+        validate_cdn_client_ip_family_runtime
+    ) >/dev/null 2>&1; then
+        fail "explicit dual-stack CDN mode must require public A and AAAA"
+    fi
 
     encoded=$(printf '%s' "$(build_node_link)" | openssl base64 -A)
     decoded=$(printf '%s' "${encoded}" | openssl base64 -d -A)

@@ -90,6 +90,8 @@ set_fixture() {
     REALITY_SHORT_ID="0123456789abcdef"
     REALITY_INBOUND_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
+    REALITY_CLIENT_IP_FAMILY="auto"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="selfhost"
     SUBSCRIPTION_DOMAIN="sub.example.com"
@@ -121,6 +123,10 @@ test_syntax_and_worker_removal() {
         "的 AAAA \${mismatch} 未指向本机公网 IPv6" "${script}"
     assert_contains "Reality keeps Gemini outbound family selection independent" \
         'gemini_domain_strategy="ForceIPv6"' "${script}"
+    assert_contains "Reality blocks private destinations before direct egress" \
+        '"169.254.0.0/16"' "${script}"
+    assert_contains "Reality validates its camouflage target with Xray" \
+        'tls ping "${REALITY_TARGET}"' "${script}"
     assert_contains "Reality default prompts explain the enter default" \
         '[${default}]（直接回车使用默认值）' \
         "$(<"${ROOT_DIR}/lib/profile-common.sh")"
@@ -214,10 +220,64 @@ test_reality_inbound_family_and_dns() {
     VPS_PUBLIC_IPV6="2001:db8::10"
     assert_success "matching AAAA is accepted in dual-stack mode" \
         validate_reality_node_dns
+    REALITY_CLIENT_IP_FAMILY="auto"
+    resolve_reality_client_ip_family
+    assert_equal "matching AAAA enables dual-stack Reality endpoint racing" \
+        "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     dig() { printf '2001:db8::20\n'; }
     assert_failure "mismatched AAAA is rejected in dual-stack mode" \
         validate_reality_node_dns
+    REALITY_CLIENT_IP_FAMILY="ipv4"
+    resolve_reality_client_ip_family
+    assert_equal "explicit IPv4 keeps the Reality endpoint on IPv4" \
+        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    REALITY_CLIENT_IP_FAMILY="dual"
+    assert_failure "explicit dual-stack rejects a mismatched node AAAA" \
+        validate_reality_client_ip_family_runtime
     unset -f dig
+}
+
+test_reality_target_preflight() {
+    local result
+    assert_success "Reality target parser accepts a valid SNI TLS 1.3 handshake" \
+        reality_tls_ping_succeeded <<'EOF'
+Pinging without SNI
+Handshake failure: remote error
+-------------------
+Pinging with SNI
+Handshake succeeded
+TLS Version: TLS 1.3
+EOF
+    assert_failure "Reality target parser rejects TLS 1.2" \
+        reality_tls_ping_succeeded <<'EOF'
+Pinging with SNI
+Handshake succeeded
+TLS Version: TLS 1.2
+EOF
+    assert_failure "Reality target parser rejects a failed SNI handshake" \
+        reality_tls_ping_succeeded <<'EOF'
+Pinging with SNI
+Handshake failure: remote error
+TLS Version: TLS 1.3
+EOF
+    result=$(
+        detect_public_ipv4() { printf '203.0.113.10\n'; }
+        resolve_reality_target_ipv4s() { printf '192.0.2.10\n'; }
+        lookup_ip_asns() {
+            [[ "$1" == "203.0.113.10" ]] && printf '64500\n' || printf '64501\n'
+        }
+        validate_reality_target_asn
+    )
+    assert_contains "Reality target warns when its ASN differs from the VPS" \
+        "不同 ASN" "${result}"
+    result=$(
+        detect_public_ipv4() { printf '203.0.113.10\n'; }
+        resolve_reality_target_ipv4s() { printf '192.0.2.10\n'; }
+        lookup_ip_asns() { printf '64500\n'; }
+        validate_reality_target_asn
+    )
+    assert_contains "Reality target confirms a matching VPS ASN" \
+        "命中同 ASN" "${result}"
 }
 
 test_subscription_stage_dispatch() {
@@ -302,8 +362,12 @@ test_subscription_generation() {
         "port: ${port}" "${yaml}"
     assert_contains "Mihomo subscription contains Reality options" \
         "reality-opts:" "${yaml}"
-    assert_not_contains "Reality Mihomo subscription does not pin the client IP family" \
-        "ip-version:" "${yaml}"
+    assert_contains "IPv4 Reality endpoint is explicit in Mihomo" \
+        "ip-version: ipv4" "${yaml}"
+    assert_contains "IPv4 Reality endpoint keeps the Mihomo IPv6 master switch disabled" \
+        $'\nipv6: false\n' "${yaml}"
+    assert_contains "application DNS continues suppressing AAAA answers" \
+        $'\n    ipv6: false\n' "${yaml}"
     assert_contains "Mihomo subscription contains complete rules" \
         "RULE-SET,telegramcidr,PROXY,no-resolve" "${yaml}"
     assert_not_contains "rendered subscription removes proxy marker" \
@@ -316,6 +380,22 @@ test_subscription_generation() {
     decoded=$(openssl base64 -d -A <"${base64_file}")
     assert_contains "fixed subscription mode uses port 443" \
         "@203.0.113.10:443?" "${decoded}"
+
+    NODE_HOST="node.example.com"
+    REALITY_INBOUND_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    REALITY_CLIENT_IP_FAMILY="auto"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
+    dig() { printf '2001:db8::10\n'; }
+    generate_subscription_files "${base64_file}" "${mihomo_file}"
+    yaml=$(<"${mihomo_file}")
+    assert_contains "matching node AAAA enables dual-stack endpoint racing" \
+        "ip-version: dual" "${yaml}"
+    assert_contains "dual-stack endpoint enables Mihomo IPv6 resolution" \
+        $'\nipv6: true\n' "${yaml}"
+    assert_contains "dual-stack endpoint does not expose application AAAA answers" \
+        $'\n    ipv6: false\n' "${yaml}"
+    unset -f dig
 }
 
 test_nginx_and_firewall() {
@@ -549,6 +629,8 @@ test_state_and_xray() {
         "SUBSCRIPTION_DOMAIN=sub.example.com" "${state}"
     assert_contains "state persists Reality inbound family" \
         "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
+    assert_contains "state persists Reality client endpoint family policy" \
+        "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Worker name" "WORKER_NAME=" "${state}"
@@ -571,10 +653,19 @@ EOF
          and .inbounds[0].streamSettings.security == "reality"
          and .inbounds[0].settings.clients[0].flow == "xtls-rprx-vision"' \
         <<<"${config}"
+    assert_success "Xray blocks private and metadata destinations" \
+        jq -e \
+        '.routing.domainStrategy == "IPOnDemand"
+         and (.outbounds[] | select(.tag == "block").protocol) == "blackhole"
+         and (.routing.rules[] | select(.outboundTag == "block").ip
+             | index("169.254.0.0/16"))' \
+        <<<"${config}"
     assert_success "Xray Gemini policy comes from Mihomo template" \
         jq -e \
-        '(.routing.rules[0].domain | index("domain:google.com"))
-         and ((.routing.rules[0].domain | index("domain:openai.com")) == null)' \
+        '(.routing.rules[] | select(.outboundTag == "gemini-family").domain
+             | index("domain:google.com"))
+         and ((.routing.rules[] | select(.outboundTag == "gemini-family").domain
+             | index("domain:openai.com")) == null)' \
         <<<"${config}"
 
     REALITY_INBOUND_IP_FAMILY="dual"
@@ -651,6 +742,7 @@ source_script_copy
 test_syntax_and_worker_removal
 test_validators_and_modes
 test_reality_inbound_family_and_dns
+test_reality_target_preflight
 test_subscription_stage_dispatch
 test_mihomo_template
 test_subscription_generation

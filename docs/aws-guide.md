@@ -47,6 +47,11 @@ AWS 注册时选择的 **Free account plan** 与 CloudFront 计费方式不是�
    并在 VPS 上自动启用 `980 GB` 全局费用保护。
 5. 把 CDN 域名写成 CloudFront Alias A/AAAA；Route 53 不对直接指向 CloudFront 的 Alias 查询收费。
 
+CloudFront 分配会启用 IPv6。安装器在 Alias A/AAAA 生效后，根据
+`CDN_CLIENT_IP_FAMILY=auto|ipv4|dual` 生成 Mihomo 节点；默认 `auto` 检测到公共 A/AAAA
+后启用双栈竞速。该设置只控制客户端到 CloudFront 边缘的连接，不改变 IPv4 源站回源，也不改变
+由 `GEMINI_IP_FAMILY` 固定为单一 `ForceIPv4` 或 `ForceIPv6` 的 Gemini 出口。
+
 正常通过 Upgrade Plan/API 升级不会清空剩余 Free Tier Credit；Credit 会继续用于符合条件的
 后续账单直至原到期日。不要为了升级而加入 AWS Organizations 或启用 Control Tower，这两种
 路径会使剩余 Free Tier Credit 立即失效。
