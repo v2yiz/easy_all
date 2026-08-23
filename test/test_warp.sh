@@ -110,14 +110,16 @@ WARP_MODE="off"
 outbounds=$(warp_xray_outbounds_json)
 routing=$(warp_xray_routing_json)
 jq -e '
-    map(.tag) == ["direct","gemini-family"]
+    map(.tag) == ["direct","gemini-family","block"]
     and .[1].settings.domainStrategy == "ForceIPv4"
 ' <<<"${outbounds}" >/dev/null || fail "disabled WARP must preserve the Gemini IPv4 policy"
 jq -e '
-    .domainStrategy == "AsIs"
-    and (.rules[0].domain | index("domain:google.com"))
-    and (.rules[0].domain | index("domain:gstatic.com"))
-    and .rules[1].outboundTag == "direct"
+    .domainStrategy == "IPOnDemand"
+    and .rules[0].outboundTag == "block"
+    and (.rules[0].ip | index("169.254.0.0/16"))
+    and (.rules[1].domain | index("domain:google.com"))
+    and (.rules[1].domain | index("domain:gstatic.com"))
+    and .rules[2].outboundTag == "direct"
 ' <<<"${routing}" >/dev/null || fail "disabled WARP routing policy is invalid"
 
 module_content=$(<"${ROOT_DIR}/lib/warp.sh")

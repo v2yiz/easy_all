@@ -46,14 +46,30 @@ choose_cloudfront_billing_mode() {
     esac
     if [[ -t 0 ]]; then
         printf '请选择 CloudFront 计费模式：\n'
+        printf 'Choose the CloudFront billing mode:\n'
+        printf '说明：选择 1/2 不是购买固定月费套餐；后续可能需要把 AWS Free account plan 升级为 Paid account plan。\n'
+        printf 'Note: choosing 1/2 does not buy a fixed monthly subscription; AWS may require upgrading the Free account plan to the Paid account plan.\n'
         printf '  1. Free 固定套餐：$0/月，基准 100 GB + 100 万请求\n'
+        printf '     Free flat-rate plan: $0/month, with 100 GB + 1 million requests as the baseline\n'
         printf '     超出费用估算：$0；无超额费，但长期明显超额可能降低边缘性能\n'
+        printf '     Estimated overage: $0; no overage fee, but sustained heavy usage may reduce edge performance\n'
         printf '     套餐包含 WAF；加入套餐的 1 个 Route 53 Hosted Zone 及额度内查询也由套餐覆盖\n'
-        printf '  2. 按量付费（1 TB 稳定月流量推荐）：每月免费 1 TB + 1000 万请求\n'
+        printf '     Includes WAF; one attached Route 53 Hosted Zone and covered queries are included\n'
+        printf '  2. 按量付费（默认推荐，1 TB 稳定月流量）：每月免费 1 TB + 1000 万请求\n'
+        printf '     Pay-as-you-go (recommended default for stable 1 TB/month): 1 TB + 10 million requests free each month\n'
+        printf '     选择 2 不会因“升级 Paid account plan”立即收费；升级本身无固定月费。\n'
+        printf '     Choosing 2 does not charge you immediately when the account plan is upgraded; the upgrade itself has no fixed monthly fee.\n'
+        printf '     但超出 Free Tier Credit/免费额度或使用不适用 credit 的资源，AWS 仍会按量计费。\n'
+        printf '     Usage beyond Free Tier credits/free quotas, or resources not covered by credits, is billed at standard rates.\n'
         printf '     自动启用独立的 980 GB 全局费用保护（UTC 自然月，每 15 秒检查）\n'
+        printf '     Enables an independent 980 GB global safety guard (UTC month, checked every 15 seconds)\n'
         printf '     1 个 Hosted Zone 估算 $0.50/月；CloudFront Alias 查询 $0，其他标准 DNS 查询 $0.40/百万次\n'
+        printf '     One Hosted Zone is estimated at $0.50/month; CloudFront Alias queries are $0, other standard DNS queries $0.40/million\n'
         printf '     超过 1 TB 后，每多 100 GB 流量约 $8.50-$12.00，另计超额请求（实际按边缘区域）\n'
-        read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " choice
+        printf '     Beyond 1 TB, each additional 100 GB is about $8.50-$12.00, plus excess requests by edge region\n'
+        read_bilingual \
+            "请选择 [${default_choice}]（直接回车使用默认值）:" \
+            "Choose [${default_choice}] (press Enter to use the default):" choice
         mode=${choice:-${current_mode}}
     elif [[ -z "${mode}" ]]; then
         die "非交互模式必须设置 AWS_CLOUDFRONT_BILLING_MODE=flat-free 或 payg"
@@ -74,11 +90,14 @@ collect_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
 
-    AWS_ORIGIN_DOMAIN=${AWS_ORIGIN_DOMAIN:-$(prompt_value "AWS Route 53 源站域名（脚本创建 A 记录）" "")}
+    AWS_ORIGIN_DOMAIN=${AWS_ORIGIN_DOMAIN:-$(prompt_value \
+        "AWS Route 53 源站域名（脚本创建 A 记录）" "" \
+        "AWS Route 53 origin domain (the script creates the A record)")}
     AWS_ORIGIN_DOMAIN=$(normalize_domain "${AWS_ORIGIN_DOMAIN}")
     validate_domain "${AWS_ORIGIN_DOMAIN}" || die "AWS_ORIGIN_DOMAIN 无效：${AWS_ORIGIN_DOMAIN}"
 
-    VLESS_CDN_DOMAIN=${VLESS_CDN_DOMAIN:-$(prompt_value "AWS CloudFront CDN 域名" "")}
+    VLESS_CDN_DOMAIN=${VLESS_CDN_DOMAIN:-$(prompt_value \
+        "AWS CloudFront CDN 域名" "" "AWS CloudFront CDN domain")}
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
@@ -315,11 +334,13 @@ collect_aws_credentials() {
         return 0
     fi
     if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
-        AWS_ACCESS_KEY_ID=$(prompt_secret "AWS IAM Access Key ID（输入不回显）") \
+        AWS_ACCESS_KEY_ID=$(prompt_secret "AWS IAM Access Key ID（输入不回显）" \
+            "AWS IAM Access Key ID (input is hidden)") \
             || die "非交互模式必须设置 AWS_ACCESS_KEY_ID"
     fi
     if [[ -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
-        AWS_SECRET_ACCESS_KEY=$(prompt_secret "AWS IAM Secret Access Key（输入不回显）") \
+        AWS_SECRET_ACCESS_KEY=$(prompt_secret "AWS IAM Secret Access Key（输入不回显）" \
+            "AWS IAM Secret Access Key (input is hidden)") \
             || die "非交互模式必须设置 AWS_SECRET_ACCESS_KEY"
     fi
     [[ -n "${AWS_ACCESS_KEY_ID}" && -n "${AWS_SECRET_ACCESS_KEY}" ]] \
@@ -344,12 +365,17 @@ confirm_aws_paid_account_upgrade() {
         die "AWS 账号仍是 Free account plan；非交互执行必须显式设置 AWS_ACCOUNT_PLAN_UPGRADE=1"
     fi
     if cloudfront_flat_rate_enabled; then
-        alert "CloudFront Free 固定套餐要求 AWS 账号先升级为 Paid account plan。"
+        alert "CloudFront Free 固定套餐要求 AWS 账号先升级为 Paid account plan；升级动作本身不收费，也不是购买付费套餐。"
+        alert "The CloudFront Free flat-rate plan requires the AWS account to use the Paid account plan; the upgrade itself has no fee and is not a paid CloudFront subscription."
     else
-        alert "按量付费模式需要 Paid account plan 才能在免费额度外持续使用并正常结算。"
+        alert "按量付费模式需要 Paid account plan 才能使用完整 CloudFront；升级动作本身不收费，不会立即产生固定月费。"
+        alert "Pay-as-you-go CloudFront requires the Paid account plan; the upgrade itself has no fee and does not create an immediate fixed monthly charge."
     fi
-    warn "升级不会清空正常剩余的 Free Tier Credit，但超出 Credit 或套餐范围的资源可能扣费。"
-    read -r -p "确认由脚本将 AWS 账号 ${AWS_ACCOUNT_ID} 升级为 Paid account plan？[y/N]（直接回车取消）: " answer
+    warn "升级不会清空正常剩余的 Free Tier Credit；但 Paid plan 会开启标准按量计费，超出 Credit/免费额度或使用不适用 credit 的资源仍可能扣费。"
+    warn "Your remaining Free Tier credits normally stay available; however, Paid plan enables standard pay-as-you-go billing, so usage beyond credits/free quotas may still be charged."
+    read_bilingual \
+        "确认由脚本将 AWS 账号 ${AWS_ACCOUNT_ID} 升级为 Paid account plan？[y/N]（直接回车取消）:" \
+        "Upgrade AWS account ${AWS_ACCOUNT_ID} to the Paid account plan? [y/N] (press Enter to cancel):" answer
     [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消 AWS 账号计划升级"
 }
 
@@ -984,6 +1010,7 @@ show_status() {
     resolve_cdn_client_ip_family
     printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
+    show_bbrv3_status
     show_warp_configuration_status
     printf 'CDN 客户端节点族: %s（配置: %s）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}" "${CDN_CLIENT_IP_FAMILY:-auto}"
@@ -1105,7 +1132,9 @@ uninstall_all() {
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
         local answer
-        read -r -p "确认删除 easy_all XHTTP 本机服务、状态和证书？远端 AWS 资源会保留。[y/N]（直接回车取消）: " answer
+        read_bilingual \
+            '确认删除 easy_all XHTTP 本机服务、状态和证书？远端 AWS 资源会保留。[y/N]（直接回车取消）:' \
+            'Delete easy_all XHTTP local services, state and certificates? Remote AWS resources will be kept. [y/N] (press Enter to cancel):' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_services
@@ -1133,7 +1162,7 @@ install_all() {
     install_packages
     ensure_ssh_boot_service
     cdn_install_dependencies
-    info "[2/9] 初始化 Google BBR 与定时重启"
+    info "[2/9] 安装 XanMod LTS BBRv3 与配置定时重启"
     configure_bbr_tcp
     configure_daily_reboot
     info "[3/9] 收集域名、CloudFront 计费模式与 VLESS 参数"
@@ -1168,6 +1197,7 @@ install_all() {
     INSTALL_ROLLBACK_ON_EXIT=0
     info "[9/9] 输出节点与订阅"
     show_subscription
+    show_bbrv3_status
     success "easy_all CDN XHTTP 安装完成"
 }
 

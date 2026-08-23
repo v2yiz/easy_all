@@ -49,10 +49,10 @@ shared_modules=(
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
 [[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/warp.sh"'* \
+    && "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/warp.sh"'* \
     && "${LAUNCHER_CONTENT}" == *'"lib/warp.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'lib/warp.sh'* \
-    && "$(<"${REALITY_PROFILE}")" != *'source "${SCRIPT_DIR}/warp.sh"'* ]] \
-    || fail "WARP must be packaged for XHTTP without loading into Reality"
+    && "${BOOTSTRAP_CONTENT}" == *'lib/warp.sh'* ]] \
+    || fail "WARP must be packaged and loaded by Reality and XHTTP"
 
 for obsolete_module in \
     profile-support.sh validation.sh acme-renewal.sh reboot-schedule.sh; do
@@ -97,6 +97,20 @@ grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
     || fail "network module must not depend on Profile template functions"
 
+mihomo_ssh_rules=$(awk '
+    $0 == "rules:" {in_rules=1; next}
+    in_rules && /^[[:space:]]*-[[:space:]]*/ {
+        rule=$0
+        sub(/^[[:space:]]*-[[:space:]]*/, "", rule)
+        print rule
+        if (++count == 2) exit
+    }
+' "${ROOT_DIR}/sample-mihomo.yaml")
+[[ "${mihomo_ssh_rules}" == $'DST-PORT,22,DIRECT\nDST-PORT,65533,DIRECT' \
+    && "$(<"${ROOT_DIR}/lib/mihomo-template.sh")" \
+        == *'前两条规则必须直连 SSH 端口 22 和 65533'* ]] \
+    || fail "Mihomo subscriptions must place SSH direct rules before every proxy rule"
+
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-enabled --quiet cron.service'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-active --quiet cron.service'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* ]] \
@@ -116,9 +130,17 @@ fi
 
 [[ "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_mtu_probing = 1'* \
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_slow_start_after_idle = 0'* \
-    && "$(<"${REALITY_PROFILE}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="1"'* \
-    && "$(<"${XHTTP_RUNTIME}")" == *'readonly BBR_ALLOW_EXISTING_XANMOD="0"'* ]] \
-    || fail "shared TCP tuning or profile XanMod policies drifted"
+    && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'linux-xanmod-lts-x64v'* \
+    && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'show_bbrv3_status()'* \
+    && "$(<"${REALITY_PROFILE}")" == *'show_bbrv3_status'* \
+    && "$(<"${XHTTP_PROFILE}")" == *'show_bbrv3_status'* \
+    && "$(<"${GCORE_PROFILE}")" == *'show_bbrv3_status'* \
+    && "$(<"${REALITY_PROFILE}")" != *'BBR_ALLOW_EXISTING_XANMOD'* \
+    && "$(<"${XHTTP_RUNTIME}")" != *'BBR_ALLOW_EXISTING_XANMOD'* ]] \
+    || fail "shared XanMod BBRv3 kernel and TCP tuning policy drifted"
+[[ "$(<"${REALITY_PROFILE}")" == *'ca-certificates curl wget gnupg'* \
+    && "$(<"${XHTTP_RUNTIME}")" == *'ca-certificates curl wget gnupg'* ]] \
+    || fail "all Profiles must install gnupg before verifying the XanMod key"
 
 [[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" == *'bash "${launcher}" register-command'* ]] \
     || fail "profiles must delegate command registration to the unified launcher"
@@ -128,6 +150,7 @@ fi
 
 (
     BACKUP_DIR=$(mktemp -d)
+    STATE_DIR="${BACKUP_DIR}/state"
     restored="${BACKUP_DIR}/restored.conf"
     trap 'rm -rf -- "${BACKUP_DIR}"' EXIT
     warn() { :; }

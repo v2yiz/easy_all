@@ -221,10 +221,15 @@ choose_monthly_quota() {
     choice=${ENABLE_MONTHLY_QUOTA:-}
     if [[ -z "${choice}" && -t 0 ]]; then
         printf '是否启用按用户月度流量配额（按 VPS 开通日计算 UTC 月度账期）？\n'
+        printf 'Enable per-user monthly traffic quotas (UTC billing cycle based on the VPS start date)?\n'
         printf '  1. 不启用（共用单个节点 UUID）\n'
+        printf '     Disable (all users share one node UUID)\n'
         printf '  2. 启用（每个订阅用户使用独立 UUID，超额自动停用）\n'
+        printf '     Enable (each subscription user gets a separate UUID and is disabled after exceeding the quota)\n'
         [[ "${current}" == "1" ]] && choice=2 || choice=1
-        read -r -p "请选择 [${choice}]（直接回车使用默认值）: " raw
+        read_bilingual \
+            "请选择 [${choice}]（直接回车使用默认值）:" \
+            "Choose [${choice}] (press Enter to use the default):" raw
         choice=${raw:-${choice}}
     fi
     if [[ -z "${choice}" ]]; then
@@ -243,7 +248,8 @@ choose_monthly_quota() {
         if [[ -z "${quotas}" && -t 0 ]]; then
             quotas=$(prompt_value \
                 "用户与月度配额 JSON（GB，0 表示不限量；Token、UUID、email 自动生成）" \
-                "${default_quotas}")
+                "${default_quotas}" \
+                "User and monthly quota JSON (GB; 0 means unlimited; Token, UUID and email are generated automatically)")
         fi
         quotas=${quotas:-${default_quotas}}
         quotas=$(normalize_monthly_quotas "${quotas}") \
@@ -253,7 +259,8 @@ choose_monthly_quota() {
         token_overrides=${QUOTA_TOKEN_OVERRIDES:-}
         if [[ -z "${token_overrides}" && -t 0 ]]; then
             token_overrides=$(prompt_value \
-                "可选 Token 覆盖 JSON（仅填写要覆盖的用户，直接回车不覆盖）" "{}")
+                "可选 Token 覆盖 JSON（仅填写要覆盖的用户，直接回车不覆盖）" "{}" \
+                "Optional Token override JSON (enter only users to override; press Enter to keep generated Tokens)")
         fi
         token_overrides=${token_overrides:-'{}'}
         ALLOWED_TOKENS=$(apply_quota_token_overrides "${generated_tokens}" "${quotas}" \
@@ -264,7 +271,8 @@ choose_monthly_quota() {
         if [[ -z "${QUOTA_START_DATE:-}" && -t 0 ]]; then
             QUOTA_START_DATE=$(prompt_value \
                 "VPS 开通日期（YYYY-MM-DD，作为每月配额周期起点）" \
-                "${default_start_date}")
+                "${default_start_date}" \
+                "VPS start date (YYYY-MM-DD; start of each monthly quota cycle)")
         else
             QUOTA_START_DATE=${QUOTA_START_DATE:-${default_start_date}}
         fi

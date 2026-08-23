@@ -82,7 +82,8 @@ gcore_json_items() {
 
 gcore_collect_api_token() {
     if [[ -z "${GCORE_API_TOKEN:-}" ]]; then
-        GCORE_API_TOKEN=$(prompt_secret "Gcore API Token（输入不回显）") \
+        GCORE_API_TOKEN=$(prompt_secret "Gcore API Token（输入不回显）" \
+            "Gcore API Token (input is hidden)") \
             || die "非交互模式必须设置 GCORE_API_TOKEN"
     fi
     # Permanent API tokens may contain characters such as '$'.  Do not
@@ -376,12 +377,15 @@ collect_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
 
-    GCORE_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN:-$(prompt_value "Gcore 源站域名（脚本创建 A 记录）" "")}
+    GCORE_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN:-$(prompt_value \
+        "Gcore 源站域名（脚本创建 A 记录）" "" \
+        "Gcore origin domain (the script creates the A record)")}
     GCORE_ORIGIN_DOMAIN=$(normalize_domain "${GCORE_ORIGIN_DOMAIN}")
     validate_domain "${GCORE_ORIGIN_DOMAIN}" || die "GCORE_ORIGIN_DOMAIN 无效：${GCORE_ORIGIN_DOMAIN}"
     AWS_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
 
-    VLESS_CDN_DOMAIN=${VLESS_CDN_DOMAIN:-$(prompt_value "Gcore CDN 节点域名" "")}
+    VLESS_CDN_DOMAIN=${VLESS_CDN_DOMAIN:-$(prompt_value \
+        "Gcore CDN 节点域名" "" "Gcore CDN node domain")}
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${GCORE_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
@@ -573,6 +577,7 @@ show_status() {
     resolve_cdn_client_ip_family
     printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
+    show_bbrv3_status
     show_warp_configuration_status
     printf 'CDN 客户端节点族: %s（配置: %s）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}" "${CDN_CLIENT_IP_FAMILY:-auto}"
@@ -682,7 +687,9 @@ uninstall_all() {
         die "非交互卸载必须显式设置 FORCE=1"
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
-        read -r -p "确认删除 easy_all Gcore CDN XHTTP 本机服务、状态和证书？远端 Gcore 资源会保留。[y/N]（直接回车取消）: " answer
+        read_bilingual \
+            '确认删除 easy_all Gcore CDN XHTTP 本机服务、状态和证书？远端 Gcore 资源会保留。[y/N]（直接回车取消）:' \
+            'Delete easy_all Gcore CDN XHTTP local services, state and certificates? Remote Gcore resources will be kept. [y/N] (press Enter to cancel):' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_services
@@ -709,7 +716,7 @@ install_all() {
     info "[1/9] 安装系统依赖"
     install_packages
     ensure_ssh_boot_service
-    info "[2/9] 初始化 Google BBR 与定时重启"
+    info "[2/9] 安装 XanMod LTS BBRv3 与配置定时重启"
     configure_bbr_tcp
     configure_daily_reboot
     info "[3/9] 收集 Gcore 域名、订阅与 VLESS 参数"
@@ -745,6 +752,7 @@ install_all() {
     gcore_clear_api_token
     info "[9/9] 输出节点与订阅"
     show_subscription
+    show_bbrv3_status
     success "easy_all Gcore CDN XHTTP 安装完成"
 }
 

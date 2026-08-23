@@ -278,6 +278,33 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
         assert_equal "shared Fail2ban configuration is idempotent" \
             "1" "$(<"${restart_count}")"
 
+        legacy_cleanup_log="${TMP_DIR}/fail2ban-legacy-cleanup.log"
+        active_state_dir="${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban/migration-state"
+        install -d -m 0700 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+        printf '1\n' >"${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100.count"
+        printf '1\n' >"${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100-19.count"
+        : >"${legacy_cleanup_log}"
+        ufw() {
+            if [[ "${1:-} ${2:-}" == "status numbered" ]]; then
+                cat <<'EOF'
+[ 1] Anywhere DENY IN 198.51.100.19/32 # easy_all-fail2ban-cidr
+[ 2] Anywhere DENY IN 198.51.100.0/24 # easy_all-fail2ban-cidr
+[ 3] Anywhere DENY IN 203.0.113.0/24 # user-managed
+EOF
+                return 0
+            fi
+            printf '%s\n' "$*" >>"${legacy_cleanup_log}"
+        }
+        remove_legacy_fail2ban_ipv4_cidr_bans
+        assert_equal "shared Fail2ban removes only its legacy broad UFW rule" \
+            "--force delete 2" "$(<"${legacy_cleanup_log}")"
+        [[ ! -e "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100.count" ]] \
+            || fail "shared Fail2ban retained a legacy IPv4 /24 state file"
+        [[ -e "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100-19.count" ]] \
+            || fail "shared Fail2ban removed a current IPv4 /32 state file"
+        EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${active_state_dir}"
+
         fake_ufw="${TMP_DIR}/fake-ufw"
         fake_ufw_log="${TMP_DIR}/fake-ufw.log"
         printf '%s\n' '#!/usr/bin/env bash' \
@@ -293,14 +320,14 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
         EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
             EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \
             "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" unban 198.51.100.19 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
-        assert_equal "shared Fail2ban keeps one UFW rule while a C segment has active bans" \
-            "insert 1 deny from 198.51.100.0/24 to any comment easy_all-fail2ban-cidr" \
+        assert_equal "shared Fail2ban manages IPv4 addresses independently" \
+            $'insert 1 deny from 198.51.100.19/32 to any comment easy_all-fail2ban-cidr\ninsert 1 deny from 198.51.100.77/32 to any comment easy_all-fail2ban-cidr\n--force delete deny from 198.51.100.19/32 to any' \
             "$(<"${fake_ufw_log}")"
         EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
             EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \
             "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" unban 198.51.100.77 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
-        assert_equal "shared Fail2ban removes a C segment only after its final active ban expires" \
-            $'insert 1 deny from 198.51.100.0/24 to any comment easy_all-fail2ban-cidr\n--force delete deny from 198.51.100.0/24 to any' \
+        assert_equal "shared Fail2ban removes only the matching IPv4 address" \
+            $'insert 1 deny from 198.51.100.19/32 to any comment easy_all-fail2ban-cidr\ninsert 1 deny from 198.51.100.77/32 to any comment easy_all-fail2ban-cidr\n--force delete deny from 198.51.100.19/32 to any\n--force delete deny from 198.51.100.77/32 to any' \
             "$(<"${fake_ufw_log}")"
         EASY_ALL_TEST_UFW_LOG="${fake_ufw_log}" \
             EASY_ALL_FAIL2BAN_UFW_BIN="${fake_ufw}" \

@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 
-# Shared Google BBR and conservative TCP tuning. Profiles configure only the
-# legacy XanMod policy through BBR_ALLOW_EXISTING_XANMOD.
+# Shared XanMod LTS BBRv3 kernel management and conservative TCP tuning.
+
+readonly BBRV3_XANMOD_KEY_URL="https://dl.xanmod.org/archive.key"
+readonly BBRV3_XANMOD_KEY_FINGERPRINT="D38D7D1DA1349567ADED882D86F7D09EE734E623"
+readonly BBRV3_XANMOD_REPOSITORY_URL="https://deb.xanmod.org"
+readonly BBRV3_XANMOD_KEYRING="${BBRV3_XANMOD_KEYRING_OVERRIDE:-/etc/apt/keyrings/xanmod-archive-keyring.gpg}"
+readonly BBRV3_XANMOD_SOURCE="${BBRV3_XANMOD_SOURCE_OVERRIDE:-/etc/apt/sources.list.d/xanmod-release.list}"
+readonly BBRV3_CPUINFO_FILE="${BBRV3_CPUINFO_FILE_OVERRIDE:-/proc/cpuinfo}"
+readonly BBRV3_AVAILABLE_CC_FILE="${BBRV3_AVAILABLE_CC_FILE_OVERRIDE:-/proc/sys/net/ipv4/tcp_available_congestion_control}"
+readonly BBRV3_MINIMUM_XANMOD_VERSION="6.4.11"
+readonly BBRV3_REBOOT_MARKER="${STATE_DIR}/bbrv3-reboot-required"
+
+BBRV3_KERNEL_PACKAGE=""
 
 tcp_runtime_keys() {
     cat <<'EOF'
@@ -37,21 +48,158 @@ restore_tcp_runtime() {
         || warn "恢复安装前 TCP 运行参数失败，请检查 ${source}"
 }
 
-configure_bbr_tcp() {
-    if [[ "$(uname -r)" == *xanmod* ]]; then
-        case "${BBR_ALLOW_EXISTING_XANMOD:-0}" in
-        1)
-            [[ -f "${STATE_FILE}" ]] \
-                || die "当前运行 XanMod 内核；全新安装前请切换到 Debian 官方内核并重启"
-            warn "旧安装仍运行 XanMod；本次保留现有 BBR，切换到 Debian 官方内核后再次执行 update"
-            return 0
-            ;;
-        0) die "当前仍在运行 XanMod 内核；请先切换到 Debian 官方内核并重启" ;;
-        *) die "BBR_ALLOW_EXISTING_XANMOD 策略无效：${BBR_ALLOW_EXISTING_XANMOD}" ;;
-        esac
+bbrv3_cpu_level() {
+    local flags required flag level=0
+    flags=$(awk -F: '$1 ~ /^[[:space:]]*flags[[:space:]]*$/ {print " " $2 " "; exit}' \
+        "${BBRV3_CPUINFO_FILE}")
+    [[ -n "${flags}" ]] || die "无法读取 CPU x86-64 指令集能力"
+    for required in \
+        "lm cmov cx8 fpu fxsr mmx syscall sse2" \
+        "cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3" \
+        "avx avx2 bmi1 bmi2 f16c fma abm movbe xsave"; do
+        for flag in ${required}; do
+            [[ "${flags}" == *" ${flag} "* ]] || {
+                ((level >= 1)) || die "CPU 不满足 XanMod x86-64-v1 最低要求"
+                printf '%s\n' "${level}"
+                return 0
+            }
+        done
+        level=$((level + 1))
+    done
+    printf '%s\n' "${level}"
+}
+
+bbrv3_kernel_package() {
+    printf 'linux-xanmod-lts-x64v%s\n' "$(bbrv3_cpu_level)"
+}
+
+bbrv3_debian_codename() {
+    local codename
+    # shellcheck source=/dev/null
+    source /etc/os-release
+    codename=${VERSION_CODENAME:-}
+    case "${codename}" in
+    bookworm | trixie) printf '%s\n' "${codename}" ;;
+    *) die "XanMod BBRv3 仅支持当前项目的 Debian 12/13：${codename:-未知}" ;;
+    esac
+}
+
+bbrv3_secure_boot_enabled() {
+    local variable value
+    for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
+        [[ -r "${variable}" ]] || continue
+        value=$(od -An -j4 -N1 -tu1 "${variable}" 2>/dev/null | tr -d '[:space:]')
+        [[ "${value}" != "1" ]] || return 0
+    done
+    return 1
+}
+
+xanmod_key_fingerprint() {
+    gpg --batch --show-keys --with-colons "$1" 2>/dev/null \
+        | awk -F: '$1 == "fpr" {print $10; exit}'
+}
+
+xanmod_repository_line() {
+    printf 'deb [signed-by=%s] %s %s main\n' \
+        "${BBRV3_XANMOD_KEYRING}" "${BBRV3_XANMOD_REPOSITORY_URL}" \
+        "$(bbrv3_debian_codename)"
+}
+
+xanmod_repository_ready() {
+    local expected
+    [[ -s "${BBRV3_XANMOD_KEYRING}" && -s "${BBRV3_XANMOD_SOURCE}" ]] || return 1
+    [[ "$(xanmod_key_fingerprint "${BBRV3_XANMOD_KEYRING}")" \
+        == "${BBRV3_XANMOD_KEY_FINGERPRINT}" ]] || return 1
+    expected=$(xanmod_repository_line)
+    [[ "$(<"${BBRV3_XANMOD_SOURCE}")" == "${expected}" ]]
+}
+
+ensure_xanmod_repository() {
+    local key keyring source fingerprint
+    xanmod_repository_ready && return 0
+    if ! command -v gpg >/dev/null 2>&1; then
+        info "安装 XanMod APT 公钥校验依赖：gnupg"
+        apt-get update || die "刷新 Debian APT 索引失败"
+        apt-get install -y --no-install-recommends gnupg \
+            || die "安装 XanMod BBRv3 所需的 gnupg 失败"
     fi
+    command -v gpg >/dev/null 2>&1 || die "安装 XanMod BBRv3 需要 gnupg"
+    key="${RUNTIME_TMP}/xanmod-archive.key"
+    keyring="${RUNTIME_TMP}/xanmod-archive-keyring.gpg"
+    source="${RUNTIME_TMP}/xanmod-release.list"
+    curl -fL --proto '=https' --tlsv1.2 --retry 3 \
+        "${BBRV3_XANMOD_KEY_URL}" -o "${key}" \
+        || die "下载 XanMod 官方 APT 公钥失败"
+    fingerprint=$(xanmod_key_fingerprint "${key}")
+    [[ "${fingerprint}" == "${BBRV3_XANMOD_KEY_FINGERPRINT}" ]] \
+        || die "XanMod APT 公钥指纹不匹配：${fingerprint:-缺失}"
+    gpg --batch --yes --dearmor --output "${keyring}" "${key}" \
+        || die "转换 XanMod APT 公钥失败"
+    xanmod_repository_line >"${source}"
+    install -d -m 0755 "$(dirname -- "${BBRV3_XANMOD_KEYRING}")" \
+        "$(dirname -- "${BBRV3_XANMOD_SOURCE}")"
+    install -m 0644 "${keyring}" "${BBRV3_XANMOD_KEYRING}"
+    install -m 0644 "${source}" "${BBRV3_XANMOD_SOURCE}"
+    xanmod_repository_ready || die "XanMod APT 仓库写入后验收失败"
+}
+
+bbrv3_meta_package_installed() {
+    local package=${1:-${BBRV3_KERNEL_PACKAGE:-$(bbrv3_kernel_package)}}
+    dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
+        | grep -qx 'ii '
+}
+
+bbrv3_kernel_image_installed() {
+    find /boot -maxdepth 1 -type f -name 'vmlinuz-*xanmod*' -size +0c \
+        -print -quit 2>/dev/null | grep -q .
+}
+
+bbrv3_running_kernel_supported() {
+    local release version
+    release=$(uname -r)
+    [[ "${release}" == *xanmod* ]] || return 1
+    version=${release%%-*}
+    dpkg --compare-versions "${version}" ge "${BBRV3_MINIMUM_XANMOD_VERSION}"
+}
+
+ensure_bbrv3_kernel() {
+    BBRV3_KERNEL_PACKAGE=$(bbrv3_kernel_package)
+    if ! bbrv3_running_kernel_supported && bbrv3_secure_boot_enabled; then
+        die "检测到 UEFI Secure Boot；拒绝安装或切换到无法确认可启动的 XanMod BBRv3 内核"
+    fi
+    ensure_xanmod_repository
+    if ! bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}"; then
+        info "安装 XanMod LTS BBRv3 内核：${BBRV3_KERNEL_PACKAGE}"
+        apt-get update
+        apt-get install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}" \
+            || die "安装 XanMod LTS BBRv3 内核失败"
+    fi
+    bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}" \
+        || die "XanMod BBRv3 元包安装后验收失败：${BBRV3_KERNEL_PACKAGE}"
+    bbrv3_kernel_image_installed || die "未找到已安装的 XanMod BBRv3 内核镜像"
+    if command -v update-grub >/dev/null 2>&1; then
+        update-grub >/dev/null || die "更新 GRUB 的 XanMod BBRv3 启动项失败"
+    fi
+}
+
+show_bbrv3_status() {
+    local release
+    release=$(uname -r)
+    if bbrv3_running_kernel_supported \
+        && [[ "$(sysctl -n net.core.default_qdisc 2>/dev/null || true)" == "fq" ]] \
+        && [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)" == "bbr" ]]; then
+        printf 'BBRv3: active（XanMod %s，fq + bbr）\n' "${release}"
+    elif bbrv3_kernel_image_installed; then
+        printf 'BBRv3: pending-reboot（当前内核 %s；请重启进入 XanMod）\n' "${release}"
+    else
+        printf 'BBRv3: unavailable（未找到 XanMod 内核；请执行 easy_all apply）\n'
+    fi
+}
+
+configure_bbr_tcp() {
+    ensure_bbrv3_kernel
     cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
-# BBR
+# XanMod BBRv3 (the kernel registers it as tcp_bbr / bbr)
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
@@ -72,9 +220,9 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.core.somaxconn = 4096
 EOF
     modprobe tcp_bbr >/dev/null 2>&1 \
-        || die "当前 Debian 内核不支持 Google BBR (tcp_bbr)"
-    grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control \
-        || die "Google BBR 模块已加载，但内核未将其注册为可用拥塞控制算法"
+        || die "当前内核不支持 tcp_bbr"
+    grep -qw bbr "${BBRV3_AVAILABLE_CC_FILE}" \
+        || die "tcp_bbr 已加载，但内核未将 bbr 注册为可用拥塞控制算法"
     printf '%s\n' tcp_bbr >"${RUNTIME_TMP}/easy_all-bbr.conf"
     install -m 0644 "${RUNTIME_TMP}/easy_all-bbr.conf" "${BBR_MODULES_CONFIG}"
     install -m 0644 "${RUNTIME_TMP}/bbr.conf" "${SYSCTL_CONFIG}"
@@ -82,5 +230,13 @@ EOF
     [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
         || die "拥塞控制算法未成功设置为 bbr"
     [[ -f "${BBR_MODULES_CONFIG}" && -f "${SYSCTL_CONFIG}" ]] \
-        || die "Google BBR 开机配置写入失败"
+        || die "BBRv3 开机配置写入失败"
+    if bbrv3_running_kernel_supported; then
+        rm -f -- "${BBRV3_REBOOT_MARKER}"
+        success "XanMod BBRv3 已启用（$(uname -r)，fq + bbr）"
+    else
+        install -d -m 0700 "${STATE_DIR}"
+        install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
+        warn "XanMod BBRv3 内核已安装；当前仍为 $(uname -r)，请在安装结束后执行 sudo reboot"
+    fi
 }

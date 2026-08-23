@@ -13,7 +13,7 @@
 `aws` 或 `gcore`。每条链路只管理自己的云端资源，不会混用 AWS Access Key、Gcore Token
 或 DNS/CDN 对象。
 
-两条 CDN XHTTP 链路的新安装默认启用 **AI WARP**：Gemini、ChatGPT 和 Claude 相关目标由
+三条链路的新安装都默认启用 **AI WARP**：Gemini、ChatGPT 和 Claude 相关目标由
 Xray 内置的用户态 WireGuard 出站转给免费 Cloudflare WARP，其余目标仍由 VPS 直连。它不创建
 系统 TUN、不修改默认路由，也不会改变 SSH、Nginx、证书续期或 CDN 回源的出口。
 
@@ -23,9 +23,12 @@ Xray 内置的用户态 WireGuard 出站转给免费 Cloudflare WARP，其余目
 三种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
 UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。安装与 `easy_all apply`
 都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。三种模式还会
-通过同一公共模块安装并启用 Fail2ban：任一 IPv4 来源在 3 分钟内失败 6 次，会封禁其所在
-`/24`（C 段）3 小时；重复来源递增封禁且最长 1 周。IPv6 仍只封禁触发地址本身；`sshd` jail
+通过同一公共模块安装并启用 Fail2ban：任一来源在 3 分钟内失败 6 次，只封禁触发 IP
+3 小时；重复来源递增封禁且最长 1 周；`sshd` jail
 始终跟随实际 SSH 端口列表。
+旧版本创建的 `easy_all-fail2ban-cidr` IPv4 `/24` UFW 规则会在下次应用时自动清理。
+生成的 Mihomo 配置会把 TCP `22` 和 `65533` 直连规则固定在规则列表顶部，避免开启 TUN 后
+SSH 管理流量再次进入代理节点。
 
 ## 安装
 
@@ -81,8 +84,8 @@ flowchart TD
 
     B -->|1 默认| R0[直连 Reality]
     R0 --> R1[系统预检 / 端口与旧安装冲突检查]
-    R1 --> R2[备份 / 依赖 / SSH 启动保障 / BBR / 重启策略]
-    R2 --> R3[公网 IPv6 探测 / 连接地址 / SNI / 订阅端口]
+    R1 --> R2[备份 / 依赖 / SSH 启动保障 / XanMod LTS BBRv3 / 重启策略]
+    R2 --> R3[公网 IPv6 探测 / 连接地址 / SNI / WARP 模式 / 订阅端口]
     R3 --> R4{订阅输出选择}
     R4 -->|部署| R5[订阅域名、文件名、Token 或用户配额]
     R4 -->|仅节点| R6[不收集订阅服务参数]
@@ -94,7 +97,7 @@ flowchart TD
 
     B -->|2| X0[AWS CDN XHTTP]
     X0 --> X1[系统预检 / 冲突检查 / 备份]
-    X1 --> X2[依赖 / SSH 启动保障 / AWS CLI / BBR / 重启策略]
+    X1 --> X2[依赖 / SSH 启动保障 / AWS CLI / XanMod LTS BBRv3 / 重启策略]
     X2 --> X3[源站域名 / CDN 域名 / WARP 模式 / VLESS 自动参数]
     X3 --> X3A{CloudFront 计费模式选择}
     X3A -->|Free 固定套餐| X4{订阅输出选择}
@@ -105,13 +108,13 @@ flowchart TD
     X6 --> X7
     X7 --> X8[UFW / Nginx HTTP-01]
     X8 --> X9[源站证书 / Xray / Nginx / 本机运行时验收]
-    X9 --> X10[ACM / Paid account plan 检查或确认升级 / CloudFront / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]
+    X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]
     X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]
     X11 --> Z
 
     B -->|3| G0[Gcore CDN XHTTP]
     G0 --> G1[系统预检 / 冲突检查 / 备份]
-    G1 --> G2[依赖 / SSH 启动保障 / BBR / 重启策略]
+    G1 --> G2[依赖 / SSH 启动保障 / XanMod LTS BBRv3 / 重启策略]
     G2 --> G3[Gcore 源站域名 / CDN 域名 / WARP 模式 / VLESS 自动参数]
     G3 --> G4{订阅输出选择}
     G4 -->|部署| G5[文件名、Token 或用户配额]
@@ -131,9 +134,9 @@ flowchart TD
 
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
-| CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费 | `2` | 使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
+| CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费（默认推荐） | `2` | 选择 2 不会因升级 Paid account plan 立即收费；升级本身无固定月费，使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
 | Gcore CDN 费用保护 | 固定 `980 GB` | `980 GB` | Gcore Free CDN 使用本机 UTC 自然月保护，不创建付费套餐或 WAAP |
-| XHTTP WARP 出口 | `1` 关闭 / `2` AI WARP / `3` Global WARP | `2` | Gemini、ChatGPT、Claude 走 WARP，其余节点用户流量直连 |
+| 节点 WARP 出口 | `1` 关闭 / `2` AI WARP / `3` Global WARP | `2` | Gemini、ChatGPT、Claude 走 WARP，其余节点用户流量直连 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
 | 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
@@ -144,16 +147,29 @@ flowchart TD
 
 脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。
 UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
+所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文；密码提示也保持双语并继续隐藏输入，
+因此在中文乱码的 VNC 终端中仍可按英文提示完成操作。
 
-三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站。Reality 与关闭
-WARP 的 XHTTP 固定使用 `ForceIPv4`；XHTTP 默认 AI WARP 的用户态 WireGuard 出站也固定以
-IPv4 解析目标。该策略不再执行 IPv4/IPv6 测速，也不提供地址族切换配置。`gstatic.com` 已纳入
+三种安装模式都从 Mihomo 模板顶部的三组 AI 域名元数据生成 VPS 端出站策略。关闭 WARP 时，
+Gemini 使用 `ForceIPv4` 专用直连；AI WARP 的用户态 WireGuard 出站也固定以 IPv4 解析目标。
+该策略不再执行 IPv4/IPv6 测速，也不提供地址族切换配置。`gstatic.com` 已纳入
 Gemini 元数据：关闭 WARP 时走 Gemini 固定 IPv4 出站，默认 AI WARP 时（包括
 `www.gstatic.com/generate_204`）走 WARP。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
-尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + BBR`，并关闭
+尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
 `tcp_slow_start_after_idle`，避免复用的空闲 TCP 连接恢复传输时重新进入慢启动。
+
+三种链路统一安装 XanMod LTS 内核；XanMod 官方将 Google BBRv3 内置为默认 `tcp_bbr`，因此
+sysctl 中算法名称仍是 `bbr`，不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3。
+安装器固定校验 XanMod APT 公钥指纹，通过 HTTPS 仓库安装，并按当前 CPU 能力选择
+`linux-xanmod-lts-x64v1/v2/v3`；这里的 x64v1/v2/v3 是 CPU 指令集等级，不是 BBR 版本。
+参考：[Google BBRv3 源码分支](https://github.com/google/bbr/tree/v3)、
+[XanMod 官方 BBRv3 与 APT 安装说明](https://xanmod.org/)。
+
+新内核安装后不会强制中断 SSH 自动重启；当前服务先继续运行，并显示 `pending-reboot`。完成安装后执行
+`sudo reboot`，重新连接再运行 `sudo easy_all status`，只有输出 `BBRv3: active` 才表示已经进入
+XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写入无法确认能够启动的第三方内核。
 
 ## 命令说明
 
@@ -163,13 +179,13 @@ Gemini 元数据：关闭 WARP 时走 Gemini 固定 IPv4 出站，默认 AI WARP
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
-| `status` | 显示当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示当前 Provider 的云端资源 ID 和全局费用保护状态，不调用云 API。 |
+| `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示当前 Provider 的云端资源 ID 和全局费用保护状态，不调用云 API。 |
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS 或 Gcore。 |
 | `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并同步当前 Provider 的云资源：AWS 同步 Route 53/ACM/CloudFront，Gcore 同步 Managed DNS/CDN/边缘证书。 |
 | `update-sub` | 重新选择订阅输出并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件，不修改 AWS 或 Gcore。 |
-| `warp-set [off\|ai\|global]` | 仅 CDN XHTTP 可用；切换 WARP 出口。省略参数时显示交互菜单。 |
-| `warp-status` | 仅 CDN XHTTP 可用；验收 WARP，并显示当前共享出口 IP 与 Cloudflare Colo。 |
+| `warp-set [off\|ai\|global]` | Reality 与 CDN XHTTP 均可用；切换 WARP 出口。省略参数时显示交互菜单。 |
+| `warp-status` | Reality 与 CDN XHTTP 均可用；验收 WARP，并显示当前共享出口 IP 与 Cloudflare Colo。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
 | `quota-status` | 显示每用户月度配额；AWS 按量付费和 Gcore Free CDN 同时显示独立的 CDN 全局费用保护用量。 |
@@ -181,6 +197,11 @@ Gemini 元数据：关闭 WARP 时走 Gemini 固定 IPv4 出站，默认 AI WARP
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
 云资源时才使用 `easy_all apply-cloud`。
 
+已经安装旧版本 easy_all 的三种链路，升级 BBRv3 的顺序是：先执行 `sudo easy_all self-update`，
+再执行 `sudo easy_all apply` 安装 XanMod LTS 内核；看到 `pending-reboot` 后执行 `sudo reboot`，
+重连后用 `sudo easy_all status` 确认 `BBRv3: active`。XHTTP 链路不需要为这次内核升级执行
+`apply-cloud`。
+
 ### `apply` 的具体操作
 
 默认执行 `easy_all apply` 不会改变 Reality/CDN 模式、UUID、节点域名或 XHTTP 路径，也不会
@@ -188,12 +209,13 @@ Gemini 元数据：关闭 WARP 时走 Gemini 固定 IPv4 出站，默认 AI WARP
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 SSH 监听、UFW 与 Fail2ban；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
-| CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、WARP Profile、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 重启前结算尚未写入账本的 Xray 流量，再按已保存的 WARP 策略生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
+| Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、WARP Profile、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的 WARP、订阅与端口模式，同步 SSH 监听、UFW 与 Fail2ban；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 按已保存的 WARP 策略生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
+| CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、WARP Profile、Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 重启前结算尚未写入账本的 Xray 流量，再按已保存的 WARP 策略生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
 
-Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的状态、Xray/Nginx 配置和
-订阅文件；CDN XHTTP 还会恢复 WARP Profile。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
-BBR/TCP 参数。已经成功创建或修改的云端资源不会自动回滚。
+Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的状态、WARP Profile、
+Xray/Nginx 配置和订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
+BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚；已安装的内核包也不会在回滚或卸载时
+自动删除，避免破坏当前启动项。
 
 ### `apply-cloud` 的具体操作
 
@@ -453,7 +475,7 @@ Reality 生成的 Mihomo/Clash 节点通过
 Reality 节点自身的 A/AAAA 连接选择；模板中的业务 DNS 仍保持 `ipv6: false`，也不配置 TUN
 IPv6 地址。Gemini 目标域名在 VPS 的 Xray 出口仍按公共策略固定地址族。
 
-Reality 服务端使用 `IPOnDemand` 在遇到 IP 规则时解析目标地址，并阻断 IPv4/IPv6
+Reality 服务端与 CDN XHTTP 使用相同的 `off`、`ai`、`global` WARP 出站策略，并阻断 IPv4/IPv6
 私网、链路本地、回环、组播及保留地址，避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
 
 Reality 交互选项：
@@ -462,6 +484,7 @@ Reality 交互选项：
 | --- | --- | --- |
 | 客户端连接地址 | 自动探测到的公网 IPv4 | 使用探测值；探测失败时必须手填 |
 | Reality SNI/目标 | `swdist.apple.com:443` | 使用默认目标 |
+| WARP 出口 | AI WARP | Gemini、ChatGPT、Claude 走 WARP，其余节点用户流量直连 |
 | 订阅端口 | `dynamic` | 随机生成 `10000-62710` 端口 |
 | 订阅输出 | 部署 Nginx HTTPS `8443` | 部署订阅服务 |
 | 自托管订阅域名 | 无 | 不允许为空 |
@@ -474,7 +497,8 @@ Reality 交互选项：
 - 使用域名作为连接地址时，AAAA 可以不发布；未发布时客户端暂时使用 A 记录。发布 AAAA 后，其地址必须与检测到的 VPS 公网 IPv6 一致。
 - 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
 
-Reality 入站双栈只影响客户端如何连接服务器。Gemini 出口始终固定使用 `ForceIPv4`，不会因为入站启用双栈而改变。
+Reality 入站双栈只影响客户端如何连接服务器。关闭 WARP 时 Gemini 出口固定使用
+`ForceIPv4`；AI/Global WARP 的 WireGuard 出站同样固定优先 IPv4，不会因为入站启用双栈而改变。
 
 默认自动选择通常不需要额外操作。需要强制只连接 IPv4，或要求完整的节点双栈条件时，可执行：
 
@@ -578,9 +602,9 @@ sudo env CDN_CLIENT_IP_FAMILY=auto easy_all apply
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
 都会把当前值显示在方括号中，直接回车沿用当前状态。
 
-### XHTTP WARP 出口
+### Reality / XHTTP WARP 出口
 
-AWS 与 Gcore XHTTP 共用同一套 WARP 策略，新安装默认 `ai`：
+Reality、AWS XHTTP 与 Gcore XHTTP 共用同一套 WARP 策略，新安装默认 `ai`：
 
 | 模式 | Xray 节点用户流量 | VPS 主机网络 |
 | --- | --- | --- |
@@ -598,7 +622,7 @@ AWS 与 Gcore XHTTP 共用同一套 WARP 策略，新安装默认 `ai`：
 
 实现使用 Xray 内置 WireGuard 出站并固定 `noKernelTun: true`、MTU `1280`；因此不会执行
 `wg-quick`，不会创建主机网卡、策略路由或改写 VPS 默认路由。这里的 `global` 只表示“该节点的
-全部用户流量”，不包括 SSH、Nginx、acme.sh、AWS/Gcore API 或 CDN 回源。私网、回环、链路本地、
+全部用户流量”，不包括 SSH、Nginx、acme.sh，也不包括 CDN 模式的 AWS/Gcore API 或 CDN 回源。私网、回环、链路本地、
 组播和云元数据地址会先被阻断，WARP 故障时也不会自动回退到 VPS 直连出口。
 
 首次启用时，安装器从 GitHub Release 下载临时 `wgcf` amd64 二进制并用 Release 的 SHA256
@@ -621,8 +645,9 @@ sudo easy_all warp-status
 ```
 
 切换会先备份状态、Profile 与本机配置，实时确认 Cloudflare trace 返回 `warp=on` 后才刷新 Xray；
-失败则恢复旧配置。已有 `STATE_VERSION=4` 的 XHTTP 安装升级时保守迁移为 `off`，不会在一次普通
-`apply` 中静默改变出口；需要启用时显式执行 `easy_all warp-set ai`。
+失败则恢复旧配置。未保存 `WARP_MODE` 的旧 Reality（`STATE_VERSION=1/2`）和旧 XHTTP
+（`STATE_VERSION=4`）安装升级时都会保守迁移为 `off`，不会在一次普通 `apply` 中静默改变出口；
+需要启用时显式执行 `easy_all warp-set ai`。
 
 Mihomo 响应的下载文件名严格使用保存值；默认下载为 `EASY_ALL`，不会自动追加 `.yaml`。
 
@@ -712,7 +737,10 @@ AWS 默认交互授权使用 Access Key ID 与 Secret Access Key；它们仅在�
 不写入状态文件。在 VPS 已配置可用的 IAM Role 或 AWS CLI 默认凭证链时，可执行
 `sudo env AWS_USE_DEFAULT_CREDENTIAL_CHAIN=1 easy_all apply-cloud`，这时不询问两项 Access Key。
 脚本检测到 Free account plan 时会在终端说明计费边界并要求一次确认，确认后调用 AWS API 升级
-为 Paid；剩余 Free Tier Credit 仍保留至原到期日。脚本随后按安装时的选择创建 CloudFront
+为 Paid。这个升级动作本身没有固定费用，也不是购买 CloudFront 固定套餐；它只是解除 Free plan
+的服务限制并开启标准按量计费。只要仍在剩余 Free Tier Credit/适用免费额度内，通常不会产生
+CloudFront 账单；超出 Credit/免费额度或使用不适用 credit 的资源后，AWS 仍会按标准价格计费。
+剩余 Free Tier Credit 正常会保留至原到期日。脚本随后按安装时的选择创建 CloudFront
 `FREE` 固定套餐，或保持按量付费且不创建 WAF；不会批准 Pro、Business 或 Premium 套餐。
 非交互执行只有显式设置 `AWS_ACCOUNT_PLAN_UPGRADE=1` 才允许账号升级。
 不要使用 AWS 根用户凭证；默认方式应创建权限受限的专用 IAM 用户。AWS 注册、最小权限策略、
@@ -761,8 +789,8 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 /etc/easy_all/quota-usage.json
 /etc/easy_all/cloudfront-fee-usage.json
 /etc/easy_all/xray/config.json
-/etc/easy_all/warp/wgcf-account.toml        # 仅 XHTTP 启用 WARP
-/etc/easy_all/warp/wgcf-profile.conf        # 仅 XHTTP 启用 WARP
+/etc/easy_all/warp/wgcf-account.toml        # 当前模式启用 WARP 时存在
+/etc/easy_all/warp/wgcf-profile.conf        # 当前模式启用 WARP 时存在
 /etc/easy_all/certs/
 /var/www/easy_all/subscriptions/
 /etc/nginx/conf.d/easy_all.conf
@@ -776,13 +804,13 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 状态字段包括：
 
 ```text
-STATE_VERSION=2  # Reality
+STATE_VERSION=3  # Reality
 STATE_VERSION=5  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
 REALITY_CLIENT_IP_FAMILY=auto|ipv4|dual       # 仅 Reality 的客户端节点连接地址族
 CDN_CLIENT_IP_FAMILY=auto|ipv4|dual           # 仅 CDN 的客户端到边缘连接地址族
-WARP_MODE=off|ai|global                       # 仅 CDN XHTTP；新安装默认 ai
+WARP_MODE=off|ai|global                       # Reality/CDN XHTTP；新安装默认 ai
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
 CLOUDFRONT_FEE_PROTECTION_GB=0|980            # AWS 固定套餐|AWS 按量付费
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
@@ -820,10 +848,10 @@ easy_all
    ├─ mihomo-template.sh     Mihomo 模板加载、校验与路由元数据
    ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
    ├─ xray-core.sh           Xray 下载、校验与安装
-   ├─ warp.sh                XHTTP 用户态 WireGuard WARP 注册、路由与验收
+   ├─ warp.sh                Reality/XHTTP 用户态 WireGuard WARP 注册、路由与验收
    ├─ scheduled-maintenance.sh  证书续期与可选定时重启
    ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
-   └─ tcp-tuning.sh          Google BBR 与保守 TCP 参数
+   └─ tcp-tuning.sh          XanMod LTS BBRv3 内核与保守 TCP 参数
 sample-mihomo.yaml
 ```
 
@@ -833,8 +861,8 @@ sample-mihomo.yaml
 代码。两个 XHTTP Profile 通过 `xhttp_render_xray_config` 实现各自的服务端传输参数。
 
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
-`scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`warp.sh` 只由 XHTTP Runtime
-加载，Reality 不加载 WARP 逻辑。`network.sh` 只负责只读网络
+`scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`warp.sh` 由 Reality 与
+XHTTP Runtime 共同加载。`network.sh` 只负责只读网络
 探测，`firewall.sh` 负责具有系统副作用的 UFW 修改，两者刻意保持独立。
 
 ## 测试
@@ -844,7 +872,7 @@ npm test
 ```
 
 测试覆盖统一入口、公共模块归属与安装完整性、XHTTP Runtime/Provider 隔离、Reality 目标验收、
-私网目标阻断、Reality 客户端地址族策略、
+三种安装模式的 WARP 出站、私网目标阻断、Reality 客户端地址族策略、
 AWS/Gcore XHTTP、用户凭据与月度配额、TCP 参数回滚、Xray 配置、CloudFront JSON、Gcore API
 载荷、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 
@@ -888,15 +916,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/debian_i
 远端操作包括：
 
 - 执行 `apt-get upgrade` 并安装基础工具及 Fail2ban。
-- 使用 Debian 官方内核的 Google BBR，TCP 参数与 `easy_all` 保持一致；拒绝 XanMod。
+- 服务器初始化阶段使用 Debian 官方内核的 Google BBR，并沿用与 `easy_all` 相同的 TCP 参数；
+  `debian_init.sh` 是独立的 SSH/系统初始化工具，不属于三条代理链，因此不会安装 XanMod。随后安装
+  easy_all 或执行 `easy_all apply` 时，三条代理链会统一换成 XanMod BBRv3。
 - 配置并启用 UFW：默认拒绝入站和转发、允许出站，并为 SSH 当前/最终端口及用户显式输入的额外 TCP 端口添加受管规则；已有的其他 UFW 规则保持不变。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
 - 创建或更新普通用户、sudo 密码和 SSH 公钥。
 - 为普通用户安装 `uv` 和 Python 3.12。
 - 写入优先级明确的独立 `sshd_config.d` 配置，保留普通用户和 root 的密码登录，也保留密钥登录；
   同时缩短未认证连接宽限时间，限制单一来源与全局预认证连接，避免扫描占满 sshd 队列。
-- 启用 Fail2ban 的 `sshd` jail：任一 IPv4 来源 3 分钟内失败 6 次后，先封禁其所在 `/24`（C 段）
-  3 小时；IPv6 只封禁触发地址。重复来源递增封禁，最长 1 周；Fail2ban 永久监控当前 SSH
+- 启用 Fail2ban 的 `sshd` jail：任一来源 3 分钟内失败 6 次后，只封禁触发 IP 3 小时；
+  重复来源递增封禁，最长 1 周；Fail2ban 永久监控当前 SSH
   端口和新增的 `65533`，并通过 UFW 执行封禁。
 - 在本地 `~/.ssh/config` 写入连接重试和保活参数的受管 Host 配置。
 

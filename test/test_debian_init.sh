@@ -278,8 +278,10 @@ test_remote_script_contract() {
         'ports_csv=${SSH_PORTS// /,}' "${platform_content}"
     assert_contains "shared platform uses CIDR-aware UFW Fail2ban bans" \
         "banaction = easy-all-ufw-cidr" "${platform_content}"
-    assert_contains "shared platform aggregates IPv4 Fail2ban bans by C segment" \
-        'NETWORK="$((10#${first})).$((10#${second})).$((10#${third})).0/24"' "${platform_content}"
+    assert_contains "shared platform limits IPv4 Fail2ban bans to one address" \
+        'NETWORK="$((10#${first})).$((10#${second})).$((10#${third})).$((10#${fourth}))/32"' "${platform_content}"
+    assert_contains "shared platform removes legacy broad IPv4 bans" \
+        "remove_legacy_fail2ban_ipv4_cidr_bans" "${platform_content}"
     assert_contains "shared Fail2ban avoids reverse DNS under scan load" \
         "usedns = no" "${platform_content}"
     assert_contains "shared platform increments repeated-source bans" \

@@ -35,7 +35,6 @@ readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy_all"
 readonly UFW_RULE_COMMENT="easy_all-managed"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
-readonly BBR_ALLOW_EXISTING_XANMOD="0"
 readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
@@ -189,10 +188,9 @@ generate_xhttp_path() {
 }
 
 prompt_secret() {
-    local label=$1 value
+    local label=$1 label_en=${2:-Input secretly / see the Chinese prompt above} value
     [[ -t 0 ]] || return 1
-    read -r -s -p "${label}: " value
-    printf '\n' >&2
+    read_bilingual "${label}:" "${label_en}:" value 1
     printf '%s' "${value}"
 }
 
@@ -203,10 +201,16 @@ choose_subscription_mode() {
             current_mode=${mode:-deploy}
             [[ "${current_mode}" == "link" ]] && default_choice=2
             printf '请选择是否部署订阅服务：\n'
+            printf 'Choose whether to deploy the subscription service:\n'
             printf '  1. 部署订阅服务（%s + Nginx；只有当前服务器时推荐）\n' \
                 "${XHTTP_CDN_NAME}"
+            printf '     Deploy the subscription service (%s + Nginx; recommended for a single server)\n' \
+                "${XHTTP_CDN_NAME}"
             printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-            read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " mode
+            printf '     Do not deploy it; output node information only (recommended for multi-node setups or an existing subscription server)\n'
+            read_bilingual \
+                "请选择 [${default_choice}]（直接回车使用默认值）:" \
+                "Choose [${default_choice}] (press Enter to use the default):" mode
             mode=${mode:-${current_mode}}
         elif [[ -z "${mode}" ]]; then
             die "非交互模式必须设置 SUBSCRIBE_MODE=deploy 或 SUBSCRIBE_MODE=link"
@@ -227,7 +231,8 @@ subscription_enabled() {
 choose_subscription_download_name() {
     local name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
     if [[ -t 0 ]]; then
-        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}")
+        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}" \
+            "Mihomo download filename (without .yaml)")
     fi
     name=$(normalize_sub_download_name "${name}")
     validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
@@ -260,7 +265,7 @@ install_packages() {
     apt-get update
     apt-get upgrade -y
     apt-get install -y --no-install-recommends \
-        ca-certificates curl wget jq unzip openssl dnsutils ufw nginx \
+        ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw nginx \
         fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
         systemd-timesyncd tar
     timedatectl set-timezone Asia/Shanghai

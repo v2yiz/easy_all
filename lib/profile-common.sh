@@ -6,13 +6,27 @@ make_temp_dir() {
     mktemp -d "${RUNTIME_TMP}/part.XXXXXX"
 }
 
+read_bilingual() {
+    local label_zh=$1 label_en=$2 variable=$3 silent=${4:-0} input
+    printf '%s\n%s\n' "${label_zh}" "${label_en}" >&2
+    if [[ "${silent}" == "1" ]]; then
+        IFS= read -r -s -p '> ' input
+        printf '\n' >&2
+    else
+        IFS= read -r -p '> ' input
+    fi
+    printf -v "${variable}" '%s' "${input}"
+}
+
 prompt_value() {
-    local label=$1 default=${2:-} value
+    local label=$1 default=${2:-} label_en=${3:-Input / see the Chinese prompt above} value
     if [[ -n "${default}" ]]; then
-        read -r -p "${label} [${default}]（直接回车使用默认值）: " value
+        read_bilingual \
+            "${label} [${default}]（直接回车使用默认值）:" \
+            "${label_en} [${default}] (press Enter to use the default):" value
         printf '%s' "${value:-${default}}"
     else
-        read -r -p "${label}: " value
+        read_bilingual "${label}:" "${label_en}:" value
         printf '%s' "${value}"
     fi
 }

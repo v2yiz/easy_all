@@ -70,7 +70,7 @@ extract_ai_warp_domain_suffixes() {
 }
 
 validate_mihomo_template() {
-    local source=$1 marker count
+    local source=$1 marker count ssh_rules
     [[ -s "${source}" ]] || die "sample-mihomo.yaml 为空：${source}"
     for marker in \
         "# EASY_ALL_PROXY_NODE" \
@@ -86,6 +86,17 @@ validate_mihomo_template() {
             || die "sample-mihomo.yaml 模板标记无效：${marker} 应且只能出现一次"
     done
     grep -q '^rules:' "${source}" || die "sample-mihomo.yaml 缺少规则"
+    ssh_rules=$(awk '
+        $0 == "rules:" {in_rules=1; next}
+        in_rules && /^[[:space:]]*-[[:space:]]*/ {
+            rule=$0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", rule)
+            print rule
+            if (++count == 2) exit
+        }
+    ' "${source}")
+    [[ "${ssh_rules}" == $'DST-PORT,22,DIRECT\nDST-PORT,65533,DIRECT' ]] \
+        || die "sample-mihomo.yaml 的前两条规则必须直连 SSH 端口 22 和 65533"
     extract_gemini_domain_suffixes "${source}" >/dev/null
     extract_chatgpt_domain_suffixes "${source}" >/dev/null
     extract_claude_domain_suffixes "${source}" >/dev/null

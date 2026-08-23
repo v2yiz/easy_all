@@ -57,10 +57,16 @@ configure_daily_reboot() {
     local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job
     if [[ -z "${mode}" && -t 0 ]]; then
         printf '请选择定时重启策略：\n'
+        printf 'Choose the scheduled reboot policy:\n'
         printf '  1. 每天凌晨 4 点重启（默认）\n'
+        printf '     Reboot every day at 04:00 (default)\n'
         printf '  2. 自定义每天几点重启（0-23）\n'
+        printf '     Choose a daily reboot hour (0-23)\n'
         printf '  3. 不配置定时重启\n'
-        read -r -p "请选择 [1]（直接回车使用默认值）: " mode
+        printf '     Do not configure scheduled reboots\n'
+        read_bilingual \
+            '请选择 [1]（直接回车使用默认值）:' \
+            'Choose [1] (press Enter to use the default):' mode
     fi
     mode=${mode:-1}
     case "${mode}" in
@@ -69,7 +75,8 @@ configure_daily_reboot() {
         SCHEDULED_REBOOT_HOUR="${DEFAULT_REBOOT_HOUR}"
         ;;
     2 | custom)
-        [[ -n "${hour}" ]] || hour=$(prompt_value "每天重启小时（0-23）" "")
+        [[ -n "${hour}" ]] || hour=$(prompt_value "每天重启小时（0-23）" "" \
+            "Daily reboot hour (0-23)")
         [[ "${hour}" =~ ^[0-9]+$ ]] && ((10#${hour} <= 23)) \
             || die "重启小时无效：${hour}"
         SCHEDULED_REBOOT_ENABLED=1

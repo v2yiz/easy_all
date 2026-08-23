@@ -47,6 +47,13 @@ AWS 注册时选择的 **Free account plan** 与 CloudFront 计费方式不是�
    并在 VPS 上自动启用 `980 GB` 全局费用保护。
 5. 把 CDN 域名写成 CloudFront Alias A/AAAA；Route 53 不对直接指向 CloudFront 的 Alias 查询收费。
 
+重要：AWS **升级为 Paid account plan 的动作本身不收费，也没有固定月费**；它不是购买
+CloudFront 付费套餐。升级只是解除 Free account plan 的服务限制并开启标准按量计费。只要仍在
+剩余 Free Tier Credit/适用免费额度内，通常不会产生 CloudFront 账单；超出 Credit/免费额度，或
+使用不适用 credit 的资源时，AWS 仍会按标准价格计费。安装菜单中的 `2 按量付费` 是多数用户的默认推荐，
+表示使用每月 1 TB + 1000 万请求免费额度，并由本机 980 GB 安全阀提前阻断节点流量；它不表示
+升级瞬间就会扣费。
+
 CloudFront 分配会启用 IPv6。安装器在 Alias A/AAAA 生效后，根据
 `CDN_CLIENT_IP_FAMILY=auto|ipv4|dual` 生成 Mihomo 节点；默认 `auto` 检测到公共 A/AAAA
 后启用双栈竞速。该设置只控制客户端到 CloudFront 边缘的连接，不改变 IPv4 源站回源，也不改变

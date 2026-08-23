@@ -52,7 +52,7 @@ assert_failure() {
 
 source_script_copy() {
     local module
-    for module in quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
+    for module in quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh warp.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/${module}"
     done
     sed \
@@ -92,11 +92,27 @@ set_fixture() {
     VPS_PUBLIC_IPV6=""
     REALITY_CLIENT_IP_FAMILY="auto"
     REALITY_CLIENT_IP_FAMILY_RESOLVED=""
+    WARP_MODE="off"
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="selfhost"
     SUBSCRIPTION_DOMAIN="sub.example.com"
     SUB_DOWNLOAD_NAME="MY_SUB"
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
+}
+
+install_test_warp_profile() {
+    install -d -m 0700 "${WARP_DIR}"
+    printf '%s\n' \
+        '[Interface]' \
+        'PrivateKey = YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=' \
+        'Address = 172.16.0.2/32, 2606:4700:110:8765::2/128' \
+        'MTU = 1280' \
+        '' \
+        '[Peer]' \
+        'PublicKey = YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=' \
+        'AllowedIPs = 0.0.0.0/0, ::/0' \
+        'Endpoint = engage.cloudflareclient.com:2408' >"${WARP_PROFILE_FILE}"
+    chmod 0600 "${WARP_PROFILE_FILE}"
 }
 
 test_syntax_and_worker_removal() {
@@ -120,12 +136,14 @@ test_syntax_and_worker_removal() {
         "configure_subscription()" "${script}"
     assert_contains "Reality validates AAAA against detected server IPv6" \
         "的 AAAA \${mismatch} 未指向本机公网 IPv6" "${script}"
-    assert_contains "Reality fixes Google and Gemini egress to IPv4" \
-        '--arg gemini_domain_strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}"' "${script}"
+    assert_contains "Reality uses shared WARP outbounds" \
+        'managed_outbounds=$(warp_xray_outbounds_json)' "${script}"
+    assert_contains "Reality uses shared WARP routing" \
+        'managed_routing=$(warp_xray_routing_json)' "${script}"
     assert_not_contains "Reality no longer measures Gemini egress families" \
         'resolve_gemini_ip_family' "${script}"
-    assert_contains "Reality blocks private destinations before direct egress" \
-        '"169.254.0.0/16"' "${script}"
+    assert_contains "shared Reality WARP policy blocks private destinations before egress" \
+        '"169.254.0.0/16"' "$(<"${ROOT_DIR}/lib/warp.sh")"
     assert_contains "Reality validates its camouflage target with Xray" \
         'tls ping "${REALITY_TARGET}"' "${script}"
     assert_contains "Reality default prompts explain the enter default" \
@@ -141,7 +159,8 @@ test_syntax_and_worker_removal() {
         'PRESERVE_ACME=1' "${script}"
     assert_contains "Reality uses the shared scheduled maintenance module" \
         'source "${SCRIPT_DIR}/scheduled-maintenance.sh"' "${script}"
-    assert_not_contains "installer no longer downloads XanMod" "dl.xanmod.org" "${script}"
+    assert_contains "shared TCP tuning installs XanMod BBRv3 from the official source" \
+        "https://dl.xanmod.org/archive.key" "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
     assert_contains "installer uses the shared TCP tuning module" \
         'source "${SCRIPT_DIR}/tcp-tuning.sh"' "${script}"
     assert_contains "shared TCP tuning persists Google BBR module loading" \
@@ -646,7 +665,23 @@ test_legacy_firewall_migration() {
 }
 
 test_state_and_xray() {
-    local state config
+    local state config legacy_warp_mode
+    install -d -m 0700 "${STATE_DIR}"
+    printf '%s\n' \
+        'STATE_VERSION=2' \
+        'PROTOCOL=reality' \
+        'REALITY_INBOUND_IP_FAMILY=ipv4' \
+        'REALITY_CLIENT_IP_FAMILY=auto' \
+        'SUBSCRIPTION_MODE=link' \
+        'QUOTA_ENABLED=0' >"${STATE_FILE}"
+    legacy_warp_mode=$(
+        unset WARP_MODE
+        load_state
+        printf '%s' "${WARP_MODE}"
+    )
+    assert_equal "legacy Reality state migrates without silently enabling WARP" \
+        "off" "${legacy_warp_mode}"
+
     set_fixture
     save_state
     state=$(<"${STATE_FILE}")
@@ -658,6 +693,8 @@ test_state_and_xray() {
         "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
     assert_contains "state persists Reality client endpoint family policy" \
         "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
+    assert_contains "state persists Reality WARP policy" \
+        "WARP_MODE=off" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state no longer persists a configurable Gemini family" \
@@ -721,6 +758,31 @@ EOF
         <<<"${config}"
     unset GEMINI_IP_FAMILY
 
+    install_test_warp_profile
+    WARP_MODE="ai"
+    write_xray_config
+    config=$(<"${XRAY_CONFIG}")
+    assert_success "Reality AI WARP routes only maintained AI domains through WireGuard" \
+        jq -e \
+        '(.outbounds[] | select(.tag == "warp").protocol) == "wireguard"
+         and (.routing.rules[] | select(.outboundTag == "warp").domain
+             | index("domain:openai.com"))
+         and (.routing.rules[] | select(.outboundTag == "warp").domain
+             | index("domain:gstatic.com"))
+         and (.routing.rules[-1].outboundTag == "direct")' \
+        <<<"${config}"
+
+    WARP_MODE="global"
+    write_xray_config
+    config=$(<"${XRAY_CONFIG}")
+    assert_success "Reality Global WARP routes all node TCP and UDP through WireGuard" \
+        jq -e \
+        '(.routing.rules | length) == 2
+         and .routing.rules[1]
+             == {type:"field",network:"tcp,udp",outboundTag:"warp"}' \
+        <<<"${config}"
+
+    WARP_MODE="off"
     QUOTA_ENABLED=1
     USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":0},"friend":{"token":"friend-token-123","uuid":"00000000-0000-4000-8000-000000000002","quota_gb":100}}'
     rm -f -- "${QUOTA_USAGE_FILE}"
@@ -762,10 +824,11 @@ test_install_pipeline_order() {
         register_easy_all_command() { printf 'register\n'; }
         install_quota_timer() { printf 'quota-timer\n'; }
         show_subscription() { printf 'show\n'; }
+        show_bbrv3_status() { printf 'bbrv3\n'; }
         run_reality_install_pipeline "reality" 1
     )
     assert_equal "Reality install pipeline follows input, common runtime, branch, persistence order" \
-        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\nquota-timer\nshow' \
+        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\nquota-timer\nshow\nbbrv3' \
         "${calls}"
 }
 

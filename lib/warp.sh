@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared XHTTP outbound policy for optional Cloudflare WARP egress.
+# Shared Reality/XHTTP outbound policy for optional Cloudflare WARP egress.
 # WARP is implemented inside Xray so it never changes the host default route,
 # CDN origin traffic, SSH, Nginx, UFW, or certificate renewal networking.
 
@@ -45,12 +45,20 @@ choose_warp_mode() {
     esac
     if [[ -t 0 ]]; then
         printf '请选择节点用户的 WARP 出口：\n'
+        printf 'Choose the WARP egress for node users:\n'
         printf '  1. 不启用 WARP：目标网站看到 VPS 出口 IP\n'
+        printf '     Disable WARP: websites see the VPS egress IP\n'
         printf '  2. AI WARP（默认）：Gemini、ChatGPT、Claude 走免费 WARP，其余直连\n'
+        printf '     AI WARP (default): Gemini, ChatGPT and Claude use free WARP; other traffic is direct\n'
         printf '  3. Global WARP：全部节点用户 TCP/UDP 走免费 WARP\n'
+        printf '     Global WARP: all node-user TCP/UDP traffic uses free WARP\n'
         printf '提示：免费 WARP 是共享出口，不保证 IP 固定；不会修改 VPS 系统路由或 CDN 回源。\n'
+        printf 'Note: free WARP uses shared egress IPs; the IP is not fixed. The VPS route and CDN origin egress are unchanged.\n'
         printf '选择 AI/Global 即表示接受 Cloudflare WARP 服务条款。\n'
-        read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " choice
+        printf 'Choosing AI/Global means accepting Cloudflare WARP Terms of Service.\n'
+        read_bilingual \
+            "请选择 [${default_choice}]（直接回车使用默认值）:" \
+            "Choose [${default_choice}] (press Enter to use the default):" choice
         mode=${choice:-${current_mode}}
     else
         mode=${mode:-${current_mode}}
@@ -177,7 +185,8 @@ warp_xray_outbounds_json() {
     off)
         jq -cn --arg strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" '[
           {protocol:"freedom",tag:"direct"},
-          {protocol:"freedom",tag:"gemini-family",settings:{domainStrategy:$strategy}}
+          {protocol:"freedom",tag:"gemini-family",settings:{domainStrategy:$strategy}},
+          {protocol:"blackhole",tag:"block"}
         ]'
         ;;
     ai | global)
@@ -197,9 +206,11 @@ warp_xray_routing_json() {
     private_ranges=$(warp_private_ranges_json)
     case "${WARP_MODE:-off}" in
     off)
-        jq -cn --argjson domains "${GEMINI_DOMAIN_SUFFIXES_JSON}" '{
-          domainStrategy:"AsIs",
+        jq -cn --argjson private "${private_ranges}" \
+            --argjson domains "${GEMINI_DOMAIN_SUFFIXES_JSON}" '{
+          domainStrategy:"IPOnDemand",
           rules:[
+            {type:"field",ip:$private,outboundTag:"block"},
             {type:"field",domain:($domains | map("domain:" + .)),outboundTag:"gemini-family"},
             {type:"field",network:"tcp,udp",outboundTag:"direct"}
           ]
@@ -376,6 +387,16 @@ show_warp_live_status() {
         "${ip:-未知}" "${colo:-未知}"
 }
 
+refresh_warp_runtime() {
+    if declare -F refresh_runtime >/dev/null; then
+        refresh_runtime
+    elif declare -F refresh_protocol_runtime_config >/dev/null; then
+        refresh_protocol_runtime_config
+    else
+        die "当前 Profile 缺少 WARP 运行时刷新实现"
+    fi
+}
+
 update_warp_mode() {
     local requested_mode=${1:-}
     (($# <= 1)) || die "用法：easy_all warp-set [off|ai|global]"
@@ -392,9 +413,9 @@ update_warp_mode() {
     prepare_warp_profile
     validate_warp_egress
     save_state
-    refresh_runtime
+    refresh_warp_runtime
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_warp_configuration_status
-    success "WARP 模式已更新；未修改 VPS 系统路由或 CDN 资源"
+    success "WARP 模式已更新；未修改 VPS 系统路由"
 }

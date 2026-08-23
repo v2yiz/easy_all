@@ -41,15 +41,34 @@ print_step() {
   echo "==> [${step}] ${title}"
 }
 
+read_bilingual() {
+  local label_zh="$1"
+  local label_en="$2"
+  local variable="$3"
+  local silent="${4:-0}"
+  local input
+  printf '%s\n%s\n' "$label_zh" "$label_en" >&2
+  if [[ "$silent" == "1" ]]; then
+    IFS= read -r -s -p '> ' input
+    echo >&2
+  else
+    IFS= read -r -p '> ' input
+  fi
+  printf -v "$variable" '%s' "$input"
+}
+
 prompt() {
   local label="$1"
   local default="${2:-}"
+  local label_en="${3:-Input / see the Chinese prompt above}"
   local value
   if [[ -n "$default" ]]; then
-    read -r -p "${label} [${default}]（直接回车使用默认值）: " value
+    read_bilingual \
+      "${label} [${default}]（直接回车使用默认值）:" \
+      "${label_en} [${default}] (press Enter to use the default):" value
     printf '%s' "${value:-$default}"
   else
-    read -r -p "${label}: " value
+    read_bilingual "${label}:" "${label_en}:" value
     [[ -n "$value" ]] || die "${label} 不能为空"
     printf '%s' "$value"
   fi
@@ -57,25 +76,27 @@ prompt() {
 
 prompt_secret() {
   local label="$1"
+  local label_en="${2:-Input secretly / see the Chinese prompt above}"
   local value
-  read -r -s -p "${label}: " value
-  echo >&2
+  read_bilingual "${label}:" "${label_en}:" value 1
   printf '%s' "$value"
 }
 
 prompt_required_secret() {
   local label="$1"
+  local label_en="${2:-Input secretly / see the Chinese prompt above}"
   local value
-  value="$(prompt_secret "$label")"
+  value="$(prompt_secret "$label" "$label_en")"
   [[ -n "$value" ]] || die "${label} 不能为空"
   printf '%s' "$value"
 }
 
 prompt_confirmed_secret() {
   local label="$1"
+  local label_en="${2:-Input the secret again / see the Chinese prompt above}"
   local value confirm
-  value="$(prompt_required_secret "$label")"
-  confirm="$(prompt_required_secret "再次输入${label}")"
+  value="$(prompt_required_secret "$label" "$label_en")"
+  confirm="$(prompt_required_secret "再次输入${label}" "Re-enter ${label_en}")"
   [[ "$value" == "$confirm" ]] || die "两次输入的${label}不一致"
   printf '%s' "$value"
 }
@@ -275,7 +296,9 @@ select_or_create_key() {
 
   echo
   echo "==> 选择 SSH key"
+  echo "==> Choose an SSH key"
   echo "可复用现有公钥，也可以为本服务器生成新的 ed25519 key。"
+  echo "You may reuse an existing public key or generate a new ed25519 key for this server."
 
   local pub_keys=()
   local file
@@ -289,15 +312,20 @@ select_or_create_key() {
     i=$((i + 1))
   done
   echo "  g) 生成新的 ed25519 key"
+  echo "     Generate a new ed25519 key"
   echo "  m) 手动输入密钥路径"
+  echo "     Enter a key path manually"
 
   local choice
-  read -r -p "请选择 [g]（直接回车使用默认值）: " choice
+  read_bilingual \
+    '请选择 [g]（直接回车使用默认值）:' \
+    'Choose [g] (press Enter to use the default):' choice
   choice="${choice:-g}"
 
   if [[ "$choice" == "g" ]]; then
     local key_name
-    key_name="$(prompt "新 key 文件名" "id_ed25519_${HOST_ALIAS}")"
+    key_name="$(prompt "新 key 文件名" "id_ed25519_${HOST_ALIAS}" \
+      "New key filename")"
     [[ "$key_name" != */* ]] || die "生成新密钥时请输入文件名，不要输入路径"
     [[ "$key_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "密钥文件名只能包含字母、数字、点、下划线和短横线: $key_name"
     [[ "$key_name" != -* ]] || die "密钥文件名不能以短横线开头: $key_name"
@@ -308,9 +336,10 @@ select_or_create_key() {
 
     echo "建议为人工登录设置 passphrase；如需完全免交互，直接回车使用空 passphrase。"
     local passphrase passphrase_confirm
-    passphrase="$(prompt_secret "新私钥 passphrase，回车为空")"
+    passphrase="$(prompt_secret "新私钥 passphrase，回车为空" \
+      "New private-key passphrase; press Enter for an empty passphrase")"
     if [[ -n "$passphrase" ]]; then
-      passphrase_confirm="$(prompt_secret "再次输入 passphrase")"
+      passphrase_confirm="$(prompt_secret "再次输入 passphrase" "Re-enter the passphrase")"
       [[ "$passphrase" == "$passphrase_confirm" ]] || die "两次输入的 passphrase 不一致"
     fi
 
@@ -320,7 +349,8 @@ select_or_create_key() {
 
   if [[ "$choice" == "m" ]]; then
     local input_path
-    input_path="$(prompt "私钥路径或公钥路径")"
+    input_path="$(prompt "私钥路径或公钥路径" "" \
+      "Private-key path or public-key path")"
     input_path="$(expand_path "$input_path")"
     if [[ "$input_path" == *.pub ]]; then
       PUBLIC_KEY="$input_path"
@@ -789,27 +819,30 @@ print_intro() {
 collect_inputs() {
   print_step "输入" "服务器与用户信息"
 
-  SERVER_HOST="$(prompt "服务器 IP/域名")"
+  SERVER_HOST="$(prompt "服务器 IP/域名" "" "Server IP/hostname")"
   validate_server_host "$SERVER_HOST"
 
-  SERVER_USER="$(prompt "初始 SSH 登录用户" "root")"
+  SERVER_USER="$(prompt "初始 SSH 登录用户" "root" "Initial SSH login user")"
   validate_server_user "$SERVER_USER"
 
-  SERVER_PASSWORD="$(prompt_secret "初始 SSH 登录用户当前密码，回车则使用交互式输入")"
+  SERVER_PASSWORD="$(prompt_secret "初始 SSH 登录用户当前密码，回车则使用交互式输入" \
+    "Current password for the initial SSH user; press Enter to let SSH prompt interactively")"
 
-  NORMAL_USER="$(prompt "最终 SSH 登录的普通用户名")"
+  NORMAL_USER="$(prompt "最终 SSH 登录的普通用户名" "" "Final non-root SSH username")"
   validate_linux_user "$NORMAL_USER"
-  NORMAL_USER_PASSWORD="$(prompt_confirmed_secret "普通用户 ${NORMAL_USER} 的 sudo 密码")"
+  NORMAL_USER_PASSWORD="$(prompt_confirmed_secret "普通用户 ${NORMAL_USER} 的 sudo 密码" \
+    "sudo password for non-root user ${NORMAL_USER}")"
 
   local default_alias
   default_alias="$(sanitize_alias "${NORMAL_USER}-${SERVER_HOST}")"
-  HOST_ALIAS="$(prompt "本地 ssh_config Host 别名" "$default_alias")"
+  HOST_ALIAS="$(prompt "本地 ssh_config Host 别名" "$default_alias" \
+    "Local ssh_config Host alias")"
   validate_host_alias "$HOST_ALIAS"
   if host_alias_exists_outside_managed_block "$HOST_ALIAS"; then
     die "本地 $SSH_CONFIG 已存在非本脚本管理的 Host $HOST_ALIAS，请换一个名称或手动处理旧配置"
   fi
 
-  CURRENT_PORT="$(prompt "服务器当前 SSH 端口" "22")"
+  CURRENT_PORT="$(prompt "服务器当前 SSH 端口" "22" "Current SSH port on the server")"
   validate_port "$CURRENT_PORT"
 
   FINAL_PORT="$EASY_ALL_ADDITIONAL_SSH_PORT"
@@ -823,7 +856,9 @@ collect_inputs() {
   fi
 
   local extra_tcp_ports_raw
-  read -r -p "UFW 额外放行 TCP 端口（逗号或空格分隔，留空则仅放行 SSH）: " \
+  read_bilingual \
+    'UFW 额外放行 TCP 端口（逗号或空格分隔，留空则仅放行 SSH）:' \
+    'Additional TCP ports to allow in UFW (comma or space separated; press Enter for SSH only):' \
     extra_tcp_ports_raw || true
   EXTRA_TCP_PORTS="$(normalize_port_list "${extra_tcp_ports_raw:-}")"
 }

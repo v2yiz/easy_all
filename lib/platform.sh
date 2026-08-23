@@ -230,6 +230,40 @@ restore_managed_fail2ban_config() {
     fi
 }
 
+legacy_fail2ban_ipv4_cidr_rule_numbers() {
+    command -v ufw >/dev/null 2>&1 || return 0
+    LC_ALL=C ufw status numbered 2>/dev/null \
+        | awk '
+            index($0, "easy_all-fail2ban-cidr") == 0 || $0 !~ /\/24([[:space:]]|$)/ {next}
+            {
+                line=$0
+                sub(/^[[:space:]]*\[[[:space:]]*/, "", line)
+                number=line
+                sub(/[[:space:]]*\].*$/, "", number)
+                gsub(/[[:space:]]/, "", number)
+                if (number ~ /^[0-9]+$/) print number
+            }
+        ' | sort -rn
+}
+
+remove_legacy_fail2ban_ipv4_cidr_bans() {
+    local rule_number state_file state_name
+    while read -r rule_number; do
+        [[ -n "${rule_number}" ]] || continue
+        ufw --force delete "${rule_number}" >/dev/null \
+            || die "删除旧版 Fail2ban IPv4 /24 封禁规则失败：UFW ${rule_number}"
+    done < <(legacy_fail2ban_ipv4_cidr_rule_numbers)
+
+    [[ -d "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}" ]] || return 0
+    for state_file in "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"/v4-*-*-*.count; do
+        [[ -e "${state_file}" ]] || continue
+        state_name=${state_file##*/}
+        [[ "${state_name}" =~ ^v4-[0-9]+-[0-9]+-[0-9]+\.count$ ]] || continue
+        rm -f -- "${state_file}" \
+            || die "删除旧版 Fail2ban IPv4 /24 状态失败：${state_file}"
+    done
+}
+
 write_fail2ban_cidr_ufw_helper() {
     local destination=$1
     cat >"${destination}" <<'EOF'
@@ -258,8 +292,8 @@ fail2ban_cidr_network_for_ip() {
         [[ "${octet}" =~ ^[0-9]{1,3}$ ]] || return 1
         ((10#${octet} <= 255)) || return 1
     done
-    NETWORK="$((10#${first})).$((10#${second})).$((10#${third})).0/24"
-    STATE_KEY="v4-$((10#${first}))-$((10#${second}))-$((10#${third}))"
+    NETWORK="$((10#${first})).$((10#${second})).$((10#${third})).$((10#${fourth}))/32"
+    STATE_KEY="v4-$((10#${first}))-$((10#${second}))-$((10#${third}))-$((10#${fourth}))"
 }
 
 fail2ban_cidr_acquire_lock() {
@@ -444,7 +478,8 @@ EOF
         rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
             "${jail_backup}" "${action_backup}" "${helper_backup}" \
             "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
-        info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按 /24 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
+        remove_legacy_fail2ban_ipv4_cidr_bans
+        info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按单 IP 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
         return 0
     fi
 
@@ -476,7 +511,8 @@ EOF
     rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
         "${jail_backup}" "${action_backup}" "${helper_backup}" \
         "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
-    info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按 /24 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
+    remove_legacy_fail2ban_ipv4_cidr_bans
+    info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按单 IP 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
 }
 
 ensure_ssh_boot_service() {

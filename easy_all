@@ -38,6 +38,13 @@ launcher_die() {
     exit 1
 }
 
+launcher_read_bilingual() {
+    local label_zh=$1 label_en=$2 variable=$3 input
+    printf '%s\n%s\n' "${label_zh}" "${label_en}" >&2
+    IFS= read -r -p '> ' input
+    printf -v "${variable}" '%s' "${input}"
+}
+
 runtime_tree_is_complete() {
     local root=$1 relative_path
     [[ -f "${root}/easy_all" ]] || return 1
@@ -57,8 +64,8 @@ launcher_usage() {
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN Provider 云资源
   update-sub       重新选择订阅模式与月度用户配额
-  warp-set         XHTTP 切换 off、ai 或 global WARP（默认 ai）
-  warp-status      XHTTP 实时验收 WARP 出口
+  warp-set         切换 off、ai 或 global WARP（新安装默认 ai）
+  warp-status      实时验收 WARP 出口
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
   quota-status     显示用户配额与 CDN XHTTP 全局费用保护
@@ -78,8 +85,8 @@ show_install_guide() {
 easy_all install
 ├─ [1 默认] 直连 Reality
 │  ├─ 适用线路：优化线路
-│  ├─ 系统检查 → 依赖/BBR/重启策略 → 公网 IPv6 探测
-│  ├─ 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
+│  ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → 公网 IPv6 探测
+│  ├─ 连接地址（默认自动探测公网 IPv4）→ SNI → WARP 出口（默认 AI WARP）→ 订阅端口
 │  ├─ 选择订阅输出
 │  │  ├─ 部署：先询问订阅域名、文件名、Token/配额
 │  │  └─ 仅节点：不收集订阅服务参数
@@ -87,16 +94,17 @@ easy_all install
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
 ├─ [2] CDN XHTTP（AWS）
    ├─ 适用线路：非优化线路
-   ├─ 系统检查 → 依赖/BBR/重启策略
+   ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略
    ├─ Route 53 源站域名（必填）→ CloudFront CDN 域名（必填）
-   ├─ 选择 CloudFront 计费：Free 固定套餐，或按量付费 1 TB 免费额度 + 980 GB 全局保护
+   ├─ 选择 CloudFront 计费：1 Free 固定套餐，或 2 按量付费（默认推荐；升级 Paid plan 本身不收费）
+   │  └─ Choose CloudFront billing: 1 Free flat-rate, or 2 pay-as-you-go (recommended; upgrading the Paid plan itself is free)
    ├─ 选择 WARP 出口：AI WARP（默认）、关闭或 Global WARP；不修改 VPS 系统路由
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
    ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A
    └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/CloudFront/已选计费模式/CDN Alias → 状态/命令/配额任务
 └─ [3] CDN XHTTP（Gcore）
    ├─ 适用线路：非优化线路；先按 docs/gcore-guide.md 委派整个主域名到 Gcore Managed DNS
-   ├─ 系统检查 → 依赖/BBR/重启策略 → Gcore 源站域名与 CDN 域名
+   ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → Gcore 源站域名与 CDN 域名
    ├─ 选择 WARP 出口：AI WARP（默认）、关闭或 Global WARP；不修改 VPS 系统路由
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
    ├─ 仅输入 GCORE_API_TOKEN → 验证 CDN/DNS 权限与 Gcore 权威 DNS 委派 → 源站 A
@@ -143,10 +151,16 @@ choose_install_mode() {
     local choice
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
+    printf 'Choose the installation mode:\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
+    printf '     Direct - Reality (recommended for optimized routes)\n' >&2
     printf '  2. AWS CDN - XHTTP（非优化线路推荐）\n' >&2
+    printf '     AWS CDN - XHTTP (recommended for non-optimized routes)\n' >&2
     printf '  3. Gcore CDN - XHTTP（非优化线路推荐）\n' >&2
-    read -r -p "请选择 [1]（直接回车使用默认值）: " choice
+    printf '     Gcore CDN - XHTTP (recommended for non-optimized routes)\n' >&2
+    launcher_read_bilingual \
+        '请选择 [1]（直接回车使用默认值）:' \
+        'Choose [1] (press Enter to use the default):' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'xhttp\n' ;;
@@ -247,13 +261,9 @@ dispatch_profile_command() {
         fi
         ;;
     warp-set)
-        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
-            || launcher_die "warp-set 仅适用于 CDN XHTTP 模式"
         update_warp_mode "$@"
         ;;
     warp-status)
-        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
-            || launcher_die "warp-status 仅适用于 CDN XHTTP 模式"
         (($# == 0)) || launcher_die "warp-status 不接受参数"
         show_warp_live_status
         ;;

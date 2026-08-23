@@ -76,11 +76,17 @@ assert_contains "README documents Reality target TLS validation" "${README_CONTE
 assert_contains "README documents Reality private destination blocking" "${README_CONTENT}" \
     '避免订阅凭据泄露后被用于访问 VPS 内网或云元数据'
 assert_contains "README documents Gemini egress policy for all profiles" "${README_CONTENT}" \
-    '三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站'
+    '三种安装模式都从 Mihomo 模板顶部的三组 AI 域名元数据生成 VPS 端出站策略'
 assert_contains "README documents fixed Gemini IPv4 egress" "${README_CONTENT}" \
     '不再执行 IPv4/IPv6 测速，也不提供地址族切换配置'
 assert_contains "README documents gstatic in the Gemini policy" "${README_CONTENT}" \
     '`gstatic.com` 已纳入'
+assert_contains "README documents bilingual interactive prompts" "${README_CONTENT}" \
+    '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
+assert_contains "README documents WARP for Reality and CDN profiles" "${README_CONTENT}" \
+    'Reality、AWS XHTTP 与 Gcore XHTTP 共用同一套 WARP 策略'
+assert_contains "README documents conservative legacy Reality WARP migration" \
+    "${README_CONTENT}" '旧 Reality（`STATE_VERSION=1/2`）'
 assert_contains "README documents Gcore client H2 keepalive" "${README_CONTENT}" \
     '客户端 H2 PING 固定为 10 秒'
 assert_contains "Gcore guide documents explicit gRPC pass-through" "${GCORE_GUIDE_CONTENT}" \
@@ -89,6 +95,20 @@ assert_contains "README documents client connection racing" "${README_CONTENT}" 
     '内置 Mihomo 模板启用 `tcp-concurrent`'
 assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
     '`tcp_slow_start_after_idle`'
+assert_contains "README documents XanMod LTS BBRv3 for every profile" \
+    "${README_CONTENT}" '三种链路统一安装 XanMod LTS 内核'
+assert_contains "README distinguishes the BBR algorithm from the sysctl name" \
+    "${README_CONTENT}" '不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3'
+assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" \
+    '`BBRv3: active`'
+assert_contains "README clarifies that the AWS account-plan upgrade itself is free" \
+    "${README_CONTENT}" '这个升级动作本身没有固定费用'
+assert_contains "AWS guide clarifies the account-plan upgrade boundary" \
+    "${AWS_GUIDE_CONTENT}" '升级为 Paid account plan 的动作本身不收费'
+assert_contains "README documents existing-install BBRv3 migration" "${README_CONTENT}" \
+    '先执行 `sudo easy_all self-update`'
+assert_contains "README keeps the independent Debian initializer out of proxy chains" \
+    "${README_CONTENT}" '`debian_init.sh` 是独立的 SSH/系统初始化工具，不属于三条代理链'
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" \
     '同步重建本机 Xray、Nginx 和订阅文件'
 assert_contains "XHTTP command message includes Xray" "${XHTTP_CONTENT}" \

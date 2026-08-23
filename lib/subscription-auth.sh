@@ -46,7 +46,8 @@ ensure_allowed_tokens() {
         raw=${ALLOWED_TOKENS}
     elif [[ -t 0 ]]; then
         prompt_default=$(jq -cn --arg token "$(generate_secret)" '{owner: $token}')
-        raw=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}")
+        raw=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}" \
+            "Subscription user Token map JSON (username => Token)")
     else
         die "非交互模式必须设置 ALLOWED_TOKENS，例如 ALLOWED_TOKENS='{\"owner\":\"$(generate_secret)\"}'"
     fi

@@ -44,7 +44,6 @@ readonly UFW_NAT6_END="# easy_all-nat6-end"
 readonly LEGACY_NFT_CONFIG="/etc/nftables.conf"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
-readonly BBR_ALLOW_EXISTING_XANMOD="1"
 readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
 readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly SERVICE_PORT="443"
@@ -61,7 +60,7 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="2"
+readonly STATE_SCHEMA_VERSION="3"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 
 # shellcheck source=lib/quota.sh
@@ -78,6 +77,8 @@ source "${SCRIPT_DIR}/mihomo-template.sh"
 source "${SCRIPT_DIR}/firewall.sh"
 # shellcheck source=lib/xray-core.sh
 source "${SCRIPT_DIR}/xray-core.sh"
+# shellcheck source=lib/warp.sh
+source "${SCRIPT_DIR}/warp.sh"
 # shellcheck source=lib/scheduled-maintenance.sh
 source "${SCRIPT_DIR}/scheduled-maintenance.sh"
 # shellcheck source=lib/subscription-auth.sh
@@ -219,7 +220,7 @@ EOF
 
 initialize_server() {
     ensure_ssh_boot_service
-    info "配置 Debian 官方内核 Google BBR"
+    info "配置 XanMod LTS 内核 BBRv3"
     configure_bbr_tcp
     info "配置每日重启与 IPv6"
     configure_daily_reboot
@@ -363,7 +364,8 @@ source_state_file() {
     unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "1" || "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+    [[ "${STATE_VERSION:-}" == "1" || "${STATE_VERSION:-}" == "2" \
+        || "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
 }
 
@@ -373,6 +375,7 @@ load_state() {
         PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6 REALITY_CLIENT_IP_FAMILY
+        WARP_MODE
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
@@ -397,6 +400,7 @@ load_state() {
     REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
     REALITY_CLIENT_IP_FAMILY=${REALITY_CLIENT_IP_FAMILY:-auto}
     REALITY_CLIENT_IP_FAMILY_RESOLVED=""
+    configure_loaded_warp_mode
     CDN_PROVIDER=""
     [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
         || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
@@ -457,6 +461,7 @@ save_state() {
         printf 'REALITY_INBOUND_IP_FAMILY=%q\n' "${REALITY_INBOUND_IP_FAMILY:-ipv4}"
         printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
         printf 'REALITY_CLIENT_IP_FAMILY=%q\n' "${REALITY_CLIENT_IP_FAMILY:-auto}"
+        printf 'WARP_MODE=%q\n' "${WARP_MODE:-off}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -586,7 +591,8 @@ collect_reality_node_host() {
             info "已自动检测本机公网 IPv4：${detected_ip}；直接回车使用，或输入其他入站 IPv4/灰云域名"
             NODE_HOST=$(prompt_value \
                 "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" \
-                "${detected_ip}")
+                "${detected_ip}" \
+                "Reality client address (public IPv4 or DNS-only / grey-cloud domain)")
         else
             NODE_HOST=${detected_ip}
         fi
@@ -596,7 +602,8 @@ collect_reality_node_host() {
     if [[ -t 0 ]]; then
         warn "无法自动检测本机公网 IPv4，请手动填写客户端可连接的入站地址"
         NODE_HOST=$(prompt_value \
-            "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" "")
+            "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" "" \
+            "Reality client address (public IPv4 or DNS-only / grey-cloud domain)")
         return 0
     fi
     die "无法自动检测 Reality 节点公网 IPv4；非交互模式请设置 NODE_HOST"
@@ -607,7 +614,8 @@ collect_reality_target() {
     if [[ -t 0 ]]; then
         REALITY_TARGET=$(prompt_value \
             "Reality SNI / 伪装目标（域名:端口）" \
-            "${DEFAULT_REALITY_TARGET}")
+            "${DEFAULT_REALITY_TARGET}" \
+            "Reality SNI / camouflage target (domain:port)")
     else
         REALITY_TARGET=${DEFAULT_REALITY_TARGET}
     fi
@@ -624,10 +632,16 @@ collect_sub_port_mode() {
 
     if [[ -z "${requested}" && -t 0 ]]; then
         printf '请选择订阅端口模式：\n'
+        printf 'Choose the subscription port mode:\n'
         printf '  1. 固定 443\n'
+        printf '     Fixed port 443\n'
         printf '  2. dynamic（订阅随机端口 %s-%s，默认）\n' \
             "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
-        read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " requested
+        printf '     dynamic (random subscription port %s-%s; default)\n' \
+            "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
+        read_bilingual \
+            "请选择 [${default_choice}]（直接回车使用默认值）:" \
+            "Choose [${default_choice}] (press Enter to use the default):" requested
     fi
     requested=${requested:-${default_mode}}
     case "${requested}" in
@@ -640,7 +654,8 @@ collect_sub_port_mode() {
 collect_subscription_domain() {
     local domain=${SUBSCRIPTION_DOMAIN:-}
     if [[ -z "${domain}" && -t 0 ]]; then
-        domain=$(prompt_value "自托管订阅域名（必须直接解析到当前 VPS）" "")
+        domain=$(prompt_value "自托管订阅域名（必须直接解析到当前 VPS）" "" \
+            "Self-hosted subscription domain (must resolve directly to this VPS)")
     fi
     [[ -n "${domain}" ]] \
         || die "自托管订阅模式必须设置 SUBSCRIPTION_DOMAIN"
@@ -662,6 +677,7 @@ collect_reality_inputs() {
     validate_reality_client_ip_family_runtime
     collect_reality_target
     validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
+    choose_warp_mode
     collect_sub_port_mode
 }
 
@@ -801,8 +817,10 @@ configure_ufw() {
 }
 
 write_xray_config() {
-    local clients listen_address="0.0.0.0"
+    local clients managed_outbounds managed_routing listen_address="0.0.0.0"
     prepare_mihomo_template
+    managed_outbounds=$(warp_xray_outbounds_json)
+    managed_routing=$(warp_xray_routing_json)
     [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] || listen_address="::"
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
@@ -831,8 +849,8 @@ write_xray_config() {
             --arg short_id "${REALITY_SHORT_ID}" \
             --arg sni "${REALITY_TARGET%:*}" \
             --arg listen_address "${listen_address}" \
-            --arg gemini_domain_strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" \
-            --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
+            --argjson managed_outbounds "${managed_outbounds}" \
+            --argjson managed_routing "${managed_routing}" '
             {
               log: {loglevel: "warning"},
               inbounds: [{
@@ -862,52 +880,8 @@ write_xray_config() {
                   routeOnly: false
                 }
               }],
-              outbounds: [
-                {protocol: "freedom", tag: "direct"},
-                {
-                  protocol: "freedom",
-                  tag: "gemini-family",
-                  settings: {domainStrategy: $gemini_domain_strategy}
-                },
-                {protocol: "blackhole", tag: "block"}
-              ],
-              routing: {
-                domainStrategy: "IPOnDemand",
-                rules: [
-                  {
-                    type: "field",
-                    ip: [
-                      "0.0.0.0/8",
-                      "10.0.0.0/8",
-                      "100.64.0.0/10",
-                      "127.0.0.0/8",
-                      "169.254.0.0/16",
-                      "172.16.0.0/12",
-                      "192.0.0.0/24",
-                      "192.168.0.0/16",
-                      "198.18.0.0/15",
-                      "224.0.0.0/4",
-                      "240.0.0.0/4",
-                      "::/128",
-                      "::1/128",
-                      "fc00::/7",
-                      "fe80::/10",
-                      "ff00::/8"
-                    ],
-                    outboundTag: "block"
-                  },
-                  {
-                    type: "field",
-                    domain: ($gemini_domain_suffixes | map("domain:" + .)),
-                    outboundTag: "gemini-family"
-                  },
-                  {
-                    type: "field",
-                    network: "tcp,udp",
-                    outboundTag: "direct"
-                  }
-                ]
-              }
+              outbounds: $managed_outbounds,
+              routing: $managed_routing
             }
             + (if $quota_enabled then {
                 api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
@@ -1275,9 +1249,14 @@ choose_subscription_mode() {
             current_mode=${mode:-selfhost}
             [[ "${current_mode}" == "link" ]] && default_choice=2
             printf '请选择是否部署订阅服务：\n'
+            printf 'Choose whether to deploy the subscription service:\n'
             printf '  1. 部署订阅服务（Nginx HTTPS :8443；只有当前服务器时推荐）\n'
+            printf '     Deploy the subscription service (Nginx HTTPS :8443; recommended for a single server)\n'
             printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-            read -r -p "请选择 [${default_choice}]（直接回车使用默认值）: " mode
+            printf '     Do not deploy it; output node information only (recommended for multi-node setups or an existing subscription server)\n'
+            read_bilingual \
+                "请选择 [${default_choice}]（直接回车使用默认值）:" \
+                "Choose [${default_choice}] (press Enter to use the default):" mode
             mode=${mode:-${current_mode}}
         elif [[ -z "${mode}" ]]; then
             die "非交互模式必须设置 SUBSCRIBE_MODE=selfhost 或 SUBSCRIBE_MODE=link"
@@ -1294,7 +1273,8 @@ choose_subscription_mode() {
 choose_subscription_download_name() {
     local allow_prompt=${1:-0} name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
     if [[ "${allow_prompt}" == "1" && -t 0 ]]; then
-        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}")
+        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}" \
+            "Mihomo download filename (without .yaml)")
     fi
     name=$(normalize_sub_download_name "${name}")
     validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
@@ -1397,6 +1377,11 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/certificate.missing"
     fi
+    if [[ -d "${WARP_DIR}" ]]; then
+        cp -a "${WARP_DIR}" "${UPDATE_SUB_BACKUP_DIR}/warp"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/warp.missing"
+    fi
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
         install -m 0600 "${UFW_BEFORE_RULES}" \
             "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules"
@@ -1422,7 +1407,7 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
-    warn "订阅更新失败，正在恢复服务端配置、订阅文件、端口模式和 UFW"
+    warn "本机配置更新失败，正在恢复服务端配置、WARP、订阅文件、端口模式和 UFW"
     install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" \
@@ -1447,6 +1432,11 @@ rollback_subscription_update() {
         install -d -m 0700 "${CERT_DIR}"
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/fullchain.pem" "${CERT_FILE}"
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/private.key" "${KEY_FILE}"
+    fi
+    rm -rf -- "${WARP_DIR}"
+    if [[ -d "${UPDATE_SUB_BACKUP_DIR}/warp" ]]; then
+        install -d -m 0700 "$(dirname -- "${WARP_DIR}")"
+        cp -a "${UPDATE_SUB_BACKUP_DIR}/warp" "${WARP_DIR}"
     fi
     if [[ -f "${NGINX_CONFIG}" ]]; then
         systemctl enable --now nginx >/dev/null 2>&1 || true
@@ -1522,7 +1512,7 @@ update_subscription() {
 
 apply_easy_all() {
     require_root
-    info "刷新 BBR 与 TCP 参数"
+    info "安装或验收 XanMod LTS BBRv3，并刷新 TCP 参数"
     configure_bbr_tcp
     register_easy_all_command
     collect_installed_state
@@ -1551,6 +1541,8 @@ refresh_protocol_runtime_config() {
         validate_reality_node_dns
         validate_reality_client_ip_family_runtime
         validate_reality_target_runtime
+        prepare_warp_profile
+        validate_warp_egress
         write_xray_config
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
@@ -1617,12 +1609,11 @@ show_subscription() {
 }
 
 show_status() {
-    local active_family
     require_root
     collect_installed_state
-    active_family=$(gemini_ip_family_status)
     printf '协议: %s\n' "${PROTOCOL}"
-    printf 'Gemini 出口族: %s（固定）\n' "${active_family}"
+    show_bbrv3_status
+    show_warp_configuration_status
     if [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]]; then
         printf 'Reality 入站族: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
     else
@@ -1743,7 +1734,9 @@ uninstall_all() {
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
         local answer
-        read -r -p "确认彻底删除 easy_all 本机服务、状态和备份？[y/N]（直接回车取消）: " answer
+        read_bilingual \
+            '确认彻底删除 easy_all 本机服务、状态和备份？[y/N]（直接回车取消）:' \
+            'Delete all easy_all local services, state and backups? [y/N] (press Enter to cancel):' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_protocol_services
@@ -1792,6 +1785,8 @@ rollback_fresh_install() {
 prepare_protocol_assets() {
     download_xray
     validate_reality_target_runtime
+    prepare_warp_profile
+    validate_warp_egress
 }
 
 install_protocol_runtime() {
@@ -1844,6 +1839,7 @@ run_reality_install_pipeline() {
     install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
+    show_bbrv3_status
     success "easy_all ${PROTOCOL} 安装完成"
 }
 
@@ -1864,6 +1860,8 @@ usage() {
   self-update   只更新 easy_all 项目代码，不刷新部署
   apply         将已安装代码应用到服务端与当前订阅模式
   update-sub    选择部署订阅服务或仅输出节点
+  warp-set      切换 off、ai 或 global WARP（新安装默认 ai）
+  warp-status   实时验收 WARP 出口
   update-core   更新 Xray 核心
   renew-cert    强制续期自托管订阅证书
   quota-status  显示每个用户的本月流量与配额状态
@@ -1890,6 +1888,7 @@ update_current_core() {
         download_xray
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
+        validate_warp_egress
     ); then
         end_quota_maintenance
         success "${PROTOCOL} 核心已更新"
@@ -1911,6 +1910,8 @@ main() {
     subscription) require_root; show_subscription ;;
     apply) apply_easy_all ;;
     update-sub) update_subscription 1 ;;
+    warp-set) shift; update_warp_mode "$@" ;;
+    warp-status) show_warp_live_status ;;
     update-core) update_current_core ;;
     renew-cert) renew_subscription_certificate ;;
     quota-sync) quota_sync_usage ;;
