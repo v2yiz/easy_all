@@ -360,6 +360,18 @@ actionunban = ${EASY_ALL_FAIL2BAN_CIDR_HELPER} unban <ip> ${EASY_ALL_FAIL2BAN_CI
 EOF
 }
 
+wait_for_ssh_fail2ban() {
+    local attempt
+    for attempt in {1..20}; do
+        if systemctl is-active --quiet fail2ban.service \
+            && fail2ban-client status sshd >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
 ensure_ssh_fail2ban() {
     local jail_candidate action_candidate helper_candidate
     local jail_backup action_backup helper_backup ports_csv
@@ -454,8 +466,7 @@ EOF
     fi
     if ! systemctl enable fail2ban.service >/dev/null 2>&1 \
         || ! systemctl restart fail2ban.service \
-        || ! systemctl is-active --quiet fail2ban.service \
-        || ! fail2ban-client status sshd >/dev/null 2>&1; then
+        || ! wait_for_ssh_fail2ban; then
         restore_managed_fail2ban_config "${jail_backup}" "${jail_had_config}" \
             "${action_backup}" "${action_had_config}" "${helper_backup}" "${helper_had_config}"
         rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \

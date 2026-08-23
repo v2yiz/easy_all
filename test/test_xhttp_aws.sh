@@ -219,14 +219,24 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
         EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-debian-init-sshd.local"
         fail2ban_active="${TMP_DIR}/fail2ban-active"
         restart_count="${TMP_DIR}/fail2ban-restart-count"
+        status_attempt_count="${TMP_DIR}/fail2ban-status-attempt-count"
         install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")"
         : >"${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
         printf '0\n' >"${restart_count}"
+        printf '0\n' >"${status_attempt_count}"
         install_fail2ban_dependencies() { return 0; }
         detect_ssh_ports() { SSH_PORTS="22 65533"; }
         ufw() { return 0; }
         fail2ban-client() {
-            [[ "${1:-}" == "-t" || "${1:-} ${2:-}" == "status sshd" ]]
+            local attempts
+            [[ "${1:-}" == "-t" ]] && return 0
+            if [[ "${1:-} ${2:-}" == "status sshd" ]]; then
+                attempts=$(( $(<"${status_attempt_count}") + 1 ))
+                printf '%s\n' "${attempts}" >"${status_attempt_count}"
+                [[ "${attempts}" -ge 3 ]]
+                return
+            fi
+            return 1
         }
         systemctl() {
             case "${1:-}" in
@@ -240,6 +250,8 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
             esac
         }
         ensure_ssh_fail2ban
+        assert_equal "shared Fail2ban waits for the sshd jail after restart" \
+            "3" "$(<"${status_attempt_count}")"
         assert_contains "shared Fail2ban monitors both SSH ports" \
             "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "port = 22,65533"
         assert_contains "shared Fail2ban uses the CIDR-aware UFW action" \
