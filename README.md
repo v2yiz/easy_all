@@ -13,6 +13,10 @@
 `aws` 或 `gcore`。每条链路只管理自己的云端资源，不会混用 AWS Access Key、Gcore Token
 或 DNS/CDN 对象。
 
+两条 CDN XHTTP 链路的新安装默认启用 **AI WARP**：Gemini、ChatGPT 和 Claude 相关目标由
+Xray 内置的用户态 WireGuard 出站转给免费 Cloudflare WARP，其余目标仍由 VPS 直连。它不创建
+系统 TUN、不修改默认路由，也不会改变 SSH、Nginx、证书续期或 CDN 回源的出口。
+
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合专用 VPS。
 
@@ -91,7 +95,7 @@ flowchart TD
     B -->|2| X0[AWS CDN XHTTP]
     X0 --> X1[系统预检 / 冲突检查 / 备份]
     X1 --> X2[依赖 / SSH 启动保障 / AWS CLI / BBR / 重启策略]
-    X2 --> X3[源站域名 / CDN 域名 / VLESS 自动参数]
+    X2 --> X3[源站域名 / CDN 域名 / WARP 模式 / VLESS 自动参数]
     X3 --> X3A{CloudFront 计费模式选择}
     X3A -->|Free 固定套餐| X4{订阅输出选择}
     X3A -->|按量付费| X4
@@ -108,7 +112,7 @@ flowchart TD
     B -->|3| G0[Gcore CDN XHTTP]
     G0 --> G1[系统预检 / 冲突检查 / 备份]
     G1 --> G2[依赖 / SSH 启动保障 / BBR / 重启策略]
-    G2 --> G3[Gcore 源站域名 / CDN 域名 / VLESS 自动参数]
+    G2 --> G3[Gcore 源站域名 / CDN 域名 / WARP 模式 / VLESS 自动参数]
     G3 --> G4{订阅输出选择}
     G4 -->|部署| G5[文件名、Token 或用户配额]
     G4 -->|仅节点| G6[不生成订阅文件]
@@ -129,6 +133,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费 | `2` | 使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
 | Gcore CDN 费用保护 | 固定 `980 GB` | `980 GB` | Gcore Free CDN 使用本机 UTC 自然月保护，不创建付费套餐或 WAAP |
+| XHTTP WARP 出口 | `1` 关闭 / `2` AI WARP / `3` Global WARP | `2` | Gemini、ChatGPT、Claude 走 WARP，其余节点用户流量直连 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
 | 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
@@ -140,10 +145,11 @@ flowchart TD
 脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。
 UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
 
-三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站，并固定使用
-`ForceIPv4`，不再执行 IPv4/IPv6 测速，也不提供地址族切换配置。`gstatic.com` 不属于该专用
-域名集合，因此经代理访问 `www.gstatic.com/generate_204` 时会落入 Xray 的普通 `direct`
-出站，由 VPS 系统网络栈正常解析和连接；该行为与客户端连接节点时使用 IPv4 还是 IPv6 无关。
+三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站。Reality 与关闭
+WARP 的 XHTTP 固定使用 `ForceIPv4`；XHTTP 默认 AI WARP 的用户态 WireGuard 出站也固定以
+IPv4 解析目标。该策略不再执行 IPv4/IPv6 测速，也不提供地址族切换配置。`gstatic.com` 已纳入
+Gemini 元数据：关闭 WARP 时走 Gemini 固定 IPv4 出站，默认 AI WARP 时（包括
+`www.gstatic.com/generate_204`）走 WARP。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + BBR`，并关闭
@@ -162,6 +168,8 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS 或 Gcore。 |
 | `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并同步当前 Provider 的云资源：AWS 同步 Route 53/ACM/CloudFront，Gcore 同步 Managed DNS/CDN/边缘证书。 |
 | `update-sub` | 重新选择订阅输出并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件，不修改 AWS 或 Gcore。 |
+| `warp-set [off\|ai\|global]` | 仅 CDN XHTTP 可用；切换 WARP 出口。省略参数时显示交互菜单。 |
+| `warp-status` | 仅 CDN XHTTP 可用；验收 WARP，并显示当前共享出口 IP 与 Cloudflare Colo。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
 | `quota-status` | 显示每用户月度配额；AWS 按量付费和 Gcore Free CDN 同时显示独立的 CDN 全局费用保护用量。 |
@@ -181,10 +189,10 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
 | Reality | 1. 重写并加载 Google BBR/TCP 参数，注册当前 easy_all 代码。<br>2. 读取状态并备份当前状态、Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留已选的订阅方式与端口模式，同步 SSH 监听、UFW 与 Fail2ban；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 保存状态，再生成、重启并验收 Xray，恢复配额任务后显示输出。 |
-| CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
+| CDN XHTTP（AWS/Gcore） | 1. 读取状态，备份状态、WARP Profile、Xray/Nginx 配置和订阅文件。<br>2. 重写并加载 Google BBR/TCP 参数，按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 重启前结算尚未写入账本的 Xray 流量，再按已保存的 WARP 策略生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件。<br>5. 保存状态、注册当前代码、恢复用户配额与全局费用保护任务并显示输出。整个过程不读取云端凭证、不修改 AWS 或 Gcore 资源。 |
 
 Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的状态、Xray/Nginx 配置和
-订阅文件。首次安装还会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
+订阅文件；CDN XHTTP 还会恢复 WARP Profile。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
 BBR/TCP 参数。已经成功创建或修改的云端资源不会自动回滚。
 
 ### `apply-cloud` 的具体操作
@@ -539,6 +547,7 @@ CDN XHTTP 交互选项：
 | --- | --- | --- |
 | Route 53 源站域名 | 无 | 不允许为空 |
 | CloudFront CDN 域名 | 无 | 不允许为空 |
+| WARP 出口 | AI WARP | Gemini、ChatGPT、Claude 走免费 WARP，其余流量直连 |
 | 订阅输出 | 启用 CloudFront + Nginx 订阅 | 启用订阅服务 |
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
@@ -568,6 +577,52 @@ sudo env CDN_CLIENT_IP_FAMILY=auto easy_all apply
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
 都会把当前值显示在方括号中，直接回车沿用当前状态。
+
+### XHTTP WARP 出口
+
+AWS 与 Gcore XHTTP 共用同一套 WARP 策略，新安装默认 `ai`：
+
+| 模式 | Xray 节点用户流量 | VPS 主机网络 |
+| --- | --- | --- |
+| `off` | Gemini 使用固定 IPv4 专用直连，其余直连 | 不变 |
+| `ai`（默认） | Mihomo 模板中分别维护并自动合并的 Gemini、ChatGPT、Claude 域名后缀走 WARP，其余直连 | 不变 |
+| `global` | 所有进入该 Xray 节点的 TCP/UDP 走 WARP | 不变 |
+
+三组元数据按官方网络清单维护，当前核对来源为
+[Google Gemini App firewall settings](https://knowledge.workspace.google.com/admin/generative-ai/gemini-app/gemini-app-firewall-settings?hl=en)、
+[OpenAI ChatGPT network recommendations](https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps)
+与 [Anthropic Desktop network access requirements](https://code.claude.com/docs/en/desktop#network-access-requirements)。
+域名清单能覆盖网页、API、登录、静态资源与主要动态内容，但不能永久视为绝对完备：服务商可能新增
+主机，ChatGPT Voice 还使用官方动态 IP 段和 UDP 3478，Claude Artifacts/Connectors 也可能访问
+用户选择的第三方域名；这些非域名或任意外部目标不会被 `ai` 模式冒进地全部送入 WARP。
+
+实现使用 Xray 内置 WireGuard 出站并固定 `noKernelTun: true`、MTU `1280`；因此不会执行
+`wg-quick`，不会创建主机网卡、策略路由或改写 VPS 默认路由。这里的 `global` 只表示“该节点的
+全部用户流量”，不包括 SSH、Nginx、acme.sh、AWS/Gcore API 或 CDN 回源。私网、回环、链路本地、
+组播和云元数据地址会先被阻断，WARP 故障时也不会自动回退到 VPS 直连出口。
+
+首次启用时，安装器从 GitHub Release 下载临时 `wgcf` amd64 二进制并用 Release 的 SHA256
+清单校验，接受 Cloudflare WARP 服务条款后注册免费 Profile；`wgcf` 不常驻运行。账户文件和
+WireGuard Profile 仅保存在 `/etc/easy_all/warp/`，目录权限 `0700`、文件权限 `0600`。
+`wgcf` 是非官方注册工具，Cloudflare 若改变注册接口或条款，启用会明确失败而不会生成半套配置。
+
+免费 WARP 不单独收费，但出口属于共享地址池，**IP 不固定**，目标站点仍可能基于地区、风控或
+账号状态拒绝访问。所有数据仍先经过这台 VPS，再由 VPS 通过 WireGuard 发往 Cloudflare，因此
+仍会消耗并计入对应 VPS 服务商的上下行流量；WARP 不是免 VPS 流量的外部旁路。当前实现也不需要
+第二台“外部 WARP 中继”VPS。
+
+切换和验收命令：
+
+```bash
+sudo easy_all warp-set ai
+sudo easy_all warp-set global
+sudo easy_all warp-set off
+sudo easy_all warp-status
+```
+
+切换会先备份状态、Profile 与本机配置，实时确认 Cloudflare trace 返回 `warp=on` 后才刷新 Xray；
+失败则恢复旧配置。已有 `STATE_VERSION=4` 的 XHTTP 安装升级时保守迁移为 `off`，不会在一次普通
+`apply` 中静默改变出口；需要启用时显式执行 `easy_all warp-set ai`。
 
 Mihomo 响应的下载文件名严格使用保存值；默认下载为 `EASY_ALL`，不会自动追加 `.yaml`。
 
@@ -706,6 +761,8 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 /etc/easy_all/quota-usage.json
 /etc/easy_all/cloudfront-fee-usage.json
 /etc/easy_all/xray/config.json
+/etc/easy_all/warp/wgcf-account.toml        # 仅 XHTTP 启用 WARP
+/etc/easy_all/warp/wgcf-profile.conf        # 仅 XHTTP 启用 WARP
 /etc/easy_all/certs/
 /var/www/easy_all/subscriptions/
 /etc/nginx/conf.d/easy_all.conf
@@ -720,11 +777,12 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 
 ```text
 STATE_VERSION=2  # Reality
-STATE_VERSION=4  # XHTTP
+STATE_VERSION=5  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
 REALITY_CLIENT_IP_FAMILY=auto|ipv4|dual       # 仅 Reality 的客户端节点连接地址族
 CDN_CLIENT_IP_FAMILY=auto|ipv4|dual           # 仅 CDN 的客户端到边缘连接地址族
+WARP_MODE=off|ai|global                       # 仅 CDN XHTTP；新安装默认 ai
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
 CLOUDFRONT_FEE_PROTECTION_GB=0|980            # AWS 固定套餐|AWS 按量付费
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
@@ -762,6 +820,7 @@ easy_all
    ├─ mihomo-template.sh     Mihomo 模板加载、校验与路由元数据
    ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
    ├─ xray-core.sh           Xray 下载、校验与安装
+   ├─ warp.sh                XHTTP 用户态 WireGuard WARP 注册、路由与验收
    ├─ scheduled-maintenance.sh  证书续期与可选定时重启
    ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
    └─ tcp-tuning.sh          Google BBR 与保守 TCP 参数
@@ -774,7 +833,8 @@ sample-mihomo.yaml
 代码。两个 XHTTP Profile 通过 `xhttp_render_xray_config` 实现各自的服务端传输参数。
 
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
-`scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`network.sh` 只负责只读网络
+`scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`warp.sh` 只由 XHTTP Runtime
+加载，Reality 不加载 WARP 逻辑。`network.sh` 只负责只读网络
 探测，`firewall.sh` 负责具有系统副作用的 UFW 修改，两者刻意保持独立。
 
 ## 测试

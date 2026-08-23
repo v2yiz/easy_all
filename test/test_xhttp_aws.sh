@@ -5,9 +5,10 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
+WARP_MODULE="${ROOT_DIR}/lib/warp.sh"
 PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
 SCHEDULED_MAINTENANCE_MODULE="${ROOT_DIR}/lib/scheduled-maintenance.sh"
-XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"
+XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"$'\n'"$(<"${WARP_MODULE}")"
 XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
 MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
 TMP_DIR=$(mktemp -d)
@@ -48,10 +49,12 @@ assert_not_contains "XHTTP state no longer persists a configurable Gemini egress
     "${XHTTP_CONTENT}" 'GEMINI_IP_FAMILY=%q'
 assert_contains "XHTTP state persists the CDN client family" "${XHTTP_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=%q'
+assert_contains "XHTTP state persists the WARP mode" "${XHTTP_CONTENT}" \
+    'WARP_MODE=%q'
 assert_contains "XHTTP routes Gemini domains through a dedicated outbound" "${XHTTP_CONTENT}" \
     'outboundTag:"gemini-family"'
-assert_contains "CloudFront fixes Google and Gemini egress to the shared IPv4 policy" \
-    "${XRAY_RENDER_CONTENT}" '${GEMINI_OUTBOUND_DOMAIN_STRATEGY}'
+assert_contains "CloudFront delegates outbound policy to the shared WARP module" \
+    "${XRAY_RENDER_CONTENT}" 'warp_xray_outbounds_json'
 assert_not_contains "CloudFront Xray egress does not depend on the client family" \
     "${XRAY_RENDER_CONTENT}" "CDN_CLIENT_IP_FAMILY"
 assert_not_contains "CloudFront client rendering does not depend on Gemini egress" \
@@ -127,7 +130,8 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     assert_equal "unified state" "/etc/easy_all" "${STATE_DIR}"
     assert_equal "unified service" "easy_all-xray.service" "${XRAY_SERVICE}"
     assert_equal "unified nginx config" "/etc/nginx/conf.d/easy_all.conf" "${NGINX_CONFIG}"
-    assert_equal "schema" "4" "${STATE_SCHEMA_VERSION}"
+    assert_equal "schema" "5" "${STATE_SCHEMA_VERSION}"
+    assert_equal "new XHTTP installs default to AI WARP" "ai" "${DEFAULT_WARP_MODE}"
     assert_equal "AWS control region" "us-east-1" "${AWS_CONTROL_REGION}"
     assert_equal "default CloudFront billing mode" "payg" \
         "${DEFAULT_AWS_CLOUDFRONT_BILLING_MODE}"
@@ -456,6 +460,8 @@ EOF
             || fail "legacy Gemini family state must be discarded"
         assert_equal "old XHTTP state defaults CDN client family to auto" \
             "auto" "${CDN_CLIENT_IP_FAMILY}"
+        assert_equal "old XHTTP state migrates without silently enabling WARP" \
+            "off" "${WARP_MODE}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
         assert_equal "node name environment override wins during update" \
@@ -467,7 +473,7 @@ EOF
         source_state_file() { STATE_VERSION="3"; }
         load_state
     ) >/dev/null 2>&1; then
-        fail "XHTTP v4 must reject old state without global protection state"
+        fail "XHTTP v5 must reject old state without global protection state"
     fi
 
     zones='{"HostedZones":[{"Id":"/hostedzone/ZBASE","Name":"example.com.","Config":{"PrivateZone":false}},{"Id":"/hostedzone/ZPRIVATE","Name":"node.example.com.","Config":{"PrivateZone":true}},{"Id":"/hostedzone/ZBOUNDARY","Name":"notexample.com.","Config":{"PrivateZone":false}}]}'
@@ -810,6 +816,10 @@ EOF
     assert_contains "Mihomo subscription node name" "$(<"${mihomo_file}")" "EASY_ALL_XHTTP_TEST"
     assert_contains "Mihomo subscription rules" "$(<"${mihomo_file}")" "RULE-SET,telegramcidr,PROXY,no-resolve"
     assert_contains "Mihomo subscription XMUX" "$(<"${mihomo_file}")" "h-keep-alive-period: 0"
+    assert_not_contains "Mihomo subscription strips ChatGPT metadata" \
+        "$(<"${mihomo_file}")" "EASY_ALL_CHATGPT_DOMAINS"
+    assert_not_contains "Mihomo subscription strips Claude metadata" \
+        "$(<"${mihomo_file}")" "EASY_ALL_CLAUDE_DOMAINS"
     assert_contains "IPv4 CDN endpoint keeps Mihomo IPv6 disabled" \
         "$(<"${mihomo_file}")" $'\nipv6: false\n'
 

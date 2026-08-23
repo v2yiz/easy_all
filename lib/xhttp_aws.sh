@@ -83,6 +83,7 @@ collect_install_inputs() {
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
     choose_cloudfront_billing_mode
+    choose_warp_mode
 
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
     XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
@@ -119,7 +120,7 @@ load_state() {
         CLOUDFRONT_FEE_PROTECTION_GB
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
-        CDN_CLIENT_IP_FAMILY
+        CDN_CLIENT_IP_FAMILY WARP_MODE
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -139,6 +140,7 @@ load_state() {
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
     CDN_PROVIDER=${CDN_PROVIDER:-aws}
     configure_cdn_client_ip_family
+    configure_loaded_warp_mode
     [[ "${CDN_PROVIDER}" == "aws" ]] \
         || die "当前版本不支持 CDN Provider：${CDN_PROVIDER}"
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
@@ -204,6 +206,7 @@ save_state() {
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY:-auto}"
+        printf 'WARP_MODE=%q\n' "${WARP_MODE:-off}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -248,7 +251,7 @@ install_aws_cli() {
 }
 
 xhttp_render_xray_config() {
-    local clients stats_enabled=false
+    local clients managed_outbounds managed_routing stats_enabled=false
     prepare_mihomo_template
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
@@ -259,14 +262,16 @@ xhttp_render_xray_config() {
     fi
     cloudfront_fee_protection_blocked && clients='[]'
     traffic_stats_enabled && stats_enabled=true
+    managed_outbounds=$(warp_xray_outbounds_json)
+    managed_routing=$(warp_xray_routing_json)
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" \
         --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg x_padding_bytes "${XHTTP_SERVER_PADDING_BYTES}" \
         --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" \
-        --arg gemini_domain_strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" \
-        --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
+        --argjson managed_outbounds "${managed_outbounds}" \
+        --argjson managed_routing "${managed_routing}" '
         {
           log:{loglevel:"warning"},
           inbounds:[{
@@ -284,16 +289,8 @@ xhttp_render_xray_config() {
               },
               sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}
           }],
-          outbounds:[
-            {protocol:"freedom",tag:"direct"},
-            {protocol:"freedom",tag:"gemini-family",
-             settings:{domainStrategy:$gemini_domain_strategy}}
-          ],
-          routing:{domainStrategy:"AsIs",rules:[
-            {type:"field",domain:($gemini_domain_suffixes | map("domain:" + .)),
-             outboundTag:"gemini-family"},
-            {type:"field",network:"tcp,udp",outboundTag:"direct"}
-          ]}
+          outbounds:$managed_outbounds,
+          routing:$managed_routing
         }
         + (if $stats_enabled then {
             api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
@@ -982,14 +979,12 @@ show_node() {
 }
 
 show_status() {
-    local active_family
     require_root
     collect_installed_state
-    active_family=$(gemini_ip_family_status)
     resolve_cdn_client_ip_family
     printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
-    printf 'Gemini 出口族: %s（固定）\n' "${active_family}"
+    show_warp_configuration_status
     printf 'CDN 客户端节点族: %s（配置: %s）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}" "${CDN_CLIENT_IP_FAMILY:-auto}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
@@ -1037,6 +1032,7 @@ update_subscription() {
     fi
     save_state
     refresh_runtime
+    validate_warp_egress
     install_quota_timer
     install_cloudfront_fee_protection_timer
     end_quota_maintenance
@@ -1151,6 +1147,8 @@ install_all() {
     info "[6/9] 申请源站证书并安装 Xray"
     issue_origin_certificate
     download_xray
+    prepare_warp_profile
+    validate_warp_egress
     write_xray_config
     install_xray_service
     write_nginx_config
@@ -1182,6 +1180,8 @@ usage() {
   apply            按当前状态应用本机运行时与订阅，不修改 AWS
   apply-cloud      应用本机并同步 Route 53、ACM 与 CloudFront
   update-sub       更新订阅选择、配额与本机运行时
+  warp-set [模式]  切换 off、ai 或 global WARP（新安装默认 ai）
+  warp-status      实时验收 WARP 出口 IP 与 Cloudflare Colo
   show             显示 VLESS 链接与 Mihomo 节点
   subscription     显示节点与订阅状态
   status           显示本机状态与已保存的 AWS 资源 ID
@@ -1204,6 +1204,8 @@ main() {
     apply) apply_easy_all ;;
     apply-cloud) apply_cloud_resources ;;
     update-sub) update_subscription ;;
+    warp-set) shift; update_warp_mode "$@" ;;
+    warp-status) show_warp_live_status ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
     status) show_status ;;

@@ -371,6 +371,7 @@ collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
     configure_cdn_client_ip_family
+    choose_warp_mode
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -421,7 +422,7 @@ load_state() {
         GCORE_SSL_CERT_ID GCORE_CDN_TARGET GCORE_FEE_PROTECTION_GB
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
-        CDN_CLIENT_IP_FAMILY
+        CDN_CLIENT_IP_FAMILY WARP_MODE
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -441,6 +442,7 @@ load_state() {
     [[ "${PROTOCOL}" == "xhttp" && "${CDN_PROVIDER:-}" == "gcore" ]] \
         || die "状态不是 Gcore CDN XHTTP；请重新安装"
     configure_cdn_client_ip_family
+    configure_loaded_warp_mode
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
     [[ "${GCORE_DNS_ZONE:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "状态中缺少 Gcore DNS Zone"
@@ -510,6 +512,7 @@ save_state() {
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY:-auto}"
+        printf 'WARP_MODE=%q\n' "${WARP_MODE:-off}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -523,7 +526,7 @@ collect_installed_state() {
 # stream-up server window strictly below that edge limit instead of inheriting
 # CloudFront's 20-40-second range.
 xhttp_render_xray_config() {
-    local clients stats_enabled=false
+    local clients managed_outbounds managed_routing stats_enabled=false
     prepare_mihomo_template
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
@@ -534,27 +537,21 @@ xhttp_render_xray_config() {
     fi
     cloudfront_fee_protection_blocked && clients='[]'
     traffic_stats_enabled && stats_enabled=true
+    managed_outbounds=$(warp_xray_outbounds_json)
+    managed_routing=$(warp_xray_routing_json)
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg stream_up_server_secs "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}" \
-        --arg gemini_domain_strategy "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" \
-        --argjson gemini_domain_suffixes "${GEMINI_DOMAIN_SUFFIXES_JSON}" '
+        --argjson managed_outbounds "${managed_outbounds}" \
+        --argjson managed_routing "${managed_routing}" '
         {log:{loglevel:"warning"},
          inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$xhttp_port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
           streamSettings:{network:"xhttp",xhttpSettings:{host:$xhttp_host,path:$xhttp_path,mode:"stream-up",scStreamUpServerSecs:$stream_up_server_secs}},
           sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],
-         outbounds:[
-           {protocol:"freedom",tag:"direct"},
-           {protocol:"freedom",tag:"gemini-family",
-            settings:{domainStrategy:$gemini_domain_strategy}}
-         ],
-         routing:{domainStrategy:"AsIs",rules:[
-           {type:"field",domain:($gemini_domain_suffixes | map("domain:" + .)),
-            outboundTag:"gemini-family"},
-           {type:"field",network:"tcp,udp",outboundTag:"direct"}
-         ]}}
+         outbounds:$managed_outbounds,
+         routing:$managed_routing}
         + (if $stats_enabled then {api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},stats:{},policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}} else {} end)
     ' >"${RUNTIME_TMP}/xray-config.json"
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null \
@@ -571,14 +568,12 @@ show_node() {
 }
 
 show_status() {
-    local active_family
     require_root
     collect_installed_state
-    active_family=$(gemini_ip_family_status)
     resolve_cdn_client_ip_family
     printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
-    printf 'Gemini 出口族: %s（固定）\n' "${active_family}"
+    show_warp_configuration_status
     printf 'CDN 客户端节点族: %s（配置: %s）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}" "${CDN_CLIENT_IP_FAMILY:-auto}"
     printf 'Gcore DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
@@ -613,6 +608,7 @@ update_subscription() {
     fi
     save_state
     refresh_runtime
+    validate_warp_egress
     install_quota_timer
     install_cloudfront_fee_protection_timer
     end_quota_maintenance
@@ -727,6 +723,8 @@ install_all() {
     info "[6/9] 申请源站证书并安装 Xray"
     issue_origin_certificate
     download_xray
+    prepare_warp_profile
+    validate_warp_egress
     write_xray_config
     install_xray_service
     write_nginx_config

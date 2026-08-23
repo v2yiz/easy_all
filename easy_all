@@ -27,6 +27,7 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "lib/mihomo-template.sh"
     "lib/firewall.sh"
     "lib/xray-core.sh"
+    "lib/warp.sh"
     "lib/scheduled-maintenance.sh"
     "lib/subscription-auth.sh"
     "lib/tcp-tuning.sh"
@@ -56,6 +57,8 @@ launcher_usage() {
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN Provider 云资源
   update-sub       重新选择订阅模式与月度用户配额
+  warp-set         XHTTP 切换 off、ai 或 global WARP（默认 ai）
+  warp-status      XHTTP 实时验收 WARP 出口
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
   quota-status     显示用户配额与 CDN XHTTP 全局费用保护
@@ -87,12 +90,14 @@ easy_all install
    ├─ 系统检查 → 依赖/BBR/重启策略
    ├─ Route 53 源站域名（必填）→ CloudFront CDN 域名（必填）
    ├─ 选择 CloudFront 计费：Free 固定套餐，或按量付费 1 TB 免费额度 + 980 GB 全局保护
+   ├─ 选择 WARP 出口：AI WARP（默认）、关闭或 Global WARP；不修改 VPS 系统路由
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
    ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A
    └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/CloudFront/已选计费模式/CDN Alias → 状态/命令/配额任务
 └─ [3] CDN XHTTP（Gcore）
    ├─ 适用线路：非优化线路；先按 docs/gcore-guide.md 委派整个主域名到 Gcore Managed DNS
    ├─ 系统检查 → 依赖/BBR/重启策略 → Gcore 源站域名与 CDN 域名
+   ├─ 选择 WARP 出口：AI WARP（默认）、关闭或 Global WARP；不修改 VPS 系统路由
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
    ├─ 仅输入 GCORE_API_TOKEN → 验证 CDN/DNS 权限与 Gcore 权威 DNS 委派 → 源站 A
    └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → 源组/Gcore CDN/免费 Let's Encrypt/CDN CNAME → 980 GB 费用保护 → 状态/命令/配额任务
@@ -240,6 +245,17 @@ dispatch_profile_command() {
         else
             update_subscription
         fi
+        ;;
+    warp-set)
+        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
+            || launcher_die "warp-set 仅适用于 CDN XHTTP 模式"
+        update_warp_mode "$@"
+        ;;
+    warp-status)
+        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
+            || launcher_die "warp-status 仅适用于 CDN XHTTP 模式"
+        (($# == 0)) || launcher_die "warp-status 不接受参数"
+        show_warp_live_status
         ;;
     update-core) update_current_core ;;
     renew-cert)

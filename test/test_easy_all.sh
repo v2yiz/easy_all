@@ -316,7 +316,7 @@ test_subscription_stage_dispatch() {
 }
 
 test_mihomo_template() {
-    local policy invalid="${TMP_DIR}/invalid.yaml"
+    local policy chatgpt_policy claude_policy ai_policy invalid="${TMP_DIR}/invalid.yaml"
     validate_mihomo_template "${ROOT_DIR}/sample-mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
@@ -325,9 +325,31 @@ test_mihomo_template() {
     policy=$(extract_gemini_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
     assert_success "Gemini policy contains Google dependencies only" \
         jq -e \
-        'index("google.com") and index("googleapis.com")
+        'index("google.com") and index("googleapis.com") and index("gstatic.com")
+         and index("www.youtube.com") and index("static.doubleclick.net")
          and (index("openai.com") | not) and (index("claude.ai") | not)' \
         <<<"${policy}"
+    chatgpt_policy=$(extract_chatgpt_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
+    assert_success "ChatGPT policy covers the official allowlist and compatibility dependencies" \
+        jq -e \
+        'index("openai.com") and index("chatgpt.com") and index("oaistatsig.com")
+         and index("ct.sendgrid.net") and index("cdn.workos.com")
+         and index("intercom.io") and index("sentry.io") and index("stripe.com")' \
+        <<<"${chatgpt_policy}"
+    claude_policy=$(extract_claude_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
+    assert_success "Claude policy covers browser, API, desktop and dynamic content domains" \
+        jq -e \
+        'index("anthropic.com") and index("claude.ai") and index("claude.com")
+         and index("claude.app") and index("claudeusercontent.com")
+         and index("claudemcpcontent.com")' \
+        <<<"${claude_policy}"
+    ai_policy=$(extract_ai_warp_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
+    assert_success "AI WARP policy covers Gemini, ChatGPT and Claude" \
+        jq -e \
+        'index("google.com") and index("gstatic.com") and index("openai.com")
+         and index("chatgpt.com") and index("anthropic.com") and index("claude.ai")
+         and length == (unique | length)' \
+        <<<"${ai_policy}"
     grep -v '^# EASY_ALL_PROXY_NAME$' \
         "${ROOT_DIR}/sample-mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \
@@ -375,6 +397,10 @@ test_subscription_generation() {
         "EASY_ALL_PROXY_NODE" "${yaml}"
     assert_not_contains "rendered subscription removes policy metadata" \
         "EASY_ALL_GEMINI_DOMAINS" "${yaml}"
+    assert_not_contains "rendered subscription removes ChatGPT metadata" \
+        "EASY_ALL_CHATGPT_DOMAINS" "${yaml}"
+    assert_not_contains "rendered subscription removes Claude metadata" \
+        "EASY_ALL_CLAUDE_DOMAINS" "${yaml}"
 
     SUB_PORT_MODE="443"
     generate_subscription_files "${base64_file}" "${mihomo_file}"
@@ -667,8 +693,8 @@ EOF
         jq -e \
         '(.routing.rules[] | select(.outboundTag == "gemini-family").domain
              | index("domain:google.com"))
-         and ((.routing.rules[] | select(.outboundTag == "gemini-family").domain
-             | index("domain:gstatic.com")) == null)
+         and (.routing.rules[] | select(.outboundTag == "gemini-family").domain
+             | index("domain:gstatic.com"))
          and ((.routing.rules[] | select(.outboundTag == "gemini-family").domain
              | index("domain:openai.com")) == null)' \
         <<<"${config}"

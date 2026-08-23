@@ -48,6 +48,11 @@ shared_modules=(
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
+[[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/warp.sh"'* \
+    && "${LAUNCHER_CONTENT}" == *'"lib/warp.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'lib/warp.sh'* \
+    && "$(<"${REALITY_PROFILE}")" != *'source "${SCRIPT_DIR}/warp.sh"'* ]] \
+    || fail "WARP must be packaged for XHTTP without loading into Reality"
 
 for obsolete_module in \
     profile-support.sh validation.sh acme-renewal.sh reboot-schedule.sh; do

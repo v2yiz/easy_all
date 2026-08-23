@@ -46,7 +46,7 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="4"
+readonly STATE_SCHEMA_VERSION="5"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
 readonly XHTTP_XMUX_MAX_CONCURRENCY="8-16"
@@ -72,6 +72,8 @@ source "${SCRIPT_DIR}/mihomo-template.sh"
 source "${SCRIPT_DIR}/firewall.sh"
 # shellcheck source=lib/xray-core.sh
 source "${SCRIPT_DIR}/xray-core.sh"
+# shellcheck source=lib/warp.sh
+source "${SCRIPT_DIR}/warp.sh"
 # shellcheck source=lib/scheduled-maintenance.sh
 source "${SCRIPT_DIR}/scheduled-maintenance.sh"
 # shellcheck source=lib/subscription-auth.sh
@@ -99,6 +101,9 @@ UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 GEMINI_DOMAIN_SUFFIXES_JSON=""
+CHATGPT_DOMAIN_SUFFIXES_JSON=""
+CLAUDE_DOMAIN_SUFFIXES_JSON=""
+AI_WARP_DOMAIN_SUFFIXES_JSON=""
 CDN_CLIENT_IP_FAMILY_RESOLVED=""
 
 cleanup() {
@@ -233,8 +238,10 @@ source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 状态文件不存在：${STATE_FILE}"
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
-        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
+    case "${STATE_VERSION:-}" in
+    4 | "${STATE_SCHEMA_VERSION}") ;;
+    *) die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}" ;;
+    esac
 }
 
 check_install_conflicts() {
@@ -640,6 +647,13 @@ render_mihomo_subscription() {
     node_name=$(jq -Rn --arg value "${XHTTP_NODE_NAME}" '$value')
     awk -v node_file="${node_file}" -v node_name="${node_name}" \
         -v ipv6_enabled="${ipv6_enabled}" '
+        $0 == "# EASY_ALL_GEMINI_DOMAINS_START" ||
+        $0 == "# EASY_ALL_CHATGPT_DOMAINS_START" ||
+        $0 == "# EASY_ALL_CLAUDE_DOMAINS_START" { metadata=1; next }
+        $0 == "# EASY_ALL_GEMINI_DOMAINS_END" ||
+        $0 == "# EASY_ALL_CHATGPT_DOMAINS_END" ||
+        $0 == "# EASY_ALL_CLAUDE_DOMAINS_END" { metadata=0; next }
+        metadata == 1 { next }
         $0 ~ /^ipv6: (true|false)$/ {
             print "ipv6: " ipv6_enabled
             next
@@ -760,11 +774,16 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/subscriptions.missing"
     fi
+    if [[ -d "${WARP_DIR}" ]]; then
+        cp -a "${WARP_DIR}" "${UPDATE_SUB_BACKUP_DIR}/warp"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/warp.missing"
+    fi
     UPDATE_SUB_ROLLBACK_ON_EXIT=1
 }
 
 rollback_subscription_update() {
-    warn "订阅更新失败，正在恢复状态、Nginx 配置与订阅文件"
+    warn "本机配置更新失败，正在恢复状态、WARP、Nginx 与订阅文件"
     [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
         && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" ]]; then
@@ -782,12 +801,18 @@ rollback_subscription_update() {
         install -d -o root -g www-data -m 0750 "$(dirname "${SUBSCRIPTION_DIR}")"
         cp -a "${UPDATE_SUB_BACKUP_DIR}/subscriptions" "${SUBSCRIPTION_DIR}"
     fi
+    rm -rf -- "${WARP_DIR}"
+    if [[ -d "${UPDATE_SUB_BACKUP_DIR}/warp" ]]; then
+        install -d -m 0700 "$(dirname -- "${WARP_DIR}")"
+        cp -a "${UPDATE_SUB_BACKUP_DIR}/warp" "${WARP_DIR}"
+    fi
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 \
         || warn "恢复订阅更新前 Nginx 配置失败"
 }
 
 finish_xhttp_apply() {
     refresh_runtime
+    validate_warp_egress
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         ensure_allowed_tokens
@@ -817,6 +842,7 @@ update_current_core() {
             write_xray_config
         fi
         if systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
+            && validate_warp_egress \
             && cloudfront_fee_mark_enforced; then
             end_quota_maintenance
             success "Xray 已更新"

@@ -45,6 +45,30 @@ extract_gemini_domain_suffixes() {
         "Gemini"
 }
 
+extract_chatgpt_domain_suffixes() {
+    extract_domain_suffix_policy "$1" \
+        "# EASY_ALL_CHATGPT_DOMAINS_START" \
+        "# EASY_ALL_CHATGPT_DOMAINS_END" \
+        "ChatGPT"
+}
+
+extract_claude_domain_suffixes() {
+    extract_domain_suffix_policy "$1" \
+        "# EASY_ALL_CLAUDE_DOMAINS_START" \
+        "# EASY_ALL_CLAUDE_DOMAINS_END" \
+        "Claude"
+}
+
+extract_ai_warp_domain_suffixes() {
+    local source=$1 gemini chatgpt claude
+    gemini=$(extract_gemini_domain_suffixes "${source}")
+    chatgpt=$(extract_chatgpt_domain_suffixes "${source}")
+    claude=$(extract_claude_domain_suffixes "${source}")
+    jq -cn --argjson gemini "${gemini}" --argjson chatgpt "${chatgpt}" \
+        --argjson claude "${claude}" \
+        '$gemini + $chatgpt + $claude | unique'
+}
+
 validate_mihomo_template() {
     local source=$1 marker count
     [[ -s "${source}" ]] || die "sample-mihomo.yaml 为空：${source}"
@@ -52,13 +76,19 @@ validate_mihomo_template() {
         "# EASY_ALL_PROXY_NODE" \
         "# EASY_ALL_PROXY_NAME" \
         "# EASY_ALL_GEMINI_DOMAINS_START" \
-        "# EASY_ALL_GEMINI_DOMAINS_END"; do
+        "# EASY_ALL_GEMINI_DOMAINS_END" \
+        "# EASY_ALL_CHATGPT_DOMAINS_START" \
+        "# EASY_ALL_CHATGPT_DOMAINS_END" \
+        "# EASY_ALL_CLAUDE_DOMAINS_START" \
+        "# EASY_ALL_CLAUDE_DOMAINS_END"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \
             || die "sample-mihomo.yaml 模板标记无效：${marker} 应且只能出现一次"
     done
     grep -q '^rules:' "${source}" || die "sample-mihomo.yaml 缺少规则"
     extract_gemini_domain_suffixes "${source}" >/dev/null
+    extract_chatgpt_domain_suffixes "${source}" >/dev/null
+    extract_claude_domain_suffixes "${source}" >/dev/null
 }
 
 fetch_mihomo_template() {
@@ -89,11 +119,17 @@ prepare_mihomo_template() {
     local template
     if [[ -n "${MIHOMO_TEMPLATE_FILE:-}" \
         && -s "${MIHOMO_TEMPLATE_FILE}" \
-        && -n "${GEMINI_DOMAIN_SUFFIXES_JSON:-}" ]]; then
+        && -n "${GEMINI_DOMAIN_SUFFIXES_JSON:-}" \
+        && -n "${CHATGPT_DOMAIN_SUFFIXES_JSON:-}" \
+        && -n "${CLAUDE_DOMAIN_SUFFIXES_JSON:-}" \
+        && -n "${AI_WARP_DOMAIN_SUFFIXES_JSON:-}" ]]; then
         return 0
     fi
     template="${RUNTIME_TMP}/sample-mihomo.yaml"
     fetch_mihomo_template "${template}"
     GEMINI_DOMAIN_SUFFIXES_JSON=$(extract_gemini_domain_suffixes "${template}")
+    CHATGPT_DOMAIN_SUFFIXES_JSON=$(extract_chatgpt_domain_suffixes "${template}")
+    CLAUDE_DOMAIN_SUFFIXES_JSON=$(extract_claude_domain_suffixes "${template}")
+    AI_WARP_DOMAIN_SUFFIXES_JSON=$(extract_ai_warp_domain_suffixes "${template}")
     MIHOMO_TEMPLATE_FILE=${template}
 }

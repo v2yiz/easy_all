@@ -59,19 +59,44 @@ Gcore Managed DNS 的方式；不提供“仅委派一个子域名”的分支�
 
 ## 3. 创建一枚最小权限 API Token
 
-在个人资料中的 **API tokens → Create token** 创建专用于 easy_all 的永久 Token。建议名称
-`easy_all_gcore`，为其对应身份授予：
+在个人资料中的 **API 令牌 → 创建** 为 easy_all 新建一枚专用 Token。建议名称
+`easy_all_gcore`；描述可填“easy_all Gcore CDN + Managed DNS 部署”。
+
+**权限边界：** 安装器只调用 Gcore 的 CDN 与 Managed DNS 接口，用于管理源组、CDN 资源、边缘证书、
+DNS Zone 和节点记录；它不调用账户、用户、账单、Cloud、Storage 或 Streaming 接口。因此 Token 必须具备
+CDN 资源的读取/创建/更新权限，以及 Managed DNS Zone 和记录的读取/写入权限；不需要 IAM 的用户或账户管理权限。
+
+![Gcore 官方控制台：创建 API 令牌、有效期与权限展示](gcore/gcore-api-token-create.png)
+
+按图操作：
+
+1. 在左侧选择 **API 令牌**，点击右上角 **创建**。
+2. 填写名称 `easy_all_gcore`。描述为可选项。
+3. 有效期建议选“设置过期日期”，设为一年并在密码管理器中设置轮换提醒；仅在已有严格密钥轮换流程时才选择“永不过期”。
+4. **不要尝试在此页勾选角色。** 控制台会根据当前登录身份已有的 IAM 权限自动带入角色；截图中的
+   **IAM / CDN → 工程师** 与 **Managed DNS → 管理员** 是该账号当前的继承状态，单选项无法点击是正常现象。
+   Gcore 未公开“工程师”与 CDN 写入 API 的逐接口对应表，**“工程师”并不等同于已验证的 CDN 写入权限**。
+   创建前请让账户管理员确认该身份可管理 CDN 源组、CDN 资源和边缘证书，以及 Managed DNS 的 Zone 和记录。
+5. 点击 **创建** 后，立即将完整 Token 保存进密码管理器。该值只会显示一次。
+
+项目中所说的功能范围对应 CDN 与 DNS 的编辑权限：
 
 | 角色 | 安装器用途 |
 | --- | --- |
 | `CDN Editor` | 读取、创建和更新源组、CDN 资源、源站 HTTPS、缓存规则和 Gcore 证书 |
 | `DNS Editor` | 读取 Zone，创建或更新源站 A 与节点 CNAME |
 
-不要授予 `Account Administrator`、`WAAP Editor`、Cloud、Storage 或 Streaming 权限。若控制台把
-权限分配给身份而不是 Token，先建立专用身份并授予上述两个角色，再为它创建 Token。
+不要通过授予整个 **IAM / CDN** 的“管理员”、WAAP、Cloud、Storage 或 Streaming 来绕过权限不足。
+Token 页面不能提升权限；请让账户管理员在 **账户的用户/IAM 权限管理页面** 为专用身份授予 CDN
+资源读写与 Managed DNS Zone/记录读写权限。重新登录或刷新“创建 API 令牌”页面后，所需角色会自动带入，再创建 Token。
 
-Token 只会完整显示一次；立刻放入密码管理器。安装时输入 `GCORE_API_TOKEN` 后，它仅存在于当前
-进程，不会写入 `/etc/easy_all/state.env`。如设置有效期，在到期前轮换即可。
+安装器会先读取 `/cdn/resources` 与 `/dns/v2/zones` 验证 Token；后续还需要创建或更新
+`/cdn/origin_groups`、`/cdn/resources`、`/cdn/sslData` 和 DNS 记录。因此只有这两个读取接口通过，仍不能证明
+Token 具备全部部署权限；若需要在正式安装前确认角色范围，请由 Gcore 账户管理员或 Gcore 支持按这些 API
+操作核对该身份的实际授权。
+
+安装时输入 `GCORE_API_TOKEN` 后，它仅存在于当前进程，不会写入 `/etc/easy_all/state.env`。如设置有效期，
+在到期前轮换即可。
 
 官方参考：[API Token 与最小角色](https://gcore.com/docs/developer-tools/mcp-server/gcore-mcp-server-overview)、
 [永久 API Token](https://gcore.com/blog/permanent-api-token-explained)。

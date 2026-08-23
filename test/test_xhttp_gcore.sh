@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/xhttp_gcore.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
+WARP_MODULE="${ROOT_DIR}/lib/warp.sh"
 XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
 MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
 
@@ -38,7 +39,7 @@ fi
 assert_contains "standalone profile directs users to unified entry" \
     "${standalone_output}" "easy_all install"
 
-profile_content="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"
+profile_content="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"$'\n'"$(<"${WARP_MODULE}")"
 assert_contains "Gcore profile uses permanent API token authentication" \
     "${profile_content}" "Authorization: APIKey"
 assert_contains "Gcore profile manages DNS zones" \
@@ -59,10 +60,12 @@ assert_not_contains "Gcore profile no longer persists a configurable Gemini egre
     "${profile_content}" 'GEMINI_IP_FAMILY=%q'
 assert_contains "Gcore profile persists the CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
+assert_contains "Gcore profile persists the WARP mode" \
+    "${profile_content}" 'WARP_MODE=%q'
 assert_contains "Gcore routes Gemini domains through a dedicated outbound" \
     "${profile_content}" 'outboundTag:"gemini-family"'
-assert_contains "Gcore fixes Google and Gemini egress to the shared IPv4 policy" \
-    "${XRAY_RENDER_CONTENT}" '${GEMINI_OUTBOUND_DOMAIN_STRATEGY}'
+assert_contains "Gcore delegates outbound policy to the shared WARP module" \
+    "${XRAY_RENDER_CONTENT}" 'warp_xray_outbounds_json'
 assert_contains "Gcore client family resolution stays in the shared XHTTP runtime" \
     "${profile_content}" 'resolve_cdn_client_ip_family'
 assert_not_contains "Gcore Xray egress does not depend on the client family" \

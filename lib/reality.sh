@@ -104,6 +104,9 @@ UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 GEMINI_DOMAIN_SUFFIXES_JSON=""
+CHATGPT_DOMAIN_SUFFIXES_JSON=""
+CLAUDE_DOMAIN_SUFFIXES_JSON=""
+AI_WARP_DOMAIN_SUFFIXES_JSON=""
 REALITY_CLIENT_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
@@ -956,8 +959,12 @@ render_mihomo_subscription() {
     node_name=$(jq -Rn --arg value "${NODE_NAME}" '$value')
     awk -v node_file="${node_file}" -v node_name="${node_name}" \
         -v ipv6_enabled="${ipv6_enabled}" '
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_START" { metadata=1; next }
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_END" { metadata=0; next }
+        $0 == "# EASY_ALL_GEMINI_DOMAINS_START" ||
+        $0 == "# EASY_ALL_CHATGPT_DOMAINS_START" ||
+        $0 == "# EASY_ALL_CLAUDE_DOMAINS_START" { metadata=1; next }
+        $0 == "# EASY_ALL_GEMINI_DOMAINS_END" ||
+        $0 == "# EASY_ALL_CHATGPT_DOMAINS_END" ||
+        $0 == "# EASY_ALL_CLAUDE_DOMAINS_END" { metadata=0; next }
         metadata == 1 { next }
         $0 ~ /^ipv6: (true|false)$/ {
             print "ipv6: " ipv6_enabled

@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bash test/test_bootstrap.sh && bash test/test_launcher.sh && bash test/test_architecture.sh && bash test/test_docs.sh && bash test/test_quota.sh && bash test/test_cdn_traffic_guard.sh && bash test/test_easy_all.sh && bash test/test_xhttp_aws.sh && bash test/test_xhttp_gcore.sh && bash test/test_debian_init.sh"
+    "test": "bash test/test_bootstrap.sh && bash test/test_launcher.sh && bash test/test_architecture.sh && bash test/test_docs.sh && bash test/test_quota.sh && bash test/test_cdn_traffic_guard.sh && bash test/test_warp.sh && bash test/test_easy_all.sh && bash test/test_xhttp_aws.sh && bash test/test_xhttp_gcore.sh && bash test/test_debian_init.sh"
   }
 }

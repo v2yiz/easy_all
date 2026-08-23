@@ -49,6 +49,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/lib/mihomo-template.sh" \
     && -f "${REPO_DIR}/lib/firewall.sh" \
     && -f "${REPO_DIR}/lib/xray-core.sh" \
+    && -f "${REPO_DIR}/lib/warp.sh" \
     && -f "${REPO_DIR}/lib/scheduled-maintenance.sh" \
     && -f "${REPO_DIR}/lib/subscription-auth.sh" \
     && -f "${REPO_DIR}/lib/tcp-tuning.sh" \

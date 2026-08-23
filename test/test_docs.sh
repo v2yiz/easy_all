@@ -33,7 +33,7 @@ done < <(
 )
 
 for command in show subscription self-update apply apply-cloud update-sub update-core \
-    renew-cert quota-status quota-set quota-reset status uninstall help; do
+    warp-set warp-status renew-cert quota-status quota-set quota-reset status uninstall help; do
     assert_contains "README public command ${command}" "${README_CONTENT}" "| \`${command}"
 done
 
@@ -79,8 +79,8 @@ assert_contains "README documents Gemini egress policy for all profiles" "${READ
     '三种模式都会从 Mihomo 模板顶部的 Gemini 域名元数据生成 VPS 端专用出站'
 assert_contains "README documents fixed Gemini IPv4 egress" "${README_CONTENT}" \
     '不再执行 IPv4/IPv6 测速，也不提供地址族切换配置'
-assert_contains "README documents ordinary gstatic egress" "${README_CONTENT}" \
-    '`www.gstatic.com/generate_204` 时会落入 Xray 的普通 `direct`'
+assert_contains "README documents gstatic in the Gemini policy" "${README_CONTENT}" \
+    '`gstatic.com` 已纳入'
 assert_contains "README documents Gcore client H2 keepalive" "${README_CONTENT}" \
     '客户端 H2 PING 固定为 10 秒'
 assert_contains "Gcore guide documents explicit gRPC pass-through" "${GCORE_GUIDE_CONTENT}" \
@@ -159,6 +159,20 @@ assert_contains "Gcore guide requires least-privilege CDN role" \
     "${GCORE_GUIDE_CONTENT}" 'CDN Editor'
 assert_contains "Gcore guide requires least-privilege DNS role" \
     "${GCORE_GUIDE_CONTENT}" 'DNS Editor'
+assert_contains "Gcore guide includes API Token creation illustration" \
+    "${GCORE_GUIDE_CONTENT}" 'gcore/gcore-api-token-create.png'
+[[ -s "${ROOT_DIR}/docs/gcore/gcore-api-token-create.png" ]] \
+    || fail "Gcore API Token illustration must be present"
+assert_contains "Gcore guide records the current console CDN role" \
+    "${GCORE_GUIDE_CONTENT}" '**IAM / CDN → 工程师**'
+assert_contains "Gcore guide does not assume the console CDN role is sufficient" \
+    "${GCORE_GUIDE_CONTENT}" '工程师”并不等同于已验证的 CDN 写入权限'
+assert_contains "Gcore guide identifies the current console DNS role" \
+    "${GCORE_GUIDE_CONTENT}" '**Managed DNS → 管理员**'
+assert_contains "Gcore guide explains that token roles are inherited" \
+    "${GCORE_GUIDE_CONTENT}" 'Token 页面不能提升权限'
+assert_contains "Gcore guide defines the required CDN API scope" \
+    "${GCORE_GUIDE_CONTENT}" '/cdn/origin_groups'
 assert_contains "Gcore guide retains real-network XHTTP validation boundary" \
     "${GCORE_GUIDE_CONTENT}" '上线前的实际连通性检查'
 assert_contains "Gcore guide documents no-card no-paid-resource boundary" \
