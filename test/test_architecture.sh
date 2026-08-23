@@ -97,19 +97,9 @@ grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
     || fail "network module must not depend on Profile template functions"
 
-mihomo_ssh_rules=$(awk '
-    $0 == "rules:" {in_rules=1; next}
-    in_rules && /^[[:space:]]*-[[:space:]]*/ {
-        rule=$0
-        sub(/^[[:space:]]*-[[:space:]]*/, "", rule)
-        print rule
-        if (++count == 2) exit
-    }
-' "${ROOT_DIR}/sample-mihomo.yaml")
-[[ "${mihomo_ssh_rules}" == $'DST-PORT,22,DIRECT\nDST-PORT,65533,DIRECT' \
-    && "$(<"${ROOT_DIR}/lib/mihomo-template.sh")" \
-        == *'前两条规则必须直连 SSH 端口 22 和 65533'* ]] \
-    || fail "Mihomo subscriptions must place SSH direct rules before every proxy rule"
+if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/sample-mihomo.yaml"; then
+    fail "Mihomo subscription template must not force SSH ports to DIRECT"
+fi
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-enabled --quiet cron.service'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-active --quiet cron.service'* \

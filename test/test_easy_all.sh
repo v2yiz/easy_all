@@ -415,6 +415,10 @@ test_subscription_generation() {
         $'\n    ipv6: false\n' "${yaml}"
     assert_contains "Mihomo subscription contains complete rules" \
         "RULE-SET,telegramcidr,PROXY,no-resolve" "${yaml}"
+    assert_not_contains "Mihomo subscription does not override SSH port 22 routing" \
+        "DST-PORT,22," "${yaml}"
+    assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \
+        "DST-PORT,65533," "${yaml}"
     assert_not_contains "rendered subscription removes proxy marker" \
         "EASY_ALL_PROXY_NODE" "${yaml}"
     assert_not_contains "rendered subscription removes policy metadata" \

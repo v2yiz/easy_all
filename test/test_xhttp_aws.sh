@@ -845,6 +845,10 @@ EOF
     assert_contains "Mihomo subscription node name" "$(<"${mihomo_file}")" "EASY_ALL_XHTTP_TEST"
     assert_contains "Mihomo subscription rules" "$(<"${mihomo_file}")" "RULE-SET,telegramcidr,PROXY,no-resolve"
     assert_contains "Mihomo subscription XMUX" "$(<"${mihomo_file}")" "h-keep-alive-period: 0"
+    assert_not_contains "Mihomo subscription does not override SSH port 22 routing" \
+        "$(<"${mihomo_file}")" "DST-PORT,22,"
+    assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \
+        "$(<"${mihomo_file}")" "DST-PORT,65533,"
     assert_not_contains "Mihomo subscription strips ChatGPT metadata" \
         "$(<"${mihomo_file}")" "EASY_ALL_CHATGPT_DOMAINS"
     assert_not_contains "Mihomo subscription strips Claude metadata" \

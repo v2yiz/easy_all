@@ -360,9 +360,6 @@ rule-providers:
 
 rules:
   # ==================== 本地安全前置规则 ====================
-  # SSH 管理流量禁止进入代理链路，避免连接代理节点自身时产生回流。
-  - DST-PORT,22,DIRECT
-  - DST-PORT,65533,DIRECT
   - DOMAIN-SUFFIX,local,DIRECT
   - DOMAIN-SUFFIX,localhost,DIRECT
   - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
