@@ -72,8 +72,6 @@ source "${SCRIPT_DIR}/mihomo-template.sh"
 source "${SCRIPT_DIR}/firewall.sh"
 # shellcheck source=lib/xray-core.sh
 source "${SCRIPT_DIR}/xray-core.sh"
-# shellcheck source=lib/warp.sh
-source "${SCRIPT_DIR}/warp.sh"
 # shellcheck source=lib/scheduled-maintenance.sh
 source "${SCRIPT_DIR}/scheduled-maintenance.sh"
 # shellcheck source=lib/subscription-auth.sh
@@ -100,10 +98,6 @@ INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
-GEMINI_DOMAIN_SUFFIXES_JSON=""
-CHATGPT_DOMAIN_SUFFIXES_JSON=""
-CLAUDE_DOMAIN_SUFFIXES_JSON=""
-AI_WARP_DOMAIN_SUFFIXES_JSON=""
 CDN_CLIENT_IP_FAMILY_RESOLVED=""
 
 cleanup() {
@@ -126,58 +120,16 @@ validate_xhttp_path() {
 }
 
 configure_cdn_client_ip_family() {
-    CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-auto}
-    CDN_CLIENT_IP_FAMILY_RESOLVED=""
-    [[ "${CDN_CLIENT_IP_FAMILY}" =~ ^(auto|ipv4|dual)$ ]] \
-        || die "CDN_CLIENT_IP_FAMILY 必须是 auto、ipv4 或 dual"
-}
-
-cdn_domain_has_address_record() {
-    local type=$1 resolver record
-    for resolver in 1.1.1.1 8.8.8.8; do
-        while IFS= read -r record; do
-            case "${type}" in
-            A)
-                validate_ipv4 "${record}" && return 0
-                ;;
-            AAAA)
-                [[ "${record}" == *:* \
-                    && "${record}" =~ ^[0-9A-Fa-f:]+$ ]] && return 0
-                ;;
-            *) return 1 ;;
-            esac
-        done < <(dig +short "${type}" "${VLESS_CDN_DOMAIN}" @"${resolver}" \
-            2>/dev/null || true)
-    done
-    return 1
-}
-
-cdn_domain_is_dual_stack() {
-    cdn_domain_has_address_record A && cdn_domain_has_address_record AAAA
+    CDN_CLIENT_IP_FAMILY="ipv4"
+    CDN_CLIENT_IP_FAMILY_RESOLVED="ipv4"
 }
 
 resolve_cdn_client_ip_family() {
-    [[ -n "${CDN_CLIENT_IP_FAMILY_RESOLVED:-}" ]] && return 0
     configure_cdn_client_ip_family
-    case "${CDN_CLIENT_IP_FAMILY}" in
-    ipv4) CDN_CLIENT_IP_FAMILY_RESOLVED="ipv4" ;;
-    dual) CDN_CLIENT_IP_FAMILY_RESOLVED="dual" ;;
-    auto)
-        if cdn_domain_is_dual_stack; then
-            CDN_CLIENT_IP_FAMILY_RESOLVED="dual"
-        else
-            CDN_CLIENT_IP_FAMILY_RESOLVED="ipv4"
-        fi
-        ;;
-    esac
 }
 
 validate_cdn_client_ip_family_runtime() {
     resolve_cdn_client_ip_family
-    if [[ "${CDN_CLIENT_IP_FAMILY}" == "dual" ]] \
-        && ! cdn_domain_is_dual_stack; then
-        die "CDN_CLIENT_IP_FAMILY=dual 需要 ${VLESS_CDN_DOMAIN} 在公共 DNS 同时提供 A 和 AAAA"
-    fi
 }
 
 validate_loopback_port() {
@@ -657,16 +609,11 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/subscriptions.missing"
     fi
-    if [[ -d "${WARP_DIR}" ]]; then
-        cp -a "${WARP_DIR}" "${UPDATE_SUB_BACKUP_DIR}/warp"
-    else
-        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/warp.missing"
-    fi
     UPDATE_SUB_ROLLBACK_ON_EXIT=1
 }
 
 rollback_subscription_update() {
-    warn "本机配置更新失败，正在恢复状态、WARP、Nginx 与订阅文件"
+    warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
     [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
         && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" ]]; then
@@ -684,18 +631,12 @@ rollback_subscription_update() {
         install -d -o root -g www-data -m 0750 "$(dirname "${SUBSCRIPTION_DIR}")"
         cp -a "${UPDATE_SUB_BACKUP_DIR}/subscriptions" "${SUBSCRIPTION_DIR}"
     fi
-    rm -rf -- "${WARP_DIR}"
-    if [[ -d "${UPDATE_SUB_BACKUP_DIR}/warp" ]]; then
-        install -d -m 0700 "$(dirname -- "${WARP_DIR}")"
-        cp -a "${UPDATE_SUB_BACKUP_DIR}/warp" "${WARP_DIR}"
-    fi
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 \
         || warn "恢复订阅更新前 Nginx 配置失败"
 }
 
 finish_xhttp_apply() {
     refresh_runtime
-    validate_warp_egress
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         ensure_allowed_tokens
@@ -705,6 +646,7 @@ finish_xhttp_apply() {
         remove_subscriptions
     fi
     save_state
+    remove_obsolete_network_state
     register_easy_all_command
     install_quota_timer
     install_cloudfront_fee_protection_timer
@@ -725,7 +667,6 @@ update_current_core() {
             write_xray_config
         fi
         if systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
-            && validate_warp_egress \
             && cloudfront_fee_mark_enforced; then
             end_quota_maintenance
             success "Xray 已更新"

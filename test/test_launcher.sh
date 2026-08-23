@@ -49,7 +49,6 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \
     && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
-    && "${guide}" == *"WARP 出口（默认 AI WARP）"* \
     && "${guide}" == *"选择 CloudFront 计费：1 Free 固定套餐，或 2 按量付费（默认推荐；升级 Paid plan 本身不收费）"* \
     && "${guide}" == *"Choose CloudFront billing: 1 Free flat-rate, or 2 pay-as-you-go (recommended; upgrading the Paid plan itself is free)"* \
     && "${guide}" == *"[3] CDN XHTTP（Gcore）"* \
@@ -72,7 +71,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" == *'X3 --> X3A{CloudFront 计费模式选择}'* \
     && "${readme}" == *'X3A -->|Free 固定套餐| X4{订阅输出选择}'* \
     && "${readme}" == *'X3A -->|按量付费| X4'* \
-    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]'* \
+    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A / 公网验收 / 生成订阅]'* \
     && "${readme}" == *'X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]'* ]] \
     || fail "README install flow must match the installer execution order"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）:'* \

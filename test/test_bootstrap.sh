@@ -29,7 +29,6 @@ content=$(<"${SCRIPT}")
     && "${content}" == *'&& -f "${REPO_DIR}/lib/mihomo-template.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/firewall.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xray-core.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/warp.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/scheduled-maintenance.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/subscription-auth.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/tcp-tuning.sh"'* \

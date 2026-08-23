@@ -119,9 +119,8 @@ Token 具备全部部署权限；若需要在正式安装前确认角色范围�
 `node.example.com`。动态链路的边缘与浏览器缓存都设置为 `0s`，并保留查询参数；源站只接受
 包含 `X-Easy-All-Origin-Key` 的 CDN 请求。
 
-`CDN_CLIENT_IP_FAMILY=auto|ipv4|dual` 只控制客户端到 Gcore 边缘的连接地址族。默认 `auto`
-根据节点 CNAME 在公共 DNS 中最终返回的 A/AAAA 自动选择；源站回源仍固定使用 IPv4 A。
-Xray 的 Gemini 专用出口始终固定为 `ForceIPv4`。
+生成的 Mihomo 节点固定使用 `ip-version: ipv4`。Gcore 的 CNAME 目标可能同时发布 A/AAAA，
+但 easy_all 客户端只选择 A；源站回源和 VPS 直连目标也固定使用 IPv4。
 
 ## 5. 上线前的实际连通性检查
 

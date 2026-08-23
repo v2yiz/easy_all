@@ -48,12 +48,6 @@ shared_modules=(
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
-[[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/warp.sh"'* \
-    && "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/warp.sh"'* \
-    && "${LAUNCHER_CONTENT}" == *'"lib/warp.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'lib/warp.sh'* ]] \
-    || fail "WARP must be packaged and loaded by Reality and XHTTP"
-
 for obsolete_module in \
     profile-support.sh validation.sh acme-renewal.sh reboot-schedule.sh; do
     [[ ! -e "${ROOT_DIR}/lib/${obsolete_module}" ]] \
@@ -170,12 +164,20 @@ fi
     XRAY_CONFIG="/definitely/missing/easy_all-xray.json"
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/lib/network.sh"
-    [[ "${GEMINI_OUTBOUND_DOMAIN_STRATEGY}" == "ForceIPv4" ]] \
-        || fail "Google and Gemini egress must be fixed to IPv4"
-    ! declare -F measure_gemini_ip_family >/dev/null \
-        || fail "fixed Google and Gemini egress must not retain latency probing"
-    [[ "$(gemini_ip_family_status)" == "ipv4（未应用，请执行 easy_all apply）" ]] \
-        || fail "Gemini status must report the fixed unapplied family"
+    [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "ForceIPv4" ]] \
+        || fail "Xray direct egress must be fixed to IPv4"
+    jq -e '
+        map(.tag) == ["direct","block"]
+        and .[0].settings.domainStrategy == "ForceIPv4"
+    ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
+        || fail "shared direct outbound policy is invalid"
+    jq -e '
+        .domainStrategy == "IPOnDemand"
+        and (.rules[0].ip | index("169.254.0.0/16"))
+        and .rules[0].outboundTag == "block"
+        and .rules[1].outboundTag == "direct"
+    ' <<<"$(xray_direct_routing_json)" >/dev/null \
+        || fail "shared direct routing policy is invalid"
 )
 
 printf 'ok - shared architecture tests passed\n'

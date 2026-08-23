@@ -78,8 +78,6 @@ source "${SCRIPT_DIR}/mihomo-template.sh"
 source "${SCRIPT_DIR}/firewall.sh"
 # shellcheck source=lib/xray-core.sh
 source "${SCRIPT_DIR}/xray-core.sh"
-# shellcheck source=lib/warp.sh
-source "${SCRIPT_DIR}/warp.sh"
 # shellcheck source=lib/scheduled-maintenance.sh
 source "${SCRIPT_DIR}/scheduled-maintenance.sh"
 # shellcheck source=lib/subscription-auth.sh
@@ -105,10 +103,6 @@ INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
-GEMINI_DOMAIN_SUFFIXES_JSON=""
-CHATGPT_DOMAIN_SUFFIXES_JSON=""
-CLAUDE_DOMAIN_SUFFIXES_JSON=""
-AI_WARP_DOMAIN_SUFFIXES_JSON=""
 REALITY_CLIENT_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
@@ -314,50 +308,13 @@ validate_reality_node_dns() {
     success "Reality 域名 AAAA 已匹配本机公网 IPv6：${expected}"
 }
 
-reality_node_has_matching_aaaa() {
-    local record canonical expected found=0
-    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] || return 1
-    validate_domain "${NODE_HOST:-}" || return 1
-    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6:-}") || return 1
-    while IFS= read -r record; do
-        validate_ipv6 "${record}" || continue
-        canonical=$(canonicalize_ipv6 "${record}") || continue
-        [[ "${canonical}" == "${expected}" ]] || return 1
-        found=1
-    done < <(dig +short AAAA "${NODE_HOST}" 2>/dev/null || true)
-    [[ "${found}" == "1" ]]
-}
-
 resolve_reality_client_ip_family() {
-    local requested=${REALITY_CLIENT_IP_FAMILY:-auto}
-    case "${requested}" in
-    ipv4)
-        REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
-        ;;
-    dual)
-        [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] \
-            || die "REALITY_CLIENT_IP_FAMILY=dual 需要服务器具备公网 IPv6"
-        validate_domain "${NODE_HOST:-}" \
-            || die "REALITY_CLIENT_IP_FAMILY=dual 需要使用同时发布 A/AAAA 的节点域名"
-        REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
-        ;;
-    auto)
-        if reality_node_has_matching_aaaa; then
-            REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
-        else
-            REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
-        fi
-        ;;
-    *) die "REALITY_CLIENT_IP_FAMILY 必须是 auto、ipv4 或 dual" ;;
-    esac
+    REALITY_CLIENT_IP_FAMILY="ipv4"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
 }
 
 validate_reality_client_ip_family_runtime() {
     resolve_reality_client_ip_family
-    if [[ "${REALITY_CLIENT_IP_FAMILY:-auto}" == "dual" ]]; then
-        reality_node_has_matching_aaaa \
-            || die "REALITY_CLIENT_IP_FAMILY=dual 需要节点 AAAA 指向本机公网 IPv6"
-    fi
 }
 
 source_state_file() {
@@ -377,7 +334,6 @@ load_state() {
         PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6 REALITY_CLIENT_IP_FAMILY
-        WARP_MODE
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
@@ -391,7 +347,6 @@ load_state() {
     if [[ -f "${STATE_FILE}" ]]; then
         source_state_file
     fi
-    unset GEMINI_IP_FAMILY
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
         if [[ -n "${!env_name:-}" ]]; then
@@ -400,17 +355,12 @@ load_state() {
         unset "${env_name}"
     done
     REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
-    REALITY_CLIENT_IP_FAMILY=${REALITY_CLIENT_IP_FAMILY:-auto}
-    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
-    configure_loaded_warp_mode
+    REALITY_CLIENT_IP_FAMILY="ipv4"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
     CDN_PROVIDER=""
     [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
         || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
         || die "状态文件中的 REALITY_INBOUND_IP_FAMILY 无效：${REALITY_INBOUND_IP_FAMILY}"
-    [[ "${REALITY_CLIENT_IP_FAMILY}" == "auto" \
-        || "${REALITY_CLIENT_IP_FAMILY}" == "ipv4" \
-        || "${REALITY_CLIENT_IP_FAMILY}" == "dual" ]] \
-        || die "状态文件中的 REALITY_CLIENT_IP_FAMILY 无效：${REALITY_CLIENT_IP_FAMILY}"
     if [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]]; then
         validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
             || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
@@ -461,8 +411,7 @@ save_state() {
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
         printf 'REALITY_INBOUND_IP_FAMILY=%q\n' "${REALITY_INBOUND_IP_FAMILY:-ipv4}"
         printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
-        printf 'REALITY_CLIENT_IP_FAMILY=%q\n' "${REALITY_CLIENT_IP_FAMILY:-auto}"
-        printf 'WARP_MODE=%q\n' "${WARP_MODE:-off}"
+        printf 'REALITY_CLIENT_IP_FAMILY=%q\n' "ipv4"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -678,7 +627,6 @@ collect_reality_inputs() {
     validate_reality_client_ip_family_runtime
     collect_reality_target
     validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
-    choose_warp_mode
     collect_sub_port_mode
 }
 
@@ -819,9 +767,8 @@ configure_ufw() {
 
 write_xray_config() {
     local clients managed_outbounds managed_routing listen_address="0.0.0.0"
-    prepare_mihomo_template
-    managed_outbounds=$(warp_xray_outbounds_json)
-    managed_routing=$(warp_xray_routing_json)
+    managed_outbounds=$(xray_direct_outbounds_json)
+    managed_routing=$(xray_direct_routing_json)
     [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] || listen_address="::"
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
@@ -1271,11 +1218,6 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/certificate.missing"
     fi
-    if [[ -d "${WARP_DIR}" ]]; then
-        cp -a "${WARP_DIR}" "${UPDATE_SUB_BACKUP_DIR}/warp"
-    else
-        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/warp.missing"
-    fi
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
         install -m 0600 "${UFW_BEFORE_RULES}" \
             "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules"
@@ -1301,7 +1243,7 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
-    warn "本机配置更新失败，正在恢复服务端配置、WARP、订阅文件、端口模式和 UFW"
+    warn "本机配置更新失败，正在恢复服务端配置、订阅文件、端口模式和 UFW"
     install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" \
@@ -1326,11 +1268,6 @@ rollback_subscription_update() {
         install -d -m 0700 "${CERT_DIR}"
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/fullchain.pem" "${CERT_FILE}"
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/private.key" "${KEY_FILE}"
-    fi
-    rm -rf -- "${WARP_DIR}"
-    if [[ -d "${UPDATE_SUB_BACKUP_DIR}/warp" ]]; then
-        install -d -m 0700 "$(dirname -- "${WARP_DIR}")"
-        cp -a "${UPDATE_SUB_BACKUP_DIR}/warp" "${WARP_DIR}"
     fi
     if [[ -f "${NGINX_CONFIG}" ]]; then
         systemctl enable --now nginx >/dev/null 2>&1 || true
@@ -1399,6 +1336,7 @@ update_subscription() {
         rollback_subscription_update
         return 1
     fi
+    remove_obsolete_network_state
     install_quota_timer
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -1435,8 +1373,6 @@ refresh_protocol_runtime_config() {
         validate_reality_node_dns
         validate_reality_client_ip_family_runtime
         validate_reality_target_runtime
-        prepare_warp_profile
-        validate_warp_egress
         write_xray_config
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
@@ -1507,15 +1443,14 @@ show_status() {
     collect_installed_state
     printf '协议: %s\n' "${PROTOCOL}"
     show_bbrv3_status
-    show_warp_configuration_status
     if [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]]; then
         printf 'Reality 入站族: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
     else
         printf 'Reality 入站族: IPv4\n'
     fi
     resolve_reality_client_ip_family
-    printf 'Reality 客户端节点族: %s（配置: %s）\n' \
-        "${REALITY_CLIENT_IP_FAMILY_RESOLVED}" "${REALITY_CLIENT_IP_FAMILY:-auto}"
+    printf 'Reality 客户端节点族: %s（固定）\n' \
+        "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
@@ -1679,8 +1614,6 @@ rollback_fresh_install() {
 prepare_protocol_assets() {
     download_xray
     validate_reality_target_runtime
-    prepare_warp_profile
-    validate_warp_egress
 }
 
 install_protocol_runtime() {
@@ -1754,8 +1687,6 @@ usage() {
   self-update   只更新 easy_all 项目代码，不刷新部署
   apply         将已安装代码应用到服务端与当前订阅模式
   update-sub    选择部署订阅服务或仅输出节点
-  warp-set      切换 off、ai 或 global WARP（新安装默认 ai）
-  warp-status   实时验收 WARP 出口
   update-core   更新 Xray 核心
   renew-cert    强制续期自托管订阅证书
   quota-status  显示每个用户的本月流量与配额状态
@@ -1782,7 +1713,6 @@ update_current_core() {
         download_xray
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
-        validate_warp_egress
     ); then
         end_quota_maintenance
         success "${PROTOCOL} 核心已更新"
@@ -1804,8 +1734,6 @@ main() {
     subscription) require_root; show_subscription ;;
     apply) apply_easy_all ;;
     update-sub) update_subscription 1 ;;
-    warp-set) shift; update_warp_mode "$@" ;;
-    warp-status) show_warp_live_status ;;
     update-core) update_current_core ;;
     renew-cert) renew_subscription_certificate ;;
     quota-sync) quota_sync_usage ;;

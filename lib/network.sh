@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
-# Shared public network discovery and VPS-side Google/Gemini egress policy.
+# Shared public network discovery and Xray IPv4 egress policy.
 
-readonly GEMINI_OUTBOUND_IP_FAMILY="ipv4"
-readonly GEMINI_OUTBOUND_DOMAIN_STRATEGY="ForceIPv4"
+readonly XRAY_OUTBOUND_DOMAIN_STRATEGY="ForceIPv4"
 
 detect_public_ipv4() {
     local service ip
@@ -22,20 +21,34 @@ detect_public_ipv4() {
     return 1
 }
 
-active_gemini_ip_family() {
-    local strategy=""
-    [[ -s "${XRAY_CONFIG}" ]] || return 1
-    strategy=$(jq -r \
-        '.outbounds[]? | select(.tag == "gemini-family") | .settings.domainStrategy' \
-        "${XRAY_CONFIG}")
-    case "${strategy}" in
-    ForceIPv6) printf 'ipv6\n' ;;
-    ForceIPv4) printf 'ipv4\n' ;;
-    *) return 1 ;;
-    esac
+xray_private_ranges_json() {
+    jq -cn '[
+      "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+      "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
+      "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
+      "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"
+    ]'
 }
 
-gemini_ip_family_status() {
-    active_gemini_ip_family \
-        || printf '%s（未应用，请执行 easy_all apply）\n' "${GEMINI_OUTBOUND_IP_FAMILY}"
+xray_direct_outbounds_json() {
+    jq -cn --arg strategy "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" '[
+      {protocol:"freedom",tag:"direct",settings:{domainStrategy:$strategy}},
+      {protocol:"blackhole",tag:"block"}
+    ]'
+}
+
+xray_direct_routing_json() {
+    local private_ranges
+    private_ranges=$(xray_private_ranges_json)
+    jq -cn --argjson private "${private_ranges}" '{
+      domainStrategy:"IPOnDemand",
+      rules:[
+        {type:"field",ip:$private,outboundTag:"block"},
+        {type:"field",network:"tcp,udp",outboundTag:"direct"}
+      ]
+    }'
+}
+
+remove_obsolete_network_state() {
+    rm -rf -- "${STATE_DIR}/warp"
 }

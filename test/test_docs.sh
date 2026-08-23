@@ -33,7 +33,7 @@ done < <(
 )
 
 for command in show subscription self-update apply apply-cloud update-sub update-core \
-    warp-set warp-status renew-cert quota-status quota-set quota-reset status uninstall help; do
+    renew-cert quota-status quota-set quota-reset status uninstall help; do
     assert_contains "README public command ${command}" "${README_CONTENT}" "| \`${command}"
 done
 
@@ -61,32 +61,22 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
-assert_contains "README documents CDN client IP family" "${README_CONTENT}" \
-    'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
-assert_contains "README keeps CDN client and Gemini families independent" "${README_CONTENT}" \
-    'VPS 上的 Gemini 专用出站始终固定为 `ForceIPv4`'
-assert_contains "AWS guide documents CDN client dual stack" "${AWS_GUIDE_CONTENT}" \
-    'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
-assert_contains "Gcore guide documents CDN client dual stack" "${GCORE_GUIDE_CONTENT}" \
-    'CDN_CLIENT_IP_FAMILY=auto|ipv4|dual'
-assert_contains "README documents the Reality endpoint family policy" "${README_CONTENT}" \
-    'REALITY_CLIENT_IP_FAMILY=auto|ipv4|dual'
+assert_contains "README documents fixed CDN client IPv4" "${README_CONTENT}" \
+    'CDN_CLIENT_IP_FAMILY=ipv4'
+assert_contains "AWS guide documents fixed CDN client IPv4" "${AWS_GUIDE_CONTENT}" \
+    '固定使用'
+assert_contains "Gcore guide documents fixed CDN client IPv4" "${GCORE_GUIDE_CONTENT}" \
+    '`ip-version: ipv4`'
+assert_contains "README documents the fixed Reality endpoint family" "${README_CONTENT}" \
+    'REALITY_CLIENT_IP_FAMILY=ipv4'
 assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \
     '带 SNI 的 TLS 1.3 握手验收'
 assert_contains "README documents Reality private destination blocking" "${README_CONTENT}" \
     '避免订阅凭据泄露后被用于访问 VPS 内网或云元数据'
-assert_contains "README documents Gemini egress policy for all profiles" "${README_CONTENT}" \
-    '三种安装模式都从 Mihomo 模板顶部的三组 AI 域名元数据生成 VPS 端出站策略'
-assert_contains "README documents fixed Gemini IPv4 egress" "${README_CONTENT}" \
-    '不再执行 IPv4/IPv6 测速，也不提供地址族切换配置'
-assert_contains "README documents gstatic in the Gemini policy" "${README_CONTENT}" \
-    '`gstatic.com` 已纳入'
+assert_contains "README documents fixed IPv4 egress for all profiles" "${README_CONTENT}" \
+    '三种安装模式的 Xray 公网出站统一使用 `ForceIPv4`'
 assert_contains "README documents bilingual interactive prompts" "${README_CONTENT}" \
     '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
-assert_contains "README documents WARP for Reality and CDN profiles" "${README_CONTENT}" \
-    'Reality、AWS XHTTP 与 Gcore XHTTP 共用同一套 WARP 策略'
-assert_contains "README documents conservative legacy Reality WARP migration" \
-    "${README_CONTENT}" '旧 Reality（`STATE_VERSION=1/2`）'
 assert_contains "README documents Gcore client H2 keepalive" "${README_CONTENT}" \
     '客户端 H2 PING 固定为 10 秒'
 assert_contains "Gcore guide documents explicit gRPC pass-through" "${GCORE_GUIDE_CONTENT}" \
@@ -136,7 +126,7 @@ assert_contains "AWS guide includes Route 53 delegation" \
 assert_contains "README clearly separates one-time delegation from automatic records" \
     "${README_CONTENT}" 'DNS 操作边界：手动一次，后续自动。'
 assert_contains "AWS guide says the script writes node records automatically" \
-    "${AWS_GUIDE_CONTENT}" '安装脚本会自动写入这些节点记录'
+    "${AWS_GUIDE_CONTENT}" '安装脚本会自动写入该节点记录'
 assert_not_contains "AWS guide omits the confusing subdomain-only delegation branch" \
     "${AWS_GUIDE_CONTENT}" '方式 B：只委派专用子域名'
 assert_not_contains "README omits subdomain-only delegation guidance" \

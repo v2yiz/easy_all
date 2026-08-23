@@ -5,11 +5,10 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
-WARP_MODULE="${ROOT_DIR}/lib/warp.sh"
 PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
 SCHEDULED_MAINTENANCE_MODULE="${ROOT_DIR}/lib/scheduled-maintenance.sh"
 SUBSCRIPTION_MODULE="${ROOT_DIR}/lib/subscription-auth.sh"
-XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"$'\n'"$(<"${WARP_MODULE}")"$'\n'"$(<"${SUBSCRIPTION_MODULE}")"
+XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"$'\n'"$(<"${SUBSCRIPTION_MODULE}")"
 XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
 MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
 TMP_DIR=$(mktemp -d)
@@ -46,20 +45,12 @@ assert_contains "traffic accounting exposes Stats API only on loopback" "${XHTTP
     'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
 assert_contains "XHTTP state persists the quota start date" "${XHTTP_CONTENT}" \
     'QUOTA_START_DATE=%q'
-assert_not_contains "XHTTP state no longer persists a configurable Gemini egress family" \
-    "${XHTTP_CONTENT}" 'GEMINI_IP_FAMILY=%q'
 assert_contains "XHTTP state persists the CDN client family" "${XHTTP_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=%q'
-assert_contains "XHTTP state persists the WARP mode" "${XHTTP_CONTENT}" \
-    'WARP_MODE=%q'
-assert_contains "XHTTP routes Gemini domains through a dedicated outbound" "${XHTTP_CONTENT}" \
-    'outboundTag:"gemini-family"'
-assert_contains "CloudFront delegates outbound policy to the shared WARP module" \
-    "${XRAY_RENDER_CONTENT}" 'warp_xray_outbounds_json'
+assert_contains "CloudFront uses the shared IPv4 direct outbound policy" \
+    "${XRAY_RENDER_CONTENT}" 'xray_direct_outbounds_json'
 assert_not_contains "CloudFront Xray egress does not depend on the client family" \
     "${XRAY_RENDER_CONTENT}" "CDN_CLIENT_IP_FAMILY"
-assert_not_contains "CloudFront client rendering does not depend on Gemini egress" \
-    "${MIHOMO_RENDER_CONTENT}" "GEMINI_IP_FAMILY"
 assert_contains "Xray keepalive stays below CloudFront response timeout" "${XHTTP_CONTENT}" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
 assert_not_contains "XHTTP client output relies on compatible padding defaults" "${XHTTP_CONTENT}" \
@@ -132,7 +123,6 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     assert_equal "unified service" "easy_all-xray.service" "${XRAY_SERVICE}"
     assert_equal "unified nginx config" "/etc/nginx/conf.d/easy_all.conf" "${NGINX_CONFIG}"
     assert_equal "schema" "5" "${STATE_SCHEMA_VERSION}"
-    assert_equal "new XHTTP installs default to AI WARP" "ai" "${DEFAULT_WARP_MODE}"
     assert_equal "AWS control region" "us-east-1" "${AWS_CONTROL_REGION}"
     assert_equal "default CloudFront billing mode" "payg" \
         "${DEFAULT_AWS_CLOUDFRONT_BILLING_MODE}"
@@ -478,18 +468,13 @@ EOF
             XHTTP_PATH="/xhttp-stored-suffix"
             AWS_ORIGIN_DOMAIN="origin.example.com"
             XRAY_XHTTP_LOOPBACK_PORT="10086"
-            GEMINI_IP_FAMILY="ipv6"
         }
         VLESS_UUID="00000000-0000-4000-8000-000000000002"
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
         load_state
-        [[ -z "${GEMINI_IP_FAMILY+x}" ]] \
-            || fail "legacy Gemini family state must be discarded"
-        assert_equal "old XHTTP state defaults CDN client family to auto" \
-            "auto" "${CDN_CLIENT_IP_FAMILY}"
-        assert_equal "old XHTTP state migrates without silently enabling WARP" \
-            "off" "${WARP_MODE}"
+        assert_equal "old XHTTP state migrates CDN client family to IPv4" \
+            "ipv4" "${CDN_CLIENT_IP_FAMILY}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
         assert_equal "node name environment override wins during update" \
@@ -657,6 +642,7 @@ EOF
         (.DefaultCacheBehavior.AllowedMethods.Items | sort) == (["GET","HEAD","OPTIONS","PUT","POST","PATCH","DELETE"] | sort) and
         .DefaultCacheBehavior.GrpcConfig.Enabled == true and
         .HttpVersion == "http2" and
+        .IsIPV6Enabled == false and
         .ViewerCertificate.ACMCertificateArn == "arn:aws:acm:us-east-1:111122223333:certificate/test" and
         .WebACLId == "arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test" and
         .Comment == "easy_all:xhttp:node.example.com"
@@ -697,12 +683,31 @@ EOF
     build_viewer_alias_change_batch "${viewer_alias}" '[]' \
         "d111111abcdef8.cloudfront.net."
     jq -e '
-        .Changes|length == 2 and
+        .Changes|length == 1 and
         .[0].Action == "CREATE" and .[0].ResourceRecordSet.Type == "A" and
-        .[1].Action == "CREATE" and .[1].ResourceRecordSet.Type == "AAAA" and
         .[0].ResourceRecordSet.AliasTarget.HostedZoneId == "Z2FDTNDATAQYW2" and
-        .[1].ResourceRecordSet.AliasTarget.DNSName == "d111111abcdef8.cloudfront.net."
+        .[0].ResourceRecordSet.AliasTarget.DNSName == "d111111abcdef8.cloudfront.net."
     ' "${viewer_alias}" >/dev/null || fail "Route 53 viewer Alias creation batch is invalid"
+    managed_dual_alias='[
+      {"Name":"node.example.com.","Type":"A","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111111abcdef8.cloudfront.net.","EvaluateTargetHealth":false}},
+      {"Name":"node.example.com.","Type":"AAAA","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111111abcdef8.cloudfront.net.","EvaluateTargetHealth":false}}
+    ]'
+    viewer_records_are_alias_target "${managed_dual_alias}" \
+        "d111111abcdef8.cloudfront.net." \
+        || fail "legacy managed A/AAAA aliases must be recognized for automatic migration"
+    if viewer_records_are_alias_target "${managed_dual_alias}" \
+        "d111111abcdef8.cloudfront.net." 1; then
+        fail "legacy managed A/AAAA aliases must not satisfy the IPv4-only target"
+    fi
+    build_viewer_alias_change_batch "${viewer_alias}" "${managed_dual_alias}" \
+        "d111111abcdef8.cloudfront.net."
+    jq -e '
+        .Changes|length == 3 and
+        .[0].Action == "DELETE" and .[0].ResourceRecordSet.Type == "A" and
+        .[1].Action == "DELETE" and .[1].ResourceRecordSet.Type == "AAAA" and
+        .[2].Action == "CREATE" and .[2].ResourceRecordSet.Type == "A"
+    ' "${viewer_alias}" >/dev/null \
+        || fail "legacy Route 53 A/AAAA aliases do not migrate to IPv4-only"
 
     subscriptions='{"subscriptionSummaries":[
       {"arn":"arn:plan:other","planTier":"FREE","resourceArns":["arn:distribution:other"]},
@@ -849,44 +854,19 @@ EOF
         "$(<"${mihomo_file}")" "DST-PORT,22,"
     assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \
         "$(<"${mihomo_file}")" "DST-PORT,65533,"
-    assert_not_contains "Mihomo subscription strips ChatGPT metadata" \
-        "$(<"${mihomo_file}")" "EASY_ALL_CHATGPT_DOMAINS"
-    assert_not_contains "Mihomo subscription strips Claude metadata" \
-        "$(<"${mihomo_file}")" "EASY_ALL_CLAUDE_DOMAINS"
     assert_contains "IPv4 CDN endpoint keeps Mihomo IPv6 disabled" \
         "$(<"${mihomo_file}")" $'\nipv6: false\n'
 
     (
-        CDN_CLIENT_IP_FAMILY="auto"
-        CDN_CLIENT_IP_FAMILY_RESOLVED=""
-        dig() {
-            case "$*" in
-            *"+short A "*) printf '198.51.100.20\n' ;;
-            *"+short AAAA "*) printf '2001:db8::20\n' ;;
-            esac
-        }
-        resolve_cdn_client_ip_family
-        assert_equal "public A and AAAA enable dual-stack CDN endpoint racing" \
-            "dual" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-        build_mihomo_node >"${node_file}.dual"
-        render_mihomo_subscription "${template}" "${node_file}.dual" \
-            "${mihomo_file}.dual" "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-        assert_contains "dual-stack CDN node is explicit in Mihomo" \
-            "$(<"${node_file}.dual")" "ip-version: dual"
-        assert_contains "dual-stack CDN endpoint enables Mihomo IPv6 resolution" \
-            "$(<"${mihomo_file}.dual")" $'\nipv6: true\n'
-        assert_contains "CDN endpoint dual-stack leaves application AAAA disabled" \
-            "$(<"${mihomo_file}.dual")" $'\n    ipv6: false\n'
-    )
-
-    if (
         CDN_CLIENT_IP_FAMILY="dual"
         CDN_CLIENT_IP_FAMILY_RESOLVED=""
-        dig() { [[ "$*" == *"+short A "* ]] && printf '198.51.100.20\n'; }
         validate_cdn_client_ip_family_runtime
-    ) >/dev/null 2>&1; then
-        fail "explicit dual-stack CDN mode must require public A and AAAA"
-    fi
+        assert_equal "legacy dual-stack CDN preference is normalized to IPv4" \
+            "ipv4" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+        build_mihomo_node >"${node_file}.ipv4"
+        assert_contains "CDN node remains fixed to IPv4" \
+            "$(<"${node_file}.ipv4")" "ip-version: ipv4"
+    )
 
     encoded=$(printf '%s' "$(build_node_link)" | openssl base64 -A)
     decoded=$(printf '%s' "${encoded}" | openssl base64 -d -A)

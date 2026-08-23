@@ -52,7 +52,7 @@ assert_failure() {
 
 source_script_copy() {
     local module
-    for module in quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh warp.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
+    for module in quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/${module}"
     done
     sed \
@@ -90,29 +90,13 @@ set_fixture() {
     REALITY_SHORT_ID="0123456789abcdef"
     REALITY_INBOUND_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
-    REALITY_CLIENT_IP_FAMILY="auto"
-    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
-    WARP_MODE="off"
+    REALITY_CLIENT_IP_FAMILY="ipv4"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="deploy"
     SUBSCRIPTION_DOMAIN="sub.example.com"
     SUB_DOWNLOAD_NAME="MY_SUB"
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
-}
-
-install_test_warp_profile() {
-    install -d -m 0700 "${WARP_DIR}"
-    printf '%s\n' \
-        '[Interface]' \
-        'PrivateKey = YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=' \
-        'Address = 172.16.0.2/32, 2606:4700:110:8765::2/128' \
-        'MTU = 1280' \
-        '' \
-        '[Peer]' \
-        'PublicKey = YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=' \
-        'AllowedIPs = 0.0.0.0/0, ::/0' \
-        'Endpoint = engage.cloudflareclient.com:2408' >"${WARP_PROFILE_FILE}"
-    chmod 0600 "${WARP_PROFILE_FILE}"
 }
 
 test_syntax_and_worker_removal() {
@@ -137,14 +121,12 @@ test_syntax_and_worker_removal() {
         "configure_subscription()" "${script}"
     assert_contains "Reality validates AAAA against detected server IPv6" \
         "的 AAAA \${mismatch} 未指向本机公网 IPv6" "${script}"
-    assert_contains "Reality uses shared WARP outbounds" \
-        'managed_outbounds=$(warp_xray_outbounds_json)' "${script}"
-    assert_contains "Reality uses shared WARP routing" \
-        'managed_routing=$(warp_xray_routing_json)' "${script}"
-    assert_not_contains "Reality no longer measures Gemini egress families" \
-        'resolve_gemini_ip_family' "${script}"
-    assert_contains "shared Reality WARP policy blocks private destinations before egress" \
-        '"169.254.0.0/16"' "$(<"${ROOT_DIR}/lib/warp.sh")"
+    assert_contains "Reality uses shared IPv4 direct outbounds" \
+        'managed_outbounds=$(xray_direct_outbounds_json)' "${script}"
+    assert_contains "Reality uses shared private-address blocking" \
+        'managed_routing=$(xray_direct_routing_json)' "${script}"
+    assert_contains "shared routing blocks cloud metadata before direct egress" \
+        '"169.254.0.0/16"' "$(<"${ROOT_DIR}/lib/network.sh")"
     assert_contains "Reality validates its camouflage target with Xray" \
         'tls ping "${REALITY_TARGET}"' "${script}"
     assert_contains "Reality default prompts explain the enter default" \
@@ -243,20 +225,18 @@ test_reality_inbound_family_and_dns() {
     VPS_PUBLIC_IPV6="2001:db8::10"
     assert_success "matching AAAA is accepted in dual-stack mode" \
         validate_reality_node_dns
-    REALITY_CLIENT_IP_FAMILY="auto"
+    REALITY_CLIENT_IP_FAMILY="dual"
     resolve_reality_client_ip_family
-    assert_equal "matching AAAA enables dual-stack Reality endpoint racing" \
-        "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    assert_equal "Reality client endpoint remains fixed to IPv4" \
+        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     dig() { printf '2001:db8::20\n'; }
     assert_failure "mismatched AAAA is rejected in dual-stack mode" \
         validate_reality_node_dns
-    REALITY_CLIENT_IP_FAMILY="ipv4"
-    resolve_reality_client_ip_family
-    assert_equal "explicit IPv4 keeps the Reality endpoint on IPv4" \
-        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     REALITY_CLIENT_IP_FAMILY="dual"
-    assert_failure "explicit dual-stack rejects a mismatched node AAAA" \
+    assert_success "legacy dual-stack client preference is normalized to IPv4" \
         validate_reality_client_ip_family_runtime
+    assert_equal "legacy dual-stack preference resolves to IPv4" \
+        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     unset -f dig
 }
 
@@ -338,40 +318,12 @@ test_subscription_stage_dispatch() {
 }
 
 test_mihomo_template() {
-    local policy chatgpt_policy claude_policy ai_policy invalid="${TMP_DIR}/invalid.yaml"
+    local invalid="${TMP_DIR}/invalid.yaml"
     validate_mihomo_template "${ROOT_DIR}/sample-mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     assert_contains "Mihomo preserves fake-IP mappings across restarts" \
         "store-fake-ip: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
-    policy=$(extract_gemini_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
-    assert_success "Gemini policy contains Google dependencies only" \
-        jq -e \
-        'index("google.com") and index("googleapis.com") and index("gstatic.com")
-         and index("www.youtube.com") and index("static.doubleclick.net")
-         and (index("openai.com") | not) and (index("claude.ai") | not)' \
-        <<<"${policy}"
-    chatgpt_policy=$(extract_chatgpt_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
-    assert_success "ChatGPT policy covers the official allowlist and compatibility dependencies" \
-        jq -e \
-        'index("openai.com") and index("chatgpt.com") and index("oaistatsig.com")
-         and index("ct.sendgrid.net") and index("cdn.workos.com")
-         and index("intercom.io") and index("sentry.io") and index("stripe.com")' \
-        <<<"${chatgpt_policy}"
-    claude_policy=$(extract_claude_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
-    assert_success "Claude policy covers browser, API, desktop and dynamic content domains" \
-        jq -e \
-        'index("anthropic.com") and index("claude.ai") and index("claude.com")
-         and index("claude.app") and index("claudeusercontent.com")
-         and index("claudemcpcontent.com")' \
-        <<<"${claude_policy}"
-    ai_policy=$(extract_ai_warp_domain_suffixes "${ROOT_DIR}/sample-mihomo.yaml")
-    assert_success "AI WARP policy covers Gemini, ChatGPT and Claude" \
-        jq -e \
-        'index("google.com") and index("gstatic.com") and index("openai.com")
-         and index("chatgpt.com") and index("anthropic.com") and index("claude.ai")
-         and length == (unique | length)' \
-        <<<"${ai_policy}"
     grep -v '^# EASY_ALL_PROXY_NAME$' \
         "${ROOT_DIR}/sample-mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \
@@ -394,7 +346,6 @@ test_subscription_generation() {
         bash -c '(( $1 < $2 ))' _ \
         "${DYNAMIC_PORT_MAX}" "${EASY_ALL_ADDITIONAL_SSH_PORT}"
     MIHOMO_TEMPLATE_FILE=""
-    GEMINI_DOMAIN_SUFFIXES_JSON=""
     generate_subscription_files "${base64_file}" "${mihomo_file}"
     decoded=$(openssl base64 -d -A <"${base64_file}")
     yaml=$(<"${mihomo_file}")
@@ -421,12 +372,6 @@ test_subscription_generation() {
         "DST-PORT,65533," "${yaml}"
     assert_not_contains "rendered subscription removes proxy marker" \
         "EASY_ALL_PROXY_NODE" "${yaml}"
-    assert_not_contains "rendered subscription removes policy metadata" \
-        "EASY_ALL_GEMINI_DOMAINS" "${yaml}"
-    assert_not_contains "rendered subscription removes ChatGPT metadata" \
-        "EASY_ALL_CHATGPT_DOMAINS" "${yaml}"
-    assert_not_contains "rendered subscription removes Claude metadata" \
-        "EASY_ALL_CLAUDE_DOMAINS" "${yaml}"
 
     SUB_PORT_MODE="443"
     generate_subscription_files "${base64_file}" "${mihomo_file}"
@@ -442,11 +387,11 @@ test_subscription_generation() {
     dig() { printf '2001:db8::10\n'; }
     generate_subscription_files "${base64_file}" "${mihomo_file}"
     yaml=$(<"${mihomo_file}")
-    assert_contains "matching node AAAA enables dual-stack endpoint racing" \
-        "ip-version: dual" "${yaml}"
-    assert_contains "dual-stack endpoint enables Mihomo IPv6 resolution" \
-        $'\nipv6: true\n' "${yaml}"
-    assert_contains "dual-stack endpoint does not expose application AAAA answers" \
+    assert_contains "matching node AAAA does not override fixed IPv4 endpoint" \
+        "ip-version: ipv4" "${yaml}"
+    assert_contains "fixed IPv4 endpoint keeps Mihomo IPv6 disabled" \
+        $'\nipv6: false\n' "${yaml}"
+    assert_contains "fixed IPv4 endpoint keeps application AAAA disabled" \
         $'\n    ipv6: false\n' "${yaml}"
     unset -f dig
 }
@@ -672,7 +617,7 @@ test_legacy_firewall_migration() {
 }
 
 test_state_and_xray() {
-    local state config legacy_subscription_mode legacy_warp_mode
+    local state config legacy_subscription_mode
     install -d -m 0700 "${STATE_DIR}"
     printf '%s\n' \
         'STATE_VERSION=2' \
@@ -681,13 +626,7 @@ test_state_and_xray() {
         'REALITY_CLIENT_IP_FAMILY=auto' \
         'SUBSCRIPTION_MODE=link' \
         'QUOTA_ENABLED=0' >"${STATE_FILE}"
-    legacy_warp_mode=$(
-        unset WARP_MODE
-        load_state
-        printf '%s' "${WARP_MODE}"
-    )
-    assert_equal "legacy Reality state migrates without silently enabling WARP" \
-        "off" "${legacy_warp_mode}"
+    load_state
 
     printf '%s\n' \
         'STATE_VERSION=3' \
@@ -714,13 +653,9 @@ test_state_and_xray() {
     assert_contains "state persists Reality inbound family" \
         "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
     assert_contains "state persists Reality client endpoint family policy" \
-        "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
-    assert_contains "state persists Reality WARP policy" \
-        "WARP_MODE=off" "${state}"
+        "REALITY_CLIENT_IP_FAMILY=ipv4" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
-    assert_not_contains "state no longer persists a configurable Gemini family" \
-        "GEMINI_IP_FAMILY=" "${state}"
     assert_not_contains "state has no Worker name" "WORKER_NAME=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
 
@@ -732,7 +667,6 @@ exit 0
 EOF
     chmod 0755 "${XRAY_BIN}"
     MIHOMO_TEMPLATE_FILE=""
-    GEMINI_DOMAIN_SUFFIXES_JSON=""
     write_xray_config
     config=$(<"${XRAY_CONFIG}")
     assert_success "Xray uses Reality Vision" \
@@ -748,14 +682,12 @@ EOF
          and (.routing.rules[] | select(.outboundTag == "block").ip
              | index("169.254.0.0/16"))' \
         <<<"${config}"
-    assert_success "Xray Gemini policy comes from Mihomo template" \
+    assert_success "Xray sends public traffic through fixed IPv4 direct egress" \
         jq -e \
-        '(.routing.rules[] | select(.outboundTag == "gemini-family").domain
-             | index("domain:google.com"))
-         and (.routing.rules[] | select(.outboundTag == "gemini-family").domain
-             | index("domain:gstatic.com"))
-         and ((.routing.rules[] | select(.outboundTag == "gemini-family").domain
-             | index("domain:openai.com")) == null)' \
+        '(.outbounds | map(.tag)) == ["direct","block"]
+         and .outbounds[0].settings.domainStrategy == "ForceIPv4"
+         and .routing.rules[-1]
+             == {type:"field",network:"tcp,udp",outboundTag:"direct"}' \
         <<<"${config}"
 
     REALITY_INBOUND_IP_FAMILY="dual"
@@ -765,46 +697,9 @@ EOF
     assert_success "dual-stack Reality listens on IPv4 and IPv6" \
         jq -e \
         '.inbounds[0].listen == "::"
-         and (.outbounds[] | select(.tag == "gemini-family")
-             | .settings.domainStrategy) == "ForceIPv4"' \
+         and .outbounds[0].settings.domainStrategy == "ForceIPv4"' \
         <<<"${config}"
 
-    GEMINI_IP_FAMILY="ipv6"
-    write_xray_config
-    config=$(<"${XRAY_CONFIG}")
-    assert_success "legacy Gemini family overrides cannot disable fixed IPv4 egress" \
-        jq -e \
-        '.inbounds[0].listen == "::"
-         and (.outbounds[] | select(.tag == "gemini-family")
-             | .settings.domainStrategy) == "ForceIPv4"' \
-        <<<"${config}"
-    unset GEMINI_IP_FAMILY
-
-    install_test_warp_profile
-    WARP_MODE="ai"
-    write_xray_config
-    config=$(<"${XRAY_CONFIG}")
-    assert_success "Reality AI WARP routes only maintained AI domains through WireGuard" \
-        jq -e \
-        '(.outbounds[] | select(.tag == "warp").protocol) == "wireguard"
-         and (.routing.rules[] | select(.outboundTag == "warp").domain
-             | index("domain:openai.com"))
-         and (.routing.rules[] | select(.outboundTag == "warp").domain
-             | index("domain:gstatic.com"))
-         and (.routing.rules[-1].outboundTag == "direct")' \
-        <<<"${config}"
-
-    WARP_MODE="global"
-    write_xray_config
-    config=$(<"${XRAY_CONFIG}")
-    assert_success "Reality Global WARP routes all node TCP and UDP through WireGuard" \
-        jq -e \
-        '(.routing.rules | length) == 2
-         and .routing.rules[1]
-             == {type:"field",network:"tcp,udp",outboundTag:"warp"}' \
-        <<<"${config}"
-
-    WARP_MODE="off"
     QUOTA_ENABLED=1
     USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":0},"friend":{"token":"friend-token-123","uuid":"00000000-0000-4000-8000-000000000002","quota_gb":100}}'
     rm -f -- "${QUOTA_USAGE_FILE}"

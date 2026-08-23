@@ -102,7 +102,6 @@ collect_install_inputs() {
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
     choose_cloudfront_billing_mode
-    choose_warp_mode
 
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
     XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
@@ -139,7 +138,7 @@ load_state() {
         CLOUDFRONT_FEE_PROTECTION_GB
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
-        CDN_CLIENT_IP_FAMILY WARP_MODE
+        CDN_CLIENT_IP_FAMILY
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -148,7 +147,6 @@ load_state() {
         printf -v "${variable}" '%s' ""
     done
     source_state_file
-    unset GEMINI_IP_FAMILY
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
         if [[ -n "${!env_name:-}" ]]; then
@@ -159,7 +157,6 @@ load_state() {
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
     CDN_PROVIDER=${CDN_PROVIDER:-aws}
     configure_cdn_client_ip_family
-    configure_loaded_warp_mode
     [[ "${CDN_PROVIDER}" == "aws" ]] \
         || die "当前版本不支持 CDN Provider：${CDN_PROVIDER}"
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
@@ -224,8 +221,7 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY:-auto}"
-        printf 'WARP_MODE=%q\n' "${WARP_MODE:-off}"
+        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "ipv4"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -271,7 +267,6 @@ install_aws_cli() {
 
 xhttp_render_xray_config() {
     local clients managed_outbounds managed_routing stats_enabled=false
-    prepare_mihomo_template
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -281,8 +276,8 @@ xhttp_render_xray_config() {
     fi
     cloudfront_fee_protection_blocked && clients='[]'
     traffic_stats_enabled && stats_enabled=true
-    managed_outbounds=$(warp_xray_outbounds_json)
-    managed_routing=$(warp_xray_routing_json)
+    managed_outbounds=$(xray_direct_outbounds_json)
+    managed_routing=$(xray_direct_routing_json)
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" \
         --argjson stats_enabled "${stats_enabled}" \
@@ -453,7 +448,7 @@ show_cloudfront_billing_estimate() {
         info "已选 CloudFront 按量付费：免费 1 TB + 1000 万请求；不创建 WAF"
         info "已启用 ${CLOUDFRONT_FEE_PROTECTION_GB} GB 全局费用保护：按 UTC 自然月统计，每 15 秒检查"
         info "当前使用 ${hosted_zone_count} 个 Hosted Zone：固定费用估算 \$${hosted_zone_cost}/月"
-        info "CloudFront Alias A/AAAA 查询 \$0；其他标准 DNS 查询每 10 万次约 \$0.04、每 100 万次约 \$0.40"
+        info "CloudFront Alias A 查询 \$0；其他标准 DNS 查询每 10 万次约 \$0.04、每 100 万次约 \$0.40"
         warn "超过 1 TB 后，每多 100 GB 流量约 \$8.50-\$12.00，另计超过 1000 万次后的请求费；实际按边缘区域结算"
     fi
 }
@@ -699,7 +694,7 @@ build_distribution_config() {
           ViewerCertificate:{CloudFrontDefaultCertificate:false,ACMCertificateArn:$certificate,
             SSLSupportMethod:"sni-only",MinimumProtocolVersion:"TLSv1.2_2021"},
           Restrictions:{GeoRestriction:{RestrictionType:"none",Quantity:0}},
-          WebACLId:$web_acl,HttpVersion:"http2",IsIPV6Enabled:true,Staging:false,
+          WebACLId:$web_acl,HttpVersion:"http2",IsIPV6Enabled:false,Staging:false,
           ContinuousDeploymentPolicyId:""
         }' >"${destination}"
 }
@@ -763,15 +758,15 @@ build_viewer_alias_change_batch() {
         def alias_record($type):
           {Action:"CREATE",ResourceRecordSet:{Name:$name,Type:$type,
             AliasTarget:{HostedZoneId:$target_zone,DNSName:$target,EvaluateTargetHealth:false}}};
-        {Comment:"easy_all CloudFront Alias A/AAAA",
+        {Comment:"easy_all CloudFront IPv4 Alias A",
          Changes:(($conflicts | map({Action:"DELETE",ResourceRecordSet:.})) +
-           [alias_record("A"),alias_record("AAAA")])}' >"${destination}"
+           [alias_record("A")])}' >"${destination}"
 }
 
 viewer_records_are_alias_target() {
-    local conflicts=$1 target=$2 require_both=${3:-0}
+    local conflicts=$1 target=$2 require_ipv4_only=${3:-0}
     jq -e --arg target "${target}" --arg zone "${CLOUDFRONT_ROUTE53_ZONE_ID}" \
-        --argjson require_both "${require_both}" '
+        --argjson require_ipv4_only "${require_ipv4_only}" '
         (length >= 1 and length <= 2) and
         (all(.[];
           (.Type == "A" or .Type == "AAAA") and
@@ -779,7 +774,8 @@ viewer_records_are_alias_target() {
           .AliasTarget.EvaluateTargetHealth == false and
           ((.AliasTarget.DNSName | rtrimstr(".")) == ($target | rtrimstr("."))))) and
         ((map(.Type) | unique | length) == length) and
-        (($require_both == 0) or ((map(.Type) | sort) == ["A","AAAA"]))' \
+        ((map(.Type) | index("A")) != null) and
+        (($require_ipv4_only == 0) or ((map(.Type) | sort) == ["A"]))' \
         <<<"${conflicts}" >/dev/null
 }
 
@@ -791,18 +787,19 @@ ensure_viewer_alias_records() {
     conflicts=$(jq -c --arg name "${VLESS_CDN_DOMAIN}." \
         '[.ResourceRecordSets[]|select(.Name==$name and .Type!="NS" and .Type!="SOA")]' <<<"${records}")
     if viewer_records_are_alias_target "${conflicts}" "${target}" 1; then
-        info "Route 53 CDN Alias A/AAAA 已指向当前 CloudFront 分配"
+        info "Route 53 CDN Alias A 已指向当前 CloudFront 分配"
         return 0
     fi
-    if [[ "$(jq 'length' <<<"${conflicts}")" -gt 0 ]]; then
+    if [[ "$(jq 'length' <<<"${conflicts}")" -gt 0 ]] \
+        && ! viewer_records_are_alias_target "${conflicts}" "${target}"; then
         [[ "${AWS_DNS_REPLACE:-0}" == "1" ]] \
             || die "${VLESS_CDN_DOMAIN} 已有 DNS 记录；拒绝覆盖。确认后可设置 AWS_DNS_REPLACE=1"
     fi
     change="${RUNTIME_TMP}/route53-viewer-alias.json"
     build_viewer_alias_change_batch "${change}" "${conflicts}" "${target}"
     aws route53 change-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
-        --change-batch "file://${change}" >/dev/null || die "写入 CloudFront Alias A/AAAA 失败"
-    success "Route 53 CDN 记录已收敛为免查询费的 CloudFront Alias A/AAAA"
+        --change-batch "file://${change}" >/dev/null || die "写入 CloudFront Alias A 失败"
+    success "Route 53 CDN 记录已收敛为仅 IPv4 的 CloudFront Alias A"
 }
 
 wait_for_cloudfront() {
@@ -1011,9 +1008,8 @@ show_status() {
     printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
     show_bbrv3_status
-    show_warp_configuration_status
-    printf 'CDN 客户端节点族: %s（配置: %s）\n' \
-        "${CDN_CLIENT_IP_FAMILY_RESOLVED}" "${CDN_CLIENT_IP_FAMILY:-auto}"
+    printf 'CDN 客户端节点族: %s（固定）\n' \
+        "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'CloudFront 计费模式: %s\n' \
@@ -1059,7 +1055,7 @@ update_subscription() {
     fi
     save_state
     refresh_runtime
-    validate_warp_egress
+    remove_obsolete_network_state
     install_quota_timer
     install_cloudfront_fee_protection_timer
     end_quota_maintenance
@@ -1176,8 +1172,6 @@ install_all() {
     info "[6/9] 申请源站证书并安装 Xray"
     issue_origin_certificate
     download_xray
-    prepare_warp_profile
-    validate_warp_egress
     write_xray_config
     install_xray_service
     write_nginx_config
@@ -1210,8 +1204,6 @@ usage() {
   apply            按当前状态应用本机运行时与订阅，不修改 AWS
   apply-cloud      应用本机并同步 Route 53、ACM 与 CloudFront
   update-sub       更新订阅选择、配额与本机运行时
-  warp-set [模式]  切换 off、ai 或 global WARP（新安装默认 ai）
-  warp-status      实时验收 WARP 出口 IP 与 Cloudflare Colo
   show             显示 VLESS 链接与 Mihomo 节点
   subscription     显示节点与订阅状态
   status           显示本机状态与已保存的 AWS 资源 ID
@@ -1234,8 +1226,6 @@ main() {
     apply) apply_easy_all ;;
     apply-cloud) apply_cloud_resources ;;
     update-sub) update_subscription ;;
-    warp-set) shift; update_warp_mode "$@" ;;
-    warp-status) show_warp_live_status ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
     status) show_status ;;

@@ -119,19 +119,11 @@ write_subscription_token_map() {
 }
 
 render_mihomo_subscription() {
-    local template=$1 node_file=$2 destination=$3 node_name=$4 client_ip_family=$5
-    local encoded_node_name ipv6_enabled=false
-    [[ "${client_ip_family}" != "dual" ]] || ipv6_enabled=true
+    local template=$1 node_file=$2 destination=$3 node_name=$4
+    local encoded_node_name
     encoded_node_name=$(jq -Rn --arg value "${node_name}" '$value')
     awk -v node_file="${node_file}" -v node_name="${encoded_node_name}" \
-        -v ipv6_enabled="${ipv6_enabled}" '
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_START" ||
-        $0 == "# EASY_ALL_CHATGPT_DOMAINS_START" ||
-        $0 == "# EASY_ALL_CLAUDE_DOMAINS_START" { metadata=1; next }
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_END" ||
-        $0 == "# EASY_ALL_CHATGPT_DOMAINS_END" ||
-        $0 == "# EASY_ALL_CLAUDE_DOMAINS_END" { metadata=0; next }
-        metadata == 1 { next }
+        -v ipv6_enabled=false '
         $0 ~ /^ipv6: (true|false)$/ {
             print "ipv6: " ipv6_enabled
             next
