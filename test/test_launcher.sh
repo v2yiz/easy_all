@@ -37,6 +37,8 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
     && "${launcher_content}" == *'git clone --depth 1 --branch main'* \
     && "${launcher_content}" == *'"${repo_dir}/easy_all" register-command'* ]] \
     || fail "self-update must download and register the complete project"
+[[ "${launcher_content}" != *'cp -a "${EASY_ALL_INSTALL_DIR}/." "${stage}/"'* ]] \
+    || fail "runtime registration must not retain files removed from the manifest"
 [[ "${launcher_content}" == *'apply-cloud)'* \
     && "${launcher_content}" == *'apply_cloud_resources'* ]] \
     || fail "launcher must expose the explicit XHTTP cloud apply"

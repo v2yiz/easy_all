@@ -186,9 +186,6 @@ unified_register_easy_all_command() {
 
     install -d -m 0755 "$(dirname "${EASY_ALL_INSTALL_DIR}")" "$(dirname "${EASY_ALL_COMMAND_PATH}")"
     stage=$(mktemp -d "${EASY_ALL_INSTALL_DIR}.stage.XXXXXX")
-    if [[ -d "${EASY_ALL_INSTALL_DIR}" ]]; then
-        cp -a "${EASY_ALL_INSTALL_DIR}/." "${stage}/"
-    fi
     install -d -m 0755 "${stage}/lib"
     install -m 0755 "${source_root}/easy_all" "${stage}/easy_all"
     syntax_files=("${stage}/easy_all")
