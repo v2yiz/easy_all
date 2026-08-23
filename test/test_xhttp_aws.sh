@@ -8,7 +8,8 @@ XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 WARP_MODULE="${ROOT_DIR}/lib/warp.sh"
 PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
 SCHEDULED_MAINTENANCE_MODULE="${ROOT_DIR}/lib/scheduled-maintenance.sh"
-XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"$'\n'"$(<"${WARP_MODULE}")"
+SUBSCRIPTION_MODULE="${ROOT_DIR}/lib/subscription-auth.sh"
+XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"$'\n'"$(<"${WARP_MODULE}")"$'\n'"$(<"${SUBSCRIPTION_MODULE}")"
 XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
 MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
 TMP_DIR=$(mktemp -d)
@@ -834,7 +835,8 @@ EOF
     mihomo_file="${TMP_DIR}/subscription.yaml"
     validate_mihomo_template "${template}"
     build_mihomo_node >"${node_file}"
-    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}"
+    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
+        "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     assert_equal "one rendered VLESS node" "1" \
         "$(grep -Fc 'type: vless' "${mihomo_file}" | tr -d ' ')"
     assert_equal "one rendered XHTTP node" "1" \
@@ -864,7 +866,7 @@ EOF
             "dual" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         build_mihomo_node >"${node_file}.dual"
         render_mihomo_subscription "${template}" "${node_file}.dual" \
-            "${mihomo_file}.dual"
+            "${mihomo_file}.dual" "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         assert_contains "dual-stack CDN node is explicit in Mihomo" \
             "$(<"${node_file}.dual")" "ip-version: dual"
         assert_contains "dual-stack CDN endpoint enables Mihomo IPv6 resolution" \
@@ -900,9 +902,11 @@ EOF
     assert_contains "quota token map selects the friend subscription directory" \
         "${quota_token_map}" '"friend-token-123" "friend";'
     SUBSCRIPTION_MODE="deploy"
-    quota_locations=$(write_subscription_nginx_locations)
+    quota_locations=$(write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}")
     assert_contains "quota subscription uses a token-selected base64 file" \
         "${quota_locations}" '$easy_all_subscription_allowed/base64.txt'
+    assert_contains "XHTTP subscription route requires the CDN origin key" \
+        "${quota_locations}" '$http_x_easy_all_origin_key'
     assert_contains "Mihomo download keeps the configured filename without an extension" \
         "${quota_locations}" 'Content-Disposition "attachment; filename=EASY_ALL_TEST"'
     assert_not_contains "Mihomo download does not append yaml to the filename" \
@@ -917,6 +921,32 @@ EOF
     )
     assert_equal "link-only mode omits subscription Nginx routes" "" "${link_nginx}"
     SUBSCRIPTION_MODE="deploy"
+
+    validation_requests="${TMP_DIR}/subscription-validation-requests"
+    : >"${validation_requests}"
+    curl() {
+        printf '%s\n' "$*" >>"${validation_requests}"
+        case "$*" in
+        *"token=invalid"*) printf '403' ;;
+        *"flag=clash"*) printf 'network: xhttp\n' ;;
+        *) printf 'base64-content\n' ;;
+        esac
+    }
+    validate_subscription_runtime
+    assert_contains "XHTTP validates that an invalid token returns 403" \
+        "$(<"${validation_requests}")" "token=invalid"
+    assert_contains "XHTTP token validation includes the CDN origin key" \
+        "$(<"${validation_requests}")" "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}"
+    if (
+        curl() { printf '200'; }
+        validate_subscription_token_rejection \
+            "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+            "https://${AWS_ORIGIN_DOMAIN}/subscribe" \
+            -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}"
+    ) >/dev/null 2>&1; then
+        fail "XHTTP acceptance must reject a 200 response for an invalid token"
+    fi
+    unset -f curl
 
     subscription_output=$(
         collect_installed_state() { :; }

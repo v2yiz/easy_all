@@ -120,6 +120,10 @@ mihomo_ssh_rules=$(awk '
 source "${ROOT_DIR}/lib/subscription-auth.sh"
 [[ "$(normalize_allowed_tokens '{" owner ":" test-token "}')" == '{"owner":"test-token"}' ]] \
     || fail "shared subscription auth does not normalize valid credentials"
+[[ "$(normalize_subscription_mode selfhost)" == "deploy" \
+    && "$(normalize_subscription_mode deploy)" == "deploy" \
+    && "$(normalize_subscription_mode link)" == "link" ]] \
+    || fail "shared subscription modes do not use the deploy/link enum"
 if normalize_allowed_tokens '{"owner":12345678}' >/dev/null 2>&1; then
     fail "shared subscription auth accepts a non-string token"
 fi

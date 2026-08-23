@@ -94,7 +94,7 @@ set_fixture() {
     REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     WARP_MODE="off"
     SUB_PORT_MODE="dynamic"
-    SUBSCRIPTION_MODE="selfhost"
+    SUBSCRIPTION_MODE="deploy"
     SUBSCRIPTION_DOMAIN="sub.example.com"
     SUB_DOWNLOAD_NAME="MY_SUB"
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
@@ -116,9 +116,10 @@ install_test_warp_profile() {
 }
 
 test_syntax_and_worker_removal() {
-    local script
+    local script subscription_module
     bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
     script=$(<"${ROOT_DIR}/lib/reality.sh")
+    subscription_module=$(<"${ROOT_DIR}/lib/subscription-auth.sh")
     assert_not_contains "installer has no Worker API token" "CF_WORKER_API_TOKEN" "${script}"
     assert_not_contains "installer has no Worker deployment mode" "DEPLOY_MODE" "${script}"
     assert_not_contains "installer has no Worker file" "subscribe-worker.js" "${script}"
@@ -150,9 +151,9 @@ test_syntax_and_worker_removal() {
         '[${default}]（直接回车使用默认值）' \
         "$(<"${ROOT_DIR}/lib/profile-common.sh")"
     assert_contains "Reality subscription prompt recommends self-hosting for one server" \
-        "只有当前服务器时推荐" "${script}"
+        "只有当前服务器时推荐" "${subscription_module}"
     assert_contains "Reality subscription prompt recommends node output for aggregation" \
-        "多节点聚合或已有订阅服务器时推荐" "${script}"
+        "多节点聚合或已有订阅服务器时推荐" "${subscription_module}"
     assert_contains "non-interactive uninstall requires FORCE" \
         "非交互卸载必须显式设置 FORCE=1" "${script}"
     assert_contains "Reality uninstall can preserve ACME state for reinstall" \
@@ -174,6 +175,8 @@ test_validators_and_modes() {
         validate_reality_target "www.cloudflare.com"
     assert_equal "Reality defaults to dynamic subscriptions" \
         "dynamic" "${DEFAULT_REALITY_PORT_MODE}"
+    assert_equal "Reality state schema records canonical subscription modes" \
+        "4" "${STATE_SCHEMA_VERSION}"
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
@@ -186,11 +189,11 @@ test_validators_and_modes() {
     SUBSCRIBE_MODE="1"
     SUBSCRIPTION_MODE=""
     choose_subscription_mode
-    assert_equal "choice 1 enables self-hosting" "selfhost" "${SUBSCRIBE_MODE}"
+    assert_equal "choice 1 deploys the subscription service" "deploy" "${SUBSCRIPTION_MODE}"
     SUBSCRIBE_MODE="2"
     SUBSCRIPTION_MODE=""
     choose_subscription_mode
-    assert_equal "choice 2 selects links only" "link" "${SUBSCRIBE_MODE}"
+    assert_equal "choice 2 selects links only" "link" "${SUBSCRIPTION_MODE}"
 
     unset SUBSCRIBE_MODE
     SUBSCRIPTION_MODE="link"
@@ -303,22 +306,22 @@ EOF
 test_subscription_stage_dispatch() {
     local calls input_calls
     calls=$(
-        deploy_selfhosted_subscription() { printf 'selfhost\n'; }
-        remove_selfhosted_subscription_runtime() { printf 'link\n'; }
-        SUBSCRIPTION_MODE="selfhost"
+        deploy_subscription_service() { printf 'deploy\n'; }
+        remove_subscription_service_runtime() { printf 'link\n'; }
+        SUBSCRIPTION_MODE="deploy"
         deploy_subscription_output
         SUBSCRIPTION_MODE="link"
         deploy_subscription_output
     )
     assert_equal "subscription deployment dispatches exactly one selected branch" \
-        $'selfhost\nlink' "${calls}"
+        $'deploy\nlink' "${calls}"
 
     input_calls=$(
         collect_subscription_domain() { printf 'domain\n'; }
         choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
         choose_monthly_quota() { printf 'quota\n'; }
         quota_enabled() { return 0; }
-        collect_selfhosted_subscription_inputs 0 0
+        collect_deployed_subscription_inputs 0 0
     )
     assert_equal "apply reuses subscription inputs without reopening quota prompts" \
         $'domain\ndownload:0' "${input_calls}"
@@ -328,7 +331,7 @@ test_subscription_stage_dispatch() {
         choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
         choose_monthly_quota() { printf 'quota\n'; }
         quota_enabled() { return 0; }
-        collect_selfhosted_subscription_inputs 1 1
+        collect_deployed_subscription_inputs 1 1
     )
     assert_equal "interactive install collects all self-hosted subscription inputs" \
         $'domain\ndownload:1\nquota' "${input_calls}"
@@ -490,7 +493,7 @@ EOF
 COMMIT
 EOF
     printf 'IPV6=no\n' >"${UFW_DEFAULT_CONFIG}"
-    SUBSCRIBE_MODE="selfhost"
+    SUBSCRIPTION_MODE="deploy"
     REALITY_INBOUND_IP_FAMILY="dual"
     VPS_PUBLIC_IPV6="2001:db8::10"
     configure_ufw
@@ -665,7 +668,7 @@ test_legacy_firewall_migration() {
 }
 
 test_state_and_xray() {
-    local state config legacy_warp_mode
+    local state config legacy_subscription_mode legacy_warp_mode
     install -d -m 0700 "${STATE_DIR}"
     printf '%s\n' \
         'STATE_VERSION=2' \
@@ -682,11 +685,26 @@ test_state_and_xray() {
     assert_equal "legacy Reality state migrates without silently enabling WARP" \
         "off" "${legacy_warp_mode}"
 
+    printf '%s\n' \
+        'STATE_VERSION=3' \
+        'PROTOCOL=reality' \
+        'REALITY_INBOUND_IP_FAMILY=ipv4' \
+        'REALITY_CLIENT_IP_FAMILY=auto' \
+        'SUBSCRIPTION_MODE=selfhost' \
+        'QUOTA_ENABLED=0' >"${STATE_FILE}"
+    legacy_subscription_mode=$(
+        unset SUBSCRIPTION_MODE
+        load_state
+        printf '%s' "${SUBSCRIPTION_MODE}"
+    )
+    assert_equal "legacy selfhost state migrates to the canonical deploy mode" \
+        "deploy" "${legacy_subscription_mode}"
+
     set_fixture
     save_state
     state=$(<"${STATE_FILE}")
     assert_contains "state persists subscription mode" \
-        "SUBSCRIPTION_MODE=selfhost" "${state}"
+        "SUBSCRIPTION_MODE=deploy" "${state}"
     assert_contains "state persists subscription domain" \
         "SUBSCRIPTION_DOMAIN=sub.example.com" "${state}"
     assert_contains "state persists Reality inbound family" \

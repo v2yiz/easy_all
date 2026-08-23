@@ -54,6 +54,7 @@ readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="1800-3000"
 readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD_OVERRIDE:-0}"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-CloudFront}"
 readonly XHTTP_ORIGIN_DNS_NAME="${XHTTP_ORIGIN_DNS_NAME_OVERRIDE:-Route 53}"
+readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
@@ -192,51 +193,6 @@ prompt_secret() {
     [[ -t 0 ]] || return 1
     read_bilingual "${label}:" "${label_en}:" value 1
     printf '%s' "${value}"
-}
-
-choose_subscription_mode() {
-    local mode=${SUBSCRIBE_MODE:-${SUBSCRIPTION_MODE:-}} current_mode default_choice=1
-    if [[ "${PROMPT_SUBSCRIPTION_MODE:-0}" == "1" || -z "${mode}" ]]; then
-        if [[ -t 0 ]]; then
-            current_mode=${mode:-deploy}
-            [[ "${current_mode}" == "link" ]] && default_choice=2
-            printf '请选择是否部署订阅服务：\n'
-            printf 'Choose whether to deploy the subscription service:\n'
-            printf '  1. 部署订阅服务（%s + Nginx；只有当前服务器时推荐）\n' \
-                "${XHTTP_CDN_NAME}"
-            printf '     Deploy the subscription service (%s + Nginx; recommended for a single server)\n' \
-                "${XHTTP_CDN_NAME}"
-            printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-            printf '     Do not deploy it; output node information only (recommended for multi-node setups or an existing subscription server)\n'
-            read_bilingual \
-                "请选择 [${default_choice}]（直接回车使用默认值）:" \
-                "Choose [${default_choice}] (press Enter to use the default):" mode
-            mode=${mode:-${current_mode}}
-        elif [[ -z "${mode}" ]]; then
-            die "非交互模式必须设置 SUBSCRIBE_MODE=deploy 或 SUBSCRIBE_MODE=link"
-        fi
-    fi
-    mode=${mode:-deploy}
-    case "${mode}" in
-    1 | deploy | selfhost | nginx) SUBSCRIPTION_MODE="deploy" ;;
-    2 | link | node) SUBSCRIPTION_MODE="link" ;;
-    *) die "订阅服务选项无效：${mode}" ;;
-    esac
-}
-
-subscription_enabled() {
-    [[ "${SUBSCRIPTION_MODE:-deploy}" == "deploy" ]]
-}
-
-choose_subscription_download_name() {
-    local name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
-    if [[ -t 0 ]]; then
-        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}" \
-            "Mihomo download filename (without .yaml)")
-    fi
-    name=$(normalize_sub_download_name "${name}")
-    validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
-    SUB_DOWNLOAD_NAME=${name}
 }
 
 source_state_file() {
@@ -435,64 +391,6 @@ xhttp_server_keepalive_referer() {
     printf 'https://%s%s/?x_padding=%s' "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}" "${padding}"
 }
 
-write_subscription_nginx_maps() {
-    subscription_enabled || return 0
-    cat <<'EOF'
-map $arg_token $easy_all_subscription_allowed {
-    default __denied__;
-EOF
-    write_subscription_token_map
-    cat <<'EOF'
-}
-
-map $arg_flag $easy_all_subscription_uri {
-    default /_easy_all_subscription/base64;
-    clash /_easy_all_subscription/mihomo;
-}
-
-EOF
-}
-
-write_subscription_nginx_locations() {
-    local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
-    local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
-    subscription_enabled || return 0
-    if quota_enabled; then
-        base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
-        mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.yaml"
-    fi
-    cat <<EOF
-    location = /subscribe {
-        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
-        if (\$request_method !~ ^(GET|HEAD)$) { return 405; }
-        if (\$easy_all_subscription_allowed = __denied__) { return 403; }
-        rewrite ^ \$easy_all_subscription_uri last;
-    }
-
-    location = /_easy_all_subscription/base64 {
-        internal;
-        alias ${base64_alias};
-        default_type text/plain;
-        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-        add_header Pragma "no-cache" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
-    }
-
-    location = /_easy_all_subscription/mihomo {
-        internal;
-        alias ${mihomo_alias};
-        default_type text/yaml;
-        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
-        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-        add_header Pragma "no-cache" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
-    }
-
-EOF
-}
-
 write_nginx_config() {
     local keepalive_referer
     keepalive_referer=$(xhttp_server_keepalive_referer)
@@ -527,7 +425,7 @@ server {
     }
 
 EOF
-        write_subscription_nginx_locations
+        write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
         cat <<EOF
     location ^~ ${XHTTP_PATH}/ {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
@@ -577,18 +475,24 @@ validate_protocol_runtime() {
 
 validate_subscription_runtime() {
     local token base64_response mihomo_response
+    validate_subscription_token_rejection \
+        "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        "https://${AWS_ORIGIN_DOMAIN}/subscribe" \
+        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}"
     if quota_enabled; then
         token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
         [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     fi
-    base64_response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+    base64_response=$(curl -fsS --noproxy '*' \
+        --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" \
         "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
-    mihomo_response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+    mihomo_response=$(curl -fsS --noproxy '*' \
+        --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
         "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
@@ -645,34 +549,6 @@ build_mihomo_node() {
         "        h-keep-alive-period: \($h_keep_alive_period)\n"'
 }
 
-render_mihomo_subscription() {
-    local template=$1 node_file=$2 destination=$3 node_name ipv6_enabled=false
-    resolve_cdn_client_ip_family
-    [[ "${CDN_CLIENT_IP_FAMILY_RESOLVED}" != "dual" ]] || ipv6_enabled=true
-    node_name=$(jq -Rn --arg value "${XHTTP_NODE_NAME}" '$value')
-    awk -v node_file="${node_file}" -v node_name="${node_name}" \
-        -v ipv6_enabled="${ipv6_enabled}" '
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_START" ||
-        $0 == "# EASY_ALL_CHATGPT_DOMAINS_START" ||
-        $0 == "# EASY_ALL_CLAUDE_DOMAINS_START" { metadata=1; next }
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_END" ||
-        $0 == "# EASY_ALL_CHATGPT_DOMAINS_END" ||
-        $0 == "# EASY_ALL_CLAUDE_DOMAINS_END" { metadata=0; next }
-        metadata == 1 { next }
-        $0 ~ /^ipv6: (true|false)$/ {
-            print "ipv6: " ipv6_enabled
-            next
-        }
-        $0 == "# EASY_ALL_PROXY_NODE" {
-            while ((getline line < node_file) > 0) print line
-            close(node_file)
-            next
-        }
-        $0 == "# EASY_ALL_PROXY_NAME" { print "        - " node_name; next }
-        { print }
-    ' "${template}" >"${destination}" || die "生成 Mihomo 订阅失败"
-}
-
 write_subscriptions() {
     local template node_file base64_file mihomo_file user uuid user_dir
     prepare_mihomo_template
@@ -693,7 +569,8 @@ write_subscriptions() {
                 printf '%s' "$(build_node_link)" | openssl base64 -A >"${base64_file}.${user}"
                 printf '\n' >>"${base64_file}.${user}"
                 render_mihomo_subscription "${template}" "${node_file}.${user}" \
-                    "${mihomo_file}.${user}"
+                    "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
+                    "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
             )
             grep -Fq 'network: xhttp' "${mihomo_file}.${user}" \
                 || die "Mihomo 订阅缺少 XHTTP 节点：${user}"
@@ -708,7 +585,8 @@ write_subscriptions() {
     build_mihomo_node >"${node_file}"
     printf '%s' "$(build_node_link)" | openssl base64 -A >"${base64_file}"
     printf '\n' >>"${base64_file}"
-    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}"
+    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
+        "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
 
     grep -Fq 'network: xhttp' "${mihomo_file}" || die "Mihomo 订阅缺少 XHTTP 节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"

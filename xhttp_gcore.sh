@@ -465,9 +465,9 @@ load_state() {
     configure_gcore_fee_protection
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-    SUBSCRIPTION_MODE=${SUBSCRIPTION_MODE:-$([[ -n "${ALLOWED_TOKENS:-}" ]] && printf deploy || printf link)}
-    [[ "${SUBSCRIPTION_MODE}" == "deploy" || "${SUBSCRIPTION_MODE}" == "link" ]] \
-        || die "状态文件中的 SUBSCRIPTION_MODE 无效"
+    SUBSCRIPTION_MODE=$(normalize_subscription_mode \
+        "${SUBSCRIPTION_MODE:-$([[ -n "${ALLOWED_TOKENS:-}" ]] && printf deploy || printf link)}") \
+        || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"

@@ -804,7 +804,7 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 状态字段包括：
 
 ```text
-STATE_VERSION=3  # Reality
+STATE_VERSION=4  # Reality
 STATE_VERSION=5  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore

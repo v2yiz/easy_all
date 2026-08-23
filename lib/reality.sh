@@ -60,8 +60,9 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="3"
+readonly STATE_SCHEMA_VERSION="4"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
+readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
@@ -365,6 +366,7 @@ source_state_file() {
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     [[ "${STATE_VERSION:-}" == "1" || "${STATE_VERSION:-}" == "2" \
+        || "${STATE_VERSION:-}" == "3" \
         || "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
 }
@@ -416,8 +418,7 @@ load_state() {
     else
         VPS_PUBLIC_IPV6=""
     fi
-    SUBSCRIPTION_MODE=${SUBSCRIPTION_MODE:-link}
-    [[ "${SUBSCRIPTION_MODE}" == "selfhost" || "${SUBSCRIPTION_MODE}" == "link" ]] \
+    SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
     if [[ -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
         SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN}")
@@ -806,7 +807,7 @@ configure_ufw() {
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
     desired_ports="${SSH_PORTS//,/ } ${SERVICE_PORT}"
-    if [[ "${SUBSCRIBE_MODE:-${SUBSCRIPTION_MODE:-}}" == "selfhost" ]]; then
+    if subscription_enabled; then
         desired_ports+=" 80 ${SUBSCRIPTION_HTTPS_PORT}"
     fi
     apply_managed_ufw_tcp_ports "${desired_ports}"
@@ -926,34 +927,6 @@ build_mihomo_node() {
             "    smux:\n      enabled: false\n"'
 }
 
-render_mihomo_subscription() {
-    local template=$1 node_file=$2 destination=$3 node_name ipv6_enabled=false
-    resolve_reality_client_ip_family
-    [[ "${REALITY_CLIENT_IP_FAMILY_RESOLVED}" != "dual" ]] || ipv6_enabled=true
-    node_name=$(jq -Rn --arg value "${NODE_NAME}" '$value')
-    awk -v node_file="${node_file}" -v node_name="${node_name}" \
-        -v ipv6_enabled="${ipv6_enabled}" '
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_START" ||
-        $0 == "# EASY_ALL_CHATGPT_DOMAINS_START" ||
-        $0 == "# EASY_ALL_CLAUDE_DOMAINS_START" { metadata=1; next }
-        $0 == "# EASY_ALL_GEMINI_DOMAINS_END" ||
-        $0 == "# EASY_ALL_CHATGPT_DOMAINS_END" ||
-        $0 == "# EASY_ALL_CLAUDE_DOMAINS_END" { metadata=0; next }
-        metadata == 1 { next }
-        $0 ~ /^ipv6: (true|false)$/ {
-            print "ipv6: " ipv6_enabled
-            next
-        }
-        $0 == "# EASY_ALL_PROXY_NODE" {
-            while ((getline line < node_file) > 0) print line
-            close(node_file)
-            next
-        }
-        $0 == "# EASY_ALL_PROXY_NAME" { print "        - " node_name; next }
-        { print }
-    ' "${template}" >"${destination}" || die "生成 Mihomo 订阅失败"
-}
-
 generate_subscription_port() {
     local value
     if [[ "${SUB_PORT_MODE}" == "443" ]]; then
@@ -964,7 +937,7 @@ generate_subscription_port() {
     printf '%s\n' "$((PORT_BASE + value % (DYNAMIC_PORT_MAX - PORT_BASE + 1)))"
 }
 
-install_selfhost_dependencies() {
+install_subscription_dependencies() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends nginx cron
@@ -1104,7 +1077,9 @@ generate_subscription_files() {
     build_mihomo_node "${port}" >"${node_file}"
     printf '%s' "$(build_node_link "${port}")" | openssl base64 -A >"${base64_file}"
     printf '\n' >>"${base64_file}"
-    render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}" "${mihomo_file}"
+    resolve_reality_client_ip_family
+    render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}" "${mihomo_file}" \
+        "${NODE_NAME}" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     printf '%s' "$(<"${base64_file}")" | openssl base64 -d -A \
         | grep -Fq 'security=reality' || die "Base64 订阅内容无效"
     grep -Fq 'reality-opts:' "${mihomo_file}" || die "Mihomo 订阅缺少 Reality 节点"
@@ -1140,27 +1115,10 @@ install_static_subscriptions() {
 }
 
 write_subscription_nginx_config() {
-    local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
-    local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
-    if quota_enabled; then
-        base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
-        mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.yaml"
-    fi
     write_subscription_web_root
     {
-        cat <<'EOF'
-map $arg_token $easy_all_subscription_allowed {
-    default __denied__;
-EOF
-        write_subscription_token_map
+        write_subscription_nginx_maps
         cat <<EOF
-}
-
-map \$arg_flag \$easy_all_subscription_uri {
-    default /_easy_all_subscription/base64;
-    clash /_easy_all_subscription/mihomo;
-}
-
 server {
     listen 80;
     listen [::]:80;
@@ -1178,33 +1136,9 @@ server {
     ssl_certificate_key ${KEY_FILE};
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    location = /subscribe {
-        if (\$request_method !~ ^(GET|HEAD)$) { return 405; }
-        if (\$easy_all_subscription_allowed = __denied__) { return 403; }
-        rewrite ^ \$easy_all_subscription_uri last;
-    }
-
-    location = /_easy_all_subscription/base64 {
-        internal;
-        alias ${base64_alias};
-        default_type text/plain;
-        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-        add_header Pragma "no-cache" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
-    }
-
-    location = /_easy_all_subscription/mihomo {
-        internal;
-        alias ${mihomo_alias};
-        default_type text/yaml;
-        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
-        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-        add_header Pragma "no-cache" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
-    }
-
+EOF
+        write_subscription_nginx_locations
+        cat <<'EOF'
     location / { return 404; }
 }
 EOF
@@ -1215,18 +1149,17 @@ EOF
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
-validate_selfhosted_subscription() {
-    local token status base64_response mihomo_response
+validate_subscription_runtime() {
+    local token base64_response mihomo_response
+    validate_subscription_token_rejection \
+        "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+        "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe"
     if quota_enabled; then
         token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
         [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     fi
-    status=$(curl -ksS --noproxy '*' -o /dev/null -w '%{http_code}' \
-        --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
-        "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe?token=invalid")
-    [[ "${status}" == "403" ]] || die "无效订阅 Token 未被拒绝（HTTP ${status}）"
     base64_response=$(curl -fsS --noproxy '*' \
         --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         --get --data-urlencode "token=${token}" \
@@ -1242,46 +1175,7 @@ validate_selfhosted_subscription() {
     grep -Fq 'reality-opts:' <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
 }
 
-choose_subscription_mode() {
-    local mode=${SUBSCRIBE_MODE:-${SUBSCRIPTION_MODE:-}} current_mode default_choice=1
-    if [[ "${PROMPT_SUBSCRIPTION_MODE:-0}" == "1" || -z "${mode}" ]]; then
-        if [[ -t 0 ]]; then
-            current_mode=${mode:-selfhost}
-            [[ "${current_mode}" == "link" ]] && default_choice=2
-            printf '请选择是否部署订阅服务：\n'
-            printf 'Choose whether to deploy the subscription service:\n'
-            printf '  1. 部署订阅服务（Nginx HTTPS :8443；只有当前服务器时推荐）\n'
-            printf '     Deploy the subscription service (Nginx HTTPS :8443; recommended for a single server)\n'
-            printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-            printf '     Do not deploy it; output node information only (recommended for multi-node setups or an existing subscription server)\n'
-            read_bilingual \
-                "请选择 [${default_choice}]（直接回车使用默认值）:" \
-                "Choose [${default_choice}] (press Enter to use the default):" mode
-            mode=${mode:-${current_mode}}
-        elif [[ -z "${mode}" ]]; then
-            die "非交互模式必须设置 SUBSCRIBE_MODE=selfhost 或 SUBSCRIBE_MODE=link"
-        fi
-    fi
-    mode=${mode:-selfhost}
-    case "${mode}" in
-    1 | selfhost | nginx) SUBSCRIBE_MODE="selfhost" ;;
-    2 | link | vless) SUBSCRIBE_MODE="link" ;;
-    *) die "订阅输出方式无效：${mode}" ;;
-    esac
-}
-
-choose_subscription_download_name() {
-    local allow_prompt=${1:-0} name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
-    if [[ "${allow_prompt}" == "1" && -t 0 ]]; then
-        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}" \
-            "Mihomo download filename (without .yaml)")
-    fi
-    name=$(normalize_sub_download_name "${name}")
-    validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
-    SUB_DOWNLOAD_NAME=${name}
-}
-
-collect_selfhosted_subscription_inputs() {
+collect_deployed_subscription_inputs() {
     local prompt_options=${1:-1} prompt_download_name=${2:-0}
     collect_subscription_domain
     choose_subscription_download_name "${prompt_download_name}"
@@ -1289,7 +1183,7 @@ collect_selfhosted_subscription_inputs() {
         choose_monthly_quota 1
     fi
     quota_enabled || ensure_allowed_tokens
-    SUBSCRIPTION_MODE="selfhost"
+    SUBSCRIPTION_MODE="deploy"
 }
 
 collect_link_subscription_inputs() {
@@ -1303,27 +1197,27 @@ collect_link_subscription_inputs() {
 collect_subscription_inputs() {
     local prompt_options=${1:-1} prompt_download_name=${2:-0}
     choose_subscription_mode
-    case "${SUBSCRIBE_MODE}" in
-    selfhost)
-        collect_selfhosted_subscription_inputs \
+    case "${SUBSCRIPTION_MODE}" in
+    deploy)
+        collect_deployed_subscription_inputs \
             "${prompt_options}" "${prompt_download_name}"
         ;;
     link) collect_link_subscription_inputs ;;
-    *) die "无法收集未知订阅输出方式：${SUBSCRIBE_MODE:-空}" ;;
+    *) die "无法收集未知订阅输出方式：${SUBSCRIPTION_MODE:-空}" ;;
     esac
 }
 
-deploy_selfhosted_subscription() {
-    install_selfhost_dependencies
+deploy_subscription_service() {
+    install_subscription_dependencies
     verify_subscription_dns
     write_subscription_bootstrap_nginx
     issue_subscription_certificate
     install_static_subscriptions
     write_subscription_nginx_config
-    validate_selfhosted_subscription
+    validate_subscription_runtime
 }
 
-remove_selfhosted_subscription_runtime() {
+remove_subscription_service_runtime() {
     if [[ -f "${NGINX_CONFIG}" || -d "${WEB_ROOT}" ]]; then
         systemctl disable --now nginx >/dev/null 2>&1 || true
         rm -f -- "${NGINX_CONFIG}"
@@ -1333,8 +1227,8 @@ remove_selfhosted_subscription_runtime() {
 
 deploy_subscription_output() {
     case "${SUBSCRIPTION_MODE:-}" in
-    selfhost) deploy_selfhosted_subscription ;;
-    link) remove_selfhosted_subscription_runtime ;;
+    deploy) deploy_subscription_service ;;
+    link) remove_subscription_service_runtime ;;
     *) die "无法部署未知订阅输出方式：${SUBSCRIPTION_MODE:-空}" ;;
     esac
 }
@@ -1342,7 +1236,7 @@ deploy_subscription_output() {
 renew_subscription_certificate() {
     require_root
     collect_installed_state
-    [[ "${SUBSCRIPTION_MODE:-}" == "selfhost" ]] || die "当前未启用自托管订阅"
+    subscription_enabled || die "当前未启用自托管订阅"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
     run_acme --renew -d "${SUBSCRIPTION_DOMAIN}" --ecc --force \
         || die "订阅证书续期失败"
@@ -1458,7 +1352,8 @@ rollback_subscription_update() {
     fi
     unset SUB_PORT_MODE SUBSCRIPTION_MODE SUBSCRIBE_MODE
     source_state_file
-    SUBSCRIBE_MODE=${SUBSCRIPTION_MODE}
+    SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
+        || die "备份状态中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
     configure_ufw || warn "恢复订阅更新前 UFW 失败"
 }
 
@@ -1516,7 +1411,6 @@ apply_easy_all() {
     configure_bbr_tcp
     register_easy_all_command
     collect_installed_state
-    SUBSCRIBE_MODE=${SUBSCRIPTION_MODE}
     update_subscription
 }
 
@@ -1592,7 +1486,7 @@ show_subscription() {
     collect_installed_state
     show_node
     printf 'Clash 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
-    if [[ "${SUBSCRIPTION_MODE:-}" == "selfhost" ]]; then
+    if subscription_enabled; then
         [[ -n "${ALLOWED_TOKENS:-}" ]] || die "自托管订阅 Token 字典缺失"
         printf '订阅方式: VPS Nginx HTTPS :%s\n' "${SUBSCRIPTION_HTTPS_PORT}"
         printf '\n订阅地址:\n'
@@ -1628,7 +1522,7 @@ show_status() {
         && printf 'active\n' || printf 'inactive\n'
     printf 'TCP 443: '
     ss -H -ltn "sport = :443" 2>/dev/null | grep -q . && printf 'listening\n' || printf 'not listening\n'
-    if [[ "${SUBSCRIPTION_MODE:-}" == "selfhost" ]]; then
+    if subscription_enabled; then
         printf '自托管订阅: https://%s:%s/subscribe\n' \
             "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}"
         printf 'Nginx: '
@@ -1872,7 +1766,7 @@ usage() {
   help          显示帮助
 
 Reality 默认使用 dynamic 订阅端口。
-订阅仅支持 selfhost 与 link 两种选择。
+订阅仅支持 deploy 与 link 两种选择。
 EOF
 }
 
