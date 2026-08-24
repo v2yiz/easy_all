@@ -204,8 +204,13 @@ fi
         .rules[0].outboundTag == "block"
         and .rules[1].outboundTag == "warp-IPv4"
         and (.rules[1].domain | index("domain:gemini.google.com"))
+        and (.rules[1].domain | index("domain:accounts.google.com"))
+        and (.rules[1].domain | index("domain:gemini.gstatic.com"))
         and (.rules[1].domain | index("domain:generativelanguage.googleapis.com"))
         and ((.rules[1].domain | index("domain:google.com")) == null)
+        and ((.rules[1].domain | index("domain:googleapis.com")) == null)
+        and ((.rules[1].domain | index("domain:gstatic.com")) == null)
+        and ((.rules[1].domain | index("geosite:google")) == null)
         and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_xhttp_routing_json)" >/dev/null \
         || fail "XHTTP WARP routing must target only Gemini-related domains"
