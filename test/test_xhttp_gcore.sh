@@ -57,8 +57,12 @@ assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
 assert_contains "Gcore profile persists the CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
-assert_contains "Gcore uses the shared IPv4 direct outbound policy" \
-    "${XRAY_RENDER_CONTENT}" 'xray_direct_outbounds_json'
+assert_contains "Gcore profile persists the Gemini WARP mode" \
+    "${profile_content}" 'XHTTP_GEMINI_WARP_MODE=%q'
+assert_contains "Gcore uses the shared XHTTP outbound policy" \
+    "${XRAY_RENDER_CONTENT}" 'xray_xhttp_outbounds_json'
+assert_contains "Gcore uses the shared XHTTP routing policy" \
+    "${XRAY_RENDER_CONTENT}" 'xray_xhttp_routing_json'
 assert_contains "Gcore client family resolution stays in the shared XHTTP runtime" \
     "${profile_content}" 'resolve_cdn_client_ip_family'
 assert_not_contains "Gcore Xray egress does not depend on the client family" \

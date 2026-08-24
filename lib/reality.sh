@@ -1336,7 +1336,6 @@ update_subscription() {
         rollback_subscription_update
         return 1
     fi
-    remove_obsolete_network_state
     install_quota_timer
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0

@@ -405,6 +405,7 @@ collect_install_inputs() {
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "ORIGIN_HEADER_SECRET 格式无效"
+    choose_xhttp_gemini_warp
     choose_subscription_mode
     if subscription_enabled; then
         choose_subscription_download_name
@@ -426,6 +427,8 @@ load_state() {
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         CDN_CLIENT_IP_FAMILY
+        XHTTP_GEMINI_WARP_MODE XHTTP_WARP_PRIVATE_KEY XHTTP_WARP_PEER_PUBLIC_KEY
+        XHTTP_WARP_ENDPOINT XHTTP_WARP_ADDRESS XHTTP_WARP_RESERVED
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -460,6 +463,7 @@ load_state() {
         || die "状态中的源站保护密钥无效"
     AWS_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
     configure_gcore_fee_protection
+    normalize_xhttp_gemini_warp_state
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     SUBSCRIPTION_MODE=$(normalize_subscription_mode \
@@ -513,6 +517,12 @@ save_state() {
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "ipv4"
+        printf 'XHTTP_GEMINI_WARP_MODE=%q\n' "${XHTTP_GEMINI_WARP_MODE:-disabled}"
+        printf 'XHTTP_WARP_PRIVATE_KEY=%q\n' "${XHTTP_WARP_PRIVATE_KEY:-}"
+        printf 'XHTTP_WARP_PEER_PUBLIC_KEY=%q\n' "${XHTTP_WARP_PEER_PUBLIC_KEY:-}"
+        printf 'XHTTP_WARP_ENDPOINT=%q\n' "${XHTTP_WARP_ENDPOINT:-}"
+        printf 'XHTTP_WARP_ADDRESS=%q\n' "${XHTTP_WARP_ADDRESS:-}"
+        printf 'XHTTP_WARP_RESERVED=%q\n' "${XHTTP_WARP_RESERVED:-}"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -536,8 +546,8 @@ xhttp_render_xray_config() {
     fi
     cloudfront_fee_protection_blocked && clients='[]'
     traffic_stats_enabled && stats_enabled=true
-    managed_outbounds=$(xray_direct_outbounds_json)
-    managed_routing=$(xray_direct_routing_json)
+    managed_outbounds=$(xray_xhttp_outbounds_json)
+    managed_routing=$(xray_xhttp_routing_json)
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
@@ -575,6 +585,7 @@ show_status() {
     show_bbrv3_status
     printf 'CDN 客户端节点族: %s（固定）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    printf 'Gemini WARP: %s\n' "$(xhttp_gemini_warp_summary)"
     printf 'Gcore DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
@@ -593,6 +604,7 @@ update_subscription() {
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
+    choose_xhttp_gemini_warp
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         choose_subscription_download_name
@@ -607,7 +619,6 @@ update_subscription() {
     fi
     save_state
     refresh_runtime
-    remove_obsolete_network_state
     install_quota_timer
     install_cloudfront_fee_protection_timer
     end_quota_maintenance

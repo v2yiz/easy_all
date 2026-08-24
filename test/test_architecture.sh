@@ -162,10 +162,17 @@ fi
 
 (
     XRAY_CONFIG="/definitely/missing/easy_all-xray.json"
+    die() { fail "$*"; }
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/lib/network.sh"
     [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "ForceIPv4" ]] \
         || fail "Xray direct egress must be fixed to IPv4"
+    validate_wireguard_key "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
+        || fail "WireGuard hex keys must be accepted"
+    XHTTP_GEMINI_WARP_MODE="auto"
+    normalize_xhttp_gemini_warp_mode
+    [[ "${XHTTP_GEMINI_WARP_MODE}" == "auto" ]] \
+        || fail "auto WARP mode must be enabled"
     jq -e '
         map(.tag) == ["direct","block"]
         and .[0].settings.domainStrategy == "ForceIPv4"
@@ -178,6 +185,53 @@ fi
         and .rules[1].outboundTag == "direct"
     ' <<<"$(xray_direct_routing_json)" >/dev/null \
         || fail "shared direct routing policy is invalid"
+
+    XHTTP_GEMINI_WARP_MODE=manual
+    XHTTP_WARP_PRIVATE_KEY="8GK9bioGPYkdL0ObYmQqe2iMsffKV9D9C7t9tP2heEU="
+    XHTTP_WARP_ADDRESS="172.16.0.2/32,2606:4700:110:8a09:eeb4:3bf8:beff:17fd/128"
+    XHTTP_WARP_RESERVED="1,2,3"
+    jq -e '
+        map(.tag) == ["direct","warp-IPv4","warp","block"]
+        and .[1].proxySettings.tag == "warp"
+        and .[2].protocol == "wireguard"
+        and .[2].settings.kernelMode == false
+        and .[2].settings.reserved == [1,2,3]
+    ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
+        || fail "XHTTP WARP outbound policy is invalid"
+    jq -e '
+        .rules[0].outboundTag == "block"
+        and .rules[1].outboundTag == "warp-IPv4"
+        and (.rules[1].domain | index("domain:gemini.google.com"))
+        and (.rules[1].domain | index("domain:generativelanguage.googleapis.com"))
+        and ((.rules[1].domain | index("domain:google.com")) == null)
+        and .rules[2].outboundTag == "direct"
+    ' <<<"$(xray_xhttp_routing_json)" >/dev/null \
+        || fail "XHTTP WARP routing must target only Gemini-related domains"
+
+    STATE_DIR=$(mktemp -d)
+    install -d -m 0700 "${STATE_DIR}/xhttp-warp"
+    cat >"${STATE_DIR}/xhttp-warp/wgcf-profile.conf" <<'EOF_WGCF'
+[Interface]
+PrivateKey = "8GK9bioGPYkdL0ObYmQqe2iMsffKV9D9C7t9tP2heEU="
+Address = 172.16.0.2/32, 2606:4700:110:8a09:eeb4:3bf8:beff:17fd/128
+
+[Peer]
+PublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+Endpoint = engage.cloudflareclient.com:2408
+Reserved = [1, 2, 3]
+EOF_WGCF
+    XHTTP_GEMINI_WARP_MODE=auto
+    XHTTP_WARP_PRIVATE_KEY=""
+    XHTTP_WARP_PEER_PUBLIC_KEY=""
+    XHTTP_WARP_ENDPOINT=""
+    XHTTP_WARP_ADDRESS=""
+    XHTTP_WARP_RESERVED=""
+    normalize_xhttp_gemini_warp_state
+    [[ "${XHTTP_WARP_ENDPOINT}" == "engage.cloudflareclient.com:2408" \
+        && "${XHTTP_WARP_RESERVED}" == "1,2,3" \
+        && "${XHTTP_WARP_ADDRESS}" == "172.16.0.2/32,2606:4700:110:8a09:eeb4:3bf8:beff:17fd/128" ]] \
+        || fail "auto WARP mode must load an existing wgcf profile"
+    rm -rf -- "${STATE_DIR}"
 )
 
 printf 'ok - shared architecture tests passed\n'

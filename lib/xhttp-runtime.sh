@@ -651,7 +651,6 @@ finish_xhttp_apply() {
         remove_subscriptions
     fi
     save_state
-    remove_obsolete_network_state
     register_easy_all_command
     install_quota_timer
     install_cloudfront_fee_protection_timer

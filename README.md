@@ -546,6 +546,7 @@ CDN XHTTP 交互选项：
 | --- | --- | --- |
 | Route 53 源站域名 | 无 | 不允许为空 |
 | CloudFront CDN 域名 | 无 | 不允许为空 |
+| Gemini WARP 出站 | 不启用 | 可选择自动注册免费 WARP 或手动填写已有配置 |
 | 订阅输出 | 启用 CloudFront + Nginx 订阅 | 启用订阅服务 |
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
@@ -558,8 +559,13 @@ XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHT
 部署时会自动移除指向同一分配的遗留 AAAA。Gcore 的 CNAME 目标可能仍发布 AAAA，但生成的客户端
 只选择 A。两种 Provider 的源站回源与 VPS 目标出站也固定使用 IPv4。
 
-`easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种 Profile 的订阅菜单
-都会把当前值显示在方括号中，直接回车沿用当前状态。
+Gemini WARP 出站默认关闭。启用后，Xray 只把 Gemini 相关域名经内置 WireGuard WARP 出站，
+不会把全部 Google 域名切到 WARP。菜单提供三项：不启用、自动注册免费 WARP 配置、手动填写
+已有 WARP WireGuard 配置。自动模式会使用或临时下载 `wgcf` 注册并生成配置；手动获取方式见
+[Cloudflare WARP WireGuard 配置指南](docs/warp-guide.md)。
+
+`easy_all update-sub` 会重新显示订阅菜单和 Gemini WARP 选项。Reality 的端口菜单和两种
+Profile 的订阅菜单都会把当前值显示在方括号中，直接回车沿用当前状态。
 
 Mihomo 响应的下载文件名严格使用保存值；默认下载为 `EASY_ALL`，不会自动追加 `.yaml`。
 

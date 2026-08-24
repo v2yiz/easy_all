@@ -47,8 +47,12 @@ assert_contains "XHTTP state persists the quota start date" "${XHTTP_CONTENT}" \
     'QUOTA_START_DATE=%q'
 assert_contains "XHTTP state persists the CDN client family" "${XHTTP_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=%q'
-assert_contains "CloudFront uses the shared IPv4 direct outbound policy" \
-    "${XRAY_RENDER_CONTENT}" 'xray_direct_outbounds_json'
+assert_contains "XHTTP state persists the Gemini WARP mode" "${XHTTP_CONTENT}" \
+    'XHTTP_GEMINI_WARP_MODE=%q'
+assert_contains "CloudFront uses the shared XHTTP outbound policy" \
+    "${XRAY_RENDER_CONTENT}" 'xray_xhttp_outbounds_json'
+assert_contains "CloudFront uses the shared XHTTP routing policy" \
+    "${XRAY_RENDER_CONTENT}" 'xray_xhttp_routing_json'
 assert_not_contains "CloudFront Xray egress does not depend on the client family" \
     "${XRAY_RENDER_CONTENT}" "CDN_CLIENT_IP_FAMILY"
 assert_contains "Xray keepalive stays below CloudFront response timeout" "${XHTTP_CONTENT}" \

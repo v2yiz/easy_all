@@ -6,6 +6,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
 GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
+WARP_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/warp-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/lib/xhttp_aws.sh")
 
@@ -75,6 +76,16 @@ assert_contains "README documents Reality private destination blocking" "${READM
     '避免订阅凭据泄露后被用于访问 VPS 内网或云元数据'
 assert_contains "README documents fixed IPv4 egress for all profiles" "${README_CONTENT}" \
     '三种安装模式的 Xray 公网出站统一使用 `ForceIPv4`'
+assert_contains "README links the WARP guide" "${README_CONTENT}" \
+    'docs/warp-guide.md'
+assert_contains "WARP guide documents wgcf registration" "${WARP_GUIDE_CONTENT}" \
+    'wgcf register'
+assert_contains "WARP guide documents wgcf profile generation" "${WARP_GUIDE_CONTENT}" \
+    'wgcf generate'
+assert_contains "WARP guide maps PrivateKey" "${WARP_GUIDE_CONTENT}" \
+    'WARP WireGuard PrivateKey'
+assert_contains "WARP guide documents manual mode" "${WARP_GUIDE_CONTENT}" \
+    '3. 手动填写已有 WARP WireGuard 配置'
 assert_contains "README documents bilingual interactive prompts" "${README_CONTENT}" \
     '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
 assert_contains "README documents Gcore client H2 keepalive" "${README_CONTENT}" \
