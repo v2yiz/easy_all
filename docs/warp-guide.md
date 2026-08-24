@@ -1,9 +1,10 @@
 # Cloudflare WARP WireGuard 配置指南
 
 本指南只用于 XHTTP 链路的 Gemini 专用 WARP 出站。启用后，easy_all 会在 Xray 内部新增
-WireGuard 出站，并且只把 Gemini/AI Studio 的最小精确域名集合导向 WARP，包括 Gemini
-本体、Gemini 静态资源和 Gemini/AI Studio API 端点；不会修改 VPS 系统默认路由，也不会把
-Google 登录、Google 首页、通用 gstatic、通用 googleapis 或通用 clients 域名切到 WARP。
+WireGuard 出站，并且只把 Gemini/AI Studio 的精确域名集合导向 WARP，包括 Gemini 本体、
+Gemini 静态资源、Gemini/AI Studio API 端点，以及 `waa-pa.clients6.google.com` 和
+`signaler-pa.clients6.google.com`；不会修改 VPS 系统默认路由，也不会把 Google 登录、
+Google 首页、通用 gstatic、通用 googleapis 或其他通用 clients 域名切到 WARP。
 Mihomo 常用的 `www.gstatic.com/generate_204` 测速地址也不在 WARP 域名集合中。
 
 ## 方式一：脚本自动注册

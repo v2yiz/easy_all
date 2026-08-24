@@ -386,6 +386,8 @@ xray_gemini_domains_json() {
       "domain:generativelanguage.googleapis.com",
       "domain:proactivebackend-pa.googleapis.com",
       "domain:alkalimakersuite-pa.clients6.google.com",
+      "domain:waa-pa.clients6.google.com",
+      "domain:signaler-pa.clients6.google.com",
       "domain:makersuite.google.com",
       "domain:ai.google.dev"
     ]'
