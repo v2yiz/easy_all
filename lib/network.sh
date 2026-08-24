@@ -382,6 +382,7 @@ xray_gemini_domains_json() {
       "domain:gemini.google.com",
       "domain:bard.google.com",
       "domain:gemini.gstatic.com",
+      "domain:www.google.com",
       "domain:generativeai.google",
       "domain:generativelanguage.googleapis.com",
       "domain:proactivebackend-pa.googleapis.com",
