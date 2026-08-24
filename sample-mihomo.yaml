@@ -60,10 +60,14 @@ dns:
     listen: '127.0.0.1:5335'
 
     default-nameserver:
+      # 用系统 DNS 引导 DoH 域名解析；部分网络会阻断公共 UDP DNS。
+      - system
       - 223.5.5.5
       - 119.29.29.29
 
     proxy-server-nameserver:
+      # 代理服务器域名必须能在代理建立前解析，优先使用系统 DNS 避免鸡生蛋问题。
+      - system
       - https://dns.alidns.com/dns-query
       - https://doh.pub/dns-query
 

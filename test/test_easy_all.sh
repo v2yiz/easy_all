@@ -324,6 +324,8 @@ test_mihomo_template() {
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     assert_contains "Mihomo preserves fake-IP mappings across restarts" \
         "store-fake-ip: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_contains "Mihomo uses system DNS for bootstrap on restricted networks" \
+        "      - system" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     grep -v '^# EASY_ALL_PROXY_NAME$' \
         "${ROOT_DIR}/sample-mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \

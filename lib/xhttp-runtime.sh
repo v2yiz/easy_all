@@ -343,6 +343,10 @@ xhttp_server_keepalive_referer() {
     printf 'https://%s%s/?x_padding=%s' "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}" "${padding}"
 }
 
+xhttp_client_path() {
+    printf '%s/' "${XHTTP_PATH%/}"
+}
+
 write_nginx_config() {
     local keepalive_referer
     keepalive_referer=$(xhttp_server_keepalive_referer)
@@ -456,7 +460,8 @@ uri_encode() {
 }
 
 build_vless_xhttp_link() {
-    local extra
+    local extra client_path
+    client_path=$(xhttp_client_path)
     extra=$(jq -cn \
         --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
         --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
@@ -473,7 +478,7 @@ build_vless_xhttp_link() {
     }')
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${XHTTP_PATH}")" "$(uri_encode "${extra}")" "$(uri_encode "${XHTTP_NODE_NAME}")"
+        "$(uri_encode "${client_path}")" "$(uri_encode "${extra}")" "$(uri_encode "${XHTTP_NODE_NAME}")"
 }
 
 build_node_link() {
@@ -484,7 +489,7 @@ build_mihomo_node() {
     resolve_cdn_client_ip_family
     jq -nr --arg xhttp_name "${XHTTP_NODE_NAME}" \
         --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg xhttp_path "${XHTTP_PATH}" \
+        --arg xhttp_path "$(xhttp_client_path)" \
         --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
         --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
         --arg c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \

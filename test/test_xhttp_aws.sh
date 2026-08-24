@@ -590,7 +590,7 @@ EOF
     assert_contains "CloudFront hostname" "${link}" "@node.example.com:443"
     assert_contains "XHTTP transport" "${link}" "type=xhttp"
     assert_contains "XHTTP stream-up" "${link}" "mode=stream-up"
-    assert_contains "XHTTP path" "${link}" "path=%2Fxhttp-test-path"
+    assert_contains "XHTTP path keeps the Nginx location suffix" "${link}" "path=%2Fxhttp-test-path%2F"
     assert_contains "XHTTP XMUX extra" "${link}" "extra="
     assert_contains "XHTTP link uses the supported uplink method key" "${link}" "uplinkHTTPMethod"
     assert_not_contains "XHTTP link omits the ignored legacy uplink key" "${link}" "uplinkMethod"
@@ -610,6 +610,8 @@ EOF
     mihomo=$(build_mihomo_node)
     assert_contains "Mihomo XHTTP" "${mihomo}" "network: xhttp"
     assert_contains "Mihomo stream-up" "${mihomo}" "mode: stream-up"
+    assert_contains "Mihomo XHTTP path keeps the Nginx location suffix" \
+        "${mihomo}" 'path: "/xhttp-test-path/"'
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
     assert_contains "Mihomo XHTTP pins the selected client IP family" \
         "${mihomo}" "ip-version: ipv4"
