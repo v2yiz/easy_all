@@ -204,6 +204,10 @@ fi
         and .rules[1].outboundTag == "warp"
         and (.rules[1].domain | index("domain:gemini.google.com"))
         and (.rules[1].domain | index("domain:gemini.gstatic.com"))
+        and (.rules[1].domain | index("domain:www.gstatic.com"))
+        and (.rules[1].domain | index("domain:ssl.gstatic.com"))
+        and (.rules[1].domain | index("domain:fonts.gstatic.com"))
+        and (.rules[1].domain | index("domain:lh3.googleusercontent.com"))
         and (.rules[1].domain | index("domain:www.google.com"))
         and (.rules[1].domain | index("domain:www.google.com.hk"))
         and (.rules[1].domain | index("domain:generativelanguage.googleapis.com"))
@@ -218,7 +222,7 @@ fi
         and ((.rules[1].domain | index("domain:google.com")) == null)
         and ((.rules[1].domain | index("domain:googleapis.com")) == null)
         and ((.rules[1].domain | index("domain:gstatic.com")) == null)
-        and ((.rules[1].domain | index("domain:www.gstatic.com")) == null)
+        and ((.rules[1].domain | index("domain:googleusercontent.com")) == null)
         and ((.rules[1].domain | index("geosite:google")) == null)
         and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_xhttp_routing_json)" >/dev/null \

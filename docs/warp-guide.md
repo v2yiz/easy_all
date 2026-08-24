@@ -2,10 +2,12 @@
 
 本指南只用于 XHTTP 链路的 Gemini 专用 WARP 出站。启用后，easy_all 会在 Xray 内部新增
 WireGuard 出站，并且只把 Gemini/AI Studio 会话所需的精确域名集合导向 WARP，包括 Gemini
-本体、Google 登录、Google 首页、Gemini 静态资源、Gemini/AI Studio API 端点和相关 clients
-端点；不会修改 VPS 系统默认路由，也不会把全量 `google.com`、全量 `googleapis.com` 或通用
-`gstatic.com` 切到 WARP。
-Mihomo 常用的 `www.gstatic.com/generate_204` 测速地址也不在 WARP 域名集合中。
+本体、Google 登录、Google 首页、Gemini 静态资源、Google 头像资源、Gemini/AI Studio API
+端点和相关 clients 端点；不会修改 VPS 系统默认路由，也不会把全量 `google.com`、全量
+`googleapis.com`、通用 `gstatic.com` 或通用 `googleusercontent.com` 切到 WARP。
+Gemini 使用的 `www.gstatic.com`、`ssl.gstatic.com`、`fonts.gstatic.com` 和
+`lh3.googleusercontent.com` 会按精确域名经 WARP 出站；因此 Mihomo 使用
+`www.gstatic.com/generate_204` 测速时也会经过 WARP。
 Cloudflare WARP 普通 WireGuard endpoint 使用 Anycast，不能在 Xray 配置里可靠指定美西或其他
 固定出口地区；如需稳定美西出口，应使用美西 VPS/代理作为单独出站。
 

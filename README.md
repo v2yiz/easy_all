@@ -561,8 +561,8 @@ XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHT
 
 Gemini WARP 出站默认关闭。启用后，Xray 只把 Gemini/AI Studio 会话所需的精确域名集合经内置
 WireGuard WARP 出站，包括 Gemini 本体、Google 登录、Google 首页、Gemini 静态资源、
-Gemini/AI Studio API 端点和相关 clients 端点；不会使用 `geosite:google` 或全量
-`google.com` / `googleapis.com` / `gstatic.com` 规则。普通 WARP WireGuard endpoint 使用
+Google 头像资源、Gemini/AI Studio API 端点和相关 clients 端点；不会使用 `geosite:google`
+或全量 `google.com` / `googleapis.com` / `gstatic.com` / `googleusercontent.com` 规则。普通 WARP WireGuard endpoint 使用
 Anycast，不能可靠指定美西出口；如需固定美西出口，应使用美西 VPS/代理作为单独出站。
 菜单提供三项：不启用、自动注册免费 WARP 配置、手动填写已有 WARP WireGuard 配置。
 自动模式会使用或临时下载 `wgcf` 注册并生成配置；手动获取方式见
