@@ -559,10 +559,11 @@ XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHT
 部署时会自动移除指向同一分配的遗留 AAAA。Gcore 的 CNAME 目标可能仍发布 AAAA，但生成的客户端
 只选择 A。两种 Provider 的源站回源与 VPS 目标出站也固定使用 IPv4。
 
-Gemini WARP 出站默认关闭。启用后，Xray 只把 Gemini 页面正常加载所需的精确域名集合经内置
-WireGuard WARP 出站，包括 Gemini 本体、Google 登录、OneGoogle 外壳、Gemini 静态资源和
-Gemini/AI Studio API 端点；不会使用 `geosite:google` 或全量 `google.com` / `googleapis.com`
-规则。菜单提供三项：不启用、自动注册免费 WARP 配置、手动填写已有 WARP WireGuard 配置。
+Gemini WARP 出站默认关闭。启用后，Xray 只把 Gemini/AI Studio 的精确域名集合经内置
+WireGuard WARP 出站，包括 Gemini 本体、Gemini 静态资源、`www.google.com`、Gemini/AI Studio
+API 端点，以及 `waa-pa.clients6.google.com` 和 `signaler-pa.clients6.google.com`；不会使用
+`geosite:google` 或全量 `google.com` / `googleapis.com` 规则。菜单提供三项：不启用、自动注册
+免费 WARP 配置、手动填写已有 WARP WireGuard 配置。
 自动模式会使用或临时下载 `wgcf` 注册并生成配置；手动获取方式见
 [Cloudflare WARP WireGuard 配置指南](docs/warp-guide.md)。
 

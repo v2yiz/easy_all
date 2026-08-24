@@ -43,6 +43,31 @@ XHTTP_WARP_RESERVED=...
 
 如果 Cloudflare WARP 注册接口返回 rate limit，换一个网络或稍后重试；也可以改用手动方式。
 
+## 测试 WARP 域名范围
+
+如果 Gemini 页面提示同一会话出现不同出口 IP，可在 VPS 上逐步测试 WARP 域名范围：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/tools/warp-scope-test.sh \
+  -o /tmp/easy_all-warp-scope-test.sh
+sudo bash /tmp/easy_all-warp-scope-test.sh list
+sudo bash /tmp/easy_all-warp-scope-test.sh hunt
+```
+
+`hunt` 会从当前推荐范围开始，逐步加回 `accounts.google.com`、`ogs.google.com`、
+`apis.google.com` 等候选域名。每一步都会重写 `/etc/easy_all/xray/config.json` 并重启
+`easy_all-xray.service`，同时保留原始备份。确认范围可用后脚本会停在当前配置；需要回滚时执行：
+
+```bash
+sudo bash /tmp/easy_all-warp-scope-test.sh restore
+```
+
+也可以直接应用某个内置范围：
+
+```bash
+sudo bash /tmp/easy_all-warp-scope-test.sh apply login
+```
+
 ## 诊断 WARP 出口
 
 如果 Gemini 超时或仍提示地区不可用，可以在 VPS 上临时启动一个仅监听本机的 SOCKS 入口，确认
