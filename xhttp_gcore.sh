@@ -145,6 +145,41 @@ gcore_upsert_rrset() {
         "$(gcore_rrset_body "${value}")" >/dev/null
 }
 
+gcore_validate_dns_zones() {
+    local cdn_zone
+    cdn_zone=$(gcore_find_zone_for_domain "${VLESS_CDN_DOMAIN}")
+    [[ -n "${cdn_zone}" ]] \
+        || die "Gcore Managed DNS 中没有覆盖 CDN 域名 ${VLESS_CDN_DOMAIN} 的 Zone"
+    [[ "${cdn_zone}" == "${GCORE_DNS_ZONE}" ]] \
+        || die "源站域名 ${GCORE_ORIGIN_DOMAIN} 与 CDN 域名 ${VLESS_CDN_DOMAIN} 必须位于同一个 Gcore Managed DNS Zone"
+    [[ "${VLESS_CDN_DOMAIN}" != "${GCORE_DNS_ZONE}" ]] \
+        || die "Gcore CDN 域名必须使用 ${GCORE_DNS_ZONE} 下的子域名，不能直接使用 Zone 根域"
+}
+
+gcore_ensure_origin_a_record() {
+    local public_ip type existing a_matches=0
+    public_ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测本机公网 IPv4"
+    validate_ipv4 "${public_ip}" || die "探测到的 VPS 公网 IPv4 无效：${public_ip}"
+    VPS_PUBLIC_IPV4=${public_ip}
+    for type in A AAAA CNAME; do
+        if existing=$(gcore_api_get_optional "/dns/v2/zones/${GCORE_DNS_ZONE}/${GCORE_ORIGIN_DOMAIN}/${type}"); then
+            if [[ "${type}" == "A" ]] && jq -e --arg value "${public_ip}" '
+                [.resource_records[]?.content[]?] | unique | sort == ([$value] | unique | sort)
+            ' <<<"${existing}" >/dev/null; then
+                a_matches=1
+                continue
+            fi
+            gcore_require_dns_replace "${GCORE_ORIGIN_DOMAIN} 与源站 A 冲突的 ${type}"
+            gcore_api_request DELETE \
+                "/dns/v2/zones/${GCORE_DNS_ZONE}/${GCORE_ORIGIN_DOMAIN}/${type}" >/dev/null
+            [[ "${type}" != "A" ]] || a_matches=0
+        fi
+    done
+    [[ "${a_matches}" == "1" ]] && return 0
+    gcore_api_request PUT "/dns/v2/zones/${GCORE_DNS_ZONE}/${GCORE_ORIGIN_DOMAIN}/A" \
+        "$(gcore_rrset_body "${public_ip}")" >/dev/null
+}
+
 gcore_ensure_cname_record() {
     local type existing
     for type in A AAAA; do
@@ -329,7 +364,6 @@ gcore_wait_for_cdn_health() {
 }
 
 gcore_prepare_origin() {
-    local public_ip
     gcore_collect_api_token
     # Both reads are deliberately required.  A CDN-only or DNS-only token cannot
     # reach a later write step with partial state.
@@ -337,11 +371,9 @@ gcore_prepare_origin() {
     GCORE_DNS_ZONE=$(gcore_find_zone_for_domain "${GCORE_ORIGIN_DOMAIN}")
     [[ -n "${GCORE_DNS_ZONE}" ]] \
         || die "Gcore Managed DNS 中没有覆盖源站域名 ${GCORE_ORIGIN_DOMAIN} 的 Zone；请先按 docs/gcore-guide.md 委派整个主域名"
+    gcore_validate_dns_zones
     gcore_verify_zone_delegation "${GCORE_DNS_ZONE}"
-    public_ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测本机公网 IPv4"
-    validate_ipv4 "${public_ip}" || die "探测到的 VPS 公网 IPv4 无效：${public_ip}"
-    VPS_PUBLIC_IPV4=${public_ip}
-    gcore_upsert_rrset "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_DOMAIN}" A "${public_ip}"
+    gcore_ensure_origin_a_record
     gcore_wait_for_origin_dns
 }
 
@@ -636,7 +668,7 @@ apply_cloud_resources() {
     configure_ufw
     gcore_prepare_origin
     gcore_apply_cdn
-    finish_xhttp_apply
+    finish_xhttp_apply 1
     gcore_clear_api_token
     success "easy_all Gcore CDN XHTTP 本机配置、Managed DNS、CDN 与边缘证书已应用"
 }

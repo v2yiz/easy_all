@@ -1085,7 +1085,7 @@ apply_cloud_resources() {
     configure_ufw
     cdn_prepare_origin
     cdn_apply
-    finish_xhttp_apply
+    finish_xhttp_apply 1
     success "easy_all CDN XHTTP 本机配置、Route 53、CloudFront 与已选计费模式已应用"
 }
 

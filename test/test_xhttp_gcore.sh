@@ -5,6 +5,8 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/xhttp_gcore.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf -- "${TMP_DIR}"' EXIT
 XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
 MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
 
@@ -57,6 +59,10 @@ assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
 assert_contains "Gcore profile persists the CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
+assert_contains "Gcore cloud apply preserves freshly synced provider state" \
+    "${profile_content}" 'finish_xhttp_apply 1'
+assert_contains "shared XHTTP runtime can refresh without reloading stale state" \
+    "${profile_content}" 'XHTTP_RUNTIME_STATE_CURRENT'
 assert_contains "Gcore uses the shared XHTTP outbound policy" \
     "${XRAY_RENDER_CONTENT}" 'xray_xhttp_outbounds_json'
 assert_contains "Gcore uses the shared XHTTP routing policy" \
@@ -145,6 +151,111 @@ assert_not_contains "Gcore profile never persists the API token" \
     assert_equal "Gcore chooses the most-specific managed DNS zone" "sub.example.com" \
         "$(gcore_find_zone_for_domain node.sub.example.com)"
     gcore_verify_zone_delegation "sub.example.com"
+
+    GCORE_DNS_ZONE="example.com"
+    GCORE_ORIGIN_DOMAIN="origin.example.com"
+    VLESS_CDN_DOMAIN="node.example.com"
+    gcore_validate_dns_zones
+    if (
+        GCORE_DNS_ZONE="example.com"
+        GCORE_ORIGIN_DOMAIN="origin.example.com"
+        VLESS_CDN_DOMAIN="node.other.com"
+        gcore_api_request() {
+            case "$2" in
+            '/dns/v2/zones?limit=1000')
+                printf '%s\n' '[{"name":"example.com"},{"name":"other.com"}]'
+                ;;
+            *) fail "unexpected mocked Gcore API path: $2" ;;
+            esac
+        }
+        gcore_validate_dns_zones
+    ) >/dev/null 2>&1; then
+        fail "Gcore CDN domain must belong to the same managed DNS zone"
+    fi
+    if (
+        GCORE_DNS_ZONE="example.com"
+        GCORE_ORIGIN_DOMAIN="origin.example.com"
+        VLESS_CDN_DOMAIN="example.com"
+        gcore_validate_dns_zones
+    ) >/dev/null 2>&1; then
+        fail "Gcore CDN domain must not use the zone apex CNAME"
+    fi
+
+    origin_calls_file="${TMP_DIR}/gcore-origin-calls"
+    : >"${origin_calls_file}"
+    (
+        GCORE_DNS_ZONE="example.com"
+        GCORE_ORIGIN_DOMAIN="origin.example.com"
+        VPS_PUBLIC_IPV4="203.0.113.10"
+        gcore_api_get_optional() {
+            case "$1" in
+            */origin.example.com/A)
+                printf '%s\n' '{"resource_records":[{"content":["203.0.113.10"]}]}'
+                ;;
+            */origin.example.com/AAAA | */origin.example.com/CNAME)
+                return 1
+                ;;
+            *) fail "unexpected mocked Gcore DNS lookup: $1" ;;
+            esac
+        }
+        gcore_api_request() { printf '%s %s\n' "$1" "$2" >>"${origin_calls_file}"; }
+        gcore_ensure_origin_a_record
+    )
+    assert_equal "Gcore source A is idempotent when already exact" "" \
+        "$(<"${origin_calls_file}")"
+
+    if (
+        GCORE_DNS_ZONE="example.com"
+        GCORE_ORIGIN_DOMAIN="origin.example.com"
+        VPS_PUBLIC_IPV4="203.0.113.10"
+        unset GCORE_DNS_REPLACE
+        gcore_api_get_optional() {
+            case "$1" in
+            */origin.example.com/A | */origin.example.com/CNAME)
+                return 1
+                ;;
+            */origin.example.com/AAAA)
+                printf '%s\n' '{"resource_records":[{"content":["2001:db8::1"]}]}'
+                ;;
+            *) fail "unexpected mocked Gcore DNS lookup: $1" ;;
+            esac
+        }
+        gcore_api_request() { fail "Gcore source A conflict must not mutate DNS"; }
+        gcore_ensure_origin_a_record
+    ) >/dev/null 2>&1; then
+        fail "Gcore source A must reject AAAA conflicts by default"
+    fi
+
+    : >"${origin_calls_file}"
+    (
+        GCORE_DNS_ZONE="example.com"
+        GCORE_ORIGIN_DOMAIN="origin.example.com"
+        VPS_PUBLIC_IPV4="203.0.113.10"
+        GCORE_DNS_REPLACE=1
+        gcore_api_get_optional() {
+            case "$1" in
+            */origin.example.com/A)
+                printf '%s\n' '{"resource_records":[{"content":["198.51.100.7"]}]}'
+                ;;
+            */origin.example.com/AAAA)
+                printf '%s\n' '{"resource_records":[{"content":["2001:db8::1"]}]}'
+                ;;
+            */origin.example.com/CNAME)
+                return 1
+                ;;
+            *) fail "unexpected mocked Gcore DNS lookup: $1" ;;
+            esac
+        }
+        gcore_api_request() { printf '%s %s\n' "$1" "$2" >>"${origin_calls_file}"; }
+        gcore_ensure_origin_a_record
+    )
+    origin_replace_calls=$(<"${origin_calls_file}")
+    assert_contains "Gcore source A replacement deletes stale A" \
+        "${origin_replace_calls}" "DELETE /dns/v2/zones/example.com/origin.example.com/A"
+    assert_contains "Gcore source A replacement deletes stale AAAA" \
+        "${origin_replace_calls}" "DELETE /dns/v2/zones/example.com/origin.example.com/AAAA"
+    assert_contains "Gcore source A replacement writes current A" \
+        "${origin_replace_calls}" "PUT /dns/v2/zones/example.com/origin.example.com/A"
 )
 
 printf 'easy_all Gcore CDN profile tests passed\n'

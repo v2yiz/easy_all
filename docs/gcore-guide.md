@@ -36,7 +36,8 @@ GCORE_API_TOKEN
 ## 2. 委派整个主域名到 Gcore Managed DNS
 
 为了让后续安装器只用一枚 Token 自动创建源站和 CDN 记录，本方案只采用**整个主域名**交给
-Gcore Managed DNS 的方式；不提供“仅委派一个子域名”的分支。
+Gcore Managed DNS 的方式；源站域名和 CDN 域名必须命中同一个 Gcore Managed DNS Zone，不提供
+“仅委派一个子域名”的分支。
 
 例如使用 `origin.example.com` 作为 VPS 源站、`node.example.com` 作为 CDN 节点：
 
@@ -49,7 +50,8 @@ Gcore Managed DNS 的方式；不提供“仅委派一个子域名”的分支�
 主域名已启用 DNSSEC 时，先按注册商要求移除旧 DNS 服务商的 DS 记录；在 Gcore DNSSEC 链路
 完全就绪后才重新启用。不要同时保留多个同名 Zone，也不要在原 DNS 与 Gcore DNS 分别维护同一记录。
 
-> **手动一次，后续自动。** 委派完成后，安装器会创建或更新 `origin.example.com` 指向 VPS 公网
+> **手动一次，后续自动。** 委派完成后，安装器会先确认 `origin.example.com` 和
+> `node.example.com` 都归属同一个 Gcore Zone，再创建或更新 `origin.example.com` 指向 VPS 公网
 > IPv4 的 A 记录，并把 `node.example.com` 写为 Gcore CDN 分配目标的 CNAME；无需手动创建这些
 > 节点记录。它不会创建 Zone、修改注册商 NS、迁移业务记录或静默覆盖冲突记录。
 

@@ -578,7 +578,7 @@ show_subscription() {
 
 refresh_runtime() {
     local backup
-    collect_installed_state
+    [[ "${XHTTP_RUNTIME_STATE_CURRENT:-0}" == "1" ]] || collect_installed_state
     cloudfront_fee_protection_checkpoint
     backup=$(make_temp_dir)
     install -m 0600 "${XRAY_CONFIG}" "${backup}/config.json"
@@ -642,7 +642,12 @@ rollback_subscription_update() {
 }
 
 finish_xhttp_apply() {
-    refresh_runtime
+    local state_current=${1:-0}
+    if [[ "${state_current}" == "1" ]]; then
+        XHTTP_RUNTIME_STATE_CURRENT=1 refresh_runtime
+    else
+        refresh_runtime
+    fi
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         ensure_allowed_tokens

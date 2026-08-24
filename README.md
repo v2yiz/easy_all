@@ -668,7 +668,8 @@ IAM 用户与两项 Access Key 获取步骤见
 
 Gcore 是菜单中的第三项：它复用 XHTTP 本机运行时，但只使用 `GCORE_API_TOKEN` 管理 Gcore
 Managed DNS、源组、CDN 资源和边缘 Let's Encrypt，不读取 AWS 凭证。安装前须将**整个主域名**
-委派到 Gcore Managed DNS；脚本会验证该委派，再自动创建源站 A 记录和节点 CNAME。详细的一次性
+委派到 Gcore Managed DNS，且源站域名与 CDN 域名必须命中同一个 Gcore Zone；脚本会验证该委派，
+再自动创建源站 A 记录和节点 CNAME。详细的一次性
 账号、委派与最小权限准备见 [Gcore 一次性准备指南](docs/gcore-guide.md)。
 
 链路为：
