@@ -382,15 +382,21 @@ xray_gemini_domains_json() {
       "domain:gemini.google.com",
       "domain:bard.google.com",
       "domain:gemini.gstatic.com",
-      "domain:www.google.com",
       "domain:generativeai.google",
       "domain:generativelanguage.googleapis.com",
       "domain:proactivebackend-pa.googleapis.com",
       "domain:alkalimakersuite-pa.clients6.google.com",
-      "domain:waa-pa.clients6.google.com",
-      "domain:signaler-pa.clients6.google.com",
       "domain:makersuite.google.com",
-      "domain:ai.google.dev"
+      "domain:ai.google.dev",
+      "domain:accounts.google.com",
+      "domain:ogs.google.com",
+      "domain:www.google.com",
+      "domain:www.google.com.hk",
+      "domain:apis.google.com",
+      "domain:clients4.google.com",
+      "domain:ogads-pa.clients6.google.com",
+      "domain:waa-pa.clients6.google.com",
+      "domain:signaler-pa.clients6.google.com"
     ]'
 }
 

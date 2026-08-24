@@ -1,11 +1,13 @@
 # Cloudflare WARP WireGuard 配置指南
 
 本指南只用于 XHTTP 链路的 Gemini 专用 WARP 出站。启用后，easy_all 会在 Xray 内部新增
-WireGuard 出站，并且只把 Gemini/AI Studio 的精确域名集合导向 WARP，包括 Gemini 本体、
-Gemini 静态资源、`www.google.com`、Gemini/AI Studio API 端点，以及
-`waa-pa.clients6.google.com` 和 `signaler-pa.clients6.google.com`；不会修改 VPS 系统默认路由，
-也不会把 Google 登录、Google 香港首页、通用 gstatic、通用 googleapis 或其他通用 clients 域名切到 WARP。
+WireGuard 出站，并且只把 Gemini/AI Studio 会话所需的精确域名集合导向 WARP，包括 Gemini
+本体、Google 登录、Google 首页、Gemini 静态资源、Gemini/AI Studio API 端点和相关 clients
+端点；不会修改 VPS 系统默认路由，也不会把全量 `google.com`、全量 `googleapis.com` 或通用
+`gstatic.com` 切到 WARP。
 Mihomo 常用的 `www.gstatic.com/generate_204` 测速地址也不在 WARP 域名集合中。
+Cloudflare WARP 普通 WireGuard endpoint 使用 Anycast，不能在 Xray 配置里可靠指定美西或其他
+固定出口地区；如需稳定美西出口，应使用美西 VPS/代理作为单独出站。
 
 ## 方式一：脚本自动注册
 
@@ -42,31 +44,6 @@ XHTTP_WARP_RESERVED=...
 ```
 
 如果 Cloudflare WARP 注册接口返回 rate limit，换一个网络或稍后重试；也可以改用手动方式。
-
-## 测试 WARP 域名范围
-
-如果 Gemini 页面提示同一会话出现不同出口 IP，可在 VPS 上逐步测试 WARP 域名范围：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/tools/warp-scope-test.sh \
-  -o /tmp/easy_all-warp-scope-test.sh
-sudo bash /tmp/easy_all-warp-scope-test.sh list
-sudo bash /tmp/easy_all-warp-scope-test.sh hunt
-```
-
-`hunt` 会从当前推荐范围开始，逐步加回 `accounts.google.com`、`ogs.google.com`、
-`apis.google.com` 等候选域名。每一步都会重写 `/etc/easy_all/xray/config.json` 并重启
-`easy_all-xray.service`，同时保留原始备份。确认范围可用后脚本会停在当前配置；需要回滚时执行：
-
-```bash
-sudo bash /tmp/easy_all-warp-scope-test.sh restore
-```
-
-也可以直接应用某个内置范围：
-
-```bash
-sudo bash /tmp/easy_all-warp-scope-test.sh apply login
-```
 
 ## 诊断 WARP 出口
 
