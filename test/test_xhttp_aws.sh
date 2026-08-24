@@ -37,6 +37,13 @@ assert_not_contains() {
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
 assert_contains "installer refuses root credentials" "${XHTTP_CONTENT}" \
     "拒绝使用 AWS 根用户访问密钥"
+route53_notice_line=$(grep -n '仅提示，非错误：源站域名与 CDN 域名都必须位于 AWS Route 53 Public Hosted Zone。' "${PROFILE}" \
+    | head -n1 | cut -d: -f1)
+origin_domain_prompt_line=$(grep -n 'AWS Route 53 源站域名' "${PROFILE}" \
+    | head -n1 | cut -d: -f1)
+[[ -n "${route53_notice_line}" && -n "${origin_domain_prompt_line}" \
+    && "${route53_notice_line}" -lt "${origin_domain_prompt_line}" ]] \
+    || fail "Route 53 hosted-zone notice must appear before domain input"
 assert_contains "Xray XHTTP inbound" "${XHTTP_CONTENT}" \
     'tag:"vless-xhttp-h2-in"'
 assert_contains "Xray fixes XHTTP to stream-up" "${XHTTP_CONTENT}" \

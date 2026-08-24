@@ -90,6 +90,7 @@ collect_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
 
+    info "仅提示，非错误：源站域名与 CDN 域名都必须位于 AWS Route 53 Public Hosted Zone。"
     AWS_ORIGIN_DOMAIN=${AWS_ORIGIN_DOMAIN:-$(prompt_value \
         "AWS Route 53 源站域名（脚本创建 A 记录）" "" \
         "AWS Route 53 origin domain (the script creates the A record)")}
@@ -1174,7 +1175,6 @@ install_all() {
     configure_daily_reboot
     info "[3/9] 收集域名、CloudFront 计费模式与 VLESS 参数"
     collect_install_inputs
-    alert "源站域名与 CDN 域名都必须位于 AWS Route 53 Public Hosted Zone。"
     info "[4/9] 创建并验证 Route 53 源站 A 记录"
     cdn_prepare_origin
     info "[5/9] 配置防火墙与 HTTP-01 入口"
