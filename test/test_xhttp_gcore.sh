@@ -57,8 +57,6 @@ assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
 assert_contains "Gcore profile persists the CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
-assert_contains "Gcore profile persists the Gemini WARP mode" \
-    "${profile_content}" 'XHTTP_GEMINI_WARP_MODE=%q'
 assert_contains "Gcore uses the shared XHTTP outbound policy" \
     "${XRAY_RENDER_CONTENT}" 'xray_xhttp_outbounds_json'
 assert_contains "Gcore uses the shared XHTTP routing policy" \

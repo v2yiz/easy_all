@@ -113,7 +113,6 @@ collect_install_inputs() {
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "ORIGIN_HEADER_SECRET 格式无效"
-    choose_xhttp_gemini_warp
     choose_subscription_mode
     if subscription_enabled; then
         choose_subscription_download_name
@@ -138,8 +137,6 @@ load_state() {
         AWS_CLOUDFRONT_DISTRIBUTION_ARN AWS_CLOUDFRONT_DOMAIN
         AWS_CLOUDFRONT_PRICING_PLAN_ARN
         CLOUDFRONT_FEE_PROTECTION_GB
-        XHTTP_GEMINI_WARP_MODE XHTTP_WARP_PRIVATE_KEY XHTTP_WARP_PEER_PUBLIC_KEY
-        XHTTP_WARP_ENDPOINT XHTTP_WARP_ADDRESS XHTTP_WARP_RESERVED
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         CDN_CLIENT_IP_FAMILY
@@ -166,7 +163,6 @@ load_state() {
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
         || die "状态文件中的 CloudFront 计费模式无效：${AWS_CLOUDFRONT_BILLING_MODE:-缺失}"
     configure_cloudfront_fee_protection
-    normalize_xhttp_gemini_warp_state
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     [[ -n "${XHTTP_PATH:-}" ]] || die "状态中缺少 XHTTP_PATH；请卸载后重新安装"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
@@ -218,12 +214,6 @@ save_state() {
         printf 'AWS_CLOUDFRONT_DOMAIN=%q\n' "${AWS_CLOUDFRONT_DOMAIN:-}"
         printf 'AWS_CLOUDFRONT_PRICING_PLAN_ARN=%q\n' "${AWS_CLOUDFRONT_PRICING_PLAN_ARN:-}"
         printf 'CLOUDFRONT_FEE_PROTECTION_GB=%q\n' "${CLOUDFRONT_FEE_PROTECTION_GB:-0}"
-        printf 'XHTTP_GEMINI_WARP_MODE=%q\n' "${XHTTP_GEMINI_WARP_MODE:-disabled}"
-        printf 'XHTTP_WARP_PRIVATE_KEY=%q\n' "${XHTTP_WARP_PRIVATE_KEY:-}"
-        printf 'XHTTP_WARP_PEER_PUBLIC_KEY=%q\n' "${XHTTP_WARP_PEER_PUBLIC_KEY:-}"
-        printf 'XHTTP_WARP_ENDPOINT=%q\n' "${XHTTP_WARP_ENDPOINT:-}"
-        printf 'XHTTP_WARP_ADDRESS=%q\n' "${XHTTP_WARP_ADDRESS:-}"
-        printf 'XHTTP_WARP_RESERVED=%q\n' "${XHTTP_WARP_RESERVED:-}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
         printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
@@ -1025,7 +1015,6 @@ show_status() {
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'CloudFront 计费模式: %s\n' \
         "$([[ "${AWS_CLOUDFRONT_BILLING_MODE}" == "flat-free" ]] && printf 'Free 固定套餐' || printf '按量付费')"
-    printf 'Gemini WARP: %s\n' "$(xhttp_gemini_warp_summary)"
     printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\n' \
         "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
@@ -1052,7 +1041,6 @@ update_subscription() {
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
-    choose_xhttp_gemini_warp
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         choose_subscription_download_name

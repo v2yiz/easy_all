@@ -167,17 +167,16 @@ fi
     source "${ROOT_DIR}/lib/network.sh"
     [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "ForceIPv4" ]] \
         || fail "Xray direct egress must be fixed to IPv4"
-    validate_wireguard_key "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
-        || fail "WireGuard hex keys must be accepted"
-    XHTTP_GEMINI_WARP_MODE="auto"
-    normalize_xhttp_gemini_warp_mode
-    [[ "${XHTTP_GEMINI_WARP_MODE}" == "auto" ]] \
-        || fail "auto WARP mode must be enabled"
     jq -e '
         map(.tag) == ["direct","block"]
         and .[0].settings.domainStrategy == "ForceIPv4"
     ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
         || fail "shared direct outbound policy is invalid"
+    jq -e '
+        map(.tag) == ["direct","block"]
+        and .[0].settings.domainStrategy == "ForceIPv4"
+    ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
+        || fail "shared XHTTP outbound policy must stay direct"
     jq -e '
         .domainStrategy == "IPOnDemand"
         and (.rules[0].ip | index("169.254.0.0/16"))
@@ -185,73 +184,12 @@ fi
         and .rules[1].outboundTag == "direct"
     ' <<<"$(xray_direct_routing_json)" >/dev/null \
         || fail "shared direct routing policy is invalid"
-
-    XHTTP_GEMINI_WARP_MODE=manual
-    XHTTP_WARP_PRIVATE_KEY="8GK9bioGPYkdL0ObYmQqe2iMsffKV9D9C7t9tP2heEU="
-    XHTTP_WARP_ADDRESS="172.16.0.2/32,2606:4700:110:8a09:eeb4:3bf8:beff:17fd/128"
-    XHTTP_WARP_RESERVED="1,2,3"
     jq -e '
-        map(.tag) == ["direct","warp","block"]
-        and .[1].protocol == "wireguard"
-        and .[1].settings.noKernelTun == true
-        and .[1].settings.domainStrategy == "ForceIPv4"
-        and .[1].settings.peers[0].keepAlive == 10
-        and .[1].settings.reserved == [1,2,3]
-    ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
-        || fail "XHTTP WARP outbound policy is invalid"
-    jq -e '
-        .rules[0].outboundTag == "block"
-        and .rules[1].outboundTag == "warp"
-        and (.rules[1].domain | index("domain:gemini.google.com"))
-        and (.rules[1].domain | index("domain:gemini.gstatic.com"))
-        and (.rules[1].domain | index("domain:www.gstatic.com"))
-        and (.rules[1].domain | index("domain:ssl.gstatic.com"))
-        and (.rules[1].domain | index("domain:fonts.gstatic.com"))
-        and (.rules[1].domain | index("domain:lh3.googleusercontent.com"))
-        and (.rules[1].domain | index("domain:www.google.com"))
-        and (.rules[1].domain | index("domain:www.google.com.hk"))
-        and (.rules[1].domain | index("domain:generativelanguage.googleapis.com"))
-        and (.rules[1].domain | index("domain:ai.google.dev"))
-        and (.rules[1].domain | index("domain:accounts.google.com"))
-        and (.rules[1].domain | index("domain:ogs.google.com"))
-        and (.rules[1].domain | index("domain:apis.google.com"))
-        and (.rules[1].domain | index("domain:clients4.google.com"))
-        and (.rules[1].domain | index("domain:ogads-pa.clients6.google.com"))
-        and (.rules[1].domain | index("domain:waa-pa.clients6.google.com"))
-        and (.rules[1].domain | index("domain:signaler-pa.clients6.google.com"))
-        and ((.rules[1].domain | index("domain:google.com")) == null)
-        and ((.rules[1].domain | index("domain:googleapis.com")) == null)
-        and ((.rules[1].domain | index("domain:gstatic.com")) == null)
-        and ((.rules[1].domain | index("domain:googleusercontent.com")) == null)
-        and ((.rules[1].domain | index("geosite:google")) == null)
-        and .rules[2].outboundTag == "direct"
+        .domainStrategy == "IPOnDemand"
+        and .rules[0].outboundTag == "block"
+        and .rules[1].outboundTag == "direct"
     ' <<<"$(xray_xhttp_routing_json)" >/dev/null \
-        || fail "XHTTP WARP routing must target only Gemini-related domains"
-
-    STATE_DIR=$(mktemp -d)
-    install -d -m 0700 "${STATE_DIR}/xhttp-warp"
-    cat >"${STATE_DIR}/xhttp-warp/wgcf-profile.conf" <<'EOF_WGCF'
-[Interface]
-PrivateKey = "8GK9bioGPYkdL0ObYmQqe2iMsffKV9D9C7t9tP2heEU="
-Address = 172.16.0.2/32, 2606:4700:110:8a09:eeb4:3bf8:beff:17fd/128
-
-[Peer]
-PublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-Endpoint = engage.cloudflareclient.com:2408
-Reserved = [1, 2, 3]
-EOF_WGCF
-    XHTTP_GEMINI_WARP_MODE=auto
-    XHTTP_WARP_PRIVATE_KEY=""
-    XHTTP_WARP_PEER_PUBLIC_KEY=""
-    XHTTP_WARP_ENDPOINT=""
-    XHTTP_WARP_ADDRESS=""
-    XHTTP_WARP_RESERVED=""
-    normalize_xhttp_gemini_warp_state
-    [[ "${XHTTP_WARP_ENDPOINT}" == "engage.cloudflareclient.com:2408" \
-        && "${XHTTP_WARP_RESERVED}" == "1,2,3" \
-        && "${XHTTP_WARP_ADDRESS}" == "172.16.0.2/32,2606:4700:110:8a09:eeb4:3bf8:beff:17fd/128" ]] \
-        || fail "auto WARP mode must load an existing wgcf profile"
-    rm -rf -- "${STATE_DIR}"
+        || fail "shared XHTTP routing policy must stay direct"
 )
 
 printf 'ok - shared architecture tests passed\n'
