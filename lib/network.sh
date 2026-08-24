@@ -410,10 +410,11 @@ xray_xhttp_outbounds_json() {
       {protocol:"wireguard",tag:"warp",settings:{
         secretKey:$secret_key,
         address:$addresses,
-        peers:[{publicKey:$peer_public_key,endpoint:$endpoint,allowedIPs:["0.0.0.0/0","::/0"],keepAlive:"10"}],
+        peers:[{publicKey:$peer_public_key,endpoint:$endpoint,allowedIPs:["0.0.0.0/0","::/0"],keepAlive:10}],
         reserved:$reserved,
         mtu:1280,
-        kernelMode:false
+        noKernelTun:true,
+        domainStrategy:"ForceIPv4"
       }},
       {protocol:"blackhole",tag:"block"}
     ]'

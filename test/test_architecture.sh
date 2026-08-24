@@ -194,7 +194,9 @@ fi
         map(.tag) == ["direct","warp-IPv4","warp","block"]
         and .[1].proxySettings.tag == "warp"
         and .[2].protocol == "wireguard"
-        and .[2].settings.kernelMode == false
+        and .[2].settings.noKernelTun == true
+        and .[2].settings.domainStrategy == "ForceIPv4"
+        and .[2].settings.peers[0].keepAlive == 10
         and .[2].settings.reserved == [1,2,3]
     ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
         || fail "XHTTP WARP outbound policy is invalid"
