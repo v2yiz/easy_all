@@ -203,12 +203,22 @@ fi
         .rules[0].outboundTag == "block"
         and .rules[1].outboundTag == "warp"
         and (.rules[1].domain | index("domain:gemini.google.com"))
-        and (.rules[1].domain | index("domain:accounts.google.com"))
         and (.rules[1].domain | index("domain:gemini.gstatic.com"))
         and (.rules[1].domain | index("domain:generativelanguage.googleapis.com"))
+        and (.rules[1].domain | index("domain:ai.google.dev"))
+        and ((.rules[1].domain | index("domain:accounts.google.com")) == null)
+        and ((.rules[1].domain | index("domain:ogs.google.com")) == null)
+        and ((.rules[1].domain | index("domain:www.google.com")) == null)
+        and ((.rules[1].domain | index("domain:www.google.com.hk")) == null)
+        and ((.rules[1].domain | index("domain:apis.google.com")) == null)
+        and ((.rules[1].domain | index("domain:clients4.google.com")) == null)
+        and ((.rules[1].domain | index("domain:ogads-pa.clients6.google.com")) == null)
+        and ((.rules[1].domain | index("domain:waa-pa.clients6.google.com")) == null)
+        and ((.rules[1].domain | index("domain:signaler-pa.clients6.google.com")) == null)
         and ((.rules[1].domain | index("domain:google.com")) == null)
         and ((.rules[1].domain | index("domain:googleapis.com")) == null)
         and ((.rules[1].domain | index("domain:gstatic.com")) == null)
+        and ((.rules[1].domain | index("domain:www.gstatic.com")) == null)
         and ((.rules[1].domain | index("geosite:google")) == null)
         and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_xhttp_routing_json)" >/dev/null \
