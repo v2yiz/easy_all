@@ -191,18 +191,17 @@ fi
     XHTTP_WARP_ADDRESS="172.16.0.2/32,2606:4700:110:8a09:eeb4:3bf8:beff:17fd/128"
     XHTTP_WARP_RESERVED="1,2,3"
     jq -e '
-        map(.tag) == ["direct","warp-IPv4","warp","block"]
-        and .[1].proxySettings.tag == "warp"
-        and .[2].protocol == "wireguard"
-        and .[2].settings.noKernelTun == true
-        and .[2].settings.domainStrategy == "ForceIPv4"
-        and .[2].settings.peers[0].keepAlive == 10
-        and .[2].settings.reserved == [1,2,3]
+        map(.tag) == ["direct","warp","block"]
+        and .[1].protocol == "wireguard"
+        and .[1].settings.noKernelTun == true
+        and .[1].settings.domainStrategy == "ForceIPv4"
+        and .[1].settings.peers[0].keepAlive == 10
+        and .[1].settings.reserved == [1,2,3]
     ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
         || fail "XHTTP WARP outbound policy is invalid"
     jq -e '
         .rules[0].outboundTag == "block"
-        and .rules[1].outboundTag == "warp-IPv4"
+        and .rules[1].outboundTag == "warp"
         and (.rules[1].domain | index("domain:gemini.google.com"))
         and (.rules[1].domain | index("domain:accounts.google.com"))
         and (.rules[1].domain | index("domain:gemini.gstatic.com"))

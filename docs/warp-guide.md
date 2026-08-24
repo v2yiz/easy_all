@@ -41,6 +41,29 @@ XHTTP_WARP_RESERVED=...
 
 如果 Cloudflare WARP 注册接口返回 rate limit，换一个网络或稍后重试；也可以改用手动方式。
 
+## 诊断 WARP 出口
+
+如果 Gemini 超时或仍提示地区不可用，可以在 VPS 上临时启动一个仅监听本机的 SOCKS 入口，确认
+Xray 内置 WARP 出站是否可用：
+
+```bash
+sudo jq '{
+  log:{loglevel:"warning"},
+  inbounds:[{tag:"diag-socks",listen:"127.0.0.1",port:18080,protocol:"socks",settings:{auth:"noauth",udp:false}}],
+  outbounds:.outbounds,
+  routing:{domainStrategy:"IPOnDemand",rules:[{type:"field",network:"tcp",outboundTag:"warp"}]}
+}' /etc/easy_all/xray/config.json | sudo tee /tmp/easy_all-warp-diag.json >/dev/null
+
+sudo /etc/easy_all/xray/xray run -config /tmp/easy_all-warp-diag.json >/tmp/easy_all-warp-diag.log 2>&1 &
+pid=$!
+sleep 1
+curl -sS --max-time 20 --socks5-hostname 127.0.0.1:18080 https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|loc|colo|warp)='
+kill "$pid"
+```
+
+正常结果应包含 `warp=on`。如果这里超时或 broken pipe，说明 WARP WireGuard 出站本身不可用，
+通常需要更换 WARP 配置或改用手动配置。
+
 ## 方式二：手动获取已有配置
 
 手动方式适合已经有 WARP / WARP+ 账号配置，或希望在本机以外的设备完成注册后再复制到 VPS。

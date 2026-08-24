@@ -417,7 +417,6 @@ xray_xhttp_outbounds_json() {
         --argjson addresses "${addresses}" \
         --argjson reserved "${reserved}" '[
       {protocol:"freedom",tag:"direct",settings:{domainStrategy:$strategy}},
-      {protocol:"freedom",tag:"warp-IPv4",settings:{domainStrategy:"UseIPv4"},proxySettings:{tag:"warp"}},
       {protocol:"wireguard",tag:"warp",settings:{
         secretKey:$secret_key,
         address:$addresses,
@@ -443,7 +442,7 @@ xray_xhttp_routing_json() {
       domainStrategy:"IPOnDemand",
       rules:[
         {type:"field",ip:$private,outboundTag:"block"},
-        {type:"field",domain:$gemini,outboundTag:"warp-IPv4"},
+        {type:"field",domain:$gemini,outboundTag:"warp"},
         {type:"field",network:"tcp,udp",outboundTag:"direct"}
       ]
     }'
