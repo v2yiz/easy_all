@@ -34,6 +34,18 @@ generate_secret() {
 
 info() { :; }
 
+FAKE_FLOCK_HELD=0
+flock() {
+    case "${1:-}" in
+    -n)
+        [[ "${FAKE_FLOCK_HELD}" == "0" ]] || return 1
+        FAKE_FLOCK_HELD=1
+        ;;
+    -u) FAKE_FLOCK_HELD=0 ;;
+    *) return 1 ;;
+    esac
+}
+
 normalize_allowed_tokens() {
     local raw=$1
     jq -ce '
@@ -59,6 +71,24 @@ assert_equal() {
     [[ "${expected}" == "${actual}" ]] \
         || fail "${label}: expected [${expected}], got [${actual}]"
 }
+
+begin_quota_maintenance
+[[ "${FAKE_FLOCK_HELD}" == "1" && -f "${QUOTA_MAINTENANCE_FILE}" ]] \
+    || fail "maintenance must hold the shared runtime write lock"
+end_quota_maintenance
+[[ "${FAKE_FLOCK_HELD}" == "0" && ! -e "${QUOTA_MAINTENANCE_FILE}" ]] \
+    || fail "maintenance must release the shared runtime write lock"
+FAKE_FLOCK_HELD=1
+if try_acquire_runtime_write_lock; then
+    fail "runtime write lock must reject concurrent writers"
+fi
+FAKE_FLOCK_HELD=0
+install -m 0600 /dev/null "${QUOTA_MAINTENANCE_FILE}"
+try_acquire_runtime_write_lock \
+    || fail "runtime write lock must recover after the previous writer exits"
+[[ ! -e "${QUOTA_MAINTENANCE_FILE}" ]] \
+    || fail "a new lock owner must clear a stale maintenance marker"
+release_runtime_write_lock
 
 tokens='{"user1":"user1-token-123","owner":"owner-token-123"}'
 quotas=$(normalize_monthly_quotas '{"owner":0,"user1":100}')

@@ -31,6 +31,10 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "lib/subscription-auth.sh"
     "lib/tcp-tuning.sh"
 )
+readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
+    "fail2ban-ufw-cidr.sh"
+    "reload-subscription-nginx.sh"
+)
 
 launcher_die() {
     printf '\033[31m%s\033[0m\n' "$*" >&2
@@ -176,6 +180,15 @@ profile_file() {
     printf '%s\n' "${candidate}"
 }
 
+stage_preserved_runtime_files() {
+    local current_dir=$1 stage_dir=$2 relative_path
+    for relative_path in "${EASY_ALL_PRESERVED_RUNTIME_FILES[@]}"; do
+        [[ -f "${current_dir}/${relative_path}" ]] || continue
+        install -m 0755 "${current_dir}/${relative_path}" \
+            "${stage_dir}/${relative_path}"
+    done
+}
+
 unified_register_easy_all_command() {
     local source_root=${EASY_ALL_ROOT} destination="${EASY_ALL_INSTALL_DIR}/easy_all"
     local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$" relative_path
@@ -196,6 +209,7 @@ unified_register_easy_all_command() {
     done
     [[ ! -f "${source_root}/sample-mihomo.yaml" ]] \
         || install -m 0644 "${source_root}/sample-mihomo.yaml" "${stage}/sample-mihomo.yaml"
+    stage_preserved_runtime_files "${EASY_ALL_INSTALL_DIR}" "${stage}"
     bash -n "${syntax_files[@]}" \
         || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
 

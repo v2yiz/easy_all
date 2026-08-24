@@ -109,6 +109,7 @@ cleanup() {
         INSTALL_ROLLBACK_ON_EXIT=0
         rollback_fresh_install || true
     fi
+    end_quota_maintenance || true
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"
     done
@@ -175,7 +176,7 @@ install_packages() {
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw nginx \
         fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
-        systemd-timesyncd tar
+        systemd-timesyncd tar util-linux
     timedatectl set-timezone Asia/Shanghai
     timedatectl set-ntp true || die "无法启用网络时间同步"
 }

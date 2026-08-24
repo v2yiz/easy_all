@@ -216,8 +216,14 @@ test_reality_inbound_family_and_dns() {
 
     NODE_HOST="node.example.com"
     REALITY_INBOUND_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV4="203.0.113.10"
     VPS_PUBLIC_IPV6=""
-    dig() { printf '2001:db8::10\n'; }
+    dig() {
+        case " $* " in
+        *" A "*) printf '203.0.113.10\n' ;;
+        *" AAAA "*) printf '2001:db8::10\n' ;;
+        esac
+    }
     assert_failure "AAAA is rejected when the server has no public IPv6" \
         validate_reality_node_dns
 
@@ -225,18 +231,49 @@ test_reality_inbound_family_and_dns() {
     VPS_PUBLIC_IPV6="2001:db8::10"
     assert_success "matching AAAA is accepted in dual-stack mode" \
         validate_reality_node_dns
+    dig() {
+        if [[ " $* " == *" A "* ]]; then
+            [[ "$*" != *"@"* ]] || return 1
+            printf '203.0.113.10\n'
+        elif [[ " $* " == *" AAAA "* ]]; then
+            printf '2001:db8::10\n'
+        fi
+    }
+    assert_success "system DNS remains usable when public resolvers are blocked" \
+        validate_reality_node_dns
     REALITY_CLIENT_IP_FAMILY="dual"
     resolve_reality_client_ip_family
     assert_equal "Reality client endpoint remains fixed to IPv4" \
         "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
-    dig() { printf '2001:db8::20\n'; }
+    dig() {
+        case " $* " in
+        *" A "*) printf '203.0.113.10\n' ;;
+        *" AAAA "*) printf '2001:db8::20\n' ;;
+        esac
+    }
     assert_failure "mismatched AAAA is rejected in dual-stack mode" \
+        validate_reality_node_dns
+    dig() {
+        case " $* " in
+        *" A "*) printf '203.0.113.20\n' ;;
+        *" AAAA "*) printf '2001:db8::10\n' ;;
+        esac
+    }
+    assert_failure "mismatched A is rejected for the fixed IPv4 client" \
+        validate_reality_node_dns
+    dig() {
+        case " $* " in
+        *" AAAA "*) printf '2001:db8::10\n' ;;
+        esac
+    }
+    assert_failure "missing A is rejected for the fixed IPv4 client" \
         validate_reality_node_dns
     REALITY_CLIENT_IP_FAMILY="dual"
     assert_success "legacy dual-stack client preference is normalized to IPv4" \
         validate_reality_client_ip_family_runtime
     assert_equal "legacy dual-stack preference resolves to IPv4" \
         "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    unset VPS_PUBLIC_IPV4
     unset -f dig
 }
 
@@ -464,6 +501,8 @@ EOF
         "${ufw6_config}"
     assert_contains "dual-stack Reality enables UFW IPv6" \
         "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
+    assert_contains "Reality reloads UFW after writing NAT rules" \
+        "reload" "$(<"${ufw_log}")"
     unset -f nginx systemctl ensure_ssh_boot_service ensure_ssh_fail2ban detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
         iptables-restore ip6tables-restore
 }

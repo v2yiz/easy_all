@@ -39,6 +39,18 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
     || fail "self-update must download and register the complete project"
 [[ "${launcher_content}" != *'cp -a "${EASY_ALL_INSTALL_DIR}/." "${stage}/"'* ]] \
     || fail "runtime registration must not retain files removed from the manifest"
+preserve_source="${TMP_DIR}/preserve-source"
+preserve_stage="${TMP_DIR}/preserve-stage"
+mkdir -p "${preserve_source}" "${preserve_stage}"
+printf '#!/bin/sh\n' >"${preserve_source}/fail2ban-ufw-cidr.sh"
+printf '#!/bin/sh\n' >"${preserve_source}/reload-subscription-nginx.sh"
+printf 'obsolete\n' >"${preserve_source}/obsolete-runtime-file"
+stage_preserved_runtime_files "${preserve_source}" "${preserve_stage}"
+[[ -x "${preserve_stage}/fail2ban-ufw-cidr.sh" \
+    && -x "${preserve_stage}/reload-subscription-nginx.sh" ]] \
+    || fail "runtime registration must preserve managed helper scripts"
+[[ ! -e "${preserve_stage}/obsolete-runtime-file" ]] \
+    || fail "runtime registration must preserve only allowlisted runtime files"
 [[ "${launcher_content}" == *'apply-cloud)'* \
     && "${launcher_content}" == *'apply_cloud_resources'* ]] \
     || fail "launcher must expose the explicit XHTTP cloud apply"

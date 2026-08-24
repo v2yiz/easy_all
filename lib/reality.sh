@@ -114,6 +114,7 @@ cleanup() {
         INSTALL_ROLLBACK_ON_EXIT=0
         rollback_fresh_install || true
     fi
+    end_quota_maintenance || true
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"
     done
@@ -157,7 +158,7 @@ install_packages() {
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw \
         fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
-        systemd-timesyncd tar
+        systemd-timesyncd tar util-linux
     timedatectl set-timezone Asia/Shanghai
     timedatectl set-ntp true || die "无法启用网络时间同步"
 }
@@ -283,13 +284,39 @@ detect_reality_inbound_family() {
 
 validate_reality_node_dns() {
     local record canonical expected records="" mismatch=""
+    local resolver public_ipv4 answer resolved_ipv4=0
+    local -a resolvers=("" "1.1.1.1" "8.8.8.8")
     validate_domain "${NODE_HOST}" || return 0
+
+    public_ipv4=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4 || true)}
+    validate_ipv4 "${public_ipv4}" \
+        || die "无法探测本机公网 IPv4，不能校验 Reality 节点域名 ${NODE_HOST}"
+    VPS_PUBLIC_IPV4=${public_ipv4}
+    for resolver in "${resolvers[@]}"; do
+        if [[ -n "${resolver}" ]]; then
+            answer=$(dig +time=2 +tries=1 +short A "${NODE_HOST}" \
+                @"${resolver}" 2>/dev/null) \
+                || continue
+        else
+            answer=$(dig +time=2 +tries=1 +short A "${NODE_HOST}" 2>/dev/null) \
+                || continue
+        fi
+        while IFS= read -r record; do
+            validate_ipv4 "${record}" || continue
+            resolved_ipv4=1
+            [[ "${record}" == "${public_ipv4}" ]] \
+                || die "${NODE_HOST} 的 A 记录 ${record} 未指向本机公网 IPv4 ${public_ipv4}"
+        done <<<"${answer}"
+    done
+    [[ "${resolved_ipv4}" == "1" ]] \
+        || die "${NODE_HOST} 未通过系统 DNS 或公共 DNS 解析到 IPv4 地址"
+
     while IFS= read -r record; do
         validate_ipv6 "${record}" || continue
         canonical=$(canonicalize_ipv6 "${record}") || continue
         [[ -z "${records}" ]] || records+=$'\n'
         records+=${canonical}
-    done < <(dig +short AAAA "${NODE_HOST}" 2>/dev/null || true)
+    done < <(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" 2>/dev/null || true)
 
     if [[ -z "${records}" ]]; then
         if [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]]; then
@@ -537,6 +564,7 @@ collect_reality_node_host() {
     [[ -z "${NODE_HOST:-}" ]] || return 0
 
     if detected_ip=$(detect_public_ipv4); then
+        VPS_PUBLIC_IPV4=${detected_ip}
         if [[ -t 0 ]]; then
             info "已自动检测本机公网 IPv4：${detected_ip}；直接回车使用，或输入其他入站 IPv4/灰云域名"
             NODE_HOST=$(prompt_value \
@@ -760,6 +788,7 @@ configure_ufw() {
     fi
     apply_managed_ufw_tcp_ports "${desired_ports}"
     write_ufw_nat_rules
+    ufw reload >/dev/null || die "加载 UFW NAT 规则失败"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
     LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
     ensure_ssh_fail2ban
@@ -1328,12 +1357,14 @@ update_subscription() {
     if ! configure_ufw || ! deploy_subscription_output; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
+        end_quota_maintenance
         return 1
     fi
     save_state
     if ! refresh_protocol_runtime_config; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
+        end_quota_maintenance
         return 1
     fi
     install_quota_timer

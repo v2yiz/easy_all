@@ -12,7 +12,8 @@ detect_public_ipv4() {
         "https://ifconfig.co"
     )
     for service in "${services[@]}"; do
-        ip=$(curl -4fsS --max-time 10 "${service}" 2>/dev/null | tr -d '[:space:]' || true)
+        ip=$(curl -4fsS --noproxy '*' --max-time 10 "${service}" 2>/dev/null \
+            | tr -d '[:space:]' || true)
         if validate_ipv4 "${ip}"; then
             printf '%s\n' "${ip}"
             return 0

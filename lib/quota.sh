@@ -9,6 +9,10 @@ readonly QUOTA_TIMER_FILE="/etc/systemd/system/easy_all-quota.timer"
 readonly QUOTA_SERVICE="easy_all-quota.service"
 readonly QUOTA_TIMER="easy_all-quota.timer"
 readonly QUOTA_MAINTENANCE_FILE="${STATE_DIR}/quota-maintenance"
+readonly RUNTIME_WRITE_LOCK_FILE="${STATE_DIR}/runtime-write.lock"
+
+RUNTIME_WRITE_LOCK_DEPTH=0
+QUOTA_MAINTENANCE_ACTIVE=0
 
 quota_enabled() {
     [[ "${QUOTA_ENABLED:-0}" == "1" ]]
@@ -22,14 +26,51 @@ traffic_stats_enabled() {
     return 1
 }
 
+try_acquire_runtime_write_lock() {
+    if ((RUNTIME_WRITE_LOCK_DEPTH > 0)); then
+        RUNTIME_WRITE_LOCK_DEPTH=$((RUNTIME_WRITE_LOCK_DEPTH + 1))
+        return 0
+    fi
+    command -v flock >/dev/null 2>&1 \
+        || die "缺少 flock；无法保护 easy_all 运行时更新"
+    install -d -m 0700 "${STATE_DIR}"
+    exec 9>"${RUNTIME_WRITE_LOCK_FILE}" \
+        || die "无法打开 easy_all 运行时锁：${RUNTIME_WRITE_LOCK_FILE}"
+    if ! flock -n 9; then
+        exec 9>&-
+        return 1
+    fi
+    RUNTIME_WRITE_LOCK_DEPTH=1
+    [[ "${QUOTA_MAINTENANCE_ACTIVE}" == "1" ]] \
+        || rm -f -- "${QUOTA_MAINTENANCE_FILE}"
+}
+
+acquire_runtime_write_lock() {
+    try_acquire_runtime_write_lock \
+        || die "另一个 easy_all 配置或流量统计任务正在运行，请稍后重试"
+}
+
+release_runtime_write_lock() {
+    ((RUNTIME_WRITE_LOCK_DEPTH > 0)) || return 0
+    RUNTIME_WRITE_LOCK_DEPTH=$((RUNTIME_WRITE_LOCK_DEPTH - 1))
+    ((RUNTIME_WRITE_LOCK_DEPTH == 0)) || return 0
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+}
+
 begin_quota_maintenance() {
+    acquire_runtime_write_lock
     install -d -m 0700 "${STATE_DIR}"
     install -m 0600 /dev/null "${QUOTA_MAINTENANCE_FILE}"
-    cleanup_files+=("${QUOTA_MAINTENANCE_FILE}")
+    QUOTA_MAINTENANCE_ACTIVE=1
 }
 
 end_quota_maintenance() {
-    rm -f -- "${QUOTA_MAINTENANCE_FILE}"
+    if [[ "${QUOTA_MAINTENANCE_ACTIVE}" == "1" ]]; then
+        rm -f -- "${QUOTA_MAINTENANCE_FILE}"
+        QUOTA_MAINTENANCE_ACTIVE=0
+    fi
+    release_runtime_write_lock
 }
 
 validate_user_accounts() {
@@ -380,17 +421,21 @@ remove_quota_timer() {
 
 quota_sync_usage() {
     local period stats usage original_usage user quota current_up current_down old_up old_down
-    local delta_up delta_down used disabled old_disabled changed=0 temp lock_dir
+    local delta_up delta_down used disabled old_disabled changed=0 temp
     local runtime_id previous_runtime_id
     local period_reset=0
     require_root
+    try_acquire_runtime_write_lock || return 0
+    if [[ "${QUOTA_MAINTENANCE_ACTIVE}" == "1" ]]; then
+        release_runtime_write_lock
+        return 0
+    fi
     collect_installed_state
-    quota_enabled || return 0
-    [[ ! -e "${QUOTA_MAINTENANCE_FILE}" ]] || return 0
+    if ! quota_enabled; then
+        release_runtime_write_lock
+        return 0
+    fi
     initialize_quota_usage
-    lock_dir="${STATE_DIR}/quota.lock"
-    mkdir "${lock_dir}" 2>/dev/null || return 0
-    cleanup_files+=("${lock_dir}")
     period=$(quota_current_period)
     usage=$(<"${QUOTA_USAGE_FILE}")
     original_usage=${usage}
@@ -446,11 +491,11 @@ quota_sync_usage() {
         if ! (rebuild_traffic_runtime); then
             printf '%s\n' "${original_usage}" >"${temp}"
             install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
-            rm -rf -- "${lock_dir}"
+            release_runtime_write_lock
             die "应用月度流量配额状态失败，已恢复旧统计状态并将在下次重试"
         fi
     fi
-    rm -rf -- "${lock_dir}"
+    release_runtime_write_lock
 }
 
 show_quota_status() {
@@ -486,17 +531,6 @@ validate_quota_user() {
         || die "配额用户不存在：${user}"
 }
 
-acquire_quota_command_lock() {
-    local lock_dir="${STATE_DIR}/quota.lock"
-    mkdir "${lock_dir}" 2>/dev/null \
-        || die "另一个流量配额任务正在运行，请稍后重试"
-    cleanup_files+=("${lock_dir}")
-}
-
-release_quota_command_lock() {
-    rm -rf -- "${STATE_DIR}/quota.lock"
-}
-
 quota_set_user() {
     local user=${1:-} quota=${2:-} old_accounts old_usage usage used
     local old_disabled new_disabled temp
@@ -512,7 +546,6 @@ quota_set_user() {
     quota_sync_usage
     begin_quota_maintenance
     initialize_quota_usage
-    acquire_quota_command_lock
     old_accounts=${USER_ACCOUNTS}
     old_usage=$(<"${QUOTA_USAGE_FILE}")
     used=$(jq -r --arg user "${user}" '.users[$user].used_bytes // 0' <<<"${old_usage}")
@@ -535,11 +568,9 @@ quota_set_user() {
         save_state
         printf '%s\n' "${old_usage}" >"${temp}"
         install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
-        release_quota_command_lock
         end_quota_maintenance
         die "修改用户配额后应用运行时状态失败，已恢复原配置"
     fi
-    release_quota_command_lock
     end_quota_maintenance
     success "用户 ${user} 的月度配额已设置为 ${quota} GB；本月已用量未清零"
     show_quota_status
@@ -555,7 +586,6 @@ quota_reset_user() {
     quota_sync_usage
     begin_quota_maintenance
     initialize_quota_usage
-    acquire_quota_command_lock
     old_usage=$(<"${QUOTA_USAGE_FILE}")
     old_disabled=$(jq -r --arg user "${user}" '.users[$user].disabled // false' <<<"${old_usage}")
     if [[ "${old_disabled}" != "true" ]]; then
@@ -577,11 +607,9 @@ quota_reset_user() {
     if [[ "${old_disabled}" == "true" ]] && ! (rebuild_traffic_runtime); then
         printf '%s\n' "${old_usage}" >"${temp}"
         install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
-        release_quota_command_lock
         end_quota_maintenance
         die "重置用户流量后恢复运行时状态失败，已恢复原统计状态"
     fi
-    release_quota_command_lock
     end_quota_maintenance
     success "用户 ${user} 的本月已用流量已清零；月度额度和凭据保持不变"
     show_quota_status
