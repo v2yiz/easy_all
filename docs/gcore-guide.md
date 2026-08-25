@@ -37,7 +37,8 @@ GCORE_API_TOKEN
 
 为了让后续安装器只用一枚 Token 自动创建源站和 CDN 记录，本方案只采用**整个主域名**交给
 Gcore Managed DNS 的方式；源站域名和 CDN 域名必须命中同一个 Gcore Managed DNS Zone，不提供
-“仅委派一个子域名”的分支。
+“仅委派一个子域名”的分支。可选的独立订阅链接域名也必须由 Gcore Managed DNS 托管；它可以位于
+另一个已完成权威委派、且当前 Token 有权管理的 Gcore Zone，不能留在其他 DNS 服务商。
 
 例如使用 `origin.example.com` 作为 VPS 源站、`node.example.com` 作为 CDN 节点：
 
@@ -53,7 +54,9 @@ Gcore Managed DNS 的方式；源站域名和 CDN 域名必须命中同一个 Gc
 > **手动一次，后续自动。** 委派完成后，安装器会先确认 `origin.example.com` 和
 > `node.example.com` 都归属同一个 Gcore Zone，再创建或更新 `origin.example.com` 指向 VPS 公网
 > IPv4 的 A 记录，并把 `node.example.com` 写为 Gcore CDN 分配目标的 CNAME；无需手动创建这些
-> 节点记录。它不会创建 Zone、修改注册商 NS、迁移业务记录或静默覆盖冲突记录。
+> 节点记录。若选择独立订阅域名，安装器会把它加入同一 CDN 资源并处理对应 CNAME：已有且正确则
+> 直接复用，完全缺失才新增，已有其他解析时停止。它不会创建 Zone、修改注册商 NS、迁移业务记录
+> 或静默覆盖冲突记录。
 
 节点域名必须是子域名，不能使用根域 `example.com`：Gcore CDN 为自定义域名分配 `*.gcdn.co`
 目标，节点记录必须以 CNAME 指向该目标。官方参考：[创建和管理 DNS Zone](https://gcore.com/docs/dns/manage-a-dns-zone)、
@@ -111,14 +114,15 @@ Token 具备全部部署权限；若需要在正式安装前确认角色范围�
 | --- | --- | --- |
 | 预检 | 验证 Token 的 CDN/DNS 访问、定位覆盖源站域名的 Zone，确认整域名 NS 委派 | CDN Editor、DNS Editor |
 | 源站 | 读取 VPS 公网 IPv4，写入源站 A；冲突 A/AAAA/CNAME 默认停止 | DNS Editor |
-| CDN | 创建或更新专属源组和 CDN 资源；强制 HTTPS 回源、源站 Host/SNI 和 Origin Key | CDN Editor |
-| 节点域名 | 读取 CDN 目标，写入节点 CNAME；冲突记录需显式确认才覆盖 | CDN Editor、DNS Editor |
-| TLS | 等待 CNAME 生效，预验证并启用 Gcore 免费 Let's Encrypt 边缘证书 | CDN Editor |
+| CDN | 创建或更新专属源组和 CDN 资源；可选订阅域名写入 secondary hostname；强制 HTTPS 回源、源站 Host/SNI 和 Origin Key | CDN Editor |
+| 节点与订阅域名 | 读取 CDN 目标；节点 CNAME 保持原有冲突策略，独立订阅 CNAME 仅在缺失时新增、正确时复用、冲突时拒绝覆盖 | CDN Editor、DNS Editor |
+| TLS | 等待所有 CNAME 生效，预验证并启用覆盖当前 CDN 域名的 Gcore 免费 Let's Encrypt 边缘证书 | CDN Editor |
 | 成本保护 | 在本机启用 980 GB、UTC 自然月的全局保护；不创建 WAAP、付费套餐或支付方式 | 本机 |
 | 验收 | 验证 DNS、HTTPS 和带 Origin Key 的 CDN 回源健康检查 | CDN Editor、DNS Editor |
 
-源站继续使用独立的 `origin.example.com` HTTPS 证书；Gcore 的边缘证书只服务
-`node.example.com`。动态链路的边缘与浏览器缓存都设置为 `0s`，并保留查询参数；源站只接受
+源站继续使用独立的 `origin.example.com` HTTPS 证书；Gcore 的边缘证书服务
+`node.example.com` 以及可选的独立订阅域名。动态链路的边缘与浏览器缓存都设置为 `0s`，并保留
+查询参数；源站只接受
 包含 `X-Easy-All-Origin-Key` 的 CDN 请求。
 
 生成的 Mihomo 节点使用 `ip-version: dual`，客户端会自动使用 Gcore CNAME 目标发布的 A/AAAA。
@@ -130,7 +134,7 @@ IPv4 出口。
 安装器可验证 DNS、边缘 HTTPS 和 HTTP 回源，但无法代替真实客户端网络的长期 XHTTP 测试。首次
 上线后，请用目标客户端确认：
 
-1. 节点可以连接，订阅可更新；节点和订阅地址都只使用 CDN 域名。
+1. 节点可以连接，订阅可更新；节点使用 CDN 节点域名，订阅使用安装时选定的节点域名或独立订阅域名。
 2. 正常使用、低速连接、网络切换和较长连接不会出现 CDN 超时或协议降级。
 3. XHTTP 路径、订阅路径与健康检查没有被缓存、合并或裁剪。
 4. 源站不会接受缺少 Origin Key 的直接请求。

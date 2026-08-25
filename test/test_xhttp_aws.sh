@@ -107,7 +107,7 @@ assert_contains "installer verifies renewal reload hook" "${XHTTP_CONTENT}" \
 assert_contains "subscription updates enable rollback" "${XHTTP_CONTENT}" \
     'UPDATE_SUB_ROLLBACK_ON_EXIT=1'
 assert_contains "CloudFront health failures are fatal" "${XHTTP_CONTENT}" \
-    'die "CloudFront 公网验收失败'
+    'die "CloudFront ${label}域名 ${domain} 公网验收失败'
 assert_not_contains "CloudFront installation does not auto-adopt unmarked legacy distributions" \
     "${XHTTP_CONTENT}" 'AWS_ADOPT_DISTRIBUTION=1'
 assert_contains "CloudFront alias conflicts require explicit old-resource cleanup" \
@@ -131,7 +131,7 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     assert_equal "unified state" "/etc/easy_all" "${STATE_DIR}"
     assert_equal "unified service" "easy_all-xray.service" "${XRAY_SERVICE}"
     assert_equal "unified nginx config" "/etc/nginx/conf.d/easy_all.conf" "${NGINX_CONFIG}"
-    assert_equal "schema" "5" "${STATE_SCHEMA_VERSION}"
+    assert_equal "schema" "6" "${STATE_SCHEMA_VERSION}"
     assert_equal "AWS control region" "us-east-1" "${AWS_CONTROL_REGION}"
     assert_equal "default CloudFront billing mode" "payg" \
         "${DEFAULT_AWS_CLOUDFRONT_BILLING_MODE}"
@@ -424,6 +424,15 @@ EOF
         "CUSTOM_SUB" "${SUB_DOWNLOAD_NAME}"
     SUB_DOWNLOAD_NAME=""
 
+    CDN_PROVIDER="aws"
+    VLESS_CDN_DOMAIN="node.example.com"
+    AWS_ORIGIN_DOMAIN="origin.example.com"
+    SUBSCRIPTION_DOMAIN="Subscribe.Example.Com."
+    collect_subscription_link_domain
+    assert_equal "XHTTP normalizes the complete subscription hostname" \
+        "subscribe.example.com" "${SUBSCRIPTION_DOMAIN}"
+    unset SUBSCRIPTION_DOMAIN
+
     SUBSCRIBE_MODE="1"
     SUBSCRIPTION_MODE=""
     choose_subscription_mode
@@ -504,6 +513,35 @@ EOF
     assert_equal "Route 53 boundary-safe matching" $'/hostedzone/ZBOUNDARY\tnotexample.com.' \
         "$(find_route53_zone_for_domain node.notexample.com "${zones}")"
 
+    if (
+        AWS_ORIGIN_DOMAIN="origin.example.com"
+        VLESS_CDN_DOMAIN="node.example.com"
+        SUBSCRIPTION_MODE="deploy"
+        SUBSCRIPTION_DOMAIN="subscribe.other.net"
+        aws() {
+            printf '%s\n' '{"HostedZones":[{"Id":"/hostedzone/ZBASE","Name":"example.com.","Config":{"PrivateZone":false}}]}'
+        }
+        find_route53_zones
+    ) >/dev/null 2>&1; then
+        fail "AWS custom subscription domains must be hosted by Route 53"
+    fi
+
+    (
+        AWS_ORIGIN_DOMAIN="origin.example.com"
+        VLESS_CDN_DOMAIN="node.example.com"
+        SUBSCRIPTION_MODE="deploy"
+        SUBSCRIPTION_DOMAIN="subscribe.other.net"
+        aws() {
+            printf '%s\n' '{"HostedZones":[
+              {"Id":"/hostedzone/ZBASE","Name":"example.com.","Config":{"PrivateZone":false}},
+              {"Id":"/hostedzone/ZSUB","Name":"other.net.","Config":{"PrivateZone":false}}
+            ]}'
+        }
+        find_route53_zones
+        assert_equal "AWS accepts a subscription domain in another Route 53 public zone" \
+            "ZSUB" "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID}"
+    )
+
     VLESS_CDN_DOMAIN="node.example.com"
     CDN_CLIENT_IP_FAMILY="auto"
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
@@ -522,6 +560,19 @@ EOF
     VLESS_CDN_DOMAIN="san.example.org"
     assert_equal "ACM reuse considers certificate SANs" "arn:issued-san" \
         "$(select_reusable_acm_certificate "${certificates}")"
+
+    VLESS_CDN_DOMAIN="node.example.com"
+    SUBSCRIPTION_MODE="deploy"
+    SUBSCRIPTION_DOMAIN="subscribe.other.net"
+    dual_domain_certificates='{"CertificateSummaryList":[
+      {"CertificateArn":"arn:node-only","DomainName":"node.example.com","Status":"ISSUED"},
+      {"CertificateArn":"arn:node-and-subscription","DomainName":"node.example.com","Status":"ISSUED",
+       "SubjectAlternativeNameSummaries":["subscribe.other.net"]}
+    ]}'
+    assert_equal "ACM reuse requires one certificate to cover both CDN aliases" \
+        "arn:node-and-subscription" \
+        "$(select_reusable_acm_certificate "${dual_domain_certificates}")"
+    unset SUBSCRIPTION_DOMAIN
 
     VLESS_CDN_DOMAIN="node.example.com"
     aws() {
@@ -659,6 +710,17 @@ EOF
         .Comment == "easy_all:xhttp:node.example.com"
     ' "${distribution}" >/dev/null || fail "CloudFront distribution config is invalid"
 
+    SUBSCRIPTION_MODE="deploy"
+    SUBSCRIPTION_DOMAIN="subscribe.example.net"
+    subscription_distribution="${TMP_DIR}/distribution-subscription-domain.json"
+    build_distribution_config "${subscription_distribution}" "subscription-caller-reference"
+    jq -e '
+        .Aliases.Quantity == 2 and
+        .Aliases.Items == ["node.example.com","subscribe.example.net"]
+    ' "${subscription_distribution}" >/dev/null \
+        || fail "CloudFront distribution must include the custom subscription alias"
+    unset SUBSCRIPTION_DOMAIN
+
     payg_distribution="${TMP_DIR}/distribution-payg.json"
     AWS_CLOUDFRONT_BILLING_MODE="payg"
     AWS_WAF_WEB_ACL_ARN=""
@@ -700,6 +762,31 @@ EOF
         .[0].ResourceRecordSet.AliasTarget.DNSName == "d111111abcdef8.cloudfront.net." and
         .[1].Action == "CREATE" and .[1].ResourceRecordSet.Type == "AAAA"
     ' "${viewer_alias}" >/dev/null || fail "Route 53 viewer Alias creation batch is invalid"
+    build_viewer_alias_change_batch "${viewer_alias}" '[]' \
+        "d111111abcdef8.cloudfront.net." "subscribe.example.net"
+    jq -e '
+        (.Changes|length) == 2 and
+        all(.Changes[]; .ResourceRecordSet.Name == "subscribe.example.net.")
+    ' "${viewer_alias}" >/dev/null \
+        || fail "Route 53 subscription aliases must use the requested complete hostname"
+    exact_cloudfront_cname='[{"Name":"subscribe.example.net.","Type":"CNAME","TTL":300,"ResourceRecords":[{"Value":"d111111abcdef8.cloudfront.net."}]}]'
+    viewer_records_are_cname_target "${exact_cloudfront_cname}" \
+        "d111111abcdef8.cloudfront.net." \
+        || fail "an exact existing CloudFront CNAME must be reusable"
+    if (
+        AWS_DNS_REPLACE=1
+        aws() {
+            if [[ "$*" == *"list-resource-record-sets"* ]]; then
+                printf '%s\n' '{"ResourceRecordSets":[{"Name":"subscribe.example.net.","Type":"CNAME","TTL":300,"ResourceRecords":[{"Value":"other.example.net."}]}]}'
+                return 0
+            fi
+            fail "a conflicting custom subscription record must never be mutated"
+        }
+        ensure_viewer_domain_record "subscribe.example.net" "ZSUB" "订阅" \
+            "d111111abcdef8.cloudfront.net." 0
+    ) >/dev/null 2>&1; then
+        fail "AWS custom subscription DNS conflicts must be rejected even with replacement enabled"
+    fi
     managed_dual_alias='[
       {"Name":"node.example.com.","Type":"A","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111111abcdef8.cloudfront.net.","EvaluateTargetHealth":false}},
       {"Name":"node.example.com.","Type":"AAAA","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111111abcdef8.cloudfront.net.","EvaluateTargetHealth":false}}
@@ -950,6 +1037,7 @@ EOF
     fi
     unset -f curl
 
+    SUBSCRIPTION_DOMAIN="subscribe.example.net"
     subscription_output=$(
         collect_installed_state() { :; }
         show_node() { :; }
@@ -957,6 +1045,9 @@ EOF
     )
     assert_contains "XHTTP subscription output labels the owner" \
         "${subscription_output}" "通用订阅 (owner):"
+    assert_contains "XHTTP subscription output uses the selected complete hostname" \
+        "${subscription_output}" "https://subscribe.example.net/subscribe?token=owner-token-123"
+    unset SUBSCRIPTION_DOMAIN
 
     local_apply_calls=$(
         require_root() { printf 'root\n'; }
@@ -1007,6 +1098,33 @@ EOF
     )
     assert_equal "explicit cloud apply completes CDN before switching runtime" \
         $'root\nstate\nsnapshot\nbbr\nufw\ndns\ncdn\nruntime\nsubscriptions\nvalidate-subscription\nsave\nregister\nshow' "${cloud_apply_calls}"
+
+    disable_custom_subscription_calls=$(
+        require_root() { :; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
+        collect_installed_state() {
+            SUBSCRIPTION_MODE="deploy"
+            VLESS_CDN_DOMAIN="node.example.com"
+            SUBSCRIPTION_DOMAIN="subscribe.example.net"
+            SUB_DOWNLOAD_NAME="EASY_ALL_TEST"
+        }
+        snapshot_subscription_update() { UPDATE_SUB_ROLLBACK_ON_EXIT=1; }
+        choose_subscription_mode() { SUBSCRIPTION_MODE="link"; }
+        validate_cdn_client_ip_family_runtime() { :; }
+        choose_monthly_quota() { QUOTA_ENABLED=0; }
+        configure_aws_cdn() { printf 'cloud\n'; }
+        remove_subscriptions() { printf 'remove\n'; }
+        save_state() { :; }
+        refresh_runtime() { :; }
+        install_quota_timer() { :; }
+        install_cloudfront_fee_protection_timer() { :; }
+        show_subscription() { :; }
+        success() { :; }
+        update_subscription
+    )
+    assert_contains "disabling a custom AWS subscription hostname synchronizes its cloud alias" \
+        "${disable_custom_subscription_calls}" $'cloud\nremove'
 )
 
 readme=$(cat "${ROOT_DIR}/README.md" "${ROOT_DIR}/docs/aws-guide.md")

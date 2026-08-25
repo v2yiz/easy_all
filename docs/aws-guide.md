@@ -91,16 +91,20 @@ AWS 官方参考：
 
 ## 3. 配置 Route 53 权威 DNS
 
-这是 CDN XHTTP 的**必要条件**。源站域名和 CDN 域名必须属于已正确委派的
+这是 CDN XHTTP 的**必要条件**。源站域名、CDN 域名，以及可选的独立订阅链接域名必须属于
+已正确委派的
 **Route 53 Public Hosted Zone**；Private Hosted Zone 不能用于公网解析。域名注册商不必迁入 AWS，
 需要交给 AWS 的是整个主域名的权威 DNS 区域。本指南只保留这一种流程，避免同时维护多个
 委派方案。
 
-完成上述委派后，不需要手动创建 `origin` 的 A 记录、ACM 验证记录或 `node` 的
-CloudFront Alias A/AAAA：安装脚本会自动写入该节点记录。脚本不会替你创建 Hosted Zone、修改
+完成上述委派后，不需要手动创建 `origin` 的 A 记录、ACM 验证记录、`node` 或独立订阅域名的
+CloudFront Alias A/AAAA：安装脚本会自动写入该节点记录，并处理独立订阅域名。独立订阅域名
+已正确指向当前 CloudFront 时原样复用，
+完全没有记录时才新增；已有其他解析时停止且不覆盖。脚本不会替你创建 Hosted Zone、修改
 注册商的 NS，或接管已有 DNS 记录；这一步仍需在 AWS 和当前 DNS 服务商处完成。
 
-例如准备使用 `origin.example.com` 和 `node.example.com`，统一将 `example.com` 交给 Route 53：
+例如准备使用 `origin.example.com`、`node.example.com` 和可选的 `subscribe.example.com`，统一将
+`example.com` 交给 Route 53：
 
 1. 在 **Route 53 → Hosted zones → Create hosted zone** 输入 `example.com`，选择
    **Public hosted zone** 后创建。
@@ -122,7 +126,7 @@ AWS 官方参考：
 
 ## 4. 创建最小权限策略
 
-先在 **Route 53 → Hosted zones** 复制源站域名和 CDN 域名所属 Public Hosted Zone
+先在 **Route 53 → Hosted zones** 复制源站域名、CDN 域名和可选订阅域名所属 Public Hosted Zone
 的 Zone ID。
 
 在 **IAM → 访问管理 → 策略 → 创建策略 → JSON** 中粘贴以下策略。将
@@ -210,8 +214,8 @@ AWS 官方参考：
 }
 ```
 
-若两个域名位于不同的 Public Hosted Zone，将 `Route53HostedZoneRecords` 的
-`Resource` 改为两个 ARN：
+若这些域名位于不同的 Public Hosted Zone，将 `Route53HostedZoneRecords` 的 `Resource` 改为包含
+全部相关 Zone 的 ARN 数组。例如使用两个 Zone：
 
 ```json
 "Resource": [

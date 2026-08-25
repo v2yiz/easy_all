@@ -98,13 +98,13 @@ flowchart TD
     X3 --> X3A{CloudFront 计费模式选择}
     X3A -->|Free 固定套餐| X4{订阅输出选择}
     X3A -->|按量付费| X4
-    X4 -->|部署| X5[文件名、Token 或用户配额]
+    X4 -->|部署| X5[订阅完整域名、文件名、Token 或用户配额]
     X4 -->|仅节点| X6[不生成订阅文件]
     X5 --> X7[AWS IAM 授权（同一命令内复用）/ Route 53 源站 A]
     X6 --> X7
     X7 --> X8[UFW / Nginx HTTP-01]
     X8 --> X9[源站证书 / Xray / Nginx / 本机运行时验收]
-    X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]
+    X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront Aliases / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]
     X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]
     X11 --> Z
 
@@ -113,18 +113,18 @@ flowchart TD
     G1 --> G2[依赖 / SSH 启动保障 / XanMod LTS BBRv3 / 重启策略]
     G2 --> G3[Gcore 源站域名 / CDN 域名 / VLESS 自动参数]
     G3 --> G4{订阅输出选择}
-    G4 -->|部署| G5[文件名、Token 或用户配额]
+    G4 -->|部署| G5[订阅完整域名、文件名、Token 或用户配额]
     G4 -->|仅节点| G6[不生成订阅文件]
     G5 --> G7[GCORE_API_TOKEN / Gcore DNS 委派验证 / 源站 A]
     G6 --> G7
     G7 --> G8[UFW / Nginx HTTP-01]
     G8 --> G9[源站证书 / Xray / Nginx / 本机运行时验收]
-    G9 --> G10[源组 / Gcore CDN / CNAME / 免费 Let's Encrypt / 公网验收 / 生成订阅]
+    G9 --> G10[源组 / Gcore CDN secondary hostname / CNAME / 免费 Let's Encrypt / 公网验收 / 生成订阅]
     G10 --> G11[保存状态 / 注册 easy_all / 配置用户配额与 980 GB 费用保护]
     G11 --> Z
 ```
 
-图中是安装器的实际执行顺序。Reality、AWS CDN 和 Gcore CDN 都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。两条 CDN 链路均先写源站 A 记录，再配置本机源站，最后创建并验收各自的 CDN。AWS 凭证与 Gcore Token 仅在当前安装或 `apply-cloud` 进程中使用，不写入状态文件。
+图中是安装器的实际执行顺序。Reality、AWS CDN 和 Gcore CDN 都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。独立域名必须由当前 Provider 的同一 DNS 服务商托管：AWS 只接受 Route 53 Public Hosted Zone，Gcore 只接受 Gcore Managed DNS Zone；可以位于该服务商下的另一个 Zone。两条 CDN 链路均先写源站 A 记录，再配置本机源站，最后创建并验收各自的 CDN。AWS 凭证与 Gcore Token 仅在当前安装、`apply-cloud`，或通过 `update-sub` 变更独立订阅域名的进程中使用，不写入状态文件。
 
 公共交互选项：
 
@@ -133,6 +133,7 @@ flowchart TD
 | CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费（默认推荐） | `2` | 选择 2 不会因升级 Paid account plan 立即收费；升级本身无固定月费，使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
 | Gcore CDN 费用保护 | 固定 `980 GB` | `980 GB` | Gcore Free CDN 使用本机 UTC 自然月保护，不创建付费套餐或 WAAP |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
+| CDN 订阅链接完整域名 | 完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
 | 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
@@ -176,7 +177,7 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 AWS 或 Gcore。 |
 | `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并同步当前 Provider 的云资源：AWS 同步 Route 53/ACM/CloudFront，Gcore 同步 Managed DNS/CDN/边缘证书。 |
-| `update-sub` | 重新选择订阅输出并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件，不修改 AWS 或 Gcore。 |
+| `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改云资源，新增、更换或停用独立域名时同步当前 Provider 的 CDN、证书和托管 DNS。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
 | `quota-status` | 显示每用户月度配额；AWS 按量付费和 Gcore Free CDN 同时显示独立的 CDN 全局费用保护用量。 |
@@ -233,6 +234,14 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 `apply` 不要求 AWS 凭证或 Gcore Token。
 
 ### 新增、删除或修改订阅用户
+
+CDN XHTTP 部署订阅时，“订阅链接完整域名”直接回车会复用节点域名。输入独立域名后，AWS 会将它加入
+同一 CloudFront 分配并由 ACM 证书覆盖，Gcore 会将它加入同一 CDN 资源的 secondary hostname 并
+由现有自动证书补发覆盖（首次安装时申请边缘证书）。脚本只接受同一 DNS 服务商中已托管、已完成
+权威委派的 Zone：Route 53 或 Gcore
+Managed DNS。若该完整域名已正确指向当前 CDN，脚本原样复用；没有记录才新增；已有其他 A、AAAA
+或 CNAME 时停止，不接管也不覆盖。域名位于另一个托管 Zone 时，部署凭证必须同时拥有该 Zone 的
+读写权限。
 
 用户清单统一通过 `easy_all update-sub` 管理。该命令接收的是**完整用户清单**：保留的用户必须
 继续写入，新增用户名会创建用户，省略已有用户名会删除用户。操作完成后运行
@@ -721,7 +730,7 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 
 ```text
 STATE_VERSION=4  # Reality
-STATE_VERSION=5  # XHTTP
+STATE_VERSION=6  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
 REALITY_CLIENT_IP_FAMILY=auto                 # 节点输出 dual

@@ -45,7 +45,7 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="5"
+readonly STATE_SCHEMA_VERSION="6"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
 readonly XHTTP_XMUX_MAX_CONCURRENCY="8-16"
@@ -153,9 +153,45 @@ source_state_file() {
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     case "${STATE_VERSION:-}" in
-    4 | "${STATE_SCHEMA_VERSION}") ;;
+    4 | 5 | "${STATE_SCHEMA_VERSION}") ;;
     *) die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}" ;;
     esac
+}
+
+subscription_link_domain() {
+    printf '%s' "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}"
+}
+
+active_subscription_link_domain() {
+    if subscription_enabled; then
+        subscription_link_domain
+    else
+        printf '%s' "${VLESS_CDN_DOMAIN}"
+    fi
+}
+
+collect_subscription_link_domain() {
+    local current domain dns_provider
+    current=$(subscription_link_domain)
+    domain=${SUBSCRIPTION_DOMAIN:-}
+    case "${CDN_PROVIDER:-}" in
+    aws) dns_provider="AWS Route 53 Public Hosted Zone" ;;
+    gcore) dns_provider="Gcore Managed DNS Zone" ;;
+    *) dns_provider="与 CDN 域名相同的 DNS 服务商" ;;
+    esac
+    if [[ -t 0 ]]; then
+        info "可直接复用 CDN 节点域名；自定义域名必须已由 ${dns_provider} 托管。"
+        domain=$(prompt_value \
+            "订阅链接完整域名（含完整主机名）" "${current}" \
+            "Full subscription hostname (must be hosted by the same DNS provider as the CDN domain)")
+    else
+        domain=${domain:-${current}}
+    fi
+    domain=$(normalize_domain "${domain}")
+    validate_domain "${domain}" || die "SUBSCRIPTION_DOMAIN 无效：${domain}"
+    [[ "${domain}" != "${AWS_ORIGIN_DOMAIN:-}" ]] \
+        || die "订阅链接域名不能与源站域名相同"
+    SUBSCRIPTION_DOMAIN=${domain}
 }
 
 check_install_conflicts() {
@@ -566,12 +602,14 @@ show_subscription() {
         return 0
     fi
     printf 'Mihomo 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME}"
-    local user token
+    local user token subscription_domain
+    subscription_domain=$(subscription_link_domain)
+    printf '订阅链接域名: %s\n' "${subscription_domain}"
     while IFS=$'\t' read -r user token; do
         printf '通用订阅 (%s): https://%s/subscribe?token=%s\n' \
-            "${user}" "${VLESS_CDN_DOMAIN}" "${token}"
+            "${user}" "${subscription_domain}" "${token}"
         printf 'Mihomo (%s):  https://%s/subscribe?token=%s&flag=clash\n' \
-            "${user}" "${VLESS_CDN_DOMAIN}" "${token}"
+            "${user}" "${subscription_domain}" "${token}"
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
     printf '\n'
 }

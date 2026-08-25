@@ -11,6 +11,18 @@ validate_mihomo_template() {
             || die "sample-mihomo.yaml 模板标记无效：${marker} 应且只能出现一次"
     done
     grep -q '^rules:' "${source}" || die "sample-mihomo.yaml 缺少规则"
+    grep -Fq '    enhanced-mode: fake-ip' "${source}" \
+        || die "sample-mihomo.yaml 未使用 XFLASH fake-ip DNS"
+    grep -Fq '    use-system-hosts: false' "${source}" \
+        || die "sample-mihomo.yaml 未使用 XFLASH hosts 策略"
+    grep -Fq "https://223.6.6.6/dns-query#h3=true" "${source}" \
+        || die "sample-mihomo.yaml 缺少 XFLASH 主 DNS"
+    grep -Fq "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
+        "${source}" || die "sample-mihomo.yaml 缺少 XFLASH 节点 DNS"
+    if grep -Eq '^[[:space:]]+(default-nameserver|direct-nameserver|respect-rules|ipv6):' \
+        "${source}"; then
+        die "sample-mihomo.yaml 包含非 XFLASH DNS 覆盖"
+    fi
 }
 
 fetch_mihomo_template() {

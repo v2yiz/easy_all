@@ -146,7 +146,7 @@ gcore_upsert_rrset() {
 }
 
 gcore_validate_dns_zones() {
-    local cdn_zone
+    local cdn_zone subscription_domain subscription_zone
     cdn_zone=$(gcore_find_zone_for_domain "${VLESS_CDN_DOMAIN}")
     [[ -n "${cdn_zone}" ]] \
         || die "Gcore Managed DNS 中没有覆盖 CDN 域名 ${VLESS_CDN_DOMAIN} 的 Zone"
@@ -154,6 +154,15 @@ gcore_validate_dns_zones() {
         || die "源站域名 ${GCORE_ORIGIN_DOMAIN} 与 CDN 域名 ${VLESS_CDN_DOMAIN} 必须位于同一个 Gcore Managed DNS Zone"
     [[ "${VLESS_CDN_DOMAIN}" != "${GCORE_DNS_ZONE}" ]] \
         || die "Gcore CDN 域名必须使用 ${GCORE_DNS_ZONE} 下的子域名，不能直接使用 Zone 根域"
+    subscription_domain=$(active_subscription_link_domain)
+    subscription_zone=$(gcore_find_zone_for_domain "${subscription_domain}")
+    [[ -n "${subscription_zone}" ]] \
+        || die "Gcore Managed DNS 中没有覆盖订阅域名 ${subscription_domain} 的 Zone"
+    [[ "${subscription_domain}" != "${subscription_zone}" ]] \
+        || die "订阅链接域名必须使用 Gcore Managed DNS Zone 下的子域名，不能直接使用根域"
+    [[ "${subscription_domain}" != "${GCORE_ORIGIN_DOMAIN}" ]] \
+        || die "订阅链接域名不能与源站域名相同"
+    GCORE_SUBSCRIPTION_DNS_ZONE=${subscription_zone}
 }
 
 gcore_ensure_origin_a_record() {
@@ -180,17 +189,43 @@ gcore_ensure_origin_a_record() {
         "$(gcore_rrset_body "${public_ip}")" >/dev/null
 }
 
-gcore_ensure_cname_record() {
-    local type existing
+gcore_ensure_domain_cname_record() {
+    local domain=$1 zone=$2 allow_replace=${3:-1} type existing
     for type in A AAAA; do
-        if existing=$(gcore_api_get_optional "/dns/v2/zones/${GCORE_DNS_ZONE}/${VLESS_CDN_DOMAIN}/${type}"); then
-            gcore_require_dns_replace "${VLESS_CDN_DOMAIN} 与 CNAME 冲突的 ${type}"
+        if existing=$(gcore_api_get_optional "/dns/v2/zones/${zone}/${domain}/${type}"); then
+            [[ "${allow_replace}" == "1" ]] \
+                || die "${domain} 已有 ${type} 记录；独立订阅域名只复用正确 CNAME，拒绝覆盖"
+            gcore_require_dns_replace "${domain} 与 CNAME 冲突的 ${type}"
             gcore_api_request DELETE \
-                "/dns/v2/zones/${GCORE_DNS_ZONE}/${VLESS_CDN_DOMAIN}/${type}" >/dev/null
+                "/dns/v2/zones/${zone}/${domain}/${type}" >/dev/null
         fi
     done
-    gcore_upsert_rrset "${GCORE_DNS_ZONE}" "${VLESS_CDN_DOMAIN}" CNAME \
-        "${GCORE_CDN_TARGET}"
+    if existing=$(gcore_api_get_optional "/dns/v2/zones/${zone}/${domain}/CNAME") \
+        && jq -e --arg value "${GCORE_CDN_TARGET}" '
+            [.resource_records[]?.content[]? | rtrimstr(".")] | unique
+            == [($value|rtrimstr("."))]
+        ' <<<"${existing}" >/dev/null; then
+        info "Gcore ${domain} 已解析到当前 CDN，直接复用"
+        return 0
+    fi
+    if [[ -n "${existing:-}" ]]; then
+        [[ "${allow_replace}" == "1" ]] \
+            || die "${domain} 已有不指向当前 Gcore CDN 的 CNAME；拒绝覆盖"
+        gcore_require_dns_replace "${domain} CNAME"
+    fi
+    gcore_api_request PUT "/dns/v2/zones/${zone}/${domain}/CNAME" \
+        "$(gcore_rrset_body "${GCORE_CDN_TARGET}")" >/dev/null
+    success "Gcore ${domain} 不存在，已新增 CNAME 解析"
+}
+
+gcore_ensure_cname_record() {
+    local subscription_domain
+    gcore_ensure_domain_cname_record "${VLESS_CDN_DOMAIN}" "${GCORE_DNS_ZONE}"
+    subscription_domain=$(active_subscription_link_domain)
+    if subscription_enabled && [[ "${subscription_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+        gcore_ensure_domain_cname_record "${subscription_domain}" \
+            "${GCORE_SUBSCRIPTION_DNS_ZONE}" 0
+    fi
 }
 
 gcore_wait_for_origin_dns() {
@@ -198,20 +233,29 @@ gcore_wait_for_origin_dns() {
     verify_origin_dns
 }
 
-gcore_wait_for_cdn_dns() {
-    local attempt records resolver all_match
-    info "等待 Gcore CDN CNAME 传播到公共 DNS"
+gcore_wait_for_domain_cname() {
+    local domain=$1 attempt records resolver all_match
+    info "等待 ${domain} 的 Gcore CDN CNAME 传播到公共 DNS"
     for attempt in {1..60}; do
         all_match=1
         for resolver in 1.1.1.1 8.8.8.8; do
-            records=$(dig +short CNAME "${VLESS_CDN_DOMAIN}" @"${resolver}" 2>/dev/null \
+            records=$(dig +short CNAME "${domain}" @"${resolver}" 2>/dev/null \
                 | sed 's/\.$//' | tr '[:upper:]' '[:lower:]' | sort -u || true)
             [[ "${records}" == "${GCORE_CDN_TARGET}" ]] || { all_match=0; break; }
         done
         [[ "${all_match}" == "1" ]] && return 0
         sleep 5
     done
-    die "CDN 域名 ${VLESS_CDN_DOMAIN} 尚未解析到 Gcore 目标 ${GCORE_CDN_TARGET}"
+    die "域名 ${domain} 尚未解析到 Gcore 目标 ${GCORE_CDN_TARGET}"
+}
+
+gcore_wait_for_cdn_dns() {
+    local subscription_domain
+    gcore_wait_for_domain_cname "${VLESS_CDN_DOMAIN}"
+    subscription_domain=$(active_subscription_link_domain)
+    if subscription_enabled && [[ "${subscription_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+        gcore_wait_for_domain_cname "${subscription_domain}"
+    fi
 }
 
 gcore_origin_group_name() {
@@ -245,10 +289,14 @@ gcore_ensure_origin_group() {
 }
 
 gcore_resource_payload() {
-    jq -cn --arg domain "${VLESS_CDN_DOMAIN}" --arg origin "${GCORE_ORIGIN_DOMAIN}" \
+    local subscription_domain
+    subscription_domain=$(active_subscription_link_domain)
+    jq -cn --arg domain "${VLESS_CDN_DOMAIN}" --arg subscription "${subscription_domain}" \
+        --arg origin "${GCORE_ORIGIN_DOMAIN}" \
         --arg key "${ORIGIN_HEADER_SECRET}" --argjson origin_group "${GCORE_ORIGIN_GROUP_ID}" '
         {
           cname:$domain,
+          secondaryHostnames:(if $subscription == $domain then [] else [$subscription] end),
           name:("easy_all xhttp " + $domain),
           originGroup:$origin_group,
           originProtocol:"HTTPS",
@@ -311,11 +359,19 @@ gcore_detect_cdn_target() {
 }
 
 gcore_certificate_name() {
-    printf 'easy-all-%s' "${VLESS_CDN_DOMAIN}"
+    local subscription_domain suffix
+    subscription_domain=$(active_subscription_link_domain)
+    if [[ "${subscription_domain}" == "${VLESS_CDN_DOMAIN}" ]]; then
+        printf 'easy-all-%s' "${VLESS_CDN_DOMAIN}"
+        return
+    fi
+    suffix=$(printf '%s|%s' "${VLESS_CDN_DOMAIN}" "${subscription_domain}" \
+        | sha256sum | cut -c1-16)
+    printf 'easy-all-%s-%s' "${VLESS_CDN_DOMAIN}" "${suffix}"
 }
 
 gcore_ensure_edge_certificate() {
-    local name certificates matches count attempt patch
+    local name certificates matches count attempt patch certificate_details
     name=$(gcore_certificate_name)
 
     # Validate the resource after its CNAME is publicly visible, before asking
@@ -323,6 +379,18 @@ gcore_ensure_edge_certificate() {
     # request when DNS is not ready yet.
     gcore_api_request POST "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/ssl/le/pre-validate" >/dev/null \
         || die "Gcore Let's Encrypt 预检查失败；请确认 ${VLESS_CDN_DOMAIN} 的 CNAME 已生效"
+
+    if [[ "${GCORE_SSL_CERT_ID:-}" =~ ^[0-9]+$ ]]; then
+        certificate_details=$(gcore_api_request GET "/cdn/sslData/${GCORE_SSL_CERT_ID}") \
+            || die "读取现有 Gcore 边缘证书失败"
+        jq -e '.automated == true' <<<"${certificate_details}" >/dev/null \
+            || die "状态中的 Gcore 证书不是自动 Let's Encrypt 证书，拒绝替换"
+        gcore_api_request PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+            "$(jq -cn --argjson cert "${GCORE_SSL_CERT_ID}" \
+                '{sslEnabled:true,sslData:$cert}')" >/dev/null
+        info "复用现有 Gcore 自动证书；secondary hostname 变化由同一 CDN 资源自动补发证书"
+        return 0
+    fi
 
     certificates=$(gcore_api_request GET '/cdn/sslData?limit=1000')
     matches=$(printf '%s' "${certificates}" | gcore_json_items | jq -c --arg name "${name}" \
@@ -350,17 +418,26 @@ gcore_ensure_edge_certificate() {
 }
 
 gcore_wait_for_cdn_health() {
-    local attempt status response
+    local subscription_domain
+    gcore_wait_for_domain_health "${VLESS_CDN_DOMAIN}" "CDN"
+    subscription_domain=$(active_subscription_link_domain)
+    if subscription_enabled && [[ "${subscription_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+        gcore_wait_for_domain_health "${subscription_domain}" "订阅"
+    fi
+}
+
+gcore_wait_for_domain_health() {
+    local domain=$1 label=$2 attempt status response
     info "等待 Gcore CDN 与 Let's Encrypt 证书部署（最多约 15 分钟）"
     for attempt in {1..90}; do
         status=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" | jq -r '.status // empty')
         response=$(curl -fsS --connect-timeout 5 --max-time 15 \
-            "https://${VLESS_CDN_DOMAIN}/easy_all-health" 2>/dev/null || true)
+            "https://${domain}/easy_all-health" 2>/dev/null || true)
         [[ "${status}" == "active" && "${response}" == "easy_all ok" ]] \
-            && { success "Gcore CDN 回源与边缘证书验收通过"; return 0; }
+            && { success "Gcore ${label}域名回源与边缘证书验收通过"; return 0; }
         sleep 10
     done
-    die "Gcore CDN 公网验收失败；请检查 CNAME、源站证书、Origin Key、Gcore CDN 资源和 Let's Encrypt 状态"
+    die "Gcore ${label}域名 ${domain} 公网验收失败；请检查 CNAME、源站证书、Origin Key、CDN 资源和 Let's Encrypt 状态"
 }
 
 gcore_prepare_origin() {
@@ -373,11 +450,22 @@ gcore_prepare_origin() {
         || die "Gcore Managed DNS 中没有覆盖源站域名 ${GCORE_ORIGIN_DOMAIN} 的 Zone；请先按 docs/gcore-guide.md 委派整个主域名"
     gcore_validate_dns_zones
     gcore_verify_zone_delegation "${GCORE_DNS_ZONE}"
+    if [[ "${GCORE_SUBSCRIPTION_DNS_ZONE}" != "${GCORE_DNS_ZONE}" ]]; then
+        gcore_verify_zone_delegation "${GCORE_SUBSCRIPTION_DNS_ZONE}"
+    fi
     gcore_ensure_origin_a_record
     gcore_wait_for_origin_dns
 }
 
 gcore_apply_cdn() {
+    if validate_domain "${GCORE_CDN_TARGET:-}" \
+        && [[ "${GCORE_CDN_TARGET}" == *.gcdn.co ]]; then
+        # During update-sub the delivery target is already known.  Publish a
+        # missing subscription CNAME before adding the secondary hostname so
+        # Gcore can reissue the existing automated certificate immediately.
+        gcore_ensure_cname_record
+        gcore_wait_for_cdn_dns
+    fi
     gcore_ensure_origin_group
     gcore_ensure_resource
     gcore_detect_cdn_target
@@ -439,10 +527,12 @@ collect_install_inputs() {
         || die "ORIGIN_HEADER_SECRET 格式无效"
     choose_subscription_mode
     if subscription_enabled; then
+        collect_subscription_link_domain
         choose_subscription_download_name
         choose_monthly_quota 1
         quota_enabled || ensure_allowed_tokens
     else
+        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         choose_monthly_quota 0
@@ -452,8 +542,9 @@ collect_install_inputs() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL CDN_PROVIDER XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN XHTTP_PATH
-        GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
+        PROTOCOL CDN_PROVIDER XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH
+        GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE
+        GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
         GCORE_SSL_CERT_ID GCORE_CDN_TARGET GCORE_FEE_PROTECTION_GB
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
@@ -479,6 +570,9 @@ load_state() {
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
     [[ "${GCORE_DNS_ZONE:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "状态中缺少 Gcore DNS Zone"
+    GCORE_SUBSCRIPTION_DNS_ZONE=${GCORE_SUBSCRIPTION_DNS_ZONE:-${GCORE_DNS_ZONE}}
+    [[ "${GCORE_SUBSCRIPTION_DNS_ZONE}" =~ ^[A-Za-z0-9.-]+$ ]] \
+        || die "状态中缺少 Gcore 订阅 DNS Zone"
     [[ "${GCORE_ORIGIN_GROUP_ID:-}" =~ ^[0-9]+$ ]] || die "状态中缺少 Gcore 源组 ID"
     [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[0-9]+$ ]] || die "状态中缺少 Gcore CDN 资源 ID"
     [[ "${GCORE_SSL_CERT_ID:-}" =~ ^[0-9]+$ ]] || die "状态中缺少 Gcore 证书 ID"
@@ -497,6 +591,10 @@ load_state() {
     SUBSCRIPTION_MODE=$(normalize_subscription_mode \
         "${SUBSCRIPTION_MODE:-$([[ -n "${ALLOWED_TOKENS:-}" ]] && printf deploy || printf link)}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
+    SUBSCRIPTION_DOMAIN=$(normalize_domain \
+        "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}")
+    validate_domain "${SUBSCRIPTION_DOMAIN}" \
+        || die "状态文件中的 SUBSCRIPTION_DOMAIN 无效：${SUBSCRIPTION_DOMAIN}"
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
@@ -526,9 +624,12 @@ save_state() {
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
+        printf 'SUBSCRIPTION_DOMAIN=%q\n' "$(subscription_link_domain)"
         printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH}"
         printf 'GCORE_ORIGIN_DOMAIN=%q\n' "${GCORE_ORIGIN_DOMAIN}"
         printf 'GCORE_DNS_ZONE=%q\n' "${GCORE_DNS_ZONE}"
+        printf 'GCORE_SUBSCRIPTION_DNS_ZONE=%q\n' \
+            "${GCORE_SUBSCRIPTION_DNS_ZONE:-${GCORE_DNS_ZONE}}"
         printf 'GCORE_ORIGIN_GROUP_ID=%q\n' "${GCORE_ORIGIN_GROUP_ID}"
         printf 'GCORE_CDN_RESOURCE_ID=%q\n' "${GCORE_CDN_RESOURCE_ID}"
         printf 'GCORE_SSL_CERT_ID=%q\n' "${GCORE_SSL_CERT_ID}"
@@ -602,13 +703,15 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
-        "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
+    printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\n订阅链接域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
+        "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "$(subscription_link_domain)" \
+        "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
     show_bbrv3_status
     printf 'CDN 客户端节点族: %s（自动双栈）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-    printf 'Gcore DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
-        "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
+    printf 'Gcore DNS Zone: %s\nGcore 订阅 DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
+        "${GCORE_DNS_ZONE}" "${GCORE_SUBSCRIPTION_DNS_ZONE:-${GCORE_DNS_ZONE}}" \
+        "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
     printf 'Nginx: '; systemctl is-active --quiet nginx && printf 'active\n' || printf 'inactive\n'
     printf 'UFW: '; LC_ALL=C ufw status 2>/dev/null | sed -n 's/^Status: //p'
@@ -617,24 +720,44 @@ show_status() {
 }
 
 update_subscription() {
+    local previous_mode previous_domain previous_active_domain new_active_domain cloud_update=0
     require_root
     begin_quota_maintenance
     collect_installed_state
+    previous_mode=${SUBSCRIPTION_MODE}
+    previous_domain=$(subscription_link_domain)
+    previous_active_domain=${VLESS_CDN_DOMAIN}
+    [[ "${previous_mode}" != "deploy" ]] || previous_active_domain=${previous_domain}
     snapshot_subscription_update
-    info "update-sub 只更新本机 Xray、订阅与 Nginx，并复用现有 Gcore CDN；不会修改 Gcore 资源"
+    info "update-sub 会更新本机 Xray、订阅与 Nginx，并复用现有 Gcore CDN；仅在新增、更换或停用独立订阅域名时同步 secondary hostname、证书与 Managed DNS"
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
+        collect_subscription_link_domain
         choose_subscription_download_name
         choose_monthly_quota 1
         quota_enabled || ensure_allowed_tokens
-        write_subscriptions
     else
+        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         choose_monthly_quota 0
+    fi
+    new_active_domain=$(active_subscription_link_domain)
+    [[ "${new_active_domain}" == "${previous_active_domain}" ]] || cloud_update=1
+    if [[ "${cloud_update}" == "1" ]]; then
+        info "订阅域名发生变化，正在同步 Gcore CDN、边缘证书与 Managed DNS"
+        gcore_collect_api_token
+        gcore_validate_dns_zones
+        gcore_verify_zone_delegation "${GCORE_SUBSCRIPTION_DNS_ZONE}"
+        gcore_apply_cdn
+        gcore_clear_api_token
+    fi
+    if subscription_enabled; then
+        write_subscriptions
+    else
         remove_subscriptions
     fi
     save_state
@@ -746,7 +869,7 @@ install_all() {
     configure_daily_reboot
     info "[3/9] 收集 Gcore 域名、订阅与 VLESS 参数"
     collect_install_inputs
-    alert "源站域名与 CDN 域名必须位于同一个已完整委派到 Gcore Managed DNS 的主域名。"
+    alert "源站域名与 CDN 域名必须位于同一个已完整委派到 Gcore Managed DNS 的主域名；独立订阅域名也必须由 Gcore Managed DNS 托管。"
     info "[4/9] 验证 Gcore 权限与 DNS 委派，并创建源站 A 记录"
     gcore_prepare_origin
     info "[5/9] 配置防火墙与 HTTP-01 入口"

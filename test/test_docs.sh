@@ -102,7 +102,7 @@ assert_contains "README keeps the independent Debian initializer out of proxy ch
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" \
     '同步重建本机 Xray、Nginx 和订阅文件'
 assert_contains "XHTTP command message includes Xray" "${XHTTP_CONTENT}" \
-    'update-sub 只更新本机 Xray、订阅与 Nginx'
+    'update-sub 会更新本机 Xray、订阅与 Nginx'
 
 if [[ "${XHTTP_CONTENT}" == *'AWS_USE_DEFAULT_CREDENTIAL_CHAIN'* ]]; then
     assert_contains "launcher guide documents AWS default chain" "${LAUNCHER_CONTENT}" \

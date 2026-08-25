@@ -359,14 +359,20 @@ test_mihomo_template() {
     validate_mihomo_template "${ROOT_DIR}/sample-mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
-    assert_contains "Mihomo preserves fake-IP mappings across restarts" \
-        "store-fake-ip: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
-    assert_equal "Mihomo uses system DNS only for proxy node bootstrap" "1" \
-        "$(grep -Fc "      - system" "${ROOT_DIR}/sample-mihomo.yaml")"
-    assert_not_contains "Mihomo DNS policies do not depend on the system resolver" \
-        "$(<"${ROOT_DIR}/sample-mihomo.yaml")" ": system"
-    assert_not_contains "Mihomo DNS avoids a PROXY fallback bootstrap cycle" \
-        "$(<"${ROOT_DIR}/sample-mihomo.yaml")" "dns-query#PROXY"
+    assert_contains "Mihomo uses the XFLASH fake-IP DNS mode" \
+        "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_contains "Mihomo uses the XFLASH HTTP/3 DNS endpoint" \
+        "https://223.6.6.6/dns-query#h3=true" \
+        "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_contains "Mihomo uses the XFLASH proxy bootstrap DNS endpoints" \
+        "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
+        "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_not_contains "Mihomo does not add a non-XFLASH default nameserver" \
+        "default-nameserver:" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_not_contains "Mihomo does not add a non-XFLASH direct nameserver" \
+        "direct-nameserver:" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_not_contains "Mihomo does not add the system resolver" \
+        "- system" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/sample-mihomo.yaml" \
         | grep -Ec '^  - ')
     assert_equal "Mihomo template contains only the current XFLASH rules" \
@@ -411,7 +417,7 @@ test_subscription_generation() {
         "ip-version: dual" "${yaml}"
     assert_contains "Reality endpoint enables the Mihomo IPv6 master switch" \
         $'\nipv6: true\n' "${yaml}"
-    assert_contains "application DNS permits AAAA answers" \
+    assert_not_contains "rendered DNS is not extended beyond XFLASH" \
         $'\n    ipv6: true\n' "${yaml}"
     assert_contains "Mihomo subscription contains XFLASH rules" \
         "DOMAIN,love.xflash.work,DIRECT" "${yaml}"

@@ -115,10 +115,12 @@ collect_install_inputs() {
         || die "ORIGIN_HEADER_SECRET 格式无效"
     choose_subscription_mode
     if subscription_enabled; then
+        collect_subscription_link_domain
         choose_subscription_download_name
         choose_monthly_quota 1
         quota_enabled || ensure_allowed_tokens
     else
+        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
@@ -130,9 +132,11 @@ load_state() {
     local variable env_name
     local -a variables=(
         PROTOCOL CDN_PROVIDER AWS_CLOUDFRONT_BILLING_MODE XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
+        SUBSCRIPTION_DOMAIN
         XHTTP_PATH AWS_ORIGIN_DOMAIN
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET
-        AWS_ORIGIN_ROUTE53_ZONE_ID AWS_ROUTE53_ZONE_ID AWS_ACM_CERTIFICATE_ARN
+        AWS_ORIGIN_ROUTE53_ZONE_ID AWS_ROUTE53_ZONE_ID AWS_SUBSCRIPTION_ROUTE53_ZONE_ID
+        AWS_ACM_CERTIFICATE_ARN
         AWS_WAF_WEB_ACL_ARN AWS_CLOUDFRONT_DISTRIBUTION_ID
         AWS_CLOUDFRONT_DISTRIBUTION_ARN AWS_CLOUDFRONT_DOMAIN
         AWS_CLOUDFRONT_PRICING_PLAN_ARN
@@ -170,6 +174,10 @@ load_state() {
     SUBSCRIPTION_MODE=$(normalize_subscription_mode \
         "${SUBSCRIPTION_MODE:-$([[ -n "${ALLOWED_TOKENS:-}" ]] && printf deploy || printf link)}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
+    SUBSCRIPTION_DOMAIN=$(normalize_domain \
+        "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}")
+    validate_domain "${SUBSCRIPTION_DOMAIN}" \
+        || die "状态文件中的 SUBSCRIPTION_DOMAIN 无效：${SUBSCRIPTION_DOMAIN}"
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
@@ -201,12 +209,15 @@ save_state() {
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
+        printf 'SUBSCRIPTION_DOMAIN=%q\n' "$(subscription_link_domain)"
         printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH}"
         printf 'AWS_ORIGIN_DOMAIN=%q\n' "${AWS_ORIGIN_DOMAIN}"
         printf 'XRAY_XHTTP_LOOPBACK_PORT=%q\n' "${XRAY_XHTTP_LOOPBACK_PORT}"
         printf 'ORIGIN_HEADER_SECRET=%q\n' "${ORIGIN_HEADER_SECRET}"
         printf 'AWS_ORIGIN_ROUTE53_ZONE_ID=%q\n' "${AWS_ORIGIN_ROUTE53_ZONE_ID:-}"
         printf 'AWS_ROUTE53_ZONE_ID=%q\n' "${AWS_ROUTE53_ZONE_ID:-}"
+        printf 'AWS_SUBSCRIPTION_ROUTE53_ZONE_ID=%q\n' \
+            "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID:-${AWS_ROUTE53_ZONE_ID:-}}"
         printf 'AWS_ACM_CERTIFICATE_ARN=%q\n' "${AWS_ACM_CERTIFICATE_ARN:-}"
         printf 'AWS_WAF_WEB_ACL_ARN=%q\n' "${AWS_WAF_WEB_ACL_ARN:-}"
         printf 'AWS_CLOUDFRONT_DISTRIBUTION_ID=%q\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}"
@@ -232,6 +243,7 @@ collect_installed_state() {
     load_state
     validate_domain "${AWS_ORIGIN_DOMAIN}" || die "状态中的源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN}" || die "状态中的 CDN 域名无效"
+    validate_domain "$(subscription_link_domain)" || die "状态中的订阅链接域名无效"
     validate_uuid "${VLESS_UUID}" || die "状态中的 VLESS UUID 无效"
     validate_xhttp_path "${XHTTP_PATH}" || die "状态中的 XHTTP 路径无效"
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
@@ -417,33 +429,44 @@ find_route53_zone_for_domain() {
 }
 
 find_route53_zones() {
-    local zones origin_zone viewer_zone
+    local zones origin_zone viewer_zone subscription_zone subscription_domain
     zones=$(aws route53 list-hosted-zones --output json) || die "查询 Route 53 Hosted Zone 失败"
     origin_zone=$(find_route53_zone_for_domain "${AWS_ORIGIN_DOMAIN}" "${zones}")
     viewer_zone=$(find_route53_zone_for_domain "${VLESS_CDN_DOMAIN}" "${zones}")
+    subscription_domain=$(active_subscription_link_domain)
+    subscription_zone=$(find_route53_zone_for_domain "${subscription_domain}" "${zones}")
     [[ -n "${origin_zone}" ]] \
         || die "Route 53 中没有覆盖源站域名 ${AWS_ORIGIN_DOMAIN} 的 Public Hosted Zone"
     [[ -n "${viewer_zone}" ]] \
         || die "Route 53 中没有覆盖 CDN 域名 ${VLESS_CDN_DOMAIN} 的 Public Hosted Zone"
+    [[ -n "${subscription_zone}" ]] \
+        || die "Route 53 中没有覆盖订阅域名 ${subscription_domain} 的 Public Hosted Zone"
     IFS=$'\t' read -r AWS_ORIGIN_ROUTE53_ZONE_ID AWS_ORIGIN_ROUTE53_ZONE_NAME <<<"${origin_zone}"
     IFS=$'\t' read -r AWS_ROUTE53_ZONE_ID AWS_ROUTE53_ZONE_NAME <<<"${viewer_zone}"
+    IFS=$'\t' read -r AWS_SUBSCRIPTION_ROUTE53_ZONE_ID \
+        AWS_SUBSCRIPTION_ROUTE53_ZONE_NAME <<<"${subscription_zone}"
     AWS_ORIGIN_ROUTE53_ZONE_ID=${AWS_ORIGIN_ROUTE53_ZONE_ID#/hostedzone/}
     AWS_ROUTE53_ZONE_ID=${AWS_ROUTE53_ZONE_ID#/hostedzone/}
+    AWS_SUBSCRIPTION_ROUTE53_ZONE_ID=${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID#/hostedzone/}
     [[ "${VLESS_CDN_DOMAIN}." != "${AWS_ROUTE53_ZONE_NAME}" ]] \
         || die "easy_all CDN XHTTP 当前要求使用子域名，不能直接使用 Hosted Zone 根域"
 }
 
 show_cloudfront_billing_estimate() {
-    local hosted_zone_count=2 hosted_zone_cost='1.00'
-    if [[ "${AWS_ORIGIN_ROUTE53_ZONE_ID}" == "${AWS_ROUTE53_ZONE_ID}" ]]; then
-        hosted_zone_count=1
-        hosted_zone_cost='0.50'
-    fi
+    local hosted_zone_count hosted_zone_cost
+    hosted_zone_count=$(printf '%s\n' "${AWS_ORIGIN_ROUTE53_ZONE_ID}" \
+        "${AWS_ROUTE53_ZONE_ID}" \
+        "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID:-${AWS_ROUTE53_ZONE_ID}}" \
+        | sort -u | awk 'NF{count++} END{print count+0}')
+    hosted_zone_cost=$(awk -v count="${hosted_zone_count}" \
+        'BEGIN{printf "%.2f", count * 0.50}')
     if cloudfront_flat_rate_enabled; then
         info "已选 CloudFront Free 固定套餐：CloudFront、套餐 WAF 和 CDN Hosted Zone 估算 \$0/月"
         warn "固定套餐基准 100 GB + 100 万请求；超出费用仍为 \$0，但持续明显超额可能降低边缘性能"
         if ((hosted_zone_count == 2)); then
             warn "源站与 CDN 使用两个 Hosted Zone：套餐只覆盖 CDN Zone；源站 Zone 另估 \$0.50/月 + 标准 DNS 查询 \$0.40/百万次"
+        elif ((hosted_zone_count > 2)); then
+            warn "当前使用 ${hosted_zone_count} 个 Hosted Zone：套餐只覆盖 CDN Zone；其他 Zone 仍按 Route 53 标准价格计费"
         fi
     else
         info "已选 CloudFront 按量付费：免费 1 TB + 1000 万请求；不创建 WAF"
@@ -517,33 +540,85 @@ certificate_covers_domain() {
         | any(.[]; covers(.))' <<<"${description}" >/dev/null
 }
 
+certificate_covers_required_domains() {
+    local description=$1 subscription_domain
+    subscription_domain=$(active_subscription_link_domain)
+    jq -e --arg primary "${VLESS_CDN_DOMAIN}" \
+        --arg subscription "${subscription_domain}" '
+        def covers($name; $domain):
+            $name == $domain or
+            ($name|startswith("*.") and ($domain|endswith($name[1:])) and
+             (($domain|split(".")|length) == ($name|split(".")|length)));
+        ([.Certificate.DomainName] + (.Certificate.SubjectAlternativeNames // [])) as $names
+        | all([$primary, $subscription] | unique[];
+            . as $domain | any($names[]; covers(.; $domain)))
+    ' <<<"${description}" >/dev/null
+}
+
 select_reusable_acm_certificate() {
-    local certificates=$1
-    jq -r --arg domain "${VLESS_CDN_DOMAIN}" '
-        def covers($name):
+    local certificates=$1 subscription_domain
+    subscription_domain=$(active_subscription_link_domain)
+    jq -r --arg primary "${VLESS_CDN_DOMAIN}" \
+        --arg subscription "${subscription_domain}" '
+        def covers($name; $domain):
             $name == $domain or
             ($name|startswith("*.") and ($domain|endswith($name[1:])) and
              (($domain|split(".")|length) == ($name|split(".")|length)));
         [.CertificateSummaryList[]? |
-          select(any(([.DomainName] + (.SubjectAlternativeNameSummaries // []))[]; covers(.)))]
+          . as $certificate |
+          ([.DomainName] + (.SubjectAlternativeNameSummaries // [])) as $names |
+          select(all([$primary, $subscription] | unique[];
+            . as $domain | any($names[]; covers(.; $domain)))) |
+          $certificate]
         | sort_by((if .Status == "ISSUED" then 0 else 1 end), .DomainName, .CertificateArn)
         | first.CertificateArn // empty' <<<"${certificates}"
 }
 
+route53_zone_id_for_validation_record() {
+    local record_name subscription_name viewer_name
+    record_name=$(normalize_domain "${1#*.}")
+    subscription_name=${AWS_SUBSCRIPTION_ROUTE53_ZONE_NAME%.}
+    viewer_name=${AWS_ROUTE53_ZONE_NAME%.}
+    if [[ "${record_name}" == "${subscription_name}" \
+        || "${record_name}" == *."${subscription_name}" ]] \
+        && { [[ "${record_name}" != "${viewer_name}" \
+            && "${record_name}" != *."${viewer_name}" ]] \
+            || (( ${#subscription_name} > ${#viewer_name} )); }; then
+        printf '%s' "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID}"
+    else
+        printf '%s' "${AWS_ROUTE53_ZONE_ID}"
+    fi
+}
+
 find_or_request_acm_certificate() {
     local certificates description arn status token attempt record_name record_type record_value change
+    local subscription_domain validation_zone
+    local -a request_arguments
+    subscription_domain=$(active_subscription_link_domain)
     if [[ -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]]; then
         arn=${AWS_ACM_CERTIFICATE_ARN}
-    else
+        description=$(aws acm describe-certificate --region "${AWS_CONTROL_REGION}" \
+            --certificate-arn "${arn}" --output json 2>/dev/null || true)
+        if [[ -z "${description}" ]] \
+            || ! certificate_covers_required_domains "${description}"; then
+            info "现有 ACM 证书未同时覆盖节点域名与订阅域名，准备复用或申请新证书"
+            arn=""
+        fi
+    fi
+    if [[ -z "${arn:-}" ]]; then
         certificates=$(aws acm list-certificates --region "${AWS_CONTROL_REGION}" \
             --certificate-statuses ISSUED PENDING_VALIDATION --output json) \
             || die "列出 ACM 证书失败"
         arn=$(select_reusable_acm_certificate "${certificates}")
         if [[ -z "${arn}" ]]; then
-            token=$(printf '%s' "${VLESS_CDN_DOMAIN}" | sha256sum | cut -c1-32)
-            arn=$(aws acm request-certificate --region "${AWS_CONTROL_REGION}" \
-                --domain-name "${VLESS_CDN_DOMAIN}" --validation-method DNS \
-                --idempotency-token "${token}" --query CertificateArn --output text) \
+            token=$(printf '%s|%s' "${VLESS_CDN_DOMAIN}" "${subscription_domain}" \
+                | sha256sum | cut -c1-32)
+            request_arguments=(acm request-certificate --region "${AWS_CONTROL_REGION}"
+                --domain-name "${VLESS_CDN_DOMAIN}" --validation-method DNS
+                --idempotency-token "${token}" --query CertificateArn --output text)
+            [[ "${subscription_domain}" == "${VLESS_CDN_DOMAIN}" ]] \
+                || request_arguments+=(--subject-alternative-names "${subscription_domain}")
+            arn=$(aws "${request_arguments[@]}") \
                 || die "申请 ACM 证书失败"
         fi
         AWS_ACM_CERTIFICATE_ARN=${arn}
@@ -558,7 +633,8 @@ find_or_request_acm_certificate() {
         sleep 2
     done
     [[ -n "${description}" ]] || die "读取 ACM 证书失败"
-    certificate_covers_domain "${description}" || die "ACM 证书不覆盖 ${VLESS_CDN_DOMAIN}"
+    certificate_covers_required_domains "${description}" \
+        || die "ACM 证书未同时覆盖 ${VLESS_CDN_DOMAIN} 与 ${subscription_domain}"
 
     status=$(jq -r '.Certificate.Status' <<<"${description}")
     [[ "${status}" == "ISSUED" ]] && return 0
@@ -567,17 +643,22 @@ find_or_request_acm_certificate() {
     for attempt in {1..30}; do
         description=$(aws acm describe-certificate --region "${AWS_CONTROL_REGION}" \
             --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" --output json) || die "读取 ACM 验证记录失败"
-        record_name=$(jq -r '.Certificate.DomainValidationOptions[]?|select(.ResourceRecord)|.ResourceRecord.Name' <<<"${description}" | head -n1)
-        record_type=$(jq -r '.Certificate.DomainValidationOptions[]?|select(.ResourceRecord)|.ResourceRecord.Type' <<<"${description}" | head -n1)
-        record_value=$(jq -r '.Certificate.DomainValidationOptions[]?|select(.ResourceRecord)|.ResourceRecord.Value' <<<"${description}" | head -n1)
-        [[ -n "${record_name}" && -n "${record_value}" ]] && break
+        if [[ "$(jq '[.Certificate.DomainValidationOptions[]?|select(.ResourceRecord)]|length' \
+            <<<"${description}")" -ge "$([[ "${subscription_domain}" == "${VLESS_CDN_DOMAIN}" ]] && printf 1 || printf 2)" ]]; then
+            break
+        fi
         sleep 2
     done
-    [[ -n "${record_name:-}" && -n "${record_value:-}" ]] || die "ACM 尚未生成 DNS 验证记录"
-    change=$(jq -cn --arg name "${record_name}" --arg type "${record_type}" --arg value "${record_value}" \
-        '{Comment:"easy_all ACM DNS validation",Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$name,Type:$type,TTL:300,ResourceRecords:[{Value:$value}]}}]}')
-    aws route53 change-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
-        --change-batch "${change}" >/dev/null || die "写入 ACM DNS 验证记录失败"
+    while IFS=$'\t' read -r record_name record_type record_value; do
+        [[ -n "${record_name}" && -n "${record_value}" ]] || continue
+        validation_zone=$(route53_zone_id_for_validation_record "${record_name}")
+        change=$(jq -cn --arg name "${record_name}" --arg type "${record_type}" \
+            --arg value "${record_value}" \
+            '{Comment:"easy_all ACM DNS validation",Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$name,Type:$type,TTL:300,ResourceRecords:[{Value:$value}]}}]}')
+        aws route53 change-resource-record-sets --hosted-zone-id "${validation_zone}" \
+            --change-batch "${change}" >/dev/null || die "写入 ACM DNS 验证记录失败：${record_name}"
+    done < <(jq -r '.Certificate.DomainValidationOptions[]?|select(.ResourceRecord)|
+        [.ResourceRecord.Name,.ResourceRecord.Type,.ResourceRecord.Value]|@tsv' <<<"${description}")
     info "等待 ACM 证书签发（通常几分钟）"
     for attempt in {1..120}; do
         status=$(aws acm describe-certificate --region "${AWS_CONTROL_REGION}" \
@@ -651,9 +732,11 @@ ensure_cloudfront_web_acl() {
 }
 
 build_distribution_config() {
-    local destination=$1 caller_reference=$2
+    local destination=$1 caller_reference=$2 subscription_domain
+    subscription_domain=$(active_subscription_link_domain)
     jq -n \
         --arg caller "${caller_reference}" --arg alias "${VLESS_CDN_DOMAIN}" \
+        --arg subscription "${subscription_domain}" \
         --arg origin "${AWS_ORIGIN_DOMAIN}" --arg origin_id "${CLOUDFRONT_ORIGIN_ID}" \
         --arg origin_key "${ORIGIN_HEADER_SECRET}" --arg comment "$(cloudfront_marker)" \
         --arg cache_policy "${CLOUDFRONT_CACHE_POLICY_ID}" \
@@ -666,7 +749,8 @@ build_distribution_config() {
         --arg web_acl "${AWS_WAF_WEB_ACL_ARN}" '
         {
           CallerReference:$caller,
-          Aliases:{Quantity:1,Items:[$alias]},
+          Aliases:(([$alias,$subscription]|unique) as $items |
+            {Quantity:($items|length),Items:$items}),
           DefaultRootObject:"",
           Origins:{Quantity:1,Items:[{
             Id:$origin_id,DomainName:$origin,OriginPath:"",
@@ -753,8 +837,8 @@ configure_cloudfront_distribution() {
 }
 
 build_viewer_alias_change_batch() {
-    local destination=$1 conflicts=$2 target=$3
-    jq -n --arg name "${VLESS_CDN_DOMAIN}." --arg target "${target}" \
+    local destination=$1 conflicts=$2 target=$3 domain=${4:-${VLESS_CDN_DOMAIN}}
+    jq -n --arg name "${domain}." --arg target "${target}" \
         --arg target_zone "${CLOUDFRONT_ROUTE53_ZONE_ID}" --argjson conflicts "${conflicts}" '
         def alias_record($type):
           {Action:"CREATE",ResourceRecordSet:{Name:$name,Type:$type,
@@ -762,6 +846,15 @@ build_viewer_alias_change_batch() {
         {Comment:"easy_all CloudFront dual-stack Alias A/AAAA",
          Changes:(($conflicts | map({Action:"DELETE",ResourceRecordSet:.})) +
            [alias_record("A"),alias_record("AAAA")])}' >"${destination}"
+}
+
+viewer_records_are_cname_target() {
+    local conflicts=$1 target=$2
+    jq -e --arg target "${target}" '
+        length==1 and .[0].Type=="CNAME" and
+        ((.[0].ResourceRecords // [])|length)==1 and
+        ((.[0].ResourceRecords[0].Value|rtrimstr(".")) == ($target|rtrimstr(".")))
+    ' <<<"${conflicts}" >/dev/null
 }
 
 viewer_records_are_alias_target() {
@@ -783,26 +876,44 @@ viewer_records_are_alias_target() {
 }
 
 ensure_viewer_alias_records() {
-    local records conflicts change target
+    local records target subscription_domain
     target="${AWS_CLOUDFRONT_DOMAIN}."
-    records=$(aws route53 list-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
+    ensure_viewer_domain_record "${VLESS_CDN_DOMAIN}" "${AWS_ROUTE53_ZONE_ID}" \
+        "CDN" "${target}"
+    subscription_domain=$(active_subscription_link_domain)
+    if subscription_enabled && [[ "${subscription_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+        ensure_viewer_domain_record "${subscription_domain}" \
+            "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID}" "订阅" "${target}" 0
+    fi
+}
+
+ensure_viewer_domain_record() {
+    local domain=$1 zone_id=$2 label=$3 target=$4 allow_replace=${5:-1}
+    local records conflicts change
+    records=$(aws route53 list-resource-record-sets --hosted-zone-id "${zone_id}" \
         --output json) || die "查询 Route 53 记录失败"
-    conflicts=$(jq -c --arg name "${VLESS_CDN_DOMAIN}." \
+    conflicts=$(jq -c --arg name "${domain}." \
         '[.ResourceRecordSets[]|select(.Name==$name and .Type!="NS" and .Type!="SOA")]' <<<"${records}")
-    if viewer_records_are_alias_target "${conflicts}" "${target}" dual; then
-        info "Route 53 CDN Alias A/AAAA 已指向当前 CloudFront 分配"
+    if viewer_records_are_alias_target "${conflicts}" "${target}" dual \
+        || viewer_records_are_cname_target "${conflicts}" "${target}"; then
+        info "Route 53 ${label}域名已指向当前 CloudFront 分配，直接复用"
+        return 0
+    fi
+    if [[ "${allow_replace}" == "0" ]] \
+        && viewer_records_are_alias_target "${conflicts}" "${target}"; then
+        info "Route 53 ${label}域名已有正确 CloudFront Alias，保持现有记录不变"
         return 0
     fi
     if [[ "$(jq 'length' <<<"${conflicts}")" -gt 0 ]] \
         && ! viewer_records_are_alias_target "${conflicts}" "${target}"; then
-        [[ "${AWS_DNS_REPLACE:-0}" == "1" ]] \
-            || die "${VLESS_CDN_DOMAIN} 已有 DNS 记录；拒绝覆盖。确认后可设置 AWS_DNS_REPLACE=1"
+        [[ "${allow_replace}" == "1" && "${AWS_DNS_REPLACE:-0}" == "1" ]] \
+            || die "${domain} 已有不指向当前 CloudFront 的 DNS 记录；拒绝覆盖"
     fi
-    change="${RUNTIME_TMP}/route53-viewer-alias.json"
-    build_viewer_alias_change_batch "${change}" "${conflicts}" "${target}"
-    aws route53 change-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
+    change="${RUNTIME_TMP}/route53-viewer-$(printf '%s' "${domain}" | sha256sum | cut -c1-12).json"
+    build_viewer_alias_change_batch "${change}" "${conflicts}" "${target}" "${domain}"
+    aws route53 change-resource-record-sets --hosted-zone-id "${zone_id}" \
         --change-batch "file://${change}" >/dev/null || die "写入 CloudFront Alias A/AAAA 失败"
-    success "Route 53 CDN 记录已收敛为双栈 CloudFront Alias A/AAAA"
+    success "Route 53 ${label}域名不存在，已新增双栈 CloudFront Alias A/AAAA"
 }
 
 wait_for_cloudfront() {
@@ -941,14 +1052,24 @@ ensure_cloudfront_payg_mode() {
 }
 
 validate_cloudfront_health() {
-    local attempt response
+    local subscription_domain
+    subscription_domain=$(active_subscription_link_domain)
+    validate_cloudfront_domain_health "${VLESS_CDN_DOMAIN}" "CDN"
+    if subscription_enabled && [[ "${subscription_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+        validate_cloudfront_domain_health "${subscription_domain}" "订阅"
+    fi
+}
+
+validate_cloudfront_domain_health() {
+    local domain=$1 label=$2 attempt response
     for attempt in {1..20}; do
         response=$(curl -fsS --connect-timeout 5 --max-time 15 \
-            "https://${VLESS_CDN_DOMAIN}/easy_all-health" 2>/dev/null || true)
-        [[ "${response}" == "easy_all ok" ]] && { success "CloudFront 回源验收通过"; return 0; }
+            "https://${domain}/easy_all-health" 2>/dev/null || true)
+        [[ "${response}" == "easy_all ok" ]] \
+            && { success "CloudFront ${label}域名回源验收通过"; return 0; }
         sleep 10
     done
-    die "CloudFront 公网验收失败；请检查 DNS、源站证书、Origin Key 与 gRPC 配置"
+    die "CloudFront ${label}域名 ${domain} 公网验收失败；请检查 DNS、证书、Origin Key 与 gRPC 配置"
 }
 
 configure_aws_cdn() {
@@ -1008,8 +1129,8 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
-        "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
+    printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\n订阅链接域名: %s\nXHTTP 路径: %s\n' \
+        "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "$(subscription_link_domain)" "${XHTTP_PATH}"
     show_bbrv3_status
     printf 'CDN 客户端节点族: %s（自动双栈）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
@@ -1017,8 +1138,9 @@ show_status() {
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'CloudFront 计费模式: %s\n' \
         "$([[ "${AWS_CLOUDFRONT_BILLING_MODE}" == "flat-free" ]] && printf 'Free 固定套餐' || printf '按量付费')"
-    printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\n' \
-        "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}"
+    printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\nRoute 53 订阅 Zone ID: %s\n' \
+        "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}" \
+        "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID:-${AWS_ROUTE53_ZONE_ID:-未知}}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
     printf 'Nginx: '; systemctl is-active --quiet nginx && printf 'active\n' || printf 'inactive\n'
     printf 'UFW: '; LC_ALL=C ufw status 2>/dev/null | sed -n 's/^Status: //p'
@@ -1035,25 +1157,41 @@ show_status() {
 }
 
 update_subscription() {
+    local previous_mode previous_domain previous_active_domain new_active_domain cloud_update=0
     require_root
     begin_quota_maintenance
     collect_installed_state
+    previous_mode=${SUBSCRIPTION_MODE}
+    previous_domain=$(subscription_link_domain)
+    previous_active_domain=${VLESS_CDN_DOMAIN}
+    [[ "${previous_mode}" != "deploy" ]] || previous_active_domain=${previous_domain}
     snapshot_subscription_update
-    info "update-sub 只更新本机 Xray、订阅与 Nginx，并复用现有 CloudFront；不会修改 AWS 资源"
+    info "update-sub 会更新本机 Xray、订阅与 Nginx，并复用现有 CloudFront；仅在新增、更换或停用独立订阅域名时同步 ACM、Alias 与 Route 53"
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
+        collect_subscription_link_domain
         choose_subscription_download_name
         choose_monthly_quota 1
         quota_enabled || ensure_allowed_tokens
-        write_subscriptions
     else
+        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         choose_monthly_quota 0
+    fi
+    new_active_domain=$(active_subscription_link_domain)
+    [[ "${new_active_domain}" == "${previous_active_domain}" ]] || cloud_update=1
+    if [[ "${cloud_update}" == "1" ]]; then
+        info "订阅域名发生变化，正在同步 CloudFront、ACM 与 Route 53"
+        configure_aws_cdn
+    fi
+    if subscription_enabled; then
+        write_subscriptions
+    else
         remove_subscriptions
     fi
     save_state

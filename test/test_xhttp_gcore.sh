@@ -45,6 +45,8 @@ assert_contains "Gcore profile uses permanent API token authentication" \
     "${profile_content}" "Authorization: APIKey"
 assert_contains "Gcore profile manages DNS zones" \
     "${profile_content}" "/dns/v2/zones"
+assert_contains "Gcore profile persists the managed subscription hostname" \
+    "${profile_content}" "SUBSCRIPTION_DOMAIN=%q"
 assert_contains "Gcore profile manages origin groups" \
     "${profile_content}" "/cdn/origin_groups"
 assert_contains "Gcore profile manages CDN resources" \
@@ -136,6 +138,15 @@ assert_not_contains "Gcore profile never persists the API token" \
         "$(jq -r '.options.staticRequestHeaders.value["X-Easy-All-Origin-Key"]' <<<"${resource_payload}")"
     assert_equal "resource refresh never disables an existing edge certificate" "null" \
         "$(jq -r '.sslEnabled' <<<"${resource_payload}")"
+    assert_equal "resource omits a secondary hostname when subscription reuses the CDN domain" \
+        "[]" "$(jq -c '.secondaryHostnames' <<<"${resource_payload}")"
+    SUBSCRIPTION_MODE="deploy"
+    SUBSCRIPTION_DOMAIN="subscribe.other.net"
+    resource_payload=$(gcore_resource_payload)
+    assert_equal "resource adds the complete subscription hostname as a secondary hostname" \
+        '["subscribe.other.net"]' \
+        "$(jq -c '.secondaryHostnames' <<<"${resource_payload}")"
+    unset SUBSCRIPTION_DOMAIN
 
     gcore_api_request() {
         case "$2" in
@@ -156,6 +167,42 @@ assert_not_contains "Gcore profile never persists the API token" \
     GCORE_ORIGIN_DOMAIN="origin.example.com"
     VLESS_CDN_DOMAIN="node.example.com"
     gcore_validate_dns_zones
+    if (
+        GCORE_DNS_ZONE="example.com"
+        GCORE_ORIGIN_DOMAIN="origin.example.com"
+        VLESS_CDN_DOMAIN="node.example.com"
+        SUBSCRIPTION_MODE="deploy"
+        SUBSCRIPTION_DOMAIN="subscribe.other.net"
+        gcore_api_request() {
+            case "$2" in
+            '/dns/v2/zones?limit=1000')
+                printf '%s\n' '[{"name":"example.com"}]'
+                ;;
+            *) fail "unexpected mocked Gcore API path: $2" ;;
+            esac
+        }
+        gcore_validate_dns_zones
+    ) >/dev/null 2>&1; then
+        fail "Gcore custom subscription domains must be hosted by Gcore Managed DNS"
+    fi
+    (
+        GCORE_DNS_ZONE="example.com"
+        GCORE_ORIGIN_DOMAIN="origin.example.com"
+        VLESS_CDN_DOMAIN="node.example.com"
+        SUBSCRIPTION_MODE="deploy"
+        SUBSCRIPTION_DOMAIN="subscribe.other.net"
+        gcore_api_request() {
+            case "$2" in
+            '/dns/v2/zones?limit=1000')
+                printf '%s\n' '[{"name":"example.com"},{"name":"other.net"}]'
+                ;;
+            *) fail "unexpected mocked Gcore API path: $2" ;;
+            esac
+        }
+        gcore_validate_dns_zones
+        assert_equal "Gcore accepts a subscription domain in another managed zone" \
+            "other.net" "${GCORE_SUBSCRIPTION_DNS_ZONE}"
+    )
     if (
         GCORE_DNS_ZONE="example.com"
         GCORE_ORIGIN_DOMAIN="origin.example.com"
@@ -256,6 +303,116 @@ assert_not_contains "Gcore profile never persists the API token" \
         "${origin_replace_calls}" "DELETE /dns/v2/zones/example.com/origin.example.com/AAAA"
     assert_contains "Gcore source A replacement writes current A" \
         "${origin_replace_calls}" "PUT /dns/v2/zones/example.com/origin.example.com/A"
+
+    cname_calls_file="${TMP_DIR}/gcore-cname-calls"
+    : >"${cname_calls_file}"
+    (
+        GCORE_CDN_TARGET="node.example.com.gcdn.co"
+        gcore_api_get_optional() {
+            case "$1" in
+            */subscribe.example.net/A | */subscribe.example.net/AAAA)
+                return 1
+                ;;
+            */subscribe.example.net/CNAME)
+                printf '%s\n' '{"resource_records":[{"content":["node.example.com.gcdn.co."]}]}'
+                ;;
+            *) fail "unexpected mocked Gcore DNS lookup: $1" ;;
+            esac
+        }
+        gcore_api_request() { printf '%s %s\n' "$1" "$2" >>"${cname_calls_file}"; }
+        gcore_ensure_domain_cname_record "subscribe.example.net" "example.net"
+    )
+    assert_equal "Gcore reuses an exact existing subscription CNAME without a write" \
+        "" "$(<"${cname_calls_file}")"
+
+    : >"${cname_calls_file}"
+    (
+        GCORE_CDN_TARGET="node.example.com.gcdn.co"
+        gcore_api_get_optional() { return 1; }
+        gcore_api_request() { printf '%s %s\n' "$1" "$2" >>"${cname_calls_file}"; }
+        gcore_ensure_domain_cname_record "subscribe.example.net" "example.net"
+    )
+    assert_contains "Gcore creates a subscription CNAME only when it is missing" \
+        "$(<"${cname_calls_file}")" \
+        "PUT /dns/v2/zones/example.net/subscribe.example.net/CNAME"
+    if (
+        GCORE_CDN_TARGET="node.example.com.gcdn.co"
+        GCORE_DNS_REPLACE=1
+        gcore_api_get_optional() {
+            case "$1" in
+            */subscribe.example.net/A | */subscribe.example.net/AAAA)
+                return 1
+                ;;
+            */subscribe.example.net/CNAME)
+                printf '%s\n' '{"resource_records":[{"content":["other.gcdn.co"]}]}'
+                ;;
+            *) fail "unexpected mocked Gcore DNS lookup: $1" ;;
+            esac
+        }
+        gcore_api_request() { fail "a conflicting custom subscription record must never be mutated"; }
+        gcore_ensure_domain_cname_record "subscribe.example.net" "example.net" 0
+    ) >/dev/null 2>&1; then
+        fail "Gcore custom subscription DNS conflicts must be rejected even with replacement enabled"
+    fi
+
+    certificate_calls_file="${TMP_DIR}/gcore-certificate-calls"
+    : >"${certificate_calls_file}"
+    (
+        GCORE_CDN_RESOURCE_ID="77"
+        GCORE_SSL_CERT_ID="88"
+        gcore_api_request() {
+            printf '%s %s %s\n' "$1" "$2" "${3:-}" >>"${certificate_calls_file}"
+            case "$1 $2" in
+            'GET /cdn/sslData/88')
+                printf '%s\n' '{"id":88,"automated":true}'
+                ;;
+            esac
+        }
+        gcore_ensure_edge_certificate
+    )
+    certificate_calls=$(<"${certificate_calls_file}")
+    assert_contains "Gcore reuses the existing automated certificate after adding a hostname" \
+        "${certificate_calls}" 'GET /cdn/sslData/88'
+    assert_contains "Gcore keeps the existing certificate attached to the CDN resource" \
+        "${certificate_calls}" 'PATCH /cdn/resources/77 {"sslEnabled":true,"sslData":88}'
+    assert_not_contains "Gcore does not create a competing certificate for a secondary hostname" \
+        "${certificate_calls}" 'POST /cdn/sslData '
+
+    add_custom_subscription_calls=$(
+        require_root() { :; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
+        collect_installed_state() {
+            SUBSCRIPTION_MODE="link"
+            VLESS_CDN_DOMAIN="node.example.com"
+            SUBSCRIPTION_DOMAIN="node.example.com"
+            SUB_DOWNLOAD_NAME="EASY_ALL_TEST"
+            QUOTA_ENABLED=0
+        }
+        snapshot_subscription_update() { UPDATE_SUB_ROLLBACK_ON_EXIT=1; }
+        choose_subscription_mode() { SUBSCRIPTION_MODE="deploy"; }
+        collect_subscription_link_domain() { SUBSCRIPTION_DOMAIN="subscribe.example.net"; }
+        choose_subscription_download_name() { :; }
+        choose_monthly_quota() { QUOTA_ENABLED=0; }
+        ensure_allowed_tokens() { ALLOWED_TOKENS='{"owner":"owner-token-123"}'; }
+        validate_cdn_client_ip_family_runtime() { :; }
+        gcore_collect_api_token() { printf 'token\n'; }
+        gcore_validate_dns_zones() { GCORE_SUBSCRIPTION_DNS_ZONE="example.net"; printf 'zones\n'; }
+        gcore_verify_zone_delegation() { printf 'delegation\n'; }
+        gcore_apply_cdn() { printf 'cloud\n'; }
+        gcore_clear_api_token() { :; }
+        write_subscriptions() { printf 'write\n'; }
+        save_state() { :; }
+        refresh_runtime() { :; }
+        install_quota_timer() { :; }
+        install_cloudfront_fee_protection_timer() { :; }
+        validate_subscription_runtime() { :; }
+        show_subscription() { :; }
+        success() { :; }
+        update_subscription
+    )
+    assert_contains "adding a custom Gcore subscription hostname synchronizes cloud resources" \
+        "${add_custom_subscription_calls}" $'token\nzones\ndelegation\ncloud\nwrite'
 )
 
 printf 'easy_all Gcore CDN profile tests passed\n'
