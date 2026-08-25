@@ -17,9 +17,9 @@ content=$(<"${SCRIPT}")
     || fail "bootstrap must install git before cloning"
 [[ "${content}" == *'git clone --depth 1 --branch main'* ]] \
     || fail "bootstrap must shallow-clone main"
-[[ "${content}" == *'&& -f "${REPO_DIR}/lib/reality.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp_aws.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/xhttp_gcore.sh"'* \
+[[ "${content}" == *'&& -f "${REPO_DIR}/profiles/reality.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-aws.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-gcore.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp-runtime.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/cdn-traffic-guard.sh"'* \
@@ -32,7 +32,7 @@ content=$(<"${SCRIPT}")
     && "${content}" == *'&& -f "${REPO_DIR}/lib/scheduled-maintenance.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/subscription-auth.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/tcp-tuning.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/sample-mihomo.yaml"'* ]] \
+    && "${content}" == *'&& -f "${REPO_DIR}/templates/mihomo.yaml"'* ]] \
     || fail "bootstrap must validate the complete project"
 [[ "${content}" == *'"${SUDO[@]}" "${REPO_DIR}/easy_all" install'* ]] \
     || fail "bootstrap must preserve interactive stdin when starting installation"

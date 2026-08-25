@@ -6,6 +6,10 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
+bash -n "${ROOT_DIR}/debian_init.sh" "${ROOT_DIR}/scripts/debian-init.sh"
+grep -Fq 'scripts/debian-init.sh' "${ROOT_DIR}/debian_init.sh" \
+    || { printf 'not ok - Debian initializer wrapper does not delegate to scripts/\n' >&2; exit 1; }
+
 TESTS_RUN=0
 SCRIPT_LOADED=0
 
@@ -61,7 +65,7 @@ source_script_copy() {
     export HOME
     mkdir -p "${HOME}/.ssh"
     sed 's/^main "$@"/: # main disabled for tests/' \
-        "${ROOT_DIR}/debian_init.sh" >"${script_copy}"
+        "${ROOT_DIR}/scripts/debian-init.sh" >"${script_copy}"
     # shellcheck source=/dev/null
     source "${script_copy}"
     EASY_ALL_PLATFORM_MODULE_SOURCE="${ROOT_DIR}/lib/platform.sh"
@@ -73,7 +77,7 @@ extract_remote_script() {
     awk '/^  cat > "\$local_script" <<'"'"'REMOTE'"'"'/ {in_block=1; next}
       in_block && /^REMOTE$/ {in_block=0; next}
       in_block {sub(/^  /, ""); print}' \
-        "${ROOT_DIR}/debian_init.sh"
+        "${ROOT_DIR}/scripts/debian-init.sh"
 }
 
 test_validators_and_normalizers() {
@@ -308,7 +312,7 @@ test_remote_script_contract() {
 
 test_script_surface_contract() {
     local content readme platform_content
-    content="$(<"${ROOT_DIR}/debian_init.sh")"
+    content="$(<"${ROOT_DIR}/scripts/debian-init.sh")"
     readme="$(<"${ROOT_DIR}/README.md")"
     platform_content="$(<"${ROOT_DIR}/lib/platform.sh")"
 
@@ -353,7 +357,7 @@ test_script_surface_contract() {
 
 test_bbr_matches_easy_all() {
     local debian_content tcp_tuning_content setting
-    debian_content="$(<"${ROOT_DIR}/debian_init.sh")"
+    debian_content="$(<"${ROOT_DIR}/scripts/debian-init.sh")"
     tcp_tuning_content="$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
     local -a settings=(
         "net.core.default_qdisc = fq"

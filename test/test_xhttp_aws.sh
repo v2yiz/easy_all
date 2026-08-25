@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
-PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
+PROFILE="${ROOT_DIR}/profiles/xhttp-aws.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 PLATFORM_MODULE="${ROOT_DIR}/lib/platform.sh"
 SCHEDULED_MAINTENANCE_MODULE="${ROOT_DIR}/lib/scheduled-maintenance.sh"
@@ -935,7 +935,7 @@ EOF
     assert_equal "flat-free cloud flow creates WAF and Free plan" \
         $'waf\ncloudfront:flat-waf\nflat-plan' "${flat_flow}"
 
-    template="${ROOT_DIR}/sample-mihomo.yaml"
+    template="${ROOT_DIR}/templates/mihomo.yaml"
     node_file="${TMP_DIR}/mihomo-node.yaml"
     mihomo_file="${TMP_DIR}/subscription.yaml"
     validate_mihomo_template "${template}"

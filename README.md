@@ -759,29 +759,37 @@ Token 或 `GCORE_API_TOKEN` 持久化到状态文件。
 
 ```text
 easy_all
-├─ xhttp_gcore.sh            Gcore CDN Provider、状态与安装编排
-└─ lib/
-   ├─ reality.sh             Reality 编排与专属配置
-   ├─ xhttp_aws.sh           AWS Provider、状态与安装编排
-   ├─ xhttp-runtime.sh       AWS/Gcore 共用的 XHTTP 本机运行时
-   ├─ quota.sh               用户配额与统计
-   ├─ cdn-traffic-guard.sh    CDN 全局流量保护与 UTC 月度账本
-   ├─ platform.sh            root/systemd/SSH 启动保障
-   ├─ profile-common.sh      Profile 公共辅助、交互与字段校验
-   ├─ network.sh             公网 IPv4 探测、IPv4 直连与私网阻断
-   ├─ mihomo-template.sh     Mihomo 模板加载与校验
-   ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
-   ├─ xray-core.sh           Xray 下载、校验与安装
-   ├─ scheduled-maintenance.sh  证书续期与可选定时重启
-   ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
-   └─ tcp-tuning.sh          XanMod LTS BBRv3 内核与保守 TCP 参数
-sample-mihomo.yaml
+├─ profiles/
+│  ├─ reality.sh             Reality 编排与专属配置
+│  ├─ xhttp-aws.sh           AWS Provider、状态与安装编排
+│  └─ xhttp-gcore.sh         Gcore Provider、状态与安装编排
+├─ lib/
+│  ├─ xhttp-runtime.sh       AWS/Gcore 共用的 XHTTP 本机运行时
+│  ├─ quota.sh               用户配额与统计
+│  ├─ cdn-traffic-guard.sh    CDN 全局流量保护与 UTC 月度账本
+│  ├─ platform.sh            root/systemd/SSH 启动保障
+│  ├─ profile-common.sh      Profile 公共辅助、交互与字段校验
+│  ├─ network.sh             公网 IPv4 探测、IPv4 直连与私网阻断
+│  ├─ mihomo-template.sh     Mihomo 模板加载与校验
+│  ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
+│  ├─ xray-core.sh           Xray 下载、校验与安装
+│  ├─ scheduled-maintenance.sh  证书续期与可选定时重启
+│  ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
+│  └─ tcp-tuning.sh          XanMod LTS BBRv3 内核与保守 TCP 参数
+├─ templates/
+│  └─ mihomo.yaml            服务器订阅使用的生产模板
+└─ scripts/
+   └─ debian-init.sh         独立 Debian 初始化实现
 ```
 
 入口负责模式选择、命令分发和完整运行时的原子注册。Reality、AWS XHTTP 与 Gcore XHTTP Profile
 只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。AWS 与 Gcore 分别加载
 `xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现，彼此不加载对方的 Provider
 代码。两个 XHTTP Profile 通过 `xhttp_render_xray_config` 实现各自的服务端传输参数。
+
+根目录的 `xhttp_gcore.sh`、`sample-mihomo.yaml` 以及 `lib/reality.sh`、`lib/xhttp_aws.sh`
+仅为旧版 `self-update` 的升级前完整性检查保留兼容符号链接；实际源码分别位于 `profiles/`
+和 `templates/`，新版安装与注册不会把这些旧路径写入服务器运行目录。
 
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
 `scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`network.sh` 负责公网 IPv4
@@ -800,7 +808,7 @@ AWS/Gcore XHTTP、用户凭据与月度配额、TCP 参数回滚、Xray 配置�
 
 ## 独立工具：debian_init
 
-`debian_init.sh` 是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分或安装前置步骤，
+`debian_init.sh` 是向后兼容的公开入口，实际实现位于 `scripts/debian-init.sh`。它是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分或安装前置步骤，
 也不会安装、更新或卸载代理节点。
 
 它应在本地管理机交互运行，通过 SSH 初始化一台全新的 Debian 12/13 amd64、systemd、

@@ -3,10 +3,10 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
-REALITY_PROFILE="${ROOT_DIR}/lib/reality.sh"
-XHTTP_PROFILE="${ROOT_DIR}/lib/xhttp_aws.sh"
+REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
+XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-aws.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
-GCORE_PROFILE="${ROOT_DIR}/xhttp_gcore.sh"
+GCORE_PROFILE="${ROOT_DIR}/profiles/xhttp-gcore.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
 
@@ -19,7 +19,16 @@ module_functions() {
     sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
 }
 
-bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" "${GCORE_PROFILE}" "${ROOT_DIR}"/lib/*.sh
+bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
+    "${ROOT_DIR}/debian_init.sh" "${ROOT_DIR}"/profiles/*.sh \
+    "${ROOT_DIR}"/lib/*.sh "${ROOT_DIR}/scripts/debian-init.sh"
+
+[[ "$(readlink "${ROOT_DIR}/lib/reality.sh")" == "../profiles/reality.sh" \
+    && "$(readlink "${ROOT_DIR}/lib/xhttp_aws.sh")" == "../profiles/xhttp-aws.sh" \
+    && "$(readlink "${ROOT_DIR}/xhttp_gcore.sh")" == "profiles/xhttp-gcore.sh" \
+    && "$(readlink "${ROOT_DIR}/sample-mihomo.yaml")" == "templates/mihomo.yaml" ]] \
+    || fail "legacy self-update paths must remain compatibility symlinks"
+[[ ! -e "${ROOT_DIR}/XFLASH" ]] || fail "the unused root XFLASH snapshot must be removed"
 
 shared_modules=(
     quota.sh
@@ -39,10 +48,10 @@ shared_modules=(
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cdn-traffic-guard.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cdn-traffic-guard.sh'* ]] \
     || fail "CDN traffic guard is missing from runtime packaging"
-[[ "${LAUNCHER_CONTENT}" == *'"xhttp_gcore.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'xhttp_gcore.sh'* \
+[[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-gcore.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-gcore.sh'* \
     && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
-    && "$(<"${GCORE_PROFILE}")" != *'source "${XHTTP_GCORE_PROFILE_ROOT}/lib/xhttp_aws.sh"'* ]] \
+    && "$(<"${GCORE_PROFILE}")" != *'xhttp-aws.sh'* ]] \
     || fail "Gcore CDN profile must be packaged and reuse the XHTTP runtime"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/xhttp-runtime.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
@@ -91,10 +100,10 @@ grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
     || fail "network module must not depend on Profile template functions"
 
-if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/sample-mihomo.yaml"; then
+if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/templates/mihomo.yaml"; then
     fail "Mihomo subscription template must not force SSH ports to DIRECT"
 fi
-grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/sample-mihomo.yaml" \
+grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep Gemini on the selected PROXY exit"
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-enabled --quiet cron.service'* \

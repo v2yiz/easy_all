@@ -39,6 +39,11 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
     || fail "self-update must download and register the complete project"
 [[ "${launcher_content}" != *'cp -a "${EASY_ALL_INSTALL_DIR}/." "${stage}/"'* ]] \
     || fail "runtime registration must not retain files removed from the manifest"
+[[ "${launcher_content}" == *'"profiles/reality.sh"'* \
+    && "${launcher_content}" == *'"profiles/xhttp-aws.sh"'* \
+    && "${launcher_content}" == *'"profiles/xhttp-gcore.sh"'* \
+    && "${launcher_content}" == *'templates/mihomo.yaml'* ]] \
+    || fail "runtime registration must use the organized profile and template paths"
 preserve_source="${TMP_DIR}/preserve-source"
 preserve_stage="${TMP_DIR}/preserve-stage"
 mkdir -p "${preserve_source}" "${preserve_stage}"

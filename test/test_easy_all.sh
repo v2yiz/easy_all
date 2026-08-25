@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 TMP_DIR=$(mktemp -d)
-SCRIPT_COPY="${TMP_DIR}/easy_all.test.sh"
+SCRIPT_COPY="${TMP_DIR}/profiles/reality.test.sh"
 TESTS_RUN=0
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
@@ -52,8 +52,9 @@ assert_failure() {
 
 source_script_copy() {
     local module
+    install -d -m 0755 "${TMP_DIR}/lib" "${TMP_DIR}/profiles"
     for module in quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
-        install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/${module}"
+        install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/lib/${module}"
     done
     sed \
         -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${TMP_DIR}/state\"|" \
@@ -71,12 +72,12 @@ source_script_copy() {
         -e "s|^readonly UFW_BEFORE6_RULES=.*|readonly UFW_BEFORE6_RULES=\"${TMP_DIR}/before6.rules\"|" \
         -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
         -e "s|^readonly LEGACY_NFT_CONFIG=.*|readonly LEGACY_NFT_CONFIG=\"${TMP_DIR}/nftables.conf\"|" \
-        "${ROOT_DIR}/lib/reality.sh" >"${SCRIPT_COPY}"
+        "${ROOT_DIR}/profiles/reality.sh" >"${SCRIPT_COPY}"
     EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_all"
     EASY_ALL_ENTRY_COMMAND=easy_all
     # shellcheck source=/dev/null
     source "${SCRIPT_COPY}"
-    MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/sample-mihomo.yaml"
+    MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/templates/mihomo.yaml"
 }
 
 set_fixture() {
@@ -102,7 +103,7 @@ set_fixture() {
 test_syntax_and_worker_removal() {
     local script subscription_module
     bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
-    script=$(<"${ROOT_DIR}/lib/reality.sh")
+    script=$(<"${ROOT_DIR}/profiles/reality.sh")
     subscription_module=$(<"${ROOT_DIR}/lib/subscription-auth.sh")
     assert_not_contains "installer has no Worker API token" "CF_WORKER_API_TOKEN" "${script}"
     assert_not_contains "installer has no Worker deployment mode" "DEPLOY_MODE" "${script}"
@@ -356,31 +357,31 @@ test_subscription_stage_dispatch() {
 
 test_mihomo_template() {
     local invalid="${TMP_DIR}/invalid.yaml" rule_count
-    validate_mihomo_template "${ROOT_DIR}/sample-mihomo.yaml"
+    validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
-        "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+        "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH fake-IP DNS mode" \
-        "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+        "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH HTTP/3 DNS endpoint" \
         "https://223.6.6.6/dns-query#h3=true" \
-        "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH proxy bootstrap DNS endpoints" \
         "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
-        "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not add a non-XFLASH default nameserver" \
-        "default-nameserver:" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+        "default-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not add a non-XFLASH direct nameserver" \
-        "direct-nameserver:" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+        "direct-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not add the system resolver" \
-        "- system" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
-    rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/sample-mihomo.yaml" \
+        "- system" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" \
         | grep -Ec '^  - ')
     assert_equal "Mihomo template contains only the current XFLASH rules" \
         "162" "${rule_count}"
     assert_contains "Mihomo template uses the XFLASH rule-provider mirror" \
-        "edgeone.gh-proxy.org" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+        "edgeone.gh-proxy.org" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     grep -v '^# EASY_ALL_PROXY_NAME$' \
-        "${ROOT_DIR}/sample-mihomo.yaml" >"${invalid}"
+        "${ROOT_DIR}/templates/mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \
         validate_mihomo_template "${invalid}"
 }
@@ -452,7 +453,7 @@ test_subscription_generation() {
         "ip-version: dual" "${yaml}"
     assert_contains "dual-stack endpoint keeps Mihomo IPv6 enabled" \
         $'\nipv6: true\n' "${yaml}"
-    assert_contains "dual-stack endpoint keeps application AAAA enabled" \
+    assert_not_contains "dual-stack endpoint keeps XFLASH DNS unchanged" \
         $'\n    ipv6: true\n' "${yaml}"
     unset -f dig
 }

@@ -37,9 +37,9 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     || die "克隆 easy_all 仓库失败"
 
 [[ -f "${REPO_DIR}/easy_all" \
-    && -f "${REPO_DIR}/lib/reality.sh" \
-    && -f "${REPO_DIR}/lib/xhttp_aws.sh" \
-    && -f "${REPO_DIR}/xhttp_gcore.sh" \
+    && -f "${REPO_DIR}/profiles/reality.sh" \
+    && -f "${REPO_DIR}/profiles/xhttp-aws.sh" \
+    && -f "${REPO_DIR}/profiles/xhttp-gcore.sh" \
     && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \
     && -f "${REPO_DIR}/lib/quota.sh" \
     && -f "${REPO_DIR}/lib/cdn-traffic-guard.sh" \
@@ -52,7 +52,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/lib/scheduled-maintenance.sh" \
     && -f "${REPO_DIR}/lib/subscription-auth.sh" \
     && -f "${REPO_DIR}/lib/tcp-tuning.sh" \
-    && -f "${REPO_DIR}/sample-mihomo.yaml" ]] \
+    && -f "${REPO_DIR}/templates/mihomo.yaml" ]] \
     || die "下载的 easy_all 项目不完整"
 
 chmod 0700 "${REPO_DIR}/easy_all"

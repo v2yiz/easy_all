@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+EASY_ALL_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${EASY_ALL_SOURCE}" ]]; do
+    EASY_ALL_SOURCE_DIR="$(cd -- "$(dirname -- "${EASY_ALL_SOURCE}")" >/dev/null 2>&1 && pwd)"
+    EASY_ALL_SOURCE=$(readlink "${EASY_ALL_SOURCE}")
+    [[ "${EASY_ALL_SOURCE}" == /* ]] || EASY_ALL_SOURCE="${EASY_ALL_SOURCE_DIR}/${EASY_ALL_SOURCE}"
+done
+readonly EASY_ALL_ROOT="$(cd -- "$(dirname -- "${EASY_ALL_SOURCE}")" >/dev/null 2>&1 && pwd)"
+readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}"
+readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
+readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
+readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
+readonly -a EASY_ALL_RUNTIME_MODULES=(
+    "profiles/reality.sh"
+    "profiles/xhttp-aws.sh"
+    "profiles/xhttp-gcore.sh"
+    "lib/xhttp-runtime.sh"
+    "lib/quota.sh"
+    "lib/cdn-traffic-guard.sh"
+    "lib/platform.sh"
+    "lib/profile-common.sh"
+    "lib/network.sh"
+    "lib/mihomo-template.sh"
+    "lib/firewall.sh"
+    "lib/xray-core.sh"
+    "lib/scheduled-maintenance.sh"
+    "lib/subscription-auth.sh"
+    "lib/tcp-tuning.sh"
+)
+readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
+    "fail2ban-ufw-cidr.sh"
+    "reload-subscription-nginx.sh"
+)
+
+launcher_die() {
+    printf '\033[31m%s\033[0m\n' "$*" >&2
+    exit 1
+}
+
+launcher_read_bilingual() {
+    local label_zh=$1 label_en=$2 variable=$3 input
+    printf '%s\n%s\n' "${label_zh}" "${label_en}" >&2
+    IFS= read -r -p '> ' input
+    printf -v "${variable}" '%s' "${input}"
+}
+
+runtime_tree_is_complete() {
+    local root=$1 relative_path
+    [[ -f "${root}/easy_all" ]] || return 1
+    for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+        [[ -f "${root}/${relative_path}" ]] || return 1
+    done
+}
+
+launcher_usage() {
+    cat <<'EOF'
+用法: easy_all [命令]
+
+  install          交互选择“直连 Reality”、“AWS CDN XHTTP”或“Gcore CDN XHTTP”
+  show             显示当前节点
+  subscription     显示节点与订阅信息
+  self-update      只更新 easy_all 项目代码
+  apply            将已安装代码应用到本机配置
+  apply-cloud      应用本机配置并同步当前 CDN Provider 云资源
+  update-sub       重新选择订阅模式与月度用户配额
+  update-core      更新 Xray 核心
+  renew-cert       续期当前模式使用的证书
+  quota-status     显示用户配额与 CDN XHTTP 全局费用保护
+  quota-set        修改指定用户的月度额度
+  quota-reset      清零指定用户的本月已用量
+  status           显示运行状态
+  uninstall        卸载当前模式
+  help             显示帮助
+
+一台 VPS 只能安装一种模式。CDN XHTTP 可选择 AWS 或 Gcore Provider。
+EOF
+}
+
+show_install_guide() {
+    cat >&2 <<'EOF'
+安装流程概览：
+easy_all install
+├─ [1 默认] 直连 Reality
+│  ├─ 适用线路：优化线路
+│  ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → 公网 IPv6 探测
+│  ├─ 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
+│  ├─ 选择订阅输出
+│  │  ├─ 部署：先询问订阅域名、文件名、Token/配额
+│  │  └─ 仅节点：不收集订阅服务参数
+│  ├─ 下载 Xray → UFW → 安装并验收 Xray
+│  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
+├─ [2] CDN XHTTP（AWS）
+   ├─ 适用线路：非优化线路
+   ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略
+   ├─ Route 53 源站域名（必填）→ CloudFront CDN 域名（必填）
+   ├─ 选择 CloudFront 计费：1 Free 固定套餐，或 2 按量付费（默认推荐；升级 Paid plan 本身不收费）
+   │  └─ Choose CloudFront billing: 1 Free flat-rate, or 2 pay-as-you-go (recommended; upgrading the Paid plan itself is free)
+   ├─ 选择订阅输出；部署时询问文件名、Token/配额
+   ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A
+   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/CloudFront/已选计费模式/CDN Alias → 状态/命令/配额任务
+└─ [3] CDN XHTTP（Gcore）
+   ├─ 适用线路：非优化线路；先按 docs/gcore-guide.md 委派整个主域名到 Gcore Managed DNS
+   ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → Gcore 源站域名与 CDN 域名
+   ├─ 选择订阅输出；部署时询问文件名、Token/配额
+   ├─ 仅输入 GCORE_API_TOKEN → 验证 CDN/DNS 权限与 Gcore 权威 DNS 委派 → 源站 A
+   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → 源组/Gcore CDN/免费 Let's Encrypt/CDN CNAME → 980 GB 费用保护 → 状态/命令/配额任务
+
+订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
+
+提示：方括号中的值是直接回车采用的默认值；没有方括号的输入必须填写。
+EOF
+}
+
+state_value() {
+    local file=$1 key=$2 line value
+    [[ -f "${file}" ]] || return 1
+    line=$(grep -E "^${key}=" "${file}" | tail -n 1) || return 1
+    value=${line#*=}
+    value=${value#\'}
+    value=${value%\'}
+    value=${value#\"}
+    value=${value%\"}
+    printf '%s\n' "${value}"
+}
+
+detect_installed_mode() {
+    local protocol=""
+    if [[ -f "${EASY_ALL_STATE_FILE}" ]]; then
+        protocol=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
+        case "${protocol}" in
+        reality) printf 'reality\n' ;;
+        xhttp)
+            case "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" in
+            gcore) printf 'gcore\n' ;;
+            '' | aws) printf 'xhttp\n' ;;
+            *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;
+            esac
+            ;;
+        *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
+        esac
+        return
+    fi
+}
+
+choose_install_mode() {
+    local choice
+    [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
+    printf '请选择安装模式：\n' >&2
+    printf 'Choose the installation mode:\n' >&2
+    printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
+    printf '     Direct - Reality (recommended for optimized routes)\n' >&2
+    printf '  2. AWS CDN - XHTTP（非优化线路推荐）\n' >&2
+    printf '     AWS CDN - XHTTP (recommended for non-optimized routes)\n' >&2
+    printf '  3. Gcore CDN - XHTTP（非优化线路推荐）\n' >&2
+    printf '     Gcore CDN - XHTTP (recommended for non-optimized routes)\n' >&2
+    launcher_read_bilingual \
+        '请选择 [1]（直接回车使用默认值）:' \
+        'Choose [1] (press Enter to use the default):' choice
+    case "${choice:-1}" in
+    1) printf 'reality\n' ;;
+    2) printf 'xhttp\n' ;;
+    3) printf 'gcore\n' ;;
+    *) launcher_die "无效选择：${choice}" ;;
+    esac
+}
+
+profile_file() {
+    local mode=$1 candidate
+    case "${mode}" in
+    reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
+    xhttp) candidate="${EASY_ALL_ROOT}/profiles/xhttp-aws.sh" ;;
+    gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
+    *) launcher_die "不支持的安装模式：${mode}" ;;
+    esac
+    [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
+    printf '%s\n' "${candidate}"
+}
+
+stage_preserved_runtime_files() {
+    local current_dir=$1 stage_dir=$2 relative_path
+    for relative_path in "${EASY_ALL_PRESERVED_RUNTIME_FILES[@]}"; do
+        [[ -f "${current_dir}/${relative_path}" ]] || continue
+        install -m 0755 "${current_dir}/${relative_path}" \
+            "${stage_dir}/${relative_path}"
+    done
+}
+
+unified_register_easy_all_command() {
+    local source_root=${EASY_ALL_ROOT} destination="${EASY_ALL_INSTALL_DIR}/easy_all"
+    local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$" relative_path
+    local -a syntax_files
+    require_root
+    runtime_tree_is_complete "${source_root}" \
+        || die "easy_all 运行时文件不完整：${source_root}"
+
+    install -d -m 0755 "$(dirname "${EASY_ALL_INSTALL_DIR}")" "$(dirname "${EASY_ALL_COMMAND_PATH}")"
+    stage=$(mktemp -d "${EASY_ALL_INSTALL_DIR}.stage.XXXXXX")
+    install -d -m 0755 "${stage}/lib" "${stage}/profiles" "${stage}/templates"
+    install -m 0755 "${source_root}/easy_all" "${stage}/easy_all"
+    syntax_files=("${stage}/easy_all")
+    for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+        install -m 0644 "${source_root}/${relative_path}" \
+            "${stage}/${relative_path}"
+        syntax_files+=("${stage}/${relative_path}")
+    done
+    [[ ! -f "${source_root}/templates/mihomo.yaml" ]] \
+        || install -m 0644 "${source_root}/templates/mihomo.yaml" \
+            "${stage}/templates/mihomo.yaml"
+    stage_preserved_runtime_files "${EASY_ALL_INSTALL_DIR}" "${stage}"
+    bash -n "${syntax_files[@]}" \
+        || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
+
+    rm -rf -- "${backup}"
+    [[ ! -d "${EASY_ALL_INSTALL_DIR}" ]] || mv "${EASY_ALL_INSTALL_DIR}" "${backup}"
+    if ! mv "${stage}" "${EASY_ALL_INSTALL_DIR}" \
+        || ! ln -sfn "${destination}" "${EASY_ALL_COMMAND_PATH}"; then
+        rm -rf -- "${EASY_ALL_INSTALL_DIR}"
+        [[ ! -d "${backup}" ]] || mv "${backup}" "${EASY_ALL_INSTALL_DIR}"
+        die "注册 easy_all 命令失败，已恢复旧版本"
+    fi
+    rm -rf -- "${backup}"
+    success "已注册命令：${EASY_ALL_COMMAND_PATH}"
+}
+
+unified_self_update() {
+    local temp_dir repo_dir
+    require_root
+    command -v git >/dev/null 2>&1 || die "缺少 git；请先安装 git 与 ca-certificates"
+
+    temp_dir=$(make_temp_dir)
+    repo_dir="${temp_dir}/easy_all"
+    git clone --depth 1 --branch main "${EASY_ALL_REPOSITORY_URL}" "${repo_dir}" \
+        || die "克隆 easy_all 仓库失败"
+    [[ -f "${repo_dir}/templates/mihomo.yaml" ]] \
+        && runtime_tree_is_complete "${repo_dir}" \
+        || die "下载的 easy_all 项目不完整"
+
+    chmod 0700 "${repo_dir}/easy_all"
+    "${repo_dir}/easy_all" register-command
+    rm -rf -- "${temp_dir}"
+    success "easy_all 项目代码已更新；未修改 Xray、Nginx、订阅或云端 CDN 资源"
+}
+
+dispatch_profile_command() {
+    local mode=$1 command=$2
+    shift 2
+    case "${command}" in
+    install) install_all ;;
+    show) require_root; show_node ;;
+    subscription) require_root; show_subscription ;;
+    apply)
+        apply_easy_all
+        ;;
+    apply-cloud)
+        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
+            || launcher_die "apply-cloud 仅适用于 CDN XHTTP 模式"
+        apply_cloud_resources
+        ;;
+    update-sub)
+        if [[ "${mode}" == "reality" ]]; then
+            update_subscription 1
+        else
+            update_subscription
+        fi
+        ;;
+    update-core) update_current_core ;;
+    renew-cert)
+        if [[ "${mode}" == "reality" ]]; then
+            renew_subscription_certificate
+        else
+            renew_certificate
+        fi
+        ;;
+    quota-sync) quota_sync_usage ;;
+    cloudfront-fee-sync)
+        [[ "${mode}" == "xhttp" ]] \
+            || launcher_die "cloudfront-fee-sync 仅适用于 CDN XHTTP 模式"
+        cloudfront_fee_protection_sync
+        ;;
+    gcore-fee-sync)
+        [[ "${mode}" == "gcore" ]] \
+            || launcher_die "gcore-fee-sync 仅适用于 Gcore CDN XHTTP 模式"
+        cloudfront_fee_protection_sync
+        ;;
+    quota-status)
+        require_root
+        collect_installed_state
+        show_quota_status
+        [[ "${mode}" == "reality" ]] || show_cloudfront_fee_protection_status
+        ;;
+    quota-set) quota_set_user "$@" ;;
+    quota-reset) quota_reset_user "$@" ;;
+    status) show_status ;;
+    self-update) unified_self_update ;;
+    register-command) register_easy_all_command ;;
+    uninstall) uninstall_all "$@" ;;
+    help | -h | --help) usage ;;
+    *) usage; return 1 ;;
+    esac
+}
+
+main() {
+    local command=${1:-install} mode="" module
+    shift || true
+
+    if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
+        launcher_usage
+        return
+    fi
+
+    if [[ "${command}" == "install" ]]; then
+        (($# == 0)) || launcher_die "install 不接受协议参数，请在交互菜单中选择"
+        mode=$(detect_installed_mode)
+        [[ -z "${mode}" ]] || launcher_die "已安装 ${mode}；一台 VPS 只允许一种模式"
+        show_install_guide
+        mode=$(choose_install_mode)
+    else
+        mode=$(detect_installed_mode)
+        [[ -n "${mode}" ]] || launcher_die "easy_all 尚未安装"
+    fi
+
+    module=$(profile_file "${mode}")
+    export EASY_ALL_ENTRY_SCRIPT="${EASY_ALL_ROOT}/easy_all"
+    [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+        || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+    # shellcheck source=/dev/null
+    source "${module}"
+
+    register_easy_all_command() {
+        unified_register_easy_all_command
+    }
+    dispatch_profile_command "${mode}" "${command}" "$@"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

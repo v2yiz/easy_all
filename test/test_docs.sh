@@ -7,7 +7,7 @@ README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
 GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
-XHTTP_CONTENT=$(<"${ROOT_DIR}/lib/xhttp_aws.sh")
+XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-aws.sh")
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -29,7 +29,7 @@ while IFS= read -r relative_path; do
     assert_contains "README runtime module list" "${README_CONTENT}" "$(basename "${relative_path}")"
 done < <(
     sed -n '/readonly -a EASY_ALL_RUNTIME_MODULES=(/,/^)/p' "${ROOT_DIR}/easy_all" \
-        | sed -n 's/^[[:space:]]*"\(lib\/[^\"]*\)"/\1/p'
+        | sed -n 's/^[[:space:]]*"\(\(lib\|profiles\)\/[^\"]*\)"/\1/p'
 )
 
 for command in show subscription self-update apply apply-cloud update-sub update-core \
@@ -98,7 +98,11 @@ assert_contains "AWS guide clarifies the account-plan upgrade boundary" \
 assert_contains "README documents existing-install BBRv3 migration" "${README_CONTENT}" \
     '先执行 `sudo easy_all self-update`'
 assert_contains "README keeps the independent Debian initializer out of proxy chains" \
-    "${README_CONTENT}" '`debian_init.sh` 是独立的 SSH/系统初始化工具，不属于三条代理链'
+    "${README_CONTENT}" '它是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分'
+assert_contains "README documents the Debian initializer implementation path" \
+    "${README_CONTENT}" 'scripts/debian-init.sh'
+assert_contains "README documents the one-release path compatibility" \
+    "${README_CONTENT}" '兼容符号链接'
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" \
     '同步重建本机 Xray、Nginx 和订阅文件'
 assert_contains "XHTTP command message includes Xray" "${XHTTP_CONTENT}" \
