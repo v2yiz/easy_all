@@ -414,6 +414,8 @@ test_subscription_generation() {
         "ip-version: dual" "${yaml}"
     assert_contains "Reality endpoint enables the Mihomo IPv6 master switch" \
         $'\nipv6: true\n' "${yaml}"
+    assert_contains "Mihomo TUN bypasses CGNAT and overlay LAN addresses" \
+        "100.64.0.0/10" "${yaml}"
     assert_not_contains "rendered DNS is not extended beyond XFLASH" \
         $'\n    ipv6: true\n' "${yaml}"
     assert_contains "Mihomo subscription contains XFLASH rules" \

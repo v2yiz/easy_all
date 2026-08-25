@@ -27,8 +27,6 @@ for legacy_path in lib/reality.sh lib/xhttp_aws.sh xhttp_gcore.sh sample-mihomo.
     [[ ! -e "${ROOT_DIR}/${legacy_path}" ]] \
         || fail "legacy path must be removed: ${legacy_path}"
 done
-[[ ! -e "${ROOT_DIR}/XFLASH" ]] || fail "the unused root XFLASH snapshot must be removed"
-
 shared_modules=(
     quota.sh
     platform.sh

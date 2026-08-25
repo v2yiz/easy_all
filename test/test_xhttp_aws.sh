@@ -923,6 +923,8 @@ EOF
         "$(<"${mihomo_file}")" "DST-PORT,65533,"
     assert_contains "dual-stack CDN endpoint keeps Mihomo IPv6 enabled" \
         "$(<"${mihomo_file}")" $'\nipv6: true\n'
+    assert_contains "CDN Mihomo TUN bypasses CGNAT and overlay LAN addresses" \
+        "$(<"${mihomo_file}")" "100.64.0.0/10"
 
     (
         CDN_CLIENT_IP_FAMILY="dual"
