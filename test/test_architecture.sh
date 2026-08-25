@@ -94,6 +94,8 @@ grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
 if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/sample-mihomo.yaml"; then
     fail "Mihomo subscription template must not force SSH ports to DIRECT"
 fi
+grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/sample-mihomo.yaml" \
+    || fail "Mihomo subscription template must keep Gemini on the selected PROXY exit"
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-enabled --quiet cron.service'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-active --quiet cron.service'* \
@@ -165,29 +167,34 @@ fi
     die() { fail "$*"; }
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/lib/network.sh"
-    [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "ForceIPv4" ]] \
-        || fail "Xray direct egress must be fixed to IPv4"
+    [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "AsIs" ]] \
+        || fail "Xray direct egress must use automatic dual-stack resolution"
     jq -e '
-        map(.tag) == ["direct","block"]
-        and .[0].settings.domainStrategy == "ForceIPv4"
+        map(.tag) == ["direct","direct-ipv4","block"]
+        and .[0].settings.domainStrategy == "AsIs"
+        and .[1].settings.domainStrategy == "ForceIPv4"
     ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
         || fail "shared direct outbound policy is invalid"
     jq -e '
-        map(.tag) == ["direct","block"]
-        and .[0].settings.domainStrategy == "ForceIPv4"
+        map(.tag) == ["direct","direct-ipv4","block"]
+        and .[0].settings.domainStrategy == "AsIs"
+        and .[1].settings.domainStrategy == "ForceIPv4"
     ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
         || fail "shared XHTTP outbound policy must stay direct"
     jq -e '
         .domainStrategy == "IPOnDemand"
         and (.rules[0].ip | index("169.254.0.0/16"))
         and .rules[0].outboundTag == "block"
-        and .rules[1].outboundTag == "direct"
+        and .rules[1].outboundTag == "direct-ipv4"
+        and (.rules[1].domain | index("domain:gemini.google.com"))
+        and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_direct_routing_json)" >/dev/null \
         || fail "shared direct routing policy is invalid"
     jq -e '
         .domainStrategy == "IPOnDemand"
         and .rules[0].outboundTag == "block"
-        and .rules[1].outboundTag == "direct"
+        and .rules[1].outboundTag == "direct-ipv4"
+        and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_xhttp_routing_json)" >/dev/null \
         || fail "shared XHTTP routing policy must stay direct"
 )

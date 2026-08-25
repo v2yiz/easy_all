@@ -2,7 +2,7 @@ mixed-port: 1080
 allow-lan: false
 mode: rule
 log-level: error
-ipv6: false
+ipv6: true
 external-controller: '127.0.0.1:9090'
 unified-delay: true
 tcp-concurrent: true
@@ -15,7 +15,7 @@ sniffer:
     enable: true
     force-dns-mapping: true
     parse-pure-ip: true
-    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保服务端能重新按固定地址族解析。
+    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保规则和双栈 DNS 策略仍按域名生效。
     override-destination: true
     sniff:
       HTTP:
@@ -36,6 +36,8 @@ tun:
     auto-detect-interface: true
     inet4-address:
       - 198.18.0.1/30
+    inet6-address:
+      - fdfe:dcba:9876::1/126
     dns-hijack:
       - any:53
       - tcp://any:53
@@ -52,7 +54,7 @@ tun:
 
 dns:
     enable: true
-    ipv6: false
+    ipv6: true
     prefer-h3: false
     use-hosts: true
     use-system-hosts: true
@@ -60,20 +62,20 @@ dns:
     listen: '127.0.0.1:5335'
 
     default-nameserver:
-      # 用系统 DNS 引导 DoH 域名解析；部分网络会阻断公共 UDP DNS。
-      - system
+      # 使用纯 IP 国内 DNS 引导 DoH 域名解析，避免依赖运营商系统 DNS。
       - 223.5.5.5
       - 119.29.29.29
 
     proxy-server-nameserver:
-      # 代理服务器域名必须能在代理建立前解析，优先使用系统 DNS 避免鸡生蛋问题。
-      - system
+      # 代理服务器域名必须能在代理建立前解析，使用国内 DoH 避免鸡生蛋问题。
+      - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
+
+    direct-nameserver:
       - https://dns.alidns.com/dns-query
       - https://doh.pub/dns-query
 
     nameserver-policy:
-      '+.lan': system
-      '+.local': system
       # 已确认的境外域名（包括 Google/Gemini）经代理使用境外 DoH。
       'geosite:geolocation-!cn':
         - https://1.1.1.1/dns-query#PROXY
@@ -134,8 +136,8 @@ dns:
       - https://doh.pub/dns-query
 
     fallback:
-      - https://1.1.1.1/dns-query
-      - https://dns.google/dns-query
+      - 'https://1.1.1.1/dns-query#PROXY'
+      - 'https://dns.google/dns-query#PROXY'
     fallback-lazy-query: true
 
     fallback-filter:
@@ -169,194 +171,70 @@ proxy-groups:
 # EASY_ALL_PROXY_NAME
 
 rule-providers:
-    private:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt'
-      path: ./ruleset/loyalsoldier/private.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 262144
-    icloud:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/icloud.txt'
-      path: ./ruleset/loyalsoldier/icloud.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 262144
-    apple:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/apple.txt'
-      path: ./ruleset/loyalsoldier/apple.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 262144
-    google:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/google.txt'
-      path: ./ruleset/loyalsoldier/google.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 262144
-    gfw:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt'
-      path: ./ruleset/loyalsoldier/gfw.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 524288
-    greatfire:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/greatfire.txt'
-      path: ./ruleset/loyalsoldier/greatfire.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 262144
-    proxy:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt'
-      path: ./ruleset/loyalsoldier/proxy.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 4194304
-    direct:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt'
-      path: ./ruleset/loyalsoldier/direct.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 4194304
-    tld-not-cn:
-      type: http
-      behavior: domain
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt'
-      path: ./ruleset/loyalsoldier/tld-not-cn.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 1048576
-    telegramcidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/telegramcidr.txt'
-      path: ./ruleset/loyalsoldier/telegramcidr.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 262144
-    lancidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt'
-      path: ./ruleset/loyalsoldier/lancidr.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 262144
-    cncidr:
-      type: http
-      behavior: ipcidr
-      format: yaml
-      url: 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt'
-      path: ./ruleset/loyalsoldier/cncidr.yaml
-      interval: 86400
-      proxy: PROXY
-      size-limit: 1048576
-
+    icloud: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/icloud.txt', path: ./ruleset/icloud.yaml, interval: 86400 }
+    apple: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/apple.txt', path: ./ruleset/apple.yaml, interval: 86400 }
+    google: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/google.txt', path: ./ruleset/google.yaml, interval: 86400 }
+    proxy: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt', path: ./ruleset/proxy.yaml, interval: 86400 }
+    direct: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt', path: ./ruleset/direct.yaml, interval: 86400 }
+    private: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt', path: ./ruleset/private.yaml, interval: 86400 }
+    gfw: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt', path: ./ruleset/gfw.yaml, interval: 86400 }
+    greatfire: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/greatfire.txt', path: ./ruleset/greatfire.yaml, interval: 86400 }
+    tld-not-cn: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt', path: ./ruleset/tld-not-cn.yaml, interval: 86400 }
+    telegramcidr: { type: http, behavior: ipcidr, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/telegramcidr.txt', path: ./ruleset/telegramcidr.yaml, interval: 86400 }
+    cncidr: { type: http, behavior: ipcidr, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt', path: ./ruleset/cncidr.yaml, interval: 86400 }
+    lancidr: { type: http, behavior: ipcidr, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt', path: ./ruleset/lancidr.yaml, interval: 86400 }
+    applications: { type: http, behavior: classical, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/applications.txt', path: ./ruleset/applications.yaml, interval: 86400 }
 
 rules:
-  # ==================== 本地安全前置规则 ====================
-  - DOMAIN-SUFFIX,local,DIRECT
-  - DOMAIN-SUFFIX,localhost,DIRECT
-  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
-  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
-  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
-  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
-  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
-  - IP-CIDR6,::1/128,DIRECT,no-resolve
-  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
-  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
-
-  # 行情域名同时保留 Fake-IP 豁免与显式直连。
-  - DOMAIN-SUFFIX,10jqka.com.cn,DIRECT
-  - DOMAIN-SUFFIX,hexin.cn,DIRECT
-  - DOMAIN-SUFFIX,hexin.com.cn,DIRECT
-  - DOMAIN-SUFFIX,myhexin.com,DIRECT
-  - DOMAIN-SUFFIX,ths123.com,DIRECT
-  - DOMAIN-SUFFIX,iwencai.com,DIRECT
-  - DOMAIN-SUFFIX,iwencai.cn,DIRECT
-  - DOMAIN-SUFFIX,51ifind.com,DIRECT
-  - DOMAIN-SUFFIX,51ifind.com.cn,DIRECT
-  - DOMAIN-SUFFIX,eastmoney.com,DIRECT
-  - DOMAIN-SUFFIX,eastmoney.cn,DIRECT
-  - DOMAIN-SUFFIX,eastmoney.com.cn,DIRECT
-  - DOMAIN-SUFFIX,eastmoneysec.com,DIRECT
-  - DOMAIN-SUFFIX,dfcfw.com,DIRECT
-  - DOMAIN-SUFFIX,guba.com.cn,DIRECT
-  - DOMAIN-SUFFIX,18.cn,DIRECT
-  - DOMAIN-SUFFIX,tdx.com.cn,DIRECT
-  - DOMAIN-SUFFIX,nesc.cn,DIRECT
-  - DOMAIN-SUFFIX,citics.com,DIRECT
-  - DOMAIN-SUFFIX,citics.com.cn,DIRECT
-  - DOMAIN-SUFFIX,citicsinfo.com,DIRECT
-  - DOMAIN-SUFFIX,cs.ecitic.com,DIRECT
-  - DOMAIN-SUFFIX,csc108.com,DIRECT
-  - DOMAIN-SUFFIX,gtht.com,DIRECT
-  - DOMAIN-SUFFIX,gtja.com,DIRECT
-  - DOMAIN-SUFFIX,gtjas.com,DIRECT
-  - DOMAIN-SUFFIX,htsec.com,DIRECT
-  - DOMAIN-SUFFIX,htsec.com.cn,DIRECT
-  - DOMAIN-SUFFIX,haitong.com,DIRECT
-  - DOMAIN-SUFFIX,haitong.com.cn,DIRECT
-  - DOMAIN-SUFFIX,htsc.com,DIRECT
-  - DOMAIN-SUFFIX,htsc.com.cn,DIRECT
-  - DOMAIN-SUFFIX,cmschina.com,DIRECT
-  - DOMAIN-SUFFIX,cmschina.com.cn,DIRECT
-  - DOMAIN-SUFFIX,gf.com.cn,DIRECT
-  - DOMAIN-SUFFIX,guosen.com.cn,DIRECT
-  - DOMAIN-SUFFIX,chinastock.com.cn,DIRECT
-  - DOMAIN-SUFFIX,xyzq.com.cn,DIRECT
+  - DOMAIN,love.xflash.work,DIRECT
   - DOMAIN-SUFFIX,futooncdn.com,DIRECT
-
-  # Apple Relay 与 Copilot 例外必须先于 Apple/Microsoft 远程规则。
-  - DOMAIN-SUFFIX,apple-relay.akamaized.net,PROXY
-  - DOMAIN-SUFFIX,apple-relay.apple.com,PROXY
-  - DOMAIN-SUFFIX,apple-relay.cloudflare.com,PROXY
-  - DOMAIN-SUFFIX,apple-relay.fastly-edge.com,PROXY
-  - DOMAIN-SUFFIX,apple-relay.mask.apple-dns.net,PROXY
-  - DOMAIN,copilot.microsoft.com,PROXY
-  - DOMAIN,copilot.bing.com,PROXY
-  - DOMAIN,api.msn.com,PROXY
-  - DOMAIN,assets.msn.com,PROXY
-  - DOMAIN,gateway.bingviz.microsoft.net,PROXY
-  - DOMAIN,gateway.bingviz.microsoftapp.net,PROXY
-  - DOMAIN,in.appcenter.ms,PROXY
-  - DOMAIN,location.microsoft.com,PROXY
-  - DOMAIN,odc.officeapps.live.com,PROXY
-  - DOMAIN,self.events.data.microsoft.com,PROXY
-  - DOMAIN,services.bingapis.com,PROXY
-  - DOMAIN-SUFFIX,bing.com,PROXY
-  - DOMAIN-SUFFIX,githubcopilot.com,PROXY
-  - DOMAIN-SUFFIX,api.microsoftapp.net,PROXY
-  - DOMAIN-SUFFIX,edgeservices.bing.com,PROXY
-  - DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY
-
-  # ==================== 主体规则 ====================
+  - PROCESS-NAME,v2ray,DIRECT
+  - PROCESS-NAME,xray,DIRECT
+  - PROCESS-NAME,naive,DIRECT
+  - PROCESS-NAME,trojan,DIRECT
+  - PROCESS-NAME,trojan-go,DIRECT
+  - PROCESS-NAME,ss-local,DIRECT
+  - PROCESS-NAME,privoxy,DIRECT
+  - PROCESS-NAME,leaf,DIRECT
+  - PROCESS-NAME,v2ray.exe,DIRECT
+  - PROCESS-NAME,xray.exe,DIRECT
+  - PROCESS-NAME,naive.exe,DIRECT
+  - PROCESS-NAME,trojan.exe,DIRECT
+  - PROCESS-NAME,trojan-go.exe,DIRECT
+  - PROCESS-NAME,ss-local.exe,DIRECT
+  - PROCESS-NAME,privoxy.exe,DIRECT
+  - PROCESS-NAME,leaf.exe,DIRECT
+  - PROCESS-NAME,Surge,DIRECT
+  - PROCESS-NAME,Surge 2,DIRECT
+  - PROCESS-NAME,Surge 3,DIRECT
+  - PROCESS-NAME,Surge 4,DIRECT
+  - PROCESS-NAME,Surge%202,DIRECT
+  - PROCESS-NAME,Surge%203,DIRECT
+  - PROCESS-NAME,Surge%204,DIRECT
+  - PROCESS-NAME,Thunder,DIRECT
+  - PROCESS-NAME,DownloadService,DIRECT
+  - PROCESS-NAME,qBittorrent,DIRECT
+  - PROCESS-NAME,Transmission,DIRECT
+  - PROCESS-NAME,fdm,DIRECT
+  - PROCESS-NAME,aria2c,DIRECT
+  - PROCESS-NAME,Folx,DIRECT
+  - PROCESS-NAME,NetTransport,DIRECT
+  - PROCESS-NAME,uTorrent,DIRECT
+  - PROCESS-NAME,WebTorrent,DIRECT
+  - PROCESS-NAME,aria2c.exe,DIRECT
+  - PROCESS-NAME,BitComet.exe,DIRECT
+  - PROCESS-NAME,fdm.exe,DIRECT
+  - PROCESS-NAME,NetTransport.exe,DIRECT
+  - PROCESS-NAME,qbittorrent.exe,DIRECT
+  - PROCESS-NAME,Thunder.exe,DIRECT
+  - PROCESS-NAME,ThunderVIP.exe,DIRECT
+  - PROCESS-NAME,transmission-daemon.exe,DIRECT
+  - PROCESS-NAME,transmission-qt.exe,DIRECT
+  - PROCESS-NAME,uTorrent.exe,DIRECT
+  - PROCESS-NAME,WebTorrent.exe,DIRECT
+  - PROCESS-NAME,aDrive.exe,DIRECT
+  - RULE-SET,applications,DIRECT
+  - DOMAIN,ssl.gstatic.com,DIRECT
   - DOMAIN-SUFFIX,gstatic.com,PROXY
   - DOMAIN-SUFFIX,ipleak.net,PROXY
   - DOMAIN-SUFFIX,browserscan.net,PROXY
@@ -408,10 +286,24 @@ rules:
   - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
   - DOMAIN-SUFFIX,sora.com,PROXY
   - DOMAIN-KEYWORD,openai,PROXY
+  - DOMAIN,api.msn.com,PROXY
+  - DOMAIN,assets.msn.com,PROXY
+  - DOMAIN,copilot.microsoft.com,PROXY
+  - DOMAIN,gateway.bingviz.microsoft.net,PROXY
+  - DOMAIN,gateway.bingviz.microsoftapp.net,PROXY
+  - DOMAIN,in.appcenter.ms,PROXY
+  - DOMAIN,location.microsoft.com,PROXY
+  - DOMAIN,odc.officeapps.live.com,PROXY
   - DOMAIN,r.bing.com,PROXY
+  - DOMAIN,self.events.data.microsoft.com,PROXY
+  - DOMAIN,services.bingapis.com,PROXY
   - DOMAIN,sydney.bing.com,PROXY
   - DOMAIN,www.bing.com,PROXY
+  - DOMAIN-SUFFIX,api.microsoftapp.net,PROXY
+  - DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY
   - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
+  - DOMAIN-SUFFIX,edgeservices.bing.com,PROXY
+  - DOMAIN-SUFFIX,githubcopilot.com,PROXY
   - DOMAIN-KEYWORD,openaicom-api,PROXY
   - DOMAIN-SUFFIX,gvt2.com,PROXY
   - DOMAIN,ai.google.dev,PROXY
@@ -447,11 +339,11 @@ rules:
   - RULE-SET,proxy,PROXY
   - RULE-SET,direct,DIRECT
   - RULE-SET,tld-not-cn,PROXY
-  - RULE-SET,telegramcidr,PROXY,no-resolve
-  - RULE-SET,lancidr,DIRECT,no-resolve
-  - RULE-SET,cncidr,DIRECT,no-resolve
-  - GEOIP,LAN,DIRECT,no-resolve
-  - GEOIP,CN,DIRECT,no-resolve
+  - RULE-SET,telegramcidr,PROXY
+  - RULE-SET,lancidr,DIRECT
+  - RULE-SET,cncidr,DIRECT
+  - GEOIP,LAN,DIRECT
+  - GEOIP,CN,DIRECT
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT

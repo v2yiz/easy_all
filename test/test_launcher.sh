@@ -85,7 +85,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" == *'X3 --> X3A{CloudFront 计费模式选择}'* \
     && "${readme}" == *'X3A -->|Free 固定套餐| X4{订阅输出选择}'* \
     && "${readme}" == *'X3A -->|按量付费| X4'* \
-    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A / 公网验收 / 生成订阅]'* \
+    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]'* \
     && "${readme}" == *'X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]'* ]] \
     || fail "README install flow must match the installer execution order"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）:'* \

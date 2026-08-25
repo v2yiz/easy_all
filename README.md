@@ -104,7 +104,7 @@ flowchart TD
     X6 --> X7
     X7 --> X8[UFW / Nginx HTTP-01]
     X8 --> X9[源站证书 / Xray / Nginx / 本机运行时验收]
-    X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A / 公网验收 / 生成订阅]
+    X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]
     X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]
     X11 --> Z
 
@@ -145,8 +145,9 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文；密码提示也保持双语并继续隐藏输入，
 因此在中文乱码的 VNC 终端中仍可按英文提示完成操作。
 
-三种安装模式的 Xray 公网出站统一使用 `ForceIPv4`，不执行 IPv4/IPv6 测速，也不提供地址族
-切换配置。所有目标网站均直接看到 VPS 的 IPv4 出口。
+三种安装模式的 Xray 普通公网出站统一使用 `AsIs`，由系统拨号器自动处理 IPv4/IPv6。Gemini 相关域名保留
+独立的 `ForceIPv4` 出站，客户端规则也继续固定走 `PROXY`，因此 Gemini 始终看到所选 VPS 的
+IPv4 出口，不会随通用双栈解析切换出口地址。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
@@ -461,9 +462,8 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Reality 生成的 Mihomo/Clash 节点固定输出 `ip-version: ipv4`，模板总开关和业务 DNS 均保持
-`ipv6: false`。Reality 服务端仍可监听 IPv6，以兼容手工维护的客户端，但 easy_all 生成的节点
-不会选择 AAAA。
+Reality 生成的 Mihomo/Clash 节点输出 `ip-version: dual`，模板总开关和业务 DNS 均使用
+`ipv6: true`；客户端会自动并发尝试节点域名的 IPv4/IPv6 地址。
 
 Reality 服务端与 CDN XHTTP 均阻断 IPv4/IPv6 私网、链路本地、回环、组播及保留地址，
 避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
@@ -487,7 +487,8 @@ Reality 交互选项：
 - 使用域名作为连接地址时，AAAA 可以不发布；未发布时客户端暂时使用 A 记录。发布 AAAA 后，其地址必须与检测到的 VPS 公网 IPv6 一致。
 - 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
 
-Reality 入站是否双栈不会改变 easy_all 生成节点及 Xray 目标出站固定使用 IPv4 的策略。
+Reality 入站根据服务器公网 IPv6 自动选择 IPv4 或双栈监听；生成节点始终使用 `dual`，没有
+可用 AAAA 时会继续连接 A。Xray 普通目标出站使用双栈，Gemini 相关域名仍固定使用 IPv4 出口。
 
 自托管订阅域名必须直接解析到 VPS：
 
@@ -557,10 +558,10 @@ CDN XHTTP 交互选项：
 | AWS Secret Access Key | 无 | 默认授权方式下不允许为空 |
 
 XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
-自动生成，不需要用户输入。生成的 Mihomo/Clash 节点固定输出 `ip-version: ipv4`，模板总开关
-和业务 DNS 均保持 `ipv6: false`。CloudFront 分配关闭 IPv6，Route 53 仅创建 Alias A；升级旧
-部署时会自动移除指向同一分配的遗留 AAAA。Gcore 的 CNAME 目标可能仍发布 AAAA，但生成的客户端
-只选择 A。两种 Provider 的源站回源与 VPS 目标出站也固定使用 IPv4。
+自动生成，不需要用户输入。生成的 Mihomo/Clash 节点输出 `ip-version: dual`，模板总开关
+和业务 DNS 均使用 `ipv6: true`。CloudFront 分配开启 IPv6，Route 53 同时创建 Alias A/AAAA；
+Gcore 客户端也会使用其 CNAME 目标发布的 A/AAAA。两种 Provider 的源站回源仍使用独立 IPv4 A
+记录；VPS 普通目标出站使用双栈，Gemini 相关域名保持固定 IPv4 出口。
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种
 Profile 的订阅菜单都会把当前值显示在方括号中，直接回车沿用当前状态。
@@ -584,14 +585,14 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 
 > **DNS 操作边界：手动一次，后续自动。** 你只需手动创建 Route 53 Public Hosted Zone，并在域名
 > 注册商将整个主域名的 NS 委派到 Route 53。之后安装脚本会探测 VPS 公网 IPv4，自动创建源站 A 记录、
-> ACM DNS 验证记录，以及指向 CloudFront 的 Alias A；无需手动创建这些节点记录。脚本不会
+> ACM DNS 验证记录，以及指向 CloudFront 的 Alias A/AAAA；无需手动创建这些节点记录。脚本不会
 > 创建 Hosted Zone、修改注册商 NS，或接管已有记录。VPS IPv4 变化后，执行 `easy_all apply-cloud`
 > 即可重新探测并同步源站 A 记录。
 
 | 域名示例             | 用途                                      |
 | -------------------- | ----------------------------------------- |
 | `origin.example.com` | CloudFront HTTPS 源站，A 记录指向 VPS     |
-| `node.example.com`   | 客户端和订阅入口，Alias A 指向 CloudFront |
+| `node.example.com`   | 客户端和订阅入口，Alias A/AAAA 指向 CloudFront |
 
 ### CloudFront 计费选择与估算
 
@@ -600,7 +601,7 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 | 模式 | CloudFront 月度额度与超额 | Route 53/WAF 估算 |
 | --- | --- | --- |
 | Free 固定套餐 | `$0/月`，基准 100 GB + 100 万请求。超过基准仍无超额费，费用估算为 `$0`；持续明显超额时 AWS 可能减少或调整边缘交付能力。 | 脚本创建的 WAF，以及加入套餐的 CDN Hosted Zone、CloudFront Alias 和额度内其他 DNS 查询由套餐覆盖。若源站使用另一个 Hosted Zone，该 Zone 仍约 `$0.50/月 + $0.40/百万次标准查询`。 |
-| 按量付费（默认） | 每月免费 1 TB + 1000 万请求。脚本自动启用独立的 980 GB 本机全局费用保护；超过 1 TB 后，以常见美国/欧洲至亚太边缘价格估算，每多 100 GB 约 `$8.50-$12.00`，超额请求另按实际边缘区域计费。 | 脚本不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；指向 CloudFront 的 Alias A 查询免费，其他标准查询约 `$0.04/10万次`、`$0.40/百万次`。同一 Zone 约 `$0.50/月`，源站与 CDN 分属两个 Zone 时约 `$1.00/月`，再加少量标准查询费。 |
+| 按量付费（默认） | 每月免费 1 TB + 1000 万请求。脚本自动启用独立的 980 GB 本机全局费用保护；超过 1 TB 后，以常见美国/欧洲至亚太边缘价格估算，每多 100 GB 约 `$8.50-$12.00`，超额请求另按实际边缘区域计费。 | 脚本不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；指向 CloudFront 的 Alias A/AAAA 查询免费，其他标准查询约 `$0.04/10万次`、`$0.40/百万次`。同一 Zone 约 `$0.50/月`，源站与 CDN 分属两个 Zone 时约 `$1.00/月`，再加少量标准查询费。 |
 
 两种 CloudFront 计费优惠不能叠加。按量付费的估算不包含 VPS 自身的 1 TB 上行流量、域名注册、
 DNSSEC KMS、Health Check、Query Logs 等费用；最终金额还取决于实际边缘区域与 AWS 当期价格。
@@ -723,8 +724,8 @@ STATE_VERSION=4  # Reality
 STATE_VERSION=5  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
-REALITY_CLIENT_IP_FAMILY=ipv4                 # 固定；兼容旧状态字段
-CDN_CLIENT_IP_FAMILY=ipv4                     # 固定；兼容旧状态字段
+REALITY_CLIENT_IP_FAMILY=auto                 # 节点输出 dual
+CDN_CLIENT_IP_FAMILY=auto                     # 节点输出 dual
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
 CLOUDFRONT_FEE_PROTECTION_GB=0|980            # AWS 固定套餐|AWS 按量付费
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP

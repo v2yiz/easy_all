@@ -544,7 +544,7 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "ipv4"
+        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "auto"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -605,7 +605,7 @@ show_status() {
     printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
     show_bbrv3_status
-    printf 'CDN 客户端节点族: %s（固定）\n' \
+    printf 'CDN 客户端节点族: %s（自动双栈）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     printf 'Gcore DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"

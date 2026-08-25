@@ -61,20 +61,20 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
-assert_contains "README documents fixed CDN client IPv4" "${README_CONTENT}" \
-    'CDN_CLIENT_IP_FAMILY=ipv4'
-assert_contains "AWS guide documents fixed CDN client IPv4" "${AWS_GUIDE_CONTENT}" \
-    '固定使用'
-assert_contains "Gcore guide documents fixed CDN client IPv4" "${GCORE_GUIDE_CONTENT}" \
-    '`ip-version: ipv4`'
-assert_contains "README documents the fixed Reality endpoint family" "${README_CONTENT}" \
-    'REALITY_CLIENT_IP_FAMILY=ipv4'
+assert_contains "README documents automatic CDN client dual stack" "${README_CONTENT}" \
+    'CDN_CLIENT_IP_FAMILY=auto'
+assert_contains "AWS guide documents dual-stack CDN clients" "${AWS_GUIDE_CONTENT}" \
+    '`ip-version: dual`'
+assert_contains "Gcore guide documents dual-stack CDN clients" "${GCORE_GUIDE_CONTENT}" \
+    '`ip-version: dual`'
+assert_contains "README documents the automatic Reality endpoint family" "${README_CONTENT}" \
+    'REALITY_CLIENT_IP_FAMILY=auto'
 assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \
     '带 SNI 的 TLS 1.3 握手验收'
 assert_contains "README documents Reality private destination blocking" "${README_CONTENT}" \
     '避免订阅凭据泄露后被用于访问 VPS 内网或云元数据'
-assert_contains "README documents fixed IPv4 egress for all profiles" "${README_CONTENT}" \
-    '三种安装模式的 Xray 公网出站统一使用 `ForceIPv4`'
+assert_contains "README documents dual-stack egress with fixed Gemini IPv4" "${README_CONTENT}" \
+    'Gemini 相关域名保留'
 assert_contains "README documents bilingual interactive prompts" "${README_CONTENT}" \
     '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
 assert_contains "README documents Gcore client H2 keepalive" "${README_CONTENT}" \

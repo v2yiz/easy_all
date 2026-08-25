@@ -45,7 +45,7 @@ AWS 注册时选择的 **Free account plan** 与 CloudFront 计费方式不是�
    套餐，并把 CDN 域名所属 Route 53 Hosted Zone 加入套餐。
 4. 选择按量付费时，创建不关联 WAF 和固定套餐的 CloudFront 分配，使用按量付费永久免费额度，
    并在 VPS 上自动启用 `980 GB` 全局费用保护。
-5. 把 CDN 域名写成 CloudFront Alias A；Route 53 不对直接指向 CloudFront 的 Alias 查询收费。
+5. 把 CDN 域名写成 CloudFront Alias A/AAAA；Route 53 不对直接指向 CloudFront 的 Alias 查询收费。
 
 重要：AWS **升级为 Paid account plan 的动作本身不收费，也没有固定月费**；它不是购买
 CloudFront 付费套餐。升级只是解除 Free account plan 的服务限制并开启标准按量计费。只要仍在
@@ -54,8 +54,9 @@ CloudFront 付费套餐。升级只是解除 Free account plan 的服务限制�
 表示使用每月 1 TB + 1000 万请求免费额度，并由本机 980 GB 安全阀提前阻断节点流量；它不表示
 升级瞬间就会扣费。
 
-CloudFront 分配关闭 IPv6，安装器仅创建 Alias A，生成的 Mihomo 节点固定使用
-`ip-version: ipv4`。CloudFront 到源站以及 VPS 到目标网站也全部固定为 IPv4。
+CloudFront 分配开启 IPv6，安装器同时创建 Alias A/AAAA，生成的 Mihomo 节点使用
+`ip-version: dual`。CloudFront 到源站继续使用独立 IPv4 A 记录；VPS 到普通目标使用自动双栈，
+Gemini 相关域名保持固定 IPv4 出口。
 
 正常通过 Upgrade Plan/API 升级不会清空剩余 Free Tier Credit；Credit 会继续用于符合条件的
 后续账单直至原到期日。不要为了升级而加入 AWS Organizations 或启用 Control Tower，这两种
@@ -66,7 +67,7 @@ CloudFront 分配关闭 IPv6，安装器仅创建 Alias A，生成的 Mihomo 节
 | 模式 | CloudFront 额度及超出估算 | Route 53 与 WAF 估算 |
 | --- | --- | --- |
 | Free 固定套餐 | `$0/月`，基准 **100 GB + 100 万次请求**。超过基准仍无超额费，因此超出费用估算仍为 `$0`；若长期明显超额，AWS 可能调整边缘交付性能。 | 套餐覆盖对应 WAF，以及加入套餐的 CDN Hosted Zone、记录和额度内查询。源站若位于另一个 Hosted Zone，该 Zone 另约 `$0.50/月 + $0.40/百万次标准查询`。 |
-| 按量付费（脚本默认） | 每月免费 **1 TB + 1000 万次请求**。脚本按 UTC 自然月累计 Xray 上下行总流量并在 **980 GB** 阻断；超过 1 TB 后按边缘区域计价，每多 100 GB 约 `$8.50-$12.00`，超额请求另计。 | 不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；CloudFront Alias A 查询免费，其他标准 DNS 查询约 `$0.04/10万次`、`$0.40/百万次`。一个 Zone 通常约 `$0.50/月`，两个 Zone 约 `$1.00/月`，再加少量普通查询费。 |
+| 按量付费（脚本默认） | 每月免费 **1 TB + 1000 万次请求**。脚本按 UTC 自然月累计 Xray 上下行总流量并在 **980 GB** 阻断；超过 1 TB 后按边缘区域计价，每多 100 GB 约 `$8.50-$12.00`，超额请求另计。 | 不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；CloudFront Alias A/AAAA 查询免费，其他标准 DNS 查询约 `$0.04/10万次`、`$0.40/百万次`。一个 Zone 通常约 `$0.50/月`，两个 Zone 约 `$1.00/月`，再加少量普通查询费。 |
 
 固定套餐不能与按量付费的 1 TB 免费额度叠加。Free 固定套餐每个 AWS 账号最多可有三个；其
 基准额度不是硬性断流上限，但不适合作为长期 1 TB 性能保证。按量付费模式不创建 WAF，因为
@@ -96,7 +97,7 @@ AWS 官方参考：
 委派方案。
 
 完成上述委派后，不需要手动创建 `origin` 的 A 记录、ACM 验证记录或 `node` 的
-CloudFront Alias A：安装脚本会自动写入该节点记录。脚本不会替你创建 Hosted Zone、修改
+CloudFront Alias A/AAAA：安装脚本会自动写入该节点记录。脚本不会替你创建 Hosted Zone、修改
 注册商的 NS，或接管已有 DNS 记录；这一步仍需在 AWS 和当前 DNS 服务商处完成。
 
 例如准备使用 `origin.example.com` 和 `node.example.com`，统一将 `example.com` 交给 Route 53：

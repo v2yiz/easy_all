@@ -117,7 +117,7 @@ assert_not_contains "Gcore profile never persists the API token" \
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
     XHTTP_NODE_NAME="GCORE_XHTTP_TEST"
     XHTTP_PATH="/xhttp-test-path"
-    CDN_CLIENT_IP_FAMILY="ipv4"
+    CDN_CLIENT_IP_FAMILY="auto"
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
     mihomo=$(build_mihomo_node)
     assert_contains "Gcore Mihomo node pings before the edge H2 idle timeout" \

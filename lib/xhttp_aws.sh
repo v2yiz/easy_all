@@ -222,7 +222,7 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "ipv4"
+        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "auto"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -695,7 +695,7 @@ build_distribution_config() {
           ViewerCertificate:{CloudFrontDefaultCertificate:false,ACMCertificateArn:$certificate,
             SSLSupportMethod:"sni-only",MinimumProtocolVersion:"TLSv1.2_2021"},
           Restrictions:{GeoRestriction:{RestrictionType:"none",Quantity:0}},
-          WebACLId:$web_acl,HttpVersion:"http2",IsIPV6Enabled:false,Staging:false,
+          WebACLId:$web_acl,HttpVersion:"http2",IsIPV6Enabled:true,Staging:false,
           ContinuousDeploymentPolicyId:""
         }' >"${destination}"
 }
@@ -759,15 +759,15 @@ build_viewer_alias_change_batch() {
         def alias_record($type):
           {Action:"CREATE",ResourceRecordSet:{Name:$name,Type:$type,
             AliasTarget:{HostedZoneId:$target_zone,DNSName:$target,EvaluateTargetHealth:false}}};
-        {Comment:"easy_all CloudFront IPv4 Alias A",
+        {Comment:"easy_all CloudFront dual-stack Alias A/AAAA",
          Changes:(($conflicts | map({Action:"DELETE",ResourceRecordSet:.})) +
-           [alias_record("A")])}' >"${destination}"
+           [alias_record("A"),alias_record("AAAA")])}' >"${destination}"
 }
 
 viewer_records_are_alias_target() {
-    local conflicts=$1 target=$2 require_ipv4_only=${3:-0}
+    local conflicts=$1 target=$2 required_mode=${3:-any}
     jq -e --arg target "${target}" --arg zone "${CLOUDFRONT_ROUTE53_ZONE_ID}" \
-        --argjson require_ipv4_only "${require_ipv4_only}" '
+        --arg required_mode "${required_mode}" '
         (length >= 1 and length <= 2) and
         (all(.[];
           (.Type == "A" or .Type == "AAAA") and
@@ -776,7 +776,9 @@ viewer_records_are_alias_target() {
           ((.AliasTarget.DNSName | rtrimstr(".")) == ($target | rtrimstr("."))))) and
         ((map(.Type) | unique | length) == length) and
         ((map(.Type) | index("A")) != null) and
-        (($require_ipv4_only == 0) or ((map(.Type) | sort) == ["A"]))' \
+        (($required_mode == "any") or
+         ($required_mode == "ipv4" and ((map(.Type) | sort) == ["A"])) or
+         ($required_mode == "dual" and ((map(.Type) | sort) == ["A","AAAA"])))' \
         <<<"${conflicts}" >/dev/null
 }
 
@@ -787,8 +789,8 @@ ensure_viewer_alias_records() {
         --output json) || die "查询 Route 53 记录失败"
     conflicts=$(jq -c --arg name "${VLESS_CDN_DOMAIN}." \
         '[.ResourceRecordSets[]|select(.Name==$name and .Type!="NS" and .Type!="SOA")]' <<<"${records}")
-    if viewer_records_are_alias_target "${conflicts}" "${target}" 1; then
-        info "Route 53 CDN Alias A 已指向当前 CloudFront 分配"
+    if viewer_records_are_alias_target "${conflicts}" "${target}" dual; then
+        info "Route 53 CDN Alias A/AAAA 已指向当前 CloudFront 分配"
         return 0
     fi
     if [[ "$(jq 'length' <<<"${conflicts}")" -gt 0 ]] \
@@ -799,8 +801,8 @@ ensure_viewer_alias_records() {
     change="${RUNTIME_TMP}/route53-viewer-alias.json"
     build_viewer_alias_change_batch "${change}" "${conflicts}" "${target}"
     aws route53 change-resource-record-sets --hosted-zone-id "${AWS_ROUTE53_ZONE_ID}" \
-        --change-batch "file://${change}" >/dev/null || die "写入 CloudFront Alias A 失败"
-    success "Route 53 CDN 记录已收敛为仅 IPv4 的 CloudFront Alias A"
+        --change-batch "file://${change}" >/dev/null || die "写入 CloudFront Alias A/AAAA 失败"
+    success "Route 53 CDN 记录已收敛为双栈 CloudFront Alias A/AAAA"
 }
 
 wait_for_cloudfront() {
@@ -1009,7 +1011,7 @@ show_status() {
     printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\nXHTTP 路径: %s\n' \
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}"
     show_bbrv3_status
-    printf 'CDN 客户端节点族: %s（固定）\n' \
+    printf 'CDN 客户端节点族: %s（自动双栈）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"

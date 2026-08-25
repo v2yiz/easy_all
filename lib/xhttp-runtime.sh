@@ -121,8 +121,8 @@ validate_xhttp_path() {
 }
 
 configure_cdn_client_ip_family() {
-    CDN_CLIENT_IP_FAMILY="ipv4"
-    CDN_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+    CDN_CLIENT_IP_FAMILY="auto"
+    CDN_CLIENT_IP_FAMILY_RESOLVED="dual"
 }
 
 resolve_cdn_client_ip_family() {

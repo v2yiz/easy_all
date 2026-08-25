@@ -482,8 +482,8 @@ EOF
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
         load_state
-        assert_equal "old XHTTP state migrates CDN client family to IPv4" \
-            "ipv4" "${CDN_CLIENT_IP_FAMILY}"
+        assert_equal "old XHTTP state migrates CDN client family to auto" \
+            "auto" "${CDN_CLIENT_IP_FAMILY}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
         assert_equal "node name environment override wins during update" \
@@ -505,7 +505,7 @@ EOF
         "$(find_route53_zone_for_domain node.notexample.com "${zones}")"
 
     VLESS_CDN_DOMAIN="node.example.com"
-    CDN_CLIENT_IP_FAMILY="ipv4"
+    CDN_CLIENT_IP_FAMILY="auto"
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
     certificates='{"CertificateSummaryList":[
       {"CertificateArn":"arn:pending-exact","DomainName":"node.example.com","Status":"PENDING_VALIDATION"},
@@ -622,8 +622,8 @@ EOF
     assert_contains "Mihomo XHTTP path keeps the Nginx location suffix" \
         "${mihomo}" 'path: "/xhttp-test-path/"'
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
-    assert_contains "Mihomo XHTTP pins the selected client IP family" \
-        "${mihomo}" "ip-version: ipv4"
+    assert_contains "Mihomo XHTTP uses automatic dual stack" \
+        "${mihomo}" "ip-version: dual"
     assert_contains "Mihomo XMUX uses expanded concurrency" \
         "${mihomo}" 'max-concurrency: "8-16"'
     assert_not_contains "Mihomo relies on its compatible padding defaults" \
@@ -653,7 +653,7 @@ EOF
         (.DefaultCacheBehavior.AllowedMethods.Items | sort) == (["GET","HEAD","OPTIONS","PUT","POST","PATCH","DELETE"] | sort) and
         .DefaultCacheBehavior.GrpcConfig.Enabled == true and
         .HttpVersion == "http2" and
-        .IsIPV6Enabled == false and
+        .IsIPV6Enabled == true and
         .ViewerCertificate.ACMCertificateArn == "arn:aws:acm:us-east-1:111122223333:certificate/test" and
         .WebACLId == "arn:aws:wafv2:us-east-1:111122223333:global/webacl/easy-all/test" and
         .Comment == "easy_all:xhttp:node.example.com"
@@ -694,31 +694,33 @@ EOF
     build_viewer_alias_change_batch "${viewer_alias}" '[]' \
         "d111111abcdef8.cloudfront.net."
     jq -e '
-        .Changes|length == 1 and
+        .Changes|length == 2 and
         .[0].Action == "CREATE" and .[0].ResourceRecordSet.Type == "A" and
         .[0].ResourceRecordSet.AliasTarget.HostedZoneId == "Z2FDTNDATAQYW2" and
-        .[0].ResourceRecordSet.AliasTarget.DNSName == "d111111abcdef8.cloudfront.net."
+        .[0].ResourceRecordSet.AliasTarget.DNSName == "d111111abcdef8.cloudfront.net." and
+        .[1].Action == "CREATE" and .[1].ResourceRecordSet.Type == "AAAA"
     ' "${viewer_alias}" >/dev/null || fail "Route 53 viewer Alias creation batch is invalid"
     managed_dual_alias='[
       {"Name":"node.example.com.","Type":"A","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111111abcdef8.cloudfront.net.","EvaluateTargetHealth":false}},
       {"Name":"node.example.com.","Type":"AAAA","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111111abcdef8.cloudfront.net.","EvaluateTargetHealth":false}}
     ]'
     viewer_records_are_alias_target "${managed_dual_alias}" \
-        "d111111abcdef8.cloudfront.net." \
-        || fail "legacy managed A/AAAA aliases must be recognized for automatic migration"
+        "d111111abcdef8.cloudfront.net." dual \
+        || fail "managed A/AAAA aliases must satisfy the dual-stack target"
     if viewer_records_are_alias_target "${managed_dual_alias}" \
-        "d111111abcdef8.cloudfront.net." 1; then
-        fail "legacy managed A/AAAA aliases must not satisfy the IPv4-only target"
+        "d111111abcdef8.cloudfront.net." ipv4; then
+        fail "managed A/AAAA aliases must not satisfy an IPv4-only target"
     fi
     build_viewer_alias_change_batch "${viewer_alias}" "${managed_dual_alias}" \
         "d111111abcdef8.cloudfront.net."
     jq -e '
-        .Changes|length == 3 and
+        .Changes|length == 4 and
         .[0].Action == "DELETE" and .[0].ResourceRecordSet.Type == "A" and
         .[1].Action == "DELETE" and .[1].ResourceRecordSet.Type == "AAAA" and
-        .[2].Action == "CREATE" and .[2].ResourceRecordSet.Type == "A"
+        .[2].Action == "CREATE" and .[2].ResourceRecordSet.Type == "A" and
+        .[3].Action == "CREATE" and .[3].ResourceRecordSet.Type == "AAAA"
     ' "${viewer_alias}" >/dev/null \
-        || fail "legacy Route 53 A/AAAA aliases do not migrate to IPv4-only"
+        || fail "Route 53 A/AAAA aliases are not rebuilt as dual stack"
 
     subscriptions='{"subscriptionSummaries":[
       {"arn":"arn:plan:other","planTier":"FREE","resourceArns":["arn:distribution:other"]},
@@ -859,24 +861,29 @@ EOF
         "$(grep -Fc 'network: xhttp' "${mihomo_file}" | tr -d ' ')"
     assert_contains "Mihomo subscription CDN domain" "$(<"${mihomo_file}")" "node.example.com"
     assert_contains "Mihomo subscription node name" "$(<"${mihomo_file}")" "EASY_ALL_XHTTP_TEST"
-    assert_contains "Mihomo subscription rules" "$(<"${mihomo_file}")" "RULE-SET,telegramcidr,PROXY,no-resolve"
+    assert_contains "Mihomo subscription XFLASH rules" \
+        "$(<"${mihomo_file}")" "DOMAIN,love.xflash.work,DIRECT"
+    assert_contains "Mihomo subscription XFLASH application rules" \
+        "$(<"${mihomo_file}")" "RULE-SET,applications,DIRECT"
+    assert_not_contains "Mihomo subscription removes legacy Apple Relay additions" \
+        "$(<"${mihomo_file}")" "apple-relay.apple.com"
     assert_contains "Mihomo subscription XMUX" "$(<"${mihomo_file}")" "h-keep-alive-period: 0"
     assert_not_contains "Mihomo subscription does not override SSH port 22 routing" \
         "$(<"${mihomo_file}")" "DST-PORT,22,"
     assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \
         "$(<"${mihomo_file}")" "DST-PORT,65533,"
-    assert_contains "IPv4 CDN endpoint keeps Mihomo IPv6 disabled" \
-        "$(<"${mihomo_file}")" $'\nipv6: false\n'
+    assert_contains "dual-stack CDN endpoint keeps Mihomo IPv6 enabled" \
+        "$(<"${mihomo_file}")" $'\nipv6: true\n'
 
     (
         CDN_CLIENT_IP_FAMILY="dual"
         CDN_CLIENT_IP_FAMILY_RESOLVED=""
         validate_cdn_client_ip_family_runtime
-        assert_equal "legacy dual-stack CDN preference is normalized to IPv4" \
-            "ipv4" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-        build_mihomo_node >"${node_file}.ipv4"
-        assert_contains "CDN node remains fixed to IPv4" \
-            "$(<"${node_file}.ipv4")" "ip-version: ipv4"
+        assert_equal "legacy dual-stack CDN preference is normalized to auto" \
+            "dual" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+        build_mihomo_node >"${node_file}.dual"
+        assert_contains "CDN node uses automatic dual stack" \
+            "$(<"${node_file}.dual")" "ip-version: dual"
     )
 
     encoded=$(printf '%s' "$(build_node_link)" | openssl base64 -A)

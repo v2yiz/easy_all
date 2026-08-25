@@ -90,8 +90,8 @@ set_fixture() {
     REALITY_SHORT_ID="0123456789abcdef"
     REALITY_INBOUND_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
-    REALITY_CLIENT_IP_FAMILY="ipv4"
-    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+    REALITY_CLIENT_IP_FAMILY="auto"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="deploy"
     SUBSCRIPTION_DOMAIN="sub.example.com"
@@ -243,8 +243,8 @@ test_reality_inbound_family_and_dns() {
         validate_reality_node_dns
     REALITY_CLIENT_IP_FAMILY="dual"
     resolve_reality_client_ip_family
-    assert_equal "Reality client endpoint remains fixed to IPv4" \
-        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    assert_equal "Reality client endpoint uses automatic dual stack" \
+        "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     dig() {
         case " $* " in
         *" A "*) printf '203.0.113.10\n' ;;
@@ -269,10 +269,10 @@ test_reality_inbound_family_and_dns() {
     assert_failure "missing A is rejected for the fixed IPv4 client" \
         validate_reality_node_dns
     REALITY_CLIENT_IP_FAMILY="dual"
-    assert_success "legacy dual-stack client preference is normalized to IPv4" \
+    assert_success "legacy dual-stack client preference is normalized to auto" \
         validate_reality_client_ip_family_runtime
-    assert_equal "legacy dual-stack preference resolves to IPv4" \
-        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    assert_equal "legacy dual-stack preference resolves to dual" \
+        "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     unset VPS_PUBLIC_IPV4
     unset -f dig
 }
@@ -355,14 +355,22 @@ test_subscription_stage_dispatch() {
 }
 
 test_mihomo_template() {
-    local invalid="${TMP_DIR}/invalid.yaml"
+    local invalid="${TMP_DIR}/invalid.yaml" rule_count
     validate_mihomo_template "${ROOT_DIR}/sample-mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     assert_contains "Mihomo preserves fake-IP mappings across restarts" \
         "store-fake-ip: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
-    assert_contains "Mihomo uses system DNS for bootstrap on restricted networks" \
-        "      - system" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
+    assert_not_contains "Mihomo DNS does not depend on the system resolver" \
+        "$(<"${ROOT_DIR}/sample-mihomo.yaml")" "      - system"
+    assert_not_contains "Mihomo DNS policies do not depend on the system resolver" \
+        "$(<"${ROOT_DIR}/sample-mihomo.yaml")" ": system"
+    rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/sample-mihomo.yaml" \
+        | grep -Ec '^  - ')
+    assert_equal "Mihomo template contains only the current XFLASH rules" \
+        "162" "${rule_count}"
+    assert_contains "Mihomo template uses the XFLASH rule-provider mirror" \
+        "edgeone.gh-proxy.org" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     grep -v '^# EASY_ALL_PROXY_NAME$' \
         "${ROOT_DIR}/sample-mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \
@@ -397,14 +405,20 @@ test_subscription_generation() {
         "port: ${port}" "${yaml}"
     assert_contains "Mihomo subscription contains Reality options" \
         "reality-opts:" "${yaml}"
-    assert_contains "IPv4 Reality endpoint is explicit in Mihomo" \
-        "ip-version: ipv4" "${yaml}"
-    assert_contains "IPv4 Reality endpoint keeps the Mihomo IPv6 master switch disabled" \
-        $'\nipv6: false\n' "${yaml}"
-    assert_contains "application DNS continues suppressing AAAA answers" \
-        $'\n    ipv6: false\n' "${yaml}"
-    assert_contains "Mihomo subscription contains complete rules" \
-        "RULE-SET,telegramcidr,PROXY,no-resolve" "${yaml}"
+    assert_contains "Reality endpoint uses automatic dual stack in Mihomo" \
+        "ip-version: dual" "${yaml}"
+    assert_contains "Reality endpoint enables the Mihomo IPv6 master switch" \
+        $'\nipv6: true\n' "${yaml}"
+    assert_contains "application DNS permits AAAA answers" \
+        $'\n    ipv6: true\n' "${yaml}"
+    assert_contains "Mihomo subscription contains XFLASH rules" \
+        "DOMAIN,love.xflash.work,DIRECT" "${yaml}"
+    assert_contains "Mihomo subscription contains XFLASH application rules" \
+        "RULE-SET,applications,DIRECT" "${yaml}"
+    assert_contains "Mihomo subscription keeps the XFLASH Telegram rule unchanged" \
+        "RULE-SET,telegramcidr,PROXY" "${yaml}"
+    assert_not_contains "Mihomo subscription removes legacy Apple Relay additions" \
+        "apple-relay.apple.com" "${yaml}"
     assert_not_contains "Mihomo subscription does not override SSH port 22 routing" \
         "DST-PORT,22," "${yaml}"
     assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \
@@ -426,12 +440,12 @@ test_subscription_generation() {
     dig() { printf '2001:db8::10\n'; }
     generate_subscription_files "${base64_file}" "${mihomo_file}"
     yaml=$(<"${mihomo_file}")
-    assert_contains "matching node AAAA does not override fixed IPv4 endpoint" \
-        "ip-version: ipv4" "${yaml}"
-    assert_contains "fixed IPv4 endpoint keeps Mihomo IPv6 disabled" \
-        $'\nipv6: false\n' "${yaml}"
-    assert_contains "fixed IPv4 endpoint keeps application AAAA disabled" \
-        $'\n    ipv6: false\n' "${yaml}"
+    assert_contains "matching node AAAA keeps automatic dual-stack endpoint" \
+        "ip-version: dual" "${yaml}"
+    assert_contains "dual-stack endpoint keeps Mihomo IPv6 enabled" \
+        $'\nipv6: true\n' "${yaml}"
+    assert_contains "dual-stack endpoint keeps application AAAA enabled" \
+        $'\n    ipv6: true\n' "${yaml}"
     unset -f dig
 }
 
@@ -694,7 +708,7 @@ test_state_and_xray() {
     assert_contains "state persists Reality inbound family" \
         "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
     assert_contains "state persists Reality client endpoint family policy" \
-        "REALITY_CLIENT_IP_FAMILY=ipv4" "${state}"
+        "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Worker name" "WORKER_NAME=" "${state}"
@@ -723,10 +737,13 @@ EOF
          and (.routing.rules[] | select(.outboundTag == "block").ip
              | index("169.254.0.0/16"))' \
         <<<"${config}"
-    assert_success "Xray sends public traffic through fixed IPv4 direct egress" \
+    assert_success "Xray uses dual-stack direct egress and fixed IPv4 for Gemini" \
         jq -e \
-        '(.outbounds | map(.tag)) == ["direct","block"]
-         and .outbounds[0].settings.domainStrategy == "ForceIPv4"
+        '(.outbounds | map(.tag)) == ["direct","direct-ipv4","block"]
+         and .outbounds[0].settings.domainStrategy == "AsIs"
+         and .outbounds[1].settings.domainStrategy == "ForceIPv4"
+         and (.routing.rules[1].domain | index("domain:gemini.google.com"))
+         and .routing.rules[1].outboundTag == "direct-ipv4"
          and .routing.rules[-1]
              == {type:"field",network:"tcp,udp",outboundTag:"direct"}' \
         <<<"${config}"
@@ -738,7 +755,8 @@ EOF
     assert_success "dual-stack Reality listens on IPv4 and IPv6" \
         jq -e \
         '.inbounds[0].listen == "::"
-         and .outbounds[0].settings.domainStrategy == "ForceIPv4"' \
+         and .outbounds[0].settings.domainStrategy == "AsIs"
+         and .outbounds[1].settings.domainStrategy == "ForceIPv4"' \
         <<<"${config}"
 
     QUOTA_ENABLED=1

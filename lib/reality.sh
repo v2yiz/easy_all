@@ -336,8 +336,8 @@ validate_reality_node_dns() {
 }
 
 resolve_reality_client_ip_family() {
-    REALITY_CLIENT_IP_FAMILY="ipv4"
-    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+    REALITY_CLIENT_IP_FAMILY="auto"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
 }
 
 validate_reality_client_ip_family_runtime() {
@@ -382,8 +382,8 @@ load_state() {
         unset "${env_name}"
     done
     REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
-    REALITY_CLIENT_IP_FAMILY="ipv4"
-    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+    REALITY_CLIENT_IP_FAMILY="auto"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
     CDN_PROVIDER=""
     [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
         || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
@@ -438,7 +438,7 @@ save_state() {
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
         printf 'REALITY_INBOUND_IP_FAMILY=%q\n' "${REALITY_INBOUND_IP_FAMILY:-ipv4}"
         printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
-        printf 'REALITY_CLIENT_IP_FAMILY=%q\n' "ipv4"
+        printf 'REALITY_CLIENT_IP_FAMILY=%q\n' "auto"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -1479,7 +1479,7 @@ show_status() {
         printf 'Reality 入站族: IPv4\n'
     fi
     resolve_reality_client_ip_family
-    printf 'Reality 客户端节点族: %s（固定）\n' \
+    printf 'Reality 客户端节点族: %s（自动双栈）\n' \
         "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
     printf '核心服务: '
