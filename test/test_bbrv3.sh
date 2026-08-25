@@ -51,7 +51,7 @@ v2_flags="${v1_flags} cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3"
 v3_flags="${v2_flags} avx avx2 bmi1 bmi2 f16c fma abm movbe xsave"
 
 write_cpu_flags "${v1_flags}"
-assert_equal "legacy CPUs select the universal XanMod LTS package" \
+assert_equal "x86-64-v1 CPUs select the universal XanMod LTS package" \
     "1" "$(bbrv3_cpu_level)"
 assert_equal "x64v1 package selection" "linux-xanmod-lts-x64v1" \
     "$(bbrv3_kernel_package)"
@@ -73,7 +73,7 @@ assert_contains "XanMod key download requires HTTPS" "${module_content}" \
     "--proto '=https'"
 assert_contains "XanMod LTS package installation is explicit" "${module_content}" \
     'apt-get install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}"'
-assert_contains "legacy installations can acquire the key verification dependency" \
+assert_contains "minimal installations can acquire the key verification dependency" \
     "${module_content}" 'apt-get install -y --no-install-recommends gnupg'
 assert_contains "Secure Boot is rejected before a new kernel install" "${module_content}" \
     'bbrv3_secure_boot_enabled'

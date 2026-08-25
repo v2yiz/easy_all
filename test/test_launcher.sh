@@ -103,13 +103,13 @@ readme=$(<"${ROOT_DIR}/README.md")
 
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=2\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=5\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Reality state selects Reality profile" "reality" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=4\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "XHTTP state selects XHTTP profile" "xhttp" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=4\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\nGCORE_CDN_RESOURCE_ID=1\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\nGCORE_CDN_RESOURCE_ID=1\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Gcore state selects Gcore profile" "gcore" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"

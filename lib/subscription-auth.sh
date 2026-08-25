@@ -4,14 +4,14 @@
 
 normalize_subscription_mode() {
     case "$1" in
-    1 | deploy | selfhost | nginx) printf 'deploy\n' ;;
-    2 | link | node | vless) printf 'link\n' ;;
+    1 | deploy) printf 'deploy\n' ;;
+    2 | link) printf 'link\n' ;;
     *) return 1 ;;
     esac
 }
 
 choose_subscription_mode() {
-    local mode=${SUBSCRIBE_MODE:-${SUBSCRIPTION_MODE:-}} current_mode default_choice=1
+    local mode=${SUBSCRIPTION_MODE:-} current_mode default_choice=1
     local deploy_description=${SUBSCRIPTION_DEPLOY_DESCRIPTION:-Nginx}
     if [[ "${PROMPT_SUBSCRIPTION_MODE:-0}" == "1" || -z "${mode}" ]]; then
         if [[ -t 0 ]]; then
@@ -36,7 +36,6 @@ choose_subscription_mode() {
     fi
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${mode:-deploy}") \
         || die "订阅服务选项无效：${mode}"
-    unset SUBSCRIBE_MODE
 }
 
 subscription_enabled() {

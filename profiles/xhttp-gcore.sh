@@ -22,7 +22,6 @@ XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Gcore Managed DNS"
 
 readonly GCORE_API_BASE="https://api.gcore.com"
 readonly GCORE_DNS_TTL="300"
-readonly DEFAULT_GCORE_FEE_PROTECTION_GB="980"
 readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"
 # Gcore closes idle H2 connections after 15 seconds; ping before that limit.
 readonly GCORE_XHTTP_H_KEEP_ALIVE_PERIOD="10"
@@ -475,19 +474,6 @@ gcore_apply_cdn() {
     gcore_wait_for_cdn_health
 }
 
-configure_gcore_fee_protection() {
-    if [[ -z "${GCORE_FEE_PROTECTION_GB:-}" || "${GCORE_FEE_PROTECTION_GB}" == "0" ]]; then
-        GCORE_FEE_PROTECTION_GB=${DEFAULT_GCORE_FEE_PROTECTION_GB}
-    fi
-    validate_cloudfront_fee_protection_gb "${GCORE_FEE_PROTECTION_GB}" \
-        || die "Gcore 全局费用保护额度必须是 1-1000 的整数 GB"
-    GCORE_FEE_PROTECTION_GB=$((10#${GCORE_FEE_PROTECTION_GB}))
-    [[ "${GCORE_FEE_PROTECTION_GB}" == "${DEFAULT_GCORE_FEE_PROTECTION_GB}" ]] \
-        || die "Gcore Free CDN 全局费用保护额度固定为 ${DEFAULT_GCORE_FEE_PROTECTION_GB} GB"
-    CLOUDFRONT_FEE_PROTECTION_GB=${GCORE_FEE_PROTECTION_GB}
-    configure_cloudfront_fee_protection
-}
-
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
@@ -513,8 +499,7 @@ collect_install_inputs() {
     GCORE_CDN_RESOURCE_ID=""
     GCORE_SSL_CERT_ID=""
     GCORE_CDN_TARGET=""
-    GCORE_FEE_PROTECTION_GB=${GCORE_FEE_PROTECTION_GB:-${DEFAULT_GCORE_FEE_PROTECTION_GB}}
-    configure_gcore_fee_protection
+    configure_cdn_traffic_protection
 
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
     XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
@@ -545,10 +530,9 @@ load_state() {
         PROTOCOL CDN_PROVIDER XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE
         GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
-        GCORE_SSL_CERT_ID GCORE_CDN_TARGET GCORE_FEE_PROTECTION_GB
+        GCORE_SSL_CERT_ID GCORE_CDN_TARGET CDN_TRAFFIC_PROTECTION_GB
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
-        CDN_CLIENT_IP_FAMILY
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -570,7 +554,6 @@ load_state() {
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
     [[ "${GCORE_DNS_ZONE:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "状态中缺少 Gcore DNS Zone"
-    GCORE_SUBSCRIPTION_DNS_ZONE=${GCORE_SUBSCRIPTION_DNS_ZONE:-${GCORE_DNS_ZONE}}
     [[ "${GCORE_SUBSCRIPTION_DNS_ZONE}" =~ ^[A-Za-z0-9.-]+$ ]] \
         || die "状态中缺少 Gcore 订阅 DNS Zone"
     [[ "${GCORE_ORIGIN_GROUP_ID:-}" =~ ^[0-9]+$ ]] || die "状态中缺少 Gcore 源组 ID"
@@ -585,25 +568,23 @@ load_state() {
     [[ "${ORIGIN_HEADER_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "状态中的源站保护密钥无效"
     AWS_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
-    configure_gcore_fee_protection
-    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-    SUBSCRIPTION_MODE=$(normalize_subscription_mode \
-        "${SUBSCRIPTION_MODE:-$([[ -n "${ALLOWED_TOKENS:-}" ]] && printf deploy || printf link)}") \
+    configure_cdn_traffic_protection
+    [[ -n "${XHTTP_NODE_NAME:-}" ]] || die "状态缺少 XHTTP_NODE_NAME；请重新安装"
+    [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || die "状态缺少 SUB_DOWNLOAD_NAME；请重新安装"
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME}")
+    SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
-    SUBSCRIPTION_DOMAIN=$(normalize_domain \
-        "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}")
+    SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN:-}")
     validate_domain "${SUBSCRIPTION_DOMAIN}" \
         || die "状态文件中的 SUBSCRIPTION_DOMAIN 无效：${SUBSCRIPTION_DOMAIN}"
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
-    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
-    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
-        || die "状态文件中的 QUOTA_ENABLED 无效"
+    [[ "${QUOTA_ENABLED:-}" == "0" || "${QUOTA_ENABLED:-}" == "1" ]] \
+        || die "状态缺少有效的 QUOTA_ENABLED；请重新安装"
     if quota_enabled; then
         validate_user_accounts "${USER_ACCOUNTS:-}" || die "状态文件中的 USER_ACCOUNTS 无效"
-        QUOTA_START_DATE=${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}
+        [[ -n "${QUOTA_START_DATE:-}" ]] || die "状态缺少 QUOTA_START_DATE；请重新安装"
         validate_quota_start_date "${QUOTA_START_DATE}" \
             || die "状态文件中的 QUOTA_START_DATE 无效：${QUOTA_START_DATE}"
     else
@@ -628,13 +609,12 @@ save_state() {
         printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH}"
         printf 'GCORE_ORIGIN_DOMAIN=%q\n' "${GCORE_ORIGIN_DOMAIN}"
         printf 'GCORE_DNS_ZONE=%q\n' "${GCORE_DNS_ZONE}"
-        printf 'GCORE_SUBSCRIPTION_DNS_ZONE=%q\n' \
-            "${GCORE_SUBSCRIPTION_DNS_ZONE:-${GCORE_DNS_ZONE}}"
+        printf 'GCORE_SUBSCRIPTION_DNS_ZONE=%q\n' "${GCORE_SUBSCRIPTION_DNS_ZONE}"
         printf 'GCORE_ORIGIN_GROUP_ID=%q\n' "${GCORE_ORIGIN_GROUP_ID}"
         printf 'GCORE_CDN_RESOURCE_ID=%q\n' "${GCORE_CDN_RESOURCE_ID}"
         printf 'GCORE_SSL_CERT_ID=%q\n' "${GCORE_SSL_CERT_ID}"
         printf 'GCORE_CDN_TARGET=%q\n' "${GCORE_CDN_TARGET}"
-        printf 'GCORE_FEE_PROTECTION_GB=%q\n' "${GCORE_FEE_PROTECTION_GB}"
+        printf 'CDN_TRAFFIC_PROTECTION_GB=%q\n' "${CDN_TRAFFIC_PROTECTION_GB}"
         printf 'XRAY_XHTTP_LOOPBACK_PORT=%q\n' "${XRAY_XHTTP_LOOPBACK_PORT}"
         printf 'ORIGIN_HEADER_SECRET=%q\n' "${ORIGIN_HEADER_SECRET}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
@@ -645,7 +625,6 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "auto"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -667,7 +646,7 @@ xhttp_render_xray_config() {
         clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" \
             '[{id:$id,email:$email}]')
     fi
-    cloudfront_fee_protection_blocked && clients='[]'
+    cdn_traffic_protection_blocked && clients='[]'
     traffic_stats_enabled && stats_enabled=true
     managed_outbounds=$(xray_xhttp_outbounds_json)
     managed_routing=$(xray_xhttp_routing_json)
@@ -710,13 +689,13 @@ show_status() {
     printf 'CDN 客户端节点族: %s（自动双栈）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     printf 'Gcore DNS Zone: %s\nGcore 订阅 DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
-        "${GCORE_DNS_ZONE}" "${GCORE_SUBSCRIPTION_DNS_ZONE:-${GCORE_DNS_ZONE}}" \
+        "${GCORE_DNS_ZONE}" "${GCORE_SUBSCRIPTION_DNS_ZONE}" \
         "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
     printf 'Xray: '; systemctl is-active --quiet "${XRAY_SERVICE}" && printf 'active\n' || printf 'inactive\n'
     printf 'Nginx: '; systemctl is-active --quiet nginx && printf 'active\n' || printf 'inactive\n'
     printf 'UFW: '; LC_ALL=C ufw status 2>/dev/null | sed -n 's/^Status: //p'
     show_quota_status
-    show_cloudfront_fee_protection_status
+    show_cdn_traffic_protection_status
 }
 
 update_subscription() {
@@ -763,7 +742,7 @@ update_subscription() {
     save_state
     refresh_runtime
     install_quota_timer
-    install_cloudfront_fee_protection_timer
+    install_cdn_traffic_protection_timer
     end_quota_maintenance
     subscription_enabled && validate_subscription_runtime
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -800,7 +779,7 @@ rollback_fresh_install() {
     warn "安装失败，正在恢复本机服务与防火墙；已创建的 Gcore DNS/CDN 资源不会自动删除"
     stop_services
     remove_quota_timer
-    remove_cloudfront_fee_protection_timer
+    remove_cdn_traffic_protection_timer
     restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
@@ -842,7 +821,7 @@ uninstall_all() {
     fi
     stop_services
     remove_quota_timer
-    remove_cloudfront_fee_protection_timer
+    remove_cdn_traffic_protection_timer
     restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${GCORE_ORIGIN_DOMAIN:-}"
@@ -893,7 +872,7 @@ install_all() {
     save_state
     register_easy_all_command
     install_quota_timer
-    install_cloudfront_fee_protection_timer
+    install_cdn_traffic_protection_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     gcore_clear_api_token
     info "[9/9] 输出节点与订阅"

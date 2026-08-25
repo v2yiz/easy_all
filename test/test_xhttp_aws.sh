@@ -52,7 +52,7 @@ assert_contains "traffic accounting exposes Stats API only on loopback" "${XHTTP
     'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
 assert_contains "XHTTP state persists the quota start date" "${XHTTP_CONTENT}" \
     'QUOTA_START_DATE=%q'
-assert_contains "XHTTP state persists the CDN client family" "${XHTTP_CONTENT}" \
+assert_not_contains "XHTTP state omits the fixed client family" "${XHTTP_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "CloudFront uses the shared XHTTP outbound policy" \
     "${XRAY_RENDER_CONTENT}" 'xray_xhttp_outbounds_json'
@@ -115,9 +115,9 @@ assert_contains "CloudFront alias conflicts require explicit old-resource cleanu
 assert_contains "CloudFront billing mode is persisted" "${XHTTP_CONTENT}" \
     'AWS_CLOUDFRONT_BILLING_MODE=%q'
 assert_contains "CloudFront fee protection threshold is persisted" "${XHTTP_CONTENT}" \
-    'CLOUDFRONT_FEE_PROTECTION_GB=%q'
+    'CDN_TRAFFIC_PROTECTION_GB=%q'
 assert_contains "global fee protection can remove every Xray client" "${XHTTP_CONTENT}" \
-    "cloudfront_fee_protection_blocked && clients='[]'"
+    "cdn_traffic_protection_blocked && clients='[]'"
 assert_contains "pay-as-you-go clears WAF association" "${XHTTP_CONTENT}" \
     'AWS_WAF_WEB_ACL_ARN=""'
 assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
@@ -131,7 +131,7 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     assert_equal "unified state" "/etc/easy_all" "${STATE_DIR}"
     assert_equal "unified service" "easy_all-xray.service" "${XRAY_SERVICE}"
     assert_equal "unified nginx config" "/etc/nginx/conf.d/easy_all.conf" "${NGINX_CONFIG}"
-    assert_equal "schema" "6" "${STATE_SCHEMA_VERSION}"
+    assert_equal "schema" "7" "${STATE_SCHEMA_VERSION}"
     assert_equal "AWS control region" "us-east-1" "${AWS_CONTROL_REGION}"
     assert_equal "default CloudFront billing mode" "payg" \
         "${DEFAULT_AWS_CLOUDFRONT_BILLING_MODE}"
@@ -147,13 +147,13 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     assert_equal "CloudFront billing choice 1 selects flat-free" "flat-free" \
         "${AWS_CLOUDFRONT_BILLING_MODE}"
     assert_equal "flat-free mode disables global fee protection" "0" \
-        "${CLOUDFRONT_FEE_PROTECTION_GB}"
+        "${CDN_TRAFFIC_PROTECTION_GB}"
     AWS_CLOUDFRONT_BILLING_MODE=2
     choose_cloudfront_billing_mode
     assert_equal "CloudFront billing choice 2 selects pay-as-you-go" "payg" \
         "${AWS_CLOUDFRONT_BILLING_MODE}"
     assert_equal "pay-as-you-go enables the 980 GB global fee protection" "980" \
-        "${CLOUDFRONT_FEE_PROTECTION_GB}"
+        "${CDN_TRAFFIC_PROTECTION_GB}"
     assert_equal "caching disabled policy" \
         "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" "${CLOUDFRONT_CACHE_POLICY_ID}"
     assert_equal "all viewer except host policy" \
@@ -220,12 +220,10 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
         EASY_ALL_FAIL2BAN_ACTION_CONFIG="${TMP_DIR}/fail2ban/action.d/easy-all-ufw-cidr.conf"
         EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/fail2ban/bin/fail2ban-ufw-cidr.sh"
         EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban/state"
-        EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-debian-init-sshd.local"
         fail2ban_active="${TMP_DIR}/fail2ban-active"
         restart_count="${TMP_DIR}/fail2ban-restart-count"
         status_attempt_count="${TMP_DIR}/fail2ban-status-attempt-count"
         install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")"
-        : >"${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}"
         printf '0\n' >"${restart_count}"
         printf '0\n' >"${status_attempt_count}"
         install_fail2ban_dependencies() { return 0; }
@@ -272,38 +270,9 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
             "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "bantime.increment = true"
         assert_contains "shared Fail2ban caps bans at one week" \
             "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")" "bantime.maxtime = 1w"
-        [[ ! -e "${EASY_ALL_LEGACY_FAIL2BAN_CONFIG}" ]] \
-            || fail "shared Fail2ban did not retire the duplicated legacy config"
         ensure_ssh_fail2ban
         assert_equal "shared Fail2ban configuration is idempotent" \
             "1" "$(<"${restart_count}")"
-
-        legacy_cleanup_log="${TMP_DIR}/fail2ban-legacy-cleanup.log"
-        active_state_dir="${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
-        EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban/migration-state"
-        install -d -m 0700 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
-        printf '1\n' >"${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100.count"
-        printf '1\n' >"${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100-19.count"
-        : >"${legacy_cleanup_log}"
-        ufw() {
-            if [[ "${1:-} ${2:-}" == "status numbered" ]]; then
-                cat <<'EOF'
-[ 1] Anywhere DENY IN 198.51.100.19/32 # easy_all-fail2ban-cidr
-[ 2] Anywhere DENY IN 198.51.100.0/24 # easy_all-fail2ban-cidr
-[ 3] Anywhere DENY IN 203.0.113.0/24 # user-managed
-EOF
-                return 0
-            fi
-            printf '%s\n' "$*" >>"${legacy_cleanup_log}"
-        }
-        remove_legacy_fail2ban_ipv4_cidr_bans
-        assert_equal "shared Fail2ban removes only its legacy broad UFW rule" \
-            "--force delete 2" "$(<"${legacy_cleanup_log}")"
-        [[ ! -e "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100.count" ]] \
-            || fail "shared Fail2ban retained a legacy IPv4 /24 state file"
-        [[ -e "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}/v4-198-51-100-19.count" ]] \
-            || fail "shared Fail2ban removed a current IPv4 /32 state file"
-        EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${active_state_dir}"
 
         fake_ufw="${TMP_DIR}/fake-ufw"
         fake_ufw_log="${TMP_DIR}/fake-ufw.log"
@@ -344,7 +313,6 @@ EOF
         EASY_ALL_FAIL2BAN_ACTION_CONFIG="${TMP_DIR}/fail2ban-rollback/action.d/easy-all-ufw-cidr.conf"
         EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/fail2ban-rollback/bin/fail2ban-ufw-cidr.sh"
         EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban-rollback/state"
-        EASY_ALL_LEGACY_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban-rollback/legacy.local"
         install_fail2ban_dependencies() { return 0; }
         detect_ssh_ports() { SSH_PORTS="22 65533"; }
         ufw() { return 0; }
@@ -433,16 +401,12 @@ EOF
         "subscribe.example.com" "${SUBSCRIPTION_DOMAIN}"
     unset SUBSCRIPTION_DOMAIN
 
-    SUBSCRIBE_MODE="1"
-    SUBSCRIPTION_MODE=""
+    SUBSCRIPTION_MODE="1"
     choose_subscription_mode
     assert_equal "subscription choice 1 deploys the service" "deploy" "${SUBSCRIPTION_MODE}"
-    SUBSCRIBE_MODE="2"
-    SUBSCRIPTION_MODE=""
+    SUBSCRIPTION_MODE="2"
     choose_subscription_mode
     assert_equal "subscription choice 2 outputs links only" "link" "${SUBSCRIPTION_MODE}"
-    unset SUBSCRIBE_MODE
-
     SUBSCRIPTION_MODE="link"
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
@@ -477,8 +441,9 @@ EOF
 
     (
         source_state_file() {
-            STATE_VERSION="4"
+            STATE_VERSION="7"
             PROTOCOL="xhttp"
+            CDN_PROVIDER="aws"
             AWS_CLOUDFRONT_BILLING_MODE="flat-free"
             VLESS_UUID="00000000-0000-4000-8000-000000000001"
             VLESS_CDN_DOMAIN="node.example.com"
@@ -486,13 +451,17 @@ EOF
             XHTTP_PATH="/xhttp-stored-suffix"
             AWS_ORIGIN_DOMAIN="origin.example.com"
             XRAY_XHTTP_LOOPBACK_PORT="10086"
+            SUB_DOWNLOAD_NAME="EASY_ALL"
+            SUBSCRIPTION_MODE="link"
+            SUBSCRIPTION_DOMAIN="node.example.com"
+            QUOTA_ENABLED="0"
         }
         VLESS_UUID="00000000-0000-4000-8000-000000000002"
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
         load_state
-        assert_equal "old XHTTP state migrates CDN client family to auto" \
-            "auto" "${CDN_CLIENT_IP_FAMILY}"
+        assert_equal "XHTTP client family resolves to dual" "dual" \
+            "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
         assert_equal "node name environment override wins during update" \
@@ -500,13 +469,6 @@ EOF
         assert_equal "XHTTP path environment override wins during update" \
             "/xhttp-updated-suffix" "${XHTTP_PATH}"
     )
-    if (
-        source_state_file() { STATE_VERSION="3"; }
-        load_state
-    ) >/dev/null 2>&1; then
-        fail "XHTTP v5 must reject old state without global protection state"
-    fi
-
     zones='{"HostedZones":[{"Id":"/hostedzone/ZBASE","Name":"example.com.","Config":{"PrivateZone":false}},{"Id":"/hostedzone/ZPRIVATE","Name":"node.example.com.","Config":{"PrivateZone":true}},{"Id":"/hostedzone/ZBOUNDARY","Name":"notexample.com.","Config":{"PrivateZone":false}}]}'
     assert_equal "Route 53 public parent zone" $'/hostedzone/ZBASE\texample.com.' \
         "$(find_route53_zone_for_domain node.example.com "${zones}")"
@@ -966,7 +928,7 @@ EOF
         CDN_CLIENT_IP_FAMILY="dual"
         CDN_CLIENT_IP_FAMILY_RESOLVED=""
         validate_cdn_client_ip_family_runtime
-        assert_equal "legacy dual-stack CDN preference is normalized to auto" \
+        assert_equal "CDN client family always resolves automatically" \
             "dual" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         build_mihomo_node >"${node_file}.dual"
         assert_contains "CDN node uses automatic dual stack" \
@@ -1118,7 +1080,7 @@ EOF
         save_state() { :; }
         refresh_runtime() { :; }
         install_quota_timer() { :; }
-        install_cloudfront_fee_protection_timer() { :; }
+        install_cdn_traffic_protection_timer() { :; }
         show_subscription() { :; }
         success() { :; }
         update_subscription

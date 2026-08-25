@@ -80,7 +80,7 @@ choose_cloudfront_billing_mode() {
     2 | payg | on-demand) AWS_CLOUDFRONT_BILLING_MODE="payg" ;;
     *) die "CloudFront 计费模式无效：${mode}" ;;
     esac
-    configure_cloudfront_fee_protection
+    configure_cdn_traffic_protection
 }
 
 collect_install_inputs() {
@@ -141,10 +141,9 @@ load_state() {
         AWS_WAF_WEB_ACL_ARN AWS_CLOUDFRONT_DISTRIBUTION_ID
         AWS_CLOUDFRONT_DISTRIBUTION_ARN AWS_CLOUDFRONT_DOMAIN
         AWS_CLOUDFRONT_PRICING_PLAN_ARN
-        CLOUDFRONT_FEE_PROTECTION_GB
+        CDN_TRAFFIC_PROTECTION_GB
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
-        CDN_CLIENT_IP_FAMILY
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     for variable in "${variables[@]}"; do
@@ -161,34 +160,32 @@ load_state() {
         unset "${env_name}"
     done
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
-    CDN_PROVIDER=${CDN_PROVIDER:-aws}
+    [[ "${CDN_PROVIDER:-}" == "aws" ]] \
+        || die "状态不是 AWS CDN XHTTP；请重新安装"
     configure_cdn_client_ip_family
-    [[ "${CDN_PROVIDER}" == "aws" ]] \
-        || die "当前版本不支持 CDN Provider：${CDN_PROVIDER}"
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
         || die "状态文件中的 CloudFront 计费模式无效：${AWS_CLOUDFRONT_BILLING_MODE:-缺失}"
-    configure_cloudfront_fee_protection
-    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
+    configure_cdn_traffic_protection
+    [[ -n "${XHTTP_NODE_NAME:-}" ]] || die "状态缺少 XHTTP_NODE_NAME；请重新安装"
     [[ -n "${XHTTP_PATH:-}" ]] || die "状态中缺少 XHTTP_PATH；请卸载后重新安装"
-    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-    SUBSCRIPTION_MODE=$(normalize_subscription_mode \
-        "${SUBSCRIPTION_MODE:-$([[ -n "${ALLOWED_TOKENS:-}" ]] && printf deploy || printf link)}") \
+    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT:-}" \
+        || die "状态缺少有效的 XRAY_XHTTP_LOOPBACK_PORT；请重新安装"
+    [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || die "状态缺少 SUB_DOWNLOAD_NAME；请重新安装"
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME}")
+    SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
-    SUBSCRIPTION_DOMAIN=$(normalize_domain \
-        "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}")
+    SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN:-}")
     validate_domain "${SUBSCRIPTION_DOMAIN}" \
         || die "状态文件中的 SUBSCRIPTION_DOMAIN 无效：${SUBSCRIPTION_DOMAIN}"
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
-    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
-    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
-        || die "状态文件中的 QUOTA_ENABLED 无效"
+    [[ "${QUOTA_ENABLED:-}" == "0" || "${QUOTA_ENABLED:-}" == "1" ]] \
+        || die "状态缺少有效的 QUOTA_ENABLED；请重新安装"
     if quota_enabled; then
         validate_user_accounts "${USER_ACCOUNTS:-}" \
             || die "状态文件中的 USER_ACCOUNTS 无效"
-        QUOTA_START_DATE=${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}
+        [[ -n "${QUOTA_START_DATE:-}" ]] || die "状态缺少 QUOTA_START_DATE；请重新安装"
         validate_quota_start_date "${QUOTA_START_DATE}" \
             || die "状态文件中的 QUOTA_START_DATE 无效：${QUOTA_START_DATE}"
     else
@@ -205,7 +202,7 @@ save_state() {
     {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
-        printf 'CDN_PROVIDER=%q\n' "${CDN_PROVIDER:-aws}"
+        printf 'CDN_PROVIDER=%q\n' "aws"
         printf 'AWS_CLOUDFRONT_BILLING_MODE=%q\n' "${AWS_CLOUDFRONT_BILLING_MODE}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
@@ -225,7 +222,7 @@ save_state() {
         printf 'AWS_CLOUDFRONT_DISTRIBUTION_ARN=%q\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ARN:-}"
         printf 'AWS_CLOUDFRONT_DOMAIN=%q\n' "${AWS_CLOUDFRONT_DOMAIN:-}"
         printf 'AWS_CLOUDFRONT_PRICING_PLAN_ARN=%q\n' "${AWS_CLOUDFRONT_PRICING_PLAN_ARN:-}"
-        printf 'CLOUDFRONT_FEE_PROTECTION_GB=%q\n' "${CLOUDFRONT_FEE_PROTECTION_GB:-0}"
+        printf 'CDN_TRAFFIC_PROTECTION_GB=%q\n' "${CDN_TRAFFIC_PROTECTION_GB:-0}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
         printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
@@ -234,7 +231,6 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "auto"
     } >"${temp}"
     install -m 0600 "${temp}" "${STATE_FILE}"
 }
@@ -288,7 +284,7 @@ xhttp_render_xray_config() {
         clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" \
             '[{id:$id,email:$email}]')
     fi
-    cloudfront_fee_protection_blocked && clients='[]'
+    cdn_traffic_protection_blocked && clients='[]'
     traffic_stats_enabled && stats_enabled=true
     managed_outbounds=$(xray_xhttp_outbounds_json)
     managed_routing=$(xray_xhttp_routing_json)
@@ -471,7 +467,7 @@ show_cloudfront_billing_estimate() {
         fi
     else
         info "已选 CloudFront 按量付费：免费 1 TB + 1000 万请求；不创建 WAF"
-        info "已启用 ${CLOUDFRONT_FEE_PROTECTION_GB} GB 全局费用保护：按 UTC 自然月统计，每 15 秒检查"
+        info "已启用 ${CDN_TRAFFIC_PROTECTION_GB} GB 全局费用保护：按 UTC 自然月统计，每 15 秒检查"
         info "当前使用 ${hosted_zone_count} 个 Hosted Zone：固定费用估算 \$${hosted_zone_cost}/月"
         info "CloudFront Alias A 查询 \$0；其他标准 DNS 查询每 10 万次约 \$0.04、每 100 万次约 \$0.40"
         warn "超过 1 TB 后，每多 100 GB 流量约 \$8.50-\$12.00，另计超过 1000 万次后的请求费；实际按边缘区域结算"
@@ -1098,24 +1094,18 @@ configure_aws_cdn() {
 }
 
 cdn_install_dependencies() {
-    case "${CDN_PROVIDER:-aws}" in
-    aws) install_aws_cli ;;
-    *) die "不支持的 CDN Provider：${CDN_PROVIDER:-缺失}" ;;
-    esac
+    [[ "${CDN_PROVIDER:-}" == "aws" ]] || die "当前 Profile 仅支持 AWS"
+    install_aws_cli
 }
 
 cdn_prepare_origin() {
-    case "${CDN_PROVIDER:-aws}" in
-    aws) prepare_aws_origin_dns ;;
-    *) die "不支持的 CDN Provider：${CDN_PROVIDER:-缺失}" ;;
-    esac
+    [[ "${CDN_PROVIDER:-}" == "aws" ]] || die "当前 Profile 仅支持 AWS"
+    prepare_aws_origin_dns
 }
 
 cdn_apply() {
-    case "${CDN_PROVIDER:-aws}" in
-    aws) configure_aws_cdn ;;
-    *) die "不支持的 CDN Provider：${CDN_PROVIDER:-缺失}" ;;
-    esac
+    [[ "${CDN_PROVIDER:-}" == "aws" ]] || die "当前 Profile 仅支持 AWS"
+    configure_aws_cdn
 }
 
 show_node() {
@@ -1154,7 +1144,7 @@ show_status() {
         printf '订阅服务: disabled（仅节点）\n'
     fi
     show_quota_status
-    show_cloudfront_fee_protection_status
+    show_cdn_traffic_protection_status
 }
 
 update_subscription() {
@@ -1198,7 +1188,7 @@ update_subscription() {
     save_state
     refresh_runtime
     install_quota_timer
-    install_cloudfront_fee_protection_timer
+    install_cdn_traffic_protection_timer
     end_quota_maintenance
     subscription_enabled && validate_subscription_runtime
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -1234,7 +1224,7 @@ rollback_fresh_install() {
     warn "安装失败，正在恢复本机服务与防火墙；已创建的 AWS 资源不会自动删除"
     stop_services
     remove_quota_timer
-    remove_cloudfront_fee_protection_timer
+    remove_cdn_traffic_protection_timer
     restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
@@ -1276,7 +1266,7 @@ uninstall_all() {
     fi
     stop_services
     remove_quota_timer
-    remove_cloudfront_fee_protection_timer
+    remove_cdn_traffic_protection_timer
     restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${AWS_ORIGIN_DOMAIN:-}"
@@ -1327,7 +1317,7 @@ install_all() {
     save_state
     register_easy_all_command
     install_quota_timer
-    install_cloudfront_fee_protection_timer
+    install_cdn_traffic_protection_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     info "[9/9] 输出节点与订阅"
     show_subscription
@@ -1372,12 +1362,12 @@ main() {
     update-core) update_current_core ;;
     renew-cert) renew_certificate ;;
     quota-sync) quota_sync_usage ;;
-    cloudfront-fee-sync) cloudfront_fee_protection_sync ;;
+    cdn-traffic-sync) cdn_traffic_protection_sync ;;
     quota-status)
         require_root
         collect_installed_state
         show_quota_status
-        show_cloudfront_fee_protection_status
+        show_cdn_traffic_protection_status
         ;;
     quota-set) shift; quota_set_user "$@" ;;
     quota-reset) shift; quota_reset_user "$@" ;;

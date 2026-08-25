@@ -136,7 +136,7 @@ detect_installed_mode() {
         xhttp)
             case "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" in
             gcore) printf 'gcore\n' ;;
-            '' | aws) printf 'xhttp\n' ;;
+            aws) printf 'xhttp\n' ;;
             *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;
             esac
             ;;
@@ -276,21 +276,16 @@ dispatch_profile_command() {
         fi
         ;;
     quota-sync) quota_sync_usage ;;
-    cloudfront-fee-sync)
-        [[ "${mode}" == "xhttp" ]] \
-            || launcher_die "cloudfront-fee-sync 仅适用于 CDN XHTTP 模式"
-        cloudfront_fee_protection_sync
-        ;;
-    gcore-fee-sync)
-        [[ "${mode}" == "gcore" ]] \
-            || launcher_die "gcore-fee-sync 仅适用于 Gcore CDN XHTTP 模式"
-        cloudfront_fee_protection_sync
+    cdn-traffic-sync)
+        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
+            || launcher_die "cdn-traffic-sync 仅适用于 CDN XHTTP 模式"
+        cdn_traffic_protection_sync
         ;;
     quota-status)
         require_root
         collect_installed_state
         show_quota_status
-        [[ "${mode}" == "reality" ]] || show_cloudfront_fee_protection_status
+        [[ "${mode}" == "reality" ]] || show_cdn_traffic_protection_status
         ;;
     quota-set) quota_set_user "$@" ;;
     quota-reset) quota_reset_user "$@" ;;

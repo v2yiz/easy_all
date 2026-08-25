@@ -22,7 +22,6 @@ UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。
 通过同一公共模块安装并启用 Fail2ban：任一来源在 3 分钟内失败 6 次，只封禁触发 IP
 3 小时；重复来源递增封禁且最长 1 周；`sshd` jail
 始终跟随实际 SSH 端口列表。
-旧版本创建的 `easy_all-fail2ban-cidr` IPv4 `/24` UFW 规则会在下次应用时自动清理。
 生成的 Mihomo 配置会把 TCP `22` 和 `65533` 直连规则固定在规则列表顶部，避免开启 TUN 后
 SSH 管理流量再次进入代理节点。
 
@@ -188,11 +187,6 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
 云资源时才使用 `easy_all apply-cloud`。
-
-已经安装旧版本 easy_all 的三种链路，升级 BBRv3 的顺序是：先执行 `sudo easy_all self-update`，
-再执行 `sudo easy_all apply` 安装 XanMod LTS 内核；看到 `pending-reboot` 后执行 `sudo reboot`，
-重连后用 `sudo easy_all status` 确认 `BBRv3: active`。XHTTP 链路不需要为这次内核升级执行
-`apply-cloud`。
 
 ### `apply` 的具体操作
 
@@ -627,7 +621,7 @@ DNSSEC KMS、Health Check、Query Logs 等费用；最终金额还取决于实�
   Xray 前也会先结算，避免应用配置或更新核心时丢失尚未落盘的流量。
 - 达到阈值后把 Xray 客户端列表整体置空并重启 Xray，从而终止现有连接并阻止新连接；进入下一
   UTC 自然月后自动恢复。
-- 全局账本保存在 `/etc/easy_all/cloudfront-fee-usage.json`，权限为 `0600`。AWS Access Key
+- 全局账本保存在 `/etc/easy_all/cdn-traffic-usage.json`，权限为 `0600`。AWS Access Key
   不会写入 VPS，也不参与这项本机定时统计。
 
 该保护统计的是到达 Xray 的上下行字节，不是 CloudFront 精确账单，也不统计 CloudFront 已处理
@@ -714,7 +708,7 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 ```text
 /etc/easy_all/state.env
 /etc/easy_all/quota-usage.json
-/etc/easy_all/cloudfront-fee-usage.json
+/etc/easy_all/cdn-traffic-usage.json
 /etc/easy_all/xray/config.json
 /etc/easy_all/certs/
 /var/www/easy_all/subscriptions/
@@ -722,33 +716,28 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 /etc/systemd/system/easy_all-xray.service
 /etc/systemd/system/easy_all-quota.service
 /etc/systemd/system/easy_all-quota.timer
-/etc/systemd/system/easy_all-cloudfront-fee.service
-/etc/systemd/system/easy_all-cloudfront-fee.timer
+/etc/systemd/system/easy_all-cdn-traffic-guard.service
+/etc/systemd/system/easy_all-cdn-traffic-guard.timer
 ```
 
 状态字段包括：
 
 ```text
-STATE_VERSION=4  # Reality
-STATE_VERSION=6  # XHTTP
+STATE_VERSION=5  # Reality
+STATE_VERSION=7  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
-REALITY_CLIENT_IP_FAMILY=auto                 # 节点输出 dual
-CDN_CLIENT_IP_FAMILY=auto                     # 节点输出 dual
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
-CLOUDFRONT_FEE_PROTECTION_GB=0|980            # AWS 固定套餐|AWS 按量付费
+CDN_TRAFFIC_PROTECTION_GB=0|980               # AWS 固定套餐为 0；AWS 按量/Gcore 为 980
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
 GCORE_CDN_RESOURCE_ID=12345                   # 仅 Gcore CDN XHTTP
-GCORE_FEE_PROTECTION_GB=980                   # 仅 Gcore CDN XHTTP
 ```
 
 Reality 的 `CDN_PROVIDER` 为空。easy_all 不会将 AWS Access Key、Secret Access Key、Session
 Token 或 `GCORE_API_TOKEN` 持久化到状态文件。
 
-源码中的全局保护模块已经统一命名为 `cdn-traffic-guard.sh`。为兼容已有安装，磁盘上的
-`cloudfront-fee-usage.json`、`easy_all-cloudfront-fee.service`、
-`easy_all-cloudfront-fee.timer`、状态字段 `CLOUDFRONT_FEE_PROTECTION_GB` 及内部同步命令继续
-保留原名称；升级不会重建账本或产生第二套定时器。
+CDN 全局保护由 `cdn-traffic-guard.sh` 统一实现，账本为 `cdn-traffic-usage.json`，定时器为
+`easy_all-cdn-traffic-guard.timer`，AWS 按量付费和 Gcore 共用内部命令 `cdn-traffic-sync`。
 
 卸载 CDN XHTTP 时只删除本机资源，保留 AWS 或 Gcore 远端资源，避免误删共享的云资源。卸载完成
 后应在对应 Console 中人工确认是否清理。
@@ -787,10 +776,6 @@ easy_all
 `xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现，彼此不加载对方的 Provider
 代码。两个 XHTTP Profile 通过 `xhttp_render_xray_config` 实现各自的服务端传输参数。
 
-根目录的 `xhttp_gcore.sh`、`sample-mihomo.yaml` 以及 `lib/reality.sh`、`lib/xhttp_aws.sh`
-仅为旧版 `self-update` 的升级前完整性检查保留兼容符号链接；实际源码分别位于 `profiles/`
-和 `templates/`，新版安装与注册不会把这些旧路径写入服务器运行目录。
-
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
 `scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`network.sh` 负责公网 IPv4
 探测和 Xray IPv4 直连策略，`firewall.sh` 负责具有系统副作用的 UFW 修改。
@@ -808,19 +793,19 @@ AWS/Gcore XHTTP、用户凭据与月度配额、TCP 参数回滚、Xray 配置�
 
 ## 独立工具：debian_init
 
-`debian_init.sh` 是向后兼容的公开入口，实际实现位于 `scripts/debian-init.sh`。它是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分或安装前置步骤，
+`scripts/debian-init.sh` 是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分或安装前置步骤，
 也不会安装、更新或卸载代理节点。
 
 它应在本地管理机交互运行，通过 SSH 初始化一台全新的 Debian 12/13 amd64、systemd、
 非容器服务器。一条命令下载并执行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/debian_init.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/debian-init.sh)
 ```
 
 不要改成 `curl ... | bash`，脚本需要从当前终端持续读取服务器信息、密码和确认选项。
 单文件入口会下载并校验项目的 `lib/platform.sh`，再将它与远端初始化脚本一起上传；因此
-`debian_init.sh` 与直连、AWS CDN、Gcore CDN 使用完全相同的 SSH 端口和 Fail2ban 实现。
+`scripts/debian-init.sh` 与直连、AWS CDN、Gcore CDN 使用完全相同的 SSH 端口和 Fail2ban 实现。
 
 本地需要 `ssh`、`scp` 和 `ssh-keygen`；安装 `sshpass` 后可自动提交首次 SSH 密码，
 否则按 SSH 提示交互输入。脚本会明确询问服务器地址、初始登录用户、普通用户名及 sudo
@@ -847,7 +832,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/debian_i
 
 - 执行 `apt-get upgrade` 并安装基础工具及 Fail2ban。
 - 服务器初始化阶段使用 Debian 官方内核的 Google BBR，并沿用与 `easy_all` 相同的 TCP 参数；
-  `debian_init.sh` 是独立的 SSH/系统初始化工具，不属于三条代理链，因此不会安装 XanMod。随后安装
+  `scripts/debian-init.sh` 是独立的 SSH/系统初始化工具，不属于三条代理链，因此不会安装 XanMod。随后安装
   easy_all 或执行 `easy_all apply` 时，三条代理链会统一换成 XanMod BBRv3。
 - 配置并启用 UFW：默认拒绝入站和转发、允许出站，并为 SSH 当前/最终端口及用户显式输入的额外 TCP 端口添加受管规则；已有的其他 UFW 规则保持不变。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。

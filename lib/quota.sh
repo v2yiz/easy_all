@@ -20,8 +20,8 @@ quota_enabled() {
 
 traffic_stats_enabled() {
     quota_enabled && return 0
-    if declare -F cloudfront_fee_protection_enabled >/dev/null 2>&1; then
-        cloudfront_fee_protection_enabled && return 0
+    if declare -F cdn_traffic_protection_enabled >/dev/null 2>&1; then
+        cdn_traffic_protection_enabled && return 0
     fi
     return 1
 }

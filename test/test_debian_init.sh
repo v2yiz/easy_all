@@ -6,9 +6,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
-bash -n "${ROOT_DIR}/debian_init.sh" "${ROOT_DIR}/scripts/debian-init.sh"
-grep -Fq 'scripts/debian-init.sh' "${ROOT_DIR}/debian_init.sh" \
-    || { printf 'not ok - Debian initializer wrapper does not delegate to scripts/\n' >&2; exit 1; }
+bash -n "${ROOT_DIR}/scripts/debian-init.sh"
 
 TESTS_RUN=0
 SCRIPT_LOADED=0
@@ -284,8 +282,6 @@ test_remote_script_contract() {
         "banaction = easy-all-ufw-cidr" "${platform_content}"
     assert_contains "shared platform limits IPv4 Fail2ban bans to one address" \
         'NETWORK="$((10#${first})).$((10#${second})).$((10#${third})).$((10#${fourth}))/32"' "${platform_content}"
-    assert_contains "shared platform removes legacy broad IPv4 bans" \
-        "remove_legacy_fail2ban_ipv4_cidr_bans" "${platform_content}"
     assert_contains "shared Fail2ban avoids reverse DNS under scan load" \
         "usedns = no" "${platform_content}"
     assert_contains "shared platform increments repeated-source bans" \
@@ -296,8 +292,6 @@ test_remote_script_contract() {
         "bantime = 3h" "${platform_content}"
     assert_contains "shared platform caps repeated-source bans" \
         "bantime.maxtime = 1w" "${platform_content}"
-    assert_contains "remote removes the legacy late-priority SSH config" \
-        'rm -f "$legacy_config_file"' "${content}"
     assert_contains "shared platform always persists the additional SSH listener" \
         'append_ssh_port "${EASY_ALL_ADDITIONAL_SSH_PORT}"' "${platform_content}"
     assert_contains "remote snapshots old managed rules before adding replacements" \

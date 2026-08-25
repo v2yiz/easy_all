@@ -1,58 +1,53 @@
 #!/usr/bin/env bash
 
-# XHTTP CDN global traffic safety guard.
-#
-# Function, state and systemd unit names retain their original CloudFront spelling
-# so existing installations keep working. The module itself is provider-neutral:
-# Gcore's Free CDN allowance has the same 1 TB boundary and therefore uses the
-# same local 980 GB fail-closed counter.
+# Provider-neutral XHTTP CDN global traffic safety guard.
 
-readonly CLOUDFRONT_FEE_USAGE_FILE="${STATE_DIR}/cloudfront-fee-usage.json"
-readonly CLOUDFRONT_FEE_SERVICE_FILE="/etc/systemd/system/easy_all-cloudfront-fee.service"
-readonly CLOUDFRONT_FEE_TIMER_FILE="/etc/systemd/system/easy_all-cloudfront-fee.timer"
-readonly CLOUDFRONT_FEE_SERVICE="easy_all-cloudfront-fee.service"
-readonly CLOUDFRONT_FEE_TIMER="easy_all-cloudfront-fee.timer"
-readonly DEFAULT_CLOUDFRONT_FEE_PROTECTION_GB="980"
+readonly CDN_TRAFFIC_GUARD_USAGE_FILE="${STATE_DIR}/cdn-traffic-usage.json"
+readonly CDN_TRAFFIC_GUARD_SERVICE_FILE="/etc/systemd/system/easy_all-cdn-traffic-guard.service"
+readonly CDN_TRAFFIC_GUARD_TIMER_FILE="/etc/systemd/system/easy_all-cdn-traffic-guard.timer"
+readonly CDN_TRAFFIC_GUARD_SERVICE="easy_all-cdn-traffic-guard.service"
+readonly CDN_TRAFFIC_GUARD_TIMER="easy_all-cdn-traffic-guard.timer"
+readonly DEFAULT_CDN_TRAFFIC_PROTECTION_GB="980"
 
-validate_cloudfront_fee_protection_gb() {
+validate_cdn_traffic_protection_gb() {
     [[ "$1" =~ ^[0-9]+$ && ${#1} -le 4 ]] \
         && ((10#$1 >= 1 && 10#$1 <= 1000))
 }
 
-configure_cloudfront_fee_protection() {
-    if [[ "${CDN_PROVIDER:-aws}" == "gcore" \
+configure_cdn_traffic_protection() {
+    if [[ "${CDN_PROVIDER:-}" == "gcore" \
         || "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ]]; then
-        if [[ -z "${CLOUDFRONT_FEE_PROTECTION_GB:-}" \
-            || "${CLOUDFRONT_FEE_PROTECTION_GB}" == "0" ]]; then
-            CLOUDFRONT_FEE_PROTECTION_GB=${DEFAULT_CLOUDFRONT_FEE_PROTECTION_GB}
+        if [[ -z "${CDN_TRAFFIC_PROTECTION_GB:-}" \
+            || "${CDN_TRAFFIC_PROTECTION_GB}" == "0" ]]; then
+            CDN_TRAFFIC_PROTECTION_GB=${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}
         fi
-        validate_cloudfront_fee_protection_gb "${CLOUDFRONT_FEE_PROTECTION_GB}" \
+        validate_cdn_traffic_protection_gb "${CDN_TRAFFIC_PROTECTION_GB}" \
             || die "CDN 全局费用保护额度必须是 1-1000 的整数 GB"
-        CLOUDFRONT_FEE_PROTECTION_GB=$((10#${CLOUDFRONT_FEE_PROTECTION_GB}))
-        [[ "${CLOUDFRONT_FEE_PROTECTION_GB}" == "${DEFAULT_CLOUDFRONT_FEE_PROTECTION_GB}" ]] \
-            || die "CDN 全局费用保护额度固定为 ${DEFAULT_CLOUDFRONT_FEE_PROTECTION_GB} GB"
+        CDN_TRAFFIC_PROTECTION_GB=$((10#${CDN_TRAFFIC_PROTECTION_GB}))
+        [[ "${CDN_TRAFFIC_PROTECTION_GB}" == "${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}" ]] \
+            || die "CDN 全局费用保护额度固定为 ${DEFAULT_CDN_TRAFFIC_PROTECTION_GB} GB"
     else
-        CLOUDFRONT_FEE_PROTECTION_GB=0
+        CDN_TRAFFIC_PROTECTION_GB=0
     fi
 }
 
-cloudfront_fee_protection_enabled() {
+cdn_traffic_protection_enabled() {
     [[ "${PROTOCOL:-}" == "xhttp" \
-        && ( "${CDN_PROVIDER:-aws}" == "gcore" \
+        && ( "${CDN_PROVIDER:-}" == "gcore" \
             || "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ) \
-        && "${CLOUDFRONT_FEE_PROTECTION_GB:-0}" =~ ^[0-9]+$ ]] \
-        && ((10#${CLOUDFRONT_FEE_PROTECTION_GB:-0} > 0))
+        && "${CDN_TRAFFIC_PROTECTION_GB:-0}" =~ ^[0-9]+$ ]] \
+        && ((10#${CDN_TRAFFIC_PROTECTION_GB:-0} > 0))
 }
 
-cdn_fee_provider_label() {
-    [[ "${CDN_PROVIDER:-aws}" == "gcore" ]] && printf 'Gcore' || printf 'CloudFront'
+cdn_traffic_provider_label() {
+    [[ "${CDN_PROVIDER:-}" == "gcore" ]] && printf 'Gcore' || printf 'CloudFront'
 }
 
-cdn_fee_sync_command() {
-    [[ "${CDN_PROVIDER:-aws}" == "gcore" ]] && printf 'gcore-fee-sync' || printf 'cloudfront-fee-sync'
+cdn_traffic_sync_command() {
+    printf 'cdn-traffic-sync'
 }
 
-cloudfront_fee_current_period() {
+cdn_traffic_current_period() {
     local value=${1:-}
     if [[ -z "${value}" ]]; then
         date -u +%Y-%m
@@ -63,7 +58,7 @@ cloudfront_fee_current_period() {
     fi
 }
 
-validate_cloudfront_fee_usage() {
+validate_cdn_traffic_usage() {
     jq -e '
         type == "object" and
         (.period|type == "string" and test("^[0-9]{4}-(0[1-9]|1[0-2])$")) and
@@ -76,58 +71,58 @@ validate_cloudfront_fee_usage() {
     ' <<<"$1" >/dev/null
 }
 
-initialize_cloudfront_fee_usage() {
+initialize_cdn_traffic_usage() {
     local period usage
-    cloudfront_fee_protection_enabled || return 0
-    period=$(cloudfront_fee_current_period)
+    cdn_traffic_protection_enabled || return 0
+    period=$(cdn_traffic_current_period)
     install -d -m 0700 "${STATE_DIR}"
-    if [[ -s "${CLOUDFRONT_FEE_USAGE_FILE}" ]]; then
-        usage=$(<"${CLOUDFRONT_FEE_USAGE_FILE}")
-        validate_cloudfront_fee_usage "${usage}" \
-            || die "$(cdn_fee_provider_label) 全局费用保护统计文件损坏：${CLOUDFRONT_FEE_USAGE_FILE}"
+    if [[ -s "${CDN_TRAFFIC_GUARD_USAGE_FILE}" ]]; then
+        usage=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
+        validate_cdn_traffic_usage "${usage}" \
+            || die "$(cdn_traffic_provider_label) 全局费用保护统计文件损坏：${CDN_TRAFFIC_GUARD_USAGE_FILE}"
         return 0
     fi
     jq -n --arg period "${period}" '
         {period:$period,runtime_id:"",used_bytes:0,
          last_uplink:0,last_downlink:0,blocked:false,enforced:false}' \
-        >"${RUNTIME_TMP}/cloudfront-fee-usage.json"
-    install -m 0600 "${RUNTIME_TMP}/cloudfront-fee-usage.json" \
-        "${CLOUDFRONT_FEE_USAGE_FILE}"
+        >"${RUNTIME_TMP}/cdn-traffic-usage.json"
+    install -m 0600 "${RUNTIME_TMP}/cdn-traffic-usage.json" \
+        "${CDN_TRAFFIC_GUARD_USAGE_FILE}"
 }
 
-cloudfront_fee_protection_blocked() {
+cdn_traffic_protection_blocked() {
     local usage
-    cloudfront_fee_protection_enabled || return 1
-    [[ -s "${CLOUDFRONT_FEE_USAGE_FILE}" ]] || return 1
-    usage=$(<"${CLOUDFRONT_FEE_USAGE_FILE}")
-    validate_cloudfront_fee_usage "${usage}" \
-        || die "$(cdn_fee_provider_label) 全局费用保护统计文件损坏：${CLOUDFRONT_FEE_USAGE_FILE}"
+    cdn_traffic_protection_enabled || return 1
+    [[ -s "${CDN_TRAFFIC_GUARD_USAGE_FILE}" ]] || return 1
+    usage=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
+    validate_cdn_traffic_usage "${usage}" \
+        || die "$(cdn_traffic_provider_label) 全局费用保护统计文件损坏：${CDN_TRAFFIC_GUARD_USAGE_FILE}"
     jq -e '.blocked == true' <<<"${usage}" >/dev/null
 }
 
-cloudfront_fee_protection_needs_apply() {
+cdn_traffic_protection_needs_apply() {
     local usage
-    cloudfront_fee_protection_enabled || return 1
-    [[ -s "${CLOUDFRONT_FEE_USAGE_FILE}" ]] || return 1
-    usage=$(<"${CLOUDFRONT_FEE_USAGE_FILE}")
-    validate_cloudfront_fee_usage "${usage}" \
-        || die "$(cdn_fee_provider_label) 全局费用保护统计文件损坏：${CLOUDFRONT_FEE_USAGE_FILE}"
+    cdn_traffic_protection_enabled || return 1
+    [[ -s "${CDN_TRAFFIC_GUARD_USAGE_FILE}" ]] || return 1
+    usage=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
+    validate_cdn_traffic_usage "${usage}" \
+        || die "$(cdn_traffic_provider_label) 全局费用保护统计文件损坏：${CDN_TRAFFIC_GUARD_USAGE_FILE}"
     jq -e '.blocked != .enforced' <<<"${usage}" >/dev/null
 }
 
-cloudfront_fee_mark_enforced() {
+cdn_traffic_mark_enforced() {
     local usage temp
-    cloudfront_fee_protection_enabled || return 0
-    initialize_cloudfront_fee_usage
-    usage=$(<"${CLOUDFRONT_FEE_USAGE_FILE}")
+    cdn_traffic_protection_enabled || return 0
+    initialize_cdn_traffic_usage
+    usage=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
     usage=$(jq -c '.enforced=.blocked' <<<"${usage}")
-    temp=$(mktemp "${STATE_DIR}/cloudfront-fee-enforced.json.XXXXXX")
+    temp=$(mktemp "${STATE_DIR}/cdn-traffic-enforced.json.XXXXXX")
     cleanup_files+=("${temp}")
     printf '%s\n' "${usage}" >"${temp}"
-    install -m 0600 "${temp}" "${CLOUDFRONT_FEE_USAGE_FILE}"
+    install -m 0600 "${temp}" "${CDN_TRAFFIC_GUARD_USAGE_FILE}"
 }
 
-cloudfront_fee_stats_totals() {
+cdn_traffic_stats_totals() {
     jq -r '
         ([.stat[]? |
           select(.name|startswith("user>>>")) |
@@ -141,63 +136,63 @@ cloudfront_fee_stats_totals() {
     ' <<<"$1"
 }
 
-install_cloudfront_fee_protection_timer() {
-    if ! cloudfront_fee_protection_enabled; then
-        remove_cloudfront_fee_protection_timer
+install_cdn_traffic_protection_timer() {
+    if ! cdn_traffic_protection_enabled; then
+        remove_cdn_traffic_protection_timer
         return 0
     fi
-    initialize_cloudfront_fee_usage
-    cat >"${RUNTIME_TMP}/easy_all-cloudfront-fee.service" <<EOF
+    initialize_cdn_traffic_usage
+    cat >"${RUNTIME_TMP}/easy_all-cdn-traffic-guard.service" <<EOF
 [Unit]
-Description=easy_all $(cdn_fee_provider_label) global traffic protection
+Description=easy_all $(cdn_traffic_provider_label) global traffic protection
 After=${XRAY_SERVICE}
 
 [Service]
 Type=oneshot
-ExecStart=${COMMAND_PATH} $(cdn_fee_sync_command)
+ExecStart=${COMMAND_PATH} $(cdn_traffic_sync_command)
 EOF
-    cat >"${RUNTIME_TMP}/easy_all-cloudfront-fee.timer" <<EOF
+    cat >"${RUNTIME_TMP}/easy_all-cdn-traffic-guard.timer" <<EOF
 [Unit]
-Description=Check easy_all $(cdn_fee_provider_label) traffic protection every 15 seconds
+Description=Check easy_all $(cdn_traffic_provider_label) traffic protection every 15 seconds
 
 [Timer]
 OnBootSec=15s
 OnUnitActiveSec=15s
 AccuracySec=1s
-Unit=easy_all-cloudfront-fee.service
+Unit=easy_all-cdn-traffic-guard.service
 
 [Install]
 WantedBy=timers.target
 EOF
-    install -m 0644 "${RUNTIME_TMP}/easy_all-cloudfront-fee.service" \
-        "${CLOUDFRONT_FEE_SERVICE_FILE}"
-    install -m 0644 "${RUNTIME_TMP}/easy_all-cloudfront-fee.timer" \
-        "${CLOUDFRONT_FEE_TIMER_FILE}"
+    install -m 0644 "${RUNTIME_TMP}/easy_all-cdn-traffic-guard.service" \
+        "${CDN_TRAFFIC_GUARD_SERVICE_FILE}"
+    install -m 0644 "${RUNTIME_TMP}/easy_all-cdn-traffic-guard.timer" \
+        "${CDN_TRAFFIC_GUARD_TIMER_FILE}"
     systemctl daemon-reload
-    systemctl enable --now "${CLOUDFRONT_FEE_TIMER}" >/dev/null \
-        || die "启用 $(cdn_fee_provider_label) 全局费用保护定时器失败"
+    systemctl enable --now "${CDN_TRAFFIC_GUARD_TIMER}" >/dev/null \
+        || die "启用 $(cdn_traffic_provider_label) 全局费用保护定时器失败"
 }
 
-remove_cloudfront_fee_protection_timer() {
-    systemctl disable --now "${CLOUDFRONT_FEE_TIMER}" >/dev/null 2>&1 || true
-    systemctl stop "${CLOUDFRONT_FEE_SERVICE}" >/dev/null 2>&1 || true
-    rm -f -- "${CLOUDFRONT_FEE_SERVICE_FILE}" "${CLOUDFRONT_FEE_TIMER_FILE}"
+remove_cdn_traffic_protection_timer() {
+    systemctl disable --now "${CDN_TRAFFIC_GUARD_TIMER}" >/dev/null 2>&1 || true
+    systemctl stop "${CDN_TRAFFIC_GUARD_SERVICE}" >/dev/null 2>&1 || true
+    rm -f -- "${CDN_TRAFFIC_GUARD_SERVICE_FILE}" "${CDN_TRAFFIC_GUARD_TIMER_FILE}"
     command -v systemctl >/dev/null 2>&1 \
         && systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
-cloudfront_fee_update_usage() {
+cdn_traffic_update_usage() {
     local period stats usage runtime_id previous_runtime_id
     local current_up current_down old_up old_down delta_up delta_down used blocked old_blocked enforced
     local threshold temp
-    initialize_cloudfront_fee_usage
-    usage=$(<"${CLOUDFRONT_FEE_USAGE_FILE}")
-    period=$(cloudfront_fee_current_period)
+    initialize_cdn_traffic_usage
+    usage=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
+    period=$(cdn_traffic_current_period)
     runtime_id=$(systemctl show "${XRAY_SERVICE}" -p InvocationID --value 2>/dev/null || true)
     stats=$("${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}") \
         || die "读取 Xray 全局流量统计失败"
     IFS=$'\t' read -r current_up current_down \
-        <<<"$(cloudfront_fee_stats_totals "${stats}")"
+        <<<"$(cdn_traffic_stats_totals "${stats}")"
     old_up=$(jq -r '.last_uplink' <<<"${usage}")
     old_down=$(jq -r '.last_downlink' <<<"${usage}")
     previous_runtime_id=$(jq -r '.runtime_id' <<<"${usage}")
@@ -220,7 +215,7 @@ cloudfront_fee_update_usage() {
         # risking an unmetered gap at the AWS billing boundary.
         used=$((delta_up + delta_down))
     fi
-    threshold=$((CLOUDFRONT_FEE_PROTECTION_GB * 1000 * 1000 * 1000))
+    threshold=$((CDN_TRAFFIC_PROTECTION_GB * 1000 * 1000 * 1000))
     old_blocked=$(jq -r '.blocked' <<<"${usage}")
     enforced=$(jq -r '.enforced' <<<"${usage}")
     blocked=false
@@ -232,75 +227,75 @@ cloudfront_fee_update_usage() {
         --argjson enforced "${enforced}" '
         {period:$period,runtime_id:$runtime_id,used_bytes:$used,
          last_uplink:$up,last_downlink:$down,blocked:$blocked,enforced:$enforced}')
-    temp=$(mktemp "${STATE_DIR}/cloudfront-fee-usage.json.XXXXXX")
+    temp=$(mktemp "${STATE_DIR}/cdn-traffic-usage.json.XXXXXX")
     cleanup_files+=("${temp}")
     printf '%s\n' "${usage}" >"${temp}"
-    install -m 0600 "${temp}" "${CLOUDFRONT_FEE_USAGE_FILE}"
+    install -m 0600 "${temp}" "${CDN_TRAFFIC_GUARD_USAGE_FILE}"
 
-    CLOUDFRONT_FEE_OLD_BLOCKED=${old_blocked}
-    CLOUDFRONT_FEE_BLOCKED=${blocked}
-    CLOUDFRONT_FEE_TRANSITION=0
-    [[ "${blocked}" == "${old_blocked}" ]] || CLOUDFRONT_FEE_TRANSITION=1
-    CLOUDFRONT_FEE_NEEDS_APPLY=0
-    [[ "${blocked}" == "${enforced}" ]] || CLOUDFRONT_FEE_NEEDS_APPLY=1
+    CDN_TRAFFIC_OLD_BLOCKED=${old_blocked}
+    CDN_TRAFFIC_BLOCKED=${blocked}
+    CDN_TRAFFIC_TRANSITION=0
+    [[ "${blocked}" == "${old_blocked}" ]] || CDN_TRAFFIC_TRANSITION=1
+    CDN_TRAFFIC_NEEDS_APPLY=0
+    [[ "${blocked}" == "${enforced}" ]] || CDN_TRAFFIC_NEEDS_APPLY=1
 }
 
-cloudfront_fee_protection_checkpoint() {
+cdn_traffic_protection_checkpoint() {
     local lock_dir
-    cloudfront_fee_protection_enabled || return 0
-    initialize_cloudfront_fee_usage
+    cdn_traffic_protection_enabled || return 0
+    initialize_cdn_traffic_usage
     lock_dir="${STATE_DIR}/quota.lock"
     mkdir "${lock_dir}" 2>/dev/null || return 0
     cleanup_files+=("${lock_dir}")
-    cloudfront_fee_update_usage
+    cdn_traffic_update_usage
     rm -rf -- "${lock_dir}"
 }
 
-cloudfront_fee_protection_sync() {
+cdn_traffic_protection_sync() {
     local lock_dir
     require_root
     collect_installed_state
-    cloudfront_fee_protection_enabled || return 0
+    cdn_traffic_protection_enabled || return 0
     [[ ! -e "${QUOTA_MAINTENANCE_FILE}" ]] || return 0
-    initialize_cloudfront_fee_usage
+    initialize_cdn_traffic_usage
     lock_dir="${STATE_DIR}/quota.lock"
     mkdir "${lock_dir}" 2>/dev/null || return 0
     cleanup_files+=("${lock_dir}")
-    cloudfront_fee_update_usage
+    cdn_traffic_update_usage
 
-    if [[ "${CLOUDFRONT_FEE_NEEDS_APPLY}" == "1" ]] \
+    if [[ "${CDN_TRAFFIC_NEEDS_APPLY}" == "1" ]] \
         && ! (rebuild_traffic_runtime); then
         rm -rf -- "${lock_dir}"
-        die "应用 $(cdn_fee_provider_label) 全局费用保护状态失败；已保留待执行状态并将在下次重试"
+        die "应用 $(cdn_traffic_provider_label) 全局费用保护状态失败；已保留待执行状态并将在下次重试"
     fi
-    [[ "${CLOUDFRONT_FEE_NEEDS_APPLY}" != "1" ]] || cloudfront_fee_mark_enforced
-    if [[ "${CLOUDFRONT_FEE_BLOCKED}" == "true" \
-        && "${CLOUDFRONT_FEE_OLD_BLOCKED}" != "true" ]]; then
+    [[ "${CDN_TRAFFIC_NEEDS_APPLY}" != "1" ]] || cdn_traffic_mark_enforced
+    if [[ "${CDN_TRAFFIC_BLOCKED}" == "true" \
+        && "${CDN_TRAFFIC_OLD_BLOCKED}" != "true" ]]; then
         printf '%s 全局费用保护已达到 %s GB，XHTTP 节点已阻断\n' \
-            "$(cdn_fee_provider_label)" \
-            "${CLOUDFRONT_FEE_PROTECTION_GB}"
-    elif [[ "${CLOUDFRONT_FEE_BLOCKED}" == "false" \
-        && "${CLOUDFRONT_FEE_OLD_BLOCKED}" == "true" ]]; then
-        printf '%s 已进入新的 UTC 自然月，XHTTP 节点已恢复\n' "$(cdn_fee_provider_label)"
+            "$(cdn_traffic_provider_label)" \
+            "${CDN_TRAFFIC_PROTECTION_GB}"
+    elif [[ "${CDN_TRAFFIC_BLOCKED}" == "false" \
+        && "${CDN_TRAFFIC_OLD_BLOCKED}" == "true" ]]; then
+        printf '%s 已进入新的 UTC 自然月，XHTTP 节点已恢复\n' "$(cdn_traffic_provider_label)"
     fi
     rm -rf -- "${lock_dir}"
 }
 
-show_cloudfront_fee_protection_status() {
+show_cdn_traffic_protection_status() {
     local usage used remaining
-    if ! cloudfront_fee_protection_enabled; then
+    if ! cdn_traffic_protection_enabled; then
         printf '%s 全局费用保护: disabled（仅 AWS 按量付费或 Gcore Free CDN 启用）\n' \
-            "$(cdn_fee_provider_label)"
+            "$(cdn_traffic_provider_label)"
         return 0
     fi
-    initialize_cloudfront_fee_usage
-    usage=$(<"${CLOUDFRONT_FEE_USAGE_FILE}")
+    initialize_cdn_traffic_usage
+    usage=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
     used=$(jq -r '.used_bytes' <<<"${usage}")
-    remaining=$((CLOUDFRONT_FEE_PROTECTION_GB * 1000 * 1000 * 1000 - used))
+    remaining=$((CDN_TRAFFIC_PROTECTION_GB * 1000 * 1000 * 1000 - used))
     ((remaining >= 0)) || remaining=0
     printf '%s 全局费用保护: enabled（UTC 自然月 %s，阈值 %s GB）\n' \
-        "$(cdn_fee_provider_label)" "$(jq -r '.period' <<<"${usage}")" \
-        "${CLOUDFRONT_FEE_PROTECTION_GB}"
+        "$(cdn_traffic_provider_label)" "$(jq -r '.period' <<<"${usage}")" \
+        "${CDN_TRAFFIC_PROTECTION_GB}"
     printf '  已统计: %.3f GB，剩余保护空间: %.3f GB，blocked=%s，enforced=%s\n' \
         "$(awk -v bytes="${used}" 'BEGIN{print bytes/1000000000}')" \
         "$(awk -v bytes="${remaining}" 'BEGIN{print bytes/1000000000}')" \

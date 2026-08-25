@@ -20,14 +20,13 @@ module_functions() {
 }
 
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
-    "${ROOT_DIR}/debian_init.sh" "${ROOT_DIR}"/profiles/*.sh \
-    "${ROOT_DIR}"/lib/*.sh "${ROOT_DIR}/scripts/debian-init.sh"
+    "${ROOT_DIR}"/profiles/*.sh "${ROOT_DIR}"/lib/*.sh \
+    "${ROOT_DIR}/scripts/debian-init.sh"
 
-[[ "$(readlink "${ROOT_DIR}/lib/reality.sh")" == "../profiles/reality.sh" \
-    && "$(readlink "${ROOT_DIR}/lib/xhttp_aws.sh")" == "../profiles/xhttp-aws.sh" \
-    && "$(readlink "${ROOT_DIR}/xhttp_gcore.sh")" == "profiles/xhttp-gcore.sh" \
-    && "$(readlink "${ROOT_DIR}/sample-mihomo.yaml")" == "templates/mihomo.yaml" ]] \
-    || fail "legacy self-update paths must remain compatibility symlinks"
+for legacy_path in lib/reality.sh lib/xhttp_aws.sh xhttp_gcore.sh sample-mihomo.yaml debian_init.sh; do
+    [[ ! -e "${ROOT_DIR}/${legacy_path}" ]] \
+        || fail "legacy path must be removed: ${legacy_path}"
+done
 [[ ! -e "${ROOT_DIR}/XFLASH" ]] || fail "the unused root XFLASH snapshot must be removed"
 
 shared_modules=(
@@ -115,10 +114,12 @@ grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/templates/mihomo.y
 source "${ROOT_DIR}/lib/subscription-auth.sh"
 [[ "$(normalize_allowed_tokens '{" owner ":" test-token "}')" == '{"owner":"test-token"}' ]] \
     || fail "shared subscription auth does not normalize valid credentials"
-[[ "$(normalize_subscription_mode selfhost)" == "deploy" \
-    && "$(normalize_subscription_mode deploy)" == "deploy" \
+[[ "$(normalize_subscription_mode deploy)" == "deploy" \
     && "$(normalize_subscription_mode link)" == "link" ]] \
     || fail "shared subscription modes do not use the deploy/link enum"
+if normalize_subscription_mode selfhost >/dev/null 2>&1; then
+    fail "shared subscription modes still accept the removed selfhost alias"
+fi
 if normalize_allowed_tokens '{"owner":12345678}' >/dev/null 2>&1; then
     fail "shared subscription auth accepts a non-string token"
 fi

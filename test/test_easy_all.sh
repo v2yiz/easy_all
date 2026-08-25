@@ -71,7 +71,6 @@ source_script_copy() {
         -e "s|^readonly UFW_BEFORE_RULES=.*|readonly UFW_BEFORE_RULES=\"${TMP_DIR}/before.rules\"|" \
         -e "s|^readonly UFW_BEFORE6_RULES=.*|readonly UFW_BEFORE6_RULES=\"${TMP_DIR}/before6.rules\"|" \
         -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
-        -e "s|^readonly LEGACY_NFT_CONFIG=.*|readonly LEGACY_NFT_CONFIG=\"${TMP_DIR}/nftables.conf\"|" \
         "${ROOT_DIR}/profiles/reality.sh" >"${SCRIPT_COPY}"
     EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_all"
     EASY_ALL_ENTRY_COMMAND=easy_all
@@ -159,7 +158,7 @@ test_validators_and_modes() {
     assert_equal "Reality defaults to dynamic subscriptions" \
         "dynamic" "${DEFAULT_REALITY_PORT_MODE}"
     assert_equal "Reality state schema records canonical subscription modes" \
-        "4" "${STATE_SCHEMA_VERSION}"
+        "5" "${STATE_SCHEMA_VERSION}"
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
@@ -169,16 +168,13 @@ test_validators_and_modes() {
         validate_ipv6 "2001::db8::10"
     assert_failure "non-IPv6 text is rejected" validate_ipv6 "not-an-ip"
 
-    SUBSCRIBE_MODE="1"
-    SUBSCRIPTION_MODE=""
+    SUBSCRIPTION_MODE="1"
     choose_subscription_mode
     assert_equal "choice 1 deploys the subscription service" "deploy" "${SUBSCRIPTION_MODE}"
-    SUBSCRIBE_MODE="2"
-    SUBSCRIPTION_MODE=""
+    SUBSCRIPTION_MODE="2"
     choose_subscription_mode
     assert_equal "choice 2 selects links only" "link" "${SUBSCRIPTION_MODE}"
 
-    unset SUBSCRIBE_MODE
     SUBSCRIPTION_MODE="link"
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
@@ -270,9 +266,9 @@ test_reality_inbound_family_and_dns() {
     assert_failure "missing A is rejected for the fixed IPv4 client" \
         validate_reality_node_dns
     REALITY_CLIENT_IP_FAMILY="dual"
-    assert_success "legacy dual-stack client preference is normalized to auto" \
+    assert_success "Reality client family always resolves automatically" \
         validate_reality_client_ip_family_runtime
-    assert_equal "legacy dual-stack preference resolves to dual" \
+    assert_equal "automatic Reality client family resolves to dual" \
         "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     unset VPS_PUBLIC_IPV4
     unset -f dig
@@ -661,52 +657,9 @@ EOF
     unset -f systemctl crontab run_acme
 }
 
-test_legacy_firewall_migration() {
-    install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
-    printf 'managed legacy rules\n' >"${LEGACY_NFT_CONFIG}"
-    sha256sum "${LEGACY_NFT_CONFIG}" | awk '{print $1}' >"${STATE_DIR}/nftables.sha256"
-    systemctl() { return 0; }
-    nft() { return 0; }
-    retire_legacy_nftables
-    assert_success "legacy managed nftables config is removed" \
-        test ! -e "${LEGACY_NFT_CONFIG}"
-    assert_success "legacy nftables ownership marker is removed" \
-        test ! -e "${STATE_DIR}/nftables.sha256"
-
-    printf 'user changed rules\n' >"${LEGACY_NFT_CONFIG}"
-    printf 'different-hash\n' >"${STATE_DIR}/nftables.sha256"
-    assert_failure "modified nftables config fails fast" retire_legacy_nftables
-    unset -f systemctl nft
-    rm -f -- "${LEGACY_NFT_CONFIG}" "${STATE_DIR}/nftables.sha256"
-}
-
 test_state_and_xray() {
-    local state config legacy_subscription_mode
+    local state config
     install -d -m 0700 "${STATE_DIR}"
-    printf '%s\n' \
-        'STATE_VERSION=2' \
-        'PROTOCOL=reality' \
-        'REALITY_INBOUND_IP_FAMILY=ipv4' \
-        'REALITY_CLIENT_IP_FAMILY=auto' \
-        'SUBSCRIPTION_MODE=link' \
-        'QUOTA_ENABLED=0' >"${STATE_FILE}"
-    load_state
-
-    printf '%s\n' \
-        'STATE_VERSION=3' \
-        'PROTOCOL=reality' \
-        'REALITY_INBOUND_IP_FAMILY=ipv4' \
-        'REALITY_CLIENT_IP_FAMILY=auto' \
-        'SUBSCRIPTION_MODE=selfhost' \
-        'QUOTA_ENABLED=0' >"${STATE_FILE}"
-    legacy_subscription_mode=$(
-        unset SUBSCRIPTION_MODE
-        load_state
-        printf '%s' "${SUBSCRIPTION_MODE}"
-    )
-    assert_equal "legacy selfhost state migrates to the canonical deploy mode" \
-        "deploy" "${legacy_subscription_mode}"
-
     set_fixture
     save_state
     state=$(<"${STATE_FILE}")
@@ -716,7 +669,7 @@ test_state_and_xray() {
         "SUBSCRIPTION_DOMAIN=sub.example.com" "${state}"
     assert_contains "state persists Reality inbound family" \
         "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
-    assert_contains "state persists Reality client endpoint family policy" \
+    assert_not_contains "state omits the fixed Reality client endpoint family" \
         "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
@@ -829,7 +782,6 @@ test_ufw_reapply_preserves_existing_ssh
 test_nginx_and_firewall
 test_acme_renewal_repair
 test_acme_reinstall_and_rate_limit_guidance
-test_legacy_firewall_migration
 test_state_and_xray
 test_install_pipeline_order
 

@@ -45,7 +45,7 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="6"
+readonly STATE_SCHEMA_VERSION="7"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
 readonly XHTTP_XMUX_MAX_CONCURRENCY="8-16"
@@ -121,7 +121,6 @@ validate_xhttp_path() {
 }
 
 configure_cdn_client_ip_family() {
-    CDN_CLIENT_IP_FAMILY="auto"
     CDN_CLIENT_IP_FAMILY_RESOLVED="dual"
 }
 
@@ -152,10 +151,8 @@ source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 状态文件不存在：${STATE_FILE}"
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    case "${STATE_VERSION:-}" in
-    4 | 5 | "${STATE_SCHEMA_VERSION}") ;;
-    *) die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}" ;;
-    esac
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；请重新安装"
 }
 
 subscription_link_domain() {
@@ -617,13 +614,13 @@ show_subscription() {
 refresh_runtime() {
     local backup
     [[ "${XHTTP_RUNTIME_STATE_CURRENT:-0}" == "1" ]] || collect_installed_state
-    cloudfront_fee_protection_checkpoint
+    cdn_traffic_protection_checkpoint
     backup=$(make_temp_dir)
     install -m 0600 "${XRAY_CONFIG}" "${backup}/config.json"
     install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
     if write_xray_config && write_nginx_config \
         && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
-        && cloudfront_fee_mark_enforced; then
+        && cdn_traffic_mark_enforced; then
         success "运行时配置已刷新"
         return 0
     fi
@@ -697,7 +694,7 @@ finish_xhttp_apply() {
     save_state
     register_easy_all_command
     install_quota_timer
-    install_cloudfront_fee_protection_timer
+    install_cdn_traffic_protection_timer
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
@@ -710,12 +707,12 @@ update_current_core() {
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
     if download_xray; then
-        cloudfront_fee_protection_checkpoint
-        if cloudfront_fee_protection_needs_apply; then
+        cdn_traffic_protection_checkpoint
+        if cdn_traffic_protection_needs_apply; then
             write_xray_config
         fi
         if systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
-            && cloudfront_fee_mark_enforced; then
+            && cdn_traffic_mark_enforced; then
             end_quota_maintenance
             success "Xray 已更新"
             return 0

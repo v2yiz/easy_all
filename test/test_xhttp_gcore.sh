@@ -59,7 +59,7 @@ assert_contains "Gcore profile limits XHTTP stream-up for its origin timeout" \
     "${profile_content}" 'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"'
 assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
-assert_contains "Gcore profile persists the CDN client family" \
+assert_not_contains "Gcore profile omits the fixed CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "Gcore cloud apply preserves freshly synced provider state" \
     "${profile_content}" 'finish_xhttp_apply 1'
@@ -85,7 +85,7 @@ assert_not_contains "Gcore profile never persists the API token" \
     source "${PROFILE}"
 
     assert_equal "Gcore reuses the XHTTP runtime" "xhttp" "${EASY_ALL_PROFILE}"
-    assert_equal "Gcore fee protection default" "980" "${DEFAULT_GCORE_FEE_PROTECTION_GB}"
+    assert_equal "CDN traffic protection default" "980" "${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}"
     assert_equal "Gcore stream-up stays below HTTP/2 idle timeout" \
         "10-14" "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}"
     assert_equal "Gcore client H2 ping stays below HTTP/2 idle timeout" \
@@ -101,16 +101,15 @@ assert_not_contains "Gcore profile never persists the API token" \
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
     AWS_CLOUDFRONT_BILLING_MODE="flat-free"
-    GCORE_FEE_PROTECTION_GB=""
-    CLOUDFRONT_FEE_PROTECTION_GB=""
-    configure_gcore_fee_protection
+    CDN_TRAFFIC_PROTECTION_GB=""
+    configure_cdn_traffic_protection
     assert_equal "Gcore always enables the 980 GB local guard" "980" \
-        "${CLOUDFRONT_FEE_PROTECTION_GB}"
-    cloudfront_fee_protection_enabled \
+        "${CDN_TRAFFIC_PROTECTION_GB}"
+    cdn_traffic_protection_enabled \
         || fail "Gcore CDN XHTTP must enable the global guard"
-    assert_equal "Gcore guard uses provider name" "Gcore" "$(cdn_fee_provider_label)"
-    assert_equal "Gcore timer invokes the correct unified command" "gcore-fee-sync" \
-        "$(cdn_fee_sync_command)"
+    assert_equal "Gcore guard uses provider name" "Gcore" "$(cdn_traffic_provider_label)"
+    assert_equal "Gcore timer invokes the correct unified command" "cdn-traffic-sync" \
+        "$(cdn_traffic_sync_command)"
 
     VLESS_CDN_DOMAIN="node.example.com"
     GCORE_ORIGIN_DOMAIN="origin.example.com"
@@ -405,7 +404,7 @@ assert_not_contains "Gcore profile never persists the API token" \
         save_state() { :; }
         refresh_runtime() { :; }
         install_quota_timer() { :; }
-        install_cloudfront_fee_protection_timer() { :; }
+        install_cdn_traffic_protection_timer() { :; }
         validate_subscription_runtime() { :; }
         show_subscription() { :; }
         success() { :; }

@@ -42,11 +42,9 @@ readonly UFW_NAT_START="# easy_all-nat-start"
 readonly UFW_NAT_END="# easy_all-nat-end"
 readonly UFW_NAT6_START="# easy_all-nat6-start"
 readonly UFW_NAT6_END="# easy_all-nat6-end"
-readonly LEGACY_NFT_CONFIG="/etc/nftables.conf"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
 readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
-readonly OLD_DISABLE_IPV6_CONF="/etc/sysctl.d/99-disable-ipv6.conf"
 readonly SERVICE_PORT="443"
 readonly SUBSCRIPTION_HTTPS_PORT="8443"
 readonly PORT_BASE="10000"
@@ -61,7 +59,7 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="4"
+readonly STATE_SCHEMA_VERSION="5"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
 
@@ -190,21 +188,15 @@ snapshot_fresh_install() {
     else
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-enable-ipv6.missing"
     fi
-    if [[ -f "${OLD_DISABLE_IPV6_CONF}" ]]; then
-        install -m 0644 "${OLD_DISABLE_IPV6_CONF}" "${BACKUP_DIR}/pre-install-disable-ipv6.conf"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-disable-ipv6.missing"
-    fi
     snapshot_tcp_runtime
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 
-configure_ipv6_compat() {
+configure_ipv6() {
     [[ -d /proc/sys/net/ipv6 ]] || {
         warn "当前内核未暴露 IPv6，继续 IPv4-only 安装"
         return 0
     }
-    rm -f -- "${OLD_DISABLE_IPV6_CONF}"
     cat >"${RUNTIME_TMP}/enable-ipv6.conf" <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 0
 net.ipv6.conf.default.disable_ipv6 = 0
@@ -221,7 +213,7 @@ initialize_server() {
     configure_bbr_tcp
     info "配置每日重启与 IPv6"
     configure_daily_reboot
-    configure_ipv6_compat
+    configure_ipv6
 }
 
 detect_public_ipv6() {
@@ -337,7 +329,6 @@ validate_reality_node_dns() {
 }
 
 resolve_reality_client_ip_family() {
-    REALITY_CLIENT_IP_FAMILY="auto"
     REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
 }
 
@@ -350,18 +341,16 @@ source_state_file() {
     unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "1" || "${STATE_VERSION:-}" == "2" \
-        || "${STATE_VERSION:-}" == "3" \
-        || "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
-        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}"
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；请重新安装"
 }
 
 load_state() {
-    local variable env_name
+    local variable env_name state_loaded=0
     local -a variables=(
         PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
-        REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6 REALITY_CLIENT_IP_FAMILY
+        REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
@@ -374,6 +363,7 @@ load_state() {
     done
     if [[ -f "${STATE_FILE}" ]]; then
         source_state_file
+        state_loaded=1
     fi
     for variable in "${variables[@]}"; do
         env_name="EASY_ALL_ENV_${variable}"
@@ -383,9 +373,15 @@ load_state() {
         unset "${env_name}"
     done
     REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
-    REALITY_CLIENT_IP_FAMILY="auto"
     REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
     CDN_PROVIDER=""
+    if [[ "${state_loaded}" == "1" ]]; then
+        [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
+        [[ -n "${SUBSCRIPTION_MODE:-}" ]] || die "状态缺少 SUBSCRIPTION_MODE；请重新安装"
+        [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || die "状态缺少 SUB_DOWNLOAD_NAME；请重新安装"
+        [[ "${QUOTA_ENABLED:-}" == "0" || "${QUOTA_ENABLED:-}" == "1" ]] \
+            || die "状态缺少有效的 QUOTA_ENABLED；请重新安装"
+    fi
     [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
         || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
         || die "状态文件中的 REALITY_INBOUND_IP_FAMILY 无效：${REALITY_INBOUND_IP_FAMILY}"
@@ -412,7 +408,7 @@ load_state() {
     if quota_enabled; then
         validate_user_accounts "${USER_ACCOUNTS:-}" \
             || die "状态文件中的 USER_ACCOUNTS 无效"
-        QUOTA_START_DATE=${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}
+        [[ -n "${QUOTA_START_DATE:-}" ]] || die "状态缺少 QUOTA_START_DATE；请重新安装"
         validate_quota_start_date "${QUOTA_START_DATE}" \
             || die "状态文件中的 QUOTA_START_DATE 无效：${QUOTA_START_DATE}"
     else
@@ -439,7 +435,6 @@ save_state() {
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
         printf 'REALITY_INBOUND_IP_FAMILY=%q\n' "${REALITY_INBOUND_IP_FAMILY:-ipv4}"
         printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
-        printf 'REALITY_CLIENT_IP_FAMILY=%q\n' "auto"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -750,27 +745,8 @@ enable_ufw_ipv6() {
     install -m 0644 "${candidate}" "${UFW_DEFAULT_CONFIG}"
 }
 
-retire_legacy_nftables() {
-    local hash_file="${STATE_DIR}/nftables.sha256" expected actual
-    [[ -f "${hash_file}" ]] || return 0
-    [[ -f "${LEGACY_NFT_CONFIG}" ]] \
-        || die "检测到旧 nftables 管理标记，但配置文件不存在"
-    expected=$(<"${hash_file}")
-    actual=$(sha256sum "${LEGACY_NFT_CONFIG}" | awk '{print $1}')
-    [[ -n "${expected}" && "${actual}" == "${expected}" ]] \
-        || die "旧 nftables 配置已被修改，拒绝自动迁移到 UFW"
-    [[ ! -f "${BACKUP_DIR}/pre-install-nftables.conf" ]] \
-        || die "安装前已存在 nftables 配置，无法安全自动切换到 UFW"
-
-    systemctl disable --now nftables >/dev/null 2>&1 || true
-    command -v nft >/dev/null 2>&1 && nft flush ruleset >/dev/null 2>&1 || true
-    rm -f -- "${LEGACY_NFT_CONFIG}" "${hash_file}"
-    success "旧版 easy_all nftables 已安全退役"
-}
-
 configure_ufw() {
     local desired_ports
-    retire_legacy_nftables
     ensure_ssh_boot_service
     detect_ssh_ports
     info "UFW 将放行 SSH 端口：${SSH_PORTS}"
@@ -1317,7 +1293,7 @@ rollback_subscription_update() {
     elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/ufw-default.missing" ]]; then
         rm -f -- "${UFW_DEFAULT_CONFIG}"
     fi
-    unset SUB_PORT_MODE SUBSCRIPTION_MODE SUBSCRIBE_MODE
+    unset SUB_PORT_MODE SUBSCRIPTION_MODE
     source_state_file
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
         || die "备份状态中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
@@ -1563,19 +1539,11 @@ restore_preinstall_firewall() {
 
 restore_preinstall_ipv6() {
     [[ -e "${BACKUP_DIR}/pre-install-enable-ipv6.conf" \
-        || -e "${BACKUP_DIR}/pre-install-enable-ipv6.missing" \
-        || -e "${BACKUP_DIR}/pre-install-disable-ipv6.conf" \
-        || -e "${BACKUP_DIR}/pre-install-disable-ipv6.missing" ]] || return 0
+        || -e "${BACKUP_DIR}/pre-install-enable-ipv6.missing" ]] || return 0
     if [[ -f "${BACKUP_DIR}/pre-install-enable-ipv6.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
     else
         rm -f -- "${IPV6_SYSCTL_CONF}"
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-disable-ipv6.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-disable-ipv6.conf" "${OLD_DISABLE_IPV6_CONF}"
-        sysctl -p "${OLD_DISABLE_IPV6_CONF}" >/dev/null 2>&1 || true
-    else
-        rm -f -- "${OLD_DISABLE_IPV6_CONF}"
     fi
 }
 

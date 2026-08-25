@@ -451,7 +451,6 @@ platform_module="$8"
 
 config_dir="/etc/ssh/sshd_config.d"
 config_file="${config_dir}/00-debian-init-hardening.conf"
-legacy_config_file="${config_dir}/99-key-only.conf"
 sysctl_config="/etc/sysctl.d/99-debian-init-bbr.conf"
 bbr_modules_config="/etc/modules-load.d/debian-init-bbr.conf"
 
@@ -737,7 +736,6 @@ fi
 } > "$config_file"
 
 "$sshd_bin" -t
-rm -f "$legacy_config_file"
 "$sshd_bin" -t
 ensure_ssh_boot_service
 configure_ufw

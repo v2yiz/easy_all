@@ -51,8 +51,8 @@ assert_contains "Gcore guide documents the active XHTTP window" "${GCORE_GUIDE_C
     '`10-14` 秒'
 assert_contains "README documents the generic CDN traffic guard module" "${README_CONTENT}" \
     'cdn-traffic-guard.sh'
-assert_contains "README documents legacy traffic guard artifact compatibility" "${README_CONTENT}" \
-    'easy_all-cloudfront-fee.service'
+assert_contains "README documents the provider-neutral traffic guard service" "${README_CONTENT}" \
+    'easy_all-cdn-traffic-guard.service'
 assert_contains "README documents merged Profile helpers" "${README_CONTENT}" \
     'profile-common.sh'
 assert_contains "README documents merged scheduled maintenance" "${README_CONTENT}" \
@@ -62,13 +62,13 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
 assert_contains "README documents automatic CDN client dual stack" "${README_CONTENT}" \
-    'CDN_CLIENT_IP_FAMILY=auto'
+    '生成的 Mihomo/Clash 节点输出 `ip-version: dual`'
 assert_contains "AWS guide documents dual-stack CDN clients" "${AWS_GUIDE_CONTENT}" \
     '`ip-version: dual`'
 assert_contains "Gcore guide documents dual-stack CDN clients" "${GCORE_GUIDE_CONTENT}" \
     '`ip-version: dual`'
 assert_contains "README documents the automatic Reality endpoint family" "${README_CONTENT}" \
-    'REALITY_CLIENT_IP_FAMILY=auto'
+    '生成节点始终使用 `dual`'
 assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \
     '带 SNI 的 TLS 1.3 握手验收'
 assert_contains "README documents Reality private destination blocking" "${README_CONTENT}" \
@@ -95,14 +95,10 @@ assert_contains "README clarifies that the AWS account-plan upgrade itself is fr
     "${README_CONTENT}" '这个升级动作本身没有固定费用'
 assert_contains "AWS guide clarifies the account-plan upgrade boundary" \
     "${AWS_GUIDE_CONTENT}" '升级为 Paid account plan 的动作本身不收费'
-assert_contains "README documents existing-install BBRv3 migration" "${README_CONTENT}" \
-    '先执行 `sudo easy_all self-update`'
 assert_contains "README keeps the independent Debian initializer out of proxy chains" \
-    "${README_CONTENT}" '它是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分'
+    "${README_CONTENT}" '`scripts/debian-init.sh` 是独立的个人服务器初始化工具'
 assert_contains "README documents the Debian initializer implementation path" \
     "${README_CONTENT}" 'scripts/debian-init.sh'
-assert_contains "README documents the one-release path compatibility" \
-    "${README_CONTENT}" '兼容符号链接'
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" \
     '同步重建本机 Xray、Nginx 和订阅文件'
 assert_contains "XHTTP command message includes Xray" "${XHTTP_CONTENT}" \
