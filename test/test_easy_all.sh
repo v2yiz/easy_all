@@ -361,10 +361,12 @@ test_mihomo_template() {
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
     assert_contains "Mihomo preserves fake-IP mappings across restarts" \
         "store-fake-ip: true" "$(<"${ROOT_DIR}/sample-mihomo.yaml")"
-    assert_not_contains "Mihomo DNS does not depend on the system resolver" \
-        "$(<"${ROOT_DIR}/sample-mihomo.yaml")" "      - system"
+    assert_equal "Mihomo uses system DNS only for proxy node bootstrap" "1" \
+        "$(grep -Fc "      - system" "${ROOT_DIR}/sample-mihomo.yaml")"
     assert_not_contains "Mihomo DNS policies do not depend on the system resolver" \
         "$(<"${ROOT_DIR}/sample-mihomo.yaml")" ": system"
+    assert_not_contains "Mihomo DNS avoids a PROXY fallback bootstrap cycle" \
+        "$(<"${ROOT_DIR}/sample-mihomo.yaml")" "dns-query#PROXY"
     rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/sample-mihomo.yaml" \
         | grep -Ec '^  - ')
     assert_equal "Mihomo template contains only the current XFLASH rules" \

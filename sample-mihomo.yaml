@@ -67,19 +67,14 @@ dns:
       - 119.29.29.29
 
     proxy-server-nameserver:
-      # 代理服务器域名必须能在代理建立前解析，使用国内 DoH 避免鸡生蛋问题。
+      # 仅节点域名保留系统 DNS 兜底，避免 DoH 尚未启动时所有节点同时不可解析。
+      - system
       - https://dns.alidns.com/dns-query
       - https://doh.pub/dns-query
 
     direct-nameserver:
       - https://dns.alidns.com/dns-query
       - https://doh.pub/dns-query
-
-    nameserver-policy:
-      # 已确认的境外域名（包括 Google/Gemini）经代理使用境外 DoH。
-      'geosite:geolocation-!cn':
-        - https://1.1.1.1/dns-query#PROXY
-        - https://dns.google/dns-query#PROXY
 
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
@@ -134,32 +129,6 @@ dns:
     nameserver:
       - https://dns.alidns.com/dns-query
       - https://doh.pub/dns-query
-
-    fallback:
-      - 'https://1.1.1.1/dns-query#PROXY'
-      - 'https://dns.google/dns-query#PROXY'
-    fallback-lazy-query: true
-
-    fallback-filter:
-        geoip: true
-        geoip-code: CN
-        ipcidr:
-          - 240.0.0.0/4
-          - 0.0.0.0/32
-          - 127.0.0.1/32
-        domain:
-          - '+.google.com'
-          - '+.googleapis.com'
-          - '+.googleapis.cn'
-          - '+.gvt1.com'
-          - '+.gvt2.com'
-          - '+.gvt3.com'
-          - '+.ggpht.com'
-          - '+.xn--ngstr-lra8j.com'
-          - '+.youtube.com'
-          - '+.github.com'
-          - '+.githubusercontent.com'
-          - '+.githubassets.com'
 
 proxies:
 # EASY_ALL_PROXY_NODE
