@@ -14,10 +14,8 @@ const WORKER_VERSION = '2026-08-26-xflash-fallback-v2';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
-const UPSTREAM_SUBSCRIPTION_USER_AGENT = 'clash-verge/v2.5.2';
-const UPSTREAM_GENERIC_USER_AGENT = 'Shadowrocket/2496';
 const XFLASH_FALLBACK_CONFIG = String.raw`
-mixed-port: 7896
+mixed-port: 1080
 allow-lan: false
 mode: rule
 log-level: info
@@ -37,7 +35,18 @@ dns:
     nameserver: ['https://223.6.6.6/dns-query#h3=true', 'https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://120.53.53.53/dns-query']
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
 proxies:
-    - { name: 'REDACTED_UPSTREAM_NODE', type: socks5, server: example.invalid, port: 443 }
+    - { name: '🇯🇵 日本 ³', type: mieru, server: node-01.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_01, password: REDACTED_PASSWORD_01, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_01 }
+    - { name: '🇸🇬 新加坡 ³', type: mieru, server: node-02.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_02, password: REDACTED_PASSWORD_02, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_02 }
+    - { name: '🇺🇸 美国 ³', type: mieru, server: node-03.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_03, password: REDACTED_PASSWORD_03, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_03 }
+    - { name: '🇯🇵 日本 ²', type: anytls, server: node-04.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_04, udp: true, tfo: false, sni: sni-04.example.invalid, skip-cert-verify: true }
+    - { name: '🇸🇬 新加坡 ²', type: anytls, server: node-05.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_05, udp: true, tfo: false, sni: sni-05.example.invalid, skip-cert-verify: true }
+    - { name: '🇺🇸 美国 ²', type: anytls, server: node-06.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_06, udp: true, tfo: false, sni: sni-06.example.invalid, skip-cert-verify: true }
+    - { name: '🇭🇰 香港 ³', type: mieru, server: node-07.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_07, password: REDACTED_PASSWORD_07, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_07 }
+    - { name: '🇰🇷 韩国 ²', type: anytls, server: node-08.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_08, udp: true, tfo: false, sni: sni-08.example.invalid, skip-cert-verify: true }
+    - { name: '🇦🇺 澳大利亚 ²', type: anytls, server: node-09.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_09, udp: true, tfo: false, sni: sni-09.example.invalid, skip-cert-verify: true }
+    - { name: '🇮🇳 印度 ²', type: anytls, server: node-10.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_10, udp: true, tfo: false, sni: sni-10.example.invalid, skip-cert-verify: true }
+    - { name: '🇬🇧 英国 ²', type: anytls, server: node-11.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_11, udp: true, tfo: false, sni: sni-11.example.invalid, skip-cert-verify: true }
+    - { name: '🇨🇦 加拿大 ²', type: anytls, server: node-12.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_12, udp: true, tfo: false, sni: sni-12.example.invalid, skip-cert-verify: true }
 proxy-groups:
     - { name: XFLASH, type: select, proxies: [♻️自动选择, 🔯故障转移, '🇯🇵 日本 ³', '🇸🇬 新加坡 ³', '🇺🇸 美国 ³', '🇯🇵 日本 ²', '🇸🇬 新加坡 ²', '🇺🇸 美国 ²', '🇭🇰 香港 ³', '🇰🇷 韩国 ²', '🇦🇺 澳大利亚 ²', '🇮🇳 印度 ²', '🇬🇧 英国 ²', '🇨🇦 加拿大 ²'] }
     - { name: ♻️自动选择, type: url-test, proxies: ['🇯🇵 日本 ³', '🇸🇬 新加坡 ³', '🇺🇸 美国 ³', '🇯🇵 日本 ²', '🇸🇬 新加坡 ²', '🇺🇸 美国 ²', '🇭🇰 香港 ³', '🇰🇷 韩国 ²', '🇦🇺 澳大利亚 ²', '🇮🇳 印度 ²', '🇬🇧 英国 ²', '🇨🇦 加拿大 ²'], url: 'http://cp.cloudflare.com/generate_204', interval: 600 }
@@ -812,12 +821,6 @@ function encodeBase64Utf8(value) {
 function upstreamHeaders(requestHeaders, format) {
     const clash = format === 'clash';
     const clientUserAgent = requestHeaders.get('User-Agent');
-    const userAgent =
-        clientUserAgent && clientUserAgent.trim()
-            ? clientUserAgent
-            : clash
-              ? UPSTREAM_SUBSCRIPTION_USER_AGENT
-              : UPSTREAM_GENERIC_USER_AGENT;
     const result = new Headers({
         Accept: clash
             ? 'text/yaml, text/plain;q=0.9, */*;q=0.8'
@@ -826,11 +829,12 @@ function upstreamHeaders(requestHeaders, format) {
             requestHeaders.get('Accept-Language') || 'zh-CN,zh-Hans;q=0.9',
         'Cache-Control': 'no-cache',
         Pragma: 'no-cache',
-        // Preserve the caller's UA exactly so XFLASH sees the same client
-        // identity as the original subscription request. Use a format-aware
-        // fallback only when the caller did not send a usable UA.
-        'User-Agent': userAgent,
     });
+    // Forward a client UA verbatim. When the client did not send one, leave
+    // the header absent instead of inventing a client identity.
+    if (clientUserAgent && clientUserAgent.trim()) {
+        result.set('User-Agent', clientUserAgent);
+    }
     return result;
 }
 
