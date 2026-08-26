@@ -275,6 +275,11 @@ dispatch_profile_command() {
             renew_certificate
         fi
         ;;
+    rotate-dynamic-ports)
+        [[ "${mode}" == "reality" ]] \
+            || launcher_die "rotate-dynamic-ports 仅适用于 Reality 模式"
+        rotate_dynamic_ports
+        ;;
     quota-sync) quota_sync_usage ;;
     cdn-traffic-sync)
         [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \

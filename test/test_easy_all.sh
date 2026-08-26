@@ -385,15 +385,13 @@ test_mihomo_template() {
 test_subscription_generation() {
     local base64_file="${TMP_DIR}/base64.txt"
     local mihomo_file="${TMP_DIR}/mihomo.yaml"
-    local decoded port yaml
+    local decoded port yaml expected_dynamic_port
     set_fixture
-    openssl() { printf '00000000\n'; }
-    assert_equal "dynamic subscription port can use its lower bound" \
-        "${PORT_BASE}" "$(generate_subscription_port)"
-    openssl() { printf '%08x\n' "$((DYNAMIC_PORT_MAX - PORT_BASE))"; }
-    assert_equal "dynamic subscription port can use its upper bound" \
-        "${DYNAMIC_PORT_MAX}" "$(generate_subscription_port)"
-    unset -f openssl
+    expected_dynamic_port=$(dynamic_port_for_current_window)
+    assert_equal "dynamic subscription port follows the current three-hour window" \
+        "${expected_dynamic_port}" "$(generate_subscription_port)"
+    assert_equal "dynamic subscription port is stable within the same window" \
+        "${expected_dynamic_port}" "$(generate_subscription_port)"
     assert_success "dynamic port range excludes the additional SSH port" \
         bash -c '(( $1 < $2 ))' _ \
         "${DYNAMIC_PORT_MAX}" "${EASY_ALL_ADDITIONAL_SSH_PORT}"
@@ -457,7 +455,7 @@ test_subscription_generation() {
 }
 
 test_nginx_and_firewall() {
-    local config ufw_config ufw6_config ufw_log="${TMP_DIR}/ufw.log"
+    local config ufw_config ufw6_config ufw_log="${TMP_DIR}/ufw.log" dynamic_rule_count dynamic_rule6_count
     set_fixture
     install -d -m 0700 "${STATE_DIR}" "${CERT_DIR}"
     install -m 0600 /dev/null "${CERT_FILE}"
@@ -514,18 +512,125 @@ EOF
         "managed-ports 22 65533 443 80 8443" "$(<"${ufw_log}")"
     assert_contains "Reality enables shared Fail2ban after UFW" \
         "fail2ban-sshd" "$(<"${ufw_log}")"
-    assert_contains "dynamic Reality forwarding remains active" \
-        "--dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT --to-ports ${SERVICE_PORT}" \
+    dynamic_rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw_config}")
+    dynamic_rule6_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")
+    assert_equal "dynamic Reality forwarding retains history and pre-opens today and tomorrow" \
+        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${dynamic_rule_count}"
+    assert_equal "dynamic Reality forwarding retains history and pre-opens today and tomorrow for IPv6" \
+        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${dynamic_rule6_count}"
+    assert_contains "dynamic Reality forwarding includes the current port" \
+        "--dport $(dynamic_port_for_current_window) -j REDIRECT --to-ports ${SERVICE_PORT}" \
         "${ufw_config}"
-    assert_contains "dynamic Reality forwarding supports IPv6" \
-        "--dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT --to-ports ${SERVICE_PORT}" \
-        "${ufw6_config}"
     assert_contains "dual-stack Reality enables UFW IPv6" \
         "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
     assert_contains "Reality reloads UFW after writing NAT rules" \
         "reload" "$(<"${ufw_log}")"
     unset -f nginx systemctl ensure_ssh_boot_service ensure_ssh_fail2ban detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
         iptables-restore ip6tables-restore
+}
+
+test_dynamic_port_year_boundary() {
+    local rules rule_count
+    set_fixture
+    date() {
+        case "$*" in
+        +%j) printf '001\n' ;;
+        +%H) printf '00\n' ;;
+        +%Y) printf '2026\n' ;;
+        *) return 1 ;;
+        esac
+    }
+    rules=$(write_dynamic_nat_rules)
+    rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${rules}")
+    assert_equal "dynamic NAT keeps history and pre-opens across a year boundary" \
+        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${rule_count}"
+    assert_contains "dynamic NAT keeps the last port from the previous year" \
+        "--dport 12919 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
+    assert_contains "dynamic NAT pre-opens the next day's 00:00 port" \
+        "--dport 10008 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
+    assert_contains "dynamic NAT pre-opens the next day's 03:00 port" \
+        "--dport 10009 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
+    assert_not_contains "dynamic NAT does not pre-open the next day's 06:00 port" \
+        "--dport 10010 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
+    unset -f date
+}
+
+test_scheduled_reboot_refreshes_dynamic_ports() {
+    local cron_state_file="${TMP_DIR}/reboot.cron" cron_state
+    : >"${cron_state_file}"
+    crontab() {
+        if [[ "${1:-}" == "-l" ]]; then
+            cat "${cron_state_file}"
+        elif [[ "${1:-}" == "-" ]]; then
+            cat >"${cron_state_file}"
+        else
+            cat "$1" >"${cron_state_file}"
+        fi
+    }
+    REBOOT_SCHEDULE_MODE=1
+    configure_daily_reboot
+    cron_state=$(<"${cron_state_file}")
+    assert_contains "daily Reality reboot refreshes dynamic NAT first" \
+        "rotate-dynamic-ports" "${cron_state}"
+    assert_contains "daily Reality reboot remains scheduled" \
+        "/usr/sbin/reboot" "${cron_state}"
+    unset REBOOT_SCHEDULE_MODE
+    unset -f crontab
+}
+
+test_dynamic_port_rotation_schedule() {
+    local cron_state_file="${TMP_DIR}/dynamic-port.cron" cron_state
+    : >"${cron_state_file}"
+    crontab() {
+        if [[ "${1:-}" == "-l" ]]; then
+            cat "${cron_state_file}"
+        elif [[ "${1:-}" == "-" ]]; then
+            cat >"${cron_state_file}"
+        else
+            cat "$1" >"${cron_state_file}"
+        fi
+    }
+    configure_dynamic_port_rotation
+    cron_state=$(<"${cron_state_file}")
+    assert_contains "dynamic port rotation runs daily after midnight" \
+        "1 0 * * *" "${cron_state}"
+    assert_contains "dynamic port rotation calls the managed command" \
+        "rotate-dynamic-ports" "${cron_state}"
+    remove_dynamic_port_rotation
+    cron_state=$(<"${cron_state_file}")
+    assert_not_contains "dynamic port rotation can be removed" \
+        "rotate-dynamic-ports" "${cron_state}"
+    unset -f crontab
+}
+
+test_dynamic_port_rotation_rollback() {
+    local cron_state_file="${TMP_DIR}/dynamic-port-rollback.cron"
+    local snapshot="${TMP_DIR}/dynamic-port-rollback.snapshot" cron_state
+    cat >"${cron_state_file}" <<EOF
+15 2 * * * /usr/local/bin/user-job
+1 0 * * * /usr/local/bin/easy_all rotate-dynamic-ports ${CRON_DYNAMIC_PORT_MARKER}
+EOF
+    cp "${cron_state_file}" "${snapshot}"
+    cat >"${cron_state_file}" <<EOF
+15 2 * * * /usr/local/bin/user-job
+30 3 * * * /usr/local/bin/concurrent-job
+EOF
+    crontab() {
+        if [[ "${1:-}" == "-l" ]]; then
+            cat "${cron_state_file}"
+        elif [[ "${1:-}" == "-" ]]; then
+            cat >"${cron_state_file}"
+        else
+            cat "$1" >"${cron_state_file}"
+        fi
+    }
+    restore_dynamic_port_rotation_schedule "${snapshot}"
+    cron_state=$(<"${cron_state_file}")
+    assert_contains "dynamic port rollback restores the previous managed schedule" \
+        "1 0 * * * /usr/local/bin/easy_all rotate-dynamic-ports" "${cron_state}"
+    assert_contains "dynamic port rollback preserves concurrent unmanaged schedules" \
+        "30 3 * * * /usr/local/bin/concurrent-job" "${cron_state}"
+    unset -f crontab
 }
 
 test_ufw_reapply_preserves_existing_ssh() {
@@ -762,13 +867,14 @@ test_install_pipeline_order() {
         deploy_subscription_output() { printf 'subscription-runtime\n'; }
         save_state() { printf 'save\n'; }
         register_easy_all_command() { printf 'register\n'; }
+        configure_dynamic_port_rotation() { printf 'dynamic-port-schedule\n'; }
         install_quota_timer() { printf 'quota-timer\n'; }
         show_subscription() { printf 'show\n'; }
         show_bbrv3_status() { printf 'bbrv3\n'; }
         run_reality_install_pipeline "reality" 1
     )
     assert_equal "Reality install pipeline follows input, common runtime, branch, persistence order" \
-        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\nquota-timer\nshow\nbbrv3' \
+        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3' \
         "${calls}"
 }
 
@@ -782,6 +888,10 @@ test_mihomo_template
 test_subscription_generation
 test_ufw_reapply_preserves_existing_ssh
 test_nginx_and_firewall
+test_dynamic_port_year_boundary
+test_scheduled_reboot_refreshes_dynamic_ports
+test_dynamic_port_rotation_schedule
+test_dynamic_port_rotation_rollback
 test_acme_renewal_repair
 test_acme_reinstall_and_rate_limit_guidance
 test_state_and_xray

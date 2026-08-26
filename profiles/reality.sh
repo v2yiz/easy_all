@@ -48,7 +48,13 @@ readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
 readonly SERVICE_PORT="443"
 readonly SUBSCRIPTION_HTTPS_PORT="8443"
 readonly PORT_BASE="10000"
-readonly DYNAMIC_PORT_MAX="62710"
+readonly DYNAMIC_PORT_ROTATION_HOURS="3"
+readonly DYNAMIC_PORT_MAX="$((PORT_BASE + 366 * 24 / DYNAMIC_PORT_ROTATION_HOURS - 1))"
+readonly DYNAMIC_PORT_RETENTION_DAYS="7"
+readonly DYNAMIC_PORT_RETENTION_WINDOWS="$((DYNAMIC_PORT_RETENTION_DAYS * 24 / DYNAMIC_PORT_ROTATION_HOURS))"
+readonly DYNAMIC_PORT_TODAY_WINDOWS="$((24 / DYNAMIC_PORT_ROTATION_HOURS))"
+readonly DYNAMIC_PORT_NEXT_DAY_WINDOWS="$((6 / DYNAMIC_PORT_ROTATION_HOURS))"
+readonly DYNAMIC_PORT_OPEN_WINDOWS="$((DYNAMIC_PORT_RETENTION_WINDOWS + DYNAMIC_PORT_TODAY_WINDOWS + DYNAMIC_PORT_NEXT_DAY_WINDOWS))"
 readonly DEFAULT_REALITY_TARGET="swdist.apple.com:443"
 readonly DEFAULT_REALITY_PORT_MODE="dynamic"
 readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
@@ -56,6 +62,7 @@ readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
 readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/templates/mihomo.yaml"
 readonly DEFAULT_REBOOT_HOUR="4"
 readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
+readonly CRON_DYNAMIC_PORT_MARKER="# easy_all-managed-dynamic-ports"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
@@ -214,6 +221,17 @@ initialize_server() {
     info "配置每日重启与 IPv6"
     configure_daily_reboot
     configure_ipv6
+}
+
+refresh_saved_daily_reboot_schedule() {
+    if [[ "${SCHEDULED_REBOOT_ENABLED:-0}" == "1" ]]; then
+        REBOOT_SCHEDULE_MODE=custom
+        REBOOT_HOUR="${SCHEDULED_REBOOT_HOUR}"
+    else
+        REBOOT_SCHEDULE_MODE=none
+        REBOOT_HOUR=""
+    fi
+    configure_daily_reboot
 }
 
 detect_public_ipv6() {
@@ -609,9 +627,9 @@ collect_sub_port_mode() {
         printf 'Choose the subscription port mode:\n'
         printf '  1. 固定 443\n'
         printf '     Fixed port 443\n'
-        printf '  2. dynamic（订阅随机端口 %s-%s，默认）\n' \
+        printf '  2. dynamic（订阅每 3 小时轮换端口 %s-%s，默认）\n' \
             "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
-        printf '     dynamic (random subscription port %s-%s; default)\n' \
+        printf '     dynamic (three-hour rotating subscription port %s-%s; default)\n' \
             "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
         read_bilingual \
             "请选择 [${default_choice}]（直接回车使用默认值）:" \
@@ -701,8 +719,7 @@ write_ufw_nat_rules_for_family() {
             printf '%s\n' "${start}"
             printf '*nat\n'
             printf ':PREROUTING ACCEPT [0:0]\n'
-            printf -- '-A PREROUTING -p tcp --dport %s:%s -j REDIRECT --to-ports %s\n' \
-                "${PORT_BASE}" "${DYNAMIC_PORT_MAX}" "${SERVICE_PORT}"
+            write_dynamic_nat_rules
             printf 'COMMIT\n'
             printf '%s\n\n' "${end}"
             cat "${candidate}"
@@ -729,6 +746,98 @@ write_ufw_nat_rules() {
         write_ufw_nat_rules_for_family "${UFW_BEFORE6_RULES}" ip6tables-restore \
             "${UFW_NAT6_START}" "${UFW_NAT6_END}" 0 "IPv6"
     fi
+}
+
+filter_dynamic_port_cron() {
+    awk -v marker="${CRON_DYNAMIC_PORT_MARKER}" 'index($0, marker) == 0'
+}
+
+restore_dynamic_port_rotation_schedule() {
+    local snapshot=$1 candidate="${RUNTIME_TMP}/rollback-dynamic-port.cron"
+    { crontab -l 2>/dev/null || true; } | filter_dynamic_port_cron >"${candidate}"
+    if [[ -f "${snapshot}" ]]; then
+        awk -v marker="${CRON_DYNAMIC_PORT_MARKER}" \
+            'index($0, marker) != 0' "${snapshot}" >>"${candidate}"
+    fi
+    crontab "${candidate}" \
+        || warn "恢复 easy_all 动态端口定时任务失败，请手动检查 root crontab"
+}
+
+configure_dynamic_port_rotation() {
+    local job
+    { crontab -l 2>/dev/null || true; } | filter_dynamic_port_cron | crontab -
+    if [[ "${SUB_PORT_MODE:-}" != "dynamic" ]]; then
+        return 0
+    fi
+    job="1 0 * * * \"${COMMAND_PATH}\" rotate-dynamic-ports >/dev/null 2>&1 ${CRON_DYNAMIC_PORT_MARKER}"
+    { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
+}
+
+remove_dynamic_port_rotation() {
+    { crontab -l 2>/dev/null || true; } | filter_dynamic_port_cron | crontab - \
+        || warn "移除 easy_all 动态端口定时任务失败，请手动检查 root crontab"
+}
+
+dynamic_port_rotation_for_now() {
+    local day_of_year hour_of_day elapsed_hours
+    day_of_year=$(TZ=Asia/Shanghai date +%j)
+    hour_of_day=$(TZ=Asia/Shanghai date +%H)
+    elapsed_hours=$(( (10#${day_of_year} - 1) * 24 + 10#${hour_of_day} ))
+    printf '%s\n' "$((elapsed_hours / DYNAMIC_PORT_ROTATION_HOURS))"
+}
+
+dynamic_port_for_current_window() {
+    local rotation
+    rotation=$(dynamic_port_rotation_for_now)
+    printf '%s\n' "$((PORT_BASE + rotation))"
+}
+
+days_in_year() {
+    local year=$1
+    if (( year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) )); then
+        printf '366\n'
+    else
+        printf '365\n'
+    fi
+}
+
+write_dynamic_nat_rules() {
+    local day_of_year current_year previous_year previous_year_windows
+    local current_year_days today_start_rotation next_day_start_rotation
+    local offset rotation port
+    day_of_year=$(TZ=Asia/Shanghai date +%j)
+    current_year=$(TZ=Asia/Shanghai date +%Y)
+    previous_year=$((10#${current_year} - 1))
+    previous_year_windows=$(( $(days_in_year "${previous_year}") * 24 / DYNAMIC_PORT_ROTATION_HOURS ))
+    current_year_days=$(days_in_year "${current_year}")
+    today_start_rotation=$(( (10#${day_of_year} - 1) * DYNAMIC_PORT_TODAY_WINDOWS ))
+    if (( 10#${day_of_year} < current_year_days )); then
+        next_day_start_rotation=$((today_start_rotation + DYNAMIC_PORT_TODAY_WINDOWS))
+    else
+        next_day_start_rotation=0
+    fi
+
+    for ((offset = 1; offset <= DYNAMIC_PORT_RETENTION_WINDOWS; offset++)); do
+        rotation=$((today_start_rotation - offset))
+        if (( rotation < 0 )); then
+            rotation=$((previous_year_windows + rotation))
+        fi
+        port=$((PORT_BASE + rotation))
+        printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
+            "${port}" "${SERVICE_PORT}"
+    done
+    for ((offset = 0; offset < DYNAMIC_PORT_TODAY_WINDOWS; offset++)); do
+        rotation=$((today_start_rotation + offset))
+        port=$((PORT_BASE + rotation))
+        printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
+            "${port}" "${SERVICE_PORT}"
+    done
+    for ((offset = 0; offset < DYNAMIC_PORT_NEXT_DAY_WINDOWS; offset++)); do
+        rotation=$((next_day_start_rotation + offset))
+        port=$((PORT_BASE + rotation))
+        printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
+            "${port}" "${SERVICE_PORT}"
+    done
 }
 
 enable_ufw_ipv6() {
@@ -881,13 +990,24 @@ build_mihomo_node() {
 }
 
 generate_subscription_port() {
-    local value
     if [[ "${SUB_PORT_MODE}" == "443" ]]; then
         printf '443\n'
         return 0
     fi
-    value=$((16#$(openssl rand -hex 4)))
-    printf '%s\n' "$((PORT_BASE + value % (DYNAMIC_PORT_MAX - PORT_BASE + 1)))"
+    dynamic_port_for_current_window
+}
+
+scheduled_reboot_pre_command() {
+    printf '"%s" rotate-dynamic-ports >/dev/null 2>&1' "${COMMAND_PATH}"
+}
+
+rotate_dynamic_ports() {
+    require_root
+    collect_installed_state
+    [[ "${SUB_PORT_MODE}" == "dynamic" ]] || return 0
+    write_ufw_nat_rules
+    ufw reload >/dev/null || die "刷新动态端口 NAT 规则失败"
+    success "动态端口 NAT 已刷新：开放 ${DYNAMIC_PORT_OPEN_WINDOWS} 个端口，覆盖最近 ${DYNAMIC_PORT_RETENTION_DAYS} 天并预开放当天及次日凌晨端口"
 }
 
 install_subscription_dependencies() {
@@ -1245,6 +1365,9 @@ snapshot_subscription_update() {
         install -m 0600 /dev/null \
             "${UPDATE_SUB_BACKUP_DIR}/ufw-default.missing"
     fi
+    { crontab -l 2>/dev/null || true; } \
+        >"${UPDATE_SUB_BACKUP_DIR}/root.crontab"
+    chmod 0600 "${UPDATE_SUB_BACKUP_DIR}/root.crontab"
     UPDATE_SUB_ROLLBACK_ON_EXIT=1
 }
 
@@ -1297,6 +1420,8 @@ rollback_subscription_update() {
     source_state_file
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
         || die "备份状态中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
+    restore_dynamic_port_rotation_schedule \
+        "${UPDATE_SUB_BACKUP_DIR}/root.crontab"
     configure_ufw || warn "恢复订阅更新前 UFW 失败"
 }
 
@@ -1314,6 +1439,7 @@ update_subscription() {
         printf '%s' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
     )
     collect_installed_state
+    refresh_saved_daily_reboot_schedule
     if [[ "${prompt_options}" == "1" ]]; then
         SUB_PORT_MODE=${requested_port_mode}
         collect_sub_port_mode "${stored_port_mode}"
@@ -1344,6 +1470,7 @@ update_subscription() {
         end_quota_maintenance
         return 1
     fi
+    configure_dynamic_port_rotation
     install_quota_timer
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -1572,6 +1699,7 @@ uninstall_all() {
     restore_preinstall_firewall
     restore_preinstall_ipv6
     remove_daily_reboot_schedule
+    remove_dynamic_port_rotation
     remove_managed_acme_domain "${SUBSCRIPTION_DOMAIN:-}"
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -1662,6 +1790,7 @@ run_reality_install_pipeline() {
     info "[9/9] 保存状态并注册 easy_all 命令"
     save_state
     register_easy_all_command
+    configure_dynamic_port_rotation
     install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     show_subscription
@@ -1688,6 +1817,7 @@ usage() {
   update-sub    选择部署订阅服务或仅输出节点
   update-core   更新 Xray 核心
   renew-cert    强制续期自托管订阅证书
+  rotate-dynamic-ports  刷新动态端口的最近 7 天 NAT 保留窗口（内部任务）
   quota-status  显示每个用户的本月流量与配额状态
   quota-set     修改指定用户的月度额度
   quota-reset   清零指定用户的本月已用量
@@ -1735,6 +1865,7 @@ main() {
     update-sub) update_subscription 1 ;;
     update-core) update_current_core ;;
     renew-cert) renew_subscription_certificate ;;
+    rotate-dynamic-ports) rotate_dynamic_ports ;;
     quota-sync) quota_sync_usage ;;
     quota-status) require_root; collect_installed_state; show_quota_status ;;
     quota-set) shift; quota_set_user "$@" ;;

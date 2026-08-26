@@ -54,7 +54,7 @@ filter_managed_reboot_cron() {
 }
 
 configure_daily_reboot() {
-    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job
+    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job pre_command=""
     if [[ -z "${mode}" && -t 0 ]]; then
         printf '请选择定时重启策略：\n'
         printf 'Choose the scheduled reboot policy:\n'
@@ -90,7 +90,14 @@ configure_daily_reboot() {
     esac
     { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab -
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
-        job="0 ${SCHEDULED_REBOOT_HOUR} * * * /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
+        if declare -F scheduled_reboot_pre_command >/dev/null 2>&1; then
+            pre_command=$(scheduled_reboot_pre_command)
+        fi
+        if [[ -n "${pre_command}" ]]; then
+            job="0 ${SCHEDULED_REBOOT_HOUR} * * * ${pre_command} && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
+        else
+            job="0 ${SCHEDULED_REBOOT_HOUR} * * * /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
+        fi
         { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
     fi
 }
