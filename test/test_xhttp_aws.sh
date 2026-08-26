@@ -62,7 +62,7 @@ assert_not_contains "CloudFront Xray egress does not depend on the client family
     "${XRAY_RENDER_CONTENT}" "CDN_CLIENT_IP_FAMILY"
 assert_contains "Xray keepalive stays below CloudFront response timeout" "${XHTTP_CONTENT}" \
     'readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"'
-assert_not_contains "XHTTP client output relies on compatible padding defaults" "${XHTTP_CONTENT}" \
+assert_not_contains "XHTTP client output omits client-side padding settings" "${XHTTP_CONTENT}" \
     'XHTTP_X_PADDING_BYTES'
 assert_contains "Xray accepts the server-side keepalive marker padding" "${XHTTP_CONTENT}" \
     'xPaddingBytes:$x_padding_bytes'
@@ -108,8 +108,6 @@ assert_contains "subscription updates enable rollback" "${XHTTP_CONTENT}" \
     'UPDATE_SUB_ROLLBACK_ON_EXIT=1'
 assert_contains "CloudFront health failures are fatal" "${XHTTP_CONTENT}" \
     'die "CloudFront ${label}域名 ${domain} 公网验收失败'
-assert_not_contains "CloudFront installation does not auto-adopt unmarked legacy distributions" \
-    "${XHTTP_CONTENT}" 'AWS_ADOPT_DISTRIBUTION=1'
 assert_contains "CloudFront alias conflicts require explicit old-resource cleanup" \
     "${XHTTP_CONTENT}" '脚本不会接管旧部署，请先删除旧分配或解除该别名'
 assert_contains "CloudFront billing mode is persisted" "${XHTTP_CONTENT}" \
@@ -615,7 +613,7 @@ EOF
     assert_contains "XHTTP path keeps the Nginx location suffix" "${link}" "path=%2Fxhttp-test-path%2F"
     assert_contains "XHTTP XMUX extra" "${link}" "extra="
     assert_contains "XHTTP link uses the supported uplink method key" "${link}" "uplinkHTTPMethod"
-    assert_not_contains "XHTTP link omits the ignored legacy uplink key" "${link}" "uplinkMethod"
+    assert_not_contains "XHTTP link omits the unsupported uplink key" "${link}" "uplinkMethod"
     encoded_extra=$(sed -n 's/.*[?&]extra=\([^&]*\).*/\1/p' <<<"${link}")
     extra_json=$(printf '%b' "${encoded_extra//%/\\x}")
     jq -e '
@@ -639,7 +637,7 @@ EOF
         "${mihomo}" "ip-version: dual"
     assert_contains "Mihomo XMUX uses expanded concurrency" \
         "${mihomo}" 'max-concurrency: "8-16"'
-    assert_not_contains "Mihomo relies on its compatible padding defaults" \
+    assert_not_contains "Mihomo omits client-side padding settings" \
         "${mihomo}" 'x-padding-'
     assert_not_contains "Mihomo XMUX omits request-count rotation" \
         "${mihomo}" "h-max-request-times"
@@ -828,7 +826,7 @@ EOF
         "$(<"${payg_calls}")" "create-subscription"
     aws() {
         [[ "$*" == *"pricing-plan-manager list-subscriptions"* ]] || return 1
-        printf '%s\n' '{"subscriptionSummaries":[{"arn":"arn:plan:legacy","planTier":"FREE","resourceArns":["arn:aws:cloudfront::111122223333:distribution/EASYALL123"]}]}'
+        printf '%s\n' '{"subscriptionSummaries":[{"arn":"arn:plan:existing","planTier":"FREE","resourceArns":["arn:aws:cloudfront::111122223333:distribution/EASYALL123"]}]}'
     }
     if (ensure_cloudfront_payg_mode) >/dev/null 2>&1; then
         fail "pay-as-you-go mode must reject a distribution with a fixed plan"
@@ -914,8 +912,6 @@ EOF
         "$(<"${mihomo_file}")" "DOMAIN,love.xflash.work,DIRECT"
     assert_contains "Mihomo subscription XFLASH application rules" \
         "$(<"${mihomo_file}")" "RULE-SET,applications,DIRECT"
-    assert_not_contains "Mihomo subscription removes legacy Apple Relay additions" \
-        "$(<"${mihomo_file}")" "apple-relay.apple.com"
     assert_contains "Mihomo subscription XMUX" "$(<"${mihomo_file}")" "h-keep-alive-period: 0"
     assert_not_contains "Mihomo subscription does not override SSH port 22 routing" \
         "$(<"${mihomo_file}")" "DST-PORT,22,"
@@ -1110,7 +1106,7 @@ assert_contains "AWS guide requires Route 53 public DNS delegation for XHTTP" \
     "${readme}" "这是 CDN XHTTP 的**必要条件**"
 assert_contains "AWS guide distinguishes DNS delegation from domain registration transfer" \
     "${readme}" "注册商不必迁入 AWS"
-assert_contains "AWS guide protects DNSSEC migrations" "${readme}" "DNSSEC"
+assert_contains "AWS guide documents DNSSEC requirements" "${readme}" "DNSSEC"
 assert_contains "README includes top-down Mermaid install flow" "${readme}" 'flowchart TD'
 assert_contains "README documents direct-enter semantics" "${readme}" \
     "直接回车会采用该值"

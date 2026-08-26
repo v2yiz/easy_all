@@ -49,13 +49,45 @@ preserve_stage="${TMP_DIR}/preserve-stage"
 mkdir -p "${preserve_source}" "${preserve_stage}"
 printf '#!/bin/sh\n' >"${preserve_source}/fail2ban-ufw-cidr.sh"
 printf '#!/bin/sh\n' >"${preserve_source}/reload-subscription-nginx.sh"
-printf 'obsolete\n' >"${preserve_source}/obsolete-runtime-file"
+printf 'unmanaged\n' >"${preserve_source}/unmanaged-runtime-file"
 stage_preserved_runtime_files "${preserve_source}" "${preserve_stage}"
 [[ -x "${preserve_stage}/fail2ban-ufw-cidr.sh" \
     && -x "${preserve_stage}/reload-subscription-nginx.sh" ]] \
     || fail "runtime registration must preserve managed helper scripts"
-[[ ! -e "${preserve_stage}/obsolete-runtime-file" ]] \
+[[ ! -e "${preserve_stage}/unmanaged-runtime-file" ]] \
     || fail "runtime registration must preserve only allowlisted runtime files"
+
+self_update_invocation="${TMP_DIR}/self-update-invocation"
+self_update_repo_path="${TMP_DIR}/self-update-repo-path"
+export SELF_UPDATE_INVOCATION_FILE="${self_update_invocation}"
+export SELF_UPDATE_REPO_PATH_FILE="${self_update_repo_path}"
+git() {
+    [[ "${1:-}" == "clone" ]] || return 1
+    local destination="${!#}" relative_path
+    printf '%s\n' "${destination}" >"${SELF_UPDATE_REPO_PATH_FILE}"
+    mkdir -p "${destination}"
+    for relative_path in easy_all templates/mihomo.yaml "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+        mkdir -p "${destination}/$(dirname -- "${relative_path}")"
+        cp "${ROOT_DIR}/${relative_path}" "${destination}/${relative_path}"
+    done
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf "%s\\n" "$*" >"${SELF_UPDATE_INVOCATION_FILE}"' \
+        >"${destination}/easy_all"
+    chmod 0700 "${destination}/easy_all"
+}
+make_temp_dir() { mktemp -d "${TMP_DIR}/self-update.XXXXXX"; }
+require_root() { :; }
+die() { fail "$*"; }
+success() { :; }
+unified_self_update
+assert_equal "self-update invokes register-command in the downloaded tree" \
+    "register-command" "$(<"${self_update_invocation}")"
+self_update_repo=$(<"${self_update_repo_path}")
+[[ ! -e "${self_update_repo}" ]] \
+    || fail "self-update must remove its temporary clone after registration"
+unset -f git make_temp_dir require_root die success
+unset SELF_UPDATE_INVOCATION_FILE SELF_UPDATE_REPO_PATH_FILE
+
 [[ "${launcher_content}" == *'apply-cloud)'* \
     && "${launcher_content}" == *'apply_cloud_resources'* ]] \
     || fail "launcher must expose the explicit XHTTP cloud apply"

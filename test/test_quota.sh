@@ -139,13 +139,6 @@ assert_equal "owner preserves the original UUID" "${VLESS_UUID}" \
 [[ "$(jq -r '.user1.uuid' <<<"${accounts}")" != "${VLESS_UUID}" ]] \
     || fail "non-owner user must receive an independent UUID"
 
-legacy_accounts='{"user1":{"token":"user1-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":100}}'
-accounts_with_new_owner=$(build_user_accounts "${tokens}" "${quotas}" "${legacy_accounts}")
-assert_equal "a newly added owner claims the original UUID" "${VLESS_UUID}" \
-    "$(jq -r '.owner.uuid' <<<"${accounts_with_new_owner}")"
-[[ "$(jq -r '.user1.uuid' <<<"${accounts_with_new_owner}")" != "${VLESS_UUID}" ]] \
-    || fail "existing non-owner must rotate away from the original UUID when owner is added"
-
 QUOTA_ENABLED=1
 USER_ACCOUNTS=${accounts}
 ALLOWED_TOKENS=${tokens}

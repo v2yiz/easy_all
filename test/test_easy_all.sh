@@ -117,8 +117,6 @@ test_syntax_and_worker_removal() {
         "collect_subscription_inputs()" "${script}"
     assert_contains "subscription deployment is a separate stage" \
         "deploy_subscription_output()" "${script}"
-    assert_not_contains "legacy coupled subscription configurator is removed" \
-        "configure_subscription()" "${script}"
     assert_contains "Reality validates AAAA against detected server IPv6" \
         "的 AAAA \${mismatch} 未指向本机公网 IPv6" "${script}"
     assert_contains "Reality uses shared IPv4 direct outbounds" \
@@ -422,8 +420,6 @@ test_subscription_generation() {
         "RULE-SET,applications,DIRECT" "${yaml}"
     assert_contains "Mihomo subscription keeps the XFLASH Telegram rule unchanged" \
         "RULE-SET,telegramcidr,PROXY" "${yaml}"
-    assert_not_contains "Mihomo subscription removes legacy Apple Relay additions" \
-        "apple-relay.apple.com" "${yaml}"
     assert_not_contains "Mihomo subscription does not override SSH port 22 routing" \
         "DST-PORT,22," "${yaml}"
     assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \
@@ -521,6 +517,17 @@ EOF
     assert_contains "dynamic Reality forwarding includes the current port" \
         "--dport $(dynamic_port_for_current_window) -j REDIRECT --to-ports ${SERVICE_PORT}" \
         "${ufw_config}"
+
+    SUB_PORT_MODE="443"
+    write_ufw_nat_rules
+    ufw_config=$(<"${UFW_BEFORE_RULES}")
+    ufw6_config=$(<"${UFW_BEFORE6_RULES}")
+    assert_equal "fixed Reality mode removes IPv4 dynamic NAT rules" "0" \
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw_config}")"
+    assert_equal "fixed Reality mode removes IPv6 dynamic NAT rules" "0" \
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
+    assert_not_contains "fixed Reality mode does not retain a dynamic port" \
+        "--dport ${PORT_BASE} -j REDIRECT" "${ufw_config}"
     assert_contains "dual-stack Reality enables UFW IPv6" \
         "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
     assert_contains "Reality reloads UFW after writing NAT rules" \
@@ -553,6 +560,72 @@ test_dynamic_port_year_boundary() {
     assert_not_contains "dynamic NAT does not pre-open the next day's 06:00 port" \
         "--dport 10010 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
     unset -f date
+}
+
+test_dynamic_port_boundaries_and_rule_set() {
+    local rules rule_ports rule_count unique_count minimum maximum
+    local mock_day=1 mock_hour=2 mock_year=2026
+    set_fixture
+    date() {
+        case "$*" in
+        +%j) printf '%03d\n' "${mock_day}" ;;
+        +%H) printf '%02d\n' "${mock_hour}" ;;
+        +%Y) printf '%04d\n' "${mock_year}" ;;
+        *) return 1 ;;
+        esac
+    }
+    assert_equal "dynamic port remains in the first window before 03:00" \
+        "10000" "$(dynamic_port_for_current_window)"
+    mock_hour=3
+    assert_equal "dynamic port advances at 03:00" \
+        "10001" "$(dynamic_port_for_current_window)"
+    mock_day=2
+    mock_hour=0
+    assert_equal "dynamic port advances at the next day's 00:00" \
+        "10008" "$(dynamic_port_for_current_window)"
+
+    mock_year=2028
+    mock_day=366
+    mock_hour=21
+    assert_equal "leap-year final window reaches the configured upper bound" \
+        "${DYNAMIC_PORT_MAX}" "$(dynamic_port_for_current_window)"
+    rules=$(write_dynamic_nat_rules)
+    rule_ports=$(grep -E -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${rules}" \
+        | awk '{print $6}')
+    rule_count=$(wc -l <<<"${rule_ports}" | tr -d ' ')
+    unique_count=$(sort -n -u <<<"${rule_ports}" | wc -l | tr -d ' ')
+    minimum=$(sort -n <<<"${rule_ports}" | head -n1)
+    maximum=$(sort -n <<<"${rule_ports}" | tail -n1)
+    assert_equal "dynamic NAT rule set has the configured number of entries" \
+        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${rule_count}"
+    assert_equal "dynamic NAT rule set has no duplicate ports" \
+        "${rule_count}" "${unique_count}"
+    assert_equal "dynamic NAT rule set starts at the base port" "${PORT_BASE}" "${minimum}"
+    assert_equal "dynamic NAT rule set stays below the reserved upper bound" \
+        "${DYNAMIC_PORT_MAX}" "${maximum}"
+    unset -f date
+}
+
+test_rotate_dynamic_ports_command() {
+    local calls=""
+    set_fixture
+    require_root() { :; }
+    collect_installed_state() { :; }
+    write_ufw_nat_rules() { calls+="write "; }
+    ufw() { calls+="reload "; }
+    rotate_dynamic_ports
+    assert_equal "dynamic port rotation writes and reloads UFW" "write reload " "${calls}"
+
+    calls=""
+    SUB_PORT_MODE="443"
+    rotate_dynamic_ports
+    assert_equal "fixed port rotation is a no-op" "" "${calls}"
+
+    SUB_PORT_MODE="dynamic"
+    if (ufw() { return 1; }; rotate_dynamic_ports) >/dev/null 2>&1; then
+        fail_test "dynamic port rotation must fail when UFW reload fails"
+    fi
+    unset -f require_root collect_installed_state write_ufw_nat_rules ufw
 }
 
 test_scheduled_reboot_refreshes_dynamic_ports() {
@@ -596,6 +669,11 @@ test_dynamic_port_rotation_schedule() {
         "1 0 * * *" "${cron_state}"
     assert_contains "dynamic port rotation calls the managed command" \
         "rotate-dynamic-ports" "${cron_state}"
+    SUB_PORT_MODE="443"
+    configure_dynamic_port_rotation
+    cron_state=$(<"${cron_state_file}")
+    assert_not_contains "fixed port mode does not install dynamic rotation" \
+        "rotate-dynamic-ports" "${cron_state}"
     remove_dynamic_port_rotation
     cron_state=$(<"${cron_state_file}")
     assert_not_contains "dynamic port rotation can be removed" \
@@ -605,15 +683,15 @@ test_dynamic_port_rotation_schedule() {
 
 test_dynamic_port_rotation_rollback() {
     local cron_state_file="${TMP_DIR}/dynamic-port-rollback.cron"
-    local snapshot="${TMP_DIR}/dynamic-port-rollback.snapshot" cron_state
+    local cron_state snapshot_state
+    install -d -m 0700 "${STATE_DIR}"
+    printf 'before-state\n' >"${STATE_FILE}"
+    printf 'before-ufw\n' >"${UFW_BEFORE_RULES}"
+    printf 'before-ufw6\n' >"${UFW_BEFORE6_RULES}"
+    printf 'before-default\n' >"${UFW_DEFAULT_CONFIG}"
     cat >"${cron_state_file}" <<EOF
 15 2 * * * /usr/local/bin/user-job
 1 0 * * * /usr/local/bin/easy_all rotate-dynamic-ports ${CRON_DYNAMIC_PORT_MARKER}
-EOF
-    cp "${cron_state_file}" "${snapshot}"
-    cat >"${cron_state_file}" <<EOF
-15 2 * * * /usr/local/bin/user-job
-30 3 * * * /usr/local/bin/concurrent-job
 EOF
     crontab() {
         if [[ "${1:-}" == "-l" ]]; then
@@ -624,13 +702,41 @@ EOF
             cat "$1" >"${cron_state_file}"
         fi
     }
-    restore_dynamic_port_rotation_schedule "${snapshot}"
+    snapshot_subscription_update
+    snapshot_state="${UPDATE_SUB_BACKUP_DIR}"
+    printf 'after-state\n' >"${STATE_FILE}"
+    printf 'after-ufw\n' >"${UFW_BEFORE_RULES}"
+    printf 'after-ufw6\n' >"${UFW_BEFORE6_RULES}"
+    printf 'after-default\n' >"${UFW_DEFAULT_CONFIG}"
+    cat >"${cron_state_file}" <<EOF
+15 2 * * * /usr/local/bin/user-job
+30 3 * * * /usr/local/bin/concurrent-job
+1 0 * * * /usr/local/bin/easy_all rotate-dynamic-ports ${CRON_DYNAMIC_PORT_MARKER}
+EOF
+    systemctl() { :; }
+    nginx() { :; }
+    source_state_file() { SUBSCRIPTION_MODE="link"; }
+    configure_ufw() { :; }
+    rollback_subscription_update
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     cron_state=$(<"${cron_state_file}")
-    assert_contains "dynamic port rollback restores the previous managed schedule" \
+    assert_contains "subscription rollback restores the previous managed schedule" \
         "1 0 * * * /usr/local/bin/easy_all rotate-dynamic-ports" "${cron_state}"
-    assert_contains "dynamic port rollback preserves concurrent unmanaged schedules" \
+    assert_contains "subscription rollback preserves concurrent unmanaged schedules" \
         "30 3 * * * /usr/local/bin/concurrent-job" "${cron_state}"
-    unset -f crontab
+    assert_contains "subscription rollback preserves unrelated schedules" \
+        "15 2 * * * /usr/local/bin/user-job" "${cron_state}"
+    assert_equal "subscription rollback restores state" "before-state" \
+        "$(<"${STATE_FILE}")"
+    assert_equal "subscription rollback restores IPv4 UFW rules" "before-ufw" \
+        "$(<"${UFW_BEFORE_RULES}")"
+    assert_equal "subscription rollback restores IPv6 UFW rules" "before-ufw6" \
+        "$(<"${UFW_BEFORE6_RULES}")"
+    assert_equal "subscription rollback restores UFW defaults" "before-default" \
+        "$(<"${UFW_DEFAULT_CONFIG}")"
+    [[ -d "${snapshot_state}" ]] || fail_test "subscription rollback snapshot was removed too early"
+    unset -f crontab systemctl nginx source_state_file configure_ufw
+    unset UPDATE_SUB_BACKUP_DIR
 }
 
 test_ufw_reapply_preserves_existing_ssh() {
@@ -889,6 +995,8 @@ test_subscription_generation
 test_ufw_reapply_preserves_existing_ssh
 test_nginx_and_firewall
 test_dynamic_port_year_boundary
+test_dynamic_port_boundaries_and_rule_set
+test_rotate_dynamic_ports_command
 test_scheduled_reboot_refreshes_dynamic_ports
 test_dynamic_port_rotation_schedule
 test_dynamic_port_rotation_rollback

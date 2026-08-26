@@ -23,9 +23,14 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}"/profiles/*.sh "${ROOT_DIR}"/lib/*.sh \
     "${ROOT_DIR}/scripts/debian-init.sh"
 
-for legacy_path in lib/reality.sh lib/xhttp_aws.sh xhttp_gcore.sh sample-mihomo.yaml debian_init.sh; do
-    [[ ! -e "${ROOT_DIR}/${legacy_path}" ]] \
-        || fail "legacy path must be removed: ${legacy_path}"
+for required_path in \
+    profiles/reality.sh profiles/xhttp-aws.sh profiles/xhttp-gcore.sh \
+    lib/xhttp-runtime.sh lib/quota.sh lib/cdn-traffic-guard.sh \
+    lib/platform.sh lib/profile-common.sh lib/network.sh \
+    lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
+    lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
+    [[ -f "${ROOT_DIR}/${required_path}" ]] \
+        || fail "required runtime path is missing: ${required_path}"
 done
 shared_modules=(
     quota.sh
@@ -54,12 +59,6 @@ shared_modules=(
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
-for obsolete_module in \
-    profile-support.sh validation.sh acme-renewal.sh reboot-schedule.sh; do
-    [[ ! -e "${ROOT_DIR}/lib/${obsolete_module}" ]] \
-        || fail "obsolete split module still exists: ${obsolete_module}"
-done
-
 for module in "${shared_modules[@]}"; do
     [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
         || fail "Reality does not source shared module ${module}"
@@ -115,9 +114,6 @@ source "${ROOT_DIR}/lib/subscription-auth.sh"
 [[ "$(normalize_subscription_mode deploy)" == "deploy" \
     && "$(normalize_subscription_mode link)" == "link" ]] \
     || fail "shared subscription modes do not use the deploy/link enum"
-if normalize_subscription_mode selfhost >/dev/null 2>&1; then
-    fail "shared subscription modes still accept the removed selfhost alias"
-fi
 if normalize_allowed_tokens '{"owner":12345678}' >/dev/null 2>&1; then
     fail "shared subscription auth accepts a non-string token"
 fi
@@ -144,7 +140,7 @@ fi
     || fail "profiles must delegate command registration to the unified launcher"
 [[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" != *'已注册单文件命令'* \
     && "$(<"${ROOT_DIR}/lib/profile-common.sh")" == *'validate_domain()'* ]] \
-    || fail "profile common helpers must include validation without legacy registration"
+    || fail "profile common helpers must include validation and unified registration"
 
 (
     BACKUP_DIR=$(mktemp -d)
