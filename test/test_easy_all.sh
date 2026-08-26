@@ -383,9 +383,15 @@ test_mihomo_template() {
 test_subscription_generation() {
     local base64_file="${TMP_DIR}/base64.txt"
     local mihomo_file="${TMP_DIR}/mihomo.yaml"
-    local decoded port yaml expected_dynamic_port
+    local decoded port yaml node_output expected_dynamic_port
     set_fixture
     expected_dynamic_port=$(dynamic_port_for_current_window)
+    collect_installed_state() { :; }
+    node_output=$(show_node)
+    assert_contains "show node uses the current dynamic Reality port" \
+        "@203.0.113.10:${expected_dynamic_port}?" "${node_output}"
+    assert_contains "show node uses the same dynamic port in Mihomo" \
+        "port: ${expected_dynamic_port}" "${node_output}"
     assert_equal "dynamic subscription port follows the current three-hour window" \
         "${expected_dynamic_port}" "$(generate_subscription_port)"
     assert_equal "dynamic subscription port is stable within the same window" \
@@ -428,6 +434,11 @@ test_subscription_generation() {
         "EASY_ALL_PROXY_NODE" "${yaml}"
 
     SUB_PORT_MODE="443"
+    node_output=$(show_node)
+    assert_contains "show node uses fixed port 443 when selected" \
+        "@203.0.113.10:443?" "${node_output}"
+    assert_contains "show node uses fixed port 443 in Mihomo" \
+        "port: 443" "${node_output}"
     generate_subscription_files "${base64_file}" "${mihomo_file}"
     decoded=$(openssl base64 -d -A <"${base64_file}")
     assert_contains "fixed subscription mode uses port 443" \
@@ -448,6 +459,7 @@ test_subscription_generation() {
     assert_not_contains "dual-stack endpoint keeps XFLASH DNS unchanged" \
         $'\n    ipv6: true\n' "${yaml}"
     unset -f dig
+    unset -f collect_installed_state
 }
 
 test_nginx_and_firewall() {

@@ -1544,10 +1544,13 @@ rebuild_traffic_runtime() {
 }
 
 show_node() {
+    local port
     collect_installed_state
-    printf '\n协议: %s\n节点链接:\n%s\n\n' "${PROTOCOL}" "$(build_node_link)"
+    port=$(generate_subscription_port)
+    printf '\n协议: %s\n节点链接:\n%s\n\n' \
+        "${PROTOCOL}" "$(build_node_link "${port}")"
     printf 'Mihomo / Clash 节点:\n'
-    build_mihomo_node
+    build_mihomo_node "${port}"
     printf '\n'
 }
 
