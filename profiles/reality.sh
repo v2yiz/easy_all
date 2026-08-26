@@ -1790,6 +1790,9 @@ run_reality_install_pipeline() {
     info "[9/9] 保存状态并注册 easy_all 命令"
     save_state
     register_easy_all_command
+    if [[ "${SUB_PORT_MODE}" == "dynamic" ]]; then
+        rotate_dynamic_ports
+    fi
     configure_dynamic_port_rotation
     install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0

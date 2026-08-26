@@ -965,7 +965,10 @@ test_install_pipeline_order() {
         install_packages() { printf 'packages\n'; }
         initialize_server() { printf 'initialize\n'; }
         collect_reality_inputs() { printf 'reality-inputs\n'; }
-        collect_subscription_inputs() { printf 'subscription-inputs:%s:%s\n' "$1" "$2"; }
+        collect_subscription_inputs() {
+            SUB_PORT_MODE="dynamic"
+            printf 'subscription-inputs:%s:%s\n' "$1" "$2"
+        }
         prepare_protocol_assets() { printf 'assets\n'; }
         configure_ufw() { printf 'ufw\n'; }
         install_protocol_runtime() { printf 'runtime\n'; }
@@ -973,6 +976,7 @@ test_install_pipeline_order() {
         deploy_subscription_output() { printf 'subscription-runtime\n'; }
         save_state() { printf 'save\n'; }
         register_easy_all_command() { printf 'register\n'; }
+        rotate_dynamic_ports() { printf 'dynamic-port-refresh\n'; }
         configure_dynamic_port_rotation() { printf 'dynamic-port-schedule\n'; }
         install_quota_timer() { printf 'quota-timer\n'; }
         show_subscription() { printf 'show\n'; }
@@ -980,7 +984,7 @@ test_install_pipeline_order() {
         run_reality_install_pipeline "reality" 1
     )
     assert_equal "Reality install pipeline follows input, common runtime, branch, persistence order" \
-        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3' \
+        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-refresh\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3' \
         "${calls}"
 }
 
