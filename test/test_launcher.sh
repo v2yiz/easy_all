@@ -32,6 +32,15 @@ export EASY_ALL_STATE_FILE_OVERRIDE="${TMP_DIR}/state.env"
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/easy_all"
 
+cron_path=$(
+    env -i PATH=/usr/bin:/bin bash -c \
+        'source "$1"; printf "%s" "$PATH"' _ "${ROOT_DIR}/easy_all"
+)
+[[ ":${cron_path}:" == *":/usr/local/sbin:"* \
+    && ":${cron_path}:" == *":/usr/sbin:"* \
+    && ":${cron_path}:" == *":/sbin:"* ]] \
+    || fail "launcher must restore administrative command paths for cron"
+
 launcher_content=$(<"${ROOT_DIR}/easy_all")
 [[ "${launcher_content}" == *'self-update      只更新 easy_all 项目代码'* \
     && "${launcher_content}" == *'git clone --depth 1 --branch main'* \

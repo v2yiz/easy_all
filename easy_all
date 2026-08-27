@@ -3,6 +3,11 @@
 set -Eeuo pipefail
 umask 077
 
+# Cron commonly starts commands with only /usr/bin:/bin. easy_all also needs
+# administrative tools such as ufw and iptables-restore from the sbin paths.
+readonly EASY_ALL_SYSTEM_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="${EASY_ALL_SYSTEM_PATH}${PATH:+:${PATH}}"
+
 EASY_ALL_SOURCE="${BASH_SOURCE[0]}"
 while [[ -L "${EASY_ALL_SOURCE}" ]]; do
     EASY_ALL_SOURCE_DIR="$(cd -- "$(dirname -- "${EASY_ALL_SOURCE}")" >/dev/null 2>&1 && pwd)"
