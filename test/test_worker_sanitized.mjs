@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 const workerPath = new URL('../worker.sanitized.js', import.meta.url).href;
 const originalFetch = globalThis.fetch;
 const originalNow = Date.now;
 const originalConsoleError = console.error;
 
-// The upstream service is intentionally unavailable in this test. Every
-// subscription must therefore exercise the local fallback path.
-globalThis.fetch = async () => {
+const unavailableFetch = async () => {
     throw new Error('upstream disabled for tests');
 };
+globalThis.fetch = unavailableFetch;
 console.error = () => {};
 
 function expectedDynamicPort(isoTime) {
@@ -42,9 +42,10 @@ function bashDynamicPort(dayOfYear, hour, year) {
     return Number(result.stdout.trim());
 }
 
-async function loadWorkerAt(isoTime) {
+async function loadWorkerAt(isoTime, fetchImpl = unavailableFetch) {
     const now = Date.parse(isoTime);
     Date.now = () => now;
+    globalThis.fetch = fetchImpl;
     return import(`${workerPath}?test=${encodeURIComponent(isoTime)}`);
 }
 
@@ -107,6 +108,11 @@ async function testFallbackPorts() {
     const clash = await clashResponse.text();
     assert.equal(portForServer(clash, 'node-2.example.invalid'), expected);
     assert.equal(portForServer(clash, 'node-3.example.invalid'), 443);
+    assert.match(clash, /- name: 延迟测试\n\s+type: select/);
+    assert.match(clash, /url: 'https:\/\/cp\.cloudflare\.com'/);
+    assert.match(clash, /timeout: 15000/);
+    assert.doesNotMatch(clash, /gstatic\.com\/generate_204/);
+    assert.doesNotMatch(clash, /type: url-test/);
     assert.equal(
         clashResponse.headers.get('Content-Disposition'),
         'attachment; filename="CURRENT_TEST"'
@@ -115,8 +121,13 @@ async function testFallbackPorts() {
     const base64Response = await worker.default.fetch(
         new Request('https://worker.example/subscribe?token=' + token)
     );
+    assert.equal(
+        base64Response.headers.get('X-Easy-All-Warning'),
+        'xflash-unavailable-local-only'
+    );
     const base64 = await base64Response.text();
     const links = Buffer.from(base64, 'base64').toString('utf8').split('\n');
+    assert.equal(links.length, 2);
     assert.ok(
         links.some((link) => link.includes('@node-2.example.invalid:' + expected + '?'))
     );
@@ -133,6 +144,96 @@ async function testFallbackPorts() {
     assert.equal(portForServer(all, 'node-1.example.invalid'), expected);
     assert.equal(portForServer(all, 'node-2.example.invalid'), expected);
     assert.equal(portForServer(all, 'node-3.example.invalid'), 443);
+}
+
+async function testOnlineXflashMerge() {
+    const upstream = `mixed-port: 7890
+proxies:
+  - name: UPSTREAM_SECRET_NODE
+    type: vless
+    server: upstream-secret.example
+    port: 443
+    uuid: UPSTREAM_SECRET_UUID
+proxy-groups:
+  - name: XFLASH
+    type: select
+    proxies: [UPSTREAM_SECRET_NODE]
+rules:
+  - DOMAIN-SUFFIX,upstream-rule.example,XFLASH
+  - MATCH,XFLASH
+`;
+    let fetchCalls = 0;
+    const worker = await loadWorkerAt(
+        '2026-08-26T04:00:00Z',
+        async () => {
+            fetchCalls += 1;
+            return new Response(upstream, {
+                status: 200,
+                headers: { 'Content-Type': 'text/yaml' },
+            });
+        }
+    );
+    const response = await worker.default.fetch(
+        new Request(
+            'https://worker.example/subscribe?token=REDACTED_TOKEN_01&flag=clash'
+        )
+    );
+    const clash = await response.text();
+    assert.equal(fetchCalls, 1);
+    assert.equal(response.headers.get('X-Easy-All-Warning'), null);
+    assert.match(clash, /DOMAIN-SUFFIX,upstream-rule\.example,PROXY/);
+    assert.match(clash, /MATCH,PROXY/);
+    assert.match(clash, /UPSTREAM_SECRET_NODE/);
+    assert.match(clash, /upstream-secret\.example/);
+    assert.match(clash, /UPSTREAM_SECRET_UUID/);
+    assert.equal(
+        portForServer(clash, 'node-2.example.invalid'),
+        expectedDynamicPort('2026-08-26T04:00:00Z')
+    );
+    assert.equal(portForServer(clash, 'node-3.example.invalid'), 443);
+
+    let base64FetchCalls = 0;
+    const base64Worker = await loadWorkerAt(
+        '2026-08-26T05:00:00Z',
+        async () => {
+            base64FetchCalls += 1;
+            return new Response(
+                Buffer.from(
+                    'vless://UPSTREAM_ONLINE_NODE@upstream.example:443'
+                ).toString('base64'),
+                { status: 200 }
+            );
+        }
+    );
+    const base64Response = await base64Worker.default.fetch(
+        new Request('https://worker.example/subscribe?token=REDACTED_TOKEN_01')
+    );
+    const links = Buffer.from(await base64Response.text(), 'base64')
+        .toString('utf8')
+        .split('\n');
+    assert.equal(base64FetchCalls, 1);
+    assert.equal(base64Response.headers.get('X-Easy-All-Warning'), null);
+    assert.equal(links.length, 3);
+    assert.ok(links.every((link) => link.startsWith('vless://')));
+    assert.ok(links.some((link) => link.includes('UPSTREAM_ONLINE_NODE')));
+}
+
+function testFallbackContainsNoXflashNodes() {
+    const workerSource = readFileSync(
+        new URL('../worker.sanitized.js', import.meta.url),
+        'utf8'
+    );
+    const fallbackSource = readFileSync(
+        new URL('../xflash.yaml', import.meta.url),
+        'utf8'
+    );
+    for (const content of [workerSource, fallbackSource]) {
+        assert.doesNotMatch(content, /type:\s*(?:mieru|anytls)/);
+        assert.doesNotMatch(content, /REDACTED_TRAFFIC_PATTERN/);
+        assert.doesNotMatch(content, /♻️自动选择|🔯故障转移/);
+    }
+    assert.match(fallbackSource, /RULE-SET,gfw,XFLASH/);
+    assert.match(fallbackSource, /proxies:\nproxy-groups:\nrule-providers:/);
 }
 
 async function testRotationBoundaries() {
@@ -166,6 +267,8 @@ async function testRotationBoundaries() {
 try {
     await testHttpContract();
     await testFallbackPorts();
+    await testOnlineXflashMerge();
+    testFallbackContainsNoXflashNodes();
     await testRotationBoundaries();
     console.log('ok - sanitized Worker tests passed');
 } finally {

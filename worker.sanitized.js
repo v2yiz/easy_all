@@ -10,7 +10,7 @@ const PORT_ROTATION_HOURS = 3;
 const XHTTP_PORT = 443;
 const SUBSCRIPTION_PATH = '/subscribe';
 const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
-const WORKER_VERSION = '2026-08-26-xflash-fallback-v2';
+const WORKER_VERSION = '2026-08-27-xflash-rules-fallback-v3';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
@@ -35,22 +35,7 @@ dns:
     nameserver: ['https://223.6.6.6/dns-query#h3=true', 'https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://120.53.53.53/dns-query']
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
 proxies:
-    - { name: '🇯🇵 日本 ³', type: mieru, server: node-01.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_01, password: REDACTED_PASSWORD_01, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_01 }
-    - { name: '🇸🇬 新加坡 ³', type: mieru, server: node-02.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_02, password: REDACTED_PASSWORD_02, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_02 }
-    - { name: '🇺🇸 美国 ³', type: mieru, server: node-03.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_03, password: REDACTED_PASSWORD_03, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_03 }
-    - { name: '🇯🇵 日本 ²', type: anytls, server: node-04.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_04, udp: true, tfo: false, sni: sni-04.example.invalid, skip-cert-verify: true }
-    - { name: '🇸🇬 新加坡 ²', type: anytls, server: node-05.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_05, udp: true, tfo: false, sni: sni-05.example.invalid, skip-cert-verify: true }
-    - { name: '🇺🇸 美国 ²', type: anytls, server: node-06.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_06, udp: true, tfo: false, sni: sni-06.example.invalid, skip-cert-verify: true }
-    - { name: '🇭🇰 香港 ³', type: mieru, server: node-07.example.invalid, port: 36000, transport: TCP, username: REDACTED_USERNAME_07, password: REDACTED_PASSWORD_07, multiplexing: MULTIPLEXING_LOW, traffic-pattern: REDACTED_TRAFFIC_PATTERN_07 }
-    - { name: '🇰🇷 韩国 ²', type: anytls, server: node-08.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_08, udp: true, tfo: false, sni: sni-08.example.invalid, skip-cert-verify: true }
-    - { name: '🇦🇺 澳大利亚 ²', type: anytls, server: node-09.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_09, udp: true, tfo: false, sni: sni-09.example.invalid, skip-cert-verify: true }
-    - { name: '🇮🇳 印度 ²', type: anytls, server: node-10.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_10, udp: true, tfo: false, sni: sni-10.example.invalid, skip-cert-verify: true }
-    - { name: '🇬🇧 英国 ²', type: anytls, server: node-11.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_11, udp: true, tfo: false, sni: sni-11.example.invalid, skip-cert-verify: true }
-    - { name: '🇨🇦 加拿大 ²', type: anytls, server: node-12.example.invalid, port: 35000, client-fingerprint: firefox, password: REDACTED_PASSWORD_12, udp: true, tfo: false, sni: sni-12.example.invalid, skip-cert-verify: true }
 proxy-groups:
-    - { name: XFLASH, type: select, proxies: [♻️自动选择, 🔯故障转移, '🇯🇵 日本 ³', '🇸🇬 新加坡 ³', '🇺🇸 美国 ³', '🇯🇵 日本 ²', '🇸🇬 新加坡 ²', '🇺🇸 美国 ²', '🇭🇰 香港 ³', '🇰🇷 韩国 ²', '🇦🇺 澳大利亚 ²', '🇮🇳 印度 ²', '🇬🇧 英国 ²', '🇨🇦 加拿大 ²'] }
-    - { name: ♻️自动选择, type: url-test, proxies: ['🇯🇵 日本 ³', '🇸🇬 新加坡 ³', '🇺🇸 美国 ³', '🇯🇵 日本 ²', '🇸🇬 新加坡 ²', '🇺🇸 美国 ²', '🇭🇰 香港 ³', '🇰🇷 韩国 ²', '🇦🇺 澳大利亚 ²', '🇮🇳 印度 ²', '🇬🇧 英国 ²', '🇨🇦 加拿大 ²'], url: 'http://cp.cloudflare.com/generate_204', interval: 600 }
-    - { name: 🔯故障转移, type: fallback, proxies: ['🇯🇵 日本 ³', '🇸🇬 新加坡 ³', '🇺🇸 美国 ³', '🇯🇵 日本 ²', '🇸🇬 新加坡 ²', '🇺🇸 美国 ²', '🇭🇰 香港 ³', '🇰🇷 韩国 ²', '🇦🇺 澳大利亚 ²', '🇮🇳 印度 ²', '🇬🇧 英国 ²', '🇨🇦 加拿大 ²'], url: 'http://cp.cloudflare.com/generate_204', interval: 450 }
 rule-providers:
     icloud: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/icloud.txt', path: ./ruleset/icloud.yaml, interval: 86400 }
     apple: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/apple.txt', path: ./ruleset/apple.yaml, interval: 86400 }
@@ -731,6 +716,15 @@ function mergeXflashClashConfig(
         '  - name: PROXY',
         '    type: select',
         `    proxies: ${JSON.stringify(proxyNames)}`,
+        '  - name: 延迟测试',
+        '    type: select',
+        `    proxies: ${JSON.stringify(proxyNames)}`,
+        "    url: 'https://cp.cloudflare.com'",
+        '    interval: 600',
+        '    lazy: false',
+        '    timeout: 15000',
+        '    max-failed-times: 5',
+        '    expected-status: 204',
     ];
     lines.splice(groupsStart + 1, groupsEnd - groupsStart - 1, ...groupLines);
 
@@ -740,10 +734,11 @@ function mergeXflashClashConfig(
             .map((line) => `${' '.repeat(indent.length - 2)}${line}`)
     );
     if (includeUpstreamProxies) {
+        // A successful live fetch contributes its current XFLASH nodes.
         lines.splice(proxiesStart + 1, 0, ...localLines);
     } else {
-        // The checked-in xflash.yaml is only a rules/config template here.
-        // Its static proxy nodes must not be advertised when XFLASH is down.
+        // The static fallback intentionally contains no XFLASH nodes. Always
+        // rebuild this section from self-built nodes only.
         lines.splice(
             proxiesStart + 1,
             proxiesEnd - proxiesStart - 1,

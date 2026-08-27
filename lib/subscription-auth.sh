@@ -132,7 +132,11 @@ render_mihomo_subscription() {
             close(node_file)
             next
         }
-        $0 == "# EASY_ALL_PROXY_NAME" { print "        - " node_name; next }
+        $0 == "# EASY_ALL_PROXY_NAME" ||
+        $0 == "# EASY_ALL_LATENCY_PROXY_NAME" {
+            print "        - " node_name
+            next
+        }
         { print }
     ' "${template}" >"${destination}" || die "生成 Mihomo 订阅失败"
 }

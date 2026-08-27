@@ -70,6 +70,17 @@ proxy-groups:
       type: select
       proxies:
 # EASY_ALL_PROXY_NAME
+    # 只负责以更宽松的超时刷新延迟展示；select 不会按延迟自动切换节点。
+    - name: 延迟测试
+      type: select
+      proxies:
+# EASY_ALL_LATENCY_PROXY_NAME
+      url: 'https://cp.cloudflare.com'
+      interval: 600
+      lazy: false
+      timeout: 15000
+      max-failed-times: 5
+      expected-status: 204
 
 rule-providers:
     icloud: { type: http, behavior: domain, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/icloud.txt', path: ./ruleset/icloud.yaml, interval: 86400 }
