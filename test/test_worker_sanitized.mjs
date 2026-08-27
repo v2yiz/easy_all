@@ -223,15 +223,14 @@ function testFallbackContainsNoXflashNodes() {
         new URL('../worker.sanitized.js', import.meta.url),
         'utf8'
     );
-    const fallbackSource = readFileSync(
-        new URL('../xflash.yaml', import.meta.url),
-        'utf8'
+    const fallbackMatch = workerSource.match(
+        /const XFLASH_FALLBACK_CONFIG = String\.raw`\n([\s\S]*?)\n`;/
     );
-    for (const content of [workerSource, fallbackSource]) {
-        assert.doesNotMatch(content, /type:\s*(?:mieru|anytls)/);
-        assert.doesNotMatch(content, /REDACTED_TRAFFIC_PATTERN/);
-        assert.doesNotMatch(content, /♻️自动选择|🔯故障转移/);
-    }
+    assert.ok(fallbackMatch, 'missing embedded XFLASH fallback config');
+    const fallbackSource = fallbackMatch[1];
+    assert.doesNotMatch(fallbackSource, /type:\s*(?:mieru|anytls)/);
+    assert.doesNotMatch(fallbackSource, /REDACTED_TRAFFIC_PATTERN/);
+    assert.doesNotMatch(fallbackSource, /♻️自动选择|🔯故障转移/);
     assert.match(fallbackSource, /RULE-SET,gfw,XFLASH/);
     assert.match(fallbackSource, /proxies:\nproxy-groups:\nrule-providers:/);
 }
