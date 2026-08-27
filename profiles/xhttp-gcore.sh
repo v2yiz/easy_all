@@ -27,6 +27,11 @@ readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"
 readonly GCORE_XHTTP_H_KEEP_ALIVE_PERIOD="10"
 XHTTP_XMUX_H_KEEP_ALIVE_PERIOD_OVERRIDE=${GCORE_XHTTP_H_KEEP_ALIVE_PERIOD}
 
+GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
+GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_MODE=""
+GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_DOMAIN=""
+GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID=""
+
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 
@@ -459,6 +464,92 @@ gcore_apply_cdn() {
     gcore_wait_for_cdn_health
 }
 
+snapshot_gcore_subscription_domain_records() {
+    local domain=$1 zone=$2 type existing
+    printf '%s\n' "${domain}" >"${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain"
+    printf '%s\n' "${zone}" >"${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain-zone"
+    for type in A AAAA CNAME; do
+        if existing=$(gcore_api_get_optional \
+            "/dns/v2/zones/${zone}/${domain}/${type}"); then
+            printf '%s\n' "${existing}" \
+                >"${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain-${type}.json"
+        else
+            install -m 0600 /dev/null \
+                "${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain-${type}.missing"
+        fi
+    done
+}
+
+snapshot_gcore_subscription_cloud_update() {
+    local new_domain
+    (
+        SUBSCRIPTION_MODE=${GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_MODE}
+        SUBSCRIPTION_DOMAIN=${GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_DOMAIN}
+        gcore_resource_payload
+    ) >"${UPDATE_SUB_BACKUP_DIR}/gcore-resource-payload.json"
+    new_domain=$(active_subscription_link_domain)
+    if subscription_enabled && [[ "${new_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+        snapshot_gcore_subscription_domain_records \
+            "${new_domain}" "${GCORE_SUBSCRIPTION_DNS_ZONE}"
+    fi
+    GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=1
+}
+
+restore_gcore_subscription_domain_records() {
+    local domain zone type existing body
+    [[ -f "${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain" ]] || return 0
+    domain=$(<"${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain")
+    zone=$(<"${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain-zone")
+    for type in A AAAA CNAME; do
+        if [[ -f "${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain-${type}.json" ]]; then
+            body=$(jq -c '{ttl,resource_records}' \
+                "${UPDATE_SUB_BACKUP_DIR}/gcore-new-domain-${type}.json")
+            gcore_api_request PUT "/dns/v2/zones/${zone}/${domain}/${type}" \
+                "${body}" >/dev/null
+        elif existing=$(gcore_api_get_optional \
+            "/dns/v2/zones/${zone}/${domain}/${type}"); then
+            gcore_api_request DELETE "/dns/v2/zones/${zone}/${domain}/${type}" \
+                >/dev/null
+        fi
+    done
+}
+
+rollback_provider_subscription_update() {
+    [[ "${GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT:-0}" == "1" ]] || return 0
+    warn "云端订阅更新失败，正在恢复 Gcore CDN secondary hostname 与新域名 DNS"
+    gcore_api_request PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+        "$(<"${UPDATE_SUB_BACKUP_DIR}/gcore-resource-payload.json")" >/dev/null
+    if [[ "${GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID:-}" =~ ^[0-9]+$ ]]; then
+        gcore_api_request PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+            "$(jq -cn --argjson cert "${GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID}" \
+                '{sslEnabled:true,sslData:$cert}')" >/dev/null
+    fi
+    restore_gcore_subscription_domain_records
+    gcore_clear_api_token
+}
+
+remove_previous_gcore_subscription_cname() {
+    local domain=$1 zone=$2 existing
+    [[ -n "${domain}" && -n "${zone}" \
+        && "${domain}" != "${VLESS_CDN_DOMAIN}" ]] || return 0
+    if ! existing=$(gcore_api_get_optional \
+        "/dns/v2/zones/${zone}/${domain}/CNAME"); then
+        return 0
+    fi
+    if ! jq -e --arg value "${GCORE_CDN_TARGET}" '
+        [.resource_records[]?.content[]? | rtrimstr(".")] | unique
+        == [($value|rtrimstr("."))]
+    ' <<<"${existing}" >/dev/null; then
+        warn "旧订阅域名 ${domain} 已不再准确指向当前 Gcore CDN，出于安全考虑未删除 DNS"
+        return 0
+    fi
+    if gcore_api_request DELETE "/dns/v2/zones/${zone}/${domain}/CNAME" >/dev/null; then
+        success "已清理旧订阅域名 ${domain} 的 Gcore CNAME"
+    else
+        warn "清理旧订阅域名 ${domain} 的 Gcore CNAME 失败，请手动复核"
+    fi
+}
+
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
@@ -687,6 +778,7 @@ show_status() {
 
 update_subscription() {
     local previous_mode previous_domain previous_active_domain new_active_domain cloud_update=0
+    local previous_subscription_zone previous_ssl_cert_id
     require_root
     begin_quota_maintenance
     collect_installed_state
@@ -694,6 +786,8 @@ update_subscription() {
     previous_domain=$(subscription_link_domain)
     previous_active_domain=${VLESS_CDN_DOMAIN}
     [[ "${previous_mode}" != "deploy" ]] || previous_active_domain=${previous_domain}
+    previous_subscription_zone=${GCORE_SUBSCRIPTION_DNS_ZONE:-}
+    previous_ssl_cert_id=${GCORE_SSL_CERT_ID:-}
     snapshot_subscription_update
     info "update-sub 会更新本机 Xray、订阅与 Nginx，并复用现有 Gcore CDN；仅在新增、更换或停用独立订阅域名时同步 secondary hostname、证书与 Managed DNS"
     PROMPT_SUBSCRIPTION_MODE=1
@@ -713,14 +807,6 @@ update_subscription() {
     fi
     new_active_domain=$(active_subscription_link_domain)
     [[ "${new_active_domain}" == "${previous_active_domain}" ]] || cloud_update=1
-    if [[ "${cloud_update}" == "1" ]]; then
-        info "订阅域名发生变化，正在同步 Gcore CDN、边缘证书与 Managed DNS"
-        gcore_collect_api_token
-        gcore_validate_dns_zones
-        gcore_verify_zone_delegation "${GCORE_SUBSCRIPTION_DNS_ZONE}"
-        gcore_apply_cdn
-        gcore_clear_api_token
-    fi
     if subscription_enabled; then
         write_subscriptions
     else
@@ -730,9 +816,29 @@ update_subscription() {
     refresh_runtime
     install_quota_timer
     install_cdn_traffic_protection_timer
-    end_quota_maintenance
     subscription_enabled && validate_subscription_runtime
+    if [[ "${cloud_update}" == "1" ]]; then
+        info "订阅域名发生变化，正在同步 Gcore CDN、边缘证书与 Managed DNS"
+        gcore_collect_api_token
+        gcore_validate_dns_zones
+        gcore_verify_zone_delegation "${GCORE_SUBSCRIPTION_DNS_ZONE}"
+        GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_MODE=${previous_mode}
+        GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_DOMAIN=${previous_domain}
+        GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID=${previous_ssl_cert_id}
+        snapshot_gcore_subscription_cloud_update
+        gcore_apply_cdn
+        save_state
+        GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        if [[ "${previous_mode}" == "deploy" \
+            && "${previous_active_domain}" != "${new_active_domain}" ]]; then
+            remove_previous_gcore_subscription_cname \
+                "${previous_domain}" "${previous_subscription_zone}"
+        fi
+        gcore_clear_api_token
+    fi
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    end_quota_maintenance
     show_subscription
     success "Nginx 订阅已刷新"
 }

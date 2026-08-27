@@ -241,31 +241,27 @@ cdn_traffic_update_usage() {
 }
 
 cdn_traffic_protection_checkpoint() {
-    local lock_dir
     cdn_traffic_protection_enabled || return 0
+    try_acquire_runtime_write_lock || return 0
     initialize_cdn_traffic_usage
-    lock_dir="${STATE_DIR}/quota.lock"
-    mkdir "${lock_dir}" 2>/dev/null || return 0
-    cleanup_files+=("${lock_dir}")
     cdn_traffic_update_usage
-    rm -rf -- "${lock_dir}"
+    release_runtime_write_lock
 }
 
 cdn_traffic_protection_sync() {
-    local lock_dir
     require_root
+    try_acquire_runtime_write_lock || return 0
     collect_installed_state
-    cdn_traffic_protection_enabled || return 0
-    [[ ! -e "${QUOTA_MAINTENANCE_FILE}" ]] || return 0
+    if ! cdn_traffic_protection_enabled; then
+        release_runtime_write_lock
+        return 0
+    fi
     initialize_cdn_traffic_usage
-    lock_dir="${STATE_DIR}/quota.lock"
-    mkdir "${lock_dir}" 2>/dev/null || return 0
-    cleanup_files+=("${lock_dir}")
     cdn_traffic_update_usage
 
     if [[ "${CDN_TRAFFIC_NEEDS_APPLY}" == "1" ]] \
         && ! (rebuild_traffic_runtime); then
-        rm -rf -- "${lock_dir}"
+        release_runtime_write_lock
         die "应用 $(cdn_traffic_provider_label) 全局费用保护状态失败；已保留待执行状态并将在下次重试"
     fi
     [[ "${CDN_TRAFFIC_NEEDS_APPLY}" != "1" ]] || cdn_traffic_mark_enforced
@@ -278,7 +274,7 @@ cdn_traffic_protection_sync() {
         && "${CDN_TRAFFIC_OLD_BLOCKED}" == "true" ]]; then
         printf '%s 已进入新的 UTC 自然月，XHTTP 节点已恢复\n' "$(cdn_traffic_provider_label)"
     fi
-    rm -rf -- "${lock_dir}"
+    release_runtime_write_lock
 }
 
 show_cdn_traffic_protection_status() {

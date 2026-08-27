@@ -867,6 +867,14 @@ test_acme_reinstall_and_rate_limit_guidance() {
     assert_success "PRESERVE_ACME keeps the reusable ACME certificate directory" \
         test -d "${ACME_HOME}/sub.example.com_ecc"
     unset PRESERVE_ACME
+
+    install -d -m 0700 "${ACME_HOME}/old.example.com_ecc" \
+        "${ACME_HOME}/current.example.com_ecc"
+    retire_managed_acme_domain "old.example.com"
+    assert_success "retiring an old subscription domain removes only its ACME renewal entry" \
+        test ! -e "${ACME_HOME}/old.example.com_ecc"
+    assert_success "retiring an old subscription domain preserves the current ACME entry" \
+        test -d "${ACME_HOME}/current.example.com_ecc"
 }
 
 test_acme_renewal_repair() {

@@ -653,6 +653,11 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
+    if declare -F rollback_provider_subscription_update >/dev/null 2>&1; then
+        if ! (rollback_provider_subscription_update); then
+            warn "恢复订阅更新前的云端 CDN/DNS 状态失败，请立即执行 easy_all apply-cloud 复核"
+        fi
+    fi
     warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
     [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
         && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
@@ -701,24 +706,44 @@ finish_xhttp_apply() {
 
 update_current_core() {
     local backup_bin="${RUNTIME_TMP}/xray-backup"
+    local backup_config="${RUNTIME_TMP}/xray-config-backup.json"
+    local backup_version="${RUNTIME_TMP}/xray-version-backup"
+    local version_missing="${RUNTIME_TMP}/xray-version.missing"
     require_root
     begin_quota_maintenance
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
-    if download_xray; then
+    install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
+    if [[ -f "${XRAY_DIR}/version" ]]; then
+        install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
+    else
+        install -m 0600 /dev/null "${version_missing}"
+    fi
+    if (
+        download_xray
         cdn_traffic_protection_checkpoint
         if cdn_traffic_protection_needs_apply; then
             write_xray_config
         fi
-        if systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
-            && cdn_traffic_mark_enforced; then
-            end_quota_maintenance
-            success "Xray 已更新"
-            return 0
-        fi
+        systemctl restart "${XRAY_SERVICE}"
+        validate_protocol_runtime
+        cdn_traffic_mark_enforced
+    ); then
+        end_quota_maintenance
+        success "Xray 已更新"
+        return 0
     fi
+    warn "新核心验收失败，正在恢复旧二进制、版本与运行时配置"
     install -m 0755 "${backup_bin}" "${XRAY_BIN}"
-    systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 || true
+    install -m 0600 "${backup_config}" "${XRAY_CONFIG}"
+    if [[ -f "${backup_version}" ]]; then
+        install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
+    elif [[ -f "${version_missing}" ]]; then
+        rm -f -- "${XRAY_DIR}/version"
+    fi
+    systemctl restart "${XRAY_SERVICE}" \
+        || die "恢复旧 Xray 后无法重启 ${XRAY_SERVICE}"
+    validate_protocol_runtime
     die "Xray 更新失败，已恢复旧版本"
 }
 

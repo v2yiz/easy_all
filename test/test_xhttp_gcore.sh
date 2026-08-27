@@ -399,6 +399,7 @@ assert_not_contains "Gcore profile never persists the API token" \
         gcore_collect_api_token() { printf 'token\n'; }
         gcore_validate_dns_zones() { GCORE_SUBSCRIPTION_DNS_ZONE="example.net"; printf 'zones\n'; }
         gcore_verify_zone_delegation() { printf 'delegation\n'; }
+        snapshot_gcore_subscription_cloud_update() { :; }
         gcore_apply_cdn() { printf 'cloud\n'; }
         gcore_clear_api_token() { :; }
         write_subscriptions() { printf 'write\n'; }
@@ -411,8 +412,51 @@ assert_not_contains "Gcore profile never persists the API token" \
         success() { :; }
         update_subscription
     )
-    assert_contains "adding a custom Gcore subscription hostname synchronizes cloud resources" \
-        "${add_custom_subscription_calls}" $'token\nzones\ndelegation\ncloud\nwrite'
+    assert_contains "adding a custom Gcore subscription hostname writes local subscriptions first" \
+        "${add_custom_subscription_calls}" $'write\n'
+    assert_contains "adding a custom Gcore subscription hostname then synchronizes cloud resources" \
+        "${add_custom_subscription_calls}" $'token\nzones\ndelegation\ncloud'
+
+    rollback_calls=$(
+        (
+            UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/gcore-cloud-rollback"
+            install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+            printf '%s\n' '{"cname":"node.example.com","secondaryHostnames":["old.example.net"]}' \
+                >"${UPDATE_SUB_BACKUP_DIR}/gcore-resource-payload.json"
+            GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=1
+            GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID=88
+            GCORE_CDN_RESOURCE_ID=77
+            rollback_log="${TMP_DIR}/gcore-cloud-rollback.calls"
+            gcore_api_request() {
+                printf '%s %s %s\n' "$1" "$2" "${3:-}" >>"${rollback_log}"
+            }
+            gcore_clear_api_token() { :; }
+            rollback_provider_subscription_update
+            cat "${rollback_log}"
+        )
+    )
+    assert_contains "Gcore subscription rollback restores the previous secondary hostname" \
+        "${rollback_calls}" 'PATCH /cdn/resources/77 {"cname":"node.example.com","secondaryHostnames":["old.example.net"]}'
+    assert_contains "Gcore subscription rollback reattaches the previous automated certificate" \
+        "${rollback_calls}" 'PATCH /cdn/resources/77 {"sslEnabled":true,"sslData":88}'
+
+    retired_cname_calls=$(
+        (
+            VLESS_CDN_DOMAIN="node.example.com"
+            GCORE_CDN_TARGET="node.example.com.gcdn.co"
+            retired_cname_log="${TMP_DIR}/gcore-retired-cname.calls"
+            gcore_api_get_optional() {
+                printf '%s\n' '{"ttl":300,"resource_records":[{"content":["node.example.com.gcdn.co"]}]}'
+            }
+            gcore_api_request() {
+                printf '%s %s\n' "$1" "$2" >>"${retired_cname_log}"
+            }
+            remove_previous_gcore_subscription_cname "old.example.net" "example.net"
+            cat "${retired_cname_log}"
+        )
+    )
+    assert_contains "Gcore removes a retired subscription CNAME only when it still targets the managed resource" \
+        "${retired_cname_calls}" 'DELETE /dns/v2/zones/example.net/old.example.net/CNAME'
 )
 
 printf 'easy_all Gcore CDN profile tests passed\n'

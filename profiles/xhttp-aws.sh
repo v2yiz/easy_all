@@ -26,6 +26,9 @@ readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="120"
 readonly XHTTP_STREAM_UP_SERVER_SECS="20-40"
 readonly XHTTP_SERVER_PADDING_BYTES="100-1000"
 
+AWS_SUBSCRIPTION_CLOUD_ROLLBACK_REQUESTED=0
+AWS_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
+
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 
@@ -905,6 +908,102 @@ ensure_viewer_domain_record() {
     success "Route 53 ${label}域名不存在，已新增双栈 CloudFront Alias A/AAAA"
 }
 
+aws_subscription_domain_records() {
+    local domain=$1 zone_id=$2
+    aws route53 list-resource-record-sets --hosted-zone-id "${zone_id}" --output json \
+        | jq -c --arg name "${domain}." \
+            '[.ResourceRecordSets[] |
+              select(.Name==$name and (.Type=="A" or .Type=="AAAA" or .Type=="CNAME"))]'
+}
+
+snapshot_aws_subscription_cloud_update() {
+    local distribution_id=${AWS_CLOUDFRONT_DISTRIBUTION_ID:-} response new_domain
+    [[ -n "${distribution_id}" ]] || distribution_id=$(find_managed_distribution)
+    [[ -n "${distribution_id}" ]] \
+        || die "无法快照当前 CloudFront 分配，拒绝执行订阅域名更新"
+    AWS_CLOUDFRONT_DISTRIBUTION_ID=${distribution_id}
+    response=$(aws cloudfront get-distribution-config --id "${distribution_id}" --output json) \
+        || die "快照 CloudFront 分配失败"
+    jq '.DistributionConfig' <<<"${response}" \
+        >"${UPDATE_SUB_BACKUP_DIR}/aws-distribution-config.json"
+
+    new_domain=$(active_subscription_link_domain)
+    if subscription_enabled && [[ "${new_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+        printf '%s\n' "${new_domain}" >"${UPDATE_SUB_BACKUP_DIR}/aws-new-domain"
+        printf '%s\n' "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID}" \
+            >"${UPDATE_SUB_BACKUP_DIR}/aws-new-domain-zone"
+        aws_subscription_domain_records "${new_domain}" \
+            "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID}" \
+            >"${UPDATE_SUB_BACKUP_DIR}/aws-new-domain-records.json" \
+            || die "快照新订阅域名 Route 53 记录失败"
+    fi
+    AWS_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=1
+}
+
+restore_aws_subscription_domain_records() {
+    local domain zone_id previous current change
+    [[ -f "${UPDATE_SUB_BACKUP_DIR}/aws-new-domain" ]] || return 0
+    domain=$(<"${UPDATE_SUB_BACKUP_DIR}/aws-new-domain")
+    zone_id=$(<"${UPDATE_SUB_BACKUP_DIR}/aws-new-domain-zone")
+    previous=$(<"${UPDATE_SUB_BACKUP_DIR}/aws-new-domain-records.json")
+    current=$(aws_subscription_domain_records "${domain}" "${zone_id}") \
+        || return 1
+    [[ "$(jq -Sc . <<<"${current}")" == "$(jq -Sc . <<<"${previous}")" ]] \
+        && return 0
+    change=$(jq -cn --argjson current "${current}" --argjson previous "${previous}" '
+        {Comment:"easy_all rollback subscription Alias",
+         Changes:(($current|map({Action:"DELETE",ResourceRecordSet:.})) +
+                  ($previous|map({Action:"CREATE",ResourceRecordSet:.})))}')
+    [[ "$(jq '.Changes|length' <<<"${change}")" == "0" ]] || \
+        aws route53 change-resource-record-sets --hosted-zone-id "${zone_id}" \
+            --change-batch "${change}" >/dev/null
+}
+
+rollback_provider_subscription_update() {
+    local current etag
+    [[ "${AWS_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT:-0}" == "1" ]] || return 0
+    warn "云端订阅更新失败，正在恢复 CloudFront 分配与新域名 Route 53 记录"
+    current=$(aws cloudfront get-distribution-config \
+        --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" --output json) || return 1
+    etag=$(jq -r '.ETag' <<<"${current}")
+    aws cloudfront update-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
+        --if-match "${etag}" \
+        --distribution-config "file://${UPDATE_SUB_BACKUP_DIR}/aws-distribution-config.json" \
+        --output json >/dev/null || return 1
+    aws cloudfront wait distribution-deployed \
+        --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" || return 1
+    restore_aws_subscription_domain_records || return 1
+    clear_aws_credentials
+}
+
+remove_previous_aws_subscription_alias() {
+    local domain=$1 zone_id=$2 records managed target change
+    [[ -n "${domain}" && -n "${zone_id}" \
+        && "${domain}" != "${VLESS_CDN_DOMAIN}" ]] || return 0
+    records=$(aws route53 list-resource-record-sets --hosted-zone-id "${zone_id}" \
+        --output json) || { warn "无法查询旧订阅域名 ${domain}，未清理其 Route 53 记录"; return 0; }
+    managed=$(jq -c --arg name "${domain}." '
+        [.ResourceRecordSets[] |
+          select(.Name==$name and (.Type=="A" or .Type=="AAAA" or .Type=="CNAME"))]' \
+        <<<"${records}")
+    [[ "$(jq 'length' <<<"${managed}")" != "0" ]] || return 0
+    target="${AWS_CLOUDFRONT_DOMAIN}."
+    if ! viewer_records_are_alias_target "${managed}" "${target}" any \
+        && ! viewer_records_are_cname_target "${managed}" "${target}"; then
+        warn "旧订阅域名 ${domain} 已不再准确指向当前 CloudFront，出于安全考虑未删除 DNS"
+        return 0
+    fi
+    change=$(jq -cn --argjson records "${managed}" '
+        {Comment:"easy_all remove retired subscription Alias",
+         Changes:($records|map({Action:"DELETE",ResourceRecordSet:.}))}')
+    if aws route53 change-resource-record-sets --hosted-zone-id "${zone_id}" \
+        --change-batch "${change}" >/dev/null; then
+        success "已清理旧订阅域名 ${domain} 的 CloudFront Alias/CNAME"
+    else
+        warn "清理旧订阅域名 ${domain} 的 Route 53 记录失败，请手动复核"
+    fi
+}
+
 wait_for_cloudfront() {
     info "等待 CloudFront 分配完成（可能需要 5-20 分钟）"
     info "分配 ID: ${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
@@ -1062,9 +1161,13 @@ validate_cloudfront_domain_health() {
 }
 
 configure_aws_cdn() {
+    local keep_credentials=${1:-0}
     install_aws_cli
     collect_aws_credentials
     find_route53_zones
+    if [[ "${AWS_SUBSCRIPTION_CLOUD_ROLLBACK_REQUESTED:-0}" == "1" ]]; then
+        snapshot_aws_subscription_cloud_update
+    fi
     show_cloudfront_billing_estimate
     find_or_request_acm_certificate
     ensure_aws_paid_account_plan
@@ -1082,7 +1185,7 @@ configure_aws_cdn() {
         ensure_cloudfront_payg_mode
     fi
     validate_cloudfront_health
-    clear_aws_credentials
+    [[ "${keep_credentials}" == "1" ]] || clear_aws_credentials
 }
 
 cdn_install_dependencies() {
@@ -1141,6 +1244,7 @@ show_status() {
 
 update_subscription() {
     local previous_mode previous_domain previous_active_domain new_active_domain cloud_update=0
+    local previous_subscription_zone_id
     require_root
     begin_quota_maintenance
     collect_installed_state
@@ -1148,6 +1252,7 @@ update_subscription() {
     previous_domain=$(subscription_link_domain)
     previous_active_domain=${VLESS_CDN_DOMAIN}
     [[ "${previous_mode}" != "deploy" ]] || previous_active_domain=${previous_domain}
+    previous_subscription_zone_id=${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID:-${AWS_ROUTE53_ZONE_ID:-}}
     snapshot_subscription_update
     info "update-sub 会更新本机 Xray、订阅与 Nginx，并复用现有 CloudFront；仅在新增、更换或停用独立订阅域名时同步 ACM、Alias 与 Route 53"
     PROMPT_SUBSCRIPTION_MODE=1
@@ -1168,10 +1273,6 @@ update_subscription() {
     fi
     new_active_domain=$(active_subscription_link_domain)
     [[ "${new_active_domain}" == "${previous_active_domain}" ]] || cloud_update=1
-    if [[ "${cloud_update}" == "1" ]]; then
-        info "订阅域名发生变化，正在同步 CloudFront、ACM 与 Route 53"
-        configure_aws_cdn
-    fi
     if subscription_enabled; then
         write_subscriptions
     else
@@ -1181,9 +1282,24 @@ update_subscription() {
     refresh_runtime
     install_quota_timer
     install_cdn_traffic_protection_timer
-    end_quota_maintenance
     subscription_enabled && validate_subscription_runtime
+    if [[ "${cloud_update}" == "1" ]]; then
+        info "订阅域名发生变化，正在同步 CloudFront、ACM 与 Route 53"
+        AWS_SUBSCRIPTION_CLOUD_ROLLBACK_REQUESTED=1
+        configure_aws_cdn 1
+        save_state
+        AWS_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
+        AWS_SUBSCRIPTION_CLOUD_ROLLBACK_REQUESTED=0
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        if [[ "${previous_mode}" == "deploy" \
+            && "${previous_active_domain}" != "${new_active_domain}" ]]; then
+            remove_previous_aws_subscription_alias \
+                "${previous_domain}" "${previous_subscription_zone_id}"
+        fi
+        clear_aws_credentials
+    fi
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    end_quota_maintenance
     show_subscription
     success "Nginx 订阅已刷新"
 }

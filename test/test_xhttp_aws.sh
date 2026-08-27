@@ -1075,6 +1075,7 @@ EOF
         validate_cdn_client_ip_family_runtime() { :; }
         choose_monthly_quota() { QUOTA_ENABLED=0; }
         configure_aws_cdn() { printf 'cloud\n'; }
+        remove_previous_aws_subscription_alias() { printf 'cleanup-old-dns\n'; }
         remove_subscriptions() { printf 'remove\n'; }
         save_state() { :; }
         refresh_runtime() { :; }
@@ -1084,9 +1085,112 @@ EOF
         success() { :; }
         update_subscription
     )
-    assert_contains "disabling a custom AWS subscription hostname synchronizes its cloud alias" \
-        "${disable_custom_subscription_calls}" $'cloud\nremove'
+    assert_contains "disabling a custom AWS subscription hostname removes local subscriptions first" \
+        "${disable_custom_subscription_calls}" $'remove\n'
+    assert_contains "disabling a custom AWS subscription hostname synchronizes and cleans cloud DNS" \
+        "${disable_custom_subscription_calls}" $'cloud\ncleanup-old-dns'
+
+    cloud_rollback_calls=$(
+        (
+            UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/aws-cloud-rollback"
+            install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+            printf '%s\n' '{"CallerReference":"old","Aliases":{"Quantity":1,"Items":["node.example.com"]}}' \
+                >"${UPDATE_SUB_BACKUP_DIR}/aws-distribution-config.json"
+            AWS_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=1
+            AWS_CLOUDFRONT_DISTRIBUTION_ID="DIST-OLD"
+            rollback_log="${TMP_DIR}/aws-cloud-rollback.calls"
+            aws() {
+                if [[ "${1:-} ${2:-}" == "cloudfront get-distribution-config" ]]; then
+                    printf '%s\n' '{"ETag":"etag-current","DistributionConfig":{}}'
+                elif [[ "${1:-} ${2:-}" == "cloudfront update-distribution" ]]; then
+                    printf 'restore-distribution %s\n' "$*" >>"${rollback_log}"
+                elif [[ "${1:-} ${2:-}" == "cloudfront wait" ]]; then
+                    printf 'wait-restored\n' >>"${rollback_log}"
+                else
+                    return 1
+                fi
+            }
+            rollback_provider_subscription_update
+            cat "${rollback_log}"
+        )
+    )
+    assert_contains "AWS subscription rollback restores the previous distribution config" \
+        "${cloud_rollback_calls}" 'restore-distribution cloudfront update-distribution'
+    assert_contains "AWS subscription rollback waits for the restored distribution" \
+        "${cloud_rollback_calls}" 'wait-restored'
+
+    retired_alias_calls=$(
+        (
+            VLESS_CDN_DOMAIN="node.example.com"
+            AWS_CLOUDFRONT_DOMAIN="d111.cloudfront.net"
+            retired_alias_log="${TMP_DIR}/aws-retired-alias.calls"
+            aws() {
+                if [[ "${1:-} ${2:-}" == "route53 list-resource-record-sets" ]]; then
+                    printf '%s\n' '{"ResourceRecordSets":[
+                      {"Name":"old.example.net.","Type":"A","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111.cloudfront.net.","EvaluateTargetHealth":false}},
+                      {"Name":"old.example.net.","Type":"AAAA","AliasTarget":{"HostedZoneId":"Z2FDTNDATAQYW2","DNSName":"d111.cloudfront.net.","EvaluateTargetHealth":false}}]}'
+                elif [[ "${1:-} ${2:-}" == "route53 change-resource-record-sets" ]]; then
+                    printf 'delete-retired-alias %s\n' "$*" >>"${retired_alias_log}"
+                else
+                    return 1
+                fi
+            }
+            remove_previous_aws_subscription_alias "old.example.net" "ZOLD"
+            cat "${retired_alias_log}"
+        )
+    )
+    assert_contains "AWS removes a retired subscription alias only when it still targets the managed distribution" \
+        "${retired_alias_calls}" 'delete-retired-alias route53 change-resource-record-sets'
 )
+
+core_update_function=$(sed -n '/^update_current_core()/,/^}/p' "${XHTTP_RUNTIME}")
+CORE_UPDATE_FUNCTION="${core_update_function}" \
+CORE_TEST_ROOT="${TMP_DIR}/core-update" bash -c '
+    set -Eeuo pipefail
+    eval "${CORE_UPDATE_FUNCTION}"
+    RUNTIME_TMP="${CORE_TEST_ROOT}/runtime"
+    XRAY_DIR="${CORE_TEST_ROOT}/xray"
+    XRAY_BIN="${XRAY_DIR}/xray"
+    XRAY_CONFIG="${XRAY_DIR}/config.json"
+    XRAY_SERVICE="easy_all-xray.service"
+    install -d -m 0755 "${RUNTIME_TMP}" "${XRAY_DIR}"
+    printf old-binary >"${XRAY_BIN}"
+    printf old-config >"${XRAY_CONFIG}"
+    printf old-version >"${XRAY_DIR}/version"
+    require_root() { :; }
+    begin_quota_maintenance() { :; }
+    end_quota_maintenance() { :; }
+    collect_installed_state() { :; }
+    download_xray() {
+        printf new-binary >"${XRAY_BIN}"
+        printf new-version >"${XRAY_DIR}/version"
+    }
+    cdn_traffic_protection_checkpoint() { :; }
+    cdn_traffic_protection_needs_apply() { return 0; }
+    write_xray_config() { printf new-config >"${XRAY_CONFIG}"; }
+    cdn_traffic_mark_enforced() { :; }
+    systemctl() { :; }
+    validate_protocol_runtime() {
+        if [[ ! -f "${CORE_TEST_ROOT}/first-validation" ]]; then
+            : >"${CORE_TEST_ROOT}/first-validation"
+            die "simulated new-core runtime validation failure"
+        fi
+        printf validated >"${CORE_TEST_ROOT}/validated"
+    }
+    warn() { :; }
+    success() { :; }
+    die() {
+        [[ "$*" != "simulated new-core runtime validation failure" ]] || exit 1
+        return 1
+    }
+    if update_current_core; then
+        exit 1
+    fi
+    [[ "$(<"${XRAY_BIN}")" == old-binary ]]
+    [[ "$(<"${XRAY_CONFIG}")" == old-config ]]
+    [[ "$(<"${XRAY_DIR}/version")" == old-version ]]
+    [[ -f "${CORE_TEST_ROOT}/validated" ]]
+' || fail "failed XHTTP core update must restore and validate binary, config, and version"
 
 readme=$(cat "${ROOT_DIR}/README.md" "${ROOT_DIR}/docs/aws-guide.md")
 assert_contains "README rejects AWS root credentials" "${readme}" "不要使用 AWS 根用户凭证"

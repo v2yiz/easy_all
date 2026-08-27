@@ -1432,7 +1432,7 @@ update_subscription() {
     local prompt_options=${1:-0}
     local requested_port_mode=${SUB_PORT_MODE:-}
     local requested_download_name=${SUB_DOWNLOAD_NAME:-} stored_port_mode
-    local prompt_download_name=0
+    local prompt_download_name=0 previous_subscription_mode previous_subscription_domain
     require_root
     begin_quota_maintenance
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
@@ -1442,6 +1442,8 @@ update_subscription() {
         printf '%s' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
     )
     collect_installed_state
+    previous_subscription_mode=${SUBSCRIPTION_MODE}
+    previous_subscription_domain=${SUBSCRIPTION_DOMAIN:-}
     refresh_saved_daily_reboot_schedule
     if [[ "${prompt_options}" == "1" ]]; then
         SUB_PORT_MODE=${requested_port_mode}
@@ -1475,8 +1477,13 @@ update_subscription() {
     fi
     configure_dynamic_port_rotation
     install_quota_timer
-    end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    if [[ "${previous_subscription_mode}" == "deploy" \
+        && ( "${SUBSCRIPTION_MODE}" != "deploy" \
+            || "${SUBSCRIPTION_DOMAIN:-}" != "${previous_subscription_domain}" ) ]]; then
+        retire_managed_acme_domain "${previous_subscription_domain}"
+    fi
+    end_quota_maintenance
     show_subscription
 }
 
@@ -1617,14 +1624,21 @@ stop_protocol_services() {
     fi
 }
 
+retire_managed_acme_domain() {
+    [[ -n "${1:-}" && -x "${ACME_BIN}" ]] || return 0
+    run_acme --remove -d "$1" --ecc >/dev/null 2>&1 \
+        || warn "acme.sh 未确认移除旧订阅域名 $1，继续清理其受管续期目录"
+    rm -rf -- "${ACME_HOME:?}/$1" "${ACME_HOME:?}/${1}_ecc"
+    info "已停止旧订阅域名 $1 的 ACME 自动续期"
+}
+
 remove_managed_acme_domain() {
     [[ -n "${1:-}" && -x "${ACME_BIN}" ]] || return 0
     if [[ "${PRESERVE_ACME:-0}" == "1" ]]; then
         warn "已按 PRESERVE_ACME=1 保留 ${ACME_HOME}，同域名重装可复用 ACME 账户和证书"
         return 0
     fi
-    run_acme --remove -d "$1" --ecc >/dev/null 2>&1 || true
-    rm -rf -- "${ACME_HOME:?}/$1" "${ACME_HOME:?}/${1}_ecc"
+    retire_managed_acme_domain "$1"
     if [[ -f "${ACME_OWNERSHIP_MARKER}" ]]; then
         rm -rf -- "${ACME_HOME}"
     fi

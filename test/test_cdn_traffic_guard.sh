@@ -13,7 +13,19 @@ COMMAND_PATH="/usr/local/bin/easy_all"
 QUOTA_API_LISTEN="127.0.0.1:10085"
 QUOTA_MAINTENANCE_FILE="${STATE_DIR}/quota-maintenance"
 cleanup_files=()
+TEST_RUNTIME_LOCK_BUSY=0
+TEST_RUNTIME_LOCK_DEPTH=0
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}"
+
+try_acquire_runtime_write_lock() {
+    [[ "${TEST_RUNTIME_LOCK_BUSY}" == "0" ]] || return 1
+    TEST_RUNTIME_LOCK_DEPTH=$((TEST_RUNTIME_LOCK_DEPTH + 1))
+}
+
+release_runtime_write_lock() {
+    ((TEST_RUNTIME_LOCK_DEPTH > 0)) || return 0
+    TEST_RUNTIME_LOCK_DEPTH=$((TEST_RUNTIME_LOCK_DEPTH - 1))
+}
 
 die() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -87,7 +99,11 @@ systemctl() {
 }
 require_root() { :; }
 collect_installed_state() { :; }
-rebuild_traffic_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
+rebuild_traffic_runtime() {
+    [[ "${TEST_RUNTIME_LOCK_DEPTH}" == "1" ]] \
+        || fail "CDN guard must hold the shared runtime write lock while rebuilding"
+    printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"
+}
 
 period=$(cdn_traffic_current_period)
 cat >"${CDN_TRAFFIC_GUARD_USAGE_FILE}" <<EOF
@@ -164,6 +180,13 @@ cdn_traffic_protection_enabled \
 assert_equal "Gcore guard labels its operator output" "Gcore" "$(cdn_traffic_provider_label)"
 assert_equal "Gcore guard uses the provider-neutral sync command" "cdn-traffic-sync" \
     "$(cdn_traffic_sync_command)"
+
+before_busy_sync=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
+TEST_RUNTIME_LOCK_BUSY=1
+cdn_traffic_protection_sync
+TEST_RUNTIME_LOCK_BUSY=0
+assert_equal "busy shared runtime lock skips the concurrent CDN guard run" \
+    "${before_busy_sync}" "$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
 
 module_content=$(<"${ROOT_DIR}/lib/cdn-traffic-guard.sh")
 [[ "${module_content}" == *'OnUnitActiveSec=15s'* \
