@@ -276,7 +276,7 @@ install_aws_cli() {
 }
 
 xhttp_render_xray_config() {
-    local clients managed_outbounds managed_routing stats_enabled=false
+    local clients managed_outbounds managed_routing inbound_sockopt stats_enabled=false
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -288,12 +288,14 @@ xhttp_render_xray_config() {
     traffic_stats_enabled && stats_enabled=true
     managed_outbounds=$(xray_xhttp_outbounds_json)
     managed_routing=$(xray_xhttp_routing_json)
+    inbound_sockopt=$(xray_inbound_sockopt_json)
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" \
         --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg x_padding_bytes "${XHTTP_SERVER_PADDING_BYTES}" \
         --arg stream_up_server_secs "${XHTTP_STREAM_UP_SERVER_SECS}" \
+        --argjson inbound_sockopt "${inbound_sockopt}" \
         --argjson managed_outbounds "${managed_outbounds}" \
         --argjson managed_routing "${managed_routing}" '
         {
@@ -303,6 +305,7 @@ xhttp_render_xray_config() {
               settings:{clients:$clients,decryption:"none"},
               streamSettings:{
                 network:"xhttp",
+                sockopt:$inbound_sockopt,
                 xhttpSettings:{
                   host:$xhttp_host,
                   path:$xhttp_path,

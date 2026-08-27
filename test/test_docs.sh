@@ -85,6 +85,12 @@ assert_contains "README documents client connection racing" "${README_CONTENT}" 
     '内置 Mihomo 模板启用 `tcp-concurrent`'
 assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
     '`tcp_slow_start_after_idle`'
+assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" "${README_CONTENT}" \
+    '不能替代 XHTTP'
+assert_contains "README documents Xray inbound TCP keepalive" "${README_CONTENT}" \
+    '三种 Xray 入站'
+assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" \
+    '`13000-60999`'
 assert_contains "README documents XanMod LTS BBRv3 for every profile" \
     "${README_CONTENT}" '三种链路统一安装 XanMod LTS 内核'
 assert_contains "README distinguishes the BBR algorithm from the sysctl name" \

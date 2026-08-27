@@ -881,9 +881,10 @@ configure_ufw() {
 }
 
 write_xray_config() {
-    local clients managed_outbounds managed_routing listen_address="0.0.0.0"
+    local clients managed_outbounds managed_routing inbound_sockopt listen_address="0.0.0.0"
     managed_outbounds=$(xray_direct_outbounds_json)
     managed_routing=$(xray_direct_routing_json)
+    inbound_sockopt=$(xray_inbound_sockopt_json)
     [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] || listen_address="::"
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
@@ -912,6 +913,7 @@ write_xray_config() {
             --arg short_id "${REALITY_SHORT_ID}" \
             --arg sni "${REALITY_TARGET%:*}" \
             --arg listen_address "${listen_address}" \
+            --argjson inbound_sockopt "${inbound_sockopt}" \
             --argjson managed_outbounds "${managed_outbounds}" \
             --argjson managed_routing "${managed_routing}" '
             {
@@ -928,6 +930,7 @@ write_xray_config() {
                 streamSettings: {
                   network: "raw",
                   security: "reality",
+                  sockopt: $inbound_sockopt,
                   realitySettings: {
                     show: false,
                     target: $target,

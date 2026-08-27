@@ -915,6 +915,8 @@ EOF
         jq -e \
         '.inbounds[0].listen == "0.0.0.0"
          and .inbounds[0].streamSettings.security == "reality"
+         and .inbounds[0].streamSettings.sockopt.tcpKeepAliveIdle == 300
+         and .inbounds[0].streamSettings.sockopt.tcpKeepAliveInterval == 30
          and .inbounds[0].settings.clients[0].flow == "xtls-rprx-vision"' \
         <<<"${config}"
     assert_success "Xray blocks private and metadata destinations" \

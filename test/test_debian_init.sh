@@ -240,6 +240,11 @@ test_remote_script_contract() {
     assert_contains "remote keeps receive autotuning" "net.ipv4.tcp_moderate_rcvbuf = 1" "${content}"
     assert_contains "remote enables PMTU black-hole recovery" "net.ipv4.tcp_mtu_probing = 1" "${content}"
     assert_contains "remote avoids idle slow start" "net.ipv4.tcp_slow_start_after_idle = 0" "${content}"
+    assert_contains "remote bounds idle time before TCP keepalive" "net.ipv4.tcp_keepalive_time = 300" "${content}"
+    assert_contains "remote uses conservative TCP keepalive intervals" "net.ipv4.tcp_keepalive_intvl = 30" "${content}"
+    assert_contains "remote bounds unanswered TCP keepalive probes" "net.ipv4.tcp_keepalive_probes = 5" "${content}"
+    assert_contains "remote expands ephemeral ports outside managed service ranges" \
+        "net.ipv4.ip_local_port_range = 13000 60999" "${content}"
     assert_contains "remote persists the BBR module" "debian-init-bbr.conf" "${content}"
     assert_not_contains "remote does not install XanMod" "dl.xanmod.org" "${content}"
     assert_not_contains "remote does not hardcode application ports" "80 443 8080 8443 8888" "${content}"
@@ -363,6 +368,10 @@ test_bbr_matches_easy_all() {
         "net.ipv4.tcp_moderate_rcvbuf = 1"
         "net.ipv4.tcp_mtu_probing = 1"
         "net.ipv4.tcp_slow_start_after_idle = 0"
+        "net.ipv4.tcp_keepalive_time = 300"
+        "net.ipv4.tcp_keepalive_intvl = 30"
+        "net.ipv4.tcp_keepalive_probes = 5"
+        "net.ipv4.ip_local_port_range = 13000 60999"
         "net.core.somaxconn = 4096"
     )
     for setting in "${settings[@]}"; do

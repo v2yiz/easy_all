@@ -4,6 +4,8 @@
 
 readonly XRAY_OUTBOUND_DOMAIN_STRATEGY="AsIs"
 readonly XRAY_FIXED_IPV4_DOMAIN_STRATEGY="ForceIPv4"
+readonly XRAY_INBOUND_TCP_KEEPALIVE_IDLE="300"
+readonly XRAY_INBOUND_TCP_KEEPALIVE_INTERVAL="30"
 
 detect_public_ipv4() {
     local service ip
@@ -39,6 +41,12 @@ xray_direct_outbounds_json() {
       {protocol:"freedom",tag:"direct-ipv4",settings:{domainStrategy:$fixed_ipv4_strategy}},
       {protocol:"blackhole",tag:"block"}
     ]'
+}
+
+xray_inbound_sockopt_json() {
+    jq -cn --argjson idle "${XRAY_INBOUND_TCP_KEEPALIVE_IDLE}" \
+        --argjson interval "${XRAY_INBOUND_TCP_KEEPALIVE_INTERVAL}" \
+        '{tcpKeepAliveIdle:$idle,tcpKeepAliveInterval:$interval}'
 }
 
 xray_direct_routing_json() {

@@ -558,6 +558,14 @@ net.ipv4.tcp_mtu_probing = 1
 # Idle connection
 net.ipv4.tcp_slow_start_after_idle = 0
 
+# Defaults for applications that enable SO_KEEPALIVE
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 5
+
+# Outbound TCP/UDP source ports; leave common service and high SSH ports free
+net.ipv4.ip_local_port_range = 13000 60999
+
 # Listen queue
 net.core.somaxconn = 4096
 SYSCTL

@@ -132,6 +132,14 @@ assert_contains "BBRv3 uses fq" "$(<"${SYSCTL_CONFIG}")" \
     'net.core.default_qdisc = fq'
 assert_contains "BBRv3 keeps the kernel algorithm name bbr" "$(<"${SYSCTL_CONFIG}")" \
     'net.ipv4.tcp_congestion_control = bbr'
+assert_contains "TCP keepalive starts after five idle minutes" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.tcp_keepalive_time = 300'
+assert_contains "TCP keepalive probes every thirty seconds" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.tcp_keepalive_intvl = 30'
+assert_contains "TCP keepalive bounds unanswered probes" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.tcp_keepalive_probes = 5'
+assert_contains "ephemeral ports avoid managed ingress ranges" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.ip_local_port_range = 13000 60999'
 [[ ! -e "${BBRV3_REBOOT_MARKER}" ]] \
     || fail "active BBRv3 must clear the reboot marker"
 

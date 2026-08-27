@@ -638,7 +638,7 @@ collect_installed_state() {
 # stream-up server window strictly below that edge limit instead of inheriting
 # CloudFront's 20-40-second range.
 xhttp_render_xray_config() {
-    local clients managed_outbounds managed_routing stats_enabled=false
+    local clients managed_outbounds managed_routing inbound_sockopt stats_enabled=false
     install -d -m 0755 "${XRAY_DIR}"
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -650,16 +650,18 @@ xhttp_render_xray_config() {
     traffic_stats_enabled && stats_enabled=true
     managed_outbounds=$(xray_xhttp_outbounds_json)
     managed_routing=$(xray_xhttp_routing_json)
+    inbound_sockopt=$(xray_inbound_sockopt_json)
     jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
         --arg xhttp_path "${XHTTP_PATH}" --arg xhttp_host "${VLESS_CDN_DOMAIN}" \
         --arg stream_up_server_secs "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}" \
+        --argjson inbound_sockopt "${inbound_sockopt}" \
         --argjson managed_outbounds "${managed_outbounds}" \
         --argjson managed_routing "${managed_routing}" '
         {log:{loglevel:"warning"},
          inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$xhttp_port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
-          streamSettings:{network:"xhttp",xhttpSettings:{host:$xhttp_host,path:$xhttp_path,mode:"stream-up",scStreamUpServerSecs:$stream_up_server_secs}},
+          streamSettings:{network:"xhttp",sockopt:$inbound_sockopt,xhttpSettings:{host:$xhttp_host,path:$xhttp_path,mode:"stream-up",scStreamUpServerSecs:$stream_up_server_secs}},
           sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],
          outbounds:$managed_outbounds,
          routing:$managed_routing}

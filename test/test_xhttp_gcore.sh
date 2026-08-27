@@ -69,6 +69,8 @@ assert_contains "Gcore uses the shared XHTTP outbound policy" \
     "${XRAY_RENDER_CONTENT}" 'xray_xhttp_outbounds_json'
 assert_contains "Gcore uses the shared XHTTP routing policy" \
     "${XRAY_RENDER_CONTENT}" 'xray_xhttp_routing_json'
+assert_contains "Gcore Xray inbound uses shared TCP keepalive" \
+    "${XRAY_RENDER_CONTENT}" 'xray_inbound_sockopt_json'
 assert_contains "Gcore client family resolution stays in the shared XHTTP runtime" \
     "${profile_content}" 'resolve_cdn_client_ip_family'
 assert_not_contains "Gcore Xray egress does not depend on the client family" \

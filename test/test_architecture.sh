@@ -161,6 +161,12 @@ fi
     grep -Fq 'net.ipv4.tcp_slow_start_after_idle = before-net.ipv4.tcp_slow_start_after_idle' \
         "${BACKUP_DIR}/pre-install-tcp-runtime.conf" \
         || fail "TCP runtime snapshot omits slow-start state"
+    grep -Fq 'net.ipv4.tcp_keepalive_time = before-net.ipv4.tcp_keepalive_time' \
+        "${BACKUP_DIR}/pre-install-tcp-runtime.conf" \
+        || fail "TCP runtime snapshot omits keepalive state"
+    grep -Fq 'net.ipv4.ip_local_port_range = before-net.ipv4.ip_local_port_range' \
+        "${BACKUP_DIR}/pre-install-tcp-runtime.conf" \
+        || fail "TCP runtime snapshot omits ephemeral port state"
     restore_tcp_runtime
     cmp -s "${BACKUP_DIR}/pre-install-tcp-runtime.conf" "${restored}" \
         || fail "TCP runtime rollback does not reload the snapshot"
@@ -173,6 +179,11 @@ fi
     source "${ROOT_DIR}/lib/network.sh"
     [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "AsIs" ]] \
         || fail "Xray direct egress must use automatic dual-stack resolution"
+    jq -e '
+        .tcpKeepAliveIdle == 300
+        and .tcpKeepAliveInterval == 30
+    ' <<<"$(xray_inbound_sockopt_json)" >/dev/null \
+        || fail "Xray inbound TCP keepalive policy drifted"
     jq -e '
         map(.tag) == ["direct","direct-ipv4","block"]
         and .[0].settings.domainStrategy == "AsIs"
