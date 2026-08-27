@@ -6,6 +6,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
 GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
+CLOUDFLARE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/cloudflare-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-aws.sh")
 
@@ -45,6 +46,45 @@ assert_contains "README documents the third Gcore installation branch" "${README
     'Gcore CDN XHTTP'
 assert_contains "README documents Gcore as a token-only provider" "${README_CONTENT}" \
     'GCORE_API_TOKEN'
+assert_contains "README links the retained Cloudflare credential guide" "${README_CONTENT}" \
+    'docs/cloudflare-guide.md'
+assert_contains "Cloudflare guide is credential-only" "${CLOUDFLARE_GUIDE_CONTENT}" \
+    'Cloudflare ID 与 API Token 获取指南'
+assert_contains "Cloudflare guide documents Account ID" "${CLOUDFLARE_GUIDE_CONTENT}" \
+    'Copy account ID'
+assert_contains "Cloudflare guide documents Zone ID" "${CLOUDFLARE_GUIDE_CONTENT}" \
+    'Zone ID'
+assert_contains "Cloudflare guide documents Workers Scripts scope" "${CLOUDFLARE_GUIDE_CONTENT}" \
+    'Account → Workers Scripts → Edit'
+assert_contains "Cloudflare guide documents DNS scope" "${CLOUDFLARE_GUIDE_CONTENT}" \
+    'Zone → DNS → Edit'
+assert_not_contains "Cloudflare guide omits abandoned deployment script" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'worker-vless/deploy.sh'
+assert_not_contains "Cloudflare guide omits abandoned VLESS deployment" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'VLESS over WebSocket'
+assert_not_contains "Cloudflare guide omits abandoned Custom Domain flow" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '## 4. 准备 Custom Domain'
+[[ ! -e "${ROOT_DIR}/docs/cloudflare/cloudflare-worker-custom-domain.svg" ]] \
+    || fail "abandoned Cloudflare Custom Domain illustration must be removed"
+for cloudflare_asset in \
+    cloudflare-account-id.svg \
+    cloudflare-worker-token.svg \
+    cloudflare-dns-token.svg; do
+    assert_contains "Cloudflare guide references ${cloudflare_asset}" \
+        "${CLOUDFLARE_GUIDE_CONTENT}" "cloudflare/${cloudflare_asset}"
+    [[ -s "${ROOT_DIR}/docs/cloudflare/${cloudflare_asset}" ]] \
+        || fail "Cloudflare guide asset is missing: ${cloudflare_asset}"
+done
+for aws_asset in \
+    aws-architecture.svg \
+    aws-cloudfront-settings.svg \
+    aws-iam-policy.svg \
+    aws-iam-access-key.svg; do
+    assert_contains "AWS guide references ${aws_asset}" \
+        "${AWS_GUIDE_CONTENT}" "aws/${aws_asset}"
+    [[ -s "${ROOT_DIR}/docs/aws/${aws_asset}" ]] \
+        || fail "AWS guide asset is missing: ${aws_asset}"
+done
 assert_contains "README documents Gcore's reduced XHTTP window" "${README_CONTENT}" \
     '`10-14` 秒'
 assert_contains "Gcore guide documents the active XHTTP window" "${GCORE_GUIDE_CONTENT}" \

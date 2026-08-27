@@ -345,10 +345,6 @@ quota_active_accounts_json() {
           ({}; .[$item.key]=$item.value)'
 }
 
-quota_user_uuid() {
-    jq -r --arg user "$1" '.[$user].uuid // empty' <<<"${USER_ACCOUNTS}"
-}
-
 initialize_quota_usage() {
     local period
     quota_enabled || return 0

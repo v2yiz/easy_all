@@ -802,6 +802,13 @@ npm test
 AWS/Gcore XHTTP、用户凭据与月度配额、TCP 参数回滚、Xray 配置、CloudFront JSON、Gcore API
 载荷、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 
+## 独立参考：Cloudflare ID 与 API Token
+
+项目已经不再提供 Cloudflare Worker VLESS 部署功能，但保留
+[Cloudflare ID 与 API Token 获取指南](docs/cloudflare-guide.md)，供其他 Cloudflare API、Worker
+或 DNS 自动化用途查阅。该指南只说明 Account ID、Zone ID 和最小权限 Token 的获取与保管，
+不属于 Reality、AWS XHTTP 或 Gcore XHTTP 安装链路。
+
 ## 独立工具：debian_init
 
 `scripts/debian-init.sh` 是独立的个人服务器初始化工具，不是 `easy_all` 的组成部分或安装前置步骤，

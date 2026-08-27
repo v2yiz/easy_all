@@ -529,17 +529,6 @@ prepare_aws_origin_dns() {
     verify_origin_dns
 }
 
-certificate_covers_domain() {
-    local description=$1
-    jq -e --arg domain "${VLESS_CDN_DOMAIN}" '
-        def covers($name):
-            $name == $domain or
-            ($name|startswith("*.") and ($domain|endswith($name[1:])) and
-             (($domain|split(".")|length) == ($name|split(".")|length)));
-        ([.Certificate.DomainName] + (.Certificate.SubjectAlternativeNames // []))
-        | any(.[]; covers(.))' <<<"${description}" >/dev/null
-}
-
 certificate_covers_required_domains() {
     local description=$1 subscription_domain
     subscription_domain=$(active_subscription_link_domain)

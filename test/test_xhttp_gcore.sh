@@ -86,7 +86,6 @@ assert_not_contains "Gcore profile never persists the API token" \
     # shellcheck source=/dev/null
     source "${PROFILE}"
 
-    assert_equal "Gcore reuses the XHTTP runtime" "xhttp" "${EASY_ALL_PROFILE}"
     assert_equal "CDN traffic protection default" "980" "${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}"
     assert_equal "Gcore stream-up stays below HTTP/2 idle timeout" \
         "10-14" "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}"

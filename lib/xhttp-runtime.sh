@@ -3,7 +3,6 @@
 # Shared local runtime for XHTTP Profiles. Provider state and cloud APIs remain
 # in the AWS and Gcore Profiles.
 
-readonly EASY_ALL_PROFILE="xhttp"
 readonly SCRIPT_DIR="${XHTTP_PROFILE_ROOT:?XHTTP_PROFILE_ROOT is required}"
 readonly SCRIPT_FILE="${XHTTP_PROFILE_FILE:?XHTTP_PROFILE_FILE is required}"
 

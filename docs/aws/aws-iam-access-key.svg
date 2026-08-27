@@ -18,7 +18,7 @@
   <g>
     <rect class="box" x="40" y="275" width="200" height="180" rx="16" fill="white" stroke="#4c9aff"/>
     <circle cx="70" cy="309" r="19" fill="#0052cc"/><text x="70" y="316" class="n" text-anchor="middle">1</text>
-    <text x="100" y="315" class="h">创建策略</text><text x="62" y="353" class="t">IAM → 策略</text><text x="62" y="381" class="t">创建策略 → JSON</text><text x="62" y="409" class="sub">easy_all_deploy_policy</text><text x="62" y="435" class="sub">限制目标 Zone ID</text>
+    <text x="100" y="315" class="h">创建策略</text><text x="62" y="353" class="t">IAM → 策略</text><text x="62" y="381" class="t">创建策略 → JSON</text><text x="62" y="409" class="sub">easy_all_deploy_policy</text><text x="62" y="435" class="sub">限制目标 Zone ARN</text>
 
     <rect class="box" x="270" y="275" width="200" height="180" rx="16" fill="white" stroke="#6554c0"/>
     <circle cx="300" cy="309" r="19" fill="#6554c0"/><text x="300" y="316" class="n" text-anchor="middle">2</text>

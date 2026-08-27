@@ -127,7 +127,6 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     # shellcheck source=/dev/null
     source "${PROFILE}"
 
-    assert_equal "profile" "xhttp" "${EASY_ALL_PROFILE}"
     assert_equal "unified state" "/etc/easy_all" "${STATE_DIR}"
     assert_equal "unified service" "easy_all-xray.service" "${XRAY_SERVICE}"
     assert_equal "unified nginx config" "/etc/nginx/conf.d/easy_all.conf" "${NGINX_CONFIG}"

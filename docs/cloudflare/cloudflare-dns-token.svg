@@ -8,14 +8,14 @@
     </style>
   </defs>
   <rect width="1400" height="900" fill="#f5f7fb"/>
-  <text x="70" y="72" class="title">3. 可选：创建独立 DNS API Token</text>
-  <text x="70" y="114" class="body muted">仅用于手工 DNS / Route；推荐的 Custom Domain 部署不需要</text>
+  <text x="70" y="72" class="title">3. 创建独立 DNS API Token</text>
+  <text x="70" y="114" class="body muted">仅在通过 API 读取或修改 DNS 记录时创建</text>
   <rect x="70" y="152" width="1260" height="650" rx="24" fill="#fff" filter="url(#shadow)"/>
   <rect x="70" y="152" width="1260" height="64" rx="24" fill="#1f2937"/>
   <text x="110" y="194" class="small" style="fill:#fff">My Profile  ›  API Tokens  ›  Create Custom Token</text>
   <text x="110" y="270" class="label">Token name</text>
   <rect x="320" y="235" width="520" height="52" rx="10" fill="#fff" stroke="#cfd6df" stroke-width="2"/>
-  <text x="344" y="269" class="body mono">easy-all-dns</text>
+  <text x="344" y="269" class="body mono">cloudflare-dns-automation</text>
   <text x="110" y="340" class="label">Permissions</text>
   <rect x="110" y="370" width="1170" height="190" rx="15" fill="#fafbfc" stroke="#dbe1ea" stroke-width="2"/>
   <text x="145" y="413" class="small muted">Resource</text><text x="430" y="413" class="small muted">Permission</text><text x="915" y="413" class="small muted">Level</text>
@@ -26,7 +26,7 @@
   <rect x="340" y="595" width="235" height="52" rx="10" fill="#fff" stroke="#cfd6df" stroke-width="2"/><text x="370" y="629" class="body">Include</text>
   <rect x="595" y="595" width="500" height="52" rx="10" fill="#fff" stroke="#f48120" stroke-width="3"/><text x="625" y="629" class="body">Specific zone: example.com</text>
   <rect x="110" y="690" width="1170" height="76" rx="14" fill="#fff8f1"/>
-  <text x="145" y="722" class="label orange">不要传给纯 Worker 部署脚本</text>
-  <text x="145" y="751" class="small">Custom Domain 会自动管理 DNS；Worker Token 与 DNS Token 应保持分离。</text>
-  <text x="70" y="858" class="small muted">只有手工维护 DNS 或传统 Worker Route 时才需要此 Token。</text>
+  <text x="145" y="722" class="label orange">Worker Token 与 DNS Token 保持分离</text>
+  <text x="145" y="751" class="small">按用途分别授权；只允许访问实际使用的单个 Zone。</text>
+  <text x="70" y="858" class="small muted">只读工具应把 DNS Edit 改为 DNS Read；不需要枚举 Zone 时可省略 Zone Read。</text>
 </svg>

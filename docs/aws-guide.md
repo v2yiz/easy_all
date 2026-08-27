@@ -11,6 +11,8 @@ AWS_SECRET_ACCESS_KEY
 > 不要为 AWS 根用户创建访问密钥，也不要把任何密钥提交到 Git、写入脚本、
 > 截图或发送到聊天中。
 
+![CDN XHTTP AWS 架构](aws/aws-architecture.svg)
+
 ## 1. 账号前提
 
 使用 AWS 全球商业区（`aws` 分区）账号，不要使用 AWS 中国区域账号（`aws-cn` 分区）。
@@ -82,6 +84,8 @@ Check、DNS Query Logs、Lambda@Edge 等额外功能。若源站域名和 CDN �
 Zone，脚本加入一次即可同时覆盖；位于两个 Zone 时，脚本只加入 CDN 域名所在 Zone，另一个仍按
 Route 53 标准价格计费。套餐生效前已经记入的费用也不应视为必然追溯减免。
 
+![CloudFront XHTTP 设置](aws/aws-cloudfront-settings.svg)
+
 AWS 官方参考：
 [CloudFront 固定套餐](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/flat-rate-pricing-plan.html)、
 [CloudFront 按量付费与永久免费额度](https://aws.amazon.com/cloudfront/faqs/)、
@@ -132,6 +136,8 @@ AWS 官方参考：
 在 **IAM → 访问管理 → 策略 → 创建策略 → JSON** 中粘贴以下策略。将
 `REPLACE_WITH_YOUR_ROUTE53_HOSTED_ZONE_ID` 替换为实际 Zone ID；不要填域名、完整 ARN
 或 CloudFront ID。策略名称建议使用 `easy_all_deploy_policy`。
+
+![IAM 最小权限组成](aws/aws-iam-policy.svg)
 
 ```json
 {
@@ -238,6 +244,8 @@ Route 53 资源的权限；DNS 写入权限仅限定在指定 Hosted Zone。策�
    `easy_all_deployers`。
 
 ## 6. 创建 Access Key
+
+![IAM 用户与访问密钥路径](aws/aws-iam-access-key.svg)
 
 1. 打开刚创建的 IAM 用户 → **安全凭证**。
 2. 在“访问密钥”区域选择 **创建访问密钥**。

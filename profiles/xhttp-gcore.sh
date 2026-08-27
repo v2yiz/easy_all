@@ -129,21 +129,6 @@ gcore_require_dns_replace() {
         || die "$1 已有不属于 easy_all 的记录；为避免覆盖业务 DNS，拒绝修改。确认替换后重试并设置 GCORE_DNS_REPLACE=1"
 }
 
-gcore_upsert_rrset() {
-    local zone=$1 name=$2 type=$3 value=$4 existing expected
-    if existing=$(gcore_api_get_optional "/dns/v2/zones/${zone}/${name}/${type}"); then
-        expected=$(jq -cn --arg value "${value}" '[$value]')
-        if jq -e --argjson expected "${expected}" '
-            [.resource_records[]?.content[]?] | unique | sort == ($expected | unique | sort)
-        ' <<<"${existing}" >/dev/null; then
-            return 0
-        fi
-        gcore_require_dns_replace "${name} ${type}"
-    fi
-    gcore_api_request PUT "/dns/v2/zones/${zone}/${name}/${type}" \
-        "$(gcore_rrset_body "${value}")" >/dev/null
-}
-
 gcore_validate_dns_zones() {
     local cdn_zone subscription_domain subscription_zone
     cdn_zone=$(gcore_find_zone_for_domain "${VLESS_CDN_DOMAIN}")
