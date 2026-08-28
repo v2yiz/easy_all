@@ -286,9 +286,10 @@ const DEFAULT_NODES = [
         xhttpNoGrpcHeader: false,
         xhttpUplinkHttpMethod: 'POST',
         xhttpReuseSettings: {
-            maxConcurrency: '8-16',
+            maxConnections: 2,
             cMaxReuseTimes: 0,
-            hMaxReusableSecs: '1800-3000',
+            hMaxRequestTimes: '300-600',
+            hMaxReusableSecs: '900-1800',
             hKeepAlivePeriod: 0,
         },
     },
@@ -336,9 +337,10 @@ function yamlString(value) {
 }
 
 const DEFAULT_XHTTP_REUSE_SETTINGS = {
-    maxConcurrency: '8-16',
+    maxConnections: 2,
     cMaxReuseTimes: 0,
-    hMaxReusableSecs: '1800-3000',
+    hMaxRequestTimes: '300-600',
+    hMaxReusableSecs: '900-1800',
     hKeepAlivePeriod: 0,
 };
 
@@ -372,9 +374,12 @@ function xhttpReuseSettings(node) {
             ? candidate
             : {};
     return {
-        maxConcurrency: xhttpString(
-            source.maxConcurrency,
-            DEFAULT_XHTTP_REUSE_SETTINGS.maxConcurrency
+        maxConnections: Math.max(
+            0,
+            xhttpNumber(
+                source.maxConnections,
+                DEFAULT_XHTTP_REUSE_SETTINGS.maxConnections
+            )
         ),
         cMaxReuseTimes: Math.max(
             0,
@@ -382,6 +387,10 @@ function xhttpReuseSettings(node) {
                 source.cMaxReuseTimes,
                 DEFAULT_XHTTP_REUSE_SETTINGS.cMaxReuseTimes
             )
+        ),
+        hMaxRequestTimes: xhttpString(
+            source.hMaxRequestTimes,
+            DEFAULT_XHTTP_REUSE_SETTINGS.hMaxRequestTimes
         ),
         hMaxReusableSecs: xhttpString(
             source.hMaxReusableSecs,
@@ -411,8 +420,9 @@ function xhttpExtra(node) {
         noGRPCHeader: Boolean(node?.xhttpNoGrpcHeader),
         uplinkHTTPMethod: xhttpString(node?.xhttpUplinkHttpMethod, 'POST'),
         xmux: {
-            maxConcurrency: reuse.maxConcurrency,
+            maxConnections: reuse.maxConnections,
             cMaxReuseTimes: reuse.cMaxReuseTimes,
+            hMaxRequestTimes: reuse.hMaxRequestTimes,
             hMaxReusableSecs: reuse.hMaxReusableSecs,
             hKeepAlivePeriod: reuse.hKeepAlivePeriod,
         },
@@ -493,8 +503,9 @@ function clashXhttpNode(node, port) {
       no-grpc-header: ${Boolean(node?.xhttpNoGrpcHeader)}
       uplink-http-method: ${yamlString(xhttpString(node?.xhttpUplinkHttpMethod, 'POST'))}
       reuse-settings:
-        max-concurrency: ${yamlString(reuse.maxConcurrency)}
+        max-connections: ${yamlString(reuse.maxConnections)}
         c-max-reuse-times: ${reuse.cMaxReuseTimes}
+        h-max-request-times: ${yamlString(reuse.hMaxRequestTimes)}
         h-max-reusable-secs: ${yamlString(reuse.hMaxReusableSecs)}
         h-keep-alive-period: ${reuse.hKeepAlivePeriod}`;
 }

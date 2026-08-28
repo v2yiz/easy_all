@@ -537,8 +537,9 @@ sudo env PRESERVE_ACME=1 easy_all uninstall
 
 XHTTP 使用 `stream-up + HTTP/2 + XMUX`。当前链路为：
 CDN 模式只输出一个 VLESS XHTTP 节点，不混入其他协议。
-XMUX 默认使用 `8-16` 并发和按存活时间轮换连接，不设置 Mihomo 不建议填写的
-`h-max-request-times`，避免连接计数轮换导致客户端链路异常。
+XMUX 固定使用 `maxConnections: 2`、`cMaxReuseTimes: 0`、
+`hMaxRequestTimes: "300-600"`、`hMaxReusableSecs: "900-1800"` 和
+`hKeepAlivePeriod: 0`；不再输出已不兼容的 `maxConcurrency`。
 
 为避免长时间流式输出在中途被截断，Nginx 会在受 Origin Key 保护的 XHTTP 回源位置补充一个
 合法的服务端 padding 标记，确保 Xray 实际启动 `scStreamUpServerSecs`，并每 `20-40` 秒发送
@@ -704,8 +705,8 @@ Managed DNS、源组、CDN 资源和边缘 Let's Encrypt，不读取 AWS 凭证�
 缓存为静态内容。
 
 Gcore 的默认源站读取超时为 30 秒、HTTP/2 空闲超时为 15 秒，因此此 Provider 将 XHTTP
-`stream-up` 服务端窗口收紧为 `10-14` 秒，并将客户端 H2 PING 固定为 10 秒，避免默认 45 秒
-PING 晚于 Gcore 空闲断连；Nginx 仍使用 1 小时流式读写超时。安装会等待 CNAME、边缘证书和
+`stream-up` 服务端窗口收紧为 `10-14` 秒；客户端 XMUX 使用共享 CDN 参数（包括
+`hKeepAlivePeriod: 0`）。Nginx 仍使用 1 小时流式读写超时。安装会等待 CNAME、边缘证书和
 HTTPS 健康检查，但无法在不接入真实客户端网络的情况下替你证明所有移动网络下的长期 XHTTP
 稳定性；首次安装后应用目标客户端做实际连接、切网和长连接测试。所有目标域名均通过 VPS
 IPv4 直连出站，不依赖客户端节点的连接地址族。
