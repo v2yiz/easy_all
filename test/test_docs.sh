@@ -114,11 +114,11 @@ assert_contains "README documents Reality target TLS validation" "${README_CONTE
 assert_contains "README documents Reality private destination blocking" "${README_CONTENT}" \
     '避免订阅凭据泄露后被用于访问 VPS 内网或云元数据'
 assert_contains "README documents dual-stack egress with fixed Gemini IPv4" "${README_CONTENT}" \
-    'Gemini 相关域名保留'
+    '静态资源使用的 Google 域名保留独立的 `ForceIPv4` 出站'
 assert_contains "README documents bilingual interactive prompts" "${README_CONTENT}" \
     '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
-assert_contains "README documents Gcore client H2 keepalive" "${README_CONTENT}" \
-    '客户端 H2 PING 固定为 10 秒'
+assert_contains "README documents the unified CDN XMUX configuration" "${README_CONTENT}" \
+    '`maxConnections: 2`'
 assert_contains "Gcore guide documents explicit gRPC pass-through" "${GCORE_GUIDE_CONTENT}" \
     '显式启用 gRPC passthrough'
 assert_contains "README documents client connection racing" "${README_CONTENT}" \

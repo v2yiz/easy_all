@@ -48,10 +48,11 @@ readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="7"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
-readonly XHTTP_XMUX_MAX_CONCURRENCY="8-16"
+readonly XHTTP_XMUX_MAX_CONNECTIONS="2"
 readonly XHTTP_XMUX_C_MAX_REUSE_TIMES="0"
-readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="1800-3000"
-readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD_OVERRIDE:-0}"
+readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="300-600"
+readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="900-1800"
+readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-CloudFront}"
 readonly XHTTP_ORIGIN_DNS_NAME="${XHTTP_ORIGIN_DNS_NAME_OVERRIDE:-Route 53}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
@@ -514,15 +515,17 @@ build_vless_xhttp_link() {
     local extra client_path
     client_path=$(xhttp_client_path)
     extra=$(jq -cn \
-        --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
+        --argjson max_connections "${XHTTP_XMUX_MAX_CONNECTIONS}" \
         --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
+        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
         --argjson h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '{
         noGRPCHeader:false,
         uplinkHTTPMethod:"POST",
         xmux:{
-            maxConcurrency:$max_concurrency,
+            maxConnections:$max_connections,
             cMaxReuseTimes:$c_max_reuse_times,
+            hMaxRequestTimes:$h_max_request_times,
             hMaxReusableSecs:$h_max_reusable_secs,
             hKeepAlivePeriod:$h_keep_alive_period
         }
@@ -542,8 +545,9 @@ build_mihomo_node() {
         --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
         --arg xhttp_path "$(xhttp_client_path)" \
         --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
-        --arg max_concurrency "${XHTTP_XMUX_MAX_CONCURRENCY}" \
+        --argjson max_connections "${XHTTP_XMUX_MAX_CONNECTIONS}" \
         --arg c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
+        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
         --arg h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
@@ -552,7 +556,8 @@ build_mihomo_node() {
         "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n    xhttp-opts:\n" +
         "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
-        "        max-concurrency: \($max_concurrency|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
+        "        max-connections: \($max_connections|tostring|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
+        "        h-max-request-times: \($h_max_request_times|@json)\n" +
         "        h-max-reusable-secs: \($h_max_reusable_secs|@json)\n" +
         "        h-keep-alive-period: \($h_keep_alive_period)\n"'
 }

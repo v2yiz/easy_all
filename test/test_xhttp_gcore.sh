@@ -89,8 +89,8 @@ assert_not_contains "Gcore profile never persists the API token" \
     assert_equal "CDN traffic protection default" "980" "${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}"
     assert_equal "Gcore stream-up stays below HTTP/2 idle timeout" \
         "10-14" "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}"
-    assert_equal "Gcore client H2 ping stays below HTTP/2 idle timeout" \
-        "10" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
+    assert_equal "Gcore uses the shared CDN XMUX keepalive period" \
+        "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     ! declare -F install_aws_cli >/dev/null \
         || fail "Gcore profile must not load the AWS provider"
     ! declare -F configure_aws_cdn >/dev/null \
@@ -124,8 +124,8 @@ assert_not_contains "Gcore profile never persists the API token" \
     mihomo=$(build_mihomo_node)
     assert_contains "Gcore Mihomo node prefers IPv6" \
         "${mihomo}" "ip-version: ipv6-prefer"
-    assert_contains "Gcore Mihomo node pings before the edge H2 idle timeout" \
-        "${mihomo}" "h-keep-alive-period: 10"
+    assert_contains "Gcore Mihomo node uses the shared CDN keepalive period" \
+        "${mihomo}" "h-keep-alive-period: 0"
     resource_payload=$(gcore_resource_payload)
     assert_equal "resource is HTTPS-to-origin" "HTTPS" \
         "$(jq -r '.originProtocol' <<<"${resource_payload}")"

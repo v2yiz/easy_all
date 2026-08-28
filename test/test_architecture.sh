@@ -202,6 +202,10 @@ fi
         and .rules[0].outboundTag == "block"
         and .rules[1].outboundTag == "direct-ipv4"
         and (.rules[1].domain | index("domain:gemini.google.com"))
+        and (.rules[1].domain | index("domain:accounts.google.com"))
+        and (.rules[1].domain | index("domain:gemini.gstatic.com"))
+        and (.rules[1].domain | index("domain:www.gstatic.com"))
+        and (.rules[1].domain | index("domain:lh3.googleusercontent.com"))
         and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_direct_routing_json)" >/dev/null \
         || fail "shared direct routing policy is invalid"

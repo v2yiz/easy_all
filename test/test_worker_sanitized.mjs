@@ -152,6 +152,24 @@ async function testFallbackPorts() {
     assert.ok(
         links.some((link) => link.includes('@node-3.example.invalid:443?'))
     );
+    const xhttpLink = links.find((link) =>
+        link.includes('@node-3.example.invalid:443?')
+    );
+    const xhttpExtra = JSON.parse(new URL(xhttpLink).searchParams.get('extra'));
+    assert.deepEqual(xhttpExtra.xmux, {
+        maxConnections: 2,
+        cMaxReuseTimes: 0,
+        hMaxRequestTimes: '300-600',
+        hMaxReusableSecs: '900-1800',
+        hKeepAlivePeriod: 0,
+    });
+    assert.equal('maxConcurrency' in xhttpExtra.xmux, false);
+
+    const xhttpClashNode = proxyBlockForName(clash, 'SELF_BUILT_NODE_03');
+    assert.match(xhttpClashNode, /^\s+max-connections: "2"$/m);
+    assert.match(xhttpClashNode, /^\s+h-max-request-times: "300-600"$/m);
+    assert.match(xhttpClashNode, /^\s+h-max-reusable-secs: "900-1800"$/m);
+    assert.doesNotMatch(xhttpClashNode, /max-concurrency/);
 
     const allResponse = await worker.default.fetch(
         new Request(
