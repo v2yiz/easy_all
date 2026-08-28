@@ -7,8 +7,7 @@ validate_mihomo_template() {
     [[ -s "${source}" ]] || die "Mihomo 模板为空：${source}"
     for marker in \
         "# EASY_ALL_PROXY_NODE" \
-        "# EASY_ALL_PROXY_NAME" \
-        "# EASY_ALL_LATENCY_PROXY_NAME"; do
+        "# EASY_ALL_PROXY_NAME"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \
             || die "Mihomo 模板标记无效：${marker} 应且只能出现一次"

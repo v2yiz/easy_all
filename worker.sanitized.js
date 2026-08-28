@@ -10,7 +10,7 @@ const PORT_ROTATION_HOURS = 3;
 const XHTTP_PORT = 443;
 const SUBSCRIPTION_PATH = '/subscribe';
 const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
-const WORKER_VERSION = '2026-08-28-xhttp-ipv6-prefer-v1';
+const WORKER_VERSION = '2026-08-28-remove-latency-group-v1';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
@@ -776,15 +776,6 @@ function mergeXflashClashConfig(
         '  - name: PROXY',
         '    type: select',
         `    proxies: ${JSON.stringify(proxyNames)}`,
-        '  - name: 延迟测试',
-        '    type: select',
-        `    proxies: ${JSON.stringify(proxyNames)}`,
-        "    url: 'https://cp.cloudflare.com'",
-        '    interval: 600',
-        '    lazy: false',
-        '    timeout: 15000',
-        '    max-failed-times: 5',
-        '    expected-status: 204',
     ];
     lines.splice(groupsStart + 1, groupsEnd - groupsStart - 1, ...groupLines);
 

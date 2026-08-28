@@ -132,8 +132,7 @@ render_mihomo_subscription() {
             close(node_file)
             next
         }
-        $0 == "# EASY_ALL_PROXY_NAME" ||
-        $0 == "# EASY_ALL_LATENCY_PROXY_NAME" {
+        $0 == "# EASY_ALL_PROXY_NAME" {
             print "        - " node_name
             next
         }

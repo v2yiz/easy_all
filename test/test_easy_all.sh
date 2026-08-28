@@ -382,17 +382,11 @@ test_mihomo_template() {
         "162" "${rule_count}"
     assert_contains "Mihomo template uses the XFLASH rule-provider mirror" \
         "edgeone.gh-proxy.org" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo template adds a manual latency display group" \
+    assert_not_contains "Mihomo template omits the latency test group" \
         "name: 延迟测试" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo latency checks tolerate XHTTP stream-up startup" \
-        "timeout: 15000" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo latency checks use the Cloudflare endpoint" \
+    assert_not_contains "Mihomo template omits latency test URLs" \
         "url: 'https://cp.cloudflare.com'" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_not_contains "Mihomo latency checks do not depend on Google" \
-        "gstatic.com/generate_204" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_not_contains "Mihomo latency display group does not auto-select" \
-        "type: url-test" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     grep -v '^# EASY_ALL_PROXY_NAME$' \
         "${ROOT_DIR}/templates/mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \
@@ -445,10 +439,10 @@ test_subscription_generation() {
         "RULE-SET,applications,DIRECT" "${yaml}"
     assert_contains "Mihomo subscription keeps the XFLASH Telegram rule unchanged" \
         "RULE-SET,telegramcidr,PROXY" "${yaml}"
-    assert_contains "Mihomo subscription exposes the manual latency display group" \
+    assert_not_contains "Mihomo subscription omits the latency test group" \
         "name: 延迟测试" "${yaml}"
-    assert_equal "Mihomo node participates in both manual select groups" \
-        "2" "$(grep -Fxc -- '        - "MY_REALITY"' "${mihomo_file}" | tr -d ' ')"
+    assert_equal "Mihomo node participates only in the PROXY group" \
+        "1" "$(grep -Fxc -- '        - "MY_REALITY"' "${mihomo_file}" | tr -d ' ')"
     assert_not_contains "Mihomo subscription does not override SSH port 22 routing" \
         "DST-PORT,22," "${yaml}"
     assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \

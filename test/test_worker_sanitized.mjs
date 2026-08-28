@@ -129,11 +129,8 @@ async function testFallbackPorts() {
         proxyBlockForName(clash, 'SELF_BUILT_NODE_03'),
         /^\s+ip-version: ipv6-prefer$/m
     );
-    assert.match(clash, /- name: 延迟测试\n\s+type: select/);
-    assert.match(clash, /url: 'https:\/\/cp\.cloudflare\.com'/);
-    assert.match(clash, /timeout: 15000/);
-    assert.doesNotMatch(clash, /gstatic\.com\/generate_204/);
-    assert.doesNotMatch(clash, /type: url-test/);
+    assert.doesNotMatch(clash, /- name: 延迟测试/);
+    assert.doesNotMatch(clash, /cp\.cloudflare\.com/);
     assert.equal(
         clashResponse.headers.get('Content-Disposition'),
         'attachment; filename="CURRENT_TEST"'
@@ -215,6 +212,8 @@ rules:
     assert.doesNotMatch(clash, /^unified-delay: true$/m);
     assert.match(clash, /DOMAIN-SUFFIX,upstream-rule\.example,PROXY/);
     assert.match(clash, /MATCH,PROXY/);
+    assert.doesNotMatch(clash, /- name: 延迟测试/);
+    assert.doesNotMatch(clash, /cp\.cloudflare\.com/);
     assert.match(clash, /UPSTREAM_SECRET_NODE/);
     assert.match(clash, /upstream-secret\.example/);
     assert.match(clash, /UPSTREAM_SECRET_UUID/);
