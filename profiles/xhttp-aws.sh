@@ -89,7 +89,7 @@ choose_cloudfront_billing_mode() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="aws"
-    configure_cdn_client_ip_family
+    choose_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -135,7 +135,8 @@ collect_install_inputs() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL CDN_PROVIDER AWS_CLOUDFRONT_BILLING_MODE XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
+        PROTOCOL CDN_PROVIDER AWS_CLOUDFRONT_BILLING_MODE CDN_CLIENT_IP_FAMILY
+        XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
         SUBSCRIPTION_DOMAIN
         XHTTP_PATH AWS_ORIGIN_DOMAIN
         XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET
@@ -207,6 +208,7 @@ save_state() {
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'CDN_PROVIDER=%q\n' "aws"
         printf 'AWS_CLOUDFRONT_BILLING_MODE=%q\n' "${AWS_CLOUDFRONT_BILLING_MODE}"
+        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
@@ -1218,7 +1220,7 @@ show_status() {
     printf '协议: xhttp\n源站域名: %s\nCDN 域名: %s\n订阅链接域名: %s\nXHTTP 路径: %s\n' \
         "${AWS_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "$(subscription_link_domain)" "${XHTTP_PATH}"
     show_bbrv3_status
-    printf 'CDN 客户端节点族: %s（自动双栈）\n' \
+    printf 'CDN 客户端节点族: %s（配置值）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     printf 'CloudFront 分配 ID: %s\nCloudFront 域名: %s\n' \
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"

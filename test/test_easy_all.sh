@@ -90,8 +90,7 @@ set_fixture() {
     REALITY_SHORT_ID="0123456789abcdef"
     REALITY_INBOUND_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
-    REALITY_CLIENT_IP_FAMILY="auto"
-    REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="deploy"
     SUBSCRIPTION_DOMAIN="sub.example.com"
@@ -236,10 +235,15 @@ test_reality_inbound_family_and_dns() {
     }
     assert_success "system DNS remains usable when public resolvers are blocked" \
         validate_reality_node_dns
-    REALITY_CLIENT_IP_FAMILY="dual"
     resolve_reality_client_ip_family
-    assert_equal "Reality client endpoint uses automatic dual stack" \
+    assert_equal "matching VPS IPv6 and AAAA enable a dual-stack Reality endpoint" \
         "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    dig() {
+        [[ " $* " != *" A "* ]] || printf '203.0.113.10\n'
+    }
+    resolve_reality_client_ip_family
+    assert_equal "missing AAAA keeps the Reality endpoint on IPv4" \
+        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     dig() {
         case " $* " in
         *" A "*) printf '203.0.113.10\n' ;;
@@ -248,6 +252,9 @@ test_reality_inbound_family_and_dns() {
     }
     assert_failure "mismatched AAAA is rejected in dual-stack mode" \
         validate_reality_node_dns
+    resolve_reality_client_ip_family
+    assert_equal "mismatched AAAA falls back to an IPv4 Reality endpoint" \
+        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     dig() {
         case " $* " in
         *" A "*) printf '203.0.113.20\n' ;;
@@ -263,11 +270,12 @@ test_reality_inbound_family_and_dns() {
     }
     assert_failure "missing A is rejected for the fixed IPv4 client" \
         validate_reality_node_dns
-    REALITY_CLIENT_IP_FAMILY="dual"
-    assert_success "Reality client family always resolves automatically" \
+    REALITY_INBOUND_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
+    assert_success "Reality client family resolves safely without VPS IPv6" \
         validate_reality_client_ip_family_runtime
-    assert_equal "automatic Reality client family resolves to dual" \
-        "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    assert_equal "Reality client family stays IPv4 without VPS IPv6" \
+        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     unset VPS_PUBLIC_IPV4
     unset -f dig
 }
@@ -423,8 +431,8 @@ test_subscription_generation() {
         "port: ${port}" "${yaml}"
     assert_contains "Mihomo subscription contains Reality options" \
         "reality-opts:" "${yaml}"
-    assert_contains "Reality endpoint uses automatic dual stack in Mihomo" \
-        "ip-version: dual" "${yaml}"
+    assert_contains "IPv4-only Reality endpoint stays IPv4 in Mihomo" \
+        "ip-version: ipv4" "${yaml}"
     assert_contains "Reality endpoint enables the Mihomo IPv6 master switch" \
         $'\nipv6: true\n' "${yaml}"
     assert_contains "Mihomo TUN bypasses CGNAT and overlay LAN addresses" \
@@ -462,7 +470,6 @@ test_subscription_generation() {
     NODE_HOST="node.example.com"
     REALITY_INBOUND_IP_FAMILY="dual"
     VPS_PUBLIC_IPV6="2001:db8::10"
-    REALITY_CLIENT_IP_FAMILY="auto"
     REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     dig() { printf '2001:db8::10\n'; }
     generate_subscription_files "${base64_file}" "${mihomo_file}"
@@ -917,7 +924,7 @@ test_state_and_xray() {
         "SUBSCRIPTION_DOMAIN=sub.example.com" "${state}"
     assert_contains "state persists Reality inbound family" \
         "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
-    assert_not_contains "state omits the fixed Reality client endpoint family" \
+    assert_not_contains "state omits the derived Reality client endpoint family" \
         "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"

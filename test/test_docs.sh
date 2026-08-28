@@ -101,14 +101,14 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
-assert_contains "README documents automatic CDN client dual stack" "${README_CONTENT}" \
-    '生成的 Mihomo/Clash 节点输出 `ip-version: dual`'
-assert_contains "AWS guide documents dual-stack CDN clients" "${AWS_GUIDE_CONTENT}" \
-    '`ip-version: dual`'
-assert_contains "Gcore guide documents dual-stack CDN clients" "${GCORE_GUIDE_CONTENT}" \
-    '`ip-version: dual`'
+assert_contains "README documents the IPv4 CDN client default" "${README_CONTENT}" \
+    '默认输出 `ip-version: ipv4`'
+assert_contains "AWS guide documents the IPv4 CDN client default" "${AWS_GUIDE_CONTENT}" \
+    '`ip-version: ipv4`'
+assert_contains "Gcore guide documents the IPv4 CDN client default" "${GCORE_GUIDE_CONTENT}" \
+    '`ip-version: ipv4`'
 assert_contains "README documents the automatic Reality endpoint family" "${README_CONTENT}" \
-    '生成节点始终使用 `dual`'
+    'VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`'
 assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \
     '带 SNI 的 TLS 1.3 握手验收'
 assert_contains "README documents Reality private destination blocking" "${README_CONTENT}" \

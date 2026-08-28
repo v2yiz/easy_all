@@ -476,8 +476,9 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Reality 生成的 Mihomo/Clash 节点输出 `ip-version: dual`，模板总开关和业务 DNS 均使用
-`ipv6: true`；客户端会自动并发尝试节点域名的 IPv4/IPv6 地址。
+Reality 生成的 Mihomo/Clash 节点默认输出 `ip-version: ipv4`。只有 VPS 已启用公网 IPv6，
+且客户端连接域名发布的全部 AAAA 都与该公网 IPv6 匹配时，节点才输出 `ip-version: dual`。
+模板总开关和业务 DNS 仍使用 `ipv6: true`，不会因此关闭其他业务域名的 IPv6 能力。
 
 Reality 服务端与 CDN XHTTP 均阻断 IPv4/IPv6 私网、链路本地、回环、组播及保留地址，
 避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
@@ -501,8 +502,9 @@ Reality 交互选项：
 - 使用域名作为连接地址时，AAAA 可以不发布；未发布时客户端暂时使用 A 记录。发布 AAAA 后，其地址必须与检测到的 VPS 公网 IPv6 一致。
 - 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
 
-Reality 入站根据服务器公网 IPv6 自动选择 IPv4 或双栈监听；生成节点始终使用 `dual`，没有
-可用 AAAA 时会继续连接 A。Xray 普通目标出站使用双栈，Gemini 相关域名仍固定使用 IPv4 出口。
+Reality 入站根据服务器公网 IPv6 自动选择 IPv4 或双栈监听；生成节点默认使用 `ipv4`，仅当
+VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`。Xray 普通目标出站使用双栈，Gemini
+相关域名仍固定使用 IPv4 出口。
 
 自托管订阅域名必须直接解析到 VPS：
 
@@ -565,6 +567,7 @@ CDN XHTTP 交互选项：
 | --- | --- | --- |
 | Route 53 源站域名 | 无 | 不允许为空 |
 | CloudFront CDN 域名 | 无 | 不允许为空 |
+| 客户端节点 IP 族 | `ipv4` | 使用 IPv4；确认客户端 IPv6 稳定时可选 `dual` |
 | 订阅输出 | 启用 CloudFront + Nginx 订阅 | 启用订阅服务 |
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
@@ -572,10 +575,12 @@ CDN XHTTP 交互选项：
 | AWS Secret Access Key | 无 | 默认授权方式下不允许为空 |
 
 XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
-自动生成，不需要用户输入。生成的 Mihomo/Clash 节点输出 `ip-version: dual`，模板总开关
-和业务 DNS 均使用 `ipv6: true`。CloudFront 分配开启 IPv6，Route 53 同时创建 Alias A/AAAA；
-Gcore 客户端也会使用其 CNAME 目标发布的 A/AAAA。两种 Provider 的源站回源仍使用独立 IPv4 A
-记录；VPS 普通目标出站使用双栈，Gemini 相关域名保持固定 IPv4 出口。
+自动生成，不需要用户输入。生成的 Mihomo/Clash 节点默认输出 `ip-version: ipv4`，用于规避
+客户端或本地网络 IPv6 不稳定造成的间歇性超时；确认客户端 IPv6 稳定时可在安装时选择
+`dual`，非交互安装可设置 `CDN_CLIENT_IP_FAMILY=dual`。模板总开关和业务 DNS 仍使用
+`ipv6: true`。CloudFront 分配继续开启 IPv6 并创建 Alias A/AAAA，Gcore CNAME 目标也可发布
+A/AAAA；这与 VPS 是否具有 IPv6 无关。两种 Provider 的源站回源仍使用独立 IPv4 A 记录；
+VPS 普通目标出站使用双栈，Gemini 相关域名保持固定 IPv4 出口。
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种
 Profile 的订阅菜单都会把当前值显示在方括号中，直接回车沿用当前状态。
@@ -739,6 +744,7 @@ STATE_VERSION=7  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
+CDN_CLIENT_IP_FAMILY=ipv4|dual                # 仅 CDN XHTTP，默认 ipv4
 CDN_TRAFFIC_PROTECTION_GB=0|980               # AWS 固定套餐为 0；AWS 按量/Gcore 为 980
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
 GCORE_CDN_RESOURCE_ID=12345                   # 仅 Gcore CDN XHTTP

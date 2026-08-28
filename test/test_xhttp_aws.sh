@@ -52,7 +52,7 @@ assert_contains "traffic accounting exposes Stats API only on loopback" "${XHTTP
     'api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]}'
 assert_contains "XHTTP state persists the quota start date" "${XHTTP_CONTENT}" \
     'QUOTA_START_DATE=%q'
-assert_not_contains "XHTTP state omits the fixed client family" "${XHTTP_CONTENT}" \
+assert_contains "XHTTP state persists the configurable client family" "${XHTTP_CONTENT}" \
     'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "CloudFront uses the shared XHTTP outbound policy" \
     "${XRAY_RENDER_CONTENT}" 'xray_xhttp_outbounds_json'
@@ -128,6 +128,22 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     source "${PROFILE}"
 
     assert_equal "unified state" "/etc/easy_all" "${STATE_DIR}"
+    unset CDN_CLIENT_IP_FAMILY
+    CDN_CLIENT_IP_FAMILY_RESOLVED=""
+    configure_cdn_client_ip_family
+    assert_equal "CDN client family defaults to IPv4" \
+        "ipv4" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    CDN_CLIENT_IP_FAMILY="auto"
+    configure_cdn_client_ip_family
+    assert_equal "legacy auto CDN client family migrates to IPv4" \
+        "ipv4" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    if (
+        CDN_CLIENT_IP_FAMILY="ipv6"
+        configure_cdn_client_ip_family
+    ) >/dev/null 2>&1; then
+        fail "unsupported CDN client family must be rejected"
+    fi
+    unset CDN_CLIENT_IP_FAMILY
     assert_equal "unified service" "easy_all-xray.service" "${XRAY_SERVICE}"
     assert_equal "unified nginx config" "/etc/nginx/conf.d/easy_all.conf" "${NGINX_CONFIG}"
     assert_equal "schema" "7" "${STATE_SCHEMA_VERSION}"
@@ -459,7 +475,7 @@ EOF
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
         load_state
-        assert_equal "XHTTP client family resolves to dual" "dual" \
+        assert_equal "old XHTTP state defaults the client family to IPv4" "ipv4" \
             "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
@@ -504,7 +520,7 @@ EOF
     )
 
     VLESS_CDN_DOMAIN="node.example.com"
-    CDN_CLIENT_IP_FAMILY="auto"
+    CDN_CLIENT_IP_FAMILY="ipv4"
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
     certificates='{"CertificateSummaryList":[
       {"CertificateArn":"arn:pending-exact","DomainName":"node.example.com","Status":"PENDING_VALIDATION"},
@@ -634,8 +650,8 @@ EOF
     assert_contains "Mihomo XHTTP path keeps the Nginx location suffix" \
         "${mihomo}" 'path: "/xhttp-test-path/"'
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
-    assert_contains "Mihomo XHTTP uses automatic dual stack" \
-        "${mihomo}" "ip-version: dual"
+    assert_contains "Mihomo XHTTP defaults to IPv4" \
+        "${mihomo}" "ip-version: ipv4"
     assert_contains "Mihomo XMUX uses expanded concurrency" \
         "${mihomo}" 'max-concurrency: "8-16"'
     assert_not_contains "Mihomo omits client-side padding settings" \
@@ -918,7 +934,7 @@ EOF
         "$(<"${mihomo_file}")" "DST-PORT,22,"
     assert_not_contains "Mihomo subscription does not override SSH port 65533 routing" \
         "$(<"${mihomo_file}")" "DST-PORT,65533,"
-    assert_contains "dual-stack CDN endpoint keeps Mihomo IPv6 enabled" \
+    assert_contains "IPv4 CDN endpoint keeps the Mihomo IPv6 master switch enabled" \
         "$(<"${mihomo_file}")" $'\nipv6: true\n'
     assert_contains "CDN Mihomo TUN bypasses CGNAT and overlay LAN addresses" \
         "$(<"${mihomo_file}")" "100.64.0.0/10"
@@ -927,10 +943,10 @@ EOF
         CDN_CLIENT_IP_FAMILY="dual"
         CDN_CLIENT_IP_FAMILY_RESOLVED=""
         validate_cdn_client_ip_family_runtime
-        assert_equal "CDN client family always resolves automatically" \
+        assert_equal "explicit CDN dual-stack selection is preserved" \
             "dual" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         build_mihomo_node >"${node_file}.dual"
-        assert_contains "CDN node uses automatic dual stack" \
+        assert_contains "CDN node uses explicitly selected dual stack" \
             "$(<"${node_file}.dual")" "ip-version: dual"
     )
 

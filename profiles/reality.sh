@@ -346,8 +346,26 @@ validate_reality_node_dns() {
     success "Reality 域名 AAAA 已匹配本机公网 IPv6：${expected}"
 }
 
+reality_node_aaaa_matches_vps() {
+    local record canonical expected found=0
+    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] || return 1
+    validate_ipv6 "${VPS_PUBLIC_IPV6:-}" || return 1
+    validate_domain "${NODE_HOST:-}" || return 1
+    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}") || return 1
+    while IFS= read -r record; do
+        validate_ipv6 "${record}" || continue
+        canonical=$(canonicalize_ipv6 "${record}") || continue
+        [[ "${canonical}" == "${expected}" ]] || return 1
+        found=1
+    done < <(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" 2>/dev/null || true)
+    [[ "${found}" == "1" ]]
+}
+
 resolve_reality_client_ip_family() {
-    REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
+    if reality_node_aaaa_matches_vps; then
+        REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
+    fi
 }
 
 validate_reality_client_ip_family_runtime() {
@@ -390,8 +408,9 @@ load_state() {
         fi
         unset "${env_name}"
     done
+    unset REALITY_CLIENT_IP_FAMILY
     REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
-    REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
+    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     CDN_PROVIDER=""
     if [[ "${state_loaded}" == "1" ]]; then
         [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
@@ -1596,7 +1615,7 @@ show_status() {
         printf 'Reality 入站族: IPv4\n'
     fi
     resolve_reality_client_ip_family
-    printf 'Reality 客户端节点族: %s（自动双栈）\n' \
+    printf 'Reality 客户端节点族: %s（按 VPS 公网 IPv6 与节点 AAAA 自动判定）\n' \
         "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
     printf '核心服务: '

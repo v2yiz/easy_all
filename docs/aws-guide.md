@@ -56,9 +56,10 @@ CloudFront 付费套餐。升级只是解除 Free account plan 的服务限制�
 表示使用每月 1 TB + 1000 万请求免费额度，并由本机 980 GB 安全阀提前阻断节点流量；它不表示
 升级瞬间就会扣费。
 
-CloudFront 分配开启 IPv6，安装器同时创建 Alias A/AAAA，生成的 Mihomo 节点使用
-`ip-version: dual`。CloudFront 到源站继续使用独立 IPv4 A 记录；VPS 到普通目标使用自动双栈，
-Gemini 相关域名保持固定 IPv4 出口。
+CloudFront 分配开启 IPv6，安装器同时创建 Alias A/AAAA；生成的 Mihomo 节点默认使用
+`ip-version: ipv4`，确认客户端 IPv6 链路稳定时可在安装菜单选择 `dual`。这个客户端选项与
+VPS 是否有 IPv6 无关。CloudFront 到源站继续使用独立 IPv4 A 记录；VPS 到普通目标使用自动
+双栈，Gemini 相关域名保持固定 IPv4 出口。
 
 正常通过 Upgrade Plan/API 升级不会清空剩余 Free Tier Credit；Credit 会继续用于符合条件的
 后续账单直至原到期日。不要为了升级而加入 AWS Organizations 或启用 Control Tower，这两种

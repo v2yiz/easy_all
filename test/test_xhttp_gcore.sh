@@ -59,7 +59,7 @@ assert_contains "Gcore profile limits XHTTP stream-up for its origin timeout" \
     "${profile_content}" 'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"'
 assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
-assert_not_contains "Gcore profile omits the fixed CDN client family" \
+assert_contains "Gcore profile persists the configurable CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "Gcore cloud apply preserves freshly synced provider state" \
     "${profile_content}" 'finish_xhttp_apply 1'
@@ -119,9 +119,11 @@ assert_not_contains "Gcore profile never persists the API token" \
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
     XHTTP_NODE_NAME="GCORE_XHTTP_TEST"
     XHTTP_PATH="/xhttp-test-path"
-    CDN_CLIENT_IP_FAMILY="auto"
+    CDN_CLIENT_IP_FAMILY="ipv4"
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
     mihomo=$(build_mihomo_node)
+    assert_contains "Gcore Mihomo node defaults to IPv4" \
+        "${mihomo}" "ip-version: ipv4"
     assert_contains "Gcore Mihomo node pings before the edge H2 idle timeout" \
         "${mihomo}" "h-keep-alive-period: 10"
     resource_payload=$(gcore_resource_payload)

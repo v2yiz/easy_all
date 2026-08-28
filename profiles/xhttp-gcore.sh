@@ -553,7 +553,7 @@ remove_previous_gcore_subscription_cname() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
-    configure_cdn_client_ip_family
+    choose_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -603,7 +603,8 @@ collect_install_inputs() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL CDN_PROVIDER XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH
+        PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
+        VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE
         GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
         GCORE_SSL_CERT_ID GCORE_CDN_TARGET CDN_TRAFFIC_PROTECTION_GB
@@ -678,6 +679,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "xhttp"
         printf 'CDN_PROVIDER=%q\n' "gcore"
+        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
@@ -764,7 +766,7 @@ show_status() {
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "$(subscription_link_domain)" \
         "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
     show_bbrv3_status
-    printf 'CDN 客户端节点族: %s（自动双栈）\n' \
+    printf 'CDN 客户端节点族: %s（配置值）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     printf 'Gcore DNS Zone: %s\nGcore 订阅 DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_SUBSCRIPTION_DNS_ZONE}" \
