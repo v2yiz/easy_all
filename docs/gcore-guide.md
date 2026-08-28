@@ -142,9 +142,9 @@ IPv6 不可用时回退 IPv4；Mihomo 模板同时关闭 `unified-delay`，避�
 5. 980 GB 阻断与下一个 UTC 自然月恢复符合预期；它仍与 Gcore 用量报表保留缓冲差异。
 
 Gcore 的默认源站读取超时为 30 秒、HTTP/2 空闲超时为 15 秒，安装器会将该 Provider 的 XHTTP
-`stream-up` 服务端窗口设为 `10-14` 秒，并把客户端 H2 PING 设为 10 秒，避免默认 45 秒 PING
-晚于 Gcore 空闲断连。CDN 资源同时显式启用 gRPC passthrough。若任一项不稳定，应先停用该节点
-进行排查，不要通过关闭 TLS、缓存动态请求或放宽 Origin Key 来“兼容”。
+`stream-up` 服务端窗口设为 `10-14` 秒。客户端 XMUX 固定使用共享的 CDN 参数（其中
+`hKeepAlivePeriod` 为 0）；CDN 资源同时显式启用 gRPC passthrough。若任一项不稳定，应先停用
+该节点进行排查，不要通过关闭 TLS、缓存动态请求或放宽 Origin Key 来“兼容”。
 
 官方参考：[动态 CDN 缓存边界](https://gcore.com/learning/dynamic-cdn-cache-rules)、
 [Gcore TLS on CDN](https://gcore.com/learning/tls-on-cdn)。

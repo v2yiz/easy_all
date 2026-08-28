@@ -183,8 +183,12 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     assert_equal "server keepalive marker length" "100" \
         "${XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH}"
     assert_equal "Nginx XHTTP stream timeout" "1h" "${XHTTP_NGINX_STREAM_TIMEOUT}"
-    assert_equal "XMUX max concurrency" "8-16" "${XHTTP_XMUX_MAX_CONCURRENCY}"
-    assert_equal "XMUX browser-like keepalive" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
+    assert_equal "XMUX maximum connections" "2" "${XHTTP_XMUX_MAX_CONNECTIONS}"
+    assert_equal "XMUX connection reuse times" "0" "${XHTTP_XMUX_C_MAX_REUSE_TIMES}"
+    assert_equal "XMUX request reuse range" "300-600" "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}"
+    assert_equal "XMUX connection lifetime range" "900-1800" \
+        "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}"
+    assert_equal "XMUX keepalive period" "0" "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
     assert_equal "CloudFront origin response timeout" "120" "${CLOUDFRONT_ORIGIN_READ_TIMEOUT}"
     assert_equal "CloudFront origin keepalive timeout" "120" \
         "${CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT}"
@@ -641,10 +645,17 @@ EOF
         .noGRPCHeader == false and
         (has("xPaddingBytes") | not) and
         (has("xPaddingObfsMode") | not) and
-        .uplinkHTTPMethod == "POST"
+        .uplinkHTTPMethod == "POST" and
+        .xmux == {
+            maxConnections: 2,
+            cMaxReuseTimes: 0,
+            hMaxRequestTimes: "300-600",
+            hMaxReusableSecs: "900-1800",
+            hKeepAlivePeriod: 0
+        }
     ' <<<"${extra_json}" >/dev/null || fail "XHTTP URI extra is invalid"
-    assert_not_contains "XHTTP XMUX omits request-count rotation" \
-        "${link}" "hMaxRequestTimes"
+    assert_not_contains "XHTTP XMUX omits incompatible max concurrency" \
+        "${link}" "maxConcurrency"
     [[ "${link}" != *"trojan"* ]] || fail "links must contain only VLESS"
     assert_equal "exactly one link" "1" "$(wc -l <<<"${link}" | tr -d ' ')"
 
@@ -656,12 +667,16 @@ EOF
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
     assert_contains "Mihomo XHTTP prefers IPv6" \
         "${mihomo}" "ip-version: ipv6-prefer"
-    assert_contains "Mihomo XMUX uses expanded concurrency" \
-        "${mihomo}" 'max-concurrency: "8-16"'
+    assert_contains "Mihomo XMUX limits connections" \
+        "${mihomo}" 'max-connections: "2"'
+    assert_contains "Mihomo XMUX rotates request counts" \
+        "${mihomo}" 'h-max-request-times: "300-600"'
+    assert_contains "Mihomo XMUX rotates connection lifetime" \
+        "${mihomo}" 'h-max-reusable-secs: "900-1800"'
     assert_not_contains "Mihomo omits client-side padding settings" \
         "${mihomo}" 'x-padding-'
-    assert_not_contains "Mihomo XMUX omits request-count rotation" \
-        "${mihomo}" "h-max-request-times"
+    assert_not_contains "Mihomo XMUX omits incompatible max concurrency" \
+        "${mihomo}" "max-concurrency"
     assert_contains "Mihomo XMUX uses browser-like keepalive" "${mihomo}" "h-keep-alive-period: 0"
 
     distribution="${TMP_DIR}/distribution.json"
