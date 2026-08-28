@@ -998,7 +998,7 @@ function subscriptionHeaders(format, env) {
     if (format === 'clash') {
         result.set(
             'Content-Disposition',
-            `attachment; filename="${downloadName(env)}"`
+            `attachment; filename=${downloadName(env)}`
         );
     }
     return result;

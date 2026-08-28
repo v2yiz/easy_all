@@ -133,7 +133,7 @@ async function testFallbackPorts() {
     assert.doesNotMatch(clash, /cp\.cloudflare\.com/);
     assert.equal(
         clashResponse.headers.get('Content-Disposition'),
-        'attachment; filename="CURRENT_TEST"'
+        'attachment; filename=CURRENT_TEST'
     );
 
     const base64Response = await worker.default.fetch(
