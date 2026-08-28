@@ -145,9 +145,9 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文；密码提示也保持双语并继续隐藏输入，
 因此在中文乱码的 VNC 终端中仍可按英文提示完成操作。
 
-三种安装模式的 Xray 普通公网出站统一使用 `AsIs`，由系统拨号器自动处理 IPv4/IPv6。Gemini 相关域名保留
-独立的 `ForceIPv4` 出站，客户端规则也继续固定走 `PROXY`，因此 Gemini 始终看到所选 VPS 的
-IPv4 出口，不会随通用双栈解析切换出口地址。
+三种安装模式的 Xray 普通公网出站统一使用 `AsIs`，由系统拨号器自动处理 IPv4/IPv6。Gemini 页面、
+认证和静态资源使用的 Google 域名保留独立的 `ForceIPv4` 出站，客户端规则也继续固定走 `PROXY`，
+因此同一 Gemini 会话始终看到所选 VPS 的 IPv4 出口，不会因某个关联请求走 IPv6 而混用出口地址。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
