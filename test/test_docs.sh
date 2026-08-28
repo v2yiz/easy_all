@@ -101,12 +101,12 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
-assert_contains "README documents the IPv4 CDN client default" "${README_CONTENT}" \
-    '默认输出 `ip-version: ipv4`'
-assert_contains "AWS guide documents the IPv4 CDN client default" "${AWS_GUIDE_CONTENT}" \
-    '`ip-version: ipv4`'
-assert_contains "Gcore guide documents the IPv4 CDN client default" "${GCORE_GUIDE_CONTENT}" \
-    '`ip-version: ipv4`'
+assert_contains "README documents the IPv6-preferred CDN client default" "${README_CONTENT}" \
+    '固定输出 `ip-version: ipv6-prefer`'
+assert_contains "AWS guide documents the IPv6-preferred CDN client default" "${AWS_GUIDE_CONTENT}" \
+    '`ip-version: ipv6-prefer`'
+assert_contains "Gcore guide documents the IPv6-preferred CDN client default" "${GCORE_GUIDE_CONTENT}" \
+    '`ip-version: ipv6-prefer`'
 assert_contains "README documents the automatic Reality endpoint family" "${README_CONTENT}" \
     'VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`'
 assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \

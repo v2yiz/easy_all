@@ -567,7 +567,7 @@ CDN XHTTP 交互选项：
 | --- | --- | --- |
 | Route 53 源站域名 | 无 | 不允许为空 |
 | CloudFront CDN 域名 | 无 | 不允许为空 |
-| 客户端节点 IP 族 | `ipv4` | 使用 IPv4；确认客户端 IPv6 稳定时可选 `dual` |
+| 客户端节点 IP 族 | `ipv6-prefer` | 自动固定为 IPv6 优先、IPv4 回退，无需输入 |
 | 订阅输出 | 启用 CloudFront + Nginx 订阅 | 启用订阅服务 |
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
@@ -575,9 +575,10 @@ CDN XHTTP 交互选项：
 | AWS Secret Access Key | 无 | 默认授权方式下不允许为空 |
 
 XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
-自动生成，不需要用户输入。生成的 Mihomo/Clash 节点默认输出 `ip-version: ipv4`，用于规避
-客户端或本地网络 IPv6 不稳定造成的间歇性超时；确认客户端 IPv6 稳定时可在安装时选择
-`dual`，非交互安装可设置 `CDN_CLIENT_IP_FAMILY=dual`。模板总开关和业务 DNS 仍使用
+自动生成，不需要用户输入。生成的 Mihomo/Clash XHTTP 节点固定输出 `ip-version: ipv6-prefer`，
+优先使用 CDN IPv6 边缘并在 IPv6 不可用时回退 IPv4；旧状态中的
+`ipv4`、`dual`、`ipv6` 或 `auto` 会在加载时迁移到 `ipv6-prefer`。Mihomo 模板同时固定
+`unified-delay: false`，避免 XHTTP 上下行分离被统一延迟探测误判。模板总开关和业务 DNS 仍使用
 `ipv6: true`。CloudFront 分配继续开启 IPv6 并创建 Alias A/AAAA，Gcore CNAME 目标也可发布
 A/AAAA；这与 VPS 是否具有 IPv6 无关。两种 Provider 的源站回源仍使用独立 IPv4 A 记录；
 VPS 普通目标出站使用双栈，Gemini 相关域名保持固定 IPv4 出口。
@@ -744,7 +745,7 @@ STATE_VERSION=7  # XHTTP
 PROTOCOL=reality|xhttp
 CDN_PROVIDER=aws|gcore
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
-CDN_CLIENT_IP_FAMILY=ipv4|dual                # 仅 CDN XHTTP，默认 ipv4
+CDN_CLIENT_IP_FAMILY=ipv6-prefer              # 仅 CDN XHTTP，固定 IPv6 优先、IPv4 回退
 CDN_TRAFFIC_PROTECTION_GB=0|980               # AWS 固定套餐为 0；AWS 按量/Gcore 为 980
 GCORE_ORIGIN_DOMAIN=origin.example.com        # 仅 Gcore CDN XHTTP
 GCORE_CDN_RESOURCE_ID=12345                   # 仅 Gcore CDN XHTTP

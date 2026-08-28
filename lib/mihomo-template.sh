@@ -18,6 +18,8 @@ validate_mihomo_template() {
         || die "Mihomo 模板未使用 XFLASH fake-ip DNS"
     grep -Fq '    use-system-hosts: false' "${source}" \
         || die "Mihomo 模板未使用 XFLASH hosts 策略"
+    grep -Fq 'unified-delay: false' "${source}" \
+        || die "Mihomo 模板必须关闭 unified-delay"
     grep -Fq "https://223.6.6.6/dns-query#h3=true" "${source}" \
         || die "Mihomo 模板缺少 XFLASH 主 DNS"
     grep -Fq "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \

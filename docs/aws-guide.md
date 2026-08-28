@@ -56,8 +56,9 @@ CloudFront 付费套餐。升级只是解除 Free account plan 的服务限制�
 表示使用每月 1 TB + 1000 万请求免费额度，并由本机 980 GB 安全阀提前阻断节点流量；它不表示
 升级瞬间就会扣费。
 
-CloudFront 分配开启 IPv6，安装器同时创建 Alias A/AAAA；生成的 Mihomo 节点默认使用
-`ip-version: ipv4`，确认客户端 IPv6 链路稳定时可在安装菜单选择 `dual`。这个客户端选项与
+CloudFront 分配开启 IPv6，安装器同时创建 Alias A/AAAA；生成的 Mihomo XHTTP 节点固定使用
+`ip-version: ipv6-prefer`，优先连接 CloudFront IPv6 边缘，IPv6 不可用时自动回退 IPv4。
+Mihomo 模板同时关闭 `unified-delay`，避免 XHTTP 上下行分离被统一延迟探测误判。这个客户端策略与
 VPS 是否有 IPv6 无关。CloudFront 到源站继续使用独立 IPv4 A 记录；VPS 到普通目标使用自动
 双栈，Gemini 相关域名保持固定 IPv4 出口。
 

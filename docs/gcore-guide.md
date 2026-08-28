@@ -125,8 +125,9 @@ Token 具备全部部署权限；若需要在正式安装前确认角色范围�
 查询参数；源站只接受
 包含 `X-Easy-All-Origin-Key` 的 CDN 请求。
 
-生成的 Mihomo 节点默认使用 `ip-version: ipv4`；确认客户端 IPv6 链路稳定时可在安装菜单选择
-`dual`，此选项与 VPS 是否有 IPv6 无关。Gcore CNAME 目标仍可发布 A/AAAA。源站回源继续使用
+生成的 Mihomo XHTTP 节点固定使用 `ip-version: ipv6-prefer`，优先连接 Gcore IPv6 边缘并在
+IPv6 不可用时回退 IPv4；Mihomo 模板同时关闭 `unified-delay`，避免 XHTTP 上下行分离被统一延迟
+探测误判。此策略与 VPS 是否有 IPv6 无关。Gcore CNAME 目标仍可发布 A/AAAA。源站回源继续使用
 独立 IPv4 A 记录；VPS 到普通目标使用自动双栈，Gemini 相关域名保持固定 IPv4 出口。
 
 ## 5. 上线前的实际连通性检查

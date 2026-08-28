@@ -131,14 +131,18 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     unset CDN_CLIENT_IP_FAMILY
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
     configure_cdn_client_ip_family
-    assert_equal "CDN client family defaults to IPv4" \
-        "ipv4" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    assert_equal "CDN client family defaults to IPv6 preference" \
+        "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     CDN_CLIENT_IP_FAMILY="auto"
     configure_cdn_client_ip_family
-    assert_equal "legacy auto CDN client family migrates to IPv4" \
-        "ipv4" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    assert_equal "legacy auto CDN client family migrates to IPv6 preference" \
+        "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    CDN_CLIENT_IP_FAMILY="dual"
+    configure_cdn_client_ip_family
+    assert_equal "legacy dual CDN client family migrates to IPv6 preference" \
+        "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     if (
-        CDN_CLIENT_IP_FAMILY="ipv6"
+        CDN_CLIENT_IP_FAMILY="invalid"
         configure_cdn_client_ip_family
     ) >/dev/null 2>&1; then
         fail "unsupported CDN client family must be rejected"
@@ -475,7 +479,7 @@ EOF
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
         load_state
-        assert_equal "old XHTTP state defaults the client family to IPv4" "ipv4" \
+        assert_equal "old XHTTP state defaults the client family to IPv6 preference" "ipv6-prefer" \
             "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
@@ -650,8 +654,8 @@ EOF
     assert_contains "Mihomo XHTTP path keeps the Nginx location suffix" \
         "${mihomo}" 'path: "/xhttp-test-path/"'
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
-    assert_contains "Mihomo XHTTP defaults to IPv4" \
-        "${mihomo}" "ip-version: ipv4"
+    assert_contains "Mihomo XHTTP prefers IPv6" \
+        "${mihomo}" "ip-version: ipv6-prefer"
     assert_contains "Mihomo XMUX uses expanded concurrency" \
         "${mihomo}" 'max-concurrency: "8-16"'
     assert_not_contains "Mihomo omits client-side padding settings" \
@@ -943,11 +947,11 @@ EOF
         CDN_CLIENT_IP_FAMILY="dual"
         CDN_CLIENT_IP_FAMILY_RESOLVED=""
         validate_cdn_client_ip_family_runtime
-        assert_equal "explicit CDN dual-stack selection is preserved" \
-            "dual" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+        assert_equal "legacy CDN dual-stack selection migrates to IPv6 preference" \
+            "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         build_mihomo_node >"${node_file}.dual"
-        assert_contains "CDN node uses explicitly selected dual stack" \
-            "$(<"${node_file}.dual")" "ip-version: dual"
+        assert_contains "CDN node uses IPv6 preference" \
+            "$(<"${node_file}.dual")" "ip-version: ipv6-prefer"
     )
 
     encoded=$(printf '%s' "$(build_node_link)" | openssl base64 -A)

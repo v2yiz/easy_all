@@ -122,8 +122,8 @@ assert_not_contains "Gcore profile never persists the API token" \
     CDN_CLIENT_IP_FAMILY="ipv4"
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
     mihomo=$(build_mihomo_node)
-    assert_contains "Gcore Mihomo node defaults to IPv4" \
-        "${mihomo}" "ip-version: ipv4"
+    assert_contains "Gcore Mihomo node prefers IPv6" \
+        "${mihomo}" "ip-version: ipv6-prefer"
     assert_contains "Gcore Mihomo node pings before the edge H2 idle timeout" \
         "${mihomo}" "h-keep-alive-period: 10"
     resource_payload=$(gcore_resource_payload)

@@ -37,7 +37,7 @@ readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
 readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
-readonly DEFAULT_CDN_CLIENT_IP_FAMILY="ipv4"
+readonly DEFAULT_CDN_CLIENT_IP_FAMILY="ipv6-prefer"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
 readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/templates/mihomo.yaml"
 readonly DEFAULT_REBOOT_HOUR="4"
@@ -121,43 +121,23 @@ validate_xhttp_path() {
 }
 
 validate_cdn_client_ip_family() {
-    [[ "$1" == "ipv4" || "$1" == "dual" ]]
+    [[ "$1" == "ipv6-prefer" ]]
 }
 
 configure_cdn_client_ip_family() {
     CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-${DEFAULT_CDN_CLIENT_IP_FAMILY}}
-    [[ "${CDN_CLIENT_IP_FAMILY}" != "auto" ]] \
-        || CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
+    case "${CDN_CLIENT_IP_FAMILY}" in
+    auto | ipv4 | ipv6 | dual)
+        CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
+        ;;
+    esac
     validate_cdn_client_ip_family "${CDN_CLIENT_IP_FAMILY}" \
-        || die "CDN_CLIENT_IP_FAMILY 必须是 ipv4 或 dual"
+        || die "CDN_CLIENT_IP_FAMILY 必须是 ipv6-prefer"
     CDN_CLIENT_IP_FAMILY_RESOLVED=${CDN_CLIENT_IP_FAMILY}
 }
 
 choose_cdn_client_ip_family() {
-    local current choice default_choice=1
-    current=${CDN_CLIENT_IP_FAMILY:-${DEFAULT_CDN_CLIENT_IP_FAMILY}}
-    [[ "${current}" != "auto" ]] || current=${DEFAULT_CDN_CLIENT_IP_FAMILY}
-    validate_cdn_client_ip_family "${current}" \
-        || die "CDN_CLIENT_IP_FAMILY 必须是 ipv4 或 dual"
-    [[ "${current}" == "dual" ]] && default_choice=2
-    if [[ -t 0 ]]; then
-        printf '请选择 CDN 客户端节点 IP 族：\n'
-        printf 'Choose the CDN client node IP family:\n'
-        printf '  1. IPv4（默认推荐，规避客户端或本地网络 IPv6 间歇性超时）\n'
-        printf '     IPv4 (recommended default; avoids intermittent client/local IPv6 timeouts)\n'
-        printf '  2. Dual（仅在客户端 IPv6 链路稳定时使用；与 VPS 是否有 IPv6 无关）\n'
-        printf '     Dual (only for stable client IPv6; independent of VPS IPv6 availability)\n'
-        read_bilingual \
-            "请选择 [${default_choice}]（直接回车使用默认值）:" \
-            "Choose [${default_choice}] (press Enter to use the default):" choice
-        case "${choice:-${default_choice}}" in
-        1) CDN_CLIENT_IP_FAMILY="ipv4" ;;
-        2) CDN_CLIENT_IP_FAMILY="dual" ;;
-        *) die "CDN 客户端节点 IP 族选项无效：${choice}" ;;
-        esac
-    else
-        CDN_CLIENT_IP_FAMILY=${current}
-    fi
+    CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
     configure_cdn_client_ip_family
 }
 

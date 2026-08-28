@@ -57,6 +57,21 @@ function portForServer(content, server) {
     return Number(match[1]);
 }
 
+function proxyBlockForName(content, name) {
+    const quoted = `  - name: ${JSON.stringify(name)}`;
+    const plain = `  - name: ${name}`;
+    let start = content.indexOf(quoted);
+    if (start < 0) {
+        start = content.indexOf(plain);
+    }
+    assert.notEqual(start, -1, `missing proxy ${name}`);
+    const nextProxy = content.indexOf('\n  - name:', start + 1);
+    const groups = content.indexOf('\nproxy-groups:', start + 1);
+    const candidates = [nextProxy, groups].filter((value) => value >= 0);
+    const end = candidates.length ? Math.min(...candidates) : content.length;
+    return content.slice(start, end);
+}
+
 async function testHttpContract() {
     const worker = await loadWorkerAt('2026-08-26T03:00:00Z');
     const token = 'REDACTED_TOKEN_01';
@@ -106,8 +121,14 @@ async function testFallbackPorts() {
         'xflash-unavailable-local-only'
     );
     const clash = await clashResponse.text();
+    assert.match(clash, /^unified-delay: false$/m);
+    assert.doesNotMatch(clash, /^unified-delay: true$/m);
     assert.equal(portForServer(clash, 'node-2.example.invalid'), expected);
     assert.equal(portForServer(clash, 'node-3.example.invalid'), 443);
+    assert.match(
+        proxyBlockForName(clash, 'SELF_BUILT_NODE_03'),
+        /^\s+ip-version: ipv6-prefer$/m
+    );
     assert.match(clash, /- name: 延迟测试\n\s+type: select/);
     assert.match(clash, /url: 'https:\/\/cp\.cloudflare\.com'/);
     assert.match(clash, /timeout: 15000/);
@@ -148,12 +169,21 @@ async function testFallbackPorts() {
 
 async function testOnlineXflashMerge() {
     const upstream = `mixed-port: 7890
+unified-delay: true
 proxies:
   - name: UPSTREAM_SECRET_NODE
     type: vless
     server: upstream-secret.example
     port: 443
     uuid: UPSTREAM_SECRET_UUID
+  - name: UPSTREAM_XHTTP_NODE
+    type: vless
+    server: upstream-xhttp.example
+    port: 443
+    uuid: UPSTREAM_XHTTP_UUID
+    network: xhttp
+    ip-version: dual
+  - { name: UPSTREAM_FLOW_XHTTP, type: vless, server: upstream-flow.example, port: 443, uuid: UPSTREAM_FLOW_UUID, network: xhttp, ip-version: ipv4 }
 proxy-groups:
   - name: XFLASH
     type: select
@@ -181,11 +211,21 @@ rules:
     const clash = await response.text();
     assert.equal(fetchCalls, 1);
     assert.equal(response.headers.get('X-Easy-All-Warning'), null);
+    assert.match(clash, /^unified-delay: false$/m);
+    assert.doesNotMatch(clash, /^unified-delay: true$/m);
     assert.match(clash, /DOMAIN-SUFFIX,upstream-rule\.example,PROXY/);
     assert.match(clash, /MATCH,PROXY/);
     assert.match(clash, /UPSTREAM_SECRET_NODE/);
     assert.match(clash, /upstream-secret\.example/);
     assert.match(clash, /UPSTREAM_SECRET_UUID/);
+    assert.match(
+        proxyBlockForName(clash, 'UPSTREAM_XHTTP_NODE'),
+        /^\s+ip-version: ipv6-prefer$/m
+    );
+    assert.match(
+        clash,
+        /name: UPSTREAM_FLOW_XHTTP[^\n]+ip-version: ipv6-prefer\s*}/
+    );
     assert.equal(
         portForServer(clash, 'node-2.example.invalid'),
         expectedDynamicPort('2026-08-26T04:00:00Z')
@@ -228,6 +268,8 @@ function testFallbackContainsNoXflashNodes() {
     );
     assert.ok(fallbackMatch, 'missing embedded XFLASH fallback config');
     const fallbackSource = fallbackMatch[1];
+    assert.match(fallbackSource, /^unified-delay: false$/m);
+    assert.doesNotMatch(fallbackSource, /^unified-delay: true$/m);
     assert.doesNotMatch(fallbackSource, /type:\s*(?:mieru|anytls)/);
     assert.doesNotMatch(fallbackSource, /REDACTED_TRAFFIC_PATTERN/);
     assert.doesNotMatch(fallbackSource, /♻️自动选择|🔯故障转移/);

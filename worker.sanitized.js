@@ -10,7 +10,7 @@ const PORT_ROTATION_HOURS = 3;
 const XHTTP_PORT = 443;
 const SUBSCRIPTION_PATH = '/subscribe';
 const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
-const WORKER_VERSION = '2026-08-27-xflash-rules-fallback-v3';
+const WORKER_VERSION = '2026-08-28-xhttp-ipv6-prefer-v1';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
@@ -20,7 +20,7 @@ allow-lan: false
 mode: rule
 log-level: info
 external-controller: '127.0.0.1:9097'
-unified-delay: true
+unified-delay: false
 profile:
     store-selected: true
 tun:
@@ -282,7 +282,7 @@ const DEFAULT_NODES = [
         sni: 'sni-3.example.invalid',
         path: '/xhttp-redacted/',
         mode: 'stream-up',
-        ipVersion: 'dual',
+        ipVersion: 'ipv6-prefer',
         xhttpNoGrpcHeader: false,
         xhttpUplinkHttpMethod: 'POST',
         xhttpReuseSettings: {
@@ -483,7 +483,7 @@ function clashXhttpNode(node, port) {
     servername: ${yamlString(node.sni)}
     client-fingerprint: ${yamlString(node.fp)}
     packet-encoding: xudp
-    ip-version: ${yamlString(node.ipVersion || 'dual')}
+    ip-version: ${yamlString('ipv6-prefer')}
     alpn:
       - h2
     xhttp-opts:
@@ -566,6 +566,66 @@ function upstreamProxyNames(lines, start, end) {
         }
     }
     return names;
+}
+
+function forceXhttpIpv6Prefer(lines, start, end, indent) {
+    const escapedIndent = indent.replace(/ /g, '\\s');
+    const itemPattern = new RegExp(`^${escapedIndent}-\\s+`);
+    const starts = [];
+    for (let index = start + 1; index < end; index += 1) {
+        if (itemPattern.test(lines[index])) {
+            starts.push(index);
+        }
+    }
+
+    for (let item = starts.length - 1; item >= 0; item -= 1) {
+        const itemStart = starts[item];
+        const itemEnd = item + 1 < starts.length ? starts[item + 1] : end;
+        const firstLine = lines[itemStart];
+        if (/^\s*-\s*\{/.test(firstLine)) {
+            if (!/\bnetwork\s*:\s*["']?xhttp(?:["']|\s|,|})/i.test(firstLine)) {
+                continue;
+            }
+            if (/\bip-version\s*:/i.test(firstLine)) {
+                lines[itemStart] = firstLine.replace(
+                    /(\bip-version\s*:\s*)(?:"[^"]*"|'[^']*'|[^,}]+)/i,
+                    '$1ipv6-prefer'
+                );
+            } else {
+                lines[itemStart] = firstLine.replace(
+                    /}\s*(#.*)?$/,
+                    ', ip-version: ipv6-prefer }$1'
+                );
+            }
+            continue;
+        }
+
+        const propertyIndent = `${indent}  `;
+        const networkIndex = lines.findIndex(
+            (line, index) =>
+                index >= itemStart &&
+                index < itemEnd &&
+                line.startsWith(propertyIndent) &&
+                line.slice(propertyIndent.length).match(
+                    /^network\s*:\s*["']?xhttp(?:["']|\s|#|$)/i
+                )
+        );
+        if (networkIndex < 0) {
+            continue;
+        }
+        const ipVersionIndex = lines.findIndex(
+            (line, index) =>
+                index >= itemStart &&
+                index < itemEnd &&
+                line.startsWith(propertyIndent) &&
+                /^ip-version\s*:/.test(line.slice(propertyIndent.length))
+        );
+        if (ipVersionIndex >= 0) {
+            lines[ipVersionIndex] = `${propertyIndent}ip-version: ipv6-prefer`;
+        } else {
+            lines.splice(networkIndex + 1, 0, `${propertyIndent}ip-version: ipv6-prefer`);
+        }
+    }
 }
 
 function parseClashRules(lines, start, end) {
@@ -746,7 +806,23 @@ function mergeXflashClashConfig(
         );
     }
 
+    forceXhttpIpv6Prefer(
+        lines,
+        proxiesStart,
+        nextTopLevelSection(lines, proxiesStart + 1),
+        indent
+    );
+
     upsertTunRouteExcludes(lines);
+
+    const unifiedDelay = lines.findIndex((line) =>
+        /^unified-delay\s*:/.test(line)
+    );
+    if (unifiedDelay >= 0) {
+        lines[unifiedDelay] = 'unified-delay: false';
+    } else {
+        lines.unshift('unified-delay: false');
+    }
 
     const tcpConcurrent = lines.findIndex((line) =>
         /^tcp-concurrent\s*:/.test(line)
