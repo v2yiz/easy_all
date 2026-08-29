@@ -934,6 +934,8 @@ test_secure_download_transport() {
         "--https-only" "${wget_call}"
     assert_contains "downloads require TLS 1.2 or newer" \
         "--secure-protocol=TLSv1_2" "${wget_call}"
+    assert_contains "downloads keep wget logs on the active terminal" \
+        "--output-file=/dev/stderr" "${wget_call}"
     assert_contains "downloads retry transient connection failures" \
         "--retry-connrefused" "${wget_call}"
     assert_contains "downloads detect stalled reads" \
@@ -952,6 +954,10 @@ test_secure_download_transport() {
         "curl " "${xray_source}"
     assert_contains "acme downloads are restricted to its official GitHub repo" \
         "api.github.com/repos/acmesh-official/acme.sh" "${common_source}"
+    assert_contains "acme selects GitHub's declared latest release" \
+        "acmesh-official/acme.sh/releases/latest" "${common_source}"
+    assert_contains "acme accepts official v-prefixed release tags" \
+        '^v?[0-9]+' "${common_source}"
     assert_contains "Xray downloads are restricted to official release URLs" \
         "github.com/XTLS/Xray-core/releases/download" "${xray_source}"
 }
