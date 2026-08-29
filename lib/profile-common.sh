@@ -6,6 +6,56 @@ make_temp_dir() {
     mktemp -d "${RUNTIME_TMP}/part.XXXXXX"
 }
 
+download_https_file() {
+    local url=$1 destination=$2 description=${3:-文件}
+    local -a wget_args=(
+        --https-only
+        --secure-protocol=TLSv1_2
+        --timeout=20
+        --read-timeout=45
+        --tries=5
+        --retry-connrefused
+        --waitretry=2
+        --max-redirect=10
+        --show-progress
+        -O "${destination}"
+    )
+    timeout 10m wget "${wget_args[@]}" "${url}" \
+        || die "下载${description}失败：${url}"
+    [[ -s "${destination}" ]] || die "下载${description}失败：返回空文件"
+}
+
+install_acme_from_github() {
+    local acme_home=$1 account_email=$2
+    local temp_dir tags_file archive source_dir version archive_url
+    temp_dir=$(make_temp_dir)
+    tags_file="${temp_dir}/tags.json"
+    archive="${temp_dir}/acme.tar.gz"
+    source_dir="${temp_dir}/source"
+
+    download_https_file \
+        "https://api.github.com/repos/acmesh-official/acme.sh/tags?per_page=1" \
+        "${tags_file}" " acme.sh 版本信息"
+    version=$(jq -r '.[0].name // empty' "${tags_file}")
+    archive_url=$(jq -r '.[0].tarball_url // empty' "${tags_file}")
+    [[ "${version}" =~ ^[0-9]+([.][0-9]+){2}$ ]] \
+        || die "GitHub 返回了无效的 acme.sh 版本：${version:-空}"
+    [[ "${archive_url}" == \
+        https://api.github.com/repos/acmesh-official/acme.sh/tarball/* ]] \
+        || die "GitHub 返回了无效的 acme.sh 下载地址"
+
+    info "正在从 GitHub 官方仓库下载 acme.sh ${version}"
+    download_https_file "${archive_url}" "${archive}" " acme.sh ${version}"
+    tar -tzf "${archive}" >/dev/null 2>&1 \
+        || die "acme.sh 下载归档损坏"
+    install -d -m 0700 "${source_dir}"
+    tar -xzf "${archive}" -C "${source_dir}" --strip-components=1 \
+        || die "解压 acme.sh 失败"
+    [[ -f "${source_dir}/acme.sh" ]] || die "acme.sh 下载归档内容不完整"
+    sh "${source_dir}/acme.sh" --install -m "${account_email}" \
+        --home "${acme_home}" || die "安装 acme.sh 失败"
+}
+
 read_bilingual() {
     local label_zh=$1 label_en=$2 variable=$3 silent=${4:-0} input
     printf '%s\n%s\n' "${label_zh}" "${label_en}" >&2

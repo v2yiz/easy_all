@@ -361,10 +361,8 @@ install_acme() {
         ensure_acme_renewal_setup
         return 0
     fi
-    local installer="${RUNTIME_TMP}/get-acme.sh"
     local account_email=${ACME_EMAIL:-admin@${AWS_ORIGIN_DOMAIN}}
-    curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" || die "下载 acme.sh 失败"
-    sh "${installer}" "email=${account_email}" --home "${ACME_HOME}" || die "安装 acme.sh 失败"
+    install_acme_from_github "${ACME_HOME}" "${account_email}"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后不可用"
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
     ensure_acme_renewal_setup

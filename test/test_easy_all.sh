@@ -906,6 +906,56 @@ EOF
     unset -f systemctl crontab run_acme
 }
 
+test_secure_download_transport() {
+    local destination="${TMP_DIR}/wget-download.test" wget_call=""
+    timeout() {
+        [[ "${1:-}" == "10m" ]] || return 1
+        shift
+        "$@"
+    }
+    wget() {
+        local output="" arg
+        wget_call="$*"
+        while (($#)); do
+            arg=$1
+            shift
+            if [[ "${arg}" == "-O" ]]; then
+                output=$1
+                shift
+            fi
+        done
+        [[ -n "${output}" ]] || return 1
+        printf '%s\n' payload >"${output}"
+    }
+
+    download_https_file "https://github.com/example/archive" "${destination}" \
+        "测试文件"
+    assert_contains "downloads require HTTPS-only redirects" \
+        "--https-only" "${wget_call}"
+    assert_contains "downloads require TLS 1.2 or newer" \
+        "--secure-protocol=TLSv1_2" "${wget_call}"
+    assert_contains "downloads retry transient connection failures" \
+        "--retry-connrefused" "${wget_call}"
+    assert_contains "downloads detect stalled reads" \
+        "--read-timeout=45" "${wget_call}"
+    assert_success "download helper writes a non-empty destination" \
+        test -s "${destination}"
+    unset -f timeout wget
+
+    local common_source xray_source xhttp_source
+    common_source=$(<"${ROOT_DIR}/lib/profile-common.sh")
+    xray_source=$(<"${ROOT_DIR}/lib/xray-core.sh")
+    xhttp_source=$(<"${ROOT_DIR}/lib/xhttp-runtime.sh")
+    assert_not_contains "acme installation no longer uses get.acme.sh" \
+        "get.acme.sh" "${common_source}${xhttp_source}"
+    assert_not_contains "Xray downloads no longer use curl" \
+        "curl " "${xray_source}"
+    assert_contains "acme downloads are restricted to its official GitHub repo" \
+        "api.github.com/repos/acmesh-official/acme.sh" "${common_source}"
+    assert_contains "Xray downloads are restricted to official release URLs" \
+        "github.com/XTLS/Xray-core/releases/download" "${xray_source}"
+}
+
 test_state_and_xray() {
     local state config
     install -d -m 0700 "${STATE_DIR}"
@@ -1044,6 +1094,7 @@ test_dynamic_port_rotation_schedule
 test_dynamic_port_rotation_rollback
 test_acme_renewal_repair
 test_acme_reinstall_and_rate_limit_guidance
+test_secure_download_transport
 test_state_and_xray
 test_install_pipeline_order
 

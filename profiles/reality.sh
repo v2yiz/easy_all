@@ -1106,11 +1106,8 @@ install_acme() {
         ensure_acme_renewal_setup
         return 0
     fi
-    local installer="${RUNTIME_TMP}/get-acme.sh"
-    curl -fsSL --retry 3 https://get.acme.sh -o "${installer}" \
-        || die "下载 acme.sh 失败"
-    sh "${installer}" "email=${ACME_EMAIL:-admin@${SUBSCRIPTION_DOMAIN}}" \
-        --home "${ACME_HOME}" || die "安装 acme.sh 失败"
+    install_acme_from_github "${ACME_HOME}" \
+        "${ACME_EMAIL:-admin@${SUBSCRIPTION_DOMAIN}}"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后不可用"
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
     ensure_acme_renewal_setup

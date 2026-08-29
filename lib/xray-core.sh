@@ -3,23 +3,31 @@
 # Shared, checksum-verified Xray release installation.
 
 download_xray() {
-    local release archive_url dgst_url version temp_dir archive dgst expected actual
+    local release_file archive_url dgst_url version temp_dir archive dgst expected actual
     temp_dir=$(make_temp_dir)
-    release=$(curl -fsSL --retry 3 "${XRAY_RELEASES_API}") \
-        || die "读取 Xray 最新版本失败"
-    version=$(jq -r '.tag_name' <<<"${release}")
+    release_file="${temp_dir}/release.json"
+    download_https_file "${XRAY_RELEASES_API}" "${release_file}" \
+        " Xray 最新版本信息"
+    version=$(jq -r '.tag_name // empty' "${release_file}")
     archive_url=$(jq -r --arg name "${XRAY_ARCHIVE}" \
-        '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release}")
+        '.assets[] | select(.name == $name) | .browser_download_url' \
+        "${release_file}")
     dgst_url=$(jq -r --arg name "${XRAY_DGST}" \
-        '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release}")
-    [[ -n "${archive_url}" && "${archive_url}" != "null" ]] \
+        '.assets[] | select(.name == $name) | .browser_download_url' \
+        "${release_file}")
+    [[ "${version}" =~ ^v[0-9]+([.][0-9]+){2}$ ]] \
+        || die "GitHub 返回了无效的 Xray 版本：${version:-空}"
+    [[ "${archive_url}" == \
+        https://github.com/XTLS/Xray-core/releases/download/*/${XRAY_ARCHIVE} ]] \
         || die "未找到 ${XRAY_ARCHIVE}"
-    [[ -n "${dgst_url}" && "${dgst_url}" != "null" ]] \
+    [[ "${dgst_url}" == \
+        https://github.com/XTLS/Xray-core/releases/download/*/${XRAY_DGST} ]] \
         || die "未找到 ${XRAY_DGST}"
     archive="${temp_dir}/${XRAY_ARCHIVE}"
     dgst="${temp_dir}/${XRAY_DGST}"
-    curl -fL --retry 3 "${archive_url}" -o "${archive}" || die "下载 Xray 失败"
-    curl -fL --retry 3 "${dgst_url}" -o "${dgst}" || die "下载 Xray 校验文件失败"
+    info "正在从 GitHub 官方 Release 下载 Xray ${version}"
+    download_https_file "${archive_url}" "${archive}" " Xray ${version}"
+    download_https_file "${dgst_url}" "${dgst}" " Xray 校验文件"
     expected=$(awk '
         BEGIN { IGNORECASE = 1 }
         /SHA256|SHA2-256/ {
