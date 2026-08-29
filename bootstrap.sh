@@ -41,6 +41,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/profiles/xhttp-aws.sh" \
     && -f "${REPO_DIR}/profiles/xhttp-gcore.sh" \
     && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \
+    && -f "${REPO_DIR}/lib/globalping-cdn.sh" \
     && -f "${REPO_DIR}/lib/quota.sh" \
     && -f "${REPO_DIR}/lib/cdn-traffic-guard.sh" \
     && -f "${REPO_DIR}/lib/platform.sh" \

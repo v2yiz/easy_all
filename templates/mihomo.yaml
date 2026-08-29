@@ -66,6 +66,7 @@ proxies:
 # EASY_ALL_PROXY_NODE
 
 proxy-groups:
+# EASY_ALL_PROXY_GROUP
     - name: PROXY
       type: select
       proxies:

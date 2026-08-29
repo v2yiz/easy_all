@@ -51,6 +51,7 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
 [[ "${launcher_content}" == *'"profiles/reality.sh"'* \
     && "${launcher_content}" == *'"profiles/xhttp-aws.sh"'* \
     && "${launcher_content}" == *'"profiles/xhttp-gcore.sh"'* \
+    && "${launcher_content}" == *'"lib/globalping-cdn.sh"'* \
     && "${launcher_content}" == *'templates/mihomo.yaml'* ]] \
     || fail "runtime registration must use the organized profile and template paths"
 preserve_source="${TMP_DIR}/preserve-source"
@@ -113,6 +114,7 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"Choose CloudFront billing: 1 Free flat-rate, or 2 pay-as-you-go (recommended; upgrading the Paid plan itself is free)"* \
     && "${guide}" == *"[3] CDN XHTTP（Gcore）"* \
     && "${guide}" == *"仅输入 GCORE_API_TOKEN"* \
+    && "${guide}" == *"[4] AWS CDN 精选 IP - XHTTP"* \
     && "${guide}" == *"CDN XHTTP"* ]] \
     || fail "install guide does not describe all installation branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
@@ -139,7 +141,8 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "install mode prompt must be bilingual and explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'AWS CDN - XHTTP（非优化线路推荐）'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN - XHTTP（非优化线路推荐）'* ]] \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN - XHTTP（非优化线路推荐）'* \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'AWS CDN 精选 IP - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
 
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
@@ -149,6 +152,9 @@ assert_equal "Reality state selects Reality profile" "reality" "$(detect_install
 
 printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "XHTTP state selects XHTTP profile" "xhttp" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CDN_ENDPOINT_MODE=optimized\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "optimized AWS state selects the fourth mode" "aws-cdn" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\nGCORE_CDN_RESOURCE_ID=1\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Gcore state selects Gcore profile" "gcore" "$(detect_installed_mode)"
@@ -180,5 +186,8 @@ if command -v script >/dev/null 2>&1; then
         || fail "interactive menu output polluted the selected mode: ${pty_output}"
 
 fi
+
+[[ "${launcher_content}" == *"4) printf 'aws-cdn"* ]] \
+    || fail "installation choice 4 must select the optimized AWS mode"
 
 printf 'ok - easy_all launcher tests passed\n'

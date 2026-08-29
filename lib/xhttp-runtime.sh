@@ -122,23 +122,34 @@ validate_xhttp_path() {
 }
 
 validate_cdn_client_ip_family() {
-    [[ "$1" == "ipv6-prefer" ]]
+    [[ "$1" == "ipv6-prefer" || "$1" == "ipv4" ]]
 }
 
 configure_cdn_client_ip_family() {
-    CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-${DEFAULT_CDN_CLIENT_IP_FAMILY}}
+    local expected=${DEFAULT_CDN_CLIENT_IP_FAMILY}
+    [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" != "optimized" ]] || expected="ipv4"
+    CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-${expected}}
+    if [[ "${expected}" == "ipv4" ]]; then
+        CDN_CLIENT_IP_FAMILY="ipv4"
+        CDN_CLIENT_IP_FAMILY_RESOLVED=${CDN_CLIENT_IP_FAMILY}
+        return 0
+    fi
     case "${CDN_CLIENT_IP_FAMILY}" in
     auto | ipv4 | ipv6 | dual)
         CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
         ;;
     esac
     validate_cdn_client_ip_family "${CDN_CLIENT_IP_FAMILY}" \
-        || die "CDN_CLIENT_IP_FAMILY 必须是 ipv6-prefer"
+        || die "CDN_CLIENT_IP_FAMILY 必须是 ipv6-prefer 或 ipv4"
     CDN_CLIENT_IP_FAMILY_RESOLVED=${CDN_CLIENT_IP_FAMILY}
 }
 
 choose_cdn_client_ip_family() {
-    CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
+    if [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]]; then
+        CDN_CLIENT_IP_FAMILY="ipv4"
+    else
+        CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
+    fi
     configure_cdn_client_ip_family
 }
 
@@ -512,6 +523,7 @@ uri_encode() {
 }
 
 build_vless_xhttp_link() {
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
     local extra client_path
     client_path=$(xhttp_client_path)
     extra=$(jq -cn \
@@ -531,18 +543,54 @@ build_vless_xhttp_link() {
         }
     }')
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${client_path}")" "$(uri_encode "${extra}")" "$(uri_encode "${XHTTP_NODE_NAME}")"
+        "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "$(uri_encode "${client_path}")" "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
+}
+
+xhttp_client_endpoints() {
+    if declare -F aws_cdn_client_endpoints >/dev/null 2>&1; then
+        aws_cdn_client_endpoints
+    else
+        printf '%s\n' "${VLESS_CDN_DOMAIN}"
+    fi
+}
+
+xhttp_using_optimized_candidates() {
+    declare -F aws_cdn_optimization_enabled >/dev/null 2>&1 \
+        && aws_cdn_optimization_enabled \
+        && declare -F globalping_cache_valid >/dev/null 2>&1 \
+        && globalping_cache_valid
+}
+
+xhttp_node_name_for_endpoint() {
+    local index=$1
+    if xhttp_using_optimized_candidates; then
+        printf '%s_IP_%02d' "${XHTTP_NODE_NAME}" "${index}"
+    else
+        printf '%s' "${XHTTP_NODE_NAME}"
+    fi
+}
+
+build_node_links() {
+    local endpoint index=1
+    while IFS= read -r endpoint; do
+        build_vless_xhttp_link "${endpoint}" \
+            "$(xhttp_node_name_for_endpoint "${index}")"
+        printf '\n'
+        index=$((index + 1))
+    done < <(xhttp_client_endpoints)
 }
 
 build_node_link() {
-    build_vless_xhttp_link
+    build_node_links
 }
 
-build_mihomo_node() {
+build_mihomo_node_for_endpoint() {
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
     resolve_cdn_client_ip_family
-    jq -nr --arg xhttp_name "${XHTTP_NODE_NAME}" \
-        --arg server "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
+    jq -nr --arg xhttp_name "${node_name}" \
+        --arg server "${server}" --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg uuid "${VLESS_UUID}" \
         --arg xhttp_path "$(xhttp_client_path)" \
         --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
         --argjson max_connections "${XHTTP_XMUX_MAX_CONNECTIONS}" \
@@ -552,9 +600,9 @@ build_mihomo_node() {
         --arg h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($server|@json)\n    client-fingerprint: chrome\n" +
+        "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
         "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n    xhttp-opts:\n" +
-        "      host: \($server|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
+        "      host: \($host|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
         "        max-connections: \($max_connections|tostring|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
         "        h-max-request-times: \($h_max_request_times|@json)\n" +
@@ -562,11 +610,62 @@ build_mihomo_node() {
         "        h-keep-alive-period: \($h_keep_alive_period)\n"'
 }
 
+build_mihomo_nodes() {
+    local endpoint index=1
+    while IFS= read -r endpoint; do
+        build_mihomo_node_for_endpoint "${endpoint}" \
+            "$(xhttp_node_name_for_endpoint "${index}")"
+        index=$((index + 1))
+    done < <(xhttp_client_endpoints)
+}
+
+build_mihomo_node() {
+    build_mihomo_nodes
+}
+
+build_mihomo_proxy_names() {
+    local endpoint index=1
+    if xhttp_using_optimized_candidates; then
+        printf '        - %s\n' \
+            "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_AUTO" '$value')"
+        return 0
+    fi
+    while IFS= read -r endpoint; do
+        printf '        - %s\n' \
+            "$(jq -Rn --arg value "$(xhttp_node_name_for_endpoint "${index}")" '$value')"
+        index=$((index + 1))
+    done < <(xhttp_client_endpoints)
+}
+
+build_mihomo_proxy_groups() {
+    local endpoint index=1
+    xhttp_using_optimized_candidates || return 0
+    printf '    - name: %s\n' \
+        "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_AUTO" '$value')"
+    cat <<'EOF'
+      type: url-test
+      proxies:
+EOF
+    while IFS= read -r endpoint; do
+        printf '        - %s\n' \
+            "$(jq -Rn --arg value "$(xhttp_node_name_for_endpoint "${index}")" '$value')"
+        index=$((index + 1))
+    done < <(xhttp_client_endpoints)
+    cat <<'EOF'
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+      tolerance: 50
+      lazy: false
+EOF
+}
+
 write_subscriptions() {
-    local template node_file base64_file mihomo_file user uuid user_dir
+    local template node_file group_file name_file base64_file mihomo_file user uuid user_dir
     prepare_mihomo_template
     template=${MIHOMO_TEMPLATE_FILE}
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
+    group_file="${RUNTIME_TMP}/mihomo-groups.yaml"
+    name_file="${RUNTIME_TMP}/mihomo-names.yaml"
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
     resolve_cdn_client_ip_family
@@ -578,12 +677,15 @@ write_subscriptions() {
             user_dir="${SUBSCRIPTION_DIR}/${user}"
             (
                 VLESS_UUID=${uuid}
-                build_mihomo_node >"${node_file}.${user}"
-                printf '%s' "$(build_node_link)" | openssl base64 -A >"${base64_file}.${user}"
+                build_mihomo_nodes >"${node_file}.${user}"
+                build_mihomo_proxy_groups >"${group_file}.${user}"
+                build_mihomo_proxy_names >"${name_file}.${user}"
+                build_node_links | openssl base64 -A >"${base64_file}.${user}"
                 printf '\n' >>"${base64_file}.${user}"
                 render_mihomo_subscription "${template}" "${node_file}.${user}" \
                     "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
-                    "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+                    "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
+                    "${group_file}.${user}" "${name_file}.${user}"
             )
             grep -Fq 'network: xhttp' "${mihomo_file}.${user}" \
                 || die "Mihomo 订阅缺少 XHTTP 节点：${user}"
@@ -595,11 +697,14 @@ write_subscriptions() {
         done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
         return 0
     fi
-    build_mihomo_node >"${node_file}"
-    printf '%s' "$(build_node_link)" | openssl base64 -A >"${base64_file}"
+    build_mihomo_nodes >"${node_file}"
+    build_mihomo_proxy_groups >"${group_file}"
+    build_mihomo_proxy_names >"${name_file}"
+    build_node_links | openssl base64 -A >"${base64_file}"
     printf '\n' >>"${base64_file}"
     render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
-        "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+        "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
+        "${group_file}" "${name_file}"
 
     grep -Fq 'network: xhttp' "${mihomo_file}" || die "Mihomo 订阅缺少 XHTTP 节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"

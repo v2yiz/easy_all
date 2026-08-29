@@ -6,6 +6,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
 GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
+GLOBALPING_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/globalping-guide.md")
 CLOUDFLARE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/cloudflare-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-aws.sh")
@@ -33,7 +34,8 @@ done < <(
         | sed -n 's/^[[:space:]]*"\(\(lib\|profiles\)\/[^\"]*\)"/\1/p'
 )
 
-for command in show subscription self-update apply apply-cloud update-sub update-core \
+for command in show subscription self-update apply apply-cloud update-sub migrate-aws-cdn \
+    refresh-cdn-ips update-core \
     renew-cert quota-status quota-set quota-reset status uninstall help; do
     assert_contains "README public command ${command}" "${README_CONTENT}" "| \`${command}"
 done
@@ -44,6 +46,24 @@ assert_contains "README XHTTP stage count" "${README_CONTENT}" \
     '源站证书 / Xray / Nginx / 本机运行时验收'
 assert_contains "README documents the third Gcore installation branch" "${README_CONTENT}" \
     'Gcore CDN XHTTP'
+assert_contains "README documents the fourth optimized AWS installation mode" \
+    "${README_CONTENT}" 'AWS CDN 精选 IP - XHTTP'
+assert_contains "README links the Globalping credential guide" "${README_CONTENT}" \
+    'docs/globalping-guide.md'
+assert_contains "Globalping guide documents GitHub sign-in" \
+    "${GLOBALPING_GUIDE_CONTENT}" 'Sign in with GitHub'
+assert_contains "Globalping guide documents the token page" \
+    "${GLOBALPING_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
+assert_contains "README documents root-only Globalping token storage" \
+    "${README_CONTENT}" '/etc/easy_all/globalping.token'
+assert_contains "README documents the six-hour Globalping refresh" \
+    "${README_CONTENT}" '每 6 小时'
+assert_contains "README documents the 72-hour Globalping fallback" \
+    "${README_CONTENT}" '超过 72 小时'
+for runtime_marker in '/etc/easy_all' 'systemd' 'refresh-cdn-ips' '模式 4'; do
+    assert_not_contains "Globalping guide excludes installer detail ${runtime_marker}" \
+        "${GLOBALPING_GUIDE_CONTENT}" "${runtime_marker}"
+done
 assert_contains "README documents Gcore as a token-only provider" "${README_CONTENT}" \
     'GCORE_API_TOKEN'
 assert_contains "README links the retained Cloudflare credential guide" "${README_CONTENT}" \
@@ -102,7 +122,7 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
 assert_contains "README documents the IPv6-preferred CDN client default" "${README_CONTENT}" \
-    '固定输出 `ip-version: ipv6-prefer`'
+    '`ip-version: ipv6-prefer`'
 assert_contains "AWS guide documents the IPv6-preferred CDN client default" "${AWS_GUIDE_CONTENT}" \
     '`ip-version: ipv6-prefer`'
 assert_contains "Gcore guide documents the IPv6-preferred CDN client default" "${GCORE_GUIDE_CONTENT}" \
@@ -128,11 +148,11 @@ assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
 assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" "${README_CONTENT}" \
     '不能替代 XHTTP'
 assert_contains "README documents Xray inbound TCP keepalive" "${README_CONTENT}" \
-    '三种 Xray 入站'
+    '四种 Xray 入站'
 assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" \
     '`13000-60999`'
 assert_contains "README documents XanMod LTS BBRv3 for every profile" \
-    "${README_CONTENT}" '三种链路统一安装 XanMod LTS 内核'
+    "${README_CONTENT}" '四种模式统一安装 XanMod LTS 内核'
 assert_contains "README distinguishes the BBR algorithm from the sysctl name" \
     "${README_CONTENT}" '不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3'
 assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" \

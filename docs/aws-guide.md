@@ -1,12 +1,14 @@
 # AWS 一次性准备指南
 
 按本文顺序操作，可一次完成 AWS 账号确认、CloudFront 两种计费模式的费用边界、Route 53 DNS
-委派、IAM 最小权限和 Access Key 创建。安装时你只需要向脚本提供：
+委派、IAM 最小权限和 Access Key 创建。AWS 授权部分安装时你只需要向脚本提供：
 
 ```text
 AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY
 ```
+
+选择模式 4 时还需提供独立的 Globalping Token，获取方法见本文第 7 节。
 
 > 不要为 AWS 根用户创建访问密钥，也不要把任何密钥提交到 Git、写入脚本、
 > 截图或发送到聊天中。
@@ -264,3 +266,16 @@ AWS_SECRET_ACCESS_KEY
 
 AWS 官方参考：
 [IAM 用户访问密钥](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)。
+
+## 7. 可选：准备模式 4 的 Globalping Token
+
+模式 4 “AWS CDN 精选 IP - XHTTP”与模式 2 使用完全相同的 IAM 权限和 AWS 资源，不需要为
+AWS 策略增加任何操作。它额外需要一个 Globalping Access Token，用于每 6 小时从中国大陆探针
+执行 IPv4 TCP/443 测量。
+
+Token 的注册和创建步骤见
+[Globalping 注册与 Token 指南](globalping-guide.md)。安装器会将 Token 保存到 VPS 的
+`/etc/easy_all/globalping.token`，权限为 `root:root 0600`；不会保存到 `state.env`。
+
+本模式不使用 Cloudflare Worker 或 Cloudflare KV，因此不需要新增 Cloudflare API Token 权限，
+也不需要修改 Cloudflare Token 图例。

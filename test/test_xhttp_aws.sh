@@ -114,6 +114,8 @@ assert_contains "CloudFront alias conflicts require explicit old-resource cleanu
     "${XHTTP_CONTENT}" '脚本不会接管旧部署，请先删除旧分配或解除该别名'
 assert_contains "CloudFront billing mode is persisted" "${XHTTP_CONTENT}" \
     'AWS_CLOUDFRONT_BILLING_MODE=%q'
+assert_contains "AWS CDN endpoint mode is persisted" "${XHTTP_CONTENT}" \
+    'AWS_CDN_ENDPOINT_MODE=%q'
 assert_contains "CloudFront fee protection threshold is persisted" "${XHTTP_CONTENT}" \
     'CDN_TRAFFIC_PROTECTION_GB=%q'
 assert_contains "global fee protection can remove every Xray client" "${XHTTP_CONTENT}" \
@@ -492,6 +494,29 @@ EOF
         assert_equal "XHTTP path environment override wins during update" \
             "/xhttp-updated-suffix" "${XHTTP_PATH}"
     )
+    (
+        source_state_file() {
+            STATE_VERSION="7"
+            PROTOCOL="xhttp"
+            CDN_PROVIDER="aws"
+            AWS_CDN_ENDPOINT_MODE="optimized"
+            AWS_CLOUDFRONT_BILLING_MODE="flat-free"
+            CDN_CLIENT_IP_FAMILY="ipv6-prefer"
+            VLESS_UUID="00000000-0000-4000-8000-000000000001"
+            VLESS_CDN_DOMAIN="node.example.com"
+            XHTTP_NODE_NAME="STORED_XHTTP"
+            XHTTP_PATH="/xhttp-stored-suffix"
+            AWS_ORIGIN_DOMAIN="origin.example.com"
+            XRAY_XHTTP_LOOPBACK_PORT="10086"
+            SUB_DOWNLOAD_NAME="EASY_ALL"
+            SUBSCRIPTION_MODE="link"
+            SUBSCRIPTION_DOMAIN="node.example.com"
+            QUOTA_ENABLED="0"
+        }
+        load_state
+        assert_equal "optimized AWS state forces IPv4 candidates" "ipv4" \
+            "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    )
     zones='{"HostedZones":[{"Id":"/hostedzone/ZBASE","Name":"example.com.","Config":{"PrivateZone":false}},{"Id":"/hostedzone/ZPRIVATE","Name":"node.example.com.","Config":{"PrivateZone":true}},{"Id":"/hostedzone/ZBOUNDARY","Name":"notexample.com.","Config":{"PrivateZone":false}}]}'
     assert_equal "Route 53 public parent zone" $'/hostedzone/ZBASE\texample.com.' \
         "$(find_route53_zone_for_domain node.example.com "${zones}")"
@@ -678,6 +703,95 @@ EOF
     assert_not_contains "Mihomo XMUX omits incompatible max concurrency" \
         "${mihomo}" "max-concurrency"
     assert_contains "Mihomo XMUX uses browser-like keepalive" "${mihomo}" "h-keep-alive-period: 0"
+
+    (
+        AWS_CDN_ENDPOINT_MODE="optimized"
+        CDN_CLIENT_IP_FAMILY="ipv6-prefer"
+        CDN_CLIENT_IP_FAMILY_RESOLVED=""
+        globalping_cache_valid() { return 0; }
+        aws_cdn_client_endpoints() {
+            printf '%s\n' 203.0.113.10 198.51.100.20
+        }
+
+        optimized_links=$(build_node_links)
+        assert_equal "optimized mode emits one URI per selected IP" "2" \
+            "$(grep -c '^vless://' <<<"${optimized_links}" | tr -d ' ')"
+        assert_contains "optimized URI connects to the selected IP" \
+            "${optimized_links}" '@203.0.113.10:443'
+        assert_contains "optimized URI keeps the CloudFront SNI" \
+            "${optimized_links}" 'sni=node.example.com'
+        assert_contains "optimized URI keeps the CloudFront XHTTP host" \
+            "${optimized_links}" 'host=node.example.com'
+
+        optimized_nodes=$(build_mihomo_nodes)
+        assert_equal "optimized mode emits one Mihomo node per selected IP" "2" \
+            "$(grep -Fc 'network: xhttp' <<<"${optimized_nodes}" | tr -d ' ')"
+        assert_contains "optimized Mihomo node connects to IPv4" \
+            "${optimized_nodes}" 'server: "203.0.113.10"'
+        assert_contains "optimized Mihomo node keeps CloudFront SNI" \
+            "${optimized_nodes}" 'servername: "node.example.com"'
+        assert_contains "optimized Mihomo node keeps CloudFront host" \
+            "${optimized_nodes}" 'host: "node.example.com"'
+        assert_contains "optimized Mihomo node is IPv4-only" \
+            "${optimized_nodes}" 'ip-version: ipv4'
+
+        optimized_groups=$(build_mihomo_proxy_groups)
+        optimized_names=$(build_mihomo_proxy_names)
+        assert_contains "optimized group performs automatic client testing" \
+            "${optimized_groups}" 'type: url-test'
+        assert_contains "optimized group tests every five minutes" \
+            "${optimized_groups}" 'interval: 300'
+        assert_contains "PROXY selects the optimized group" \
+            "${optimized_names}" 'EASY_ALL_XHTTP_TEST_AUTO'
+
+        optimized_node_file="${TMP_DIR}/mihomo-optimized-nodes.yaml"
+        optimized_group_file="${TMP_DIR}/mihomo-optimized-groups.yaml"
+        optimized_name_file="${TMP_DIR}/mihomo-optimized-names.yaml"
+        optimized_mihomo_file="${TMP_DIR}/mihomo-optimized.yaml"
+        printf '%s\n' "${optimized_nodes}" >"${optimized_node_file}"
+        printf '%s\n' "${optimized_groups}" >"${optimized_group_file}"
+        printf '%s\n' "${optimized_names}" >"${optimized_name_file}"
+        render_mihomo_subscription "${ROOT_DIR}/templates/mihomo.yaml" \
+            "${optimized_node_file}" "${optimized_mihomo_file}" \
+            "${XHTTP_NODE_NAME}" ipv4 "${optimized_group_file}" \
+            "${optimized_name_file}"
+        assert_equal "rendered optimized subscription contains tenable candidates" "2" \
+            "$(grep -Fc 'network: xhttp' "${optimized_mihomo_file}" | tr -d ' ')"
+        assert_contains "rendered optimized subscription contains url-test group" \
+            "$(<"${optimized_mihomo_file}")" 'type: url-test'
+    )
+
+    migration_calls=$(
+        require_root() { printf 'root\n'; }
+        begin_quota_maintenance() { printf 'begin\n'; }
+        collect_installed_state() {
+            printf 'state\n'
+            AWS_CDN_ENDPOINT_MODE="domain"
+            CDN_CLIENT_IP_FAMILY="ipv6-prefer"
+            SUBSCRIPTION_MODE="deploy"
+        }
+        collect_globalping_token() { printf 'token\n'; }
+        validate_globalping_access() { printf 'access\n'; }
+        snapshot_subscription_update() { printf 'snapshot\n'; }
+        refresh_globalping_cache() { printf 'refresh\n'; }
+        subscription_enabled() { return 0; }
+        write_subscriptions() { printf 'write\n'; }
+        validate_subscription_runtime() { printf 'validate-subscription\n'; }
+        save_state() {
+            printf 'save:%s:%s\n' \
+                "${AWS_CDN_ENDPOINT_MODE}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+        }
+        persist_globalping_token() { printf 'persist-token\n'; }
+        register_easy_all_command() { printf 'register\n'; }
+        install_globalping_refresh_timer() { printf 'timer\n'; }
+        end_quota_maintenance() { printf 'end\n'; }
+        show_subscription() { printf 'show\n'; }
+        success() { :; }
+        migrate_to_optimized_aws_cdn
+    )
+    assert_equal "mode 2 migration preserves ordering and enables optimized IPv4" \
+        $'root\nbegin\nstate\ntoken\naccess\nsnapshot\nrefresh\nwrite\nvalidate-subscription\nsave:optimized:ipv4\npersist-token\nregister\ntimer\nend\nshow' \
+        "${migration_calls}"
 
     distribution="${TMP_DIR}/distribution.json"
     build_distribution_config "${distribution}" "test-caller-reference"

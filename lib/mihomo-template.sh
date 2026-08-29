@@ -7,6 +7,7 @@ validate_mihomo_template() {
     [[ -s "${source}" ]] || die "Mihomo 模板为空：${source}"
     for marker in \
         "# EASY_ALL_PROXY_NODE" \
+        "# EASY_ALL_PROXY_GROUP" \
         "# EASY_ALL_PROXY_NAME"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \

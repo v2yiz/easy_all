@@ -24,6 +24,7 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/xhttp-aws.sh"
     "profiles/xhttp-gcore.sh"
     "lib/xhttp-runtime.sh"
+    "lib/globalping-cdn.sh"
     "lib/quota.sh"
     "lib/cdn-traffic-guard.sh"
     "lib/platform.sh"
@@ -65,13 +66,15 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择“直连 Reality”、“AWS CDN XHTTP”或“Gcore CDN XHTTP”
+  install          交互选择 Reality、AWS/Gcore CDN XHTTP 或 AWS CDN 精选 IP
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update      只更新 easy_all 项目代码
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN Provider 云资源
   update-sub       重新选择订阅模式与月度用户配额
+  migrate-aws-cdn  将模式 2 原地迁移为模式 4 AWS CDN 精选 IP
+  refresh-cdn-ips  立即刷新模式 4 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
   quota-status     显示用户配额与 CDN XHTTP 全局费用保护
@@ -81,7 +84,7 @@ launcher_usage() {
   uninstall        卸载当前模式
   help             显示帮助
 
-一台 VPS 只能安装一种模式。CDN XHTTP 可选择 AWS 或 Gcore Provider。
+一台 VPS 只能安装一种模式。模式 2 可原地迁移到模式 4。
 EOF
 }
 
@@ -107,12 +110,17 @@ easy_all install
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
    ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A
    └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/CloudFront/已选计费模式/CDN Alias → 状态/命令/配额任务
-└─ [3] CDN XHTTP（Gcore）
+├─ [3] CDN XHTTP（Gcore）
    ├─ 适用线路：非优化线路；先按 docs/gcore-guide.md 委派整个主域名到 Gcore Managed DNS
    ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → Gcore 源站域名与 CDN 域名
    ├─ 选择订阅输出；部署时询问文件名、Token/配额
    ├─ 仅输入 GCORE_API_TOKEN → 验证 CDN/DNS 权限与 Gcore 权威 DNS 委派 → 源站 A
    └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → 源组/Gcore CDN/免费 Let's Encrypt/CDN CNAME → 980 GB 费用保护 → 状态/命令/配额任务
+└─ [4] AWS CDN 精选 IP - XHTTP
+   ├─ 完整复用模式 2 的 AWS CloudFront 链路，也可由已安装的模式 2 原地迁移
+   ├─ Globalping 使用中国大陆探针执行 10 包 TCP/443 测量，每 6 小时刷新
+   ├─ 最多保存 10 个零丢包 IPv4；失败保留上一版，超过 72 小时回退 CDN 域名
+   └─ Mihomo 自动测速选择最优 IP；Base64 输出全部候选节点
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
@@ -141,7 +149,13 @@ detect_installed_mode() {
         xhttp)
             case "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" in
             gcore) printf 'gcore\n' ;;
-            aws) printf 'xhttp\n' ;;
+            aws)
+                if [[ "$(state_value "${EASY_ALL_STATE_FILE}" AWS_CDN_ENDPOINT_MODE || true)" == "optimized" ]]; then
+                    printf 'aws-cdn\n'
+                else
+                    printf 'xhttp\n'
+                fi
+                ;;
             *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;
             esac
             ;;
@@ -162,6 +176,8 @@ choose_install_mode() {
     printf '     AWS CDN - XHTTP (recommended for non-optimized routes)\n' >&2
     printf '  3. Gcore CDN - XHTTP（非优化线路推荐）\n' >&2
     printf '     Gcore CDN - XHTTP (recommended for non-optimized routes)\n' >&2
+    printf '  4. AWS CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
+    printf '     AWS CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice
@@ -169,6 +185,7 @@ choose_install_mode() {
     1) printf 'reality\n' ;;
     2) printf 'xhttp\n' ;;
     3) printf 'gcore\n' ;;
+    4) printf 'aws-cdn\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -177,7 +194,7 @@ profile_file() {
     local mode=$1 candidate
     case "${mode}" in
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
-    xhttp) candidate="${EASY_ALL_ROOT}/profiles/xhttp-aws.sh" ;;
+    xhttp | aws-cdn) candidate="${EASY_ALL_ROOT}/profiles/xhttp-aws.sh" ;;
     gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
@@ -261,7 +278,7 @@ dispatch_profile_command() {
         apply_easy_all
         ;;
     apply-cloud)
-        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
+        [[ "${mode}" == "xhttp" || "${mode}" == "aws-cdn" || "${mode}" == "gcore" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN XHTTP 模式"
         apply_cloud_resources
         ;;
@@ -273,6 +290,16 @@ dispatch_profile_command() {
         fi
         ;;
     update-core) update_current_core ;;
+    migrate-aws-cdn)
+        [[ "${mode}" == "xhttp" ]] \
+            || launcher_die "migrate-aws-cdn 仅适用于模式 2 AWS CDN XHTTP"
+        migrate_to_optimized_aws_cdn
+        ;;
+    refresh-cdn-ips)
+        [[ "${mode}" == "aws-cdn" ]] \
+            || launcher_die "refresh-cdn-ips 仅适用于模式 4 AWS CDN 精选 IP"
+        refresh_aws_cdn_ips
+        ;;
     renew-cert)
         if [[ "${mode}" == "reality" ]]; then
             renew_subscription_certificate
@@ -287,7 +314,7 @@ dispatch_profile_command() {
         ;;
     quota-sync) quota_sync_usage ;;
     cdn-traffic-sync)
-        [[ "${mode}" == "xhttp" || "${mode}" == "gcore" ]] \
+        [[ "${mode}" == "xhttp" || "${mode}" == "aws-cdn" || "${mode}" == "gcore" ]] \
             || launcher_die "cdn-traffic-sync 仅适用于 CDN XHTTP 模式"
         cdn_traffic_protection_sync
         ;;
@@ -330,6 +357,7 @@ main() {
 
     module=$(profile_file "${mode}")
     export EASY_ALL_ENTRY_SCRIPT="${EASY_ALL_ROOT}/easy_all"
+    export EASY_ALL_SELECTED_MODE="${mode}"
     [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
         || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
     # shellcheck source=/dev/null

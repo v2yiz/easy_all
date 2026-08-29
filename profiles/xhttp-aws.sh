@@ -31,6 +31,8 @@ AWS_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
 
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
+# shellcheck source=lib/globalping-cdn.sh
+source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
 
 validate_cloudfront_billing_mode() {
     [[ "$1" == "flat-free" || "$1" == "payg" ]]
@@ -89,6 +91,13 @@ choose_cloudfront_billing_mode() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="aws"
+    if [[ "${EASY_ALL_SELECTED_MODE:-xhttp}" == "aws-cdn" ]]; then
+        AWS_CDN_ENDPOINT_MODE="optimized"
+    else
+        AWS_CDN_ENDPOINT_MODE="domain"
+    fi
+    validate_aws_cdn_endpoint_mode "${AWS_CDN_ENDPOINT_MODE}" \
+        || die "AWS_CDN_ENDPOINT_MODE 无效：${AWS_CDN_ENDPOINT_MODE}"
     choose_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
@@ -107,6 +116,11 @@ collect_install_inputs() {
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
     choose_cloudfront_billing_mode
+    if aws_cdn_optimization_enabled; then
+        info "模式 4 将使用中国大陆 Globalping 探针筛选 CloudFront IPv4。"
+        collect_globalping_token
+        validate_globalping_access || die "Globalping Token 验证失败"
+    fi
 
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
     XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
@@ -135,7 +149,8 @@ collect_install_inputs() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL CDN_PROVIDER AWS_CLOUDFRONT_BILLING_MODE CDN_CLIENT_IP_FAMILY
+        PROTOCOL CDN_PROVIDER AWS_CDN_ENDPOINT_MODE
+        AWS_CLOUDFRONT_BILLING_MODE CDN_CLIENT_IP_FAMILY
         XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
         SUBSCRIPTION_DOMAIN
         XHTTP_PATH AWS_ORIGIN_DOMAIN
@@ -166,6 +181,9 @@ load_state() {
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
     [[ "${CDN_PROVIDER:-}" == "aws" ]] \
         || die "状态不是 AWS CDN XHTTP；请重新安装"
+    AWS_CDN_ENDPOINT_MODE=${AWS_CDN_ENDPOINT_MODE:-domain}
+    validate_aws_cdn_endpoint_mode "${AWS_CDN_ENDPOINT_MODE}" \
+        || die "状态文件中的 AWS CDN 接入模式无效：${AWS_CDN_ENDPOINT_MODE}"
     configure_cdn_client_ip_family
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
         || die "状态文件中的 CloudFront 计费模式无效：${AWS_CLOUDFRONT_BILLING_MODE:-缺失}"
@@ -207,6 +225,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'CDN_PROVIDER=%q\n' "aws"
+        printf 'AWS_CDN_ENDPOINT_MODE=%q\n' "${AWS_CDN_ENDPOINT_MODE:-domain}"
         printf 'AWS_CLOUDFRONT_BILLING_MODE=%q\n' "${AWS_CLOUDFRONT_BILLING_MODE}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
@@ -1207,9 +1226,10 @@ cdn_apply() {
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS XHTTP stream-up/H2 over AWS CloudFront\n节点链接:\n%s\n\n' "$(build_node_link)"
-    printf 'Mihomo / Clash 节点:\n'
-    build_mihomo_node
+    printf '\n协议: VLESS XHTTP stream-up/H2 over AWS CloudFront\n节点链接:\n'
+    build_node_links
+    printf '\nMihomo / Clash 节点:\n'
+    build_mihomo_nodes
     printf '\n'
 }
 
@@ -1226,6 +1246,9 @@ show_status() {
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'CloudFront 计费模式: %s\n' \
         "$([[ "${AWS_CLOUDFRONT_BILLING_MODE}" == "flat-free" ]] && printf 'Free 固定套餐' || printf '按量付费')"
+    printf 'AWS CDN 客户端接入: %s\n' \
+        "$([[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] \
+            && printf 'Globalping 精选 IPv4' || printf 'CDN 域名')"
     printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\nRoute 53 订阅 Zone ID: %s\n' \
         "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}" \
         "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID:-${AWS_ROUTE53_ZONE_ID:-未知}}"
@@ -1242,6 +1265,61 @@ show_status() {
     fi
     show_quota_status
     show_cdn_traffic_protection_status
+    show_globalping_status
+}
+
+refresh_aws_cdn_ips() {
+    local refresh_status=0
+    require_root
+    acquire_runtime_write_lock
+    collect_installed_state
+    aws_cdn_optimization_enabled \
+        || { release_runtime_write_lock; die "当前不是模式 4 AWS CDN 精选 IP"; }
+    snapshot_subscription_update
+    if ! refresh_globalping_cache; then
+        refresh_status=1
+        if globalping_cache_valid; then
+            warn "Globalping 刷新失败，继续使用上一版有效精选 IP"
+        else
+            warn "Globalping 无有效缓存，订阅将回退到 AWS CDN 域名"
+        fi
+    fi
+    if subscription_enabled; then
+        write_subscriptions
+        validate_subscription_runtime
+    fi
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    release_runtime_write_lock
+    ((refresh_status == 0)) || return 1
+    success "AWS CDN 精选 IP 与订阅已刷新"
+}
+
+migrate_to_optimized_aws_cdn() {
+    require_root
+    begin_quota_maintenance
+    collect_installed_state
+    [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "domain" ]] \
+        || die "当前已经是模式 4 AWS CDN 精选 IP"
+    collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
+    snapshot_subscription_update
+    if ! refresh_globalping_cache; then
+        warn "首次 Globalping 测量失败；将使用 CDN 域名回退节点，定时任务会继续重试"
+    fi
+    AWS_CDN_ENDPOINT_MODE="optimized"
+    configure_cdn_client_ip_family
+    if subscription_enabled; then
+        write_subscriptions
+        validate_subscription_runtime
+    fi
+    save_state
+    persist_globalping_token
+    register_easy_all_command
+    install_globalping_refresh_timer
+    end_quota_maintenance
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    show_subscription
+    success "已从模式 2 原地迁移到模式 4；AWS 云资源与 XHTTP 服务端参数保持不变"
 }
 
 update_subscription() {
@@ -1284,6 +1362,7 @@ update_subscription() {
     refresh_runtime
     install_quota_timer
     install_cdn_traffic_protection_timer
+    install_globalping_refresh_timer
     subscription_enabled && validate_subscription_runtime
     if [[ "${cloud_update}" == "1" ]]; then
         info "订阅域名发生变化，正在同步 CloudFront、ACM 与 Route 53"
@@ -1314,6 +1393,7 @@ apply_easy_all() {
     configure_bbr_tcp
     configure_ufw
     finish_xhttp_apply
+    install_globalping_refresh_timer
     success "easy_all CDN XHTTP 本机配置与订阅已应用；未修改 AWS 资源"
 }
 
@@ -1327,6 +1407,7 @@ apply_cloud_resources() {
     cdn_prepare_origin
     cdn_apply
     finish_xhttp_apply 1
+    install_globalping_refresh_timer
     success "easy_all CDN XHTTP 本机配置、Route 53、CloudFront 与已选计费模式已应用"
 }
 
@@ -1335,6 +1416,7 @@ rollback_fresh_install() {
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
+    remove_globalping_refresh_timer
     restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
@@ -1377,6 +1459,7 @@ uninstall_all() {
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
+    remove_globalping_refresh_timer
     restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${AWS_ORIGIN_DOMAIN:-}"
@@ -1416,9 +1499,14 @@ install_all() {
     install_xray_service
     write_nginx_config
     validate_protocol_runtime
-    info "[7/9] 配置 ACM、确认 AWS Paid plan、CloudFront 已选计费模式与 Route 53 CDN Alias"
+    info "[7/9] 配置 ACM、CloudFront、Route 53 CDN Alias 与可选 Globalping 精选 IP"
     cdn_apply
     validate_cdn_client_ip_family_runtime
+    if aws_cdn_optimization_enabled; then
+        persist_globalping_token
+        refresh_globalping_cache \
+            || warn "首次 Globalping 测量失败；先使用 CDN 域名回退节点，定时任务会继续重试"
+    fi
     if subscription_enabled; then
         write_subscriptions
         validate_subscription_runtime
@@ -1428,6 +1516,7 @@ install_all() {
     register_easy_all_command
     install_quota_timer
     install_cdn_traffic_protection_timer
+    install_globalping_refresh_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     info "[9/9] 输出节点与订阅"
     show_subscription
@@ -1444,6 +1533,8 @@ usage() {
   apply            按当前状态应用本机运行时与订阅，不修改 AWS
   apply-cloud      应用本机并同步 Route 53、ACM 与 CloudFront
   update-sub       更新订阅选择、配额与本机运行时
+  migrate-aws-cdn  将模式 2 原地迁移为模式 4 AWS CDN 精选 IP
+  refresh-cdn-ips  立即刷新 Globalping 精选 IPv4 与订阅
   show             显示 VLESS 链接与 Mihomo 节点
   subscription     显示节点与订阅状态
   status           显示本机状态与已保存的 AWS 资源 ID
@@ -1454,7 +1545,8 @@ usage() {
   quota-reset      清零指定用户的本月已用量
   uninstall        删除本机内容，保留远端 AWS 资源
 
-发布单个 VLESS XHTTP stream-up/H2 节点。节点 DNS 全部由 Route 53 管理；
+模式 2 发布单个 CDN 域名节点；模式 4 发布最多 10 个 Globalping 精选 IPv4。
+节点域名与源站 DNS 全部由 Route 53 管理；
 CloudFront 使用 HTTPS 回源、禁用缓存、启用 gRPC，并转发除 Host 外的全部查看器请求头。
 可选择部署 CloudFront + Nginx Token 订阅，或仅输出节点信息。
 EOF
@@ -1466,6 +1558,8 @@ main() {
     apply) apply_easy_all ;;
     apply-cloud) apply_cloud_resources ;;
     update-sub) update_subscription ;;
+    migrate-aws-cdn) migrate_to_optimized_aws_cdn ;;
+    refresh-cdn-ips) refresh_aws_cdn_ips ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
     status) show_status ;;

@@ -25,7 +25,7 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
 
 for required_path in \
     profiles/reality.sh profiles/xhttp-aws.sh profiles/xhttp-gcore.sh \
-    lib/xhttp-runtime.sh lib/quota.sh lib/cdn-traffic-guard.sh \
+    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/quota.sh lib/cdn-traffic-guard.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
     lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
@@ -50,6 +50,10 @@ shared_modules=(
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cdn-traffic-guard.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cdn-traffic-guard.sh'* ]] \
     || fail "CDN traffic guard is missing from runtime packaging"
+[[ "${LAUNCHER_CONTENT}" == *'"lib/globalping-cdn.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'lib/globalping-cdn.sh'* \
+    && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* ]] \
+    || fail "Globalping CDN module is missing from the AWS runtime"
 [[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-gcore.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-gcore.sh'* \
     && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
