@@ -172,7 +172,8 @@ generate_xhttp_path() {
 prompt_secret() {
     local label=$1 label_en=${2:-Input secretly / see the Chinese prompt above} value
     [[ -t 0 ]] || return 1
-    read_bilingual "${label}:" "${label_en}:" value 1
+    read_bilingual "${label}，粘贴后按 Enter；输入过程不会显示任何字符:" \
+        "${label_en}; paste it and press Enter; no characters will be displayed:" value 1
     printf '%s' "${value}"
 }
 

@@ -53,8 +53,10 @@ install_acme_from_github() {
     tar -xzf "${archive}" -C "${source_dir}" --strip-components=1 \
         || die "解压 acme.sh 失败"
     [[ -f "${source_dir}/acme.sh" ]] || die "acme.sh 下载归档内容不完整"
-    sh "${source_dir}/acme.sh" --install -m "${account_email}" \
-        --home "${acme_home}" || die "安装 acme.sh 失败"
+    (
+        cd "${source_dir}"
+        sh ./acme.sh --install -m "${account_email}" --home "${acme_home}"
+    ) || die "安装 acme.sh 失败"
 }
 
 read_bilingual() {

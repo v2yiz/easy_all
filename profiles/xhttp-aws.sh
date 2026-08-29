@@ -358,11 +358,14 @@ collect_aws_credentials() {
     export AWS_DEFAULT_REGION="${AWS_CONTROL_REGION}"
     export AWS_PAGER=""
     if [[ "${AWS_USE_DEFAULT_CREDENTIAL_CHAIN:-0}" == "1" ]]; then
-        identity=$(aws sts get-caller-identity --output json) || die "AWS 默认凭证链不可用"
+        info "正在通过 AWS STS 验证默认凭证链，请等待"
+        identity=$(aws sts get-caller-identity --output json) \
+            || die "AWS 默认凭证链不可用；请检查凭证和 VPS 到 sts.amazonaws.com 的网络"
         arn=$(jq -r '.Arn // empty' <<<"${identity}")
         [[ "${arn}" != *":root" ]] || die "拒绝使用 AWS 根用户凭证；请改用专用 IAM 用户或 Role"
         AWS_ACCOUNT_ID=$(jq -r '.Account // empty' <<<"${identity}")
         [[ "${AWS_ACCOUNT_ID}" =~ ^[0-9]{12}$ ]] || die "AWS STS 未返回有效账号 ID"
+        success "AWS 凭证验证通过：${arn}"
         return 0
     fi
     if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
@@ -379,11 +382,14 @@ collect_aws_credentials() {
         || die "AWS 访问密钥不能为空"
     export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
     [[ -z "${AWS_SESSION_TOKEN:-}" ]] || export AWS_SESSION_TOKEN
-    identity=$(aws sts get-caller-identity --output json) || die "AWS 凭证验证失败"
+    info "已收到隐藏输入，正在通过 AWS STS 验证凭证，请等待"
+    identity=$(aws sts get-caller-identity --output json) \
+        || die "AWS 凭证验证失败；请检查 Access Key、Secret Key 和 VPS 到 sts.amazonaws.com 的网络"
     arn=$(jq -r '.Arn // empty' <<<"${identity}")
     [[ "${arn}" != *":root" ]] || die "拒绝使用 AWS 根用户访问密钥；请改用专用 IAM 用户"
     AWS_ACCOUNT_ID=$(jq -r '.Account // empty' <<<"${identity}")
     [[ "${AWS_ACCOUNT_ID}" =~ ^[0-9]{12}$ ]] || die "AWS STS 未返回有效账号 ID"
+    success "AWS 凭证验证通过：${arn}"
 }
 
 clear_aws_credentials() {
@@ -454,7 +460,9 @@ find_route53_zone_for_domain() {
 
 find_route53_zones() {
     local zones origin_zone viewer_zone subscription_zone subscription_domain
-    zones=$(aws route53 list-hosted-zones --output json) || die "查询 Route 53 Hosted Zone 失败"
+    info "AWS 凭证已就绪，正在查询 Route 53 Public Hosted Zone，请等待"
+    zones=$(aws route53 list-hosted-zones --output json) \
+        || die "查询 Route 53 Hosted Zone 失败；请检查 IAM 权限和 VPS 到 AWS API 的网络"
     origin_zone=$(find_route53_zone_for_domain "${AWS_ORIGIN_DOMAIN}" "${zones}")
     viewer_zone=$(find_route53_zone_for_domain "${VLESS_CDN_DOMAIN}" "${zones}")
     subscription_domain=$(active_subscription_link_domain)

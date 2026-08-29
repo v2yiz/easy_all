@@ -958,8 +958,45 @@ test_secure_download_transport() {
         "acmesh-official/acme.sh/releases/latest" "${common_source}"
     assert_contains "acme accepts official v-prefixed release tags" \
         '^v?[0-9]+' "${common_source}"
+    assert_contains "acme installs from inside the extracted source directory" \
+        'cd "${source_dir}"' "${common_source}"
+    assert_contains "acme invokes the source entrypoint by relative path" \
+        'sh ./acme.sh --install' "${common_source}"
     assert_contains "Xray downloads are restricted to official release URLs" \
         "github.com/XTLS/Xray-core/releases/download" "${xray_source}"
+
+    local fixture_source="${TMP_DIR}/acme-release" fixture_home="${TMP_DIR}/acme-installed"
+    install -d -m 0700 "${fixture_source}"
+    cat >"${fixture_source}/acme.sh" <<'EOF'
+#!/bin/sh
+[ -f ./acme.sh ] || exit 90
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--home" ]; then
+        shift
+        install_home=$1
+    fi
+    shift
+done
+[ -n "${install_home:-}" ] || exit 91
+mkdir -p "${install_home}"
+cp ./acme.sh "${install_home}/acme.sh"
+chmod 0700 "${install_home}/acme.sh"
+EOF
+    (
+        download_https_file() {
+            local url=$1 destination=$2
+            if [[ "${url}" == */releases/latest ]]; then
+                printf '%s\n' \
+                    '{"tag_name":"v3.1.4","tarball_url":"https://api.github.com/repos/acmesh-official/acme.sh/tarball/v3.1.4"}' \
+                    >"${destination}"
+            else
+                tar -czf "${destination}" -C "${TMP_DIR}" acme-release
+            fi
+        }
+        install_acme_from_github "${fixture_home}" "admin@example.com"
+    )
+    assert_success "acme installer runs with its source directory as cwd" \
+        test -x "${fixture_home}/acme.sh"
 }
 
 test_state_and_xray() {
