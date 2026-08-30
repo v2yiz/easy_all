@@ -1650,14 +1650,37 @@ retire_managed_acme_domain() {
 
 remove_managed_acme_domain() {
     [[ -n "${1:-}" && -x "${ACME_BIN}" ]] || return 0
-    if [[ "${PRESERVE_ACME:-0}" == "1" ]]; then
-        warn "已按 PRESERVE_ACME=1 保留 ${ACME_HOME}，同域名重装可复用 ACME 账户和证书"
-        return 0
-    fi
     retire_managed_acme_domain "$1"
     if [[ -f "${ACME_OWNERSHIP_MARKER}" ]]; then
         rm -rf -- "${ACME_HOME}"
     fi
+}
+
+remove_managed_acme_cron() {
+    command -v crontab >/dev/null 2>&1 || return 0
+    local current filtered
+    current=$(crontab -l 2>/dev/null || true)
+    [[ -n "${current}" ]] || return 0
+    filtered=$(awk -v acme_bin="${ACME_BIN}" '
+        { normalized=$0; gsub(/"/, "", normalized) }
+        index(normalized, acme_bin) && normalized ~ /(^|[[:space:]])--cron([[:space:]]|$)/ { next }
+        { print }
+    ' <<<"${current}")
+    [[ "${filtered}" == "${current}" ]] && return 0
+    if [[ -n "${filtered}" ]]; then
+        printf '%s\n' "${filtered}" | crontab -
+    else
+        crontab -r
+    fi
+}
+
+revoke_reality_certificate_before_uninstall() {
+    [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
+    [[ -s "${CERT_FILE}" ]] || return 0
+    [[ -x "${ACME_BIN}" && -n "${SUBSCRIPTION_DOMAIN:-}" ]] \
+        || die "无法定位 Reality 订阅证书或 acme.sh，已停止卸载；本机证书仍保留"
+    run_acme --revoke -d "${SUBSCRIPTION_DOMAIN}" --ecc \
+        || die "Let’s Encrypt 证书吊销失败，已停止卸载；本机证书仍保留"
 }
 
 restore_preinstall_firewall() {
@@ -1713,8 +1736,8 @@ restore_preinstall_ipv6() {
 uninstall_all() {
     local mode=${1:-}
     require_root
-    [[ -z "${mode}" || "${mode}" == "--purge" ]] \
-        || die "uninstall 不支持参数 ${mode}；当前默认即为 purge"
+    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
+        || die "uninstall 不支持参数 ${mode}"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" || -L "${COMMAND_PATH}" ]] \
         || die "easy_all 尚未安装"
     if [[ -f "${STATE_FILE}" ]]; then
@@ -1730,6 +1753,10 @@ uninstall_all() {
             'Delete all easy_all local services, state and backups? [y/N] (press Enter to cancel):' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
+    UNINSTALL_PURGE_CLOUD=0
+    [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1
+    revoke_reality_certificate_before_uninstall
+    remove_managed_acme_cron
     stop_protocol_services
     remove_quota_timer
     restore_preinstall_firewall
@@ -1861,7 +1888,7 @@ usage() {
   quota-set     修改指定用户的月度额度
   quota-reset   清零指定用户的本月已用量
   status        显示当前协议、服务、端口和订阅状态
-  uninstall     默认彻底删除所有 easy_all 本机数据
+  uninstall     删除本机数据；可追加 --purge-cloud 先吊销订阅证书
   help          显示帮助
 
 Reality 默认使用 dynamic 订阅端口。

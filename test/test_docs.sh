@@ -34,7 +34,7 @@ done < <(
         | sed -n 's/^[[:space:]]*"\(\(lib\|profiles\)\/[^\"]*\)"/\1/p'
 )
 
-for command in show subscription self-update apply apply-cloud update-sub migrate-aws-cdn \
+for command in show subscription self-update apply apply-cloud update-sub \
     refresh-cdn-ips update-core \
     renew-cert quota-status quota-set quota-reset status uninstall help; do
     assert_contains "README public command ${command}" "${README_CONTENT}" "| \`${command}"
@@ -116,8 +116,6 @@ assert_contains "Cloudflare guide documents Globalping fallback" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '缓存超过 72 小时'
 assert_contains "Cloudflare guide documents the 100 MB request boundary" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '**100 MB**'
-assert_not_contains "Cloudflare guide omits abandoned Worker scope" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Workers Scripts'
 assert_not_contains "Cloudflare guide does not instruct manual proxied record creation" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '在 **DNS → Records** 创建'
 for aws_asset in \

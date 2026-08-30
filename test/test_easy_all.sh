@@ -98,18 +98,17 @@ set_fixture() {
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
 }
 
-test_syntax_and_worker_removal() {
+test_syntax_and_reality_boundaries() {
     local script subscription_module
     bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
     script=$(<"${ROOT_DIR}/profiles/reality.sh")
     subscription_module=$(<"${ROOT_DIR}/lib/subscription-auth.sh")
-    assert_not_contains "installer has no Worker API token" "CF_WORKER_API_TOKEN" "${script}"
-    assert_not_contains "installer has no Worker deployment mode" "DEPLOY_MODE" "${script}"
-    assert_not_contains "installer has no Worker file" "subscribe-worker.js" "${script}"
     assert_not_contains "installer has no Cloudflare API endpoint" \
         "api.cloudflare.com/client/v4" "${script}"
-    assert_not_contains "installer has no sample Worker source" "sample-worker.js" "${script}"
-    assert_success "root sample Worker was deleted" test ! -e "${ROOT_DIR}/sample-worker.js"
+    assert_contains "Reality revokes ACME before local cleanup" \
+        "revoke_reality_certificate_before_uninstall" "${script}"
+    assert_contains "Reality removes its ACME cron entry" \
+        "remove_managed_acme_cron" "${script}"
     assert_contains "Reality input collection is a separate stage" \
         "collect_reality_inputs()" "${script}"
     assert_contains "subscription input collection is a separate stage" \
@@ -135,8 +134,6 @@ test_syntax_and_worker_removal() {
         "多节点聚合或已有订阅服务器时推荐" "${subscription_module}"
     assert_contains "non-interactive uninstall requires FORCE" \
         "非交互卸载必须显式设置 FORCE=1" "${script}"
-    assert_contains "Reality uninstall can preserve ACME state for reinstall" \
-        'PRESERVE_ACME=1' "${script}"
     assert_contains "Reality uses the shared scheduled maintenance module" \
         'source "${SCRIPT_DIR}/scheduled-maintenance.sh"' "${script}"
     assert_contains "shared TCP tuning installs XanMod BBRv3 from the official source" \
@@ -861,14 +858,6 @@ test_acme_reinstall_and_rate_limit_guidance() {
         "Let's Encrypt 触发签发限流（acme.sh 返回 17）" "${message}"
     unset -f run_acme install_acme
 
-    install -d -m 0700 "${ACME_HOME}/sub.example.com_ecc"
-    install -m 0700 /dev/null "${ACME_BIN}"
-    PRESERVE_ACME=1
-    remove_managed_acme_domain "sub.example.com"
-    assert_success "PRESERVE_ACME keeps the reusable ACME certificate directory" \
-        test -d "${ACME_HOME}/sub.example.com_ecc"
-    unset PRESERVE_ACME
-
     install -d -m 0700 "${ACME_HOME}/old.example.com_ecc" \
         "${ACME_HOME}/current.example.com_ecc"
     retire_managed_acme_domain "old.example.com"
@@ -1031,7 +1020,6 @@ test_state_and_xray() {
         "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
-    assert_not_contains "state has no Worker name" "WORKER_NAME=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
 
     install -d -m 0755 "${XRAY_DIR}"
@@ -1136,7 +1124,7 @@ test_install_pipeline_order() {
 }
 
 source_script_copy
-test_syntax_and_worker_removal
+test_syntax_and_reality_boundaries
 test_validators_and_modes
 test_reality_inbound_family_and_dns
 test_reality_target_preflight

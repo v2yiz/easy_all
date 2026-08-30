@@ -28,8 +28,6 @@ GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
 GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_MODE=""
 GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_DOMAIN=""
 GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID=""
-GCORE_GLOBALPING_UPGRADE_REQUIRED=0
-
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 # shellcheck source=lib/globalping-cdn.sh
@@ -101,6 +99,16 @@ gcore_collect_api_token() {
 
 gcore_clear_api_token() {
     unset GCORE_API_TOKEN
+}
+
+purge_gcore_certificate_before_uninstall() {
+    [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
+    [[ "${GCORE_SSL_CERT_ID:-}" =~ ^[0-9]+$ ]] \
+        || die "状态缺少 Gcore 边缘证书 ID，已停止卸载；本机证书仍保留"
+    gcore_collect_api_token
+    gcore_api_request DELETE "/cdn/sslData/${GCORE_SSL_CERT_ID}" >/dev/null \
+        || die "Gcore 边缘证书仍在使用或删除失败，已停止卸载；本机证书仍保留"
+    gcore_clear_api_token
 }
 
 gcore_find_zone_for_domain() {
@@ -635,12 +643,8 @@ load_state() {
     done
     [[ "${PROTOCOL}" == "xhttp" && "${CDN_PROVIDER:-}" == "gcore" ]] \
         || die "状态不是 Gcore CDN XHTTP；请重新安装"
-    GCORE_GLOBALPING_UPGRADE_REQUIRED=0
-    [[ -n "${GCORE_CDN_ENDPOINT_MODE:-}" ]] \
-        || GCORE_GLOBALPING_UPGRADE_REQUIRED=1
-    GCORE_CDN_ENDPOINT_MODE=${GCORE_CDN_ENDPOINT_MODE:-optimized}
-    validate_cdn_endpoint_mode "${GCORE_CDN_ENDPOINT_MODE}" \
-        || die "状态文件中的 Gcore CDN 接入模式无效：${GCORE_CDN_ENDPOINT_MODE}"
+    [[ "${GCORE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] \
+        || die "状态中的 Gcore CDN 必须是 optimized 接入模式"
     configure_cdn_client_ip_family
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
@@ -693,7 +697,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "xhttp"
         printf 'CDN_PROVIDER=%q\n' "gcore"
-        printf 'GCORE_CDN_ENDPOINT_MODE=%q\n' "${GCORE_CDN_ENDPOINT_MODE:-optimized}"
+        printf 'GCORE_CDN_ENDPOINT_MODE=%q\n' "${GCORE_CDN_ENDPOINT_MODE}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
@@ -784,7 +788,7 @@ show_status() {
     printf 'CDN 客户端节点族: %s（配置值）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     printf 'Gcore CDN 客户端接入: %s\n' \
-        "$([[ "${GCORE_CDN_ENDPOINT_MODE:-optimized}" == "optimized" ]] \
+        "$([[ "${GCORE_CDN_ENDPOINT_MODE}" == "optimized" ]] \
             && printf 'Globalping 精选 IPv4' || printf 'CDN 域名')"
     printf 'Gcore DNS Zone: %s\nGcore 订阅 DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_SUBSCRIPTION_DNS_ZONE}" \
@@ -795,23 +799,6 @@ show_status() {
     show_quota_status
     show_cdn_traffic_protection_status
     show_globalping_status
-}
-
-ensure_gcore_globalping_upgrade() {
-    cdn_optimization_enabled || return 0
-    if [[ "${GCORE_GLOBALPING_UPGRADE_REQUIRED:-0}" != "1" \
-        && -s "${GLOBALPING_TOKEN_FILE}" ]]; then
-        return 0
-    fi
-    if [[ "${GCORE_GLOBALPING_UPGRADE_REQUIRED:-0}" == "1" ]]; then
-        info "正在把现有 Gcore 模式 4 原地升级为 Globalping 精选 IPv4 接入"
-    fi
-    collect_globalping_token
-    validate_globalping_access || die "Globalping Token 验证失败"
-    persist_globalping_token
-    refresh_globalping_cache \
-        || warn "首次 Globalping 测量失败；先使用 Gcore CDN 域名回退节点，定时任务会继续重试"
-    GCORE_GLOBALPING_UPGRADE_REQUIRED=0
 }
 
 refresh_gcore_cdn_ips() {
@@ -851,7 +838,6 @@ update_subscription() {
     require_root
     begin_quota_maintenance
     collect_installed_state
-    ensure_gcore_globalping_upgrade
     previous_mode=${SUBSCRIPTION_MODE}
     previous_domain=$(subscription_link_domain)
     previous_active_domain=${VLESS_CDN_DOMAIN}
@@ -918,7 +904,6 @@ apply_easy_all() {
     require_root
     begin_quota_maintenance
     collect_installed_state
-    ensure_gcore_globalping_upgrade
     snapshot_subscription_update
     configure_bbr_tcp
     configure_ufw
@@ -931,7 +916,6 @@ apply_cloud_resources() {
     require_root
     begin_quota_maintenance
     collect_installed_state
-    ensure_gcore_globalping_upgrade
     snapshot_subscription_update
     configure_bbr_tcp
     configure_ufw
@@ -976,7 +960,8 @@ rollback_fresh_install() {
 uninstall_all() {
     local mode=${1:-} answer
     require_root
-    [[ -z "${mode}" ]] || die "uninstall 不支持参数：${mode}"
+    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
+        || die "uninstall 不支持参数：${mode}"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all Gcore CDN XHTTP 尚未安装"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" && ! -t 0 ]]; then
@@ -984,10 +969,14 @@ uninstall_all() {
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
         read_bilingual \
-            '确认删除 easy_all Gcore CDN XHTTP 本机服务、状态和证书？远端 Gcore 资源会保留。[y/N]（直接回车取消）:' \
-            'Delete easy_all Gcore CDN XHTTP local services, state and certificates? Remote Gcore resources will be kept. [y/N] (press Enter to cancel):' answer
+            '确认删除 easy_all Gcore CDN XHTTP 本机服务、状态和证书？默认保留远端 Gcore 资源。[y/N]（直接回车取消）:' \
+            'Delete easy_all Gcore CDN XHTTP local services, state and certificates? Gcore resources are kept by default. [y/N] (press Enter to cancel):' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
+    UNINSTALL_PURGE_CLOUD=0
+    [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1
+    purge_gcore_certificate_before_uninstall
+    remove_managed_acme_cron
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
@@ -998,7 +987,7 @@ uninstall_all() {
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
-    success "easy_all Gcore CDN XHTTP 本机内容已卸载；Gcore DNS、源组、CDN 与边缘证书未删除"
+    success "easy_all Gcore CDN XHTTP 本机内容已卸载；远端 Gcore 资源按卸载选项处理"
 }
 
 install_all() {
@@ -1058,6 +1047,6 @@ install_all() {
 usage() {
     cat <<'EOF'
 Gcore Profile 只能由 easy_all 统一入口调用。
-请使用：easy_all install
+请使用：easy_all install 或 easy_all uninstall [--purge-cloud]
 EOF
 }

@@ -396,7 +396,6 @@ assert_not_contains "Gcore profile never persists the API token" \
             SUB_DOWNLOAD_NAME="EASY_ALL_TEST"
             QUOTA_ENABLED=0
         }
-        ensure_gcore_globalping_upgrade() { :; }
         snapshot_subscription_update() { UPDATE_SUB_ROLLBACK_ON_EXIT=1; }
         choose_subscription_mode() { SUBSCRIPTION_MODE="deploy"; }
         collect_subscription_link_domain() { SUBSCRIPTION_DOMAIN="subscribe.example.net"; }

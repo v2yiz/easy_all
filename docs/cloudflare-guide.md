@@ -4,8 +4,7 @@
 `node.example.com`。客户端连接精选 IPv4，TLS SNI 与 XHTTP Host 仍始终是
 `node.example.com`；VPS 通过 Globalping 维护候选 IP 缓存，Mihomo 再在客户端网络中测速选优。
 
-> Cloudflare 不是本项目旧 Worker 部署的兼容入口。本模式只使用 proxied DNS、Universal SSL、
-> Origin CA、Full (strict)、HTTP/2/gRPC 与 Transform Rule，不创建 Worker。
+> 本模式使用 proxied DNS、Universal SSL、Origin CA、Full (strict)、HTTP/2/gRPC 与 Transform Rule。
 
 ## 架构与边界
 
@@ -42,7 +41,7 @@ Rule，在回源请求中写入 `X-Easy-All-Origin-Key`。健康检查与订阅�
 ## 1. 安装前只需准备 Zone 和名称
 
 1. 在 Cloudflare 添加 `example.com` Zone，并在注册商把权威 NS 委派到 Cloudflare，等待 Zone 为
-   **Active**。迁移前先保留现有网站和邮件所需的 DNS 记录。
+   **Active**。变更 NS 前先备份现有网站和邮件所需的 DNS 记录。
 2. 为节点选择 Zone 下的**一级子域名**，例如 `node.example.com`；独立订阅域名（如启用）也必须在
    同一个 Zone 下，且同样是一级子域名。
 3. 仅创建下节的一枚 Zone-scoped API Token，然后运行安装器。
@@ -76,7 +75,7 @@ Rule。安装器会创建或更新它们：DNS 中已有同名 AAAA 或 CNAME、
 2. Token name 可填 `easy_all-cloudflare-zone`；在 **Permissions** 中逐项添加下表六项 `Zone` 权限，
    每项均选 `Edit`，只有 `Zone / Zone` 选 `Read`。
 3. 在 **Zone Resources** 选择 **Include → Specific zone → 你的根域名**，不要选 **All zones**；不要添加
-   Account、User、Billing、Workers 或 API Keys 权限。
+   Account、User、Billing 或 API Keys 权限。
 4. 选择 **Continue to summary**，核对权限与 Zone 后选择 **Create Token**；立刻复制显示的 Token，回到
    安装器的 `Cloudflare API Token` 隐藏输入提示中粘贴。它不是 **Account ID**、**Zone ID**，也不是
    已弃用的 **Origin CA Key**。
@@ -101,7 +100,7 @@ shell 历史或长期明文 `.env`。
 
 因此，按默认设计使用 Free Zone 时，Cloudflare 侧的上述功能**没有固定月费或按本项目流量自动计费项**。
 仍可能发生的费用来自：域名注册/续费、VPS、用户自行升级 Pro/Business/Enterprise，或自行启用
-Argo、Load Balancing、Advanced Certificate Manager、Cache Reserve、Workers、Spectrum 等付费产品。
+Argo、Load Balancing、Advanced Certificate Manager、Cache Reserve、Spectrum 等付费产品。
 Cloudflare 的服务条款、流量限制与风控仍独立适用，Free 并不等于保证任何流量形态都被接受。
 
 官方参考：[套餐与价格](https://www.cloudflare.com/plans/)、

@@ -517,7 +517,7 @@ load_state() {
     local v e; local -a vars=(PROTOCOL CDN_PROVIDER CLOUDFLARE_CDN_ENDPOINT_MODE CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR)
     for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; printf -v "${e}" %s "${!v:-}"; printf -v "${v}" %s ""; done; source_state_file; for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; [[ -z "${!e:-}" ]] || printf -v "${v}" %s "${!e}"; unset "${e}"; done
     [[ "${PROTOCOL}" == xhttp && "${CDN_PROVIDER:-}" == cloudflare ]] || die "状态不是 Cloudflare CDN XHTTP"
-    [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-optimized}" == optimized ]] || die "Cloudflare 仅支持 Globalping optimized 模式"; configure_cdn_client_ip_family
+    [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == optimized ]] || die "Cloudflare 仅支持 Globalping optimized 模式"; configure_cdn_client_ip_family
     configure_cdn_traffic_protection
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" && validate_uuid "${VLESS_UUID:-}" && validate_xhttp_path "${XHTTP_PATH:-}" && validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT:-}" || die "Cloudflare 状态缺少必要有效字段"
     [[ "${CLOUDFLARE_ORIGIN_DOMAIN}" == "${VLESS_CDN_DOMAIN}" ]] \
@@ -622,7 +622,16 @@ apply_easy_all() { require_root; begin_quota_maintenance; collect_installed_stat
 apply_cloud_resources() { require_root; begin_quota_maintenance; collect_installed_state; snapshot_subscription_update; configure_bbr_tcp; configure_ufw; cloudflare_prepare_origin; cloudflare_issue_origin_certificate 0; cloudflare_configure_cdn; finish_xhttp_apply 1; cloudflare_validate_cdn_health; cloudflare_finalize_certificate_rotation; install_globalping_refresh_timer; cloudflare_clear_api_token; success "Cloudflare DNS、Origin CA、规则和本机配置已应用"; }
 
 rollback_fresh_install() { stop_services; remove_quota_timer; remove_cdn_traffic_protection_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; cloudflare_clear_api_token; }
-uninstall_all() { local answer; require_root; [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all Cloudflare CDN XHTTP 尚未安装"; [[ "${FORCE:-0}" == 1 || -t 0 ]] || die "非交互卸载必须设置 FORCE=1"; if [[ "${FORCE:-0}" != 1 ]]; then read_bilingual '删除本机内容（Cloudflare 资源保留）？[y/N]:' 'Delete local content (Cloudflare resources remain)? [y/N]:' answer; [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"; fi; stop_services; remove_quota_timer; remove_cdn_traffic_protection_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; remove_daily_reboot_schedule; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; success "本机内容已卸载；Cloudflare DNS、Origin CA 与 ruleset 保留"; }
+purge_cloudflare_certificate_before_uninstall() {
+    [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
+    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] \
+        || die "状态缺少 Cloudflare Origin CA 证书 ID，已停止卸载；本机证书仍保留"
+    cloudflare_collect_api_token
+    cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null \
+        || die "Cloudflare Origin CA 吊销失败，已停止卸载；本机证书仍保留"
+    cloudflare_clear_api_token
+}
+uninstall_all() { local mode=${1:-} answer; require_root; [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] || die "uninstall 不支持参数：${mode}"; [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all Cloudflare CDN XHTTP 尚未安装"; [[ "${FORCE:-0}" == 1 || -t 0 ]] || die "非交互卸载必须设置 FORCE=1"; [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1 || UNINSTALL_PURGE_CLOUD=0; [[ "${FORCE:-0}" == 1 ]] || { read_bilingual '删除本机内容（Cloudflare 资源保留）？[y/N]:' 'Delete local content (Cloudflare resources remain)? [y/N]:' answer; [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"; }; [[ ! -f "${STATE_FILE}" ]] || load_state; purge_cloudflare_certificate_before_uninstall; stop_services; remove_quota_timer; remove_cdn_traffic_protection_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; remove_daily_reboot_schedule; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; success "本机内容已卸载；远端 Cloudflare 资源按卸载选项处理"; }
 
 install_all() {
     [[ -t 0 ]] || die "安装必须在交互终端中执行"; CDN_PROVIDER=cloudflare; require_root; require_systemd; [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装"; check_platform; check_install_conflicts; snapshot_fresh_install

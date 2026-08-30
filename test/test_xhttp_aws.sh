@@ -110,8 +110,8 @@ assert_contains "subscription updates enable rollback" "${XHTTP_CONTENT}" \
     'UPDATE_SUB_ROLLBACK_ON_EXIT=1'
 assert_contains "CloudFront health failures are fatal" "${XHTTP_CONTENT}" \
     'die "CloudFront ${label}域名 ${domain} 公网验收失败'
-assert_contains "CloudFront alias conflicts require explicit old-resource cleanup" \
-    "${XHTTP_CONTENT}" '脚本不会接管旧部署，请先删除旧分配或解除该别名'
+assert_contains "CloudFront alias conflicts require explicit resource cleanup" \
+    "${XHTTP_CONTENT}" '脚本不会接管该资源，请先删除该分配或解除别名'
 assert_contains "CloudFront billing mode is persisted" "${XHTTP_CONTENT}" \
     'AWS_CLOUDFRONT_BILLING_MODE=%q'
 assert_contains "AWS CDN endpoint mode is persisted" "${XHTTP_CONTENT}" \
@@ -124,6 +124,8 @@ assert_contains "pay-as-you-go clears WAF association" "${XHTTP_CONTENT}" \
     'AWS_WAF_WEB_ACL_ARN=""'
 assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     '非交互卸载必须显式设置 FORCE=1'
+assert_contains "AWS purge option deletes ACM before local cleanup" "${XHTTP_CONTENT}" \
+    'purge_aws_certificate_before_uninstall'
 
 (
     # shellcheck source=/dev/null
@@ -135,14 +137,12 @@ assert_contains "non-interactive uninstall requires FORCE" "${XHTTP_CONTENT}" \
     configure_cdn_client_ip_family
     assert_equal "CDN client family defaults to IPv6 preference" \
         "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-    CDN_CLIENT_IP_FAMILY="auto"
-    configure_cdn_client_ip_family
-    assert_equal "legacy auto CDN client family migrates to IPv6 preference" \
-        "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-    CDN_CLIENT_IP_FAMILY="dual"
-    configure_cdn_client_ip_family
-    assert_equal "legacy dual CDN client family migrates to IPv6 preference" \
-        "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    if (
+        CDN_CLIENT_IP_FAMILY="auto"
+        configure_cdn_client_ip_family
+    ) >/dev/null 2>&1; then
+        fail "non-current CDN client family must be rejected"
+    fi
     if (
         CDN_CLIENT_IP_FAMILY="invalid"
         configure_cdn_client_ip_family
@@ -469,6 +469,7 @@ EOF
             STATE_VERSION="7"
             PROTOCOL="xhttp"
             CDN_PROVIDER="aws"
+            AWS_CDN_ENDPOINT_MODE="domain"
             AWS_CLOUDFRONT_BILLING_MODE="flat-free"
             VLESS_UUID="00000000-0000-4000-8000-000000000001"
             VLESS_CDN_DOMAIN="node.example.com"
@@ -484,8 +485,9 @@ EOF
         VLESS_UUID="00000000-0000-4000-8000-000000000002"
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
+        AWS_CDN_ENDPOINT_MODE=""
         load_state
-        assert_equal "old XHTTP state defaults the client family to IPv6 preference" "ipv6-prefer" \
+        assert_equal "AWS domain state uses IPv6 preference" "ipv6-prefer" \
             "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
@@ -636,6 +638,8 @@ EOF
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
     VLESS_CDN_DOMAIN="node.example.com"
     AWS_ORIGIN_DOMAIN="origin.example.com"
+    AWS_CDN_ENDPOINT_MODE="domain"
+    CDN_CLIENT_IP_FAMILY="ipv6-prefer"
     XHTTP_PATH="/xhttp-test-path"
     XRAY_XHTTP_LOOPBACK_PORT="10086"
     ORIGIN_HEADER_SECRET="test-origin-header-secret"
@@ -760,38 +764,6 @@ EOF
         assert_contains "rendered optimized subscription contains url-test group" \
             "$(<"${optimized_mihomo_file}")" 'type: url-test'
     )
-
-    migration_calls=$(
-        require_root() { printf 'root\n'; }
-        begin_quota_maintenance() { printf 'begin\n'; }
-        collect_installed_state() {
-            printf 'state\n'
-            AWS_CDN_ENDPOINT_MODE="domain"
-            CDN_CLIENT_IP_FAMILY="ipv6-prefer"
-            SUBSCRIPTION_MODE="deploy"
-        }
-        collect_globalping_token() { printf 'token\n'; }
-        validate_globalping_access() { printf 'access\n'; }
-        snapshot_subscription_update() { printf 'snapshot\n'; }
-        refresh_globalping_cache() { printf 'refresh\n'; }
-        subscription_enabled() { return 0; }
-        write_subscriptions() { printf 'write\n'; }
-        validate_subscription_runtime() { printf 'validate-subscription\n'; }
-        save_state() {
-            printf 'save:%s:%s\n' \
-                "${AWS_CDN_ENDPOINT_MODE}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-        }
-        persist_globalping_token() { printf 'persist-token\n'; }
-        register_easy_all_command() { printf 'register\n'; }
-        install_globalping_refresh_timer() { printf 'timer\n'; }
-        end_quota_maintenance() { printf 'end\n'; }
-        show_subscription() { printf 'show\n'; }
-        success() { :; }
-        migrate_to_optimized_aws_cdn
-    )
-    assert_equal "mode 2 migration preserves ordering and enables optimized IPv4" \
-        $'root\nbegin\nstate\ntoken\naccess\nsnapshot\nrefresh\nwrite\nvalidate-subscription\nsave:optimized:ipv4\npersist-token\nregister\ntimer\nend\nshow' \
-        "${migration_calls}"
 
     distribution="${TMP_DIR}/distribution.json"
     build_distribution_config "${distribution}" "test-caller-reference"
@@ -1071,17 +1043,6 @@ EOF
         "$(<"${mihomo_file}")" $'\nipv6: true\n'
     assert_contains "CDN Mihomo TUN bypasses CGNAT and overlay LAN addresses" \
         "$(<"${mihomo_file}")" "100.64.0.0/10"
-
-    (
-        CDN_CLIENT_IP_FAMILY="dual"
-        CDN_CLIENT_IP_FAMILY_RESOLVED=""
-        validate_cdn_client_ip_family_runtime
-        assert_equal "legacy CDN dual-stack selection migrates to IPv6 preference" \
-            "ipv6-prefer" "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
-        build_mihomo_node >"${node_file}.dual"
-        assert_contains "CDN node uses IPv6 preference" \
-            "$(<"${node_file}.dual")" "ip-version: ipv6-prefer"
-    )
 
     encoded=$(printf '%s' "$(build_node_link)" | openssl base64 -A)
     decoded=$(printf '%s' "${encoded}" | openssl base64 -d -A)
@@ -1364,7 +1325,5 @@ assert_contains "AWS guide documents DNSSEC requirements" "${readme}" "DNSSEC"
 assert_contains "README includes top-down Mermaid install flow" "${readme}" 'flowchart TD'
 assert_contains "README documents direct-enter semantics" "${readme}" \
     "直接回车会采用该值"
-
-[[ ! -e "${ROOT_DIR}/sample-worker.js" ]] || fail "XHTTP profile must not retain Worker source"
 
 printf 'easy_all XHTTP tests passed\n'

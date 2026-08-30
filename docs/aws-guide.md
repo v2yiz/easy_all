@@ -183,7 +183,8 @@ AWS 官方参考：
       "Action": [
         "acm:ListCertificates",
         "acm:RequestCertificate",
-        "acm:DescribeCertificate"
+        "acm:DescribeCertificate",
+        "acm:DeleteCertificate"
       ],
       "Resource": "*"
     },
@@ -277,5 +278,4 @@ Token 的注册和创建步骤见
 [Globalping 注册与 Token 指南](globalping-guide.md)。安装器会将 Token 保存到 VPS 的
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`；不会保存到 `state.env`。
 
-本模式不使用 Cloudflare Worker 或 Cloudflare KV，因此不需要新增 Cloudflare API Token 权限，
-也不需要修改 Cloudflare Token 图例。
+本模式不需要 Cloudflare API Token，也不需要配置 Cloudflare 侧 DNS。

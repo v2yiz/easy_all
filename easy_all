@@ -74,7 +74,6 @@ launcher_usage() {
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN Provider 云资源
   update-sub       重新选择订阅模式与月度用户配额
-  migrate-aws-cdn  将 AWS 域名入口原地迁移为 AWS 精选 IP
   refresh-cdn-ips  立即刷新模式 2/4/5 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
@@ -82,10 +81,10 @@ launcher_usage() {
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
   status           显示运行状态
-  uninstall        卸载当前模式
+  uninstall        卸载当前模式；可追加 --purge-cloud 先处理远端证书
   help             显示帮助
 
-一台 VPS 只能安装一种模式。AWS 域名入口可原地迁移到 AWS 精选 IP。
+一台 VPS 只能安装一种模式。
 EOF
 }
 
@@ -124,7 +123,7 @@ easy_all install
    ├─ GCORE_API_TOKEN → 验证 CDN/DNS 权限与权威 DNS 委派 → 源站 A
    └─ 源组/Gcore CDN/免费证书/CNAME → Globalping 精选 IPv4 → 980 GB 费用保护与定时刷新
 └─ [5] AWS CDN 精选 IP - XHTTP
-   ├─ 完整复用模式 3 的 AWS CloudFront 链路，也可由已安装的 AWS 域名入口原地迁移
+   ├─ 使用独立的新装配置，创建 AWS CloudFront 精选 IP 节点
    ├─ Globalping 使用中国大陆探针执行 10 包 TCP/443 测量，每小时刷新
    ├─ 最多保存 10 个零丢包 IPv4；失败保留上一版，超过 72 小时回退 CDN 域名
    └─ Mihomo 自动测速选择最优 IP；Base64 输出全部候选节点
@@ -148,21 +147,34 @@ state_value() {
 }
 
 detect_installed_mode() {
-    local protocol=""
+    local protocol="" state_version=""
     if [[ -f "${EASY_ALL_STATE_FILE}" ]]; then
         protocol=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
+        state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
         case "${protocol}" in
-        reality) printf 'reality\n' ;;
+        reality)
+            [[ "${state_version}" == "5" ]] || launcher_die "Reality 状态版本无效；仅支持当前全新安装生成的状态"
+            printf 'reality\n'
+            ;;
         xhttp)
+            [[ "${state_version}" == "7" ]] || launcher_die "XHTTP 状态版本无效；仅支持当前全新安装生成的状态"
             case "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" in
-            cloudflare) printf 'cloudflare\n' ;;
-            gcore) printf 'gcore\n' ;;
+            cloudflare)
+                [[ "$(state_value "${EASY_ALL_STATE_FILE}" CLOUDFLARE_CDN_ENDPOINT_MODE || true)" == "optimized" ]] \
+                    || launcher_die "Cloudflare 状态不完整；请重新安装"
+                printf 'cloudflare\n'
+                ;;
+            gcore)
+                [[ "$(state_value "${EASY_ALL_STATE_FILE}" GCORE_CDN_ENDPOINT_MODE || true)" == "optimized" ]] \
+                    || launcher_die "Gcore 状态不完整；请重新安装"
+                printf 'gcore\n'
+                ;;
             aws)
-                if [[ "$(state_value "${EASY_ALL_STATE_FILE}" AWS_CDN_ENDPOINT_MODE || true)" == "optimized" ]]; then
-                    printf 'aws-cdn\n'
-                else
-                    printf 'xhttp\n'
-                fi
+                case "$(state_value "${EASY_ALL_STATE_FILE}" AWS_CDN_ENDPOINT_MODE || true)" in
+                domain) printf 'xhttp\n' ;;
+                optimized) printf 'aws-cdn\n' ;;
+                *) launcher_die "AWS CDN 状态不完整；请重新安装" ;;
+                esac
                 ;;
             *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;
             esac
@@ -303,11 +315,6 @@ dispatch_profile_command() {
         fi
         ;;
     update-core) update_current_core ;;
-    migrate-aws-cdn)
-        [[ "${mode}" == "xhttp" ]] \
-            || launcher_die "migrate-aws-cdn 仅适用于模式 3 AWS CDN XHTTP 域名入口"
-        migrate_to_optimized_aws_cdn
-        ;;
     refresh-cdn-ips)
         [[ "${mode}" == "cloudflare" || "${mode}" == "aws-cdn" || "${mode}" == "gcore" ]] \
             || launcher_die "refresh-cdn-ips 仅适用于模式 2/4/5 CDN 精选 IP"

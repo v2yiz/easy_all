@@ -156,17 +156,17 @@ assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 printf 'STATE_VERSION=5\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Reality state selects Reality profile" "reality" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=8\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\nCLOUDFLARE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\nCLOUDFLARE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare state selects the second mode" "cloudflare" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "legacy AWS domain state remains the third mode" "xhttp" "$(detect_installed_mode)"
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CDN_ENDPOINT_MODE=domain\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "AWS domain state selects the third mode" "xhttp" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CDN_ENDPOINT_MODE=optimized\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "legacy optimized AWS state remains the fifth mode" "aws-cdn" "$(detect_installed_mode)"
+assert_equal "optimized AWS state selects the fifth mode" "aws-cdn" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\nGCORE_CDN_RESOURCE_ID=1\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "legacy Gcore state remains the fourth mode" "gcore" "$(detect_installed_mode)"
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\nGCORE_CDN_ENDPOINT_MODE=optimized\nGCORE_CDN_RESOURCE_ID=1\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "Gcore state selects the fourth mode" "gcore" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \

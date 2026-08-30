@@ -182,8 +182,7 @@ load_state() {
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
     [[ "${CDN_PROVIDER:-}" == "aws" ]] \
         || die "状态不是 AWS CDN XHTTP；请重新安装"
-    AWS_CDN_ENDPOINT_MODE=${AWS_CDN_ENDPOINT_MODE:-domain}
-    validate_aws_cdn_endpoint_mode "${AWS_CDN_ENDPOINT_MODE}" \
+    validate_aws_cdn_endpoint_mode "${AWS_CDN_ENDPOINT_MODE:-}" \
         || die "状态文件中的 AWS CDN 接入模式无效：${AWS_CDN_ENDPOINT_MODE}"
     configure_cdn_client_ip_family
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
@@ -226,7 +225,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'CDN_PROVIDER=%q\n' "aws"
-        printf 'AWS_CDN_ENDPOINT_MODE=%q\n' "${AWS_CDN_ENDPOINT_MODE:-domain}"
+        printf 'AWS_CDN_ENDPOINT_MODE=%q\n' "${AWS_CDN_ENDPOINT_MODE}"
         printf 'AWS_CLOUDFRONT_BILLING_MODE=%q\n' "${AWS_CLOUDFRONT_BILLING_MODE}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
@@ -395,6 +394,17 @@ collect_aws_credentials() {
 
 clear_aws_credentials() {
     unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+}
+
+purge_aws_certificate_before_uninstall() {
+    [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
+    [[ -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]] \
+        || die "状态缺少 AWS ACM 证书 ARN，已停止卸载；本机证书仍保留"
+    collect_aws_credentials
+    aws acm delete-certificate --region "${AWS_CONTROL_REGION}" \
+        --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" \
+        || die "AWS ACM 证书仍在使用或删除失败，已停止卸载；本机证书仍保留"
+    clear_aws_credentials
 }
 
 confirm_aws_paid_account_upgrade() {
@@ -828,7 +838,7 @@ configure_cloudfront_distribution() {
             || die "读取 CloudFront 分配 ${id} 失败"
         comment=$(jq -r '.DistributionConfig.Comment' <<<"${existing}")
         [[ "${comment}" == "$(cloudfront_marker)" ]] \
-            || die "CloudFront 分配 ${id} 不是当前 easy_all XHTTP 管理，拒绝接管旧部署或其他分配"
+            || die "CloudFront 分配 ${id} 不是当前 easy_all XHTTP 管理，拒绝接管非受管或其他用途的分配"
         etag=$(jq -r '.ETag' <<<"${existing}")
         caller=$(jq -r '.DistributionConfig.CallerReference' <<<"${existing}")
         build_distribution_config "${config}" "${caller}"
@@ -842,7 +852,7 @@ configure_cloudfront_distribution() {
         if ! response=$(aws cloudfront create-distribution --distribution-config "file://${config}" \
             --output json 2>"${create_error}"); then
             if grep -Fq "CNAMEAlreadyExists" "${create_error}"; then
-                die "CDN 域名 ${VLESS_CDN_DOMAIN} 已绑定其他 CloudFront 分配；脚本不会接管旧部署，请先删除旧分配或解除该别名"
+                die "CDN 域名 ${VLESS_CDN_DOMAIN} 已绑定其他 CloudFront 分配；脚本不会接管该资源，请先删除该分配或解除别名"
             fi
             cat "${create_error}" >&2
             die "创建 CloudFront 分配失败"
@@ -1256,7 +1266,7 @@ show_status() {
     printf 'CloudFront 计费模式: %s\n' \
         "$([[ "${AWS_CLOUDFRONT_BILLING_MODE}" == "flat-free" ]] && printf 'Free 固定套餐' || printf '按量付费')"
     printf 'AWS CDN 客户端接入: %s\n' \
-        "$([[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] \
+        "$([[ "${AWS_CDN_ENDPOINT_MODE}" == "optimized" ]] \
             && printf 'Globalping 精选 IPv4' || printf 'CDN 域名')"
     printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\nRoute 53 订阅 Zone ID: %s\n' \
         "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}" \
@@ -1301,34 +1311,6 @@ refresh_aws_cdn_ips() {
     release_runtime_write_lock
     ((refresh_status == 0)) || return 1
     success "AWS CDN 精选 IP 与订阅已刷新"
-}
-
-migrate_to_optimized_aws_cdn() {
-    require_root
-    begin_quota_maintenance
-    collect_installed_state
-    [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "domain" ]] \
-        || die "当前已经是模式 5 AWS CDN 精选 IP"
-    collect_globalping_token
-    validate_globalping_access || die "Globalping Token 验证失败"
-    snapshot_subscription_update
-    if ! refresh_globalping_cache; then
-        warn "首次 Globalping 测量失败；将使用 CDN 域名回退节点，定时任务会继续重试"
-    fi
-    AWS_CDN_ENDPOINT_MODE="optimized"
-    configure_cdn_client_ip_family
-    if subscription_enabled; then
-        write_subscriptions
-        validate_subscription_runtime
-    fi
-    save_state
-    persist_globalping_token
-    register_easy_all_command
-    install_globalping_refresh_timer
-    end_quota_maintenance
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    show_subscription
-    success "已从模式 3 原地迁移到模式 5；AWS 云资源与 XHTTP 服务端参数保持不变"
 }
 
 update_subscription() {
@@ -1452,7 +1434,8 @@ rollback_fresh_install() {
 uninstall_all() {
     local mode=${1:-}
     require_root
-    [[ -z "${mode}" ]] || die "uninstall 不支持参数：${mode}"
+    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
+        || die "uninstall 不支持参数：${mode}"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all XHTTP 尚未安装"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" && ! -t 0 ]]; then
@@ -1461,10 +1444,14 @@ uninstall_all() {
     if [[ "${FORCE:-0}" != "1" ]]; then
         local answer
         read_bilingual \
-            '确认删除 easy_all XHTTP 本机服务、状态和证书？远端 AWS 资源会保留。[y/N]（直接回车取消）:' \
-            'Delete easy_all XHTTP local services, state and certificates? Remote AWS resources will be kept. [y/N] (press Enter to cancel):' answer
+            '确认删除 easy_all XHTTP 本机服务、状态和证书？默认保留远端 AWS 资源。[y/N]（直接回车取消）:' \
+            'Delete easy_all XHTTP local services, state and certificates? AWS resources are kept by default. [y/N] (press Enter to cancel):' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
+    UNINSTALL_PURGE_CLOUD=0
+    [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1
+    purge_aws_certificate_before_uninstall
+    remove_managed_acme_cron
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
@@ -1475,7 +1462,7 @@ uninstall_all() {
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
-    success "easy_all XHTTP 本机内容已卸载；CloudFront、ACM、Route 53 记录及可能存在的 WAF/固定套餐未删除"
+    success "easy_all XHTTP 本机内容已卸载；远端 AWS 资源按卸载选项处理"
 }
 
 install_all() {
@@ -1542,7 +1529,6 @@ usage() {
   apply            按当前状态应用本机运行时与订阅，不修改 AWS
   apply-cloud      应用本机并同步 Route 53、ACM 与 CloudFront
   update-sub       更新订阅选择、配额与本机运行时
-  migrate-aws-cdn  将模式 3 原地迁移为模式 5 AWS CDN 精选 IP
   refresh-cdn-ips  立即刷新 Globalping 精选 IPv4 与订阅
   show             显示 VLESS 链接与 Mihomo 节点
   subscription     显示节点与订阅状态
@@ -1552,7 +1538,7 @@ usage() {
   quota-status     显示用户配额与 CloudFront 全局费用保护状态
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
-  uninstall        删除本机内容，保留远端 AWS 资源
+  uninstall        删除本机内容；追加 --purge-cloud 可先处理 ACM 证书
 
 模式 3 发布单个 CDN 域名节点；模式 5 发布最多 10 个 Globalping 精选 IPv4。
 节点域名与源站 DNS 全部由 Route 53 管理；
@@ -1567,7 +1553,6 @@ main() {
     apply) apply_easy_all ;;
     apply-cloud) apply_cloud_resources ;;
     update-sub) update_subscription ;;
-    migrate-aws-cdn) migrate_to_optimized_aws_cdn ;;
     refresh-cdn-ips) refresh_aws_cdn_ips ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
@@ -1585,7 +1570,7 @@ main() {
     quota-set) shift; quota_set_user "$@" ;;
     quota-reset) shift; quota_reset_user "$@" ;;
     register-command) register_easy_all_command ;;
-    uninstall) uninstall_all ;;
+    uninstall) uninstall_all "${2:-}" ;;
     help | -h | --help) usage ;;
     *) usage; return 1 ;;
     esac

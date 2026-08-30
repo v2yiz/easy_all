@@ -350,7 +350,7 @@ test_script_surface_contract() {
         "用户显式输入的额外 TCP 端口" "${readme}"
     assert_contains "README documents Fail2ban SSH protection" \
         '启用 Fail2ban 的 `sshd` jail' "${readme}"
-    assert_contains "README documents that SSH 65533 avoids the Worker range" \
+    assert_contains "README documents that SSH 65533 avoids the dynamic entry range" \
         '新增 SSH 端口 `65533` 位于该范围之外' "${readme}"
 }
 

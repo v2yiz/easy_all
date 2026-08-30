@@ -24,10 +24,10 @@ validate_aws_cdn_endpoint_mode() {
 }
 
 cdn_optimization_enabled() {
-    case "${CDN_PROVIDER:-aws}" in
-    aws) [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] ;;
-    cloudflare) [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] ;;
-    gcore) [[ "${GCORE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] ;;
+    case "${CDN_PROVIDER:-}" in
+    aws) [[ "${AWS_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
+    cloudflare) [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
+    gcore) [[ "${GCORE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
     *) return 1 ;;
     esac
 }
@@ -302,8 +302,8 @@ globalping_cache_valid() {
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
         --arg provider "${CDN_PROVIDER:-aws}" \
         --argjson limit "${GLOBALPING_CANDIDATE_LIMIT}" '
-          (.version == 2 or (.version == 1 and $provider == "aws"))
-          and (.provider // "aws") == $provider
+          .version == 2
+          and .provider == $provider
           and .domain == $domain
           and (.measured_at_epoch | type) == "number"
           and (.candidates | type) == "array"

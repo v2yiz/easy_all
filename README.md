@@ -204,18 +204,25 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 Cloudflare、AWS 或 Gcore。 |
 | `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并同步当前 Provider 的云资源：Cloudflare 同步 proxied DNS/规则/边缘设置，AWS 同步 Route 53/ACM/CloudFront，Gcore 同步 Managed DNS/CDN/边缘证书。 |
 | `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改云资源，新增、更换或停用独立域名时同步当前 Provider 的 CDN、证书和托管 DNS。 |
-| `migrate-aws-cdn` | 仅模式 3 可用；保留现有 AWS 与本机服务端资源，原地迁移为模式 5 Globalping 精选 IPv4。 |
 | `refresh-cdn-ips` | 模式 2/4/5 可用；立即运行一次 Globalping 测量，更新当前 Provider 的本地缓存并原子重建订阅。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
 | `quota-status` | 显示每用户月度配额；AWS 按量付费和 Gcore Free CDN 同时显示独立的 CDN 全局费用保护用量。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
-| `uninstall` | 卸载当前模式的本机资源。CDN XHTTP 保留远端 AWS 或 Gcore 资源，需在对应 Console 中自行确认是否清理。 |
+| `uninstall` | 仅卸载当前模式的本机资源，保留远端资源。使用 `easy_all uninstall --purge-cloud` 时，会先处理远端证书，再清理本机。 |
 | `help` | 显示命令帮助。 |
 
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
 云资源时才使用 `easy_all apply-cloud`。
+
+卸载与证书处理：默认 `easy_all uninstall` 只清理本机。若确认要先处理远端证书，再清理本机，
+执行 `easy_all uninstall --purge-cloud`；脚本会在 Reality 上吊销 Let’s Encrypt 证书，并重新询问
+对应的 Cloudflare、AWS 或 Gcore 凭证。
+远端操作失败时会立即停止，本机状态和证书不会删除。AWS ACM 没有此处意义上的吊销操作，脚本
+尝试删除证书；若证书仍被 CloudFront 使用，AWS 会拒绝删除，需先在控制台解除关联。Cloudflare
+Origin CA 可直接吊销。固定套餐、DNS、CDN
+和其他共享资源不会被该选项自动删除。
 
 ### `apply` 的具体操作
 
@@ -233,7 +240,7 @@ BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚�
 自动删除，避免破坏当前启动项。
 
 配置更新、核心更新和用户配额统计共用一把运行时写锁。同一时间只能执行一个写操作；检测到另一个
-任务正在运行时会立即停止并提示稍后重试，避免旧状态覆盖新配置。
+任务正在运行时会立即停止并提示稍后重试，避免并发写入覆盖最新配置。
 
 ### `apply-cloud` 的具体操作
 
@@ -533,22 +540,13 @@ https://sub.example.com:8443/subscribe?token=owner-token
 https://sub.example.com:8443/subscribe?token=owner-token&flag=clash
 ```
 
-### Reality 重装与证书幂等
+### Reality 维护与证书
 
 `easy_all apply` 是 Reality 的幂等应用入口：它保留 UUID、Reality 密钥、订阅域名、Token
-和 acme.sh 证书状态；证书尚未到续期时间时 acme.sh 不会重复签发。不要通过反复卸载、安装
-代替更新。
+和 acme.sh 证书状态；证书尚未到续期时间时 acme.sh 不会重复签发。
 
-Reality 的 `uninstall` 默认彻底删除本机状态和专用 acme.sh 目录。若准备使用同一个订阅域名
-重装，可显式保留 ACME 账户、订单和证书：
-
-```bash
-sudo env PRESERVE_ACME=1 easy_all uninstall
-```
-
-随后使用相同订阅域名安装，acme.sh 会复用尚有效的证书，避免再次占用 Let’s Encrypt
-签发次数。该开关只保留 `/root/.acme-easy_all.sh`；Reality UUID、密钥和订阅 Token 仍会在
-重装时重新生成。无需重装时应继续使用 `easy_all apply`。
+Reality 的 `uninstall` 会删除本机状态和专用 acme.sh 目录；下一次安装是新的部署，并生成新的
+节点凭据和证书状态。
 
 证书申请失败时脚本会保留并显示 acme.sh/Let’s Encrypt 原始输出。检测到 HTTP 429、
 `rateLimited`、`too many certificates` 或 `retry after` 时，会提示按 CA 给出的时间等待。
@@ -579,7 +577,7 @@ XHTTP 使用 `stream-up + HTTP/2 + XMUX`。当前链路为：
 服务端链路，但输出最多 10 个精选 IPv4 节点，不混入其他协议。
 XMUX 固定使用 `maxConnections: 2`、`cMaxReuseTimes: 0`、
 `hMaxRequestTimes: "300-600"`、`hMaxReusableSecs: "900-1800"` 和
-`hKeepAlivePeriod: 0`；不再输出已不兼容的 `maxConcurrency`。
+`hKeepAlivePeriod: 0`。
 
 为避免长时间流式输出在中途被截断，Nginx 会在受 Origin Key 保护的 XHTTP 回源位置补充一个
 合法的服务端 padding 标记，确保 Xray 实际启动 `scStreamUpServerSecs`，并每 `20-40` 秒发送
@@ -615,8 +613,7 @@ CDN XHTTP 交互选项：
 
 XHTTP 节点名默认 `VLESS_XHTTP_H2`，本机端口默认 `10086`，UUID、XHTTP 路径和 Origin Key
 自动生成，不需要用户输入。模式 3 的 Mihomo/Clash XHTTP 节点固定输出
-`ip-version: ipv6-prefer`；模式 2/4/5 的精选地址固定输出 `ip-version: ipv4`。旧 AWS 域名模式状态中的
-`ipv4`、`dual`、`ipv6` 或 `auto` 会在加载时迁移到 `ipv6-prefer`。Mihomo 模板同时固定
+`ip-version: ipv6-prefer`；模式 2/4/5 的精选地址固定输出 `ip-version: ipv4`。Mihomo 模板同时固定
 `unified-delay: false`，避免 XHTTP 上下行分离被统一延迟探测误判。模板总开关和业务 DNS 仍使用
 `ipv6: true`。CloudFront 分配继续开启 IPv6 并创建 Alias A/AAAA，Gcore CNAME 目标也可发布
 A/AAAA；这与 VPS 是否具有 IPv6 无关。两种 Provider 的源站回源仍使用独立 IPv4 A 记录；
@@ -645,6 +642,7 @@ Gcore CDN 自定义域名。VPS 每小时通过 Globalping 中国大陆探针执
 ```text
 /etc/easy_all/aws-cdn-ips.json
 /etc/easy_all/gcore-cdn-ips.json
+/etc/easy_all/cloudflare-cdn-ips.json
 ```
 
 刷新失败时继续使用上一版有效缓存；缓存超过 72 小时则生成原 CDN 域名回退节点。Mihomo
@@ -652,12 +650,6 @@ Gcore CDN 自定义域名。VPS 每小时通过 Globalping 中国大陆探针执
 切换，且只影响后续新连接；Base64
 订阅只包含多个候选 URI，不提供策略组语义。客户端请求仍由 Nginx 读取静态订阅文件，不会
 等待 Globalping。
-
-已经安装模式 3 时可以原地迁移，不调用 AWS API，也不修改云端资源：
-
-```bash
-sudo easy_all migrate-aws-cdn
-```
 
 手动刷新：
 
@@ -730,11 +722,11 @@ DNSSEC KMS、Health Check、Query Logs 等费用；最终金额还取决于实�
 但未到达 Xray 的请求、TLS/HTTP 开销或请求次数。因此它是带 20 GB 缓冲的费用安全阀，不是 AWS
 侧硬额度；`1000 万次请求`仍不能通过 Xray 字节统计提前精确阻断。
 
-### CDN 安装重试与 AWS 幂等
+### AWS 受管资源边界
 
-安装中断后重新执行时，脚本会收敛到本次安装已经创建的受管 AWS 资源：
+安装和 `apply-cloud` 只管理带有 easy_all 稳定标记的 AWS 资源：
 
-| AWS 资源 | 重试行为 |
+| AWS 资源 | 管理行为 |
 | --- | --- |
 | Route 53 源站 A | 已准确指向当前 VPS 时直接复用；不存在时创建。指向其他地址或存在 AAAA/CNAME 时默认停止，确认后设置 `AWS_ORIGIN_DNS_REPLACE=1`。 |
 | ACM 证书 | 复用覆盖 CDN 域名的已签发或待验证证书，优先已签发证书；支持复用单级通配符证书。找不到时才申请新证书。 |
@@ -743,8 +735,8 @@ DNSSEC KMS、Health Check、Query Logs 等费用；最终金额还取决于实�
 | CloudFront 计费 | Free 固定套餐按分配 ARN 复用 `FREE` 套餐，并确保 CDN Hosted Zone 已加入；按量付费会确认分配没有关联固定套餐。检测到与已选模式冲突时停止，不自动切换计费。 |
 | Route 53 CDN Alias | 已指向当前分配的 A 直接复用；遗留的同目标 AAAA 会自动删除。任何其他同名记录都默认停止，确认覆盖时设置 `AWS_DNS_REPLACE=1`。 |
 
-脚本只复用带有当前稳定管理标记的 CloudFront 分配，不会自动接管无标记的旧部署或其他分配。
-若 CDN 域名仍被旧 CloudFront 分配占用，安装会停止，需先删除旧分配或解除别名。若同一 CDN
+脚本只复用带有当前稳定管理标记的 CloudFront 分配，不会自动接管无标记或其他用途的分配。
+若 CDN 域名已被其他 CloudFront 分配占用，安装会停止，需先删除该分配或解除别名。若同一 CDN
 域名异常存在多个带相同管理标记的分配，脚本也会停止并要求先消除歧义。
 
 CloudFront + Nginx 订阅接口同时校验：
@@ -779,9 +771,8 @@ Managed DNS、源组、CDN 资源和边缘 Let's Encrypt，不读取 AWS 凭证�
 账号、委派与最小权限准备见 [Gcore 一次性准备指南](docs/gcore-guide.md)。
 
 模式 4 默认使用 Globalping 中国大陆探针预筛 Gcore 边缘 IPv4，并由 VPS 以 CDN 域名作为
-SNI/Host 逐个访问健康检查；Mihomo 再从客户端网络自动测速选优。旧版模式 4 在执行
-`easy_all self-update` 后，下一次 `sudo easy_all apply` 会提示输入 Globalping Token 并原地升级，
-不修改现有 Gcore 云资源。测量失败或缓存超过 72 小时时自动回退到原 CDN 域名。
+SNI/Host 逐个访问健康检查；Mihomo 再从客户端网络自动测速选优。测量失败或缓存超过 72 小时时
+自动回退到原 CDN 域名。
 
 链路为：
 
@@ -832,7 +823,7 @@ Gcore CDN 为自定义域名分配 `*.gcdn.co` 目标并要求 CNAME 的行为�
 /etc/systemd/system/easy_all-globalping-refresh.timer
 ```
 
-状态字段包括：
+状态文件由安装器自动维护；仅接受当前新装生成的格式：
 
 ```text
 STATE_VERSION=5  # Reality

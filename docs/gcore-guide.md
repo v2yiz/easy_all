@@ -57,7 +57,7 @@ Gcore Managed DNS 的方式；源站域名和 CDN 域名必须命中同一个 Gc
 > `node.example.com` 都归属同一个 Gcore Zone，再创建或更新 `origin.example.com` 指向 VPS 公网
 > IPv4 的 A 记录，并把 `node.example.com` 写为 Gcore CDN 分配目标的 CNAME；无需手动创建这些
 > 节点记录。若选择独立订阅域名，安装器会把它加入同一 CDN 资源并处理对应 CNAME：已有且正确则
-> 直接复用，完全缺失才新增，已有其他解析时停止。它不会创建 Zone、修改注册商 NS、迁移业务记录
+> 直接复用，完全缺失才新增，已有其他解析时停止。它不会创建 Zone、修改注册商 NS 或业务记录
 > 或静默覆盖冲突记录。
 
 节点域名必须是子域名，不能使用根域 `example.com`：Gcore CDN 为自定义域名分配 `*.gcdn.co`

@@ -131,12 +131,8 @@ validate_cdn_client_ip_family() {
 
 configure_cdn_client_ip_family() {
     local expected=${DEFAULT_CDN_CLIENT_IP_FAMILY}
-    if declare -F cdn_optimization_enabled >/dev/null 2>&1; then
-        if cdn_optimization_enabled; then
-            expected="ipv4"
-        fi
-    elif [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" \
-        || "${GCORE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]]; then
+    if declare -F cdn_optimization_enabled >/dev/null 2>&1 \
+        && cdn_optimization_enabled; then
         expected="ipv4"
     fi
     CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-${expected}}
@@ -145,21 +141,14 @@ configure_cdn_client_ip_family() {
         CDN_CLIENT_IP_FAMILY_RESOLVED=${CDN_CLIENT_IP_FAMILY}
         return 0
     fi
-    case "${CDN_CLIENT_IP_FAMILY}" in
-    auto | ipv4 | ipv6 | dual)
-        CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
-        ;;
-    esac
     validate_cdn_client_ip_family "${CDN_CLIENT_IP_FAMILY}" \
         || die "CDN_CLIENT_IP_FAMILY 必须是 ipv6-prefer 或 ipv4"
     CDN_CLIENT_IP_FAMILY_RESOLVED=${CDN_CLIENT_IP_FAMILY}
 }
 
 choose_cdn_client_ip_family() {
-    if { declare -F cdn_optimization_enabled >/dev/null 2>&1 \
-        && cdn_optimization_enabled; } \
-        || [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" \
-            || "${GCORE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]]; then
+    if declare -F cdn_optimization_enabled >/dev/null 2>&1 \
+        && cdn_optimization_enabled; then
         CDN_CLIENT_IP_FAMILY="ipv4"
     else
         CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
@@ -956,6 +945,24 @@ remove_managed_acme_domain() {
     [[ -n "${1:-}" && -x "${ACME_BIN}" ]] || return 0
     run_acme --remove -d "$1" --ecc >/dev/null 2>&1 || true
     rm -rf -- "${ACME_HOME:?}/$1" "${ACME_HOME:?}/${1}_ecc"
+}
+
+remove_managed_acme_cron() {
+    command -v crontab >/dev/null 2>&1 || return 0
+    local current filtered
+    current=$(crontab -l 2>/dev/null || true)
+    [[ -n "${current}" ]] || return 0
+    filtered=$(awk -v acme_bin="${ACME_BIN}" '
+        { normalized=$0; gsub(/"/, "", normalized) }
+        index(normalized, acme_bin) && normalized ~ /(^|[[:space:]])--cron([[:space:]]|$)/ { next }
+        { print }
+    ' <<<"${current}")
+    [[ "${filtered}" == "${current}" ]] && return 0
+    if [[ -n "${filtered}" ]]; then
+        printf '%s\n' "${filtered}" | crontab -
+    else
+        crontab -r
+    fi
 }
 
 stop_services() {

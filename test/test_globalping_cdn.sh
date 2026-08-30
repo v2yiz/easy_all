@@ -25,6 +25,7 @@ GLOBALPING_REFRESH_SERVICE_FILE_OVERRIDE="${TMP_DIR}/easy_all-globalping-refresh
 GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE="${TMP_DIR}/easy_all-globalping-refresh.timer"
 COMMAND_PATH="/usr/local/bin/easy_all"
 VLESS_CDN_DOMAIN="node.example.com"
+CDN_PROVIDER="aws"
 AWS_CDN_ENDPOINT_MODE="optimized"
 GLOBALPING_NOW_EPOCH=2000000000
 cleanup_files=()
