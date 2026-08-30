@@ -102,6 +102,16 @@ assert_contains "Cloudflare guide token grants Zone Settings edit" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Zone Settings / Edit`'
 assert_contains "Cloudflare guide token grants SSL and Certificates edit" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / SSL and Certificates / Edit`'
+assert_contains "Cloudflare guide embeds the API token walkthrough" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'cloudflare/cloudflare-api-token-easy-all.svg'
+[[ -s "${ROOT_DIR}/docs/cloudflare/cloudflare-api-token-easy-all.svg" ]] \
+    || fail "Cloudflare API token walkthrough asset is missing"
+assert_contains "Cloudflare guide distinguishes API Token from IDs" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '它不是 **Account ID**、**Zone ID**'
+assert_contains "Cloudflare guide documents Free plan boundary" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare 费用与 Free 计划边界'
+assert_contains "Cloudflare guide documents no automatic paid product" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '不会开通付款方式、升级套餐或创建按量计费产品'
 assert_contains "Cloudflare guide documents Globalping fallback" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '缓存超过 72 小时'
 assert_contains "Cloudflare guide documents the 100 MB request boundary" \
