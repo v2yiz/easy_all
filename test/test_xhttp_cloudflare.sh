@@ -222,8 +222,20 @@ EOF
 
     validation_calls="${TMP_DIR}/cloudflare-validation-calls"
     curl() {
+        local output_file=""
         printf '%s\n' "$*" >>"${validation_calls}"
-        printf 'easy_all ok\n2'
+        while (($# > 0)); do
+            if [[ "$1" == "-o" ]]; then
+                output_file=$2
+                shift 2
+            else
+                shift
+            fi
+        done
+        [[ -n "${output_file}" ]] \
+            || fail "Cloudflare validation must separate body from metadata"
+        printf 'easy_all ok\n' >"${output_file}"
+        printf '2'
     }
     cloudflare_validate_pool_candidate '104.16.0.10' \
         || fail "Cloudflare candidate health validation should pass"
@@ -233,6 +245,44 @@ EOF
         "$(<"${validation_calls}")" \
         '--resolve node.example.com:443:104.16.0.10'
     unset -f curl
+
+    if (
+        curl() {
+            local output_file=""
+            while (($# > 0)); do
+                if [[ "$1" == "-o" ]]; then
+                    output_file=$2
+                    shift 2
+                else
+                    shift
+                fi
+            done
+            : >"${output_file}"
+            printf '403\ttext/html'
+        }
+        cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
+    ); then
+        fail "Cloudflare gRPC validation must reject a disabled zone"
+    fi
+    (
+        curl() {
+            local output_file=""
+            while (($# > 0)); do
+                if [[ "$1" == "-o" ]]; then
+                    output_file=$2
+                    shift 2
+                else
+                    shift
+                fi
+            done
+            : >"${output_file}"
+            printf '200\ttext/plain'
+        }
+        cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
+    ) || fail "Cloudflare gRPC validation must accept an enabled zone"
+    assert_contains "Cloudflare refresh validates gRPC before candidate discovery" \
+        "${profile_content}" \
+        'cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"'
 
     GLOBALPING_NOW_EPOCH=2000000000
     CDN_PROVIDER="cloudflare"

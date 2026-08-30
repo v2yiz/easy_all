@@ -88,6 +88,10 @@ assert_contains "Cloudflare guide documents automatic origin HTTP/2" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '开启 origin HTTP/2'
 assert_contains "Cloudflare guide documents the manual gRPC toggle" \
     "${CLOUDFLARE_GUIDE_CONTENT}" 'Network → gRPC'
+assert_contains "Cloudflare guide makes the gRPC toggle a prerequisite" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '必需条件'
+assert_contains "Cloudflare guide documents automatic gRPC verification" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '会主动发送 gRPC 形态的边缘请求检查该开关'
 assert_contains "Cloudflare guide documents automatic Transform Rule" \
     "${CLOUDFLARE_GUIDE_CONTENT}" 'Transform Rule'
 assert_contains "Cloudflare guide documents origin firewall boundary" \

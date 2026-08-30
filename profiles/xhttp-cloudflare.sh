@@ -498,7 +498,34 @@ cloudflare_configure_cdn() {
 
 cloudflare_validate_cdn_health() {
     cloudflare_wait_for_health "${VLESS_CDN_DOMAIN}" "CDN"
+    cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
     if subscription_enabled && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then cloudflare_wait_for_health "$(active_subscription_link_domain)" "订阅"; fi
+}
+
+cloudflare_validate_grpc_edge() {
+    local domain=$1 body_file metadata curl_status http_code content_type
+    body_file=$(mktemp "${RUNTIME_TMP}/cloudflare-grpc-check.XXXXXX")
+    if metadata=$(curl -sS --http2 --proto '=https' --tlsv1.2 \
+        --connect-timeout 5 --max-time 15 --noproxy '*' \
+        -X POST -H 'Content-Type: application/grpc' -H 'TE: trailers' \
+        --data-binary '' -o "${body_file}" \
+        -w $'%{http_code}\t%{content_type}' \
+        "https://${domain}/easy_all-health" 2>/dev/null); then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    rm -f -- "${body_file}"
+    IFS=$'\t' read -r http_code content_type <<<"${metadata}"
+
+    ((curl_status == 0)) \
+        || die "Cloudflare gRPC 边缘验收失败：无法连接 ${domain}"
+    if [[ "${http_code}" == "403" && "${content_type}" == text/html* ]]; then
+        die "Cloudflare Zone 尚未开启 gRPC；请在控制台 Network → gRPC 开启后重试"
+    fi
+    [[ "${http_code}" == "200" ]] \
+        || die "Cloudflare gRPC 边缘验收失败：HTTP ${http_code:-未知}"
+    success "Cloudflare gRPC 边缘验收通过"
 }
 
 cloudflare_wait_for_health() {
@@ -580,6 +607,7 @@ refresh_cloudflare_cdn_ips() {
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
     persist_globalping_token
+    cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
     if ! refresh_globalping_cache; then
         refresh_status=1
         warn "Globalping 刷新失败，保留有效缓存或回退域名"

@@ -214,17 +214,24 @@ cloudflare_select_carrier_candidates() {
 }
 
 cloudflare_validate_pool_candidate() {
-    local ip=$1 response body http_version
+    local ip=$1 body body_file http_version curl_status
     validate_public_ipv4 "${ip}" || return 1
-    response=$(curl -fsS --http2 --proto '=https' --tlsv1.2 \
+    body_file=$(mktemp "${RUNTIME_TMP}/cloudflare-health-body.XXXXXX")
+    if http_version=$(curl -fsS --http2 --proto '=https' --tlsv1.2 \
         --connect-timeout 4 --max-time 10 --noproxy '*' \
         --resolve "${VLESS_CDN_DOMAIN}:443:${ip}" \
-        -w $'\n%{http_version}' \
-        "https://${VLESS_CDN_DOMAIN}/easy_all-health" 2>/dev/null) \
-        || return 1
-    body=${response%$'\n'*}
-    http_version=${response##*$'\n'}
-    [[ "${body}" == "easy_all ok" && "${http_version}" == "2" ]]
+        -o "${body_file}" \
+        -w '%{http_version}' \
+        "https://${VLESS_CDN_DOMAIN}/easy_all-health" 2>/dev/null); then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    body=$(<"${body_file}")
+    rm -f -- "${body_file}"
+
+    ((curl_status == 0)) \
+        && [[ "${body}" == "easy_all ok" && "${http_version}" == "2" ]]
 }
 
 cloudflare_prevalidate_candidate_pool() {

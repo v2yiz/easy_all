@@ -9,7 +9,13 @@ DNS、证书、TLS、origin HTTP/2、回源密钥规则、防火墙白名单和 
 
 1. 在 Cloudflare 添加根域名，例如 `example.com`，并等待 Zone 状态为 **Active**。
 2. 在该 Zone 下准备客户端连接的 CDN 节点域名，例如 `node.example.com`。不要预先创建这个名称的 DNS 记录。
-3. 如果部署独立订阅域名，它也必须是同一 Zone 下的一级子域名。
+3. 进入目标 Zone 的 **Network → gRPC**，将 **gRPC** 手动切换为 **On**。这是 XHTTP
+   `stream-up` 的必需条件，Cloudflare 当前没有可用于该开关的 Zone Settings API，安装器无法代办。
+4. 如果部署独立订阅域名，它也必须是同一 Zone 下的一级子域名。
+
+安装、`apply-cloud` 和 `refresh-cdn-ips` 会主动发送 gRPC 形态的边缘请求检查该开关。若收到
+`403 text/html`，命令会停止并明确提示开启 gRPC。普通 `/easy_all-health` 返回 HTTP 200
+不能证明 gRPC 已开启；若订阅可以下载、所有 XHTTP 节点却同时超时，应首先复查此开关。
 
 ## 只创建一个 API Token
 
@@ -40,7 +46,7 @@ Include → Specific zone → example.com
 - 创建唯一的 proxied `A` 记录，指向 VPS 公网 IPv4。
 - 签发 15 年 Origin CA 证书并配置 Full (strict)。
 - 开启 origin HTTP/2，并写入 XHTTP 回源密钥规则。
-- 提示在 Cloudflare 控制台 **Network → gRPC** 手动开启 gRPC（当前没有可用的 Zone Settings API）。
+- 验收 Cloudflare gRPC 边缘请求；开关未开启时立即停止并提示前往控制台处理。
 - 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
 - 每小时读取 Cloudflare 官方 IPv4 CIDR，拆分为 `/24` 后轮换抽样 120 个地址。
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
