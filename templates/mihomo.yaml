@@ -88,6 +88,9 @@ rule-providers:
     applications: { type: http, behavior: classical, url: 'https://edgeone.gh-proxy.org/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/applications.txt', path: ./ruleset/applications.yaml, interval: 86400 }
 
 rules:
+  # XHTTP 外层固定使用 HTTP/2/TCP；拒绝 UDP/443，使 QUIC 业务快速回退到 TCP，
+  # 避免 QUIC/XUDP 套在可靠有序传输上时放大丢包与队头阻塞。
+  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - DOMAIN,love.xflash.work,DIRECT
   - DOMAIN-SUFFIX,futooncdn.com,DIRECT
   - PROCESS-NAME,v2ray,DIRECT
@@ -248,5 +251,4 @@ rules:
   - GEOIP,CN,DIRECT
   - GEOSITE,CN,DIRECT
   - GEOSITE,private,DIRECT
-  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - MATCH,PROXY

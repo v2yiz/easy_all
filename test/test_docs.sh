@@ -175,7 +175,7 @@ assert_contains "README documents dual-stack egress with fixed Gemini IPv4" "${R
 assert_contains "README documents bilingual interactive prompts" "${README_CONTENT}" \
     '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
 assert_contains "README documents the unified CDN XMUX configuration" "${README_CONTENT}" \
-    '`maxConnections: 2`'
+    '`maxConnections: 4`'
 assert_contains "README documents client connection racing" "${README_CONTENT}" \
     '内置 Mihomo 模板启用 `tcp-concurrent`'
 assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \

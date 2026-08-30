@@ -186,7 +186,7 @@ assert_contains "AWS purge option deletes ACM before local cleanup" "${XHTTP_CON
     assert_equal "server keepalive marker length" "100" \
         "${XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH}"
     assert_equal "Nginx XHTTP stream timeout" "1h" "${XHTTP_NGINX_STREAM_TIMEOUT}"
-    assert_equal "XMUX maximum connections" "2" "${XHTTP_XMUX_MAX_CONNECTIONS}"
+    assert_equal "XMUX maximum connections" "4" "${XHTTP_XMUX_MAX_CONNECTIONS}"
     assert_equal "XMUX connection reuse times" "0" "${XHTTP_XMUX_C_MAX_REUSE_TIMES}"
     assert_equal "XMUX request reuse range" "300-600" "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}"
     assert_equal "XMUX connection lifetime range" "900-1800" \
@@ -652,7 +652,7 @@ EOF
         (has("xPaddingObfsMode") | not) and
         .uplinkHTTPMethod == "POST" and
         .xmux == {
-            maxConnections: 2,
+            maxConnections: 4,
             cMaxReuseTimes: 0,
             hMaxRequestTimes: "300-600",
             hMaxReusableSecs: "900-1800",
@@ -673,7 +673,7 @@ EOF
     assert_contains "Mihomo XHTTP uses IPv4 for selected AWS endpoints" \
         "${mihomo}" "ip-version: ipv4"
     assert_contains "Mihomo XMUX limits connections" \
-        "${mihomo}" 'max-connections: "2"'
+        "${mihomo}" 'max-connections: "4"'
     assert_contains "Mihomo XMUX rotates request counts" \
         "${mihomo}" 'h-max-request-times: "300-600"'
     assert_contains "Mihomo XMUX rotates connection lifetime" \

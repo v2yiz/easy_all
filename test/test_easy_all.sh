@@ -355,7 +355,7 @@ test_subscription_stage_dispatch() {
 }
 
 test_mihomo_template() {
-    local invalid="${TMP_DIR}/invalid.yaml" rule_count
+    local invalid="${TMP_DIR}/invalid.yaml" rule_count first_rule
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
@@ -377,6 +377,10 @@ test_mihomo_template() {
         | grep -Ec '^  - ')
     assert_equal "Mihomo template contains only the current XFLASH rules" \
         "162" "${rule_count}"
+    first_rule=$(awk '/^rules:$/ { found=1; next } found && $0 !~ /^  #/ { print; exit }' \
+        "${ROOT_DIR}/templates/mihomo.yaml")
+    assert_equal "Mihomo globally rejects UDP 443 before domain rules" \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' "${first_rule}"
     assert_contains "Mihomo template uses the XFLASH rule-provider mirror" \
         "edgeone.gh-proxy.org" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \

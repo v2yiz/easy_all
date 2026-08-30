@@ -149,9 +149,9 @@ Include → Specific zone → example.com
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
   CDN 入口的地址；再按 Globalping 当前剩余免费额度限制本轮测量规模，避免耗尽额度。
 - 使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
-  `eyeball-network` 探针执行 TCP/443 零丢包预筛；每个运营商先按 RTT 取前 10，再合并去重并
+  `eyeball-network` 探针分别发送 10 包 TCP/443，执行零丢包预筛；每个运营商先按 RTT 取前 10，再合并去重并
   按三网覆盖数、平均 RTT 排序。
-- 最终最多发布 18 个 IP 节点。
+- 最终最多发布 12 个 IP 节点。
 - 订阅始终额外保留一个原始域名兜底节点。客户端 Mihomo 每 600 秒测速，候选快至少
   50 ms 才切换；所有节点的 SNI 和 XHTTP Host 始终使用节点域名。
 - 测量失败继续使用上次有效缓存；缓存超过 72 小时则回退到节点域名。

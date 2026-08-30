@@ -115,7 +115,7 @@ assert_not_contains "Cloudflare API token is never persisted in state" \
       and .target == "104.16.0.10"
       and .timeout == 15
       and .measurementOptions == {
-        packets:5, protocol:"TCP", port:443
+        packets:10, protocol:"TCP", port:443
       }
       and .locations == [
         {country:"CN",asn:4134,tags:["eyeball-network"],limit:1},
@@ -127,8 +127,8 @@ assert_not_contains "Cloudflare API token is never persisted in state" \
 
     measurements_file="${TMP_DIR}/cloudflare-measurements.ndjson"
     cat >"${measurements_file}" <<'EOF'
-{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"city":"Shanghai","network":"Telecom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":20}}},{"probe":{"country":"CN","asn":4837,"city":"Beijing","network":"Unicom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":40}}}]}}
-{"ip":"172.64.0.20","source_cidr":"172.64.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"city":"Guangzhou","network":"Mobile","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":30}}},{"probe":{"country":"CN","asn":4134,"city":"Hangzhou","network":"Telecom","tags":["datacenter-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":1}}}]}}
+{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"city":"Shanghai","network":"Telecom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":20}}},{"probe":{"country":"CN","asn":4837,"city":"Beijing","network":"Unicom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":40}}}]}}
+{"ip":"172.64.0.20","source_cidr":"172.64.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"city":"Guangzhou","network":"Mobile","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":30}}},{"probe":{"country":"CN","asn":4134,"city":"Hangzhou","network":"Telecom","tags":["datacenter-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":1}}}]}}
 EOF
     observations_file="${TMP_DIR}/cloudflare-observations.ndjson"
     cloudflare_zero_loss_observations \
@@ -181,9 +181,9 @@ EOF
         done
     done
     disjoint_ranked=$(cloudflare_select_carrier_candidates \
-        "${disjoint_observations}" 10 18)
-    assert_equal "Cloudflare caps the deduplicated carrier union at eighteen" \
-        "18" "$(jq 'length' <<<"${disjoint_ranked}")"
+        "${disjoint_observations}" 10 12)
+    assert_equal "Cloudflare caps the deduplicated carrier union at twelve" \
+        "12" "$(jq 'length' <<<"${disjoint_ranked}")"
 
     raw_pool_file="${TMP_DIR}/cloudflare-raw-pool.tsv"
     prevalidated_pool_file="${TMP_DIR}/cloudflare-prevalidated-pool.tsv"
@@ -233,15 +233,15 @@ EOF
               measurement:{results:[
                 {
                   probe:{country:"CN",asn:4134,city:"Shanghai",network:"Telecom",tags:["eyeball-network"]},
-                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:5,rcv:5,drop:0,avg:20}}
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:10,rcv:10,drop:0,avg:20}}
                 },
                 {
                   probe:{country:"CN",asn:4837,city:"Beijing",network:"Unicom",tags:["eyeball-network"]},
-                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:5,rcv:5,drop:0,avg:30}}
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:10,rcv:10,drop:0,avg:30}}
                 },
                 {
                   probe:{country:"CN",asn:9808,city:"Guangzhou",network:"Mobile",tags:["eyeball-network"]},
-                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:5,rcv:5,drop:0,avg:40}}
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:10,rcv:10,drop:0,avg:40}}
                 }
               ]}
             }' >"${destination}"
@@ -370,7 +370,7 @@ EOF
     assert_equal "Cloudflare takes ten final candidates per carrier" \
         "10" "${CLOUDFLARE_CANDIDATES_PER_CARRIER}"
     assert_equal "Cloudflare publishes at most eighteen optimized IPs" \
-        "18" "${CLOUDFLARE_CANDIDATE_LIMIT}"
+        "12" "${CLOUDFLARE_CANDIDATE_LIMIT}"
 
     # Mock the provider API: a missing DNS record must produce an orange-cloud
     # A record, never an unproxied origin record.

@@ -543,8 +543,8 @@ VPS 防火墙只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列�
 `node.example.com` 作为 SNI/Host，并发验证 HTTPS、HTTP/2 与 `/easy_all-health`，避免把官方
 地址范围中未提供 CDN 入口的地址提交测量。随后根据 Globalping 当前剩余免费额度自动限制候选数，
 再分别使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的
-`eyeball-network` 探针执行 TCP/443 零丢包预筛。每个运营商先按 RTT 取前 10，再合并去重并按
-三网覆盖数、平均 RTT 排序，最终最多发布 18 个 IP 节点，并始终额外发布原始域名兜底节点。
+`eyeball-network` 探针分别发送 10 包 TCP/443，执行零丢包预筛。每个运营商先按 RTT 取前 10，
+再合并去重并按三网覆盖数、平均 RTT 排序，最终最多发布 12 个 IP 节点，并始终额外发布原始域名兜底节点。
 所有节点的 `servername` 与
 `xhttp-opts.host` 仍必须是 `node.example.com`。
 
@@ -563,7 +563,7 @@ DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见
 XHTTP 使用 `stream-up + HTTP/2 + XMUX`。模式 3 使用 CloudFront 服务端链路，输出最多
 10 个 Globalping 精选 IPv4 节点，不混入其他协议。AWS CloudFront、Route 53、ACM 等服务可能
 产生费用；请在安装前阅读 [AWS 一次性准备指南](docs/aws-guide.md) 的费用边界。
-XMUX 固定使用 `maxConnections: 2`、`cMaxReuseTimes: 0`、
+XMUX 固定使用 `maxConnections: 4`、`cMaxReuseTimes: 0`、
 `hMaxRequestTimes: "300-600"`、`hMaxReusableSecs: "900-1800"` 和
 `hKeepAlivePeriod: 0`。
 
@@ -632,7 +632,7 @@ SNI 访问 `/easy_all-health` 复核。结果去重并按覆盖探针数、平�
 ```
 
 刷新失败时继续使用上一版有效缓存；缓存超过 72 小时则生成原 CDN 域名回退节点。模式 2
-即使缓存有效也保留域名兜底，并将 IP 候选限制为 18 个，因此 `url-test` 总计最多 19 个节点。
+即使缓存有效也保留域名兜底，并将 IP 候选限制为 12 个，因此 `url-test` 总计最多 13 个节点。
 模式 2 的 Mihomo 订阅每 600 秒、模式 3 每 300 秒从客户端实际网络测速；候选快至少 50 ms
 时才自动切换，且只影响后续新连接；Base64 订阅只包含多个候选 URI，不提供策略组语义。
 客户端请求仍由 Nginx 读取静态订阅文件，不会等待 Globalping。
