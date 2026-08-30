@@ -6,9 +6,10 @@
 readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-120}"
 readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-5}"
 readonly CLOUDFLARE_CANDIDATES_PER_CARRIER="${CLOUDFLARE_CANDIDATES_PER_CARRIER_OVERRIDE:-6}"
-readonly CLOUDFLARE_PREVALIDATION_PER_CARRIER="${CLOUDFLARE_PREVALIDATION_PER_CARRIER_OVERRIDE:-6}"
 readonly CLOUDFLARE_CANDIDATE_LIMIT=18
 readonly CLOUDFLARE_CACHE_VERSION=3
+readonly CLOUDFLARE_PROBES_PER_CANDIDATE=3
+readonly CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY=12
 
 cloudflare_ipv4_to_uint32() {
     local ip=$1 a b c d
@@ -226,28 +227,95 @@ cloudflare_validate_pool_candidate() {
     [[ "${body}" == "easy_all ok" && "${http_version}" == "2" ]]
 }
 
+cloudflare_prevalidate_candidate_pool() {
+    local source=$1 destination=$2 validation_dir part
+    local ip source_cidr index=0 count=0
+    validation_dir=$(make_temp_dir)
+    : >"${destination}"
+
+    while IFS=$'\t' read -r ip source_cidr; do
+        index=$((index + 1))
+        (
+            if cloudflare_validate_pool_candidate "${ip}"; then
+                printf '%s\t%s\n' "${ip}" "${source_cidr}" \
+                    >"${validation_dir}/$(printf '%06d' "${index}").tsv"
+            fi
+            true
+        ) &
+        if ((index % CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY == 0)); then
+            wait || true
+        fi
+    done <"${source}"
+    wait || true
+
+    for part in "${validation_dir}"/*.tsv; do
+        [[ -f "${part}" ]] || continue
+        cat "${part}" >>"${destination}"
+        count=$((count + 1))
+    done
+    ((count > 0)) || {
+        warn "Cloudflare 官方 IP 池没有通过 SNI、HTTP/2 与健康接口预检的候选"
+        return 1
+    }
+    info "Cloudflare 官方 IP 池本机预检通过 ${count} 个候选"
+}
+
+cloudflare_limit_pool_to_globalping_budget() {
+    local source=$1 destination=$2 limits remaining budget count
+    limits=$(globalping_api_request GET "/limits") || {
+        warn "无法读取 Globalping 剩余额度"
+        return 1
+    }
+    remaining=$(jq -er '
+        .rateLimit.measurements.create.remaining
+        | select(type == "number" and . >= 0)
+        | floor
+    ' <<<"${limits}") || {
+        warn "Globalping 未返回有效的剩余额度"
+        return 1
+    }
+    budget=$((remaining / CLOUDFLARE_PROBES_PER_CANDIDATE))
+    ((budget > 0)) || {
+        warn "Globalping 本小时免费测试额度不足，请在额度重置后重试"
+        return 1
+    }
+
+    count=$(wc -l <"${source}" | tr -d ' ')
+    if ((count > budget)); then
+        warn "Globalping 剩余额度仅够测量 ${budget} 个 Cloudflare 候选，本轮已自动缩减"
+        count=${budget}
+    fi
+    head -n "${count}" "${source}" >"${destination}"
+}
+
 cloudflare_build_official_pool_cache() {
-    local destination=$1 ranges_file pool_file measurements_file observations_file
-    local preliminary_file validated_file approved_file final_observations_file
-    local candidate ip count measured_at measured_at_epoch pool_size measurement_count
+    local destination=$1 ranges_file raw_pool_file pool_file budgeted_pool_file
+    local measurements_file observations_file preliminary_file
+    local count measured_at measured_at_epoch pool_size prevalidated_pool_size
+    local measurement_count
     ranges_file=$(make_temp_dir)/cloudflare-official-ipv4.txt
+    raw_pool_file=$(make_temp_dir)/cloudflare-raw-candidate-pool.tsv
     pool_file=$(make_temp_dir)/cloudflare-candidate-pool.tsv
+    budgeted_pool_file=$(make_temp_dir)/cloudflare-budgeted-candidate-pool.tsv
     measurements_file=$(make_temp_dir)/cloudflare-measurements.ndjson
     observations_file=$(make_temp_dir)/cloudflare-observations.ndjson
     preliminary_file=$(make_temp_dir)/cloudflare-preliminary.json
-    validated_file=$(make_temp_dir)/cloudflare-validated.ndjson
-    approved_file=$(make_temp_dir)/cloudflare-approved.json
-    final_observations_file=$(make_temp_dir)/cloudflare-final-observations.ndjson
 
     cloudflare_fetch_origin_ipv4_ranges >"${ranges_file}" \
         || { warn "无法获取 Cloudflare 官方 IPv4 CIDR"; return 1; }
-    cloudflare_generate_candidate_pool "${ranges_file}" >"${pool_file}" \
+    cloudflare_generate_candidate_pool "${ranges_file}" >"${raw_pool_file}" \
         || { warn "无法从 Cloudflare 官方 IPv4 CIDR 生成候选"; return 1; }
-    pool_size=$(wc -l <"${pool_file}" | tr -d ' ')
-    info "Cloudflare 官方 IP 池本轮抽样 ${pool_size} 个 /24 候选，正在按三网探针预筛"
+    pool_size=$(wc -l <"${raw_pool_file}" | tr -d ' ')
+    info "Cloudflare 官方 IP 池本轮抽样 ${pool_size} 个 /24 候选，正在执行本机 CDN 入口预检"
+    cloudflare_prevalidate_candidate_pool "${raw_pool_file}" "${pool_file}" \
+        || return 1
+    prevalidated_pool_size=$(wc -l <"${pool_file}" | tr -d ' ')
+    cloudflare_limit_pool_to_globalping_budget \
+        "${pool_file}" "${budgeted_pool_file}" || return 1
+    info "正在对 $(wc -l <"${budgeted_pool_file}" | tr -d ' ') 个可用入口执行三网探针预筛"
 
     cloudflare_collect_globalping_measurements \
-        "${pool_file}" "${measurements_file}" || return 1
+        "${budgeted_pool_file}" "${measurements_file}" || return 1
     measurement_count=$(wc -l <"${measurements_file}" | tr -d ' ')
     cloudflare_zero_loss_observations \
         "${measurements_file}" >"${observations_file}"
@@ -256,24 +324,6 @@ cloudflare_build_official_pool_cache() {
         return 1
     }
     cloudflare_select_carrier_candidates "${observations_file}" \
-        "${CLOUDFLARE_PREVALIDATION_PER_CARRIER}" \
-        "$((CLOUDFLARE_PREVALIDATION_PER_CARRIER * 3))" >"${preliminary_file}"
-
-    : >"${validated_file}"
-    while IFS= read -r candidate; do
-        ip=$(jq -r '.ip' <<<"${candidate}")
-        cloudflare_validate_pool_candidate "${ip}" \
-            && printf '%s\n' "${candidate}" >>"${validated_file}"
-    done < <(jq -c '.[]' "${preliminary_file}")
-    [[ -s "${validated_file}" ]] || {
-        warn "Cloudflare 官方 IP 池没有通过 SNI、HTTP/2 与健康接口复核的候选"
-        return 1
-    }
-    jq -sc 'map(.ip) | unique' "${validated_file}" >"${approved_file}"
-    jq -c --slurpfile approved "${approved_file}" \
-        'select(.ip as $ip | ($approved[0] | index($ip)) != null)' \
-        "${observations_file}" >"${final_observations_file}"
-    cloudflare_select_carrier_candidates "${final_observations_file}" \
         "${CLOUDFLARE_CANDIDATES_PER_CARRIER}" \
         "${CLOUDFLARE_CANDIDATE_LIMIT}" >"${preliminary_file}"
     count=$(jq 'length' "${preliminary_file}")
@@ -288,6 +338,7 @@ cloudflare_build_official_pool_cache() {
         --argjson measured_at_epoch "${measured_at_epoch}" \
         --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" \
         --argjson pool_sample_size "${pool_size}" \
+        --argjson prevalidated_pool_size "${prevalidated_pool_size}" \
         --argjson measurement_count "${measurement_count}" \
         --argjson candidates "$(<"${preliminary_file}")" '{
           version:$version,
@@ -303,6 +354,7 @@ cloudflare_build_official_pool_cache() {
           port:443,
           packets:$packets,
           pool_sample_size:$pool_sample_size,
+          prevalidated_pool_size:$prevalidated_pool_size,
           measurement_count:$measurement_count,
           candidates:$candidates
         }' >"${destination}"

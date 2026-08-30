@@ -141,10 +141,44 @@ EOF
         "2" "$(jq -r '.[] | select(.ip == "104.16.0.10") | .carrier_count' \
             <<<"${ranked}")"
 
+    raw_pool_file="${TMP_DIR}/cloudflare-raw-pool.tsv"
+    prevalidated_pool_file="${TMP_DIR}/cloudflare-prevalidated-pool.tsv"
+    printf '%s\n' \
+        $'104.16.0.10\t104.16.0.0/13' \
+        $'104.16.0.11\t104.16.0.0/13' \
+        $'104.16.0.12\t104.16.0.0/13' >"${raw_pool_file}"
+    (
+        cloudflare_validate_pool_candidate() {
+            [[ "$1" == "104.16.0.10" || "$1" == "104.16.0.12" ]]
+        }
+        cloudflare_prevalidate_candidate_pool \
+            "${raw_pool_file}" "${prevalidated_pool_file}"
+    )
+    assert_equal "Cloudflare prevalidation removes inactive official-range IPs" \
+        $'104.16.0.10\t104.16.0.0/13\n104.16.0.12\t104.16.0.0/13' \
+        "$(<"${prevalidated_pool_file}")"
+
+    budgeted_pool_file="${TMP_DIR}/cloudflare-budgeted-pool.tsv"
+    (
+        globalping_api_request() {
+            [[ "$1" == "GET" && "$2" == "/limits" ]] \
+                || fail "unexpected Globalping budget API request"
+            printf '%s\n' \
+                '{"rateLimit":{"measurements":{"create":{"remaining":6}}}}'
+        }
+        cloudflare_limit_pool_to_globalping_budget \
+            "${raw_pool_file}" "${budgeted_pool_file}"
+    )
+    assert_equal "Cloudflare limits submissions to the current free probe budget" \
+        "2" "$(wc -l <"${budgeted_pool_file}" | tr -d ' ')"
+
     generated_cache="${TMP_DIR}/cloudflare-generated-cache.json"
     (
         cloudflare_fetch_origin_ipv4_ranges() {
             printf '%s\n' '104.16.0.0/24'
+        }
+        cloudflare_limit_pool_to_globalping_budget() {
+            cp "$1" "$2"
         }
         cloudflare_collect_globalping_measurements() {
             local pool_file=$1 destination=$2 ip source_cidr
@@ -179,6 +213,7 @@ EOF
       and .probe_type == "eyeball-network"
       and .carrier_asns == [4134,4837,9808]
       and .pool_sample_size == 1
+      and .prevalidated_pool_size == 1
       and .measurement_count == 1
       and (.candidates | length) == 1
       and .candidates[0].carrier_count == 3

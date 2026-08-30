@@ -560,12 +560,13 @@ Universal SSL 终止客户端 TLS；VPS 使用 Origin CA 证书，SSL 模式固�
 HTTP/2 与 gRPC，Transform Rule 为该节点名的回源请求注入 Origin Key，Nginx 同时校验 Host 与该密钥。
 VPS 防火墙只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列表更新。
 
-模式 2 从 Cloudflare 官方 IPv4 CIDR 按 `/24` 轮换抽样，每轮测试 120 个地址。Globalping
-分别使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的
-`eyeball-network` 探针执行 TCP/443 零丢包预筛；VPS 再以 `node.example.com` 作为 SNI/Host
-验证 HTTPS、HTTP/2 与 `/easy_all-health`。每个运营商最多保留 6 个候选，最终最多发布 18 个
-IP 节点，并始终额外发布原始域名兜底节点。所有节点的 `servername` 与 `xhttp-opts.host`
-仍必须是 `node.example.com`。
+模式 2 从 Cloudflare 官方 IPv4 CIDR 按 `/24` 轮换抽样，每轮扫描 120 个地址。VPS 先以
+`node.example.com` 作为 SNI/Host，并发验证 HTTPS、HTTP/2 与 `/easy_all-health`，避免把官方
+地址范围中未提供 CDN 入口的地址提交测量。随后根据 Globalping 当前剩余免费额度自动限制候选数，
+再分别使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的
+`eyeball-network` 探针执行 TCP/443 零丢包预筛。每个运营商最多保留 6 个候选，最终最多发布
+18 个 IP 节点，并始终额外发布原始域名兜底节点。所有节点的 `servername` 与
+`xhttp-opts.host` 仍必须是 `node.example.com`。
 
 VPS 每小时更新缓存并在刷新失败时保留旧缓存；缓存超过 72 小时只发布域名节点。Mihomo 每
 600 秒在客户端网络运行一次 `url-test`；只有候选比当前节点快至少 50 ms 才切换，以减少抖动。
