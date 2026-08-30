@@ -177,7 +177,9 @@ VPS 出口带宽和每用户配额估算容量，再进行低速、长连接和�
 ## 7. 卸载
 
 `sudo easy_all uninstall` 只清理本机。`sudo easy_all uninstall --purge-cloud` 会先使用同一枚
-Token 吊销 Origin CA 证书，成功后才清理本机；远端 DNS 和规则仍需按需在控制台处理。
+Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Transform/Config Rules、删除规则后
+为空且名称匹配的 easy_all ruleset，并吊销 Origin CA 证书；全部完成后才清理本机。未带 easy_all
+标记的 DNS、包含其他规则的 ruleset、Zone 级 origin HTTP/2 设置和手动 gRPC 开关都会保留。
 
 官方参考：[Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)、
 [Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)、

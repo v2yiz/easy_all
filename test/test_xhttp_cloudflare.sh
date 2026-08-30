@@ -81,6 +81,12 @@ assert_contains "Xray stays in stream-up mode" \
     "${profile_content}${runtime_content}" 'mode:"stream-up"'
 assert_not_contains "Cloudflare API token is never persisted in state" \
     "${profile_content}" 'CLOUDFLARE_API_TOKEN=%q'
+assert_contains "Cloudflare purge prompt names all managed remote resources" \
+    "${profile_content}" 'easy_all 托管的 Cloudflare DNS、规则和 Origin CA 证书'
+assert_contains "Cloudflare purge removes managed DNS records" \
+    "${profile_content}" 'cloudflare_purge_managed_dns_record'
+assert_contains "Cloudflare purge removes stable-ref rules" \
+    "${profile_content}" 'cloudflare_purge_managed_rule'
 
 (
     # The profile must be sourceable without calling external services.
@@ -369,7 +375,7 @@ EOF
         "${mihomo_group}" 'interval: 600'
     assert_equal "Cloudflare takes ten final candidates per carrier" \
         "10" "${CLOUDFLARE_CANDIDATES_PER_CARRIER}"
-    assert_equal "Cloudflare publishes at most eighteen optimized IPs" \
+    assert_equal "Cloudflare publishes at most twelve optimized IPs" \
         "12" "${CLOUDFLARE_CANDIDATE_LIMIT}"
 
     # Mock the provider API: a missing DNS record must produce an orange-cloud
@@ -456,6 +462,85 @@ EOF
     assert_contains "header rule preserves the origin secret" "$(<"${rule_calls}")" \
         'X-Easy-All-Origin-Key'
     assert_contains "strict rule enforces strict TLS" "$(<"${rule_calls}")" '"ssl":"strict"'
+
+    # --purge-cloud must remove every easy_all-owned Cloudflare resource while
+    # identifying rules by stable ref and DNS records by their managed comment.
+    purge_calls="${TMP_DIR}/purge-calls"
+    header_reads="${TMP_DIR}/purge-header-reads"
+    strict_reads="${TMP_DIR}/purge-strict-reads"
+    : >"${purge_calls}"
+    : >"${header_reads}"
+    : >"${strict_reads}"
+    SUBSCRIPTION_MODE=deploy
+    SUBSCRIPTION_DOMAIN='sub.example.com'
+    CLOUDFLARE_HEADER_RULESET_ID='header-rules'
+    CLOUDFLARE_STRICT_RULESET_ID='strict-rules'
+    CLOUDFLARE_ORIGIN_CERT_ID='origin-cert'
+    UNINSTALL_PURGE_CLOUD=1
+    node_header_ref=$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${XHTTP_PATH}")
+    sub_header_ref=$(cloudflare_ref 'header:sub.example.com:/subscribe')
+    node_strict_ref=$(cloudflare_ref "strict:${VLESS_CDN_DOMAIN}")
+    sub_strict_ref=$(cloudflare_ref 'strict:sub.example.com')
+    cloudflare_collect_api_token() { :; }
+    cloudflare_api_request() {
+        local method=$1 path=$2 reads
+        printf '%s\t%s\n' "${method}" "${path}" >>"${purge_calls}"
+        case "${method} ${path}" in
+        "GET /zones/${CLOUDFLARE_ZONE_ID}/rulesets/header-rules")
+            printf 'x\n' >>"${header_reads}"
+            reads=$(wc -l <"${header_reads}" | tr -d ' ')
+            if ((reads <= 2)); then
+                jq -cn --arg first "${node_header_ref}" --arg second "${sub_header_ref}" \
+                    '{name:"easy_all xhttp headers node.example.com",kind:"zone",phase:"http_request_late_transform",rules:[{id:"node-header",ref:$first},{id:"sub-header",ref:$second}]}'
+            else
+                printf '%s\n' '{"name":"easy_all xhttp headers node.example.com","kind":"zone","phase":"http_request_late_transform","rules":[]}'
+            fi
+            ;;
+        "GET /zones/${CLOUDFLARE_ZONE_ID}/rulesets/strict-rules")
+            printf 'x\n' >>"${strict_reads}"
+            reads=$(wc -l <"${strict_reads}" | tr -d ' ')
+            if ((reads <= 2)); then
+                jq -cn --arg first "${node_strict_ref}" --arg second "${sub_strict_ref}" \
+                    '{name:"easy_all xhttp strict node.example.com",kind:"zone",phase:"http_config_settings",rules:[{id:"node-strict",ref:$first},{id:"sub-strict",ref:$second}]}'
+            else
+                printf '%s\n' '{"name":"easy_all xhttp strict node.example.com","kind":"zone","phase":"http_config_settings","rules":[]}'
+            fi
+            ;;
+        *'/dns_records?type=A&name=node.example.com&per_page=100')
+            printf '%s\n' '[{"id":"node-dns","comment":"easy_all xhttp origin"}]'
+            ;;
+        *'/dns_records?type=A&name=sub.example.com&per_page=100')
+            printf '%s\n' '[{"id":"sub-dns","comment":"easy_all xhttp origin"}]'
+            ;;
+        DELETE*) printf '{}\n' ;;
+        *) fail "unexpected Cloudflare purge API path: ${method} ${path}" ;;
+        esac
+    }
+    purge_cloudflare_resources_before_uninstall >/dev/null
+    assert_equal "Cloudflare purge removes four stable-ref rules" "4" \
+        "$(awk -F '\t' '$1 == "DELETE" && $2 ~ /\/rulesets\/.*\/rules\// {count++} END {print count + 0}' "${purge_calls}")"
+    assert_equal "Cloudflare purge removes two empty owned rulesets" "2" \
+        "$(awk -F '\t' '$1 == "DELETE" && $2 ~ /\/rulesets\/(header-rules|strict-rules)$/ {count++} END {print count + 0}' "${purge_calls}")"
+    assert_equal "Cloudflare purge removes two managed DNS records" "2" \
+        "$(awk -F '\t' '$1 == "DELETE" && $2 ~ /\/dns_records\// {count++} END {print count + 0}' "${purge_calls}")"
+    assert_contains "Cloudflare purge revokes the Origin CA certificate" \
+        "$(<"${purge_calls}")" $'DELETE\t/certificates/origin-cert'
+
+    preserved_dns_calls="${TMP_DIR}/preserved-dns-calls"
+    : >"${preserved_dns_calls}"
+    cloudflare_api_request() {
+        printf '%s\t%s\n' "$1" "$2" >>"${preserved_dns_calls}"
+        case "$1 $2" in
+        GET*'/dns_records?type=A&name=customer.example.com&per_page=100')
+            printf '%s\n' '[{"id":"customer-dns","comment":"customer owned"}]'
+            ;;
+        DELETE*) fail "Cloudflare purge attempted to delete an unmarked DNS record" ;;
+        *) fail "unexpected preserved Cloudflare DNS API path: $1 $2" ;;
+        esac
+    }
+    cloudflare_purge_managed_dns_record 'customer.example.com' >/dev/null
+    assert_equal "Cloudflare purge preserves unmarked DNS records" "0" \
+        "$(awk -F '\t' '$1 == "DELETE" {count++} END {print count + 0}' "${preserved_dns_calls}")"
 
     # Zone-setting writes must send real JSON.  A shell-style object such as
     # {value:"2"} is rejected by Cloudflare with HTTP 400.

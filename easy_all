@@ -81,7 +81,7 @@ launcher_usage() {
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
   status           显示运行状态
-  uninstall        卸载当前模式；可追加 --purge-cloud 先处理远端证书
+  uninstall        卸载当前模式；可追加 --purge-cloud 清理托管的远端资源
   help             显示帮助
 
 一台 VPS 只能安装一种模式。

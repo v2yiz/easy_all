@@ -190,19 +190,21 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `quota-status` | 显示每用户月度配额；AWS 按量付费时同时显示独立的 CDN 全局费用保护用量。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
-| `uninstall` | 仅卸载当前模式的本机资源，保留远端资源。使用 `easy_all uninstall --purge-cloud` 时，会先处理远端证书，再清理本机。 |
+| `uninstall` | 仅卸载当前模式的本机资源，保留远端资源。Cloudflare 模式使用 `easy_all uninstall --purge-cloud` 时，会先删除 easy_all 标记的 DNS、规则、空的托管 ruleset 和 Origin CA 证书，再清理本机。 |
 | `help` | 显示命令帮助。 |
 
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
 云资源时才使用 `easy_all apply-cloud`。
 
-卸载与证书处理：默认 `easy_all uninstall` 只清理本机。若确认要先处理远端证书，再清理本机，
-执行 `easy_all uninstall --purge-cloud`；脚本会在 Reality 上吊销 Let’s Encrypt 证书，并重新询问
-对应的 Cloudflare 或 AWS 凭证。
+卸载与远端资源处理：默认 `easy_all uninstall` 只清理本机。Cloudflare 模式执行
+`easy_all uninstall --purge-cloud` 时，脚本会删除带 `easy_all xhttp origin` 标记的节点/订阅 A 记录、
+按稳定 `ref` 定位的 Transform/Config Rules、删除规则后为空且名称匹配的 easy_all ruleset，以及
+Origin CA 证书；不会删除未带 easy_all 标记的 DNS 或包含其他规则的 ruleset。Zone 级 origin HTTP/2
+设置和需要手动开启的 gRPC 开关不会自动还原，因为没有安全的方式判断它们是否仍被其他业务使用。
+Reality 模式会吊销 Let’s Encrypt 证书；AWS 模式仍只尝试删除 ACM 证书，并重新询问对应凭证。
 远端操作失败时会立即停止，本机状态和证书不会删除。AWS ACM 没有此处意义上的吊销操作，脚本
 尝试删除证书；若证书仍被 CloudFront 使用，AWS 会拒绝删除，需先在控制台解除关联。Cloudflare
-Origin CA 可直接吊销。固定套餐、DNS、CDN
-和其他共享资源不会被该选项自动删除。
+Origin CA 可直接吊销。AWS 固定套餐、DNS、CDN 和其他共享资源不会被该选项自动删除。
 
 ### `apply` 的具体操作
 

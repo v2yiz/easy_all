@@ -663,16 +663,137 @@ apply_easy_all() { require_root; begin_quota_maintenance; collect_installed_stat
 apply_cloud_resources() { require_root; begin_quota_maintenance; collect_installed_state; snapshot_subscription_update; configure_bbr_tcp; configure_ufw; cloudflare_prepare_origin; cloudflare_issue_origin_certificate 0; cloudflare_configure_cdn; finish_xhttp_apply 1; cloudflare_validate_cdn_health; cloudflare_finalize_certificate_rotation; install_globalping_refresh_timer; cloudflare_clear_api_token; success "Cloudflare DNS、Origin CA、规则和本机配置已应用"; }
 
 rollback_fresh_install() { stop_services; remove_quota_timer; remove_cdn_traffic_protection_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; cloudflare_clear_api_token; }
-purge_cloudflare_certificate_before_uninstall() {
-    [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
-    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] \
-        || die "状态缺少 Cloudflare Origin CA 证书 ID，已停止卸载；本机证书仍保留"
-    cloudflare_collect_api_token
-    cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null \
-        || die "Cloudflare Origin CA 吊销失败，已停止卸载；本机证书仍保留"
-    cloudflare_clear_api_token
+
+cloudflare_purge_managed_rule() {
+    local ruleset=$1 ref=$2 rules matches count id
+    rules=$(cloudflare_api_request GET \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
+    matches=$(jq -c --arg ref "${ref}" \
+        '[.rules[]? | select(.ref==$ref)]' <<<"${rules}")
+    count=$(jq length <<<"${matches}")
+    ((count <= 1)) \
+        || die "Cloudflare ruleset 中有多个 easy_all ref ${ref}，已停止卸载以避免误删"
+    ((count == 1)) || return 0
+    id=$(jq -r '.[0].id // empty' <<<"${matches}")
+    [[ -n "${id}" ]] || die "Cloudflare easy_all 规则缺少 ID：${ref}"
+    cloudflare_api_request DELETE \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${id}" \
+        >/dev/null
 }
-uninstall_all() { local mode=${1:-} answer; require_root; [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] || die "uninstall 不支持参数：${mode}"; [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all Cloudflare CDN XHTTP 尚未安装"; [[ "${FORCE:-0}" == 1 || -t 0 ]] || die "非交互卸载必须设置 FORCE=1"; [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1 || UNINSTALL_PURGE_CLOUD=0; [[ "${FORCE:-0}" == 1 ]] || { read_bilingual '删除本机内容（Cloudflare 资源保留）？[y/N]:' 'Delete local content (Cloudflare resources remain)? [y/N]:' answer; [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"; }; [[ ! -f "${STATE_FILE}" ]] || load_state; purge_cloudflare_certificate_before_uninstall; stop_services; remove_quota_timer; remove_cdn_traffic_protection_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; remove_daily_reboot_schedule; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; success "本机内容已卸载；远端 Cloudflare 资源按卸载选项处理"; }
+
+cloudflare_purge_empty_owned_ruleset() {
+    local ruleset=$1 expected_name=$2 expected_phase=$3 current
+    current=$(cloudflare_api_request GET \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
+    if jq -e --arg name "${expected_name}" --arg phase "${expected_phase}" '
+        .name == $name and .kind == "zone" and .phase == $phase
+        and ((.rules // []) | length) == 0
+    ' <<<"${current}" >/dev/null; then
+        cloudflare_api_request DELETE \
+            "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}" >/dev/null
+    fi
+}
+
+cloudflare_purge_managed_dns_record() {
+    local host=$1 records count id comment
+    records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" A "${host}")
+    count=$(jq length <<<"${records}")
+    ((count <= 1)) \
+        || die "Cloudflare 域名 ${host} 有多个 A 记录，已停止卸载以避免误删"
+    ((count == 1)) || return 0
+    id=$(jq -r '.[0].id // empty' <<<"${records}")
+    comment=$(jq -r '.[0].comment // empty' <<<"${records}")
+    if [[ -z "${id}" || "${comment}" != "easy_all xhttp origin" ]]; then
+        info "Cloudflare DNS ${host} 不是 easy_all 标记的记录，予以保留"
+        return 0
+    fi
+    cloudflare_api_request DELETE \
+        "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null
+}
+
+purge_cloudflare_resources_before_uninstall() {
+    local host header_name strict_name
+    [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
+    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
+        && -n "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
+        && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
+        || die "状态缺少 Cloudflare 证书或 ruleset ID，已停止卸载；本机状态仍保留"
+    cloudflare_collect_api_token
+
+    cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
+        "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${XHTTP_PATH}")"
+    if subscription_enabled \
+        && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
+        cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
+            "$(cloudflare_ref "header:$(active_subscription_link_domain):/subscribe")"
+    fi
+    while IFS= read -r host; do
+        cloudflare_purge_managed_rule "${CLOUDFLARE_STRICT_RULESET_ID}" \
+            "$(cloudflare_ref "strict:${host}")"
+    done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
+
+    header_name="easy_all xhttp headers ${VLESS_CDN_DOMAIN}"
+    strict_name="easy_all xhttp strict ${VLESS_CDN_DOMAIN}"
+    cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_HEADER_RULESET_ID}" \
+        "${header_name}" "http_request_late_transform"
+    cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_STRICT_RULESET_ID}" \
+        "${strict_name}" "http_config_settings"
+
+    while IFS= read -r host; do
+        cloudflare_purge_managed_dns_record "${host}"
+    done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
+
+    cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null \
+        || die "Cloudflare Origin CA 吊销失败，已停止卸载；本机状态仍保留"
+    cloudflare_clear_api_token
+    success "easy_all 托管的 Cloudflare DNS、规则、ruleset 与 Origin CA 证书已清理"
+}
+
+uninstall_all() {
+    local mode=${1:-} answer
+    require_root
+    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
+        || die "uninstall 不支持参数：${mode}"
+    [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] \
+        || die "easy_all Cloudflare CDN XHTTP 尚未安装"
+    if [[ "${mode}" == "--purge-cloud" && ! -f "${STATE_FILE}" ]]; then
+        die "缺少状态文件，无法安全识别 easy_all 托管的 Cloudflare 资源；本机内容未删除"
+    fi
+    [[ ! -f "${STATE_FILE}" ]] || load_state
+    [[ "${FORCE:-0}" == 1 || -t 0 ]] \
+        || die "非交互卸载必须设置 FORCE=1"
+    UNINSTALL_PURGE_CLOUD=0
+    [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1
+    if [[ "${FORCE:-0}" != 1 ]]; then
+        if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
+            read_bilingual \
+                '删除本机内容以及 easy_all 托管的 Cloudflare DNS、规则和 Origin CA 证书？[y/N]:' \
+                'Delete local content and easy_all-managed Cloudflare DNS, rules, and Origin CA certificate? [y/N]:' answer
+        else
+            read_bilingual \
+                '删除本机内容（Cloudflare 资源保留）？[y/N]:' \
+                'Delete local content (Cloudflare resources are kept)? [y/N]:' answer
+        fi
+        [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
+    fi
+    purge_cloudflare_resources_before_uninstall
+    stop_services
+    remove_quota_timer
+    remove_cdn_traffic_protection_timer
+    remove_globalping_refresh_timer
+    cloudflare_remove_origin_firewall_rules
+    restore_preinstall_firewall
+    remove_daily_reboot_schedule
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" \
+        "${CERT_RELOAD_HOOK}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
+    if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
+        success "本机内容及 easy_all 托管的 Cloudflare 远端资源已卸载"
+    else
+        success "本机内容已卸载；远端 Cloudflare 资源已保留"
+    fi
+}
 
 install_all() {
     [[ -t 0 ]] || die "安装必须在交互终端中执行"; CDN_PROVIDER=cloudflare; require_root; require_systemd; [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装"; check_platform; check_install_conflicts; snapshot_fresh_install
