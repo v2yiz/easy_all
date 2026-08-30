@@ -308,6 +308,11 @@ EOF
     assert_contains "Cloudflare optimized IP keeps the CDN hostname as SNI" \
         "${mihomo_nodes}" 'servername: "node.example.com"'
     mihomo_group=$(build_mihomo_proxy_groups)
+    mihomo_proxy_names=$(build_mihomo_proxy_names)
+    assert_contains "Cloudflare URL-test group uses the concise AUTO name" \
+        "${mihomo_group}" 'name: "AUTO"'
+    assert_contains "Cloudflare PROXY selects the concise AUTO group" \
+        "${mihomo_proxy_names}" '"AUTO"'
     assert_contains "Cloudflare URL test includes the domain fallback" \
         "${mihomo_group}" '- "VLESS_XHTTP_H2_DOMAIN"'
     assert_contains "Cloudflare URL test includes the optimized IP" \

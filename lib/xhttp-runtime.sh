@@ -662,11 +662,19 @@ build_mihomo_node() {
     build_mihomo_nodes
 }
 
+xhttp_auto_group_name() {
+    if [[ "${CDN_PROVIDER:-}" == "cloudflare" ]]; then
+        printf 'AUTO'
+    else
+        printf '%s_AUTO' "${XHTTP_NODE_NAME}"
+    fi
+}
+
 build_mihomo_proxy_names() {
     local endpoint index=1
     if xhttp_using_optimized_candidates; then
         printf '        - %s\n' \
-            "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_AUTO" '$value')"
+            "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
         return 0
     fi
     while IFS= read -r endpoint; do
@@ -680,7 +688,7 @@ build_mihomo_proxy_groups() {
     local endpoint index=1
     xhttp_using_optimized_candidates || return 0
     printf '    - name: %s\n' \
-        "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_AUTO" '$value')"
+        "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
     cat <<'EOF'
       type: url-test
       proxies:
