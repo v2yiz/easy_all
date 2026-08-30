@@ -602,6 +602,7 @@ refresh_cloudflare_cdn_ips() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    install_globalping_refresh_timer
     snapshot_subscription_update
     configure_ufw
     collect_globalping_token

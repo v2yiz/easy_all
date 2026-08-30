@@ -15,32 +15,18 @@ readonly GLOBALPING_CANDIDATE_LIMIT=10
 readonly GLOBALPING_CACHE_MAX_AGE_SECONDS=259200
 readonly GLOBALPING_POLL_ATTEMPTS=35
 
-validate_cdn_endpoint_mode() {
-    [[ "$1" == "domain" || "$1" == "optimized" ]]
-}
-
-validate_aws_cdn_endpoint_mode() {
-    validate_cdn_endpoint_mode "$1"
-}
-
 cdn_optimization_enabled() {
     case "${CDN_PROVIDER:-}" in
-    aws) [[ "${AWS_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
+    aws) return 0 ;;
     cloudflare) [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
-    gcore) [[ "${GCORE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
     *) return 1 ;;
     esac
-}
-
-aws_cdn_optimization_enabled() {
-    [[ "${CDN_PROVIDER:-aws}" == "aws" ]] && cdn_optimization_enabled
 }
 
 globalping_cdn_provider_label() {
     case "${CDN_PROVIDER:-aws}" in
     aws) printf 'AWS' ;;
     cloudflare) printf 'Cloudflare' ;;
-    gcore) printf 'Gcore' ;;
     *) printf 'Unknown' ;;
     esac
 }
@@ -367,7 +353,7 @@ EOF
 Description=Refresh easy_all CDN endpoints every hour
 
 [Timer]
-OnBootSec=1h
+OnActiveSec=1h
 OnUnitActiveSec=1h
 Unit=${GLOBALPING_REFRESH_SERVICE}
 
@@ -378,9 +364,16 @@ EOF
         "${GLOBALPING_REFRESH_SERVICE_FILE}"
     install -m 0644 "${RUNTIME_TMP}/easy_all-globalping-refresh.timer" \
         "${GLOBALPING_REFRESH_TIMER_FILE}"
-    systemctl daemon-reload
-    systemctl enable --now "${GLOBALPING_REFRESH_TIMER}" >/dev/null \
+    systemctl daemon-reload \
+        || die "重新加载 Globalping 定时器失败"
+    systemctl enable "${GLOBALPING_REFRESH_TIMER}" >/dev/null \
         || die "启用 Globalping 每小时刷新定时器失败"
+    systemctl restart "${GLOBALPING_REFRESH_TIMER}" >/dev/null \
+        || die "启动 Globalping 每小时刷新定时器失败"
+    systemctl is-enabled --quiet "${GLOBALPING_REFRESH_TIMER}" \
+        || die "Globalping 每小时刷新定时器未设置为开机启动"
+    systemctl is-active --quiet "${GLOBALPING_REFRESH_TIMER}" \
+        || die "Globalping 每小时刷新定时器未运行"
 }
 
 remove_globalping_refresh_timer() {

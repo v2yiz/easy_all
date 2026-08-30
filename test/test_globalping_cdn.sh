@@ -26,7 +26,6 @@ GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE="${TMP_DIR}/easy_all-globalping-refresh.t
 COMMAND_PATH="/usr/local/bin/easy_all"
 VLESS_CDN_DOMAIN="node.example.com"
 CDN_PROVIDER="aws"
-AWS_CDN_ENDPOINT_MODE="optimized"
 GLOBALPING_NOW_EPOCH=2000000000
 cleanup_files=()
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}"
@@ -157,23 +156,8 @@ assert_equal "stale cache falls back to CDN domain" "node.example.com" \
     "$(aws_cdn_client_endpoints)"
 
 GLOBALPING_NOW_EPOCH=2000000000
-AWS_CDN_ENDPOINT_MODE="domain"
-assert_equal "mode 2 always uses the CDN domain" "node.example.com" \
-    "$(aws_cdn_client_endpoints)"
-
-CDN_PROVIDER="gcore"
-GCORE_CDN_ENDPOINT_MODE="optimized"
-AWS_CDN_ENDPOINT_MODE="domain"
-jq '.provider = "gcore"' "${GLOBALPING_CACHE_FILE}" >"${cache_stage}"
-install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
-assert_equal "Gcore optimized mode reuses the provider-neutral candidates" \
-    "13.32.10.10" "$(cdn_client_endpoints)"
-GCORE_CDN_ENDPOINT_MODE="domain"
-assert_equal "Gcore domain mode ignores candidate cache" "node.example.com" \
-    "$(cdn_client_endpoints)"
 CDN_PROVIDER="cloudflare"
 CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
-GCORE_CDN_ENDPOINT_MODE="domain"
 jq '.provider = "cloudflare"' "${GLOBALPING_CACHE_FILE}" >"${cache_stage}"
 install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
 assert_equal "Cloudflare optimized mode reuses the provider-neutral candidates" \
@@ -189,16 +173,31 @@ unset GLOBALPING_TOKEN
 assert_equal "token is loaded from the root-only file" \
     "test-globalping-token-value" "$(globalping_token_value)"
 
-systemctl() { :; }
-AWS_CDN_ENDPOINT_MODE="optimized"
+systemctl_calls="${TMP_DIR}/systemctl-calls"
+: >"${systemctl_calls}"
+systemctl() {
+    printf '%s\n' "$*" >>"${systemctl_calls}"
+    return 0
+}
 install_globalping_refresh_timer
 grep -Fq 'ExecStart=/usr/local/bin/easy_all refresh-cdn-ips' \
     "${GLOBALPING_REFRESH_SERVICE_FILE}" \
     || fail "Globalping service must invoke the manual refresh command"
 grep -Fq 'OnUnitActiveSec=1h' "${GLOBALPING_REFRESH_TIMER_FILE}" \
     || fail "Globalping timer must refresh every hour"
-grep -Fq 'OnBootSec=1h' "${GLOBALPING_REFRESH_TIMER_FILE}" \
-    || fail "Globalping timer must not repeat the install-time refresh early"
+grep -Fq 'OnActiveSec=1h' "${GLOBALPING_REFRESH_TIMER_FILE}" \
+    || fail "Globalping timer must wait one hour after registration"
+if grep -Fq 'OnBootSec=' "${GLOBALPING_REFRESH_TIMER_FILE}"; then
+    fail "Globalping timer must not trigger immediately when registered long after boot"
+fi
+grep -Fq 'enable easy_all-globalping-refresh.timer' "${systemctl_calls}" \
+    || fail "Globalping refresh timer must be enabled"
+grep -Fq 'restart easy_all-globalping-refresh.timer' "${systemctl_calls}" \
+    || fail "Globalping refresh timer must restart after registration"
+grep -Fq 'is-enabled --quiet easy_all-globalping-refresh.timer' "${systemctl_calls}" \
+    || fail "Globalping refresh timer registration must verify enablement"
+grep -Fq 'is-active --quiet easy_all-globalping-refresh.timer' "${systemctl_calls}" \
+    || fail "Globalping refresh timer registration must verify activity"
 remove_globalping_refresh_timer
 [[ ! -e "${GLOBALPING_REFRESH_SERVICE_FILE}" \
     && ! -e "${GLOBALPING_REFRESH_TIMER_FILE}" ]] \

@@ -15,8 +15,7 @@ validate_cdn_traffic_protection_gb() {
 }
 
 configure_cdn_traffic_protection() {
-    if [[ "${CDN_PROVIDER:-}" == "gcore" \
-        || "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ]]; then
+    if [[ "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ]]; then
         if [[ -z "${CDN_TRAFFIC_PROTECTION_GB:-}" \
             || "${CDN_TRAFFIC_PROTECTION_GB}" == "0" ]]; then
             CDN_TRAFFIC_PROTECTION_GB=${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}
@@ -33,8 +32,7 @@ configure_cdn_traffic_protection() {
 
 cdn_traffic_protection_enabled() {
     [[ "${PROTOCOL:-}" == "xhttp" \
-        && ( "${CDN_PROVIDER:-}" == "gcore" \
-            || "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ) \
+        && "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" \
         && "${CDN_TRAFFIC_PROTECTION_GB:-0}" =~ ^[0-9]+$ ]] \
         && ((10#${CDN_TRAFFIC_PROTECTION_GB:-0} > 0))
 }
@@ -43,7 +41,6 @@ cdn_traffic_provider_label() {
     case "${CDN_PROVIDER:-}" in
     aws) printf 'CloudFront' ;;
     cloudflare) printf 'Cloudflare' ;;
-    gcore) printf 'Gcore' ;;
     *) printf 'Unknown CDN' ;;
     esac
 }
@@ -285,7 +282,7 @@ cdn_traffic_protection_sync() {
 show_cdn_traffic_protection_status() {
     local usage used remaining
     if ! cdn_traffic_protection_enabled; then
-        printf '%s 全局费用保护: disabled（仅 AWS 按量付费或 Gcore Free CDN 启用）\n' \
+        printf '%s 全局费用保护: disabled（仅 AWS 按量付费启用）\n' \
             "$(cdn_traffic_provider_label)"
         return 0
     fi

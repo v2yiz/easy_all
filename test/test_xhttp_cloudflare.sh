@@ -141,6 +141,50 @@ EOF
         "2" "$(jq -r '.[] | select(.ip == "104.16.0.10") | .carrier_count' \
             <<<"${ranked}")"
 
+    overlapping_observations="${TMP_DIR}/cloudflare-overlapping-observations.ndjson"
+    : >"${overlapping_observations}"
+    for candidate_index in $(seq 1 18); do
+        for carrier_asn in 4134 4837 9808; do
+            jq -cn --arg ip "104.16.1.${candidate_index}" \
+                --argjson asn "${carrier_asn}" \
+                --argjson rtt "$((10 + candidate_index))" '{
+                  ip:$ip,
+                  source_cidr:"104.16.0.0/13",
+                  carrier_asn:$asn,
+                  avg_rtt_ms:$rtt,
+                  city:"test",
+                  network:"test"
+                }' >>"${overlapping_observations}"
+        done
+    done
+    overlapping_ranked=$(cloudflare_select_carrier_candidates \
+        "${overlapping_observations}" 10 18)
+    assert_equal "Cloudflare takes each carrier top ten before deduplication" \
+        "10" "$(jq 'length' <<<"${overlapping_ranked}")"
+
+    disjoint_observations="${TMP_DIR}/cloudflare-disjoint-observations.ndjson"
+    : >"${disjoint_observations}"
+    carrier_index=0
+    for carrier_asn in 4134 4837 9808; do
+        carrier_index=$((carrier_index + 1))
+        for candidate_index in $(seq 1 10); do
+            jq -cn --arg ip "104.16.${carrier_index}.${candidate_index}" \
+                --argjson asn "${carrier_asn}" \
+                --argjson rtt "$((10 + candidate_index))" '{
+                  ip:$ip,
+                  source_cidr:"104.16.0.0/13",
+                  carrier_asn:$asn,
+                  avg_rtt_ms:$rtt,
+                  city:"test",
+                  network:"test"
+                }' >>"${disjoint_observations}"
+        done
+    done
+    disjoint_ranked=$(cloudflare_select_carrier_candidates \
+        "${disjoint_observations}" 10 18)
+    assert_equal "Cloudflare caps the deduplicated carrier union at eighteen" \
+        "18" "$(jq 'length' <<<"${disjoint_ranked}")"
+
     raw_pool_file="${TMP_DIR}/cloudflare-raw-pool.tsv"
     prevalidated_pool_file="${TMP_DIR}/cloudflare-prevalidated-pool.tsv"
     printf '%s\n' \
@@ -283,6 +327,10 @@ EOF
     assert_contains "Cloudflare refresh validates gRPC before candidate discovery" \
         "${profile_content}" \
         'cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"'
+    refresh_function=$(sed -n \
+        '/^refresh_cloudflare_cdn_ips()/,/^}/p' "${PROFILE}")
+    assert_contains "Cloudflare manual refresh repairs the hourly timer" \
+        "${refresh_function}" 'install_globalping_refresh_timer'
 
     GLOBALPING_NOW_EPOCH=2000000000
     CDN_PROVIDER="cloudflare"
@@ -319,8 +367,8 @@ EOF
         "${mihomo_group}" '- "VLESS_XHTTP_H2_IP_01"'
     assert_contains "Cloudflare URL test runs every 600 seconds" \
         "${mihomo_group}" 'interval: 600'
-    assert_equal "Cloudflare keeps six final candidates per carrier" \
-        "6" "${CLOUDFLARE_CANDIDATES_PER_CARRIER}"
+    assert_equal "Cloudflare takes ten final candidates per carrier" \
+        "10" "${CLOUDFLARE_CANDIDATES_PER_CARRIER}"
     assert_equal "Cloudflare publishes at most eighteen optimized IPs" \
         "18" "${CLOUDFLARE_CANDIDATE_LIMIT}"
 

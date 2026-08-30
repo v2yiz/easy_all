@@ -11,6 +11,7 @@ SUBSCRIPTION_MODULE="${ROOT_DIR}/lib/subscription-auth.sh"
 XHTTP_CONTENT="$(<"${PROFILE}")"$'\n'"$(<"${XHTTP_RUNTIME}")"$'\n'"$(<"${SUBSCRIPTION_MODULE}")"
 XRAY_RENDER_CONTENT=$(sed -n '/^xhttp_render_xray_config()/,/^}/p' "${PROFILE}")
 MIHOMO_RENDER_CONTENT=$(sed -n '/^build_mihomo_node()/,/^}/p' "${XHTTP_RUNTIME}")
+REFRESH_FUNCTION=$(sed -n '/^refresh_aws_cdn_ips()/,/^}/p' "${PROFILE}")
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
@@ -35,6 +36,8 @@ assert_not_contains() {
 }
 
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
+assert_contains "AWS manual refresh repairs the hourly timer" \
+    "${REFRESH_FUNCTION}" 'install_globalping_refresh_timer'
 assert_contains "installer refuses root credentials" "${XHTTP_CONTENT}" \
     "拒绝使用 AWS 根用户访问密钥"
 route53_notice_line=$(grep -n '仅提示，非错误：源站域名与 CDN 域名都必须位于 AWS Route 53 Public Hosted Zone。' "${PROFILE}" \
@@ -88,9 +91,9 @@ assert_contains "installer keeps detected SSH ports" "$(<"${PLATFORM_MODULE}")" 
     'for port in ${SSH_PORTS}'
 assert_contains "installer verifies the new SSH listener" "$(<"${PLATFORM_MODULE}")" \
     'ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}"'
-assert_contains "AWS and Gcore installs include Fail2ban" "${XHTTP_CONTENT}" \
+assert_contains "AWS installs include Fail2ban" "${XHTTP_CONTENT}" \
     'fail2ban python3-systemd'
-assert_contains "AWS and Gcore enable shared Fail2ban after UFW" "${XHTTP_CONTENT}" \
+assert_contains "AWS enables shared Fail2ban after UFW" "${XHTTP_CONTENT}" \
     'ensure_ssh_fail2ban'
 assert_contains "shared Fail2ban enables incremental bans" "$(<"${PLATFORM_MODULE}")" \
     'bantime.increment = true'
@@ -114,8 +117,6 @@ assert_contains "CloudFront alias conflicts require explicit resource cleanup" \
     "${XHTTP_CONTENT}" '脚本不会接管该资源，请先删除该分配或解除别名'
 assert_contains "CloudFront billing mode is persisted" "${XHTTP_CONTENT}" \
     'AWS_CLOUDFRONT_BILLING_MODE=%q'
-assert_contains "AWS CDN endpoint mode is persisted" "${XHTTP_CONTENT}" \
-    'AWS_CDN_ENDPOINT_MODE=%q'
 assert_contains "CloudFront fee protection threshold is persisted" "${XHTTP_CONTENT}" \
     'CDN_TRAFFIC_PROTECTION_GB=%q'
 assert_contains "global fee protection can remove every Xray client" "${XHTTP_CONTENT}" \
@@ -469,8 +470,8 @@ EOF
             STATE_VERSION="7"
             PROTOCOL="xhttp"
             CDN_PROVIDER="aws"
-            AWS_CDN_ENDPOINT_MODE="domain"
             AWS_CLOUDFRONT_BILLING_MODE="flat-free"
+            CDN_CLIENT_IP_FAMILY="ipv6-prefer"
             VLESS_UUID="00000000-0000-4000-8000-000000000001"
             VLESS_CDN_DOMAIN="node.example.com"
             XHTTP_NODE_NAME="STORED_XHTTP"
@@ -485,9 +486,8 @@ EOF
         VLESS_UUID="00000000-0000-4000-8000-000000000002"
         XHTTP_NODE_NAME="UPDATED_XHTTP"
         XHTTP_PATH="/xhttp-updated-suffix"
-        AWS_CDN_ENDPOINT_MODE=""
         load_state
-        assert_equal "AWS domain state uses IPv6 preference" "ipv6-prefer" \
+        assert_equal "optimized AWS state forces IPv4 candidates" "ipv4" \
             "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
         assert_equal "UUID environment override wins during update" \
             "00000000-0000-4000-8000-000000000002" "${VLESS_UUID}"
@@ -495,29 +495,6 @@ EOF
             "UPDATED_XHTTP" "${XHTTP_NODE_NAME}"
         assert_equal "XHTTP path environment override wins during update" \
             "/xhttp-updated-suffix" "${XHTTP_PATH}"
-    )
-    (
-        source_state_file() {
-            STATE_VERSION="7"
-            PROTOCOL="xhttp"
-            CDN_PROVIDER="aws"
-            AWS_CDN_ENDPOINT_MODE="optimized"
-            AWS_CLOUDFRONT_BILLING_MODE="flat-free"
-            CDN_CLIENT_IP_FAMILY="ipv6-prefer"
-            VLESS_UUID="00000000-0000-4000-8000-000000000001"
-            VLESS_CDN_DOMAIN="node.example.com"
-            XHTTP_NODE_NAME="STORED_XHTTP"
-            XHTTP_PATH="/xhttp-stored-suffix"
-            AWS_ORIGIN_DOMAIN="origin.example.com"
-            XRAY_XHTTP_LOOPBACK_PORT="10086"
-            SUB_DOWNLOAD_NAME="EASY_ALL"
-            SUBSCRIPTION_MODE="link"
-            SUBSCRIPTION_DOMAIN="node.example.com"
-            QUOTA_ENABLED="0"
-        }
-        load_state
-        assert_equal "optimized AWS state forces IPv4 candidates" "ipv4" \
-            "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
     )
     zones='{"HostedZones":[{"Id":"/hostedzone/ZBASE","Name":"example.com.","Config":{"PrivateZone":false}},{"Id":"/hostedzone/ZPRIVATE","Name":"node.example.com.","Config":{"PrivateZone":true}},{"Id":"/hostedzone/ZBOUNDARY","Name":"notexample.com.","Config":{"PrivateZone":false}}]}'
     assert_equal "Route 53 public parent zone" $'/hostedzone/ZBASE\texample.com.' \
@@ -638,7 +615,6 @@ EOF
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
     VLESS_CDN_DOMAIN="node.example.com"
     AWS_ORIGIN_DOMAIN="origin.example.com"
-    AWS_CDN_ENDPOINT_MODE="domain"
     CDN_CLIENT_IP_FAMILY="ipv6-prefer"
     XHTTP_PATH="/xhttp-test-path"
     XRAY_XHTTP_LOOPBACK_PORT="10086"
@@ -694,8 +670,8 @@ EOF
     assert_contains "Mihomo XHTTP path keeps the Nginx location suffix" \
         "${mihomo}" 'path: "/xhttp-test-path/"'
     assert_contains "Mihomo XMUX" "${mihomo}" "reuse-settings:"
-    assert_contains "Mihomo XHTTP prefers IPv6" \
-        "${mihomo}" "ip-version: ipv6-prefer"
+    assert_contains "Mihomo XHTTP uses IPv4 for selected AWS endpoints" \
+        "${mihomo}" "ip-version: ipv4"
     assert_contains "Mihomo XMUX limits connections" \
         "${mihomo}" 'max-connections: "2"'
     assert_contains "Mihomo XMUX rotates request counts" \
@@ -709,7 +685,6 @@ EOF
     assert_contains "Mihomo XMUX uses browser-like keepalive" "${mihomo}" "h-keep-alive-period: 0"
 
     (
-        AWS_CDN_ENDPOINT_MODE="optimized"
         CDN_CLIENT_IP_FAMILY="ipv6-prefer"
         CDN_CLIENT_IP_FAMILY_RESOLVED=""
         globalping_cache_valid() { return 0; }
@@ -1136,6 +1111,7 @@ EOF
         refresh_runtime() { printf 'runtime\n'; }
         write_subscriptions() { printf 'subscriptions\n'; }
         validate_subscription_runtime() { printf 'validate-subscription\n'; }
+        install_globalping_refresh_timer() { :; }
         save_state() { printf 'save\n'; }
         register_easy_all_command() { printf 'register\n'; }
         show_subscription() { printf 'show\n'; }
@@ -1161,6 +1137,7 @@ EOF
         refresh_runtime() { printf 'runtime\n'; }
         write_subscriptions() { printf 'subscriptions\n'; }
         validate_subscription_runtime() { printf 'validate-subscription\n'; }
+        install_globalping_refresh_timer() { :; }
         save_state() { printf 'save\n'; }
         register_easy_all_command() { printf 'register\n'; }
         show_subscription() { printf 'show\n'; }
@@ -1191,6 +1168,7 @@ EOF
         refresh_runtime() { :; }
         install_quota_timer() { :; }
         install_cdn_traffic_protection_timer() { :; }
+        install_globalping_refresh_timer() { :; }
         show_subscription() { :; }
         success() { :; }
         update_subscription

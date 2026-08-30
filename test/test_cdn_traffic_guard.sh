@@ -169,18 +169,6 @@ if cdn_traffic_protection_enabled; then
     fail "flat-rate mode must not enable the pay-as-you-go guard"
 fi
 
-CDN_PROVIDER="gcore"
-AWS_CLOUDFRONT_BILLING_MODE="flat-free"
-CDN_TRAFFIC_PROTECTION_GB=""
-configure_cdn_traffic_protection
-assert_equal "Gcore Free CDN enables the same 980 GB global guard" "980" \
-    "${CDN_TRAFFIC_PROTECTION_GB}"
-cdn_traffic_protection_enabled \
-    || fail "Gcore Free CDN must enable the global guard independently of AWS billing"
-assert_equal "Gcore guard labels its operator output" "Gcore" "$(cdn_traffic_provider_label)"
-assert_equal "Gcore guard uses the provider-neutral sync command" "cdn-traffic-sync" \
-    "$(cdn_traffic_sync_command)"
-
 before_busy_sync=$(<"${CDN_TRAFFIC_GUARD_USAGE_FILE}")
 TEST_RUNTIME_LOCK_BUSY=1
 cdn_traffic_protection_sync

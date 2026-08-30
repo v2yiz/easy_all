@@ -8,7 +8,11 @@ AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY
 ```
 
-选择模式 5 时还需提供独立的 Globalping Token，获取方法见本文第 7 节。
+选择模式 3 时还需提供独立的 Globalping Token，获取方法见本文第 7 节。
+
+费用提示：AWS CloudFront、Route 53、ACM 等服务可能产生费用。按量付费模式只有在适用的免费额度
+内通常不产生 CloudFront 费用，超出免费额度或使用不适用 credit 的资源后会按标准价格计费；请按本文
+第 2 节的边界设置费用提醒并启用脚本的流量保护。
 
 > 不要为 AWS 根用户创建访问密钥，也不要把任何密钥提交到 Git、写入脚本、
 > 截图或发送到聊天中。
@@ -58,8 +62,8 @@ CloudFront 付费套餐。升级只是解除 Free account plan 的服务限制�
 表示使用每月 1 TB + 1000 万请求免费额度，并由本机 980 GB 安全阀提前阻断节点流量；它不表示
 升级瞬间就会扣费。
 
-CloudFront 分配开启 IPv6，安装器同时创建 Alias A/AAAA；生成的 Mihomo XHTTP 节点固定使用
-`ip-version: ipv6-prefer`，优先连接 CloudFront IPv6 边缘，IPv6 不可用时自动回退 IPv4。
+CloudFront 分配开启 IPv6，安装器同时创建 Alias A/AAAA；模式 3 生成的 Mihomo XHTTP 节点固定使用
+`ip-version: ipv4`，连接经过 Globalping 筛选的 CloudFront IPv4 边缘。
 Mihomo 模板同时关闭 `unified-delay`，避免 XHTTP 上下行分离被统一延迟探测误判。这个客户端策略与
 VPS 是否有 IPv6 无关。CloudFront 到源站继续使用独立 IPv4 A 记录；VPS 到普通目标使用自动
 双栈，Gemini 相关域名保持固定 IPv4 出口。
@@ -268,11 +272,11 @@ AWS_SECRET_ACCESS_KEY
 AWS 官方参考：
 [IAM 用户访问密钥](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)。
 
-## 7. 可选：准备模式 5 的 Globalping Token
+## 7. 准备模式 3 的 Globalping Token
 
-模式 5 “AWS CDN 精选 IP - XHTTP”与模式 3 使用完全相同的 IAM 权限和 AWS 资源，不需要为
-AWS 策略增加任何操作。它额外需要一个 Globalping Access Token，用于每小时从中国大陆探针
-执行 IPv4 TCP/443 测量。
+模式 3 “AWS CDN 精选 IP - XHTTP”使用本文前面创建的同一套 IAM 权限和 AWS 资源，不需要为
+AWS 策略增加任何操作。它需要一个 Globalping Access Token，用于每小时从中国大陆探针执行
+IPv4 TCP/443 测量。
 
 Token 的注册和创建步骤见
 [前置准备手册](preparation-guide.md#2-注册-globalping-并创建-access-token)。安装器会将 Token 保存到 VPS 的

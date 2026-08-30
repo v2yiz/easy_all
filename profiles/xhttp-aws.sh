@@ -92,13 +92,6 @@ choose_cloudfront_billing_mode() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="aws"
-    if [[ "${EASY_ALL_SELECTED_MODE:-xhttp}" == "aws-cdn" ]]; then
-        AWS_CDN_ENDPOINT_MODE="optimized"
-    else
-        AWS_CDN_ENDPOINT_MODE="domain"
-    fi
-    validate_aws_cdn_endpoint_mode "${AWS_CDN_ENDPOINT_MODE}" \
-        || die "AWS_CDN_ENDPOINT_MODE 无效：${AWS_CDN_ENDPOINT_MODE}"
     choose_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
@@ -117,11 +110,9 @@ collect_install_inputs() {
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
     choose_cloudfront_billing_mode
-    if aws_cdn_optimization_enabled; then
-        info "模式 5 将使用中国大陆 Globalping 探针筛选 CloudFront IPv4。"
-        collect_globalping_token
-        validate_globalping_access || die "Globalping Token 验证失败"
-    fi
+    info "模式 3 将使用中国大陆 Globalping 探针筛选 CloudFront IPv4。"
+    collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
 
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
     XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
@@ -150,7 +141,7 @@ collect_install_inputs() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL CDN_PROVIDER AWS_CDN_ENDPOINT_MODE
+        PROTOCOL CDN_PROVIDER
         AWS_CLOUDFRONT_BILLING_MODE CDN_CLIENT_IP_FAMILY
         XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN
         SUBSCRIPTION_DOMAIN
@@ -182,8 +173,6 @@ load_state() {
     [[ "${PROTOCOL}" == "xhttp" ]] || die "状态协议不是 xhttp；请重新安装"
     [[ "${CDN_PROVIDER:-}" == "aws" ]] \
         || die "状态不是 AWS CDN XHTTP；请重新安装"
-    validate_aws_cdn_endpoint_mode "${AWS_CDN_ENDPOINT_MODE:-}" \
-        || die "状态文件中的 AWS CDN 接入模式无效：${AWS_CDN_ENDPOINT_MODE}"
     configure_cdn_client_ip_family
     validate_cloudfront_billing_mode "${AWS_CLOUDFRONT_BILLING_MODE:-}" \
         || die "状态文件中的 CloudFront 计费模式无效：${AWS_CLOUDFRONT_BILLING_MODE:-缺失}"
@@ -225,7 +214,6 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'CDN_PROVIDER=%q\n' "aws"
-        printf 'AWS_CDN_ENDPOINT_MODE=%q\n' "${AWS_CDN_ENDPOINT_MODE}"
         printf 'AWS_CLOUDFRONT_BILLING_MODE=%q\n' "${AWS_CLOUDFRONT_BILLING_MODE}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
@@ -1265,9 +1253,7 @@ show_status() {
         "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}"
     printf 'CloudFront 计费模式: %s\n' \
         "$([[ "${AWS_CLOUDFRONT_BILLING_MODE}" == "flat-free" ]] && printf 'Free 固定套餐' || printf '按量付费')"
-    printf 'AWS CDN 客户端接入: %s\n' \
-        "$([[ "${AWS_CDN_ENDPOINT_MODE}" == "optimized" ]] \
-            && printf 'Globalping 精选 IPv4' || printf 'CDN 域名')"
+    printf 'AWS CDN 客户端接入: Globalping 精选 IPv4\n'
     printf 'Route 53 源站 Zone ID: %s\nRoute 53 CDN Zone ID: %s\nRoute 53 订阅 Zone ID: %s\n' \
         "${AWS_ORIGIN_ROUTE53_ZONE_ID:-未知}" "${AWS_ROUTE53_ZONE_ID:-未知}" \
         "${AWS_SUBSCRIPTION_ROUTE53_ZONE_ID:-${AWS_ROUTE53_ZONE_ID:-未知}}"
@@ -1292,8 +1278,7 @@ refresh_aws_cdn_ips() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
-    aws_cdn_optimization_enabled \
-        || { release_runtime_write_lock; die "当前不是模式 5 AWS CDN 精选 IP"; }
+    install_globalping_refresh_timer
     snapshot_subscription_update
     if ! refresh_globalping_cache; then
         refresh_status=1
@@ -1495,14 +1480,12 @@ install_all() {
     install_xray_service
     write_nginx_config
     validate_protocol_runtime
-    info "[7/9] 配置 ACM、CloudFront、Route 53 CDN Alias 与可选 Globalping 精选 IP"
+    info "[7/9] 配置 ACM、CloudFront、Route 53 CDN Alias 与 Globalping 精选 IP"
     cdn_apply
     validate_cdn_client_ip_family_runtime
-    if aws_cdn_optimization_enabled; then
-        persist_globalping_token
-        refresh_globalping_cache \
-            || warn "首次 Globalping 测量失败；先使用 CDN 域名回退节点，定时任务会继续重试"
-    fi
+    persist_globalping_token
+    refresh_globalping_cache \
+        || warn "首次 Globalping 测量失败；先使用 CDN 域名回退节点，定时任务会继续重试"
     if subscription_enabled; then
         write_subscriptions
         validate_subscription_runtime
@@ -1540,7 +1523,7 @@ usage() {
   quota-reset      清零指定用户的本月已用量
   uninstall        删除本机内容；追加 --purge-cloud 可先处理 ACM 证书
 
-模式 3 发布单个 CDN 域名节点；模式 5 发布最多 10 个 Globalping 精选 IPv4。
+模式 3 发布最多 10 个 Globalping 精选 IPv4。
 节点域名与源站 DNS 全部由 Route 53 管理；
 CloudFront 使用 HTTPS 回源、禁用缓存、启用 gRPC，并转发除 Host 外的全部查看器请求头。
 可选择部署 CloudFront + Nginx Token 订阅，或仅输出节点信息。

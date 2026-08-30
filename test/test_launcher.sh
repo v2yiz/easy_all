@@ -51,7 +51,6 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
 [[ "${launcher_content}" == *'"profiles/reality.sh"'* \
     && "${launcher_content}" == *'"profiles/xhttp-cloudflare.sh"'* \
     && "${launcher_content}" == *'"profiles/xhttp-aws.sh"'* \
-    && "${launcher_content}" == *'"profiles/xhttp-gcore.sh"'* \
     && "${launcher_content}" == *'"lib/globalping-cdn.sh"'* \
     && "${launcher_content}" == *'templates/mihomo.yaml'* ]] \
     || fail "runtime registration must use the organized profile and template paths"
@@ -113,13 +112,10 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
     && "${guide}" == *"[2] Cloudflare CDN 精选 IP - XHTTP"* \
     && "${guide}" == *"CLOUDFLARE_API_TOKEN"* \
-    && "${guide}" == *"[3] AWS CDN - XHTTP"* \
     && "${guide}" == *"选择 CloudFront 计费：1 Free 固定套餐，或 2 按量付费（默认推荐；升级 Paid plan 本身不收费）"* \
     && "${guide}" == *"Choose CloudFront billing: 1 Free flat-rate, or 2 pay-as-you-go (recommended; upgrading the Paid plan itself is free)"* \
-    && "${guide}" == *"[4] Gcore CDN 精选 IP - XHTTP"* \
-    && "${guide}" == *"GCORE_API_TOKEN"* \
-    && "${guide}" == *"Globalping 精选 IPv4"* \
-    && "${guide}" == *"[5] AWS CDN 精选 IP - XHTTP"* \
+    && "${guide}" == *"Globalping 使用中国大陆探针"* \
+    && "${guide}" == *"[3] AWS CDN 精选 IP - XHTTP"* \
     && "${guide}" == *"CDN XHTTP"* ]] \
     || fail "install guide does not describe all installation branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
@@ -138,7 +134,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" == *'X3 --> X3A{CloudFront 计费模式选择}'* \
     && "${readme}" == *'X3A -->|Free 固定套餐| X4{订阅输出选择}'* \
     && "${readme}" == *'X3A -->|按量付费| X4'* \
-    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront Aliases / Route 53 Alias A/AAAA / 公网验收 / 生成订阅]'* \
+    && "${readme}" == *'X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront Aliases / Route 53 Alias A/AAAA / 公网验收 / Globalping 精选 IPv4 / 生成订阅]'* \
     && "${readme}" == *'X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]'* ]] \
     || fail "README install flow must match the installer execution order"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）:'* \
@@ -146,11 +142,8 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "install mode prompt must be bilingual and explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - XHTTP'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'AWS CDN - XHTTP（非优化线路推荐）'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 精选 IP - XHTTP'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'AWS CDN 精选 IP - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
-
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=5\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
@@ -159,14 +152,8 @@ assert_equal "Reality state selects Reality profile" "reality" "$(detect_install
 printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\nCLOUDFLARE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare state selects the second mode" "cloudflare" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CDN_ENDPOINT_MODE=domain\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "AWS domain state selects the third mode" "xhttp" "$(detect_installed_mode)"
-
-printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CDN_ENDPOINT_MODE=optimized\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "optimized AWS state selects the fifth mode" "aws-cdn" "$(detect_installed_mode)"
-
-printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\nGCORE_CDN_ENDPOINT_MODE=optimized\nGCORE_CDN_RESOURCE_ID=1\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "Gcore state selects the fourth mode" "gcore" "$(detect_installed_mode)"
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "AWS state selects the third mode" "aws-cdn" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \
@@ -197,9 +184,7 @@ if command -v script >/dev/null 2>&1; then
 fi
 
 [[ "${launcher_content}" == *"2) printf 'cloudflare"* \
-    && "${launcher_content}" == *"3) printf 'xhttp"* \
-    && "${launcher_content}" == *"4) printf 'gcore"* \
-    && "${launcher_content}" == *"5) printf 'aws-cdn"* ]] \
-    || fail "installation choices must retain the Cloudflare, AWS, Gcore, optimized AWS order"
+    && "${launcher_content}" == *"3) printf 'aws-cdn"* ]] \
+    || fail "installation choices must retain the three supported modes in order"
 
 printf 'ok - easy_all launcher tests passed\n'

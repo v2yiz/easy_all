@@ -3,9 +3,12 @@
 本手册覆盖 Cloudflare + Globalping CDN XHTTP 部署所需的域名、账号、DNS 和 Token 准备。
 
 本手册把域名、Cloudflare 和 Globalping 的一次性准备合并在一起，供 Cloudflare CDN 精选 IP XHTTP
-模式（模式 2）使用；Globalping 账号和 Token 也适用于 AWS/Gcore 精选 IP 模式（模式 4/5）。
+模式（模式 2）使用；Globalping 账号和 Token 也适用于 AWS 精选 IP 模式（模式 3）。
 手册只覆盖注册、DNS、账号权限和 Token 准备，不包含 VPS 命令。完成后再回到
 [README 的安装说明](../README.md) 执行安装。
+
+线路与费用提示：只有非优化线路才推荐使用 CDN。Cloudflare 通常近乎免费；AWS CloudFront、
+Route 53、ACM 等服务可能产生费用，启用 AWS 前请先阅读 [AWS 一次性准备指南](aws-guide.md)。
 
 ## 1. 先注册域名并交给 Cloudflare 托管
 
@@ -146,7 +149,8 @@ Include → Specific zone → example.com
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
   CDN 入口的地址；再按 Globalping 当前剩余免费额度限制本轮测量规模，避免耗尽额度。
 - 使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
-  `eyeball-network` 探针执行 TCP/443 零丢包预筛，每个运营商最多保留 6 个候选。
+  `eyeball-network` 探针执行 TCP/443 零丢包预筛；每个运营商先按 RTT 取前 10，再合并去重并
+  按三网覆盖数、平均 RTT 排序。
 - 最终最多发布 18 个 IP 节点。
 - 订阅始终额外保留一个原始域名兜底节点。客户端 Mihomo 每 600 秒测速，候选快至少
   50 ms 才切换；所有节点的 SNI 和 XHTTP Host 始终使用节点域名。

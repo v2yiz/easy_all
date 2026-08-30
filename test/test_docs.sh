@@ -5,7 +5,6 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
-GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
 PREPARATION_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-aws.sh")
@@ -43,10 +42,16 @@ assert_contains "README Reality stage count" "${README_CONTENT}" \
     '保存最终状态 / 注册 easy_all / 配置配额任务'
 assert_contains "README XHTTP stage count" "${README_CONTENT}" \
     '源站证书 / Xray / Nginx / 本机运行时验收'
-assert_contains "README documents the third Gcore installation branch" "${README_CONTENT}" \
-    'Gcore CDN XHTTP'
-assert_contains "README documents the fourth optimized AWS installation mode" \
+assert_contains "README documents the third optimized AWS installation mode" \
     "${README_CONTENT}" 'AWS CDN 精选 IP - XHTTP'
+assert_contains "README documents three installation modes" "${README_CONTENT}" \
+    '三种安装模式'
+assert_contains "README documents the CDN cost boundary" "${README_CONTENT}" \
+    '只有非优化线路才推荐使用 CDN'
+assert_contains "README documents that Cloudflare is nearly free" "${README_CONTENT}" \
+    'Cloudflare 通常近乎免费'
+assert_contains "README documents possible AWS charges" "${README_CONTENT}" \
+    'AWS CloudFront、'
 assert_contains "README links the preparation guide" "${README_CONTENT}" \
     'docs/preparation-guide.md'
 assert_contains "Preparation guide has the expected title" \
@@ -71,8 +76,6 @@ assert_contains "README documents the hourly Globalping refresh" \
     "${README_CONTENT}" '每小时'
 assert_contains "README documents the 72-hour Globalping fallback" \
     "${README_CONTENT}" '超过 72 小时'
-assert_contains "README documents the Gcore API credential" "${README_CONTENT}" \
-    'GCORE_API_TOKEN'
 assert_contains "README links the renamed preparation guide" "${README_CONTENT}" \
     'docs/preparation-guide.md'
 assert_contains "Preparation guide documents the optimized XHTTP mode" \
@@ -127,8 +130,8 @@ assert_contains "Preparation guide documents carrier-specific eyeball probes" \
     "${PREPARATION_GUIDE_CONTENT}" '`AS4134`、中国联通 `AS4837`、中国移动 `AS9808`'
 assert_contains "Preparation guide keeps the hostname fallback" \
     "${PREPARATION_GUIDE_CONTENT}" '原始域名兜底节点'
-assert_contains "Preparation guide documents six candidates per carrier" \
-    "${PREPARATION_GUIDE_CONTENT}" '每个运营商最多保留 6 个候选'
+assert_contains "Preparation guide documents ten candidates per carrier" \
+    "${PREPARATION_GUIDE_CONTENT}" '每个运营商先按 RTT 取前 10'
 assert_contains "Preparation guide documents its longer client test interval" \
     "${PREPARATION_GUIDE_CONTENT}" '每 600 秒测速'
 assert_contains "Preparation guide documents the 100 MB request boundary" \
@@ -145,10 +148,6 @@ for aws_asset in \
     [[ -s "${ROOT_DIR}/docs/aws/${aws_asset}" ]] \
         || fail "AWS guide asset is missing: ${aws_asset}"
 done
-assert_contains "README documents Gcore's reduced XHTTP window" "${README_CONTENT}" \
-    '`10-14` 秒'
-assert_contains "Gcore guide documents the active XHTTP window" "${GCORE_GUIDE_CONTENT}" \
-    '`10-14` 秒'
 assert_contains "README documents the generic CDN traffic guard module" "${README_CONTENT}" \
     'cdn-traffic-guard.sh'
 assert_contains "README documents the provider-neutral traffic guard service" "${README_CONTENT}" \
@@ -161,14 +160,10 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" \
     'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" \
     '不会生成数万条'
-assert_contains "README documents the IPv6-preferred CDN client default" "${README_CONTENT}" \
-    '`ip-version: ipv6-prefer`'
-assert_contains "AWS guide documents the IPv6-preferred CDN client default" "${AWS_GUIDE_CONTENT}" \
-    '`ip-version: ipv6-prefer`'
-assert_contains "Gcore guide documents the optimized IPv4 client mode" "${GCORE_GUIDE_CONTENT}" \
+assert_contains "README documents the IPv4 CDN client default" "${README_CONTENT}" \
     '`ip-version: ipv4`'
-assert_contains "Gcore guide documents Globalping candidate validation" "${GCORE_GUIDE_CONTENT}" \
-    'SNI/Host'
+assert_contains "AWS guide documents the IPv4 CDN client default" "${AWS_GUIDE_CONTENT}" \
+    '`ip-version: ipv4`'
 assert_contains "README documents the automatic Reality endpoint family" "${README_CONTENT}" \
     'VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`'
 assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \
@@ -181,8 +176,6 @@ assert_contains "README documents bilingual interactive prompts" "${README_CONTE
     '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
 assert_contains "README documents the unified CDN XMUX configuration" "${README_CONTENT}" \
     '`maxConnections: 2`'
-assert_contains "Gcore guide documents explicit gRPC pass-through" "${GCORE_GUIDE_CONTENT}" \
-    '显式启用 gRPC passthrough'
 assert_contains "README documents client connection racing" "${README_CONTENT}" \
     '内置 Mihomo 模板启用 `tcp-concurrent`'
 assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
@@ -190,11 +183,11 @@ assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
 assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" "${README_CONTENT}" \
     '不能替代 XHTTP'
 assert_contains "README documents Xray inbound TCP keepalive" "${README_CONTENT}" \
-    '五种 Xray 入站'
+    '三种 Xray 入站'
 assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" \
     '`13000-60999`'
 assert_contains "README documents XanMod LTS BBRv3 for every profile" \
-    "${README_CONTENT}" '五种模式统一安装 XanMod LTS 内核'
+    "${README_CONTENT}" '三种模式统一安装 XanMod LTS 内核'
 assert_contains "README distinguishes the BBR algorithm from the sysctl name" \
     "${README_CONTENT}" '不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3'
 assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" \
@@ -261,48 +254,8 @@ assert_contains "AWS guide pins CloudFront control operations to us-east-1" \
     "${AWS_GUIDE_CONTENT}" 'AWS 控制区域：选择 `us-east-1`（美国·弗吉尼亚北部）'
 assert_contains "AWS guide explains that the control region is not the traffic region" \
     "${AWS_GUIDE_CONTENT}" '这不是节点的落地位置选择'
-assert_contains "Gcore guide documents the implemented third installation option" \
-    "${GCORE_GUIDE_CONTENT}" '已实现 Gcore CDN XHTTP 安装链路'
-assert_contains "Gcore guide accepts one API token" \
-    "${GCORE_GUIDE_CONTENT}" 'GCORE_API_TOKEN'
-assert_contains "Gcore guide records the Free CDN monthly allowance" \
-    "${GCORE_GUIDE_CONTENT}" '1 TB'
-assert_contains "Gcore guide records the Free CDN request allowance" \
-    "${GCORE_GUIDE_CONTENT}" '10 亿'
-assert_contains "Gcore guide documents the active 980 GB safety boundary" \
-    "${GCORE_GUIDE_CONTENT}" '在 **980 GB** 时阻断'
-assert_contains "Gcore guide uses only full-domain delegation" \
-    "${GCORE_GUIDE_CONTENT}" '只采用**整个主域名**交给'
-assert_contains "Gcore guide requires least-privilege CDN role" \
-    "${GCORE_GUIDE_CONTENT}" 'CDN Editor'
-assert_contains "Gcore guide requires least-privilege DNS role" \
-    "${GCORE_GUIDE_CONTENT}" 'DNS Editor'
-assert_contains "Gcore guide includes API Token creation illustration" \
-    "${GCORE_GUIDE_CONTENT}" 'gcore/gcore-api-token-create.png'
-[[ -s "${ROOT_DIR}/docs/gcore/gcore-api-token-create.png" ]] \
-    || fail "Gcore API Token illustration must be present"
-assert_contains "Gcore guide records the current console CDN role" \
-    "${GCORE_GUIDE_CONTENT}" '**IAM / CDN → 工程师**'
-assert_contains "Gcore guide does not assume the console CDN role is sufficient" \
-    "${GCORE_GUIDE_CONTENT}" '工程师”并不等同于已验证的 CDN 写入权限'
-assert_contains "Gcore guide identifies the current console DNS role" \
-    "${GCORE_GUIDE_CONTENT}" '**Managed DNS → 管理员**'
-assert_contains "Gcore guide explains that token roles are inherited" \
-    "${GCORE_GUIDE_CONTENT}" 'Token 页面不能提升权限'
-assert_contains "Gcore guide defines the required CDN API scope" \
-    "${GCORE_GUIDE_CONTENT}" '/cdn/origin_groups'
-assert_contains "Gcore guide retains real-network XHTTP validation boundary" \
-    "${GCORE_GUIDE_CONTENT}" '上线前的实际连通性检查'
-assert_contains "Gcore guide documents no-card no-paid-resource boundary" \
-    "${GCORE_GUIDE_CONTENT}" '不绑定信用卡'
-for vps_marker in 'sudo ' 'dig +short' 'easy_all apply' './easy_all install'; do
-    assert_not_contains "Gcore guide excludes VPS marker ${vps_marker}" \
-        "${GCORE_GUIDE_CONTENT}" "${vps_marker}"
-done
 aws_markdown_count=$(find "${ROOT_DIR}/docs" -maxdepth 1 -type f -name 'aws*.md' | wc -l | tr -d ' ')
 [[ "${aws_markdown_count}" == "1" ]] || fail "AWS user guidance must stay in one Markdown file"
-gcore_markdown_count=$(find "${ROOT_DIR}/docs" -maxdepth 1 -type f -name 'gcore*.md' | wc -l | tr -d ' ')
-[[ "${gcore_markdown_count}" == "1" ]] || fail "Gcore user guidance must stay in one Markdown file"
 
 for action in \
     'sts:GetCallerIdentity' \

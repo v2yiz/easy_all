@@ -23,7 +23,6 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/reality.sh"
     "profiles/xhttp-cloudflare.sh"
     "profiles/xhttp-aws.sh"
-    "profiles/xhttp-gcore.sh"
     "lib/xhttp-runtime.sh"
     "lib/globalping-cdn.sh"
     "lib/cloudflare-ip-pool.sh"
@@ -68,14 +67,14 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality、Cloudflare/AWS CDN 或 CDN 精选 IP
+  install          交互选择 Reality、Cloudflare 或 AWS CDN 精选 IP
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update      只更新 easy_all 项目代码
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN Provider 云资源
   update-sub       重新选择订阅模式与月度用户配额
-  refresh-cdn-ips  立即刷新模式 2/4/5 的 Globalping 精选 IP 与订阅
+  refresh-cdn-ips  立即刷新模式 2/3 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
   quota-status     显示用户配额与 CDN XHTTP 全局费用保护
@@ -108,25 +107,15 @@ easy_all install
    ├─ CLOUDFLARE_API_TOKEN → Proxied A → Origin CA → Full strict/gRPC/HTTP2/Origin Key 规则
    ├─ Nginx/Xray → Cloudflare 回源 IP 防火墙 → 公网验收
    └─ Cloudflare 官方 IPv4 池轮换抽样 → 三网 Globalping eyeball 预筛 → 域名兜底/客户端二次测速
-├─ [3] AWS CDN - XHTTP（CDN XHTTP）
-   ├─ 适用线路：非优化线路
-   ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略
-   ├─ Route 53 源站域名（必填）→ CloudFront CDN 域名（必填）
+└─ [3] AWS CDN 精选 IP - XHTTP（CDN XHTTP）
+   ├─ 适用线路：非优化线路；AWS 可能产生费用
+   ├─ 使用独立的新装配置，创建 AWS CloudFront 精选 IP 节点
    ├─ 选择 CloudFront 计费：1 Free 固定套餐，或 2 按量付费（默认推荐；升级 Paid plan 本身不收费）
    │  └─ Choose CloudFront billing: 1 Free flat-rate, or 2 pay-as-you-go (recommended; upgrading the Paid plan itself is free)
-   ├─ 选择订阅输出；部署时询问文件名、Token/配额
-   ├─ AWS IAM 授权（默认读取 Access Key，也可用默认凭证链）→ Route 53 源站 A
-   └─ UFW/HTTP-01 → 源站证书/Xray/Nginx → ACM/Paid plan/CloudFront/已选计费模式/CDN Alias → 状态/命令/配额任务
-├─ [4] Gcore CDN 精选 IP - XHTTP
-   ├─ 适用线路：非优化线路；先按 docs/gcore-guide.md 委派整个主域名到 Gcore Managed DNS
-   ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → Gcore 源站域名与 CDN 域名
-   ├─ 选择订阅输出；部署时询问文件名、Token/配额
-   ├─ GCORE_API_TOKEN → 验证 CDN/DNS 权限与权威 DNS 委派 → 源站 A
-   └─ 源组/Gcore CDN/免费证书/CNAME → Globalping 精选 IPv4 → 980 GB 费用保护与定时刷新
-└─ [5] AWS CDN 精选 IP - XHTTP
-   ├─ 使用独立的新装配置，创建 AWS CloudFront 精选 IP 节点
+   │  └─ AWS CloudFront、Route 53、ACM 等服务超出免费额度后可能产生费用
    ├─ Globalping 使用中国大陆探针执行 10 包 TCP/443 测量，每小时刷新
    ├─ 最多保存 10 个零丢包 IPv4；失败保留上一版，超过 72 小时回退 CDN 域名
+   ├─ AWS IAM 授权默认使用 Access Key，也可用默认凭证链
    └─ Mihomo 自动测速选择最优 IP；Base64 输出全部候选节点
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
@@ -165,17 +154,8 @@ detect_installed_mode() {
                     || launcher_die "Cloudflare 状态不完整；请重新安装"
                 printf 'cloudflare\n'
                 ;;
-            gcore)
-                [[ "$(state_value "${EASY_ALL_STATE_FILE}" GCORE_CDN_ENDPOINT_MODE || true)" == "optimized" ]] \
-                    || launcher_die "Gcore 状态不完整；请重新安装"
-                printf 'gcore\n'
-                ;;
             aws)
-                case "$(state_value "${EASY_ALL_STATE_FILE}" AWS_CDN_ENDPOINT_MODE || true)" in
-                domain) printf 'xhttp\n' ;;
-                optimized) printf 'aws-cdn\n' ;;
-                *) launcher_die "AWS CDN 状态不完整；请重新安装" ;;
-                esac
+                printf 'aws-cdn\n'
                 ;;
             *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;
             esac
@@ -195,21 +175,17 @@ choose_install_mode() {
     printf '     Direct - Reality (recommended for optimized routes)\n' >&2
     printf '  2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
     printf '     Cloudflare CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
-    printf '  3. AWS CDN - XHTTP（非优化线路推荐）\n' >&2
-    printf '     AWS CDN - XHTTP (recommended for non-optimized routes)\n' >&2
-    printf '  4. Gcore CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
-    printf '     Gcore CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
-    printf '  5. AWS CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
+    printf '  3. AWS CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
     printf '     AWS CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
+    printf '     提示：只有非优化线路才推荐走 CDN；Cloudflare 近乎免费，AWS 可能产生费用。\n' >&2
+    printf '     Note: CDN is recommended only for non-optimized routes; Cloudflare is nearly free, while AWS may incur charges.\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare\n' ;;
-    3) printf 'xhttp\n' ;;
-    4) printf 'gcore\n' ;;
-    5) printf 'aws-cdn\n' ;;
+    3) printf 'aws-cdn\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -219,8 +195,7 @@ profile_file() {
     case "${mode}" in
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare.sh" ;;
-    xhttp | aws-cdn) candidate="${EASY_ALL_ROOT}/profiles/xhttp-aws.sh" ;;
-    gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
+    aws-cdn) candidate="${EASY_ALL_ROOT}/profiles/xhttp-aws.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -303,8 +278,7 @@ dispatch_profile_command() {
         apply_easy_all
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare" || "${mode}" == "xhttp" \
-            || "${mode}" == "aws-cdn" || "${mode}" == "gcore" ]] \
+        [[ "${mode}" == "cloudflare" || "${mode}" == "aws-cdn" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN XHTTP 模式"
         apply_cloud_resources
         ;;
@@ -317,12 +291,10 @@ dispatch_profile_command() {
         ;;
     update-core) update_current_core ;;
     refresh-cdn-ips)
-        [[ "${mode}" == "cloudflare" || "${mode}" == "aws-cdn" || "${mode}" == "gcore" ]] \
-            || launcher_die "refresh-cdn-ips 仅适用于模式 2/4/5 CDN 精选 IP"
+        [[ "${mode}" == "cloudflare" || "${mode}" == "aws-cdn" ]] \
+            || launcher_die "refresh-cdn-ips 仅适用于模式 2/3 CDN 精选 IP"
         if [[ "${mode}" == "cloudflare" ]]; then
             refresh_cloudflare_cdn_ips
-        elif [[ "${mode}" == "gcore" ]]; then
-            refresh_gcore_cdn_ips
         else
             refresh_aws_cdn_ips
         fi
@@ -341,8 +313,7 @@ dispatch_profile_command() {
         ;;
     quota-sync) quota_sync_usage ;;
     cdn-traffic-sync)
-        [[ "${mode}" == "cloudflare" || "${mode}" == "xhttp" \
-            || "${mode}" == "aws-cdn" || "${mode}" == "gcore" ]] \
+        [[ "${mode}" == "cloudflare" || "${mode}" == "aws-cdn" ]] \
             || launcher_die "cdn-traffic-sync 仅适用于 CDN XHTTP 模式"
         cdn_traffic_protection_sync
         ;;

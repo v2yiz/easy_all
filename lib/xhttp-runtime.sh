@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Shared local runtime for XHTTP Profiles. Provider state and cloud APIs remain
-# in the AWS and Gcore Profiles.
+# in the AWS and Cloudflare Profiles.
 
 readonly SCRIPT_DIR="${XHTTP_PROFILE_ROOT:?XHTTP_PROFILE_ROOT is required}"
 readonly SCRIPT_FILE="${XHTTP_PROFILE_FILE:?XHTTP_PROFILE_FILE is required}"
@@ -208,7 +208,6 @@ collect_subscription_link_domain() {
     case "${CDN_PROVIDER:-}" in
     aws) dns_provider="AWS Route 53 Public Hosted Zone" ;;
     cloudflare) dns_provider="Cloudflare DNS Zone" ;;
-    gcore) dns_provider="Gcore Managed DNS Zone" ;;
     *) dns_provider="与 CDN 域名相同的 DNS 服务商" ;;
     esac
     if [[ -t 0 ]]; then
