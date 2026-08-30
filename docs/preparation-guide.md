@@ -21,8 +21,8 @@
    如果注册商当前要求手机号、实名或其他验证，以注册商页面为准。
 2. 搜索一个自己能长期使用的根域名，例如 `example.com`。本项目需要根域名控制权，后续会在
    它下面使用 `node.example.com` 这样的一级子域名。
-3. 对比首年和续费价格后再下单。若需要长期使用，可以在注册商允许的范围内一次续费多年；不要
-   只根据首年促销价判断长期成本。
+3. 在 Spaceship 的优惠场景下，建议先注册 **1 年**，再续费 **9 年**；按 10 年总价计算，平均每年
+   价格通常更便宜。下单前必须在当前结算页核对首年价、9 年续费价和 10 年总价，活动和价格可能变化。
 4. 保存注册商账号、域名到期日和恢复邮箱。不要把注册商密码、付款信息或后续 API Token 写入
    仓库。
 
@@ -51,6 +51,10 @@ Cloudflare 会为这个 Zone 分配两条名称服务器（Nameservers）。先�
 两条名称服务器，然后保存。
 
 ![Cloudflare 名称服务器示例](preparation/cloudflare-nameservers.png)
+
+下面是注册商侧 Nameservers 页面的脱敏示意图；域名和名称服务器均为示例值。
+
+![Spaceship 域名管理器中修改名称服务器的脱敏示例](preparation/spaceship-nameservers.png)
 
 等待注册商和公共 DNS 更新，直到 Cloudflare 中该 Zone 的状态变为 **Active**。名称服务器切换期间，
 如果域名还承载网站或邮件，请先记录原有的 `A`、`AAAA`、`CNAME`、`MX`、`TXT`、SPF、DKIM、DMARC
@@ -100,6 +104,8 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 2. 进入目标 Zone 的 **Network → gRPC**，将 **gRPC** 手动切换为 **On**。这是 XHTTP
    `stream-up` 的必需条件，Cloudflare 当前没有可用于该开关的 Zone Settings API，安装器无法代办。
 3. 如果部署独立订阅域名，它也必须是同一 Zone 下的一级子域名。
+
+![Cloudflare Network → gRPC 设置路径脱敏示意图](preparation/cloudflare-grpc.svg)
 
 安装、`apply-cloud` 和 `refresh-cdn-ips` 会主动发送 gRPC 形态的边缘请求检查该开关。若收到
 `403 text/html`，命令会停止并明确提示开启 gRPC。普通 `/easy_all-health` 返回 HTTP 200

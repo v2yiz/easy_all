@@ -53,8 +53,14 @@ assert_contains "Preparation guide has the expected title" \
     "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
 assert_contains "Preparation guide documents domain registration" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://www.spaceship.com/'
+assert_contains "Preparation guide recommends the Spaceship 1-plus-9-year plan" \
+    "${PREPARATION_GUIDE_CONTENT}" '先注册 **1 年**，再续费 **9 年**'
 assert_contains "Preparation guide documents Cloudflare sign-up" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://dash.cloudflare.com/sign-up'
+assert_contains "Preparation guide embeds the registrar Nameservers illustration" \
+    "${PREPARATION_GUIDE_CONTENT}" 'preparation/spaceship-nameservers.png'
+assert_contains "Preparation guide embeds the Cloudflare gRPC illustration" \
+    "${PREPARATION_GUIDE_CONTENT}" 'preparation/cloudflare-grpc.svg'
 assert_contains "Preparation guide documents Globalping GitHub sign-in" \
     "${PREPARATION_GUIDE_CONTENT}" 'Sign in with GitHub'
 assert_contains "Preparation guide documents the Globalping token page" \

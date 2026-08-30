@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" role="img" aria-labelledby="title desc">
+  <title id="title">Cloudflare Network gRPC 脱敏示意图</title>
+  <desc id="desc">示意在目标 Cloudflare Zone 中打开 Network 菜单，进入 gRPC 页面并将开关切换为 On。</desc>
+  <defs>
+    <linearGradient id="bar" x1="0" x2="1">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset="1" stop-color="#f5f7fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#18324d" flood-opacity=".12"/>
+    </filter>
+    <style>
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; }
+      .muted { fill: #667085; }
+      .ink { fill: #152238; }
+      .blue { fill: #1769e0; }
+      .small { font-size: 22px; }
+      .body { font-size: 27px; }
+      .label { font-size: 24px; font-weight: 600; }
+      .title { font-size: 38px; font-weight: 700; }
+    </style>
+  </defs>
+  <rect width="1400" height="860" fill="#f4f7fb"/>
+  <rect x="38" y="34" width="1324" height="792" rx="18" fill="#fff" filter="url(#shadow)"/>
+  <rect x="38" y="34" width="1324" height="82" rx="18" fill="url(#bar)"/>
+  <circle cx="78" cy="75" r="12" fill="#ff625d"/><circle cx="118" cy="75" r="12" fill="#ffc043"/><circle cx="158" cy="75" r="12" fill="#32c759"/>
+  <rect x="230" y="55" width="1000" height="40" rx="20" fill="#fff" stroke="#d9e1ed"/>
+  <text x="264" y="82" class="sans small muted">dash.cloudflare.com › example.com › Network › gRPC</text>
+
+  <rect x="38" y="116" width="300" height="710" fill="#101828"/>
+  <text x="78" y="180" class="sans title" fill="#fff">CLOUDFLARE</text>
+  <text x="78" y="244" class="sans body" fill="#c9d4e3">Overview</text>
+  <text x="78" y="302" class="sans body" fill="#c9d4e3">DNS</text>
+  <text x="78" y="360" class="sans body" fill="#c9d4e3">SSL/TLS</text>
+  <rect x="58" y="386" width="260" height="60" rx="12" fill="#1769e0"/>
+  <text x="78" y="425" class="sans body" fill="#fff" font-weight="700">Network</text>
+  <text x="78" y="500" class="sans body" fill="#c9d4e3">Security</text>
+  <text x="78" y="558" class="sans body" fill="#c9d4e3">Rules</text>
+  <path d="M318 416 L370 416" stroke="#1769e0" stroke-width="5"/><path d="M360 404 L376 416 L360 428" fill="none" stroke="#1769e0" stroke-width="5"/>
+
+  <text x="398" y="182" class="sans title ink">Network</text>
+  <text x="398" y="226" class="sans body muted">Zone: example.com <tspan fill="#98a2b3">(示例域名，已脱敏)</tspan></text>
+  <rect x="398" y="270" width="900" height="458" rx="16" fill="#fbfcfe" stroke="#dce4ef"/>
+  <text x="444" y="332" class="sans label ink">Network features</text>
+  <rect x="444" y="372" width="808" height="112" rx="14" fill="#fff" stroke="#cfd8e5"/>
+  <text x="480" y="420" class="sans body ink" font-weight="700">gRPC</text>
+  <text x="480" y="458" class="sans small muted">Enable gRPC connections for this Zone</text>
+  <rect x="1086" y="398" width="116" height="54" rx="27" fill="#1769e0"/>
+  <circle cx="1174" cy="425" r="20" fill="#fff"/>
+  <text x="996" y="432" class="sans small blue" text-anchor="end" font-weight="700">On</text>
+  <rect x="444" y="528" width="808" height="142" rx="14" fill="#eef5ff" stroke="#b9d4ff"/>
+  <text x="480" y="576" class="sans label blue">操作路径</text>
+  <text x="480" y="620" class="sans body ink">目标 Zone → Network → gRPC → On</text>
+  <text x="480" y="656" class="sans small muted">示例图只保留菜单和开关，账号、Zone 详情均已替换。</text>
+
+  <rect x="398" y="756" width="900" height="48" rx="12" fill="#fff3e8"/>
+  <text x="426" y="788" class="sans small" fill="#9a4d00">这是唯一需要手动开启的 Cloudflare 开关；不要用 API Token 代替此步骤。</text>
+</svg>
