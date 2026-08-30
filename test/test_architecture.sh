@@ -26,7 +26,7 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
 
 for required_path in \
     profiles/reality.sh profiles/xhttp-cloudflare.sh profiles/xhttp-aws.sh profiles/xhttp-gcore.sh \
-    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/quota.sh lib/cdn-traffic-guard.sh \
+    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh lib/cdn-traffic-guard.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
     lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
@@ -57,6 +57,12 @@ shared_modules=(
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
     && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* ]] \
     || fail "Globalping CDN module is missing from a CDN Provider runtime"
+[[ "${LAUNCHER_CONTENT}" == *'"lib/cloudflare-ip-pool.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"'* \
+    && "$(<"${XHTTP_PROFILE}")" != *'cloudflare-ip-pool.sh'* \
+    && "$(<"${GCORE_PROFILE}")" != *'cloudflare-ip-pool.sh'* ]] \
+    || fail "Cloudflare official IP pool must remain scoped to mode 2"
 [[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-cloudflare.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-cloudflare.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \

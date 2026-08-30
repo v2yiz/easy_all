@@ -97,7 +97,7 @@ flowchart TD
     C0 --> C1[系统预检 / 冲突检查 / 备份]
     C1 --> C2[Cloudflare Zone Token / 单一 proxied A / Universal SSL / Origin CA]
     C2 --> C3[Full strict / HTTP2 gRPC / Transform Rule Origin Key / Cloudflare IP 防火墙]
-    C3 --> C4[Globalping 中国大陆 IPv4 预筛 / VPS SNI 健康检查 / 客户端测速订阅]
+    C3 --> C4[官方 IPv4 池轮换抽样 / 三网 eyeball 预筛 / VPS HTTP2 健康检查]
     C4 --> C5[保存缓存 / 注册每小时刷新 / 输出节点与订阅]
     C5 --> Z
 
@@ -560,10 +560,16 @@ Universal SSL 终止客户端 TLS；VPS 使用 Origin CA 证书，SSL 模式固�
 HTTP/2 与 gRPC，Transform Rule 为该节点名的回源请求注入 Origin Key，Nginx 同时校验 Host 与该密钥。
 VPS 防火墙只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列表更新。
 
-节点连接地址是 Globalping 中国大陆探针筛出的 Cloudflare IPv4，但 `servername` 与
-`xhttp-opts.host` 仍必须是 `node.example.com`。VPS 每小时更新零丢包缓存并在失效时保留旧缓存；
-缓存超过 72 小时回退为节点域名。Mihomo 每 300 秒在客户端网络运行一次 `url-test`；只有候选比
-当前节点快至少 50 ms 才切换，以减少抖动。切换影响后续新连接，不会迁移已经建立的 XHTTP 会话。
+模式 2 从 Cloudflare 官方 IPv4 CIDR 按 `/24` 轮换抽样，每轮测试 120 个地址。Globalping
+分别使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的
+`eyeball-network` 探针执行 TCP/443 零丢包预筛；VPS 再以 `node.example.com` 作为 SNI/Host
+验证 HTTPS、HTTP/2 与 `/easy_all-health`。每个运营商最多保留 6 个候选，最终最多发布 18 个
+IP 节点，并始终额外发布原始域名兜底节点。所有节点的 `servername` 与 `xhttp-opts.host`
+仍必须是 `node.example.com`。
+
+VPS 每小时更新缓存并在刷新失败时保留旧缓存；缓存超过 72 小时只发布域名节点。Mihomo 每
+600 秒在客户端网络运行一次 `url-test`；只有候选比当前节点快至少 50 ms 才切换，以减少抖动。
+切换影响后续新连接，不会迁移已经建立的 XHTTP 会话。
 
 该模式只使用一枚限制到目标 Zone 的 API Token（Zone Read、DNS Edit、Transform Rules Edit、
 Config Rules Edit、Zone Settings Edit、SSL and Certificates Edit）。完整的
@@ -633,11 +639,10 @@ xhttp-opts.host: AWS CDN 域名
 CloudFront 通过 TLS SNI 识别对应分配，因此连接地址可以是经过筛选的边缘 IPv4，但
 `servername` 和 XHTTP `host` 必须继续使用已配置并由 ACM 证书覆盖的 CDN 域名。
 
-模式 2 对 Cloudflare、模式 4 对 Gcore 使用相同算法：节点连接地址替换为精选 IPv4，但 SNI 和 XHTTP Host 始终保持
-Gcore CDN 自定义域名。VPS 每小时通过 Globalping 中国大陆探针执行一次 IPv4 TCP/443 测量，每个探针发送 10 包。
-只保留测量完成且 `loss=0`、`drop=0`、`rcv=10` 的地址，再由 VPS 使用 CDN 域名作为 SNI
-访问 `/easy_all-health` 复核当前 Provider 的 CDN 回源。结果去重并按覆盖探针数、平均 RTT 排序，
-最多保存 10 个：
+模式 2 使用 Cloudflare 官方 IPv4 CIDR 抽样与三网探针算法，具体见上一节。模式 4 和模式 5
+继续以 CDN 域名为目标，通过 Globalping 中国大陆探针执行 IPv4 TCP/443 测量，每个探针发送
+10 包。只保留测量完成且 `loss=0`、`drop=0`、`rcv=10` 的地址，再由 VPS 使用 CDN 域名作为
+SNI 访问 `/easy_all-health` 复核。结果去重并按覆盖探针数、平均 RTT 排序，最多保存 10 个：
 
 ```text
 /etc/easy_all/aws-cdn-ips.json
@@ -645,11 +650,11 @@ Gcore CDN 自定义域名。VPS 每小时通过 Globalping 中国大陆探针执
 /etc/easy_all/cloudflare-cdn-ips.json
 ```
 
-刷新失败时继续使用上一版有效缓存；缓存超过 72 小时则生成原 CDN 域名回退节点。Mihomo
-订阅为候选节点生成 `url-test` 组，每 300 秒从客户端实际网络测速；候选快至少 50 ms 时才自动
-切换，且只影响后续新连接；Base64
-订阅只包含多个候选 URI，不提供策略组语义。客户端请求仍由 Nginx 读取静态订阅文件，不会
-等待 Globalping。
+刷新失败时继续使用上一版有效缓存；缓存超过 72 小时则生成原 CDN 域名回退节点。模式 2
+即使缓存有效也保留域名兜底，并将 IP 候选限制为 18 个，因此 `url-test` 总计最多 19 个节点。
+模式 2 的 Mihomo 订阅每 600 秒、模式 4/5 每 300 秒从客户端实际网络测速；候选快至少 50 ms
+时才自动切换，且只影响后续新连接；Base64 订阅只包含多个候选 URI，不提供策略组语义。
+客户端请求仍由 Nginx 读取静态订阅文件，不会等待 Globalping。
 
 手动刷新：
 

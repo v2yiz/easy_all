@@ -26,6 +26,7 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/xhttp-gcore.sh"
     "lib/xhttp-runtime.sh"
     "lib/globalping-cdn.sh"
+    "lib/cloudflare-ip-pool.sh"
     "lib/quota.sh"
     "lib/cdn-traffic-guard.sh"
     "lib/platform.sh"
@@ -106,7 +107,7 @@ easy_all install
    ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → Cloudflare 一级子域名
    ├─ CLOUDFLARE_API_TOKEN → Proxied A → Origin CA → Full strict/gRPC/HTTP2/Origin Key 规则
    ├─ Nginx/Xray → Cloudflare 回源 IP 防火墙 → 公网验收
-   └─ Globalping 中国大陆探针预筛 → 客户端二次测速 → 每小时刷新
+   └─ Cloudflare 官方 IPv4 池轮换抽样 → 三网 Globalping eyeball 预筛 → 域名兜底/客户端二次测速
 ├─ [3] AWS CDN - XHTTP（CDN XHTTP）
    ├─ 适用线路：非优化线路
    ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略

@@ -84,6 +84,7 @@ assert_not_contains "Cloudflare API token is never persisted in state" \
 
 (
     # The profile must be sourceable without calling external services.
+    GLOBALPING_CACHE_FILE_OVERRIDE="${TMP_DIR}/cloudflare-cdn-ips.json"
     source "${PROFILE}"
 
     CLOUDFLARE_ZONE_ID='zone-test'
@@ -91,6 +92,147 @@ assert_not_contains "Cloudflare API token is never persisted in state" \
     CLOUDFLARE_ORIGIN_DOMAIN='node.example.com'
     XHTTP_PATH='/xhttp-test-path'
     ORIGIN_HEADER_SECRET='0123456789abcdef'
+
+    ranges_file="${TMP_DIR}/cloudflare-ranges.txt"
+    printf '%s\n' '104.16.0.0/23' '173.245.48.0/24' >"${ranges_file}"
+    candidate_pool=$(cloudflare_generate_candidate_pool \
+        "${ranges_file}" 3 2000000000)
+    assert_equal "Cloudflare samples one address from each available /24" \
+        "3" "$(wc -l <<<"${candidate_pool}" | tr -d ' ')"
+    assert_equal "Cloudflare /24 sampling does not emit duplicate addresses" \
+        "3" "$(cut -f1 <<<"${candidate_pool}" | sort -u | wc -l | tr -d ' ')"
+    while IFS=$'\t' read -r candidate_ip source_cidr; do
+        cloudflare_ipv4_in_cidr "${candidate_ip}" "${source_cidr}" \
+            || fail "Cloudflare candidate ${candidate_ip} is outside ${source_cidr}"
+        [[ "${candidate_ip##*.}" != "0" && "${candidate_ip##*.}" != "255" ]] \
+            || fail "Cloudflare candidate uses a network or broadcast address"
+    done <<<"${candidate_pool}"
+
+    measurement_request=$(cloudflare_globalping_measurement_request \
+        '104.16.0.10')
+    jq -e '
+      .type == "ping"
+      and .target == "104.16.0.10"
+      and .timeout == 15
+      and .measurementOptions == {
+        packets:5, protocol:"TCP", port:443
+      }
+      and .locations == [
+        {country:"CN",asn:4134,tags:["eyeball-network"],limit:1},
+        {country:"CN",asn:4837,tags:["eyeball-network"],limit:1},
+        {country:"CN",asn:9808,tags:["eyeball-network"],limit:1}
+      ]
+    ' <<<"${measurement_request}" >/dev/null \
+        || fail "Cloudflare Globalping request must target three mainland eyeball carriers"
+
+    measurements_file="${TMP_DIR}/cloudflare-measurements.ndjson"
+    cat >"${measurements_file}" <<'EOF'
+{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"city":"Shanghai","network":"Telecom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":20}}},{"probe":{"country":"CN","asn":4837,"city":"Beijing","network":"Unicom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":40}}}]}}
+{"ip":"172.64.0.20","source_cidr":"172.64.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"city":"Guangzhou","network":"Mobile","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":30}}},{"probe":{"country":"CN","asn":4134,"city":"Hangzhou","network":"Telecom","tags":["datacenter-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":5,"rcv":5,"drop":0,"avg":1}}}]}}
+EOF
+    observations_file="${TMP_DIR}/cloudflare-observations.ndjson"
+    cloudflare_zero_loss_observations \
+        "${measurements_file}" >"${observations_file}"
+    assert_equal "Cloudflare accepts only successful eyeball carrier observations" \
+        "3" "$(wc -l <"${observations_file}" | tr -d ' ')"
+    ranked=$(cloudflare_select_carrier_candidates \
+        "${observations_file}" 3 9)
+    assert_equal "Cloudflare aggregates the same IP across carriers" \
+        "2" "$(jq -r '.[] | select(.ip == "104.16.0.10") | .carrier_count' \
+            <<<"${ranked}")"
+
+    generated_cache="${TMP_DIR}/cloudflare-generated-cache.json"
+    (
+        cloudflare_fetch_origin_ipv4_ranges() {
+            printf '%s\n' '104.16.0.0/24'
+        }
+        cloudflare_collect_globalping_measurements() {
+            local pool_file=$1 destination=$2 ip source_cidr
+            IFS=$'\t' read -r ip source_cidr <"${pool_file}"
+            jq -cn --arg ip "${ip}" --arg source_cidr "${source_cidr}" '{
+              ip:$ip,
+              source_cidr:$source_cidr,
+              measurement:{results:[
+                {
+                  probe:{country:"CN",asn:4134,city:"Shanghai",network:"Telecom",tags:["eyeball-network"]},
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:5,rcv:5,drop:0,avg:20}}
+                },
+                {
+                  probe:{country:"CN",asn:4837,city:"Beijing",network:"Unicom",tags:["eyeball-network"]},
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:5,rcv:5,drop:0,avg:30}}
+                },
+                {
+                  probe:{country:"CN",asn:9808,city:"Guangzhou",network:"Mobile",tags:["eyeball-network"]},
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:5,rcv:5,drop:0,avg:40}}
+                }
+              ]}
+            }' >"${destination}"
+        }
+        cloudflare_validate_pool_candidate() { return 0; }
+        GLOBALPING_NOW_EPOCH=2000000000
+        cloudflare_build_official_pool_cache "${generated_cache}"
+    )
+    jq -e '
+      .version == 3
+      and .provider == "cloudflare"
+      and .candidate_source == "cloudflare-official-ipv4-cidrs"
+      and .probe_type == "eyeball-network"
+      and .carrier_asns == [4134,4837,9808]
+      and .pool_sample_size == 1
+      and .measurement_count == 1
+      and (.candidates | length) == 1
+      and .candidates[0].carrier_count == 3
+    ' "${generated_cache}" >/dev/null \
+        || fail "Cloudflare official-pool cache schema is invalid"
+
+    validation_calls="${TMP_DIR}/cloudflare-validation-calls"
+    curl() {
+        printf '%s\n' "$*" >>"${validation_calls}"
+        printf 'easy_all ok\n2'
+    }
+    cloudflare_validate_pool_candidate '104.16.0.10' \
+        || fail "Cloudflare candidate health validation should pass"
+    assert_contains "Cloudflare health validation requires HTTP/2" \
+        "$(<"${validation_calls}")" '--http2'
+    assert_contains "Cloudflare health validation pins the candidate with domain SNI" \
+        "$(<"${validation_calls}")" \
+        '--resolve node.example.com:443:104.16.0.10'
+    unset -f curl
+
+    GLOBALPING_NOW_EPOCH=2000000000
+    CDN_PROVIDER="cloudflare"
+    CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
+    XHTTP_NODE_NAME="VLESS_XHTTP_H2"
+    cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
+{"version":3,"provider":"cloudflare","domain":"node.example.com","candidate_source":"cloudflare-official-ipv4-cidrs","measured_at":"2033-05-18T03:33:20Z","measured_at_epoch":2000000000,"probe_type":"eyeball-network","carrier_asns":[4134,4837,9808],"candidates":[{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","observations":2,"carrier_count":2,"avg_rtt_ms":30,"asns":[4134,4837]}]}
+EOF
+    globalping_cache_valid \
+        || fail "Cloudflare official-pool cache must be accepted"
+    assert_equal "Cloudflare endpoints always retain the domain fallback" \
+        $'node.example.com\n104.16.0.10' "$(cdn_client_endpoints)"
+    assert_equal "Cloudflare fallback node has an explicit name" \
+        "VLESS_XHTTP_H2_DOMAIN" "$(xhttp_node_name_for_endpoint 1)"
+    assert_equal "Cloudflare optimized IP numbering starts after the fallback" \
+        "VLESS_XHTTP_H2_IP_01" "$(xhttp_node_name_for_endpoint 2)"
+    VLESS_UUID="00000000-0000-4000-8000-000000000001"
+    mihomo_nodes=$(build_mihomo_nodes)
+    assert_contains "Cloudflare subscription renders the domain fallback node" \
+        "${mihomo_nodes}" '"VLESS_XHTTP_H2_DOMAIN"'
+    assert_contains "Cloudflare subscription renders an optimized IP node" \
+        "${mihomo_nodes}" '"VLESS_XHTTP_H2_IP_01"'
+    assert_contains "Cloudflare optimized IP keeps the CDN hostname as SNI" \
+        "${mihomo_nodes}" 'servername: "node.example.com"'
+    mihomo_group=$(build_mihomo_proxy_groups)
+    assert_contains "Cloudflare URL test includes the domain fallback" \
+        "${mihomo_group}" '- "VLESS_XHTTP_H2_DOMAIN"'
+    assert_contains "Cloudflare URL test includes the optimized IP" \
+        "${mihomo_group}" '- "VLESS_XHTTP_H2_IP_01"'
+    assert_contains "Cloudflare URL test runs every 600 seconds" \
+        "${mihomo_group}" 'interval: 600'
+    assert_equal "Cloudflare keeps six final candidates per carrier" \
+        "6" "${CLOUDFLARE_CANDIDATES_PER_CARRIER}"
+    assert_equal "Cloudflare publishes at most eighteen optimized IPs" \
+        "18" "${CLOUDFLARE_CANDIDATE_LIMIT}"
 
     # Mock the provider API: a missing DNS record must produce an orange-cloud
     # A record, never an unproxied origin record.

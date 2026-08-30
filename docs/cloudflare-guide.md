@@ -42,8 +42,13 @@ Include → Specific zone → example.com
 - 开启 origin HTTP/2，并写入 XHTTP 回源密钥规则。
 - 提示在 Cloudflare 控制台 **Network → gRPC** 手动开启 gRPC（当前没有可用的 Zone Settings API）。
 - 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
-- 每小时通过 Globalping 中国大陆探针筛选零丢包 IPv4，最多保留 10 个候选。
-- 客户端 Mihomo 每 300 秒测速，候选快至少 50 ms 才切换；SNI 和 XHTTP Host 始终使用节点域名。
+- 每小时读取 Cloudflare 官方 IPv4 CIDR，拆分为 `/24` 后轮换抽样 120 个地址。
+- 使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
+  `eyeball-network` 探针执行 TCP/443 零丢包预筛，每个运营商最多保留 6 个候选。
+- VPS 使用节点域名作为 SNI/Host，要求候选通过 HTTPS、HTTP/2 和
+  `/easy_all-health` 复核；最终最多发布 18 个 IP 节点。
+- 订阅始终额外保留一个原始域名兜底节点。客户端 Mihomo 每 600 秒测速，候选快至少
+  50 ms 才切换；所有节点的 SNI 和 XHTTP Host 始终使用节点域名。
 - 测量失败继续使用上次有效缓存；缓存超过 72 小时则回退到节点域名。
 
 安装器不会覆盖其他 DNS 记录或规则。发现同名记录、规则歧义或权限不足时会停止并保留本机状态。

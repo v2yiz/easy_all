@@ -23,12 +23,15 @@ readonly CLOUDFLARE_ORIGIN_IPS_FILE="/etc/easy_all/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cloudflare-origin"
 XHTTP_CDN_NAME_OVERRIDE="Cloudflare"
 XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Cloudflare DNS"
+XHTTP_URL_TEST_INTERVAL_OVERRIDE=600
 
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 # shellcheck source=lib/globalping-cdn.sh
 GLOBALPING_CACHE_BASENAME_OVERRIDE="cloudflare-cdn-ips.json"
 source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
+# shellcheck source=lib/cloudflare-ip-pool.sh
+source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"
 
 cloudflare_collect_api_token() {
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
@@ -515,7 +518,7 @@ collect_install_inputs() {
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "" "CDN hostname used by clients")}"); validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     AWS_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
-    info "Cloudflare 模式使用中国大陆 Globalping 探针筛选 CDN IPv4。"; collect_globalping_token; validate_globalping_access || die "Globalping Token 验证失败"
+    info "Cloudflare 模式从官方 IPv4 CIDR 轮换抽样，并使用三网 Globalping eyeball 探针预筛。"; collect_globalping_token; validate_globalping_access || die "Globalping Token 验证失败"
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}; XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"; validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}; validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"; ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "Origin header 密钥无效"
@@ -565,7 +568,7 @@ xhttp_render_xray_config() {
 }
 
 show_node() { collect_installed_state; printf '\n协议: VLESS XHTTP stream-up/H2 over Cloudflare CDN\n节点链接:\n%s\n\n' "$(build_node_link)"; build_mihomo_node; }
-show_status() { require_root; collect_installed_state; resolve_cdn_client_ip_family; printf '协议: xhttp（Cloudflare CDN）\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\nGlobalping: optimized IPv4\n' "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"; show_globalping_status; }
+show_status() { require_root; collect_installed_state; resolve_cdn_client_ip_family; printf '协议: xhttp（Cloudflare CDN）\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: enabled\n' "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"; show_globalping_status; }
 
 refresh_cloudflare_cdn_ips() {
     local refresh_status=0

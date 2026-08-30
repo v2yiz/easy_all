@@ -53,6 +53,7 @@ readonly XHTTP_XMUX_C_MAX_REUSE_TIMES="0"
 readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="300-600"
 readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="900-1800"
 readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
+readonly XHTTP_URL_TEST_INTERVAL="${XHTTP_URL_TEST_INTERVAL_OVERRIDE:-300}"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-CloudFront}"
 readonly XHTTP_ORIGIN_DNS_NAME="${XHTTP_ORIGIN_DNS_NAME_OVERRIDE:-Route 53}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
@@ -689,9 +690,9 @@ EOF
             "$(jq -Rn --arg value "$(xhttp_node_name_for_endpoint "${index}")" '$value')"
         index=$((index + 1))
     done < <(xhttp_client_endpoints)
-    cat <<'EOF'
+    cat <<EOF
       url: https://www.gstatic.com/generate_204
-      interval: 300
+      interval: ${XHTTP_URL_TEST_INTERVAL}
       tolerance: 50
       lazy: false
 EOF

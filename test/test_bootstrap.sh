@@ -23,6 +23,7 @@ content=$(<"${SCRIPT}")
     && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-gcore.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp-runtime.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/globalping-cdn.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/lib/cloudflare-ip-pool.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/cdn-traffic-guard.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/platform.sh"'* \

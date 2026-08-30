@@ -110,6 +110,16 @@ assert_contains "Cloudflare guide embeds the API token walkthrough" \
     || fail "Cloudflare API token walkthrough asset is missing"
 assert_contains "Cloudflare guide documents Globalping fallback" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '超过 72 小时'
+assert_contains "Cloudflare guide documents the official IPv4 pool" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
+assert_contains "Cloudflare guide documents carrier-specific eyeball probes" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`AS4134`、中国联通 `AS4837`、中国移动 `AS9808`'
+assert_contains "Cloudflare guide keeps the hostname fallback" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '原始域名兜底节点'
+assert_contains "Cloudflare guide documents six candidates per carrier" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '每个运营商最多保留 6 个候选'
+assert_contains "Cloudflare guide documents its longer client test interval" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '每 600 秒测速'
 assert_contains "Cloudflare guide documents the 100 MB request boundary" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '**100 MB**'
 assert_not_contains "Cloudflare guide does not instruct manual proxied record creation" \
