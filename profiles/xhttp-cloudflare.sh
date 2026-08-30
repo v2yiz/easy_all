@@ -52,11 +52,14 @@ cloudflare_api_request() {
         "${CLOUDFLARE_API_TOKEN}" >"${headers}"
     chmod 0600 "${headers}"
     if [[ -n "${payload}" ]]; then
-        response=$(curl -fsS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+        # Do not use curl's --fail here: Cloudflare returns a useful JSON
+        # error body for 4xx responses, and jq below can surface that detail
+        # instead of reducing it to a generic "request failed" message.
+        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
             -H "@${headers}" \
             --data "${payload}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     else
-        response=$(curl -fsS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
             -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     fi
     jq -e '.success == true' <<<"${response}" >/dev/null || { jq -c '.errors // .' <<<"${response}" >&2; die "Cloudflare API 返回错误：${method} ${path}"; }
@@ -480,9 +483,14 @@ cloudflare_cleanup_previous_subscription_host() {
 cloudflare_configure_cdn() {
     cloudflare_configure_rules
     # Orange-cloud DNS is Cloudflare's CDN attachment.  HTTP/2 to origin is
-    # controlled by the zone setting; gRPC requires the matching zone setting.
-    cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/origin_max_http_version" '{value:"2"}' >/dev/null
-    cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/grpc" '{value:"on"}' >/dev/null
+    # controlled by the zone setting.  Cloudflare's current public API does
+    # not expose the Network → gRPC toggle, so that one is called out below.
+    # Keep these payloads valid JSON.  Cloudflare rejects the shell-style
+    # `{value:"..."}` form with HTTP 400 because JSON object keys must be
+    # quoted.  jq also makes the intended string values explicit.
+    cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/origin_max_http_version" \
+        "$(jq -cn '{value:"2"}')" >/dev/null
+    warn "请在 Cloudflare 控制台的 Network → gRPC 中手动开启 gRPC；该开关当前没有可用的 Zone Settings API"
 }
 
 cloudflare_validate_cdn_health() {
@@ -503,7 +511,8 @@ cloudflare_wait_for_health() {
 collect_install_inputs() {
     PROTOCOL=xhttp; CDN_PROVIDER=cloudflare; CLOUDFLARE_CDN_ENDPOINT_MODE=optimized; choose_cdn_client_ip_family; configure_cdn_traffic_protection
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}; VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}; validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
-    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "Cloudflare CDN 节点一级子域名" "" "Cloudflare CDN first-level hostname")}"); validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
+    info "Cloudflare 模式采用单域名架构：此域名同时用于客户端连接、Cloudflare 回源和 VPS 证书。"
+    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "" "CDN hostname used by clients")}"); validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     AWS_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     info "Cloudflare 模式使用中国大陆 Globalping 探针筛选 CDN IPv4。"; collect_globalping_token; validate_globalping_access || die "Globalping Token 验证失败"
@@ -556,7 +565,7 @@ xhttp_render_xray_config() {
 }
 
 show_node() { collect_installed_state; printf '\n协议: VLESS XHTTP stream-up/H2 over Cloudflare CDN\n节点链接:\n%s\n\n' "$(build_node_link)"; build_mihomo_node; }
-show_status() { require_root; collect_installed_state; resolve_cdn_client_ip_family; printf '协议: xhttp（Cloudflare CDN）\n源站域名: %s\nCDN 域名: %s\nOrigin CA: %s（到期 %s）\nGlobalping: optimized IPv4\n' "${CLOUDFLARE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"; show_globalping_status; }
+show_status() { require_root; collect_installed_state; resolve_cdn_client_ip_family; printf '协议: xhttp（Cloudflare CDN）\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\nGlobalping: optimized IPv4\n' "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"; show_globalping_status; }
 
 refresh_cloudflare_cdn_ips() {
     local refresh_status=0

@@ -33,6 +33,10 @@ assert_not_contains() {
 
 [[ -f "${PROFILE}" ]] || fail "Cloudflare XHTTP profile is missing"
 bash -n "${PROFILE}"
+assert_contains "Cloudflare prompt names the client CDN hostname" \
+    "$(<"${PROFILE}")" '客户端连接的 CDN 节点域名'
+assert_contains "Cloudflare explains the single-host architecture" \
+    "$(<"${PROFILE}")" 'Cloudflare 模式采用单域名架构'
 if standalone_output=$(bash "${PROFILE}" 2>&1); then
     fail "Cloudflare profile must not be a standalone entry point"
 fi
@@ -66,7 +70,7 @@ assert_contains "Cloudflare profile selects strict origin TLS" \
 assert_contains "Cloudflare profile enables HTTP/2 to origin" \
     "${profile_content}" 'origin_max_http_version'
 assert_contains "Cloudflare profile enables gRPC" \
-    "${profile_content}" 'grpc'
+    "${profile_content}" 'Network → gRPC'
 assert_contains "Cloudflare profile manages stable reference rules" \
     "${profile_content}" '/rulesets'
 assert_contains "Cloudflare rules use stable refs" \
@@ -172,6 +176,23 @@ assert_not_contains "Cloudflare API token is never persisted in state" \
     assert_contains "header rule preserves the origin secret" "$(<"${rule_calls}")" \
         'X-Easy-All-Origin-Key'
     assert_contains "strict rule enforces strict TLS" "$(<"${rule_calls}")" '"ssl":"strict"'
+
+    # Zone-setting writes must send real JSON.  A shell-style object such as
+    # {value:"2"} is rejected by Cloudflare with HTTP 400.
+    setting_calls="${TMP_DIR}/setting-calls"
+    : >"${setting_calls}"
+    cloudflare_configure_rules() { :; }
+    cloudflare_api_request() {
+        printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >>"${setting_calls}"
+        printf '{}\n'
+    }
+    cloudflare_configure_cdn
+    origin_http_payload=$(awk -F '\t' '$2 ~ /origin_max_http_version/ {print $3}' "${setting_calls}")
+    jq -e '.value == "2"' <<<"${origin_http_payload}" >/dev/null \
+        || fail "Cloudflare origin HTTP/2 setting payload must be valid JSON"
+    if grep -q '/settings/grpc' "${setting_calls}"; then
+        fail "Cloudflare profile must not call the unavailable gRPC zone-setting API"
+    fi
 )
 
 printf 'easy_all Cloudflare CDN profile tests passed\n'

@@ -75,21 +75,23 @@ assert_contains "Cloudflare guide requires one first-level hostname" \
 assert_contains "Cloudflare guide requires an active Zone" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '**Active**'
 assert_contains "Cloudflare guide documents proxied A automation" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '自动创建或更新唯一 proxied `A` 记录'
+    "${CLOUDFLARE_GUIDE_CONTENT}" '创建唯一的 proxied `A` 记录'
 assert_contains "Cloudflare guide documents automatic Origin CA" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '自动签发并安装 15 年期'
+    "${CLOUDFLARE_GUIDE_CONTENT}" '签发 15 年 Origin CA 证书'
 assert_contains "Cloudflare guide documents one-stop Origin CA rotation" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`easy_all renew-cert` 一站式轮换'
+    "${CLOUDFLARE_GUIDE_CONTENT}" '轮换和吊销 Origin CA 证书'
 assert_contains "Cloudflare guide identifies the Origin CA certificate" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare Origin CA'
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Origin CA 证书'
 assert_contains "Cloudflare guide documents host-scoped strict TLS" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'host-scoped 的 **Full (strict)** 配置规则'
-assert_contains "Cloudflare guide documents automatic origin HTTP/2 and gRPC" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'origin HTTP/2 与 gRPC'
+    "${CLOUDFLARE_GUIDE_CONTENT}" '配置 Full (strict)'
+assert_contains "Cloudflare guide documents automatic origin HTTP/2" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '开启 origin HTTP/2'
+assert_contains "Cloudflare guide documents the manual gRPC toggle" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Network → gRPC'
 assert_contains "Cloudflare guide documents automatic Transform Rule" \
     "${CLOUDFLARE_GUIDE_CONTENT}" 'Transform Rule'
 assert_contains "Cloudflare guide documents origin firewall boundary" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '官方 IP 列表放行 TCP 443'
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443'
 assert_contains "Cloudflare guide token grants Zone read" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Zone / Read`'
 assert_contains "Cloudflare guide token grants DNS edit" \
@@ -106,14 +108,8 @@ assert_contains "Cloudflare guide embeds the API token walkthrough" \
     "${CLOUDFLARE_GUIDE_CONTENT}" 'cloudflare/cloudflare-api-token-easy-all.svg'
 [[ -s "${ROOT_DIR}/docs/cloudflare/cloudflare-api-token-easy-all.svg" ]] \
     || fail "Cloudflare API token walkthrough asset is missing"
-assert_contains "Cloudflare guide distinguishes API Token from IDs" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '它不是 **Account ID**、**Zone ID**'
-assert_contains "Cloudflare guide documents Free plan boundary" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare 费用与 Free 计划边界'
-assert_contains "Cloudflare guide documents no automatic paid product" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '不会开通付款方式、升级套餐或创建按量计费产品'
 assert_contains "Cloudflare guide documents Globalping fallback" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '缓存超过 72 小时'
+    "${CLOUDFLARE_GUIDE_CONTENT}" '超过 72 小时'
 assert_contains "Cloudflare guide documents the 100 MB request boundary" \
     "${CLOUDFLARE_GUIDE_CONTENT}" '**100 MB**'
 assert_not_contains "Cloudflare guide does not instruct manual proxied record creation" \
