@@ -879,7 +879,10 @@ test_acme_reinstall_and_rate_limit_guidance() {
 }
 
 test_acme_renewal_repair() {
-    local cron_state=""
+    local cron_state="" maintenance_source
+    maintenance_source=$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")
+    assert_contains "all installed acme invocations force wget transport" \
+        'ACME_USE_WGET=1 "${ACME_BIN}"' "${maintenance_source}"
     install -d -m 0700 "${ACME_HOME}"
     cat >"${ACME_BIN}" <<'EOF'
 #!/bin/sh
@@ -902,6 +905,15 @@ EOF
     assert_contains "existing acme.sh repairs its missing renewal entry" \
         "--cron" "${cron_state}"
     assert_contains "existing acme.sh falls back to an easy_all managed renewal entry" \
+        "easy_all-acme-renewal" "${cron_state}"
+
+    cron_state=$(printf '%s\n%s\n' \
+        "7 1,7,13,19 * * * \"${ACME_HOME}\"/acme.sh --cron --home \"${ACME_HOME}\" > /dev/null" \
+        "17 2 * * * \"${ACME_BIN}\" --cron --home \"${ACME_HOME}\" >/dev/null 2>&1 # easy_all-acme-renewal")
+    install_acme
+    assert_equal "quoted acme cron paths are recognized and deduplicated" \
+        "1" "$(grep -c -- '--cron' <<<"${cron_state}")"
+    assert_not_contains "deduplication removes the redundant fallback cron" \
         "easy_all-acme-renewal" "${cron_state}"
     unset -f systemctl crontab run_acme
 }
@@ -962,6 +974,10 @@ test_secure_download_transport() {
         'cd "${source_dir}"' "${common_source}"
     assert_contains "acme invokes the source entrypoint by relative path" \
         'sh ./acme.sh --install' "${common_source}"
+    assert_contains "acme uses wget for its own update metadata request" \
+        'ACME_USE_WGET=1' "${common_source}"
+    assert_contains "easy_all prevents acme from editing the shell profile" \
+        '--no-cron --no-profile' "${common_source}"
     assert_contains "Xray downloads are restricted to official release URLs" \
         "github.com/XTLS/Xray-core/releases/download" "${xray_source}"
 

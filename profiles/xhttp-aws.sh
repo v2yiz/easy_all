@@ -32,6 +32,7 @@ AWS_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 # shellcheck source=lib/globalping-cdn.sh
+GLOBALPING_CACHE_BASENAME_OVERRIDE="aws-cdn-ips.json"
 source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
 
 validate_cloudfront_billing_mode() {
@@ -117,7 +118,7 @@ collect_install_inputs() {
     [[ "${AWS_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
     choose_cloudfront_billing_mode
     if aws_cdn_optimization_enabled; then
-        info "模式 4 将使用中国大陆 Globalping 探针筛选 CloudFront IPv4。"
+        info "模式 5 将使用中国大陆 Globalping 探针筛选 CloudFront IPv4。"
         collect_globalping_token
         validate_globalping_access || die "Globalping Token 验证失败"
     fi
@@ -1282,7 +1283,7 @@ refresh_aws_cdn_ips() {
     acquire_runtime_write_lock
     collect_installed_state
     aws_cdn_optimization_enabled \
-        || { release_runtime_write_lock; die "当前不是模式 4 AWS CDN 精选 IP"; }
+        || { release_runtime_write_lock; die "当前不是模式 5 AWS CDN 精选 IP"; }
     snapshot_subscription_update
     if ! refresh_globalping_cache; then
         refresh_status=1
@@ -1307,7 +1308,7 @@ migrate_to_optimized_aws_cdn() {
     begin_quota_maintenance
     collect_installed_state
     [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "domain" ]] \
-        || die "当前已经是模式 4 AWS CDN 精选 IP"
+        || die "当前已经是模式 5 AWS CDN 精选 IP"
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
     snapshot_subscription_update
@@ -1327,7 +1328,7 @@ migrate_to_optimized_aws_cdn() {
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
-    success "已从模式 2 原地迁移到模式 4；AWS 云资源与 XHTTP 服务端参数保持不变"
+    success "已从模式 3 原地迁移到模式 5；AWS 云资源与 XHTTP 服务端参数保持不变"
 }
 
 update_subscription() {
@@ -1541,7 +1542,7 @@ usage() {
   apply            按当前状态应用本机运行时与订阅，不修改 AWS
   apply-cloud      应用本机并同步 Route 53、ACM 与 CloudFront
   update-sub       更新订阅选择、配额与本机运行时
-  migrate-aws-cdn  将模式 2 原地迁移为模式 4 AWS CDN 精选 IP
+  migrate-aws-cdn  将模式 3 原地迁移为模式 5 AWS CDN 精选 IP
   refresh-cdn-ips  立即刷新 Globalping 精选 IPv4 与订阅
   show             显示 VLESS 链接与 Mihomo 节点
   subscription     显示节点与订阅状态
@@ -1553,7 +1554,7 @@ usage() {
   quota-reset      清零指定用户的本月已用量
   uninstall        删除本机内容，保留远端 AWS 资源
 
-模式 2 发布单个 CDN 域名节点；模式 4 发布最多 10 个 Globalping 精选 IPv4。
+模式 3 发布单个 CDN 域名节点；模式 5 发布最多 10 个 Globalping 精选 IPv4。
 节点域名与源站 DNS 全部由 Route 53 管理；
 CloudFront 使用 HTTPS 回源、禁用缓存、启用 gRPC，并转发除 Host 外的全部查看器请求头。
 可选择部署 CloudFront + Nginx Token 订阅，或仅输出节点信息。

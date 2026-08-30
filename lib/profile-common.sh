@@ -53,10 +53,13 @@ install_acme_from_github() {
     tar -xzf "${archive}" -C "${source_dir}" --strip-components=1 \
         || die "解压 acme.sh 失败"
     [[ -f "${source_dir}/acme.sh" ]] || die "acme.sh 下载归档内容不完整"
+    info "正在本地安装 acme.sh，并读取 GitHub 官方版本信息，请等待"
     (
         cd "${source_dir}"
-        sh ./acme.sh --install -m "${account_email}" --home "${acme_home}"
+        ACME_USE_WGET=1 sh ./acme.sh --install --use-wget \
+            --no-cron --no-profile -m "${account_email}" --home "${acme_home}"
     ) || die "安装 acme.sh 失败"
+    success "acme.sh 本地安装完成"
 }
 
 read_bilingual() {

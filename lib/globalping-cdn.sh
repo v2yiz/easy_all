@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
-# AWS CloudFront endpoint discovery through mainland China Globalping probes.
+# CDN endpoint discovery through mainland China Globalping probes.
 
 readonly GLOBALPING_API_BASE="https://api.globalping.io/v1"
 readonly GLOBALPING_TOKEN_FILE="${GLOBALPING_TOKEN_FILE_OVERRIDE:-${STATE_DIR}/globalping.token}"
-readonly GLOBALPING_CACHE_FILE="${GLOBALPING_CACHE_FILE_OVERRIDE:-${STATE_DIR}/aws-cdn-ips.json}"
+readonly GLOBALPING_CACHE_FILE="${GLOBALPING_CACHE_FILE_OVERRIDE:-${STATE_DIR}/${GLOBALPING_CACHE_BASENAME_OVERRIDE:-cdn-ips.json}}"
 readonly GLOBALPING_REFRESH_SERVICE_FILE="${GLOBALPING_REFRESH_SERVICE_FILE_OVERRIDE:-/etc/systemd/system/easy_all-globalping-refresh.service}"
 readonly GLOBALPING_REFRESH_TIMER_FILE="${GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE:-/etc/systemd/system/easy_all-globalping-refresh.timer}"
 readonly GLOBALPING_REFRESH_SERVICE="easy_all-globalping-refresh.service"
@@ -15,12 +15,34 @@ readonly GLOBALPING_CANDIDATE_LIMIT=10
 readonly GLOBALPING_CACHE_MAX_AGE_SECONDS=259200
 readonly GLOBALPING_POLL_ATTEMPTS=35
 
-validate_aws_cdn_endpoint_mode() {
+validate_cdn_endpoint_mode() {
     [[ "$1" == "domain" || "$1" == "optimized" ]]
 }
 
+validate_aws_cdn_endpoint_mode() {
+    validate_cdn_endpoint_mode "$1"
+}
+
+cdn_optimization_enabled() {
+    case "${CDN_PROVIDER:-aws}" in
+    aws) [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] ;;
+    cloudflare) [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] ;;
+    gcore) [[ "${GCORE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]] ;;
+    *) return 1 ;;
+    esac
+}
+
 aws_cdn_optimization_enabled() {
-    [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]]
+    [[ "${CDN_PROVIDER:-aws}" == "aws" ]] && cdn_optimization_enabled
+}
+
+globalping_cdn_provider_label() {
+    case "${CDN_PROVIDER:-aws}" in
+    aws) printf 'AWS' ;;
+    cloudflare) printf 'Cloudflare' ;;
+    gcore) printf 'Gcore' ;;
+    *) printf 'Unknown' ;;
+    esac
 }
 
 validate_globalping_token() {
@@ -60,7 +82,7 @@ collect_globalping_token() {
 
 persist_globalping_token() {
     local temp
-    aws_cdn_optimization_enabled || return 0
+    cdn_optimization_enabled || return 0
     collect_globalping_token
     install -d -m 0700 "${STATE_DIR}"
     temp=$(mktemp "${STATE_DIR}/globalping.token.XXXXXX")
@@ -102,7 +124,7 @@ globalping_measurement_request() {
 globalping_api_request() {
     local method=$1 path=$2 body=${3:-} token headers
     token=$(globalping_token_value) || {
-        warn "缺少 Globalping Token，无法刷新 AWS CDN 精选 IP"
+        warn "缺少 Globalping Token，无法刷新 $(globalping_cdn_provider_label) CDN 精选 IP"
         return 1
     }
     headers=$(make_temp_dir)/globalping-headers
@@ -209,7 +231,7 @@ globalping_zero_loss_candidates() {
     ' <<<"$1"
 }
 
-validate_cloudfront_candidate() {
+validate_cdn_candidate() {
     local ip=$1 response
     validate_public_ipv4 "${ip}" || return 1
     response=$(curl -fsS --connect-timeout 4 --max-time 10 --noproxy '*' \
@@ -231,7 +253,7 @@ globalping_build_cache() {
     while IFS= read -r candidate; do
         index=$((index + 1))
         (
-            validate_cloudfront_candidate "$(jq -r '.ip' <<<"${candidate}")" \
+            validate_cdn_candidate "$(jq -r '.ip' <<<"${candidate}")" \
                 && printf '%s\n' "${candidate}" >"${validation_dir}/${index}.json"
             true
         ) &
@@ -244,13 +266,14 @@ globalping_build_cache() {
 
     count=$(wc -l <"${validated_file}" | tr -d ' ')
     ((count > 0)) || {
-        warn "Globalping 没有返回通过 CloudFront 健康复核的零丢包 IPv4"
+        warn "Globalping 没有返回通过 $(globalping_cdn_provider_label) CDN 健康复核的零丢包 IPv4"
         return 1
     }
     measurement_id=$(jq -r '.id' <<<"${measurement}")
     measured_at=$(jq -r '.updatedAt // .createdAt // empty' <<<"${measurement}")
     measured_at_epoch=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
     jq -n --arg domain "${VLESS_CDN_DOMAIN}" \
+        --arg provider "${CDN_PROVIDER:-aws}" \
         --arg measurement_id "${measurement_id}" \
         --arg measured_at "${measured_at}" \
         --argjson measured_at_epoch "${measured_at_epoch}" \
@@ -259,7 +282,8 @@ globalping_build_cache() {
             "$(jq -s --argjson limit "${GLOBALPING_CANDIDATE_LIMIT}" \
                 'sort_by([-.observations, .avg_rtt_ms, .ip]) | .[0:$limit]' \
                 "${validated_file}")" '{
-          version:1,
+          version:2,
+          provider:$provider,
           domain:$domain,
           measurement_id:$measurement_id,
           measured_at:$measured_at,
@@ -276,8 +300,10 @@ globalping_cache_valid() {
     local now age ip
     [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
+        --arg provider "${CDN_PROVIDER:-aws}" \
         --argjson limit "${GLOBALPING_CANDIDATE_LIMIT}" '
-          .version == 1
+          (.version == 2 or (.version == 1 and $provider == "aws"))
+          and (.provider // "aws") == $provider
           and .domain == $domain
           and (.measured_at_epoch | type) == "number"
           and (.candidates | type) == "array"
@@ -297,12 +323,16 @@ globalping_cache_valid() {
     ((age >= 0 && age <= GLOBALPING_CACHE_MAX_AGE_SECONDS))
 }
 
-aws_cdn_client_endpoints() {
-    if aws_cdn_optimization_enabled && globalping_cache_valid; then
+cdn_client_endpoints() {
+    if cdn_optimization_enabled && globalping_cache_valid; then
         jq -r '.candidates[].ip' "${GLOBALPING_CACHE_FILE}"
     else
         printf '%s\n' "${VLESS_CDN_DOMAIN}"
     fi
+}
+
+aws_cdn_client_endpoints() {
+    cdn_client_endpoints
 }
 
 refresh_globalping_cache() {
@@ -310,21 +340,21 @@ refresh_globalping_cache() {
     collect_globalping_token
     measurement=$(globalping_run_measurement) || return 1
     install -d -m 0700 "${STATE_DIR}"
-    temp=$(mktemp "${STATE_DIR}/aws-cdn-ips.json.XXXXXX")
+    temp=$(mktemp "${STATE_DIR}/cdn-ips.json.XXXXXX")
     cleanup_files+=("${temp}")
     globalping_build_cache "${measurement}" "${temp}" || return 1
     install -o root -g root -m 0600 "${temp}" "${GLOBALPING_CACHE_FILE}"
-    success "Globalping 已更新 $(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}") 个 AWS CDN 精选 IPv4"
+    success "Globalping 已更新 $(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}") 个 $(globalping_cdn_provider_label) CDN 精选 IPv4"
 }
 
 install_globalping_refresh_timer() {
-    if ! aws_cdn_optimization_enabled; then
+    if ! cdn_optimization_enabled; then
         remove_globalping_refresh_timer
         return 0
     fi
     cat >"${RUNTIME_TMP}/easy_all-globalping-refresh.service" <<EOF
 [Unit]
-Description=Refresh easy_all AWS CDN endpoints with Globalping
+Description=Refresh easy_all CDN endpoints with Globalping
 After=network-online.target
 Wants=network-online.target
 
@@ -334,11 +364,11 @@ ExecStart=${COMMAND_PATH} refresh-cdn-ips
 EOF
     cat >"${RUNTIME_TMP}/easy_all-globalping-refresh.timer" <<EOF
 [Unit]
-Description=Refresh easy_all AWS CDN endpoints every six hours
+Description=Refresh easy_all CDN endpoints every hour
 
 [Timer]
-OnBootSec=6h
-OnUnitActiveSec=6h
+OnBootSec=1h
+OnUnitActiveSec=1h
 Unit=${GLOBALPING_REFRESH_SERVICE}
 
 [Install]
@@ -350,7 +380,7 @@ EOF
         "${GLOBALPING_REFRESH_TIMER_FILE}"
     systemctl daemon-reload
     systemctl enable --now "${GLOBALPING_REFRESH_TIMER}" >/dev/null \
-        || die "启用 Globalping 六小时刷新定时器失败"
+        || die "启用 Globalping 每小时刷新定时器失败"
 }
 
 remove_globalping_refresh_timer() {
@@ -361,16 +391,20 @@ remove_globalping_refresh_timer() {
 }
 
 show_globalping_status() {
-    if ! aws_cdn_optimization_enabled; then
-        printf 'AWS CDN 精选 IP: disabled\n'
+    local provider_label
+    provider_label=$(globalping_cdn_provider_label)
+    if ! cdn_optimization_enabled; then
+        printf '%s CDN 精选 IP: disabled\n' "${provider_label}"
         return 0
     fi
     if globalping_cache_valid; then
-        printf 'AWS CDN 精选 IP: enabled，%s 个，最近成功刷新 %s\n' \
+        printf '%s CDN 精选 IP: enabled，%s 个，最近成功刷新 %s\n' \
+            "${provider_label}" \
             "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")" \
             "$(jq -r '.measured_at // "未知"' "${GLOBALPING_CACHE_FILE}")"
     else
-        printf 'AWS CDN 精选 IP: 缓存缺失或超过 72 小时，当前回退 CDN 域名\n'
+        printf '%s CDN 精选 IP: 缓存缺失或超过 72 小时，当前回退 CDN 域名\n' \
+            "${provider_label}"
     fi
     printf 'Globalping 定时器: '
     systemctl is-active --quiet "${GLOBALPING_REFRESH_TIMER}" \

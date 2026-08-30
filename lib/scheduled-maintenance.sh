@@ -4,16 +4,43 @@
 # Certificate issuance and domain cleanup remain Profile-specific.
 
 run_acme() {
-    "${ACME_BIN}" "$@" --home "${ACME_HOME}"
+    ACME_USE_WGET=1 "${ACME_BIN}" "$@" --home "${ACME_HOME}"
 }
 
 has_acme_renewal_cron() {
     local crontab_content
     crontab_content=$(crontab -l 2>/dev/null || true)
     awk -v acme_bin="${ACME_BIN}" '
-        index($0, acme_bin) && $0 ~ /(^|[[:space:]])--cron([[:space:]]|$)/ { found=1 }
+        {
+            normalized=$0
+            gsub(/"/, "", normalized)
+        }
+        index(normalized, acme_bin) && normalized ~ /(^|[[:space:]])--cron([[:space:]]|$)/ { found=1 }
         END { exit !found }
     ' <<<"${crontab_content}"
+}
+
+deduplicate_acme_renewal_cron() {
+    local current_file deduplicated_file
+    current_file="${RUNTIME_TMP}/acme-renewal.current"
+    deduplicated_file="${RUNTIME_TMP}/acme-renewal.deduplicated"
+    crontab -l >"${current_file}" 2>/dev/null || : >"${current_file}"
+    awk -v acme_bin="${ACME_BIN}" '
+        {
+            normalized=$0
+            gsub(/"/, "", normalized)
+            managed=index(normalized, acme_bin) && normalized ~ /(^|[[:space:]])--cron([[:space:]]|$)/
+            if (managed) {
+                if (seen) next
+                seen=1
+            }
+            print
+        }
+    ' "${current_file}" >"${deduplicated_file}"
+    if ! cmp -s "${current_file}" "${deduplicated_file}"; then
+        crontab "${deduplicated_file}" || die "清理重复的 acme.sh 自动续期任务失败"
+        warn "检测到重复的 acme.sh 自动续期任务，已合并为一条"
+    fi
 }
 
 install_managed_acme_renewal_cron() {
@@ -21,7 +48,11 @@ install_managed_acme_renewal_cron() {
     crontab_content=$(crontab -l 2>/dev/null || true)
     cron_file="${RUNTIME_TMP}/acme-renewal.cron"
     awk -v acme_bin="${ACME_BIN}" '
-        !(index($0, acme_bin) && $0 ~ /(^|[[:space:]])--cron([[:space:]]|$)/) { print }
+        {
+            normalized=$0
+            gsub(/"/, "", normalized)
+        }
+        !(index(normalized, acme_bin) && normalized ~ /(^|[[:space:]])--cron([[:space:]]|$)/) { print }
     ' <<<"${crontab_content}" >"${cron_file}"
     printf '17 2 * * * "%s" --cron --home "%s" >/dev/null 2>&1 # easy_all-acme-renewal\n' \
         "${ACME_BIN}" "${ACME_HOME}" >>"${cron_file}"
@@ -40,13 +71,16 @@ verify_acme_renewal_setup() {
 }
 
 ensure_acme_renewal_setup() {
+    info "正在检查并配置 acme.sh 自动续期任务，请等待"
     run_acme --install-cronjob >/dev/null 2>&1 \
         || warn "acme.sh --install-cronjob 失败，改用 easy_all 受管 cron"
+    deduplicate_acme_renewal_cron
     if ! has_acme_renewal_cron; then
         warn "acme.sh 未写入续期任务，正在写入 easy_all 受管 cron"
         install_managed_acme_renewal_cron
     fi
     verify_acme_renewal_setup
+    success "acme.sh 自动续期任务已就绪"
 }
 
 filter_managed_reboot_cron() {

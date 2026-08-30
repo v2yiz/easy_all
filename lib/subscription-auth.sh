@@ -224,8 +224,17 @@ EOF
 validate_subscription_token_rejection() {
     local resolve=$1 url=$2
     shift 2
-    local status
-    status=$(curl -ksS --noproxy '*' -o /dev/null -w '%{http_code}' \
+    local status arg
+    local -a tls_args=(-k)
+    for arg in "$@"; do
+        if [[ "${arg}" == "--cacert" ]]; then
+            # Keep the array non-empty for Bash 3.x + `set -u`; the caller's
+            # --cacert remains authoritative and replaces the default -k.
+            tls_args=(--proto '=https')
+            break
+        fi
+    done
+    status=$(curl -sS "${tls_args[@]}" --noproxy '*' -o /dev/null -w '%{http_code}' \
         --resolve "${resolve}" "$@" --get --data-urlencode "token=invalid" "${url}") \
         || die "无效订阅 Token 验收请求失败"
     [[ "${status}" == "403" ]] || die "无效订阅 Token 未被拒绝（HTTP ${status}）"

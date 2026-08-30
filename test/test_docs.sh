@@ -56,45 +56,60 @@ assert_contains "Globalping guide documents the token page" \
     "${GLOBALPING_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
-assert_contains "README documents the six-hour Globalping refresh" \
-    "${README_CONTENT}" '每 6 小时'
+assert_contains "README documents the hourly Globalping refresh" \
+    "${README_CONTENT}" '每小时'
 assert_contains "README documents the 72-hour Globalping fallback" \
     "${README_CONTENT}" '超过 72 小时'
 for runtime_marker in '/etc/easy_all' 'systemd' 'refresh-cdn-ips' '模式 4'; do
     assert_not_contains "Globalping guide excludes installer detail ${runtime_marker}" \
         "${GLOBALPING_GUIDE_CONTENT}" "${runtime_marker}"
 done
-assert_contains "README documents Gcore as a token-only provider" "${README_CONTENT}" \
+assert_contains "README documents the Gcore API credential" "${README_CONTENT}" \
     'GCORE_API_TOKEN'
 assert_contains "README links the retained Cloudflare credential guide" "${README_CONTENT}" \
     'docs/cloudflare-guide.md'
-assert_contains "Cloudflare guide is credential-only" "${CLOUDFLARE_GUIDE_CONTENT}" \
-    'Cloudflare ID 与 API Token 获取指南'
-assert_contains "Cloudflare guide documents Account ID" "${CLOUDFLARE_GUIDE_CONTENT}" \
-    'Copy account ID'
-assert_contains "Cloudflare guide documents Zone ID" "${CLOUDFLARE_GUIDE_CONTENT}" \
-    'Zone ID'
-assert_contains "Cloudflare guide documents Workers Scripts scope" "${CLOUDFLARE_GUIDE_CONTENT}" \
-    'Account → Workers Scripts → Edit'
-assert_contains "Cloudflare guide documents DNS scope" "${CLOUDFLARE_GUIDE_CONTENT}" \
-    'Zone → DNS → Edit'
-assert_not_contains "Cloudflare guide omits abandoned deployment script" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'worker-vless/deploy.sh'
-assert_not_contains "Cloudflare guide omits abandoned VLESS deployment" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'VLESS over WebSocket'
-assert_not_contains "Cloudflare guide omits abandoned Custom Domain flow" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '## 4. 准备 Custom Domain'
-[[ ! -e "${ROOT_DIR}/docs/cloudflare/cloudflare-worker-custom-domain.svg" ]] \
-    || fail "abandoned Cloudflare Custom Domain illustration must be removed"
-for cloudflare_asset in \
-    cloudflare-account-id.svg \
-    cloudflare-worker-token.svg \
-    cloudflare-dns-token.svg; do
-    assert_contains "Cloudflare guide references ${cloudflare_asset}" \
-        "${CLOUDFLARE_GUIDE_CONTENT}" "cloudflare/${cloudflare_asset}"
-    [[ -s "${ROOT_DIR}/docs/cloudflare/${cloudflare_asset}" ]] \
-        || fail "Cloudflare guide asset is missing: ${cloudflare_asset}"
-done
+assert_contains "Cloudflare guide documents the optimized XHTTP mode" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
+assert_contains "Cloudflare guide requires one first-level hostname" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '一级子域名'
+assert_contains "Cloudflare guide requires an active Zone" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '**Active**'
+assert_contains "Cloudflare guide documents proxied A automation" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '自动创建或更新唯一 proxied `A` 记录'
+assert_contains "Cloudflare guide documents automatic Origin CA" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '自动签发并安装 15 年期'
+assert_contains "Cloudflare guide documents one-stop Origin CA rotation" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`easy_all renew-cert` 一站式轮换'
+assert_contains "Cloudflare guide identifies the Origin CA certificate" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare Origin CA'
+assert_contains "Cloudflare guide documents host-scoped strict TLS" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'host-scoped 的 **Full (strict)** 配置规则'
+assert_contains "Cloudflare guide documents automatic origin HTTP/2 and gRPC" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'origin HTTP/2 与 gRPC'
+assert_contains "Cloudflare guide documents automatic Transform Rule" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Transform Rule'
+assert_contains "Cloudflare guide documents origin firewall boundary" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '官方 IP 列表放行 TCP 443'
+assert_contains "Cloudflare guide token grants Zone read" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Zone / Read`'
+assert_contains "Cloudflare guide token grants DNS edit" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / DNS / Edit`'
+assert_contains "Cloudflare guide token grants Transform Rules edit" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Transform Rules / Edit`'
+assert_contains "Cloudflare guide token grants Config Rules edit" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Config Rules / Edit`'
+assert_contains "Cloudflare guide token grants Zone Settings edit" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Zone Settings / Edit`'
+assert_contains "Cloudflare guide token grants SSL and Certificates edit" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / SSL and Certificates / Edit`'
+assert_contains "Cloudflare guide documents Globalping fallback" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '缓存超过 72 小时'
+assert_contains "Cloudflare guide documents the 100 MB request boundary" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '**100 MB**'
+assert_not_contains "Cloudflare guide omits abandoned Worker scope" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" 'Workers Scripts'
+assert_not_contains "Cloudflare guide does not instruct manual proxied record creation" \
+    "${CLOUDFLARE_GUIDE_CONTENT}" '在 **DNS → Records** 创建'
 for aws_asset in \
     aws-architecture.svg \
     aws-cloudfront-settings.svg \
@@ -125,8 +140,10 @@ assert_contains "README documents the IPv6-preferred CDN client default" "${READ
     '`ip-version: ipv6-prefer`'
 assert_contains "AWS guide documents the IPv6-preferred CDN client default" "${AWS_GUIDE_CONTENT}" \
     '`ip-version: ipv6-prefer`'
-assert_contains "Gcore guide documents the IPv6-preferred CDN client default" "${GCORE_GUIDE_CONTENT}" \
-    '`ip-version: ipv6-prefer`'
+assert_contains "Gcore guide documents the optimized IPv4 client mode" "${GCORE_GUIDE_CONTENT}" \
+    '`ip-version: ipv4`'
+assert_contains "Gcore guide documents Globalping candidate validation" "${GCORE_GUIDE_CONTENT}" \
+    'SNI/Host'
 assert_contains "README documents the automatic Reality endpoint family" "${README_CONTENT}" \
     'VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`'
 assert_contains "README documents Reality target TLS validation" "${README_CONTENT}" \
@@ -148,11 +165,11 @@ assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
 assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" "${README_CONTENT}" \
     '不能替代 XHTTP'
 assert_contains "README documents Xray inbound TCP keepalive" "${README_CONTENT}" \
-    '四种 Xray 入站'
+    '五种 Xray 入站'
 assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" \
     '`13000-60999`'
 assert_contains "README documents XanMod LTS BBRv3 for every profile" \
-    "${README_CONTENT}" '四种模式统一安装 XanMod LTS 内核'
+    "${README_CONTENT}" '五种模式统一安装 XanMod LTS 内核'
 assert_contains "README distinguishes the BBR algorithm from the sysctl name" \
     "${README_CONTENT}" '不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3'
 assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" \

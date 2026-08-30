@@ -120,14 +120,15 @@ assert_equal "duplicate observations are aggregated" "2" \
 assert_equal "average RTT is aggregated" "40" \
     "$(jq -r '.[0].avg_rtt_ms' <<<"${candidates}")"
 
-validate_cloudfront_candidate() {
+validate_cdn_candidate() {
     [[ "$1" == "13.32.10.10" ]]
 }
 cache_stage="${TMP_DIR}/cache-stage.json"
 globalping_build_cache "${measurement}" "${cache_stage}"
 install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
 jq -e '
-  .version == 1
+  .version == 2
+  and .provider == "aws"
   and .domain == "node.example.com"
   and .probe_country == "CN"
   and .protocol == "TCP"
@@ -159,6 +160,28 @@ AWS_CDN_ENDPOINT_MODE="domain"
 assert_equal "mode 2 always uses the CDN domain" "node.example.com" \
     "$(aws_cdn_client_endpoints)"
 
+CDN_PROVIDER="gcore"
+GCORE_CDN_ENDPOINT_MODE="optimized"
+AWS_CDN_ENDPOINT_MODE="domain"
+jq '.provider = "gcore"' "${GLOBALPING_CACHE_FILE}" >"${cache_stage}"
+install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
+assert_equal "Gcore optimized mode reuses the provider-neutral candidates" \
+    "13.32.10.10" "$(cdn_client_endpoints)"
+GCORE_CDN_ENDPOINT_MODE="domain"
+assert_equal "Gcore domain mode ignores candidate cache" "node.example.com" \
+    "$(cdn_client_endpoints)"
+CDN_PROVIDER="cloudflare"
+CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
+GCORE_CDN_ENDPOINT_MODE="domain"
+jq '.provider = "cloudflare"' "${GLOBALPING_CACHE_FILE}" >"${cache_stage}"
+install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
+assert_equal "Cloudflare optimized mode reuses the provider-neutral candidates" \
+    "13.32.10.10" "$(cdn_client_endpoints)"
+CLOUDFLARE_CDN_ENDPOINT_MODE="domain"
+assert_equal "Cloudflare domain mode ignores candidate cache" "node.example.com" \
+    "$(cdn_client_endpoints)"
+CDN_PROVIDER="aws"
+
 printf 'test-globalping-token-value\n' >"${GLOBALPING_TOKEN_FILE}"
 chmod 0600 "${GLOBALPING_TOKEN_FILE}"
 unset GLOBALPING_TOKEN
@@ -171,9 +194,9 @@ install_globalping_refresh_timer
 grep -Fq 'ExecStart=/usr/local/bin/easy_all refresh-cdn-ips' \
     "${GLOBALPING_REFRESH_SERVICE_FILE}" \
     || fail "Globalping service must invoke the manual refresh command"
-grep -Fq 'OnUnitActiveSec=6h' "${GLOBALPING_REFRESH_TIMER_FILE}" \
-    || fail "Globalping timer must refresh every six hours"
-grep -Fq 'OnBootSec=6h' "${GLOBALPING_REFRESH_TIMER_FILE}" \
+grep -Fq 'OnUnitActiveSec=1h' "${GLOBALPING_REFRESH_TIMER_FILE}" \
+    || fail "Globalping timer must refresh every hour"
+grep -Fq 'OnBootSec=1h' "${GLOBALPING_REFRESH_TIMER_FILE}" \
     || fail "Globalping timer must not repeat the install-time refresh early"
 remove_globalping_refresh_timer
 [[ ! -e "${GLOBALPING_REFRESH_SERVICE_FILE}" \

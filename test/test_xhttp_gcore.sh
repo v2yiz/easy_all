@@ -59,6 +59,10 @@ assert_contains "Gcore profile limits XHTTP stream-up for its origin timeout" \
     "${profile_content}" 'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="10-14"'
 assert_contains "Gcore profile persists its CDN provider" \
     "${profile_content}" "CDN_PROVIDER=%q\\n' \"gcore\""
+assert_contains "Gcore profile persists optimized endpoint mode" \
+    "${profile_content}" 'GCORE_CDN_ENDPOINT_MODE=%q'
+assert_contains "Gcore profile loads provider-neutral Globalping discovery" \
+    "${profile_content}" 'globalping-cdn.sh'
 assert_contains "Gcore profile persists the configurable CDN client family" \
     "${profile_content}" 'CDN_CLIENT_IP_FAMILY=%q'
 assert_contains "Gcore cloud apply preserves freshly synced provider state" \
@@ -101,6 +105,7 @@ assert_not_contains "Gcore profile never persists the API token" \
 
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
+    GCORE_CDN_ENDPOINT_MODE="optimized"
     AWS_CLOUDFRONT_BILLING_MODE="flat-free"
     CDN_TRAFFIC_PROTECTION_GB=""
     configure_cdn_traffic_protection
@@ -122,8 +127,8 @@ assert_not_contains "Gcore profile never persists the API token" \
     CDN_CLIENT_IP_FAMILY="ipv4"
     CDN_CLIENT_IP_FAMILY_RESOLVED=""
     mihomo=$(build_mihomo_node)
-    assert_contains "Gcore Mihomo node prefers IPv6" \
-        "${mihomo}" "ip-version: ipv6-prefer"
+    assert_contains "Gcore optimized Mihomo node pins IPv4" \
+        "${mihomo}" "ip-version: ipv4"
     assert_contains "Gcore Mihomo node uses the shared CDN keepalive period" \
         "${mihomo}" "h-keep-alive-period: 0"
     resource_payload=$(gcore_resource_payload)
@@ -391,6 +396,7 @@ assert_not_contains "Gcore profile never persists the API token" \
             SUB_DOWNLOAD_NAME="EASY_ALL_TEST"
             QUOTA_ENABLED=0
         }
+        ensure_gcore_globalping_upgrade() { :; }
         snapshot_subscription_update() { UPDATE_SUB_ROLLBACK_ON_EXIT=1; }
         choose_subscription_mode() { SUBSCRIPTION_MODE="deploy"; }
         collect_subscription_link_domain() { SUBSCRIPTION_DOMAIN="subscribe.example.net"; }
@@ -409,6 +415,7 @@ assert_not_contains "Gcore profile never persists the API token" \
         refresh_runtime() { :; }
         install_quota_timer() { :; }
         install_cdn_traffic_protection_timer() { :; }
+        install_globalping_refresh_timer() { :; }
         validate_subscription_runtime() { :; }
         show_subscription() { :; }
         success() { :; }

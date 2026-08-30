@@ -28,9 +28,13 @@ GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
 GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_MODE=""
 GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_DOMAIN=""
 GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID=""
+GCORE_GLOBALPING_UPGRADE_REQUIRED=0
 
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
+# shellcheck source=lib/globalping-cdn.sh
+GLOBALPING_CACHE_BASENAME_OVERRIDE="gcore-cdn-ips.json"
+source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
 
 gcore_api_request() {
     local method=$1 path=$2 payload=${3:-}
@@ -550,6 +554,9 @@ remove_previous_gcore_subscription_cname() {
 collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
+    GCORE_CDN_ENDPOINT_MODE="optimized"
+    validate_cdn_endpoint_mode "${GCORE_CDN_ENDPOINT_MODE}" \
+        || die "GCORE_CDN_ENDPOINT_MODE 无效：${GCORE_CDN_ENDPOINT_MODE}"
     choose_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
@@ -567,6 +574,9 @@ collect_install_inputs() {
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效：${VLESS_CDN_DOMAIN}"
     [[ "${GCORE_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] || die "源站域名与 CDN 域名不能相同"
+    info "模式 4 将使用中国大陆 Globalping 探针筛选 Gcore CDN IPv4。"
+    collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
     GCORE_DNS_ZONE=""
     GCORE_ORIGIN_GROUP_ID=""
     GCORE_CDN_RESOURCE_ID=""
@@ -600,7 +610,8 @@ collect_install_inputs() {
 load_state() {
     local variable env_name
     local -a variables=(
-        PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
+        PROTOCOL CDN_PROVIDER GCORE_CDN_ENDPOINT_MODE
+        CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE
         GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
@@ -624,6 +635,12 @@ load_state() {
     done
     [[ "${PROTOCOL}" == "xhttp" && "${CDN_PROVIDER:-}" == "gcore" ]] \
         || die "状态不是 Gcore CDN XHTTP；请重新安装"
+    GCORE_GLOBALPING_UPGRADE_REQUIRED=0
+    [[ -n "${GCORE_CDN_ENDPOINT_MODE:-}" ]] \
+        || GCORE_GLOBALPING_UPGRADE_REQUIRED=1
+    GCORE_CDN_ENDPOINT_MODE=${GCORE_CDN_ENDPOINT_MODE:-optimized}
+    validate_cdn_endpoint_mode "${GCORE_CDN_ENDPOINT_MODE}" \
+        || die "状态文件中的 Gcore CDN 接入模式无效：${GCORE_CDN_ENDPOINT_MODE}"
     configure_cdn_client_ip_family
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
@@ -676,6 +693,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "xhttp"
         printf 'CDN_PROVIDER=%q\n' "gcore"
+        printf 'GCORE_CDN_ENDPOINT_MODE=%q\n' "${GCORE_CDN_ENDPOINT_MODE:-optimized}"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
@@ -765,6 +783,9 @@ show_status() {
     show_bbrv3_status
     printf 'CDN 客户端节点族: %s（配置值）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
+    printf 'Gcore CDN 客户端接入: %s\n' \
+        "$([[ "${GCORE_CDN_ENDPOINT_MODE:-optimized}" == "optimized" ]] \
+            && printf 'Globalping 精选 IPv4' || printf 'CDN 域名')"
     printf 'Gcore DNS Zone: %s\nGcore 订阅 DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_SUBSCRIPTION_DNS_ZONE}" \
         "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
@@ -773,6 +794,55 @@ show_status() {
     printf 'UFW: '; LC_ALL=C ufw status 2>/dev/null | sed -n 's/^Status: //p'
     show_quota_status
     show_cdn_traffic_protection_status
+    show_globalping_status
+}
+
+ensure_gcore_globalping_upgrade() {
+    cdn_optimization_enabled || return 0
+    if [[ "${GCORE_GLOBALPING_UPGRADE_REQUIRED:-0}" != "1" \
+        && -s "${GLOBALPING_TOKEN_FILE}" ]]; then
+        return 0
+    fi
+    if [[ "${GCORE_GLOBALPING_UPGRADE_REQUIRED:-0}" == "1" ]]; then
+        info "正在把现有 Gcore 模式 4 原地升级为 Globalping 精选 IPv4 接入"
+    fi
+    collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
+    persist_globalping_token
+    refresh_globalping_cache \
+        || warn "首次 Globalping 测量失败；先使用 Gcore CDN 域名回退节点，定时任务会继续重试"
+    GCORE_GLOBALPING_UPGRADE_REQUIRED=0
+}
+
+refresh_gcore_cdn_ips() {
+    local refresh_status=0
+    require_root
+    acquire_runtime_write_lock
+    collect_installed_state
+    cdn_optimization_enabled \
+        || { release_runtime_write_lock; die "当前 Gcore 模式 4 未启用精选 IP"; }
+    snapshot_subscription_update
+    collect_globalping_token
+    validate_globalping_access \
+        || { release_runtime_write_lock; die "Globalping Token 验证失败"; }
+    persist_globalping_token
+    if ! refresh_globalping_cache; then
+        refresh_status=1
+        if globalping_cache_valid; then
+            warn "Globalping 刷新失败，继续使用上一版有效精选 IP"
+        else
+            warn "Globalping 无有效缓存，订阅将回退到 Gcore CDN 域名"
+        fi
+    fi
+    if subscription_enabled; then
+        write_subscriptions
+        validate_subscription_runtime
+    fi
+    save_state
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    release_runtime_write_lock
+    ((refresh_status == 0)) || return 1
+    success "Gcore CDN 精选 IP 与订阅已刷新"
 }
 
 update_subscription() {
@@ -781,6 +851,7 @@ update_subscription() {
     require_root
     begin_quota_maintenance
     collect_installed_state
+    ensure_gcore_globalping_upgrade
     previous_mode=${SUBSCRIPTION_MODE}
     previous_domain=$(subscription_link_domain)
     previous_active_domain=${VLESS_CDN_DOMAIN}
@@ -815,6 +886,7 @@ update_subscription() {
     refresh_runtime
     install_quota_timer
     install_cdn_traffic_protection_timer
+    install_globalping_refresh_timer
     subscription_enabled && validate_subscription_runtime
     if [[ "${cloud_update}" == "1" ]]; then
         info "订阅域名发生变化，正在同步 Gcore CDN、边缘证书与 Managed DNS"
@@ -846,10 +918,12 @@ apply_easy_all() {
     require_root
     begin_quota_maintenance
     collect_installed_state
+    ensure_gcore_globalping_upgrade
     snapshot_subscription_update
     configure_bbr_tcp
     configure_ufw
     finish_xhttp_apply
+    install_globalping_refresh_timer
     success "easy_all Gcore CDN XHTTP 本机配置与订阅已应用；未修改 Gcore 资源"
 }
 
@@ -857,12 +931,14 @@ apply_cloud_resources() {
     require_root
     begin_quota_maintenance
     collect_installed_state
+    ensure_gcore_globalping_upgrade
     snapshot_subscription_update
     configure_bbr_tcp
     configure_ufw
     gcore_prepare_origin
     gcore_apply_cdn
     finish_xhttp_apply 1
+    install_globalping_refresh_timer
     gcore_clear_api_token
     success "easy_all Gcore CDN XHTTP 本机配置、Managed DNS、CDN 与边缘证书已应用"
 }
@@ -872,6 +948,7 @@ rollback_fresh_install() {
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
+    remove_globalping_refresh_timer
     restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
@@ -914,6 +991,7 @@ uninstall_all() {
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
+    remove_globalping_refresh_timer
     restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${GCORE_ORIGIN_DOMAIN:-}"
@@ -956,6 +1034,9 @@ install_all() {
     info "[7/9] 配置 Gcore 源组、CDN、CNAME 与免费 Let's Encrypt"
     gcore_apply_cdn
     validate_cdn_client_ip_family_runtime
+    persist_globalping_token
+    refresh_globalping_cache \
+        || warn "首次 Globalping 测量失败；先使用 Gcore CDN 域名回退节点，定时任务会继续重试"
     if subscription_enabled; then
         write_subscriptions
         validate_subscription_runtime
@@ -965,6 +1046,7 @@ install_all() {
     register_easy_all_command
     install_quota_timer
     install_cdn_traffic_protection_timer
+    install_globalping_refresh_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     gcore_clear_api_token
     info "[9/9] 输出节点与订阅"

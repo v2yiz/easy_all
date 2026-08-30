@@ -100,6 +100,10 @@ UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 CDN_CLIENT_IP_FAMILY_RESOLVED=""
+# Keep at least one element: Debian still ships Bash versions where expanding
+# an empty array under `set -u` raises "unbound variable".  Restricting these
+# local probes to HTTPS is also the intended behavior for every provider.
+XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
 
 cleanup() {
     local path
@@ -127,7 +131,14 @@ validate_cdn_client_ip_family() {
 
 configure_cdn_client_ip_family() {
     local expected=${DEFAULT_CDN_CLIENT_IP_FAMILY}
-    [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" != "optimized" ]] || expected="ipv4"
+    if declare -F cdn_optimization_enabled >/dev/null 2>&1; then
+        if cdn_optimization_enabled; then
+            expected="ipv4"
+        fi
+    elif [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" \
+        || "${GCORE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]]; then
+        expected="ipv4"
+    fi
     CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-${expected}}
     if [[ "${expected}" == "ipv4" ]]; then
         CDN_CLIENT_IP_FAMILY="ipv4"
@@ -145,7 +156,10 @@ configure_cdn_client_ip_family() {
 }
 
 choose_cdn_client_ip_family() {
-    if [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]]; then
+    if { declare -F cdn_optimization_enabled >/dev/null 2>&1 \
+        && cdn_optimization_enabled; } \
+        || [[ "${AWS_CDN_ENDPOINT_MODE:-domain}" == "optimized" \
+            || "${GCORE_CDN_ENDPOINT_MODE:-domain}" == "optimized" ]]; then
         CDN_CLIENT_IP_FAMILY="ipv4"
     else
         CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
@@ -203,6 +217,7 @@ collect_subscription_link_domain() {
     domain=${SUBSCRIPTION_DOMAIN:-}
     case "${CDN_PROVIDER:-}" in
     aws) dns_provider="AWS Route 53 Public Hosted Zone" ;;
+    cloudflare) dns_provider="Cloudflare DNS Zone" ;;
     gcore) dns_provider="Gcore Managed DNS Zone" ;;
     *) dns_provider="与 CDN 域名相同的 DNS 服务商" ;;
     esac
@@ -216,7 +231,8 @@ collect_subscription_link_domain() {
     fi
     domain=$(normalize_domain "${domain}")
     validate_domain "${domain}" || die "SUBSCRIPTION_DOMAIN 无效：${domain}"
-    [[ "${domain}" != "${AWS_ORIGIN_DOMAIN:-}" ]] \
+    [[ "${CDN_PROVIDER:-}" == "cloudflare" \
+        || "${domain}" != "${AWS_ORIGIN_DOMAIN:-}" ]] \
         || die "订阅链接域名不能与源站域名相同"
     SUBSCRIPTION_DOMAIN=${domain}
 }
@@ -284,6 +300,10 @@ snapshot_ufw_state() {
 }
 
 configure_ufw() {
+    if declare -F xhttp_configure_ufw >/dev/null 2>&1; then
+        xhttp_configure_ufw
+        return
+    fi
     local desired_ports
     snapshot_ufw_state
     if ! command -v ufw >/dev/null 2>&1; then
@@ -304,6 +324,10 @@ configure_ufw() {
 }
 
 verify_origin_dns() {
+    if declare -F xhttp_verify_origin_dns >/dev/null 2>&1; then
+        xhttp_verify_origin_dns
+        return
+    fi
     local public_ip records resolver attempt resolver_ok last_records=""
     public_ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测本机公网 IPv4"
     validate_ipv4 "${public_ip}" || die "探测到的 VPS 公网 IPv4 无效：${public_ip}"
@@ -339,6 +363,10 @@ write_web_root() {
 }
 
 write_bootstrap_nginx_config() {
+    if declare -F xhttp_write_bootstrap_nginx_config >/dev/null 2>&1; then
+        xhttp_write_bootstrap_nginx_config
+        return
+    fi
     write_web_root
     rm -f -- /etc/nginx/sites-enabled/default
     cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
@@ -370,14 +398,22 @@ install_acme() {
 }
 
 issue_origin_certificate() {
+    if declare -F xhttp_issue_origin_certificate >/dev/null 2>&1; then
+        xhttp_issue_origin_certificate
+        return
+    fi
     local issue_status=0
     install_acme
+    info "正在设置 Let's Encrypt 为默认证书颁发机构，请等待"
     run_acme --set-default-ca --server letsencrypt >/dev/null \
         || die "设置 Let's Encrypt 为默认 CA 失败"
+    info "正在向 Let's Encrypt 申请源站证书：${AWS_ORIGIN_DOMAIN}"
+    info "CA 将从公网通过 TCP 80 访问 HTTP-01 验证文件；DNS 传播和验证可能需要数分钟，请等待"
     run_acme --issue --webroot "${WEB_ROOT}" -d "${AWS_ORIGIN_DOMAIN}" --keylength ec-256 \
         || issue_status=$?
     [[ "${issue_status}" == 0 || "${issue_status}" == 2 ]] \
         || die "源站证书申请失败（acme.sh 返回 ${issue_status}）"
+    success "Let's Encrypt 源站证书已签发或仍然有效"
     install -d -m 0700 "${CERT_DIR}" "${COMMAND_INSTALL_DIR}"
     cat >"${RUNTIME_TMP}/reload-tls-service.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -385,6 +421,7 @@ set -Eeuo pipefail
 systemctl reload nginx.service >/dev/null 2>&1 || systemctl restart nginx.service >/dev/null 2>&1
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
+    info "正在安装源站证书和续期重载钩子，请等待"
     run_acme --install-cert -d "${AWS_ORIGIN_DOMAIN}" --ecc \
         --fullchain-file "${CERT_FILE}" --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" || die "安装源站证书失败"
@@ -474,11 +511,16 @@ EOF
 
 validate_protocol_runtime() {
     local attempt response
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
+    if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
+        xhttp_validate_local_tls_curl_args
+    fi
     for attempt in 1 2 3 4 5; do
         if systemctl is-active --quiet "${XRAY_SERVICE}" \
             && systemctl is-active --quiet nginx \
             && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
-            response=$(curl -fsS --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+            response=$(curl -fsS "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
+                --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
                 -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
                 "https://${AWS_ORIGIN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
@@ -493,9 +535,14 @@ validate_protocol_runtime() {
 
 validate_subscription_runtime() {
     local token base64_response mihomo_response
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
+    if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
+        xhttp_validate_local_tls_curl_args
+    fi
     validate_subscription_token_rejection \
         "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
         "https://${AWS_ORIGIN_DOMAIN}/subscribe" \
+        "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}"
     if quota_enabled; then
         token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
@@ -503,13 +550,13 @@ validate_subscription_runtime() {
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     fi
-    base64_response=$(curl -fsS --noproxy '*' \
+    base64_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" \
         "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
-    mihomo_response=$(curl -fsS --noproxy '*' \
+    mihomo_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
@@ -547,16 +594,19 @@ build_vless_xhttp_link() {
 }
 
 xhttp_client_endpoints() {
-    if declare -F aws_cdn_client_endpoints >/dev/null 2>&1; then
+    if [[ "${CDN_PROVIDER:-aws}" == "aws" ]] \
+        && declare -F aws_cdn_client_endpoints >/dev/null 2>&1; then
         aws_cdn_client_endpoints
+    elif declare -F cdn_client_endpoints >/dev/null 2>&1; then
+        cdn_client_endpoints
     else
         printf '%s\n' "${VLESS_CDN_DOMAIN}"
     fi
 }
 
 xhttp_using_optimized_candidates() {
-    declare -F aws_cdn_optimization_enabled >/dev/null 2>&1 \
-        && aws_cdn_optimization_enabled \
+    declare -F cdn_optimization_enabled >/dev/null 2>&1 \
+        && cdn_optimization_enabled \
         && declare -F globalping_cache_valid >/dev/null 2>&1 \
         && globalping_cache_valid
 }
@@ -877,6 +927,10 @@ update_current_core() {
 renew_certificate() {
     require_root
     collect_installed_state
+    if declare -F xhttp_renew_origin_certificate >/dev/null 2>&1; then
+        xhttp_renew_origin_certificate
+        return
+    fi
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
     run_acme --renew -d "${AWS_ORIGIN_DOMAIN}" --ecc --force || die "源站证书续期失败"
     "${CERT_RELOAD_HOOK}" || die "证书已续期，但 Nginx 重载失败"

@@ -38,6 +38,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
 
 [[ -f "${REPO_DIR}/easy_all" \
     && -f "${REPO_DIR}/profiles/reality.sh" \
+    && -f "${REPO_DIR}/profiles/xhttp-cloudflare.sh" \
     && -f "${REPO_DIR}/profiles/xhttp-aws.sh" \
     && -f "${REPO_DIR}/profiles/xhttp-gcore.sh" \
     && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \

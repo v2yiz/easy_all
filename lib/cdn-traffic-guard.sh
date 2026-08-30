@@ -40,7 +40,12 @@ cdn_traffic_protection_enabled() {
 }
 
 cdn_traffic_provider_label() {
-    [[ "${CDN_PROVIDER:-}" == "gcore" ]] && printf 'Gcore' || printf 'CloudFront'
+    case "${CDN_PROVIDER:-}" in
+    aws) printf 'CloudFront' ;;
+    cloudflare) printf 'Cloudflare' ;;
+    gcore) printf 'Gcore' ;;
+    *) printf 'Unknown CDN' ;;
+    esac
 }
 
 cdn_traffic_sync_command() {

@@ -1,16 +1,18 @@
 # Gcore 一次性准备指南
 
-> **当前状态：已实现 Gcore CDN XHTTP 安装链路。** 在 `easy_all install` 中选择第 3 项
-> “Gcore CDN - XHTTP”。本指南只说明你在 Gcore 控制台和域名注册商需要完成的一次性准备；
+> **当前状态：已实现 Gcore CDN XHTTP 安装链路。** 在 `easy_all install` 中选择第 4 项
+> “Gcore CDN 精选 IP - XHTTP”。本指南只说明你在 Gcore 控制台和域名注册商需要完成的一次性准备；
 > 安装器会处理 VPS 上的源站、DNS 记录、CDN、边缘证书和本机费用保护。
 
-安装器只会要求你提供一项凭证：
+安装器会要求两项彼此独立的凭证：
 
 ```text
-GCORE_API_TOKEN
+GCORE_API_TOKEN       # 管理 Gcore DNS/CDN，仅在当前云端操作进程中使用
+Globalping Token      # 运行中国大陆探针测量，保存为 root-only 本机文件
 ```
 
-不要将 Token 写入脚本、Git、截图或聊天记录。也不要使用日常个人管理员 Token。
+不要将 Token 写入脚本、Git、截图或聊天记录。Gcore 也不要使用日常个人管理员 Token。
+Globalping Token 的创建步骤见 [Globalping 注册与 Token 指南](globalping-guide.md)。
 
 ## 1. 保持 Free CDN，并了解费用边界
 
@@ -125,10 +127,12 @@ Token 具备全部部署权限；若需要在正式安装前确认角色范围�
 查询参数；源站只接受
 包含 `X-Easy-All-Origin-Key` 的 CDN 请求。
 
-生成的 Mihomo XHTTP 节点固定使用 `ip-version: ipv6-prefer`，优先连接 Gcore IPv6 边缘并在
-IPv6 不可用时回退 IPv4；Mihomo 模板同时关闭 `unified-delay`，避免 XHTTP 上下行分离被统一延迟
-探测误判。此策略与 VPS 是否有 IPv6 无关。Gcore CNAME 目标仍可发布 A/AAAA。源站回源继续使用
-独立 IPv4 A 记录；VPS 到普通目标使用自动双栈，Gemini 相关域名保持固定 IPv4 出口。
+生成的 Mihomo XHTTP 节点固定使用 `ip-version: ipv4`。Globalping 先从中国大陆探针对 Gcore CDN
+域名执行 TCP/443 零丢包筛选，VPS 再用 CDN 域名作为 SNI/Host 复核每个候选地址；Mihomo 从客户端
+网络对候选节点自动测速。模板同时关闭 `unified-delay`，避免 XHTTP 上下行分离被统一延迟探测误判。
+精选缓存失败或超过 72 小时时回退到原 CDN 域名。Globalping Token 的获取方法见
+[Globalping 注册与 Token 指南](globalping-guide.md)。源站回源继续使用独立 IPv4 A 记录；VPS 到普通
+目标使用自动双栈，Gemini 相关域名保持固定 IPv4 出口。
 
 ## 5. 上线前的实际连通性检查
 

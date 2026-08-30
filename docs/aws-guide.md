@@ -8,7 +8,7 @@ AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY
 ```
 
-选择模式 4 时还需提供独立的 Globalping Token，获取方法见本文第 7 节。
+选择模式 5 时还需提供独立的 Globalping Token，获取方法见本文第 7 节。
 
 > 不要为 AWS 根用户创建访问密钥，也不要把任何密钥提交到 Git、写入脚本、
 > 截图或发送到聊天中。
@@ -267,10 +267,10 @@ AWS_SECRET_ACCESS_KEY
 AWS 官方参考：
 [IAM 用户访问密钥](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)。
 
-## 7. 可选：准备模式 4 的 Globalping Token
+## 7. 可选：准备模式 5 的 Globalping Token
 
-模式 4 “AWS CDN 精选 IP - XHTTP”与模式 2 使用完全相同的 IAM 权限和 AWS 资源，不需要为
-AWS 策略增加任何操作。它额外需要一个 Globalping Access Token，用于每 6 小时从中国大陆探针
+模式 5 “AWS CDN 精选 IP - XHTTP”与模式 3 使用完全相同的 IAM 权限和 AWS 资源，不需要为
+AWS 策略增加任何操作。它额外需要一个 Globalping Access Token，用于每小时从中国大陆探针
 执行 IPv4 TCP/443 测量。
 
 Token 的注册和创建步骤见
