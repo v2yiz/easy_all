@@ -28,6 +28,10 @@ SSH 管理流量再次进入代理节点。
 
 ## 安装
 
+Cloudflare 精选 IP XHTTP 以及其他 Globalping 精选 IP 模式需要先准备域名、Cloudflare/Globalping
+账号和 Token；请先阅读统一的
+[前置准备手册](docs/preparation-guide.md)。
+
 一条命令下载完整项目并进入交互安装：
 
 ```bash
@@ -577,7 +581,7 @@ VPS 每小时更新缓存并在刷新失败时保留旧缓存；缓存超过 72 
 该模式只使用一枚限制到目标 Zone 的 API Token（Zone Read、DNS Edit、Transform Rules Edit、
 Config Rules Edit、Zone Settings Edit、SSL and Certificates Edit）。完整的
 DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见
-[Cloudflare CDN 精选 IP XHTTP 准备与架构](docs/cloudflare-guide.md)。
+[前置准备手册](docs/preparation-guide.md)。
 
 ## AWS CDN XHTTP
 
@@ -665,8 +669,8 @@ SNI 访问 `/easy_all-health` 复核。结果去重并按覆盖探针数、平�
 sudo easy_all refresh-cdn-ips
 ```
 
-Globalping 注册、Token 和运行边界见
-[Globalping 注册与 Token 指南](docs/globalping-guide.md)。
+Globalping 注册、Token 和运行边界见统一的
+[前置准备手册](docs/preparation-guide.md)。
 
 `easy_all update-sub` 会重新显示订阅菜单。Reality 的端口菜单和两种
 Profile 的订阅菜单都会把当前值显示在方括号中，直接回车沿用当前状态。
@@ -911,7 +915,7 @@ Cloudflare/AWS/Gcore XHTTP、用户凭据与月度配额、TCP 参数回滚、Xr
 
 模式 2 的 DNS、Universal SSL、Origin CA、Full (strict)、gRPC、Transform Rule、Zone-scoped Token、
 Cloudflare IP 防火墙，以及 Globalping 缓存和长连接风险均见
-[Cloudflare CDN 精选 IP XHTTP 准备与架构](docs/cloudflare-guide.md)。
+[前置准备手册](docs/preparation-guide.md)。
 
 ## 独立工具：debian_init
 

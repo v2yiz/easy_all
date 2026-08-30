@@ -6,8 +6,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
 AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
 GCORE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/gcore-guide.md")
-GLOBALPING_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/globalping-guide.md")
-CLOUDFLARE_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/cloudflare-guide.md")
+PREPARATION_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-aws.sh")
 
@@ -48,86 +47,88 @@ assert_contains "README documents the third Gcore installation branch" "${README
     'Gcore CDN XHTTP'
 assert_contains "README documents the fourth optimized AWS installation mode" \
     "${README_CONTENT}" 'AWS CDN 精选 IP - XHTTP'
-assert_contains "README links the Globalping credential guide" "${README_CONTENT}" \
-    'docs/globalping-guide.md'
-assert_contains "Globalping guide documents GitHub sign-in" \
-    "${GLOBALPING_GUIDE_CONTENT}" 'Sign in with GitHub'
-assert_contains "Globalping guide documents the token page" \
-    "${GLOBALPING_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
+assert_contains "README links the preparation guide" "${README_CONTENT}" \
+    'docs/preparation-guide.md'
+assert_contains "Preparation guide has the expected title" \
+    "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
+assert_contains "Preparation guide documents domain registration" \
+    "${PREPARATION_GUIDE_CONTENT}" 'https://www.spaceship.com/'
+assert_contains "Preparation guide documents Cloudflare sign-up" \
+    "${PREPARATION_GUIDE_CONTENT}" 'https://dash.cloudflare.com/sign-up'
+assert_contains "Preparation guide documents Globalping GitHub sign-in" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Sign in with GitHub'
+assert_contains "Preparation guide documents the Globalping token page" \
+    "${PREPARATION_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
 assert_contains "README documents the hourly Globalping refresh" \
     "${README_CONTENT}" '每小时'
 assert_contains "README documents the 72-hour Globalping fallback" \
     "${README_CONTENT}" '超过 72 小时'
-for runtime_marker in '/etc/easy_all' 'systemd' 'refresh-cdn-ips' '模式 4'; do
-    assert_not_contains "Globalping guide excludes installer detail ${runtime_marker}" \
-        "${GLOBALPING_GUIDE_CONTENT}" "${runtime_marker}"
-done
 assert_contains "README documents the Gcore API credential" "${README_CONTENT}" \
     'GCORE_API_TOKEN'
-assert_contains "README links the retained Cloudflare credential guide" "${README_CONTENT}" \
-    'docs/cloudflare-guide.md'
-assert_contains "Cloudflare guide documents the optimized XHTTP mode" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
-assert_contains "Cloudflare guide requires one first-level hostname" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '一级子域名'
-assert_contains "Cloudflare guide requires an active Zone" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '**Active**'
-assert_contains "Cloudflare guide documents proxied A automation" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '创建唯一的 proxied `A` 记录'
-assert_contains "Cloudflare guide documents automatic Origin CA" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '签发 15 年 Origin CA 证书'
-assert_contains "Cloudflare guide documents one-stop Origin CA rotation" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '轮换和吊销 Origin CA 证书'
-assert_contains "Cloudflare guide identifies the Origin CA certificate" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Origin CA 证书'
-assert_contains "Cloudflare guide documents host-scoped strict TLS" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '配置 Full (strict)'
-assert_contains "Cloudflare guide documents automatic origin HTTP/2" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '开启 origin HTTP/2'
-assert_contains "Cloudflare guide documents the manual gRPC toggle" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Network → gRPC'
-assert_contains "Cloudflare guide makes the gRPC toggle a prerequisite" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '必需条件'
-assert_contains "Cloudflare guide documents automatic gRPC verification" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '会主动发送 gRPC 形态的边缘请求检查该开关'
-assert_contains "Cloudflare guide documents automatic Transform Rule" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Transform Rule'
-assert_contains "Cloudflare guide documents origin firewall boundary" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443'
-assert_contains "Cloudflare guide token grants Zone read" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Zone / Read`'
-assert_contains "Cloudflare guide token grants DNS edit" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / DNS / Edit`'
-assert_contains "Cloudflare guide token grants Transform Rules edit" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Transform Rules / Edit`'
-assert_contains "Cloudflare guide token grants Config Rules edit" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Config Rules / Edit`'
-assert_contains "Cloudflare guide token grants Zone Settings edit" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / Zone Settings / Edit`'
-assert_contains "Cloudflare guide token grants SSL and Certificates edit" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`Zone / SSL and Certificates / Edit`'
-assert_contains "Cloudflare guide embeds the API token walkthrough" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'cloudflare/cloudflare-api-token-easy-all.svg'
+assert_contains "README links the renamed preparation guide" "${README_CONTENT}" \
+    'docs/preparation-guide.md'
+assert_contains "Preparation guide documents the optimized XHTTP mode" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
+assert_contains "Preparation guide requires one first-level hostname" \
+    "${PREPARATION_GUIDE_CONTENT}" '一级子域名'
+assert_contains "Preparation guide requires an active Zone" \
+    "${PREPARATION_GUIDE_CONTENT}" '**Active**'
+assert_contains "Preparation guide documents proxied A automation" \
+    "${PREPARATION_GUIDE_CONTENT}" '创建唯一的 proxied `A` 记录'
+assert_contains "Preparation guide documents automatic Origin CA" \
+    "${PREPARATION_GUIDE_CONTENT}" '签发 15 年 Origin CA 证书'
+assert_contains "Preparation guide documents one-stop Origin CA rotation" \
+    "${PREPARATION_GUIDE_CONTENT}" '轮换和吊销 Origin CA 证书'
+assert_contains "Preparation guide identifies the Origin CA certificate" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Origin CA 证书'
+assert_contains "Preparation guide documents host-scoped strict TLS" \
+    "${PREPARATION_GUIDE_CONTENT}" '配置 Full (strict)'
+assert_contains "Preparation guide documents automatic origin HTTP/2" \
+    "${PREPARATION_GUIDE_CONTENT}" '开启 origin HTTP/2'
+assert_contains "Preparation guide documents the manual gRPC toggle" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Network → gRPC'
+assert_contains "Preparation guide makes the gRPC toggle a prerequisite" \
+    "${PREPARATION_GUIDE_CONTENT}" '必需条件'
+assert_contains "Preparation guide documents automatic gRPC verification" \
+    "${PREPARATION_GUIDE_CONTENT}" '会主动发送 gRPC 形态的边缘请求检查该开关'
+assert_contains "Preparation guide documents automatic Transform Rule" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Transform Rule'
+assert_contains "Preparation guide documents origin firewall boundary" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443'
+assert_contains "Preparation guide token grants Zone read" \
+    "${PREPARATION_GUIDE_CONTENT}" '`Zone / Zone / Read`'
+assert_contains "Preparation guide token grants DNS edit" \
+    "${PREPARATION_GUIDE_CONTENT}" '`Zone / DNS / Edit`'
+assert_contains "Preparation guide token grants Transform Rules edit" \
+    "${PREPARATION_GUIDE_CONTENT}" '`Zone / Transform Rules / Edit`'
+assert_contains "Preparation guide token grants Config Rules edit" \
+    "${PREPARATION_GUIDE_CONTENT}" '`Zone / Config Rules / Edit`'
+assert_contains "Preparation guide token grants Zone Settings edit" \
+    "${PREPARATION_GUIDE_CONTENT}" '`Zone / Zone Settings / Edit`'
+assert_contains "Preparation guide token grants SSL and Certificates edit" \
+    "${PREPARATION_GUIDE_CONTENT}" '`Zone / SSL and Certificates / Edit`'
+assert_contains "Preparation guide embeds the API token walkthrough" \
+    "${PREPARATION_GUIDE_CONTENT}" 'cloudflare/cloudflare-api-token-easy-all.svg'
 [[ -s "${ROOT_DIR}/docs/cloudflare/cloudflare-api-token-easy-all.svg" ]] \
     || fail "Cloudflare API token walkthrough asset is missing"
-assert_contains "Cloudflare guide documents Globalping fallback" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '超过 72 小时'
-assert_contains "Cloudflare guide documents the official IPv4 pool" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
-assert_contains "Cloudflare guide documents carrier-specific eyeball probes" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '`AS4134`、中国联通 `AS4837`、中国移动 `AS9808`'
-assert_contains "Cloudflare guide keeps the hostname fallback" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '原始域名兜底节点'
-assert_contains "Cloudflare guide documents six candidates per carrier" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '每个运营商最多保留 6 个候选'
-assert_contains "Cloudflare guide documents its longer client test interval" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '每 600 秒测速'
-assert_contains "Cloudflare guide documents the 100 MB request boundary" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '**100 MB**'
-assert_not_contains "Cloudflare guide does not instruct manual proxied record creation" \
-    "${CLOUDFLARE_GUIDE_CONTENT}" '在 **DNS → Records** 创建'
+assert_contains "Preparation guide documents Globalping fallback" \
+    "${PREPARATION_GUIDE_CONTENT}" '超过 72 小时'
+assert_contains "Preparation guide documents the official IPv4 pool" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
+assert_contains "Preparation guide documents carrier-specific eyeball probes" \
+    "${PREPARATION_GUIDE_CONTENT}" '`AS4134`、中国联通 `AS4837`、中国移动 `AS9808`'
+assert_contains "Preparation guide keeps the hostname fallback" \
+    "${PREPARATION_GUIDE_CONTENT}" '原始域名兜底节点'
+assert_contains "Preparation guide documents six candidates per carrier" \
+    "${PREPARATION_GUIDE_CONTENT}" '每个运营商最多保留 6 个候选'
+assert_contains "Preparation guide documents its longer client test interval" \
+    "${PREPARATION_GUIDE_CONTENT}" '每 600 秒测速'
+assert_contains "Preparation guide documents the 100 MB request boundary" \
+    "${PREPARATION_GUIDE_CONTENT}" '**100 MB**'
+assert_not_contains "Preparation guide does not instruct manual proxied record creation" \
+    "${PREPARATION_GUIDE_CONTENT}" '在 **DNS → Records** 创建'
 for aws_asset in \
     aws-architecture.svg \
     aws-cloudfront-settings.svg \

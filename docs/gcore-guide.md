@@ -12,7 +12,8 @@ Globalping Token      # 运行中国大陆探针测量，保存为 root-only 本
 ```
 
 不要将 Token 写入脚本、Git、截图或聊天记录。Gcore 也不要使用日常个人管理员 Token。
-Globalping Token 的创建步骤见 [Globalping 注册与 Token 指南](globalping-guide.md)。
+Globalping Token 的创建步骤见
+[前置准备手册](preparation-guide.md#2-注册-globalping-并创建-access-token)。
 
 ## 1. 保持 Free CDN，并了解费用边界
 
@@ -131,7 +132,7 @@ Token 具备全部部署权限；若需要在正式安装前确认角色范围�
 域名执行 TCP/443 零丢包筛选，VPS 再用 CDN 域名作为 SNI/Host 复核每个候选地址；Mihomo 从客户端
 网络对候选节点自动测速。模板同时关闭 `unified-delay`，避免 XHTTP 上下行分离被统一延迟探测误判。
 精选缓存失败或超过 72 小时时回退到原 CDN 域名。Globalping Token 的获取方法见
-[Globalping 注册与 Token 指南](globalping-guide.md)。源站回源继续使用独立 IPv4 A 记录；VPS 到普通
+[前置准备手册](preparation-guide.md#2-注册-globalping-并创建-access-token)。源站回源继续使用独立 IPv4 A 记录；VPS 到普通
 目标使用自动双栈，Gemini 相关域名保持固定 IPv4 出口。
 
 ## 5. 上线前的实际连通性检查

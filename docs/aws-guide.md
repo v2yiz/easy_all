@@ -275,7 +275,7 @@ AWS 策略增加任何操作。它额外需要一个 Globalping Access Token，�
 执行 IPv4 TCP/443 测量。
 
 Token 的注册和创建步骤见
-[Globalping 注册与 Token 指南](globalping-guide.md)。安装器会将 Token 保存到 VPS 的
+[前置准备手册](preparation-guide.md#2-注册-globalping-并创建-access-token)。安装器会将 Token 保存到 VPS 的
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`；不会保存到 `state.env`。
 
 本模式不需要 Cloudflare API Token，也不需要配置 Cloudflare 侧 DNS。
