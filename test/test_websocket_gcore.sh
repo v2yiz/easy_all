@@ -26,8 +26,8 @@ bash -n "${PROFILE}" "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
 
 assert_contains "Gcore uses official WebSocket option" "${CONTENT}" \
     'websockets:{enabled:true,value:true}'
-assert_contains "Gcore explicitly disables gRPC" "${CONTENT}" \
-    'grpc_passthrough:{enabled:true,value:false}'
+assert_not_contains "Gcore omits unavailable gRPC passthrough option" "${PROFILE}" \
+    'grpc_passthrough'
 assert_contains "Gcore preserves query strings for early data" "${CONTENT}" \
     'ignoreQueryString:{enabled:true,value:false}'
 assert_contains "Gcore cache payload does not combine value and default" "${CONTENT}" \
@@ -80,6 +80,8 @@ assert_contains "Gcore trusted CA names include the issuer fingerprint" "${CONTE
     'fingerprint=${CURRENT_GCORE_ORIGIN_ISSUER_SHA256:-${GCORE_ORIGIN_ISSUER_SHA256:-}}'
 assert_not_contains "Gcore DNS-01 flow skips the optional HTTP pre-validation request" \
     "${PROFILE}" '/ssl/le/pre-validate'
+assert_contains "Gcore enables HTTP redirect only after attaching an edge certificate" \
+    "${CONTENT}" 'gcore_attach_edge_certificate'
 assert_contains "purge preflights the attached edge certificate" "${CONTENT}" \
     'and .sslData == $edge'
 assert_contains "purge preflights the attached origin CA" "${CONTENT}" \
@@ -118,6 +120,27 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         && "${first_ca_name}" == easy-all-origin-ca-*-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
         && "${second_ca_name}" == easy-all-origin-ca-*-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]] \
         || fail "Gcore trusted CA names must change with the issuer fingerprint"
+
+    GCORE_CDN_RESOURCE_ID=42
+    GCORE_SSL_CERT_ID=43
+    attach_call=0
+    gcore_api_request() {
+        [[ "$1 $2" == "PATCH /cdn/resources/42" ]] \
+            || fail "unexpected Gcore edge certificate request: $1 $2"
+        ((attach_call += 1))
+        if ((attach_call == 1)); then
+            jq -e '.sslEnabled == true and .sslData == 43 and (has("options") | not)' \
+                <<<"$3" >/dev/null \
+                || fail "Gcore must attach the edge certificate before enabling redirect"
+        else
+            jq -e '.options.redirect_http_to_https == {enabled:true,value:true}
+                and (has("sslData") | not)' <<<"$3" >/dev/null \
+                || fail "Gcore must enable redirect in a separate request"
+        fi
+    }
+    gcore_attach_edge_certificate
+    [[ "${attach_call}" == "2" ]] \
+        || fail "Gcore edge certificate attachment must use two ordered requests"
 
     CDN_PROVIDER=gcore
     PROTOCOL=websocket
@@ -164,7 +187,8 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         and .proxy_ssl_data == 14
         and .options.allowedHttpMethods.value == ["GET","HEAD"]
         and .options.websockets.value == true
-        and .options.grpc_passthrough.value == false
+        and (.options | has("grpc_passthrough") | not)
+        and (.options | has("redirect_http_to_https") | not)
         and .options.edge_cache_settings.value == "0s"
         and (.options.edge_cache_settings | has("default") | not)
     ' <<<"${payload}" >/dev/null || fail "Gcore resource payload is invalid"

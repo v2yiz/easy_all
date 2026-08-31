@@ -365,10 +365,11 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 | VLESS flow | 空 | WebSocket 不使用 Vision flow |
 | 证书校验 | 开启 | 精选 IP 不改变 SNI，也不跳过证书校验 |
 
-Gcore Resource 开启 `websockets`，显式关闭 `grpc_passthrough`；使用 HTTPS 回源并固定 Host/SNI；
-只允许 `GET/HEAD`；Edge cache 和 browser cache 均为 `0s`；保留查询参数以支持 `?ed=2560`；
-注入随机 Origin Key；不覆盖 Gcore WebSocket 的回源读取超时；使用 DNS-01 自动边缘证书，并开启
-Origin SSL Validation。CNAME 目标只读取 `GET /cdn/clients/me` 返回的账户专属 `cname`。
+Gcore Resource 开启 `websockets`，不提交免费套餐不可用的 `grpc_passthrough` 选项；使用 HTTPS
+回源并固定 Host/SNI；只允许 `GET/HEAD`；Edge cache 和 browser cache 均为 `0s`；保留查询参数
+以支持 `?ed=2560`；注入随机 Origin Key；不覆盖 Gcore WebSocket 的回源读取超时；使用 DNS-01
+自动边缘证书，并开启 Origin SSL Validation。首次创建 Resource 时先关联边缘证书，再单独开启
+HTTP 到 HTTPS 重定向。CNAME 目标只读取 `GET /cdn/clients/me` 返回的账户专属 `cname`。
 
 ### 8.5 Origin SSL Validation 与 mTLS
 

@@ -590,7 +590,8 @@ VLESS WebSocket TLS，Gcore 边缘接收标准 HTTP/1.1 Upgrade，再通过 HTTP
 - Mihomo 使用 `network: ws`、`max-early-data: 2560`、`skip-cert-verify: false`。
 
 Gcore Resource 开启 `websockets`、HTTPS 回源、DNS-01、强制 HTTPS 和查询参数保留；只允许
-`GET/HEAD`，关闭边缘和浏览器缓存，显式关闭 gRPC passthrough。CNAME 目标始终读取
+`GET/HEAD`，关闭边缘和浏览器缓存，不提交免费套餐不可用的 gRPC passthrough 选项。首次创建
+Resource 时先保持 HTTP 重定向关闭，关联边缘证书后再单独开启。CNAME 目标始终读取
 `GET /cdn/clients/me` 的账户专属 `cname`，不会根据自定义域名拼接 `*.gcdn.co`。
 
 源站安全使用 Gcore 官方 Origin SSL Validation：安装器从源站 Let's Encrypt fullchain

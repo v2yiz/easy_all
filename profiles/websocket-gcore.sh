@@ -535,7 +535,6 @@ gcore_resource_payload() {
           options:{
             allowedHttpMethods:{enabled:true,value:["GET","HEAD"]},
             websockets:{enabled:true,value:true},
-            grpc_passthrough:{enabled:true,value:false},
             edge_cache_settings:{enabled:true,value:"0s"},
             browser_cache_settings:{enabled:true,value:"0s"},
             ignoreQueryString:{enabled:true,value:false},
@@ -543,7 +542,6 @@ gcore_resource_payload() {
             sni:{enabled:true,sni_type:"custom",custom_hostname:$origin},
             staticRequestHeaders:{enabled:true,value:{"X-Easy-All-Origin-Key":$key}},
             proxy_connect_timeout:{enabled:true,value:"5s"},
-            redirect_http_to_https:{enabled:true,value:true},
             use_dns01_le_challenge:{enabled:true,value:true}
           }
         }
@@ -603,6 +601,15 @@ gcore_certificate_name() {
     printf 'easy-all-%s-%s' "${VLESS_CDN_DOMAIN}" "${suffix}"
 }
 
+gcore_attach_edge_certificate() {
+    gcore_api_request PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+        "$(jq -cn --argjson cert "${GCORE_SSL_CERT_ID}" \
+            '{sslEnabled:true,sslData:$cert}')" >/dev/null
+    gcore_api_request PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+        "$(jq -cn '{options:{redirect_http_to_https:{enabled:true,value:true}}}')" \
+        >/dev/null
+}
+
 gcore_ensure_edge_certificate() {
     local name certificates matches count attempt patch certificate_details
     name=$(gcore_certificate_name)
@@ -612,9 +619,7 @@ gcore_ensure_edge_certificate() {
             || die "读取现有 Gcore 边缘证书失败"
         jq -e '.automated == true' <<<"${certificate_details}" >/dev/null \
             || die "状态中的 Gcore 证书不是自动 Let's Encrypt 证书，拒绝替换"
-        gcore_api_request PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
-            "$(jq -cn --argjson cert "${GCORE_SSL_CERT_ID}" \
-                '{sslEnabled:true,sslData:$cert}')" >/dev/null
+        gcore_attach_edge_certificate
         info "复用现有 Gcore 自动证书；secondary hostname 变化由同一 CDN 资源自动补发证书"
         return 0
     fi
@@ -640,8 +645,7 @@ gcore_ensure_edge_certificate() {
         [[ "${GCORE_SSL_CERT_ID:-}" =~ ^[0-9]+$ ]] \
             || die "等待 Gcore Let's Encrypt 证书创建超时"
     fi
-    gcore_api_request PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
-        "$(jq -cn --argjson cert "${GCORE_SSL_CERT_ID}" '{sslEnabled:true,sslData:$cert}')" >/dev/null
+    gcore_attach_edge_certificate
 }
 
 gcore_wait_for_cdn_health() {
