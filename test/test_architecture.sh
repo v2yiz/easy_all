@@ -80,6 +80,15 @@ for retired_xhttp_identifier in \
         "${XHTTP_RUNTIME}" "${CLOUDFLARE_PROFILE}" >/dev/null \
         || fail "retired XHTTP identifier remains: ${retired_xhttp_identifier}"
 done
+for retired_acme_identifier in \
+    ACME_HOME ACME_BIN ACME_OWNERSHIP_MARKER CERT_RELOAD_HOOK install_acme \
+    install_acme_from_github run_acme ensure_acme_renewal_setup \
+    remove_managed_acme_domain remove_managed_acme_cron; do
+    ! grep -Eq "(^|[^[:alnum:]_])${retired_acme_identifier}([^[:alnum:]_]|$)" \
+        "${ROOT_DIR}/easy_all" "${ROOT_DIR}/profiles/reality.sh" \
+        "${ROOT_DIR}"/lib/*.sh >/dev/null \
+        || fail "retired ACME identifier remains: ${retired_acme_identifier}"
+done
 for module in "${shared_modules[@]}"; do
     [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
         || fail "Reality does not source shared module ${module}"
@@ -118,10 +127,9 @@ fi
 grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep Gemini on the selected PROXY exit"
 
-[[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-enabled --quiet cron.service'* \
-    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'systemctl is-active --quiet cron.service'* \
-    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* ]] \
-    || fail "scheduled maintenance must cover ACME renewal and reboot policy"
+[[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \
+    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" != *'acme'* ]] \
+    || fail "scheduled maintenance must cover reboot policy without ACME"
 
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/lib/subscription-auth.sh"

@@ -1,9 +1,9 @@
 # 前置准备手册
 
-本手册覆盖 Cloudflare CDN 模式所需的域名、账号、DNS 和 Token 准备，也说明 Reality 直连模式无需
-额外 CDN 资源。
+本手册覆盖两种模式所需的 Cloudflare 域名、账号、DNS 和 Token 准备。Reality 节点数据仍然直连，
+但自托管订阅固定使用 Cloudflare Universal SSL 与 Origin CA。
 
-Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality 直连模式无需继续阅读。
+Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality 部署订阅时阅读第 1、3、4 节。
 手册只覆盖注册、DNS、账号权限和 Token 准备，不包含 VPS 命令。完成后再回到
 [README 的安装说明](../README.md) 执行安装。
 
@@ -18,7 +18,7 @@ VPS 费用另计，自行启用增值服务时按 Cloudflare 当前规则计费�
 
 | 链路 | 必须准备 | 不需要准备 | 继续阅读 |
 | --- | --- | --- | --- |
-| 模式 1：Reality 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4；可直接使用 IP，也可准备 DNS only/灰云节点域名；如部署自托管订阅，再准备一个直接解析到 VPS 的域名 | CDN Provider 账号、CDN API Token、Globalping Token | README 的 Reality 章节；本手册无需继续 |
+| 模式 1：Reality 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token | Globalping Token、gRPC 设置 | 第 1、3、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare XHTTP | 根域名、Cloudflare Free 账号、已变为 **Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 
 各链路建议使用的域名如下：
@@ -150,7 +150,8 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 Include → Specific zone → example.com
 ```
 
-仅添加以下六项权限：
+XHTTP 模式添加以下六项权限；Reality 仅部署订阅时只需其中 `Zone / Zone / Read`、
+`Zone / DNS / Edit`、`Zone / Config Rules / Edit` 和 `Zone / SSL and Certificates / Edit`：
 
 | 权限 | 用途 |
 | --- | --- |

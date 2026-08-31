@@ -66,8 +66,6 @@ source_script_copy() {
         -e "s|^readonly XRAY_CONFIG=.*|readonly XRAY_CONFIG=\"${TMP_DIR}/state/xray/config.json\"|" \
         -e "s|^readonly XRAY_SERVICE_FILE=.*|readonly XRAY_SERVICE_FILE=\"${TMP_DIR}/easy_all-xray.service\"|" \
         -e "s|^readonly NGINX_CONFIG=.*|readonly NGINX_CONFIG=\"${TMP_DIR}/easy_all.conf\"|" \
-        -e "s|^readonly ACME_HOME=.*|readonly ACME_HOME=\"${TMP_DIR}/acme\"|" \
-        -e "s|^readonly ACME_BIN=.*|readonly ACME_BIN=\"${TMP_DIR}/acme/acme.sh\"|" \
         -e "s|^readonly UFW_BEFORE_RULES=.*|readonly UFW_BEFORE_RULES=\"${TMP_DIR}/before.rules\"|" \
         -e "s|^readonly UFW_BEFORE6_RULES=.*|readonly UFW_BEFORE6_RULES=\"${TMP_DIR}/before6.rules\"|" \
         -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
@@ -95,6 +93,11 @@ set_fixture() {
     SUBSCRIPTION_DOMAIN="sub.example.com"
     SUB_DOWNLOAD_NAME="MY_SUB"
     ALLOWED_TOKENS='{"owner":"test-token","friend":"friend-token"}'
+    CLOUDFLARE_ZONE_ID="test-zone-id"
+    CLOUDFLARE_ZONE_NAME="example.com"
+    CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
+    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2041-08-31T00:00:00Z"
+    CLOUDFLARE_STRICT_RULESET_ID="test-strict-ruleset-id"
 }
 
 test_syntax_and_reality_boundaries() {
@@ -102,12 +105,13 @@ test_syntax_and_reality_boundaries() {
     bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
     script=$(<"${ROOT_DIR}/profiles/reality.sh")
     subscription_module=$(<"${ROOT_DIR}/lib/subscription-auth.sh")
-    assert_not_contains "installer has no Cloudflare API endpoint" \
+    assert_contains "Reality provisions Cloudflare through the official API" \
         "api.cloudflare.com/client/v4" "${script}"
-    assert_contains "Reality revokes ACME before local cleanup" \
-        "revoke_reality_certificate_before_uninstall" "${script}"
-    assert_contains "Reality removes its ACME cron entry" \
-        "remove_managed_acme_cron" "${script}"
+    assert_contains "Reality installs a Cloudflare Origin CA certificate" \
+        "reality_cloudflare_issue_origin_certificate" "${script}"
+    assert_contains "Reality restricts subscription origin traffic to Cloudflare" \
+        "reality_cloudflare_configure_subscription_firewall" "${script}"
+    assert_not_contains "Reality no longer contains ACME" "acme" "${script}"
     assert_contains "Reality input collection is a separate stage" \
         "collect_reality_inputs()" "${script}"
     assert_contains "subscription input collection is a separate stage" \
@@ -151,7 +155,7 @@ test_validators_and_modes() {
     assert_equal "Reality defaults to dynamic subscriptions" \
         "dynamic" "${DEFAULT_REALITY_PORT_MODE}"
     assert_equal "Reality state schema records canonical subscription modes" \
-        "5" "${STATE_SCHEMA_VERSION}"
+        "6" "${STATE_SCHEMA_VERSION}"
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
@@ -501,6 +505,7 @@ test_nginx_and_firewall() {
     ensure_ssh_boot_service() { return 0; }
     ensure_ssh_fail2ban() { printf 'fail2ban-sshd\n' >>"${ufw_log}"; }
     detect_ssh_ports() { SSH_PORTS="22 65533"; }
+    reality_cloudflare_fetch_origin_ipv4_ranges() { printf '173.245.48.0/20\n'; }
     apply_managed_ufw_tcp_ports() {
         printf 'managed-ports %s\n' "$1" >>"${ufw_log}"
     }
@@ -530,10 +535,14 @@ EOF
     configure_ufw
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
-    assert_contains "self-hosting opens HTTP" \
-        "managed-ports 22 65533 443 80 8443" "$(<"${ufw_log}")"
-    assert_contains "self-hosting opens 8443" \
-        "managed-ports 22 65533 443 80 8443" "$(<"${ufw_log}")"
+    assert_contains "self-hosting stages 8443 before the Cloudflare allowlist" \
+        "managed-ports 22 65533 443 8443" "$(<"${ufw_log}")"
+    assert_contains "self-hosting removes unrestricted 8443 after staging" \
+        "managed-ports 22 65533 443" "$(<"${ufw_log}")"
+    assert_contains "self-hosting allows Cloudflare ranges to 8443" \
+        "allow proto tcp from 173.245.48.0/20 to any port 8443" "$(<"${ufw_log}")"
+    assert_not_contains "self-hosting does not open HTTP 80" \
+        "managed-ports 22 65533 443 80" "$(<"${ufw_log}")"
     assert_contains "Reality enables shared Fail2ban after UFW" \
         "fail2ban-sshd" "$(<"${ufw_log}")"
     dynamic_rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw_config}")
@@ -822,92 +831,25 @@ EOF
     unset -f ufw
 }
 
-test_acme_reinstall_and_rate_limit_guidance() {
-    local rate_log="${TMP_DIR}/acme-rate-limit.log"
-    local generic_log="${TMP_DIR}/acme-generic-error.log"
-    local message
-    printf '%s\n' \
-        '429 urn:ietf:params:acme:error:rateLimited: too many certificates already issued for this exact set of identifiers, retry after 2026-08-20 12:00:00 UTC' \
-        >"${rate_log}"
-    message=$(describe_acme_issue_failure "${rate_log}" 1)
-    assert_contains "ACME rate limit guidance tells the user to wait" \
-        "请等待 CA 指定时间后再试" "${message}"
-    assert_contains "ACME rate limit guidance includes retry-after" \
-        "retry after 2026-08-20 12:00:00 UTC" "${message}"
-    assert_contains "ACME duplicate certificate guidance allows a new domain" \
-        "全新订阅域名" "${message}"
-
-    printf '%s\n' 'Invalid response from http://sub.example.com/.well-known/acme-challenge' \
-        >"${generic_log}"
-    message=$(describe_acme_issue_failure "${generic_log}" 1)
-    assert_contains "generic ACME failures retain DNS and port guidance" \
-        "DNS、CAA 和 TCP 80" "${message}"
-    assert_not_contains "generic ACME failures are not mislabeled as rate limits" \
-        "触发签发限流" "${message}"
-
-    run_acme() {
-        if [[ "$*" == *"--set-default-ca"* ]]; then
-            return 0
-        fi
-        printf '%s\n' \
-            '429 rateLimited: too many certificates for this exact set of identifiers, retry after 2026-08-20 12:00:00 UTC'
-        return 17
-    }
-    install_acme() { :; }
-    if message=$(issue_subscription_certificate 2>&1); then
-        fail_test "rate-limited certificate issuance must fail"
-    fi
-    assert_contains "certificate issuance reports parsed rate-limit guidance" \
-        "Let's Encrypt 触发签发限流（acme.sh 返回 17）" "${message}"
-    unset -f run_acme install_acme
-
-    install -d -m 0700 "${ACME_HOME}/old.example.com_ecc" \
-        "${ACME_HOME}/current.example.com_ecc"
-    retire_managed_acme_domain "old.example.com"
-    assert_success "retiring an old subscription domain removes only its ACME renewal entry" \
-        test ! -e "${ACME_HOME}/old.example.com_ecc"
-    assert_success "retiring an old subscription domain preserves the current ACME entry" \
-        test -d "${ACME_HOME}/current.example.com_ecc"
-}
-
-test_acme_renewal_repair() {
-    local cron_state="" maintenance_source
+test_cloudflare_reality_contract() {
+    local reality_source common_source maintenance_source
+    reality_source=$(<"${ROOT_DIR}/profiles/reality.sh")
+    common_source=$(<"${ROOT_DIR}/lib/profile-common.sh")
     maintenance_source=$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")
-    assert_contains "all installed acme invocations force wget transport" \
-        'ACME_USE_WGET=1 "${ACME_BIN}"' "${maintenance_source}"
-    install -d -m 0700 "${ACME_HOME}"
-    cat >"${ACME_BIN}" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-    chmod 0700 "${ACME_BIN}"
-    systemctl() { return 0; }
-    crontab() {
-        if [[ "${1:-}" == "-l" ]]; then
-            printf '%s\n' "${cron_state}"
-        else
-            cron_state=$(<"$1")
-        fi
-    }
-    run_acme() {
-        [[ "$*" == *"--install-cronjob"* ]] || return 1
-        return 0
-    }
-    install_acme
-    assert_contains "existing acme.sh repairs its missing renewal entry" \
-        "--cron" "${cron_state}"
-    assert_contains "existing acme.sh falls back to an easy_all managed renewal entry" \
-        "easy_all-acme-renewal" "${cron_state}"
-
-    cron_state=$(printf '%s\n%s\n' \
-        "7 1,7,13,19 * * * \"${ACME_HOME}\"/acme.sh --cron --home \"${ACME_HOME}\" > /dev/null" \
-        "17 2 * * * \"${ACME_BIN}\" --cron --home \"${ACME_HOME}\" >/dev/null 2>&1 # easy_all-acme-renewal")
-    install_acme
-    assert_equal "quoted acme cron paths are recognized and deduplicated" \
-        "1" "$(grep -c -- '--cron' <<<"${cron_state}")"
-    assert_not_contains "deduplication removes the redundant fallback cron" \
-        "easy_all-acme-renewal" "${cron_state}"
-    unset -f systemctl crontab run_acme
+    assert_contains "Reality requests long-lived Cloudflare Origin CA certificates" \
+        "CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475" "${reality_source}"
+    assert_contains "Reality creates proxied Cloudflare subscription DNS" \
+        'proxied:true,comment:"easy_all reality subscription origin"' "${reality_source}"
+    assert_contains "Reality enforces hostname-scoped strict TLS" \
+        'action_parameters:{ssl:"strict"}' "${reality_source}"
+    assert_contains "Reality verifies local TLS with the Origin CA root" \
+        '--cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"' "${reality_source}"
+    assert_contains "Reality validates the public Cloudflare subscription path" \
+        "reality_cloudflare_validate_public_subscription" "${reality_source}"
+    assert_not_contains "profile common no longer installs ACME" \
+        "acmesh-official" "${common_source}"
+    assert_not_contains "scheduled maintenance no longer manages ACME" \
+        "acme" "${maintenance_source}"
 }
 
 test_secure_download_transport() {
@@ -948,63 +890,12 @@ test_secure_download_transport() {
         test -s "${destination}"
     unset -f timeout wget
 
-    local common_source xray_source xhttp_source
-    common_source=$(<"${ROOT_DIR}/lib/profile-common.sh")
+    local xray_source
     xray_source=$(<"${ROOT_DIR}/lib/xray-core.sh")
-    xhttp_source=$(<"${ROOT_DIR}/lib/xhttp-runtime.sh")
-    assert_not_contains "acme installation no longer uses get.acme.sh" \
-        "get.acme.sh" "${common_source}${xhttp_source}"
     assert_not_contains "Xray downloads no longer use curl" \
         "curl " "${xray_source}"
-    assert_contains "acme downloads are restricted to its official GitHub repo" \
-        "api.github.com/repos/acmesh-official/acme.sh" "${common_source}"
-    assert_contains "acme selects GitHub's declared latest release" \
-        "acmesh-official/acme.sh/releases/latest" "${common_source}"
-    assert_contains "acme accepts official v-prefixed release tags" \
-        '^v?[0-9]+' "${common_source}"
-    assert_contains "acme installs from inside the extracted source directory" \
-        'cd "${source_dir}"' "${common_source}"
-    assert_contains "acme invokes the source entrypoint by relative path" \
-        'sh ./acme.sh --install' "${common_source}"
-    assert_contains "acme uses wget for its own update metadata request" \
-        'ACME_USE_WGET=1' "${common_source}"
-    assert_contains "easy_all prevents acme from editing the shell profile" \
-        '--no-cron --no-profile' "${common_source}"
     assert_contains "Xray downloads are restricted to official release URLs" \
         "github.com/XTLS/Xray-core/releases/download" "${xray_source}"
-
-    local fixture_source="${TMP_DIR}/acme-release" fixture_home="${TMP_DIR}/acme-installed"
-    install -d -m 0700 "${fixture_source}"
-    cat >"${fixture_source}/acme.sh" <<'EOF'
-#!/bin/sh
-[ -f ./acme.sh ] || exit 90
-while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--home" ]; then
-        shift
-        install_home=$1
-    fi
-    shift
-done
-[ -n "${install_home:-}" ] || exit 91
-mkdir -p "${install_home}"
-cp ./acme.sh "${install_home}/acme.sh"
-chmod 0700 "${install_home}/acme.sh"
-EOF
-    (
-        download_https_file() {
-            local url=$1 destination=$2
-            if [[ "${url}" == */releases/latest ]]; then
-                printf '%s\n' \
-                    '{"tag_name":"v3.1.4","tarball_url":"https://api.github.com/repos/acmesh-official/acme.sh/tarball/v3.1.4"}' \
-                    >"${destination}"
-            else
-                tar -czf "${destination}" -C "${TMP_DIR}" acme-release
-            fi
-        }
-        install_acme_from_github "${fixture_home}" "admin@example.com"
-    )
-    assert_success "acme installer runs with its source directory as cwd" \
-        test -x "${fixture_home}/acme.sh"
 }
 
 test_state_and_xray() {
@@ -1017,6 +908,12 @@ test_state_and_xray() {
         "SUBSCRIPTION_MODE=deploy" "${state}"
     assert_contains "state persists subscription domain" \
         "SUBSCRIPTION_DOMAIN=sub.example.com" "${state}"
+    assert_contains "state persists the Cloudflare Origin CA identifier" \
+        "CLOUDFLARE_ORIGIN_CERT_ID=test-origin-cert-id" "${state}"
+    assert_contains "state persists the hostname-scoped Strict TLS ruleset" \
+        "CLOUDFLARE_STRICT_RULESET_ID=test-strict-ruleset-id" "${state}"
+    assert_not_contains "state never persists the Cloudflare API Token" \
+        "CLOUDFLARE_API_TOKEN" "${state}"
     assert_contains "state persists Reality inbound family" \
         "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
     assert_not_contains "state omits the derived Reality client endpoint family" \
@@ -1142,8 +1039,7 @@ test_rotate_dynamic_ports_command
 test_scheduled_reboot_refreshes_dynamic_ports
 test_dynamic_port_rotation_schedule
 test_dynamic_port_rotation_rollback
-test_acme_renewal_repair
-test_acme_reinstall_and_rate_limit_guidance
+test_cloudflare_reality_contract
 test_secure_download_transport
 test_state_and_xray
 test_install_pipeline_order

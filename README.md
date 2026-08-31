@@ -159,12 +159,12 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
 | `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；Cloudflare 模式额外显示 Globalping 缓存与定时器状态，不调用云 API。 |
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
-| `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 Provider 云资源。 |
+| `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收运行时和订阅；Reality 部署订阅时会同步其 Cloudflare DNS、Strict TLS 与 Origin CA。 |
 | `apply-cloud` | 仅 Cloudflare 模式可用；应用本机配置并同步 Cloudflare DNS、证书、规则和相关设置。 |
 | `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改 Cloudflare 资源，新增、更换或停用独立域名时同步当前 Zone。 |
 | `refresh-cdn-ips` | Cloudflare 模式可用；立即运行一次 Globalping 测量，更新本地缓存并原子重建订阅。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
-| `renew-cert` | 强制续期当前模式使用的本机证书；Cloudflare 模式同时轮换 Origin CA 并重新验收。 |
+| `renew-cert` | 强制轮换当前模式使用的 Cloudflare Origin CA 证书并重新验收。 |
 | `quota-status` | 显示每用户月度配额和 Xray 本地统计。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
@@ -174,12 +174,13 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
 云资源时才使用 `easy_all apply-cloud`。
 
-卸载与远端资源处理：默认 `easy_all uninstall` 只清理本机。Cloudflare 模式执行
+卸载与远端资源处理：默认 `easy_all uninstall` 只清理本机。两种模式执行
 `easy_all uninstall --purge-cloud` 时，脚本会删除带 `easy_all xhttp origin` 标记的节点/订阅 A 记录、
 按稳定 `ref` 定位的 Transform/Config Rules、删除规则后为空且名称匹配的 easy_all ruleset，以及
-Origin CA 证书；不会删除未带 easy_all 标记的 DNS 或包含其他规则的 ruleset。Zone 级 origin HTTP/2
+Origin CA 证书；Reality 使用自己的 `easy_all reality subscription origin` DNS 标记和 Strict TLS
+规则，不会触碰 XHTTP 资源。脚本不会删除未带 easy_all 标记的 DNS 或包含其他规则的 ruleset。Zone 级 origin HTTP/2
 设置和需要手动开启的 gRPC 开关不会自动还原，因为没有安全的方式判断它们是否仍被其他业务使用。
-Reality 模式会吊销 Let’s Encrypt 证书；Cloudflare Origin CA 可直接吊销。远端操作失败时会立即停止，
+Cloudflare Origin CA 会通过 API 直接吊销。远端操作失败时会立即停止，
 本机状态和证书不会删除；Zone 级设置和未带 easy_all 标记的资源会保留。
 
 ### `apply` 的具体操作
@@ -189,7 +190,7 @@ Reality 模式会吊销 Let’s Encrypt 证书；Cloudflare Origin CA 可直接�
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式，同步 SSH 监听、UFW 与 Fail2ban；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
+| Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
 | Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件；使用现有 Globalping 缓存。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
@@ -450,7 +451,8 @@ ASN 会给出警告但不会阻止安装，查询不可用时同样只警告。R
 保留前面 `56` 个历史 3 小时窗口，同时预开放当天全天 `8` 个端口和次日凌晨 `00/03` 的
 `2` 个端口，共 `66` 个端口，并将它们重定向到 Xray `443`；不会生成数万条 UFW allow 规则。
 每天 `00:01` 会刷新这组端口；每日重启任务也会先刷新并清理，再执行重启。UFW 过滤规则默认拒绝入站与转发，始终放行检测到的 SSH
-端口、Reality TCP `443`、HTTP `80`（自托管订阅）和订阅 HTTPS `8443`（自托管订阅）。
+端口和 Reality TCP `443`；部署自托管订阅时，HTTPS `8443` 仅允许 Cloudflare 官方 IPv4 回源段，
+不开放 HTTP `80`。
 
 Reality 的订阅模式：
 
@@ -487,25 +489,28 @@ Reality 入站根据服务器公网 IPv6 自动选择 IPv4 或双栈监听；生
 VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`。Xray 普通目标出站使用双栈，Gemini
 相关域名仍固定使用 IPv4 出口。
 
-自托管订阅域名必须直接解析到 VPS：
+自托管订阅域名必须是 Cloudflare Active Zone 下的一级子域名。安装器创建 Proxied A 记录；
+客户端由 Universal SSL 终止 TLS，Cloudflare 使用 Full (strict) 连接 VPS `8443` 上的 Origin CA：
 
 ```text
 https://sub.example.com:8443/subscribe?token=owner-token
 https://sub.example.com:8443/subscribe?token=owner-token&flag=clash
 ```
 
+订阅域名不能与 Reality 节点连接域名相同：节点域名必须保持 DNS only/灰云以便直连，订阅域名则必须
+保持 Proxied/橙云。
+
 ### Reality 维护与证书
 
 `easy_all apply` 是 Reality 的幂等应用入口：它保留 UUID、Reality 密钥、订阅域名、Token
-和 acme.sh 证书状态；证书尚未到续期时间时 acme.sh 不会重复签发。
+和 Cloudflare Origin CA 状态；现有证书仍匹配域名且至少剩余 30 天时不会重复签发。
 
-Reality 的 `uninstall` 会删除本机状态和专用 acme.sh 目录；下一次安装是新的部署，并生成新的
-节点凭据和证书状态。
+Reality 数据链路仍由客户端直连 VPS `443`，不经过 Cloudflare，也不使用该证书。只有订阅 HTTPS
+经过 Cloudflare。VPS 的 `8443` 仅放行 Cloudflare 官方 IPv4 回源段，TCP `80` 不再开放。
 
-证书申请失败时脚本会保留并显示 acme.sh/Let’s Encrypt 原始输出。检测到 HTTP 429、
-`rateLimited`、`too many certificates` 或 `retry after` 时，会提示按 CA 给出的时间等待。
-只有明确属于“重复证书/相同域名集合”限流时，才可改用已经解析到当前 VPS 的全新订阅域名；
-账户、IP 或失败验证次数限流不能靠换域名绕过，应停止重试并等待。
+Origin CA 默认签发 5475 天（15 年），`renew-cert` 可手动轮换并在本机、公网验收通过后吊销旧证书。
+API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留远端资源；追加 `--purge-cloud`
+才会删除带 easy_all 所有权标记的订阅 A 记录、Strict TLS 规则并吊销 Origin CA。
 
 ## Cloudflare CDN 精选 IP XHTTP
 
@@ -605,7 +610,7 @@ easy_all
 │  ├─ mihomo-template.sh     Mihomo 模板加载与校验
 │  ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
 │  ├─ xray-core.sh           Xray 下载、校验与安装
-│  ├─ scheduled-maintenance.sh  证书续期与可选定时重启
+│  ├─ scheduled-maintenance.sh  可选定时重启
 │  ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
 │  └─ tcp-tuning.sh          XanMod LTS BBRv3 内核与保守 TCP 参数
 ├─ templates/
@@ -619,7 +624,7 @@ Profile 只保留协议编排和 Provider 专属策略；公共模块不反向�
 加载 `xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现。
 
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
-`scheduled-maintenance.sh` 统一管理 acme.sh 续期与可选定时重启。`network.sh` 负责公网 IPv4
+`scheduled-maintenance.sh` 统一管理可选定时重启。`network.sh` 负责公网 IPv4
 探测和 Xray IPv4 直连策略，`firewall.sh` 负责具有系统副作用的 UFW 修改。
 
 ## 测试
@@ -630,7 +635,7 @@ npm test
 
 测试覆盖统一入口、公共模块归属与安装完整性、Reality 目标验收、Cloudflare XHTTP、
 Globalping 严格零丢包筛选、用户凭据与月度配额、TCP 参数回滚、Xray 配置、订阅渲染、
-Token 鉴权、证书续期检查和更新顺序。
+Token 鉴权、Origin CA 轮换检查和更新顺序。
 
 ## Cloudflare 模式参考
 

@@ -57,12 +57,10 @@ preserve_source="${TMP_DIR}/preserve-source"
 preserve_stage="${TMP_DIR}/preserve-stage"
 mkdir -p "${preserve_source}" "${preserve_stage}"
 printf '#!/bin/sh\n' >"${preserve_source}/fail2ban-ufw-cidr.sh"
-printf '#!/bin/sh\n' >"${preserve_source}/reload-subscription-nginx.sh"
 printf 'unmanaged\n' >"${preserve_source}/unmanaged-runtime-file"
 stage_preserved_runtime_files "${preserve_source}" "${preserve_stage}"
-[[ -x "${preserve_stage}/fail2ban-ufw-cidr.sh" \
-    && -x "${preserve_stage}/reload-subscription-nginx.sh" ]] \
-    || fail "runtime registration must preserve managed helper scripts"
+[[ -x "${preserve_stage}/fail2ban-ufw-cidr.sh" ]] \
+    || fail "runtime registration must preserve the managed Fail2ban helper"
 [[ ! -e "${preserve_stage}/unmanaged-runtime-file" ]] \
     || fail "runtime registration must preserve only allowlisted runtime files"
 
@@ -141,7 +139,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "install mode prompt must explain line recommendations"
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=5\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=6\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Reality state selects Reality profile" "reality" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\nCLOUDFLARE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
