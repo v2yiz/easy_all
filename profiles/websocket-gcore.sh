@@ -692,9 +692,12 @@ gcore_wait_for_domain_health() {
             -w '%{http_code}' "https://${domain}/easy_all-health" \
             2>"${health_error}" || true)
         response=$(<"${health_body}")
-        [[ "${status}" == "active" && "${http_code}" == "200" \
-            && "${response}" == "easy_all ok" ]] \
-            && { success "Gcore ${label}域名回源与边缘证书验收通过"; return 0; }
+        if [[ "${http_code}" == "200" && "${response}" == "easy_all ok" ]]; then
+            [[ "${status}" == "active" ]] \
+                || warn "Gcore Resource 状态仍为 ${status:-unknown}，但 ${label}域名端到端 HTTPS 验收已通过"
+            success "Gcore ${label}域名回源与边缘证书验收通过"
+            return 0
+        fi
         if ((attempt == 1 || attempt % 3 == 0)); then
             curl_error=$(tr '\n' ' ' <"${health_error}")
             info "Gcore ${label}域名状态：Resource=${status:-unknown}，Let's Encrypt=${certificate_status}，HTTPS=${http_code:-000}${curl_error:+（${curl_error}）}"

@@ -152,6 +152,32 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     [[ "${attach_call}" == "2" ]] \
         || fail "Gcore edge certificate attachment must use two ordered requests"
 
+    gcore_api_request() {
+        case "$1 $2" in
+        "GET /cdn/resources/42") printf '%s\n' '{"status":"processed"}' ;;
+        "GET /cdn/sslData/43/status")
+            printf '%s\n' '{"active":false,"latest_status":{"status":"DONE"}}'
+            ;;
+        *) return 1 ;;
+        esac
+    }
+    curl() {
+        local output_file=""
+        while (($#)); do
+            if [[ "$1" == "-o" ]]; then
+                output_file=$2
+                shift 2
+            else
+                shift
+            fi
+        done
+        printf 'easy_all ok\n' >"${output_file}"
+        printf '200'
+    }
+    sleep() { fail "Gcore must not wait after end-to-end HTTPS succeeds"; }
+    gcore_wait_for_domain_health node.example.com CDN >/dev/null
+    unset -f curl sleep
+
     CDN_PROVIDER=gcore
     PROTOCOL=websocket
     CDN_TRAFFIC_PROTECTION_GB=0
