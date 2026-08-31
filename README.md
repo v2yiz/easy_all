@@ -1,17 +1,72 @@
 # easy_all
 
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点安装器。一个项目、一个命令，
-安装时只能选择一种模式：
+安装时只能选择一种模式。本文先给第一次使用的完整路径；协议、端口和配额等技术细节放在后文，
+第一次安装不必先理解它们。
 
 | 安装模式       | 协议                         | CDN Provider / 入口 |
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | Cloudflare + Globalping IPv4 |
 
-Cloudflare 使用 XHTTP，VPS 通过 Globalping 预筛、客户端测速选优；Reality 用于优化线路直连。
+Cloudflare 使用 XHTTP，VPS 通过 Globalping 预筛、客户端测速选优；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
-只适合专用 VPS。
+只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
+所在地区法律、VPS 服务商和 Cloudflare 的服务条款。
+
+## 第一次安装：先看这里
+
+### 1. 选择模式
+
+| 你的情况 | 建议 | 需要额外准备 |
+| --- | --- | --- |
+| 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
+| 明确要使用 Cloudflare CDN，并愿意维护域名、Token 和 gRPC 设置 | 选择 `2`：Cloudflare XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台手动打开 gRPC。 |
+
+“优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
+处理 Cloudflare 前置准备时，再选择 Cloudflare XHTTP。同一 VPS 不能直接切换模式；需要更换时，
+先备份自己的订阅信息，阅读后文的卸载说明并决定是否清理云端资源，再卸载和重新安装。
+
+### 2. 运行前检查清单
+
+请逐项确认后再运行安装器：
+
+- 你购买的是一台有**公网 IPv4** 的 VPS，系统为 **Debian 12 或 Debian 13**，CPU 架构为
+  **amd64/x86_64/x64**；不要选择 ARM/aarch64，也不要使用 Docker、LXC 等容器。
+- 你已经从自己的电脑登录到 VPS，且知道当前 SSH 登录用户、密码或密钥、端口和公网 IP。购买页面中的
+  “Console / VNC / Web console” 也应能打开；它是 SSH 意外断开时的救援入口。
+- 这是专用服务器：没有其他代理面板、Xray、Nginx 或业务占用相关端口。安装前建议在服务商控制台创建
+  一份快照。
+- 如果服务商还有 Security Group、云防火墙或网络 ACL，它与 VPS 内的 UFW 是两套规则。请勿让它拦截
+  当前 SSH 端口、Reality 的 `443`，或 Cloudflare 回源所需的 `443`；脚本无法修改服务商控制台规则。
+- Cloudflare XHTTP 已按[前置准备手册](docs/preparation-guide.md)完成域名、Token 与 gRPC；不要提前创建
+  `node.example.com` 或计划使用的独立订阅域名的 DNS 记录。
+
+> **安装会改动系统。** 它会安装 XanMod 内核和依赖、设置系统时区为 `Asia/Shanghai`、配置 UFW 和
+> Fail2ban、额外让 SSH 监听 TCP `65533`、创建 systemd 定时任务，并管理 Xray/Nginx。请保留当前 SSH
+> 会话直到安装、重启和重新登录均验证完成。
+
+几个词的含义：VPS 是远程服务器；SSH 是从自己电脑连接它的终端方式；公网 IPv4 是别人可访问的
+服务器 IP；Cloudflare Zone 就是已交给 Cloudflare 托管的根域名；橙云/Proxied 表示经过 Cloudflare，
+灰云/DNS only 表示直连服务器。
+
+### 3. 先登录 VPS，再运行安装命令
+
+**下面的命令必须在 VPS 的 SSH 终端中运行，不是在自己的 Windows/macOS 终端、手机终端或 Cloudflare
+网页中运行。**
+
+例如，在 macOS/Linux 的 Terminal 或 Windows PowerShell/Windows Terminal 中，先按服务商提供的
+登录信息连接（将尖括号内容替换为自己的值）：
+
+```bash
+ssh <登录用户>@<VPS公网IP> -p <SSH端口>
+```
+
+首次连接询问是否信任主机指纹时，先与服务商控制台显示的指纹核对；确认无误后输入 `yes`。看到类似
+`root@...` 或 `<用户名>@...` 的提示符后，才表示已经进入 VPS。若服务商只提供网页终端，也可以在那里运行。
+
+## 安装
 
 两种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
 UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。安装与 `easy_all apply`
@@ -24,17 +79,21 @@ SSH 管理流量再次进入代理节点。
 
 ## 安装
 
-线路与费用提示：只有非优化线路才推荐使用 CDN。Cloudflare Free Zone 本身无月费，域名注册费
-和 VPS 费用另计；自行启用增值服务时按 Cloudflare 当前规则计费。
+线路与费用提示：Cloudflare XHTTP 面向直连 VPS 体验不理想、且愿意维护域名和第三方账号的场景，
+并不保证一定更快。Cloudflare Free Zone 本身无月费，域名注册费和 VPS 费用另计；自行启用增值服务时
+按 Cloudflare 当前规则计费。
 
-CDN 模式需要先准备域名、Cloudflare 账号和 Globalping Token。请先阅读统一的
-[前置准备手册](docs/preparation-guide.md)。
+Cloudflare XHTTP 模式需要先准备域名、Cloudflare 账号和 Globalping Token。请先阅读统一的
+[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择“部署订阅”时才需要 Cloudflare 域名和 API Token。
 
 一条命令下载完整项目并进入交互安装：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
 ```
+
+请原样粘贴这条命令；不要改成 `curl ... | sudo bash`，安装器需要持续从当前终端读取选项。它会在
+需要管理员权限时提示输入当前登录用户的 `sudo` 密码；输入密码时屏幕没有字符回显是正常的。
 
 安装完成后，使用系统命令更新 easy_all 项目代码本身：
 
@@ -48,7 +107,6 @@ sudo easy_all self-update
 
 更新 Xray 核心请使用 `sudo easy_all update-core`。
 
-不要把安装命令改成 `curl ... | sudo bash`：安装器需要从当前终端读取模式、域名和订阅选项。
 安装引导脚本会：
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
@@ -72,6 +130,75 @@ sudo ./easy_all install
   2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）
  请选择 [1]（直接回车使用默认值）:
 ```
+
+### 4. 第一次输入时怎么选
+
+下列建议面向“只自己使用、首次部署”的情况；不需要多用户配额时，遇到 JSON、Token 覆盖、UUID 和
+Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填写。
+
+| 看到的选项 | 首次单用户建议 | 说明 |
+| --- | --- | --- |
+| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是需完整 Cloudflare 前置准备的 XHTTP。 |
+| 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
+| 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
+| 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
+| Reality SNI/目标 | 直接回车 | 使用脚本验证过的默认值；不要随意填常见网站。 |
+| Reality 动态端口 | 直接回车 | 这是**节点连接端口**的轮换策略，不是订阅下载端口。 |
+
+所有提示中的 `[值]` 都表示直接按回车会采用该值；没有方括号且没有写“可留空”的输入必须填写。
+输入 Cloudflare 或 Globalping Token 时不会显示字符，粘贴后直接按回车即可。
+
+### 5. 安装完成后：重启、验证、导入客户端
+
+安装结束后不要立刻关闭终端。新 XanMod 内核需要重启才会生效：
+
+```bash
+sudo reboot
+```
+
+SSH 会断开。等待 VPS 启动后重新登录，运行：
+
+```bash
+sudo easy_all status
+sudo easy_all subscription
+```
+
+`status` 显示 `BBRv3: active` 才表示新内核已生效；若显示 `pending-reboot`，说明还没有成功从新内核
+启动。`subscription` 会显示每位用户的订阅地址。订阅地址与 UUID 都是访问凭据，不要截图、公开或发送给
+不信任的人。
+
+在电脑或手机上安装支持 Mihomo 配置的客户端，在其“从 URL 导入配置 / Import from URL”位置粘贴输出中带
+`flag=clash` 的 **Mihomo** 地址，然后启用该配置并访问一个普通网站测试。Cloudflare 精选 IP 节点必须使用
+支持独立 IP、TLS SNI、HTTP Host 和 XHTTP `stream-up` 字段的客户端；兼容性要求见
+[Cloudflare 客户端说明](#精选-ip-的客户端要求)。不确定客户端是否兼容时，先用订阅中的“原始域名兜底”节点对照测试。
+
+#### 客户端选择与导入
+
+首次使用推荐以下客户端。下载时只从列出的官方项目或 App Store 页面选择与自己系统和 CPU 对应的安装包，
+不要从网盘或不明网站下载，也不要因为急于使用而忽略操作系统的安全提示。
+
+| 平台 | 推荐客户端 | 首次使用方式 |
+| --- | --- | --- |
+| Windows、macOS、Linux、Android | [Bettbox 官方发布页](https://github.com/appshubcc/Bettbox/releases) | Bettbox 使用 Mihomo 内核并声明支持 VLESS XHTTP/Reality。安装后选择导入订阅/配置链接，粘贴 `easy_all subscription` 输出的 Mihomo 地址，启用配置。 |
+| iPhone、iPad | [Clash Mi 官方下载页](https://clashmi.app/download) | 安装后打开“我的配置”→右上角 `+`→“添加配置链接”，粘贴 `easy_all subscription` 输出的 Mihomo 地址；其[官方用户手册](https://clashmi.app/guide/)有配图说明。 |
+| Shadowrocket（小火箭） | **不作为本项目推荐客户端** | 虽有 XHTTP 支持记录，但本项目所需的 IP/SNI/Host 分离和复用字段未逐项确认；请自行逐节点测试。 |
+
+“能导入”不代表“全部节点都能连接”。Cloudflare 模式下，原始域名兜底节点可用于判断订阅和基础链路是否正常；
+它不能证明客户端也支持精选 IP 节点。启用 TUN 或“全局代理”会改变设备的网络路由，首次使用前请先确认客户端
+如何一键关闭或恢复网络。
+
+### 第一次安装常见问题
+
+| 现象 | 先做什么 |
+| --- | --- |
+| 在本机运行后提示系统不支持 | 退出命令，在 VPS 的 SSH 或网页终端中重新运行。 |
+| SSH 断开或重启后无法登录 | 不要反复猜端口；使用服务商网页 Console/VNC，确认当前 SSH 端口与 UFW/安全组规则。保留旧 SSH 会话直到新会话可登录。 |
+| 提示 Zone 不是 Active 或找不到域名 | 回到 Cloudflare Overview，等待 Zone 变为 **Active**；检查注册商名称服务器是否完整替换。 |
+| gRPC 检查返回 `403 text/html` | 在目标 Zone 的 **Network → gRPC** 手动开启 gRPC，等待设置生效后重新执行提示的命令。 |
+| API Token 权限不足或同名 DNS 记录冲突 | 不要删除不认识的记录或扩大 Token 权限。按准备手册核对最小权限；为节点/订阅换一个未被占用的一级子域名。 |
+| Globalping 额度不足或没有候选 IP | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；已有缓存会继续使用，缓存过期时会回退到域名节点。 |
+| 检测到 UEFI Secure Boot | 安装器不会安装无法确认启动的第三方内核。请改用满足要求的 VPS，或在完全理解风险后从服务商控制台处理 Secure Boot。 |
+| 能下载订阅但客户端连接失败 | 先确认客户端支持 Mihomo XHTTP；Cloudflare 模式再检查 gRPC。使用原始域名兜底节点做对照，不要直接删除 Cloudflare 规则。 |
 
 ## 安装脑图
 
@@ -108,15 +235,15 @@ flowchart TD
 
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
-| Globalping Token | Cloudflare 模式必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
-| Cloudflare Zone Token | Cloudflare 模式必填，隐藏输入 | 无 | 仅限目标 Zone 的 Zone、DNS、Transform Rules、Config Rules、Zone Settings、SSL and Certificates 最小权限 |
+| Globalping Token | 仅 Cloudflare XHTTP 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
+| Cloudflare Zone Token | Cloudflare XHTTP 必填；Reality 选择“部署订阅”时也必填，隐藏输入 | 无 | 仅限目标 Zone 的最小权限；所需权限见前置准备手册 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
-| CDN 订阅链接完整域名 | 完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
-| 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
+| CDN 订阅链接完整域名 | 仅 Cloudflare XHTTP 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
+| 月度用户配额 | 仅选择“部署订阅”时出现；`1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
 | 安装模式 | `1` Reality / `2` Cloudflare | `1` | 安装 Reality |
-| 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 写入每日 04:00 的 root crontab |
+| 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入每日 04:00 的 root crontab；重启会短暂断线 |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
 脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。

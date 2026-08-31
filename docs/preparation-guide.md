@@ -1,14 +1,19 @@
 # 前置准备手册
 
 本手册覆盖两种模式所需的 Cloudflare 域名、账号、DNS 和 Token 准备。Reality 节点数据仍然直连，
-但自托管订阅固定使用 Cloudflare Universal SSL 与 Origin CA。
+但选择“部署订阅”时，订阅服务会使用 Cloudflare Universal SSL 与 Origin CA。
 
-Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality 部署订阅时阅读第 1、3、4 节。
-手册只覆盖注册、DNS、账号权限和 Token 准备，不包含 VPS 命令。完成后再回到
-[README 的安装说明](../README.md) 执行安装。
+Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality **只有选择部署订阅**时才阅读第 1、3.1、4 节。
+Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览器和账号侧操作；VPS 登录、安装、重启和
+客户端导入请回到 [README 的第一次安装路径](../README.md#第一次安装先看这里)。
 
-线路与费用提示：只有非优化线路才推荐使用 CDN。Cloudflare Free Zone 本身无月费；域名注册费和
-VPS 费用另计，自行启用增值服务时按 Cloudflare 当前规则计费。
+先区分三个容易混淆的概念：域名注册商是你购买/续费域名的地方；Cloudflare 是管理该域名 DNS 和代理的
+地方；VPS 是实际运行 easy_all 的远程服务器。把名称服务器改为 Cloudflare 并不等于把域名转移到
+Cloudflare，注册商仍负责续费。
+
+线路与费用提示：Cloudflare XHTTP 面向直连 VPS 体验不理想、且愿意维护域名和第三方账号的场景，
+并不保证一定更快。Cloudflare Free Zone 本身无月费；域名注册费和 VPS 费用另计，自行启用增值服务时
+按 Cloudflare 当前规则计费。
 
 ## 0. 按链路选择准备内容
 
@@ -18,7 +23,7 @@ VPS 费用另计，自行启用增值服务时按 Cloudflare 当前规则计费�
 
 | 链路 | 必须准备 | 不需要准备 | 继续阅读 |
 | --- | --- | --- | --- |
-| 模式 1：Reality 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token | Globalping Token、gRPC 设置 | 第 1、3、4 节及 README 的 Reality 章节 |
+| 模式 1：Reality 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token | Globalping Token、gRPC 设置 | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare XHTTP | 根域名、Cloudflare Free 账号、已变为 **Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 
 各链路建议使用的域名如下：
@@ -129,16 +134,30 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 - 不要在聊天、Issue 或其他公开渠道发送 Token。
 - 怀疑泄露时，立即在 [Globalping Tokens](https://dash.globalping.io/tokens) 撤销并重新创建。
 
-## 3. Cloudflare 安装前准备
+安装器会把 Globalping Token 仅保存到 VPS 上 root 可读的凭据文件，用于每小时刷新候选 IP。若控制台提示
+本小时额度不足，不要反复执行刷新；等待额度恢复后再运行 `sudo easy_all refresh-cdn-ips`。刷新失败时，
+已有有效缓存仍会保留；缓存过期后订阅会退回原始域名节点。
 
-1. 在已经 **Active** 的 Zone 下准备客户端连接的 CDN 节点域名，例如 `node.example.com`。不要预先创建这个名称的 DNS 记录。
+## 3. 域名准备：Reality 订阅与 Cloudflare XHTTP
+
+### 3.1 Reality：只在部署订阅时阅读
+
+如果 Reality 安装时选择“部署订阅”，准备一个位于 **Active** Cloudflare Zone 下的一级子域名，例如
+`sub.example.com`。不要提前创建该名称的 DNS 记录；安装器会创建橙云/Proxied 记录并配置证书。
+
+Reality 的节点连接域名（例如 `node.example.com`）如有使用，必须保持灰云/DNS only 以便客户端直连 VPS；
+它不能与橙云订阅域名相同。Reality 不需要 gRPC，也不会把节点数据流量经过 Cloudflare。
+
+### 3.2 Cloudflare XHTTP：必须完成
+
+1. 在已经 **Active** 的 Zone 下准备客户端连接的节点域名，例如 `node.example.com`。不要预先创建这个名称的 DNS 记录。
 2. 进入目标 Zone 的 **Network → gRPC**，将 **gRPC** 手动切换为 **On**。这是 XHTTP
    `stream-up` 的必需条件，Cloudflare 当前没有可用于该开关的 Zone Settings API，安装器无法代办。
 3. 如果部署独立订阅域名，它也必须是同一 Zone 下的一级子域名。
 
 ![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
 
-安装、`apply-cloud` 和 `refresh-cdn-ips` 会主动发送 gRPC 形态的边缘请求检查该开关。若收到
+XHTTP 的安装、`apply-cloud` 和 `refresh-cdn-ips` 会主动发送 gRPC 形态的边缘请求检查该开关。若收到
 `403 text/html`，命令会停止并明确提示开启 gRPC。普通 `/easy_all-health` 返回 HTTP 200
 不能证明 gRPC 已开启；若订阅可以下载、所有 XHTTP 节点却同时超时，应首先复查此开关。
 
@@ -164,8 +183,13 @@ XHTTP 模式添加以下六项权限；Reality 仅部署订阅时只需其中 `Z
 
 ![Cloudflare API Token 的六项最小权限与单 Zone 资源范围](img/cloudflare/cloudflare-api-token-easy-all.svg)
 
-创建后立即复制 Token，并粘贴到安装器的 `Cloudflare API Token` 输入框。Token 只在当前进程使用，
-不会写入状态文件；请勿选择所有 Zone，也不要添加其他权限。
+创建后立即复制 Token，并保存到可信的密码管理器；把它粘贴到安装器的 `Cloudflare API Token` 输入框。
+Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需要同步云端资源时仍会要求提供。请勿选择所有
+Zone，也不要添加其他权限。
+
+通常 `easy_all apply` 不需要 Cloudflare Token；`apply-cloud`、证书轮换、Reality 自托管订阅的云端同步，
+以及 `uninstall --purge-cloud` 等操作可能会要求它。Token 遗失时可在 Cloudflare 新建一枚相同最小权限的
+Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 
 ## 5. 安装器会自动完成的事项
 
