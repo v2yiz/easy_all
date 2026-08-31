@@ -13,7 +13,6 @@ fi
 
 readonly XHTTP_CLOUDFLARE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 readonly XHTTP_PROFILE_ROOT="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../lib"
-readonly XHTTP_PROFILE_FILE="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/xhttp-cloudflare.sh"
 readonly CLOUDFLARE_API_BASE="https://api.cloudflare.com/client/v4"
 readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
 readonly CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS="20-40"
@@ -162,14 +161,6 @@ xhttp_configure_ufw() {
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
     LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
     ensure_ssh_fail2ban
-}
-
-cloudflare_zone_for_domain() {
-    local domain=$1 zones zone
-    zones=$(cloudflare_api_request GET "/zones?name=${domain}&status=active&per_page=50")
-    zone=$(jq -r --arg domain "${domain}" '[.[] | select((.name|ascii_downcase)==$domain) | .id] | if length == 1 then .[0] else empty end' <<<"${zones}")
-    [[ -n "${zone}" ]] || die "Cloudflare 中没有 active Zone：${domain}；请将完整 Zone 设为 Active 后重试"
-    printf '%s' "${zone}"
 }
 
 cloudflare_find_parent_zone() {
@@ -333,11 +324,6 @@ cloudflare_issue_origin_certificate() {
     CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=${old_id}
 }
 
-xhttp_issue_origin_certificate() { cloudflare_issue_origin_certificate 0; }
-xhttp_write_bootstrap_nginx_config() {
-    write_web_root
-    rm -f -- /etc/nginx/sites-enabled/default
-}
 xhttp_validate_local_tls_curl_args() {
     cloudflare_ensure_origin_ca_root
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}")
@@ -659,7 +645,7 @@ update_subscription() {
 apply_easy_all() { require_root; begin_quota_maintenance; collect_installed_state; snapshot_subscription_update; configure_bbr_tcp; configure_ufw; finish_xhttp_apply; install_globalping_refresh_timer; success "Cloudflare 本机配置已应用；未修改 Cloudflare 资源"; }
 apply_cloud_resources() { require_root; begin_quota_maintenance; collect_installed_state; snapshot_subscription_update; configure_bbr_tcp; configure_ufw; cloudflare_prepare_origin; cloudflare_issue_origin_certificate 0; cloudflare_configure_cdn; finish_xhttp_apply 1; cloudflare_validate_cdn_health; cloudflare_finalize_certificate_rotation; install_globalping_refresh_timer; cloudflare_clear_api_token; success "Cloudflare DNS、Origin CA、规则和本机配置已应用"; }
 
-rollback_fresh_install() { stop_services; remove_quota_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; cloudflare_clear_api_token; }
+rollback_fresh_install() { stop_services; remove_quota_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; cloudflare_clear_api_token; }
 
 cloudflare_purge_managed_rule() {
     local ruleset=$1 ref=$2 rules matches count id
@@ -780,8 +766,7 @@ uninstall_all() {
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall
     remove_daily_reboot_schedule
-    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" \
-        "${CERT_RELOAD_HOOK}"
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
     if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then

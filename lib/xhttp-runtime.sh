@@ -3,7 +3,6 @@
 # Shared local runtime for the Cloudflare XHTTP profile.
 
 readonly SCRIPT_DIR="${XHTTP_PROFILE_ROOT:?XHTTP_PROFILE_ROOT is required}"
-readonly SCRIPT_FILE="${XHTTP_PROFILE_FILE:?XHTTP_PROFILE_FILE is required}"
 
 readonly STATE_DIR="/etc/easy_all"
 readonly BACKUP_DIR="${STATE_DIR}/backups"
@@ -16,10 +15,8 @@ readonly SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
-readonly ENTRY_SCRIPT_FILE="${EASY_ALL_ENTRY_SCRIPT:-${SCRIPT_FILE}}"
 readonly ENTRY_COMMAND_NAME="easy_all"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
-readonly CERT_RELOAD_HOOK="${COMMAND_INSTALL_DIR}/reload-tls-service.sh"
 readonly XRAY_DIR="${STATE_DIR}/xray"
 readonly XRAY_BIN="${XRAY_DIR}/xray"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
@@ -27,9 +24,6 @@ readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
 readonly XRAY_SERVICE="easy_all-xray.service"
 readonly XRAY_SERVICE_DESCRIPTION="${XHTTP_SERVICE_DESCRIPTION_OVERRIDE:-Xray VLESS XHTTP managed by easy_all}"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
-readonly ACME_HOME="/root/.acme-easy_all-xhttp.sh"
-readonly ACME_BIN="${ACME_HOME}/acme.sh"
-readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy_all"
 readonly UFW_RULE_COMMENT="easy_all-managed"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
@@ -54,7 +48,6 @@ readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="900-1800"
 readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 readonly XHTTP_URL_TEST_INTERVAL="${XHTTP_URL_TEST_INTERVAL_OVERRIDE:-300}"
 readonly XHTTP_CDN_NAME="Cloudflare"
-readonly XHTTP_ORIGIN_DNS_NAME="Cloudflare DNS"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
 
 # shellcheck source=lib/quota.sh
@@ -87,7 +80,6 @@ RESET='\033[0m'
 info() { printf '%b%s%b\n' "${CYAN}" "$*" "${RESET}"; }
 success() { printf '%b%s%b\n' "${GREEN}" "$*" "${RESET}"; }
 warn() { printf '%b%s%b\n' "${YELLOW}" "$*" "${RESET}"; }
-alert() { printf '%b%s%b\n' "${RED}" "$*" "${RESET}"; }
 fail() { printf '%b%s%b\n' "${RED}" "$*" "${RESET}" >&2; return 1; }
 die() { fail "$*"; exit 1; }
 
@@ -301,107 +293,8 @@ configure_ufw() {
     ensure_ssh_fail2ban
 }
 
-verify_origin_dns() {
-    if declare -F xhttp_verify_origin_dns >/dev/null 2>&1; then
-        xhttp_verify_origin_dns
-        return
-    fi
-    local public_ip records attempt resolver_ok last_records=""
-    public_ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测本机公网 IPv4"
-    validate_ipv4 "${public_ip}" || die "探测到的 VPS 公网 IPv4 无效：${public_ip}"
-    VPS_PUBLIC_IPV4=${public_ip}
-    info "等待 ${XHTTP_ORIGIN_DNS_NAME} 源站 A 记录传播到公共 DNS"
-    for attempt in {1..60}; do
-        records=$(dig +short A "${XHTTP_ORIGIN_DOMAIN}" @1.1.1.1 2>/dev/null \
-            | awk 'NF' | sort -u || true)
-        last_records=${records:-未解析}
-        resolver_ok=1
-        [[ -n "${records}" ]] || resolver_ok=0
-        if [[ -n "${records}" ]]; then
-            while read -r record; do
-                if ! validate_ipv4 "${record}" || [[ "${record}" != "${public_ip}" ]]; then
-                    resolver_ok=0
-                    break
-                fi
-            done <<<"${records}"
-        fi
-        [[ "${resolver_ok}" == 1 ]] && return 0
-        sleep 5
-    done
-    die "源站域名 ${XHTTP_ORIGIN_DOMAIN} 尚未通过 1.1.1.1 解析到当前 VPS ${public_ip}（当前结果：${last_records}）"
-}
-
-write_web_root() {
-    install -d -m 0755 "${WEB_ROOT}/.well-known/acme-challenge"
-    printf '%s\n' 'ready' >"${WEB_ROOT}/index.html"
-    chmod 0644 "${WEB_ROOT}/index.html"
-}
-
 write_bootstrap_nginx_config() {
-    if declare -F xhttp_write_bootstrap_nginx_config >/dev/null 2>&1; then
-        xhttp_write_bootstrap_nginx_config
-        return
-    fi
-    write_web_root
     rm -f -- /etc/nginx/sites-enabled/default
-    cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${XHTTP_ORIGIN_DOMAIN};
-    root ${WEB_ROOT};
-    location ^~ /.well-known/acme-challenge/ { try_files \$uri =404; }
-    location / { return 404; }
-}
-EOF
-    install -m 0600 "${RUNTIME_TMP}/easy_all-bootstrap.conf" "${NGINX_CONFIG}"
-    nginx -t >/dev/null || die "Nginx HTTP 引导配置校验失败"
-    systemctl enable --now nginx >/dev/null || die "启动 Nginx 失败"
-    systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
-}
-
-install_acme() {
-    if [[ -x "${ACME_BIN}" ]]; then
-        ensure_acme_renewal_setup
-        return 0
-    fi
-    local account_email=${ACME_EMAIL:-admin@${XHTTP_ORIGIN_DOMAIN}}
-    install_acme_from_github "${ACME_HOME}" "${account_email}"
-    [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后不可用"
-    install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
-    ensure_acme_renewal_setup
-}
-
-issue_origin_certificate() {
-    if declare -F xhttp_issue_origin_certificate >/dev/null 2>&1; then
-        xhttp_issue_origin_certificate
-        return
-    fi
-    local issue_status=0
-    install_acme
-    info "正在设置 Let's Encrypt 为默认证书颁发机构，请等待"
-    run_acme --set-default-ca --server letsencrypt >/dev/null \
-        || die "设置 Let's Encrypt 为默认 CA 失败"
-    info "正在向 Let's Encrypt 申请源站证书：${XHTTP_ORIGIN_DOMAIN}"
-    info "CA 将从公网通过 TCP 80 访问 HTTP-01 验证文件；DNS 传播和验证可能需要数分钟，请等待"
-    run_acme --issue --webroot "${WEB_ROOT}" -d "${XHTTP_ORIGIN_DOMAIN}" --keylength ec-256 \
-        || issue_status=$?
-    [[ "${issue_status}" == 0 || "${issue_status}" == 2 ]] \
-        || die "源站证书申请失败（acme.sh 返回 ${issue_status}）"
-    success "Let's Encrypt 源站证书已签发或仍然有效"
-    install -d -m 0700 "${CERT_DIR}" "${COMMAND_INSTALL_DIR}"
-    cat >"${RUNTIME_TMP}/reload-tls-service.sh" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-systemctl reload nginx.service >/dev/null 2>&1 || systemctl restart nginx.service >/dev/null 2>&1
-EOF
-    install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
-    info "正在安装源站证书和续期重载钩子，请等待"
-    run_acme --install-cert -d "${XHTTP_ORIGIN_DOMAIN}" --ecc \
-        --fullchain-file "${CERT_FILE}" --key-file "${KEY_FILE}" \
-        --reloadcmd "${CERT_RELOAD_HOOK}" || die "安装源站证书失败"
-    [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" && -x "${CERT_RELOAD_HOOK}" ]] \
-        || die "源站证书、私钥或续期重载钩子安装不完整"
 }
 
 write_xray_config() {
@@ -424,7 +317,7 @@ xhttp_client_path() {
 write_nginx_config() {
     local keepalive_referer
     keepalive_referer=$(xhttp_server_keepalive_referer)
-    write_web_root
+    install -d -m 0755 "${WEB_ROOT}"
     {
         write_subscription_nginx_maps
         cat <<EOF
@@ -432,8 +325,6 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${XHTTP_ORIGIN_DOMAIN};
-    root ${WEB_ROOT};
-    location ^~ /.well-known/acme-challenge/ { try_files \$uri =404; }
     location / { return 301 https://${XHTTP_ORIGIN_DOMAIN}\$request_uri; }
 }
 
@@ -905,14 +796,7 @@ update_current_core() {
 renew_certificate() {
     require_root
     collect_installed_state
-    if declare -F xhttp_renew_origin_certificate >/dev/null 2>&1; then
-        xhttp_renew_origin_certificate
-        return
-    fi
-    [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
-    run_acme --renew -d "${XHTTP_ORIGIN_DOMAIN}" --ecc --force || die "源站证书续期失败"
-    "${CERT_RELOAD_HOOK}" || die "证书已续期，但 Nginx 重载失败"
-    success "源站证书已续期"
+    xhttp_renew_origin_certificate
 }
 
 restore_preinstall_firewall() {
@@ -927,30 +811,6 @@ restore_preinstall_firewall() {
         ufw --force enable >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1; then
         ufw --force disable >/dev/null 2>&1 || true
-    fi
-}
-
-remove_managed_acme_domain() {
-    [[ -n "${1:-}" && -x "${ACME_BIN}" ]] || return 0
-    run_acme --remove -d "$1" --ecc >/dev/null 2>&1 || true
-    rm -rf -- "${ACME_HOME:?}/$1" "${ACME_HOME:?}/${1}_ecc"
-}
-
-remove_managed_acme_cron() {
-    command -v crontab >/dev/null 2>&1 || return 0
-    local current filtered
-    current=$(crontab -l 2>/dev/null || true)
-    [[ -n "${current}" ]] || return 0
-    filtered=$(awk -v acme_bin="${ACME_BIN}" '
-        { normalized=$0; gsub(/"/, "", normalized) }
-        index(normalized, acme_bin) && normalized ~ /(^|[[:space:]])--cron([[:space:]]|$)/ { next }
-        { print }
-    ' <<<"${current}")
-    [[ "${filtered}" == "${current}" ]] && return 0
-    if [[ -n "${filtered}" ]]; then
-        printf '%s\n' "${filtered}" | crontab -
-    else
-        crontab -r
     fi
 }
 

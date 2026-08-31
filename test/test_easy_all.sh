@@ -72,7 +72,6 @@ source_script_copy() {
         -e "s|^readonly UFW_BEFORE6_RULES=.*|readonly UFW_BEFORE6_RULES=\"${TMP_DIR}/before6.rules\"|" \
         -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
         "${ROOT_DIR}/profiles/reality.sh" >"${SCRIPT_COPY}"
-    EASY_ALL_ENTRY_SCRIPT="${ROOT_DIR}/easy_all"
     EASY_ALL_ENTRY_COMMAND=easy_all
     # shellcheck source=/dev/null
     source "${SCRIPT_COPY}"

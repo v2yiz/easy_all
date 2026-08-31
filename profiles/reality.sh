@@ -7,7 +7,6 @@ umask 077
 
 readonly REALITY_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 readonly SCRIPT_DIR="${REALITY_PROFILE_ROOT}/../lib"
-readonly SCRIPT_FILE="${REALITY_PROFILE_ROOT}/$(basename -- "${BASH_SOURCE[0]}")"
 
 readonly STATE_DIR="/etc/easy_all"
 readonly BACKUP_DIR="${STATE_DIR}/backups"
@@ -20,7 +19,6 @@ readonly SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
-readonly ENTRY_SCRIPT_FILE="${EASY_ALL_ENTRY_SCRIPT:-${SCRIPT_FILE}}"
 readonly ENTRY_COMMAND_NAME="${EASY_ALL_ENTRY_COMMAND:-easy_all}"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
 readonly XRAY_DIR="${STATE_DIR}/xray"

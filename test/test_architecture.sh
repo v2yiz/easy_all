@@ -62,6 +62,24 @@ shared_modules=(
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
+
+for retired_identifier in \
+    XHTTP_PROFILE_FILE ENTRY_SCRIPT_FILE EASY_ALL_ENTRY_SCRIPT \
+    XHTTP_ORIGIN_DNS_NAME \
+    verify_origin_dns issue_origin_certificate xhttp_issue_origin_certificate \
+    cloudflare_zone_for_domain; do
+    ! grep -Eq "(^|[^[:alnum:]_])${retired_identifier}([^[:alnum:]_]|$)" \
+        "${ROOT_DIR}/easy_all" "${REALITY_PROFILE}" \
+        "${XHTTP_RUNTIME}" "${CLOUDFLARE_PROFILE}" >/dev/null \
+        || fail "retired runtime identifier remains: ${retired_identifier}"
+done
+for retired_xhttp_identifier in \
+    ACME_HOME ACME_BIN ACME_OWNERSHIP_MARKER CERT_RELOAD_HOOK install_acme \
+    remove_managed_acme_domain remove_managed_acme_cron; do
+    ! grep -Eq "(^|[^[:alnum:]_])${retired_xhttp_identifier}([^[:alnum:]_]|$)" \
+        "${XHTTP_RUNTIME}" "${CLOUDFLARE_PROFILE}" >/dev/null \
+        || fail "retired XHTTP identifier remains: ${retired_xhttp_identifier}"
+done
 for module in "${shared_modules[@]}"; do
     [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
         || fail "Reality does not source shared module ${module}"

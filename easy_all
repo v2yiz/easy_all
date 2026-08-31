@@ -324,7 +324,6 @@ main() {
     fi
 
     module=$(profile_file "${mode}")
-    export EASY_ALL_ENTRY_SCRIPT="${EASY_ALL_ROOT}/easy_all"
     export EASY_ALL_SELECTED_MODE="${mode}"
     [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
         || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
