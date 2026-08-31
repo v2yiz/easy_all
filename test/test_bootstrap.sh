@@ -20,6 +20,7 @@ content=$(<"${SCRIPT}")
 [[ "${content}" == *'&& -f "${REPO_DIR}/profiles/reality.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-cloudflare.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-aws.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/profiles/websocket-gcore.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp-runtime.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/globalping-cdn.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/cloudflare-ip-pool.sh"'* \

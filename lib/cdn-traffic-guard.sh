@@ -8,6 +8,7 @@ readonly CDN_TRAFFIC_GUARD_TIMER_FILE="/etc/systemd/system/easy_all-cdn-traffic-
 readonly CDN_TRAFFIC_GUARD_SERVICE="easy_all-cdn-traffic-guard.service"
 readonly CDN_TRAFFIC_GUARD_TIMER="easy_all-cdn-traffic-guard.timer"
 readonly DEFAULT_CDN_TRAFFIC_PROTECTION_GB="980"
+readonly DEFAULT_GCORE_CDN_TRAFFIC_PROTECTION_GB="990"
 
 validate_cdn_traffic_protection_gb() {
     [[ "$1" =~ ^[0-9]+$ && ${#1} -le 4 ]] \
@@ -15,25 +16,31 @@ validate_cdn_traffic_protection_gb() {
 }
 
 configure_cdn_traffic_protection() {
-    if [[ "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ]]; then
+    local default_gb=0
+    if [[ "${CDN_PROVIDER:-}" == "gcore" ]]; then
+        default_gb=${DEFAULT_GCORE_CDN_TRAFFIC_PROTECTION_GB}
+    elif [[ "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ]]; then
+        default_gb=${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}
+    fi
+    if ((default_gb > 0)); then
         if [[ -z "${CDN_TRAFFIC_PROTECTION_GB:-}" \
             || "${CDN_TRAFFIC_PROTECTION_GB}" == "0" ]]; then
-            CDN_TRAFFIC_PROTECTION_GB=${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}
+            CDN_TRAFFIC_PROTECTION_GB=${default_gb}
         fi
         validate_cdn_traffic_protection_gb "${CDN_TRAFFIC_PROTECTION_GB}" \
             || die "CDN 全局费用保护额度必须是 1-1000 的整数 GB"
         CDN_TRAFFIC_PROTECTION_GB=$((10#${CDN_TRAFFIC_PROTECTION_GB}))
-        [[ "${CDN_TRAFFIC_PROTECTION_GB}" == "${DEFAULT_CDN_TRAFFIC_PROTECTION_GB}" ]] \
-            || die "CDN 全局费用保护额度固定为 ${DEFAULT_CDN_TRAFFIC_PROTECTION_GB} GB"
+        [[ "${CDN_TRAFFIC_PROTECTION_GB}" == "${default_gb}" ]] \
+            || die "CDN 全局费用保护额度固定为 ${default_gb} GB"
     else
         CDN_TRAFFIC_PROTECTION_GB=0
     fi
 }
 
 cdn_traffic_protection_enabled() {
-    [[ "${PROTOCOL:-}" == "xhttp" \
-        && "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" \
-        && "${CDN_TRAFFIC_PROTECTION_GB:-0}" =~ ^[0-9]+$ ]] \
+    [[ ( "${PROTOCOL:-}" == "xhttp" && "${AWS_CLOUDFRONT_BILLING_MODE:-}" == "payg" ) \
+        || ( "${PROTOCOL:-}" == "websocket" && "${CDN_PROVIDER:-}" == "gcore" ) ]] \
+        && [[ "${CDN_TRAFFIC_PROTECTION_GB:-0}" =~ ^[0-9]+$ ]] \
         && ((10#${CDN_TRAFFIC_PROTECTION_GB:-0} > 0))
 }
 
@@ -41,6 +48,7 @@ cdn_traffic_provider_label() {
     case "${CDN_PROVIDER:-}" in
     aws) printf 'CloudFront' ;;
     cloudflare) printf 'Cloudflare' ;;
+    gcore) printf 'Gcore CDN' ;;
     *) printf 'Unknown CDN' ;;
     esac
 }
@@ -269,12 +277,12 @@ cdn_traffic_protection_sync() {
     [[ "${CDN_TRAFFIC_NEEDS_APPLY}" != "1" ]] || cdn_traffic_mark_enforced
     if [[ "${CDN_TRAFFIC_BLOCKED}" == "true" \
         && "${CDN_TRAFFIC_OLD_BLOCKED}" != "true" ]]; then
-        printf '%s 全局费用保护已达到 %s GB，XHTTP 节点已阻断\n' \
+        printf '%s 全局费用保护已达到 %s GB，CDN 节点已阻断\n' \
             "$(cdn_traffic_provider_label)" \
             "${CDN_TRAFFIC_PROTECTION_GB}"
     elif [[ "${CDN_TRAFFIC_BLOCKED}" == "false" \
         && "${CDN_TRAFFIC_OLD_BLOCKED}" == "true" ]]; then
-        printf '%s 已进入新的 UTC 自然月，XHTTP 节点已恢复\n' "$(cdn_traffic_provider_label)"
+        printf '%s 已进入新的 UTC 自然月，CDN 节点已恢复\n' "$(cdn_traffic_provider_label)"
     fi
     release_runtime_write_lock
 }
@@ -282,7 +290,7 @@ cdn_traffic_protection_sync() {
 show_cdn_traffic_protection_status() {
     local usage used remaining
     if ! cdn_traffic_protection_enabled; then
-        printf '%s 全局费用保护: disabled（仅 AWS 按量付费启用）\n' \
+        printf '%s 全局费用保护: disabled\n' \
             "$(cdn_traffic_provider_label)"
         return 0
     fi

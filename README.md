@@ -8,16 +8,18 @@
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | Cloudflare + Globalping IPv4 |
 | 3. AWS CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | CloudFront + Globalping IPv4 |
+| 4. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS / HTTP1.1 | Gcore CDN + Globalping IPv4 |
 
-两个 CDN XHTTP 模式复用同一套 Xray、Nginx、订阅与用户配额运行时。精选 IP 模式由 VPS
+AWS 与 Cloudflare 使用 XHTTP；Gcore 优先采用其官方明确支持、并有 V2Ray 教程的标准
+WebSocket。三个精选 IP 模式由 VPS
 Globalping 预筛、客户端测速选优；精选 IP 只改变客户端入口，不创建第二套 CDN 资源。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合专用 VPS。
 
-三种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
+四种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
 UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。安装与 `easy_all apply`
-都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。三种模式还会
+都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。四种模式还会
 通过同一公共模块安装并启用 Fail2ban：任一来源在 3 分钟内失败 6 次，只封禁触发 IP
 3 小时；重复来源递增封禁且最长 1 周；`sshd` jail
 始终跟随实际 SSH 端口列表。
@@ -26,11 +28,11 @@ SSH 管理流量再次进入代理节点。
 
 ## 安装
 
-线路与费用提示：只有非优化线路才推荐使用 CDN。Cloudflare 通常近乎免费；AWS CloudFront、
-Route 53、ACM 等服务可能产生费用，启用 AWS 前请先阅读费用说明。
+线路与费用提示：只有非优化线路才推荐使用 CDN。Cloudflare Free 和 Gcore Free 链路预期为
+`$0/月`；AWS 默认按量链路在免费 CloudFront 额度内主要承担 Route 53，常规预期约 `$0.60/月`。
+超出免费额度、使用额外 Hosted Zone 或启用增值服务时另行计费。
 
-Cloudflare 精选 IP XHTTP 和 AWS 精选 IP XHTTP 需要先准备域名、Cloudflare/Globalping
-账号和 Token；请先阅读统一的
+CDN 精选 IP 模式需要先准备域名、相应 Provider 账号和 Globalping Token；请先阅读统一的
 [前置准备手册](docs/preparation-guide.md)。
 
 一条命令下载完整项目并进入交互安装：
@@ -45,7 +47,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 sudo easy_all self-update
 ```
 
-`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、三个 Profile、XHTTP 公共
+`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、四个 Profile、CDN 公共
 运行时、公共支持模块和 Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或云端 CDN 资源。
 代码包含配置生成变化时，再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
@@ -56,7 +58,7 @@ sudo easy_all self-update
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
 2. 浅克隆 `main` 分支完整项目到权限受限的临时目录。
-3. 校验入口、三个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
+3. 校验入口、四个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
 4. 通过 `sudo` 启动交互安装。
 5. 安装结束后删除临时下载目录。
 
@@ -74,6 +76,7 @@ sudo ./easy_all install
   1. 直连 - Reality（优化线路推荐）
   2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）
   3. AWS CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）
+  4. Gcore CDN 精选 IP - VLESS WebSocket TLS（官方支持路径）
 请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -120,23 +123,32 @@ flowchart TD
     X9 --> X10[ACM / Paid account plan 检查或确认升级（升级本身不收费）/ CloudFront Aliases / Route 53 Alias A/AAAA / 公网验收 / Globalping 精选 IPv4 / 生成订阅]
     X10 --> X11[保存状态 / 注册 easy_all / 配置用户配额与全局费用保护任务]
     X11 --> Z
+
+    B -->|4| G0[Gcore CDN 精选 IP WebSocket]
+    G0 --> G1[Gcore Managed DNS / API Token / Globalping Token]
+    G1 --> G2[源站 A / Let's Encrypt / mTLS 客户端证书]
+    G2 --> G3[Origin Group / WebSocket CDN Resource / Origin SSL Validation]
+    G3 --> G4[账户专属 CNAME / DNS-01 边缘证书 / WebSocket 101 验收]
+    G4 --> G5[Globalping 精选 IPv4 / 990 GB 费用保护 / 订阅]
+    G5 --> Z
 ```
 
-图中是安装器的实际执行顺序。三种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。Cloudflare 模式只使用单一 proxied 一级子域；AWS 只接受 Route 53 Public Hosted Zone。所有精选 IP 模式均由 VPS 预筛并由客户端最终测速选优。
+图中是安装器的实际执行顺序。四种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。Cloudflare 模式只使用单一 proxied 一级子域；AWS 只接受 Route 53 Public Hosted Zone；Gcore 只接受已完整委派的 Managed DNS Zone。所有精选 IP 模式均由 VPS 预筛并由客户端最终测速选优。
 
 公共交互选项：
 
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
-| CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费（默认推荐） | `2` | 选择 2 不会因升级 Paid account plan 立即收费；升级本身无固定月费，使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
-| Globalping Token | 模式 2/3 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
+| CloudFront 计费 | `1` Free 固定套餐 / `2` 按量付费（默认推荐） | `2` | 默认模式在免费 CloudFront 额度内常规预期约 `$0.60/月`（主要为一个 Route 53 Zone 和少量查询）；使用每月 1 TB / 1000 万请求免费额度，并启用 980 GB 全局费用保护 |
+| Globalping Token | 模式 2/3/4 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
+| Gcore API Token | 模式 4 云资源操作时必填，隐藏输入 | 无 | 只存在于当前进程，不写入状态文件 |
 | Cloudflare Zone Token | 模式 2 必填，隐藏输入 | 无 | 仅限目标 Zone 的 Zone、DNS、Transform Rules、Config Rules、Zone Settings、SSL and Certificates 最小权限 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
 | CDN 订阅链接完整域名 | 完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
 | 月度用户配额 | `1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
-| 安装模式 | `1` Reality / `2` Cloudflare 精选 IP / `3` AWS 精选 IP | `1` | 安装 Reality |
+| 安装模式 | `1` Reality / `2` Cloudflare / `3` AWS / `4` Gcore 精选 IP | `1` | 安装 Reality |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 写入每日 04:00 的 root crontab |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
@@ -145,7 +157,7 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文；密码提示也保持双语并继续隐藏输入，
 因此在中文乱码的 VNC 终端中仍可按英文提示完成操作。
 
-三种安装模式的 Xray 普通公网出站统一使用 `AsIs`，由系统拨号器自动处理 IPv4/IPv6。Gemini 页面、
+四种安装模式的 Xray 普通公网出站统一使用 `AsIs`，由系统拨号器自动处理 IPv4/IPv6。Gemini 页面、
 认证和静态资源使用的 Google 域名保留独立的 `ForceIPv4` 出站，客户端规则也继续固定走 `PROXY`，
 因此同一 Gemini 会话始终看到所选 VPS 的 IPv4 出口，不会因某个关联请求走 IPv6 而混用出口地址。
 
@@ -153,14 +165,14 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
 `tcp_slow_start_after_idle`，避免复用的空闲 TCP 连接恢复传输时重新进入慢启动。
 
-服务器把启用 `SO_KEEPALIVE` 的 TCP 套接字默认探测参数设为 `300/30/5`，并在三种 Xray 入站
+服务器把启用 `SO_KEEPALIVE` 的 TCP 套接字默认探测参数设为 `300/30/5`，并在四种 Xray 入站
 显式启用相同的 300 秒空闲阈值与 30 秒探测间隔：空闲 300 秒后每 30 秒探测一次，连续 5 次无响应
 后回收失效连接。它用于限制半开连接的资源占用，不能替代 XHTTP 为适配
 CloudFront HTTP/2 空闲超时而设置的应用层保活。出站 TCP/UDP 临时端口范围设为
 `13000-60999`（48,000 个端口），为代理出站连接增加容量，并避开 Reality 动态入口
 `10000-12927`、本机 Xray/API 端口和 SSH `65533`；这项设置增加并发上限，不改善单连接延迟。
 
-三种模式统一安装 XanMod LTS 内核；XanMod 官方将 Google BBRv3 内置为默认 `tcp_bbr`，因此
+四种模式统一安装 XanMod LTS 内核；XanMod 官方将 Google BBRv3 内置为默认 `tcp_bbr`，因此
 sysctl 中算法名称仍是 `bbr`，不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3。
 安装器固定校验 XanMod APT 公钥指纹，通过 HTTPS 仓库安装，并按当前 CPU 能力选择
 `linux-xanmod-lts-x64v1/v2/v3`；这里的 x64v1/v2/v3 是 CPU 指令集等级，不是 BBR 版本。
@@ -179,18 +191,18 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
-| `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；CDN XHTTP 额外显示当前 Provider 的云端资源 ID、全局费用保护、Globalping 缓存与定时器状态，不调用云 API。 |
+| `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；CDN 模式额外显示当前 Provider 的云端资源 ID、全局费用保护、Globalping 缓存与定时器状态，不调用云 API。 |
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
-| `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 Cloudflare 或 AWS。 |
-| `apply-cloud` | 仅 CDN XHTTP 可用；应用本机配置，并同步当前 Provider 的云资源：Cloudflare 同步 proxied DNS/规则/边缘设置，AWS 同步 Route 53/ACM/CloudFront。 |
+| `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收本机运行时和订阅；不下载项目代码，也不修改 Provider 云资源。 |
+| `apply-cloud` | 仅 CDN 模式可用；应用本机配置并同步当前 Provider 云资源。Gcore 会同步 Managed DNS、Origin Group、WebSocket Resource、Trusted CA、回源客户端证书和边缘证书。 |
 | `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改云资源，新增、更换或停用独立域名时同步当前 Provider 的 CDN、证书和托管 DNS。 |
-| `refresh-cdn-ips` | 模式 2/3 可用；立即运行一次 Globalping 测量，更新当前 Provider 的本地缓存并原子重建订阅。 |
+| `refresh-cdn-ips` | 模式 2/3/4 可用；立即运行一次 Globalping 测量，更新当前 Provider 的本地缓存并原子重建订阅。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
-| `renew-cert` | 强制续期当前模式使用的本机证书：Reality 仅在自托管订阅模式可用，CDN XHTTP 续期源站证书；不操作 ACM。 |
-| `quota-status` | 显示每用户月度配额；AWS 按量付费时同时显示独立的 CDN 全局费用保护用量。 |
+| `renew-cert` | 强制续期当前模式使用的本机证书；Gcore 同时更新 Trusted CA 并重新验收 CDN。 |
+| `quota-status` | 显示每用户月度配额；AWS 按量付费和 Gcore 模式同时显示独立的 CDN 全局费用保护用量。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
-| `uninstall` | 仅卸载当前模式的本机资源，保留远端资源。Cloudflare 模式使用 `easy_all uninstall --purge-cloud` 时，会先删除 easy_all 标记的 DNS、规则、空的托管 ruleset 和 Origin CA 证书，再清理本机。 |
+| `uninstall` | 默认仅卸载本机资源。Gcore 使用 `--purge-cloud` 时，仅删除所有权标记和 ID 都匹配的 CDN 资源、证书、源组及本工具创建且未变化的 DNS 记录，永不删除 Zone。 |
 | `help` | 显示命令帮助。 |
 
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
@@ -208,15 +220,16 @@ Origin CA 可直接吊销。AWS 固定套餐、DNS、CDN 和其他共享资源�
 
 ### `apply` 的具体操作
 
-默认执行 `easy_all apply` 不会改变 Reality/CDN 模式、UUID、节点域名或 XHTTP 路径，也不会
+默认执行 `easy_all apply` 不会改变 Reality/CDN 模式、UUID、节点域名或传输路径，也不会
 重新询问订阅模式。它读取 `/etc/easy_all/state.env` 中已有状态，以当前保存的参数重新生成配置。
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
 | Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式，同步 SSH 监听、UFW 与 Fail2ban；自托管模式会校验 DNS、确保证书/Nginx 并重建订阅，仅节点模式会清理订阅服务。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
 | CDN XHTTP（Cloudflare/AWS） | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 重启前结算尚未写入账本的 Xray 流量，再生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件；精选 IP 模式使用现有 Globalping 缓存。<br>5. 保存状态、注册当前代码、恢复用户配额、全局费用保护及 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
+| Gcore WebSocket | 与 CDN 公共运行时相同，但生成 VLESS WebSocket 配置并验证 HTTP `101`。普通 `apply` 不读取 Gcore Token；如果源站证书的签发 CA 已变化，会停止并要求运行 `apply-cloud`，避免 Gcore Trusted CA 与本机证书链失配。 |
 
-Reality 和 CDN XHTTP 在订阅或运行时配置更新失败时，会恢复已备份的状态、
+Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
 Xray/Nginx 配置和订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
 BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚；已安装的内核包也不会在回滚或卸载时
 自动删除，避免破坏当前启动项。
@@ -226,10 +239,12 @@ BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚�
 
 ### `apply-cloud` 的具体操作
 
-`easy_all apply-cloud` 仅适用于 CDN XHTTP。它先读取状态与备份并更新本机 BBR/UFW，然后：
+`easy_all apply-cloud` 适用于 CDN 模式。它先读取状态与备份并更新本机 BBR/UFW，然后：
 AWS 链路同步 Route 53 源站 A、ACM、账号套餐检查与 CloudFront。AWS 默认读取当前终端提供的
 Access Key（也可显式启用默认凭证链）。已成功创建或变更的云资源不自动回滚，
 因此只有云端配置确实需要同步时才应执行该命令。
+Gcore 链路临时读取 `GCORE_API_TOKEN`，同步 Managed DNS、账户专属 CNAME、Origin Group、
+WebSocket Resource、Origin SSL Validation/mTLS 和 DNS-01 边缘证书；Token 不落盘。
 
 ### 轮换 UUID
 
@@ -241,14 +256,14 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 ```
 
 也可将命令中的值替换为指定的标准 UUID。更新成功后，旧 UUID 立即失效；请从
-`easy_all show` 获取新节点，或在已部署订阅服务时让客户端重新拉取订阅。CDN XHTTP 的普通
-`apply` 不要求 AWS 凭证。
+`easy_all show` 获取新节点，或在已部署订阅服务时让客户端重新拉取订阅。CDN 模式的普通
+`apply` 不要求云端凭证。
 
 ### 新增、删除或修改订阅用户
 
-CDN XHTTP 部署订阅时，“订阅链接完整域名”直接回车会复用节点域名。输入独立域名后，AWS 会将它加入
-同一 CloudFront 分配并由 ACM 证书覆盖。脚本只接受同一 DNS 服务商中已托管、已完成权威委派的
-Route 53 Zone。若该完整域名已正确指向当前 CDN，脚本原样复用；没有记录才新增；已有其他 A、AAAA
+CDN 模式部署订阅时，“订阅链接完整域名”直接回车会复用节点域名。输入独立域名后，AWS 会将它加入
+同一 CloudFront 分配并由 ACM 证书覆盖；Gcore 会将它作为同一 Resource 的 secondary hostname。
+脚本只接受相应 DNS 服务商中已托管、已完成权威委派的 Zone。若该完整域名已正确指向当前 CDN，脚本原样复用；没有记录才新增；已有其他 A、AAAA
 或 CNAME 时停止，不接管也不覆盖。域名位于另一个托管 Zone 时，部署凭证必须同时拥有该 Zone 的
 读写权限。
 
@@ -560,6 +575,37 @@ Config Rules Edit、Zone Settings Edit、SSL and Certificates Edit）。完整�
 DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见
 [前置准备手册](docs/preparation-guide.md)。
 
+## Gcore CDN 精选 IP WebSocket
+
+模式 4 使用 Gcore 官方明确支持的 WebSocket，而不强行复用 XHTTP。客户端采用
+VLESS WebSocket TLS，Gcore 边缘接收标准 HTTP/1.1 Upgrade，再通过 HTTPS WebSocket
+回源到 Nginx 和仅监听 `127.0.0.1` 的 Xray。
+
+固定参数：
+
+- `heartbeatPeriod: 55`，在移动端续航和运营商空闲连接回收之间取平衡；
+- Early Data `2560`，使用 `Sec-WebSocket-Protocol`；
+- ALPN 仅 `http/1.1`，不混入需要 RFC 8441 Extended CONNECT 的 `h2`；
+- VLESS `flow` 为空、`decryption: none`、Mux 关闭；
+- Mihomo 使用 `network: ws`、`max-early-data: 2560`、`skip-cert-verify: false`。
+
+Gcore Resource 开启 `websockets`、HTTPS 回源、DNS-01、强制 HTTPS 和查询参数保留；只允许
+`GET/HEAD`，关闭边缘和浏览器缓存，显式关闭 gRPC passthrough。CNAME 目标始终读取
+`GET /cdn/clients/me` 的账户专属 `cname`，不会根据自定义域名拼接 `*.gcdn.co`。
+
+源站安全使用 Gcore 官方 Origin SSL Validation：安装器从源站 Let's Encrypt fullchain
+提取签发 CA 上传为 Trusted CA，并生成专用客户端 CA/证书。Gcore 回源时验证源站证书并出示
+客户端证书；Nginx 设置 `ssl_verify_client on`，同时继续校验随机 Origin Key。源站证书链发生
+变化时，普通 `apply` 会停止，`apply-cloud` 或 `renew-cert` 会更新 Trusted CA 后再恢复服务。
+
+Globalping 对业务域名执行中国大陆 TCP/443 零丢包筛选，VPS 随后对候选 IP 同时验证 HTTPS
+健康检查和 WebSocket `101`。最多保存 10 个 IPv4，缓存超过 72 小时回退业务域名。客户端
+`server` 使用候选 IP，但 SNI、Host 和证书校验始终使用 Gcore CDN 业务域名。
+
+Gcore Free CDN 当前包含每月 `1 TB` 流量，因此模式 4 使用 `990 GB` 本地载荷保护。
+该阈值只留下约 10 GB 缓冲，而且本机统计不等同 Gcore 最终账单，需同时查看控制台用量并开启提醒。
+完整权限、DNS、费用和生命周期说明见统一的 [前置准备手册](docs/preparation-guide.md#8-gcore-cdn-精选-ip-websocket-准备)。
+
 ## AWS CDN XHTTP
 
 XHTTP 使用 `stream-up + HTTP/2 + XMUX`。模式 3 使用 CloudFront 服务端链路，输出最多
@@ -686,7 +732,7 @@ A 记录。同名 AAAA 或 CNAME 会被当作冲突并默认停止；确认覆�
 | 模式 | CloudFront 月度额度与超额 | Route 53/WAF 估算 |
 | --- | --- | --- |
 | Free 固定套餐 | `$0/月`，基准 100 GB + 100 万请求。超过基准仍无超额费，费用估算为 `$0`；持续明显超额时 AWS 可能减少或调整边缘交付能力。 | 脚本创建的 WAF，以及加入套餐的 CDN Hosted Zone、CloudFront Alias 和额度内其他 DNS 查询由套餐覆盖。若源站使用另一个 Hosted Zone，该 Zone 仍约 `$0.50/月 + $0.40/百万次标准查询`。 |
-| 按量付费（默认） | 每月免费 1 TB + 1000 万请求。脚本自动启用独立的 980 GB 本机全局费用保护；超过 1 TB 后，以常见美国/欧洲至亚太边缘价格估算，每多 100 GB 约 `$8.50-$12.00`，超额请求另按实际边缘区域计费。 | 脚本不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；指向 CloudFront 的 Alias A/AAAA 查询免费，其他标准查询约 `$0.04/10万次`、`$0.40/百万次`。同一 Zone 约 `$0.50/月`，源站与 CDN 分属两个 Zone 时约 `$1.00/月`，再加少量标准查询费。 |
+| 按量付费（默认） | 每月免费 1 TB + 1000 万请求。脚本自动启用独立的 980 GB 本机全局费用保护；免费额度内常规总费用预期约 `$0.60/月`。超过 1 TB 后，以常见美国/欧洲至亚太边缘价格估算，每多 100 GB 约 `$8.50-$12.00`，超额请求另按实际边缘区域计费。 | 脚本不创建 WAF。每个 Public Hosted Zone 约 `$0.50/月`；指向 CloudFront 的 Alias A/AAAA 查询免费，其他标准查询约 `$0.04/10万次`、`$0.40/百万次`。同一 Zone 加少量标准查询常规约 `$0.60/月`；源站与 CDN 分属两个 Zone 时约 `$1.00/月` 以上。 |
 
 两种 CloudFront 计费优惠不能叠加。按量付费的估算不包含 VPS 自身的 1 TB 上行流量、域名注册、
 DNSSEC KMS、Health Check、Query Logs 等费用；最终金额还取决于实际边缘区域与 AWS 当期价格。
@@ -777,23 +823,23 @@ IAM 用户与两项 Access Key 获取步骤见
 
 ```text
 STATE_VERSION=5  # Reality
-STATE_VERSION=7  # XHTTP
-PROTOCOL=reality|xhttp
-CDN_PROVIDER=cloudflare|aws
+STATE_VERSION=7  # XHTTP / WebSocket CDN
+PROTOCOL=reality|xhttp|websocket
+CDN_PROVIDER=cloudflare|aws|gcore
 AWS_CLOUDFRONT_BILLING_MODE=flat-free|payg   # 仅 AWS CDN XHTTP
-CDN_CLIENT_IP_FAMILY=ipv4                     # 模式 2/3 固定 IPv4
-CDN_TRAFFIC_PROTECTION_GB=0|980               # AWS 固定套餐为 0；AWS 按量为 980
+CDN_CLIENT_IP_FAMILY=ipv4                     # 模式 2/3/4 固定 IPv4
+CDN_TRAFFIC_PROTECTION_GB=0|980|990           # Gcore 为 990；AWS 固定套餐为 0、按量为 980
 ```
 
 Reality 的 `CDN_PROVIDER` 为空。easy_all 不会将 AWS Access Key、Secret Access Key、Session
-Token 或 Globalping Token 持久化到状态文件。模式 2/3 的 Globalping Token
+Token、Gcore API Token 或 Globalping Token 持久化到状态文件。模式 2/3/4 的 Globalping Token
 单独保存在 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`。
 
 CDN 全局保护由 `cdn-traffic-guard.sh` 统一实现，账本为 `cdn-traffic-usage.json`，定时器为
 `easy_all-cdn-traffic-guard.timer`，AWS 按量付费使用内部命令 `cdn-traffic-sync`。
 
-卸载 CDN XHTTP 时只删除本机资源，保留 AWS 远端资源，避免误删共享的云资源。卸载完成
-后应在对应 Console 中人工确认是否清理。
+默认卸载 CDN 模式时只删除本机资源。Gcore 可显式使用 `uninstall --purge-cloud`，此时只清理
+经所有权和当前值校验的 easy_all 远端资源；AWS 远端资源仍默认保留。卸载完成后应在对应 Console 中复核。
 
 ## 模块
 
@@ -803,10 +849,12 @@ CDN 全局保护由 `cdn-traffic-guard.sh` 统一实现，账本为 `cdn-traffic
 easy_all
 ├─ profiles/
 │  ├─ reality.sh             Reality 编排与专属配置
-│  └─ xhttp-aws.sh           AWS Provider、状态与安装编排
+│  ├─ xhttp-cloudflare.sh    Cloudflare Provider、状态与安装编排
+│  ├─ xhttp-aws.sh           AWS Provider、状态与安装编排
+│  └─ websocket-gcore.sh     Gcore WebSocket Provider、状态与安装编排
 ├─ lib/
-│  ├─ xhttp-runtime.sh       Cloudflare/AWS 共用的 XHTTP 本机运行时
-│  ├─ globalping-cdn.sh      Cloudflare/AWS 精选 IPv4、缓存与每小时刷新任务
+│  ├─ xhttp-runtime.sh       三个 CDN Profile 复用的本机运行时骨架
+│  ├─ globalping-cdn.sh      Cloudflare/AWS/Gcore 精选 IPv4、缓存与每小时刷新任务
 │  ├─ quota.sh               用户配额与统计
 │  ├─ cdn-traffic-guard.sh    CDN 全局流量保护与 UTC 月度账本
 │  ├─ platform.sh            root/systemd/SSH 启动保障
@@ -824,7 +872,7 @@ easy_all
    └─ debian-init.sh         独立 Debian 初始化实现
 ```
 
-入口负责模式选择、命令分发和完整运行时的原子注册。Reality、AWS XHTTP 与 Cloudflare XHTTP
+入口负责模式选择、命令分发和完整运行时的原子注册。Reality 与三个 CDN
 Profile 只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。两个 XHTTP Profile
 分别加载 `xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现，彼此不加载对方的
 Provider 代码。两个 XHTTP Profile 通过 `xhttp_render_xray_config` 实现各自的服务端传输参数。
@@ -840,8 +888,8 @@ npm test
 ```
 
 测试覆盖统一入口、公共模块归属与安装完整性、XHTTP Runtime/Provider 隔离、Reality 目标验收、
-三种安装模式的 IPv4 直连、私网目标阻断、Reality 客户端地址族策略、Globalping 严格零丢包筛选、
-Cloudflare/AWS XHTTP、用户凭据与月度配额、TCP 参数回滚、Xray 配置、CloudFront JSON、
+四种安装模式的 IPv4 直连、私网目标阻断、Reality 客户端地址族策略、Globalping 严格零丢包筛选、
+Cloudflare/AWS XHTTP、Gcore WebSocket、用户凭据与月度配额、TCP 参数回滚、Xray 配置、CloudFront/Gcore JSON、
 载荷、Route 53、订阅渲染、Token 鉴权、证书续期检查和更新顺序。
 
 ## Cloudflare 模式参考

@@ -54,6 +54,21 @@ fi
 assert_equal "UTC calendar month extraction" "2026-08" \
     "$(cdn_traffic_current_period "2026-08-20")"
 
+PROTOCOL="websocket"
+CDN_PROVIDER="gcore"
+CDN_TRAFFIC_PROTECTION_GB=""
+configure_cdn_traffic_protection
+assert_equal "Gcore protection defaults below the free-plan ceiling" "990" \
+    "${CDN_TRAFFIC_PROTECTION_GB}"
+cdn_traffic_protection_enabled \
+    || fail "Gcore WebSocket must enable global fee protection"
+if (
+    CDN_TRAFFIC_PROTECTION_GB=989
+    configure_cdn_traffic_protection
+) >/dev/null 2>&1; then
+    fail "Gcore protection threshold must stay fixed at 990 GB"
+fi
+
 PROTOCOL="xhttp"
 CDN_PROVIDER="aws"
 AWS_CLOUDFRONT_BILLING_MODE="payg"

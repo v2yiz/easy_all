@@ -72,6 +72,8 @@ choose_cloudfront_billing_mode() {
         printf '     Enables an independent 980 GB global safety guard (UTC month, checked every 15 seconds)\n'
         printf '     1 个 Hosted Zone 估算 $0.50/月；CloudFront Alias 查询 $0，其他标准 DNS 查询 $0.40/百万次\n'
         printf '     One Hosted Zone is estimated at $0.50/month; CloudFront Alias queries are $0, other standard DNS queries $0.40/million\n'
+        printf '     免费 CloudFront 额度内，1 个 Zone 加少量标准查询的常规总费用预期约 $0.60/月\n'
+        printf '     Within the free CloudFront allowance, one zone plus light standard DNS traffic is typically about $0.60/month\n'
         printf '     超过 1 TB 后，每多 100 GB 流量约 $8.50-$12.00，另计超额请求（实际按边缘区域）\n'
         printf '     Beyond 1 TB, each additional 100 GB is about $8.50-$12.00, plus excess requests by edge region\n'
         read_bilingual \

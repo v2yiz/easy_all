@@ -17,7 +17,7 @@ readonly GLOBALPING_POLL_ATTEMPTS=35
 
 cdn_optimization_enabled() {
     case "${CDN_PROVIDER:-}" in
-    aws) return 0 ;;
+    aws | gcore) return 0 ;;
     cloudflare) [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
     *) return 1 ;;
     esac
@@ -27,6 +27,7 @@ globalping_cdn_provider_label() {
     case "${CDN_PROVIDER:-aws}" in
     aws) printf 'AWS' ;;
     cloudflare) printf 'Cloudflare' ;;
+    gcore) printf 'Gcore' ;;
     *) printf 'Unknown' ;;
     esac
 }
@@ -223,7 +224,10 @@ validate_cdn_candidate() {
     response=$(curl -fsS --connect-timeout 4 --max-time 10 --noproxy '*' \
         --resolve "${VLESS_CDN_DOMAIN}:443:${ip}" \
         "https://${VLESS_CDN_DOMAIN}/easy_all-health" 2>/dev/null) || return 1
-    [[ "${response}" == "easy_all ok" ]]
+    [[ "${response}" == "easy_all ok" ]] || return 1
+    if declare -F validate_cdn_candidate_transport >/dev/null 2>&1; then
+        validate_cdn_candidate_transport "${ip}"
+    fi
 }
 
 globalping_build_cache() {

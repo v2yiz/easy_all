@@ -8,6 +8,7 @@ AWS_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/aws-guide.md")
 PREPARATION_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-aws.sh")
+GCORE_CONTENT=$(<"${ROOT_DIR}/profiles/websocket-gcore.sh")
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -44,18 +45,53 @@ assert_contains "README XHTTP stage count" "${README_CONTENT}" \
     '源站证书 / Xray / Nginx / 本机运行时验收'
 assert_contains "README documents the third optimized AWS installation mode" \
     "${README_CONTENT}" 'AWS CDN 精选 IP - XHTTP'
-assert_contains "README documents three installation modes" "${README_CONTENT}" \
-    '三种安装模式'
+assert_contains "README documents four installation modes" "${README_CONTENT}" \
+    '四种安装模式'
+assert_contains "README documents Gcore WebSocket mode" "${README_CONTENT}" \
+    'Gcore CDN 精选 IP - WebSocket'
+assert_not_contains "README does not list a separate Gcore guide" "${README_CONTENT}" \
+    'docs/gcore-guide.md'
+assert_contains "Preparation guide documents official Gcore WebSocket" "${PREPARATION_GUIDE_CONTENT}" \
+    'VLESS + WebSocket + TLS'
+assert_contains "Preparation guide embeds the Gcore API token screenshot" "${PREPARATION_GUIDE_CONTENT}" \
+    'gcore/gcore-api-token-create.png'
+assert_contains "Preparation guide documents the balanced Gcore heartbeat" "${PREPARATION_GUIDE_CONTENT}" \
+    '`heartbeatPeriod` | `55` 秒'
+assert_contains "Preparation guide documents Gcore early data" "${PREPARATION_GUIDE_CONTENT}" \
+    'Early Data | `2560`'
+assert_contains "Preparation guide documents Gcore HTTP 1.1 ALPN" "${PREPARATION_GUIDE_CONTENT}" \
+    'ALPN | `http/1.1`'
+assert_contains "Preparation guide documents Gcore Origin SSL Validation" "${PREPARATION_GUIDE_CONTENT}" \
+    'Origin SSL Validation 与 mTLS'
+assert_contains "Preparation guide documents the Gcore Managed DNS console path" \
+    "${PREPARATION_GUIDE_CONTENT}" '网络 → Managed DNS → 所有区域 → 添加区域'
+assert_contains "Preparation guide documents Gcore zone creation stages" \
+    "${PREPARATION_GUIDE_CONTENT}" '输入域 → 正在扫描记录 → 检查记录 → 更改域名服务器'
+assert_contains "Preparation guide tells users to scan Gcore DNS records" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Skip scanning'
+assert_contains "Preparation guide requires complete Gcore NS replacement" \
+    "${PREPARATION_GUIDE_CONTENT}" '完整替换当前 NS'
+assert_contains "Gcore profile never persists its API token" "${GCORE_CONTENT}" \
+    'unset GCORE_API_TOKEN'
 assert_contains "README documents the CDN cost boundary" "${README_CONTENT}" \
     '只有非优化线路才推荐使用 CDN'
-assert_contains "README documents that Cloudflare is nearly free" "${README_CONTENT}" \
-    'Cloudflare 通常近乎免费'
-assert_contains "README documents possible AWS charges" "${README_CONTENT}" \
-    'AWS CloudFront、'
+assert_contains "README documents free Cloudflare and Gcore modes" "${README_CONTENT}" \
+    'Cloudflare Free 和 Gcore Free'
+assert_contains "README documents the typical AWS monthly cost" "${README_CONTENT}" \
+    '常规预期约 `$0.60/月`'
 assert_contains "README links the preparation guide" "${README_CONTENT}" \
     'docs/preparation-guide.md'
 assert_contains "Preparation guide has the expected title" \
     "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
+assert_contains "Preparation guide has a per-route checklist" \
+    "${PREPARATION_GUIDE_CONTENT}" '## 0. 按链路选择准备内容'
+for mode in '模式 1：Reality 直连' '模式 2：Cloudflare XHTTP' \
+    '模式 3：AWS CloudFront XHTTP' '模式 4：Gcore WebSocket'; do
+    assert_contains "Preparation guide documents prerequisites for ${mode}" \
+        "${PREPARATION_GUIDE_CONTENT}" "${mode}"
+done
+assert_contains "Preparation guide explains exclusive DNS delegation" \
+    "${PREPARATION_GUIDE_CONTENT}" '不能同时托管同一个 Zone'
 assert_contains "Preparation guide documents domain registration" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://www.spaceship.com/'
 assert_contains "Preparation guide recommends the Spaceship 1-plus-9-year plan" \
@@ -183,11 +219,11 @@ assert_contains "README documents idle slow-start tuning" "${README_CONTENT}" \
 assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" "${README_CONTENT}" \
     '不能替代 XHTTP'
 assert_contains "README documents Xray inbound TCP keepalive" "${README_CONTENT}" \
-    '三种 Xray 入站'
+    '四种 Xray 入站'
 assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" \
     '`13000-60999`'
 assert_contains "README documents XanMod LTS BBRv3 for every profile" \
-    "${README_CONTENT}" '三种模式统一安装 XanMod LTS 内核'
+    "${README_CONTENT}" '四种模式统一安装 XanMod LTS 内核'
 assert_contains "README distinguishes the BBR algorithm from the sysctl name" \
     "${README_CONTENT}" '不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3'
 assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" \

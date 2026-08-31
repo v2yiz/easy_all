@@ -26,7 +26,7 @@ readonly XRAY_BIN="${XRAY_DIR}/xray"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
 readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
 readonly XRAY_SERVICE="easy_all-xray.service"
-readonly XRAY_SERVICE_DESCRIPTION="Xray VLESS XHTTP managed by easy_all"
+readonly XRAY_SERVICE_DESCRIPTION="${XHTTP_SERVICE_DESCRIPTION_OVERRIDE:-Xray VLESS XHTTP managed by easy_all}"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
 readonly ACME_HOME="/root/.acme-aws.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
@@ -523,7 +523,7 @@ validate_protocol_runtime() {
 }
 
 validate_subscription_runtime() {
-    local token base64_response mihomo_response
+    local token base64_response mihomo_response marker
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
         xhttp_validate_local_tls_curl_args
@@ -550,7 +550,10 @@ validate_subscription_runtime() {
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
         "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
-    grep -Fq 'network: xhttp' <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
+    marker='network: xhttp'
+    declare -F mihomo_transport_marker >/dev/null 2>&1 \
+        && marker=$(mihomo_transport_marker)
+    grep -Fq "${marker}" <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
 }
 
 uri_encode() {
@@ -706,7 +709,7 @@ EOF
 }
 
 write_subscriptions() {
-    local template node_file group_file name_file base64_file mihomo_file user uuid user_dir
+    local template node_file group_file name_file base64_file mihomo_file user uuid user_dir marker
     prepare_mihomo_template
     template=${MIHOMO_TEMPLATE_FILE}
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
@@ -715,6 +718,9 @@ write_subscriptions() {
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
     resolve_cdn_client_ip_family
+    marker='network: xhttp'
+    declare -F mihomo_transport_marker >/dev/null 2>&1 \
+        && marker=$(mihomo_transport_marker)
 
     if quota_enabled; then
         rm -rf -- "${SUBSCRIPTION_DIR}"
@@ -733,8 +739,8 @@ write_subscriptions() {
                     "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
                     "${group_file}.${user}" "${name_file}.${user}"
             )
-            grep -Fq 'network: xhttp' "${mihomo_file}.${user}" \
-                || die "Mihomo 订阅缺少 XHTTP 节点：${user}"
+            grep -Fq "${marker}" "${mihomo_file}.${user}" \
+                || die "Mihomo 订阅缺少有效节点：${user}"
             install -d -o root -g www-data -m 0750 "${user_dir}"
             install -o root -g www-data -m 0640 \
                 "${base64_file}.${user}" "${user_dir}/base64.txt"
@@ -752,7 +758,7 @@ write_subscriptions() {
         "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
         "${group_file}" "${name_file}"
 
-    grep -Fq 'network: xhttp' "${mihomo_file}" || die "Mihomo 订阅缺少 XHTTP 节点"
+    grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
     rm -rf -- "${SUBSCRIPTION_DIR}"
     install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"

@@ -7,6 +7,7 @@ REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
 XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-aws.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 CLOUDFLARE_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare.sh"
+GCORE_PROFILE="${ROOT_DIR}/profiles/websocket-gcore.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
 
@@ -24,7 +25,7 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}/scripts/debian-init.sh"
 
 for required_path in \
-    profiles/reality.sh profiles/xhttp-cloudflare.sh profiles/xhttp-aws.sh \
+    profiles/reality.sh profiles/xhttp-cloudflare.sh profiles/xhttp-aws.sh profiles/websocket-gcore.sh \
     lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh lib/cdn-traffic-guard.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
@@ -53,7 +54,8 @@ shared_modules=(
 [[ "${LAUNCHER_CONTENT}" == *'"lib/globalping-cdn.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/globalping-cdn.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
-    && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* ]] \
+    && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
+    && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* ]] \
     || fail "Globalping CDN module is missing from a CDN Provider runtime"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cloudflare-ip-pool.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
