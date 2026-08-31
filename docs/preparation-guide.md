@@ -89,6 +89,13 @@ Cloudflare 会为这个 Zone 分配两条名称服务器（Nameservers）。先�
 如果域名还承载网站或邮件，请先记录原有的 `A`、`AAAA`、`CNAME`、`MX`、`TXT`、SPF、DKIM、DMARC
 和 CAA 记录；遗漏邮件记录可能导致收发信中断。
 
+托管成功后，打开该 Zone 的 **Overview** 页面，确认出现绿色勾选和提示
+**Your domain is now protected by Cloudflare**。同时应看到 **Your web traffic is proxying through
+Cloudflare**，这表示该域名的流量已经通过 Cloudflare 代理。只有看到这个成功标记，才算完成域名托管；
+仅能进入 Cloudflare 控制台、看到 **Free** 计划或拿到 Nameservers 并不代表托管已经生效。
+
+![Cloudflare 域名托管成功标记](preparation/cloudflare-domain-protected.png)
+
 参考文章：[48元撸10年xyz域名，搭配Cloudflare有N王炸玩法](https://post.smzdm.com/p/ae5rg7nk/)
 （第 1、2 节）。文中截图仅用于说明操作位置，最终以注册商和 Cloudflare 当前页面为准。
 
