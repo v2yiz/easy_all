@@ -30,15 +30,21 @@ assert_not_contains "Gcore domain mode does not load Globalping" "${PROFILE}" \
     'globalping-cdn.sh'
 assert_contains "Gcore persists domain endpoint mode" "${CONTENT}" \
     'GCORE_CDN_ENDPOINT_MODE="domain"'
-assert_contains "Gcore migrates legacy optimized state to domain mode" "${CONTENT}" \
+assert_not_contains "Gcore rejects the removed optimized state" "${CONTENT}" \
     'optimized) GCORE_CDN_ENDPOINT_MODE="domain"'
 for obsolete_globalping_call in collect_globalping_token refresh_globalping_cache \
     persist_globalping_token install_globalping_refresh_timer show_globalping_status; do
     assert_not_contains "Gcore does not invoke ${obsolete_globalping_call}" \
         "${PROFILE}" "${obsolete_globalping_call}"
 done
-assert_contains "Gcore removes legacy Globalping runtime files" "${CONTENT}" \
+assert_not_contains "Gcore omits legacy Globalping cleanup" "${CONTENT}" \
     'remove_legacy_gcore_globalping_runtime'
+assert_not_contains "Gcore does not accept the XHTTP node-name alias" "${CONTENT}" \
+    'WS_NODE_NAME:-${XHTTP_NODE_NAME'
+assert_not_contains "Gcore does not accept the XHTTP path alias" "${CONTENT}" \
+    'WS_PATH:-${XHTTP_PATH'
+assert_not_contains "Gcore does not accept the XHTTP loopback-port alias" "${CONTENT}" \
+    'XRAY_WS_LOOPBACK_PORT:-${XRAY_XHTTP_LOOPBACK_PORT'
 assert_not_contains "Gcore omits unavailable gRPC passthrough option" "${PROFILE}" \
     'grpc_passthrough'
 assert_contains "Gcore preserves query strings for early data" "${CONTENT}" \

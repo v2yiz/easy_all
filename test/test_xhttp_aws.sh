@@ -176,6 +176,14 @@ assert_contains "AWS purge option deletes ACM before local cleanup" "${XHTTP_CON
         "${AWS_CLOUDFRONT_BILLING_MODE}"
     assert_equal "pay-as-you-go enables the 980 GB global fee protection" "980" \
         "${CDN_TRAFFIC_PROTECTION_GB}"
+    for removed_mode in free fixed on-demand; do
+        if (
+            AWS_CLOUDFRONT_BILLING_MODE=${removed_mode}
+            choose_cloudfront_billing_mode
+        ) >/dev/null 2>&1; then
+            fail "removed CloudFront billing alias remains accepted: ${removed_mode}"
+        fi
+    done
     assert_equal "caching disabled policy" \
         "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" "${CLOUDFRONT_CACHE_POLICY_ID}"
     assert_equal "all viewer except host policy" \

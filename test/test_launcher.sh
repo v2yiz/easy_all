@@ -163,8 +163,9 @@ printf 'STATE_VERSION=7\nPROTOCOL=websocket\nCDN_PROVIDER=gcore\nGCORE_CDN_ENDPO
 assert_equal "Gcore state selects the fourth mode" "gcore-cdn" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=7\nPROTOCOL=websocket\nCDN_PROVIDER=gcore\nGCORE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "legacy optimized Gcore state remains selectable for domain migration" \
-    "gcore-cdn" "$(detect_installed_mode)"
+if (detect_installed_mode) >/dev/null 2>&1; then
+    fail "Gcore legacy optimized state must be rejected"
+fi
 
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \

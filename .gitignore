@@ -13,7 +13,5 @@ state.env
 *.token
 subscribe-worker.js
 worker.js
-worker_fix.js
-worker_follow.js
 .dbg/
 /XFLASH

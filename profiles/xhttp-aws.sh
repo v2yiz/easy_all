@@ -47,8 +47,8 @@ choose_cloudfront_billing_mode() {
     local mode=${AWS_CLOUDFRONT_BILLING_MODE:-} current_mode choice default_choice=2
     current_mode=${mode:-${DEFAULT_AWS_CLOUDFRONT_BILLING_MODE}}
     case "${current_mode}" in
-    1 | flat-free | free | fixed) current_mode="flat-free"; default_choice=1 ;;
-    2 | payg | on-demand) current_mode="payg"; default_choice=2 ;;
+    1 | flat-free) current_mode="flat-free"; default_choice=1 ;;
+    2 | payg) current_mode="payg"; default_choice=2 ;;
     *) die "CloudFront 计费模式无效：${current_mode}" ;;
     esac
     if [[ -t 0 ]]; then
@@ -84,8 +84,8 @@ choose_cloudfront_billing_mode() {
         die "非交互模式必须设置 AWS_CLOUDFRONT_BILLING_MODE=flat-free 或 payg"
     fi
     case "${mode}" in
-    1 | flat-free | free | fixed) AWS_CLOUDFRONT_BILLING_MODE="flat-free" ;;
-    2 | payg | on-demand) AWS_CLOUDFRONT_BILLING_MODE="payg" ;;
+    1 | flat-free) AWS_CLOUDFRONT_BILLING_MODE="flat-free" ;;
+    2 | payg) AWS_CLOUDFRONT_BILLING_MODE="payg" ;;
     *) die "CloudFront 计费模式无效：${mode}" ;;
     esac
     configure_cdn_traffic_protection

@@ -36,10 +36,6 @@ GCORE_SUBSCRIPTION_ROLLBACK_PREVIOUS_SSL_CERT_ID=""
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 
-readonly GCORE_LEGACY_GLOBALPING_TOKEN_FILE="${STATE_DIR}/globalping.token"
-readonly GCORE_LEGACY_GLOBALPING_CACHE_FILE="${STATE_DIR}/gcore-cdn-ips.json"
-readonly GCORE_LEGACY_GLOBALPING_SERVICE_FILE="/etc/systemd/system/easy_all-globalping-refresh.service"
-readonly GCORE_LEGACY_GLOBALPING_TIMER_FILE="/etc/systemd/system/easy_all-globalping-refresh.timer"
 readonly GCORE_CLIENT_CA_FILE="${CERT_DIR}/gcore-client-ca.pem"
 readonly GCORE_CLIENT_CA_KEY_FILE="${CERT_DIR}/gcore-client-ca.key"
 readonly GCORE_CLIENT_CERT_FILE="${CERT_DIR}/gcore-client.pem"
@@ -126,16 +122,6 @@ gcore_collect_api_token() {
 
 gcore_clear_api_token() {
     unset GCORE_API_TOKEN
-}
-
-remove_legacy_gcore_globalping_runtime() {
-    systemctl disable --now easy_all-globalping-refresh.timer >/dev/null 2>&1 || true
-    systemctl stop easy_all-globalping-refresh.service >/dev/null 2>&1 || true
-    rm -f -- "${GCORE_LEGACY_GLOBALPING_SERVICE_FILE}" \
-        "${GCORE_LEGACY_GLOBALPING_TIMER_FILE}" \
-        "${GCORE_LEGACY_GLOBALPING_CACHE_FILE}" \
-        "${GCORE_LEGACY_GLOBALPING_TOKEN_FILE}"
-    systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 gcore_delete_owned_rrset() {
@@ -847,7 +833,7 @@ collect_install_inputs() {
     validate_cdn_endpoint_mode "${GCORE_CDN_ENDPOINT_MODE}" \
         || die "GCORE_CDN_ENDPOINT_MODE 无效：${GCORE_CDN_ENDPOINT_MODE}"
     choose_cdn_client_ip_family
-    XHTTP_NODE_NAME=${WS_NODE_NAME:-${XHTTP_NODE_NAME:-VLESS_WS_GCORE}}
+    XHTTP_NODE_NAME=${WS_NODE_NAME:-VLESS_WS_GCORE}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
 
@@ -877,9 +863,9 @@ collect_install_inputs() {
     CDN_TRAFFIC_PROTECTION_GB=${GCORE_CDN_TRAFFIC_PROTECTION_GB}
     configure_cdn_traffic_protection
 
-    XHTTP_PATH=${WS_PATH:-${XHTTP_PATH:-/ws-$(openssl rand -hex 16)}}
+    XHTTP_PATH=${WS_PATH:-/ws-$(openssl rand -hex 16)}
     validate_xhttp_path "${XHTTP_PATH}" || die "WS_PATH 无效：${XHTTP_PATH}"
-    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_WS_LOOPBACK_PORT:-${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}}
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_WS_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         || die "XRAY_WS_LOOPBACK_PORT 无效：${XRAY_XHTTP_LOOPBACK_PORT}"
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
@@ -933,11 +919,8 @@ load_state() {
     XHTTP_NODE_NAME=${WS_NODE_NAME}
     XHTTP_PATH=${WS_PATH}
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_WS_LOOPBACK_PORT}
-    case "${GCORE_CDN_ENDPOINT_MODE:-}" in
-    domain) ;;
-    optimized) GCORE_CDN_ENDPOINT_MODE="domain" ;;
-    *) die "状态中的 Gcore CDN 接入模式无效" ;;
-    esac
+    validate_cdn_endpoint_mode "${GCORE_CDN_ENDPOINT_MODE:-}" \
+        || die "状态中的 Gcore CDN 接入模式无效"
     configure_cdn_client_ip_family
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
@@ -1285,7 +1268,6 @@ update_subscription() {
     refresh_runtime
     install_quota_timer
     install_cdn_traffic_protection_timer
-    remove_legacy_gcore_globalping_runtime
     subscription_enabled && validate_subscription_runtime
     if [[ "${cloud_update}" == "1" ]]; then
         info "订阅域名发生变化，正在同步 Gcore CDN、边缘证书与 Managed DNS"
@@ -1322,7 +1304,6 @@ apply_easy_all() {
     configure_bbr_tcp
     configure_ufw
     finish_xhttp_apply
-    remove_legacy_gcore_globalping_runtime
     success "easy_all Gcore CDN WebSocket 本机配置与订阅已应用；未修改 Gcore 资源"
 }
 
@@ -1352,7 +1333,6 @@ apply_cloud_resources() {
     gcore_prepare_origin
     gcore_apply_cdn
     finish_xhttp_apply 1
-    remove_legacy_gcore_globalping_runtime
     gcore_clear_api_token
     success "easy_all Gcore CDN WebSocket 本机配置、Managed DNS、CDN 与证书已应用"
 }
@@ -1362,7 +1342,6 @@ rollback_fresh_install() {
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
-    remove_legacy_gcore_globalping_runtime
     restore_preinstall_firewall
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
@@ -1410,7 +1389,6 @@ uninstall_all() {
     stop_services
     remove_quota_timer
     remove_cdn_traffic_protection_timer
-    remove_legacy_gcore_globalping_runtime
     restore_preinstall_firewall
     remove_daily_reboot_schedule
     remove_managed_acme_domain "${GCORE_ORIGIN_DOMAIN:-}"
@@ -1462,7 +1440,6 @@ install_all() {
     register_easy_all_command
     install_quota_timer
     install_cdn_traffic_protection_timer
-    remove_legacy_gcore_globalping_runtime
     INSTALL_ROLLBACK_ON_EXIT=0
     gcore_clear_api_token
     info "[9/9] 输出节点与订阅"

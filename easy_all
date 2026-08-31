@@ -170,7 +170,7 @@ detect_installed_mode() {
         websocket)
             [[ "${state_version}" == "7" ]] || launcher_die "WebSocket 状态版本无效；请重新安装"
             [[ "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" == "gcore" \
-                && "$(state_value "${EASY_ALL_STATE_FILE}" GCORE_CDN_ENDPOINT_MODE || true)" =~ ^(domain|optimized)$ ]] \
+                && "$(state_value "${EASY_ALL_STATE_FILE}" GCORE_CDN_ENDPOINT_MODE || true)" == "domain" ]] \
                 || launcher_die "Gcore WebSocket 状态不完整；请重新安装"
             printf 'gcore-cdn\n'
             ;;
