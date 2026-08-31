@@ -71,6 +71,10 @@ assert_contains "Preparation guide tells users to scan Gcore DNS records" \
     "${PREPARATION_GUIDE_CONTENT}" 'Skip scanning'
 assert_contains "Preparation guide requires complete Gcore NS replacement" \
     "${PREPARATION_GUIDE_CONTENT}" '完整替换当前 NS'
+assert_contains "Preparation guide makes the Gcore delegated status a hard prerequisite" \
+    "${PREPARATION_GUIDE_CONTENT}" '必须显示绿色'
+assert_contains "Preparation guide distinguishes the Gcore product status from zone delegation" \
+    "${PREPARATION_GUIDE_CONTENT}" '不能代替 Zone 的“已委托”状态'
 assert_contains "Preparation guide documents the Gcore pre-provisioning delegation check" \
     "${PREPARATION_GUIDE_CONTENT}" '第 4/9 步、创建源站 A 记录之前'
 assert_contains "Preparation guide documents Gcore delegation success criteria" \

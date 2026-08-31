@@ -72,6 +72,14 @@ assert_not_contains "Gcore state does not persist the API token" "${CONTENT}" \
     'printf '\''GCORE_API_TOKEN='
 assert_contains "Gcore systemd service is transport-accurate" "${CONTENT}" \
     'XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS WebSocket managed by easy_all"'
+assert_contains "Gcore API failures include the method and path" "${CONTENT}" \
+    'Gcore API 请求失败（HTTP ${status}）：${method} ${path}'
+assert_not_contains "Gcore never tries to replace immutable trusted CA content" "${PROFILE}" \
+    'gcore_api_request PUT "/cdn/sslCertificates/'
+assert_contains "Gcore trusted CA names include the issuer fingerprint" "${CONTENT}" \
+    'fingerprint=${CURRENT_GCORE_ORIGIN_ISSUER_SHA256:-${GCORE_ORIGIN_ISSUER_SHA256:-}}'
+assert_not_contains "Gcore DNS-01 flow skips the optional HTTP pre-validation request" \
+    "${PROFILE}" '/ssl/le/pre-validate'
 assert_contains "purge preflights the attached edge certificate" "${CONTENT}" \
     'and .sslData == $edge'
 assert_contains "purge preflights the attached origin CA" "${CONTENT}" \
@@ -84,6 +92,32 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     source "${PROFILE}"
     [[ "${GCORE_WS_HEARTBEAT_PERIOD}" == "55" ]] || fail "heartbeat constant drifted"
     [[ "${GCORE_WS_EARLY_DATA}" == "2560" ]] || fail "early data constant drifted"
+
+    GCORE_API_TOKEN=1234567890abcdef
+    api_error_file=$(mktemp)
+    curl() {
+        printf '%s\n%s' '{"errors":{"cname":["invalid domain"]}}' '400'
+    }
+    if gcore_api_request POST '/cdn/resources' '{}' >/dev/null 2>"${api_error_file}"; then
+        fail "Gcore API HTTP 400 must fail"
+    fi
+    api_error=$(<"${api_error_file}")
+    rm -f -- "${api_error_file}"
+    assert_contains "Gcore API error preserves the response body" "${api_error}" \
+        '{"errors":{"cname":["invalid domain"]}}'
+    assert_contains "Gcore API error identifies the failed endpoint" "${api_error}" \
+        'Gcore API 请求失败（HTTP 400）：POST /cdn/resources'
+    unset -f curl
+
+    GCORE_ORIGIN_DOMAIN=origin.example.com
+    CURRENT_GCORE_ORIGIN_ISSUER_SHA256=$(printf 'A%.0s' {1..64})
+    first_ca_name=$(gcore_origin_ca_name)
+    CURRENT_GCORE_ORIGIN_ISSUER_SHA256=$(printf 'B%.0s' {1..64})
+    second_ca_name=$(gcore_origin_ca_name)
+    [[ "${first_ca_name}" != "${second_ca_name}" \
+        && "${first_ca_name}" == easy-all-origin-ca-*-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        && "${second_ca_name}" == easy-all-origin-ca-*-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]] \
+        || fail "Gcore trusted CA names must change with the issuer fingerprint"
 
     CDN_PROVIDER=gcore
     PROTOCOL=websocket

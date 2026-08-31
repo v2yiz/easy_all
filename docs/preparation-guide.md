@@ -265,14 +265,17 @@ sub.example.com     可选订阅域名，作为同一 CDN Resource 的 secondary
    和 DMARC。遗漏 MX/TXT/SPF/DKIM/DMARC 会影响邮件；遗漏 CAA 可能影响证书签发。
 4. 在“更改域名服务器”复制 Gcore 给出的全部权威 NS；回到注册商的 Nameservers 页面，完整替换当前 NS
    并保存。不要只新增一条，也不要同时保留旧 DNS 服务商的 NS。
-5. 等待 Gcore 控制台中的 Delegation Status 通过：Zone 存在、至少一个 Gcore 权威 NS，且没有非 Gcore
+5. 回到 **网络 → Managed DNS → 所有区域**。目标 Zone 在列表的 **“状态”** 列必须显示绿色
+   **“已委托”**，才可以开始模式 4 安装；“Managed DNS 活动”只是产品已开通，不能代替 Zone 的“已委托”状态。
+6. “已委托”表示 Gcore 的 Delegation Status 已通过：Zone 存在、至少一个 Gcore 权威 NS，且没有非 Gcore
    权威 NS。NS 传播可能需要数分钟到 48 小时。
-6. 委派完成前不要运行模式 4；也不要预先创建 `origin`、`node` 或独立订阅记录，安装器会在确认无冲突
+7. Zone 尚未显示“已委托”时不要运行模式 4；也不要预先创建 `origin`、`node` 或独立订阅记录，安装器会在确认无冲突
    后创建。
 
 #### 安装前与自行确认委派状态
 
-安装器会在 **第 4/9 步、创建源站 A 记录之前**调用 Gcore 的 Delegation Status 接口。只有同时满足
+安装器会在 **第 4/9 步、创建源站 A 记录之前**调用 Gcore 的 Delegation Status 接口。它是控制台“已委托”
+状态的自动化复核；只有同时满足
 `zone_exists=true`、Gcore 权威 NS 数量大于 `0`、非 Gcore 权威 NS 数量为 `0` 才继续；否则立即停止，
 不会创建或覆盖任何 DNS/CDN 资源。委派刚改完时可直接尝试安装，未生效便按提示安全退出，稍后重试即可。
 

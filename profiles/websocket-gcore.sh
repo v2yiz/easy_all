@@ -51,19 +51,30 @@ validate_cdn_endpoint_mode() {
 
 gcore_api_request() {
     local method=$1 path=$2 payload=${3:-}
-    local -a retry_args=()
+    local response status body retry_count=0
     [[ -n "${GCORE_API_TOKEN:-}" ]] || die "缺少 GCORE_API_TOKEN"
-    [[ "${method}" != "GET" ]] || retry_args=(--retry 3)
+    [[ "${method}" != "GET" ]] || retry_count=3
     if [[ -n "${payload}" ]]; then
-        curl -fsS "${retry_args[@]}" --connect-timeout 10 --max-time 45 \
-            -X "${method}" -H "Authorization: APIKey ${GCORE_API_TOKEN}" \
+        response=$(curl -sS --retry "${retry_count}" --connect-timeout 10 --max-time 45 \
+            -X "${method}" -H "Authorization: apikey ${GCORE_API_TOKEN}" \
             -H 'Content-Type: application/json' --data "${payload}" \
-            "${GCORE_API_BASE}${path}"
+            -w $'\n%{http_code}' "${GCORE_API_BASE}${path}") \
+            || { fail "请求 Gcore API 失败：${method} ${path}" || true; return 1; }
     else
-        curl -fsS "${retry_args[@]}" --connect-timeout 10 --max-time 45 \
-            -X "${method}" -H "Authorization: APIKey ${GCORE_API_TOKEN}" \
-            "${GCORE_API_BASE}${path}"
+        response=$(curl -sS --retry "${retry_count}" --connect-timeout 10 --max-time 45 \
+            -X "${method}" -H "Authorization: apikey ${GCORE_API_TOKEN}" \
+            -w $'\n%{http_code}' "${GCORE_API_BASE}${path}") \
+            || { fail "请求 Gcore API 失败：${method} ${path}" || true; return 1; }
     fi
+    status=${response##*$'\n'}
+    body=${response%$'\n'*}
+    if [[ "${status}" =~ ^2[0-9][0-9]$ ]]; then
+        printf '%s' "${body}"
+        return 0
+    fi
+    [[ -z "${body}" ]] || printf '%s\n' "${body}" >&2
+    fail "Gcore API 请求失败（HTTP ${status}）：${method} ${path}" || true
+    return 1
 }
 
 # GET an object that may not exist.  Exit status 1 means only HTTP 404; any
@@ -73,7 +84,7 @@ gcore_api_get_optional() {
     local path=$1 response status body
     [[ -n "${GCORE_API_TOKEN:-}" ]] || die "缺少 GCORE_API_TOKEN"
     response=$(curl -sS --retry 3 --connect-timeout 10 --max-time 45 \
-        -X GET -H "Authorization: APIKey ${GCORE_API_TOKEN}" \
+        -X GET -H "Authorization: apikey ${GCORE_API_TOKEN}" \
         -w $'\n%{http_code}' "${GCORE_API_BASE}${path}") \
         || die "请求 Gcore API 失败：GET ${path}"
     status=${response##*$'\n'}
@@ -165,7 +176,7 @@ purge_gcore_resources_before_uninstall() {
         '.name == $expected and (.automated // false) == false' <<<"${client_cert}" >/dev/null \
         || die "Gcore 回源客户端证书所有权标记不匹配，拒绝 purge"
     origin_ca=$(gcore_api_request GET "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}")
-    jq -e --arg expected "easy-all-origin-ca-${GCORE_ORIGIN_DOMAIN}" '.name == $expected' \
+    jq -e --arg expected "$(gcore_origin_ca_name)" '.name == $expected' \
         <<<"${origin_ca}" >/dev/null \
         || die "Gcore Trusted CA 所有权标记不匹配，拒绝 purge"
 
@@ -353,6 +364,16 @@ gcore_origin_group_name() {
     printf 'easy-all-ws-%s' "${GCORE_ORIGIN_DOMAIN//./-}"
 }
 
+gcore_origin_ca_name() {
+    local domain_hash fingerprint
+    fingerprint=${CURRENT_GCORE_ORIGIN_ISSUER_SHA256:-${GCORE_ORIGIN_ISSUER_SHA256:-}}
+    [[ "${fingerprint}" =~ ^[A-F0-9]{64}$ ]] \
+        || die "缺少有效的 Gcore 源站签发 CA 指纹"
+    domain_hash=$(printf '%s' "${GCORE_ORIGIN_DOMAIN}" | sha256sum | cut -c1-16)
+    printf 'easy-all-origin-ca-%s-%s' "${domain_hash}" \
+        "$(printf '%s' "${fingerprint}" | tr 'A-F' 'a-f')"
+}
+
 gcore_prepare_origin_validation_material() {
     local csr="${RUNTIME_TMP}/gcore-client.csr" extension="${RUNTIME_TMP}/gcore-client.ext"
     install -d -m 0700 "${CERT_DIR}"
@@ -424,18 +445,16 @@ gcore_named_certificate_id() {
 gcore_ensure_origin_validation_certificates() {
     local ca_name client_name ca_body client_body certificate_chain current
     gcore_prepare_origin_validation_material
-    ca_name="easy-all-origin-ca-${GCORE_ORIGIN_DOMAIN}"
+    ca_name=$(gcore_origin_ca_name)
     client_name="easy-all-origin-client-${GCORE_ORIGIN_DOMAIN}"
     ca_body=$(jq -cn --arg name "${ca_name}" \
         --rawfile certificate "${GCORE_ORIGIN_ISSUER_FILE}" \
         '{name:$name,sslCertificate:$certificate}')
-    GCORE_ORIGIN_CA_ID=${GCORE_ORIGIN_CA_ID:-$(gcore_named_certificate_id \
-        '/cdn/sslCertificates' "${ca_name}")}
+    GCORE_ORIGIN_CA_ID=$(gcore_named_certificate_id '/cdn/sslCertificates' "${ca_name}")
     if [[ "${GCORE_ORIGIN_CA_ID:-}" =~ ^[0-9]+$ ]]; then
         current=$(gcore_api_request GET "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}")
         jq -e --arg expected "${ca_name}" '.name == $expected' <<<"${current}" >/dev/null \
             || die "状态中的 Gcore Trusted CA 所有权标记不匹配"
-        gcore_api_request PUT "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}" "${ca_body}" >/dev/null
     else
         GCORE_ORIGIN_CA_ID=$(gcore_api_request POST '/cdn/sslCertificates' "${ca_body}" \
             | jq -r '.id // empty')
@@ -587,12 +606,6 @@ gcore_certificate_name() {
 gcore_ensure_edge_certificate() {
     local name certificates matches count attempt patch certificate_details
     name=$(gcore_certificate_name)
-
-    # Validate the resource after its CNAME is publicly visible, before asking
-    # Let's Encrypt to issue a certificate.  This avoids an unusable issuance
-    # request when DNS is not ready yet.
-    gcore_api_request POST "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/ssl/le/pre-validate" >/dev/null \
-        || die "Gcore Let's Encrypt 预检查失败；请确认 ${VLESS_CDN_DOMAIN} 的 CNAME 已生效"
 
     if [[ "${GCORE_SSL_CERT_ID:-}" =~ ^[0-9]+$ ]]; then
         certificate_details=$(gcore_api_request GET "/cdn/sslData/${GCORE_SSL_CERT_ID}") \
