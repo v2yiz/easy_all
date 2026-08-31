@@ -71,6 +71,20 @@ assert_contains "Preparation guide tells users to scan Gcore DNS records" \
     "${PREPARATION_GUIDE_CONTENT}" 'Skip scanning'
 assert_contains "Preparation guide requires complete Gcore NS replacement" \
     "${PREPARATION_GUIDE_CONTENT}" '完整替换当前 NS'
+assert_contains "Preparation guide documents the Gcore pre-provisioning delegation check" \
+    "${PREPARATION_GUIDE_CONTENT}" '第 4/9 步、创建源站 A 记录之前'
+assert_contains "Preparation guide documents Gcore delegation success criteria" \
+    "${PREPARATION_GUIDE_CONTENT}" '`zone_exists=true`'
+assert_contains "Preparation guide documents public resolver NS verification" \
+    "${PREPARATION_GUIDE_CONTENT}" 'dig @1.1.1.1 NS 1988088.xyz +short'
+assert_contains "Preparation guide documents DNS delegation tracing" \
+    "${PREPARATION_GUIDE_CONTENT}" 'dig +trace NS 1988088.xyz'
+assert_contains "Preparation guide verifies public DNSSEC resolution after Gcore delegation" \
+    "${PREPARATION_GUIDE_CONTENT}" 'dig @1.1.1.1 SOA 1988088.xyz +dnssec'
+assert_contains "Preparation guide prevents stale DNSSEC DS records during Gcore migration" \
+    "${PREPARATION_GUIDE_CONTENT}" '删除旧的 `DS` 记录'
+assert_contains "Preparation guide documents DNSSEC DS self-check" \
+    "${PREPARATION_GUIDE_CONTENT}" 'dig DS example.com +short'
 assert_contains "Gcore profile never persists its API token" "${GCORE_CONTENT}" \
     'unset GCORE_API_TOKEN'
 assert_contains "README documents the CDN cost boundary" "${README_CONTENT}" \

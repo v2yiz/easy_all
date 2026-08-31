@@ -210,9 +210,13 @@ gcore_verify_zone_delegation() {
     authorized=$(jq -r '.gcore_authorized_count // 0' <<<"${result}")
     non_gcore=$(jq -r '.non_gcore_authorized_count // 0' <<<"${result}")
     exists=$(jq -r '.zone_exists // false' <<<"${result}")
-    [[ "${exists}" == "true" && "${authorized}" =~ ^[0-9]+$ \
-        && "${non_gcore}" =~ ^[0-9]+$ && ${authorized} -gt 0 && ${non_gcore} -eq 0 ]] \
-        || die "Gcore 尚未成为 ${zone} 的唯一权威 DNS；请先完成 docs/preparation-guide.md 的整域名 NS 委派"
+    [[ "${authorized}" =~ ^[0-9]+$ && "${non_gcore}" =~ ^[0-9]+$ ]] \
+        || die "Gcore 返回了无效的 ${zone} NS 委派状态；请稍后重试"
+    if [[ "${exists}" == "true" && ${authorized} -gt 0 && ${non_gcore} -eq 0 ]]; then
+        info "Gcore NS 委派已确认：${zone}（Gcore 权威 NS：${authorized}，非 Gcore 权威 NS：0）"
+        return 0
+    fi
+    die "Gcore 尚未成为 ${zone} 的唯一权威 DNS（Zone 存在：${exists}，Gcore 权威 NS：${authorized}，非 Gcore 权威 NS：${non_gcore}）。本次安装尚未创建任何 DNS/CDN 资源；请完成 docs/preparation-guide.md 的整域名 NS 委派后重试。可先执行：dig NS ${zone} +short"
 }
 
 gcore_rrset_body() {

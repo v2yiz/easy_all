@@ -270,6 +270,36 @@ sub.example.com     可选订阅域名，作为同一 CDN Resource 的 secondary
 6. 委派完成前不要运行模式 4；也不要预先创建 `origin`、`node` 或独立订阅记录，安装器会在确认无冲突
    后创建。
 
+#### 安装前与自行确认委派状态
+
+安装器会在 **第 4/9 步、创建源站 A 记录之前**调用 Gcore 的 Delegation Status 接口。只有同时满足
+`zone_exists=true`、Gcore 权威 NS 数量大于 `0`、非 Gcore 权威 NS 数量为 `0` 才继续；否则立即停止，
+不会创建或覆盖任何 DNS/CDN 资源。委派刚改完时可直接尝试安装，未生效便按提示安全退出，稍后重试即可。
+
+也可以在自己的电脑或 VPS 上检查。以下示例以 `1988088.xyz` 为例：
+
+```bash
+# 查看常用递归解析器当前看到的权威 NS；结果必须全部是 Gcore 控制台“更改域名服务器”页面给出的 NS。
+dig @1.1.1.1 NS 1988088.xyz +short
+dig @8.8.8.8 NS 1988088.xyz +short
+
+# 沿 DNS 委派链追踪，适合在不同公共解析器结果不一致时排查。
+dig +trace NS 1988088.xyz
+
+# 确认域名可被启用 DNSSEC 校验的公共解析器正常解析；不得返回 SERVFAIL。
+dig @1.1.1.1 SOA 1988088.xyz +dnssec
+```
+
+若命令不可用，安装 `dnsutils`（Debian/Ubuntu）或 `bind-utils`（RHEL 系）后再试。Gcore 控制台的
+**Delegation Status 已通过**说明 NS 委派完成；公共递归解析器的 `SOA` 查询正常返回、而非 `SERVFAIL`，才表示
+域名在互联网中可正常使用。公共递归解析器可能仍保留旧 NS 缓存。若 `dig` 输出同时包含旧服务商和 Gcore 的 NS，
+说明注册商处没有完整替换，或委派尚未传播完成；不要开始安装。
+
+> **从已启用 DNSSEC 的旧 DNS 服务商迁移时**：在注册商处先关闭旧 DNSSEC 或删除旧的 `DS` 记录，再更换 NS。
+> 否则注册局仍会要求新权威 DNS 使用旧密钥签名，开启 DNSSEC 校验的公共解析器会返回 `SERVFAIL`，即使新 NS
+> 本身已经正确。可用 `dig DS example.com +short` 检查；计划继续使用 DNSSEC 时，先在 Gcore 为 Zone 启用 DNSSEC，
+> 再将 **Gcore 当前生成的 DS** 写入注册商，绝不能沿用 Cloudflare 或其他旧服务商的 DS。
+
 Gcore Free Managed DNS 当前可用于此流程；若当前账户的 Managed DNS 显示未激活或并非 Free 方案，先在
 该产品页完成启用，再创建 Zone。
 

@@ -38,6 +38,12 @@ assert_not_contains "Gcore does not force a WebSocket read timeout shorter than 
     "${PROFILE}" 'proxy_read_timeout:{enabled:true'
 assert_contains "Gcore uses account-specific CNAME" "${CONTENT}" \
     "gcore_api_request GET '/cdn/clients/me'"
+assert_contains "Gcore verifies delegation before provisioning" "${CONTENT}" \
+    'GET "/dns/v2/analyze/${zone}/delegation-status"'
+assert_contains "Gcore reports the delegation result before provisioning" "${CONTENT}" \
+    'Gcore NS 委派已确认：${zone}'
+assert_contains "Gcore delegation failure includes a local DNS self-check" "${CONTENT}" \
+    'dig NS ${zone} +short'
 assert_not_contains "Gcore never derives a custom-domain gcdn target" "${PROFILE}" \
     '${VLESS_CDN_DOMAIN}.gcdn.co'
 assert_contains "Gcore enables DNS-01" "${CONTENT}" \
