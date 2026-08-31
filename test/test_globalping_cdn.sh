@@ -166,14 +166,6 @@ CLOUDFLARE_CDN_ENDPOINT_MODE="domain"
 assert_equal "Cloudflare domain mode ignores candidate cache" "node.example.com" \
     "$(cdn_client_endpoints)"
 
-CDN_PROVIDER="gcore"
-GCORE_CDN_ENDPOINT_MODE="optimized"
-jq '.provider = "gcore"' "${GLOBALPING_CACHE_FILE}" >"${cache_stage}"
-install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
-assert_equal "Gcore optimized mode reuses the provider-neutral candidates" \
-    "13.32.10.10" "$(cdn_client_endpoints)"
-assert_equal "Gcore provider has an explicit display label" "Gcore" \
-    "$(globalping_cdn_provider_label)"
 CDN_PROVIDER="aws"
 
 printf 'test-globalping-token-value\n' >"${GLOBALPING_TOKEN_FILE}"

@@ -17,7 +17,7 @@ readonly GLOBALPING_POLL_ATTEMPTS=35
 
 cdn_optimization_enabled() {
     case "${CDN_PROVIDER:-}" in
-    aws | gcore) return 0 ;;
+    aws) return 0 ;;
     cloudflare) [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
     *) return 1 ;;
     esac
@@ -27,7 +27,6 @@ globalping_cdn_provider_label() {
     case "${CDN_PROVIDER:-aws}" in
     aws) printf 'AWS' ;;
     cloudflare) printf 'Cloudflare' ;;
-    gcore) printf 'Gcore' ;;
     *) printf 'Unknown' ;;
     esac
 }

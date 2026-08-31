@@ -68,14 +68,14 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality、Cloudflare、AWS 或 Gcore CDN 精选 IP
+  install          交互选择 Reality、Cloudflare、AWS 精选 IP 或 Gcore CDN
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update      只更新 easy_all 项目代码
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN Provider 云资源
   update-sub       重新选择订阅模式与月度用户配额
-  refresh-cdn-ips  立即刷新模式 2/3/4 的 Globalping 精选 IP 与订阅
+  refresh-cdn-ips  立即刷新模式 2/3 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
   renew-cert       续期当前模式使用的证书
   quota-status     显示用户配额与 CDN 全局费用保护
@@ -118,12 +118,12 @@ easy_all install
    ├─ 最多保存 10 个零丢包 IPv4；失败保留上一版，超过 72 小时回退 CDN 域名
    ├─ AWS IAM 授权默认使用 Access Key，也可用默认凭证链
    └─ Mihomo 自动测速选择最优 IP；Base64 输出全部候选节点
-└─ [4] Gcore CDN 精选 IP - VLESS WebSocket TLS
+└─ [4] Gcore CDN 域名 - VLESS WebSocket TLS
    ├─ 使用 Gcore 官方支持并有 V2Ray 教程的标准 WebSocket
    ├─ 需要已完整委派到 Gcore Managed DNS 的 Zone 与临时输入的 GCORE_API_TOKEN
    ├─ 自动配置源组、CDN、WebSocket、DNS-01 边缘证书与 Origin SSL Validation/mTLS
    ├─ WebSocket 心跳 55 秒，ALPN http/1.1，Early Data 2560
-   └─ Globalping 中国大陆探针预筛，Mihomo 对最多 10 个 IPv4 二次测速
+   └─ 客户端直接连接 Gcore CDN 域名，由 Gcore DNS 调度边缘节点
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
@@ -170,7 +170,7 @@ detect_installed_mode() {
         websocket)
             [[ "${state_version}" == "7" ]] || launcher_die "WebSocket 状态版本无效；请重新安装"
             [[ "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" == "gcore" \
-                && "$(state_value "${EASY_ALL_STATE_FILE}" GCORE_CDN_ENDPOINT_MODE || true)" == "optimized" ]] \
+                && "$(state_value "${EASY_ALL_STATE_FILE}" GCORE_CDN_ENDPOINT_MODE || true)" =~ ^(domain|optimized)$ ]] \
                 || launcher_die "Gcore WebSocket 状态不完整；请重新安装"
             printf 'gcore-cdn\n'
             ;;
@@ -191,8 +191,8 @@ choose_install_mode() {
     printf '     Cloudflare CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
     printf '  3. AWS CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
     printf '     AWS CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
-    printf '  4. Gcore CDN 精选 IP - VLESS WebSocket TLS（官方支持路径）\n' >&2
-    printf '     Gcore CDN optimized IPv4 - VLESS WebSocket TLS (officially supported path)\n' >&2
+    printf '  4. Gcore CDN 域名 - VLESS WebSocket TLS（官方支持路径）\n' >&2
+    printf '     Gcore CDN domain - VLESS WebSocket TLS (officially supported path)\n' >&2
     printf '     提示：Cloudflare Free 与 Gcore Free 预期 $0/月；AWS 默认按量模式常规预期约 $0.60/月。\n' >&2
     printf '     Note: Cloudflare Free and Gcore Free are expected at $0/month; AWS pay-as-you-go is typically about $0.60/month.\n' >&2
     launcher_read_bilingual \
@@ -309,12 +309,10 @@ dispatch_profile_command() {
         ;;
     update-core) update_current_core ;;
     refresh-cdn-ips)
-        [[ "${mode}" == "cloudflare" || "${mode}" == "aws-cdn" || "${mode}" == "gcore-cdn" ]] \
-            || launcher_die "refresh-cdn-ips 仅适用于模式 2/3/4 CDN 精选 IP"
+        [[ "${mode}" == "cloudflare" || "${mode}" == "aws-cdn" ]] \
+            || launcher_die "refresh-cdn-ips 仅适用于模式 2/3 CDN 精选 IP"
         if [[ "${mode}" == "cloudflare" ]]; then
             refresh_cloudflare_cdn_ips
-        elif [[ "${mode}" == "gcore-cdn" ]]; then
-            refresh_gcore_cdn_ips
         else
             refresh_aws_cdn_ips
         fi

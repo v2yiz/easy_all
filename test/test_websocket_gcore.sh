@@ -26,6 +26,19 @@ bash -n "${PROFILE}" "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
 
 assert_contains "Gcore uses official WebSocket option" "${CONTENT}" \
     'websockets:{enabled:true,value:true}'
+assert_not_contains "Gcore domain mode does not load Globalping" "${PROFILE}" \
+    'globalping-cdn.sh'
+assert_contains "Gcore persists domain endpoint mode" "${CONTENT}" \
+    'GCORE_CDN_ENDPOINT_MODE="domain"'
+assert_contains "Gcore migrates legacy optimized state to domain mode" "${CONTENT}" \
+    'optimized) GCORE_CDN_ENDPOINT_MODE="domain"'
+for obsolete_globalping_call in collect_globalping_token refresh_globalping_cache \
+    persist_globalping_token install_globalping_refresh_timer show_globalping_status; do
+    assert_not_contains "Gcore does not invoke ${obsolete_globalping_call}" \
+        "${PROFILE}" "${obsolete_globalping_call}"
+done
+assert_contains "Gcore removes legacy Globalping runtime files" "${CONTENT}" \
+    'remove_legacy_gcore_globalping_runtime'
 assert_not_contains "Gcore omits unavailable gRPC passthrough option" "${PROFILE}" \
     'grpc_passthrough'
 assert_contains "Gcore preserves query strings for early data" "${CONTENT}" \
@@ -185,14 +198,15 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     [[ "${CDN_TRAFFIC_PROTECTION_GB}" == "990" ]] \
         || fail "Gcore traffic guard must default to 990 GB"
     cdn_traffic_protection_enabled || fail "Gcore traffic guard must be enabled"
-    cdn_optimization_enabled || fail "Gcore optimized IP discovery must be enabled"
-    [[ "$(globalping_cdn_provider_label)" == "Gcore" ]] \
-        || fail "Gcore Globalping label is invalid"
 
     VLESS_UUID=11111111-1111-4111-8111-111111111111
     VLESS_CDN_DOMAIN=node.example.com
     XHTTP_NODE_NAME=GCORE_WS
     XHTTP_PATH=/ws-0123456789abcdef
+    [[ "$(xhttp_client_endpoints)" == "node.example.com" ]] \
+        || fail "Gcore subscription must use only the CDN domain"
+    ! xhttp_using_optimized_candidates \
+        || fail "Gcore domain mode must not use optimized candidates"
     link=$(build_vless_xhttp_link 203.0.113.10 TEST)
     [[ "${link}" == *'type=ws'* \
         && "${link}" == *'alpn=http%2F1.1'* \

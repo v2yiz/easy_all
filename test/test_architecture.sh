@@ -55,8 +55,8 @@ shared_modules=(
     && "${BOOTSTRAP_CONTENT}" == *'lib/globalping-cdn.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
-    && "$(<"${GCORE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* ]] \
-    || fail "Globalping CDN module is missing from a CDN Provider runtime"
+    && "$(<"${GCORE_PROFILE}")" != *'globalping-cdn.sh'* ]] \
+    || fail "Globalping CDN module must remain scoped to Cloudflare and AWS"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cloudflare-ip-pool.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"'* \

@@ -48,7 +48,7 @@ assert_contains "README documents the third optimized AWS installation mode" \
 assert_contains "README documents four installation modes" "${README_CONTENT}" \
     '四种安装模式'
 assert_contains "README documents Gcore WebSocket mode" "${README_CONTENT}" \
-    'Gcore CDN 精选 IP - WebSocket'
+    'Gcore CDN 域名 - WebSocket'
 assert_not_contains "README does not list a separate Gcore guide" "${README_CONTENT}" \
     'docs/gcore-guide.md'
 assert_contains "Preparation guide documents official Gcore WebSocket" "${PREPARATION_GUIDE_CONTENT}" \

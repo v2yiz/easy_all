@@ -1,9 +1,9 @@
 # 前置准备手册
 
-本手册统一覆盖 Cloudflare、AWS、Gcore 三种 CDN 精选 IP 模式所需的域名、账号、DNS 和 Token 准备。
+本手册统一覆盖 Cloudflare、AWS、Gcore 三种 CDN 模式所需的域名、账号、DNS 和 Token 准备。
 
 Cloudflare CDN 精选 IP XHTTP 模式（模式 2）阅读第 1–7 节；AWS 模式（模式 3）阅读第 2 节和
-[AWS 一次性准备指南](aws-guide.md)；Gcore WebSocket 模式（模式 4）阅读第 1.1、2、8 节。
+[AWS 一次性准备指南](aws-guide.md)；Gcore WebSocket 模式（模式 4）阅读第 1.1、8 节。
 手册只覆盖注册、DNS、账号权限和 Token 准备，不包含 VPS 命令。完成后再回到
 [README 的安装说明](../README.md) 执行安装。
 
@@ -22,7 +22,7 @@ Route 53 Hosted Zone 和少量标准 DNS 查询。具体边界见 [AWS 一次性
 | 模式 1：Reality 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4；可直接使用 IP，也可准备 DNS only/灰云节点域名；如部署自托管订阅，再准备一个直接解析到 VPS 的域名 | CDN Provider 账号、CDN API Token、Globalping Token | README 的 Reality 章节；本手册无需继续 |
 | 模式 2：Cloudflare XHTTP | 根域名、Cloudflare Free 账号、已变为 **Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | AWS/Gcore 账号与凭证、付费 Cloudflare 增值产品 | 第 1–7 节 |
 | 模式 3：AWS CloudFront XHTTP | AWS 全球商业区账号及 MFA、费用提醒、Route 53 Public Hosted Zone、源站和节点子域名、最小权限 IAM Access Key、Globalping Token；默认按量模式常规预期约 `$0.60/月` | Cloudflare/Gcore Token、EC2、AWS 中国区账号 | 第 2 节和 [AWS 一次性准备指南](aws-guide.md) |
-| 模式 4：Gcore WebSocket | Gcore Free CDN 账号、Gcore Managed DNS Free Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、Globalping Token、控制台用量提醒；额度内预期 `$0/月` | XHTTP、Cloudflare gRPC、AWS 凭证 | 第 1.1、2、8 节 |
+| 模式 4：Gcore WebSocket | Gcore Free CDN 账号、Gcore Managed DNS Free Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、控制台用量提醒；额度内预期 `$0/月` | Globalping Token、XHTTP、Cloudflare gRPC、AWS 凭证 | 第 1.1、8 节 |
 
 各链路建议使用的域名如下：
 
@@ -33,8 +33,8 @@ AWS:        origin.example.com；node.example.com；sub.example.com（可选）
 Gcore:      origin.example.com；node.example.com；sub.example.com（可选）
 ```
 
-所有模式都需要一台没有其他代理面板占用端口和配置的专用 VPS。CDN 三种模式都固定使用
-Globalping 中国大陆探针预筛 IPv4；Globalping Token 的创建方法统一见第 2 节。
+所有模式都需要一台没有其他代理面板占用端口和配置的专用 VPS。模式 2/3 使用
+Globalping 中国大陆探针预筛 IPv4；模式 4 直接使用 Gcore CDN 域名。
 
 ## 1. 先注册域名并交给 Cloudflare 托管
 
@@ -213,17 +213,16 @@ Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Tra
 [Transform Rules](https://developers.cloudflare.com/rules/transform/)、
 [Cloudflare IP 地址](https://www.cloudflare.com/ips/)。
 
-## 8. Gcore CDN 精选 IP WebSocket 准备
+## 8. Gcore CDN 域名 WebSocket 准备
 
 模式 4 使用 `VLESS + WebSocket + TLS`。这是 Gcore 明确支持的 CDN 协议，Gcore 也发布了
 [V2Ray via WebSocket 教程](https://gcore.com/learning/v2ray-websocket)。本模式不使用 XHTTP、
 gRPC 或 HTTP/3 WebSocket。
 
-安装器需要两项彼此独立的凭证：
+安装器需要以下凭证：
 
 ```text
 GCORE_API_TOKEN   # 仅在当前云端操作进程中使用，不落盘
-Globalping Token  # 保存到 VPS 的 root-only 文件，用于中国大陆测量
 ```
 
 不要把 Token 写入脚本、Git、截图或聊天记录。
@@ -349,7 +348,7 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 ```text
 客户端 VLESS
   -> WebSocket + TLS，ALPN http/1.1
-  -> Gcore 精选边缘 IPv4，SNI/Host 仍为 node.example.com
+  -> Gcore CDN 域名，由 Gcore DNS 调度边缘节点
   -> Gcore CDN WebSocket
   -> HTTPS + Origin SSL Validation + Gcore 客户端证书
   -> Nginx mTLS + Origin Key
@@ -363,7 +362,7 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 | ALPN | `http/1.1` | 标准 WebSocket 使用 HTTP/1.1 Upgrade，不混入 RFC 8441 `h2` |
 | Mux | 关闭 | 避免单个 WebSocket 故障影响多条逻辑连接 |
 | VLESS flow | 空 | WebSocket 不使用 Vision flow |
-| 证书校验 | 开启 | 精选 IP 不改变 SNI，也不跳过证书校验 |
+| 证书校验 | 开启 | 客户端使用 CDN 域名作为连接地址、SNI 和 Host |
 
 Gcore Resource 开启 `websockets`，不提交免费套餐不可用的 `grpc_passthrough` 选项；使用 HTTPS
 回源并固定 Host/SNI；只允许 `GET/HEAD`；Edge cache 和 browser cache 均为 `0s`；保留查询参数
@@ -383,14 +382,13 @@ HTTP 到 HTTPS 重定向。CNAME 目标只读取 `GET /cdn/clients/me` 返回的
 
 官方参考：[Origin SSL Validation](https://docs.gcore.com/cdn/cdn-resource-options/general/enable-origin-ssl-validation.md)。
 
-### 8.6 精选 IP 与验收
+### 8.6 CDN 域名与验收
 
-Globalping 对 `node.example.com:443` 使用中国大陆探针发送 10 包 TCP 测量，只保留零丢包 IPv4。
-VPS 随后使用候选 IP 建立 TLS（SNI/Host 保持业务域名），验证健康检查和标准 WebSocket HTTP `101`。
-最多保存 10 个候选，每小时刷新；刷新失败保留旧缓存，超过 72 小时回退 CDN 域名。
+模式 4 始终使用 `node.example.com` 作为客户端连接地址、TLS SNI 和 HTTP Host，由 Gcore DNS
+调度边缘节点。安装器不要求 Globalping Token，也不创建候选 IP 缓存或每小时刷新任务。
 
 首次上线仍应在实际移动、联通、电信网络测试锁屏/空闲、Wi-Fi/蜂窝切换、至少 2 小时连续传输、
-Early Data 开关对照，以及精选 IP 与业务域名入口对照。
+Early Data 开关对照，以及不同网络下的 Gcore DNS 调度效果。
 
 ### 8.7 云资源清理
 

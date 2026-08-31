@@ -117,7 +117,7 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"Choose CloudFront billing: 1 Free flat-rate, or 2 pay-as-you-go (recommended; upgrading the Paid plan itself is free)"* \
     && "${guide}" == *"Globalping 使用中国大陆探针"* \
     && "${guide}" == *"[3] AWS CDN 精选 IP - XHTTP"* \
-    && "${guide}" == *"[4] Gcore CDN 精选 IP - VLESS WebSocket TLS"* \
+    && "${guide}" == *"[4] Gcore CDN 域名 - VLESS WebSocket TLS"* \
     && "${guide}" == *"WebSocket 心跳 55 秒，ALPN http/1.1，Early Data 2560"* \
     && "${guide}" == *"CDN XHTTP"* ]] \
     || fail "install guide does not describe all installation branches and defaults"
@@ -146,7 +146,7 @@ readme=$(<"${ROOT_DIR}/README.md")
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - XHTTP'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'AWS CDN 精选 IP - XHTTP'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 精选 IP - VLESS WebSocket TLS'* ]] \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 域名 - VLESS WebSocket TLS'* ]] \
     || fail "install mode prompt must explain line recommendations"
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
@@ -159,8 +159,12 @@ assert_equal "Cloudflare state selects the second mode" "cloudflare" "$(detect_i
 printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=aws\nAWS_CLOUDFRONT_BILLING_MODE=payg\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "AWS state selects the third mode" "aws-cdn" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=7\nPROTOCOL=websocket\nCDN_PROVIDER=gcore\nGCORE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=7\nPROTOCOL=websocket\nCDN_PROVIDER=gcore\nGCORE_CDN_ENDPOINT_MODE=domain\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Gcore state selects the fourth mode" "gcore-cdn" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=7\nPROTOCOL=websocket\nCDN_PROVIDER=gcore\nGCORE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "legacy optimized Gcore state remains selectable for domain migration" \
+    "gcore-cdn" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \
