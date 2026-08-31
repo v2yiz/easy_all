@@ -336,19 +336,15 @@ gcore_wait_for_origin_dns() {
 }
 
 gcore_wait_for_domain_cname() {
-    local domain=$1 attempt records resolver all_match
+    local domain=$1 attempt records
     info "等待 ${domain} 的 Gcore CDN CNAME 传播到公共 DNS"
     for attempt in {1..60}; do
-        all_match=1
-        for resolver in 1.1.1.1 8.8.8.8; do
-            records=$(dig +short CNAME "${domain}" @"${resolver}" 2>/dev/null \
-                | sed 's/\.$//' | tr '[:upper:]' '[:lower:]' | sort -u || true)
-            [[ "${records}" == "${GCORE_CDN_TARGET}" ]] || { all_match=0; break; }
-        done
-        [[ "${all_match}" == "1" ]] && return 0
+        records=$(dig +short CNAME "${domain}" @1.1.1.1 2>/dev/null \
+            | sed 's/\.$//' | tr '[:upper:]' '[:lower:]' | sort -u || true)
+        [[ "${records}" == "${GCORE_CDN_TARGET}" ]] && return 0
         sleep 5
     done
-    die "域名 ${domain} 尚未解析到 Gcore 目标 ${GCORE_CDN_TARGET}"
+    die "域名 ${domain} 尚未通过 1.1.1.1 解析到 Gcore 目标 ${GCORE_CDN_TARGET}"
 }
 
 gcore_wait_for_cdn_dns() {
@@ -658,14 +654,51 @@ gcore_wait_for_cdn_health() {
 }
 
 gcore_wait_for_domain_health() {
-    local domain=$1 label=$2 attempt status response
-    info "等待 Gcore CDN 与 Let's Encrypt 证书部署（最多约 15 分钟）"
+    local domain=$1 label=$2 attempt status response http_code
+    local certificate_state certificate_status certificate_error curl_error
+    local health_body="${RUNTIME_TMP}/gcore-health-body"
+    local health_error="${RUNTIME_TMP}/gcore-health-error"
+    info "等待 Gcore ${label}域名 ${domain} 的 CDN 与 Let's Encrypt 证书部署"
+    certificate_status="PENDING"
     for attempt in {1..90}; do
-        status=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" | jq -r '.status // empty')
-        response=$(curl -fsS --connect-timeout 5 --max-time 15 \
-            "https://${domain}/easy_all-health" 2>/dev/null || true)
-        [[ "${status}" == "active" && "${response}" == "easy_all ok" ]] \
+        status=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+            | jq -r '.status // empty' | tr '[:upper:]' '[:lower:]')
+        if ((attempt == 1 || attempt % 3 == 0)); then
+            certificate_state=$(gcore_api_request GET \
+                "/cdn/sslData/${GCORE_SSL_CERT_ID}/status") \
+                || die "无法读取 Gcore Let's Encrypt 签发状态"
+            certificate_status=$(jq -r '
+                if (.latest_status.status? // "") != "" then
+                    .latest_status.status | ascii_upcase
+                elif .active == true then "PROCESSING"
+                else "PENDING"
+                end
+            ' <<<"${certificate_state}")
+            case "${certificate_status}" in
+            FAILED | CANCELLED)
+                certificate_error=$(jq -r '
+                    [.latest_status.error?, .latest_status.details?]
+                    | map(select(. != null and . != "")) | join(": ")
+                ' <<<"${certificate_state}")
+                die "Gcore Let's Encrypt 签发${certificate_status}：${certificate_error:-未返回错误详情}"
+                ;;
+            esac
+        fi
+
+        : >"${health_body}"
+        : >"${health_error}"
+        http_code=$(curl -sS --proto '=https' --noproxy '*' \
+            --connect-timeout 5 --max-time 15 -o "${health_body}" \
+            -w '%{http_code}' "https://${domain}/easy_all-health" \
+            2>"${health_error}" || true)
+        response=$(<"${health_body}")
+        [[ "${status}" == "active" && "${http_code}" == "200" \
+            && "${response}" == "easy_all ok" ]] \
             && { success "Gcore ${label}域名回源与边缘证书验收通过"; return 0; }
+        if ((attempt == 1 || attempt % 3 == 0)); then
+            curl_error=$(tr '\n' ' ' <"${health_error}")
+            info "Gcore ${label}域名状态：Resource=${status:-unknown}，Let's Encrypt=${certificate_status}，HTTPS=${http_code:-000}${curl_error:+（${curl_error}）}"
+        fi
         sleep 10
     done
     die "Gcore ${label}域名 ${domain} 公网验收失败；请检查 CNAME、源站证书、Origin Key、CDN 资源和 Let's Encrypt 状态"

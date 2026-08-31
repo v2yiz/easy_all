@@ -44,6 +44,10 @@ assert_contains "Gcore reports the delegation result before provisioning" "${CON
     'Gcore NS 委派已确认：${zone}'
 assert_contains "Gcore delegation failure includes a local DNS self-check" "${CONTENT}" \
     'dig NS ${zone} +short'
+assert_contains "Gcore CNAME propagation uses Cloudflare DNS" "${CONTENT}" \
+    'dig +short CNAME "${domain}" @1.1.1.1'
+assert_not_contains "Gcore CNAME propagation does not mix public resolvers" \
+    "${PROFILE}" '@8.8.8.8'
 assert_not_contains "Gcore never derives a custom-domain gcdn target" "${PROFILE}" \
     '${VLESS_CDN_DOMAIN}.gcdn.co'
 assert_contains "Gcore enables DNS-01" "${CONTENT}" \
@@ -82,6 +86,12 @@ assert_not_contains "Gcore DNS-01 flow skips the optional HTTP pre-validation re
     "${PROFILE}" '/ssl/le/pre-validate'
 assert_contains "Gcore enables HTTP redirect only after attaching an edge certificate" \
     "${CONTENT}" 'gcore_attach_edge_certificate'
+assert_contains "Gcore checks the Let's Encrypt issuance status" "${CONTENT}" \
+    '"/cdn/sslData/${GCORE_SSL_CERT_ID}/status"'
+assert_contains "Gcore fails fast when certificate issuance fails" "${CONTENT}" \
+    'FAILED | CANCELLED)'
+assert_contains "Gcore reports health check progress" "${CONTENT}" \
+    'Resource=${status:-unknown}，Let'\''s Encrypt=${certificate_status}，HTTPS=${http_code:-000}'
 assert_contains "purge preflights the attached edge certificate" "${CONTENT}" \
     'and .sslData == $edge'
 assert_contains "purge preflights the attached origin CA" "${CONTENT}" \

@@ -317,32 +317,29 @@ verify_origin_dns() {
         xhttp_verify_origin_dns
         return
     fi
-    local public_ip records resolver attempt resolver_ok last_records=""
+    local public_ip records attempt resolver_ok last_records=""
     public_ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测本机公网 IPv4"
     validate_ipv4 "${public_ip}" || die "探测到的 VPS 公网 IPv4 无效：${public_ip}"
     VPS_PUBLIC_IPV4=${public_ip}
     info "等待 ${XHTTP_ORIGIN_DNS_NAME} 源站 A 记录传播到公共 DNS"
     for attempt in {1..60}; do
-        last_records=""
-        for resolver in 1.1.1.1 8.8.8.8; do
-            records=$(dig +short A "${AWS_ORIGIN_DOMAIN}" @"${resolver}" 2>/dev/null \
-                | awk 'NF' | sort -u || true)
-            last_records+="${resolver}: ${records:-未解析}; "
-            resolver_ok=1
-            [[ -n "${records}" ]] || resolver_ok=0
-            if [[ -n "${records}" ]]; then
-                while read -r record; do
-                    if ! validate_ipv4 "${record}" || [[ "${record}" != "${public_ip}" ]]; then
-                        resolver_ok=0
-                        break
-                    fi
-                done <<<"${records}"
-            fi
-            [[ "${resolver_ok}" == 1 ]] && return 0
-        done
+        records=$(dig +short A "${AWS_ORIGIN_DOMAIN}" @1.1.1.1 2>/dev/null \
+            | awk 'NF' | sort -u || true)
+        last_records=${records:-未解析}
+        resolver_ok=1
+        [[ -n "${records}" ]] || resolver_ok=0
+        if [[ -n "${records}" ]]; then
+            while read -r record; do
+                if ! validate_ipv4 "${record}" || [[ "${record}" != "${public_ip}" ]]; then
+                    resolver_ok=0
+                    break
+                fi
+            done <<<"${records}"
+        fi
+        [[ "${resolver_ok}" == 1 ]] && return 0
         sleep 5
     done
-    die "源站域名 ${AWS_ORIGIN_DOMAIN} 尚未解析到当前 VPS ${public_ip}（公共 DNS：${last_records% })"
+    die "源站域名 ${AWS_ORIGIN_DOMAIN} 尚未通过 1.1.1.1 解析到当前 VPS ${public_ip}（当前结果：${last_records}）"
 }
 
 write_web_root() {

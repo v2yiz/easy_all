@@ -441,10 +441,9 @@ EOF
     PROMPT_SUBSCRIPTION_MODE=0
 
     dig() {
-        case "$*" in
-            *"@1.1.1.1"*) return 0 ;;
-            *"@8.8.8.8"*) printf '%s\n' '198.51.100.10' ;;
-        esac
+        [[ "$*" == *"@1.1.1.1"* ]] \
+            || fail "origin DNS verification must only query 1.1.1.1"
+        printf '%s\n' '198.51.100.10'
     }
     AWS_ORIGIN_DOMAIN="origin.example.com"
     VPS_PUBLIC_IPV4="198.51.100.10"
