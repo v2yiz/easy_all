@@ -4,10 +4,9 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
-XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-aws.sh"
+XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 CLOUDFLARE_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare.sh"
-GCORE_PROFILE="${ROOT_DIR}/profiles/websocket-gcore.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
 
@@ -25,8 +24,8 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}/scripts/debian-init.sh"
 
 for required_path in \
-    profiles/reality.sh profiles/xhttp-cloudflare.sh profiles/xhttp-aws.sh profiles/websocket-gcore.sh \
-    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh lib/cdn-traffic-guard.sh \
+    profiles/reality.sh profiles/xhttp-cloudflare.sh \
+    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
     lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
@@ -46,21 +45,13 @@ shared_modules=(
     tcp-tuning.sh
 )
 
-[[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/cdn-traffic-guard.sh"'* ]] \
-    || fail "XHTTP runtime does not source its CDN traffic guard"
-[[ "${LAUNCHER_CONTENT}" == *'"lib/cdn-traffic-guard.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'lib/cdn-traffic-guard.sh'* ]] \
-    || fail "CDN traffic guard is missing from runtime packaging"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/globalping-cdn.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/globalping-cdn.sh'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
-    && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
-    && "$(<"${GCORE_PROFILE}")" != *'globalping-cdn.sh'* ]] \
-    || fail "Globalping CDN module must remain scoped to Cloudflare and AWS"
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* ]] \
+    || fail "Globalping CDN module is missing from the Cloudflare profile"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cloudflare-ip-pool.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"'* \
-    && "$(<"${XHTTP_PROFILE}")" != *'cloudflare-ip-pool.sh'* ]] \
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"'* ]] \
     || fail "Cloudflare official IP pool must remain scoped to mode 2"
 [[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-cloudflare.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-cloudflare.sh'* \
@@ -94,14 +85,10 @@ done
 
 while read -r function_name; do
     [[ -n "${function_name}" ]] || continue
-    ! grep -Eq "^${function_name}\\(\\)" "${XHTTP_PROFILE}" \
-        || fail "AWS Profile redefines XHTTP runtime function ${function_name}"
     ! grep -Eq "^${function_name}\\(\\)" "${CLOUDFLARE_PROFILE}" \
         || fail "Cloudflare Profile redefines XHTTP runtime function ${function_name}"
 done < <(module_functions "${XHTTP_RUNTIME}")
 
-grep -Eq '^xhttp_render_xray_config\(\)' "${XHTTP_PROFILE}" \
-    || fail "AWS Profile does not implement the XHTTP render hook"
 grep -Eq '^xhttp_render_xray_config\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare Profile does not implement the XHTTP render hook"
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
@@ -138,7 +125,6 @@ fi
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'linux-xanmod-lts-x64v'* \
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'show_bbrv3_status()'* \
     && "$(<"${REALITY_PROFILE}")" == *'show_bbrv3_status'* \
-    && "$(<"${XHTTP_PROFILE}")" == *'show_bbrv3_status'* \
     && "$(<"${REALITY_PROFILE}")" != *'BBR_ALLOW_EXISTING_XANMOD'* \
     && "$(<"${XHTTP_RUNTIME}")" != *'BBR_ALLOW_EXISTING_XANMOD'* ]] \
     || fail "shared XanMod BBRv3 kernel and TCP tuning policy drifted"

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-# Cloudflare-only endpoint discovery. The shared Globalping module continues to
-# serve AWS without inheriting Cloudflare's official-range scanning.
+# Cloudflare-only endpoint discovery.
 
 readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-120}"
 readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-10}"

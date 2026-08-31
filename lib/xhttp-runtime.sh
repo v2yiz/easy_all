@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared local runtime for XHTTP Profiles. Provider state and cloud APIs remain
-# in the AWS and Cloudflare Profiles.
+# Shared local runtime for the Cloudflare XHTTP profile.
 
 readonly SCRIPT_DIR="${XHTTP_PROFILE_ROOT:?XHTTP_PROFILE_ROOT is required}"
 readonly SCRIPT_FILE="${XHTTP_PROFILE_FILE:?XHTTP_PROFILE_FILE is required}"
@@ -28,7 +27,7 @@ readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
 readonly XRAY_SERVICE="easy_all-xray.service"
 readonly XRAY_SERVICE_DESCRIPTION="${XHTTP_SERVICE_DESCRIPTION_OVERRIDE:-Xray VLESS XHTTP managed by easy_all}"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
-readonly ACME_HOME="/root/.acme-aws.sh"
+readonly ACME_HOME="/root/.acme-easy_all-xhttp.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
 readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy_all"
 readonly UFW_RULE_COMMENT="easy_all-managed"
@@ -54,14 +53,12 @@ readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="300-600"
 readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="900-1800"
 readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 readonly XHTTP_URL_TEST_INTERVAL="${XHTTP_URL_TEST_INTERVAL_OVERRIDE:-300}"
-readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-CloudFront}"
-readonly XHTTP_ORIGIN_DNS_NAME="${XHTTP_ORIGIN_DNS_NAME_OVERRIDE:-Route 53}"
+readonly XHTTP_CDN_NAME="Cloudflare"
+readonly XHTTP_ORIGIN_DNS_NAME="Cloudflare DNS"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
-# shellcheck source=lib/cdn-traffic-guard.sh
-source "${SCRIPT_DIR}/cdn-traffic-guard.sh"
 # shellcheck source=lib/platform.sh
 source "${SCRIPT_DIR}/platform.sh"
 # shellcheck source=lib/profile-common.sh
@@ -202,16 +199,11 @@ active_subscription_link_domain() {
 }
 
 collect_subscription_link_domain() {
-    local current domain dns_provider
+    local current domain
     current=$(subscription_link_domain)
     domain=${SUBSCRIPTION_DOMAIN:-}
-    case "${CDN_PROVIDER:-}" in
-    aws) dns_provider="AWS Route 53 Public Hosted Zone" ;;
-    cloudflare) dns_provider="Cloudflare DNS Zone" ;;
-    *) dns_provider="与 CDN 域名相同的 DNS 服务商" ;;
-    esac
     if [[ -t 0 ]]; then
-        info "可直接复用 CDN 节点域名；自定义域名必须已由 ${dns_provider} 托管。"
+        info "可直接复用 CDN 节点域名；自定义域名必须已由 Cloudflare DNS Zone 托管。"
         domain=$(prompt_value \
             "订阅链接完整域名（含完整主机名）" "${current}" \
             "Full subscription hostname (must be hosted by the same DNS provider as the CDN domain)")
@@ -220,9 +212,6 @@ collect_subscription_link_domain() {
     fi
     domain=$(normalize_domain "${domain}")
     validate_domain "${domain}" || die "SUBSCRIPTION_DOMAIN 无效：${domain}"
-    [[ "${CDN_PROVIDER:-}" == "cloudflare" \
-        || "${domain}" != "${AWS_ORIGIN_DOMAIN:-}" ]] \
-        || die "订阅链接域名不能与源站域名相同"
     SUBSCRIPTION_DOMAIN=${domain}
 }
 
@@ -323,7 +312,7 @@ verify_origin_dns() {
     VPS_PUBLIC_IPV4=${public_ip}
     info "等待 ${XHTTP_ORIGIN_DNS_NAME} 源站 A 记录传播到公共 DNS"
     for attempt in {1..60}; do
-        records=$(dig +short A "${AWS_ORIGIN_DOMAIN}" @1.1.1.1 2>/dev/null \
+        records=$(dig +short A "${XHTTP_ORIGIN_DOMAIN}" @1.1.1.1 2>/dev/null \
             | awk 'NF' | sort -u || true)
         last_records=${records:-未解析}
         resolver_ok=1
@@ -339,7 +328,7 @@ verify_origin_dns() {
         [[ "${resolver_ok}" == 1 ]] && return 0
         sleep 5
     done
-    die "源站域名 ${AWS_ORIGIN_DOMAIN} 尚未通过 1.1.1.1 解析到当前 VPS ${public_ip}（当前结果：${last_records}）"
+    die "源站域名 ${XHTTP_ORIGIN_DOMAIN} 尚未通过 1.1.1.1 解析到当前 VPS ${public_ip}（当前结果：${last_records}）"
 }
 
 write_web_root() {
@@ -359,7 +348,7 @@ write_bootstrap_nginx_config() {
 server {
     listen 80;
     listen [::]:80;
-    server_name ${AWS_ORIGIN_DOMAIN};
+    server_name ${XHTTP_ORIGIN_DOMAIN};
     root ${WEB_ROOT};
     location ^~ /.well-known/acme-challenge/ { try_files \$uri =404; }
     location / { return 404; }
@@ -376,7 +365,7 @@ install_acme() {
         ensure_acme_renewal_setup
         return 0
     fi
-    local account_email=${ACME_EMAIL:-admin@${AWS_ORIGIN_DOMAIN}}
+    local account_email=${ACME_EMAIL:-admin@${XHTTP_ORIGIN_DOMAIN}}
     install_acme_from_github "${ACME_HOME}" "${account_email}"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 安装后不可用"
     install -m 0600 /dev/null "${ACME_OWNERSHIP_MARKER}"
@@ -393,9 +382,9 @@ issue_origin_certificate() {
     info "正在设置 Let's Encrypt 为默认证书颁发机构，请等待"
     run_acme --set-default-ca --server letsencrypt >/dev/null \
         || die "设置 Let's Encrypt 为默认 CA 失败"
-    info "正在向 Let's Encrypt 申请源站证书：${AWS_ORIGIN_DOMAIN}"
+    info "正在向 Let's Encrypt 申请源站证书：${XHTTP_ORIGIN_DOMAIN}"
     info "CA 将从公网通过 TCP 80 访问 HTTP-01 验证文件；DNS 传播和验证可能需要数分钟，请等待"
-    run_acme --issue --webroot "${WEB_ROOT}" -d "${AWS_ORIGIN_DOMAIN}" --keylength ec-256 \
+    run_acme --issue --webroot "${WEB_ROOT}" -d "${XHTTP_ORIGIN_DOMAIN}" --keylength ec-256 \
         || issue_status=$?
     [[ "${issue_status}" == 0 || "${issue_status}" == 2 ]] \
         || die "源站证书申请失败（acme.sh 返回 ${issue_status}）"
@@ -408,7 +397,7 @@ systemctl reload nginx.service >/dev/null 2>&1 || systemctl restart nginx.servic
 EOF
     install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
     info "正在安装源站证书和续期重载钩子，请等待"
-    run_acme --install-cert -d "${AWS_ORIGIN_DOMAIN}" --ecc \
+    run_acme --install-cert -d "${XHTTP_ORIGIN_DOMAIN}" --ecc \
         --fullchain-file "${CERT_FILE}" --key-file "${KEY_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}" || die "安装源站证书失败"
     [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" && -x "${CERT_RELOAD_HOOK}" ]] \
@@ -442,16 +431,16 @@ write_nginx_config() {
 server {
     listen 80;
     listen [::]:80;
-    server_name ${AWS_ORIGIN_DOMAIN};
+    server_name ${XHTTP_ORIGIN_DOMAIN};
     root ${WEB_ROOT};
     location ^~ /.well-known/acme-challenge/ { try_files \$uri =404; }
-    location / { return 301 https://${AWS_ORIGIN_DOMAIN}\$request_uri; }
+    location / { return 301 https://${XHTTP_ORIGIN_DOMAIN}\$request_uri; }
 }
 
 server {
     listen 443 ssl http2 backlog=4096;
     listen [::]:443 ssl http2 backlog=4096;
-    server_name ${AWS_ORIGIN_DOMAIN};
+    server_name ${XHTTP_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -506,9 +495,9 @@ validate_protocol_runtime() {
             && systemctl is-active --quiet nginx \
             && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
             response=$(curl -fsS "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-                --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+                --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
                 -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
-                "https://${AWS_ORIGIN_DOMAIN}/easy_all-health" || true)
+                "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
                 validate_quota_api
                 return 0
@@ -526,8 +515,8 @@ validate_subscription_runtime() {
         xhttp_validate_local_tls_curl_args
     fi
     validate_subscription_token_rejection \
-        "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        "https://${AWS_ORIGIN_DOMAIN}/subscribe" \
+        "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        "https://${XHTTP_ORIGIN_DOMAIN}/subscribe" \
         "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}"
     if quota_enabled; then
@@ -537,16 +526,16 @@ validate_subscription_runtime() {
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     fi
     base64_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-        --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" \
-        "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
+        "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
     mihomo_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-        --resolve "${AWS_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
         -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
-        "https://${AWS_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
+        "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
         && marker=$(mihomo_transport_marker)
@@ -583,10 +572,7 @@ build_vless_xhttp_link() {
 }
 
 xhttp_client_endpoints() {
-    if [[ "${CDN_PROVIDER:-aws}" == "aws" ]] \
-        && declare -F aws_cdn_client_endpoints >/dev/null 2>&1; then
-        aws_cdn_client_endpoints
-    elif declare -F cdn_client_endpoints >/dev/null 2>&1; then
+    if declare -F cdn_client_endpoints >/dev/null 2>&1; then
         cdn_client_endpoints
     else
         printf '%s\n' "${VLESS_CDN_DOMAIN}"
@@ -790,13 +776,11 @@ show_subscription() {
 refresh_runtime() {
     local backup
     [[ "${XHTTP_RUNTIME_STATE_CURRENT:-0}" == "1" ]] || collect_installed_state
-    cdn_traffic_protection_checkpoint
     backup=$(make_temp_dir)
     install -m 0600 "${XRAY_CONFIG}" "${backup}/config.json"
     install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
     if write_xray_config && write_nginx_config \
-        && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime \
-        && cdn_traffic_mark_enforced; then
+        && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime; then
         success "运行时配置已刷新"
         return 0
     fi
@@ -875,7 +859,6 @@ finish_xhttp_apply() {
     save_state
     register_easy_all_command
     install_quota_timer
-    install_cdn_traffic_protection_timer
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
@@ -898,13 +881,8 @@ update_current_core() {
     fi
     if (
         download_xray
-        cdn_traffic_protection_checkpoint
-        if cdn_traffic_protection_needs_apply; then
-            write_xray_config
-        fi
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
-        cdn_traffic_mark_enforced
     ); then
         end_quota_maintenance
         success "Xray 已更新"
@@ -932,7 +910,7 @@ renew_certificate() {
         return
     fi
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
-    run_acme --renew -d "${AWS_ORIGIN_DOMAIN}" --ecc --force || die "源站证书续期失败"
+    run_acme --renew -d "${XHTTP_ORIGIN_DOMAIN}" --ecc --force || die "源站证书续期失败"
     "${CERT_RELOAD_HOOK}" || die "证书已续期，但 Nginx 重载失败"
     success "源站证书已续期"
 }

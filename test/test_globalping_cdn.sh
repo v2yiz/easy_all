@@ -20,12 +20,13 @@ assert_equal() {
 STATE_DIR="${TMP_DIR}/state"
 RUNTIME_TMP="${TMP_DIR}/runtime"
 GLOBALPING_TOKEN_FILE_OVERRIDE="${STATE_DIR}/globalping.token"
-GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/aws-cdn-ips.json"
+GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/cloudflare-cdn-ips.json"
 GLOBALPING_REFRESH_SERVICE_FILE_OVERRIDE="${TMP_DIR}/easy_all-globalping-refresh.service"
 GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE="${TMP_DIR}/easy_all-globalping-refresh.timer"
 COMMAND_PATH="/usr/local/bin/easy_all"
 VLESS_CDN_DOMAIN="node.example.com"
-CDN_PROVIDER="aws"
+CDN_PROVIDER="cloudflare"
+CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
 GLOBALPING_NOW_EPOCH=2000000000
 cleanup_files=()
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}"
@@ -128,7 +129,7 @@ globalping_build_cache "${measurement}" "${cache_stage}"
 install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
 jq -e '
   .version == 2
-  and .provider == "aws"
+  and .provider == "cloudflare"
   and .domain == "node.example.com"
   and .probe_country == "CN"
   and .protocol == "TCP"
@@ -146,14 +147,14 @@ jq -e '
 
 globalping_cache_valid || fail "fresh Globalping cache must be valid"
 assert_equal "fresh cache returns selected IPv4" "13.32.10.10" \
-    "$(aws_cdn_client_endpoints)"
+    "$(cdn_client_endpoints)"
 
 GLOBALPING_NOW_EPOCH=$((2000000000 + GLOBALPING_CACHE_MAX_AGE_SECONDS + 1))
 if globalping_cache_valid; then
     fail "cache older than 72 hours must not be used"
 fi
 assert_equal "stale cache falls back to CDN domain" "node.example.com" \
-    "$(aws_cdn_client_endpoints)"
+    "$(cdn_client_endpoints)"
 
 GLOBALPING_NOW_EPOCH=2000000000
 CDN_PROVIDER="cloudflare"
@@ -165,8 +166,7 @@ assert_equal "Cloudflare optimized mode reuses the provider-neutral candidates" 
 CLOUDFLARE_CDN_ENDPOINT_MODE="domain"
 assert_equal "Cloudflare domain mode ignores candidate cache" "node.example.com" \
     "$(cdn_client_endpoints)"
-
-CDN_PROVIDER="aws"
+CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
 
 printf 'test-globalping-token-value\n' >"${GLOBALPING_TOKEN_FILE}"
 chmod 0600 "${GLOBALPING_TOKEN_FILE}"

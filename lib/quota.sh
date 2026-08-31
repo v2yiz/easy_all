@@ -18,14 +18,6 @@ quota_enabled() {
     [[ "${QUOTA_ENABLED:-0}" == "1" ]]
 }
 
-traffic_stats_enabled() {
-    quota_enabled && return 0
-    if declare -F cdn_traffic_protection_enabled >/dev/null 2>&1; then
-        cdn_traffic_protection_enabled && return 0
-    fi
-    return 1
-}
-
 try_acquire_runtime_write_lock() {
     if ((RUNTIME_WRITE_LOCK_DEPTH > 0)); then
         RUNTIME_WRITE_LOCK_DEPTH=$((RUNTIME_WRITE_LOCK_DEPTH + 1))
@@ -397,7 +389,7 @@ EOF
 
 validate_quota_api() {
     local attempt
-    traffic_stats_enabled || return 0
+    quota_enabled || return 0
     for attempt in 1 2 3 4 5; do
         if "${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}" \
             >/dev/null 2>&1; then

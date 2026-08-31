@@ -21,8 +21,6 @@ readonly CLOUDFLARE_XHTTP_PADDING_BYTES="100-1000"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="/etc/easy_all/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cloudflare-origin"
-XHTTP_CDN_NAME_OVERRIDE="Cloudflare"
-XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Cloudflare DNS"
 XHTTP_URL_TEST_INTERVAL_OVERRIDE=600
 
 # shellcheck source=lib/xhttp-runtime.sh
@@ -256,10 +254,10 @@ cloudflare_prepare_origin() {
         cloudflare_ensure_proxied_a "${CLOUDFLARE_ZONE_ID}" "$(active_subscription_link_domain)" "${ip}"
     fi
     # A proxied record correctly resolves to Cloudflare anycast addresses, so
-    # the shared Route53-style "must resolve to this VPS" check is inapplicable.
+    # The shared DNS propagation check is inapplicable to proxied Cloudflare DNS.
     # Public end-to-end verification is performed after TLS/rules are deployed.
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
-    AWS_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
+    XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
 }
 
 cloudflare_ensure_origin_ca_root() {
@@ -539,12 +537,12 @@ cloudflare_wait_for_health() {
 }
 
 collect_install_inputs() {
-    PROTOCOL=xhttp; CDN_PROVIDER=cloudflare; CLOUDFLARE_CDN_ENDPOINT_MODE=optimized; choose_cdn_client_ip_family; configure_cdn_traffic_protection
+    PROTOCOL=xhttp; CDN_PROVIDER=cloudflare; CLOUDFLARE_CDN_ENDPOINT_MODE=optimized; choose_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}; VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}; validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
     info "Cloudflare 模式采用单域名架构：此域名同时用于客户端连接、Cloudflare 回源和 VPS 证书。"
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "" "CDN hostname used by clients")}"); validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
-    AWS_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
+    XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     info "Cloudflare 模式从官方 IPv4 CIDR 轮换抽样，并使用三网 Globalping eyeball 探针预筛。"; collect_globalping_token; validate_globalping_access || die "Globalping Token 验证失败"
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}; XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"; validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}; validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"; ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
@@ -557,7 +555,6 @@ load_state() {
     for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; printf -v "${e}" %s "${!v:-}"; printf -v "${v}" %s ""; done; source_state_file; for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; [[ -z "${!e:-}" ]] || printf -v "${v}" %s "${!e}"; unset "${e}"; done
     [[ "${PROTOCOL}" == xhttp && "${CDN_PROVIDER:-}" == cloudflare ]] || die "状态不是 Cloudflare CDN XHTTP"
     [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == optimized ]] || die "Cloudflare 仅支持 Globalping optimized 模式"; configure_cdn_client_ip_family
-    configure_cdn_traffic_protection
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" && validate_uuid "${VLESS_UUID:-}" && validate_xhttp_path "${XHTTP_PATH:-}" && validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT:-}" || die "Cloudflare 状态缺少必要有效字段"
     [[ "${CLOUDFLARE_ORIGIN_DOMAIN}" == "${VLESS_CDN_DOMAIN}" ]] \
         || die "Cloudflare 状态不是单一 Proxied 源站域名架构"
@@ -565,7 +562,7 @@ load_state() {
         && -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
         && -n "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" ]] \
         || die "状态缺少 Cloudflare Zone 或 Origin CA 资源"
-    [[ "${ORIGIN_HEADER_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "状态中的源站密钥无效"; AWS_ORIGIN_DOMAIN=${CLOUDFLARE_ORIGIN_DOMAIN}
+    [[ "${ORIGIN_HEADER_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "状态中的源站密钥无效"; XHTTP_ORIGIN_DOMAIN=${CLOUDFLARE_ORIGIN_DOMAIN}
     SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN:-}"); validate_domain "${SUBSCRIPTION_DOMAIN}" || die "订阅域名状态无效"; SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-}") || die "订阅模式状态无效"; SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-}") || die "订阅文件名状态无效"
     [[ -z "${ALLOWED_TOKENS:-}" ]] \
         || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
@@ -588,7 +585,7 @@ save_state() {
 collect_installed_state() { [[ -f "${STATE_FILE}" ]] || die "easy_all Cloudflare CDN XHTTP 尚未安装"; load_state; }
 
 xhttp_render_xray_config() {
-    local clients outbounds routing sockopt stats=false; install -d -m 0755 "${XRAY_DIR}"; if quota_enabled; then clients=$(quota_active_clients_json); else clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]'); fi; cdn_traffic_protection_blocked && clients='[]'; traffic_stats_enabled && stats=true
+    local clients outbounds routing sockopt stats=false; install -d -m 0755 "${XRAY_DIR}"; if quota_enabled; then clients=$(quota_active_clients_json); stats=true; else clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]'); fi
     outbounds=$(xray_xhttp_outbounds_json); routing=$(xray_xhttp_routing_json); sockopt=$(xray_inbound_sockopt_json)
     jq -n --argjson port "${XRAY_XHTTP_LOOPBACK_PORT}" --argjson clients "${clients}" --argjson stats "${stats}" --arg host "${VLESS_CDN_DOMAIN}" --arg path "${XHTTP_PATH}" --arg secs "${CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS}" --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES}" --argjson sockopt "${sockopt}" --argjson outbounds "${outbounds}" --argjson routing "${routing}" '{log:{loglevel:"warning"},inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$port,protocol:"vless",settings:{clients:$clients,decryption:"none"},streamSettings:{network:"xhttp",sockopt:$sockopt,xhttpSettings:{host:$host,path:$path,mode:"stream-up",xPaddingBytes:$padding,scStreamUpServerSecs:$secs}},sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],outbounds:$outbounds,routing:$routing} + (if $stats then {api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},stats:{},policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}} else {} end)' >"${RUNTIME_TMP}/xray-config.json"
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null || die "Xray 配置校验失败"; install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
@@ -662,7 +659,7 @@ update_subscription() {
 apply_easy_all() { require_root; begin_quota_maintenance; collect_installed_state; snapshot_subscription_update; configure_bbr_tcp; configure_ufw; finish_xhttp_apply; install_globalping_refresh_timer; success "Cloudflare 本机配置已应用；未修改 Cloudflare 资源"; }
 apply_cloud_resources() { require_root; begin_quota_maintenance; collect_installed_state; snapshot_subscription_update; configure_bbr_tcp; configure_ufw; cloudflare_prepare_origin; cloudflare_issue_origin_certificate 0; cloudflare_configure_cdn; finish_xhttp_apply 1; cloudflare_validate_cdn_health; cloudflare_finalize_certificate_rotation; install_globalping_refresh_timer; cloudflare_clear_api_token; success "Cloudflare DNS、Origin CA、规则和本机配置已应用"; }
 
-rollback_fresh_install() { stop_services; remove_quota_timer; remove_cdn_traffic_protection_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; cloudflare_clear_api_token; }
+rollback_fresh_install() { stop_services; remove_quota_timer; remove_globalping_refresh_timer; cloudflare_remove_origin_firewall_rules; restore_preinstall_firewall; rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"; systemctl daemon-reload >/dev/null 2>&1 || true; rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"; cloudflare_clear_api_token; }
 
 cloudflare_purge_managed_rule() {
     local ruleset=$1 ref=$2 rules matches count id
@@ -779,7 +776,6 @@ uninstall_all() {
     purge_cloudflare_resources_before_uninstall
     stop_services
     remove_quota_timer
-    remove_cdn_traffic_protection_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall
@@ -797,6 +793,6 @@ uninstall_all() {
 
 install_all() {
     [[ -t 0 ]] || die "安装必须在交互终端中执行"; CDN_PROVIDER=cloudflare; require_root; require_systemd; [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装"; check_platform; check_install_conflicts; snapshot_fresh_install
-    install_packages; ensure_ssh_boot_service; configure_bbr_tcp; configure_daily_reboot; collect_install_inputs; cloudflare_prepare_origin; configure_ufw; write_bootstrap_nginx_config; cloudflare_issue_origin_certificate 0; download_xray; write_xray_config; install_xray_service; write_nginx_config; validate_protocol_runtime; cloudflare_configure_cdn; cloudflare_validate_cdn_health; cloudflare_finalize_certificate_rotation; persist_globalping_token; refresh_globalping_cache || warn "首次 Globalping 测量失败，暂回退 CDN 域名"; subscription_enabled && { write_subscriptions; validate_subscription_runtime; }; save_state; register_easy_all_command; install_quota_timer; install_cdn_traffic_protection_timer; install_globalping_refresh_timer; INSTALL_ROLLBACK_ON_EXIT=0; cloudflare_clear_api_token; show_subscription; success "easy_all Cloudflare CDN XHTTP 安装完成"
+    install_packages; ensure_ssh_boot_service; configure_bbr_tcp; configure_daily_reboot; collect_install_inputs; cloudflare_prepare_origin; configure_ufw; write_bootstrap_nginx_config; cloudflare_issue_origin_certificate 0; download_xray; write_xray_config; install_xray_service; write_nginx_config; validate_protocol_runtime; cloudflare_configure_cdn; cloudflare_validate_cdn_health; cloudflare_finalize_certificate_rotation; persist_globalping_token; refresh_globalping_cache || warn "首次 Globalping 测量失败，暂回退 CDN 域名"; subscription_enabled && { write_subscriptions; validate_subscription_runtime; }; save_state; register_easy_all_command; install_quota_timer; install_globalping_refresh_timer; INSTALL_ROLLBACK_ON_EXIT=0; cloudflare_clear_api_token; show_subscription; success "easy_all Cloudflare CDN XHTTP 安装完成"
 }
 usage() { printf 'Cloudflare Profile 只能由 easy_all 统一入口调用。\n'; }

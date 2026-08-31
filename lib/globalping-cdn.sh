@@ -16,19 +16,12 @@ readonly GLOBALPING_CACHE_MAX_AGE_SECONDS=259200
 readonly GLOBALPING_POLL_ATTEMPTS=35
 
 cdn_optimization_enabled() {
-    case "${CDN_PROVIDER:-}" in
-    aws) return 0 ;;
-    cloudflare) [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == "optimized" ]] ;;
-    *) return 1 ;;
-    esac
+    [[ "${CDN_PROVIDER:-}" == "cloudflare" \
+        && "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == "optimized" ]]
 }
 
 globalping_cdn_provider_label() {
-    case "${CDN_PROVIDER:-aws}" in
-    aws) printf 'AWS' ;;
-    cloudflare) printf 'Cloudflare' ;;
-    *) printf 'Unknown' ;;
-    esac
+    printf 'Cloudflare'
 }
 
 validate_globalping_token() {
@@ -262,7 +255,7 @@ globalping_build_cache() {
     measured_at=$(jq -r '.updatedAt // .createdAt // empty' <<<"${measurement}")
     measured_at_epoch=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
     jq -n --arg domain "${VLESS_CDN_DOMAIN}" \
-        --arg provider "${CDN_PROVIDER:-aws}" \
+        --arg provider "cloudflare" \
         --arg measurement_id "${measurement_id}" \
         --arg measured_at "${measured_at}" \
         --argjson measured_at_epoch "${measured_at_epoch}" \
@@ -289,7 +282,7 @@ globalping_cache_valid() {
     local now age ip
     [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
-        --arg provider "${CDN_PROVIDER:-aws}" \
+        --arg provider "cloudflare" \
         --argjson limit "${GLOBALPING_CANDIDATE_LIMIT}" '
           .version == 2
           and .provider == $provider
@@ -318,10 +311,6 @@ cdn_client_endpoints() {
     else
         printf '%s\n' "${VLESS_CDN_DOMAIN}"
     fi
-}
-
-aws_cdn_client_endpoints() {
-    cdn_client_endpoints
 }
 
 refresh_globalping_cache() {
