@@ -187,6 +187,12 @@ sudo easy_all subscription
 它不能证明客户端也支持精选 IP 节点。启用 TUN 或“全局代理”会改变设备的网络路由，首次使用前请先确认客户端
 如何一键关闭或恢复网络。
 
+若要在 Shadowrocket 中让普通节点订阅按延迟自动选择，请按带图例的
+[Shadowrocket 自动选择节点指南](docs/shadowrocket-auto-node-guide.md)，导入项目维护者统一部署的规则
+配置，再由用户把希望自动选节点的规则策略从 `PROXY` 改为 `AUTO`。用户不需要自行部署 Worker；节点订阅仍需在 Shadowrocket 中
+单独添加。此功能不会改变上述
+Cloudflare 精选 IP XHTTP 兼容性边界。
+
 ### 第一次安装常见问题
 
 | 现象 | 先做什么 |

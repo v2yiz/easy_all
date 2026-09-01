@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="700" viewBox="0 0 1400 700" role="img" aria-labelledby="title desc">
+  <title id="title">iPhone 和 iPad 版 Shadowrocket 订阅 DNS 覆写</title>
+  <desc id="desc">iPhone 或 iPad 进入设置、订阅、DNS，填入阿里公共 DNS 或 DNSPod 的 DoH 地址之一。当前 macOS 版没有此入口。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-10%" width="140%" height="130%"><feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#18324d" flood-opacity=".14"/></filter>
+    <style>.sans{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}.title{font-size:38px;font-weight:750}.head{font-size:25px;font-weight:700}.body{font-size:21px}.small{font-size:18px}.ink{fill:#162238}.muted{fill:#667085}.blue{fill:#1769e0}.green{fill:#138a5b}.orange{fill:#c65d00}</style>
+  </defs>
+  <rect width="1400" height="700" fill="#f4f7fb"/>
+  <text x="700" y="64" text-anchor="middle" class="sans title ink">iPhone / iPad：订阅失败时尝试 DNS 覆写</text>
+
+  <rect x="86" y="112" width="1228" height="74" rx="18" fill="#fff" stroke="#dce4ef" filter="url(#shadow)"/>
+  <circle cx="132" cy="149" r="22" fill="#e8f2ff"/><text x="132" y="157" text-anchor="middle" class="sans head blue">1</text>
+  <text x="176" y="157" class="sans head ink">Shadowrocket → 设置 → 订阅 → DNS</text><text x="1240" y="157" text-anchor="end" class="sans small blue">仅 iOS / iPadOS</text>
+
+  <rect x="86" y="230" width="586" height="294" rx="24" fill="#fff" stroke="#dce4ef" filter="url(#shadow)"/>
+  <circle cx="132" cy="280" r="22" fill="#fff1e6"/><text x="132" y="288" text-anchor="middle" class="sans head orange">2</text>
+  <text x="176" y="288" class="sans head ink">填写其中一个地址</text>
+  <rect x="126" y="328" width="506" height="68" rx="14" fill="#eef5ff" stroke="#86b8ff"/>
+  <text x="150" y="370" class="sans body blue">https://dns.alidns.com/dns-query</text>
+  <text x="378" y="432" text-anchor="middle" class="sans body muted">或</text>
+  <rect x="126" y="454" width="506" height="44" rx="12" fill="#f8fafc" stroke="#dce4ef"/>
+  <text x="150" y="484" class="sans body ink">https://doh.pub/dns-query</text>
+
+  <rect x="728" y="230" width="586" height="294" rx="24" fill="#fff" stroke="#dce4ef" filter="url(#shadow)"/>
+  <circle cx="774" cy="280" r="22" fill="#e8f8ef"/><text x="774" y="288" text-anchor="middle" class="sans head green">3</text>
+  <text x="818" y="288" class="sans head ink">保存并重新更新订阅</text>
+  <rect x="768" y="330" width="506" height="78" rx="14" fill="#eef8f3" stroke="#b9dfce"/>
+  <text x="1021" y="364" text-anchor="middle" class="sans head green">保存 → 返回首页 → 更新订阅</text>
+  <text x="1021" y="391" text-anchor="middle" class="sans small muted">第一个仍失败时，再换另一个地址</text>
+  <rect x="768" y="446" width="506" height="52" rx="12" fill="#fff8e8" stroke="#f0c36b"/>
+  <text x="1021" y="479" text-anchor="middle" class="sans small orange">只修复 DNS 解析；不能修复无效或过期订阅</text>
+
+  <rect x="86" y="566" width="1228" height="82" rx="16" fill="#fff4e8" stroke="#efbd76"/>
+  <text x="700" y="601" text-anchor="middle" class="sans body ink">当前 macOS 版没有“设置 → 订阅”入口，请勿照搬此路径。</text>
+  <text x="700" y="629" text-anchor="middle" class="sans small muted">Mac 可切换网络，或暂时用可用节点代理更新；成功后将全局路由恢复为“配置”。</text>
+</svg>

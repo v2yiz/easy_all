@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
 PREPARATION_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
+SHADOWROCKET_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/shadowrocket-auto-node-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-cloudflare.sh")
 
@@ -50,6 +51,42 @@ assert_contains "README documents the Mihomo requirement for selected IPs" \
     "${README_CONTENT}" '精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成'
 assert_contains "README documents Shadowrocket as unverified" \
     "${README_CONTENT}" '不把 Shadowrocket 列为本项目的已验证客户端'
+assert_contains "README links the Shadowrocket auto-node guide" \
+    "${README_CONTENT}" 'docs/shadowrocket-auto-node-guide.md'
+
+assert_contains "Shadowrocket guide has the expected title" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '# Shadowrocket AUTO 自动选节点指南'
+assert_contains "Shadowrocket guide explains the separate node subscription" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '自己的节点订阅绑定到该分组'
+assert_contains "Shadowrocket guide documents the AUTO interval" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '`300` 秒'
+assert_contains "Shadowrocket guide documents Config routing mode" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '全局路由**，选择 **配置**'
+assert_contains "Shadowrocket guide documents subscription DNS override" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" 'https://dns.alidns.com/dns-query'
+assert_contains "Shadowrocket guide documents the alternate subscription DNS" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" 'https://doh.pub/dns-query'
+assert_contains "Shadowrocket guide does not ask users to deploy the Worker" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '用户不需要部署 Worker'
+assert_contains "Shadowrocket guide requires rules to use AUTO" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '所有生效的 `PROXY` 规则自动改为 `AUTO`'
+assert_contains "Shadowrocket guide distinguishes the macOS DNS path" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" 'macOS 版“设置”页没有“订阅”项目'
+assert_contains "Shadowrocket guide documents hourly subscription refresh" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '将 **间隔** 设为 **1 小时**'
+assert_contains "Shadowrocket guide documents subscription binding" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" '打开 **订阅** 开关'
+assert_contains "Shadowrocket guide links the no-group upstream" \
+    "${SHADOWROCKET_GUIDE_CONTENT}" 'Shadowrocket-ADBlock-Rules-Forever/lazy.conf'
+for asset in \
+    docs/img/shadowrocket/mac-add-subscription.svg \
+    docs/img/shadowrocket/mac-import-config.svg \
+    docs/img/shadowrocket/mac-auto-group.svg \
+    docs/img/shadowrocket/mac-finish.svg \
+    docs/img/shadowrocket/subscription-auto-refresh.svg \
+    docs/img/shadowrocket/subscription-dns.svg; do
+    [[ -s "${ROOT_DIR}/${asset}" ]] || fail "Shadowrocket guide asset is missing: ${asset}"
+done
 
 assert_contains "Preparation guide has the expected title" \
     "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
