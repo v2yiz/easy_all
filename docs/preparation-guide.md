@@ -471,6 +471,11 @@ Gcore Resource 不开启 `websockets`，不提交免费套餐不可用的 `grpc_
 模式 3 始终使用 `node.example.com` 作为客户端连接地址、TLS SNI 和 HTTP Host，由 Gcore DNS
 调度边缘节点。安装器不要求 Globalping Token，也不创建候选 IP 缓存或每小时刷新任务。
 
+Gcore CDN 链路的生效可能很慢，创建或更新后请耐心等待，不要因为终端暂时没有成功就重复执行安装。
+当前源站 A 记录和 CDN CNAME 的公共 DNS 传播各自最多等待约 5 分钟；边缘证书、CDN Resource 和公网
+XHTTP 链路验收每个域名最多轮询 90 次、每次间隔 10 秒，基础超时约 15 分钟，实际还要加上 Gcore API
+和 HTTPS 请求耗时。若同时配置独立订阅域名，两套域名会顺序验收，最长等待时间还会相应增加。
+
 首次上线仍应在实际移动、联通、电信网络测试锁屏/空闲、Wi-Fi/蜂窝切换、至少 2 小时连续传输、
 Early Data 开关对照，以及不同网络下的 Gcore DNS 调度效果。
 

@@ -703,6 +703,11 @@ XHTTP CDN Resource、Origin Group、Origin SSL Validation、mTLS 回源证书和
 Let's Encrypt 证书；已有 A/AAAA/CNAME 记录默认拒绝覆盖，只有显式设置 `GCORE_DNS_REPLACE=1`
 才允许替换冲突记录。
 
+Gcore CDN 链路生效可能很慢，创建或更新后请耐心等待，不要重复执行安装。当前源站 A 记录和 CDN
+CNAME 的公共 DNS 传播各自最多约 5 分钟；边缘证书、CDN Resource 和公网 XHTTP 链路验收每个域名
+的基础超时约 15 分钟（90 次检查、每次间隔 10 秒，实际还要加上 API 和 HTTPS 请求耗时）。配置
+独立订阅域名时，两套域名会顺序验收，等待时间会相应增加。
+
 Gcore Free CDN 的本地保护阈值固定为 `990 GB`。Xray 统计达到阈值后临时阻断节点，进入新的 UTC
 自然月恢复；它只是本地第二道保护，仍需在 Gcore 控制台设置用量提醒。完整的域名委派、Token 权限、
 XHTTP 参数、证书和卸载说明见统一的[前置准备手册](docs/preparation-guide.md#8-gcore-cdn-域名-xhttp-准备)。

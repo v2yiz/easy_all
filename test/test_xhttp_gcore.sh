@@ -119,6 +119,8 @@ assert_contains "Gcore fails fast when certificate issuance fails" "${CONTENT}" 
     'FAILED | CANCELLED)'
 assert_contains "Gcore reports health check progress" "${CONTENT}" \
     'Resource=${status:-unknown}，Let'\''s Encrypt=${certificate_status}，HTTPS=${http_code:-000}'
+assert_contains "Gcore explains the slow CDN activation timeout" "${CONTENT}" \
+    '链路生效可能较慢，请耐心等待，当前公网验收超时约 15 分钟'
 assert_contains "Gcore health check runs a real XHTTP probe" "${CONTENT}" \
     'if gcore_probe_xhttp; then'
 assert_contains "purge preflights the attached edge certificate" "${CONTENT}" \

@@ -912,7 +912,7 @@ gcore_wait_for_domain_health() {
     local certificate_state certificate_status certificate_error curl_error
     local health_body="${RUNTIME_TMP}/gcore-health-body"
     local health_error="${RUNTIME_TMP}/gcore-health-error"
-    info "等待 Gcore ${label}域名 ${domain} 的 CDN 与 Let's Encrypt 证书部署"
+    info "等待 Gcore ${label}域名 ${domain} 的 CDN 与 Let's Encrypt 证书部署；链路生效可能较慢，请耐心等待，当前公网验收超时约 15 分钟（90 次、每次间隔 10 秒，API/网络请求耗时另计）"
     certificate_status="PENDING"
     for attempt in {1..90}; do
         status=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
