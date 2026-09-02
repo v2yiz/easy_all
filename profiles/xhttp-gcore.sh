@@ -19,7 +19,7 @@ readonly GCORE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/n
 readonly XHTTP_PROFILE_ROOT="${GCORE_PROFILE_ROOT}/../lib"
 XHTTP_CDN_NAME_OVERRIDE="Gcore CDN"
 XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Gcore Managed DNS"
-XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS XHTTP managed by easy_all"
+XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS XHTTP + WebSocket managed by easy_all"
 XHTTP_MODE_OVERRIDE="packet-up"
 XHTTP_XMUX_ENABLED_OVERRIDE=false
 
@@ -29,6 +29,8 @@ readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="30"
 readonly GCORE_XHTTP_PADDING_BYTES="100-1000"
 readonly GCORE_CDN_TRAFFIC_PROTECTION_GB="990"
 readonly GCORE_XHTTP_NGINX_TIMEOUT="1h"
+readonly GCORE_WEBSOCKET_NGINX_TIMEOUT="1h"
+readonly DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT="10087"
 GCORE_TRANSPORT_MIGRATION_REQUIRED=0
 
 GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
@@ -718,7 +720,7 @@ gcore_resource_payload() {
           active:true,
           options:{
             allowedHttpMethods:{enabled:true,value:["GET","HEAD","POST"]},
-            websockets:{enabled:true,value:false},
+            websockets:{enabled:true,value:true},
             edge_cache_settings:{enabled:true,value:"0s"},
             browser_cache_settings:{enabled:true,value:"0s"},
             ignoreQueryString:{enabled:true,value:false},
@@ -911,8 +913,52 @@ gcore_probe_xhttp() {
     [[ "${http_code}" == "204" ]]
 }
 
+gcore_probe_websocket() {
+    local probe_dir="${RUNTIME_TMP}/gcore-websocket-probe"
+    local probe_config="${probe_dir}/config.json" probe_log="${probe_dir}/xray.log"
+    local probe_port=0 probe_pid=0 attempt response http_code
+    install -d -m 0700 "${probe_dir}"
+    for attempt in {1..20}; do
+        probe_port=$((20000 + RANDOM % 20000))
+        ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q . || break
+        probe_port=0
+    done
+    ((probe_port > 0)) || return 1
+    jq -n --arg address "${VLESS_CDN_DOMAIN}" --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg uuid "${VLESS_UUID}" --arg path "${WEBSOCKET_PATH}" \
+        --argjson port "${probe_port}" '
+        {log:{loglevel:"error"},
+         inbounds:[{tag:"gcore-websocket-probe-socks",listen:"127.0.0.1",port:$port,
+                    protocol:"socks",settings:{udp:false}}],
+         outbounds:[{tag:"proxy",protocol:"vless",
+          settings:{vnext:[{address:$address,port:443,users:[{id:$uuid,encryption:"none"}]}]},
+          streamSettings:{network:"ws",security:"tls",
+           tlsSettings:{serverName:$host,alpn:["http/1.1"],fingerprint:"chrome"},
+           wsSettings:{path:$path,headers:{Host:$host}}}}]}
+    ' >"${probe_config}" || return 1
+    "${XRAY_BIN}" run -test -config "${probe_config}" >/dev/null 2>"${probe_log}" || return 1
+    "${XRAY_BIN}" run -config "${probe_config}" >"${probe_log}" 2>&1 &
+    probe_pid=$!
+    for attempt in {1..10}; do
+        ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q . && break
+        sleep 1
+    done
+    if ! ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q .; then
+        kill "${probe_pid}" >/dev/null 2>&1 || true
+        wait "${probe_pid}" >/dev/null 2>&1 || true
+        return 1
+    fi
+    response=$(curl -sS --noproxy '' --proxy "socks5h://127.0.0.1:${probe_port}" \
+        --connect-timeout 10 --max-time 30 -w $'\n%{http_code}' \
+        'https://cp.cloudflare.com/generate_204' 2>/dev/null || true)
+    http_code=${response##*$'\n'}
+    kill "${probe_pid}" >/dev/null 2>&1 || true
+    wait "${probe_pid}" >/dev/null 2>&1 || true
+    [[ "${http_code}" == "204" ]]
+}
+
 gcore_wait_for_domain_health() {
-    local domain=$1 label=$2 attempt status response http_code xhttp_status xhttp_verified=0
+    local domain=$1 label=$2 attempt status response http_code transport_status transport_verified=0
     local certificate_state certificate_status certificate_error curl_error
     local health_body="${RUNTIME_TMP}/gcore-health-body"
     local health_error="${RUNTIME_TMP}/gcore-health-error"
@@ -950,32 +996,32 @@ gcore_wait_for_domain_health() {
             -w '%{http_code}' "https://${domain}/easy_all-health" \
             2>"${health_error}" || true)
         response=$(<"${health_body}")
-        xhttp_status="not-run"
+        transport_status="not-run"
         if [[ "${label}" == "CDN" ]]; then
-            if ((xhttp_verified == 1)); then
-                xhttp_status="ok"
+            if ((transport_verified == 1)); then
+                transport_status="ok"
             elif [[ "${http_code}" == "200" && "${response}" == "easy_all ok" ]] \
                 && ((attempt == 1 || attempt % 3 == 0)); then
-                if gcore_probe_xhttp; then
-                    xhttp_verified=1
-                    xhttp_status="ok"
+                if gcore_probe_xhttp && gcore_probe_websocket; then
+                    transport_verified=1
+                    transport_status="ok"
                 else
-                    xhttp_status="failed"
+                    transport_status="failed"
                 fi
             else
-                xhttp_status="pending"
+                transport_status="pending"
             fi
         fi
         if [[ "${http_code}" == "200" && "${response}" == "easy_all ok" ]] \
-            && { [[ "${label}" != "CDN" ]] || ((xhttp_verified == 1)); }; then
+            && { [[ "${label}" != "CDN" ]] || ((transport_verified == 1)); }; then
             [[ "${status}" == "active" ]] \
                 || warn "Gcore Resource 状态仍为 ${status:-unknown}，但 ${label}域名端到端 HTTPS 验收已通过"
-            success "Gcore ${label}域名回源、边缘证书与 XHTTP 验收通过"
+            success "Gcore ${label}域名回源、边缘证书与 XHTTP/WebSocket 验收通过"
             return 0
         fi
         if ((attempt == 1 || attempt % 3 == 0)); then
             curl_error=$(tr '\n' ' ' <"${health_error}")
-            info "Gcore ${label}域名状态：Resource=${status:-unknown}，Let's Encrypt=${certificate_status}，HTTPS=${http_code:-000}，XHTTP=${xhttp_status}${curl_error:+（${curl_error}）}"
+            info "Gcore ${label}域名状态：Resource=${status:-unknown}，Let's Encrypt=${certificate_status}，HTTPS=${http_code:-000}，双链路=${transport_status}${curl_error:+（${curl_error}）}"
         fi
         sleep 10
     done
@@ -1141,9 +1187,17 @@ collect_install_inputs() {
 
     XHTTP_PATH=${XHTTP_PATH:-/xhttp-$(openssl rand -hex 16)}
     validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
+    WEBSOCKET_PATH=${WEBSOCKET_PATH:-/ws-$(openssl rand -hex 16)}
+    validate_xhttp_path "${WEBSOCKET_PATH}" || die "WEBSOCKET_PATH 无效：${WEBSOCKET_PATH}"
+    [[ "${WEBSOCKET_PATH}" != "${XHTTP_PATH}" ]] || die "WebSocket 与 XHTTP 路径不能相同"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         || die "XRAY_XHTTP_LOOPBACK_PORT 无效：${XRAY_XHTTP_LOOPBACK_PORT}"
+    XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" \
+        || die "XRAY_WEBSOCKET_LOOPBACK_PORT 无效：${XRAY_WEBSOCKET_LOOPBACK_PORT}"
+    [[ "${XRAY_WEBSOCKET_LOOPBACK_PORT}" != "${XRAY_XHTTP_LOOPBACK_PORT}" ]] \
+        || die "WebSocket 与 XHTTP 本机端口不能相同"
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "ORIGIN_HEADER_SECRET 格式无效"
@@ -1166,14 +1220,15 @@ load_state() {
     local -a variables=(
         PROTOCOL CDN_PROVIDER
         CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
-        VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH
+        VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH WEBSOCKET_PATH
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE
         GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
         GCORE_SSL_CERT_ID GCORE_ORIGIN_CA_ID GCORE_ORIGIN_CLIENT_CERT_ID
         GCORE_CDN_TARGET GCORE_ORIGIN_ISSUER_SHA256 CDN_TRAFFIC_PROTECTION_GB
         VPS_PUBLIC_IPV4 GCORE_ORIGIN_A_OWNED GCORE_CDN_CNAME_OWNED
         GCORE_SUBSCRIPTION_CNAME_OWNED
-        XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
+        XRAY_XHTTP_LOOPBACK_PORT XRAY_WEBSOCKET_LOOPBACK_PORT
+        ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
@@ -1194,10 +1249,16 @@ load_state() {
         && ( "${PROTOCOL}" == "xhttp" || "${PROTOCOL}" == "ws" ) ]] \
         || die "状态不是 Gcore CDN XHTTP；请重新安装"
     GCORE_TRANSPORT_MIGRATION_REQUIRED=0
+    [[ -n "${WEBSOCKET_PATH:-}" && -n "${XRAY_WEBSOCKET_LOOPBACK_PORT:-}" ]] \
+        || GCORE_TRANSPORT_MIGRATION_REQUIRED=1
     if [[ "${PROTOCOL}" == "ws" ]]; then
         GCORE_TRANSPORT_MIGRATION_REQUIRED=1
+        WEBSOCKET_PATH=${WEBSOCKET_PATH:-${XHTTP_PATH}}
+        XHTTP_PATH="/xhttp-${XHTTP_PATH##*-}"
         PROTOCOL=xhttp
     fi
+    WEBSOCKET_PATH=${WEBSOCKET_PATH:-/ws-${XHTTP_PATH##*-}}
+    XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
     configure_cdn_client_ip_family
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
     validate_domain "${VLESS_CDN_DOMAIN:-}" || die "状态中的 Gcore CDN 域名无效"
@@ -1220,8 +1281,14 @@ load_state() {
         || die "状态中的 Gcore CDN 目标无效"
     validate_uuid "${VLESS_UUID:-}" || die "状态中的 VLESS UUID 无效"
     validate_xhttp_path "${XHTTP_PATH:-}" || die "状态中的 XHTTP 路径无效"
+    validate_xhttp_path "${WEBSOCKET_PATH:-}" || die "状态中的 WebSocket 路径无效"
+    [[ "${WEBSOCKET_PATH}" != "${XHTTP_PATH}" ]] || die "状态中的 WebSocket 与 XHTTP 路径相同"
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT:-}" \
         || die "状态中的 XHTTP 本机端口无效"
+    validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT:-}" \
+        || die "状态中的 WebSocket 本机端口无效"
+    [[ "${XRAY_WEBSOCKET_LOOPBACK_PORT}" != "${XRAY_XHTTP_LOOPBACK_PORT}" ]] \
+        || die "状态中的 WebSocket 与 XHTTP 本机端口相同"
     [[ "${ORIGIN_HEADER_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "状态中的源站保护密钥无效"
     XHTTP_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
@@ -1265,6 +1332,7 @@ save_state() {
         printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
         printf 'SUBSCRIPTION_DOMAIN=%q\n' "$(subscription_link_domain)"
         printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH}"
+        printf 'WEBSOCKET_PATH=%q\n' "${WEBSOCKET_PATH}"
         printf 'GCORE_ORIGIN_DOMAIN=%q\n' "${GCORE_ORIGIN_DOMAIN}"
         printf 'GCORE_DNS_ZONE=%q\n' "${GCORE_DNS_ZONE}"
         printf 'GCORE_SUBSCRIPTION_DNS_ZONE=%q\n' "${GCORE_SUBSCRIPTION_DNS_ZONE}"
@@ -1281,6 +1349,7 @@ save_state() {
         printf 'GCORE_SUBSCRIPTION_CNAME_OWNED=%q\n' "${GCORE_SUBSCRIPTION_CNAME_OWNED:-0}"
         printf 'CDN_TRAFFIC_PROTECTION_GB=%q\n' "${CDN_TRAFFIC_PROTECTION_GB}"
         printf 'XRAY_XHTTP_LOOPBACK_PORT=%q\n' "${XRAY_XHTTP_LOOPBACK_PORT}"
+        printf 'XRAY_WEBSOCKET_LOOPBACK_PORT=%q\n' "${XRAY_WEBSOCKET_LOOPBACK_PORT}"
         printf 'ORIGIN_HEADER_SECRET=%q\n' "${ORIGIN_HEADER_SECRET}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -1307,6 +1376,65 @@ mihomo_transport_marker() {
     printf 'network: xhttp'
 }
 
+build_vless_websocket_link() {
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WEBSOCKET}
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "${node_name}")"
+}
+
+build_node_links() {
+    local endpoint
+    while IFS= read -r endpoint; do
+        build_vless_xhttp_link "${endpoint}" "${XHTTP_NODE_NAME}_PACKET_UP"
+        printf '\n'
+        build_vless_websocket_link "${endpoint}" "${XHTTP_NODE_NAME}_WEBSOCKET"
+        printf '\n'
+    done < <(xhttp_client_endpoints)
+}
+
+build_mihomo_websocket_node() {
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WEBSOCKET}
+    resolve_cdn_client_ip_family
+    jq -nr --arg name "${node_name}" --arg server "${server}" \
+        --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
+        --arg path "${WEBSOCKET_PATH}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" '
+        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+        "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
+        "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
+        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - http/1.1\n" +
+        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
+}
+
+build_mihomo_nodes() {
+    local endpoint
+    while IFS= read -r endpoint; do
+        build_mihomo_node_for_endpoint "${endpoint}" "${XHTTP_NODE_NAME}_PACKET_UP"
+        build_mihomo_websocket_node "${endpoint}" "${XHTTP_NODE_NAME}_WEBSOCKET"
+    done < <(xhttp_client_endpoints)
+}
+
+build_mihomo_proxy_names() {
+    printf '        - %s\n' \
+        "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
+}
+
+build_mihomo_proxy_groups() {
+    printf '    - name: %s\n' \
+        "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
+    cat <<EOF
+      type: url-test
+      proxies:
+        - $(jq -Rn --arg value "${XHTTP_NODE_NAME}_PACKET_UP" '$value')
+        - $(jq -Rn --arg value "${XHTTP_NODE_NAME}_WEBSOCKET" '$value')
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+      tolerance: 20
+      timeout: 3000
+      lazy: false
+EOF
+}
+
 xhttp_render_xray_config() {
     local clients managed_outbounds managed_routing inbound_sockopt stats_enabled=false
     install -d -m 0755 "${XRAY_DIR}"
@@ -1321,9 +1449,11 @@ xhttp_render_xray_config() {
     managed_outbounds=$(xray_xhttp_outbounds_json)
     managed_routing=$(xray_xhttp_routing_json)
     inbound_sockopt=$(xray_inbound_sockopt_json)
-    jq -n --argjson port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+    jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+        --argjson websocket_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
-        --arg path "${XHTTP_PATH}" --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg xhttp_path "${XHTTP_PATH}" --arg websocket_path "${WEBSOCKET_PATH}" \
+        --arg host "${VLESS_CDN_DOMAIN}" \
         --arg padding "${GCORE_XHTTP_PADDING_BYTES}" \
         --arg mode "${XHTTP_MODE}" \
         --argjson max_buffered_posts "${GCORE_XHTTP_MAX_BUFFERED_POSTS}" \
@@ -1331,11 +1461,15 @@ xhttp_render_xray_config() {
         --argjson managed_outbounds "${managed_outbounds}" \
         --argjson managed_routing "${managed_routing}" '
         {log:{loglevel:"warning"},
-         inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$port,protocol:"vless",
+         inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$xhttp_port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
           streamSettings:{network:"xhttp",sockopt:$inbound_sockopt,
-            xhttpSettings:{host:$host,path:$path,mode:$mode,
+            xhttpSettings:{host:$host,path:$xhttp_path,mode:$mode,
               xPaddingBytes:$padding,scMaxBufferedPosts:$max_buffered_posts}},
+          sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}},
+         {tag:"vless-websocket-in",listen:"127.0.0.1",port:$websocket_port,protocol:"vless",
+          settings:{clients:$clients,decryption:"none"},
+          streamSettings:{network:"ws",sockopt:$inbound_sockopt,wsSettings:{path:$websocket_path}},
           sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],
          outbounds:$managed_outbounds,
          routing:$managed_routing}
@@ -1384,6 +1518,22 @@ server {
 EOF
         write_subscription_nginx_locations
         cat <<EOF
+    location = ${WEBSOCKET_PATH} {
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host ${VLESS_CDN_DOMAIN};
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_buffering off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
+        proxy_send_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
+        proxy_pass http://127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT};
+        access_log off;
+    }
+
     location ^~ ${XHTTP_PATH}/ {
         client_max_body_size 0;
         client_body_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
@@ -1408,14 +1558,14 @@ EOF
 EOF
     } >"${RUNTIME_TMP}/easy_all.conf"
     install -m 0600 "${RUNTIME_TMP}/easy_all.conf" "${NGINX_CONFIG}"
-    nginx -t >/dev/null || die "Nginx XHTTP 配置校验失败"
+    nginx -t >/dev/null || die "Nginx XHTTP + WebSocket 配置校验失败"
     systemctl enable --now nginx >/dev/null
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS XHTTP packet-up/H2 over Gcore CDN\n节点链接:\n%s\n\n' "$(build_node_link)"
+    printf '\n协议: VLESS XHTTP packet-up/H2 + WebSocket over Gcore CDN\n节点链接:\n%s\n\n' "$(build_node_link)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_node
     printf '\n'
@@ -1425,9 +1575,9 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\n订阅链接域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
+    printf '协议: xhttp packet-up + websocket（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\n订阅链接域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\nWebSocket 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "$(subscription_link_domain)" \
-        "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
+        "${GCORE_CDN_TARGET}" "${XHTTP_PATH}" "${WEBSOCKET_PATH}"
     show_bbrv3_status
     printf 'CDN 客户端节点族: %s（配置值）\n' \
         "${CDN_CLIENT_IP_FAMILY_RESOLVED}"
@@ -1450,7 +1600,7 @@ update_subscription() {
     begin_quota_maintenance
     collect_installed_state
     [[ "${GCORE_TRANSPORT_MIGRATION_REQUIRED}" != "1" ]] \
-        || die "当前安装仍是旧 Gcore WebSocket 链路；请先执行 easy_all apply-cloud 完成 XHTTP packet-up 迁移"
+        || die "当前安装尚未启用 Gcore XHTTP + WebSocket 双链路；请先执行 easy_all apply-cloud 完成迁移"
     previous_mode=${SUBSCRIPTION_MODE}
     previous_domain=$(subscription_link_domain)
     previous_active_domain=${VLESS_CDN_DOMAIN}
@@ -1517,7 +1667,7 @@ apply_easy_all() {
     begin_quota_maintenance
     collect_installed_state
     [[ "${GCORE_TRANSPORT_MIGRATION_REQUIRED}" != "1" ]] \
-        || die "当前安装仍是旧 Gcore WebSocket 链路；请执行 easy_all apply-cloud，一次性启用 XHTTP packet-up 并迁移本机配置"
+        || die "当前安装尚未启用 Gcore XHTTP + WebSocket 双链路；请执行 easy_all apply-cloud 一次性迁移"
     validate_gcore_origin_issuer_synced
     snapshot_subscription_update
     configure_bbr_tcp
@@ -1530,7 +1680,7 @@ xhttp_renew_origin_certificate() {
     require_root
     collect_installed_state
     [[ "${GCORE_TRANSPORT_MIGRATION_REQUIRED}" != "1" ]] \
-        || die "当前安装仍是旧 Gcore WebSocket 链路；请先执行 easy_all apply-cloud 完成 XHTTP packet-up 迁移"
+        || die "当前安装尚未启用 Gcore XHTTP + WebSocket 双链路；请先执行 easy_all apply-cloud 完成迁移"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
     run_acme --renew -d "${GCORE_ORIGIN_DOMAIN}" --ecc --force \
         || die "源站证书续期失败"

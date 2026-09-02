@@ -40,7 +40,7 @@ done
 
 assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
-assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 域名 - XHTTP'
+assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 域名 - XHTTP + WebSocket'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
@@ -135,8 +135,8 @@ assert_contains "Preparation guide documents the Globalping token page" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
 assert_contains "Preparation guide documents the optimized XHTTP mode" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
-assert_contains "Preparation guide documents Gcore XHTTP" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Gcore CDN 域名 XHTTP 准备'
+assert_contains "Preparation guide documents Gcore dual transport" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Gcore CDN 域名 XHTTP + WebSocket 准备'
 assert_contains "Preparation guide embeds the Gcore Managed DNS illustration" \
     "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'
 assert_contains "Preparation guide embeds the Gcore API token illustration" \

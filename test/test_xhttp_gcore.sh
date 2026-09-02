@@ -26,10 +26,10 @@ bash -n "${PROFILE}" "${ROOT_DIR}/easy_all" "${ROOT_DIR}"/lib/*.sh
 
 assert_contains "Gcore allows XHTTP uplink POST" "${CONTENT}" \
     'allowedHttpMethods:{enabled:true,value:["GET","HEAD","POST"]}'
-assert_contains "Gcore explicitly disables legacy WebSocket support" "${CONTENT}" \
-    'websockets:{enabled:true,value:false}'
-assert_contains "legacy WebSocket installs require atomic migration" "${CONTENT}" \
-    '请执行 easy_all apply-cloud，一次性启用 XHTTP packet-up 并迁移本机配置'
+assert_contains "Gcore enables WebSocket beside XHTTP" "${CONTENT}" \
+    'websockets:{enabled:true,value:true}'
+assert_contains "single-transport installs require atomic migration" "${CONTENT}" \
+    '请执行 easy_all apply-cloud 一次性迁移'
 assert_contains "migration switches the local runtime before XHTTP validation" "${CONTENT}" \
     'gcore_apply_cdn 1'
 assert_not_contains "Gcore domain mode does not load Globalping" "${PROFILE}" \
@@ -95,6 +95,12 @@ assert_contains "Gcore packet-up omits the stream-up-only gRPC header" "${CONTEN
     'if $mode == "packet-up" then {} else {noGRPCHeader:$no_grpc_header} end'
 assert_contains "Gcore server limits buffered packet-up posts" "${CONTENT}" \
     'scMaxBufferedPosts:$max_buffered_posts'
+assert_contains "Xray exposes a second WebSocket inbound" "${CONTENT}" \
+    'streamSettings:{network:"ws",sockopt:$inbound_sockopt,wsSettings:{path:$websocket_path}}'
+assert_contains "Nginx forwards WebSocket upgrades" "${CONTENT}" \
+    'proxy_set_header Upgrade \$http_upgrade;'
+assert_contains "Nginx routes WebSocket to its own loopback port" "${CONTENT}" \
+    'proxy_pass http://127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT};'
 assert_contains "XHTTP disables Nginx buffering" "${CONTENT}" \
     'proxy_request_buffering off;'
 assert_contains "XHTTP accepts streaming request bodies" "${CONTENT}" \
@@ -111,10 +117,14 @@ assert_contains "Gcore state persists XHTTP protocol" "${CONTENT}" \
     'printf '\''PROTOCOL=%q\n'\'' "xhttp"'
 assert_contains "Gcore state persists XHTTP path" "${CONTENT}" \
     'printf '\''XHTTP_PATH=%q\n'\'''
+assert_contains "Gcore state persists WebSocket path" "${CONTENT}" \
+    'printf '\''WEBSOCKET_PATH=%q\n'\'''
+assert_contains "Gcore state persists WebSocket loopback port" "${CONTENT}" \
+    'printf '\''XRAY_WEBSOCKET_LOOPBACK_PORT=%q\n'\'''
 assert_not_contains "Gcore state does not persist the API token" "${CONTENT}" \
     'printf '\''GCORE_API_TOKEN='
 assert_contains "Gcore systemd service is transport-accurate" "${CONTENT}" \
-    'XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS XHTTP managed by easy_all"'
+    'XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS XHTTP + WebSocket managed by easy_all"'
 assert_contains "Gcore API failures include the method and path" "${CONTENT}" \
     'Gcore API 请求失败（HTTP ${status}）：${method} ${path}'
 assert_not_contains "Gcore never tries to replace immutable trusted CA content" "${PROFILE}" \
@@ -134,7 +144,9 @@ assert_contains "Gcore reports health check progress" "${CONTENT}" \
 assert_contains "Gcore explains the slow CDN activation timeout" "${CONTENT}" \
     '链路生效可能较慢，请耐心等待，当前公网验收超时约 15 分钟'
 assert_contains "Gcore health check runs a real XHTTP probe" "${CONTENT}" \
-    'if gcore_probe_xhttp; then'
+    'if gcore_probe_xhttp && gcore_probe_websocket; then'
+assert_contains "Gcore health check runs a real WebSocket probe" "${CONTENT}" \
+    'gcore_probe_websocket'
 assert_contains "Gcore XHTTP probe avoids a same-CDN hairpin request" "${CONTENT}" \
     "'https://cp.cloudflare.com/generate_204'"
 assert_contains "purge preflights the attached edge certificate" "${CONTENT}" \
@@ -212,6 +224,9 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     gcore_probe_xhttp() {
         ((probe_call += 1))
     }
+    gcore_probe_websocket() {
+        ((probe_call += 1))
+    }
     curl() {
         local output_file=""
         while (($#)); do
@@ -227,7 +242,7 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     }
     sleep() { fail "Gcore must not wait after end-to-end HTTPS succeeds"; }
     gcore_wait_for_domain_health node.example.com CDN >/dev/null
-    [[ "${probe_call}" == "1" ]] || fail "Gcore CDN health must run the XHTTP probe"
+    [[ "${probe_call}" == "2" ]] || fail "Gcore CDN health must run both transport probes"
     unset -f curl sleep
 
     CDN_PROVIDER=gcore
@@ -242,6 +257,7 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     VLESS_CDN_DOMAIN=node.example.com
     XHTTP_NODE_NAME=GCORE_XHTTP
     XHTTP_PATH=/xhttp-0123456789abcdef
+    WEBSOCKET_PATH=/ws-0123456789abcdef
     [[ "$(xhttp_client_endpoints)" == "node.example.com" ]] \
         || fail "Gcore subscription must use only the CDN domain"
     ! xhttp_using_optimized_candidates \
@@ -254,6 +270,11 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         && "${link}" != *'noGRPCHeader'* \
         && "${link}" != *'xmux'* ]] \
         || fail "VLESS XHTTP URI does not contain the agreed settings"
+    websocket_link=$(build_vless_websocket_link 203.0.113.10 TEST_WS)
+    [[ "${websocket_link}" == *'type=ws'* \
+        && "${websocket_link}" == *'alpn=http%2F1.1'* \
+        && "${websocket_link}" == *'path=%2Fws-0123456789abcdef'* ]] \
+        || fail "VLESS WebSocket URI does not contain the agreed settings"
 
     CDN_CLIENT_IP_FAMILY=ipv4
     mihomo=$(build_mihomo_node_for_endpoint 203.0.113.10 TEST)
@@ -264,6 +285,25 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         && "${mihomo}" != *'no-grpc-header:'* \
         && "${mihomo}" != *'reuse-settings:'* ]] \
         || fail "Mihomo XHTTP output does not contain the agreed settings"
+    websocket_mihomo=$(build_mihomo_websocket_node 203.0.113.10 TEST_WS)
+    [[ "${websocket_mihomo}" == *'network: ws'* \
+        && "${websocket_mihomo}" == *'      - http/1.1'* \
+        && "${websocket_mihomo}" == *'path: "/ws-0123456789abcdef"'* ]] \
+        || fail "Mihomo WebSocket output does not contain the agreed settings"
+    dual_links=$(build_node_links)
+    [[ "${dual_links}" == *'type=xhttp'* && "${dual_links}" == *'type=ws'* ]] \
+        || fail "Gcore subscription must contain both transports"
+    mihomo_group=$(build_mihomo_proxy_groups)
+    mihomo_proxy_names=$(build_mihomo_proxy_names)
+    [[ "${mihomo_group}" == *'type: url-test'* \
+        && "${mihomo_group}" == *'"GCORE_XHTTP_PACKET_UP"'* \
+        && "${mihomo_group}" == *'"GCORE_XHTTP_WEBSOCKET"'* \
+        && "${mihomo_group}" == *'interval: 300'* \
+        && "${mihomo_group}" == *'tolerance: 20'* \
+        && "${mihomo_group}" == *'timeout: 3000'* \
+        && "${mihomo_group}" == *'lazy: false'* \
+        && "${mihomo_proxy_names}" == *'"GCORE_XHTTP_AUTO"'* ]] \
+        || fail "Gcore dual-transport URL-test group is invalid"
 
     GCORE_ORIGIN_DOMAIN=origin.example.com
     SUBSCRIPTION_DOMAIN=node.example.com
@@ -280,7 +320,7 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         and .proxy_ssl_ca == 13
         and .proxy_ssl_data == 14
         and .options.allowedHttpMethods.value == ["GET","HEAD","POST"]
-        and .options.websockets == {enabled:true,value:false}
+        and .options.websockets == {enabled:true,value:true}
         and (.options | has("grpc_passthrough") | not)
         and (.options | has("redirect_http_to_https") | not)
         and .options.edge_cache_settings.value == "0s"
@@ -300,9 +340,9 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     }
     gcore_ensure_resource
     jq -e '.name == "easy_all xhttp node.example.com"
-        and .options.websockets == {enabled:true,value:false}' \
+        and .options.websockets == {enabled:true,value:true}' \
         <<<"${migration_patch}" >/dev/null \
-        || fail "legacy WebSocket resource was not converted to XHTTP"
+        || fail "legacy WebSocket resource was not converted to dual transport"
 
     gcore_api_request() {
         [[ "$1 $2" == "GET /cdn/clients/me" ]] || return 1

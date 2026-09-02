@@ -253,10 +253,10 @@ Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Tra
 [Transform Rules](https://developers.cloudflare.com/rules/transform/)、
 [Cloudflare IP 地址](https://www.cloudflare.com/ips/)。
 
-## 8. Gcore CDN 域名 XHTTP 准备
+## 8. Gcore CDN 域名 XHTTP + WebSocket 准备
 
-模式 3 使用 `VLESS + XHTTP(packet-up) + TLS`。Gcore CDN 支持 HTTP/2，XHTTP 使用普通的
-HTTPS 请求承载代理流量，不需要打开 Gcore 的 WebSocket 选项；客户端始终使用 Gcore CDN
+模式 3 同时使用 `VLESS + XHTTP(packet-up) + TLS` 和 `VLESS + WebSocket + TLS`。Gcore CDN 支持 HTTP/2，XHTTP 使用普通的
+HTTPS 请求承载代理流量，同时开启 Gcore 的 WebSocket 选项；客户端始终使用 Gcore CDN
 域名，**不做 IP 精选**，由 Gcore DNS 负责边缘调度。XHTTP 的下行是独立的 `GET`；
 packet-up 会把上行拆成多个 `POST` 请求，因此 CDN 资源必须同时放行
 `GET/HEAD/POST`。
@@ -431,13 +431,12 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 
 ```text
 客户端 VLESS
-  -> XHTTP packet-up + TLS，ALPN h2
+  -> XHTTP packet-up + TLS（ALPN h2）或 WebSocket + TLS（ALPN http/1.1）
   -> Gcore CDN 域名，由 Gcore DNS 调度边缘节点
-  -> Gcore CDN HTTP/2 / HTTPS
+  -> Gcore CDN HTTP/2 或 WebSocket / HTTPS
   -> HTTPS + Origin SSL Validation + Gcore 客户端证书
-  -> Nginx mTLS + Origin Key
-  -> Nginx HTTP/1.1 proxy_pass
-  -> 127.0.0.1 上的 Xray VLESS XHTTP
+  -> Nginx mTLS 按路径分流
+  -> 127.0.0.1 上的 Xray VLESS XHTTP 或 WebSocket
 ```
 
 | 参数                     | 值                               | 原因                                                       |
@@ -445,15 +444,17 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 | `mode`                 | `packet-up`                    | 将上行拆成多个 POST 请求，避免 CDN 必须支持流式请求体       |
 | `uplinkHTTPMethod`     | `POST`                         | XHTTP packet-up 的上行方法，Gcore 必须放行 POST             |
 | `ALPN`                 | `h2`                           | Gcore 支持 HTTP/2；避免退回 WebSocket 的 HTTP/1.1 Upgrade  |
+| WebSocket `ALPN`       | `http/1.1`                     | 使用标准 WebSocket Upgrade                                 |
+| WebSocket 路径         | 独立随机 `/ws-*`               | 与 XHTTP 路径分流                                           |
 | `xPaddingBytes`        | `100-1000`                     | 使用 XHTTP 默认范围，减少固定请求头特征                    |
 | `scMaxBufferedPosts`   | `30`                           | 限制服务端等待中的上行 POST 数，避免无界缓存                 |
 | `xmux`                 | 不显式配置，使用 Xray 原生默认值 | 避免把未经 Gcore 免费节点实测的连接数和复用周期写死        |
 | VLESS flow               | 空                               | XHTTP 不使用 Vision flow                                   |
 | 证书校验                 | 开启                             | 客户端使用 CDN 域名作为连接地址、SNI 和 Host               |
 
-Gcore Resource 显式关闭 `websockets`，不提交免费套餐不可用的 `grpc_passthrough` 选项；使用 HTTPS
+Gcore Resource 开启 `websockets`，不提交免费套餐不可用的 `grpc_passthrough` 选项；使用 HTTPS
 回源并固定 Host/SNI；允许 `GET/HEAD/POST`；Edge cache 和 browser cache 均为 `0s`；不忽略查询参数，
-避免 XHTTP 的会话字段被错误合并；注入随机 Origin Key；Nginx 到本机 Xray 使用 HTTP/1.1
+避免 XHTTP 的会话字段被错误合并；Nginx 到本机 Xray 使用 HTTP/1.1
 `proxy_pass`，并关闭请求/响应缓冲；使用 DNS-01 自动边缘证书，并开启 Origin SSL Validation。
 首次创建 Resource 时先关联边缘证书，再单独开启 HTTP 到 HTTPS 重定向。CNAME 目标只读取
 `GET /cdn/clients/me` 返回的账户专属 `cname`。
@@ -477,7 +478,7 @@ Gcore Resource 显式关闭 `websockets`，不提交免费套餐不可用的 `gr
 
 Gcore CDN 链路的生效可能很慢，创建或更新后请耐心等待，不要因为终端暂时没有成功就重复执行安装。
 当前源站 A 记录和 CDN CNAME 的公共 DNS 传播各自最多等待约 5 分钟；边缘证书、CDN Resource 和公网
-XHTTP 链路验收每个域名最多轮询 90 次、每次间隔 10 秒，基础超时约 15 分钟，实际还要加上 Gcore API
+XHTTP 与 WebSocket 双链路验收每个域名最多轮询 90 次、每次间隔 10 秒，基础超时约 15 分钟，实际还要加上 Gcore API
 和 HTTPS 请求耗时。若同时配置独立订阅域名，两套域名会顺序验收，最长等待时间还会相应增加。
 
 首次上线仍应在实际移动、联通、电信网络测试锁屏/空闲、Wi-Fi/蜂窝切换、至少 2 小时连续传输、

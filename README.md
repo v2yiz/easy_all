@@ -8,9 +8,9 @@
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | Cloudflare + Globalping IPv4 |
-| 3. Gcore CDN 域名 - XHTTP | VLESS XHTTP packet-up / TLS / HTTP2 | Gcore CDN 域名 |
+| 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 |
 
-Cloudflare 和 Gcore 均使用 XHTTP，前者通过 Globalping 预筛、客户端测速选优，后者直接由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 使用 XHTTP；Gcore 同时提供 XHTTP packet-up 和 WebSocket，由 Gcore DNS 调度域名；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -130,7 +130,7 @@ sudo ./easy_all install
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
   2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）
-  3. Gcore CDN 域名 - XHTTP（Gcore DNS 调度，不做 IP 精选）
+  3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -236,7 +236,7 @@ flowchart TD
     C4 --> C5[保存缓存 / 注册每小时刷新 / 输出节点与订阅]
     C5 --> Z
 
-    B -->|3| G0[Gcore CDN 域名 XHTTP]
+    B -->|3| G0[Gcore CDN 域名 XHTTP + WebSocket]
     G0 --> G1[系统预检 / 冲突检查 / 备份]
     G1 --> G2[Gcore API Token / Managed DNS 委派 / 源站与 CDN 域名]
     G2 --> G3[源站 A / Let's Encrypt / mTLS 回源证书]
@@ -340,7 +340,7 @@ Cloudflare Origin CA 会通过 API 直接吊销。远端操作失败时会立即
 | --- | --- |
 | Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
 | Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件；使用现有 Globalping 缓存。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
-| Gcore CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 使用已有证书和 mTLS 材料重建 Xray/Nginx，按 Gcore 域名验收 XHTTP。<br>4. 重建订阅、保存状态并恢复 990 GB 全局流量保护任务。普通 `apply` 不读取 Gcore 云端凭证；旧 WebSocket 安装需先执行一次 `apply-cloud` 原地迁移。 |
+| Gcore CDN XHTTP + WebSocket | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 使用已有证书和 mTLS 材料重建 Xray/Nginx，按 Gcore 域名验收 XHTTP 与 WebSocket。<br>4. 重建订阅、保存状态并恢复 990 GB 全局流量保护任务。普通 `apply` 不读取 Gcore 云端凭证；旧单链路安装需先执行一次 `apply-cloud` 原地迁移。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
 Xray/Nginx 配置和订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
@@ -703,25 +703,26 @@ Config Rules Edit、Zone Settings Edit、SSL and Certificates Edit）。完整�
 DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见
 [前置准备手册](docs/preparation-guide.md)。
 
-## Gcore CDN 域名 XHTTP
+## Gcore CDN 域名 XHTTP + WebSocket
 
-模式 3 使用 `VLESS + XHTTP(packet-up) + TLS`，客户端连接地址、TLS SNI 和 HTTP Host
+模式 3 同时使用 `VLESS + XHTTP(packet-up) + TLS` 和 `VLESS + WebSocket + TLS`，客户端连接地址、TLS SNI 和 HTTP Host
 始终使用 Gcore CDN 域名，由 Gcore DNS 调度边缘节点；不收集 Globalping Token、不生成精选 IP 缓存，
-也不安装 IP 刷新任务。
+也不安装 IP 刷新任务。节点与订阅会同时输出 `PACKET_UP` 和 `WEBSOCKET` 两个入口，共用 UUID；
+Mihomo 订阅每 300 秒测速，延迟差超过 20 ms 时切换，单次探测 3 秒超时。
 
 安装器要求根域名已完整委派给 Gcore Managed DNS，并使用 Gcore API Token 自动创建源站 A 记录、
-XHTTP CDN Resource、Origin Group、Origin SSL Validation、mTLS 回源证书和边缘证书。源站使用
+XHTTP + WebSocket CDN Resource、Origin Group、Origin SSL Validation、mTLS 回源证书和边缘证书。源站使用
 Let's Encrypt 证书；已有 A/AAAA/CNAME 记录默认拒绝覆盖，只有显式设置 `GCORE_DNS_REPLACE=1`
 才允许替换冲突记录。
 
 Gcore CDN 链路生效可能很慢，创建或更新后请耐心等待，不要重复执行安装。当前源站 A 记录和 CDN
-CNAME 的公共 DNS 传播各自最多约 5 分钟；边缘证书、CDN Resource 和公网 XHTTP 链路验收每个域名
+CNAME 的公共 DNS 传播各自最多约 5 分钟；边缘证书、CDN Resource 和公网双链路验收每个域名
 的基础超时约 15 分钟（90 次检查、每次间隔 10 秒，实际还要加上 API 和 HTTPS 请求耗时）。配置
 独立订阅域名时，两套域名会顺序验收，等待时间会相应增加。
 
 Gcore Free CDN 的本地保护阈值固定为 `990 GB`。Xray 统计达到阈值后临时阻断节点，进入新的 UTC
 自然月恢复；它只是本地第二道保护，仍需在 Gcore 控制台设置用量提醒。完整的域名委派、Token 权限、
-XHTTP 参数、证书和卸载说明见统一的[前置准备手册](docs/preparation-guide.md#8-gcore-cdn-域名-xhttp-准备)。
+双链路参数、证书和卸载说明见统一的[前置准备手册](docs/preparation-guide.md#8-gcore-cdn-域名-xhttp--websocket-准备)。
 
 ## 状态与边界
 

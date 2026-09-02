@@ -113,7 +113,7 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"三网 Globalping eyeball 预筛"* \
     && "${guide}" == *"XHTTP"* \
     && "${guide}" != *"AWS"* \
-    && "${guide}" == *"[3] Gcore CDN 域名 - XHTTP"* \
+    && "${guide}" == *"[3] Gcore CDN 域名 - XHTTP + WebSocket"* \
     && "${guide}" == *"不做 IP 精选"* ]] \
     || fail "install guide does not describe the supported installation branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
@@ -136,7 +136,7 @@ readme=$(<"${ROOT_DIR}/README.md")
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - XHTTP'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 域名 - XHTTP'* ]] \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 域名 - XHTTP + WebSocket'* ]] \
     || fail "install mode prompt must explain line recommendations"
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
