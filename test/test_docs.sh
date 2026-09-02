@@ -40,7 +40,7 @@ done
 
 assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
-assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 域名 - XHTTP'
+assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 域名 - WebSocket'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
@@ -135,16 +135,16 @@ assert_contains "Preparation guide documents the Globalping token page" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
 assert_contains "Preparation guide documents the optimized XHTTP mode" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
-assert_contains "Preparation guide documents Gcore XHTTP" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Gcore CDN 域名 XHTTP 准备'
+assert_contains "Preparation guide documents Gcore WebSocket" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Gcore CDN 域名 WebSocket 准备'
 assert_contains "Preparation guide embeds the Gcore Managed DNS illustration" \
     "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'
 assert_contains "Preparation guide embeds the Gcore API token illustration" \
     "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/api-token-create.svg'
-assert_contains "Preparation guide documents Gcore POST uplink" \
-    "${PREPARATION_GUIDE_CONTENT}" 'GET/HEAD/POST'
-assert_contains "Preparation guide documents Gcore H2" \
-    "${PREPARATION_GUIDE_CONTENT}" 'ALPN h2'
+assert_contains "Preparation guide documents Gcore WebSocket methods" \
+    "${PREPARATION_GUIDE_CONTENT}" 'GET/HEAD'
+assert_contains "Preparation guide documents Gcore WebSocket ALPN" \
+    "${PREPARATION_GUIDE_CONTENT}" 'ALPN http/1.1'
 assert_contains "Preparation guide documents Gcore HTTP proxy" \
     "${PREPARATION_GUIDE_CONTENT}" 'proxy_pass'
 assert_contains "Preparation guide keeps Gcore domain routing" \

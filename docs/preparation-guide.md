@@ -3,7 +3,7 @@
 本手册覆盖 Reality、Cloudflare 和 Gcore 三种模式所需的域名、账号、DNS 和 Token 准备。Reality 节点数据仍然直连，
 但选择“部署订阅”时，订阅服务会使用 Cloudflare Universal SSL 与 Origin CA。
 
-Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Gcore XHTTP 模式阅读第 1.1、8 节；Reality **只有选择部署订阅**时才阅读第 1、3.1、4 节。
+Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Gcore WebSocket 模式阅读第 1.1、8 节；Reality **只有选择部署订阅**时才阅读第 1、3.1、4 节。
 Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览器和账号侧操作；VPS 登录、安装、重启和
 客户端导入请回到 [README 的第一次安装路径](../README.md#第一次安装先看这里)。
 
@@ -24,7 +24,7 @@ Cloudflare Free Zone 与 Gcore Free CDN 的基础额度按 Provider 当前规则
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token                       | Globalping Token、gRPC 设置                        | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品                           | 第 1–7 节                                                                    |
-| 模式 3：Gcore XHTTP      | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、控制台用量提醒；额度内预期`$0/月`                                 | Globalping、Cloudflare gRPC 等 Cloudflare 专属准备 | 第 1.1、8 节                                                                  |
+| 模式 3：Gcore WebSocket | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、控制台用量提醒；额度内预期`$0/月`                                 | Globalping、Cloudflare gRPC 等 Cloudflare 专属准备 | 第 1.1、8 节                                                                  |
 
 各链路建议使用的域名如下：
 
@@ -253,13 +253,13 @@ Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Tra
 [Transform Rules](https://developers.cloudflare.com/rules/transform/)、
 [Cloudflare IP 地址](https://www.cloudflare.com/ips/)。
 
-## 8. Gcore CDN 域名 XHTTP 准备
+## 8. Gcore CDN 域名 WebSocket 准备
 
-模式 3 使用 `VLESS + XHTTP(packet-up) + TLS`。Gcore CDN 支持 HTTP/2，XHTTP 使用普通的
-HTTPS 请求承载代理流量，不需要打开 Gcore 的 WebSocket 选项；客户端始终使用 Gcore CDN
-域名，**不做 IP 精选**，由 Gcore DNS 负责边缘调度。XHTTP 的下行是独立的 `GET`；
-packet-up 会把上行拆成多个 `POST` 请求，因此 CDN 资源必须同时放行
-`GET/HEAD/POST`。
+模式 3 使用 Gcore 官方文档支持的 `VLESS + WebSocket + TLS`。安装器通过官方 CDN API
+开启 WebSocket，客户端始终使用 Gcore CDN 域名，**不做 IP 精选**，由 Gcore DNS 负责边缘调度。
+CDN 资源只需放行 WebSocket 握手和订阅所需的 `GET/HEAD`。
+
+官方参考：[Gcore：How to Run V2Ray via WebSocket and Gcore](https://gcore.com/learning/v2ray-websocket)。
 
 安装器需要以下凭证：
 
@@ -370,7 +370,7 @@ API tokens → Create token**。Gcore 的永久 Token 只在创建完成时显�
 
 按下面填写，不要把真实 Token 放进仓库、截图、聊天记录或命令历史：
 
-1. **Token name** 填 `easy_all-gcore`；**Description** 可填 `easy_all Gcore CDN XHTTP`，方便日后识别。
+1. **Token name** 填 `easy_all-gcore`；**Description** 可填 `easy_all Gcore CDN WebSocket`，方便日后识别。
 2. **Expiration** 建议设置到期日并在到期前轮换；需要长期无人值守时才选 **Never expire**，但仍应记录轮换计划。
 3. 在 **IAM / CDN** 中优先选择 `Engineers`。当前实现只管理 CDN/DNS 资源，不管理用户、Token、账单或账号设置，
    因此不需要把整个 Token 提升到 `Administrators`。**Purge and Prefetch only** 只够清缓存/预取，不能创建
@@ -431,30 +431,25 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 
 ```text
 客户端 VLESS
-  -> XHTTP packet-up + TLS，ALPN h2
+  -> WebSocket + TLS，ALPN http/1.1
   -> Gcore CDN 域名，由 Gcore DNS 调度边缘节点
-  -> Gcore CDN HTTP/2 / HTTPS
+  -> Gcore CDN WebSocket / HTTPS
   -> HTTPS + Origin SSL Validation + Gcore 客户端证书
-  -> Nginx mTLS + Origin Key
-  -> Nginx HTTP/1.1 proxy_pass
-  -> 127.0.0.1 上的 Xray VLESS XHTTP
+  -> Nginx mTLS
+  -> Nginx HTTP/1.1 Upgrade / proxy_pass
+  -> 127.0.0.1 上的 Xray VLESS WebSocket
 ```
 
 | 参数                     | 值                               | 原因                                                       |
 | ------------------------ | -------------------------------- | ---------------------------------------------------------- |
-| `mode`                 | `packet-up`                    | 将上行拆成多个 POST 请求，避免 CDN 必须支持流式请求体       |
-| `uplinkHTTPMethod`     | `POST`                         | XHTTP packet-up 的上行方法，Gcore 必须放行 POST             |
-| `ALPN`                 | `h2`                           | Gcore 支持 HTTP/2；避免退回 WebSocket 的 HTTP/1.1 Upgrade  |
-| `xPaddingBytes`        | `100-1000`                     | 使用 XHTTP 默认范围，减少固定请求头特征                    |
-| `scMaxBufferedPosts`   | `30`                           | 限制服务端等待中的上行 POST 数，避免无界缓存                 |
-| `xmux`                 | 不显式配置，使用 Xray 原生默认值 | 避免把未经 Gcore 免费节点实测的连接数和复用周期写死        |
-| VLESS flow               | 空                               | XHTTP 不使用 Vision flow                                   |
+| 传输                     | `ws`                             | Gcore 官方公开支持且客户端兼容性最好                        |
+| `ALPN`                   | `http/1.1`                       | WebSocket Upgrade 的标准 HTTP 版本                          |
+| VLESS flow               | 空                               | WebSocket 不使用 Vision flow                               |
 | 证书校验                 | 开启                             | 客户端使用 CDN 域名作为连接地址、SNI 和 Host               |
 
-Gcore Resource 不开启 `websockets`，不提交免费套餐不可用的 `grpc_passthrough` 选项；使用 HTTPS
-回源并固定 Host/SNI；允许 `GET/HEAD/POST`；Edge cache 和 browser cache 均为 `0s`；不忽略查询参数，
-避免 XHTTP 的会话字段被错误合并；注入随机 Origin Key；Nginx 到本机 Xray 使用 HTTP/1.1
-`proxy_pass`，并关闭请求/响应缓冲；使用 DNS-01 自动边缘证书，并开启 Origin SSL Validation。
+Gcore Resource 开启官方 `websockets` 选项，不提交免费套餐不可用的 `grpc_passthrough`；使用 HTTPS
+回源并固定 Host/SNI；允许 `GET/HEAD`；Edge cache 和 browser cache 均为 `0s`；Nginx 到本机 Xray
+使用标准 HTTP/1.1 Upgrade，并关闭响应缓冲；使用 DNS-01 自动边缘证书，并开启 Origin SSL Validation。
 首次创建 Resource 时先关联边缘证书，再单独开启 HTTP 到 HTTPS 重定向。CNAME 目标只读取
 `GET /cdn/clients/me` 返回的账户专属 `cname`。
 
@@ -463,7 +458,7 @@ Gcore Resource 不开启 `websockets`，不提交免费套餐不可用的 `grpc_
 源站使用独立 Let's Encrypt 证书。安装器从 `fullchain.pem` 提取签发 CA，上传到
 `/cdn/sslCertificates`；同时在 VPS 生成专用客户端 CA 和客户端证书，把客户端证书与私钥上传到
 `/cdn/sslData`。Gcore 验证源站证书并出示客户端证书；Nginx 使用 `ssl_verify_client on`，所以直接
-访问源站 443 即使知道 Origin Key，也无法通过 TLS 客户端证书验证。
+直接访问源站 443 无法通过 TLS 客户端证书验证。
 
 如果源站证书续期后签发 CA 发生变化，普通 `easy_all apply` 会停止并提示运行
 `easy_all apply-cloud`。`easy_all renew-cert` 会要求 Gcore Token，在续期后同步 Trusted CA 并重新验收。
@@ -477,7 +472,7 @@ Gcore Resource 不开启 `websockets`，不提交免费套餐不可用的 `grpc_
 
 Gcore CDN 链路的生效可能很慢，创建或更新后请耐心等待，不要因为终端暂时没有成功就重复执行安装。
 当前源站 A 记录和 CDN CNAME 的公共 DNS 传播各自最多等待约 5 分钟；边缘证书、CDN Resource 和公网
-XHTTP 链路验收每个域名最多轮询 90 次、每次间隔 10 秒，基础超时约 15 分钟，实际还要加上 Gcore API
+WebSocket 链路验收每个域名最多轮询 90 次、每次间隔 10 秒，基础超时约 15 分钟，实际还要加上 Gcore API
 和 HTTPS 请求耗时。若同时配置独立订阅域名，两套域名会顺序验收，最长等待时间还会相应增加。
 
 首次上线仍应在实际移动、联通、电信网络测试锁屏/空闲、Wi-Fi/蜂窝切换、至少 2 小时连续传输、
