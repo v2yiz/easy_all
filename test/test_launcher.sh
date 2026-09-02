@@ -142,8 +142,11 @@ assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 printf 'STATE_VERSION=6\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Reality state selects Reality profile" "reality" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\nCLOUDFLARE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare state selects the second mode" "cloudflare" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\nCLOUDFLARE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "legacy Cloudflare state remains readable" "cloudflare" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \

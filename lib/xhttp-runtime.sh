@@ -496,10 +496,6 @@ build_node_links() {
     done < <(xhttp_client_endpoints)
 }
 
-build_node_link() {
-    build_node_links
-}
-
 build_mihomo_node_for_endpoint() {
     local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
     resolve_cdn_client_ip_family
@@ -532,10 +528,6 @@ build_mihomo_nodes() {
             "$(xhttp_node_name_for_endpoint "${index}")"
         index=$((index + 1))
     done < <(xhttp_client_endpoints)
-}
-
-build_mihomo_node() {
-    build_mihomo_nodes
 }
 
 xhttp_auto_group_name() {

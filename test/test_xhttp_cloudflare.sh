@@ -51,10 +51,8 @@ assert_contains "Cloudflare profile loads Globalping discovery" \
     "${profile_content}" 'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'
 assert_contains "Cloudflare profile persists its provider" \
     "${profile_content}" 'CDN_PROVIDER)'
-assert_contains "Cloudflare profile persists optimized endpoint mode" \
+assert_not_contains "Cloudflare profile has no endpoint mode flag" \
     "${profile_content}" 'CLOUDFLARE_CDN_ENDPOINT_MODE'
-assert_contains "Cloudflare profile sets the optimized endpoint mode" \
-    "${profile_content}" 'CLOUDFLARE_CDN_ENDPOINT_MODE=optimized'
 assert_contains "Cloudflare profile uses bearer API authentication" \
     "${profile_content}" 'Authorization: Bearer %s'
 assert_not_contains "Cloudflare token is not exposed in curl argv" \
@@ -340,7 +338,6 @@ EOF
 
     GLOBALPING_NOW_EPOCH=2000000000
     CDN_PROVIDER="cloudflare"
-    CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
     XHTTP_NODE_NAME="VLESS_XHTTP_H2"
     cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 {"version":3,"provider":"cloudflare","domain":"node.example.com","candidate_source":"cloudflare-official-ipv4-cidrs","measured_at":"2033-05-18T03:33:20Z","measured_at_epoch":2000000000,"probe_type":"eyeball-network","carrier_asns":[4134,4837,9808],"candidates":[{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","observations":2,"carrier_count":2,"avg_rtt_ms":30,"asns":[4134,4837]}]}

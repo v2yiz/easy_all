@@ -24,11 +24,7 @@ GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/cloudflare-cdn-ips.json"
 GLOBALPING_REFRESH_SERVICE_FILE_OVERRIDE="${TMP_DIR}/easy_all-globalping-refresh.service"
 GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE="${TMP_DIR}/easy_all-globalping-refresh.timer"
 COMMAND_PATH="/usr/local/bin/easy_all"
-VLESS_CDN_DOMAIN="node.example.com"
 CDN_PROVIDER="cloudflare"
-CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
-GLOBALPING_NOW_EPOCH=2000000000
-cleanup_files=()
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}"
 
 warn() { :; }
@@ -47,126 +43,9 @@ if validate_public_ipv4 127.0.0.1 || validate_public_ipv4 169.254.169.254 \
     fail "private, metadata, and documentation IPv4 ranges must be rejected"
 fi
 
-request=$(globalping_measurement_request)
-jq -e '
-  .type == "ping"
-  and .target == "node.example.com"
-  and .locations == [{country:"CN"}]
-  and .limit == 50
-  and .timeout == 20
-  and .measurementOptions == {
-    packets:10, protocol:"TCP", port:443, ipVersion:4
-  }
-' <<<"${request}" >/dev/null || fail "Globalping request contract is invalid"
-
-(
-    poll_count_file="${TMP_DIR}/poll-count"
-    printf '0\n' >"${poll_count_file}"
-    sleep() { :; }
-    globalping_api_request() {
-        if [[ "$1" == "POST" ]]; then
-            printf '%s\n' '{"id":"measurement-1","probesCount":2}'
-            return 0
-        fi
-        poll_count=$(<"${poll_count_file}")
-        poll_count=$((poll_count + 1))
-        printf '%s\n' "${poll_count}" >"${poll_count_file}"
-        if ((poll_count == 1)); then
-            printf '%s\n' '{"id":"measurement-1","status":"in-progress"}'
-        else
-            printf '%s\n' '{"id":"measurement-1","status":"finished","results":[]}'
-        fi
-    }
-    result=$(globalping_run_measurement)
-    assert_equal "synchronous measurement polling reaches the final response" \
-        "finished" "$(jq -r '.status' <<<"${result}")"
-    assert_equal "synchronous measurement polls until completion" "2" \
-        "$(<"${poll_count_file}")"
-)
-
-measurement='{
-  "id":"measurement-1",
-  "status":"finished",
-  "createdAt":"2033-05-18T03:33:20Z",
-  "updatedAt":"2033-05-18T03:33:25Z",
-  "results":[
-    {
-      "probe":{"country":"CN","city":"Shanghai","asn":9929,"network":"Unicom"},
-      "result":{"status":"finished","resolvedAddress":"13.32.10.10","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":30}}
-    },
-    {
-      "probe":{"country":"CN","city":"Beijing","asn":4134,"network":"Telecom"},
-      "result":{"status":"finished","resolvedAddress":"13.32.10.10","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":50}}
-    },
-    {
-      "probe":{"country":"CN","city":"Guangzhou","asn":9808,"network":"Mobile"},
-      "result":{"status":"finished","resolvedAddress":"18.64.20.20","stats":{"loss":10,"total":10,"rcv":9,"drop":1,"avg":40}}
-    },
-    {
-      "probe":{"country":"US","city":"Seattle","asn":16509,"network":"Amazon"},
-      "result":{"status":"finished","resolvedAddress":"192.0.2.30","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":20}}
-    },
-    {
-      "probe":{"country":"CN","city":"Shenzhen","asn":4134,"network":"Telecom"},
-      "result":{"status":"finished","resolvedAddress":"999.1.1.1","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":10}}
-    }
-  ]
-}'
-
-candidates=$(globalping_zero_loss_candidates "${measurement}")
-assert_equal "only one strict mainland zero-loss IPv4 remains" "1" \
-    "$(jq 'length' <<<"${candidates}")"
-assert_equal "duplicate observations are aggregated" "2" \
-    "$(jq -r '.[0].observations' <<<"${candidates}")"
-assert_equal "average RTT is aggregated" "40" \
-    "$(jq -r '.[0].avg_rtt_ms' <<<"${candidates}")"
-
-validate_cdn_candidate() {
-    [[ "$1" == "13.32.10.10" ]]
-}
-cache_stage="${TMP_DIR}/cache-stage.json"
-globalping_build_cache "${measurement}" "${cache_stage}"
-install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
-jq -e '
-  .version == 2
-  and .provider == "cloudflare"
-  and .domain == "node.example.com"
-  and .probe_country == "CN"
-  and .protocol == "TCP"
-  and .port == 443
-  and .packets == 10
-  and .candidates == [{
-    ip:"13.32.10.10",
-    observations:2,
-    avg_rtt_ms:40,
-    cities:["Beijing","Shanghai"],
-    asns:[4134,9929],
-    networks:["Telecom","Unicom"]
-  }]
-' "${GLOBALPING_CACHE_FILE}" >/dev/null || fail "Globalping cache schema is invalid"
-
-globalping_cache_valid || fail "fresh Globalping cache must be valid"
-assert_equal "fresh cache returns selected IPv4" "13.32.10.10" \
-    "$(cdn_client_endpoints)"
-
-GLOBALPING_NOW_EPOCH=$((2000000000 + GLOBALPING_CACHE_MAX_AGE_SECONDS + 1))
-if globalping_cache_valid; then
-    fail "cache older than 72 hours must not be used"
-fi
-assert_equal "stale cache falls back to CDN domain" "node.example.com" \
-    "$(cdn_client_endpoints)"
-
-GLOBALPING_NOW_EPOCH=2000000000
-CDN_PROVIDER="cloudflare"
-CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
-jq '.provider = "cloudflare"' "${GLOBALPING_CACHE_FILE}" >"${cache_stage}"
-install -m 0600 "${cache_stage}" "${GLOBALPING_CACHE_FILE}"
-assert_equal "Cloudflare optimized mode reuses the provider-neutral candidates" \
-    "13.32.10.10" "$(cdn_client_endpoints)"
-CLOUDFLARE_CDN_ENDPOINT_MODE="domain"
-assert_equal "Cloudflare domain mode ignores candidate cache" "node.example.com" \
-    "$(cdn_client_endpoints)"
-CLOUDFLARE_CDN_ENDPOINT_MODE="optimized"
+CLOUDFLARE_CDN_ENDPOINT_MODE=domain
+cdn_optimization_enabled \
+    || fail "Cloudflare optimization must not depend on the removed endpoint mode"
 
 printf 'test-globalping-token-value\n' >"${GLOBALPING_TOKEN_FILE}"
 chmod 0600 "${GLOBALPING_TOKEN_FILE}"

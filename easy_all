@@ -137,8 +137,6 @@ detect_installed_mode() {
             [[ "${state_version}" == "7" ]] || launcher_die "XHTTP 状态版本无效；仅支持当前全新安装生成的状态"
             case "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" in
             cloudflare)
-                [[ "$(state_value "${EASY_ALL_STATE_FILE}" CLOUDFLARE_CDN_ENDPOINT_MODE || true)" == "optimized" ]] \
-                    || launcher_die "Cloudflare 状态不完整；请重新安装"
                 printf 'cloudflare\n'
                 ;;
             *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;

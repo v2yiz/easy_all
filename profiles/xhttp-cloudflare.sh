@@ -523,7 +523,7 @@ cloudflare_wait_for_health() {
 }
 
 collect_install_inputs() {
-    PROTOCOL=xhttp; CDN_PROVIDER=cloudflare; CLOUDFLARE_CDN_ENDPOINT_MODE=optimized; choose_cdn_client_ip_family
+    PROTOCOL=xhttp; CDN_PROVIDER=cloudflare; choose_cdn_client_ip_family
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}; VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}; validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
     info "Cloudflare 模式采用单域名架构：此域名同时用于客户端连接、Cloudflare 回源和 VPS 证书。"
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "" "CDN hostname used by clients")}"); validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
@@ -537,10 +537,9 @@ collect_install_inputs() {
 }
 
 load_state() {
-    local v e; local -a vars=(PROTOCOL CDN_PROVIDER CLOUDFLARE_CDN_ENDPOINT_MODE CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR)
+    local v e; local -a vars=(PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR)
     for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; printf -v "${e}" %s "${!v:-}"; printf -v "${v}" %s ""; done; source_state_file; for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; [[ -z "${!e:-}" ]] || printf -v "${v}" %s "${!e}"; unset "${e}"; done
-    [[ "${PROTOCOL}" == xhttp && "${CDN_PROVIDER:-}" == cloudflare ]] || die "状态不是 Cloudflare CDN XHTTP"
-    [[ "${CLOUDFLARE_CDN_ENDPOINT_MODE:-}" == optimized ]] || die "Cloudflare 仅支持 Globalping optimized 模式"; configure_cdn_client_ip_family
+    [[ "${PROTOCOL}" == xhttp && "${CDN_PROVIDER:-}" == cloudflare ]] || die "状态不是 Cloudflare CDN XHTTP"; configure_cdn_client_ip_family
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" && validate_uuid "${VLESS_UUID:-}" && validate_xhttp_path "${XHTTP_PATH:-}" && validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT:-}" || die "Cloudflare 状态缺少必要有效字段"
     [[ "${CLOUDFLARE_ORIGIN_DOMAIN}" == "${VLESS_CDN_DOMAIN}" ]] \
         || die "Cloudflare 状态不是单一 Proxied 源站域名架构"
@@ -566,7 +565,7 @@ load_state() {
 
 save_state() {
     install -d -m 0700 "${STATE_DIR}"; local t; t=$(mktemp "${STATE_DIR}/state.env.XXXXXX"); cleanup_files+=("${t}")
-    { for v in STATE_VERSION PROTOCOL CDN_PROVIDER CLOUDFLARE_CDN_ENDPOINT_MODE CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do case "${v}" in STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}";; PROTOCOL) printf '%s=%q\n' "${v}" xhttp;; CDN_PROVIDER) printf '%s=%q\n' "${v}" cloudflare;; SUBSCRIPTION_DOMAIN) printf '%s=%q\n' "${v}" "$(subscription_link_domain)";; *) printf '%s=%q\n' "${v}" "${!v:-}";; esac; done; } >"${t}"; install -m 0600 "${t}" "${STATE_FILE}"
+    { for v in STATE_VERSION PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do case "${v}" in STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}";; PROTOCOL) printf '%s=%q\n' "${v}" xhttp;; CDN_PROVIDER) printf '%s=%q\n' "${v}" cloudflare;; SUBSCRIPTION_DOMAIN) printf '%s=%q\n' "${v}" "$(subscription_link_domain)";; *) printf '%s=%q\n' "${v}" "${!v:-}";; esac; done; } >"${t}"; install -m 0600 "${t}" "${STATE_FILE}"
 }
 collect_installed_state() { [[ -f "${STATE_FILE}" ]] || die "easy_all Cloudflare CDN XHTTP 尚未安装"; load_state; }
 
@@ -577,7 +576,7 @@ xhttp_render_xray_config() {
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null || die "Xray 配置校验失败"; install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
 }
 
-show_node() { collect_installed_state; printf '\n协议: VLESS XHTTP stream-up/H2 over Cloudflare CDN\n节点链接:\n%s\n\n' "$(build_node_link)"; build_mihomo_node; }
+show_node() { collect_installed_state; printf '\n协议: VLESS XHTTP stream-up/H2 over Cloudflare CDN\n节点链接:\n%s\n\n' "$(build_node_links)"; build_mihomo_nodes; }
 show_status() { require_root; collect_installed_state; resolve_cdn_client_ip_family; printf '协议: xhttp（Cloudflare CDN）\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: enabled\n' "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"; show_globalping_status; }
 
 refresh_cloudflare_cdn_ips() {
