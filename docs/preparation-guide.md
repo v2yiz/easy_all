@@ -20,11 +20,11 @@ Cloudflare Free Zone 与 Gcore Free CDN 的基础额度按 Provider 当前规则
 也只能委派给一组权威名称服务器，因此一个 Zone 不能同时委派给多组权威名称服务器。
 需要并行测试不同 CDN 时，请使用不同根域名或分别正确委派的独立 Zone。
 
-| 链路 | 必须准备 | 不需要准备 | 继续阅读 |
-| --- | --- | --- | --- |
-| 模式 1：Reality 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token | Globalping Token、gRPC 设置 | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
-| 模式 2：Cloudflare XHTTP | 根域名、Cloudflare Free 账号、已变为 **Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
-| 模式 3：Gcore XHTTP | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、控制台用量提醒；额度内预期 `$0/月` | Globalping、Cloudflare gRPC 等 Cloudflare 专属准备 | 第 1.1、8 节 |
+| 链路                     | 必须准备                                                                                                                                                                       | 不需要准备                                         | 继续阅读                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token                       | Globalping Token、gRPC 设置                        | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
+| 模式 2：Cloudflare XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品                           | 第 1–7 节                                                                    |
+| 模式 3：Gcore XHTTP      | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、控制台用量提醒；额度内预期`$0/月`                                 | Globalping、Cloudflare gRPC 等 Cloudflare 专属准备 | 第 1.1、8 节                                                                  |
 
 各链路建议使用的域名如下：
 
@@ -173,13 +173,13 @@ Include → Specific zone → example.com
 XHTTP 模式添加以下六项权限；Reality 仅部署订阅时只需其中 `Zone / Zone / Read`、
 `Zone / DNS / Edit`、`Zone / Config Rules / Edit` 和 `Zone / SSL and Certificates / Edit`：
 
-| 权限 | 用途 |
-| --- | --- |
-| `Zone / Zone / Read` | 识别并验证目标 Zone |
-| `Zone / DNS / Edit` | 管理节点和订阅 DNS 记录 |
-| `Zone / Transform Rules / Edit` | 管理回源密钥规则 |
-| `Zone / Config Rules / Edit` | 设置 Full (strict) |
-| `Zone / Zone Settings / Edit` | 启用 origin HTTP/2 |
+| 权限                                   | 用途                            |
+| -------------------------------------- | ------------------------------- |
+| `Zone / Zone / Read`                 | 识别并验证目标 Zone             |
+| `Zone / DNS / Edit`                  | 管理节点和订阅 DNS 记录         |
+| `Zone / Transform Rules / Edit`      | 管理回源密钥规则                |
+| `Zone / Config Rules / Edit`         | 设置 Full (strict)              |
+| `Zone / Zone Settings / Edit`        | 启用 origin HTTP/2              |
 | `Zone / SSL and Certificates / Edit` | 签发、轮换和吊销 Origin CA 证书 |
 
 ![Cloudflare API Token 的六项最小权限与单 Zone 资源范围](img/cloudflare/cloudflare-api-token-easy-all.svg)
@@ -229,12 +229,12 @@ Shadowrocket 列为已验证客户端。若使用小火箭，请升级到最新�
 上述能力可在 Cloudflare Free Zone 使用；域名注册费和 VPS 费用另计。本项目不会自动启用任何
 按量计费的增值产品，也不承诺固定的月度 CDN 流量额度。
 
-| 项目 | 说明 |
-| --- | --- |
+| 项目          | 说明                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------- |
 | 基础 CDN 费用 | Free Zone 本身无月费；Token、proxied DNS、Universal SSL、Origin CA、HTTP/2、gRPC 和规则配置不单独收费。 |
-| 可用流量 | 没有可据此保证的固定 GB 上限；实际受 Cloudflare 服务条款、账户风控、VPS 带宽和连接质量共同限制。 |
-| 单次请求 | Free/Pro 的请求体上限为 **100 MB**；长连接或大流量不等于获得无限制隧道能力。 |
-| 额外费用 | 只有自行启用 Argo、WAF、Bot Management 等增值产品时，相关流量才可能产生额外费用；本项目不启用它们。 |
+| 可用流量      | 没有可据此保证的固定 GB 上限；实际受 Cloudflare 服务条款、账户风控、VPS 带宽和连接质量共同限制。        |
+| 单次请求      | Free/Pro 的请求体上限为**100 MB**；长连接或大流量不等于获得无限制隧道能力。                       |
+| 额外费用      | 只有自行启用 Argo、WAF、Bot Management 等增值产品时，相关流量才可能产生额外费用；本项目不启用它们。     |
 
 本链路是实时 XHTTP 转发，数据不会因为 CDN 缓存而减少 VPS 出口流量。建议先按目标用户数、峰值并发、
 VPS 出口带宽和每用户配额估算容量，再进行低速、长连接和持续传输测试。Cloudflare 的条款、流量限制
@@ -298,6 +298,13 @@ sub.example.com     可选订阅域名，作为同一 CDN Resource 的 secondary
 当前控制台路径是 **网络 → Managed DNS → 所有区域 → 添加区域**。点击后会进入四步流程：
 **输入域 → 正在扫描记录 → 检查记录 → 更改域名服务器**。
 
+下面是当前控制台英文界面的定位图；中文版的菜单和步骤位置相同。图中只是打开向导，未提交任何域名：
+
+![Gcore Managed DNS 添加区域向导](img/gcore/managed-dns-add-zone.svg)
+
+重点看左侧四步：先在 Gcore 创建 Zone，再到注册商替换根域名的权威 NS，最后等 Zone 状态变为
+**Active/已委托**。不要把 `node.example.com` 填成 Zone；这里应填写 `example.com` 这样的根域名。
+
 1. 在“输入域”填入要托管的根域，例如 `example.com`，不要填写 `node.example.com` 这样的节点子域。
 2. 保持 **Skip scanning** 未勾选，让 Gcore 扫描现有 DNS。只有确认根域从未承载网站、邮箱或其他
    DNS 业务时，才可跳过扫描。
@@ -351,21 +358,53 @@ Gcore Free Managed DNS 当前可用于此流程；若当前账户的 Managed DNS
 
 ### 8.3 Gcore API Token 权限
 
-新建一枚 easy_all 专用 Token。API 使用：
+Token 是安装器访问 Gcore CDN 和 Managed DNS API 的唯一凭证。当前控制台路径是 **头像 → Profile →
+API tokens → Create token**。Gcore 的永久 Token 只在创建完成时显示一次，关闭弹窗后不能再次查看。
 
+![Gcore API Token 创建与角色选择](img/gcore/api-token-create.svg)
+
+按下面填写，不要把真实 Token 放进仓库、截图、聊天记录或命令历史：
+
+1. **Token name** 填 `easy_all-gcore`；**Description** 可填 `easy_all Gcore CDN XHTTP`，方便日后识别。
+2. **Expiration** 建议设置到期日并在到期前轮换；需要长期无人值守时才选 **Never expire**，但仍应记录轮换计划。
+3. 在 **IAM / CDN** 中优先选择 `Engineers`。当前实现只管理 CDN/DNS 资源，不管理用户、Token、账单或账号设置，
+   因此不需要把整个 Token 提升到 `Administrators`。**Purge and Prefetch only** 只够清缓存/预取，不能创建
+   Origin Group、CDN Resource、证书或 DNS 记录，不能用于本项目安装。
+4. **Managed DNS** 必须使用能创建/修改 Zone RRset 的角色。若控制台把 Managed DNS 写权限单独固定为
+   `Administrators`，只在该产品卡保留管理员角色即可，不代表 **IAM / CDN** 也必须选择管理员；如果能选择更低角色，
+   先确认角色说明包含 Managed DNS 写权限。Cloud、Storage、Streaming、WAAP 等本项目不使用的产品不需要额外授权。
+5. 点击 **Create** 后，立即复制弹窗中的完整 Token，保存到密码管理器或本次安装的环境变量，再确认
+   **OK, I’ve copied token**。不要截图保存 Token；丢失后只能删除旧 Token 并重新创建。
+
+API 使用：
 
 ```http
 Authorization: APIKey <token>
 ```
 
-Token 所属身份必须能读取和修改：
+安装器实际会读取/修改：
 
 - CDN Client、Origin Group、CDN Resource；
 - CDN SSL Certificate 与 Trusted CA Certificate；
 - Managed DNS Zone、Delegation Status 和 RRset。
 
-创建 Token 前应让账户管理员确认该身份具备 CDN 和 Managed DNS 写权限；不要授予 Cloud、Storage、
-Streaming、WAAP 或 IAM 用户管理权限。
+创建前让账户管理员确认 Token 的角色同时覆盖 CDN 和 Managed DNS 写操作。角色名称以当前控制台的
+说明为准；通常结论是 **Engineers 足够，Administrators 不必需**。仅有 `Purge and Prefetch only` 或 `Users` 时，
+Token 会在安装器进入写操作时被拒绝；若 `Engineers` 在你的账号上对某个写接口返回 HTTP 403，再按 Gcore 当前角色
+说明决定是否只提升对应产品权限，不要默认扩大到整个账号管理员。
+
+创建后可先做一次不改数据的认证检查（Token 中若含 `$`，请保留单引号）：
+
+```bash
+export GCORE_API_TOKEN='粘贴完整 Token'
+curl -fsS \
+  -H "Authorization: APIKey ${GCORE_API_TOKEN}" \
+  https://api.gcore.com/cdn/clients/me | jq .
+unset GCORE_API_TOKEN
+```
+
+能返回 JSON 才表示认证有效；权限是否足够，还要由安装器继续检查 Managed DNS 委派并执行后续 CDN/DNS
+写操作。Token 只在当前安装进程需要时提供给 `GCORE_API_TOKEN`，脚本不会把它写入配置文件。
 
 安装器会访问的主要接口：
 
@@ -381,7 +420,7 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 ```
 
 官方参考：[API 认证](https://docs.gcore.com/developer-tools/rest-api/authentication.md)、
-[API Token](https://docs.gcore.com/account-settings/api-tokens.md)。
+[API Token](https://gcore.mintlify.dev/docs/account-settings/api-tokens)。
 
 ### 8.4 安装器创建的链路与固定参数
 
@@ -396,17 +435,17 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
   -> 127.0.0.1 上的 Xray VLESS XHTTP
 ```
 
-| 参数 | 值 | 原因 |
-| --- | --- | --- |
-| `mode` | `stream-up` | 用一个流式 POST 上传，并由独立 GET 承载下行，适合 CDN 转发 |
-| `uplinkHTTPMethod` | `POST` | XHTTP stream-up 的固定上行方法，Gcore 必须放行 POST |
-| `ALPN` | `h2` | Gcore 支持 HTTP/2；避免退回 WebSocket 的 HTTP/1.1 Upgrade |
-| `xPaddingBytes` | `100-1000` | 使用 XHTTP 默认范围，减少固定请求头特征 |
-| `scStreamUpServerSecs` | `20-40` 秒 | 在长连接空闲期间发服务端 padding，避免边缘空闲回收 |
-| `noGRPCHeader` | `true` | Gcore 只需普通 HTTPS POST，不依赖 gRPC passthrough |
-| `xmux` | 不显式配置，使用 Xray 原生默认值 | 避免把未经 Gcore 免费节点实测的连接数和复用周期写死 |
-| VLESS flow | 空 | XHTTP 不使用 Vision flow |
-| 证书校验 | 开启 | 客户端使用 CDN 域名作为连接地址、SNI 和 Host |
+| 参数                     | 值                               | 原因                                                       |
+| ------------------------ | -------------------------------- | ---------------------------------------------------------- |
+| `mode`                 | `stream-up`                    | 用一个流式 POST 上传，并由独立 GET 承载下行，适合 CDN 转发 |
+| `uplinkHTTPMethod`     | `POST`                         | XHTTP stream-up 的固定上行方法，Gcore 必须放行 POST        |
+| `ALPN`                 | `h2`                           | Gcore 支持 HTTP/2；避免退回 WebSocket 的 HTTP/1.1 Upgrade  |
+| `xPaddingBytes`        | `100-1000`                     | 使用 XHTTP 默认范围，减少固定请求头特征                    |
+| `scStreamUpServerSecs` | `20-40` 秒                     | 在长连接空闲期间发服务端 padding，避免边缘空闲回收         |
+| `noGRPCHeader`         | `true`                         | Gcore 只需普通 HTTPS POST，不依赖 gRPC passthrough         |
+| `xmux`                 | 不显式配置，使用 Xray 原生默认值 | 避免把未经 Gcore 免费节点实测的连接数和复用周期写死        |
+| VLESS flow               | 空                               | XHTTP 不使用 Vision flow                                   |
+| 证书校验                 | 开启                             | 客户端使用 CDN 域名作为连接地址、SNI 和 Host               |
 
 Gcore Resource 不开启 `websockets`，不提交免费套餐不可用的 `grpc_passthrough` 选项；使用 HTTPS
 回源并固定 Host/SNI；允许 `GET/HEAD/POST`；Edge cache 和 browser cache 均为 `0s`；不忽略查询参数，

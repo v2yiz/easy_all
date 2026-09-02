@@ -101,6 +101,8 @@ for asset in \
     docs/img/cloudflare/cloudflare-domain-protected.svg \
     docs/img/cloudflare/cloudflare-grpc.svg \
     docs/img/cloudflare/cloudflare-nameservers.svg \
+    docs/img/gcore/api-token-create.svg \
+    docs/img/gcore/managed-dns-add-zone.svg \
     docs/img/spaceship/spaceship-domain-search.svg \
     docs/img/spaceship/spaceship-nameservers.svg \
     docs/img/spaceship/spaceship-signup.svg; do
@@ -109,6 +111,7 @@ done
 NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit)
 [[ -z "${NON_SVG_ASSET}" ]] || fail "Non-SVG documentation asset remains: ${NON_SVG_ASSET}"
 [[ ! -d "${ROOT_DIR}/docs/preparation" ]] || fail "obsolete preparation asset directory still exists"
+[[ ! -d "${ROOT_DIR}/docs/images/gcore" ]] || fail "obsolete Gcore asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/cloudflare" ]] || fail "obsolete top-level Cloudflare asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/spaceship" ]] || fail "obsolete top-level Spaceship asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/guide" ]] || fail "obsolete guide directory still exists"
@@ -134,6 +137,10 @@ assert_contains "Preparation guide documents the optimized XHTTP mode" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
 assert_contains "Preparation guide documents Gcore XHTTP" \
     "${PREPARATION_GUIDE_CONTENT}" 'Gcore CDN 域名 XHTTP 准备'
+assert_contains "Preparation guide embeds the Gcore Managed DNS illustration" \
+    "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'
+assert_contains "Preparation guide embeds the Gcore API token illustration" \
+    "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/api-token-create.svg'
 assert_contains "Preparation guide documents Gcore POST uplink" \
     "${PREPARATION_GUIDE_CONTENT}" 'GET/HEAD/POST'
 assert_contains "Preparation guide documents Gcore H2" \
