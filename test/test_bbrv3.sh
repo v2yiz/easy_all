@@ -72,9 +72,9 @@ assert_contains "XanMod repository uses HTTPS" "${module_content}" \
 assert_contains "XanMod key download requires HTTPS" "${module_content}" \
     "--proto '=https'"
 assert_contains "XanMod LTS package installation is explicit" "${module_content}" \
-    'apt-get install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}"'
+    'apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}"'
 assert_contains "minimal installations can acquire the key verification dependency" \
-    "${module_content}" 'apt-get install -y --no-install-recommends gnupg'
+    "${module_content}" 'apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends gnupg'
 assert_contains "Secure Boot is rejected before a new kernel install" "${module_content}" \
     'bbrv3_secure_boot_enabled'
 assert_contains "BBRv3 requires a reboot marker" "${module_content}" \

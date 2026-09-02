@@ -29,8 +29,8 @@ fi
 
 if ! command -v git >/dev/null 2>&1; then
     command -v apt-get >/dev/null 2>&1 || die "仅支持使用 APT 安装 git"
-    "${SUDO[@]}" apt-get update
-    "${SUDO[@]}" apt-get install -y --no-install-recommends git ca-certificates
+    "${SUDO[@]}" apt-get -o DPkg::Lock::Timeout=300 update
+    "${SUDO[@]}" apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends git ca-certificates
 fi
 
 git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \

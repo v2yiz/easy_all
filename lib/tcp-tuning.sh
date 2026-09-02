@@ -123,8 +123,8 @@ ensure_xanmod_repository() {
     xanmod_repository_ready && return 0
     if ! command -v gpg >/dev/null 2>&1; then
         info "安装 XanMod APT 公钥校验依赖：gnupg"
-        apt-get update || die "刷新 Debian APT 索引失败"
-        apt-get install -y --no-install-recommends gnupg \
+        apt-get -o DPkg::Lock::Timeout=300 update || die "刷新 Debian APT 索引失败"
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends gnupg \
             || die "安装 XanMod BBRv3 所需的 gnupg 失败"
     fi
     command -v gpg >/dev/null 2>&1 || die "安装 XanMod BBRv3 需要 gnupg"
@@ -174,8 +174,8 @@ ensure_bbrv3_kernel() {
     ensure_xanmod_repository
     if ! bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}"; then
         info "安装 XanMod LTS BBRv3 内核：${BBRV3_KERNEL_PACKAGE}"
-        apt-get update
-        apt-get install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}" \
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}" \
             || die "安装 XanMod LTS BBRv3 内核失败"
     fi
     bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}" \

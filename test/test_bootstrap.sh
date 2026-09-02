@@ -13,7 +13,7 @@ fail() {
 bash -n "${SCRIPT}"
 content=$(<"${SCRIPT}")
 
-[[ "${content}" == *'apt-get install -y --no-install-recommends git ca-certificates'* ]] \
+[[ "${content}" == *'apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends git ca-certificates'* ]] \
     || fail "bootstrap must install git before cloning"
 [[ "${content}" == *'git clone --depth 1 --branch main'* ]] \
     || fail "bootstrap must shallow-clone main"
@@ -41,7 +41,7 @@ content=$(<"${SCRIPT}")
 [[ "${content}" != *'archive/refs/heads/main.tar.gz'* ]] \
     || fail "bootstrap must use git rather than a source archive"
 
-install_line=$(grep -n 'apt-get install -y' "${SCRIPT}" | cut -d: -f1)
+install_line=$(grep -n 'apt-get .*install -y' "${SCRIPT}" | cut -d: -f1)
 clone_line=$(grep -n 'git clone --depth 1' "${SCRIPT}" | cut -d: -f1)
 ((install_line < clone_line)) || fail "git installation must precede git clone"
 

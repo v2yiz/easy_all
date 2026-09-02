@@ -230,9 +230,9 @@ check_install_conflicts() {
 
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get upgrade -y
-    apt-get install -y --no-install-recommends \
+    apt-get -o DPkg::Lock::Timeout=300 update
+    apt-get -o DPkg::Lock::Timeout=300 upgrade -y
+    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
         ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw nginx \
         fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
         systemd-timesyncd tar util-linux
@@ -288,8 +288,8 @@ configure_ufw() {
     snapshot_ufw_state
     if ! command -v ufw >/dev/null 2>&1; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get install -y --no-install-recommends ufw
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends ufw
     fi
     ensure_ssh_boot_service
     detect_ssh_ports

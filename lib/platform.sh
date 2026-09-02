@@ -199,8 +199,8 @@ install_fail2ban_dependencies() {
     done
     if [[ "${needs_install}" == "1" ]]; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get install -y --no-install-recommends fail2ban python3-systemd
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends fail2ban python3-systemd
     fi
     command -v fail2ban-client >/dev/null 2>&1 \
         || die "Fail2ban 安装后仍不可用"

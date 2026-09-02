@@ -159,9 +159,9 @@ canonicalize_ipv6() {
 
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get upgrade -y
-    apt-get install -y --no-install-recommends \
+    apt-get -o DPkg::Lock::Timeout=300 update
+    apt-get -o DPkg::Lock::Timeout=300 upgrade -y
+    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
         ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw \
         fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
         systemd-timesyncd tar util-linux
@@ -948,8 +948,8 @@ configure_ufw() {
     info "UFW 将放行 SSH 端口：${SSH_PORTS}"
     snapshot_ufw_state
     if ! command -v ufw >/dev/null 2>&1; then
-        apt-get update
-        apt-get install -y --no-install-recommends ufw
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends ufw
     fi
     enable_ufw_ipv6
     ufw default deny incoming >/dev/null
@@ -1105,8 +1105,8 @@ rotate_dynamic_ports() {
 
 install_subscription_dependencies() {
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y --no-install-recommends nginx cron
+    apt-get -o DPkg::Lock::Timeout=300 update
+    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx cron
     command -v nginx >/dev/null 2>&1 || die "Nginx 安装后不可用"
 }
 

@@ -319,6 +319,10 @@ sub.example.com     可选订阅域名，作为同一 CDN Resource 的 secondary
 7. Zone 尚未显示“已委托”时不要运行模式 3；也不要预先创建 `origin`、`node` 或独立订阅记录，安装器会在确认无冲突
    后创建。
 
+下面是 Gcore 控制台显示委派成功的示例；截图中的域名已脱敏为 `example.com`，绿色“已委托”状态表示可以继续模式 3 安装。
+
+![Gcore Managed DNS 委派成功示例](gcore-delegation-success.png)
+
 #### 安装前与自行确认委派状态
 
 安装器会在 **第 4/9 步、创建源站 A 记录之前**调用 Gcore 的 Delegation Status 接口。它是控制台“已委托”
@@ -326,18 +330,18 @@ sub.example.com     可选订阅域名，作为同一 CDN Resource 的 secondary
 `zone_exists=true`、Gcore 权威 NS 数量大于 `0`、非 Gcore 权威 NS 数量为 `0` 才继续；否则立即停止，
 不会创建或覆盖任何 DNS/CDN 资源。委派刚改完时可直接尝试安装，未生效便按提示安全退出，稍后重试即可。
 
-也可以在自己的电脑或 VPS 上检查。以下示例以 `1988088.xyz` 为例：
+也可以在自己的电脑或 VPS 上检查。以下示例以 `example.com` 为例：
 
 ```bash
 # 查看常用递归解析器当前看到的权威 NS；结果必须全部是 Gcore 控制台“更改域名服务器”页面给出的 NS。
-dig @1.1.1.1 NS 1988088.xyz +short
-dig @8.8.8.8 NS 1988088.xyz +short
+dig @1.1.1.1 NS example.com +short
+dig @8.8.8.8 NS example.com +short
 
 # 沿 DNS 委派链追踪，适合在不同公共解析器结果不一致时排查。
-dig +trace NS 1988088.xyz
+dig +trace NS example.com
 
 # 确认域名可被启用 DNSSEC 校验的公共解析器正常解析；不得返回 SERVFAIL。
-dig @1.1.1.1 SOA 1988088.xyz +dnssec
+dig @1.1.1.1 SOA example.com +dnssec
 ```
 
 若命令不可用，安装 `dnsutils`（Debian/Ubuntu）或 `bind-utils`（RHEL 系）后再试。Gcore 控制台的

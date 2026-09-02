@@ -494,11 +494,11 @@ case "$normal_user" in
 install_base_packages() {
   log "[remote 1/7] 更新 apt 索引并升级系统包"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  apt-get -y upgrade
+  apt-get -o DPkg::Lock::Timeout=300 update
+  apt-get -o DPkg::Lock::Timeout=300 -y upgrade
 
   log "[remote 2/7] 安装基础包"
-  apt-get install -y \
+  apt-get -o DPkg::Lock::Timeout=300 install -y \
     vim tmux curl wget ca-certificates sudo git build-essential \
     openssh-server ufw fail2ban python3-systemd systemd-timesyncd kmod procps
 }
