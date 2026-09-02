@@ -110,7 +110,7 @@ for (const [request, cachedResponse] of writes) {
   if (cacheUrl.searchParams.get("__easy_all_cache") !== "stale") {
     throw new Error(`unexpected cache kind: ${cacheUrl}`);
   }
-  if (cacheUrl.searchParams.get("__easy_all_version") !== "v2") {
+  if (cacheUrl.searchParams.get("__easy_all_version") !== "v3") {
     throw new Error(`unexpected cache version: ${cacheUrl}`);
   }
   if (cachedResponse.headers.get("Cache-Control") !== "public, max-age=259200, s-maxage=259200") {

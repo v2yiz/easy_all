@@ -129,6 +129,8 @@ assert_contains "Gcore explains the slow CDN activation timeout" "${CONTENT}" \
     '链路生效可能较慢，请耐心等待，当前公网验收超时约 15 分钟'
 assert_contains "Gcore health check runs a real XHTTP probe" "${CONTENT}" \
     'if gcore_probe_xhttp; then'
+assert_contains "Gcore XHTTP probe avoids a same-CDN hairpin request" "${CONTENT}" \
+    "'https://cp.cloudflare.com/generate_204'"
 assert_contains "purge preflights the attached edge certificate" "${CONTENT}" \
     'and .sslData == $edge'
 assert_contains "purge preflights the attached origin CA" "${CONTENT}" \

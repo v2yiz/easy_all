@@ -897,13 +897,13 @@ gcore_probe_xhttp() {
 
     response=$(curl -sS --noproxy '' --proxy "socks5h://127.0.0.1:${probe_port}" \
         --connect-timeout 10 --max-time 30 \
-        -w $'\n%{http_code}' "https://${VLESS_CDN_DOMAIN}/easy_all-health" 2>/dev/null \
+        -w $'\n%{http_code}' 'https://cp.cloudflare.com/generate_204' 2>/dev/null \
         || true)
     http_code=${response##*$'\n'}
     response=${response%$'\n'*}
     kill "${probe_pid}" >/dev/null 2>&1 || true
     wait "${probe_pid}" >/dev/null 2>&1 || true
-    [[ "${http_code}" == "200" && "${response}" == "easy_all ok" ]]
+    [[ "${http_code}" == "204" ]]
 }
 
 gcore_wait_for_domain_health() {
