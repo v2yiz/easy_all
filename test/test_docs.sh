@@ -44,7 +44,7 @@ assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/p
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
 assert_contains "README documents hourly Globalping refresh" "${README_CONTENT}" '每小时'
-assert_contains "README documents the 72-hour Globalping fallback" "${README_CONTENT}" '超过 72 小时'
+assert_contains "README documents the 24-hour Globalping fallback" "${README_CONTENT}" '超过 24 小时'
 assert_contains "README documents the official Cloudflare IPv4 pool" \
     "${README_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
 assert_contains "README documents the Mihomo requirement for selected IPs" \

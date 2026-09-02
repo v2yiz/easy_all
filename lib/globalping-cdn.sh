@@ -9,7 +9,7 @@ readonly GLOBALPING_REFRESH_SERVICE_FILE="${GLOBALPING_REFRESH_SERVICE_FILE_OVER
 readonly GLOBALPING_REFRESH_TIMER_FILE="${GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE:-/etc/systemd/system/easy_all-globalping-refresh.timer}"
 readonly GLOBALPING_REFRESH_SERVICE="easy_all-globalping-refresh.service"
 readonly GLOBALPING_REFRESH_TIMER="easy_all-globalping-refresh.timer"
-readonly GLOBALPING_CACHE_MAX_AGE_SECONDS=259200
+readonly GLOBALPING_CACHE_MAX_AGE_SECONDS=86400
 
 cdn_optimization_enabled() {
     [[ "${CDN_PROVIDER:-}" == "cloudflare" ]]
@@ -172,7 +172,7 @@ show_globalping_status() {
             "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")" \
             "$(jq -r '.measured_at // "未知"' "${GLOBALPING_CACHE_FILE}")"
     else
-        printf '%s CDN 精选 IP: 缓存缺失或超过 72 小时，当前回退 CDN 域名\n' \
+        printf '%s CDN 精选 IP: 缓存缺失或超过 24 小时，当前回退 CDN 域名\n' \
             "${provider_label}"
     fi
     printf 'Globalping 定时器: '

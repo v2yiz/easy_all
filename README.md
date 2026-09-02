@@ -664,7 +664,7 @@ VPS 防火墙只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列�
 `xhttp-opts.host` 仍必须是 `node.example.com`。
 
 VPS 使用 systemd timer 每小时更新缓存；安装、`apply` 和手动 `refresh-cdn-ips` 都会自动修复
-并验收该 timer。刷新失败时保留旧缓存；缓存超过 72 小时只发布域名节点。Mihomo 每
+并验收该 timer。刷新失败时保留旧缓存；缓存超过 24 小时只发布域名节点。Mihomo 每
 600 秒在客户端网络运行一次 `url-test`；只有候选比当前节点快至少 50 ms 才切换，以减少抖动。
 切换影响后续新连接，不会迁移已经建立的 XHTTP 会话。
 
