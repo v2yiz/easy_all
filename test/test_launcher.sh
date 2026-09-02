@@ -96,8 +96,9 @@ unset -f git make_temp_dir require_root die success
 unset SELF_UPDATE_INVOCATION_FILE SELF_UPDATE_REPO_PATH_FILE
 
 [[ "${launcher_content}" == *'apply-cloud)'* \
+    && "${launcher_content}" == *'"${mode}" == "cloudflare" || "${mode}" == "gcore"'* \
     && "${launcher_content}" == *'apply_cloud_resources'* ]] \
-    || fail "launcher must expose the explicit XHTTP cloud apply"
+    || fail "launcher must expose the explicit CDN cloud apply"
 [[ "${launcher_content}" != *$'\n    update)'* \
     && "${launcher_content}" != *$'\n    update-cloud)'* ]] \
     || fail "launcher must not expose the removed update commands"
@@ -112,7 +113,8 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"三网 Globalping eyeball 预筛"* \
     && "${guide}" == *"XHTTP"* \
     && "${guide}" != *"AWS"* \
-    && "${guide}" != *"Gcore"* ]] \
+    && "${guide}" == *"[3] Gcore CDN 域名 - XHTTP"* \
+    && "${guide}" == *"不做 IP 精选"* ]] \
     || fail "install guide does not describe the supported installation branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
 [[ "${readme}" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
@@ -125,7 +127,6 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" == *'R7 --> R8[应用已选输出：部署 Nginx/证书/订阅，或清理订阅服务]'* \
     && "${readme}" == *'R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]'* \
     && "${readme}" != *'AWS'* \
-    && "${readme}" != *'Gcore'* \
     && "${readme}" != *'CloudFront'* \
     && "${readme}" != *'Route 53'* ]] \
     || fail "README install flow must match the installer execution order"
@@ -135,7 +136,7 @@ readme=$(<"${ROOT_DIR}/README.md")
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - XHTTP'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* \
-    && "$(<"${ROOT_DIR}/easy_all")" != *'Gcore CDN 域名 - VLESS WebSocket TLS'* ]] \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 域名 - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
@@ -147,6 +148,9 @@ assert_equal "Cloudflare state selects the second mode" "cloudflare" "$(detect_i
 
 printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\nCLOUDFLARE_CDN_ENDPOINT_MODE=optimized\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "legacy Cloudflare state remains readable" "cloudflare" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "Gcore state selects the last mode" "gcore" "$(detect_installed_mode)"
 
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \
@@ -178,7 +182,7 @@ fi
 
 [[ "${launcher_content}" == *"2) printf 'cloudflare"* \
     && "${launcher_content}" != *"3) printf 'aws-cdn"* \
-    && "${launcher_content}" != *"4) printf 'gcore-cdn"* ]] \
+    && "${launcher_content}" == *"3) printf 'gcore"* ]] \
     || fail "installation choices must retain only the supported modes in order"
 
 printf 'ok - easy_all launcher tests passed\n'

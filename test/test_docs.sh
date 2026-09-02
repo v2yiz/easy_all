@@ -33,13 +33,14 @@ done < <(
 )
 
 for command in show subscription self-update apply apply-cloud update-sub \
-    refresh-cdn-ips update-core renew-cert quota-status quota-set quota-reset \
+    refresh-cdn-ips cdn-traffic-sync update-core renew-cert quota-status quota-set quota-reset \
     status uninstall help; do
     assert_contains "README public command ${command}" "${README_CONTENT}" "| \`${command}"
 done
 
 assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
+assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 域名 - XHTTP'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
@@ -131,6 +132,16 @@ assert_contains "Preparation guide documents the Globalping token page" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
 assert_contains "Preparation guide documents the optimized XHTTP mode" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
+assert_contains "Preparation guide documents Gcore XHTTP" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Gcore CDN 域名 XHTTP 准备'
+assert_contains "Preparation guide documents Gcore POST uplink" \
+    "${PREPARATION_GUIDE_CONTENT}" 'GET/HEAD/POST'
+assert_contains "Preparation guide documents Gcore H2" \
+    "${PREPARATION_GUIDE_CONTENT}" 'ALPN h2'
+assert_contains "Preparation guide documents Gcore HTTP proxy" \
+    "${PREPARATION_GUIDE_CONTENT}" 'proxy_pass'
+assert_contains "Preparation guide keeps Gcore domain routing" \
+    "${PREPARATION_GUIDE_CONTENT}" '不做 IP 精选'
 assert_contains "Preparation guide requires an active Zone" \
     "${PREPARATION_GUIDE_CONTENT}" '**Active**'
 assert_contains "Preparation guide documents proxied A automation" \
@@ -183,8 +194,8 @@ for content_label in README preparation-guide launcher Cloudflare-profile XHTTP-
     Cloudflare-profile) content=${XHTTP_CONTENT} ;;
     XHTTP-runtime) content=$(<"${ROOT_DIR}/lib/xhttp-runtime.sh") ;;
     esac
-    for legacy_term in AWS Amazon Gcore GCORE CloudFront 'Route 53' \
-        'xhttp-aws' 'websocket-gcore' 'aws-cdn' 'gcore-cdn' 'cdn-traffic'; do
+    for legacy_term in AWS Amazon CloudFront 'Route 53' \
+        'xhttp-aws' 'aws-cdn'; do
         assert_not_contains "${content_label} excludes ${legacy_term}" "${content}" "${legacy_term}"
     done
 done
@@ -197,17 +208,13 @@ for removed_path in \
     docs/aws/aws-iam-access-key.svg \
     docs/gcore/gcore-api-token-create.png \
     profiles/xhttp-aws.sh \
-    profiles/websocket-gcore.sh \
-    lib/cdn-traffic-guard.sh \
     test/test_xhttp_aws.sh \
-    test/test_websocket_gcore.sh \
     test/test_cdn_traffic_guard.sh; do
     [[ ! -e "${ROOT_DIR}/${removed_path}" ]] || fail "removed path still exists: ${removed_path}"
 done
 
 for forbidden_reference in \
     'AWS CDN 精选 IP' \
-    'Gcore CDN' \
     'CloudFront' \
     'Route 53' \
     'docs/aws-guide.md' \

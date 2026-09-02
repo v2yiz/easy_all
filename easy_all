@@ -22,7 +22,9 @@ readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://gi
 readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/reality.sh"
     "profiles/xhttp-cloudflare.sh"
+    "profiles/xhttp-gcore.sh"
     "lib/xhttp-runtime.sh"
+    "lib/cdn-traffic-guard.sh"
     "lib/globalping-cdn.sh"
     "lib/cloudflare-ip-pool.sh"
     "lib/quota.sh"
@@ -64,16 +66,17 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality 或 Cloudflare CDN
+  install          交互选择 Reality、Cloudflare CDN 或 Gcore CDN
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update      只更新 easy_all 项目代码
   apply            将已安装代码应用到本机配置
-  apply-cloud      应用本机配置并同步 Cloudflare 云资源
+  apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅模式与月度用户配额
   refresh-cdn-ips  立即刷新 Cloudflare 的 Globalping 精选 IP 与订阅
+  cdn-traffic-sync 同步 CDN 全局流量保护状态
   update-core      更新 Xray 核心
-  renew-cert       轮换当前模式使用的 Cloudflare Origin CA 证书
+  renew-cert       轮换当前 CDN 模式的源站/Provider 证书
   quota-status     显示用户配额与 Xray 本地统计
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
@@ -98,12 +101,17 @@ easy_all install
 │  │  └─ 仅节点：不收集订阅服务参数
 │  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
-└─ [2] Cloudflare CDN 精选 IP - XHTTP
+├─ [2] Cloudflare CDN 精选 IP - XHTTP
    ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
    ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → Cloudflare 一级子域名
    ├─ CLOUDFLARE_API_TOKEN → Proxied A → Origin CA → Full strict/gRPC/HTTP2/Origin Key 规则
    ├─ Nginx/Xray → Cloudflare 回源 IP 防火墙 → 公网验收
    └─ Cloudflare 官方 IPv4 池轮换抽样 → 三网 Globalping eyeball 预筛 → 域名兜底/客户端二次测速
+└─ [3] Gcore CDN 域名 - XHTTP
+   ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
+   ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
+   ├─ Origin Group / XHTTP Resource / Origin SSL Validation / 边缘证书
+   └─ Gcore CDN 域名 → CNAME 传播 → XHTTP HTTPS 验收；不做 IP 精选
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
@@ -139,6 +147,9 @@ detect_installed_mode() {
             cloudflare)
                 printf 'cloudflare\n'
                 ;;
+            gcore)
+                printf 'gcore\n'
+                ;;
             *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;
             esac
             ;;
@@ -157,12 +168,15 @@ choose_install_mode() {
     printf '     Direct - Reality (recommended for optimized routes)\n' >&2
     printf '  2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
     printf '     Cloudflare CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
+    printf '  3. Gcore CDN 域名 - XHTTP（Gcore DNS 调度，不做 IP 精选）\n' >&2
+    printf '     Gcore CDN domain - XHTTP (Gcore DNS routing, no IP selection)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare\n' ;;
+    3) printf 'gcore\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -172,6 +186,7 @@ profile_file() {
     case "${mode}" in
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare.sh" ;;
+    gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -254,7 +269,7 @@ dispatch_profile_command() {
         apply_easy_all
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare" ]] \
+        [[ "${mode}" == "cloudflare" || "${mode}" == "gcore" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         apply_cloud_resources
         ;;
@@ -270,6 +285,11 @@ dispatch_profile_command() {
         [[ "${mode}" == "cloudflare" ]] \
             || launcher_die "refresh-cdn-ips 仅适用于 Cloudflare CDN 精选 IP"
         refresh_cloudflare_cdn_ips
+        ;;
+    cdn-traffic-sync)
+        [[ "${mode}" == "gcore" ]] \
+            || launcher_die "cdn-traffic-sync 仅适用于 Gcore CDN 模式"
+        cdn_traffic_protection_sync
         ;;
     renew-cert)
         if [[ "${mode}" == "reality" ]]; then

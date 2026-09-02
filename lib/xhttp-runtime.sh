@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared local runtime for the Cloudflare XHTTP profile.
+# Shared local runtime for CDN profiles.
 
 readonly SCRIPT_DIR="${XHTTP_PROFILE_ROOT:?XHTTP_PROFILE_ROOT is required}"
 
@@ -47,8 +47,18 @@ readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="300-600"
 readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="900-1800"
 readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
 readonly XHTTP_URL_TEST_INTERVAL="${XHTTP_URL_TEST_INTERVAL_OVERRIDE:-300}"
-readonly XHTTP_CDN_NAME="Cloudflare"
+readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-Cloudflare}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
+
+xhttp_no_grpc_header_json() {
+    [[ "${XHTTP_NO_GRPC_HEADER_OVERRIDE:-false}" == "true" ]] \
+        && printf 'true' || printf 'false'
+}
+
+xhttp_xmux_enabled_json() {
+    [[ "${XHTTP_XMUX_ENABLED_OVERRIDE:-true}" == "true" ]] \
+        && printf 'true' || printf 'false'
+}
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
@@ -439,24 +449,27 @@ uri_encode() {
 
 build_vless_xhttp_link() {
     local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
-    local extra client_path
+    local extra client_path no_grpc_header xmux_enabled
     client_path=$(xhttp_client_path)
+    no_grpc_header=$(xhttp_no_grpc_header_json)
+    xmux_enabled=$(xhttp_xmux_enabled_json)
     extra=$(jq -cn \
+        --argjson no_grpc_header "${no_grpc_header}" \
+        --argjson xmux_enabled "${xmux_enabled}" \
         --argjson max_connections "${XHTTP_XMUX_MAX_CONNECTIONS}" \
         --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
         --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
         --argjson h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '{
-        noGRPCHeader:false,
-        uplinkHTTPMethod:"POST",
-        xmux:{
+        noGRPCHeader:$no_grpc_header,
+        uplinkHTTPMethod:"POST"
+    } + (if $xmux_enabled then {xmux:{
             maxConnections:$max_connections,
             cMaxReuseTimes:$c_max_reuse_times,
             hMaxRequestTimes:$h_max_request_times,
             hMaxReusableSecs:$h_max_reusable_secs,
             hKeepAlivePeriod:$h_keep_alive_period
-        }
-    }')
+        }} else {} end)')
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
         "$(uri_encode "${client_path}")" "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
@@ -498,27 +511,31 @@ build_node_links() {
 
 build_mihomo_node_for_endpoint() {
     local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
+    local no_grpc_header xmux_enabled reuse_settings=""
     resolve_cdn_client_ip_family
+    no_grpc_header=$(xhttp_no_grpc_header_json)
+    xmux_enabled=$(xhttp_xmux_enabled_json)
+    if [[ "${xmux_enabled}" == "true" ]]; then
+        printf -v reuse_settings \
+            '      reuse-settings:\n        max-connections: %s\n        c-max-reuse-times: %s\n        h-max-request-times: %s\n        h-max-reusable-secs: %s\n        h-keep-alive-period: %s\n' \
+            "${XHTTP_XMUX_MAX_CONNECTIONS}" "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
+            "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
+            "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
+    fi
     jq -nr --arg xhttp_name "${node_name}" \
         --arg server "${server}" --arg host "${VLESS_CDN_DOMAIN}" \
         --arg uuid "${VLESS_UUID}" \
         --arg xhttp_path "$(xhttp_client_path)" \
         --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
-        --argjson max_connections "${XHTTP_XMUX_MAX_CONNECTIONS}" \
-        --arg c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
-        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
-        --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
-        --arg h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '
+        --argjson no_grpc_header "${no_grpc_header}" \
+        --arg reuse_settings "${reuse_settings}" '
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
         "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n    xhttp-opts:\n" +
         "      host: \($host|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
-        "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
-        "        max-connections: \($max_connections|tostring|@json)\n        c-max-reuse-times: \($c_max_reuse_times)\n" +
-        "        h-max-request-times: \($h_max_request_times|@json)\n" +
-        "        h-max-reusable-secs: \($h_max_reusable_secs|@json)\n" +
-        "        h-keep-alive-period: \($h_keep_alive_period)\n"'
+        "      no-grpc-header: \($no_grpc_header|tostring)\n      uplink-http-method: POST\n" +
+        $reuse_settings'
 }
 
 build_mihomo_nodes() {

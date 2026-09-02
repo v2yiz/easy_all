@@ -24,8 +24,9 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}/scripts/debian-init.sh"
 
 for required_path in \
-    profiles/reality.sh profiles/xhttp-cloudflare.sh \
+    profiles/reality.sh profiles/xhttp-cloudflare.sh profiles/xhttp-gcore.sh \
     lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh \
+    lib/cdn-traffic-guard.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
     lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
@@ -58,6 +59,13 @@ shared_modules=(
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" != *'xhttp-aws.sh'* ]] \
     || fail "Cloudflare CDN profile must be packaged and reuse the XHTTP runtime"
+[[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-gcore.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-gcore.sh'* \
+    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
+    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" == *'source "${XHTTP_PROFILE_ROOT}/cdn-traffic-guard.sh"'* \
+    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" != *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
+    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" != *'GCORE_CDN_ENDPOINT_MODE'* ]] \
+    || fail "Gcore CDN profile must reuse the runtime with domain-only routing"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/xhttp-runtime.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
