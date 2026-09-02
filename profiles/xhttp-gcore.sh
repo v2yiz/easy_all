@@ -701,7 +701,7 @@ gcore_resource_payload() {
     subscription_domain=$(active_subscription_link_domain)
     jq -cn --arg domain "${VLESS_CDN_DOMAIN}" --arg subscription "${subscription_domain}" \
         --arg origin "${GCORE_ORIGIN_DOMAIN}" \
-        --arg key "${ORIGIN_HEADER_SECRET}" --argjson origin_group "${GCORE_ORIGIN_GROUP_ID}" \
+        --argjson origin_group "${GCORE_ORIGIN_GROUP_ID}" \
         --argjson origin_ca "${GCORE_ORIGIN_CA_ID}" \
         --argjson client_cert "${GCORE_ORIGIN_CLIENT_CERT_ID}" '
         {
@@ -721,7 +721,6 @@ gcore_resource_payload() {
             ignoreQueryString:{enabled:true,value:false},
             hostHeader:{enabled:true,value:$origin},
             sni:{enabled:true,sni_type:"custom",custom_hostname:$origin},
-            staticRequestHeaders:{enabled:true,value:{"X-Easy-All-Origin-Key":$key}},
             proxy_connect_timeout:{enabled:true,value:"5s"},
             use_dns01_le_challenge:{enabled:true,value:true}
           }
@@ -1365,17 +1364,15 @@ server {
     keepalive_timeout 5m;
 
     location = /easy_all-health {
-        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         default_type text/plain;
         add_header Cache-Control "no-store" always;
         return 200 "easy_all ok\n";
     }
 
 EOF
-        write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
+        write_subscription_nginx_locations
         cat <<EOF
     location ^~ ${XHTTP_PATH}/ {
-        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         client_max_body_size 0;
         client_body_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
         proxy_http_version 1.1;
@@ -1384,7 +1381,6 @@ EOF
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Easy-All-Origin-Key \$http_x_easy_all_origin_key;
         proxy_set_header Referer "${keepalive_referer}";
         proxy_buffering off;
         proxy_request_buffering off;

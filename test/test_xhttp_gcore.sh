@@ -67,6 +67,10 @@ assert_contains "origin validation supplies client certificate" "${CONTENT}" \
     'proxy_ssl_data:$client_cert'
 assert_contains "Nginx requires the Gcore client certificate" "${CONTENT}" \
     'ssl_verify_client on;'
+assert_not_contains "Gcore mTLS does not duplicate origin authentication with a static header" \
+    "${PROFILE}" 'staticRequestHeaders'
+assert_not_contains "Gcore mTLS does not reject requests on a redundant origin header" \
+    "${PROFILE}" 'http_x_easy_all_origin_key'
 assert_contains "Gcore uses the agreed XHTTP padding range" "${CONTENT}" \
     'readonly GCORE_XHTTP_PADDING_BYTES="100-1000"'
 assert_contains "Gcore uses the agreed packet-up buffering limit" "${CONTENT}" \
