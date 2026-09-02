@@ -1414,6 +1414,8 @@ build_mihomo_nodes() {
     done < <(xhttp_client_endpoints)
 }
 
+xhttp_auto_group_name() { printf 'GCORE_AUTO'; }
+
 build_mihomo_proxy_names() {
     printf '        - %s\n' \
         "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"

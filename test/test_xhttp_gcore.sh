@@ -302,7 +302,7 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         && "${mihomo_group}" == *'tolerance: 20'* \
         && "${mihomo_group}" == *'timeout: 3000'* \
         && "${mihomo_group}" == *'lazy: false'* \
-        && "${mihomo_proxy_names}" == *'"GCORE_XHTTP_AUTO"'* ]] \
+        && "${mihomo_proxy_names}" == *'"GCORE_AUTO"'* ]] \
         || fail "Gcore dual-transport URL-test group is invalid"
 
     GCORE_ORIGIN_DOMAIN=origin.example.com
