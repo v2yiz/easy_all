@@ -14,7 +14,7 @@ Cloudflare 和 Gcore 均使用 XHTTP，前者通过 Globalping 预筛、客户�
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
-所在地区法律、VPS 服务商和 Cloudflare 的服务条款。
+所在地区法律、VPS 服务商以及 Cloudflare 和 Gcore 的服务条款。
 
 ## 第一次安装：先看这里
 
@@ -69,7 +69,7 @@ ssh <登录用户>@<VPS公网IP> -p <SSH端口>
 首次连接询问是否信任主机指纹时，先与服务商控制台显示的指纹核对；确认无误后输入 `yes`。看到类似
 `root@...` 或 `<用户名>@...` 的提示符后，才表示已经进入 VPS。若服务商只提供网页终端，也可以在那里运行。
 
-## 安装
+## 系统与安全保障
 
 三种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
 UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。安装与 `easy_all apply`
@@ -236,6 +236,14 @@ flowchart TD
     C4 --> C5[保存缓存 / 注册每小时刷新 / 输出节点与订阅]
     C5 --> Z
 
+    B -->|3| G0[Gcore CDN 域名 XHTTP]
+    G0 --> G1[系统预检 / 冲突检查 / 备份]
+    G1 --> G2[Gcore API Token / Managed DNS 委派 / 源站与 CDN 域名]
+    G2 --> G3[源站 A / Let's Encrypt / mTLS 回源证书]
+    G3 --> G4[Origin Group / XHTTP Resource / 边缘证书]
+    G4 --> G5[CNAME 传播 / 公网 XHTTP 验收 / 990 GB 流量保护]
+    G5 --> Z
+
 ```
 
 图中是安装器的实际执行顺序。三种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。Cloudflare 模式只使用单一 proxied 一级子域，由 VPS 预筛并由客户端最终测速选优；Gcore 模式只使用 CDN 域名，不做 IP 精选。
@@ -246,12 +254,15 @@ flowchart TD
 | --- | --- | --- | --- |
 | Globalping Token | 仅 Cloudflare XHTTP 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
 | Cloudflare Zone Token | Cloudflare XHTTP 必填；Reality 选择“部署订阅”时也必填，隐藏输入 | 无 | 仅限目标 Zone 的最小权限；所需权限见前置准备手册 |
+| Gcore API Token | 仅 Gcore XHTTP 必填，隐藏输入 | 无 | 用于 DNS/CDN/证书资源；仅当前进程使用 |
+| Gcore 源站域名 | 仅 Gcore XHTTP 必填；脚本创建源站 A 记录 | 无 | 与 CDN 域名位于同一 Gcore Managed DNS 主域名 |
+| Gcore CDN 节点域名 | 仅 Gcore XHTTP 必填 | 无 | 客户端连接地址、TLS SNI 和 HTTP Host 均使用该域名 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
-| CDN 订阅链接完整域名 | 仅 Cloudflare XHTTP 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
+| CDN 订阅链接完整域名 | 仅 Cloudflare/Gcore XHTTP 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
 | 月度用户配额 | 仅选择“部署订阅”时出现；`1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
-| 安装模式 | `1` Reality / `2` Cloudflare | `1` | 安装 Reality |
+| 安装模式 | `1` Reality / `2` Cloudflare / `3` Gcore | `1` | 安装 Reality |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入每日 04:00 的 root crontab；重启会短暂断线 |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
@@ -297,11 +308,11 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收运行时和订阅；Reality 部署订阅时会同步其 Cloudflare DNS、Strict TLS 与 Origin CA。 |
 | `apply-cloud` | CDN 模式可用；应用本机配置并同步当前 Provider 的 DNS、证书和 CDN 资源。 |
-| `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改 Cloudflare 资源，新增、更换或停用独立域名时同步当前 Zone。 |
+| `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改当前 Provider 资源，新增、更换或停用独立域名时同步对应 Provider。 |
 | `refresh-cdn-ips` | Cloudflare 模式可用；立即运行一次 Globalping 测量，更新本地缓存并原子重建订阅。 |
 | `cdn-traffic-sync` | Gcore 模式可用；同步 990 GB 全局流量保护状态。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
-| `renew-cert` | 强制轮换当前 CDN 模式的源站/Provider 证书并重新验收。 |
+| `renew-cert` | 强制轮换当前模式的证书并重新验收；Reality 需已部署自托管订阅，CDN 模式轮换源站/Provider 证书。 |
 | `quota-status` | 显示每用户月度配额和 Xray 本地统计。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户的本月已用流量，不修改额度、Token、UUID 或 email。 |
@@ -714,16 +725,20 @@ XHTTP 参数、证书和卸载说明见统一的[前置准备手册](docs/prepar
 
 ## 状态与边界
 
-统一状态目录：
+统一状态目录（不同模式只使用其中对应项）：
 
 ```text
 /etc/easy_all/state.env
 /etc/easy_all/quota-usage.json
 /etc/easy_all/globalping.token
 /etc/easy_all/cloudflare-cdn-ips.json
+/etc/easy_all/cloudflare-origin-ipv4.txt
 /etc/easy_all/cdn-traffic-usage.json
 /etc/easy_all/xray/config.json
 /etc/easy_all/certs/
+/etc/easy_all/certs/gcore-client*.pem
+/etc/easy_all/certs/gcore-client*.key
+/etc/easy_all/certs/gcore-origin-issuer.pem
 /var/www/easy_all/subscriptions/
 /etc/nginx/conf.d/easy_all.conf
 /etc/systemd/system/easy_all-xray.service
@@ -731,12 +746,15 @@ XHTTP 参数、证书和卸载说明见统一的[前置准备手册](docs/prepar
 /etc/systemd/system/easy_all-quota.timer
 /etc/systemd/system/easy_all-globalping-refresh.service
 /etc/systemd/system/easy_all-globalping-refresh.timer
+/etc/systemd/system/easy_all-cdn-traffic-guard.service
+/etc/systemd/system/easy_all-cdn-traffic-guard.timer
+/root/.acme-gcore.sh/
 ```
 
 状态文件由安装器自动维护；仅接受当前新装生成的格式：
 
 ```text
-STATE_VERSION=5  # Reality
+STATE_VERSION=6  # Reality
 STATE_VERSION=7  # Cloudflare XHTTP
 STATE_VERSION=7  # Gcore XHTTP
 PROTOCOL=reality|xhttp
@@ -744,11 +762,13 @@ CDN_PROVIDER=cloudflare|gcore
 CDN_CLIENT_IP_FAMILY=ipv4|ipv6-prefer
 ```
 
-Reality 的 `CDN_PROVIDER` 为空。Globalping Token 单独保存在
+Reality 的 `CDN_PROVIDER` 为空。Globalping Token 只在 Cloudflare 模式使用，单独保存在
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`，不会写入状态文件。
 
-默认卸载 CDN 模式时只删除本机资源。Cloudflare 可显式使用 `uninstall --purge-cloud`，此时只清理
-经所有权和当前值校验的 easy_all 远端资源；卸载完成后应在 Cloudflare 控制台中复核。
+默认 `uninstall` 只删除本机资源并保留远端资源。追加 `--purge-cloud` 时，Reality 清理带所有权标记的
+Cloudflare 订阅 A 记录、Strict TLS 规则和 Origin CA；Cloudflare XHTTP 清理其受管 DNS、规则和 Origin CA；
+Gcore XHTTP 清理受管 CDN Resource、Origin Group、证书和 DNS 记录。所有模式都先校验资源所有权与当前值，
+永不删除 DNS Zone；远端操作完成后仍应在对应 Provider 控制台复核。
 
 ## 模块
 
@@ -764,6 +784,7 @@ easy_all
 │  ├─ xhttp-runtime.sh       CDN Profile 复用的本机运行时骨架
 │  ├─ cdn-traffic-guard.sh   Gcore 全局流量保护
 │  ├─ globalping-cdn.sh      Cloudflare 精选 IPv4、缓存与每小时刷新任务
+│  ├─ cloudflare-ip-pool.sh   Cloudflare 官方 IPv4 池抽样与三网候选筛选
 │  ├─ quota.sh               用户配额与统计
 │  ├─ platform.sh            root/systemd/SSH 启动保障
 │  ├─ profile-common.sh      Profile 公共辅助、交互与字段校验
