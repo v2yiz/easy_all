@@ -20,12 +20,12 @@ readonly XHTTP_PROFILE_ROOT="${GCORE_PROFILE_ROOT}/../lib"
 XHTTP_CDN_NAME_OVERRIDE="Gcore CDN"
 XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Gcore Managed DNS"
 XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS XHTTP managed by easy_all"
-XHTTP_NO_GRPC_HEADER_OVERRIDE=true
+XHTTP_MODE_OVERRIDE="packet-up"
 XHTTP_XMUX_ENABLED_OVERRIDE=false
 
 readonly GCORE_API_BASE="https://api.gcore.com"
 readonly GCORE_DNS_TTL="300"
-readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="20-40"
+readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="30"
 readonly GCORE_XHTTP_PADDING_BYTES="100-1000"
 readonly GCORE_CDN_TRAFFIC_PROTECTION_GB="990"
 readonly GCORE_XHTTP_NGINX_TIMEOUT="1h"
@@ -873,8 +873,8 @@ gcore_probe_xhttp() {
               network:"xhttp", security:"tls",
               tlsSettings:{serverName:$host,alpn:["h2"],fingerprint:"chrome"},
               xhttpSettings:{
-                host:$host, path:$path, mode:"stream-up",
-                extra:{noGRPCHeader:true,uplinkHTTPMethod:"POST"}
+                host:$host, path:$path, mode:"packet-up",
+                extra:{uplinkHTTPMethod:"POST"}
               }
             }
           }]
@@ -1314,7 +1314,8 @@ xhttp_render_xray_config() {
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
         --arg path "${XHTTP_PATH}" --arg host "${VLESS_CDN_DOMAIN}" \
         --arg padding "${GCORE_XHTTP_PADDING_BYTES}" \
-        --arg server_secs "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}" \
+        --arg mode "${XHTTP_MODE}" \
+        --argjson max_buffered_posts "${GCORE_XHTTP_MAX_BUFFERED_POSTS}" \
         --argjson inbound_sockopt "${inbound_sockopt}" \
         --argjson managed_outbounds "${managed_outbounds}" \
         --argjson managed_routing "${managed_routing}" '
@@ -1322,8 +1323,8 @@ xhttp_render_xray_config() {
          inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
           streamSettings:{network:"xhttp",sockopt:$inbound_sockopt,
-            xhttpSettings:{host:$host,path:$path,mode:"stream-up",
-              xPaddingBytes:$padding,scStreamUpServerSecs:$server_secs}},
+            xhttpSettings:{host:$host,path:$path,mode:$mode,
+              xPaddingBytes:$padding,scMaxBufferedPosts:$max_buffered_posts}},
           sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],
          outbounds:$managed_outbounds,
          routing:$managed_routing}
@@ -1406,7 +1407,7 @@ EOF
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS XHTTP stream-up/H2 over Gcore CDN\n节点链接:\n%s\n\n' "$(build_node_link)"
+    printf '\n协议: VLESS XHTTP packet-up/H2 over Gcore CDN\n节点链接:\n%s\n\n' "$(build_node_link)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_node
     printf '\n'

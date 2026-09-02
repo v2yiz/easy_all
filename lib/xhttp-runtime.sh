@@ -41,6 +41,7 @@ readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="7"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
+readonly XHTTP_MODE="${XHTTP_MODE_OVERRIDE:-stream-up}"
 readonly XHTTP_XMUX_MAX_CONNECTIONS="4"
 readonly XHTTP_XMUX_C_MAX_REUSE_TIMES="0"
 readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="300-600"
@@ -449,30 +450,33 @@ uri_encode() {
 
 build_vless_xhttp_link() {
     local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
-    local extra client_path no_grpc_header xmux_enabled
+    local extra client_path mode no_grpc_header xmux_enabled
     client_path=$(xhttp_client_path)
+    mode=${XHTTP_MODE}
     no_grpc_header=$(xhttp_no_grpc_header_json)
     xmux_enabled=$(xhttp_xmux_enabled_json)
     extra=$(jq -cn \
         --argjson no_grpc_header "${no_grpc_header}" \
         --argjson xmux_enabled "${xmux_enabled}" \
+        --arg mode "${mode}" \
         --argjson max_connections "${XHTTP_XMUX_MAX_CONNECTIONS}" \
         --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
         --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
         --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
         --argjson h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '{
-        noGRPCHeader:$no_grpc_header,
         uplinkHTTPMethod:"POST"
-    } + (if $xmux_enabled then {xmux:{
+    } + (if $mode == "packet-up" then {} else {noGRPCHeader:$no_grpc_header} end)
+    + (if $xmux_enabled then {xmux:{
             maxConnections:$max_connections,
             cMaxReuseTimes:$c_max_reuse_times,
             hMaxRequestTimes:$h_max_request_times,
             hMaxReusableSecs:$h_max_reusable_secs,
             hKeepAlivePeriod:$h_keep_alive_period
         }} else {} end)')
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=%s&extra=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${client_path}")" "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
+        "$(uri_encode "${client_path}")" "$(uri_encode "${mode}")" \
+        "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
 }
 
 xhttp_client_endpoints() {
@@ -511,8 +515,9 @@ build_node_links() {
 
 build_mihomo_node_for_endpoint() {
     local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
-    local no_grpc_header xmux_enabled reuse_settings=""
+    local mode no_grpc_header xmux_enabled reuse_settings=""
     resolve_cdn_client_ip_family
+    mode=${XHTTP_MODE}
     no_grpc_header=$(xhttp_no_grpc_header_json)
     xmux_enabled=$(xhttp_xmux_enabled_json)
     if [[ "${xmux_enabled}" == "true" ]]; then
@@ -527,14 +532,18 @@ build_mihomo_node_for_endpoint() {
         --arg uuid "${VLESS_UUID}" \
         --arg xhttp_path "$(xhttp_client_path)" \
         --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
+        --arg mode "${mode}" \
         --argjson no_grpc_header "${no_grpc_header}" \
         --arg reuse_settings "${reuse_settings}" '
         "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
         "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n    xhttp-opts:\n" +
-        "      host: \($host|@json)\n      path: \($xhttp_path|@json)\n      mode: stream-up\n" +
-        "      no-grpc-header: \($no_grpc_header|tostring)\n      uplink-http-method: POST\n" +
+        "      host: \($host|@json)\n      path: \($xhttp_path|@json)\n      mode: \($mode)\n" +
+        (if $mode == "packet-up" then "" else
+            "      no-grpc-header: \($no_grpc_header|tostring)\n"
+        end) +
+        "      uplink-http-method: POST\n" +
         $reuse_settings'
 }
 

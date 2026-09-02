@@ -255,10 +255,11 @@ Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Tra
 
 ## 8. Gcore CDN 域名 XHTTP 准备
 
-模式 3 使用 `VLESS + XHTTP(stream-up) + TLS`。Gcore CDN 支持 HTTP/2，XHTTP 使用普通的
+模式 3 使用 `VLESS + XHTTP(packet-up) + TLS`。Gcore CDN 支持 HTTP/2，XHTTP 使用普通的
 HTTPS 请求承载代理流量，不需要打开 Gcore 的 WebSocket 选项；客户端始终使用 Gcore CDN
-域名，**不做 IP 精选**，由 Gcore DNS 负责边缘调度。XHTTP 的上行是长连接 `POST`，下行是
-独立的 `GET`，因此 CDN 资源必须同时放行 `GET/HEAD/POST`。
+域名，**不做 IP 精选**，由 Gcore DNS 负责边缘调度。XHTTP 的下行是独立的 `GET`；
+packet-up 会把上行拆成多个 `POST` 请求，因此 CDN 资源必须同时放行
+`GET/HEAD/POST`。
 
 安装器需要以下凭证：
 
@@ -430,7 +431,7 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 
 ```text
 客户端 VLESS
-  -> XHTTP stream-up + TLS，ALPN h2
+  -> XHTTP packet-up + TLS，ALPN h2
   -> Gcore CDN 域名，由 Gcore DNS 调度边缘节点
   -> Gcore CDN HTTP/2 / HTTPS
   -> HTTPS + Origin SSL Validation + Gcore 客户端证书
@@ -441,12 +442,11 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 
 | 参数                     | 值                               | 原因                                                       |
 | ------------------------ | -------------------------------- | ---------------------------------------------------------- |
-| `mode`                 | `stream-up`                    | 用一个流式 POST 上传，并由独立 GET 承载下行，适合 CDN 转发 |
-| `uplinkHTTPMethod`     | `POST`                         | XHTTP stream-up 的固定上行方法，Gcore 必须放行 POST        |
+| `mode`                 | `packet-up`                    | 将上行拆成多个 POST 请求，避免 CDN 必须支持流式请求体       |
+| `uplinkHTTPMethod`     | `POST`                         | XHTTP packet-up 的上行方法，Gcore 必须放行 POST             |
 | `ALPN`                 | `h2`                           | Gcore 支持 HTTP/2；避免退回 WebSocket 的 HTTP/1.1 Upgrade  |
 | `xPaddingBytes`        | `100-1000`                     | 使用 XHTTP 默认范围，减少固定请求头特征                    |
-| `scStreamUpServerSecs` | `20-40` 秒                     | 在长连接空闲期间发服务端 padding，避免边缘空闲回收         |
-| `noGRPCHeader`         | `true`                         | Gcore 只需普通 HTTPS POST，不依赖 gRPC passthrough         |
+| `scMaxBufferedPosts`   | `30`                           | 限制服务端等待中的上行 POST 数，避免无界缓存                 |
 | `xmux`                 | 不显式配置，使用 Xray 原生默认值 | 避免把未经 Gcore 免费节点实测的连接数和复用周期写死        |
 | VLESS flow               | 空                               | XHTTP 不使用 Vision flow                                   |
 | 证书校验                 | 开启                             | 客户端使用 CDN 域名作为连接地址、SNI 和 Host               |

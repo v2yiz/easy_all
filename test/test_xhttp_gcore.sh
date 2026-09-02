@@ -69,20 +69,22 @@ assert_contains "Nginx requires the Gcore client certificate" "${CONTENT}" \
     'ssl_verify_client on;'
 assert_contains "Gcore uses the agreed XHTTP padding range" "${CONTENT}" \
     'readonly GCORE_XHTTP_PADDING_BYTES="100-1000"'
-assert_contains "Gcore uses the agreed stream-up keepalive range" "${CONTENT}" \
-    'readonly GCORE_XHTTP_STREAM_UP_SERVER_SECS="20-40"'
+assert_contains "Gcore uses the agreed packet-up buffering limit" "${CONTENT}" \
+    'readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="30"'
 assert_contains "XHTTP uses HTTP/2 ALPN" "${CONTENT}" \
     'alpn=h2'
-assert_contains "XHTTP uses stream-up" "${CONTENT}" \
-    'mode:"stream-up"'
+assert_contains "Gcore uses packet-up" "${CONTENT}" \
+    'XHTTP_MODE_OVERRIDE="packet-up"'
 assert_contains "XHTTP uses POST uplink" "${CONTENT}" \
     'uplinkHTTPMethod:"POST"'
-assert_contains "Gcore disables the unnecessary gRPC header" "${CONTENT}" \
+assert_not_contains "Gcore does not set the stream-up-only gRPC header" "${PROFILE}" \
     'XHTTP_NO_GRPC_HEADER_OVERRIDE=true'
 assert_contains "Gcore uses native Xray XMUX defaults" "${CONTENT}" \
     'XHTTP_XMUX_ENABLED_OVERRIDE=false'
-assert_contains "Gcore removes the gRPC header from client links" "${CONTENT}" \
-    'noGRPCHeader:$no_grpc_header'
+assert_contains "Gcore packet-up omits the stream-up-only gRPC header" "${CONTENT}" \
+    'if $mode == "packet-up" then {} else {noGRPCHeader:$no_grpc_header} end'
+assert_contains "Gcore server limits buffered packet-up posts" "${CONTENT}" \
+    'scMaxBufferedPosts:$max_buffered_posts'
 assert_contains "XHTTP disables Nginx buffering" "${CONTENT}" \
     'proxy_request_buffering off;'
 assert_contains "XHTTP accepts streaming request bodies" "${CONTENT}" \
@@ -133,8 +135,8 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
 (
     # shellcheck source=/dev/null
     source "${PROFILE}"
-    [[ "${GCORE_XHTTP_STREAM_UP_SERVER_SECS}" == "20-40" ]] \
-        || fail "stream-up keepalive constant drifted"
+    [[ "${GCORE_XHTTP_MAX_BUFFERED_POSTS}" == "30" ]] \
+        || fail "packet-up buffering limit drifted"
     [[ "${GCORE_XHTTP_PADDING_BYTES}" == "100-1000" ]] \
         || fail "XHTTP padding constant drifted"
 
@@ -235,9 +237,9 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     link=$(build_vless_xhttp_link 203.0.113.10 TEST)
     [[ "${link}" == *'type=xhttp'* \
         && "${link}" == *'alpn=h2'* \
-        && "${link}" == *'mode=stream-up'* \
+        && "${link}" == *'mode=packet-up'* \
         && "${link}" == *'uplinkHTTPMethod%22%3A%22POST'* \
-        && "${link}" == *'noGRPCHeader%22%3Atrue'* \
+        && "${link}" != *'noGRPCHeader'* \
         && "${link}" != *'xmux'* ]] \
         || fail "VLESS XHTTP URI does not contain the agreed settings"
 
@@ -245,9 +247,9 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     mihomo=$(build_mihomo_node_for_endpoint 203.0.113.10 TEST)
     [[ "${mihomo}" == *'network: xhttp'* \
         && "${mihomo}" == *'      - h2'* \
-        && "${mihomo}" == *'mode: stream-up'* \
+        && "${mihomo}" == *'mode: packet-up'* \
         && "${mihomo}" == *'uplink-http-method: POST'* \
-        && "${mihomo}" == *'no-grpc-header: true'* \
+        && "${mihomo}" != *'no-grpc-header:'* \
         && "${mihomo}" != *'reuse-settings:'* ]] \
         || fail "Mihomo XHTTP output does not contain the agreed settings"
 

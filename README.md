@@ -8,7 +8,7 @@
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | Cloudflare + Globalping IPv4 |
-| 3. Gcore CDN 域名 - XHTTP | VLESS XHTTP stream-up / TLS / HTTP2 | Gcore CDN 域名 |
+| 3. Gcore CDN 域名 - XHTTP | VLESS XHTTP packet-up / TLS / HTTP2 | Gcore CDN 域名 |
 
 Cloudflare 和 Gcore 均使用 XHTTP，前者通过 Globalping 预筛、客户端测速选优，后者直接由 Gcore DNS 调度域名；Reality 用于直连。
 
@@ -705,7 +705,7 @@ DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见
 
 ## Gcore CDN 域名 XHTTP
 
-模式 3 使用 `VLESS + XHTTP(stream-up) + TLS`，客户端连接地址、TLS SNI 和 HTTP Host
+模式 3 使用 `VLESS + XHTTP(packet-up) + TLS`，客户端连接地址、TLS SNI 和 HTTP Host
 始终使用 Gcore CDN 域名，由 Gcore DNS 调度边缘节点；不收集 Globalping Token、不生成精选 IP 缓存，
 也不安装 IP 刷新任务。
 
