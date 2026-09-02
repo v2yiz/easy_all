@@ -993,6 +993,7 @@ gcore_prepare_origin() {
 }
 
 gcore_apply_cdn() {
+    local skip_health=${1:-0}
     if validate_domain "${GCORE_CDN_TARGET:-}" \
         && [[ "${GCORE_CDN_TARGET}" == *.gcdn.co ]]; then
         # During update-sub the delivery target is already known.  Publish a
@@ -1008,7 +1009,7 @@ gcore_apply_cdn() {
     gcore_ensure_cname_record
     gcore_wait_for_cdn_dns
     gcore_ensure_edge_certificate
-    gcore_wait_for_cdn_health
+    [[ "${skip_health}" == "1" ]] || gcore_wait_for_cdn_health
 }
 
 snapshot_gcore_subscription_domain_records() {
@@ -1554,8 +1555,14 @@ apply_cloud_resources() {
     configure_bbr_tcp
     configure_ufw
     gcore_prepare_origin
-    gcore_apply_cdn
-    finish_xhttp_apply 1
+    if [[ "${GCORE_TRANSPORT_MIGRATION_REQUIRED}" == "1" ]]; then
+        gcore_apply_cdn 1
+        finish_xhttp_apply 1
+        gcore_wait_for_cdn_health
+    else
+        gcore_apply_cdn
+        finish_xhttp_apply 1
+    fi
     gcore_clear_api_token
     success "easy_all Gcore CDN WebSocket 本机配置、Managed DNS、CDN 与证书已应用"
 }

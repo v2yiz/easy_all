@@ -29,6 +29,8 @@ assert_contains "Gcore probe uses WebSocket" "${CONTENT}" 'gcore_probe_websocket
 assert_not_contains "Gcore transport no longer uses packet-up" "${CONTENT}" 'mode:"packet-up"'
 assert_contains "legacy installs require an atomic cloud migration" "${CONTENT}" \
     '请执行 easy_all apply-cloud，一次性启用 Gcore WebSocket 并迁移本机配置'
+assert_contains "migration switches the local runtime before WebSocket validation" "${CONTENT}" \
+    'gcore_apply_cdn 1'
 assert_contains "Gcore uses account-specific CNAME" "${CONTENT}" \
     "gcore_api_request GET '/cdn/clients/me'"
 assert_contains "Gcore verifies delegation" "${CONTENT}" \
