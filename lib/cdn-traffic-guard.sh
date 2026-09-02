@@ -27,8 +27,7 @@ configure_cdn_traffic_protection() {
 }
 
 cdn_traffic_protection_enabled() {
-    [[ ( "${PROTOCOL:-}" == "ws" || "${PROTOCOL:-}" == "xhttp" ) \
-        && "${CDN_PROVIDER:-}" == "gcore" ]] \
+    [[ "${PROTOCOL:-}" == "xhttp" && "${CDN_PROVIDER:-}" == "gcore" ]] \
         && [[ "${CDN_TRAFFIC_PROTECTION_GB:-0}" =~ ^[0-9]+$ ]] \
         && ((10#${CDN_TRAFFIC_PROTECTION_GB:-0} > 0))
 }

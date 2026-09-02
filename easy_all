@@ -107,11 +107,11 @@ easy_all install
    ├─ CLOUDFLARE_API_TOKEN → Proxied A → Origin CA → Full strict/gRPC/HTTP2/Origin Key 规则
    ├─ Nginx/Xray → Cloudflare 回源 IP 防火墙 → 公网验收
    └─ Cloudflare 官方 IPv4 池轮换抽样 → 三网 Globalping eyeball 预筛 → 域名兜底/客户端二次测速
-└─ [3] Gcore CDN 域名 - WebSocket
+└─ [3] Gcore CDN 域名 - XHTTP
    ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
    ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
-   ├─ Origin Group / WebSocket Resource / Origin SSL Validation / 边缘证书
-   └─ Gcore CDN 域名 → CNAME 传播 → WebSocket HTTPS 验收；不做 IP 精选
+   ├─ Origin Group / XHTTP Resource / Origin SSL Validation / 边缘证书
+   └─ Gcore CDN 域名 → CNAME 传播 → XHTTP HTTPS 验收；不做 IP 精选
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
@@ -168,8 +168,8 @@ choose_install_mode() {
     printf '     Direct - Reality (recommended for optimized routes)\n' >&2
     printf '  2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
     printf '     Cloudflare CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
-    printf '  3. Gcore CDN 域名 - WebSocket（Gcore 官方支持，不做 IP 精选）\n' >&2
-    printf '     Gcore CDN domain - WebSocket (officially supported by Gcore, no IP selection)\n' >&2
+    printf '  3. Gcore CDN 域名 - XHTTP（Gcore DNS 调度，不做 IP 精选）\n' >&2
+    printf '     Gcore CDN domain - XHTTP (Gcore DNS routing, no IP selection)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice

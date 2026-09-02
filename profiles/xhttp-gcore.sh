@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Gcore CDN VLESS WebSocket profile.
+# Gcore CDN VLESS XHTTP profile.
 #
 # This Profile is intentionally loaded only by easy_all's third installation
 # choice. It reuses the provider-neutral parts of the CDN runtime while
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 umask 077
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    printf 'xhttp-gcore.sh 是 easy_all 的 Gcore WebSocket Profile；请使用：easy_all install\n' >&2
+    printf 'xhttp-gcore.sh 是 easy_all 的 Gcore XHTTP Profile；请使用：easy_all install\n' >&2
     exit 2
 fi
 
@@ -19,12 +19,16 @@ readonly GCORE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/n
 readonly XHTTP_PROFILE_ROOT="${GCORE_PROFILE_ROOT}/../lib"
 XHTTP_CDN_NAME_OVERRIDE="Gcore CDN"
 XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Gcore Managed DNS"
-XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS WebSocket managed by easy_all"
+XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS XHTTP managed by easy_all"
+XHTTP_MODE_OVERRIDE="packet-up"
+XHTTP_XMUX_ENABLED_OVERRIDE=false
 
 readonly GCORE_API_BASE="https://api.gcore.com"
 readonly GCORE_DNS_TTL="300"
+readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="30"
+readonly GCORE_XHTTP_PADDING_BYTES="100-1000"
 readonly GCORE_CDN_TRAFFIC_PROTECTION_GB="990"
-readonly GCORE_WEBSOCKET_NGINX_TIMEOUT="1h"
+readonly GCORE_XHTTP_NGINX_TIMEOUT="1h"
 GCORE_TRANSPORT_MIGRATION_REQUIRED=0
 
 GCORE_SUBSCRIPTION_CLOUD_ROLLBACK_ON_EXIT=0
@@ -335,8 +339,8 @@ purge_gcore_resources_before_uninstall() {
     gcore_collect_api_token
     resource=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}")
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
-        --arg name "easy_all websocket ${VLESS_CDN_DOMAIN}" \
-        --arg legacy_name "easy_all xhttp ${VLESS_CDN_DOMAIN}" \
+        --arg name "easy_all xhttp ${VLESS_CDN_DOMAIN}" \
+        --arg legacy_name "easy_all websocket ${VLESS_CDN_DOMAIN}" \
         --argjson group "${GCORE_ORIGIN_GROUP_ID}" \
         --argjson edge "${GCORE_SSL_CERT_ID}" \
         --argjson ca "${GCORE_ORIGIN_CA_ID}" \
@@ -705,7 +709,7 @@ gcore_resource_payload() {
         {
           cname:$domain,
           secondaryHostnames:(if $subscription == $domain then [] else [$subscription] end),
-          name:("easy_all websocket " + $domain),
+          name:("easy_all xhttp " + $domain),
           originGroup:$origin_group,
           originProtocol:"HTTPS",
           proxy_ssl_enabled:true,
@@ -713,8 +717,8 @@ gcore_resource_payload() {
           proxy_ssl_data:$client_cert,
           active:true,
           options:{
-            allowedHttpMethods:{enabled:true,value:["GET","HEAD"]},
-            websockets:{enabled:true,value:true},
+            allowedHttpMethods:{enabled:true,value:["GET","HEAD","POST"]},
+            websockets:{enabled:true,value:false},
             edge_cache_settings:{enabled:true,value:"0s"},
             browser_cache_settings:{enabled:true,value:"0s"},
             ignoreQueryString:{enabled:true,value:false},
@@ -733,8 +737,8 @@ gcore_ensure_resource() {
     if [[ -n "${GCORE_CDN_RESOURCE_ID:-}" ]]; then
         current=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}")
         jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
-            --arg name "easy_all websocket ${VLESS_CDN_DOMAIN}" \
-            --arg legacy_name "easy_all xhttp ${VLESS_CDN_DOMAIN}" '
+            --arg name "easy_all xhttp ${VLESS_CDN_DOMAIN}" \
+            --arg legacy_name "easy_all websocket ${VLESS_CDN_DOMAIN}" '
             (.cname | rtrimstr(".") | ascii_downcase) == $domain
             and (.name == $name or .name == $legacy_name)
         ' <<<"${current}" >/dev/null \
@@ -748,8 +752,8 @@ gcore_ensure_resource() {
     count=$(jq 'length' <<<"${matches}")
     ((count <= 1)) || die "Gcore 中发现多个使用 ${VLESS_CDN_DOMAIN} 的 CDN 资源"
     if ((count == 1)); then
-        jq -e --arg expected "easy_all websocket ${VLESS_CDN_DOMAIN}" \
-            --arg legacy "easy_all xhttp ${VLESS_CDN_DOMAIN}" \
+        jq -e --arg expected "easy_all xhttp ${VLESS_CDN_DOMAIN}" \
+            --arg legacy "easy_all websocket ${VLESS_CDN_DOMAIN}" \
             '.[0].name == $expected or .[0].name == $legacy' <<<"${matches}" >/dev/null \
             || die "${VLESS_CDN_DOMAIN} 已被非 easy_all Gcore 资源占用，拒绝接管"
         GCORE_CDN_RESOURCE_ID=$(jq -r '.[0].id' <<<"${matches}")
@@ -839,8 +843,8 @@ gcore_wait_for_cdn_health() {
     fi
 }
 
-gcore_probe_websocket() {
-    local probe_dir="${RUNTIME_TMP}/gcore-websocket-probe"
+gcore_probe_xhttp() {
+    local probe_dir="${RUNTIME_TMP}/gcore-xhttp-probe"
     local probe_config="${probe_dir}/config.json"
     local probe_log="${probe_dir}/xray.log"
     local probe_port=0 probe_pid=0 attempt response http_code
@@ -855,12 +859,12 @@ gcore_probe_websocket() {
     ((probe_port > 0)) || return 1
 
     jq -n --arg address "${VLESS_CDN_DOMAIN}" --arg host "${VLESS_CDN_DOMAIN}" \
-        --arg uuid "${VLESS_UUID}" --arg path "${XHTTP_PATH}" \
+        --arg uuid "${VLESS_UUID}" --arg path "$(xhttp_client_path)" \
         --argjson port "${probe_port}" '
         {
           log:{loglevel:"error"},
           inbounds:[{
-            tag:"gcore-websocket-probe-socks", listen:"127.0.0.1", port:$port,
+            tag:"gcore-xhttp-probe-socks", listen:"127.0.0.1", port:$port,
             protocol:"socks", settings:{udp:false}
           }],
           outbounds:[{
@@ -870,9 +874,12 @@ gcore_probe_websocket() {
               users:[{id:$uuid,encryption:"none"}]
             }]},
             streamSettings:{
-              network:"ws", security:"tls",
-              tlsSettings:{serverName:$host,alpn:["http/1.1"],fingerprint:"chrome"},
-              wsSettings:{path:$path,headers:{Host:$host}}
+              network:"xhttp", security:"tls",
+              tlsSettings:{serverName:$host,alpn:["h2"],fingerprint:"chrome"},
+              xhttpSettings:{
+                host:$host, path:$path, mode:"packet-up",
+                extra:{uplinkHTTPMethod:"POST"}
+              }
             }
           }]
         }
@@ -905,7 +912,7 @@ gcore_probe_websocket() {
 }
 
 gcore_wait_for_domain_health() {
-    local domain=$1 label=$2 attempt status response http_code websocket_status websocket_verified=0
+    local domain=$1 label=$2 attempt status response http_code xhttp_status xhttp_verified=0
     local certificate_state certificate_status certificate_error curl_error
     local health_body="${RUNTIME_TMP}/gcore-health-body"
     local health_error="${RUNTIME_TMP}/gcore-health-error"
@@ -943,36 +950,36 @@ gcore_wait_for_domain_health() {
             -w '%{http_code}' "https://${domain}/easy_all-health" \
             2>"${health_error}" || true)
         response=$(<"${health_body}")
-        websocket_status="not-run"
+        xhttp_status="not-run"
         if [[ "${label}" == "CDN" ]]; then
-            if ((websocket_verified == 1)); then
-                websocket_status="ok"
+            if ((xhttp_verified == 1)); then
+                xhttp_status="ok"
             elif [[ "${http_code}" == "200" && "${response}" == "easy_all ok" ]] \
                 && ((attempt == 1 || attempt % 3 == 0)); then
-                if gcore_probe_websocket; then
-                    websocket_verified=1
-                    websocket_status="ok"
+                if gcore_probe_xhttp; then
+                    xhttp_verified=1
+                    xhttp_status="ok"
                 else
-                    websocket_status="failed"
+                    xhttp_status="failed"
                 fi
             else
-                websocket_status="pending"
+                xhttp_status="pending"
             fi
         fi
         if [[ "${http_code}" == "200" && "${response}" == "easy_all ok" ]] \
-            && { [[ "${label}" != "CDN" ]] || ((websocket_verified == 1)); }; then
+            && { [[ "${label}" != "CDN" ]] || ((xhttp_verified == 1)); }; then
             [[ "${status}" == "active" ]] \
                 || warn "Gcore Resource 状态仍为 ${status:-unknown}，但 ${label}域名端到端 HTTPS 验收已通过"
-            success "Gcore ${label}域名回源、边缘证书与 WebSocket 验收通过"
+            success "Gcore ${label}域名回源、边缘证书与 XHTTP 验收通过"
             return 0
         fi
         if ((attempt == 1 || attempt % 3 == 0)); then
             curl_error=$(tr '\n' ' ' <"${health_error}")
-            info "Gcore ${label}域名状态：Resource=${status:-unknown}，Let's Encrypt=${certificate_status}，HTTPS=${http_code:-000}，WebSocket=${websocket_status}${curl_error:+（${curl_error}）}"
+            info "Gcore ${label}域名状态：Resource=${status:-unknown}，Let's Encrypt=${certificate_status}，HTTPS=${http_code:-000}，XHTTP=${xhttp_status}${curl_error:+（${curl_error}）}"
         fi
         sleep 10
     done
-    die "Gcore ${label}域名 ${domain} 公网验收失败；请检查 CNAME、源站证书、WebSocket、CDN 资源和 Let's Encrypt 状态"
+    die "Gcore ${label}域名 ${domain} 公网验收失败；请检查 CNAME、源站证书、Origin Key、CDN 资源和 Let's Encrypt 状态"
 }
 
 gcore_prepare_origin() {
@@ -1099,10 +1106,10 @@ remove_previous_gcore_subscription_cname() {
 }
 
 collect_install_inputs() {
-    PROTOCOL="ws"
+    PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
     choose_cdn_client_ip_family
-    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-VLESS_WS_GCORE}
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-VLESS_XHTTP_GCORE}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
 
@@ -1132,8 +1139,8 @@ collect_install_inputs() {
     CDN_TRAFFIC_PROTECTION_GB=${GCORE_CDN_TRAFFIC_PROTECTION_GB}
     configure_cdn_traffic_protection
 
-    XHTTP_PATH=${XHTTP_PATH:-/ws-$(openssl rand -hex 16)}
-    validate_xhttp_path "${XHTTP_PATH}" || die "WebSocket 路径无效：${XHTTP_PATH}"
+    XHTTP_PATH=${XHTTP_PATH:-/xhttp-$(openssl rand -hex 16)}
+    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效：${XHTTP_PATH}"
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         || die "XRAY_XHTTP_LOOPBACK_PORT 无效：${XRAY_XHTTP_LOOPBACK_PORT}"
@@ -1184,12 +1191,12 @@ load_state() {
         unset "${env_name}"
     done
     [[ "${CDN_PROVIDER:-}" == "gcore" \
-        && ( "${PROTOCOL}" == "ws" || "${PROTOCOL}" == "xhttp" ) ]] \
-        || die "状态不是 Gcore CDN WebSocket；请重新安装"
+        && ( "${PROTOCOL}" == "xhttp" || "${PROTOCOL}" == "ws" ) ]] \
+        || die "状态不是 Gcore CDN XHTTP；请重新安装"
     GCORE_TRANSPORT_MIGRATION_REQUIRED=0
-    if [[ "${PROTOCOL}" == "xhttp" ]]; then
+    if [[ "${PROTOCOL}" == "ws" ]]; then
         GCORE_TRANSPORT_MIGRATION_REQUIRED=1
-        PROTOCOL=ws
+        PROTOCOL=xhttp
     fi
     configure_cdn_client_ip_family
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" || die "状态中的 Gcore 源站域名无效"
@@ -1212,7 +1219,7 @@ load_state() {
     validate_domain "${GCORE_CDN_TARGET:-}" && [[ "${GCORE_CDN_TARGET}" == *.gcdn.co ]] \
         || die "状态中的 Gcore CDN 目标无效"
     validate_uuid "${VLESS_UUID:-}" || die "状态中的 VLESS UUID 无效"
-    validate_xhttp_path "${XHTTP_PATH:-}" || die "状态中的 WebSocket 路径无效"
+    validate_xhttp_path "${XHTTP_PATH:-}" || die "状态中的 XHTTP 路径无效"
     validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT:-}" \
         || die "状态中的 XHTTP 本机端口无效"
     [[ "${ORIGIN_HEADER_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
@@ -1250,7 +1257,7 @@ save_state() {
     cleanup_files+=("${temp}")
     {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
-        printf 'PROTOCOL=%q\n' "ws"
+        printf 'PROTOCOL=%q\n' "xhttp"
         printf 'CDN_PROVIDER=%q\n' "gcore"
         printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
         printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
@@ -1288,7 +1295,7 @@ save_state() {
 }
 
 collect_installed_state() {
-    [[ -f "${STATE_FILE}" ]] || die "easy_all Gcore CDN WebSocket 尚未安装"
+    [[ -f "${STATE_FILE}" ]] || die "easy_all Gcore CDN XHTTP 尚未安装"
     load_state
 }
 
@@ -1297,27 +1304,7 @@ xhttp_validate_local_tls_curl_args() {
 }
 
 mihomo_transport_marker() {
-    printf 'network: ws'
-}
-
-build_vless_xhttp_link() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${XHTTP_PATH}")" "$(uri_encode "${node_name}")"
-}
-
-build_mihomo_node_for_endpoint() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
-    resolve_cdn_client_ip_family
-    jq -nr --arg name "${node_name}" --arg server "${server}" \
-        --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg path "${XHTTP_PATH}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" '
-        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-        "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - http/1.1\n" +
-        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
+    printf 'network: xhttp'
 }
 
 xhttp_render_xray_config() {
@@ -1336,14 +1323,19 @@ xhttp_render_xray_config() {
     inbound_sockopt=$(xray_inbound_sockopt_json)
     jq -n --argjson port "${XRAY_XHTTP_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
-        --arg path "${XHTTP_PATH}" \
+        --arg path "${XHTTP_PATH}" --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg padding "${GCORE_XHTTP_PADDING_BYTES}" \
+        --arg mode "${XHTTP_MODE}" \
+        --argjson max_buffered_posts "${GCORE_XHTTP_MAX_BUFFERED_POSTS}" \
         --argjson inbound_sockopt "${inbound_sockopt}" \
         --argjson managed_outbounds "${managed_outbounds}" \
         --argjson managed_routing "${managed_routing}" '
         {log:{loglevel:"warning"},
-         inbounds:[{tag:"vless-websocket-in",listen:"127.0.0.1",port:$port,protocol:"vless",
+         inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
-          streamSettings:{network:"ws",sockopt:$inbound_sockopt,wsSettings:{path:$path}},
+          streamSettings:{network:"xhttp",sockopt:$inbound_sockopt,
+            xhttpSettings:{host:$host,path:$path,mode:$mode,
+              xPaddingBytes:$padding,scMaxBufferedPosts:$max_buffered_posts}},
           sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],
          outbounds:$managed_outbounds,
          routing:$managed_routing}
@@ -1355,6 +1347,8 @@ xhttp_render_xray_config() {
 }
 
 write_nginx_config() {
+    local keepalive_referer
+    keepalive_referer=$(xhttp_server_keepalive_referer)
     gcore_prepare_origin_validation_material
     write_web_root
     {
@@ -1390,18 +1384,21 @@ server {
 EOF
         write_subscription_nginx_locations
         cat <<EOF
-    location = ${XHTTP_PATH} {
+    location ^~ ${XHTTP_PATH}/ {
+        client_max_body_size 0;
+        client_body_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection "";
         proxy_set_header Host ${VLESS_CDN_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Referer "${keepalive_referer}";
         proxy_buffering off;
+        proxy_request_buffering off;
         proxy_connect_timeout 5s;
-        proxy_read_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
-        proxy_send_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
+        proxy_read_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
+        proxy_send_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
         proxy_pass http://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
         access_log off;
     }
@@ -1411,14 +1408,14 @@ EOF
 EOF
     } >"${RUNTIME_TMP}/easy_all.conf"
     install -m 0600 "${RUNTIME_TMP}/easy_all.conf" "${NGINX_CONFIG}"
-    nginx -t >/dev/null || die "Nginx WebSocket 配置校验失败"
+    nginx -t >/dev/null || die "Nginx XHTTP 配置校验失败"
     systemctl enable --now nginx >/dev/null
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS WebSocket/TLS over Gcore CDN\n节点链接:\n%s\n\n' "$(build_node_link)"
+    printf '\n协议: VLESS XHTTP packet-up/H2 over Gcore CDN\n节点链接:\n%s\n\n' "$(build_node_link)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_node
     printf '\n'
@@ -1428,7 +1425,7 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: WebSocket（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\n订阅链接域名: %s\nGcore 目标: %s\nWebSocket 路径: %s\n' \
+    printf '协议: xhttp（Gcore CDN）\n源站域名: %s\nCDN 域名: %s\n订阅链接域名: %s\nGcore 目标: %s\nXHTTP 路径: %s\n' \
         "${GCORE_ORIGIN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "$(subscription_link_domain)" \
         "${GCORE_CDN_TARGET}" "${XHTTP_PATH}"
     show_bbrv3_status
@@ -1453,7 +1450,7 @@ update_subscription() {
     begin_quota_maintenance
     collect_installed_state
     [[ "${GCORE_TRANSPORT_MIGRATION_REQUIRED}" != "1" ]] \
-        || die "当前安装仍是旧 Gcore XHTTP 链路；请先执行 easy_all apply-cloud 完成 WebSocket 迁移"
+        || die "当前安装仍是旧 Gcore WebSocket 链路；请先执行 easy_all apply-cloud 完成 XHTTP packet-up 迁移"
     previous_mode=${SUBSCRIPTION_MODE}
     previous_domain=$(subscription_link_domain)
     previous_active_domain=${VLESS_CDN_DOMAIN}
@@ -1520,20 +1517,20 @@ apply_easy_all() {
     begin_quota_maintenance
     collect_installed_state
     [[ "${GCORE_TRANSPORT_MIGRATION_REQUIRED}" != "1" ]] \
-        || die "当前安装仍是旧 Gcore XHTTP 链路；请执行 easy_all apply-cloud，一次性启用 Gcore WebSocket 并迁移本机配置"
+        || die "当前安装仍是旧 Gcore WebSocket 链路；请执行 easy_all apply-cloud，一次性启用 XHTTP packet-up 并迁移本机配置"
     validate_gcore_origin_issuer_synced
     snapshot_subscription_update
     configure_bbr_tcp
     configure_ufw
     finish_xhttp_apply
-    success "easy_all Gcore CDN WebSocket 本机配置与订阅已应用；未修改 Gcore 资源"
+    success "easy_all Gcore CDN XHTTP 本机配置与订阅已应用；未修改 Gcore 资源"
 }
 
 xhttp_renew_origin_certificate() {
     require_root
     collect_installed_state
     [[ "${GCORE_TRANSPORT_MIGRATION_REQUIRED}" != "1" ]] \
-        || die "当前安装仍是旧 Gcore XHTTP 链路；请先执行 easy_all apply-cloud 完成 WebSocket 迁移"
+        || die "当前安装仍是旧 Gcore WebSocket 链路；请先执行 easy_all apply-cloud 完成 XHTTP packet-up 迁移"
     [[ -x "${ACME_BIN}" ]] || die "acme.sh 尚未安装"
     run_acme --renew -d "${GCORE_ORIGIN_DOMAIN}" --ecc --force \
         || die "源站证书续期失败"
@@ -1564,7 +1561,7 @@ apply_cloud_resources() {
         finish_xhttp_apply 1
     fi
     gcore_clear_api_token
-    success "easy_all Gcore CDN WebSocket 本机配置、Managed DNS、CDN 与证书已应用"
+    success "easy_all Gcore CDN XHTTP 本机配置、Managed DNS、CDN 与证书已应用"
 }
 
 rollback_fresh_install() {
@@ -1601,15 +1598,15 @@ uninstall_all() {
     require_root
     [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
         || die "uninstall 不支持参数：${mode}"
-    [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all Gcore CDN WebSocket 尚未安装"
+    [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all Gcore CDN XHTTP 尚未安装"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" && ! -t 0 ]]; then
         die "非交互卸载必须显式设置 FORCE=1"
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
         read_bilingual \
-            '确认删除 easy_all Gcore CDN WebSocket 本机服务、状态和证书？默认保留远端 Gcore 资源。[y/N]（直接回车取消）:' \
-            'Delete easy_all Gcore CDN WebSocket local services, state and certificates? Gcore resources are kept by default. [y/N] (press Enter to cancel):' answer
+            '确认删除 easy_all Gcore CDN XHTTP 本机服务、状态和证书？默认保留远端 Gcore 资源。[y/N]（直接回车取消）:' \
+            'Delete easy_all Gcore CDN XHTTP local services, state and certificates? Gcore resources are kept by default. [y/N] (press Enter to cancel):' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     UNINSTALL_PURGE_CLOUD=0
@@ -1625,7 +1622,7 @@ uninstall_all() {
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}"
-    success "easy_all Gcore CDN WebSocket 本机内容已卸载；远端 Gcore 资源按卸载选项处理"
+    success "easy_all Gcore CDN XHTTP 本机内容已卸载；远端 Gcore 资源按卸载选项处理"
 }
 
 install_all() {
@@ -1675,7 +1672,7 @@ install_all() {
     info "[9/9] 输出节点与订阅"
     show_subscription
     show_bbrv3_status
-    success "easy_all Gcore CDN WebSocket 安装完成"
+    success "easy_all Gcore CDN XHTTP 安装完成"
 }
 
 usage() {

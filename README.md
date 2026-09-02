@@ -8,9 +8,9 @@
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | Cloudflare + Globalping IPv4 |
-| 3. Gcore CDN 域名 - WebSocket | VLESS WebSocket / TLS | Gcore CDN 域名 |
+| 3. Gcore CDN 域名 - XHTTP | VLESS XHTTP packet-up / TLS / HTTP2 | Gcore CDN 域名 |
 
-Cloudflare 使用 XHTTP 并通过 Globalping 预筛、客户端测速选优；Gcore 使用官方支持的 WebSocket 并由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 和 Gcore 均使用 XHTTP，前者通过 Globalping 预筛、客户端测速选优，后者直接由 Gcore DNS 调度域名；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -24,7 +24,7 @@ Cloudflare 使用 XHTTP 并通过 Globalping 预筛、客户端测速选优；Gc
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，并愿意维护域名、Token 和 gRPC 设置 | 选择 `2`：Cloudflare XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台手动打开 gRPC。 |
-| 需要 Gcore CDN 域名入口，并愿意维护 Gcore Managed DNS 和 API Token | 选择 `3`：Gcore WebSocket | Gcore Free CDN、Managed DNS Zone、源站/节点域名和 Gcore API Token；不需要 Globalping。 |
+| 需要 Gcore CDN 域名入口，并愿意维护 Gcore Managed DNS 和 API Token | 选择 `3`：Gcore XHTTP | Gcore Free CDN、Managed DNS Zone、源站/节点域名和 Gcore API Token；不需要 Globalping。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 或 Gcore 前置准备时，再选择对应 CDN 模式。同一 VPS 不能直接切换模式；需要更换时，
@@ -44,7 +44,7 @@ Cloudflare 使用 XHTTP 并通过 Globalping 预筛、客户端测速选优；Gc
   当前 SSH 端口、Reality 的 `443`，或 CDN 回源所需的 `443`；脚本无法修改服务商控制台规则。
 - Cloudflare XHTTP 已按[前置准备手册](docs/preparation-guide.md)完成域名、Token 与 gRPC；不要提前创建
   `node.example.com` 或计划使用的独立订阅域名的 DNS 记录。
-- Gcore WebSocket 已按[前置准备手册](docs/preparation-guide.md)完成根域名委派、源站/节点域名和 Gcore API Token；不要提前创建节点 CNAME。
+- Gcore XHTTP 已按[前置准备手册](docs/preparation-guide.md)完成根域名委派、源站/节点域名和 Gcore API Token；不要提前创建节点 CNAME。
 
 > **安装会改动系统。** 它会安装 XanMod 内核和依赖、设置系统时区为 `Asia/Shanghai`、配置 UFW 和
 > Fail2ban、额外让 SSH 监听 TCP `65533`、创建 systemd 定时任务，并管理 Xray/Nginx。请保留当前 SSH
@@ -130,7 +130,7 @@ sudo ./easy_all install
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
   2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）
-  3. Gcore CDN 域名 - WebSocket（Gcore 官方支持，不做 IP 精选）
+  3. Gcore CDN 域名 - XHTTP（Gcore DNS 调度，不做 IP 精选）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -141,7 +141,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 
 | 看到的选项 | 首次单用户建议 | 说明 |
 | --- | --- | --- |
-| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP，`3` 是 Gcore 域名 WebSocket。 |
+| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP，`3` 是 Gcore 域名 XHTTP。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
@@ -236,7 +236,7 @@ flowchart TD
     C4 --> C5[保存缓存 / 注册每小时刷新 / 输出节点与订阅]
     C5 --> Z
 
-    B -->|3| G0[Gcore CDN 域名 WebSocket]
+    B -->|3| G0[Gcore CDN 域名 XHTTP]
     G0 --> G1[系统预检 / 冲突检查 / 备份]
     G1 --> G2[Gcore API Token / Managed DNS 委派 / 源站与 CDN 域名]
     G2 --> G3[源站 A / Let's Encrypt / mTLS 回源证书]
@@ -254,11 +254,11 @@ flowchart TD
 | --- | --- | --- | --- |
 | Globalping Token | 仅 Cloudflare XHTTP 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
 | Cloudflare Zone Token | Cloudflare XHTTP 必填；Reality 选择“部署订阅”时也必填，隐藏输入 | 无 | 仅限目标 Zone 的最小权限；所需权限见前置准备手册 |
-| Gcore API Token | 仅 Gcore WebSocket 必填，隐藏输入 | 无 | 用于 DNS/CDN/证书资源；仅当前进程使用 |
-| Gcore 源站域名 | 仅 Gcore WebSocket 必填；脚本创建源站 A 记录 | 无 | 与 CDN 域名位于同一 Gcore Managed DNS 主域名 |
-| Gcore CDN 节点域名 | 仅 Gcore WebSocket 必填 | 无 | 客户端连接地址、TLS SNI 和 HTTP Host 均使用该域名 |
+| Gcore API Token | 仅 Gcore XHTTP 必填，隐藏输入 | 无 | 用于 DNS/CDN/证书资源；仅当前进程使用 |
+| Gcore 源站域名 | 仅 Gcore XHTTP 必填；脚本创建源站 A 记录 | 无 | 与 CDN 域名位于同一 Gcore Managed DNS 主域名 |
+| Gcore CDN 节点域名 | 仅 Gcore XHTTP 必填 | 无 | 客户端连接地址、TLS SNI 和 HTTP Host 均使用该域名 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
-| CDN 订阅链接完整域名 | 仅 Cloudflare XHTTP/Gcore WebSocket 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
+| CDN 订阅链接完整域名 | 仅 Cloudflare/Gcore XHTTP 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
 | 月度用户配额 | 仅选择“部署订阅”时出现；`1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
@@ -340,7 +340,7 @@ Cloudflare Origin CA 会通过 API 直接吊销。远端操作失败时会立即
 | --- | --- |
 | Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
 | Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件；使用现有 Globalping 缓存。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
-| Gcore CDN WebSocket | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 使用已有证书和 mTLS 材料重建 Xray/Nginx，按 Gcore 域名验收 WebSocket。<br>4. 重建订阅、保存状态并恢复 990 GB 全局流量保护任务。普通 `apply` 不读取 Gcore 云端凭证。旧 XHTTP 安装需先执行一次 `apply-cloud` 原地迁移。 |
+| Gcore CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 使用已有证书和 mTLS 材料重建 Xray/Nginx，按 Gcore 域名验收 XHTTP。<br>4. 重建订阅、保存状态并恢复 990 GB 全局流量保护任务。普通 `apply` 不读取 Gcore 云端凭证；旧 WebSocket 安装需先执行一次 `apply-cloud` 原地迁移。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
 Xray/Nginx 配置和订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
@@ -703,25 +703,25 @@ Config Rules Edit、Zone Settings Edit、SSL and Certificates Edit）。完整�
 DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见
 [前置准备手册](docs/preparation-guide.md)。
 
-## Gcore CDN 域名 WebSocket
+## Gcore CDN 域名 XHTTP
 
-模式 3 使用 Gcore 官方支持的 `VLESS + WebSocket + TLS`，客户端连接地址、TLS SNI 和 HTTP Host
+模式 3 使用 `VLESS + XHTTP(packet-up) + TLS`，客户端连接地址、TLS SNI 和 HTTP Host
 始终使用 Gcore CDN 域名，由 Gcore DNS 调度边缘节点；不收集 Globalping Token、不生成精选 IP 缓存，
 也不安装 IP 刷新任务。
 
 安装器要求根域名已完整委派给 Gcore Managed DNS，并使用 Gcore API Token 自动创建源站 A 记录、
-WebSocket CDN Resource、Origin Group、Origin SSL Validation、mTLS 回源证书和边缘证书。源站使用
+XHTTP CDN Resource、Origin Group、Origin SSL Validation、mTLS 回源证书和边缘证书。源站使用
 Let's Encrypt 证书；已有 A/AAAA/CNAME 记录默认拒绝覆盖，只有显式设置 `GCORE_DNS_REPLACE=1`
 才允许替换冲突记录。
 
 Gcore CDN 链路生效可能很慢，创建或更新后请耐心等待，不要重复执行安装。当前源站 A 记录和 CDN
-CNAME 的公共 DNS 传播各自最多约 5 分钟；边缘证书、CDN Resource 和公网 WebSocket 链路验收每个域名
+CNAME 的公共 DNS 传播各自最多约 5 分钟；边缘证书、CDN Resource 和公网 XHTTP 链路验收每个域名
 的基础超时约 15 分钟（90 次检查、每次间隔 10 秒，实际还要加上 API 和 HTTPS 请求耗时）。配置
 独立订阅域名时，两套域名会顺序验收，等待时间会相应增加。
 
 Gcore Free CDN 的本地保护阈值固定为 `990 GB`。Xray 统计达到阈值后临时阻断节点，进入新的 UTC
 自然月恢复；它只是本地第二道保护，仍需在 Gcore 控制台设置用量提醒。完整的域名委派、Token 权限、
-WebSocket 参数、证书和卸载说明见统一的[前置准备手册](docs/preparation-guide.md#8-gcore-cdn-域名-websocket-准备)。
+XHTTP 参数、证书和卸载说明见统一的[前置准备手册](docs/preparation-guide.md#8-gcore-cdn-域名-xhttp-准备)。
 
 ## 状态与边界
 
@@ -756,8 +756,8 @@ WebSocket 参数、证书和卸载说明见统一的[前置准备手册](docs/pr
 ```text
 STATE_VERSION=6  # Reality
 STATE_VERSION=7  # Cloudflare XHTTP
-STATE_VERSION=7  # Gcore WebSocket
-PROTOCOL=reality|xhttp|ws
+STATE_VERSION=7  # Gcore XHTTP
+PROTOCOL=reality|xhttp
 CDN_PROVIDER=cloudflare|gcore
 CDN_CLIENT_IP_FAMILY=ipv4|ipv6-prefer
 ```
@@ -767,7 +767,7 @@ Reality 的 `CDN_PROVIDER` 为空。Globalping Token 只在 Cloudflare 模式使
 
 默认 `uninstall` 只删除本机资源并保留远端资源。追加 `--purge-cloud` 时，Reality 清理带所有权标记的
 Cloudflare 订阅 A 记录、Strict TLS 规则和 Origin CA；Cloudflare XHTTP 清理其受管 DNS、规则和 Origin CA；
-Gcore WebSocket 清理受管 CDN Resource、Origin Group、证书和 DNS 记录。所有模式都先校验资源所有权与当前值，
+Gcore XHTTP 清理受管 CDN Resource、Origin Group、证书和 DNS 记录。所有模式都先校验资源所有权与当前值，
 永不删除 DNS Zone；远端操作完成后仍应在对应 Provider 控制台复核。
 
 ## 模块
@@ -779,7 +779,7 @@ easy_all
 ├─ profiles/
 │  ├─ reality.sh             Reality 编排与专属配置
 │  ├─ xhttp-cloudflare.sh    Cloudflare Provider、状态与安装编排
-│  └─ xhttp-gcore.sh           Gcore WebSocket Provider、状态与安装编排
+│  └─ xhttp-gcore.sh           Gcore XHTTP Provider、状态与安装编排
 ├─ lib/
 │  ├─ xhttp-runtime.sh       CDN Profile 复用的本机运行时骨架
 │  ├─ cdn-traffic-guard.sh   Gcore 全局流量保护
