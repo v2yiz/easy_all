@@ -124,7 +124,7 @@ render_mihomo_subscription() {
     encoded_node_name=$(jq -Rn --arg value "${node_name}" '$value')
     awk -v node_file="${node_file}" -v node_name="${encoded_node_name}" \
         -v group_file="${group_file}" -v name_file="${name_file}" \
-        -v ipv6_enabled=true '
+        -v ipv6_enabled=false '
         $0 ~ /^ipv6: (true|false)$/ {
             print "ipv6: " ipv6_enabled
             next

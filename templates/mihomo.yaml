@@ -2,7 +2,7 @@ mixed-port: 1080
 allow-lan: false
 mode: rule
 log-level: error
-ipv6: true
+ipv6: false
 external-controller: '127.0.0.1:9090'
 unified-delay: false
 tcp-concurrent: true

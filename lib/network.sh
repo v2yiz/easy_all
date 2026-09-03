@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
-# Shared public network discovery and Xray dual-stack egress policy.
+# Shared public network discovery and Xray egress policy.
 
 readonly XRAY_OUTBOUND_DOMAIN_STRATEGY="AsIs"
-readonly XRAY_FIXED_IPV4_DOMAIN_STRATEGY="ForceIPv4"
 readonly XRAY_INBOUND_TCP_KEEPALIVE_IDLE="300"
 readonly XRAY_INBOUND_TCP_KEEPALIVE_INTERVAL="30"
 
@@ -35,10 +34,8 @@ xray_private_ranges_json() {
 }
 
 xray_direct_outbounds_json() {
-    jq -cn --arg strategy "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" \
-        --arg fixed_ipv4_strategy "${XRAY_FIXED_IPV4_DOMAIN_STRATEGY}" '[
+    jq -cn --arg strategy "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" '[
       {protocol:"freedom",tag:"direct",settings:{domainStrategy:$strategy}},
-      {protocol:"freedom",tag:"direct-ipv4",settings:{domainStrategy:$fixed_ipv4_strategy}},
       {protocol:"blackhole",tag:"block"}
     ]'
 }
@@ -50,40 +47,13 @@ xray_inbound_sockopt_json() {
 }
 
 xray_direct_routing_json() {
-    local private_ranges gemini_domains
+    local private_ranges
     private_ranges=$(xray_private_ranges_json)
-    gemini_domains=$(jq -cn '[
-      "full:ai.google.dev",
-      "full:alkalimakersuite-pa.clients6.google.com",
-      "full:makersuite.google.com",
-      "domain:accounts.google.com",
-      "domain:bard.google.com",
-      "domain:deepmind.com",
-      "domain:deepmind.google",
-      "domain:gemini.google.com",
-      "domain:gemini.gstatic.com",
-      "domain:generativeai.google",
-      "domain:fonts.gstatic.com",
-      "domain:lh3.googleusercontent.com",
-      "domain:ogs.google.com",
-      "full:proactivebackend-pa.googleapis.com",
-      "full:apis.google.com",
-      "domain:signaler-pa.clients6.google.com",
-      "domain:ssl.gstatic.com",
-      "domain:waa-pa.clients6.google.com",
-      "domain:www.google.com",
-      "domain:www.google.com.hk",
-      "domain:www.gstatic.com",
-      "domain:clients4.google.com",
-      "domain:ogads-pa.clients6.google.com",
-      "keyword:generativelanguage"
-    ]')
-    jq -cn --argjson private "${private_ranges}" \
-        --argjson gemini "${gemini_domains}" '{
+    jq -cn --argjson private "${private_ranges}" '{
       domainStrategy:"IPOnDemand",
       rules:[
         {type:"field",ip:$private,outboundTag:"block"},
-        {type:"field",domain:$gemini,network:"tcp,udp",outboundTag:"direct-ipv4"},
+        {type:"field",network:"udp",port:"443",outboundTag:"block"},
         {type:"field",network:"tcp,udp",outboundTag:"direct"}
       ]
     }'

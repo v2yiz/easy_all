@@ -208,41 +208,40 @@ fi
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/lib/network.sh"
     [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "AsIs" ]] \
-        || fail "Xray direct egress must use automatic dual-stack resolution"
+        || fail "Xray direct egress must use automatic direct resolution"
     jq -e '
         .tcpKeepAliveIdle == 300
         and .tcpKeepAliveInterval == 30
     ' <<<"$(xray_inbound_sockopt_json)" >/dev/null \
         || fail "Xray inbound TCP keepalive policy drifted"
     jq -e '
-        map(.tag) == ["direct","direct-ipv4","block"]
+        map(.tag) == ["direct","block"]
         and .[0].settings.domainStrategy == "AsIs"
-        and .[1].settings.domainStrategy == "ForceIPv4"
+        and .[1].protocol == "blackhole"
     ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
         || fail "shared direct outbound policy is invalid"
     jq -e '
-        map(.tag) == ["direct","direct-ipv4","block"]
+        map(.tag) == ["direct","block"]
         and .[0].settings.domainStrategy == "AsIs"
-        and .[1].settings.domainStrategy == "ForceIPv4"
+        and .[1].protocol == "blackhole"
     ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
         || fail "shared XHTTP outbound policy must stay direct"
     jq -e '
         .domainStrategy == "IPOnDemand"
         and (.rules[0].ip | index("169.254.0.0/16"))
         and .rules[0].outboundTag == "block"
-        and .rules[1].outboundTag == "direct-ipv4"
-        and (.rules[1].domain | index("domain:gemini.google.com"))
-        and (.rules[1].domain | index("domain:accounts.google.com"))
-        and (.rules[1].domain | index("domain:gemini.gstatic.com"))
-        and (.rules[1].domain | index("domain:www.gstatic.com"))
-        and (.rules[1].domain | index("domain:lh3.googleusercontent.com"))
+        and .rules[1].outboundTag == "block"
+        and .rules[1].network == "udp"
+        and .rules[1].port == "443"
         and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_direct_routing_json)" >/dev/null \
         || fail "shared direct routing policy is invalid"
     jq -e '
         .domainStrategy == "IPOnDemand"
         and .rules[0].outboundTag == "block"
-        and .rules[1].outboundTag == "direct-ipv4"
+        and .rules[1].outboundTag == "block"
+        and .rules[1].network == "udp"
+        and .rules[1].port == "443"
         and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_xhttp_routing_json)" >/dev/null \
         || fail "shared XHTTP routing policy must stay direct"

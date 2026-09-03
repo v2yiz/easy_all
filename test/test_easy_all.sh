@@ -431,8 +431,8 @@ test_subscription_generation() {
         "reality-opts:" "${yaml}"
     assert_contains "IPv4-only Reality endpoint stays IPv4 in Mihomo" \
         "ip-version: ipv4" "${yaml}"
-    assert_contains "Reality endpoint enables the Mihomo IPv6 master switch" \
-        $'\nipv6: true\n' "${yaml}"
+    assert_contains "Reality endpoint keeps the Mihomo IPv6 master switch disabled" \
+        $'\nipv6: false\n' "${yaml}"
     assert_contains "Mihomo TUN bypasses CGNAT and overlay LAN addresses" \
         "100.64.0.0/10" "${yaml}"
     assert_not_contains "rendered DNS is not extended beyond XFLASH" \
@@ -474,8 +474,8 @@ test_subscription_generation() {
     yaml=$(<"${mihomo_file}")
     assert_contains "matching node AAAA keeps automatic dual-stack endpoint" \
         "ip-version: dual" "${yaml}"
-    assert_contains "dual-stack endpoint keeps Mihomo IPv6 enabled" \
-        $'\nipv6: true\n' "${yaml}"
+    assert_contains "dual-stack endpoint keeps Mihomo IPv6 disabled" \
+        $'\nipv6: false\n' "${yaml}"
     assert_not_contains "dual-stack endpoint keeps XFLASH DNS unchanged" \
         $'\n    ipv6: true\n' "${yaml}"
     unset -f dig
@@ -944,16 +944,17 @@ EOF
         jq -e \
         '.routing.domainStrategy == "IPOnDemand"
          and (.outbounds[] | select(.tag == "block").protocol) == "blackhole"
-         and (.routing.rules[] | select(.outboundTag == "block").ip
-             | index("169.254.0.0/16"))' \
+         and (.routing.rules[0].ip | index("169.254.0.0/16"))
+         and .routing.rules[0].outboundTag == "block"' \
         <<<"${config}"
-    assert_success "Xray uses dual-stack direct egress and fixed IPv4 for Gemini" \
+    assert_success "Xray uses direct egress and blocks UDP 443" \
         jq -e \
-        '(.outbounds | map(.tag)) == ["direct","direct-ipv4","block"]
+        '(.outbounds | map(.tag)) == ["direct","block"]
          and .outbounds[0].settings.domainStrategy == "AsIs"
-         and .outbounds[1].settings.domainStrategy == "ForceIPv4"
-         and (.routing.rules[1].domain | index("domain:gemini.google.com"))
-         and .routing.rules[1].outboundTag == "direct-ipv4"
+         and .outbounds[1].protocol == "blackhole"
+         and .routing.rules[1].outboundTag == "block"
+         and .routing.rules[1].network == "udp"
+         and .routing.rules[1].port == "443"
          and .routing.rules[-1]
              == {type:"field",network:"tcp,udp",outboundTag:"direct"}' \
         <<<"${config}"
@@ -965,8 +966,7 @@ EOF
     assert_success "dual-stack Reality listens on IPv4 and IPv6" \
         jq -e \
         '.inbounds[0].listen == "::"
-         and .outbounds[0].settings.domainStrategy == "AsIs"
-         and .outbounds[1].settings.domainStrategy == "ForceIPv4"' \
+         and .outbounds[0].settings.domainStrategy == "AsIs"' \
         <<<"${config}"
 
     QUOTA_ENABLED=1

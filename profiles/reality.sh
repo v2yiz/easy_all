@@ -205,9 +205,9 @@ configure_ipv6() {
         return 0
     }
     cat >"${RUNTIME_TMP}/enable-ipv6.conf" <<'EOF'
-net.ipv6.conf.all.disable_ipv6 = 0
-net.ipv6.conf.default.disable_ipv6 = 0
-net.ipv6.conf.lo.disable_ipv6 = 0
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
     install -m 0644 "${RUNTIME_TMP}/enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
     sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null \
@@ -218,7 +218,7 @@ initialize_server() {
     ensure_ssh_boot_service
     info "配置 XanMod LTS 内核 BBRv3"
     configure_bbr_tcp
-    info "配置每日重启与 IPv6"
+    info "配置每日重启并禁用 IPv6"
     configure_daily_reboot
     configure_ipv6
 }

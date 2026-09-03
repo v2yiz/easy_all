@@ -223,11 +223,11 @@ function transformConfig(
     canonicalUrl,
   );
 
-  // 明确启用 IPv6。
+  // 明确禁用 IPv6。
   lines = upsertGeneralValue(
     lines,
     "ipv6",
-    "true",
+    "false",
   );
 
   // 本地 IPv6 地址跳过代理。
@@ -246,6 +246,9 @@ function transformConfig(
 
   // 注入 AUTO 策略组。
   lines = injectAutoGroup(lines);
+
+  // 注入 UDP 443 拦截规则以屏蔽 QUIC。
+  lines = injectUdp443RejectRule(lines);
 
   // 将上游所有生效的 PROXY 规则统一交给 AUTO 自动测速选择。
   lines = rewriteProxyRulesToAuto(lines);
@@ -453,6 +456,29 @@ function injectAutoGroup(lines) {
     0,
     generatedComment,
     autoLine,
+  );
+
+  return lines;
+}
+
+function injectUdp443RejectRule(lines) {
+  const { start } = findSection(
+    lines,
+    "Rule",
+  );
+
+  const udpRejectLine = "AND,((PROTOCOL,UDP),(DEST-PORT,443)),REJECT";
+  const commentLine = "# 拒绝 UDP/443 以屏蔽 QUIC，避免降级延迟";
+
+  if (lines.some((line) => line.trim() === udpRejectLine)) {
+    return lines;
+  }
+
+  lines.splice(
+    start + 1,
+    0,
+    commentLine,
+    udpRejectLine,
   );
 
   return lines;

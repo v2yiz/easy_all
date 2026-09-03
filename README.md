@@ -271,9 +271,7 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文；密码提示也保持双语并继续隐藏输入，
 因此在中文乱码的 VNC 终端中仍可按英文提示完成操作。
 
-三种安装模式的 Xray 普通公网出站统一使用 `AsIs`，由系统拨号器自动处理 IPv4/IPv6。Gemini 页面、
-认证和静态资源使用的 Google 域名保留独立的 `ForceIPv4` 出站，客户端规则也继续固定走 `PROXY`，
-因此同一 Gemini 会话始终看到所选 VPS 的 IPv4 出口，不会因某个关联请求走 IPv6 而混用出口地址。
+服务器在初始化阶段通过 sysctl 完全禁用 IPv6，所有公网出站均天然使用稳定受控的 IPv4 出口，彻底避免因 IPv6 路由较差或双栈裂脑导致 Gemini 侧边栏及后台同步卡顿。同时服务端与客户端规则均默认阻断 UDP/443（QUIC），使 HTTP/3 流量直接快速回退至稳定 TCP。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
@@ -635,8 +633,7 @@ Reality 交互选项：
 - 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
 
 Reality 入站根据服务器公网 IPv6 自动选择 IPv4 或双栈监听；生成节点默认使用 `ipv4`，仅当
-VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`。Xray 普通目标出站使用双栈，Gemini
-相关域名仍固定使用 IPv4 出口。
+VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`。Xray 出站统一使用直接出站并默认拦截 UDP/443。
 
 自托管订阅域名必须是 Cloudflare Active Zone 下的一级子域名。安装器创建 Proxied A 记录；
 客户端由 Universal SSL 终止 TLS，Cloudflare 使用 Full (strict) 连接 VPS `8443` 上的 Origin CA：

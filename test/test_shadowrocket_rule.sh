@@ -81,6 +81,8 @@ assertContains("RULE-SET,https://example.com/global.list,AUTO");
 assertContains("RULE-SET,https://example.com/china.list,DIRECT");
 assertContains("FINAL,AUTO");
 assertContains("update-url = https://rules.example/EASY_ALL.conf");
+assertContains("ipv6 = false");
+assertContains("AND,((PROTOCOL,UDP),(DEST-PORT,443)),REJECT");
 
 if (output.includes("RULE-SET,https://example.com/global.list,PROXY")) {
   throw new Error("active PROXY rules must be rewritten to AUTO");
