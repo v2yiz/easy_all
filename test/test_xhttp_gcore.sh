@@ -387,4 +387,21 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         || fail "WebSocket migration must switch the local runtime before XHTTP validation: ${calls}"
 )
 
+(
+    # A missing managed Nginx file must be recreated by apply, not fail while backing it up.
+    # shellcheck source=/dev/null
+    source "${PROFILE}"
+    XHTTP_RUNTIME_STATE_CURRENT=1
+    install() {
+        [[ "${3:-}" != "${NGINX_CONFIG}" ]] \
+            || fail "refresh_runtime tried to back up a missing Nginx config"
+    }
+    write_xray_config() { :; }
+    write_nginx_config() { :; }
+    systemctl() { :; }
+    validate_protocol_runtime() { :; }
+    success() { :; }
+    refresh_runtime
+)
+
 printf 'ok - Gcore XHTTP profile tests passed\n'

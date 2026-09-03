@@ -687,7 +687,9 @@ refresh_runtime() {
     [[ "${XHTTP_RUNTIME_STATE_CURRENT:-0}" == "1" ]] || collect_installed_state
     backup=$(make_temp_dir)
     install -m 0600 "${XRAY_CONFIG}" "${backup}/config.json"
-    install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
+    if [[ -f "${NGINX_CONFIG}" ]]; then
+        install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
+    fi
     if write_xray_config && write_nginx_config \
         && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime; then
         success "运行时配置已刷新"
@@ -695,7 +697,11 @@ refresh_runtime() {
     fi
     warn "刷新失败，恢复旧配置"
     install -m 0600 "${backup}/config.json" "${XRAY_CONFIG}"
-    install -m 0600 "${backup}/nginx.conf" "${NGINX_CONFIG}"
+    if [[ -f "${backup}/nginx.conf" ]]; then
+        install -m 0600 "${backup}/nginx.conf" "${NGINX_CONFIG}"
+    else
+        rm -f -- "${NGINX_CONFIG}"
+    fi
     systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 || true
     systemctl reload nginx >/dev/null 2>&1 || true
     die "运行时刷新失败"
