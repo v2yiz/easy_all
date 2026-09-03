@@ -1160,7 +1160,7 @@ collect_install_inputs() {
     PROTOCOL="xhttp"
     CDN_PROVIDER="gcore"
     choose_cdn_client_ip_family
-    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-VLESS_XHTTP_GCORE}
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-GCORE}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
 
@@ -1298,6 +1298,7 @@ load_state() {
         || die "状态中的源站保护密钥无效"
     XHTTP_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
     configure_cdn_traffic_protection
+    [[ "${XHTTP_NODE_NAME:-}" != "VLESS_XHTTP_GCORE" ]] || XHTTP_NODE_NAME="GCORE"
     [[ -n "${XHTTP_NODE_NAME:-}" ]] || die "状态缺少 XHTTP_NODE_NAME；请重新安装"
     [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || die "状态缺少 SUB_DOWNLOAD_NAME；请重新安装"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME}")
@@ -1381,8 +1382,32 @@ mihomo_transport_marker() {
     printf 'network: xhttp'
 }
 
+gcore_base_node_name() {
+    local base=${XHTTP_NODE_NAME:-GCORE}
+    base=${base#VLESS_}
+    base=${base%_XHTTP}
+    base=${base%_GCORE}
+    base=${base%_WS}
+    base=${base%_WEBSOCKET}
+    base=${base%_PACKET_UP}
+    [[ -n "${base}" ]] || base="GCORE"
+    printf '%s' "${base}"
+}
+
+xhttp_auto_group_name() {
+    printf '%s_AUTO' "$(gcore_base_node_name)"
+}
+
+xhttp_websocket_node_name() {
+    printf '%s_WS' "$(gcore_base_node_name)"
+}
+
+xhttp_packet_up_node_name() {
+    printf '%s_XHTTP' "$(gcore_base_node_name)"
+}
+
 build_vless_websocket_link() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WEBSOCKET}
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-$(xhttp_websocket_node_name)}
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
         "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "${node_name}")"
@@ -1391,15 +1416,15 @@ build_vless_websocket_link() {
 build_node_links() {
     local endpoint
     while IFS= read -r endpoint; do
-        build_vless_xhttp_link "${endpoint}" "${XHTTP_NODE_NAME}_PACKET_UP"
+        build_vless_xhttp_link "${endpoint}" "$(xhttp_packet_up_node_name)"
         printf '\n'
-        build_vless_websocket_link "${endpoint}" "${XHTTP_NODE_NAME}_WEBSOCKET"
+        build_vless_websocket_link "${endpoint}" "$(xhttp_websocket_node_name)"
         printf '\n'
     done < <(xhttp_client_endpoints)
 }
 
 build_mihomo_websocket_node() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WEBSOCKET}
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-$(xhttp_websocket_node_name)}
     resolve_cdn_client_ip_family
     jq -nr --arg name "${node_name}" --arg server "${server}" \
         --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
@@ -1414,20 +1439,18 @@ build_mihomo_websocket_node() {
 build_mihomo_nodes() {
     local endpoint
     while IFS= read -r endpoint; do
-        build_mihomo_node_for_endpoint "${endpoint}" "${XHTTP_NODE_NAME}_PACKET_UP"
-        build_mihomo_websocket_node "${endpoint}" "${XHTTP_NODE_NAME}_WEBSOCKET"
+        build_mihomo_node_for_endpoint "${endpoint}" "$(xhttp_packet_up_node_name)"
+        build_mihomo_websocket_node "${endpoint}" "$(xhttp_websocket_node_name)"
     done < <(xhttp_client_endpoints)
 }
-
-xhttp_auto_group_name() { printf 'GCORE_AUTO'; }
 
 build_mihomo_proxy_names() {
     printf '        - %s\n' \
         "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
     printf '        - %s\n' \
-        "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_WEBSOCKET" '$value')"
+        "$(jq -Rn --arg value "$(xhttp_websocket_node_name)" '$value')"
     printf '        - %s\n' \
-        "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_PACKET_UP" '$value')"
+        "$(jq -Rn --arg value "$(xhttp_packet_up_node_name)" '$value')"
 }
 
 build_mihomo_proxy_groups() {
@@ -1436,8 +1459,8 @@ build_mihomo_proxy_groups() {
     cat <<EOF
       type: url-test
       proxies:
-        - $(jq -Rn --arg value "${XHTTP_NODE_NAME}_PACKET_UP" '$value')
-        - $(jq -Rn --arg value "${XHTTP_NODE_NAME}_WEBSOCKET" '$value')
+        - $(jq -Rn --arg value "$(xhttp_websocket_node_name)" '$value')
+        - $(jq -Rn --arg value "$(xhttp_packet_up_node_name)" '$value')
       url: https://www.gstatic.com/generate_204
       interval: 600
       tolerance: 50
@@ -1694,6 +1717,7 @@ apply_easy_all() {
     configure_bbr_tcp
     configure_ufw
     finish_xhttp_apply
+    install_cdn_traffic_protection_timer
     success "easy_all Gcore CDN XHTTP 本机配置与订阅已应用；未修改 Gcore 资源"
 }
 

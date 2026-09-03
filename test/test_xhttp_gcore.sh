@@ -305,15 +305,15 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     mihomo_group=$(build_mihomo_proxy_groups)
     mihomo_proxy_names=$(build_mihomo_proxy_names)
     [[ "${mihomo_group}" == *'type: url-test'* \
-        && "${mihomo_group}" == *'"GCORE_XHTTP_PACKET_UP"'* \
-        && "${mihomo_group}" == *'"GCORE_XHTTP_WEBSOCKET"'* \
+        && "${mihomo_group}" == *'"GCORE_WS"'* \
+        && "${mihomo_group}" == *'"GCORE_XHTTP"'* \
         && "${mihomo_group}" == *'interval: 600'* \
         && "${mihomo_group}" == *'tolerance: 50'* \
         && "${mihomo_group}" == *'timeout: 3000'* \
         && "${mihomo_group}" == *'lazy: true'* \
         && "${mihomo_proxy_names}" == *'"GCORE_AUTO"'* \
-        && "${mihomo_proxy_names}" == *'"GCORE_XHTTP_WEBSOCKET"'* \
-        && "${mihomo_proxy_names}" == *'"GCORE_XHTTP_PACKET_UP"'* ]] \
+        && "${mihomo_proxy_names}" == *'"GCORE_WS"'* \
+        && "${mihomo_proxy_names}" == *'"GCORE_XHTTP"'* ]] \
         || fail "Gcore dual-transport URL-test group is invalid"
 
     GCORE_ORIGIN_DOMAIN=origin.example.com
