@@ -446,8 +446,8 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 | `ALPN`                 | `h2`                           | Gcore 支持 HTTP/2；避免退回 WebSocket 的 HTTP/1.1 Upgrade  |
 | WebSocket `ALPN`       | `http/1.1`                     | 使用标准 WebSocket Upgrade                                 |
 | WebSocket 路径         | 独立随机 `/ws-*`               | 与 XHTTP 路径分流                                           |
-| `xPaddingBytes`        | `100-1000`                     | 使用 XHTTP 默认范围，减少固定请求头特征                    |
-| `scMaxBufferedPosts`   | `30`                           | 限制服务端等待中的上行 POST 数，避免无界缓存                 |
+| `xPaddingBytes`        | `100-500`                      | 优化填充范围，减少固定请求头特征并降低上行数据膨胀          |
+| `scMaxBufferedPosts`   | `100`                          | 适度扩充服务端等待中的上行 POST 缓冲区，防止突发丢流        |
 | `xmux`                 | 不显式配置，使用 Xray 原生默认值 | 避免把未经 Gcore 免费节点实测的连接数和复用周期写死        |
 | VLESS flow               | 空                               | XHTTP 不使用 Vision flow                                   |
 | 证书校验                 | 开启                             | 客户端使用 CDN 域名作为连接地址、SNI 和 Host               |

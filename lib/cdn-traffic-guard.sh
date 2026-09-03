@@ -138,12 +138,12 @@ ExecStart=${COMMAND_PATH} cdn-traffic-sync
 EOF
     cat >"${RUNTIME_TMP}/easy_all-cdn-traffic-guard.timer" <<EOF
 [Unit]
-Description=Check easy_all Gcore CDN traffic protection every 15 seconds
+Description=Check easy_all Gcore CDN traffic protection every 300 seconds
 
 [Timer]
-OnBootSec=15s
-OnUnitActiveSec=15s
-AccuracySec=1s
+OnBootSec=300s
+OnUnitActiveSec=300s
+AccuracySec=5s
 Unit=easy_all-cdn-traffic-guard.service
 
 [Install]

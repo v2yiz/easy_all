@@ -78,9 +78,9 @@ assert_not_contains "Gcore mTLS does not duplicate origin authentication with a 
 assert_not_contains "Gcore mTLS does not reject requests on a redundant origin header" \
     "${PROFILE}" 'http_x_easy_all_origin_key'
 assert_contains "Gcore uses the agreed XHTTP padding range" "${CONTENT}" \
-    'readonly GCORE_XHTTP_PADDING_BYTES="100-1000"'
+    'readonly GCORE_XHTTP_PADDING_BYTES="100-500"'
 assert_contains "Gcore uses the agreed packet-up buffering limit" "${CONTENT}" \
-    'readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="30"'
+    'readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="100"'
 assert_contains "XHTTP uses HTTP/2 ALPN" "${CONTENT}" \
     'alpn=h2'
 assert_contains "Gcore uses packet-up" "${CONTENT}" \
@@ -100,7 +100,7 @@ assert_contains "Xray exposes a second WebSocket inbound" "${CONTENT}" \
 assert_contains "Nginx forwards WebSocket upgrades" "${CONTENT}" \
     'proxy_set_header Upgrade \$http_upgrade;'
 assert_contains "Nginx routes WebSocket to its own loopback port" "${CONTENT}" \
-    'proxy_pass http://127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT};'
+    'proxy_pass http://gcore_websocket_backend;'
 assert_contains "XHTTP disables Nginx buffering" "${CONTENT}" \
     'proxy_request_buffering off;'
 assert_contains "XHTTP accepts streaming request bodies" "${CONTENT}" \
@@ -110,7 +110,13 @@ assert_contains "XHTTP allows slow streaming uploads" "${CONTENT}" \
 assert_contains "XHTTP proxies to the local Xray over HTTP/1.1" "${CONTENT}" \
     'proxy_http_version 1.1;'
 assert_contains "XHTTP uses the local proxy target" "${CONTENT}" \
-    'proxy_pass http://127.0.0.1:'
+    'proxy_pass http://gcore_xhttp_backend;'
+assert_contains "Nginx enables socket keepalive" "${CONTENT}" \
+    'so_keepalive=15s:5s:3;'
+assert_contains "Nginx defines websocket keepalive pool" "${CONTENT}" \
+    'upstream gcore_websocket_backend {'
+assert_contains "Nginx defines xhttp keepalive pool" "${CONTENT}" \
+    'upstream gcore_xhttp_backend {'
 assert_contains "Gcore guard uses conservative accounting" "${CONTENT}" \
     'readonly GCORE_CDN_TRAFFIC_PROTECTION_GB="990"'
 assert_contains "Gcore state persists XHTTP protocol" "${CONTENT}" \
@@ -159,9 +165,9 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
 (
     # shellcheck source=/dev/null
     source "${PROFILE}"
-    [[ "${GCORE_XHTTP_MAX_BUFFERED_POSTS}" == "30" ]] \
+    [[ "${GCORE_XHTTP_MAX_BUFFERED_POSTS}" == "100" ]] \
         || fail "packet-up buffering limit drifted"
-    [[ "${GCORE_XHTTP_PADDING_BYTES}" == "100-1000" ]] \
+    [[ "${GCORE_XHTTP_PADDING_BYTES}" == "100-500" ]] \
         || fail "XHTTP padding constant drifted"
 
     GCORE_API_TOKEN=1234567890abcdef
@@ -276,7 +282,10 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
         && "${websocket_link}" == *'path=%2Fws-0123456789abcdef'* ]] \
         || fail "VLESS WebSocket URI does not contain the agreed settings"
 
-    CDN_CLIENT_IP_FAMILY=ipv4
+    unset CDN_CLIENT_IP_FAMILY
+    choose_cdn_client_ip_family
+    [[ "${CDN_CLIENT_IP_FAMILY_RESOLVED}" == "ipv4" ]] \
+        || fail "Gcore default client IP family must be ipv4"
     mihomo=$(build_mihomo_node_for_endpoint 203.0.113.10 TEST)
     [[ "${mihomo}" == *'network: xhttp'* \
         && "${mihomo}" == *'      - h2'* \
@@ -298,11 +307,13 @@ assert_contains "purge preflights the attached client certificate" "${CONTENT}" 
     [[ "${mihomo_group}" == *'type: url-test'* \
         && "${mihomo_group}" == *'"GCORE_XHTTP_PACKET_UP"'* \
         && "${mihomo_group}" == *'"GCORE_XHTTP_WEBSOCKET"'* \
-        && "${mihomo_group}" == *'interval: 300'* \
-        && "${mihomo_group}" == *'tolerance: 20'* \
+        && "${mihomo_group}" == *'interval: 600'* \
+        && "${mihomo_group}" == *'tolerance: 50'* \
         && "${mihomo_group}" == *'timeout: 3000'* \
-        && "${mihomo_group}" == *'lazy: false'* \
-        && "${mihomo_proxy_names}" == *'"GCORE_AUTO"'* ]] \
+        && "${mihomo_group}" == *'lazy: true'* \
+        && "${mihomo_proxy_names}" == *'"GCORE_AUTO"'* \
+        && "${mihomo_proxy_names}" == *'"GCORE_XHTTP_WEBSOCKET"'* \
+        && "${mihomo_proxy_names}" == *'"GCORE_XHTTP_PACKET_UP"'* ]] \
         || fail "Gcore dual-transport URL-test group is invalid"
 
     GCORE_ORIGIN_DOMAIN=origin.example.com

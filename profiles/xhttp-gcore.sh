@@ -25,8 +25,8 @@ XHTTP_XMUX_ENABLED_OVERRIDE=false
 
 readonly GCORE_API_BASE="https://api.gcore.com"
 readonly GCORE_DNS_TTL="300"
-readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="30"
-readonly GCORE_XHTTP_PADDING_BYTES="100-1000"
+readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="100"
+readonly GCORE_XHTTP_PADDING_BYTES="100-500"
 readonly GCORE_CDN_TRAFFIC_PROTECTION_GB="990"
 readonly GCORE_XHTTP_NGINX_TIMEOUT="1h"
 readonly GCORE_WEBSOCKET_NGINX_TIMEOUT="1h"
@@ -44,6 +44,11 @@ source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
 # always the Gcore DNS name.
 # shellcheck source=lib/cdn-traffic-guard.sh
 source "${XHTTP_PROFILE_ROOT}/cdn-traffic-guard.sh"
+
+choose_cdn_client_ip_family() {
+    CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-ipv4}
+    configure_cdn_client_ip_family
+}
 
 readonly ACME_HOME="/root/.acme-gcore.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
@@ -1419,6 +1424,10 @@ xhttp_auto_group_name() { printf 'GCORE_AUTO'; }
 build_mihomo_proxy_names() {
     printf '        - %s\n' \
         "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
+    printf '        - %s\n' \
+        "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_WEBSOCKET" '$value')"
+    printf '        - %s\n' \
+        "$(jq -Rn --arg value "${XHTTP_NODE_NAME}_PACKET_UP" '$value')"
 }
 
 build_mihomo_proxy_groups() {
@@ -1430,10 +1439,10 @@ build_mihomo_proxy_groups() {
         - $(jq -Rn --arg value "${XHTTP_NODE_NAME}_PACKET_UP" '$value')
         - $(jq -Rn --arg value "${XHTTP_NODE_NAME}_WEBSOCKET" '$value')
       url: https://www.gstatic.com/generate_204
-      interval: 300
-      tolerance: 20
+      interval: 600
+      tolerance: 50
       timeout: 3000
-      lazy: false
+      lazy: true
 EOF
 }
 
@@ -1490,6 +1499,16 @@ write_nginx_config() {
     {
         write_subscription_nginx_maps
         cat <<EOF
+upstream gcore_websocket_backend {
+    server 127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT};
+    keepalive 32;
+}
+
+upstream gcore_xhttp_backend {
+    server 127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
+    keepalive 32;
+}
+
 server {
     listen 80;
     listen [::]:80;
@@ -1500,8 +1519,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2 backlog=4096;
-    listen [::]:443 ssl http2 backlog=4096;
+    listen 443 ssl http2 backlog=4096 so_keepalive=15s:5s:3;
+    listen [::]:443 ssl http2 backlog=4096 so_keepalive=15s:5s:3;
     server_name ${GCORE_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -1532,7 +1551,7 @@ EOF
         proxy_connect_timeout 5s;
         proxy_read_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
         proxy_send_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
-        proxy_pass http://127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT};
+        proxy_pass http://gcore_websocket_backend;
         access_log off;
     }
 
@@ -1551,7 +1570,7 @@ EOF
         proxy_connect_timeout 5s;
         proxy_read_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
         proxy_send_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
-        proxy_pass http://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
+        proxy_pass http://gcore_xhttp_backend;
         access_log off;
     }
 
