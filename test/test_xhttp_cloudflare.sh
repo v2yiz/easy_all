@@ -240,6 +240,15 @@ EOF
     assert_equal "Cloudflare limits submissions to the current free probe budget" \
         "2" "$(wc -l <"${budgeted_pool_file}" | tr -d ' ')"
 
+    (
+        globalping_api_request() {
+            printf '{"status":"finished","id":"test1"}\n'
+        }
+        wait_res=$(cloudflare_wait_globalping_measurement "test1")
+        assert_contains "cloudflare_wait_globalping_measurement succeeds" \
+            "${wait_res}" '"finished"'
+    )
+
     generated_cache="${TMP_DIR}/cloudflare-generated-cache.json"
     (
         cloudflare_fetch_origin_ipv4_ranges() {
