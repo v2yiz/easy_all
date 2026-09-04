@@ -207,12 +207,19 @@ build_singbox_subscription_json() {
       log: { level: "warn" },
       dns: {
         servers: [
-          { tag: "remote", address: "https://1.1.1.1/dns-query", detour: "PROXY" },
-          { tag: "local", address: "https://223.5.5.5/dns-query", detour: "direct" },
-          { tag: "block", address: "rcode://success" }
+          {
+            tag: "remote",
+            type: "https",
+            server: "1.1.1.1",
+            detour: "PROXY"
+          },
+          {
+            tag: "local",
+            type: "local",
+            detour: "direct"
+          }
         ],
         rules: [
-          { outbound: "any", server: "local" },
           { clash_mode: "Direct", server: "local" },
           { clash_mode: "Global", server: "remote" },
           { rule_set: "geosite-cn", server: "local" }
@@ -292,6 +299,7 @@ build_singbox_subscription_json() {
         { type: "dns", tag: "dns-out" }
       ],
       route: {
+        default_domain_resolver: "local",
         rules: [
           { protocol: "dns", outbound: "dns-out" },
           { clash_mode: "Direct", outbound: "direct" },
