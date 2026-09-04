@@ -179,7 +179,7 @@ build_mihomo_proxy_groups() {
       proxies:
         - $(jq -Rn --arg value "$(singbox_trojan_node_name)" '$value')
         - $(jq -Rn --arg value "$(singbox_vless_node_name)" '$value')
-      url: https://www.gstatic.com/generate_204
+      url: http://cp.cloudflare.com/generate_204
       interval: 600
       tolerance: 50
       timeout: 3000
@@ -208,22 +208,30 @@ build_singbox_subscription_json() {
       dns: {
         servers: [
           {
-            tag: "remote",
-            type: "https",
-            server: "1.1.1.1",
-            detour: "PROXY"
+            tag: "fakeip",
+            type: "fakeip",
+            inet4_range: "198.18.0.0/15",
+            inet6_range: "fc00::/18"
           },
           {
             tag: "local",
             type: "local",
             detour: "direct"
+          },
+          {
+            tag: "remote",
+            type: "https",
+            server: "1.1.1.1",
+            detour: "PROXY"
           }
         ],
         rules: [
           { clash_mode: "Direct", action: "route", server: "local" },
-          { clash_mode: "Global", action: "route", server: "remote" },
-          { rule_set: "geosite-cn", action: "route", server: "local" }
+          { clash_mode: "Global", action: "route", server: "fakeip" },
+          { rule_set: "geosite-cn", action: "route", server: "local" },
+          { query_type: ["A", "AAAA"], action: "route", server: "fakeip" }
         ],
+        final: "remote",
         strategy: "prefer_ipv4"
       },
       http_clients: [
@@ -258,7 +266,7 @@ build_singbox_subscription_json() {
           type: "urltest",
           tag: $auto_name,
           outbounds: [$trojan_name, $vless_name],
-          url: "https://www.gstatic.com/generate_204",
+          url: "http://cp.cloudflare.com/generate_204",
           interval: "10m",
           tolerance: 50
         },

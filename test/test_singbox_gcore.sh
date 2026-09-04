@@ -151,17 +151,25 @@ assert_contains "Sing-box subscription VLESS tag" "${sub_vless_tag}" "VLESS"
 assert_contains "Sing-box subscription PROXY includes AUTO" "${sub_proxy_outbounds}" "_AUTO"
 
 # Modern DNS format assertions (sing-box 1.12+ / 1.14+)
+sub_fakeip_dns_type=$(jq -r '.dns.servers[] | select(.tag=="fakeip") | .type' <<<"${singbox_sub}")
+sub_fakeip_inet4=$(jq -r '.dns.servers[] | select(.tag=="fakeip") | .inet4_range' <<<"${singbox_sub}")
 sub_remote_dns_type=$(jq -r '.dns.servers[] | select(.tag=="remote") | .type' <<<"${singbox_sub}")
 sub_local_dns_type=$(jq -r '.dns.servers[] | select(.tag=="local") | .type' <<<"${singbox_sub}")
+sub_dns_final=$(jq -r '.dns.final' <<<"${singbox_sub}")
 sub_has_legacy_dns_address=$(jq -r '[.dns.servers[] | has("address")] | any' <<<"${singbox_sub}")
 sub_has_legacy_dns_outbound_rule=$(jq -r '[.dns.rules[] | has("outbound")] | any' <<<"${singbox_sub}")
 sub_route_domain_resolver=$(jq -r '.route.default_domain_resolver' <<<"${singbox_sub}")
+sub_urltest_url=$(jq -r '.outbounds[] | select(.type=="urltest") | .url' <<<"${singbox_sub}")
 
+assert_equal "Sing-box fakeip DNS type is fakeip" "fakeip" "${sub_fakeip_dns_type}"
+assert_equal "Sing-box fakeip inet4_range is 198.18.0.0/15" "198.18.0.0/15" "${sub_fakeip_inet4}"
 assert_equal "Sing-box remote DNS type is https" "https" "${sub_remote_dns_type}"
 assert_equal "Sing-box local DNS type is local" "local" "${sub_local_dns_type}"
+assert_equal "Sing-box DNS final server is remote" "remote" "${sub_dns_final}"
 assert_equal "Sing-box DNS servers do not use legacy address field" "false" "${sub_has_legacy_dns_address}"
 assert_equal "Sing-box DNS rules do not use legacy outbound rule" "false" "${sub_has_legacy_dns_outbound_rule}"
 assert_equal "Sing-box route sets default_domain_resolver" "local" "${sub_route_domain_resolver}"
+assert_equal "Sing-box urltest uses fast generate_204 endpoint" "http://cp.cloudflare.com/generate_204" "${sub_urltest_url}"
 
 # Modern client outbounds (sing-box 1.13+ / 1.14+: no legacy dns or block outbounds)
 sub_has_legacy_dns_outbound=$(jq -r '[.outbounds[] | select(.type=="dns")] | length' <<<"${singbox_sub}")
