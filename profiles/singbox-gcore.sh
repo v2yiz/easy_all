@@ -236,11 +236,10 @@ build_singbox_subscription_json() {
         {
           type: "tun",
           tag: "tun-in",
-          inet4_address: "172.19.0.1/30",
+          address: ["172.19.0.1/30"],
           auto_route: true,
           strict_route: false,
-          stack: "mixed",
-          sniff: true
+          stack: "mixed"
         }
       ],
       outbounds: [
@@ -294,14 +293,13 @@ build_singbox_subscription_json() {
           },
           packet_encoding: "xudp"
         },
-        { type: "direct", tag: "direct" },
-        { type: "block", tag: "block" },
-        { type: "dns", tag: "dns-out" }
+        { type: "direct", tag: "direct" }
       ],
       route: {
         default_domain_resolver: "local",
         rules: [
-          { protocol: "dns", outbound: "dns-out" },
+          { action: "sniff" },
+          { protocol: "dns", action: "hijack-dns" },
           { clash_mode: "Direct", outbound: "direct" },
           { clash_mode: "Global", outbound: "PROXY" },
           { ip_is_private: true, outbound: "direct" },
@@ -402,12 +400,11 @@ singbox_render_config() {
         }
       ],
       outbounds: [
-        { type: "direct", tag: "direct" },
-        { type: "block", tag: "block" }
+        { type: "direct", tag: "direct" }
       ],
       route: {
         rules: [
-          { ip_is_private: true, outbound: "block" }
+          { ip_is_private: true, action: "reject" }
         ],
         auto_detect_interface: true
       }
@@ -599,7 +596,7 @@ show_status() {
     printf 'Gcore DNS Zone: %s\nGcore 订阅 DNS Zone: %s\n源组 ID: %s\nCDN 资源 ID: %s\n边缘证书 ID: %s\n' \
         "${GCORE_DNS_ZONE}" "${GCORE_SUBSCRIPTION_DNS_ZONE}" \
         "${GCORE_ORIGIN_GROUP_ID}" "${GCORE_CDN_RESOURCE_ID}" "${GCORE_SSL_CERT_ID}"
-    printf 'Sing-box: '; systemctl is-active --quiet "${SINGBOX_SERVICE}" && printf 'active\n' || printf 'inactive\n'
+    printf 'Sing-box: '; systemctl is-active --quiet "${SINGBOX_SERVICE}" && printf 'active (%s)\n' "$(singbox_installed_version)" || printf 'inactive (%s)\n' "$(singbox_installed_version)"
     printf 'Nginx: '; systemctl is-active --quiet nginx && printf 'active\n' || printf 'inactive\n'
     printf 'UFW: '; LC_ALL=C ufw status 2>/dev/null | sed -n 's/^Status: //p'
 }

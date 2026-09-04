@@ -14,8 +14,18 @@ SINGBOX_SERVICE_FILE="/etc/systemd/system/easy_all-singbox.service"
 SINGBOX_SERVICE="easy_all-singbox.service"
 SINGBOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
 
+singbox_installed_version() {
+    if [[ -x "${SINGBOX_BIN}" ]]; then
+        "${SINGBOX_BIN}" version 2>/dev/null | head -n 1 | awk '{print $3}'
+    elif [[ -f "${SINGBOX_DIR}/version" ]]; then
+        cat "${SINGBOX_DIR}/version"
+    else
+        printf '未安装'
+    fi
+}
+
 download_singbox() {
-    local release_file archive_url sha_url version clean_version temp_dir archive sha_file expected actual
+    local release_file archive_url sha_url version clean_version temp_dir archive sha_file expected actual arch expected_digest
     temp_dir=$(make_temp_dir)
     release_file="${temp_dir}/release.json"
     download_https_file "${SINGBOX_RELEASES_API}" "${release_file}" \
@@ -25,21 +35,35 @@ download_singbox() {
         || die "GitHub 返回了无效的 Sing-box 版本：${version:-空}"
     clean_version="${version#v}"
 
-    archive_url=$(jq -r '
-        .assets[]? | select(.name | test("^sing-box-.*-linux-amd64\\.tar\\.gz$")) | .browser_download_url
+    case "$(uname -m)" in
+        x86_64|amd64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) arch="amd64" ;;
+    esac
+
+    archive_url=$(jq -r --arg arch "${arch}" '
+        .assets[]? | select(.name | test("^sing-box-.*-linux-" + $arch + "\\.tar\\.gz$")) | .browser_download_url
     ' "${release_file}" | head -n 1)
     [[ -n "${archive_url}" && "${archive_url}" == https://github.com/SagerNet/sing-box/releases/download/* ]] \
-        || die "未找到适配 amd64 的 Sing-box 发布归档"
+        || die "未找到适配 ${arch} 的 Sing-box 发布归档"
 
-    sha_url=$(jq -r '
-        .assets[]? | select(.name | test("^sing-box-.*-linux-amd64\\.tar\\.gz\\.sha256$")) | .browser_download_url
+    expected_digest=$(jq -r --arg arch "${arch}" '
+        .assets[]? | select(.name | test("^sing-box-.*-linux-" + $arch + "\\.tar\\.gz$")) | .digest // empty
+    ' "${release_file}" | head -n 1)
+
+    sha_url=$(jq -r --arg arch "${arch}" '
+        .assets[]? | select(.name | test("^sing-box-.*-linux-" + $arch + "\\.tar\\.gz\\.sha256$")) | .browser_download_url
     ' "${release_file}" | head -n 1)
 
     archive="${temp_dir}/sing-box.tar.gz"
-    info "正在从 GitHub 官方 Release 下载 Sing-box ${version}"
+    info "正在从 GitHub 官方 Release 下载 Sing-box ${version} (${arch})"
     download_https_file "${archive_url}" "${archive}" " Sing-box ${version}"
 
-    if [[ -n "${sha_url}" ]]; then
+    if [[ -n "${expected_digest}" && "${expected_digest}" == sha256:* ]]; then
+        expected="${expected_digest#sha256:}"
+        actual=$(sha256sum "${archive}" | awk '{print $1}')
+        [[ "${expected,,}" == "${actual,,}" ]] || die "Sing-box SHA256 校验失败"
+    elif [[ -n "${sha_url}" ]]; then
         sha_file="${temp_dir}/sing-box.sha256"
         download_https_file "${sha_url}" "${sha_file}" " Sing-box 校验文件"
         expected=$(awk '{print $1; exit}' "${sha_file}")
@@ -85,10 +109,14 @@ EOF
 update_singbox_core() {
     require_root
     [[ -x "${SINGBOX_BIN}" ]] || die "Sing-box 尚未安装"
-    info "正在检查 Sing-box 核心更新"
+    local old_version new_version
+    old_version=$(singbox_installed_version)
+    info "当前 Sing-box 版本: ${old_version}"
+    info "正在检查 Sing-box 核心更新并安装最新版本..."
     download_singbox
     if systemctl is-active --quiet "${SINGBOX_SERVICE}"; then
         systemctl restart "${SINGBOX_SERVICE}" || die "重启 Sing-box 服务失败"
     fi
-    success "Sing-box 核心已更新至最新版本"
+    new_version=$(singbox_installed_version)
+    success "Sing-box 核心已更新至最新版本: ${old_version} -> ${new_version}"
 }

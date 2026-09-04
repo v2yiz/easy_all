@@ -109,6 +109,12 @@ assert_equal "VLESS inbound listen port" "10087" "${vless_port}"
 assert_equal "Trojan inbound transport" "ws" "${trojan_ws}"
 assert_equal "VLESS inbound transport" "ws" "${vless_ws}"
 
+# Modern server outbounds (no legacy block outbound)
+server_outbound_types=$(jq -r '[.outbounds[].type] | join(",")' <<<"${singbox_json}")
+server_rule_action=$(jq -r '.route.rules[0].action' <<<"${singbox_json}")
+assert_equal "Server outbounds only contain direct" "direct" "${server_outbound_types}"
+assert_equal "Server private IP rule uses reject action" "reject" "${server_rule_action}"
+
 # 4. Test link generation
 trojan_link=$(build_trojan_websocket_link "${VLESS_CDN_DOMAIN}")
 vless_link=$(build_vless_websocket_link "${VLESS_CDN_DOMAIN}")
@@ -153,6 +159,19 @@ assert_equal "Sing-box local DNS type is local" "local" "${sub_local_dns_type}"
 assert_equal "Sing-box DNS servers do not use legacy address field" "false" "${sub_has_legacy_dns_address}"
 assert_equal "Sing-box DNS rules do not use legacy outbound rule" "false" "${sub_has_legacy_dns_outbound_rule}"
 assert_equal "Sing-box route sets default_domain_resolver" "local" "${sub_route_domain_resolver}"
+
+# Modern client outbounds (sing-box 1.13+ / 1.14+: no legacy dns or block outbounds)
+sub_has_legacy_dns_outbound=$(jq -r '[.outbounds[] | select(.type=="dns")] | length' <<<"${singbox_sub}")
+sub_has_legacy_block_outbound=$(jq -r '[.outbounds[] | select(.type=="block")] | length' <<<"${singbox_sub}")
+sub_dns_rule_action=$(jq -r '.route.rules[] | select(.protocol=="dns") | .action' <<<"${singbox_sub}")
+sub_has_sniff_rule=$(jq -r '[.route.rules[] | select(.action=="sniff")] | length' <<<"${singbox_sub}")
+sub_tun_address=$(jq -r '.inbounds[] | select(.type=="tun") | .address[0]' <<<"${singbox_sub}")
+
+assert_equal "Sing-box subscription has no dns outbound" "0" "${sub_has_legacy_dns_outbound}"
+assert_equal "Sing-box subscription has no block outbound" "0" "${sub_has_legacy_block_outbound}"
+assert_equal "Sing-box subscription routes DNS via hijack-dns action" "hijack-dns" "${sub_dns_rule_action}"
+assert_equal "Sing-box subscription includes sniff action in route" "1" "${sub_has_sniff_rule}"
+assert_equal "Sing-box subscription tun inbound uses modern address field" "172.19.0.1/30" "${sub_tun_address}"
 
 # 7. Test Nginx config generation
 # Mock Gcore CA, mTLS, and system hooks
