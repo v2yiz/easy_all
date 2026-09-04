@@ -245,10 +245,9 @@ build_singbox_subscription_json() {
             server: "local"
           },
           { rule_set: "geosite-cn", action: "route", server: "local" },
-          { rule_set: "geosite-category-ai", action: "route", server: "fakeip" },
-          { query_type: ["A", "AAAA"], action: "route", server: "fakeip" }
+          { rule_set: ["geosite-category-ai", "geosite-geolocation-!cn"], action: "route", server: "fakeip" }
         ],
-        final: "remote",
+        final: "local",
         strategy: "prefer_ipv4"
       },
       http_clients: [
@@ -332,7 +331,6 @@ build_singbox_subscription_json() {
         rules: [
           { action: "sniff" },
           { protocol: "dns", action: "hijack-dns" },
-          { network: "udp", port: [443], action: "reject" },
           { clash_mode: "Direct", action: "route", outbound: "direct" },
           { clash_mode: "Global", action: "route", outbound: "PROXY" },
           {
@@ -352,8 +350,9 @@ build_singbox_subscription_json() {
             outbound: "direct"
           },
           { ip_is_private: true, action: "route", outbound: "direct" },
-          { rule_set: "geosite-category-ai", action: "route", outbound: "PROXY" },
-          { rule_set: ["geoip-cn", "geosite-cn"], action: "route", outbound: "direct" }
+          { rule_set: ["geosite-category-ai", "geosite-geolocation-!cn"], action: "route", outbound: "PROXY" },
+          { rule_set: ["geoip-cn", "geosite-cn"], action: "route", outbound: "direct" },
+          { network: "udp", port: [443], action: "reject" }
         ],
         rule_set: [
           {
@@ -361,6 +360,13 @@ build_singbox_subscription_json() {
             type: "remote",
             format: "binary",
             url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ai-chat-!cn.srs",
+            http_client: "proxy-client"
+          },
+          {
+            tag: "geosite-geolocation-!cn",
+            type: "remote",
+            format: "binary",
+            url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
             http_client: "proxy-client"
           },
           {
