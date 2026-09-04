@@ -7,11 +7,11 @@
 | 安装模式       | 协议                         | CDN Provider / 入口 |
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
-| 2. Cloudflare CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | Cloudflare + Globalping IPv4 |
+| 2. Cloudflare CDN 精选 IP - XHTTP + WebSocket | VLESS XHTTP stream-up + WebSocket / TLS | Cloudflare + Globalping IPv4 |
 | 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 (Xray 核心) |
 | 4. Gcore CDN 域名 - Sing-box (Trojan + VLESS WS) | Trojan WS / VLESS WS / TLS | Gcore CDN 域名 (Sing-box 核心) |
 
-Cloudflare 使用 XHTTP；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 提供 XHTTP + WebSocket 双链路（精选 IP 调度）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray/Sing-box、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -130,7 +130,7 @@ sudo ./easy_all install
 ```text
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
-  2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）
+  2. Cloudflare CDN 精选 IP - XHTTP + WebSocket（三网独立优选 + 双链路）
   3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）
   4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）
  请选择 [1]（直接回车使用默认值）:
@@ -143,7 +143,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 
 | 看到的选项 | 首次单用户建议 | 说明 |
 | --- | --- | --- |
-| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP，`3` 是 Gcore 域名 XHTTP，`4` 是 Gcore Sing-box（有 iPhone 时推荐，iOS Sing-box 开箱即享两节点自动切换，同时兼容 Mihomo）。 |
+| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP + WebSocket 双链路，`3` 是 Gcore 域名 XHTTP，`4` 是 Gcore Sing-box（有 iPhone 时推荐，iOS Sing-box 开箱即享两节点自动切换，同时兼容 Mihomo）。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
@@ -230,12 +230,12 @@ flowchart TD
     R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]
     R9 --> Z[输出节点与订阅信息]
 
-    B -->|2| C0[Cloudflare CDN 精选 IP XHTTP]
+    B -->|2| C0[Cloudflare CDN 精选 IP XHTTP + WebSocket]
     C0 --> C1[系统预检 / 冲突检查 / 备份]
     C1 --> C2[Cloudflare Zone Token / 单一 proxied A / Universal SSL / Origin CA]
     C2 --> C3[Full strict / HTTP2 gRPC / Transform Rule Origin Key / Cloudflare IP 防火墙]
-    C3 --> C4[官方 IPv4 池轮换抽样 / 三网 eyeball 预筛 / VPS HTTP2 健康检查]
-    C4 --> C5[保存缓存 / 注册每小时刷新 / 输出节点与订阅]
+    C3 --> C4[官方高优 CIDR 权重抽样 / 三网独立预筛 + TLS 验证 / VPS HTTP2 健康检查]
+    C4 --> C5[保存缓存 / 注册每小时刷新 / 输出三网双链路节点与订阅]
     C5 --> Z
 
     B -->|3| G0[Gcore CDN 域名 XHTTP + WebSocket]
@@ -661,28 +661,28 @@ Origin CA 默认签发 5475 天（15 年），`renew-cert` 可手动轮换并在
 API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留远端资源；追加 `--purge-cloud`
 才会删除带 easy_all 所有权标记的订阅 A 记录、Strict TLS 规则并吊销 Origin CA。
 
-## Cloudflare CDN 精选 IP XHTTP
+## Cloudflare CDN 精选 IP XHTTP + WebSocket
 
-模式 2 使用一个 proxied 一级子域（例如 `node.example.com`）作为唯一节点入口。Cloudflare
+模式 2 使用一个 proxied 一级子域（例如 `node.example.com`）作为唯一节点入口，提供 **VLESS XHTTP stream-up + VLESS WebSocket** 双链路。Cloudflare
 Universal SSL 终止客户端 TLS；VPS 使用 Origin CA 证书，SSL 模式固定为 Full (strict)。边缘开启
-HTTP/2 与 gRPC，Transform Rule 为该节点名的回源请求注入 Origin Key，Nginx 同时校验 Host 与该密钥。
+HTTP/2 与 gRPC，Transform Rule 为该节点名的回源请求注入 Origin Key，Nginx 同时校验 Host 与该密钥，分别转发至 Xray 的 XHTTP 和 WebSocket 独立回环入站。
 VPS 防火墙只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列表更新。
 部署前必须在目标 Zone 的 **Network → gRPC** 中手动开启 gRPC；该开关没有可用 API。安装、
 `apply-cloud` 和 `refresh-cdn-ips` 会执行边缘验收，发现 Cloudflare 返回 `403` 时立即停止。
 
-模式 2 从 Cloudflare 官方 IPv4 CIDR 按 `/24` 轮换抽样，每轮扫描 120 个地址。VPS 先以
+模式 2 基于 Cloudflare 官方 IPv4 CIDR 构建候选池，集成高质量高优 CIDR 权重池（如 104.16/13、104.24/14、172.64/13、162.159/16 等占 70% 权重，其余网段占 30%），每轮扫描 120 个地址。VPS 先以
 `node.example.com` 作为 SNI/Host，并发验证 HTTPS、HTTP/2 与 `/easy_all-health`，避免把官方
 地址范围中未提供 CDN 入口的地址提交测量。随后根据 Globalping 当前剩余免费额度自动限制候选数，
-再分别使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的
-`eyeball-network` 探针分别发送 10 包 TCP/443，执行零丢包预筛。每个运营商先按 RTT 取前 10，
-再合并去重并按三网覆盖数、平均 RTT 排序，最终最多发布 12 个 IP 节点，并始终额外发布原始域名兜底节点。
+通过两阶段验证：第一阶段使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的
+`eyeball-network` 探针分别发送 4 包 TCP/443 进行零丢包测延迟；第二阶段对低延迟候选执行真实公网 HTTP/TLS 深度探测（HEAD `/easy_all-health`，校验 HTTP 200 且 Host/SNI 匹配），彻底剔除 SNI 假通与阻断节点。
+系统按电信、联通、移动三大运营商独立筛选输出各 Top 3 优质候选 IP（命名为 `电信01-03`、`联通01-03`、`移动01-03`），每个候选 IP 搭配 XHTTP 与 WebSocket 双链路，共最多输出 18 个精选节点（有效缓存下不输出域名兜底节点）。
 所有节点的 `servername` 与
-`xhttp-opts.host` 仍必须是 `node.example.com`。
+`xhttp-opts.host`（或 WS `headers.Host`）仍必须是 `node.example.com`。
 
 VPS 使用 systemd timer 每小时更新缓存；安装、`apply` 和手动 `refresh-cdn-ips` 都会自动修复
-并验收该 timer。刷新失败时保留旧缓存；缓存超过 24 小时只发布域名节点。Mihomo 每
-600 秒在客户端网络运行一次 `url-test`；只有候选比当前节点快至少 50 ms 才切换，以减少抖动。
-切换影响后续新连接，不会迁移已经建立的 XHTTP 会话。
+并验收该 timer。刷新失败时保留旧缓存；未生成缓存或缓存超过 24 小时只发布域名节点。Mihomo 每
+300 秒在客户端网络运行一次 `url-test`；只有候选比当前节点快至少 50 ms 才切换，以减少抖动。
+切换影响后续新连接，不会迁移已经建立的会话。
 
 ### 精选 IP 的客户端要求
 

@@ -20,7 +20,7 @@ readonly CLOUDFLARE_XHTTP_PADDING_BYTES="100-1000"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="/etc/easy_all/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cloudflare-origin"
-XHTTP_URL_TEST_INTERVAL_OVERRIDE=600
+XHTTP_URL_TEST_INTERVAL_OVERRIDE=300
 
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
@@ -384,30 +384,34 @@ cloudflare_upsert_rule() {
 }
 
 cloudflare_add_header_rule() {
-    local ruleset=$1 host=$2 path=$3 ref
+    local ruleset=$1 host=$2 path=$3 ws_path=${4:-} ref
     ref=$(cloudflare_ref "header:${host}:${path}")
-    # Health and subscription are protected by the same origin header as
-    # XHTTP.  Keeping them in this one hostname/path-scoped rule also makes
-    # updates atomic and leaves all non-easy_all rules untouched.
-    cloudflare_upsert_rule "${ruleset}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" --arg path "${path}" --arg key "${ORIGIN_HEADER_SECRET}" '{ref:$ref,description:("easy_all origin header for "+$path),expression:("http.host eq \""+$host+"\" and (starts_with(http.request.uri.path, \""+$path+"\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"),action:"rewrite",action_parameters:{headers:{"X-Easy-All-Origin-Key":{operation:"set",value:$key}}}}')"
+    local expr
+    if [[ -n "${ws_path}" ]]; then
+        expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${path}\") or starts_with(http.request.uri.path, \"${ws_path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"
+    else
+        expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"
+    fi
+    # Health, subscription and dual-link transports are protected by the same origin header.
+    cloudflare_upsert_rule "${ruleset}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" --arg path "${path}" --arg expr "${expr}" --arg key "${ORIGIN_HEADER_SECRET}" '{ref:$ref,description:("easy_all origin header for "+$path),expression:$expr,action:"rewrite",action_parameters:{headers:{"X-Easy-All-Origin-Key":{operation:"set",value:$key}}}}')"
 }
 
 cloudflare_configure_rules() {
     local host transform strict ref
     host=${VLESS_CDN_DOMAIN}
     transform=$(cloudflare_managed_ruleset "easy_all xhttp headers ${host}" "http_request_late_transform")
-    cloudflare_add_header_rule "${transform}" "${host}" "${XHTTP_PATH}"
+    cloudflare_add_header_rule "${transform}" "${host}" "${XHTTP_PATH}" "${WEBSOCKET_PATH:-}"
     if subscription_enabled \
         && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
         cloudflare_add_header_rule "${transform}" \
-            "$(active_subscription_link_domain)" "/subscribe"
+            "$(active_subscription_link_domain)" "/subscribe" ""
     fi
     # Host-scoped strict TLS/configuration rule; it is kept in a separate
     # easy_all-owned ruleset so no customer configuration rule is overwritten.
     strict=$(cloudflare_managed_ruleset "easy_all xhttp strict ${host}" "http_config_settings")
     while IFS= read -r host; do
         ref=$(cloudflare_ref "strict:${host}")
-        cloudflare_upsert_rule "${strict}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" '{ref:$ref,description:"easy_all xhttp strict origin TLS",expression:("http.host eq \""+$host+"\""),action:"set_config",action_parameters:{ssl:"strict"}}')"
+        cloudflare_upsert_rule "${strict}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" '{ref:$ref,description:"easy_all xhttp strict origin TLS",expression:("http.host eq \""+$host+"\""),action:"set_config",action_parameters:{ssl:"strict",security_level:"essentially_off",browser_integrity_check:false}}')"
     done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
     CLOUDFLARE_HEADER_RULESET_ID=${transform}; CLOUDFLARE_STRICT_RULESET_ID=${strict}
 }
@@ -531,16 +535,27 @@ collect_install_inputs() {
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     info "Cloudflare 模式从官方 IPv4 CIDR 轮换抽样，并使用三网 Globalping eyeball 探针预筛。"; collect_globalping_token; validate_globalping_access || die "Globalping Token 验证失败"
     XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}; XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"; validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
-    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}; validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"; ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}; validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"
+    WEBSOCKET_PATH=${WEBSOCKET_PATH:-/ws-$(openssl rand -hex 12)}
+    [[ "${WEBSOCKET_PATH}" =~ ^/[A-Za-z0-9._~/-]{3,128}$ ]] || die "WEBSOCKET_PATH 无效"
+    XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" || die "WebSocket 本机端口无效"
+    [[ "${XRAY_WEBSOCKET_LOOPBACK_PORT}" != "${XRAY_XHTTP_LOOPBACK_PORT}" ]] || die "XHTTP 与 WebSocket 本机端口不能冲突"
+    ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "Origin header 密钥无效"
     choose_subscription_mode; if subscription_enabled; then collect_subscription_link_domain; choose_subscription_download_name; choose_monthly_quota 1; quota_enabled || ensure_allowed_tokens; else SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}; SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"); ALLOWED_TOKENS=""; choose_monthly_quota 0; fi
 }
 
 load_state() {
-    local v e; local -a vars=(PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR)
+    local v e; local -a vars=(PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT XRAY_WEBSOCKET_LOOPBACK_PORT WEBSOCKET_PATH ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR)
     for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; printf -v "${e}" %s "${!v:-}"; printf -v "${v}" %s ""; done; source_state_file; for v in "${vars[@]}"; do e="EASY_ALL_ENV_${v}"; [[ -z "${!e:-}" ]] || printf -v "${v}" %s "${!e}"; unset "${e}"; done
     [[ "${PROTOCOL}" == xhttp && "${CDN_PROVIDER:-}" == cloudflare ]] || die "状态不是 Cloudflare CDN XHTTP"; configure_cdn_client_ip_family
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" && validate_uuid "${VLESS_UUID:-}" && validate_xhttp_path "${XHTTP_PATH:-}" && validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT:-}" || die "Cloudflare 状态缺少必要有效字段"
+    WEBSOCKET_PATH=${WEBSOCKET_PATH:-/ws-$(openssl rand -hex 12)}
+    [[ "${WEBSOCKET_PATH}" =~ ^/[A-Za-z0-9._~/-]{3,128}$ ]] || die "状态中的 WEBSOCKET_PATH 无效"
+    XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" || die "状态中的 WebSocket 本机端口无效"
+    [[ "${XRAY_WEBSOCKET_LOOPBACK_PORT}" != "${XRAY_XHTTP_LOOPBACK_PORT}" ]] || die "XHTTP 与 WebSocket 本机端口不能冲突"
     [[ "${CLOUDFLARE_ORIGIN_DOMAIN}" == "${VLESS_CDN_DOMAIN}" ]] \
         || die "Cloudflare 状态不是单一 Proxied 源站域名架构"
     [[ -n "${CLOUDFLARE_ZONE_ID:-}" && -n "${CLOUDFLARE_ZONE_NAME:-}" \
@@ -565,19 +580,94 @@ load_state() {
 
 save_state() {
     install -d -m 0700 "${STATE_DIR}"; local t; t=$(mktemp "${STATE_DIR}/state.env.XXXXXX"); cleanup_files+=("${t}")
-    { for v in STATE_VERSION PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do case "${v}" in STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}";; PROTOCOL) printf '%s=%q\n' "${v}" xhttp;; CDN_PROVIDER) printf '%s=%q\n' "${v}" cloudflare;; SUBSCRIPTION_DOMAIN) printf '%s=%q\n' "${v}" "$(subscription_link_domain)";; *) printf '%s=%q\n' "${v}" "${!v:-}";; esac; done; } >"${t}"; install -m 0600 "${t}" "${STATE_FILE}"
+    { for v in STATE_VERSION PROTOCOL CDN_PROVIDER CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN XHTTP_PATH CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID XRAY_XHTTP_LOOPBACK_PORT XRAY_WEBSOCKET_LOOPBACK_PORT WEBSOCKET_PATH ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do case "${v}" in STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}";; PROTOCOL) printf '%s=%q\n' "${v}" xhttp;; CDN_PROVIDER) printf '%s=%q\n' "${v}" cloudflare;; SUBSCRIPTION_DOMAIN) printf '%s=%q\n' "${v}" "$(subscription_link_domain)";; *) printf '%s=%q\n' "${v}" "${!v:-}";; esac; done; } >"${t}"; install -m 0600 "${t}" "${STATE_FILE}"
 }
 collect_installed_state() { [[ -f "${STATE_FILE}" ]] || die "easy_all Cloudflare CDN XHTTP 尚未安装"; load_state; }
 
 xhttp_render_xray_config() {
-    local clients outbounds routing sockopt stats=false; install -d -m 0755 "${XRAY_DIR}"; if quota_enabled; then clients=$(quota_active_clients_json); stats=true; else clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]'); fi
-    outbounds=$(xray_xhttp_outbounds_json); routing=$(xray_xhttp_routing_json); sockopt=$(xray_inbound_sockopt_json)
-    jq -n --argjson port "${XRAY_XHTTP_LOOPBACK_PORT}" --argjson clients "${clients}" --argjson stats "${stats}" --arg host "${VLESS_CDN_DOMAIN}" --arg path "${XHTTP_PATH}" --arg secs "${CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS}" --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES}" --argjson sockopt "${sockopt}" --argjson outbounds "${outbounds}" --argjson routing "${routing}" '{log:{loglevel:"warning"},inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$port,protocol:"vless",settings:{clients:$clients,decryption:"none"},streamSettings:{network:"xhttp",sockopt:$sockopt,xhttpSettings:{host:$host,path:$path,mode:"stream-up",xPaddingBytes:$padding,scStreamUpServerSecs:$secs}},sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],outbounds:$outbounds,routing:$routing} + (if $stats then {api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},stats:{},policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}} else {} end)' >"${RUNTIME_TMP}/xray-config.json"
-    "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null || die "Xray 配置校验失败"; install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
+    local clients outbounds routing sockopt stats=false
+    install -d -m 0755 "${XRAY_DIR}"
+    if quota_enabled; then
+        clients=$(quota_active_clients_json)
+        stats=true
+    else
+        clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]')
+    fi
+    outbounds=$(xray_xhttp_outbounds_json)
+    routing=$(xray_xhttp_routing_json)
+    sockopt=$(xray_inbound_sockopt_json)
+    jq -n --argjson port "${XRAY_XHTTP_LOOPBACK_PORT}" \
+        --argjson websocket_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" \
+        --argjson clients "${clients}" \
+        --argjson stats "${stats}" \
+        --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg path "${XHTTP_PATH}" \
+        --arg websocket_path "${WEBSOCKET_PATH}" \
+        --arg secs "${CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS}" \
+        --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES}" \
+        --argjson sockopt "${sockopt}" \
+        --argjson outbounds "${outbounds}" \
+        --argjson routing "${routing}" '
+        {
+          log: {loglevel: "warning"},
+          inbounds: [
+            {
+              tag: "vless-xhttp-h2-in",
+              listen: "127.0.0.1",
+              port: $port,
+              protocol: "vless",
+              settings: {clients: $clients, decryption: "none"},
+              streamSettings: {
+                network: "xhttp",
+                sockopt: $sockopt,
+                xhttpSettings: {
+                  host: $host,
+                  path: $path,
+                  mode: "stream-up",
+                  xPaddingBytes: $padding,
+                  scStreamUpServerSecs: $secs
+                }
+              },
+              sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: false}
+            },
+            {
+              tag: "vless-websocket-in",
+              listen: "127.0.0.1",
+              port: $websocket_port,
+              protocol: "vless",
+              settings: {clients: $clients, decryption: "none"},
+              streamSettings: {
+                network: "ws",
+                sockopt: $sockopt,
+                wsSettings: {path: $websocket_path}
+              },
+              sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: false}
+            }
+          ],
+          outbounds: $outbounds,
+          routing: $routing
+        } + (if $stats then {api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},stats:{},policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}} else {} end)' >"${RUNTIME_TMP}/xray-config.json"
+    "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null || die "Xray 配置校验失败"
+    install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
 }
 
-show_node() { collect_installed_state; printf '\n协议: VLESS XHTTP stream-up/H2 over Cloudflare CDN\n节点链接:\n%s\n\n' "$(build_node_links)"; build_mihomo_nodes; }
-show_status() { require_root; collect_installed_state; resolve_cdn_client_ip_family; printf '协议: xhttp（Cloudflare CDN）\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: enabled\n' "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"; show_globalping_status; }
+show_node() {
+    collect_installed_state
+    printf '\n协议: VLESS XHTTP stream-up + WebSocket over Cloudflare CDN\n节点链接:\n%s\n\n' "$(build_node_links)"
+    build_mihomo_nodes
+}
+
+show_status() {
+    require_root
+    collect_installed_state
+    resolve_cdn_client_ip_family
+    local fallback_desc="disabled (三网独立精选 IP)"
+    if ! globalping_cache_valid; then
+        fallback_desc="enabled (仅当测量缓存未就绪时回退 CDN 域名)"
+    fi
+    printf '协议: xhttp + websocket（Cloudflare CDN 双链路）\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: %s\n' "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}" "${fallback_desc}"
+    show_globalping_status
+}
 
 refresh_cloudflare_cdn_ips() {
     local refresh_status=0

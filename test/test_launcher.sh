@@ -108,9 +108,9 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \
     && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
-    && "${guide}" == *"[2] Cloudflare CDN 精选 IP - XHTTP"* \
+    && "${guide}" == *"[2] Cloudflare CDN 精选 IP - XHTTP + WebSocket"* \
     && "${guide}" == *"CLOUDFLARE_API_TOKEN"* \
-    && "${guide}" == *"三网 Globalping eyeball 预筛"* \
+    && "${guide}" == *"三网 Globalping eyeball"* \
     && "${guide}" == *"XHTTP"* \
     && "${guide}" != *"AWS"* \
     && "${guide}" == *"[3] Gcore CDN 域名 - XHTTP + WebSocket"* \

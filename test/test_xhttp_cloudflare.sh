@@ -76,7 +76,11 @@ assert_contains "Cloudflare rules use stable refs" \
 assert_contains "Cloudflare profile has its own stream-up timeout" \
     "${profile_content}" 'CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS="20-40"'
 assert_contains "Xray stays in stream-up mode" \
-    "${profile_content}${runtime_content}" 'mode:"stream-up"'
+    "${profile_content}${runtime_content}" 'stream-up'
+assert_contains "Cloudflare profile configures WebSocket inbound" \
+    "${profile_content}" 'vless-websocket-in'
+assert_contains "Cloudflare profile configures XHTTP inbound" \
+    "${profile_content}" 'vless-xhttp-h2-in'
 assert_not_contains "Cloudflare API token is never persisted in state" \
     "${profile_content}" 'CLOUDFLARE_API_TOKEN=%q'
 assert_contains "Cloudflare purge prompt names all managed remote resources" \
@@ -89,6 +93,7 @@ assert_contains "Cloudflare purge removes stable-ref rules" \
 (
     # The profile must be sourceable without calling external services.
     GLOBALPING_CACHE_FILE_OVERRIDE="${TMP_DIR}/cloudflare-cdn-ips.json"
+    XRAY_BIN=true
     source "${PROFILE}"
 
     CLOUDFLARE_ZONE_ID='zone-test'
@@ -119,7 +124,7 @@ assert_contains "Cloudflare purge removes stable-ref rules" \
       and .target == "104.16.0.10"
       and .timeout == 15
       and .measurementOptions == {
-        packets:10, protocol:"TCP", port:443
+        packets:4, protocol:"TCP", port:443
       }
       and .locations == [
         {country:"CN",asn:4134,tags:["eyeball-network"],limit:1},
@@ -129,10 +134,24 @@ assert_contains "Cloudflare purge removes stable-ref rules" \
     ' <<<"${measurement_request}" >/dev/null \
         || fail "Cloudflare Globalping request must target three mainland eyeball carriers"
 
+    tls_measurement_request=$(cloudflare_globalping_tls_measurement_request \
+        '104.16.0.10' 4134 'node.example.com')
+    jq -e '
+      .type == "http"
+      and .target == "104.16.0.10"
+      and .timeout == 15
+      and .locations == [{country:"CN",asn:4134,tags:["eyeball-network"],limit:1}]
+      and .measurementOptions == {
+        protocol:"HTTPS", port:443,
+        request:{method:"HEAD",path:"/easy_all-health",headers:{Host:"node.example.com"}}
+      }
+    ' <<<"${tls_measurement_request}" >/dev/null \
+        || fail "Cloudflare Globalping TLS verification request must target HEAD /easy_all-health with Host"
+
     measurements_file="${TMP_DIR}/cloudflare-measurements.ndjson"
     cat >"${measurements_file}" <<'EOF'
-{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"city":"Shanghai","network":"Telecom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":20}}},{"probe":{"country":"CN","asn":4837,"city":"Beijing","network":"Unicom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":40}}}]}}
-{"ip":"172.64.0.20","source_cidr":"172.64.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"city":"Guangzhou","network":"Mobile","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":30}}},{"probe":{"country":"CN","asn":4134,"city":"Hangzhou","network":"Telecom","tags":["datacenter-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":10,"rcv":10,"drop":0,"avg":1}}}]}}
+{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"city":"Shanghai","network":"Telecom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":4,"rcv":4,"drop":0,"avg":20}}},{"probe":{"country":"CN","asn":4837,"city":"Beijing","network":"Unicom","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"104.16.0.10","stats":{"loss":0,"total":4,"rcv":4,"drop":0,"avg":40}}}]}}
+{"ip":"172.64.0.20","source_cidr":"172.64.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"city":"Guangzhou","network":"Mobile","tags":["eyeball-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":4,"rcv":4,"drop":0,"avg":30}}},{"probe":{"country":"CN","asn":4134,"city":"Hangzhou","network":"Telecom","tags":["datacenter-network"]},"result":{"status":"finished","resolvedAddress":"172.64.0.20","stats":{"loss":0,"total":4,"rcv":4,"drop":0,"avg":1}}}]}}
 EOF
     observations_file="${TMP_DIR}/cloudflare-observations.ndjson"
     cloudflare_zero_loss_observations \
@@ -141,9 +160,10 @@ EOF
         "3" "$(wc -l <"${observations_file}" | tr -d ' ')"
     ranked=$(cloudflare_select_carrier_candidates \
         "${observations_file}" 3 9)
-    assert_equal "Cloudflare aggregates the same IP across carriers" \
-        "2" "$(jq -r '.[] | select(.ip == "104.16.0.10") | .carrier_count' \
-            <<<"${ranked}")"
+    assert_equal "Cloudflare assigns carrier label for Telecom" \
+        "电信01" "$(jq -r '.[] | select(.carrier == "telecom") | .label' <<<"${ranked}")"
+    assert_equal "Cloudflare selects candidates for each carrier" \
+        "3" "$(jq 'length' <<<"${ranked}")"
 
     overlapping_observations="${TMP_DIR}/cloudflare-overlapping-observations.ndjson"
     : >"${overlapping_observations}"
@@ -162,9 +182,9 @@ EOF
         done
     done
     overlapping_ranked=$(cloudflare_select_carrier_candidates \
-        "${overlapping_observations}" 10 18)
-    assert_equal "Cloudflare takes each carrier top ten before deduplication" \
-        "10" "$(jq 'length' <<<"${overlapping_ranked}")"
+        "${overlapping_observations}" 3 9)
+    assert_equal "Cloudflare takes each carrier top three" \
+        "9" "$(jq 'length' <<<"${overlapping_ranked}")"
 
     disjoint_observations="${TMP_DIR}/cloudflare-disjoint-observations.ndjson"
     : >"${disjoint_observations}"
@@ -185,9 +205,9 @@ EOF
         done
     done
     disjoint_ranked=$(cloudflare_select_carrier_candidates \
-        "${disjoint_observations}" 10 12)
-    assert_equal "Cloudflare caps the deduplicated carrier union at twelve" \
-        "12" "$(jq 'length' <<<"${disjoint_ranked}")"
+        "${disjoint_observations}" 3 9)
+    assert_equal "Cloudflare caps candidates at limit" \
+        "9" "$(jq 'length' <<<"${disjoint_ranked}")"
 
     raw_pool_file="${TMP_DIR}/cloudflare-raw-pool.tsv"
     prevalidated_pool_file="${TMP_DIR}/cloudflare-prevalidated-pool.tsv"
@@ -237,25 +257,35 @@ EOF
               measurement:{results:[
                 {
                   probe:{country:"CN",asn:4134,city:"Shanghai",network:"Telecom",tags:["eyeball-network"]},
-                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:10,rcv:10,drop:0,avg:20}}
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:4,rcv:4,drop:0,avg:20}}
                 },
                 {
                   probe:{country:"CN",asn:4837,city:"Beijing",network:"Unicom",tags:["eyeball-network"]},
-                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:10,rcv:10,drop:0,avg:30}}
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:4,rcv:4,drop:0,avg:30}}
                 },
                 {
                   probe:{country:"CN",asn:9808,city:"Guangzhou",network:"Mobile",tags:["eyeball-network"]},
-                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:10,rcv:10,drop:0,avg:40}}
+                  result:{status:"finished",resolvedAddress:$ip,stats:{loss:0,total:4,rcv:4,drop:0,avg:40}}
                 }
               ]}
             }' >"${destination}"
+        }
+        cloudflare_collect_globalping_tls_measurements() {
+            local candidates_file=$1 domain=$2 destination=$3
+            while IFS=$'\t' read -r ip source_cidr asn rtt; do
+                jq -cn --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
+                    --argjson asn "${asn}" --argjson rtt "${rtt}" '{
+                      ip:$ip,source_cidr:$source_cidr,carrier_asn:$asn,avg_rtt_ms:$rtt,
+                      measurement:{results:[{result:{status:"finished",statusCode:200,tls:{protocol:"TLSv1.3"}}}]}
+                    }' >>"${destination}"
+            done <"${candidates_file}"
         }
         cloudflare_validate_pool_candidate() { return 0; }
         GLOBALPING_NOW_EPOCH=2000000000
         cloudflare_build_official_pool_cache "${generated_cache}"
     )
     jq -e '
-      .version == 3
+      .version == 4
       and .provider == "cloudflare"
       and .candidate_source == "cloudflare-official-ipv4-cidrs"
       and .probe_type == "eyeball-network"
@@ -263,8 +293,10 @@ EOF
       and .pool_sample_size == 1
       and .prevalidated_pool_size == 1
       and .measurement_count == 1
-      and (.candidates | length) == 1
-      and .candidates[0].carrier_count == 3
+      and (.candidates | length) == 3
+      and .carriers.telecom[0].label == "电信01"
+      and .carriers.unicom[0].label == "联通01"
+      and .carriers.mobile[0].label == "移动01"
     ' "${generated_cache}" >/dev/null \
         || fail "Cloudflare official-pool cache schema is invalid"
 
@@ -339,41 +371,93 @@ EOF
     GLOBALPING_NOW_EPOCH=2000000000
     CDN_PROVIDER="cloudflare"
     XHTTP_NODE_NAME="VLESS_XHTTP_H2"
+    WEBSOCKET_PATH="/ws-test"
+    XRAY_WEBSOCKET_LOOPBACK_PORT=10087
+    XRAY_XHTTP_LOOPBACK_PORT=10086
     cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
-{"version":3,"provider":"cloudflare","domain":"node.example.com","candidate_source":"cloudflare-official-ipv4-cidrs","measured_at":"2033-05-18T03:33:20Z","measured_at_epoch":2000000000,"probe_type":"eyeball-network","carrier_asns":[4134,4837,9808],"candidates":[{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","observations":2,"carrier_count":2,"avg_rtt_ms":30,"asns":[4134,4837]}]}
+{"version":4,"provider":"cloudflare","domain":"node.example.com","candidate_source":"cloudflare-official-ipv4-cidrs","measured_at":"2033-05-18T03:33:20Z","measured_at_epoch":2000000000,"probe_type":"eyeball-network","carrier_asns":[4134,4837,9808],"carriers":{"telecom":[{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","avg_rtt_ms":20,"carrier":"telecom","label":"电信01"}],"unicom":[{"ip":"104.16.0.11","source_cidr":"104.16.0.0/13","avg_rtt_ms":30,"carrier":"unicom","label":"联通01"}],"mobile":[{"ip":"104.16.0.12","source_cidr":"104.16.0.0/13","avg_rtt_ms":40,"carrier":"mobile","label":"移动01"}]},"candidates":[{"ip":"104.16.0.10","source_cidr":"104.16.0.0/13","avg_rtt_ms":20,"carrier":"telecom","label":"电信01"},{"ip":"104.16.0.11","source_cidr":"104.16.0.0/13","avg_rtt_ms":30,"carrier":"unicom","label":"联通01"},{"ip":"104.16.0.12","source_cidr":"104.16.0.0/13","avg_rtt_ms":40,"carrier":"mobile","label":"移动01"}]}
 EOF
     globalping_cache_valid \
         || fail "Cloudflare official-pool cache must be accepted"
-    assert_equal "Cloudflare endpoints always retain the domain fallback" \
-        $'node.example.com\n104.16.0.10' "$(cdn_client_endpoints)"
-    assert_equal "Cloudflare fallback node has an explicit name" \
-        "VLESS_XHTTP_H2_DOMAIN" "$(xhttp_node_name_for_endpoint 1)"
-    assert_equal "Cloudflare optimized IP numbering starts after the fallback" \
-        "VLESS_XHTTP_H2_IP_01" "$(xhttp_node_name_for_endpoint 2)"
+    assert_equal "Cloudflare endpoints output only optimized candidate IPs without domain fallback" \
+        $'104.16.0.10\n104.16.0.11\n104.16.0.12' "$(cdn_client_endpoints)"
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
+    node_links=$(build_node_links)
+    assert_contains "Cloudflare node links include Telecom XHTTP link" \
+        "${node_links}" '#%E7%94%B5%E4%BF%A101_XHTTP'
+    assert_contains "Cloudflare node links include Telecom WS link" \
+        "${node_links}" '#%E7%94%B5%E4%BF%A101_WS'
+    assert_contains "Cloudflare node links include Mobile XHTTP link" \
+        "${node_links}" '#%E7%A7%BB%E5%8A%A801_XHTTP'
+    assert_contains "Cloudflare node links include Mobile WS link" \
+        "${node_links}" '#%E7%A7%BB%E5%8A%A801_WS'
+    assert_not_contains "Cloudflare valid cache does not output domain fallback links" \
+        "${node_links}" 'node.example.com:443'
     mihomo_nodes=$(build_mihomo_nodes)
-    assert_contains "Cloudflare subscription renders the domain fallback node" \
+    assert_contains "Cloudflare subscription renders Telecom XHTTP node" \
+        "${mihomo_nodes}" '"电信01_XHTTP"'
+    assert_contains "Cloudflare subscription renders Telecom WS node" \
+        "${mihomo_nodes}" '"电信01_WS"'
+    assert_contains "Cloudflare subscription renders Mobile XHTTP node" \
+        "${mihomo_nodes}" '"移动01_XHTTP"'
+    assert_contains "Cloudflare subscription renders Mobile WS node" \
+        "${mihomo_nodes}" '"移动01_WS"'
+    assert_not_contains "Cloudflare subscription does not render domain fallback node" \
         "${mihomo_nodes}" '"VLESS_XHTTP_H2_DOMAIN"'
-    assert_contains "Cloudflare subscription renders an optimized IP node" \
-        "${mihomo_nodes}" '"VLESS_XHTTP_H2_IP_01"'
     assert_contains "Cloudflare optimized IP keeps the CDN hostname as SNI" \
         "${mihomo_nodes}" 'servername: "node.example.com"'
     mihomo_group=$(build_mihomo_proxy_groups)
     mihomo_proxy_names=$(build_mihomo_proxy_names)
     assert_contains "Cloudflare URL-test group uses the concise AUTO name" \
         "${mihomo_group}" 'name: "AUTO"'
-    assert_contains "Cloudflare PROXY selects the concise AUTO group" \
+    assert_contains "Cloudflare URL-test group includes carrier groups" \
+        "${mihomo_group}" 'name: "移动优选"'
+    assert_contains "Cloudflare PROXY selects AUTO group" \
         "${mihomo_proxy_names}" '"AUTO"'
-    assert_contains "Cloudflare URL test includes the domain fallback" \
-        "${mihomo_group}" '- "VLESS_XHTTP_H2_DOMAIN"'
-    assert_contains "Cloudflare URL test includes the optimized IP" \
-        "${mihomo_group}" '- "VLESS_XHTTP_H2_IP_01"'
-    assert_contains "Cloudflare URL test runs every 600 seconds" \
-        "${mihomo_group}" 'interval: 600'
-    assert_equal "Cloudflare takes ten final candidates per carrier" \
-        "10" "${CLOUDFLARE_CANDIDATES_PER_CARRIER}"
-    assert_equal "Cloudflare publishes at most twelve optimized IPs" \
-        "12" "${CLOUDFLARE_CANDIDATE_LIMIT}"
+    assert_contains "Cloudflare PROXY selects carrier groups" \
+        "${mihomo_proxy_names}" '"移动优选"'
+    assert_not_contains "Cloudflare URL test does not include domain fallback" \
+        "${mihomo_group}" 'DOMAIN'
+    assert_contains "Cloudflare URL test includes Telecom WS node" \
+        "${mihomo_group}" '- "电信01_WS"'
+    assert_contains "Cloudflare URL test runs every 300 seconds" \
+        "${mihomo_group}" 'interval: 300'
+    assert_contains "Cloudflare URL test uses Cloudflare 204 endpoint" \
+        "${mihomo_group}" 'url: https://cp.cloudflare.com/generate_204'
+    assert_equal "Cloudflare takes 3 final candidates per carrier" \
+        "3" "${CLOUDFLARE_CANDIDATES_PER_CARRIER}"
+    assert_equal "Cloudflare publishes at most 9 optimized IPs" \
+        "9" "${CLOUDFLARE_CANDIDATE_LIMIT}"
+
+    # Verify Xray config rendering includes dual links
+    (
+        install() { :; }
+        xhttp_render_xray_config
+        jq -e '
+          (.inbounds | map(.tag)) == ["vless-xhttp-h2-in", "vless-websocket-in"]
+          and (.inbounds[] | select(.tag == "vless-websocket-in") | .streamSettings.wsSettings.path) == "/ws-test"
+        ' "${RUNTIME_TMP}/xray-config.json" >/dev/null || fail "Xray config must contain both xhttp and websocket inbounds"
+    )
+
+    # Verify Nginx config rendering includes WebSocket proxy and XHTTP grpc pass
+    (
+        install() { :; }
+        nginx() { :; }
+        systemctl() { :; }
+        SUBSCRIPTION_MODE=none
+        ALLOWED_TOKENS=""
+        XHTTP_ORIGIN_DOMAIN="${VLESS_CDN_DOMAIN}"
+        write_nginx_config
+        nginx_conf_content=$(<"${RUNTIME_TMP}/easy_all.conf")
+        assert_contains "Nginx config includes websocket location" \
+            "${nginx_conf_content}" 'location = /ws-test'
+        assert_contains "Nginx config includes websocket backend pass" \
+            "${nginx_conf_content}" 'proxy_pass http://127.0.0.1:10087;'
+        assert_contains "Nginx config includes xhttp location" \
+            "${nginx_conf_content}" 'location ^~ /xhttp-test-path/'
+        assert_contains "Nginx config includes xhttp grpc pass" \
+            "${nginx_conf_content}" 'grpc_pass grpc://127.0.0.1:10086;'
+    )
 
     # Mock the provider API: a missing DNS record must produce an orange-cloud
     # A record, never an unproxied origin record.
@@ -459,6 +543,8 @@ EOF
     assert_contains "header rule preserves the origin secret" "$(<"${rule_calls}")" \
         'X-Easy-All-Origin-Key'
     assert_contains "strict rule enforces strict TLS" "$(<"${rule_calls}")" '"ssl":"strict"'
+    assert_contains "strict rule disables security challenge" "$(<"${rule_calls}")" '"security_level":"essentially_off"'
+    assert_contains "strict rule disables browser integrity check" "$(<"${rule_calls}")" '"browser_integrity_check":false'
 
     # --purge-cloud must remove every easy_all-owned Cloudflare resource while
     # identifying rules by stable ref and DNS records by their managed comment.

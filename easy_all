@@ -104,12 +104,12 @@ easy_all install
 │  │  └─ 仅节点：不收集订阅服务参数
 │  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
-├─ [2] Cloudflare CDN 精选 IP - XHTTP
+├─ [2] Cloudflare CDN 精选 IP - XHTTP + WebSocket（三网独立优选 + 双链路）
    ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
    ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → Cloudflare 一级子域名
    ├─ CLOUDFLARE_API_TOKEN → Proxied A → Origin CA → Full strict/gRPC/HTTP2/Origin Key 规则
    ├─ Nginx/Xray → Cloudflare 回源 IP 防火墙 → 公网验收
-   └─ Cloudflare 官方 IPv4 池轮换抽样 → 三网 Globalping eyeball 预筛 → 域名兜底/客户端二次测速
+   └─ Cloudflare 官方 IPv4 权重池抽样 → 三网 Globalping eyeball 深度探测 → 电信/联通/移动独立优选 + 双链路
 ├─ [3] Gcore CDN 域名 - XHTTP + WebSocket
 │  ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
 │  ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
@@ -185,8 +185,8 @@ choose_install_mode() {
     printf 'Choose the installation mode:\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
     printf '     Direct - Reality (recommended for optimized routes)\n' >&2
-    printf '  2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）\n' >&2
-    printf '     Cloudflare CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
+    printf '  2. Cloudflare CDN 精选 IP - XHTTP + WebSocket（三网独立优选 + 双链路）\n' >&2
+    printf '     Cloudflare CDN optimized IPv4 - XHTTP + WebSocket (3-carrier separated + dual-link)\n' >&2
     printf '  3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）\n' >&2
     printf '     Gcore CDN domain - XHTTP + WebSocket (Gcore DNS routing, no IP selection)\n' >&2
     printf '  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）\n' >&2

@@ -196,19 +196,18 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 
 - 创建唯一的 proxied `A` 记录，指向 VPS 公网 IPv4。
 - 签发 15 年 Origin CA 证书并配置 Full (strict)。
-- 开启 origin HTTP/2，并写入 XHTTP 回源密钥规则。
+- 开启 origin HTTP/2，并写入 XHTTP 与 WebSocket 回源密钥规则。
 - 验收 Cloudflare gRPC 边缘请求；开关未开启时立即停止并提示前往控制台处理。
 - 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
-- 每小时读取 Cloudflare 官方 IPv4 CIDR，拆分为 `/24` 后轮换抽样 120 个地址。
+- 每小时读取 Cloudflare 官方 IPv4 CIDR，以 70% 高质量高优网段权重抽样 120 个地址。
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
   CDN 入口的地址；再按 Globalping 当前剩余免费额度限制本轮测量规模，避免耗尽额度。
-- 使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
-  `eyeball-network` 探针分别发送 10 包 TCP/443，执行零丢包预筛；每个运营商先按 RTT 取前 10，再合并去重并
-  按三网覆盖数、平均 RTT 排序。
-- 最终最多发布 12 个 IP 节点。
-- 订阅始终额外保留一个原始域名兜底节点。客户端 Mihomo 每 600 秒测速，候选快至少
-  50 ms 才切换；所有节点的 SNI 和 XHTTP Host 始终使用节点域名。
-- 测量失败继续使用上次有效缓存；缓存超过 72 小时则回退到节点域名。
+- 两阶段预筛：第一阶段使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
+  `eyeball-network` 探针分别发送 4 包 TCP/443 进行零丢包测延迟；第二阶段对低延迟候选进行真实 HTTP/TLS HEAD `/easy_all-health` 验证，彻底剔除 SNI 假通。
+- 按电信、联通、移动三大运营商独立优选，各输出 Top 3 优质候选 IP，搭配 XHTTP 与 WebSocket 双链路各自生成节点（`电信01_XHTTP`、`电信01_WS` 等，最多 18 个节点）。
+- 缓存有效时不输出域名兜底节点，仅在未生成精选 IP 缓存或缓存失效超过 24 小时兜底回退时才发布原始域名兜底节点。客户端 Mihomo 每 300 秒测速，候选快至少
+  50 ms 才切换；所有节点的 SNI 和 Host 始终使用节点域名。
+- 测量失败继续使用上次有效缓存；未生成缓存或缓存超过 24 小时则回退到原始域名兜底节点。
 
 ### 5.1 精选 IP 的客户端要求
 

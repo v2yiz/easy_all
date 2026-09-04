@@ -18,7 +18,7 @@ readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly ENTRY_COMMAND_NAME="easy_all"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
 readonly XRAY_DIR="${STATE_DIR}/xray"
-readonly XRAY_BIN="${XRAY_DIR}/xray"
+readonly XRAY_BIN="${XRAY_BIN:-${XRAY_DIR}/xray}"
 readonly XRAY_CONFIG="${XRAY_DIR}/config.json"
 readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
 readonly XRAY_SERVICE="easy_all-xray.service"
@@ -28,6 +28,7 @@ readonly UFW_RULE_COMMENT="easy_all-managed"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
 readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
+[[ -n "${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT:-}" ]] || readonly DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT="10087"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
 readonly DEFAULT_CDN_CLIENT_IP_FAMILY="ipv4"
@@ -375,6 +376,27 @@ server {
 
 EOF
         write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
+        if [[ -n "${WEBSOCKET_PATH:-}" ]]; then
+            cat <<EOF
+    location = ${WEBSOCKET_PATH} {
+        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host ${VLESS_CDN_DOMAIN};
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_buffering off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        proxy_pass http://127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}};
+        access_log off;
+    }
+
+EOF
+        fi
         cat <<EOF
     location ^~ ${XHTTP_PATH}/ {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
@@ -498,6 +520,26 @@ build_vless_xhttp_link() {
         "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
 }
 
+build_vless_websocket_link() {
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WS}
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "${node_name}")"
+}
+
+build_mihomo_websocket_node() {
+    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WS}
+    resolve_cdn_client_ip_family
+    jq -nr --arg name "${node_name}" --arg server "${server}" \
+        --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
+        --arg path "${WEBSOCKET_PATH}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" '
+        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+        "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
+        "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
+        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - http/1.1\n" +
+        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
+}
+
 xhttp_client_endpoints() {
     if declare -F cdn_client_endpoints >/dev/null 2>&1; then
         cdn_client_endpoints
@@ -523,6 +565,24 @@ xhttp_node_name_for_endpoint() {
 }
 
 build_node_links() {
+    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
+        local ip label carrier
+        while IFS=$'\t' read -r ip label carrier; do
+            [[ -n "${ip}" ]] || continue
+            if [[ "${carrier}" == "fallback" ]]; then
+                build_vless_xhttp_link "${ip}" "${XHTTP_NODE_NAME}_XHTTP"
+                printf '\n'
+                build_vless_websocket_link "${ip}" "${XHTTP_NODE_NAME}_WS"
+                printf '\n'
+            else
+                build_vless_xhttp_link "${ip}" "${label}_XHTTP"
+                printf '\n'
+                build_vless_websocket_link "${ip}" "${label}_WS"
+                printf '\n'
+            fi
+        done < <(cloudflare_client_candidates)
+        return 0
+    fi
     local endpoint index=1
     while IFS= read -r endpoint; do
         build_vless_xhttp_link "${endpoint}" \
@@ -567,6 +627,20 @@ build_mihomo_node_for_endpoint() {
 }
 
 build_mihomo_nodes() {
+    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
+        local ip label carrier
+        while IFS=$'\t' read -r ip label carrier; do
+            [[ -n "${ip}" ]] || continue
+            if [[ "${carrier}" == "fallback" ]]; then
+                build_mihomo_node_for_endpoint "${ip}" "${XHTTP_NODE_NAME}_XHTTP"
+                build_mihomo_websocket_node "${ip}" "${XHTTP_NODE_NAME}_WS"
+            else
+                build_mihomo_node_for_endpoint "${ip}" "${label}_XHTTP"
+                build_mihomo_websocket_node "${ip}" "${label}_WS"
+            fi
+        done < <(cloudflare_client_candidates)
+        return 0
+    fi
     local endpoint index=1
     while IFS= read -r endpoint; do
         build_mihomo_node_for_endpoint "${endpoint}" \
@@ -584,6 +658,37 @@ xhttp_auto_group_name() {
 }
 
 build_mihomo_proxy_names() {
+    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
+        if cdn_optimization_enabled && globalping_cache_valid; then
+            printf '        - "AUTO"\n'
+            local telecom_count=0 unicom_count=0 mobile_count=0
+            local ip label carrier
+            local -a all_nodes=()
+            while IFS=$'\t' read -r ip label carrier; do
+                [[ -n "${ip}" ]] || continue
+                all_nodes+=("${label}_WS" "${label}_XHTTP")
+                case "${carrier}" in
+                    telecom) telecom_count=$((telecom_count + 1)) ;;
+                    unicom)  unicom_count=$((unicom_count + 1)) ;;
+                    mobile)  mobile_count=$((mobile_count + 1)) ;;
+                esac
+            done < <(cloudflare_client_candidates)
+
+            ((telecom_count > 0)) && printf '        - "电信优选"\n'
+            ((unicom_count > 0))  && printf '        - "联通优选"\n'
+            ((mobile_count > 0))  && printf '        - "移动优选"\n'
+            local node
+            for node in "${all_nodes[@]}"; do
+                printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
+            done
+        else
+            local base_node="${XHTTP_NODE_NAME}"
+            printf '        - "AUTO"\n'
+            printf '        - %s\n' "$(jq -Rn --arg value "${base_node}_WS" '$value')"
+            printf '        - %s\n' "$(jq -Rn --arg value "${base_node}_XHTTP" '$value')"
+        fi
+        return 0
+    fi
     local endpoint index=1
     if xhttp_using_optimized_candidates; then
         printf '        - %s\n' \
@@ -598,6 +703,76 @@ build_mihomo_proxy_names() {
 }
 
 build_mihomo_proxy_groups() {
+    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
+        if cdn_optimization_enabled && globalping_cache_valid; then
+            local -a all_nodes=() telecom_nodes=() unicom_nodes=() mobile_nodes=()
+            local ip label carrier
+            while IFS=$'\t' read -r ip label carrier; do
+                [[ -n "${ip}" ]] || continue
+                local n_ws="${label}_WS" n_xhttp="${label}_XHTTP"
+                all_nodes+=("${n_ws}" "${n_xhttp}")
+                case "${carrier}" in
+                    telecom) telecom_nodes+=("${n_ws}" "${n_xhttp}") ;;
+                    unicom)  unicom_nodes+=("${n_ws}" "${n_xhttp}") ;;
+                    mobile)  mobile_nodes+=("${n_ws}" "${n_xhttp}") ;;
+                esac
+            done < <(cloudflare_client_candidates)
+
+            printf '    - name: "AUTO"\n'
+            printf '      type: url-test\n'
+            printf '      proxies:\n'
+            local node
+            for node in "${all_nodes[@]}"; do
+                printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
+            done
+            cat <<EOF
+      url: https://cp.cloudflare.com/generate_204
+      interval: ${XHTTP_URL_TEST_INTERVAL}
+      tolerance: 50
+      timeout: 3000
+      lazy: true
+EOF
+            local c_name
+            for c_name in "电信优选" "联通优选" "移动优选"; do
+                local -a c_nodes=()
+                case "${c_name}" in
+                    电信优选) c_nodes=("${telecom_nodes[@]}") ;;
+                    联通优选) c_nodes=("${unicom_nodes[@]}") ;;
+                    移动优选) c_nodes=("${mobile_nodes[@]}") ;;
+                esac
+                if ((${#c_nodes[@]} > 0)); then
+                    printf '    - name: %s\n' "$(jq -Rn --arg value "${c_name}" '$value')"
+                    printf '      type: url-test\n'
+                    printf '      proxies:\n'
+                    for node in "${c_nodes[@]}"; do
+                        printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
+                    done
+                    cat <<EOF
+      url: https://cp.cloudflare.com/generate_204
+      interval: ${XHTTP_URL_TEST_INTERVAL}
+      tolerance: 50
+      timeout: 3000
+      lazy: true
+EOF
+                fi
+            done
+        else
+            local base_node="${XHTTP_NODE_NAME}"
+            printf '    - name: "AUTO"\n'
+            cat <<EOF
+      type: url-test
+      proxies:
+        - $(jq -Rn --arg value "${base_node}_WS" '$value')
+        - $(jq -Rn --arg value "${base_node}_XHTTP" '$value')
+      url: https://cp.cloudflare.com/generate_204
+      interval: ${XHTTP_URL_TEST_INTERVAL}
+      tolerance: 50
+      timeout: 3000
+      lazy: true
+EOF
+        fi
+        return 0
+    fi
     local endpoint index=1
     xhttp_using_optimized_candidates || return 0
     printf '    - name: %s\n' \
@@ -612,7 +787,7 @@ EOF
         index=$((index + 1))
     done < <(xhttp_client_endpoints)
     cat <<EOF
-      url: https://www.gstatic.com/generate_204
+      url: https://cp.cloudflare.com/generate_204
       interval: ${XHTTP_URL_TEST_INTERVAL}
       tolerance: 50
       lazy: false
