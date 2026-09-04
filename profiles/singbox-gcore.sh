@@ -220,12 +220,18 @@ build_singbox_subscription_json() {
           }
         ],
         rules: [
-          { clash_mode: "Direct", server: "local" },
-          { clash_mode: "Global", server: "remote" },
-          { rule_set: "geosite-cn", server: "local" }
+          { clash_mode: "Direct", action: "route", server: "local" },
+          { clash_mode: "Global", action: "route", server: "remote" },
+          { rule_set: "geosite-cn", action: "route", server: "local" }
         ],
         strategy: "prefer_ipv4"
       },
+      http_clients: [
+        {
+          tag: "proxy-client",
+          detour: "PROXY"
+        }
+      ],
       inbounds: [
         {
           type: "mixed",
@@ -297,13 +303,14 @@ build_singbox_subscription_json() {
       ],
       route: {
         default_domain_resolver: "local",
+        default_http_client: "proxy-client",
         rules: [
           { action: "sniff" },
           { protocol: "dns", action: "hijack-dns" },
-          { clash_mode: "Direct", outbound: "direct" },
-          { clash_mode: "Global", outbound: "PROXY" },
-          { ip_is_private: true, outbound: "direct" },
-          { rule_set: ["geoip-cn", "geosite-cn"], outbound: "direct" }
+          { clash_mode: "Direct", action: "route", outbound: "direct" },
+          { clash_mode: "Global", action: "route", outbound: "PROXY" },
+          { ip_is_private: true, action: "route", outbound: "direct" },
+          { rule_set: ["geoip-cn", "geosite-cn"], action: "route", outbound: "direct" }
         ],
         rule_set: [
           {
@@ -311,14 +318,14 @@ build_singbox_subscription_json() {
             type: "remote",
             format: "binary",
             url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-            download_detour: "PROXY"
+            http_client: "proxy-client"
           },
           {
             tag: "geoip-cn",
             type: "remote",
             format: "binary",
             url: "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-            download_detour: "PROXY"
+            http_client: "proxy-client"
           }
         ],
         auto_detect_interface: true
