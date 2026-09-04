@@ -245,6 +245,7 @@ build_singbox_subscription_json() {
             server: "local"
           },
           { rule_set: "geosite-cn", action: "route", server: "local" },
+          { rule_set: ["geosite-category-ai", "geosite-gfw"], action: "route", server: "fakeip" },
           { query_type: ["A", "AAAA"], action: "route", server: "fakeip" }
         ],
         final: "remote",
@@ -351,9 +352,24 @@ build_singbox_subscription_json() {
             outbound: "direct"
           },
           { ip_is_private: true, action: "route", outbound: "direct" },
+          { rule_set: ["geosite-category-ai", "geosite-gfw"], action: "route", outbound: "PROXY" },
           { rule_set: ["geoip-cn", "geosite-cn"], action: "route", outbound: "direct" }
         ],
         rule_set: [
+          {
+            tag: "geosite-category-ai",
+            type: "remote",
+            format: "binary",
+            url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ai-chat-!cn.srs",
+            http_client: "proxy-client"
+          },
+          {
+            tag: "geosite-gfw",
+            type: "remote",
+            format: "binary",
+            url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-gfw.srs",
+            http_client: "proxy-client"
+          },
           {
             tag: "geosite-cn",
             type: "remote",
@@ -369,6 +385,7 @@ build_singbox_subscription_json() {
             http_client: "proxy-client"
           }
         ],
+        final: "PROXY",
         auto_detect_interface: true
       }
     }
