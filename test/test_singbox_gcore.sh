@@ -146,9 +146,15 @@ sub_trojan_tag=$(jq -r '.outbounds[] | select(.type=="trojan") | .tag' <<<"${sin
 sub_vless_tag=$(jq -r '.outbounds[] | select(.type=="vless") | .tag' <<<"${singbox_sub}")
 sub_proxy_outbounds=$(jq -r '.outbounds[] | select(.tag=="PROXY") | .outbounds | join(",")' <<<"${singbox_sub}")
 
+sub_proxy_first=$(jq -r '.outbounds[] | select(.tag=="PROXY") | .outbounds[0]' <<<"${singbox_sub}")
+sub_urltest_outbounds=$(jq -r '.outbounds[] | select(.type=="urltest") | .outbounds | join(",")' <<<"${singbox_sub}")
+
 assert_contains "Sing-box subscription Trojan tag" "${sub_trojan_tag}" "TROJAN"
 assert_contains "Sing-box subscription VLESS tag" "${sub_vless_tag}" "VLESS"
 assert_contains "Sing-box subscription PROXY includes AUTO" "${sub_proxy_outbounds}" "_AUTO"
+assert_contains "Sing-box subscription PROXY defaults to AUTO" "${sub_proxy_first}" "_AUTO"
+assert_contains "Sing-box subscription AUTO urltest includes Trojan" "${sub_urltest_outbounds}" "TROJAN"
+assert_contains "Sing-box subscription AUTO urltest includes VLESS" "${sub_urltest_outbounds}" "VLESS"
 
 # Modern DNS format assertions (sing-box 1.12+ / 1.14+)
 sub_fakeip_dns_type=$(jq -r '.dns.servers[] | select(.tag=="fakeip") | .type' <<<"${singbox_sub}")

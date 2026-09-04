@@ -118,6 +118,8 @@ easy_all install
 └─ [4] Gcore CDN 域名 - Sing-box (Trojan + VLESS WebSocket)
    ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
    ├─ 采用 Sing-box 服务端后端，同时监听 Trojan WS (10088) 与 VLESS WS (10087)
+   ├─ 客户端兼容：完全兼容 Mihomo (Clash) 客户端与 Sing-box 客户端
+   ├─ iPhone 推荐：若有 iPhone，推荐选模式 4，iOS Sing-box 开箱自带两节点自动测速与故障切换
    ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
    ├─ Gcore CDN 资源与配置同模式 3 完全复用；支持模式 3 零损失就地秒级迁移
    └─ 订阅生成：通用 Base64、Mihomo YAML (flag=clash) 以及 Sing-box JSON (flag=singbox)
@@ -187,8 +189,8 @@ choose_install_mode() {
     printf '     Cloudflare CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
     printf '  3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）\n' >&2
     printf '     Gcore CDN domain - XHTTP + WebSocket (Gcore DNS routing, no IP selection)\n' >&2
-    printf '  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WebSocket 双链路，Sing-box 后端）\n' >&2
-    printf '     Gcore CDN domain - Sing-box (Trojan + VLESS WebSocket dual links)\n' >&2
+    printf '  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）\n' >&2
+    printf '     Gcore CDN domain - Sing-box (dual links, recommended for iPhone, auto failover)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice

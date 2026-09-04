@@ -26,7 +26,7 @@ Cloudflare 使用 XHTTP；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Tro
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，并愿意维护域名、Token 和 gRPC 设置 | 选择 `2`：Cloudflare XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台手动打开 gRPC。 |
 | 需要 Gcore CDN 域名入口，并愿意维护 Gcore Managed DNS 和 API Token | 选择 `3`：Gcore XHTTP | Gcore Free CDN、Managed DNS Zone、源站/节点域名和 Gcore API Token；不需要 Globalping。 |
-| 需要 Gcore CDN 域名入口，更偏好 Sing-box 后端或使用 Trojan/Sing-box 客户端订阅 | 选择 `4`：Gcore Sing-box | 同模式 3 前置条件。若已安装模式 3，可随时一键原地无缝切换为模式 4。 |
+| 需要 Gcore CDN 域名入口，或有 iPhone 客户端需求（需要双节点简单自动切换） | 选择 `4`：Gcore Sing-box | 同模式 3 前置条件。若有 iPhone，推荐使用 Sing-box 后端及 iOS 客户端，开箱即支持 Trojan + VLESS 两节点自动测速与故障切换（urltest）；后端同时完全兼容 Mihomo 客户端。若已安装模式 3，可随时一键原地无缝切换为模式 4。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 或 Gcore 前置准备时，再选择对应 CDN 模式。Gcore 模式下可在模式 3 与模式 4 之间通过 `easy_all switch-backend` 原地无缝迁移，无需重新创建云端资源。
@@ -132,6 +132,7 @@ sudo ./easy_all install
   1. 直连 - Reality（优化线路推荐）
   2. Cloudflare CDN 精选 IP - XHTTP（中国大陆 Globalping 预筛 + 客户端测速）
   3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）
+  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -142,7 +143,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 
 | 看到的选项 | 首次单用户建议 | 说明 |
 | --- | --- | --- |
-| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP，`3` 是 Gcore 域名 XHTTP。 |
+| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP，`3` 是 Gcore 域名 XHTTP，`4` 是 Gcore Sing-box（有 iPhone 时推荐，iOS Sing-box 开箱即享两节点自动切换，同时兼容 Mihomo）。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
@@ -727,10 +728,20 @@ Gcore Free CDN 的本地保护阈值固定为 `990 GB`。Xray 统计达到阈值
 
 模式 4 采用 Sing-box 作为服务端后端，同时监听 Trojan WebSocket（端口 `10088`）与 VLESS WebSocket（端口 `10087`），完全对齐 Gcore CDN 链路规范：
 - **云端资源 100% 复用**：与模式 3 完全一致，包含 Gcore Managed DNS、源站 A 记录、Origin Group、Let's Encrypt 边缘证书、mTLS 双向回源校验。
+- **客户端全兼容（Sing-box 后端兼容 Mihomo 客户端）**：
+  服务端虽采用 Sing-box 核心，但对外暴露标准 Trojan 与 VLESS 协议，**完全兼容 Mihomo (Clash) 客户端**与 Sing-box 客户端，无需担心客户端选型受限。
 - **订阅全适配**：
   - 通用 Base64 订阅（包含 `trojan://` 与 `vless://` 两个节点链接）
-  - Mihomo / Clash 订阅（`flag=clash`，自动注入 `_TROJAN_WS`、`_VLESS_WS` 以及 `_AUTO` url-test 测速分组）
+  - Mihomo / Clash 订阅（`flag=clash`，自动注入 `_TROJAN_WS`、`_VLESS_WS` 以及 `_AUTO` url-test 测速分组，专为 Mihomo 客户端优化）
   - Sing-box 专属订阅（`flag=singbox`，生成完整的规则集、DNS 策略、Outbounds 分组与分流配置）
+
+### iPhone / iOS 用户特别推荐：开箱即用的两节点自动切换
+
+如果你的主力设备包含 **iPhone (iOS)**，在 Gcore 链路下强烈推荐安装 **模式 4（Sing-box 后端）** 并搭配 **iOS 官方 Sing-box 客户端**：
+- **两节点自动测速与故障切换（urltest）**：
+  Sing-box 订阅原生配置了 `_AUTO` 自动测速分组（基于 `urltest` 探测 Cloudflare 204 优选低延迟），并作为默认的 `PROXY` 出站。Gcore 上的 Trojan WS 与 VLESS WS 双链路会被自动健康检查；当其中一条链路断流或网络波动时，iOS 客户端会自动无缝切换至另一可用节点，完全无需手动干预。
+- **开箱即用，避免繁琐配置**：
+  在 iOS 上使用其他客户端（如 Shadowrocket）时，需要手动配置正则新建 AUTO 策略组并设置订阅绑定；而官方免费的 iOS Sing-box 客户端只需直接添加带有 `flag=singbox` 的订阅链接，就能开箱享受双链路自动故障转移。
 
 ### 从模式 3 就地无缝迁移至模式 4（Plan B）
 
