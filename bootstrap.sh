@@ -40,6 +40,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/profiles/reality.sh" \
     && -f "${REPO_DIR}/profiles/xhttp-cloudflare.sh" \
     && -f "${REPO_DIR}/profiles/xhttp-gcore.sh" \
+    && -f "${REPO_DIR}/profiles/singbox-gcore.sh" \
     && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \
     && -f "${REPO_DIR}/lib/cdn-traffic-guard.sh" \
     && -f "${REPO_DIR}/lib/globalping-cdn.sh" \
@@ -51,6 +52,7 @@ git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/lib/mihomo-template.sh" \
     && -f "${REPO_DIR}/lib/firewall.sh" \
     && -f "${REPO_DIR}/lib/xray-core.sh" \
+    && -f "${REPO_DIR}/lib/singbox-core.sh" \
     && -f "${REPO_DIR}/lib/scheduled-maintenance.sh" \
     && -f "${REPO_DIR}/lib/subscription-auth.sh" \
     && -f "${REPO_DIR}/lib/tcp-tuning.sh" \

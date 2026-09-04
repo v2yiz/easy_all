@@ -23,6 +23,7 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/reality.sh"
     "profiles/xhttp-cloudflare.sh"
     "profiles/xhttp-gcore.sh"
+    "profiles/singbox-gcore.sh"
     "lib/xhttp-runtime.sh"
     "lib/cdn-traffic-guard.sh"
     "lib/globalping-cdn.sh"
@@ -34,6 +35,7 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "lib/mihomo-template.sh"
     "lib/firewall.sh"
     "lib/xray-core.sh"
+    "lib/singbox-core.sh"
     "lib/scheduled-maintenance.sh"
     "lib/subscription-auth.sh"
     "lib/tcp-tuning.sh"
@@ -75,7 +77,8 @@ launcher_usage() {
   update-sub       重新选择订阅模式与月度用户配额
   refresh-cdn-ips  立即刷新 Cloudflare 的 Globalping 精选 IP 与订阅
   cdn-traffic-sync 同步 CDN 全局流量保护状态
-  update-core      更新 Xray 核心
+  update-core      更新核心（Xray 或 Sing-box）
+  switch-backend   在 Gcore 模式下无缝切换 Xray / Sing-box 后端
   renew-cert       轮换当前 CDN 模式的源站/Provider 证书
   quota-status     显示用户配额与 Xray 本地统计
   quota-set        修改指定用户的月度额度
@@ -107,11 +110,17 @@ easy_all install
    ├─ CLOUDFLARE_API_TOKEN → Proxied A → Origin CA → Full strict/gRPC/HTTP2/Origin Key 规则
    ├─ Nginx/Xray → Cloudflare 回源 IP 防火墙 → 公网验收
    └─ Cloudflare 官方 IPv4 池轮换抽样 → 三网 Globalping eyeball 预筛 → 域名兜底/客户端二次测速
-└─ [3] Gcore CDN 域名 - XHTTP + WebSocket
+├─ [3] Gcore CDN 域名 - XHTTP + WebSocket
+│  ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
+│  ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
+│  ├─ Origin Group / XHTTP + WebSocket Resource / Origin SSL Validation / 边缘证书
+│  └─ Gcore CDN 域名 → CNAME 传播 → XHTTP + WebSocket 验收；不做 IP 精选
+└─ [4] Gcore CDN 域名 - Sing-box (Trojan + VLESS WebSocket)
    ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
+   ├─ 采用 Sing-box 服务端后端，同时监听 Trojan WS (10088) 与 VLESS WS (10087)
    ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
-   ├─ Origin Group / XHTTP + WebSocket Resource / Origin SSL Validation / 边缘证书
-   └─ Gcore CDN 域名 → CNAME 传播 → XHTTP + WebSocket 验收；不做 IP 精选
+   ├─ Gcore CDN 资源与配置同模式 3 完全复用；支持模式 3 零损失就地秒级迁移
+   └─ 订阅生成：通用 Base64、Mihomo YAML (flag=clash) 以及 Sing-box JSON (flag=singbox)
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
@@ -148,10 +157,18 @@ detect_installed_mode() {
                 printf 'cloudflare\n'
                 ;;
             gcore)
-                printf 'gcore\n'
+                if [[ "$(state_value "${EASY_ALL_STATE_FILE}" BACKEND || true)" == "singbox" ]]; then
+                    printf 'singbox-gcore\n'
+                else
+                    printf 'gcore\n'
+                fi
                 ;;
             *) launcher_die "无法识别 CDN Provider：$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" ;;
             esac
+            ;;
+        singbox-ws)
+            [[ "${state_version}" == "7" ]] || launcher_die "Sing-box 状态版本无效；仅支持当前全新安装生成的状态"
+            printf 'singbox-gcore\n'
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
         esac
@@ -170,6 +187,8 @@ choose_install_mode() {
     printf '     Cloudflare CDN optimized IPv4 - XHTTP (Globalping prefilter + client testing)\n' >&2
     printf '  3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）\n' >&2
     printf '     Gcore CDN domain - XHTTP + WebSocket (Gcore DNS routing, no IP selection)\n' >&2
+    printf '  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WebSocket 双链路，Sing-box 后端）\n' >&2
+    printf '     Gcore CDN domain - Sing-box (Trojan + VLESS WebSocket dual links)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice
@@ -177,6 +196,7 @@ choose_install_mode() {
     1) printf 'reality\n' ;;
     2) printf 'cloudflare\n' ;;
     3) printf 'gcore\n' ;;
+    4) printf 'singbox-gcore\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -187,6 +207,7 @@ profile_file() {
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare.sh" ;;
     gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
+    singbox-gcore) candidate="${EASY_ALL_ROOT}/profiles/singbox-gcore.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -269,7 +290,7 @@ dispatch_profile_command() {
         apply_easy_all
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare" || "${mode}" == "gcore" ]] \
+        [[ "${mode}" == "cloudflare" || "${mode}" == "gcore" || "${mode}" == "singbox-gcore" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         apply_cloud_resources
         ;;
@@ -280,16 +301,32 @@ dispatch_profile_command() {
             update_subscription
         fi
         ;;
-    update-core) update_current_core ;;
+    update-core)
+        if [[ "${mode}" == "singbox-gcore" ]]; then
+            update_singbox_core
+        else
+            update_current_core
+        fi
+        ;;
     refresh-cdn-ips)
         [[ "${mode}" == "cloudflare" ]] \
             || launcher_die "refresh-cdn-ips 仅适用于 Cloudflare CDN 精选 IP"
         refresh_cloudflare_cdn_ips
         ;;
     cdn-traffic-sync)
-        [[ "${mode}" == "gcore" ]] \
+        [[ "${mode}" == "gcore" || "${mode}" == "singbox-gcore" ]] \
             || launcher_die "cdn-traffic-sync 仅适用于 Gcore CDN 模式"
         cdn_traffic_protection_sync
+        ;;
+    switch-backend)
+        if [[ "${mode}" == "gcore" ]]; then
+            source "${EASY_ALL_ROOT}/profiles/singbox-gcore.sh"
+            migrate_from_xhttp_gcore
+        elif [[ "${mode}" == "singbox-gcore" ]]; then
+            info "当前已是 Sing-box 后端模式"
+        else
+            launcher_die "switch-backend 仅适用于 Gcore 模式"
+        fi
         ;;
     renew-cert)
         if [[ "${mode}" == "reality" ]]; then
@@ -332,7 +369,32 @@ main() {
     if [[ "${command}" == "install" ]]; then
         (($# == 0)) || launcher_die "install 不接受协议参数，请在交互菜单中选择"
         mode=$(detect_installed_mode)
-        [[ -z "${mode}" ]] || launcher_die "已安装 ${mode}；一台 VPS 只允许一种模式"
+        if [[ -n "${mode}" ]]; then
+            if [[ "${mode}" == "gcore" ]]; then
+                show_install_guide
+                local target_mode
+                target_mode=$(choose_install_mode)
+                if [[ "${target_mode}" == "singbox-gcore" ]]; then
+                    module=$(profile_file "singbox-gcore")
+                    export EASY_ALL_SELECTED_MODE="singbox-gcore"
+                    [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+                        || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+                    # shellcheck source=/dev/null
+                    source "${module}"
+                    register_easy_all_command() {
+                        unified_register_easy_all_command
+                    }
+                    migrate_from_xhttp_gcore
+                    return 0
+                elif [[ "${target_mode}" == "gcore" ]]; then
+                    launcher_die "已安装 gcore；请使用 easy_all apply 刷新配置"
+                else
+                    launcher_die "已安装 gcore；切换到不同平台请先执行 easy_all uninstall"
+                fi
+            else
+                launcher_die "已安装 ${mode}；一台 VPS 只允许一种模式"
+            fi
+        fi
         show_install_guide
         mode=$(choose_install_mode)
     else

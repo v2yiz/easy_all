@@ -8,11 +8,12 @@
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP | VLESS XHTTP stream-up / HTTP2 | Cloudflare + Globalping IPv4 |
-| 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 |
+| 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 (Xray 核心) |
+| 4. Gcore CDN 域名 - Sing-box (Trojan + VLESS WS) | Trojan WS / VLESS WS / TLS | Gcore CDN 域名 (Sing-box 核心) |
 
-Cloudflare 使用 XHTTP；Gcore 同时提供 XHTTP packet-up 和 WebSocket，由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 使用 XHTTP；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
 
-同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
+同一台 VPS 只能安装一种模式。脚本会管理 Xray/Sing-box、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
 所在地区法律、VPS 服务商以及 Cloudflare 和 Gcore 的服务条款。
 
@@ -25,10 +26,10 @@ Cloudflare 使用 XHTTP；Gcore 同时提供 XHTTP packet-up 和 WebSocket，由
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，并愿意维护域名、Token 和 gRPC 设置 | 选择 `2`：Cloudflare XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台手动打开 gRPC。 |
 | 需要 Gcore CDN 域名入口，并愿意维护 Gcore Managed DNS 和 API Token | 选择 `3`：Gcore XHTTP | Gcore Free CDN、Managed DNS Zone、源站/节点域名和 Gcore API Token；不需要 Globalping。 |
+| 需要 Gcore CDN 域名入口，更偏好 Sing-box 后端或使用 Trojan/Sing-box 客户端订阅 | 选择 `4`：Gcore Sing-box | 同模式 3 前置条件。若已安装模式 3，可随时一键原地无缝切换为模式 4。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
-处理 Cloudflare 或 Gcore 前置准备时，再选择对应 CDN 模式。同一 VPS 不能直接切换模式；需要更换时，
-先备份自己的订阅信息，阅读后文的卸载说明并决定是否清理云端资源，再卸载和重新安装。
+处理 Cloudflare 或 Gcore 前置准备时，再选择对应 CDN 模式。Gcore 模式下可在模式 3 与模式 4 之间通过 `easy_all switch-backend` 原地无缝迁移，无需重新创建云端资源。
 
 ### 2. 运行前检查清单
 
@@ -309,7 +310,8 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改当前 Provider 资源，新增、更换或停用独立域名时同步对应 Provider。 |
 | `refresh-cdn-ips` | Cloudflare 模式可用；立即运行一次 Globalping 测量，更新本地缓存并原子重建订阅。 |
 | `cdn-traffic-sync` | Gcore 模式可用；同步 990 GB 全局流量保护状态。 |
-| `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
+| `update-core` | 下载并更新核心（Xray 或 Sing-box）；更新失败时恢复旧版本。 |
+| `switch-backend` | Gcore 模式可用；在 Xray（模式 3）与 Sing-box（模式 4）后端间就地秒级平滑切换，保留全部 Gcore 云资产与 VLESS 凭据。 |
 | `renew-cert` | 强制轮换当前模式的证书并重新验收；Reality 需已部署自托管订阅，CDN 模式轮换源站/Provider 证书。 |
 | `quota-status` | 显示每用户月度配额和 Xray 本地统计。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
@@ -720,6 +722,30 @@ CNAME 的公共 DNS 传播各自最多约 5 分钟；边缘证书、CDN Resource
 Gcore Free CDN 的本地保护阈值固定为 `990 GB`。Xray 统计达到阈值后临时阻断节点，进入新的 UTC
 自然月恢复；它只是本地第二道保护，仍需在 Gcore 控制台设置用量提醒。完整的域名委派、Token 权限、
 双链路参数、证书和卸载说明见统一的[前置准备手册](docs/preparation-guide.md#8-gcore-cdn-域名-xhttp--websocket-准备)。
+
+## Gcore CDN 域名 Sing-box (Trojan + VLESS WebSocket)
+
+模式 4 采用 Sing-box 作为服务端后端，同时监听 Trojan WebSocket（端口 `10088`）与 VLESS WebSocket（端口 `10087`），完全对齐 Gcore CDN 链路规范：
+- **云端资源 100% 复用**：与模式 3 完全一致，包含 Gcore Managed DNS、源站 A 记录、Origin Group、Let's Encrypt 边缘证书、mTLS 双向回源校验。
+- **订阅全适配**：
+  - 通用 Base64 订阅（包含 `trojan://` 与 `vless://` 两个节点链接）
+  - Mihomo / Clash 订阅（`flag=clash`，自动注入 `_TROJAN_WS`、`_VLESS_WS` 以及 `_AUTO` url-test 测速分组）
+  - Sing-box 专属订阅（`flag=singbox`，生成完整的规则集、DNS 策略、Outbounds 分组与分流配置）
+
+### 从模式 3 就地无缝迁移至模式 4（Plan B）
+
+如果你的 VPS 当前已经安装了模式 3（Gcore XHTTP + WebSocket），无需重新申请证书或等待 CDN 生效，可执行：
+
+```bash
+easy_all switch-backend
+# 或运行 easy_all install 选择 4
+```
+
+迁移过程特点：
+1. **零云端等待**：保留全部已生效的 Gcore CDN 资源、DNS 记录与证书，无需重新下发 CDN 或等待 DNS 传播。
+2. **凭据无缝继承**：保留现有的 `VLESS_UUID` 与 `WEBSOCKET_PATH`，原客户端已配置的 VLESS WS 节点保持 100% 兼容、无感连接。
+3. **本地原子切换**：自动拉取并安装 Sing-box 核心，生成 Trojan WS + VLESS WS 组合配置，停用旧 Xray 服务并重载 Nginx，秒级切换完成。
+4. **订阅自动刷新**：自动重新渲染订阅目录，立刻支持使用 `flag=singbox` 获取 Sing-box 客户端完整配置。
 
 ## 状态与边界
 

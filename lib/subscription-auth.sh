@@ -167,6 +167,8 @@ EOF
 map $arg_flag $easy_all_subscription_uri {
     default /_easy_all_subscription/base64;
     clash /_easy_all_subscription/mihomo;
+    singbox /_easy_all_subscription/singbox;
+    sing-box /_easy_all_subscription/singbox;
 }
 
 EOF
@@ -176,6 +178,7 @@ write_subscription_nginx_locations() {
     local origin_header_secret=${1:-}
     local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
     local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
+    local singbox_alias="${SUBSCRIPTION_SINGBOX_FILE:-${SUBSCRIPTION_DIR}/singbox.json}"
     local origin_guard=""
     subscription_enabled || return 0
     if [[ -n "${origin_header_secret}" ]]; then
@@ -186,6 +189,7 @@ write_subscription_nginx_locations() {
     if quota_enabled; then
         base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
         mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.yaml"
+        singbox_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/singbox.json"
     fi
     cat <<'EOF'
     location = /subscribe {
@@ -212,6 +216,17 @@ EOF
         alias ${mihomo_alias};
         default_type text/yaml;
         add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+        add_header Pragma "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+    }
+
+    location = /_easy_all_subscription/singbox {
+        internal;
+        alias ${singbox_alias};
+        default_type application/json;
+        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}.json" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;
         add_header X-Content-Type-Options "nosniff" always;
