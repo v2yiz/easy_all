@@ -30,6 +30,8 @@ SINGBOX_TROJAN_LOOPBACK_PORT="${SINGBOX_TROJAN_LOOPBACK_PORT:-${DEFAULT_SINGBOX_
 SINGBOX_VLESS_LOOPBACK_PORT="${SINGBOX_VLESS_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_LOOPBACK_PORT}}"
 TROJAN_PASSWORD="${TROJAN_PASSWORD:-}"
 TROJAN_PATH="${TROJAN_PATH:-}"
+ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-}"
+XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-${GCORE_ORIGIN_DOMAIN:-}}"
 
 generate_trojan_path() {
     printf '/trojan-%s' "$(openssl rand -hex 12)"
@@ -65,7 +67,7 @@ load_state() {
         VPS_PUBLIC_IPV4 GCORE_ORIGIN_A_OWNED GCORE_CDN_CNAME_OWNED
         GCORE_SUBSCRIPTION_CNAME_OWNED
         SINGBOX_TROJAN_LOOPBACK_PORT SINGBOX_VLESS_LOOPBACK_PORT
-        ALLOWED_TOKENS SUB_DOWNLOAD_NAME
+        ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
     )
     [[ -f "${state_path}" ]] || return 1
@@ -73,6 +75,11 @@ load_state() {
         env_name=$(env -i bash -c 'source "$1" && printf "%s" "${'"${variable}"':-}"' _ "${state_path}")
         printf -v "${variable}" '%s' "${env_name}"
     done
+    XHTTP_ORIGIN_DOMAIN="${GCORE_ORIGIN_DOMAIN}"
+}
+
+mihomo_transport_marker() {
+    printf 'network: ws'
 }
 
 can_in_place_migrate_from_xhttp_gcore() {
@@ -526,6 +533,7 @@ save_state() {
         printf 'GCORE_SUBSCRIPTION_CNAME_OWNED=%q\n' "${GCORE_SUBSCRIPTION_CNAME_OWNED:-0}"
         printf 'SINGBOX_TROJAN_LOOPBACK_PORT=%q\n' "${SINGBOX_TROJAN_LOOPBACK_PORT}"
         printf 'SINGBOX_VLESS_LOOPBACK_PORT=%q\n' "${SINGBOX_VLESS_LOOPBACK_PORT}"
+        printf 'ORIGIN_HEADER_SECRET=%q\n' "${ORIGIN_HEADER_SECRET:-}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME}"
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
@@ -601,8 +609,11 @@ migrate_from_xhttp_gcore() {
     TROJAN_PATH="${TROJAN_PATH:-$(generate_trojan_path)}"
     SINGBOX_TROJAN_LOOPBACK_PORT="${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}"
     SINGBOX_VLESS_LOOPBACK_PORT="${DEFAULT_SINGBOX_VLESS_LOOPBACK_PORT}"
+    ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-$(generate_secret)}"
+    XHTTP_ORIGIN_DOMAIN="${GCORE_ORIGIN_DOMAIN}"
     BACKEND="singbox"
     PROTOCOL="singbox-ws"
+    CDN_PROVIDER="gcore"
 
     info "[1/5] 安装 Sing-box 核心并生成双链路配置"
     download_singbox

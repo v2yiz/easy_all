@@ -372,7 +372,16 @@ main() {
             migrate_from_xhttp_gcore
             return 0
         elif [[ "${mode}" == "singbox-gcore" ]]; then
-            printf '\033[32m%s\033[0m\n' "当前已是 Sing-box 后端模式"
+            module=$(profile_file "gcore")
+            export EASY_ALL_SELECTED_MODE="gcore"
+            [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+                || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+            # shellcheck source=/dev/null
+            source "${module}"
+            register_easy_all_command() {
+                unified_register_easy_all_command
+            }
+            migrate_from_singbox_gcore
             return 0
         else
             launcher_die "switch-backend 仅适用于 Gcore 模式"
@@ -383,11 +392,11 @@ main() {
         (($# == 0)) || launcher_die "install 不接受协议参数，请在交互菜单中选择"
         mode=$(detect_installed_mode)
         if [[ -n "${mode}" ]]; then
-            if [[ "${mode}" == "gcore" ]]; then
+            if [[ "${mode}" == "gcore" || "${mode}" == "singbox-gcore" ]]; then
                 show_install_guide
                 local target_mode
                 target_mode=$(choose_install_mode)
-                if [[ "${target_mode}" == "singbox-gcore" ]]; then
+                if [[ "${mode}" == "gcore" && "${target_mode}" == "singbox-gcore" ]]; then
                     module=$(profile_file "singbox-gcore")
                     export EASY_ALL_SELECTED_MODE="singbox-gcore"
                     [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
@@ -399,10 +408,22 @@ main() {
                     }
                     migrate_from_xhttp_gcore
                     return 0
-                elif [[ "${target_mode}" == "gcore" ]]; then
-                    launcher_die "已安装 gcore；请使用 easy_all apply 刷新配置"
+                elif [[ "${mode}" == "singbox-gcore" && "${target_mode}" == "gcore" ]]; then
+                    module=$(profile_file "gcore")
+                    export EASY_ALL_SELECTED_MODE="gcore"
+                    [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+                        || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+                    # shellcheck source=/dev/null
+                    source "${module}"
+                    register_easy_all_command() {
+                        unified_register_easy_all_command
+                    }
+                    migrate_from_singbox_gcore
+                    return 0
+                elif [[ "${mode}" == "${target_mode}" ]]; then
+                    launcher_die "已安装 ${mode}；请使用 easy_all apply 刷新配置"
                 else
-                    launcher_die "已安装 gcore；切换到不同平台请先执行 easy_all uninstall"
+                    launcher_die "已安装 ${mode}；切换到不同平台请先执行 easy_all uninstall"
                 fi
             else
                 launcher_die "已安装 ${mode}；一台 VPS 只允许一种模式"

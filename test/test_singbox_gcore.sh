@@ -167,6 +167,30 @@ write_subscriptions
 assert_contains "Mihomo yaml has trojan" "$(<"${TMP_DIR}/web/subscriptions/mihomo.yaml")" "type: trojan"
 assert_contains "Singbox json has trojan" "$(<"${TMP_DIR}/web/subscriptions/singbox.json")" "trojan"
 
+curl() {
+    local url="" flag=""
+    for arg in "$@"; do
+        if [[ "${arg}" == "flag=clash" ]]; then
+            flag="clash"
+        fi
+        if [[ "${arg}" == http* ]]; then
+            url="${arg}"
+        fi
+    done
+    if [[ "${url}" == *"/subscribe" ]]; then
+        if [[ "${flag}" == "clash" ]]; then
+            printf 'network: ws\nproxies:\n'
+        else
+            printf 'dHJvamFuOi8v...\n'
+        fi
+        return 0
+    fi
+    return 1
+}
+validate_subscription_token_rejection() { :; }
+validate_subscription_runtime
+unset -f curl validate_subscription_token_rejection
+
 # 9. Test in-place migration detection
 TEST_STATE_FILE="${TMP_DIR}/state.env"
 export EASY_ALL_STATE_FILE_OVERRIDE="${TEST_STATE_FILE}"
@@ -184,7 +208,13 @@ assert_equal "Cannot migrate from already singbox" "1" "$(can_in_place_migrate_f
 ) || fail "re-sourcing singbox-gcore after xhttp-gcore failed with readonly variable or other error"
 
 # 11. Test switch-backend dispatcher
-output=$(env EASY_ALL_STATE_FILE_OVERRIDE="${TEST_STATE_FILE}" "${ROOT_DIR}/easy_all" switch-backend)
-assert_contains "switch-backend reports already singbox" "${output}" "当前已是 Sing-box 后端模式"
+assert_contains "switch-backend initiates migration from singbox" \
+    "$(env EASY_ALL_STATE_FILE_OVERRIDE="${TEST_STATE_FILE}" "${ROOT_DIR}/easy_all" switch-backend 2>&1 || true)" \
+    "root"
+
+printf 'STATE_VERSION=6\nPROTOCOL=reality\n' >"${TEST_STATE_FILE}"
+assert_contains "switch-backend rejects non-gcore mode" \
+    "$(env EASY_ALL_STATE_FILE_OVERRIDE="${TEST_STATE_FILE}" "${ROOT_DIR}/easy_all" switch-backend 2>&1 || true)" \
+    "switch-backend 仅适用于 Gcore 模式"
 
 printf 'ok - singbox gcore profile tests passed\n'

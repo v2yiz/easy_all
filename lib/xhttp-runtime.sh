@@ -412,6 +412,8 @@ validate_protocol_runtime() {
 
 validate_subscription_runtime() {
     local token base64_response mihomo_response marker
+    XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-${GCORE_ORIGIN_DOMAIN:-}}"
+    ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
         xhttp_validate_local_tls_curl_args

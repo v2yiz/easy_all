@@ -1875,6 +1875,69 @@ install_all() {
     success "easy_all Gcore CDN XHTTP 安装完成"
 }
 
+migrate_from_singbox_gcore() {
+    require_root
+    info "检测到当前已安装模式 4（Gcore Sing-box：Trojan + VLESS WebSocket）。"
+    info "正在执行就地平滑迁移至模式 3（Gcore Xray：VLESS XHTTP + WebSocket）..."
+
+    local state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    [[ -f "${state_path}" ]] || die "状态文件不存在，无法迁移"
+    local -a vars=(
+        CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
+        VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN WEBSOCKET_PATH
+        GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE
+        GCORE_ORIGIN_GROUP_ID GCORE_CDN_RESOURCE_ID
+        GCORE_SSL_CERT_ID GCORE_ORIGIN_CA_ID GCORE_ORIGIN_CLIENT_CERT_ID
+        GCORE_CDN_TARGET GCORE_ORIGIN_ISSUER_SHA256 CDN_TRAFFIC_PROTECTION_GB
+        VPS_PUBLIC_IPV4 GCORE_ORIGIN_A_OWNED GCORE_CDN_CNAME_OWNED
+        GCORE_SUBSCRIPTION_CNAME_OWNED
+        ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
+        SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+    )
+    for var in "${vars[@]}"; do
+        local val
+        val=$(env -i bash -c 'source "$1" && printf "%s" "${'"${var}"':-}"' _ "${state_path}")
+        printf -v "${var}" '%s' "${val}"
+    done
+
+    VLESS_UUID="${VLESS_UUID:-$(generate_user_uuid)}"
+    WEBSOCKET_PATH="${WEBSOCKET_PATH:-/ws-$(openssl rand -hex 16)}"
+    XHTTP_PATH="${XHTTP_PATH:-/xhttp-$(openssl rand -hex 16)}"
+    XRAY_XHTTP_LOOPBACK_PORT="${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT:-10086}"
+    XRAY_WEBSOCKET_LOOPBACK_PORT="${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT:-10087}"
+    ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-$(generate_secret)}"
+    XHTTP_ORIGIN_DOMAIN="${GCORE_ORIGIN_DOMAIN}"
+    PROTOCOL="xhttp"
+    BACKEND="xray"
+    CDN_PROVIDER="gcore"
+
+    info "[1/5] 安装 Xray 核心并生成配置"
+    download_xray
+    write_xray_config
+    install_xray_service
+    install_cdn_traffic_protection_timer
+
+    info "[2/5] 停止并停用 Sing-box 服务"
+    systemctl stop easy_all-singbox.service >/dev/null 2>&1 || true
+    systemctl disable easy_all-singbox.service >/dev/null 2>&1 || true
+
+    info "[3/5] 更新 Nginx 反代配置并重载"
+    write_nginx_config
+
+    info "[4/5] 生成新格式订阅（Base64、Mihomo YAML）"
+    if subscription_enabled; then
+        write_subscriptions
+        validate_subscription_runtime
+    fi
+
+    info "[5/5] 保存状态并更新 easy_all 命令注册"
+    save_state
+    register_easy_all_command
+
+    show_subscription
+    success "已成功就地迁移至 Xray（VLESS XHTTP + WebSocket）！"
+}
+
 usage() {
     cat <<'EOF'
 Gcore Profile 只能由 easy_all 统一入口调用。
