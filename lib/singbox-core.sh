@@ -2,12 +2,17 @@
 
 # Shared, checksum-verified Sing-box release installation.
 
+if [[ "${_EASY_ALL_SINGBOX_CORE_LOADED:-0}" == "1" ]]; then
+    return 0 2>/dev/null || true
+fi
+_EASY_ALL_SINGBOX_CORE_LOADED=1
+
 SINGBOX_DIR="${SINGBOX_DIR_OVERRIDE:-${STATE_DIR:-/etc/easy_all}/singbox}"
 SINGBOX_BIN="${SINGBOX_BIN_OVERRIDE:-${SINGBOX_DIR}/sing-box}"
 SINGBOX_CONFIG="${SINGBOX_CONFIG_OVERRIDE:-${SINGBOX_DIR}/config.json}"
-readonly SINGBOX_SERVICE_FILE="/etc/systemd/system/easy_all-singbox.service"
-readonly SINGBOX_SERVICE="easy_all-singbox.service"
-readonly SINGBOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+SINGBOX_SERVICE_FILE="/etc/systemd/system/easy_all-singbox.service"
+SINGBOX_SERVICE="easy_all-singbox.service"
+SINGBOX_RELEASES_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
 
 download_singbox() {
     local release_file archive_url sha_url version clean_version temp_dir archive sha_file expected actual

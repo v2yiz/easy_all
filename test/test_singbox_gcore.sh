@@ -177,4 +177,14 @@ assert_equal "Can migrate from xhttp-gcore" "0" "$(can_in_place_migrate_from_xht
 printf 'STATE_VERSION=7\nPROTOCOL=singbox-ws\nCDN_PROVIDER=gcore\nBACKEND=singbox\n' >"${TEST_STATE_FILE}"
 assert_equal "Cannot migrate from already singbox" "1" "$(can_in_place_migrate_from_xhttp_gcore && echo 0 || echo 1)"
 
+# 10. Test re-sourcing resilience (prevent readonly variable error)
+(
+    source "${ROOT_DIR}/profiles/xhttp-gcore.sh"
+    source "${ROOT_DIR}/profiles/singbox-gcore.sh"
+) || fail "re-sourcing singbox-gcore after xhttp-gcore failed with readonly variable or other error"
+
+# 11. Test switch-backend dispatcher
+output=$(env EASY_ALL_STATE_FILE_OVERRIDE="${TEST_STATE_FILE}" "${ROOT_DIR}/easy_all" switch-backend)
+assert_contains "switch-backend reports already singbox" "${output}" "当前已是 Sing-box 后端模式"
+
 printf 'ok - singbox gcore profile tests passed\n'

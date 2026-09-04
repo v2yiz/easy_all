@@ -15,6 +15,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     exit 2
 fi
 
+if [[ "${_EASY_ALL_XHTTP_GCORE_LOADED:-0}" == "1" ]]; then
+    return 0 2>/dev/null || true
+fi
+_EASY_ALL_XHTTP_GCORE_LOADED=1
+
 readonly GCORE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 readonly XHTTP_PROFILE_ROOT="${GCORE_PROFILE_ROOT}/../lib"
 XHTTP_CDN_NAME_OVERRIDE="Gcore CDN"

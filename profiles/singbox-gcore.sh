@@ -16,13 +16,15 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 fi
 
 SINGBOX_PROFILE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-# shellcheck source=profiles/xhttp-gcore.sh
-source "${SINGBOX_PROFILE_DIR}/xhttp-gcore.sh"
+if ! declare -F gcore_apply_cdn >/dev/null; then
+    # shellcheck source=profiles/xhttp-gcore.sh
+    source "${SINGBOX_PROFILE_DIR}/xhttp-gcore.sh"
+fi
 # shellcheck source=lib/singbox-core.sh
 source "${SINGBOX_PROFILE_DIR}/../lib/singbox-core.sh"
 
-readonly DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT="10088"
-readonly DEFAULT_SINGBOX_VLESS_LOOPBACK_PORT="10087"
+DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT="10088"
+DEFAULT_SINGBOX_VLESS_LOOPBACK_PORT="10087"
 
 SINGBOX_TROJAN_LOOPBACK_PORT="${SINGBOX_TROJAN_LOOPBACK_PORT:-${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}}"
 SINGBOX_VLESS_LOOPBACK_PORT="${SINGBOX_VLESS_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_LOOPBACK_PORT}}"

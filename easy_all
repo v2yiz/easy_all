@@ -318,16 +318,6 @@ dispatch_profile_command() {
             || launcher_die "cdn-traffic-sync 仅适用于 Gcore CDN 模式"
         cdn_traffic_protection_sync
         ;;
-    switch-backend)
-        if [[ "${mode}" == "gcore" ]]; then
-            source "${EASY_ALL_ROOT}/profiles/singbox-gcore.sh"
-            migrate_from_xhttp_gcore
-        elif [[ "${mode}" == "singbox-gcore" ]]; then
-            info "当前已是 Sing-box 后端模式"
-        else
-            launcher_die "switch-backend 仅适用于 Gcore 模式"
-        fi
-        ;;
     renew-cert)
         if [[ "${mode}" == "reality" ]]; then
             renew_subscription_certificate
@@ -364,6 +354,29 @@ main() {
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
         launcher_usage
         return
+    fi
+
+    if [[ "${command}" == "switch-backend" ]]; then
+        mode=$(detect_installed_mode)
+        [[ -n "${mode}" ]] || launcher_die "easy_all 尚未安装"
+        if [[ "${mode}" == "gcore" ]]; then
+            module=$(profile_file "singbox-gcore")
+            export EASY_ALL_SELECTED_MODE="singbox-gcore"
+            [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+                || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+            # shellcheck source=/dev/null
+            source "${module}"
+            register_easy_all_command() {
+                unified_register_easy_all_command
+            }
+            migrate_from_xhttp_gcore
+            return 0
+        elif [[ "${mode}" == "singbox-gcore" ]]; then
+            printf '\033[32m%s\033[0m\n' "当前已是 Sing-box 后端模式"
+            return 0
+        else
+            launcher_die "switch-backend 仅适用于 Gcore 模式"
+        fi
     fi
 
     if [[ "${command}" == "install" ]]; then
