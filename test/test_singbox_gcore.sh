@@ -155,17 +155,27 @@ sub_fakeip_dns_type=$(jq -r '.dns.servers[] | select(.tag=="fakeip") | .type' <<
 sub_fakeip_inet4=$(jq -r '.dns.servers[] | select(.tag=="fakeip") | .inet4_range' <<<"${singbox_sub}")
 sub_remote_dns_type=$(jq -r '.dns.servers[] | select(.tag=="remote") | .type' <<<"${singbox_sub}")
 sub_local_dns_type=$(jq -r '.dns.servers[] | select(.tag=="local") | .type' <<<"${singbox_sub}")
+sub_local_dns_server=$(jq -r '.dns.servers[] | select(.tag=="local") | .server' <<<"${singbox_sub}")
 sub_dns_final=$(jq -r '.dns.final' <<<"${singbox_sub}")
 sub_has_legacy_dns_address=$(jq -r '[.dns.servers[] | has("address")] | any' <<<"${singbox_sub}")
 sub_has_legacy_dns_outbound_rule=$(jq -r '[.dns.rules[] | has("outbound")] | any' <<<"${singbox_sub}")
 sub_route_domain_resolver=$(jq -r '.route.default_domain_resolver' <<<"${singbox_sub}")
 sub_urltest_url=$(jq -r '.outbounds[] | select(.type=="urltest") | .url' <<<"${singbox_sub}")
+sub_wechat_dns_server=$(jq -r '.dns.rules[] | select(.domain_suffix? and (.domain_suffix | index("weixin.com"))) | .server' <<<"${singbox_sub}")
+sub_wechat_route_outbound=$(jq -r '.route.rules[] | select(.domain_suffix? and (.domain_suffix | index("weixin.com"))) | .outbound' <<<"${singbox_sub}")
+sub_quic_rule_action=$(jq -r '.route.rules[] | select(.network=="udp" and .port==[443]) | .action' <<<"${singbox_sub}")
 
 assert_equal "Sing-box fakeip DNS type is fakeip" "fakeip" "${sub_fakeip_dns_type}"
 assert_equal "Sing-box fakeip inet4_range is 198.18.0.0/15" "198.18.0.0/15" "${sub_fakeip_inet4}"
 assert_equal "Sing-box remote DNS type is https" "https" "${sub_remote_dns_type}"
-assert_equal "Sing-box local DNS type is local" "local" "${sub_local_dns_type}"
+assert_equal "Sing-box local DNS type is udp" "udp" "${sub_local_dns_type}"
+assert_equal "Sing-box local DNS server is 223.5.5.5" "223.5.5.5" "${sub_local_dns_server}"
+sub_local_has_detour=$(jq -r '.dns.servers[] | select(.tag=="local") | has("detour")' <<<"${singbox_sub}")
+assert_equal "Sing-box local DNS server has no redundant detour" "false" "${sub_local_has_detour}"
 assert_equal "Sing-box DNS final server is remote" "remote" "${sub_dns_final}"
+assert_equal "Sing-box DNS rules route WeChat domains to local" "local" "${sub_wechat_dns_server}"
+assert_equal "Sing-box route rules route WeChat domains to direct" "direct" "${sub_wechat_route_outbound}"
+assert_equal "Sing-box route rules reject UDP 443 QUIC" "reject" "${sub_quic_rule_action}"
 assert_equal "Sing-box DNS servers do not use legacy address field" "false" "${sub_has_legacy_dns_address}"
 assert_equal "Sing-box DNS rules do not use legacy outbound rule" "false" "${sub_has_legacy_dns_outbound_rule}"
 assert_equal "Sing-box route sets default_domain_resolver" "local" "${sub_route_domain_resolver}"
@@ -191,7 +201,7 @@ sub_geosite_client=$(jq -r '.route.rule_set[] | select(.tag=="geosite-cn") | .ht
 sub_geoip_client=$(jq -r '.route.rule_set[] | select(.tag=="geoip-cn") | .http_client' <<<"${singbox_sub}")
 sub_has_legacy_download_detour=$(jq -r '[.route.rule_set[] | has("download_detour")] | any' <<<"${singbox_sub}")
 sub_dns_rule_has_action=$(jq -r '.dns.rules[0].action' <<<"${singbox_sub}")
-sub_route_rule_has_action=$(jq -r '.route.rules[2].action' <<<"${singbox_sub}")
+sub_route_rule_has_action=$(jq -r '.route.rules[] | select(.clash_mode=="Direct") | .action' <<<"${singbox_sub}")
 
 assert_equal "Sing-box http_clients proxy-client detour is PROXY" "PROXY" "${sub_http_client_detour}"
 assert_equal "Sing-box route sets default_http_client" "proxy-client" "${sub_route_default_http_client}"

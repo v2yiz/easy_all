@@ -210,13 +210,13 @@ build_singbox_subscription_json() {
           {
             tag: "fakeip",
             type: "fakeip",
-            inet4_range: "198.18.0.0/15",
-            inet6_range: "fc00::/18"
+            inet4_range: "198.18.0.0/15"
           },
           {
             tag: "local",
-            type: "local",
-            detour: "direct"
+            type: "udp",
+            server: "223.5.5.5",
+            server_port: 53
           },
           {
             tag: "remote",
@@ -228,6 +228,22 @@ build_singbox_subscription_json() {
         rules: [
           { clash_mode: "Direct", action: "route", server: "local" },
           { clash_mode: "Global", action: "route", server: "fakeip" },
+          {
+            domain_suffix: [
+              "wechat.com",
+              "weixin.com",
+              "qq.com",
+              "qpic.cn",
+              "qlogo.cn",
+              "tencent.com",
+              "servicewechat.com",
+              "tenpay.com",
+              "wechatpay.cn",
+              "gtimg.com"
+            ],
+            action: "route",
+            server: "local"
+          },
           { rule_set: "geosite-cn", action: "route", server: "local" },
           { query_type: ["A", "AAAA"], action: "route", server: "fakeip" }
         ],
@@ -315,8 +331,25 @@ build_singbox_subscription_json() {
         rules: [
           { action: "sniff" },
           { protocol: "dns", action: "hijack-dns" },
+          { network: "udp", port: [443], action: "reject" },
           { clash_mode: "Direct", action: "route", outbound: "direct" },
           { clash_mode: "Global", action: "route", outbound: "PROXY" },
+          {
+            domain_suffix: [
+              "wechat.com",
+              "weixin.com",
+              "qq.com",
+              "qpic.cn",
+              "qlogo.cn",
+              "tencent.com",
+              "servicewechat.com",
+              "tenpay.com",
+              "wechatpay.cn",
+              "gtimg.com"
+            ],
+            action: "route",
+            outbound: "direct"
+          },
           { ip_is_private: true, action: "route", outbound: "direct" },
           { rule_set: ["geoip-cn", "geosite-cn"], action: "route", outbound: "direct" }
         ],
