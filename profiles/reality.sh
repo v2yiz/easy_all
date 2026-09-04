@@ -2127,6 +2127,7 @@ run_reality_install_pipeline() {
     show_subscription
     show_bbrv3_status
     success "easy_all ${PROTOCOL} 安装完成"
+    prompt_bbrv3_reboot
 }
 
 install_all() {

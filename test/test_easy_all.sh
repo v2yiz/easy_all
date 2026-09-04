@@ -386,6 +386,8 @@ test_mihomo_template() {
         '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' "${first_rule}"
     assert_contains "Mihomo template uses official Loyalsoldier clash-rules release" \
         "raw.githubusercontent.com/Loyalsoldier/clash-rules/release" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo template rule-providers route through PROXY" \
+        "proxy: PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \
         "name: 延迟测试" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits latency test URLs" \
@@ -1016,10 +1018,11 @@ test_install_pipeline_order() {
         install_quota_timer() { printf 'quota-timer\n'; }
         show_subscription() { printf 'show\n'; }
         show_bbrv3_status() { printf 'bbrv3\n'; }
+        prompt_bbrv3_reboot() { printf 'reboot-prompt\n'; }
         run_reality_install_pipeline "reality" 1
     )
     assert_equal "Reality install pipeline follows input, common runtime, branch, persistence order" \
-        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-refresh\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3' \
+        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-refresh\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3\nreboot-prompt' \
         "${calls}"
 }
 

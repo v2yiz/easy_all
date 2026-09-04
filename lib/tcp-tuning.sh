@@ -262,3 +262,36 @@ EOF
         warn "XanMod BBRv3 内核已安装；当前仍为 $(uname -r)，请在安装结束后执行 sudo reboot"
     fi
 }
+
+prompt_bbrv3_reboot() {
+    local choice
+    if bbrv3_running_kernel_supported; then
+        return 0
+    fi
+    printf '\n'
+    printf '%s\n' "========================================================================"
+    printf '%s\n' "⚠️  【重要提示：请立即重启服务器以激活 BBRv3】"
+    printf '%s\n' "XanMod LTS 内核已安装完成，当前运行仍为原版内核 ($(uname -r))。"
+    printf '%s\n' "系统必须重启后才会真正载入 XanMod BBRv3 内核！"
+    printf '%s\n' "请保存好上方的节点与订阅链接后，立即重启服务器。"
+    printf '%s\n' "========================================================================"
+    if [[ "${EASY_ALL_NO_REBOOT:-0}" == "1" ]]; then
+        return 0
+    fi
+    if [[ -t 0 ]]; then
+        printf '是否现在立即重启服务器以生效 BBRv3？[y/N]: '
+        read -r choice || choice="n"
+        case "${choice}" in
+            [yY]|[yY][eE][sS])
+                info "正在重启服务器..."
+                ${REBOOT_COMMAND:-reboot}
+                ;;
+            *)
+                warn "已跳过自动重启，请在保存配置后手动执行: sudo reboot"
+                ;;
+        esac
+    else
+        warn "检测到非交互式环境，请在保存配置后手动执行: sudo reboot"
+    fi
+}
+

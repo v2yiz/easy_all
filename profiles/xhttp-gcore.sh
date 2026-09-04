@@ -1877,6 +1877,7 @@ install_all() {
     show_subscription
     show_bbrv3_status
     success "easy_all Gcore CDN XHTTP 安装完成"
+    prompt_bbrv3_reboot
 }
 
 migrate_from_singbox_gcore() {

@@ -866,7 +866,43 @@ uninstall_all() {
 }
 
 install_all() {
-    [[ -t 0 ]] || die "安装必须在交互终端中执行"; CDN_PROVIDER=cloudflare; require_root; require_systemd; [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装"; check_platform; check_install_conflicts; snapshot_fresh_install
-    install_packages; ensure_ssh_boot_service; configure_bbr_tcp; configure_daily_reboot; collect_install_inputs; cloudflare_prepare_origin; configure_ufw; write_bootstrap_nginx_config; cloudflare_issue_origin_certificate 0; download_xray; write_xray_config; install_xray_service; write_nginx_config; validate_protocol_runtime; cloudflare_configure_cdn; cloudflare_validate_cdn_health; cloudflare_finalize_certificate_rotation; persist_globalping_token; refresh_globalping_cache || warn "首次 Globalping 测量失败，暂回退 CDN 域名"; subscription_enabled && { write_subscriptions; validate_subscription_runtime; }; save_state; register_easy_all_command; install_quota_timer; install_globalping_refresh_timer; INSTALL_ROLLBACK_ON_EXIT=0; cloudflare_clear_api_token; show_subscription; success "easy_all Cloudflare CDN XHTTP 安装完成"
+    [[ -t 0 ]] || die "安装必须在交互终端中执行"
+    CDN_PROVIDER=cloudflare
+    require_root
+    require_systemd
+    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装"
+    check_platform
+    check_install_conflicts
+    snapshot_fresh_install
+    install_packages
+    ensure_ssh_boot_service
+    configure_bbr_tcp
+    configure_daily_reboot
+    collect_install_inputs
+    cloudflare_prepare_origin
+    configure_ufw
+    write_bootstrap_nginx_config
+    cloudflare_issue_origin_certificate 0
+    download_xray
+    write_xray_config
+    install_xray_service
+    write_nginx_config
+    validate_protocol_runtime
+    cloudflare_configure_cdn
+    cloudflare_validate_cdn_health
+    cloudflare_finalize_certificate_rotation
+    persist_globalping_token
+    refresh_globalping_cache || warn "首次 Globalping 测量失败，暂回退 CDN 域名"
+    subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
+    save_state
+    register_easy_all_command
+    install_quota_timer
+    install_globalping_refresh_timer
+    INSTALL_ROLLBACK_ON_EXIT=0
+    cloudflare_clear_api_token
+    show_subscription
+    success "easy_all Cloudflare CDN XHTTP 安装完成"
+    show_bbrv3_status
+    prompt_bbrv3_reboot
 }
 usage() { printf 'Cloudflare Profile 只能由 easy_all 统一入口调用。\n'; }

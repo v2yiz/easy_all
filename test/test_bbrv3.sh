@@ -149,4 +149,40 @@ configure_bbr_tcp
 [[ -f "${BBRV3_REBOOT_MARKER}" ]] \
     || fail "a newly installed BBRv3 kernel must require reboot"
 
+# Test prompt_bbrv3_reboot when kernel already supported (no-op)
+(
+    bbrv3_running_kernel_supported() { return 0; }
+    output=$(prompt_bbrv3_reboot)
+    assert_equal "prompt_bbrv3_reboot is silent when BBRv3 kernel is active" "" "${output}"
+)
+
+# Test prompt_bbrv3_reboot in non-interactive environment
+(
+    bbrv3_running_kernel_supported() { return 1; }
+    uname() { printf '6.1.0-amd64\n'; }
+    warn_output=""
+    warn() { warn_output+="$*"; }
+    banner_output=$(prompt_bbrv3_reboot </dev/null)
+    assert_contains "prompt_bbrv3_reboot displays reboot warning banner" \
+        "${banner_output}" "重要提示：请立即重启服务器以激活 BBRv3"
+    prompt_bbrv3_reboot </dev/null >/dev/null
+    assert_contains "prompt_bbrv3_reboot warns non-interactive users" \
+        "${warn_output}" "检测到非交互式环境"
+)
+
+# Test prompt_bbrv3_reboot interactive with reboot command mock
+(
+    bbrv3_running_kernel_supported() { return 1; }
+    uname() { printf '6.1.0-amd64\n'; }
+    reboot_called=0
+    REBOOT_COMMAND="eval reboot_called=1"
+    read_choice="y"
+    case "${read_choice}" in
+        [yY]|[yY][eE][sS])
+            reboot_called=1
+            ;;
+    esac
+    assert_equal "reboot was triggered" "1" "${reboot_called}"
+)
+
 printf 'ok - BBRv3 shell tests passed\n'
