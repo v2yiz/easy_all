@@ -384,8 +384,8 @@ test_mihomo_template() {
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo globally rejects UDP 443 before domain rules" \
         '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' "${first_rule}"
-    assert_contains "Mihomo template uses the XFLASH rule-provider mirror" \
-        "edgeone.gh-proxy.org" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo template uses official Loyalsoldier clash-rules release" \
+        "raw.githubusercontent.com/Loyalsoldier/clash-rules/release" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \
         "name: 延迟测试" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits latency test URLs" \
