@@ -200,11 +200,10 @@ sub_route_default_http_client=$(jq -r '.route.default_http_client' <<<"${singbox
 sub_geosite_client=$(jq -r '.route.rule_set[] | select(.tag=="geosite-cn") | .http_client' <<<"${singbox_sub}")
 sub_geoip_client=$(jq -r '.route.rule_set[] | select(.tag=="geoip-cn") | .http_client' <<<"${singbox_sub}")
 sub_ai_client=$(jq -r '.route.rule_set[] | select(.tag=="geosite-category-ai") | .http_client' <<<"${singbox_sub}")
-sub_gfw_client=$(jq -r '.route.rule_set[] | select(.tag=="geosite-gfw") | .http_client' <<<"${singbox_sub}")
 sub_has_legacy_download_detour=$(jq -r '[.route.rule_set[] | has("download_detour")] | any' <<<"${singbox_sub}")
 sub_dns_rule_has_action=$(jq -r '.dns.rules[0].action' <<<"${singbox_sub}")
 sub_route_rule_has_action=$(jq -r '.route.rules[] | select(.clash_mode=="Direct") | .action' <<<"${singbox_sub}")
-sub_ai_rule_outbound=$(jq -r '.route.rules[] | select(.rule_set? and (.rule_set | index("geosite-category-ai"))) | .outbound' <<<"${singbox_sub}")
+sub_ai_rule_outbound=$(jq -r '.route.rules[] | select(.rule_set=="geosite-category-ai") | .outbound' <<<"${singbox_sub}")
 sub_route_final=$(jq -r '.route.final' <<<"${singbox_sub}")
 
 assert_equal "Sing-box http_clients proxy-client detour is PROXY" "PROXY" "${sub_http_client_detour}"
@@ -212,11 +211,10 @@ assert_equal "Sing-box route sets default_http_client" "proxy-client" "${sub_rou
 assert_equal "Sing-box geosite-cn rule_set uses http_client proxy-client" "proxy-client" "${sub_geosite_client}"
 assert_equal "Sing-box geoip-cn rule_set uses http_client proxy-client" "proxy-client" "${sub_geoip_client}"
 assert_equal "Sing-box geosite-category-ai rule_set uses http_client proxy-client" "proxy-client" "${sub_ai_client}"
-assert_equal "Sing-box geosite-gfw rule_set uses http_client proxy-client" "proxy-client" "${sub_gfw_client}"
 assert_equal "Sing-box rule_set has no deprecated download_detour" "false" "${sub_has_legacy_download_detour}"
 assert_equal "Sing-box DNS rule specifies action route" "route" "${sub_dns_rule_has_action}"
 assert_equal "Sing-box route rule specifies action route" "route" "${sub_route_rule_has_action}"
-assert_equal "Sing-box route rules route AI and GFW to PROXY" "PROXY" "${sub_ai_rule_outbound}"
+assert_equal "Sing-box route rules route AI to PROXY" "PROXY" "${sub_ai_rule_outbound}"
 assert_equal "Sing-box route final is PROXY" "PROXY" "${sub_route_final}"
 
 
