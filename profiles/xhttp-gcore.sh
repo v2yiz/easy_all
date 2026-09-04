@@ -1520,7 +1520,11 @@ xhttp_render_xray_config() {
 }
 
 write_nginx_config() {
-    local keepalive_referer
+    local keepalive_referer http2_directive="" listen_h2="http2 "
+    if nginx_supports_http2_directive; then
+        http2_directive=$'\n    http2 on;'
+        listen_h2=""
+    fi
     keepalive_referer=$(xhttp_server_keepalive_referer)
     gcore_prepare_origin_validation_material
     write_web_root
@@ -1547,8 +1551,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2 backlog=4096 so_keepalive=15s:5s:3;
-    listen [::]:443 ssl http2 backlog=4096 so_keepalive=15s:5s:3;
+    listen 443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;
+    listen [::]:443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;${http2_directive}
     server_name ${GCORE_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};

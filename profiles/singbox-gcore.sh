@@ -417,6 +417,12 @@ singbox_render_config() {
 }
 
 write_nginx_config() {
+    local temp http2_directive="" listen_h2="http2 "
+    if nginx_supports_http2_directive; then
+        http2_directive=$'\n    http2 on;'
+        listen_h2=""
+    fi
+    temp="${RUNTIME_TMP}/nginx.conf"
     gcore_prepare_origin_validation_material
     write_web_root
     {
@@ -442,8 +448,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2 backlog=4096 so_keepalive=15s:5s:3;
-    listen [::]:443 ssl http2 backlog=4096 so_keepalive=15s:5s:3;
+    listen 443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;
+    listen [::]:443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;${http2_directive}
     server_name ${GCORE_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -505,51 +511,55 @@ EOF
 }
 
 save_state() {
-    install -d -m 0700 "${STATE_DIR}"
+    local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    local state_dir="$(dirname "${target}")"
+    install -d -m 0700 "${state_dir}"
     local temp
-    temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX")
+    temp=$(mktemp "${state_dir}/state.env.XXXXXX")
     cleanup_files+=("${temp}")
     {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "singbox-ws"
         printf 'BACKEND=%q\n' "singbox"
         printf 'CDN_PROVIDER=%q\n' "gcore"
-        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY}"
-        printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME}"
-        printf 'VLESS_UUID=%q\n' "${VLESS_UUID}"
-        printf 'TROJAN_PASSWORD=%q\n' "${TROJAN_PASSWORD}"
-        printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN}"
-        printf 'SUBSCRIPTION_DOMAIN=%q\n' "$(subscription_link_domain)"
-        printf 'TROJAN_PATH=%q\n' "${TROJAN_PATH}"
-        printf 'WEBSOCKET_PATH=%q\n' "${WEBSOCKET_PATH}"
-        printf 'GCORE_ORIGIN_DOMAIN=%q\n' "${GCORE_ORIGIN_DOMAIN}"
-        printf 'GCORE_DNS_ZONE=%q\n' "${GCORE_DNS_ZONE}"
-        printf 'GCORE_SUBSCRIPTION_DNS_ZONE=%q\n' "${GCORE_SUBSCRIPTION_DNS_ZONE}"
-        printf 'GCORE_ORIGIN_GROUP_ID=%q\n' "${GCORE_ORIGIN_GROUP_ID}"
-        printf 'GCORE_CDN_RESOURCE_ID=%q\n' "${GCORE_CDN_RESOURCE_ID}"
-        printf 'GCORE_SSL_CERT_ID=%q\n' "${GCORE_SSL_CERT_ID}"
-        printf 'GCORE_ORIGIN_CA_ID=%q\n' "${GCORE_ORIGIN_CA_ID}"
-        printf 'GCORE_ORIGIN_CLIENT_CERT_ID=%q\n' "${GCORE_ORIGIN_CLIENT_CERT_ID}"
-        printf 'GCORE_ORIGIN_ISSUER_SHA256=%q\n' "${GCORE_ORIGIN_ISSUER_SHA256}"
-        printf 'GCORE_CDN_TARGET=%q\n' "${GCORE_CDN_TARGET}"
+        printf 'CDN_CLIENT_IP_FAMILY=%q\n' "${CDN_CLIENT_IP_FAMILY:-ipv6-prefer}"
+        printf 'XHTTP_NODE_NAME=%q\n' "${XHTTP_NODE_NAME:-}"
+        printf 'VLESS_UUID=%q\n' "${VLESS_UUID:-}"
+        printf 'TROJAN_PASSWORD=%q\n' "${TROJAN_PASSWORD:-}"
+        printf 'VLESS_CDN_DOMAIN=%q\n' "${VLESS_CDN_DOMAIN:-}"
+        printf 'SUBSCRIPTION_DOMAIN=%q\n' "$(subscription_link_domain 2>/dev/null || true)"
+        printf 'TROJAN_PATH=%q\n' "${TROJAN_PATH:-}"
+        printf 'WEBSOCKET_PATH=%q\n' "${WEBSOCKET_PATH:-}"
+        printf 'GCORE_ORIGIN_DOMAIN=%q\n' "${GCORE_ORIGIN_DOMAIN:-}"
+        printf 'GCORE_DNS_ZONE=%q\n' "${GCORE_DNS_ZONE:-}"
+        printf 'GCORE_SUBSCRIPTION_DNS_ZONE=%q\n' "${GCORE_SUBSCRIPTION_DNS_ZONE:-}"
+        printf 'GCORE_ORIGIN_GROUP_ID=%q\n' "${GCORE_ORIGIN_GROUP_ID:-}"
+        printf 'GCORE_CDN_RESOURCE_ID=%q\n' "${GCORE_CDN_RESOURCE_ID:-}"
+        printf 'GCORE_SSL_CERT_ID=%q\n' "${GCORE_SSL_CERT_ID:-}"
+        printf 'GCORE_ORIGIN_CA_ID=%q\n' "${GCORE_ORIGIN_CA_ID:-}"
+        printf 'GCORE_ORIGIN_CLIENT_CERT_ID=%q\n' "${GCORE_ORIGIN_CLIENT_CERT_ID:-}"
+        printf 'GCORE_ORIGIN_ISSUER_SHA256=%q\n' "${GCORE_ORIGIN_ISSUER_SHA256:-}"
+        printf 'GCORE_CDN_TARGET=%q\n' "${GCORE_CDN_TARGET:-}"
         printf 'VPS_PUBLIC_IPV4=%q\n' "${VPS_PUBLIC_IPV4:-}"
         printf 'GCORE_ORIGIN_A_OWNED=%q\n' "${GCORE_ORIGIN_A_OWNED:-0}"
         printf 'GCORE_CDN_CNAME_OWNED=%q\n' "${GCORE_CDN_CNAME_OWNED:-0}"
         printf 'GCORE_SUBSCRIPTION_CNAME_OWNED=%q\n' "${GCORE_SUBSCRIPTION_CNAME_OWNED:-0}"
-        printf 'SINGBOX_TROJAN_LOOPBACK_PORT=%q\n' "${SINGBOX_TROJAN_LOOPBACK_PORT}"
-        printf 'SINGBOX_VLESS_LOOPBACK_PORT=%q\n' "${SINGBOX_VLESS_LOOPBACK_PORT}"
+        printf 'SINGBOX_TROJAN_LOOPBACK_PORT=%q\n' "${SINGBOX_TROJAN_LOOPBACK_PORT:-${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}}"
+        printf 'SINGBOX_VLESS_LOOPBACK_PORT=%q\n' "${SINGBOX_VLESS_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_LOOPBACK_PORT}}"
         printf 'ORIGIN_HEADER_SECRET=%q\n' "${ORIGIN_HEADER_SECRET:-}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
-        printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME}"
+        printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-EASY_ALL}"
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-deploy}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
     } >"${temp}"
-    install -m 0600 "${temp}" "${STATE_FILE}"
+    local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    install -m 0600 "${temp}" "${target}"
 }
 
 collect_installed_state() {
-    [[ -f "${STATE_FILE}" ]] || die "easy_all Gcore Sing-box 尚未安装"
+    local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    [[ -f "${target}" ]] || die "easy_all Gcore Sing-box 尚未安装"
     load_state
 }
 
@@ -724,6 +734,9 @@ apply_easy_all() {
         write_subscriptions
         validate_subscription_runtime
     fi
+    save_state
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    show_subscription
     success "easy_all Gcore Sing-box 本机配置与订阅已应用；未修改 Gcore 资源"
 }
 
@@ -771,6 +784,7 @@ update_subscription() {
         save_state
         gcore_clear_api_token
     fi
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
     success "Nginx 订阅已刷新"
 }
@@ -790,7 +804,10 @@ apply_cloud_resources() {
         write_subscriptions
         validate_subscription_runtime
     fi
+    save_state
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     gcore_clear_api_token
+    show_subscription
     success "easy_all Gcore CDN Sing-box 本机配置、Managed DNS、CDN 与证书已应用"
 }
 

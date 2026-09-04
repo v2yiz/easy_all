@@ -64,7 +64,10 @@ install() {
         esac
     done
     local target="${args[${#args[@]}-1]}"
-    if [[ "${target}" == "/etc/nginx/conf.d/easy_all.conf" ]]; then
+    if [[ "${target}" == /etc/easy_all/* || "${target}" == "/etc/easy_all" ]]; then
+        target="${TMP_DIR}/state${target#/etc/easy_all}"
+        args[${#args[@]}-1]="${target}"
+    elif [[ "${target}" == "/etc/nginx/conf.d/easy_all.conf" ]]; then
         target="${TMP_DIR}/nginx.conf"
         args[${#args[@]}-1]="${target}"
     elif [[ "${target}" == /var/www/easy_all/* || "${target}" == "/var/www/easy_all" ]]; then
@@ -256,4 +259,16 @@ assert_contains "switch-backend rejects non-gcore mode" \
     "$(env EASY_ALL_STATE_FILE_OVERRIDE="${TEST_STATE_FILE}" "${ROOT_DIR}/easy_all" switch-backend 2>&1 || true)" \
     "switch-backend 仅适用于 Gcore 模式"
 
+# 12. Test apply_easy_all resets UPDATE_SUB_ROLLBACK_ON_EXIT
+require_root() { :; }
+validate_gcore_origin_issuer_synced() { :; }
+configure_bbr_tcp() { :; }
+configure_ufw() { :; }
+validate_subscription_runtime() { :; }
+systemctl() { :; }
+save_state
+apply_easy_all
+assert_equal "apply_easy_all leaves UPDATE_SUB_ROLLBACK_ON_EXIT=0" "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
+
 printf 'ok - singbox gcore profile tests passed\n'
+

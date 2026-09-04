@@ -122,6 +122,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+nginx_supports_http2_directive() {
+    command -v nginx >/dev/null 2>&1 || return 1
+    local ver major minor patch
+    ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
+    [[ -n "${ver}" ]] || return 1
+    IFS=. read -r major minor patch <<<"${ver}"
+    patch=${patch:-0}
+    if (( major > 1 || (major == 1 && minor > 25) || (major == 1 && minor == 25 && patch >= 1) )); then
+        return 0
+    fi
+    return 1
+}
+
 validate_xhttp_path() {
     [[ ${#1} -ge 9 && ${#1} -le 96 && "$1" =~ ^/[A-Za-z0-9._~-]+$ ]]
 }
@@ -326,7 +339,11 @@ xhttp_client_path() {
 }
 
 write_nginx_config() {
-    local keepalive_referer
+    local keepalive_referer http2_directive="" listen_h2="http2 "
+    if nginx_supports_http2_directive; then
+        http2_directive=$'\n    http2 on;'
+        listen_h2=""
+    fi
     keepalive_referer=$(xhttp_server_keepalive_referer)
     install -d -m 0755 "${WEB_ROOT}"
     {
@@ -340,8 +357,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2 backlog=4096;
-    listen [::]:443 ssl http2 backlog=4096;
+    listen 443 ssl ${listen_h2}backlog=4096;
+    listen [::]:443 ssl ${listen_h2}backlog=4096;${http2_directive}
     server_name ${XHTTP_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -715,8 +732,13 @@ rebuild_traffic_runtime() {
 
 snapshot_subscription_update() {
     UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
-    install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
-    install -m 0600 "${XRAY_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/xray-config.json"
+    [[ -f "${STATE_FILE}" ]] && install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
+    if [[ -n "${SINGBOX_CONFIG:-}" && -f "${SINGBOX_CONFIG}" ]]; then
+        install -m 0600 "${SINGBOX_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/singbox-config.json"
+    fi
+    if [[ -n "${XRAY_CONFIG:-}" && -f "${XRAY_CONFIG}" ]]; then
+        install -m 0600 "${XRAY_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/xray-config.json"
+    fi
     if [[ -f "${NGINX_CONFIG}" ]]; then
         install -m 0600 "${NGINX_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/nginx.conf"
     else
@@ -739,9 +761,14 @@ rollback_subscription_update() {
     warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
     [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
         && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
-    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" ]]; then
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/singbox-config.json" && -n "${SINGBOX_CONFIG:-}" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/singbox-config.json" "${SINGBOX_CONFIG}"
+        systemctl restart "${SINGBOX_SERVICE:-easy_all-singbox.service}" >/dev/null 2>&1 \
+            || warn "恢复订阅更新前 Sing-box 配置失败"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" && -n "${XRAY_CONFIG:-}" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" "${XRAY_CONFIG}"
-        systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 \
+        systemctl restart "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 \
             || warn "恢复订阅更新前 Xray 配置失败"
     fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" ]]; then
