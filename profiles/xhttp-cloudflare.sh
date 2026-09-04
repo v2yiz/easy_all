@@ -411,7 +411,7 @@ cloudflare_configure_rules() {
     strict=$(cloudflare_managed_ruleset "easy_all xhttp strict ${host}" "http_config_settings")
     while IFS= read -r host; do
         ref=$(cloudflare_ref "strict:${host}")
-        cloudflare_upsert_rule "${strict}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" '{ref:$ref,description:"easy_all xhttp strict origin TLS",expression:("http.host eq \""+$host+"\""),action:"set_config",action_parameters:{ssl:"strict",security_level:"essentially_off",browser_integrity_check:false}}')"
+        cloudflare_upsert_rule "${strict}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" '{ref:$ref,description:"easy_all xhttp strict origin TLS",expression:("http.host eq \""+$host+"\""),action:"set_config",action_parameters:{ssl:"strict",security_level:"essentially_off",bic:false}}')"
     done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
     CLOUDFLARE_HEADER_RULESET_ID=${transform}; CLOUDFLARE_STRICT_RULESET_ID=${strict}
 }

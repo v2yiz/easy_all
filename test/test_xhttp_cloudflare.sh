@@ -544,7 +544,7 @@ EOF
         'X-Easy-All-Origin-Key'
     assert_contains "strict rule enforces strict TLS" "$(<"${rule_calls}")" '"ssl":"strict"'
     assert_contains "strict rule disables security challenge" "$(<"${rule_calls}")" '"security_level":"essentially_off"'
-    assert_contains "strict rule disables browser integrity check" "$(<"${rule_calls}")" '"browser_integrity_check":false'
+    assert_contains "strict rule disables browser integrity check" "$(<"${rule_calls}")" '"bic":false'
 
     # --purge-cloud must remove every easy_all-owned Cloudflare resource while
     # identifying rules by stable ref and DNS records by their managed comment.
