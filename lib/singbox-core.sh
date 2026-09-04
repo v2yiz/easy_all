@@ -93,6 +93,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+WorkingDirectory=${SINGBOX_DIR}
 ExecStart=${SINGBOX_BIN} run -c ${SINGBOX_CONFIG}
 Restart=on-failure
 RestartSec=5s

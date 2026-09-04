@@ -106,7 +106,7 @@ singbox_auto_group_name() {
 
 build_trojan_websocket_link() {
     local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-$(singbox_trojan_node_name)}
-    printf 'trojan://%s@%s:443?security=tls&type=ws&sni=%s&host=%s&path=%s#%s' \
+    printf 'trojan://%s@%s:443?security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s#%s' \
         "$(uri_encode "${TROJAN_PASSWORD}")" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
         "$(uri_encode "${TROJAN_PATH}")" "$(uri_encode "${node_name}")"
 }
@@ -206,6 +206,7 @@ build_singbox_subscription_json() {
     {
       log: { level: "warn" },
       dns: {
+        reverse_mapping: true,
         servers: [
           {
             tag: "fakeip",
@@ -250,6 +251,12 @@ build_singbox_subscription_json() {
         final: "local",
         strategy: "prefer_ipv4"
       },
+      experimental: {
+        cache_file: {
+          enabled: true,
+          store_fakeip: true
+        }
+      },
       http_clients: [
         {
           tag: "proxy-client",
@@ -266,10 +273,11 @@ build_singbox_subscription_json() {
         {
           type: "tun",
           tag: "tun-in",
-          address: ["172.19.0.1/30"],
+          address: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
           auto_route: true,
           strict_route: false,
-          stack: "mixed"
+          stack: "mixed",
+          endpoint_independent_nat: true
         }
       ],
       outbounds: [
@@ -284,7 +292,8 @@ build_singbox_subscription_json() {
           outbounds: [$trojan_name, $vless_name],
           url: "http://cp.cloudflare.com/generate_204",
           interval: "10m",
-          tolerance: 50
+          tolerance: 50,
+          idle_timeout: "30m"
         },
         {
           type: "trojan",
@@ -350,9 +359,9 @@ build_singbox_subscription_json() {
             outbound: "direct"
           },
           { ip_is_private: true, action: "route", outbound: "direct" },
-          { rule_set: ["geosite-category-ai", "geosite-geolocation-!cn"], action: "route", outbound: "PROXY" },
           { rule_set: ["geoip-cn", "geosite-cn"], action: "route", outbound: "direct" },
-          { network: "udp", port: [443], action: "reject" }
+          { network: "udp", port: [443], action: "reject" },
+          { rule_set: ["geosite-category-ai", "geosite-geolocation-!cn"], action: "route", outbound: "PROXY" }
         ],
         rule_set: [
           {
@@ -447,6 +456,10 @@ singbox_render_config() {
             path: $trojan_path,
             max_early_data: 2048,
             early_data_header_name: "Sec-WebSocket-Protocol"
+          },
+          multiplex: {
+            enabled: true,
+            padding: false
           }
         },
         {
@@ -460,6 +473,10 @@ singbox_render_config() {
             path: $vless_path,
             max_early_data: 2048,
             early_data_header_name: "Sec-WebSocket-Protocol"
+          },
+          multiplex: {
+            enabled: true,
+            padding: false
           }
         }
       ],
@@ -468,7 +485,8 @@ singbox_render_config() {
       ],
       route: {
         rules: [
-          { ip_is_private: true, action: "reject" }
+          { ip_is_private: true, action: "reject" },
+          { network: "udp", port: [443], action: "reject" }
         ],
         auto_detect_interface: true
       }
@@ -492,6 +510,11 @@ write_nginx_config() {
     {
         write_subscription_nginx_maps
         cat <<EOF
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
 upstream gcore_trojan_backend {
     server 127.0.0.1:${SINGBOX_TROJAN_LOOPBACK_PORT};
     keepalive 32;
@@ -535,7 +558,7 @@ EOF
     location = ${TROJAN_PATH} {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \$connection_upgrade;
         proxy_set_header Host ${VLESS_CDN_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -544,6 +567,7 @@ EOF
         proxy_connect_timeout 5s;
         proxy_read_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
         proxy_send_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
+        proxy_socket_keepalive on;
         proxy_pass http://gcore_trojan_backend;
         access_log off;
     }
@@ -551,7 +575,7 @@ EOF
     location = ${WEBSOCKET_PATH} {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \$connection_upgrade;
         proxy_set_header Host ${VLESS_CDN_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -560,6 +584,7 @@ EOF
         proxy_connect_timeout 5s;
         proxy_read_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
         proxy_send_timeout ${GCORE_WEBSOCKET_NGINX_TIMEOUT};
+        proxy_socket_keepalive on;
         proxy_pass http://gcore_vless_backend;
         access_log off;
     }
@@ -699,9 +724,11 @@ migrate_from_xhttp_gcore() {
     singbox_render_config
     install_singbox_service
 
-    info "[2/5] 停止并停用 Xray 服务"
+    info "[2/5] 停止并停用 Xray 服务与定时器"
     systemctl stop easy_all-xray.service >/dev/null 2>&1 || true
     systemctl disable easy_all-xray.service >/dev/null 2>&1 || true
+    remove_cdn_traffic_protection_timer >/dev/null 2>&1 || true
+    remove_quota_timer >/dev/null 2>&1 || true
 
     info "[3/5] 更新 Nginx 反代配置并重载"
     write_nginx_config
@@ -895,6 +922,8 @@ uninstall_all() {
     [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1
     purge_gcore_resources_before_uninstall
     remove_managed_acme_cron
+    remove_cdn_traffic_protection_timer >/dev/null 2>&1 || true
+    remove_quota_timer >/dev/null 2>&1 || true
     systemctl disable --now "${SINGBOX_SERVICE}" >/dev/null 2>&1 || true
     systemctl stop "${SINGBOX_SERVICE}" >/dev/null 2>&1 || true
     systemctl disable --now nginx >/dev/null 2>&1 || true

@@ -115,8 +115,14 @@ assert_equal "VLESS inbound transport" "ws" "${vless_ws}"
 # Modern server outbounds (no legacy block outbound)
 server_outbound_types=$(jq -r '[.outbounds[].type] | join(",")' <<<"${singbox_json}")
 server_rule_action=$(jq -r '.route.rules[0].action' <<<"${singbox_json}")
+server_trojan_mux=$(jq -r '.inbounds[] | select(.type=="trojan") | .multiplex.enabled' <<<"${singbox_json}")
+server_vless_mux=$(jq -r '.inbounds[] | select(.type=="vless") | .multiplex.enabled' <<<"${singbox_json}")
+server_quic_reject=$(jq -r '.route.rules[] | select(.network=="udp" and .port==[443]) | .action' <<<"${singbox_json}")
 assert_equal "Server outbounds only contain direct" "direct" "${server_outbound_types}"
 assert_equal "Server private IP rule uses reject action" "reject" "${server_rule_action}"
+assert_equal "Server trojan inbound enables multiplex" "true" "${server_trojan_mux}"
+assert_equal "Server vless inbound enables multiplex" "true" "${server_vless_mux}"
+assert_equal "Server route rejects UDP 443" "reject" "${server_quic_reject}"
 
 # 4. Test link generation
 trojan_link=$(build_trojan_websocket_link "${VLESS_CDN_DOMAIN}")
@@ -124,9 +130,13 @@ vless_link=$(build_vless_websocket_link "${VLESS_CDN_DOMAIN}")
 
 assert_contains "Trojan link scheme and password" "${trojan_link}" "trojan://test-trojan-password@cdn.example.com:443"
 assert_contains "Trojan link type ws" "${trojan_link}" "type=ws"
+assert_contains "Trojan link fp=chrome" "${trojan_link}" "fp=chrome"
+assert_contains "Trojan link alpn" "${trojan_link}" "alpn=http%2F1.1"
 assert_contains "Trojan link path" "${trojan_link}" "path=%2Ftrojan-ws-path"
 assert_contains "VLESS link scheme and uuid" "${vless_link}" "vless://11111111-2222-3333-4444-555555555555@cdn.example.com:443"
 assert_contains "VLESS link type ws" "${vless_link}" "type=ws"
+assert_contains "VLESS link fp=chrome" "${vless_link}" "fp=chrome"
+assert_contains "VLESS link alpn" "${vless_link}" "alpn=http%2F1.1"
 assert_contains "VLESS link path" "${vless_link}" "path=%2Fvless-ws-path"
 
 # 5. Test Mihomo nodes and groups
@@ -193,12 +203,22 @@ sub_has_legacy_block_outbound=$(jq -r '[.outbounds[] | select(.type=="block")] |
 sub_dns_rule_action=$(jq -r '.route.rules[] | select(.protocol=="dns") | .action' <<<"${singbox_sub}")
 sub_has_sniff_rule=$(jq -r '[.route.rules[] | select(.action=="sniff")] | length' <<<"${singbox_sub}")
 sub_tun_address=$(jq -r '.inbounds[] | select(.type=="tun") | .address[0]' <<<"${singbox_sub}")
+sub_tun_inet6=$(jq -r '.inbounds[] | select(.type=="tun") | .address[1]' <<<"${singbox_sub}")
+sub_tun_fullcone=$(jq -r '.inbounds[] | select(.type=="tun") | .endpoint_independent_nat' <<<"${singbox_sub}")
+sub_dns_reverse_mapping=$(jq -r '.dns.reverse_mapping' <<<"${singbox_sub}")
+sub_cache_store_fakeip=$(jq -r '.experimental.cache_file.store_fakeip' <<<"${singbox_sub}")
+sub_urltest_idle_timeout=$(jq -r '.outbounds[] | select(.type=="urltest") | .idle_timeout' <<<"${singbox_sub}")
 
 assert_equal "Sing-box subscription has no dns outbound" "0" "${sub_has_legacy_dns_outbound}"
 assert_equal "Sing-box subscription has no block outbound" "0" "${sub_has_legacy_block_outbound}"
 assert_equal "Sing-box subscription routes DNS via hijack-dns action" "hijack-dns" "${sub_dns_rule_action}"
 assert_equal "Sing-box subscription includes sniff action in route" "1" "${sub_has_sniff_rule}"
 assert_equal "Sing-box subscription tun inbound uses modern address field" "172.19.0.1/30" "${sub_tun_address}"
+assert_equal "Sing-box subscription tun inbound includes IPv6 ULA" "fdfe:dcba:9876::1/126" "${sub_tun_inet6}"
+assert_equal "Sing-box subscription tun inbound enables FullCone NAT" "true" "${sub_tun_fullcone}"
+assert_equal "Sing-box subscription DNS enables reverse_mapping" "true" "${sub_dns_reverse_mapping}"
+assert_equal "Sing-box subscription persists Fake-IP in cache_file" "true" "${sub_cache_store_fakeip}"
+assert_equal "Sing-box subscription urltest specifies idle_timeout" "30m" "${sub_urltest_idle_timeout}"
 
 # Rule-set uses modern 1.14+ http_client instead of deprecated download_detour
 sub_http_client_detour=$(jq -r '.http_clients[] | select(.tag=="proxy-client") | .detour' <<<"${singbox_sub}")
@@ -213,6 +233,11 @@ sub_route_rule_has_action=$(jq -r '.route.rules[] | select(.clash_mode=="Direct"
 sub_ai_rule_outbound=$(jq -r '.route.rules[] | select(.rule_set? and (.rule_set | index("geosite-category-ai"))) | .outbound' <<<"${singbox_sub}")
 sub_route_final=$(jq -r '.route.final' <<<"${singbox_sub}")
 
+# QUIC reject rule must appear BEFORE foreign proxy rule to prevent QUIC-in-TCP stalls
+sub_quic_idx=$(jq '[.route.rules[].action] | index("reject")' <<<"${singbox_sub}")
+sub_foreign_proxy_idx=$(jq '[.route.rules[] | (.rule_set? // []) | if type=="array" then index("geosite-geolocation-!cn") != null else . == "geosite-geolocation-!cn" end] | index(true)' <<<"${singbox_sub}")
+quic_before_proxy=$(jq -n --argjson q "${sub_quic_idx}" --argjson p "${sub_foreign_proxy_idx}" '$q < $p')
+
 assert_equal "Sing-box http_clients proxy-client detour is PROXY" "PROXY" "${sub_http_client_detour}"
 assert_equal "Sing-box route sets default_http_client" "proxy-client" "${sub_route_default_http_client}"
 assert_equal "Sing-box geosite-cn rule_set uses http_client proxy-client" "proxy-client" "${sub_geosite_client}"
@@ -223,6 +248,7 @@ assert_equal "Sing-box rule_set has no deprecated download_detour" "false" "${su
 assert_equal "Sing-box DNS rule specifies action route" "route" "${sub_dns_rule_has_action}"
 assert_equal "Sing-box route rule specifies action route" "route" "${sub_route_rule_has_action}"
 assert_equal "Sing-box route rules route AI to PROXY" "PROXY" "${sub_ai_rule_outbound}"
+assert_equal "Sing-box QUIC reject rule is evaluated before foreign PROXY rule" "true" "${quic_before_proxy}"
 assert_equal "Sing-box route final is PROXY" "PROXY" "${sub_route_final}"
 
 
@@ -235,6 +261,7 @@ nginx() { :; }
 write_nginx_config
 
 nginx_content=$(<"${TMP_DIR}/nginx.conf")
+assert_contains "Nginx defines connection_upgrade map" "${nginx_content}" "map \$http_upgrade \$connection_upgrade {"
 assert_contains "Nginx defines trojan upstream" "${nginx_content}" "upstream gcore_trojan_backend {"
 assert_contains "Nginx defines vless upstream" "${nginx_content}" "upstream gcore_vless_backend {"
 assert_contains "Nginx maps singbox flag" "${nginx_content}" "singbox /_easy_all_subscription/singbox;"
@@ -242,6 +269,8 @@ assert_contains "Nginx maps clash flag" "${nginx_content}" "clash /_easy_all_sub
 assert_contains "Nginx location for singbox" "${nginx_content}" "location = /_easy_all_subscription/singbox {"
 assert_contains "Nginx location for trojan path" "${nginx_content}" "location = /trojan-ws-path {"
 assert_contains "Nginx location for vless path" "${nginx_content}" "location = /vless-ws-path {"
+assert_contains "Nginx sets Connection upgrade mapping" "${nginx_content}" "proxy_set_header Connection \$connection_upgrade;"
+assert_contains "Nginx enables socket keepalive" "${nginx_content}" "proxy_socket_keepalive on;"
 
 # 8. Test subscription writer
 write_subscriptions

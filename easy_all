@@ -318,6 +318,10 @@ dispatch_profile_command() {
     cdn-traffic-sync)
         [[ "${mode}" == "gcore" || "${mode}" == "singbox-gcore" ]] \
             || launcher_die "cdn-traffic-sync 仅适用于 Gcore CDN 模式"
+        if [[ "${mode}" == "singbox-gcore" ]]; then
+            info "当前为 Sing-box 后端模式；全局费用保护定时器已在后端切换时自动停用"
+            return 0
+        fi
         cdn_traffic_protection_sync
         ;;
     renew-cert)
@@ -332,10 +336,20 @@ dispatch_profile_command() {
             || launcher_die "rotate-dynamic-ports 仅适用于 Reality 模式"
         rotate_dynamic_ports
         ;;
-    quota-sync) quota_sync_usage ;;
+    quota-sync)
+        if [[ "${mode}" == "singbox-gcore" ]]; then
+            info "当前为 Sing-box 后端模式；配额统计已停用"
+            return 0
+        fi
+        quota_sync_usage
+        ;;
     quota-status)
         require_root
         collect_installed_state
+        if [[ "${mode}" == "singbox-gcore" ]]; then
+            info "当前为 Sing-box 后端模式；用户流量配额功能适用于 Xray 后端"
+            return 0
+        fi
         show_quota_status
         ;;
     quota-set) quota_set_user "$@" ;;
