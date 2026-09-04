@@ -311,14 +311,14 @@ build_singbox_subscription_json() {
             type: "remote",
             format: "binary",
             url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-            download_detour: "direct"
+            download_detour: "PROXY"
           },
           {
             tag: "geoip-cn",
             type: "remote",
             format: "binary",
             url: "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-            download_detour: "direct"
+            download_detour: "PROXY"
           }
         ],
         auto_detect_interface: true

@@ -173,6 +173,13 @@ assert_equal "Sing-box subscription routes DNS via hijack-dns action" "hijack-dn
 assert_equal "Sing-box subscription includes sniff action in route" "1" "${sub_has_sniff_rule}"
 assert_equal "Sing-box subscription tun inbound uses modern address field" "172.19.0.1/30" "${sub_tun_address}"
 
+# Rule-set download_detour must route through PROXY to bypass GFW IP blocks
+sub_geosite_detour=$(jq -r '.route.rule_set[] | select(.tag=="geosite-cn") | .download_detour' <<<"${singbox_sub}")
+sub_geoip_detour=$(jq -r '.route.rule_set[] | select(.tag=="geoip-cn") | .download_detour' <<<"${singbox_sub}")
+assert_equal "Sing-box geosite-cn rule_set routes download via PROXY" "PROXY" "${sub_geosite_detour}"
+assert_equal "Sing-box geoip-cn rule_set routes download via PROXY" "PROXY" "${sub_geoip_detour}"
+
+
 # 7. Test Nginx config generation
 # Mock Gcore CA, mTLS, and system hooks
 gcore_prepare_origin_validation_material() { :; }
