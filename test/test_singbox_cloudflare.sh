@@ -168,70 +168,64 @@ globalping_cache_valid() { return 0; }
 cloudflare_validate_grpc_edge() { return 0; }
 
 candidates_output=$(cloudflare_singbox_client_candidates)
-assert_equal "Candidates count is exactly 9" "9" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
+assert_equal "Candidates count is exactly 4" "4" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
 
-# Test node links: exactly 18 links (9 WS + 9 gRPC)
+# Test node links: exactly 8 links (4 WS + 4 gRPC)
 node_links=$(build_node_links)
 link_count=$(grep -c '^vless://' <<<"${node_links}")
-assert_equal "Total node links is exactly 18" "18" "${link_count}"
+assert_equal "Total node links is exactly 8" "8" "${link_count}"
 
 ws_link_count=$(grep -c 'type=ws' <<<"${node_links}")
-assert_equal "WS node links count is 9" "9" "${ws_link_count}"
+assert_equal "WS node links count is 4" "4" "${ws_link_count}"
 
 grpc_link_count=$(grep -c 'type=grpc' <<<"${node_links}")
-assert_equal "gRPC node links count is 9" "9" "${grpc_link_count}"
+assert_equal "gRPC node links count is 4" "4" "${grpc_link_count}"
 
 # Verify NO domain fallback link
 assert_not_contains "Node links do not contain domain as server" "${node_links}" "@node.example.com:443"
 
-# Verify carrier nodes in links
-assert_contains "Links contain Telecom01 WS" "${node_links}" "#%E7%94%B5%E4%BF%A101_WS"
-assert_contains "Links contain Telecom01 GRPC" "${node_links}" "#%E7%94%B5%E4%BF%A101_GRPC"
-assert_contains "Links contain Unicom01 WS" "${node_links}" "#%E8%81%94%E9%80%9A01_WS"
-assert_contains "Links contain Unicom01 GRPC" "${node_links}" "#%E8%81%94%E9%80%9A01_GRPC"
-assert_contains "Links contain Mobile01 WS" "${node_links}" "#%E7%A7%BB%E5%8A%A801_WS"
-assert_contains "Links contain Mobile01 GRPC" "${node_links}" "#%E7%A7%BB%E5%8A%A801_GRPC"
+# Verify WS and GRPC node links
+assert_contains "Links contain WS01" "${node_links}" "#WS01"
+assert_contains "Links contain GRPC01" "${node_links}" "#GRPC01"
+assert_contains "Links contain WS04" "${node_links}" "#WS04"
+assert_contains "Links contain GRPC04" "${node_links}" "#GRPC04"
 
-# Test Mihomo nodes: exactly 18 nodes
+# Test Mihomo nodes: exactly 8 nodes
 mihomo_nodes=$(build_mihomo_nodes)
 node_count=$(grep -c '^[[:space:]]*- name:' <<<"${mihomo_nodes}")
-assert_equal "Mihomo nodes count is exactly 18" "18" "${node_count}"
+assert_equal "Mihomo nodes count is exactly 8" "8" "${node_count}"
 
-assert_contains "Mihomo renders 电信01_WS" "${mihomo_nodes}" '"电信01_WS"'
-assert_contains "Mihomo renders 电信01_GRPC" "${mihomo_nodes}" '"电信01_GRPC"'
-assert_contains "Mihomo renders 联通01_WS" "${mihomo_nodes}" '"联通01_WS"'
-assert_contains "Mihomo renders 联通01_GRPC" "${mihomo_nodes}" '"联通01_GRPC"'
-assert_contains "Mihomo renders 移动01_WS" "${mihomo_nodes}" '"移动01_WS"'
-assert_contains "Mihomo renders 移动01_GRPC" "${mihomo_nodes}" '"移动01_GRPC"'
+assert_contains "Mihomo renders WS01" "${mihomo_nodes}" '"WS01"'
+assert_contains "Mihomo renders GRPC01" "${mihomo_nodes}" '"GRPC01"'
+assert_contains "Mihomo renders WS04" "${mihomo_nodes}" '"WS04"'
+assert_contains "Mihomo renders GRPC04" "${mihomo_nodes}" '"GRPC04"'
 assert_not_contains "Mihomo nodes do not contain domain fallback" "${mihomo_nodes}" 'server: "node.example.com"'
 
-# Test Mihomo proxy groups
+# Test Mihomo proxy groups: only AUTO group, no carrier groups
 groups_output=$(build_mihomo_proxy_groups)
 assert_contains "Groups contain AUTO group" "${groups_output}" 'name: "AUTO"'
-assert_contains "Groups contain 电信优选 group" "${groups_output}" 'name: "电信优选"'
-assert_contains "Groups contain 联通优选 group" "${groups_output}" 'name: "联通优选"'
-assert_contains "Groups contain 移动优选 group" "${groups_output}" 'name: "移动优选"'
+assert_not_contains "Groups do not contain 电信优选 group" "${groups_output}" 'name: "电信优选"'
+assert_not_contains "Groups do not contain 联通优选 group" "${groups_output}" 'name: "联通优选"'
+assert_not_contains "Groups do not contain 移动优选 group" "${groups_output}" 'name: "移动优选"'
 assert_contains "Groups test url" "${groups_output}" 'url: https://cp.cloudflare.com/generate_204'
 assert_not_contains "Groups do not contain domain fallback" "${groups_output}" 'DOMAIN'
 
 # Test Mihomo proxy names under PROXY
 names_output=$(build_mihomo_proxy_names)
 assert_contains "Names contain AUTO" "${names_output}" '"AUTO"'
-assert_contains "Names contain 电信优选" "${names_output}" '"电信优选"'
-assert_contains "Names contain 联通优选" "${names_output}" '"联通优选"'
-assert_contains "Names contain 移动优选" "${names_output}" '"移动优选"'
-assert_contains "Names contain 电信01_WS" "${names_output}" '"电信01_WS"'
-assert_contains "Names contain 电信01_GRPC" "${names_output}" '"电信01_GRPC"'
+assert_contains "Names contain WS01" "${names_output}" '"WS01"'
+assert_contains "Names contain GRPC01" "${names_output}" '"GRPC01"'
+assert_not_contains "Names do not contain 电信优选" "${names_output}" '"电信优选"'
 
 # Test Sing-box client subscription JSON
 singbox_sub_json=$(build_singbox_subscription_json)
 sb_outbound_count=$(jq '.outbounds | length' <<<"${singbox_sub_json}")
-# 1 selector (PROXY) + 4 urltests (AUTO, 电信优选, 联通优选, 移动优选) + 18 node outbounds + 1 direct = 24
-assert_equal "Sing-box subscription total outbounds" "24" "${sb_outbound_count}"
+# 1 selector (PROXY) + 1 urltest (AUTO) + 8 node outbounds + 1 direct = 11
+assert_equal "Sing-box subscription total outbounds" "11" "${sb_outbound_count}"
 sb_ws_count=$(jq '[.outbounds[] | select(.type == "vless" and .transport.type == "ws")] | length' <<<"${singbox_sub_json}")
-assert_equal "Sing-box subscription WS outbounds" "9" "${sb_ws_count}"
+assert_equal "Sing-box subscription WS outbounds" "4" "${sb_ws_count}"
 sb_grpc_count=$(jq '[.outbounds[] | select(.type == "vless" and .transport.type == "grpc")] | length' <<<"${singbox_sub_json}")
-assert_equal "Sing-box subscription gRPC outbounds" "9" "${sb_grpc_count}"
+assert_equal "Sing-box subscription gRPC outbounds" "4" "${sb_grpc_count}"
 
 # Test write_subscriptions
 validate_subscription_runtime() { :; }
@@ -249,7 +243,7 @@ mihomo_file_content=$(<"${sub_mihomo}")
 assert_contains "Mihomo file contains WS nodes" "${mihomo_file_content}" 'network: ws'
 assert_contains "Mihomo file contains gRPC nodes" "${mihomo_file_content}" 'network: grpc'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
-assert_contains "Mihomo file contains 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
+assert_not_contains "Mihomo file does not contain 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
 assert_contains "Mihomo file contains geosite:cn in fake-ip-filter" "${mihomo_file_content}" "'geosite:cn'"
 assert_contains "Mihomo file contains 10jqka in fake-ip-filter" "${mihomo_file_content}" "'+.10jqka.com.cn'"
 
@@ -259,7 +253,7 @@ assert_contains "Sing-box subscription has geosite-cn dns rule" "${singbox_file_
 
 base64_decoded=$(openssl base64 -d -A <"${sub_base64}")
 decoded_links=$(grep -c '^vless://' <<<"${base64_decoded}")
-assert_equal "Decoded base64 contains exactly 18 links" "18" "${decoded_links}"
+assert_equal "Decoded base64 contains exactly 8 links" "8" "${decoded_links}"
 
 # 6. Test state save and load
 actual_state_file="${TMP_DIR}/state/state.env"

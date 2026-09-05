@@ -5,7 +5,7 @@
 # This Profile provides a Sing-box backend over Cloudflare CDN, running both
 # VLESS + WebSocket and VLESS + gRPC on local loopback ports behind
 # Nginx with Cloudflare Origin CA and Origin Key protection.
-# Outputs 3-carrier optimized IPs (3 per carrier, total 18 nodes, no domain fallback).
+# Outputs optimized IPs (top 4 IPs, total 8 nodes, no domain fallback).
 
 set -Eeuo pipefail
 umask 077
@@ -471,15 +471,30 @@ build_mihomo_grpc_node() {
         "    grpc-opts:\n      grpc-service-name: \($service|@json)\n"'
 }
 
-# Strictly filter out any fallback lines: only valid carrier IP candidates are yielded.
-# 3 carriers x 3 IPs = 9 IPs (which will produce exactly 18 nodes, no domain fallback).
+# Strictly filter out any fallback lines: select top 4 high-quality unique IPs.
+# 4 IPs x 2 protocols (WS + gRPC) = 8 nodes (no domain fallback).
 cloudflare_singbox_client_candidates() {
-    if declare -F cloudflare_client_candidates >/dev/null 2>&1; then
-        local ip label carrier
+    if cdn_optimization_enabled && globalping_cache_valid; then
+        jq -r '
+          .candidates
+          | group_by(.ip)
+          | map(sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms])[0])
+          | sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms, .ip])
+          | .[0:4]
+          | to_entries[]
+          | [.value.ip, (if (.key + 1) < 10 then "0" + ((.key + 1)|tostring) else ((.key + 1)|tostring) end), (.value.carrier // "anycast")]
+          | @tsv
+        ' "${GLOBALPING_CACHE_FILE}"
+    elif declare -F cloudflare_client_candidates >/dev/null 2>&1; then
+        local ip label carrier count=0
         while IFS=$'\t' read -r ip label carrier; do
             [[ -n "${ip}" ]] || continue
             [[ "${carrier}" == "fallback" ]] && continue
-            printf '%s\t%s\t%s\n' "${ip}" "${label}" "${carrier}"
+            count=$((count + 1))
+            local idx
+            idx=$(printf '%02d' "${count}")
+            printf '%s\t%s\t%s\n' "${ip}" "${idx}" "${carrier}"
+            ((count >= 4)) && break
         done < <(cloudflare_client_candidates)
     fi
 }
@@ -488,9 +503,9 @@ build_node_links() {
     local ip label carrier
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_vless_ws_link "${ip}" "${label}_WS"
+        build_vless_ws_link "${ip}" "WS${label}"
         printf '\n'
-        build_vless_grpc_link "${ip}" "${label}_GRPC"
+        build_vless_grpc_link "${ip}" "GRPC${label}"
         printf '\n'
     done < <(cloudflare_singbox_client_candidates)
 }
@@ -499,29 +514,20 @@ build_mihomo_nodes() {
     local ip label carrier
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_mihomo_ws_node "${ip}" "${label}_WS"
-        build_mihomo_grpc_node "${ip}" "${label}_GRPC"
+        build_mihomo_ws_node "${ip}" "WS${label}"
+        build_mihomo_grpc_node "${ip}" "GRPC${label}"
     done < <(cloudflare_singbox_client_candidates)
 }
 
 build_mihomo_proxy_names() {
     printf '        - "AUTO"\n'
-    local telecom_count=0 unicom_count=0 mobile_count=0
     local ip label carrier
     local -a all_nodes=()
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        all_nodes+=("${label}_WS" "${label}_GRPC")
-        case "${carrier}" in
-            telecom) telecom_count=$((telecom_count + 1)) ;;
-            unicom)  unicom_count=$((unicom_count + 1)) ;;
-            mobile)  mobile_count=$((mobile_count + 1)) ;;
-        esac
+        all_nodes+=("WS${label}" "GRPC${label}")
     done < <(cloudflare_singbox_client_candidates)
 
-    ((telecom_count > 0)) && printf '        - "电信优选"\n'
-    ((unicom_count > 0))  && printf '        - "联通优选"\n'
-    ((mobile_count > 0))  && printf '        - "移动优选"\n'
     local node
     for node in "${all_nodes[@]}"; do
         printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
@@ -529,17 +535,11 @@ build_mihomo_proxy_names() {
 }
 
 build_mihomo_proxy_groups() {
-    local -a all_nodes=() telecom_nodes=() unicom_nodes=() mobile_nodes=()
+    local -a all_nodes=()
     local ip label carrier
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        local n_ws="${label}_WS" n_grpc="${label}_GRPC"
-        all_nodes+=("${n_ws}" "${n_grpc}")
-        case "${carrier}" in
-            telecom) telecom_nodes+=("${n_ws}" "${n_grpc}") ;;
-            unicom)  unicom_nodes+=("${n_ws}" "${n_grpc}") ;;
-            mobile)  mobile_nodes+=("${n_ws}" "${n_grpc}") ;;
-        esac
+        all_nodes+=("WS${label}" "GRPC${label}")
     done < <(cloudflare_singbox_client_candidates)
 
     printf '    - name: "AUTO"\n'
@@ -556,47 +556,18 @@ build_mihomo_proxy_groups() {
       timeout: 3000
       lazy: true
 EOF
-    local c_name
-    for c_name in "电信优选" "联通优选" "移动优选"; do
-        local -a c_nodes=()
-        case "${c_name}" in
-            电信优选) c_nodes=("${telecom_nodes[@]}") ;;
-            联通优选) c_nodes=("${unicom_nodes[@]}") ;;
-            移动优选) c_nodes=("${mobile_nodes[@]}") ;;
-        esac
-        if ((${#c_nodes[@]} > 0)); then
-            printf '    - name: %s\n' "$(jq -Rn --arg value "${c_name}" '$value')"
-            printf '      type: url-test\n'
-            printf '      proxies:\n'
-            for node in "${c_nodes[@]}"; do
-                printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
-            done
-            cat <<EOF
-      url: https://cp.cloudflare.com/generate_204
-      interval: 300
-      tolerance: 50
-      timeout: 3000
-      lazy: true
-EOF
-        fi
-    done
 }
 
 build_singbox_subscription_json() {
     local host=${VLESS_CDN_DOMAIN}
-    local -a all_nodes=() telecom_nodes=() unicom_nodes=() mobile_nodes=()
+    local -a all_nodes=()
     local ip label carrier
     local outbounds_json="[]"
 
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        local n_ws="${label}_WS" n_grpc="${label}_GRPC"
+        local n_ws="WS${label}" n_grpc="GRPC${label}"
         all_nodes+=("${n_ws}" "${n_grpc}")
-        case "${carrier}" in
-            telecom) telecom_nodes+=("${n_ws}" "${n_grpc}") ;;
-            unicom)  unicom_nodes+=("${n_ws}" "${n_grpc}") ;;
-            mobile)  mobile_nodes+=("${n_ws}" "${n_grpc}") ;;
-        esac
         # Add WS outbound
         outbounds_json=$(jq -c \
             --arg tag "${n_ws}" --arg server "${ip}" --arg host "${host}" \
@@ -646,9 +617,6 @@ build_singbox_subscription_json() {
 
     local -a selector_tags=()
     selector_tags+=("AUTO")
-    ((${#telecom_nodes[@]} > 0)) && selector_tags+=("电信优选")
-    ((${#unicom_nodes[@]} > 0))  && selector_tags+=("联通优选")
-    ((${#mobile_nodes[@]} > 0))  && selector_tags+=("移动优选")
     for n in "${all_nodes[@]}"; do
         selector_tags+=("${n}")
     done
@@ -656,9 +624,6 @@ build_singbox_subscription_json() {
     jq -n \
         --argjson selector_tags "$(printf '%s\n' "${selector_tags[@]}" | jq -R . | jq -s .)" \
         --argjson all_nodes "$(printf '%s\n' "${all_nodes[@]}" | jq -R . | jq -s .)" \
-        --argjson telecom_nodes "$(printf '%s\n' "${telecom_nodes[@]}" | jq -R . | jq -s .)" \
-        --argjson unicom_nodes "$(printf '%s\n' "${unicom_nodes[@]}" | jq -R . | jq -s .)" \
-        --argjson mobile_nodes "$(printf '%s\n' "${mobile_nodes[@]}" | jq -R . | jq -s .)" \
         --argjson node_outbounds "${outbounds_json}" '
     {
       log: { level: "warn" },
@@ -718,33 +683,6 @@ build_singbox_subscription_json() {
             idle_timeout: "30m"
           }
         ] +
-        (if ($telecom_nodes | length) > 0 then [{
-          type: "urltest",
-          tag: "电信优选",
-          outbounds: $telecom_nodes,
-          url: "https://cp.cloudflare.com/generate_204",
-          interval: "5m",
-          tolerance: 50,
-          idle_timeout: "30m"
-        }] else [] end) +
-        (if ($unicom_nodes | length) > 0 then [{
-          type: "urltest",
-          tag: "联通优选",
-          outbounds: $unicom_nodes,
-          url: "https://cp.cloudflare.com/generate_204",
-          interval: "5m",
-          tolerance: 50,
-          idle_timeout: "30m"
-        }] else [] end) +
-        (if ($mobile_nodes | length) > 0 then [{
-          type: "urltest",
-          tag: "移动优选",
-          outbounds: $mobile_nodes,
-          url: "https://cp.cloudflare.com/generate_204",
-          interval: "5m",
-          tolerance: 50,
-          idle_timeout: "30m"
-        }] else [] end) +
         $node_outbounds +
         [{ type: "direct", tag: "direct" }]
       ),
@@ -840,7 +778,7 @@ write_subscriptions() {
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS WebSocket + gRPC over Cloudflare CDN（Sing-box 后端，三网精选 18 节点）\n节点链接:\n%s\n\n' "$(build_node_links)"
+    printf '\n协议: VLESS WebSocket + gRPC over Cloudflare CDN（Sing-box 后端，精选 8 节点）\n节点链接:\n%s\n\n' "$(build_node_links)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_nodes
 }
@@ -849,7 +787,7 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: VLESS WS + gRPC（Cloudflare CDN Sing-box 双链路）\n后端: Sing-box (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled (三网独立精选 18 节点，无域名兜底)\n' \
+    printf '协议: VLESS WS + gRPC（Cloudflare CDN Sing-box 双链路）\n后端: Sing-box (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled (精选 8 节点，无域名兜底)\n' \
         "$(singbox_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"
     show_globalping_status
 }
@@ -939,7 +877,7 @@ migrate_from_xhttp_cloudflare() {
     write_nginx_config
     validate_protocol_runtime
 
-    info "[5/6] 刷新三网精选 IP 并生成新格式订阅（18 节点无域名兜底）"
+    info "[5/6] 刷新精选 IP 并生成新格式订阅（8 节点无域名兜底）"
     refresh_cloudflare_cdn_ips
 
     info "[6/6] 保存状态并更新 easy_all 命令注册"
@@ -950,7 +888,7 @@ migrate_from_xhttp_cloudflare() {
     if subscription_enabled; then
         show_subscription
     fi
-    success "已成功就地平滑迁移至 Sing-box（VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点）！"
+    success "已成功就地平滑迁移至 Sing-box（VLESS-WS + VLESS-gRPC 双链路，精选 8 节点）！"
 }
 
 rollback_fresh_install() {

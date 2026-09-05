@@ -10,9 +10,9 @@
 | 2. Cloudflare CDN 精选 IP - XHTTP + WebSocket | VLESS XHTTP stream-up + WebSocket / TLS | Cloudflare + Globalping IPv4 |
 | 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 (Xray 核心) |
 | 4. Gcore CDN 域名 - Sing-box (Trojan + VLESS WS) | Trojan WS / VLESS WS / TLS | Gcore CDN 域名 (Sing-box 核心) |
-| 5. Cloudflare CDN 精选 IP - Sing-box (VLESS-WS + VLESS-gRPC) | VLESS WS + VLESS gRPC / TLS | Cloudflare + Globalping IPv4 (Sing-box 核心，严格 18 节点无域名兜底) |
+| 5. Cloudflare CDN 精选 IP - Sing-box (VLESS-WS + VLESS-gRPC) | VLESS WS + VLESS gRPC / TLS | Cloudflare + Globalping IPv4 (Sing-box 核心，严格 8 节点无域名兜底) |
 
-Cloudflare 提供 XHTTP + WebSocket（Xray 核心）或 VLESS-WS + VLESS-gRPC（Sing-box 核心，三网精选 18 节点）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 提供 XHTTP + WebSocket（Xray 核心）或 VLESS-WS + VLESS-gRPC（Sing-box 核心，精选 8 节点）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray/Sing-box、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -135,7 +135,7 @@ sudo ./easy_all install
   2. Cloudflare CDN 精选 IP - XHTTP + WebSocket（三网独立优选 + 双链路）
   3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）
   4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）
-  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点）
+  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + VLESS-gRPC 双链路，精选 8 节点）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -765,10 +765,10 @@ easy_all switch-backend
 
 模式 5 采用 Sing-box 作为服务端后端，同时监听 VLESS WebSocket（端口 `10087`）与 VLESS gRPC（端口 `10086`），严格遵循以下规范：
 
-- **三网精选 18 节点**：通过 Globalping eyeball 探针挑选电信 Top 3、联通 Top 3、移动 Top 3（共 9 个独立 IP），每个 IP 分别生成 WS 与 gRPC 节点，严格输出 18 个节点，**绝不输出域名兜底节点**。
-- **三网策略组自动调度**：
-  - Mihomo 客户端订阅：内置 `AUTO`（全部 18 节点测速）以及 `电信优选`、`联通优选`、`移动优选`（各自 6 个节点测速）独立 `url-test` 策略组。
-  - Sing-box 客户端订阅：内置 `AUTO` 与三网各运营商独立 `urltest` 策略组。
+- **精选 8 节点**：通过 Globalping eyeball 探针 TLS 验证与低延迟综合挑选 Top 4 独立 IP，每个 IP 分别生成 WS 与 gRPC 节点（`WS01` ~ `WS04`，`GRPC01` ~ `GRPC04`），严格输出 8 个节点，**绝不输出域名兜底节点**。
+- **单一 AUTO 策略组极速调度**：
+  - Mihomo 客户端订阅：内置全局 `AUTO`（全部 8 节点实时测速）策略组与 `PROXY` 选择器，彻底摒弃多子组带来的客户端并发风暴与后台耗电。
+  - Sing-box 客户端订阅：内置全局 `AUTO` 策略组与 `PROXY` 选择器。
 - **安全与边缘规则**：Nginx 强校验 `X-Easy-All-Origin-Key`；自动前置检查 Cloudflare 控制台 gRPC 开关；后端内置 `ip_is_private` 与 UDP 443 (QUIC) 快速阻断以避免队头阻塞。
 - **模式 2 原地无缝平滑迁移**：若已安装模式 2（Xray Cloudflare），可通过 `easy_all install` 选择 5 或 `easy_all switch-backend` 进行一键原地升级：保留已有的 Cloudflare DNS、Origin CA 证书和规则集，无需等待 DNS 传播。
 

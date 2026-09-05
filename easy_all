@@ -126,12 +126,12 @@ easy_all install
 │  ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
 │  ├─ Gcore CDN 资源与配置同模式 3 完全复用；支持模式 3 零损失就地秒级迁移
 │  └─ 订阅生成：通用 Base64、Mihomo YAML (flag=clash) 以及 Sing-box JSON (flag=singbox)
-└─ [5] Cloudflare CDN 精选 IP - Sing-box (VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点)
+└─ [5] Cloudflare CDN 精选 IP - Sing-box (VLESS-WS + VLESS-gRPC 双链路，精选 8 节点)
    ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
    ├─ 采用 Sing-box 服务端后端，同时监听 VLESS WS (10087) 与 VLESS gRPC (10086)
-   ├─ 三网独立优选：电信 Top 3 + 联通 Top 3 + 移动 Top 3（共 9 个精选 IP）
-   ├─ 双协议输出：每个 IP 分别生成 WS 与 gRPC，严格输出 18 个节点，完全无域名兜底
-   ├─ 客户端兼容：完全兼容 Mihomo (Clash) 客户端与 Sing-box 客户端（带三网自动测速策略组）
+   ├─ 全网综合优选：基于 Globalping 探针 TLS 验证与低延迟筛选综合 Top 4 精选 IP
+   ├─ 双协议输出：每个 IP 分别生成 WS 与 gRPC，严格输出 8 个节点，完全无域名兜底
+   ├─ 客户端兼容：完全兼容 Mihomo (Clash) 客户端与 Sing-box 客户端（单一 AUTO 全局自动测速组）
    └─ 支持模式 2 零损失就地平滑迁移
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
@@ -209,8 +209,8 @@ choose_install_mode() {
     printf '     Gcore CDN domain - XHTTP + WebSocket (Gcore DNS routing, no IP selection)\n' >&2
     printf '  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）\n' >&2
     printf '     Gcore CDN domain - Sing-box (dual links, recommended for iPhone, auto failover)\n' >&2
-    printf '  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点）\n' >&2
-    printf '     Cloudflare CDN optimized IPv4 - Sing-box (VLESS-WS + VLESS-gRPC, 3-carrier 18 nodes)\n' >&2
+    printf '  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + VLESS-gRPC 双链路，精选 8 节点）\n' >&2
+    printf '     Cloudflare CDN optimized IPv4 - Sing-box (VLESS-WS + VLESS-gRPC, 8 optimized nodes)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice
