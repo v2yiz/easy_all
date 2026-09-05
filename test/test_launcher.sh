@@ -43,7 +43,7 @@ cron_path=$(
 
 launcher_content=$(<"${ROOT_DIR}/easy_all")
 [[ "${launcher_content}" == *'self-update      只更新 easy_all 项目代码'* \
-    && "${launcher_content}" == *'git clone --depth 1 --branch main'* \
+    && "${launcher_content}" == *'git clone --depth 1 --branch "${target_branch}"'* \
     && "${launcher_content}" == *'"${repo_dir}/easy_all" register-command'* ]] \
     || fail "self-update must download and register the complete project"
 [[ "${launcher_content}" != *'cp -a "${EASY_ALL_INSTALL_DIR}/." "${stage}/"'* ]] \
@@ -66,12 +66,15 @@ stage_preserved_runtime_files "${preserve_source}" "${preserve_stage}"
 
 self_update_invocation="${TMP_DIR}/self-update-invocation"
 self_update_repo_path="${TMP_DIR}/self-update-repo-path"
+self_update_branch="${TMP_DIR}/self-update-branch"
 export SELF_UPDATE_INVOCATION_FILE="${self_update_invocation}"
 export SELF_UPDATE_REPO_PATH_FILE="${self_update_repo_path}"
+export SELF_UPDATE_BRANCH_FILE="${self_update_branch}"
 git() {
     [[ "${1:-}" == "clone" ]] || return 1
     local destination="${!#}" relative_path
     printf '%s\n' "${destination}" >"${SELF_UPDATE_REPO_PATH_FILE}"
+    printf '%s\n' "$5" >"${SELF_UPDATE_BRANCH_FILE}"
     mkdir -p "${destination}"
     for relative_path in easy_all templates/mihomo.yaml "${EASY_ALL_RUNTIME_MODULES[@]}"; do
         mkdir -p "${destination}/$(dirname -- "${relative_path}")"
@@ -89,11 +92,18 @@ success() { :; }
 unified_self_update
 assert_equal "self-update invokes register-command in the downloaded tree" \
     "register-command" "$(<"${self_update_invocation}")"
+assert_equal "self-update defaults to dev branch" \
+    "dev" "$(<"${self_update_branch}")"
 self_update_repo=$(<"${self_update_repo_path}")
 [[ ! -e "${self_update_repo}" ]] \
     || fail "self-update must remove its temporary clone after registration"
+
+unified_self_update "custom-feat"
+assert_equal "self-update respects custom branch argument" \
+    "custom-feat" "$(<"${self_update_branch}")"
+
 unset -f git make_temp_dir require_root die success
-unset SELF_UPDATE_INVOCATION_FILE SELF_UPDATE_REPO_PATH_FILE
+unset SELF_UPDATE_INVOCATION_FILE SELF_UPDATE_REPO_PATH_FILE SELF_UPDATE_BRANCH_FILE
 
 [[ "${launcher_content}" == *'apply-cloud)'* \
     && "${launcher_content}" == *'"${mode}" == "cloudflare" || "${mode}" == "gcore"'* \

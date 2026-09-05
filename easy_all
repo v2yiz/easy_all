@@ -19,6 +19,8 @@ readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/stat
 readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
 readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
+readonly EASY_ALL_DEFAULT_BRANCH="dev"
+readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
 readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/reality.sh"
     "profiles/xhttp-cloudflare.sh"
@@ -283,13 +285,14 @@ unified_register_easy_all_command() {
 }
 
 unified_self_update() {
+    local target_branch=${1:-${EASY_ALL_BRANCH}}
     local temp_dir repo_dir
     require_root
     command -v git >/dev/null 2>&1 || die "缺少 git；请先安装 git 与 ca-certificates"
 
     temp_dir=$(make_temp_dir)
     repo_dir="${temp_dir}/easy_all"
-    git clone --depth 1 --branch main "${EASY_ALL_REPOSITORY_URL}" "${repo_dir}" \
+    git clone --depth 1 --branch "${target_branch}" "${EASY_ALL_REPOSITORY_URL}" "${repo_dir}" \
         || die "克隆 easy_all 仓库失败"
     [[ -f "${repo_dir}/templates/mihomo.yaml" ]] \
         && runtime_tree_is_complete "${repo_dir}" \
@@ -375,7 +378,7 @@ dispatch_profile_command() {
     quota-set) quota_set_user "$@" ;;
     quota-reset) quota_reset_user "$@" ;;
     status) show_status ;;
-    self-update) unified_self_update ;;
+    self-update) unified_self_update "$@" ;;
     register-command) register_easy_all_command ;;
     uninstall) uninstall_all "$@" ;;
     help | -h | --help) usage ;;
