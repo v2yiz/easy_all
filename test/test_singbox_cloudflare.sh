@@ -250,6 +250,12 @@ assert_contains "Mihomo file contains WS nodes" "${mihomo_file_content}" 'networ
 assert_contains "Mihomo file contains gRPC nodes" "${mihomo_file_content}" 'network: grpc'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
 assert_contains "Mihomo file contains 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
+assert_contains "Mihomo file contains geosite:cn in fake-ip-filter" "${mihomo_file_content}" "'geosite:cn'"
+assert_contains "Mihomo file contains 10jqka in fake-ip-filter" "${mihomo_file_content}" "'+.10jqka.com.cn'"
+
+singbox_file_content=$(<"${sub_singbox}")
+assert_contains "Sing-box subscription excludes 10jqka in dns" "${singbox_file_content}" '10jqka.com.cn'
+assert_contains "Sing-box subscription has geosite-cn dns rule" "${singbox_file_content}" 'geosite-cn'
 
 base64_decoded=$(openssl base64 -d -A <"${sub_base64}")
 decoded_links=$(grep -c '^vless://' <<<"${base64_decoded}")

@@ -668,7 +668,8 @@ build_singbox_subscription_json() {
           {
             domain_suffix: [
               "wechat.com", "weixin.com", "qq.com", "qpic.cn", "qlogo.cn",
-              "tencent.com", "servicewechat.com", "tenpay.com", "wechatpay.cn", "gtimg.com"
+              "tencent.com", "servicewechat.com", "tenpay.com", "wechatpay.cn", "gtimg.com",
+              "10jqka.com.cn"
             ],
             action: "route",
             server: "local"
@@ -751,7 +752,8 @@ build_singbox_subscription_json() {
           {
             domain_suffix: [
               "wechat.com", "weixin.com", "qq.com", "qpic.cn", "qlogo.cn",
-              "tencent.com", "servicewechat.com", "tenpay.com", "wechatpay.cn", "gtimg.com"
+              "tencent.com", "servicewechat.com", "tenpay.com", "wechatpay.cn", "gtimg.com",
+              "10jqka.com.cn"
             ],
             action: "route",
             outbound: "direct"

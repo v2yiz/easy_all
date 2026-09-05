@@ -240,7 +240,8 @@ build_singbox_subscription_json() {
               "servicewechat.com",
               "tenpay.com",
               "wechatpay.cn",
-              "gtimg.com"
+              "gtimg.com",
+              "10jqka.com.cn"
             ],
             action: "route",
             server: "local"
@@ -353,7 +354,8 @@ build_singbox_subscription_json() {
               "servicewechat.com",
               "tenpay.com",
               "wechatpay.cn",
-              "gtimg.com"
+              "gtimg.com",
+              "10jqka.com.cn"
             ],
             action: "route",
             outbound: "direct"
