@@ -25,7 +25,7 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
 
 for required_path in \
     profiles/reality.sh profiles/xhttp-cloudflare.sh profiles/xhttp-gcore.sh \
-    profiles/singbox-gcore.sh \
+    profiles/singbox-gcore.sh profiles/singbox-cloudflare.sh \
     lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh \
     lib/cdn-traffic-guard.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
@@ -73,6 +73,11 @@ shared_modules=(
     && "$(<"${ROOT_DIR}/profiles/singbox-gcore.sh")" == *'source "${SINGBOX_PROFILE_DIR}/xhttp-gcore.sh"'* \
     && "$(<"${ROOT_DIR}/profiles/singbox-gcore.sh")" == *'source "${SINGBOX_PROFILE_DIR}/../lib/singbox-core.sh"'* ]] \
     || fail "Gcore Sing-box profile must reuse Gcore CDN and Sing-box core modules"
+[[ "${LAUNCHER_CONTENT}" == *'"profiles/singbox-cloudflare.sh"'* \
+    && "${BOOTSTRAP_CONTENT}" == *'profiles/singbox-cloudflare.sh'* \
+    && "$(<"${ROOT_DIR}/profiles/singbox-cloudflare.sh")" == *'source "${SINGBOX_PROFILE_DIR}/xhttp-cloudflare.sh"'* \
+    && "$(<"${ROOT_DIR}/profiles/singbox-cloudflare.sh")" == *'source "${SINGBOX_PROFILE_DIR}/../lib/singbox-core.sh"'* ]] \
+    || fail "Cloudflare Sing-box profile must reuse Cloudflare CDN and Sing-box core modules"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/xhttp-runtime.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
     && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \

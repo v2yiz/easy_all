@@ -24,6 +24,7 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/xhttp-cloudflare.sh"
     "profiles/xhttp-gcore.sh"
     "profiles/singbox-gcore.sh"
+    "profiles/singbox-cloudflare.sh"
     "lib/xhttp-runtime.sh"
     "lib/cdn-traffic-guard.sh"
     "lib/globalping-cdn.sh"
@@ -115,14 +116,21 @@ easy_all install
 │  ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
 │  ├─ Origin Group / XHTTP + WebSocket Resource / Origin SSL Validation / 边缘证书
 │  └─ Gcore CDN 域名 → CNAME 传播 → XHTTP + WebSocket 验收；不做 IP 精选
-└─ [4] Gcore CDN 域名 - Sing-box (Trojan + VLESS WebSocket)
-   ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
-   ├─ 采用 Sing-box 服务端后端，同时监听 Trojan WS (10088) 与 VLESS WS (10087)
-   ├─ 客户端兼容：完全兼容 Mihomo (Clash) 客户端与 Sing-box 客户端
-   ├─ iPhone 推荐：若有 iPhone，推荐选模式 4，iOS Sing-box 开箱自带两节点自动测速与故障切换
-   ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
-   ├─ Gcore CDN 资源与配置同模式 3 完全复用；支持模式 3 零损失就地秒级迁移
-   └─ 订阅生成：通用 Base64、Mihomo YAML (flag=clash) 以及 Sing-box JSON (flag=singbox)
+├─ [4] Gcore CDN 域名 - Sing-box (Trojan + VLESS WebSocket)
+│  ├─ 适用线路：非优化线路；根域名需完整委派给 Gcore Managed DNS
+│  ├─ 采用 Sing-box 服务端后端，同时监听 Trojan WS (10088) 与 VLESS WS (10087)
+│  ├─ 客户端兼容：完全兼容 Mihomo (Clash) 客户端与 Sing-box 客户端
+│  ├─ iPhone 推荐：若有 iPhone，推荐选模式 4，iOS Sing-box 开箱自带两节点自动测速与故障切换
+│  ├─ Gcore API Token → 源站 A → Let's Encrypt → mTLS 客户端证书
+│  ├─ Gcore CDN 资源与配置同模式 3 完全复用；支持模式 3 零损失就地秒级迁移
+│  └─ 订阅生成：通用 Base64、Mihomo YAML (flag=clash) 以及 Sing-box JSON (flag=singbox)
+└─ [5] Cloudflare CDN 精选 IP - Sing-box (VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点)
+   ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
+   ├─ 采用 Sing-box 服务端后端，同时监听 VLESS WS (10087) 与 VLESS gRPC (10086)
+   ├─ 三网独立优选：电信 Top 3 + 联通 Top 3 + 移动 Top 3（共 9 个精选 IP）
+   ├─ 双协议输出：每个 IP 分别生成 WS 与 gRPC，严格输出 18 个节点，完全无域名兜底
+   ├─ 客户端兼容：完全兼容 Mihomo (Clash) 客户端与 Sing-box 客户端（带三网自动测速策略组）
+   └─ 支持模式 2 零损失就地平滑迁移
 
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
@@ -156,7 +164,11 @@ detect_installed_mode() {
             [[ "${state_version}" == "7" ]] || launcher_die "XHTTP 状态版本无效；仅支持当前全新安装生成的状态"
             case "$(state_value "${EASY_ALL_STATE_FILE}" CDN_PROVIDER || true)" in
             cloudflare)
-                printf 'cloudflare\n'
+                if [[ "$(state_value "${EASY_ALL_STATE_FILE}" BACKEND || true)" == "singbox" ]]; then
+                    printf 'singbox-cloudflare\n'
+                else
+                    printf 'cloudflare\n'
+                fi
                 ;;
             gcore)
                 if [[ "$(state_value "${EASY_ALL_STATE_FILE}" BACKEND || true)" == "singbox" ]]; then
@@ -171,6 +183,10 @@ detect_installed_mode() {
         singbox-ws)
             [[ "${state_version}" == "7" ]] || launcher_die "Sing-box 状态版本无效；仅支持当前全新安装生成的状态"
             printf 'singbox-gcore\n'
+            ;;
+        singbox-cf)
+            [[ "${state_version}" == "7" ]] || launcher_die "Sing-box 状态版本无效；仅支持当前全新安装生成的状态"
+            printf 'singbox-cloudflare\n'
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
         esac
@@ -191,6 +207,8 @@ choose_install_mode() {
     printf '     Gcore CDN domain - XHTTP + WebSocket (Gcore DNS routing, no IP selection)\n' >&2
     printf '  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）\n' >&2
     printf '     Gcore CDN domain - Sing-box (dual links, recommended for iPhone, auto failover)\n' >&2
+    printf '  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点）\n' >&2
+    printf '     Cloudflare CDN optimized IPv4 - Sing-box (VLESS-WS + VLESS-gRPC, 3-carrier 18 nodes)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice
@@ -199,6 +217,7 @@ choose_install_mode() {
     2) printf 'cloudflare\n' ;;
     3) printf 'gcore\n' ;;
     4) printf 'singbox-gcore\n' ;;
+    5) printf 'singbox-cloudflare\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -210,6 +229,7 @@ profile_file() {
     cloudflare) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare.sh" ;;
     gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
     singbox-gcore) candidate="${EASY_ALL_ROOT}/profiles/singbox-gcore.sh" ;;
+    singbox-cloudflare) candidate="${EASY_ALL_ROOT}/profiles/singbox-cloudflare.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -292,7 +312,7 @@ dispatch_profile_command() {
         apply_easy_all
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare" || "${mode}" == "gcore" || "${mode}" == "singbox-gcore" ]] \
+        [[ "${mode}" == "cloudflare" || "${mode}" == "gcore" || "${mode}" == "singbox-gcore" || "${mode}" == "singbox-cloudflare" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         apply_cloud_resources
         ;;
@@ -304,14 +324,14 @@ dispatch_profile_command() {
         fi
         ;;
     update-core)
-        if [[ "${mode}" == "singbox-gcore" ]]; then
+        if [[ "${mode}" == "singbox-gcore" || "${mode}" == "singbox-cloudflare" ]]; then
             update_singbox_core
         else
             update_current_core
         fi
         ;;
     refresh-cdn-ips)
-        [[ "${mode}" == "cloudflare" ]] \
+        [[ "${mode}" == "cloudflare" || "${mode}" == "singbox-cloudflare" ]] \
             || launcher_die "refresh-cdn-ips 仅适用于 Cloudflare CDN 精选 IP"
         refresh_cloudflare_cdn_ips
         ;;
@@ -337,7 +357,7 @@ dispatch_profile_command() {
         rotate_dynamic_ports
         ;;
     quota-sync)
-        if [[ "${mode}" == "singbox-gcore" ]]; then
+        if [[ "${mode}" == "singbox-gcore" || "${mode}" == "singbox-cloudflare" ]]; then
             info "当前为 Sing-box 后端模式；配额统计已停用"
             return 0
         fi
@@ -346,7 +366,7 @@ dispatch_profile_command() {
     quota-status)
         require_root
         collect_installed_state
-        if [[ "${mode}" == "singbox-gcore" ]]; then
+        if [[ "${mode}" == "singbox-gcore" || "${mode}" == "singbox-cloudflare" ]]; then
             info "当前为 Sing-box 后端模式；用户流量配额功能适用于 Xray 后端"
             return 0
         fi
@@ -399,6 +419,20 @@ main() {
             }
             migrate_from_singbox_gcore
             return 0
+        elif [[ "${mode}" == "cloudflare" ]]; then
+            module=$(profile_file "singbox-cloudflare")
+            export EASY_ALL_SELECTED_MODE="singbox-cloudflare"
+            [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+                || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+            # shellcheck source=/dev/null
+            source "${module}"
+            register_easy_all_command() {
+                unified_register_easy_all_command
+            }
+            migrate_from_xhttp_cloudflare
+            return 0
+        elif [[ "${mode}" == "singbox-cloudflare" ]]; then
+            launcher_die "从 Cloudflare Sing-box 切回 Xray 请先备份配置或重新执行安装"
         else
             launcher_die "switch-backend 仅适用于 Gcore 模式"
         fi
@@ -435,6 +469,27 @@ main() {
                         unified_register_easy_all_command
                     }
                     migrate_from_singbox_gcore
+                    return 0
+                elif [[ "${mode}" == "${target_mode}" ]]; then
+                    launcher_die "已安装 ${mode}；请使用 easy_all apply 刷新配置"
+                else
+                    launcher_die "已安装 ${mode}；切换到不同平台请先执行 easy_all uninstall"
+                fi
+            elif [[ "${mode}" == "cloudflare" || "${mode}" == "singbox-cloudflare" ]]; then
+                show_install_guide
+                local target_mode
+                target_mode=$(choose_install_mode)
+                if [[ "${mode}" == "cloudflare" && "${target_mode}" == "singbox-cloudflare" ]]; then
+                    module=$(profile_file "singbox-cloudflare")
+                    export EASY_ALL_SELECTED_MODE="singbox-cloudflare"
+                    [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+                        || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+                    # shellcheck source=/dev/null
+                    source "${module}"
+                    register_easy_all_command() {
+                        unified_register_easy_all_command
+                    }
+                    migrate_from_xhttp_cloudflare
                     return 0
                 elif [[ "${mode}" == "${target_mode}" ]]; then
                     launcher_die "已安装 ${mode}；请使用 easy_all apply 刷新配置"

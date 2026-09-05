@@ -158,6 +158,9 @@ assert_equal "legacy Gcore WebSocket state remains readable" "gcore" "$(detect_i
 printf 'STATE_VERSION=7\nPROTOCOL=singbox-ws\nCDN_PROVIDER=gcore\nBACKEND=singbox\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Gcore Sing-box state selects singbox-gcore" "singbox-gcore" "$(detect_installed_mode)"
 
+printf 'STATE_VERSION=7\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\nBACKEND=singbox\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "Cloudflare Sing-box state selects singbox-cloudflare" "singbox-cloudflare" "$(detect_installed_mode)"
+
 rm -f -- "${EASY_ALL_STATE_FILE}"
 assert_failure_contains "install rejects a mode argument" \
     "install 不接受协议参数" \
@@ -189,7 +192,8 @@ fi
 [[ "${launcher_content}" == *"2) printf 'cloudflare"* \
     && "${launcher_content}" != *"3) printf 'aws-cdn"* \
     && "${launcher_content}" == *"3) printf 'gcore"* \
-    && "${launcher_content}" == *"4) printf 'singbox-gcore"* ]] \
+    && "${launcher_content}" == *"4) printf 'singbox-gcore"* \
+    && "${launcher_content}" == *"5) printf 'singbox-cloudflare"* ]] \
     || fail "installation choices must retain only the supported modes in order"
 
 printf 'ok - easy_all launcher tests passed\n'

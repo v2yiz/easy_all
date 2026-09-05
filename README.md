@@ -10,8 +10,9 @@
 | 2. Cloudflare CDN 精选 IP - XHTTP + WebSocket | VLESS XHTTP stream-up + WebSocket / TLS | Cloudflare + Globalping IPv4 |
 | 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 (Xray 核心) |
 | 4. Gcore CDN 域名 - Sing-box (Trojan + VLESS WS) | Trojan WS / VLESS WS / TLS | Gcore CDN 域名 (Sing-box 核心) |
+| 5. Cloudflare CDN 精选 IP - Sing-box (VLESS-WS + VLESS-gRPC) | VLESS WS + VLESS gRPC / TLS | Cloudflare + Globalping IPv4 (Sing-box 核心，严格 18 节点无域名兜底) |
 
-Cloudflare 提供 XHTTP + WebSocket 双链路（精选 IP 调度）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 提供 XHTTP + WebSocket（Xray 核心）或 VLESS-WS + VLESS-gRPC（Sing-box 核心，三网精选 18 节点）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray/Sing-box、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -27,6 +28,7 @@ Cloudflare 提供 XHTTP + WebSocket 双链路（精选 IP 调度）；Gcore 提�
 | 明确要使用 Cloudflare CDN，并愿意维护域名、Token 和 gRPC 设置 | 选择 `2`：Cloudflare XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台手动打开 gRPC。 |
 | 需要 Gcore CDN 域名入口，并愿意维护 Gcore Managed DNS 和 API Token | 选择 `3`：Gcore XHTTP | Gcore Free CDN、Managed DNS Zone、源站/节点域名和 Gcore API Token；不需要 Globalping。 |
 | 需要 Gcore CDN 域名入口，或有 iPhone 客户端需求（需要双节点简单自动切换） | 选择 `4`：Gcore Sing-box | 同模式 3 前置条件。若有 iPhone，推荐使用 Sing-box 后端及 iOS 客户端，开箱即支持 Trojan + VLESS 两节点自动测速与故障切换（urltest）；后端同时完全兼容 Mihomo 客户端。若已安装模式 3，可随时一键原地无缝切换为模式 4。 |
+| 明确要使用 Cloudflare CDN，追求极致兼容或需要 Sing-box 服务端 + 三网自动测速策略组 | 选择 `5`：Cloudflare Sing-box | 同模式 2 前置条件。采用 Sing-box 服务端后端，同时监听 VLESS WS (10087) 与 VLESS gRPC (10086)；基于三网 Globalping 精选生成 9 个 IPv4 × 双协议 = 严格 18 个节点（无域名兜底）；Mihomo 与 Sing-box 订阅中内置三网独立测速组与全节点 AUTO 组。若已安装模式 2，可随时一键原地无缝切换为模式 5。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 或 Gcore 前置准备时，再选择对应 CDN 模式。Gcore 模式下可在模式 3 与模式 4 之间通过 `easy_all switch-backend` 原地无缝迁移，无需重新创建云端资源。
@@ -133,6 +135,7 @@ sudo ./easy_all install
   2. Cloudflare CDN 精选 IP - XHTTP + WebSocket（三网独立优选 + 双链路）
   3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）
   4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）
+  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -757,6 +760,17 @@ easy_all switch-backend
 2. **凭据无缝继承**：保留现有的 `VLESS_UUID` 与 `WEBSOCKET_PATH`，原客户端已配置的 VLESS WS 节点保持 100% 兼容、无感连接。
 3. **本地原子切换**：自动拉取并安装 Sing-box 核心，生成 Trojan WS + VLESS WS 组合配置，停用旧 Xray 服务并重载 Nginx，秒级切换完成。
 4. **订阅自动刷新**：自动重新渲染订阅目录，立刻支持使用 `flag=singbox` 获取 Sing-box 客户端完整配置。
+
+## Cloudflare CDN 精选 IP Sing-box (VLESS WebSocket + gRPC 双链路)
+
+模式 5 采用 Sing-box 作为服务端后端，同时监听 VLESS WebSocket（端口 `10087`）与 VLESS gRPC（端口 `10086`），严格遵循以下规范：
+
+- **三网精选 18 节点**：通过 Globalping eyeball 探针挑选电信 Top 3、联通 Top 3、移动 Top 3（共 9 个独立 IP），每个 IP 分别生成 WS 与 gRPC 节点，严格输出 18 个节点，**绝不输出域名兜底节点**。
+- **三网策略组自动调度**：
+  - Mihomo 客户端订阅：内置 `AUTO`（全部 18 节点测速）以及 `电信优选`、`联通优选`、`移动优选`（各自 6 个节点测速）独立 `url-test` 策略组。
+  - Sing-box 客户端订阅：内置 `AUTO` 与三网各运营商独立 `urltest` 策略组。
+- **安全与边缘规则**：Nginx 强校验 `X-Easy-All-Origin-Key`；自动前置检查 Cloudflare 控制台 gRPC 开关；后端内置 `ip_is_private` 与 UDP 443 (QUIC) 快速阻断以避免队头阻塞。
+- **模式 2 原地无缝平滑迁移**：若已安装模式 2（Xray Cloudflare），可通过 `easy_all install` 选择 5 或 `easy_all switch-backend` 进行一键原地升级：保留已有的 Cloudflare DNS、Origin CA 证书和规则集，无需等待 DNS 传播。
 
 ## 状态与边界
 
