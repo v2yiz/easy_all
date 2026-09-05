@@ -15,8 +15,8 @@ content=$(<"${SCRIPT}")
 
 [[ "${content}" == *'apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends git ca-certificates'* ]] \
     || fail "bootstrap must install git before cloning"
-[[ "${content}" == *'git clone --depth 1 --branch main'* ]] \
-    || fail "bootstrap must shallow-clone main"
+[[ "${content}" == *'git clone --depth 1 --branch "${BRANCH}"'* ]] \
+    || fail "bootstrap must shallow-clone configured branch"
 [[ "${content}" == *'&& -f "${REPO_DIR}/profiles/reality.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-cloudflare.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-gcore.sh"'* \

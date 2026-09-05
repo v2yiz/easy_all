@@ -4,6 +4,8 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY_URL="https://github.com/v2yiz/easy_all.git"
+readonly DEFAULT_BRANCH="dev"
+BRANCH="${EASY_ALL_BRANCH:-${DEFAULT_BRANCH}}"
 
 die() {
     printf '错误: %s\n' "$*" >&2
@@ -33,7 +35,7 @@ if ! command -v git >/dev/null 2>&1; then
     "${SUDO[@]}" apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends git ca-certificates
 fi
 
-git clone --depth 1 --branch main "${REPOSITORY_URL}" "${REPO_DIR}" \
+git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
     || die "克隆 easy_all 仓库失败"
 
 [[ -f "${REPO_DIR}/easy_all" \
