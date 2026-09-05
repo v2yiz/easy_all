@@ -670,9 +670,10 @@ build_singbox_subscription_json() {
             action: "route",
             server: "local"
           },
-          { rule_set: "geosite-cn", action: "route", server: "local" }
+          { rule_set: "geosite-cn", action: "route", server: "local" },
+          { query_type: ["A", "AAAA"], action: "route", server: "fakeip" }
         ],
-        final: "fakeip",
+        final: "local",
         strategy: "prefer_ipv4"
       },
       experimental: {

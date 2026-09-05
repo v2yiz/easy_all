@@ -188,7 +188,9 @@ assert_equal "Sing-box local DNS type is udp" "udp" "${sub_local_dns_type}"
 assert_equal "Sing-box local DNS server is 223.5.5.5" "223.5.5.5" "${sub_local_dns_server}"
 sub_local_has_detour=$(jq -r '.dns.servers[] | select(.tag=="local") | has("detour")' <<<"${singbox_sub}")
 assert_equal "Sing-box local DNS server has no redundant detour" "false" "${sub_local_has_detour}"
-assert_equal "Sing-box DNS final server is fakeip" "fakeip" "${sub_dns_final}"
+assert_equal "Sing-box DNS final server is local" "local" "${sub_dns_final}"
+sub_fakeip_query_types=$(jq -c '.dns.rules[] | select(.server=="fakeip" and has("query_type")) | .query_type' <<<"${singbox_sub}")
+assert_equal "Sing-box DNS rules route A/AAAA to fakeip" '["A","AAAA"]' "${sub_fakeip_query_types}"
 assert_equal "Sing-box DNS rules route WeChat domains to local" "local" "${sub_wechat_dns_server}"
 assert_equal "Sing-box route rules route WeChat domains to direct" "direct" "${sub_wechat_route_outbound}"
 assert_equal "Sing-box route rules reject UDP 443 QUIC" "reject" "${sub_quic_rule_action}"

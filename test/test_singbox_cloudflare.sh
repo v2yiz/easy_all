@@ -249,6 +249,8 @@ assert_contains "Mihomo file contains 10jqka in fake-ip-filter" "${mihomo_file_c
 singbox_file_content=$(<"${sub_singbox}")
 assert_contains "Sing-box subscription excludes 10jqka in dns" "${singbox_file_content}" '10jqka.com.cn'
 assert_contains "Sing-box subscription has geosite-cn dns rule" "${singbox_file_content}" 'geosite-cn'
+assert_contains "Sing-box subscription sets final DNS server to local" "${singbox_file_content}" '"final": "local"'
+assert_contains "Sing-box subscription routes A/AAAA queries to fakeip" "${singbox_file_content}" '"query_type": ['
 
 base64_decoded=$(openssl base64 -d -A <"${sub_base64}")
 decoded_vless=$(grep -c '^vless://' <<<"${base64_decoded}")
