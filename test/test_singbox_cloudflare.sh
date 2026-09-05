@@ -293,7 +293,26 @@ assert_equal "Can migrate from xhttp-cloudflare" "0" \
 assert_equal "Cannot migrate from already singbox" "1" \
     "$(EASY_ALL_STATE_FILE_OVERRIDE="${STATE_FILE}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
 
-# 8. Test install_all execution flow with mocks (verifying all symbols resolve cleanly)
+# 8. Test transport marker and validate_protocol_runtime CA handling
+assert_equal "mihomo_transport_marker outputs network: ws" "network: ws" "$(mihomo_transport_marker)"
+
+(
+    systemctl() { return 0; }
+    ss() { printf 'LISTEN 0 512 127.0.0.1:443\n'; }
+    xhttp_validate_local_tls_curl_args() {
+        XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "/etc/easy_all/cloudflare-origin-ca-ecc.pem")
+    }
+    curl() {
+        printf '%s\n' "$*" >"${TMP_DIR}/captured_curl"
+        printf 'easy_all ok\n'
+    }
+    validate_protocol_runtime
+    captured_curl=$(<"${TMP_DIR}/captured_curl")
+    assert_contains "validate_protocol_runtime passes --cacert to curl" "${captured_curl}" "--cacert /etc/easy_all/cloudflare-origin-ca-ecc.pem"
+    assert_contains "validate_protocol_runtime passes Origin Key header" "${captured_curl}" "X-Easy-All-Origin-Key"
+)
+
+# 9. Test install_all execution flow with mocks (verifying all symbols resolve cleanly)
 install_out=$(
     require_root() { :; }
     require_systemd() { :; }

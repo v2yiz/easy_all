@@ -384,13 +384,21 @@ stop_services() {
     systemctl stop "${SINGBOX_SERVICE}" nginx 2>/dev/null || true
 }
 
+mihomo_transport_marker() {
+    printf 'network: ws\n'
+}
+
 validate_protocol_runtime() {
     local attempt response
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
+    if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
+        xhttp_validate_local_tls_curl_args
+    fi
     for attempt in 1 2 3 4 5; do
         if systemctl is-active --quiet "${SINGBOX_SERVICE}" \
             && systemctl is-active --quiet nginx \
             && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
-            response=$(curl -fsS \
+            response=$(curl -fsS "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
                 --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
                 -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
                 "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
