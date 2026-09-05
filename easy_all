@@ -209,8 +209,8 @@ choose_install_mode() {
     printf '     Gcore CDN domain - XHTTP + WebSocket (Gcore DNS routing, no IP selection)\n' >&2
     printf '  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）\n' >&2
     printf '     Gcore CDN domain - Sing-box (dual links, recommended for iPhone, auto failover)\n' >&2
-    printf '  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + VLESS-gRPC 双链路，精选 8 节点）\n' >&2
-    printf '     Cloudflare CDN optimized IPv4 - Sing-box (VLESS-WS + VLESS-gRPC, 8 optimized nodes)\n' >&2
+    printf '  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + Trojan-WS 双链路，精选 8 节点）\n' >&2
+    printf '     Cloudflare CDN optimized IPv4 - Sing-box (VLESS-WS + Trojan-WS, 8 optimized nodes)\n' >&2
     launcher_read_bilingual \
         '请选择 [1]（直接回车使用默认值）:' \
         'Choose [1] (press Enter to use the default):' choice

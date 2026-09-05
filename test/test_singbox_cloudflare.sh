@@ -52,9 +52,10 @@ export CLOUDFLARE_ORIGIN_DOMAIN="node.example.com"
 export XHTTP_ORIGIN_DOMAIN="node.example.com"
 export VLESS_UUID="11111111-2222-4111-8111-111111111111"
 export WEBSOCKET_PATH="/ws-test-path"
-export GRPC_SERVICE_NAME="grpc-test-service"
+export TROJAN_PASSWORD="test-trojan-password"
+export TROJAN_PATH="/tr-test-path"
 export SINGBOX_VLESS_WS_LOOPBACK_PORT=10087
-export SINGBOX_VLESS_GRPC_LOOPBACK_PORT=10086
+export SINGBOX_TROJAN_LOOPBACK_PORT=10086
 export ORIGIN_HEADER_SECRET="test-origin-secret-12345678"
 export ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 export SUB_DOWNLOAD_NAME="TEST_SUB"
@@ -119,11 +120,12 @@ singbox_conf=$(<"${SINGBOX_CONFIG}")
 
 assert_contains "singbox config has warning log level" "${singbox_conf}" '"level": "warn"'
 assert_contains "singbox config contains vless-ws-in" "${singbox_conf}" '"tag": "vless-ws-in"'
-assert_contains "singbox config contains vless-grpc-in" "${singbox_conf}" '"tag": "vless-grpc-in"'
+assert_contains "singbox config contains trojan-ws-in" "${singbox_conf}" '"tag": "trojan-ws-in"'
 assert_contains "singbox config ws port" "${singbox_conf}" '"listen_port": 10087'
-assert_contains "singbox config grpc port" "${singbox_conf}" '"listen_port": 10086'
+assert_contains "singbox config trojan port" "${singbox_conf}" '"listen_port": 10086'
 assert_contains "singbox config ws path" "${singbox_conf}" '"path": "/ws-test-path"'
-assert_contains "singbox config grpc service name" "${singbox_conf}" '"service_name": "grpc-test-service"'
+assert_contains "singbox config trojan path" "${singbox_conf}" '"path": "/tr-test-path"'
+assert_contains "singbox config trojan password" "${singbox_conf}" '"password": "test-trojan-password"'
 assert_contains "singbox config uuid" "${singbox_conf}" '"uuid": "11111111-2222-4111-8111-111111111111"'
 assert_contains "singbox config multiplex enabled" "${singbox_conf}" '"enabled": true'
 assert_contains "singbox config private ip reject" "${singbox_conf}" '"ip_is_private": true'
@@ -138,8 +140,8 @@ nginx_conf=$(<"${TMP_DIR}/nginx.conf")
 assert_contains "nginx config contains domain" "${nginx_conf}" "server_name node.example.com;"
 assert_contains "nginx config contains ws location" "${nginx_conf}" "location = /ws-test-path"
 assert_contains "nginx config contains ws proxy_pass" "${nginx_conf}" "proxy_pass http://127.0.0.1:10087;"
-assert_contains "nginx config contains grpc location" "${nginx_conf}" "location ^~ /grpc-test-service/ {"
-assert_contains "nginx config contains grpc_pass" "${nginx_conf}" "grpc_pass grpc://127.0.0.1:10086;"
+assert_contains "nginx config contains trojan location" "${nginx_conf}" "location = /tr-test-path"
+assert_contains "nginx config contains trojan proxy_pass" "${nginx_conf}" "proxy_pass http://127.0.0.1:10086;"
 assert_contains "nginx config checks origin key" "${nginx_conf}" 'if ($http_x_easy_all_origin_key != "test-origin-secret-12345678") { return 404; }'
 assert_contains "nginx config has health endpoint" "${nginx_conf}" "location = /easy_all-health"
 
@@ -170,25 +172,22 @@ cloudflare_validate_grpc_edge() { return 0; }
 candidates_output=$(cloudflare_singbox_client_candidates)
 assert_equal "Candidates count is exactly 4" "4" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
 
-# Test node links: exactly 8 links (4 WS + 4 gRPC)
+# Test node links: exactly 8 links (4 VLESS WS + 4 Trojan WS)
 node_links=$(build_node_links)
-link_count=$(grep -c '^vless://' <<<"${node_links}")
-assert_equal "Total node links is exactly 8" "8" "${link_count}"
+vless_link_count=$(grep -c '^vless://' <<<"${node_links}")
+assert_equal "Total VLESS node links is 4" "4" "${vless_link_count}"
 
-ws_link_count=$(grep -c 'type=ws' <<<"${node_links}")
-assert_equal "WS node links count is 4" "4" "${ws_link_count}"
-
-grpc_link_count=$(grep -c 'type=grpc' <<<"${node_links}")
-assert_equal "gRPC node links count is 4" "4" "${grpc_link_count}"
+trojan_link_count=$(grep -c '^trojan://' <<<"${node_links}")
+assert_equal "Total Trojan node links is 4" "4" "${trojan_link_count}"
 
 # Verify NO domain fallback link
 assert_not_contains "Node links do not contain domain as server" "${node_links}" "@node.example.com:443"
 
-# Verify WS and GRPC node links
+# Verify WS and TROJAN node links
 assert_contains "Links contain WS01" "${node_links}" "#WS01"
-assert_contains "Links contain GRPC01" "${node_links}" "#GRPC01"
+assert_contains "Links contain TROJAN01" "${node_links}" "#TROJAN01"
 assert_contains "Links contain WS04" "${node_links}" "#WS04"
-assert_contains "Links contain GRPC04" "${node_links}" "#GRPC04"
+assert_contains "Links contain TROJAN04" "${node_links}" "#TROJAN04"
 
 # Test Mihomo nodes: exactly 8 nodes
 mihomo_nodes=$(build_mihomo_nodes)
@@ -196,9 +195,9 @@ node_count=$(grep -c '^[[:space:]]*- name:' <<<"${mihomo_nodes}")
 assert_equal "Mihomo nodes count is exactly 8" "8" "${node_count}"
 
 assert_contains "Mihomo renders WS01" "${mihomo_nodes}" '"WS01"'
-assert_contains "Mihomo renders GRPC01" "${mihomo_nodes}" '"GRPC01"'
+assert_contains "Mihomo renders TROJAN01" "${mihomo_nodes}" '"TROJAN01"'
 assert_contains "Mihomo renders WS04" "${mihomo_nodes}" '"WS04"'
-assert_contains "Mihomo renders GRPC04" "${mihomo_nodes}" '"GRPC04"'
+assert_contains "Mihomo renders TROJAN04" "${mihomo_nodes}" '"TROJAN04"'
 assert_not_contains "Mihomo nodes do not contain domain fallback" "${mihomo_nodes}" 'server: "node.example.com"'
 
 # Test Mihomo proxy groups: only AUTO group, no carrier groups
@@ -214,7 +213,7 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
 names_output=$(build_mihomo_proxy_names)
 assert_contains "Names contain AUTO" "${names_output}" '"AUTO"'
 assert_contains "Names contain WS01" "${names_output}" '"WS01"'
-assert_contains "Names contain GRPC01" "${names_output}" '"GRPC01"'
+assert_contains "Names contain TROJAN01" "${names_output}" '"TROJAN01"'
 assert_not_contains "Names do not contain 电信优选" "${names_output}" '"电信优选"'
 
 # Test Sing-box client subscription JSON
@@ -224,8 +223,8 @@ sb_outbound_count=$(jq '.outbounds | length' <<<"${singbox_sub_json}")
 assert_equal "Sing-box subscription total outbounds" "11" "${sb_outbound_count}"
 sb_ws_count=$(jq '[.outbounds[] | select(.type == "vless" and .transport.type == "ws")] | length' <<<"${singbox_sub_json}")
 assert_equal "Sing-box subscription WS outbounds" "4" "${sb_ws_count}"
-sb_grpc_count=$(jq '[.outbounds[] | select(.type == "vless" and .transport.type == "grpc")] | length' <<<"${singbox_sub_json}")
-assert_equal "Sing-box subscription gRPC outbounds" "4" "${sb_grpc_count}"
+sb_trojan_count=$(jq '[.outbounds[] | select(.type == "trojan" and .transport.type == "ws")] | length' <<<"${singbox_sub_json}")
+assert_equal "Sing-box subscription Trojan outbounds" "4" "${sb_trojan_count}"
 
 # Test write_subscriptions
 validate_subscription_runtime() { :; }
@@ -241,7 +240,7 @@ sub_singbox="${TMP_DIR}/web/subscriptions/singbox.json"
 
 mihomo_file_content=$(<"${sub_mihomo}")
 assert_contains "Mihomo file contains WS nodes" "${mihomo_file_content}" 'network: ws'
-assert_contains "Mihomo file contains gRPC nodes" "${mihomo_file_content}" 'network: grpc'
+assert_contains "Mihomo file contains Trojan nodes" "${mihomo_file_content}" 'type: trojan'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
 assert_not_contains "Mihomo file does not contain 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
 assert_contains "Mihomo file contains geosite:cn in fake-ip-filter" "${mihomo_file_content}" "'geosite:cn'"
@@ -252,8 +251,10 @@ assert_contains "Sing-box subscription excludes 10jqka in dns" "${singbox_file_c
 assert_contains "Sing-box subscription has geosite-cn dns rule" "${singbox_file_content}" 'geosite-cn'
 
 base64_decoded=$(openssl base64 -d -A <"${sub_base64}")
-decoded_links=$(grep -c '^vless://' <<<"${base64_decoded}")
-assert_equal "Decoded base64 contains exactly 8 links" "8" "${decoded_links}"
+decoded_vless=$(grep -c '^vless://' <<<"${base64_decoded}")
+assert_equal "Decoded base64 contains 4 vless links" "4" "${decoded_vless}"
+decoded_trojan=$(grep -c '^trojan://' <<<"${base64_decoded}")
+assert_equal "Decoded base64 contains 4 trojan links" "4" "${decoded_trojan}"
 
 # 6. Test state save and load
 actual_state_file="${TMP_DIR}/state/state.env"
@@ -264,14 +265,41 @@ assert_contains "State has PROTOCOL=singbox-cf" "${state_content}" "PROTOCOL=sin
 assert_contains "State has BACKEND=singbox" "${state_content}" "BACKEND=singbox"
 assert_contains "State has CDN_PROVIDER=cloudflare" "${state_content}" "CDN_PROVIDER=cloudflare"
 assert_contains "State has WS port" "${state_content}" "SINGBOX_VLESS_WS_LOOPBACK_PORT=10087"
-assert_contains "State has gRPC port" "${state_content}" "SINGBOX_VLESS_GRPC_LOOPBACK_PORT=10086"
+assert_contains "State has Trojan port" "${state_content}" "SINGBOX_TROJAN_LOOPBACK_PORT=10086"
+assert_contains "State has Trojan password" "${state_content}" "TROJAN_PASSWORD=test-trojan-password"
+assert_contains "State has Trojan path" "${state_content}" "TROJAN_PATH=/tr-test-path"
 
 # Test load_state
 PROTOCOL="" BACKEND="" CDN_PROVIDER=""
 EASY_ALL_STATE_FILE_OVERRIDE="${actual_state_file}" load_state
 assert_equal "load_state loads PROTOCOL" "singbox-cf" "${PROTOCOL}"
 assert_equal "load_state loads BACKEND" "singbox" "${BACKEND}"
-assert_equal "load_state loads CDN_PROVIDER" "cloudflare" "${CDN_PROVIDER}"
+# Test backward compatibility: load_state with legacy gRPC state
+legacy_grpc_state="${TMP_DIR}/legacy_grpc.env"
+cat >"${legacy_grpc_state}" <<EOF
+STATE_VERSION='7'
+PROTOCOL='singbox-cf'
+BACKEND='singbox'
+CDN_PROVIDER='cloudflare'
+CDN_CLIENT_IP_FAMILY='ipv4'
+VLESS_UUID='11111111-2222-4111-8111-111111111111'
+VLESS_CDN_DOMAIN='node.example.com'
+CLOUDFLARE_ORIGIN_DOMAIN='node.example.com'
+CLOUDFLARE_ZONE_ID='test-zone-id'
+CLOUDFLARE_ZONE_NAME='example.com'
+CLOUDFLARE_ORIGIN_CERT_ID='test-origin-cert-id'
+CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON='2035-01-01T00:00:00Z'
+SINGBOX_VLESS_WS_LOOPBACK_PORT='10087'
+SINGBOX_VLESS_GRPC_LOOPBACK_PORT='10086'
+WEBSOCKET_PATH='/ws-test-path'
+ORIGIN_HEADER_SECRET='test-origin-secret-12345678'
+SUBSCRIPTION_MODE='deploy'
+EOF
+TROJAN_PASSWORD="" TROJAN_PATH="" SINGBOX_TROJAN_LOOPBACK_PORT=""
+EASY_ALL_STATE_FILE_OVERRIDE="${legacy_grpc_state}" load_state
+assert_equal "load_state fallbacks SINGBOX_TROJAN_LOOPBACK_PORT to legacy grpc port" "10086" "${SINGBOX_TROJAN_LOOPBACK_PORT}"
+[[ -n "${TROJAN_PASSWORD}" ]] || fail "load_state did not auto-generate TROJAN_PASSWORD for legacy state"
+[[ "${TROJAN_PATH}" =~ ^/tr- ]] || fail "load_state did not auto-generate valid TROJAN_PATH for legacy state"
 
 # 7. Test in-place migration check
 legacy_state="${TMP_DIR}/legacy.env"
@@ -326,9 +354,10 @@ install_out=$(
         CLOUDFLARE_ORIGIN_DOMAIN="cdn.example.com"
         XHTTP_ORIGIN_DOMAIN="cdn.example.com"
         WEBSOCKET_PATH="/ws-test"
-        GRPC_SERVICE_NAME="grpc-test"
+        TROJAN_PATH="/tr-test"
+        TROJAN_PASSWORD="test-trojan-password"
         SINGBOX_VLESS_WS_LOOPBACK_PORT="10087"
-        SINGBOX_VLESS_GRPC_LOOPBACK_PORT="10086"
+        SINGBOX_TROJAN_LOOPBACK_PORT="10086"
         ORIGIN_HEADER_SECRET="test-secret-12345678"
         SUBSCRIPTION_MODE="link"
         SUBSCRIPTION_DOMAIN="cdn.example.com"

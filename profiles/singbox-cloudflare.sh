@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-# Cloudflare CDN Sing-box (VLESS WebSocket + VLESS gRPC) profile.
+# Cloudflare CDN Sing-box (VLESS WebSocket + Trojan WebSocket) profile.
 #
 # This Profile provides a Sing-box backend over Cloudflare CDN, running both
-# VLESS + WebSocket and VLESS + gRPC on local loopback ports behind
+# VLESS + WebSocket and Trojan + WebSocket on local loopback ports behind
 # Nginx with Cloudflare Origin CA and Origin Key protection.
 # Outputs optimized IPs (top 4 IPs, total 8 nodes, no domain fallback).
 
@@ -24,18 +24,23 @@ fi
 source "${SINGBOX_PROFILE_DIR}/../lib/singbox-core.sh"
 
 DEFAULT_SINGBOX_VLESS_WS_LOOPBACK_PORT="10087"
-DEFAULT_SINGBOX_VLESS_GRPC_LOOPBACK_PORT="10086"
+DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT="10086"
 
 SINGBOX_VLESS_WS_LOOPBACK_PORT="${SINGBOX_VLESS_WS_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_WS_LOOPBACK_PORT}}"
-SINGBOX_VLESS_GRPC_LOOPBACK_PORT="${SINGBOX_VLESS_GRPC_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_GRPC_LOOPBACK_PORT}}"
-GRPC_SERVICE_NAME="${GRPC_SERVICE_NAME:-}"
+SINGBOX_TROJAN_LOOPBACK_PORT="${SINGBOX_TROJAN_LOOPBACK_PORT:-${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}}"
+TROJAN_PASSWORD="${TROJAN_PASSWORD:-}"
+TROJAN_PATH="${TROJAN_PATH:-}"
 ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-}"
 BACKEND="singbox"
 PROTOCOL="singbox-cf"
 CDN_PROVIDER="cloudflare"
 
-generate_grpc_service_name() {
-    printf 'grpc-%s' "$(openssl rand -hex 6)"
+generate_trojan_path() {
+    printf '/tr-%s' "$(openssl rand -hex 12)"
+}
+
+generate_trojan_password() {
+    openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16
 }
 
 read_state_field() {
@@ -93,17 +98,20 @@ collect_install_inputs() {
     WEBSOCKET_PATH=${WEBSOCKET_PATH:-/ws-$(openssl rand -hex 12)}
     [[ "${WEBSOCKET_PATH}" =~ ^/[A-Za-z0-9._~/-]{3,128}$ ]] || die "WEBSOCKET_PATH 无效"
 
-    GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME:-$(generate_grpc_service_name)}
-    [[ "${GRPC_SERVICE_NAME}" =~ ^[A-Za-z0-9._~-]{3,64}$ ]] || die "GRPC_SERVICE_NAME 无效"
+    TROJAN_PATH=${TROJAN_PATH:-$(generate_trojan_path)}
+    [[ "${TROJAN_PATH}" =~ ^/[A-Za-z0-9._~/-]{3,128}$ ]] || die "TROJAN_PATH 无效"
+
+    TROJAN_PASSWORD=${TROJAN_PASSWORD:-$(generate_trojan_password)}
+    [[ -n "${TROJAN_PASSWORD}" ]] || die "TROJAN_PASSWORD 无效"
 
     SINGBOX_VLESS_WS_LOOPBACK_PORT=${SINGBOX_VLESS_WS_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_WS_LOOPBACK_PORT}}
     validate_loopback_port "${SINGBOX_VLESS_WS_LOOPBACK_PORT}" || die "WebSocket 本机端口无效"
 
-    SINGBOX_VLESS_GRPC_LOOPBACK_PORT=${SINGBOX_VLESS_GRPC_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_GRPC_LOOPBACK_PORT}}
-    validate_loopback_port "${SINGBOX_VLESS_GRPC_LOOPBACK_PORT}" || die "gRPC 本机端口无效"
+    SINGBOX_TROJAN_LOOPBACK_PORT=${SINGBOX_TROJAN_LOOPBACK_PORT:-${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}}
+    validate_loopback_port "${SINGBOX_TROJAN_LOOPBACK_PORT}" || die "Trojan 本机端口无效"
 
-    [[ "${SINGBOX_VLESS_WS_LOOPBACK_PORT}" != "${SINGBOX_VLESS_GRPC_LOOPBACK_PORT}" ]] \
-        || die "WebSocket 与 gRPC 本机端口不能冲突"
+    [[ "${SINGBOX_VLESS_WS_LOOPBACK_PORT}" != "${SINGBOX_TROJAN_LOOPBACK_PORT}" ]] \
+        || die "VLESS 与 Trojan 本机端口不能冲突"
 
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "Origin header 密钥无效"
@@ -132,8 +140,8 @@ load_state() {
         CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID
         CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
         CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID
-        SINGBOX_VLESS_WS_LOOPBACK_PORT SINGBOX_VLESS_GRPC_LOOPBACK_PORT
-        WEBSOCKET_PATH GRPC_SERVICE_NAME
+        SINGBOX_VLESS_WS_LOOPBACK_PORT SINGBOX_TROJAN_LOOPBACK_PORT
+        WEBSOCKET_PATH TROJAN_PASSWORD TROJAN_PATH
         ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
     )
@@ -149,13 +157,23 @@ load_state() {
         && validate_uuid "${VLESS_UUID:-}" || die "Cloudflare 状态缺少有效域名或 UUID"
     WEBSOCKET_PATH=${WEBSOCKET_PATH:-/ws-$(openssl rand -hex 12)}
     [[ "${WEBSOCKET_PATH}" =~ ^/[A-Za-z0-9._~/-]{3,128}$ ]] || die "状态中的 WEBSOCKET_PATH 无效"
-    GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME:-$(generate_grpc_service_name)}
-    [[ "${GRPC_SERVICE_NAME}" =~ ^[A-Za-z0-9._~-]{3,64}$ ]] || die "状态中的 GRPC_SERVICE_NAME 无效"
+
+    # Backward compatibility for upgrading from gRPC state
+    if [[ -z "${SINGBOX_TROJAN_LOOPBACK_PORT:-}" ]]; then
+        local legacy_grpc_port
+        legacy_grpc_port=$(env -i bash -c 'source "$1" && printf "%s" "${SINGBOX_VLESS_GRPC_LOOPBACK_PORT:-}"' _ "${state_path}")
+        SINGBOX_TROJAN_LOOPBACK_PORT="${legacy_grpc_port:-${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}}"
+    fi
+    TROJAN_PASSWORD=${TROJAN_PASSWORD:-$(generate_trojan_password)}
+    [[ -n "${TROJAN_PASSWORD}" ]] || die "状态中的 TROJAN_PASSWORD 无效"
+    TROJAN_PATH=${TROJAN_PATH:-$(generate_trojan_path)}
+    [[ "${TROJAN_PATH}" =~ ^/[A-Za-z0-9._~/-]{3,128}$ ]] || die "状态中的 TROJAN_PATH 无效"
+
     SINGBOX_VLESS_WS_LOOPBACK_PORT=${SINGBOX_VLESS_WS_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_WS_LOOPBACK_PORT}}
-    SINGBOX_VLESS_GRPC_LOOPBACK_PORT=${SINGBOX_VLESS_GRPC_LOOPBACK_PORT:-${DEFAULT_SINGBOX_VLESS_GRPC_LOOPBACK_PORT}}
+    SINGBOX_TROJAN_LOOPBACK_PORT=${SINGBOX_TROJAN_LOOPBACK_PORT:-${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}}
     validate_loopback_port "${SINGBOX_VLESS_WS_LOOPBACK_PORT}" || die "状态中的 WebSocket 端口无效"
-    validate_loopback_port "${SINGBOX_VLESS_GRPC_LOOPBACK_PORT}" || die "状态中的 gRPC 端口无效"
-    [[ "${SINGBOX_VLESS_WS_LOOPBACK_PORT}" != "${SINGBOX_VLESS_GRPC_LOOPBACK_PORT}" ]] || die "端口冲突"
+    validate_loopback_port "${SINGBOX_TROJAN_LOOPBACK_PORT}" || die "状态中的 Trojan 端口无效"
+    [[ "${SINGBOX_VLESS_WS_LOOPBACK_PORT}" != "${SINGBOX_TROJAN_LOOPBACK_PORT}" ]] || die "端口冲突"
     [[ "${CLOUDFLARE_ORIGIN_DOMAIN}" == "${VLESS_CDN_DOMAIN}" ]] \
         || die "Cloudflare 状态不是单一 Proxied 源站域名架构"
     [[ -n "${CLOUDFLARE_ZONE_ID:-}" && -n "${CLOUDFLARE_ZONE_NAME:-}" \
@@ -187,8 +205,8 @@ save_state() {
             CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID \
             CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON \
             CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID \
-            SINGBOX_VLESS_WS_LOOPBACK_PORT SINGBOX_VLESS_GRPC_LOOPBACK_PORT \
-            WEBSOCKET_PATH GRPC_SERVICE_NAME ORIGIN_HEADER_SECRET ALLOWED_TOKENS \
+            SINGBOX_VLESS_WS_LOOPBACK_PORT SINGBOX_TROJAN_LOOPBACK_PORT \
+            WEBSOCKET_PATH TROJAN_PASSWORD TROJAN_PATH ORIGIN_HEADER_SECRET ALLOWED_TOKENS \
             SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do
             case "${v}" in
             STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}" ;;
@@ -212,10 +230,11 @@ singbox_render_config() {
     install -d -m 0755 "${SINGBOX_DIR}"
     jq -n \
         --argjson ws_port "${SINGBOX_VLESS_WS_LOOPBACK_PORT}" \
-        --argjson grpc_port "${SINGBOX_VLESS_GRPC_LOOPBACK_PORT}" \
+        --argjson trojan_port "${SINGBOX_TROJAN_LOOPBACK_PORT}" \
         --arg vless_uuid "${VLESS_UUID}" \
         --arg ws_path "${WEBSOCKET_PATH}" \
-        --arg grpc_service "${GRPC_SERVICE_NAME}" '
+        --arg trojan_pw "${TROJAN_PASSWORD}" \
+        --arg trojan_path "${TROJAN_PATH}" '
     {
       log: { level: "warn" },
       inbounds: [
@@ -237,14 +256,16 @@ singbox_render_config() {
           }
         },
         {
-          type: "vless",
-          tag: "vless-grpc-in",
+          type: "trojan",
+          tag: "trojan-ws-in",
           listen: "127.0.0.1",
-          listen_port: $grpc_port,
-          users: [{ name: "vless-grpc-user", uuid: $vless_uuid }],
+          listen_port: $trojan_port,
+          users: [{ name: "trojan-user", password: $trojan_pw }],
           transport: {
-            type: "grpc",
-            service_name: $grpc_service
+            type: "ws",
+            path: $trojan_path,
+            max_early_data: 2048,
+            early_data_header_name: "Sec-WebSocket-Protocol"
           },
           multiplex: {
             enabled: true,
@@ -324,18 +345,20 @@ EOF
         access_log off;
     }
 
-    location ^~ /${GRPC_SERVICE_NAME}/ {
+    location = ${TROJAN_PATH} {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
-        client_max_body_size 0;
-        client_body_timeout 1h;
-        grpc_set_header Host ${VLESS_CDN_DOMAIN};
-        grpc_set_header X-Real-IP \$remote_addr;
-        grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        grpc_set_header X-Forwarded-Proto https;
-        grpc_socket_keepalive on;
-        grpc_read_timeout 1h;
-        grpc_send_timeout 1h;
-        grpc_pass grpc://127.0.0.1:${SINGBOX_VLESS_GRPC_LOOPBACK_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host ${VLESS_CDN_DOMAIN};
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_buffering off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        proxy_pass http://127.0.0.1:${SINGBOX_TROJAN_LOOPBACK_PORT};
         access_log off;
     }
 
@@ -350,10 +373,10 @@ EOF
 }
 
 cloudflare_add_singbox_header_rule() {
-    local ruleset=$1 host=$2 ws_path=$3 grpc_service=$4 ref
-    ref=$(cloudflare_ref "header:${host}:${ws_path}:${grpc_service}")
+    local ruleset=$1 host=$2 ws_path=$3 trojan_path=$4 ref
+    ref=$(cloudflare_ref "header:${host}:${ws_path}:${trojan_path}")
     local expr
-    expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${ws_path}\") or starts_with(http.request.uri.path, \"/${grpc_service}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"
+    expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${ws_path}\") or starts_with(http.request.uri.path, \"${trojan_path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"
     cloudflare_upsert_rule "${ruleset}" "${ref}" \
         "$(jq -cn --arg ref "${ref}" --arg expr "${expr}" --arg key "${ORIGIN_HEADER_SECRET}" \
             '{ref:$ref,description:"easy_all singbox origin header",expression:$expr,action:"rewrite",action_parameters:{headers:{"X-Easy-All-Origin-Key":{operation:"set",value:$key}}}}')"
@@ -363,7 +386,7 @@ cloudflare_configure_rules() {
     local host transform strict ref
     host=${VLESS_CDN_DOMAIN}
     transform=$(cloudflare_managed_ruleset "easy_all singbox headers ${host}" "http_request_late_transform")
-    cloudflare_add_singbox_header_rule "${transform}" "${host}" "${WEBSOCKET_PATH}" "${GRPC_SERVICE_NAME}"
+    cloudflare_add_singbox_header_rule "${transform}" "${host}" "${WEBSOCKET_PATH}" "${TROJAN_PATH}"
     if subscription_enabled \
         && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
         cloudflare_add_header_rule "${transform}" \
@@ -438,11 +461,11 @@ build_vless_ws_link() {
         "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "${node_name}")"
 }
 
-build_vless_grpc_link() {
+build_trojan_ws_link() {
     local server=$1 node_name=$2
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=grpc&serviceName=%s&sni=%s&fp=chrome&alpn=h2&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${server}" "${GRPC_SERVICE_NAME}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${node_name}")"
+    printf 'trojan://%s@%s:443?security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s#%s' \
+        "$(uri_encode "${TROJAN_PASSWORD}")" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "$(uri_encode "${TROJAN_PATH}")" "$(uri_encode "${node_name}")"
 }
 
 build_mihomo_ws_node() {
@@ -458,21 +481,22 @@ build_mihomo_ws_node() {
         "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
 }
 
-build_mihomo_grpc_node() {
+build_mihomo_trojan_node() {
     local server=$1 node_name=$2
     resolve_cdn_client_ip_family
     jq -nr --arg name "${node_name}" --arg server "${server}" \
-        --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg service "${GRPC_SERVICE_NAME}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" '
-        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-        "    uuid: \($uuid|@json)\n    network: grpc\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n" +
-        "    grpc-opts:\n      grpc-service-name: \($service|@json)\n"'
+        --arg host "${VLESS_CDN_DOMAIN}" --arg password "${TROJAN_PASSWORD}" \
+        --arg path "${TROJAN_PATH}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" '
+        "  - name: \($name|@json)\n    type: trojan\n    server: \($server|@json)\n    port: 443\n" +
+        "    password: \($password|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
+        "    sni: \($host|@json)\n    client-fingerprint: chrome\n" +
+        "    skip-cert-verify: false\n    ip-version: \($ip_version)\n" +
+        "    alpn:\n      - http/1.1\n" +
+        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
 }
 
 # Strictly filter out any fallback lines: select top 4 high-quality unique IPs.
-# 4 IPs x 2 protocols (WS + gRPC) = 8 nodes (no domain fallback).
+# 4 IPs x 2 protocols (WS + Trojan) = 8 nodes (no domain fallback).
 cloudflare_singbox_client_candidates() {
     if cdn_optimization_enabled && globalping_cache_valid; then
         jq -r '
@@ -505,7 +529,7 @@ build_node_links() {
         [[ -n "${ip}" ]] || continue
         build_vless_ws_link "${ip}" "WS${label}"
         printf '\n'
-        build_vless_grpc_link "${ip}" "GRPC${label}"
+        build_trojan_ws_link "${ip}" "TROJAN${label}"
         printf '\n'
     done < <(cloudflare_singbox_client_candidates)
 }
@@ -515,7 +539,7 @@ build_mihomo_nodes() {
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
         build_mihomo_ws_node "${ip}" "WS${label}"
-        build_mihomo_grpc_node "${ip}" "GRPC${label}"
+        build_mihomo_trojan_node "${ip}" "TROJAN${label}"
     done < <(cloudflare_singbox_client_candidates)
 }
 
@@ -525,7 +549,7 @@ build_mihomo_proxy_names() {
     local -a all_nodes=()
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        all_nodes+=("WS${label}" "GRPC${label}")
+        all_nodes+=("WS${label}" "TROJAN${label}")
     done < <(cloudflare_singbox_client_candidates)
 
     local node
@@ -539,7 +563,7 @@ build_mihomo_proxy_groups() {
     local ip label carrier
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        all_nodes+=("WS${label}" "GRPC${label}")
+        all_nodes+=("WS${label}" "TROJAN${label}")
     done < <(cloudflare_singbox_client_candidates)
 
     printf '    - name: "AUTO"\n'
@@ -566,8 +590,8 @@ build_singbox_subscription_json() {
 
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        local n_ws="WS${label}" n_grpc="GRPC${label}"
-        all_nodes+=("${n_ws}" "${n_grpc}")
+        local n_ws="WS${label}" n_trojan="TROJAN${label}"
+        all_nodes+=("${n_ws}" "${n_trojan}")
         # Add WS outbound
         outbounds_json=$(jq -c \
             --arg tag "${n_ws}" --arg server "${ip}" --arg host "${host}" \
@@ -591,27 +615,27 @@ build_singbox_subscription_json() {
               },
               packet_encoding: "xudp"
             }]' <<<"${outbounds_json}")
-        # Add gRPC outbound
+        # Add Trojan outbound
         outbounds_json=$(jq -c \
-            --arg tag "${n_grpc}" --arg server "${ip}" --arg host "${host}" \
-            --arg uuid "${VLESS_UUID}" --arg service "${GRPC_SERVICE_NAME}" \
+            --arg tag "${n_trojan}" --arg server "${ip}" --arg host "${host}" \
+            --arg password "${TROJAN_PASSWORD}" --arg path "${TROJAN_PATH}" \
             '. + [{
-              type: "vless",
+              type: "trojan",
               tag: $tag,
               server: $server,
               server_port: 443,
-              uuid: $uuid,
+              password: $password,
               tls: {
                 enabled: true,
                 server_name: $host,
                 utls: { enabled: true, fingerprint: "chrome" },
-                alpn: ["h2"]
+                alpn: ["http/1.1"]
               },
               transport: {
-                type: "grpc",
-                service_name: $service
-              },
-              packet_encoding: "xudp"
+                type: "ws",
+                path: $path,
+                headers: { Host: $host }
+              }
             }]' <<<"${outbounds_json}")
     done < <(cloudflare_singbox_client_candidates)
 
@@ -767,7 +791,7 @@ write_subscriptions() {
     build_singbox_subscription_json >"${singbox_file}"
 
     grep -Fq 'network: ws' "${mihomo_file}" || die "Mihomo 订阅缺少 WS 节点"
-    grep -Fq 'network: grpc' "${mihomo_file}" || die "Mihomo 订阅缺少 gRPC 节点"
+    grep -Fq 'type: trojan' "${mihomo_file}" || die "Mihomo 订阅缺少 Trojan 节点"
 
     rm -rf -- "${SUBSCRIPTION_DIR}"
     install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
@@ -778,7 +802,7 @@ write_subscriptions() {
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS WebSocket + gRPC over Cloudflare CDN（Sing-box 后端，精选 8 节点）\n节点链接:\n%s\n\n' "$(build_node_links)"
+    printf '\n协议: VLESS WS + Trojan WS over Cloudflare CDN（Sing-box 后端，精选 8 节点）\n节点链接:\n%s\n\n' "$(build_node_links)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_nodes
 }
@@ -787,7 +811,7 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: VLESS WS + gRPC（Cloudflare CDN Sing-box 双链路）\n后端: Sing-box (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled (精选 8 节点，无域名兜底)\n' \
+    printf '协议: VLESS WS + Trojan WS（Cloudflare CDN Sing-box 双链路）\n后端: Sing-box (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled (精选 8 节点，无域名兜底)\n' \
         "$(singbox_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"
     show_globalping_status
 }
@@ -825,7 +849,6 @@ refresh_cloudflare_cdn_ips() {
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
     persist_globalping_token
-    cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
     if ! refresh_globalping_cache; then
         refresh_status=1
         warn "Globalping 刷新失败，保留上一版本有效缓存"
@@ -849,16 +872,17 @@ migrate_from_xhttp_cloudflare() {
 
     VLESS_UUID="${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}"
     WEBSOCKET_PATH="${WEBSOCKET_PATH:-/ws-$(openssl rand -hex 12)}"
-    GRPC_SERVICE_NAME="${GRPC_SERVICE_NAME:-$(generate_grpc_service_name)}"
+    TROJAN_PATH="${TROJAN_PATH:-$(generate_trojan_path)}"
+    TROJAN_PASSWORD="${TROJAN_PASSWORD:-$(generate_trojan_password)}"
     SINGBOX_VLESS_WS_LOOPBACK_PORT="${DEFAULT_SINGBOX_VLESS_WS_LOOPBACK_PORT}"
-    SINGBOX_VLESS_GRPC_LOOPBACK_PORT="${DEFAULT_SINGBOX_VLESS_GRPC_LOOPBACK_PORT}"
+    SINGBOX_TROJAN_LOOPBACK_PORT="${DEFAULT_SINGBOX_TROJAN_LOOPBACK_PORT}"
     ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-$(generate_secret)}"
     XHTTP_ORIGIN_DOMAIN="${VLESS_CDN_DOMAIN}"
     BACKEND="singbox"
     PROTOCOL="singbox-cf"
     CDN_PROVIDER="cloudflare"
 
-    info "[1/6] 下载 Sing-box 核心并生成 VLESS WS + gRPC 双链路配置"
+    info "[1/6] 下载 Sing-box 核心并生成 VLESS WS + Trojan WS 双链路配置"
     download_singbox
     singbox_render_config
     install_singbox_service
@@ -868,7 +892,7 @@ migrate_from_xhttp_cloudflare() {
     systemctl disable easy_all-xray.service >/dev/null 2>&1 || true
     remove_quota_timer >/dev/null 2>&1 || true
 
-    info "[3/6] 同步 Cloudflare 边缘规则与 gRPC 支持"
+    info "[3/6] 同步 Cloudflare 边缘规则"
     cloudflare_prepare_origin
     cloudflare_issue_origin_certificate 0
     cloudflare_configure_cdn
@@ -888,7 +912,7 @@ migrate_from_xhttp_cloudflare() {
     if subscription_enabled; then
         show_subscription
     fi
-    success "已成功就地平滑迁移至 Sing-box（VLESS-WS + VLESS-gRPC 双链路，精选 8 节点）！"
+    success "已成功就地平滑迁移至 Sing-box（VLESS-WS + Trojan-WS 双链路，精选 8 节点）！"
 }
 
 rollback_fresh_install() {
@@ -1037,7 +1061,11 @@ purge_cloudflare_resources_before_uninstall() {
     cloudflare_collect_api_token
 
     cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
-        "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${WEBSOCKET_PATH}:${GRPC_SERVICE_NAME}")"
+        "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${WEBSOCKET_PATH}:${TROJAN_PATH}")"
+    if [[ -n "${GRPC_SERVICE_NAME:-}" ]]; then
+        cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
+            "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${WEBSOCKET_PATH}:${GRPC_SERVICE_NAME}")" >/dev/null 2>&1 || true
+    fi
     if subscription_enabled \
         && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
         cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
