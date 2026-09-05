@@ -372,5 +372,37 @@ install_out=$(
 )
 assert_contains "install_all pipeline runs to completion without unresolved symbols" "${install_out}" "INSTALL_ALL_FINISHED_SUCCESSFULLY"
 
+# 10. Test apply_easy_all, apply_cloud_resources, update_subscription reset UPDATE_SUB_ROLLBACK_ON_EXIT
+(
+    require_root() { :; }
+    collect_installed_state() { :; }
+    configure_bbr_tcp() { :; }
+    configure_ufw() { :; }
+    finish_singbox_apply() { :; }
+    install_globalping_refresh_timer() { :; }
+    show_subscription() { :; }
+    cloudflare_prepare_origin() { :; }
+    cloudflare_issue_origin_certificate() { :; }
+    cloudflare_configure_cdn() { :; }
+    cloudflare_validate_cdn_health() { :; }
+    cloudflare_finalize_certificate_rotation() { :; }
+    cloudflare_clear_api_token() { :; }
+    choose_subscription_mode() { :; }
+    collect_subscription_link_domain() { :; }
+    choose_subscription_download_name() { :; }
+    choose_monthly_quota() { :; }
+    ensure_allowed_tokens() { :; }
+    cloudflare_cleanup_previous_subscription_host() { :; }
+
+    apply_easy_all
+    assert_equal "apply_easy_all leaves UPDATE_SUB_ROLLBACK_ON_EXIT=0" "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
+
+    apply_cloud_resources
+    assert_equal "apply_cloud_resources leaves UPDATE_SUB_ROLLBACK_ON_EXIT=0" "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
+
+    update_subscription
+    assert_equal "update_subscription leaves UPDATE_SUB_ROLLBACK_ON_EXIT=0" "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
+)
+
 printf 'ok - singbox cloudflare profile tests passed\n'
 

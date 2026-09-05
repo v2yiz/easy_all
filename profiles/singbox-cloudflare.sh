@@ -1028,6 +1028,8 @@ apply_easy_all() {
     configure_ufw
     finish_singbox_apply
     install_globalping_refresh_timer
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    show_subscription
     success "Cloudflare Sing-box 本机配置已应用；未修改 Cloudflare 资源"
 }
 
@@ -1045,6 +1047,8 @@ apply_cloud_resources() {
     cloudflare_finalize_certificate_rotation
     install_globalping_refresh_timer
     cloudflare_clear_api_token
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    show_subscription
     success "Cloudflare DNS、Origin CA、规则和本机配置已应用"
 }
 
@@ -1080,6 +1084,8 @@ update_subscription() {
     cloudflare_finalize_certificate_rotation
     install_globalping_refresh_timer
     cloudflare_clear_api_token
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    show_subscription
     success "Cloudflare 订阅、Origin CA 与回源规则已更新"
 }
 
