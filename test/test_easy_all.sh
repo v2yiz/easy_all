@@ -385,7 +385,7 @@ test_mihomo_template() {
     assert_equal "Mihomo globally rejects UDP 443 before domain rules" \
         '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' "${first_rule}"
     assert_contains "Mihomo template uses official Loyalsoldier clash-rules release" \
-        "raw.githubusercontent.com/Loyalsoldier/clash-rules/release" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo template rule-providers route through PROXY" \
         "proxy: PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \
