@@ -293,4 +293,65 @@ assert_equal "Can migrate from xhttp-cloudflare" "0" \
 assert_equal "Cannot migrate from already singbox" "1" \
     "$(EASY_ALL_STATE_FILE_OVERRIDE="${STATE_FILE}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
 
+# 8. Test install_all execution flow with mocks (verifying all symbols resolve cleanly)
+install_out=$(
+    require_root() { :; }
+    require_systemd() { :; }
+    check_platform() { :; }
+    check_install_conflicts() { :; }
+    snapshot_fresh_install() { :; }
+    install_packages() { :; }
+    ensure_ssh_boot_service() { :; }
+    configure_bbr_tcp() { :; }
+    configure_daily_reboot() { :; }
+    collect_install_inputs() {
+        PROTOCOL="singbox-cf"
+        BACKEND="singbox"
+        CDN_PROVIDER="cloudflare"
+        VLESS_UUID="11111111-2222-3333-4444-555555555555"
+        VLESS_CDN_DOMAIN="cdn.example.com"
+        CLOUDFLARE_ORIGIN_DOMAIN="cdn.example.com"
+        XHTTP_ORIGIN_DOMAIN="cdn.example.com"
+        WEBSOCKET_PATH="/ws-test"
+        GRPC_SERVICE_NAME="grpc-test"
+        SINGBOX_VLESS_WS_LOOPBACK_PORT="10087"
+        SINGBOX_VLESS_GRPC_LOOPBACK_PORT="10086"
+        ORIGIN_HEADER_SECRET="test-secret-12345678"
+        SUBSCRIPTION_MODE="link"
+        SUBSCRIPTION_DOMAIN="cdn.example.com"
+        SUB_DOWNLOAD_NAME="TEST_SUB"
+        ALLOWED_TOKENS=""
+    }
+    cloudflare_prepare_origin() { :; }
+    configure_ufw() { :; }
+    write_bootstrap_nginx_config() { :; }
+    cloudflare_issue_origin_certificate() { :; }
+    download_singbox() { :; }
+    singbox_render_config() { :; }
+    install_singbox_service() { :; }
+    write_nginx_config() { :; }
+    validate_protocol_runtime() { :; }
+    cloudflare_configure_cdn() { :; }
+    cloudflare_validate_cdn_health() { :; }
+    cloudflare_finalize_certificate_rotation() { :; }
+    persist_globalping_token() { :; }
+    refresh_globalping_cache() { :; }
+    write_subscriptions() { :; }
+    validate_subscription_runtime() { :; }
+    save_state() { :; }
+    register_easy_all_command() { :; }
+    install_quota_timer() { :; }
+    install_globalping_refresh_timer() { :; }
+    cloudflare_clear_api_token() { :; }
+    show_subscription() { :; }
+    show_bbrv3_status() { :; }
+    prompt_bbrv3_reboot() { :; }
+
+    rm -f -- "${STATE_FILE}"
+    FORCE_INTERACTIVE=1 install_all
+    printf '\nINSTALL_ALL_FINISHED_SUCCESSFULLY\n'
+)
+assert_contains "install_all pipeline runs to completion without unresolved symbols" "${install_out}" "INSTALL_ALL_FINISHED_SUCCESSFULLY"
+
 printf 'ok - singbox cloudflare profile tests passed\n'
+

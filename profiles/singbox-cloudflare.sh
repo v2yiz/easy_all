@@ -405,7 +405,6 @@ validate_protocol_runtime() {
 
 finish_singbox_apply() {
     local sync_cloud=${1:-0}
-    write_certificate
     singbox_render_config
     write_nginx_config
     if ! systemctl is-active --quiet "${SINGBOX_SERVICE}"; then
@@ -418,7 +417,7 @@ finish_singbox_apply() {
         write_subscriptions
         validate_subscription_runtime
     else
-        cleanup_disabled_subscription_runtime
+        remove_subscriptions
     fi
     save_state
     ((sync_cloud == 1)) || return 0
@@ -946,8 +945,20 @@ migrate_from_xhttp_cloudflare() {
     success "已成功就地平滑迁移至 Sing-box（VLESS-WS + VLESS-gRPC 双链路，三网精选 18 节点）！"
 }
 
+rollback_fresh_install() {
+    stop_services
+    remove_quota_timer
+    remove_globalping_refresh_timer
+    cloudflare_remove_origin_firewall_rules
+    restore_preinstall_firewall
+    rm -f -- "${SINGBOX_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${SINGBOX_DIR}"
+    cloudflare_clear_api_token
+}
+
 install_all() {
-    [[ -t 0 ]] || die "安装必须在交互终端中执行"
+    [[ -t 0 || "${FORCE_INTERACTIVE:-0}" == "1" ]] || die "安装必须在交互终端中执行"
     CDN_PROVIDER="cloudflare"
     BACKEND="singbox"
     PROTOCOL="singbox-cf"
@@ -966,34 +977,39 @@ install_all() {
     fi
 
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
-    require_fresh_environment
-    acquire_runtime_write_lock
-    record_initial_environment
-    collect_install_inputs
-    info "正在配置 XanMod LTS BBRv3、TCP 优化与日常重启..."
+    check_platform
+    check_install_conflicts
+    snapshot_fresh_install
+    install_packages
+    ensure_ssh_boot_service
     configure_bbr_tcp
     configure_daily_reboot
-    install_system_dependencies
-    download_singbox
-    cloudflare_configure_origin_firewall
-    xhttp_configure_ufw
+    collect_install_inputs
     cloudflare_prepare_origin
-    cloudflare_issue_origin_certificate 1
+    configure_ufw
+    write_bootstrap_nginx_config
+    cloudflare_issue_origin_certificate 0
+    download_singbox
+    singbox_render_config
+    install_singbox_service
+    write_nginx_config
+    validate_protocol_runtime
     cloudflare_configure_cdn
-    finish_singbox_apply 1
     cloudflare_validate_cdn_health
     cloudflare_finalize_certificate_rotation
-    install_globalping_refresh_timer
+    persist_globalping_token
+    refresh_globalping_cache || warn "首次 Globalping 测量失败，暂回退 CDN 域名"
+    subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
+    save_state
     register_easy_all_command
-    refresh_cloudflare_cdn_ips
-    cloudflare_clear_api_token
+    install_quota_timer
+    install_globalping_refresh_timer
     INSTALL_ROLLBACK_ON_EXIT=0
-    release_runtime_write_lock
+    cloudflare_clear_api_token
+    show_subscription
     success "easy_all Cloudflare CDN Sing-box 安装完成"
-    show_node
-    if subscription_enabled; then
-        show_subscription
-    fi
+    show_bbrv3_status
+    prompt_bbrv3_reboot
 }
 
 apply_easy_all() {
@@ -1059,44 +1075,83 @@ update_subscription() {
     success "Cloudflare 订阅、Origin CA 与回源规则已更新"
 }
 
+purge_cloudflare_resources_before_uninstall() {
+    local host header_name strict_name
+    [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
+    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
+        && -n "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
+        && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
+        || die "状态缺少 Cloudflare 证书或 ruleset ID，已停止卸载；本机状态仍保留"
+    cloudflare_collect_api_token
+
+    cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
+        "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${WEBSOCKET_PATH}:${GRPC_SERVICE_NAME}")"
+    if subscription_enabled \
+        && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
+        cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
+            "$(cloudflare_ref "header:$(active_subscription_link_domain):/subscribe")"
+    fi
+    while IFS= read -r host; do
+        cloudflare_purge_managed_rule "${CLOUDFLARE_STRICT_RULESET_ID}" \
+            "$(cloudflare_ref "strict:${host}")"
+    done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
+
+    header_name="easy_all singbox headers ${VLESS_CDN_DOMAIN}"
+    strict_name="easy_all singbox strict ${VLESS_CDN_DOMAIN}"
+    cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_HEADER_RULESET_ID}" \
+        "${header_name}" "http_request_late_transform"
+    cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_STRICT_RULESET_ID}" \
+        "${strict_name}" "http_config_settings"
+
+    while IFS= read -r host; do
+        cloudflare_purge_managed_dns_record "${host}"
+    done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
+
+    cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null \
+        || die "Cloudflare Origin CA 吊销失败，已停止卸载；本机状态仍保留"
+    cloudflare_clear_api_token
+    success "easy_all 托管的 Cloudflare DNS、规则、ruleset 与 Origin CA 证书已清理"
+}
+
 uninstall_all() {
     local mode=${1:-} answer
     require_root
     [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
         || die "uninstall 不支持参数：${mode}"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all Cloudflare Sing-box 尚未安装"
-    [[ ! -f "${STATE_FILE}" ]] || load_state
-    if [[ "${FORCE:-0}" != "1" && ! -t 0 ]]; then
-        die "非交互卸载必须显式设置 FORCE=1"
+    if [[ "${mode}" == "--purge-cloud" && ! -f "${STATE_FILE}" ]]; then
+        die "缺少状态文件，无法安全识别 easy_all 托管的 Cloudflare 资源；本机内容未删除"
     fi
-    if [[ "${FORCE:-0}" != "1" ]]; then
-        read_bilingual \
-            '确认删除 easy_all Cloudflare CDN Sing-box 本机服务、状态和证书？默认保留远端 Cloudflare 资源。[y/N]（直接回车取消）:' \
-            'Delete easy_all Cloudflare CDN Sing-box local services, state and certificates? Cloudflare resources are kept by default. [y/N] (press Enter to cancel):' answer
+    [[ ! -f "${STATE_FILE}" ]] || load_state
+    [[ "${FORCE:-0}" == 1 || -t 0 ]] \
+        || die "非交互卸载必须设置 FORCE=1"
+    UNINSTALL_PURGE_CLOUD=0
+    [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1
+    if [[ "${FORCE:-0}" != 1 ]]; then
+        if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
+            read_bilingual \
+                '删除本机内容以及 easy_all 托管的 Cloudflare DNS、规则和 Origin CA 证书？[y/N]:' \
+                'Delete local content and easy_all-managed Cloudflare DNS, rules, and Origin CA certificate? [y/N]:' answer
+        else
+            read_bilingual \
+                '删除本机内容（Cloudflare 资源保留）？[y/N]:' \
+                'Delete local content (Cloudflare resources are kept)? [y/N]:' answer
+        fi
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
+    purge_cloudflare_resources_before_uninstall
     stop_services
+    remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall
-    if [[ "${mode}" == "--purge-cloud" ]]; then
-        cloudflare_collect_api_token
-        cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
-            "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${WEBSOCKET_PATH}:${GRPC_SERVICE_NAME}")"
-        cloudflare_purge_managed_rule "${CLOUDFLARE_STRICT_RULESET_ID:-}" \
-            "$(cloudflare_ref "strict:${VLESS_CDN_DOMAIN}")"
-        if subscription_enabled && [[ "${SUBSCRIPTION_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]]; then
-            cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
-                "$(cloudflare_ref "header:${SUBSCRIPTION_DOMAIN}:/subscribe")"
-            cloudflare_purge_managed_rule "${CLOUDFLARE_STRICT_RULESET_ID:-}" \
-                "$(cloudflare_ref "strict:${SUBSCRIPTION_DOMAIN}")"
-            cloudflare_delete_proxied_a "${SUBSCRIPTION_DOMAIN}"
-        fi
-        cloudflare_delete_proxied_a "${VLESS_CDN_DOMAIN}"
-        cloudflare_clear_api_token
-    fi
+    remove_daily_reboot_schedule
     rm -f -- "${SINGBOX_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${SINGBOX_DIR}"
-    success "easy_all Cloudflare CDN Sing-box 已卸载"
+    if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
+        success "本机内容及 easy_all 托管的 Cloudflare 远端资源已卸载"
+    else
+        success "本机内容已卸载；远端 Cloudflare 资源已保留"
+    fi
 }
