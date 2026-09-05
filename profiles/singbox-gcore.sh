@@ -246,10 +246,9 @@ build_singbox_subscription_json() {
             action: "route",
             server: "local"
           },
-          { rule_set: "geosite-cn", action: "route", server: "local" },
-          { rule_set: ["geosite-category-ai", "geosite-geolocation-!cn"], action: "route", server: "fakeip" }
+          { rule_set: "geosite-cn", action: "route", server: "local" }
         ],
-        final: "local",
+        final: "fakeip",
         strategy: "prefer_ipv4"
       },
       experimental: {
@@ -278,7 +277,8 @@ build_singbox_subscription_json() {
           auto_route: true,
           strict_route: false,
           stack: "mixed",
-          endpoint_independent_nat: true
+          endpoint_independent_nat: true,
+          mtu: 1500
         }
       ],
       outbounds: [
@@ -370,28 +370,28 @@ build_singbox_subscription_json() {
             tag: "geosite-category-ai",
             type: "remote",
             format: "binary",
-            url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ai-chat-!cn.srs",
+            url: "https://fastly.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-category-ai-chat-!cn.srs",
             http_client: "proxy-client"
           },
           {
             tag: "geosite-geolocation-!cn",
             type: "remote",
             format: "binary",
-            url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
+            url: "https://fastly.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
             http_client: "proxy-client"
           },
           {
             tag: "geosite-cn",
             type: "remote",
             format: "binary",
-            url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+            url: "https://fastly.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
             http_client: "proxy-client"
           },
           {
             tag: "geoip-cn",
             type: "remote",
             format: "binary",
-            url: "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+            url: "https://fastly.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs",
             http_client: "proxy-client"
           }
         ],
