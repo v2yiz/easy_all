@@ -301,6 +301,21 @@ write_nginx_config() {
     {
         write_subscription_nginx_maps
         cat <<EOF
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+upstream cf_vless_backend {
+    server 127.0.0.1:${SINGBOX_VLESS_WS_LOOPBACK_PORT};
+    keepalive 32;
+}
+
+upstream cf_trojan_backend {
+    server 127.0.0.1:${SINGBOX_TROJAN_LOOPBACK_PORT};
+    keepalive 32;
+}
+
 server {
     listen 80;
     listen [::]:80;
@@ -309,8 +324,8 @@ server {
 }
 
 server {
-    listen 443 ssl ${listen_h2}backlog=4096;
-    listen [::]:443 ssl ${listen_h2}backlog=4096;${http2_directive}
+    listen 443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;
+    listen [::]:443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;${http2_directive}
     server_name ${XHTTP_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -332,7 +347,7 @@ EOF
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \$connection_upgrade;
         proxy_set_header Host ${VLESS_CDN_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -341,7 +356,8 @@ EOF
         proxy_connect_timeout 5s;
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
-        proxy_pass http://127.0.0.1:${SINGBOX_VLESS_WS_LOOPBACK_PORT};
+        proxy_socket_keepalive on;
+        proxy_pass http://cf_vless_backend;
         access_log off;
     }
 
@@ -349,7 +365,7 @@ EOF
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \$connection_upgrade;
         proxy_set_header Host ${VLESS_CDN_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -358,7 +374,8 @@ EOF
         proxy_connect_timeout 5s;
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
-        proxy_pass http://127.0.0.1:${SINGBOX_TROJAN_LOOPBACK_PORT};
+        proxy_socket_keepalive on;
+        proxy_pass http://cf_trojan_backend;
         access_log off;
     }
 

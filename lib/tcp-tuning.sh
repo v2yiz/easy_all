@@ -210,11 +210,11 @@ configure_bbr_tcp() {
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# TCP buffer
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.ipv4.tcp_rmem = 4096 131072 16777216
-net.ipv4.tcp_wmem = 4096 16384 16777216
+# TCP buffer (32 MB ceiling for high-BDP cross-border links)
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_rmem = 4096 131072 33554432
+net.ipv4.tcp_wmem = 4096 16384 33554432
 net.ipv4.tcp_moderate_rcvbuf = 1
 
 # PMTU
