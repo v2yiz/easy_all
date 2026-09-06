@@ -186,17 +186,17 @@ assert_contains "Links contain packetEncoding" "${node_links}" "packetEncoding=x
 assert_not_contains "Node links do not contain domain as server" "${node_links}" "@node.example.com:443"
 
 # Verify XHTTP node links
-assert_contains "Links contain XHTTP01" "${node_links}" "#XHTTP01"
-assert_contains "Links contain XHTTP05" "${node_links}" "#XHTTP05"
-assert_not_contains "Links do not contain XHTTP06" "${node_links}" "#XHTTP06"
+assert_contains "Links contain 优选1" "${node_links}" "#$(jq -nr --arg v '优选1' '$v|@uri')"
+assert_contains "Links contain 优选5" "${node_links}" "#$(jq -nr --arg v '优选5' '$v|@uri')"
+assert_not_contains "Links do not contain 优选6" "${node_links}" "#$(jq -nr --arg v '优选6' '$v|@uri')"
 
 # Test Mihomo nodes: exactly 5 nodes
 mihomo_nodes=$(build_mihomo_nodes)
 node_count=$(grep -c '^[[:space:]]*- name:' <<<"${mihomo_nodes}")
 assert_equal "Mihomo nodes count is exactly 5" "5" "${node_count}"
 
-assert_contains "Mihomo renders XHTTP01" "${mihomo_nodes}" '"XHTTP01"'
-assert_contains "Mihomo renders XHTTP05" "${mihomo_nodes}" '"XHTTP05"'
+assert_contains "Mihomo renders 优选1" "${mihomo_nodes}" '"优选1"'
+assert_contains "Mihomo renders 优选5" "${mihomo_nodes}" '"优选5"'
 assert_contains "Mihomo renders network: xhttp" "${mihomo_nodes}" "network: xhttp"
 assert_contains "Mihomo renders mode: stream-up" "${mihomo_nodes}" "mode: stream-up"
 assert_contains "Mihomo renders alpn h2" "${mihomo_nodes}" "- h2"
@@ -207,6 +207,8 @@ assert_not_contains "Mihomo nodes do not contain domain fallback" "${mihomo_node
 # Test Mihomo proxy groups: only AUTO group, no carrier groups
 groups_output=$(build_mihomo_proxy_groups)
 assert_contains "Groups contain AUTO group" "${groups_output}" 'name: "AUTO"'
+assert_contains "AUTO group contains 优选1" "${groups_output}" '"优选1"'
+assert_contains "AUTO group contains 优选5" "${groups_output}" '"优选5"'
 assert_not_contains "Groups do not contain 电信优选 group" "${groups_output}" 'name: "电信优选"'
 assert_not_contains "Groups do not contain 联通优选 group" "${groups_output}" 'name: "联通优选"'
 assert_not_contains "Groups do not contain 移动优选 group" "${groups_output}" 'name: "移动优选"'
@@ -217,8 +219,7 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
 # Test Mihomo proxy names under PROXY
 names_output=$(build_mihomo_proxy_names)
 assert_contains "Names contain AUTO" "${names_output}" '"AUTO"'
-assert_contains "Names contain XHTTP01" "${names_output}" '"XHTTP01"'
-assert_contains "Names contain XHTTP05" "${names_output}" '"XHTTP05"'
+assert_not_contains "Names do not contain 优选1" "${names_output}" '"优选1"'
 assert_not_contains "Names do not contain 电信优选" "${names_output}" '"电信优选"'
 
 # Test write_subscriptions: supports Universal (Base64) and Clash (Mihomo)
@@ -241,6 +242,7 @@ mihomo_file_content=$(<"${sub_mihomo}")
 assert_contains "Mihomo file contains XHTTP nodes" "${mihomo_file_content}" 'network: xhttp'
 assert_contains "Mihomo file contains stream-up mode" "${mihomo_file_content}" 'mode: stream-up'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
+assert_contains "Mihomo file contains 优选1" "${mihomo_file_content}" '"优选1"'
 assert_not_contains "Mihomo file does not contain 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
 
 # Verify state save & load

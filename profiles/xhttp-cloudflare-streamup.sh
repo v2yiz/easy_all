@@ -967,7 +967,7 @@ cloudflare_xhttp_streamup_client_candidates() {
           | sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms, .ip])
           | .[0:5]
           | to_entries[]
-          | [.value.ip, (if (.key + 1) < 10 then "0" + ((.key + 1)|tostring) else ((.key + 1)|tostring) end), (.value.carrier // "anycast")]
+          | [.value.ip, ((.key + 1)|tostring), (.value.carrier // "anycast")]
           | @tsv
         ' "${GLOBALPING_CACHE_FILE}"
     elif declare -F cloudflare_client_candidates >/dev/null 2>&1; then
@@ -976,9 +976,7 @@ cloudflare_xhttp_streamup_client_candidates() {
             [[ -n "${ip}" ]] || continue
             [[ "${carrier}" == "fallback" ]] && continue
             count=$((count + 1))
-            local idx
-            idx=$(printf '%02d' "${count}")
-            printf '%s\t%s\t%s\n' "${ip}" "${idx}" "${carrier}"
+            printf '%s\t%s\t%s\n' "${ip}" "${count}" "${carrier}"
             ((count >= 5)) && break
         done < <(cloudflare_client_candidates)
     fi
@@ -988,7 +986,7 @@ build_node_links() {
     local ip label carrier
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_vless_xhttp_link "${ip}" "XHTTP${label}"
+        build_vless_xhttp_link "${ip}" "优选${label}"
         printf '\n'
     done < <(cloudflare_xhttp_streamup_client_candidates)
 }
@@ -997,23 +995,12 @@ build_mihomo_nodes() {
     local ip label carrier
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_mihomo_xhttp_node "${ip}" "XHTTP${label}"
+        build_mihomo_xhttp_node "${ip}" "优选${label}"
     done < <(cloudflare_xhttp_streamup_client_candidates)
 }
 
 build_mihomo_proxy_names() {
     printf '        - "AUTO"\n'
-    local ip label carrier
-    local -a all_nodes=()
-    while IFS=$'\t' read -r ip label carrier; do
-        [[ -n "${ip}" ]] || continue
-        all_nodes+=("XHTTP${label}")
-    done < <(cloudflare_xhttp_streamup_client_candidates)
-
-    local node
-    for node in "${all_nodes[@]}"; do
-        printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
-    done
 }
 
 build_mihomo_proxy_groups() {
@@ -1021,7 +1008,7 @@ build_mihomo_proxy_groups() {
     local ip label carrier
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        all_nodes+=("XHTTP${label}")
+        all_nodes+=("优选${label}")
     done < <(cloudflare_xhttp_streamup_client_candidates)
 
     printf '    - name: "AUTO"\n'
