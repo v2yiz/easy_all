@@ -15,7 +15,7 @@ Node.js 18 或更新版本即可，无需安装 npm 依赖。
 - `config.local.json`：用户 token、Reality 节点、VPS CF 订阅地址、CF 备用节点、XFLASH 订阅地址。`nodes` 中的节点全部平铺显示；端口继续按北京时间每三小时轮换。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。自定义模式 2 模板会与默认 Worker 配置不同。
-- `../worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
+- `worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
 
 本地配置和生成产物均被 Git 忽略，文件权限为 0600。构建先校验配置和产物语法，再原子替换旧产物；失败保留原文件。构建不会部署，也不清理 Git 历史。
 

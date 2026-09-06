@@ -3,7 +3,9 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-const workerPath = new URL('../worker.js', import.meta.url);
+const workerPath = existsSync(new URL('../worker-src/worker.js', import.meta.url))
+    ? new URL('../worker-src/worker.js', import.meta.url)
+    : new URL('../worker.js', import.meta.url);
 if (!existsSync(workerPath)) {
     console.log('worker.js not found, skipping local node test');
     process.exit(0);
