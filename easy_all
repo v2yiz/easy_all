@@ -423,22 +423,27 @@ main() {
             }
             migrate_from_singbox_gcore
             return 0
-        elif [[ "${mode}" == "cloudflare" ]]; then
-            module=$(profile_file "singbox-cloudflare")
-            export EASY_ALL_SELECTED_MODE="singbox-cloudflare"
-            [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
-                || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
-            # shellcheck source=/dev/null
-            source "${module}"
-            register_easy_all_command() {
-                unified_register_easy_all_command
-            }
-            migrate_from_xhttp_cloudflare
-            return 0
-        elif [[ "${mode}" == "singbox-cloudflare" ]]; then
-            launcher_die "从 Cloudflare Sing-box 切回 Xray 请先备份配置或重新执行安装"
+        elif [[ "${mode}" == "cloudflare" || "${mode}" == "singbox-cloudflare" ]]; then
+            local current_backend current_proto
+            current_backend=$(state_value "${EASY_ALL_STATE_FILE}" BACKEND || true)
+            current_proto=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
+            if [[ "${mode}" == "cloudflare" || "${current_backend}" == "singbox" || "${current_proto}" == "singbox-cf" ]]; then
+                module=$(profile_file "singbox-cloudflare")
+                export EASY_ALL_SELECTED_MODE="singbox-cloudflare"
+                [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \
+                    || export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
+                # shellcheck source=/dev/null
+                source "${module}"
+                register_easy_all_command() {
+                    unified_register_easy_all_command
+                }
+                migrate_from_xhttp_cloudflare
+                return 0
+            else
+                launcher_die "当前已是 Cloudflare 纯 XHTTP stream-up (Xray) 模式；如需刷新配置请执行 easy_all apply"
+            fi
         else
-            launcher_die "switch-backend 仅适用于 Gcore 模式"
+            launcher_die "switch-backend 仅适用于 CDN 模式"
         fi
     fi
 
@@ -483,7 +488,10 @@ main() {
                 show_install_guide
                 local target_mode
                 target_mode=$(choose_install_mode)
-                if [[ "${mode}" == "cloudflare" && "${target_mode}" == "singbox-cloudflare" ]]; then
+                local current_backend current_proto
+                current_backend=$(state_value "${EASY_ALL_STATE_FILE}" BACKEND || true)
+                current_proto=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
+                if [[ ("${mode}" == "cloudflare" || "${current_backend}" == "singbox" || "${current_proto}" == "singbox-cf") && "${target_mode}" == "singbox-cloudflare" ]]; then
                     module=$(profile_file "singbox-cloudflare")
                     export EASY_ALL_SELECTED_MODE="singbox-cloudflare"
                     [[ ! -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]] \

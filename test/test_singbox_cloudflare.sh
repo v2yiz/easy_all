@@ -244,4 +244,23 @@ assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
 
+# Verify migration checks from both old singbox-cf and legacy xhttp
+legacy_singbox_state="${TMP_DIR}/state_singbox.env"
+cat >"${legacy_singbox_state}" <<'EOF'
+CDN_PROVIDER="cloudflare"
+PROTOCOL="singbox-cf"
+BACKEND="singbox"
+EOF
+assert_equal "Can migrate from singbox-cf state" "0" \
+    "$(EASY_ALL_STATE_FILE_OVERRIDE="${legacy_singbox_state}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
+
+legacy_xhttp_state="${TMP_DIR}/state_xhttp.env"
+cat >"${legacy_xhttp_state}" <<'EOF'
+CDN_PROVIDER="cloudflare"
+PROTOCOL="xhttp"
+BACKEND="xray"
+EOF
+assert_equal "Can migrate from legacy xhttp state" "0" \
+    "$(EASY_ALL_STATE_FILE_OVERRIDE="${legacy_xhttp_state}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
+
 printf 'ok - Cloudflare pure XHTTP stream-up (Mode 5) tests passed\n'
