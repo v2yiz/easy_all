@@ -571,8 +571,14 @@ net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 
-# Listen queue
-net.core.somaxconn = 4096
+# HTTP/2 & gRPC anti-bufferbloat: limit unsent bytes in write queue
+net.ipv4.tcp_notsent_lowat = 131072
+
+# High-concurrency socket recycling & queue optimization
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 15
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65535
 SYSCTL
 
   modprobe tcp_bbr 2>/dev/null || {

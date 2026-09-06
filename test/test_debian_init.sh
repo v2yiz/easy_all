@@ -372,7 +372,11 @@ test_bbr_matches_easy_all() {
         "net.ipv4.tcp_keepalive_intvl = 30"
         "net.ipv4.tcp_keepalive_probes = 5"
         "net.ipv4.ip_local_port_range = 13000 60999"
-        "net.core.somaxconn = 4096"
+        "net.ipv4.tcp_notsent_lowat = 131072"
+        "net.ipv4.tcp_tw_reuse = 1"
+        "net.ipv4.tcp_fin_timeout = 15"
+        "net.core.somaxconn = 65535"
+        "net.core.netdev_max_backlog = 65535"
     )
     for setting in "${settings[@]}"; do
         assert_contains "debian_init has shared BBR setting ${setting}" \
