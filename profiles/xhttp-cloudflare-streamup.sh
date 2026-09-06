@@ -53,7 +53,12 @@ normalize_xhttp_path() {
     else
         path="/xhttp-$(openssl rand -hex 12)"
     fi
+    path="${path%/}"
     printf '%s\n' "${path}"
+}
+
+xhttp_client_path() {
+    printf '%s/' "${XHTTP_PATH%/}"
 }
 
 can_in_place_migrate_from_xhttp_cloudflare() {
@@ -62,7 +67,7 @@ can_in_place_migrate_from_xhttp_cloudflare() {
     local cdn proto
     cdn=$(read_state_field "${state_path}" CDN_PROVIDER || true)
     proto=$(read_state_field "${state_path}" PROTOCOL || true)
-    [[ "${cdn}" == "cloudflare" && ("${proto}" == "xhttp" || "${proto}" == "ws" || "${proto}" == "singbox-cf") ]]
+    [[ "${cdn}" == "cloudflare" && ("${proto}" == "xhttp" || "${proto}" == "ws" || "${proto}" == "singbox-cf" || "${proto}" == "cloudflare-streamup" || "${proto}" == "xhttp-streamup") ]]
 }
 
 can_in_place_migrate_from_streamup_cloudflare() {
@@ -265,11 +270,6 @@ write_nginx_config() {
     {
         write_subscription_nginx_maps
         cat <<EOF
-upstream cf_xhttp_backend {
-    server 127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
-    keepalive 32;
-}
-
 server {
     listen 80;
     listen [::]:80;
@@ -297,19 +297,19 @@ server {
 EOF
         write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
         cat <<EOF
-    location = ${XHTTP_PATH} {
+    location ^~ ${XHTTP_PATH} {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
-        proxy_http_version 1.1;
-        proxy_set_header Host ${VLESS_CDN_DOMAIN};
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_buffering off;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        proxy_socket_keepalive on;
-        proxy_pass http://cf_xhttp_backend;
+        client_max_body_size 0;
+        client_body_timeout 1h;
+        grpc_set_header Host ${VLESS_CDN_DOMAIN};
+        grpc_set_header X-Real-IP \$remote_addr;
+        grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        grpc_set_header X-Forwarded-Proto https;
+        grpc_set_header X-Easy-All-Origin-Key \$http_x_easy_all_origin_key;
+        grpc_socket_keepalive on;
+        grpc_read_timeout 1h;
+        grpc_send_timeout 1h;
+        grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
         access_log off;
     }
 
@@ -403,23 +403,39 @@ finish_xhttp_apply() {
 
 build_vless_xhttp_link() {
     local server=$1 node_name=$2
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up#%s' \
+    local client_path extra
+    client_path=$(xhttp_client_path)
+    extra=$(jq -cn '{
+        uplinkHTTPMethod: "POST",
+        noGRPCHeader: false,
+        xmux: {
+            maxConnections: 4,
+            cMaxReuseTimes: 0,
+            hMaxRequestTimes: "300-600",
+            hMaxReusableSecs: "900-1800",
+            hKeepAlivePeriod: 0
+        }
+    }')
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${XHTTP_PATH}")" "$(uri_encode "${node_name}")"
+        "$(uri_encode "${client_path}")" \
+        "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
 }
 
 build_mihomo_xhttp_node() {
     local server=$1 node_name=$2
+    local client_path
+    client_path=$(xhttp_client_path)
     resolve_cdn_client_ip_family
     jq -nr --arg name "${node_name}" --arg server "${server}" \
         --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg path "${XHTTP_PATH}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" '
+        --arg path "${client_path}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" '
         "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
         "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n" +
         "    xhttp-opts:\n      host: \($host|@json)\n      path: \($path|@json)\n      mode: stream-up\n" +
-        "      uplink-http-method: POST\n      reuse-settings:\n        max-connections: 4\n" +
+        "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n        max-connections: 4\n" +
         "        c-max-reuse-times: 0\n        h-max-request-times: 300-600\n        h-max-reusable-secs: 900-1800\n        h-keep-alive-period: 0\n"'
 }
 
@@ -630,6 +646,11 @@ migrate_from_xhttp_cloudflare() {
     info "[4/6] 更新 Nginx 反代配置并重载"
     write_nginx_config
     validate_protocol_runtime
+    if declare -F cloudflare_validate_grpc_edge >/dev/null 2>&1; then
+        if ! cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}" 2>/dev/null; then
+            warn "Cloudflare gRPC 边缘检测未通过。请确保在 Cloudflare 控制台（域名 -> 网络 -> gRPC）已开启 gRPC！"
+        fi
+    fi
 
     info "[5/6] 刷新精选 IP 并生成新格式订阅（5 节点无域名兜底）"
     refresh_cloudflare_cdn_ips
@@ -643,6 +664,7 @@ migrate_from_xhttp_cloudflare() {
         show_subscription
     fi
     success "已成功就地平滑迁移至 Cloudflare 纯 XHTTP stream-up（精选 5 节点）！"
+    warn "重要提示：Cloudflare 纯 XHTTP stream-up 依赖 gRPC 穿透，请确保在 Cloudflare 控制台已开启 Network → gRPC！"
 }
 
 rollback_fresh_install() {
@@ -723,6 +745,7 @@ apply_easy_all() {
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
     success "Cloudflare XHTTP stream-up 本机配置已应用；未修改 Cloudflare 资源"
+    warn "提示：若客户端节点超时，请检查 Cloudflare 控制台（域名 -> 网络 -> gRPC）是否已开启！"
 }
 
 apply_cloud_resources() {

@@ -443,7 +443,7 @@ main() {
                 launcher_die "当前已是 Cloudflare 纯 XHTTP stream-up (Xray) 模式；如需刷新配置请执行 easy_all apply"
             fi
         else
-            launcher_die "switch-backend 仅适用于 CDN 模式"
+            launcher_die "switch-backend 仅适用于 Gcore 模式"
         fi
     fi
 

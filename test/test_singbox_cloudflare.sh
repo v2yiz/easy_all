@@ -132,12 +132,13 @@ write_nginx_config
 nginx_conf=$(<"${TMP_DIR}/nginx.conf")
 
 assert_contains "nginx config contains domain" "${nginx_conf}" "server_name node.example.com;"
-assert_contains "nginx config contains upstream" "${nginx_conf}" "upstream cf_xhttp_backend"
-assert_contains "nginx config contains xhttp location" "${nginx_conf}" "location = /xhttp-test-path"
-assert_contains "nginx config contains xhttp proxy_pass" "${nginx_conf}" "proxy_pass http://cf_xhttp_backend;"
-assert_contains "nginx config buffering off" "${nginx_conf}" "proxy_buffering off;"
+assert_contains "nginx config contains xhttp location" "${nginx_conf}" "location ^~ /xhttp-test-path"
+assert_contains "nginx config contains xhttp grpc_pass" "${nginx_conf}" "grpc_pass grpc://127.0.0.1:10086;"
+assert_contains "nginx config body size 0" "${nginx_conf}" "client_max_body_size 0;"
+assert_contains "nginx config socket keepalive" "${nginx_conf}" "grpc_socket_keepalive on;"
 assert_contains "nginx config checks origin key" "${nginx_conf}" 'if ($http_x_easy_all_origin_key != "test-origin-secret-12345678") { return 404; }'
 assert_contains "nginx config has health endpoint" "${nginx_conf}" "location = /easy_all-health"
+assert_not_contains "nginx config does not contain upstream" "${nginx_conf}" "upstream cf_xhttp_backend"
 assert_not_contains "nginx config does not contain websocket location" "${nginx_conf}" "location = /ws-"
 assert_not_contains "nginx config does not contain trojan location" "${nginx_conf}" "location = /tr-"
 
@@ -177,6 +178,9 @@ assert_equal "Total VLESS node links is 5" "5" "${vless_link_count}"
 assert_contains "Links contain type=xhttp" "${node_links}" "type=xhttp"
 assert_contains "Links contain mode=stream-up" "${node_links}" "mode=stream-up"
 assert_contains "Links contain alpn=h2" "${node_links}" "alpn=h2"
+assert_contains "Links contain path with trailing slash" "${node_links}" "path=%2Fxhttp-test-path%2F"
+assert_contains "Links contain extra parameter" "${node_links}" "extra="
+assert_contains "Links contain packetEncoding" "${node_links}" "packetEncoding=xudp"
 
 # Verify NO domain fallback link
 assert_not_contains "Node links do not contain domain as server" "${node_links}" "@node.example.com:443"
@@ -196,6 +200,8 @@ assert_contains "Mihomo renders XHTTP05" "${mihomo_nodes}" '"XHTTP05"'
 assert_contains "Mihomo renders network: xhttp" "${mihomo_nodes}" "network: xhttp"
 assert_contains "Mihomo renders mode: stream-up" "${mihomo_nodes}" "mode: stream-up"
 assert_contains "Mihomo renders alpn h2" "${mihomo_nodes}" "- h2"
+assert_contains "Mihomo renders path with trailing slash" "${mihomo_nodes}" 'path: "/xhttp-test-path/"'
+assert_contains "Mihomo renders no-grpc-header false" "${mihomo_nodes}" "no-grpc-header: false"
 assert_not_contains "Mihomo nodes do not contain domain fallback" "${mihomo_nodes}" 'server: "node.example.com"'
 
 # Test Mihomo proxy groups: only AUTO group, no carrier groups
