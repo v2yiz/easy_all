@@ -574,6 +574,20 @@ function workerResponse(
     });
 }
 
+function selectLocalNodes(nodes, url) {
+    const showAll = url.searchParams.get('node') === 'all';
+    if (showAll) {
+        return nodes;
+    }
+    return nodes.filter(
+        (node) =>
+            !node.optional &&
+            !node.allOnly &&
+            !/vmiss/i.test(node.name) &&
+            !/vmiss/i.test(node.host)
+    );
+}
+
 function createWorkerHandler({
     allowedTokenValues,
     localNodes,
@@ -620,7 +634,8 @@ function createWorkerHandler({
             url.searchParams.get('flag')
         );
         const dynamicCdnNodes = await fetchDynamicCdnNodes(vpsCdnUrl, { fetchImpl });
-        const nodes = [...localNodes, ...dynamicCdnNodes];
+        const selectedLocalNodes = selectLocalNodes(localNodes, url);
+        const nodes = [...selectedLocalNodes, ...dynamicCdnNodes];
         const ports = resolveNodePorts(nodes, { now });
         let content;
         let degraded = false;

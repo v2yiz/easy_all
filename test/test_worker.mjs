@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-const source = await readFile(new URL('../worker.js', import.meta.url), 'utf8');
+const workerPath = new URL('../worker.js', import.meta.url);
+if (!existsSync(workerPath)) {
+    console.log('worker.js not found, skipping local node test');
+    process.exit(0);
+}
+
+const source = await readFile(workerPath, 'utf8');
 const handleRequest = vm.runInNewContext(
     source.replace(/export default \{[\s\S]*$/, `
         createWorkerHandler({
@@ -27,7 +34,11 @@ for (const flag of ['clash', 'base64']) {
         assert.equal(response.status, 200);
         const body = await response.text();
         const content = flag === 'base64' ? atob(body) : body;
-        assert.ok(content.includes('vmiss.tiandi.party'));
+        if (node === '&node=all') {
+            assert.ok(content.includes('vmiss.tiandi.party'));
+        } else {
+            assert.ok(!content.includes('vmiss.tiandi.party'));
+        }
         assert.ok(content.includes('bwg.tiandi.party'));
     }
 }

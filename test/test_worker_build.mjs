@@ -10,6 +10,7 @@ try {
     const config = JSON.parse(await readFile(new URL('../worker-src/config.example.json', import.meta.url), 'utf8'));
     config.allowedTokens = { owner: 'offline-test-token' };
     config.nodes.push({ ...config.nodes[0], name: 'Hidden Reality', host: 'hidden.example.com' });
+    config.nodes.push({ ...config.nodes[0], name: 'Optional VMISS', host: 'vmiss.example.com', optional: true });
     config.fallbackCdnNodes = [{ type: 'vless', security: 'tls', network: 'xhttp', name: 'Fallback CF', host: 'fallback.example.com', uuid: config.nodes[0].uuid, path: '/xhttp/', mode: 'stream-up' }];
     const configPath = join(temp, 'config.json');
     const outputPath = join(temp, 'worker.mjs');
@@ -42,7 +43,10 @@ try {
     const fallbackBody = await fallback.text();
     assert.ok(fallbackBody.includes('fallback.example.com'));
     assert.ok(fallbackBody.includes('hidden.example.com'));
-    assert.ok((await (await offline(request('&node=all'))).text()).includes('hidden.example.com'));
+    assert.ok(!fallbackBody.includes('vmiss.example.com'));
+    const allBody = await (await offline(request('&node=all'))).text();
+    assert.ok(allBody.includes('hidden.example.com'));
+    assert.ok(allBody.includes('vmiss.example.com'));
     assert.equal(await (await offline(request('', 'offline-test-token', 'HEAD'))).text(), '');
     const upstream = `dns:\n  nameserver: [malicious.invalid]\nproxies:\n    - name: Remote\n      type: vless\n      server: remote.example.com\n      port: 443\n      uuid: ${config.nodes[0].uuid}\n      network: xhttp\n      ip-version: ipv4\n      alpn:\n        - h2\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n`;
     const cf = `vless://${config.nodes[0].uuid}@192.0.2.1:443?security=tls&type=xhttp&host=cdn.example.com&path=%2Fxhttp%2F&mode=stream-up#CF`;
