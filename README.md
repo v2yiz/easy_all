@@ -10,9 +10,9 @@
 | 2. Cloudflare CDN 精选 IP - XHTTP + WebSocket | VLESS XHTTP stream-up + WebSocket / TLS | Cloudflare + Globalping IPv4 |
 | 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 (Xray 核心) |
 | 4. Gcore CDN 域名 - Sing-box (Trojan + VLESS WS) | Trojan WS / VLESS WS / TLS | Gcore CDN 域名 (Sing-box 核心) |
-| 5. Cloudflare CDN 精选 IP - Sing-box (VLESS-WS + Trojan-WS) | VLESS WS + Trojan WS / TLS | Cloudflare + Globalping IPv4 (Sing-box 核心，严格 8 节点无域名兜底) |
+| 5. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (全网精选 5 节点，完全无域名兜底) |
 
-Cloudflare 提供 XHTTP + WebSocket（Xray 核心）或 VLESS-WS + Trojan-WS（Sing-box 核心，精选 8 节点）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 提供 XHTTP + WebSocket（三网独立优选双链路）或纯 XHTTP stream-up（全网精选 5 节点）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray/Sing-box、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -28,7 +28,7 @@ Cloudflare 提供 XHTTP + WebSocket（Xray 核心）或 VLESS-WS + Trojan-WS（S
 | 明确要使用 Cloudflare CDN，并愿意维护域名、Token 和 gRPC 设置 | 选择 `2`：Cloudflare XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台手动打开 gRPC。 |
 | 需要 Gcore CDN 域名入口，并愿意维护 Gcore Managed DNS 和 API Token | 选择 `3`：Gcore XHTTP | Gcore Free CDN、Managed DNS Zone、源站/节点域名和 Gcore API Token；不需要 Globalping。 |
 | 需要 Gcore CDN 域名入口，或有 iPhone 客户端需求（需要双节点简单自动切换） | 选择 `4`：Gcore Sing-box | 同模式 3 前置条件。若有 iPhone，推荐使用 Sing-box 后端及 iOS 客户端，开箱即支持 Trojan + VLESS 两节点自动测速与故障切换（urltest）；后端同时完全兼容 Mihomo 客户端。若已安装模式 3，可随时一键原地无缝切换为模式 4。 |
-| 明确要使用 Cloudflare CDN，追求高兼容全 WebSocket 穿透与 Sing-box 核心 | 选择 `5`：Cloudflare Sing-box | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token（无需开启 gRPC）。采用 Sing-box 服务端后端，同时监听 VLESS WS (10087) 与 Trojan WS (10086)；基于三网 Globalping 精选生成 Top 4 优质 IPv4 × 双协议 = 严格 8 个节点（无域名兜底）；Mihomo 与 Sing-box 订阅中内置全节点 AUTO 自动测速优选组。若已安装模式 2，可随时一键原地无缝切换为模式 5。 |
+| 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精简 5 节点 | 选择 `5`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；基于全网综合优选筛选 Top 5 优质 IPv4 节点（严格 5 节点无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。若已安装模式 2，可随时一键原地无缝切换为模式 5。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 或 Gcore 前置准备时，再选择对应 CDN 模式。Gcore 模式下可在模式 3 与模式 4 之间通过 `easy_all switch-backend` 原地无缝迁移，无需重新创建云端资源。
@@ -135,7 +135,7 @@ sudo ./easy_all install
   2. Cloudflare CDN 精选 IP - XHTTP + WebSocket（三网独立优选 + 双链路）
   3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）
   4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）
-  5. Cloudflare CDN 精选 IP - Sing-box（VLESS-WS + Trojan-WS 双链路，精选 8 节点）
+  5. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -146,7 +146,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 
 | 看到的选项 | 首次单用户建议 | 说明 |
 | --- | --- | --- |
-| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP + WebSocket 双链路，`3` 是 Gcore 域名 XHTTP，`4` 是 Gcore Sing-box（有 iPhone 时推荐，iOS Sing-box 开箱即享两节点自动切换，同时兼容 Mihomo）。 |
+| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP + WebSocket 双链路，`3` 是 Gcore 域名 XHTTP，`4` 是 Gcore Sing-box（有 iPhone 时推荐，iOS Sing-box 开箱即享两节点自动切换，同时兼容 Mihomo），`5` 是 Cloudflare 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点，支持通用与 Clash 订阅）。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
@@ -761,17 +761,18 @@ easy_all switch-backend
 3. **本地原子切换**：自动拉取并安装 Sing-box 核心，生成 Trojan WS + VLESS WS 组合配置，停用旧 Xray 服务并重载 Nginx，秒级切换完成。
 4. **订阅自动刷新**：自动重新渲染订阅目录，立刻支持使用 `flag=singbox` 获取 Sing-box 客户端完整配置。
 
-## Cloudflare CDN 精选 IP Sing-box (VLESS WebSocket + Trojan WebSocket 双链路)
+## Cloudflare CDN 精选 IP 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
 
-模式 5 采用 Sing-box 作为服务端后端，同时监听 VLESS WebSocket（端口 `10087`）与 Trojan WebSocket（端口 `10086`），严格遵循以下规范：
+模式 5 采用 Xray 作为服务端后端，监听 VLESS XHTTP（端口 `10086`，模式 `stream-up`），完全适配 Cloudflare CDN 传输特性，严格遵循以下规范：
 
-- **精选 8 节点**：通过 Globalping eyeball 探针 TLS 验证与低延迟综合挑选 Top 4 独立 IP，每个 IP 分别生成 WS 与 Trojan 节点（`WS01` ~ `WS04`，`TROJAN01` ~ `TROJAN04`），严格输出 8 个节点，**绝不输出域名兜底节点**。
-- **单一 AUTO 策略组极速调度**：
-  - Mihomo 客户端订阅：内置全局 `AUTO`（全部 8 节点实时测速）策略组与 `PROXY` 选择器，彻底摒弃多子组带来的客户端并发风暴与后台耗电。
-  - Sing-box 客户端订阅：内置全局 `AUTO` 策略组与 `PROXY` 选择器。
-- **全 WebSocket 穿透与免 gRPC 配置**：双协议全部采用标准 HTTP/1.1 WebSocket 升级，在移动蜂窝等复杂网络环境下具有最高穿透性，且无需在 Cloudflare 控制台手动开启 gRPC 开关。
-- **安全与边缘规则**：Nginx 强校验 `X-Easy-All-Origin-Key`；后端内置 `ip_is_private` 与 UDP 443 (QUIC) 快速阻断以避免队头阻塞。
-- **模式 2 原地无缝平滑迁移**：若已安装模式 2（Xray Cloudflare），可通过 `easy_all install` 选择 5 或 `easy_all switch-backend` 进行一键原地升级：保留已有的 Cloudflare DNS、Origin CA 证书和规则集，无需等待 DNS 传播。
+- **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
+- **精选 5 节点**：基于 Globalping eyeball 探针全网实测数据与 TLS 握手验证，按延迟优选筛选 Top 5 独立 IPv4（`XHTTP01` ~ `XHTTP05`），严格输出 5 个精选节点，**绝不输出域名兜底节点**。
+- **全能双模式订阅支持**：
+  - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
+  - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
+- **安全防护与边缘规则**：Nginx 前端反向代理校验 `X-Easy-All-Origin-Key` 请求头；Cloudflare 边缘规则仅放行专属 XHTTP 路径、健康检查与订阅端点；后端开启 `ip_is_private` 私网阻断与 UDP 443 (QUIC) 阻断。
+- **模式 2 原地无缝平滑迁移**：若已有模式 2（Xray Cloudflare XHTTP+WS），可通过 `easy_all install` 选择 5 或运行 `easy_all switch-backend` 原地平滑迁移：无缝复用已申请的 Cloudflare Origin CA 证书与 DNS 解析，自动化调整 Nginx 与 Cloudflare 边缘规则，秒级完成切换。
+
 
 ## 状态与边界
 

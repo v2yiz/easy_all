@@ -3,8 +3,8 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
-PROFILE="${ROOT_DIR}/profiles/singbox-cloudflare.sh"
-CORE_LIB="${ROOT_DIR}/lib/singbox-core.sh"
+PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
+CORE_LIB="${ROOT_DIR}/lib/xray-core.sh"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
@@ -29,14 +29,14 @@ assert_not_contains() {
 }
 
 # 1. Syntax check
-bash -n "${PROFILE}" "${CORE_LIB}"
+bash -n "${PROFILE}" "${CORE_LIB}" "${ROOT_DIR}/profiles/singbox-cloudflare.sh"
 
 # 2. Source modules in isolated environment
 export STATE_DIR="${TMP_DIR}/state"
 export RUNTIME_TMP="${TMP_DIR}/runtime"
-export SINGBOX_DIR_OVERRIDE="${TMP_DIR}/singbox"
-export SINGBOX_BIN_OVERRIDE="${TMP_DIR}/singbox/sing-box"
-export SINGBOX_CONFIG_OVERRIDE="${TMP_DIR}/singbox/config.json"
+export XRAY_DIR="${TMP_DIR}/xray"
+export XRAY_BIN="${TMP_DIR}/xray/xray"
+export XRAY_CONFIG="${TMP_DIR}/xray/config.json"
 export CERT_DIR="${STATE_DIR}/certs"
 export CERT_FILE="${CERT_DIR}/cert.pem"
 export KEY_FILE="${CERT_DIR}/key.pem"
@@ -44,18 +44,15 @@ export WEB_ROOT="${TMP_DIR}/web"
 export SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 export SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 export SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
-export SUBSCRIPTION_SINGBOX_FILE="${SUBSCRIPTION_DIR}/singbox.json"
 export NGINX_CONFIG="${TMP_DIR}/nginx.conf"
 export STATE_FILE="${STATE_DIR}/state.env"
+export EASY_ALL_STATE_FILE_OVERRIDE="${STATE_DIR}/state.env"
 export VLESS_CDN_DOMAIN="node.example.com"
 export CLOUDFLARE_ORIGIN_DOMAIN="node.example.com"
 export XHTTP_ORIGIN_DOMAIN="node.example.com"
 export VLESS_UUID="11111111-2222-4111-8111-111111111111"
-export WEBSOCKET_PATH="/ws-test-path"
-export TROJAN_PASSWORD="test-trojan-password"
-export TROJAN_PATH="/tr-test-path"
-export SINGBOX_VLESS_WS_LOOPBACK_PORT=10087
-export SINGBOX_TROJAN_LOOPBACK_PORT=10086
+export XHTTP_PATH="/xhttp-test-path"
+export XRAY_XHTTP_LOOPBACK_PORT=10086
 export ORIGIN_HEADER_SECRET="test-origin-secret-12345678"
 export ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 export SUB_DOWNLOAD_NAME="TEST_SUB"
@@ -69,7 +66,7 @@ export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/cloudflare-cdn-ips.json"
 export CDN_CLIENT_IP_FAMILY="ipv4"
 export XHTTP_NODE_NAME="TEST_NODE"
 
-mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/singbox"
+mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
 touch "${CERT_FILE}" "${KEY_FILE}"
 
 install() {
@@ -111,25 +108,22 @@ rm() {
     command rm "${args[@]}"
 }
 
-# shellcheck source=profiles/singbox-cloudflare.sh
+# shellcheck source=profiles/xhttp-cloudflare-streamup.sh
 source "${PROFILE}"
 
-# 3. Test singbox_render_config
-singbox_render_config
-singbox_conf=$(<"${SINGBOX_CONFIG}")
+# 3. Test xhttp_render_xray_config
+xhttp_render_xray_config
+xray_conf=$(<"${TMP_DIR}/state/xray/config.json")
 
-assert_contains "singbox config has warning log level" "${singbox_conf}" '"level": "warn"'
-assert_contains "singbox config contains vless-ws-in" "${singbox_conf}" '"tag": "vless-ws-in"'
-assert_contains "singbox config contains trojan-ws-in" "${singbox_conf}" '"tag": "trojan-ws-in"'
-assert_contains "singbox config ws port" "${singbox_conf}" '"listen_port": 10087'
-assert_contains "singbox config trojan port" "${singbox_conf}" '"listen_port": 10086'
-assert_contains "singbox config ws path" "${singbox_conf}" '"path": "/ws-test-path"'
-assert_contains "singbox config trojan path" "${singbox_conf}" '"path": "/tr-test-path"'
-assert_contains "singbox config trojan password" "${singbox_conf}" '"password": "test-trojan-password"'
-assert_contains "singbox config uuid" "${singbox_conf}" '"uuid": "11111111-2222-4111-8111-111111111111"'
-assert_contains "singbox config multiplex enabled" "${singbox_conf}" '"enabled": true'
-assert_contains "singbox config private ip reject" "${singbox_conf}" '"ip_is_private": true'
-assert_contains "singbox config udp 443 reject" "${singbox_conf}" '"port": ['
+assert_contains "xray config contains vless-xhttp-h2-in" "${xray_conf}" '"tag": "vless-xhttp-h2-in"'
+assert_contains "xray config xhttp port" "${xray_conf}" '"port": 10086'
+assert_contains "xray config xhttp path" "${xray_conf}" '"path": "/xhttp-test-path"'
+assert_contains "xray config mode stream-up" "${xray_conf}" '"mode": "stream-up"'
+assert_contains "xray config padding bytes" "${xray_conf}" '"xPaddingBytes": "100-1000"'
+assert_contains "xray config keepalive server secs" "${xray_conf}" '"scStreamUpServerSecs": "20-40"'
+assert_contains "xray config uuid" "${xray_conf}" '"id": "11111111-2222-4111-8111-111111111111"'
+assert_not_contains "xray config does not contain websocket" "${xray_conf}" 'vless-websocket-in'
+assert_not_contains "xray config does not contain trojan" "${xray_conf}" 'trojan'
 
 # 4. Test write_nginx_config
 nginx() { :; }
@@ -138,28 +132,30 @@ write_nginx_config
 nginx_conf=$(<"${TMP_DIR}/nginx.conf")
 
 assert_contains "nginx config contains domain" "${nginx_conf}" "server_name node.example.com;"
-assert_contains "nginx config contains ws location" "${nginx_conf}" "location = /ws-test-path"
-assert_contains "nginx config contains ws proxy_pass" "${nginx_conf}" "proxy_pass http://127.0.0.1:10087;"
-assert_contains "nginx config contains trojan location" "${nginx_conf}" "location = /tr-test-path"
-assert_contains "nginx config contains trojan proxy_pass" "${nginx_conf}" "proxy_pass http://127.0.0.1:10086;"
+assert_contains "nginx config contains upstream" "${nginx_conf}" "upstream cf_xhttp_backend"
+assert_contains "nginx config contains xhttp location" "${nginx_conf}" "location = /xhttp-test-path"
+assert_contains "nginx config contains xhttp proxy_pass" "${nginx_conf}" "proxy_pass http://cf_xhttp_backend;"
+assert_contains "nginx config buffering off" "${nginx_conf}" "proxy_buffering off;"
 assert_contains "nginx config checks origin key" "${nginx_conf}" 'if ($http_x_easy_all_origin_key != "test-origin-secret-12345678") { return 404; }'
 assert_contains "nginx config has health endpoint" "${nginx_conf}" "location = /easy_all-health"
+assert_not_contains "nginx config does not contain websocket location" "${nginx_conf}" "location = /ws-"
+assert_not_contains "nginx config does not contain trojan location" "${nginx_conf}" "location = /tr-"
 
-# 5. Test 18 nodes output across 3 carriers with no domain fallback
+# 5. Test 5 curated nodes output with no domain fallback
 # Set up mock Globalping cache with 9 candidates (3 telecom, 3 unicom, 3 mobile)
 cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 {
   "updated_at": 1725500000,
   "candidates": [
-    {"ip": "104.16.1.1", "label": "电信01", "carrier": "telecom"},
-    {"ip": "104.16.1.2", "label": "电信02", "carrier": "telecom"},
-    {"ip": "104.16.1.3", "label": "电信03", "carrier": "telecom"},
-    {"ip": "104.16.2.1", "label": "联通01", "carrier": "unicom"},
-    {"ip": "104.16.2.2", "label": "联通02", "carrier": "unicom"},
-    {"ip": "104.16.2.3", "label": "联通03", "carrier": "unicom"},
-    {"ip": "104.16.3.1", "label": "移动01", "carrier": "mobile"},
-    {"ip": "104.16.3.2", "label": "移动02", "carrier": "mobile"},
-    {"ip": "104.16.3.3", "label": "移动03", "carrier": "mobile"}
+    {"ip": "104.16.1.1", "label": "电信01", "carrier": "telecom", "avg_rtt_ms": 120, "tls_verified": true},
+    {"ip": "104.16.1.2", "label": "电信02", "carrier": "telecom", "avg_rtt_ms": 130, "tls_verified": true},
+    {"ip": "104.16.1.3", "label": "电信03", "carrier": "telecom", "avg_rtt_ms": 140, "tls_verified": true},
+    {"ip": "104.16.2.1", "label": "联通01", "carrier": "unicom", "avg_rtt_ms": 110, "tls_verified": true},
+    {"ip": "104.16.2.2", "label": "联通02", "carrier": "unicom", "avg_rtt_ms": 125, "tls_verified": true},
+    {"ip": "104.16.2.3", "label": "联通03", "carrier": "unicom", "avg_rtt_ms": 135, "tls_verified": true},
+    {"ip": "104.16.3.1", "label": "移动01", "carrier": "mobile", "avg_rtt_ms": 115, "tls_verified": true},
+    {"ip": "104.16.3.2", "label": "移动02", "carrier": "mobile", "avg_rtt_ms": 128, "tls_verified": true},
+    {"ip": "104.16.3.3", "label": "移动03", "carrier": "mobile", "avg_rtt_ms": 145, "tls_verified": true}
   ]
 }
 EOF
@@ -169,35 +165,37 @@ cdn_optimization_enabled() { return 0; }
 globalping_cache_valid() { return 0; }
 cloudflare_validate_grpc_edge() { return 0; }
 
-candidates_output=$(cloudflare_singbox_client_candidates)
-assert_equal "Candidates count is exactly 4" "4" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
+candidates_output=$(cloudflare_xhttp_streamup_client_candidates)
+assert_equal "Candidates count is exactly 5" "5" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
 
-# Test node links: exactly 8 links (4 VLESS WS + 4 Trojan WS)
+# Test node links: exactly 5 links (5 VLESS XHTTP stream-up)
 node_links=$(build_node_links)
 vless_link_count=$(grep -c '^vless://' <<<"${node_links}")
-assert_equal "Total VLESS node links is 4" "4" "${vless_link_count}"
+assert_equal "Total VLESS node links is 5" "5" "${vless_link_count}"
 
-trojan_link_count=$(grep -c '^trojan://' <<<"${node_links}")
-assert_equal "Total Trojan node links is 4" "4" "${trojan_link_count}"
+# Verify all links have type=xhttp and mode=stream-up
+assert_contains "Links contain type=xhttp" "${node_links}" "type=xhttp"
+assert_contains "Links contain mode=stream-up" "${node_links}" "mode=stream-up"
+assert_contains "Links contain alpn=h2" "${node_links}" "alpn=h2"
 
 # Verify NO domain fallback link
 assert_not_contains "Node links do not contain domain as server" "${node_links}" "@node.example.com:443"
 
-# Verify WS and TROJAN node links
-assert_contains "Links contain WS01" "${node_links}" "#WS01"
-assert_contains "Links contain TROJAN01" "${node_links}" "#TROJAN01"
-assert_contains "Links contain WS04" "${node_links}" "#WS04"
-assert_contains "Links contain TROJAN04" "${node_links}" "#TROJAN04"
+# Verify XHTTP node links
+assert_contains "Links contain XHTTP01" "${node_links}" "#XHTTP01"
+assert_contains "Links contain XHTTP05" "${node_links}" "#XHTTP05"
+assert_not_contains "Links do not contain XHTTP06" "${node_links}" "#XHTTP06"
 
-# Test Mihomo nodes: exactly 8 nodes
+# Test Mihomo nodes: exactly 5 nodes
 mihomo_nodes=$(build_mihomo_nodes)
 node_count=$(grep -c '^[[:space:]]*- name:' <<<"${mihomo_nodes}")
-assert_equal "Mihomo nodes count is exactly 8" "8" "${node_count}"
+assert_equal "Mihomo nodes count is exactly 5" "5" "${node_count}"
 
-assert_contains "Mihomo renders WS01" "${mihomo_nodes}" '"WS01"'
-assert_contains "Mihomo renders TROJAN01" "${mihomo_nodes}" '"TROJAN01"'
-assert_contains "Mihomo renders WS04" "${mihomo_nodes}" '"WS04"'
-assert_contains "Mihomo renders TROJAN04" "${mihomo_nodes}" '"TROJAN04"'
+assert_contains "Mihomo renders XHTTP01" "${mihomo_nodes}" '"XHTTP01"'
+assert_contains "Mihomo renders XHTTP05" "${mihomo_nodes}" '"XHTTP05"'
+assert_contains "Mihomo renders network: xhttp" "${mihomo_nodes}" "network: xhttp"
+assert_contains "Mihomo renders mode: stream-up" "${mihomo_nodes}" "mode: stream-up"
+assert_contains "Mihomo renders alpn h2" "${mihomo_nodes}" "- h2"
 assert_not_contains "Mihomo nodes do not contain domain fallback" "${mihomo_nodes}" 'server: "node.example.com"'
 
 # Test Mihomo proxy groups: only AUTO group, no carrier groups
@@ -212,222 +210,38 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
 # Test Mihomo proxy names under PROXY
 names_output=$(build_mihomo_proxy_names)
 assert_contains "Names contain AUTO" "${names_output}" '"AUTO"'
-assert_contains "Names contain WS01" "${names_output}" '"WS01"'
-assert_contains "Names contain TROJAN01" "${names_output}" '"TROJAN01"'
+assert_contains "Names contain XHTTP01" "${names_output}" '"XHTTP01"'
+assert_contains "Names contain XHTTP05" "${names_output}" '"XHTTP05"'
 assert_not_contains "Names do not contain 电信优选" "${names_output}" '"电信优选"'
 
-# Test Sing-box client subscription JSON
-singbox_sub_json=$(build_singbox_subscription_json)
-sb_outbound_count=$(jq '.outbounds | length' <<<"${singbox_sub_json}")
-# 1 selector (PROXY) + 1 urltest (AUTO) + 8 node outbounds + 1 direct = 11
-assert_equal "Sing-box subscription total outbounds" "11" "${sb_outbound_count}"
-sb_ws_count=$(jq '[.outbounds[] | select(.type == "vless" and .transport.type == "ws")] | length' <<<"${singbox_sub_json}")
-assert_equal "Sing-box subscription WS outbounds" "4" "${sb_ws_count}"
-sb_trojan_count=$(jq '[.outbounds[] | select(.type == "trojan" and .transport.type == "ws")] | length' <<<"${singbox_sub_json}")
-assert_equal "Sing-box subscription Trojan outbounds" "4" "${sb_trojan_count}"
-
-# Test write_subscriptions
+# Test write_subscriptions: supports Universal (Base64) and Clash (Mihomo)
 validate_subscription_runtime() { :; }
 write_subscriptions
 
 sub_base64="${TMP_DIR}/web/subscriptions/base64.txt"
 sub_mihomo="${TMP_DIR}/web/subscriptions/mihomo.yaml"
-sub_singbox="${TMP_DIR}/web/subscriptions/singbox.json"
 
 [[ -s "${sub_base64}" ]] || fail "Base64 subscription file is missing or empty"
 [[ -s "${sub_mihomo}" ]] || fail "Mihomo subscription file is missing or empty"
-[[ -s "${sub_singbox}" ]] || fail "Sing-box subscription file is missing or empty"
 
+# Verify Base64 content decodes to 5 vless links
+decoded_base64=$(openssl base64 -d -A <"${sub_base64}")
+decoded_link_count=$(grep -c '^vless://' <<<"${decoded_base64}")
+assert_equal "Universal Base64 decodes to 5 links" "5" "${decoded_link_count}"
+
+# Verify Mihomo YAML content
 mihomo_file_content=$(<"${sub_mihomo}")
-assert_contains "Mihomo file contains WS nodes" "${mihomo_file_content}" 'network: ws'
-assert_contains "Mihomo file contains Trojan nodes" "${mihomo_file_content}" 'type: trojan'
+assert_contains "Mihomo file contains XHTTP nodes" "${mihomo_file_content}" 'network: xhttp'
+assert_contains "Mihomo file contains stream-up mode" "${mihomo_file_content}" 'mode: stream-up'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
 assert_not_contains "Mihomo file does not contain 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
-assert_contains "Mihomo file contains geosite:cn in fake-ip-filter" "${mihomo_file_content}" "'geosite:cn'"
-assert_contains "Mihomo file contains 10jqka in fake-ip-filter" "${mihomo_file_content}" "'+.10jqka.com.cn'"
 
-singbox_file_content=$(<"${sub_singbox}")
-assert_contains "Sing-box subscription excludes 10jqka in dns" "${singbox_file_content}" '10jqka.com.cn'
-assert_contains "Sing-box subscription has geosite-cn dns rule" "${singbox_file_content}" 'geosite-cn'
-assert_contains "Sing-box subscription sets final DNS server to local" "${singbox_file_content}" '"final": "local"'
-assert_contains "Sing-box subscription routes A/AAAA queries to fakeip" "${singbox_file_content}" '"query_type": ['
+# Verify state save & load
+save_state
+[[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file not created"
+state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
+assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 'PROTOCOL=cloudflare-streamup'
+assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
+assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
 
-base64_decoded=$(openssl base64 -d -A <"${sub_base64}")
-decoded_vless=$(grep -c '^vless://' <<<"${base64_decoded}")
-assert_equal "Decoded base64 contains 4 vless links" "4" "${decoded_vless}"
-decoded_trojan=$(grep -c '^trojan://' <<<"${base64_decoded}")
-assert_equal "Decoded base64 contains 4 trojan links" "4" "${decoded_trojan}"
-
-# 6. Test state save and load
-actual_state_file="${TMP_DIR}/state/state.env"
-EASY_ALL_STATE_FILE_OVERRIDE="${actual_state_file}" save_state
-[[ -f "${actual_state_file}" ]] || fail "state file was not created"
-state_content=$(<"${actual_state_file}")
-assert_contains "State has PROTOCOL=singbox-cf" "${state_content}" "PROTOCOL=singbox-cf"
-assert_contains "State has BACKEND=singbox" "${state_content}" "BACKEND=singbox"
-assert_contains "State has CDN_PROVIDER=cloudflare" "${state_content}" "CDN_PROVIDER=cloudflare"
-assert_contains "State has WS port" "${state_content}" "SINGBOX_VLESS_WS_LOOPBACK_PORT=10087"
-assert_contains "State has Trojan port" "${state_content}" "SINGBOX_TROJAN_LOOPBACK_PORT=10086"
-assert_contains "State has Trojan password" "${state_content}" "TROJAN_PASSWORD=test-trojan-password"
-assert_contains "State has Trojan path" "${state_content}" "TROJAN_PATH=/tr-test-path"
-
-# Test load_state
-PROTOCOL="" BACKEND="" CDN_PROVIDER=""
-EASY_ALL_STATE_FILE_OVERRIDE="${actual_state_file}" load_state
-assert_equal "load_state loads PROTOCOL" "singbox-cf" "${PROTOCOL}"
-assert_equal "load_state loads BACKEND" "singbox" "${BACKEND}"
-# Test backward compatibility: load_state with legacy gRPC state
-legacy_grpc_state="${TMP_DIR}/legacy_grpc.env"
-cat >"${legacy_grpc_state}" <<EOF
-STATE_VERSION='7'
-PROTOCOL='singbox-cf'
-BACKEND='singbox'
-CDN_PROVIDER='cloudflare'
-CDN_CLIENT_IP_FAMILY='ipv4'
-VLESS_UUID='11111111-2222-4111-8111-111111111111'
-VLESS_CDN_DOMAIN='node.example.com'
-CLOUDFLARE_ORIGIN_DOMAIN='node.example.com'
-CLOUDFLARE_ZONE_ID='test-zone-id'
-CLOUDFLARE_ZONE_NAME='example.com'
-CLOUDFLARE_ORIGIN_CERT_ID='test-origin-cert-id'
-CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON='2035-01-01T00:00:00Z'
-SINGBOX_VLESS_WS_LOOPBACK_PORT='10087'
-SINGBOX_VLESS_GRPC_LOOPBACK_PORT='10086'
-WEBSOCKET_PATH='/ws-test-path'
-ORIGIN_HEADER_SECRET='test-origin-secret-12345678'
-SUBSCRIPTION_MODE='deploy'
-EOF
-TROJAN_PASSWORD="" TROJAN_PATH="" SINGBOX_TROJAN_LOOPBACK_PORT=""
-EASY_ALL_STATE_FILE_OVERRIDE="${legacy_grpc_state}" load_state
-assert_equal "load_state fallbacks SINGBOX_TROJAN_LOOPBACK_PORT to legacy grpc port" "10086" "${SINGBOX_TROJAN_LOOPBACK_PORT}"
-[[ -n "${TROJAN_PASSWORD}" ]] || fail "load_state did not auto-generate TROJAN_PASSWORD for legacy state"
-[[ "${TROJAN_PATH}" =~ ^/tr- ]] || fail "load_state did not auto-generate valid TROJAN_PATH for legacy state"
-
-# 7. Test in-place migration check
-legacy_state="${TMP_DIR}/legacy.env"
-cat >"${legacy_state}" <<EOF
-STATE_VERSION='7'
-PROTOCOL='xhttp'
-CDN_PROVIDER='cloudflare'
-BACKEND='xray'
-EOF
-assert_equal "Can migrate from xhttp-cloudflare" "0" \
-    "$(EASY_ALL_STATE_FILE_OVERRIDE="${legacy_state}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
-
-assert_equal "Cannot migrate from already singbox" "1" \
-    "$(EASY_ALL_STATE_FILE_OVERRIDE="${STATE_FILE}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
-
-# 8. Test transport marker and validate_protocol_runtime CA handling
-assert_equal "mihomo_transport_marker outputs network: ws" "network: ws" "$(mihomo_transport_marker)"
-
-(
-    systemctl() { return 0; }
-    ss() { printf 'LISTEN 0 512 127.0.0.1:443\n'; }
-    xhttp_validate_local_tls_curl_args() {
-        XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "/etc/easy_all/cloudflare-origin-ca-ecc.pem")
-    }
-    curl() {
-        printf '%s\n' "$*" >"${TMP_DIR}/captured_curl"
-        printf 'easy_all ok\n'
-    }
-    validate_protocol_runtime
-    captured_curl=$(<"${TMP_DIR}/captured_curl")
-    assert_contains "validate_protocol_runtime passes --cacert to curl" "${captured_curl}" "--cacert /etc/easy_all/cloudflare-origin-ca-ecc.pem"
-    assert_contains "validate_protocol_runtime passes Origin Key header" "${captured_curl}" "X-Easy-All-Origin-Key"
-)
-
-# 9. Test install_all execution flow with mocks (verifying all symbols resolve cleanly)
-install_out=$(
-    require_root() { :; }
-    require_systemd() { :; }
-    check_platform() { :; }
-    check_install_conflicts() { :; }
-    snapshot_fresh_install() { :; }
-    install_packages() { :; }
-    ensure_ssh_boot_service() { :; }
-    configure_bbr_tcp() { :; }
-    configure_daily_reboot() { :; }
-    collect_install_inputs() {
-        PROTOCOL="singbox-cf"
-        BACKEND="singbox"
-        CDN_PROVIDER="cloudflare"
-        VLESS_UUID="11111111-2222-3333-4444-555555555555"
-        VLESS_CDN_DOMAIN="cdn.example.com"
-        CLOUDFLARE_ORIGIN_DOMAIN="cdn.example.com"
-        XHTTP_ORIGIN_DOMAIN="cdn.example.com"
-        WEBSOCKET_PATH="/ws-test"
-        TROJAN_PATH="/tr-test"
-        TROJAN_PASSWORD="test-trojan-password"
-        SINGBOX_VLESS_WS_LOOPBACK_PORT="10087"
-        SINGBOX_TROJAN_LOOPBACK_PORT="10086"
-        ORIGIN_HEADER_SECRET="test-secret-12345678"
-        SUBSCRIPTION_MODE="link"
-        SUBSCRIPTION_DOMAIN="cdn.example.com"
-        SUB_DOWNLOAD_NAME="TEST_SUB"
-        ALLOWED_TOKENS=""
-    }
-    cloudflare_prepare_origin() { :; }
-    configure_ufw() { :; }
-    write_bootstrap_nginx_config() { :; }
-    cloudflare_issue_origin_certificate() { :; }
-    download_singbox() { :; }
-    singbox_render_config() { :; }
-    install_singbox_service() { :; }
-    write_nginx_config() { :; }
-    validate_protocol_runtime() { :; }
-    cloudflare_configure_cdn() { :; }
-    cloudflare_validate_cdn_health() { :; }
-    cloudflare_finalize_certificate_rotation() { :; }
-    persist_globalping_token() { :; }
-    refresh_globalping_cache() { :; }
-    write_subscriptions() { :; }
-    validate_subscription_runtime() { :; }
-    save_state() { :; }
-    register_easy_all_command() { :; }
-    install_quota_timer() { :; }
-    install_globalping_refresh_timer() { :; }
-    cloudflare_clear_api_token() { :; }
-    show_subscription() { :; }
-    show_bbrv3_status() { :; }
-    prompt_bbrv3_reboot() { :; }
-
-    rm -f -- "${STATE_FILE}"
-    FORCE_INTERACTIVE=1 install_all
-    printf '\nINSTALL_ALL_FINISHED_SUCCESSFULLY\n'
-)
-assert_contains "install_all pipeline runs to completion without unresolved symbols" "${install_out}" "INSTALL_ALL_FINISHED_SUCCESSFULLY"
-
-# 10. Test apply_easy_all, apply_cloud_resources, update_subscription reset UPDATE_SUB_ROLLBACK_ON_EXIT
-(
-    require_root() { :; }
-    collect_installed_state() { :; }
-    configure_bbr_tcp() { :; }
-    configure_ufw() { :; }
-    finish_singbox_apply() { :; }
-    install_globalping_refresh_timer() { :; }
-    show_subscription() { :; }
-    cloudflare_prepare_origin() { :; }
-    cloudflare_issue_origin_certificate() { :; }
-    cloudflare_configure_cdn() { :; }
-    cloudflare_validate_cdn_health() { :; }
-    cloudflare_finalize_certificate_rotation() { :; }
-    cloudflare_clear_api_token() { :; }
-    choose_subscription_mode() { :; }
-    collect_subscription_link_domain() { :; }
-    choose_subscription_download_name() { :; }
-    choose_monthly_quota() { :; }
-    ensure_allowed_tokens() { :; }
-    cloudflare_cleanup_previous_subscription_host() { :; }
-
-    apply_easy_all
-    assert_equal "apply_easy_all leaves UPDATE_SUB_ROLLBACK_ON_EXIT=0" "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
-
-    apply_cloud_resources
-    assert_equal "apply_cloud_resources leaves UPDATE_SUB_ROLLBACK_ON_EXIT=0" "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
-
-    update_subscription
-    assert_equal "update_subscription leaves UPDATE_SUB_ROLLBACK_ON_EXIT=0" "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
-)
-
-printf 'ok - singbox cloudflare profile tests passed\n'
-
+printf 'ok - Cloudflare pure XHTTP stream-up (Mode 5) tests passed\n'
