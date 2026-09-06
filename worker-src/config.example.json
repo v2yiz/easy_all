@@ -1,0 +1,22 @@
+{
+  "allowedTokens": {
+    "owner": "replace-with-a-long-random-token"
+  },
+  "vpsCdnUrl": "https://cdn.example.com/subscribe?token=replace-me",
+  "upstreamUrl": "https://subscription.example.com/replace-me",
+  "fallbackCdnNodes": [],
+  "nodes": [
+    {
+      "type": "vless",
+      "security": "reality",
+      "network": "tcp",
+      "name": "Reality example",
+      "host": "reality.example.com",
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "sni": "www.example.com",
+      "pbk": "replace-with-reality-public-key",
+      "sid": "0123456789abcdef",
+      "fp": "chrome"
+    }
+  ]
+}

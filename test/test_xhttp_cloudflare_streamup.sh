@@ -29,7 +29,7 @@ assert_not_contains() {
 }
 
 # 1. Syntax check
-bash -n "${PROFILE}" "${CORE_LIB}" "${ROOT_DIR}/profiles/singbox-cloudflare.sh"
+bash -n "${PROFILE}" "${CORE_LIB}"
 
 # 2. Source modules in isolated environment
 export STATE_DIR="${TMP_DIR}/state"
@@ -167,12 +167,12 @@ globalping_cache_valid() { return 0; }
 cloudflare_validate_grpc_edge() { return 0; }
 
 candidates_output=$(cloudflare_xhttp_streamup_client_candidates)
-assert_equal "Candidates count is exactly 3" "3" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
+assert_equal "Candidates count is exactly 5" "5" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
 
-# Test node links: exactly 3 links (3 VLESS XHTTP stream-up)
+# Test node links: exactly 5 links (5 VLESS XHTTP stream-up)
 node_links=$(build_node_links)
 vless_link_count=$(grep -c '^vless://' <<<"${node_links}")
-assert_equal "Total VLESS node links is 3" "3" "${vless_link_count}"
+assert_equal "Total VLESS node links is 5" "5" "${vless_link_count}"
 
 # Verify all links have type=xhttp and mode=stream-up
 assert_contains "Links contain type=xhttp" "${node_links}" "type=xhttp"
@@ -187,16 +187,16 @@ assert_not_contains "Node links do not contain domain as server" "${node_links}"
 
 # Verify XHTTP node links
 assert_contains "Links contain XHTTP01" "${node_links}" "#XHTTP01"
-assert_contains "Links contain XHTTP03" "${node_links}" "#XHTTP03"
-assert_not_contains "Links do not contain XHTTP04" "${node_links}" "#XHTTP04"
+assert_contains "Links contain XHTTP05" "${node_links}" "#XHTTP05"
+assert_not_contains "Links do not contain XHTTP06" "${node_links}" "#XHTTP06"
 
-# Test Mihomo nodes: exactly 3 nodes
+# Test Mihomo nodes: exactly 5 nodes
 mihomo_nodes=$(build_mihomo_nodes)
 node_count=$(grep -c '^[[:space:]]*- name:' <<<"${mihomo_nodes}")
-assert_equal "Mihomo nodes count is exactly 3" "3" "${node_count}"
+assert_equal "Mihomo nodes count is exactly 5" "5" "${node_count}"
 
 assert_contains "Mihomo renders XHTTP01" "${mihomo_nodes}" '"XHTTP01"'
-assert_contains "Mihomo renders XHTTP03" "${mihomo_nodes}" '"XHTTP03"'
+assert_contains "Mihomo renders XHTTP05" "${mihomo_nodes}" '"XHTTP05"'
 assert_contains "Mihomo renders network: xhttp" "${mihomo_nodes}" "network: xhttp"
 assert_contains "Mihomo renders mode: stream-up" "${mihomo_nodes}" "mode: stream-up"
 assert_contains "Mihomo renders alpn h2" "${mihomo_nodes}" "- h2"
@@ -218,7 +218,7 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
 names_output=$(build_mihomo_proxy_names)
 assert_contains "Names contain AUTO" "${names_output}" '"AUTO"'
 assert_contains "Names contain XHTTP01" "${names_output}" '"XHTTP01"'
-assert_contains "Names contain XHTTP03" "${names_output}" '"XHTTP03"'
+assert_contains "Names contain XHTTP05" "${names_output}" '"XHTTP05"'
 assert_not_contains "Names do not contain 电信优选" "${names_output}" '"电信优选"'
 
 # Test write_subscriptions: supports Universal (Base64) and Clash (Mihomo)
@@ -231,10 +231,10 @@ sub_mihomo="${TMP_DIR}/web/subscriptions/mihomo.yaml"
 [[ -s "${sub_base64}" ]] || fail "Base64 subscription file is missing or empty"
 [[ -s "${sub_mihomo}" ]] || fail "Mihomo subscription file is missing or empty"
 
-# Verify Base64 content decodes to 3 vless links
+# Verify Base64 content decodes to 5 vless links
 decoded_base64=$(openssl base64 -d -A <"${sub_base64}")
 decoded_link_count=$(grep -c '^vless://' <<<"${decoded_base64}")
-assert_equal "Universal Base64 decodes to 3 links" "3" "${decoded_link_count}"
+assert_equal "Universal Base64 decodes to 5 links" "5" "${decoded_link_count}"
 
 # Verify Mihomo YAML content
 mihomo_file_content=$(<"${sub_mihomo}")
@@ -251,24 +251,19 @@ assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
 
-# Verify migration checks from both old singbox-cf and legacy xhttp
+# Verify legacy states are rejected by load_state
 legacy_singbox_state="${TMP_DIR}/state_singbox.env"
 cat >"${legacy_singbox_state}" <<'EOF'
-CDN_PROVIDER="cloudflare"
-PROTOCOL="singbox-cf"
-BACKEND="singbox"
+STATE_VERSION='7'
+CDN_PROVIDER='cloudflare'
+PROTOCOL='singbox-cf'
+BACKEND='singbox'
 EOF
-assert_equal "Can migrate from singbox-cf state" "0" \
-    "$(EASY_ALL_STATE_FILE_OVERRIDE="${legacy_singbox_state}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
-
-legacy_xhttp_state="${TMP_DIR}/state_xhttp.env"
-cat >"${legacy_xhttp_state}" <<'EOF'
-CDN_PROVIDER="cloudflare"
-PROTOCOL="xhttp"
-BACKEND="xray"
-EOF
-assert_equal "Can migrate from legacy xhttp state" "0" \
-    "$(EASY_ALL_STATE_FILE_OVERRIDE="${legacy_xhttp_state}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
+legacy_load_err=$(
+    bash -c 'source "$1"; EASY_ALL_STATE_FILE_OVERRIDE="$2" load_state' _ \
+        "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" "${legacy_singbox_state}" 2>&1 || true
+)
+assert_contains "load_state rejects legacy singbox-cf state" "${legacy_load_err}" "状态不是 Cloudflare XHTTP Stream-up"
 
 # Verify normalize_xhttp_path idempotency and double-prefix recovery
 assert_equal "normalize_xhttp_path cleans double /xhttp- prefix" \
@@ -332,4 +327,4 @@ assert_equal "Cleaned exactly 2 old easy_all rules" "2" "${#deleted_rules[@]}"
 assert_equal "Deleted old-easy-rule-1" "old-easy-rule-1" "${deleted_rules[0]}"
 assert_equal "Deleted old-easy-rule-2" "old-easy-rule-2" "${deleted_rules[1]}"
 
-printf 'ok - Cloudflare pure XHTTP stream-up (Mode 5) tests passed\n'
+printf 'ok - Cloudflare pure XHTTP stream-up (Mode 2) tests passed\n'

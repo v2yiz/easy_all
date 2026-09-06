@@ -40,13 +40,8 @@ git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
 
 [[ -f "${REPO_DIR}/easy_all" \
     && -f "${REPO_DIR}/profiles/reality.sh" \
-    && -f "${REPO_DIR}/profiles/xhttp-cloudflare.sh" \
-    && -f "${REPO_DIR}/profiles/xhttp-gcore.sh" \
-    && -f "${REPO_DIR}/profiles/singbox-gcore.sh" \
-    && -f "${REPO_DIR}/profiles/singbox-cloudflare.sh" \
     && -f "${REPO_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
     && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \
-    && -f "${REPO_DIR}/lib/cdn-traffic-guard.sh" \
     && -f "${REPO_DIR}/lib/globalping-cdn.sh" \
     && -f "${REPO_DIR}/lib/cloudflare-ip-pool.sh" \
     && -f "${REPO_DIR}/lib/quota.sh" \
@@ -56,7 +51,6 @@ git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/lib/mihomo-template.sh" \
     && -f "${REPO_DIR}/lib/firewall.sh" \
     && -f "${REPO_DIR}/lib/xray-core.sh" \
-    && -f "${REPO_DIR}/lib/singbox-core.sh" \
     && -f "${REPO_DIR}/lib/scheduled-maintenance.sh" \
     && -f "${REPO_DIR}/lib/subscription-auth.sh" \
     && -f "${REPO_DIR}/lib/tcp-tuning.sh" \

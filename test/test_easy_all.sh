@@ -390,8 +390,8 @@ test_mihomo_template() {
         "- DOMAIN-SUFFIX,steamcommunity.com,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     first_rule=$(awk '/^rules:$/ { found=1; next } found && $0 !~ /^  #/ { print; exit }' \
         "${ROOT_DIR}/templates/mihomo.yaml")
-    assert_equal "Mihomo globally rejects UDP 443 before domain rules" \
-        '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' "${first_rule}"
+    assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
+        '  - DOMAIN,love.xflash.work,DIRECT' "${first_rule}"
     assert_contains "Mihomo template uses official Loyalsoldier clash-rules release" \
         "fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo template rule-providers route through PROXY" \

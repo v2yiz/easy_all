@@ -15,3 +15,6 @@ subscribe-worker.js
 worker.js
 .dbg/
 /XFLASH
+
+/worker-src/config.local.json
+/.worker-build-*/

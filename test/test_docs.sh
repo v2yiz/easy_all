@@ -7,7 +7,7 @@ README_CONTENT=$(<"${ROOT_DIR}/README.md")
 PREPARATION_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
 SHADOWROCKET_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/shadowrocket-auto-node-guide.md")
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
-XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-cloudflare.sh")
+XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh")
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -33,14 +33,13 @@ done < <(
 )
 
 for command in show subscription self-update apply apply-cloud update-sub \
-    refresh-cdn-ips cdn-traffic-sync update-core renew-cert quota-status quota-set quota-reset \
+    refresh-cdn-ips update-core renew-cert quota-status quota-set quota-reset \
     status uninstall help; do
     assert_contains "README public command ${command}" "${README_CONTENT}" "| \`${command}"
 done
 
 assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
-assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 域名 - XHTTP + WebSocket'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
@@ -101,8 +100,6 @@ for asset in \
     docs/img/cloudflare/cloudflare-domain-protected.svg \
     docs/img/cloudflare/cloudflare-grpc.svg \
     docs/img/cloudflare/cloudflare-nameservers.svg \
-    docs/img/gcore/api-token-create.svg \
-    docs/img/gcore/managed-dns-add-zone.svg \
     docs/img/spaceship/spaceship-domain-search.svg \
     docs/img/spaceship/spaceship-nameservers.svg \
     docs/img/spaceship/spaceship-signup.svg; do
@@ -112,6 +109,7 @@ NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit
 [[ -z "${NON_SVG_ASSET}" ]] || fail "Non-SVG documentation asset remains: ${NON_SVG_ASSET}"
 [[ ! -d "${ROOT_DIR}/docs/preparation" ]] || fail "obsolete preparation asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/images/gcore" ]] || fail "obsolete Gcore asset directory still exists"
+[[ ! -d "${ROOT_DIR}/docs/img/gcore" ]] || fail "obsolete Gcore img directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/cloudflare" ]] || fail "obsolete top-level Cloudflare asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/spaceship" ]] || fail "obsolete top-level Spaceship asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/guide" ]] || fail "obsolete guide directory still exists"
@@ -135,20 +133,6 @@ assert_contains "Preparation guide documents the Globalping token page" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
 assert_contains "Preparation guide documents the optimized XHTTP mode" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
-assert_contains "Preparation guide documents Gcore dual transport" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Gcore CDN 域名 XHTTP + WebSocket 准备'
-assert_contains "Preparation guide embeds the Gcore Managed DNS illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'
-assert_contains "Preparation guide embeds the Gcore API token illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/api-token-create.svg'
-assert_contains "Preparation guide documents Gcore POST uplink" \
-    "${PREPARATION_GUIDE_CONTENT}" 'GET/HEAD/POST'
-assert_contains "Preparation guide documents Gcore H2" \
-    "${PREPARATION_GUIDE_CONTENT}" 'ALPN h2'
-assert_contains "Preparation guide documents Gcore HTTP proxy" \
-    "${PREPARATION_GUIDE_CONTENT}" 'proxy_pass'
-assert_contains "Preparation guide keeps Gcore domain routing" \
-    "${PREPARATION_GUIDE_CONTENT}" '不做 IP 精选'
 assert_contains "Preparation guide requires an active Zone" \
     "${PREPARATION_GUIDE_CONTENT}" '**Active**'
 assert_contains "Preparation guide documents proxied A automation" \
@@ -214,9 +198,20 @@ for removed_path in \
     docs/aws/aws-iam-policy.svg \
     docs/aws/aws-iam-access-key.svg \
     docs/gcore/gcore-api-token-create.png \
+    docs/gcore-delegation-success.png \
     profiles/xhttp-aws.sh \
+    profiles/xhttp-cloudflare.sh \
+    profiles/xhttp-gcore.sh \
+    profiles/singbox-gcore.sh \
+    profiles/singbox-cloudflare.sh \
+    lib/singbox-core.sh \
+    lib/cdn-traffic-guard.sh \
     test/test_xhttp_aws.sh \
-    test/test_cdn_traffic_guard.sh; do
+    test/test_cdn_traffic_guard.sh \
+    test/test_xhttp_cloudflare.sh \
+    test/test_xhttp_gcore.sh \
+    test/test_singbox_cloudflare.sh \
+    test/test_singbox_gcore.sh; do
     [[ ! -e "${ROOT_DIR}/${removed_path}" ]] || fail "removed path still exists: ${removed_path}"
 done
 
@@ -225,13 +220,14 @@ for forbidden_reference in \
     'CloudFront' \
     'Route 53' \
     'docs/aws-guide.md' \
-    'docs/gcore/'; do
+    'docs/gcore/' \
+    'Gcore'; do
     assert_not_contains "README excludes ${forbidden_reference}" "${README_CONTENT}" "${forbidden_reference}"
     assert_not_contains "preparation guide excludes ${forbidden_reference}" \
         "${PREPARATION_GUIDE_CONTENT}" "${forbidden_reference}"
 done
 
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
-    "${ROOT_DIR}/profiles/xhttp-cloudflare.sh" "${ROOT_DIR}/lib/xhttp-runtime.sh"
+    "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" "${ROOT_DIR}/lib/xhttp-runtime.sh"
 
 printf 'ok - documentation alignment tests passed\n'

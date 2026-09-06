@@ -28,7 +28,6 @@ readonly UFW_RULE_COMMENT="easy_all-managed"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
 readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
-[[ -n "${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT:-}" ]] || readonly DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT="10087"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
 readonly DEFAULT_CDN_CLIENT_IP_FAMILY="ipv4"
@@ -376,27 +375,6 @@ server {
 
 EOF
         write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
-        if [[ -n "${WEBSOCKET_PATH:-}" ]]; then
-            cat <<EOF
-    location = ${WEBSOCKET_PATH} {
-        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host ${VLESS_CDN_DOMAIN};
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_buffering off;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        proxy_pass http://127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}};
-        access_log off;
-    }
-
-EOF
-        fi
         cat <<EOF
     location ^~ ${XHTTP_PATH}/ {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
@@ -451,7 +429,7 @@ validate_protocol_runtime() {
 
 validate_subscription_runtime() {
     local token base64_response mihomo_response marker
-    XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-${GCORE_ORIGIN_DOMAIN:-}}"
+    XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-}"
     ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
@@ -908,9 +886,6 @@ rebuild_traffic_runtime() {
 snapshot_subscription_update() {
     UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
     [[ -f "${STATE_FILE}" ]] && install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
-    if [[ -n "${SINGBOX_CONFIG:-}" && -f "${SINGBOX_CONFIG}" ]]; then
-        install -m 0600 "${SINGBOX_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/singbox-config.json"
-    fi
     if [[ -n "${XRAY_CONFIG:-}" && -f "${XRAY_CONFIG}" ]]; then
         install -m 0600 "${XRAY_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/xray-config.json"
     fi
@@ -936,11 +911,6 @@ rollback_subscription_update() {
     warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
     [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
         && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
-    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/singbox-config.json" && -n "${SINGBOX_CONFIG:-}" ]]; then
-        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/singbox-config.json" "${SINGBOX_CONFIG}"
-        systemctl restart "${SINGBOX_SERVICE:-easy_all-singbox.service}" >/dev/null 2>&1 \
-            || warn "恢复订阅更新前 Sing-box 配置失败"
-    fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" && -n "${XRAY_CONFIG:-}" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" "${XRAY_CONFIG}"
         systemctl restart "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 \

@@ -15,13 +15,524 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     exit 2
 fi
 
-PROFILE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-if ! declare -F cloudflare_api_request >/dev/null; then
-    # shellcheck source=profiles/xhttp-cloudflare.sh
-    source "${PROFILE_DIR}/xhttp-cloudflare.sh"
-fi
+readonly XHTTP_CLOUDFLARE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+readonly XHTTP_PROFILE_ROOT="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../lib"
+readonly CLOUDFLARE_API_BASE="https://api.cloudflare.com/client/v4"
+readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
+readonly CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS="20-40"
+readonly CLOUDFLARE_XHTTP_PADDING_BYTES="100-1000"
+readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
+readonly CLOUDFLARE_ORIGIN_IPS_FILE="/etc/easy_all/cloudflare-origin-ipv4.txt"
+readonly CLOUDFLARE_UFW_COMMENT="easy_all-cloudflare-origin"
+XHTTP_URL_TEST_INTERVAL_OVERRIDE=300
+
+# shellcheck source=lib/xhttp-runtime.sh
+source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
+# shellcheck source=lib/globalping-cdn.sh
+GLOBALPING_CACHE_BASENAME_OVERRIDE="cloudflare-cdn-ips.json"
+source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
+# shellcheck source=lib/cloudflare-ip-pool.sh
+source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"
 # shellcheck source=lib/xray-core.sh
-source "${PROFILE_DIR}/../lib/xray-core.sh"
+source "${XHTTP_PROFILE_ROOT}/xray-core.sh"
+
+cloudflare_collect_api_token() {
+    if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+        CLOUDFLARE_API_TOKEN=$(prompt_secret "Cloudflare API Token（仅当前进程使用，不落盘）" \
+            "Cloudflare API Token (current process only; never saved)") \
+            || die "非交互模式必须设置 CLOUDFLARE_API_TOKEN"
+    fi
+    [[ ${#CLOUDFLARE_API_TOKEN} -ge 20 && ${#CLOUDFLARE_API_TOKEN} -le 512 \
+        && "${CLOUDFLARE_API_TOKEN}" != *[[:space:]]* ]] || die "CLOUDFLARE_API_TOKEN 格式无效"
+}
+cloudflare_clear_api_token() {
+    unset CLOUDFLARE_API_TOKEN
+    rm -f -- "${RUNTIME_TMP}/cloudflare-api-headers"
+}
+
+cloudflare_api_request() {
+    local method=$1 path=$2 payload=${3:-} response headers
+    [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "缺少 CLOUDFLARE_API_TOKEN"
+    headers="${RUNTIME_TMP}/cloudflare-api-headers"
+    printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
+        "${CLOUDFLARE_API_TOKEN}" >"${headers}"
+    chmod 0600 "${headers}"
+    if [[ -n "${payload}" ]]; then
+        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+            -H "@${headers}" \
+            --data "${payload}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
+    else
+        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+            -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
+    fi
+    jq -e '.success == true' <<<"${response}" >/dev/null || { jq -c '.errors // .' <<<"${response}" >&2; die "Cloudflare API 返回错误：${method} ${path}"; }
+    jq -c '.result' <<<"${response}"
+}
+
+cloudflare_fetch_origin_ipv4_ranges() {
+    local response
+    response=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
+        "${CLOUDFLARE_API_BASE}/ips") \
+        || return 1
+    jq -er '
+        select(.success == true)
+        | .result.ipv4_cidrs
+        | select(type == "array" and length > 0)
+        | unique[]
+        | select(test("^([0-9]{1,3}\\.){3}[0-9]{1,3}/([89]|[12][0-9]|3[0-2])$"))
+    ' <<<"${response}" | sort -u
+}
+
+cloudflare_origin_ufw_rule_numbers() {
+    command -v ufw >/dev/null 2>&1 || return 0
+    LC_ALL=C ufw status numbered 2>/dev/null \
+        | sed -n "/${CLOUDFLARE_UFW_COMMENT}/s/^[[:space:]]*\\[[[:space:]]*\\([0-9][0-9]*\\)\\].*/\\1/p" \
+        | sort -rn
+}
+
+cloudflare_remove_origin_firewall_rules() {
+    local number
+    while IFS= read -r number; do
+        [[ -n "${number}" ]] || continue
+        ufw --force delete "${number}" >/dev/null 2>&1 \
+            || warn "删除 Cloudflare 回源 UFW 规则 ${number} 失败"
+    done < <(cloudflare_origin_ufw_rule_numbers)
+}
+
+cloudflare_configure_origin_firewall() {
+    local next current cidr
+    next="${RUNTIME_TMP}/cloudflare-origin-ipv4.txt"
+    if ! cloudflare_fetch_origin_ipv4_ranges >"${next}" || [[ ! -s "${next}" ]]; then
+        if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
+            warn "获取 Cloudflare 官方 IP 段失败，继续使用上一版回源白名单"
+            install -m 0600 "${CLOUDFLARE_ORIGIN_IPS_FILE}" "${next}"
+        else
+            die "无法获取 Cloudflare 官方 IPv4 段，且本机没有可回退的白名单"
+        fi
+    fi
+    current="${RUNTIME_TMP}/cloudflare-origin-ipv4.current"
+    if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
+        install -m 0600 "${CLOUDFLARE_ORIGIN_IPS_FILE}" "${current}"
+    else
+        : >"${current}"
+    fi
+
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        ufw allow proto tcp from "${cidr}" to any port 443 \
+            comment "${CLOUDFLARE_UFW_COMMENT}" >/dev/null \
+            || die "添加 Cloudflare 回源 UFW 规则失败：${cidr}"
+    done <"${next}"
+    ufw --force enable >/dev/null || die "启用 UFW 失败"
+    ufw reload >/dev/null || die "重载 UFW 失败"
+
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        grep -Fxq "${cidr}" "${next}" && continue
+        ufw --force delete allow proto tcp from "${cidr}" to any port 443 >/dev/null \
+            || warn "删除过期 Cloudflare 回源 UFW 规则失败：${cidr}"
+    done <"${current}"
+    install -d -m 0700 "$(dirname "${CLOUDFLARE_ORIGIN_IPS_FILE}")"
+    install -m 0600 "${next}" "${CLOUDFLARE_ORIGIN_IPS_FILE}"
+    ufw reload >/dev/null || die "重载 UFW 失败"
+}
+
+xhttp_configure_ufw() {
+    local desired_ports
+    snapshot_ufw_state
+    if ! command -v ufw >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends ufw
+    fi
+    ensure_ssh_boot_service
+    detect_ssh_ports
+    ufw default deny incoming >/dev/null
+    ufw default allow outgoing >/dev/null
+    ufw default deny routed >/dev/null
+    desired_ports=${SSH_PORTS}
+    apply_managed_ufw_tcp_ports "${desired_ports} 443"
+    cloudflare_configure_origin_firewall
+    apply_managed_ufw_tcp_ports "${desired_ports}"
+    systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
+    LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
+    ensure_ssh_fail2ban
+}
+
+cloudflare_find_parent_zone() {
+    local domain=$1 candidate zone
+    candidate=${domain}
+    while [[ "${candidate}" == *.* ]]; do
+        zone=$(cloudflare_api_request GET "/zones?name=${candidate}&status=active&per_page=50" | jq -r --arg name "${candidate}" '[.[] | select((.name|ascii_downcase)==$name) | .id] | if length == 1 then .[0] else empty end')
+        if [[ -n "${zone}" ]]; then printf '%s' "${zone}"; return; fi
+        candidate=${candidate#*.}
+    done
+    die "Cloudflare active Zone 未覆盖域名：${domain}"
+}
+
+cloudflare_record_list() { cloudflare_api_request GET "/zones/$1/dns_records?type=$2&name=$3&per_page=100"; }
+cloudflare_require_single_record() {
+    local records=$1 count
+    count=$(jq 'length' <<<"${records}")
+    ((count <= 1)) || die "Cloudflare 中发现多个同名同类型 DNS 记录，拒绝猜测或覆盖"
+}
+
+cloudflare_ensure_proxied_a() {
+    local zone=$1 host=$2 ip=$3 records record id content proxied comment type payload
+    for type in A AAAA CNAME; do
+        records=$(cloudflare_record_list "${zone}" "${type}" "${host}")
+        cloudflare_require_single_record "${records}"
+        [[ "${type}" == A ]] || [[ $(jq 'length' <<<"${records}") == 0 ]] || die "${host} 已有 ${type} 记录；拒绝覆盖"
+        if [[ "${type}" == A && $(jq 'length' <<<"${records}") == 1 ]]; then
+            record=$(jq -c '.[0]' <<<"${records}"); id=$(jq -r '.id' <<<"${record}")
+            content=$(jq -r '.content' <<<"${record}"); proxied=$(jq -r '.proxied' <<<"${record}")
+            comment=$(jq -r '.comment // empty' <<<"${record}")
+            if [[ "${content}" == "${ip}" && "${proxied}" == true ]]; then
+                return 0
+            fi
+            [[ "${comment}" == "easy_all xhttp origin" ]] \
+                || die "${host} 的 A 记录与 easy_all 目标不一致或未代理；拒绝覆盖"
+            payload=$(jq -cn --arg name "${host}" --arg content "${ip}" \
+                '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')
+            cloudflare_api_request PATCH "/zones/${zone}/dns_records/${id}" \
+                "${payload}" >/dev/null
+            return 0
+        fi
+    done
+    cloudflare_api_request POST "/zones/${zone}/dns_records" \
+        "$(jq -cn --arg name "${host}" --arg content "${ip}" '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')" >/dev/null
+}
+
+cloudflare_validate_zones() {
+    local zone
+    CLOUDFLARE_ZONE_ID=$(cloudflare_find_parent_zone "${VLESS_CDN_DOMAIN}")
+    CLOUDFLARE_CDN_ZONE_ID=${CLOUDFLARE_ZONE_ID}
+    CLOUDFLARE_SUBSCRIPTION_ZONE_ID=$(cloudflare_find_parent_zone "$(active_subscription_link_domain)")
+    [[ "${CLOUDFLARE_ZONE_ID}" == "${CLOUDFLARE_SUBSCRIPTION_ZONE_ID}" ]] || die "订阅域名必须在同一个 Cloudflare Zone"
+    zone=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}")
+    CLOUDFLARE_ZONE_NAME=$(jq -r '.name // empty | ascii_downcase' <<<"${zone}")
+    [[ -n "${CLOUDFLARE_ZONE_NAME}" ]] || die "Cloudflare Zone 未返回有效名称"
+    cloudflare_validate_universal_hostname "${VLESS_CDN_DOMAIN}"
+    cloudflare_validate_universal_hostname "$(active_subscription_link_domain)"
+}
+
+cloudflare_validate_universal_hostname() {
+    local host=$1 prefix
+    [[ "${host}" == *."${CLOUDFLARE_ZONE_NAME}" ]] \
+        || die "${host} 不属于 Cloudflare Zone ${CLOUDFLARE_ZONE_NAME}"
+    prefix=${host%.${CLOUDFLARE_ZONE_NAME}}
+    [[ -n "${prefix}" && "${prefix}" != *.* ]] \
+        || die "Cloudflare 模式首版只支持 Zone 下的一级子域名：${host}"
+}
+
+cloudflare_prepare_origin() {
+    local ip
+    cloudflare_collect_api_token
+    cloudflare_validate_zones
+    ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测 VPS 公网 IPv4"
+    validate_ipv4 "${ip}" || die "VPS 公网 IPv4 无效：${ip}"
+    VPS_PUBLIC_IPV4=${ip}
+    cloudflare_ensure_proxied_a "${CLOUDFLARE_ZONE_ID}" "${VLESS_CDN_DOMAIN}" "${ip}"
+    if subscription_enabled && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
+        cloudflare_ensure_proxied_a "${CLOUDFLARE_ZONE_ID}" "$(active_subscription_link_domain)" "${ip}"
+    fi
+    CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
+    XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
+}
+
+cloudflare_ensure_origin_ca_root() {
+    CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
+    if [[ -s "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" ]] \
+        && openssl x509 -in "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" -noout >/dev/null 2>&1; then
+        return 0
+    fi
+    install -d -m 0700 "${CERT_DIR}"
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 \
+        "${CLOUDFLARE_ORIGIN_CA_ROOT_URL}" \
+        -o "${RUNTIME_TMP}/cloudflare-origin-ca-ecc.pem" \
+        || die "下载 Cloudflare Origin CA ECC 根证书失败"
+    openssl x509 -in "${RUNTIME_TMP}/cloudflare-origin-ca-ecc.pem" -noout >/dev/null 2>&1 \
+        || die "Cloudflare Origin CA ECC 根证书格式无效"
+    install -m 0644 "${RUNTIME_TMP}/cloudflare-origin-ca-ecc.pem" \
+        "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
+}
+
+cloudflare_origin_certificate_is_current() {
+    local host expected_hosts actual_hosts
+    [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" ]] || return 1
+    openssl x509 -in "${CERT_FILE}" -checkend 2592000 -noout >/dev/null 2>&1 \
+        || return 1
+    while IFS= read -r host; do
+        openssl x509 -in "${CERT_FILE}" -checkhost "${host}" -noout >/dev/null 2>&1 \
+            || return 1
+    done < <(jq -r '.[]' <<<"$(cloudflare_origin_certificate_hosts)")
+    expected_hosts=$(cloudflare_origin_certificate_hosts | jq -r '.[]' | sort -u)
+    actual_hosts=$(openssl x509 -in "${CERT_FILE}" -noout -ext subjectAltName 2>/dev/null \
+        | sed -n '2,$p' | tr ',' '\n' \
+        | sed -n 's/^[[:space:]]*DNS://p' | sort -u)
+    [[ -n "${actual_hosts}" && "${actual_hosts}" == "${expected_hosts}" ]] \
+        || return 1
+    [[ "$(openssl x509 -in "${CERT_FILE}" -pubkey -noout 2>/dev/null \
+        | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)" \
+        == "$(openssl pkey -in "${KEY_FILE}" -pubout -outform DER 2>/dev/null \
+        | sha256sum | cut -d' ' -f1)" ]] || return 1
+}
+
+cloudflare_origin_certificate_hosts() {
+    jq -cn --arg cdn "${VLESS_CDN_DOMAIN}" \
+        --arg sub "$(active_subscription_link_domain)" '[$cdn,$sub] | unique'
+}
+
+cloudflare_issue_origin_certificate() {
+    local force=${1:-0} key csr result cert expires hosts san old_id
+    cloudflare_ensure_origin_ca_root
+    if [[ "${force}" != "1" ]] && cloudflare_origin_certificate_is_current; then
+        return 0
+    fi
+    cloudflare_collect_api_token
+    old_id=${CLOUDFLARE_ORIGIN_CERT_ID:-}
+    install -d -m 0700 "${CERT_DIR}"
+    key="${RUNTIME_TMP}/cloudflare-origin-ecc.key"
+    csr="${RUNTIME_TMP}/cloudflare-origin.csr"
+    openssl ecparam -name prime256v1 -genkey -noout -out "${key}"
+    chmod 0600 "${key}"
+    hosts=$(jq -cn --arg origin "${CLOUDFLARE_ORIGIN_DOMAIN}" --arg cdn "${VLESS_CDN_DOMAIN}" --arg sub "$(active_subscription_link_domain)" '[$origin,$cdn,$sub] | unique')
+    san=$(jq -r 'map("DNS:" + .) | join(",")' <<<"${hosts}")
+    openssl req -new -sha256 -key "${key}" -subj "/CN=${CLOUDFLARE_ORIGIN_DOMAIN}" \
+        -addext "subjectAltName=${san}" -out "${csr}"
+    result=$(cloudflare_api_request POST '/certificates' "$(jq -cn --arg csr "$(<"${csr}")" --argjson hosts "${hosts}" --argjson validity "${CLOUDFLARE_ORIGIN_VALIDITY_DAYS}" '{hostnames:$hosts,requested_validity:$validity,request_type:"origin-ecc",csr:$csr}')")
+    cert=$(jq -r '.certificate // empty' <<<"${result}"); CLOUDFLARE_ORIGIN_CERT_ID=$(jq -r '.id // empty' <<<"${result}"); expires=$(jq -r '.expires_on // empty' <<<"${result}")
+    [[ -n "${cert}" && -n "${CLOUDFLARE_ORIGIN_CERT_ID}" && -n "${expires}" ]] || die "Cloudflare 未返回 Origin CA 证书、ID 或到期时间"
+    printf '%s\n' "${cert}" >"${RUNTIME_TMP}/origin.pem"
+    openssl verify -CAfile "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" \
+        "${RUNTIME_TMP}/origin.pem" >/dev/null \
+        || die "Cloudflare Origin CA 证书链验证失败"
+    install -m 0600 "${RUNTIME_TMP}/origin.pem" "${CERT_FILE}"
+    install -m 0600 "${key}" "${KEY_FILE}"
+    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=${expires}
+    CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=${old_id}
+}
+
+xhttp_validate_local_tls_curl_args() {
+    cloudflare_ensure_origin_ca_root
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}")
+}
+
+xhttp_renew_origin_certificate() {
+    local old_id
+    cloudflare_collect_api_token
+    old_id=${CLOUDFLARE_ORIGIN_CERT_ID:-}
+    cloudflare_issue_origin_certificate 1
+    nginx -t >/dev/null || die "Cloudflare 新源站证书安装后 Nginx 配置校验失败"
+    systemctl reload nginx || systemctl restart nginx \
+        || die "Cloudflare 新源站证书已安装，但 Nginx 重载失败"
+    validate_protocol_runtime
+    save_state
+    if [[ -n "${old_id}" && "${old_id}" != "${CLOUDFLARE_ORIGIN_CERT_ID}" ]]; then
+        if ! (cloudflare_api_request DELETE "/certificates/${old_id}" >/dev/null); then
+            warn "新证书已生效，但撤销旧 Cloudflare Origin CA 证书失败：${old_id}"
+        fi
+    fi
+    cloudflare_clear_api_token
+    success "Cloudflare Origin CA 源站证书已轮换"
+}
+
+cloudflare_finalize_certificate_rotation() {
+    local old_id=${CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID:-}
+    [[ -n "${old_id}" && "${old_id}" != "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] \
+        || return 0
+    if ! (cloudflare_api_request DELETE "/certificates/${old_id}" >/dev/null); then
+        warn "新证书已通过公网验收，但撤销旧 Cloudflare Origin CA 证书失败：${old_id}"
+        return 0
+    fi
+    CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=""
+}
+
+cloudflare_ref() { printf 'easy_all_%s' "$(printf '%s' "$1" | sha256sum | cut -c1-24)"; }
+
+cloudflare_managed_ruleset() {
+    local name=$1 phase=$2 listed matches count id
+    listed=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets")
+    matches=$(jq -c --arg phase "${phase}" \
+        '[.[] | select(.kind=="zone" and .phase==$phase)]' <<<"${listed}")
+    count=$(jq length <<<"${matches}")
+    ((count <= 1)) \
+        || die "Cloudflare phase ${phase} 存在多个 zone ruleset，拒绝猜测"
+    if ((count == 1)); then jq -r '.[0].id' <<<"${matches}"; return; fi
+    id=$(cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/rulesets" "$(jq -cn --arg name "${name}" --arg phase "${phase}" '{name:$name,kind:"zone",phase:$phase,rules:[]}')" | jq -r '.id // empty')
+    [[ -n "${id}" ]] || die "Cloudflare 未返回 ruleset ID"; printf '%s' "${id}"
+}
+
+cloudflare_upsert_rule() {
+    local ruleset=$1 ref=$2 payload=$3 rules matches count id
+    rules=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
+    matches=$(jq -c --arg ref "${ref}" '[.rules[]? | select(.ref==$ref)]' <<<"${rules}"); count=$(jq length <<<"${matches}")
+    ((count <= 1)) || die "Cloudflare ruleset 中有多个 easy_all ref ${ref}，拒绝覆盖"
+    if ((count == 1)); then id=$(jq -r '.[0].id' <<<"${matches}"); cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${id}" "${payload}" >/dev/null
+    else cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules" "${payload}" >/dev/null; fi
+}
+
+cloudflare_add_header_rule() {
+    local ruleset=$1 host=$2 path=$3 ws_path=${4:-} ref
+    ref=$(cloudflare_ref "header:${host}:${path}")
+    local expr
+    expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"
+    cloudflare_upsert_rule "${ruleset}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" --arg path "${path}" --arg expr "${expr}" --arg key "${ORIGIN_HEADER_SECRET}" '{ref:$ref,description:("easy_all origin header for "+$path),expression:$expr,action:"rewrite",action_parameters:{headers:{"X-Easy-All-Origin-Key":{operation:"set",value:$key}}}}')"
+}
+
+cloudflare_delete_managed_rule() {
+    local ruleset=$1 ref=$2 rules matches count id
+    [[ -n "${ruleset}" ]] || return 0
+    if ! rules=$(cloudflare_api_request GET \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}"); then
+        warn "读取 Cloudflare ruleset 失败，保留旧规则 ${ref}"
+        return 0
+    fi
+    matches=$(jq -c --arg ref "${ref}" \
+        '[.rules[]? | select(.ref==$ref)]' <<<"${rules}")
+    count=$(jq length <<<"${matches}")
+    if ((count > 1)); then
+        warn "Cloudflare ruleset 中存在多个旧 easy_all ref ${ref}，拒绝删除"
+        return 0
+    fi
+    ((count == 1)) || return 0
+    id=$(jq -r '.[0].id' <<<"${matches}")
+    if ! (cloudflare_api_request DELETE \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${id}" >/dev/null); then
+        warn "删除旧 Cloudflare 规则失败：${ref}"
+    fi
+}
+
+cloudflare_cleanup_previous_subscription_host() {
+    local old_host=$1 current_host records count id comment
+    [[ -n "${old_host}" && "${old_host}" != "${VLESS_CDN_DOMAIN}" ]] || return 0
+    current_host=$(active_subscription_link_domain)
+    [[ "${old_host}" != "${current_host}" ]] || return 0
+
+    cloudflare_delete_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
+        "$(cloudflare_ref "header:${old_host}:/subscribe")"
+    cloudflare_delete_managed_rule "${CLOUDFLARE_STRICT_RULESET_ID:-}" \
+        "$(cloudflare_ref "strict:${old_host}")"
+
+    if ! records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" A "${old_host}"); then
+        warn "读取旧 Cloudflare 订阅 DNS 失败，保留 ${old_host}"
+        return 0
+    fi
+    count=$(jq length <<<"${records}")
+    ((count == 1)) || {
+        ((count == 0)) || warn "旧订阅域名 ${old_host} 有多个 A 记录，拒绝删除"
+        return 0
+    }
+    id=$(jq -r '.[0].id // empty' <<<"${records}")
+    comment=$(jq -r '.[0].comment // empty' <<<"${records}")
+    [[ -n "${id}" && "${comment}" == "easy_all xhttp origin" ]] || {
+        warn "旧订阅域名 ${old_host} 不是 easy_all 标记的 DNS 记录，予以保留"
+        return 0
+    }
+    if ! (cloudflare_api_request DELETE \
+        "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null); then
+        warn "删除旧 Cloudflare 订阅 DNS 失败：${old_host}"
+    fi
+}
+
+cloudflare_configure_cdn() {
+    cloudflare_configure_rules
+    cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/origin_max_http_version" \
+        "$(jq -cn '{value:"2"}')" >/dev/null
+    warn "请在 Cloudflare 控制台的 Network → gRPC 中手动开启 gRPC；该开关当前没有可用的 Zone Settings API"
+}
+
+cloudflare_validate_cdn_health() {
+    cloudflare_wait_for_health "${VLESS_CDN_DOMAIN}" "CDN"
+    cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
+    if subscription_enabled && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then cloudflare_wait_for_health "$(active_subscription_link_domain)" "订阅"; fi
+}
+
+cloudflare_validate_grpc_edge() {
+    local domain=$1 body_file metadata curl_status http_code content_type
+    body_file=$(mktemp "${RUNTIME_TMP}/cloudflare-grpc-check.XXXXXX")
+    if metadata=$(curl -sS --http2 --proto '=https' --tlsv1.2 \
+        --connect-timeout 5 --max-time 15 --noproxy '*' \
+        -X POST -H 'Content-Type: application/grpc' -H 'TE: trailers' \
+        --data-binary '' -o "${body_file}" \
+        -w $'%{http_code}\t%{content_type}' \
+        "https://${domain}/easy_all-health" 2>/dev/null); then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    rm -f -- "${body_file}"
+    IFS=$'\t' read -r http_code content_type <<<"${metadata}"
+
+    ((curl_status == 0)) \
+        || die "Cloudflare gRPC 边缘验收失败：无法连接 ${domain}"
+    if [[ "${http_code}" == "403" && "${content_type}" == text/html* ]]; then
+        die "Cloudflare Zone 尚未开启 gRPC；请在控制台 Network → gRPC 开启后重试"
+    fi
+    [[ "${http_code}" == "200" ]] \
+        || die "Cloudflare gRPC 边缘验收失败：HTTP ${http_code:-未知}"
+    success "Cloudflare gRPC 边缘验收通过"
+}
+
+cloudflare_wait_for_health() {
+    local domain=$1 label=$2 attempt response
+    for attempt in {1..60}; do
+        response=$(curl -fsS --connect-timeout 5 --max-time 15 "https://${domain}/easy_all-health" 2>/dev/null || true)
+        [[ "${response}" == "easy_all ok" ]] && { success "Cloudflare ${label} 公共健康验收通过"; return; }
+        sleep 5
+    done
+    die "Cloudflare ${label} ${domain} 公共健康验收失败；请检查 DNS、Origin CA、Strict TLS 和规则"
+}
+
+cloudflare_purge_managed_rule() {
+    local ruleset=$1 ref=$2 rules matches count id
+    rules=$(cloudflare_api_request GET \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
+    matches=$(jq -c --arg ref "${ref}" \
+        '[.rules[]? | select(.ref==$ref)]' <<<"${rules}")
+    count=$(jq length <<<"${matches}")
+    ((count <= 1)) \
+        || die "Cloudflare ruleset 中有多个 easy_all ref ${ref}，已停止卸载以避免误删"
+    ((count == 1)) || return 0
+    id=$(jq -r '.[0].id // empty' <<<"${matches}")
+    [[ -n "${id}" ]] || die "Cloudflare easy_all 规则缺少 ID：${ref}"
+    cloudflare_api_request DELETE \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${id}" \
+        >/dev/null
+}
+
+cloudflare_purge_empty_owned_ruleset() {
+    local ruleset=$1 expected_name=$2 expected_phase=$3 current
+    current=$(cloudflare_api_request GET \
+        "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
+    if jq -e --arg name "${expected_name}" --arg phase "${expected_phase}" '
+        .name == $name and .kind == "zone" and .phase == $phase
+        and ((.rules // []) | length) == 0
+    ' <<<"${current}" >/dev/null; then
+        cloudflare_api_request DELETE \
+            "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}" >/dev/null
+    fi
+}
+
+cloudflare_purge_managed_dns_record() {
+    local host=$1 records count id comment
+    records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" A "${host}")
+    count=$(jq length <<<"${records}")
+    ((count <= 1)) \
+        || die "Cloudflare 域名 ${host} 有多个 A 记录，已停止卸载以避免误删"
+    ((count == 1)) || return 0
+    id=$(jq -r '.[0].id // empty' <<<"${records}")
+    comment=$(jq -r '.[0].comment // empty' <<<"${records}")
+    if [[ -z "${id}" || "${comment}" != "easy_all xhttp origin" ]]; then
+        info "Cloudflare DNS ${host} 不是 easy_all 标记的记录，予以保留"
+        return 0
+    fi
+    cloudflare_api_request DELETE \
+        "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null \
+        || die "删除 Cloudflare DNS 记录失败：${host}"
+}
+
+usage() { printf 'Cloudflare Profile 只能由 easy_all 统一入口调用。\n'; }
 
 XRAY_XHTTP_LOOPBACK_PORT="${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT:-10086}}"
 ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-}"
@@ -59,24 +570,6 @@ normalize_xhttp_path() {
 
 xhttp_client_path() {
     printf '%s/' "${XHTTP_PATH%/}"
-}
-
-can_in_place_migrate_from_xhttp_cloudflare() {
-    local state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
-    [[ -f "${state_path}" ]] || return 1
-    local cdn proto
-    cdn=$(read_state_field "${state_path}" CDN_PROVIDER || true)
-    proto=$(read_state_field "${state_path}" PROTOCOL || true)
-    [[ "${cdn}" == "cloudflare" && ("${proto}" == "xhttp" || "${proto}" == "ws" || "${proto}" == "singbox-cf" || "${proto}" == "cloudflare-streamup" || "${proto}" == "xhttp-streamup") ]]
-}
-
-can_in_place_migrate_from_streamup_cloudflare() {
-    local state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
-    [[ -f "${state_path}" ]] || return 1
-    local cdn proto
-    cdn=$(read_state_field "${state_path}" CDN_PROVIDER || true)
-    proto=$(read_state_field "${state_path}" PROTOCOL || true)
-    [[ "${cdn}" == "cloudflare" && ("${proto}" == "cloudflare-streamup" || "${proto}" == "xhttp-streamup" || "${proto}" == "singbox-cf") ]]
 }
 
 collect_install_inputs() {
@@ -141,7 +634,7 @@ load_state() {
         env_name=$(env -i bash -c 'source "$1" && printf "%s" "${'"${variable}"':-}"' _ "${state_path}")
         printf -v "${variable}" '%s' "${env_name}"
     done
-    [[ "${PROTOCOL}" == "cloudflare-streamup" || "${PROTOCOL}" == "xhttp-streamup" || "${PROTOCOL}" == "singbox-cf" || ("${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray") ]] \
+    [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
     configure_cdn_client_ip_family
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
@@ -379,7 +872,7 @@ cloudflare_configure_rules() {
 }
 
 stop_services() {
-    systemctl stop "${XRAY_SERVICE}" "${SINGBOX_SERVICE:-easy_all-singbox.service}" nginx 2>/dev/null || true
+    systemctl stop "${XRAY_SERVICE}" nginx 2>/dev/null || true
 }
 
 validate_protocol_runtime() {
@@ -463,8 +956,8 @@ build_mihomo_xhttp_node() {
         "        c-max-reuse-times: 0\n        h-max-request-times: 300-600\n        h-max-reusable-secs: 900-1800\n        h-keep-alive-period: 0\n"'
 }
 
-# Strictly filter out any fallback lines: select top 3 high-quality unique IPs.
-# 3 IPs x 1 protocol (XHTTP stream-up) = 3 nodes (no domain fallback).
+# Strictly filter out any fallback lines: select top 5 high-quality unique IPs.
+# 5 IPs x 1 protocol (XHTTP stream-up) = 5 nodes (no domain fallback).
 cloudflare_xhttp_streamup_client_candidates() {
     if cdn_optimization_enabled && globalping_cache_valid; then
         jq -r '
@@ -472,7 +965,7 @@ cloudflare_xhttp_streamup_client_candidates() {
           | group_by(.ip)
           | map(sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms])[0])
           | sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms, .ip])
-          | .[0:3]
+          | .[0:5]
           | to_entries[]
           | [.value.ip, (if (.key + 1) < 10 then "0" + ((.key + 1)|tostring) else ((.key + 1)|tostring) end), (.value.carrier // "anycast")]
           | @tsv
@@ -486,7 +979,7 @@ cloudflare_xhttp_streamup_client_candidates() {
             local idx
             idx=$(printf '%02d' "${count}")
             printf '%s\t%s\t%s\n' "${ip}" "${idx}" "${carrier}"
-            ((count >= 3)) && break
+            ((count >= 5)) && break
         done < <(cloudflare_client_candidates)
     fi
 }
@@ -637,60 +1130,6 @@ refresh_cloudflare_cdn_ips() {
     success "Cloudflare CDN 精选 IP 与订阅已刷新"
 }
 
-migrate_from_xhttp_cloudflare() {
-    require_root
-    info "检测到当前已安装 Cloudflare 模式。"
-    info "正在执行就地平滑迁移至模式 5（保留全部 Cloudflare 云端资产、Origin CA 与 VLESS 凭据，切换为纯 XHTTP stream-up 精选 5 节点）..."
-    load_state
-
-    VLESS_UUID="${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}"
-    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
-    XRAY_XHTTP_LOOPBACK_PORT="${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}"
-    ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-$(generate_secret)}"
-    XHTTP_ORIGIN_DOMAIN="${VLESS_CDN_DOMAIN}"
-    BACKEND="xray"
-    PROTOCOL="cloudflare-streamup"
-    CDN_PROVIDER="cloudflare"
-
-    info "[1/6] 停止旧 Sing-box 服务（若存在）并确保 Xray 核心已就绪"
-    systemctl stop easy_all-singbox.service >/dev/null 2>&1 || true
-    systemctl disable easy_all-singbox.service >/dev/null 2>&1 || true
-    download_xray
-    xhttp_render_xray_config
-    install_xray_service
-
-    info "[2/6] 停止旧配额定时器（若有）"
-    remove_quota_timer >/dev/null 2>&1 || true
-
-    info "[3/6] 同步 Cloudflare 边缘规则"
-    cloudflare_prepare_origin
-    cloudflare_issue_origin_certificate 0
-    cloudflare_configure_cdn
-
-    info "[4/6] 更新 Nginx 反代配置并重载"
-    write_nginx_config
-    validate_protocol_runtime
-    if declare -F cloudflare_validate_grpc_edge >/dev/null 2>&1; then
-        if ! cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}" 2>/dev/null; then
-            warn "Cloudflare gRPC 边缘检测未通过。请确保在 Cloudflare 控制台（域名 -> 网络 -> gRPC）已开启 gRPC！"
-        fi
-    fi
-
-    info "[5/6] 刷新精选 IP 并生成新格式订阅（5 节点无域名兜底）"
-    refresh_cloudflare_cdn_ips
-
-    info "[6/6] 保存状态并更新 easy_all 命令注册"
-    save_state
-    register_easy_all_command
-
-    show_node
-    if subscription_enabled; then
-        show_subscription
-    fi
-    success "已成功就地平滑迁移至 Cloudflare 纯 XHTTP stream-up（精选 5 节点）！"
-    warn "重要提示：Cloudflare 纯 XHTTP stream-up 依赖 gRPC 穿透，请确保在 Cloudflare 控制台已开启 Network → gRPC！"
-}
-
 rollback_fresh_install() {
     stop_services
     remove_quota_timer
@@ -710,17 +1149,6 @@ install_all() {
     PROTOCOL="cloudflare-streamup"
     require_root
     require_systemd
-
-    if can_in_place_migrate_from_xhttp_cloudflare; then
-        local migrate_ans=""
-        read_bilingual \
-            "检测到当前已安装 Cloudflare 模式。是否直接就地无缝迁移至模式 5（保留全部 Cloudflare 云资源与 VLESS 凭据，切换为纯 XHTTP stream-up 模式）？[Y/n]:" \
-            "Detected existing Cloudflare Mode. Migrate in-place to Mode 5 (preserve Cloudflare resources & VLESS creds, switch to pure XHTTP stream-up)? [Y/n]:" migrate_ans
-        if [[ -z "${migrate_ans}" || "${migrate_ans}" =~ ^[Yy]$ ]]; then
-            migrate_from_xhttp_cloudflare
-            return 0
-        fi
-    fi
 
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
@@ -899,9 +1327,9 @@ uninstall_all() {
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall
     remove_daily_reboot_schedule
-    rm -f -- "${XRAY_SERVICE_FILE}" "${SINGBOX_SERVICE_FILE:-/etc/systemd/system/easy_all-singbox.service}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}" "${SINGBOX_DIR:-/etc/easy_all/singbox}"
+    rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
     if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
         success "本机内容及 easy_all 托管的 Cloudflare 远端资源已卸载"
     else

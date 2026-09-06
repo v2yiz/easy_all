@@ -4,9 +4,9 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
-XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare.sh"
+XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
-CLOUDFLARE_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare.sh"
+CLOUDFLARE_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
 
@@ -24,14 +24,11 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}/scripts/debian-init.sh"
 
 for required_path in \
-    profiles/reality.sh profiles/xhttp-cloudflare.sh profiles/xhttp-gcore.sh \
-    profiles/singbox-gcore.sh profiles/singbox-cloudflare.sh \
+    profiles/reality.sh \
     profiles/xhttp-cloudflare-streamup.sh \
     lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh \
-    lib/cdn-traffic-guard.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
-    lib/singbox-core.sh \
     lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
     [[ -f "${ROOT_DIR}/${required_path}" ]] \
         || fail "required runtime path is missing: ${required_path}"
@@ -56,32 +53,15 @@ shared_modules=(
 [[ "${LAUNCHER_CONTENT}" == *'"lib/cloudflare-ip-pool.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"'* ]] \
-    || fail "Cloudflare official IP pool must remain scoped to mode 2"
-[[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-cloudflare.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-cloudflare.sh'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" != *'xhttp-aws.sh'* ]] \
-    || fail "Cloudflare CDN profile must be packaged and reuse the XHTTP runtime"
-[[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-gcore.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-gcore.sh'* \
-    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
-    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" == *'source "${XHTTP_PROFILE_ROOT}/cdn-traffic-guard.sh"'* \
-    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" != *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* \
-    && "$(<"${ROOT_DIR}/profiles/xhttp-gcore.sh")" != *'GCORE_CDN_ENDPOINT_MODE'* ]] \
-    || fail "Gcore CDN profile must reuse the runtime with domain-only routing"
-[[ "${LAUNCHER_CONTENT}" == *'"profiles/singbox-gcore.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'profiles/singbox-gcore.sh'* \
-    && "$(<"${ROOT_DIR}/profiles/singbox-gcore.sh")" == *'source "${SINGBOX_PROFILE_DIR}/xhttp-gcore.sh"'* \
-    && "$(<"${ROOT_DIR}/profiles/singbox-gcore.sh")" == *'source "${SINGBOX_PROFILE_DIR}/../lib/singbox-core.sh"'* ]] \
-    || fail "Gcore Sing-box profile must reuse Gcore CDN and Sing-box core modules"
+    || fail "Cloudflare official IP pool must remain scoped to Cloudflare streamup mode"
 [[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-cloudflare-streamup.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-cloudflare-streamup.sh'* \
-    && "$(<"${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh")" == *'source "${PROFILE_DIR}/xhttp-cloudflare.sh"'* \
-    && "$(<"${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh")" == *'source "${PROFILE_DIR}/../lib/xray-core.sh"'* ]] \
-    || fail "Cloudflare XHTTP Stream-up profile must reuse Cloudflare CDN and Xray core modules"
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xray-core.sh"'* ]] \
+    || fail "Cloudflare XHTTP Stream-up profile must reuse runtime and Xray core modules"
 [[ "${LAUNCHER_CONTENT}" == *'"lib/xhttp-runtime.sh"'* \
     && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
-    && "$(<"${XHTTP_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
 
 for retired_identifier in \
@@ -106,7 +86,7 @@ for retired_acme_identifier in \
     install_acme_from_github run_acme ensure_acme_renewal_setup \
     remove_managed_acme_domain remove_managed_acme_cron; do
     ! grep -Eq "(^|[^[:alnum:]_])${retired_acme_identifier}([^[:alnum:]_]|$)" \
-        "${ROOT_DIR}/easy_all" "${ROOT_DIR}/profiles/reality.sh" \
+        "${ROOT_DIR}/easy_all" "${REALITY_PROFILE}" \
         "${ROOT_DIR}"/lib/*.sh >/dev/null \
         || fail "retired ACME identifier remains: ${retired_acme_identifier}"
 done
@@ -128,14 +108,10 @@ for module in platform.sh profile-common.sh network.sh mihomo-template.sh firewa
             || fail "Reality redefines shared function ${function_name}"
         ! grep -Eq "^${function_name}\\(\\)" "${XHTTP_RUNTIME}" \
             || fail "XHTTP runtime redefines shared function ${function_name}"
+        ! grep -Eq "^${function_name}\\(\\)" "${CLOUDFLARE_PROFILE}" \
+            || fail "Cloudflare Profile redefines shared function ${function_name}"
     done < <(module_functions "${ROOT_DIR}/lib/${module}")
 done
-
-while read -r function_name; do
-    [[ -n "${function_name}" ]] || continue
-    ! grep -Eq "^${function_name}\\(\\)" "${CLOUDFLARE_PROFILE}" \
-        || fail "Cloudflare Profile redefines XHTTP runtime function ${function_name}"
-done < <(module_functions "${XHTTP_RUNTIME}")
 
 grep -Eq '^xhttp_render_xray_config\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare Profile does not implement the XHTTP render hook"

@@ -7,16 +7,13 @@
 | 安装模式       | 协议                         | CDN Provider / 入口 |
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
-| 2. Cloudflare CDN 精选 IP - XHTTP + WebSocket | VLESS XHTTP stream-up + WebSocket / TLS | Cloudflare + Globalping IPv4 |
-| 3. Gcore CDN 域名 - XHTTP + WebSocket | VLESS XHTTP packet-up / WebSocket / TLS | Gcore CDN 域名 (Xray 核心) |
-| 4. Gcore CDN 域名 - Sing-box (Trojan + VLESS WS) | Trojan WS / VLESS WS / TLS | Gcore CDN 域名 (Sing-box 核心) |
-| 5. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (全网精选 5 节点，完全无域名兜底) |
+| 2. Cloudflare CDN 精选 IP - XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (全网精选 5 节点，完全无域名兜底) |
 
-Cloudflare 提供 XHTTP + WebSocket（三网独立优选双链路）或纯 XHTTP stream-up（全网精选 5 节点）；Gcore 提供 XHTTP + WebSocket（Xray 核心）或 Trojan + VLESS WebSocket（Sing-box 核心），由 Gcore DNS 调度域名；Reality 用于直连。
+Cloudflare 提供纯 XHTTP stream-up（全网精选 5 节点）；Reality 用于直连。
 
-同一台 VPS 只能安装一种模式。脚本会管理 Xray/Sing-box、Nginx、证书、UFW、BBR 和订阅文件，
+同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
-所在地区法律、VPS 服务商以及 Cloudflare 和 Gcore 的服务条款。
+所在地区法律、VPS 服务商以及 Cloudflare 的服务条款。
 
 ## 第一次安装：先看这里
 
@@ -25,13 +22,10 @@ Cloudflare 提供 XHTTP + WebSocket（三网独立优选双链路）或纯 XHTTP
 | 你的情况 | 建议 | 需要额外准备 |
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
-| 明确要使用 Cloudflare CDN，并愿意维护域名、Token 和 gRPC 设置 | 选择 `2`：Cloudflare XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台手动打开 gRPC。 |
-| 需要 Gcore CDN 域名入口，并愿意维护 Gcore Managed DNS 和 API Token | 选择 `3`：Gcore XHTTP | Gcore Free CDN、Managed DNS Zone、源站/节点域名和 Gcore API Token；不需要 Globalping。 |
-| 需要 Gcore CDN 域名入口，或有 iPhone 客户端需求（需要双节点简单自动切换） | 选择 `4`：Gcore Sing-box | 同模式 3 前置条件。若有 iPhone，推荐使用 Sing-box 后端及 iOS 客户端，开箱即支持 Trojan + VLESS 两节点自动测速与故障切换（urltest）；后端同时完全兼容 Mihomo 客户端。若已安装模式 3，可随时一键原地无缝切换为模式 4。 |
-| 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精简 5 节点 | 选择 `5`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；基于全网综合优选筛选 Top 5 优质 IPv4 节点（严格 5 节点无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。若已安装模式 2，可随时一键原地无缝切换为模式 5。 |
+| 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精简 5 节点 | 选择 `2`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；基于全网综合优选筛选 Top 5 优质 IPv4 节点（严格 5 节点无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
-处理 Cloudflare 或 Gcore 前置准备时，再选择对应 CDN 模式。Gcore 模式下可在模式 3 与模式 4 之间通过 `easy_all switch-backend` 原地无缝迁移，无需重新创建云端资源。
+处理 Cloudflare 前置准备时，再选择对应 CDN 模式。
 
 ### 2. 运行前检查清单
 
@@ -47,7 +41,6 @@ Cloudflare 提供 XHTTP + WebSocket（三网独立优选双链路）或纯 XHTTP
   当前 SSH 端口、Reality 的 `443`，或 CDN 回源所需的 `443`；脚本无法修改服务商控制台规则。
 - Cloudflare XHTTP 已按[前置准备手册](docs/preparation-guide.md)完成域名、Token 与 gRPC；不要提前创建
   `node.example.com` 或计划使用的独立订阅域名的 DNS 记录。
-- Gcore XHTTP 已按[前置准备手册](docs/preparation-guide.md)完成根域名委派、源站/节点域名和 Gcore API Token；不要提前创建节点 CNAME。
 
 > **安装会改动系统。** 它会安装 XanMod 内核和依赖、设置系统时区为 `Asia/Shanghai`、配置 UFW 和
 > Fail2ban、额外让 SSH 监听 TCP `65533`、创建 systemd 定时任务，并管理 Xray/Nginx。请保留当前 SSH
@@ -74,9 +67,9 @@ ssh <登录用户>@<VPS公网IP> -p <SSH端口>
 
 ## 系统与安全保障
 
-三种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
+两种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
 UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。安装与 `easy_all apply`
-都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。三种模式还会
+都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。两种模式还会
 通过同一公共模块安装并启用 Fail2ban：任一来源在 3 分钟内失败 6 次，只封禁触发 IP
 3 小时；重复来源递增封禁且最长 1 周；`sshd` jail
 始终跟随实际 SSH 端口列表。
@@ -86,7 +79,7 @@ SSH 管理流量再次进入代理节点。
 ## 安装
 
 线路与费用提示：CDN 模式面向直连 VPS 体验不理想、且愿意维护域名和第三方账号的场景，并不保证一定更快。
-Cloudflare Free Zone 与 Gcore Free CDN 的基础额度按 Provider 当前规则执行，域名注册费和 VPS 费用另计。
+Cloudflare Free Zone 的基础额度按 Provider 当前规则执行，域名注册费和 VPS 费用另计。
 
 CDN 模式需要先准备对应 Provider 的域名、账号和 Token。请先阅读统一的
 [前置准备手册](docs/preparation-guide.md)。Reality 只有在选择“部署订阅”时才需要 Cloudflare 域名和 API Token。
@@ -106,7 +99,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 sudo easy_all self-update
 ```
 
-`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、三个 Profile、CDN 公共
+`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、两个 Profile、CDN 公共
 运行时、公共支持模块和 Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或云端 CDN 资源。
 代码包含配置生成变化时，再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
@@ -116,7 +109,7 @@ sudo easy_all self-update
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
 2. 浅克隆 `main` 分支完整项目到权限受限的临时目录。
-3. 校验入口、三个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
+3. 校验入口、两个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
 4. 通过 `sudo` 启动交互安装。
 5. 安装结束后删除临时下载目录。
 
@@ -132,10 +125,7 @@ sudo ./easy_all install
 ```text
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
-  2. Cloudflare CDN 精选 IP - XHTTP + WebSocket（三网独立优选 + 双链路）
-  3. Gcore CDN 域名 - XHTTP + WebSocket（Gcore DNS 调度，不做 IP 精选）
-  4. Gcore CDN 域名 - Sing-box（Trojan + VLESS WS 双链路，iPhone 推荐，自带两节点自动切换）
-  5. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
+  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -146,7 +136,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 
 | 看到的选项 | 首次单用户建议 | 说明 |
 | --- | --- | --- |
-| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare XHTTP + WebSocket 双链路，`3` 是 Gcore 域名 XHTTP，`4` 是 Gcore Sing-box（有 iPhone 时推荐，iOS Sing-box 开箱即享两节点自动切换，同时兼容 Mihomo），`5` 是 Cloudflare 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点，支持通用与 Clash 订阅）。 |
+| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点，支持通用与 Clash 订阅）。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
@@ -154,7 +144,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 | Reality 动态端口 | 直接回车 | 这是**节点连接端口**的轮换策略，不是订阅下载端口。 |
 
 所有提示中的 `[值]` 都表示直接按回车会采用该值；没有方括号且没有写“可留空”的输入必须填写。
-输入 Cloudflare、Globalping 或 Gcore Token 时不会显示字符，粘贴后直接按回车即可。
+输入 Cloudflare 或 Globalping Token 时不会显示字符，粘贴后直接按回车即可。
 
 ### 5. 安装完成后：重启、验证、导入客户端
 
@@ -191,8 +181,8 @@ sudo easy_all subscription
 | iPhone、iPad | [Clash Mi 官方下载页](https://clashmi.app/download) | 安装后打开“我的配置”→右上角 `+`→“添加配置链接”，粘贴 `easy_all subscription` 输出的 Mihomo 地址；其[官方用户手册](https://clashmi.app/guide/)有配图说明。 |
 | Shadowrocket（小火箭） | **不作为本项目推荐客户端** | 虽有 XHTTP 支持记录，但本项目所需的 IP/SNI/Host 分离和复用字段未逐项确认；请自行逐节点测试。 |
 
-“能导入”不代表“全部节点都能连接”。Cloudflare 模式下，原始域名兜底节点可用于判断订阅和基础链路是否正常；
-它不能证明客户端也支持精选 IP 节点。启用 TUN 或“全局代理”会改变设备的网络路由，首次使用前请先确认客户端
+“能导入”不代表“全部节点都能连接”。Cloudflare 模式全网精选 5 节点，完全无域名兜底；
+请确保客户端完整支持 XHTTP stream-up 并正确解析 IP/SNI/Host 分离字段。启用 TUN 或“全局代理”会改变设备的网络路由，首次使用前请先确认客户端
 如何一键关闭或恢复网络。
 
 若要在 Shadowrocket 中让普通节点订阅按延迟自动选择，请按带图例的
@@ -210,9 +200,9 @@ Cloudflare 精选 IP XHTTP 兼容性边界。
 | 提示 Zone 不是 Active 或找不到域名 | 回到 Cloudflare Overview，等待 Zone 变为 **Active**；检查注册商名称服务器是否完整替换。 |
 | gRPC 检查返回 `403 text/html` | 在目标 Zone 的 **Network → gRPC** 手动开启 gRPC，等待设置生效后重新执行提示的命令。 |
 | API Token 权限不足或同名 DNS 记录冲突 | 不要删除不认识的记录或扩大 Token 权限。按准备手册核对最小权限；为节点/订阅换一个未被占用的一级子域名。 |
-| Globalping 额度不足或没有候选 IP | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；已有缓存会继续使用，缓存过期时会回退到域名节点。 |
+| Globalping 额度不足或没有候选 IP | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；已有缓存会继续使用。 |
 | 检测到 UEFI Secure Boot | 安装器不会安装无法确认启动的第三方内核。请改用满足要求的 VPS，或在完全理解风险后从服务商控制台处理 Secure Boot。 |
-| 能下载订阅但客户端连接失败 | 先确认客户端支持 Mihomo XHTTP；Cloudflare 模式再检查 gRPC。使用原始域名兜底节点做对照，不要直接删除 Cloudflare 规则。 |
+| 能下载订阅但客户端连接失败 | 先确认客户端支持 Mihomo XHTTP；Cloudflare 模式再检查 gRPC。可使用 Base64 通用链接单节点逐一排查，不要直接删除 Cloudflare 规则。 |
 
 ## 安装脑图
 
@@ -233,25 +223,16 @@ flowchart TD
     R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]
     R9 --> Z[输出节点与订阅信息]
 
-    B -->|2| C0[Cloudflare CDN 精选 IP XHTTP + WebSocket]
+    B -->|5| C0[Cloudflare CDN 精选 IP 纯 XHTTP stream-up]
     C0 --> C1[系统预检 / 冲突检查 / 备份]
     C1 --> C2[Cloudflare Zone Token / 单一 proxied A / Universal SSL / Origin CA]
     C2 --> C3[Full strict / HTTP2 gRPC / Transform Rule Origin Key / Cloudflare IP 防火墙]
-    C3 --> C4[官方高优 CIDR 权重抽样 / 三网独立预筛 + TLS 验证 / VPS HTTP2 健康检查]
-    C4 --> C5[保存缓存 / 注册每小时刷新 / 输出三网双链路节点与订阅]
+    C3 --> C4[官方高优 CIDR 权重抽样 / 全网预筛 + TLS 验证 / 筛选 Top 5 精选 IP]
+    C4 --> C5[保存缓存 / 注册每小时刷新 / 输出纯 XHTTP 5 节点与订阅]
     C5 --> Z
-
-    B -->|3| G0[Gcore CDN 域名 XHTTP + WebSocket]
-    G0 --> G1[系统预检 / 冲突检查 / 备份]
-    G1 --> G2[Gcore API Token / Managed DNS 委派 / 源站与 CDN 域名]
-    G2 --> G3[源站 A / Let's Encrypt / mTLS 回源证书]
-    G3 --> G4[Origin Group / XHTTP Resource / 边缘证书]
-    G4 --> G5[CNAME 传播 / 公网 XHTTP 验收 / 990 GB 流量保护]
-    G5 --> Z
-
 ```
 
-图中是安装器的实际执行顺序。三种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。Cloudflare 模式只使用单一 proxied 一级子域，由 VPS 预筛并由客户端最终测速选优；Gcore 模式只使用 CDN 域名，不做 IP 精选。
+图中是安装器的实际执行顺序。两种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。Cloudflare 模式只使用单一 proxied 一级子域，由 VPS 预筛并由客户端最终测速选优。
 
 公共交互选项：
 
@@ -259,15 +240,12 @@ flowchart TD
 | --- | --- | --- | --- |
 | Globalping Token | 仅 Cloudflare XHTTP 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
 | Cloudflare Zone Token | Cloudflare XHTTP 必填；Reality 选择“部署订阅”时也必填，隐藏输入 | 无 | 仅限目标 Zone 的最小权限；所需权限见前置准备手册 |
-| Gcore API Token | 仅 Gcore XHTTP 必填，隐藏输入 | 无 | 用于 DNS/CDN/证书资源；仅当前进程使用 |
-| Gcore 源站域名 | 仅 Gcore XHTTP 必填；脚本创建源站 A 记录 | 无 | 与 CDN 域名位于同一 Gcore Managed DNS 主域名 |
-| Gcore CDN 节点域名 | 仅 Gcore XHTTP 必填 | 无 | 客户端连接地址、TLS SNI 和 HTTP Host 均使用该域名 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
-| CDN 订阅链接完整域名 | 仅 Cloudflare/Gcore XHTTP 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
+| CDN 订阅链接完整域名 | 仅 Cloudflare XHTTP 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
 | 月度用户配额 | 仅选择“部署订阅”时出现；`1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
-| 安装模式 | `1` Reality / `2` Cloudflare / `3` Gcore | `1` | 安装 Reality |
+| 安装模式 | `1` Reality / `2` Cloudflare | `1` | 安装 Reality |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入每日 04:00 的 root crontab；重启会短暂断线 |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
@@ -282,13 +260,13 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
 `tcp_slow_start_after_idle`，避免复用的空闲 TCP 连接恢复传输时重新进入慢启动。
 
-服务器把启用 `SO_KEEPALIVE` 的 TCP 套接字默认探测参数设为 `300/30/5`，并在三种 Xray 入站
+服务器把启用 `SO_KEEPALIVE` 的 TCP 套接字默认探测参数设为 `300/30/5`，并在 Xray 入站
 显式启用相同的 300 秒空闲阈值与 30 秒探测间隔：空闲 300 秒后每 30 秒探测一次，连续 5 次无响应
 后回收失效连接。它用于限制半开连接的资源占用，不能替代 XHTTP 自身的应用层保活。出站 TCP/UDP 临时端口范围设为
 `13000-60999`（48,000 个端口），为代理出站连接增加容量，并避开 Reality 动态入口
 `10000-12927`、本机 Xray/API 端口和 SSH `65533`；这项设置增加并发上限，不改善单连接延迟。
 
-三种模式统一安装 XanMod LTS 内核；XanMod 官方将 Google BBRv3 内置为默认 `tcp_bbr`，因此
+两种模式统一安装 XanMod LTS 内核；XanMod 官方将 Google BBRv3 内置为默认 `tcp_bbr`，因此
 sysctl 中算法名称仍是 `bbr`，不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3。
 安装器固定校验 XanMod APT 公钥指纹，通过 HTTPS 仓库安装，并按当前 CPU 能力选择
 `linux-xanmod-lts-x64v1/v2/v3`；这里的 x64v1/v2/v3 是 CPU 指令集等级，不是 BBR 版本。
@@ -307,15 +285,13 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
-| `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；Cloudflare 模式额外显示 Globalping 缓存，Gcore 模式额外显示全局流量保护状态，不调用云 API。 |
+| `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；Cloudflare 模式额外显示 Globalping 缓存，不调用云 API。 |
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收运行时和订阅；Reality 部署订阅时会同步其 Cloudflare DNS、Strict TLS 与 Origin CA。 |
 | `apply-cloud` | CDN 模式可用；应用本机配置并同步当前 Provider 的 DNS、证书和 CDN 资源。 |
 | `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改当前 Provider 资源，新增、更换或停用独立域名时同步对应 Provider。 |
 | `refresh-cdn-ips` | Cloudflare 模式可用；立即运行一次 Globalping 测量，更新本地缓存并原子重建订阅。 |
-| `cdn-traffic-sync` | Gcore 模式可用；同步 990 GB 全局流量保护状态。 |
-| `update-core` | 下载并更新核心（Xray 或 Sing-box）；更新失败时恢复旧版本。 |
-| `switch-backend` | Gcore 模式可用；在 Xray（模式 3）与 Sing-box（模式 4）后端间就地秒级平滑切换，保留全部 Gcore 云资产与 VLESS 凭据。 |
+| `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制轮换当前模式的证书并重新验收；Reality 需已部署自托管订阅，CDN 模式轮换源站/Provider 证书。 |
 | `quota-status` | 显示每用户月度配额和 Xray 本地统计。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
@@ -326,7 +302,7 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
 云资源时才使用 `easy_all apply-cloud`。
 
-卸载与远端资源处理：默认 `easy_all uninstall` 只清理本机。三种模式执行
+卸载与远端资源处理：默认 `easy_all uninstall` 只清理本机。两种模式执行
 `easy_all uninstall --purge-cloud` 时，脚本会删除带 `easy_all xhttp origin` 标记的节点/订阅 A 记录、
 按稳定 `ref` 定位的 Transform/Config Rules、删除规则后为空且名称匹配的 easy_all ruleset，以及
 Origin CA 证书；Reality 使用自己的 `easy_all reality subscription origin` DNS 标记和 Strict TLS
@@ -344,7 +320,6 @@ Cloudflare Origin CA 会通过 API 直接吊销。远端操作失败时会立即
 | --- | --- |
 | Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
 | Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件；使用现有 Globalping 缓存。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
-| Gcore CDN XHTTP + WebSocket | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 使用已有证书和 mTLS 材料重建 Xray/Nginx，按 Gcore 域名验收 XHTTP 与 WebSocket。<br>4. 重建订阅、保存状态并恢复 990 GB 全局流量保护任务。普通 `apply` 不读取 Gcore 云端凭证；旧单链路安装需先执行一次 `apply-cloud` 原地迁移。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
 Xray/Nginx 配置和订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
@@ -664,114 +639,32 @@ Origin CA 默认签发 5475 天（15 年），`renew-cert` 可手动轮换并在
 API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留远端资源；追加 `--purge-cloud`
 才会删除带 easy_all 所有权标记的订阅 A 记录、Strict TLS 规则并吊销 Origin CA。
 
-## Cloudflare CDN 精选 IP XHTTP + WebSocket
+## 模式 2：Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
 
-模式 2 使用一个 proxied 一级子域（例如 `node.example.com`）作为唯一节点入口，提供 **VLESS XHTTP stream-up + VLESS WebSocket** 双链路。Cloudflare
-Universal SSL 终止客户端 TLS；VPS 使用 Origin CA 证书，SSL 模式固定为 Full (strict)。边缘开启
-HTTP/2 与 gRPC，Transform Rule 为该节点名的回源请求注入 Origin Key，Nginx 同时校验 Host 与该密钥，分别转发至 Xray 的 XHTTP 和 WebSocket 独立回环入站。
-VPS 防火墙只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列表更新。
-部署前必须在目标 Zone 的 **Network → gRPC** 中手动开启 gRPC；该开关没有可用 API。安装、
-`apply-cloud` 和 `refresh-cdn-ips` 会执行边缘验收，发现 Cloudflare 返回 `403` 时立即停止。
-
-模式 2 基于 Cloudflare 官方 IPv4 CIDR 构建候选池，集成高质量高优 CIDR 权重池（如 104.16/13、104.24/14、172.64/13、162.159/16 等占 70% 权重，其余网段占 30%），每轮扫描 120 个地址。VPS 先以
-`node.example.com` 作为 SNI/Host，并发验证 HTTPS、HTTP/2 与 `/easy_all-health`，避免把官方
-地址范围中未提供 CDN 入口的地址提交测量。随后根据 Globalping 当前剩余免费额度自动限制候选数，
-通过两阶段验证：第一阶段使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的
-`eyeball-network` 探针分别发送 4 包 TCP/443 进行零丢包测延迟；第二阶段对低延迟候选执行真实公网 HTTP/TLS 深度探测（HEAD `/easy_all-health`，校验 HTTP 200 且 Host/SNI 匹配），彻底剔除 SNI 假通与阻断节点。
-系统按电信、联通、移动三大运营商独立筛选输出各 Top 3 优质候选 IP（命名为 `电信01-03`、`联通01-03`、`移动01-03`），每个候选 IP 搭配 XHTTP 与 WebSocket 双链路，共最多输出 18 个精选节点（有效缓存下不输出域名兜底节点）。
-所有节点的 `servername` 与
-`xhttp-opts.host`（或 WS `headers.Host`）仍必须是 `node.example.com`。
-
-VPS 使用 systemd timer 每小时更新缓存；安装、`apply` 和手动 `refresh-cdn-ips` 都会自动修复
-并验收该 timer。刷新失败时保留旧缓存；未生成缓存或缓存超过 24 小时只发布域名节点。Mihomo 每
-300 秒在客户端网络运行一次 `url-test`；只有候选比当前节点快至少 50 ms 才切换，以减少抖动。
-切换影响后续新连接，不会迁移已经建立的会话。
-
-### 精选 IP 的客户端要求
-
-本项目的精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成，需要使用 Mihomo，或明确兼容
-同等 Mihomo XHTTP 字段的客户端。它不是把节点域名简单替换成 IP：每个 IP 节点的 `server`
-是筛选出的 Cloudflare IPv4，但 `servername` 和 `xhttp-opts.host` 仍然必须是节点域名，同时
-依赖 XHTTP `stream-up`、路径以及独立的 TLS SNI/HTTP Host 字段。客户端如果不能分别保存 IP、TLS SNI 和 HTTP Host，
-精选 IP 节点会连接失败；客户端是否兼容，最终仍需以实际生成订阅的导入测试为准。
-
-“小火箭”通常指 Shadowrocket。其官方 App Store 更新记录已列出 XHTTP、XHTTP transport
-options parsing，以及 `stream-up` 相关修复，但没有逐项确认本项目所需的 IP/SNI/Host 分离和
-完整 Mihomo XHTTP 参数。因此当前不把 Shadowrocket 列为本项目的已验证客户端；如使用
-小火箭，请升级到最新版并导入实际订阅逐个测试。不能确认兼容时，请使用 Mihomo；订阅中的
-原始域名兜底节点只能作为兼容性对照，不能证明精选 IP 节点已被支持。
-
-该模式只使用一枚限制到目标 Zone 的 API Token（Zone Read、DNS Edit、Transform Rules Edit、
-Config Rules Edit、Zone Settings Edit、SSL and Certificates Edit）。完整的
-DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见
-[前置准备手册](docs/preparation-guide.md)。
-
-## Gcore CDN 域名 XHTTP + WebSocket
-
-模式 3 同时使用 `VLESS + XHTTP(packet-up) + TLS` 和 `VLESS + WebSocket + TLS`，客户端连接地址、TLS SNI 和 HTTP Host
-始终使用 Gcore CDN 域名，由 Gcore DNS 调度边缘节点；不收集 Globalping Token、不生成精选 IP 缓存，
-也不安装 IP 刷新任务。节点与订阅会同时输出 `PACKET_UP` 和 `WEBSOCKET` 两个入口，共用 UUID；
-Mihomo 订阅每 300 秒测速，延迟差超过 20 ms 时切换，单次探测 3 秒超时。
-
-安装器要求根域名已完整委派给 Gcore Managed DNS，并使用 Gcore API Token 自动创建源站 A 记录、
-XHTTP + WebSocket CDN Resource、Origin Group、Origin SSL Validation、mTLS 回源证书和边缘证书。源站使用
-Let's Encrypt 证书；已有 A/AAAA/CNAME 记录默认拒绝覆盖，只有显式设置 `GCORE_DNS_REPLACE=1`
-才允许替换冲突记录。
-
-Gcore CDN 链路生效可能很慢，创建或更新后请耐心等待，不要重复执行安装。当前源站 A 记录和 CDN
-CNAME 的公共 DNS 传播各自最多约 5 分钟；边缘证书、CDN Resource 和公网双链路验收每个域名
-的基础超时约 15 分钟（90 次检查、每次间隔 10 秒，实际还要加上 API 和 HTTPS 请求耗时）。配置
-独立订阅域名时，两套域名会顺序验收，等待时间会相应增加。
-
-Gcore Free CDN 的本地保护阈值固定为 `990 GB`。Xray 统计达到阈值后临时阻断节点，进入新的 UTC
-自然月恢复；它只是本地第二道保护，仍需在 Gcore 控制台设置用量提醒。完整的域名委派、Token 权限、
-双链路参数、证书和卸载说明见统一的[前置准备手册](docs/preparation-guide.md#8-gcore-cdn-域名-xhttp--websocket-准备)。
-
-## Gcore CDN 域名 Sing-box (Trojan + VLESS WebSocket)
-
-模式 4 采用 Sing-box 作为服务端后端，同时监听 Trojan WebSocket（端口 `10088`）与 VLESS WebSocket（端口 `10087`），完全对齐 Gcore CDN 链路规范：
-- **云端资源 100% 复用**：与模式 3 完全一致，包含 Gcore Managed DNS、源站 A 记录、Origin Group、Let's Encrypt 边缘证书、mTLS 双向回源校验。
-- **客户端全兼容（Sing-box 后端兼容 Mihomo 客户端）**：
-  服务端虽采用 Sing-box 核心，但对外暴露标准 Trojan 与 VLESS 协议，**完全兼容 Mihomo (Clash) 客户端**与 Sing-box 客户端，无需担心客户端选型受限。
-- **订阅全适配**：
-  - 通用 Base64 订阅（包含 `trojan://` 与 `vless://` 两个节点链接）
-  - Mihomo / Clash 订阅（`flag=clash`，自动注入 `_TROJAN_WS`、`_VLESS_WS` 以及 `_AUTO` url-test 测速分组，专为 Mihomo 客户端优化）
-  - Sing-box 专属订阅（`flag=singbox`，生成完整的规则集、DNS 策略、Outbounds 分组与分流配置）
-
-### iPhone / iOS 用户特别推荐：开箱即用的两节点自动切换
-
-如果你的主力设备包含 **iPhone (iOS)**，在 Gcore 链路下强烈推荐安装 **模式 4（Sing-box 后端）** 并搭配 **iOS 官方 Sing-box 客户端**：
-- **两节点自动测速与故障切换（urltest）**：
-  Sing-box 订阅原生配置了 `_AUTO` 自动测速分组（基于 `urltest` 探测 Cloudflare 204 优选低延迟），并作为默认的 `PROXY` 出站。Gcore 上的 Trojan WS 与 VLESS WS 双链路会被自动健康检查；当其中一条链路断流或网络波动时，iOS 客户端会自动无缝切换至另一可用节点，完全无需手动干预。
-- **开箱即用，避免繁琐配置**：
-  在 iOS 上使用其他客户端（如 Shadowrocket）时，需要手动配置正则新建 AUTO 策略组并设置订阅绑定；而官方免费的 iOS Sing-box 客户端只需直接添加带有 `flag=singbox` 的订阅链接，就能开箱享受双链路自动故障转移。
-
-### 从模式 3 就地无缝迁移至模式 4（Plan B）
-
-如果你的 VPS 当前已经安装了模式 3（Gcore XHTTP + WebSocket），无需重新申请证书或等待 CDN 生效，可执行：
-
-```bash
-easy_all switch-backend
-# 或运行 easy_all install 选择 4
-```
-
-迁移过程特点：
-1. **零云端等待**：保留全部已生效的 Gcore CDN 资源、DNS 记录与证书，无需重新下发 CDN 或等待 DNS 传播。
-2. **凭据无缝继承**：保留现有的 `VLESS_UUID` 与 `WEBSOCKET_PATH`，原客户端已配置的 VLESS WS 节点保持 100% 兼容、无感连接。
-3. **本地原子切换**：自动拉取并安装 Sing-box 核心，生成 Trojan WS + VLESS WS 组合配置，停用旧 Xray 服务并重载 Nginx，秒级切换完成。
-4. **订阅自动刷新**：自动重新渲染订阅目录，立刻支持使用 `flag=singbox` 获取 Sing-box 客户端完整配置。
-
-## Cloudflare CDN 精选 IP 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
-
-模式 5 采用 Xray 作为服务端后端，监听 VLESS XHTTP（端口 `10086`，模式 `stream-up`），完全适配 Cloudflare CDN 传输特性，严格遵循以下规范：
+模式 2 采用 Xray 作为服务端后端，监听 VLESS XHTTP（端口 `10086`，模式 `stream-up`），使用一个 proxied 一级子域（例如 `node.example.com`）作为唯一节点入口，完全适配 Cloudflare CDN 传输特性，严格遵循以下规范：
 
 - **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
-- **精选 3 节点**：基于 Globalping eyeball 探针全网实测数据与 TLS 握手验证，按延迟优选筛选 Top 3 独立 IPv4（`XHTTP01` ~ `XHTTP03`），严格输出 3 个黄金平衡精选节点，**绝不输出域名兜底节点**。
+- **精选 5 节点**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针全网实测与 TLS 握手深度校验，按延迟优选筛选 Top 5 优质独立 IPv4，**严格输出 5 个精选节点，绝不输出域名兜底节点**。
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
-- **安全防护与边缘规则**：Nginx 前端反向代理校验 `X-Easy-All-Origin-Key` 请求头；Cloudflare 边缘规则仅放行专属 XHTTP 路径、健康检查与订阅端点；后端开启 `ip_is_private` 私网阻断与 UDP 443 (QUIC) 阻断。
-- **模式 2 原地无缝平滑迁移**：若已有模式 2（Xray Cloudflare XHTTP+WS），可通过 `easy_all install` 选择 5 或运行 `easy_all switch-backend` 原地平滑迁移：无缝复用已申请的 Cloudflare Origin CA 证书与 DNS 解析，自动化调整 Nginx 与 Cloudflare 边缘规则，秒级完成切换。
+- **边缘规则与安全防护**：
+  - Cloudflare Universal SSL 终止客户端 TLS；VPS 使用 Origin CA 证书，SSL 模式固定为 Full (strict)。
+  - 边缘开启 HTTP/2 与 gRPC（部署前必须在目标 Zone 的 **Network → gRPC** 中手动开启 gRPC；该开关没有可用 API。安装、`apply-cloud` 和 `refresh-cdn-ips` 会执行边缘验收，发现 Cloudflare 返回 `403` 时立即停止）。
+  - Transform Rule 为该节点名的回源请求注入专属 Origin Key（`X-Easy-All-Origin-Key`），Nginx 同时校验 Host 与该密钥，阻断非 CDN 恶意扫描。
+  - VPS 防火墙（UFW）只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列表更新。
+  - 后端开启 `ip_is_private` 私网阻断与 UDP 443 (QUIC) 阻断。
+- **定时刷新与客户端测速**：
+  - VPS 使用 systemd timer 每小时更新缓存；安装、`apply` 和手动 `refresh-cdn-ips` 都会自动修复并验收该 timer。刷新失败时保留旧缓存；未生成缓存或缓存超过 24 小时继续使用现有缓存。
+  - Mihomo 每 300 秒在客户端网络运行一次 `url-test` 自动选优。
+
+### 精选 IP 的客户端要求
+
+本项目的精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成，需要使用 Mihomo，或明确兼容同等 Mihomo XHTTP 字段的客户端。它不是把节点域名简单替换成 IP：每个 IP 节点的 `server` 是筛选出的 Cloudflare IPv4，但 `servername` 和 `xhttp-opts.host` 仍然必须是节点域名，同时依赖 XHTTP `stream-up`、路径以及独立的 TLS SNI/HTTP Host 字段。客户端如果不能分别保存 IP、TLS SNI 和 HTTP Host，精选 IP 节点会连接失败；客户端是否兼容，最终仍需以实际生成订阅的导入测试为准。
+
+“小火箭”通常指 Shadowrocket。其官方 App Store 更新记录已列出 XHTTP、XHTTP transport options parsing，以及 `stream-up` 相关修复，但没有逐项确认本项目所需的 IP/SNI/Host 分离和完整 Mihomo XHTTP 参数。因此当前不把 Shadowrocket 列为本项目的已验证客户端；如使用小火箭，请升级到最新版并导入实际订阅逐个测试。不能确认兼容时，请使用 Mihomo。
+
+该模式只使用一枚限制到目标 Zone 的 API Token（Zone Read、DNS Edit、Transform Rules Edit、Config Rules Edit、Zone Settings Edit、SSL and Certificates Edit）。完整的 DNS、证书、规则、防火墙和条款/100 MB/长连接风险说明见 [前置准备手册](docs/preparation-guide.md)。
 
 
 ## 状态与边界
@@ -784,12 +677,8 @@ easy_all switch-backend
 /etc/easy_all/globalping.token
 /etc/easy_all/cloudflare-cdn-ips.json
 /etc/easy_all/cloudflare-origin-ipv4.txt
-/etc/easy_all/cdn-traffic-usage.json
 /etc/easy_all/xray/config.json
 /etc/easy_all/certs/
-/etc/easy_all/certs/gcore-client*.pem
-/etc/easy_all/certs/gcore-client*.key
-/etc/easy_all/certs/gcore-origin-issuer.pem
 /var/www/easy_all/subscriptions/
 /etc/nginx/conf.d/easy_all.conf
 /etc/systemd/system/easy_all-xray.service
@@ -797,19 +686,15 @@ easy_all switch-backend
 /etc/systemd/system/easy_all-quota.timer
 /etc/systemd/system/easy_all-globalping-refresh.service
 /etc/systemd/system/easy_all-globalping-refresh.timer
-/etc/systemd/system/easy_all-cdn-traffic-guard.service
-/etc/systemd/system/easy_all-cdn-traffic-guard.timer
-/root/.acme-gcore.sh/
 ```
 
 状态文件由安装器自动维护；仅接受当前新装生成的格式：
 
 ```text
 STATE_VERSION=6  # Reality
-STATE_VERSION=7  # Cloudflare XHTTP
-STATE_VERSION=7  # Gcore XHTTP
-PROTOCOL=reality|xhttp
-CDN_PROVIDER=cloudflare|gcore
+STATE_VERSION=7  # Cloudflare 纯 XHTTP stream-up
+PROTOCOL=reality|cloudflare-streamup
+CDN_PROVIDER=cloudflare
 CDN_CLIENT_IP_FAMILY=ipv4|ipv6-prefer
 ```
 
@@ -817,9 +702,8 @@ Reality 的 `CDN_PROVIDER` 为空。Globalping Token 只在 Cloudflare 模式使
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`，不会写入状态文件。
 
 默认 `uninstall` 只删除本机资源并保留远端资源。追加 `--purge-cloud` 时，Reality 清理带所有权标记的
-Cloudflare 订阅 A 记录、Strict TLS 规则和 Origin CA；Cloudflare XHTTP 清理其受管 DNS、规则和 Origin CA；
-Gcore XHTTP 清理受管 CDN Resource、Origin Group、证书和 DNS 记录。所有模式都先校验资源所有权与当前值，
-永不删除 DNS Zone；远端操作完成后仍应在对应 Provider 控制台复核。
+Cloudflare 订阅 A 记录、Strict TLS 规则和 Origin CA；Cloudflare 模式清理其受管 DNS、规则和 Origin CA。
+所有模式都先校验资源所有权与当前值，永不删除 DNS Zone；远端操作完成后仍应在对应 Provider 控制台复核。
 
 ## 模块
 
@@ -828,31 +712,29 @@ Gcore XHTTP 清理受管 CDN Resource、Origin Group、证书和 DNS 记录。�
 ```text
 easy_all
 ├─ profiles/
-│  ├─ reality.sh             Reality 编排与专属配置
-│  ├─ xhttp-cloudflare.sh    Cloudflare Provider、状态与安装编排
-│  └─ xhttp-gcore.sh           Gcore XHTTP Provider、状态与安装编排
+│  ├─ reality.sh                   Reality 编排与专属配置
+│  └─ xhttp-cloudflare-streamup.sh  Cloudflare 纯 XHTTP stream-up Provider、状态与安装编排
 ├─ lib/
-│  ├─ xhttp-runtime.sh       CDN Profile 复用的本机运行时骨架
-│  ├─ cdn-traffic-guard.sh   Gcore 全局流量保护
-│  ├─ globalping-cdn.sh      Cloudflare 精选 IPv4、缓存与每小时刷新任务
-│  ├─ cloudflare-ip-pool.sh   Cloudflare 官方 IPv4 池抽样与三网候选筛选
-│  ├─ quota.sh               用户配额与统计
-│  ├─ platform.sh            root/systemd/SSH 启动保障
-│  ├─ profile-common.sh      Profile 公共辅助、交互与字段校验
-│  ├─ network.sh             公网 IPv4 探测、IPv4 直连与私网阻断
-│  ├─ mihomo-template.sh     Mihomo 模板加载与校验
-│  ├─ firewall.sh            SSH 端口发现与受管 UFW 过滤规则
-│  ├─ xray-core.sh           Xray 下载、校验与安装
-│  ├─ scheduled-maintenance.sh  可选定时重启
-│  ├─ subscription-auth.sh   非配额订阅 Token 校验与映射
-│  └─ tcp-tuning.sh          XanMod LTS BBRv3 内核与保守 TCP 参数
+│  ├─ xhttp-runtime.sh             CDN Profile 复用的本机运行时骨架
+│  ├─ globalping-cdn.sh            Cloudflare 精选 IPv4、缓存与每小时刷新任务
+│  ├─ cloudflare-ip-pool.sh        Cloudflare 官方 IPv4 池抽样与候选筛选
+│  ├─ quota.sh                     用户配额与统计
+│  ├─ platform.sh                  root/systemd/SSH 启动保障
+│  ├─ profile-common.sh            Profile 公共辅助、交互与字段校验
+│  ├─ network.sh                   公网 IPv4 探测、IPv4 直连与私网阻断
+│  ├─ mihomo-template.sh           Mihomo 模板加载与校验
+│  ├─ firewall.sh                  SSH 端口发现与受管 UFW 过滤规则
+│  ├─ xray-core.sh                 Xray 下载、校验与安装
+│  ├─ scheduled-maintenance.sh     可选定时重启
+│  ├─ subscription-auth.sh         非配额订阅 Token 校验与映射
+│  └─ tcp-tuning.sh                XanMod LTS BBRv3 内核与保守 TCP 参数
 ├─ templates/
-│  └─ mihomo.yaml            服务器订阅使用的生产模板
+│  └─ mihomo.yaml                  服务器订阅使用的生产模板
 └─ scripts/
-   └─ debian-init.sh         独立 Debian 初始化实现
+   └─ debian-init.sh               独立 Debian 初始化实现
 ```
 
-入口负责模式选择、命令分发和完整运行时的原子注册。Reality、Cloudflare 与 Gcore
+入口负责模式选择、命令分发和完整运行时的原子注册。Reality 与 Cloudflare
 Profile 只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。CDN Profile
 加载 `xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现。
 
@@ -866,8 +748,8 @@ Profile 只保留协议编排和 Provider 专属策略；公共模块不反向�
 npm test
 ```
 
-测试覆盖统一入口、公共模块归属与安装完整性、Reality 目标验收、Cloudflare XHTTP、Gcore
-XHTTP 域名链路、Globalping 严格零丢包筛选、用户凭据与月度配额、TCP 参数回滚、Xray 配置、
+测试覆盖统一入口、公共模块归属与安装完整性、Reality 目标验收、Cloudflare 纯 XHTTP stream-up、
+Globalping 严格零丢包筛选、用户凭据与月度配额、TCP 参数回滚、Xray 配置、
 订阅渲染、Token 鉴权、Origin CA 轮换检查和更新顺序。
 
 ## Cloudflare 模式参考
