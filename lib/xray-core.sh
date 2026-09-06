@@ -62,6 +62,7 @@ Wants=network-online.target
 Type=simple
 User=root
 ExecStart=${XRAY_BIN} run -config ${XRAY_CONFIG}
+ExecStopPost=-${COMMAND_PATH} quota-sync
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576

@@ -699,7 +699,11 @@ collect_installed_state() {
 xhttp_render_xray_config() {
     install -d -m 0755 "${XRAY_DIR}"
     local clients
-    clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]')
+    if quota_enabled; then
+        clients=$(quota_active_clients_json "vless-xhttp-h2-in")
+    else
+        clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]')
+    fi
     local outbounds routing sockopt
     outbounds=$(xray_xhttp_outbounds_json)
     routing=$(xray_xhttp_routing_json)
@@ -713,7 +717,8 @@ xhttp_render_xray_config() {
         --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES}" \
         --argjson sockopt "${sockopt}" \
         --argjson outbounds "${outbounds}" \
-        --argjson routing "${routing}" '
+        --argjson routing "${routing}" \
+        --argjson quota_enabled "$([[ "${QUOTA_ENABLED:-0}" == "1" ]] && printf true || printf false)" '
         {
           log: { loglevel: "warning" },
           inbounds: [
@@ -746,7 +751,12 @@ xhttp_render_xray_config() {
           ],
           outbounds: $outbounds,
           routing: $routing
-        }' >"${RUNTIME_TMP}/xray-config.json"
+        }
+        + (if $quota_enabled then {
+            api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
+            stats:{},
+            policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}
+          } else {} end)' >"${RUNTIME_TMP}/xray-config.json"
     if [[ -x "${XRAY_BIN}" ]]; then
         "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null 2>&1 || die "Xray 配置校验失败"
     fi
@@ -790,13 +800,13 @@ server {
 EOF
         write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
         cat <<EOF
-    location ^~ ${XHTTP_PATH} {
+    location ^~ ${XHTTP_PATH}/ {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
         client_max_body_size 0;
         client_body_timeout 1h;
         grpc_set_header Host ${VLESS_CDN_DOMAIN};
-        grpc_set_header X-Real-IP \$remote_addr;
-        grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        grpc_set_header X-Real-IP \$http_cf_connecting_ip;
+        grpc_set_header X-Forwarded-For \$http_cf_connecting_ip;
         grpc_set_header X-Forwarded-Proto https;
         grpc_set_header X-Easy-All-Origin-Key \$http_x_easy_all_origin_key;
         grpc_socket_keepalive on;

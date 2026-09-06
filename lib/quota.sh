@@ -72,6 +72,7 @@ validate_user_accounts() {
         all(to_entries[];
             (.key|test("^[A-Za-z0-9._-]{1,64}$")) and
             (.key != "__denied__") and
+            (.key != "." and .key != "..") and
             (.value|type == "object") and
             (.value.token|type == "string" and test("^[A-Za-z0-9._~-]{8,128}$")) and
             (.value.uuid|type == "string") and
@@ -444,33 +445,42 @@ quota_sync_usage() {
     fi
     stats=$("${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}") \
         || die "读取 Xray 用户流量统计失败"
-    while IFS=$'\t' read -r user quota; do
-        current_up=$(jq -r --arg name "user>>>easy_all.${user}>>>traffic>>>uplink" \
-            '[.stat[]?|select(.name==$name)|.value][0] // 0' <<<"${stats}")
-        current_down=$(jq -r --arg name "user>>>easy_all.${user}>>>traffic>>>downlink" \
-            '[.stat[]?|select(.name==$name)|.value][0] // 0' <<<"${stats}")
-        old_up=$(jq -r --arg user "${user}" '.users[$user].last_uplink // 0' <<<"${usage}")
-        old_down=$(jq -r --arg user "${user}" '.users[$user].last_downlink // 0' <<<"${usage}")
-        if [[ "${period_reset}" == "1" ]]; then
-            delta_up=0
-            delta_down=0
-        else
-            ((current_up >= old_up)) && delta_up=$((current_up - old_up)) || delta_up=${current_up}
-            ((current_down >= old_down)) && delta_down=$((current_down - old_down)) || delta_down=${current_down}
-        fi
-        used=$(jq -r --arg user "${user}" '.users[$user].used_bytes // 0' <<<"${usage}")
-        used=$((used + delta_up + delta_down))
-        old_disabled=$(jq -r --arg user "${user}" '.users[$user].disabled // false' <<<"${usage}")
-        disabled=false
-        ((quota > 0 && used >= quota * 1000 * 1000 * 1000)) && disabled=true
-        [[ "${disabled}" == "${old_disabled}" ]] || changed=1
-        usage=$(jq -c --arg user "${user}" --argjson used "${used}" \
-            --argjson up "${current_up}" --argjson down "${current_down}" \
-            --argjson disabled "${disabled}" '
-            .users[$user]={used_bytes:$used,last_uplink:$up,last_downlink:$down,
-              disabled:$disabled}' <<<"${usage}")
-    done < <(jq -r 'to_entries[] | [.key,(.value.quota_gb|tostring)] | @tsv' \
-        <<<"${USER_ACCOUNTS}")
+    usage=$(jq -c \
+        --argjson accounts "${USER_ACCOUNTS}" \
+        --argjson stats "${stats}" \
+        --argjson period_reset "${period_reset}" '
+        # Build a lookup from stat name to value
+        ($stats.stat // [] | map({(.name): (.value // 0)}) | add // {}) as $stat_map |
+        reduce ($accounts | to_entries[]) as $entry (.; 
+            $entry.key as $user |
+            ($entry.value.quota_gb // 0) as $quota |
+            ($stat_map["user>>>" + "easy_all." + $user + ">>>traffic>>>uplink"] // 0) as $current_up |
+            ($stat_map["user>>>" + "easy_all." + $user + ">>>traffic>>>downlink"] // 0) as $current_down |
+            (.users[$user].last_uplink // 0) as $old_up |
+            (.users[$user].last_downlink // 0) as $old_down |
+            (.users[$user].used_bytes // 0) as $prev_used |
+            (if $period_reset == 1 then 0
+             elif $current_up >= $old_up then ($current_up - $old_up)
+             else $current_up end) as $delta_up |
+            (if $period_reset == 1 then 0
+             elif $current_down >= $old_down then ($current_down - $old_down)
+             else $current_down end) as $delta_down |
+            ($prev_used + $delta_up + $delta_down) as $used |
+            (if $quota > 0 and $used >= ($quota * 1000 * 1000 * 1000) then true else false end) as $disabled |
+            .users[$user] = {
+                used_bytes: $used,
+                last_uplink: $current_up,
+                last_downlink: $current_down,
+                disabled: $disabled
+            }
+        )' <<<"${usage}")
+    # Detect if any user's disabled state changed
+    if [[ "${changed}" == "0" ]]; then
+        changed=$(jq -r --argjson orig "${original_usage}" '
+            [.users | to_entries[] |
+              select((.value.disabled // false) != ($orig.users[.key].disabled // false))] |
+            if length > 0 then "1" else "0" end' <<<"${usage}")
+    fi
     temp=$(mktemp "${STATE_DIR}/quota-usage.json.XXXXXX")
     cleanup_files+=("${temp}")
     printf '%s\n' "${usage}" >"${temp}"

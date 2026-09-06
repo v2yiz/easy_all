@@ -245,10 +245,14 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = 5000 }
             throw new Error('No vless links found in VPS subscription');
         }
 
-        return links.slice(0, 5).map((link, idx) => {
-            const parsed = parseVlessLink(link);
-            parsed.name = `🇺🇸备用CF${idx + 1}`;
-            return parsed;
+        return links.slice(0, 5).flatMap((link, idx) => {
+            try {
+                const parsed = parseVlessLink(link);
+                parsed.name = `🇺🇸备用CF${idx + 1}`;
+                return [parsed];
+            } catch {
+                return [];
+            }
         });
     } catch (error) {
         console.warn('Dynamic CF subscription unavailable; using configured fallback nodes');

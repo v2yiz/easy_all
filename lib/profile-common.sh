@@ -73,7 +73,7 @@ validate_domain() {
         [[ "${label}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || return 1
     done
     tld=${labels[$((${#labels[@]} - 1))]}
-    [[ "${tld}" =~ ^[A-Za-z]{2,}$ ]]
+    [[ "${tld}" =~ ^[A-Za-z0-9-]{2,}$ ]]
 }
 
 normalize_domain() {

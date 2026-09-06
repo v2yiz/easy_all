@@ -36,7 +36,7 @@ fetch_mihomo_template() {
         if [[ -f "${source}" ]]; then
             install -m 0600 "${source}" "${destination}"
         elif [[ "${source}" =~ ^https:// ]]; then
-            curl -fsSL --retry 3 "${source}" -o "${destination}" \
+            curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 "${source}" -o "${destination}" \
                 || die "下载 Mihomo 模板失败：${source}"
             chmod 0600 "${destination}"
         else
@@ -48,7 +48,7 @@ fetch_mihomo_template() {
         url=${MIHOMO_TEMPLATE_URL:-${DEFAULT_MIHOMO_TEMPLATE_URL}}
         [[ "${url}" =~ ^https:// ]] \
             || die "MIHOMO_TEMPLATE_URL 必须使用 HTTPS：${url}"
-        curl -fsSL --retry 3 "${url}" -o "${destination}" \
+        curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 "${url}" -o "${destination}" \
             || die "下载 Mihomo 模板失败：${url}"
     fi
     validate_mihomo_template "${destination}"

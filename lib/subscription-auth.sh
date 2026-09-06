@@ -74,6 +74,8 @@ normalize_allowed_tokens() {
                     [ $entries[] | {key: (.key | trim), value: (.value | trim)} ] as $clean
                     | if any($clean[]; .key == "" or .value == "") then
                     error("ALLOWED_TOKENS 不允许空用户名或空 token")
+                    elif any($clean[]; (.key == "." or .key == "..")) then
+                    error("ALLOWED_TOKENS 用户名不能为 . 或 ..")
                     elif any($clean[]; (.key | test("^[A-Za-z0-9._-]{1,64}$") | not)) then
                     error("ALLOWED_TOKENS 用户名只能包含字母、数字、点、下划线、短横线，长度 1-64")
                     elif any($clean[]; (.value | test("^[A-Za-z0-9._~-]{8,128}$") | not)) then
@@ -122,11 +124,12 @@ render_mihomo_subscription() {
     local group_file=${6:-} name_file=${7:-}
     local encoded_node_name
     encoded_node_name=$(jq -Rn --arg value "${node_name}" '$value')
-    awk -v node_file="${node_file}" -v node_name="${encoded_node_name}" \
-        -v group_file="${group_file}" -v name_file="${name_file}" \
-        -v ipv6_enabled=false '
+    EASY_ALL_NODE_NAME="${encoded_node_name}" \
+    EASY_ALL_IPV6="${IPV6_ENABLED:-false}" \
+    awk -v node_file="${node_file}" \
+        -v group_file="${group_file}" -v name_file="${name_file}" '
         $0 ~ /^ipv6: (true|false)$/ {
-            print "ipv6: " ipv6_enabled
+            print "ipv6: " ENVIRON["EASY_ALL_IPV6"]
             next
         }
         $0 == "# EASY_ALL_PROXY_NODE" {
@@ -146,7 +149,7 @@ render_mihomo_subscription() {
                 while ((getline line < name_file) > 0) print line
                 close(name_file)
             } else {
-                print "        - " node_name
+                print "        - " ENVIRON["EASY_ALL_NODE_NAME"]
             }
             next
         }
