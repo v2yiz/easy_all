@@ -167,12 +167,12 @@ globalping_cache_valid() { return 0; }
 cloudflare_validate_grpc_edge() { return 0; }
 
 candidates_output=$(cloudflare_xhttp_streamup_client_candidates)
-assert_equal "Candidates count is exactly 5" "5" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
+assert_equal "Candidates count is exactly 3" "3" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
 
-# Test node links: exactly 5 links (5 VLESS XHTTP stream-up)
+# Test node links: exactly 3 links (3 VLESS XHTTP stream-up)
 node_links=$(build_node_links)
 vless_link_count=$(grep -c '^vless://' <<<"${node_links}")
-assert_equal "Total VLESS node links is 5" "5" "${vless_link_count}"
+assert_equal "Total VLESS node links is 3" "3" "${vless_link_count}"
 
 # Verify all links have type=xhttp and mode=stream-up
 assert_contains "Links contain type=xhttp" "${node_links}" "type=xhttp"
@@ -187,16 +187,16 @@ assert_not_contains "Node links do not contain domain as server" "${node_links}"
 
 # Verify XHTTP node links
 assert_contains "Links contain XHTTP01" "${node_links}" "#XHTTP01"
-assert_contains "Links contain XHTTP05" "${node_links}" "#XHTTP05"
-assert_not_contains "Links do not contain XHTTP06" "${node_links}" "#XHTTP06"
+assert_contains "Links contain XHTTP03" "${node_links}" "#XHTTP03"
+assert_not_contains "Links do not contain XHTTP04" "${node_links}" "#XHTTP04"
 
-# Test Mihomo nodes: exactly 5 nodes
+# Test Mihomo nodes: exactly 3 nodes
 mihomo_nodes=$(build_mihomo_nodes)
 node_count=$(grep -c '^[[:space:]]*- name:' <<<"${mihomo_nodes}")
-assert_equal "Mihomo nodes count is exactly 5" "5" "${node_count}"
+assert_equal "Mihomo nodes count is exactly 3" "3" "${node_count}"
 
 assert_contains "Mihomo renders XHTTP01" "${mihomo_nodes}" '"XHTTP01"'
-assert_contains "Mihomo renders XHTTP05" "${mihomo_nodes}" '"XHTTP05"'
+assert_contains "Mihomo renders XHTTP03" "${mihomo_nodes}" '"XHTTP03"'
 assert_contains "Mihomo renders network: xhttp" "${mihomo_nodes}" "network: xhttp"
 assert_contains "Mihomo renders mode: stream-up" "${mihomo_nodes}" "mode: stream-up"
 assert_contains "Mihomo renders alpn h2" "${mihomo_nodes}" "- h2"
@@ -218,7 +218,7 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
 names_output=$(build_mihomo_proxy_names)
 assert_contains "Names contain AUTO" "${names_output}" '"AUTO"'
 assert_contains "Names contain XHTTP01" "${names_output}" '"XHTTP01"'
-assert_contains "Names contain XHTTP05" "${names_output}" '"XHTTP05"'
+assert_contains "Names contain XHTTP03" "${names_output}" '"XHTTP03"'
 assert_not_contains "Names do not contain 电信优选" "${names_output}" '"电信优选"'
 
 # Test write_subscriptions: supports Universal (Base64) and Clash (Mihomo)
@@ -231,10 +231,10 @@ sub_mihomo="${TMP_DIR}/web/subscriptions/mihomo.yaml"
 [[ -s "${sub_base64}" ]] || fail "Base64 subscription file is missing or empty"
 [[ -s "${sub_mihomo}" ]] || fail "Mihomo subscription file is missing or empty"
 
-# Verify Base64 content decodes to 5 vless links
+# Verify Base64 content decodes to 3 vless links
 decoded_base64=$(openssl base64 -d -A <"${sub_base64}")
 decoded_link_count=$(grep -c '^vless://' <<<"${decoded_base64}")
-assert_equal "Universal Base64 decodes to 5 links" "5" "${decoded_link_count}"
+assert_equal "Universal Base64 decodes to 3 links" "3" "${decoded_link_count}"
 
 # Verify Mihomo YAML content
 mihomo_file_content=$(<"${sub_mihomo}")

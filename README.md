@@ -766,7 +766,7 @@ easy_all switch-backend
 模式 5 采用 Xray 作为服务端后端，监听 VLESS XHTTP（端口 `10086`，模式 `stream-up`），完全适配 Cloudflare CDN 传输特性，严格遵循以下规范：
 
 - **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
-- **精选 5 节点**：基于 Globalping eyeball 探针全网实测数据与 TLS 握手验证，按延迟优选筛选 Top 5 独立 IPv4（`XHTTP01` ~ `XHTTP05`），严格输出 5 个精选节点，**绝不输出域名兜底节点**。
+- **精选 3 节点**：基于 Globalping eyeball 探针全网实测数据与 TLS 握手验证，按延迟优选筛选 Top 3 独立 IPv4（`XHTTP01` ~ `XHTTP03`），严格输出 3 个黄金平衡精选节点，**绝不输出域名兜底节点**。
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。

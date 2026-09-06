@@ -463,8 +463,8 @@ build_mihomo_xhttp_node() {
         "        c-max-reuse-times: 0\n        h-max-request-times: 300-600\n        h-max-reusable-secs: 900-1800\n        h-keep-alive-period: 0\n"'
 }
 
-# Strictly filter out any fallback lines: select top 5 high-quality unique IPs.
-# 5 IPs x 1 protocol (XHTTP stream-up) = 5 nodes (no domain fallback).
+# Strictly filter out any fallback lines: select top 3 high-quality unique IPs.
+# 3 IPs x 1 protocol (XHTTP stream-up) = 3 nodes (no domain fallback).
 cloudflare_xhttp_streamup_client_candidates() {
     if cdn_optimization_enabled && globalping_cache_valid; then
         jq -r '
@@ -472,7 +472,7 @@ cloudflare_xhttp_streamup_client_candidates() {
           | group_by(.ip)
           | map(sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms])[0])
           | sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms, .ip])
-          | .[0:5]
+          | .[0:3]
           | to_entries[]
           | [.value.ip, (if (.key + 1) < 10 then "0" + ((.key + 1)|tostring) else ((.key + 1)|tostring) end), (.value.carrier // "anycast")]
           | @tsv
@@ -486,7 +486,7 @@ cloudflare_xhttp_streamup_client_candidates() {
             local idx
             idx=$(printf '%02d' "${count}")
             printf '%s\t%s\t%s\n' "${ip}" "${idx}" "${carrier}"
-            ((count >= 5)) && break
+            ((count >= 3)) && break
         done < <(cloudflare_client_candidates)
     fi
 }
