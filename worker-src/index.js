@@ -162,7 +162,7 @@ function clashRealityNode(node, port) {
       short-id: ${yamlString(node.sid)}
     client-fingerprint: ${yamlString(node.fp)}
     packet-encoding: xudp
-    ip-version: ${yamlString(node.ipVersion || 'dual')}
+    ip-version: ${yamlString(node.ipVersion || 'ipv4')}
     smux:
       enabled: false`;
 }

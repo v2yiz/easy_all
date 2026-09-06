@@ -598,7 +598,7 @@ Reality 的订阅模式：
 
 Reality 生成的 Mihomo/Clash 节点默认输出 `ip-version: ipv4`。只有 VPS 已启用公网 IPv6，
 且客户端连接域名发布的全部 AAAA 都与该公网 IPv6 匹配时，节点才输出 `ip-version: dual`。
-模板总开关和业务 DNS 仍使用 `ipv6: true`，不会因此关闭其他业务域名的 IPv6 能力。
+模板总开关和业务 DNS 统一使用 `ipv6: false`，彻底禁用客户端 IPv6 解析与出站。
 
 Reality 服务端与 CDN XHTTP 均阻断 IPv4/IPv6 私网、链路本地、回环、组播及保留地址，
 避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
