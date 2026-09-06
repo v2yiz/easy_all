@@ -140,6 +140,23 @@ assert_contains "TCP keepalive bounds unanswered probes" "$(<"${SYSCTL_CONFIG}")
     'net.ipv4.tcp_keepalive_probes = 5'
 assert_contains "ephemeral ports avoid managed ingress ranges" "$(<"${SYSCTL_CONFIG}")" \
     'net.ipv4.ip_local_port_range = 13000 60999'
+assert_contains "HTTP/2 and gRPC anti-bufferbloat tcp_notsent_lowat" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.tcp_notsent_lowat = 131072'
+assert_contains "fast TIME_WAIT socket recycling" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.tcp_tw_reuse = 1'
+assert_contains "FIN-WAIT-2 timeout reduced to 15s" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.tcp_fin_timeout = 15'
+assert_contains "somaxconn queue increased to 65535" "$(<"${SYSCTL_CONFIG}")" \
+    'net.core.somaxconn = 65535'
+assert_contains "netdev_max_backlog queue increased to 65535" "$(<"${SYSCTL_CONFIG}")" \
+    'net.core.netdev_max_backlog = 65535'
+
+runtime_keys=$(tcp_runtime_keys)
+assert_contains "runtime keys include tcp_notsent_lowat" "${runtime_keys}" 'net.ipv4.tcp_notsent_lowat'
+assert_contains "runtime keys include tcp_tw_reuse" "${runtime_keys}" 'net.ipv4.tcp_tw_reuse'
+assert_contains "runtime keys include tcp_fin_timeout" "${runtime_keys}" 'net.ipv4.tcp_fin_timeout'
+assert_contains "runtime keys include somaxconn" "${runtime_keys}" 'net.core.somaxconn'
+assert_contains "runtime keys include netdev_max_backlog" "${runtime_keys}" 'net.core.netdev_max_backlog'
 [[ ! -e "${BBRV3_REBOOT_MARKER}" ]] \
     || fail "active BBRv3 must clear the reboot marker"
 
@@ -183,6 +200,29 @@ configure_bbr_tcp
             ;;
     esac
     assert_equal "reboot was triggered" "1" "${reboot_called}"
+)
+
+# Test physical FQ qdisc application and service setup/removal
+(
+    SYSTEMD_SYSTEM_DIR="${TMP_DIR}/systemd"
+    mkdir -p "${SYSTEMD_SYSTEM_DIR}"
+    tc_args=""
+    tc() { tc_args="$*"; }
+    ip() { printf 'default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.100 metric 100\n'; }
+    systemctl_calls=()
+    systemctl() { systemctl_calls+=("$*"); }
+
+    apply_physical_fq_qdisc
+    assert_equal "tc replaces root qdisc with fq on default iface" \
+        "qdisc replace dev eth0 root fq" "${tc_args}"
+    [[ -f "${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service" ]] \
+        || fail "easy_all-fq.service was not created"
+    assert_contains "fq service file sets fq" "$(<"${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service")" \
+        'tc qdisc replace dev "$iface" root fq'
+
+    remove_physical_fq_qdisc_service
+    [[ ! -f "${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service" ]] \
+        || fail "easy_all-fq.service was not removed"
 )
 
 printf 'ok - BBRv3 shell tests passed\n'

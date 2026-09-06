@@ -25,11 +25,15 @@ net.ipv4.tcp_wmem
 net.ipv4.tcp_moderate_rcvbuf
 net.ipv4.tcp_mtu_probing
 net.ipv4.tcp_slow_start_after_idle
+net.ipv4.tcp_notsent_lowat
+net.ipv4.tcp_tw_reuse
+net.ipv4.tcp_fin_timeout
 net.ipv4.tcp_keepalive_time
 net.ipv4.tcp_keepalive_intvl
 net.ipv4.tcp_keepalive_probes
 net.ipv4.ip_local_port_range
 net.core.somaxconn
+net.core.netdev_max_backlog
 net.ipv6.conf.all.disable_ipv6
 net.ipv6.conf.default.disable_ipv6
 net.ipv6.conf.lo.disable_ipv6
@@ -50,6 +54,7 @@ snapshot_tcp_runtime() {
 
 restore_tcp_runtime() {
     local source="${BACKUP_DIR}/pre-install-tcp-runtime.conf"
+    remove_physical_fq_qdisc_service
     [[ -s "${source}" ]] || return 0
     sysctl -p "${source}" >/dev/null 2>&1 \
         || warn "恢复安装前 TCP 运行参数失败，请检查 ${source}"
@@ -223,6 +228,15 @@ net.ipv4.tcp_mtu_probing = 1
 # Idle connection
 net.ipv4.tcp_slow_start_after_idle = 0
 
+# HTTP/2 & gRPC anti-bufferbloat: limit unsent bytes in write queue
+net.ipv4.tcp_notsent_lowat = 131072
+
+# High-concurrency socket recycling & queue optimization
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 15
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65535
+
 # Defaults for applications that enable SO_KEEPALIVE. XHTTP application-layer
 # keepalive remains responsible for satisfying CDN HTTP/2 idle timeouts.
 net.ipv4.tcp_keepalive_time = 300
@@ -237,9 +251,6 @@ net.ipv4.ip_local_port_range = 13000 60999
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
-
-# Listen queue
-net.core.somaxconn = 4096
 EOF
     modprobe tcp_bbr >/dev/null 2>&1 \
         || die "当前内核不支持 tcp_bbr"
@@ -253,6 +264,7 @@ EOF
         || die "拥塞控制算法未成功设置为 bbr"
     [[ -f "${BBR_MODULES_CONFIG}" && -f "${SYSCTL_CONFIG}" ]] \
         || die "BBRv3 开机配置写入失败"
+    apply_physical_fq_qdisc
     if bbrv3_running_kernel_supported; then
         rm -f -- "${BBRV3_REBOOT_MARKER}"
         success "XanMod BBRv3 已启用（$(uname -r)，fq + bbr）"
@@ -260,6 +272,52 @@ EOF
         install -d -m 0700 "${STATE_DIR}"
         install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
         warn "XanMod BBRv3 内核已安装；当前仍为 $(uname -r)，请在安装结束后执行 sudo reboot"
+    fi
+}
+
+apply_physical_fq_qdisc() {
+    local default_iface=""
+    if command -v ip >/dev/null 2>&1; then
+        default_iface=$(ip -o -4 route show to default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+        if [[ -z "${default_iface}" ]]; then
+            default_iface=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+        fi
+    fi
+    if [[ -n "${default_iface}" ]] && command -v tc >/dev/null 2>&1; then
+        tc qdisc replace dev "${default_iface}" root fq >/dev/null 2>&1 || true
+    fi
+
+    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+    local fq_service_file="${systemd_dir}/easy_all-fq.service"
+    if [[ -d "${systemd_dir}" ]] && command -v systemctl >/dev/null 2>&1; then
+        cat >"${RUNTIME_TMP:-/tmp}/easy_all-fq.service" <<'EOF'
+[Unit]
+Description=Ensure FQ qdisc on default network interface for BBR
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'iface=$(ip -o -4 route show to default 2>/dev/null | awk "{for(i=1;i<=NF;i++) if(\$i==\"dev\") {print \$(i+1); exit}}"); [ -n "$iface" ] && command -v tc >/dev/null 2>&1 && tc qdisc replace dev "$iface" root fq'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        install -m 0644 "${RUNTIME_TMP:-/tmp}/easy_all-fq.service" "${fq_service_file}"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable easy_all-fq.service >/dev/null 2>&1 || true
+        systemctl start easy_all-fq.service >/dev/null 2>&1 || true
+    fi
+}
+
+remove_physical_fq_qdisc_service() {
+    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+    local fq_service_file="${systemd_dir}/easy_all-fq.service"
+    if [[ -f "${fq_service_file}" ]] && command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now easy_all-fq.service >/dev/null 2>&1 || true
+        rm -f -- "${fq_service_file}"
+        systemctl daemon-reload >/dev/null 2>&1 || true
     fi
 }
 

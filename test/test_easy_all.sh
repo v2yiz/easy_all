@@ -379,7 +379,15 @@ test_mihomo_template() {
     rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" \
         | grep -Ec '^  - ')
     assert_equal "Mihomo template contains only the current XFLASH rules" \
-        "162" "${rule_count}"
+        "166" "${rule_count}"
+    assert_contains "Mihomo filters WeChat CDN from fake-ip" \
+        "'+.qpic.cn'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo filters WeChat domain from fake-ip" \
+        "'+.weixin.qq.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo bypasses Steam download CDN" \
+        "- DOMAIN-SUFFIX,steamcontent.com,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo proxies Steam community" \
+        "- DOMAIN-SUFFIX,steamcommunity.com,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     first_rule=$(awk '/^rules:$/ { found=1; next } found && $0 !~ /^  #/ { print; exit }' \
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo globally rejects UDP 443 before domain rules" \
