@@ -7,7 +7,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 
 export async function buildWorker({
     configPath = resolve(root, 'worker-src/config.local.json'),
-    outputPath = resolve(root, 'worker.js'),
+    outputPath = resolve(root, 'worker-src/worker.js'),
     now = Date.now(),
 } = {}) {
     let config;
