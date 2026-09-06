@@ -166,20 +166,22 @@ sudo easy_all subscription
 不信任的人。
 
 在电脑或手机上安装支持 Mihomo 配置的客户端，在其“从 URL 导入配置 / Import from URL”位置粘贴输出中带
-`flag=clash` 的 **Mihomo** 地址，然后启用该配置并访问一个普通网站测试。Cloudflare 精选 IP 节点必须使用
-支持独立 IP、TLS SNI、HTTP Host 和 XHTTP `stream-up` 字段的客户端；兼容性要求见
-[Cloudflare 客户端说明](#精选-ip-的客户端要求)。不确定客户端是否兼容时，先用订阅中的“原始域名兜底”节点对照测试。
+`flag=clash` 的 **Mihomo** 地址，然后启用该配置并访问一个普通网站测试。Cloudflare 精选 IP 节点需确保客户端支持独立 IP、TLS SNI、HTTP Host 和 XHTTP `stream-up` 字段；兼容性要求见
+[Cloudflare 客户端说明](#精选-ip-的客户端要求)。
 
 #### 客户端选择与导入
 
-首次使用推荐以下客户端。下载时只从列出的官方项目或 App Store 页面选择与自己系统和 CPU 对应的安装包，
-不要从网盘或不明网站下载，也不要因为急于使用而忽略操作系统的安全提示。
+本项目订阅基于标准的 **Mihomo (Clash Meta)** 规范生成，**任何基于 Mihomo 内核的客户端均可直接使用**（包括直连 Reality 与 Cloudflare CDN 精选 IP 的 XHTTP stream-up 纯流模式）。
 
-| 平台 | 推荐客户端 | 首次使用方式 |
+下载客户端时，请务必从官方开源项目发布页或应用商店下载对应操作系统与 CPU 架构的安装包。以下按操作系统分类推荐社区主流热门的 Mihomo 客户端：
+
+| 平台 / 操作系统 | 推荐热门客户端 | 特点与首次导入方式 |
 | --- | --- | --- |
-| Windows、macOS、Linux、Android | [Bettbox 官方发布页](https://github.com/appshubcc/Bettbox/releases) | Bettbox 使用 Mihomo 内核并声明支持 VLESS XHTTP/Reality。安装后选择导入订阅/配置链接，粘贴 `easy_all subscription` 输出的 Mihomo 地址，启用配置。 |
-| iPhone、iPad | [Clash Mi 官方下载页](https://clashmi.app/download) | 安装后打开“我的配置”→右上角 `+`→“添加配置链接”，粘贴 `easy_all subscription` 输出的 Mihomo 地址；其[官方用户手册](https://clashmi.app/guide/)有配图说明。 |
-| Shadowrocket（小火箭） | **不作为本项目推荐客户端** | 虽有 XHTTP 支持记录，但本项目所需的 IP/SNI/Host 分离和复用字段未逐项确认；请自行逐节点测试。 |
+| **Windows** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>[FlClash](https://github.com/chen08209/FlClash/releases)<br>[Clash Nyanpasu](https://github.com/keiko233/clash-nyanpasu/releases) | **Clash Verge Rev**（主流首选）：UI 现代、开箱即用，原生内置最新 Mihomo 内核，系统代理与 TUN 模式非常稳定。<br>**FlClash**：基于 Flutter，跨平台极简，内存占用极低。<br>**导入方式**：在“订阅 / 订阅管理”中新建订阅，粘贴输出的 Mihomo 地址，保存并启用。 |
+| **macOS** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>[FlClash](https://github.com/chen08209/FlClash/releases)<br>[Clash Nyanpasu](https://github.com/keiko233/clash-nyanpasu/releases) | **Clash Verge Rev**：原生适配 Apple Silicon (M 系列芯片) 与 Intel，菜单栏常驻与全局路由切换体验极佳。<br>**FlClash**：轻量清爽，操作逻辑一致。<br>**导入方式**：在订阅设置中粘贴带 `flag=clash` 的 URL，启用系统代理或 TUN。 |
+| **Android** | [FlClash](https://github.com/chen08209/FlClash/releases)<br>[Clash Meta for Android (CMFA)](https://github.com/MetaCubeX/ClashMetaForAndroid/releases)<br>[Bettbox](https://github.com/appshubcc/Bettbox/releases) | **FlClash**：移动端界面交互精美流畅，对精选 IP 与 XHTTP stream-up 支持良好。<br>**CMFA**：经典功能全面，支持细粒度分应用代理。<br>**Bettbox**：开箱即用，支持 VLESS XHTTP/Reality。<br>**导入方式**：配置 -> 新建配置 -> URL 导入，粘贴订阅地址并保存。 |
+| **iOS / iPadOS** | [Clash Mi 官方下载页](https://clashmi.app/download)<br>[Shadowrocket（小火箭）](https://apps.apple.com/app/shadowrocket/id932747118) | **Clash Mi**（首选推荐）：App Store / TestFlight 可用，专为 Mihomo / Clash Meta 打造，完整支持 XHTTP stream-up 与一键配置导入；配图说明详见其[官方用户手册](https://clashmi.app/guide/)。<br>**Shadowrocket**：**不作为本项目首选推荐**。虽支持 Base64 / 单节点，但对精选 IP 所需的 IP/SNI/Host 分离解析能力需自行逐节点测试确认。 |
+| **Linux** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>[FlClash](https://github.com/chen08209/FlClash/releases)<br>[Mihomo Core (CLI)](https://github.com/MetaCubeX/mihomo/releases) | **桌面环境**：推荐使用 Clash Verge Rev（提供 AppImage/deb/rpm）或 FlClash。<br>**服务器/路由器环境**：可直接下载原生 Mihomo 二进制核心配合 systemd 守护进程运行。 |
 
 “能导入”不代表“全部节点都能连接”。Cloudflare 模式全网精选 5 节点，完全无域名兜底；
 请确保客户端完整支持 XHTTP stream-up 并正确解析 IP/SNI/Host 分离字段。启用 TUN 或“全局代理”会改变设备的网络路由，首次使用前请先确认客户端
