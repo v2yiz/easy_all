@@ -301,4 +301,34 @@ EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
 
+# Verify cloudflare_cleanup_stale_header_rules cleans old easy_all rules while keeping keep_ref and user rules
+ruleset_test_id="test-ruleset-123"
+deleted_rules=()
+cloudflare_api_request() {
+    case "$1 $2" in
+    "GET /zones/test-zone-id/rulesets/test-ruleset-123")
+        cat <<'EOF'
+{
+  "rules": [
+    {"id": "user-rule-1", "ref": "customer_ref", "description": "customer custom rule"},
+    {"id": "old-easy-rule-1", "ref": "easy_all_old1", "description": "easy_all origin header for /xhttp-old1"},
+    {"id": "old-easy-rule-2", "ref": "easy_all_old2", "description": "easy_all xhttp streamup origin header"},
+    {"id": "keep-easy-rule", "ref": "easy_all_keep", "description": "easy_all xhttp streamup origin header"}
+  ]
+}
+EOF
+        ;;
+    "DELETE /zones/test-zone-id/rulesets/test-ruleset-123/rules/"*)
+        local rule_id=${2##*/}
+        deleted_rules+=("${rule_id}")
+        printf '{"id":"%s"}\n' "${rule_id}"
+        ;;
+    esac
+}
+
+cloudflare_cleanup_stale_header_rules "${ruleset_test_id}" "easy_all_keep"
+assert_equal "Cleaned exactly 2 old easy_all rules" "2" "${#deleted_rules[@]}"
+assert_equal "Deleted old-easy-rule-1" "old-easy-rule-1" "${deleted_rules[0]}"
+assert_equal "Deleted old-easy-rule-2" "old-easy-rule-2" "${deleted_rules[1]}"
+
 printf 'ok - Cloudflare pure XHTTP stream-up (Mode 5) tests passed\n'

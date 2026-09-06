@@ -323,6 +323,25 @@ EOF
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
+cloudflare_cleanup_stale_header_rules() {
+    local ruleset=$1 keep_ref1=${2:-} keep_ref2=${3:-}
+    local rules rule_id rule_ref rule_desc
+    rules=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}") || return 0
+    while IFS=$'\t' read -r rule_id rule_ref rule_desc; do
+        [[ -n "${rule_id}" ]] || continue
+        if [[ -n "${keep_ref1}" && "${rule_ref}" == "${keep_ref1}" ]]; then
+            continue
+        fi
+        if [[ -n "${keep_ref2}" && "${rule_ref}" == "${keep_ref2}" ]]; then
+            continue
+        fi
+        if [[ "${rule_ref}" == easy_all_* || "${rule_desc}" == easy_all* ]]; then
+            info "自动清理旧版本 easy_all 规则：${rule_desc:-easy_all} (${rule_id})"
+            cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${rule_id}" >/dev/null || true
+        fi
+    done < <(jq -r '.rules[]? | [.id, (.ref // ""), (.description // "")] | @tsv' <<<"${rules}")
+}
+
 cloudflare_add_streamup_header_rule() {
     local ruleset=$1 host=$2 path=$3 ref
     ref=$(cloudflare_ref "header:${host}:${path}")
@@ -334,12 +353,17 @@ cloudflare_add_streamup_header_rule() {
 }
 
 cloudflare_configure_rules() {
-    local host transform strict ref
+    local host transform strict ref keep_header_ref keep_sub_ref=""
     host=${VLESS_CDN_DOMAIN}
     transform=$(cloudflare_managed_ruleset "easy_all xhttp streamup headers ${host}" "http_request_late_transform")
-    cloudflare_add_streamup_header_rule "${transform}" "${host}" "${XHTTP_PATH}"
+    keep_header_ref=$(cloudflare_ref "header:${host}:${XHTTP_PATH}")
     if subscription_enabled \
         && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
+        keep_sub_ref=$(cloudflare_ref "header:$(active_subscription_link_domain):/subscribe")
+    fi
+    cloudflare_cleanup_stale_header_rules "${transform}" "${keep_header_ref}" "${keep_sub_ref}"
+    cloudflare_add_streamup_header_rule "${transform}" "${host}" "${XHTTP_PATH}"
+    if [[ -n "${keep_sub_ref}" ]]; then
         cloudflare_add_header_rule "${transform}" \
             "$(active_subscription_link_domain)" "/subscribe" ""
     fi
