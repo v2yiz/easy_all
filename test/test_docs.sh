@@ -65,9 +65,14 @@ for asset in \
     docs/img/cloudflare/cloudflare-nameservers.svg \
     docs/img/spaceship/spaceship-domain-search.svg \
     docs/img/spaceship/spaceship-nameservers.svg \
-    docs/img/spaceship/spaceship-signup.svg; do
+    docs/img/spaceship/spaceship-signup.svg \
+    docs/img/clashmi/clashmi-global-proxy.svg; do
     [[ -s "${ROOT_DIR}/${asset}" ]] || fail "Documentation asset is missing: ${asset}"
 done
+assert_contains "README documents Clash Mi global proxy guide" \
+    "${README_CONTENT}" 'docs/img/clashmi/clashmi-global-proxy.svg'
+assert_contains "README reminds Clash Mi manual PROXY selection" \
+    "${README_CONTENT}" '手动勾选 `PROXY`'
 NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit)
 [[ -z "${NON_SVG_ASSET}" ]] || fail "Non-SVG documentation asset remains: ${NON_SVG_ASSET}"
 [[ ! -d "${ROOT_DIR}/docs/preparation" ]] || fail "obsolete preparation asset directory still exists"

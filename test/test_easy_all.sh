@@ -378,8 +378,8 @@ test_mihomo_template() {
         "- system" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" \
         | grep -Ec '^  - ')
-    assert_equal "Mihomo template contains only the current XFLASH rules" \
-        "166" "${rule_count}"
+    assert_equal "Mihomo template contains optimized lightweight rules" \
+        "71" "${rule_count}"
     assert_contains "Mihomo filters WeChat CDN from fake-ip" \
         "'+.qpic.cn'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo filters WeChat domain from fake-ip" \
@@ -392,10 +392,18 @@ test_mihomo_template() {
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
         '  - DOMAIN,love.xflash.work,DIRECT' "${first_rule}"
-    assert_contains "Mihomo template uses official Loyalsoldier clash-rules release" \
-        "fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo template rule-providers route through PROXY" \
-        "proxy: PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo proxies non-CN AI services" \
+        "GEOSITE,category-ai-chat-!cn,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo routes Apple domestic CDN direct" \
+        "GEOSITE,apple-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo routes Microsoft domestic CDN direct" \
+        "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo routes mainland domains direct" \
+        "GEOSITE,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo routes mainland IP addresses direct" \
+        "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo falls back to proxy for unclassified traffic" \
+        "MATCH,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \
         "name: 延迟测试" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits latency test URLs" \
@@ -449,10 +457,10 @@ test_subscription_generation() {
         $'\n    ipv6: true\n' "${yaml}"
     assert_contains "Mihomo subscription contains XFLASH rules" \
         "DOMAIN,love.xflash.work,DIRECT" "${yaml}"
-    assert_contains "Mihomo subscription contains XFLASH application rules" \
-        "RULE-SET,applications,DIRECT" "${yaml}"
-    assert_contains "Mihomo subscription keeps the XFLASH Telegram rule unchanged" \
-        "RULE-SET,telegramcidr,PROXY" "${yaml}"
+    assert_contains "Mihomo subscription contains AI proxy rules" \
+        "GEOSITE,category-ai-chat-!cn,PROXY" "${yaml}"
+    assert_contains "Mihomo subscription keeps the Telegram rule" \
+        "GEOIP,telegram,PROXY,no-resolve" "${yaml}"
     assert_not_contains "Mihomo subscription omits the latency test group" \
         "name: 延迟测试" "${yaml}"
     assert_equal "Mihomo node participates only in the PROXY group" \

@@ -50,7 +50,7 @@ try {
     const liveResponse = await live(request());
     assert.equal(liveResponse.headers.get('X-Easy-All-Warning'), null);
     const liveBody = await liveResponse.text();
-    const groups = liveBody.split('proxy-groups:\n')[1].split('rule-providers:\n')[0];
+    const groups = liveBody.split('proxy-groups:\n')[1].split('rules:\n')[0];
     assert.equal((groups.match(/name:/g) || []).length, 2);
     assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 备用优选'));
     const proxyMembers = groups.split('name: 备用优选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
@@ -58,14 +58,14 @@ try {
     assert.ok(!groups.includes('DIRECT'));
     const template = await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8');
     for (const body of [fallbackBody, liveBody]) {
-        assert.equal(body.split('rule-providers:\n')[1], template.split('rule-providers:\n')[1]);
+        assert.equal(body.split('rules:\n')[1], template.split('rules:\n')[1]);
         assert.equal(body.split('\nproxies:\n')[0], template.split('\nproxies:\n')[0]);
         assert.ok(body.includes('ipv6: false'));
     }
     assert.ok(liveBody.includes('remote.example.com') && liveBody.includes('192.0.2.1'));
     assert.deepEqual(JSON.parse(groups.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), ['🇺🇸备用CF1']);
     assert.ok(groups.split('name: 备用优选')[0].includes('Remote'), 'PROXY includes upstream');
-    const fallbackAuto = fallbackBody.split('name: 备用优选')[1].split('rule-providers:')[0];
+    const fallbackAuto = fallbackBody.split('name: 备用优选')[1].split('rules:\n')[0];
     assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['Fallback CF']);
     const fiveCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `🇺🇸备用CF${i}` }));
     const fiveBody = api.buildClashConfig([...api.LOCAL_NODES, ...fiveCf], [10000, 10000, 443, 443, 443, 443, 443, 443], upstream, fiveCf);

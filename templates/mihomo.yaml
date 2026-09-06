@@ -73,21 +73,6 @@ proxy-groups:
 # EASY_ALL_PROXY_NAME
 # EASY_ALL_PROXY_GROUP
 
-rule-providers:
-    icloud: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt', path: ./ruleset/icloud.yaml, interval: 86400, proxy: PROXY }
-    apple: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/apple.txt', path: ./ruleset/apple.yaml, interval: 86400, proxy: PROXY }
-    google: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/google.txt', path: ./ruleset/google.yaml, interval: 86400, proxy: PROXY }
-    proxy: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/proxy.txt', path: ./ruleset/proxy.yaml, interval: 86400, proxy: PROXY }
-    direct: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/direct.txt', path: ./ruleset/direct.yaml, interval: 86400, proxy: PROXY }
-    private: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/private.txt', path: ./ruleset/private.yaml, interval: 86400, proxy: PROXY }
-    gfw: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/gfw.txt', path: ./ruleset/gfw.yaml, interval: 86400, proxy: PROXY }
-    greatfire: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/greatfire.txt', path: ./ruleset/greatfire.yaml, interval: 86400, proxy: PROXY }
-    tld-not-cn: { type: http, behavior: domain, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/tld-not-cn.txt', path: ./ruleset/tld-not-cn.yaml, interval: 86400, proxy: PROXY }
-    telegramcidr: { type: http, behavior: ipcidr, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/telegramcidr.txt', path: ./ruleset/telegramcidr.yaml, interval: 86400, proxy: PROXY }
-    cncidr: { type: http, behavior: ipcidr, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/cncidr.txt', path: ./ruleset/cncidr.yaml, interval: 86400, proxy: PROXY }
-    lancidr: { type: http, behavior: ipcidr, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/lancidr.txt', path: ./ruleset/lancidr.yaml, interval: 86400, proxy: PROXY }
-    applications: { type: http, behavior: classical, url: 'https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/applications.txt', path: ./ruleset/applications.yaml, interval: 86400, proxy: PROXY }
-
 rules:
   - DOMAIN,love.xflash.work,DIRECT
   - DOMAIN-SUFFIX,futooncdn.com,DIRECT
@@ -143,117 +128,29 @@ rules:
   - PROCESS-NAME,uTorrent.exe,DIRECT
   - PROCESS-NAME,WebTorrent.exe,DIRECT
   - PROCESS-NAME,aDrive.exe,DIRECT
-  - RULE-SET,applications,DIRECT
   - DOMAIN,ssl.gstatic.com,DIRECT
-  - DOMAIN-SUFFIX,gstatic.com,PROXY
-  - DOMAIN-SUFFIX,ipleak.net,PROXY
-  - DOMAIN-SUFFIX,browserscan.net,PROXY
-  - DOMAIN-SUFFIX,surfsharkdns.com,PROXY
-  - DOMAIN-SUFFIX,edns.ip-api.com,PROXY
-  - DOMAIN-SUFFIX,dnsleaktest.com,PROXY
-  - DOMAIN-SUFFIX,dnsleak.com,PROXY
-  - DOMAIN-SUFFIX,expressvpn.com,PROXY
-  - DOMAIN-SUFFIX,nordvpn.com,PROXY
-  - DOMAIN-SUFFIX,surfshark.com,PROXY
-  - DOMAIN-SUFFIX,perfect-privacy.com,PROXY
-  - DOMAIN-SUFFIX,browserleaks.com,PROXY
-  - DOMAIN-SUFFIX,browserleaks.org,PROXY
-  - DOMAIN-SUFFIX,browserleaks.net,PROXY
-  - DOMAIN-SUFFIX,vpnunlimited.com,PROXY
-  - DOMAIN-SUFFIX,whoer.net,PROXY
-  - DOMAIN-SUFFIX,whrq.net,PROXY
-  - DOMAIN-SUFFIX,asmr.one,PROXY
-  - DOMAIN,browser-intake-datadoghq.com,PROXY
-  - DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY
-  - DOMAIN,openai-api.arkoselabs.com,PROXY
-  - DOMAIN,openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net,PROXY
-  - DOMAIN,openaicomproductionae4b.blob.core.windows.net,PROXY
-  - DOMAIN,production-openaicom-storage.azureedge.net,PROXY
-  - DOMAIN,static.cloudflareinsights.com,PROXY
-  - DOMAIN-SUFFIX,ai.com,PROXY
-  - DOMAIN-SUFFIX,algolia.net,PROXY
-  - DOMAIN-SUFFIX,api.statsig.com,PROXY
-  - DOMAIN-SUFFIX,auth0.com,PROXY
-  - DOMAIN-SUFFIX,chatgpt.com,PROXY
-  - DOMAIN-SUFFIX,chatgpt.livekit.cloud,PROXY
-  - DOMAIN-SUFFIX,client-api.arkoselabs.com,PROXY
-  - DOMAIN-SUFFIX,events.statsigapi.net,PROXY
-  - DOMAIN-SUFFIX,featuregates.org,PROXY
-  - DOMAIN-SUFFIX,host.livekit.cloud,PROXY
-  - DOMAIN-SUFFIX,identrust.com,PROXY
-  - DOMAIN-SUFFIX,intercom.io,PROXY
-  - DOMAIN-SUFFIX,intercomcdn.com,PROXY
-  - DOMAIN-SUFFIX,launchdarkly.com,PROXY
-  - DOMAIN-SUFFIX,oaistatic.com,PROXY
-  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
-  - DOMAIN-SUFFIX,observeit.net,PROXY
-  - DOMAIN-SUFFIX,openai.com,PROXY
-  - DOMAIN-SUFFIX,openaiapi-site.azureedge.net,PROXY
-  - DOMAIN-SUFFIX,openaicom.imgix.net,PROXY
-  - DOMAIN-SUFFIX,segment.io,PROXY
-  - DOMAIN-SUFFIX,sentry.io,PROXY
-  - DOMAIN-SUFFIX,stripe.com,PROXY
-  - DOMAIN-SUFFIX,turn.livekit.cloud,PROXY
-  - DOMAIN-SUFFIX,sora.com,PROXY
-  - DOMAIN-KEYWORD,openai,PROXY
-  - DOMAIN,api.msn.com,PROXY
-  - DOMAIN,assets.msn.com,PROXY
-  - DOMAIN,copilot.microsoft.com,PROXY
-  - DOMAIN,gateway.bingviz.microsoft.net,PROXY
-  - DOMAIN,gateway.bingviz.microsoftapp.net,PROXY
-  - DOMAIN,in.appcenter.ms,PROXY
-  - DOMAIN,location.microsoft.com,PROXY
-  - DOMAIN,odc.officeapps.live.com,PROXY
-  - DOMAIN,r.bing.com,PROXY
-  - DOMAIN,self.events.data.microsoft.com,PROXY
-  - DOMAIN,services.bingapis.com,PROXY
-  - DOMAIN,sydney.bing.com,PROXY
-  - DOMAIN,www.bing.com,PROXY
-  - DOMAIN-SUFFIX,api.microsoftapp.net,PROXY
-  - DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY
-  - DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY
-  - DOMAIN-SUFFIX,edgeservices.bing.com,PROXY
-  - DOMAIN-SUFFIX,githubcopilot.com,PROXY
-  - DOMAIN-KEYWORD,openaicom-api,PROXY
-  - DOMAIN-SUFFIX,gvt2.com,PROXY
-  - DOMAIN,ai.google.dev,PROXY
-  - DOMAIN,alkalimakersuite-pa.clients6.google.com,PROXY
-  - DOMAIN,makersuite.google.com,PROXY
-  - DOMAIN-SUFFIX,bard.google.com,PROXY
-  - DOMAIN-SUFFIX,deepmind.com,PROXY
-  - DOMAIN-SUFFIX,deepmind.google,PROXY
-  - DOMAIN-SUFFIX,gemini.google.com,PROXY
-  - DOMAIN-SUFFIX,generativeai.google,PROXY
-  - DOMAIN-SUFFIX,proactivebackend-pa.googleapis.com,PROXY
-  - DOMAIN-SUFFIX,apis.google.com,PROXY
-  - DOMAIN-KEYWORD,colab,PROXY
-  - DOMAIN-KEYWORD,developerprofiles,PROXY
-  - DOMAIN-KEYWORD,generativelanguage,PROXY
-  - DOMAIN,cdn.usefathom.com,PROXY
-  - DOMAIN-SUFFIX,anthropic.com,PROXY
-  - DOMAIN-SUFFIX,claude.ai,PROXY
-  - DOMAIN-SUFFIX,razie.ai,PROXY
-  - DOMAIN-SUFFIX,razie.aws.intellij.net,PROXY
-  - DOMAIN-SUFFIX,jetbrains.ai,PROXY
-  - DOMAIN-SUFFIX,meta.com,PROXY
-  - DOMAIN-SUFFIX,services.googleapis.cn,PROXY
-  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
-  - RULE-SET,private,DIRECT
-  - RULE-SET,icloud,DIRECT
-  - RULE-SET,apple,DIRECT
-  - RULE-SET,google,PROXY
-  - RULE-SET,gfw,PROXY
-  - RULE-SET,greatfire,PROXY
-  - RULE-SET,proxy,PROXY
-  - RULE-SET,direct,DIRECT
-  - RULE-SET,tld-not-cn,PROXY
-  - RULE-SET,telegramcidr,PROXY
-  - RULE-SET,lancidr,DIRECT
-  - RULE-SET,cncidr,DIRECT
-  - GEOIP,LAN,DIRECT
-  - GEOIP,CN,DIRECT
-  - GEOSITE,CN,DIRECT
+  # 大流量 CDN 优化 (Apple 与 Microsoft 国内 CDN 直连加速)
+  - GEOSITE,apple-cn,DIRECT
+  - GEOSITE,microsoft@cn,DIRECT
+  # 海外主流 AI 平台代理分流
+  - DOMAIN-SUFFIX,chatgpt.com,PROXY
+  - DOMAIN-SUFFIX,oaistatic.com,PROXY
+  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
+  - DOMAIN-SUFFIX,openai.com,PROXY
+  - DOMAIN-SUFFIX,anthropic.com,PROXY
+  - DOMAIN-SUFFIX,claude.ai,PROXY
+  - DOMAIN-SUFFIX,gemini.google.com,PROXY
+  - GEOSITE,category-ai-chat-!cn,PROXY
+  # Telegram 专属 IP 段代理
+  - GEOIP,telegram,PROXY,no-resolve
+  # 局域网与私有域名直连
   - GEOSITE,private,DIRECT
+  - GEOIP,LAN,DIRECT,no-resolve
+  # 中国大陆域名与大陆 IP 直连 (涵盖国内音视频、国内云 CDN)
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT
+  # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY
+

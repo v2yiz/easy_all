@@ -180,12 +180,24 @@ sudo easy_all subscription
 | **Windows** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>[Clash Party](https://github.com/mihomo-party-org/clash-party/releases)<br>[FlClash](https://github.com/chen08209/FlClash/releases) | **Clash Verge Rev**（主流首选）：UI 现代、开箱即用，原生内置最新 Mihomo 内核，系统代理与 TUN 模式非常稳定。<br>**Clash Party**：跨平台高颜值、活跃更新维护，图形化路由与订阅管理出色。<br>**FlClash**：基于 Flutter，跨平台极简，内存占用极低。<br>**导入方式**：在“订阅 / 订阅管理”中新建订阅，粘贴输出的 Mihomo 地址，保存并启用。 |
 | **macOS** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>[Clash Party](https://github.com/mihomo-party-org/clash-party/releases)<br>[FlClash](https://github.com/chen08209/FlClash/releases) | **Clash Verge Rev**：原生适配 Apple Silicon (M 系列芯片) 与 Intel，菜单栏常驻与全局路由切换体验极佳。<br>**Clash Party**：现代化跨平台体验，支持深色模式与灵活分流配置。<br>**FlClash**：轻量清爽，操作逻辑一致。<br>**导入方式**：在订阅设置中粘贴带 `flag=clash` 的 URL，启用系统代理或 TUN。 |
 | **Android** | [FlClash](https://github.com/chen08209/FlClash/releases)<br>[Clash Meta for Android (CMFA)](https://github.com/MetaCubeX/ClashMetaForAndroid/releases)<br>[Bettbox](https://github.com/appshubcc/Bettbox/releases) | **FlClash**：移动端界面交互精美流畅，对精选 IP 与 XHTTP stream-up 支持良好。<br>**CMFA**：经典功能全面，支持细粒度分应用代理。<br>**Bettbox**：开箱即用，支持 VLESS XHTTP/Reality。<br>**导入方式**：配置 -> 新建配置 -> URL 导入，粘贴订阅地址并保存。 |
-| **iOS / iPadOS** | [Clash Mi 官方下载页](https://clashmi.app/download)<br>[Shadowrocket（小火箭）](https://apps.apple.com/app/shadowrocket/id932747118) | **Clash Mi**（首选推荐）：App Store / TestFlight 可用，专为 Mihomo / Clash Meta 打造，完整支持 XHTTP stream-up 与一键配置导入；配图说明详见其[官方用户手册](https://clashmi.app/guide/)。<br>**Shadowrocket**：**不作为本项目首选推荐**。虽支持 Base64 / 单节点，但对精选 IP 所需的 IP/SNI/Host 分离解析能力需自行逐节点测试确认。 |
+| **iOS / iPadOS** | [Clash Mi 官方下载页](https://clashmi.app/download)<br>[Shadowrocket（小火箭）](https://apps.apple.com/app/shadowrocket/id932747118) | **Clash Mi**（首选推荐）：App Store / TestFlight 可用，专为 Mihomo / Clash Meta 打造，完整支持 XHTTP stream-up 与一键配置导入；配图说明详见其[官方用户手册](https://clashmi.app/guide/)。**特别提示**：日常请保持「规则」模式；若切换为「全局」模式，必须手动在“代理”页面将 `GLOBAL` 指向 `PROXY`（详见下方指引图）。<br>**Shadowrocket**：**不作为本项目首选推荐**。虽支持 Base64 / 单节点，但对精选 IP 所需的 IP/SNI/Host 分离解析能力需自行逐节点测试确认。 |
 | **Linux** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>[Clash Party](https://github.com/mihomo-party-org/clash-party/releases)<br>[FlClash](https://github.com/chen08209/FlClash/releases)<br>[Mihomo Core (CLI)](https://github.com/MetaCubeX/mihomo/releases) | **桌面环境**：推荐使用 Clash Verge Rev、Clash Party（提供 AppImage/deb/rpm）或 FlClash。<br>**服务器/路由器环境**：可直接下载原生 Mihomo 二进制核心配合 systemd 守护进程运行。 |
 
 “能导入”不代表“全部节点都能连接”。Cloudflare 模式全网精选 5 节点，完全无域名兜底；
 请确保客户端完整支持 XHTTP stream-up 并正确解析 IP/SNI/Host 分离字段。启用 TUN 或“全局代理”会改变设备的网络路由，首次使用前请先确认客户端
 如何一键关闭或恢复网络。
+
+##### iOS Clash Mi 模式设置与关键避坑提醒
+
+> [!IMPORTANT]
+> **Clash Mi「规则」与「全局」模式设置提醒：**
+> - **日常推荐选择【规则】模式**：本项目下发的 Mihomo 订阅内置高精简高性能分流规则。在「规则」模式下，中国大陆域名与 IP 直连（含 Apple、微软国内 CDN），境外网站与 AI 流量自动经由 `PROXY` 节点组（自动测速优选最优节点），**开箱即用，无需任何手动修改**。
+> - **切换至【全局】模式的特别注意点**：Clash Mi 客户端内置了名为 `GLOBAL` 的全局选择器分组，**该分组初始默认指向 `DIRECT`（直连）**。
+>   - 若在首页切换为「全局」模式，客户端将强制所有请求走 `GLOBAL` 组；
+>   - **若未修改 `GLOBAL` 的目标，所有流量仍将直连，导致看似已连上但境外网站打不开**；
+>   - **正确做法**：进入客户端底部的**「代理 (Proxies)」**页面，点击 **`GLOBAL`** 策略组，**手动勾选 `PROXY`**（或具体的备用优选节点），全局代理才会生效。
+
+![Clash Mi 规则模式与全局模式设置指引](docs/img/clashmi/clashmi-global-proxy.svg)
 
 ### 第一次安装常见问题
 
@@ -199,6 +211,7 @@ sudo easy_all subscription
 | Globalping 额度不足或没有候选 IP | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；已有缓存会继续使用。 |
 | 检测到 UEFI Secure Boot | 安装器不会安装无法确认启动的第三方内核。请改用满足要求的 VPS，或在完全理解风险后从服务商控制台处理 Secure Boot。 |
 | 能下载订阅但客户端连接失败 | 先确认客户端支持 Mihomo XHTTP；Cloudflare 模式再检查 gRPC。可使用 Base64 通用链接单节点逐一排查，不要直接删除 Cloudflare 规则。 |
+| Clash Mi 开启「全局」模式后打不开境外网站 | Clash Mi 内置的 GLOBAL 分组默认指向 DIRECT。切换为全局模式后，必须进入客户端「代理」页面，点击 GLOBAL 并手动勾选「PROXY」（详见上方指引图）。推荐日常直接使用「规则」模式。 |
 
 ## 安装脑图
 
