@@ -199,9 +199,40 @@ sudo easy_all subscription
 
 ![Clash Mi 规则模式与全局模式设置指引](docs/img/clashmi/clashmi-global-proxy.svg)
 
+##### 订阅更新故障与 DNS 污染排查：客户端 DNS 覆写指引
+
+在某些特定网络环境（如部分省份移动/广电宽带、校园网或企业内网），本地运营商的默认递归 DNS 可能会对自建二级域名或 Cloudflare 代理的订阅域名进行投毒劫持或解析超时，导致客户端在初次导入或刷新订阅时提示 `i/o timeout`、`connect: connection refused` 或 `no such host`。
+
+此时可通过在客户端中**覆写内置 DNS** 或配置**加密 DNS (DoH)** 彻底解决。
+
+> [!TIP]
+> **推荐使用的抗污染公共 DNS / DoH：**
+> - **国内首选（防劫持、低延迟、国内网站 CDN 不绕路）：**
+>   - **阿里 DNS**：DoH `https://223.5.5.5/dns-query` ｜ 普通 IP `223.5.5.5` / `223.6.6.6`
+>   - **腾讯 DNSPod**：DoH `https://doh.pub/dns-query` ｜ 普通 IP `119.29.29.29` / `1.12.12.12`
+> - **海外纯净备用（若订阅域名在国内解析被彻底封锁）：**
+>   - **Cloudflare DNS**：DoH `https://1.1.1.1/dns-query` ｜ 普通 IP `1.1.1.1`
+>   - **Google DNS**：DoH `https://dns.google/dns-query` ｜ 普通 IP `8.8.8.8`
+
+主流客户端 DNS 覆写与排查操作指引：
+
+1. **Clash Verge Rev (Windows / macOS / Linux)**
+   - **配置 DoH 覆写**：进入左侧「设置」→「DNS 设置」→ 开启「自定义 DNS」，在 `nameserver` 列表中添加 `https://223.5.5.5/dns-query`，保存即可。
+   - **订阅单独绑定 Hosts（最稳妥手段）**：在「订阅」页面右键点击订阅卡片 →「编辑信息」→ 在「Hosts」区域添加一行 `你的订阅域名 104.19.14.59`（指向任意 Cloudflare 官方 IPv4），客户端更新订阅时将完全绕过本地 DNS。
+2. **Clash Mi (iOS / iPadOS)**
+   - 点击底栏「设置」→「DNS 设置」→ 开启「自定义 DNS 覆写」→ 添加并置顶 `https://223.5.5.5/dns-query`（或 `223.5.5.5`），返回首页重新刷新订阅。
+3. **FlClash (Android / Windows / macOS / Linux)**
+   - 进入「设置」→「网络 / DNS」→ 开启「覆写 DNS」选项 → 将默认 DNS 服务器修改为 `https://223.5.5.5/dns-query`。
+4. **Clash Meta for Android (CMFA)**
+   - 进入「设置」→「覆写」→「DNS 覆写」→ 将 `nameserver` 修改为 `https://223.5.5.5/dns-query`。
+5. **Shadowrocket (小火箭，iOS)**
+   - 点击底栏「设置」→「DNS」→ 启用「DoH」并添加 `https://223.5.5.5/dns-query`；或在「配置」中长按本地规则文件 →「编辑纯文本」并在 `[Host]` 字段下添加一行 `你的订阅域名 = 104.19.14.59`。
+
 ### 第一次安装常见问题
 
 | 现象 | 先做什么 |
+| --- | --- |
+| 订阅链接在部分网络下拉取失败或提示超时 | 本地运营商 DNS 污染了订阅域名。请参考上方「客户端 DNS 覆写指引」在客户端配置阿里 DoH（`https://223.5.5.5/dns-query`），或在 Hosts 中直接指定 Cloudflare IP。 |
 | --- | --- |
 | 在本机运行后提示系统不支持 | 退出命令，在 VPS 的 SSH 或网页终端中重新运行。 |
 | SSH 断开或重启后无法登录 | 不要反复猜端口；使用服务商网页 Console/VNC，确认当前 SSH 端口与 UFW/安全组规则。保留旧 SSH 会话直到新会话可登录。 |
