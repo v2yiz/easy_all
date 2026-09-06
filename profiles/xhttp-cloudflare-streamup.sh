@@ -541,7 +541,7 @@ build_mihomo_proxy_groups() {
     cat <<EOF
       url: https://cp.cloudflare.com/generate_204
       interval: 300
-      tolerance: 50
+      tolerance: 30
       timeout: 3000
       lazy: true
 EOF

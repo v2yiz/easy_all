@@ -211,6 +211,7 @@ assert_not_contains "Groups do not contain 电信优选 group" "${groups_output}
 assert_not_contains "Groups do not contain 联通优选 group" "${groups_output}" 'name: "联通优选"'
 assert_not_contains "Groups do not contain 移动优选 group" "${groups_output}" 'name: "移动优选"'
 assert_contains "Groups test url" "${groups_output}" 'url: https://cp.cloudflare.com/generate_204'
+assert_contains "Groups tolerance is 30" "${groups_output}" 'tolerance: 30'
 assert_not_contains "Groups do not contain domain fallback" "${groups_output}" 'DOMAIN'
 
 # Test Mihomo proxy names under PROXY
