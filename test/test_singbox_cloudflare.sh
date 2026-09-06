@@ -263,4 +263,36 @@ EOF
 assert_equal "Can migrate from legacy xhttp state" "0" \
     "$(EASY_ALL_STATE_FILE_OVERRIDE="${legacy_xhttp_state}" can_in_place_migrate_from_xhttp_cloudflare && echo 0 || echo 1)"
 
+# Verify normalize_xhttp_path idempotency and double-prefix recovery
+assert_equal "normalize_xhttp_path cleans double /xhttp- prefix" \
+    "/xhttp-0123456789abcdef" "$(normalize_xhttp_path "/xhttp-/xhttp-0123456789abcdef")"
+assert_equal "normalize_xhttp_path converts /vless- prefix" \
+    "/xhttp-0123456789abcdef" "$(normalize_xhttp_path "/vless-0123456789abcdef")"
+assert_equal "normalize_xhttp_path keeps clean /xhttp- intact" \
+    "/xhttp-0123456789abcdef" "$(normalize_xhttp_path "/xhttp-0123456789abcdef")"
+
+# Verify load_state successfully recovers from double-prefixed XHTTP_PATH in state
+corrupted_state="${TMP_DIR}/state_corrupted.env"
+cat >"${corrupted_state}" <<EOF
+STATE_VERSION='7'
+PROTOCOL='cloudflare-streamup'
+BACKEND='xray'
+CDN_PROVIDER='cloudflare'
+CDN_CLIENT_IP_FAMILY='ipv4'
+VLESS_UUID='11111111-2222-4111-8111-111111111111'
+VLESS_CDN_DOMAIN='cdn.example.com'
+CLOUDFLARE_ORIGIN_DOMAIN='cdn.example.com'
+CLOUDFLARE_ZONE_ID='test-zone-id'
+CLOUDFLARE_ZONE_NAME='example.com'
+CLOUDFLARE_ORIGIN_CERT_ID='test-origin-cert-id'
+CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON='2035-01-01T00:00:00Z'
+XRAY_XHTTP_LOOPBACK_PORT='10086'
+XHTTP_PATH='/xhttp-/xhttp-0123456789abcdef'
+ORIGIN_HEADER_SECRET='test-origin-secret-12345678'
+SUBSCRIPTION_MODE='deploy'
+EOF
+EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
+assert_equal "load_state normalizes corrupted XHTTP_PATH" \
+    "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
+
 printf 'ok - Cloudflare pure XHTTP stream-up (Mode 5) tests passed\n'

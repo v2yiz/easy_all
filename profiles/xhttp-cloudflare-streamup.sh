@@ -41,6 +41,21 @@ read_state_field() {
     printf '%s\n' "${value}"
 }
 
+normalize_xhttp_path() {
+    local path=${1:-}
+    while [[ "${path}" =~ ^/(xhttp|vless)-/(xhttp|vless)- ]]; do
+        path="/${path#/*-/}"
+    done
+    if [[ "${path}" =~ ^/(xhttp|vless)- ]]; then
+        path="/xhttp-${path#/*-}"
+    elif [[ -n "${path}" ]]; then
+        path="/xhttp-${path#/}"
+    else
+        path="/xhttp-$(openssl rand -hex 12)"
+    fi
+    printf '%s\n' "${path}"
+}
+
 can_in_place_migrate_from_xhttp_cloudflare() {
     local state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     [[ -f "${state_path}" ]] || return 1
@@ -79,8 +94,7 @@ collect_install_inputs() {
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
 
-    XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
-    XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
+    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
     validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
 
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
@@ -127,8 +141,7 @@ load_state() {
     configure_cdn_client_ip_family
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Cloudflare 状态缺少有效域名或 UUID"
-    XHTTP_PATH=${XHTTP_PATH:-$(generate_xhttp_path)}
-    XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
+    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
     validate_xhttp_path "${XHTTP_PATH}" || die "状态中的 XHTTP_PATH 无效"
 
     XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
@@ -591,8 +604,7 @@ migrate_from_xhttp_cloudflare() {
     load_state
 
     VLESS_UUID="${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}"
-    XHTTP_PATH="${XHTTP_PATH:-$(generate_xhttp_path)}"
-    XHTTP_PATH="/xhttp-${XHTTP_PATH#/vless-}"
+    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
     XRAY_XHTTP_LOOPBACK_PORT="${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}"
     ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-$(generate_secret)}"
     XHTTP_ORIGIN_DOMAIN="${VLESS_CDN_DOMAIN}"
