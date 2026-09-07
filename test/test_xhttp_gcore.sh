@@ -150,6 +150,92 @@ assert_equal "Candidate 5 is 92.223.120.143 (128.0ms)" "92.223.120.143" \
 assert_equal "Candidate 6 is 92.223.120.132 (135.2ms)" "92.223.120.132" \
     "$(jq -r '.[] | select(.label == "6") | .ip' <<<"${candidates_json}")"
 
+# 3b. Test historical bonus and primary region advantage
+obs_advanced="${TMP_DIR}/obs_adv.ndjson"
+cat >"${obs_advanced}" <<'EOF'
+{"ip":"1.1.1.1","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":48.0,"tls_verified":true}
+{"ip":"1.1.1.2","carrier_asn":9808,"carrier":"mobile","region":"JP","avg_rtt_ms":40.0,"tls_verified":true}
+{"ip":"2.2.2.1","carrier_asn":4837,"carrier":"unicom","region":"JP","avg_rtt_ms":55.0,"tls_verified":true}
+{"ip":"2.2.2.2","carrier_asn":4837,"carrier":"unicom","region":"JP","avg_rtt_ms":52.0,"tls_verified":true}
+{"ip":"3.3.3.1","carrier_asn":4134,"carrier":"telecom","region":"LA","avg_rtt_ms":130.0,"tls_verified":true}
+{"ip":"3.3.3.2","carrier_asn":4134,"carrier":"telecom","region":"LA","avg_rtt_ms":135.0,"tls_verified":true}
+EOF
+
+# For mobile:
+# 1.1.1.1 is HK (primary): effective score = 48.0
+# 1.1.1.2 is JP (cross): raw 40.0, but penalized +10ms = 50.0
+# Therefore 1.1.1.1 (score 48.0) should beat 1.1.1.2 (score 50.0) despite higher raw latency
+adv_json=$(gcore_select_carrier_candidates "${obs_advanced}" 2 6)
+assert_equal "Primary region advantage: 1.1.1.1 (HK, raw 48ms) beats 1.1.1.2 (JP cross, raw 40ms + 10ms penalty)" \
+    "1.1.1.1" "$(jq -r '.[] | select(.label == "1") | .ip' <<<"${adv_json}")"
+
+# Now test historical winner 5ms bonus:
+# 2.2.2.1 is historical winner in previous cache:
+hist_cache="${TMP_DIR}/hist_cache.json"
+cat >"${hist_cache}" <<'EOF'
+{
+  "candidates": [
+    {"ip": "2.2.2.1", "label": "3", "carrier": "unicom"}
+  ]
+}
+EOF
+# 2.2.2.1 raw = 55.0, with -5ms bonus => 50.0
+# 2.2.2.2 raw = 52.0 => 52.0
+# With bonus, 2.2.2.1 should be ranked #3 ahead of 2.2.2.2
+adv_hist_json=$(gcore_select_carrier_candidates "${obs_advanced}" 2 6 "${hist_cache}")
+assert_equal "Historical winner bonus: 2.2.2.1 gets -5ms bonus and beats 2.2.2.2" \
+    "2.2.2.1" "$(jq -r '.[] | select(.label == "3") | .ip' <<<"${adv_hist_json}")"
+
+# 3c. Test gcore_limit_pool_to_globalping_budget balancing
+pool_file="${TMP_DIR}/test_pool.tsv"
+budgeted_pool="${TMP_DIR}/budgeted_pool.tsv"
+cat >"${pool_file}" <<'EOF'
+10.0.1.1	9808	mobile	HK
+10.0.1.2	9808	mobile	HK
+10.0.1.3	9808	mobile	HK
+10.0.1.4	9808	mobile	HK
+10.0.2.1	4837	unicom	JP
+10.0.2.2	4837	unicom	JP
+10.0.2.3	4837	unicom	JP
+10.0.3.1	4134	telecom	LA
+10.0.3.2	4134	telecom	LA
+EOF
+# Mock globalping_api_request to return remaining=12 (reserve 3 => tcp_budget=9 => 3 per carrier)
+globalping_api_request() {
+    if [[ "$1" == "GET" && "$2" == "/limits" ]]; then
+        printf '{"rateLimit":{"measurements":{"create":{"remaining":9}}}}'
+        return 0
+    fi
+    return 1
+}
+# Remaining 9, reserve 3 => tcp_budget 6 => 2 per carrier
+gcore_limit_pool_to_globalping_budget "${pool_file}" "${budgeted_pool}"
+mobile_count=$(awk -F'\t' '$2=="9808"{c++} END{print c+0}' "${budgeted_pool}")
+unicom_count=$(awk -F'\t' '$2=="4837"{c++} END{print c+0}' "${budgeted_pool}")
+telecom_count=$(awk -F'\t' '$2=="4134"{c++} END{print c+0}' "${budgeted_pool}")
+assert_equal "Multi-carrier budget balanced: mobile has 2 candidates" "2" "${mobile_count}"
+assert_equal "Multi-carrier budget balanced: unicom has 2 candidates" "2" "${unicom_count}"
+assert_equal "Multi-carrier budget balanced: telecom has 2 candidates" "2" "${telecom_count}"
+unset -f globalping_api_request
+
+# 3d. Test gcore_parse_tls_observations status code and TLS authorized requirements
+sample_tls_file="${TMP_DIR}/sample_tls.ndjson"
+cat >"${sample_tls_file}" <<'EOF'
+{"ip":"10.1.1.1","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":40.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"authorized":true}}}]}}
+{"ip":"10.1.1.2","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":42.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":403,"tls":{"authorized":true}}}]}}
+{"ip":"10.1.1.3","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":44.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"authorized":false}}}]}}
+EOF
+parsed_tls=$(gcore_parse_tls_observations "${sample_tls_file}")
+assert_equal "10.1.1.1 with 101 and authorized TLS is selected" "10.1.1.1" \
+    "$(jq -r 'select(.ip == "10.1.1.1") | .ip' <<<"${parsed_tls}")"
+assert_equal "10.1.1.1 has tls_verified == true" "true" \
+    "$(jq -r 'select(.ip == "10.1.1.1") | .tls_verified' <<<"${parsed_tls}")"
+assert_equal "10.1.1.2 with 403 is filtered out" "" \
+    "$(jq -r 'select(.ip == "10.1.1.2") | .ip' <<<"${parsed_tls}")"
+assert_equal "10.1.1.3 with unauthorized TLS is filtered out" "" \
+    "$(jq -r 'select(.ip == "10.1.1.3") | .ip' <<<"${parsed_tls}")"
+
+
 # 4. Write valid cache file and test cache validation
 now_epoch=$(date +%s)
 cat >"${GLOBALPING_CACHE_FILE}" <<EOF

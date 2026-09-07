@@ -432,15 +432,6 @@ gcore_ensure_origin_group() {
 
 gcore_ensure_resource() {
     local payload response existing_resources res
-    existing_resources=$(gcore_api_request GET "/cdn/resources")
-    while IFS= read -r res; do
-        [[ -n "${res}" ]] || continue
-        if [[ "$(jq -r '.cname // empty' <<<"${res}")" == "${VLESS_CDN_DOMAIN}" ]]; then
-            GCORE_CDN_RESOURCE_ID=$(jq -r '.id' <<<"${res}")
-            return 0
-        fi
-    done < <(gcore_json_items "${existing_resources}")
-
     payload=$(jq -cn \
         --arg cname "${VLESS_CDN_DOMAIN}" \
         --argjson origin_group "${GCORE_ORIGIN_GROUP_ID}" \
@@ -467,6 +458,18 @@ gcore_ensure_resource() {
             }
           }
         }')
+
+    existing_resources=$(gcore_api_request GET "/cdn/resources")
+    while IFS= read -r res; do
+        [[ -n "${res}" ]] || continue
+        if [[ "$(jq -r '.cname // empty' <<<"${res}")" == "${VLESS_CDN_DOMAIN}" ]]; then
+            GCORE_CDN_RESOURCE_ID=$(jq -r '.id' <<<"${res}")
+            info "更新已有 Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 的 mTLS 与配置"
+            gcore_api_request PUT "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || true
+            return 0
+        fi
+    done < <(gcore_json_items "${existing_resources}")
+
     response=$(gcore_api_request POST "/cdn/resources" "${payload}")
     GCORE_CDN_RESOURCE_ID=$(jq -er '.id // empty' <<<"${response}")
 }

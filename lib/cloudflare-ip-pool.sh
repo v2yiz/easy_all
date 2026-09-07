@@ -52,113 +52,107 @@ cloudflare_generate_candidate_pool() {
     local ranges_file=$1
     local sample_limit=${2:-${CLOUDFLARE_POOL_SAMPLE_LIMIT}}
     local epoch=${3:-${GLOBALPING_NOW_EPOCH:-$(date +%s)}}
-    local priority_blocks_file other_blocks_file
-    local cidr network prefix base mask last subnet hour
-    local is_priority pri_cidr pri_total oth_total
-    local pri_limit oth_limit i line_number block_value source_cidr host candidate
 
     [[ -s "${ranges_file}" && "${sample_limit}" =~ ^[1-9][0-9]*$ ]] || return 1
-    priority_blocks_file=$(make_temp_dir)/cloudflare-priority-blocks.tsv
-    other_blocks_file=$(make_temp_dir)/cloudflare-other-blocks.tsv
-    : >"${priority_blocks_file}"
-    : >"${other_blocks_file}"
 
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
-        network=${cidr%/*}
-        prefix=${cidr#*/}
-        [[ "${prefix}" =~ ^[0-9]+$ ]] && ((prefix >= 8 && prefix <= 24)) \
-            || return 1
-        base=$(cloudflare_ipv4_to_uint32 "${network}") || return 1
-        mask=$(((0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF))
-        base=$((base & mask))
-        last=$((base + (1 << (32 - prefix)) - 1))
+    python3 - "${ranges_file}" "${sample_limit}" "${epoch}" "${CLOUDFLARE_PRIORITY_IPV4_CIDRS[@]}" <<'EOF'
+import sys, ipaddress
 
-        is_priority=0
-        for pri_cidr in "${CLOUDFLARE_PRIORITY_IPV4_CIDRS[@]}"; do
-            if cloudflare_ipv4_in_cidr "${network}" "${pri_cidr}"; then
-                is_priority=1
-                break
-            fi
-        done
+ranges_file = sys.argv[1]
+sample_limit = int(sys.argv[2])
+epoch = int(sys.argv[3])
+priority_cidrs = [ipaddress.ip_network(c) for c in sys.argv[4:]]
+pri_ranges = [(int(net.network_address), int(net.broadcast_address)) for net in priority_cidrs]
 
-        for ((subnet = base; subnet <= last; subnet += 256)); do
-            if ((is_priority == 1)); then
-                printf '%u\t%s\n' "${subnet}" "${cidr}" >>"${priority_blocks_file}"
-            else
-                printf '%u\t%s\n' "${subnet}" "${cidr}" >>"${other_blocks_file}"
-            fi
-        done
-    done <"${ranges_file}"
+pri_blocks = []
+oth_blocks = []
 
-    pri_total=$(wc -l <"${priority_blocks_file}" | tr -d ' ')
-    oth_total=$(wc -l <"${other_blocks_file}" | tr -d ' ')
-    (((pri_total + oth_total) > 0)) || return 1
+with open(ranges_file, "r", encoding="utf-8") as f:
+    for line in f:
+        cidr = line.strip()
+        if not cidr:
+            continue
+        try:
+            net = ipaddress.ip_network(cidr)
+            for sub in net.subnets(new_prefix=24):
+                sub_start = int(sub.network_address)
+                if any(r[0] <= sub_start <= r[1] for r in pri_ranges):
+                    pri_blocks.append((sub_start, cidr))
+                else:
+                    oth_blocks.append((sub_start, cidr))
+        except Exception:
+            continue
 
-    if ((pri_total > 0 && oth_total > 0)); then
-        pri_limit=$((sample_limit * 7 / 10))
-        ((pri_limit > 0)) || pri_limit=1
-        ((pri_limit <= pri_total)) || pri_limit=${pri_total}
-        oth_limit=$((sample_limit - pri_limit))
-        ((oth_limit <= oth_total)) || oth_limit=${oth_total}
-    elif ((pri_total > 0)); then
-        pri_limit=${sample_limit}
-        ((pri_limit <= pri_total)) || pri_limit=${pri_total}
-        oth_limit=0
-    else
-        pri_limit=0
-        oth_limit=${sample_limit}
-        ((oth_limit <= oth_total)) || oth_limit=${oth_total}
-    fi
+if not pri_blocks and not oth_blocks:
+    sys.exit(1)
 
-    hour=$((epoch / 3600))
+if pri_blocks and oth_blocks:
+    pri_limit = max(1, min(len(pri_blocks), sample_limit * 7 // 10))
+    oth_limit = min(len(oth_blocks), sample_limit - pri_limit)
+elif pri_blocks:
+    pri_limit = min(len(pri_blocks), sample_limit)
+    oth_limit = 0
+else:
+    pri_limit = 0
+    oth_limit = min(len(oth_blocks), sample_limit)
 
-    if ((pri_limit > 0)); then
-        for ((i = 0; i < pri_limit; i += 1)); do
-            line_number=$(((hour + (i * pri_total / pri_limit)) % pri_total + 1))
-            IFS=$'\t' read -r block_value source_cidr \
-                < <(sed -n "${line_number}p" "${priority_blocks_file}")
-            [[ -n "${block_value}" && -n "${source_cidr}" ]] || return 1
-            host=$((1 + ((hour * 37 + i * 67 + block_value) % 254)))
-            candidate=$(cloudflare_uint32_to_ipv4 "$((block_value + host))") \
-                || return 1
-            printf '%s\t%s\n' "${candidate}" "${source_cidr}"
-        done
-    fi
+hour = epoch // 3600
 
-    if ((oth_limit > 0)); then
-        for ((i = 0; i < oth_limit; i += 1)); do
-            line_number=$(((hour + (i * oth_total / oth_limit)) % oth_total + 1))
-            IFS=$'\t' read -r block_value source_cidr \
-                < <(sed -n "${line_number}p" "${other_blocks_file}")
-            [[ -n "${block_value}" && -n "${source_cidr}" ]] || return 1
-            host=$((1 + ((hour * 37 + i * 67 + block_value) % 254)))
-            candidate=$(cloudflare_uint32_to_ipv4 "$((block_value + host))") \
-                || return 1
-            printf '%s\t%s\n' "${candidate}" "${source_cidr}"
-        done
-    fi
+if pri_limit > 0:
+    for i in range(pri_limit):
+        idx = (hour + (i * len(pri_blocks) // pri_limit)) % len(pri_blocks)
+        block_val, src_cidr = pri_blocks[idx]
+        host = 1 + ((hour * 37 + i * 67 + block_val) % 254)
+        cand_ip = str(ipaddress.IPv4Address(block_val + host))
+        print(f"{cand_ip}\t{src_cidr}")
+
+if oth_limit > 0:
+    for i in range(oth_limit):
+        idx = (hour + (i * len(oth_blocks) // oth_limit)) % len(oth_blocks)
+        block_val, src_cidr = oth_blocks[idx]
+        host = 1 + ((hour * 37 + i * 67 + block_val) % 254)
+        cand_ip = str(ipaddress.IPv4Address(block_val + host))
+        print(f"{cand_ip}\t{src_cidr}")
+EOF
 }
 
 cloudflare_globalping_measurement_request() {
-    local ip=$1
+    local ip=$1 base_id=${2:-}
     validate_public_ipv4 "${ip}" || return 1
-    jq -cn --arg target "${ip}" \
-        --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" '{
-          type:"ping",
-          target:$target,
-          locations:[
-            {country:"CN",asn:4134,tags:["eyeball-network"],limit:1},
-            {country:"CN",asn:4837,tags:["eyeball-network"],limit:1},
-            {country:"CN",asn:9808,tags:["eyeball-network"],limit:1}
-          ],
-          timeout:15,
-          measurementOptions:{
-            packets:$packets,
-            protocol:"TCP",
-            port:443
-          }
-        }'
+    if [[ -n "${base_id}" ]]; then
+        jq -cn --arg target "${ip}" \
+            --arg base "${base_id}" \
+            --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" '{
+              type:"ping",
+              target:$target,
+              locations:[
+                {magic:$base}
+              ],
+              timeout:15,
+              measurementOptions:{
+                packets:$packets,
+                protocol:"TCP",
+                port:443
+              }
+            }'
+    else
+        jq -cn --arg target "${ip}" \
+            --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" '{
+              type:"ping",
+              target:$target,
+              locations:[
+                {country:"CN",asn:4134,tags:["eyeball-network"],limit:1},
+                {country:"CN",asn:4837,tags:["eyeball-network"],limit:1},
+                {country:"CN",asn:9808,tags:["eyeball-network"],limit:1}
+              ],
+              timeout:15,
+              measurementOptions:{
+                packets:$packets,
+                protocol:"TCP",
+                port:443
+              }
+            }'
+    fi
 }
 
 cloudflare_wait_globalping_measurement() {
@@ -180,17 +174,27 @@ cloudflare_wait_globalping_measurement() {
 cloudflare_collect_globalping_measurements() {
     local pool_file=$1 destination=$2 jobs_file
     local ip source_cidr created measurement_id result submitted=0 completed=0
+    local base_measurement_id=""
     jobs_file=$(make_temp_dir)/cloudflare-globalping-jobs.tsv
     : >"${jobs_file}"
     : >"${destination}"
 
     while IFS=$'\t' read -r ip source_cidr; do
-        created=$(globalping_api_request POST "/measurements" \
-            "$(cloudflare_globalping_measurement_request "${ip}")") \
-            || continue
+        created=""
+        if [[ -n "${base_measurement_id}" ]]; then
+            created=$(globalping_api_request POST "/measurements" \
+                "$(cloudflare_globalping_measurement_request "${ip}" "${base_measurement_id}")") \
+                || created=""
+        fi
+        if [[ -z "${created}" ]]; then
+            created=$(globalping_api_request POST "/measurements" \
+                "$(cloudflare_globalping_measurement_request "${ip}")") \
+                || continue
+        fi
         measurement_id=$(jq -er \
             '.id | select(type == "string" and length > 0)' <<<"${created}") \
             || continue
+        [[ -z "${base_measurement_id}" ]] && base_measurement_id="${measurement_id}"
         printf '%s\t%s\t%s\n' "${measurement_id}" "${ip}" "${source_cidr}" \
             >>"${jobs_file}"
         submitted=$((submitted + 1))
@@ -244,26 +248,48 @@ cloudflare_zero_loss_observations() {
 }
 
 cloudflare_select_carrier_candidates() {
-    local observations_file=$1 per_carrier=$2 limit=$3
-    jq -sc --argjson per_carrier "${per_carrier}" --argjson limit "${limit}" '
+    local observations_file=$1 per_carrier=$2 limit=$3 history_file=${4:-}
+    local history_ips_json="[]"
+    if [[ -n "${history_file}" && -s "${history_file}" ]]; then
+        history_ips_json=$(jq -R -s -c 'split("\n") | map(split("\t")[0] | select(length > 0))' "${history_file}")
+    fi
+
+    jq -sc --argjson per_carrier "${per_carrier}" \
+           --argjson limit "${limit}" \
+           --argjson hist "${history_ips_json}" '
+      . as $all_items |
       [
         {asn: 4134, carrier: "telecom", prefix: "电信"},
         {asn: 4837, carrier: "unicom",  prefix: "联通"},
         {asn: 9808, carrier: "mobile",  prefix: "移动"}
       ] as $carriers |
-      [
-        $carriers[] as $c |
-        ([ .[] | select(.carrier_asn == $c.asn) ]
-         | group_by(.ip)
-         | map(sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms])[0])
-         | sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms, .ip])
-         | .[0:$per_carrier]) as $matched |
-        range(0; $matched | length) as $i |
-        $matched[$i] + {
-          carrier: $c.carrier,
-          label: ($c.prefix + (if ($i + 1) < 10 then "0" + (($i + 1)|tostring) else (($i + 1)|tostring) end))
+      reduce $carriers[] as $c (
+        {selected_ips: [], results: []};
+        . as $state |
+        (
+          [ $all_items[]
+            | select(.carrier_asn == $c.asn and .tls_verified == true)
+            | . as $item
+            | select($state.selected_ips | index($item.ip) | not)
+            | . + {is_historical: ($hist | index($item.ip) != null)}
+          ]
+          | sort_by([
+              (if .is_historical == true then (.avg_rtt_ms - 5) else .avg_rtt_ms end),
+              .avg_rtt_ms,
+              .ip
+            ])
+          | .[0:$per_carrier]
+        ) as $picked |
+        {
+          selected_ips: ($state.selected_ips + ($picked | map(.ip))),
+          results: ($state.results + [
+            $picked | to_entries[] | .value + {
+              carrier: $c.carrier,
+              label: ($c.prefix + (if (.key + 1) < 10 then "0" + ((.key + 1)|tostring) else ((.key + 1)|tostring) end))
+            }
+          ])
         }
-      ] | .[0:$limit]
+      ) | .results | .[0:$limit]
     ' "${observations_file}"
 }
 
@@ -333,8 +359,8 @@ cloudflare_parse_tls_observations() {
         select(
             .measurement.results[]?
             | select(.result.status == "finished")
-            | select(.result.tls.protocol != null and .result.tls.protocol != "")
-            | select((.result.statusCode // 0) > 0 and (.result.statusCode // 0) < 500)
+            | select(.result.tls != null and .result.tls.authorized == true)
+            | select(.result.statusCode == 200)
         )
         | {
             ip: .ip,
@@ -414,27 +440,76 @@ cloudflare_limit_pool_to_globalping_budget() {
         warn "Globalping 未返回有效的剩余额度"
         return 1
     }
-    budget=$((remaining / CLOUDFLARE_PROBES_PER_CANDIDATE))
-    ((budget > 0)) || {
+
+    local stage2_reserve=15
+    if (( remaining <= 25 )); then
+        stage2_reserve=6
+    fi
+    if (( remaining <= stage2_reserve )); then
+        warn "Globalping 本小时剩余额度不足（剩余 ${remaining}，需预留 Stage 2 深度验证额度 ${stage2_reserve}）"
+        return 1
+    fi
+    local tcp_remaining=$(( remaining - stage2_reserve ))
+    budget=$(( tcp_remaining / CLOUDFLARE_PROBES_PER_CANDIDATE ))
+    (( budget > 0 )) || {
         warn "Globalping 本小时免费测试额度不足，请在额度重置后重试"
         return 1
     }
 
     count=$(wc -l <"${source}" | tr -d ' ')
-    if ((count > budget)); then
-        warn "Globalping 剩余额度仅够测量 ${budget} 个 Cloudflare 候选，本轮已自动缩减"
-        count=${budget}
+    if (( count > budget )); then
+        warn "Globalping 剩余额度仅够测量 ${budget} 个 Cloudflare 候选，本轮已按 7:3 分层比例缩减"
+        python3 - "${source}" "${destination}" "${budget}" "${CLOUDFLARE_PRIORITY_IPV4_CIDRS[@]}" <<'EOF'
+import sys, ipaddress
+
+source_path, dest_path, budget_str = sys.argv[1], sys.argv[2], sys.argv[3]
+budget = int(budget_str)
+priority_cidrs = [ipaddress.ip_network(c) for c in sys.argv[4:]]
+pri_ranges = [(int(net.network_address), int(net.broadcast_address)) for net in priority_cidrs]
+
+pri_lines = []
+oth_lines = []
+
+with open(source_path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        ip = parts[0]
+        try:
+            ip_int = int(ipaddress.IPv4Address(ip))
+            if any(r[0] <= ip_int <= r[1] for r in pri_ranges):
+                pri_lines.append(line)
+            else:
+                oth_lines.append(line)
+        except Exception:
+            oth_lines.append(line)
+
+pri_target = max(1, min(len(pri_lines), budget * 7 // 10))
+oth_target = min(len(oth_lines), budget - pri_target)
+if pri_target + oth_target < budget and len(pri_lines) > pri_target:
+    pri_target = min(len(pri_lines), budget - oth_target)
+
+selected = pri_lines[:pri_target] + oth_lines[:oth_target]
+with open(dest_path, "w", encoding="utf-8") as f:
+    for line in selected:
+        f.write(line + "\n")
+EOF
+    else
+        cat "${source}" >"${destination}"
     fi
-    head -n "${count}" "${source}" >"${destination}"
 }
 
 cloudflare_build_official_pool_cache() {
     local destination=$1 ranges_file raw_pool_file pool_file budgeted_pool_file
     local measurements_file observations_file tcp_top_candidates_tsv
-    local tls_measurements_file tls_observations_file all_observations_file preliminary_file
+    local tls_measurements_file tls_observations_file preliminary_file
+    local history_candidates_tsv hist_count new_sample_limit
     local count measured_at measured_at_epoch pool_size prevalidated_pool_size
     local measurement_count
     ranges_file=$(make_temp_dir)/cloudflare-official-ipv4.txt
+    history_candidates_tsv=$(make_temp_dir)/cloudflare-history-candidates.tsv
     raw_pool_file=$(make_temp_dir)/cloudflare-raw-candidate-pool.tsv
     pool_file=$(make_temp_dir)/cloudflare-candidate-pool.tsv
     budgeted_pool_file=$(make_temp_dir)/cloudflare-budgeted-candidate-pool.tsv
@@ -443,15 +518,36 @@ cloudflare_build_official_pool_cache() {
     tcp_top_candidates_tsv=$(make_temp_dir)/cloudflare-tcp-top.tsv
     tls_measurements_file=$(make_temp_dir)/cloudflare-tls-measurements.ndjson
     tls_observations_file=$(make_temp_dir)/cloudflare-tls-observations.ndjson
-    all_observations_file=$(make_temp_dir)/cloudflare-all-observations.ndjson
     preliminary_file=$(make_temp_dir)/cloudflare-preliminary.json
+
+    : >"${history_candidates_tsv}"
+    if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
+        jq -r '
+            .candidates[]?
+            | [.ip, .source_cidr, (.carrier_asn // 0), (.avg_rtt_ms // 0), (.carrier // "")]
+            | @tsv
+        ' "${GLOBALPING_CACHE_FILE}" 2>/dev/null >"${history_candidates_tsv}" || true
+    fi
+    hist_count=$(wc -l <"${history_candidates_tsv}" | tr -d ' ')
 
     cloudflare_fetch_origin_ipv4_ranges >"${ranges_file}" \
         || { warn "无法获取 Cloudflare 官方 IPv4 CIDR"; return 1; }
-    cloudflare_generate_candidate_pool "${ranges_file}" >"${raw_pool_file}" \
+
+    new_sample_limit=$(( CLOUDFLARE_POOL_SAMPLE_LIMIT - hist_count ))
+    (( new_sample_limit > 0 )) || new_sample_limit=${CLOUDFLARE_POOL_SAMPLE_LIMIT}
+
+    cloudflare_generate_candidate_pool "${ranges_file}" "${new_sample_limit}" >"${raw_pool_file}.new" \
         || { warn "无法从 Cloudflare 官方 IPv4 CIDR 生成候选"; return 1; }
+
+    {
+        if (( hist_count > 0 )); then
+            awk -F'\t' '{print $1 "\t" $2}' "${history_candidates_tsv}"
+        fi
+        cat "${raw_pool_file}.new"
+    } | awk -F'\t' '!seen[$1]++' >"${raw_pool_file}"
+
     pool_size=$(wc -l <"${raw_pool_file}" | tr -d ' ')
-    info "Cloudflare 官方 IP 池本轮抽样 ${pool_size} 个 /24 候选，正在执行本机 CDN 入口预检"
+    info "Cloudflare 官方 IP 池本轮抽样 ${pool_size} 个 /24 候选（含 ${hist_count} 个历史候选），正在执行本机 CDN 入口预检"
     cloudflare_prevalidate_candidate_pool "${raw_pool_file}" "${pool_file}" \
         || return 1
     prevalidated_pool_size=$(wc -l <"${pool_file}" | tr -d ' ')
@@ -487,13 +583,26 @@ cloudflare_build_official_pool_cache() {
             "${tls_measurements_file}" >"${tls_observations_file}" || true
     fi
 
-    cat "${tls_observations_file}" "${observations_file}" >"${all_observations_file}"
-
-    cloudflare_select_carrier_candidates "${all_observations_file}" \
+    cloudflare_select_carrier_candidates "${tls_observations_file}" \
         "${CLOUDFLARE_CANDIDATES_PER_CARRIER}" \
-        "${CLOUDFLARE_CANDIDATE_LIMIT}" >"${preliminary_file}"
+        "${CLOUDFLARE_CANDIDATE_LIMIT}" \
+        "${history_candidates_tsv}" >"${preliminary_file}"
+
     count=$(jq 'length' "${preliminary_file}")
-    ((count > 0)) || return 1
+    if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
+        if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
+            warn "Cloudflare 官方 IP 池未选满 ${CLOUDFLARE_CANDIDATE_LIMIT} 个独立有效候选（实际 ${count} 个），保留现有缓存"
+            return 1
+        fi
+    else
+        if (( count == 0 )); then
+            warn "Cloudflare 官方 IP 池没有通过 TLS 验证的有效候选"
+            return 1
+        fi
+        if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
+            warn "Cloudflare 官方 IP 池首次生成仅选出 ${count} 个独立有效候选（预期 ${CLOUDFLARE_CANDIDATE_LIMIT} 个）"
+        fi
+    fi
 
     measured_at_epoch=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
     measured_at=$(date -u -r "${measured_at_epoch}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
