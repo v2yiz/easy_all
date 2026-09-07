@@ -426,4 +426,56 @@ assert_equal "CNAME record payload TTL" "300" "$(jq -r '.ttl' <<<"${cname_payloa
 
 unset -f gcore_api_request
 
+# Request contracts checked against G-Core/gcore-python OpenAPI-generated CDN types.
+(
+    api_calls="${TMP_DIR}/cdn-api-calls"
+    existing=false
+    reject_update=false
+    gcore_api_request() {
+        printf '%s %s\n' "$1" "$2" >>"${api_calls}"
+        case "$1 $2" in
+        'GET /cdn/origin_groups')
+            if [[ "${existing}" == true ]]; then
+                jq -cn --arg name "$(gcore_origin_group_name)" '[{id:101,name:$name}]'
+            else printf '[]'; fi ;;
+        'POST /cdn/origin_groups')
+            jq -e --arg origin "${GCORE_ORIGIN_DOMAIN}" '
+                has("origins") == false and .use_next == false and
+                .sources == [{source:$origin,enabled:true,backup:false}]
+            ' <<<"$3" >/dev/null || return 1
+            printf '{"id":101}' ;;
+        'GET /cdn/resources')
+            if [[ "${existing}" == true ]]; then
+                jq -cn --arg cname "${VLESS_CDN_DOMAIN}" '[{id:202,cname:$cname}]'
+            else printf '[]'; fi ;;
+        'POST /cdn/resources'|'PUT /cdn/resources/202')
+            [[ "${reject_update}" == false ]] || return 1
+            jq -e --arg origin "${GCORE_ORIGIN_DOMAIN}" '
+                .originGroup == 101 and .originProtocol == "HTTPS" and
+                .proxy_ssl_enabled == true and .proxy_ssl_data == 11223 and .proxy_ssl_ca == 44556 and
+                .options.websockets == {enabled:true,value:true} and
+                .options.sni == {enabled:true,sni_type:"custom",custom_hostname:$origin} and
+                .options.redirect_http_to_https == {enabled:true,value:true} and
+                .options.ignoreQueryString == {enabled:true,value:false} and
+                .options.slice == {enabled:true,value:false} and
+                .options.edge_cache_settings.value == "0s" and
+                (.options | has("origin_ssl_validation") or has("force_ssl") or has("proxy_cache") or has("ignore_query_string")) == false
+            ' <<<"$3" >/dev/null || return 1
+            printf '{"id":202}' ;;
+        *) return 1 ;;
+        esac
+    }
+    gcore_ensure_origin_group
+    assert_equal "Created origin group ID" 101 "${GCORE_ORIGIN_GROUP_ID}"
+    gcore_ensure_resource
+    assert_equal "Created resource ID" 202 "${GCORE_CDN_RESOURCE_ID}"
+    existing=true
+    gcore_ensure_origin_group
+    gcore_ensure_resource
+    assert_equal "Existing group is reused" 1 "$(grep -c '^POST /cdn/origin_groups$' "${api_calls}")"
+    assert_equal "Existing resource is updated" 1 "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
+    reject_update=true
+    if gcore_ensure_resource; then fail "Resource update failure must propagate"; fi
+)
+
 printf 'ok - Gcore Mode 3 unit tests passed\n'

@@ -435,7 +435,7 @@ gcore_ensure_origin_validation_certificates() {
         --arg name "${cert_name}" \
         --arg cert "$(<"${GCORE_CLIENT_CERT_FILE}")" \
         --arg key "$(<"${GCORE_CLIENT_CERT_KEY}")" \
-        '{name:$name,sslCertificate:$cert,sslPrivateKey:$key}')
+        '{name:$name,sslCertificate:$cert,sslPrivateKey:$key,validate_root_ca:false}')
     local cert_res
     cert_res=$(gcore_api_request POST "/cdn/sslData" "${cert_payload}")
     GCORE_ORIGIN_CLIENT_CERT_ID=$(jq -er '.id // empty' <<<"${cert_res}")
@@ -469,8 +469,8 @@ gcore_ensure_origin_group() {
 
     payload=$(jq -cn --arg name "${group_name}" --arg source "${GCORE_ORIGIN_DOMAIN}" '{
       name: $name,
-      use_next: true,
-      origins: [{source: $source, enabled: true, backup: false}]
+      use_next: false,
+      sources: [{source: $source, enabled: true, backup: false}]
     }')
     response=$(gcore_api_request POST "/cdn/origin_groups" "${payload}")
     GCORE_ORIGIN_GROUP_ID=$(jq -er '.id // empty' <<<"${response}")
@@ -482,26 +482,24 @@ gcore_ensure_resource() {
         --arg cname "${VLESS_CDN_DOMAIN}" \
         --argjson origin_group "${GCORE_ORIGIN_GROUP_ID}" \
         --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg origin "${GCORE_ORIGIN_DOMAIN}" \
         --argjson client_cert_id "${GCORE_ORIGIN_CLIENT_CERT_ID}" \
         --argjson origin_ca_id "${GCORE_ORIGIN_CA_ID}" '{
           cname: $cname,
           originGroup: $origin_group,
           originProtocol: "HTTPS",
+          proxy_ssl_enabled: true,
+          proxy_ssl_data: $client_cert_id,
+          proxy_ssl_ca: $origin_ca_id,
           options: {
-            websockets: {enabled: true},
+            websockets: {enabled: true, value: true},
             hostHeader: {enabled: true, value: $host},
-            force_ssl: {enabled: true},
-            proxy_cache: {enabled: false},
+            redirect_http_to_https: {enabled: true, value: true},
+            sni: {enabled: true, sni_type: "custom", custom_hostname: $origin},
             edge_cache_settings: {enabled: true, value: "0s", custom_values: {}},
             browser_cache_settings: {enabled: true, value: "0s"},
-            ignore_query_string: {enabled: false},
-            slice: {enabled: false},
-            origin_ssl_validation: {
-              enabled: true,
-              auth_type: "client_certificate",
-              ssl_data_id: $client_cert_id,
-              ssl_certificate_id: $origin_ca_id
-            }
+            ignoreQueryString: {enabled: true, value: false},
+            slice: {enabled: true, value: false}
           }
         }')
 
@@ -511,7 +509,7 @@ gcore_ensure_resource() {
         if [[ "$(jq -r '.cname // empty' <<<"${res}")" == "${VLESS_CDN_DOMAIN}" ]]; then
             GCORE_CDN_RESOURCE_ID=$(jq -r '.id' <<<"${res}")
             info "更新已有 Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 的 mTLS 与配置"
-            gcore_api_request PUT "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || true
+            gcore_api_request PUT "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
             return 0
         fi
     done < <(gcore_json_items "${existing_resources}")
