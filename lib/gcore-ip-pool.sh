@@ -707,6 +707,10 @@ refresh_gcore_globalping_cache() {
         "${GLOBALPING_CACHE_FILE}") 个三网定向精选 IPv4"
 }
 
+refresh_globalping_cache() {
+    refresh_gcore_globalping_cache "$@"
+}
+
 # Output the curated candidates (falls back to domain if no cache)
 gcore_client_candidates() {
     if [[ -s "${GLOBALPING_CACHE_FILE}" ]] \
