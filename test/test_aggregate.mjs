@@ -41,9 +41,22 @@ try {
         /clash/i.test(options.headers.get('User-Agent')) ? 'proxies:\n  - name: Remote\n    type: ss\n' : 'ss://example#Remote',
     ) };
     await checkAggregate(path, checkOptions);
-    await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => new Response('unavailable', {status: 503}) }));
+    await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => new Response('unavailable', {status: 503}) }), /XFLASH HTTP 503/);
+    await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => { throw Error(config.allowedTokens.alice); } }), error => {
+        assert.ok(error.message.includes('XFLASH 请求失败'));
+        assert.ok(!error.message.includes(config.allowedTokens.alice));
+        return true;
+    });
     await writeFile(join(dir, 'alice/base64.txt'), 'invalid');
     assert.equal((await handle(request(config.allowedTokens.alice))).status, 503);
-    await assert.rejects(checkAggregate(path, checkOptions));
+    await assert.rejects(checkAggregate(path, checkOptions), /解析本机订阅/);
+    await rm(join(dir, 'alice/base64.txt'));
+    await assert.rejects(checkAggregate(path, checkOptions), /读取本机订阅.*alice/);
+    await writeFile(path, '{"token":"private-value", invalid}');
+    await assert.rejects(checkAggregate(path, checkOptions), error => {
+        assert.ok(error.message.includes('不是有效 JSON'));
+        assert.ok(!error.message.includes('private-value'));
+        return true;
+    });
     console.log('Aggregate local nodes, UA formats, reload and user isolation checks passed');
 } finally { await rm(dir, { recursive: true, force: true }); }
