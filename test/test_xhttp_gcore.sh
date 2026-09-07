@@ -291,6 +291,20 @@ assert_equal "10.1.1.2 with 502 is filtered out" "" \
 assert_equal "10.1.1.3 with unauthorized cert is filtered out" "" \
     "$(jq -r 'select(.ip == "10.1.1.3") | .ip' <<<"${parsed_tls}")"
 
+# Local WebSocket candidate validation must force HTTP/1.1.
+(
+    curl_args_file="${TMP_DIR}/gcore-candidate-curl-args"
+    curl() {
+        printf '%s\n' "$*" >"${curl_args_file}"
+        printf '101'
+        return 28
+    }
+    gcore_validate_pool_candidate "92.223.76.20" \
+        || fail "HTTP 101 must pass even when curl times out on the upgraded connection"
+    assert_contains "WebSocket candidate validation forces HTTP/1.1" \
+        "$(<"${curl_args_file}")" "--http1.1"
+)
+
 # 3e. Edge propagation accepts end-to-end success even while Resource is processed.
 (
     QUOTA_ENABLED=0

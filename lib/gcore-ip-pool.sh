@@ -150,11 +150,11 @@ gcore_wait_for_precheck_readiness() {
     return 1
 }
 
-# Pre-validates IP locally through TLS SNI and WebSocket handshake
+# Pre-validates IP locally through TLS SNI and an HTTP/1.1 WebSocket handshake.
 gcore_validate_pool_candidate() {
     local ip=$1 ws_path=${WEBSOCKET_PATH:-/easy_all-ws} http_code curl_status
     validate_public_ipv4 "${ip}" || return 1
-    http_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    http_code=$(curl --http1.1 -sS -o /dev/null -w '%{http_code}' \
         --connect-timeout 4 --max-time 10 --noproxy '*' \
         --resolve "${VLESS_CDN_DOMAIN}:443:${ip}" \
         -H "Host: ${VLESS_CDN_DOMAIN}" \
