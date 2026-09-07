@@ -67,6 +67,11 @@ try {
         assert.ok(!error.message.includes(config.allowedTokens.alice));
         return true;
     });
+    for (const code of ['ENOTFOUND', 'UND_ERR_CONNECT_TIMEOUT', 'CERT_HAS_EXPIRED']) {
+        await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => {
+            throw new TypeError('fetch failed', { cause: Object.assign(new Error('private-value'), {code}) });
+        } }), error => error.message.includes(code) && !error.message.includes('private-value'));
+    }
     await writeFile(join(dir, 'alice/base64.txt'), 'invalid');
     assert.equal((await handle(request(config.allowedTokens.alice))).status, 503);
     await assert.rejects(checkAggregate(path, checkOptions), /解析本机订阅/);

@@ -7,6 +7,27 @@ import vm from 'node:vm';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const localUrl = 'https://local-subscription.invalid/subscribe';
 
+function upstreamFailure(error) {
+    const hints = {
+        ENOTFOUND: 'DNS 无法解析', EAI_AGAIN: 'DNS 暂时失败',
+        ENETUNREACH: '网络不可达', EHOSTUNREACH: '主机不可达',
+        ECONNREFUSED: '连接被拒绝', ECONNRESET: '连接被重置',
+        ETIMEDOUT: '连接超时', UND_ERR_CONNECT_TIMEOUT: 'Node.js 建立连接超时',
+        UND_ERR_SOCKET: '连接意外关闭',
+        CERT_HAS_EXPIRED: 'TLS 证书过期',
+        UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'TLS 证书链无法验证',
+        UNABLE_TO_GET_ISSUER_CERT_LOCALLY: '缺少受信任的签发证书',
+        SELF_SIGNED_CERT_IN_CHAIN: 'TLS 证书链包含自签名证书',
+        DEPTH_ZERO_SELF_SIGNED_CERT: 'TLS 使用自签名证书',
+        ERR_TLS_CERT_ALTNAME_INVALID: 'TLS 证书域名不匹配',
+    };
+    const causes = [error, error?.cause, ...(error?.cause?.errors || [])];
+    const codes = [...new Set(causes.map(e => e?.code).filter(code => Object.hasOwn(hints, code)))];
+    if (codes.length) return codes.map(code => `${code}（${hints[code]}）`).join(', ');
+    if (error?.name === 'AbortError') return 'AbortError（请求超过聚合超时限制）';
+    return '未识别的网络错误（未输出可能包含凭据的原始错误）';
+}
+
 async function readConfig(path) {
     let text;
     try { text = await readFile(path, 'utf8'); }
@@ -48,6 +69,7 @@ export async function aggregateHandler(configPath, { fetchImpl = fetch, subscrip
             const local = await readFile(file, 'utf8');
             stage = '加载聚合运行逻辑或生成节点（检查 nodes 数组及 Reality 参数）';
             let upstreamStatus;
+            let networkFailure;
             const handler = vm.runInNewContext(source.replace(/export default \{[\s\S]*$/, 'handleRequest;'), {
                 PRIVATE_CONFIG: { ...config, vpsCdnUrl: localUrl, fallbackCdnNodes: [] },
                 WORKER_VERSION: 'vps-aggregate', MIHOMO_TEMPLATE: template,
@@ -56,9 +78,14 @@ export async function aggregateHandler(configPath, { fetchImpl = fetch, subscrip
                 console: { warn() {}, error() {} },
                 fetch: async (target, options) => {
                     if (new URL(target).origin === new URL(localUrl).origin) return new Response(local);
-                    const response = await fetchImpl(target, options);
-                    upstreamStatus = response.status;
-                    return response;
+                    try {
+                        const response = await fetchImpl(target, options);
+                        upstreamStatus = response.status;
+                        return response;
+                    } catch (error) {
+                        networkFailure = upstreamFailure(error);
+                        throw error;
+                    }
                 },
             });
             url.pathname = '/subscribe';
@@ -70,7 +97,7 @@ export async function aggregateHandler(configPath, { fetchImpl = fetch, subscrip
             }
             if (diagnose && response.headers.has('X-Easy-All-Warning')) {
                 stage = upstreamStatus === undefined
-                    ? 'XFLASH 请求失败：连接、DNS、TLS 或超时问题'
+                    ? `XFLASH 请求失败：${networkFailure || '未收到 HTTP 响应'}`
                     : `XFLASH HTTP ${upstreamStatus}，请求失败或正文格式不被支持`;
                 throw Error('Invalid upstream subscription');
             }
