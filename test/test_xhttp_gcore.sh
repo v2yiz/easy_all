@@ -255,7 +255,7 @@ cat >"${pool_file}" <<'EOF'
 10.0.3.1	4134	telecom	LA
 10.0.3.2	4134	telecom	LA
 EOF
-# Mock globalping_api_request to return remaining=12 (reserve 3 => tcp_budget=9 => 3 per carrier)
+# Mock globalping_api_request with enough budget for the complete prevalidated pool.
 globalping_api_request() {
     if [[ "$1" == "GET" && "$2" == "/limits" ]]; then
         printf '{"rateLimit":{"measurements":{"create":{"remaining":9}}}}'
@@ -263,33 +263,26 @@ globalping_api_request() {
     fi
     return 1
 }
-# Remaining 9, reserve 3 => tcp_budget 6 => 2 per carrier
 gcore_limit_pool_to_globalping_budget "${pool_file}" "${budgeted_pool}"
 mobile_count=$(awk -F'\t' '$2=="9808"{c++} END{print c+0}' "${budgeted_pool}")
 unicom_count=$(awk -F'\t' '$2=="4837"{c++} END{print c+0}' "${budgeted_pool}")
 telecom_count=$(awk -F'\t' '$2=="4134"{c++} END{print c+0}' "${budgeted_pool}")
-assert_equal "Multi-carrier budget balanced: mobile has 2 candidates" "2" "${mobile_count}"
-assert_equal "Multi-carrier budget balanced: unicom has 2 candidates" "2" "${unicom_count}"
+assert_equal "Available budget keeps all mobile candidates" "4" "${mobile_count}"
+assert_equal "Available budget keeps all unicom candidates" "3" "${unicom_count}"
 assert_equal "Multi-carrier budget balanced: telecom has 2 candidates" "2" "${telecom_count}"
 unset -f globalping_api_request
 
-# 3d. Test gcore_parse_tls_observations status code and TLS authorized requirements
-sample_tls_file="${TMP_DIR}/sample_tls.ndjson"
-cat >"${sample_tls_file}" <<'EOF'
-{"ip":"10.1.1.1","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":40.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
-{"ip":"10.1.1.2","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":42.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":502,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
-{"ip":"10.1.1.3","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":44.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"}}}]}}
-{"ip":"10.1.1.4","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":46.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"ERR_TLS_CERT_ALTNAME_INVALID"}}}]}}
+# 3d. Zero-loss observations retain the local TLS/WebSocket verification marker.
+sample_measurements_file="${TMP_DIR}/sample-measurements.ndjson"
+cat >"${sample_measurements_file}" <<'EOF'
+{"ip":"10.1.1.1","carrier_asn":9808,"carrier":"mobile","region":"HK","measurement":{"results":[{"probe":{"country":"CN","tags":["eyeball-network"],"asn":9808,"city":"Guangzhou","network":"CMCC"},"result":{"status":"finished","resolvedAddress":"10.1.1.1","stats":{"loss":0,"total":4,"rcv":4,"drop":0,"avg":40.0}}}]}}
+{"ip":"10.1.1.2","carrier_asn":9808,"carrier":"mobile","region":"HK","measurement":{"results":[{"probe":{"country":"CN","tags":["eyeball-network"],"asn":9808},"result":{"status":"finished","resolvedAddress":"10.1.1.2","stats":{"loss":25,"total":4,"rcv":3,"drop":1,"avg":42.0}}}]}}
 EOF
-parsed_tls=$(gcore_parse_tls_observations "${sample_tls_file}")
-assert_equal "10.1.1.1 with 101 and authorized TLS is selected" "10.1.1.1" \
-    "$(jq -r 'select(.ip == "10.1.1.1") | .ip' <<<"${parsed_tls}")"
-assert_equal "10.1.1.4 with ALTNAME_INVALID probe error is selected" "10.1.1.4" \
-    "$(jq -r 'select(.ip == "10.1.1.4") | .ip' <<<"${parsed_tls}")"
-assert_equal "10.1.1.2 with 502 is filtered out" "" \
-    "$(jq -r 'select(.ip == "10.1.1.2") | .ip' <<<"${parsed_tls}")"
-assert_equal "10.1.1.3 with unauthorized cert is filtered out" "" \
-    "$(jq -r 'select(.ip == "10.1.1.3") | .ip' <<<"${parsed_tls}")"
+observations=$(gcore_zero_loss_observations "${sample_measurements_file}")
+assert_equal "Zero-loss candidate retains local TLS verification" "true" \
+    "$(jq -r 'select(.ip == "10.1.1.1") | .tls_verified' <<<"${observations}")"
+assert_equal "Lossy candidate is filtered out" "" \
+    "$(jq -r 'select(.ip == "10.1.1.2") | .ip' <<<"${observations}")"
 
 # Local WebSocket candidate validation must force HTTP/1.1.
 (

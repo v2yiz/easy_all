@@ -8,9 +8,9 @@
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (三网定向精选 6 节点平铺，完全无域名兜底) |
-| 3. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS | Gcore + Globalping IPv4 (三网定向精选 6 节点平铺，完全无域名兜底) |
+| 3. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS | Gcore + Globalping IPv4（三网定向最多 6 个已验证节点） |
 
-Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gcore 提供纯 VLESS WebSocket（三网定向精选 6 节点平铺）；Reality 用于直连。
+Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gcore 提供纯 VLESS WebSocket（三网定向最多 6 个已验证节点）；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -24,7 +24,7 @@ Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gc
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精选 6 节点 | 选择 `2`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；通过 Globalping 对移动/联通/电信执行三网定向测速并平铺下发 6 个优质 IPv4 节点（节点名称优选1~优选6，严格无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
-| 明确要使用 Gcore CDN，追求优质单播边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过 Gcore 官方公共 IP 池与 RFC 8805 Geofeed 提取香港、日本、洛杉矶节点，由 Globalping 进行三网定向不交叉测速（移动->HK、联通->JP、电信->LA），严格平铺下发 6 个最稳定单播节点（节点名称优选1~优选6，完全无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
+| 明确要使用 Gcore CDN，追求优质单播边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；从 Gcore 官方 CDN 服务器地址与 RFC 8805 Geofeed 提取香港、日本、洛杉矶候选，经本机 SNI/WebSocket 和 Globalping 三网定向测速筛选，最多下发 6 个实际有效节点；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 前置准备时，再选择对应 CDN 模式。

@@ -2,13 +2,14 @@
 
 # Gcore CDN endpoint discovery and carrier-targeted Globalping measurement.
 #
-# Fetches official CDN edge IPs from Gcore API, maps them to regions
+# Fetches Gcore CDN server IPs, maps them to regions, and keeps only addresses
+# that also accept this resource's SNI and WebSocket handshake.
 # (Hong Kong, Japan, Los Angeles) using Gcore RFC 8805 Geofeed,
 # and probes them strictly with dedicated carriers:
 #   China Mobile (9808) -> Hong Kong (all available)
 #   China Unicom (4837) -> Japan (all available)
 #   China Telecom (4134) -> Los Angeles (all available)
-# Strictly outputs top 2 curated IPs per carrier (total 6 nodes, no domain fallback).
+# Outputs up to 2 curated IPs per carrier (up to 6 nodes).
 
 readonly GCORE_POOL_PUBLIC_IP_LIST_URL="https://api.gcore.com/cdn/public-ip-list"
 readonly GCORE_POOL_GEOFEED_URL="https://geofeed.gcore.lu/IP-Range.csv"
@@ -39,8 +40,8 @@ gcore_fetch_official_geofeed() {
         "${GCORE_POOL_GEOFEED_URL}" || return 1
 }
 
-# Extracts candidate IPs for Hong Kong, Japan, and Los Angeles by cross-referencing
-# Gcore official public-ip-list with Gcore official RFC 8805 geofeed.
+# Extracts server IP candidates for Hong Kong, Japan, and Los Angeles by
+# cross-referencing Gcore public-ip-list with the official RFC 8805 geofeed.
 # Output format: <IP>\t<CARRIER_ASN>\t<CARRIER_NAME>\t<REGION_NAME>
 gcore_generate_carrier_candidate_pool() {
     local cdn_ips_file geofeed_file
@@ -343,96 +344,10 @@ gcore_zero_loss_observations() {
           region:$entry.region,
           avg_rtt_ms:.result.stats.avg,
           city:(.probe.city // ""),
-          network:(.probe.network // "")
+          network:(.probe.network // ""),
+          tls_verified:true
         }
     ' "${measurements_file}"
-}
-
-# Deep Globalping WebSocket/TLS probe to eliminate SNI blocking or fake-up IPs
-gcore_globalping_tls_measurement_request() {
-    local ip=$1 asn=$2 domain=$3 ws_path=${4:-${WEBSOCKET_PATH:-/easy_all-ws}}
-    validate_public_ipv4 "${ip}" || return 1
-    jq -cn --arg target "${ip}" \
-        --argjson asn "${asn}" \
-        --arg host "${domain}" \
-        --arg path "${ws_path}" '{
-          type: "http",
-          target: $target,
-          locations: [
-            {country: "CN", asn: $asn, tags: ["eyeball-network"], limit: 1}
-          ],
-          timeout: 15,
-          measurementOptions: {
-            protocol: "HTTPS",
-            port: 443,
-            request: {
-              method: "GET",
-              path: $path,
-              headers: {
-                Host: $host,
-                Upgrade: "websocket",
-                Connection: "Upgrade",
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
-                "Sec-WebSocket-Version": "13"
-              }
-            }
-          }
-        }'
-}
-
-gcore_collect_globalping_tls_measurements() {
-    local candidates_file=$1 domain=$2 destination=$3 jobs_file
-    local ip asn carrier region rtt created measurement_id result submitted=0 completed=0
-    jobs_file=$(make_temp_dir)/gcore-globalping-tls-jobs.tsv
-    : >"${jobs_file}"
-    : >"${destination}"
-
-    while IFS=$'\t' read -r ip asn carrier region rtt; do
-        [[ -n "${ip}" ]] || continue
-        created=$(globalping_api_request POST "/measurements" \
-            "$(gcore_globalping_tls_measurement_request "${ip}" "${asn}" "${domain}")") \
-            || continue
-        measurement_id=$(jq -er \
-            '.id | select(type == "string" and length > 0)' <<<"${created}") \
-            || continue
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${measurement_id}" "${ip}" "${asn}" "${carrier}" "${region}" "${rtt}" \
-            >>"${jobs_file}"
-        submitted=$((submitted + 1))
-    done <"${candidates_file}"
-    ((submitted > 0)) || return 0
-
-    sleep 2
-    while IFS=$'\t' read -r measurement_id ip asn carrier region rtt; do
-        result=$(gcore_wait_globalping_measurement "${measurement_id}") \
-            || continue
-        jq -c --arg ip "${ip}" --argjson asn "${asn}" \
-            --arg carrier "${carrier}" --arg region "${region}" --argjson rtt "${rtt}" \
-            '{ip:$ip,carrier_asn:$asn,carrier:$carrier,region:$region,avg_rtt_ms:$rtt,measurement:.}' \
-            <<<"${result}" >>"${destination}"
-        completed=$((completed + 1))
-    done <"${jobs_file}"
-}
-
-gcore_parse_tls_observations() {
-    local tls_file=$1
-    [[ -s "${tls_file}" ]] || return 0
-    jq -c '
-        select(
-            .measurement.results[]?
-            | select(.result.status == "finished")
-            | select(.result.tls != null and .result.tls.protocol != null and .result.tls.protocol != "")
-            | select(.result.tls.authorized == true or .result.tls.error == "ERR_TLS_CERT_ALTNAME_INVALID")
-            | select((.result.statusCode // 0) > 0 and (.result.statusCode // 0) < 500)
-        )
-        | {
-            ip: .ip,
-            carrier_asn: .carrier_asn,
-            carrier: .carrier,
-            region: .region,
-            avg_rtt_ms: .avg_rtt_ms,
-            tls_verified: true
-        }
-    ' "${tls_file}"
 }
 
 # Selects top 2 candidates per carrier (Mobile->HK, Unicom->JP, Telecom->LA/US-CA)
@@ -503,16 +418,8 @@ gcore_limit_pool_to_globalping_budget() {
         return 1
     }
 
-    local stage2_reserve=9
-    if (( remaining <= 15 )); then
-        stage2_reserve=3
-    fi
-    if (( remaining <= stage2_reserve )); then
-        warn "Globalping 本小时免费测试额度不足（剩余 ${remaining}，需预留 Stage 2 深度验证额度 ${stage2_reserve}）"
-        return 1
-    fi
-    local tcp_budget=$(( remaining - stage2_reserve ))
-    (( tcp_budget > 0 )) || {
+    local tcp_budget=${remaining}
+    ((tcp_budget > 0)) || {
         warn "Globalping 本小时免费测试额度不足，请在额度重置后重试"
         return 1
     }
@@ -566,10 +473,9 @@ EOF
 
 gcore_build_official_pool_cache() {
     local destination=$1 raw_pool_file pool_file budgeted_pool_file
-    local measurements_file observations_file tcp_top_candidates_tsv
-    local tls_measurements_file tls_observations_file preliminary_file
+    local measurements_file observations_file preliminary_file
     local history_candidates_tsv hist_count
-    local pool_size prevalidated_pool_size measurement_count count
+    local pool_size unique_pool_size prevalidated_pool_size measurement_count count
     local measured_at measured_at_epoch
 
     raw_pool_file=$(make_temp_dir)/gcore-raw-candidates.tsv
@@ -578,9 +484,6 @@ gcore_build_official_pool_cache() {
     budgeted_pool_file=$(make_temp_dir)/gcore-budgeted-candidates.tsv
     measurements_file=$(make_temp_dir)/gcore-measurements.ndjson
     observations_file=$(make_temp_dir)/gcore-observations.ndjson
-    tcp_top_candidates_tsv=$(make_temp_dir)/gcore-tcp-top.tsv
-    tls_measurements_file=$(make_temp_dir)/gcore-tls-measurements.ndjson
-    tls_observations_file=$(make_temp_dir)/gcore-tls-observations.ndjson
     preliminary_file=$(make_temp_dir)/gcore-preliminary.json
 
     : >"${history_candidates_tsv}"
@@ -593,7 +496,7 @@ gcore_build_official_pool_cache() {
     fi
     hist_count=$(wc -l <"${history_candidates_tsv}" | tr -d ' ')
 
-    info "正在从 Gcore 官方 API 与 Geofeed 检索香港、日本、加州边缘单播 IP"
+    info "正在从 Gcore CDN 服务器地址与 Geofeed 检索香港、日本、加州候选 IP"
     gcore_generate_carrier_candidate_pool >"${raw_pool_file}.new" \
         || { warn "无法从 Gcore 官方 API 生成候选池"; return 1; }
 
@@ -606,9 +509,10 @@ gcore_build_official_pool_cache() {
 
     pool_size=$(wc -l <"${raw_pool_file}" | tr -d ' ')
     ((pool_size > 0)) || { warn "未匹配到任何 Gcore 目标地区 IP"; return 1; }
+    unique_pool_size=$(cut -f1 "${raw_pool_file}" | sort -u | wc -l | tr -d ' ')
 
     gcore_wait_for_precheck_readiness || return 1
-    info "Gcore 官方池共匹配到 ${pool_size} 个候选 IP（含 ${hist_count} 个历史候选），正在执行本机 CDN 入口预检"
+    info "Gcore 地址池匹配到 ${pool_size} 条运营商候选记录（${unique_pool_size} 个唯一 IP，含 ${hist_count} 条历史记录），正在执行本机 CDN 入口预检"
     gcore_prevalidate_candidate_pool "${raw_pool_file}" "${pool_file}" \
         || return 1
     prevalidated_pool_size=$(wc -l <"${pool_file}" | tr -d ' ')
@@ -627,25 +531,7 @@ gcore_build_official_pool_cache() {
         return 1
     }
 
-    # Extract top 3 candidates per carrier for Stage 2 HTTP/TLS verification
-    jq -s -r '
-        group_by(.carrier_asn)
-        | map(sort_by(.avg_rtt_ms) | .[0:3])
-        | add
-        | .[]?
-        | [.ip, .carrier_asn, .carrier, .region, .avg_rtt_ms]
-        | @tsv
-    ' "${observations_file}" >"${tcp_top_candidates_tsv}"
-
-    if [[ -s "${tcp_top_candidates_tsv}" ]]; then
-        info "正在对候选执行 Globalping WebSocket/TLS 深度验证（防 SNI 假通与链路中断）"
-        gcore_collect_globalping_tls_measurements \
-            "${tcp_top_candidates_tsv}" "${VLESS_CDN_DOMAIN}" "${tls_measurements_file}" || true
-        gcore_parse_tls_observations \
-            "${tls_measurements_file}" >"${tls_observations_file}" || true
-    fi
-
-    gcore_select_carrier_candidates "${tls_observations_file}" \
+    gcore_select_carrier_candidates "${observations_file}" \
         "${GCORE_CANDIDATES_PER_CARRIER}" \
         "${GCORE_CANDIDATE_LIMIT}" \
         "${history_candidates_tsv}" >"${preliminary_file}"
@@ -658,7 +544,7 @@ gcore_build_official_pool_cache() {
         fi
     else
         if (( count == 0 )); then
-            warn "Gcore 官方 IP 池没有通过 TLS/WebSocket 验证的有效候选"
+            warn "Gcore 官方 IP 池没有通过本机 TLS/WebSocket 与三网零丢包验证的有效候选"
             return 1
         fi
         if (( count < GCORE_CANDIDATE_LIMIT )); then

@@ -3,9 +3,8 @@
 # Gcore CDN Profile for easy_all (Mode 3).
 #
 # Provides high-performance, edge-accelerated VLESS over Gcore CDN.
-# Uses official Gcore API and Geofeed to curate IPv4 nodes for Hong Kong,
-# Japan, and Los Angeles, directional eyeball Globalping testing (no cross testing),
-# and strictly outputs top 2 nodes per carrier (total 6 nodes, no domain fallback).
+# Uses Gcore server addresses and Geofeed data to find IPv4 candidates for Hong
+# Kong, Japan, and California, then selects up to 2 verified nodes per carrier.
 # Server side enables mTLS origin validation and dual-path Xray (WebSocket + XHTTP packet-up).
 
 set -Eeuo pipefail
@@ -1410,7 +1409,7 @@ write_subscriptions() {
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS WebSocket over Gcore CDN（精选 6 节点）\n节点链接:\n%s\n\n' "$(build_node_links)"
+    printf '\n协议: VLESS WebSocket over Gcore CDN（最多 6 个已验证节点）\n节点链接:\n%s\n\n' "$(build_node_links)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_nodes
 }
@@ -1419,7 +1418,7 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: VLESS WebSocket + XHTTP packet-up（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Gcore 官方公共 IP 池 / 三网 Globalping eyeball 定向探针\n域名兜底: disabled (全网精选 6 节点，无域名兜底)\n' \
+    printf '协议: VLESS WebSocket + XHTTP packet-up（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Gcore CDN 服务器地址 / 三网 Globalping eyeball 定向探针\n节点数量: 最多 6 个，以实际验证结果为准\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${GCORE_CDN_TARGET}"
     show_globalping_status
 }
