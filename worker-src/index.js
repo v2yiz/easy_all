@@ -498,9 +498,6 @@ async function fetchXflashSubscription(
         if (response.headers.get('cf-mitigated') === 'challenge') {
             throw new Error('Upstream returned a Cloudflare challenge');
         }
-        if (/text\/html/i.test(response.headers.get('content-type') || '')) {
-            throw new Error('Upstream returned HTML instead of a subscription');
-        }
 
         const contentLength = Number(response.headers.get('content-length'));
         if (Number.isFinite(contentLength) && contentLength > maxSize) {

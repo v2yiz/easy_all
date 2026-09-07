@@ -69,7 +69,7 @@ try {
     for (const [status, headers, warning] of [
         [403, {}, 'HTTP 403'],
         [200, {'cf-mitigated': 'challenge'}, 'Cloudflare challenge'],
-        [200, {'content-type': 'text/html'}, 'HTML'],
+        [200, {'content-type': 'text/html'}, 'No vless links'],
     ]) {
         const response = await make(async () => new Response('<html>blocked</html>', {status, headers}))(request());
         assert.equal(response.status, 200, 'fallback warning must be a valid HTTP header');
@@ -94,6 +94,14 @@ try {
     assert.ok(liveBody.includes('remote.example.com') && liveBody.includes('192.0.2.1'));
     assert.deepEqual(JSON.parse(groups.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), ['🇺🇸备用CF1']);
     assert.ok(groups.split('name: 备用优选')[0].includes('Remote'), 'PROXY includes upstream');
+    const encodedXflash = btoa(upstream);
+    const htmlTyped = make(async url => new Response(
+        new URL(url).origin === new URL(config.vpsCdnUrl).origin ? btoa(cf) : encodedXflash,
+        { headers: { 'content-type': 'text/html; charset=utf-8' } },
+    ));
+    const htmlTypedBody = await htmlTyped(request());
+    assert.equal(htmlTypedBody.headers.get('X-Easy-All-Warning'), null, 'base64 XFLASH must not be rejected by content type');
+    assert.ok((await htmlTypedBody.text()).includes('remote.example.com'));
     const fallbackAuto = fallbackBody.split('name: 备用优选')[1].split('rules:\n')[0];
     assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['Fallback CF']);
     const sixCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `🇺🇸备用CF${i}` }));
