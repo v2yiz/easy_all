@@ -12,11 +12,14 @@ readonly GLOBALPING_REFRESH_TIMER="easy_all-globalping-refresh.timer"
 readonly GLOBALPING_CACHE_MAX_AGE_SECONDS=86400
 
 cdn_optimization_enabled() {
-    [[ "${CDN_PROVIDER:-}" == "cloudflare" ]]
+    [[ "${CDN_PROVIDER:-}" == "cloudflare" || "${CDN_PROVIDER:-}" == "gcore" ]]
 }
 
 globalping_cdn_provider_label() {
-    printf 'Cloudflare'
+    case "${CDN_PROVIDER:-}" in
+    gcore) printf 'Gcore' ;;
+    *) printf 'Cloudflare' ;;
+    esac
 }
 
 validate_globalping_token() {

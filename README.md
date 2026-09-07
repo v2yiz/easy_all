@@ -8,12 +8,13 @@
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (全网精选 5 节点，完全无域名兜底) |
+| 3. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS | Gcore + Globalping IPv4 (三网定向精选 6 节点，完全无域名兜底) |
 
-Cloudflare 提供纯 XHTTP stream-up（全网精选 5 节点）；Reality 用于直连。
+Cloudflare 提供纯 XHTTP stream-up（全网精选 5 节点）；Gcore 提供纯 VLESS WebSocket（三网定向精选 6 节点）；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
-所在地区法律、VPS 服务商以及 Cloudflare 的服务条款。
+所在地区法律、VPS 服务商以及 Cloudflare / Gcore 的服务条款。
 
 ## 第一次安装：先看这里
 
@@ -23,6 +24,7 @@ Cloudflare 提供纯 XHTTP stream-up（全网精选 5 节点）；Reality 用于
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精简 5 节点 | 选择 `2`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；基于全网综合优选筛选 Top 5 优质 IPv4 节点（严格 5 节点无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
+| 明确要使用 Gcore CDN，追求优质单播边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过 Gcore 官方公共 IP 池与 RFC 8805 Geofeed 提取香港、日本、洛杉矶节点，由 Globalping 进行三网定向不交叉测速（移动->HK、联通->JP、电信->LA），严格下发 6 个最稳定单播节点（完全无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 前置准备时，再选择对应 CDN 模式。

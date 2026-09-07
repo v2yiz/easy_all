@@ -119,10 +119,11 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
     && "${guide}" == *"[2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up"* \
+    && "${guide}" == *"[3] Gcore CDN 精选 IP - 优质单播节点"* \
     && "${guide}" == *"全网综合优选"* \
+    && "${guide}" == *"定向不交叉测速"* \
     && "${guide}" == *"XHTTP"* \
-    && "${guide}" != *"AWS"* \
-    && "${guide}" != *"Gcore"* ]] \
+    && "${guide}" != *"AWS"* ]] \
     || fail "install guide does not describe the supported installation branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
 [[ "${readme}" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
@@ -143,8 +144,8 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "install mode prompt must be bilingual and explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - 纯 XHTTP stream-up'* \
-    && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* \
-    && "$(<"${ROOT_DIR}/easy_all")" != *'Gcore CDN 域名'* ]] \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 精选 IP - 优质单播节点'* \
+    && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
@@ -153,6 +154,9 @@ assert_equal "Reality state selects Reality profile" "reality" "$(detect_install
 
 printf 'STATE_VERSION=7\nPROTOCOL=cloudflare-streamup\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare streamup state selects cloudflare-streamup" "cloudflare-streamup" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=1\nPROTOCOL=gcore\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "Gcore state selects gcore" "gcore" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=7\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_failure_contains "legacy singbox-cf state is rejected" \
@@ -204,13 +208,25 @@ sys.stdout.write(stdout.decode())" "${ROOT_DIR}/easy_all"
     )
     [[ "${pty_output_mode2}" == *"MODE=<cloudflare-streamup>"* ]] \
         || fail "interactive menu choice 2 failed: ${pty_output_mode2}"
+
+    pty_output_mode3=$(
+        python3 -c "import pty, os, subprocess, sys
+master, slave = os.openpty()
+p = subprocess.Popen(['bash', '-c', 'source \"\$1\"; mode=\$(choose_install_mode); printf \"MODE=<\$mode>\\n\"', '_', sys.argv[1]], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(slave)
+os.write(master, b'3\n')
+stdout, _ = p.communicate()
+os.close(master)
+sys.stdout.write(stdout.decode())" "${ROOT_DIR}/easy_all"
+    )
+    [[ "${pty_output_mode3}" == *"MODE=<gcore>"* ]] \
+        || fail "interactive menu choice 3 failed: ${pty_output_mode3}"
 fi
 
 [[ "${launcher_content}" == *"1) printf 'reality"* \
     && "${launcher_content}" == *"2) printf 'cloudflare-streamup"* \
-    && "${launcher_content}" != *"3) printf 'gcore"* \
-    && "${launcher_content}" != *"4) printf 'singbox-gcore"* \
-    && "${launcher_content}" != *"5) printf"* ]] \
+    && "${launcher_content}" == *"3) printf 'gcore"* \
+    && "${launcher_content}" != *"4) printf"* ]] \
     || fail "installation choices must retain only the supported modes in order"
 
 printf 'ok - easy_all launcher tests passed\n'

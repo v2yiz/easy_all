@@ -66,7 +66,10 @@ for asset in \
     docs/img/spaceship/spaceship-domain-search.svg \
     docs/img/spaceship/spaceship-nameservers.svg \
     docs/img/spaceship/spaceship-signup.svg \
-    docs/img/clashmi/clashmi-global-proxy.svg; do
+    docs/img/clashmi/clashmi-global-proxy.svg \
+    docs/img/gcore/api-token-create.svg \
+    docs/img/gcore/managed-dns-add-zone.svg \
+    docs/gcore-delegation-success.png; do
     [[ -s "${ROOT_DIR}/${asset}" ]] || fail "Documentation asset is missing: ${asset}"
 done
 assert_contains "README documents Clash Mi global proxy guide" \
@@ -77,7 +80,6 @@ NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit
 [[ -z "${NON_SVG_ASSET}" ]] || fail "Non-SVG documentation asset remains: ${NON_SVG_ASSET}"
 [[ ! -d "${ROOT_DIR}/docs/preparation" ]] || fail "obsolete preparation asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/images/gcore" ]] || fail "obsolete Gcore asset directory still exists"
-[[ ! -d "${ROOT_DIR}/docs/img/gcore" ]] || fail "obsolete Gcore img directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/cloudflare" ]] || fail "obsolete top-level Cloudflare asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/spaceship" ]] || fail "obsolete top-level Spaceship asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/guide" ]] || fail "obsolete guide directory still exists"
@@ -167,10 +169,8 @@ for removed_path in \
     docs/aws/aws-iam-policy.svg \
     docs/aws/aws-iam-access-key.svg \
     docs/gcore/gcore-api-token-create.png \
-    docs/gcore-delegation-success.png \
     profiles/xhttp-aws.sh \
     profiles/xhttp-cloudflare.sh \
-    profiles/xhttp-gcore.sh \
     profiles/singbox-gcore.sh \
     profiles/singbox-cloudflare.sh \
     lib/singbox-core.sh \
@@ -181,7 +181,6 @@ for removed_path in \
     test/test_xhttp_aws.sh \
     test/test_cdn_traffic_guard.sh \
     test/test_xhttp_cloudflare.sh \
-    test/test_xhttp_gcore.sh \
     test/test_singbox_cloudflare.sh \
     test/test_singbox_gcore.sh; do
     [[ ! -e "${ROOT_DIR}/${removed_path}" ]] || fail "removed path still exists: ${removed_path}"
@@ -194,14 +193,22 @@ for forbidden_reference in \
     'docs/aws-guide.md' \
     'docs/gcore/' \
     'docs/shadowrocket-auto-node-guide.md' \
-    'Shadowrocket 自动选择节点指南' \
-    'Gcore'; do
+    'Shadowrocket 自动选择节点指南'; do
     assert_not_contains "README excludes ${forbidden_reference}" "${README_CONTENT}" "${forbidden_reference}"
     assert_not_contains "preparation guide excludes ${forbidden_reference}" \
         "${PREPARATION_GUIDE_CONTENT}" "${forbidden_reference}"
 done
 
+assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 精选 IP'
+assert_contains "Preparation guide documents Gcore mode" "${PREPARATION_GUIDE_CONTENT}" '## 8. Gcore CDN 精选 IP 准备'
+assert_contains "Preparation guide embeds Gcore delegation success" "${PREPARATION_GUIDE_CONTENT}" 'gcore-delegation-success.png'
+assert_contains "Preparation guide embeds Gcore token create" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/api-token-create.svg'
+assert_contains "Preparation guide embeds Gcore add zone" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'
+
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
-    "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" "${ROOT_DIR}/lib/xhttp-runtime.sh"
+    "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
+    "${ROOT_DIR}/profiles/xhttp-gcore.sh" \
+    "${ROOT_DIR}/lib/xhttp-runtime.sh" \
+    "${ROOT_DIR}/lib/gcore-ip-pool.sh"
 
 printf 'ok - documentation alignment tests passed\n'

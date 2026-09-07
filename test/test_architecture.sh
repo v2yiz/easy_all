@@ -26,7 +26,8 @@ bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
 for required_path in \
     profiles/reality.sh \
     profiles/xhttp-cloudflare-streamup.sh \
-    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh \
+    profiles/xhttp-gcore.sh \
+    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/gcore-ip-pool.sh lib/quota.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
     lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
