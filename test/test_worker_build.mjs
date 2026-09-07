@@ -57,7 +57,7 @@ try {
         const result = await dynamicApi.fetchDynamicCdnNodes(config.vpsCdnUrl + '&flag=clash', {
             fetchImpl: async (url, options) => {
                 assert.equal(new URL(url).searchParams.get('flag'), 'base64');
-                assert.equal(options.headers.get('User-Agent'), 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+                assert.equal(options.headers.get('User-Agent'), 'v2rayN');
                 const links = [...Array(6).fill(cf.replace('type=xhttp', 'type=tcp')), ...Array(7).fill(cf)].join('\n');
                 return new Response(encoded ? btoa(links) : links);
             },
@@ -74,6 +74,19 @@ try {
         },
     });
     assert.equal(forwardedUA.nodes.length, 1, 'client UA is forwarded without changing parsing');
+    let upstreamUA = '';
+    await api.fetchXflashSubscription(
+        { headers: new Headers({ 'User-Agent': 'curl/8.0' }) },
+        config.upstreamUrl,
+        {
+            format: 'base64',
+            fetchImpl: async (_url, options) => {
+                upstreamUA = options.headers.get('User-Agent');
+                return new Response(btoa(cf));
+            },
+        },
+    );
+    assert.equal(upstreamUA, 'v2rayN', 'unknown URI clients use a supported XFLASH UA');
     for (const [status, headers, warning] of [
         [403, {}, 'HTTP 403'],
         [200, {'cf-mitigated': 'challenge'}, 'Cloudflare challenge'],

@@ -237,7 +237,7 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTRE
         subscriptionUrl.searchParams.set('flag', 'base64');
         const text = await fetchXflashSubscription(
             { headers: new Headers({ 'User-Agent': clientUA }) },
-            subscriptionUrl.toString(), { fetchImpl, timeoutMs, format: 'base64' }
+            subscriptionUrl.toString(), { fetchImpl, timeoutMs, format: 'base64', label: 'CDN subscription' }
         );
         const decoded = decodeBase64Utf8(text) || text;
         const links = decoded
@@ -452,7 +452,14 @@ function encodeBase64Utf8(value) {
 
 function upstreamHeaders(requestHeaders, format) {
     const clash = format === 'clash';
-    const clientUserAgent = requestHeaders.get('User-Agent');
+    const clientUserAgent = requestHeaders.get('User-Agent')?.trim() || '';
+    const upstreamUserAgent = clash
+        ? /clash|mihomo|stash/i.test(clientUserAgent)
+            ? clientUserAgent
+            : 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        : /v2ray|shadowrocket|sing-box|hiddify|nekoray|quantumult|surge/i.test(clientUserAgent)
+            ? clientUserAgent
+            : 'v2rayN';
     const result = new Headers({
         Accept: clash
             ? 'text/yaml, text/plain;q=0.9, */*;q=0.8'
@@ -462,11 +469,7 @@ function upstreamHeaders(requestHeaders, format) {
         'Cache-Control': 'no-cache',
         Pragma: 'no-cache',
     });
-    // Forward a client UA verbatim. When the client did not send one, leave
-    // the header absent instead of inventing a client identity.
-    if (clientUserAgent && clientUserAgent.trim()) {
-        result.set('User-Agent', clientUserAgent);
-    }
+    result.set('User-Agent', upstreamUserAgent);
     return result;
 }
 
@@ -478,6 +481,7 @@ async function fetchXflashSubscription(
         timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS,
         maxSize = MAX_UPSTREAM_SUBSCRIPTION_SIZE,
         format = 'clash',
+        label = 'XFLASH',
     } = {}
 ) {
     const controller = new AbortController();
@@ -493,7 +497,7 @@ async function fetchXflashSubscription(
                 : response.status === 429
                     ? ' (rate-limited by upstream)'
                     : '';
-            throw new Error(`XFLASH returned HTTP ${response.status}${hint}`);
+            throw new Error(`${label} returned HTTP ${response.status}${hint}`);
         }
 
         if (response.headers.get('cf-mitigated') === 'challenge') {
