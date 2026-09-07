@@ -1537,7 +1537,6 @@ apply_easy_all() {
     finish_xhttp_apply
     install_globalping_refresh_timer
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    show_subscription
     success "Gcore CDN 本机配置已应用；未修改 Gcore 资源"
 }
 
@@ -1549,11 +1548,15 @@ apply_cloud_resources() {
     configure_ufw
     gcore_prepare_origin
     gcore_apply_cdn
+    collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
+    persist_globalping_token
+    refresh_gcore_globalping_cache \
+        || warn "Globalping 刷新失败，保留上一版本有效缓存"
     finish_xhttp_apply 1
     install_globalping_refresh_timer
     gcore_clear_api_token
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    show_subscription
     success "easy_all Gcore CDN 本机配置、Managed DNS、CDN 与证书已应用"
 }
 

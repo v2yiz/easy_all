@@ -1215,7 +1215,6 @@ apply_easy_all() {
     finish_xhttp_apply
     install_globalping_refresh_timer
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    show_subscription
     success "Cloudflare XHTTP stream-up 本机配置已应用；未修改 Cloudflare 资源"
     warn "提示：若客户端节点超时，请检查 Cloudflare 控制台（域名 -> 网络 -> gRPC）是否已开启！"
 }
@@ -1235,7 +1234,6 @@ apply_cloud_resources() {
     install_globalping_refresh_timer
     cloudflare_clear_api_token
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    show_subscription
     success "Cloudflare DNS、Origin CA、规则和本机配置已应用"
 }
 
@@ -1272,7 +1270,6 @@ update_subscription() {
     install_globalping_refresh_timer
     cloudflare_clear_api_token
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    show_subscription
     success "Cloudflare 订阅、Origin CA 与回源规则已更新"
 }
 

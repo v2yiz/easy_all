@@ -748,6 +748,30 @@ unset -f gcore_api_request
         "local prepare cloud clear save " "${calls}"
 )
 
+# apply-cloud refreshes optimized IPs before rebuilding subscriptions and does not print twice.
+(
+    calls=""
+    require_root() { :; }
+    collect_installed_state() { :; }
+    snapshot_subscription_update() { :; }
+    configure_bbr_tcp() { :; }
+    configure_ufw() { :; }
+    gcore_prepare_origin() { calls+="prepare "; }
+    gcore_apply_cdn() { calls+="cloud "; }
+    collect_globalping_token() { calls+="token "; }
+    validate_globalping_access() { calls+="validate "; }
+    persist_globalping_token() { calls+="persist "; }
+    refresh_gcore_globalping_cache() { calls+="refresh "; }
+    finish_xhttp_apply() { calls+="finish:$1 "; }
+    install_globalping_refresh_timer() { calls+="timer "; }
+    gcore_clear_api_token() { calls+="clear "; }
+    show_subscription() { calls+="show "; }
+    success() { calls+="success "; }
+    apply_cloud_resources
+    assert_equal "apply-cloud refreshes IPs before one subscription render" \
+        "prepare cloud token validate persist refresh finish:1 timer clear success " "${calls}"
+)
+
 # Execute the real upload flow with temporary certificate paths in a fresh shell.
 {
     declare -f gcore_uploaded_certificate_id gcore_ensure_origin_validation_certificates \

@@ -148,6 +148,25 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 精选 IP - 优质单播节点'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
+interactive_sources=$(
+    cat "${ROOT_DIR}/easy_all" \
+        "${ROOT_DIR}/lib/profile-common.sh" \
+        "${ROOT_DIR}/lib/subscription-auth.sh" \
+        "${ROOT_DIR}/lib/quota.sh" \
+        "${ROOT_DIR}/lib/scheduled-maintenance.sh" \
+        "${ROOT_DIR}/lib/xhttp-runtime.sh" \
+        "${ROOT_DIR}/profiles/reality.sh" \
+        "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
+        "${ROOT_DIR}/profiles/xhttp-gcore.sh" \
+        "${ROOT_DIR}/scripts/debian-init.sh"
+)
+for english_prompt in \
+    "Choose the" "Choose [" "press Enter" "Delete local" \
+    "Initial SSH login" "Current password" "Final non-root" \
+    "Additional TCP ports" "Full subscription hostname"; do
+    [[ "${interactive_sources}" != *"${english_prompt}"* ]] \
+        || fail "interactive prompts must not contain English text: ${english_prompt}"
+done
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=6\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
