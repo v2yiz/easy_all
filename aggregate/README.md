@@ -1,6 +1,6 @@
 # VPS 本机订阅聚合
 
-`easy_all aggregate` 启动前台 HTTP 服务，仅监听 `127.0.0.1:8788`，通过现有 Nginx 的 `/aggregate` 对外服务。需要 Node.js 18+，无 npm 依赖。保留原 `/subscribe` 和优选刷新任务。
+配置好 `/etc/easy_all/aggregate.json` 后执行 `sudo easy_all aggregate`，自动校验并配置后台服务，通过现有 Nginx 的 `/aggregate` 对外服务。仅监听 `127.0.0.1:8788`，保留原 `/subscribe` 和优选刷新任务。
 
 ## 配置
 
@@ -23,23 +23,18 @@ sudo nano /etc/easy_all/aggregate.json
 
 模板复用 `/usr/local/lib/easy_all/templates/mihomo.yaml`。JSON 和模板每次请求重新读取，修改无需重启；无效配置或本地订阅返回 503，避免继续下发旧凭据。XFLASH 失败保留原来的本地节点降级行为。执行 self-update 会更新模板，修改前请保留备份。
 
-可指定其他配置路径：`sudo easy_all aggregate /etc/easy_all/other.json`。每台机器只能运行一个监听 8788 的实例。
+仅校验、不修改服务：`sudo easy_all aggregate --check`（需要已安装 Node.js 18+）。校验覆盖所有配置用户的本地节点和 XFLASH 的 Clash/Base64 输出；任一失败就停止，不继续配置运行环境。
 
 ## 已安装 Cloudflare 模式的部署步骤
 
-先将配置安全复制到上述路径，然后在 VPS 执行：
+首次获取新命令先更新代码，然后配置好 JSON，执行：
 
 ```bash
 sudo easy_all self-update
-sudo apt-get install -y nodejs
-sudo chmod 600 /etc/easy_all/aggregate.json
-sudo install -m 644 /usr/local/lib/easy_all/aggregate/easy_all-aggregate.service /etc/systemd/system/easy_all-aggregate.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now easy_all-aggregate
-sudo easy_all apply-cloud
+sudo easy_all aggregate
 ```
 
-本次首次接入需要 `apply-cloud`：它生成 Nginx 新路径，并为 `/aggregate` 同步 Cloudflare 源站校验头规则，需要现有云端凭证，且会应用本机配置和托管云资源。之后只改聚合 JSON 不需要再运行 apply-cloud。新安装已包含路径和转换规则。
+命令自动安装缺失的 Node.js，先进行聚合校验；通过后调用现有 `apply-cloud` 生成 Nginx 路径及 Cloudflare 源站校验头规则，再配置并重启 systemd 服务。这一步会应用本机配置和托管云资源，仍需要现有 Cloudflare 凭证（缺失时按原流程提示）。失败会停止并返回非零状态；整套流程不是跨云事务，已成功的步骤不会全部撤销，可排除原因后重跑。之后只改 JSON 无需重启或重新配置。
 
 订阅地址使用现有 VPS 订阅域名和 `aggregate.json` 中的 token：
 

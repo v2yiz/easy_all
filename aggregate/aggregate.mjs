@@ -50,9 +50,30 @@ export async function aggregateHandler(configPath, { fetchImpl = fetch, subscrip
     };
 }
 
+export async function checkAggregate(configPath, options = {}) {
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    const tokens = Object.values(config.allowedTokens || {});
+    if (!tokens.length || !Array.isArray(config.nodes)) throw Error('Invalid config');
+    const handle = await aggregateHandler(configPath, options);
+    for (const token of tokens) {
+        for (const ua of ['clash-verge', 'v2rayN']) {
+            const url = new URL('http://localhost/aggregate');
+            url.searchParams.set('token', token);
+            const response = await handle(new Request(url, { headers: { 'User-Agent': ua } }));
+            if (response.status !== 200 || response.headers.has('X-Easy-All-Warning')) throw Error('Aggregate validation failed');
+            await response.arrayBuffer();
+        }
+    }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-    const configPath = resolve(process.argv[2] || '/etc/easy_all/aggregate.json');
+    const checking = process.argv[2] === '--check';
+    const configPath = resolve(process.argv[checking ? 3 : 2] || '/etc/easy_all/aggregate.json');
     try {
+        if (checking) {
+            await checkAggregate(configPath);
+            console.log('聚合校验通过：配置、所有用户本地订阅及 XFLASH 两种格式正常');
+        } else {
         await readFile(configPath, 'utf8');
         const handle = await aggregateHandler(configPath);
         const server = createServer(async (req, res) => {
@@ -65,5 +86,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         });
         server.on('error', () => { console.error('Cannot listen on 127.0.0.1:8788'); process.exitCode = 1; });
         server.listen(8788, '127.0.0.1', () => console.log('Aggregate listening on 127.0.0.1:8788/aggregate'));
+        }
     } catch { console.error('Cannot start aggregate; check aggregate.json and installed runtime'); process.exitCode = 1; }
 }

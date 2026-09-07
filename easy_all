@@ -62,7 +62,7 @@ runtime_tree_is_complete() {
     for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
         [[ -f "${root}/${relative_path}" ]] || return 1
     done
-    [[ -f "${root}/aggregate/aggregate.mjs" && -f "${root}/worker-src/index.js" && -f "${root}/aggregate/easy_all-aggregate.service" && -f "${root}/aggregate/aggregate.example.json" && -f "${root}/aggregate/README.md" ]]
+    [[ -f "${root}/aggregate/setup.sh" && -f "${root}/aggregate/aggregate.mjs" && -f "${root}/worker-src/index.js" && -f "${root}/aggregate/easy_all-aggregate.service" && -f "${root}/aggregate/aggregate.example.json" && -f "${root}/aggregate/README.md" ]]
 }
 
 launcher_usage() {
@@ -73,7 +73,7 @@ launcher_usage() {
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update      只更新 easy_all 项目代码
-  aggregate [配置文件] 启动本机订阅聚合服务（127.0.0.1:8788）
+  aggregate [--check] 校验 aggregate.json 并自动配置聚合服务
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅模式与月度用户配额
@@ -226,7 +226,7 @@ unified_register_easy_all_command() {
         || install -m 0644 "${source_root}/templates/mihomo.yaml" \
             "${stage}/templates/mihomo.yaml"
     install -d -m 0755 "${stage}/aggregate" "${stage}/worker-src"
-    for relative_path in aggregate.mjs aggregate.example.json easy_all-aggregate.service README.md; do
+    for relative_path in aggregate.mjs setup.sh aggregate.example.json easy_all-aggregate.service README.md; do
         install -m 0644 "${source_root}/aggregate/${relative_path}" "${stage}/aggregate/${relative_path}"
     done
     install -m 0644 "${source_root}/worker-src/index.js" "${stage}/worker-src/index.js"
@@ -338,8 +338,9 @@ main() {
     shift || true
 
     if [[ "${command}" == "aggregate" ]]; then
-        command -v node >/dev/null 2>&1 || launcher_die "聚合需要 Node.js 18+，请运行 sudo apt-get install nodejs"
-        exec node "${EASY_ALL_ROOT}/aggregate/aggregate.mjs" "$@"
+        source "${EASY_ALL_ROOT}/aggregate/setup.sh"
+        setup_aggregate "$@"
+        return
     fi
 
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then

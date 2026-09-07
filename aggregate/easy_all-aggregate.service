@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/easy_all aggregate
+ExecStart=/usr/bin/node /usr/local/lib/easy_all/aggregate/aggregate.mjs
 Restart=on-failure
 RestartSec=5
 UMask=0077

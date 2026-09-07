@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { aggregateHandler } from '../aggregate/aggregate.mjs';
+import { aggregateHandler, checkAggregate } from '../aggregate/aggregate.mjs';
 
 const dir = await mkdtemp(join(tmpdir(), 'aggregate-test-'));
 try {
@@ -35,7 +35,15 @@ try {
     await writeFile(path, JSON.stringify(config));
     assert.equal((await handle(request('alice-token-123456789'))).status, 403, 'config reload revokes old tokens');
     assert.equal((await handle(request(config.allowedTokens.alice))).status, 200);
+    delete config.allowedTokens.bob;
+    await writeFile(path, JSON.stringify(config));
+    const checkOptions = { subscriptionDir: dir, fetchImpl: async (_url, options) => new Response(
+        /clash/i.test(options.headers.get('User-Agent')) ? 'proxies:\n  - name: Remote\n    type: ss\n' : 'ss://example#Remote',
+    ) };
+    await checkAggregate(path, checkOptions);
+    await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => new Response('unavailable', {status: 503}) }));
     await writeFile(join(dir, 'alice/base64.txt'), 'invalid');
     assert.equal((await handle(request(config.allowedTokens.alice))).status, 503);
+    await assert.rejects(checkAggregate(path, checkOptions));
     console.log('Aggregate local nodes, UA formats, reload and user isolation checks passed');
 } finally { await rm(dir, { recursive: true, force: true }); }
