@@ -228,23 +228,15 @@ function parseVlessLink(link) {
     };
 }
 
-async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS, userAgent = '' } = {}) {
+async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS } = {}) {
     if (!url) return { nodes: FALLBACK_CDN_NODES, error: null };
     try {
-        // When sub.tiandi.party is proxied via Cloudflare orange-cloud, this Worker
-        // subrequest passes through WAF / Bot Fight Mode.
-        // Two prerequisites on the Cloudflare dashboard make this work:
-        //   1. Compatibility flag "global_fetch_strictly_public" on this Worker
-        //      (removes the same-zone subrequest loop block, Error 1042).
-        //   2. A WAF custom rule: Hostname equals "sub.tiandi.party" → Skip
-        //      (All remaining custom rules + Managed Rules + Bot Fight Mode).
-        // On the code side we use a realistic subscription-client UA so that
-        // Cloudflare's bot scoring does not pre-emptively challenge the request
-        // before the WAF skip rule is evaluated.
-        const clientUA = userAgent?.trim() || 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
+        // The parser consumes URI subscriptions, regardless of the caller's format.
+        const subscriptionUrl = new URL(url);
+        subscriptionUrl.searchParams.set('flag', 'base64');
         const text = await fetchXflashSubscription(
-            { headers: new Headers({ 'User-Agent': clientUA }) },
-            url, { fetchImpl, timeoutMs, format: 'base64' }
+            { headers: new Headers({ 'User-Agent': 'v2rayN' }) },
+            subscriptionUrl.toString(), { fetchImpl, timeoutMs, format: 'base64' }
         );
         const decoded = decodeBase64Utf8(text) || text;
         const links = decoded
@@ -257,15 +249,14 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTRE
             throw new Error('No vless links found in VPS subscription');
         }
 
-        const nodes = links.slice(0, 6).flatMap((link, idx) => {
+        const nodes = links.flatMap((link) => {
             try {
                 const parsed = parseVlessLink(link);
-                parsed.name = `🇺🇸备用CF${idx + 1}`;
                 return [parsed];
             } catch {
                 return [];
             }
-        });
+        }).slice(0, 6).map((node, idx) => ({ ...node, name: `🇺🇸备用CF${idx + 1}` }));
         if (nodes.length === 0) {
             throw new Error('Failed to parse any vless links from VPS subscription');
         }
@@ -496,16 +487,19 @@ async function fetchXflashSubscription(
             signal: controller.signal,
         });
         if (!response.ok) {
-            // 403 from an orange-cloud domain most likely means WAF / Bot Fight Mode
-            // blocked this Worker subrequest. Fix: add a WAF custom rule to Skip
-            // Bot Fight Mode for Hostname = sub.tiandi.party, and ensure the
-            // "global_fetch_strictly_public" compatibility flag is enabled on the Worker.
             const hint = response.status === 403
-                ? ' (WAF/Bot Fight Mode may be blocking this subrequest — check Cloudflare WAF skip rule)'
+                ? ' (check Cloudflare Security Events; Bot Fight Mode cannot be skipped by WAF rules)'
                 : response.status === 429
                     ? ' (rate-limited by upstream)'
                     : '';
             throw new Error(`XFLASH returned HTTP ${response.status}${hint}`);
+        }
+
+        if (response.headers.get('cf-mitigated') === 'challenge') {
+            throw new Error('Upstream returned a Cloudflare challenge');
+        }
+        if (/text\/html/i.test(response.headers.get('content-type') || '')) {
+            throw new Error('Upstream returned HTML instead of a subscription');
         }
 
         const contentLength = Number(response.headers.get('content-length'));
@@ -662,8 +656,7 @@ function createWorkerHandler({
             request,
             url.searchParams.get('flag')
         );
-        const clientUA = request.headers.get('User-Agent');
-        const { nodes: dynamicCdnNodes, error: dynamicCdnError } = await fetchDynamicCdnNodes(vpsCdnUrl, { fetchImpl, userAgent: clientUA });
+        const { nodes: dynamicCdnNodes, error: dynamicCdnError } = await fetchDynamicCdnNodes(vpsCdnUrl, { fetchImpl });
         const selectedLocalNodes = selectLocalNodes(localNodes, url);
         const nodes = [...selectedLocalNodes, ...dynamicCdnNodes];
         const ports = resolveNodePorts(nodes, { now });

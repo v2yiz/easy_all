@@ -50,7 +50,32 @@ try {
     assert.equal(await (await offline(request('', 'offline-test-token', 'HEAD'))).text(), '');
     const upstream = `dns:\n  nameserver: [malicious.invalid]\nproxies:\n    - name: Remote\n      type: vless\n      server: remote.example.com\n      port: 443\n      uuid: ${config.nodes[0].uuid}\n      network: xhttp\n      ip-version: ipv4\n      alpn:\n        - h2\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n`;
     const cf = `vless://${config.nodes[0].uuid}@192.0.2.1:443?security=tls&type=xhttp&host=cdn.example.com&path=%2Fxhttp%2F&mode=stream-up#CF`;
-    const live = make(async url => new Response(url === config.vpsCdnUrl ? btoa(cf) : upstream));
+    const live = make(async url => new Response(new URL(url).origin === new URL(config.vpsCdnUrl).origin ? btoa(cf) : upstream));
+    // Format must be pinned even when a copied VPS link requests Clash YAML.
+    const dynamicApi = vm.runInContext('({fetchDynamicCdnNodes})', context);
+    for (const encoded of [false, true]) {
+        const result = await dynamicApi.fetchDynamicCdnNodes(config.vpsCdnUrl + '&flag=clash', {
+            fetchImpl: async (url, options) => {
+                assert.equal(new URL(url).searchParams.get('flag'), 'base64');
+                assert.equal(options.headers.get('User-Agent'), 'v2rayN');
+                const links = [...Array(6).fill(cf.replace('type=xhttp', 'type=tcp')), ...Array(7).fill(cf)].join('\n');
+                return new Response(encoded ? btoa(links) : links);
+            },
+        });
+        assert.equal(result.error, null);
+        assert.equal(result.nodes.length, 6, 'limit applies to supported nodes');
+        assert.equal(result.nodes[0].name, '🇺🇸备用CF1');
+    }
+    for (const [status, headers, warning] of [
+        [403, {}, 'HTTP 403'],
+        [200, {'cf-mitigated': 'challenge'}, 'Cloudflare challenge'],
+        [200, {'content-type': 'text/html'}, 'HTML'],
+    ]) {
+        const response = await make(async () => new Response('<html>blocked</html>', {status, headers}))(request());
+        assert.equal(response.status, 200, 'fallback warning must be a valid HTTP header');
+        assert.ok(response.headers.get('X-Easy-All-CDN-Warning').includes(warning));
+        assert.ok((await response.text()).includes('fallback.example.com'));
+    }
     const liveResponse = await live(request());
     assert.equal(liveResponse.headers.get('X-Easy-All-Warning'), null);
     const liveBody = await liveResponse.text();
@@ -83,7 +108,7 @@ try {
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies: []'));
     const flow = api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies:\n  - { name: Flow, type: ss, server: flow.example.com, port: 443 }\ndns: {}\n');
     assert.ok(flow.includes('name: Flow'));
-    const invalidUpstream = make(async url => new Response(url === config.vpsCdnUrl ? cf : 'proxies: []'));
+    const invalidUpstream = make(async url => new Response(new URL(url).origin === new URL(config.vpsCdnUrl).origin ? cf : 'proxies: []'));
     assert.equal((await invalidUpstream(request())).headers.get('X-Easy-All-Warning'), 'xflash-unavailable-local-only');
     await assert.rejects(api.fetchXflashSubscription({headers: new Headers()}, config.upstreamUrl, {
         timeoutMs: 5,
@@ -92,7 +117,7 @@ try {
     await assert.rejects(api.fetchXflashSubscription({headers: new Headers()}, config.upstreamUrl, {
         maxSize: 3, fetchImpl: async () => new Response('oversized'),
     }));
-    const generic = make(async url => new Response(url === config.vpsCdnUrl ? cf : 'ss://example#Remote'));
+    const generic = make(async url => new Response(new URL(url).origin === new URL(config.vpsCdnUrl).origin ? cf : 'ss://example#Remote'));
     const genericRequest = new Request('https://worker.invalid/subscribe?token=offline-test-token&flag=base64');
     const genericBody = atob(await (await generic(genericRequest)).text());
     assert.ok(genericBody.includes('ss://example#Remote') && genericBody.includes('192.0.2.1'));

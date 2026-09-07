@@ -26,3 +26,16 @@ Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `n
 公共模板保留已有国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。全局 IPv6 默认关闭，节点 IP 统一输出 ipv4。模板开头的明确直连域名（包括 Steam 下载域名）先匹配，其余 UDP/443 在代理规则前拒绝；不是放行所有国内 QUIC。国内集合仍在显式代理域名之后，避免覆盖 AI 等例外。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅，已部署产物不会自动更新。
 
 版本由构建脚本按北京时间生成，例如 `2026-09-06-v0`。同一天根据现有 `worker.js` 的版本递增，跨日从 `v0` 开始；构建失败不消耗版本。删除产物后也会从 `v0` 开始，因此需要连续编号时请保留上次构建的文件。版本通过 `X-Easy-All-Version` 响应头返回。
+
+### CF 聚合只出现兜底节点
+
+动态 CF 获取或解析失败会使用 `fallbackCdnNodes`；这不代表 VPS 没有生成节点。Worker 请求 VPS 时固定追加 `flag=base64` 并使用 URI 客户端 UA，先解析有效节点再取最多六个，避免 Clash 格式或前面的不支持节点导致误降级。
+
+部署重新构建的 `worker.js` 后，检查订阅响应头（不要公开含 token 的链接）：
+
+- `X-Easy-All-Version`：确认线上已更新。
+- `X-Easy-All-CDN-Nodes`：动态获取成功的节点数量。
+- `X-Easy-All-CDN-Warning`：动态获取失败原因；HTTP 403 检查 Cloudflare Security Events，HTML/challenge 表示收到网页或挑战而非节点，超时检查 Worker 到订阅域名的连接。
+- `X-Easy-All-Warning`：独立的 XFLASH 上游状态，与 CF 获取结果不同。
+
+Cloudflare 配置问题不能靠更换 UA 修复。[Bot Fight Mode 不能被 WAF Skip 规则跳过](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/)；Super Bot Fight Mode 才支持该例外。[1042 表示同 Zone 的 Worker 子请求限制](https://developers.cloudflare.com/workers/observability/errors/)，仅在确实发生该错误时检查 `global_fetch_strictly_public` 及路由，避免请求递归回聚合 Worker 自身。
