@@ -41,7 +41,7 @@ export XRAY_CONFIG="${TMP_DIR}/xray/config.json"
 export CERT_DIR="${STATE_DIR}/certs"
 export CERT_FILE="${CERT_DIR}/cert.pem"
 export KEY_FILE="${CERT_DIR}/key.pem"
-export FULLCHAIN_FILE="${CERT_DIR}/fullchain.pem"
+unset FULLCHAIN_FILE
 export WEB_ROOT="${TMP_DIR}/web"
 export SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 export SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
@@ -65,7 +65,7 @@ export CDN_CLIENT_IP_FAMILY="ipv4"
 export XHTTP_NODE_NAME="TEST_NODE"
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
-touch "${CERT_FILE}" "${KEY_FILE}" "${FULLCHAIN_FILE}"
+touch "${CERT_FILE}" "${KEY_FILE}"
 
 install() {
     local args=()
@@ -114,6 +114,24 @@ chmod +x "${XRAY_BIN}"
 
 # shellcheck source=/dev/null
 source "${PROFILE}"
+
+# Certificate installation must use the same full chain as Nginx, without FULLCHAIN_FILE.
+(
+    write_cert_reload_hook() { :; }
+    install_acme() { :; }
+    install() { :; }
+    chmod() { :; }
+    acme_install_args=""
+    run_acme() {
+        if [[ "$1" == "--install-cert" ]]; then
+            acme_install_args="$*"
+        fi
+    }
+    issue_origin_certificate
+    assert_contains "ACME installs Nginx full chain" "${acme_install_args}" "--fullchain-file ${CERT_FILE}"
+    assert_contains "ACME installs private key" "${acme_install_args}" "--key-file ${KEY_FILE}"
+    assert_not_contains "Leaf certificate must not overwrite full chain" "${acme_install_args}" "--cert-file"
+)
 
 # 3. Test gcore_select_carrier_candidates ranking and label assignment
 observations_file="${TMP_DIR}/observations.ndjson"

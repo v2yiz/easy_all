@@ -375,14 +375,13 @@ issue_origin_certificate() {
         die "源站域名 ${GCORE_ORIGIN_DOMAIN} 证书签发失败"
     fi
     if ! run_acme --install-cert -d "${GCORE_ORIGIN_DOMAIN}" --ecc \
-        --cert-file "${CERT_FILE}" \
         --key-file "${KEY_FILE}" \
-        --fullchain-file "${FULLCHAIN_FILE}" \
+        --fullchain-file "${CERT_FILE}" \
         --reloadcmd "${CERT_RELOAD_HOOK}"; then
         die "安装源站 ECC 证书失败"
     fi
     chmod 0600 "${KEY_FILE}"
-    chmod 0644 "${CERT_FILE}" "${FULLCHAIN_FILE}"
+    chmod 0644 "${CERT_FILE}"
 }
 
 # --- Origin Validation & mTLS with Gcore ---
@@ -444,8 +443,8 @@ gcore_ensure_origin_validation_certificates() {
     # 2. Upload Let'\''s Encrypt intermediate/root CA to Gcore (/cdn/sslCertificates)
     local issuer_ca_file="${RUNTIME_TMP}/issuer_ca.crt"
     # Extract CA certificate chain (all except the first server leaf cert)
-    awk 'BEGIN {c=0} /BEGIN CERTIFICATE/ {c++} c>1 {print}' "${FULLCHAIN_FILE}" >"${issuer_ca_file}"
-    [[ -s "${issuer_ca_file}" ]] || install -m 0644 "${FULLCHAIN_FILE}" "${issuer_ca_file}"
+    awk 'BEGIN {c=0} /BEGIN CERTIFICATE/ {c++} c>1 {print}' "${CERT_FILE}" >"${issuer_ca_file}"
+    [[ -s "${issuer_ca_file}" ]] || install -m 0644 "${CERT_FILE}" "${issuer_ca_file}"
 
     ca_payload=$(jq -cn \
         --arg name "${ca_name}" \
