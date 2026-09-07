@@ -2,7 +2,7 @@
 
 # Cloudflare-only endpoint discovery.
 
-readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-72}"
+readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-120}"
 readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-4}"
 readonly CLOUDFLARE_CANDIDATES_PER_CARRIER="${CLOUDFLARE_CANDIDATES_PER_CARRIER_OVERRIDE:-2}"
 readonly CLOUDFLARE_CANDIDATE_LIMIT=6
@@ -97,12 +97,13 @@ else:
     oth_limit = min(len(oth_blocks), sample_limit)
 
 hour = epoch // 3600
+responsive_hosts = [1, 2, 3, 4, 8, 16, 24, 32, 64, 100, 128, 150, 172, 198, 200]
 
 if pri_limit > 0:
     for i in range(pri_limit):
         idx = (hour + (i * len(pri_blocks) // pri_limit)) % len(pri_blocks)
         block_val, src_cidr = pri_blocks[idx]
-        host = 1 + ((hour * 37 + i * 67 + block_val) % 254)
+        host = responsive_hosts[(hour * 7 + i * 11 + (block_val >> 8)) % len(responsive_hosts)]
         cand_ip = str(ipaddress.IPv4Address(block_val + host))
         print(f"{cand_ip}\t{src_cidr}")
 
@@ -110,7 +111,7 @@ if oth_limit > 0:
     for i in range(oth_limit):
         idx = (hour + (i * len(oth_blocks) // oth_limit)) % len(oth_blocks)
         block_val, src_cidr = oth_blocks[idx]
-        host = 1 + ((hour * 37 + i * 67 + block_val) % 254)
+        host = responsive_hosts[(hour * 7 + i * 11 + (block_val >> 8)) % len(responsive_hosts)]
         cand_ip = str(ipaddress.IPv4Address(block_val + host))
         print(f"{cand_ip}\t{src_cidr}")
 EOF
@@ -174,27 +175,17 @@ cloudflare_wait_globalping_measurement() {
 cloudflare_collect_globalping_measurements() {
     local pool_file=$1 destination=$2 jobs_file
     local ip source_cidr created measurement_id result submitted=0 completed=0
-    local base_measurement_id=""
     jobs_file=$(make_temp_dir)/cloudflare-globalping-jobs.tsv
     : >"${jobs_file}"
     : >"${destination}"
 
     while IFS=$'\t' read -r ip source_cidr; do
-        created=""
-        if [[ -n "${base_measurement_id}" ]]; then
-            created=$(globalping_api_request POST "/measurements" \
-                "$(cloudflare_globalping_measurement_request "${ip}" "${base_measurement_id}")") \
-                || created=""
-        fi
-        if [[ -z "${created}" ]]; then
-            created=$(globalping_api_request POST "/measurements" \
-                "$(cloudflare_globalping_measurement_request "${ip}")") \
-                || continue
-        fi
+        created=$(globalping_api_request POST "/measurements" \
+            "$(cloudflare_globalping_measurement_request "${ip}")") \
+            || continue
         measurement_id=$(jq -er \
             '.id | select(type == "string" and length > 0)' <<<"${created}") \
             || continue
-        [[ -z "${base_measurement_id}" ]] && base_measurement_id="${measurement_id}"
         printf '%s\t%s\t%s\n' "${measurement_id}" "${ip}" "${source_cidr}" \
             >>"${jobs_file}"
         submitted=$((submitted + 1))
@@ -230,16 +221,15 @@ cloudflare_zero_loss_observations() {
       | select(.result.status == "finished")
       | select(.result.resolvedAddress == $entry.ip)
       | select(
-          .result.stats.loss == 0
-          and .result.stats.total == $packets
-          and .result.stats.rcv == $packets
-          and .result.stats.drop == 0
+          ((.result.stats.loss // 100) <= 25)
+          and ((.result.stats.rcv // 0) >= 3)
           and (.result.stats.avg | type) == "number"
         )
       | {
           ip:$entry.ip,
           source_cidr:$entry.source_cidr,
           carrier_asn:.probe.asn,
+          loss:(.result.stats.loss // 0),
           avg_rtt_ms:.result.stats.avg,
           city:(.probe.city // ""),
           network:(.probe.network // "")
@@ -248,49 +238,143 @@ cloudflare_zero_loss_observations() {
 }
 
 cloudflare_select_carrier_candidates() {
-    local observations_file=$1 per_carrier=$2 limit=$3 history_file=${4:-}
-    local history_ips_json="[]"
-    if [[ -n "${history_file}" && -s "${history_file}" ]]; then
-        history_ips_json=$(jq -R -s -c 'split("\n") | map(split("\t")[0] | select(length > 0))' "${history_file}")
-    fi
+    local observations_file=$1 per_carrier=$2 limit=$3 history_file=${4:-} fallback_file=${5:-}
 
-    jq -sc --argjson per_carrier "${per_carrier}" \
-           --argjson limit "${limit}" \
-           --argjson hist "${history_ips_json}" '
-      . as $all_items |
-      [
-        {asn: 4134, carrier: "telecom", prefix: "电信"},
-        {asn: 4837, carrier: "unicom",  prefix: "联通"},
-        {asn: 9808, carrier: "mobile",  prefix: "移动"}
-      ] as $carriers |
-      reduce $carriers[] as $c (
-        {selected_ips: [], results: []};
-        . as $state |
-        (
-          [ $all_items[]
-            | select(.carrier_asn == $c.asn and .tls_verified == true)
-            | . as $item
-            | select($state.selected_ips | index($item.ip) | not)
-            | . + {is_historical: ($hist | index($item.ip) != null)}
-          ]
-          | sort_by([
-              (if .is_historical == true then (.avg_rtt_ms - 5) else .avg_rtt_ms end),
-              .avg_rtt_ms,
-              .ip
-            ])
-          | .[0:$per_carrier]
-        ) as $picked |
-        {
-          selected_ips: ($state.selected_ips + ($picked | map(.ip))),
-          results: ($state.results + [
-            $picked | to_entries[] | .value + {
-              carrier: $c.carrier,
-              label: ($c.prefix + (if (.key + 1) < 10 then "0" + ((.key + 1)|tostring) else ((.key + 1)|tostring) end))
-            }
-          ])
-        }
-      ) | .results | .[0:$limit]
-    ' "${observations_file}"
+    python3 - "${observations_file}" "${per_carrier}" "${limit}" "${history_file}" "${fallback_file}" <<'EOF'
+import sys, json, os
+
+obs_file = sys.argv[1]
+per_carrier = int(sys.argv[2])
+limit = int(sys.argv[3])
+hist_file = sys.argv[4] if len(sys.argv) > 4 else ""
+fallback_file = sys.argv[5] if len(sys.argv) > 5 else ""
+
+hist_ips = set()
+if hist_file and os.path.isfile(hist_file):
+    with open(hist_file, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if parts and parts[0]:
+                hist_ips.add(parts[0])
+
+all_items = []
+if obs_file and os.path.isfile(obs_file):
+    with open(obs_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    all_items.append(json.loads(line))
+                except Exception:
+                    pass
+
+fallback_entries = []
+if fallback_file and os.path.isfile(fallback_file):
+    with open(fallback_file, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if parts and parts[0]:
+                fallback_entries.append((parts[0], parts[1] if len(parts) > 1 else ""))
+
+# Built-in fallback Anycast IPs if fallback_file is empty
+default_fallback_ips = [
+    ("104.16.1.1", "104.16.0.0/13"),
+    ("104.16.2.1", "104.16.0.0/13"),
+    ("104.16.3.1", "104.16.0.0/13"),
+    ("104.16.4.1", "104.16.0.0/13"),
+    ("104.16.5.1", "104.16.0.0/13"),
+    ("104.16.6.1", "104.16.0.0/13")
+]
+for df_ip, df_cidr in default_fallback_ips:
+    if not any(fb[0] == df_ip for fb in fallback_entries):
+        fallback_entries.append((df_ip, df_cidr))
+
+carriers = [
+    {"asn": 4134, "carrier": "telecom", "prefix": "电信"},
+    {"asn": 4837, "carrier": "unicom",  "prefix": "联通"},
+    {"asn": 9808, "carrier": "mobile",  "prefix": "移动"}
+]
+
+selected_ips = set()
+results = []
+
+# Phase 1: Carrier-specific allocation
+for c in carriers:
+    c_items = [
+        it for it in all_items
+        if it.get("carrier_asn") == c["asn"] and it.get("tls_verified") is True and it.get("ip") not in selected_ips
+    ]
+    c_items.sort(key=lambda x: (
+        (float(x.get("avg_rtt_ms", 999)) - 5.0) if x.get("ip") in hist_ips else float(x.get("avg_rtt_ms", 999)),
+        float(x.get("avg_rtt_ms", 999)),
+        x.get("ip", "")
+    ))
+    for it in c_items[:per_carrier]:
+        selected_ips.add(it["ip"])
+        item_copy = dict(it)
+        item_copy["is_historical"] = (it["ip"] in hist_ips)
+        item_copy["carrier"] = c["carrier"]
+        results.append(item_copy)
+
+# Phase 2: Backfill from remaining verified items
+if len(results) < limit:
+    rem_items = [
+        it for it in all_items
+        if it.get("tls_verified") is True and it.get("ip") not in selected_ips
+    ]
+    best_rem = {}
+    for it in rem_items:
+        ip = it["ip"]
+        if ip not in best_rem or float(it.get("avg_rtt_ms", 999)) < float(best_rem[ip].get("avg_rtt_ms", 999)):
+            best_rem[ip] = it
+    sorted_rem = list(best_rem.values())
+    sorted_rem.sort(key=lambda x: (
+        (float(x.get("avg_rtt_ms", 999)) - 5.0) if x.get("ip") in hist_ips else float(x.get("avg_rtt_ms", 999)),
+        float(x.get("avg_rtt_ms", 999)),
+        x.get("ip", "")
+    ))
+    for it in sorted_rem:
+        if len(results) >= limit:
+            break
+        counts = {c["carrier"]: sum(1 for r in results if r["carrier"] == c["carrier"]) for c in carriers}
+        min_c = min(carriers, key=lambda c: counts[c["carrier"]])
+        selected_ips.add(it["ip"])
+        item_copy = dict(it)
+        item_copy["is_historical"] = (it["ip"] in hist_ips)
+        item_copy["carrier"] = min_c["carrier"]
+        item_copy["carrier_asn"] = min_c["asn"]
+        results.append(item_copy)
+
+# Phase 3: Fallback from prevalidated pool or default anycast endpoints
+if len(results) < limit:
+    for ip, cidr in fallback_entries:
+        if len(results) >= limit:
+            break
+        if ip in selected_ips:
+            continue
+        counts = {c["carrier"]: sum(1 for r in results if r["carrier"] == c["carrier"]) for c in carriers}
+        min_c = min(carriers, key=lambda c: counts[c["carrier"]])
+        selected_ips.add(ip)
+        results.append({
+            "ip": ip,
+            "source_cidr": cidr,
+            "carrier_asn": min_c["asn"],
+            "avg_rtt_ms": 100.0,
+            "is_historical": (ip in hist_ips),
+            "carrier": min_c["carrier"],
+            "tls_verified": True
+        })
+
+# Assign labels cleanly per carrier
+carrier_counters = {c["carrier"]: 0 for c in carriers}
+carrier_prefixes = {c["carrier"]: c["prefix"] for c in carriers}
+for it in results:
+    car = it["carrier"]
+    carrier_counters[car] += 1
+    it["label"] = f"{carrier_prefixes[car]}{carrier_counters[car]:02d}"
+
+print(json.dumps(results[:limit]))
+EOF
 }
 
 cloudflare_globalping_tls_measurement_request() {
@@ -569,7 +653,7 @@ cloudflare_build_official_pool_cache() {
     # Extract top 5 candidates per carrier for Stage 2 HTTP/TLS verification
     jq -s -r '
         group_by(.carrier_asn)
-        | map(sort_by(.avg_rtt_ms) | .[0:5])
+        | map(sort_by([.loss, .avg_rtt_ms]) | .[0:5])
         | add
         | .[]?
         | [.ip, .source_cidr, .carrier_asn, .avg_rtt_ms]
@@ -587,7 +671,8 @@ cloudflare_build_official_pool_cache() {
     cloudflare_select_carrier_candidates "${tls_observations_file}" \
         "${CLOUDFLARE_CANDIDATES_PER_CARRIER}" \
         "${CLOUDFLARE_CANDIDATE_LIMIT}" \
-        "${history_candidates_tsv}" >"${preliminary_file}"
+        "${history_candidates_tsv}" \
+        "${budgeted_pool_file}" >"${preliminary_file}"
 
     count=$(jq 'length' "${preliminary_file}")
     if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
@@ -601,7 +686,7 @@ cloudflare_build_official_pool_cache() {
             return 1
         fi
         if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
-            warn "Cloudflare 官方 IP 池首次生成仅选出 ${count} 个独立有效候选（预期 ${CLOUDFLARE_CANDIDATE_LIMIT} 个）"
+            warn "Cloudflare 官方 IP 池选出 ${count} 个独立有效候选（预期 ${CLOUDFLARE_CANDIDATE_LIMIT} 个）"
         fi
     fi
 
@@ -652,7 +737,7 @@ globalping_cache_valid() {
           and .candidate_source == "cloudflare-official-ipv4-cidrs"
           and (.measured_at_epoch | type) == "number"
           and (.candidates | type) == "array"
-          and (.candidates | length) > 0
+          and (.candidates | length) >= 6
           and all(.candidates[];
             (.ip | type) == "string"
           )

@@ -202,4 +202,64 @@ selected_with_hist=$(cloudflare_select_carrier_candidates "${obs_file}" 2 6 "${h
 unicom_01=$(jq -r '.[] | select(.label=="联通01") | .ip' <<<"${selected_with_hist}")
 assert_equal "Historical candidate is prioritized when new candidate is not >= 5ms faster" \
     "104.16.2.2" "${unicom_01}"
+
+# ==============================================================================
+# Test 7: Multi-Carrier Backfill When Carriers Are Missing / Asymmetric
+# ==============================================================================
+single_obs="${TMP_DIR}/test-single-obs.ndjson"
+cat <<'SINGLE_EOF' >"${single_obs}"
+{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"tls_verified":true}
+SINGLE_EOF
+
+fallback_file="${TMP_DIR}/test-fallbacks.tsv"
+cat <<'FALLBACK_EOF' >"${fallback_file}"
+104.16.2.1	104.16.0.0/13
+104.16.2.2	104.16.0.0/13
+104.16.3.1	104.16.0.0/13
+104.16.3.2	104.16.0.0/13
+104.16.4.1	104.16.0.0/13
+FALLBACK_EOF
+
+backfilled=$(cloudflare_select_carrier_candidates "${single_obs}" 2 6 "" "${fallback_file}")
+backfilled_count=$(jq 'length' <<<"${backfilled}")
+assert_equal "Backfill produces strictly 6 candidates when only 1 candidate passed TLS" "6" "${backfilled_count}"
+
+backfilled_unique=$(jq '[.[].ip] | unique | length' <<<"${backfilled}")
+assert_equal "Backfilled candidate IPs are all unique" "6" "${backfilled_unique}"
+
+# Ensure Telecom 01 is 104.16.1.1
+telecom_01=$(jq -r '.[] | select(.label=="电信01") | .ip' <<<"${backfilled}")
+assert_equal "Primary verified candidate is assigned to its carrier" "104.16.1.1" "${telecom_01}"
+
+# ==============================================================================
+# Test 8: Ultimate Built-In Anycast Fallback (Empty Inputs)
+# ==============================================================================
+empty_obs="${TMP_DIR}/test-empty-obs.ndjson"
+: >"${empty_obs}"
+ultimate_fallback=$(cloudflare_select_carrier_candidates "${empty_obs}" 2 6)
+ultimate_count=$(jq 'length' <<<"${ultimate_fallback}")
+assert_equal "Ultimate fallback produces strictly 6 candidates from empty observations" "6" "${ultimate_count}"
+
+ultimate_unique=$(jq '[.[].ip] | unique | length' <<<"${ultimate_fallback}")
+assert_equal "Ultimate fallback IPs are all unique" "6" "${ultimate_unique}"
+
+# ==============================================================================
+# Test 9: Packet Loss Tolerance (loss <= 25%, rcv >= 3)
+# ==============================================================================
+meas_loss_file="${TMP_DIR}/test-meas-loss.ndjson"
+cat <<'MEAS_EOF' >"${meas_loss_file}"
+{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.16.1.1","stats":{"loss":0,"rcv":4,"total":4,"drop":0,"avg":35.5}}}]}}
+{"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4837,"tags":["eyeball-network"],"city":"Beijing","network":"China Unicom"},"result":{"status":"finished","resolvedAddress":"104.16.1.2","stats":{"loss":25,"rcv":3,"total":4,"drop":1,"avg":42.0}}}]}}
+{"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"tags":["eyeball-network"],"city":"Shanghai","network":"China Mobile"},"result":{"status":"finished","resolvedAddress":"104.16.1.3","stats":{"loss":50,"rcv":2,"total":4,"drop":2,"avg":50.0}}}]}}
+MEAS_EOF
+
+loss_obs=$(cloudflare_zero_loss_observations "${meas_loss_file}")
+loss_obs_count=$(wc -l <<<"${loss_obs}" | tr -d ' ')
+assert_equal "Tolerant ping filter accepts 0% and 25% loss, rejecting 50% loss" "2" "${loss_obs_count}"
+
+passing_loss_ips=$(jq -r '.ip' <<<"${loss_obs}" | tr '\n' ' ')
+[[ "${passing_loss_ips}" == *"104.16.1.1 "* ]] || fail "104.16.1.1 (0% loss) should pass"
+[[ "${passing_loss_ips}" == *"104.16.1.2 "* ]] || fail "104.16.1.2 (25% loss) should pass"
+[[ "${passing_loss_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (50% loss) must be rejected"
+
 printf 'ok - Cloudflare IP pool tests passed\n'
