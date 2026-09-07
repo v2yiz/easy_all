@@ -19,16 +19,11 @@ choose_subscription_mode() {
                 || die "当前订阅服务模式无效：${mode}"
             [[ "${current_mode}" == "link" ]] && default_choice=2
             printf '请选择是否部署订阅服务：\n'
-            printf 'Choose whether to deploy the subscription service:\n'
             printf '  1. 部署订阅服务（%s；只有当前服务器时推荐）\n' \
                 "${deploy_description}"
-            printf '     Deploy the subscription service (%s; recommended for a single server)\n' \
-                "${deploy_description}"
             printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-            printf '     Do not deploy it; output node information only (recommended for multi-node setups or an existing subscription server)\n'
             read_bilingual \
-                "请选择 [${default_choice}]（直接回车使用默认值）:" \
-                "Choose [${default_choice}] (press Enter to use the default):" mode
+                "请选择 [${default_choice}]（直接回车使用默认值）:" mode
             mode=${mode:-${current_mode}}
         elif [[ -z "${mode}" ]]; then
             die "非交互模式必须设置 SUBSCRIPTION_MODE=deploy 或 SUBSCRIPTION_MODE=link"
@@ -45,8 +40,7 @@ subscription_enabled() {
 choose_subscription_download_name() {
     local allow_prompt=${1:-1} name=${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}
     if [[ "${allow_prompt}" == "1" && -t 0 ]]; then
-        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}" \
-            "Mihomo download filename (without .yaml)")
+        name=$(prompt_value "Mihomo 下载文件名（不含 .yaml）" "${name}")
     fi
     name=$(normalize_sub_download_name "${name}")
     validate_sub_download_name "${name}" || die "Mihomo 下载文件名无效：${name}"
@@ -99,8 +93,7 @@ ensure_allowed_tokens() {
         raw=${ALLOWED_TOKENS}
     elif [[ -t 0 ]]; then
         prompt_default=$(jq -cn --arg token "$(generate_secret)" '{owner: $token}')
-        raw=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}" \
-            "Subscription user Token map JSON (username => Token)")
+        raw=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}")
     else
         die "非交互模式必须设置 ALLOWED_TOKENS，例如 ALLOWED_TOKENS='{\"owner\":\"$(generate_secret)\"}'"
     fi

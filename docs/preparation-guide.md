@@ -414,9 +414,11 @@ unset GCORE_API_TOKEN
 ```text
 GET    /cdn/clients/me
 GET    /cdn/resources
+GET    /cdn/resources/<resource_id>
 POST   /cdn/origin_groups
 POST   /cdn/sslCertificates
 POST   /cdn/sslData
+GET    /cdn/sslData/<certificate_id>/status
 GET    /dns/v2/zones
 GET    /dns/v2/analyze/<zone>/delegation-status
 PUT    /dns/v2/zones/<zone>/<name>/<type>
@@ -451,6 +453,11 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 Gcore Resource 开启 `websockets`；使用 HTTPS 回源并固定 Host/SNI；允许 `GET/HEAD/POST`；
 Edge cache 和 browser cache 均为 `0s`；不忽略查询参数；开启 Origin SSL Validation 与客户端证书鉴权。
 
+安装器使用 `1.1.1.1` 等待源站 A 与 CDN CNAME 传播，然后轮询 Resource 和边缘证书状态，并通过公网
+`/easy_all-health`、真实 XHTTP 和 WebSocket 链路完成验收。Resource 状态仅用于诊断；即使仍显示
+`processed`，只要端到端 HTTPS 与传输验收成功即可继续。开始精选 IP 预检前还会再次等待公网健康接口，
+避免异步证书签发或边缘配置传播期间把全部候选误判为不可用。
+
 ### 8.5 Origin SSL Validation 与 mTLS
 
 源站使用独立 Let's Encrypt 证书。安装器从 `fullchain.pem` 提取签发 CA，上传到
@@ -481,4 +488,3 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 
 `sudo easy_all uninstall --purge-cloud` 会先使用 Token 删除由本次安装创建的 CDN Resource、边缘证书、
 回源客户端证书、Trusted CA 以及 Origin Group，再清理本机内容；永不删除 Managed DNS Zone。
-

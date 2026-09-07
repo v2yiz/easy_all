@@ -140,8 +140,9 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" != *'Route 53'* ]] \
     || fail "README install flow must match the installer execution order"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'请选择 [1]（直接回车使用默认值）:'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'Choose [1] (press Enter to use the default):'* ]] \
-    || fail "install mode prompt must be bilingual and explain the enter default"
+    && "$(<"${ROOT_DIR}/easy_all")" != *'Choose the installation mode:'* \
+    && "$(<"${ROOT_DIR}/easy_all")" != *'Direct - Reality'* ]] \
+    || fail "install mode prompt must be Chinese-only and explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - 纯 XHTTP stream-up'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 精选 IP - 优质单播节点'* \

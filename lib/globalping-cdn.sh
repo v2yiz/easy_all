@@ -49,8 +49,7 @@ collect_globalping_token() {
     fi
     if [[ -z "${token}" ]]; then
         token=$(prompt_secret \
-            "Globalping Access Token（仅保存到 VPS root-only 凭据文件）" \
-            "Globalping access token (stored only in a root-only VPS credential file)") \
+            "Globalping Access Token（仅保存到 VPS root-only 凭据文件）") \
             || die "必须在交互终端中输入 GLOBALPING_TOKEN"
     fi
     validate_globalping_token "${token}" || die "Globalping Token 格式无效"

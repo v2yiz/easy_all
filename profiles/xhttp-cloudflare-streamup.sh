@@ -38,8 +38,7 @@ source "${XHTTP_PROFILE_ROOT}/xray-core.sh"
 
 cloudflare_collect_api_token() {
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-        CLOUDFLARE_API_TOKEN=$(prompt_secret "Cloudflare API Token（仅当前进程使用，不落盘）" \
-            "Cloudflare API Token (current process only; never saved)") \
+        CLOUDFLARE_API_TOKEN=$(prompt_secret "Cloudflare API Token（仅当前进程使用，不落盘）") \
             || die "非交互模式必须设置 CLOUDFLARE_API_TOKEN"
     fi
     [[ ${#CLOUDFLARE_API_TOKEN} -ge 20 && ${#CLOUDFLARE_API_TOKEN} -le 512 \
@@ -584,7 +583,7 @@ collect_install_inputs() {
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
 
     info "Cloudflare 模式采用单域名架构：此域名同时用于客户端连接、Cloudflare 回源和 VPS 证书。"
-    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "" "CDN hostname used by clients")}")
+    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "")}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
@@ -1332,12 +1331,10 @@ uninstall_all() {
     if [[ "${FORCE:-0}" != 1 ]]; then
         if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
             read_bilingual \
-                '删除本机内容以及 easy_all 托管的 Cloudflare DNS、规则和 Origin CA 证书？[y/N]:' \
-                'Delete local content and easy_all-managed Cloudflare DNS, rules, and Origin CA certificate? [y/N]:' answer
+                '删除本机内容以及 easy_all 托管的 Cloudflare DNS、规则和 Origin CA 证书？[y/N]:' answer
         else
             read_bilingual \
-                '删除本机内容（Cloudflare 资源保留）？[y/N]:' \
-                'Delete local content (Cloudflare resources are kept)? [y/N]:' answer
+                '删除本机内容（Cloudflare 资源保留）？[y/N]:' answer
         fi
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi

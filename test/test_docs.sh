@@ -131,8 +131,8 @@ assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}
 assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
 assert_contains "README documents the automatic Reality endpoint family" \
     "${README_CONTENT}" 'VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`'
-assert_contains "README documents bilingual interactive prompts" \
-    "${README_CONTENT}" '所有需要用户输入的交互提示都会先显示中文，再在下一行显示英文'
+assert_contains "README documents Chinese-only interactive prompts" \
+    "${README_CONTENT}" '所有需要用户输入的交互提示仅显示中文'
 assert_contains "README documents client connection racing" \
     "${README_CONTENT}" '内置 Mihomo 模板启用 `tcp-concurrent`'
 assert_contains "README documents idle slow-start tuning" \

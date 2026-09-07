@@ -18,6 +18,8 @@ readonly GCORE_CANDIDATE_LIMIT=6
 readonly GCORE_CACHE_VERSION=1
 readonly GCORE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
+readonly GCORE_PRECHECK_READY_ATTEMPTS="${GCORE_PRECHECK_READY_ATTEMPTS_OVERRIDE:-90}"
+readonly GCORE_PRECHECK_READY_INTERVAL="${GCORE_PRECHECK_READY_INTERVAL_OVERRIDE:-10}"
 
 gcore_fetch_official_cdn_ips() {
     local response
@@ -115,6 +117,37 @@ for ip, reg in us_ips[:20]:
 for ip in jp_ips[:5]:
     print(f"{ip}\t4134\ttelecom\tJP")
 EOF
+}
+
+gcore_wait_for_precheck_readiness() {
+    local attempt body http_code curl_status=0 curl_error
+    local body_file="${RUNTIME_TMP}/gcore-precheck-health-body"
+    local error_file="${RUNTIME_TMP}/gcore-precheck-health-error"
+    info "候选 IP 预检前等待 Gcore CDN 公网健康接口就绪"
+    for ((attempt = 1; attempt <= GCORE_PRECHECK_READY_ATTEMPTS; attempt += 1)); do
+        : >"${body_file}"
+        : >"${error_file}"
+        if http_code=$(curl -sS --proto '=https' --noproxy '*' \
+            --connect-timeout 5 --max-time 15 -o "${body_file}" \
+            -w '%{http_code}' "https://${VLESS_CDN_DOMAIN}/easy_all-health" \
+            2>"${error_file}"); then
+            curl_status=0
+        else
+            curl_status=$?
+        fi
+        body=$(<"${body_file}")
+        if ((curl_status == 0)) && [[ "${http_code}" == "200" && "${body}" == "easy_all ok" ]]; then
+            info "Gcore CDN 公网健康接口已就绪，开始候选 IP 预检"
+            return 0
+        fi
+        if ((attempt == 1 || attempt % 3 == 0)); then
+            curl_error=$(tr '\n' ' ' <"${error_file}")
+            info "Gcore CDN 公网健康等待：attempt=${attempt}/${GCORE_PRECHECK_READY_ATTEMPTS}，curl=${curl_status}，HTTP=${http_code:-000}，body=${body:-<empty>}${curl_error:+，error=${curl_error}}"
+        fi
+        sleep "${GCORE_PRECHECK_READY_INTERVAL}"
+    done
+    warn "Gcore CDN 公网健康接口等待超时：curl=${curl_status}，HTTP=${http_code:-000}，body=${body:-<empty>}；停止候选 IP 预检"
+    return 1
 }
 
 # Pre-validates IP locally through TLS SNI and WebSocket handshake
@@ -574,6 +607,7 @@ gcore_build_official_pool_cache() {
     pool_size=$(wc -l <"${raw_pool_file}" | tr -d ' ')
     ((pool_size > 0)) || { warn "未匹配到任何 Gcore 目标地区 IP"; return 1; }
 
+    gcore_wait_for_precheck_readiness || return 1
     info "Gcore 官方池共匹配到 ${pool_size} 个候选 IP（含 ${hist_count} 个历史候选），正在执行本机 CDN 入口预检"
     gcore_prevalidate_candidate_pool "${raw_pool_file}" "${pool_file}" \
         || return 1

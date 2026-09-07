@@ -50,8 +50,8 @@ launcher_die() {
 }
 
 launcher_read_bilingual() {
-    local label_zh=$1 label_en=$2 variable=$3 input
-    printf '%s\n%s\n' "${label_zh}" "${label_en}" >&2
+    local label=$1 variable=$2 input
+    printf '%s\n' "${label}" >&2
     IFS= read -r -p '> ' input
     printf -v "${variable}" '%s' "${input}"
 }
@@ -165,16 +165,10 @@ choose_install_mode() {
     local choice
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
-    printf 'Choose the installation mode:\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
-    printf '     Direct - Reality (recommended for optimized routes)\n' >&2
     printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点）\n' >&2
-    printf '     Cloudflare CDN optimized IPv4 - Pure XHTTP stream-up (6 carrier-targeted nodes)\n' >&2
     printf '  3. Gcore CDN 精选 IP - 优质单播节点（完全适配 Gcore，三网定向精选 6 节点）\n' >&2
-    printf '     Gcore CDN optimized IPv4 - Pure VLESS WebSocket (6 carrier-targeted nodes)\n' >&2
-    launcher_read_bilingual \
-        '请选择 [1]（直接回车使用默认值）:' \
-        'Choose [1] (press Enter to use the default):' choice
+    launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare-streamup\n' ;;

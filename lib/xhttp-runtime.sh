@@ -187,10 +187,9 @@ generate_xhttp_path() {
 }
 
 prompt_secret() {
-    local label=$1 label_en=${2:-Input secretly / see the Chinese prompt above} value
+    local label=$1 value
     [[ -t 0 ]] || return 1
-    read_bilingual "${label}，粘贴后按 Enter；输入过程不会显示任何字符:" \
-        "${label_en}; paste it and press Enter; no characters will be displayed:" value 1
+    read_bilingual "${label}，粘贴后按回车键；输入过程不会显示任何字符:" value 1
     printf '%s' "${value}"
 }
 
@@ -220,9 +219,7 @@ collect_subscription_link_domain() {
     domain=${SUBSCRIPTION_DOMAIN:-}
     if [[ -t 0 ]]; then
         info "可直接复用 CDN 节点域名；自定义域名必须已由 Cloudflare DNS Zone 托管。"
-        domain=$(prompt_value \
-            "订阅链接完整域名（含完整主机名）" "${current}" \
-            "Full subscription hostname (must be hosted by the same DNS provider as the CDN domain)")
+        domain=$(prompt_value "订阅链接完整域名（含完整主机名）" "${current}")
     else
         domain=${domain:-${current}}
     fi

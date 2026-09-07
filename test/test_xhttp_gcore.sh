@@ -51,6 +51,7 @@ export STATE_FILE="${STATE_DIR}/state.env"
 export EASY_ALL_STATE_FILE_OVERRIDE="${STATE_DIR}/state.env"
 export VLESS_CDN_DOMAIN="node.example.com"
 export GCORE_ORIGIN_DOMAIN="origin.example.com"
+export GCORE_SUBSCRIPTION_DNS_ZONE="example.com"
 export VLESS_UUID="11111111-2222-4111-8111-111111111111"
 export WEBSOCKET_PATH="/ws-test-path"
 export XHTTP_PATH="/xhttp-test-path"
@@ -63,6 +64,12 @@ export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
 export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/gcore-cdn-ips.json"
 export CDN_CLIENT_IP_FAMILY="ipv4"
 export XHTTP_NODE_NAME="TEST_NODE"
+export GCORE_DNS_PROPAGATION_ATTEMPTS_OVERRIDE=3
+export GCORE_DNS_PROPAGATION_INTERVAL_OVERRIDE=0
+export GCORE_EDGE_PROPAGATION_ATTEMPTS_OVERRIDE=3
+export GCORE_EDGE_PROPAGATION_INTERVAL_OVERRIDE=0
+export GCORE_PRECHECK_READY_ATTEMPTS_OVERRIDE=3
+export GCORE_PRECHECK_READY_INTERVAL_OVERRIDE=0
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
 touch "${CERT_FILE}" "${KEY_FILE}"
@@ -115,6 +122,35 @@ chmod +x "${XRAY_BIN}"
 # shellcheck source=/dev/null
 source "${PROFILE}"
 trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
+
+# API wrappers must reject non-2xx responses even when the body lacks error/errors keys.
+if (
+    gcore_api_raw() { printf '{"message":"forbidden"}\n403'; }
+    gcore_api_request GET "/cdn/resources"
+) >/dev/null 2>&1; then
+    fail "HTTP 403 must not be treated as a successful Gcore API response"
+fi
+(
+    gcore_api_raw() { printf '{"items":[]}\n200'; }
+    assert_equal "HTTP 200 returns only the response body" \
+        '{"items":[]}' "$(gcore_api_request GET "/cdn/resources")"
+)
+
+# Delegation failure is a hard stop before provisioning.
+if (
+    gcore_api_request() {
+        printf '{"zone_exists":true,"gcore_authorized_count":1,"non_gcore_authorized_count":1}'
+    }
+    gcore_verify_zone_delegation example.com
+) >/dev/null 2>&1; then
+    fail "Mixed authoritative DNS must fail delegation validation"
+fi
+(
+    gcore_api_request() {
+        printf '{"zone_exists":true,"gcore_authorized_count":2,"non_gcore_authorized_count":0}'
+    }
+    gcore_verify_zone_delegation example.com
+)
 
 # Certificate installation must use the same full chain as Nginx, without FULLCHAIN_FILE.
 (
@@ -255,6 +291,129 @@ assert_equal "10.1.1.2 with 502 is filtered out" "" \
 assert_equal "10.1.1.3 with unauthorized cert is filtered out" "" \
     "$(jq -r 'select(.ip == "10.1.1.3") | .ip' <<<"${parsed_tls}")"
 
+# 3e. Edge propagation accepts end-to-end success even while Resource is processed.
+(
+    QUOTA_ENABLED=0
+    SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
+    GCORE_CDN_RESOURCE_ID=202
+    GCORE_EDGE_CERTIFICATE_ID=303
+    probe_calls=0
+    gcore_api_request() {
+        case "$1 $2" in
+        "GET /cdn/resources/202") printf '{"status":"processed"}' ;;
+        "GET /cdn/sslData/303/status")
+            printf '{"active":false,"latest_status":{"status":"DONE"}}'
+            ;;
+        *) return 1 ;;
+        esac
+    }
+    curl() {
+        printf 'easy_all ok\n' >"${RUNTIME_TMP}/gcore-edge-health-body"
+        printf '200'
+    }
+    gcore_probe_xhttp() { probe_calls=$((probe_calls + 1)); }
+    gcore_probe_websocket() { probe_calls=$((probe_calls + 1)); }
+    sleep() { fail "Propagation wait must stop after end-to-end success"; }
+    gcore_wait_for_cdn_health >/dev/null
+    assert_equal "Both Gcore transports are verified" "2" "${probe_calls}"
+)
+
+# Quota mode uses an active account UUID and skips transport probes if all users are disabled.
+(
+    QUOTA_ENABLED=1
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    selected_uuid="22222222-2222-4222-8222-222222222222"
+    USER_ACCOUNTS=$(jq -cn --arg uuid "${selected_uuid}" \
+        '{owner:{uuid:$uuid,token:"owner-token-123",quota_gb:100}}')
+    probe_args="${TMP_DIR}/gcore-quota-probe-args"
+    gcore_wait_for_domain_health() {
+        printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-}" >>"${probe_args}"
+    }
+    quota_active_accounts_json() { printf '%s\n' "${USER_ACCOUNTS}"; }
+    gcore_wait_for_cdn_health
+    assert_equal "Quota propagation uses an active account UUID" "${selected_uuid}" \
+        "$(awk -F'\t' 'NR==1 {print $4}' "${probe_args}")"
+    assert_equal "Quota propagation keeps transport verification enabled" "1" \
+        "$(awk -F'\t' 'NR==1 {print $3}' "${probe_args}")"
+    assert_equal "Custom subscription domain is also health checked" \
+        "${SUBSCRIPTION_DOMAIN}" "$(awk -F'\t' 'NR==2 {print $1}' "${probe_args}")"
+    assert_equal "Subscription-domain health check does not run transport twice" "0" \
+        "$(awk -F'\t' 'NR==2 {print $3}' "${probe_args}")"
+
+    : >"${probe_args}"
+    quota_active_accounts_json() { printf '{}\n'; }
+    gcore_wait_for_cdn_health
+    assert_equal "All-disabled quota skips transport verification" "0" \
+        "$(awk -F'\t' 'NR==1 {print $3}' "${probe_args}")"
+)
+
+# Certificate failures stop before any public or transport probe.
+if (
+    QUOTA_ENABLED=0
+    SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
+    GCORE_CDN_RESOURCE_ID=202
+    GCORE_EDGE_CERTIFICATE_ID=303
+    gcore_api_request() {
+        case "$1 $2" in
+        "GET /cdn/resources/202") printf '{"status":"processed"}' ;;
+        "GET /cdn/sslData/303/status")
+            printf '{"latest_status":{"status":"FAILED","error":"dns","details":"challenge failed"}}'
+            ;;
+        *) return 1 ;;
+        esac
+    }
+    curl() { fail "Public probe must not run after certificate failure"; }
+    gcore_probe_xhttp() { fail "XHTTP probe must not run after certificate failure"; }
+    gcore_probe_websocket() { fail "WebSocket probe must not run after certificate failure"; }
+    gcore_wait_for_cdn_health
+) >/dev/null 2>&1; then
+    fail "Failed edge certificate must stop propagation wait"
+fi
+
+# 3f. Candidate scanning waits for the public CDN health endpoint first.
+(
+    curl_calls_file="${TMP_DIR}/gcore-readiness-curl-calls"
+    printf '0\n' >"${curl_calls_file}"
+    sleep_calls=0
+    curl() {
+        local curl_calls
+        curl_calls=$(<"${curl_calls_file}")
+        curl_calls=$((curl_calls + 1))
+        printf '%s\n' "${curl_calls}" >"${curl_calls_file}"
+        if ((curl_calls == 1)); then
+            printf 'not ready\n' >"${RUNTIME_TMP}/gcore-precheck-health-body"
+            printf '503'
+        else
+            printf 'easy_all ok\n' >"${RUNTIME_TMP}/gcore-precheck-health-body"
+            printf '200'
+        fi
+    }
+    sleep() { sleep_calls=$((sleep_calls + 1)); }
+    gcore_wait_for_precheck_readiness >/dev/null
+    assert_equal "Public edge readiness retries before candidate scanning" \
+        "2" "$(<"${curl_calls_file}")"
+    assert_equal "Public edge readiness waits between attempts" "1" "${sleep_calls}"
+)
+
+(
+    sequence_file="${TMP_DIR}/gcore-precheck-sequence"
+    : >"${sequence_file}"
+    gcore_generate_carrier_candidate_pool() {
+        printf '92.223.76.20\t9808\tmobile\tHK\n'
+    }
+    gcore_wait_for_precheck_readiness() {
+        printf 'ready\n' >>"${sequence_file}"
+    }
+    gcore_prevalidate_candidate_pool() {
+        printf 'prevalidate\n' >>"${sequence_file}"
+        return 1
+    }
+    if gcore_build_official_pool_cache "${TMP_DIR}/unused-cache.json"; then
+        fail "Mocked candidate prevalidation must stop the cache build"
+    fi
+    assert_equal "Public edge wait runs before candidate prevalidation" \
+        $'ready\nprevalidate' "$(<"${sequence_file}")"
+)
 
 # 4. Write valid cache file and test cache validation
 now_epoch=$(date +%s)
@@ -350,6 +509,7 @@ assert_equal "normalize_xhttp_path keeps clean /xhttp- intact" \
 
 # 10. Test save_state and load_state
 export GCORE_DNS_ZONE="example.com"
+export GCORE_SUBSCRIPTION_DNS_ZONE="example.com"
 export GCORE_CDN_TARGET="cl-test.gcdn.co"
 export GCORE_CDN_RESOURCE_ID="12345"
 export GCORE_ORIGIN_GROUP_ID="67890"
@@ -366,13 +526,16 @@ assert_contains "State file cdn is gcore" "${state_content}" 'CDN_PROVIDER=gcore
 assert_contains "State file has origin domain" "${state_content}" 'GCORE_ORIGIN_DOMAIN=origin.example.com'
 assert_contains "State file has CDN domain" "${state_content}" 'VLESS_CDN_DOMAIN=node.example.com'
 assert_contains "State file has CNAME target" "${state_content}" 'GCORE_CDN_TARGET=cl-test.gcdn.co'
+assert_contains "State file has subscription DNS zone" "${state_content}" 'GCORE_SUBSCRIPTION_DNS_ZONE=example.com'
 
 # Reset vars and load_state
-unset VLESS_CDN_DOMAIN GCORE_ORIGIN_DOMAIN GCORE_CDN_TARGET
+unset VLESS_CDN_DOMAIN GCORE_ORIGIN_DOMAIN GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET
 load_state
 assert_equal "load_state restored VLESS_CDN_DOMAIN" "node.example.com" "${VLESS_CDN_DOMAIN}"
 assert_equal "load_state restored GCORE_ORIGIN_DOMAIN" "origin.example.com" "${GCORE_ORIGIN_DOMAIN}"
 assert_equal "load_state restored GCORE_CDN_TARGET" "cl-test.gcdn.co" "${GCORE_CDN_TARGET}"
+assert_equal "load_state restored GCORE_SUBSCRIPTION_DNS_ZONE" \
+    "example.com" "${GCORE_SUBSCRIPTION_DNS_ZONE}"
 assert_equal "load_state restored XHTTP_ORIGIN_DOMAIN" "origin.example.com" "${XHTTP_ORIGIN_DOMAIN}"
 
 # Verify mihomo_transport_marker
@@ -395,7 +558,7 @@ found_zone=$(gcore_find_zone_for_domain "origin.1988088.xyz")
 assert_equal "gcore_find_zone_for_domain matches zone with zones envelope" "1988088.xyz" "${found_zone}"
 found_sub_zone=$(gcore_find_zone_for_domain "deep.sub.1988088.xyz")
 assert_equal "gcore_find_zone_for_domain matches deep sub-domain" "1988088.xyz" "${found_sub_zone}"
-# 12. Test gcore_ensure_origin_a_record and gcore_ensure_cdn_cname_record payload
+# 12. Test gcore_ensure_origin_a_record and gcore_ensure_domain_cname_record payload
 recorded_calls=()
 gcore_api_request() {
     recorded_calls+=("$1 $2 $3")
@@ -415,21 +578,49 @@ assert_equal "A record payload IP" "192.129.209.51" "$(jq -r '.resource_records[
 assert_equal "A record payload TTL" "300" "$(jq -r '.ttl' <<<"${a_payload}")"
 
 VLESS_CDN_DOMAIN="node.1988088.xyz"
+SUBSCRIPTION_MODE=deploy
+SUBSCRIPTION_DOMAIN="sub.1988088.xyz"
+GCORE_SUBSCRIPTION_DNS_ZONE="${GCORE_DNS_ZONE}"
 GCORE_CDN_TARGET="cl-test.gcdn.co"
-gcore_ensure_cdn_cname_record
+gcore_ensure_cdn_cname_records
 
-assert_equal "Total record calls" "2" "${#recorded_calls[@]}"
+assert_equal "Total record calls" "3" "${#recorded_calls[@]}"
 cname_call="${recorded_calls[1]}"
 assert_contains "CNAME record method and url" "${cname_call}" "PUT /dns/v2/zones/1988088.xyz/node.1988088.xyz/CNAME"
 cname_payload="${cname_call#PUT /dns/v2/zones/1988088.xyz/node.1988088.xyz/CNAME }"
 assert_equal "CNAME record payload target" "cl-test.gcdn.co" "$(jq -r '.resource_records[0].content[0]' <<<"${cname_payload}")"
 assert_equal "CNAME record payload TTL" "300" "$(jq -r '.ttl' <<<"${cname_payload}")"
+subscription_cname_call="${recorded_calls[2]}"
+assert_contains "Subscription CNAME method and url" "${subscription_cname_call}" \
+    "PUT /dns/v2/zones/1988088.xyz/sub.1988088.xyz/CNAME"
 
 unset -f gcore_api_request
+
+# DNS propagation checks use only 1.1.1.1 and require exact records.
+(
+    dig_calls="${TMP_DIR}/gcore-dig-calls"
+    : >"${dig_calls}"
+    dig() {
+        printf '%s\n' "$*" >>"${dig_calls}"
+        case "$*" in
+        *"${GCORE_ORIGIN_DOMAIN}"*) printf '%s\n' "${VPS_PUBLIC_IPV4}" ;;
+        *"${VLESS_CDN_DOMAIN}"*) printf '%s.\n' "${GCORE_CDN_TARGET}" ;;
+        *"${SUBSCRIPTION_DOMAIN}"*) printf '%s.\n' "${GCORE_CDN_TARGET}" ;;
+        esac
+    }
+    sleep() { fail "DNS propagation must return on the first matching response"; }
+    gcore_wait_for_origin_dns
+    gcore_wait_for_cdn_dns
+    assert_equal "All DNS propagation checks ran" "3" "$(wc -l <"${dig_calls}" | tr -d ' ')"
+    assert_equal "DNS propagation uses only 1.1.1.1" "3" \
+        "$(grep -c '@1.1.1.1' "${dig_calls}")"
+)
 
 # Request contracts checked against G-Core/gcore-python OpenAPI-generated CDN types.
 (
     api_calls="${TMP_DIR}/cdn-api-calls"
+    SUBSCRIPTION_MODE=deploy
+    SUBSCRIPTION_DOMAIN="sub.1988088.xyz"
     existing=false
     reject_update=false
     bound_certificate=404
@@ -468,13 +659,20 @@ unset -f gcore_api_request
         'POST /cdn/resources'|'PUT /cdn/resources/202')
             [[ "${reject_update}" == false ]] || return 1
             [[ "${expected_certificate}" == 404 || -f "${certificate_created}" ]] || return 1
-            jq -e --arg origin "${GCORE_ORIGIN_DOMAIN}" --argjson cert "${expected_certificate}" '
-                .sslEnabled == true and .sslData == $cert and .sslData != .proxy_ssl_data and
+            jq -e --arg origin "${GCORE_ORIGIN_DOMAIN}" \
+                --arg subscription "${SUBSCRIPTION_DOMAIN}" \
+                --argjson cert "${expected_certificate}" '
+                .active == true and .sslEnabled == true and
+                .sslData == $cert and .sslData != .proxy_ssl_data and
+                .secondaryHostnames == [$subscription] and
                 .options.use_dns01_le_challenge == {enabled:true,value:true} and
                 .originGroup == 101 and .originProtocol == "HTTPS" and
                 .proxy_ssl_enabled == true and .proxy_ssl_data == 11223 and .proxy_ssl_ca == 44556 and
+                .options.allowedHttpMethods == {enabled:true,value:["GET","HEAD","POST"]} and
                 .options.websockets == {enabled:true,value:true} and
+                .options.hostHeader == {enabled:true,value:$origin} and
                 .options.sni == {enabled:true,sni_type:"custom",custom_hostname:$origin} and
+                .options.proxy_connect_timeout == {enabled:true,value:"5s"} and
                 .options.redirect_http_to_https == {enabled:true,value:true} and
                 .options.ignoreQueryString == {enabled:true,value:false} and
                 .options.slice == {enabled:true,value:false} and
@@ -489,6 +687,8 @@ unset -f gcore_api_request
     assert_equal "Created origin group ID" 101 "${GCORE_ORIGIN_GROUP_ID}"
     gcore_ensure_resource
     assert_equal "Created resource ID" 202 "${GCORE_CDN_RESOURCE_ID}"
+    assert_equal "Created resource retains edge certificate ID for propagation checks" \
+        303 "${GCORE_EDGE_CERTIFICATE_ID}"
     existing=true
     expected_certificate=404
     gcore_ensure_origin_group
@@ -512,6 +712,40 @@ unset -f gcore_api_request
     requests_before=$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")
     if gcore_ensure_resource; then fail "Certificate failure must stop resource update"; fi
     assert_equal "No resource mutation after certificate failure" "${requests_before}" "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
+)
+
+# Changing the active subscription domain synchronizes Gcore before saving state.
+(
+    calls=""
+    require_root() { :; }
+    begin_quota_maintenance() { :; }
+    collect_installed_state() {
+        VLESS_CDN_DOMAIN="node.example.com"
+        SUBSCRIPTION_DOMAIN="${VLESS_CDN_DOMAIN}"
+        SUBSCRIPTION_MODE=deploy
+        QUOTA_ENABLED=0
+    }
+    snapshot_subscription_update() { :; }
+    choose_subscription_mode() { SUBSCRIPTION_MODE=deploy; }
+    collect_subscription_link_domain() { SUBSCRIPTION_DOMAIN="sub.example.com"; }
+    choose_subscription_download_name() { :; }
+    choose_monthly_quota() { QUOTA_ENABLED=0; }
+    ensure_allowed_tokens() { :; }
+    write_subscriptions() { :; }
+    validate_cdn_client_ip_family_runtime() { :; }
+    refresh_runtime() { calls+="local "; }
+    install_quota_timer() { :; }
+    validate_subscription_runtime() { :; }
+    gcore_prepare_origin() { calls+="prepare "; }
+    gcore_apply_cdn() { calls+="cloud "; }
+    gcore_clear_api_token() { calls+="clear "; }
+    save_state() { calls+="save "; }
+    end_quota_maintenance() { :; }
+    show_subscription() { :; }
+    success() { :; }
+    update_subscription
+    assert_equal "Subscription domain changes synchronize Gcore before state save" \
+        "local prepare cloud clear save " "${calls}"
 )
 
 # Execute the real upload flow with temporary certificate paths in a fresh shell.

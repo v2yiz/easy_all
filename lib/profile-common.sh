@@ -27,8 +27,8 @@ download_https_file() {
 }
 
 read_bilingual() {
-    local label_zh=$1 label_en=$2 variable=$3 silent=${4:-0} input
-    printf '%s\n%s\n' "${label_zh}" "${label_en}" >&2
+    local label=$1 variable=$2 silent=${3:-0} input
+    printf '%s\n' "${label}" >&2
     if [[ "${silent}" == "1" ]]; then
         IFS= read -r -s -p '> ' input
         printf '\n' >&2
@@ -39,14 +39,12 @@ read_bilingual() {
 }
 
 prompt_value() {
-    local label=$1 default=${2:-} label_en=${3:-Input / see the Chinese prompt above} value
+    local label=$1 default=${2:-} value
     if [[ -n "${default}" ]]; then
-        read_bilingual \
-            "${label} [${default}]（直接回车使用默认值）:" \
-            "${label_en} [${default}] (press Enter to use the default):" value
+        read_bilingual "${label} [${default}]（直接回车使用默认值）:" value
         printf '%s' "${value:-${default}}"
     else
-        read_bilingual "${label}:" "${label_en}:" value
+        read_bilingual "${label}:" value
         printf '%s' "${value}"
     fi
 }

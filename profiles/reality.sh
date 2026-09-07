@@ -618,8 +618,7 @@ collect_reality_node_host() {
             info "已自动检测本机公网 IPv4：${detected_ip}；直接回车使用，或输入其他入站 IPv4/灰云域名"
             NODE_HOST=$(prompt_value \
                 "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" \
-                "${detected_ip}" \
-                "Reality client address (public IPv4 or DNS-only / grey-cloud domain)")
+                "${detected_ip}")
         else
             NODE_HOST=${detected_ip}
         fi
@@ -629,8 +628,7 @@ collect_reality_node_host() {
     if [[ -t 0 ]]; then
         warn "无法自动检测本机公网 IPv4，请手动填写客户端可连接的入站地址"
         NODE_HOST=$(prompt_value \
-            "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" "" \
-            "Reality client address (public IPv4 or DNS-only / grey-cloud domain)")
+            "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" "")
         return 0
     fi
     die "无法自动检测 Reality 节点公网 IPv4；非交互模式请设置 NODE_HOST"
@@ -641,8 +639,7 @@ collect_reality_target() {
     if [[ -t 0 ]]; then
         REALITY_TARGET=$(prompt_value \
             "Reality SNI / 伪装目标（域名:端口）" \
-            "${DEFAULT_REALITY_TARGET}" \
-            "Reality SNI / camouflage target (domain:port)")
+            "${DEFAULT_REALITY_TARGET}")
     else
         REALITY_TARGET=${DEFAULT_REALITY_TARGET}
     fi
@@ -659,16 +656,11 @@ collect_sub_port_mode() {
 
     if [[ -z "${requested}" && -t 0 ]]; then
         printf '请选择订阅端口模式：\n'
-        printf 'Choose the subscription port mode:\n'
         printf '  1. 固定 443\n'
-        printf '     Fixed port 443\n'
         printf '  2. dynamic（订阅每 3 小时轮换端口 %s-%s，默认）\n' \
             "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
-        printf '     dynamic (three-hour rotating subscription port %s-%s; default)\n' \
-            "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
         read_bilingual \
-            "请选择 [${default_choice}]（直接回车使用默认值）:" \
-            "Choose [${default_choice}] (press Enter to use the default):" requested
+            "请选择 [${default_choice}]（直接回车使用默认值）:" requested
     fi
     requested=${requested:-${default_mode}}
     case "${requested}" in
@@ -681,8 +673,7 @@ collect_sub_port_mode() {
 collect_subscription_domain() {
     local domain=${SUBSCRIPTION_DOMAIN:-}
     if [[ -z "${domain}" && -t 0 ]]; then
-        domain=$(prompt_value "Cloudflare 代理的订阅域名（Zone 下一级子域名）" "" \
-            "Cloudflare-proxied subscription hostname (first-level Zone subdomain)")
+        domain=$(prompt_value "Cloudflare 代理的订阅域名（Zone 下一级子域名）" "")
     fi
     [[ -n "${domain}" ]] \
         || die "自托管订阅模式必须设置 SUBSCRIPTION_DOMAIN"
@@ -1113,8 +1104,7 @@ install_subscription_dependencies() {
 reality_cloudflare_collect_api_token() {
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
         CLOUDFLARE_API_TOKEN=$(prompt_secret \
-            "Cloudflare API Token（仅当前进程使用，不落盘）" \
-            "Cloudflare API Token (current process only; never saved)") \
+            "Cloudflare API Token（仅当前进程使用，不落盘）") \
             || die "非交互模式必须设置 CLOUDFLARE_API_TOKEN"
     fi
     [[ ${#CLOUDFLARE_API_TOKEN} -ge 20 && ${#CLOUDFLARE_API_TOKEN} -le 512 \
@@ -1991,12 +1981,10 @@ uninstall_all() {
         local answer
         if [[ "${mode}" == "--purge-cloud" ]]; then
             read_bilingual \
-                '删除本机内容以及 easy_all 托管的 Cloudflare 订阅 DNS、Strict TLS 规则和 Origin CA？[y/N]:' \
-                'Delete local content and easy_all-managed Cloudflare subscription resources? [y/N]:' answer
+                '删除本机内容以及 easy_all 托管的 Cloudflare 订阅 DNS、Strict TLS 规则和 Origin CA？[y/N]:' answer
         else
             read_bilingual \
-                '删除 easy_all 本机服务、状态和备份（保留 Cloudflare 资源）？[y/N]:' \
-                'Delete local services, state, and backups (keep Cloudflare resources)? [y/N]:' answer
+                '删除 easy_all 本机服务、状态和备份（保留 Cloudflare 资源）？[y/N]:' answer
         fi
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
