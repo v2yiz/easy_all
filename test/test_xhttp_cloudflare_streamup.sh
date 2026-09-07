@@ -142,7 +142,7 @@ assert_not_contains "nginx config does not contain upstream" "${nginx_conf}" "up
 assert_not_contains "nginx config does not contain websocket location" "${nginx_conf}" "location = /ws-"
 assert_not_contains "nginx config does not contain trojan location" "${nginx_conf}" "location = /tr-"
 
-# 5. Test 5 curated nodes output with no domain fallback
+# 5. Test 6 curated nodes output with no domain fallback
 # Set up mock Globalping cache with 9 candidates (3 telecom, 3 unicom, 3 mobile)
 cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 {
@@ -167,12 +167,12 @@ globalping_cache_valid() { return 0; }
 cloudflare_validate_grpc_edge() { return 0; }
 
 candidates_output=$(cloudflare_xhttp_streamup_client_candidates)
-assert_equal "Candidates count is exactly 5" "5" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
+assert_equal "Candidates count is exactly 6" "6" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
 
-# Test node links: exactly 5 links (5 VLESS XHTTP stream-up)
+# Test node links: exactly 6 links (6 VLESS XHTTP stream-up)
 node_links=$(build_node_links)
 vless_link_count=$(grep -c '^vless://' <<<"${node_links}")
-assert_equal "Total VLESS node links is 5" "5" "${vless_link_count}"
+assert_equal "Total VLESS node links is 6" "6" "${vless_link_count}"
 
 # Verify all links have type=xhttp and mode=stream-up
 assert_contains "Links contain type=xhttp" "${node_links}" "type=xhttp"
@@ -187,16 +187,16 @@ assert_not_contains "Node links do not contain domain as server" "${node_links}"
 
 # Verify XHTTP node links
 assert_contains "Links contain 优选1" "${node_links}" "#$(jq -nr --arg v '优选1' '$v|@uri')"
-assert_contains "Links contain 优选5" "${node_links}" "#$(jq -nr --arg v '优选5' '$v|@uri')"
-assert_not_contains "Links do not contain 优选6" "${node_links}" "#$(jq -nr --arg v '优选6' '$v|@uri')"
+assert_contains "Links contain 优选6" "${node_links}" "#$(jq -nr --arg v '优选6' '$v|@uri')"
+assert_not_contains "Links do not contain 优选7" "${node_links}" "#$(jq -nr --arg v '优选7' '$v|@uri')"
 
-# Test Mihomo nodes: exactly 5 nodes
+# Test Mihomo nodes: exactly 6 nodes
 mihomo_nodes=$(build_mihomo_nodes)
 node_count=$(grep -c '^[[:space:]]*- name:' <<<"${mihomo_nodes}")
-assert_equal "Mihomo nodes count is exactly 5" "5" "${node_count}"
+assert_equal "Mihomo nodes count is exactly 6" "6" "${node_count}"
 
 assert_contains "Mihomo renders 优选1" "${mihomo_nodes}" '"优选1"'
-assert_contains "Mihomo renders 优选5" "${mihomo_nodes}" '"优选5"'
+assert_contains "Mihomo renders 优选6" "${mihomo_nodes}" '"优选6"'
 assert_contains "Mihomo renders network: xhttp" "${mihomo_nodes}" "network: xhttp"
 assert_contains "Mihomo renders mode: stream-up" "${mihomo_nodes}" "mode: stream-up"
 assert_contains "Mihomo renders alpn h2" "${mihomo_nodes}" "- h2"
@@ -208,7 +208,7 @@ assert_not_contains "Mihomo nodes do not contain domain fallback" "${mihomo_node
 groups_output=$(build_mihomo_proxy_groups)
 assert_contains "Groups contain AUTO group" "${groups_output}" 'name: "AUTO"'
 assert_contains "AUTO group contains 优选1" "${groups_output}" '"优选1"'
-assert_contains "AUTO group contains 优选5" "${groups_output}" '"优选5"'
+assert_contains "AUTO group contains 优选6" "${groups_output}" '"优选6"'
 assert_not_contains "Groups do not contain 电信优选 group" "${groups_output}" 'name: "电信优选"'
 assert_not_contains "Groups do not contain 联通优选 group" "${groups_output}" 'name: "联通优选"'
 assert_not_contains "Groups do not contain 移动优选 group" "${groups_output}" 'name: "移动优选"'
@@ -232,10 +232,10 @@ sub_mihomo="${TMP_DIR}/web/subscriptions/mihomo.yaml"
 [[ -s "${sub_base64}" ]] || fail "Base64 subscription file is missing or empty"
 [[ -s "${sub_mihomo}" ]] || fail "Mihomo subscription file is missing or empty"
 
-# Verify Base64 content decodes to 5 vless links
+# Verify Base64 content decodes to 6 vless links
 decoded_base64=$(openssl base64 -d -A <"${sub_base64}")
 decoded_link_count=$(grep -c '^vless://' <<<"${decoded_base64}")
-assert_equal "Universal Base64 decodes to 5 links" "5" "${decoded_link_count}"
+assert_equal "Universal Base64 decodes to 6 links" "6" "${decoded_link_count}"
 
 # Verify Mihomo YAML content
 mihomo_file_content=$(<"${sub_mihomo}")
@@ -243,6 +243,7 @@ assert_contains "Mihomo file contains XHTTP nodes" "${mihomo_file_content}" 'net
 assert_contains "Mihomo file contains stream-up mode" "${mihomo_file_content}" 'mode: stream-up'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
 assert_contains "Mihomo file contains 优选1" "${mihomo_file_content}" '"优选1"'
+assert_contains "Mihomo file contains 优选6" "${mihomo_file_content}" '"优选6"'
 assert_not_contains "Mihomo file does not contain 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
 
 # Verify state save & load

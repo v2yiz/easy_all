@@ -7,10 +7,10 @@
 | 安装模式       | 协议                         | CDN Provider / 入口 |
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
-| 2. Cloudflare CDN 精选 IP - XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (全网精选 5 节点，完全无域名兜底) |
-| 3. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS | Gcore + Globalping IPv4 (三网定向精选 6 节点，完全无域名兜底) |
+| 2. Cloudflare CDN 精选 IP - XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (三网定向精选 6 节点平铺，完全无域名兜底) |
+| 3. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS | Gcore + Globalping IPv4 (三网定向精选 6 节点平铺，完全无域名兜底) |
 
-Cloudflare 提供纯 XHTTP stream-up（全网精选 5 节点）；Gcore 提供纯 VLESS WebSocket（三网定向精选 6 节点）；Reality 用于直连。
+Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gcore 提供纯 VLESS WebSocket（三网定向精选 6 节点平铺）；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -23,8 +23,8 @@ Cloudflare 提供纯 XHTTP stream-up（全网精选 5 节点）；Gcore 提供�
 | 你的情况 | 建议 | 需要额外准备 |
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
-| 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精简 5 节点 | 选择 `2`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；基于全网综合优选筛选 Top 5 优质 IPv4 节点（严格 5 节点无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
-| 明确要使用 Gcore CDN，追求优质单播边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过 Gcore 官方公共 IP 池与 RFC 8805 Geofeed 提取香港、日本、洛杉矶节点，由 Globalping 进行三网定向不交叉测速（移动->HK、联通->JP、电信->LA），严格下发 6 个最稳定单播节点（完全无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
+| 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精选 6 节点 | 选择 `2`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；通过 Globalping 对移动/联通/电信执行三网定向测速并平铺下发 6 个优质 IPv4 节点（节点名称优选1~优选6，严格无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
+| 明确要使用 Gcore CDN，追求优质单播边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过 Gcore 官方公共 IP 池与 RFC 8805 Geofeed 提取香港、日本、洛杉矶节点，由 Globalping 进行三网定向不交叉测速（移动->HK、联通->JP、电信->LA），严格平铺下发 6 个最稳定单播节点（节点名称优选1~优选6，完全无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 前置准备时，再选择对应 CDN 模式。
@@ -681,12 +681,12 @@ Origin CA 默认签发 5475 天（15 年），`renew-cert` 可手动轮换并在
 API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留远端资源；追加 `--purge-cloud`
 才会删除带 easy_all 所有权标记的订阅 A 记录、Strict TLS 规则并吊销 Origin CA。
 
-## 模式 2：Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
+## 模式 2：Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点平铺）
 
 模式 2 采用 Xray 作为服务端后端，监听 VLESS XHTTP（端口 `10086`，模式 `stream-up`），使用一个 proxied 一级子域（例如 `node.example.com`）作为唯一节点入口，完全适配 Cloudflare CDN 传输特性，严格遵循以下规范：
 
 - **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
-- **精选 5 节点**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针全网实测与 TLS 握手深度校验，按延迟优选筛选 Top 5 优质独立 IPv4，**严格输出 5 个精选节点，绝不输出域名兜底节点**。
+- **三网定向精选 6 节点（平铺）**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针针对电信、联通、移动三网实测与 TLS 深度校验，每家运营商严格挑选 2 个最优节点平铺输出（节点名称统一为 `优选1` 到 `优选6`），**严格输出 6 个精选节点，绝不输出域名兜底节点**。
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。

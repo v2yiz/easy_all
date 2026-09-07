@@ -133,22 +133,22 @@ candidates_json=$(gcore_select_carrier_candidates "${observations_file}" 2 6)
 assert_equal "6 candidates selected (2 per carrier)" "6" "$(jq 'length' <<<"${candidates_json}")"
 
 # Verify mobile candidates (HK)
-assert_equal "Mobile 01 is 92.223.76.22 (lowest latency 38.5ms)" "92.223.76.22" \
-    "$(jq -r '.[] | select(.label == "移动01") | .ip' <<<"${candidates_json}")"
-assert_equal "Mobile 02 is 92.223.76.20 (45.2ms)" "92.223.76.20" \
-    "$(jq -r '.[] | select(.label == "移动02") | .ip' <<<"${candidates_json}")"
+assert_equal "Candidate 1 is 92.223.76.22 (lowest latency 38.5ms)" "92.223.76.22" \
+    "$(jq -r '.[] | select(.label == "1") | .ip' <<<"${candidates_json}")"
+assert_equal "Candidate 2 is 92.223.76.20 (45.2ms)" "92.223.76.20" \
+    "$(jq -r '.[] | select(.label == "2") | .ip' <<<"${candidates_json}")"
 
 # Verify unicom candidates (JP)
-assert_equal "Unicom 01 is 31.184.207.8 (58.3ms)" "31.184.207.8" \
-    "$(jq -r '.[] | select(.label == "联通01") | .ip' <<<"${candidates_json}")"
-assert_equal "Unicom 02 is 31.184.207.6 (62.1ms)" "31.184.207.6" \
-    "$(jq -r '.[] | select(.label == "联通02") | .ip' <<<"${candidates_json}")"
+assert_equal "Candidate 3 is 31.184.207.8 (58.3ms)" "31.184.207.8" \
+    "$(jq -r '.[] | select(.label == "3") | .ip' <<<"${candidates_json}")"
+assert_equal "Candidate 4 is 31.184.207.6 (62.1ms)" "31.184.207.6" \
+    "$(jq -r '.[] | select(.label == "4") | .ip' <<<"${candidates_json}")"
 
 # Verify telecom candidates (LA)
-assert_equal "Telecom 01 is 92.223.120.143 (128.0ms)" "92.223.120.143" \
-    "$(jq -r '.[] | select(.label == "电信01") | .ip' <<<"${candidates_json}")"
-assert_equal "Telecom 02 is 92.223.120.132 (135.2ms)" "92.223.120.132" \
-    "$(jq -r '.[] | select(.label == "电信02") | .ip' <<<"${candidates_json}")"
+assert_equal "Candidate 5 is 92.223.120.143 (128.0ms)" "92.223.120.143" \
+    "$(jq -r '.[] | select(.label == "5") | .ip' <<<"${candidates_json}")"
+assert_equal "Candidate 6 is 92.223.120.132 (135.2ms)" "92.223.120.132" \
+    "$(jq -r '.[] | select(.label == "6") | .ip' <<<"${candidates_json}")"
 
 # 4. Write valid cache file and test cache validation
 now_epoch=$(date +%s)
@@ -178,13 +178,15 @@ assert_equal "Strictly 6 candidate lines" "6" "${candidate_lines}"
 
 # 6. Test build_node_links and build_mihomo_nodes
 links_output=$(build_node_links)
-assert_contains "Links output contains 优选移动01" "${links_output}" "#$(jq -nr --arg v '优选移动01' '$v|@uri')"
-assert_contains "Links output contains 优选联通01" "${links_output}" "#$(jq -nr --arg v '优选联通01' '$v|@uri')"
-assert_contains "Links output contains 优选电信01" "${links_output}" "#$(jq -nr --arg v '优选电信01' '$v|@uri')"
+assert_contains "Links output contains 优选1" "${links_output}" "#$(jq -nr --arg v '优选1' '$v|@uri')"
+assert_contains "Links output contains 优选6" "${links_output}" "#$(jq -nr --arg v '优选6' '$v|@uri')"
+assert_not_contains "Links output does not contain 优选7" "${links_output}" "#$(jq -nr --arg v '优选7' '$v|@uri')"
 assert_contains "Links output uses websocket protocol" "${links_output}" "type=ws"
 assert_not_contains "Links output has no domain fallback" "${links_output}" "fallback"
 
 mihomo_nodes_output=$(build_mihomo_nodes)
+assert_contains "Mihomo nodes contain 优选1" "${mihomo_nodes_output}" '"优选1"'
+assert_contains "Mihomo nodes contain 优选6" "${mihomo_nodes_output}" '"优选6"'
 assert_contains "Mihomo nodes contain ws network" "${mihomo_nodes_output}" "network: ws"
 assert_contains "Mihomo nodes contain path" "${mihomo_nodes_output}" "path: \"${WEBSOCKET_PATH}\""
 assert_contains "Mihomo nodes contain host header" "${mihomo_nodes_output}" "Host: \"${VLESS_CDN_DOMAIN}\""
@@ -197,16 +199,14 @@ sub_mihomo="${TMP_DIR}/web/subscriptions/mihomo.yaml"
 [[ -s "${sub_mihomo}" ]] || fail "Mihomo subscription file missing"
 
 base64_decoded=$(base64 -d <"${sub_base64}")
-assert_contains "Base64 subscription has 优选移动01" "${base64_decoded}" "#$(jq -nr --arg v '优选移动01' '$v|@uri')"
-assert_contains "Base64 subscription has 优选联通01" "${base64_decoded}" "#$(jq -nr --arg v '优选联通01' '$v|@uri')"
-assert_contains "Base64 subscription has 优选电信01" "${base64_decoded}" "#$(jq -nr --arg v '优选电信01' '$v|@uri')"
+assert_contains "Base64 subscription has 优选1" "${base64_decoded}" "#$(jq -nr --arg v '优选1' '$v|@uri')"
+assert_contains "Base64 subscription has 优选6" "${base64_decoded}" "#$(jq -nr --arg v '优选6' '$v|@uri')"
 assert_not_contains "Base64 subscription has NO domain fallback" "${base64_decoded}" "${VLESS_CDN_DOMAIN}#"
 
 mihomo_content=$(<"${sub_mihomo}")
 assert_contains "Mihomo subscription has AUTO proxy group" "${mihomo_content}" 'name: "AUTO"'
-assert_contains "Mihomo subscription AUTO group contains 优选移动01" "${mihomo_content}" '"优选移动01"'
-assert_contains "Mihomo subscription AUTO group contains 优选联通01" "${mihomo_content}" '"优选联通01"'
-assert_contains "Mihomo subscription AUTO group contains 优选电信01" "${mihomo_content}" '"优选电信01"'
+assert_contains "Mihomo subscription AUTO group contains 优选1" "${mihomo_content}" '"优选1"'
+assert_contains "Mihomo subscription AUTO group contains 优选6" "${mihomo_content}" '"优选6"'
 assert_not_contains "Mihomo subscription has NO domain node" "${mihomo_content}" 'server: "node.example.com"'
 
 # 8. Test Xray and Nginx config generation

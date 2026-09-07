@@ -344,14 +344,14 @@ gcore_parse_tls_observations() {
 }
 
 # Selects top 2 candidates per carrier (Mobile->HK, Unicom->JP, Telecom->LA)
-# Labels: 移动01, 移动02, 联通01, 联通02, 电信01, 电信02
+# Output 6 candidates flattened with sequential labels 1..6
 gcore_select_carrier_candidates() {
     local observations_file=$1 per_carrier=${2:-${GCORE_CANDIDATES_PER_CARRIER}} limit=${3:-${GCORE_CANDIDATE_LIMIT}}
     jq -sc --argjson per_carrier "${per_carrier}" --argjson limit "${limit}" '
       [
-        {asn: 9808, carrier: "mobile",  prefix: "移动", target_region: "HK"},
-        {asn: 4837, carrier: "unicom",  prefix: "联通", target_region: "JP"},
-        {asn: 4134, carrier: "telecom", prefix: "电信", target_region: "LA"}
+        {asn: 9808, carrier: "mobile",  target_region: "HK"},
+        {asn: 4837, carrier: "unicom",  target_region: "JP"},
+        {asn: 4134, carrier: "telecom", target_region: "LA"}
       ] as $carriers |
       [
         $carriers[] as $c |
@@ -360,13 +360,14 @@ gcore_select_carrier_candidates() {
          | map(sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms])[0])
          | sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms, .ip])
          | .[0:$per_carrier]) as $matched |
-        range(0; $matched | length) as $i |
-        $matched[$i] + {
+        $matched[] |
+        . + {
           carrier: $c.carrier,
-          region: $matched[$i].region,
-          label: ($c.prefix + (if ($i + 1) < 10 then "0" + (($i + 1)|tostring) else (($i + 1)|tostring) end))
+          region: .region
         }
       ] | .[0:$limit]
+      | to_entries
+      | map(.value + {label: ((.key + 1)|tostring)})
     ' "${observations_file}"
 }
 
@@ -547,6 +548,11 @@ refresh_gcore_globalping_cache() {
 # Strictly output the curated candidates (NO fallback domain)
 gcore_client_candidates() {
     if gcore_globalping_cache_valid; then
-        jq -r '.candidates[] | [.ip, .label, .carrier, (.region // "")] | @tsv' "${GLOBALPING_CACHE_FILE}"
+        jq -r '
+          .candidates[0:6]
+          | to_entries[]
+          | [.value.ip, ((.key + 1)|tostring), .value.carrier, (.value.region // "")]
+          | @tsv
+        ' "${GLOBALPING_CACHE_FILE}"
     fi
 }

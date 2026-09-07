@@ -967,15 +967,11 @@ build_mihomo_xhttp_node() {
 }
 
 # Strictly filter out any fallback lines: select top 5 high-quality unique IPs.
-# 5 IPs x 1 protocol (XHTTP stream-up) = 5 nodes (no domain fallback).
+# 6 IPs x 1 protocol (XHTTP stream-up) = 6 nodes (no domain fallback).
 cloudflare_xhttp_streamup_client_candidates() {
     if cdn_optimization_enabled && globalping_cache_valid; then
         jq -r '
-          .candidates
-          | group_by(.ip)
-          | map(sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms])[0])
-          | sort_by([(if .tls_verified == true then 0 else 1 end), .avg_rtt_ms, .ip])
-          | .[0:5]
+          .candidates[0:6]
           | to_entries[]
           | [.value.ip, ((.key + 1)|tostring), (.value.carrier // "anycast")]
           | @tsv
@@ -987,7 +983,7 @@ cloudflare_xhttp_streamup_client_candidates() {
             [[ "${carrier}" == "fallback" ]] && continue
             count=$((count + 1))
             printf '%s\t%s\t%s\n' "${ip}" "${count}" "${carrier}"
-            ((count >= 5)) && break
+            ((count >= 6)) && break
         done < <(cloudflare_client_candidates)
     fi
 }
