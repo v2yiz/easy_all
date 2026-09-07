@@ -514,4 +514,68 @@ unset -f gcore_api_request
     assert_equal "No resource mutation after certificate failure" "${requests_before}" "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
 )
 
+# Execute the real upload flow with temporary certificate paths in a fresh shell.
+{
+    declare -f gcore_uploaded_certificate_id gcore_ensure_origin_validation_certificates \
+        gcore_origin_ca_name gcore_json_items fail die assert_equal
+    cat <<'EOF'
+set -Eeuo pipefail
+RED="" RESET=""
+RUNTIME_TMP=$1
+GCORE_ORIGIN_DOMAIN=origin.example.com
+GCORE_CLIENT_CERT_FILE="$1/client.crt"
+GCORE_CLIENT_CERT_KEY="$1/client.key"
+CERT_FILE="$1/fullchain.pem"
+store="$1/uploaded-certificates.json"
+printf '[]' >"${store}"
+printf 'client-certificate' >"${GCORE_CLIENT_CERT_FILE}"
+printf 'first-key' >"${GCORE_CLIENT_CERT_KEY}"
+printf '%s\n' '-----BEGIN CERTIFICATE-----' leaf '-----END CERTIFICATE-----' \
+    '-----BEGIN CERTIFICATE-----' issuer '-----END CERTIFICATE-----' >"${CERT_FILE}"
+gcore_prepare_origin_validation_material() { :; }
+reject_update=false
+gcore_api_request() {
+    local method=$1 endpoint=$2 payload=${3:-} next id
+    case "${method}" in
+    GET) jq --arg endpoint "${endpoint}" '[.[] | select(.endpoint == $endpoint)]' "${store}" ;;
+    POST)
+        # Model the API uniqueness rule, including retries after local state loss.
+        jq -e --arg endpoint "${endpoint}" --argjson p "${payload}" \
+            'all(.[]; .endpoint != $endpoint or .name != $p.name)' "${store}" >/dev/null || return 1
+        id=$(jq 'length + 1' "${store}")
+        next=$(jq --arg endpoint "${endpoint}" --argjson id "${id}" --argjson p "${payload}" \
+            '. + [$p + {id:$id,endpoint:$endpoint}]' "${store}")
+        printf '%s' "${next}" >"${store}"
+        # Exercise the documented empty create response as well.
+        ;;
+    PUT)
+        [[ "${reject_update}" == false ]] || return 1
+        [[ "${endpoint}" == /cdn/sslData/* ]] || return 1
+        id=${endpoint##*/}
+        next=$(jq --argjson id "${id}" --argjson p "${payload}" \
+            'map(if .id == $id then . + $p else . end)' "${store}")
+        printf '%s' "${next}" >"${store}" ;;
+    *) return 1 ;;
+    esac
+}
+gcore_ensure_origin_validation_certificates
+assert_equal "first upload creates client and CA" 2 "$(jq length "${store}")"
+unset GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID
+gcore_ensure_origin_validation_certificates
+assert_equal "retry creates no duplicate certificates" 2 "$(jq length "${store}")"
+assert_equal "retry restores client ID" 1 "${GCORE_ORIGIN_CLIENT_CERT_ID}"
+assert_equal "retry restores CA ID" 2 "${GCORE_ORIGIN_CA_ID}"
+printf 'replacement-key' >"${GCORE_CLIENT_CERT_KEY}"
+gcore_ensure_origin_validation_certificates
+assert_equal "reinstallation updates client key" replacement-key "$(jq -r '.[0].sslPrivateKey' "${store}")"
+printf 'new-issuer\n' >>"${CERT_FILE}"
+gcore_ensure_origin_validation_certificates
+assert_equal "changed issuer chain creates a new CA" 3 "${GCORE_ORIGIN_CA_ID}"
+gcore_ensure_origin_validation_certificates
+assert_equal "changed CA is reused on retry" 3 "$(jq length "${store}")"
+reject_update=true
+if gcore_ensure_origin_validation_certificates; then fail "client update failure must propagate"; fi
+EOF
+} | bash -s -- "${TMP_DIR}"
+
 printf 'ok - Gcore Mode 3 unit tests passed\n'

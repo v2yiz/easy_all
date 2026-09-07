@@ -424,6 +424,31 @@ gcore_prepare_origin_validation_material() {
     fi
 }
 
+gcore_uploaded_certificate_id() {
+    local endpoint=$1 payload=$2 name certificates certificate_id response
+    name=$(jq -er '.name' <<<"${payload}") || return 1
+    certificates=$(gcore_api_request GET "${endpoint}") || return 1
+    certificate_id=$(gcore_json_items "${certificates}" | jq -sr --arg name "${name}" '
+        first(.[] | select(.name == $name and .deleted != true) | .id) // empty')
+    if [[ -n "${certificate_id}" ]]; then
+        [[ "${certificate_id}" =~ ^[1-9][0-9]*$ ]] || die "Gcore 返回无效的证书 ID"
+        # Reinstallation may generate a new client key; update the existing object.
+        if [[ "${endpoint}" == "/cdn/sslData" ]]; then
+            gcore_api_request PUT "${endpoint}/${certificate_id}" "${payload}" >/dev/null || return 1
+        fi
+    else
+        response=$(gcore_api_request POST "${endpoint}" "${payload}") || return 1
+        certificate_id=$(jq -r '.id // empty' <<<"${response}")
+        if [[ -z "${certificate_id}" ]]; then
+            certificates=$(gcore_api_request GET "${endpoint}") || return 1
+            certificate_id=$(gcore_json_items "${certificates}" | jq -sr --arg name "${name}" '
+                first(.[] | select(.name == $name and .deleted != true) | .id) // empty')
+        fi
+    fi
+    [[ "${certificate_id}" =~ ^[1-9][0-9]*$ ]] || die "无法获取 Gcore 证书 ID：${name}"
+    printf '%s' "${certificate_id}"
+}
+
 gcore_ensure_origin_validation_certificates() {
     gcore_prepare_origin_validation_material
     local cert_name ca_name cert_payload ca_payload
@@ -436,9 +461,7 @@ gcore_ensure_origin_validation_certificates() {
         --arg cert "$(<"${GCORE_CLIENT_CERT_FILE}")" \
         --arg key "$(<"${GCORE_CLIENT_CERT_KEY}")" \
         '{name:$name,sslCertificate:$cert,sslPrivateKey:$key,validate_root_ca:false}')
-    local cert_res
-    cert_res=$(gcore_api_request POST "/cdn/sslData" "${cert_payload}")
-    GCORE_ORIGIN_CLIENT_CERT_ID=$(jq -er '.id // empty' <<<"${cert_res}")
+    GCORE_ORIGIN_CLIENT_CERT_ID=$(gcore_uploaded_certificate_id "/cdn/sslData" "${cert_payload}") || return 1
 
     # 2. Upload Let'\''s Encrypt intermediate/root CA to Gcore (/cdn/sslCertificates)
     local issuer_ca_file="${RUNTIME_TMP}/issuer_ca.crt"
@@ -446,13 +469,13 @@ gcore_ensure_origin_validation_certificates() {
     awk 'BEGIN {c=0} /BEGIN CERTIFICATE/ {c++} c>1 {print}' "${CERT_FILE}" >"${issuer_ca_file}"
     [[ -s "${issuer_ca_file}" ]] || install -m 0644 "${CERT_FILE}" "${issuer_ca_file}"
 
+    # Trusted CA contents cannot be replaced through the API; version the name by chain.
+    ca_name="${ca_name}-$(openssl dgst -sha256 "${issuer_ca_file}" | awk '{print $NF}')"
     ca_payload=$(jq -cn \
         --arg name "${ca_name}" \
         --arg cert "$(<"${issuer_ca_file}")" \
         '{name:$name,sslCertificate:$cert}')
-    local ca_res
-    ca_res=$(gcore_api_request POST "/cdn/sslCertificates" "${ca_payload}")
-    GCORE_ORIGIN_CA_ID=$(jq -er '.id // empty' <<<"${ca_res}")
+    GCORE_ORIGIN_CA_ID=$(gcore_uploaded_certificate_id "/cdn/sslCertificates" "${ca_payload}") || return 1
 }
 
 gcore_ensure_origin_group() {
