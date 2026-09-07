@@ -361,4 +361,18 @@ xhttp_validate_local_tls_curl_args
 assert_equal "curl args include client cert" "${GCORE_CLIENT_CERT_FILE}" "${XHTTP_LOCAL_TLS_CURL_ARGS[3]}"
 assert_equal "curl args include client key" "${GCORE_CLIENT_CERT_KEY}" "${XHTTP_LOCAL_TLS_CURL_ARGS[5]}"
 
+# 11. Test gcore_find_zone_for_domain with envelope formats
+gcore_api_request() {
+    if [[ "$1" == "GET" && "$2" == "/dns/v2/zones" ]]; then
+        printf '{"zones":[{"name":"1988088.xyz","id":123}],"total_amount":1}'
+        return 0
+    fi
+    return 1
+}
+found_zone=$(gcore_find_zone_for_domain "origin.1988088.xyz")
+assert_equal "gcore_find_zone_for_domain matches zone with zones envelope" "1988088.xyz" "${found_zone}"
+found_sub_zone=$(gcore_find_zone_for_domain "deep.sub.1988088.xyz")
+assert_equal "gcore_find_zone_for_domain matches deep sub-domain" "1988088.xyz" "${found_sub_zone}"
+unset -f gcore_api_request
+
 printf 'ok - Gcore Mode 3 unit tests passed\n'
