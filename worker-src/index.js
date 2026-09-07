@@ -228,11 +228,12 @@ function parseVlessLink(link) {
     };
 }
 
-async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = 5000 } = {}) {
-    if (!url) return FALLBACK_CDN_NODES;
+async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS, userAgent = '' } = {}) {
+    if (!url) return { nodes: FALLBACK_CDN_NODES, error: null };
     try {
+        const clientUA = userAgent?.trim() || 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
         const text = await fetchXflashSubscription(
-            { headers: new Headers({ 'User-Agent': 'easy_all_worker' }) },
+            { headers: new Headers({ 'User-Agent': clientUA }) },
             url, { fetchImpl, timeoutMs, format: 'base64' }
         );
         const decoded = decodeBase64Utf8(text) || text;
@@ -246,7 +247,7 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = 5000 }
             throw new Error('No vless links found in VPS subscription');
         }
 
-        return links.slice(0, 6).flatMap((link, idx) => {
+        const nodes = links.slice(0, 6).flatMap((link, idx) => {
             try {
                 const parsed = parseVlessLink(link);
                 parsed.name = `🇺🇸备用CF${idx + 1}`;
@@ -255,9 +256,13 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = 5000 }
                 return [];
             }
         });
+        if (nodes.length === 0) {
+            throw new Error('Failed to parse any vless links from VPS subscription');
+        }
+        return { nodes, error: null };
     } catch (error) {
-        console.warn('Dynamic CF subscription unavailable; using configured fallback nodes');
-        return FALLBACK_CDN_NODES;
+        console.warn('Dynamic CF subscription unavailable; using configured fallback nodes:', error.message);
+        return { nodes: FALLBACK_CDN_NODES, error: error.message };
     }
 }
 
@@ -638,7 +643,8 @@ function createWorkerHandler({
             request,
             url.searchParams.get('flag')
         );
-        const dynamicCdnNodes = await fetchDynamicCdnNodes(vpsCdnUrl, { fetchImpl });
+        const clientUA = request.headers.get('User-Agent');
+        const { nodes: dynamicCdnNodes, error: dynamicCdnError } = await fetchDynamicCdnNodes(vpsCdnUrl, { fetchImpl, userAgent: clientUA });
         const selectedLocalNodes = selectLocalNodes(localNodes, url);
         const nodes = [...selectedLocalNodes, ...dynamicCdnNodes];
         const ports = resolveNodePorts(nodes, { now });
@@ -671,6 +677,11 @@ function createWorkerHandler({
         const headers = subscriptionHeaders(format, env || {});
         if (degraded) {
             headers.set('X-Easy-All-Warning', 'xflash-unavailable-local-only');
+        }
+        if (dynamicCdnError) {
+            headers.set('X-Easy-All-CDN-Warning', dynamicCdnError);
+        } else if (dynamicCdnNodes?.length) {
+            headers.set('X-Easy-All-CDN-Nodes', String(dynamicCdnNodes.length));
         }
         return workerResponse(
             request,
