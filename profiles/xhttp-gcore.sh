@@ -662,20 +662,29 @@ build_mihomo_websocket_node() {
 }
 
 build_node_links() {
-    local ip label carrier region
+    local ip label carrier region count=0
     while IFS=$'\t' read -r ip label carrier region; do
         [[ -n "${ip}" ]] || continue
+        count=$((count + 1))
         build_vless_websocket_link "${ip}" "优选${label}"
         printf '\n'
     done < <(gcore_client_candidates)
+    if (( count == 0 )); then
+        build_vless_websocket_link "${VLESS_CDN_DOMAIN}" "优选1"
+        printf '\n'
+    fi
 }
 
 build_mihomo_nodes() {
-    local ip label carrier region
+    local ip label carrier region count=0
     while IFS=$'\t' read -r ip label carrier region; do
         [[ -n "${ip}" ]] || continue
+        count=$((count + 1))
         build_mihomo_websocket_node "${ip}" "优选${label}"
     done < <(gcore_client_candidates)
+    if (( count == 0 )); then
+        build_mihomo_websocket_node "${VLESS_CDN_DOMAIN}" "优选1"
+    fi
 }
 
 build_mihomo_proxy_names() {
@@ -689,6 +698,9 @@ build_mihomo_proxy_groups() {
         [[ -n "${ip}" ]] || continue
         all_nodes+=("优选${label}")
     done < <(gcore_client_candidates)
+    if (( ${#all_nodes[@]} == 0 )); then
+        all_nodes+=("优选1")
+    fi
 
     printf '    - name: "AUTO"\n'
     printf '      type: url-test\n'
@@ -857,6 +869,10 @@ apply_easy_all() {
     snapshot_subscription_update
     configure_bbr_tcp
     configure_ufw
+    if ! gcore_globalping_cache_valid; then
+        info "当前 Globalping 优选缓存未就绪或已过期，正在执行刷新..."
+        refresh_globalping_cache || warn "Globalping 刷新失败，将使用现有缓存或域名兜底"
+    fi
     finish_xhttp_apply
     install_globalping_refresh_timer
     UPDATE_SUB_ROLLBACK_ON_EXIT=0

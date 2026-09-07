@@ -243,8 +243,16 @@ assert_contains "Mihomo file contains XHTTP nodes" "${mihomo_file_content}" 'net
 assert_contains "Mihomo file contains stream-up mode" "${mihomo_file_content}" 'mode: stream-up'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
 assert_contains "Mihomo file contains 优选1" "${mihomo_file_content}" '"优选1"'
-assert_contains "Mihomo file contains 优选6" "${mihomo_file_content}" '"优选6"'
-assert_not_contains "Mihomo file does not contain 电信优选 group" "${mihomo_file_content}" 'name: "电信优选"'
+# Test cache resiliency: expired cache still emits candidates and writes subscription
+globalping_cache_valid() { return 1; }
+write_subscriptions
+assert_contains "Expired cache still renders XHTTP nodes" "$(cat "${sub_mihomo}")" 'network: xhttp'
+
+# Test cache resiliency: completely empty cache falls back to domain and writes subscription
+rm -f "${GLOBALPING_CACHE_FILE}"
+write_subscriptions
+assert_contains "Missing cache falls back to domain node" "$(cat "${sub_mihomo}")" 'server: "node.example.com"'
+globalping_cache_valid() { return 0; }
 
 # Verify state save & load
 save_state

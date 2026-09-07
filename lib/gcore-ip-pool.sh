@@ -672,8 +672,7 @@ gcore_globalping_cache_valid() {
     local now age
     [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
-        --argjson version "${GCORE_CACHE_VERSION}" \
-        --argjson limit "${GCORE_CANDIDATE_LIMIT}" '
+        --argjson version "${GCORE_CACHE_VERSION}" '
           .version == $version
           and .provider == "gcore"
           and .domain == $domain
@@ -683,7 +682,6 @@ gcore_globalping_cache_valid() {
           and (.measured_at_epoch | type) == "number"
           and (.candidates | type) == "array"
           and (.candidates | length) > 0
-          and (.candidates | length) <= $limit
           and all(.candidates[];
             (.ip | type) == "string"
             and (.avg_rtt_ms | type) == "number"
@@ -708,9 +706,10 @@ refresh_gcore_globalping_cache() {
         "${GLOBALPING_CACHE_FILE}") 个三网定向精选 IPv4"
 }
 
-# Strictly output the curated candidates (NO fallback domain)
+# Output the curated candidates (falls back to domain if no cache)
 gcore_client_candidates() {
-    if gcore_globalping_cache_valid; then
+    if [[ -s "${GLOBALPING_CACHE_FILE}" ]] \
+        && jq -e '.candidates | type == "array" and length > 0' "${GLOBALPING_CACHE_FILE}" >/dev/null 2>&1; then
         jq -r '
           .candidates[0:6]
           | to_entries[]

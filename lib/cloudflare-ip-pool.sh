@@ -644,31 +644,24 @@ globalping_cache_valid() {
     local now age ip source_cidr
     [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
-        --argjson version "${CLOUDFLARE_CACHE_VERSION}" \
-        --argjson limit "${CLOUDFLARE_CANDIDATE_LIMIT}" '
-          .version == $version
+        --argjson version "${CLOUDFLARE_CACHE_VERSION}" '
+          (.version == 3 or .version == 4 or .version == $version)
           and .provider == "cloudflare"
           and .domain == $domain
           and .candidate_source == "cloudflare-official-ipv4-cidrs"
-          and .probe_type == "eyeball-network"
-          and .carrier_asns == [4134,4837,9808]
           and (.measured_at_epoch | type) == "number"
           and (.candidates | type) == "array"
           and (.candidates | length) > 0
-          and (.candidates | length) <= $limit
           and all(.candidates[];
             (.ip | type) == "string"
-            and (.source_cidr | type) == "string"
-            and (.avg_rtt_ms | type) == "number"
-            and (.carrier | type) == "string"
-            and (.label | type) == "string"
           )
         ' "${GLOBALPING_CACHE_FILE}" >/dev/null || return 1
     while IFS=$'\t' read -r ip source_cidr; do
-        validate_public_ipv4 "${ip}" \
-            && cloudflare_ipv4_in_cidr "${ip}" "${source_cidr}" \
-            || return 1
-    done < <(jq -r '.candidates[] | [.ip,.source_cidr] | @tsv' \
+        validate_public_ipv4 "${ip}" || return 1
+        if [[ -n "${source_cidr}" ]]; then
+            cloudflare_ipv4_in_cidr "${ip}" "${source_cidr}" || return 1
+        fi
+    done < <(jq -r '.candidates[] | [.ip, (.source_cidr // "")] | @tsv' \
         "${GLOBALPING_CACHE_FILE}")
     now=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
     age=$((now - $(jq -r '.measured_at_epoch' "${GLOBALPING_CACHE_FILE}")))

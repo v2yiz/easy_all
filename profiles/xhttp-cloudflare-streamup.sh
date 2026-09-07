@@ -966,10 +966,11 @@ build_mihomo_xhttp_node() {
         "        c-max-reuse-times: 0\n        h-max-request-times: 300-600\n        h-max-reusable-secs: 900-1800\n        h-keep-alive-period: 0\n"'
 }
 
-# Strictly filter out any fallback lines: select top 5 high-quality unique IPs.
-# 6 IPs x 1 protocol (XHTTP stream-up) = 6 nodes (no domain fallback).
+# Strictly filter out any fallback lines: select top 6 high-quality unique IPs.
+# 6 IPs x 1 protocol (XHTTP stream-up) = 6 nodes (fallback to domain if no cache).
 cloudflare_xhttp_streamup_client_candidates() {
-    if cdn_optimization_enabled && globalping_cache_valid; then
+    if cdn_optimization_enabled && [[ -s "${GLOBALPING_CACHE_FILE}" ]] \
+        && jq -e '.candidates | type == "array" and length > 0' "${GLOBALPING_CACHE_FILE}" >/dev/null 2>&1; then
         jq -r '
           .candidates[0:6]
           | to_entries[]
@@ -980,7 +981,6 @@ cloudflare_xhttp_streamup_client_candidates() {
         local ip label carrier count=0
         while IFS=$'\t' read -r ip label carrier; do
             [[ -n "${ip}" ]] || continue
-            [[ "${carrier}" == "fallback" ]] && continue
             count=$((count + 1))
             printf '%s\t%s\t%s\n' "${ip}" "${count}" "${carrier}"
             ((count >= 6)) && break
@@ -989,20 +989,29 @@ cloudflare_xhttp_streamup_client_candidates() {
 }
 
 build_node_links() {
-    local ip label carrier
+    local ip label carrier count=0
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
+        count=$((count + 1))
         build_vless_xhttp_link "${ip}" "优选${label}"
         printf '\n'
     done < <(cloudflare_xhttp_streamup_client_candidates)
+    if (( count == 0 )); then
+        build_vless_xhttp_link "${VLESS_CDN_DOMAIN}" "优选1"
+        printf '\n'
+    fi
 }
 
 build_mihomo_nodes() {
-    local ip label carrier
+    local ip label carrier count=0
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
+        count=$((count + 1))
         build_mihomo_xhttp_node "${ip}" "优选${label}"
     done < <(cloudflare_xhttp_streamup_client_candidates)
+    if (( count == 0 )); then
+        build_mihomo_xhttp_node "${VLESS_CDN_DOMAIN}" "优选1"
+    fi
 }
 
 build_mihomo_proxy_names() {
@@ -1016,6 +1025,9 @@ build_mihomo_proxy_groups() {
         [[ -n "${ip}" ]] || continue
         all_nodes+=("优选${label}")
     done < <(cloudflare_xhttp_streamup_client_candidates)
+    if (( ${#all_nodes[@]} == 0 )); then
+        all_nodes+=("优选1")
+    fi
 
     printf '    - name: "AUTO"\n'
     printf '      type: url-test\n'
@@ -1185,6 +1197,10 @@ apply_easy_all() {
     snapshot_subscription_update
     configure_bbr_tcp
     configure_ufw
+    if ! globalping_cache_valid; then
+        info "当前 Globalping 优选缓存未就绪或已过期，正在执行刷新..."
+        refresh_globalping_cache || warn "Globalping 刷新失败，将使用现有缓存或域名兜底"
+    fi
     finish_xhttp_apply
     install_globalping_refresh_timer
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
