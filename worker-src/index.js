@@ -201,7 +201,8 @@ function parseVlessLink(link) {
     const port = Number(url.port) || 443;
     const name = decodeURIComponent(url.hash.replace(/^#/, ''));
     const params = url.searchParams;
-    if (url.protocol !== 'vless:' || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(uuid) || !server || params.get('security') !== 'tls' || params.get('type') !== 'xhttp') {
+    const network = params.get('type');
+    if (url.protocol !== 'vless:' || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(uuid) || !server || params.get('security') !== 'tls' || !['xhttp', 'ws'].includes(network)) {
         throw new Error('Unsupported CF node');
     }
     let extra = {};
@@ -211,7 +212,7 @@ function parseVlessLink(link) {
     return {
         type: 'vless',
         security: params.get('security') || 'tls',
-        network: params.get('type') || 'xhttp',
+        network,
         uuid,
         server,
         port,
@@ -245,7 +246,7 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = 5000 }
             throw new Error('No vless links found in VPS subscription');
         }
 
-        return links.slice(0, 5).flatMap((link, idx) => {
+        return links.slice(0, 6).flatMap((link, idx) => {
             try {
                 const parsed = parseVlessLink(link);
                 parsed.name = `🇺🇸备用CF${idx + 1}`;
@@ -393,7 +394,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', '备用优选', 'DIRECT', 'REJECT'].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
-    const autoNames = autoNodes.slice(0, 5).map(node => node.name);
+    const autoNames = autoNodes.slice(0, 6).map(node => node.name);
     const group = [
         '    - name: 备用优选', '      type: url-test',
         '      url: https://cp.cloudflare.com/generate_204',

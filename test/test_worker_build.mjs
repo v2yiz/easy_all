@@ -71,12 +71,12 @@ try {
     assert.ok(groups.split('name: 备用优选')[0].includes('Remote'), 'PROXY includes upstream');
     const fallbackAuto = fallbackBody.split('name: 备用优选')[1].split('rules:\n')[0];
     assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['Fallback CF']);
-    const fiveCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `🇺🇸备用CF${i}` }));
-    const fiveBody = api.buildClashConfig([...api.LOCAL_NODES, ...fiveCf], [10000, 10000, 443, 443, 443, 443, 443, 443], upstream, fiveCf);
-    const fiveProxy = fiveBody.split('proxy-groups:')[1].split('name: 备用优选')[0];
-    assert.ok(fiveCf.every(node => !fiveProxy.includes(node.name)), 'CF nodes only appear inside backup group');
+    const sixCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `🇺🇸备用CF${i}` }));
+    const sixBody = api.buildClashConfig([...api.LOCAL_NODES, ...sixCf], [10000, 10000, 443, 443, 443, 443, 443, 443], upstream, sixCf);
+    const sixProxy = sixBody.split('proxy-groups:')[1].split('name: 备用优选')[0];
+    assert.ok(sixCf.every(node => !sixProxy.includes(node.name)), 'CF nodes only appear inside backup group');
     assert.ok(!fallbackBody.split('proxy-groups:')[1].split('name: 备用优选')[0].includes('Fallback CF'));
-    assert.deepEqual(JSON.parse(fiveBody.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), fiveCf.slice(0, 5).map(n => n.name));
+    assert.deepEqual(JSON.parse(sixBody.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), sixCf.slice(0, 6).map(n => n.name));
     assert.ok(!liveBody.includes('malicious.invalid'));
     assert.ok(liveBody.includes('ip-version: ipv4'));
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 备用优选')));

@@ -21,7 +21,7 @@ Node.js 18 或更新版本即可，无需安装 npm 依赖。
 
 Worker 保留 `/subscribe?token=...`，`flag=clash` 返回完整配置，`flag=base64` 返回节点 URI 订阅；无 flag 时沿用客户端 User-Agent 判断。所有节点默认显示，旧链接的 `node` 参数不再影响节点列表。
 
-Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。VPS 获取失败使用 `fallbackCdnNodes`。仅生成 PROXY 和备用优选两个策略组，PROXY 依次包含其他节点和备用优选，不重复列出 CF 备用节点。备用优选仅包含本次获取的最多五个 CF 备用节点（获取失败使用本地备用配置）。没有 CF 节点时备用优选使用 REJECT，避免自动切换到其他节点；DIRECT 仅用于直连分流规则。
+Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。VPS 获取失败使用 `fallbackCdnNodes`。仅生成 PROXY 和备用优选两个策略组，PROXY 依次包含其他节点和备用优选，不重复列出 CF 备用节点。备用优选仅包含本次获取的最多六个 CF 备用节点（获取失败使用本地备用配置）。没有 CF 节点时备用优选使用 REJECT，避免自动切换到其他节点；DIRECT 仅用于直连分流规则。
 
 公共模板保留已有国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。全局 IPv6 默认关闭，节点 IP 统一输出 ipv4。模板开头的明确直连域名（包括 Steam 下载域名）先匹配，其余 UDP/443 在代理规则前拒绝；不是放行所有国内 QUIC。国内集合仍在显式代理域名之后，避免覆盖 AI 等例外。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅，已部署产物不会自动更新。
 
