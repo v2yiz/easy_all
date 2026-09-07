@@ -279,7 +279,7 @@ gcore_ensure_origin_a_record() {
 
     local payload
     payload=$(jq -cn --arg ip "${public_ip}" --argjson ttl "${GCORE_DNS_TTL}" \
-        '{records:[{content:$ip}],ttl:$ttl}')
+        '{resource_records:[{content:[$ip]}],ttl:$ttl}')
     info "在 Gcore Managed DNS 配置源站 A 记录: ${GCORE_ORIGIN_DOMAIN} -> ${public_ip}"
     gcore_api_request PUT "/dns/v2/zones/${GCORE_DNS_ZONE}/${GCORE_ORIGIN_DOMAIN}/A" "${payload}" >/dev/null
 }
@@ -287,7 +287,7 @@ gcore_ensure_origin_a_record() {
 gcore_ensure_cdn_cname_record() {
     local payload
     payload=$(jq -cn --arg target "${GCORE_CDN_TARGET}" --argjson ttl "${GCORE_DNS_TTL}" \
-        '{records:[{content:$target}],ttl:$ttl}')
+        '{resource_records:[{content:[$target]}],ttl:$ttl}')
     info "在 Gcore Managed DNS 配置 CDN CNAME 记录: ${VLESS_CDN_DOMAIN} -> ${GCORE_CDN_TARGET}"
     gcore_api_request PUT "/dns/v2/zones/${GCORE_DNS_ZONE}/${VLESS_CDN_DOMAIN}/CNAME" "${payload}" >/dev/null
 }

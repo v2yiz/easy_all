@@ -373,6 +373,36 @@ found_zone=$(gcore_find_zone_for_domain "origin.1988088.xyz")
 assert_equal "gcore_find_zone_for_domain matches zone with zones envelope" "1988088.xyz" "${found_zone}"
 found_sub_zone=$(gcore_find_zone_for_domain "deep.sub.1988088.xyz")
 assert_equal "gcore_find_zone_for_domain matches deep sub-domain" "1988088.xyz" "${found_sub_zone}"
+# 12. Test gcore_ensure_origin_a_record and gcore_ensure_cdn_cname_record payload
+recorded_calls=()
+gcore_api_request() {
+    recorded_calls+=("$1 $2 $3")
+    return 0
+}
+
+GCORE_DNS_ZONE="1988088.xyz"
+GCORE_ORIGIN_DOMAIN="origin.1988088.xyz"
+VPS_PUBLIC_IPV4="192.129.209.51"
+gcore_ensure_origin_a_record
+
+assert_equal "A record call count" "1" "${#recorded_calls[@]}"
+a_call="${recorded_calls[0]}"
+assert_contains "A record method and url" "${a_call}" "PUT /dns/v2/zones/1988088.xyz/origin.1988088.xyz/A"
+a_payload="${a_call#PUT /dns/v2/zones/1988088.xyz/origin.1988088.xyz/A }"
+assert_equal "A record payload IP" "192.129.209.51" "$(jq -r '.resource_records[0].content[0]' <<<"${a_payload}")"
+assert_equal "A record payload TTL" "300" "$(jq -r '.ttl' <<<"${a_payload}")"
+
+VLESS_CDN_DOMAIN="node.1988088.xyz"
+GCORE_CDN_TARGET="cl-test.gcdn.co"
+gcore_ensure_cdn_cname_record
+
+assert_equal "Total record calls" "2" "${#recorded_calls[@]}"
+cname_call="${recorded_calls[1]}"
+assert_contains "CNAME record method and url" "${cname_call}" "PUT /dns/v2/zones/1988088.xyz/node.1988088.xyz/CNAME"
+cname_payload="${cname_call#PUT /dns/v2/zones/1988088.xyz/node.1988088.xyz/CNAME }"
+assert_equal "CNAME record payload target" "cl-test.gcdn.co" "$(jq -r '.resource_records[0].content[0]' <<<"${cname_payload}")"
+assert_equal "CNAME record payload TTL" "300" "$(jq -r '.ttl' <<<"${cname_payload}")"
+
 unset -f gcore_api_request
 
 printf 'ok - Gcore Mode 3 unit tests passed\n'
