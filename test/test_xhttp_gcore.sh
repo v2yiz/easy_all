@@ -114,6 +114,7 @@ chmod +x "${XRAY_BIN}"
 
 # shellcheck source=/dev/null
 source "${PROFILE}"
+trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
 
 # Certificate installation must use the same full chain as Nginx, without FULLCHAIN_FILE.
 (
@@ -431,6 +432,11 @@ unset -f gcore_api_request
     api_calls="${TMP_DIR}/cdn-api-calls"
     existing=false
     reject_update=false
+    bound_certificate=404
+    expected_certificate=303
+    empty_certificate_response=false
+    reject_certificate=false
+    certificate_created="${TMP_DIR}/edge-certificate-created"
     gcore_api_request() {
         printf '%s %s\n' "$1" "$2" >>"${api_calls}"
         case "$1 $2" in
@@ -444,13 +450,27 @@ unset -f gcore_api_request
                 .sources == [{source:$origin,enabled:true,backup:false}]
             ' <<<"$3" >/dev/null || return 1
             printf '{"id":101}' ;;
+        'GET /cdn/sslData')
+            if [[ -f "${certificate_created}" ]]; then
+                jq -cn --arg name "easy_all-edge-${VLESS_CDN_DOMAIN}" '[{id:303,name:$name,automated:true}]'
+            else printf '[]'; fi ;;
+        'POST /cdn/sslData')
+            [[ "${reject_certificate}" == false ]] || return 1
+            jq -e --arg name "easy_all-edge-${VLESS_CDN_DOMAIN}" '
+                . == {name:$name,automated:true}
+            ' <<<"$3" >/dev/null || return 1
+            touch "${certificate_created}"
+            if [[ "${empty_certificate_response}" == false ]]; then printf '{"id":303}'; fi ;;
         'GET /cdn/resources')
             if [[ "${existing}" == true ]]; then
-                jq -cn --arg cname "${VLESS_CDN_DOMAIN}" '[{id:202,cname:$cname}]'
+                jq -cn --arg cname "${VLESS_CDN_DOMAIN}" --argjson cert "${bound_certificate}" '[{id:202,cname:$cname,sslData:$cert}]'
             else printf '[]'; fi ;;
         'POST /cdn/resources'|'PUT /cdn/resources/202')
             [[ "${reject_update}" == false ]] || return 1
-            jq -e --arg origin "${GCORE_ORIGIN_DOMAIN}" '
+            [[ "${expected_certificate}" == 404 || -f "${certificate_created}" ]] || return 1
+            jq -e --arg origin "${GCORE_ORIGIN_DOMAIN}" --argjson cert "${expected_certificate}" '
+                .sslEnabled == true and .sslData == $cert and .sslData != .proxy_ssl_data and
+                .options.use_dns01_le_challenge == {enabled:true,value:true} and
                 .originGroup == 101 and .originProtocol == "HTTPS" and
                 .proxy_ssl_enabled == true and .proxy_ssl_data == 11223 and .proxy_ssl_ca == 44556 and
                 .options.websockets == {enabled:true,value:true} and
@@ -470,12 +490,28 @@ unset -f gcore_api_request
     gcore_ensure_resource
     assert_equal "Created resource ID" 202 "${GCORE_CDN_RESOURCE_ID}"
     existing=true
+    expected_certificate=404
     gcore_ensure_origin_group
     gcore_ensure_resource
     assert_equal "Existing group is reused" 1 "$(grep -c '^POST /cdn/origin_groups$' "${api_calls}")"
     assert_equal "Existing resource is updated" 1 "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
     reject_update=true
     if gcore_ensure_resource; then fail "Resource update failure must propagate"; fi
+    reject_update=false
+    assert_equal "Bound certificate avoids certificate lookup" 1 "$(grep -c '^GET /cdn/sslData$' "${api_calls}")"
+    bound_certificate=null
+    expected_certificate=303
+    gcore_ensure_resource
+    assert_equal "Unbound resource reuses managed edge certificate" 1 "$(grep -c '^POST /cdn/sslData$' "${api_calls}")"
+    rm -f "${certificate_created}"
+    empty_certificate_response=true
+    gcore_ensure_resource
+    assert_equal "Empty create response resolves certificate by name" 2 "$(grep -c '^POST /cdn/sslData$' "${api_calls}")"
+    rm -f "${certificate_created}"
+    reject_certificate=true
+    requests_before=$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")
+    if gcore_ensure_resource; then fail "Certificate failure must stop resource update"; fi
+    assert_equal "No resource mutation after certificate failure" "${requests_before}" "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
 )
 
 printf 'ok - Gcore Mode 3 unit tests passed\n'

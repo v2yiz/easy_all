@@ -476,18 +476,53 @@ gcore_ensure_origin_group() {
     GCORE_ORIGIN_GROUP_ID=$(jq -er '.id // empty' <<<"${response}")
 }
 
+gcore_edge_certificate_id() {
+    local name="easy_all-edge-${VLESS_CDN_DOMAIN}" certificates certificate_id response
+    certificates=$(gcore_api_request GET "/cdn/sslData") || return 1
+    certificate_id=$(gcore_json_items "${certificates}" | jq -sr --arg name "${name}" '
+        first(.[] | select(.name == $name and .automated == true and .deleted != true) | .id) // empty')
+    if [[ -z "${certificate_id}" ]]; then
+        response=$(gcore_api_request POST "/cdn/sslData" \
+            "$(jq -cn --arg name "${name}" '{name:$name,automated:true}')") || return 1
+        certificate_id=$(jq -r '.id // empty' <<<"${response}")
+        # Some API versions return an empty creation response; resolve the unique name.
+        if [[ -z "${certificate_id}" ]]; then
+            certificates=$(gcore_api_request GET "/cdn/sslData") || return 1
+            certificate_id=$(gcore_json_items "${certificates}" | jq -sr --arg name "${name}" '
+                first(.[] | select(.name == $name and .automated == true and .deleted != true) | .id) // empty')
+        fi
+    fi
+    [[ "${certificate_id}" =~ ^[1-9][0-9]*$ ]] || die "无法获取 Gcore 边缘 HTTPS 证书 ID"
+    printf '%s' "${certificate_id}"
+}
+
 gcore_ensure_resource() {
-    local payload response existing_resources res
+    local payload response existing_resources res resource_id="" edge_certificate_id=""
+    existing_resources=$(gcore_api_request GET "/cdn/resources") || return 1
+    while IFS= read -r res; do
+        [[ -n "${res}" ]] || continue
+        if [[ "$(jq -r '.cname // empty' <<<"${res}")" == "${VLESS_CDN_DOMAIN}" ]]; then
+            resource_id=$(jq -er '.id' <<<"${res}") || return 1
+            edge_certificate_id=$(jq -r '.sslData // empty' <<<"${res}")
+            break
+        fi
+    done < <(gcore_json_items "${existing_resources}")
+    if [[ ! "${edge_certificate_id}" =~ ^[1-9][0-9]*$ ]]; then
+        edge_certificate_id=$(gcore_edge_certificate_id) || return 1
+    fi
     payload=$(jq -cn \
         --arg cname "${VLESS_CDN_DOMAIN}" \
         --argjson origin_group "${GCORE_ORIGIN_GROUP_ID}" \
         --arg host "${VLESS_CDN_DOMAIN}" \
         --arg origin "${GCORE_ORIGIN_DOMAIN}" \
         --argjson client_cert_id "${GCORE_ORIGIN_CLIENT_CERT_ID}" \
-        --argjson origin_ca_id "${GCORE_ORIGIN_CA_ID}" '{
+        --argjson origin_ca_id "${GCORE_ORIGIN_CA_ID}" \
+        --argjson edge_certificate_id "${edge_certificate_id}" '{
           cname: $cname,
           originGroup: $origin_group,
           originProtocol: "HTTPS",
+          sslEnabled: true,
+          sslData: $edge_certificate_id,
           proxy_ssl_enabled: true,
           proxy_ssl_data: $client_cert_id,
           proxy_ssl_ca: $origin_ca_id,
@@ -495,6 +530,7 @@ gcore_ensure_resource() {
             websockets: {enabled: true, value: true},
             hostHeader: {enabled: true, value: $host},
             redirect_http_to_https: {enabled: true, value: true},
+            use_dns01_le_challenge: {enabled: true, value: true},
             sni: {enabled: true, sni_type: "custom", custom_hostname: $origin},
             edge_cache_settings: {enabled: true, value: "0s", custom_values: {}},
             browser_cache_settings: {enabled: true, value: "0s"},
@@ -503,19 +539,15 @@ gcore_ensure_resource() {
           }
         }')
 
-    existing_resources=$(gcore_api_request GET "/cdn/resources")
-    while IFS= read -r res; do
-        [[ -n "${res}" ]] || continue
-        if [[ "$(jq -r '.cname // empty' <<<"${res}")" == "${VLESS_CDN_DOMAIN}" ]]; then
-            GCORE_CDN_RESOURCE_ID=$(jq -r '.id' <<<"${res}")
-            info "更新已有 Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 的 mTLS 与配置"
-            gcore_api_request PUT "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
-            return 0
-        fi
-    done < <(gcore_json_items "${existing_resources}")
-
-    response=$(gcore_api_request POST "/cdn/resources" "${payload}")
-    GCORE_CDN_RESOURCE_ID=$(jq -er '.id // empty' <<<"${response}")
+    if [[ -n "${resource_id}" ]]; then
+        GCORE_CDN_RESOURCE_ID=${resource_id}
+        info "更新已有 Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 的 HTTPS、mTLS 与配置"
+        gcore_api_request PUT "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
+    else
+        response=$(gcore_api_request POST "/cdn/resources" "${payload}") || return 1
+        GCORE_CDN_RESOURCE_ID=$(jq -er '.id // empty' <<<"${response}") || return 1
+    fi
+    info "Gcore 边缘 HTTPS 已配置；新申请的证书由 Gcore 异步签发，签发完成前客户端 HTTPS 可能暂不可用"
 }
 
 gcore_prepare_origin() {
