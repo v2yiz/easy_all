@@ -231,6 +231,16 @@ function parseVlessLink(link) {
 async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS, userAgent = '' } = {}) {
     if (!url) return { nodes: FALLBACK_CDN_NODES, error: null };
     try {
+        // When sub.tiandi.party is proxied via Cloudflare orange-cloud, this Worker
+        // subrequest passes through WAF / Bot Fight Mode.
+        // Two prerequisites on the Cloudflare dashboard make this work:
+        //   1. Compatibility flag "global_fetch_strictly_public" on this Worker
+        //      (removes the same-zone subrequest loop block, Error 1042).
+        //   2. A WAF custom rule: Hostname equals "sub.tiandi.party" → Skip
+        //      (All remaining custom rules + Managed Rules + Bot Fight Mode).
+        // On the code side we use a realistic subscription-client UA so that
+        // Cloudflare's bot scoring does not pre-emptively challenge the request
+        // before the WAF skip rule is evaluated.
         const clientUA = userAgent?.trim() || 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
         const text = await fetchXflashSubscription(
             { headers: new Headers({ 'User-Agent': clientUA }) },
@@ -486,7 +496,16 @@ async function fetchXflashSubscription(
             signal: controller.signal,
         });
         if (!response.ok) {
-            throw new Error(`XFLASH returned HTTP ${response.status}`);
+            // 403 from an orange-cloud domain most likely means WAF / Bot Fight Mode
+            // blocked this Worker subrequest. Fix: add a WAF custom rule to Skip
+            // Bot Fight Mode for Hostname = sub.tiandi.party, and ensure the
+            // "global_fetch_strictly_public" compatibility flag is enabled on the Worker.
+            const hint = response.status === 403
+                ? ' (WAF/Bot Fight Mode may be blocking this subrequest — check Cloudflare WAF skip rule)'
+                : response.status === 429
+                    ? ' (rate-limited by upstream)'
+                    : '';
+            throw new Error(`XFLASH returned HTTP ${response.status}${hint}`);
         }
 
         const contentLength = Number(response.headers.get('content-length'));
