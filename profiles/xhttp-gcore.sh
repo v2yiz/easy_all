@@ -211,6 +211,29 @@ gcore_configure_origin_firewall() {
 
     install -d -m 0700 "$(dirname "${GCORE_ORIGIN_IPS_FILE}")"
     install -m 0600 "${next}" "${GCORE_ORIGIN_IPS_FILE}"
+    ufw reload >/dev/null 2>&1 || true
+}
+
+configure_ufw() {
+    local desired_ports
+    snapshot_ufw_state
+    if ! command -v ufw >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends ufw
+    fi
+    ensure_ssh_boot_service
+    detect_ssh_ports
+    ufw default deny incoming >/dev/null
+    ufw default allow outgoing >/dev/null
+    ufw default deny routed >/dev/null
+    desired_ports=${SSH_PORTS}
+    apply_managed_ufw_tcp_ports "${desired_ports} 80 443"
+    gcore_configure_origin_firewall
+    apply_managed_ufw_tcp_ports "${desired_ports} 80"
+    systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
+    LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
+    ensure_ssh_fail2ban
 }
 
 # --- DNS & Zone Management ---
@@ -320,7 +343,20 @@ run_acme() {
         --cert-home "${ACME_HOME}/certs" "$@"
 }
 
+write_cert_reload_hook() {
+    install -d -m 0755 "$(dirname "${CERT_RELOAD_HOOK}")"
+    cat >"${RUNTIME_TMP}/reload-tls-service.sh" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+nginx -t >/dev/null 2>&1 || exit 1
+systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || exit 1
+EOF
+    install -m 0755 "${RUNTIME_TMP}/reload-tls-service.sh" "${CERT_RELOAD_HOOK}"
+    rm -f -- "${RUNTIME_TMP}/reload-tls-service.sh"
+}
+
 issue_origin_certificate() {
+    write_cert_reload_hook
     install_acme
     run_acme --set-default-ca --server letsencrypt >/dev/null || true
     install -d -m 0700 "${CERT_DIR}"
@@ -331,7 +367,8 @@ issue_origin_certificate() {
     if ! run_acme --install-cert -d "${GCORE_ORIGIN_DOMAIN}" --ecc \
         --cert-file "${CERT_FILE}" \
         --key-file "${KEY_FILE}" \
-        --fullchain-file "${FULLCHAIN_FILE}"; then
+        --fullchain-file "${FULLCHAIN_FILE}" \
+        --reloadcmd "${CERT_RELOAD_HOOK}"; then
         die "安装源站 ECC 证书失败"
     fi
     chmod 0600 "${KEY_FILE}"
@@ -495,6 +532,186 @@ gcore_apply_cdn() {
     gcore_ensure_origin_group
     gcore_ensure_origin_validation_certificates
     gcore_ensure_resource
+}
+
+normalize_websocket_path() {
+    local path=${1:-}
+    while [[ "${path}" =~ ^/(ws|websocket)-/(ws|websocket)- ]]; do
+        path="/${path#/*-/}"
+    done
+    if [[ "${path}" =~ ^/(ws|websocket)- ]]; then
+        path="/ws-${path#/*-}"
+    elif [[ -n "${path}" ]]; then
+        path="/ws-${path#/}"
+    else
+        path="/ws-$(openssl rand -hex 12)"
+    fi
+    path="${path%/}"
+    printf '%s\n' "${path}"
+}
+
+normalize_xhttp_path() {
+    local path=${1:-}
+    while [[ "${path}" =~ ^/(xhttp|vless)-/(xhttp|vless)- ]]; do
+        path="/${path#/*-/}"
+    done
+    if [[ "${path}" =~ ^/(xhttp|vless)- ]]; then
+        path="/xhttp-${path#/*-}"
+    elif [[ -n "${path}" ]]; then
+        path="/xhttp-${path#/}"
+    else
+        path="/xhttp-$(openssl rand -hex 12)"
+    fi
+    path="${path%/}"
+    printf '%s\n' "${path}"
+}
+
+collect_install_inputs() {
+    PROTOCOL="gcore"
+    BACKEND="xray"
+    CDN_PROVIDER="gcore"
+    choose_cdn_client_ip_family
+
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
+    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
+
+    info "Gcore 模式需要两个不同子域名：CDN 节点域名用于客户端连接，源站域名用于 VPS 真实回源与证书。"
+    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "" "CDN hostname used by clients (e.g. node.example.com)")}")
+    validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
+
+    GCORE_ORIGIN_DOMAIN=$(normalize_domain "${GCORE_ORIGIN_DOMAIN:-$(prompt_value "VPS 回源解析的源站域名" "" "Origin hostname for VPS (e.g. origin.example.com)")}")
+    validate_domain "${GCORE_ORIGIN_DOMAIN}" || die "GCORE_ORIGIN_DOMAIN 无效"
+
+    [[ "${VLESS_CDN_DOMAIN}" != "${GCORE_ORIGIN_DOMAIN}" ]] \
+        || die "CDN 节点域名与源站域名不能相同"
+    XHTTP_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
+
+    info "Gcore 模式需要具有 CDN 与 Managed DNS 权限的 API Token。"
+    gcore_collect_api_token
+
+    info "Gcore 模式从官方单播节点提取香港、日本、洛杉矶边缘，并使用三网 Globalping eyeball 探针定向测速。"
+    collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
+
+    WEBSOCKET_PATH=$(normalize_websocket_path "${WEBSOCKET_PATH:-}")
+    validate_xhttp_path "${WEBSOCKET_PATH}" || die "WEBSOCKET_PATH 无效"
+
+    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
+    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
+
+    XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" || die "WebSocket 本机端口无效"
+
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"
+
+    choose_subscription_mode
+    if subscription_enabled; then
+        collect_subscription_link_domain
+        choose_subscription_download_name
+        choose_monthly_quota 0
+        ensure_allowed_tokens
+    else
+        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
+        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
+        ALLOWED_TOKENS=""
+        choose_monthly_quota 0
+    fi
+}
+
+load_state() {
+    local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    local -a variables=(
+        STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
+        CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
+        VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
+        GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_CDN_TARGET
+        GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID
+        GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID
+        VPS_PUBLIC_IPV4 WEBSOCKET_PATH XHTTP_PATH
+        XRAY_WEBSOCKET_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT
+        ALLOWED_TOKENS SUB_DOWNLOAD_NAME
+        SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+    )
+    [[ -f "${state_path}" ]] || return 1
+    for variable in "${variables[@]}"; do
+        env_name=$(env -i bash -c 'source "$1" && printf "%s" "${'"${variable}"':-}"' _ "${state_path}")
+        printf -v "${variable}" '%s' "${env_name}"
+    done
+    [[ "${PROTOCOL}" == "gcore" && "${CDN_PROVIDER:-}" == "gcore" && "${BACKEND:-}" == "xray" ]] \
+        || die "状态不是 Gcore CDN"
+    configure_cdn_client_ip_family
+    validate_domain "${GCORE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
+        && validate_uuid "${VLESS_UUID:-}" || die "Gcore 状态缺少有效域名或 UUID"
+    [[ "${GCORE_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
+        || die "Gcore 状态中源站域名与 CDN 节点域名不能相同"
+    XHTTP_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
+    WEBSOCKET_PATH=$(normalize_websocket_path "${WEBSOCKET_PATH:-}")
+    validate_xhttp_path "${WEBSOCKET_PATH}" || die "状态中的 WEBSOCKET_PATH 无效"
+    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
+    validate_xhttp_path "${XHTTP_PATH}" || die "状态中的 XHTTP_PATH 无效"
+
+    XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" || die "状态中的 WebSocket 本机端口无效"
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "状态中的 XHTTP 本机端口无效"
+
+    SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}")
+    SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-none}") || die "订阅模式无效"
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}") || die "订阅文件名无效"
+    [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") || die "Token 无效"
+    BACKEND="xray"
+    PROTOCOL="gcore"
+    CDN_PROVIDER="gcore"
+}
+
+save_state() {
+    local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    local state_dir
+    state_dir="$(dirname "${target}")"
+    install -d -m 0700 "${state_dir}"
+    local t
+    t=$(mktemp "${state_dir}/state.env.XXXXXX")
+    cleanup_files+=("${t}")
+    {
+        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER CDN_CLIENT_IP_FAMILY \
+            XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
+            GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_CDN_TARGET \
+            GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID \
+            GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID \
+            VPS_PUBLIC_IPV4 WEBSOCKET_PATH XHTTP_PATH \
+            XRAY_WEBSOCKET_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT \
+            ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE \
+            SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do
+            case "${v}" in
+            STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}" ;;
+            PROTOCOL) printf '%s=%q\n' "${v}" "gcore" ;;
+            BACKEND) printf '%s=%q\n' "${v}" "xray" ;;
+            CDN_PROVIDER) printf '%s=%q\n' "${v}" "gcore" ;;
+            SUBSCRIPTION_DOMAIN) printf '%s=%q\n' "${v}" "$(subscription_link_domain)" ;;
+            *) printf '%s=%q\n' "${v}" "${!v:-}" ;;
+            esac
+        done
+    } >"${t}"
+    install -m 0600 "${t}" "${target}"
+}
+
+collect_installed_state() {
+    [[ -f "${STATE_FILE}" ]] || die "easy_all Gcore CDN 尚未安装"
+    load_state
+}
+
+mihomo_transport_marker() {
+    printf 'network: ws\n'
+}
+
+xhttp_validate_local_tls_curl_args() {
+    XHTTP_LOCAL_TLS_CURL_ARGS=(
+        --proto '=https'
+        --cert "${GCORE_CLIENT_CERT_FILE}"
+        --key "${GCORE_CLIENT_CERT_KEY}"
+    )
 }
 
 # --- Service Configurations (Xray & Nginx) ---
@@ -719,7 +936,7 @@ EOF
 }
 
 write_subscriptions() {
-    local template node_file group_file name_file base64_file mihomo_file
+    local template node_file group_file name_file base64_file mihomo_file user uuid user_dir marker='network: ws'
     prepare_mihomo_template
     template=${MIHOMO_TEMPLATE_FILE}
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
@@ -727,6 +944,35 @@ write_subscriptions() {
     name_file="${RUNTIME_TMP}/mihomo-names.yaml"
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
+    resolve_cdn_client_ip_family
+
+    if quota_enabled; then
+        rm -rf -- "${SUBSCRIPTION_DIR}"
+        install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
+        while IFS=$'\t' read -r user uuid; do
+            user_dir="${SUBSCRIPTION_DIR}/${user}"
+            (
+                VLESS_UUID=${uuid}
+                build_mihomo_nodes >"${node_file}.${user}"
+                build_mihomo_proxy_groups >"${group_file}.${user}"
+                build_mihomo_proxy_names >"${name_file}.${user}"
+                build_node_links | openssl base64 -A >"${base64_file}.${user}"
+                printf '\n' >>"${base64_file}.${user}"
+                render_mihomo_subscription "${template}" "${node_file}.${user}" \
+                    "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
+                    "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" \
+                    "${group_file}.${user}" "${name_file}.${user}"
+            )
+            grep -Fq "${marker}" "${mihomo_file}.${user}" \
+                || die "Mihomo 订阅缺少有效节点：${user}"
+            install -d -o root -g www-data -m 0750 "${user_dir}"
+            install -o root -g www-data -m 0640 \
+                "${base64_file}.${user}" "${user_dir}/base64.txt"
+            install -o root -g www-data -m 0640 \
+                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml"
+        done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
+        return 0
+    fi
 
     build_mihomo_nodes >"${node_file}"
     build_mihomo_proxy_groups >"${group_file}"
@@ -871,7 +1117,7 @@ apply_easy_all() {
     configure_ufw
     if ! gcore_globalping_cache_valid; then
         info "当前 Globalping 优选缓存未就绪或已过期，正在执行刷新..."
-        refresh_globalping_cache || warn "Globalping 刷新失败，将使用现有缓存或域名兜底"
+        refresh_gcore_globalping_cache || warn "Globalping 刷新失败，将使用现有缓存或域名兜底"
     fi
     finish_xhttp_apply
     install_globalping_refresh_timer

@@ -316,4 +316,49 @@ assert_contains "Nginx has easy_all-health location" "${nginx_cfg}" "location = 
 assert_contains "Nginx proxies WebSocket backend" "${nginx_cfg}" "proxy_pass http://gcore_websocket_backend;"
 assert_contains "Nginx proxies XHTTP backend" "${nginx_cfg}" "proxy_pass http://gcore_xhttp_backend;"
 
+# 9. Test path normalizers
+assert_equal "normalize_websocket_path cleans double /ws- prefix" \
+    "/ws-0123456789abcdef" "$(normalize_websocket_path "/ws-/ws-0123456789abcdef")"
+assert_equal "normalize_websocket_path keeps clean /ws- intact" \
+    "/ws-0123456789abcdef" "$(normalize_websocket_path "/ws-0123456789abcdef")"
+assert_equal "normalize_xhttp_path cleans double /xhttp- prefix" \
+    "/xhttp-0123456789abcdef" "$(normalize_xhttp_path "/xhttp-/xhttp-0123456789abcdef")"
+assert_equal "normalize_xhttp_path keeps clean /xhttp- intact" \
+    "/xhttp-0123456789abcdef" "$(normalize_xhttp_path "/xhttp-0123456789abcdef")"
+
+# 10. Test save_state and load_state
+export GCORE_DNS_ZONE="example.com"
+export GCORE_CDN_TARGET="cl-test.gcdn.co"
+export GCORE_CDN_RESOURCE_ID="12345"
+export GCORE_ORIGIN_GROUP_ID="67890"
+export GCORE_ORIGIN_CLIENT_CERT_ID="11223"
+export GCORE_ORIGIN_CA_ID="44556"
+export VPS_PUBLIC_IPV4="198.51.100.1"
+
+save_state
+[[ -s "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file was not saved"
+state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
+assert_contains "State file protocol is gcore" "${state_content}" 'PROTOCOL=gcore'
+assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
+assert_contains "State file cdn is gcore" "${state_content}" 'CDN_PROVIDER=gcore'
+assert_contains "State file has origin domain" "${state_content}" 'GCORE_ORIGIN_DOMAIN=origin.example.com'
+assert_contains "State file has CDN domain" "${state_content}" 'VLESS_CDN_DOMAIN=node.example.com'
+assert_contains "State file has CNAME target" "${state_content}" 'GCORE_CDN_TARGET=cl-test.gcdn.co'
+
+# Reset vars and load_state
+unset VLESS_CDN_DOMAIN GCORE_ORIGIN_DOMAIN GCORE_CDN_TARGET
+load_state
+assert_equal "load_state restored VLESS_CDN_DOMAIN" "node.example.com" "${VLESS_CDN_DOMAIN}"
+assert_equal "load_state restored GCORE_ORIGIN_DOMAIN" "origin.example.com" "${GCORE_ORIGIN_DOMAIN}"
+assert_equal "load_state restored GCORE_CDN_TARGET" "cl-test.gcdn.co" "${GCORE_CDN_TARGET}"
+assert_equal "load_state restored XHTTP_ORIGIN_DOMAIN" "origin.example.com" "${XHTTP_ORIGIN_DOMAIN}"
+
+# Verify mihomo_transport_marker
+assert_equal "mihomo_transport_marker is network: ws" "network: ws" "$(mihomo_transport_marker)"
+
+# Verify xhttp_validate_local_tls_curl_args
+xhttp_validate_local_tls_curl_args
+assert_equal "curl args include client cert" "${GCORE_CLIENT_CERT_FILE}" "${XHTTP_LOCAL_TLS_CURL_ARGS[3]}"
+assert_equal "curl args include client key" "${GCORE_CLIENT_CERT_KEY}" "${XHTTP_LOCAL_TLS_CURL_ARGS[5]}"
+
 printf 'ok - Gcore Mode 3 unit tests passed\n'
