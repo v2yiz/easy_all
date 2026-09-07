@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { aggregateHandler, checkAggregate } from '../aggregate/aggregate.mjs';
+import { createServer } from 'node:http';
 
 const dir = await mkdtemp(join(tmpdir(), 'aggregate-test-'));
 try {
@@ -51,6 +52,14 @@ try {
         return checkOptions.fetchImpl(...args);
     } });
     assert.equal(checkCalls, 1, 'all users share exactly one XFLASH fetch');
+    const upstreamServer = createServer((_req, res) => res.end('proxies:\n  - name: Remote\n    type: ss\n'));
+    await new Promise(resolve => upstreamServer.listen(0, '127.0.0.1', resolve));
+    try {
+        await checkAggregate(path, { ...checkOptions, fetchImpl: (_url, init) => fetch(`http://127.0.0.1:${upstreamServer.address().port}`, init) });
+    } finally {
+        upstreamServer.closeAllConnections();
+        await new Promise(resolve => upstreamServer.close(resolve));
+    }
     checkCalls = 0;
     await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => {
         checkCalls++;
