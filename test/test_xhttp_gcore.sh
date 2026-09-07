@@ -221,18 +221,19 @@ unset -f globalping_api_request
 # 3d. Test gcore_parse_tls_observations status code and TLS authorized requirements
 sample_tls_file="${TMP_DIR}/sample_tls.ndjson"
 cat >"${sample_tls_file}" <<'EOF'
-{"ip":"10.1.1.1","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":40.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"authorized":true}}}]}}
-{"ip":"10.1.1.2","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":42.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":403,"tls":{"authorized":true}}}]}}
-{"ip":"10.1.1.3","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":44.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"authorized":false}}}]}}
+{"ip":"10.1.1.1","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":40.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"10.1.1.2","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":42.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":502,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"10.1.1.3","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":44.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":101,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"}}}]}}
+{"ip":"10.1.1.4","carrier_asn":9808,"carrier":"mobile","region":"HK","avg_rtt_ms":46.0,"measurement":{"status":"finished","results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"ERR_TLS_CERT_ALTNAME_INVALID"}}}]}}
 EOF
 parsed_tls=$(gcore_parse_tls_observations "${sample_tls_file}")
 assert_equal "10.1.1.1 with 101 and authorized TLS is selected" "10.1.1.1" \
     "$(jq -r 'select(.ip == "10.1.1.1") | .ip' <<<"${parsed_tls}")"
-assert_equal "10.1.1.1 has tls_verified == true" "true" \
-    "$(jq -r 'select(.ip == "10.1.1.1") | .tls_verified' <<<"${parsed_tls}")"
-assert_equal "10.1.1.2 with 403 is filtered out" "" \
+assert_equal "10.1.1.4 with ALTNAME_INVALID probe error is selected" "10.1.1.4" \
+    "$(jq -r 'select(.ip == "10.1.1.4") | .ip' <<<"${parsed_tls}")"
+assert_equal "10.1.1.2 with 502 is filtered out" "" \
     "$(jq -r 'select(.ip == "10.1.1.2") | .ip' <<<"${parsed_tls}")"
-assert_equal "10.1.1.3 with unauthorized TLS is filtered out" "" \
+assert_equal "10.1.1.3 with unauthorized cert is filtered out" "" \
     "$(jq -r 'select(.ip == "10.1.1.3") | .ip' <<<"${parsed_tls}")"
 
 

@@ -136,21 +136,22 @@ assert_equal "Anchored request specifies magic location" "base-meas-id-12345" \
 tls_mock_file="${TMP_DIR}/tls-mock.ndjson"
 cat <<'TLS_EOF' >"${tls_mock_file}"
 {"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":42.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
-{"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":35.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
-{"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false}}}]}}
+{"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":35.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"ERR_TLS_CERT_ALTNAME_INVALID"}}}]}}
+{"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"}}}]}}
 {"ip":"104.16.1.4","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":50.0,"measurement":{"results":[{"result":{"status":"failed","statusCode":0,"error":"connection timeout"}}]}}
-{"ip":"104.16.1.5","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":48.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.5","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":48.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":502,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
 TLS_EOF
 
 parsed_tls=$(cloudflare_parse_tls_observations "${tls_mock_file}")
 parsed_count=$(wc -l <<<"${parsed_tls}" | tr -d ' ')
-assert_equal "Only 200 + authorized=true results pass TLS parsing" "2" "${parsed_count}"
+assert_equal "2 valid edge results pass TLS parsing" "2" "${parsed_count}"
 
 passing_ips=$(jq -r '.ip' <<<"${parsed_tls}" | tr '\n' ' ')
 [[ "${passing_ips}" == *"104.16.1.1 "* ]] || fail "104.16.1.1 should pass TLS parsing"
-[[ "${passing_ips}" == *"104.16.1.5 "* ]] || fail "104.16.1.5 should pass TLS parsing"
-[[ "${passing_ips}" != *"104.16.1.2 "* ]] || fail "104.16.1.2 (HTTP 403) must be rejected"
-[[ "${passing_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (authorized=false) must be rejected"
+[[ "${passing_ips}" == *"104.16.1.2 "* ]] || fail "104.16.1.2 should pass TLS parsing"
+[[ "${passing_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (UNABLE_TO_VERIFY_LEAF_SIGNATURE) must be rejected"
+[[ "${passing_ips}" != *"104.16.1.4 "* ]] || fail "104.16.1.4 (failed) must be rejected"
+[[ "${passing_ips}" != *"104.16.1.5 "* ]] || fail "104.16.1.5 (HTTP 502) must be rejected"
 
 # ==============================================================================
 # Test 5: Strict Cross-Carrier Deduplication & 6 Unique Candidates Output

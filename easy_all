@@ -102,11 +102,11 @@ easy_all install
 │  │  └─ 仅节点：不收集订阅服务参数
 │  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
-└─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）
+└─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 6 节点）
    ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
    ├─ 采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up 极速流模式
-   ├─ 全网综合优选：基于 Globalping 探针 TLS 验证与低延迟筛选综合 Top 5 精选 IP
-   ├─ 严格输出 5 个精选节点，完全无域名兜底；内置全局单一 AUTO 自动测速组
+   ├─ 全网综合优选：基于 Globalping 探针 TLS 验证与低延迟筛选三网定向 6 精选 IP
+   ├─ 严格输出 6 个精选节点，完全无域名兜底；内置全局单一 AUTO 自动测速组
    ├─ 订阅生成：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移
 └─ [3] Gcore CDN 精选 IP - 优质单播节点（完全适配 Gcore，三网定向精选 6 节点）
@@ -166,8 +166,8 @@ choose_install_mode() {
     printf 'Choose the installation mode:\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
     printf '     Direct - Reality (recommended for optimized routes)\n' >&2
-    printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 5 节点）\n' >&2
-    printf '     Cloudflare CDN optimized IPv4 - Pure XHTTP stream-up (5 optimized nodes)\n' >&2
+    printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点）\n' >&2
+    printf '     Cloudflare CDN optimized IPv4 - Pure XHTTP stream-up (6 carrier-targeted nodes)\n' >&2
     printf '  3. Gcore CDN 精选 IP - 优质单播节点（完全适配 Gcore，三网定向精选 6 节点）\n' >&2
     printf '     Gcore CDN optimized IPv4 - Pure VLESS WebSocket (6 carrier-targeted nodes)\n' >&2
     launcher_read_bilingual \

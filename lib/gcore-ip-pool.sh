@@ -387,8 +387,9 @@ gcore_parse_tls_observations() {
         select(
             .measurement.results[]?
             | select(.result.status == "finished")
-            | select(.result.tls != null and .result.tls.authorized == true)
-            | select((.result.statusCode // 0) == 101 or (.result.statusCode // 0) == 200)
+            | select(.result.tls != null and .result.tls.protocol != null and .result.tls.protocol != "")
+            | select(.result.tls.authorized == true or .result.tls.error == "ERR_TLS_CERT_ALTNAME_INVALID")
+            | select((.result.statusCode // 0) > 0 and (.result.statusCode // 0) < 500)
         )
         | {
             ip: .ip,
