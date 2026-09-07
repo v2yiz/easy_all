@@ -221,6 +221,14 @@ EOF
         add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
     }
 
+    location = /aggregate {
+${origin_guard}
+        proxy_pass http://127.0.0.1:8788;
+        proxy_set_header Host \$host;
+        proxy_set_header User-Agent \$http_user_agent;
+        proxy_read_timeout 30s;
+    }
+
 EOF
 }
 

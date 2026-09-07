@@ -76,7 +76,7 @@ git() {
     printf '%s\n' "${destination}" >"${SELF_UPDATE_REPO_PATH_FILE}"
     printf '%s\n' "$5" >"${SELF_UPDATE_BRANCH_FILE}"
     mkdir -p "${destination}"
-    for relative_path in easy_all templates/mihomo.yaml "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+    for relative_path in easy_all aggregate/aggregate.example.json aggregate/README.md templates/mihomo.yaml aggregate/aggregate.mjs worker-src/index.js aggregate/easy_all-aggregate.service "${EASY_ALL_RUNTIME_MODULES[@]}"; do
         mkdir -p "${destination}/$(dirname -- "${relative_path}")"
         cp "${ROOT_DIR}/${relative_path}" "${destination}/${relative_path}"
     done

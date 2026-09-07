@@ -376,7 +376,7 @@ cloudflare_add_header_rule() {
     local ruleset=$1 host=$2 path=$3 ws_path=${4:-} ref
     ref=$(cloudflare_ref "header:${host}:${path}")
     local expr
-    expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"
+    expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\") or http.request.uri.path eq \"/aggregate\")"
     cloudflare_upsert_rule "${ruleset}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" --arg path "${path}" --arg expr "${expr}" --arg key "${ORIGIN_HEADER_SECRET}" '{ref:$ref,description:("easy_all origin header for "+$path),expression:$expr,action:"rewrite",action_parameters:{headers:{"X-Easy-All-Origin-Key":{operation:"set",value:$key}}}}')"
 }
 
