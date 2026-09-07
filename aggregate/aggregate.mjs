@@ -87,17 +87,24 @@ export async function checkAggregate(configPath, options = {}) {
     if (!config || typeof config !== 'object') throw Error('aggregate.json 顶层必须是对象');
     const tokens = Object.values(config.allowedTokens || {});
     if (!tokens.length || !Array.isArray(config.nodes)) throw Error('配置必须包含 allowedTokens 对象和 nodes 数组（无额外节点填写 []）');
-    const handle = await aggregateHandler(configPath, { ...options, diagnose: true });
+    let upstreamResponse;
+    const handle = await aggregateHandler(configPath, {
+        ...options,
+        diagnose: true,
+        fetchImpl: async (url, init) => {
+            if (url !== config.upstreamUrl) throw Error('Config changed during validation');
+            upstreamResponse ??= await (options.fetchImpl || fetch)(url, init);
+            return upstreamResponse.clone();
+        },
+    });
     for (const token of tokens) {
-        for (const ua of ['clash-verge', 'v2rayN']) {
-            const url = new URL('http://localhost/aggregate');
-            url.searchParams.set('token', token);
-            let response;
-            try { response = await handle(new Request(url, { headers: { 'User-Agent': ua } })); }
-            catch (error) { throw Error(`${ua === 'v2rayN' ? 'Base64' : 'Clash'} 校验失败：${error.message}`); }
-            if (response.status !== 200 || response.headers.has('X-Easy-All-Warning')) throw Error('Aggregate validation failed');
-            await response.arrayBuffer();
-        }
+        const url = new URL('http://localhost/aggregate');
+        url.searchParams.set('token', token);
+        let response;
+        try { response = await handle(new Request(url, { headers: { 'User-Agent': 'clash-verge' } })); }
+        catch (error) { throw Error(`Clash 校验失败：${error.message}`); }
+        if (response.status !== 200 || response.headers.has('X-Easy-All-Warning')) throw Error('Aggregate validation failed');
+        await response.arrayBuffer();
     }
 }
 
@@ -107,7 +114,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     try {
         if (checking) {
             await checkAggregate(configPath);
-            console.log('聚合校验通过：配置、所有用户本地订阅及 XFLASH 两种格式正常');
+            console.log('聚合校验通过：所有用户本地订阅正常，XFLASH 仅请求一次（Clash 格式）');
         } else {
         await readFile(configPath, 'utf8');
         const handle = await aggregateHandler(configPath);

@@ -41,6 +41,26 @@ try {
         /clash/i.test(options.headers.get('User-Agent')) ? 'proxies:\n  - name: Remote\n    type: ss\n' : 'ss://example#Remote',
     ) };
     await checkAggregate(path, checkOptions);
+    config.allowedTokens.bob = 'bob-token-1234567890';
+    await mkdir(join(dir, 'bob'));
+    await writeFile(join(dir, 'bob/base64.txt'), btoa(local.replace('192.0.2.1', '192.0.2.2')));
+    await writeFile(path, JSON.stringify(config));
+    let checkCalls = 0;
+    await checkAggregate(path, { ...checkOptions, fetchImpl: async (...args) => {
+        checkCalls++;
+        return checkOptions.fetchImpl(...args);
+    } });
+    assert.equal(checkCalls, 1, 'all users share exactly one XFLASH fetch');
+    checkCalls = 0;
+    await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => {
+        checkCalls++;
+        return new Response('limited', {status: 429});
+    } }), /XFLASH HTTP 429/);
+    assert.equal(checkCalls, 1, 'rate limits never trigger retries');
+    await writeFile(join(dir, 'bob/base64.txt'), 'invalid');
+    await assert.rejects(checkAggregate(path, checkOptions), /解析本机订阅.*bob/);
+    delete config.allowedTokens.bob;
+    await writeFile(path, JSON.stringify(config));
     await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => new Response('unavailable', {status: 503}) }), /XFLASH HTTP 503/);
     await assert.rejects(checkAggregate(path, { ...checkOptions, fetchImpl: async () => { throw Error(config.allowedTokens.alice); } }), error => {
         assert.ok(error.message.includes('XFLASH 请求失败'));

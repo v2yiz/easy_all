@@ -23,7 +23,7 @@ sudo nano /etc/easy_all/aggregate.json
 
 模板复用 `/usr/local/lib/easy_all/templates/mihomo.yaml`。JSON 和模板每次请求重新读取，修改无需重启；无效配置或本地订阅返回 503，避免继续下发旧凭据。XFLASH 失败保留原来的本地节点降级行为。执行 self-update 会更新模板，修改前请保留备份。
 
-仅校验、不修改服务：`sudo easy_all aggregate --check`（需要已安装 Node.js 18+）。校验覆盖所有配置用户的本地节点和 XFLASH 的 Clash/Base64 输出；任一失败就停止，不继续配置运行环境。
+仅校验、不修改服务：`sudo easy_all aggregate --check`（需要已安装 Node.js 18+）。每次校验只请求 XFLASH 一次（Clash 格式），所有用户复用该响应，分别检查本地节点与合并结果。校验不再额外请求 Base64；任一失败立即停止，不重试上游、不继续配置运行环境。正常客户端订阅仍按 UA 获取对应格式，每个订阅请求拉取一次 XFLASH。
 
 ## 已安装 Cloudflare 模式的部署步骤
 
