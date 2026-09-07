@@ -19,9 +19,11 @@ module_functions() {
     sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
 }
 
-bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
+for script in "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}"/profiles/*.sh "${ROOT_DIR}"/lib/*.sh \
-    "${ROOT_DIR}/scripts/debian-init.sh"
+    "${ROOT_DIR}"/test/*.sh "${ROOT_DIR}/scripts/debian-init.sh"; do
+    bash -n "${script}"
+done
 
 for required_path in \
     profiles/reality.sh \

@@ -273,6 +273,9 @@ cat >"${GLOBALPING_CACHE_FILE}" <<EOF
 EOF
 
 gcore_globalping_cache_valid || fail "gcore_globalping_cache_valid should succeed for valid cache"
+globalping_cache_valid || fail "shared cache hook should recognize valid Gcore cache"
+systemctl() { :; }
+assert_contains "Shared status recognizes Gcore cache" "$(show_globalping_status)" 'enabled，6 个'
 
 # 5. Verify NO domain fallback in client candidates
 candidates_output=$(gcore_client_candidates)

@@ -707,6 +707,10 @@ refresh_gcore_globalping_cache() {
         "${GLOBALPING_CACHE_FILE}") 个三网定向精选 IPv4"
 }
 
+globalping_cache_valid() {
+    gcore_globalping_cache_valid "$@"
+}
+
 refresh_globalping_cache() {
     refresh_gcore_globalping_cache "$@"
 }

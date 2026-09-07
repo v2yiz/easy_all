@@ -315,7 +315,8 @@ cloudflare_issue_origin_certificate() {
 
 xhttp_validate_local_tls_curl_args() {
     cloudflare_ensure_origin_ca_root
-    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}")
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
+        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}")
 }
 
 xhttp_renew_origin_certificate() {
@@ -628,6 +629,7 @@ load_state() {
         XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH
         ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+        QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     [[ -f "${state_path}" ]] || return 1
     for variable in "${variables[@]}"; do
@@ -656,6 +658,16 @@ load_state() {
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-none}") || die "订阅模式无效"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}") || die "订阅文件名无效"
     [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") || die "Token 无效"
+    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
+    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
+        || die "状态文件中的 QUOTA_ENABLED 无效"
+    if quota_enabled; then
+        validate_user_accounts "${USER_ACCOUNTS:-}" || die "状态文件中的 USER_ACCOUNTS 无效"
+        validate_quota_start_date "${QUOTA_START_DATE:-}" || die "状态文件中的 QUOTA_START_DATE 无效"
+    else
+        USER_ACCOUNTS=""
+        QUOTA_START_DATE=""
+    fi
     BACKEND="xray"
     PROTOCOL="cloudflare-streamup"
     CDN_PROVIDER="cloudflare"
@@ -677,7 +689,8 @@ save_state() {
             CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON \
             CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID \
             XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH ORIGIN_HEADER_SECRET ALLOWED_TOKENS \
-            SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do
+            SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
+            QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
             case "${v}" in
             STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}" ;;
             PROTOCOL) printf '%s=%q\n' "${v}" "cloudflare-streamup" ;;
@@ -897,7 +910,6 @@ validate_protocol_runtime() {
             && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
             response=$(curl -fsS "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
                 --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-                -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
                 "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
                 return 0

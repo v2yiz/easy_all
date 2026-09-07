@@ -642,6 +642,7 @@ load_state() {
         XRAY_WEBSOCKET_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+        QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     [[ -f "${state_path}" ]] || return 1
     for variable in "${variables[@]}"; do
@@ -670,6 +671,16 @@ load_state() {
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-none}") || die "订阅模式无效"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}") || die "订阅文件名无效"
     [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") || die "Token 无效"
+    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
+    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
+        || die "状态文件中的 QUOTA_ENABLED 无效"
+    if quota_enabled; then
+        validate_user_accounts "${USER_ACCOUNTS:-}" || die "状态文件中的 USER_ACCOUNTS 无效"
+        validate_quota_start_date "${QUOTA_START_DATE:-}" || die "状态文件中的 QUOTA_START_DATE 无效"
+    else
+        USER_ACCOUNTS=""
+        QUOTA_START_DATE=""
+    fi
     BACKEND="xray"
     PROTOCOL="gcore"
     CDN_PROVIDER="gcore"
@@ -692,7 +703,8 @@ save_state() {
             VPS_PUBLIC_IPV4 WEBSOCKET_PATH XHTTP_PATH \
             XRAY_WEBSOCKET_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT \
             ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE \
-            SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do
+            SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
+            QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
             case "${v}" in
             STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}" ;;
             PROTOCOL) printf '%s=%q\n' "${v}" "gcore" ;;

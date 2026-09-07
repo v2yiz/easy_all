@@ -415,7 +415,6 @@ validate_protocol_runtime() {
             && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
             response=$(curl -fsS "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
                 --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-                -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
                 "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
                 validate_quota_api
@@ -430,7 +429,6 @@ validate_protocol_runtime() {
 validate_subscription_runtime() {
     local token base64_response mihomo_response marker
     XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-}"
-    ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
         xhttp_validate_local_tls_curl_args
@@ -438,8 +436,7 @@ validate_subscription_runtime() {
     validate_subscription_token_rejection \
         "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe" \
-        "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}"
+        "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}"
     if quota_enabled; then
         token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
         [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
@@ -448,13 +445,11 @@ validate_subscription_runtime() {
     fi
     base64_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" \
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
     mihomo_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" \
         --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
     marker='network: xhttp'
