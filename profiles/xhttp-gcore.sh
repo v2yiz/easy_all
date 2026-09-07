@@ -125,10 +125,18 @@ gcore_json_items() {
     local json=$1
     if jq -e 'type == "array"' <<<"${json}" >/dev/null 2>&1; then
         jq -c '.[]' <<<"${json}"
-    elif jq -e 'type == "object" and has("results") and (.results | type == "array")' <<<"${json}" >/dev/null 2>&1; then
-        jq -c '.results[]' <<<"${json}"
-    elif jq -e 'type == "object" and has("data") and (.data | type == "array")' <<<"${json}" >/dev/null 2>&1; then
-        jq -c '.data[]' <<<"${json}"
+    elif jq -e 'type == "object"' <<<"${json}" >/dev/null 2>&1; then
+        if jq -e 'has("zones") and (.zones | type == "array")' <<<"${json}" >/dev/null 2>&1; then
+            jq -c '.zones[]' <<<"${json}"
+        elif jq -e 'has("rrsets") and (.rrsets | type == "array")' <<<"${json}" >/dev/null 2>&1; then
+            jq -c '.rrsets[]' <<<"${json}"
+        elif jq -e 'has("results") and (.results | type == "array")' <<<"${json}" >/dev/null 2>&1; then
+            jq -c '.results[]' <<<"${json}"
+        elif jq -e 'has("data") and (.data | type == "array")' <<<"${json}" >/dev/null 2>&1; then
+            jq -c '.data[]' <<<"${json}"
+        elif jq -e 'has("items") and (.items | type == "array")' <<<"${json}" >/dev/null 2>&1; then
+            jq -c '.items[]' <<<"${json}"
+        fi
     fi
 }
 
@@ -239,10 +247,12 @@ configure_ufw() {
 # --- DNS & Zone Management ---
 
 gcore_find_zone_for_domain() {
-    local domain=$1 zones matched="" candidate
+    local domain candidate matched="" zones
+    domain=$(normalize_domain "$1")
     zones=$(gcore_api_request GET "/dns/v2/zones")
     while IFS= read -r candidate; do
         [[ -n "${candidate}" ]] || continue
+        candidate=$(normalize_domain "${candidate}")
         if [[ "${domain}" == "${candidate}" || "${domain}" == *".${candidate}" ]]; then
             if [[ -z "${matched}" || ${#candidate} -gt ${#matched} ]]; then
                 matched=${candidate}
@@ -256,8 +266,8 @@ gcore_find_zone_for_domain() {
 gcore_verify_zone_delegation() {
     local zone=$1 status
     status=$(gcore_api_request GET "/dns/v2/analyze/${zone}/delegation-status")
-    if ! jq -e '.delegated == true' <<<"${status}" >/dev/null 2>&1; then
-        warn "Zone ${zone} 在 Gcore 尚未通过 DNS 委派校验"
+    if ! jq -e '.delegated == true or (.zone_exists == true and (.gcore_authorized_count // 0) > 0 and (.non_gcore_authorized_count // 0) == 0)' <<<"${status}" >/dev/null 2>&1; then
+        warn "Zone ${zone} 在 Gcore 尚未通过 DNS 委派校验，请确认已在域名注册商处将权威 NS 替换为 Gcore"
     fi
 }
 
@@ -521,7 +531,7 @@ gcore_prepare_origin() {
 
     info "检索 Gcore Managed DNS Zone"
     GCORE_DNS_ZONE=$(gcore_find_zone_for_domain "${GCORE_ORIGIN_DOMAIN}") \
-        || die "未找到匹配域名 ${GCORE_ORIGIN_DOMAIN} 的 Gcore DNS Zone"
+        || die "未找到匹配域名 ${GCORE_ORIGIN_DOMAIN} 的 Gcore DNS Zone。请先在 Gcore 控制台（DNS -> Add zone）添加根域名托管 Zone，并将域名权威 NS 委派至 Gcore"
     gcore_verify_zone_delegation "${GCORE_DNS_ZONE}"
     gcore_ensure_origin_a_record
     gcore_ensure_cdn_cname_record
