@@ -228,14 +228,15 @@ function parseVlessLink(link) {
     };
 }
 
-async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS } = {}) {
+async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS, userAgent = '' } = {}) {
     if (!url) return { nodes: FALLBACK_CDN_NODES, error: null };
     try {
         // The parser consumes URI subscriptions, regardless of the caller's format.
+        const clientUA = userAgent?.trim() || 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
         const subscriptionUrl = new URL(url);
         subscriptionUrl.searchParams.set('flag', 'base64');
         const text = await fetchXflashSubscription(
-            { headers: new Headers({ 'User-Agent': 'v2rayN' }) },
+            { headers: new Headers({ 'User-Agent': clientUA }) },
             subscriptionUrl.toString(), { fetchImpl, timeoutMs, format: 'base64' }
         );
         const decoded = decodeBase64Utf8(text) || text;
@@ -653,7 +654,10 @@ function createWorkerHandler({
             request,
             url.searchParams.get('flag')
         );
-        const { nodes: dynamicCdnNodes, error: dynamicCdnError } = await fetchDynamicCdnNodes(vpsCdnUrl, { fetchImpl });
+        const { nodes: dynamicCdnNodes, error: dynamicCdnError } = await fetchDynamicCdnNodes(vpsCdnUrl, {
+            fetchImpl,
+            userAgent: request.headers.get('User-Agent'),
+        });
         const selectedLocalNodes = selectLocalNodes(localNodes, url);
         const nodes = [...selectedLocalNodes, ...dynamicCdnNodes];
         const ports = resolveNodePorts(nodes, { now });

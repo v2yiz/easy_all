@@ -57,7 +57,7 @@ try {
         const result = await dynamicApi.fetchDynamicCdnNodes(config.vpsCdnUrl + '&flag=clash', {
             fetchImpl: async (url, options) => {
                 assert.equal(new URL(url).searchParams.get('flag'), 'base64');
-                assert.equal(options.headers.get('User-Agent'), 'v2rayN');
+                assert.equal(options.headers.get('User-Agent'), 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
                 const links = [...Array(6).fill(cf.replace('type=xhttp', 'type=tcp')), ...Array(7).fill(cf)].join('\n');
                 return new Response(encoded ? btoa(links) : links);
             },
@@ -66,6 +66,14 @@ try {
         assert.equal(result.nodes.length, 6, 'limit applies to supported nodes');
         assert.equal(result.nodes[0].name, '🇺🇸备用CF1');
     }
+    const forwardedUA = await dynamicApi.fetchDynamicCdnNodes(config.vpsCdnUrl, {
+        userAgent: 'client-subscription/1.0',
+        fetchImpl: async (url, options) => {
+            assert.equal(options.headers.get('User-Agent'), 'client-subscription/1.0');
+            return new Response(btoa(cf));
+        },
+    });
+    assert.equal(forwardedUA.nodes.length, 1, 'client UA is forwarded without changing parsing');
     for (const [status, headers, warning] of [
         [403, {}, 'HTTP 403'],
         [200, {'cf-mitigated': 'challenge'}, 'Cloudflare challenge'],
