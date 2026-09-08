@@ -520,6 +520,22 @@ assert_equal "Lossy candidate is filtered out" "" \
         "$(<"${curl_args_file}")" "--http1.1"
 )
 
+# Failed candidate probes must preserve curl's concrete TLS error.
+(
+    curl() {
+        printf 'curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL\n' >&2
+        printf '000'
+        return 35
+    }
+    if failed_probe=$(gcore_probe_pool_candidate "31.184.207.6"); then
+        fail "TLS handshake failure must reject the candidate"
+    fi
+    assert_contains "Candidate probe classifies TLS handshake failures" \
+        "${failed_probe}" $'35\t000\tTLS 握手失败'
+    assert_contains "Candidate probe preserves curl error details" \
+        "${failed_probe}" "SSL_ERROR_SYSCALL"
+)
+
 # Candidate prevalidation keeps successful records and summarizes failures.
 (
     precheck_source="${TMP_DIR}/gcore-precheck-source.tsv"
@@ -532,8 +548,8 @@ EOF
     gcore_probe_pool_candidate() {
         case "$1" in
         92.223.76.20) printf '28\t101\n'; return 0 ;;
-        31.184.207.6) printf '35\t000\n'; return 1 ;;
-        *) printf '0\t403\n'; return 1 ;;
+        31.184.207.6) printf '35\t000\tTLS 握手失败：mock ssl error\n'; return 1 ;;
+        *) printf '0\t403\tWebSocket 握手返回未接受的 HTTP 状态\n'; return 1 ;;
         esac
     }
     warn() { printf '%s\n' "$*"; }
@@ -545,6 +561,12 @@ EOF
         "${precheck_log}" "curl=35,HTTP=000:1"
     assert_contains "Candidate prevalidation reports rejected HTTP responses" \
         "${precheck_log}" "curl=0,HTTP=403:1"
+    assert_contains "Candidate prevalidation reports the failed IP and curl detail" \
+        "${precheck_log}" \
+        "31.184.207.6：curl=35，HTTP=000，原因=TLS 握手失败：mock ssl error"
+    assert_contains "Candidate prevalidation explains rejected HTTP status" \
+        "${precheck_log}" \
+        "92.223.120.132：curl=0，HTTP=403，原因=WebSocket 握手返回未接受的 HTTP 状态"
 )
 
 # 3e. Edge propagation accepts end-to-end success even while Resource is processed.

@@ -224,9 +224,30 @@ gcore_wait_for_precheck_readiness() {
 }
 
 # Pre-validates IP locally through TLS SNI and an HTTP/1.1 WebSocket handshake.
+gcore_candidate_failure_reason() {
+    local curl_status=$1 http_code=$2 curl_error=${3:-} reason
+    case "${curl_status}" in
+    0) reason="WebSocket 握手返回未接受的 HTTP 状态" ;;
+    6) reason="域名解析失败" ;;
+    7) reason="无法连接候选 IP 的 443 端口" ;;
+    28) reason="连接或握手超时" ;;
+    35) reason="TLS 握手失败" ;;
+    52) reason="边缘返回空响应" ;;
+    56) reason="接收响应失败或连接被重置" ;;
+    60) reason="TLS 证书校验失败" ;;
+    *) reason="curl 请求失败" ;;
+    esac
+    printf '%s%s' "${reason}" "${curl_error:+：${curl_error}}"
+}
+
 gcore_probe_pool_candidate() {
-    local ip=$1 ws_path=${WEBSOCKET_PATH:-/easy_all-ws} http_code="" curl_status=0
+    local ip=$1 ws_path=${WEBSOCKET_PATH:-/easy_all-ws}
+    local http_code="" curl_status=0 curl_error="" error_file reason
     validate_public_ipv4 "${ip}" || return 1
+    error_file=$(mktemp "${RUNTIME_TMP}/gcore-candidate-curl.XXXXXX") || {
+        printf '1\t000\t无法创建 curl 错误日志\n'
+        return 1
+    }
     http_code=$(curl --http1.1 -sS -o /dev/null -w '%{http_code}' \
         --connect-timeout 4 --max-time 10 --noproxy '*' \
         --resolve "${VLESS_CDN_DOMAIN}:443:${ip}" \
@@ -235,9 +256,18 @@ gcore_probe_pool_candidate() {
         -H "Connection: Upgrade" \
         -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
         -H "Sec-WebSocket-Version: 13" \
-        "https://${VLESS_CDN_DOMAIN}${ws_path}" 2>/dev/null) || curl_status=$?
-    printf '%s\t%s\n' "${curl_status}" "${http_code:-000}"
-    [[ "${http_code}" == "101" || "${http_code}" == "200" ]]
+        "https://${VLESS_CDN_DOMAIN}${ws_path}" 2>"${error_file}") || curl_status=$?
+    curl_error=$(tr '\t\r\n' '   ' <"${error_file}" \
+        | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
+    rm -f -- "${error_file}"
+    if [[ "${http_code}" == "101" || "${http_code}" == "200" ]]; then
+        printf '%s\t%s\n' "${curl_status}" "${http_code}"
+        return 0
+    fi
+    reason=$(gcore_candidate_failure_reason \
+        "${curl_status}" "${http_code:-000}" "${curl_error}")
+    printf '%s\t%s\t%s\n' "${curl_status}" "${http_code:-000}" "${reason}"
+    return 1
 }
 
 gcore_validate_pool_candidate() {
@@ -247,7 +277,7 @@ gcore_validate_pool_candidate() {
 gcore_prevalidate_candidate_pool() {
     local source=$1 destination=$2 validation_dir part failures_file failure_summary
     local unique_ips_file passed_ips_file ip index=0 record_count=0 passed_count=0
-    local probe_result
+    local probe_result failed_ip failed_curl failed_http failed_reason
     validation_dir=$(make_temp_dir)
     failures_file="${validation_dir}/failures"
     unique_ips_file="${validation_dir}/unique-ips"
@@ -289,6 +319,9 @@ gcore_prevalidate_candidate_pool() {
         cat "${part}" >>"${failures_file}"
     done
     if [[ -s "${failures_file}" ]]; then
+        while IFS=$'\t' read -r failed_ip failed_curl failed_http failed_reason; do
+            warn "Gcore DNS 入口预检淘汰 ${failed_ip}：curl=${failed_curl}，HTTP=${failed_http}，原因=${failed_reason:-未知}"
+        done <"${failures_file}"
         failure_summary=$(awk -F'\t' '
             {key="curl=" $2 ",HTTP=" $3; counts[key]++}
             END {
