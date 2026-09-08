@@ -455,7 +455,9 @@ Edge cache 和 browser cache 均为 `0s`；不忽略查询参数；开启 Origin
 安装器使用 `1.1.1.1` 等待源站 A 与 CDN CNAME 传播，然后轮询 Resource 和边缘证书状态，并通过公网
 `/easy_all-health`、真实 XHTTP 和 WebSocket 链路完成验收。Resource 状态仅用于诊断；即使仍显示
 `processed`，只要端到端 HTTPS 与传输验收成功即可继续。开始精选 IP 预检前还会再次等待公网健康接口，
-避免异步证书签发或边缘配置传播期间把全部候选误判为不可用。
+避免异步证书签发或边缘配置传播期间把全部候选误判为不可用。重复执行 `apply-cloud` 时会先刷新本机
+Xray/Nginx，再比较公网 DNS 和 CDN Resource 的目标字段；配置一致时跳过重复写入及长时间传播轮询，
+仅执行一轮端到端复核。
 
 ### 8.5 Origin SSL Validation 与 mTLS
 

@@ -447,6 +447,66 @@ EOF
     assert_equal "Both Gcore transports are verified" "2" "${probe_calls}"
 )
 
+# XHTTP failure must not suppress the WebSocket probe or its diagnostic.
+(
+    transport_probe_calls="${TMP_DIR}/gcore-transport-probe-calls"
+    : >"${transport_probe_calls}"
+    QUOTA_ENABLED=0
+    SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
+    GCORE_CDN_RESOURCE_ID=202
+    GCORE_EDGE_CERTIFICATE_ID=303
+    gcore_api_request() {
+        case "$1 $2" in
+        "GET /cdn/resources/202") printf '{"status":"active"}' ;;
+        "GET /cdn/sslData/303/status")
+            printf '{"active":true,"latest_status":{"status":"DONE"}}'
+            ;;
+        *) return 1 ;;
+        esac
+    }
+    curl() {
+        printf 'easy_all ok\n' >"${RUNTIME_TMP}/gcore-edge-health-body"
+        printf '200'
+    }
+    gcore_probe_xhttp() {
+        printf 'xhttp\n' >>"${transport_probe_calls}"
+        GCORE_XHTTP_PROBE_ERROR="mock xhttp failure"
+        return 1
+    }
+    gcore_probe_websocket() {
+        printf 'websocket\n' >>"${transport_probe_calls}"
+        return 0
+    }
+    sleep() { fail "Single-attempt validation must not sleep"; }
+    if transport_error=$(gcore_wait_for_cdn_health 1 0 2>&1); then
+        fail "A failed XHTTP transport must fail CDN validation"
+    fi
+    assert_equal "Both transport probes run independently" \
+        $'xhttp\nwebsocket' "$(<"${transport_probe_calls}")"
+    assert_contains "Transport diagnostics identify XHTTP failure" \
+        "${transport_error}" "XHTTP=failed(mock xhttp failure)"
+    assert_contains "Transport diagnostics identify WebSocket success" \
+        "${transport_error}" "WebSocket=ok"
+)
+
+# Unchanged resources use one validation attempt; changed resources allow propagation.
+(
+    health_args="${TMP_DIR}/gcore-health-args"
+    gcore_ensure_origin_group() { :; }
+    gcore_ensure_origin_validation_certificates() { :; }
+    gcore_wait_for_cdn_health() { printf '%s\t%s\n' "${1:-default}" "${2:-default}" >"${health_args}"; }
+
+    gcore_ensure_resource() { GCORE_CDN_RESOURCE_CHANGED=0; }
+    gcore_apply_cdn >/dev/null
+    assert_equal "Unchanged resource uses one immediate health check" \
+        $'1\t0' "$(<"${health_args}")"
+
+    gcore_ensure_resource() { GCORE_CDN_RESOURCE_CHANGED=1; }
+    gcore_apply_cdn >/dev/null
+    assert_equal "Changed resource uses the default propagation window" \
+        $'default\tdefault' "$(<"${health_args}")"
+)
+
 # Quota mode uses an active account UUID and skips transport probes if all users are disabled.
 (
     QUOTA_ENABLED=1
@@ -712,6 +772,7 @@ gcore_api_request() {
     recorded_calls+=("$1 $2 $3")
     return 0
 }
+dig() { return 1; }
 
 GCORE_DNS_ZONE="1988088.xyz"
 GCORE_ORIGIN_DOMAIN="origin.1988088.xyz"
@@ -742,7 +803,20 @@ subscription_cname_call="${recorded_calls[2]}"
 assert_contains "Subscription CNAME method and url" "${subscription_cname_call}" \
     "PUT /dns/v2/zones/1988088.xyz/sub.1988088.xyz/CNAME"
 
-unset -f gcore_api_request
+dig() {
+    case "$*" in
+    *" A ${GCORE_ORIGIN_DOMAIN} "*) printf '%s\n' "${VPS_PUBLIC_IPV4}" ;;
+    *" CNAME ${VLESS_CDN_DOMAIN} "*|*" CNAME ${SUBSCRIPTION_DOMAIN} "*)
+        printf '%s.\n' "${GCORE_CDN_TARGET}"
+        ;;
+    esac
+}
+gcore_ensure_origin_a_record
+gcore_ensure_cdn_cname_records
+assert_equal "Matching public DNS records skip redundant API writes" \
+    "3" "${#recorded_calls[@]}"
+
+unset -f dig gcore_api_request
 
 # DNS propagation checks use only 1.1.1.1 and require exact records.
 (
@@ -775,7 +849,9 @@ unset -f gcore_api_request
     expected_certificate=303
     empty_certificate_response=false
     reject_certificate=false
+    resource_matches=false
     certificate_created="${TMP_DIR}/edge-certificate-created"
+    resource_payload="${TMP_DIR}/gcore-resource-payload.json"
     gcore_api_request() {
         printf '%s %s\n' "$1" "$2" >>"${api_calls}"
         case "$1 $2" in
@@ -804,6 +880,12 @@ unset -f gcore_api_request
             if [[ "${existing}" == true ]]; then
                 jq -cn --arg cname "${VLESS_CDN_DOMAIN}" --argjson cert "${bound_certificate}" '[{id:202,cname:$cname,sslData:$cert}]'
             else printf '[]'; fi ;;
+        'GET /cdn/resources/202')
+            if [[ "${resource_matches}" == true && -s "${resource_payload}" ]]; then
+                cat "${resource_payload}"
+            else
+                printf '{"id":202,"active":false}'
+            fi ;;
         'POST /cdn/resources'|'PUT /cdn/resources/202')
             [[ "${reject_update}" == false ]] || return 1
             [[ "${expected_certificate}" == 404 || -f "${certificate_created}" ]] || return 1
@@ -827,6 +909,7 @@ unset -f gcore_api_request
                 .options.edge_cache_settings.value == "0s" and
                 (.options | has("origin_ssl_validation") or has("force_ssl") or has("proxy_cache") or has("ignore_query_string")) == false
             ' <<<"$3" >/dev/null || return 1
+            printf '%s\n' "$3" >"${resource_payload}"
             printf '{"id":202}' ;;
         *) return 1 ;;
         esac
@@ -843,6 +926,13 @@ unset -f gcore_api_request
     gcore_ensure_resource
     assert_equal "Existing group is reused" 1 "$(grep -c '^POST /cdn/origin_groups$' "${api_calls}")"
     assert_equal "Existing resource is updated" 1 "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
+    resource_matches=true
+    gcore_ensure_resource
+    assert_equal "Unchanged resource skips PUT" 1 \
+        "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
+    assert_equal "Unchanged resource exposes no propagation change" 0 \
+        "${GCORE_CDN_RESOURCE_CHANGED}"
+    resource_matches=false
     reject_update=true
     if gcore_ensure_resource; then fail "Resource update failure must propagate"; fi
     reject_update=false
@@ -905,19 +995,20 @@ unset -f gcore_api_request
     configure_bbr_tcp() { :; }
     configure_ufw() { :; }
     gcore_prepare_origin() { calls+="prepare "; }
+    refresh_runtime() { calls+="runtime "; }
     gcore_apply_cdn() { calls+="cloud "; }
     collect_globalping_token() { calls+="token "; }
     validate_globalping_access() { calls+="validate "; }
     persist_globalping_token() { calls+="persist "; }
     refresh_gcore_globalping_cache() { calls+="refresh "; }
-    finish_xhttp_apply() { calls+="finish:$1 "; }
+    finish_xhttp_apply() { calls+="finish:$1:$2 "; }
     install_globalping_refresh_timer() { calls+="timer "; }
     gcore_clear_api_token() { calls+="clear "; }
     show_subscription() { calls+="show "; }
     success() { calls+="success "; }
     apply_cloud_resources
     assert_equal "apply-cloud refreshes IPs before one subscription render" \
-        "prepare cloud token validate persist refresh finish:1 timer clear success " "${calls}"
+        "prepare runtime cloud token validate persist refresh finish:1:1 timer clear success " "${calls}"
 )
 
 # Execute the real upload flow with temporary certificate paths in a fresh shell.

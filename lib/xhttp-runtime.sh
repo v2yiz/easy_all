@@ -923,11 +923,13 @@ rollback_subscription_update() {
 }
 
 finish_xhttp_apply() {
-    local state_current=${1:-0}
-    if [[ "${state_current}" == "1" ]]; then
-        XHTTP_RUNTIME_STATE_CURRENT=1 refresh_runtime
-    else
-        refresh_runtime
+    local state_current=${1:-0} runtime_already_refreshed=${2:-0}
+    if [[ "${runtime_already_refreshed}" != "1" ]]; then
+        if [[ "${state_current}" == "1" ]]; then
+            XHTTP_RUNTIME_STATE_CURRENT=1 refresh_runtime
+        else
+            refresh_runtime
+        fi
     fi
     validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
