@@ -70,6 +70,7 @@ export GCORE_EDGE_PROPAGATION_ATTEMPTS_OVERRIDE=3
 export GCORE_EDGE_PROPAGATION_INTERVAL_OVERRIDE=0
 export GCORE_PRECHECK_READY_ATTEMPTS_OVERRIDE=3
 export GCORE_PRECHECK_READY_INTERVAL_OVERRIDE=0
+export GCORE_DNS_PROBES_PER_REGION_OVERRIDE=2
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
 touch "${CERT_FILE}" "${KEY_FILE}"
@@ -122,6 +123,100 @@ chmod +x "${XRAY_BIN}"
 # shellcheck source=/dev/null
 source "${PROFILE}"
 trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
+
+# Regional DNS discovery must use real CDN hostname answers, not origin ACL IPs.
+dns_request=$(gcore_globalping_dns_measurement_request "${VLESS_CDN_DOMAIN}")
+assert_equal "Gcore DNS discovery targets the CDN hostname" "${VLESS_CDN_DOMAIN}" \
+    "$(jq -r '.target' <<<"${dns_request}")"
+assert_equal "Gcore DNS discovery uses the DNS measurement type" "dns" \
+    "$(jq -r '.type' <<<"${dns_request}")"
+assert_equal "Gcore DNS discovery requests A records" "A" \
+    "$(jq -r '.measurementOptions.query.type' <<<"${dns_request}")"
+assert_equal "Gcore DNS discovery covers three target regions" "3" \
+    "$(jq '.locations | length' <<<"${dns_request}")"
+assert_equal "Gcore DNS discovery uses the configured probes per region" "true" \
+    "$(jq 'all(.locations[]; .limit == 2)' <<<"${dns_request}")"
+
+dns_measurement="${TMP_DIR}/gcore-dns-measurement.json"
+cat >"${dns_measurement}" <<'EOF'
+{
+  "status": "finished",
+  "results": [
+    {
+      "probe": {"country": "HK", "city": "Hong Kong"},
+      "result": {
+        "status": "finished",
+        "statusCode": 0,
+        "answers": [
+          {"type": "CNAME", "value": "cl-test.gcdn.co."},
+          {"type": "A", "value": "92.223.76.20"},
+          {"type": "A", "value": "92.223.76.22"},
+          {"type": "A", "value": "10.0.0.1"}
+        ]
+      }
+    },
+    {
+      "probe": {"country": "JP", "city": "Tokyo"},
+      "result": {
+        "status": "finished",
+        "statusCode": 0,
+        "answers": [
+          {"type": "A", "value": "31.184.207.6"},
+          {"type": "A", "value": "31.184.207.8"}
+        ]
+      }
+    },
+    {
+      "probe": {"country": "US", "state": "CA", "city": "Los Angeles"},
+      "result": {
+        "status": "finished",
+        "statusCode": 0,
+        "answers": [
+          {"type": "A", "value": "92.223.120.132"},
+          {"type": "A", "value": "92.223.120.138"}
+        ]
+      }
+    },
+    {
+      "probe": {"country": "JP", "city": "Osaka"},
+      "result": {
+        "status": "failed",
+        "statusCode": 2,
+        "answers": [{"type": "A", "value": "31.184.207.9"}]
+      }
+    }
+  ]
+}
+EOF
+dns_candidates=$(gcore_parse_globalping_dns_candidates "$(<"${dns_measurement}")")
+assert_equal "Regional DNS parsing keeps six unique public ingress IPs" "6" \
+    "$(cut -f1 <<<"${dns_candidates}" | sort -u | wc -l | tr -d ' ')"
+assert_equal "Hong Kong answers feed Mobile primary and Unicom cross-checks" "2" \
+    "$(awk -F'\t' '$1=="92.223.76.20" && ($2=="9808" || $2=="4837"){c++} END{print c+0}' <<<"${dns_candidates}")"
+assert_equal "Japan answers feed all three carrier checks" "3" \
+    "$(awk -F'\t' '$1=="31.184.207.6"{c++} END{print c+0}' <<<"${dns_candidates}")"
+assert_equal "Los Angeles answers feed Telecom primary checks" "4134" \
+    "$(awk -F'\t' '$1=="92.223.120.132"{print $2}' <<<"${dns_candidates}")"
+assert_not_contains "Private DNS answers are rejected" "${dns_candidates}" "10.0.0.1"
+assert_not_contains "Failed DNS probe answers are rejected" "${dns_candidates}" "31.184.207.9"
+
+(
+    globalping_api_request() {
+        assert_equal "DNS discovery submits one measurement" \
+            "POST /measurements" "$1 $2"
+        assert_equal "Submitted discovery payload targets the CDN hostname" \
+            "${VLESS_CDN_DOMAIN}" "$(jq -r '.target' <<<"$3")"
+        printf '{"id":"dns-measurement-1"}'
+    }
+    gcore_wait_globalping_measurement() {
+        assert_equal "DNS discovery waits for the created measurement" \
+            "dns-measurement-1" "$1"
+        cat "${dns_measurement}"
+    }
+    generated=$(gcore_generate_carrier_candidate_pool)
+    assert_equal "DNS discovery orchestration returns parsed candidates" \
+        "${dns_candidates}" "${generated}"
+)
 
 # API wrappers must reject non-2xx responses even when the body lacks error/errors keys.
 if (
@@ -298,6 +393,33 @@ assert_equal "Lossy candidate is filtered out" "" \
         "$(<"${curl_args_file}")" "--http1.1"
 )
 
+# Candidate prevalidation keeps successful records and summarizes failures.
+(
+    precheck_source="${TMP_DIR}/gcore-precheck-source.tsv"
+    precheck_output="${TMP_DIR}/gcore-precheck-output.tsv"
+    cat >"${precheck_source}" <<'EOF'
+92.223.76.20	9808	mobile	HK
+31.184.207.6	4837	unicom	JP
+92.223.120.132	4134	telecom	LA
+EOF
+    gcore_probe_pool_candidate() {
+        case "$1" in
+        92.223.76.20) printf '28\t101\n'; return 0 ;;
+        31.184.207.6) printf '35\t000\n'; return 1 ;;
+        *) printf '0\t403\n'; return 1 ;;
+        esac
+    }
+    warn() { printf '%s\n' "$*"; }
+    precheck_log=$(gcore_prevalidate_candidate_pool \
+        "${precheck_source}" "${precheck_output}")
+    assert_equal "Candidate prevalidation keeps only successful ingress records" \
+        $'92.223.76.20\t9808\tmobile\tHK' "$(<"${precheck_output}")"
+    assert_contains "Candidate prevalidation reports TLS/connect failures" \
+        "${precheck_log}" "curl=35,HTTP=000:1"
+    assert_contains "Candidate prevalidation reports rejected HTTP responses" \
+        "${precheck_log}" "curl=0,HTTP=403:1"
+)
+
 # 3e. Edge propagation accepts end-to-end success even while Resource is processed.
 (
     QUOTA_ENABLED=0
@@ -415,14 +537,14 @@ fi
         printf 'prevalidate\n' >>"${sequence_file}"
         return 1
     }
-    if gcore_build_official_pool_cache "${TMP_DIR}/unused-cache.json"; then
+    if gcore_build_dns_pool_cache "${TMP_DIR}/unused-cache.json"; then
         fail "Mocked candidate prevalidation must stop the cache build"
     fi
     assert_equal "Public edge wait runs before candidate prevalidation" \
         $'ready\nprevalidate' "$(<"${sequence_file}")"
 )
 
-# 4. Write valid cache file and test cache validation
+# 4. Legacy origin-ACL caches must not be served after the discovery upgrade.
 now_epoch=$(date +%s)
 cat >"${GLOBALPING_CACHE_FILE}" <<EOF
 {
@@ -430,6 +552,25 @@ cat >"${GLOBALPING_CACHE_FILE}" <<EOF
   "provider": "gcore",
   "domain": "${VLESS_CDN_DOMAIN}",
   "candidate_source": "gcore-official-public-ip-list",
+  "measured_at_epoch": ${now_epoch},
+  "probe_type": "eyeball-network",
+  "carrier_asns": [9808, 4837, 4134],
+  "candidates": ${candidates_json}
+}
+EOF
+if gcore_globalping_cache_compatible; then
+    fail "Legacy origin-ACL cache must not be treated as a compatible ingress cache"
+fi
+assert_equal "Legacy origin-ACL cache is not emitted to clients" \
+    "" "$(gcore_client_candidates)"
+
+# Write valid regional-DNS cache and test cache validation.
+cat >"${GLOBALPING_CACHE_FILE}" <<EOF
+{
+  "version": 2,
+  "provider": "gcore",
+  "domain": "${VLESS_CDN_DOMAIN}",
+  "candidate_source": "gcore-globalping-regional-dns",
   "measured_at": "2026-09-07T00:00:00Z",
   "measured_at_epoch": ${now_epoch},
   "probe_country": "CN",

@@ -3,8 +3,8 @@
 # Gcore CDN Profile for easy_all (Mode 3).
 #
 # Provides high-performance, edge-accelerated VLESS over Gcore CDN.
-# Uses Gcore server addresses and Geofeed data to find IPv4 candidates for Hong
-# Kong, Japan, and California, then selects up to 2 verified nodes per carrier.
+# Resolves the account CDN hostname from Hong Kong, Japan, and Los Angeles,
+# then selects up to 2 verified IPv4 endpoints per China carrier.
 # Server side enables mTLS origin validation and dual-path Xray (WebSocket + XHTTP packet-up).
 
 set -Eeuo pipefail
@@ -991,7 +991,7 @@ collect_install_inputs() {
     info "Gcore 模式需要具有 CDN 与 Managed DNS 权限的 API Token。"
     gcore_collect_api_token
 
-    info "Gcore 模式从官方单播节点提取香港、日本、洛杉矶边缘，并使用三网 Globalping eyeball 探针定向测速。"
+    info "Gcore 模式通过香港、日本、洛杉矶 Globalping 探针发现真实 DNS 入口，并使用三网 eyeball 探针定向测速。"
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
 
@@ -1418,7 +1418,7 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: VLESS WebSocket + XHTTP packet-up（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Gcore CDN 服务器地址 / 三网 Globalping eyeball 定向探针\n节点数量: 最多 6 个，以实际验证结果为准\n' \
+    printf '协议: VLESS WebSocket + XHTTP packet-up（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 最多 6 个，以实际验证结果为准\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${GCORE_CDN_TARGET}"
     show_globalping_status
 }

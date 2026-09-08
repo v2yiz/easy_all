@@ -252,10 +252,9 @@ Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Tra
 
 ## 8. Gcore CDN 精选 IP 准备
 
-模式 3 面向非优化线路 VPS，通过 Gcore CDN 边缘进行全网加速。与 Cloudflare 的 Anycast 泛播不同，Gcore
-绝大多数边缘节点为**单播（Unicast）** IP。模式 3 采用 Gcore 官方公共 IP 接口与权威 RFC 8805 Geofeed，
-全量提取属于香港、日本、洛杉矶的官方 CDN 节点，并通过 Globalping Eyeball 探针进行**定向不交叉测速**
-（移动 -> 香港，联通 -> 日本，电信 -> 洛杉矶），各下发最稳定的前 2 个节点（共 6 个节点），**完全无域名兜底**。
+模式 3 面向非优化线路 VPS，通过 Gcore CDN 边缘进行全网加速。模式 3 使用香港、日本、洛杉矶的
+Globalping 探针解析当前账户的 CDN 域名，汇总 Gcore 实际返回的入口 IPv4，再通过中国移动、联通、电信
+Eyeball 探针定向测速。每个运营商最多下发 2 个独立有效节点（总计最多 6 个），**完全无域名兜底**。
 
 服务端采用双路径架构：同时监听并支持原生全双工 **VLESS WebSocket** 与拆包式 **VLESS XHTTP packet-up**，
 并强制开启 Gcore Origin SSL Validation 与客户端证书 mTLS 双向鉴权，彻底杜绝源站真实 IP 被直接嗅探。
@@ -432,7 +431,7 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 ```text
 客户端 VLESS
   -> WebSocket + TLS（ALPN http/1.1）或 XHTTP packet-up + TLS（ALPN h2）
-  -> Gcore 全网定向精选单播 IP（移动->香港，联通->日本，电信->洛杉矶）
+  -> Gcore 多地区 DNS 发现的真实入口 IP
   -> Gcore CDN 边缘反代
   -> HTTPS + Origin SSL Validation + Gcore 客户端证书
   -> Nginx mTLS 鉴权后按路径分流
@@ -470,19 +469,21 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 
 官方参考：[Origin SSL Validation](https://docs.gcore.com/cdn/cdn-resource-options/general/enable-origin-ssl-validation.md)。
 
-### 8.6 定向精选 IP 与无域名兜底机制
+### 8.6 多地区 DNS 发现、定向精选与无域名兜底
 
-- **官方 IP 与地理数据库**：通过 `https://api.gcore.com/cdn/public-ip-list` 与 `https://geofeed.gcore.lu/IP-Range.csv`
-  提取香港、日本、洛杉矶的 Gcore CDN 服务器地址；该接口主要用于源站 ACL，只有通过本机
-  HTTP/1.1 SNI/WebSocket 握手的地址才会作为客户端入口候选。
-- **定向不交叉探测**：
-  - 移动（ASN 9808）探针仅对香港候选全量测速；
-  - 联通（ASN 4837）探针仅对日本候选全量测速；
-  - 电信（ASN 4134）探针仅对洛杉矶候选全量测速。
+- **真实入口发现**：通过 Globalping 分别从香港、日本、洛杉矶的多个探针解析 `VLESS_CDN_DOMAIN`，
+  合并成功 DNS 响应中的公共 IPv4。不同地区、网络和递归解析器可能获得不同入口；重复地址会去重。
+- **回源地址严格隔离**：`https://api.gcore.com/cdn/public-ip-list` 和 `/cdn/public-net-list` 是
+  Gcore CDN 服务器回源地址清单，仅用于源站 UFW/ACL 放行，不再作为客户端入口候选。
+- **运营商定向探测**：
+  - 移动（ASN 9808）以香港入口为主，并交叉检查日本入口；
+  - 联通（ASN 4837）以日本入口为主，并交叉检查香港入口；
+  - 电信（ASN 4134）以洛杉矶入口为主，并交叉检查日本入口。
 - **防假通验证**：本机先使用目标域名作为 TLS SNI，通过 HTTP/1.1 完成真实 WebSocket 握手；随后仅将
   已验证地址交给 Globalping，从三网探针执行 TCP/443 零丢包与延迟测量。
-- **最多下发 6 节点**：各网最多取前 2 个 IP；首次刷新不足 6 个时下发实际有效数量，已有完整缓存时刷新
-  不足会保留上一版缓存。
+- **最多下发 6 节点**：各网最多取前 2 个 IP；不足 6 个时下发实际有效数量，后续刷新若有效 IP 数减少则
+  保留上一版缓存。若 Gcore 对所有地区始终返回同一个入口 IP，最终节点数也会保持为 1，不会用回源地址
+  或重复 IP 凑数。
 
 ### 8.7 云资源清理
 

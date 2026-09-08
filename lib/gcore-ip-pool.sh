@@ -2,122 +2,106 @@
 
 # Gcore CDN endpoint discovery and carrier-targeted Globalping measurement.
 #
-# Fetches Gcore CDN server IPs, maps them to regions, and keeps only addresses
-# that also accept this resource's SNI and WebSocket handshake.
-# (Hong Kong, Japan, Los Angeles) using Gcore RFC 8805 Geofeed,
-# and probes them strictly with dedicated carriers:
-#   China Mobile (9808) -> Hong Kong (all available)
-#   China Unicom (4837) -> Japan (all available)
-#   China Telecom (4134) -> Los Angeles (all available)
+# Resolves this account's CDN hostname from Hong Kong, Japan, and Los Angeles,
+# keeps only addresses that accept this resource's SNI and WebSocket handshake,
+# and probes them with dedicated China carrier probes:
+#   China Mobile (9808) -> Hong Kong primary, Japan cross-check
+#   China Unicom (4837) -> Japan primary, Hong Kong cross-check
+#   China Telecom (4134) -> Los Angeles primary, Japan cross-check
 # Outputs up to 2 curated IPs per carrier (up to 6 nodes).
 
-readonly GCORE_POOL_PUBLIC_IP_LIST_URL="https://api.gcore.com/cdn/public-ip-list"
-readonly GCORE_POOL_GEOFEED_URL="https://geofeed.gcore.lu/IP-Range.csv"
 readonly GCORE_GLOBALPING_PACKET_COUNT="${GCORE_GLOBALPING_PACKET_COUNT_OVERRIDE:-4}"
+readonly GCORE_DNS_PROBES_PER_REGION="${GCORE_DNS_PROBES_PER_REGION_OVERRIDE:-5}"
 readonly GCORE_CANDIDATES_PER_CARRIER=2
 readonly GCORE_CANDIDATE_LIMIT=6
-readonly GCORE_CACHE_VERSION=1
+readonly GCORE_CACHE_VERSION=2
 readonly GCORE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
 readonly GCORE_PRECHECK_READY_ATTEMPTS="${GCORE_PRECHECK_READY_ATTEMPTS_OVERRIDE:-90}"
 readonly GCORE_PRECHECK_READY_INTERVAL="${GCORE_PRECHECK_READY_INTERVAL_OVERRIDE:-10}"
 
-gcore_fetch_official_cdn_ips() {
-    local response
-    response=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
-        "${GCORE_POOL_PUBLIC_IP_LIST_URL}") || return 1
-    jq -er '
-        .addresses
-        | select(type == "array" and length > 0)
-        | unique[]
-        | sub("/32$"; "")
-        | select(test("^([0-9]{1,3}\\.){3}[0-9]{1,3}$"))
-    ' <<<"${response}" | sort -u
+gcore_globalping_dns_measurement_request() {
+    local domain=$1
+    validate_domain "${domain}" || return 1
+    [[ "${GCORE_DNS_PROBES_PER_REGION}" =~ ^[1-9][0-9]*$ ]] || return 1
+    jq -cn --arg target "${domain}" \
+        --argjson probes "${GCORE_DNS_PROBES_PER_REGION}" '{
+          type:"dns",
+          target:$target,
+          locations:[
+            {country:"HK",limit:$probes},
+            {country:"JP",limit:$probes},
+            {country:"US",city:"Los Angeles",limit:$probes}
+          ],
+          timeout:15,
+          measurementOptions:{
+            query:{type:"A"}
+          }
+        }'
 }
 
-gcore_fetch_official_geofeed() {
-    curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
-        "${GCORE_POOL_GEOFEED_URL}" || return 1
-}
-
-# Extracts server IP candidates for Hong Kong, Japan, and Los Angeles by
-# cross-referencing Gcore public-ip-list with the official RFC 8805 geofeed.
+# Converts successful regional DNS answers into carrier-specific candidates.
 # Output format: <IP>\t<CARRIER_ASN>\t<CARRIER_NAME>\t<REGION_NAME>
+gcore_parse_globalping_dns_candidates() {
+    local measurement=$1 addresses_file valid_file
+    addresses_file=$(make_temp_dir)/gcore-dns-addresses.tsv
+    valid_file=$(make_temp_dir)/gcore-dns-valid-addresses.tsv
+
+    jq -r '
+      .results[]?
+      | select(.result.status == "finished" and .result.statusCode == 0)
+      | (
+          if .probe.country == "HK" then "HK"
+          elif .probe.country == "JP" then "JP"
+          elif .probe.country == "US"
+            and ((.probe.city // "") == "Los Angeles" or (.probe.state // "") == "California")
+          then "LA"
+          else empty
+          end
+        ) as $region
+      | .result.answers[]?
+      | select(.type == "A")
+      | [.value, $region]
+      | @tsv
+    ' <<<"${measurement}" >"${addresses_file}" || return 1
+
+    : >"${valid_file}"
+    while IFS=$'\t' read -r ip region; do
+        validate_public_ipv4 "${ip}" || continue
+        case "${region}" in
+        HK | JP | LA) printf '%s\t%s\n' "${ip}" "${region}" >>"${valid_file}" ;;
+        esac
+    done <"${addresses_file}"
+    [[ -s "${valid_file}" ]] || return 1
+    sort -u -o "${valid_file}" "${valid_file}"
+
+    {
+        awk -F'\t' '$2=="HK" {print $1 "\t9808\tmobile\tHK"}' "${valid_file}"
+        awk -F'\t' '$2=="JP" {print $1 "\t4837\tunicom\tJP"}' "${valid_file}"
+        awk -F'\t' '$2=="LA" {print $1 "\t4134\ttelecom\tLA"}' "${valid_file}"
+        awk -F'\t' '$2=="JP" {print $1 "\t9808\tmobile\tJP"}' "${valid_file}"
+        awk -F'\t' '$2=="HK" {print $1 "\t4837\tunicom\tHK"}' "${valid_file}"
+        awk -F'\t' '$2=="JP" {print $1 "\t4134\ttelecom\tJP"}' "${valid_file}"
+    } | awk -F'\t' '!seen[$1,$2]++'
+}
+
 gcore_generate_carrier_candidate_pool() {
-    local cdn_ips_file geofeed_file
-    cdn_ips_file=$(make_temp_dir)/gcore-cdn-ips.txt
-    geofeed_file=$(make_temp_dir)/gcore-geofeed.csv
-
-    gcore_fetch_official_cdn_ips >"${cdn_ips_file}" || return 1
-    [[ -s "${cdn_ips_file}" ]] || return 1
-    gcore_fetch_official_geofeed >"${geofeed_file}" || return 1
-    [[ -s "${geofeed_file}" ]] || return 1
-
-    python3 - "${cdn_ips_file}" "${geofeed_file}" <<'EOF'
-import sys, ipaddress, csv
-
-cdn_ips_path, geofeed_path = sys.argv[1], sys.argv[2]
-
-with open(cdn_ips_path, "r", encoding="utf-8") as f:
-    cdn_ips = [ipaddress.ip_address(line.strip()) for line in f if line.strip()]
-
-hk_nets, jp_nets, la_nets, ca_nets = [], [], [], []
-
-with open(geofeed_path, "r", encoding="utf-8") as f:
-    for line in f:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        try:
-            parts = list(csv.reader([line]))[0]
-            if len(parts) < 2:
-                continue
-            cidr = parts[0].strip()
-            country = parts[1].strip() if len(parts) > 1 else ""
-            region = parts[2].strip() if len(parts) > 2 else ""
-            city = parts[3].strip() if len(parts) > 3 else ""
-
-            net = ipaddress.ip_network(cidr)
-            if net.version != 4:
-                continue
-
-            if country == "HK" or "Hong Kong" in city:
-                hk_nets.append(net)
-            elif country == "JP" or "Tokyo" in city or "Osaka" in city:
-                jp_nets.append(net)
-            elif country == "US":
-                if "Los Angeles" in city:
-                    la_nets.append(net)
-                elif region == "US-CA" or "San Jose" in city or "Santa Clara" in city or "Fremont" in city:
-                    ca_nets.append(net)
-        except Exception:
-            continue
-
-hk_ips = [ip for ip in cdn_ips if any(ip in net for net in hk_nets)]
-jp_ips = [ip for ip in cdn_ips if any(ip in net for net in jp_nets)]
-la_ips = [ip for ip in cdn_ips if any(ip in net for net in la_nets)]
-ca_ips = [ip for ip in cdn_ips if any(ip in net for net in ca_nets)]
-us_ips = [(ip, "LA") for ip in la_ips] + [(ip, "US-CA") for ip in ca_ips]
-
-# 80% primary, 20% cross-exploration
-# Mobile (9808): Primary HK (up to 20), Cross JP (up to 5)
-for ip in hk_ips[:20]:
-    print(f"{ip}\t9808\tmobile\tHK")
-for ip in jp_ips[:5]:
-    print(f"{ip}\t9808\tmobile\tJP")
-
-# Unicom (4837): Primary JP (up to 20), Cross HK (up to 5)
-for ip in jp_ips[:20]:
-    print(f"{ip}\t4837\tunicom\tJP")
-for ip in hk_ips[:5]:
-    print(f"{ip}\t4837\tunicom\tHK")
-
-# Telecom (4134): Primary US (LA/US-CA) (up to 20), Cross JP (up to 5)
-for ip, reg in us_ips[:20]:
-    print(f"{ip}\t4134\ttelecom\t{reg}")
-for ip in jp_ips[:5]:
-    print(f"{ip}\t4134\ttelecom\tJP")
-EOF
+    local created measurement_id measurement
+    created=$(globalping_api_request POST "/measurements" \
+        "$(gcore_globalping_dns_measurement_request "${VLESS_CDN_DOMAIN}")") \
+        || {
+            warn "无法提交 Gcore 多地区 DNS 候选发现测量"
+            return 1
+        }
+    measurement_id=$(jq -er \
+        '.id | select(type == "string" and length > 0)' <<<"${created}") \
+        || return 1
+    measurement=$(gcore_wait_globalping_measurement "${measurement_id}") \
+        || {
+            warn "Gcore 多地区 DNS 候选发现测量未完成"
+            return 1
+        }
+    gcore_parse_globalping_dns_candidates "${measurement}"
 }
 
 gcore_wait_for_precheck_readiness() {
@@ -152,8 +136,8 @@ gcore_wait_for_precheck_readiness() {
 }
 
 # Pre-validates IP locally through TLS SNI and an HTTP/1.1 WebSocket handshake.
-gcore_validate_pool_candidate() {
-    local ip=$1 ws_path=${WEBSOCKET_PATH:-/easy_all-ws} http_code curl_status
+gcore_probe_pool_candidate() {
+    local ip=$1 ws_path=${WEBSOCKET_PATH:-/easy_all-ws} http_code="" curl_status=0
     validate_public_ipv4 "${ip}" || return 1
     http_code=$(curl --http1.1 -sS -o /dev/null -w '%{http_code}' \
         --connect-timeout 4 --max-time 10 --noproxy '*' \
@@ -164,41 +148,76 @@ gcore_validate_pool_candidate() {
         -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
         -H "Sec-WebSocket-Version: 13" \
         "https://${VLESS_CDN_DOMAIN}${ws_path}" 2>/dev/null) || curl_status=$?
+    printf '%s\t%s\n' "${curl_status}" "${http_code:-000}"
     [[ "${http_code}" == "101" || "${http_code}" == "200" ]]
 }
 
-gcore_prevalidate_candidate_pool() {
-    local source=$1 destination=$2 validation_dir part
-    local ip asn carrier region index=0 count=0
-    validation_dir=$(make_temp_dir)
-    : >"${destination}"
+gcore_validate_pool_candidate() {
+    gcore_probe_pool_candidate "$1" >/dev/null
+}
 
-    while IFS=$'\t' read -r ip asn carrier region; do
+gcore_prevalidate_candidate_pool() {
+    local source=$1 destination=$2 validation_dir part failures_file failure_summary
+    local unique_ips_file passed_ips_file ip index=0 record_count=0 passed_count=0
+    local probe_result
+    validation_dir=$(make_temp_dir)
+    failures_file="${validation_dir}/failures"
+    unique_ips_file="${validation_dir}/unique-ips"
+    passed_ips_file="${validation_dir}/passed-ips"
+    : >"${destination}"
+    : >"${failures_file}"
+    : >"${passed_ips_file}"
+    cut -f1 "${source}" | awk 'NF && !seen[$0]++' >"${unique_ips_file}"
+
+    while IFS= read -r ip; do
         [[ -n "${ip}" ]] || continue
         index=$((index + 1))
         (
-            if gcore_validate_pool_candidate "${ip}"; then
-                printf '%s\t%s\t%s\t%s\n' "${ip}" "${asn}" "${carrier}" "${region}" \
-                    >"${validation_dir}/$(printf '%06d' "${index}").tsv"
+            if probe_result=$(gcore_probe_pool_candidate "${ip}"); then
+                printf '%s\n' "${ip}" \
+                    >"${validation_dir}/$(printf '%06d' "${index}").ok"
+            else
+                printf '%s\t%s\n' "${ip}" "${probe_result:-1	000}" \
+                    >"${validation_dir}/$(printf '%06d' "${index}").fail"
             fi
             true
         ) &
         if ((index % GCORE_LOCAL_VALIDATION_CONCURRENCY == 0)); then
             wait || true
         fi
-    done <"${source}"
+    done <"${unique_ips_file}"
     wait || true
 
-    for part in "${validation_dir}"/*.tsv; do
+    for part in "${validation_dir}"/*.ok; do
         [[ -f "${part}" ]] || continue
-        cat "${part}" >>"${destination}"
-        count=$((count + 1))
+        cat "${part}" >>"${passed_ips_file}"
+        passed_count=$((passed_count + 1))
     done
-    ((count > 0)) || {
-        warn "Gcore 官方 IP 池没有通过本机 SNI 与健康检查预检的候选"
+    awk -F'\t' 'NR==FNR {passed[$1]=1; next} passed[$1]' \
+        "${passed_ips_file}" "${source}" >"${destination}"
+    record_count=$(wc -l <"${destination}" | tr -d ' ')
+    for part in "${validation_dir}"/*.fail; do
+        [[ -f "${part}" ]] || continue
+        cat "${part}" >>"${failures_file}"
+    done
+    if [[ -s "${failures_file}" ]]; then
+        failure_summary=$(awk -F'\t' '
+            {key="curl=" $2 ",HTTP=" $3; counts[key]++}
+            END {
+                sep=""
+                for (key in counts) {
+                    printf "%s%s:%d", sep, key, counts[key]
+                    sep="；"
+                }
+            }
+        ' "${failures_file}")
+        warn "Gcore DNS 入口预检淘汰 $((index - passed_count)) 个唯一 IP（${failure_summary}）"
+    fi
+    ((passed_count > 0)) || {
+        warn "Gcore DNS 入口池没有通过本机 SNI 与 WebSocket 预检的候选"
         return 1
     }
-    info "Gcore 官方 IP 池本机预检通过 ${count} 个候选"
+    info "Gcore DNS 入口池本机预检通过 ${passed_count} 个唯一 IP（${record_count} 条运营商候选记录）"
 }
 
 # Globalping measurement request targeting ONLY the carrier designated for that IP
@@ -300,7 +319,7 @@ gcore_collect_globalping_measurements() {
         submitted=$((submitted + 1))
     done <"${pool_file}"
     ((submitted > 0)) || {
-        warn "Gcore 官方 IP 池没有成功提交任何 Globalping 测量"
+        warn "Gcore DNS 入口池没有成功提交任何 Globalping 测量"
         return 1
     }
 
@@ -315,7 +334,7 @@ gcore_collect_globalping_measurements() {
         completed=$((completed + 1))
     done <"${jobs_file}"
     ((completed > 0)) || {
-        warn "Gcore 官方 IP 池的 Globalping 测量均未完成"
+        warn "Gcore DNS 入口池的 Globalping 测量均未完成"
         return 1
     }
 }
@@ -471,11 +490,34 @@ EOF
     fi
 }
 
-gcore_build_official_pool_cache() {
+gcore_globalping_cache_compatible() {
+    [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
+    jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
+        --argjson version "${GCORE_CACHE_VERSION}" '
+          .version == $version
+          and .provider == "gcore"
+          and .domain == $domain
+          and .candidate_source == "gcore-globalping-regional-dns"
+          and .probe_type == "eyeball-network"
+          and .carrier_asns == [9808,4837,4134]
+          and (.measured_at_epoch | type) == "number"
+          and (.candidates | type) == "array"
+          and (.candidates | length) > 0
+          and all(.candidates[];
+            (.ip | type) == "string"
+            and (.avg_rtt_ms | type) == "number"
+            and (.carrier | type) == "string"
+            and (.label | type) == "string"
+          )
+        ' "${GLOBALPING_CACHE_FILE}" >/dev/null
+}
+
+gcore_build_dns_pool_cache() {
     local destination=$1 raw_pool_file pool_file budgeted_pool_file
     local measurements_file observations_file preliminary_file
     local history_candidates_tsv hist_count
     local pool_size unique_pool_size prevalidated_pool_size measurement_count count
+    local existing_count=0
     local measured_at measured_at_epoch
 
     raw_pool_file=$(make_temp_dir)/gcore-raw-candidates.tsv
@@ -496,9 +538,9 @@ gcore_build_official_pool_cache() {
     fi
     hist_count=$(wc -l <"${history_candidates_tsv}" | tr -d ' ')
 
-    info "正在从 Gcore CDN 服务器地址与 Geofeed 检索香港、日本、加州候选 IP"
+    info "正在通过香港、日本、洛杉矶 Globalping 探针解析 Gcore CDN 域名入口"
     gcore_generate_carrier_candidate_pool >"${raw_pool_file}.new" \
-        || { warn "无法从 Gcore 官方 API 生成候选池"; return 1; }
+        || { warn "无法从 Gcore 多地区 DNS 解析生成入口候选池"; return 1; }
 
     {
         if (( hist_count > 0 )); then
@@ -512,7 +554,7 @@ gcore_build_official_pool_cache() {
     unique_pool_size=$(cut -f1 "${raw_pool_file}" | sort -u | wc -l | tr -d ' ')
 
     gcore_wait_for_precheck_readiness || return 1
-    info "Gcore 地址池匹配到 ${pool_size} 条运营商候选记录（${unique_pool_size} 个唯一 IP，含 ${hist_count} 条历史记录），正在执行本机 CDN 入口预检"
+    info "Gcore 多地区 DNS 汇总 ${pool_size} 条运营商候选记录（${unique_pool_size} 个唯一入口 IP，含 ${hist_count} 条历史记录），正在执行本机 CDN 入口预检"
     gcore_prevalidate_candidate_pool "${raw_pool_file}" "${pool_file}" \
         || return 1
     prevalidated_pool_size=$(wc -l <"${pool_file}" | tr -d ' ')
@@ -527,7 +569,7 @@ gcore_build_official_pool_cache() {
 
     gcore_zero_loss_observations "${measurements_file}" >"${observations_file}"
     [[ -s "${observations_file}" ]] || {
-        warn "Gcore 官方 IP 池没有零丢包候选"
+        warn "Gcore DNS 入口池没有三网零丢包候选"
         return 1
     }
 
@@ -537,19 +579,19 @@ gcore_build_official_pool_cache() {
         "${history_candidates_tsv}" >"${preliminary_file}"
 
     count=$(jq 'length' "${preliminary_file}")
-    if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
-        if (( count < GCORE_CANDIDATE_LIMIT )); then
-            warn "Gcore 官方 IP 池未选满 ${GCORE_CANDIDATE_LIMIT} 个独立有效候选（实际 ${count} 个），保留现有缓存"
-            return 1
-        fi
-    else
-        if (( count == 0 )); then
-            warn "Gcore 官方 IP 池没有通过本机 TLS/WebSocket 与三网零丢包验证的有效候选"
-            return 1
-        fi
-        if (( count < GCORE_CANDIDATE_LIMIT )); then
-            warn "Gcore 官方 IP 池首次生成仅选出 ${count} 个独立有效候选（预期 ${GCORE_CANDIDATE_LIMIT} 个）"
-        fi
+    if gcore_globalping_cache_compatible; then
+        existing_count=$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")
+    fi
+    if (( count == 0 )); then
+        warn "Gcore DNS 入口池没有通过本机 TLS/WebSocket 与三网零丢包验证的有效候选"
+        return 1
+    fi
+    if (( existing_count > count )); then
+        warn "Gcore DNS 入口池本轮仅选出 ${count} 个独立有效候选，少于现有缓存 ${existing_count} 个，保留现有缓存"
+        return 1
+    fi
+    if (( count < GCORE_CANDIDATE_LIMIT )); then
+        warn "Gcore DNS 入口池本轮选出 ${count} 个独立有效候选（预期 ${GCORE_CANDIDATE_LIMIT} 个）"
     fi
 
     measured_at_epoch=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
@@ -568,7 +610,7 @@ gcore_build_official_pool_cache() {
           version:$version,
           provider:"gcore",
           domain:$domain,
-          candidate_source:"gcore-official-public-ip-list",
+          candidate_source:"gcore-globalping-regional-dns",
           measured_at:$measured_at,
           measured_at_epoch:$measured_at_epoch,
           probe_country:"CN",
@@ -591,25 +633,7 @@ gcore_build_official_pool_cache() {
 
 gcore_globalping_cache_valid() {
     local now age
-    [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
-    jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
-        --argjson version "${GCORE_CACHE_VERSION}" '
-          .version == $version
-          and .provider == "gcore"
-          and .domain == $domain
-          and .candidate_source == "gcore-official-public-ip-list"
-          and .probe_type == "eyeball-network"
-          and .carrier_asns == [9808,4837,4134]
-          and (.measured_at_epoch | type) == "number"
-          and (.candidates | type) == "array"
-          and (.candidates | length) > 0
-          and all(.candidates[];
-            (.ip | type) == "string"
-            and (.avg_rtt_ms | type) == "number"
-            and (.carrier | type) == "string"
-            and (.label | type) == "string"
-          )
-        ' "${GLOBALPING_CACHE_FILE}" >/dev/null || return 1
+    gcore_globalping_cache_compatible || return 1
     now=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
     age=$((now - $(jq -r '.measured_at_epoch' "${GLOBALPING_CACHE_FILE}")))
     ((age >= 0 && age <= GLOBALPING_CACHE_MAX_AGE_SECONDS))
@@ -621,9 +645,9 @@ refresh_gcore_globalping_cache() {
     install -d -m 0700 "${STATE_DIR}"
     temp=$(mktemp "${STATE_DIR}/gcore-cdn-ips.json.XXXXXX")
     cleanup_files+=("${temp}")
-    gcore_build_official_pool_cache "${temp}" || return 1
+    gcore_build_dns_pool_cache "${temp}" || return 1
     install -o root -g root -m 0600 "${temp}" "${GLOBALPING_CACHE_FILE}"
-    success "Gcore 官方 IP 池已更新 $(jq '.candidates | length' \
+    success "Gcore 多地区 DNS 入口池已更新 $(jq '.candidates | length' \
         "${GLOBALPING_CACHE_FILE}") 个三网定向精选 IPv4"
 }
 
@@ -635,10 +659,9 @@ refresh_globalping_cache() {
     refresh_gcore_globalping_cache "$@"
 }
 
-# Output the curated candidates (falls back to domain if no cache)
+# Output only compatible curated candidates; Gcore mode has no domain fallback.
 gcore_client_candidates() {
-    if [[ -s "${GLOBALPING_CACHE_FILE}" ]] \
-        && jq -e '.candidates | type == "array" and length > 0' "${GLOBALPING_CACHE_FILE}" >/dev/null 2>&1; then
+    if gcore_globalping_cache_compatible; then
         jq -r '
           .candidates[0:6]
           | to_entries[]
