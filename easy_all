@@ -109,12 +109,12 @@ easy_all install
    ├─ 严格输出 6 个精选节点，完全无域名兜底；内置全局单一 AUTO 自动测速组
    ├─ 订阅生成：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移
-└─ [3] Gcore CDN 精选 IP - 多地区真实入口（三网定向最多 6 个已验证节点）
+└─ [3] Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）
    ├─ 适用线路：非优化线路；域名需委派至 Gcore Managed DNS Zone
    ├─ 采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源
    ├─ 地址候选池：通过亚洲/美国西岸/中国三网及多公共解析器发现真实入口
    ├─ 定向测速：移动以香港为主、联通以日本为主、电信以洛杉矶为主
-   ├─ 每网最多输出 2 个通过验证的节点，总计最多 6 个
+   ├─ 每网最多输出 2 个通过验证的节点，总计 1～6 个，通常为 2 个
    ├─ 订阅生成：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移
 
@@ -166,7 +166,7 @@ choose_install_mode() {
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
     printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点）\n' >&2
-    printf '  3. Gcore CDN 精选 IP - 多地区真实入口（三网定向最多 6 个已验证节点）\n' >&2
+    printf '  3. Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;

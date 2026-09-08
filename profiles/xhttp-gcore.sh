@@ -1514,7 +1514,7 @@ EOF
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS WebSocket over Gcore CDN（最多 6 个已验证节点）\n节点链接:\n%s\n\n' "$(build_node_links)"
+    printf '\n协议: VLESS WebSocket over Gcore CDN（1～6 个已验证节点，通常为 2 个）\n节点链接:\n%s\n\n' "$(build_node_links)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_nodes
 }
@@ -1522,7 +1522,7 @@ show_node() {
 show_status() {
     require_root
     collect_installed_state
-    printf '协议: VLESS WebSocket（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 最多 6 个，以实际验证结果为准\n' \
+    printf '协议: VLESS WebSocket（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 1～6 个，通常为 2 个，以实际验证结果为准\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${GCORE_CDN_TARGET}"
     show_globalping_status
 }

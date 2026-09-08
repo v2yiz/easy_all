@@ -8,9 +8,9 @@
 | -------------- | ---------------------------- | ------------------- |
 | 1. 直连 - Reality | VLESS TCP Reality Vision     | VPS TCP 443         |
 | 2. Cloudflare CDN 精选 IP - XHTTP stream-up | VLESS XHTTP stream-up / TLS | Cloudflare + Globalping IPv4 (三网定向精选 6 节点平铺，完全无域名兜底) |
-| 3. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS | Gcore + Globalping IPv4（三网定向最多 6 个已验证节点） |
+| 3. Gcore CDN 精选 IP - WebSocket | VLESS WebSocket / TLS | Gcore + Globalping IPv4（三网定向 1～6 个已验证节点，通常为 2 个） |
 
-Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gcore 提供纯 VLESS WebSocket（三网定向最多 6 个已验证节点）；Reality 用于直连。
+Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gcore 提供纯 VLESS WebSocket（三网定向 1～6 个已验证节点，通常为 2 个）；Reality 用于直连。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -24,7 +24,7 @@ Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gc
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精选 6 节点 | 选择 `2`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；通过 Globalping 对移动/联通/电信执行三网定向测速并平铺下发 6 个优质 IPv4 节点（节点名称优选1~优选6，严格无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
-| 明确要使用 Gcore CDN，追求多地区边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，最多下发 6 个实际有效节点；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
+| 明确要使用 Gcore CDN，追求多地区边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 前置准备时，再选择对应 CDN 模式。
@@ -128,7 +128,7 @@ sudo ./easy_all install
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
   2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点）
-  3. Gcore CDN 精选 IP - WebSocket（三网定向最多 6 个已验证节点）
+  3. Gcore CDN 精选 IP - WebSocket（三网定向 1～6 个已验证节点，通常为 2 个）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -277,7 +277,7 @@ flowchart TD
     G0 --> G1[校验 Managed DNS 委派 / 创建源站 A 与 CDN CNAME]
     G1 --> G2[签发源站证书 / 配置 mTLS / 创建 CDN Resource]
     G2 --> G3[多地区 DNS 发现 / WebSocket 预检 / 三网定向测速]
-    G3 --> G4[保存缓存 / 注册每小时刷新 / 输出最多 6 个节点与订阅]
+    G3 --> G4[保存缓存 / 注册每小时刷新 / 输出 1～6 个节点，通常为 2 个]
     G4 --> Z
 ```
 

@@ -41,6 +41,8 @@ assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Real
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
 assert_contains "README documents Gcore install option" "${README_CONTENT}" \
     '3. Gcore CDN 精选 IP - WebSocket'
+assert_contains "README documents the typical Gcore node count" "${README_CONTENT}" \
+    '1～6 个已验证节点，通常为 2 个'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
@@ -211,6 +213,8 @@ done
 
 assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 精选 IP'
 assert_contains "Preparation guide documents Gcore mode" "${PREPARATION_GUIDE_CONTENT}" '## 8. Gcore CDN 精选 IP 准备'
+assert_contains "Preparation guide documents the typical Gcore node count" \
+    "${PREPARATION_GUIDE_CONTENT}" '下发 1～6 个节点，通常为 2 个'
 assert_contains "Preparation guide embeds Gcore delegation success" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/gcore-delegation-success.png'
 assert_contains "Preparation guide embeds Gcore token create" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/api-token-create.svg'
 assert_contains "Preparation guide embeds Gcore add zone" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'

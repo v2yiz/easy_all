@@ -120,6 +120,7 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
     && "${guide}" == *"[2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up"* \
     && "${guide}" == *"[3] Gcore CDN 精选 IP - 多地区真实入口"* \
+    && "${guide}" == *"1～6 个已验证节点，通常为 2 个"* \
     && "${guide}" == *"全网综合优选"* \
     && "${guide}" == *"定向测速"* \
     && "${guide}" == *"XHTTP"* \
@@ -146,6 +147,7 @@ readme=$(<"${ROOT_DIR}/README.md")
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - 纯 XHTTP stream-up'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 精选 IP - 多地区真实入口'* \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'1～6 个已验证节点，通常为 2 个'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
 interactive_sources=$(
