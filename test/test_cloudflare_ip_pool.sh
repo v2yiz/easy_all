@@ -204,44 +204,28 @@ assert_equal "Historical candidate is prioritized when new candidate is not >= 5
     "104.16.2.2" "${unicom_01}"
 
 # ==============================================================================
-# Test 7: Multi-Carrier Backfill When Carriers Are Missing / Asymmetric
+# Test 7: Missing carriers never synthesize unverified candidates
 # ==============================================================================
 single_obs="${TMP_DIR}/test-single-obs.ndjson"
 cat <<'SINGLE_EOF' >"${single_obs}"
 {"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"tls_verified":true}
 SINGLE_EOF
 
-fallback_file="${TMP_DIR}/test-fallbacks.tsv"
-cat <<'FALLBACK_EOF' >"${fallback_file}"
-104.16.2.1	104.16.0.0/13
-104.16.2.2	104.16.0.0/13
-104.16.3.1	104.16.0.0/13
-104.16.3.2	104.16.0.0/13
-104.16.4.1	104.16.0.0/13
-FALLBACK_EOF
-
-backfilled=$(cloudflare_select_carrier_candidates "${single_obs}" 2 6 "" "${fallback_file}")
+backfilled=$(cloudflare_select_carrier_candidates "${single_obs}" 2 6)
 backfilled_count=$(jq 'length' <<<"${backfilled}")
-assert_equal "Backfill produces strictly 6 candidates when only 1 candidate passed TLS" "6" "${backfilled_count}"
+assert_equal "Only measured candidates are retained" "1" "${backfilled_count}"
 
-backfilled_unique=$(jq '[.[].ip] | unique | length' <<<"${backfilled}")
-assert_equal "Backfilled candidate IPs are all unique" "6" "${backfilled_unique}"
-
-# Ensure Telecom 01 is 104.16.1.1
 telecom_01=$(jq -r '.[] | select(.label=="电信01") | .ip' <<<"${backfilled}")
 assert_equal "Primary verified candidate is assigned to its carrier" "104.16.1.1" "${telecom_01}"
 
 # ==============================================================================
-# Test 8: Ultimate Built-In Anycast Fallback (Empty Inputs)
+# Test 8: Empty observations produce no synthetic fallback
 # ==============================================================================
 empty_obs="${TMP_DIR}/test-empty-obs.ndjson"
 : >"${empty_obs}"
 ultimate_fallback=$(cloudflare_select_carrier_candidates "${empty_obs}" 2 6)
 ultimate_count=$(jq 'length' <<<"${ultimate_fallback}")
-assert_equal "Ultimate fallback produces strictly 6 candidates from empty observations" "6" "${ultimate_count}"
-
-ultimate_unique=$(jq '[.[].ip] | unique | length' <<<"${ultimate_fallback}")
-assert_equal "Ultimate fallback IPs are all unique" "6" "${ultimate_unique}"
+assert_equal "Empty observations produce no candidates" "0" "${ultimate_count}"
 
 # ==============================================================================
 # Test 9: Packet Loss Tolerance (loss <= 25%, rcv >= 3)

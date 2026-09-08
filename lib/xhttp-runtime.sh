@@ -41,25 +41,8 @@ readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="7"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
-readonly XHTTP_MODE="${XHTTP_MODE_OVERRIDE:-stream-up}"
-readonly XHTTP_XMUX_MAX_CONNECTIONS="4"
-readonly XHTTP_XMUX_C_MAX_REUSE_TIMES="0"
-readonly XHTTP_XMUX_H_MAX_REQUEST_TIMES="300-600"
-readonly XHTTP_XMUX_H_MAX_REUSABLE_SECS="900-1800"
-readonly XHTTP_XMUX_H_KEEP_ALIVE_PERIOD="0"
-readonly XHTTP_URL_TEST_INTERVAL="${XHTTP_URL_TEST_INTERVAL_OVERRIDE:-300}"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-Cloudflare}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
-
-xhttp_no_grpc_header_json() {
-    [[ "${XHTTP_NO_GRPC_HEADER_OVERRIDE:-false}" == "true" ]] \
-        && printf 'true' || printf 'false'
-}
-
-xhttp_xmux_enabled_json() {
-    [[ "${XHTTP_XMUX_ENABLED_OVERRIDE:-true}" == "true" ]] \
-        && printf 'true' || printf 'false'
-}
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
@@ -459,314 +442,19 @@ uri_encode() {
     jq -nr --arg value "$1" '$value|@uri'
 }
 
-build_vless_xhttp_link() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
-    local extra client_path mode no_grpc_header xmux_enabled
-    client_path=$(xhttp_client_path)
-    mode=${XHTTP_MODE}
-    no_grpc_header=$(xhttp_no_grpc_header_json)
-    xmux_enabled=$(xhttp_xmux_enabled_json)
-    extra=$(jq -cn \
-        --argjson no_grpc_header "${no_grpc_header}" \
-        --argjson xmux_enabled "${xmux_enabled}" \
-        --arg mode "${mode}" \
-        --argjson max_connections "${XHTTP_XMUX_MAX_CONNECTIONS}" \
-        --argjson c_max_reuse_times "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
-        --arg h_max_request_times "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" \
-        --arg h_max_reusable_secs "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
-        --argjson h_keep_alive_period "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}" '{
-        uplinkHTTPMethod:"POST"
-    } + (if $mode == "packet-up" then {} else {noGRPCHeader:$no_grpc_header} end)
-    + (if $xmux_enabled then {xmux:{
-            maxConnections:$max_connections,
-            cMaxReuseTimes:$c_max_reuse_times,
-            hMaxRequestTimes:$h_max_request_times,
-            hMaxReusableSecs:$h_max_reusable_secs,
-            hKeepAlivePeriod:$h_keep_alive_period
-        }} else {} end)')
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=%s&extra=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${client_path}")" "$(uri_encode "${mode}")" \
-        "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
-}
-
-build_vless_websocket_link() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WS}
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
-        "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "${node_name}")"
-}
-
-build_mihomo_websocket_node() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}_WS}
-    resolve_cdn_client_ip_family
-    jq -nr --arg name "${node_name}" --arg server "${server}" \
-        --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg path "${WEBSOCKET_PATH}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" '
-        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-        "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - http/1.1\n" +
-        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
-}
-
-xhttp_client_endpoints() {
-    if declare -F cdn_client_endpoints >/dev/null 2>&1; then
-        cdn_client_endpoints
-    else
-        printf '%s\n' "${VLESS_CDN_DOMAIN}"
-    fi
-}
-
-xhttp_using_optimized_candidates() {
-    declare -F cdn_optimization_enabled >/dev/null 2>&1 \
-        && cdn_optimization_enabled \
-        && declare -F globalping_cache_valid >/dev/null 2>&1 \
-        && globalping_cache_valid
-}
-
-xhttp_node_name_for_endpoint() {
-    local index=$1
-    if xhttp_using_optimized_candidates; then
-        printf '%s_IP_%02d' "${XHTTP_NODE_NAME}" "${index}"
-    else
-        printf '%s' "${XHTTP_NODE_NAME}"
-    fi
-}
-
-build_node_links() {
-    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
-        local ip label carrier
-        while IFS=$'\t' read -r ip label carrier; do
-            [[ -n "${ip}" ]] || continue
-            if [[ "${carrier}" == "fallback" ]]; then
-                build_vless_xhttp_link "${ip}" "${XHTTP_NODE_NAME}_XHTTP"
-                printf '\n'
-                build_vless_websocket_link "${ip}" "${XHTTP_NODE_NAME}_WS"
-                printf '\n'
-            else
-                build_vless_xhttp_link "${ip}" "${label}_XHTTP"
-                printf '\n'
-                build_vless_websocket_link "${ip}" "${label}_WS"
-                printf '\n'
-            fi
-        done < <(cloudflare_client_candidates)
-        return 0
-    fi
-    local endpoint index=1
-    while IFS= read -r endpoint; do
-        build_vless_xhttp_link "${endpoint}" \
-            "$(xhttp_node_name_for_endpoint "${index}")"
-        printf '\n'
-        index=$((index + 1))
-    done < <(xhttp_client_endpoints)
-}
-
-build_mihomo_node_for_endpoint() {
-    local server=${1:-${VLESS_CDN_DOMAIN}} node_name=${2:-${XHTTP_NODE_NAME}}
-    local mode no_grpc_header xmux_enabled reuse_settings=""
-    resolve_cdn_client_ip_family
-    mode=${XHTTP_MODE}
-    no_grpc_header=$(xhttp_no_grpc_header_json)
-    xmux_enabled=$(xhttp_xmux_enabled_json)
-    if [[ "${xmux_enabled}" == "true" ]]; then
-        printf -v reuse_settings \
-            '      reuse-settings:\n        max-connections: %s\n        c-max-reuse-times: %s\n        h-max-request-times: %s\n        h-max-reusable-secs: %s\n        h-keep-alive-period: %s\n' \
-            "${XHTTP_XMUX_MAX_CONNECTIONS}" "${XHTTP_XMUX_C_MAX_REUSE_TIMES}" \
-            "${XHTTP_XMUX_H_MAX_REQUEST_TIMES}" "${XHTTP_XMUX_H_MAX_REUSABLE_SECS}" \
-            "${XHTTP_XMUX_H_KEEP_ALIVE_PERIOD}"
-    fi
-    jq -nr --arg xhttp_name "${node_name}" \
-        --arg server "${server}" --arg host "${VLESS_CDN_DOMAIN}" \
-        --arg uuid "${VLESS_UUID}" \
-        --arg xhttp_path "$(xhttp_client_path)" \
-        --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
-        --arg mode "${mode}" \
-        --argjson no_grpc_header "${no_grpc_header}" \
-        --arg reuse_settings "${reuse_settings}" '
-        "  - name: \($xhttp_name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-        "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n    xhttp-opts:\n" +
-        "      host: \($host|@json)\n      path: \($xhttp_path|@json)\n      mode: \($mode)\n" +
-        (if $mode == "packet-up" then "" else
-            "      no-grpc-header: \($no_grpc_header|tostring)\n"
-        end) +
-        "      uplink-http-method: POST\n" +
-        $reuse_settings'
-}
-
-build_mihomo_nodes() {
-    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
-        local ip label carrier
-        while IFS=$'\t' read -r ip label carrier; do
-            [[ -n "${ip}" ]] || continue
-            if [[ "${carrier}" == "fallback" ]]; then
-                build_mihomo_node_for_endpoint "${ip}" "${XHTTP_NODE_NAME}_XHTTP"
-                build_mihomo_websocket_node "${ip}" "${XHTTP_NODE_NAME}_WS"
-            else
-                build_mihomo_node_for_endpoint "${ip}" "${label}_XHTTP"
-                build_mihomo_websocket_node "${ip}" "${label}_WS"
-            fi
-        done < <(cloudflare_client_candidates)
-        return 0
-    fi
-    local endpoint index=1
-    while IFS= read -r endpoint; do
-        build_mihomo_node_for_endpoint "${endpoint}" \
-            "$(xhttp_node_name_for_endpoint "${index}")"
-        index=$((index + 1))
-    done < <(xhttp_client_endpoints)
-}
-
-xhttp_auto_group_name() {
-    if [[ "${CDN_PROVIDER:-}" == "cloudflare" ]]; then
-        printf 'AUTO'
-    else
-        printf '%s_AUTO' "${XHTTP_NODE_NAME}"
-    fi
-}
-
-build_mihomo_proxy_names() {
-    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
-        if cdn_optimization_enabled && globalping_cache_valid; then
-            printf '        - "AUTO"\n'
-            local telecom_count=0 unicom_count=0 mobile_count=0
-            local ip label carrier
-            local -a all_nodes=()
-            while IFS=$'\t' read -r ip label carrier; do
-                [[ -n "${ip}" ]] || continue
-                all_nodes+=("${label}_WS" "${label}_XHTTP")
-                case "${carrier}" in
-                    telecom) telecom_count=$((telecom_count + 1)) ;;
-                    unicom)  unicom_count=$((unicom_count + 1)) ;;
-                    mobile)  mobile_count=$((mobile_count + 1)) ;;
-                esac
-            done < <(cloudflare_client_candidates)
-
-            ((telecom_count > 0)) && printf '        - "电信优选"\n'
-            ((unicom_count > 0))  && printf '        - "联通优选"\n'
-            ((mobile_count > 0))  && printf '        - "移动优选"\n'
-            local node
-            for node in "${all_nodes[@]}"; do
-                printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
-            done
-        else
-            local base_node="${XHTTP_NODE_NAME}"
-            printf '        - "AUTO"\n'
-            printf '        - %s\n' "$(jq -Rn --arg value "${base_node}_WS" '$value')"
-            printf '        - %s\n' "$(jq -Rn --arg value "${base_node}_XHTTP" '$value')"
-        fi
-        return 0
-    fi
-    local endpoint index=1
-    if xhttp_using_optimized_candidates; then
-        printf '        - %s\n' \
-            "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
-        return 0
-    fi
-    while IFS= read -r endpoint; do
-        printf '        - %s\n' \
-            "$(jq -Rn --arg value "$(xhttp_node_name_for_endpoint "${index}")" '$value')"
-        index=$((index + 1))
-    done < <(xhttp_client_endpoints)
-}
-
-build_mihomo_proxy_groups() {
-    if declare -F cloudflare_client_candidates >/dev/null 2>&1 && [[ -n "${WEBSOCKET_PATH:-}" ]]; then
-        if cdn_optimization_enabled && globalping_cache_valid; then
-            local -a all_nodes=() telecom_nodes=() unicom_nodes=() mobile_nodes=()
-            local ip label carrier
-            while IFS=$'\t' read -r ip label carrier; do
-                [[ -n "${ip}" ]] || continue
-                local n_ws="${label}_WS" n_xhttp="${label}_XHTTP"
-                all_nodes+=("${n_ws}" "${n_xhttp}")
-                case "${carrier}" in
-                    telecom) telecom_nodes+=("${n_ws}" "${n_xhttp}") ;;
-                    unicom)  unicom_nodes+=("${n_ws}" "${n_xhttp}") ;;
-                    mobile)  mobile_nodes+=("${n_ws}" "${n_xhttp}") ;;
-                esac
-            done < <(cloudflare_client_candidates)
-
-            printf '    - name: "AUTO"\n'
-            printf '      type: url-test\n'
-            printf '      proxies:\n'
-            local node
-            for node in "${all_nodes[@]}"; do
-                printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
-            done
-            cat <<EOF
-      url: https://cp.cloudflare.com/generate_204
-      interval: ${XHTTP_URL_TEST_INTERVAL}
-      tolerance: 50
-      timeout: 3000
-      lazy: true
-EOF
-            local c_name
-            for c_name in "电信优选" "联通优选" "移动优选"; do
-                local -a c_nodes=()
-                case "${c_name}" in
-                    电信优选) c_nodes=("${telecom_nodes[@]}") ;;
-                    联通优选) c_nodes=("${unicom_nodes[@]}") ;;
-                    移动优选) c_nodes=("${mobile_nodes[@]}") ;;
-                esac
-                if ((${#c_nodes[@]} > 0)); then
-                    printf '    - name: %s\n' "$(jq -Rn --arg value "${c_name}" '$value')"
-                    printf '      type: url-test\n'
-                    printf '      proxies:\n'
-                    for node in "${c_nodes[@]}"; do
-                        printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
-                    done
-                    cat <<EOF
-      url: https://cp.cloudflare.com/generate_204
-      interval: ${XHTTP_URL_TEST_INTERVAL}
-      tolerance: 50
-      timeout: 3000
-      lazy: true
-EOF
-                fi
-            done
-        else
-            local base_node="${XHTTP_NODE_NAME}"
-            printf '    - name: "AUTO"\n'
-            cat <<EOF
-      type: url-test
-      proxies:
-        - $(jq -Rn --arg value "${base_node}_WS" '$value')
-        - $(jq -Rn --arg value "${base_node}_XHTTP" '$value')
-      url: https://cp.cloudflare.com/generate_204
-      interval: ${XHTTP_URL_TEST_INTERVAL}
-      tolerance: 50
-      timeout: 3000
-      lazy: true
-EOF
-        fi
-        return 0
-    fi
-    local endpoint index=1
-    xhttp_using_optimized_candidates || return 0
-    printf '    - name: %s\n' \
-        "$(jq -Rn --arg value "$(xhttp_auto_group_name)" '$value')"
-    cat <<'EOF'
-      type: url-test
-      proxies:
-EOF
-    while IFS= read -r endpoint; do
-        printf '        - %s\n' \
-            "$(jq -Rn --arg value "$(xhttp_node_name_for_endpoint "${index}")" '$value')"
-        index=$((index + 1))
-    done < <(xhttp_client_endpoints)
-    cat <<EOF
-      url: https://cp.cloudflare.com/generate_204
-      interval: ${XHTTP_URL_TEST_INTERVAL}
-      tolerance: 50
-      lazy: false
-EOF
+xhttp_require_subscription_hooks() {
+    local hook
+    for hook in build_node_links build_mihomo_nodes \
+        build_mihomo_proxy_groups build_mihomo_proxy_names; do
+        declare -F "${hook}" >/dev/null 2>&1 \
+            || die "CDN Profile 缺少订阅渲染钩子：${hook}"
+    done
 }
 
 write_subscriptions() {
     local template node_file group_file name_file base64_file mihomo_file user uuid user_dir marker
     prepare_mihomo_template
+    xhttp_require_subscription_hooks
     template=${MIHOMO_TEMPLATE_FILE}
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
     group_file="${RUNTIME_TMP}/mihomo-groups.yaml"
@@ -886,6 +574,16 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/nginx.conf.missing"
     fi
+    if [[ -f "${CERT_FILE}" ]]; then
+        install -m 0644 "${CERT_FILE}" "${UPDATE_SUB_BACKUP_DIR}/certificate.pem"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/certificate.missing"
+    fi
+    if [[ -f "${KEY_FILE}" ]]; then
+        install -m 0600 "${KEY_FILE}" "${UPDATE_SUB_BACKUP_DIR}/private.key"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/private-key.missing"
+    fi
     if [[ -d "${SUBSCRIPTION_DIR}" ]]; then
         cp -a "${SUBSCRIPTION_DIR}" "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
     else
@@ -913,6 +611,16 @@ rollback_subscription_update() {
     else
         rm -f -- "${NGINX_CONFIG}"
     fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/certificate.pem" ]]; then
+        install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/certificate.pem" "${CERT_FILE}"
+    else
+        rm -f -- "${CERT_FILE}"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/private.key" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/private.key" "${KEY_FILE}"
+    else
+        rm -f -- "${KEY_FILE}"
+    fi
     rm -rf -- "${SUBSCRIPTION_DIR}"
     if [[ -d "${UPDATE_SUB_BACKUP_DIR}/subscriptions" ]]; then
         install -d -o root -g www-data -m 0750 "$(dirname "${SUBSCRIPTION_DIR}")"
@@ -920,6 +628,11 @@ rollback_subscription_update() {
     fi
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 \
         || warn "恢复订阅更新前 Nginx 配置失败"
+}
+
+commit_subscription_update() {
+    end_quota_maintenance
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
 }
 
 finish_xhttp_apply() {
@@ -942,8 +655,6 @@ finish_xhttp_apply() {
     save_state
     register_easy_all_command
     install_quota_timer
-    end_quota_maintenance
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
 }
 

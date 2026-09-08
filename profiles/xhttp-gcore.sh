@@ -5,7 +5,7 @@
 # Provides high-performance, edge-accelerated VLESS over Gcore CDN.
 # Resolves the account CDN hostname from Asian, US West, China-carrier, and
 # public-resolver perspectives, then selects up to 2 endpoints per carrier.
-# Server side enables mTLS origin validation and dual-path Xray (WebSocket + XHTTP packet-up).
+# Server side enables mTLS origin validation and VLESS over WebSocket.
 
 set -Eeuo pipefail
 umask 077
@@ -28,16 +28,11 @@ PROTOCOL="gcore"
 XHTTP_CDN_NAME_OVERRIDE="Gcore CDN"
 XHTTP_ORIGIN_DNS_NAME_OVERRIDE="Gcore Managed DNS"
 XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray VLESS WebSocket managed by easy_all"
-XHTTP_MODE_OVERRIDE="packet-up"
-XHTTP_XMUX_ENABLED_OVERRIDE=false
 
 readonly GCORE_API_BASE="https://api.gcore.com"
 readonly GCORE_DNS_TTL="300"
-readonly GCORE_XHTTP_MAX_BUFFERED_POSTS="100"
-readonly GCORE_XHTTP_PADDING_BYTES="100-1000"
 readonly GCORE_CDN_TRAFFIC_PROTECTION_GB="990"
 readonly GCORE_WEBSOCKET_NGINX_TIMEOUT="1h"
-readonly GCORE_XHTTP_NGINX_TIMEOUT="1h"
 readonly DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT="10087"
 readonly GCORE_ORIGIN_IPS_FILE="/etc/easy_all/gcore-origin-ipv4.txt"
 readonly GCORE_UFW_COMMENT="easy_all-gcore-origin"
@@ -92,17 +87,23 @@ collect_subscription_link_domain() {
 # --- Gcore API and Credentials ---
 
 gcore_api_raw() {
-    local method=$1 path=$2 payload=${3:-} response
+    local method=$1 path=$2 payload=${3:-} response headers payload_file
     [[ -n "${GCORE_API_TOKEN:-}" ]] || die "缺少 GCORE_API_TOKEN"
+    headers="${RUNTIME_TMP}/gcore-api-headers"
+    printf 'Authorization: APIKey %s\n' "${GCORE_API_TOKEN}" >"${headers}"
+    chmod 0600 "${headers}"
     if [[ -n "${payload}" ]]; then
+        payload_file="${RUNTIME_TMP}/gcore-api-payload"
+        printf '%s' "${payload}" >"${payload_file}"
+        chmod 0600 "${payload_file}"
         response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
-            -H "Authorization: APIKey ${GCORE_API_TOKEN}" \
+            -H "@${headers}" \
             -H 'Content-Type: application/json' \
-            --data "${payload}" -w $'\n%{http_code}' \
+            --data-binary "@${payload_file}" -w $'\n%{http_code}' \
             "${GCORE_API_BASE}${path}") || return 1
     else
         response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
-            -H "Authorization: APIKey ${GCORE_API_TOKEN}" \
+            -H "@${headers}" \
             -H 'Accept: application/json' \
             -w $'\n%{http_code}' "${GCORE_API_BASE}${path}") || return 1
     fi
@@ -135,19 +136,46 @@ gcore_api_request() {
 gcore_api_get_optional() {
     local path=$1 http_code response body
     response=$(gcore_api_raw GET "${path}") \
-        || die "Gcore API 请求失败：GET ${path}"
+        || {
+            fail "Gcore API 请求失败：GET ${path}"
+            return 2
+        }
     http_code=${response##*$'\n'}
     body=${response%$'\n'*}
     [[ "${http_code}" =~ ^[0-9]{3}$ ]] \
-        || die "Gcore API 返回无效 HTTP 状态：GET ${path}；响应正文：${body}"
+        || {
+            fail "Gcore API 返回无效 HTTP 状态：GET ${path}；响应正文：${body}"
+            return 2
+        }
     if [[ "${http_code}" == "404" ]]; then
-        return 1
+        return 4
     fi
     if ((http_code < 200 || http_code >= 300)); then
         printf '%s\n' "${body:-<empty>}" >&2
-        die "Gcore API 请求失败（HTTP ${http_code}）：GET ${path}"
+        fail "Gcore API 请求失败（HTTP ${http_code}）：GET ${path}"
+        return 2
     fi
     printf '%s' "${body}"
+}
+
+gcore_api_delete_optional() {
+    local path=$1 response http_code body
+    response=$(gcore_api_raw DELETE "${path}") || {
+        fail "Gcore API 请求失败：DELETE ${path}"
+        return 1
+    }
+    http_code=${response##*$'\n'}
+    body=${response%$'\n'*}
+    [[ "${http_code}" =~ ^[0-9]{3}$ ]] || {
+        fail "Gcore API 返回无效 HTTP 状态：DELETE ${path}；响应正文：${body}"
+        return 1
+    }
+    [[ "${http_code}" == "404" ]] && return 0
+    if ((http_code < 200 || http_code >= 300)); then
+        printf '%s\n' "${body:-<empty>}" >&2
+        fail "Gcore API 请求失败（HTTP ${http_code}）：DELETE ${path}"
+        return 1
+    fi
 }
 
 gcore_json_items() {
@@ -222,8 +250,7 @@ gcore_configure_origin_firewall() {
             warn "获取 Gcore 官方 IP 段失败，继续使用上一版回源白名单"
             install -m 0600 "${GCORE_ORIGIN_IPS_FILE}" "${next}"
         else
-            warn "无法获取 Gcore 官方 IPv4 段，跳过 UFW 回源白名单限制"
-            return 0
+            die "无法获取 Gcore 官方 IPv4 段，且本机没有可回退的白名单"
         fi
     fi
     current="${RUNTIME_TMP}/gcore-origin-ipv4.current"
@@ -235,19 +262,24 @@ gcore_configure_origin_firewall() {
 
     while IFS= read -r cidr; do
         [[ -n "${cidr}" ]] || continue
-        grep -Fxq "${cidr}" "${next}" && continue
-        ufw delete allow proto tcp from "${cidr}" to any port 443 comment "${GCORE_UFW_COMMENT}" >/dev/null 2>&1 || true
-    done <"${current}"
-
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
         grep -Fxq "${cidr}" "${current}" && continue
-        ufw allow proto tcp from "${cidr}" to any port 443 comment "${GCORE_UFW_COMMENT}" >/dev/null 2>&1 || true
+        ufw allow proto tcp from "${cidr}" to any port 443 \
+            comment "${GCORE_UFW_COMMENT}" >/dev/null \
+            || die "添加 Gcore 回源 UFW 规则失败：${cidr}"
     done <"${next}"
+    ufw reload >/dev/null || die "重载 Gcore 回源 UFW 规则失败"
 
     install -d -m 0700 "$(dirname "${GCORE_ORIGIN_IPS_FILE}")"
     install -m 0600 "${next}" "${GCORE_ORIGIN_IPS_FILE}"
-    ufw reload >/dev/null 2>&1 || true
+
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        grep -Fxq "${cidr}" "${next}" && continue
+        ufw delete allow proto tcp from "${cidr}" to any port 443 \
+            comment "${GCORE_UFW_COMMENT}" >/dev/null \
+            || warn "删除过期 Gcore 回源 UFW 规则失败：${cidr}"
+    done <"${current}"
+    ufw reload >/dev/null || die "重载 Gcore 回源 UFW 规则失败"
 }
 
 configure_ufw() {
@@ -348,14 +380,48 @@ gcore_domain_cname_matches_public_dns() {
     [[ "${records}" == "${expected}" ]]
 }
 
+gcore_rrset_values() {
+    local rrset=$1
+    jq -er '
+      .resource_records
+      | select(type == "array")
+      | map(.content[]?)
+      | map(select(type == "string"))
+      | unique
+      | .[]
+    ' <<<"${rrset}"
+}
+
+gcore_require_rrset_available() {
+    local zone=$1 domain=$2 type=$3 expected=$4 rrset values status
+    if rrset=$(gcore_api_get_optional \
+        "/dns/v2/zones/${zone}/${domain}/${type}"); then
+        :
+    else
+        status=$?
+        ((status == 4)) && return 1
+        die "无法读取 Gcore Managed DNS ${type} RRset：${domain}"
+    fi
+    values=$(gcore_rrset_values "${rrset}") \
+        || die "Gcore Managed DNS 返回无效 ${type} RRset：${domain}"
+    [[ "${values}" == "${expected}" ]] \
+        || die "Gcore Managed DNS ${domain} 已存在非 easy_all 目标的 ${type} RRset，拒绝覆盖（当前：${values//$'\n'/,}；目标：${expected}）"
+}
+
 gcore_ensure_origin_a_record() {
     local public_ip
     public_ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测本机公网 IPv4"
     validate_ipv4 "${public_ip}" || die "公网 IPv4 无效：${public_ip}"
     VPS_PUBLIC_IPV4=${public_ip}
 
-    if gcore_origin_a_matches_public_dns; then
-        info "Gcore Managed DNS 源站 A 记录已匹配，跳过更新"
+    if gcore_require_rrset_available \
+        "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_DOMAIN}" A "${public_ip}"; then
+        if gcore_origin_a_matches_public_dns; then
+            info "Gcore Managed DNS 源站 A 记录已匹配，跳过更新"
+        else
+            info "Gcore Managed DNS 源站 A 记录已存在，等待公共 DNS 传播"
+            GCORE_DNS_RECORDS_CHANGED=1
+        fi
         return 0
     fi
     local payload
@@ -367,9 +433,15 @@ gcore_ensure_origin_a_record() {
 }
 
 gcore_ensure_domain_cname_record() {
-    local domain=$1 zone=$2 payload
-    if gcore_domain_cname_matches_public_dns "${domain}"; then
-        info "Gcore Managed DNS CDN CNAME 已匹配：${domain} -> ${GCORE_CDN_TARGET}，跳过更新"
+    local domain=$1 zone=$2 payload expected
+    expected=$(normalize_domain "${GCORE_CDN_TARGET}")
+    if gcore_require_rrset_available "${zone}" "${domain}" CNAME "${expected}"; then
+        if gcore_domain_cname_matches_public_dns "${domain}"; then
+            info "Gcore Managed DNS CDN CNAME 已匹配：${domain} -> ${GCORE_CDN_TARGET}，跳过更新"
+        else
+            info "Gcore Managed DNS CDN CNAME 已存在，等待公共 DNS 传播：${domain}"
+            GCORE_DNS_RECORDS_CHANGED=1
+        fi
         return 0
     fi
     payload=$(jq -cn --arg target "${GCORE_CDN_TARGET}" --argjson ttl "${GCORE_DNS_TTL}" \
@@ -662,6 +734,61 @@ gcore_edge_certificate_id() {
     printf '%s' "${certificate_id}"
 }
 
+gcore_resolve_edge_certificate_id_for_purge() {
+    local resource certificates candidate status
+    [[ "${GCORE_EDGE_CERTIFICATE_ID:-}" =~ ^[1-9][0-9]*$ ]] && return 0
+    if [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+        if resource=$(gcore_api_get_optional \
+            "/cdn/resources/${GCORE_CDN_RESOURCE_ID}"); then
+            candidate=$(jq -r '.sslData // empty' <<<"${resource}")
+            if [[ "${candidate}" =~ ^[1-9][0-9]*$ ]]; then
+                GCORE_EDGE_CERTIFICATE_ID=${candidate}
+                return 0
+            fi
+        else
+            status=$?
+            ((status == 4)) || return 1
+        fi
+    fi
+    certificates=$(gcore_api_request GET "/cdn/sslData") || return 1
+    candidate=$(gcore_json_items "${certificates}" | jq -sr \
+        --arg name "easy_all-edge-${VLESS_CDN_DOMAIN}" '
+        first(.[] | select(
+          .name == $name and .automated == true and .deleted != true
+        ) | .id) // empty')
+    if [[ "${candidate}" =~ ^[1-9][0-9]*$ ]]; then
+        GCORE_EDGE_CERTIFICATE_ID=${candidate}
+    fi
+}
+
+gcore_wait_for_edge_certificate() {
+    local certificate_id=$1 attempt state status details
+    for ((attempt = 1; attempt <= GCORE_EDGE_PROPAGATION_ATTEMPTS; attempt += 1)); do
+        state=$(gcore_api_request GET "/cdn/sslData/${certificate_id}/status") \
+            || die "无法读取 Gcore 边缘证书签发状态"
+        status=$(jq -r '
+            if (.latest_status.status? // "") != "" then
+                .latest_status.status | ascii_upcase
+            elif .active == true then "ACTIVE"
+            else "PENDING"
+            end
+        ' <<<"${state}")
+        case "${status}" in
+        ACTIVE | DONE) return 0 ;;
+        FAILED | CANCELLED)
+            details=$(jq -c '{
+                error:(.latest_status.error // null),
+                details:(.latest_status.details // null)
+            }' <<<"${state}")
+            die "Gcore 边缘证书签发 ${status}：${details}"
+            ;;
+        esac
+        ((attempt == GCORE_EDGE_PROPAGATION_ATTEMPTS)) \
+            || sleep "${GCORE_EDGE_PROPAGATION_INTERVAL}"
+    done
+    die "Gcore 边缘证书等待超时：ID=${certificate_id}，状态=${status:-unknown}"
+}
+
 gcore_resource_matches_payload() {
     local resource=$1 payload=$2
     jq -en --argjson actual "${resource}" --argjson desired "${payload}" '
@@ -699,8 +826,9 @@ gcore_resource_matches_payload() {
 }
 
 gcore_ensure_resource() {
-    local payload response existing_resources current_resource res subscription_domain
+    local payload bootstrap_payload response existing_resources current_resource res subscription_domain
     local resource_id="" edge_certificate_id=""
+    local certificate_needs_binding=0
     GCORE_CDN_RESOURCE_CHANGED=0
     subscription_domain=$(active_subscription_link_domain)
     existing_resources=$(gcore_api_request GET "/cdn/resources") || return 1
@@ -714,6 +842,7 @@ gcore_ensure_resource() {
     done < <(gcore_json_items "${existing_resources}")
     if [[ ! "${edge_certificate_id}" =~ ^[1-9][0-9]*$ ]]; then
         edge_certificate_id=$(gcore_edge_certificate_id) || return 1
+        certificate_needs_binding=1
     fi
     GCORE_EDGE_CERTIFICATE_ID=${edge_certificate_id}
     payload=$(jq -cn \
@@ -735,7 +864,7 @@ gcore_ensure_resource() {
           proxy_ssl_data: $client_cert_id,
           proxy_ssl_ca: $origin_ca_id,
           options: {
-            allowedHttpMethods: {enabled: true, value: ["GET", "HEAD", "POST"]},
+            allowedHttpMethods: {enabled: true, value: ["GET", "HEAD"]},
             websockets: {enabled: true, value: true},
             hostHeader: {enabled: true, value: $origin},
             redirect_http_to_https: {enabled: true, value: true},
@@ -748,6 +877,9 @@ gcore_ensure_resource() {
             slice: {enabled: true, value: false}
           }
         }')
+    bootstrap_payload=$(jq -c '
+        .options.redirect_http_to_https = {enabled:false,value:false}
+    ' <<<"${payload}")
 
     if [[ -n "${resource_id}" ]]; then
         GCORE_CDN_RESOURCE_ID=${resource_id}
@@ -757,13 +889,22 @@ gcore_ensure_resource() {
             info "Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 配置未变化，跳过更新"
         else
             info "更新已有 Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 的 HTTPS、mTLS 与配置"
+            if ((certificate_needs_binding == 1)); then
+                gcore_api_request PUT \
+                    "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${bootstrap_payload}" >/dev/null \
+                    || return 1
+            fi
+            gcore_wait_for_edge_certificate "${edge_certificate_id}"
             gcore_api_request PUT \
                 "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
             GCORE_CDN_RESOURCE_CHANGED=1
         fi
     else
-        response=$(gcore_api_request POST "/cdn/resources" "${payload}") || return 1
+        response=$(gcore_api_request POST "/cdn/resources" "${bootstrap_payload}") || return 1
         GCORE_CDN_RESOURCE_ID=$(jq -er '.id // empty' <<<"${response}") || return 1
+        gcore_wait_for_edge_certificate "${edge_certificate_id}"
+        gcore_api_request PUT \
+            "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
         GCORE_CDN_RESOURCE_CHANGED=1
     fi
     if ((GCORE_CDN_RESOURCE_CHANGED == 1)); then
@@ -775,83 +916,6 @@ gcore_probe_log_summary() {
     local log_file=$1
     [[ -s "${log_file}" ]] || return 0
     tail -n 4 "${log_file}" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g'
-}
-
-gcore_probe_xhttp() {
-    local probe_uuid=${1:-${VLESS_UUID}}
-    local probe_dir="${RUNTIME_TMP}/gcore-xhttp-probe"
-    local probe_config="${probe_dir}/config.json" probe_log="${probe_dir}/xray.log"
-    local probe_port=0 probe_pid=0 attempt response http_code curl_status=0 log_summary
-    GCORE_XHTTP_PROBE_ERROR=""
-    install -d -m 0700 "${probe_dir}"
-    for attempt in {1..20}; do
-        probe_port=$((20000 + RANDOM % 20000))
-        ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q . || break
-        probe_port=0
-    done
-    if ((probe_port == 0)); then
-        GCORE_XHTTP_PROBE_ERROR="无法分配本机探针端口"
-        return 1
-    fi
-    jq -n --arg address "${VLESS_CDN_DOMAIN}" --arg host "${VLESS_CDN_DOMAIN}" \
-        --arg uuid "${probe_uuid}" --arg path "$(xhttp_client_path)" \
-        --argjson port "${probe_port}" '
-        {
-          log:{loglevel:"error"},
-          inbounds:[{
-            tag:"gcore-xhttp-probe-socks",listen:"127.0.0.1",port:$port,
-            protocol:"socks",settings:{udp:false}
-          }],
-          outbounds:[{
-            tag:"proxy",protocol:"vless",
-            settings:{vnext:[{address:$address,port:443,
-                              users:[{id:$uuid,encryption:"none"}]}]},
-            streamSettings:{
-              network:"xhttp",security:"tls",
-              tlsSettings:{serverName:$host,alpn:["h2"],fingerprint:"chrome"},
-              xhttpSettings:{host:$host,path:$path,mode:"packet-up",
-                             extra:{uplinkHTTPMethod:"POST"}}
-            }
-          }]
-        }
-    ' >"${probe_config}" || {
-        GCORE_XHTTP_PROBE_ERROR="无法生成探针配置"
-        return 1
-    }
-    if ! "${XRAY_BIN}" run -test -config "${probe_config}" >/dev/null 2>"${probe_log}"; then
-        log_summary=$(gcore_probe_log_summary "${probe_log}")
-        GCORE_XHTTP_PROBE_ERROR="配置校验失败${log_summary:+：${log_summary}}"
-        return 1
-    fi
-    "${XRAY_BIN}" run -config "${probe_config}" >"${probe_log}" 2>&1 &
-    probe_pid=$!
-    for attempt in {1..10}; do
-        ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q . && break
-        sleep 1
-    done
-    if ! ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q .; then
-        kill "${probe_pid}" >/dev/null 2>&1 || true
-        wait "${probe_pid}" >/dev/null 2>&1 || true
-        log_summary=$(gcore_probe_log_summary "${probe_log}")
-        GCORE_XHTTP_PROBE_ERROR="SOCKS 探针未启动${log_summary:+：${log_summary}}"
-        return 1
-    fi
-    if response=$(curl -sS --noproxy '' --proxy "socks5h://127.0.0.1:${probe_port}" \
-        --connect-timeout 10 --max-time 30 -w $'\n%{http_code}' \
-        'https://cp.cloudflare.com/generate_204' 2>>"${probe_log}"); then
-        curl_status=0
-    else
-        curl_status=$?
-    fi
-    http_code=${response##*$'\n'}
-    kill "${probe_pid}" >/dev/null 2>&1 || true
-    wait "${probe_pid}" >/dev/null 2>&1 || true
-    if [[ "${http_code}" == "204" ]]; then
-        return 0
-    fi
-    log_summary=$(gcore_probe_log_summary "${probe_log}")
-    GCORE_XHTTP_PROBE_ERROR="curl=${curl_status},HTTP=${http_code:-000}${log_summary:+，Xray=${log_summary}}"
-    return 1
 }
 
 gcore_probe_websocket() {
@@ -937,11 +1001,11 @@ gcore_wait_for_domain_health() {
     local attempt resource status certificate_state certificate_status="PENDING"
     local certificate_error response http_code curl_status=0 curl_error
     local transport_status transport_verified=0 validation_label="HTTPS"
-    local xhttp_ok=0 websocket_ok=0
+    local websocket_ok=0
     local health_body="${RUNTIME_TMP}/gcore-edge-health-body"
     local health_error="${RUNTIME_TMP}/gcore-edge-health-error"
     if ((verify_transport == 1)); then
-        validation_label="HTTPS 与 XHTTP/WebSocket"
+        validation_label="HTTPS 与 WebSocket"
     else
         transport_verified=1
     fi
@@ -994,16 +1058,13 @@ gcore_wait_for_domain_health() {
             elif ((transport_verified == 1)); then
                 transport_status="ok"
             elif ((attempt == 1 || attempt % 3 == 0)); then
-                xhttp_ok=0
                 websocket_ok=0
-                gcore_probe_xhttp "${probe_uuid}" && xhttp_ok=1
                 gcore_probe_websocket "${probe_uuid}" && websocket_ok=1
-                if ((xhttp_ok == 1 && websocket_ok == 1)); then
+                if ((websocket_ok == 1)); then
                     transport_verified=1
-                    transport_status="XHTTP=ok,WebSocket=ok"
+                    transport_status="WebSocket=ok"
                 else
-                    transport_status="XHTTP=$([[ ${xhttp_ok} == 1 ]] && printf ok || printf 'failed(%s)' "${GCORE_XHTTP_PROBE_ERROR:-unknown}")"
-                    transport_status+=",WebSocket=$([[ ${websocket_ok} == 1 ]] && printf ok || printf 'failed(%s)' "${GCORE_WEBSOCKET_PROBE_ERROR:-unknown}")"
+                    transport_status="WebSocket=failed(${GCORE_WEBSOCKET_PROBE_ERROR:-unknown})"
                 fi
             fi
         fi
@@ -1031,7 +1092,7 @@ gcore_wait_for_cdn_health() {
         probe_uuid=$(quota_active_accounts_json | jq -er 'first(to_entries[]).value.uuid') \
             || verify_transport=0
         if ((verify_transport == 0)); then
-            info "所有配额用户均已停用，跳过 XHTTP/WebSocket 业务探针，仅验收 CDN 公网健康接口"
+            info "所有配额用户均已停用，跳过 WebSocket 业务探针，仅验收 CDN 公网健康接口"
         fi
     else
         probe_uuid=${VLESS_UUID}
@@ -1103,22 +1164,6 @@ normalize_websocket_path() {
     printf '%s\n' "${path}"
 }
 
-normalize_xhttp_path() {
-    local path=${1:-}
-    while [[ "${path}" =~ ^/(xhttp|vless)-/(xhttp|vless)- ]]; do
-        path="/${path#/*-/}"
-    done
-    if [[ "${path}" =~ ^/(xhttp|vless)- ]]; then
-        path="/xhttp-${path#/*-}"
-    elif [[ -n "${path}" ]]; then
-        path="/xhttp-${path#/}"
-    else
-        path="/xhttp-$(openssl rand -hex 12)"
-    fi
-    path="${path%/}"
-    printf '%s\n' "${path}"
-}
-
 collect_install_inputs() {
     PROTOCOL="gcore"
     BACKEND="xray"
@@ -1150,21 +1195,15 @@ collect_install_inputs() {
     WEBSOCKET_PATH=$(normalize_websocket_path "${WEBSOCKET_PATH:-}")
     validate_xhttp_path "${WEBSOCKET_PATH}" || die "WEBSOCKET_PATH 无效"
 
-    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
-    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
-
     XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
     validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" || die "WebSocket 本机端口无效"
-
-    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
-    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"
 
     choose_subscription_mode
     if subscription_enabled; then
         collect_subscription_link_domain
         choose_subscription_download_name
-        choose_monthly_quota 0
-        ensure_allowed_tokens
+        choose_monthly_quota 1
+        quota_enabled || ensure_allowed_tokens
     else
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -1180,10 +1219,9 @@ load_state() {
         CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET
-        GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID
+        GCORE_CDN_RESOURCE_ID GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID
         GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID
-        VPS_PUBLIC_IPV4 WEBSOCKET_PATH XHTTP_PATH
-        XRAY_WEBSOCKET_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT
+        VPS_PUBLIC_IPV4 WEBSOCKET_PATH XRAY_WEBSOCKET_LOOPBACK_PORT
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
@@ -1195,6 +1233,8 @@ load_state() {
     done
     [[ "${PROTOCOL}" == "gcore" && "${CDN_PROVIDER:-}" == "gcore" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Gcore CDN"
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 Gcore 状态版本：${STATE_VERSION:-缺失}；请重新安装"
     configure_cdn_client_ip_family
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Gcore 状态缺少有效域名或 UUID"
@@ -1203,13 +1243,8 @@ load_state() {
     XHTTP_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
     WEBSOCKET_PATH=$(normalize_websocket_path "${WEBSOCKET_PATH:-}")
     validate_xhttp_path "${WEBSOCKET_PATH}" || die "状态中的 WEBSOCKET_PATH 无效"
-    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
-    validate_xhttp_path "${XHTTP_PATH}" || die "状态中的 XHTTP_PATH 无效"
-
     XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
     validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" || die "状态中的 WebSocket 本机端口无效"
-    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
-    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "状态中的 XHTTP 本机端口无效"
 
     SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}")
     GCORE_SUBSCRIPTION_DNS_ZONE=${GCORE_SUBSCRIPTION_DNS_ZONE:-${GCORE_DNS_ZONE}}
@@ -1243,10 +1278,9 @@ save_state() {
         for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER CDN_CLIENT_IP_FAMILY \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
             GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET \
-            GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID \
+            GCORE_CDN_RESOURCE_ID GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID \
             GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID \
-            VPS_PUBLIC_IPV4 WEBSOCKET_PATH XHTTP_PATH \
-            XRAY_WEBSOCKET_LOOPBACK_PORT XRAY_XHTTP_LOOPBACK_PORT \
+            VPS_PUBLIC_IPV4 WEBSOCKET_PATH XRAY_WEBSOCKET_LOOPBACK_PORT \
             ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE \
             SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
             QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
@@ -1296,25 +1330,14 @@ xhttp_render_xray_config() {
     inbound_sockopt=$(xray_inbound_sockopt_json)
     quota_enabled && stats_enabled=true
 
-    jq -n --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
-        --argjson websocket_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" \
+    jq -n --argjson websocket_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
-        --arg xhttp_path "${XHTTP_PATH}" --arg websocket_path "${WEBSOCKET_PATH}" \
-        --arg host "${VLESS_CDN_DOMAIN}" \
-        --arg padding "${GCORE_XHTTP_PADDING_BYTES}" \
-        --arg mode "packet-up" \
-        --argjson max_buffered_posts "${GCORE_XHTTP_MAX_BUFFERED_POSTS}" \
+        --arg websocket_path "${WEBSOCKET_PATH}" \
         --argjson inbound_sockopt "${inbound_sockopt}" \
         --argjson managed_outbounds "${managed_outbounds}" \
         --argjson managed_routing "${managed_routing}" '
         {log:{loglevel:"warning"},
-         inbounds:[{tag:"vless-xhttp-h2-in",listen:"127.0.0.1",port:$xhttp_port,protocol:"vless",
-          settings:{clients:$clients,decryption:"none"},
-          streamSettings:{network:"xhttp",sockopt:$inbound_sockopt,
-            xhttpSettings:{host:$host,path:$xhttp_path,mode:$mode,
-              xPaddingBytes:$padding,scMaxBufferedPosts:$max_buffered_posts}},
-          sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}},
-         {tag:"vless-websocket-in",listen:"127.0.0.1",port:$websocket_port,protocol:"vless",
+         inbounds:[{tag:"vless-websocket-in",listen:"127.0.0.1",port:$websocket_port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
           streamSettings:{network:"ws",sockopt:$inbound_sockopt,wsSettings:{path:$websocket_path}},
           sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:false}}],
@@ -1340,11 +1363,6 @@ write_nginx_config() {
         cat <<EOF
 upstream gcore_websocket_backend {
     server 127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT};
-    keepalive 32;
-}
-
-upstream gcore_xhttp_backend {
-    server 127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
     keepalive 32;
 }
 
@@ -1394,24 +1412,6 @@ EOF
         access_log off;
     }
 
-    location ^~ ${XHTTP_PATH}/ {
-        client_max_body_size 0;
-        client_body_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host ${VLESS_CDN_DOMAIN};
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
-        proxy_send_timeout ${GCORE_XHTTP_NGINX_TIMEOUT};
-        proxy_pass http://gcore_xhttp_backend;
-        access_log off;
-    }
-
     location / { return 404; }
 }
 EOF
@@ -1452,10 +1452,7 @@ build_node_links() {
         build_vless_websocket_link "${ip}" "优选${label}"
         printf '\n'
     done < <(gcore_client_candidates)
-    if (( count == 0 )); then
-        build_vless_websocket_link "${VLESS_CDN_DOMAIN}" "优选1"
-        printf '\n'
-    fi
+    ((count > 0)) || die "Gcore 没有可用的已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
 }
 
 build_mihomo_nodes() {
@@ -1465,9 +1462,7 @@ build_mihomo_nodes() {
         count=$((count + 1))
         build_mihomo_websocket_node "${ip}" "优选${label}"
     done < <(gcore_client_candidates)
-    if (( count == 0 )); then
-        build_mihomo_websocket_node "${VLESS_CDN_DOMAIN}" "优选1"
-    fi
+    ((count > 0)) || die "Gcore 没有可用的已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
 }
 
 build_mihomo_proxy_names() {
@@ -1481,9 +1476,8 @@ build_mihomo_proxy_groups() {
         [[ -n "${ip}" ]] || continue
         all_nodes+=("优选${label}")
     done < <(gcore_client_candidates)
-    if (( ${#all_nodes[@]} == 0 )); then
-        all_nodes+=("优选1")
-    fi
+    ((${#all_nodes[@]} > 0)) \
+        || die "Gcore 没有可用的已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
 
     printf '    - name: "AUTO"\n'
     printf '      type: url-test\n'
@@ -1501,62 +1495,6 @@ build_mihomo_proxy_groups() {
 EOF
 }
 
-write_subscriptions() {
-    local template node_file group_file name_file base64_file mihomo_file user uuid user_dir marker='network: ws'
-    prepare_mihomo_template
-    template=${MIHOMO_TEMPLATE_FILE}
-    node_file="${RUNTIME_TMP}/mihomo-node.yaml"
-    group_file="${RUNTIME_TMP}/mihomo-groups.yaml"
-    name_file="${RUNTIME_TMP}/mihomo-names.yaml"
-    base64_file="${RUNTIME_TMP}/subscription-base64.txt"
-    mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
-    resolve_cdn_client_ip_family
-
-    if quota_enabled; then
-        rm -rf -- "${SUBSCRIPTION_DIR}"
-        install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
-        while IFS=$'\t' read -r user uuid; do
-            user_dir="${SUBSCRIPTION_DIR}/${user}"
-            (
-                VLESS_UUID=${uuid}
-                build_mihomo_nodes >"${node_file}.${user}"
-                build_mihomo_proxy_groups >"${group_file}.${user}"
-                build_mihomo_proxy_names >"${name_file}.${user}"
-                build_node_links | openssl base64 -A >"${base64_file}.${user}"
-                printf '\n' >>"${base64_file}.${user}"
-                render_mihomo_subscription "${template}" "${node_file}.${user}" \
-                    "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
-                    "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" \
-                    "${group_file}.${user}" "${name_file}.${user}"
-            )
-            grep -Fq "${marker}" "${mihomo_file}.${user}" \
-                || die "Mihomo 订阅缺少有效节点：${user}"
-            install -d -o root -g www-data -m 0750 "${user_dir}"
-            install -o root -g www-data -m 0640 \
-                "${base64_file}.${user}" "${user_dir}/base64.txt"
-            install -o root -g www-data -m 0640 \
-                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml"
-        done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
-        return 0
-    fi
-
-    build_mihomo_nodes >"${node_file}"
-    build_mihomo_proxy_groups >"${group_file}"
-    build_mihomo_proxy_names >"${name_file}"
-    build_node_links | openssl base64 -A >"${base64_file}"
-    printf '\n' >>"${base64_file}"
-    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
-        "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" \
-        "${group_file}" "${name_file}"
-
-    grep -Fq 'network: ws' "${mihomo_file}" || die "Mihomo 订阅缺少 WebSocket 节点"
-
-    rm -rf -- "${SUBSCRIPTION_DIR}"
-    install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
-    install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
-    install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
-}
-
 # --- Lifecycle Commands ---
 
 show_node() {
@@ -1570,7 +1508,7 @@ show_status() {
     require_root
     collect_installed_state
     resolve_cdn_client_ip_family
-    printf '协议: VLESS WebSocket + XHTTP packet-up（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 最多 6 个，以实际验证结果为准\n' \
+    printf '协议: VLESS WebSocket（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 最多 6 个，以实际验证结果为准\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${GCORE_CDN_TARGET}"
     show_globalping_status
 }
@@ -1615,7 +1553,7 @@ refresh_gcore_cdn_ips() {
         validate_subscription_runtime
     fi
     save_state
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    commit_subscription_update
     release_runtime_write_lock
     ((refresh_status == 0)) || return 1
     success "Gcore CDN 精选 IP 与订阅已刷新"
@@ -1661,7 +1599,8 @@ install_all() {
     validate_protocol_runtime
     gcore_apply_cdn
     persist_globalping_token
-    refresh_gcore_globalping_cache || warn "首次 Globalping 测量失败"
+    refresh_gcore_globalping_cache \
+        || die "首次 Globalping 测量失败，无法生成严格精选 IP 订阅"
     subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
     save_state
     register_easy_all_command
@@ -1683,11 +1622,11 @@ apply_easy_all() {
     configure_ufw
     if ! gcore_globalping_cache_valid; then
         info "当前 Globalping 优选缓存未就绪或已过期，正在执行刷新..."
-        refresh_gcore_globalping_cache || warn "Globalping 刷新失败，将使用现有缓存或域名兜底"
+        refresh_gcore_globalping_cache || warn "Globalping 刷新失败，将继续使用现有兼容缓存"
     fi
     finish_xhttp_apply
     install_globalping_refresh_timer
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    commit_subscription_update
     success "Gcore CDN 本机配置已应用；未修改 Gcore 资源"
 }
 
@@ -1708,7 +1647,7 @@ apply_cloud_resources() {
     finish_xhttp_apply 1 1
     install_globalping_refresh_timer
     gcore_clear_api_token
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    commit_subscription_update
     success "easy_all Gcore CDN 本机配置、Managed DNS、CDN 与证书已应用"
 }
 
@@ -1761,18 +1700,20 @@ update_subscription() {
         gcore_clear_api_token
     fi
     save_state
-    end_quota_maintenance
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     show_subscription
+    commit_subscription_update
     success "Nginx 订阅已刷新"
 }
 
 uninstall_all() {
-    local mode=${1:-} answer
+    local mode=${1:-} answer purge_failed=0
     require_root
     [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
         || die "uninstall 不支持参数：${mode}"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all 尚未安装"
+    if [[ "${mode}" == "--purge-cloud" && ! -f "${STATE_FILE}" ]]; then
+        die "缺少状态文件，无法安全识别 easy_all 托管的 Gcore 资源；本机内容未删除"
+    fi
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" && ! -t 0 ]]; then
         die "非交互卸载必须显式设置 FORCE=1"
@@ -1785,11 +1726,25 @@ uninstall_all() {
     if [[ "${mode}" == "--purge-cloud" ]]; then
         info "正在清理 Gcore CDN 远端资源..."
         gcore_collect_api_token
-        # Remove CDN resource, origin group, SSL certificates
-        [[ -z "${GCORE_CDN_RESOURCE_ID:-}" ]] || gcore_api_request DELETE "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" >/dev/null 2>&1 || true
-        [[ -z "${GCORE_ORIGIN_GROUP_ID:-}" ]] || gcore_api_request DELETE "/cdn/origin_groups/${GCORE_ORIGIN_GROUP_ID}" >/dev/null 2>&1 || true
-        [[ -z "${GCORE_ORIGIN_CLIENT_CERT_ID:-}" ]] || gcore_api_request DELETE "/cdn/sslData/${GCORE_ORIGIN_CLIENT_CERT_ID}" >/dev/null 2>&1 || true
-        [[ -z "${GCORE_ORIGIN_CA_ID:-}" ]] || gcore_api_request DELETE "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}" >/dev/null 2>&1 || true
+        gcore_resolve_edge_certificate_id_for_purge \
+            || die "无法识别 easy_all 托管的 Gcore 边缘证书；本机状态仍保留"
+        [[ -z "${GCORE_CDN_RESOURCE_ID:-}" ]] \
+            || gcore_api_delete_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+                || purge_failed=1
+        [[ -z "${GCORE_ORIGIN_GROUP_ID:-}" ]] \
+            || gcore_api_delete_optional "/cdn/origin_groups/${GCORE_ORIGIN_GROUP_ID}" \
+                || purge_failed=1
+        [[ -z "${GCORE_ORIGIN_CLIENT_CERT_ID:-}" ]] \
+            || gcore_api_delete_optional "/cdn/sslData/${GCORE_ORIGIN_CLIENT_CERT_ID}" \
+                || purge_failed=1
+        [[ -z "${GCORE_EDGE_CERTIFICATE_ID:-}" ]] \
+            || gcore_api_delete_optional "/cdn/sslData/${GCORE_EDGE_CERTIFICATE_ID}" \
+                || purge_failed=1
+        [[ -z "${GCORE_ORIGIN_CA_ID:-}" ]] \
+            || gcore_api_delete_optional "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}" \
+                || purge_failed=1
+        ((purge_failed == 0)) \
+            || die "部分 Gcore 远端资源清理失败；本机状态仍保留，可直接重试 uninstall --purge-cloud"
         gcore_clear_api_token
     fi
     stop_services

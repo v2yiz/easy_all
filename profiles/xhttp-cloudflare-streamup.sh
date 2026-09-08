@@ -5,7 +5,7 @@
 # This Profile provides pure VLESS XHTTP stream-up over Cloudflare CDN,
 # fully adapted to Cloudflare HTTP/2 and gRPC edge streaming with
 # randomized keep-alive server timeout and packet padding.
-# Strictly outputs top 5 curated IPv4 nodes (no domain fallback).
+# Strictly outputs 6 curated IPv4 nodes with no domain fallback.
 
 set -Eeuo pipefail
 umask 077
@@ -24,7 +24,6 @@ readonly CLOUDFLARE_XHTTP_PADDING_BYTES="100-1000"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="/etc/easy_all/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cloudflare-origin"
-XHTTP_URL_TEST_INTERVAL_OVERRIDE=300
 
 # shellcheck source=lib/xhttp-runtime.sh
 source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
@@ -50,21 +49,25 @@ cloudflare_clear_api_token() {
 }
 
 cloudflare_api_request() {
-    local method=$1 path=$2 payload=${3:-} response headers
+    local method=$1 path=$2 payload=${3:-} response headers payload_file
     [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "缺少 CLOUDFLARE_API_TOKEN"
     headers="${RUNTIME_TMP}/cloudflare-api-headers"
     printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
         "${CLOUDFLARE_API_TOKEN}" >"${headers}"
     chmod 0600 "${headers}"
     if [[ -n "${payload}" ]]; then
+        payload_file="${RUNTIME_TMP}/cloudflare-api-payload"
+        printf '%s' "${payload}" >"${payload_file}"
+        chmod 0600 "${payload_file}"
         response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
             -H "@${headers}" \
-            --data "${payload}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
+            --data-binary "@${payload_file}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     else
         response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
             -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     fi
-    jq -e '.success == true' <<<"${response}" >/dev/null || { jq -c '.errors // .' <<<"${response}" >&2; die "Cloudflare API 返回错误：${method} ${path}"; }
+    jq -e '.success == true' <<<"${response}" >/dev/null \
+        || { printf '%s\n' "${response:-<empty>}" >&2; die "Cloudflare API 返回错误：${method} ${path}"; }
     jq -c '.result' <<<"${response}"
 }
 
@@ -313,9 +316,12 @@ cloudflare_issue_origin_certificate() {
 }
 
 xhttp_validate_local_tls_curl_args() {
+    local headers="${RUNTIME_TMP}/cloudflare-origin-headers"
     cloudflare_ensure_origin_ca_root
+    printf 'X-Easy-All-Origin-Key: %s\n' "${ORIGIN_HEADER_SECRET}" >"${headers}"
+    chmod 0600 "${headers}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
-        -H "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}")
+        -H "@${headers}")
 }
 
 xhttp_renew_origin_certificate() {
@@ -443,35 +449,110 @@ cloudflare_configure_cdn() {
 }
 
 cloudflare_validate_cdn_health() {
+    local probe_uuid=""
     cloudflare_wait_for_health "${VLESS_CDN_DOMAIN}" "CDN"
-    cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
+    if quota_enabled; then
+        probe_uuid=$(quota_active_accounts_json | jq -er 'first(to_entries[]).value.uuid') \
+            || {
+                info "所有配额用户均已停用，跳过 XHTTP 业务探针，仅验收 CDN 公网健康接口"
+                probe_uuid=""
+            }
+    else
+        probe_uuid=${VLESS_UUID}
+    fi
+    if [[ -n "${probe_uuid}" ]]; then
+        cloudflare_probe_xhttp "${probe_uuid}" \
+            || die "Cloudflare XHTTP 端到端验收失败：${CLOUDFLARE_XHTTP_PROBE_ERROR:-unknown}"
+    fi
     if subscription_enabled && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then cloudflare_wait_for_health "$(active_subscription_link_domain)" "订阅"; fi
 }
 
-cloudflare_validate_grpc_edge() {
-    local domain=$1 body_file metadata curl_status http_code content_type
-    body_file=$(mktemp "${RUNTIME_TMP}/cloudflare-grpc-check.XXXXXX")
-    if metadata=$(curl -sS --http2 --proto '=https' --tlsv1.2 \
-        --connect-timeout 5 --max-time 15 --noproxy '*' \
-        -X POST -H 'Content-Type: application/grpc' -H 'TE: trailers' \
-        --data-binary '' -o "${body_file}" \
-        -w $'%{http_code}\t%{content_type}' \
-        "https://${domain}/easy_all-health" 2>/dev/null); then
+cloudflare_probe_xhttp() {
+    local probe_uuid=${1:-${VLESS_UUID}}
+    local probe_dir="${RUNTIME_TMP}/cloudflare-xhttp-probe"
+    local probe_config="${probe_dir}/config.json" probe_log="${probe_dir}/xray.log"
+    local probe_port=0 probe_pid=0 attempt response="" http_code="" curl_status=0 log_summary
+    CLOUDFLARE_XHTTP_PROBE_ERROR=""
+    install -d -m 0700 "${probe_dir}"
+    for attempt in {1..20}; do
+        probe_port=$((20000 + RANDOM % 20000))
+        ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q . || break
+        probe_port=0
+    done
+    if ((probe_port == 0)); then
+        CLOUDFLARE_XHTTP_PROBE_ERROR="无法分配本机探针端口"
+        return 1
+    fi
+    jq -n --arg address "${VLESS_CDN_DOMAIN}" --arg host "${VLESS_CDN_DOMAIN}" \
+        --arg uuid "${probe_uuid}" --arg path "$(xhttp_client_path)" \
+        --argjson port "${probe_port}" '{
+          log:{loglevel:"error"},
+          inbounds:[{
+            tag:"cloudflare-xhttp-probe-socks",listen:"127.0.0.1",port:$port,
+            protocol:"socks",settings:{udp:false}
+          }],
+          outbounds:[{
+            tag:"proxy",protocol:"vless",
+            settings:{vnext:[{address:$address,port:443,
+                              users:[{id:$uuid,encryption:"none"}]}]},
+            streamSettings:{
+              network:"xhttp",security:"tls",
+              tlsSettings:{serverName:$host,alpn:["h2"],fingerprint:"chrome"},
+              xhttpSettings:{
+                host:$host,path:$path,mode:"stream-up",
+                extra:{
+                  uplinkHTTPMethod:"POST",
+                  noGRPCHeader:false,
+                  xmux:{
+                    maxConnections:4,
+                    cMaxReuseTimes:0,
+                    hMaxRequestTimes:"300-600",
+                    hMaxReusableSecs:"900-1800",
+                    hKeepAlivePeriod:0
+                  }
+                }
+              }
+            }
+          }]
+        }' >"${probe_config}" || {
+        CLOUDFLARE_XHTTP_PROBE_ERROR="无法生成探针配置"
+        return 1
+    }
+    if ! "${XRAY_BIN}" run -test -config "${probe_config}" >/dev/null 2>"${probe_log}"; then
+        log_summary=$(tail -n 4 "${probe_log}" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g')
+        CLOUDFLARE_XHTTP_PROBE_ERROR="配置校验失败${log_summary:+：${log_summary}}"
+        return 1
+    fi
+    "${XRAY_BIN}" run -config "${probe_config}" >"${probe_log}" 2>&1 &
+    probe_pid=$!
+    for attempt in {1..10}; do
+        ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q . && break
+        sleep 1
+    done
+    if ! ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q .; then
+        kill "${probe_pid}" >/dev/null 2>&1 || true
+        wait "${probe_pid}" >/dev/null 2>&1 || true
+        log_summary=$(tail -n 4 "${probe_log}" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g')
+        CLOUDFLARE_XHTTP_PROBE_ERROR="SOCKS 探针未启动${log_summary:+：${log_summary}}"
+        return 1
+    fi
+    if response=$(curl -sS --noproxy '' --proxy "socks5h://127.0.0.1:${probe_port}" \
+        --connect-timeout 10 --max-time 30 -w $'\n%{http_code}' \
+        'https://cp.cloudflare.com/generate_204' 2>>"${probe_log}"); then
         curl_status=0
     else
         curl_status=$?
     fi
-    rm -f -- "${body_file}"
-    IFS=$'\t' read -r http_code content_type <<<"${metadata}"
-
-    ((curl_status == 0)) \
-        || die "Cloudflare gRPC 边缘验收失败：无法连接 ${domain}"
-    if [[ "${http_code}" == "403" && "${content_type}" == text/html* ]]; then
-        die "Cloudflare Zone 尚未开启 gRPC；请在控制台 Network → gRPC 开启后重试"
+    http_code=${response##*$'\n'}
+    kill "${probe_pid}" >/dev/null 2>&1 || true
+    wait "${probe_pid}" >/dev/null 2>&1 || true
+    if [[ "${http_code}" == "204" ]]; then
+        success "Cloudflare XHTTP 端到端验收通过"
+        return 0
     fi
-    [[ "${http_code}" == "200" ]] \
-        || die "Cloudflare gRPC 边缘验收失败：HTTP ${http_code:-未知}"
-    success "Cloudflare gRPC 边缘验收通过"
+    log_summary=$(tail -n 4 "${probe_log}" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g')
+    CLOUDFLARE_XHTTP_PROBE_ERROR="curl=${curl_status},HTTP=${http_code:-000}${log_summary:+，Xray=${log_summary}}"
+    return 1
 }
 
 cloudflare_wait_for_health() {
@@ -605,8 +686,8 @@ collect_install_inputs() {
     if subscription_enabled; then
         collect_subscription_link_domain
         choose_subscription_download_name
-        choose_monthly_quota 0
-        ensure_allowed_tokens
+        choose_monthly_quota 1
+        quota_enabled || ensure_allowed_tokens
     else
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -637,6 +718,8 @@ load_state() {
     done
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 Cloudflare 状态版本：${STATE_VERSION:-缺失}；请重新安装"
     configure_cdn_client_ip_family
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Cloudflare 状态缺少有效域名或 UUID"
@@ -712,7 +795,7 @@ xhttp_render_xray_config() {
     install -d -m 0755 "${XRAY_DIR}"
     local clients
     if quota_enabled; then
-        clients=$(quota_active_clients_json "vless-xhttp-h2-in")
+        clients=$(quota_active_clients_json)
     else
         clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]')
     fi
@@ -838,25 +921,6 @@ EOF
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
-cloudflare_cleanup_stale_header_rules() {
-    local ruleset=$1 keep_ref1=${2:-} keep_ref2=${3:-}
-    local rules rule_id rule_ref rule_desc
-    rules=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}") || return 0
-    while IFS=$'\t' read -r rule_id rule_ref rule_desc; do
-        [[ -n "${rule_id}" ]] || continue
-        if [[ -n "${keep_ref1}" && "${rule_ref}" == "${keep_ref1}" ]]; then
-            continue
-        fi
-        if [[ -n "${keep_ref2}" && "${rule_ref}" == "${keep_ref2}" ]]; then
-            continue
-        fi
-        if [[ "${rule_ref}" == easy_all_* || "${rule_desc}" == easy_all* ]]; then
-            info "自动清理旧版本 easy_all 规则：${rule_desc:-easy_all} (${rule_id})"
-            cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${rule_id}" >/dev/null || true
-        fi
-    done < <(jq -r '.rules[]? | [.id, (.ref // ""), (.description // "")] | @tsv' <<<"${rules}")
-}
-
 cloudflare_add_streamup_header_rule() {
     local ruleset=$1 host=$2 path=$3 ref
     ref=$(cloudflare_ref "header:${host}:${path}")
@@ -868,17 +932,12 @@ cloudflare_add_streamup_header_rule() {
 }
 
 cloudflare_configure_rules() {
-    local host transform strict ref keep_header_ref keep_sub_ref=""
+    local host transform strict ref
     host=${VLESS_CDN_DOMAIN}
     transform=$(cloudflare_managed_ruleset "easy_all xhttp streamup headers ${host}" "http_request_late_transform")
-    keep_header_ref=$(cloudflare_ref "header:${host}:${XHTTP_PATH}")
+    cloudflare_add_streamup_header_rule "${transform}" "${host}" "${XHTTP_PATH}"
     if subscription_enabled \
         && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
-        keep_sub_ref=$(cloudflare_ref "header:$(active_subscription_link_domain):/subscribe")
-    fi
-    cloudflare_cleanup_stale_header_rules "${transform}" "${keep_header_ref}" "${keep_sub_ref}"
-    cloudflare_add_streamup_header_rule "${transform}" "${host}" "${XHTTP_PATH}"
-    if [[ -n "${keep_sub_ref}" ]]; then
         cloudflare_add_header_rule "${transform}" \
             "$(active_subscription_link_domain)" "/subscribe" ""
     fi
@@ -891,52 +950,6 @@ cloudflare_configure_rules() {
     done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
     CLOUDFLARE_HEADER_RULESET_ID=${transform}
     CLOUDFLARE_STRICT_RULESET_ID=${strict}
-}
-
-stop_services() {
-    systemctl stop "${XRAY_SERVICE}" nginx 2>/dev/null || true
-}
-
-validate_protocol_runtime() {
-    local attempt response
-    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
-    if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
-        xhttp_validate_local_tls_curl_args
-    fi
-    for attempt in 1 2 3 4 5; do
-        if systemctl is-active --quiet "${XRAY_SERVICE}" \
-            && systemctl is-active --quiet nginx \
-            && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
-            response=$(curl -fsS "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-                --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-                "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
-            if [[ "${response}" == "easy_all ok" ]]; then
-                return 0
-            fi
-        fi
-        sleep 2
-    done
-    die "VLESS XHTTP 本机运行时验收失败"
-}
-
-finish_xhttp_apply() {
-    local sync_cloud=${1:-0}
-    xhttp_render_xray_config
-    write_nginx_config
-    if ! systemctl is-active --quiet "${XRAY_SERVICE}"; then
-        install_xray_service
-    else
-        systemctl reload-or-restart "${XRAY_SERVICE}" || systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 失败"
-    fi
-    validate_protocol_runtime
-    if subscription_enabled; then
-        write_subscriptions
-        validate_subscription_runtime
-    else
-        remove_subscriptions
-    fi
-    save_state
-    ((sync_cloud == 1)) || return 0
 }
 
 build_vless_xhttp_link() {
@@ -977,25 +990,16 @@ build_mihomo_xhttp_node() {
         "        c-max-reuse-times: 0\n        h-max-request-times: 300-600\n        h-max-reusable-secs: 900-1800\n        h-keep-alive-period: 0\n"'
 }
 
-# Strictly filter out any fallback lines: select top 6 high-quality unique IPs.
-# 6 IPs x 1 protocol (XHTTP stream-up) = 6 nodes (fallback to domain if no cache).
+# Select 6 compatible curated IPv4 entries. Cache age triggers refresh but does
+# not invalidate a previously verified pool.
 cloudflare_xhttp_streamup_client_candidates() {
-    if cdn_optimization_enabled && [[ -s "${GLOBALPING_CACHE_FILE}" ]] \
-        && jq -e '.candidates | type == "array" and length > 0' "${GLOBALPING_CACHE_FILE}" >/dev/null 2>&1; then
+    if cdn_optimization_enabled && cloudflare_globalping_cache_compatible; then
         jq -r '
           .candidates[0:6]
           | to_entries[]
           | [.value.ip, ((.key + 1)|tostring), (.value.carrier // "anycast")]
           | @tsv
         ' "${GLOBALPING_CACHE_FILE}"
-    elif declare -F cloudflare_client_candidates >/dev/null 2>&1; then
-        local ip label carrier count=0
-        while IFS=$'\t' read -r ip label carrier; do
-            [[ -n "${ip}" ]] || continue
-            count=$((count + 1))
-            printf '%s\t%s\t%s\n' "${ip}" "${count}" "${carrier}"
-            ((count >= 6)) && break
-        done < <(cloudflare_client_candidates)
     fi
 }
 
@@ -1007,10 +1011,8 @@ build_node_links() {
         build_vless_xhttp_link "${ip}" "优选${label}"
         printf '\n'
     done < <(cloudflare_xhttp_streamup_client_candidates)
-    if (( count == 0 )); then
-        build_vless_xhttp_link "${VLESS_CDN_DOMAIN}" "优选1"
-        printf '\n'
-    fi
+    ((count == 6)) \
+        || die "Cloudflare 没有完整的 6 个已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
 }
 
 build_mihomo_nodes() {
@@ -1020,9 +1022,8 @@ build_mihomo_nodes() {
         count=$((count + 1))
         build_mihomo_xhttp_node "${ip}" "优选${label}"
     done < <(cloudflare_xhttp_streamup_client_candidates)
-    if (( count == 0 )); then
-        build_mihomo_xhttp_node "${VLESS_CDN_DOMAIN}" "优选1"
-    fi
+    ((count == 6)) \
+        || die "Cloudflare 没有完整的 6 个已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
 }
 
 build_mihomo_proxy_names() {
@@ -1036,9 +1037,8 @@ build_mihomo_proxy_groups() {
         [[ -n "${ip}" ]] || continue
         all_nodes+=("优选${label}")
     done < <(cloudflare_xhttp_streamup_client_candidates)
-    if (( ${#all_nodes[@]} == 0 )); then
-        all_nodes+=("优选1")
-    fi
+    ((${#all_nodes[@]} == 6)) \
+        || die "Cloudflare 没有完整的 6 个已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
 
     printf '    - name: "AUTO"\n'
     printf '      type: url-test\n'
@@ -1054,34 +1054,6 @@ build_mihomo_proxy_groups() {
       timeout: 3000
       lazy: true
 EOF
-}
-
-write_subscriptions() {
-    local template node_file group_file name_file base64_file mihomo_file
-    prepare_mihomo_template
-    template=${MIHOMO_TEMPLATE_FILE}
-    node_file="${RUNTIME_TMP}/mihomo-node.yaml"
-    group_file="${RUNTIME_TMP}/mihomo-groups.yaml"
-    name_file="${RUNTIME_TMP}/mihomo-names.yaml"
-    base64_file="${RUNTIME_TMP}/subscription-base64.txt"
-    mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
-
-    build_mihomo_nodes >"${node_file}"
-    build_mihomo_proxy_groups >"${group_file}"
-    build_mihomo_proxy_names >"${name_file}"
-    build_node_links | openssl base64 -A >"${base64_file}"
-    printf '\n' >>"${base64_file}"
-    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
-        "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" \
-        "${group_file}" "${name_file}"
-
-    grep -Fq 'network: xhttp' "${mihomo_file}" || die "Mihomo 订阅缺少 XHTTP 节点"
-    grep -Fq 'mode: stream-up' "${mihomo_file}" || die "Mihomo 订阅缺少 stream-up 模式"
-
-    rm -rf -- "${SUBSCRIPTION_DIR}"
-    install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
-    install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
-    install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
 }
 
 show_node() {
@@ -1140,7 +1112,7 @@ refresh_cloudflare_cdn_ips() {
         validate_subscription_runtime
     fi
     save_state
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    commit_subscription_update
     release_runtime_write_lock
     ((refresh_status == 0)) || return 1
     success "Cloudflare CDN 精选 IP 与订阅已刷新"
@@ -1188,7 +1160,7 @@ install_all() {
     cloudflare_validate_cdn_health
     cloudflare_finalize_certificate_rotation
     persist_globalping_token
-    refresh_globalping_cache || warn "首次 Globalping 测量失败，暂回退 CDN 域名"
+    refresh_globalping_cache || die "首次 Globalping 测量失败，无法生成严格精选 IP 订阅"
     subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
     save_state
     register_easy_all_command
@@ -1210,11 +1182,11 @@ apply_easy_all() {
     configure_ufw
     if ! globalping_cache_valid; then
         info "当前 Globalping 优选缓存未就绪或已过期，正在执行刷新..."
-        refresh_globalping_cache || warn "Globalping 刷新失败，将使用现有缓存或域名兜底"
+        refresh_globalping_cache || warn "Globalping 刷新失败，将继续使用现有兼容缓存"
     fi
     finish_xhttp_apply
     install_globalping_refresh_timer
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    commit_subscription_update
     success "Cloudflare XHTTP stream-up 本机配置已应用；未修改 Cloudflare 资源"
     warn "提示：若客户端节点超时，请检查 Cloudflare 控制台（域名 -> 网络 -> gRPC）是否已开启！"
 }
@@ -1233,13 +1205,14 @@ apply_cloud_resources() {
     cloudflare_finalize_certificate_rotation
     install_globalping_refresh_timer
     cloudflare_clear_api_token
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    commit_subscription_update
     success "Cloudflare DNS、Origin CA、规则和本机配置已应用"
 }
 
 update_subscription() {
     local previous_subscription_host=""
     require_root
+    begin_quota_maintenance
     collect_installed_state
     if subscription_enabled; then
         previous_subscription_host=$(active_subscription_link_domain)
@@ -1251,8 +1224,8 @@ update_subscription() {
     if subscription_enabled; then
         collect_subscription_link_domain
         choose_subscription_download_name
-        choose_monthly_quota 0
-        ensure_allowed_tokens
+        choose_monthly_quota 1
+        quota_enabled || ensure_allowed_tokens
     else
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
@@ -1269,7 +1242,7 @@ update_subscription() {
     cloudflare_finalize_certificate_rotation
     install_globalping_refresh_timer
     cloudflare_clear_api_token
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    commit_subscription_update
     success "Cloudflare 订阅、Origin CA 与回源规则已更新"
 }
 

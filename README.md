@@ -239,7 +239,7 @@ sudo easy_all subscription
 | 在本机运行后提示系统不支持 | 退出命令，在 VPS 的 SSH 或网页终端中重新运行。 |
 | SSH 断开或重启后无法登录 | 不要反复猜端口；使用服务商网页 Console/VNC，确认当前 SSH 端口与 UFW/安全组规则。保留旧 SSH 会话直到新会话可登录。 |
 | 提示 Zone 不是 Active 或找不到域名 | 回到 Cloudflare Overview，等待 Zone 变为 **Active**；检查注册商名称服务器是否完整替换。 |
-| gRPC 检查返回 `403 text/html` | 在目标 Zone 的 **Network → gRPC** 手动开启 gRPC，等待设置生效后重新执行提示的命令。 |
+| Cloudflare XHTTP 端到端验收失败 | 在目标 Zone 的 **Network → gRPC** 手动开启 gRPC，等待设置生效后重试；验收会通过临时 Xray 客户端实际穿透 CDN、Nginx 和服务端 Xray。 |
 | API Token 权限不足或同名 DNS 记录冲突 | 不要删除不认识的记录或扩大 Token 权限。按准备手册核对最小权限；为节点/订阅换一个未被占用的一级子域名。 |
 | Globalping 额度不足或没有候选 IP | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；已有缓存会继续使用。 |
 | 检测到 UEFI Secure Boot | 安装器不会安装无法确认启动的第三方内核。请改用满足要求的 VPS，或在完全理解风险后从服务商控制台处理 Secure Boot。 |
@@ -265,12 +265,12 @@ flowchart TD
     R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]
     R9 --> Z[输出节点与订阅信息]
 
-    B -->|5| C0[Cloudflare CDN 精选 IP 纯 XHTTP stream-up]
+    B -->|2| C0[Cloudflare CDN 精选 IP 纯 XHTTP stream-up]
     C0 --> C1[系统预检 / 冲突检查 / 备份]
     C1 --> C2[Cloudflare Zone Token / 单一 proxied A / Universal SSL / Origin CA]
     C2 --> C3[Full strict / HTTP2 gRPC / Transform Rule Origin Key / Cloudflare IP 防火墙]
-    C3 --> C4[官方高优 CIDR 权重抽样 / 全网预筛 + TLS 验证 / 筛选 Top 5 精选 IP]
-    C4 --> C5[保存缓存 / 注册每小时刷新 / 输出纯 XHTTP 5 节点与订阅]
+    C3 --> C4[官方高优 CIDR 权重抽样 / 全网预筛 + TLS 验证 / 筛选 6 个精选 IP]
+    C4 --> C5[保存缓存 / 注册每小时刷新 / 输出纯 XHTTP 6 节点与订阅]
     C5 --> Z
 ```
 
@@ -344,13 +344,14 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 项目脚本升级使用 `easy_all self-update`；部署配置应用使用 `easy_all apply`；只有确实需要同步
 云资源时才使用 `easy_all apply-cloud`。
 
-卸载与远端资源处理：默认 `easy_all uninstall` 只清理本机。两种模式执行
-`easy_all uninstall --purge-cloud` 时，脚本会删除带 `easy_all xhttp origin` 标记的节点/订阅 A 记录、
+卸载与远端资源处理：默认 `easy_all uninstall` 只清理本机。Reality 与 Cloudflare 模式执行
+`easy_all uninstall --purge-cloud` 时，脚本会删除带所有权标记的节点/订阅 A 记录、
 按稳定 `ref` 定位的 Transform/Config Rules、删除规则后为空且名称匹配的 easy_all ruleset，以及
 Origin CA 证书；Reality 使用自己的 `easy_all reality subscription origin` DNS 标记和 Strict TLS
 规则，不会触碰 XHTTP 资源。脚本不会删除未带 easy_all 标记的 DNS 或包含其他规则的 ruleset。Zone 级 origin HTTP/2
 设置和需要手动开启的 gRPC 开关不会自动还原，因为没有安全的方式判断它们是否仍被其他业务使用。
-Cloudflare Origin CA 会通过 API 直接吊销。远端操作失败时会立即停止，
+Gcore 模式按状态中的资源 ID 删除 CDN Resource、Origin Group、回源客户端证书、边缘证书和 Trusted CA，
+但保留 Managed DNS Zone。远端操作失败时会立即停止，
 本机状态和证书不会删除；Zone 级设置和未带 easy_all 标记的资源会保留。
 
 ### `apply` 的具体操作
@@ -361,10 +362,11 @@ Cloudflare Origin CA 会通过 API 直接吊销。远端操作失败时会立即
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
 | Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
-| Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅，或删除订阅文件；使用现有 Globalping 缓存。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
+| Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅；只使用完整且格式兼容的 6 节点缓存，不生成域名兜底。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
+| Gcore CDN WebSocket | 1. 读取状态并备份本机配置。<br>2. 同步 UFW 回源白名单并刷新单一 WebSocket 入站。<br>3. 使用现有兼容入口缓存重建订阅，不生成域名兜底。<br>4. 保存状态、注册当前代码并恢复配额与 Globalping 定时任务。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
-Xray/Nginx 配置和订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
+Xray/Nginx 配置、TLS 证书与订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
 BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚；已安装的内核包也不会在回滚或卸载时
 自动删除，避免破坏当前启动项。
 
@@ -376,7 +378,9 @@ BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚�
 `easy_all apply-cloud` 适用于 CDN 模式。它先读取状态与备份并更新本机 BBR/UFW，然后同步
 当前 Provider 的 DNS、证书和 CDN 资源。已成功创建或变更的云资源不自动回滚，因此只有云端配置
 确实需要同步时才应执行该命令。Gcore 模式会先应用本机 Xray/Nginx 配置，再执行 CDN 传输验收；
-已匹配的 DNS 记录和 CDN Resource 不会重复写入，未发生云端变更时只执行一轮端到端检查。
+已匹配的 DNS 记录和 CDN Resource 不会重复写入，未发生云端变更时只执行一轮端到端检查。Gcore
+写入 DNS 前先读取权威 RRset；已有值与目标不同时直接停止，绝不覆盖用户记录。新 CDN Resource
+先绑定边缘证书并等待证书可用，再开启 HTTP 到 HTTPS 重定向。
 
 ### 轮换 UUID
 
@@ -693,12 +697,13 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
 - **边缘规则与安全防护**：
   - Cloudflare Universal SSL 终止客户端 TLS；VPS 使用 Origin CA 证书，SSL 模式固定为 Full (strict)。
-  - 边缘开启 HTTP/2 与 gRPC（部署前必须在目标 Zone 的 **Network → gRPC** 中手动开启 gRPC；该开关没有可用 API。安装、`apply-cloud` 和 `refresh-cdn-ips` 会执行边缘验收，发现 Cloudflare 返回 `403` 时立即停止）。
+  - 边缘开启 HTTP/2 与 gRPC（部署前必须在目标 Zone 的 **Network → gRPC** 中手动开启 gRPC；该开关没有可用 API）。安装和 `apply-cloud` 会启动临时 Xray 客户端，通过真实 XHTTP 路径访问外部 `204` 地址，只有 CDN、Nginx 与服务端 Xray 全链路成功才通过。
   - Transform Rule 为该节点名的回源请求注入专属 Origin Key（`X-Easy-All-Origin-Key`），Nginx 同时校验 Host 与该密钥，阻断非 CDN 恶意扫描。
   - VPS 防火墙（UFW）只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列表更新。
   - 后端开启 `ip_is_private` 私网阻断与 UDP 443 (QUIC) 阻断。
 - **定时刷新与客户端测速**：
-  - VPS 使用 systemd timer 每小时更新缓存；安装、`apply` 和手动 `refresh-cdn-ips` 都会自动修复并验收该 timer。刷新失败时保留旧缓存；未生成缓存或缓存超过 24 小时继续使用现有缓存。
+  - VPS 使用 systemd timer 每小时更新缓存；安装、`apply` 和手动 `refresh-cdn-ips` 都会自动修复并验收该 timer。刷新失败时保留格式兼容的上一版已验证缓存；没有完整 6 节点缓存时停止生成订阅，不使用域名或内置 IP 凑数。
+  - 无兜底候选缓存使用 schema v5；旧 v3/v4 缓存会被拒绝并触发重新测量，避免继续下发历史合成地址。
   - Mihomo 每 300 秒在客户端网络运行一次 `url-test` 自动选优。
 
 ### 精选 IP 的客户端要求
@@ -735,9 +740,9 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
 
 ```text
 STATE_VERSION=6  # Reality
-STATE_VERSION=7  # Cloudflare 纯 XHTTP stream-up
-PROTOCOL=reality|cloudflare-streamup
-CDN_PROVIDER=cloudflare
+STATE_VERSION=7  # Cloudflare XHTTP / Gcore WebSocket
+PROTOCOL=reality|cloudflare-streamup|gcore
+CDN_PROVIDER=cloudflare|gcore
 CDN_CLIENT_IP_FAMILY=ipv4|ipv6-prefer
 ```
 
@@ -756,11 +761,13 @@ Cloudflare 订阅 A 记录、Strict TLS 规则和 Origin CA；Cloudflare 模式�
 easy_all
 ├─ profiles/
 │  ├─ reality.sh                   Reality 编排与专属配置
-│  └─ xhttp-cloudflare-streamup.sh  Cloudflare 纯 XHTTP stream-up Provider、状态与安装编排
+│  ├─ xhttp-cloudflare-streamup.sh  Cloudflare 纯 XHTTP stream-up Provider
+│  └─ xhttp-gcore.sh                Gcore WebSocket Provider、mTLS 与云资源编排
 ├─ lib/
 │  ├─ xhttp-runtime.sh             CDN Profile 复用的本机运行时骨架
-│  ├─ globalping-cdn.sh            Cloudflare 精选 IPv4、缓存与每小时刷新任务
+│  ├─ globalping-cdn.sh            CDN 精选 IPv4 凭据、缓存与每小时刷新任务
 │  ├─ cloudflare-ip-pool.sh        Cloudflare 官方 IPv4 池抽样与候选筛选
+│  ├─ gcore-ip-pool.sh             Gcore 多地区 DNS 入口发现与候选筛选
 │  ├─ quota.sh                     用户配额与统计
 │  ├─ platform.sh                  root/systemd/SSH 启动保障
 │  ├─ profile-common.sh            Profile 公共辅助、交互与字段校验
@@ -777,9 +784,9 @@ easy_all
    └─ debian-init.sh               独立 Debian 初始化实现
 ```
 
-入口负责模式选择、命令分发和完整运行时的原子注册。Reality 与 Cloudflare
-Profile 只保留协议编排和 Provider 专属策略；公共模块不反向依赖 Profile。CDN Profile
-加载 `xhttp-runtime.sh`，共享 Xray、Nginx、订阅、证书和本机回滚实现。
+入口负责模式选择、命令分发和完整运行时的原子注册。Cloudflare 与 Gcore Profile 只实现协议节点渲染、
+Provider 云资源和网络策略；公共模块不反向依赖 Profile。两种 CDN Profile 加载 `xhttp-runtime.sh`，
+共享订阅渲染、配额用户展开、状态应用收尾、命令注册、证书和本机回滚实现。
 
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
 `scheduled-maintenance.sh` 统一管理可选定时重启。`network.sh` 负责公网 IPv4

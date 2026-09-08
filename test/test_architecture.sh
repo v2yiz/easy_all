@@ -7,6 +7,7 @@ REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
 XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 CLOUDFLARE_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
+GCORE_PROFILE="${ROOT_DIR}/profiles/xhttp-gcore.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
 
@@ -118,6 +119,32 @@ done
 
 grep -Eq '^xhttp_render_xray_config\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare Profile does not implement the XHTTP render hook"
+grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
+    || fail "Gcore Profile does not implement the Xray render hook"
+! grep -Eq '^write_subscriptions\(\)' "${CLOUDFLARE_PROFILE}" "${GCORE_PROFILE}" \
+    || fail "CDN profiles must use shared subscription rendering"
+! grep -Eq '^finish_xhttp_apply\(\)' "${CLOUDFLARE_PROFILE}" "${GCORE_PROFILE}" \
+    || fail "CDN profiles must use shared apply finalization"
+! grep -Eq 'gcore_probe_xhttp|GCORE_XHTTP|XRAY_XHTTP|packet-up|gcore_xhttp_backend' \
+    "${GCORE_PROFILE}" \
+    || fail "Gcore must remain WebSocket-only"
+! grep -Eq 'cloudflare_cleanup_stale_header_rules' "${CLOUDFLARE_PROFILE}" \
+    || fail "Cloudflare must not delete rules by zone-wide easy_all prefix"
+grep -Fq '[[ "${state_version}" == "7" ]]' "${ROOT_DIR}/easy_all" \
+    || fail "CDN modes must enforce the current state schema"
+[[ "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/certificate.pem"'* \
+    && "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/private.key"'* ]] \
+    || fail "CDN rollback must preserve local TLS certificate and key"
+[[ "$(<"${GCORE_PROFILE}")" == *'GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID'* \
+    && "$(<"${GCORE_PROFILE}")" == *'/cdn/sslData/${GCORE_EDGE_CERTIFICATE_ID}'* ]] \
+    || fail "Gcore must persist and purge the managed edge certificate"
+finish_apply_body=$(sed -n '/^finish_xhttp_apply()/,/^}/p' "${XHTTP_RUNTIME}")
+[[ "${finish_apply_body}" != *'UPDATE_SUB_ROLLBACK_ON_EXIT=0'* \
+    && "${finish_apply_body}" != *'end_quota_maintenance'* ]] \
+    || fail "shared apply finalization must not commit the caller-owned rollback transaction"
+grep -Fq 'commit_subscription_update' "${CLOUDFLARE_PROFILE}" \
+    && grep -Fq 'commit_subscription_update' "${GCORE_PROFILE}" \
+    || fail "CDN profiles must commit rollback only after provider-specific validation"
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
     || fail "network module must not depend on Profile template functions"
 

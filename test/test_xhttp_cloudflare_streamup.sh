@@ -146,7 +146,11 @@ assert_not_contains "nginx config does not contain trojan location" "${nginx_con
 # Set up mock Globalping cache with 9 candidates (3 telecom, 3 unicom, 3 mobile)
 cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 {
-  "updated_at": 1725500000,
+  "version": 5,
+  "provider": "cloudflare",
+  "domain": "node.example.com",
+  "candidate_source": "cloudflare-official-ipv4-cidrs",
+  "measured_at_epoch": 1725500000,
   "candidates": [
     {"ip": "104.16.1.1", "label": "电信01", "carrier": "telecom", "avg_rtt_ms": 120, "tls_verified": true},
     {"ip": "104.16.1.2", "label": "电信02", "carrier": "telecom", "avg_rtt_ms": 130, "tls_verified": true},
@@ -160,11 +164,16 @@ cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
   ]
 }
 EOF
+cp "${GLOBALPING_CACHE_FILE}" "${TMP_DIR}/valid-cloudflare-cache.json"
+jq '.version = 4' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/legacy-cloudflare-cache.json"
+cp "${TMP_DIR}/legacy-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
+if cloudflare_globalping_cache_compatible; then
+    fail "Legacy v4 cache may contain synthetic fallback IPs and must be rejected"
+fi
+cp "${TMP_DIR}/valid-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
 
 # Mock validation functions
 cdn_optimization_enabled() { return 0; }
-globalping_cache_valid() { return 0; }
-cloudflare_validate_grpc_edge() { return 0; }
 
 candidates_output=$(cloudflare_xhttp_streamup_client_candidates)
 assert_equal "Candidates count is exactly 6" "6" "$(wc -l <<<"${candidates_output}" | tr -d ' ')"
@@ -243,16 +252,38 @@ assert_contains "Mihomo file contains XHTTP nodes" "${mihomo_file_content}" 'net
 assert_contains "Mihomo file contains stream-up mode" "${mihomo_file_content}" 'mode: stream-up'
 assert_contains "Mihomo file contains AUTO group" "${mihomo_file_content}" 'name: "AUTO"'
 assert_contains "Mihomo file contains 优选1" "${mihomo_file_content}" '"优选1"'
-# Test cache resiliency: expired cache still emits candidates and writes subscription
-globalping_cache_valid() { return 1; }
+# A stale but compatible cache remains usable while refresh is retried.
 write_subscriptions
 assert_contains "Expired cache still renders XHTTP nodes" "$(cat "${sub_mihomo}")" 'network: xhttp'
 
-# Test cache resiliency: completely empty cache falls back to domain and writes subscription
+# Missing cache must fail instead of publishing an unverified hostname fallback.
 rm -f "${GLOBALPING_CACHE_FILE}"
+if (write_subscriptions) >/dev/null 2>&1; then
+    fail "Missing cache must not generate a domain fallback subscription"
+fi
+cp "${TMP_DIR}/valid-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
+
+# Shared subscription rendering must preserve per-user UUIDs in quota mode.
+QUOTA_ENABLED=1
+QUOTA_START_DATE=2026-01-01
+USER_ACCOUNTS='{"owner":{"uuid":"11111111-2222-4111-8111-111111111111","token":"owner-token-123","quota_gb":10},"friend":{"uuid":"22222222-2222-4222-8222-222222222222","token":"friend-token-123","quota_gb":20}}'
+ALLOWED_TOKENS='{"owner":"owner-token-123","friend":"friend-token-123"}'
+xhttp_render_xray_config
+jq -e '
+    .inbounds[0].settings.clients | length == 2
+    and all(.[]; has("flow") | not)
+' "${TMP_DIR}/state/xray/config.json" >/dev/null \
+    || fail "Cloudflare quota clients must not contain a VLESS flow"
 write_subscriptions
-assert_contains "Missing cache falls back to domain node" "$(cat "${sub_mihomo}")" 'server: "node.example.com"'
-globalping_cache_valid() { return 0; }
+[[ -s "${TMP_DIR}/web/subscriptions/friend/base64.txt" ]] \
+    || fail "Quota subscription must render a per-user Base64 file"
+friend_links=$(openssl base64 -d -A <"${TMP_DIR}/web/subscriptions/friend/base64.txt")
+assert_contains "Quota subscription uses the user's UUID" \
+    "${friend_links}" "22222222-2222-4222-8222-222222222222"
+QUOTA_ENABLED=0
+USER_ACCOUNTS=""
+QUOTA_START_DATE=""
+ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 
 # Verify state save & load
 save_state
@@ -308,34 +339,43 @@ EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
 
-# Verify cloudflare_cleanup_stale_header_rules cleans old easy_all rules while keeping keep_ref and user rules
-ruleset_test_id="test-ruleset-123"
-deleted_rules=()
-cloudflare_api_request() {
-    case "$1 $2" in
-    "GET /zones/test-zone-id/rulesets/test-ruleset-123")
-        cat <<'EOF'
-{
-  "rules": [
-    {"id": "user-rule-1", "ref": "customer_ref", "description": "customer custom rule"},
-    {"id": "old-easy-rule-1", "ref": "easy_all_old1", "description": "easy_all origin header for /xhttp-old1"},
-    {"id": "old-easy-rule-2", "ref": "easy_all_old2", "description": "easy_all xhttp streamup origin header"},
-    {"id": "keep-easy-rule", "ref": "easy_all_keep", "description": "easy_all xhttp streamup origin header"}
-  ]
-}
+# Edge validation must run a real XHTTP client path instead of posting to the
+# static health endpoint.
+(
+    XHTTP_PATH="/xhttp-test-path"
+    probe_started="${TMP_DIR}/cloudflare-probe-started"
+    probe_curl_args="${TMP_DIR}/cloudflare-probe-curl-args"
+    cat >"${XRAY_BIN}" <<EOF
+#!/bin/sh
+case " \$* " in
+*" -test "*) exit 0 ;;
+*) touch "${probe_started}"; exec /usr/bin/tail -f /dev/null ;;
+esac
 EOF
-        ;;
-    "DELETE /zones/test-zone-id/rulesets/test-ruleset-123/rules/"*)
-        local rule_id=${2##*/}
-        deleted_rules+=("${rule_id}")
-        printf '{"id":"%s"}\n' "${rule_id}"
-        ;;
-    esac
-}
+    chmod +x "${XRAY_BIN}"
+    ss() {
+        [[ -f "${probe_started}" ]] && printf 'LISTEN\n'
+    }
+    curl() {
+        printf '%s\n' "$*" >"${probe_curl_args}"
+        printf '\n204'
+    }
+    cloudflare_probe_xhttp "${VLESS_UUID}"
+    jq -e '
+        .outbounds[0].streamSettings.network == "xhttp"
+        and .outbounds[0].streamSettings.xhttpSettings.mode == "stream-up"
+        and .outbounds[0].streamSettings.xhttpSettings.path == "/xhttp-test-path/"
+    ' "${RUNTIME_TMP}/cloudflare-xhttp-probe/config.json" >/dev/null \
+        || fail "Cloudflare probe must use the deployed XHTTP settings"
+    assert_contains "Cloudflare probe sends traffic through local SOCKS" \
+        "$(<"${probe_curl_args}")" "--proxy socks5h://127.0.0.1:"
+    assert_contains "Cloudflare probe validates external traffic" \
+        "$(<"${probe_curl_args}")" "https://cp.cloudflare.com/generate_204"
+)
 
-cloudflare_cleanup_stale_header_rules "${ruleset_test_id}" "easy_all_keep"
-assert_equal "Cleaned exactly 2 old easy_all rules" "2" "${#deleted_rules[@]}"
-assert_equal "Deleted old-easy-rule-1" "old-easy-rule-1" "${deleted_rules[0]}"
-assert_equal "Deleted old-easy-rule-2" "old-easy-rule-2" "${deleted_rules[1]}"
+# Cloudflare configuration must not expose a zone-wide prefix cleanup hook.
+if declare -F cloudflare_cleanup_stale_header_rules >/dev/null 2>&1; then
+    fail "Cloudflare must not scan and delete rules owned by other deployments"
+fi
 
 printf 'ok - Cloudflare pure XHTTP stream-up (Mode 2) tests passed\n'

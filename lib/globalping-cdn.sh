@@ -174,7 +174,7 @@ show_globalping_status() {
             "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")" \
             "$(jq -r '.measured_at // "未知"' "${GLOBALPING_CACHE_FILE}")"
     else
-        printf '%s CDN 精选 IP: 缓存缺失或超过 24 小时，当前回退 CDN 域名\n' \
+        printf '%s CDN 精选 IP: 缓存缺失或超过 24 小时，等待刷新；兼容的已验证旧缓存仍可继续使用\n' \
             "${provider_label}"
     fi
     printf 'Globalping 定时器: '

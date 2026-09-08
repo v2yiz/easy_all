@@ -1,5 +1,5 @@
-# Debug Session: gcore-xhttp-timeout
-- **Status**: [FIX UNDER VERIFICATION]
+# Historical Debug Session: gcore-xhttp-timeout
+- **Status**: [CLOSED - GCORE XHTTP REMOVED]
 - **Issue**: Gcore HTTPS health and WebSocket pass, but the XHTTP packet-up probe times out after 30 seconds with no response.
 - **Debug Server**: http://10.88.254.52:7777/event
 - **Log File**: `.dbg/trae-debug-log-gcore-xhttp-timeout.ndjson`
@@ -40,6 +40,14 @@
 ## Verification Conclusion
 The failure occurs during XHTTP padding validation, before VLESS handles the proxied destination. Gcore, mTLS, Nginx, and `cp.cloudflare.com` are not the cause. The managed server range `100-500` is incompatible with the Xray and Mihomo client default `100-1000`.
 
-## Fix Under Verification
+## Historical Attempted Fix
 - Restore the Gcore XHTTP server range to `100-1000`, matching the client default and the Cloudflare profile.
-- Re-run `apply-cloud` so the installed Xray server config is regenerated, then verify both XHTTP and WebSocket probes.
+- This was tested before the final WebSocket-only architecture decision below.
+
+## Final Architecture Decision
+
+Gcore now exposes only VLESS over WebSocket. The XHTTP inbound, Nginx path,
+client configuration and deployment probe were removed because they were not
+published in subscriptions and could incorrectly block an otherwise healthy
+WebSocket deployment. This file is retained only as historical debugging
+evidence; its fix instructions no longer apply to the current code.

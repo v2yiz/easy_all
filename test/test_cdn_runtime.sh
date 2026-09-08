@@ -44,8 +44,16 @@ curl() {
         [[ "${args}" == *" --key ${GCORE_CLIENT_CERT_KEY} "* ]] &&
         [[ "${args}" != *X-Easy-All-Origin-Key* ]]
     else
+        local arg previous="" header_file=""
+        for arg in "$@"; do
+            if [[ "${previous}" == "-H" && "${arg}" == @* ]]; then
+                header_file=${arg#@}
+            fi
+            previous=${arg}
+        done
         [[ "${args}" == *" --cacert ${CLOUDFLARE_ORIGIN_CA_ROOT_FILE} "* ]] &&
-        [[ "${args}" == *" -H X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET} "* ]]
+        [[ -s "${header_file}" ]] &&
+        grep -Fqx "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" "${header_file}"
     fi || exit 1
     printf '%s\n' "${args}" >>"${RUNTIME_TMP}/curl.log"
     case "${args}" in

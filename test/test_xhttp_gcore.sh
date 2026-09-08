@@ -54,9 +54,7 @@ export GCORE_ORIGIN_DOMAIN="origin.example.com"
 export GCORE_SUBSCRIPTION_DNS_ZONE="example.com"
 export VLESS_UUID="11111111-2222-4111-8111-111111111111"
 export WEBSOCKET_PATH="/ws-test-path"
-export XHTTP_PATH="/xhttp-test-path"
 export XRAY_WEBSOCKET_LOOPBACK_PORT=10087
-export XRAY_XHTTP_LOOPBACK_PORT=10086
 export ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 export SUB_DOWNLOAD_NAME="TEST_SUB"
 export SUBSCRIPTION_MODE="deploy"
@@ -357,6 +355,19 @@ fi
     assert_equal "HTTP 200 returns only the response body" \
         '{"items":[]}' "$(gcore_api_request GET "/cdn/resources")"
 )
+(
+    gcore_api_raw() { printf '{"message":"already absent"}\n404'; }
+    gcore_api_delete_optional "/cdn/resources/202" \
+        || fail "DELETE 404 must be idempotent"
+)
+(
+    GCORE_EDGE_CERTIFICATE_ID=""
+    GCORE_CDN_RESOURCE_ID=202
+    gcore_api_get_optional() { printf '{"sslData":303}'; }
+    gcore_resolve_edge_certificate_id_for_purge
+    assert_equal "Legacy state resolves edge certificate from resource" \
+        "303" "${GCORE_EDGE_CERTIFICATE_ID}"
+)
 
 # Delegation failure is a hard stop before provisioning.
 if (
@@ -520,6 +531,17 @@ assert_equal "Lossy candidate is filtered out" "" \
         "$(<"${curl_args_file}")" "--http1.1"
 )
 
+# Ordinary HTTP success is not a WebSocket upgrade.
+(
+    curl() {
+        printf '200'
+        return 0
+    }
+    if gcore_validate_pool_candidate "92.223.76.20"; then
+        fail "HTTP 200 must not pass WebSocket candidate validation"
+    fi
+)
+
 # Failed candidate probes must preserve curl's concrete TLS error.
 (
     curl() {
@@ -589,14 +611,13 @@ EOF
         printf 'easy_all ok\n' >"${RUNTIME_TMP}/gcore-edge-health-body"
         printf '200'
     }
-    gcore_probe_xhttp() { probe_calls=$((probe_calls + 1)); }
     gcore_probe_websocket() { probe_calls=$((probe_calls + 1)); }
     sleep() { fail "Propagation wait must stop after end-to-end success"; }
     gcore_wait_for_cdn_health >/dev/null
-    assert_equal "Both Gcore transports are verified" "2" "${probe_calls}"
+    assert_equal "Gcore WebSocket transport is verified" "1" "${probe_calls}"
 )
 
-# XHTTP failure must not suppress the WebSocket probe or its diagnostic.
+# Gcore deployment validation depends only on the published WebSocket transport.
 (
     transport_probe_calls="${TMP_DIR}/gcore-transport-probe-calls"
     : >"${transport_probe_calls}"
@@ -617,25 +638,16 @@ EOF
         printf 'easy_all ok\n' >"${RUNTIME_TMP}/gcore-edge-health-body"
         printf '200'
     }
-    gcore_probe_xhttp() {
-        printf 'xhttp\n' >>"${transport_probe_calls}"
-        GCORE_XHTTP_PROBE_ERROR="mock xhttp failure"
-        return 1
-    }
     gcore_probe_websocket() {
         printf 'websocket\n' >>"${transport_probe_calls}"
         return 0
     }
     sleep() { fail "Single-attempt validation must not sleep"; }
-    if transport_error=$(gcore_wait_for_cdn_health 1 0 2>&1); then
-        fail "A failed XHTTP transport must fail CDN validation"
-    fi
-    assert_equal "Both transport probes run independently" \
-        $'xhttp\nwebsocket' "$(<"${transport_probe_calls}")"
-    assert_contains "Transport diagnostics identify XHTTP failure" \
-        "${transport_error}" "XHTTP=failed(mock xhttp failure)"
+    transport_output=$(gcore_wait_for_cdn_health 1 0 2>&1)
+    assert_equal "Only the WebSocket probe runs" \
+        "websocket" "$(<"${transport_probe_calls}")"
     assert_contains "Transport diagnostics identify WebSocket success" \
-        "${transport_error}" "WebSocket=ok"
+        "${transport_output}" "WebSocket"
 )
 
 # Unchanged resources use one validation attempt; changed resources allow propagation.
@@ -701,7 +713,6 @@ if (
         esac
     }
     curl() { fail "Public probe must not run after certificate failure"; }
-    gcore_probe_xhttp() { fail "XHTTP probe must not run after certificate failure"; }
     gcore_probe_websocket() { fail "WebSocket probe must not run after certificate failure"; }
     gcore_wait_for_cdn_health
 ) >/dev/null 2>&1; then
@@ -772,6 +783,9 @@ if gcore_globalping_cache_compatible; then
 fi
 assert_equal "Legacy origin-ACL cache is not emitted to clients" \
     "" "$(gcore_client_candidates)"
+if (build_node_links) >/dev/null 2>&1; then
+    fail "Gcore must not generate a hostname fallback when the cache is incompatible"
+fi
 
 # Write valid regional-DNS cache and test cache validation.
 cat >"${GLOBALPING_CACHE_FILE}" <<EOF
@@ -849,10 +863,7 @@ xray_conf_file="${TMP_DIR}/state/xray/config.json"
 [[ -s "${xray_conf_file}" ]] || fail "Xray config not generated"
 xray_cfg=$(<"${xray_conf_file}")
 assert_contains "Xray has WebSocket inbound" "${xray_cfg}" '"tag": "vless-websocket-in"'
-assert_contains "Xray has XHTTP packet-up inbound" "${xray_cfg}" '"tag": "vless-xhttp-h2-in"'
-assert_contains "Xray XHTTP uses packet-up mode" "${xray_cfg}" '"mode": "packet-up"'
-assert_contains "Xray XHTTP server uses the managed padding range" \
-    "${xray_cfg}" '"xPaddingBytes": "100-1000"'
+assert_not_contains "Xray does not contain an XHTTP inbound" "${xray_cfg}" '"network": "xhttp"'
 
 nginx() { :; }
 systemctl() { :; }
@@ -863,17 +874,13 @@ nginx_cfg=$(<"${nginx_conf_file}")
 assert_contains "Nginx verifies Gcore client cert" "${nginx_cfg}" "ssl_verify_client on;"
 assert_contains "Nginx has easy_all-health location" "${nginx_cfg}" "location = /easy_all-health"
 assert_contains "Nginx proxies WebSocket backend" "${nginx_cfg}" "proxy_pass http://gcore_websocket_backend;"
-assert_contains "Nginx proxies XHTTP backend" "${nginx_cfg}" "proxy_pass http://gcore_xhttp_backend;"
+assert_not_contains "Nginx does not contain an XHTTP backend" "${nginx_cfg}" "gcore_xhttp_backend"
 
 # 9. Test path normalizers
 assert_equal "normalize_websocket_path cleans double /ws- prefix" \
     "/ws-0123456789abcdef" "$(normalize_websocket_path "/ws-/ws-0123456789abcdef")"
 assert_equal "normalize_websocket_path keeps clean /ws- intact" \
     "/ws-0123456789abcdef" "$(normalize_websocket_path "/ws-0123456789abcdef")"
-assert_equal "normalize_xhttp_path cleans double /xhttp- prefix" \
-    "/xhttp-0123456789abcdef" "$(normalize_xhttp_path "/xhttp-/xhttp-0123456789abcdef")"
-assert_equal "normalize_xhttp_path keeps clean /xhttp- intact" \
-    "/xhttp-0123456789abcdef" "$(normalize_xhttp_path "/xhttp-0123456789abcdef")"
 
 # 10. Test save_state and load_state
 export GCORE_DNS_ZONE="example.com"
@@ -932,6 +939,7 @@ gcore_api_request() {
     recorded_calls+=("$1 $2 $3")
     return 0
 }
+gcore_api_get_optional() { return 4; }
 dig() { return 1; }
 
 GCORE_DNS_ZONE="1988088.xyz"
@@ -963,6 +971,15 @@ subscription_cname_call="${recorded_calls[2]}"
 assert_contains "Subscription CNAME method and url" "${subscription_cname_call}" \
     "PUT /dns/v2/zones/1988088.xyz/sub.1988088.xyz/CNAME"
 
+gcore_api_get_optional() {
+    case "$1" in
+    */A) jq -cn --arg value "${VPS_PUBLIC_IPV4}" \
+        '{resource_records:[{content:[$value]}],ttl:300}' ;;
+    */CNAME) jq -cn --arg value "${GCORE_CDN_TARGET}" \
+        '{resource_records:[{content:[$value]}],ttl:300}' ;;
+    *) return 4 ;;
+    esac
+}
 dig() {
     case "$*" in
     *" A ${GCORE_ORIGIN_DOMAIN} "*) printf '%s\n' "${VPS_PUBLIC_IPV4}" ;;
@@ -976,7 +993,17 @@ gcore_ensure_cdn_cname_records
 assert_equal "Matching public DNS records skip redundant API writes" \
     "3" "${#recorded_calls[@]}"
 
-unset -f dig gcore_api_request
+if (
+    gcore_api_get_optional() {
+        printf '{"resource_records":[{"content":["occupied.example.net"]}],"ttl":300}'
+    }
+    gcore_ensure_domain_cname_record \
+        "${VLESS_CDN_DOMAIN}" "${GCORE_DNS_ZONE}"
+) >/dev/null 2>&1; then
+    fail "Conflicting Gcore RRsets must not be overwritten"
+fi
+
+unset -f dig gcore_api_request gcore_api_get_optional
 
 # DNS propagation checks use only 1.1.1.1 and require exact records.
 (
@@ -1036,6 +1063,10 @@ unset -f dig gcore_api_request
             ' <<<"$3" >/dev/null || return 1
             touch "${certificate_created}"
             if [[ "${empty_certificate_response}" == false ]]; then printf '{"id":303}'; fi ;;
+        'GET /cdn/sslData/303/status')
+            printf '{"active":true,"latest_status":{"status":"DONE"}}' ;;
+        'GET /cdn/sslData/404/status')
+            printf '{"active":true,"latest_status":{"status":"DONE"}}' ;;
         'GET /cdn/resources')
             if [[ "${existing}" == true ]]; then
                 jq -cn --arg cname "${VLESS_CDN_DOMAIN}" --argjson cert "${bound_certificate}" '[{id:202,cname:$cname,sslData:$cert}]'
@@ -1046,7 +1077,7 @@ unset -f dig gcore_api_request
             else
                 printf '{"id":202,"active":false}'
             fi ;;
-        'POST /cdn/resources'|'PUT /cdn/resources/202')
+        'POST /cdn/resources')
             [[ "${reject_update}" == false ]] || return 1
             [[ "${expected_certificate}" == 404 || -f "${certificate_created}" ]] || return 1
             jq -e --arg origin "${GCORE_ORIGIN_DOMAIN}" \
@@ -1058,18 +1089,31 @@ unset -f dig gcore_api_request
                 .options.use_dns01_le_challenge == {enabled:true,value:true} and
                 .originGroup == 101 and .originProtocol == "HTTPS" and
                 .proxy_ssl_enabled == true and .proxy_ssl_data == 11223 and .proxy_ssl_ca == 44556 and
-                .options.allowedHttpMethods == {enabled:true,value:["GET","HEAD","POST"]} and
+                .options.allowedHttpMethods == {enabled:true,value:["GET","HEAD"]} and
                 .options.websockets == {enabled:true,value:true} and
                 .options.hostHeader == {enabled:true,value:$origin} and
                 .options.sni == {enabled:true,sni_type:"custom",custom_hostname:$origin} and
                 .options.proxy_connect_timeout == {enabled:true,value:"5s"} and
-                .options.redirect_http_to_https == {enabled:true,value:true} and
+                .options.redirect_http_to_https == {enabled:false,value:false} and
                 .options.ignoreQueryString == {enabled:true,value:false} and
                 .options.slice == {enabled:true,value:false} and
                 .options.edge_cache_settings.value == "0s" and
                 (.options | has("origin_ssl_validation") or has("force_ssl") or has("proxy_cache") or has("ignore_query_string")) == false
             ' <<<"$3" >/dev/null || return 1
-            printf '%s\n' "$3" >"${resource_payload}"
+            printf '{"id":202}' ;;
+        'PUT /cdn/resources/202')
+            [[ "${reject_update}" == false ]] || return 1
+            jq -e '
+                (
+                  .options.redirect_http_to_https == {enabled:false,value:false}
+                  or .options.redirect_http_to_https == {enabled:true,value:true}
+                )
+                and .options.allowedHttpMethods == {enabled:true,value:["GET","HEAD"]}
+            ' <<<"$3" >/dev/null || return 1
+            if jq -e '.options.redirect_http_to_https.enabled == true' \
+                <<<"$3" >/dev/null; then
+                printf '%s\n' "$3" >"${resource_payload}"
+            fi
             printf '{"id":202}' ;;
         *) return 1 ;;
         esac
@@ -1080,15 +1124,22 @@ unset -f dig gcore_api_request
     assert_equal "Created resource ID" 202 "${GCORE_CDN_RESOURCE_ID}"
     assert_equal "Created resource retains edge certificate ID for propagation checks" \
         303 "${GCORE_EDGE_CERTIFICATE_ID}"
+    assert_equal "New resource enables redirect only after certificate binding" 1 \
+        "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
     existing=true
     expected_certificate=404
     gcore_ensure_origin_group
     gcore_ensure_resource
     assert_equal "Existing group is reused" 1 "$(grep -c '^POST /cdn/origin_groups$' "${api_calls}")"
-    assert_equal "Existing resource is updated" 1 "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
+    assert_equal "Existing resource is updated" 2 \
+        "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
+    status_line=$(grep -n '^GET /cdn/sslData/404/status$' "${api_calls}" | tail -n 1 | cut -d: -f1)
+    put_line=$(grep -n '^PUT /cdn/resources/202$' "${api_calls}" | tail -n 1 | cut -d: -f1)
+    ((status_line < put_line)) \
+        || fail "Existing certificate must be active before enabling HTTPS redirect"
     resource_matches=true
     gcore_ensure_resource
-    assert_equal "Unchanged resource skips PUT" 1 \
+    assert_equal "Unchanged resource skips PUT" 2 \
         "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
     assert_equal "Unchanged resource exposes no propagation change" 0 \
         "${GCORE_CDN_RESOURCE_CHANGED}"

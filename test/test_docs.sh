@@ -43,7 +43,8 @@ assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/p
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
 assert_contains "README documents hourly Globalping refresh" "${README_CONTENT}" '每小时'
-assert_contains "README documents the 24-hour Globalping fallback" "${README_CONTENT}" '超过 24 小时'
+assert_contains "README documents compatible-cache reuse" \
+    "${README_CONTENT}" '格式兼容的上一版已验证缓存'
 assert_contains "README documents the official Cloudflare IPv4 pool" \
     "${README_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
 assert_contains "README documents the Mihomo requirement for selected IPs" \
@@ -117,8 +118,8 @@ assert_contains "Preparation guide documents the Cloudflare API token walkthroug
     || fail "Cloudflare API token walkthrough asset is missing"
 assert_contains "Preparation guide documents the official IPv4 pool" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
-assert_contains "Preparation guide keeps the hostname fallback" \
-    "${PREPARATION_GUIDE_CONTENT}" '原始域名兜底节点'
+assert_contains "Preparation guide forbids hostname fallback" \
+    "${PREPARATION_GUIDE_CONTENT}" '不使用内置 Anycast IP 或域名兜底凑数'
 assert_contains "Preparation guide documents the Mihomo requirement for selected IPs" \
     "${PREPARATION_GUIDE_CONTENT}" '精选 IP 订阅需要使用 Mihomo'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \

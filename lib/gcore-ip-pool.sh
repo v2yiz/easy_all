@@ -260,7 +260,7 @@ gcore_probe_pool_candidate() {
     curl_error=$(tr '\t\r\n' '   ' <"${error_file}" \
         | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
     rm -f -- "${error_file}"
-    if [[ "${http_code}" == "101" || "${http_code}" == "200" ]]; then
+    if [[ "${http_code}" == "101" ]]; then
         printf '%s\t%s\n' "${curl_status}" "${http_code}"
         return 0
     fi

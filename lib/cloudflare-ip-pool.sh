@@ -6,7 +6,7 @@ readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-
 readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-4}"
 readonly CLOUDFLARE_CANDIDATES_PER_CARRIER="${CLOUDFLARE_CANDIDATES_PER_CARRIER_OVERRIDE:-2}"
 readonly CLOUDFLARE_CANDIDATE_LIMIT=6
-readonly CLOUDFLARE_CACHE_VERSION=4
+readonly CLOUDFLARE_CACHE_VERSION=5
 readonly CLOUDFLARE_PROBES_PER_CANDIDATE=3
 readonly CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
@@ -238,16 +238,15 @@ cloudflare_zero_loss_observations() {
 }
 
 cloudflare_select_carrier_candidates() {
-    local observations_file=$1 per_carrier=$2 limit=$3 history_file=${4:-} fallback_file=${5:-}
+    local observations_file=$1 per_carrier=$2 limit=$3 history_file=${4:-}
 
-    python3 - "${observations_file}" "${per_carrier}" "${limit}" "${history_file}" "${fallback_file}" <<'EOF'
+    python3 - "${observations_file}" "${per_carrier}" "${limit}" "${history_file}" <<'EOF'
 import sys, json, os
 
 obs_file = sys.argv[1]
 per_carrier = int(sys.argv[2])
 limit = int(sys.argv[3])
 hist_file = sys.argv[4] if len(sys.argv) > 4 else ""
-fallback_file = sys.argv[5] if len(sys.argv) > 5 else ""
 
 hist_ips = set()
 if hist_file and os.path.isfile(hist_file):
@@ -267,27 +266,6 @@ if obs_file and os.path.isfile(obs_file):
                     all_items.append(json.loads(line))
                 except Exception:
                     pass
-
-fallback_entries = []
-if fallback_file and os.path.isfile(fallback_file):
-    with open(fallback_file, "r", encoding="utf-8") as f:
-        for line in f:
-            parts = line.strip().split("\t")
-            if parts and parts[0]:
-                fallback_entries.append((parts[0], parts[1] if len(parts) > 1 else ""))
-
-# Built-in fallback Anycast IPs if fallback_file is empty
-default_fallback_ips = [
-    ("104.16.1.1", "104.16.0.0/13"),
-    ("104.16.2.1", "104.16.0.0/13"),
-    ("104.16.3.1", "104.16.0.0/13"),
-    ("104.16.4.1", "104.16.0.0/13"),
-    ("104.16.5.1", "104.16.0.0/13"),
-    ("104.16.6.1", "104.16.0.0/13")
-]
-for df_ip, df_cidr in default_fallback_ips:
-    if not any(fb[0] == df_ip for fb in fallback_entries):
-        fallback_entries.append((df_ip, df_cidr))
 
 carriers = [
     {"asn": 4134, "carrier": "telecom", "prefix": "电信"},
@@ -344,26 +322,6 @@ if len(results) < limit:
         item_copy["carrier"] = min_c["carrier"]
         item_copy["carrier_asn"] = min_c["asn"]
         results.append(item_copy)
-
-# Phase 3: Fallback from prevalidated pool or default anycast endpoints
-if len(results) < limit:
-    for ip, cidr in fallback_entries:
-        if len(results) >= limit:
-            break
-        if ip in selected_ips:
-            continue
-        counts = {c["carrier"]: sum(1 for r in results if r["carrier"] == c["carrier"]) for c in carriers}
-        min_c = min(carriers, key=lambda c: counts[c["carrier"]])
-        selected_ips.add(ip)
-        results.append({
-            "ip": ip,
-            "source_cidr": cidr,
-            "carrier_asn": min_c["asn"],
-            "avg_rtt_ms": 100.0,
-            "is_historical": (ip in hist_ips),
-            "carrier": min_c["carrier"],
-            "tls_verified": True
-        })
 
 # Assign labels cleanly per carrier
 carrier_counters = {c["carrier"]: 0 for c in carriers}
@@ -671,8 +629,7 @@ cloudflare_build_official_pool_cache() {
     cloudflare_select_carrier_candidates "${tls_observations_file}" \
         "${CLOUDFLARE_CANDIDATES_PER_CARRIER}" \
         "${CLOUDFLARE_CANDIDATE_LIMIT}" \
-        "${history_candidates_tsv}" \
-        "${budgeted_pool_file}" >"${preliminary_file}"
+        "${history_candidates_tsv}" >"${preliminary_file}"
 
     count=$(jq 'length' "${preliminary_file}")
     if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
@@ -726,12 +683,12 @@ cloudflare_build_official_pool_cache() {
         }' >"${destination}"
 }
 
-globalping_cache_valid() {
-    local now age ip source_cidr
+cloudflare_globalping_cache_compatible() {
+    local ip source_cidr
     [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
         --argjson version "${CLOUDFLARE_CACHE_VERSION}" '
-          (.version == 3 or .version == 4 or .version == $version)
+          .version == $version
           and .provider == "cloudflare"
           and .domain == $domain
           and .candidate_source == "cloudflare-official-ipv4-cidrs"
@@ -749,6 +706,11 @@ globalping_cache_valid() {
         fi
     done < <(jq -r '.candidates[] | [.ip, (.source_cidr // "")] | @tsv' \
         "${GLOBALPING_CACHE_FILE}")
+}
+
+globalping_cache_valid() {
+    local now age
+    cloudflare_globalping_cache_compatible || return 1
     now=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
     age=$((now - $(jq -r '.measured_at_epoch' "${GLOBALPING_CACHE_FILE}")))
     ((age >= 0 && age <= GLOBALPING_CACHE_MAX_AGE_SECONDS))
@@ -766,28 +728,8 @@ refresh_globalping_cache() {
         "${GLOBALPING_CACHE_FILE}") 个三网独立精选 IPv4"
 }
 
-cdn_client_endpoints() {
-    if cdn_optimization_enabled && globalping_cache_valid; then
-        jq -r '.candidates[].ip' "${GLOBALPING_CACHE_FILE}"
-    else
-        printf '%s\n' "${VLESS_CDN_DOMAIN}"
-    fi
-}
-
 cloudflare_client_candidates() {
-    if cdn_optimization_enabled && globalping_cache_valid; then
+    if cdn_optimization_enabled && cloudflare_globalping_cache_compatible; then
         jq -r '.candidates[] | [.ip, .label, .carrier] | @tsv' "${GLOBALPING_CACHE_FILE}"
-    else
-        printf '%s\t%s\t%s\n' "${VLESS_CDN_DOMAIN}" "${XHTTP_NODE_NAME}" "fallback"
-    fi
-}
-
-xhttp_node_name_for_endpoint() {
-    local index=$1
-    if xhttp_using_optimized_candidates; then
-        jq -r --argjson idx "$((index - 1))" '.candidates[$idx].label // empty' \
-            "${GLOBALPING_CACHE_FILE}" 2>/dev/null || printf '%s_IP_%02d' "${XHTTP_NODE_NAME}" "${index}"
-    else
-        printf '%s' "${XHTTP_NODE_NAME}"
     fi
 }

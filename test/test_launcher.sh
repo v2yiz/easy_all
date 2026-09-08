@@ -175,8 +175,13 @@ assert_equal "Reality state selects Reality profile" "reality" "$(detect_install
 printf 'STATE_VERSION=7\nPROTOCOL=cloudflare-streamup\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare streamup state selects cloudflare-streamup" "cloudflare-streamup" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=1\nPROTOCOL=gcore\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=7\nPROTOCOL=gcore\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Gcore state selects gcore" "gcore" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=1\nPROTOCOL=gcore\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
+assert_failure_contains "legacy Gcore state is rejected" \
+    "状态版本无效" \
+    detect_installed_mode
 
 printf 'STATE_VERSION=7\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_failure_contains "legacy singbox-cf state is rejected" \

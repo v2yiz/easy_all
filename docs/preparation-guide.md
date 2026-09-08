@@ -156,9 +156,9 @@ Reality 的节点连接域名（例如 `node.example.com`）如有使用，必�
 
 ![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
 
-XHTTP 的安装、`apply-cloud` 和 `refresh-cdn-ips` 会主动发送 gRPC 形态的边缘请求检查该开关。若收到
-`403 text/html`，命令会停止并明确提示开启 gRPC。普通 `/easy_all-health` 返回 HTTP 200
-不能证明 gRPC 已开启；若订阅可以下载、所有 XHTTP 节点却同时超时，应首先复查此开关。
+XHTTP 的安装和 `apply-cloud` 会启动临时 Xray 客户端，通过本机 SOCKS 出口访问外部 `204` 地址。
+该请求必须实际经过 Cloudflare、XHTTP 路径、Nginx 和服务端 Xray；普通 `/easy_all-health` 返回
+HTTP 200 不再作为传输成功依据。验收失败时先复查 gRPC 开关，再检查 Xray/Nginx 日志。
 
 ## 4. 只创建一个 Cloudflare API Token
 
@@ -194,18 +194,19 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 
 - 创建唯一的 proxied `A` 记录，指向 VPS 公网 IPv4。
 - 签发 15 年 Origin CA 证书并配置 Full (strict)。
-- 开启 origin HTTP/2，并写入 XHTTP 与 WebSocket 回源密钥规则。
-- 验收 Cloudflare gRPC 边缘请求；开关未开启时立即停止并提示前往控制台处理。
+- 开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
+  前缀删除同一 Zone 中其他部署的规则。
+- 使用临时 Xray 客户端完成 Cloudflare XHTTP 端到端验收。
 - 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
 - 每小时读取 Cloudflare 官方 IPv4 CIDR，以 70% 高质量高优网段权重抽样 120 个地址。
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
   CDN 入口的地址；再按 Globalping 当前剩余免费额度限制本轮测量规模，避免耗尽额度。
 - 两阶段预筛：第一阶段使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
   `eyeball-network` 探针分别发送 4 包 TCP/443 进行零丢包测延迟；第二阶段对低延迟候选进行真实 HTTP/TLS HEAD `/easy_all-health` 验证，彻底剔除 SNI 假通。
-- 按电信、联通、移动三大运营商独立优选，各输出 Top 3 优质候选 IP，搭配 XHTTP 与 WebSocket 双链路各自生成节点（`电信01_XHTTP`、`电信01_WS` 等，最多 18 个节点）。
-- 缓存有效时不输出域名兜底节点，仅在未生成精选 IP 缓存或缓存失效超过 24 小时兜底回退时才发布原始域名兜底节点。客户端 Mihomo 每 300 秒测速，候选快至少
-  50 ms 才切换；所有节点的 SNI 和 Host 始终使用节点域名。
-- 测量失败继续使用上次有效缓存；未生成缓存或缓存超过 24 小时则回退到原始域名兜底节点。
+- 按电信、联通、移动三大运营商独立优选，每网输出 2 个通过本机 HTTP/2 和 Globalping HTTP/TLS
+  验证的地址，统一生成 6 个纯 XHTTP 节点（`优选1` 到 `优选6`）。
+- 不使用内置 Anycast IP 或域名兜底凑数。刷新失败时继续使用格式兼容的上一版已验证缓存；从未生成
+  完整 6 节点缓存时停止生成订阅。客户端 Mihomo 每 300 秒测速。
 
 ### 5.1 精选 IP 的客户端要求
 
@@ -217,7 +218,7 @@ IP 节点会连接失败；请以实际生成订阅的导入测试确认兼容�
 “小火箭”通常指 Shadowrocket。它的官方版本记录已说明支持 XHTTP 和 XHTTP transport options，
 但没有逐项确认本项目所需的 IP/SNI/Host 分离及完整 Mihomo XHTTP 复用参数。因此本项目暂不把
 Shadowrocket 列为已验证客户端。若使用小火箭，请升级到最新版后导入实际订阅逐个测试；不能
-确认时使用 Mihomo。原始域名兜底节点只能作为对照，不能证明精选 IP 节点已被支持。
+确认时使用 Mihomo。
 
 安装器不会覆盖其他 DNS 记录或规则。发现同名记录、规则歧义或权限不足时会停止并保留本机状态。
 
@@ -257,8 +258,8 @@ Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Tra
 中国移动、联通、电信 Eyeball 探针定向测速。每个运营商最多下发 2 个独立有效节点（总计最多 6 个），
 **完全无域名兜底**。
 
-服务端采用双路径架构：同时监听并支持原生全双工 **VLESS WebSocket** 与拆包式 **VLESS XHTTP packet-up**，
-并强制开启 Gcore Origin SSL Validation 与客户端证书 mTLS 双向鉴权，彻底杜绝源站真实 IP 被直接嗅探。
+服务端采用单一 **VLESS WebSocket** 数据面，并强制开启 Gcore Origin SSL Validation 与客户端证书
+mTLS 双向鉴权。未向客户端发布的 XHTTP 入站、路径和验收逻辑已经移除。
 
 安装器需要以下凭证：
 
@@ -318,6 +319,9 @@ sub.example.com     可选独立订阅域名，作为同一 CDN Resource 的 sec
    权威 NS。NS 传播可能需要数分钟到 48 小时。
 7. Zone 尚未显示“已委托”时不要运行模式 3；也不要预先创建 `origin`、`node` 或独立订阅记录，安装器会在确认无冲突
    后创建。
+
+安装器写入前会通过 Gcore Managed DNS API 读取目标 A/CNAME RRset。目标名称已经存在且值不同会
+fail-fast，不会根据公共 DNS 结果猜测所有权或覆盖现有记录；请改用未占用的子域名。
 
 下面是 Gcore 控制台显示委派成功的示例；截图中的域名已脱敏为 `example.com`，绿色“已委托”状态表示可以继续模式 3 安装。
 
@@ -431,34 +435,31 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 
 ```text
 客户端 VLESS
-  -> WebSocket + TLS（ALPN http/1.1）或 XHTTP packet-up + TLS（ALPN h2）
+  -> WebSocket + TLS（ALPN http/1.1）
   -> Gcore 多地区 DNS 发现的真实入口 IP
   -> Gcore CDN 边缘反代
   -> HTTPS + Origin SSL Validation + Gcore 客户端证书
-  -> Nginx mTLS 鉴权后按路径分流
+  -> Nginx mTLS 鉴权后转发 WebSocket
   -> 127.0.0.1 上的 Xray VLESS 服务端
 ```
 
 | 参数                     | 值                               | 原因                                                       |
 | ------------------------ | -------------------------------- | ---------------------------------------------------------- |
-| 下发主协议               | `VLESS over WebSocket`           | Gcore 原生支持 WebSocket，无缓冲全双工，延迟与连接最稳定     |
-| 备选/分流协议            | `VLESS over XHTTP (packet-up)`   | 将上行拆包为 POST 请求，避免触发 Gcore 免费套餐流式缓冲超时  |
+| 下发协议                 | `VLESS over WebSocket`           | 与实际部署、探针和订阅保持单一协议                         |
 | WebSocket `ALPN`         | `http/1.1`                       | 标准 WebSocket Upgrade 协商                                |
-| XHTTP `ALPN`             | `h2`                             | HTTP/2 传输，避免被降级                                    |
-| WebSocket 路径           | 独立随机 `/ws-*`                 | 与 XHTTP 路径分流                                           |
-| `xPaddingBytes`          | `100-1000`                       | 与 Xray/Mihomo 客户端默认范围一致，避免随机 padding 被拒绝   |
-| `scMaxBufferedPosts`     | `100`                            | 适度扩充服务端等待缓冲区，防止突发丢包                      |
+| WebSocket 路径           | 独立随机 `/ws-*`                 | 隔离业务入口                                               |
 | 证书校验                 | 开启                             | 客户端使用精选 IP 作为连接地址，SNI 和 Host 使用 CDN 域名  |
 
-Gcore Resource 开启 `websockets`；使用 HTTPS 回源并固定 Host/SNI；允许 `GET/HEAD/POST`；
+Gcore Resource 开启 `websockets`；使用 HTTPS 回源并固定 Host/SNI；只允许 `GET/HEAD`；
 Edge cache 和 browser cache 均为 `0s`；不忽略查询参数；开启 Origin SSL Validation 与客户端证书鉴权。
 
 安装器使用 `1.1.1.1` 等待源站 A 与 CDN CNAME 传播，然后轮询 Resource 和边缘证书状态，并通过公网
-`/easy_all-health`、真实 XHTTP 和 WebSocket 链路完成验收。Resource 状态仅用于诊断；即使仍显示
+`/easy_all-health` 与真实 WebSocket 链路完成验收。Resource 状态仅用于诊断；即使仍显示
 `processed`，只要端到端 HTTPS 与传输验收成功即可继续。开始精选 IP 预检前还会再次等待公网健康接口，
 避免异步证书签发或边缘配置传播期间把全部候选误判为不可用。重复执行 `apply-cloud` 时会先刷新本机
 Xray/Nginx，再比较公网 DNS 和 CDN Resource 的目标字段；配置一致时跳过重复写入及长时间传播轮询，
-仅执行一轮端到端复核。
+仅执行一轮端到端复核。新资源先在关闭 HTTP 重定向的状态下绑定边缘证书，证书可用后再开启
+HTTP 到 HTTPS 重定向。
 
 ### 8.5 Origin SSL Validation 与 mTLS
 
@@ -489,7 +490,8 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
   - 移动（ASN 9808）优先大陆移动、香港、台北和新加坡视角；
   - 联通（ASN 4837）优先大陆联通、日本和台北视角；
   - 电信（ASN 4134）优先大陆电信、洛杉矶和美国西海岸视角。
-- **防假通验证**：本机先使用目标域名作为 TLS SNI，通过 HTTP/1.1 完成真实 WebSocket 握手；随后仅将
+- **防假通验证**：本机先使用目标域名作为 TLS SNI，并且只接受 HTTP `101` 作为 WebSocket Upgrade
+  成功；普通 HTTP `200` 会被拒绝。随后仅将
   已验证地址交给 Globalping，从三网探针执行 TCP/443 零丢包与延迟测量。
 - **最多下发 6 节点**：各网最多取前 2 个 IP；不足 6 个时下发实际有效数量，后续刷新若有效 IP 数减少则
   保留上一版缓存。若 Gcore 对所有地区始终返回同一个入口 IP，最终节点数也会保持为 1，不会用回源地址

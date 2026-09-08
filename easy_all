@@ -153,6 +153,7 @@ detect_installed_mode() {
             printf 'cloudflare-streamup\n'
             ;;
         gcore)
+            [[ "${state_version}" == "7" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
             printf 'gcore\n'
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
