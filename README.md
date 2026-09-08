@@ -24,7 +24,7 @@ Cloudflare 提供纯 XHTTP stream-up（三网定向精选 6 节点平铺）；Gc
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，追求纯粹极速流模式与精选 6 节点 | 选择 `2`：Cloudflare 纯 XHTTP | 域名、Cloudflare Active Zone、Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up；通过 Globalping 对移动/联通/电信执行三网定向测速并平铺下发 6 个优质 IPv4 节点（节点名称优选1~优选6，严格无域名兜底）；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
-| 明确要使用 Gcore CDN，追求多地区边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
+| 明确要使用 Gcore CDN，追求多地区边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个，节点连续命名为 `优选1`～`优选n`；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 前置准备时，再选择对应 CDN 模式。
@@ -142,7 +142,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 | 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare 纯 XHTTP stream-up，`3` 是 Gcore WebSocket。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
-| 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
+| 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）先更新并校验 GeoSite/GeoIP，再重启；会中断已有连接。 |
 | Reality SNI/目标 | 直接回车 | 使用脚本验证过的默认值；不要随意填常见网站。 |
 | Reality 动态端口 | 直接回车 | 这是**节点连接端口**的轮换策略，不是订阅下载端口。 |
 
@@ -255,7 +255,7 @@ flowchart TD
     B -->|1 默认| R0[直连 Reality]
     R0 --> R1[系统预检 / 端口与旧安装冲突检查]
     R1 --> R2[备份 / 依赖 / SSH 启动保障 / XanMod LTS BBRv3 / 重启策略]
-    R2 --> R3[禁用 IPv6 / 连接地址 / SNI / 订阅端口]
+    R2 --> R3[探测公网 IPv6 / 选择 IPv4 或双栈 / 连接地址 / SNI / 订阅端口]
     R3 --> R4{订阅输出选择}
     R4 -->|部署| R5[订阅域名、文件名、Token 或用户配额]
     R4 -->|仅节点| R6[不收集订阅服务参数]
@@ -295,14 +295,20 @@ flowchart TD
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
 | 安装模式 | `1` Reality / `2` Cloudflare / `3` Gcore | `1` | 安装 Reality |
-| 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入每日 04:00 的 root crontab；重启会短暂断线 |
+| 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入 root crontab；重启前最多用 10 分钟更新并校验 GeoSite/GeoIP，更新失败保留旧资产且不阻止重启 |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
 脚本提示中的 `[值]` 表示直接回车会采用该值；没有方括号且没有明确写“可留空”的输入必须填写。
 UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
 所有需要用户输入的交互提示仅显示中文；密码提示同样使用中文并继续隐藏输入。
 
-服务器在初始化阶段通过 sysctl 完全禁用 IPv6，所有公网出站均天然使用稳定受控的 IPv4 出口，彻底避免因 IPv6 路由较差或双栈裂脑导致 Gemini 侧边栏及后台同步卡顿。同时服务端与客户端规则均默认阻断 UDP/443（QUIC），使 HTTP/3 流量直接快速回退至稳定 TCP。
+服务器在初始化阶段同时检查全局 IPv6 地址、默认路由和真实 HTTPS IPv6 出口：三项都可用时启用
+IPv4/IPv6 双栈，否则通过 sysctl 保持 IPv4-only。双栈模式从经过 SHA256 校验的 Xray 官方发布包安装
+`geosite.dat` 与 `geoip.dat`，将 `geosite:google` 和 `geoip:google` 统一路由到绑定 IPv4 的
+`direct-google-ipv4` 出站，并强制 `ForceIPv4`，避免 Gemini/Google 在同一 VPS 上混用 IPv4 与 IPv6。
+每日重启前从 `Loyalsoldier/v2ray-rules-dat` 发布页下载独立 Geo 数据及其 SHA256 文件，只有哈希和
+Xray 分类校验都通过才原子替换。其他服务仍可使用 VPS IPv6。服务端与客户端规则默认阻断
+UDP/443（QUIC），使 HTTP/3 快速回退至 TCP。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
 尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
@@ -340,6 +346,7 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改当前 Provider 资源，新增、更换或停用独立域名时同步对应 Provider。 |
 | `refresh-cdn-ips` | Cloudflare/Gcore 模式可用；立即运行一次 Globalping 测量，更新当前 Provider 的本地缓存并重建订阅。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
+| `refresh-xray-assets` | 双栈 VPS 可用；立即下载、校验并原子更新 Xray GeoSite/GeoIP，当前 Xray 会在下次重启时加载新资产。 |
 | `renew-cert` | 强制轮换当前模式的证书并重新验收；Reality 需已部署自托管订阅，CDN 模式轮换源站/Provider 证书。 |
 | `quota-status` | 显示每用户月度配额和 Xray 本地统计。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
@@ -367,7 +374,7 @@ Gcore 模式按状态中的资源 ID 删除 CDN Resource、Origin Group、回源
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 读取已安装模式，安装或验收 XanMod LTS BBRv3、全局禁用 IPv6、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
+| Reality | 1. 读取已安装模式，安装或验收 XanMod LTS BBRv3、应用已探测的 IPv4/双栈状态、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 双栈模式校验 Xray GeoSite/GeoIP 资产并固定 Google IPv4 出站；保留订阅与端口模式，自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
 | Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅；只使用完整且格式兼容的 6 节点缓存，不生成域名兜底。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
 | Gcore CDN WebSocket | 1. 读取状态并备份本机配置。<br>2. 同步 UFW 回源白名单并刷新单一 WebSocket 入站。<br>3. 使用现有兼容入口缓存重建订阅，不生成域名兜底。<br>4. 保存状态、注册当前代码并恢复配额与 Globalping 定时任务。 |
 
@@ -637,7 +644,8 @@ ASN 会给出警告但不会阻止安装，查询不可用时同样只警告。R
 保留前面 `56` 个历史 3 小时窗口，同时预开放当天全天 `8` 个端口和次日凌晨 `00/03` 的
 `2` 个端口，共 `66` 个端口，并将它们重定向到 Xray `443`；不会生成数万条 UFW allow 规则。
 每个 3 小时窗口开始后的第 1 分钟会刷新 NAT，并先完整生成、校验再切换已部署的 Base64/Mihomo 订阅；
-每日重启任务也会先刷新再执行重启。Worker 聚合仍在每次请求时直接计算当前端口。UFW 过滤规则默认拒绝入站与转发，始终放行检测到的 SSH
+每日重启任务会先尝试更新 GeoSite/GeoIP；Reality 再刷新动态端口后执行重启。Geo 数据下载、SHA256
+或 Xray 分类校验失败时保留旧资产，不因外部下载故障取消重启。Worker 聚合仍在每次请求时直接计算当前端口。UFW 过滤规则默认拒绝入站与转发，始终放行检测到的 SSH
 端口和 Reality TCP `443`；部署自托管订阅时，HTTPS `8443` 仅允许 Cloudflare 官方 IPv4 回源段，
 不开放 HTTP `80`。
 
@@ -646,8 +654,11 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Reality 生成的 Mihomo/Clash 节点固定输出 `ip-version: ipv4`，模板总开关和业务 DNS
-统一使用 `ipv6: false`，彻底禁用客户端 IPv6 解析与出站。
+Mihomo 模板启用客户端 IPv4/IPv6 双栈 DNS 与 TUN。Reality 只有在 VPS 公网 IPv6 可用且节点域名的
+AAAA 全部指向该地址时才输出 `ip-version: dual`；使用 IPv4 地址、没有 AAAA、AAAA 不匹配或 VPS
+没有 IPv6 时均保持 `ip-version: ipv4`。Cloudflare/Gcore 精选节点的连接地址是经过验证的 IPv4，
+因此始终保持 `ip-version: ipv4`，不受 VPS 出站双栈状态影响。客户端将整个 `GEOSITE,google`
+交给代理，VPS 再统一固定为 IPv4 出站。
 
 Reality 服务端与 CDN XHTTP 均阻断 IPv4/IPv6 私网、链路本地、回环、组播及保留地址，
 避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
@@ -664,13 +675,17 @@ Reality 交互选项：
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
 
-Reality 在主机、UFW、Xray、Nginx 和客户端订阅层统一使用 IPv4：
+Reality 按安装时探测结果配置网络族：
 
-- sysctl 固定设置 `net.ipv6.conf.{all,default,lo}.disable_ipv6=1`，UFW 固定设置 `IPV6=no`。
-- Xray Reality 入站只监听 `0.0.0.0:443`，Nginx 订阅源站只监听 IPv4 `8443`。
-- 动态端口只写入 IPv4 NAT；`apply` 会清理旧版本遗留的 IPv6 NAT 区块。
-- 使用域名作为连接地址时，A 记录必须解析到当前 VPS 公网 IPv4，且不得发布 AAAA。
-- Xray 出站统一使用直接出站并默认拦截 UDP/443。
+- 没有可用公网 IPv6时，sysctl 设置 `disable_ipv6=1`、UFW 设置 `IPV6=no`，Xray 监听
+  `0.0.0.0:443`，动态端口只写入 IPv4 NAT。
+- 检测到可用公网 IPv6时，sysctl 设置 `disable_ipv6=0`、UFW 设置 `IPV6=yes`，Xray 监听
+  `::`，动态端口同时写入 IPv4/IPv6 NAT。
+- 使用域名作为连接地址时，A 记录必须指向当前 VPS 公网 IPv4；AAAA 可以不发布，但一旦发布，
+  所有 AAAA 都必须指向探测到的 VPS 公网 IPv6。
+- Nginx 自托管订阅源站仍只监听 IPv4 `8443`，由 Cloudflare IPv4 回源白名单保护。
+- Xray 阻断私网目标和 UDP/443；双栈模式的普通出站允许 IPv4/IPv6，但 Google 域名及 IP
+  固定绑定 IPv4 出站。
 
 自托管订阅域名必须是 Cloudflare Active Zone 下的一级子域名。安装器创建 Proxied A 记录；
 客户端由 Universal SSL 终止 TLS，Cloudflare 使用 Full (strict) 连接 VPS `8443` 上的 Origin CA：
@@ -752,9 +767,12 @@ STATE_VERSION=6  # Reality
 STATE_VERSION=7  # Cloudflare XHTTP / Gcore WebSocket
 PROTOCOL=reality|cloudflare-streamup|gcore
 CDN_PROVIDER=cloudflare|gcore
+VPS_IP_FAMILY=ipv4|dual
+VPS_PUBLIC_IPV6=...  # 仅 dual
 ```
 
-客户端 IP 族不再作为状态项，所有模式固定为 IPv4-only。Reality 的 `CDN_PROVIDER` 为空。
+Reality 的客户端节点族根据 VPS 双栈状态和节点 AAAA 实时生成，不单独持久化；CDN 精选入口固定
+IPv4。Reality 的 `CDN_PROVIDER` 为空。
 Globalping Token 只在 Cloudflare 模式使用，单独保存在
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`，不会写入状态文件。
 
@@ -780,11 +798,11 @@ easy_all
 │  ├─ quota.sh                     用户配额与统计
 │  ├─ platform.sh                  root/systemd/SSH 启动保障
 │  ├─ profile-common.sh            Profile 公共辅助、交互与字段校验
-│  ├─ network.sh                   公网 IPv4 探测、IPv4 直连与私网阻断
+│  ├─ network.sh                   公网 IPv4/IPv6 探测、Google IPv4 出站与私网阻断
 │  ├─ mihomo-template.sh           Mihomo 模板加载与校验
 │  ├─ firewall.sh                  SSH 端口发现与受管 UFW 过滤规则
-│  ├─ xray-core.sh                 Xray 下载、校验与安装
-│  ├─ scheduled-maintenance.sh     可选定时重启
+│  ├─ xray-core.sh                 Xray/GeoSite/GeoIP 下载、校验与安装
+│  ├─ scheduled-maintenance.sh     Geo 数据预更新与可选定时重启
 │  ├─ subscription-auth.sh         非配额订阅 Token 校验与映射
 │  └─ tcp-tuning.sh                XanMod LTS BBRv3 内核与保守 TCP 参数
 ├─ templates/
@@ -798,8 +816,8 @@ Provider 云资源和网络策略；公共模块不反向依赖 Profile。两种
 共享订阅渲染、配额用户展开、状态应用收尾、命令注册、证书和本机回滚实现。
 
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
-`scheduled-maintenance.sh` 统一管理可选定时重启。`network.sh` 负责公网 IPv4
-探测和 Xray IPv4 直连策略，`firewall.sh` 负责具有系统副作用的 UFW 修改。
+`scheduled-maintenance.sh` 统一管理 Geo 数据预更新与可选定时重启。`network.sh` 负责公网
+IPv4/IPv6 探测和 Xray 出站策略，`firewall.sh` 负责具有系统副作用的 UFW 修改。
 
 ## 测试
 

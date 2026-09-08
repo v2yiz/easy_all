@@ -120,10 +120,6 @@ render_mihomo_subscription() {
     EASY_ALL_NODE_NAME="${encoded_node_name}" \
     awk -v node_file="${node_file}" \
         -v group_file="${group_file}" -v name_file="${name_file}" '
-        $0 ~ /^ipv6: (true|false)$/ {
-            print "ipv6: false"
-            next
-        }
         $0 == "# EASY_ALL_PROXY_NODE" {
             while ((getline line < node_file) > 0) print line
             close(node_file)

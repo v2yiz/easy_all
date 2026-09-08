@@ -149,7 +149,7 @@ xhttp_configure_ufw() {
     fi
     ensure_ssh_boot_service
     detect_ssh_ports
-    disable_ufw_ipv6
+    configure_ufw_ip_family
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
@@ -698,6 +698,8 @@ collect_install_inputs() {
 
 load_state() {
     local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    local detected_ip_family=${VPS_IP_FAMILY:-}
+    local detected_public_ipv6=${VPS_PUBLIC_IPV6:-}
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
         XHTTP_NODE_NAME VLESS_UUID
@@ -706,6 +708,7 @@ load_state() {
         CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID
         CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
         CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID
+        VPS_IP_FAMILY VPS_PUBLIC_IPV6
         XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH
         ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
@@ -716,6 +719,10 @@ load_state() {
         env_name=$(env -i bash -c 'source "$1" && printf "%s" "${'"${variable}"':-}"' _ "${state_path}")
         printf -v "${variable}" '%s' "${env_name}"
     done
+    if [[ -n "${detected_ip_family}" ]]; then
+        VPS_IP_FAMILY=${detected_ip_family}
+        VPS_PUBLIC_IPV6=${detected_public_ipv6}
+    fi
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
@@ -750,6 +757,16 @@ load_state() {
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
     fi
+    case "${VPS_IP_FAMILY:-}" in
+    "") VPS_PUBLIC_IPV6="" ;;
+    ipv4) VPS_PUBLIC_IPV6="" ;;
+    dual)
+        validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
+            || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
+        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
+        ;;
+    *) die "状态文件中的 VPS_IP_FAMILY 无效：${VPS_IP_FAMILY}" ;;
+    esac
     BACKEND="xray"
     PROTOCOL="cloudflare-streamup"
     CDN_PROVIDER="cloudflare"
@@ -770,6 +787,7 @@ save_state() {
             CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID \
             CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON \
             CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID \
+            VPS_IP_FAMILY VPS_PUBLIC_IPV6 \
             XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH ORIGIN_HEADER_SECRET ALLOWED_TOKENS \
             SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
             QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
@@ -793,6 +811,7 @@ collect_installed_state() {
 
 xhttp_render_xray_config() {
     install -d -m 0755 "${XRAY_DIR}"
+    ensure_xray_geosite_assets
     local clients
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -810,12 +829,14 @@ xhttp_render_xray_config() {
         --arg path "${XHTTP_PATH}" \
         --arg secs "${CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS}" \
         --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES}" \
+        --arg xray_asset_dir "${XRAY_DIR}" \
         --argjson sockopt "${sockopt}" \
         --argjson outbounds "${outbounds}" \
         --argjson routing "${routing}" \
         --argjson quota_enabled "$([[ "${QUOTA_ENABLED:-0}" == "1" ]] && printf true || printf false)" '
         {
           log: { loglevel: "warning" },
+          env: {XRAY_LOCATION_ASSET:$xray_asset_dir},
           inbounds: [
             {
               tag: "vless-xhttp-h2-in",
@@ -1065,6 +1086,11 @@ show_status() {
     collect_installed_state
     printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled (三网定向精选 6 节点，无域名兜底)\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"
+    if vps_dual_stack_enabled; then
+        printf 'VPS 出站: IPv4 + IPv6（%s；Google 固定 IPv4）\n' "${VPS_PUBLIC_IPV6}"
+    else
+        printf 'VPS 出站: IPv4-only\n'
+    fi
     show_globalping_status
 }
 

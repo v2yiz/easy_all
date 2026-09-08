@@ -22,13 +22,18 @@ try {
     const second = await readFile(outputPath, 'utf8');
     assert.equal(second.replace('2026-09-06-v1', '2026-09-06-v0'), initial, 'only version changes on rebuild');
     assert.equal(await buildWorker({ configPath, outputPath, now: now + 60_000 }), '2026-09-07-v0', 'Beijing midnight resets revision');
-    const source = await readFile(outputPath, 'utf8');
+    let source = await readFile(outputPath, 'utf8');
     assert.equal((await stat(outputPath)).mode & 0o777, 0o600);
     config.nodes[0].ipVersion = 'dual';
     await writeFile(configPath, JSON.stringify(config));
-    await assert.rejects(buildWorker({ configPath, outputPath }), /IPv4-only/);
-    assert.equal(await readFile(outputPath, 'utf8'), source, 'IPv6 config rejection preserves artifact');
-    delete config.nodes[0].ipVersion;
+    await buildWorker({ configPath, outputPath, now: now + 120_000 });
+    source = await readFile(outputPath, 'utf8');
+    assert.ok(source.includes('"ipVersion":"dual"'), 'Reality nodes accept explicit dual-stack');
+    config.fallbackCdnNodes[0].ipVersion = 'dual';
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /fallbackCdnNodes IP family/);
+    assert.equal(await readFile(outputPath, 'utf8'), source, 'CDN dual-stack rejection preserves artifact');
+    delete config.fallbackCdnNodes[0].ipVersion;
     await writeFile(configPath, '{invalid');
     await assert.rejects(buildWorker({ configPath, outputPath }));
     assert.equal(await readFile(outputPath, 'utf8'), source, 'failed build preserves artifact');
@@ -43,9 +48,10 @@ try {
     assert.equal((await offline(request('', 'offline-test-token', 'POST'))).status, 405);
     assert.equal(calls, 0, 'reject before upstream access');
     const fallback = await offline(request());
-    assert.equal(fallback.headers.get('X-Easy-All-Version'), '2026-09-07-v0');
+    assert.equal(fallback.headers.get('X-Easy-All-Version'), '2026-09-07-v1');
     assert.equal(fallback.headers.get('X-Easy-All-Warning'), 'xflash-unavailable-local-only');
     const fallbackBody = await fallback.text();
+    assert.ok(fallbackBody.includes('ip-version: dual'));
     assert.ok(fallbackBody.includes('fallback.example.com'));
     assert.ok(fallbackBody.includes('hidden.example.com'));
     assert.ok(!fallbackBody.includes('vmiss.example.com'));
@@ -69,7 +75,7 @@ try {
         });
         assert.equal(result.error, null);
         assert.equal(result.nodes.length, 6, 'limit applies to supported nodes');
-        assert.equal(result.nodes[0].name, '🇺🇸备用CF1');
+        assert.equal(result.nodes[0].name, '优选1');
     }
     const forwardedUA = await dynamicApi.fetchDynamicCdnNodes(config.vpsCdnUrl, {
         userAgent: 'client-subscription/1.0',
@@ -115,10 +121,10 @@ try {
     for (const body of [fallbackBody, liveBody]) {
         assert.equal(body.split('rules:\n')[1], template.split('rules:\n')[1]);
         assert.equal(body.split('\nproxies:\n')[0], template.split('\nproxies:\n')[0]);
-        assert.ok(body.includes('ipv6: false'));
+        assert.ok(body.includes('ipv6: true'));
     }
     assert.ok(liveBody.includes('remote.example.com') && liveBody.includes('192.0.2.1'));
-    assert.deepEqual(JSON.parse(groups.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), ['🇺🇸备用CF1']);
+    assert.deepEqual(JSON.parse(groups.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), ['优选1']);
     assert.ok(groups.split('name: 备用优选')[0].includes('Remote'), 'PROXY includes upstream');
     const encodedXflash = btoa(upstream);
     const htmlTyped = make(async url => new Response(
@@ -129,8 +135,8 @@ try {
     assert.equal(htmlTypedBody.headers.get('X-Easy-All-Warning'), null, 'base64 XFLASH must not be rejected by content type');
     assert.ok((await htmlTypedBody.text()).includes('remote.example.com'));
     const fallbackAuto = fallbackBody.split('name: 备用优选')[1].split('rules:\n')[0];
-    assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['Fallback CF']);
-    const sixCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `🇺🇸备用CF${i}` }));
+    assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['优选1']);
+    const sixCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `优选${i}` }));
     const sixBody = api.buildClashConfig([...api.LOCAL_NODES, ...sixCf], [10000, 10000, 443, 443, 443, 443, 443, 443], upstream, sixCf);
     const sixProxy = sixBody.split('proxy-groups:')[1].split('name: 备用优选')[0];
     assert.ok(sixCf.every(node => !sixProxy.includes(node.name)), 'CF nodes only appear inside backup group');

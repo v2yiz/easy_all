@@ -132,6 +132,10 @@ assert_contains "Preparation guide forbids hostname fallback" \
     "${PREPARATION_GUIDE_CONTENT}" '不使用内置 Anycast IP 或域名兜底凑数'
 assert_contains "Preparation guide documents the Mihomo requirement for selected IPs" \
     "${PREPARATION_GUIDE_CONTENT}" '精选 IP 订阅需要使用 Mihomo'
+assert_contains "Preparation guide documents automatic VPS dual-stack detection" \
+    "${PREPARATION_GUIDE_CONTENT}" '默认 IPv6 路由和可用 HTTPS'
+assert_contains "Preparation guide documents Reality IPv6 firewall prerequisites" \
+    "${PREPARATION_GUIDE_CONTENT}" '安全组'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \
     "${PREPARATION_GUIDE_CONTENT}" 'Shadowrocket 列为已验证客户端'
 
@@ -141,8 +145,10 @@ assert_contains "README documents merged scheduled maintenance" \
 assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" 'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" '不会生成数万条'
 assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
-assert_contains "README documents the global IPv4-only Reality policy" \
-    "${README_CONTENT}" 'Xray Reality 入站只监听 `0.0.0.0:443`'
+assert_contains "README documents conditional VPS dual-stack support" \
+    "${README_CONTENT}" '检测到可用公网 IPv6'
+assert_contains "README documents Google IPv4-only egress" \
+    "${README_CONTENT}" '`direct-google-ipv4`'
 assert_contains "README documents Chinese-only interactive prompts" \
     "${README_CONTENT}" '所有需要用户输入的交互提示仅显示中文'
 assert_contains "README documents client connection racing" \
@@ -154,6 +160,8 @@ assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" \
 assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" '`13000-60999`'
 assert_contains "README documents XanMod LTS BBRv3" "${README_CONTENT}" 'XanMod LTS 内核'
 assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" '`BBRv3: active`'
+assert_contains "README documents GeoSite refresh before reboot" \
+    "${README_CONTENT}" '重启前最多用 10 分钟更新并校验 GeoSite/GeoIP'
 assert_contains "README keeps the independent Debian initializer" \
     "${README_CONTENT}" '`scripts/debian-init.sh` 是独立的个人服务器初始化工具'
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" '同步重建本机 Xray、Nginx 和订阅文件'

@@ -2,7 +2,7 @@ mixed-port: 1080
 allow-lan: false
 mode: rule
 log-level: error
-ipv6: false
+ipv6: true
 external-controller: '127.0.0.1:9090'
 unified-delay: false
 tcp-concurrent: true
@@ -35,21 +35,28 @@ tun:
     auto-detect-interface: true
     inet4-address:
       - 198.18.0.1/30
+    inet6-address:
+      - fdfe:dcba:9876::1/126
     dns-hijack:
       - any:53
       - tcp://any:53
     # Windows TUN + Reality/BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
     strict-route: false
-    # 通用局域网 IPv4 地址绕过 TUN，保留内网直连能力。
+    # 通用局域网 IPv4/IPv6 地址绕过 TUN，保留内网直连能力。
     route-exclude-address:
       - 10.0.0.0/8
       - 172.16.0.0/12
       - 192.168.0.0/16
       - 169.254.0.0/16
       - 100.64.0.0/10
+      - fc00::/7
+      - fe80::/10
+      - ::1/128
+      - ff00::/8
 
 dns:
     enable: true
+    ipv6: true
     use-system-hosts: false
     listen: '127.0.0.1:5335'
     enhanced-mode: fake-ip
@@ -78,6 +85,8 @@ rules:
   - DOMAIN-SUFFIX,steamserver.net,DIRECT
   # 上面的显式直连域名保留 QUIC；其余 UDP/443 拒绝，避免经 XHTTP 传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
+  # 所有 Google 服务经代理进入 VPS；双栈 VPS 再强制使用 IPv4 出站。
+  - GEOSITE,google,PROXY
   - DOMAIN-SUFFIX,steamcommunity.com,PROXY
   - PROCESS-NAME,v2ray,DIRECT
   - PROCESS-NAME,xray,DIRECT
@@ -124,7 +133,6 @@ rules:
   - PROCESS-NAME,uTorrent.exe,DIRECT
   - PROCESS-NAME,WebTorrent.exe,DIRECT
   - PROCESS-NAME,aDrive.exe,DIRECT
-  - DOMAIN,ssl.gstatic.com,DIRECT
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
   # 大流量 CDN 优化 (Apple 与 Microsoft 国内 CDN 直连加速)

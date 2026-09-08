@@ -225,6 +225,9 @@ show_bbrv3_status() {
 }
 
 configure_bbr_tcp() {
+    local disable_ipv6=1
+    ensure_vps_ip_family
+    vps_dual_stack_enabled && disable_ipv6=0
     ensure_bbrv3_kernel
     cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
 # XanMod BBRv3 (the kernel registers it as tcp_bbr / bbr)
@@ -262,11 +265,13 @@ net.ipv4.tcp_keepalive_probes = 5
 # Outbound TCP/UDP source ports. Keep clear of easy_all's 10000-12927 Reality
 # ingress range and the high 65533 SSH listener.
 net.ipv4.ip_local_port_range = 13000 60999
+EOF
+    cat >>"${RUNTIME_TMP}/bbr.conf" <<EOF
 
-# Disable IPv6 for every easy_all mode.
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
+# IPv6 follows the public-connectivity probe performed during installation.
+net.ipv6.conf.all.disable_ipv6 = ${disable_ipv6}
+net.ipv6.conf.default.disable_ipv6 = ${disable_ipv6}
+net.ipv6.conf.lo.disable_ipv6 = ${disable_ipv6}
 EOF
     if [[ "${PROTOCOL:-}" == "reality" && -z "${CDN_PROVIDER:-}" ]]; then
         cat >>"${RUNTIME_TMP}/bbr.conf" <<'EOF'

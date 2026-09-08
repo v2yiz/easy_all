@@ -146,6 +146,7 @@ function vlessLink(node, port) {
 }
 
 function clashRealityNode(node, port) {
+    const ipVersion = node.ipVersion === 'dual' ? 'dual' : 'ipv4';
     return `  - name: ${yamlString(node.name)}
     type: vless
     server: ${yamlString(node.host)}
@@ -162,7 +163,7 @@ function clashRealityNode(node, port) {
       short-id: ${yamlString(node.sid)}
     client-fingerprint: ${yamlString(node.fp)}
     packet-encoding: xudp
-    ip-version: ipv4
+    ip-version: ${ipVersion}
     smux:
       enabled: false`;
 }
@@ -228,8 +229,17 @@ function parseVlessLink(link) {
     };
 }
 
+function normalizeCdnNodeNames(nodes) {
+    return nodes.slice(0, 6).map((node, index) => ({
+        ...node,
+        name: `优选${index + 1}`,
+    }));
+}
+
 async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS, userAgent = '' } = {}) {
-    if (!url) return { nodes: FALLBACK_CDN_NODES, error: null };
+    if (!url) {
+        return { nodes: normalizeCdnNodeNames(FALLBACK_CDN_NODES), error: null };
+    }
     try {
         // The parser consumes URI subscriptions, regardless of the caller's format.
         const clientUA = userAgent?.trim() || 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
@@ -257,14 +267,17 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTRE
             } catch {
                 return [];
             }
-        }).slice(0, 6).map((node, idx) => ({ ...node, name: `🇺🇸备用CF${idx + 1}` }));
+        });
         if (nodes.length === 0) {
             throw new Error('Failed to parse any vless links from VPS subscription');
         }
-        return { nodes, error: null };
+        return { nodes: normalizeCdnNodeNames(nodes), error: null };
     } catch (error) {
         console.warn('Dynamic CF subscription unavailable; using configured fallback nodes:', error.message);
-        return { nodes: FALLBACK_CDN_NODES, error: error.message };
+        return {
+            nodes: normalizeCdnNodeNames(FALLBACK_CDN_NODES),
+            error: error.message,
+        };
     }
 }
 

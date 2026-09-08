@@ -16,7 +16,8 @@
       "sni": "www.example.com",
       "pbk": "replace-with-reality-public-key",
       "sid": "0123456789abcdef",
-      "fp": "chrome"
+      "fp": "chrome",
+      "ipVersion": "ipv4"
     }
   ]
 }

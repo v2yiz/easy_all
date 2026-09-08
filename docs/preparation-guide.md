@@ -24,6 +24,11 @@ Cloudflare Free Zone 与 Gcore Free CDN 的基础额度按 Provider 当前规则
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品                           | 第 1–7 节                                                                    |
 | 模式 3：Gcore CDN 精选 IP   | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、Globalping Token；额度内预期 `$0/月`（1TB/月内）                      | Cloudflare gRPC 等 Cloudflare 专属准备             | 第 1.1、8 节                                                                  |
 
+公网 IPv6 不是必需条件。安装器只有在 VPS 同时具备全局 IPv6 地址、默认 IPv6 路由和可用 HTTPS
+IPv6 出口时才启用双栈，否则保持 IPv4-only。Reality 若要让客户端通过 IPv6 直连，还需在云厂商安全组
+放行 TCP `443` 和动态端口范围，并为节点域名发布与探测地址完全一致的 AAAA。CDN 精选入口与回源仍使用
+IPv4，VPS 双栈仅用于允许非 Google 服务按系统策略选择出站地址。
+
 各链路建议使用的域名如下：
 
 ```text
@@ -145,8 +150,9 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 `sub.example.com`。不要提前创建该名称的 DNS 记录；安装器会创建橙云/Proxied 记录并配置证书。
 
 Reality 的节点连接域名（例如 `node.example.com`）如有使用，必须保持灰云/DNS only 以便客户端直连 VPS；
-它只能发布指向 VPS 的 A 记录，不得发布 AAAA，且不能与橙云订阅域名相同。Reality 不需要 gRPC，
-也不会把节点数据流量经过 Cloudflare。
+它必须发布指向 VPS 的 A 记录，且不能与橙云订阅域名相同。安装器检测到 VPS 具备可用公网 IPv6
+时，可以再发布指向该地址的 AAAA；所有 AAAA 都必须与安装器探测结果一致，否则安装会停止。
+没有可用公网 IPv6时不要发布 AAAA。Reality 不需要 gRPC，也不会把节点数据流量经过 Cloudflare。
 
 ### 3.2 Cloudflare XHTTP：必须完成
 

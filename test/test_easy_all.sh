@@ -90,6 +90,8 @@ set_fixture() {
     REALITY_PRIVATE_KEY="test-private-key"
     REALITY_PUBLIC_KEY="test-public-key"
     REALITY_SHORT_ID="0123456789abcdef"
+    VPS_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="deploy"
     SUBSCRIPTION_DOMAIN="sub.example.com"
@@ -120,9 +122,13 @@ test_syntax_and_reality_boundaries() {
         "collect_subscription_inputs()" "${script}"
     assert_contains "subscription deployment is a separate stage" \
         "deploy_subscription_output()" "${script}"
-    assert_contains "Reality rejects AAAA records while IPv6 is globally disabled" \
-        "easy_all 已全局禁用 IPv6，请删除该记录" "${script}"
-    assert_contains "Reality uses shared IPv4 direct outbounds" \
+    assert_contains "Reality validates AAAA against detected server IPv6" \
+        "未指向本机公网 IPv6" "${script}"
+    assert_contains "Reality reminds users about the external IPv6 security group" \
+        "请在云厂商安全组手工放行" "${script}"
+    assert_contains "Reality reminds users to publish matching A and AAAA records" \
+        "需保留正确的 A，并将 AAAA 指向" "${script}"
+    assert_contains "Reality uses shared direct outbounds" \
         'managed_outbounds=$(xray_direct_outbounds_json)' "${script}"
     assert_contains "Reality uses shared private-address blocking" \
         'managed_routing=$(xray_direct_routing_json)' "${script}"
@@ -176,17 +182,51 @@ test_validators_and_modes() {
     PROMPT_SUBSCRIPTION_MODE=0
 }
 
-test_reality_ipv4_dns_policy() {
+test_vps_ip_family_detection() {
+    local detected
+    detected=$(
+        unset VPS_IP_FAMILY VPS_PUBLIC_IPV6
+        info() { :; }
+        enable_ipv6_for_detection() { return 0; }
+        detect_public_ipv6() { printf '2001:db8::10\n'; }
+        ensure_vps_ip_family
+        printf '%s|%s\n' "${VPS_IP_FAMILY}" "${VPS_PUBLIC_IPV6}"
+    )
+    assert_equal "usable public IPv6 enables VPS dual-stack" \
+        "dual|2001:db8::10" "${detected}"
+
+    detected=$(
+        unset VPS_IP_FAMILY VPS_PUBLIC_IPV6
+        info() { :; }
+        enable_ipv6_for_detection() { return 0; }
+        detect_public_ipv6() { return 1; }
+        ensure_vps_ip_family
+        printf '%s|%s\n' "${VPS_IP_FAMILY}" "${VPS_PUBLIC_IPV6}"
+    )
+    assert_equal "missing public IPv6 keeps VPS IPv4-only" "ipv4|" "${detected}"
+}
+
+test_reality_ip_family_dns_policy() {
     NODE_HOST="node.example.com"
     VPS_PUBLIC_IPV4="203.0.113.10"
+    VPS_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
     dig() {
         case " $* " in
         *" A "*) printf '203.0.113.10\n' ;;
         *" AAAA "*) printf '2001:db8::10\n' ;;
         esac
     }
-    assert_failure "Reality rejects AAAA when IPv6 is globally disabled" \
+    assert_failure "Reality rejects AAAA when no public IPv6 was detected" \
         validate_reality_node_dns
+    VPS_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    assert_success "Reality accepts AAAA matching the detected public IPv6" \
+        validate_reality_node_dns
+    assert_equal "matching Reality AAAA enables a dual client node" "dual" \
+        "$(resolve_reality_client_ip_family; printf '%s' "${REALITY_CLIENT_IP_FAMILY_RESOLVED}")"
+    VPS_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
     dig() {
         if [[ " $* " == *" A "* ]]; then
             [[ "$*" != *"@"* ]] || return 1
@@ -207,6 +247,8 @@ test_reality_ipv4_dns_policy() {
     }
     assert_failure "missing A is rejected for the IPv4-only client" \
         validate_reality_node_dns
+    VPS_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
     unset VPS_PUBLIC_IPV4
     unset -f dig
 }
@@ -325,6 +367,8 @@ test_mihomo_template() {
         '  - DOMAIN,love.xflash.work,DIRECT' "${first_rule}"
     assert_contains "Mihomo proxies non-CN AI services" \
         "GEOSITE,category-ai-chat-!cn,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo proxies all Google domains through the VPS" \
+        "GEOSITE,google,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes Apple domestic CDN direct" \
         "GEOSITE,apple-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes Microsoft domestic CDN direct" \
@@ -381,16 +425,18 @@ test_subscription_generation() {
         "reality-opts:" "${yaml}"
     assert_contains "IPv4-only Reality endpoint stays IPv4 in Mihomo" \
         "ip-version: ipv4" "${yaml}"
-    assert_contains "Reality endpoint keeps the Mihomo IPv6 master switch disabled" \
-        $'\nipv6: false\n' "${yaml}"
+    assert_contains "Mihomo enables the client IPv6 master switch" \
+        $'\nipv6: true\n' "${yaml}"
     assert_contains "Mihomo TUN bypasses CGNAT and overlay LAN addresses" \
         "100.64.0.0/10" "${yaml}"
-    assert_not_contains "rendered DNS is not extended beyond XFLASH" \
+    assert_contains "Mihomo DNS resolves IPv6 for dual-stack direct traffic" \
         $'\n    ipv6: true\n' "${yaml}"
     assert_contains "Mihomo subscription contains XFLASH rules" \
         "DOMAIN,love.xflash.work,DIRECT" "${yaml}"
     assert_contains "Mihomo subscription contains AI proxy rules" \
         "GEOSITE,category-ai-chat-!cn,PROXY" "${yaml}"
+    assert_contains "Mihomo sends every Google domain through the VPS" \
+        "GEOSITE,google,PROXY" "${yaml}"
     assert_contains "Mihomo subscription keeps the Telegram rule" \
         "GEOIP,telegram,PROXY,no-resolve" "${yaml}"
     assert_not_contains "Mihomo subscription omits the latency test group" \
@@ -414,8 +460,17 @@ test_subscription_generation() {
     decoded=$(openssl base64 -d -A <"${base64_file}")
     assert_contains "fixed subscription mode uses port 443" \
         "@203.0.113.10:443?" "${decoded}"
+
+    NODE_HOST="node.example.com"
+    VPS_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    dig() {
+        [[ " $* " != *" AAAA "* ]] || printf '2001:db8::10\n'
+    }
+    assert_contains "matching Reality AAAA renders a dual-stack client node" \
+        "ip-version: dual" "$(build_mihomo_node 443)"
     unset IPV6_ENABLED
-    unset -f collect_installed_state
+    unset -f collect_installed_state dig
 }
 
 test_nginx_and_firewall() {
@@ -498,8 +553,20 @@ EOF
         "--dport $(dynamic_port_for_current_window) -j REDIRECT --to-ports ${SERVICE_PORT}" \
         "${ufw_config}"
 
+    VPS_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    configure_ufw
+    ufw6_config=$(<"${UFW_BEFORE6_RULES}")
+    assert_equal "dual-stack Reality mirrors dynamic NAT rules to IPv6" \
+        "${DYNAMIC_PORT_OPEN_WINDOWS}" \
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
+    assert_contains "dual-stack Reality enables UFW IPv6" \
+        "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
+
+    VPS_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
     SUB_PORT_MODE="443"
-    write_ufw_nat_rules
+    configure_ufw
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
     assert_equal "fixed Reality mode removes IPv4 dynamic NAT rules" "0" \
@@ -633,8 +700,15 @@ test_scheduled_reboot_refreshes_dynamic_ports() {
     REBOOT_SCHEDULE_MODE=1
     configure_daily_reboot
     cron_state=$(<"${cron_state_file}")
+    assert_contains "daily reboot refreshes Xray GeoSite and GeoIP first" \
+        "refresh-xray-assets" "${cron_state}"
     assert_contains "daily Reality reboot refreshes dynamic NAT first" \
         "rotate-dynamic-ports" "${cron_state}"
+    assert_success "Geo refresh precedes Reality dynamic port refresh" \
+        bash -c '[[ "$1" == *refresh-xray-assets*rotate-dynamic-ports* ]]' _ \
+        "${cron_state}"
+    assert_contains "Geo refresh failure does not block the reboot pipeline" \
+        "refresh-xray-assets >/dev/null 2>&1 || true" "${cron_state}"
     assert_contains "daily Reality reboot remains scheduled" \
         "/usr/sbin/reboot" "${cron_state}"
     unset REBOOT_SCHEDULE_MODE
@@ -927,6 +1001,16 @@ test_secure_download_transport() {
         "curl " "${xray_source}"
     assert_contains "Xray downloads are restricted to official release URLs" \
         "github.com/XTLS/Xray-core/releases/download" "${xray_source}"
+    assert_contains "dual-stack Xray validates the Google GeoSite category" \
+        'domain:["geosite:google"]' "${xray_source}"
+    assert_contains "dual-stack Xray validates the Google GeoIP category" \
+        'ip:["geoip:google"]' "${xray_source}"
+    assert_contains "Xray service pins the resource asset directory" \
+        "Environment=XRAY_LOCATION_ASSET=" "${xray_source}"
+    assert_contains "daily GeoSite updates use the dedicated release asset" \
+        "v2ray-rules-dat/releases/latest/download" "${xray_source}"
+    assert_contains "daily GeoSite updates require published SHA256 files" \
+        '.sha256sum' "${xray_source}"
 }
 
 test_state_and_xray() {
@@ -947,15 +1031,16 @@ test_state_and_xray() {
         "CLOUDFLARE_API_TOKEN" "${state}"
     assert_not_contains "state omits retired Reality inbound family" \
         "REALITY_INBOUND_IP_FAMILY=" "${state}"
-    assert_not_contains "state omits retired VPS IPv6 address" \
+    assert_contains "state persists the detected VPS IP family" \
+        "VPS_IP_FAMILY=ipv4" "${state}"
+    assert_contains "state persists an empty VPS IPv6 address in IPv4-only mode" \
         "VPS_PUBLIC_IPV6=" "${state}"
-    printf 'REALITY_INBOUND_IP_FAMILY=dual\nVPS_PUBLIC_IPV6=2001:db8::10\n' \
-        >>"${STATE_FILE}"
+    printf 'REALITY_INBOUND_IP_FAMILY=dual\n' >>"${STATE_FILE}"
     load_state
     assert_equal "legacy Reality inbound family is discarded" "" \
         "${REALITY_INBOUND_IP_FAMILY:-}"
-    assert_equal "legacy VPS IPv6 address is discarded" "" \
-        "${VPS_PUBLIC_IPV6:-}"
+    assert_equal "current VPS family remains IPv4" "ipv4" \
+        "${VPS_IP_FAMILY:-}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
@@ -996,6 +1081,28 @@ EOF
          and .routing.rules[-1]
              == {type:"field",network:"tcp,udp",outboundTag:"direct"}' \
         <<<"${config}"
+
+    VPS_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    printf 'test-geosite\n' >"${XRAY_DIR}/geosite.dat"
+    printf 'test-geoip\n' >"${XRAY_DIR}/geoip.dat"
+    write_xray_config
+    config=$(<"${XRAY_CONFIG}")
+    assert_success "dual-stack Xray listens on IPv6 and pins Google to IPv4" \
+        jq -e \
+        '.inbounds[0].listen == "::"
+         and (.outbounds | map(.tag))
+             == ["direct","direct-google-ipv4","block"]
+         and .outbounds[1].settings.domainStrategy == "UseIPv4"
+         and .outbounds[1].targetStrategy == "ForceIPv4"
+         and .outbounds[1].sendThrough == "0.0.0.0"
+         and .routing.rules[2].domain == ["geosite:google"]
+         and .routing.rules[2].outboundTag == "direct-google-ipv4"
+         and .routing.rules[3].ip == ["geoip:google"]
+         and .routing.rules[3].outboundTag == "direct-google-ipv4"' \
+        <<<"${config}"
+    VPS_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
 
     QUOTA_ENABLED=1
     USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":0},"friend":{"token":"friend-token-123","uuid":"00000000-0000-4000-8000-000000000002","quota_gb":100}}'
@@ -1042,12 +1149,13 @@ test_install_pipeline_order() {
         configure_dynamic_port_rotation() { printf 'dynamic-port-schedule\n'; }
         install_quota_timer() { printf 'quota-timer\n'; }
         show_subscription() { printf 'show\n'; }
+        show_reality_dual_stack_notice() { printf 'dual-stack-notice\n'; }
         show_bbrv3_status() { printf 'bbrv3\n'; }
         prompt_bbrv3_reboot() { printf 'reboot-prompt\n'; }
         run_reality_install_pipeline "reality" 1
     )
     assert_equal "Reality install pipeline follows input, common runtime, branch, persistence order" \
-        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3\nreboot-prompt' \
+        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-schedule\nquota-timer\nshow\ndual-stack-notice\nbbrv3\nreboot-prompt' \
         "${calls}"
 }
 
@@ -1075,7 +1183,8 @@ test_apply_loads_reality_state_before_tcp_tuning() {
 source_script_copy
 test_syntax_and_reality_boundaries
 test_validators_and_modes
-test_reality_ipv4_dns_policy
+test_vps_ip_family_detection
+test_reality_ip_family_dns_policy
 test_reality_target_preflight
 test_subscription_stage_dispatch
 test_mihomo_template

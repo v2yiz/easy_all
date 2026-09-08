@@ -890,6 +890,8 @@ export GCORE_ORIGIN_GROUP_ID="67890"
 export GCORE_ORIGIN_CLIENT_CERT_ID="11223"
 export GCORE_ORIGIN_CA_ID="44556"
 export VPS_PUBLIC_IPV4="198.51.100.1"
+export VPS_IP_FAMILY="dual"
+export VPS_PUBLIC_IPV6="2001:db8::10"
 
 save_state
 [[ -s "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file was not saved"
@@ -901,6 +903,8 @@ assert_contains "State file has origin domain" "${state_content}" 'GCORE_ORIGIN_
 assert_contains "State file has CDN domain" "${state_content}" 'VLESS_CDN_DOMAIN=node.example.com'
 assert_contains "State file has CNAME target" "${state_content}" 'GCORE_CDN_TARGET=cl-test.gcdn.co'
 assert_contains "State file has subscription DNS zone" "${state_content}" 'GCORE_SUBSCRIPTION_DNS_ZONE=example.com'
+assert_contains "State file has VPS dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=dual'
+assert_contains "State file has public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6=2001:db8::10'
 
 # Reset vars and load_state
 unset VLESS_CDN_DOMAIN GCORE_ORIGIN_DOMAIN GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET
@@ -911,6 +915,9 @@ assert_equal "load_state restored GCORE_CDN_TARGET" "cl-test.gcdn.co" "${GCORE_C
 assert_equal "load_state restored GCORE_SUBSCRIPTION_DNS_ZONE" \
     "example.com" "${GCORE_SUBSCRIPTION_DNS_ZONE}"
 assert_equal "load_state restored XHTTP_ORIGIN_DOMAIN" "origin.example.com" "${XHTTP_ORIGIN_DOMAIN}"
+assert_equal "load_state preserved the current detected VPS family" "dual" "${VPS_IP_FAMILY}"
+VPS_IP_FAMILY="ipv4"
+VPS_PUBLIC_IPV6=""
 
 # Verify mihomo_transport_marker
 assert_equal "mihomo_transport_marker is network: ws" "network: ws" "$(mihomo_transport_marker)"

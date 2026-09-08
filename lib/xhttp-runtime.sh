@@ -248,7 +248,7 @@ configure_ufw() {
     fi
     ensure_ssh_boot_service
     detect_ssh_ports
-    disable_ufw_ipv6
+    configure_ufw_ip_family
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
@@ -610,6 +610,7 @@ finish_xhttp_apply() {
     fi
     save_state
     register_easy_all_command
+    refresh_saved_daily_reboot_schedule
     install_quota_timer
     show_subscription
 }
@@ -619,11 +620,13 @@ update_current_core() {
     local backup_config="${RUNTIME_TMP}/xray-config-backup.json"
     local backup_version="${RUNTIME_TMP}/xray-version-backup"
     local version_missing="${RUNTIME_TMP}/xray-version.missing"
+    local backup_assets="${RUNTIME_TMP}/xray-assets-backup"
     require_root
     begin_quota_maintenance
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
     install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
+    snapshot_xray_assets "${backup_assets}"
     if [[ -f "${XRAY_DIR}/version" ]]; then
         install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
     else
@@ -641,6 +644,7 @@ update_current_core() {
     warn "新核心验收失败，正在恢复旧二进制、版本与运行时配置"
     install -m 0755 "${backup_bin}" "${XRAY_BIN}"
     install -m 0600 "${backup_config}" "${XRAY_CONFIG}"
+    restore_xray_assets "${backup_assets}"
     if [[ -f "${backup_version}" ]]; then
         install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
     elif [[ -f "${version_missing}" ]]; then

@@ -5,17 +5,32 @@
 # The calling profile provides UFW_RULE_COMMENT, UFW_DEFAULT_CONFIG and
 # info/warn/die. Profile modules remain responsible for snapshots and NAT rules.
 
-disable_ufw_ipv6() {
+set_ufw_ipv6() {
+    local enabled=$1
     local candidate="${RUNTIME_TMP}/ufw-default"
+    [[ "${enabled}" == "yes" || "${enabled}" == "no" ]] \
+        || die "UFW IPv6 开关无效：${enabled}"
     [[ -f "${UFW_DEFAULT_CONFIG}" ]] \
         || die "缺少 UFW 默认配置：${UFW_DEFAULT_CONFIG}"
-    awk '
+    awk -v enabled="${enabled}" '
         BEGIN {updated=0}
-        /^IPV6=/ {print "IPV6=no"; updated=1; next}
+        /^IPV6=/ {print "IPV6=" enabled; updated=1; next}
         {print}
-        END {if (!updated) print "IPV6=no"}
+        END {if (!updated) print "IPV6=" enabled}
     ' "${UFW_DEFAULT_CONFIG}" >"${candidate}"
     install -m 0644 "${candidate}" "${UFW_DEFAULT_CONFIG}"
+}
+
+configure_ufw_ip_family() {
+    if vps_dual_stack_enabled; then
+        set_ufw_ipv6 yes
+    else
+        set_ufw_ipv6 no
+    fi
+}
+
+disable_ufw_ipv6() {
+    set_ufw_ipv6 no
 }
 
 managed_ufw_rule_numbers() {

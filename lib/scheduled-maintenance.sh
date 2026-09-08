@@ -7,7 +7,8 @@ filter_managed_reboot_cron() {
 }
 
 configure_daily_reboot() {
-    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job pre_command=""
+    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job
+    local pre_command profile_pre_command=""
     if [[ -z "${mode}" && -t 0 ]]; then
         printf '请选择定时重启策略：\n'
         printf '  1. 每天凌晨 4 点重启（默认）\n'
@@ -36,16 +37,27 @@ configure_daily_reboot() {
     esac
     { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab -
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
-        if declare -F scheduled_reboot_pre_command >/dev/null 2>&1; then
-            pre_command=$(scheduled_reboot_pre_command)
+        pre_command="/usr/bin/timeout 10m \"${COMMAND_PATH}\" refresh-xray-assets >/dev/null 2>&1 || true"
+        if declare -F scheduled_reboot_profile_pre_command >/dev/null 2>&1; then
+            profile_pre_command=$(scheduled_reboot_profile_pre_command)
         fi
-        if [[ -n "${pre_command}" ]]; then
-            job="0 ${SCHEDULED_REBOOT_HOUR} * * * ${pre_command} && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
-        else
-            job="0 ${SCHEDULED_REBOOT_HOUR} * * * /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
+        if [[ -n "${profile_pre_command}" ]]; then
+            pre_command="${pre_command}; ${profile_pre_command}"
         fi
+        job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command} ) && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
         { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
     fi
+}
+
+refresh_saved_daily_reboot_schedule() {
+    if [[ "${SCHEDULED_REBOOT_ENABLED:-0}" == "1" ]]; then
+        REBOOT_SCHEDULE_MODE=custom
+        REBOOT_HOUR="${SCHEDULED_REBOOT_HOUR}"
+    else
+        REBOOT_SCHEDULE_MODE=none
+        REBOOT_HOUR=""
+    fi
+    configure_daily_reboot
 }
 
 remove_daily_reboot_schedule() {

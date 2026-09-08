@@ -287,7 +287,7 @@ configure_ufw() {
     fi
     ensure_ssh_boot_service
     detect_ssh_ports
-    disable_ufw_ipv6
+    configure_ufw_ip_family
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
@@ -1232,6 +1232,8 @@ collect_install_inputs() {
 
 load_state() {
     local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    local detected_ip_family=${VPS_IP_FAMILY:-}
+    local detected_public_ipv6=${VPS_PUBLIC_IPV6:-}
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
         XHTTP_NODE_NAME VLESS_UUID
@@ -1239,7 +1241,8 @@ load_state() {
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET
         GCORE_CDN_RESOURCE_ID GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID
         GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID
-        VPS_PUBLIC_IPV4 WEBSOCKET_PATH XRAY_WEBSOCKET_LOOPBACK_PORT
+        VPS_PUBLIC_IPV4 VPS_IP_FAMILY VPS_PUBLIC_IPV6
+        WEBSOCKET_PATH XRAY_WEBSOCKET_LOOPBACK_PORT
         ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
@@ -1249,6 +1252,10 @@ load_state() {
         env_name=$(env -i bash -c 'source "$1" && printf "%s" "${'"${variable}"':-}"' _ "${state_path}")
         printf -v "${variable}" '%s' "${env_name}"
     done
+    if [[ -n "${detected_ip_family}" ]]; then
+        VPS_IP_FAMILY=${detected_ip_family}
+        VPS_PUBLIC_IPV6=${detected_public_ipv6}
+    fi
     [[ "${PROTOCOL}" == "gcore" && "${CDN_PROVIDER:-}" == "gcore" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Gcore CDN"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
@@ -1279,6 +1286,16 @@ load_state() {
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
     fi
+    case "${VPS_IP_FAMILY:-}" in
+    "") VPS_PUBLIC_IPV6="" ;;
+    ipv4) VPS_PUBLIC_IPV6="" ;;
+    dual)
+        validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
+            || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
+        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
+        ;;
+    *) die "状态文件中的 VPS_IP_FAMILY 无效：${VPS_IP_FAMILY}" ;;
+    esac
     BACKEND="xray"
     PROTOCOL="gcore"
     CDN_PROVIDER="gcore"
@@ -1298,7 +1315,8 @@ save_state() {
             GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET \
             GCORE_CDN_RESOURCE_ID GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID \
             GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID \
-            VPS_PUBLIC_IPV4 WEBSOCKET_PATH XRAY_WEBSOCKET_LOOPBACK_PORT \
+            VPS_PUBLIC_IPV4 VPS_IP_FAMILY VPS_PUBLIC_IPV6 \
+            WEBSOCKET_PATH XRAY_WEBSOCKET_LOOPBACK_PORT \
             ALLOWED_TOKENS SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE \
             SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
             QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
@@ -1337,6 +1355,7 @@ xhttp_validate_local_tls_curl_args() {
 xhttp_render_xray_config() {
     local clients managed_outbounds managed_routing inbound_sockopt stats_enabled=false
     install -d -m 0755 "${XRAY_DIR}"
+    ensure_xray_geosite_assets
     if quota_enabled; then
         clients=$(quota_active_clients_json)
     else
@@ -1351,10 +1370,11 @@ xhttp_render_xray_config() {
     jq -n --argjson websocket_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" \
         --argjson clients "${clients}" --argjson stats_enabled "${stats_enabled}" \
         --arg websocket_path "${WEBSOCKET_PATH}" \
+        --arg xray_asset_dir "${XRAY_DIR}" \
         --argjson inbound_sockopt "${inbound_sockopt}" \
         --argjson managed_outbounds "${managed_outbounds}" \
         --argjson managed_routing "${managed_routing}" '
-        {log:{loglevel:"warning"},
+        {log:{loglevel:"warning"},env:{XRAY_LOCATION_ASSET:$xray_asset_dir},
          inbounds:[{tag:"vless-websocket-in",listen:"127.0.0.1",port:$websocket_port,protocol:"vless",
           settings:{clients:$clients,decryption:"none"},
           streamSettings:{network:"ws",sockopt:$inbound_sockopt,wsSettings:{path:$websocket_path}},
@@ -1524,6 +1544,11 @@ show_status() {
     collect_installed_state
     printf '协议: VLESS WebSocket（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 1～6 个，通常为 2 个，以实际验证结果为准\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${GCORE_CDN_TARGET}"
+    if vps_dual_stack_enabled; then
+        printf 'VPS 出站: IPv4 + IPv6（%s；Google 固定 IPv4）\n' "${VPS_PUBLIC_IPV6}"
+    else
+        printf 'VPS 出站: IPv4-only\n'
+    fi
     show_globalping_status
 }
 

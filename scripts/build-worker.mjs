@@ -36,12 +36,20 @@ export async function buildWorker({
                 requireValue(node.security === 'tls' && ['xhttp', 'ws'].includes(node.network) && nonempty(node.path) && node.path.startsWith('/'), 'CDN parameters');
             }
             requireValue(node.port === undefined || Number.isInteger(node.port) && node.port > 0 && node.port <= 65535, 'port');
-            requireValue(node.ipVersion === undefined || node.ipVersion === 'ipv4', `${key} IPv4-only`);
+            const allowedIpVersions = key === 'nodes' ? ['ipv4', 'dual'] : ['ipv4'];
+            requireValue(
+                node.ipVersion === undefined || allowedIpVersions.includes(node.ipVersion),
+                `${key} IP family`
+            );
         }
     }
     requireValue(config.nodes.length > 0, 'at least one Reality node');
     const names = [...config.nodes, ...config.fallbackCdnNodes].map(node => node.name);
     requireValue(new Set(names).size === names.length && names.every(name => !['PROXY', '备用优选', 'DIRECT', 'REJECT'].includes(name)), 'unique, non-reserved node names');
+    requireValue(
+        config.nodes.every(node => !/^优选[1-6]$/.test(node.name)),
+        'Reality node names must not use reserved CDN names 优选1..优选6'
+    );
     const [template, source] = await Promise.all([
         readFile(resolve(root, 'templates/mihomo.yaml'), 'utf8'),
         readFile(resolve(root, 'worker-src/index.js'), 'utf8'),

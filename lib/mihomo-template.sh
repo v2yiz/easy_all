@@ -18,13 +18,17 @@ validate_mihomo_template() {
         || die "Mihomo 模板未使用 XFLASH fake-ip DNS"
     grep -Fq '    use-system-hosts: false' "${source}" \
         || die "Mihomo 模板未使用 XFLASH hosts 策略"
+    grep -Fqx 'ipv6: true' "${source}" \
+        || die "Mihomo 模板未启用客户端 IPv6"
+    grep -Fq '    ipv6: true' "${source}" \
+        || die "Mihomo DNS 未启用 IPv6"
     grep -Fq 'unified-delay: false' "${source}" \
         || die "Mihomo 模板必须关闭 unified-delay"
     grep -Fq "https://223.6.6.6/dns-query#h3=true" "${source}" \
         || die "Mihomo 模板缺少 XFLASH 主 DNS"
     grep -Fq "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
         "${source}" || die "Mihomo 模板缺少 XFLASH 节点 DNS"
-    if grep -Eq '^[[:space:]]+(default-nameserver|direct-nameserver|respect-rules|ipv6):' \
+    if grep -Eq '^[[:space:]]+(default-nameserver|direct-nameserver|respect-rules):' \
         "${source}"; then
         die "Mihomo 模板包含非 XFLASH DNS 覆盖"
     fi

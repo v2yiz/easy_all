@@ -153,8 +153,11 @@ if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/templates/mihomo.yaml"; then
 fi
 grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep Gemini on the selected PROXY exit"
+grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
+    || fail "Mihomo subscription template must keep all Google services on the VPS exit"
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \
+    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'refresh-xray-assets'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" != *'acme'* ]] \
     || fail "scheduled maintenance must cover reboot policy without ACME"
 [[ "$(<"${XHTTP_RUNTIME}")" == *'snapshot_platform_security_state'* ]] \
@@ -245,6 +248,8 @@ fi
     die() { fail "$*"; }
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/lib/network.sh"
+    VPS_IP_FAMILY="ipv4"
+    VPS_PUBLIC_IPV6=""
     [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "AsIs" ]] \
         || fail "Xray direct egress must use automatic direct resolution"
     jq -e '
@@ -283,6 +288,24 @@ fi
         and .rules[2].outboundTag == "direct"
     ' <<<"$(xray_xhttp_routing_json)" >/dev/null \
         || fail "shared XHTTP routing policy must stay direct"
+
+    VPS_IP_FAMILY="dual"
+    VPS_PUBLIC_IPV6="2001:db8::10"
+    jq -e '
+        map(.tag) == ["direct","direct-google-ipv4","block"]
+        and .[1].settings.domainStrategy == "UseIPv4"
+        and .[1].targetStrategy == "ForceIPv4"
+        and .[1].sendThrough == "0.0.0.0"
+    ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
+        || fail "dual-stack Xray must add a Google IPv4-only outbound"
+    jq -e '
+        .rules[2].domain == ["geosite:google"]
+        and .rules[2].outboundTag == "direct-google-ipv4"
+        and .rules[2].ruleTag == "google-ipv4-only"
+        and .rules[3].ip == ["geoip:google"]
+        and .rules[3].outboundTag == "direct-google-ipv4"
+    ' <<<"$(xray_direct_routing_json)" >/dev/null \
+        || fail "dual-stack Xray must route Google domains through IPv4"
 )
 
 printf 'ok - shared architecture tests passed\n'

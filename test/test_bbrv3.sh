@@ -40,6 +40,8 @@ info() { :; }
 success() { :; }
 
 # shellcheck source=/dev/null
+source "${ROOT_DIR}/lib/network.sh"
+# shellcheck source=/dev/null
 source "${ROOT_DIR}/lib/tcp-tuning.sh"
 
 write_cpu_flags() {
@@ -129,6 +131,8 @@ bbrv3_running_kernel_supported() { return 0; }
 install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
 PROTOCOL="reality"
 CDN_PROVIDER=""
+VPS_IP_FAMILY="ipv4"
+VPS_PUBLIC_IPV6=""
 configure_bbr_tcp
 assert_contains "BBRv3 uses fq" "$(<"${SYSCTL_CONFIG}")" \
     'net.core.default_qdisc = fq'
@@ -156,6 +160,14 @@ assert_contains "Reality disables destination metrics reuse" "$(<"${SYSCTL_CONFI
     'net.ipv4.tcp_no_metrics_save = 1'
 assert_contains "IPv4-only Reality disables host IPv6" "$(<"${SYSCTL_CONFIG}")" \
     'net.ipv6.conf.all.disable_ipv6 = 1'
+
+VPS_IP_FAMILY="dual"
+VPS_PUBLIC_IPV6="2001:db8::10"
+configure_bbr_tcp
+assert_contains "dual-stack Reality enables host IPv6" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv6.conf.all.disable_ipv6 = 0'
+VPS_IP_FAMILY="ipv4"
+VPS_PUBLIC_IPV6=""
 
 runtime_keys=$(tcp_runtime_keys)
 assert_contains "runtime keys include tcp_notsent_lowat" "${runtime_keys}" 'net.ipv4.tcp_notsent_lowat'

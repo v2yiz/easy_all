@@ -286,6 +286,8 @@ QUOTA_ENABLED=0
 USER_ACCOUNTS=""
 QUOTA_START_DATE=""
 ALLOWED_TOKENS='{"owner":"test-token-12345"}'
+VPS_IP_FAMILY="dual"
+VPS_PUBLIC_IPV6="2001:db8::10"
 
 # Verify state save & load
 save_state
@@ -294,6 +296,8 @@ state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
 assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 'PROTOCOL=cloudflare-streamup'
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
+assert_contains "State file persists dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=dual'
+assert_contains "State file persists public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6=2001:db8::10'
 
 # Verify legacy states are rejected by load_state
 legacy_singbox_state="${TMP_DIR}/state_singbox.env"
@@ -342,6 +346,10 @@ assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
 assert_equal "load_state discards legacy CDN IPv6 preference" \
     "" "${CDN_CLIENT_IP_FAMILY:-}"
+assert_equal "load_state preserves the current detected VPS family" \
+    "dual" "${VPS_IP_FAMILY}"
+VPS_IP_FAMILY="ipv4"
+VPS_PUBLIC_IPV6=""
 
 # Edge validation must run a real XHTTP client path instead of posting to the
 # static health endpoint.
