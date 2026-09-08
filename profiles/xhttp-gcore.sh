@@ -62,11 +62,6 @@ readonly GCORE_CLIENT_CA_FILE="${CERT_DIR}/gcore-client-ca.crt"
 readonly GCORE_CLIENT_CERT_KEY="${CERT_DIR}/gcore-client.key"
 readonly GCORE_CLIENT_CERT_FILE="${CERT_DIR}/gcore-client.crt"
 
-choose_cdn_client_ip_family() {
-    CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-ipv4}
-    configure_cdn_client_ip_family
-}
-
 collect_subscription_link_domain() {
     local current domain
     current=$(subscription_link_domain)
@@ -292,6 +287,7 @@ configure_ufw() {
     fi
     ensure_ssh_boot_service
     detect_ssh_ports
+    disable_ufw_ipv6
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
@@ -517,7 +513,6 @@ write_bootstrap_nginx_config() {
     cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
 server {
     listen 80;
-    listen [::]:80;
     server_name ${GCORE_ORIGIN_DOMAIN};
     root ${WEB_ROOT};
     location ^~ /.well-known/acme-challenge/ {
@@ -1168,7 +1163,6 @@ collect_install_inputs() {
     PROTOCOL="gcore"
     BACKEND="xray"
     CDN_PROVIDER="gcore"
-    choose_cdn_client_ip_family
 
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
@@ -1216,7 +1210,7 @@ load_state() {
     local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
-        CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
+        XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET
         GCORE_CDN_RESOURCE_ID GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID
@@ -1235,7 +1229,7 @@ load_state() {
         || die "状态不是 Gcore CDN"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 Gcore 状态版本：${STATE_VERSION:-缺失}；请重新安装"
-    configure_cdn_client_ip_family
+    unset CDN_CLIENT_IP_FAMILY CDN_CLIENT_IP_FAMILY_RESOLVED
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Gcore 状态缺少有效域名或 UUID"
     [[ "${GCORE_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
@@ -1275,7 +1269,7 @@ save_state() {
     t=$(mktemp "${state_dir}/state.env.XXXXXX")
     cleanup_files+=("${t}")
     {
-        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER CDN_CLIENT_IP_FAMILY \
+        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
             GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET \
             GCORE_CDN_RESOURCE_ID GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID \
@@ -1368,7 +1362,6 @@ upstream gcore_websocket_backend {
 
 server {
     listen 80;
-    listen [::]:80;
     server_name ${GCORE_ORIGIN_DOMAIN};
     root ${WEB_ROOT};
     location ^~ /.well-known/acme-challenge/ { try_files \$uri =404; }
@@ -1377,7 +1370,6 @@ server {
 
 server {
     listen 443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;
-    listen [::]:443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;${http2_directive}
     server_name ${GCORE_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -1433,14 +1425,13 @@ build_vless_websocket_link() {
 
 build_mihomo_websocket_node() {
     local server=$1 node_name=$2
-    resolve_cdn_client_ip_family
     jq -nr --arg name "${node_name}" --arg server "${server}" \
         --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg path "${WEBSOCKET_PATH}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" '
+        --arg path "${WEBSOCKET_PATH}" '
         "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - http/1.1\n" +
+        "    packet-encoding: xudp\n    ip-version: ipv4\n    alpn:\n      - http/1.1\n" +
         "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
 }
 
@@ -1507,7 +1498,6 @@ show_node() {
 show_status() {
     require_root
     collect_installed_state
-    resolve_cdn_client_ip_family
     printf '协议: VLESS WebSocket（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 最多 6 个，以实际验证结果为准\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${GCORE_CDN_TARGET}"
     show_globalping_status
@@ -1677,7 +1667,6 @@ update_subscription() {
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
-    validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         collect_subscription_link_domain
         choose_subscription_download_name

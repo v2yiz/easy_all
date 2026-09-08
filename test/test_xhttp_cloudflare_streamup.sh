@@ -63,7 +63,6 @@ export CLOUDFLARE_ZONE_NAME="example.com"
 export CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
 export CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2035-01-01T00:00:00Z"
 export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/cloudflare-cdn-ips.json"
-export CDN_CLIENT_IP_FAMILY="ipv4"
 export XHTTP_NODE_NAME="TEST_NODE"
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
@@ -322,7 +321,7 @@ STATE_VERSION='7'
 PROTOCOL='cloudflare-streamup'
 BACKEND='xray'
 CDN_PROVIDER='cloudflare'
-CDN_CLIENT_IP_FAMILY='ipv4'
+CDN_CLIENT_IP_FAMILY='ipv6-prefer'
 VLESS_UUID='11111111-2222-4111-8111-111111111111'
 VLESS_CDN_DOMAIN='cdn.example.com'
 CLOUDFLARE_ORIGIN_DOMAIN='cdn.example.com'
@@ -338,6 +337,8 @@ EOF
 EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
+assert_equal "load_state discards legacy CDN IPv6 preference" \
+    "" "${CDN_CLIENT_IP_FAMILY:-}"
 
 # Edge validation must run a real XHTTP client path instead of posting to the
 # static health endpoint.

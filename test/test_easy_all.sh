@@ -71,6 +71,11 @@ source_script_copy() {
         -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
         "${ROOT_DIR}/profiles/reality.sh" >"${SCRIPT_COPY}"
     EASY_ALL_ENTRY_COMMAND=easy_all
+    EASY_ALL_SSH_PORT_CONFIG="${TMP_DIR}/ssh/00-easy-all-ports.conf"
+    EASY_ALL_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-easy-all-sshd.local"
+    EASY_ALL_FAIL2BAN_ACTION_CONFIG="${TMP_DIR}/fail2ban/action.d/easy-all-ufw-cidr.conf"
+    EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/cmd/fail2ban-ufw-cidr.sh"
+    EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban-state"
     # shellcheck source=/dev/null
     source "${SCRIPT_COPY}"
     MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/templates/mihomo.yaml"
@@ -85,9 +90,6 @@ set_fixture() {
     REALITY_PRIVATE_KEY="test-private-key"
     REALITY_PUBLIC_KEY="test-public-key"
     REALITY_SHORT_ID="0123456789abcdef"
-    REALITY_INBOUND_IP_FAMILY="ipv4"
-    VPS_PUBLIC_IPV6=""
-    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="deploy"
     SUBSCRIPTION_DOMAIN="sub.example.com"
@@ -118,8 +120,8 @@ test_syntax_and_reality_boundaries() {
         "collect_subscription_inputs()" "${script}"
     assert_contains "subscription deployment is a separate stage" \
         "deploy_subscription_output()" "${script}"
-    assert_contains "Reality validates AAAA against detected server IPv6" \
-        "的 AAAA \${mismatch} 未指向本机公网 IPv6" "${script}"
+    assert_contains "Reality rejects AAAA records while IPv6 is globally disabled" \
+        "easy_all 已全局禁用 IPv6，请删除该记录" "${script}"
     assert_contains "Reality uses shared IPv4 direct outbounds" \
         'managed_outbounds=$(xray_direct_outbounds_json)' "${script}"
     assert_contains "Reality uses shared private-address blocking" \
@@ -159,12 +161,6 @@ test_validators_and_modes() {
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
-    assert_success "compressed IPv6 is accepted" validate_ipv6 "2001:db8::10"
-    assert_success "loopback IPv6 is accepted" validate_ipv6 "::1"
-    assert_failure "multiple IPv6 compression markers are rejected" \
-        validate_ipv6 "2001::db8::10"
-    assert_failure "non-IPv6 text is rejected" validate_ipv6 "not-an-ip"
-
     SUBSCRIPTION_MODE="1"
     choose_subscription_mode
     assert_equal "choice 1 deploys the subscription service" "deploy" "${SUBSCRIPTION_MODE}"
@@ -180,102 +176,37 @@ test_validators_and_modes() {
     PROMPT_SUBSCRIPTION_MODE=0
 }
 
-test_reality_inbound_family_and_dns() {
-    local detected
-    detected=$(
-        ip() {
-            if [[ "$*" == "-6 -o addr show scope global" ]]; then
-                printf '2: eth0 inet6 2001:db8::10/64 scope global\n'
-            elif [[ "$*" == "-6 route show default" ]]; then
-                printf 'default via 2001:db8::1 dev eth0\n'
-            elif [[ "$*" == "-6 route get 2001:db8::10" ]]; then
-                printf '2001:db8::10 dev eth0 src 2001:db8::10\n'
-            fi
-        }
-        curl() { printf '2001:db8::10\n'; }
-        detect_public_ipv6
-    )
-    assert_equal "public IPv6 detection requires and returns usable IPv6" \
-        "2001:db8::10" "${detected}"
-
-    detected=$(
-        detect_public_ipv6() { printf '2001:db8::10\n'; }
-        unset REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6
-        info() { :; }
-        detect_reality_inbound_family
-        printf '%s|%s\n' "${REALITY_INBOUND_IP_FAMILY}" "${VPS_PUBLIC_IPV6}"
-    )
-    assert_equal "detected public IPv6 enables Reality dual stack" \
-        "dual|2001:db8::10" "${detected}"
-
+test_reality_ipv4_dns_policy() {
     NODE_HOST="node.example.com"
-    REALITY_INBOUND_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV4="203.0.113.10"
-    VPS_PUBLIC_IPV6=""
     dig() {
         case " $* " in
         *" A "*) printf '203.0.113.10\n' ;;
         *" AAAA "*) printf '2001:db8::10\n' ;;
         esac
     }
-    assert_failure "AAAA is rejected when the server has no public IPv6" \
-        validate_reality_node_dns
-
-    REALITY_INBOUND_IP_FAMILY="dual"
-    VPS_PUBLIC_IPV6="2001:db8::10"
-    assert_success "matching AAAA is accepted in dual-stack mode" \
+    assert_failure "Reality rejects AAAA when IPv6 is globally disabled" \
         validate_reality_node_dns
     dig() {
         if [[ " $* " == *" A "* ]]; then
             [[ "$*" != *"@"* ]] || return 1
             printf '203.0.113.10\n'
-        elif [[ " $* " == *" AAAA "* ]]; then
-            printf '2001:db8::10\n'
         fi
     }
     assert_success "system DNS remains usable when public resolvers are blocked" \
         validate_reality_node_dns
-    resolve_reality_client_ip_family
-    assert_equal "matching VPS IPv6 and AAAA enable a dual-stack Reality endpoint" \
-        "dual" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
-    dig() {
-        [[ " $* " != *" A "* ]] || printf '203.0.113.10\n'
-    }
-    resolve_reality_client_ip_family
-    assert_equal "missing AAAA keeps the Reality endpoint on IPv4" \
-        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
-    dig() {
-        case " $* " in
-        *" A "*) printf '203.0.113.10\n' ;;
-        *" AAAA "*) printf '2001:db8::20\n' ;;
-        esac
-    }
-    assert_failure "mismatched AAAA is rejected in dual-stack mode" \
-        validate_reality_node_dns
-    resolve_reality_client_ip_family
-    assert_equal "mismatched AAAA falls back to an IPv4 Reality endpoint" \
-        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     dig() {
         case " $* " in
         *" A "*) printf '203.0.113.20\n' ;;
-        *" AAAA "*) printf '2001:db8::10\n' ;;
         esac
     }
     assert_failure "mismatched A is rejected for the fixed IPv4 client" \
         validate_reality_node_dns
     dig() {
-        case " $* " in
-        *" AAAA "*) printf '2001:db8::10\n' ;;
-        esac
+        return 0
     }
-    assert_failure "missing A is rejected for the fixed IPv4 client" \
+    assert_failure "missing A is rejected for the IPv4-only client" \
         validate_reality_node_dns
-    REALITY_INBOUND_IP_FAMILY="ipv4"
-    VPS_PUBLIC_IPV6=""
-    assert_success "Reality client family resolves safely without VPS IPv6" \
-        validate_reality_client_ip_family_runtime
-    assert_equal "Reality client family stays IPv4 without VPS IPv6" \
-        "ipv4" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     unset VPS_PUBLIC_IPV4
     unset -f dig
 }
@@ -434,6 +365,7 @@ test_subscription_generation() {
     assert_success "dynamic port range excludes the additional SSH port" \
         bash -c '(( $1 < $2 ))' _ \
         "${DYNAMIC_PORT_MAX}" "${EASY_ALL_ADDITIONAL_SSH_PORT}"
+    IPV6_ENABLED=true
     MIHOMO_TEMPLATE_FILE=""
     generate_subscription_files "${base64_file}" "${mihomo_file}"
     decoded=$(openssl base64 -d -A <"${base64_file}")
@@ -482,26 +414,12 @@ test_subscription_generation() {
     decoded=$(openssl base64 -d -A <"${base64_file}")
     assert_contains "fixed subscription mode uses port 443" \
         "@203.0.113.10:443?" "${decoded}"
-
-    NODE_HOST="node.example.com"
-    REALITY_INBOUND_IP_FAMILY="dual"
-    VPS_PUBLIC_IPV6="2001:db8::10"
-    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
-    dig() { printf '2001:db8::10\n'; }
-    generate_subscription_files "${base64_file}" "${mihomo_file}"
-    yaml=$(<"${mihomo_file}")
-    assert_contains "matching node AAAA keeps automatic dual-stack endpoint" \
-        "ip-version: dual" "${yaml}"
-    assert_contains "dual-stack endpoint keeps Mihomo IPv6 disabled" \
-        $'\nipv6: false\n' "${yaml}"
-    assert_not_contains "dual-stack endpoint keeps XFLASH DNS unchanged" \
-        $'\n    ipv6: true\n' "${yaml}"
-    unset -f dig
+    unset IPV6_ENABLED
     unset -f collect_installed_state
 }
 
 test_nginx_and_firewall() {
-    local config ufw_config ufw6_config ufw_log="${TMP_DIR}/ufw.log" dynamic_rule_count dynamic_rule6_count
+    local config ufw_config ufw6_config ufw_log="${TMP_DIR}/ufw.log" dynamic_rule_count
     set_fixture
     install -d -m 0700 "${STATE_DIR}" "${CERT_DIR}"
     install -m 0600 /dev/null "${CERT_FILE}"
@@ -511,6 +429,7 @@ test_nginx_and_firewall() {
     write_subscription_nginx_config
     config=$(<"${NGINX_CONFIG}")
     assert_contains "Nginx listens on 8443" "listen 8443 ssl http2;" "${config}"
+    assert_not_contains "Nginx does not listen on IPv6" "listen [::]:" "${config}"
     assert_contains "Nginx authorizes token values" '"test-token" 1;' "${config}"
     assert_not_contains "Nginx does not authorize token labels" '"owner" 1;' "${config}"
     assert_contains "Nginx keeps static files internal" \
@@ -542,14 +461,19 @@ test_nginx_and_firewall() {
 COMMIT
 EOF
     cat >"${UFW_BEFORE6_RULES}" <<'EOF'
+# easy_all-nat6-start
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -p tcp --dport 10000 -j REDIRECT --to-ports 443
+COMMIT
+# easy_all-nat6-end
+
 *filter
 :ufw6-before-input - [0:0]
 COMMIT
 EOF
-    printf 'IPV6=no\n' >"${UFW_DEFAULT_CONFIG}"
+    printf 'IPV6=yes\n' >"${UFW_DEFAULT_CONFIG}"
     SUBSCRIPTION_MODE="deploy"
-    REALITY_INBOUND_IP_FAMILY="dual"
-    VPS_PUBLIC_IPV6="2001:db8::10"
     configure_ufw
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
@@ -564,11 +488,10 @@ EOF
     assert_contains "Reality enables shared Fail2ban after UFW" \
         "fail2ban-sshd" "$(<"${ufw_log}")"
     dynamic_rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw_config}")
-    dynamic_rule6_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")
     assert_equal "dynamic Reality forwarding retains history and pre-opens today and tomorrow" \
         "${DYNAMIC_PORT_OPEN_WINDOWS}" "${dynamic_rule_count}"
-    assert_equal "dynamic Reality forwarding retains history and pre-opens today and tomorrow for IPv6" \
-        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${dynamic_rule6_count}"
+    assert_equal "Reality never creates IPv6 dynamic NAT rules" "0" \
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
     assert_contains "dynamic Reality forwarding includes the current port" \
         "--dport $(dynamic_port_for_current_window) -j REDIRECT --to-ports ${SERVICE_PORT}" \
         "${ufw_config}"
@@ -583,8 +506,8 @@ EOF
         "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
     assert_not_contains "fixed Reality mode does not retain a dynamic port" \
         "--dport ${PORT_BASE} -j REDIRECT" "${ufw_config}"
-    assert_contains "dual-stack Reality enables UFW IPv6" \
-        "IPV6=yes" "$(<"${UFW_DEFAULT_CONFIG}")"
+    assert_contains "Reality disables UFW IPv6" \
+        "IPV6=no" "$(<"${UFW_DEFAULT_CONFIG}")"
     assert_contains "Reality reloads UFW after writing NAT rules" \
         "reload" "$(<"${ufw_log}")"
     unset -f nginx systemctl ensure_ssh_boot_service ensure_ssh_fail2ban detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
@@ -662,25 +585,35 @@ test_dynamic_port_boundaries_and_rule_set() {
 }
 
 test_rotate_dynamic_ports_command() {
-    local calls=""
+    local calls="" begin_definition end_definition
     set_fixture
+    begin_definition=$(declare -f begin_quota_maintenance)
+    end_definition=$(declare -f end_quota_maintenance)
     require_root() { :; }
+    begin_quota_maintenance() { calls+="lock "; }
+    end_quota_maintenance() { calls+="unlock "; }
     collect_installed_state() { :; }
     write_ufw_nat_rules() { calls+="write "; }
     ufw() { calls+="reload "; }
+    install_static_subscriptions() { calls+="subscriptions "; }
     rotate_dynamic_ports
-    assert_equal "dynamic port rotation writes and reloads UFW" "write reload " "${calls}"
+    assert_equal "dynamic port rotation refreshes NAT and deployed subscriptions" \
+        "lock write reload subscriptions unlock " "${calls}"
 
     calls=""
     SUB_PORT_MODE="443"
     rotate_dynamic_ports
-    assert_equal "fixed port rotation is a no-op" "" "${calls}"
+    assert_equal "fixed port rotation only enters and leaves the runtime lock" \
+        "lock unlock " "${calls}"
 
     SUB_PORT_MODE="dynamic"
     if (ufw() { return 1; }; rotate_dynamic_ports) >/dev/null 2>&1; then
         fail_test "dynamic port rotation must fail when UFW reload fails"
     fi
-    unset -f require_root collect_installed_state write_ufw_nat_rules ufw
+    unset -f require_root collect_installed_state write_ufw_nat_rules ufw \
+        install_static_subscriptions
+    eval "${begin_definition}"
+    eval "${end_definition}"
 }
 
 test_scheduled_reboot_refreshes_dynamic_ports() {
@@ -720,8 +653,8 @@ test_dynamic_port_rotation_schedule() {
     }
     configure_dynamic_port_rotation
     cron_state=$(<"${cron_state_file}")
-    assert_contains "dynamic port rotation runs daily after midnight" \
-        "1 0 * * *" "${cron_state}"
+    assert_contains "dynamic port rotation runs after every three-hour boundary" \
+        "1 */3 * * *" "${cron_state}"
     assert_contains "dynamic port rotation calls the managed command" \
         "rotate-dynamic-ports" "${cron_state}"
     SUB_PORT_MODE="443"
@@ -738,7 +671,8 @@ test_dynamic_port_rotation_schedule() {
 
 test_dynamic_port_rotation_rollback() {
     local cron_state_file="${TMP_DIR}/dynamic-port-rollback.cron"
-    local cron_state snapshot_state
+    local cron_state snapshot_state source_state_definition
+    source_state_definition=$(declare -f source_state_file)
     install -d -m 0700 "${STATE_DIR}"
     printf 'before-state\n' >"${STATE_FILE}"
     printf 'before-ufw\n' >"${UFW_BEFORE_RULES}"
@@ -790,7 +724,8 @@ EOF
     assert_equal "subscription rollback restores UFW defaults" "before-default" \
         "$(<"${UFW_DEFAULT_CONFIG}")"
     [[ -d "${snapshot_state}" ]] || fail_test "subscription rollback snapshot was removed too early"
-    unset -f crontab systemctl nginx source_state_file configure_ufw
+    unset -f crontab systemctl nginx configure_ufw
+    eval "${source_state_definition}"
     unset UPDATE_SUB_BACKUP_DIR
 }
 
@@ -846,7 +781,83 @@ EOF
         "8443/tcp|ALLOW IN|Anywhere|easy_all-managed" "${state_text}"
     assert_contains "Reality UFW preserves unrelated user rules" \
         "9999/tcp|ALLOW IN|Anywhere|user-rule" "${state_text}"
+    assert_failure "managed staging rule is not treated as an external 8443 bypass" \
+        ufw_tcp_port_has_unmanaged_anywhere_allow 8443
+    printf '8443|ALLOW IN|Anywhere|user-rule\n' >>"${state}"
+    assert_success "external unrestricted 8443 rule is detected" \
+        ufw_tcp_port_has_unmanaged_anywhere_allow 8443
     unset -f ufw
+}
+
+test_restore_inactive_ufw_state() {
+    local log="${TMP_DIR}/ufw-restore.log"
+    rm -f -- "${BACKUP_DIR}"/pre-install-ufw.{active,inactive,missing}
+    install -d -m 0700 "${BACKUP_DIR}"
+    install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive"
+    : >"${log}"
+    remove_managed_ufw_rules() { :; }
+    ufw() { printf '%s\n' "$*" >>"${log}"; }
+    restore_preinstall_firewall
+    assert_contains "inactive UFW snapshot remains inactive after restore" \
+        "--force disable" "$(<"${log}")"
+    assert_not_contains "inactive UFW snapshot is never enabled" \
+        "--force enable" "$(<"${log}")"
+    unset -f remove_managed_ufw_rules ufw
+}
+
+test_platform_security_snapshot_and_restore() {
+    local log="${TMP_DIR}/platform-restore.log"
+    rm -rf -- "${BACKUP_DIR}" "${TMP_DIR}/ssh" "${TMP_DIR}/fail2ban" \
+        "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+    install -d -m 0700 "${BACKUP_DIR}"
+    install -d -m 0755 "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")" \
+        "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")" \
+        "$(dirname -- "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")" \
+        "$(dirname -- "${EASY_ALL_FAIL2BAN_CIDR_HELPER}")"
+    printf 'original-ssh\n' >"${EASY_ALL_SSH_PORT_CONFIG}"
+    printf 'original-jail\n' >"${EASY_ALL_FAIL2BAN_CONFIG}"
+    printf 'original-action\n' >"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
+    : >"${log}"
+    systemctl() {
+        case "$1 $2" in
+        "cat fail2ban.service" | "cat ssh.service") return 0 ;;
+        "is-enabled --quiet" | "is-active --quiet") return 0 ;;
+        *) printf 'systemctl %s\n' "$*" >>"${log}"; return 0 ;;
+        esac
+    }
+    snapshot_platform_security_state
+    printf '# Managed by easy_all\nPort 65533\n' >"${EASY_ALL_SSH_PORT_CONFIG}"
+    printf 'managed-jail\n' >"${EASY_ALL_FAIL2BAN_CONFIG}"
+    printf 'managed-action\n' >"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
+    printf 'managed-helper\n' >"${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
+    install -d -m 0700 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+    sshd() { return 0; }
+    fail2ban-client() { return 0; }
+    ufw() {
+        if [[ "${1:-}" == "status" ]]; then
+            printf '[ 1] Anywhere DENY IN 203.0.113.1 # easy_all-fail2ban-cidr\n'
+        else
+            printf 'ufw %s\n' "$*" >>"${log}"
+        fi
+    }
+    restore_platform_security_state
+    assert_equal "platform restore reinstates the original SSH config" \
+        "original-ssh" "$(<"${EASY_ALL_SSH_PORT_CONFIG}")"
+    assert_equal "platform restore reinstates the original Fail2ban jail" \
+        "original-jail" "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")"
+    assert_equal "platform restore reinstates the original Fail2ban action" \
+        "original-action" "$(<"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")"
+    [[ ! -e "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] \
+        || fail_test "platform restore must remove the easy_all Fail2ban helper"
+    [[ ! -e "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}" ]] \
+        || fail_test "platform restore must remove Fail2ban helper state"
+    assert_contains "platform restore reloads SSH" \
+        "systemctl reload ssh.service" "$(<"${log}")"
+    assert_contains "platform restore restarts previously active Fail2ban" \
+        "systemctl restart fail2ban.service" "$(<"${log}")"
+    assert_contains "platform restore removes Fail2ban UFW rules" \
+        "ufw --force delete 1" "$(<"${log}")"
+    unset -f systemctl sshd fail2ban-client ufw
 }
 
 test_cloudflare_reality_contract() {
@@ -932,10 +943,17 @@ test_state_and_xray() {
         "CLOUDFLARE_STRICT_RULESET_ID=test-strict-ruleset-id" "${state}"
     assert_not_contains "state never persists the Cloudflare API Token" \
         "CLOUDFLARE_API_TOKEN" "${state}"
-    assert_contains "state persists Reality inbound family" \
-        "REALITY_INBOUND_IP_FAMILY=ipv4" "${state}"
-    assert_not_contains "state omits the derived Reality client endpoint family" \
-        "REALITY_CLIENT_IP_FAMILY=auto" "${state}"
+    assert_not_contains "state omits retired Reality inbound family" \
+        "REALITY_INBOUND_IP_FAMILY=" "${state}"
+    assert_not_contains "state omits retired VPS IPv6 address" \
+        "VPS_PUBLIC_IPV6=" "${state}"
+    printf 'REALITY_INBOUND_IP_FAMILY=dual\nVPS_PUBLIC_IPV6=2001:db8::10\n' \
+        >>"${STATE_FILE}"
+    load_state
+    assert_equal "legacy Reality inbound family is discarded" "" \
+        "${REALITY_INBOUND_IP_FAMILY:-}"
+    assert_equal "legacy VPS IPv6 address is discarded" "" \
+        "${VPS_PUBLIC_IPV6:-}"
     assert_contains "state supports persisting the quota start date" \
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
@@ -975,16 +993,6 @@ EOF
          and .routing.rules[1].port == "443"
          and .routing.rules[-1]
              == {type:"field",network:"tcp,udp",outboundTag:"direct"}' \
-        <<<"${config}"
-
-    REALITY_INBOUND_IP_FAMILY="dual"
-    VPS_PUBLIC_IPV6="2001:db8::10"
-    write_xray_config
-    config=$(<"${XRAY_CONFIG}")
-    assert_success "dual-stack Reality listens on IPv4 and IPv6" \
-        jq -e \
-        '.inbounds[0].listen == "::"
-         and .outbounds[0].settings.domainStrategy == "AsIs"' \
         <<<"${config}"
 
     QUOTA_ENABLED=1
@@ -1029,7 +1037,6 @@ test_install_pipeline_order() {
         deploy_subscription_output() { printf 'subscription-runtime\n'; }
         save_state() { printf 'save\n'; }
         register_easy_all_command() { printf 'register\n'; }
-        rotate_dynamic_ports() { printf 'dynamic-port-refresh\n'; }
         configure_dynamic_port_rotation() { printf 'dynamic-port-schedule\n'; }
         install_quota_timer() { printf 'quota-timer\n'; }
         show_subscription() { printf 'show\n'; }
@@ -1038,19 +1045,42 @@ test_install_pipeline_order() {
         run_reality_install_pipeline "reality" 1
     )
     assert_equal "Reality install pipeline follows input, common runtime, branch, persistence order" \
-        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-refresh\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3\nreboot-prompt' \
+        $'root\nsystemd\nplatform\nprotocol\nconflicts\nsnapshot\npackages\ninitialize\nreality-inputs\nsubscription-inputs:1:1\nassets\nufw\nruntime\nvalidate-runtime\nsubscription-runtime\nsave\nregister\ndynamic-port-schedule\nquota-timer\nshow\nbbrv3\nreboot-prompt' \
         "${calls}"
+}
+
+test_apply_loads_reality_state_before_tcp_tuning() {
+    local calls
+    calls=$(
+        unset PROTOCOL CDN_PROVIDER
+        require_root() { :; }
+        info() { :; }
+        collect_installed_state() {
+            PROTOCOL="reality"
+            CDN_PROVIDER=""
+            printf 'state\n'
+        }
+        configure_bbr_tcp() { printf 'tcp:%s:%s\n' "${PROTOCOL:-}" "${CDN_PROVIDER:-}"; }
+        configure_ipv6() { printf 'ipv6-off\n'; }
+        register_easy_all_command() { printf 'register\n'; }
+        update_subscription() { printf 'update\n'; }
+        apply_easy_all
+    )
+    assert_equal "Reality apply loads protocol before selecting TCP tuning" \
+        $'state\ntcp:reality:\nipv6-off\nregister\nupdate' "${calls}"
 }
 
 source_script_copy
 test_syntax_and_reality_boundaries
 test_validators_and_modes
-test_reality_inbound_family_and_dns
+test_reality_ipv4_dns_policy
 test_reality_target_preflight
 test_subscription_stage_dispatch
 test_mihomo_template
 test_subscription_generation
 test_ufw_reapply_preserves_existing_ssh
+test_restore_inactive_ufw_state
+test_platform_security_snapshot_and_restore
 test_nginx_and_firewall
 test_dynamic_port_year_boundary
 test_dynamic_port_boundaries_and_rule_set
@@ -1062,5 +1092,6 @@ test_cloudflare_reality_contract
 test_secure_download_transport
 test_state_and_xray
 test_install_pipeline_order
+test_apply_loads_reality_state_before_tcp_tuning
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"

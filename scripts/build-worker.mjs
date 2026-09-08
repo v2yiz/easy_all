@@ -36,6 +36,7 @@ export async function buildWorker({
                 requireValue(node.security === 'tls' && ['xhttp', 'ws'].includes(node.network) && nonempty(node.path) && node.path.startsWith('/'), 'CDN parameters');
             }
             requireValue(node.port === undefined || Number.isInteger(node.port) && node.port > 0 && node.port <= 65535, 'port');
+            requireValue(node.ipVersion === undefined || node.ipVersion === 'ipv4', `${key} IPv4-only`);
         }
     }
     requireValue(config.nodes.length > 0, 'at least one Reality node');

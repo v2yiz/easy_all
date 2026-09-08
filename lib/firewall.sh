@@ -2,8 +2,21 @@
 
 # Shared UFW filter-rule management for all easy_all profiles.
 #
-# The calling profile provides UFW_RULE_COMMENT plus info/warn/die. Profile
-# modules remain responsible for their own snapshots, NAT rules and IPv6 policy.
+# The calling profile provides UFW_RULE_COMMENT, UFW_DEFAULT_CONFIG and
+# info/warn/die. Profile modules remain responsible for snapshots and NAT rules.
+
+disable_ufw_ipv6() {
+    local candidate="${RUNTIME_TMP}/ufw-default"
+    [[ -f "${UFW_DEFAULT_CONFIG}" ]] \
+        || die "缺少 UFW 默认配置：${UFW_DEFAULT_CONFIG}"
+    awk '
+        BEGIN {updated=0}
+        /^IPV6=/ {print "IPV6=no"; updated=1; next}
+        {print}
+        END {if (!updated) print "IPV6=no"}
+    ' "${UFW_DEFAULT_CONFIG}" >"${candidate}"
+    install -m 0644 "${candidate}" "${UFW_DEFAULT_CONFIG}"
+}
 
 managed_ufw_rule_numbers() {
     command -v ufw >/dev/null 2>&1 || return 0
@@ -81,6 +94,26 @@ verify_ufw_tcp_ports() {
         ufw_tcp_port_is_allowed "${port}" \
             || die "UFW 未有效放行 TCP ${port}；停止应用以避免服务或 SSH 失联"
     done
+}
+
+ufw_tcp_port_has_unmanaged_anywhere_allow() {
+    local port=$1
+    command -v ufw >/dev/null 2>&1 || return 1
+    LC_ALL=C ufw status numbered 2>/dev/null \
+        | awk -v port="${port}" -v expected="${port}/tcp" -v managed="${UFW_RULE_COMMENT}" '
+            index($0, managed) != 0 {next}
+            {
+                line=$0
+                sub(/^[[:space:]]*\[[[:space:]]*[^]]*\][[:space:]]*/, "", line)
+                endpoint=line
+                sub(/[[:space:]].*$/, "", endpoint)
+                if ((endpoint == expected || endpoint == port) &&
+                    line ~ ("^" port "(/tcp)?([[:space:]]+\\(v6\\))?[[:space:]]+ALLOW[[:space:]]+IN[[:space:]]+Anywhere([[:space:]]|$)")) {
+                    found=1
+                }
+            }
+            END {exit(found ? 0 : 1)}
+        '
 }
 
 apply_managed_ufw_tcp_ports() {

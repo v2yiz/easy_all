@@ -35,22 +35,18 @@ tun:
     auto-detect-interface: true
     inet4-address:
       - 198.18.0.1/30
-    inet6-address:
-      - fdfe:dcba:9876::1/126
     dns-hijack:
       - any:53
       - tcp://any:53
     # Windows TUN + Reality/BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
     strict-route: false
-    # 通用局域网 IPv4/IPv6 地址绕过 TUN，保留内网直连能力。
+    # 通用局域网 IPv4 地址绕过 TUN，保留内网直连能力。
     route-exclude-address:
       - 10.0.0.0/8
       - 172.16.0.0/12
       - 192.168.0.0/16
       - 169.254.0.0/16
       - 100.64.0.0/10
-      - fc00::/7
-      - fe80::/10
 
 dns:
     enable: true
@@ -153,4 +149,3 @@ rules:
   - GEOIP,CN,DIRECT
   # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY
-

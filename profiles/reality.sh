@@ -109,7 +109,6 @@ INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
-REALITY_CLIENT_IP_FAMILY_RESOLVED=""
 cleanup() {
     local path
     if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" \
@@ -127,36 +126,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-validate_ipv6() {
-    local ip=${1%%%*} segment rest colons
-    [[ -n "${ip}" && ${#ip} -le 39 && "${ip}" == *:* \
-        && "${ip}" =~ ^[0-9A-Fa-f:]+$ && "${ip}" != *:::* ]] || return 1
-    colons=${ip//[^:]/}
-    if [[ "${ip}" == *::* ]]; then
-        rest=${ip#*::}
-        [[ "${rest}" != *::* ]] || return 1
-        ((${#colons} >= 2 && ${#colons} <= 8)) || return 1
-    else
-        ((${#colons} == 7)) || return 1
-    fi
-    for segment in ${ip//:/ }; do
-        [[ ${#segment} -ge 1 && ${#segment} -le 4 \
-            && "${segment}" =~ ^[0-9A-Fa-f]+$ ]] || return 1
-    done
-}
-
-canonicalize_ipv6() {
-    local ip=${1%%%*} canonical=""
-    validate_ipv6 "${ip}" || return 1
-    if command -v ip >/dev/null 2>&1; then
-        canonical=$(ip -6 route get "${ip}" 2>/dev/null \
-            | awk 'NR == 1 {for (i=1; i<=NF; i++) if ($i ~ /:/) {print $i; exit}}' \
-            || true)
-    fi
-    [[ -n "${canonical}" ]] || canonical=${ip}
-    tr '[:upper:]' '[:lower:]' <<<"${canonical}" | tr -d '\n'
-}
-
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o DPkg::Lock::Timeout=300 update
@@ -172,6 +141,7 @@ install_packages() {
 snapshot_fresh_install() {
     install -d -m 0700 "${BACKUP_DIR}"
     snapshot_ufw_state
+    snapshot_platform_security_state
     if [[ -f "${SYSCTL_CONFIG}" ]]; then
         install -m 0644 "${SYSCTL_CONFIG}" "${BACKUP_DIR}/pre-install-bbr.conf"
     else
@@ -201,7 +171,7 @@ snapshot_fresh_install() {
 
 configure_ipv6() {
     [[ -d /proc/sys/net/ipv6 ]] || {
-        warn "当前内核未暴露 IPv6，继续 IPv4-only 安装"
+        info "当前内核未暴露 IPv6，无需额外禁用"
         return 0
     }
     cat >"${RUNTIME_TMP}/enable-ipv6.conf" <<'EOF'
@@ -211,7 +181,7 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
     install -m 0644 "${RUNTIME_TMP}/enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
     sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null \
-        || warn "IPv6 sysctl 应用失败，继续 IPv4-only 安装"
+        || die "全局禁用 IPv6 的 sysctl 应用失败"
 }
 
 initialize_server() {
@@ -234,68 +204,8 @@ refresh_saved_daily_reboot_schedule() {
     configure_daily_reboot
 }
 
-detect_public_ipv6() {
-    local service candidate canonical
-    command -v ip >/dev/null 2>&1 || return 1
-    ip -6 -o addr show scope global 2>/dev/null | grep -q 'inet6 ' || return 1
-    ip -6 route show default 2>/dev/null | grep -q '^default' || return 1
-    local -a services=(
-        "https://api6.ipify.org"
-        "https://ipv6.icanhazip.com"
-        "https://ifconfig.co/ip"
-    )
-    for service in "${services[@]}"; do
-        candidate=$(curl -6fsS --noproxy '*' --max-time 10 "${service}" 2>/dev/null \
-            | tr -d '[:space:]' || true)
-        validate_ipv6 "${candidate}" || continue
-        canonical=$(canonicalize_ipv6 "${candidate}") || continue
-        printf '%s\n' "${canonical}"
-        return 0
-    done
-    return 1
-}
-
-detect_reality_inbound_family() {
-    local detected=""
-    case "${REALITY_INBOUND_IP_FAMILY:-}" in
-    ipv4)
-        VPS_PUBLIC_IPV6=""
-        info "未启用 Reality IPv6 入站；使用 IPv4 监听"
-        return 0
-        ;;
-    dual)
-        detected=${VPS_PUBLIC_IPV6:-$(detect_public_ipv6 || true)}
-        validate_ipv6 "${detected}" \
-            || die "REALITY_INBOUND_IP_FAMILY=dual 但未检测到可用公网 IPv6"
-        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${detected}")
-        info "已启用 Reality IPv4/IPv6 双栈入站：${VPS_PUBLIC_IPV6}"
-        return 0
-        ;;
-    "") ;;
-    *) die "REALITY_INBOUND_IP_FAMILY 必须是 ipv4 或 dual" ;;
-    esac
-
-    if [[ -n "${VPS_PUBLIC_IPV6:-}" ]]; then
-        validate_ipv6 "${VPS_PUBLIC_IPV6}" \
-            || die "VPS_PUBLIC_IPV6 无效：${VPS_PUBLIC_IPV6}"
-        detected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
-    else
-        detected=$(detect_public_ipv6 || true)
-    fi
-    if [[ -n "${detected}" ]]; then
-        REALITY_INBOUND_IP_FAMILY="dual"
-        VPS_PUBLIC_IPV6=${detected}
-        info "检测到公网 IPv6，Reality 将启用 IPv4/IPv6 双栈入站：${VPS_PUBLIC_IPV6}"
-    else
-        REALITY_INBOUND_IP_FAMILY="ipv4"
-        VPS_PUBLIC_IPV6=""
-        info "未检测到可用公网 IPv6，Reality 将保持 IPv4 入站"
-    fi
-}
-
 validate_reality_node_dns() {
-    local record canonical expected records="" mismatch=""
-    local resolver public_ipv4 answer resolved_ipv4=0
+    local record resolver public_ipv4 answer resolved_ipv4=0
     local -a resolvers=("" "1.1.1.1" "8.8.8.8")
     validate_domain "${NODE_HOST}" || return 0
 
@@ -321,55 +231,20 @@ validate_reality_node_dns() {
     done
     [[ "${resolved_ipv4}" == "1" ]] \
         || die "${NODE_HOST} 未通过系统 DNS 或公共 DNS 解析到 IPv4 地址"
-
-    while IFS= read -r record; do
-        validate_ipv6 "${record}" || continue
-        canonical=$(canonicalize_ipv6 "${record}") || continue
-        [[ -z "${records}" ]] || records+=$'\n'
-        records+=${canonical}
-    done < <(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" 2>/dev/null || true)
-
-    if [[ -z "${records}" ]]; then
-        if [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]]; then
-            info "${NODE_HOST} 尚未发布 AAAA；当前可先使用 IPv4，添加 AAAA=${VPS_PUBLIC_IPV6} 后即可双栈连接"
+    for resolver in "${resolvers[@]}"; do
+        if [[ -n "${resolver}" ]]; then
+            answer=$(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" \
+                @"${resolver}" 2>/dev/null) \
+                || continue
+        else
+            answer=$(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" 2>/dev/null) \
+                || continue
         fi
-        return 0
-    fi
-    [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
-        || die "${NODE_HOST} 发布了 AAAA（${records//$'\n'/, }），但服务器没有可用公网 IPv6；请删除 AAAA 或为 VPS 配置 IPv6"
-    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
-    while IFS= read -r record; do
-        [[ "${record}" == "${expected}" ]] || mismatch=${record}
-    done <<<"${records}"
-    [[ -z "${mismatch}" ]] \
-        || die "${NODE_HOST} 的 AAAA ${mismatch} 未指向本机公网 IPv6 ${expected}"
-    success "Reality 域名 AAAA 已匹配本机公网 IPv6：${expected}"
-}
-
-reality_node_aaaa_matches_vps() {
-    local record canonical expected found=0
-    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] || return 1
-    validate_ipv6 "${VPS_PUBLIC_IPV6:-}" || return 1
-    validate_domain "${NODE_HOST:-}" || return 1
-    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}") || return 1
-    while IFS= read -r record; do
-        validate_ipv6 "${record}" || continue
-        canonical=$(canonicalize_ipv6 "${record}") || continue
-        [[ "${canonical}" == "${expected}" ]] || return 1
-        found=1
-    done < <(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" 2>/dev/null || true)
-    [[ "${found}" == "1" ]]
-}
-
-resolve_reality_client_ip_family() {
-    REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
-    if reality_node_aaaa_matches_vps; then
-        REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
-    fi
-}
-
-validate_reality_client_ip_family_runtime() {
-    resolve_reality_client_ip_family
+        while IFS= read -r record; do
+            [[ "${record}" == *:* ]] || continue
+            die "${NODE_HOST} 发布了 AAAA ${record}；easy_all 已全局禁用 IPv6，请删除该记录"
+        done <<<"${answer}"
+    done
 }
 
 source_state_file() {
@@ -386,7 +261,6 @@ load_state() {
     local -a variables=(
         PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
-        REALITY_INBOUND_IP_FAMILY VPS_PUBLIC_IPV6
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_ORIGIN_CERT_ID
@@ -410,9 +284,8 @@ load_state() {
         fi
         unset "${env_name}"
     done
-    unset REALITY_CLIENT_IP_FAMILY
-    REALITY_INBOUND_IP_FAMILY=${REALITY_INBOUND_IP_FAMILY:-ipv4}
-    REALITY_CLIENT_IP_FAMILY_RESOLVED=""
+    unset REALITY_INBOUND_IP_FAMILY REALITY_CLIENT_IP_FAMILY \
+        REALITY_CLIENT_IP_FAMILY_RESOLVED VPS_PUBLIC_IPV6
     CDN_PROVIDER=""
     if [[ "${state_loaded}" == "1" ]]; then
         [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
@@ -420,16 +293,6 @@ load_state() {
         [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || die "状态缺少 SUB_DOWNLOAD_NAME；请重新安装"
         [[ "${QUOTA_ENABLED:-}" == "0" || "${QUOTA_ENABLED:-}" == "1" ]] \
             || die "状态缺少有效的 QUOTA_ENABLED；请重新安装"
-    fi
-    [[ "${REALITY_INBOUND_IP_FAMILY}" == "ipv4" \
-        || "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]] \
-        || die "状态文件中的 REALITY_INBOUND_IP_FAMILY 无效：${REALITY_INBOUND_IP_FAMILY}"
-    if [[ "${REALITY_INBOUND_IP_FAMILY}" == "dual" ]]; then
-        validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
-            || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
-        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
-    else
-        VPS_PUBLIC_IPV6=""
     fi
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
@@ -481,8 +344,6 @@ save_state() {
         printf 'REALITY_PRIVATE_KEY=%q\n' "${REALITY_PRIVATE_KEY:-}"
         printf 'REALITY_PUBLIC_KEY=%q\n' "${REALITY_PUBLIC_KEY:-}"
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
-        printf 'REALITY_INBOUND_IP_FAMILY=%q\n' "${REALITY_INBOUND_IP_FAMILY:-ipv4}"
-        printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -686,7 +547,6 @@ collect_subscription_domain() {
 
 collect_reality_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
-    detect_reality_inbound_family
     NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
@@ -760,16 +620,11 @@ write_ufw_nat_rules_for_family() {
 }
 
 write_ufw_nat_rules() {
-    local dynamic=0 dual_dynamic=0
+    local dynamic=0
     [[ "${SUB_PORT_MODE}" != "dynamic" ]] || dynamic=1
-    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] \
-        || dual_dynamic=${dynamic}
     write_ufw_nat_rules_for_family "${UFW_BEFORE_RULES}" iptables-restore \
         "${UFW_NAT_START}" "${UFW_NAT_END}" "${dynamic}" "IPv4"
-    if [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]]; then
-        write_ufw_nat_rules_for_family "${UFW_BEFORE6_RULES}" ip6tables-restore \
-            "${UFW_NAT6_START}" "${UFW_NAT6_END}" "${dual_dynamic}" "IPv6"
-    elif [[ -f "${UFW_BEFORE6_RULES}" ]] \
+    if [[ -f "${UFW_BEFORE6_RULES}" ]] \
         && grep -Fq "${UFW_NAT6_START}" "${UFW_BEFORE6_RULES}"; then
         write_ufw_nat_rules_for_family "${UFW_BEFORE6_RULES}" ip6tables-restore \
             "${UFW_NAT6_START}" "${UFW_NAT6_END}" 0 "IPv6"
@@ -797,7 +652,7 @@ configure_dynamic_port_rotation() {
     if [[ "${SUB_PORT_MODE:-}" != "dynamic" ]]; then
         return 0
     fi
-    job="1 0 * * * \"${COMMAND_PATH}\" rotate-dynamic-ports >/dev/null 2>&1 ${CRON_DYNAMIC_PORT_MARKER}"
+    job="1 */${DYNAMIC_PORT_ROTATION_HOURS} * * * \"${COMMAND_PATH}\" rotate-dynamic-ports >/dev/null 2>&1 ${CRON_DYNAMIC_PORT_MARKER}"
     { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
 }
 
@@ -868,20 +723,6 @@ write_dynamic_nat_rules() {
     done
 }
 
-enable_ufw_ipv6() {
-    local candidate="${RUNTIME_TMP}/ufw-default"
-    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]] || return 0
-    [[ -f "${UFW_DEFAULT_CONFIG}" ]] \
-        || die "双栈模式缺少 UFW 默认配置：${UFW_DEFAULT_CONFIG}"
-    awk '
-        BEGIN {updated=0}
-        /^IPV6=/ {print "IPV6=yes"; updated=1; next}
-        {print}
-        END {if (!updated) print "IPV6=yes"}
-    ' "${UFW_DEFAULT_CONFIG}" >"${candidate}"
-    install -m 0644 "${candidate}" "${UFW_DEFAULT_CONFIG}"
-}
-
 reality_cloudflare_fetch_origin_ipv4_ranges() {
     local response
     response=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
@@ -942,12 +783,14 @@ configure_ufw() {
         apt-get -o DPkg::Lock::Timeout=300 update
         apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends ufw
     fi
-    enable_ufw_ipv6
-    ufw default deny incoming >/dev/null
-    ufw default allow outgoing >/dev/null
-    ufw default deny routed >/dev/null
+    disable_ufw_ipv6
+    ufw default deny incoming >/dev/null || die "设置 UFW 默认入站策略失败"
+    ufw default allow outgoing >/dev/null || die "设置 UFW 默认出站策略失败"
+    ufw default deny routed >/dev/null || die "设置 UFW 默认转发策略失败"
     desired_ports="${SSH_PORTS//,/ } ${SERVICE_PORT}"
     if subscription_enabled; then
+        ufw_tcp_port_has_unmanaged_anywhere_allow "${SUBSCRIPTION_HTTPS_PORT}" \
+            && die "检测到非 easy_all 管理的 TCP ${SUBSCRIPTION_HTTPS_PORT} 全网放行规则；请先删除该规则，避免绕过 Cloudflare 回源白名单"
         apply_managed_ufw_tcp_ports "${desired_ports} ${SUBSCRIPTION_HTTPS_PORT}"
         reality_cloudflare_configure_subscription_firewall
     else
@@ -962,11 +805,10 @@ configure_ufw() {
 }
 
 write_xray_config() {
-    local clients managed_outbounds managed_routing inbound_sockopt listen_address="0.0.0.0"
+    local clients managed_outbounds managed_routing inbound_sockopt
     managed_outbounds=$(xray_direct_outbounds_json)
     managed_routing=$(xray_direct_routing_json)
     inbound_sockopt=$(xray_inbound_sockopt_json)
-    [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" != "dual" ]] || listen_address="::"
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
         local pair
@@ -993,7 +835,6 @@ write_xray_config() {
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
             --arg sni "${REALITY_TARGET%:*}" \
-            --arg listen_address "${listen_address}" \
             --argjson inbound_sockopt "${inbound_sockopt}" \
             --argjson managed_outbounds "${managed_outbounds}" \
             --argjson managed_routing "${managed_routing}" '
@@ -1001,7 +842,7 @@ write_xray_config() {
               log: {loglevel: "warning"},
               inbounds: [{
                 tag: "vless-reality-in",
-                listen: $listen_address,
+                listen: "0.0.0.0",
                 port: 443,
                 protocol: "vless",
                 settings: {
@@ -1058,18 +899,16 @@ build_node_link() {
 
 build_mihomo_node() {
     local port=${1:-443}
-    resolve_reality_client_ip_family
     jq -nr \
             --arg name "${NODE_NAME}" --arg server "${NODE_HOST}" \
             --arg uuid "${VLESS_UUID}" --arg sni "${REALITY_TARGET%:*}" \
             --arg pbk "${REALITY_PUBLIC_KEY}" --arg sid "${REALITY_SHORT_ID}" \
-            --arg ip_version "${REALITY_CLIENT_IP_FAMILY_RESOLVED}" \
             --argjson port "${port}" '
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: \($port)\n" +
             "    uuid: \($uuid|@json)\n    network: tcp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    flow: xtls-rprx-vision\n    servername: \($sni|@json)\n" +
             "    reality-opts:\n      public-key: \($pbk|@json)\n      short-id: \($sid|@json)\n" +
-            "    client-fingerprint: chrome\n    packet-encoding: xudp\n    ip-version: \($ip_version)\n" +
+            "    client-fingerprint: chrome\n    packet-encoding: xudp\n    ip-version: ipv4\n" +
             "    smux:\n      enabled: false\n"'
 }
 
@@ -1087,10 +926,18 @@ scheduled_reboot_pre_command() {
 
 rotate_dynamic_ports() {
     require_root
+    begin_quota_maintenance
     collect_installed_state
-    [[ "${SUB_PORT_MODE}" == "dynamic" ]] || return 0
+    if [[ "${SUB_PORT_MODE}" != "dynamic" ]]; then
+        end_quota_maintenance
+        return 0
+    fi
     write_ufw_nat_rules
     ufw reload >/dev/null || die "刷新动态端口 NAT 规则失败"
+    if subscription_enabled; then
+        install_static_subscriptions
+    fi
+    end_quota_maintenance
     success "动态端口 NAT 已刷新：开放 ${DYNAMIC_PORT_OPEN_WINDOWS} 个端口，覆盖最近 ${DYNAMIC_PORT_RETENTION_DAYS} 天并预开放当天及次日凌晨端口"
 }
 
@@ -1322,7 +1169,6 @@ write_subscription_bootstrap_nginx() {
     cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
 server {
     listen ${SUBSCRIPTION_HTTPS_PORT} ssl http2;
-    listen [::]:${SUBSCRIPTION_HTTPS_PORT} ssl http2;
     server_name ${SUBSCRIPTION_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -1346,9 +1192,8 @@ generate_subscription_files() {
     build_mihomo_node "${port}" >"${node_file}"
     printf '%s' "$(build_node_link "${port}")" | openssl base64 -A >"${base64_file}"
     printf '\n' >>"${base64_file}"
-    resolve_reality_client_ip_family
     render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}" "${mihomo_file}" \
-        "${NODE_NAME}" "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+        "${NODE_NAME}"
     printf '%s' "$(<"${base64_file}")" | openssl base64 -d -A \
         | grep -Fq 'security=reality' || die "Base64 订阅内容无效"
     grep -Fq 'reality-opts:' "${mihomo_file}" || die "Mihomo 订阅缺少 Reality 节点"
@@ -1358,12 +1203,15 @@ generate_subscription_files() {
 install_static_subscriptions() {
     local base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
-    local user uuid user_dir
+    local stage_dir="${WEB_ROOT}/.subscriptions.stage.$$"
+    local previous_dir="${WEB_ROOT}/.subscriptions.previous.$$"
+    local user uuid user_dir had_previous=0
+    install -d -m 0755 "${WEB_ROOT}"
+    rm -rf -- "${stage_dir}" "${previous_dir}"
+    install -d -o root -g www-data -m 0750 "${stage_dir}"
     if quota_enabled; then
-        rm -rf -- "${SUBSCRIPTION_DIR}"
-        install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
         while IFS=$'\t' read -r user uuid; do
-            user_dir="${SUBSCRIPTION_DIR}/${user}"
+            user_dir="${stage_dir}/${user}"
             (
                 VLESS_UUID=${uuid}
                 generate_subscription_files "${base64_file}.${user}" "${mihomo_file}.${user}"
@@ -1374,13 +1222,25 @@ install_static_subscriptions() {
             install -o root -g www-data -m 0640 \
                 "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml"
         done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
-        return 0
+    else
+        generate_subscription_files "${base64_file}" "${mihomo_file}"
+        install -o root -g www-data -m 0640 "${base64_file}" \
+            "${stage_dir}/base64.txt"
+        install -o root -g www-data -m 0640 "${mihomo_file}" \
+            "${stage_dir}/mihomo.yaml"
     fi
-    generate_subscription_files "${base64_file}" "${mihomo_file}"
-    rm -rf -- "${SUBSCRIPTION_DIR}"
-    install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
-    install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
-    install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
+    if [[ -d "${SUBSCRIPTION_DIR}" ]]; then
+        mv "${SUBSCRIPTION_DIR}" "${previous_dir}" \
+            || die "备份当前订阅目录失败"
+        had_previous=1
+    fi
+    if ! mv "${stage_dir}" "${SUBSCRIPTION_DIR}"; then
+        [[ "${had_previous}" != "1" ]] \
+            || mv "${previous_dir}" "${SUBSCRIPTION_DIR}" >/dev/null 2>&1 \
+            || true
+        die "发布新订阅目录失败"
+    fi
+    rm -rf -- "${previous_dir}"
 }
 
 write_subscription_nginx_config() {
@@ -1390,7 +1250,6 @@ write_subscription_nginx_config() {
         cat <<EOF
 server {
     listen ${SUBSCRIPTION_HTTPS_PORT} ssl http2;
-    listen [::]:${SUBSCRIPTION_HTTPS_PORT} ssl http2;
     server_name ${SUBSCRIPTION_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -1737,10 +1596,11 @@ update_subscription() {
 
 apply_easy_all() {
     require_root
+    collect_installed_state
     info "安装或验收 XanMod LTS BBRv3，并刷新 TCP 参数"
     configure_bbr_tcp
+    configure_ipv6
     register_easy_all_command
-    collect_installed_state
     update_subscription
 }
 
@@ -1839,14 +1699,8 @@ show_status() {
     collect_installed_state
     printf '协议: %s\n' "${PROTOCOL}"
     show_bbrv3_status
-    if [[ "${REALITY_INBOUND_IP_FAMILY:-ipv4}" == "dual" ]]; then
-        printf 'Reality 入站族: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
-    else
-        printf 'Reality 入站族: IPv4\n'
-    fi
-    resolve_reality_client_ip_family
-    printf 'Reality 客户端节点族: %s（按 VPS 公网 IPv6 与节点 AAAA 自动判定）\n' \
-        "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
+    printf 'Reality 入站族: IPv4-only\n'
+    printf 'Reality 客户端节点族: IPv4-only\n'
     printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
@@ -1943,15 +1797,20 @@ restore_preinstall_firewall() {
         install -m 0644 "${RUNTIME_TMP}/ufw-before6-restored.rules" \
             "${UFW_BEFORE6_RULES}"
     fi
-    if command -v ufw >/dev/null 2>&1 \
+    if [[ -f "${BACKUP_DIR}/pre-install-ufw.active" ]]; then
+        ufw --force enable >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
+    elif [[ -f "${BACKUP_DIR}/pre-install-ufw.inactive" \
+        || -f "${BACKUP_DIR}/pre-install-ufw.missing" ]]; then
+        command -v ufw >/dev/null 2>&1 \
+            && ufw --force disable >/dev/null 2>&1 || true
+    elif command -v ufw >/dev/null 2>&1 \
         && LC_ALL=C ufw status numbered 2>/dev/null | grep -q '^[[:space:]]*\['; then
         ufw --force enable >/dev/null 2>&1 || true
-    elif [[ -f "${BACKUP_DIR}/pre-install-ufw.active" ]]; then
-        ufw --force enable >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1; then
         ufw --force disable >/dev/null 2>&1 || true
     fi
-    command -v ufw >/dev/null 2>&1 && ufw reload >/dev/null 2>&1 || true
 }
 
 restore_preinstall_ipv6() {
@@ -2000,8 +1859,10 @@ uninstall_all() {
     stop_protocol_services
     remove_quota_timer
     reality_cloudflare_remove_subscription_firewall_rules
+    restore_platform_security_state
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
     remove_dynamic_port_rotation
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
@@ -2019,21 +1880,10 @@ rollback_fresh_install() {
     stop_protocol_services
     remove_quota_timer
     reality_cloudflare_remove_subscription_firewall_rules
+    restore_platform_security_state
     restore_preinstall_firewall
     restore_preinstall_ipv6
-    if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
-        sysctl -p "${SYSCTL_CONFIG}" >/dev/null 2>&1 || true
-    elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
-        rm -f -- "${SYSCTL_CONFIG}"
-    fi
-    restore_tcp_runtime
-    if [[ -f "${BACKUP_DIR}/pre-install-bbr-module.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-bbr-module.conf" \
-            "${BBR_MODULES_CONFIG}"
-    elif [[ -f "${BACKUP_DIR}/pre-install-bbr-module.missing" ]]; then
-        rm -f -- "${BBR_MODULES_CONFIG}"
-    fi
+    restore_bbr_tcp_install_state
     if [[ -f "${BACKUP_DIR}/pre-install-crontab" ]]; then
         crontab "${BACKUP_DIR}/pre-install-crontab" >/dev/null 2>&1 || true
     elif [[ -f "${BACKUP_DIR}/pre-install-crontab.missing" ]]; then
@@ -2105,9 +1955,6 @@ run_reality_install_pipeline() {
     reality_cloudflare_finalize_certificate_rotation
     save_state
     register_easy_all_command
-    if [[ "${SUB_PORT_MODE}" == "dynamic" ]]; then
-        rotate_dynamic_ports
-    fi
     configure_dynamic_port_rotation
     install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
@@ -2137,7 +1984,7 @@ usage() {
   update-sub    选择部署订阅服务或仅输出节点
   update-core   更新 Xray 核心
   renew-cert    强制轮换 Cloudflare Origin CA 订阅证书
-  rotate-dynamic-ports  刷新动态端口的最近 7 天 NAT 保留窗口（内部任务）
+  rotate-dynamic-ports  刷新动态端口 NAT 窗口与已部署订阅（内部任务）
   quota-status  显示每个用户的本月流量与配额状态
   quota-set     修改指定用户的月度额度
   quota-reset   清零指定用户的本月已用量
@@ -2159,8 +2006,8 @@ update_current_core() {
     [[ ! -f "${XRAY_DIR}/version" ]] \
         || install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
     if (
-        download_xray
-        systemctl restart "${XRAY_SERVICE}"
+        download_xray || exit 1
+        systemctl restart "${XRAY_SERVICE}" || exit 1
         validate_protocol_runtime
     ); then
         end_quota_maintenance

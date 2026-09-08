@@ -149,6 +149,7 @@ xhttp_configure_ufw() {
     fi
     ensure_ssh_boot_service
     detect_ssh_ports
+    disable_ufw_ipv6
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
@@ -657,7 +658,6 @@ collect_install_inputs() {
     PROTOCOL="cloudflare-streamup"
     BACKEND="xray"
     CDN_PROVIDER="cloudflare"
-    choose_cdn_client_ip_family
 
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
@@ -700,7 +700,7 @@ load_state() {
     local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
-        CDN_CLIENT_IP_FAMILY XHTTP_NODE_NAME VLESS_UUID
+        XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
         CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME
         CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID
@@ -720,7 +720,7 @@ load_state() {
         || die "状态不是 Cloudflare XHTTP Stream-up"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 Cloudflare 状态版本：${STATE_VERSION:-缺失}；请重新安装"
-    configure_cdn_client_ip_family
+    unset CDN_CLIENT_IP_FAMILY CDN_CLIENT_IP_FAMILY_RESOLVED
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Cloudflare 状态缺少有效域名或 UUID"
     XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
@@ -764,7 +764,7 @@ save_state() {
     t=$(mktemp "${state_dir}/state.env.XXXXXX")
     cleanup_files+=("${t}")
     {
-        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER CDN_CLIENT_IP_FAMILY \
+        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
             CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME \
             CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID \
@@ -870,14 +870,12 @@ write_nginx_config() {
         cat <<EOF
 server {
     listen 80;
-    listen [::]:80;
     server_name ${XHTTP_ORIGIN_DOMAIN};
     location / { return 301 https://${XHTTP_ORIGIN_DOMAIN}\$request_uri; }
 }
 
 server {
     listen 443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;
-    listen [::]:443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;${http2_directive}
     server_name ${XHTTP_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -977,14 +975,13 @@ build_mihomo_xhttp_node() {
     local server=$1 node_name=$2
     local client_path
     client_path=$(xhttp_client_path)
-    resolve_cdn_client_ip_family
     jq -nr --arg name "${node_name}" --arg server "${server}" \
         --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg path "${client_path}" --arg ip_version "${CDN_CLIENT_IP_FAMILY_RESOLVED:-ipv4}" '
+        --arg path "${client_path}" '
         "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    ip-version: \($ip_version)\n    alpn:\n      - h2\n" +
+        "    packet-encoding: xudp\n    ip-version: ipv4\n    alpn:\n      - h2\n" +
         "    xhttp-opts:\n      host: \($host|@json)\n      path: \($path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n        max-connections: 4\n" +
         "        c-max-reuse-times: 0\n        h-max-request-times: 300-600\n        h-max-reusable-secs: 900-1800\n        h-keep-alive-period: 0\n"'
@@ -1066,7 +1063,6 @@ show_node() {
 show_status() {
     require_root
     collect_installed_state
-    resolve_cdn_client_ip_family
     printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（单域名架构）\nOrigin CA: %s（到期 %s）\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled (三网定向精选 6 节点，无域名兜底)\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"
     show_globalping_status

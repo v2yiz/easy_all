@@ -60,7 +60,6 @@ export SUB_DOWNLOAD_NAME="TEST_SUB"
 export SUBSCRIPTION_MODE="deploy"
 export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
 export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/gcore-cdn-ips.json"
-export CDN_CLIENT_IP_FAMILY="ipv4"
 export XHTTP_NODE_NAME="TEST_NODE"
 export GCORE_DNS_PROPAGATION_ATTEMPTS_OVERRIDE=3
 export GCORE_DNS_PROPAGATION_INTERVAL_OVERRIDE=0
@@ -1181,7 +1180,6 @@ unset -f dig gcore_api_request gcore_api_get_optional
     choose_monthly_quota() { QUOTA_ENABLED=0; }
     ensure_allowed_tokens() { :; }
     write_subscriptions() { :; }
-    validate_cdn_client_ip_family_runtime() { :; }
     refresh_runtime() { calls+="local "; }
     install_quota_timer() { :; }
     validate_subscription_runtime() { :; }

@@ -162,7 +162,7 @@ function clashRealityNode(node, port) {
       short-id: ${yamlString(node.sid)}
     client-fingerprint: ${yamlString(node.fp)}
     packet-encoding: xudp
-    ip-version: ${yamlString(node.ipVersion || 'ipv4')}
+    ip-version: ipv4
     smux:
       enabled: false`;
 }
@@ -184,7 +184,7 @@ function clashXhttpNode(node, port) {
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
     packet-encoding: xudp
-    ip-version: ${yamlString(node.ipVersion || 'ipv4')}
+    ip-version: ipv4
     alpn:
       - h2
     xhttp-opts:
@@ -285,7 +285,7 @@ function clashWebSocketNode(node, port) {
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
     packet-encoding: xudp
-    ip-version: ${yamlString(node.ipVersion || 'ipv4')}
+    ip-version: ipv4
     alpn:
       - ${yamlString(node.alpn || 'http/1.1')}
     ws-opts:

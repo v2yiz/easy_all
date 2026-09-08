@@ -61,6 +61,21 @@ restore_tcp_runtime() {
         || warn "恢复安装前 TCP 运行参数失败，请检查 ${source}"
 }
 
+restore_bbr_tcp_install_state() {
+    if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
+        install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
+    elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
+        rm -f -- "${SYSCTL_CONFIG}"
+    fi
+    if [[ -f "${BACKUP_DIR}/pre-install-bbr-module.conf" ]]; then
+        install -m 0644 "${BACKUP_DIR}/pre-install-bbr-module.conf" \
+            "${BBR_MODULES_CONFIG}"
+    elif [[ -f "${BACKUP_DIR}/pre-install-bbr-module.missing" ]]; then
+        rm -f -- "${BBR_MODULES_CONFIG}"
+    fi
+    restore_tcp_runtime
+}
+
 bbrv3_cpu_level() {
     local flags required flag level=0
     flags=$(awk -F: '$1 ~ /^[[:space:]]*flags[[:space:]]*$/ {print " " $2 " "; exit}' \
@@ -248,7 +263,7 @@ net.ipv4.tcp_keepalive_probes = 5
 # ingress range and the high 65533 SSH listener.
 net.ipv4.ip_local_port_range = 13000 60999
 
-# Disable IPv6
+# Disable IPv6 for every easy_all mode.
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1

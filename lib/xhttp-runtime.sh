@@ -25,12 +25,12 @@ readonly XRAY_SERVICE="easy_all-xray.service"
 readonly XRAY_SERVICE_DESCRIPTION="${XHTTP_SERVICE_DESCRIPTION_OVERRIDE:-Xray VLESS XHTTP managed by easy_all}"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
 readonly UFW_RULE_COMMENT="easy_all-managed"
+readonly UFW_DEFAULT_CONFIG="/etc/default/ufw"
 readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
 readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
 readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
-readonly DEFAULT_CDN_CLIENT_IP_FAMILY="ipv4"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
 readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/templates/mihomo.yaml"
 readonly DEFAULT_REBOOT_HOUR="4"
@@ -83,7 +83,6 @@ INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
-CDN_CLIENT_IP_FAMILY_RESOLVED=""
 # Keep at least one element: Debian still ships Bash versions where expanding
 # an empty array under `set -u` raises "unbound variable".  Restricting these
 # local probes to HTTPS is also the intended behavior for every provider.
@@ -120,45 +119,6 @@ nginx_supports_http2_directive() {
 
 validate_xhttp_path() {
     [[ ${#1} -ge 9 && ${#1} -le 96 && "$1" =~ ^/[A-Za-z0-9._~-]+$ ]]
-}
-
-validate_cdn_client_ip_family() {
-    [[ "$1" == "ipv6-prefer" || "$1" == "ipv4" ]]
-}
-
-configure_cdn_client_ip_family() {
-    local expected=${DEFAULT_CDN_CLIENT_IP_FAMILY}
-    if declare -F cdn_optimization_enabled >/dev/null 2>&1 \
-        && cdn_optimization_enabled; then
-        expected="ipv4"
-    fi
-    CDN_CLIENT_IP_FAMILY=${CDN_CLIENT_IP_FAMILY:-${expected}}
-    if [[ "${expected}" == "ipv4" ]]; then
-        CDN_CLIENT_IP_FAMILY="ipv4"
-        CDN_CLIENT_IP_FAMILY_RESOLVED=${CDN_CLIENT_IP_FAMILY}
-        return 0
-    fi
-    validate_cdn_client_ip_family "${CDN_CLIENT_IP_FAMILY}" \
-        || die "CDN_CLIENT_IP_FAMILY 必须是 ipv6-prefer 或 ipv4"
-    CDN_CLIENT_IP_FAMILY_RESOLVED=${CDN_CLIENT_IP_FAMILY}
-}
-
-choose_cdn_client_ip_family() {
-    if declare -F cdn_optimization_enabled >/dev/null 2>&1 \
-        && cdn_optimization_enabled; then
-        CDN_CLIENT_IP_FAMILY="ipv4"
-    else
-        CDN_CLIENT_IP_FAMILY=${DEFAULT_CDN_CLIENT_IP_FAMILY}
-    fi
-    configure_cdn_client_ip_family
-}
-
-resolve_cdn_client_ip_family() {
-    configure_cdn_client_ip_family
-}
-
-validate_cdn_client_ip_family_runtime() {
-    resolve_cdn_client_ip_family
 }
 
 validate_loopback_port() {
@@ -268,8 +228,8 @@ snapshot_ufw_state() {
     else
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive"
     fi
-    if [[ -f /etc/default/ufw ]]; then
-        install -m 0600 /etc/default/ufw "${BACKUP_DIR}/pre-install-ufw-default"
+    if [[ -f "${UFW_DEFAULT_CONFIG}" ]]; then
+        install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
     fi
 }
 
@@ -287,6 +247,7 @@ configure_ufw() {
     fi
     ensure_ssh_boot_service
     detect_ssh_ports
+    disable_ufw_ipv6
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
@@ -331,14 +292,12 @@ write_nginx_config() {
         cat <<EOF
 server {
     listen 80;
-    listen [::]:80;
     server_name ${XHTTP_ORIGIN_DOMAIN};
     location / { return 301 https://${XHTTP_ORIGIN_DOMAIN}\$request_uri; }
 }
 
 server {
     listen 443 ssl ${listen_h2}backlog=4096;
-    listen [::]:443 ssl ${listen_h2}backlog=4096;${http2_directive}
     server_name ${XHTTP_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -461,7 +420,6 @@ write_subscriptions() {
     name_file="${RUNTIME_TMP}/mihomo-names.yaml"
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
-    resolve_cdn_client_ip_family
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
         && marker=$(mihomo_transport_marker)
@@ -480,7 +438,6 @@ write_subscriptions() {
                 printf '\n' >>"${base64_file}.${user}"
                 render_mihomo_subscription "${template}" "${node_file}.${user}" \
                     "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
-                    "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
                     "${group_file}.${user}" "${name_file}.${user}"
             )
             grep -Fq "${marker}" "${mihomo_file}.${user}" \
@@ -499,8 +456,7 @@ write_subscriptions() {
     build_node_links | openssl base64 -A >"${base64_file}"
     printf '\n' >>"${base64_file}"
     render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
-        "${XHTTP_NODE_NAME}" "${CDN_CLIENT_IP_FAMILY_RESOLVED}" \
-        "${group_file}" "${name_file}"
+        "${XHTTP_NODE_NAME}" "${group_file}" "${name_file}"
 
     grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
@@ -644,7 +600,6 @@ finish_xhttp_apply() {
             refresh_runtime
         fi
     fi
-    validate_cdn_client_ip_family_runtime
     if subscription_enabled; then
         ensure_allowed_tokens
         write_subscriptions
@@ -705,7 +660,8 @@ renew_certificate() {
 restore_preinstall_firewall() {
     remove_managed_ufw_rules
     [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
-        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" /etc/default/ufw
+        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" \
+            "${UFW_DEFAULT_CONFIG}"
     if command -v ufw >/dev/null 2>&1 \
         && LC_ALL=C ufw status numbered 2>/dev/null | grep -q '^[[:space:]]*\['; then
         ufw --force enable >/dev/null 2>&1 || true

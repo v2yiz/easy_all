@@ -154,6 +154,8 @@ assert_contains "netdev_max_backlog queue increased to 65535" "$(<"${SYSCTL_CONF
     'net.core.netdev_max_backlog = 65535'
 assert_contains "Reality disables destination metrics reuse" "$(<"${SYSCTL_CONFIG}")" \
     'net.ipv4.tcp_no_metrics_save = 1'
+assert_contains "IPv4-only Reality disables host IPv6" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv6.conf.all.disable_ipv6 = 1'
 
 runtime_keys=$(tcp_runtime_keys)
 assert_contains "runtime keys include tcp_notsent_lowat" "${runtime_keys}" 'net.ipv4.tcp_notsent_lowat'
@@ -170,6 +172,8 @@ CDN_PROVIDER="cloudflare"
 configure_bbr_tcp
 [[ "$(<"${SYSCTL_CONFIG}")" != *'net.ipv4.tcp_no_metrics_save'* ]] \
     || fail "Cloudflare TCP settings must not include tcp_no_metrics_save"
+assert_contains "Cloudflare keeps host IPv6 disabled" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv6.conf.all.disable_ipv6 = 1'
 
 PROTOCOL="gcore"
 CDN_PROVIDER="gcore"

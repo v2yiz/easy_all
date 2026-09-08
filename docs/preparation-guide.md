@@ -145,7 +145,8 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 `sub.example.com`。不要提前创建该名称的 DNS 记录；安装器会创建橙云/Proxied 记录并配置证书。
 
 Reality 的节点连接域名（例如 `node.example.com`）如有使用，必须保持灰云/DNS only 以便客户端直连 VPS；
-它不能与橙云订阅域名相同。Reality 不需要 gRPC，也不会把节点数据流量经过 Cloudflare。
+它只能发布指向 VPS 的 A 记录，不得发布 AAAA，且不能与橙云订阅域名相同。Reality 不需要 gRPC，
+也不会把节点数据流量经过 Cloudflare。
 
 ### 3.2 Cloudflare XHTTP：必须完成
 

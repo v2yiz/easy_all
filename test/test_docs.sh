@@ -131,8 +131,8 @@ assert_contains "README documents merged scheduled maintenance" \
 assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" 'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" '不会生成数万条'
 assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
-assert_contains "README documents the automatic Reality endpoint family" \
-    "${README_CONTENT}" 'VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`'
+assert_contains "README documents the global IPv4-only Reality policy" \
+    "${README_CONTENT}" 'Xray Reality 入站只监听 `0.0.0.0:443`'
 assert_contains "README documents Chinese-only interactive prompts" \
     "${README_CONTENT}" '所有需要用户输入的交互提示仅显示中文'
 assert_contains "README documents client connection racing" \

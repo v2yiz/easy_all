@@ -30,6 +30,128 @@ require_systemd() {
     [[ -d /run/systemd/system ]] || die "当前系统未由 systemd 管理"
 }
 
+snapshot_platform_security_state() {
+    local source name
+    local sentinel="${BACKUP_DIR}/pre-install-platform-security.snapshotted"
+    [[ ! -e "${sentinel}" ]] || return 0
+    install -d -m 0700 "${BACKUP_DIR}"
+    for source in \
+        "${EASY_ALL_SSH_PORT_CONFIG}" \
+        "${EASY_ALL_FAIL2BAN_CONFIG}" \
+        "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"; do
+        case "${source}" in
+        "${EASY_ALL_SSH_PORT_CONFIG}") name="ssh-port.conf" ;;
+        "${EASY_ALL_FAIL2BAN_CONFIG}") name="fail2ban-jail.conf" ;;
+        *) name="fail2ban-action.conf" ;;
+        esac
+        if [[ -f "${source}" ]]; then
+            install -m 0600 "${source}" "${BACKUP_DIR}/pre-install-${name}"
+        else
+            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-${name}.missing"
+        fi
+    done
+    if systemctl cat fail2ban.service >/dev/null 2>&1; then
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.present"
+        if systemctl is-enabled --quiet fail2ban.service; then
+            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.enabled"
+        else
+            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.disabled"
+        fi
+        if systemctl is-active --quiet fail2ban.service; then
+            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.active"
+        else
+            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.inactive"
+        fi
+    else
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.missing"
+    fi
+    install -m 0600 /dev/null "${sentinel}"
+}
+
+managed_fail2ban_ufw_rule_numbers() {
+    command -v ufw >/dev/null 2>&1 || return 0
+    LC_ALL=C ufw status numbered 2>/dev/null \
+        | sed -n '/easy_all-fail2ban-cidr/s/^[[:space:]]*\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' \
+        | sort -rn
+}
+
+remove_managed_fail2ban_ufw_rules() {
+    local number
+    while IFS= read -r number; do
+        [[ -n "${number}" ]] || continue
+        ufw --force delete "${number}" >/dev/null 2>&1 \
+            || warn "删除 easy_all Fail2ban UFW 规则 ${number} 失败"
+    done < <(managed_fail2ban_ufw_rule_numbers)
+}
+
+restore_platform_security_state() {
+    local sshd_bin="" unit="" sentinel="${BACKUP_DIR}/pre-install-platform-security.snapshotted"
+    remove_managed_fail2ban_ufw_rules
+    rm -rf -- "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+
+    if [[ -f "${BACKUP_DIR}/pre-install-ssh-port.conf" ]]; then
+        install -d -m 0755 "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")"
+        install -m 0644 "${BACKUP_DIR}/pre-install-ssh-port.conf" \
+            "${EASY_ALL_SSH_PORT_CONFIG}"
+    elif [[ -f "${BACKUP_DIR}/pre-install-ssh-port.conf.missing" \
+        || ( ! -e "${sentinel}" \
+            && -f "${EASY_ALL_SSH_PORT_CONFIG}" \
+            && "$(<"${EASY_ALL_SSH_PORT_CONFIG}")" == *"Managed by easy_all"* ) ]]; then
+        rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}"
+    fi
+
+    if [[ -f "${BACKUP_DIR}/pre-install-fail2ban-jail.conf" ]]; then
+        install -m 0644 "${BACKUP_DIR}/pre-install-fail2ban-jail.conf" \
+            "${EASY_ALL_FAIL2BAN_CONFIG}"
+    else
+        rm -f -- "${EASY_ALL_FAIL2BAN_CONFIG}"
+    fi
+    if [[ -f "${BACKUP_DIR}/pre-install-fail2ban-action.conf" ]]; then
+        install -m 0644 "${BACKUP_DIR}/pre-install-fail2ban-action.conf" \
+            "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
+    else
+        rm -f -- "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
+    fi
+    rm -f -- "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
+
+    sshd_bin=$(command -v sshd 2>/dev/null || true)
+    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    if [[ -n "${sshd_bin}" ]] && "${sshd_bin}" -t >/dev/null 2>&1; then
+        for unit in ssh.service sshd.service; do
+            systemctl cat "${unit}" >/dev/null 2>&1 || continue
+            systemctl reload "${unit}" >/dev/null 2>&1 \
+                || warn "恢复 SSH 配置后重载 ${unit} 失败"
+            break
+        done
+    else
+        warn "恢复 SSH 配置后校验失败，请检查 ${EASY_ALL_SSH_PORT_CONFIG}"
+    fi
+
+    if [[ -e "${sentinel}" ]]; then
+        if [[ -f "${BACKUP_DIR}/pre-install-fail2ban.missing" ]]; then
+            systemctl disable --now fail2ban.service >/dev/null 2>&1 || true
+        elif [[ -f "${BACKUP_DIR}/pre-install-fail2ban.present" ]]; then
+            fail2ban-client -t >/dev/null 2>&1 \
+                || warn "恢复 Fail2ban 配置后校验失败"
+            if [[ -f "${BACKUP_DIR}/pre-install-fail2ban.enabled" ]]; then
+                systemctl enable fail2ban.service >/dev/null 2>&1 || true
+            else
+                systemctl disable fail2ban.service >/dev/null 2>&1 || true
+            fi
+            if [[ -f "${BACKUP_DIR}/pre-install-fail2ban.active" ]]; then
+                systemctl restart fail2ban.service >/dev/null 2>&1 \
+                    || warn "恢复 Fail2ban 服务失败"
+            else
+                systemctl stop fail2ban.service >/dev/null 2>&1 || true
+            fi
+        fi
+    elif systemctl cat fail2ban.service >/dev/null 2>&1; then
+        fail2ban-client -t >/dev/null 2>&1 \
+            && systemctl restart fail2ban.service >/dev/null 2>&1 \
+            || warn "移除旧版 easy_all Fail2ban 配置后重载失败"
+    fi
+}
+
 append_ssh_port() {
     local port=$1
     [[ "${port}" =~ ^[0-9]+$ ]] || return 0
@@ -109,8 +231,6 @@ restore_managed_ssh_port_config() {
 ensure_additional_ssh_port() {
     local sshd_bin=$1 unit=$2 candidate backup had_config=0 address_family port attempt
     local preserve_port
-    local enable_ipv4=1
-    local enable_ipv6=0
 
     [[ "${EASY_ALL_ADDITIONAL_SSH_PORT}" =~ ^[0-9]+$ ]] \
         && ((10#${EASY_ALL_ADDITIONAL_SSH_PORT} >= 1 \
@@ -137,14 +257,8 @@ ensure_additional_ssh_port() {
 
     address_family=$("${sshd_bin}" -T 2>/dev/null \
         | awk '$1 == "addressfamily" && !found {value=$2; found=1} END {if (found) print value}')
-    [[ "${address_family:-any}" != "inet6" ]] || enable_ipv4=0
-    if [[ "${address_family:-any}" != "inet" \
-        && -r /proc/sys/net/ipv6/conf/all/disable_ipv6 \
-        && "$(< /proc/sys/net/ipv6/conf/all/disable_ipv6)" == "0" ]]; then
-        enable_ipv6=1
-    fi
-    [[ "${enable_ipv4}" == "1" || "${enable_ipv6}" == "1" ]] \
-        || die "sshd 仅允许 IPv6，但当前系统 IPv6 不可用"
+    [[ "${address_family:-any}" != "inet6" ]] \
+        || die "sshd 仅允许 IPv6，但 easy_all 已全局禁用 IPv6"
 
     {
         printf '%s\n' '# Managed by easy_all. Keep every detected SSH port and add 65533.'
@@ -152,8 +266,7 @@ ensure_additional_ssh_port() {
             printf 'Port %s\n' "${port}"
         done
         for port in ${SSH_PORTS}; do
-            [[ "${enable_ipv4}" == "1" ]] && printf 'ListenAddress 0.0.0.0:%s\n' "${port}"
-            [[ "${enable_ipv6}" == "1" ]] && printf 'ListenAddress [::]:%s\n' "${port}"
+            printf 'ListenAddress 0.0.0.0:%s\n' "${port}"
         done
     } >"${candidate}"
 

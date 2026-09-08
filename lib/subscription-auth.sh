@@ -114,15 +114,14 @@ write_subscription_token_map() {
 
 render_mihomo_subscription() {
     local template=$1 node_file=$2 destination=$3 node_name=$4
-    local group_file=${6:-} name_file=${7:-}
+    local group_file=${5:-} name_file=${6:-}
     local encoded_node_name
     encoded_node_name=$(jq -Rn --arg value "${node_name}" '$value')
     EASY_ALL_NODE_NAME="${encoded_node_name}" \
-    EASY_ALL_IPV6="${IPV6_ENABLED:-false}" \
     awk -v node_file="${node_file}" \
         -v group_file="${group_file}" -v name_file="${name_file}" '
         $0 ~ /^ipv6: (true|false)$/ {
-            print "ipv6: " ENVIRON["EASY_ALL_IPV6"]
+            print "ipv6: false"
             next
         }
         $0 == "# EASY_ALL_PROXY_NODE" {

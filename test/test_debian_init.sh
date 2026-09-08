@@ -277,8 +277,8 @@ test_remote_script_contract() {
         'configure_fail2ban_ssh()' "${content}"
     assert_contains "shared platform pins SSH to explicit IPv4 listen addresses" \
         "printf 'ListenAddress 0.0.0.0:%s" "${platform_content}"
-    assert_contains "shared platform pins SSH to explicit IPv6 listen addresses when available" \
-        "printf 'ListenAddress [::]:%s" "${platform_content}"
+    assert_not_contains "shared platform never emits IPv6 SSH listeners" \
+        "ListenAddress [::]" "${platform_content}"
     assert_contains "shared platform enables Fail2ban SSH jail" \
         "fail2ban-client status sshd" "${platform_content}"
     assert_contains "shared Fail2ban monitors detected SSH ports" \

@@ -255,7 +255,7 @@ flowchart TD
     B -->|1 默认| R0[直连 Reality]
     R0 --> R1[系统预检 / 端口与旧安装冲突检查]
     R1 --> R2[备份 / 依赖 / SSH 启动保障 / XanMod LTS BBRv3 / 重启策略]
-    R2 --> R3[公网 IPv6 探测 / 连接地址 / SNI / 订阅端口]
+    R2 --> R3[禁用 IPv6 / 连接地址 / SNI / 订阅端口]
     R3 --> R4{订阅输出选择}
     R4 -->|部署| R5[订阅域名、文件名、Token 或用户配额]
     R4 -->|仅节点| R6[不收集订阅服务参数]
@@ -361,14 +361,15 @@ Gcore 模式按状态中的资源 ID 删除 CDN Resource、Origin Group、回源
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 读取状态并备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
+| Reality | 1. 读取已安装模式，安装或验收 XanMod LTS BBRv3、全局禁用 IPv6、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式；自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS，8443 仅允许 Cloudflare 官方 IPv4 回源，并重建、验收订阅。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
 | Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3、重写 TCP 参数，并按当前状态同步 SSH 监听、UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx。<br>4. 按已保存的选择重建并验收订阅；只使用完整且格式兼容的 6 节点缓存，不生成域名兜底。<br>5. 保存状态、注册当前代码、恢复用户配额和 Globalping 刷新任务并显示输出。普通 `apply` 不读取云端凭证、不修改云资源。 |
 | Gcore CDN WebSocket | 1. 读取状态并备份本机配置。<br>2. 同步 UFW 回源白名单并刷新单一 WebSocket 入站。<br>3. 使用现有兼容入口缓存重建订阅，不生成域名兜底。<br>4. 保存状态、注册当前代码并恢复配额与 Globalping 定时任务。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
 Xray/Nginx 配置、TLS 证书与订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
 BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚；已安装的内核包也不会在回滚或卸载时
-自动删除，避免破坏当前启动项。
+自动删除，避免破坏当前启动项。Reality 卸载会恢复安装前的 TCP/BBR 配置、UFW 启停状态、
+SSH 端口配置与 Fail2ban 配置；仅保留已经安装的内核和软件包。
 
 配置更新、核心更新和用户配额统计共用一把运行时写锁。同一时间只能执行一个写操作；检测到另一个
 任务正在运行时会立即停止并提示稍后重试，避免并发写入覆盖最新配置。
@@ -625,7 +626,8 @@ ASN 会给出警告但不会阻止安装，查询不可用时同样只警告。R
 共享该端口；端口范围为 `10000-12927`，按闰年预留共 `2,928` 个端口。UFW 的 `before.rules` 受管 NAT 区块
 保留前面 `56` 个历史 3 小时窗口，同时预开放当天全天 `8` 个端口和次日凌晨 `00/03` 的
 `2` 个端口，共 `66` 个端口，并将它们重定向到 Xray `443`；不会生成数万条 UFW allow 规则。
-每天 `00:01` 会刷新这组端口；每日重启任务也会先刷新并清理，再执行重启。UFW 过滤规则默认拒绝入站与转发，始终放行检测到的 SSH
+每个 3 小时窗口开始后的第 1 分钟会刷新 NAT，并先完整生成、校验再切换已部署的 Base64/Mihomo 订阅；
+每日重启任务也会先刷新再执行重启。Worker 聚合仍在每次请求时直接计算当前端口。UFW 过滤规则默认拒绝入站与转发，始终放行检测到的 SSH
 端口和 Reality TCP `443`；部署自托管订阅时，HTTPS `8443` 仅允许 Cloudflare 官方 IPv4 回源段，
 不开放 HTTP `80`。
 
@@ -634,9 +636,8 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Reality 生成的 Mihomo/Clash 节点默认输出 `ip-version: ipv4`。只有 VPS 已启用公网 IPv6，
-且客户端连接域名发布的全部 AAAA 都与该公网 IPv6 匹配时，节点才输出 `ip-version: dual`。
-模板总开关和业务 DNS 统一使用 `ipv6: false`，彻底禁用客户端 IPv6 解析与出站。
+Reality 生成的 Mihomo/Clash 节点固定输出 `ip-version: ipv4`，模板总开关和业务 DNS
+统一使用 `ipv6: false`，彻底禁用客户端 IPv6 解析与出站。
 
 Reality 服务端与 CDN XHTTP 均阻断 IPv4/IPv6 私网、链路本地、回环、组播及保留地址，
 避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
@@ -653,15 +654,13 @@ Reality 交互选项：
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
 
-安装器会先检查服务器是否具有全局 IPv6 地址、IPv6 默认路由和可用的公网 IPv6 出口：
+Reality 在主机、UFW、Xray、Nginx 和客户端订阅层统一使用 IPv4：
 
-- 检测成功时，Reality 入站使用 `::` 显式启用 IPv4/IPv6 双栈，UFW 启用 IPv6；动态订阅端口同时写入 IPv4 与 IPv6 NAT 转发规则。
-- 使用域名作为连接地址时，A 记录必须解析到当前 VPS 公网 IPv4；系统 DNS 优先，公共 DNS 可用时会交叉校验。
-- 使用域名作为连接地址时，AAAA 可以不发布；未发布时客户端暂时使用 A 记录。发布 AAAA 后，其地址必须与检测到的 VPS 公网 IPv6 一致。
-- 未检测到可用公网 IPv6 时保持 IPv4 入站；此时连接域名不得发布 AAAA，避免客户端连接到不可用的 IPv6 地址。
-
-Reality 入站根据服务器公网 IPv6 自动选择 IPv4 或双栈监听；生成节点默认使用 `ipv4`，仅当
-VPS 公网 IPv6 与节点域名 AAAA 完整匹配时使用 `dual`。Xray 出站统一使用直接出站并默认拦截 UDP/443。
+- sysctl 固定设置 `net.ipv6.conf.{all,default,lo}.disable_ipv6=1`，UFW 固定设置 `IPV6=no`。
+- Xray Reality 入站只监听 `0.0.0.0:443`，Nginx 订阅源站只监听 IPv4 `8443`。
+- 动态端口只写入 IPv4 NAT；`apply` 会清理旧版本遗留的 IPv6 NAT 区块。
+- 使用域名作为连接地址时，A 记录必须解析到当前 VPS 公网 IPv4，且不得发布 AAAA。
+- Xray 出站统一使用直接出站并默认拦截 UDP/443。
 
 自托管订阅域名必须是 Cloudflare Active Zone 下的一级子域名。安装器创建 Proxied A 记录；
 客户端由 Universal SSL 终止 TLS，Cloudflare 使用 Full (strict) 连接 VPS `8443` 上的 Origin CA：
@@ -743,10 +742,10 @@ STATE_VERSION=6  # Reality
 STATE_VERSION=7  # Cloudflare XHTTP / Gcore WebSocket
 PROTOCOL=reality|cloudflare-streamup|gcore
 CDN_PROVIDER=cloudflare|gcore
-CDN_CLIENT_IP_FAMILY=ipv4|ipv6-prefer
 ```
 
-Reality 的 `CDN_PROVIDER` 为空。Globalping Token 只在 Cloudflare 模式使用，单独保存在
+客户端 IP 族不再作为状态项，所有模式固定为 IPv4-only。Reality 的 `CDN_PROVIDER` 为空。
+Globalping Token 只在 Cloudflare 模式使用，单独保存在
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`，不会写入状态文件。
 
 默认 `uninstall` 只删除本机资源并保留远端资源。追加 `--purge-cloud` 时，Reality 清理带所有权标记的

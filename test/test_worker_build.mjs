@@ -24,6 +24,11 @@ try {
     assert.equal(await buildWorker({ configPath, outputPath, now: now + 60_000 }), '2026-09-07-v0', 'Beijing midnight resets revision');
     const source = await readFile(outputPath, 'utf8');
     assert.equal((await stat(outputPath)).mode & 0o777, 0o600);
+    config.nodes[0].ipVersion = 'dual';
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /IPv4-only/);
+    assert.equal(await readFile(outputPath, 'utf8'), source, 'IPv6 config rejection preserves artifact');
+    delete config.nodes[0].ipVersion;
     await writeFile(configPath, '{invalid');
     await assert.rejects(buildWorker({ configPath, outputPath }));
     assert.equal(await readFile(outputPath, 'utf8'), source, 'failed build preserves artifact');
