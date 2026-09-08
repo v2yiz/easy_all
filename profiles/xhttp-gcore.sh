@@ -1143,7 +1143,7 @@ collect_install_inputs() {
     info "Gcore 模式需要具有 CDN 与 Managed DNS 权限的 API Token。"
     gcore_collect_api_token
 
-    info "Gcore 模式通过亚洲、美国西岸、中国三网及多公共解析器发现真实 DNS 入口，并使用三网 eyeball 探针定向测速。"
+    info "Gcore 模式通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器发现真实 DNS 入口，并使用三网 eyeball 探针定向测速。"
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
 

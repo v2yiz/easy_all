@@ -2,21 +2,21 @@
 
 # Gcore CDN endpoint discovery and carrier-targeted Globalping measurement.
 #
-# Resolves this account's CDN hostname from regional and China-carrier DNS
-# perspectives, keeps a rolling history of verified ingress addresses, and
-# probes them with dedicated China carrier probes.
+# Resolves this account's CDN hostname from mainland China, Hong Kong, Taiwan,
+# Japan, Singapore, and US west coast DNS perspectives, keeps a rolling history
+# of verified ingress addresses, and probes them with China carrier probes.
 # Outputs up to 2 curated IPs per carrier (up to 6 nodes).
 
 readonly GCORE_GLOBALPING_PACKET_COUNT="${GCORE_GLOBALPING_PACKET_COUNT_OVERRIDE:-4}"
-readonly GCORE_DNS_PROBES_PER_REGION="${GCORE_DNS_PROBES_PER_REGION_OVERRIDE:-8}"
-readonly GCORE_DNS_AUX_PROBES_PER_REGION="${GCORE_DNS_AUX_PROBES_PER_REGION_OVERRIDE:-2}"
-readonly GCORE_DNS_CARRIER_PROBES="${GCORE_DNS_CARRIER_PROBES_OVERRIDE:-1}"
-readonly GCORE_DNS_RESOLVER_PROBES_PER_REGION="${GCORE_DNS_RESOLVER_PROBES_PER_REGION_OVERRIDE:-2}"
+readonly GCORE_DNS_PROBES_PER_REGION="${GCORE_DNS_PROBES_PER_REGION_OVERRIDE:-12}"
+readonly GCORE_DNS_AUX_PROBES_PER_REGION="${GCORE_DNS_AUX_PROBES_PER_REGION_OVERRIDE:-4}"
+readonly GCORE_DNS_CARRIER_PROBES="${GCORE_DNS_CARRIER_PROBES_OVERRIDE:-8}"
+readonly GCORE_DNS_RESOLVER_PROBES_PER_REGION="${GCORE_DNS_RESOLVER_PROBES_PER_REGION_OVERRIDE:-3}"
 readonly GCORE_DNS_HISTORY_MAX_AGE_SECONDS="${GCORE_DNS_HISTORY_MAX_AGE_SECONDS_OVERRIDE:-604800}"
 readonly GCORE_DNS_HISTORY_MAX_IPS="${GCORE_DNS_HISTORY_MAX_IPS_OVERRIDE:-60}"
 readonly GCORE_CANDIDATES_PER_CARRIER=2
 readonly GCORE_CANDIDATE_LIMIT=6
-readonly GCORE_CACHE_VERSION=3
+readonly GCORE_CACHE_VERSION=4
 readonly GCORE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
 readonly GCORE_PRECHECK_READY_ATTEMPTS="${GCORE_PRECHECK_READY_ATTEMPTS_OVERRIDE:-90}"
@@ -41,18 +41,27 @@ gcore_globalping_dns_measurement_request() {
           locations:
             (if $scope == "full" then [
               {country:"HK",limit:$probes},
+              {country:"TW",limit:$probes},
               {country:"JP",limit:$probes},
+              {country:"SG",limit:$probes},
               {country:"US",city:"Los Angeles",limit:$probes},
-              {country:"KR",limit:$aux_probes},
-              {country:"SG",limit:$aux_probes},
               {country:"US",city:"San Jose",limit:$aux_probes},
+              {country:"US",city:"Santa Clara",limit:$aux_probes},
+              {country:"US",city:"Fremont",limit:$aux_probes},
+              {country:"US",city:"San Francisco",limit:$aux_probes},
+              {country:"US",city:"Seattle",limit:$aux_probes},
+              {country:"US",city:"Portland",limit:$aux_probes},
               {country:"CN",asn:9808,tags:["eyeball-network"],limit:$carrier_probes},
               {country:"CN",asn:4837,tags:["eyeball-network"],limit:$carrier_probes},
               {country:"CN",asn:4134,tags:["eyeball-network"],limit:$carrier_probes}
             ] else [
               {country:"HK",limit:$resolver_probes},
+              {country:"TW",limit:$resolver_probes},
               {country:"JP",limit:$resolver_probes},
-              {country:"US",city:"Los Angeles",limit:$resolver_probes}
+              {country:"SG",limit:$resolver_probes},
+              {country:"US",city:"Los Angeles",limit:$resolver_probes},
+              {country:"US",city:"San Jose",limit:$resolver_probes},
+              {country:"US",city:"Seattle",limit:$resolver_probes}
             ] end),
           timeout:15,
           measurementOptions:
@@ -72,15 +81,22 @@ gcore_parse_globalping_dns_endpoints() {
           elif .probe.country == "CN" and .probe.asn == 4837 then "CN-CU"
           elif .probe.country == "CN" and .probe.asn == 4134 then "CN-CT"
           elif .probe.country == "HK" then "HK"
+          elif .probe.country == "TW" then "TW"
           elif .probe.country == "JP" then "JP"
-          elif .probe.country == "KR" then "KR"
           elif .probe.country == "SG" then "SG"
           elif .probe.country == "US"
             and (.probe.city // "") == "Los Angeles"
           then "LA"
           elif .probe.country == "US"
-            and ((.probe.city // "") == "San Jose" or (.probe.state // "") == "California")
-          then "US-CA"
+            and (
+              (.probe.city // "") == "San Jose"
+              or (.probe.city // "") == "Santa Clara"
+              or (.probe.city // "") == "Fremont"
+              or (.probe.city // "") == "San Francisco"
+              or (.probe.city // "") == "Seattle"
+              or (.probe.city // "") == "Portland"
+            )
+          then "US-WEST"
           else empty
           end
         ) as $region
@@ -109,7 +125,7 @@ gcore_expand_dns_endpoints_for_carriers() {
     while IFS=$'\t' read -r ip region; do
         validate_public_ipv4 "${ip}" || continue
         case "${region}" in
-        CN-CM | CN-CU | CN-CT | HK | JP | KR | SG | LA | US-CA)
+        CN-CM | CN-CU | CN-CT | HK | TW | JP | SG | LA | US-WEST)
             printf '%s\t%s\n' "${ip}" "${region}" >>"${valid_file}"
             ;;
         esac
@@ -119,11 +135,11 @@ gcore_expand_dns_endpoints_for_carriers() {
 
     {
         gcore_emit_dns_candidates_for_carrier "${valid_file}" \
-            9808 mobile CN-CM HK SG JP KR CN-CU CN-CT LA US-CA
+            9808 mobile CN-CM HK TW JP SG CN-CU CN-CT LA US-WEST
         gcore_emit_dns_candidates_for_carrier "${valid_file}" \
-            4837 unicom CN-CU JP KR HK SG CN-CM CN-CT LA US-CA
+            4837 unicom CN-CU JP TW HK SG CN-CM CN-CT US-WEST LA
         gcore_emit_dns_candidates_for_carrier "${valid_file}" \
-            4134 telecom CN-CT LA US-CA JP KR SG HK CN-CM CN-CU
+            4134 telecom CN-CT LA US-WEST JP TW HK SG CN-CM CN-CU
     } | awk -F'\t' '!seen[$1,$2]++'
 }
 
@@ -441,7 +457,7 @@ gcore_zero_loss_observations() {
     ' "${measurements_file}"
 }
 
-# Selects top 2 candidates per carrier (Mobile->HK, Unicom->JP, Telecom->LA/US-CA)
+# Selects top 2 candidates per carrier from the configured regional views.
 # Output 6 candidates flattened with sequential labels 1..6
 gcore_select_carrier_candidates() {
     local observations_file=$1 per_carrier=${2:-${GCORE_CANDIDATES_PER_CARRIER}} limit=${3:-${GCORE_CANDIDATE_LIMIT}} history_file=${4:-}
@@ -461,9 +477,9 @@ gcore_select_carrier_candidates() {
            --argjson hist "${history_ips_json}" '
       . as $all_items |
       [
-        {asn: 9808, carrier: "mobile",  primary: ["CN-CM", "HK", "SG"]},
-        {asn: 4837, carrier: "unicom",  primary: ["CN-CU", "JP", "KR"]},
-        {asn: 4134, carrier: "telecom", primary: ["CN-CT", "LA", "US-CA"]}
+        {asn: 9808, carrier: "mobile",  primary: ["CN-CM", "HK", "TW", "SG"]},
+        {asn: 4837, carrier: "unicom",  primary: ["CN-CU", "JP", "TW"]},
+        {asn: 4134, carrier: "telecom", primary: ["CN-CT", "LA", "US-WEST"]}
       ] as $carriers |
       reduce $carriers[] as $c (
         {selected_ips: [], results: []};
@@ -589,6 +605,11 @@ gcore_load_retained_dns_candidates() {
           and (.carrier_asn | type) == "number"
           and (.carrier | type) == "string"
           and (.region | type) == "string"
+          and (
+            .region == "CN-CM" or .region == "CN-CU" or .region == "CN-CT"
+            or .region == "HK" or .region == "TW" or .region == "JP"
+            or .region == "SG" or .region == "LA" or .region == "US-WEST"
+          )
           and (.last_seen_epoch | type) == "number"
           and ($now - .last_seen_epoch) >= 0
           and ($now - .last_seen_epoch) <= $max_age
@@ -681,7 +702,7 @@ gcore_build_dns_pool_cache() {
     gcore_load_retained_dns_candidates "${retained_dns_file}" "${measured_at_epoch}"
     hist_count=$(wc -l <"${retained_dns_file}" | tr -d ' ')
 
-    info "正在通过亚洲、美国西岸、中国三网及多公共解析器发现 Gcore CDN 域名入口"
+    info "正在通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器发现 Gcore CDN 域名入口"
     gcore_generate_carrier_candidate_pool >"${current_pool_file}" \
         || { warn "无法从 Gcore 多地区 DNS 解析生成入口候选池"; return 1; }
     gcore_merge_dns_candidate_history \
