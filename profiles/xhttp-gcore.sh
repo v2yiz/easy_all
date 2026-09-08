@@ -3,8 +3,8 @@
 # Gcore CDN Profile for easy_all (Mode 3).
 #
 # Provides high-performance, edge-accelerated VLESS over Gcore CDN.
-# Resolves the account CDN hostname from Hong Kong, Japan, and Los Angeles,
-# then selects up to 2 verified IPv4 endpoints per China carrier.
+# Resolves the account CDN hostname from Asian, US West, China-carrier, and
+# public-resolver perspectives, then selects up to 2 endpoints per carrier.
 # Server side enables mTLS origin validation and dual-path Xray (WebSocket + XHTTP packet-up).
 
 set -Eeuo pipefail
@@ -1143,7 +1143,7 @@ collect_install_inputs() {
     info "Gcore 模式需要具有 CDN 与 Managed DNS 权限的 API Token。"
     gcore_collect_api_token
 
-    info "Gcore 模式通过香港、日本、洛杉矶 Globalping 探针发现真实 DNS 入口，并使用三网 eyeball 探针定向测速。"
+    info "Gcore 模式通过亚洲、美国西岸、中国三网及多公共解析器发现真实 DNS 入口，并使用三网 eyeball 探针定向测速。"
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
 

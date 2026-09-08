@@ -71,6 +71,10 @@ export GCORE_EDGE_PROPAGATION_INTERVAL_OVERRIDE=0
 export GCORE_PRECHECK_READY_ATTEMPTS_OVERRIDE=3
 export GCORE_PRECHECK_READY_INTERVAL_OVERRIDE=0
 export GCORE_DNS_PROBES_PER_REGION_OVERRIDE=2
+export GCORE_DNS_AUX_PROBES_PER_REGION_OVERRIDE=1
+export GCORE_DNS_CARRIER_PROBES_OVERRIDE=1
+export GCORE_DNS_RESOLVER_PROBES_PER_REGION_OVERRIDE=1
+export GCORE_DNS_HISTORY_MAX_AGE_SECONDS_OVERRIDE=7200
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
 touch "${CERT_FILE}" "${KEY_FILE}"
@@ -132,10 +136,19 @@ assert_equal "Gcore DNS discovery uses the DNS measurement type" "dns" \
     "$(jq -r '.type' <<<"${dns_request}")"
 assert_equal "Gcore DNS discovery requests A records" "A" \
     "$(jq -r '.measurementOptions.query.type' <<<"${dns_request}")"
-assert_equal "Gcore DNS discovery covers three target regions" "3" \
+assert_equal "Gcore DNS discovery covers regional and China-carrier perspectives" "9" \
     "$(jq '.locations | length' <<<"${dns_request}")"
-assert_equal "Gcore DNS discovery uses the configured probes per region" "true" \
-    "$(jq 'all(.locations[]; .limit == 2)' <<<"${dns_request}")"
+assert_equal "Gcore DNS discovery uses more core probes" "true" \
+    "$(jq '[.locations[] | select(.country=="HK" or .country=="JP" or .city=="Los Angeles") | .limit] == [2,2,2]' <<<"${dns_request}")"
+assert_equal "Gcore DNS discovery includes all China carrier ASNs" \
+    '[4134,4837,9808]' \
+    "$(jq -c '[.locations[] | select(.country=="CN") | .asn] | sort' <<<"${dns_request}")"
+resolver_request=$(gcore_globalping_dns_measurement_request \
+    "${VLESS_CDN_DOMAIN}" "1.1.1.1" core)
+assert_equal "Resolver-specific discovery uses Cloudflare DNS" "1.1.1.1" \
+    "$(jq -r '.measurementOptions.resolver' <<<"${resolver_request}")"
+assert_equal "Resolver-specific discovery uses compact core locations" "3" \
+    "$(jq '.locations | length' <<<"${resolver_request}")"
 
 dns_measurement="${TMP_DIR}/gcore-dns-measurement.json"
 cat >"${dns_measurement}" <<'EOF'
@@ -184,39 +197,111 @@ cat >"${dns_measurement}" <<'EOF'
         "statusCode": 2,
         "answers": [{"type": "A", "value": "31.184.207.9"}]
       }
+    },
+    {
+      "probe": {"country": "KR", "city": "Seoul"},
+      "result": {
+        "status": "finished",
+        "statusCode": 0,
+        "answers": [{"type": "A", "value": "92.223.120.140"}]
+      }
+    },
+    {
+      "probe": {"country": "CN", "asn": 9808, "city": "Guangzhou"},
+      "result": {
+        "status": "finished",
+        "statusCode": 0,
+        "answers": [{"type": "A", "value": "92.223.120.143"}]
+      }
     }
   ]
 }
 EOF
 dns_candidates=$(gcore_parse_globalping_dns_candidates "$(<"${dns_measurement}")")
-assert_equal "Regional DNS parsing keeps six unique public ingress IPs" "6" \
+assert_equal "Regional DNS parsing keeps eight unique public ingress IPs" "8" \
     "$(cut -f1 <<<"${dns_candidates}" | sort -u | wc -l | tr -d ' ')"
-assert_equal "Hong Kong answers feed Mobile primary and Unicom cross-checks" "2" \
-    "$(awk -F'\t' '$1=="92.223.76.20" && ($2=="9808" || $2=="4837"){c++} END{print c+0}' <<<"${dns_candidates}")"
+assert_equal "Hong Kong answers feed all three carrier checks" "3" \
+    "$(awk -F'\t' '$1=="92.223.76.20"{c++} END{print c+0}' <<<"${dns_candidates}")"
 assert_equal "Japan answers feed all three carrier checks" "3" \
     "$(awk -F'\t' '$1=="31.184.207.6"{c++} END{print c+0}' <<<"${dns_candidates}")"
-assert_equal "Los Angeles answers feed Telecom primary checks" "4134" \
-    "$(awk -F'\t' '$1=="92.223.120.132"{print $2}' <<<"${dns_candidates}")"
+assert_equal "China Mobile DNS answers retain their dedicated view" "CN-CM" \
+    "$(awk -F'\t' '$1=="92.223.120.143" && $2=="9808"{print $4}' <<<"${dns_candidates}")"
+assert_equal "Korea answers feed all three carrier checks" "3" \
+    "$(awk -F'\t' '$1=="92.223.120.140"{c++} END{print c+0}' <<<"${dns_candidates}")"
 assert_not_contains "Private DNS answers are rejected" "${dns_candidates}" "10.0.0.1"
 assert_not_contains "Failed DNS probe answers are rejected" "${dns_candidates}" "31.184.207.9"
 
 (
+    dns_submissions="${TMP_DIR}/gcore-dns-submissions"
+    : >"${dns_submissions}"
     globalping_api_request() {
         assert_equal "DNS discovery submits one measurement" \
             "POST /measurements" "$1 $2"
         assert_equal "Submitted discovery payload targets the CDN hostname" \
             "${VLESS_CDN_DOMAIN}" "$(jq -r '.target' <<<"$3")"
-        printf '{"id":"dns-measurement-1"}'
+        resolver=$(jq -r '.measurementOptions.resolver // "probe-default"' <<<"$3")
+        printf '%s\n' "${resolver}" >>"${dns_submissions}"
+        jq -cn --arg id "dns-${resolver}" '{id:$id}'
     }
     gcore_wait_globalping_measurement() {
-        assert_equal "DNS discovery waits for the created measurement" \
-            "dns-measurement-1" "$1"
         cat "${dns_measurement}"
     }
     generated=$(gcore_generate_carrier_candidate_pool)
     assert_equal "DNS discovery orchestration returns parsed candidates" \
         "${dns_candidates}" "${generated}"
+    assert_equal "DNS discovery submits default and two public resolver views" \
+        $'probe-default\n1.1.1.1\n8.8.8.8' "$(<"${dns_submissions}")"
 )
+
+# DNS candidates survive hourly refreshes for the configured retention window.
+history_now=100000
+retained_dns="${TMP_DIR}/gcore-retained-dns.tsv"
+cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
+{
+  "version": 2,
+  "provider": "gcore",
+  "candidate_source": "gcore-globalping-regional-dns",
+  "measured_at_epoch": 99000,
+  "candidates": [
+    {"ip":"92.223.76.20","carrier_asn":9808,"carrier":"mobile","region":"HK"}
+  ]
+}
+EOF
+gcore_load_retained_dns_candidates "${retained_dns}" "${history_now}"
+assert_equal "Version 2 DNS cache migrates selected endpoints into history" \
+    $'92.223.76.20\t9808\tmobile\tHK\t99000' "$(<"${retained_dns}")"
+
+cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
+{
+  "version": 3,
+  "provider": "gcore",
+  "candidate_source": "gcore-globalping-regional-dns",
+  "measured_at_epoch": 100000,
+  "discovered_candidates": [
+    {"ip":"92.223.76.20","carrier_asn":9808,"carrier":"mobile","region":"HK","last_seen_epoch":99000},
+    {"ip":"31.184.207.6","carrier_asn":4837,"carrier":"unicom","region":"JP","last_seen_epoch":92799}
+  ]
+}
+EOF
+gcore_load_retained_dns_candidates "${retained_dns}" "${history_now}"
+assert_contains "Fresh DNS history is retained across hours" \
+    "$(<"${retained_dns}")" $'92.223.76.20\t9808\tmobile\tHK\t99000'
+assert_not_contains "Expired DNS history is removed" \
+    "$(<"${retained_dns}")" "31.184.207.6"
+
+current_dns="${TMP_DIR}/gcore-current-dns.tsv"
+merged_dns="${TMP_DIR}/gcore-merged-dns.tsv"
+cat >"${current_dns}" <<'EOF'
+92.223.76.20	9808	mobile	HK
+92.223.120.132	4134	telecom	LA
+EOF
+gcore_merge_dns_candidate_history \
+    "${current_dns}" "${retained_dns}" "${merged_dns}" "${history_now}"
+assert_equal "Current DNS observations refresh their history timestamp" \
+    "100000" "$(awk -F'\t' '$1=="92.223.76.20"{print $5}' "${merged_dns}")"
+assert_equal "New DNS observations are added to rolling history" \
+    "100000" "$(awk -F'\t' '$1=="92.223.120.132"{print $5}' "${merged_dns}")"
+rm -f -- "${GLOBALPING_CACHE_FILE}"
 
 # API wrappers must reject non-2xx responses even when the body lacks error/errors keys.
 if (
@@ -627,7 +712,7 @@ assert_equal "Legacy origin-ACL cache is not emitted to clients" \
 # Write valid regional-DNS cache and test cache validation.
 cat >"${GLOBALPING_CACHE_FILE}" <<EOF
 {
-  "version": 2,
+  "version": 3,
   "provider": "gcore",
   "domain": "${VLESS_CDN_DOMAIN}",
   "candidate_source": "gcore-globalping-regional-dns",
@@ -636,6 +721,15 @@ cat >"${GLOBALPING_CACHE_FILE}" <<EOF
   "probe_country": "CN",
   "probe_type": "eyeball-network",
   "carrier_asns": [9808, 4837, 4134],
+  "discovered_candidates": [
+    {
+      "ip": "92.223.76.20",
+      "carrier_asn": 9808,
+      "carrier": "mobile",
+      "region": "HK",
+      "last_seen_epoch": ${now_epoch}
+    }
+  ],
   "candidates": ${candidates_json}
 }
 EOF
