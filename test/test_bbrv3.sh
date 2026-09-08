@@ -127,6 +127,8 @@ uname() { printf '6.18.42-x64v3-xanmod1\n'; }
 bbrv3_running_kernel_supported() { return 0; }
 
 install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
+PROTOCOL="reality"
+CDN_PROVIDER=""
 configure_bbr_tcp
 assert_contains "BBRv3 uses fq" "$(<"${SYSCTL_CONFIG}")" \
     'net.core.default_qdisc = fq'
@@ -150,6 +152,8 @@ assert_contains "somaxconn queue increased to 65535" "$(<"${SYSCTL_CONFIG}")" \
     'net.core.somaxconn = 65535'
 assert_contains "netdev_max_backlog queue increased to 65535" "$(<"${SYSCTL_CONFIG}")" \
     'net.core.netdev_max_backlog = 65535'
+assert_contains "Reality disables destination metrics reuse" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv4.tcp_no_metrics_save = 1'
 
 runtime_keys=$(tcp_runtime_keys)
 assert_contains "runtime keys include tcp_notsent_lowat" "${runtime_keys}" 'net.ipv4.tcp_notsent_lowat'
@@ -157,8 +161,21 @@ assert_contains "runtime keys include tcp_tw_reuse" "${runtime_keys}" 'net.ipv4.
 assert_contains "runtime keys include tcp_fin_timeout" "${runtime_keys}" 'net.ipv4.tcp_fin_timeout'
 assert_contains "runtime keys include somaxconn" "${runtime_keys}" 'net.core.somaxconn'
 assert_contains "runtime keys include netdev_max_backlog" "${runtime_keys}" 'net.core.netdev_max_backlog'
+assert_contains "runtime keys include tcp_no_metrics_save" "${runtime_keys}" 'net.ipv4.tcp_no_metrics_save'
 [[ ! -e "${BBRV3_REBOOT_MARKER}" ]] \
     || fail "active BBRv3 must clear the reboot marker"
+
+PROTOCOL="cloudflare-streamup"
+CDN_PROVIDER="cloudflare"
+configure_bbr_tcp
+[[ "$(<"${SYSCTL_CONFIG}")" != *'net.ipv4.tcp_no_metrics_save'* ]] \
+    || fail "Cloudflare TCP settings must not include tcp_no_metrics_save"
+
+PROTOCOL="gcore"
+CDN_PROVIDER="gcore"
+configure_bbr_tcp
+[[ "$(<"${SYSCTL_CONFIG}")" != *'net.ipv4.tcp_no_metrics_save'* ]] \
+    || fail "Gcore TCP settings must not include tcp_no_metrics_save"
 
 bbrv3_running_kernel_supported() { return 1; }
 uname() { printf '6.1.0-amd64\n'; }

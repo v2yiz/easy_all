@@ -28,6 +28,7 @@ net.ipv4.tcp_slow_start_after_idle
 net.ipv4.tcp_notsent_lowat
 net.ipv4.tcp_tw_reuse
 net.ipv4.tcp_fin_timeout
+net.ipv4.tcp_no_metrics_save
 net.ipv4.tcp_keepalive_time
 net.ipv4.tcp_keepalive_intvl
 net.ipv4.tcp_keepalive_probes
@@ -252,6 +253,13 @@ net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
+    if [[ "${PROTOCOL:-}" == "reality" && -z "${CDN_PROVIDER:-}" ]]; then
+        cat >>"${RUNTIME_TMP}/bbr.conf" <<'EOF'
+
+# Direct-link routing changes should not reuse stale destination metrics.
+net.ipv4.tcp_no_metrics_save = 1
+EOF
+    fi
     modprobe tcp_bbr >/dev/null 2>&1 \
         || die "当前内核不支持 tcp_bbr"
     grep -qw bbr "${BBRV3_AVAILABLE_CC_FILE}" \
@@ -352,4 +360,3 @@ prompt_bbrv3_reboot() {
         warn "检测到非交互式环境，请在保存配置后手动执行: sudo reboot"
     fi
 }
-
