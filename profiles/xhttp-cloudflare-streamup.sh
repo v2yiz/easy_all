@@ -383,7 +383,7 @@ cloudflare_add_header_rule() {
     local ruleset=$1 host=$2 path=$3 ws_path=${4:-} ref
     ref=$(cloudflare_ref "header:${host}:${path}")
     local expr
-    expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\") or http.request.uri.path eq \"/aggregate\")"
+    expr="http.host eq \"${host}\" and (starts_with(http.request.uri.path, \"${path}\") or starts_with(http.request.uri.path, \"/easy_all-health\") or starts_with(http.request.uri.path, \"/subscribe\"))"
     cloudflare_upsert_rule "${ruleset}" "${ref}" "$(jq -cn --arg ref "${ref}" --arg host "${host}" --arg path "${path}" --arg expr "${expr}" --arg key "${ORIGIN_HEADER_SECRET}" '{ref:$ref,description:("easy_all origin header for "+$path),expression:$expr,action:"rewrite",action_parameters:{headers:{"X-Easy-All-Origin-Key":{operation:"set",value:$key}}}}')"
 }
 
@@ -1115,11 +1115,18 @@ refresh_cloudflare_cdn_ips() {
 }
 
 rollback_fresh_install() {
+    if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" ]]; then
+        (UNINSTALL_PURGE_CLOUD=1 purge_cloudflare_resources_before_uninstall 1) \
+            || warn "首次安装创建的 Cloudflare 资源未能全部自动清理"
+    fi
     stop_services
     remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
+    restore_platform_security_state
     restore_preinstall_firewall
+    restore_bbr_tcp_install_state
+    restore_preinstall_crontab
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
@@ -1153,16 +1160,18 @@ install_all() {
     write_nginx_config
     validate_protocol_runtime
     cloudflare_configure_cdn
-    cloudflare_validate_cdn_health
-    cloudflare_finalize_certificate_rotation
-    persist_globalping_token
-    refresh_globalping_cache || die "首次 Globalping 测量失败，无法生成严格精选 IP 订阅"
-    subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
     save_state
     register_easy_all_command
-    install_quota_timer
-    install_globalping_refresh_timer
     INSTALL_ROLLBACK_ON_EXIT=0
+    persist_globalping_token
+    install_globalping_refresh_timer
+    install_quota_timer
+    cloudflare_validate_cdn_health
+    cloudflare_finalize_certificate_rotation
+    refresh_globalping_cache \
+        || die "首次 Globalping 测量失败；本机与 Cloudflare 状态已保存，请稍后执行 easy_all refresh-cdn-ips"
+    subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
+    save_state
     cloudflare_clear_api_token
     show_subscription
     success "easy_all Cloudflare CDN 纯 XHTTP stream-up 安装完成"
@@ -1243,39 +1252,49 @@ update_subscription() {
 }
 
 purge_cloudflare_resources_before_uninstall() {
-    local host header_name strict_name
+    local allow_partial=${1:-0} host header_name strict_name
     [[ "${UNINSTALL_PURGE_CLOUD:-0}" == "1" ]] || return 0
-    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
-        && -n "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
-        && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
-        || die "状态缺少 Cloudflare 证书或 ruleset ID，已停止卸载；本机状态仍保留"
+    if [[ "${allow_partial}" != "1" ]]; then
+        [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
+            && -n "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
+            && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
+            || die "状态缺少 Cloudflare 证书或 ruleset ID，已停止卸载；本机状态仍保留"
+    fi
     cloudflare_collect_api_token
 
-    cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
-        "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${XHTTP_PATH}")"
-    if subscription_enabled \
-        && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
+    if [[ -n "${CLOUDFLARE_HEADER_RULESET_ID:-}" ]]; then
         cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
-            "$(cloudflare_ref "header:$(active_subscription_link_domain):/subscribe")"
+            "$(cloudflare_ref "header:${VLESS_CDN_DOMAIN}:${XHTTP_PATH}")"
+        if subscription_enabled \
+            && [[ "$(active_subscription_link_domain)" != "${VLESS_CDN_DOMAIN}" ]]; then
+            cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
+                "$(cloudflare_ref "header:$(active_subscription_link_domain):/subscribe")"
+        fi
     fi
-    while IFS= read -r host; do
-        cloudflare_purge_managed_rule "${CLOUDFLARE_STRICT_RULESET_ID}" \
-            "$(cloudflare_ref "strict:${host}")"
-    done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
+    if [[ -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]]; then
+        while IFS= read -r host; do
+            cloudflare_purge_managed_rule "${CLOUDFLARE_STRICT_RULESET_ID}" \
+                "$(cloudflare_ref "strict:${host}")"
+        done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
+    fi
 
     header_name="easy_all xhttp streamup headers ${VLESS_CDN_DOMAIN}"
     strict_name="easy_all xhttp streamup strict ${VLESS_CDN_DOMAIN}"
-    cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_HEADER_RULESET_ID}" \
-        "${header_name}" "http_request_late_transform"
-    cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_STRICT_RULESET_ID}" \
-        "${strict_name}" "http_config_settings"
+    [[ -z "${CLOUDFLARE_HEADER_RULESET_ID:-}" ]] \
+        || cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_HEADER_RULESET_ID}" \
+            "${header_name}" "http_request_late_transform"
+    [[ -z "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
+        || cloudflare_purge_empty_owned_ruleset "${CLOUDFLARE_STRICT_RULESET_ID}" \
+            "${strict_name}" "http_config_settings"
 
     while IFS= read -r host; do
         cloudflare_purge_managed_dns_record "${host}"
     done < <(cloudflare_origin_certificate_hosts | jq -r '.[]')
 
-    cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null \
-        || die "Cloudflare Origin CA 吊销失败，已停止卸载；本机状态仍保留"
+    if [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]]; then
+        cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null \
+            || die "Cloudflare Origin CA 吊销失败，已停止卸载；本机状态仍保留"
+    fi
     cloudflare_clear_api_token
     success "easy_all 托管的 Cloudflare DNS、规则、ruleset 与 Origin CA 证书已清理"
 }
@@ -1309,7 +1328,9 @@ uninstall_all() {
     remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
+    restore_platform_security_state
     restore_preinstall_firewall
+    restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true

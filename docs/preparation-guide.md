@@ -135,7 +135,7 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 
 安装器会把 Globalping Token 仅保存到 VPS 上 root 可读的凭据文件，用于每小时刷新候选 IP。若控制台提示
 本小时额度不足，不要反复执行刷新；等待额度恢复后再运行 `sudo easy_all refresh-cdn-ips`。刷新失败时，
-已有有效缓存仍会保留；缓存过期后订阅会退回原始域名节点。
+格式兼容的上一版已验证缓存仍会保留；没有兼容缓存时停止生成订阅，不会回退到域名节点。
 
 ## 3. 域名准备：Reality 订阅与 Cloudflare XHTTP
 
@@ -203,7 +203,7 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
   CDN 入口的地址；再按 Globalping 当前剩余免费额度限制本轮测量规模，避免耗尽额度。
 - 两阶段预筛：第一阶段使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
-  `eyeball-network` 探针分别发送 4 包 TCP/443 进行零丢包测延迟；第二阶段对低延迟候选进行真实 HTTP/TLS HEAD `/easy_all-health` 验证，彻底剔除 SNI 假通。
+  `eyeball-network` 探针分别发送 10 包 TCP/443，最多允许丢 1 包（10%）；第二阶段对低延迟候选进行真实 HTTP/TLS HEAD `/easy_all-health` 验证，彻底剔除 SNI 假通。
 - 按电信、联通、移动三大运营商独立优选，每网输出 2 个通过本机 HTTP/2 和 Globalping HTTP/TLS
   验证的地址，统一生成 6 个纯 XHTTP 节点（`优选1` 到 `优选6`）。
 - 不使用内置 Anycast IP 或域名兜底凑数。刷新失败时继续使用格式兼容的上一版已验证缓存；从未生成
@@ -361,8 +361,8 @@ dig @1.1.1.1 SOA example.com +dnssec
 Gcore Free Managed DNS 当前可用于此流程；若当前账户的 Managed DNS 显示未激活或并非 Free 方案，先在
 该产品页完成启用，再创建 Zone。
 
-节点域名不能是 Zone 根域，因为它需要使用 CNAME。已有 A、AAAA 或其他 CNAME 时，脚本默认停止，
-不会静默覆盖。只有明确设置 `GCORE_DNS_REPLACE=1` 才允许替换冲突记录。
+节点域名不能是 Zone 根域，因为它需要使用 CNAME。已有 A、AAAA 或其他 CNAME 时，脚本会停止且
+不会覆盖；请改用未占用的子域名。
 
 ### 8.3 Gcore API Token 权限
 

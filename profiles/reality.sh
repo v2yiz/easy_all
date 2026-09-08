@@ -1884,16 +1884,12 @@ rollback_fresh_install() {
     restore_preinstall_firewall
     restore_preinstall_ipv6
     restore_bbr_tcp_install_state
-    if [[ -f "${BACKUP_DIR}/pre-install-crontab" ]]; then
-        crontab "${BACKUP_DIR}/pre-install-crontab" >/dev/null 2>&1 || true
-    elif [[ -f "${BACKUP_DIR}/pre-install-crontab.missing" ]]; then
-        crontab -r >/dev/null 2>&1 || true
-    fi
+    restore_preinstall_crontab
     if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" \
         && -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
-        reality_cloudflare_purge_managed_resources \
+        (reality_cloudflare_purge_managed_resources \
             "${SUBSCRIPTION_DOMAIN}" "${CLOUDFLARE_ZONE_ID}" \
-            "${CLOUDFLARE_STRICT_RULESET_ID:-}" "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
+            "${CLOUDFLARE_STRICT_RULESET_ID:-}" "${CLOUDFLARE_ORIGIN_CERT_ID:-}") \
             || warn "首次安装创建的 Cloudflare 资源未能自动清理"
     fi
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"

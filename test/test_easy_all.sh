@@ -434,6 +434,8 @@ test_nginx_and_firewall() {
     assert_not_contains "Nginx does not authorize token labels" '"owner" 1;' "${config}"
     assert_contains "Nginx keeps static files internal" \
         "location = /_easy_all_subscription/mihomo" "${config}"
+    assert_equal "Subscription location suppresses token-bearing access logs" "1" \
+        "$(grep -c 'access_log off;' <<<"${config}")"
     assert_contains "Mihomo download keeps the configured filename without an extension" \
         'Content-Disposition "attachment; filename=MY_SUB"' "${config}"
     assert_not_contains "Mihomo download does not append yaml to the filename" \

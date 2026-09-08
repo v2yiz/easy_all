@@ -52,3 +52,12 @@ remove_daily_reboot_schedule() {
     { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab - \
         || warn "移除 easy_all 定时重启任务失败，请手动检查 root crontab"
 }
+
+restore_preinstall_crontab() {
+    if [[ -f "${BACKUP_DIR}/pre-install-crontab" ]]; then
+        crontab "${BACKUP_DIR}/pre-install-crontab" >/dev/null 2>&1 \
+            || warn "恢复安装前 root crontab 失败"
+    elif [[ -f "${BACKUP_DIR}/pre-install-crontab.missing" ]]; then
+        crontab -r >/dev/null 2>&1 || true
+    fi
+}

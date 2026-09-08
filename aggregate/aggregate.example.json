@@ -1,7 +1,0 @@
-{
-  "allowedTokens": {
-    "owner": "replace-with-a-long-random-token"
-  },
-  "upstreamUrl": "https://subscription.example.com/replace-me",
-  "nodes": []
-}

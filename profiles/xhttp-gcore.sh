@@ -404,6 +404,22 @@ gcore_require_rrset_available() {
         || die "Gcore Managed DNS ${domain} 已存在非 easy_all 目标的 ${type} RRset，拒绝覆盖（当前：${values//$'\n'/,}；目标：${expected}）"
 }
 
+gcore_delete_rrset_if_matches() {
+    local zone=$1 domain=$2 type=$3 expected=$4 rrset values status path
+    path="/dns/v2/zones/${zone}/${domain}/${type}"
+    rrset=$(gcore_api_get_optional "${path}") || {
+        status=$?
+        [[ "${status}" == "4" ]] && return 0
+        return "${status}"
+    }
+    values=$(gcore_rrset_values "${rrset}") || return 1
+    if [[ "${values}" != "${expected}" ]]; then
+        warn "Gcore Managed DNS ${domain} 的 ${type} 当前值已变化，保留该记录"
+        return 0
+    fi
+    gcore_api_delete_optional "${path}"
+}
+
 gcore_ensure_origin_a_record() {
     local public_ip
     public_ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测本机公网 IPv4"
@@ -1130,17 +1146,25 @@ gcore_prepare_origin() {
     fi
 }
 
-gcore_apply_cdn() {
+gcore_prepare_cdn_resources() {
     info "配置 Gcore 源组、证书与 CDN 资源"
     gcore_ensure_origin_group
     gcore_ensure_origin_validation_certificates
     gcore_ensure_resource
+}
+
+gcore_validate_cdn_resources() {
     if ((GCORE_CDN_RESOURCE_CHANGED == 1)); then
         gcore_wait_for_cdn_health
     else
         info "Gcore CDN Resource 未变化，执行单轮端到端验收并跳过传播轮询"
         gcore_wait_for_cdn_health 1 0
     fi
+}
+
+gcore_apply_cdn() {
+    gcore_prepare_cdn_resources
+    gcore_validate_cdn_resources
 }
 
 normalize_websocket_path() {
@@ -1549,12 +1573,68 @@ refresh_gcore_cdn_ips() {
     success "Gcore CDN 精选 IP 与订阅已刷新"
 }
 
+gcore_purge_managed_resources() {
+    local purge_failed=0
+    gcore_collect_api_token
+    if ! gcore_resolve_edge_certificate_id_for_purge; then
+        warn "无法识别 easy_all 托管的 Gcore 边缘证书"
+        purge_failed=1
+    fi
+    [[ -z "${GCORE_CDN_RESOURCE_ID:-}" ]] \
+        || gcore_api_delete_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+            || purge_failed=1
+    [[ -z "${GCORE_ORIGIN_GROUP_ID:-}" ]] \
+        || gcore_api_delete_optional "/cdn/origin_groups/${GCORE_ORIGIN_GROUP_ID}" \
+            || purge_failed=1
+    [[ -z "${GCORE_ORIGIN_CLIENT_CERT_ID:-}" ]] \
+        || gcore_api_delete_optional "/cdn/sslData/${GCORE_ORIGIN_CLIENT_CERT_ID}" \
+            || purge_failed=1
+    [[ -z "${GCORE_EDGE_CERTIFICATE_ID:-}" ]] \
+        || gcore_api_delete_optional "/cdn/sslData/${GCORE_EDGE_CERTIFICATE_ID}" \
+            || purge_failed=1
+    [[ -z "${GCORE_ORIGIN_CA_ID:-}" ]] \
+        || gcore_api_delete_optional "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}" \
+            || purge_failed=1
+    gcore_purge_managed_dns_records || purge_failed=1
+    gcore_clear_api_token
+    ((purge_failed == 0))
+}
+
+gcore_purge_managed_dns_records() {
+    local subscription_domain
+    if [[ -n "${GCORE_CDN_TARGET:-}" ]]; then
+        gcore_delete_rrset_if_matches \
+            "${GCORE_DNS_ZONE}" "${VLESS_CDN_DOMAIN}" CNAME \
+            "$(normalize_domain "${GCORE_CDN_TARGET}")" || return 1
+        subscription_domain=$(active_subscription_link_domain)
+        if [[ "${subscription_domain}" != "${VLESS_CDN_DOMAIN}" ]]; then
+            gcore_delete_rrset_if_matches \
+                "${GCORE_SUBSCRIPTION_DNS_ZONE}" "${subscription_domain}" CNAME \
+                "$(normalize_domain "${GCORE_CDN_TARGET}")" || return 1
+        fi
+    fi
+    if [[ -n "${VPS_PUBLIC_IPV4:-}" ]]; then
+        gcore_delete_rrset_if_matches \
+            "${GCORE_DNS_ZONE}" "${GCORE_ORIGIN_DOMAIN}" A \
+            "${VPS_PUBLIC_IPV4}" || return 1
+    fi
+}
+
 rollback_fresh_install() {
+    if [[ -n "${GCORE_API_TOKEN:-}" ]] \
+        && [[ -n "${GCORE_CDN_RESOURCE_ID:-}${GCORE_ORIGIN_GROUP_ID:-}${GCORE_ORIGIN_CLIENT_CERT_ID:-}${GCORE_EDGE_CERTIFICATE_ID:-}${GCORE_ORIGIN_CA_ID:-}" \
+            || "${GCORE_DNS_RECORDS_CHANGED:-0}" == "1" ]]; then
+        (gcore_purge_managed_resources) \
+            || warn "首次安装创建的 Gcore 资源未能全部自动清理"
+    fi
     stop_services
     remove_quota_timer
     remove_globalping_refresh_timer
     gcore_remove_origin_firewall_rules
+    restore_platform_security_state
     restore_preinstall_firewall
+    restore_bbr_tcp_install_state
+    restore_preinstall_crontab
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
@@ -1587,16 +1667,18 @@ install_all() {
     install_xray_service
     write_nginx_config
     validate_protocol_runtime
-    gcore_apply_cdn
-    persist_globalping_token
-    refresh_gcore_globalping_cache \
-        || die "首次 Globalping 测量失败，无法生成严格精选 IP 订阅"
-    subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
+    gcore_prepare_cdn_resources
     save_state
     register_easy_all_command
-    install_quota_timer
-    install_globalping_refresh_timer
     INSTALL_ROLLBACK_ON_EXIT=0
+    persist_globalping_token
+    install_globalping_refresh_timer
+    install_quota_timer
+    gcore_validate_cdn_resources
+    refresh_gcore_globalping_cache \
+        || die "首次 Globalping 测量失败；本机与 Gcore 状态已保存，请稍后执行 easy_all refresh-cdn-ips"
+    subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
+    save_state
     gcore_clear_api_token
     show_subscription
     success "easy_all Gcore CDN 精选节点安装完成"
@@ -1695,7 +1777,7 @@ update_subscription() {
 }
 
 uninstall_all() {
-    local mode=${1:-} answer purge_failed=0
+    local mode=${1:-} answer
     require_root
     [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
         || die "uninstall 不支持参数：${mode}"
@@ -1714,33 +1796,16 @@ uninstall_all() {
     fi
     if [[ "${mode}" == "--purge-cloud" ]]; then
         info "正在清理 Gcore CDN 远端资源..."
-        gcore_collect_api_token
-        gcore_resolve_edge_certificate_id_for_purge \
-            || die "无法识别 easy_all 托管的 Gcore 边缘证书；本机状态仍保留"
-        [[ -z "${GCORE_CDN_RESOURCE_ID:-}" ]] \
-            || gcore_api_delete_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
-                || purge_failed=1
-        [[ -z "${GCORE_ORIGIN_GROUP_ID:-}" ]] \
-            || gcore_api_delete_optional "/cdn/origin_groups/${GCORE_ORIGIN_GROUP_ID}" \
-                || purge_failed=1
-        [[ -z "${GCORE_ORIGIN_CLIENT_CERT_ID:-}" ]] \
-            || gcore_api_delete_optional "/cdn/sslData/${GCORE_ORIGIN_CLIENT_CERT_ID}" \
-                || purge_failed=1
-        [[ -z "${GCORE_EDGE_CERTIFICATE_ID:-}" ]] \
-            || gcore_api_delete_optional "/cdn/sslData/${GCORE_EDGE_CERTIFICATE_ID}" \
-                || purge_failed=1
-        [[ -z "${GCORE_ORIGIN_CA_ID:-}" ]] \
-            || gcore_api_delete_optional "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}" \
-                || purge_failed=1
-        ((purge_failed == 0)) \
+        gcore_purge_managed_resources \
             || die "部分 Gcore 远端资源清理失败；本机状态仍保留，可直接重试 uninstall --purge-cloud"
-        gcore_clear_api_token
     fi
     stop_services
     remove_quota_timer
     remove_globalping_refresh_timer
     gcore_remove_origin_firewall_rules
+    restore_platform_security_state
     restore_preinstall_firewall
+    restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true

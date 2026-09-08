@@ -157,6 +157,25 @@ grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/templates/mihomo.y
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" != *'acme'* ]] \
     || fail "scheduled maintenance must cover reboot policy without ACME"
+[[ "$(<"${XHTTP_RUNTIME}")" == *'snapshot_platform_security_state'* ]] \
+    || fail "CDN fresh installs must snapshot shared platform security state"
+for profile in "${CLOUDFLARE_PROFILE}" "${GCORE_PROFILE}"; do
+    rollback_body=$(sed -n '/^rollback_fresh_install()/,/^}/p' "${profile}")
+    [[ "${rollback_body}" == *'restore_platform_security_state'* \
+        && "${rollback_body}" == *'restore_bbr_tcp_install_state'* \
+        && "${rollback_body}" == *'restore_preinstall_crontab'* ]] \
+        || fail "$(basename "${profile}") fresh rollback does not restore shared host state"
+    install_body=$(sed -n '/^install_all()/,/^}/p' "${profile}")
+    save_line=$(grep -n 'save_state' <<<"${install_body}" | head -n 1 | cut -d: -f1)
+    refresh_line=$(grep -n 'refresh_.*globalping.*cache' <<<"${install_body}" | head -n 1 | cut -d: -f1)
+    [[ -n "${save_line}" && -n "${refresh_line}" && "${save_line}" -lt "${refresh_line}" ]] \
+        || fail "$(basename "${profile}") must persist cloud ownership before Globalping"
+done
+[[ "$(sed -n '/^rollback_fresh_install()/,/^}/p' "${CLOUDFLARE_PROFILE}")" == *'purge_cloudflare_resources_before_uninstall'* \
+    && "$(sed -n '/^rollback_fresh_install()/,/^}/p' "${GCORE_PROFILE}")" == *'gcore_purge_managed_resources'* ]] \
+    || fail "CDN fresh rollback must attempt provider resource cleanup before local rollback"
+[[ "$(<"${ROOT_DIR}/lib/subscription-auth.sh")" == *'access_log off;'* ]] \
+    || fail "token-bearing subscription locations must suppress access logs"
 
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/lib/subscription-auth.sh"

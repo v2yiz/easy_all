@@ -3,10 +3,10 @@
 # Cloudflare-only endpoint discovery.
 
 readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-120}"
-readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-4}"
+readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-10}"
 readonly CLOUDFLARE_CANDIDATES_PER_CARRIER="${CLOUDFLARE_CANDIDATES_PER_CARRIER_OVERRIDE:-2}"
 readonly CLOUDFLARE_CANDIDATE_LIMIT=6
-readonly CLOUDFLARE_CACHE_VERSION=5
+readonly CLOUDFLARE_CACHE_VERSION=6
 readonly CLOUDFLARE_PROBES_PER_CANDIDATE=3
 readonly CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
@@ -210,7 +210,7 @@ cloudflare_collect_globalping_measurements() {
     }
 }
 
-cloudflare_zero_loss_observations() {
+cloudflare_acceptable_loss_observations() {
     local measurements_file=$1
     jq -c --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" '
       . as $entry
@@ -220,9 +220,11 @@ cloudflare_zero_loss_observations() {
       | select(.probe.asn == 4134 or .probe.asn == 4837 or .probe.asn == 9808)
       | select(.result.status == "finished")
       | select(.result.resolvedAddress == $entry.ip)
+      | (($packets * 9 + 9) / 10 | floor) as $required_received
       | select(
-          ((.result.stats.loss // 100) <= 25)
-          and ((.result.stats.rcv // 0) >= 3)
+          ((.result.stats.loss // 100) <= 10)
+          and ((.result.stats.total // 0) == $packets)
+          and ((.result.stats.rcv // 0) >= $required_received)
           and (.result.stats.avg | type) == "number"
         )
       | {
@@ -242,6 +244,7 @@ cloudflare_select_carrier_candidates() {
 
     python3 - "${observations_file}" "${per_carrier}" "${limit}" "${history_file}" <<'EOF'
 import sys, json, os
+from itertools import combinations
 
 obs_file = sys.argv[1]
 per_carrier = int(sys.argv[2])
@@ -273,55 +276,41 @@ carriers = [
     {"asn": 9808, "carrier": "mobile",  "prefix": "移动"}
 ]
 
-selected_ips = set()
-results = []
-
-# Phase 1: Carrier-specific allocation
+carrier_items = []
 for c in carriers:
     c_items = [
         it for it in all_items
-        if it.get("carrier_asn") == c["asn"] and it.get("tls_verified") is True and it.get("ip") not in selected_ips
+        if it.get("carrier_asn") == c["asn"] and it.get("tls_verified") is True
     ]
     c_items.sort(key=lambda x: (
         (float(x.get("avg_rtt_ms", 999)) - 5.0) if x.get("ip") in hist_ips else float(x.get("avg_rtt_ms", 999)),
         float(x.get("avg_rtt_ms", 999)),
         x.get("ip", "")
     ))
-    for it in c_items[:per_carrier]:
-        selected_ips.add(it["ip"])
-        item_copy = dict(it)
-        item_copy["is_historical"] = (it["ip"] in hist_ips)
-        item_copy["carrier"] = c["carrier"]
-        results.append(item_copy)
+    carrier_items.append((c, c_items))
 
-# Phase 2: Backfill from remaining verified items
-if len(results) < limit:
-    rem_items = [
-        it for it in all_items
-        if it.get("tls_verified") is True and it.get("ip") not in selected_ips
-    ]
-    best_rem = {}
-    for it in rem_items:
-        ip = it["ip"]
-        if ip not in best_rem or float(it.get("avg_rtt_ms", 999)) < float(best_rem[ip].get("avg_rtt_ms", 999)):
-            best_rem[ip] = it
-    sorted_rem = list(best_rem.values())
-    sorted_rem.sort(key=lambda x: (
-        (float(x.get("avg_rtt_ms", 999)) - 5.0) if x.get("ip") in hist_ips else float(x.get("avg_rtt_ms", 999)),
-        float(x.get("avg_rtt_ms", 999)),
-        x.get("ip", "")
-    ))
-    for it in sorted_rem:
-        if len(results) >= limit:
-            break
-        counts = {c["carrier"]: sum(1 for r in results if r["carrier"] == c["carrier"]) for c in carriers}
-        min_c = min(carriers, key=lambda c: counts[c["carrier"]])
-        selected_ips.add(it["ip"])
-        item_copy = dict(it)
-        item_copy["is_historical"] = (it["ip"] in hist_ips)
-        item_copy["carrier"] = min_c["carrier"]
-        item_copy["carrier_asn"] = min_c["asn"]
-        results.append(item_copy)
+def assign(index, selected_ips, picked):
+    if index == len(carrier_items):
+        return picked
+    carrier, items = carrier_items[index]
+    available = [item for item in items if item.get("ip") not in selected_ips]
+    for choice in combinations(available, per_carrier):
+        assigned = []
+        for item in choice:
+            item_copy = dict(item)
+            item_copy["is_historical"] = item.get("ip") in hist_ips
+            item_copy["carrier"] = carrier["carrier"]
+            assigned.append(item_copy)
+        result = assign(
+            index + 1,
+            selected_ips | {item.get("ip") for item in choice},
+            picked + assigned,
+        )
+        if result is not None:
+            return result
+    return None
+
+results = assign(0, set(), []) or []
 
 # Assign labels cleanly per carrier
 carrier_counters = {c["carrier"]: 0 for c in carriers}
@@ -601,10 +590,10 @@ cloudflare_build_official_pool_cache() {
     cloudflare_collect_globalping_measurements \
         "${budgeted_pool_file}" "${measurements_file}" || return 1
     measurement_count=$(wc -l <"${measurements_file}" | tr -d ' ')
-    cloudflare_zero_loss_observations \
+    cloudflare_acceptable_loss_observations \
         "${measurements_file}" >"${observations_file}"
     [[ -s "${observations_file}" ]] || {
-        warn "Cloudflare 官方 IP 池没有零丢包候选"
+        warn "Cloudflare 官方 IP 池没有丢包率不超过 10% 的候选"
         return 1
     }
 
@@ -632,19 +621,13 @@ cloudflare_build_official_pool_cache() {
         "${history_candidates_tsv}" >"${preliminary_file}"
 
     count=$(jq 'length' "${preliminary_file}")
-    if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
-        if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
-            warn "Cloudflare 官方 IP 池未选满 ${CLOUDFLARE_CANDIDATE_LIMIT} 个独立有效候选（实际 ${count} 个），保留现有缓存"
-            return 1
+    if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
+        if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
+            warn "Cloudflare 官方 IP 池未选满 ${CLOUDFLARE_CANDIDATE_LIMIT} 个三网独立有效候选（实际 ${count} 个），保留现有缓存"
+        else
+            warn "Cloudflare 官方 IP 池未选满 ${CLOUDFLARE_CANDIDATE_LIMIT} 个三网独立有效候选（实际 ${count} 个），首次安装停止"
         fi
-    else
-        if (( count == 0 )); then
-            warn "Cloudflare 官方 IP 池没有通过 TLS 验证的有效候选"
-            return 1
-        fi
-        if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
-            warn "Cloudflare 官方 IP 池选出 ${count} 个独立有效候选（预期 ${CLOUDFLARE_CANDIDATE_LIMIT} 个）"
-        fi
+        return 1
     fi
 
     measured_at_epoch=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
@@ -687,14 +670,20 @@ cloudflare_globalping_cache_compatible() {
     local ip source_cidr
     [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
-        --argjson version "${CLOUDFLARE_CACHE_VERSION}" '
+        --argjson version "${CLOUDFLARE_CACHE_VERSION}" \
+        --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" '
           .version == $version
           and .provider == "cloudflare"
           and .domain == $domain
+          and .packets == $packets
           and .candidate_source == "cloudflare-official-ipv4-cidrs"
           and (.measured_at_epoch | type) == "number"
           and (.candidates | type) == "array"
-          and (.candidates | length) >= 6
+          and (.candidates | length) == 6
+          and ([.candidates[].ip] | unique | length) == 6
+          and ([.candidates[] | select(.carrier == "telecom" and .carrier_asn == 4134)] | length) == 2
+          and ([.candidates[] | select(.carrier == "unicom" and .carrier_asn == 4837)] | length) == 2
+          and ([.candidates[] | select(.carrier == "mobile" and .carrier_asn == 9808)] | length) == 2
           and all(.candidates[];
             (.ip | type) == "string"
           )

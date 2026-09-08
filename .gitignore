@@ -13,10 +13,7 @@ state.env
 *.token
 subscribe-worker.js
 worker.js
-.dbg/
 /XFLASH
 
 /worker-src/config.local.json
-/aggregate.json
-/aggregate/aggregate.json
 /.worker-build-*/

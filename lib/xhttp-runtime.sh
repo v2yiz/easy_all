@@ -197,6 +197,7 @@ install_packages() {
 snapshot_fresh_install() {
     install -d -m 0700 "${BACKUP_DIR}"
     snapshot_ufw_state
+    snapshot_platform_security_state
     if [[ -f "${SYSCTL_CONFIG}" ]]; then
         install -m 0644 "${SYSCTL_CONFIG}" "${BACKUP_DIR}/pre-install-bbr.conf"
     else
@@ -662,12 +663,17 @@ restore_preinstall_firewall() {
     [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
         || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" \
             "${UFW_DEFAULT_CONFIG}"
-    if command -v ufw >/dev/null 2>&1 \
+    if [[ -f "${BACKUP_DIR}/pre-install-ufw.active" ]]; then
+        ufw --force enable >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
+    elif [[ -f "${BACKUP_DIR}/pre-install-ufw.inactive" \
+        || -f "${BACKUP_DIR}/pre-install-ufw.missing" ]]; then
+        command -v ufw >/dev/null 2>&1 \
+            && ufw --force disable >/dev/null 2>&1 || true
+    elif command -v ufw >/dev/null 2>&1 \
         && LC_ALL=C ufw status numbered 2>/dev/null | grep -q '^[[:space:]]*\['; then
         ufw --force enable >/dev/null 2>&1 || true
-        info "检测到其他 UFW 规则，保留 UFW 启用状态"
-    elif [[ -f "${BACKUP_DIR}/pre-install-ufw.active" ]]; then
-        ufw --force enable >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1; then
         ufw --force disable >/dev/null 2>&1 || true
     fi

@@ -142,32 +142,35 @@ assert_not_contains "nginx config does not contain websocket location" "${nginx_
 assert_not_contains "nginx config does not contain trojan location" "${nginx_conf}" "location = /tr-"
 
 # 5. Test 6 curated nodes output with no domain fallback
-# Set up mock Globalping cache with 9 candidates (3 telecom, 3 unicom, 3 mobile)
+# Set up a complete cache with 6 unique candidates (2 per carrier).
 cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 {
-  "version": 5,
+  "version": 6,
   "provider": "cloudflare",
   "domain": "node.example.com",
   "candidate_source": "cloudflare-official-ipv4-cidrs",
   "measured_at_epoch": 1725500000,
+  "packets": 10,
   "candidates": [
-    {"ip": "104.16.1.1", "label": "电信01", "carrier": "telecom", "avg_rtt_ms": 120, "tls_verified": true},
-    {"ip": "104.16.1.2", "label": "电信02", "carrier": "telecom", "avg_rtt_ms": 130, "tls_verified": true},
-    {"ip": "104.16.1.3", "label": "电信03", "carrier": "telecom", "avg_rtt_ms": 140, "tls_verified": true},
-    {"ip": "104.16.2.1", "label": "联通01", "carrier": "unicom", "avg_rtt_ms": 110, "tls_verified": true},
-    {"ip": "104.16.2.2", "label": "联通02", "carrier": "unicom", "avg_rtt_ms": 125, "tls_verified": true},
-    {"ip": "104.16.2.3", "label": "联通03", "carrier": "unicom", "avg_rtt_ms": 135, "tls_verified": true},
-    {"ip": "104.16.3.1", "label": "移动01", "carrier": "mobile", "avg_rtt_ms": 115, "tls_verified": true},
-    {"ip": "104.16.3.2", "label": "移动02", "carrier": "mobile", "avg_rtt_ms": 128, "tls_verified": true},
-    {"ip": "104.16.3.3", "label": "移动03", "carrier": "mobile", "avg_rtt_ms": 145, "tls_verified": true}
+    {"ip": "104.16.1.1", "label": "电信01", "carrier": "telecom", "carrier_asn": 4134, "avg_rtt_ms": 120, "tls_verified": true},
+    {"ip": "104.16.1.2", "label": "电信02", "carrier": "telecom", "carrier_asn": 4134, "avg_rtt_ms": 130, "tls_verified": true},
+    {"ip": "104.16.2.1", "label": "联通01", "carrier": "unicom", "carrier_asn": 4837, "avg_rtt_ms": 110, "tls_verified": true},
+    {"ip": "104.16.2.2", "label": "联通02", "carrier": "unicom", "carrier_asn": 4837, "avg_rtt_ms": 125, "tls_verified": true},
+    {"ip": "104.16.3.1", "label": "移动01", "carrier": "mobile", "carrier_asn": 9808, "avg_rtt_ms": 115, "tls_verified": true},
+    {"ip": "104.16.3.2", "label": "移动02", "carrier": "mobile", "carrier_asn": 9808, "avg_rtt_ms": 128, "tls_verified": true}
   ]
 }
 EOF
 cp "${GLOBALPING_CACHE_FILE}" "${TMP_DIR}/valid-cloudflare-cache.json"
-jq '.version = 4' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/legacy-cloudflare-cache.json"
+jq '.version = 5' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/legacy-cloudflare-cache.json"
 cp "${TMP_DIR}/legacy-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
 if cloudflare_globalping_cache_compatible; then
-    fail "Legacy v4 cache may contain synthetic fallback IPs and must be rejected"
+    fail "Legacy v5 cache may contain loose-loss or synthetic-carrier entries and must be rejected"
+fi
+jq '(.candidates[] | select(.carrier == "mobile") | .carrier_asn) = 4134' \
+    "${TMP_DIR}/valid-cloudflare-cache.json" >"${GLOBALPING_CACHE_FILE}"
+if cloudflare_globalping_cache_compatible; then
+    fail "Cache entries with rewritten carrier ownership must be rejected"
 fi
 cp "${TMP_DIR}/valid-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
 

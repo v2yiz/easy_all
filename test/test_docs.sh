@@ -39,9 +39,13 @@ done
 
 assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
+assert_contains "README documents Gcore install option" "${README_CONTENT}" \
+    '3. Gcore CDN 精选 IP - WebSocket'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
+assert_contains "README documents subscription access-log suppression" \
+    "${README_CONTENT}" '避免查询参数中的 Token 写入'
 assert_contains "README documents hourly Globalping refresh" "${README_CONTENT}" '每小时'
 assert_contains "README documents compatible-cache reuse" \
     "${README_CONTENT}" '格式兼容的上一版已验证缓存'
@@ -118,6 +122,10 @@ assert_contains "Preparation guide documents the Cloudflare API token walkthroug
     || fail "Cloudflare API token walkthrough asset is missing"
 assert_contains "Preparation guide documents the official IPv4 pool" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
+assert_contains "Preparation guide documents the Cloudflare loss threshold" \
+    "${PREPARATION_GUIDE_CONTENT}" '最多允许丢 1 包（10%）'
+assert_not_contains "Preparation guide does not advertise unsupported Gcore DNS replacement" \
+    "${PREPARATION_GUIDE_CONTENT}" 'GCORE_DNS_REPLACE'
 assert_contains "Preparation guide forbids hostname fallback" \
     "${PREPARATION_GUIDE_CONTENT}" '不使用内置 Anycast IP 或域名兜底凑数'
 assert_contains "Preparation guide documents the Mihomo requirement for selected IPs" \

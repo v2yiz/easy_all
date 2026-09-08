@@ -125,6 +125,8 @@ fi
 req_no_anchor=$(cloudflare_globalping_measurement_request "104.16.1.1")
 assert_equal "Default request specifies 3 eyeball networks" "3" \
     "$(jq '.locations | length' <<<"${req_no_anchor}")"
+assert_equal "Default request sends ten packets for a 10 percent loss threshold" "10" \
+    "$(jq '.measurementOptions.packets' <<<"${req_no_anchor}")"
 
 req_with_anchor=$(cloudflare_globalping_measurement_request "104.16.1.1" "base-meas-id-12345")
 assert_equal "Anchored request specifies magic location" "base-meas-id-12345" \
@@ -213,10 +215,7 @@ SINGLE_EOF
 
 backfilled=$(cloudflare_select_carrier_candidates "${single_obs}" 2 6)
 backfilled_count=$(jq 'length' <<<"${backfilled}")
-assert_equal "Only measured candidates are retained" "1" "${backfilled_count}"
-
-telecom_01=$(jq -r '.[] | select(.label=="电信01") | .ip' <<<"${backfilled}")
-assert_equal "Primary verified candidate is assigned to its carrier" "104.16.1.1" "${telecom_01}"
+assert_equal "Missing carriers cannot be filled from another carrier" "0" "${backfilled_count}"
 
 # ==============================================================================
 # Test 8: Empty observations produce no synthetic fallback
@@ -228,22 +227,22 @@ ultimate_count=$(jq 'length' <<<"${ultimate_fallback}")
 assert_equal "Empty observations produce no candidates" "0" "${ultimate_count}"
 
 # ==============================================================================
-# Test 9: Packet Loss Tolerance (loss <= 25%, rcv >= 3)
+# Test 9: Packet Loss Tolerance (loss <= 10%, rcv >= 9/10)
 # ==============================================================================
 meas_loss_file="${TMP_DIR}/test-meas-loss.ndjson"
 cat <<'MEAS_EOF' >"${meas_loss_file}"
-{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.16.1.1","stats":{"loss":0,"rcv":4,"total":4,"drop":0,"avg":35.5}}}]}}
-{"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4837,"tags":["eyeball-network"],"city":"Beijing","network":"China Unicom"},"result":{"status":"finished","resolvedAddress":"104.16.1.2","stats":{"loss":25,"rcv":3,"total":4,"drop":1,"avg":42.0}}}]}}
-{"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"tags":["eyeball-network"],"city":"Shanghai","network":"China Mobile"},"result":{"status":"finished","resolvedAddress":"104.16.1.3","stats":{"loss":50,"rcv":2,"total":4,"drop":2,"avg":50.0}}}]}}
+{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.16.1.1","stats":{"loss":0,"rcv":10,"total":10,"drop":0,"avg":35.5}}}]}}
+{"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4837,"tags":["eyeball-network"],"city":"Beijing","network":"China Unicom"},"result":{"status":"finished","resolvedAddress":"104.16.1.2","stats":{"loss":10,"rcv":9,"total":10,"drop":1,"avg":42.0}}}]}}
+{"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"tags":["eyeball-network"],"city":"Shanghai","network":"China Mobile"},"result":{"status":"finished","resolvedAddress":"104.16.1.3","stats":{"loss":20,"rcv":8,"total":10,"drop":2,"avg":50.0}}}]}}
 MEAS_EOF
 
-loss_obs=$(cloudflare_zero_loss_observations "${meas_loss_file}")
+loss_obs=$(cloudflare_acceptable_loss_observations "${meas_loss_file}")
 loss_obs_count=$(wc -l <<<"${loss_obs}" | tr -d ' ')
-assert_equal "Tolerant ping filter accepts 0% and 25% loss, rejecting 50% loss" "2" "${loss_obs_count}"
+assert_equal "Ping filter accepts 0% and 10% loss, rejecting 20% loss" "2" "${loss_obs_count}"
 
 passing_loss_ips=$(jq -r '.ip' <<<"${loss_obs}" | tr '\n' ' ')
 [[ "${passing_loss_ips}" == *"104.16.1.1 "* ]] || fail "104.16.1.1 (0% loss) should pass"
-[[ "${passing_loss_ips}" == *"104.16.1.2 "* ]] || fail "104.16.1.2 (25% loss) should pass"
-[[ "${passing_loss_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (50% loss) must be rejected"
+[[ "${passing_loss_ips}" == *"104.16.1.2 "* ]] || fail "104.16.1.2 (10% loss) should pass"
+[[ "${passing_loss_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (20% loss) must be rejected"
 
 printf 'ok - Cloudflare IP pool tests passed\n'

@@ -69,9 +69,9 @@ ssh <登录用户>@<VPS公网IP> -p <SSH端口>
 
 ## 系统与安全保障
 
-两种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
+三种安装模式都会保留 sshd 已检测到的现有端口，并通过公共平台模块额外监听 TCP `65533`；
 UFW 会在拒绝其他入站流量前同时放行现有 SSH 端口和 `65533`。安装与 `easy_all apply`
-都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。两种模式还会
+都会校验 sshd 配置、实际监听套接字和 UFW 规则，任一环节失败都会停止应用。三种模式还会
 通过同一公共模块安装并启用 Fail2ban：任一来源在 3 分钟内失败 6 次，只封禁触发 IP
 3 小时；重复来源递增封禁且最长 1 周；`sshd` jail
 始终跟随实际 SSH 端口列表。
@@ -101,7 +101,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 sudo easy_all self-update
 ```
 
-`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、两个 Profile、CDN 公共
+`self-update` 只下载并原子替换 `/usr/local/lib/easy_all` 中的入口、三个 Profile、CDN 公共
 运行时、公共支持模块和 Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或云端 CDN 资源。
 代码包含配置生成变化时，再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
@@ -111,7 +111,7 @@ sudo easy_all self-update
 
 1. 检查 `git`；缺失时先通过 APT 安装 `git` 和 CA 证书。
 2. 浅克隆 `main` 分支完整项目到权限受限的临时目录。
-3. 校验入口、两个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
+3. 校验入口、三个 Profile、全部公共运行时模块和 Mihomo 模板均存在。
 4. 通过 `sudo` 启动交互安装。
 5. 安装结束后删除临时下载目录。
 
@@ -128,6 +128,7 @@ sudo ./easy_all install
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
   2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点）
+  3. Gcore CDN 精选 IP - WebSocket（三网定向最多 6 个已验证节点）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -138,7 +139,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 
 | 看到的选项 | 首次单用户建议 | 说明 |
 | --- | --- | --- |
-| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点，支持通用与 Clash 订阅）。 |
+| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare 纯 XHTTP stream-up，`3` 是 Gcore WebSocket。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启，会中断已有连接。 |
@@ -235,7 +236,6 @@ sudo easy_all subscription
 | 现象 | 先做什么 |
 | --- | --- |
 | 订阅链接在部分网络下拉取失败或提示超时 | 本地运营商 DNS 污染了订阅域名。请参考上方「客户端 DNS 覆写指引」在客户端配置阿里 DoH（`https://223.5.5.5/dns-query`），或在 Hosts 中直接指定 Cloudflare IP。 |
-| --- | --- |
 | 在本机运行后提示系统不支持 | 退出命令，在 VPS 的 SSH 或网页终端中重新运行。 |
 | SSH 断开或重启后无法登录 | 不要反复猜端口；使用服务商网页 Console/VNC，确认当前 SSH 端口与 UFW/安全组规则。保留旧 SSH 会话直到新会话可登录。 |
 | 提示 Zone 不是 Active 或找不到域名 | 回到 Cloudflare Overview，等待 Zone 变为 **Active**；检查注册商名称服务器是否完整替换。 |
@@ -272,22 +272,29 @@ flowchart TD
     C3 --> C4[官方高优 CIDR 权重抽样 / 全网预筛 + TLS 验证 / 筛选 6 个精选 IP]
     C4 --> C5[保存缓存 / 注册每小时刷新 / 输出纯 XHTTP 6 节点与订阅]
     C5 --> Z
+
+    B -->|3| G0[Gcore CDN 精选 IP WebSocket]
+    G0 --> G1[校验 Managed DNS 委派 / 创建源站 A 与 CDN CNAME]
+    G1 --> G2[签发源站证书 / 配置 mTLS / 创建 CDN Resource]
+    G2 --> G3[多地区 DNS 发现 / WebSocket 预检 / 三网定向测速]
+    G3 --> G4[保存缓存 / 注册每小时刷新 / 输出最多 6 个节点与订阅]
+    G4 --> Z
 ```
 
-图中是安装器的实际执行顺序。两种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。Cloudflare 模式只使用单一 proxied 一级子域，由 VPS 预筛并由客户端最终测速选优。
+图中是安装器的实际执行顺序。三种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。部署 CDN 订阅时可直接复用节点域名，也可输入独立的完整订阅域名。Cloudflare 模式只使用单一 proxied 一级子域，由 VPS 预筛并由客户端最终测速选优。
 
 公共交互选项：
 
 | 输入 | 选项/格式 | 默认值 | 直接回车 |
 | --- | --- | --- | --- |
-| Globalping Token | 仅 Cloudflare XHTTP 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
+| Globalping Token | Cloudflare XHTTP 与 Gcore 必填，隐藏输入 | 无 | 不允许为空；保存到 root-only 独立文件 |
 | Cloudflare Zone Token | Cloudflare XHTTP 必填；Reality 选择“部署订阅”时也必填，隐藏输入 | 无 | 仅限目标 Zone 的最小权限；所需权限见前置准备手册 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
-| CDN 订阅链接完整域名 | 仅 Cloudflare XHTTP 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
+| CDN 订阅链接完整域名 | Cloudflare/Gcore 部署订阅时出现；完整主机名，例如 `subscribe.example.com` | 当前 CDN 节点域名 | 复用节点域名；自定义值必须由当前 Provider 的同一 DNS 服务商托管 |
 | 月度用户配额 | 仅选择“部署订阅”时出现；`1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
-| 安装模式 | `1` Reality / `2` Cloudflare | `1` | 安装 Reality |
+| 安装模式 | `1` Reality / `2` Cloudflare / `3` Gcore | `1` | 安装 Reality |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入每日 04:00 的 root crontab；重启会短暂断线 |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
@@ -307,7 +314,7 @@ UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不�
 `13000-60999`（48,000 个端口），为代理出站连接增加容量，并避开 Reality 动态入口
 `10000-12927`、本机 Xray/API 端口和 SSH `65533`；这项设置增加并发上限，不改善单连接延迟。
 
-两种模式统一安装 XanMod LTS 内核；XanMod 官方将 Google BBRv3 内置为默认 `tcp_bbr`，因此
+三种模式统一安装 XanMod LTS 内核；XanMod 官方将 Google BBRv3 内置为默认 `tcp_bbr`，因此
 sysctl 中算法名称仍是 `bbr`，不能仅凭该名称把 Debian 官方内核的 BBRv1 当成 BBRv3。
 安装器固定校验 XanMod APT 公钥指纹，通过 HTTPS 仓库安装，并按当前 CPU 能力选择
 `linux-xanmod-lts-x64v1/v2/v3`；这里的 x64v1/v2/v3 是 CPU 指令集等级，不是 BBR 版本。
@@ -326,13 +333,12 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo/Clash 节点片段。 |
 | `subscription` | 显示节点、订阅部署状态和各 Token 对应的订阅地址。 |
-| `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；Cloudflare 模式额外显示 Globalping 缓存，不调用云 API。 |
+| `status` | 显示 BBRv3、当前协议、本机服务、端口及订阅状态；两种 CDN 模式额外显示 Globalping 缓存，不调用云 API。 |
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
-| `aggregate [--check]` | 校验 aggregate.json 并自动配置本机聚合服务；`--check` 仅校验；[部署说明](aggregate/README.md)。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收运行时和订阅；Reality 部署订阅时会同步其 Cloudflare DNS、Strict TLS 与 Origin CA。 |
 | `apply-cloud` | CDN 模式可用；应用本机配置并同步当前 Provider 的 DNS、证书和 CDN 资源。 |
 | `update-sub` | 重新选择订阅输出、订阅链接域名并管理用户/配额；同步重建本机 Xray、Nginx 和订阅文件。域名不变时不修改当前 Provider 资源，新增、更换或停用独立域名时同步对应 Provider。 |
-| `refresh-cdn-ips` | Cloudflare 模式可用；立即运行一次 Globalping 测量，更新本地缓存并原子重建订阅。 |
+| `refresh-cdn-ips` | Cloudflare/Gcore 模式可用；立即运行一次 Globalping 测量，更新当前 Provider 的本地缓存并重建订阅。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
 | `renew-cert` | 强制轮换当前模式的证书并重新验收；Reality 需已部署自托管订阅，CDN 模式轮换源站/Provider 证书。 |
 | `quota-status` | 显示每用户月度配额和 Xray 本地统计。 |
@@ -351,7 +357,7 @@ Origin CA 证书；Reality 使用自己的 `easy_all reality subscription origin
 规则，不会触碰 XHTTP 资源。脚本不会删除未带 easy_all 标记的 DNS 或包含其他规则的 ruleset。Zone 级 origin HTTP/2
 设置和需要手动开启的 gRPC 开关不会自动还原，因为没有安全的方式判断它们是否仍被其他业务使用。
 Gcore 模式按状态中的资源 ID 删除 CDN Resource、Origin Group、回源客户端证书、边缘证书和 Trusted CA，
-但保留 Managed DNS Zone。远端操作失败时会立即停止，
+并仅在值仍与当前安装目标一致时删除节点/订阅 CNAME 和源站 A，但始终保留 Managed DNS Zone。远端操作失败时会立即停止，
 本机状态和证书不会删除；Zone 级设置和未带 easy_all 标记的资源会保留。
 
 ### `apply` 的具体操作
@@ -366,10 +372,11 @@ Gcore 模式按状态中的资源 ID 删除 CDN Resource、Origin Group、回源
 | Gcore CDN WebSocket | 1. 读取状态并备份本机配置。<br>2. 同步 UFW 回源白名单并刷新单一 WebSocket 入站。<br>3. 使用现有兼容入口缓存重建订阅，不生成域名兜底。<br>4. 保存状态、注册当前代码并恢复配额与 Globalping 定时任务。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
-Xray/Nginx 配置、TLS 证书与订阅文件。首次安装会恢复安装前记录的 TCP sysctl 运行值；普通 `apply` 会保留本次应用的
-BBRv3/TCP 参数。已经成功创建或修改的云端资源不会自动回滚；已安装的内核包也不会在回滚或卸载时
-自动删除，避免破坏当前启动项。Reality 卸载会恢复安装前的 TCP/BBR 配置、UFW 启停状态、
-SSH 端口配置与 Fail2ban 配置；仅保留已经安装的内核和软件包。
+Xray/Nginx 配置、TLS 证书与订阅文件。首次安装在云资源检查点之前失败时，会恢复 TCP sysctl、
+root crontab、UFW 启停状态、SSH 与 Fail2ban；已安装的内核包不会自动删除。CDN 资源完整创建后会立即
+保存状态并注册 `easy_all` 命令，再执行公网验收和 Globalping；后续失败时保留该可恢复安装，可直接运行
+`easy_all apply-cloud` 或 `easy_all refresh-cdn-ips` 重试。云资源创建中途失败会执行 best-effort 清理，
+清理失败只告警，不会阻断本机回滚。
 
 配置更新、核心更新和用户配额统计共用一把运行时写锁。同一时间只能执行一个写操作；检测到另一个
 任务正在运行时会立即停止并提示稍后重试，避免并发写入覆盖最新配置。
@@ -492,6 +499,9 @@ sudo env ENABLE_MONTHLY_QUOTA=2 \
   QUOTA_START_DATE='2026-08-15' \
   easy_all update-sub
 ```
+
+托管 Nginx 对 `/subscribe` 关闭访问日志，避免查询参数中的 Token 写入
+`/var/log/nginx/access.log`；仍应将订阅 URL 视为敏感凭据。
 
 不需要手工填写 UUID 或 email。安装完成后，`easy_all subscription` 会显示每个用户的最终
 订阅地址。通过 `easy_all update-sub` 调整配额时，同名用户会复用原 Token 和 UUID；新增用户
@@ -798,7 +808,7 @@ npm test
 ```
 
 测试覆盖统一入口、公共模块归属与安装完整性、Reality 目标验收、Cloudflare 纯 XHTTP stream-up、
-Globalping 严格零丢包筛选、用户凭据与月度配额、TCP 参数回滚、Xray 配置、
+Globalping 低丢包筛选、用户凭据与月度配额、TCP 参数回滚、Xray 配置、
 订阅渲染、Token 鉴权、Origin CA 轮换检查和更新顺序。
 
 ## Cloudflare 模式参考

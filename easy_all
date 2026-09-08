@@ -62,22 +62,20 @@ runtime_tree_is_complete() {
     for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
         [[ -f "${root}/${relative_path}" ]] || return 1
     done
-    [[ -f "${root}/aggregate/setup.sh" && -f "${root}/aggregate/aggregate.mjs" && -f "${root}/worker-src/index.js" && -f "${root}/aggregate/easy_all-aggregate.service" && -f "${root}/aggregate/aggregate.example.json" && -f "${root}/aggregate/README.md" ]]
 }
 
 launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality 或 Cloudflare CDN
+  install          交互选择 Reality、Cloudflare CDN 或 Gcore CDN
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update      只更新 easy_all 项目代码
-  aggregate [--check] 校验 aggregate.json 并自动配置聚合服务
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅模式与月度用户配额
-  refresh-cdn-ips  立即刷新 Cloudflare 的 Globalping 精选 IP 与订阅
+  refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
   renew-cert       轮换当前 CDN 模式的源站/Provider 证书
   quota-status     显示用户配额与 Xray 本地统计
@@ -220,11 +218,6 @@ unified_register_easy_all_command() {
     [[ ! -f "${source_root}/templates/mihomo.yaml" ]] \
         || install -m 0644 "${source_root}/templates/mihomo.yaml" \
             "${stage}/templates/mihomo.yaml"
-    install -d -m 0755 "${stage}/aggregate" "${stage}/worker-src"
-    for relative_path in aggregate.mjs setup.sh aggregate.example.json easy_all-aggregate.service README.md; do
-        install -m 0644 "${source_root}/aggregate/${relative_path}" "${stage}/aggregate/${relative_path}"
-    done
-    install -m 0644 "${source_root}/worker-src/index.js" "${stage}/worker-src/index.js"
     stage_preserved_runtime_files "${EASY_ALL_INSTALL_DIR}" "${stage}"
     bash -n "${syntax_files[@]}" \
         || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
@@ -331,12 +324,6 @@ dispatch_profile_command() {
 main() {
     local command=${1:-install} mode="" module
     shift || true
-
-    if [[ "${command}" == "aggregate" ]]; then
-        source "${EASY_ALL_ROOT}/aggregate/setup.sh"
-        setup_aggregate "$@"
-        return
-    fi
 
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
         launcher_usage

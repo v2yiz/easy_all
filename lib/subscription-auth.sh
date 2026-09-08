@@ -187,6 +187,7 @@ write_subscription_nginx_locations() {
 EOF
     [[ -z "${origin_guard}" ]] || printf '%s\n' "${origin_guard}"
     cat <<EOF
+        access_log off;
         if (\$request_method !~ ^(GET|HEAD)$) { return 405; }
         if (\$easy_all_subscription_allowed = __denied__) { return 403; }
         rewrite ^ \$easy_all_subscription_uri last;
@@ -211,14 +212,6 @@ EOF
         add_header Pragma "no-cache" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
-    }
-
-    location = /aggregate {
-${origin_guard}
-        proxy_pass http://127.0.0.1:8788;
-        proxy_set_header Host \$host;
-        proxy_set_header User-Agent \$http_user_agent;
-        proxy_read_timeout 30s;
     }
 
 EOF

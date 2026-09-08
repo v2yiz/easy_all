@@ -1162,6 +1162,47 @@ unset -f dig gcore_api_request gcore_api_get_optional
     assert_equal "No resource mutation after certificate failure" "${requests_before}" "$(grep -c '^PUT /cdn/resources/202$' "${api_calls}")"
 )
 
+# Managed Gcore resource cleanup is shared by uninstall and fresh-install rollback.
+(
+    calls=""
+    GCORE_API_TOKEN="test-token"
+    GCORE_CDN_RESOURCE_ID=101
+    GCORE_ORIGIN_GROUP_ID=102
+    GCORE_ORIGIN_CLIENT_CERT_ID=103
+    GCORE_EDGE_CERTIFICATE_ID=104
+    GCORE_ORIGIN_CA_ID=105
+    gcore_collect_api_token() { :; }
+    gcore_resolve_edge_certificate_id_for_purge() { :; }
+    gcore_api_delete_optional() { calls+="$1 "; }
+    gcore_purge_managed_dns_records() { :; }
+    gcore_clear_api_token() { :; }
+    gcore_purge_managed_resources
+    assert_equal "Gcore purge covers every managed CDN resource" \
+        "/cdn/resources/101 /cdn/origin_groups/102 /cdn/sslData/103 /cdn/sslData/104 /cdn/sslCertificates/105 " \
+        "${calls}"
+)
+
+(
+    deleted="" rrset_missing=0
+    gcore_api_get_optional() {
+        [[ "${rrset_missing}" == "0" ]] || return 4
+        printf '{"resource_records":[{"content":["cl-test.gcdn.co"]}],"ttl":300}'
+    }
+    gcore_api_delete_optional() { deleted=$1; }
+    gcore_delete_rrset_if_matches \
+        "example.com" "node.example.com" CNAME "cl-test.gcdn.co"
+    assert_equal "Gcore purge deletes only a matching managed DNS RRset" \
+        "/dns/v2/zones/example.com/node.example.com/CNAME" "${deleted}"
+    deleted=""
+    gcore_delete_rrset_if_matches \
+        "example.com" "node.example.com" CNAME "other.gcdn.co"
+    assert_equal "Gcore purge preserves DNS RRsets whose value changed" "" "${deleted}"
+    rrset_missing=1
+    gcore_delete_rrset_if_matches \
+        "example.com" "node.example.com" CNAME "cl-test.gcdn.co" \
+        || fail "Gcore purge must treat an already missing RRset as success"
+)
+
 # Changing the active subscription domain synchronizes Gcore before saving state.
 (
     calls=""
