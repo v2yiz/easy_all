@@ -337,6 +337,18 @@ test_mihomo_template() {
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH fake-IP DNS mode" \
         "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo uses DAT-format Geo data" \
+        "geodata-mode: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo updates Geo data automatically" \
+        "geo-auto-update: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo refreshes Geo data every 24 hours" \
+        "geo-update-interval: 24" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo uses the MetaCubeX GeoIP source" \
+        "MetaCubeX/meta-rules-dat@release/geoip.dat" \
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo uses the MetaCubeX GeoSite source" \
+        "MetaCubeX/meta-rules-dat@release/geosite.dat" \
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH HTTP/3 DNS endpoint" \
         "https://223.6.6.6/dns-query#h3=true" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"

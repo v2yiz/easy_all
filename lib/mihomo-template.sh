@@ -24,6 +24,16 @@ validate_mihomo_template() {
         || die "Mihomo DNS 未启用 IPv6"
     grep -Fq 'unified-delay: false' "${source}" \
         || die "Mihomo 模板必须关闭 unified-delay"
+    grep -Fqx 'geodata-mode: true' "${source}" \
+        || die "Mihomo 模板未启用 Geo DAT 数据"
+    grep -Fqx 'geo-auto-update: true' "${source}" \
+        || die "Mihomo 模板未启用 Geo 数据自动更新"
+    grep -Fqx 'geo-update-interval: 24' "${source}" \
+        || die "Mihomo 模板 Geo 数据更新周期不是 24 小时"
+    grep -Fq 'MetaCubeX/meta-rules-dat@release/geoip.dat' "${source}" \
+        || die "Mihomo 模板缺少 GeoIP 数据源"
+    grep -Fq 'MetaCubeX/meta-rules-dat@release/geosite.dat' "${source}" \
+        || die "Mihomo 模板缺少 GeoSite 数据源"
     grep -Fq "https://223.6.6.6/dns-query#h3=true" "${source}" \
         || die "Mihomo 模板缺少 XFLASH 主 DNS"
     grep -Fq "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
