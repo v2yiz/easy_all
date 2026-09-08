@@ -69,14 +69,15 @@ for asset in \
     docs/img/clashmi/clashmi-global-proxy.svg \
     docs/img/gcore/api-token-create.svg \
     docs/img/gcore/managed-dns-add-zone.svg \
-    docs/gcore-delegation-success.png; do
+    docs/img/gcore/gcore-delegation-success.png; do
     [[ -s "${ROOT_DIR}/${asset}" ]] || fail "Documentation asset is missing: ${asset}"
 done
 assert_contains "README documents Clash Mi global proxy guide" \
     "${README_CONTENT}" 'docs/img/clashmi/clashmi-global-proxy.svg'
 assert_contains "README reminds Clash Mi manual PROXY selection" \
     "${README_CONTENT}" '手动勾选 `PROXY`'
-NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit)
+NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' \
+    ! -path "${ROOT_DIR}/docs/img/gcore/gcore-delegation-success.png" -print -quit)
 [[ -z "${NON_SVG_ASSET}" ]] || fail "Non-SVG documentation asset remains: ${NON_SVG_ASSET}"
 [[ ! -d "${ROOT_DIR}/docs/preparation" ]] || fail "obsolete preparation asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/images/gcore" ]] || fail "obsolete Gcore asset directory still exists"
@@ -201,7 +202,7 @@ done
 
 assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 精选 IP'
 assert_contains "Preparation guide documents Gcore mode" "${PREPARATION_GUIDE_CONTENT}" '## 8. Gcore CDN 精选 IP 准备'
-assert_contains "Preparation guide embeds Gcore delegation success" "${PREPARATION_GUIDE_CONTENT}" 'gcore-delegation-success.png'
+assert_contains "Preparation guide embeds Gcore delegation success" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/gcore-delegation-success.png'
 assert_contains "Preparation guide embeds Gcore token create" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/api-token-create.svg'
 assert_contains "Preparation guide embeds Gcore add zone" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'
 

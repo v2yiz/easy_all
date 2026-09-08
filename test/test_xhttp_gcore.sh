@@ -787,6 +787,8 @@ xray_cfg=$(<"${xray_conf_file}")
 assert_contains "Xray has WebSocket inbound" "${xray_cfg}" '"tag": "vless-websocket-in"'
 assert_contains "Xray has XHTTP packet-up inbound" "${xray_cfg}" '"tag": "vless-xhttp-h2-in"'
 assert_contains "Xray XHTTP uses packet-up mode" "${xray_cfg}" '"mode": "packet-up"'
+assert_contains "Xray XHTTP server uses the managed padding range" \
+    "${xray_cfg}" '"xPaddingBytes": "100-1000"'
 
 nginx() { :; }
 systemctl() { :; }

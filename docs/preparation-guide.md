@@ -321,7 +321,7 @@ sub.example.com     可选独立订阅域名，作为同一 CDN Resource 的 sec
 
 下面是 Gcore 控制台显示委派成功的示例；截图中的域名已脱敏为 `example.com`，绿色“已委托”状态表示可以继续模式 3 安装。
 
-![Gcore Managed DNS 委派成功示例](gcore-delegation-success.png)
+![Gcore Managed DNS 委派成功示例](img/gcore/gcore-delegation-success.png)
 
 #### 安装前与自行确认委派状态
 
@@ -446,7 +446,7 @@ PUT    /dns/v2/zones/<zone>/<name>/<type>
 | WebSocket `ALPN`         | `http/1.1`                       | 标准 WebSocket Upgrade 协商                                |
 | XHTTP `ALPN`             | `h2`                             | HTTP/2 传输，避免被降级                                    |
 | WebSocket 路径           | 独立随机 `/ws-*`                 | 与 XHTTP 路径分流                                           |
-| `xPaddingBytes`          | `100-500`                        | 优化填充范围，减少请求头固定指纹特征                        |
+| `xPaddingBytes`          | `100-1000`                       | 与 Xray/Mihomo 客户端默认范围一致，避免随机 padding 被拒绝   |
 | `scMaxBufferedPosts`     | `100`                            | 适度扩充服务端等待缓冲区，防止突发丢包                      |
 | 证书校验                 | 开启                             | 客户端使用精选 IP 作为连接地址，SNI 和 Host 使用 CDN 域名  |
 
