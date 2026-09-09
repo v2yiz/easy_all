@@ -7,7 +7,8 @@ const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
-const EXTERNAL_CLASH_USER_AGENT = 'Mihomo';
+// The upstream capability filter omits Mieru unless the Mihomo UA has a version.
+const EXTERNAL_CLASH_USER_AGENT = 'mihomo/1.19.30';
 const EXTERNAL_URI_USER_AGENT = 'v2rayN';
 const CDN_NODE_LIMIT = 6;
 const {

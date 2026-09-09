@@ -38,7 +38,7 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 `worker.js`。这个手工恢复版本内嵌当前 Token，动态源仍携带私有源密钥，并继续要求每次请求
 成功读取 VPS 节点；源不可用时返回 `502`。配额模式不会生成内嵌 Token 的恢复版本。
 
-`externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用 `Mihomo` UA，避免客户端版本透传导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `优选1`～`优选6`；仅生成 PROXY 和备用优选两个策略组，没有 CDN 节点时使用 REJECT。
+`externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用带版本的 Mihomo UA，使上游正确下发 Mieru 等需要能力识别的节点，同时避免透传客户端版本导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `优选1`～`优选6`；仅生成 PROXY 和备用优选两个策略组，没有 CDN 节点时使用 REJECT。
 
 公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。中国大陆域名使用阿里与 DNSPod DoH，其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；代理节点域名仍由独立的直连 DoH 解析，避免启动循环。Reality 节点可显式选择 `ipv4` 或 `dual`，其中 `dual` 要求 VPS 公网 IPv6 和节点 AAAA 匹配。动态 Cloudflare 节点固定输出 `ipv4`；VPS 自身仍可保持双栈，并按已持久化策略通过 `ForceIPv4` 或 `ForceIPv6` 固定 Google 出站。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅。
 

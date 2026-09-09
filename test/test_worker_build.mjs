@@ -58,7 +58,7 @@ try {
     assert.ok(allBody.includes('hidden.example.com'));
     assert.ok(allBody.includes('vmiss.example.com'));
     assert.equal(await (await offline(request('', 'offline-test-token', 'HEAD'))).text(), '');
-    const upstream = `dns:\n  nameserver: [malicious.invalid]\nproxies:\n    - name: Remote\n      type: vless\n      server: remote.example.com\n      port: 443\n      uuid: ${config.nodes[0].uuid}\n      network: xhttp\n      ip-version: ipv4\n      alpn:\n        - h2\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n`;
+    const upstream = `dns:\n  nameserver: [malicious.invalid]\nproxies:\n    - name: Remote\n      type: vless\n      server: remote.example.com\n      port: 443\n      uuid: ${config.nodes[0].uuid}\n      network: xhttp\n      ip-version: ipv4\n      alpn:\n        - h2\n    - { name: Mieru Remote, type: mieru, server: mieru.example.com, port: 443, username: test-user, password: test-password, transport: TCP, multiplexing: MULTIPLEXING_LOW }\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n`;
     const xmux = {
         maxConnections: 4,
         cMaxReuseTimes: 0,
@@ -198,7 +198,7 @@ try {
             },
         },
     );
-    assert.equal(upstreamUA, 'Mihomo', 'Clash aggregation does not forward stale client versions');
+    assert.equal(upstreamUA, 'mihomo/1.19.30', 'Clash aggregation advertises current Mieru support');
     for (const [status, headers, warning] of [
         [403, {}, 'HTTP 403'],
         [200, {'cf-mitigated': 'challenge'}, 'Cloudflare challenge'],
@@ -216,7 +216,7 @@ try {
     assert.equal((groups.match(/name:/g) || []).length, 2);
     assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 备用优选'));
     const proxyMembers = groups.split('name: 备用优选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
-    assert.deepEqual(proxyMembers, ['Reality example', 'Hidden Reality', 'Remote', '备用优选']);
+    assert.deepEqual(proxyMembers, ['Reality example', 'Hidden Reality', 'Remote', 'Mieru Remote', '备用优选']);
     assert.ok(!groups.includes('DIRECT'));
     const template = await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8');
     for (const body of [fallbackBody, liveBody]) {
@@ -225,6 +225,12 @@ try {
         assert.ok(body.includes('ipv6: true'));
     }
     assert.ok(liveBody.includes('remote.example.com') && liveBody.includes('192.0.2.1'));
+    assert.ok(
+        liveBody.includes('type: mieru') &&
+        liveBody.includes('mieru.example.com') &&
+        groups.split('name: 备用优选')[0].includes('Mieru Remote'),
+        'Clash output preserves upstream Mieru nodes and adds them to PROXY',
+    );
     for (const expected of [
         'reuse-settings:',
         'max-connections: 4',
