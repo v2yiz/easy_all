@@ -159,6 +159,28 @@ assert_not_contains "nginx config does not contain trojan location" "${nginx_con
 assert_equal "Origin CA only covers the Nginx node source hostname" \
     '["node.example.com"]' "$(cloudflare_origin_certificate_hosts)"
 
+# Cover both the profile override and shared runtime renderer on old/new Nginx.
+(
+    for renderer in "${PROFILE}" "${ROOT_DIR}/lib/xhttp-runtime.sh"; do
+        eval "$(awk '/^write_nginx_config\(\) \{/ {found=1} found && /^[a-z_]+\(\) \{/ && !/^write_nginx_config/ {exit} found {print}' "${renderer}")"
+        for version in 1.24.0 1.25.0 1.25.1 1.26.3; do
+            nginx() { [[ "${1:-}" != -v ]] || printf 'nginx version: nginx/%s\n' "${version}" >&2; }
+            write_nginx_config
+            config=$(<"${TMP_DIR}/nginx.conf")
+            case "${version}" in
+                1.24.0|1.25.0)
+                    assert_contains "${renderer} ${version} legacy HTTP/2" "${config}" 'listen 443 ssl http2 '
+                    assert_not_contains "${renderer} ${version} no unsupported directive" "${config}" 'http2 on;'
+                    ;;
+                *)
+                    assert_contains "${renderer} ${version} enables HTTP/2" "${config}" 'http2 on;'
+                    assert_not_contains "${renderer} ${version} no deprecated syntax" "${config}" 'listen 443 ssl http2 '
+                    ;;
+            esac
+        done
+    done
+)
+
 # 5. Test 6 curated nodes output with no domain fallback
 # Set up a complete cache with 6 unique candidates (2 per carrier).
 cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'

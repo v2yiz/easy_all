@@ -1420,7 +1420,7 @@ server {
     server_name ${XHTTP_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.2 TLSv1.3;${http2_directive}
     tcp_nodelay on;
     keepalive_timeout 5m;
 

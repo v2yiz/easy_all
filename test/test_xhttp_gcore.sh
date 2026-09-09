@@ -877,6 +877,13 @@ assert_contains "Nginx has easy_all-health location" "${nginx_cfg}" "location = 
 assert_contains "Nginx proxies WebSocket backend" "${nginx_cfg}" "proxy_pass http://gcore_websocket_backend;"
 assert_not_contains "Nginx does not contain an XHTTP backend" "${nginx_cfg}" "gcore_xhttp_backend"
 
+(
+    nginx() { [[ "${1:-}" != -v ]] || printf 'nginx version: nginx/1.26.3\n' >&2; }
+    write_nginx_config
+    assert_contains "Modern Nginx enables HTTP/2" "$(<"${nginx_conf_file}")" 'http2 on;'
+    assert_not_contains "Modern Nginx avoids deprecated listen syntax" "$(<"${nginx_conf_file}")" 'listen 443 ssl http2 '
+)
+
 # 9. Test path normalizers
 assert_equal "normalize_websocket_path cleans double /ws- prefix" \
     "/ws-0123456789abcdef" "$(normalize_websocket_path "/ws-/ws-0123456789abcdef")"
