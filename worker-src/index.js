@@ -7,7 +7,21 @@ const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
-const { allowedTokens: ALLOWED_TOKENS, nodes: LOCAL_NODES, upstreamUrl: UPSTREAM_SUBSCRIPTION_URL, vpsCdnUrl: VPS_CDN_SUBSCRIPTION_URL, fallbackCdnNodes: FALLBACK_CDN_NODES } = PRIVATE_CONFIG;
+const CDN_IPV4_NODE_LIMIT = 6;
+const CDN_IPV6_NODE_LIMIT = 3;
+const CDN_NODE_LIMIT = CDN_IPV4_NODE_LIMIT + CDN_IPV6_NODE_LIMIT;
+const {
+    allowedTokens: ALLOWED_TOKENS,
+    nodes: LOCAL_NODES,
+    externalSubUrl: EXTERNAL_SUBSCRIPTION_URL,
+    vpsSubUrl: VPS_SUBSCRIPTION_URL,
+    vpsCdnUseRequestToken: VPS_CDN_USE_REQUEST_TOKEN = false,
+    delegateTokenValidation: DELEGATE_TOKEN_VALIDATION = false,
+    requireDynamicCdn: REQUIRE_DYNAMIC_CDN = false,
+    sourceSecret: VPS_CDN_SOURCE_SECRET = '',
+    fallbackCdnNodes: FALLBACK_CDN_NODES,
+    subscriptionDownloadName: SUBSCRIPTION_DOWNLOAD_NAME = DEFAULT_SUB_DOWNLOAD_NAME,
+} = PRIVATE_CONFIG;
 const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));
 
 function getHourCount(now = Date.now()) {
@@ -29,7 +43,7 @@ function nodePort({ now = Date.now } = {}) {
 function resolveNodePorts(nodes, dependencies) {
     const port = nodePort(dependencies);
     return nodes.map((node) =>
-        node.security === 'reality' ? port : TLS_PORT
+        node.security === 'reality' ? (node.port || port) : (node.port || TLS_PORT)
     );
 }
 
@@ -40,8 +54,33 @@ function uriEncode(value) {
     );
 }
 
+function validSubscriptionToken(value) {
+    return /^[A-Za-z0-9._~-]{8,128}$/.test(String(value || ''));
+}
+
 function yamlString(value) {
     return JSON.stringify(String(value));
+}
+
+function normalizeConnectHost(value) {
+    const host = String(value || '').trim();
+    return host.startsWith('[') && host.endsWith(']')
+        ? host.slice(1, -1)
+        : host;
+}
+
+function uriAuthorityHost(value) {
+    const host = normalizeConnectHost(value);
+    return host.includes(':') ? '[' + host + ']' : host;
+}
+
+function nodeIpVersion(node) {
+    if (node.ipVersion === 'dual') {
+        return 'dual';
+    }
+    return node.ipVersion === 'ipv6' || normalizeConnectHost(node.server || node.host).includes(':')
+        ? 'ipv6'
+        : 'ipv4';
 }
 
 function xhttpString(value, fallback) {
@@ -67,6 +106,34 @@ function xhttpNumber(value, fallback) {
     return fallback;
 }
 
+const XHTTP_XMUX_FIELDS = [
+    ['maxConnections', 'max-connections'],
+    ['cMaxReuseTimes', 'c-max-reuse-times'],
+    ['hMaxRequestTimes', 'h-max-request-times'],
+    ['hMaxReusableSecs', 'h-max-reusable-secs'],
+    ['hKeepAlivePeriod', 'h-keep-alive-period'],
+];
+
+function normalizeXhttpXmux(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    const result = {};
+    for (const [field] of XHTTP_XMUX_FIELDS) {
+        const current = value[field];
+        if (typeof current === 'number' && Number.isFinite(current)) {
+            result[field] = current;
+        } else if (
+            typeof current === 'string' &&
+            current.trim() &&
+            !/[\r\n\0]/.test(current)
+        ) {
+            result[field] = current.trim();
+        }
+    }
+    return Object.keys(result).length ? result : null;
+}
+
 function xhttpClientPath(node) {
     const path = String(node.path || '').trim();
     if (!path.startsWith('/')) {
@@ -81,6 +148,10 @@ function xhttpExtra(node) {
     };
     if (node.mode !== 'packet-up') {
         extra.noGRPCHeader = Boolean(node?.xhttpNoGrpcHeader);
+    }
+    const xmux = normalizeXhttpXmux(node?.xhttpXmux);
+    if (xmux) {
+        extra.xmux = xmux;
     }
     return extra;
 }
@@ -111,7 +182,7 @@ function wsUriPath(node) {
 }
 
 function vlessLink(node, port) {
-    const connectHost = node.server || node.host;
+    const connectHost = uriAuthorityHost(node.server || node.host);
     const connectPort = node.network === 'xhttp' ? (node.port || 443) : port;
     const params = new URLSearchParams({
         encryption: 'none',
@@ -173,9 +244,19 @@ function clashXhttpNode(node, port) {
         node.mode === 'packet-up'
             ? ''
             : `      no-grpc-header: ${Boolean(node?.xhttpNoGrpcHeader)}\n`;
+    const xmux = normalizeXhttpXmux(node?.xhttpXmux);
+    const reuseSettings = xmux
+        ? `\n      reuse-settings:\n${XHTTP_XMUX_FIELDS
+            .filter(([field]) => Object.hasOwn(xmux, field))
+            .map(([field, yamlField]) =>
+                `        ${yamlField}: ${JSON.stringify(xmux[field])}`
+            )
+            .join('\n')}`
+        : '';
+    const ipVersion = nodeIpVersion(node);
     return `  - name: ${yamlString(node.name)}
     type: vless
-    server: ${yamlString(node.server || node.host)}
+    server: ${yamlString(normalizeConnectHost(node.server || node.host))}
     port: ${node.port || port}
     uuid: ${yamlString(node.uuid)}
     network: xhttp
@@ -185,20 +266,20 @@ function clashXhttpNode(node, port) {
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
     packet-encoding: xudp
-    ip-version: ipv4
+    ip-version: ${ipVersion}
     alpn:
       - h2
     xhttp-opts:
       host: ${yamlString(node.host)}
       path: ${yamlString(xhttpClientPath(node))}
       mode: ${yamlString(node.mode || 'stream-up')}
-${noGrpcHeader}      uplink-http-method: ${yamlString(xhttpString(node?.xhttpUplinkHttpMethod, 'POST'))}`;
+${noGrpcHeader}      uplink-http-method: ${yamlString(xhttpString(node?.xhttpUplinkHttpMethod, 'POST'))}${reuseSettings}`;
 }
 
 function parseVlessLink(link) {
     const url = new URL(link);
     const uuid = url.username;
-    const server = url.hostname;
+    const server = normalizeConnectHost(url.hostname);
     const port = Number(url.port) || 443;
     const name = decodeURIComponent(url.hash.replace(/^#/, ''));
     const params = url.searchParams;
@@ -225,18 +306,34 @@ function parseVlessLink(link) {
         mode: params.get('mode') || 'stream-up',
         xhttpUplinkHttpMethod: extra.uplinkHTTPMethod || 'POST',
         xhttpNoGrpcHeader: Boolean(extra.noGRPCHeader),
-        ipVersion: 'ipv4',
+        xhttpXmux: normalizeXhttpXmux(extra.xmux),
+        ipVersion: server.includes(':') ? 'ipv6' : 'ipv4',
     };
 }
 
 function normalizeCdnNodeNames(nodes) {
-    return nodes.slice(0, 6).map((node, index) => ({
-        ...node,
-        name: `优选${index + 1}`,
-    }));
+    const ipv4 = [];
+    const ipv6 = [];
+    for (const node of nodes) {
+        const target = nodeIpVersion(node) === 'ipv6' ? ipv6 : ipv4;
+        const limit = target === ipv6 ? CDN_IPV6_NODE_LIMIT : CDN_IPV4_NODE_LIMIT;
+        if (target.length < limit) {
+            target.push(node);
+        }
+    }
+    return [
+        ...ipv4.map((node, index) => ({ ...node, name: '优选' + (index + 1) })),
+        ...ipv6.map((node, index) => ({ ...node, name: '优选IPv6-' + (index + 1) })),
+    ];
 }
 
-async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS, userAgent = '' } = {}) {
+async function fetchDynamicCdnNodes(url, {
+    fetchImpl = fetch,
+    timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS,
+    userAgent = '',
+    sourceToken = '',
+    sourceSecret = '',
+} = {}) {
     if (!url) {
         return { nodes: normalizeCdnNodeNames(FALLBACK_CDN_NODES), error: null };
     }
@@ -245,9 +342,20 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTRE
         const clientUA = userAgent?.trim() || 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
         const subscriptionUrl = new URL(url);
         subscriptionUrl.searchParams.set('flag', 'base64');
+        if (sourceToken) {
+            subscriptionUrl.searchParams.set('token', sourceToken);
+        }
         const text = await fetchXflashSubscription(
             { headers: new Headers({ 'User-Agent': clientUA }) },
-            subscriptionUrl.toString(), { fetchImpl, timeoutMs, format: 'base64', label: 'CDN subscription' }
+            subscriptionUrl.toString(), {
+                fetchImpl,
+                timeoutMs,
+                format: 'base64',
+                label: 'CDN subscription',
+                extraHeaders: sourceSecret
+                    ? { 'X-Easy-All-Worker-Source': sourceSecret }
+                    : {},
+            }
         );
         const decoded = decodeBase64Utf8(text) || text;
         const links = decoded
@@ -277,6 +385,7 @@ async function fetchDynamicCdnNodes(url, { fetchImpl = fetch, timeoutMs = UPSTRE
         return {
             nodes: normalizeCdnNodeNames(FALLBACK_CDN_NODES),
             error: error.message,
+            sourceStatus: error.httpStatus || 0,
         };
     }
 }
@@ -286,9 +395,10 @@ function clashWebSocketNode(node, port) {
     const earlyData = maxEarlyData
         ? `\n      max-early-data: ${maxEarlyData}\n      early-data-header-name: ${yamlString(node.earlyDataHeaderName || 'Sec-WebSocket-Protocol')}`
         : '';
+    const ipVersion = nodeIpVersion(node);
     return `  - name: ${yamlString(node.name)}
     type: vless
-    server: ${yamlString(node.host)}
+    server: ${yamlString(normalizeConnectHost(node.server || node.host))}
     port: ${port}
     uuid: ${yamlString(node.uuid)}
     network: ws
@@ -298,7 +408,7 @@ function clashWebSocketNode(node, port) {
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
     packet-encoding: xudp
-    ip-version: ipv4
+    ip-version: ${ipVersion}
     alpn:
       - ${yamlString(node.alpn || 'http/1.1')}
     ws-opts:
@@ -414,7 +524,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', '备用优选', 'DIRECT', 'REJECT'].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
-    const autoNames = autoNodes.slice(0, 6).map(node => node.name);
+    const autoNames = autoNodes.slice(0, CDN_NODE_LIMIT).map(node => node.name);
     const group = [
         '    - name: 备用优选', '      type: url-test',
         '      url: https://cp.cloudflare.com/generate_204',
@@ -488,21 +598,27 @@ function upstreamHeaders(requestHeaders, format) {
 
 async function fetchXflashSubscription(
     request,
-    upstreamUrl,
+    externalSubUrl,
     {
         fetchImpl = fetch,
         timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS,
         maxSize = MAX_UPSTREAM_SUBSCRIPTION_SIZE,
         format = 'clash',
         label = 'XFLASH',
+        extraHeaders = {},
     } = {}
 ) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetchImpl(upstreamUrl, {
-            headers: upstreamHeaders(request.headers, format),
+        const headers = upstreamHeaders(request.headers, format);
+        for (const [name, value] of Object.entries(extraHeaders)) {
+            headers.set(name, value);
+        }
+        const response = await fetchImpl(externalSubUrl, {
+            headers,
             signal: controller.signal,
+            cache: 'no-store',
         });
         if (!response.ok) {
             const hint = response.status === 403
@@ -510,7 +626,9 @@ async function fetchXflashSubscription(
                 : response.status === 429
                     ? ' (rate-limited by upstream)'
                     : '';
-            throw new Error(`${label} returned HTTP ${response.status}${hint}`);
+            const error = new Error(`${label} returned HTTP ${response.status}${hint}`);
+            error.httpStatus = response.status;
+            throw error;
         }
 
         if (response.headers.get('cf-mitigated') === 'challenge') {
@@ -532,8 +650,8 @@ async function fetchXflashSubscription(
     }
 }
 
-async function fetchXflashClashConfig(request, upstreamUrl, options = {}) {
-    const content = await fetchXflashSubscription(request, upstreamUrl, {
+async function fetchXflashClashConfig(request, externalSubUrl, options = {}) {
+    const content = await fetchXflashSubscription(request, externalSubUrl, {
         ...options,
         format: 'clash',
     });
@@ -629,23 +747,34 @@ function selectLocalNodes(nodes, url) {
 function createWorkerHandler({
     allowedTokenValues,
     localNodes,
-    upstreamUrl,
-    vpsCdnUrl = VPS_CDN_SUBSCRIPTION_URL,
+    externalSubUrl,
+    vpsSubUrl = VPS_SUBSCRIPTION_URL,
+    vpsCdnUseRequestToken = VPS_CDN_USE_REQUEST_TOKEN,
+    delegateTokenValidation = DELEGATE_TOKEN_VALIDATION,
+    requireDynamicCdn = REQUIRE_DYNAMIC_CDN,
+    sourceSecret = VPS_CDN_SOURCE_SECRET,
+    subscriptionDownloadName = SUBSCRIPTION_DOWNLOAD_NAME,
     now = Date.now,
     fetchImpl = fetch,
 }) {
     async function buildClashSubscription(request, nodes, ports, autoNodes) {
-        const upstream = await fetchXflashClashConfig(request, upstreamUrl, {
+        const upstream = await fetchXflashClashConfig(request, externalSubUrl, {
             fetchImpl,
         });
         return buildClashConfig(nodes, ports, upstream, autoNodes);
     }
 
     async function buildGenericSubscription(request, nodes, ports) {
+        if (!externalSubUrl) {
+            return {
+                content: buildBase64Subscription(nodes, ports),
+                degraded: false,
+            };
+        }
         try {
             const upstream = await fetchXflashSubscription(
                 request,
-                upstreamUrl,
+                externalSubUrl,
                 {
                     fetchImpl,
                     timeoutMs: UPSTREAM_GENERIC_FETCH_TIMEOUT_MS,
@@ -667,14 +796,31 @@ function createWorkerHandler({
     }
 
     async function handleSubscription(request, env, url) {
+        const requestToken = url.searchParams.get('token');
         const format = subscriptionFormat(
             request,
             url.searchParams.get('flag')
         );
-        const { nodes: dynamicCdnNodes, error: dynamicCdnError } = await fetchDynamicCdnNodes(vpsCdnUrl, {
+        const {
+            nodes: dynamicCdnNodes,
+            error: dynamicCdnError,
+            sourceStatus,
+        } = await fetchDynamicCdnNodes(vpsSubUrl, {
             fetchImpl,
             userAgent: request.headers.get('User-Agent'),
+            sourceToken: vpsCdnUseRequestToken ? requestToken : '',
+            sourceSecret,
         });
+        if (requireDynamicCdn && dynamicCdnError) {
+            return workerResponse(
+                request,
+                sourceStatus === 403 && delegateTokenValidation
+                    ? 'Forbidden'
+                    : 'Subscription source unavailable',
+                sourceStatus === 403 && delegateTokenValidation ? 403 : 502,
+                new Headers({ 'X-Easy-All-CDN-Warning': dynamicCdnError })
+            );
+        }
         const selectedLocalNodes = selectLocalNodes(localNodes, url);
         const nodes = [...selectedLocalNodes, ...dynamicCdnNodes];
         const ports = resolveNodePorts(nodes, { now });
@@ -682,17 +828,21 @@ function createWorkerHandler({
         let degraded = false;
 
         if (format === 'clash') {
-            try {
-                content = await buildClashSubscription(
-                    request,
-                    nodes,
-                    ports,
-                    dynamicCdnNodes
-                );
-            } catch (error) {
-                console.error('XFLASH subscription unavailable or unsupported');
+            if (!externalSubUrl) {
                 content = buildClashConfig(nodes, ports, '', dynamicCdnNodes);
-                degraded = true;
+            } else {
+                try {
+                    content = await buildClashSubscription(
+                        request,
+                        nodes,
+                        ports,
+                        dynamicCdnNodes
+                    );
+                } catch (error) {
+                    console.error('XFLASH subscription unavailable or unsupported');
+                    content = buildClashConfig(nodes, ports, '', dynamicCdnNodes);
+                    degraded = true;
+                }
             }
         } else {
             const generic = await buildGenericSubscription(
@@ -704,7 +854,10 @@ function createWorkerHandler({
             degraded = generic.degraded;
         }
 
-        const headers = subscriptionHeaders(format, env || {});
+        const headers = subscriptionHeaders(format, {
+            SUB_DOWNLOAD_NAME:
+                env?.SUB_DOWNLOAD_NAME || subscriptionDownloadName,
+        });
         if (degraded) {
             headers.set('X-Easy-All-Warning', 'xflash-unavailable-local-only');
         }
@@ -721,7 +874,7 @@ function createWorkerHandler({
         );
     }
 
-    return async function handleRequest(request, env, context) {
+    return async function handleRequest(request, env, _context) {
         if (request.method !== 'GET' && request.method !== 'HEAD') {
             return workerResponse(
                 request,
@@ -735,7 +888,12 @@ function createWorkerHandler({
         if (url.pathname !== SUBSCRIPTION_PATH) {
             return workerResponse(request, 'Not Found', 404);
         }
-        if (!allowedTokenValues.has(url.searchParams.get('token'))) {
+        const requestToken = url.searchParams.get('token');
+        if (
+            delegateTokenValidation
+                ? !validSubscriptionToken(requestToken)
+                : !allowedTokenValues.has(requestToken)
+        ) {
             return workerResponse(request, 'Forbidden', 403);
         }
 
@@ -747,8 +905,13 @@ function createWorkerHandler({
 const handleRequest = createWorkerHandler({
     allowedTokenValues: ALLOWED_TOKEN_VALUES,
     localNodes: LOCAL_NODES,
-    upstreamUrl: UPSTREAM_SUBSCRIPTION_URL,
-    vpsCdnUrl: VPS_CDN_SUBSCRIPTION_URL,
+    externalSubUrl: EXTERNAL_SUBSCRIPTION_URL,
+    vpsSubUrl: VPS_SUBSCRIPTION_URL,
+    vpsCdnUseRequestToken: VPS_CDN_USE_REQUEST_TOKEN,
+    delegateTokenValidation: DELEGATE_TOKEN_VALIDATION,
+    requireDynamicCdn: REQUIRE_DYNAMIC_CDN,
+    sourceSecret: VPS_CDN_SOURCE_SECRET,
+    subscriptionDownloadName: SUBSCRIPTION_DOWNLOAD_NAME,
 });
 
 export default {

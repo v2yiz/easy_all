@@ -2,9 +2,25 @@
   "allowedTokens": {
     "owner": "replace-with-a-long-random-token"
   },
-  "vpsCdnUrl": "https://cdn.example.com/subscribe?token=replace-me",
-  "upstreamUrl": "https://subscription.example.com/replace-me",
-  "fallbackCdnNodes": [],
+  "vpsSubUrl": "https://cdn.example.com/subscribe?token=replace-me",
+  "externalSubUrl": "https://subscription.example.com/replace-me",
+  "fallbackCdnNodes": [{
+      "type": "vless",
+      "security": "tls",
+      "network": "xhttp",
+      "uuid": "e40d1d40-d380-49de-8b91-8607f2dd5dd9",
+      "server": "104.19.14.59",
+      "port": 443,
+      "host": "cf.1988088.xyz",
+      "sni": "cf.1988088.xyz",
+      "name": "请求上游失败，请稍后重试",
+      "fp": "chrome",
+      "path": "/xhttp-b1d4dbc7a8d6e7ebb78ad99e/",
+      "mode": "stream-up",
+      "xhttpUplinkHttpMethod": "POST",
+      "xhttpNoGrpcHeader": false,
+      "ipVersion": "ipv4"
+    }],
   "nodes": [
     {
       "type": "vless",

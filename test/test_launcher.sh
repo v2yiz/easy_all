@@ -51,6 +51,8 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
 [[ "${launcher_content}" == *'"profiles/reality.sh"'* \
     && "${launcher_content}" == *'"profiles/xhttp-cloudflare-streamup.sh"'* \
     && "${launcher_content}" == *'"lib/globalping-cdn.sh"'* \
+    && "${launcher_content}" == *'"worker-src/index.js"'* \
+    && "${launcher_content}" == *'"scripts/build-worker.mjs"'* \
     && "${launcher_content}" == *'templates/mihomo.yaml'* ]] \
     || fail "runtime registration must use the organized profile and template paths"
 preserve_source="${TMP_DIR}/preserve-source"
@@ -76,7 +78,8 @@ git() {
     printf '%s\n' "${destination}" >"${SELF_UPDATE_REPO_PATH_FILE}"
     printf '%s\n' "$5" >"${SELF_UPDATE_BRANCH_FILE}"
     mkdir -p "${destination}"
-    for relative_path in easy_all templates/mihomo.yaml "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+    for relative_path in easy_all templates/mihomo.yaml \
+        "${EASY_ALL_RUNTIME_MODULES[@]}" "${EASY_ALL_RUNTIME_ASSETS[@]}"; do
         mkdir -p "${destination}/$(dirname -- "${relative_path}")"
         cp "${ROOT_DIR}/${relative_path}" "${destination}/${relative_path}"
     done
@@ -123,6 +126,9 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"1～6 个已验证节点，通常为 2 个"* \
     && "${guide}" == *"全网综合优选"* \
     && "${guide}" == *"定向测速"* \
+    && "${guide}" == *"Worker 为唯一公开聚合入口"* \
+    && "${guide}" == *"默认 EASYALL"* \
+    && "${guide}" == *"VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）"* \
     && "${guide}" == *"XHTTP"* \
     && "${guide}" != *"AWS"* ]] \
     || fail "install guide does not describe the supported installation branches and defaults"
@@ -146,6 +152,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "install mode prompt must be Chinese-only and explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - 纯 XHTTP stream-up'* \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'月度出站额度通常是主要上限，但不与有效载荷严格等值'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Gcore CDN 精选 IP - 多地区真实入口'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'1～6 个已验证节点，通常为 2 个'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* ]] \
@@ -171,13 +178,13 @@ for english_prompt in \
 done
 assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=6\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=7\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Reality state selects Reality profile" "reality" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=7\nPROTOCOL=cloudflare-streamup\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=9\nPROTOCOL=cloudflare-streamup\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare streamup state selects cloudflare-streamup" "cloudflare-streamup" "$(detect_installed_mode)"
 
-printf 'STATE_VERSION=7\nPROTOCOL=gcore\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=9\nPROTOCOL=gcore\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Gcore state selects gcore" "gcore" "$(detect_installed_mode)"
 
 printf 'STATE_VERSION=1\nPROTOCOL=gcore\nCDN_PROVIDER=gcore\n' >"${EASY_ALL_STATE_FILE}"
@@ -185,12 +192,12 @@ assert_failure_contains "legacy Gcore state is rejected" \
     "状态版本无效" \
     detect_installed_mode
 
-printf 'STATE_VERSION=7\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=9\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_failure_contains "legacy singbox-cf state is rejected" \
     "无法识别已安装协议" \
     detect_installed_mode
 
-printf 'STATE_VERSION=7\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
+printf 'STATE_VERSION=9\nPROTOCOL=xhttp\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_failure_contains "legacy xhttp state is rejected" \
     "无法识别已安装协议" \
     detect_installed_mode

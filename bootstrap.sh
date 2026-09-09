@@ -56,6 +56,8 @@ git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
     && -f "${REPO_DIR}/lib/scheduled-maintenance.sh" \
     && -f "${REPO_DIR}/lib/subscription-auth.sh" \
     && -f "${REPO_DIR}/lib/tcp-tuning.sh" \
+    && -f "${REPO_DIR}/worker-src/index.js" \
+    && -f "${REPO_DIR}/scripts/build-worker.mjs" \
     && -f "${REPO_DIR}/templates/mihomo.yaml" ]] \
     || die "下载的 easy_all 项目不完整"
 

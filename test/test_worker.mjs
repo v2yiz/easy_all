@@ -17,7 +17,7 @@ const handleRequest = vm.runInNewContext(
         createWorkerHandler({
             allowedTokenValues: new Set(['test']),
             localNodes: LOCAL_NODES,
-            upstreamUrl: 'https://upstream.invalid',
+            externalSubUrl: 'https://upstream.invalid',
         });
     `),
     {

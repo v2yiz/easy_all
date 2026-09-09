@@ -66,7 +66,7 @@ readonly CRON_DYNAMIC_PORT_MARKER="# easy_all-managed-dynamic-ports"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="6"
+readonly STATE_SCHEMA_VERSION="7"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
 
@@ -289,6 +289,7 @@ load_state() {
         PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         VPS_IP_FAMILY VPS_PUBLIC_IPV6
+        GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         SUB_PORT_MODE ALLOWED_TOKENS
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_ORIGIN_CERT_ID
@@ -312,8 +313,6 @@ load_state() {
         fi
         unset "${env_name}"
     done
-    unset REALITY_INBOUND_IP_FAMILY REALITY_CLIENT_IP_FAMILY \
-        REALITY_CLIENT_IP_FAMILY_RESOLVED
     CDN_PROVIDER=""
     if [[ "${state_loaded}" == "1" ]]; then
         [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
@@ -321,6 +320,8 @@ load_state() {
         [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || die "状态缺少 SUB_DOWNLOAD_NAME；请重新安装"
         [[ "${QUOTA_ENABLED:-}" == "0" || "${QUOTA_ENABLED:-}" == "1" ]] \
             || die "状态缺少有效的 QUOTA_ENABLED；请重新安装"
+        validate_google_egress_policy_state \
+            || die "状态缺少有效的 Google 出站策略；请重新安装"
     fi
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
@@ -388,6 +389,10 @@ save_state() {
         printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID:-}"
         printf 'VPS_IP_FAMILY=%q\n' "${VPS_IP_FAMILY:-ipv4}"
         printf 'VPS_PUBLIC_IPV6=%q\n' "${VPS_PUBLIC_IPV6:-}"
+        validate_google_egress_policy_state \
+            || die "无法保存无效的 Google 出站策略"
+        printf 'GOOGLE_EGRESS_MODE=%q\n' "${GOOGLE_EGRESS_MODE}"
+        printf 'GOOGLE_EGRESS_RESOLVED=%q\n' "${GOOGLE_EGRESS_RESOLVED}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
@@ -602,6 +607,7 @@ collect_reality_inputs() {
     collect_reality_target
     validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
     collect_sub_port_mode
+    choose_google_egress_mode
 }
 
 check_install_conflicts() {
@@ -1390,7 +1396,7 @@ collect_deployed_subscription_inputs() {
     if [[ "${prompt_options}" == "1" ]]; then
         choose_monthly_quota 1
     fi
-    quota_enabled || ensure_allowed_tokens
+    quota_enabled || ensure_allowed_tokens "${prompt_options}"
     SUBSCRIPTION_MODE="deploy"
 }
 
@@ -1601,6 +1607,11 @@ update_subscription() {
     fi
     prepare_mihomo_template
     snapshot_subscription_update
+    if [[ "${prompt_options}" == "1" ]]; then
+        choose_google_egress_mode
+    else
+        refresh_google_egress_selection
+    fi
     [[ "${prompt_options}" == "1" ]] && PROMPT_SUBSCRIPTION_MODE=1
     collect_subscription_inputs "${prompt_options}" "${prompt_download_name}"
     PROMPT_SUBSCRIPTION_MODE=0
@@ -1769,11 +1780,11 @@ show_status() {
     printf '协议: %s\n' "${PROTOCOL}"
     show_bbrv3_status
     if vps_dual_stack_enabled; then
-        printf 'VPS 网络栈: IPv4 + IPv6（%s；Google 固定 IPv4 出站）\n' \
-            "${VPS_PUBLIC_IPV6}"
+        printf 'VPS 网络栈: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
     else
         printf 'VPS 网络栈: IPv4-only\n'
     fi
+    printf 'Google 出站: %s\n' "$(google_egress_status)"
     resolve_reality_client_ip_family
     printf 'Reality 客户端节点族: %s（仅 AAAA 匹配 VPS 时启用 dual）\n' \
         "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"

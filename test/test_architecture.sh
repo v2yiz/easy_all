@@ -131,7 +131,8 @@ grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
 ! grep -Eq 'cloudflare_cleanup_stale_header_rules' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare must not delete rules by zone-wide easy_all prefix"
 grep -Fq '[[ "${state_version}" == "7" ]]' "${ROOT_DIR}/easy_all" \
-    || fail "CDN modes must enforce the current state schema"
+    && grep -Fq '[[ "${state_version}" == "9" ]]' "${ROOT_DIR}/easy_all" \
+    || fail "all modes must enforce their current state schema"
 [[ "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/certificate.pem"'* \
     && "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/private.key"'* ]] \
     || fail "CDN rollback must preserve local TLS certificate and key"
@@ -142,6 +143,9 @@ finish_apply_body=$(sed -n '/^finish_xhttp_apply()/,/^}/p' "${XHTTP_RUNTIME}")
 [[ "${finish_apply_body}" != *'UPDATE_SUB_ROLLBACK_ON_EXIT=0'* \
     && "${finish_apply_body}" != *'end_quota_maintenance'* ]] \
     || fail "shared apply finalization must not commit the caller-owned rollback transaction"
+[[ "${finish_apply_body}" == *'[[ "${defer_state_save}" == "1" ]] || save_state'* \
+    && "${finish_apply_body}" == *'[[ "${defer_state_save}" == "1" ]] || show_subscription'* ]] \
+    || fail "deferred Worker updates must not reload stale state before commit"
 grep -Fq 'commit_subscription_update' "${CLOUDFLARE_PROFILE}" \
     && grep -Fq 'commit_subscription_update' "${GCORE_PROFILE}" \
     || fail "CDN profiles must commit rollback only after provider-specific validation"
@@ -168,12 +172,24 @@ for profile in "${CLOUDFLARE_PROFILE}" "${GCORE_PROFILE}"; do
         && "${rollback_body}" == *'restore_bbr_tcp_install_state'* \
         && "${rollback_body}" == *'restore_preinstall_crontab'* ]] \
         || fail "$(basename "${profile}") fresh rollback does not restore shared host state"
-    install_body=$(sed -n '/^install_all()/,/^}/p' "${profile}")
-    save_line=$(grep -n 'save_state' <<<"${install_body}" | head -n 1 | cut -d: -f1)
-    refresh_line=$(grep -n 'refresh_.*globalping.*cache' <<<"${install_body}" | head -n 1 | cut -d: -f1)
-    [[ -n "${save_line}" && -n "${refresh_line}" && "${save_line}" -lt "${refresh_line}" ]] \
-        || fail "$(basename "${profile}") must persist cloud ownership before Globalping"
 done
+cloudflare_install=$(sed -n '/^install_all()/,/^}/p' "${CLOUDFLARE_PROFILE}")
+cloudflare_refresh_line=$(grep -n 'refresh_globalping_cache' <<<"${cloudflare_install}" | head -n 1 | cut -d: -f1)
+cloudflare_deploy_line=$(grep -n 'cloudflare_deploy_subscription_worker' <<<"${cloudflare_install}" | head -n 1 | cut -d: -f1)
+cloudflare_validate_line=$(grep -n 'cloudflare_validate_subscription_worker' <<<"${cloudflare_install}" | head -n 1 | cut -d: -f1)
+cloudflare_save_line=$(grep -n 'save_state' <<<"${cloudflare_install}" | head -n 1 | cut -d: -f1)
+[[ -n "${cloudflare_refresh_line}" && -n "${cloudflare_deploy_line}" \
+    && -n "${cloudflare_validate_line}" && -n "${cloudflare_save_line}" \
+    && "${cloudflare_refresh_line}" -lt "${cloudflare_deploy_line}" \
+    && "${cloudflare_deploy_line}" -lt "${cloudflare_validate_line}" \
+    && "${cloudflare_validate_line}" -lt "${cloudflare_save_line}" ]] \
+    || fail "Cloudflare must commit state only after Worker aggregation validation"
+gcore_install=$(sed -n '/^install_all()/,/^}/p' "${GCORE_PROFILE}")
+gcore_save_line=$(grep -n 'save_state' <<<"${gcore_install}" | head -n 1 | cut -d: -f1)
+gcore_refresh_line=$(grep -n 'refresh_.*globalping.*cache' <<<"${gcore_install}" | head -n 1 | cut -d: -f1)
+[[ -n "${gcore_save_line}" && -n "${gcore_refresh_line}" \
+    && "${gcore_save_line}" -lt "${gcore_refresh_line}" ]] \
+    || fail "Gcore must persist cloud ownership before Globalping"
 [[ "$(sed -n '/^rollback_fresh_install()/,/^}/p' "${CLOUDFLARE_PROFILE}")" == *'purge_cloudflare_resources_before_uninstall'* \
     && "$(sed -n '/^rollback_fresh_install()/,/^}/p' "${GCORE_PROFILE}")" == *'gcore_purge_managed_resources'* ]] \
     || fail "CDN fresh rollback must attempt provider resource cleanup before local rollback"
@@ -246,6 +262,7 @@ fi
 (
     XRAY_CONFIG="/definitely/missing/easy_all-xray.json"
     die() { fail "$*"; }
+    info() { :; }
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/lib/network.sh"
     VPS_IP_FAMILY="ipv4"
@@ -291,6 +308,8 @@ fi
 
     VPS_IP_FAMILY="dual"
     VPS_PUBLIC_IPV6="2001:db8::10"
+    GOOGLE_EGRESS_MODE="ipv4"
+    GOOGLE_EGRESS_RESOLVED="ipv4"
     jq -e '
         map(.tag) == ["direct","direct-google-ipv4","block"]
         and .[1].settings.domainStrategy == "UseIPv4"
@@ -301,11 +320,41 @@ fi
     jq -e '
         .rules[2].domain == ["geosite:google"]
         and .rules[2].outboundTag == "direct-google-ipv4"
-        and .rules[2].ruleTag == "google-ipv4-only"
+        and .rules[2].ruleTag == "google-egress-locked"
         and .rules[3].ip == ["geoip:google"]
         and .rules[3].outboundTag == "direct-google-ipv4"
     ' <<<"$(xray_direct_routing_json)" >/dev/null \
         || fail "dual-stack Xray must route Google domains through IPv4"
+
+    GOOGLE_EGRESS_MODE="ipv6"
+    GOOGLE_EGRESS_RESOLVED="ipv6"
+    jq -e --arg source "${VPS_PUBLIC_IPV6}" '
+        map(.tag) == ["direct","direct-google-ipv6","block"]
+        and .[1].settings.domainStrategy == "UseIPv6"
+        and .[1].targetStrategy == "ForceIPv6"
+        and .[1].sendThrough == $source
+    ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
+        || fail "Google IPv6 lock must use a single ForceIPv6 outbound"
+    jq -e '
+        .rules[2].outboundTag == "direct-google-ipv6"
+        and .rules[3].outboundTag == "direct-google-ipv6"
+    ' <<<"$(xray_direct_routing_json)" >/dev/null \
+        || fail "Google IPv6 lock must route domain and IP rules consistently"
+
+    google_egress_probe_family() {
+        [[ "$1" == "ipv6" ]] && printf '3\t0.050000' || printf '3\t0.120000'
+    }
+    GOOGLE_EGRESS_MODE="auto"
+    GOOGLE_EGRESS_RESOLVED="ipv4"
+    refresh_google_egress_selection >/dev/null
+    [[ "${GOOGLE_EGRESS_RESOLVED}" == "ipv6" ]] \
+        || fail "Google auto mode must probe once and persist the selected family"
+    google_egress_probe_family() {
+        [[ "$1" == "ipv6" ]] && printf '2\t0.010000' || printf '3\t0.120000'
+    }
+    refresh_google_egress_selection >/dev/null
+    [[ "${GOOGLE_EGRESS_RESOLVED}" == "ipv4" ]] \
+        || fail "Google auto mode must prioritize probe success rate over latency"
 )
 
 printf 'ok - shared architecture tests passed\n'

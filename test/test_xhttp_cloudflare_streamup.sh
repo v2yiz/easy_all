@@ -45,6 +45,7 @@ export SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 export SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 export SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
 export NGINX_CONFIG="${TMP_DIR}/nginx.conf"
+export CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE="${TMP_DIR}/worker.js"
 export STATE_FILE="${STATE_DIR}/state.env"
 export EASY_ALL_STATE_FILE_OVERRIDE="${STATE_DIR}/state.env"
 export VLESS_CDN_DOMAIN="node.example.com"
@@ -57,13 +58,22 @@ export ORIGIN_HEADER_SECRET="test-origin-secret-12345678"
 export ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 export SUB_DOWNLOAD_NAME="TEST_SUB"
 export SUBSCRIPTION_MODE="deploy"
+export SUBSCRIPTION_DOMAIN="sub.example.com"
 export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
 export CLOUDFLARE_ZONE_ID="test-zone-id"
 export CLOUDFLARE_ZONE_NAME="example.com"
+export CLOUDFLARE_ACCOUNT_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+export CLOUDFLARE_WORKER_NAME="EASYALL"
+export CLOUDFLARE_WORKER_DOMAIN_ID="test-worker-domain-id"
+export WORKER_SOURCE_SECRET="test-worker-source-secret-12345"
+export WORKER_AGGREGATION_CONFIG='{"allowedTokens":{"owner":"config-override-token-12345"},"externalSubUrl":"https://extra.example.com/subscribe?token=extra-token","fallbackCdnNodes":[],"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"Extra Reality","host":"extra.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"www.example.com","pbk":"extra-public-key","sid":"0123456789abcdef","fp":"chrome","ipVersion":"ipv4","port":4443}]}'
 export CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
 export CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2035-01-01T00:00:00Z"
 export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/cloudflare-cdn-ips.json"
 export XHTTP_NODE_NAME="TEST_NODE"
+export CLOUDFLARE_CLIENT_IP_FAMILY="ipv4"
+export GOOGLE_EGRESS_MODE="auto"
+export GOOGLE_EGRESS_RESOLVED="ipv4"
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
 touch "${CERT_FILE}" "${KEY_FILE}"
@@ -131,38 +141,45 @@ write_nginx_config
 nginx_conf=$(<"${TMP_DIR}/nginx.conf")
 
 assert_contains "nginx config contains domain" "${nginx_conf}" "server_name node.example.com;"
+assert_not_contains "Nginx does not expose the Worker subscription hostname" \
+    "${nginx_conf}" "server_name sub.example.com;"
 assert_contains "nginx config contains xhttp location" "${nginx_conf}" "location ^~ /xhttp-test-path"
 assert_contains "nginx config contains xhttp grpc_pass" "${nginx_conf}" "grpc_pass grpc://127.0.0.1:10086;"
 assert_contains "nginx config body size 0" "${nginx_conf}" "client_max_body_size 0;"
 assert_contains "nginx config socket keepalive" "${nginx_conf}" "grpc_socket_keepalive on;"
 assert_contains "nginx config checks origin key" "${nginx_conf}" 'if ($http_x_easy_all_origin_key != "test-origin-secret-12345678") { return 404; }'
+assert_contains "nginx subscription source requires Worker secret" "${nginx_conf}" \
+    'if ($http_x_easy_all_worker_source != "test-worker-source-secret-12345") { return 404; }'
 assert_contains "nginx config has health endpoint" "${nginx_conf}" "location = /easy_all-health"
 assert_not_contains "nginx config does not contain upstream" "${nginx_conf}" "upstream cf_xhttp_backend"
 assert_not_contains "nginx config does not contain websocket location" "${nginx_conf}" "location = /ws-"
 assert_not_contains "nginx config does not contain trojan location" "${nginx_conf}" "location = /tr-"
+assert_equal "Origin CA only covers the Nginx node source hostname" \
+    '["node.example.com"]' "$(cloudflare_origin_certificate_hosts)"
 
 # 5. Test 6 curated nodes output with no domain fallback
 # Set up a complete cache with 6 unique candidates (2 per carrier).
 cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 {
-  "version": 6,
+  "version": 7,
   "provider": "cloudflare",
   "domain": "node.example.com",
-  "candidate_source": "cloudflare-official-ipv4-cidrs",
+  "client_ip_family": "ipv4",
+  "candidate_source": "cloudflare-official-ipv4-and-domain-ipv6",
   "measured_at_epoch": 1725500000,
   "packets": 10,
   "candidates": [
-    {"ip": "104.16.1.1", "label": "电信01", "carrier": "telecom", "carrier_asn": 4134, "avg_rtt_ms": 120, "tls_verified": true},
-    {"ip": "104.16.1.2", "label": "电信02", "carrier": "telecom", "carrier_asn": 4134, "avg_rtt_ms": 130, "tls_verified": true},
-    {"ip": "104.16.2.1", "label": "联通01", "carrier": "unicom", "carrier_asn": 4837, "avg_rtt_ms": 110, "tls_verified": true},
-    {"ip": "104.16.2.2", "label": "联通02", "carrier": "unicom", "carrier_asn": 4837, "avg_rtt_ms": 125, "tls_verified": true},
-    {"ip": "104.16.3.1", "label": "移动01", "carrier": "mobile", "carrier_asn": 9808, "avg_rtt_ms": 115, "tls_verified": true},
-    {"ip": "104.16.3.2", "label": "移动02", "carrier": "mobile", "carrier_asn": 9808, "avg_rtt_ms": 128, "tls_verified": true}
+    {"ip": "104.16.1.1", "source_cidr": "104.16.0.0/13", "address_family": "ipv4", "label": "电信01", "carrier": "telecom", "carrier_asn": 4134, "avg_rtt_ms": 120, "tls_verified": true},
+    {"ip": "104.16.1.2", "source_cidr": "104.16.0.0/13", "address_family": "ipv4", "label": "电信02", "carrier": "telecom", "carrier_asn": 4134, "avg_rtt_ms": 130, "tls_verified": true},
+    {"ip": "104.16.2.1", "source_cidr": "104.16.0.0/13", "address_family": "ipv4", "label": "联通01", "carrier": "unicom", "carrier_asn": 4837, "avg_rtt_ms": 110, "tls_verified": true},
+    {"ip": "104.16.2.2", "source_cidr": "104.16.0.0/13", "address_family": "ipv4", "label": "联通02", "carrier": "unicom", "carrier_asn": 4837, "avg_rtt_ms": 125, "tls_verified": true},
+    {"ip": "104.16.3.1", "source_cidr": "104.16.0.0/13", "address_family": "ipv4", "label": "移动01", "carrier": "mobile", "carrier_asn": 9808, "avg_rtt_ms": 115, "tls_verified": true},
+    {"ip": "104.16.3.2", "source_cidr": "104.16.0.0/13", "address_family": "ipv4", "label": "移动02", "carrier": "mobile", "carrier_asn": 9808, "avg_rtt_ms": 128, "tls_verified": true}
   ]
 }
 EOF
 cp "${GLOBALPING_CACHE_FILE}" "${TMP_DIR}/valid-cloudflare-cache.json"
-jq '.version = 5' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/legacy-cloudflare-cache.json"
+jq '.version = 6' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/legacy-cloudflare-cache.json"
 cp "${TMP_DIR}/legacy-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
 if cloudflare_globalping_cache_compatible; then
     fail "Legacy v5 cache may contain loose-loss or synthetic-carrier entries and must be rejected"
@@ -226,6 +243,119 @@ assert_not_contains "Groups do not contain 移动优选 group" "${groups_output}
 assert_contains "Groups test url" "${groups_output}" 'url: https://cp.cloudflare.com/generate_204'
 assert_contains "Groups tolerance is 30" "${groups_output}" 'tolerance: 30'
 assert_not_contains "Groups do not contain domain fallback" "${groups_output}" 'DOMAIN'
+
+# Worker deployment source forwards the public token to the private Nginx source.
+generated_worker="${CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE}"
+cloudflare_build_subscription_worker
+node --check "${generated_worker}"
+generated_worker_content=$(<"${generated_worker}")
+assert_contains "Generated Worker enables request-token forwarding" \
+    "${generated_worker_content}" '"vpsCdnUseRequestToken":true'
+assert_contains "Generated Worker delegates final Token validation to Nginx" \
+    "${generated_worker_content}" '"delegateTokenValidation":true'
+assert_contains "Generated Worker requires its dynamic source" \
+    "${generated_worker_content}" '"requireDynamicCdn":true'
+assert_contains "Generated Worker embeds the private source secret" \
+    "${generated_worker_content}" '"sourceSecret":"test-worker-source-secret-12345"'
+assert_contains "Generated Worker embeds optional extra nodes" \
+    "${generated_worker_content}" '"name":"Extra Reality"'
+assert_contains "Generated Worker preserves config.local externalSubUrl" \
+    "${generated_worker_content}" \
+    '"externalSubUrl":"https://extra.example.com/subscribe?token=extra-token"'
+assert_contains "Generated Worker injects the locally generated vpsSubUrl" \
+    "${generated_worker_content}" '"vpsSubUrl":"https://node.example.com/subscribe"'
+assert_not_contains "Generated Worker does not embed public subscription Tokens" \
+    "${generated_worker_content}" 'test-token-12345'
+assert_not_contains "Generated Worker delegates rather than embedding config allowedTokens" \
+    "${generated_worker_content}" 'config-override-token-12345'
+assert_contains "Worker upload enables same-zone public fetch" \
+    "$(<"${PROFILE}")" 'compatibility_flags:["global_fetch_strictly_public"]'
+assert_contains "Worker deployment disables workers.dev and previews" \
+    "$(<"${PROFILE}")" '{enabled:false,previews_enabled:false}'
+assert_contains "Worker custom domain uses the account API" \
+    "$(<"${PROFILE}")" '/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains'
+install_input_body=$(sed -n '/^collect_install_inputs()/,/^}/p' "${PROFILE}")
+install_token_line=$(grep -n 'ensure_allowed_tokens 1' <<<"${install_input_body}" | cut -d: -f1)
+install_nodes_line=$(grep -n 'choose_worker_aggregation_config' <<<"${install_input_body}" | cut -d: -f1)
+update_input_body=$(sed -n '/^update_subscription()/,/^}/p' "${PROFILE}")
+update_token_line=$(grep -n 'ensure_allowed_tokens 1' <<<"${update_input_body}" | cut -d: -f1)
+update_nodes_line=$(grep -n 'choose_worker_aggregation_config' <<<"${update_input_body}" | cut -d: -f1)
+((install_token_line < install_nodes_line && update_token_line < update_nodes_line)) \
+    || fail "Worker nodes prompt must run after user Token configuration"
+assert_contains "Worker nodes prompt first asks whether aggregation is needed" \
+    "$(<"${PROFILE}")" '是否需要进行订阅聚合？'
+(
+    unset CLOUDFLARE_WORKER_NAME
+    choose_cloudflare_worker_name
+    assert_equal "Worker name defaults to EASYALL" "EASYALL" \
+        "${CLOUDFLARE_WORKER_NAME}"
+)
+assert_equal "Worker config normalizer keeps one Reality node" "1" \
+    "$(normalize_worker_aggregation_config "${WORKER_AGGREGATION_CONFIG}" | jq '.nodes | length')"
+ALLOWED_TOKENS='{"owner":"test-token-12345"}'
+QUOTA_ENABLED=0
+normalized_worker_config=$(normalize_worker_aggregation_config "${WORKER_AGGREGATION_CONFIG}")
+apply_worker_allowed_tokens_override "${normalized_worker_config}"
+assert_equal "config.local allowedTokens override installer tokens" \
+    '{"owner":"config-override-token-12345"}' "${ALLOWED_TOKENS}"
+if normalize_worker_aggregation_config '{"vpsSubUrl":"https://forbidden.example.com"}' \
+    >/dev/null 2>&1; then
+    fail "User Worker config must not accept vpsSubUrl"
+fi
+(
+    api_calls="${TMP_DIR}/worker-domain-api-calls"
+    : >"${api_calls}"
+    CLOUDFLARE_WORKER_DOMAIN_ID=""
+    cloudflare_api_request() {
+        printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >>"${api_calls}"
+        if [[ "$1 $2" == "GET /accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" ]]; then
+            printf '[]\n'
+        elif [[ "$1 $2" == GET\ /zones/${CLOUDFLARE_ZONE_ID}/dns_records* ]]; then
+            printf '[]\n'
+        elif [[ "$1 $2" == "PUT /accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" ]]; then
+            printf '{"id":"new-worker-domain-id"}\n'
+        else
+            fail "Unexpected Worker domain API call: $1 $2"
+        fi
+    }
+    cloudflare_attach_subscription_worker_domain
+    assert_equal "Worker custom domain ID is persisted from API response" \
+        "new-worker-domain-id" "${CLOUDFLARE_WORKER_DOMAIN_ID}"
+    assert_contains "Worker custom domain binds the selected service" \
+        "$(<"${api_calls}")" '"service":"EASYALL"'
+)
+
+# Dual mode keeps all IPv4 nodes and appends independently addressable IPv6 nodes.
+jq '.client_ip_family = "dual"
+    | .ipv6_candidate_count = 2
+    | .candidates += [
+        {"ip":"2606:4700::6810:101","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-1","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":95,"tls_verified":true},
+        {"ip":"2606:4700::6810:102","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-2","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":98,"tls_verified":true}
+      ]' "${TMP_DIR}/valid-cloudflare-cache.json" >"${GLOBALPING_CACHE_FILE}"
+CLOUDFLARE_CLIENT_IP_FAMILY="dual"
+dual_links=$(build_node_links)
+assert_equal "Dual subscription keeps 6 IPv4 and adds 2 IPv6 links" "8" \
+    "$(grep -c '^vless://' <<<"${dual_links}")"
+assert_contains "IPv6 VLESS authority is bracketed" "${dual_links}" \
+    '@[2606:4700::6810:101]:443'
+dual_mihomo=$(build_mihomo_nodes)
+assert_contains "Mihomo renders IPv6 server without URI brackets" "${dual_mihomo}" \
+    'server: "2606:4700::6810:101"'
+assert_contains "Mihomo pins IPv6 candidates" "${dual_mihomo}" 'ip-version: ipv6'
+assert_contains "Mihomo labels IPv6 candidates separately" "${dual_mihomo}" '"优选IPv6-2"'
+dual_groups=$(build_mihomo_proxy_groups)
+assert_contains "AUTO group includes IPv6 candidates" "${dual_groups}" '"优选IPv6-2"'
+jq '.ipv6_candidate_count = 4
+    | .candidates += [
+        {"ip":"2606:4700::6810:103","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-3","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":100,"tls_verified":true},
+        {"ip":"2606:4700::6810:104","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-4","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":105,"tls_verified":true}
+      ]' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/overflow-ipv6-cache.json"
+cp "${TMP_DIR}/overflow-ipv6-cache.json" "${GLOBALPING_CACHE_FILE}"
+if cloudflare_globalping_cache_compatible; then
+    fail "Dual cache with more than 3 IPv6 candidates must be rejected"
+fi
+CLOUDFLARE_CLIENT_IP_FAMILY="ipv4"
+cp "${TMP_DIR}/valid-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
 
 # Test Mihomo proxy names under PROXY
 names_output=$(build_mihomo_proxy_names)
@@ -298,11 +428,49 @@ assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
 assert_contains "State file persists dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=dual'
 assert_contains "State file persists public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6=2001:db8::10'
+assert_contains "State file persists Cloudflare client family" "${state_content}" \
+    'CLOUDFLARE_CLIENT_IP_FAMILY=ipv4'
+assert_contains "State file persists Google egress mode" "${state_content}" \
+    'GOOGLE_EGRESS_MODE=auto'
+assert_contains "State file persists resolved Google family" "${state_content}" \
+    'GOOGLE_EGRESS_RESOLVED=ipv4'
+assert_contains "State file persists Worker name" "${state_content}" \
+    'CLOUDFLARE_WORKER_NAME=EASYALL'
+assert_contains "State file persists Worker domain ID" "${state_content}" \
+    'CLOUDFLARE_WORKER_DOMAIN_ID=test-worker-domain-id'
+assert_contains "State file persists Cloudflare Account ID" "${state_content}" \
+    'CLOUDFLARE_ACCOUNT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+assert_contains "State file persists private Worker source secret" "${state_content}" \
+    'WORKER_SOURCE_SECRET=test-worker-source-secret-12345'
+assert_contains "State file persists Worker aggregation config" "${state_content}" \
+    'WORKER_AGGREGATION_CONFIG='
+
+missing_policy_state="${TMP_DIR}/state_missing_policy.env"
+grep -Ev '^(CLOUDFLARE_CLIENT_IP_FAMILY|GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED)=' \
+    "${EASY_ALL_STATE_FILE_OVERRIDE}" >"${missing_policy_state}"
+missing_policy_err=$(
+    bash -c 'source "$1"; EASY_ALL_STATE_FILE_OVERRIDE="$2" load_state' _ \
+        "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
+        "${missing_policy_state}" 2>&1 || true
+)
+assert_contains "load_state rejects state without the current family policy" \
+    "${missing_policy_err}" "状态缺少有效的 Cloudflare 客户端入口 IP 族"
+
+missing_worker_state="${TMP_DIR}/state_missing_worker.env"
+grep -Ev '^(CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_WORKER_NAME|CLOUDFLARE_WORKER_DOMAIN_ID|WORKER_SOURCE_SECRET)=' \
+    "${EASY_ALL_STATE_FILE_OVERRIDE}" >"${missing_worker_state}"
+missing_worker_err=$(
+    bash -c 'source "$1"; EASY_ALL_STATE_FILE_OVERRIDE="$2" load_state' _ \
+        "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
+        "${missing_worker_state}" 2>&1 || true
+)
+assert_contains "load_state rejects deployed subscriptions without Worker state" \
+    "${missing_worker_err}" "状态缺少有效的 Cloudflare Account ID"
 
 # Verify legacy states are rejected by load_state
 legacy_singbox_state="${TMP_DIR}/state_singbox.env"
 cat >"${legacy_singbox_state}" <<'EOF'
-STATE_VERSION='7'
+STATE_VERSION='9'
 CDN_PROVIDER='cloudflare'
 PROTOCOL='singbox-cf'
 BACKEND='singbox'
@@ -324,13 +492,20 @@ assert_equal "normalize_xhttp_path keeps clean /xhttp- intact" \
 # Verify load_state successfully recovers from double-prefixed XHTTP_PATH in state
 corrupted_state="${TMP_DIR}/state_corrupted.env"
 cat >"${corrupted_state}" <<EOF
-STATE_VERSION='7'
+STATE_VERSION='9'
 PROTOCOL='cloudflare-streamup'
 BACKEND='xray'
 CDN_PROVIDER='cloudflare'
-CDN_CLIENT_IP_FAMILY='ipv6-prefer'
+CLOUDFLARE_CLIENT_IP_FAMILY='ipv4'
+GOOGLE_EGRESS_MODE='auto'
+GOOGLE_EGRESS_RESOLVED='ipv4'
+CLOUDFLARE_ACCOUNT_ID='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+CLOUDFLARE_WORKER_NAME='EASYALL'
+CLOUDFLARE_WORKER_DOMAIN_ID='test-worker-domain-id'
+WORKER_SOURCE_SECRET='test-worker-source-secret-12345'
 VLESS_UUID='11111111-2222-4111-8111-111111111111'
 VLESS_CDN_DOMAIN='cdn.example.com'
+SUBSCRIPTION_DOMAIN='sub.example.com'
 CLOUDFLARE_ORIGIN_DOMAIN='cdn.example.com'
 CLOUDFLARE_ZONE_ID='test-zone-id'
 CLOUDFLARE_ZONE_NAME='example.com'
@@ -344,8 +519,10 @@ EOF
 EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
-assert_equal "load_state discards legacy CDN IPv6 preference" \
-    "" "${CDN_CLIENT_IP_FAMILY:-}"
+assert_equal "load_state preserves Cloudflare client family" \
+    "ipv4" "${CLOUDFLARE_CLIENT_IP_FAMILY}"
+assert_equal "load_state preserves Google egress mode" \
+    "auto" "${GOOGLE_EGRESS_MODE}"
 assert_equal "load_state preserves the current detected VPS family" \
     "dual" "${VPS_IP_FAMILY}"
 VPS_IP_FAMILY="ipv4"

@@ -32,6 +32,8 @@ content=$(<"${SCRIPT}")
     && "${content}" == *'&& -f "${REPO_DIR}/lib/scheduled-maintenance.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/subscription-auth.sh"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/lib/tcp-tuning.sh"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/worker-src/index.js"'* \
+    && "${content}" == *'&& -f "${REPO_DIR}/scripts/build-worker.mjs"'* \
     && "${content}" == *'&& -f "${REPO_DIR}/templates/mihomo.yaml"'* ]] \
     || fail "bootstrap must validate the complete project"
 [[ "${content}" == *'"${SUDO[@]}" "${REPO_DIR}/easy_all" install'* ]] \

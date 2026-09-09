@@ -1191,6 +1191,7 @@ collect_install_inputs() {
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
+    choose_google_egress_mode
 
     info "Gcore 模式需要两个不同子域名：CDN 节点域名用于客户端连接，源站域名用于 VPS 真实回源与证书。"
     VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "")}")
@@ -1221,7 +1222,7 @@ collect_install_inputs() {
         collect_subscription_link_domain
         choose_subscription_download_name
         choose_monthly_quota 1
-        quota_enabled || ensure_allowed_tokens
+        quota_enabled || ensure_allowed_tokens 1
     else
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
@@ -1236,6 +1237,7 @@ load_state() {
     local detected_public_ipv6=${VPS_PUBLIC_IPV6:-}
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
+        GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
         GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET
@@ -1260,7 +1262,6 @@ load_state() {
         || die "状态不是 Gcore CDN"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 Gcore 状态版本：${STATE_VERSION:-缺失}；请重新安装"
-    unset CDN_CLIENT_IP_FAMILY CDN_CLIENT_IP_FAMILY_RESOLVED
     validate_domain "${GCORE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Gcore 状态缺少有效域名或 UUID"
     [[ "${GCORE_ORIGIN_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
@@ -1296,6 +1297,8 @@ load_state() {
         ;;
     *) die "状态文件中的 VPS_IP_FAMILY 无效：${VPS_IP_FAMILY}" ;;
     esac
+    validate_google_egress_policy_state \
+        || die "状态缺少有效的 Google 出站策略；请重新安装"
     BACKEND="xray"
     PROTOCOL="gcore"
     CDN_PROVIDER="gcore"
@@ -1304,6 +1307,8 @@ load_state() {
 save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
+    validate_google_egress_policy_state \
+        || die "无法保存无效的 Google 出站策略"
     state_dir="$(dirname "${target}")"
     install -d -m 0700 "${state_dir}"
     local t
@@ -1311,6 +1316,7 @@ save_state() {
     cleanup_files+=("${t}")
     {
         for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
+            GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
             GCORE_ORIGIN_DOMAIN GCORE_DNS_ZONE GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET \
             GCORE_CDN_RESOURCE_ID GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID \
@@ -1545,10 +1551,11 @@ show_status() {
     printf '协议: VLESS WebSocket（Gcore CDN）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nGcore 回源域名: %s\nGcore 目标: %s\n候选来源: Globalping 多地区 DNS / 三网 eyeball 定向探针\n节点数量: 1～6 个，通常为 2 个，以实际验证结果为准\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${GCORE_CDN_TARGET}"
     if vps_dual_stack_enabled; then
-        printf 'VPS 出站: IPv4 + IPv6（%s；Google 固定 IPv4）\n' "${VPS_PUBLIC_IPV6}"
+        printf 'VPS 出站: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
     else
         printf 'VPS 出站: IPv4-only\n'
     fi
+    printf 'Google 出站: %s\n' "$(google_egress_status)"
     show_globalping_status
 }
 
@@ -1716,6 +1723,7 @@ apply_easy_all() {
     collect_installed_state
     snapshot_subscription_update
     configure_bbr_tcp
+    refresh_google_egress_selection
     configure_ufw
     if ! gcore_globalping_cache_valid; then
         info "当前 Globalping 优选缓存未就绪或已过期，正在执行刷新..."
@@ -1732,6 +1740,7 @@ apply_cloud_resources() {
     collect_installed_state
     snapshot_subscription_update
     configure_bbr_tcp
+    refresh_google_egress_selection
     configure_ufw
     gcore_prepare_origin
     XHTTP_RUNTIME_STATE_CURRENT=1 refresh_runtime
@@ -1771,6 +1780,7 @@ update_subscription() {
     collect_installed_state
     previous_active_domain=$(active_subscription_link_domain)
     snapshot_subscription_update
+    choose_google_egress_mode
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
@@ -1778,7 +1788,7 @@ update_subscription() {
         collect_subscription_link_domain
         choose_subscription_download_name
         choose_monthly_quota 1
-        quota_enabled || ensure_allowed_tokens
+        quota_enabled || ensure_allowed_tokens 1
         write_subscriptions
     else
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}

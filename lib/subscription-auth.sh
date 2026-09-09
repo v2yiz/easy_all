@@ -88,8 +88,11 @@ normalize_allowed_tokens() {
 }
 
 ensure_allowed_tokens() {
-    local raw prompt_default normalized
-    if [[ -n "${ALLOWED_TOKENS:-}" ]]; then
+    local prompt_existing=${1:-0} raw prompt_default normalized
+    if [[ "${prompt_existing}" == "1" && -t 0 ]]; then
+        prompt_default=${ALLOWED_TOKENS:-$(jq -cn --arg token "$(generate_secret)" '{owner: $token}')}
+        raw=$(prompt_value "订阅用户 Token 完整字典 JSON（用户名=>token）" "${prompt_default}")
+    elif [[ -n "${ALLOWED_TOKENS:-}" ]]; then
         raw=${ALLOWED_TOKENS}
     elif [[ -t 0 ]]; then
         prompt_default=$(jq -cn --arg token "$(generate_secret)" '{owner: $token}')
@@ -165,14 +168,21 @@ EOF
 
 write_subscription_nginx_locations() {
     local origin_header_secret=${1:-}
+    local worker_source_secret=${2:-}
     local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
     local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
     local origin_guard=""
+    local worker_guard=""
     subscription_enabled || return 0
     if [[ -n "${origin_header_secret}" ]]; then
         [[ "${origin_header_secret}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
             || die "订阅源站保护密钥格式无效"
         origin_guard="        if (\$http_x_easy_all_origin_key != \"${origin_header_secret}\") { return 404; }"
+    fi
+    if [[ -n "${worker_source_secret}" ]]; then
+        [[ "${worker_source_secret}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+            || die "Worker 订阅源密钥格式无效"
+        worker_guard="        if (\$http_x_easy_all_worker_source != \"${worker_source_secret}\") { return 404; }"
     fi
     if quota_enabled; then
         base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
@@ -182,6 +192,7 @@ write_subscription_nginx_locations() {
     location = /subscribe {
 EOF
     [[ -z "${origin_guard}" ]] || printf '%s\n' "${origin_guard}"
+    [[ -z "${worker_guard}" ]] || printf '%s\n' "${worker_guard}"
     cat <<EOF
         access_log off;
         if (\$request_method !~ ^(GET|HEAD)$) { return 405; }

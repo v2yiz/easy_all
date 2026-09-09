@@ -1,5 +1,8 @@
 # Worker 构建
 
+Cloudflare XHTTP 模式选择“部署订阅服务”时，安装器会直接通过 Cloudflare API 生成并部署该 Worker，
+默认名称为 `EASYALL`，无需手工执行本节命令。下面的本地构建流程只用于独立维护或聚合额外节点。
+
 在仓库根目录运行：
 
 ```sh
@@ -21,15 +24,25 @@ Node.js 18 或更新版本即可，无需安装 npm 依赖。
 
 Worker 保留 `/subscribe?token=...`，`flag=clash` 返回完整配置，`flag=base64` 返回节点 URI 订阅；无 flag 时沿用客户端 User-Agent 判断。默认隐藏标记为 `optional`、`allOnly` 或名称/主机包含 `vmiss` 的节点；追加 `node=all` 时显示全部节点。
 
-Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。VPS 获取失败使用 `fallbackCdnNodes`。动态与兜底 CDN 节点都会按最终顺序统一命名为 `优选1`～`优选6`。仅生成 PROXY 和备用优选两个策略组，PROXY 依次包含其他节点和备用优选，不重复列出 CDN 节点。备用优选仅包含本次获取的最多六个 CDN 节点；没有 CDN 节点时使用 REJECT，避免自动切换到其他节点；DIRECT 仅用于直连分流规则。
+安装器自动部署的 Worker 不依赖外部 `externalSubUrl`：它将公开请求的 Token 转发到节点域名上的
+Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 显式启用
+`global_fetch_strictly_public`、关闭 `workers.dev` 和 Preview URL，并只绑定独立订阅 Custom Domain。
+自动部署脚本不内嵌公开用户 Token；Nginx 是用户与配额鉴权的唯一真源。订阅域名不得与节点域名相同；
+动态源失败时返回 `502`，源明确拒绝 Token 时返回 `403`，不会使用静态节点绕过用户配额。
+选择聚合时，安装器读取一份不含 `vpsSubUrl` 的 `config.local.json` JSON，保留其中的 `nodes`、
+`externalSubUrl` 和 `fallbackCdnNodes`；其中的 `allowedTokens` 会覆盖安装器先前设置的 Token。
+启用配额时用户名必须与配额用户一致。安装器再注入本机私有源 URL 与鉴权字段。
+最终配置由 `../scripts/build-worker.mjs` 正式校验构建，不由 shell 直接拼接。
 
-公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。中国大陆域名使用阿里与 DNSPod DoH，其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；代理节点域名仍由独立的直连 DoH 解析，避免启动循环。Reality 节点可显式选择 `ipv4` 或 `dual`；CF/Gcore 精选节点仍固定输出 `ip-version: ipv4`。所有 Google 域名都进入代理，双栈 VPS 再固定使用 IPv4 出口。模板先直连明确例外、局域网和中国大陆域名，并按 GeoIP 放行纯 IP 的国内 QUIC；其余 UDP/443 在代理规则前拒绝。下载器不再按进程无条件直连，仍按目标域名/IP 分流。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅，已部署产物不会自动更新。
+Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。VPS 获取失败使用 `fallbackCdnNodes`。动态与兜底 CDN 节点按地址族分别命名：IPv4 为 `优选1`～`优选6`，IPv6 为 `优选IPv6-1`～`优选IPv6-3`。仅生成 PROXY 和备用优选两个策略组，备用优选最多包含 6 个 IPv4 和 3 个 IPv6；没有 CDN 节点时使用 REJECT。
+
+公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。中国大陆域名使用阿里与 DNSPod DoH，其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；代理节点域名仍由独立的直连 DoH 解析，避免启动循环。Reality 节点可显式选择 `ipv4` 或 `dual`；动态 CDN 节点根据连接地址输出 `ipv4` 或 `ipv6`。所有 Google 域名都进入代理，VPS 再按已持久化策略通过 `ForceIPv4` 或 `ForceIPv6` 固定出站。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅。
 
 版本由构建脚本按北京时间生成，例如 `2026-09-06-v0`。同一天根据现有 `worker.js` 的版本递增，跨日从 `v0` 开始；构建失败不消耗版本。删除产物后也会从 `v0` 开始，因此需要连续编号时请保留上次构建的文件。版本通过 `X-Easy-All-Version` 响应头返回。
 
 ### CF 聚合只出现兜底节点
 
-动态 CF 获取或解析失败会使用 `fallbackCdnNodes`；这不代表 VPS 没有生成节点。Worker 请求 VPS 时固定追加 `flag=base64` 并使用 URI 客户端 UA，先解析有效节点再取最多六个，避免 Clash 格式或前面的不支持节点导致误降级。
+动态 CF 获取或解析失败会使用 `fallbackCdnNodes`；这不代表 VPS 没有生成节点。Worker 请求 VPS 时固定追加 `flag=base64` 并使用 URI 客户端 UA，解析后分别保留最多 6 个 IPv4 和 3 个 IPv6 节点。
 
 部署重新构建的 `worker.js` 后，检查订阅响应头（不要公开含 token 的链接）：
 
@@ -38,4 +51,4 @@ Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `n
 - `X-Easy-All-CDN-Warning`：动态获取失败原因；HTTP 403 检查 Cloudflare Security Events，challenge 表示收到 Cloudflare 挑战，解析错误表示正文没有可用节点，超时检查 Worker 到订阅域名的连接。上游错误的 `Content-Type` 不代表正文无效，XFLASH 可能用 `text/html` 返回 Base64 或 YAML。
 - `X-Easy-All-Warning`：独立的 XFLASH 上游状态，与 CF 获取结果不同。
 
-Cloudflare 配置问题不能靠更换 UA 修复。[Bot Fight Mode 不能被 WAF Skip 规则跳过](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/)；Super Bot Fight Mode 才支持该例外。[1042 表示同 Zone 的 Worker 子请求限制](https://developers.cloudflare.com/workers/observability/errors/)，仅在确实发生该错误时检查 `global_fetch_strictly_public` 及路由，避免请求递归回聚合 Worker 自身。
+Cloudflare 配置问题不能靠更换 UA 修复。[Bot Fight Mode 不能被 WAF Skip 规则跳过](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/)；Super Bot Fight Mode 才支持该例外。[1042 表示同 Zone 的 Worker 子请求限制](https://developers.cloudflare.com/workers/observability/errors/)；自动部署固定启用 `global_fetch_strictly_public`，并将 Worker 与节点源绑定到不同主机名以避免递归。

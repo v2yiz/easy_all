@@ -8,6 +8,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 export async function buildWorker({
     configPath = resolve(root, 'worker-src/config.local.json'),
     outputPath = resolve(root, 'worker-src/worker.js'),
+    templatePath = resolve(root, 'templates/mihomo.yaml'),
+    sourcePath = resolve(root, 'worker-src/index.js'),
     now = Date.now(),
 } = {}) {
     let config;
@@ -18,12 +20,44 @@ export async function buildWorker({
     requireValue(config && typeof config === 'object', 'object required');
     requireValue(config.allowedTokens && !Array.isArray(config.allowedTokens) && typeof config.allowedTokens === 'object', 'allowedTokens');
     const tokens = Object.values(config.allowedTokens);
-    requireValue(tokens.length && tokens.every(value => nonempty(value) && value.length >= 16) && new Set(tokens).size === tokens.length, 'tokens must be unique strings of at least 16 characters');
-    for (const key of ['upstreamUrl', 'vpsCdnUrl']) {
+    requireValue(
+        tokens.every(value => nonempty(value) && value.length >= 16) &&
+            new Set(tokens).size === tokens.length &&
+            (config.delegateTokenValidation === true || tokens.length > 0),
+        'tokens must be unique strings of at least 16 characters'
+    );
+    for (const key of ['externalSubUrl', 'vpsSubUrl']) {
+        if (key === 'externalSubUrl' && config[key] === '') continue;
         let url;
         try { url = new URL(config[key]); } catch {}
         requireValue(url?.protocol === 'https:' && !url.username && !url.password, key);
     }
+    requireValue(
+        config.vpsCdnUseRequestToken === undefined || typeof config.vpsCdnUseRequestToken === 'boolean',
+        'vpsCdnUseRequestToken'
+    );
+    requireValue(
+        config.requireDynamicCdn === undefined || typeof config.requireDynamicCdn === 'boolean',
+        'requireDynamicCdn'
+    );
+    requireValue(
+        config.delegateTokenValidation === undefined ||
+            typeof config.delegateTokenValidation === 'boolean',
+        'delegateTokenValidation'
+    );
+    requireValue(
+        config.sourceSecret === undefined || nonempty(config.sourceSecret),
+        'sourceSecret'
+    );
+    requireValue(
+        !config.vpsCdnUseRequestToken || nonempty(config.sourceSecret),
+        'sourceSecret is required when vpsCdnUseRequestToken is enabled'
+    );
+    requireValue(
+        config.subscriptionDownloadName === undefined ||
+            /^[A-Za-z0-9._-]{1,64}$/.test(config.subscriptionDownloadName),
+        'subscriptionDownloadName'
+    );
     for (const key of ['nodes', 'fallbackCdnNodes']) {
         requireValue(Array.isArray(config[key]), key);
         for (const node of config[key]) {
@@ -36,23 +70,27 @@ export async function buildWorker({
                 requireValue(node.security === 'tls' && ['xhttp', 'ws'].includes(node.network) && nonempty(node.path) && node.path.startsWith('/'), 'CDN parameters');
             }
             requireValue(node.port === undefined || Number.isInteger(node.port) && node.port > 0 && node.port <= 65535, 'port');
-            const allowedIpVersions = key === 'nodes' ? ['ipv4', 'dual'] : ['ipv4'];
+            requireValue(node.server === undefined || nonempty(node.server), `${key} server`);
+            const allowedIpVersions = key === 'nodes' ? ['ipv4', 'dual'] : ['ipv4', 'ipv6'];
             requireValue(
                 node.ipVersion === undefined || allowedIpVersions.includes(node.ipVersion),
                 `${key} IP family`
             );
         }
     }
-    requireValue(config.nodes.length > 0, 'at least one Reality node');
+    requireValue(
+        config.nodes.length > 0 || config.requireDynamicCdn === true || Boolean(config.externalSubUrl),
+        'at least one node source'
+    );
     const names = [...config.nodes, ...config.fallbackCdnNodes].map(node => node.name);
     requireValue(new Set(names).size === names.length && names.every(name => !['PROXY', '备用优选', 'DIRECT', 'REJECT'].includes(name)), 'unique, non-reserved node names');
     requireValue(
-        config.nodes.every(node => !/^优选[1-6]$/.test(node.name)),
-        'Reality node names must not use reserved CDN names 优选1..优选6'
+        config.nodes.every(node => !/^优选(?:[1-6]|IPv6-[1-3])$/.test(node.name)),
+        'Reality node names must not use reserved CDN names'
     );
     const [template, source] = await Promise.all([
-        readFile(resolve(root, 'templates/mihomo.yaml'), 'utf8'),
-        readFile(resolve(root, 'worker-src/index.js'), 'utf8'),
+        readFile(templatePath, 'utf8'),
+        readFile(sourcePath, 'utf8'),
     ]);
     for (const marker of ['# EASY_ALL_PROXY_NODE', '# EASY_ALL_PROXY_GROUP', '# EASY_ALL_PROXY_NAME']) {
         requireValue(template.split('\n').filter(line => line === marker).length === 1, `template marker ${marker}`);
@@ -84,6 +122,26 @@ export async function buildWorker({
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-    try { const version = await buildWorker(); console.log(`Built worker.js: ${version}`); }
+    const configPath = process.env.EASY_ALL_WORKER_CONFIG_PATH
+        ? resolve(process.env.EASY_ALL_WORKER_CONFIG_PATH)
+        : undefined;
+    const outputPath = process.env.EASY_ALL_WORKER_OUTPUT_PATH
+        ? resolve(process.env.EASY_ALL_WORKER_OUTPUT_PATH)
+        : undefined;
+    const templatePath = process.env.EASY_ALL_WORKER_TEMPLATE_PATH
+        ? resolve(process.env.EASY_ALL_WORKER_TEMPLATE_PATH)
+        : undefined;
+    const sourcePath = process.env.EASY_ALL_WORKER_SOURCE_PATH
+        ? resolve(process.env.EASY_ALL_WORKER_SOURCE_PATH)
+        : undefined;
+    try {
+        const version = await buildWorker({
+            configPath,
+            outputPath,
+            templatePath,
+            sourcePath,
+        });
+        console.log(`Built worker.js: ${version}`);
+    }
     catch (error) { console.error(error.message); process.exitCode = 1; }
 }

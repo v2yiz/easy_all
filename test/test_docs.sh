@@ -50,13 +50,27 @@ assert_contains "README documents subscription access-log suppression" \
     "${README_CONTENT}" '避免查询参数中的 Token 写入'
 assert_contains "README documents hourly Globalping refresh" "${README_CONTENT}" '每小时'
 assert_contains "README documents compatible-cache reuse" \
-    "${README_CONTENT}" '格式兼容的上一版已验证缓存'
+    "${README_CONTENT}" '与当前入口策略兼容的缓存'
 assert_contains "README documents the official Cloudflare IPv4 pool" \
     "${README_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
+assert_contains "README documents optional verified Cloudflare IPv6 nodes" \
+    "${README_CONTENT}" '优选IPv6-1`～`优选IPv6-3'
+assert_contains "README documents Worker script permission" \
+    "${README_CONTENT}" 'Workers Scripts Write'
+assert_contains "README documents the default Worker name" \
+    "${README_CONTENT}" '默认 `EASYALL`'
+assert_contains "README documents same-zone Worker fetch handling" \
+    "${README_CONTENT}" '`global_fetch_strictly_public`'
+assert_contains "README documents managed Worker extra nodes" \
+    "${README_CONTENT}" 'WORKER_AGGREGATION_CONFIG={...}'
+assert_contains "Preparation guide keeps Nginx as a private Worker source" \
+    "${PREPARATION_GUIDE_CONTENT}" '`X-Easy-All-Worker-Source`'
 assert_contains "README documents the Mihomo requirement for selected IPs" \
     "${README_CONTENT}" '精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成'
 assert_contains "README documents Shadowrocket as unverified" \
     "${README_CONTENT}" '不把 Shadowrocket 列为本项目的已验证客户端'
+assert_contains "README explains the Cloudflare VPS traffic boundary" \
+    "${README_CONTENT}" '用户上下行载荷之和会消耗 VPS 出站额度'
 
 assert_contains "Preparation guide has the expected title" \
     "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
@@ -124,6 +138,8 @@ assert_contains "Preparation guide documents the Cloudflare API token walkthroug
     || fail "Cloudflare API token walkthrough asset is missing"
 assert_contains "Preparation guide documents the official IPv4 pool" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
+assert_contains "Preparation guide documents Cloudflare IPv6 validation" \
+    "${PREPARATION_GUIDE_CONTENT}" '属于 Cloudflare 官方 IPv6 CIDR'
 assert_contains "Preparation guide documents the Cloudflare loss threshold" \
     "${PREPARATION_GUIDE_CONTENT}" '最多允许丢 1 包（10%）'
 assert_not_contains "Preparation guide does not advertise unsupported Gcore DNS replacement" \
@@ -138,6 +154,10 @@ assert_contains "Preparation guide documents Reality IPv6 firewall prerequisites
     "${PREPARATION_GUIDE_CONTENT}" '安全组'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \
     "${PREPARATION_GUIDE_CONTENT}" 'Shadowrocket 列为已验证客户端'
+assert_contains "Preparation guide explains outbound-only VPS accounting" \
+    "${PREPARATION_GUIDE_CONTENT}" '仅计出站的 VPS 会把两者计入出站额度'
+assert_contains "Cloudflare install interaction explains the VPS traffic boundary" \
+    "${XHTTP_CONTENT}" '月度出站额度通常是可用代理载荷的主要上限'
 
 assert_contains "README documents merged Profile helpers" "${README_CONTENT}" 'profile-common.sh'
 assert_contains "README documents merged scheduled maintenance" \
@@ -147,8 +167,10 @@ assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}
 assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
 assert_contains "README documents conditional VPS dual-stack support" \
     "${README_CONTENT}" '检测到可用公网 IPv6'
-assert_contains "README documents Google IPv4-only egress" \
-    "${README_CONTENT}" '`direct-google-ipv4`'
+assert_contains "README documents locked Google egress selection" \
+    "${README_CONTENT}" '再比较延迟中位数'
+assert_contains "README documents persisted Google egress state" \
+    "${README_CONTENT}" 'GOOGLE_EGRESS_RESOLVED=ipv4|ipv6'
 assert_contains "README documents Chinese-only interactive prompts" \
     "${README_CONTENT}" '所有需要用户输入的交互提示仅显示中文'
 assert_contains "README documents client connection racing" \
@@ -166,7 +188,7 @@ assert_contains "README keeps the independent Debian initializer" \
     "${README_CONTENT}" '`scripts/debian-init.sh` 是独立的个人服务器初始化工具'
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" '同步重建本机 Xray、Nginx 和订阅文件'
 assert_contains "XHTTP command message includes Xray" "${XHTTP_CONTENT}" \
-    'Cloudflare 订阅、Origin CA 与回源规则已更新'
+    'Cloudflare Worker 订阅、Origin CA 与回源规则已更新'
 
 for content_label in README preparation-guide launcher Cloudflare-profile XHTTP-runtime; do
     case "${content_label}" in

@@ -92,6 +92,8 @@ set_fixture() {
     REALITY_SHORT_ID="0123456789abcdef"
     VPS_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
+    GOOGLE_EGRESS_MODE="auto"
+    GOOGLE_EGRESS_RESOLVED="ipv4"
     SUB_PORT_MODE="dynamic"
     SUBSCRIPTION_MODE="deploy"
     SUBSCRIPTION_DOMAIN="sub.example.com"
@@ -163,7 +165,7 @@ test_validators_and_modes() {
     assert_equal "Reality defaults to dynamic subscriptions" \
         "dynamic" "${DEFAULT_REALITY_PORT_MODE}"
     assert_equal "Reality state schema records canonical subscription modes" \
-        "6" "${STATE_SCHEMA_VERSION}"
+        "7" "${STATE_SCHEMA_VERSION}"
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
@@ -1077,16 +1079,15 @@ test_state_and_xray() {
         "CLOUDFLARE_STRICT_RULESET_ID=test-strict-ruleset-id" "${state}"
     assert_not_contains "state never persists the Cloudflare API Token" \
         "CLOUDFLARE_API_TOKEN" "${state}"
-    assert_not_contains "state omits retired Reality inbound family" \
-        "REALITY_INBOUND_IP_FAMILY=" "${state}"
     assert_contains "state persists the detected VPS IP family" \
         "VPS_IP_FAMILY=ipv4" "${state}"
     assert_contains "state persists an empty VPS IPv6 address in IPv4-only mode" \
         "VPS_PUBLIC_IPV6=" "${state}"
-    printf 'REALITY_INBOUND_IP_FAMILY=dual\n' >>"${STATE_FILE}"
+    assert_contains "state persists Google egress mode" \
+        "GOOGLE_EGRESS_MODE=auto" "${state}"
+    assert_contains "state persists resolved Google family" \
+        "GOOGLE_EGRESS_RESOLVED=ipv4" "${state}"
     load_state
-    assert_equal "legacy Reality inbound family is discarded" "" \
-        "${REALITY_INBOUND_IP_FAMILY:-}"
     assert_equal "current VPS family remains IPv4" "ipv4" \
         "${VPS_IP_FAMILY:-}"
     assert_contains "state supports persisting the quota start date" \

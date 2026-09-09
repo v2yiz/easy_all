@@ -40,6 +40,10 @@ readonly -a EASY_ALL_RUNTIME_MODULES=(
     "lib/subscription-auth.sh"
     "lib/tcp-tuning.sh"
 )
+readonly -a EASY_ALL_RUNTIME_ASSETS=(
+    "worker-src/index.js"
+    "scripts/build-worker.mjs"
+)
 readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
@@ -62,6 +66,9 @@ runtime_tree_is_complete() {
     for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
         [[ -f "${root}/${relative_path}" ]] || return 1
     done
+    for relative_path in "${EASY_ALL_RUNTIME_ASSETS[@]}"; do
+        [[ -f "${root}/${relative_path}" ]] || return 1
+    done
 }
 
 launcher_usage() {
@@ -74,7 +81,7 @@ launcher_usage() {
   self-update      只更新 easy_all 项目代码
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN 云资源
-  update-sub       重新选择订阅模式与月度用户配额
+  update-sub       重新选择订阅、入口 IP 族与 Google 出站策略
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
   refresh-xray-assets  更新并校验 Xray GeoSite/GeoIP（双栈 VPS）
@@ -103,12 +110,18 @@ easy_all install
 │  │  └─ 仅节点：不收集订阅服务参数
 │  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
-└─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，精选 6 节点）
+└─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4 + 最多 3 个已验证 IPv6）
    ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
+   ├─ 流量口径：实时回源；VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）
+   ├─ 入口 IP 族：默认 IPv4；可选 dual，在保留 6 个 IPv4 的同时追加最多 3 个已验证 IPv6
+   ├─ Google 出口：auto 探测后锁定，或显式强制 IPv4 / IPv6
    ├─ 采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up 极速流模式
-   ├─ 全网综合优选：基于 Globalping 探针 TLS 验证与低延迟筛选三网定向 6 精选 IP
-   ├─ 严格输出 6 个精选节点，完全无域名兜底；内置全局单一 AUTO 自动测速组
-   ├─ 订阅生成：通用 Base64 以及 Mihomo YAML (flag=clash)
+   ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4，dual 时再验证域名 AAAA
+   ├─ 固定输出 6 个 IPv4，按选择追加最多 3 个 IPv6，完全无域名兜底；内置单一 AUTO 组
+   ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
+   ├─ Worker 名称可指定（默认 EASYALL），订阅域名必须与节点域名不同
+   ├─ 可选输入不含 vpsSubUrl 的 config.local.json；本机注入源 URL 后构建 Worker
+   ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移
 └─ [3] Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）
    ├─ 适用线路：非优化线路；域名需委派至 Gcore Managed DNS Zone
@@ -144,15 +157,15 @@ detect_installed_mode() {
         state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
         case "${protocol}" in
         reality)
-            [[ "${state_version}" == "6" ]] || launcher_die "Reality 状态版本无效；仅支持当前全新安装生成的状态"
+            [[ "${state_version}" == "7" ]] || launcher_die "Reality 状态版本无效；仅支持当前全新安装生成的状态"
             printf 'reality\n'
             ;;
         cloudflare-streamup)
-            [[ "${state_version}" == "7" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
+            [[ "${state_version}" == "9" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
             printf 'cloudflare-streamup\n'
             ;;
         gcore)
-            [[ "${state_version}" == "7" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
+            [[ "${state_version}" == "9" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
             printf 'gcore\n'
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
@@ -166,7 +179,8 @@ choose_install_mode() {
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
-    printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（完全适配 Cloudflare，三网定向精选 6 节点）\n' >&2
+    printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4 + 最多 3 个已验证 IPv6）\n' >&2
+    printf '     流量实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是主要上限，但不与有效载荷严格等值\n' >&2
     printf '  3. Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
@@ -208,13 +222,18 @@ unified_register_easy_all_command() {
 
     install -d -m 0755 "$(dirname "${EASY_ALL_INSTALL_DIR}")" "$(dirname "${EASY_ALL_COMMAND_PATH}")"
     stage=$(mktemp -d "${EASY_ALL_INSTALL_DIR}.stage.XXXXXX")
-    install -d -m 0755 "${stage}/lib" "${stage}/profiles" "${stage}/templates"
+    install -d -m 0755 "${stage}/lib" "${stage}/profiles" "${stage}/templates" \
+        "${stage}/worker-src" "${stage}/scripts"
     install -m 0755 "${source_root}/easy_all" "${stage}/easy_all"
     syntax_files=("${stage}/easy_all")
     for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
         install -m 0644 "${source_root}/${relative_path}" \
             "${stage}/${relative_path}"
         syntax_files+=("${stage}/${relative_path}")
+    done
+    for relative_path in "${EASY_ALL_RUNTIME_ASSETS[@]}"; do
+        install -m 0644 "${source_root}/${relative_path}" \
+            "${stage}/${relative_path}"
     done
     [[ ! -f "${source_root}/templates/mihomo.yaml" ]] \
         || install -m 0644 "${source_root}/templates/mihomo.yaml" \

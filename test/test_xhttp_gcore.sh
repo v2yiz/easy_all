@@ -61,6 +61,8 @@ export SUBSCRIPTION_MODE="deploy"
 export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
 export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/gcore-cdn-ips.json"
 export XHTTP_NODE_NAME="TEST_NODE"
+export GOOGLE_EGRESS_MODE="auto"
+export GOOGLE_EGRESS_RESOLVED="ipv4"
 export GCORE_DNS_PROPAGATION_ATTEMPTS_OVERRIDE=3
 export GCORE_DNS_PROPAGATION_INTERVAL_OVERRIDE=0
 export GCORE_EDGE_PROPAGATION_ATTEMPTS_OVERRIDE=3
@@ -905,6 +907,8 @@ assert_contains "State file has CNAME target" "${state_content}" 'GCORE_CDN_TARG
 assert_contains "State file has subscription DNS zone" "${state_content}" 'GCORE_SUBSCRIPTION_DNS_ZONE=example.com'
 assert_contains "State file has VPS dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=dual'
 assert_contains "State file has public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6=2001:db8::10'
+assert_contains "State file has Google egress mode" "${state_content}" 'GOOGLE_EGRESS_MODE=auto'
+assert_contains "State file has resolved Google family" "${state_content}" 'GOOGLE_EGRESS_RESOLVED=ipv4'
 
 # Reset vars and load_state
 unset VLESS_CDN_DOMAIN GCORE_ORIGIN_DOMAIN GCORE_SUBSCRIPTION_DNS_ZONE GCORE_CDN_TARGET

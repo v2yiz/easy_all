@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title desc">
   <title id="title">easy_all 所需的 Cloudflare API Token 配置图例</title>
-  <desc id="desc">从 My Profile 的 API Tokens 创建 Custom Token，加入六项 Zone 权限，并将资源限制为一个特定 Zone。</desc>
+  <desc id="desc">从 My Profile 的 API Tokens 创建 Custom Token，加入六项 Zone 权限和一项 Account Workers 权限，并将资源限制为一个特定账号与 Zone。</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".13"/></filter>
     <style>
@@ -17,11 +17,11 @@
   <text x="165" y="250" class="body mono">dash.cloudflare.com  →  My Profile  →  API Tokens  →  Create Token  →  Custom Token</text>
   <text x="165" y="280" class="small muted">选择 Custom Token；不要选 Global API Key，也无需 Account ID。</text>
 
-  <rect x="70" y="335" width="1460" height="510" rx="22" fill="#fff" filter="url(#shadow)"/>
+  <rect x="70" y="335" width="1460" height="530" rx="22" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="390" r="25" fill="#f48120"/><text x="107" y="400" class="step white">2</text>
-  <text x="165" y="385" class="step">填写名称并添加 6 项 Permissions</text>
-  <text x="165" y="426" class="body">Token name：<tspan class="mono">easy_all-cloudflare-zone</tspan></text>
-  <rect x="135" y="460" width="1330" height="320" rx="14" fill="#fafbfc" stroke="#d8dee8" stroke-width="2"/>
+  <text x="165" y="385" class="step">填写名称并添加 7 项 Permissions</text>
+  <text x="165" y="426" class="body">Token name：<tspan class="mono">easy_all-cloudflare-worker</tspan></text>
+  <rect x="135" y="460" width="1330" height="375" rx="14" fill="#fafbfc" stroke="#d8dee8" stroke-width="2"/>
   <text x="180" y="505" class="small muted">Permission group</text><text x="740" y="505" class="small muted">Permission</text><text x="1050" y="505" class="small muted">为什么需要</text>
   <line x1="165" y1="522" x2="1435" y2="522" stroke="#d8dee8"/>
   <g class="body">
@@ -32,14 +32,16 @@
     <text x="180" y="745">Zone / Zone Settings</text><text x="740" y="745" class="orange">Edit</text><text x="1050" y="745" class="green">启用 HTTP/2 to Origin 与 gRPC</text>
   </g>
   <text x="180" y="790" class="body">Zone / SSL and Certificates</text><text x="740" y="790" class="body orange">Edit</text><text x="1050" y="790" class="body green">签发及轮换 Origin CA</text>
+  <text x="180" y="830" class="body">Account / Workers Scripts</text><text x="740" y="830" class="small orange">Edit（API: Write）</text><text x="1050" y="830" class="body green">部署 Worker 与 Custom Domain</text>
 
   <rect x="70" y="880" width="1460" height="235" rx="22" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="935" r="25" fill="#f48120"/><text x="107" y="945" class="step white">3</text>
-  <text x="165" y="930" class="step">只授权一个 Zone，创建并复制一次性 Token secret</text>
-  <text x="165" y="976" class="body">Zone Resources：<tspan class="mono">Include  →  Specific zone  →  example.com</tspan></text>
-  <rect x="165" y="998" width="680" height="50" rx="10" fill="#fff4e9" stroke="#f48120" stroke-width="2"/>
-  <text x="190" y="1032" class="small orange">不要选 All zones；不要添加 Account / Billing / Workers 权限</text>
-  <text x="890" y="1005" class="small">Continue to summary → 核对 → Create Token</text>
-  <text x="890" y="1040" class="small muted">secret 仅显示一次：复制到密码管理器，然后粘贴到安装器隐藏输入。</text>
-  <text x="70" y="1165" class="tiny muted">权限名称会随 Dashboard 语言显示为中文或英文；以 “Zone / … / Read|Edit” 的层级和本图六项为准。</text>
+  <text x="165" y="930" class="step">只授权目标账号与 Zone，创建并复制一次性 Token secret</text>
+  <text x="165" y="976" class="body">Account Resources：<tspan class="mono">Include  →  Specific account</tspan></text>
+  <text x="165" y="1016" class="body">Zone Resources：<tspan class="mono">Include  →  Specific zone  →  example.com</tspan></text>
+  <rect x="165" y="1040" width="680" height="50" rx="10" fill="#fff4e9" stroke="#f48120" stroke-width="2"/>
+  <text x="190" y="1074" class="small orange">不要选择 All accounts 或 All zones</text>
+  <text x="890" y="1048" class="small">Continue to summary → 核对 → Create Token</text>
+  <text x="890" y="1083" class="small muted">secret 仅显示一次：复制到密码管理器，然后粘贴到安装器隐藏输入。</text>
+  <text x="70" y="1165" class="tiny muted">Dashboard 显示 Edit，API 文档称 Workers Scripts Write；两者是同一权限。</text>
 </svg>

@@ -86,9 +86,9 @@ download_xray() {
     install -d -m 0755 "${XRAY_DIR}"
     if xray_geosite_required; then
         [[ -s "${temp_dir}/xray/geosite.dat" ]] \
-            || die "Xray 发布包缺少双栈 Google IPv4 路由所需的 geosite.dat"
+            || die "Xray 发布包缺少 Google 固定地址族路由所需的 geosite.dat"
         [[ -s "${temp_dir}/xray/geoip.dat" ]] \
-            || die "Xray 发布包缺少双栈 Google IPv4 路由所需的 geoip.dat"
+            || die "Xray 发布包缺少 Google 固定地址族路由所需的 geoip.dat"
         asset_test_config="${temp_dir}/asset-test.json"
         jq -n '{
           log:{loglevel:"none"},

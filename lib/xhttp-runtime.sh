@@ -38,11 +38,11 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="7"
+readonly STATE_SCHEMA_VERSION="9"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-Cloudflare}"
-readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${XHTTP_CDN_NAME} + Nginx"
+readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${SUBSCRIPTION_DEPLOY_DESCRIPTION_OVERRIDE:-${XHTTP_CDN_NAME} + Nginx}"
 
 # shellcheck source=lib/quota.sh
 source "${SCRIPT_DIR}/quota.sh"
@@ -594,6 +594,7 @@ commit_subscription_update() {
 
 finish_xhttp_apply() {
     local state_current=${1:-0} runtime_already_refreshed=${2:-0}
+    local defer_state_save=${3:-0}
     if [[ "${runtime_already_refreshed}" != "1" ]]; then
         if [[ "${state_current}" == "1" ]]; then
             XHTTP_RUNTIME_STATE_CURRENT=1 refresh_runtime
@@ -608,11 +609,11 @@ finish_xhttp_apply() {
     else
         remove_subscriptions
     fi
-    save_state
+    [[ "${defer_state_save}" == "1" ]] || save_state
     register_easy_all_command
     refresh_saved_daily_reboot_schedule
     install_quota_timer
-    show_subscription
+    [[ "${defer_state_save}" == "1" ]] || show_subscription
 }
 
 update_current_core() {

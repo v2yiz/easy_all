@@ -12,7 +12,10 @@ Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览�
 对应平台，注册商仍负责续费。
 
 线路与费用提示：CDN 模式面向直连 VPS 体验不理想、且愿意维护域名和第三方账号的场景，并不保证一定更快。
-Cloudflare Free Zone 与 Gcore Free CDN 的基础额度按 Provider 当前规则执行；域名注册费和 VPS 费用另计。
+Cloudflare XHTTP 的代理数据会实时经过 VPS：VPS 仅计出站时，其月度出站额度通常是可用代理载荷的
+主要上限，但协议开销和 Cloudflare 服务规则会使两者并非严格等值；VPS 双向计费时还需同时计算入站与
+出站。Cloudflare Free Zone 与 Gcore Free CDN 的使用边界按 Provider 当前规则执行；域名注册费和
+VPS 费用另计。
 
 ## 0. 按链路选择准备内容
 
@@ -21,19 +24,20 @@ Cloudflare Free Zone 与 Gcore Free CDN 的基础额度按 Provider 当前规则
 | 链路                     | 必须准备                                                                                                                                                                       | 不需要准备                                         | 继续阅读                                                                      |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token                       | Globalping Token、gRPC 设置                        | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
-| 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、一个节点子域名、Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品                           | 第 1–7 节                                                                    |
+| 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 | 模式 3：Gcore CDN 精选 IP   | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、Globalping Token；额度内预期 `$0/月`（1TB/月内）                      | Cloudflare gRPC 等 Cloudflare 专属准备             | 第 1.1、8 节                                                                  |
 
 公网 IPv6 不是必需条件。安装器只有在 VPS 同时具备全局 IPv6 地址、默认 IPv6 路由和可用 HTTPS
 IPv6 出口时才启用双栈，否则保持 IPv4-only。Reality 若要让客户端通过 IPv6 直连，还需在云厂商安全组
-放行 TCP `443` 和动态端口范围，并为节点域名发布与探测地址完全一致的 AAAA。CDN 精选入口与回源仍使用
-IPv4，VPS 双栈仅用于允许非 Google 服务按系统策略选择出站地址。
+放行 TCP `443` 和动态端口范围，并为节点域名发布与探测地址完全一致的 AAAA。Cloudflare 客户端入口
+可选择 `ipv4` 或 `dual`；这不要求 VPS 有 IPv6，Cloudflare 仍可通过 IPv4 回源。VPS 双栈用于目标站
+出站，Google/YouTube 会按安装时选择的 `auto/ipv4/ipv6` 策略固定到单一地址族。
 
 各链路建议使用的域名如下：
 
 ```text
 Reality:    node.example.com（可选）；sub.example.com（仅自托管订阅需要）
-Cloudflare: node.example.com；sub.example.com（可选独立订阅域名）
+Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 Worker）
 Gcore:      origin.example.com；node.example.com；sub.example.com（可选独立订阅域名）
 ```
 
@@ -159,7 +163,8 @@ Reality 的节点连接域名（例如 `node.example.com`）如有使用，必�
 1. 在已经 **Active** 的 Zone 下准备客户端连接的节点域名，例如 `node.example.com`。不要预先创建这个名称的 DNS 记录。
 2. 进入目标 Zone 的 **Network → gRPC**，将 **gRPC** 手动切换为 **On**。这是 XHTTP
    `stream-up` 的必需条件，Cloudflare 当前没有可用于该开关的 Zone Settings API，安装器无法代办。
-3. 如果部署独立订阅域名，它也必须是同一 Zone 下的一级子域名。
+3. 如果部署订阅，准备另一个同 Zone 一级子域名，例如 `sub.example.com`。它必须与节点域名不同，
+   且不要提前创建 DNS 记录；安装器会把它直接绑定为 Worker Custom Domain。
 
 ![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
 
@@ -169,29 +174,32 @@ HTTP 200 不再作为传输成功依据。验收失败时先复查 gRPC 开关�
 
 ## 4. 只创建一个 Cloudflare API Token
 
-进入 **My Profile → API Tokens → Create Token → Custom Token**，资源选择：
+进入 **My Profile → API Tokens → Create Token → Custom Token**。Cloudflare XHTTP 模式同时选择：
 
 ```text
+Account Resources → Include → Specific account → 你的 Cloudflare 账号
 Include → Specific zone → example.com
 ```
 
-XHTTP 模式添加以下六项权限；Reality 仅部署订阅时只需其中 `Zone / Zone / Read`、
+XHTTP 模式添加以下七项权限；Reality 仅部署订阅时只需其中 `Zone / Zone / Read`、
 `Zone / DNS / Edit`、`Zone / Config Rules / Edit` 和 `Zone / SSL and Certificates / Edit`：
 
 | 权限                                   | 用途                            |
 | -------------------------------------- | ------------------------------- |
 | `Zone / Zone / Read`                 | 识别并验证目标 Zone             |
-| `Zone / DNS / Edit`                  | 管理节点和订阅 DNS 记录         |
+| `Zone / DNS / Edit`                  | 管理节点域名的 proxied A 记录   |
 | `Zone / Transform Rules / Edit`      | 管理回源密钥规则                |
 | `Zone / Config Rules / Edit`         | 设置 Full (strict)              |
 | `Zone / Zone Settings / Edit`        | 启用 origin HTTP/2              |
 | `Zone / SSL and Certificates / Edit` | 签发、轮换和吊销 Origin CA 证书 |
+| `Account / Workers Scripts / Edit`（API 名称：`Workers Scripts Write`） | 新建/更新 Worker、关闭 workers.dev 并绑定 Custom Domain |
 
-![Cloudflare API Token 的六项最小权限与单 Zone 资源范围](img/cloudflare/cloudflare-api-token-easy-all.svg)
+![Cloudflare API Token 的七项最小权限与 Account/Zone 资源范围](img/cloudflare/cloudflare-api-token-easy-all.svg)
 
 创建后立即复制 Token，并保存到可信的密码管理器；把它粘贴到安装器的 `Cloudflare API Token` 输入框。
-Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需要同步云端资源时仍会要求提供。请勿选择所有
-Zone，也不要添加其他权限。
+Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需要同步云端资源时仍会要求提供。XHTTP
+使用同一枚 Token，但 `Workers Scripts Write` 必须限制到目标账号，六项 Zone 权限必须限制到目标 Zone；
+请勿选择所有账号、所有 Zone 或添加其他权限。原来的纯 Zone Token 不足以部署 Worker。
 
 通常 `easy_all apply` 不需要 Cloudflare Token；`apply-cloud`、证书轮换、Reality 自托管订阅的云端同步，
 以及 `uninstall --purge-cloud` 等操作可能会要求它。Token 遗失时可在 Cloudflare 新建一枚相同最小权限的
@@ -199,9 +207,22 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 
 ## 5. 安装器会自动完成的事项
 
-- 创建唯一的 proxied `A` 记录，指向 VPS 公网 IPv4。
+- 创建节点域名唯一的 proxied `A` 记录，指向 VPS 公网 IPv4。
 - 签发 15 年 Origin CA 证书并配置 Full (strict)。
-- 开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
+- 部署用户指定名称的模块 Worker（默认 `EASYALL`），关闭它的 `workers.dev` 和 Preview URL，
+  再将独立订阅域名绑定为唯一公开入口。
+- Worker 显式启用 `global_fetch_strictly_public`，通过节点域名的公共 Cloudflare 路径读取 Nginx
+  私有订阅源；每次请求转发用户 Token，并附加独立的 `X-Easy-All-Worker-Source` 密钥，由 Nginx
+  执行最终用户和配额鉴权。
+- 安装器验证 Worker 能取得动态节点、无效 Token 返回 `403`，同时确认直接请求 Nginx 节点源返回 `404`。
+- 可选输入一份不含 `vpsSubUrl` 的 `config.local.json`；字段参考
+  [`worker-src/config.example.json`](../worker-src/config.example.json)。安装器保留其中的
+  `nodes`、`externalSubUrl`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的
+  用户 Token，再注入本机生成的
+  `vpsSubUrl` 与私有源配置。交互先完成用户 Token/配额设置，再询问“是否需要进行订阅聚合”；
+  选择需要后隐藏输入 JSON，并交给 `build-worker.mjs` 校验构建、自动部署。
+  启用配额时，`allowedTokens` 用户名必须与配额用户完全一致，只允许覆盖 Token。
+- dual 模式开启 Cloudflare IPv6 Compatibility；所有模式开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
   前缀删除同一 Zone 中其他部署的规则。
 - 使用临时 Xray 客户端完成 Cloudflare XHTTP 端到端验收。
 - 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
@@ -212,22 +233,34 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   `eyeball-network` 探针分别发送 10 包 TCP/443，最多允许丢 1 包（10%）；第二阶段对低延迟候选进行真实 HTTP/TLS HEAD `/easy_all-health` 验证，彻底剔除 SNI 假通。
 - 按电信、联通、移动三大运营商独立优选，每网输出 2 个通过本机 HTTP/2 和 Globalping HTTP/TLS
   验证的地址，统一生成 6 个纯 XHTTP 节点（`优选1` 到 `优选6`）。
+- 选择 `dual` 时，通过 `1.1.1.1` 查询节点域名 AAAA，只保留属于 Cloudflare 官方 IPv6 CIDR
+  且通过三网 TCP 与 HTTP/TLS 验证的地址，最多追加为 `优选IPv6-1`～`优选IPv6-3`；不会替换 6 个 IPv4 节点。
 - 不使用内置 Anycast IP 或域名兜底凑数。刷新失败时继续使用格式兼容的上一版已验证缓存；从未生成
-  完整 6 节点缓存时停止生成订阅。客户端 Mihomo 每 300 秒测速。
+  完整 6 个 IPv4 的缓存时停止生成订阅；dual 模式还要求 1～3 个有效 IPv6。客户端 Mihomo 每 300 秒测速。
 
 ### 5.1 精选 IP 的客户端要求
 
 精选 IP 订阅需要使用 Mihomo，或明确兼容同等 Mihomo XHTTP 字段的客户端。本项目按 Mihomo
-配置格式生成节点：`server` 是筛选出的 Cloudflare IPv4，而 TLS SNI、XHTTP Host、路径、
+配置格式生成节点：`server` 是筛选出的 Cloudflare IPv4 或 IPv6，而 TLS SNI、XHTTP Host、路径、
 `stream-up` 和复用参数仍需保持正确。客户端若不能分别保存 IP、TLS SNI 和 HTTP Host，精选
 IP 节点会连接失败；请以实际生成订阅的导入测试确认兼容性。
+
+### 5.2 IP 族选择
+
+- Cloudflare 客户端入口默认 `ipv4`；选择 `dual` 只追加 IPv6 节点，不改变 IPv4 回源和 VPS 出口。
+- Google/YouTube 出口默认 `auto`。安装和每次 `easy_all apply` 会分别执行三次 IPv4/IPv6
+  `generate_204` 探测，先比较成功次数，再比较延迟中位数，选择后写入状态并使用
+  `ForceIPv4` 或 `ForceIPv6`。它不会在每个连接上自动回退，因此同一轮运行中的 Google 新连接
+  使用同一地址族。
+- 显式选择 `ipv6` 时，VPS 必须具备可用公网 IPv6，且 Google IPv6 探测必须成功，否则操作立即停止。
 
 “小火箭”通常指 Shadowrocket。它的官方版本记录已说明支持 XHTTP 和 XHTTP transport options，
 但没有逐项确认本项目所需的 IP/SNI/Host 分离及完整 Mihomo XHTTP 复用参数。因此本项目暂不把
 Shadowrocket 列为已验证客户端。若使用小火箭，请升级到最新版后导入实际订阅逐个测试；不能
 确认时使用 Mihomo。
 
-安装器不会覆盖其他 DNS 记录或规则。发现同名记录、规则歧义或权限不足时会停止并保留本机状态。
+安装器不会覆盖其他 DNS 记录、Worker 或规则。发现同名 Worker、同名记录、自定义域名占用、
+规则歧义或权限不足时会停止；请更换名称，不能让安装器猜测所有权。
 
 ## 6. 费用与使用边界
 
@@ -237,25 +270,32 @@ Shadowrocket 列为已验证客户端。若使用小火箭，请升级到最新�
 | 项目          | 说明                                                                                                    |
 | ------------- | ------------------------------------------------------------------------------------------------------- |
 | 基础 CDN 费用 | Free Zone 本身无月费；Token、proxied DNS、Universal SSL、Origin CA、HTTP/2、gRPC 和规则配置不单独收费。 |
-| 可用流量      | 没有可据此保证的固定 GB 上限；实际受 Cloudflare 服务条款、账户风控、VPS 带宽和连接质量共同限制。        |
+| 可用流量      | Cloudflare Free 没有本项目可据此承诺的固定 GB 额度。VPS 仅计出站时，其月度出站额度通常是主要容量上限，但不是可用载荷的一比一保证；实际还受协议开销、Cloudflare 服务条款、账户风控、VPS 带宽和连接质量限制。 |
 | 单次请求      | Free/Pro 的请求体上限为**100 MB**；长连接或大流量不等于获得无限制隧道能力。                       |
 | 额外费用      | 只有自行启用 Argo、WAF、Bot Management 等增值产品时，相关流量才可能产生额外费用；本项目不启用它们。     |
 
-本链路是实时 XHTTP 转发，数据不会因为 CDN 缓存而减少 VPS 出口流量。建议先按目标用户数、峰值并发、
-VPS 出口带宽和每用户配额估算容量，再进行低速、长连接和持续传输测试。Cloudflare 的条款、流量限制
-和风控优先于本说明。
+本链路是实时 XHTTP 转发，数据不会因为 CDN 缓存而减少 VPS 流量。用户上行由 VPS 发往目标站，
+用户下行由 VPS 发往 Cloudflare 边缘；仅计出站的 VPS 会把两者计入出站额度，另有协议、TLS 和重传
+开销。若 VPS 服务商统计入站与出站总量，同一载荷进入并离开 VPS 都可能计费，实际可承载的用户载荷
+可能显著低于套餐标称流量。建议按服务商计费口径、目标用户数、峰值并发、VPS 出口带宽和每用户配额
+估算容量，再进行低速、长连接和持续传输测试。Cloudflare 的条款、流量限制和风控优先于本说明。
 
 ## 7. 卸载
 
 `sudo easy_all uninstall` 只清理本机。`sudo easy_all uninstall --purge-cloud` 会先使用同一枚
-Token 删除 easy_all 标记的节点/订阅 DNS、按稳定 `ref` 定位的 Transform/Config Rules、删除规则后
-为空且名称匹配的 easy_all ruleset，并吊销 Origin CA 证书；全部完成后才清理本机。未带 easy_all
-标记的 DNS、包含其他规则的 ruleset、Zone 级 origin HTTP/2 设置和手动 gRPC 开关都会保留。
+Token 删除 easy_all 状态记录的 Worker Custom Domain 与 Worker、带所有权标记的节点 DNS、按稳定
+`ref` 定位的 Transform/Config Rules、删除规则后为空且名称匹配的 easy_all ruleset，并吊销 Origin CA
+证书；全部完成后才清理本机。未带 easy_all 标记的 DNS、包含其他规则的 ruleset、Zone 级 origin
+HTTP/2 设置和手动 gRPC 开关都会保留。
 
 官方参考：[Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)、
 [Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)、
 [gRPC](https://developers.cloudflare.com/network/grpc-connections/)、
+[IPv6 Compatibility](https://developers.cloudflare.com/network/ipv6-compatibility/)、
 [Transform Rules](https://developers.cloudflare.com/rules/transform/)、
+[Workers Script Upload](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/)、
+[Workers Custom Domains](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)、
+[Workers Fetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/)、
 [Cloudflare IP 地址](https://www.cloudflare.com/ips/)。
 
 ## 8. Gcore CDN 精选 IP 准备
