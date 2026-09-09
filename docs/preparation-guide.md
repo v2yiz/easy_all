@@ -182,11 +182,11 @@ IPv6 Compatibility，并从该 proxied 域名自动返回的 Cloudflare 边缘 A
 
 ![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
 
-XHTTP 的安装和 `apply-cloud` 会先发送 `application/grpc` 请求检查边缘开关；未开启时会直接给出
-`Cloudflare Zone 尚未开启 gRPC`，不再等到 XHTTP 连接超时。随后安装器启动临时 Xray 客户端，
-通过本机 SOCKS 出口访问前面已验证可用的 Google `204` 地址。该请求必须实际经过 Cloudflare、
-XHTTP 路径、Nginx 和服务端 Xray；普通 `/easy_all-health` 返回 HTTP 200 不再作为传输成功依据。
-真实 XHTTP 探针会重试 6 次以容忍设置传播延迟，仍失败时再检查 Xray/Nginx 日志。
+XHTTP 的安装和 `apply-cloud` 会启动临时 Xray 客户端，通过本机 SOCKS 出口访问前面已验证可用的
+Google `204` 地址。该请求必须实际经过 Cloudflare、XHTTP 路径、Nginx 和服务端 Xray；普通
+`/easy_all-health` 返回 HTTP 200 不再作为传输成功依据。真实 XHTTP 探针会重试 6 次以容忍设置
+传播延迟。只有全部失败后，安装器才发送 `application/grpc` 请求辅助区分未开启开关的 `403` 和
+源站 TLS 握手失败的 `525`；该模拟请求本身不是 XHTTP 验收门槛。
 
 ## 4. 只创建一个 Cloudflare API Token
 
@@ -240,7 +240,7 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   启用配额时，`allowedTokens` 用户名必须与配额用户完全一致，只允许覆盖 Token。
 - dual 模式开启 Cloudflare IPv6 Compatibility；所有模式开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
   前缀删除同一 Zone 中其他部署的规则。
-- 先识别 Cloudflare gRPC 开关未启用的 `403`，再使用临时 Xray 客户端完成可重试的 XHTTP 端到端验收。
+- 使用临时 Xray 客户端完成可重试的 XHTTP 端到端验收，仅在失败后辅助诊断 gRPC `403` 或源站 TLS `525`。
 - 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
 - 每小时读取 Cloudflare 官方 IPv4 CIDR，以 70% 高质量高优网段权重抽样 120 个地址。
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供

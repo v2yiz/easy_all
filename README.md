@@ -261,8 +261,8 @@ sudo easy_all subscription
 | 在本机运行后提示系统不支持 | 退出命令，在 VPS 的 SSH 或网页终端中重新运行。 |
 | SSH 断开或重启后无法登录 | 不要反复猜端口；使用服务商网页 Console/VNC，确认当前 SSH 端口与 UFW/安全组规则。保留旧 SSH 会话直到新会话可登录。 |
 | 提示 Zone 不是 Active 或找不到域名 | 回到 Cloudflare Overview，等待 Zone 变为 **Active**；检查注册商名称服务器是否完整替换。 |
-| 提示 `Cloudflare Zone 尚未开启 gRPC` | 在目标 Zone 的 **Network → gRPC** 手动开启 gRPC，等待设置生效后重新安装；安装器会先执行边缘预检，不再等到 XHTTP 连接超时后才报错。 |
-| Cloudflare XHTTP 端到端验收失败 | gRPC 预检通过后，安装器会通过临时 Xray 客户端访问已验证的 Google `204` 地址，并重试 6 次；仍失败时检查 Xray/Nginx 日志和 Cloudflare 规则。 |
+| 提示 `Cloudflare Zone 尚未开启 gRPC` | 在目标 Zone 的 **Network → gRPC** 手动开启 gRPC，等待设置生效后重新安装；安装器只在真实 XHTTP 重试全部失败后执行该辅助诊断。 |
+| Cloudflare XHTTP 端到端验收失败 | 安装器会通过临时 Xray 客户端访问已验证的 Google `204` 地址，并重试 6 次；仍失败时会附带 gRPC 边缘辅助诊断，再检查 Xray/Nginx 日志和 Cloudflare 规则。 |
 | API Token 权限不足或同名 DNS 记录冲突 | 不要删除不认识的记录或扩大 Token 权限。按准备手册核对最小权限；为节点/订阅换一个未被占用的一级子域名。 |
 | Globalping 额度不足或没有候选 IP | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；已有缓存会继续使用。 |
 | 检测到 UEFI Secure Boot | 安装器不会安装无法确认启动的第三方内核。请改用满足要求的 VPS，或在完全理解风险后从服务商控制台处理 Secure Boot。 |
@@ -810,7 +810,7 @@ Reality 节点省略 `port` 时按北京时间三小时端口规则计算，也�
 配额用户完全一致，仅覆盖 Token，不猜测新增用户的额度。
 - **边缘规则与安全防护**：
   - Cloudflare Universal SSL 终止客户端 TLS；VPS 使用 Origin CA 证书，SSL 模式固定为 Full (strict)。
-  - 边缘开启 HTTP/2 与 gRPC（部署前必须在目标 Zone 的 **Network → gRPC** 中手动开启 gRPC；该开关没有可用 API）。安装和 `apply-cloud` 会先用 `application/grpc` 请求识别未开启的开关，再启动临时 Xray 客户端，通过真实 XHTTP 路径访问已验证的 Google `204` 地址并容忍短暂传播延迟；只有 CDN、Nginx 与服务端 Xray 全链路成功才通过。
+  - 边缘开启 HTTP/2 与 gRPC（部署前必须在目标 Zone 的 **Network → gRPC** 中手动开启 gRPC；该开关没有可用 API）。安装和 `apply-cloud` 会启动临时 Xray 客户端，通过真实 XHTTP 路径访问已验证的 Google `204` 地址并容忍短暂传播延迟；只有真实链路失败后才发送 `application/grpc` 请求辅助识别未开启的开关或源站 TLS 错误，该辅助请求不单独决定验收结果。
   - Transform Rule 为该节点名的回源请求注入专属 Origin Key（`X-Easy-All-Origin-Key`），Nginx 同时校验 Host 与该密钥，阻断非 CDN 恶意扫描。
   - VPS 防火墙（UFW）只允许 Cloudflare 官方 IP 段访问 443，并随官方 IP 列表更新。
   - 后端开启 `ip_is_private` 私网阻断与 UDP 443 (QUIC) 阻断。

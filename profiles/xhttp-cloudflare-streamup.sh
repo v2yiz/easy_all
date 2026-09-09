@@ -828,7 +828,6 @@ cloudflare_configure_cdn() {
 cloudflare_validate_cdn_health() {
     local probe_uuid=""
     cloudflare_wait_for_health "${VLESS_CDN_DOMAIN}" "CDN"
-    cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
     if quota_enabled; then
         probe_uuid=$(quota_active_accounts_json | jq -er 'first(to_entries[]).value.uuid') \
             || {
@@ -843,8 +842,9 @@ cloudflare_validate_cdn_health() {
     fi
 }
 
-cloudflare_validate_grpc_edge() {
+cloudflare_probe_grpc_edge() {
     local domain=$1 body_file metadata="" curl_status=0 http_code="" content_type=""
+    CLOUDFLARE_GRPC_EDGE_ERROR=""
     body_file="${RUNTIME_TMP}/cloudflare-grpc-check-body"
     if metadata=$(curl -sS --http2 --proto '=https' --tlsv1.2 \
         --connect-timeout 5 --max-time 15 --noproxy '*' \
@@ -858,14 +858,19 @@ cloudflare_validate_grpc_edge() {
     fi
     rm -f -- "${body_file}"
     IFS=$'\t' read -r http_code content_type <<<"${metadata}"
-    ((curl_status == 0)) \
-        || die "Cloudflare gRPC 边缘预检连接失败：curl=${curl_status},HTTP=${http_code:-000}"
-    if [[ "${http_code}" == "403" && "${content_type}" == text/html* ]]; then
-        die "Cloudflare Zone 尚未开启 gRPC；请在控制台 Network → gRPC 开启，等待生效后重新安装"
+    if ((curl_status != 0)); then
+        CLOUDFLARE_GRPC_EDGE_ERROR="连接失败：curl=${curl_status},HTTP=${http_code:-000}"
+        return 1
     fi
-    [[ "${http_code}" == "200" ]] \
-        || die "Cloudflare gRPC 边缘预检失败：HTTP=${http_code:-000},Content-Type=${content_type:-unknown}"
-    success "Cloudflare gRPC 边缘预检通过"
+    if [[ "${http_code}" == "403" && "${content_type}" == text/html* ]]; then
+        CLOUDFLARE_GRPC_EDGE_ERROR="Cloudflare Zone 尚未开启 gRPC"
+        return 1
+    fi
+    if [[ "${http_code}" != "200" ]]; then
+        CLOUDFLARE_GRPC_EDGE_ERROR="HTTP=${http_code:-000},Content-Type=${content_type:-unknown}"
+        return 1
+    fi
+    return 0
 }
 
 cloudflare_wait_for_xhttp() {
@@ -875,6 +880,13 @@ cloudflare_wait_for_xhttp() {
         ((attempt == CLOUDFLARE_XHTTP_PROBE_ATTEMPTS)) && break
         sleep "${CLOUDFLARE_XHTTP_PROBE_INTERVAL}"
     done
+    if ! cloudflare_probe_grpc_edge "${VLESS_CDN_DOMAIN}"; then
+        if [[ "${CLOUDFLARE_GRPC_EDGE_ERROR}" == \
+            "Cloudflare Zone 尚未开启 gRPC" ]]; then
+            die "${CLOUDFLARE_GRPC_EDGE_ERROR}；请在控制台 Network → gRPC 开启，等待生效后重新安装"
+        fi
+        die "Cloudflare XHTTP 端到端验收失败（已重试 ${CLOUDFLARE_XHTTP_PROBE_ATTEMPTS} 次）：${CLOUDFLARE_XHTTP_PROBE_ERROR:-unknown}；gRPC 边缘辅助诊断：${CLOUDFLARE_GRPC_EDGE_ERROR:-unknown}"
+    fi
     die "Cloudflare XHTTP 端到端验收失败（已重试 ${CLOUDFLARE_XHTTP_PROBE_ATTEMPTS} 次）：${CLOUDFLARE_XHTTP_PROBE_ERROR:-unknown}"
 }
 

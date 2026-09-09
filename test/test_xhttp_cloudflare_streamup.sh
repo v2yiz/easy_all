@@ -564,17 +564,18 @@ EOF
         "$(<"${probe_curl_args}")" "https://www.gstatic.com/generate_204"
 )
 
-# A disabled dashboard-only gRPC setting is diagnosed before the XHTTP timeout.
-grpc_disabled_err=$(
-    (
-        curl() {
-            printf '403\ttext/html'
-        }
-        cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
-    ) 2>&1 || true
+# The synthetic gRPC request is diagnostic only and recognizes a disabled
+# dashboard setting without acting as an independent acceptance gate.
+(
+    curl() {
+        printf '403\ttext/html'
+    }
+    if cloudflare_probe_grpc_edge "${VLESS_CDN_DOMAIN}"; then
+        fail "Cloudflare gRPC diagnostic must reject a disabled setting"
+    fi
+    assert_equal "Cloudflare gRPC diagnostic reports the disabled setting" \
+        "Cloudflare Zone 尚未开启 gRPC" "${CLOUDFLARE_GRPC_EDGE_ERROR}"
 )
-assert_contains "Cloudflare gRPC preflight reports the disabled setting" \
-    "${grpc_disabled_err}" "Cloudflare Zone 尚未开启 gRPC"
 
 # The end-to-end probe tolerates short Cloudflare setting propagation delays.
 (
@@ -590,11 +591,33 @@ assert_contains "Cloudflare gRPC preflight reports the disabled setting" \
         fi
         return 0
     }
+    cloudflare_probe_grpc_edge() {
+        fail "A successful real XHTTP probe must not run the synthetic gRPC diagnostic"
+    }
     sleep() { :; }
     cloudflare_wait_for_xhttp "${VLESS_UUID}"
     assert_equal "Cloudflare XHTTP validation retries transient failures" \
         "3" "$(<"${attempt_file}")"
 )
+
+# A synthetic 525 is attached as auxiliary evidence only after every real
+# XHTTP attempt has failed.
+grpc_525_err=$(
+    (
+        cloudflare_probe_xhttp() {
+            CLOUDFLARE_XHTTP_PROBE_ERROR="curl=28,HTTP=000"
+            return 1
+        }
+        cloudflare_probe_grpc_edge() {
+            CLOUDFLARE_GRPC_EDGE_ERROR="HTTP=525,Content-Type=text/html"
+            return 1
+        }
+        sleep() { :; }
+        cloudflare_wait_for_xhttp "${VLESS_UUID}"
+    ) 2>&1 || true
+)
+assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
+    "${grpc_525_err}" "gRPC 边缘辅助诊断：HTTP=525"
 
 # Fresh-install rollback only removes resources recorded as created by that run.
 (
