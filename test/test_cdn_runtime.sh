@@ -4,10 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 if [[ $# == 0 ]]; then
-    for profile in xhttp-gcore xhttp-cloudflare-streamup; do
-        env -i PATH="$PATH" bash "$0" "${profile}" || exit "$?"
-    done
-    exit 0
+    exec env -i PATH="$PATH" bash "$0" xhttp-cloudflare-streamup
 fi
 profile=$1
 unset ORIGIN_HEADER_SECRET FULLCHAIN_FILE QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
@@ -16,50 +13,49 @@ trap 'status=$?; cleanup; exit "$status"' EXIT
 EASY_ALL_STATE_FILE_OVERRIDE="${RUNTIME_TMP}/state.env"
 VLESS_CDN_DOMAIN=node.example.com
 XHTTP_ORIGIN_DOMAIN=origin.example.com
-GCORE_ORIGIN_DOMAIN=${XHTTP_ORIGIN_DOMAIN}
 VLESS_UUID=11111111-2222-4111-8111-111111111111
 XHTTP_PATH=/xhttp-test-path
 WEBSOCKET_PATH=/ws-test-path
 SUBSCRIPTION_MODE=deploy
 ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 XHTTP_NODE_NAME=test
-if [[ "${profile}" == xhttp-cloudflare-streamup ]]; then
-    CDN_PROVIDER=cloudflare
-    CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
-    XHTTP_ORIGIN_DOMAIN=${CLOUDFLARE_ORIGIN_DOMAIN}
-    CLOUDFLARE_ZONE_ID=test-zone
-    CLOUDFLARE_ZONE_NAME=example.com
-    CLOUDFLARE_ORIGIN_CERT_ID=test-cert
-    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=2035-01-01T00:00:00Z
-    ORIGIN_HEADER_SECRET=test-origin-secret-12345678
-    cloudflare_ensure_origin_ca_root() { CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"; }
-fi
+CDN_PROVIDER=cloudflare
+GOOGLE_EGRESS_MODE=auto
+GOOGLE_EGRESS_RESOLVED=ipv4
+CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
+XHTTP_ORIGIN_DOMAIN=${CLOUDFLARE_ORIGIN_DOMAIN}
+CLOUDFLARE_ACCOUNT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+CLOUDFLARE_WORKER_NAME=easyall
+CLOUDFLARE_WORKER_DOMAIN_ID=test-worker-domain-id
+CLOUDFLARE_ZONE_ID=test-zone
+CLOUDFLARE_ZONE_NAME=example.com
+CLOUDFLARE_ORIGIN_CERT_ID=test-cert
+CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=2035-01-01T00:00:00Z
+ORIGIN_HEADER_SECRET=test-origin-secret-12345678
+WORKER_SOURCE_SECRET=test-worker-source-secret-12345
+WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
+SUBSCRIPTION_DOMAIN=sub.example.com
+cloudflare_ensure_origin_ca_root() { CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"; }
 systemctl() { :; }
 ss() { printf 'LISTEN\n'; }
 sleep() { :; }
 curl() {
     local args=" $* "
-    if [[ "${CDN_PROVIDER}" == gcore ]]; then
-        [[ "${args}" == *" --cert ${GCORE_CLIENT_CERT_FILE} "* ]] &&
-        [[ "${args}" == *" --key ${GCORE_CLIENT_CERT_KEY} "* ]] &&
-        [[ "${args}" != *X-Easy-All-Origin-Key* ]]
-    else
-        local arg previous="" header_file=""
-        for arg in "$@"; do
-            if [[ "${previous}" == "-H" && "${arg}" == @* ]]; then
-                header_file=${arg#@}
-            fi
-            previous=${arg}
-        done
-        [[ "${args}" == *" --cacert ${CLOUDFLARE_ORIGIN_CA_ROOT_FILE} "* ]] &&
-        [[ -s "${header_file}" ]] &&
-        grep -Fqx "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" "${header_file}"
-    fi || exit 1
+    local arg previous="" header_file=""
+    for arg in "$@"; do
+        if [[ "${previous}" == "-H" && "${arg}" == @* ]]; then
+            header_file=${arg#@}
+        fi
+        previous=${arg}
+    done
+    [[ "${args}" == *" --cacert ${CLOUDFLARE_ORIGIN_CA_ROOT_FILE} "* ]] &&
+    [[ -s "${header_file}" ]] &&
+    grep -Fqx "X-Easy-All-Origin-Key: ${ORIGIN_HEADER_SECRET}" "${header_file}" \
+        || exit 1
     printf '%s\n' "${args}" >>"${RUNTIME_TMP}/curl.log"
     case "${args}" in
         *token=invalid*) printf '403' ;;
-        *flag=clash*)
-            if [[ "${CDN_PROVIDER}" == gcore ]]; then printf 'network: ws'; else printf 'network: xhttp'; fi ;;
+        *flag=clash*) printf 'network: xhttp' ;;
         *easy_all-health*) printf '%s' "${health_response:-easy_all ok}" ;;
         *) printf 'subscription' ;;
     esac

@@ -187,12 +187,6 @@ configure_bbr_tcp
 assert_contains "Cloudflare keeps host IPv6 disabled" "$(<"${SYSCTL_CONFIG}")" \
     'net.ipv6.conf.all.disable_ipv6 = 1'
 
-PROTOCOL="gcore"
-CDN_PROVIDER="gcore"
-configure_bbr_tcp
-[[ "$(<"${SYSCTL_CONFIG}")" != *'net.ipv4.tcp_no_metrics_save'* ]] \
-    || fail "Gcore TCP settings must not include tcp_no_metrics_save"
-
 bbrv3_running_kernel_supported() { return 1; }
 uname() { printf '6.1.0-amd64\n'; }
 configure_bbr_tcp

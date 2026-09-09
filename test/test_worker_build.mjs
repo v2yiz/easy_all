@@ -292,14 +292,14 @@ try {
         xmux,
         'generic output preserves all XHTTP xmux settings',
     );
-    const ws = `vless://${config.nodes[0].uuid}@192.0.2.2:443?security=tls&type=ws&sni=gcore.example.com&host=gcore.example.com&path=%2Fws#Gcore`;
+    const ws = `vless://${config.nodes[0].uuid}@192.0.2.2:443?security=tls&type=ws&sni=ws.example.com&host=ws.example.com&path=%2Fws#WebSocket`;
     const wsLive = make(async url => new Response(
         new URL(url).origin === new URL(config.vpsSubUrl).origin ? btoa(ws) : upstream,
     ));
     const wsBody = await (await wsLive(request())).text();
     assert.ok(wsBody.includes('server: "192.0.2.2"'), 'Clash output preserves the WebSocket connection IP');
-    assert.ok(wsBody.includes('servername: "gcore.example.com"'), 'WebSocket TLS SNI remains the CDN domain');
-    assert.ok(wsBody.includes('Host: "gcore.example.com"'), 'WebSocket HTTP Host remains the CDN domain');
+    assert.ok(wsBody.includes('servername: "ws.example.com"'), 'WebSocket TLS SNI remains the CDN domain');
+    assert.ok(wsBody.includes('Host: "ws.example.com"'), 'WebSocket HTTP Host remains the CDN domain');
     const degradedGeneric = atob(await (await offline(genericRequest)).text());
     assert.ok(degradedGeneric.includes('fallback.example.com'));
     const ports = api.resolveNodePorts(api.LOCAL_NODES, {now: () => Date.UTC(2026, 0, 1)});

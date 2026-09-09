@@ -24,11 +24,9 @@ readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_
 readonly -a EASY_ALL_RUNTIME_MODULES=(
     "profiles/reality.sh"
     "profiles/xhttp-cloudflare-streamup.sh"
-    "profiles/xhttp-gcore.sh"
     "lib/xhttp-runtime.sh"
     "lib/globalping-cdn.sh"
     "lib/cloudflare-ip-pool.sh"
-    "lib/gcore-ip-pool.sh"
     "lib/quota.sh"
     "lib/platform.sh"
     "lib/profile-common.sh"
@@ -75,7 +73,7 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality、Cloudflare CDN 或 Gcore CDN
+  install          交互选择 Reality 或 Cloudflare CDN
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update      只更新 easy_all 项目代码
@@ -123,15 +121,6 @@ easy_all install
    ├─ 可选输入不含 vpsSubUrl 的 config.local.json；本机注入源 URL 后构建 Worker
    ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移
-└─ [3] Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）
-   ├─ 适用线路：非优化线路；域名需委派至 Gcore Managed DNS Zone
-   ├─ 采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源
-   ├─ 地址候选池：通过亚洲/美国西岸/中国三网及多公共解析器发现真实入口
-   ├─ 定向测速：移动以香港为主、联通以日本为主、电信以洛杉矶为主
-   ├─ 每网最多输出 2 个通过验证的节点，总计 1～6 个，通常为 2 个
-   ├─ 订阅生成：通用 Base64 以及 Mihomo YAML (flag=clash)
-   └─ 零损失就地平滑安装/迁移
-
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
 
 提示：方括号中的值是直接回车采用的默认值；没有方括号的输入必须填写。
@@ -164,10 +153,6 @@ detect_installed_mode() {
             [[ "${state_version}" == "9" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
             printf 'cloudflare-streamup\n'
             ;;
-        gcore)
-            [[ "${state_version}" == "9" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
-            printf 'gcore\n'
-            ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
         esac
         return
@@ -181,12 +166,10 @@ choose_install_mode() {
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
     printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）\n' >&2
     printf '     流量实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是主要上限，但不与有效载荷严格等值\n' >&2
-    printf '  3. Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare-streamup\n' ;;
-    3) printf 'gcore\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -196,7 +179,6 @@ profile_file() {
     case "${mode}" in
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare-streamup) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare-streamup.sh" ;;
-    gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -285,7 +267,7 @@ dispatch_profile_command() {
         apply_easy_all
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "gcore" ]] \
+        [[ "${mode}" == "cloudflare-streamup" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         apply_cloud_resources
         ;;
@@ -305,8 +287,6 @@ dispatch_profile_command() {
     refresh-cdn-ips)
         if [[ "${mode}" == "cloudflare-streamup" ]]; then
             refresh_cloudflare_cdn_ips
-        elif [[ "${mode}" == "gcore" ]]; then
-            refresh_gcore_cdn_ips
         else
             launcher_die "refresh-cdn-ips 仅适用于 CDN 精选 IP 模式"
         fi
@@ -314,8 +294,6 @@ dispatch_profile_command() {
     renew-cert)
         if [[ "${mode}" == "reality" ]]; then
             renew_subscription_certificate
-        elif [[ "${mode}" == "gcore" ]]; then
-            xhttp_renew_origin_certificate
         else
             renew_certificate
         fi

@@ -7,7 +7,6 @@ REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
 XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 CLOUDFLARE_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
-GCORE_PROFILE="${ROOT_DIR}/profiles/xhttp-gcore.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
 
@@ -29,8 +28,7 @@ done
 for required_path in \
     profiles/reality.sh \
     profiles/xhttp-cloudflare-streamup.sh \
-    profiles/xhttp-gcore.sh \
-    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/gcore-ip-pool.sh lib/quota.sh \
+    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh \
     lib/platform.sh lib/profile-common.sh lib/network.sh \
     lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
     lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
@@ -119,15 +117,10 @@ done
 
 grep -Eq '^xhttp_render_xray_config\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare Profile does not implement the XHTTP render hook"
-grep -Eq '^xhttp_render_xray_config\(\)' "${GCORE_PROFILE}" \
-    || fail "Gcore Profile does not implement the Xray render hook"
-! grep -Eq '^write_subscriptions\(\)' "${CLOUDFLARE_PROFILE}" "${GCORE_PROFILE}" \
+! grep -Eq '^write_subscriptions\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "CDN profiles must use shared subscription rendering"
-! grep -Eq '^finish_xhttp_apply\(\)' "${CLOUDFLARE_PROFILE}" "${GCORE_PROFILE}" \
+! grep -Eq '^finish_xhttp_apply\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "CDN profiles must use shared apply finalization"
-! grep -Eq 'gcore_probe_xhttp|GCORE_XHTTP|XRAY_XHTTP|packet-up|gcore_xhttp_backend' \
-    "${GCORE_PROFILE}" \
-    || fail "Gcore must remain WebSocket-only"
 ! grep -Eq 'cloudflare_cleanup_stale_header_rules' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare must not delete rules by zone-wide easy_all prefix"
 grep -Fq '[[ "${state_version}" == "7" ]]' "${ROOT_DIR}/easy_all" \
@@ -136,9 +129,6 @@ grep -Fq '[[ "${state_version}" == "7" ]]' "${ROOT_DIR}/easy_all" \
 [[ "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/certificate.pem"'* \
     && "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/private.key"'* ]] \
     || fail "CDN rollback must preserve local TLS certificate and key"
-[[ "$(<"${GCORE_PROFILE}")" == *'GCORE_EDGE_CERTIFICATE_ID GCORE_ORIGIN_GROUP_ID'* \
-    && "$(<"${GCORE_PROFILE}")" == *'/cdn/sslData/${GCORE_EDGE_CERTIFICATE_ID}'* ]] \
-    || fail "Gcore must persist and purge the managed edge certificate"
 finish_apply_body=$(sed -n '/^finish_xhttp_apply()/,/^}/p' "${XHTTP_RUNTIME}")
 [[ "${finish_apply_body}" != *'UPDATE_SUB_ROLLBACK_ON_EXIT=0'* \
     && "${finish_apply_body}" != *'end_quota_maintenance'* ]] \
@@ -147,7 +137,6 @@ finish_apply_body=$(sed -n '/^finish_xhttp_apply()/,/^}/p' "${XHTTP_RUNTIME}")
     && "${finish_apply_body}" == *'[[ "${defer_state_save}" == "1" ]] || show_subscription'* ]] \
     || fail "deferred Worker updates must not reload stale state before commit"
 grep -Fq 'commit_subscription_update' "${CLOUDFLARE_PROFILE}" \
-    && grep -Fq 'commit_subscription_update' "${GCORE_PROFILE}" \
     || fail "CDN profiles must commit rollback only after provider-specific validation"
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
     || fail "network module must not depend on Profile template functions"
@@ -166,7 +155,7 @@ grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "scheduled maintenance must cover reboot policy without ACME"
 [[ "$(<"${XHTTP_RUNTIME}")" == *'snapshot_platform_security_state'* ]] \
     || fail "CDN fresh installs must snapshot shared platform security state"
-for profile in "${CLOUDFLARE_PROFILE}" "${GCORE_PROFILE}"; do
+for profile in "${CLOUDFLARE_PROFILE}"; do
     rollback_body=$(sed -n '/^rollback_fresh_install()/,/^}/p' "${profile}")
     [[ "${rollback_body}" == *'restore_platform_security_state'* \
         && "${rollback_body}" == *'restore_bbr_tcp_install_state'* \
@@ -184,16 +173,9 @@ cloudflare_save_line=$(grep -n 'save_state' <<<"${cloudflare_install}" | head -n
     && "${cloudflare_deploy_line}" -lt "${cloudflare_validate_line}" \
     && "${cloudflare_validate_line}" -lt "${cloudflare_save_line}" ]] \
     || fail "Cloudflare must commit state only after Worker aggregation validation"
-gcore_install=$(sed -n '/^install_all()/,/^}/p' "${GCORE_PROFILE}")
-gcore_save_line=$(grep -n 'save_state' <<<"${gcore_install}" | head -n 1 | cut -d: -f1)
-gcore_refresh_line=$(grep -n 'refresh_.*globalping.*cache' <<<"${gcore_install}" | head -n 1 | cut -d: -f1)
-[[ -n "${gcore_save_line}" && -n "${gcore_refresh_line}" \
-    && "${gcore_save_line}" -lt "${gcore_refresh_line}" ]] \
-    || fail "Gcore must persist cloud ownership before Globalping"
 cloudflare_rollback_body=$(sed -n '/^rollback_fresh_install()/,/^}/p' "${CLOUDFLARE_PROFILE}")
 [[ "${cloudflare_rollback_body}" == *'cloudflare_rollback_fresh_install_resources'* \
-    && "${cloudflare_rollback_body}" != *'purge_cloudflare_resources_before_uninstall'* \
-    && "$(sed -n '/^rollback_fresh_install()/,/^}/p' "${GCORE_PROFILE}")" == *'gcore_purge_managed_resources'* ]] \
+    && "${cloudflare_rollback_body}" != *'purge_cloudflare_resources_before_uninstall'* ]] \
     || fail "CDN fresh rollback must attempt provider resource cleanup before local rollback"
 [[ "$(<"${ROOT_DIR}/lib/subscription-auth.sh")" == *'access_log off;'* ]] \
     || fail "token-bearing subscription locations must suppress access logs"

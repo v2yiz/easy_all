@@ -12,14 +12,7 @@ readonly GLOBALPING_REFRESH_TIMER="easy_all-globalping-refresh.timer"
 readonly GLOBALPING_CACHE_MAX_AGE_SECONDS=86400
 
 cdn_optimization_enabled() {
-    [[ "${CDN_PROVIDER:-}" == "cloudflare" || "${CDN_PROVIDER:-}" == "gcore" ]]
-}
-
-globalping_cdn_provider_label() {
-    case "${CDN_PROVIDER:-}" in
-    gcore) printf 'Gcore' ;;
-    *) printf 'Cloudflare' ;;
-    esac
+    [[ "${CDN_PROVIDER:-}" == "cloudflare" ]]
 }
 
 validate_globalping_token() {
@@ -82,7 +75,7 @@ globalping_token_value() {
 globalping_api_request() {
     local method=$1 path=$2 body=${3:-} token headers
     token=$(globalping_token_value) || {
-        warn "缺少 Globalping Token，无法刷新 $(globalping_cdn_provider_label) CDN 精选 IP"
+        warn "缺少 Globalping Token，无法刷新 Cloudflare CDN 精选 IP"
         return 1
     }
     headers=$(make_temp_dir)/globalping-headers
@@ -162,20 +155,16 @@ remove_globalping_refresh_timer() {
 }
 
 show_globalping_status() {
-    local provider_label
-    provider_label=$(globalping_cdn_provider_label)
     if ! cdn_optimization_enabled; then
-        printf '%s CDN 精选 IP: disabled\n' "${provider_label}"
+        printf 'Cloudflare CDN 精选 IP: disabled\n'
         return 0
     fi
     if globalping_cache_valid; then
-        printf '%s CDN 精选 IP: enabled，%s 个，最近成功刷新 %s\n' \
-            "${provider_label}" \
+        printf 'Cloudflare CDN 精选 IP: enabled，%s 个，最近成功刷新 %s\n' \
             "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")" \
             "$(jq -r '.measured_at // "未知"' "${GLOBALPING_CACHE_FILE}")"
     else
-        printf '%s CDN 精选 IP: 缓存缺失或超过 24 小时，等待刷新；兼容的已验证旧缓存仍可继续使用\n' \
-            "${provider_label}"
+        printf 'Cloudflare CDN 精选 IP: 缓存缺失或超过 24 小时，等待刷新；兼容的已验证旧缓存仍可继续使用\n'
     fi
     printf 'Globalping 定时器: '
     systemctl is-active --quiet "${GLOBALPING_REFRESH_TIMER}" \

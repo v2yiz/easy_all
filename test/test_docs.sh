@@ -39,10 +39,6 @@ done
 
 assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
-assert_contains "README documents Gcore install option" "${README_CONTENT}" \
-    '3. Gcore CDN 精选 IP - WebSocket'
-assert_contains "README documents the typical Gcore node count" "${README_CONTENT}" \
-    '1～6 个已验证节点，通常为 2 个'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
@@ -79,10 +75,6 @@ assert_contains "README documents the Reality AAAA requirement" \
     "${README_CONTENT}" 'DNS only 节点域名的全部 AAAA 都指向该 VPS IPv6'
 assert_contains "README keeps VPS dual-stack independent from Cloudflare IPv4 edges" \
     "${README_CONTENT}" '不影响 VPS 自身保留双栈能力'
-assert_contains "README documents the Gcore IPv4-only client entry" \
-    "${README_CONTENT}" 'Gcore 客户端入口固定为 IPv4'
-assert_contains "README documents Globalping for both CDN providers" \
-    "${README_CONTENT}" 'Globalping Token 由 Cloudflare 和 Gcore 两种 CDN 模式使用'
 assert_not_contains "README does not pin Google to stale IPv4-only behavior" \
     "${README_CONTENT}" '固定绑定 IPv4 出站'
 
@@ -101,21 +93,16 @@ for asset in \
     docs/img/spaceship/spaceship-domain-search.svg \
     docs/img/spaceship/spaceship-nameservers.svg \
     docs/img/spaceship/spaceship-signup.svg \
-    docs/img/clashmi/clashmi-global-proxy.svg \
-    docs/img/gcore/api-token-create.svg \
-    docs/img/gcore/managed-dns-add-zone.svg \
-    docs/img/gcore/gcore-delegation-success.png; do
+    docs/img/clashmi/clashmi-global-proxy.svg; do
     [[ -s "${ROOT_DIR}/${asset}" ]] || fail "Documentation asset is missing: ${asset}"
 done
 assert_contains "README documents Clash Mi global proxy guide" \
     "${README_CONTENT}" 'docs/img/clashmi/clashmi-global-proxy.svg'
 assert_contains "README reminds Clash Mi manual PROXY selection" \
     "${README_CONTENT}" '手动勾选 `PROXY`'
-NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' \
-    ! -path "${ROOT_DIR}/docs/img/gcore/gcore-delegation-success.png" -print -quit)
+NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit)
 [[ -z "${NON_SVG_ASSET}" ]] || fail "Non-SVG documentation asset remains: ${NON_SVG_ASSET}"
 [[ ! -d "${ROOT_DIR}/docs/preparation" ]] || fail "obsolete preparation asset directory still exists"
-[[ ! -d "${ROOT_DIR}/docs/images/gcore" ]] || fail "obsolete Gcore asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/cloudflare" ]] || fail "obsolete top-level Cloudflare asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/spaceship" ]] || fail "obsolete top-level Spaceship asset directory still exists"
 [[ ! -d "${ROOT_DIR}/docs/guide" ]] || fail "obsolete guide directory still exists"
@@ -156,8 +143,6 @@ assert_contains "Preparation guide documents IPv4-only Cloudflare edges" \
     "${PREPARATION_GUIDE_CONTENT}" '只筛选和下发 Cloudflare IPv4 边缘节点'
 assert_contains "Preparation guide documents the Cloudflare loss threshold" \
     "${PREPARATION_GUIDE_CONTENT}" '最多允许丢 1 包（10%）'
-assert_not_contains "Preparation guide does not advertise unsupported Gcore DNS replacement" \
-    "${PREPARATION_GUIDE_CONTENT}" 'GCORE_DNS_REPLACE'
 assert_contains "Preparation guide forbids hostname fallback" \
     "${PREPARATION_GUIDE_CONTENT}" '不使用内置 Anycast IP 或域名兜底凑数'
 assert_contains "Preparation guide documents the Mihomo requirement for selected IPs" \
@@ -168,14 +153,16 @@ assert_contains "Preparation guide documents Reality IPv6 firewall prerequisites
     "${PREPARATION_GUIDE_CONTENT}" '安全组'
 assert_contains "Preparation guide preserves VPS dual-stack behavior" \
     "${PREPARATION_GUIDE_CONTENT}" 'VPS 双栈仍可用于 Reality 直连和目标站出站'
-assert_contains "Preparation guide documents the Gcore IPv4-only client entry" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Gcore WebSocket | 当前固定下发 IPv4 节点'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \
     "${PREPARATION_GUIDE_CONTENT}" 'Shadowrocket 列为已验证客户端'
 assert_contains "Preparation guide explains outbound-only VPS accounting" \
     "${PREPARATION_GUIDE_CONTENT}" '仅计出站的 VPS 会把两者计入出站额度'
 assert_contains "Cloudflare install interaction explains the VPS traffic boundary" \
     "${XHTTP_CONTENT}" '月度出站额度通常是可用代理载荷的主要上限'
+assert_contains "Cloudflare node-domain prompt includes a concrete example" \
+    "${XHTTP_CONTENT}" '客户端连接的 CDN 节点域名（例如 node.example.com）'
+assert_contains "Cloudflare node-domain hint forbids pre-created DNS records" \
+    "${XHTTP_CONTENT}" '不要提前创建 DNS 记录'
 
 assert_contains "README documents merged Profile helpers" "${README_CONTENT}" 'profile-common.sh'
 assert_contains "README documents merged scheduled maintenance" \
@@ -228,10 +215,8 @@ for removed_path in \
     docs/aws/aws-cloudfront-settings.svg \
     docs/aws/aws-iam-policy.svg \
     docs/aws/aws-iam-access-key.svg \
-    docs/gcore/gcore-api-token-create.png \
     profiles/xhttp-aws.sh \
     profiles/xhttp-cloudflare.sh \
-    profiles/singbox-gcore.sh \
     profiles/singbox-cloudflare.sh \
     lib/singbox-core.sh \
     lib/cdn-traffic-guard.sh \
@@ -241,8 +226,7 @@ for removed_path in \
     test/test_xhttp_aws.sh \
     test/test_cdn_traffic_guard.sh \
     test/test_xhttp_cloudflare.sh \
-    test/test_singbox_cloudflare.sh \
-    test/test_singbox_gcore.sh; do
+    test/test_singbox_cloudflare.sh; do
     [[ ! -e "${ROOT_DIR}/${removed_path}" ]] || fail "removed path still exists: ${removed_path}"
 done
 
@@ -251,7 +235,6 @@ for forbidden_reference in \
     'CloudFront' \
     'Route 53' \
     'docs/aws-guide.md' \
-    'docs/gcore/' \
     'docs/shadowrocket-auto-node-guide.md' \
     'Shadowrocket 自动选择节点指南'; do
     assert_not_contains "README excludes ${forbidden_reference}" "${README_CONTENT}" "${forbidden_reference}"
@@ -259,18 +242,8 @@ for forbidden_reference in \
         "${PREPARATION_GUIDE_CONTENT}" "${forbidden_reference}"
 done
 
-assert_contains "README documents Gcore mode" "${README_CONTENT}" 'Gcore CDN 精选 IP'
-assert_contains "Preparation guide documents Gcore mode" "${PREPARATION_GUIDE_CONTENT}" '## 8. Gcore CDN 精选 IP 准备'
-assert_contains "Preparation guide documents the typical Gcore node count" \
-    "${PREPARATION_GUIDE_CONTENT}" '下发 1～6 个节点，通常为 2 个'
-assert_contains "Preparation guide embeds Gcore delegation success" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/gcore-delegation-success.png'
-assert_contains "Preparation guide embeds Gcore token create" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/api-token-create.svg'
-assert_contains "Preparation guide embeds Gcore add zone" "${PREPARATION_GUIDE_CONTENT}" 'img/gcore/managed-dns-add-zone.svg'
-
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
-    "${ROOT_DIR}/profiles/xhttp-gcore.sh" \
-    "${ROOT_DIR}/lib/xhttp-runtime.sh" \
-    "${ROOT_DIR}/lib/gcore-ip-pool.sh"
+    "${ROOT_DIR}/lib/xhttp-runtime.sh"
 
 printf 'ok - documentation alignment tests passed\n'

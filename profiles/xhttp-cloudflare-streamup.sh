@@ -1210,7 +1210,8 @@ collect_install_inputs() {
 
     info "Cloudflare 数据面采用单域名架构；部署订阅时另用独立域名绑定 Worker。"
     info "流量说明：代理数据实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是可用代理载荷的主要上限，但协议开销及 Cloudflare 服务规则会进一步约束；双向计费请按服务商口径折算。"
-    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "")}")
+    info "节点域名提示：使用 Cloudflare Active Zone 下未占用的一级子域名，例如 node.example.com；不要提前创建 DNS 记录。"
+    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名（例如 node.example.com）" "")}")
     validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
