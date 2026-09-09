@@ -53,8 +53,8 @@ assert_contains "README documents compatible-cache reuse" \
     "${README_CONTENT}" '与当前入口策略兼容的缓存'
 assert_contains "README documents the official Cloudflare IPv4 pool" \
     "${README_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
-assert_contains "README documents optional verified Cloudflare IPv6 nodes" \
-    "${README_CONTENT}" '优选IPv6-1`～`优选IPv6-3'
+assert_contains "README documents IPv4-only Cloudflare edge nodes" \
+    "${README_CONTENT}" 'Cloudflare 客户端入口固定使用 IPv4'
 assert_contains "README documents Worker script permission" \
     "${README_CONTENT}" 'Workers Scripts Write'
 assert_contains "README documents the default Worker name" \
@@ -71,16 +71,14 @@ assert_contains "README documents Shadowrocket as unverified" \
     "${README_CONTENT}" '不把 Shadowrocket 列为本项目的已验证客户端'
 assert_contains "README explains the Cloudflare VPS traffic boundary" \
     "${README_CONTENT}" '用户上下行载荷之和会消耗 VPS 出站额度'
-assert_contains "README distinguishes VPS and client dual-stack" \
-    "${README_CONTENT}" '“VPS 双栈”“客户端入口双栈”和“Google 出站地址族”是三项独立能力'
+assert_contains "README distinguishes VPS, proxy entry and Google egress families" \
+    "${README_CONTENT}" '“VPS 双栈”“代理节点入口地址族”和“Google 出站地址族”是三项独立能力'
 assert_contains "README documents automatic Reality client dual-stack" \
     "${README_CONTENT}" '没有独立的 `dual` 选项'
 assert_contains "README documents the Reality AAAA requirement" \
     "${README_CONTENT}" 'DNS only 节点域名的全部 AAAA 都指向该 VPS IPv6'
-assert_contains "README documents Cloudflare edge IPv6 independence" \
-    "${README_CONTENT}" 'Cloudflare 边缘 IPv6，不要求 VPS 有 IPv6'
-assert_contains "README forbids a Cloudflare AAAA pointing to the VPS" \
-    "${README_CONTENT}" '不要再创建指向 VPS 的 AAAA'
+assert_contains "README keeps VPS dual-stack independent from Cloudflare IPv4 edges" \
+    "${README_CONTENT}" '不影响 VPS 自身保留双栈能力'
 assert_contains "README documents the Gcore IPv4-only client entry" \
     "${README_CONTENT}" 'Gcore 客户端入口固定为 IPv4'
 assert_contains "README documents Globalping for both CDN providers" \
@@ -154,8 +152,8 @@ assert_contains "Preparation guide documents the Cloudflare API token walkthroug
     || fail "Cloudflare API token walkthrough asset is missing"
 assert_contains "Preparation guide documents the official IPv4 pool" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
-assert_contains "Preparation guide documents Cloudflare IPv6 validation" \
-    "${PREPARATION_GUIDE_CONTENT}" '属于 Cloudflare 官方 IPv6 CIDR'
+assert_contains "Preparation guide documents IPv4-only Cloudflare edges" \
+    "${PREPARATION_GUIDE_CONTENT}" '只筛选和下发 Cloudflare IPv4 边缘节点'
 assert_contains "Preparation guide documents the Cloudflare loss threshold" \
     "${PREPARATION_GUIDE_CONTENT}" '最多允许丢 1 包（10%）'
 assert_not_contains "Preparation guide does not advertise unsupported Gcore DNS replacement" \
@@ -168,10 +166,8 @@ assert_contains "Preparation guide documents automatic VPS dual-stack detection"
     "${PREPARATION_GUIDE_CONTENT}" '默认 IPv6 路由和可用 HTTPS'
 assert_contains "Preparation guide documents Reality IPv6 firewall prerequisites" \
     "${PREPARATION_GUIDE_CONTENT}" '安全组'
-assert_contains "Preparation guide distinguishes Cloudflare edge dual-stack" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 的 `dual` 只影响客户端到 CDN 边缘'
-assert_contains "Preparation guide forbids a Cloudflare AAAA pointing to the VPS" \
-    "${PREPARATION_GUIDE_CONTENT}" '不要手工创建指向 VPS 的 AAAA'
+assert_contains "Preparation guide preserves VPS dual-stack behavior" \
+    "${PREPARATION_GUIDE_CONTENT}" 'VPS 双栈仍可用于 Reality 直连和目标站出站'
 assert_contains "Preparation guide documents the Gcore IPv4-only client entry" \
     "${PREPARATION_GUIDE_CONTENT}" 'Gcore WebSocket | 当前固定下发 IPv4 节点'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \

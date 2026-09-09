@@ -71,7 +71,6 @@ export CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
 export CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2035-01-01T00:00:00Z"
 export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/cloudflare-cdn-ips.json"
 export XHTTP_NODE_NAME="TEST_NODE"
-export CLOUDFLARE_CLIENT_IP_FAMILY="ipv4"
 export GOOGLE_EGRESS_MODE="auto"
 export GOOGLE_EGRESS_RESOLVED="ipv4"
 export CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE=2
@@ -187,11 +186,10 @@ assert_equal "Origin CA only covers the Nginx node source hostname" \
 # Set up a complete cache with 6 unique candidates (2 per carrier).
 cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 {
-  "version": 7,
+  "version": 8,
   "provider": "cloudflare",
   "domain": "node.example.com",
-  "client_ip_family": "ipv4",
-  "candidate_source": "cloudflare-official-ipv4-and-domain-ipv6",
+  "candidate_source": "cloudflare-official-ipv4",
   "measured_at_epoch": 1725500000,
   "packets": 10,
   "candidates": [
@@ -205,10 +203,10 @@ cat >"${GLOBALPING_CACHE_FILE}" <<'EOF'
 }
 EOF
 cp "${GLOBALPING_CACHE_FILE}" "${TMP_DIR}/valid-cloudflare-cache.json"
-jq '.version = 6' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/legacy-cloudflare-cache.json"
+jq '.version = 7' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/legacy-cloudflare-cache.json"
 cp "${TMP_DIR}/legacy-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
 if cloudflare_globalping_cache_compatible; then
-    fail "Legacy v5 cache may contain loose-loss or synthetic-carrier entries and must be rejected"
+    fail "Legacy Cloudflare cache must be rejected"
 fi
 jq '(.candidates[] | select(.carrier == "mobile") | .carrier_asn) = 4134' \
     "${TMP_DIR}/valid-cloudflare-cache.json" >"${GLOBALPING_CACHE_FILE}"
@@ -388,36 +386,12 @@ fi
     done
 )
 
-# Dual mode keeps all IPv4 nodes and appends independently addressable IPv6 nodes.
-jq '.client_ip_family = "dual"
-    | .ipv6_candidate_count = 2
-    | .candidates += [
-        {"ip":"2606:4700::6810:101","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-1","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":95,"tls_verified":true},
-        {"ip":"2606:4700::6810:102","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-2","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":98,"tls_verified":true}
-      ]' "${TMP_DIR}/valid-cloudflare-cache.json" >"${GLOBALPING_CACHE_FILE}"
-CLOUDFLARE_CLIENT_IP_FAMILY="dual"
-dual_links=$(build_node_links)
-assert_equal "Dual subscription keeps 6 IPv4 and adds 2 IPv6 links" "8" \
-    "$(grep -c '^vless://' <<<"${dual_links}")"
-assert_contains "IPv6 VLESS authority is bracketed" "${dual_links}" \
-    '@[2606:4700::6810:101]:443'
-dual_mihomo=$(build_mihomo_nodes)
-assert_contains "Mihomo renders IPv6 server without URI brackets" "${dual_mihomo}" \
-    'server: "2606:4700::6810:101"'
-assert_contains "Mihomo pins IPv6 candidates" "${dual_mihomo}" 'ip-version: ipv6'
-assert_contains "Mihomo labels IPv6 candidates separately" "${dual_mihomo}" '"优选IPv6-2"'
-dual_groups=$(build_mihomo_proxy_groups)
-assert_contains "AUTO group includes IPv6 candidates" "${dual_groups}" '"优选IPv6-2"'
-jq '.ipv6_candidate_count = 4
-    | .candidates += [
-        {"ip":"2606:4700::6810:103","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-3","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":100,"tls_verified":true},
-        {"ip":"2606:4700::6810:104","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-4","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":105,"tls_verified":true}
-      ]' "${GLOBALPING_CACHE_FILE}" >"${TMP_DIR}/overflow-ipv6-cache.json"
-cp "${TMP_DIR}/overflow-ipv6-cache.json" "${GLOBALPING_CACHE_FILE}"
+jq '.candidates += [
+      {"ip":"2606:4700::6810:101","source_cidr":"2606:4700::/32","address_family":"ipv6","label":"IPv6-1","carrier":"ipv6","carrier_asn":0,"avg_rtt_ms":95,"tls_verified":true}
+    ]' "${TMP_DIR}/valid-cloudflare-cache.json" >"${GLOBALPING_CACHE_FILE}"
 if cloudflare_globalping_cache_compatible; then
-    fail "Dual cache with more than 3 IPv6 candidates must be rejected"
+    fail "Cloudflare cache containing an IPv6 edge candidate must be rejected"
 fi
-CLOUDFLARE_CLIENT_IP_FAMILY="ipv4"
 cp "${TMP_DIR}/valid-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
 
 # Test Mihomo proxy names under PROXY
@@ -491,8 +465,8 @@ assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
 assert_contains "State file persists dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=dual'
 assert_contains "State file persists public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6=2001:db8::10'
-assert_contains "State file persists Cloudflare client family" "${state_content}" \
-    'CLOUDFLARE_CLIENT_IP_FAMILY=ipv4'
+assert_not_contains "State file omits removed Cloudflare client family" "${state_content}" \
+    'CLOUDFLARE_CLIENT_IP_FAMILY='
 assert_contains "State file persists Google egress mode" "${state_content}" \
     'GOOGLE_EGRESS_MODE=auto'
 assert_contains "State file persists resolved Google family" "${state_content}" \
@@ -509,15 +483,15 @@ assert_contains "State file persists Worker aggregation config" "${state_content
     'WORKER_AGGREGATION_CONFIG='
 
 missing_policy_state="${TMP_DIR}/state_missing_policy.env"
-grep -Ev '^(CLOUDFLARE_CLIENT_IP_FAMILY|GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED)=' \
+grep -Ev '^(GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED)=' \
     "${EASY_ALL_STATE_FILE_OVERRIDE}" >"${missing_policy_state}"
 missing_policy_err=$(
     bash -c 'source "$1"; EASY_ALL_STATE_FILE_OVERRIDE="$2" load_state' _ \
         "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
         "${missing_policy_state}" 2>&1 || true
 )
-assert_contains "load_state rejects state without the current family policy" \
-    "${missing_policy_err}" "状态缺少有效的 Cloudflare 客户端入口 IP 族"
+assert_contains "load_state rejects state without the current Google family policy" \
+    "${missing_policy_err}" "状态缺少有效的 Google 出站策略"
 
 missing_worker_state="${TMP_DIR}/state_missing_worker.env"
 grep -Ev '^(CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_WORKER_NAME|CLOUDFLARE_WORKER_DOMAIN_ID|WORKER_SOURCE_SECRET)=' \
@@ -559,7 +533,6 @@ STATE_VERSION='9'
 PROTOCOL='cloudflare-streamup'
 BACKEND='xray'
 CDN_PROVIDER='cloudflare'
-CLOUDFLARE_CLIENT_IP_FAMILY='ipv4'
 GOOGLE_EGRESS_MODE='auto'
 GOOGLE_EGRESS_RESOLVED='ipv4'
 CLOUDFLARE_ACCOUNT_ID='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
@@ -582,8 +555,6 @@ EOF
 EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
-assert_equal "load_state preserves Cloudflare client family" \
-    "ipv4" "${CLOUDFLARE_CLIENT_IP_FAMILY}"
 assert_equal "load_state preserves Google egress mode" \
     "auto" "${GOOGLE_EGRESS_MODE}"
 assert_equal "load_state preserves the current detected VPS family" \
@@ -727,7 +698,7 @@ assert_contains "Worker failure includes upstream reason" "${worker_error}" 'CDN
 assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private-test-token'
 
 # During install/update, an upstream acceptance failure keeps the deployment
-# and emits a standalone Worker that can safely use configured fallback nodes.
+# and emits a standalone Worker without weakening dynamic-source requirements.
 (
     trap - EXIT
     quota_enabled() { return 1; }
@@ -760,8 +731,8 @@ assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private
         "${recovery_worker}" '"delegateTokenValidation":false'
     assert_contains "Recovery Worker embeds the current Token set" \
         "${recovery_worker}" '"owner":"recovery-test-token"'
-    assert_contains "Recovery Worker allows configured fallback nodes" \
-        "${recovery_worker}" '"requireDynamicCdn":false'
+    assert_contains "Recovery Worker still requires the dynamic CDN source" \
+        "${recovery_worker}" '"requireDynamicCdn":true'
     assert_contains "Recovery Worker retains private source authentication" \
         "${recovery_worker}" '"sourceSecret":"test-worker-source-secret-12345"'
     expected_vps_source=$(printf '"vpsSubUrl":"https://%s/subscribe"' "${VLESS_CDN_DOMAIN}")

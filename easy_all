@@ -110,10 +110,10 @@ easy_all install
 │  │  └─ 仅节点：不收集订阅服务参数
 │  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
-└─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4 + 最多 3 个已验证 IPv6）
+└─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）
    ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
    ├─ 流量口径：实时回源；VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）
-   ├─ 入口 IP 族：默认 IPv4；可选 dual，在保留 6 个 IPv4 的同时追加最多 3 个已验证 IPv6
+   ├─ 入口 IP 族：固定 IPv4，输出 6 个三网精选节点
    ├─ Google 出口：auto 探测后锁定，或显式强制 IPv4 / IPv6
    ├─ 采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up 极速流模式
    ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4，dual 时再验证域名 AAAA
@@ -179,7 +179,7 @@ choose_install_mode() {
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
-    printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4 + 最多 3 个已验证 IPv6）\n' >&2
+    printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）\n' >&2
     printf '     流量实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是主要上限，但不与有效载荷严格等值\n' >&2
     printf '  3. Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice

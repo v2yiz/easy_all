@@ -137,14 +137,16 @@ assert_equal "Anchored request specifies magic location" "base-meas-id-12345" \
 # ==============================================================================
 # Test 4: TLS Verification Gate & Result Parsing
 # ==============================================================================
-for target in 104.16.1.1 2606:4700::6810:101; do
-    tls_request=$(cloudflare_globalping_tls_measurement_request "${target}" 4134 node.example.com)
-    assert_equal "TLS probe dials the candidate IP" "${target}" "$(jq -r '.target' <<<"${tls_request}")"
-    assert_equal "TLS probe sets SNI and HTTP Host via request.host" "node.example.com" \
-        "$(jq -r '.measurementOptions.request.host' <<<"${tls_request}")"
-    assert_equal "TLS probe checks the health endpoint" "/easy_all-health" \
-        "$(jq -r '.measurementOptions.request.path' <<<"${tls_request}")"
-done
+tls_request=$(cloudflare_globalping_tls_measurement_request "104.16.1.1" 4134 node.example.com)
+assert_equal "TLS probe dials the candidate IP" "104.16.1.1" "$(jq -r '.target' <<<"${tls_request}")"
+assert_equal "TLS probe sets SNI and HTTP Host via request.host" "node.example.com" \
+    "$(jq -r '.measurementOptions.request.host' <<<"${tls_request}")"
+assert_equal "TLS probe checks the health endpoint" "/easy_all-health" \
+    "$(jq -r '.measurementOptions.request.path' <<<"${tls_request}")"
+if cloudflare_globalping_tls_measurement_request \
+    "2606:4700::6810:101" 4134 node.example.com >/dev/null 2>&1; then
+    fail "Cloudflare TLS probes must reject IPv6 edge candidates"
+fi
 
 tls_mock_file="${TMP_DIR}/tls-mock.ndjson"
 cat <<'TLS_EOF' >"${tls_mock_file}"
@@ -257,36 +259,9 @@ passing_loss_ips=$(jq -r '.ip' <<<"${loss_obs}" | tr '\n' ' ')
 [[ "${passing_loss_ips}" == *"104.16.1.2 "* ]] || fail "104.16.1.2 (10% loss) should pass"
 [[ "${passing_loss_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (20% loss) must be rejected"
 
-# ==============================================================================
-# Test 10: IPv6 discovery, measurement requests and candidate selection
-# ==============================================================================
-ipv6_ranges="${TMP_DIR}/cloudflare-ipv6.txt"
-ipv6_pool="${TMP_DIR}/cloudflare-ipv6-pool.tsv"
-printf '2606:4700::/32\n' >"${ipv6_ranges}"
-dig() {
-    printf '2606:4700::6810:101\n2001:db8::1\n2606:4700::6810:102\n'
-}
-cloudflare_discover_ipv6_candidate_pool "${ipv6_ranges}" "${ipv6_pool}"
-assert_equal "Only Cloudflare-owned AAAA records become candidates" "2" \
-    "$(wc -l <"${ipv6_pool}" | tr -d ' ')"
-cloudflare_ipv6_in_cidr "2606:4700::6810:101" "2606:4700::/32" \
-    || fail "Cloudflare IPv6 CIDR membership validation failed"
-ipv6_request=$(cloudflare_globalping_measurement_request "2606:4700::6810:101")
-assert_equal "IPv6 measurement keeps the literal target" "2606:4700::6810:101" \
-    "$(jq -r '.target' <<<"${ipv6_request}")"
-
-ipv6_obs="${TMP_DIR}/ipv6-observations.ndjson"
-cat <<'IPV6_OBS_EOF' >"${ipv6_obs}"
-{"ip":"2606:4700::6810:101","source_cidr":"2606:4700::/32","address_family":"ipv6","carrier_asn":4134,"avg_rtt_ms":50,"tls_verified":true}
-{"ip":"2606:4700::6810:101","source_cidr":"2606:4700::/32","address_family":"ipv6","carrier_asn":9808,"avg_rtt_ms":70,"tls_verified":true}
-{"ip":"2606:4700::6810:102","source_cidr":"2606:4700::/32","address_family":"ipv6","carrier_asn":4837,"avg_rtt_ms":45,"tls_verified":true}
-{"ip":"2606:4700::6810:103","source_cidr":"2606:4700::/32","address_family":"ipv6","carrier_asn":4134,"avg_rtt_ms":55,"tls_verified":true}
-{"ip":"2606:4700::6810:104","source_cidr":"2606:4700::/32","address_family":"ipv6","carrier_asn":9808,"avg_rtt_ms":40,"tls_verified":true}
-IPV6_OBS_EOF
-ipv6_selected=$(cloudflare_select_ipv6_candidates "${ipv6_obs}")
-assert_equal "IPv6 selection deduplicates and caps addresses at 3" "3" \
-    "$(jq 'length' <<<"${ipv6_selected}")"
-assert_equal "IPv6 candidates carry an explicit family" "true" \
-    "$(jq 'all(.[]; .address_family == "ipv6")' <<<"${ipv6_selected}")"
+if cloudflare_globalping_measurement_request \
+    "2606:4700::6810:101" >/dev/null 2>&1; then
+    fail "Cloudflare TCP probes must reject IPv6 edge candidates"
+fi
 
 printf 'ok - Cloudflare IP pool tests passed\n'

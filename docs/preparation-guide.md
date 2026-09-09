@@ -34,13 +34,12 @@ DNS 的要求如下：
 | 链路 | 客户端入口 IPv6 | VPS 需要公网 IPv6 | 用户需要配置 AAAA |
 | --- | --- | --- | --- |
 | Reality 直连 | 满足条件时自动启用，不提供独立开关 | 是 | 需要 IPv6 直连时，将 DNS only 节点域名的 AAAA 指向 VPS IPv6；只用 IPv4 时不发布 |
-| Cloudflare XHTTP | 可选 `dual`，追加 Cloudflare 边缘 IPv6 | 否 | 否；不要创建指向 VPS 的 AAAA。安装器开启 IPv6 Compatibility，由 proxied 节点域名返回边缘 AAAA |
+| Cloudflare XHTTP | 固定下发 IPv4 节点 | 否 | 否；安装器只创建指向 VPS IPv4 的 proxied A |
 | Gcore WebSocket | 当前固定下发 IPv4 节点 | 否 | 否；源站使用 A，节点使用 CNAME |
 
 Reality 若要让客户端通过 IPv6 直连，还需在云厂商安全组放行 IPv6 TCP `443` 和动态端口范围。
-Cloudflare 的 `dual` 只影响客户端到 CDN 边缘，不改变 Cloudflare 到 VPS 的 IPv4 回源。VPS 双栈还可
-用于目标站出站；Google/YouTube 会按安装时选择的 `auto/ipv4/ipv6` 策略固定到单一地址族，该策略与
-客户端入口独立。
+Cloudflare 客户端入口固定使用 IPv4。VPS 双栈仍可用于 Reality 直连和目标站出站；
+Google/YouTube 会按安装时选择的 `auto/ipv4/ipv6` 策略固定到单一地址族。
 
 各链路建议使用的域名如下：
 
@@ -176,9 +175,8 @@ gRPC，也不会把节点数据流量经过 Cloudflare。
 3. 如果部署订阅，准备另一个同 Zone 一级子域名，例如 `sub.example.com`。它必须与节点域名不同，
    且不要提前创建 DNS 记录；安装器会把它直接绑定为 Worker Custom Domain。
 
-安装器始终为节点域名创建指向 VPS IPv4 的 proxied `A`。选择 `dual` 时，安装器另行开启 Zone 的
-IPv6 Compatibility，并从该 proxied 域名自动返回的 Cloudflare 边缘 AAAA 中筛选 IPv6 节点。
-不要手工创建指向 VPS 的 AAAA；VPS 本身没有 IPv6 也不影响该客户端双栈入口。
+安装器始终为节点域名创建指向 VPS IPv4 的 proxied `A`，并只筛选和下发 Cloudflare IPv4 边缘节点。
+无需为 Cloudflare XHTTP 准备 AAAA；VPS 本身是否具备 IPv6 不影响该客户端入口。
 
 ![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
 
@@ -232,7 +230,8 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   执行最终用户和配额鉴权。
 - 安装器验证 Worker 能取得动态节点、无效 Token 返回 `403`，同时确认直接请求 Nginx 节点源返回 `404`。
 - 非配额模式若持续无法通过 Worker 动态源验收，安装器保留当前部署，并在执行用户的主目录输出
-  权限为 `0600` 的 `worker.js` 供手工部署；配额模式仍失败回滚，避免兜底节点绕过流量核算。
+  权限为 `0600` 的 `worker.js` 供手工部署；该 Worker 仍要求每次请求成功读取 VPS 动态源，失败
+  时返回 `502`。配额模式仍失败回滚，不生成内嵌 Token 的恢复版本。
 - 可选输入一份不含 `vpsSubUrl` 的 `config.local.json`；字段参考
   [`worker-src/config.example.json`](../worker-src/config.example.json)。安装器保留其中的
   `nodes`、`externalSubUrl`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的
@@ -240,7 +239,7 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   再询问“是否需要进行订阅聚合”；
   选择需要后隐藏输入 JSON，并交给 `build-worker.mjs` 校验构建、自动部署。
   启用配额时，`allowedTokens` 用户名必须与配额用户完全一致，只允许覆盖 Token。
-- dual 模式开启 Cloudflare IPv6 Compatibility；所有模式开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
+- 开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
   前缀删除同一 Zone 中其他部署的规则。
 - 使用临时 Xray 客户端完成可重试的 XHTTP 端到端验收，仅在失败后辅助诊断 gRPC `403` 或源站 TLS `525`。
 - 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
@@ -251,22 +250,20 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   `eyeball-network` 探针分别发送 10 包 TCP/443，最多允许丢 1 包（10%）；第二阶段对低延迟候选进行真实 HTTP/TLS HEAD `/easy_all-health` 验证，彻底剔除 SNI 假通。
 - 按电信、联通、移动三大运营商独立优选，每网输出 2 个通过本机 HTTP/2 和 Globalping HTTP/TLS
   验证的地址，统一生成 6 个纯 XHTTP 节点（`优选1` 到 `优选6`）。
-- 选择 `dual` 时，通过 `1.1.1.1` 查询节点域名 AAAA，只保留属于 Cloudflare 官方 IPv6 CIDR
-  且通过三网 TCP 与 HTTP/TLS 验证的地址，最多追加为 `优选IPv6-1`～`优选IPv6-3`；不会替换 6 个 IPv4 节点。
 - 不使用内置 Anycast IP 或域名兜底凑数。刷新失败时继续使用格式兼容的上一版已验证缓存；从未生成
-  完整 6 个 IPv4 的缓存时停止生成订阅；dual 模式还要求 1～3 个有效 IPv6。客户端 Mihomo 每 300 秒测速。
+  完整 6 个 IPv4 的缓存时停止生成订阅。客户端 Mihomo 每 300 秒测速。
 
 ### 5.1 精选 IP 的客户端要求
 
 精选 IP 订阅需要使用 Mihomo，或明确兼容同等 Mihomo XHTTP 字段的客户端。本项目按 Mihomo
-配置格式生成节点：`server` 是筛选出的 Cloudflare IPv4 或 IPv6，而 TLS SNI、XHTTP Host、路径、
+配置格式生成节点：`server` 是筛选出的 Cloudflare IPv4，而 TLS SNI、XHTTP Host、路径、
 `stream-up` 和复用参数仍需保持正确。客户端若不能分别保存 IP、TLS SNI 和 HTTP Host，精选
 IP 节点会连接失败；请以实际生成订阅的导入测试确认兼容性。
 
-### 5.2 IP 族选择
+### 5.2 VPS 出站 IP 族
 
-- Cloudflare 客户端入口默认 `ipv4`；选择 `dual` 只追加 Cloudflare 边缘 IPv6 节点，不要求 VPS
-  有 IPv6，不需要用户配置 AAAA，也不改变 IPv4 回源和 VPS 出口。
+- Cloudflare 客户端入口固定使用 IPv4，不提供地址族选项；VPS 自身仍按探测结果保留 IPv4-only
+  或双栈状态。
 - Google/YouTube 出口默认 `auto`。安装和每次 `easy_all apply` 会分别执行三次 IPv4/IPv6
   `generate_204` 探测，先比较成功次数，再比较延迟中位数，选择后写入状态并使用
   `ForceIPv4` 或 `ForceIPv6`。它不会在每个连接上自动回退，因此同一轮运行中的 Google 新连接
@@ -311,7 +308,6 @@ HTTP/2 设置和手动 gRPC 开关都会保留。
 官方参考：[Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)、
 [Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)、
 [gRPC](https://developers.cloudflare.com/network/grpc-connections/)、
-[IPv6 Compatibility](https://developers.cloudflare.com/network/ipv6-compatibility/)、
 [Transform Rules](https://developers.cloudflare.com/rules/transform/)、
 [Workers Script Upload](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/)、
 [Workers Custom Domains](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)、

@@ -7,9 +7,9 @@ const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
-const CDN_IPV4_NODE_LIMIT = 6;
-const CDN_IPV6_NODE_LIMIT = 3;
-const CDN_NODE_LIMIT = CDN_IPV4_NODE_LIMIT + CDN_IPV6_NODE_LIMIT;
+const EXTERNAL_CLASH_USER_AGENT = 'Mihomo';
+const EXTERNAL_URI_USER_AGENT = 'v2rayN';
+const CDN_NODE_LIMIT = 6;
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,
@@ -17,11 +17,13 @@ const {
     vpsSubUrl: VPS_SUBSCRIPTION_URL,
     vpsCdnUseRequestToken: VPS_CDN_USE_REQUEST_TOKEN = false,
     delegateTokenValidation: DELEGATE_TOKEN_VALIDATION = false,
-    requireDynamicCdn: REQUIRE_DYNAMIC_CDN = false,
+    requireDynamicCdn: CONFIG_REQUIRE_DYNAMIC_CDN,
     sourceSecret: VPS_CDN_SOURCE_SECRET = '',
     fallbackCdnNodes: FALLBACK_CDN_NODES,
     subscriptionDownloadName: SUBSCRIPTION_DOWNLOAD_NAME = DEFAULT_SUB_DOWNLOAD_NAME,
 } = PRIVATE_CONFIG;
+const REQUIRE_DYNAMIC_CDN =
+    CONFIG_REQUIRE_DYNAMIC_CDN ?? Boolean(VPS_SUBSCRIPTION_URL);
 const ALLOWED_TOKEN_VALUES = new Set(Object.values(ALLOWED_TOKENS));
 
 function getHourCount(now = Date.now()) {
@@ -312,19 +314,9 @@ function parseVlessLink(link) {
 }
 
 function normalizeCdnNodeNames(nodes) {
-    const ipv4 = [];
-    const ipv6 = [];
-    for (const node of nodes) {
-        const target = nodeIpVersion(node) === 'ipv6' ? ipv6 : ipv4;
-        const limit = target === ipv6 ? CDN_IPV6_NODE_LIMIT : CDN_IPV4_NODE_LIMIT;
-        if (target.length < limit) {
-            target.push(node);
-        }
-    }
-    return [
-        ...ipv4.map((node, index) => ({ ...node, name: '优选' + (index + 1) })),
-        ...ipv6.map((node, index) => ({ ...node, name: '优选IPv6-' + (index + 1) })),
-    ];
+    return nodes
+        .slice(0, CDN_NODE_LIMIT)
+        .map((node, index) => ({ ...node, name: '优选' + (index + 1) }));
 }
 
 async function fetchDynamicCdnNodes(url, {
@@ -488,6 +480,12 @@ function upstreamProxyNames(lines, start, end) {
     return names;
 }
 
+function hasUpgradePlaceholder(names) {
+    return names.some(name =>
+        /请(?:更新|更换)客户端|客户端(?:版本过低|已不能使用)/.test(name)
+    );
+}
+
 function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     let upstreamLines = [];
     let upstreamNames = [];
@@ -497,6 +495,9 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
         if (start < 0) throw new Error('XFLASH proxies must be a YAML block list');
         const end = nextTopLevelSection(lines, start + 1);
         upstreamNames = upstreamProxyNames(lines, start, end);
+        if (hasUpgradePlaceholder(upstreamNames)) {
+            throw new Error('XFLASH returned client upgrade placeholders');
+        }
         const first = lines.slice(start + 1, end).find(line => /^\s*-\s+/.test(line));
         if (!first) throw new Error('XFLASH has no proxy nodes');
         const indent = first.match(/^\s*/)[0].length;
@@ -575,14 +576,6 @@ function encodeBase64Utf8(value) {
 
 function upstreamHeaders(requestHeaders, format) {
     const clash = format === 'clash';
-    const clientUserAgent = requestHeaders.get('User-Agent')?.trim() || '';
-    const upstreamUserAgent = clash
-        ? /clash|mihomo|stash/i.test(clientUserAgent)
-            ? clientUserAgent
-            : 'clash-verge/v1.7.7 Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-        : /v2ray|shadowrocket|sing-box|hiddify|nekoray|quantumult|surge/i.test(clientUserAgent)
-            ? clientUserAgent
-            : 'v2rayN';
     const result = new Headers({
         Accept: clash
             ? 'text/yaml, text/plain;q=0.9, */*;q=0.8'
@@ -592,7 +585,10 @@ function upstreamHeaders(requestHeaders, format) {
         'Cache-Control': 'no-cache',
         Pragma: 'no-cache',
     });
-    result.set('User-Agent', upstreamUserAgent);
+    result.set(
+        'User-Agent',
+        clash ? EXTERNAL_CLASH_USER_AGENT : EXTERNAL_URI_USER_AGENT
+    );
     return result;
 }
 

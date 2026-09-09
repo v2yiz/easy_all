@@ -18,6 +18,8 @@ const handleRequest = vm.runInNewContext(
             allowedTokenValues: new Set(['test']),
             localNodes: LOCAL_NODES,
             externalSubUrl: 'https://upstream.invalid',
+            vpsSubUrl: '',
+            requireDynamicCdn: false,
         });
     `),
     {

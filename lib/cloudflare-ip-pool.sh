@@ -6,8 +6,7 @@ readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-
 readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-10}"
 readonly CLOUDFLARE_CANDIDATES_PER_CARRIER="${CLOUDFLARE_CANDIDATES_PER_CARRIER_OVERRIDE:-2}"
 readonly CLOUDFLARE_CANDIDATE_LIMIT=6
-readonly CLOUDFLARE_IPV6_CANDIDATE_LIMIT=3
-readonly CLOUDFLARE_CACHE_VERSION=7
+readonly CLOUDFLARE_CACHE_VERSION=8
 readonly CLOUDFLARE_PROBES_PER_CANDIDATE=3
 readonly CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
@@ -47,57 +46,6 @@ cloudflare_ipv4_in_cidr() {
     network_value=$(cloudflare_ipv4_to_uint32 "${network}") || return 1
     mask=$(((0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF))
     (( (ip_value & mask) == (network_value & mask) ))
-}
-
-cloudflare_ipv6_in_cidr() {
-    local ip=$1 cidr=$2
-    validate_ipv6 "${ip}" || return 1
-    python3 - "${ip}" "${cidr}" <<'EOF'
-import ipaddress, sys
-try:
-    address = ipaddress.IPv6Address(sys.argv[1])
-    network = ipaddress.IPv6Network(sys.argv[2], strict=False)
-except ValueError:
-    raise SystemExit(1)
-raise SystemExit(0 if address in network else 1)
-EOF
-}
-
-cloudflare_discover_ipv6_candidate_pool() {
-    local ranges_file=$1 destination=$2 answers_file
-    answers_file=$(make_temp_dir)/cloudflare-domain-aaaa.txt
-    dig +time=3 +tries=2 +short AAAA "${VLESS_CDN_DOMAIN}" @1.1.1.1 2>/dev/null \
-        | awk 'NF' | sort -u >"${answers_file}" || true
-    [[ -s "${answers_file}" ]] || return 1
-    python3 - "${ranges_file}" "${answers_file}" "${destination}" <<'EOF'
-import ipaddress, sys
-
-ranges_path, answers_path, destination = sys.argv[1:]
-networks = []
-with open(ranges_path, "r", encoding="utf-8") as source:
-    for line in source:
-        try:
-            networks.append(ipaddress.IPv6Network(line.strip(), strict=False))
-        except ValueError:
-            pass
-
-matches = []
-with open(answers_path, "r", encoding="utf-8") as source:
-    for line in source:
-        try:
-            address = ipaddress.IPv6Address(line.strip())
-        except ValueError:
-            continue
-        for network in networks:
-            if address in network:
-                matches.append((str(address), str(network)))
-                break
-
-with open(destination, "w", encoding="utf-8") as output:
-    for address, network in sorted(set(matches)):
-        output.write(f"{address}\t{network}\n")
-EOF
-    [[ -s "${destination}" ]]
 }
 
 cloudflare_generate_candidate_pool() {
@@ -171,7 +119,7 @@ EOF
 
 cloudflare_globalping_measurement_request() {
     local ip=$1 base_id=${2:-}
-    validate_public_ipv4 "${ip}" || validate_ipv6 "${ip}" || return 1
+    validate_public_ipv4 "${ip}" || return 1
     if [[ -n "${base_id}" ]]; then
         jq -cn --arg target "${ip}" \
             --arg base "${base_id}" \
@@ -252,8 +200,7 @@ cloudflare_collect_globalping_measurements() {
         result=$(cloudflare_wait_globalping_measurement "${measurement_id}") \
             || continue
         jq -c --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
-            --arg family "$([[ "${ip}" == *:* ]] && printf ipv6 || printf ipv4)" \
-            '{ip:$ip,source_cidr:$source_cidr,address_family:$family,measurement:.}' \
+            '{ip:$ip,source_cidr:$source_cidr,address_family:"ipv4",measurement:.}' \
             <<<"${result}" >>"${destination}"
         completed=$((completed + 1))
     done <"${jobs_file}"
@@ -272,10 +219,7 @@ cloudflare_acceptable_loss_observations() {
       | select((.probe.tags // []) | index("eyeball-network"))
       | select(.probe.asn == 4134 or .probe.asn == 4837 or .probe.asn == 9808)
       | select(.result.status == "finished")
-      | select(
-          .result.resolvedAddress == $entry.ip
-          or ($entry.address_family == "ipv6" and (.result.resolvedAddress | contains(":")))
-        )
+      | select(.result.resolvedAddress == $entry.ip)
       | (($packets * 9 + 9) / 10 | floor) as $required_received
       | select(
           ((.result.stats.loss // 100) <= 10)
@@ -384,30 +328,9 @@ print(json.dumps(results[:limit]))
 EOF
 }
 
-cloudflare_select_ipv6_candidates() {
-    local observations_file=$1 limit=${2:-${CLOUDFLARE_IPV6_CANDIDATE_LIMIT}}
-    jq -sc --argjson limit "${limit}" '
-      group_by(.ip)
-      | map({
-          ip: .[0].ip,
-          source_cidr: .[0].source_cidr,
-          address_family: "ipv6",
-          carrier: "ipv6",
-          carrier_asn: 0,
-          avg_rtt_ms: (map(.avg_rtt_ms) | add / length),
-          probe_count: length,
-          tls_verified: true
-        })
-      | sort_by([-.probe_count, .avg_rtt_ms, .ip])
-      | .[0:$limit]
-      | to_entries
-      | map(.value + {label: ("IPv6-" + ((.key + 1) | tostring))})
-    ' "${observations_file}"
-}
-
 cloudflare_globalping_tls_measurement_request() {
     local ip=$1 asn=$2 domain=$3
-    validate_public_ipv4 "${ip}" || validate_ipv6 "${ip}" || return 1
+    validate_public_ipv4 "${ip}" || return 1
     jq -cn --arg target "${ip}" \
         --argjson asn "${asn}" \
         --arg host "${domain}" '{
@@ -455,9 +378,8 @@ cloudflare_collect_globalping_tls_measurements() {
         result=$(cloudflare_wait_globalping_measurement "${measurement_id}") \
             || continue
         jq -c --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
-            --arg family "$([[ "${ip}" == *:* ]] && printf ipv6 || printf ipv4)" \
             --argjson asn "${asn}" --argjson rtt "${rtt}" \
-            '{ip:$ip,source_cidr:$source_cidr,address_family:$family,carrier_asn:$asn,avg_rtt_ms:$rtt,measurement:.}' \
+            '{ip:$ip,source_cidr:$source_cidr,address_family:"ipv4",carrier_asn:$asn,avg_rtt_ms:$rtt,measurement:.}' \
             <<<"${result}" >>"${destination}"
         completed=$((completed + 1))
     done <"${jobs_file}"
@@ -477,7 +399,7 @@ cloudflare_parse_tls_observations() {
         | {
             ip: .ip,
             source_cidr: .source_cidr,
-            address_family: (.address_family // (if (.ip | contains(":")) then "ipv6" else "ipv4" end)),
+            address_family: "ipv4",
             carrier_asn: .carrier_asn,
             avg_rtt_ms: .avg_rtt_ms,
             tls_verified: true
@@ -555,11 +477,8 @@ cloudflare_limit_pool_to_globalping_budget() {
     }
 
     local stage2_reserve=15
-    [[ "${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}" != "dual" ]] \
-        || stage2_reserve=24
     if (( remaining <= 25 )); then
-        [[ "${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}" == "dual" ]] \
-            || stage2_reserve=6
+        stage2_reserve=6
     fi
     if (( remaining <= stage2_reserve )); then
         warn "Globalping 本小时剩余额度不足（剩余 ${remaining}，需预留 Stage 2 深度验证额度 ${stage2_reserve}）"
@@ -621,11 +540,8 @@ cloudflare_build_official_pool_cache() {
     local destination=$1 ranges_file raw_pool_file pool_file budgeted_pool_file
     local measurements_file observations_file tcp_top_candidates_tsv
     local tls_measurements_file tls_observations_file preliminary_file
-    local ipv6_ranges_file ipv6_pool_file ipv6_measurements_file ipv6_observations_file
-    local ipv6_top_candidates_tsv ipv6_tls_measurements_file ipv6_tls_observations_file
-    local ipv6_preliminary_file combined_candidates_file
     local history_candidates_tsv hist_count new_sample_limit
-    local count ipv6_count=0 measured_at measured_at_epoch pool_size prevalidated_pool_size
+    local count measured_at measured_at_epoch pool_size prevalidated_pool_size
     local measurement_count
     ranges_file=$(make_temp_dir)/cloudflare-official-ipv4.txt
     history_candidates_tsv=$(make_temp_dir)/cloudflare-history-candidates.tsv
@@ -638,16 +554,6 @@ cloudflare_build_official_pool_cache() {
     tls_measurements_file=$(make_temp_dir)/cloudflare-tls-measurements.ndjson
     tls_observations_file=$(make_temp_dir)/cloudflare-tls-observations.ndjson
     preliminary_file=$(make_temp_dir)/cloudflare-preliminary.json
-    ipv6_ranges_file=$(make_temp_dir)/cloudflare-official-ipv6.txt
-    ipv6_pool_file=$(make_temp_dir)/cloudflare-ipv6-candidates.tsv
-    ipv6_measurements_file=$(make_temp_dir)/cloudflare-ipv6-measurements.ndjson
-    ipv6_observations_file=$(make_temp_dir)/cloudflare-ipv6-observations.ndjson
-    ipv6_top_candidates_tsv=$(make_temp_dir)/cloudflare-ipv6-top.tsv
-    ipv6_tls_measurements_file=$(make_temp_dir)/cloudflare-ipv6-tls-measurements.ndjson
-    ipv6_tls_observations_file=$(make_temp_dir)/cloudflare-ipv6-tls-observations.ndjson
-    ipv6_preliminary_file=$(make_temp_dir)/cloudflare-ipv6-preliminary.json
-    combined_candidates_file=$(make_temp_dir)/cloudflare-combined-candidates.json
-    printf '[]\n' >"${ipv6_preliminary_file}"
 
     : >"${history_candidates_tsv}"
     if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
@@ -732,42 +638,6 @@ cloudflare_build_official_pool_cache() {
         return 1
     fi
 
-    if [[ "${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}" == "dual" ]]; then
-        cloudflare_fetch_client_ipv6_ranges >"${ipv6_ranges_file}" \
-            || { warn "无法获取 Cloudflare 官方 IPv6 CIDR"; return 1; }
-        cloudflare_discover_ipv6_candidate_pool "${ipv6_ranges_file}" "${ipv6_pool_file}" \
-            || { warn "节点域名未通过 1.1.1.1 返回 Cloudflare IPv6 入口"; return 1; }
-        info "正在对 $(wc -l <"${ipv6_pool_file}" | tr -d ' ') 个域名 AAAA 入口执行三网 IPv6 探针验证"
-        cloudflare_collect_globalping_measurements \
-            "${ipv6_pool_file}" "${ipv6_measurements_file}" || return 1
-        cloudflare_acceptable_loss_observations \
-            "${ipv6_measurements_file}" >"${ipv6_observations_file}"
-        [[ -s "${ipv6_observations_file}" ]] \
-            || { warn "Cloudflare IPv6 入口没有三网可用观测"; return 1; }
-        jq -s -r '
-            group_by(.carrier_asn)
-            | map(sort_by([.loss, .avg_rtt_ms]) | .[0:5])
-            | add
-            | .[]?
-            | [.ip, .source_cidr, .carrier_asn, .avg_rtt_ms]
-            | @tsv
-        ' "${ipv6_observations_file}" >"${ipv6_top_candidates_tsv}"
-        cloudflare_collect_globalping_tls_measurements \
-            "${ipv6_top_candidates_tsv}" "${VLESS_CDN_DOMAIN}" \
-            "${ipv6_tls_measurements_file}" || true
-        cloudflare_parse_tls_observations \
-            "${ipv6_tls_measurements_file}" >"${ipv6_tls_observations_file}" || true
-        cloudflare_select_ipv6_candidates "${ipv6_tls_observations_file}" \
-            "${CLOUDFLARE_IPV6_CANDIDATE_LIMIT}" >"${ipv6_preliminary_file}"
-        ipv6_count=$(jq 'length' "${ipv6_preliminary_file}")
-        ((ipv6_count > 0)) \
-            || { warn "Cloudflare IPv6 入口没有通过 TLS/HTTP 验证的候选"; return 1; }
-    fi
-
-    jq -n --argjson ipv4 "$(<"${preliminary_file}")" \
-        --argjson ipv6 "$(<"${ipv6_preliminary_file}")" \
-        '$ipv4 + $ipv6' >"${combined_candidates_file}"
-
     measured_at_epoch=${GLOBALPING_NOW_EPOCH:-$(date +%s)}
     measured_at=$(date -u -r "${measured_at_epoch}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
         || date -u -d "@${measured_at_epoch}" '+%Y-%m-%dT%H:%M:%SZ')
@@ -779,14 +649,11 @@ cloudflare_build_official_pool_cache() {
         --argjson pool_sample_size "${pool_size}" \
         --argjson prevalidated_pool_size "${prevalidated_pool_size}" \
         --argjson measurement_count "${measurement_count}" \
-        --arg client_ip_family "${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}" \
-        --argjson ipv6_candidate_count "${ipv6_count}" \
-        --argjson candidates "$(<"${combined_candidates_file}")" '{
+        --argjson candidates "$(<"${preliminary_file}")" '{
           version:$version,
           provider:"cloudflare",
           domain:$domain,
-          client_ip_family:$client_ip_family,
-          candidate_source:"cloudflare-official-ipv4-and-domain-ipv6",
+          candidate_source:"cloudflare-official-ipv4",
           measured_at:$measured_at,
           measured_at_epoch:$measured_at_epoch,
           probe_country:"CN",
@@ -798,31 +665,26 @@ cloudflare_build_official_pool_cache() {
           pool_sample_size:$pool_sample_size,
           prevalidated_pool_size:$prevalidated_pool_size,
           measurement_count:$measurement_count,
-          ipv6_candidate_count:$ipv6_candidate_count,
           carriers:{
-            telecom:([$candidates[] | select(.address_family=="ipv4" and .carrier=="telecom")]),
-            unicom:([$candidates[] | select(.address_family=="ipv4" and .carrier=="unicom")]),
-            mobile:([$candidates[] | select(.address_family=="ipv4" and .carrier=="mobile")])
+            telecom:([$candidates[] | select(.carrier=="telecom")]),
+            unicom:([$candidates[] | select(.carrier=="unicom")]),
+            mobile:([$candidates[] | select(.carrier=="mobile")])
           },
           candidates:$candidates
         }' >"${destination}"
 }
 
 cloudflare_globalping_cache_compatible() {
-    local ip source_cidr family
+    local ip source_cidr
     [[ -s "${GLOBALPING_CACHE_FILE}" ]] || return 1
-    local client_ip_family=${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}
     jq -e --arg domain "${VLESS_CDN_DOMAIN}" \
         --argjson version "${CLOUDFLARE_CACHE_VERSION}" \
-        --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" \
-        --argjson ipv6_limit "${CLOUDFLARE_IPV6_CANDIDATE_LIMIT}" \
-        --arg family "${client_ip_family}" '
+        --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" '
           .version == $version
           and .provider == "cloudflare"
           and .domain == $domain
           and .packets == $packets
-          and .client_ip_family == $family
-          and .candidate_source == "cloudflare-official-ipv4-and-domain-ipv6"
+          and .candidate_source == "cloudflare-official-ipv4"
           and (.measured_at_epoch | type) == "number"
           and (.candidates | type) == "array"
           and ([.candidates[].ip] | unique | length) == (.candidates | length)
@@ -830,32 +692,16 @@ cloudflare_globalping_cache_compatible() {
           and ([.candidates[] | select(.address_family == "ipv4" and .carrier == "telecom" and .carrier_asn == 4134)] | length) == 2
           and ([.candidates[] | select(.address_family == "ipv4" and .carrier == "unicom" and .carrier_asn == 4837)] | length) == 2
           and ([.candidates[] | select(.address_family == "ipv4" and .carrier == "mobile" and .carrier_asn == 9808)] | length) == 2
-          and (if $family == "dual" then
-              ([.candidates[] | select(.address_family == "ipv6")] | length) >= 1
-              and ([.candidates[] | select(.address_family == "ipv6")] | length) <= $ipv6_limit
-            else
-              ([.candidates[] | select(.address_family == "ipv6")] | length) == 0
-            end)
           and all(.candidates[];
             (.ip | type) == "string"
-            and (.address_family == "ipv4" or .address_family == "ipv6")
+            and .address_family == "ipv4"
           )
         ' "${GLOBALPING_CACHE_FILE}" >/dev/null || return 1
-    while IFS=$'\t' read -r ip source_cidr family; do
-        case "${family}" in
-        ipv4)
-            validate_public_ipv4 "${ip}" || return 1
-            [[ -z "${source_cidr}" ]] \
-                || cloudflare_ipv4_in_cidr "${ip}" "${source_cidr}" || return 1
-            ;;
-        ipv6)
-            validate_ipv6 "${ip}" || return 1
-            [[ -n "${source_cidr}" ]] \
-                && cloudflare_ipv6_in_cidr "${ip}" "${source_cidr}" || return 1
-            ;;
-        *) return 1 ;;
-        esac
-    done < <(jq -r '.candidates[] | [.ip, (.source_cidr // ""), .address_family] | @tsv' \
+    while IFS=$'\t' read -r ip source_cidr; do
+        validate_public_ipv4 "${ip}" || return 1
+        [[ -z "${source_cidr}" ]] \
+            || cloudflare_ipv4_in_cidr "${ip}" "${source_cidr}" || return 1
+    done < <(jq -r '.candidates[] | [.ip, (.source_cidr // "")] | @tsv' \
         "${GLOBALPING_CACHE_FILE}")
 }
 
@@ -875,9 +721,8 @@ refresh_globalping_cache() {
     cleanup_files+=("${temp}")
     cloudflare_build_official_pool_cache "${temp}" || return 1
     install -o root -g root -m 0600 "${temp}" "${GLOBALPING_CACHE_FILE}"
-    success "Cloudflare 入口池已更新：$(jq '[.candidates[] | select(.address_family=="ipv4")] | length' \
-        "${GLOBALPING_CACHE_FILE}") 个 IPv4，$(jq '[.candidates[] | select(.address_family=="ipv6")] | length' \
-        "${GLOBALPING_CACHE_FILE}") 个 IPv6"
+    success "Cloudflare IPv4 入口池已更新：$(jq '.candidates | length' \
+        "${GLOBALPING_CACHE_FILE}") 个节点"
 }
 
 cloudflare_client_candidates() {

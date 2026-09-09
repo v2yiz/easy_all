@@ -5,7 +5,7 @@
 # This Profile provides pure VLESS XHTTP stream-up over Cloudflare CDN,
 # fully adapted to Cloudflare HTTP/2 and gRPC edge streaming with
 # randomized keep-alive server timeout and packet padding.
-# Always outputs 6 curated IPv4 nodes and can append up to 3 verified IPv6 entries.
+# Always outputs 6 curated IPv4 nodes.
 
 set -Eeuo pipefail
 umask 077
@@ -317,7 +317,7 @@ cloudflare_build_manual_worker_recovery() {
           vpsSubUrl:$source_url,
           vpsCdnUseRequestToken:true,
           delegateTokenValidation:false,
-          requireDynamicCdn:false,
+          requireDynamicCdn:true,
           sourceSecret:$source_secret,
           fallbackCdnNodes:$aggregation.fallbackCdnNodes,
           subscriptionDownloadName:$download_name
@@ -549,20 +549,6 @@ cloudflare_fetch_origin_ipv4_ranges() {
         | select(type == "array" and length > 0)
         | unique[]
         | select(test("^([0-9]{1,3}\\.){3}[0-9]{1,3}/([89]|[12][0-9]|3[0-2])$"))
-    ' <<<"${response}" | sort -u
-}
-
-cloudflare_fetch_client_ipv6_ranges() {
-    local response
-    response=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
-        "${CLOUDFLARE_API_BASE}/ips") \
-        || return 1
-    jq -er '
-        select(.success == true)
-        | .result.ipv6_cidrs
-        | select(type == "array" and length > 0)
-        | unique[]
-        | select(contains(":"))
     ' <<<"${response}" | sort -u
 }
 
@@ -930,10 +916,6 @@ cloudflare_cleanup_previous_subscription_host() {
 
 cloudflare_configure_cdn() {
     cloudflare_configure_rules
-    if [[ "${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}" == "dual" ]]; then
-        cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/ipv6" \
-            "$(jq -cn '{value:"on"}')" >/dev/null
-    fi
     cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/origin_max_http_version" \
         "$(jq -cn '{value:"2"}')" >/dev/null
     warn "Cloudflare gRPC 只能在控制台 Network → gRPC 中手动开启，Zone Settings API 不支持该开关"
@@ -1190,34 +1172,6 @@ xhttp_client_path() {
     printf '%s/' "${XHTTP_PATH%/}"
 }
 
-validate_cloudflare_client_ip_family() {
-    [[ "$1" == "ipv4" || "$1" == "dual" ]]
-}
-
-normalize_cloudflare_client_ip_family() {
-    CLOUDFLARE_CLIENT_IP_FAMILY=${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}
-    validate_cloudflare_client_ip_family "${CLOUDFLARE_CLIENT_IP_FAMILY}" \
-        || die "CLOUDFLARE_CLIENT_IP_FAMILY 必须是 ipv4 或 dual"
-}
-
-choose_cloudflare_client_ip_family() {
-    local choice default_choice=1
-    CLOUDFLARE_CLIENT_IP_FAMILY=${CLOUDFLARE_CLIENT_IP_FAMILY:-ipv4}
-    [[ "${CLOUDFLARE_CLIENT_IP_FAMILY}" != "dual" ]] || default_choice=2
-    if [[ -t 0 ]]; then
-        printf '请选择 Cloudflare 客户端入口 IP 族：\n' >&2
-        printf '  1. ipv4（默认；保留 6 个三网精选 IPv4）\n' >&2
-        printf '  2. dual（额外加入最多 3 个已验证 IPv6，IPv4 节点保持不变）\n' >&2
-        read_bilingual "请选择 [${default_choice}]（直接回车使用默认值）:" choice
-        case "${choice:-${default_choice}}" in
-        1) CLOUDFLARE_CLIENT_IP_FAMILY="ipv4" ;;
-        2) CLOUDFLARE_CLIENT_IP_FAMILY="dual" ;;
-        *) die "Cloudflare 客户端入口 IP 族选项无效：${choice}" ;;
-        esac
-    fi
-    normalize_cloudflare_client_ip_family
-}
-
 collect_cloudflare_worker_inputs() {
     local domain default_domain
     default_domain="sub.${VLESS_CDN_DOMAIN#*.}"
@@ -1252,7 +1206,6 @@ collect_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
 
-    choose_cloudflare_client_ip_family
     choose_google_egress_mode
 
     info "Cloudflare 数据面采用单域名架构；部署订阅时另用独立域名绑定 Worker。"
@@ -1262,7 +1215,7 @@ collect_install_inputs() {
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
 
-    info "Cloudflare 模式从官方 IPv4 CIDR 轮换抽样；dual 模式还验证域名 AAAA，并使用三网 Globalping eyeball 探针预筛。"
+    info "Cloudflare 模式从官方 IPv4 CIDR 轮换抽样，并使用三网 Globalping eyeball 探针预筛。"
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
 
@@ -1298,7 +1251,7 @@ load_state() {
     local detected_public_ipv6=${VPS_PUBLIC_IPV6:-}
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
-        CLOUDFLARE_CLIENT_IP_FAMILY GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
+        GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
         XHTTP_NODE_NAME VLESS_UUID
@@ -1326,8 +1279,6 @@ load_state() {
         || die "状态不是 Cloudflare XHTTP Stream-up"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
         || die "不支持的 Cloudflare 状态版本：${STATE_VERSION:-缺失}；请重新安装"
-    validate_cloudflare_client_ip_family "${CLOUDFLARE_CLIENT_IP_FAMILY:-}" \
-        || die "状态缺少有效的 Cloudflare 客户端入口 IP 族；请重新安装"
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Cloudflare 状态缺少有效域名或 UUID"
     XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
@@ -1392,8 +1343,6 @@ load_state() {
 save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
-    validate_cloudflare_client_ip_family "${CLOUDFLARE_CLIENT_IP_FAMILY:-}" \
-        || die "无法保存无效的 Cloudflare 客户端入口 IP 族"
     validate_google_egress_policy_state \
         || die "无法保存无效的 Google 出站策略"
     if subscription_enabled; then
@@ -1413,7 +1362,7 @@ save_state() {
     cleanup_files+=("${t}")
     {
         for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
-            CLOUDFLARE_CLIENT_IP_FAMILY GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
+            GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
             CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID \
             WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
@@ -1602,10 +1551,9 @@ cloudflare_configure_rules() {
 }
 
 build_vless_xhttp_link() {
-    local server=$1 node_name=$2 family=${3:-ipv4}
-    local client_path extra authority=${server}
+    local server=$1 node_name=$2
+    local client_path extra
     client_path=$(xhttp_client_path)
-    [[ "${family}" != "ipv6" ]] || authority="[${server}]"
     extra=$(jq -cn '{
         uplinkHTTPMethod: "POST",
         noGRPCHeader: false,
@@ -1618,79 +1566,64 @@ build_vless_xhttp_link() {
         }
     }')
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=xhttp&sni=%s&fp=chrome&alpn=h2&host=%s&path=%s&mode=stream-up&extra=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${authority}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
+        "${VLESS_UUID}" "${server}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" \
         "$(uri_encode "${client_path}")" \
         "$(uri_encode "${extra}")" "$(uri_encode "${node_name}")"
 }
 
 build_mihomo_xhttp_node() {
-    local server=$1 node_name=$2 family=${3:-ipv4}
+    local server=$1 node_name=$2
     local client_path
     client_path=$(xhttp_client_path)
     jq -nr --arg name "${node_name}" --arg server "${server}" \
         --arg host "${VLESS_CDN_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg path "${client_path}" --arg family "${family}" '
+        --arg path "${client_path}" '
         "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: xhttp\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n    client-fingerprint: chrome\n" +
-        "    packet-encoding: xudp\n    ip-version: \($family)\n    alpn:\n      - h2\n" +
+        "    packet-encoding: xudp\n    ip-version: ipv4\n    alpn:\n      - h2\n" +
         "    xhttp-opts:\n      host: \($host|@json)\n      path: \($path|@json)\n      mode: stream-up\n" +
         "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n        max-connections: 4\n" +
         "        c-max-reuse-times: 0\n        h-max-request-times: 300-600\n        h-max-reusable-secs: 900-1800\n        h-keep-alive-period: 0\n"'
 }
 
-# IPv4 remains the required six-node baseline. Dual mode appends independently
-# verified IPv6 addresses returned by the proxied hostname.
 cloudflare_xhttp_streamup_client_candidates() {
     if cdn_optimization_enabled && cloudflare_globalping_cache_compatible; then
         jq -r '
-          (.candidates | map(select(.address_family == "ipv4")) | to_entries[]
-            | [.value.ip, ((.key + 1)|tostring), (.value.carrier // "anycast"), "ipv4"] | @tsv),
-          (.candidates | map(select(.address_family == "ipv6")) | to_entries[]
-            | [.value.ip, ("IPv6-" + ((.key + 1)|tostring)), "ipv6", "ipv6"] | @tsv)
+          .candidates | to_entries[]
+          | [.value.ip, ((.key + 1)|tostring), (.value.carrier // "anycast")] | @tsv
         ' "${GLOBALPING_CACHE_FILE}"
     fi
 }
 
 cloudflare_validate_client_candidate_counts() {
-    local candidates=$1 ipv4_count=0 ipv6_count=0 ip label carrier family
-    while IFS=$'\t' read -r ip label carrier family; do
+    local candidates=$1 count=0 ip label carrier
+    while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        if [[ "${family}" == "ipv6" ]]; then
-            ipv6_count=$((ipv6_count + 1))
-        else
-            ipv4_count=$((ipv4_count + 1))
-        fi
+        count=$((count + 1))
     done <<<"${candidates}"
-    ((ipv4_count == CLOUDFLARE_CANDIDATE_LIMIT)) \
+    ((count == CLOUDFLARE_CANDIDATE_LIMIT)) \
         || die "Cloudflare 没有完整的 6 个已验证 IPv4 入口；请先执行 easy_all refresh-cdn-ips"
-    if [[ "${CLOUDFLARE_CLIENT_IP_FAMILY}" == "dual" ]]; then
-        ((ipv6_count > 0)) \
-            || die "Cloudflare dual 模式没有已验证 IPv6 入口；请先执行 easy_all refresh-cdn-ips"
-    else
-        ((ipv6_count == 0)) \
-            || die "Cloudflare IPv4 模式缓存意外包含 IPv6 入口；请刷新缓存"
-    fi
 }
 
 build_node_links() {
-    local ip label carrier family candidates
+    local ip label carrier candidates
     candidates=$(cloudflare_xhttp_streamup_client_candidates)
     cloudflare_validate_client_candidate_counts "${candidates}"
-    while IFS=$'\t' read -r ip label carrier family; do
+    while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_vless_xhttp_link "${ip}" "优选${label}" "${family}"
+        build_vless_xhttp_link "${ip}" "优选${label}"
         printf '\n'
     done <<<"${candidates}"
 }
 
 build_mihomo_nodes() {
-    local ip label carrier family candidates
+    local ip label carrier candidates
     candidates=$(cloudflare_xhttp_streamup_client_candidates)
     cloudflare_validate_client_candidate_counts "${candidates}"
-    while IFS=$'\t' read -r ip label carrier family; do
+    while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_mihomo_xhttp_node "${ip}" "优选${label}" "${family}"
+        build_mihomo_xhttp_node "${ip}" "优选${label}"
     done <<<"${candidates}"
 }
 
@@ -1700,10 +1633,10 @@ build_mihomo_proxy_names() {
 
 build_mihomo_proxy_groups() {
     local -a all_nodes=()
-    local ip label carrier family candidates
+    local ip label carrier candidates
     candidates=$(cloudflare_xhttp_streamup_client_candidates)
     cloudflare_validate_client_candidate_counts "${candidates}"
-    while IFS=$'\t' read -r ip label carrier family; do
+    while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
         all_nodes+=("优选${label}")
     done <<<"${candidates}"
@@ -1726,7 +1659,7 @@ EOF
 
 show_node() {
     collect_installed_state
-    printf '\n协议: VLESS XHTTP stream-up over Cloudflare CDN（6 个 IPv4 + 最多 3 个已验证 IPv6）\n节点链接:\n%s\n\n' "$(build_node_links)"
+    printf '\n协议: VLESS XHTTP stream-up over Cloudflare CDN（6 个 IPv4）\n节点链接:\n%s\n\n' "$(build_node_links)"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_nodes
 }
@@ -1734,9 +1667,9 @@ show_node() {
 show_status() {
     require_root
     collect_installed_state
-    printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（数据面单域名）\nOrigin CA: %s（到期 %s）\n客户端入口 IP 族: %s\nGoogle 出站: %s\n候选来源: Cloudflare 官方 IPv4 CIDR / 域名 AAAA / 三网 Globalping eyeball 探针\n域名兜底: disabled\n' \
+    printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（数据面单域名）\nOrigin CA: %s（到期 %s）\n客户端入口 IP 族: IPv4\nGoogle 出站: %s\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}" \
-        "${CLOUDFLARE_CLIENT_IP_FAMILY}" "$(google_egress_status)"
+        "$(google_egress_status)"
     if subscription_enabled; then
         printf '公开订阅: Cloudflare Worker %s（%s）\n' \
             "${CLOUDFLARE_WORKER_NAME}" "${SUBSCRIPTION_DOMAIN}"
@@ -1964,18 +1897,16 @@ apply_cloud_resources() {
 
 update_subscription() {
     local previous_subscription_host="" previous_worker_domain_id=""
-    local previous_client_ip_family previous_subscription_enabled=0
+    local previous_subscription_enabled=0
     require_root
     begin_quota_maintenance
     collect_installed_state
-    previous_client_ip_family=${CLOUDFLARE_CLIENT_IP_FAMILY}
     if subscription_enabled; then
         previous_subscription_enabled=1
         previous_subscription_host=$(active_subscription_link_domain)
         previous_worker_domain_id=${CLOUDFLARE_WORKER_DOMAIN_ID}
     fi
     snapshot_subscription_update
-    choose_cloudflare_client_ip_family
     choose_google_egress_mode
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
@@ -1998,13 +1929,12 @@ update_subscription() {
     cloudflare_prepare_origin
     cloudflare_issue_origin_certificate 0
     cloudflare_configure_cdn
-    if [[ "${CLOUDFLARE_CLIENT_IP_FAMILY}" != "${previous_client_ip_family}" ]] \
-        || ! globalping_cache_valid; then
+    if ! globalping_cache_valid; then
         collect_globalping_token
         validate_globalping_access || die "Globalping Token 验证失败"
         persist_globalping_token
         refresh_globalping_cache \
-            || die "Cloudflare 客户端入口 IP 族更新失败，已保留旧缓存"
+            || die "Cloudflare IPv4 入口池更新失败，已保留旧缓存"
     fi
     finish_xhttp_apply 1 0 1
     if subscription_enabled; then

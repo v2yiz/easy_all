@@ -29,14 +29,6 @@ try {
     await buildWorker({ configPath, outputPath, now: now + 120_000 });
     source = await readFile(outputPath, 'utf8');
     assert.ok(source.includes('"ipVersion":"dual"'), 'Reality nodes accept explicit dual-stack');
-    config.fallbackCdnNodes[0].server = '2606:4700::6810:100';
-    config.fallbackCdnNodes[0].ipVersion = 'ipv6';
-    await writeFile(configPath, JSON.stringify(config));
-    await buildWorker({ configPath, outputPath, now: now + 180_000 });
-    source = await readFile(outputPath, 'utf8');
-    assert.ok(source.includes('\"ipVersion\":\"ipv6\"'), 'fallback CDN nodes accept explicit IPv6');
-    delete config.fallbackCdnNodes[0].server;
-    delete config.fallbackCdnNodes[0].ipVersion;
     await writeFile(configPath, JSON.stringify(config));
     await buildWorker({ configPath, outputPath, now: now + 240_000 });
     source = await readFile(outputPath, 'utf8');
@@ -45,7 +37,7 @@ try {
     assert.equal(await readFile(outputPath, 'utf8'), source, 'failed build preserves artifact');
     const context = vm.createContext({ URL, URLSearchParams, Headers, Response, AbortController, TextEncoder, TextDecoder, atob, btoa, setTimeout, clearTimeout, fetch: async () => { throw Error('offline'); }, console: { error() {}, warn() {} } });
     const api = vm.runInContext(source.replace(/export default \{[\s\S]*$/, '({createWorkerHandler, resolveNodePorts, buildClashConfig, fetchXflashSubscription, PRIVATE_CONFIG, LOCAL_NODES});'), context);
-    const make = fetchImpl => api.createWorkerHandler({ allowedTokenValues: new Set(['offline-test-token']), localNodes: api.LOCAL_NODES, externalSubUrl: config.externalSubUrl, vpsSubUrl: config.vpsSubUrl, now: () => Date.UTC(2026, 0, 1), fetchImpl });
+    const make = fetchImpl => api.createWorkerHandler({ allowedTokenValues: new Set(['offline-test-token']), localNodes: api.LOCAL_NODES, externalSubUrl: config.externalSubUrl, vpsSubUrl: config.vpsSubUrl, requireDynamicCdn: false, now: () => Date.UTC(2026, 0, 1), fetchImpl });
     const request = (suffix = '', token = 'offline-test-token', method = 'GET') => new Request(`https://worker.invalid/subscribe?token=${token}&flag=clash${suffix}`, {method});
     const genericRequest = new Request('https://worker.invalid/subscribe?token=offline-test-token&flag=base64');
     let calls = 0;
@@ -55,7 +47,7 @@ try {
     assert.equal((await offline(request('', 'offline-test-token', 'POST'))).status, 405);
     assert.equal(calls, 0, 'reject before upstream access');
     const fallback = await offline(request());
-    assert.equal(fallback.headers.get('X-Easy-All-Version'), '2026-09-07-v3');
+    assert.equal(fallback.headers.get('X-Easy-All-Version'), '2026-09-07-v2');
     assert.equal(fallback.headers.get('X-Easy-All-Warning'), 'xflash-unavailable-local-only');
     const fallbackBody = await fallback.text();
     assert.ok(fallbackBody.includes('ip-version: dual'));
@@ -96,31 +88,28 @@ try {
         assert.equal(result.nodes.length, 6, 'limit applies to supported nodes');
         assert.equal(result.nodes[0].name, '优选1');
     }
-    const cf6 = `vless://${config.nodes[0].uuid}@[2606:4700::6810:101]:443?security=tls&type=xhttp&host=cdn.example.com&path=%2Fxhttp%2F&mode=stream-up&extra=${cfExtra}#CF6`;
-    const dualResult = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
-        fetchImpl: async () => new Response(btoa([
-            ...Array(7).fill(cf),
-            cf6,
-            cf6.replace('6810:101', '6810:102'),
-            cf6.replace('6810:101', '6810:103'),
-            cf6.replace('6810:101', '6810:104'),
-        ].join('\n'))),
-    });
-    assert.equal(dualResult.nodes.length, 9, 'dynamic CDN keeps 6 IPv4 and up to 3 IPv6 nodes');
-    assert.equal(dualResult.nodes[6].name, '优选IPv6-1');
-    assert.equal(dualResult.nodes[8].name, '优选IPv6-3');
-    assert.equal(dualResult.nodes[8].server, '2606:4700::6810:103');
-    assert.ok(!dualResult.nodes.some(node => node.server === '2606:4700::6810:104'));
-    assert.equal(dualResult.nodes[6].server, '2606:4700::6810:101');
-    assert.equal(dualResult.nodes[6].ipVersion, 'ipv6');
-    const forwardedUA = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
+    const fixedSourceUA = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
         userAgent: 'client-subscription/1.0',
-        fetchImpl: async (url, options) => {
-            assert.equal(options.headers.get('User-Agent'), 'client-subscription/1.0');
+        fetchImpl: async (_url, options) => {
+            assert.equal(options.headers.get('User-Agent'), 'v2rayN');
             return new Response(btoa(cf));
         },
     });
-    assert.equal(forwardedUA.nodes.length, 1, 'client UA is forwarded without changing parsing');
+    assert.equal(fixedSourceUA.nodes.length, 1, 'private URI source uses a stable supported UA');
+    const strictByDefault = api.createWorkerHandler({
+        allowedTokenValues: new Set(['offline-test-token']),
+        localNodes: api.LOCAL_NODES,
+        externalSubUrl: '',
+        vpsSubUrl: 'https://node.example.com/subscribe',
+        fetchImpl: async () => { throw new Error('source offline'); },
+    });
+    assert.equal(
+        (await strictByDefault(new Request(
+            'https://sub.example.com/subscribe?token=offline-test-token'
+        ))).status,
+        502,
+        'a configured VPS source is required unless fallback is explicitly enabled',
+    );
     let privateSourceRequest;
     const privateSourceHandler = api.createWorkerHandler({
         allowedTokenValues: new Set(),
@@ -198,6 +187,18 @@ try {
         },
     );
     assert.equal(upstreamUA, 'v2rayN', 'unknown URI clients use a supported XFLASH UA');
+    await api.fetchXflashSubscription(
+        { headers: new Headers({ 'User-Agent': 'clash-verge/v1.7.7' }) },
+        config.externalSubUrl,
+        {
+            format: 'clash',
+            fetchImpl: async (_url, options) => {
+                upstreamUA = options.headers.get('User-Agent');
+                return new Response(upstream);
+            },
+        },
+    );
+    assert.equal(upstreamUA, 'Mihomo', 'Clash aggregation does not forward stale client versions');
     for (const [status, headers, warning] of [
         [403, {}, 'HTTP 403'],
         [200, {'cf-mitigated': 'challenge'}, 'Cloudflare challenge'],
@@ -254,21 +255,15 @@ try {
     assert.deepEqual(JSON.parse(sixBody.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), sixCf.slice(0, 6).map(n => n.name));
     assert.ok(!liveBody.includes('malicious.invalid'));
     assert.ok(liveBody.includes('ip-version: ipv4'));
-    const dualPorts = api.resolveNodePorts([...api.LOCAL_NODES, ...dualResult.nodes], {now: () => Date.UTC(2026, 0, 1)});
-    const dualBody = api.buildClashConfig([...api.LOCAL_NODES, ...dualResult.nodes], dualPorts, upstream, dualResult.nodes);
-    assert.ok(dualBody.includes('server: \"2606:4700::6810:101\"'));
-    assert.ok(dualBody.includes('ip-version: ipv6'));
-    assert.deepEqual(
-        JSON.parse(dualBody.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]),
-        [...Array(6)].map((_, index) => `优选${index + 1}`).concat(
-            ['优选IPv6-1', '优选IPv6-2', '优选IPv6-3']
-        )
-    );
-    const genericDual = atob(await (await make(async url => new Response(
-        new URL(url).origin === new URL(config.vpsSubUrl).origin ? btoa(cf6) : btoa('ss://example#Remote'),
-    ))(genericRequest)).text());
-    assert.ok(genericDual.includes('@[2606:4700::6810:101]:443'), 'generic output brackets IPv6 URI authorities');
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 备用优选')));
+    assert.throws(
+        () => api.buildClashConfig(
+            api.LOCAL_NODES,
+            [10000],
+            upstream.replace('name: Remote', 'name: 请更新客户端，此客户端版本过低'),
+        ),
+        /client upgrade placeholders/,
+    );
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies: []'));
     const flow = api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies:\n  - { name: Flow, type: ss, server: flow.example.com, port: 443 }\ndns: {}\n');
     assert.ok(flow.includes('name: Flow'));
