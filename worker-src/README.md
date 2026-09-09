@@ -23,7 +23,7 @@ Worker 保留 `/subscribe?token=...`，`flag=clash` 返回完整配置，`flag=b
 
 Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。VPS 获取失败使用 `fallbackCdnNodes`。动态与兜底 CDN 节点都会按最终顺序统一命名为 `优选1`～`优选6`。仅生成 PROXY 和备用优选两个策略组，PROXY 依次包含其他节点和备用优选，不重复列出 CDN 节点。备用优选仅包含本次获取的最多六个 CDN 节点；没有 CDN 节点时使用 REJECT，避免自动切换到其他节点；DIRECT 仅用于直连分流规则。
 
-公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。Reality 节点可显式选择 `ipv4` 或 `dual`；CF/Gcore 精选节点仍固定输出 `ip-version: ipv4`。所有 Google 域名都进入代理，双栈 VPS 再固定使用 IPv4 出口。模板开头的明确直连域名（包括 Steam 下载域名）先匹配，其余 UDP/443 在代理规则前拒绝；不是放行所有国内 QUIC。国内集合仍在显式代理域名之后，避免覆盖 AI 等例外。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅，已部署产物不会自动更新。
+公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。中国大陆域名使用阿里与 DNSPod DoH，其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；代理节点域名仍由独立的直连 DoH 解析，避免启动循环。Reality 节点可显式选择 `ipv4` 或 `dual`；CF/Gcore 精选节点仍固定输出 `ip-version: ipv4`。所有 Google 域名都进入代理，双栈 VPS 再固定使用 IPv4 出口。模板先直连明确例外、局域网和中国大陆域名，并按 GeoIP 放行纯 IP 的国内 QUIC；其余 UDP/443 在代理规则前拒绝。下载器不再按进程无条件直连，仍按目标域名/IP 分流。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅，已部署产物不会自动更新。
 
 版本由构建脚本按北京时间生成，例如 `2026-09-06-v0`。同一天根据现有 `worker.js` 的版本递增，跨日从 `v0` 开始；构建失败不消耗版本。删除产物后也会从 `v0` 开始，因此需要连续编号时请保留上次构建的文件。版本通过 `X-Easy-All-Version` 响应头返回。
 

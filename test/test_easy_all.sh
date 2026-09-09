@@ -332,11 +332,23 @@ test_subscription_stage_dispatch() {
 
 test_mihomo_template() {
     local invalid="${TMP_DIR}/invalid.yaml" rule_count first_rule
+    local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH fake-IP DNS mode" \
         "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo persists fake-IP mappings" \
+        "store-fake-ip: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo allocates an IPv6 fake-IP pool" \
+        "fake-ip-range6: fdfe:dcba:9876::/64" \
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo uses rule-based fake-IP filtering" \
+        "fake-ip-filter-mode: rule" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo defaults unmatched domains to fake-IP" \
+        "- MATCH,fake-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo uses the default UDP session timeout" \
+        "udp-timeout: 300" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses DAT-format Geo data" \
         "geodata-mode: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo updates Geo data automatically" \
@@ -349,11 +361,20 @@ test_mihomo_template() {
     assert_contains "Mihomo uses the MetaCubeX GeoSite source" \
         "MetaCubeX/meta-rules-dat@release/geosite.dat" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo uses the XFLASH HTTP/3 DNS endpoint" \
+    assert_contains "Mihomo resolves mainland domains with mainland DoH" \
+        "'geosite:cn':" \
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo resolves other domains through Cloudflare DoH over PROXY" \
+        "https://1.1.1.1/dns-query#PROXY" \
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo resolves other domains through Google DoH over PROXY" \
+        "https://8.8.8.8/dns-query#PROXY" \
+        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_not_contains "Mihomo no longer forces direct HTTP/3 DNS" \
         "https://223.6.6.6/dns-query#h3=true" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH proxy bootstrap DNS endpoints" \
-        "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
+        "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://1.1.1.1/dns-query']" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not add a non-XFLASH default nameserver" \
         "default-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
@@ -364,19 +385,34 @@ test_mihomo_template() {
     rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" \
         | grep -Ec '^  - ')
     assert_equal "Mihomo template contains optimized lightweight rules" \
-        "71" "${rule_count}"
+        "50" "${rule_count}"
     assert_contains "Mihomo filters WeChat CDN from fake-ip" \
-        "'+.qpic.cn'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "DOMAIN-SUFFIX,qpic.cn,real-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo filters WeChat domain from fake-ip" \
-        "'+.weixin.qq.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "DOMAIN-SUFFIX,weixin.qq.com,real-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo bypasses Steam download CDN" \
         "- DOMAIN-SUFFIX,steamcontent.com,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo proxies Steam community" \
         "- DOMAIN-SUFFIX,steamcommunity.com,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_not_contains "Mihomo does not bypass routing by downloader process" \
+        "PROCESS-NAME,qBittorrent,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_not_contains "Mihomo does not bypass routing by downloader process on Windows" \
+        "PROCESS-NAME,Thunder.exe,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     first_rule=$(awk '/^rules:$/ { found=1; next } found && $0 !~ /^  #/ { print; exit }' \
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
         '  - DOMAIN,love.xflash.work,DIRECT' "${first_rule}"
+    cn_domain_rule_line=$(grep -nF -- '  - GEOSITE,CN,DIRECT' \
+        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    cn_quic_rule_line=$(grep -nF -- \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' \
+        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    quic_reject_rule_line=$(grep -nF -- \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' \
+        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    assert_success "Mihomo routes mainland QUIC before rejecting other UDP 443" \
+        bash -c '(( $1 < $2 && $2 < $3 ))' _ \
+        "${cn_domain_rule_line}" "${cn_quic_rule_line}" "${quic_reject_rule_line}"
     assert_contains "Mihomo proxies non-CN AI services" \
         "GEOSITE,category-ai-chat-!cn,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo proxies all Google domains through the VPS" \

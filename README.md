@@ -308,10 +308,12 @@ IPv4/IPv6 双栈，否则通过 sysctl 保持 IPv4-only。双栈模式从经过 
 `direct-google-ipv4` 出站，并强制 `ForceIPv4`，避免 Gemini/Google 在同一 VPS 上混用 IPv4 与 IPv6。
 每日重启前从 `Loyalsoldier/v2ray-rules-dat` 发布页下载独立 Geo 数据及其 SHA256 文件，只有哈希和
 Xray 分类校验都通过才原子替换。其他服务仍可使用 VPS IPv6。服务端与客户端规则默认阻断
-UDP/443（QUIC），使 HTTP/3 快速回退至 TCP。
+境外 UDP/443（QUIC），使 HTTP/3 快速回退至 TCP；局域网与中国大陆 QUIC 仍保持直连。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
-尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。VPS 使用 `fq + XanMod BBRv3`，并关闭
+尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。中国大陆域名使用国内 DoH，
+其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH，代理节点域名保留独立的国内 DoH 启动解析。
+VPS 使用 `fq + XanMod BBRv3`，并关闭
 `tcp_slow_start_after_idle`，避免复用的空闲 TCP 连接恢复传输时重新进入慢启动。
 
 服务器把启用 `SO_KEEPALIVE` 的 TCP 套接字默认探测参数设为 `300/30/5`，并在 Xray 入站

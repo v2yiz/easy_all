@@ -16,6 +16,7 @@ geox-url:
     geosite: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat'
 profile:
     store-selected: true
+    store-fake-ip: true
 
 sniffer:
     enable: true
@@ -36,8 +37,8 @@ tun:
     enable: true
     stack: mixed
     mtu: 1500
-    # 默认 UDP NAT 会话仅保留 5 分钟；行情客户端的低频 UDP 长连接保留 2 小时。
-    udp-timeout: 7200
+    # 使用 Mihomo 默认的 5 分钟 UDP NAT 会话超时，避免长期保留失效映射。
+    udp-timeout: 300
     auto-route: true
     auto-detect-interface: true
     inet4-address:
@@ -68,10 +69,96 @@ dns:
     listen: '127.0.0.1:5335'
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
+    fake-ip-range6: fdfe:dcba:9876::/64
     # 国内及已验证的兼容性例外返回真实 IP；是否直连仍由下方分流规则决定。
-    fake-ip-filter: ['geosite:cn', 'geosite:private', '+.10jqka.com.cn', '+.qpic.cn', '+.weixin.qq.com', '+.wechat.com', '*.lan', 'stun.*.*.*', 'stun.*.*', time.windows.com, time.nist.gov, time.apple.com, time.asia.apple.com, '*.ntp.org.cn', '*.openwrt.pool.ntp.org', time1.cloud.tencent.com, time.ustc.edu.cn, pool.ntp.org, ntp.ubuntu.com, ntp.aliyun.com, ntp1.aliyun.com, ntp2.aliyun.com, ntp3.aliyun.com, ntp4.aliyun.com, ntp5.aliyun.com, ntp6.aliyun.com, ntp7.aliyun.com, time1.aliyun.com, time2.aliyun.com, time3.aliyun.com, time4.aliyun.com, time5.aliyun.com, time6.aliyun.com, time7.aliyun.com, '*.time.edu.cn', time1.apple.com, time2.apple.com, time3.apple.com, time4.apple.com, time5.apple.com, time6.apple.com, time7.apple.com, time1.google.com, time2.google.com, time3.google.com, time4.google.com, music.163.com, '*.music.163.com', '*.126.net', musicapi.taihe.com, music.taihe.com, songsearch.kugou.com, trackercdn.kugou.com, '*.kuwo.cn', api-jooxtt.sanook.com, api.joox.com, joox.com, y.qq.com, '*.y.qq.com', streamoc.music.tc.qq.com, mobileoc.music.tc.qq.com, isure.stream.qqmusic.qq.com, dl.stream.qqmusic.qq.com, aqqmusic.tc.qq.com, amobile.music.tc.qq.com, '*.xiami.com', '*.music.migu.cn', music.migu.cn, '*.msftconnecttest.com', '*.msftncsi.com', localhost.ptlogin2.qq.com, '*.*.*.srv.nintendo.net', '*.*.stun.playstation.net', 'xbox.*.*.microsoft.com', '*.ipv6.microsoft.com', '*.*.xboxlive.com', speedtest.cros.wr.pvp.net]
-    nameserver: ['https://223.6.6.6/dns-query#h3=true', 'https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://120.53.53.53/dns-query']
-    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+    fake-ip-filter-mode: rule
+    fake-ip-filter:
+      - GEOSITE,cn,real-ip
+      - GEOSITE,private,real-ip
+      - DOMAIN-SUFFIX,10jqka.com.cn,real-ip
+      - DOMAIN-SUFFIX,qpic.cn,real-ip
+      - DOMAIN-SUFFIX,weixin.qq.com,real-ip
+      - DOMAIN-SUFFIX,wechat.com,real-ip
+      - DOMAIN-SUFFIX,lan,real-ip
+      - DOMAIN-WILDCARD,stun.*.*.*,real-ip
+      - DOMAIN-WILDCARD,stun.*.*,real-ip
+      - DOMAIN,time.windows.com,real-ip
+      - DOMAIN,time.nist.gov,real-ip
+      - DOMAIN,time.apple.com,real-ip
+      - DOMAIN,time.asia.apple.com,real-ip
+      - DOMAIN-SUFFIX,ntp.org.cn,real-ip
+      - DOMAIN-SUFFIX,openwrt.pool.ntp.org,real-ip
+      - DOMAIN,time1.cloud.tencent.com,real-ip
+      - DOMAIN,time.ustc.edu.cn,real-ip
+      - DOMAIN,pool.ntp.org,real-ip
+      - DOMAIN,ntp.ubuntu.com,real-ip
+      - DOMAIN,ntp.aliyun.com,real-ip
+      - DOMAIN,ntp1.aliyun.com,real-ip
+      - DOMAIN,ntp2.aliyun.com,real-ip
+      - DOMAIN,ntp3.aliyun.com,real-ip
+      - DOMAIN,ntp4.aliyun.com,real-ip
+      - DOMAIN,ntp5.aliyun.com,real-ip
+      - DOMAIN,ntp6.aliyun.com,real-ip
+      - DOMAIN,ntp7.aliyun.com,real-ip
+      - DOMAIN,time1.aliyun.com,real-ip
+      - DOMAIN,time2.aliyun.com,real-ip
+      - DOMAIN,time3.aliyun.com,real-ip
+      - DOMAIN,time4.aliyun.com,real-ip
+      - DOMAIN,time5.aliyun.com,real-ip
+      - DOMAIN,time6.aliyun.com,real-ip
+      - DOMAIN,time7.aliyun.com,real-ip
+      - DOMAIN-SUFFIX,time.edu.cn,real-ip
+      - DOMAIN,time1.apple.com,real-ip
+      - DOMAIN,time2.apple.com,real-ip
+      - DOMAIN,time3.apple.com,real-ip
+      - DOMAIN,time4.apple.com,real-ip
+      - DOMAIN,time5.apple.com,real-ip
+      - DOMAIN,time6.apple.com,real-ip
+      - DOMAIN,time7.apple.com,real-ip
+      - DOMAIN,time1.google.com,real-ip
+      - DOMAIN,time2.google.com,real-ip
+      - DOMAIN,time3.google.com,real-ip
+      - DOMAIN,time4.google.com,real-ip
+      - DOMAIN,music.163.com,real-ip
+      - DOMAIN-SUFFIX,music.163.com,real-ip
+      - DOMAIN-SUFFIX,126.net,real-ip
+      - DOMAIN,musicapi.taihe.com,real-ip
+      - DOMAIN,music.taihe.com,real-ip
+      - DOMAIN,songsearch.kugou.com,real-ip
+      - DOMAIN,trackercdn.kugou.com,real-ip
+      - DOMAIN-SUFFIX,kuwo.cn,real-ip
+      - DOMAIN,api-jooxtt.sanook.com,real-ip
+      - DOMAIN,api.joox.com,real-ip
+      - DOMAIN,joox.com,real-ip
+      - DOMAIN,y.qq.com,real-ip
+      - DOMAIN-SUFFIX,y.qq.com,real-ip
+      - DOMAIN,streamoc.music.tc.qq.com,real-ip
+      - DOMAIN,mobileoc.music.tc.qq.com,real-ip
+      - DOMAIN,isure.stream.qqmusic.qq.com,real-ip
+      - DOMAIN,dl.stream.qqmusic.qq.com,real-ip
+      - DOMAIN,aqqmusic.tc.qq.com,real-ip
+      - DOMAIN,amobile.music.tc.qq.com,real-ip
+      - DOMAIN-SUFFIX,xiami.com,real-ip
+      - DOMAIN-SUFFIX,music.migu.cn,real-ip
+      - DOMAIN,music.migu.cn,real-ip
+      - DOMAIN-SUFFIX,msftconnecttest.com,real-ip
+      - DOMAIN-SUFFIX,msftncsi.com,real-ip
+      - DOMAIN,localhost.ptlogin2.qq.com,real-ip
+      - DOMAIN-WILDCARD,*.*.*.srv.nintendo.net,real-ip
+      - DOMAIN-WILDCARD,*.*.stun.playstation.net,real-ip
+      - DOMAIN-WILDCARD,xbox.*.*.microsoft.com,real-ip
+      - DOMAIN-SUFFIX,ipv6.microsoft.com,real-ip
+      - DOMAIN-WILDCARD,*.*.xboxlive.com,real-ip
+      - DOMAIN,speedtest.cros.wr.pvp.net,real-ip
+      - MATCH,fake-ip
+    nameserver-policy:
+      'geosite:cn':
+        - https://223.5.5.5/dns-query
+        - https://1.12.12.12/dns-query
+    nameserver:
+      - 'https://1.1.1.1/dns-query#PROXY'
+      - 'https://8.8.8.8/dns-query#PROXY'
+    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://1.1.1.1/dns-query']
 
 proxies:
 # EASY_ALL_PROXY_NODE
@@ -90,7 +177,12 @@ rules:
   - DOMAIN-SUFFIX,steamcontent.com,DIRECT
   - DOMAIN-SUFFIX,cm.steampowered.com,DIRECT
   - DOMAIN-SUFFIX,steamserver.net,DIRECT
-  # 上面的显式直连域名保留 QUIC；其余 UDP/443 拒绝，避免经 XHTTP 传输。
+  # 局域网与中国大陆域名优先直连；纯 IP 的国内 QUIC 通过 GeoIP 单独放行。
+  - GEOSITE,private,DIRECT
+  - GEOIP,LAN,DIRECT,no-resolve
+  - GEOSITE,CN,DIRECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
+  # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   # 所有 Google 服务经代理进入 VPS；双栈 VPS 再强制使用 IPv4 出站。
   - GEOSITE,google,PROXY
@@ -118,28 +210,6 @@ rules:
   - PROCESS-NAME,Surge%202,DIRECT
   - PROCESS-NAME,Surge%203,DIRECT
   - PROCESS-NAME,Surge%204,DIRECT
-  - PROCESS-NAME,Thunder,DIRECT
-  - PROCESS-NAME,DownloadService,DIRECT
-  - PROCESS-NAME,qBittorrent,DIRECT
-  - PROCESS-NAME,Transmission,DIRECT
-  - PROCESS-NAME,fdm,DIRECT
-  - PROCESS-NAME,aria2c,DIRECT
-  - PROCESS-NAME,Folx,DIRECT
-  - PROCESS-NAME,NetTransport,DIRECT
-  - PROCESS-NAME,uTorrent,DIRECT
-  - PROCESS-NAME,WebTorrent,DIRECT
-  - PROCESS-NAME,aria2c.exe,DIRECT
-  - PROCESS-NAME,BitComet.exe,DIRECT
-  - PROCESS-NAME,fdm.exe,DIRECT
-  - PROCESS-NAME,NetTransport.exe,DIRECT
-  - PROCESS-NAME,qbittorrent.exe,DIRECT
-  - PROCESS-NAME,Thunder.exe,DIRECT
-  - PROCESS-NAME,ThunderVIP.exe,DIRECT
-  - PROCESS-NAME,transmission-daemon.exe,DIRECT
-  - PROCESS-NAME,transmission-qt.exe,DIRECT
-  - PROCESS-NAME,uTorrent.exe,DIRECT
-  - PROCESS-NAME,WebTorrent.exe,DIRECT
-  - PROCESS-NAME,aDrive.exe,DIRECT
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
   # 大流量 CDN 优化 (Apple 与 Microsoft 国内 CDN 直连加速)
@@ -156,11 +226,7 @@ rules:
   - GEOSITE,category-ai-chat-!cn,PROXY
   # Telegram 专属 IP 段代理
   - GEOIP,telegram,PROXY,no-resolve
-  # 局域网与私有域名直连
-  - GEOSITE,private,DIRECT
-  - GEOIP,LAN,DIRECT,no-resolve
-  # 中国大陆域名与大陆 IP 直连 (涵盖国内音视频、国内云 CDN)
-  - GEOSITE,CN,DIRECT
+  # 中国大陆 IP 直连 (涵盖国内音视频、国内云 CDN)
   - GEOIP,CN,DIRECT
   # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY
