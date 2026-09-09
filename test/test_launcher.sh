@@ -149,7 +149,6 @@ readme=$(<"${ROOT_DIR}/README.md")
     || fail "install mode prompt must be Chinese-only and explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP（非优化线路推荐）'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'月度出站额度通常是主要上限，但不与有效载荷严格等值'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
 interactive_sources=$(

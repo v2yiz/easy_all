@@ -167,7 +167,6 @@ choose_install_mode() {
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
     printf '  2. Cloudflare CDN 精选 IP（非优化线路推荐）\n' >&2
-    printf '     流量实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是主要上限，但不与有效载荷严格等值\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
