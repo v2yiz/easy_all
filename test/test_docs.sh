@@ -65,6 +65,26 @@ assert_contains "README documents the Mihomo requirement for selected IPs" \
     "${README_CONTENT}" '精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成'
 assert_contains "README documents Shadowrocket as unverified" \
     "${README_CONTENT}" '不把 Shadowrocket 列为本项目的已验证客户端'
+assert_not_contains "README removes Clash Party recommendations" \
+    "${README_CONTENT}" 'Clash Party'
+WINDOWS_CLIENT_ROW=$(grep '^| \*\*Windows\*\*' "${ROOT_DIR}/README.md")
+MACOS_CLIENT_ROW=$(grep '^| \*\*macOS\*\*' "${ROOT_DIR}/README.md")
+ANDROID_CLIENT_ROW=$(grep '^| \*\*Android\*\*' "${ROOT_DIR}/README.md")
+IOS_CLIENT_ROW=$(grep '^| \*\*iOS / iPadOS\*\*' "${ROOT_DIR}/README.md")
+LINUX_CLIENT_ROW=$(grep '^| \*\*Linux\*\*' "${ROOT_DIR}/README.md")
+for row in "${WINDOWS_CLIENT_ROW}" "${MACOS_CLIENT_ROW}" "${LINUX_CLIENT_ROW}"; do
+    assert_contains "desktop client matrix includes Clash Verge Rev" "${row}" 'Clash Verge Rev'
+    assert_contains "desktop client matrix includes Clash Mi" "${row}" 'Clash Mi'
+    assert_contains "desktop client matrix includes Bettbox" "${row}" 'Bettbox'
+done
+assert_contains "Android client matrix includes Clash Mi" "${ANDROID_CLIENT_ROW}" 'Clash Mi'
+assert_contains "Android client matrix includes Bettbox" "${ANDROID_CLIENT_ROW}" 'Bettbox'
+assert_not_contains "Android client matrix excludes Clash Verge Rev" \
+    "${ANDROID_CLIENT_ROW}" 'Clash Verge Rev'
+assert_contains "iOS client matrix includes Clash Mi" "${IOS_CLIENT_ROW}" 'Clash Mi'
+assert_not_contains "iOS client matrix excludes Bettbox" "${IOS_CLIENT_ROW}" 'Bettbox'
+assert_not_contains "iOS client matrix excludes Clash Verge Rev" \
+    "${IOS_CLIENT_ROW}" 'Clash Verge Rev'
 assert_contains "README explains the Cloudflare VPS traffic boundary" \
     "${README_CONTENT}" '用户上下行载荷之和会消耗 VPS 出站额度'
 assert_contains "README distinguishes VPS, proxy entry and Google egress families" \
