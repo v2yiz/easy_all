@@ -27,11 +27,20 @@ VPS 费用另计。
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 | 模式 3：Gcore CDN 精选 IP   | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、Globalping Token；额度内预期 `$0/月`（1TB/月内）                      | Cloudflare gRPC 等 Cloudflare 专属准备             | 第 1.1、8 节                                                                  |
 
-公网 IPv6 不是必需条件。安装器只有在 VPS 同时具备全局 IPv6 地址、默认 IPv6 路由和可用 HTTPS
-IPv6 出口时才启用双栈，否则保持 IPv4-only。Reality 若要让客户端通过 IPv6 直连，还需在云厂商安全组
-放行 TCP `443` 和动态端口范围，并为节点域名发布与探测地址完全一致的 AAAA。Cloudflare 客户端入口
-可选择 `ipv4` 或 `dual`；这不要求 VPS 有 IPv6，Cloudflare 仍可通过 IPv4 回源。VPS 双栈用于目标站
-出站，Google/YouTube 会按安装时选择的 `auto/ipv4/ipv6` 策略固定到单一地址族。
+公网 IPv6 不是任何模式的安装必需条件。安装器只有在 VPS 同时具备全局 IPv6 地址、
+默认 IPv6 路由和可用 HTTPS IPv6 出口时才启用 VPS 双栈，否则保持 IPv4-only。不同链路对 IPv6 和
+DNS 的要求如下：
+
+| 链路 | 客户端入口 IPv6 | VPS 需要公网 IPv6 | 用户需要配置 AAAA |
+| --- | --- | --- | --- |
+| Reality 直连 | 满足条件时自动启用，不提供独立开关 | 是 | 需要 IPv6 直连时，将 DNS only 节点域名的 AAAA 指向 VPS IPv6；只用 IPv4 时不发布 |
+| Cloudflare XHTTP | 可选 `dual`，追加 Cloudflare 边缘 IPv6 | 否 | 否；不要创建指向 VPS 的 AAAA。安装器开启 IPv6 Compatibility，由 proxied 节点域名返回边缘 AAAA |
+| Gcore WebSocket | 当前固定下发 IPv4 节点 | 否 | 否；源站使用 A，节点使用 CNAME |
+
+Reality 若要让客户端通过 IPv6 直连，还需在云厂商安全组放行 IPv6 TCP `443` 和动态端口范围。
+Cloudflare 的 `dual` 只影响客户端到 CDN 边缘，不改变 Cloudflare 到 VPS 的 IPv4 回源。VPS 双栈还可
+用于目标站出站；Google/YouTube 会按安装时选择的 `auto/ipv4/ipv6` 策略固定到单一地址族，该策略与
+客户端入口独立。
 
 各链路建议使用的域名如下：
 
@@ -155,8 +164,9 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 
 Reality 的节点连接域名（例如 `node.example.com`）如有使用，必须保持灰云/DNS only 以便客户端直连 VPS；
 它必须发布指向 VPS 的 A 记录，且不能与橙云订阅域名相同。安装器检测到 VPS 具备可用公网 IPv6
-时，可以再发布指向该地址的 AAAA；所有 AAAA 都必须与安装器探测结果一致，否则安装会停止。
-没有可用公网 IPv6时不要发布 AAAA。Reality 不需要 gRPC，也不会把节点数据流量经过 Cloudflare。
+时，如果需要客户端通过 IPv6 直连，再发布指向该地址的 AAAA；所有 AAAA 都必须与安装器探测结果
+一致，否则安装会停止。只需要 IPv4 直连或 VPS 没有可用公网 IPv6 时不要发布 AAAA。Reality 不需要
+gRPC，也不会把节点数据流量经过 Cloudflare。
 
 ### 3.2 Cloudflare XHTTP：必须完成
 
@@ -165,6 +175,10 @@ Reality 的节点连接域名（例如 `node.example.com`）如有使用，必�
    `stream-up` 的必需条件，Cloudflare 当前没有可用于该开关的 Zone Settings API，安装器无法代办。
 3. 如果部署订阅，准备另一个同 Zone 一级子域名，例如 `sub.example.com`。它必须与节点域名不同，
    且不要提前创建 DNS 记录；安装器会把它直接绑定为 Worker Custom Domain。
+
+安装器始终为节点域名创建指向 VPS IPv4 的 proxied `A`。选择 `dual` 时，安装器另行开启 Zone 的
+IPv6 Compatibility，并从该 proxied 域名自动返回的 Cloudflare 边缘 AAAA 中筛选 IPv6 节点。
+不要手工创建指向 VPS 的 AAAA；VPS 本身没有 IPv6 也不影响该客户端双栈入口。
 
 ![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
 
@@ -218,8 +232,8 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 - 可选输入一份不含 `vpsSubUrl` 的 `config.local.json`；字段参考
   [`worker-src/config.example.json`](../worker-src/config.example.json)。安装器保留其中的
   `nodes`、`externalSubUrl`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的
-  用户 Token，再注入本机生成的
-  `vpsSubUrl` 与私有源配置。交互先完成用户 Token/配额设置，再询问“是否需要进行订阅聚合”；
+  用户 Token。安装器再注入本机生成的 `vpsSubUrl` 与私有源配置。交互先完成用户 Token/配额设置，
+  再询问“是否需要进行订阅聚合”；
   选择需要后隐藏输入 JSON，并交给 `build-worker.mjs` 校验构建、自动部署。
   启用配额时，`allowedTokens` 用户名必须与配额用户完全一致，只允许覆盖 Token。
 - dual 模式开启 Cloudflare IPv6 Compatibility；所有模式开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
@@ -247,7 +261,8 @@ IP 节点会连接失败；请以实际生成订阅的导入测试确认兼容�
 
 ### 5.2 IP 族选择
 
-- Cloudflare 客户端入口默认 `ipv4`；选择 `dual` 只追加 IPv6 节点，不改变 IPv4 回源和 VPS 出口。
+- Cloudflare 客户端入口默认 `ipv4`；选择 `dual` 只追加 Cloudflare 边缘 IPv6 节点，不要求 VPS
+  有 IPv6，不需要用户配置 AAAA，也不改变 IPv4 回源和 VPS 出口。
 - Google/YouTube 出口默认 `auto`。安装和每次 `easy_all apply` 会分别执行三次 IPv4/IPv6
   `generate_204` 探测，先比较成功次数，再比较延迟中位数，选择后写入状态并使用
   `ForceIPv4` 或 `ForceIPv6`。它不会在每个连接上自动回退，因此同一轮运行中的 Google 新连接

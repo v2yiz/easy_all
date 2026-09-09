@@ -12,6 +12,22 @@
 
 Cloudflare 提供纯 XHTTP stream-up（固定保留 6 个三网精选 IPv4，可选追加最多 3 个已验证 IPv6）；Gcore 提供纯 VLESS WebSocket（三网定向 1～6 个已验证节点，通常为 2 个）；Reality 用于直连。
 
+### 地址族与 DNS 的关系
+
+项目中的“VPS 双栈”“客户端入口双栈”和“Google 出站地址族”是三项独立能力，不应混为同一个开关：
+
+| 范围 | 实际行为 | VPS 必须有公网 IPv6 | 需要用户配置 AAAA |
+| --- | --- | --- | --- |
+| VPS 网络栈 | 安装器自动探测全局 IPv6 地址、默认路由和 HTTPS IPv6 出口；三项均可用才记录为 `dual` | 这是 VPS 自身能力，不是安装选项 | 否 |
+| Reality 客户端入口 | 没有独立的 `dual` 选项；仅当 VPS 已为双栈，且 DNS only 节点域名的全部 AAAA 都指向该 VPS IPv6 时，节点自动输出 `ip-version: dual` | 是 | 仅需要 IPv6 直连时需要；否则不发布 AAAA，节点保持 IPv4 |
+| Cloudflare 客户端入口 | `ipv4` 固定下发 6 个 IPv4；`dual` 在此基础上追加最多 3 个 Cloudflare 边缘 IPv6 | 否，Cloudflare 可继续通过 IPv4 回源 VPS | 否；不要创建指向 VPS 的 AAAA。安装器开启 IPv6 Compatibility，由 proxied 节点域名返回 Cloudflare 边缘 AAAA |
+| Gcore 客户端入口 | 当前实现只筛选和下发 Gcore IPv4 节点，Mihomo 固定 `ip-version: ipv4` | 否 | 否；源站使用 A，节点使用 CNAME |
+| Google/YouTube VPS 出站 | `auto/ipv4/ipv6` 决定 VPS 到 Google 的地址族，与客户端入口无关 | 仅选择或探测锁定到 `ipv6` 时需要 | 否 |
+
+因此，公网 IPv6 对三种模式都不是安装必需条件。只有 Reality 想让客户端直接通过 IPv6 连接 VPS
+时，才需要同时满足 VPS 公网 IPv6、云安全组 IPv6 入站和节点 AAAA 三项条件。Cloudflare 的
+`dual` 是“客户端到 CDN 边缘双栈”，不是“CDN 到 VPS 双栈”。
+
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
 所在地区法律、VPS 服务商以及 Cloudflare / Gcore 的服务条款。
@@ -23,7 +39,7 @@ Cloudflare 提供纯 XHTTP stream-up（固定保留 6 个三网精选 IPv4，可
 | 你的情况 | 建议 | 需要额外准备 |
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
-| 明确要使用 Cloudflare CDN，追求纯 XHTTP 与双栈入口对照 | 选择 `2`：Cloudflare 纯 XHTTP | 同一 Active Zone 下互不相同的节点域名和 Worker 订阅域名、具备 Zone 权限及账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。固定下发 6 个三网精选 IPv4；选择 `dual` 时再追加最多 3 个节点域名实际 AAAA 中通过验证的 IPv6，严格无域名兜底。 |
+| 明确要使用 Cloudflare CDN，追求纯 XHTTP 与双栈入口对照 | 选择 `2`：Cloudflare 纯 XHTTP | 同一 Active Zone 下互不相同的节点域名和 Worker 订阅域名、具备 Zone 权限及账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。固定下发 6 个三网精选 IPv4；选择 `dual` 时再追加最多 3 个经节点域名 AAAA 发现并验证的 Cloudflare 边缘 IPv6，不要求 VPS 有 IPv6，也不要配置指向 VPS 的 AAAA。 |
 | 明确要使用 Gcore CDN，追求多地区边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个，节点连续命名为 `优选1`～`优选n`；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
@@ -148,7 +164,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）先更新并校验 GeoSite/GeoIP，再重启；会中断已有连接。 |
 | Reality SNI/目标 | 直接回车 | 使用脚本验证过的默认值；不要随意填常见网站。 |
 | Reality 动态端口 | 直接回车 | 这是**节点连接端口**的轮换策略，不是订阅下载端口。 |
-| Cloudflare 客户端入口 IP 族 | 选 `1`（`ipv4`） | `dual` 保留全部 IPv4 节点并追加最多 3 个已验证 IPv6；客户端网络没有稳定 IPv6 时不要开启。 |
+| Cloudflare 客户端入口 IP 族 | 选 `1`（`ipv4`） | `dual` 保留全部 IPv4 节点并追加最多 3 个 Cloudflare 边缘 IPv6；不要求 VPS 有 IPv6，也不需要手工添加 AAAA。客户端网络没有稳定 IPv6 时不要开启。 |
 | Google/YouTube VPS 出站 | 选 `1`（`auto`） | 安装或 `apply` 时比较 IPv4/IPv6 成功率和延迟中位数，选择后锁定；不会逐连接回退。 |
 
 所有提示中的 `[值]` 都表示直接按回车会采用该值；没有方括号且没有写“可留空”的输入必须填写。
@@ -306,7 +322,7 @@ flowchart TD
 | Worker 聚合配置 | 选择需要聚合后出现；不含 `vpsSubUrl` 的 `config.local.json` JSON | 无 | 隐藏输入；本机自动注入 `vpsSubUrl`，后续可保留、替换或清空 |
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
 | 安装模式 | `1` Reality / `2` Cloudflare / `3` Gcore | `1` | 安装 Reality |
-| Cloudflare 客户端入口 IP 族 | `1` IPv4 / `2` dual | `1` | 保留 6 个 IPv4；dual 额外追加最多 3 个已验证 IPv6 |
+| Cloudflare 客户端入口 IP 族 | `1` IPv4 / `2` dual | `1` | 保留 6 个 IPv4；dual 额外追加最多 3 个 Cloudflare 边缘 IPv6，与 VPS 地址族无关 |
 | Google/YouTube VPS 出站 | `1` auto / `2` IPv4 / `3` IPv6 | `1` | auto 在安装或 apply 时探测并锁定一个 IP 族 |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入 root crontab；重启前最多用 10 分钟更新并校验 GeoSite/GeoIP，更新失败保留旧资产且不阻止重启 |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
@@ -671,11 +687,12 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Mihomo 模板启用客户端 IPv4/IPv6 双栈 DNS 与 TUN。Reality 只有在 VPS 公网 IPv6 可用且节点域名的
-AAAA 全部指向该地址时才输出 `ip-version: dual`；使用 IPv4 地址、没有 AAAA、AAAA 不匹配或 VPS
-没有 IPv6 时均保持 `ip-version: ipv4`。Cloudflare 始终保留 6 个已验证 IPv4 节点；选择 `dual`
-时再追加最多 3 个已验证 IPv6 节点，并按连接地址分别输出 `ip-version: ipv4` 或 `ipv6`。Gcore
-精选节点仍使用 IPv4。客户端将整个 `GEOSITE,google` 交给代理，VPS 根据持久化的
+Mihomo 模板本身启用客户端 IPv4/IPv6 双栈 DNS 与 TUN，这不代表所有代理节点都必须双栈。
+Reality 没有手工选择客户端地址族的选项：只有在 VPS 公网 IPv6 可用且节点域名的 AAAA 全部指向
+该地址时才自动输出 `ip-version: dual`；使用 IPv4 地址或未发布 AAAA 时保持 `ip-version: ipv4`，
+AAAA 已发布但与 VPS 能力或地址不匹配时安装器会停止。Cloudflare 的 `dual` 只为客户端追加最多
+3 个 Cloudflare 边缘 IPv6，VPS 可保持 IPv4-only，且不应创建指向 VPS 的 AAAA。Gcore 精选节点
+固定使用 IPv4。客户端将整个 `GEOSITE,google` 交给代理，VPS 根据持久化的
 `GOOGLE_EGRESS_MODE=auto|ipv4|ipv6` 策略，将 Google 域名与 IP 流量统一锁定到同一地址族。
 
 Reality 服务端与 CDN XHTTP 均阻断 IPv4/IPv6 私网、链路本地、回环、组播及保留地址，
@@ -699,11 +716,11 @@ Reality 按安装时探测结果配置网络族：
   `0.0.0.0:443`，动态端口只写入 IPv4 NAT。
 - 检测到可用公网 IPv6时，sysctl 设置 `disable_ipv6=0`、UFW 设置 `IPV6=yes`，Xray 监听
   `::`，动态端口同时写入 IPv4/IPv6 NAT。
-- 使用域名作为连接地址时，A 记录必须指向当前 VPS 公网 IPv4；AAAA 可以不发布，但一旦发布，
-  所有 AAAA 都必须指向探测到的 VPS 公网 IPv6。
+- 使用域名作为 Reality 连接地址时，A 记录必须指向当前 VPS 公网 IPv4。只需要 IPv4 直连时不要
+  发布 AAAA；需要 IPv6 直连时，所有 AAAA 都必须指向探测到的 VPS 公网 IPv6。
 - Nginx 自托管订阅源站仍只监听 IPv4 `8443`，由 Cloudflare IPv4 回源白名单保护。
 - Xray 阻断私网目标和 UDP/443；双栈模式的普通出站允许 IPv4/IPv6，但 Google 域名及 IP
-  固定绑定 IPv4 出站。
+  按 `GOOGLE_EGRESS_MODE` 的探测或显式选择结果固定到 IPv4 或 IPv6。
 
 自托管订阅域名必须是 Cloudflare Active Zone 下的一级子域名。安装器创建 Proxied A 记录；
 客户端由 Universal SSL 终止 TLS，Cloudflare 使用 Full (strict) 连接 VPS `8443` 上的 Origin CA：
@@ -735,7 +752,7 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
 - **流量容量不是 Cloudflare 提供的固定免费额度**：XHTTP 只做实时转发，用户上行由 VPS 发往目标站，用户下行由 VPS 发往 Cloudflare 边缘。若 VPS 仅计出站，用户上下行载荷之和会消耗 VPS 出站额度，因此该额度通常是主要容量上限；协议、TLS 和重传开销会让有效载荷低于账单流量。若 VPS 统计双向流量，同一载荷进入并离开 VPS 都可能计费，必须按服务商规则折算。Cloudflare 服务条款、账户风控和连接质量仍可能先于 VPS 额度形成限制。
 - **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
 - **三网定向精选 6 节点（平铺）**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针针对电信、联通、移动三网实测与 TLS 深度校验，每家运营商严格挑选 2 个最优节点平铺输出（节点名称统一为 `优选1` 到 `优选6`），**严格输出 6 个精选节点，绝不输出域名兜底节点**。
-- **可选双栈入口**：安装时默认选择 `ipv4`。选择 `dual` 后仍完整保留上述 6 个 IPv4 节点，并从 `1.1.1.1` 返回的节点域名 AAAA 中筛出属于 Cloudflare 官方 IPv6 CIDR、且通过三网 TCP 与 HTTP/TLS 验证的地址，最多追加为 `优选IPv6-1`～`优选IPv6-3`。客户端到边缘使用 IPv6 不要求 VPS 有 IPv6；Cloudflare 仍可通过 IPv4 回源。
+- **可选双栈入口**：安装时默认选择 `ipv4`。选择 `dual` 后仍完整保留上述 6 个 IPv4 节点，并从 `1.1.1.1` 返回的 proxied 节点域名 AAAA 中筛出属于 Cloudflare 官方 IPv6 CIDR、且通过三网 TCP 与 HTTP/TLS 验证的地址，最多追加为 `优选IPv6-1`～`优选IPv6-3`。安装器会开启 Zone 的 IPv6 Compatibility；用户只需保留安装器创建的 proxied A，不要再创建指向 VPS 的 AAAA。客户端到边缘使用 IPv6 不要求 VPS 有 IPv6，Cloudflare 仍可通过 IPv4 回源。
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
@@ -852,9 +869,10 @@ GOOGLE_EGRESS_RESOLVED=ipv4|ipv6
 不提供旧状态字段补全或自动迁移；状态版本或必填策略字段不匹配时需重新安装。
 
 Reality 的客户端节点族根据 VPS 双栈状态和节点 AAAA 实时生成，不单独持久化。Cloudflare 默认下发
-IPv4，选择 dual 时额外下发已验证 IPv6；该客户端入口选择与 VPS 回源、Google 出口策略互相独立。
+IPv4，选择 dual 时额外下发已验证的 Cloudflare 边缘 IPv6；该客户端入口选择与 VPS 回源、Google
+出口策略互相独立。Gcore 客户端入口固定为 IPv4。
 Reality 的 `CDN_PROVIDER` 为空。
-Globalping Token 只在 Cloudflare 模式使用，单独保存在
+Globalping Token 由 Cloudflare 和 Gcore 两种 CDN 模式使用，单独保存在
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`，不会写入状态文件。
 
 默认 `uninstall` 只删除本机资源并保留远端资源。追加 `--purge-cloud` 时，Reality 清理带所有权标记的

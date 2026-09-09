@@ -71,6 +71,22 @@ assert_contains "README documents Shadowrocket as unverified" \
     "${README_CONTENT}" '不把 Shadowrocket 列为本项目的已验证客户端'
 assert_contains "README explains the Cloudflare VPS traffic boundary" \
     "${README_CONTENT}" '用户上下行载荷之和会消耗 VPS 出站额度'
+assert_contains "README distinguishes VPS and client dual-stack" \
+    "${README_CONTENT}" '“VPS 双栈”“客户端入口双栈”和“Google 出站地址族”是三项独立能力'
+assert_contains "README documents automatic Reality client dual-stack" \
+    "${README_CONTENT}" '没有独立的 `dual` 选项'
+assert_contains "README documents the Reality AAAA requirement" \
+    "${README_CONTENT}" 'DNS only 节点域名的全部 AAAA 都指向该 VPS IPv6'
+assert_contains "README documents Cloudflare edge IPv6 independence" \
+    "${README_CONTENT}" 'Cloudflare 边缘 IPv6，不要求 VPS 有 IPv6'
+assert_contains "README forbids a Cloudflare AAAA pointing to the VPS" \
+    "${README_CONTENT}" '不要再创建指向 VPS 的 AAAA'
+assert_contains "README documents the Gcore IPv4-only client entry" \
+    "${README_CONTENT}" 'Gcore 客户端入口固定为 IPv4'
+assert_contains "README documents Globalping for both CDN providers" \
+    "${README_CONTENT}" 'Globalping Token 由 Cloudflare 和 Gcore 两种 CDN 模式使用'
+assert_not_contains "README does not pin Google to stale IPv4-only behavior" \
+    "${README_CONTENT}" '固定绑定 IPv4 出站'
 
 assert_contains "Preparation guide has the expected title" \
     "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
@@ -152,6 +168,12 @@ assert_contains "Preparation guide documents automatic VPS dual-stack detection"
     "${PREPARATION_GUIDE_CONTENT}" '默认 IPv6 路由和可用 HTTPS'
 assert_contains "Preparation guide documents Reality IPv6 firewall prerequisites" \
     "${PREPARATION_GUIDE_CONTENT}" '安全组'
+assert_contains "Preparation guide distinguishes Cloudflare edge dual-stack" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 的 `dual` 只影响客户端到 CDN 边缘'
+assert_contains "Preparation guide forbids a Cloudflare AAAA pointing to the VPS" \
+    "${PREPARATION_GUIDE_CONTENT}" '不要手工创建指向 VPS 的 AAAA'
+assert_contains "Preparation guide documents the Gcore IPv4-only client entry" \
+    "${PREPARATION_GUIDE_CONTENT}" 'Gcore WebSocket | 当前固定下发 IPv4 节点'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \
     "${PREPARATION_GUIDE_CONTENT}" 'Shadowrocket 列为已验证客户端'
 assert_contains "Preparation guide explains outbound-only VPS accounting" \
