@@ -74,6 +74,8 @@ export XHTTP_NODE_NAME="TEST_NODE"
 export CLOUDFLARE_CLIENT_IP_FAMILY="ipv4"
 export GOOGLE_EGRESS_MODE="auto"
 export GOOGLE_EGRESS_RESOLVED="ipv4"
+export CLOUDFLARE_XHTTP_PROBE_ATTEMPTS_OVERRIDE=3
+export CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE=0
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
 touch "${CERT_FILE}" "${KEY_FILE}"
@@ -559,7 +561,73 @@ EOF
     assert_contains "Cloudflare probe sends traffic through local SOCKS" \
         "$(<"${probe_curl_args}")" "--proxy socks5h://127.0.0.1:"
     assert_contains "Cloudflare probe validates external traffic" \
-        "$(<"${probe_curl_args}")" "https://cp.cloudflare.com/generate_204"
+        "$(<"${probe_curl_args}")" "https://www.gstatic.com/generate_204"
+)
+
+# A disabled dashboard-only gRPC setting is diagnosed before the XHTTP timeout.
+grpc_disabled_err=$(
+    (
+        curl() {
+            printf '403\ttext/html'
+        }
+        cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
+    ) 2>&1 || true
+)
+assert_contains "Cloudflare gRPC preflight reports the disabled setting" \
+    "${grpc_disabled_err}" "Cloudflare Zone 尚未开启 gRPC"
+
+# The end-to-end probe tolerates short Cloudflare setting propagation delays.
+(
+    attempt_file="${TMP_DIR}/cloudflare-probe-attempts"
+    printf '0\n' >"${attempt_file}"
+    cloudflare_probe_xhttp() {
+        local attempts
+        attempts=$(( $(<"${attempt_file}") + 1 ))
+        printf '%s\n' "${attempts}" >"${attempt_file}"
+        if ((attempts < 3)); then
+            CLOUDFLARE_XHTTP_PROBE_ERROR="transient"
+            return 1
+        fi
+        return 0
+    }
+    sleep() { :; }
+    cloudflare_wait_for_xhttp "${VLESS_UUID}"
+    assert_equal "Cloudflare XHTTP validation retries transient failures" \
+        "3" "$(<"${attempt_file}")"
+)
+
+# Fresh-install rollback only removes resources recorded as created by that run.
+(
+    rollback_calls="${TMP_DIR}/cloudflare-rollback-api-calls"
+    : >"${rollback_calls}"
+    printf 'new-ruleset-id\n' >"${RUNTIME_TMP}/cloudflare-created-rulesets"
+    CLOUDFLARE_WORKER_CREATED=1
+    CLOUDFLARE_WORKER_DOMAIN_ID="new-worker-domain-id"
+    CLOUDFLARE_CREATED_RULE_REFS=$'existing-ruleset\tnew-rule-ref'
+    CLOUDFLARE_CREATED_ORIGIN_CERT_ID="new-origin-cert-id"
+    CLOUDFLARE_CREATED_DNS_RECORD_ID="new-dns-record-id"
+    cloudflare_delete_subscription_worker_resources() {
+        printf 'worker\t%s\t%s\n' "$1" "$2" >>"${rollback_calls}"
+    }
+    cloudflare_delete_managed_rule() {
+        printf 'rule\t%s\t%s\n' "$1" "$2" >>"${rollback_calls}"
+    }
+    cloudflare_api_request() {
+        printf '%s\t%s\n' "$1" "$2" >>"${rollback_calls}"
+        printf '{}\n'
+    }
+    cloudflare_rollback_fresh_install_resources
+    rollback_output=$(<"${rollback_calls}")
+    assert_contains "Rollback removes the newly created Worker" \
+        "${rollback_output}" $'worker\tnew-worker-domain-id\tEASYALL'
+    assert_contains "Rollback removes only a rule recorded during this run" \
+        "${rollback_output}" $'rule\texisting-ruleset\tnew-rule-ref'
+    assert_contains "Rollback removes the newly created ruleset" \
+        "${rollback_output}" '/zones/test-zone-id/rulesets/new-ruleset-id'
+    assert_contains "Rollback removes the newly created certificate" \
+        "${rollback_output}" '/certificates/new-origin-cert-id'
+    assert_contains "Rollback removes the newly created DNS record" \
+        "${rollback_output}" '/dns_records/new-dns-record-id'
 )
 
 # Cloudflare configuration must not expose a zone-wide prefix cleanup hook.

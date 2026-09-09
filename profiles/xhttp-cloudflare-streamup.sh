@@ -31,6 +31,9 @@ readonly CLOUDFLARE_WORKER_SOURCE_FILE="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../work
 readonly CLOUDFLARE_WORKER_BUILD_SCRIPT="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../scripts/build-worker.mjs"
 readonly CLOUDFLARE_WORKER_READY_ATTEMPTS="${CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE:-30}"
 readonly CLOUDFLARE_WORKER_READY_INTERVAL="${CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE:-2}"
+readonly CLOUDFLARE_XHTTP_PROBE_ATTEMPTS="${CLOUDFLARE_XHTTP_PROBE_ATTEMPTS_OVERRIDE:-6}"
+readonly CLOUDFLARE_XHTTP_PROBE_INTERVAL="${CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE:-5}"
+readonly CLOUDFLARE_XHTTP_PROBE_URL="${CLOUDFLARE_XHTTP_PROBE_URL_OVERRIDE:-https://www.gstatic.com/generate_204}"
 
 # shellcheck source=lib/xhttp-runtime.sh
 SUBSCRIPTION_DEPLOY_DESCRIPTION_OVERRIDE="Cloudflare Worker 聚合；Nginx 仅作私有节点源"
@@ -545,7 +548,7 @@ cloudflare_require_single_record() {
 }
 
 cloudflare_ensure_proxied_a() {
-    local zone=$1 host=$2 ip=$3 records record id content proxied comment type payload
+    local zone=$1 host=$2 ip=$3 records record id content proxied comment type payload result
     for type in A AAAA CNAME; do
         records=$(cloudflare_record_list "${zone}" "${type}" "${host}")
         cloudflare_require_single_record "${records}"
@@ -566,8 +569,11 @@ cloudflare_ensure_proxied_a() {
             return 0
         fi
     done
-    cloudflare_api_request POST "/zones/${zone}/dns_records" \
-        "$(jq -cn --arg name "${host}" --arg content "${ip}" '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')" >/dev/null
+    result=$(cloudflare_api_request POST "/zones/${zone}/dns_records" \
+        "$(jq -cn --arg name "${host}" --arg content "${ip}" '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')")
+    CLOUDFLARE_CREATED_DNS_RECORD_ID=$(jq -r '.id // empty' <<<"${result}")
+    [[ -n "${CLOUDFLARE_CREATED_DNS_RECORD_ID}" ]] \
+        || die "Cloudflare 未返回新建 DNS 记录 ID"
 }
 
 cloudflare_validate_zones() {
@@ -670,6 +676,7 @@ cloudflare_issue_origin_certificate() {
     result=$(cloudflare_api_request POST '/certificates' "$(jq -cn --arg csr "$(<"${csr}")" --argjson hosts "${hosts}" --argjson validity "${CLOUDFLARE_ORIGIN_VALIDITY_DAYS}" '{hostnames:$hosts,requested_validity:$validity,request_type:"origin-ecc",csr:$csr}')")
     cert=$(jq -r '.certificate // empty' <<<"${result}"); CLOUDFLARE_ORIGIN_CERT_ID=$(jq -r '.id // empty' <<<"${result}"); expires=$(jq -r '.expires_on // empty' <<<"${result}")
     [[ -n "${cert}" && -n "${CLOUDFLARE_ORIGIN_CERT_ID}" && -n "${expires}" ]] || die "Cloudflare 未返回 Origin CA 证书、ID 或到期时间"
+    CLOUDFLARE_CREATED_ORIGIN_CERT_ID=${CLOUDFLARE_ORIGIN_CERT_ID}
     printf '%s\n' "${cert}" >"${RUNTIME_TMP}/origin.pem"
     openssl verify -CAfile "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" \
         "${RUNTIME_TMP}/origin.pem" >/dev/null \
@@ -735,7 +742,9 @@ cloudflare_managed_ruleset() {
         || die "Cloudflare phase ${phase} 存在多个 zone ruleset，拒绝猜测"
     if ((count == 1)); then jq -r '.[0].id' <<<"${matches}"; return; fi
     id=$(cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/rulesets" "$(jq -cn --arg name "${name}" --arg phase "${phase}" '{name:$name,kind:"zone",phase:$phase,rules:[]}')" | jq -r '.id // empty')
-    [[ -n "${id}" ]] || die "Cloudflare 未返回 ruleset ID"; printf '%s' "${id}"
+    [[ -n "${id}" ]] || die "Cloudflare 未返回 ruleset ID"
+    printf '%s\n' "${id}" >>"${RUNTIME_TMP}/cloudflare-created-rulesets"
+    printf '%s' "${id}"
 }
 
 cloudflare_upsert_rule() {
@@ -743,8 +752,17 @@ cloudflare_upsert_rule() {
     rules=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
     matches=$(jq -c --arg ref "${ref}" '[.rules[]? | select(.ref==$ref)]' <<<"${rules}"); count=$(jq length <<<"${matches}")
     ((count <= 1)) || die "Cloudflare ruleset 中有多个 easy_all ref ${ref}，拒绝覆盖"
-    if ((count == 1)); then id=$(jq -r '.[0].id' <<<"${matches}"); cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${id}" "${payload}" >/dev/null
-    else cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules" "${payload}" >/dev/null; fi
+    if ((count == 1)); then
+        id=$(jq -r '.[0].id' <<<"${matches}")
+        cloudflare_api_request PATCH \
+            "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${id}" \
+            "${payload}" >/dev/null
+    else
+        cloudflare_api_request POST \
+            "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules" \
+            "${payload}" >/dev/null
+        CLOUDFLARE_CREATED_RULE_REFS+="${CLOUDFLARE_CREATED_RULE_REFS:+$'\n'}${ruleset}"$'\t'"${ref}"
+    fi
 }
 
 cloudflare_delete_managed_rule() {
@@ -804,12 +822,13 @@ cloudflare_configure_cdn() {
     fi
     cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/origin_max_http_version" \
         "$(jq -cn '{value:"2"}')" >/dev/null
-    warn "请在 Cloudflare 控制台的 Network → gRPC 中手动开启 gRPC；该开关当前没有可用的 Zone Settings API"
+    warn "Cloudflare gRPC 只能在控制台 Network → gRPC 中手动开启，Zone Settings API 不支持该开关"
 }
 
 cloudflare_validate_cdn_health() {
     local probe_uuid=""
     cloudflare_wait_for_health "${VLESS_CDN_DOMAIN}" "CDN"
+    cloudflare_validate_grpc_edge "${VLESS_CDN_DOMAIN}"
     if quota_enabled; then
         probe_uuid=$(quota_active_accounts_json | jq -er 'first(to_entries[]).value.uuid') \
             || {
@@ -820,9 +839,43 @@ cloudflare_validate_cdn_health() {
         probe_uuid=${VLESS_UUID}
     fi
     if [[ -n "${probe_uuid}" ]]; then
-        cloudflare_probe_xhttp "${probe_uuid}" \
-            || die "Cloudflare XHTTP 端到端验收失败：${CLOUDFLARE_XHTTP_PROBE_ERROR:-unknown}"
+        cloudflare_wait_for_xhttp "${probe_uuid}"
     fi
+}
+
+cloudflare_validate_grpc_edge() {
+    local domain=$1 body_file metadata="" curl_status=0 http_code="" content_type=""
+    body_file="${RUNTIME_TMP}/cloudflare-grpc-check-body"
+    if metadata=$(curl -sS --http2 --proto '=https' --tlsv1.2 \
+        --connect-timeout 5 --max-time 15 --noproxy '*' \
+        -X POST -H 'Content-Type: application/grpc' -H 'TE: trailers' \
+        --data-binary '' -o "${body_file}" \
+        -w $'%{http_code}\t%{content_type}' \
+        "https://${domain}/easy_all-health" 2>/dev/null); then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    rm -f -- "${body_file}"
+    IFS=$'\t' read -r http_code content_type <<<"${metadata}"
+    ((curl_status == 0)) \
+        || die "Cloudflare gRPC 边缘预检连接失败：curl=${curl_status},HTTP=${http_code:-000}"
+    if [[ "${http_code}" == "403" && "${content_type}" == text/html* ]]; then
+        die "Cloudflare Zone 尚未开启 gRPC；请在控制台 Network → gRPC 开启，等待生效后重新安装"
+    fi
+    [[ "${http_code}" == "200" ]] \
+        || die "Cloudflare gRPC 边缘预检失败：HTTP=${http_code:-000},Content-Type=${content_type:-unknown}"
+    success "Cloudflare gRPC 边缘预检通过"
+}
+
+cloudflare_wait_for_xhttp() {
+    local probe_uuid=$1 attempt
+    for ((attempt = 1; attempt <= CLOUDFLARE_XHTTP_PROBE_ATTEMPTS; attempt += 1)); do
+        cloudflare_probe_xhttp "${probe_uuid}" && return 0
+        ((attempt == CLOUDFLARE_XHTTP_PROBE_ATTEMPTS)) && break
+        sleep "${CLOUDFLARE_XHTTP_PROBE_INTERVAL}"
+    done
+    die "Cloudflare XHTTP 端到端验收失败（已重试 ${CLOUDFLARE_XHTTP_PROBE_ATTEMPTS} 次）：${CLOUDFLARE_XHTTP_PROBE_ERROR:-unknown}"
 }
 
 cloudflare_probe_xhttp() {
@@ -844,7 +897,7 @@ cloudflare_probe_xhttp() {
     jq -n --arg address "${VLESS_CDN_DOMAIN}" --arg host "${VLESS_CDN_DOMAIN}" \
         --arg uuid "${probe_uuid}" --arg path "$(xhttp_client_path)" \
         --argjson port "${probe_port}" '{
-          log:{loglevel:"error"},
+          log:{loglevel:"warning"},
           inbounds:[{
             tag:"cloudflare-xhttp-probe-socks",listen:"127.0.0.1",port:$port,
             protocol:"socks",settings:{udp:false}
@@ -896,7 +949,7 @@ cloudflare_probe_xhttp() {
     fi
     if response=$(curl -sS --noproxy '' --proxy "socks5h://127.0.0.1:${probe_port}" \
         --connect-timeout 10 --max-time 30 -w $'\n%{http_code}' \
-        'https://cp.cloudflare.com/generate_204' 2>>"${probe_log}"); then
+        "${CLOUDFLARE_XHTTP_PROBE_URL}" 2>>"${probe_log}"); then
         curl_status=0
     else
         curl_status=$?
@@ -1626,7 +1679,7 @@ refresh_cloudflare_cdn_ips() {
 
 rollback_fresh_install() {
     if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" ]]; then
-        (UNINSTALL_PURGE_CLOUD=1 purge_cloudflare_resources_before_uninstall 1) \
+        (cloudflare_rollback_fresh_install_resources) \
             || warn "首次安装创建的 Cloudflare 资源未能全部自动清理"
     fi
     stop_services
@@ -1641,6 +1694,38 @@ rollback_fresh_install() {
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
     cloudflare_clear_api_token
+}
+
+cloudflare_rollback_fresh_install_resources() {
+    local ruleset ref id
+    if [[ "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ]]; then
+        cloudflare_delete_subscription_worker_resources \
+            "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${CLOUDFLARE_WORKER_NAME:-}" \
+            || warn "回滚本次新建的 Cloudflare Worker 失败"
+    fi
+    while IFS=$'\t' read -r ruleset ref; do
+        [[ -n "${ruleset}" && -n "${ref}" ]] || continue
+        cloudflare_delete_managed_rule "${ruleset}" "${ref}"
+    done <<<"${CLOUDFLARE_CREATED_RULE_REFS:-}"
+    if [[ -f "${RUNTIME_TMP}/cloudflare-created-rulesets" ]]; then
+        while IFS= read -r id; do
+            [[ -n "${id}" ]] || continue
+            cloudflare_api_request DELETE \
+                "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${id}" >/dev/null \
+                || warn "回滚本次新建的 Cloudflare ruleset 失败：${id}"
+        done <"${RUNTIME_TMP}/cloudflare-created-rulesets"
+    fi
+    if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
+        cloudflare_api_request DELETE \
+            "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null \
+            || warn "回滚本次新建的 Origin CA 证书失败"
+    fi
+    if [[ -n "${CLOUDFLARE_CREATED_DNS_RECORD_ID:-}" ]]; then
+        cloudflare_api_request DELETE \
+            "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${CLOUDFLARE_CREATED_DNS_RECORD_ID}" \
+            >/dev/null || warn "回滚本次新建的 Cloudflare DNS 记录失败"
+    fi
+    success "本次首次安装新建的 Cloudflare 资源已回滚"
 }
 
 install_all() {

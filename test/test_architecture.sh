@@ -190,7 +190,9 @@ gcore_refresh_line=$(grep -n 'refresh_.*globalping.*cache' <<<"${gcore_install}"
 [[ -n "${gcore_save_line}" && -n "${gcore_refresh_line}" \
     && "${gcore_save_line}" -lt "${gcore_refresh_line}" ]] \
     || fail "Gcore must persist cloud ownership before Globalping"
-[[ "$(sed -n '/^rollback_fresh_install()/,/^}/p' "${CLOUDFLARE_PROFILE}")" == *'purge_cloudflare_resources_before_uninstall'* \
+cloudflare_rollback_body=$(sed -n '/^rollback_fresh_install()/,/^}/p' "${CLOUDFLARE_PROFILE}")
+[[ "${cloudflare_rollback_body}" == *'cloudflare_rollback_fresh_install_resources'* \
+    && "${cloudflare_rollback_body}" != *'purge_cloudflare_resources_before_uninstall'* \
     && "$(sed -n '/^rollback_fresh_install()/,/^}/p' "${GCORE_PROFILE}")" == *'gcore_purge_managed_resources'* ]] \
     || fail "CDN fresh rollback must attempt provider resource cleanup before local rollback"
 [[ "$(<"${ROOT_DIR}/lib/subscription-auth.sh")" == *'access_log off;'* ]] \
