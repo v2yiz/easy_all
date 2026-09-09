@@ -209,8 +209,9 @@ cloudflare_validate_worker_access() {
     count=$(jq --arg name "${CLOUDFLARE_WORKER_NAME}" \
         '[.[] | select(.id == $name)] | length' <<<"${scripts}")
     ((count <= 1)) || die "Cloudflare 返回多个同名 Worker：${CLOUDFLARE_WORKER_NAME}"
-    if [[ -z "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" && "${count}" != "0" ]]; then
-        die "Worker ${CLOUDFLARE_WORKER_NAME} 已存在；请更换名称或先删除旧 Worker"
+    CLOUDFLARE_WORKER_EXISTS=${count}
+    if ((count == 1)); then
+        info "复用 Worker ${CLOUDFLARE_WORKER_NAME}，将更新订阅脚本"
     fi
     if [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" && "${count}" != "1" ]]; then
         die "状态中的 Worker ${CLOUDFLARE_WORKER_NAME} 不存在；拒绝创建来源不明的新 Worker"
@@ -299,8 +300,9 @@ cloudflare_upload_subscription_worker() {
             printf '%s\n' "${response:-<empty>}" >&2
             die "Cloudflare Worker 上传失败：PUT ${path}；请根据上方 Cloudflare API 错误码和消息排查"
         }
-    [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
-        || CLOUDFLARE_WORKER_CREATED=1
+    if [[ "${CLOUDFLARE_WORKER_EXISTS:-1}" == "0" ]]; then
+        CLOUDFLARE_WORKER_CREATED=1
+    fi
 }
 
 cloudflare_attach_subscription_worker_domain() {
@@ -336,6 +338,7 @@ cloudflare_attach_subscription_worker_domain() {
     CLOUDFLARE_WORKER_DOMAIN_ID=$(jq -r '.id // empty' <<<"${result}")
     [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID}" ]] \
         || die "Cloudflare 未返回 Worker 自定义域名 ID"
+    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=${CLOUDFLARE_WORKER_DOMAIN_ID}
 }
 
 cloudflare_deploy_subscription_worker() {
@@ -1733,6 +1736,10 @@ cloudflare_rollback_fresh_install_resources() {
         (cloudflare_delete_subscription_worker_resources \
             "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${CLOUDFLARE_WORKER_NAME:-}") \
             || { warn "回滚本次新建的 Cloudflare Worker 失败"; failed=1; }
+    elif [[ -n "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}" ]]; then
+        (cloudflare_api_request DELETE \
+            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}" >/dev/null) \
+            || { warn "回滚本次新建的 Worker 自定义域名失败"; failed=1; }
     fi
     while IFS=$'\t' read -r ruleset ref; do
         [[ -n "${ruleset}" && -n "${ref}" ]] || continue

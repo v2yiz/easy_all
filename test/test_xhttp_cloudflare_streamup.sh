@@ -358,6 +358,34 @@ fi
         "new-worker-domain-id" "${CLOUDFLARE_WORKER_DOMAIN_ID}"
     assert_contains "Worker custom domain binds the selected service" \
         "$(<"${api_calls}")" '"service":"easyall"'
+    assert_equal "New domain is tracked for rollback" new-worker-domain-id "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}"
+    unset CLOUDFLARE_CREATED_WORKER_DOMAIN_ID
+    cloudflare_api_request() {
+        [[ "$1" == GET ]] || fail "Existing domain must not be recreated"
+        printf '[{"id":"existing-domain","hostname":"sub.example.com","service":"easyall"}]\n'
+    }
+    cloudflare_attach_subscription_worker_domain
+    assert_equal "Matching domain is reused" existing-domain "${CLOUDFLARE_WORKER_DOMAIN_ID}"
+    assert_equal "Reused domain is not marked as new" '' "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}"
+)
+
+# Reusing a script must not mark it as newly created, even without a saved domain ID.
+(
+    CLOUDFLARE_WORKER_DOMAIN_ID=""
+    CLOUDFLARE_API_TOKEN=test-api-token-placeholder
+    CLOUDFLARE_WORKER_BUILD_CURRENT=1
+    cloudflare_api_request() { printf '%s\n' "${mock_scripts}"; }
+    curl() { printf '{"success":true}\n'; }
+    for mock_scripts in '[{"id":"easyall"}]' '[]'; do
+        unset CLOUDFLARE_WORKER_CREATED
+        cloudflare_validate_worker_access
+        cloudflare_upload_subscription_worker
+        if [[ "${mock_scripts}" == '[]' ]]; then
+            assert_equal "New Worker is tracked for rollback" 1 "${CLOUDFLARE_WORKER_CREATED:-0}"
+        else
+            assert_equal "Reused Worker is retained on rollback" 0 "${CLOUDFLARE_WORKER_CREATED:-0}"
+        fi
+    done
 )
 
 # Dual mode keeps all IPv4 nodes and appends independently addressable IPv6 nodes.
@@ -729,6 +757,18 @@ assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private
         "${rollback_output}" '/certificates/new-origin-cert-id'
     assert_contains "Rollback removes the newly created DNS record" \
         "${rollback_output}" '/dns_records/new-dns-record-id'
+    : >"${rollback_calls}"
+    CLOUDFLARE_WORKER_CREATED=0
+    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=new-domain-on-existing-worker
+    cloudflare_rollback_fresh_install_resources
+    assert_contains "Rollback detaches only the new domain on a reused Worker" \
+        "$(<"${rollback_calls}")" '/workers/domains/new-domain-on-existing-worker'
+    assert_not_contains "Rollback never deletes the reused Worker" "$(<"${rollback_calls}")" $'worker\t'
+    unset CLOUDFLARE_CREATED_WORKER_DOMAIN_ID
+    : >"${rollback_calls}"
+    cloudflare_rollback_fresh_install_resources
+    assert_not_contains "Existing Worker domain survives rollback" "$(<"${rollback_calls}")" '/workers/domains/'
+    CLOUDFLARE_WORKER_CREATED=1
     : >"${rollback_calls}"
     cloudflare_delete_subscription_worker_resources() { exit 1; }
     if cloudflare_rollback_fresh_install_resources >"${TMP_DIR}/rollback-failure" 2>&1; then

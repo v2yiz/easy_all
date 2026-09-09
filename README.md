@@ -448,7 +448,7 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 Cloudflare 模式部署订阅时必须使用与节点不同的同 Zone 一级子域，默认建议为 `sub.<Zone>`；
 安装器通过 Workers Custom Domain API 绑定，不为它创建指向 VPS 的 A 记录。Gcore 模式可直接复用
 节点域名，也可输入独立订阅域名。脚本只接受当前 Provider 已托管、已完成权威委派的 Zone；已有
-其他 A、AAAA、CNAME、Worker 或 Custom Domain 时停止，不接管也不覆盖。
+其他 A、AAAA、CNAME 记录或自定义域名绑定到其他 Worker 时停止；同名 Worker 和匹配的已有绑定会复用。
 
 用户清单统一通过 `easy_all update-sub` 管理。该命令接收的是**完整用户清单**：保留的用户必须
 继续写入，新增用户名会创建用户，省略已有用户名会删除用户。操作完成后运行
@@ -758,7 +758,7 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
-  - Worker 名称可在安装时指定，默认 `easyall`；发现同名 Worker 时立即停止，不覆盖现有脚本。
+  - Worker 名称可在安装时指定，默认 `easyall`；发现同名 Worker 时复用并更新订阅脚本；首次安装失败不会删除复用的 Worker，已更新的脚本不会恢复旧版本。
   - 选择聚合时输入一份不含 `vpsSubUrl` 的 `config.local.json`。安装器保留其中的 `nodes`、`externalSubUrl` 和 `fallbackCdnNodes`；如果包含 `allowedTokens`，它会覆盖之前在安装器中设置的用户 Token。随后注入本机生成的私有 `vpsSubUrl`、源密钥和鉴权策略。
   - 完整配置会交给 `scripts/build-worker.mjs` 校验并构建，而不是由 shell 拼接 Worker；构建成功后自动上传、绑定 Custom Domain 并输出订阅链接。
   - 公开请求只进入安装器创建的 Cloudflare Worker。Worker 校验 Token 格式后，将同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥转发给节点域名上的 Nginx，由 Nginx 执行最终用户/配额鉴权；直接请求 Nginx 源返回 `404`。
