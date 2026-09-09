@@ -266,30 +266,31 @@ sudo easy_all subscription
 ## 安装脑图
 
 ```mermaid
-flowchart TD
-    A[easy_all install] --> B{先选择安装模式}
+graph TD
+    A["easy_all install"] --> B{"选择安装模式"}
 
-    B -->|1 默认| R0[直连 Reality]
-    R0 --> R1[系统预检 / 端口与旧安装冲突检查]
-    R1 --> R2[备份 / 依赖 / SSH 启动保障 / XanMod LTS BBRv3 / 重启策略]
-    R2 --> R3[探测公网 IPv6 / 选择 IPv4 或双栈 / 连接地址 / SNI / 订阅端口]
-    R3 --> R4{订阅输出选择}
-    R4 -->|部署| R5[订阅域名、文件名、Token 或用户配额]
-    R4 -->|仅节点| R6[不收集订阅服务参数]
-    R5 --> R7[公共运行时：下载 Xray / 配置 UFW / 安装并验收 Xray]
+    B -->|1| R0["Reality（默认，优化线路推荐）"]
+    R0 --> R1["1/9 系统预检、协议与冲突检查"]
+    R1 --> R2["2/9 备份、依赖、SSH、BBRv3 与重启策略"]
+    R2 --> R3["3/9 自动探测双栈，收集连接地址、SNI、订阅端口与 Google 出站"]
+    R3 --> R4{"4/9 订阅输出选择"}
+    R4 -->|部署| R5["收集订阅域名、文件名、Token 或用户配额"]
+    R4 -->|仅节点| R6["不收集订阅服务参数"]
+    R5 --> R7["5-7/9 准备 Xray、配置 UFW、安装并验收 Reality"]
     R6 --> R7
-    R7 --> R8[应用已选输出：部署 Nginx/证书/订阅，或清理订阅服务]
-    R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]
-    R9 --> Z[输出节点与订阅信息]
+    R7 --> R8["8/9 部署或清理订阅服务"]
+    R8 --> R9["9/9 完成证书轮换、保存状态、注册命令与任务"]
+    R9 --> Z["输出节点、订阅、BBRv3 状态与重启提示"]
 
-    B -->|2| C0[Cloudflare CDN 精选 IP 纯 XHTTP stream-up]
-    C0 --> C1[系统预检 / 冲突检查 / 备份]
-    C1 --> C2[Cloudflare Zone Token / 单一 proxied A / Universal SSL / Origin CA]
-    C2 --> C3[Full strict / HTTP2 gRPC / Transform Rule Origin Key / Cloudflare IP 防火墙]
-    C3 --> C4[筛选 6 个已验证 IPv4]
-    C4 --> C5[Nginx 私有节点源 / 上传 Worker / 绑定独立订阅域名]
-    C5 --> C6[验收 Worker 到节点源的同 Zone fetch / 保存状态 / 注册每小时刷新]
-    C6 --> Z
+    B -->|2| C0["Cloudflare CDN 精选 IP（非优化线路推荐）"]
+    C0 --> C1["系统预检、冲突检查、备份、依赖、SSH、BBRv3 与重启策略"]
+    C1 --> C2["收集 Google 出站、节点域名、Globalping、订阅与 Worker 参数"]
+    C2 --> C3["配置 DNS、Origin CA、UFW、Xray 与 Nginx 私有节点源"]
+    C3 --> C4["配置并验收 Full strict、HTTP2、gRPC、回源规则与 XHTTP"]
+    C4 --> C5["Globalping 筛选 6 个 IPv4，生成并验收源订阅"]
+    C5 --> C6["构建上传 Worker，绑定独立订阅域名并完成聚合验收"]
+    C6 --> C7["完成证书轮换、保存状态、注册命令与定时任务"]
+    C7 --> Z
 ```
 
 图中是安装器的实际执行顺序。两种模式都只询问一次订阅输出；后续步骤只应用已保存的选择，不会再次询问。Cloudflare 模式部署订阅时必须使用与节点不同的一级子域绑定 Worker。

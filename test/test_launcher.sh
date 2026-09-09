@@ -130,15 +130,19 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" != *"AWS"* ]] \
     || fail "install guide does not describe the supported installation branches and defaults"
 readme=$(<"${ROOT_DIR}/README.md")
-[[ "${readme}" == *'A[easy_all install] --> B{先选择安装模式}'* ]] \
+[[ "${readme}" == *'A["easy_all install"] --> B{"选择安装模式"}'* ]] \
     || fail "README install flow must choose the mode before profile initialization"
-[[ "${readme}" == *'R3 --> R4{订阅输出选择}'* \
-    && "${readme}" == *'R4 -->|部署| R5[订阅域名、文件名、Token 或用户配额]'* \
-    && "${readme}" == *'R4 -->|仅节点| R6[不收集订阅服务参数]'* \
-    && "${readme}" == *'R5 --> R7[公共运行时：下载 Xray / 配置 UFW / 安装并验收 Xray]'* \
+[[ "${readme}" == *'R3 --> R4{"4/9 订阅输出选择"}'* \
+    && "${readme}" == *'R4 -->|部署| R5["收集订阅域名、文件名、Token 或用户配额"]'* \
+    && "${readme}" == *'R4 -->|仅节点| R6["不收集订阅服务参数"]'* \
+    && "${readme}" == *'R5 --> R7["5-7/9 准备 Xray、配置 UFW、安装并验收 Reality"]'* \
     && "${readme}" == *'R6 --> R7'* \
-    && "${readme}" == *'R7 --> R8[应用已选输出：部署 Nginx/证书/订阅，或清理订阅服务]'* \
-    && "${readme}" == *'R8 --> R9[保存最终状态 / 注册 easy_all / 配置配额任务]'* \
+    && "${readme}" == *'R7 --> R8["8/9 部署或清理订阅服务"]'* \
+    && "${readme}" == *'R8 --> R9["9/9 完成证书轮换、保存状态、注册命令与任务"]'* \
+    && "${readme}" == *'C1 --> C2["收集 Google 出站、节点域名、Globalping、订阅与 Worker 参数"]'* \
+    && "${readme}" == *'C4 --> C5["Globalping 筛选 6 个 IPv4，生成并验收源订阅"]'* \
+    && "${readme}" == *'C5 --> C6["构建上传 Worker，绑定独立订阅域名并完成聚合验收"]'* \
+    && "${readme}" != *'选择 IPv4 或双栈'* \
     && "${readme}" != *'AWS'* \
     && "${readme}" != *'CloudFront'* \
     && "${readme}" != *'Route 53'* ]] \
