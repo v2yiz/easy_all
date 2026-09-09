@@ -148,7 +148,7 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "$(<"${ROOT_DIR}/easy_all")" != *'Direct - Reality'* ]] \
     || fail "install mode prompt must be Chinese-only and explain the enter default"
 [[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP - 纯 XHTTP stream-up'* \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP（非优化线路推荐）'* \
     && "$(<"${ROOT_DIR}/easy_all")" == *'月度出站额度通常是主要上限，但不与有效载荷严格等值'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* ]] \
     || fail "install mode prompt must explain line recommendations"
@@ -177,6 +177,11 @@ assert_equal "Reality state selects Reality profile" "reality" "$(detect_install
 
 printf 'STATE_VERSION=9\nPROTOCOL=cloudflare-streamup\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare streamup state selects cloudflare-streamup" "cloudflare-streamup" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=8\nPROTOCOL=cloudflare-streamup\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
+assert_failure_contains "stale Cloudflare state explains reinstall prerequisite" \
+    "如需全新安装，请先执行 easy_all uninstall" \
+    detect_installed_mode
 
 printf 'STATE_VERSION=9\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_failure_contains "legacy singbox-cf state is rejected" \

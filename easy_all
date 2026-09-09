@@ -146,11 +146,13 @@ detect_installed_mode() {
         state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
         case "${protocol}" in
         reality)
-            [[ "${state_version}" == "7" ]] || launcher_die "Reality 状态版本无效；仅支持当前全新安装生成的状态"
+            [[ "${state_version}" == "7" ]] \
+                || launcher_die "Reality 状态版本无效（当前：${state_version:-缺失}，要求：7）；不支持原地升级。如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
             printf 'reality\n'
             ;;
         cloudflare-streamup)
-            [[ "${state_version}" == "9" ]] || launcher_die "状态版本无效；仅支持当前全新安装生成的状态"
+            [[ "${state_version}" == "9" ]] \
+                || launcher_die "Cloudflare 状态版本无效（当前：${state_version:-缺失}，要求：9）；不支持原地升级。如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
             printf 'cloudflare-streamup\n'
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
@@ -164,7 +166,7 @@ choose_install_mode() {
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
-    printf '  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）\n' >&2
+    printf '  2. Cloudflare CDN 精选 IP（非优化线路推荐）\n' >&2
     printf '     流量实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是主要上限，但不与有效载荷严格等值\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in

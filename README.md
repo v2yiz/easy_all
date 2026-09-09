@@ -143,7 +143,7 @@ sudo ./easy_all install
 ```text
 请选择安装模式：
   1. 直连 - Reality（优化线路推荐）
-  2. Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）
+  2. Cloudflare CDN 精选 IP（非优化线路推荐）
  请选择 [1]（直接回车使用默认值）:
 ```
 
