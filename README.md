@@ -283,13 +283,13 @@ graph TD
     R9 --> Z["输出节点、订阅、BBRv3 状态与重启提示"]
 
     B -->|2| C0["Cloudflare CDN 精选 IP（非优化线路推荐）"]
-    C0 --> C1["系统预检、冲突检查、备份、依赖、SSH、BBRv3 与重启策略"]
-    C1 --> C2["收集 Google 出站、节点域名、Globalping、订阅与 Worker 参数"]
-    C2 --> C3["配置 DNS、Origin CA、UFW、Xray 与 Nginx 私有节点源"]
-    C3 --> C4["配置并验收 Full strict、HTTP2、gRPC、回源规则与 XHTTP"]
-    C4 --> C5["Globalping 筛选 6 个 IPv4，生成并验收源订阅"]
-    C5 --> C6["构建上传 Worker，绑定独立订阅域名并完成聚合验收"]
-    C6 --> C7["完成证书轮换、保存状态、注册命令与定时任务"]
+    C0 --> C1["1/7 系统预检、冲突检查、备份、依赖、SSH、BBRv3 与重启策略"]
+    C1 --> C2["2/7 收集 Google 出站、节点域名、Globalping、订阅与 Worker 参数"]
+    C2 --> C3["3/7 配置 DNS、Origin CA、UFW、Xray 与 Nginx 私有节点源"]
+    C3 --> C4["4/7 配置并验收 Full strict、HTTP2、gRPC、回源规则与 XHTTP"]
+    C4 --> C5["5/7 Globalping 筛选 6 个 IPv4，生成并验收源订阅"]
+    C5 --> C6["6/7 构建上传 Worker，绑定独立订阅域名并完成聚合验收"]
+    C6 --> C7["7/7 完成证书轮换、保存状态、注册命令与定时任务"]
     C7 --> Z
 ```
 

@@ -139,9 +139,9 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "${readme}" == *'R6 --> R7'* \
     && "${readme}" == *'R7 --> R8["8/9 部署或清理订阅服务"]'* \
     && "${readme}" == *'R8 --> R9["9/9 完成证书轮换、保存状态、注册命令与任务"]'* \
-    && "${readme}" == *'C1 --> C2["收集 Google 出站、节点域名、Globalping、订阅与 Worker 参数"]'* \
-    && "${readme}" == *'C4 --> C5["Globalping 筛选 6 个 IPv4，生成并验收源订阅"]'* \
-    && "${readme}" == *'C5 --> C6["构建上传 Worker，绑定独立订阅域名并完成聚合验收"]'* \
+    && "${readme}" == *'C1 --> C2["2/7 收集 Google 出站、节点域名、Globalping、订阅与 Worker 参数"]'* \
+    && "${readme}" == *'C4 --> C5["5/7 Globalping 筛选 6 个 IPv4，生成并验收源订阅"]'* \
+    && "${readme}" == *'C5 --> C6["6/7 构建上传 Worker，绑定独立订阅域名并完成聚合验收"]'* \
     && "${readme}" != *'选择 IPv4 或双栈'* \
     && "${readme}" != *'AWS'* \
     && "${readme}" != *'CloudFront'* \
