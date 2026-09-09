@@ -137,6 +137,15 @@ assert_equal "Anchored request specifies magic location" "base-meas-id-12345" \
 # ==============================================================================
 # Test 4: TLS Verification Gate & Result Parsing
 # ==============================================================================
+for target in 104.16.1.1 2606:4700::6810:101; do
+    tls_request=$(cloudflare_globalping_tls_measurement_request "${target}" 4134 node.example.com)
+    assert_equal "TLS probe dials the candidate IP" "${target}" "$(jq -r '.target' <<<"${tls_request}")"
+    assert_equal "TLS probe sets SNI and HTTP Host via request.host" "node.example.com" \
+        "$(jq -r '.measurementOptions.request.host' <<<"${tls_request}")"
+    assert_equal "TLS probe checks the health endpoint" "/easy_all-health" \
+        "$(jq -r '.measurementOptions.request.path' <<<"${tls_request}")"
+done
+
 tls_mock_file="${TMP_DIR}/tls-mock.ndjson"
 cat <<'TLS_EOF' >"${tls_mock_file}"
 {"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":42.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
@@ -144,15 +153,16 @@ cat <<'TLS_EOF' >"${tls_mock_file}"
 {"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"}}}]}}
 {"ip":"104.16.1.4","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":50.0,"measurement":{"results":[{"result":{"status":"failed","statusCode":0,"error":"connection timeout"}}]}}
 {"ip":"104.16.1.5","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":48.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":502,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.6","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":40,"measurement":{"results":[{"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
 TLS_EOF
 
 parsed_tls=$(cloudflare_parse_tls_observations "${tls_mock_file}")
 parsed_count=$(wc -l <<<"${parsed_tls}" | tr -d ' ')
-assert_equal "2 valid edge results pass TLS parsing" "2" "${parsed_count}"
+assert_equal "Only authenticated healthy edge results pass TLS parsing" "1" "${parsed_count}"
 
 passing_ips=$(jq -r '.ip' <<<"${parsed_tls}" | tr '\n' ' ')
 [[ "${passing_ips}" == *"104.16.1.1 "* ]] || fail "104.16.1.1 should pass TLS parsing"
-[[ "${passing_ips}" == *"104.16.1.2 "* ]] || fail "104.16.1.2 should pass TLS parsing"
+[[ "${passing_ips}" != *"104.16.1.2 "* ]] || fail "104.16.1.2 (wrong certificate name) must be rejected"
 [[ "${passing_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (UNABLE_TO_VERIFY_LEAF_SIGNATURE) must be rejected"
 [[ "${passing_ips}" != *"104.16.1.4 "* ]] || fail "104.16.1.4 (failed) must be rejected"
 [[ "${passing_ips}" != *"104.16.1.5 "* ]] || fail "104.16.1.5 (HTTP 502) must be rejected"

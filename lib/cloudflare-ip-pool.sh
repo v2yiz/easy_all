@@ -423,9 +423,7 @@ cloudflare_globalping_tls_measurement_request() {
             request: {
               method: "HEAD",
               path: "/easy_all-health",
-              headers: {
-                Host: $host
-              }
+              host: $host
             }
           }
         }'
@@ -473,8 +471,8 @@ cloudflare_parse_tls_observations() {
             .measurement.results[]?
             | select(.result.status == "finished")
             | select(.result.tls != null and .result.tls.protocol != null and .result.tls.protocol != "")
-            | select(.result.tls.authorized == true or .result.tls.error == "ERR_TLS_CERT_ALTNAME_INVALID")
-            | select((.result.statusCode // 0) > 0 and (.result.statusCode // 0) < 500)
+            | select(.result.tls.authorized == true)
+            | select(.result.statusCode == 200)
         )
         | {
             ip: .ip,
@@ -722,6 +720,10 @@ cloudflare_build_official_pool_cache() {
 
     count=$(jq 'length' "${preliminary_file}")
     if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
+        warn "Globalping HTTP/TLS 有效候选：$(jq -sr '
+            [4134,4837,9808][] as $asn
+            | "AS\($asn)=\([.[] | select(.carrier_asn == $asn) | .ip] | unique | length)"
+        ' "${tls_observations_file}" | tr '\n' ' ')；需三网各 2 个且 IP 不重复"
         if [[ -s "${GLOBALPING_CACHE_FILE}" ]]; then
             warn "Cloudflare 官方 IP 池未选满 ${CLOUDFLARE_CANDIDATE_LIMIT} 个三网独立有效候选（实际 ${count} 个），保留现有缓存"
         else
