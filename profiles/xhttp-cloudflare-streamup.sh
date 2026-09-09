@@ -62,7 +62,7 @@ cloudflare_clear_api_token() {
 }
 
 cloudflare_api_request() {
-    local method=$1 path=$2 payload=${3:-} response headers payload_file
+    local method=$1 path=$2 payload=${3:-} response headers payload_file status
     [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "缺少 CLOUDFLARE_API_TOKEN"
     headers="${RUNTIME_TMP}/cloudflare-api-headers"
     printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
@@ -72,13 +72,23 @@ cloudflare_api_request() {
         payload_file="${RUNTIME_TMP}/cloudflare-api-payload"
         printf '%s' "${payload}" >"${payload_file}"
         chmod 0600 "${payload_file}"
-        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
             -H "@${headers}" \
             --data-binary "@${payload_file}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     else
-        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
             -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     fi
+    status=${response##*$'\n'}
+    response=${response%$'\n'*}
+    if [[ "${method}" == "DELETE" && "${status}" == "204" && -z "${response}" ]]; then
+        printf 'null\n'
+        return 0
+    fi
+    [[ "${status}" == 2[0-9][0-9] ]] || {
+        printf '%s\n' "${response:-<empty>}" >&2
+        die "Cloudflare API HTTP ${status:-000}：${method} ${path}"
+    }
     jq -e '.success == true' <<<"${response}" >/dev/null \
         || { printf '%s\n' "${response:-<empty>}" >&2; die "Cloudflare API 返回错误：${method} ${path}"; }
     jq -c '.result' <<<"${response}"
@@ -374,7 +384,7 @@ cloudflare_delete_subscription_worker_resources() {
 }
 
 cloudflare_validate_subscription_worker() {
-    local token="" body headers status attempt decoded ready=0
+    local token="" body headers status attempt decoded ready=0 curl_status=0 warning=""
     subscription_enabled || return 0
     if quota_enabled; then
         token=$(quota_active_accounts_json | jq -r 'first(.[].token) // empty')
@@ -387,26 +397,35 @@ cloudflare_validate_subscription_worker() {
     body="${RUNTIME_TMP}/worker-subscription-body"
     headers="${RUNTIME_TMP}/worker-subscription-headers"
     for ((attempt = 1; attempt <= CLOUDFLARE_WORKER_READY_ATTEMPTS; attempt += 1)); do
-        status=$(curl -sS --connect-timeout 5 --max-time 10 \
+        : >"${headers}"
+        : >"${body}"
+        curl_status=0
+        status=$(curl -sS --connect-timeout 5 --max-time 30 \
             -D "${headers}" -o "${body}" -w '%{http_code}' \
             --get --data-urlencode "token=${token:-invalid}" \
             --data-urlencode "flag=base64" \
-            "https://${SUBSCRIPTION_DOMAIN}/subscribe" 2>/dev/null || true)
-        if [[ -n "${token}" && "${status}" == "200" ]] \
+            "https://${SUBSCRIPTION_DOMAIN}/subscribe" 2>/dev/null) || curl_status=$?
+        if [[ "${curl_status}" == "0" && -n "${token}" && "${status}" == "200" ]] \
             && ! grep -qi '^X-Easy-All-CDN-Warning:' "${headers}"; then
             decoded=$(openssl base64 -d -A <"${body}" 2>/dev/null || true)
             if grep -q '^vless://' <<<"${decoded}"; then
                 ready=1
                 break
             fi
-        elif [[ -z "${token}" && "${status}" == "403" ]]; then
+        elif [[ "${curl_status}" == "0" && -z "${token}" && "${status}" == "403" ]]; then
             ready=1
             break
         fi
-        sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
+        ((attempt == CLOUDFLARE_WORKER_READY_ATTEMPTS)) || sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
     done
-    ((ready == 1)) \
-        || die "Cloudflare Worker 订阅验收失败；请检查自定义域名证书及 Worker 到 ${VLESS_CDN_DOMAIN} 的公共 fetch"
+    if ((ready != 1)); then
+        warning=$(awk 'tolower($0) ~ /^x-easy-all-cdn-warning:/ {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "${headers}")
+        if [[ -n "${token}" ]]; then
+            warning=${warning//"${token}"/[redacted]}
+            warning=${warning//"$(uri_encode "${token}")"/[redacted]}
+        fi
+        die "Cloudflare Worker 订阅验收失败：curl=${curl_status},HTTP=${status:-000}${warning:+，回源诊断：${warning:0:500}}；请检查自定义域名证书及 Worker 到 ${VLESS_CDN_DOMAIN} 的公共 fetch"
+    fi
 
     status=$(curl -sS --connect-timeout 5 --max-time 20 \
         -o /dev/null -w '%{http_code}' \
@@ -1709,34 +1728,35 @@ rollback_fresh_install() {
 }
 
 cloudflare_rollback_fresh_install_resources() {
-    local ruleset ref id
+    local ruleset ref id failed=0
     if [[ "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ]]; then
-        cloudflare_delete_subscription_worker_resources \
-            "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${CLOUDFLARE_WORKER_NAME:-}" \
-            || warn "回滚本次新建的 Cloudflare Worker 失败"
+        (cloudflare_delete_subscription_worker_resources \
+            "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${CLOUDFLARE_WORKER_NAME:-}") \
+            || { warn "回滚本次新建的 Cloudflare Worker 失败"; failed=1; }
     fi
     while IFS=$'\t' read -r ruleset ref; do
         [[ -n "${ruleset}" && -n "${ref}" ]] || continue
-        cloudflare_delete_managed_rule "${ruleset}" "${ref}"
+        (cloudflare_delete_managed_rule "${ruleset}" "${ref}") || failed=1
     done <<<"${CLOUDFLARE_CREATED_RULE_REFS:-}"
     if [[ -f "${RUNTIME_TMP}/cloudflare-created-rulesets" ]]; then
         while IFS= read -r id; do
             [[ -n "${id}" ]] || continue
-            cloudflare_api_request DELETE \
-                "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${id}" >/dev/null \
-                || warn "回滚本次新建的 Cloudflare ruleset 失败：${id}"
+            (cloudflare_api_request DELETE \
+                "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${id}" >/dev/null) \
+                || { warn "回滚本次新建的 Cloudflare ruleset 失败：${id}"; failed=1; }
         done <"${RUNTIME_TMP}/cloudflare-created-rulesets"
     fi
     if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
-        cloudflare_api_request DELETE \
-            "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null \
-            || warn "回滚本次新建的 Origin CA 证书失败"
+        (cloudflare_api_request DELETE \
+            "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null) \
+            || { warn "回滚本次新建的 Origin CA 证书失败"; failed=1; }
     fi
     if [[ -n "${CLOUDFLARE_CREATED_DNS_RECORD_ID:-}" ]]; then
-        cloudflare_api_request DELETE \
+        (cloudflare_api_request DELETE \
             "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${CLOUDFLARE_CREATED_DNS_RECORD_ID}" \
-            >/dev/null || warn "回滚本次新建的 Cloudflare DNS 记录失败"
+            >/dev/null) || { warn "回滚本次新建的 Cloudflare DNS 记录失败"; failed=1; }
     fi
+    ((failed == 0)) || return 1
     success "本次首次安装新建的 Cloudflare 资源已回滚"
 }
 

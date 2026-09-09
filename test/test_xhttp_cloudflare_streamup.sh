@@ -74,6 +74,8 @@ export XHTTP_NODE_NAME="TEST_NODE"
 export CLOUDFLARE_CLIENT_IP_FAMILY="ipv4"
 export GOOGLE_EGRESS_MODE="auto"
 export GOOGLE_EGRESS_RESOLVED="ipv4"
+export CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE=2
+export CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE=0
 export CLOUDFLARE_XHTTP_PROBE_ATTEMPTS_OVERRIDE=3
 export CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE=0
 
@@ -650,6 +652,51 @@ grpc_525_err=$(
 assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
     "${grpc_525_err}" "gRPC 边缘辅助诊断：HTTP=525"
 
+# API success requires a valid envelope, except DELETE 204 No Content.
+(
+    CLOUDFLARE_API_TOKEN=test-api-token-placeholder
+    curl() { printf '%s' "${mock_response}"; }
+    mock_response=$'\n204'
+    assert_equal "DELETE 204 succeeds without JSON" null "$(cloudflare_api_request DELETE /test)"
+    mock_response=$'{"success":true,"result":{"id":"ok"}}\n200'
+    assert_equal "JSON API response remains supported" '{"id":"ok"}' "$(cloudflare_api_request GET /test)"
+    for mock_response in $'\n403' $'\n500' $'\n200' $'{"success":false}\n200'; do
+        if (cloudflare_api_request DELETE /test) >/dev/null 2>&1; then
+            fail "Failed or ambiguous API response must not pass"
+        fi
+    done
+    mock_response=$'\n204'
+    if (cloudflare_api_request GET /test) >/dev/null 2>&1; then
+        fail "GET still requires JSON"
+    fi
+)
+
+# Worker acceptance exposes upstream failures while redacting the subscription token.
+worker_error=$(
+    (
+        quota_enabled() { return 1; }
+        ALLOWED_TOKENS='{"owner":"private-test-token"}'
+        curl() {
+            local header_file=""
+            while (($#)); do
+                if [[ "$1" == -D ]]; then
+                    header_file=$2; shift
+                elif [[ "$1" == --max-time ]]; then
+                    [[ "$2" == 30 ]] || exit 99
+                    shift
+                fi
+                shift
+            done
+            printf 'X-Easy-All-CDN-Warning: CDN subscription returned HTTP 404 private-test-token\r\n' >"${header_file}"
+            printf 502
+        }
+        cloudflare_validate_subscription_worker
+    ) 2>&1 || true
+)
+assert_contains "Worker failure includes response status" "${worker_error}" 'curl=0,HTTP=502'
+assert_contains "Worker failure includes upstream reason" "${worker_error}" 'CDN subscription returned HTTP 404'
+assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private-test-token'
+
 # Fresh-install rollback only removes resources recorded as created by that run.
 (
     rollback_calls="${TMP_DIR}/cloudflare-rollback-api-calls"
@@ -682,6 +729,15 @@ assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
         "${rollback_output}" '/certificates/new-origin-cert-id'
     assert_contains "Rollback removes the newly created DNS record" \
         "${rollback_output}" '/dns_records/new-dns-record-id'
+    : >"${rollback_calls}"
+    cloudflare_delete_subscription_worker_resources() { exit 1; }
+    if cloudflare_rollback_fresh_install_resources >"${TMP_DIR}/rollback-failure" 2>&1; then
+        fail "Incomplete rollback must report failure"
+    fi
+    assert_contains "Rollback continues after Worker deletion exits" \
+        "$(<"${rollback_calls}")" '/dns_records/new-dns-record-id'
+    assert_not_contains "Incomplete rollback must not claim success" \
+        "$(<"${TMP_DIR}/rollback-failure")" '资源已回滚'
 )
 
 # Cloudflare configuration must not expose a zone-wide prefix cleanup hook.
