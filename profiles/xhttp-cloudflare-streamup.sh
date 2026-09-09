@@ -1612,7 +1612,7 @@ build_node_links() {
     cloudflare_validate_client_candidate_counts "${candidates}"
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_vless_xhttp_link "${ip}" "优选${label}"
+        build_vless_xhttp_link "${ip}" "🇺🇸优选${label}"
         printf '\n'
     done <<<"${candidates}"
 }
@@ -1623,7 +1623,7 @@ build_mihomo_nodes() {
     cloudflare_validate_client_candidate_counts "${candidates}"
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        build_mihomo_xhttp_node "${ip}" "优选${label}"
+        build_mihomo_xhttp_node "${ip}" "🇺🇸优选${label}"
     done <<<"${candidates}"
 }
 
@@ -1638,7 +1638,7 @@ build_mihomo_proxy_groups() {
     cloudflare_validate_client_candidate_counts "${candidates}"
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
-        all_nodes+=("优选${label}")
+        all_nodes+=("🇺🇸优选${label}")
     done <<<"${candidates}"
 
     printf '    - name: "AUTO"\n'

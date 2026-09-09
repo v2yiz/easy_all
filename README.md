@@ -40,7 +40,7 @@ Cloudflare 提供纯 XHTTP stream-up（固定保留 6 个三网精选 IPv4）；
 | --- | --- | --- |
 | 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
 | 明确要使用 Cloudflare CDN，追求纯 XHTTP | 选择 `2`：Cloudflare 纯 XHTTP | 同一 Active Zone 下互不相同的节点域名和 Worker 订阅域名、具备 Zone 权限及账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。固定下发 6 个三网精选 IPv4。 |
-| 明确要使用 Gcore CDN，追求多地区边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个，节点连续命名为 `优选1`～`优选n`；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
+| 明确要使用 Gcore CDN，追求多地区边缘与三网定向直连 | 选择 `3`：Gcore CDN 精选 IP | 域名（委派至 Gcore Managed DNS）、Gcore API Token、Globalping Token。采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个，节点连续命名为 `🇺🇸优选1`～`🇺🇸优选n`；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。 |
 
 “优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
 处理 Cloudflare 前置准备时，再选择对应 CDN 模式。
@@ -218,7 +218,7 @@ sudo easy_all subscription
 > - **切换至【全局】模式的特别注意点**：Clash Mi 客户端内置了名为 `GLOBAL` 的全局选择器分组，**该分组初始默认指向 `DIRECT`（直连）**。
 >   - 若在首页切换为「全局」模式，客户端将强制所有请求走 `GLOBAL` 组；
 >   - **若未修改 `GLOBAL` 的目标，所有流量仍将直连，导致看似已连上但境外网站打不开**；
->   - **正确做法**：进入客户端底部的**「代理 (Proxies)」**页面，点击 **`GLOBAL`** 策略组，**手动勾选 `PROXY`**（或具体的备用优选节点），全局代理才会生效。
+>   - **正确做法**：进入客户端底部的**「代理 (Proxies)」**页面，点击 **`GLOBAL`** 策略组，**手动勾选 `PROXY`**（或具体的 `🇺🇸优选` 节点），全局代理才会生效。
 
 ![Clash Mi 规则模式与全局模式设置指引](docs/img/clashmi/clashmi-global-proxy.svg)
 
@@ -749,7 +749,7 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
 
 - **流量容量不是 Cloudflare 提供的固定免费额度**：XHTTP 只做实时转发，用户上行由 VPS 发往目标站，用户下行由 VPS 发往 Cloudflare 边缘。若 VPS 仅计出站，用户上下行载荷之和会消耗 VPS 出站额度，因此该额度通常是主要容量上限；协议、TLS 和重传开销会让有效载荷低于账单流量。若 VPS 统计双向流量，同一载荷进入并离开 VPS 都可能计费，必须按服务商规则折算。Cloudflare 服务条款、账户风控和连接质量仍可能先于 VPS 额度形成限制。
 - **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
-- **三网定向精选 6 节点（平铺）**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针针对电信、联通、移动三网实测与 TLS 深度校验，每家运营商严格挑选 2 个最优节点平铺输出（节点名称统一为 `优选1` 到 `优选6`），**严格输出 6 个精选节点，绝不输出域名兜底节点**。
+- **三网定向精选 6 节点（平铺）**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针针对电信、联通、移动三网实测与 TLS 深度校验，每家运营商严格挑选 2 个最优节点平铺输出（节点名称统一为 `🇺🇸优选1` 到 `🇺🇸优选6`），**严格输出 6 个精选节点，绝不输出域名兜底节点**。
 - **入口固定 IPv4**：VPS 候选池和订阅源只生成上述 6 个 Cloudflare IPv4 节点，不发现或下发 Cloudflare 边缘 IPv6；Worker 按源顺序聚合，不重复校验地址族。VPS 自身的 IPv6 探测、Reality 双栈和 Google IPv6 出站逻辑保持独立。
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
@@ -800,7 +800,7 @@ config.local.json JSON（不得包含 vpsSubUrl）:
 }
 ```
 
-`name` 必须唯一且不能使用 `优选1`～`优选6` 或策略组保留名。
+`name` 必须唯一且不能使用 `🇺🇸优选1`～`🇺🇸优选6` 或策略组保留名。
 Reality 节点省略 `port` 时按北京时间三小时端口规则计算，也可填写固定端口。不需要聚合时选择 `1`，
 安装器会构建只包含本机动态 Cloudflare 节点的 Worker。
 未启用配额时，`allowedTokens` 可重新定义完整用户集合；启用配额时，它的用户名必须与前一步设置的

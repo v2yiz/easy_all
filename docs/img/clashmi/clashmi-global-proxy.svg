@@ -125,13 +125,13 @@
         <rect width="198" height="58" rx="6" fill="#EFF6FF" stroke="#93C5FD"/>
         <text x="12" y="20" fill="#1E40AF" font-size="12" font-weight="700">1. PROXY (策略组)</text>
         <text x="12" y="36" fill="#3B82F6" font-size="10.5">规则模式下的主要出口</text>
-        <text x="12" y="50" fill="#64748B" font-size="10">默认指向 ➔ 【备用优选】</text>
+        <text x="12" y="50" fill="#64748B" font-size="10">默认指向 ➔ 【🇺🇸优选】</text>
       </g>
       
-      <!-- Group 2: 备用优选 -->
+      <!-- Group 2: 🇺🇸优选 -->
       <g transform="translate(16, 115)">
         <rect width="198" height="58" rx="6" fill="#F0FDF4" stroke="#86EFAC"/>
-        <text x="12" y="20" fill="#166534" font-size="12" font-weight="700">2. 备用优选 (URLTest)</text>
+        <text x="12" y="20" fill="#166534" font-size="12" font-weight="700">2. 🇺🇸优选 (URLTest)</text>
         <text x="12" y="36" fill="#22C55E" font-size="10.5">全自动对 5 个精选 IP 测速</text>
         <text x="12" y="50" fill="#64748B" font-size="10">自动选中最低延迟节点</text>
       </g>

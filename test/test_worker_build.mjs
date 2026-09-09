@@ -86,7 +86,7 @@ try {
         });
         assert.equal(result.error, null);
         assert.equal(result.nodes.length, 6, 'limit applies to supported nodes');
-        assert.equal(result.nodes[0].name, '优选1');
+        assert.equal(result.nodes[0].name, '🇺🇸优选1');
     }
     const fixedSourceUA = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
         userAgent: 'client-subscription/1.0',
@@ -214,9 +214,9 @@ try {
     const liveBody = await liveResponse.text();
     const groups = liveBody.split('proxy-groups:\n')[1].split('rules:\n')[0];
     assert.equal((groups.match(/name:/g) || []).length, 2);
-    assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 备用优选'));
-    const proxyMembers = groups.split('name: 备用优选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
-    assert.deepEqual(proxyMembers, ['Reality example', 'Hidden Reality', 'Remote', 'Mieru Remote', '备用优选']);
+    assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 🇺🇸优选'));
+    const proxyMembers = groups.split('name: 🇺🇸优选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
+    assert.deepEqual(proxyMembers, ['Reality example', 'Hidden Reality', 'Remote', 'Mieru Remote', '🇺🇸优选']);
     assert.ok(!groups.includes('DIRECT'));
     const template = await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8');
     for (const body of [fallbackBody, liveBody]) {
@@ -228,7 +228,7 @@ try {
     assert.ok(
         liveBody.includes('type: mieru') &&
         liveBody.includes('mieru.example.com') &&
-        groups.split('name: 备用优选')[0].includes('Mieru Remote'),
+        groups.split('name: 🇺🇸优选')[0].includes('Mieru Remote'),
         'Clash output preserves upstream Mieru nodes and adds them to PROXY',
     );
     for (const expected of [
@@ -241,8 +241,8 @@ try {
     ]) {
         assert.ok(liveBody.includes(expected), `Clash output preserves XHTTP ${expected}`);
     }
-    assert.deepEqual(JSON.parse(groups.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), ['优选1']);
-    assert.ok(groups.split('name: 备用优选')[0].includes('Remote'), 'PROXY includes upstream');
+    assert.deepEqual(JSON.parse(groups.split('name: 🇺🇸优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), ['🇺🇸优选1']);
+    assert.ok(groups.split('name: 🇺🇸优选')[0].includes('Remote'), 'PROXY includes upstream');
     const encodedXflash = btoa(upstream);
     const htmlTyped = make(async url => new Response(
         new URL(url).origin === new URL(config.vpsSubUrl).origin ? btoa(cf) : encodedXflash,
@@ -251,17 +251,17 @@ try {
     const htmlTypedBody = await htmlTyped(request());
     assert.equal(htmlTypedBody.headers.get('X-Easy-All-Warning'), null, 'base64 XFLASH must not be rejected by content type');
     assert.ok((await htmlTypedBody.text()).includes('remote.example.com'));
-    const fallbackAuto = fallbackBody.split('name: 备用优选')[1].split('rules:\n')[0];
-    assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['优选1']);
-    const sixCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `优选${i}` }));
+    const fallbackAuto = fallbackBody.split('name: 🇺🇸优选')[1].split('rules:\n')[0];
+    assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['🇺🇸优选1']);
+    const sixCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `🇺🇸优选${i}` }));
     const sixBody = api.buildClashConfig([...api.LOCAL_NODES, ...sixCf], [10000, 10000, 443, 443, 443, 443, 443, 443], upstream, sixCf);
-    const sixProxy = sixBody.split('proxy-groups:')[1].split('name: 备用优选')[0];
+    const sixProxy = sixBody.split('proxy-groups:')[1].split('name: 🇺🇸优选')[0];
     assert.ok(sixCf.every(node => !sixProxy.includes(node.name)), 'CF nodes only appear inside backup group');
-    assert.ok(!fallbackBody.split('proxy-groups:')[1].split('name: 备用优选')[0].includes('Fallback CF'));
-    assert.deepEqual(JSON.parse(sixBody.split('name: 备用优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), sixCf.slice(0, 6).map(n => n.name));
+    assert.ok(!fallbackBody.split('proxy-groups:')[1].split('name: 🇺🇸优选')[0].includes('Fallback CF'));
+    assert.deepEqual(JSON.parse(sixBody.split('name: 🇺🇸优选')[1].match(/proxies: (\[[^\n]+\])/)[1]), sixCf.slice(0, 6).map(n => n.name));
     assert.ok(!liveBody.includes('malicious.invalid'));
     assert.ok(liveBody.includes('ip-version: ipv4'));
-    assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 备用优选')));
+    assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 🇺🇸优选')));
     assert.throws(
         () => api.buildClashConfig(
             api.LOCAL_NODES,

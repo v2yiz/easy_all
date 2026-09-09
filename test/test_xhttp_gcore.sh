@@ -827,15 +827,15 @@ assert_equal "Strictly 6 candidate lines" "6" "${candidate_lines}"
 
 # 6. Test build_node_links and build_mihomo_nodes
 links_output=$(build_node_links)
-assert_contains "Links output contains 优选1" "${links_output}" "#$(jq -nr --arg v '优选1' '$v|@uri')"
-assert_contains "Links output contains 优选6" "${links_output}" "#$(jq -nr --arg v '优选6' '$v|@uri')"
-assert_not_contains "Links output does not contain 优选7" "${links_output}" "#$(jq -nr --arg v '优选7' '$v|@uri')"
+assert_contains "Links output contains 🇺🇸优选1" "${links_output}" "#$(jq -nr --arg v '🇺🇸优选1' '$v|@uri')"
+assert_contains "Links output contains 🇺🇸优选6" "${links_output}" "#$(jq -nr --arg v '🇺🇸优选6' '$v|@uri')"
+assert_not_contains "Links output does not contain 🇺🇸优选7" "${links_output}" "#$(jq -nr --arg v '🇺🇸优选7' '$v|@uri')"
 assert_contains "Links output uses websocket protocol" "${links_output}" "type=ws"
 assert_not_contains "Links output has no domain fallback" "${links_output}" "fallback"
 
 mihomo_nodes_output=$(build_mihomo_nodes)
-assert_contains "Mihomo nodes contain 优选1" "${mihomo_nodes_output}" '"优选1"'
-assert_contains "Mihomo nodes contain 优选6" "${mihomo_nodes_output}" '"优选6"'
+assert_contains "Mihomo nodes contain 🇺🇸优选1" "${mihomo_nodes_output}" '"🇺🇸优选1"'
+assert_contains "Mihomo nodes contain 🇺🇸优选6" "${mihomo_nodes_output}" '"🇺🇸优选6"'
 assert_contains "Mihomo nodes contain ws network" "${mihomo_nodes_output}" "network: ws"
 assert_contains "Mihomo nodes contain path" "${mihomo_nodes_output}" "path: \"${WEBSOCKET_PATH}\""
 assert_contains "Mihomo nodes contain host header" "${mihomo_nodes_output}" "Host: \"${VLESS_CDN_DOMAIN}\""
@@ -848,14 +848,14 @@ sub_mihomo="${TMP_DIR}/web/subscriptions/mihomo.yaml"
 [[ -s "${sub_mihomo}" ]] || fail "Mihomo subscription file missing"
 
 base64_decoded=$(base64 -d <"${sub_base64}")
-assert_contains "Base64 subscription has 优选1" "${base64_decoded}" "#$(jq -nr --arg v '优选1' '$v|@uri')"
-assert_contains "Base64 subscription has 优选6" "${base64_decoded}" "#$(jq -nr --arg v '优选6' '$v|@uri')"
+assert_contains "Base64 subscription has 🇺🇸优选1" "${base64_decoded}" "#$(jq -nr --arg v '🇺🇸优选1' '$v|@uri')"
+assert_contains "Base64 subscription has 🇺🇸优选6" "${base64_decoded}" "#$(jq -nr --arg v '🇺🇸优选6' '$v|@uri')"
 assert_not_contains "Base64 subscription has NO domain fallback" "${base64_decoded}" "${VLESS_CDN_DOMAIN}#"
 
 mihomo_content=$(<"${sub_mihomo}")
 assert_contains "Mihomo subscription has AUTO proxy group" "${mihomo_content}" 'name: "AUTO"'
-assert_contains "Mihomo subscription AUTO group contains 优选1" "${mihomo_content}" '"优选1"'
-assert_contains "Mihomo subscription AUTO group contains 优选6" "${mihomo_content}" '"优选6"'
+assert_contains "Mihomo subscription AUTO group contains 🇺🇸优选1" "${mihomo_content}" '"🇺🇸优选1"'
+assert_contains "Mihomo subscription AUTO group contains 🇺🇸优选6" "${mihomo_content}" '"🇺🇸优选6"'
 assert_not_contains "Mihomo subscription has NO domain node" "${mihomo_content}" 'server: "node.example.com"'
 
 # 8. Test Xray and Nginx config generation

@@ -11,6 +11,7 @@ const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
 const EXTERNAL_CLASH_USER_AGENT = 'mihomo/1.19.30';
 const EXTERNAL_URI_USER_AGENT = 'v2rayN';
 const CDN_NODE_LIMIT = 6;
+const CDN_GROUP_NAME = '🇺🇸优选';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,
@@ -317,7 +318,7 @@ function parseVlessLink(link) {
 function normalizeCdnNodeNames(nodes) {
     return nodes
         .slice(0, CDN_NODE_LIMIT)
-        .map((node, index) => ({ ...node, name: '优选' + (index + 1) }));
+        .map((node, index) => ({ ...node, name: CDN_GROUP_NAME + (index + 1) }));
 }
 
 async function fetchDynamicCdnNodes(url, {
@@ -523,12 +524,12 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
         );
     }
     const names = [...nodes.map(node => node.name), ...upstreamNames];
-    if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', '备用优选', 'DIRECT', 'REJECT'].includes(name))) {
+    if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', CDN_GROUP_NAME, 'DIRECT', 'REJECT'].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
     const autoNames = autoNodes.slice(0, CDN_NODE_LIMIT).map(node => node.name);
     const group = [
-        '    - name: 备用优选', '      type: url-test',
+        `    - name: ${CDN_GROUP_NAME}`, '      type: url-test',
         '      url: https://cp.cloudflare.com/generate_204',
         '      interval: 300', '      tolerance: 30', '      timeout: 3000',
         '      lazy: true', '      proxies: ' + JSON.stringify(autoNames.length ? autoNames : ['REJECT']),
@@ -536,7 +537,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),
         '# EASY_ALL_PROXY_GROUP': group,
-        '# EASY_ALL_PROXY_NAME': [...names.filter(name => !autoNodes.some(node => node.name === name)), '备用优选'].map(name => '        - ' + yamlString(name)).join('\n'),
+        '# EASY_ALL_PROXY_NAME': [...names.filter(name => !autoNodes.some(node => node.name === name)), CDN_GROUP_NAME].map(name => '        - ' + yamlString(name)).join('\n'),
     };
     return MIHOMO_TEMPLATE.split('\n').map(line => replacements[line] ?? line).join('\n');
 }

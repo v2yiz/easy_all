@@ -1490,7 +1490,7 @@ build_node_links() {
     while IFS=$'\t' read -r ip label carrier region; do
         [[ -n "${ip}" ]] || continue
         count=$((count + 1))
-        build_vless_websocket_link "${ip}" "优选${label}"
+        build_vless_websocket_link "${ip}" "🇺🇸优选${label}"
         printf '\n'
     done < <(gcore_client_candidates)
     ((count > 0)) || die "Gcore 没有可用的已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
@@ -1501,7 +1501,7 @@ build_mihomo_nodes() {
     while IFS=$'\t' read -r ip label carrier region; do
         [[ -n "${ip}" ]] || continue
         count=$((count + 1))
-        build_mihomo_websocket_node "${ip}" "优选${label}"
+        build_mihomo_websocket_node "${ip}" "🇺🇸优选${label}"
     done < <(gcore_client_candidates)
     ((count > 0)) || die "Gcore 没有可用的已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
 }
@@ -1515,7 +1515,7 @@ build_mihomo_proxy_groups() {
     local ip label carrier region
     while IFS=$'\t' read -r ip label carrier region; do
         [[ -n "${ip}" ]] || continue
-        all_nodes+=("优选${label}")
+        all_nodes+=("🇺🇸优选${label}")
     done < <(gcore_client_candidates)
     ((${#all_nodes[@]} > 0)) \
         || die "Gcore 没有可用的已验证入口 IP；请先执行 easy_all refresh-cdn-ips"
