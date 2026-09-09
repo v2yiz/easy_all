@@ -29,8 +29,8 @@ readonly CLOUDFLARE_WORKER_COMPATIBILITY_DATE="2026-09-09"
 readonly CLOUDFLARE_WORKER_SOURCE_HEADER="X-Easy-All-Worker-Source"
 readonly CLOUDFLARE_WORKER_SOURCE_FILE="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../worker-src/index.js"
 readonly CLOUDFLARE_WORKER_BUILD_SCRIPT="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../scripts/build-worker.mjs"
-readonly CLOUDFLARE_WORKER_READY_ATTEMPTS="${CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE:-30}"
-readonly CLOUDFLARE_WORKER_READY_INTERVAL="${CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE:-2}"
+readonly CLOUDFLARE_WORKER_READY_ATTEMPTS="${CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE:-60}"
+readonly CLOUDFLARE_WORKER_READY_INTERVAL="${CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE:-5}"
 readonly CLOUDFLARE_XHTTP_PROBE_ATTEMPTS="${CLOUDFLARE_XHTTP_PROBE_ATTEMPTS_OVERRIDE:-6}"
 readonly CLOUDFLARE_XHTTP_PROBE_INTERVAL="${CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE:-5}"
 readonly CLOUDFLARE_XHTTP_PROBE_URL="${CLOUDFLARE_XHTTP_PROBE_URL_OVERRIDE:-https://www.gstatic.com/generate_204}"
@@ -81,7 +81,7 @@ cloudflare_api_request() {
     fi
     status=${response##*$'\n'}
     response=${response%$'\n'*}
-    if [[ "${method}" == "DELETE" && "${status}" == "204" && -z "${response}" ]]; then
+    if [[ "${method}" == "DELETE" && ( "${status}" == "200" || "${status}" == "204" ) && -z "${response//[[:space:]]/}" ]]; then
         printf 'null\n'
         return 0
     fi
@@ -90,7 +90,7 @@ cloudflare_api_request() {
         die "Cloudflare API HTTP ${status:-000}：${method} ${path}"
     }
     jq -e '.success == true' <<<"${response}" >/dev/null \
-        || { printf '%s\n' "${response:-<empty>}" >&2; die "Cloudflare API 返回错误：${method} ${path}"; }
+        || { printf '%s\n' "${response:-<empty>}" >&2; die "Cloudflare API 返回错误（HTTP ${status}）：${method} ${path}"; }
     jq -c '.result' <<<"${response}"
 }
 
@@ -387,7 +387,8 @@ cloudflare_delete_subscription_worker_resources() {
 }
 
 cloudflare_validate_subscription_worker() {
-    local token="" body headers status attempt decoded ready=0 curl_status=0 warning=""
+    local token="" body headers status attempt decoded ready=0 curl_status=0 warning="" ip
+    local worker_curl_args=(--noproxy '*')
     subscription_enabled || return 0
     if quota_enabled; then
         token=$(quota_active_accounts_json | jq -r 'first(.[].token) // empty')
@@ -403,7 +404,7 @@ cloudflare_validate_subscription_worker() {
         : >"${headers}"
         : >"${body}"
         curl_status=0
-        status=$(curl -sS --connect-timeout 5 --max-time 30 \
+        status=$(curl -sS "${worker_curl_args[@]}" --connect-timeout 5 --max-time 30 \
             -D "${headers}" -o "${body}" -w '%{http_code}' \
             --get --data-urlencode "token=${token:-invalid}" \
             --data-urlencode "flag=base64" \
@@ -419,6 +420,14 @@ cloudflare_validate_subscription_worker() {
             ready=1
             break
         fi
+        if ((curl_status == 6)); then
+            while IFS= read -r ip; do
+                validate_public_ipv4 "${ip}" || continue
+                worker_curl_args=(--noproxy '*' --resolve "${SUBSCRIPTION_DOMAIN}:443:${ip}")
+                info "订阅域名 ${SUBSCRIPTION_DOMAIN} 的本机 DNS 尚未更新，使用 1.1.1.1 的公共解析结果验收"
+                break
+            done < <(dig +time=3 +tries=1 +short A "${SUBSCRIPTION_DOMAIN}" @1.1.1.1 2>/dev/null)
+        fi
         ((attempt == CLOUDFLARE_WORKER_READY_ATTEMPTS)) || sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
     done
     if ((ready != 1)); then
@@ -427,10 +436,13 @@ cloudflare_validate_subscription_worker() {
             warning=${warning//"${token}"/[redacted]}
             warning=${warning//"$(uri_encode "${token}")"/[redacted]}
         fi
+        if ((curl_status == 6)); then
+            die "订阅域名 ${SUBSCRIPTION_DOMAIN} DNS 解析失败（curl=6）；已等待公共 DNS 发布，请检查 Worker Custom Domain 的 DNS 状态"
+        fi
         die "Cloudflare Worker 订阅验收失败：curl=${curl_status},HTTP=${status:-000}${warning:+，回源诊断：${warning:0:500}}；请检查自定义域名证书及 Worker 到 ${VLESS_CDN_DOMAIN} 的公共 fetch"
     fi
 
-    status=$(curl -sS --connect-timeout 5 --max-time 20 \
+    status=$(curl -sS "${worker_curl_args[@]}" --connect-timeout 5 --max-time 20 \
         -o /dev/null -w '%{http_code}' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe?token=invalid" 2>/dev/null || true)
     [[ "${status}" == "403" ]] || die "Cloudflare Worker 未拒绝无效订阅 Token（HTTP ${status:-000}）"

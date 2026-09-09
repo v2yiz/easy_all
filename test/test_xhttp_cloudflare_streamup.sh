@@ -680,15 +680,16 @@ grpc_525_err=$(
 assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
     "${grpc_525_err}" "gRPC 边缘辅助诊断：HTTP=525"
 
-# API success requires a valid envelope, except DELETE 204 No Content.
+# API success requires a valid envelope, except successful empty DELETE responses.
 (
     CLOUDFLARE_API_TOKEN=test-api-token-placeholder
     curl() { printf '%s' "${mock_response}"; }
-    mock_response=$'\n204'
-    assert_equal "DELETE 204 succeeds without JSON" null "$(cloudflare_api_request DELETE /test)"
+    for mock_response in $'\n204' $'\n200' $' \n\n200'; do
+        assert_equal "Successful empty DELETE succeeds without JSON" null "$(cloudflare_api_request DELETE /test)"
+    done
     mock_response=$'{"success":true,"result":{"id":"ok"}}\n200'
     assert_equal "JSON API response remains supported" '{"id":"ok"}' "$(cloudflare_api_request GET /test)"
-    for mock_response in $'\n403' $'\n500' $'\n200' $'{"success":false}\n200'; do
+    for mock_response in $'\n403' $'\n500' $'\n202' $'{"success":false}\n200'; do
         if (cloudflare_api_request DELETE /test) >/dev/null 2>&1; then
             fail "Failed or ambiguous API response must not pass"
         fi
@@ -724,6 +725,35 @@ worker_error=$(
 assert_contains "Worker failure includes response status" "${worker_error}" 'curl=0,HTTP=502'
 assert_contains "Worker failure includes upstream reason" "${worker_error}" 'CDN subscription returned HTTP 404'
 assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private-test-token'
+
+# A stale local resolver can use public DNS without changing TLS SNI or skipping auth checks.
+(
+    quota_enabled() { return 1; }
+    dig() {
+        [[ " $* " == *" @1.1.1.1 "* ]] || return 98
+        printf 'not-an-ip\n127.0.0.1\n104.16.1.1\n'
+    }
+    curl() {
+        local header_file="" body_file="" resolved=0 invalid=0 source=0
+        while (($#)); do
+            case "$1" in
+                --resolve) [[ "$2" == "${SUBSCRIPTION_DOMAIN}:443:104.16.1.1" ]] || return 99; resolved=1; shift ;;
+                -D) header_file=$2; shift ;;
+                -o) body_file=$2; shift ;;
+                *token=invalid*) invalid=1 ;;
+                "https://${VLESS_CDN_DOMAIN}/subscribe") source=1 ;;
+            esac
+            shift
+        done
+        if ((source)); then printf 404; return; fi
+        if (( ! resolved )); then printf 000; return 6; fi
+        if ((invalid)); then printf 403; return; fi
+        : >"${header_file}"
+        printf 'vless://test-node' | openssl base64 -A >"${body_file}"
+        printf 200
+    }
+    cloudflare_validate_subscription_worker
+)
 
 # Fresh-install rollback only removes resources recorded as created by that run.
 (
