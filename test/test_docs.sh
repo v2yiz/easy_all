@@ -58,7 +58,7 @@ assert_contains "README documents optional verified Cloudflare IPv6 nodes" \
 assert_contains "README documents Worker script permission" \
     "${README_CONTENT}" 'Workers Scripts Write'
 assert_contains "README documents the default Worker name" \
-    "${README_CONTENT}" '默认 `EASYALL`'
+    "${README_CONTENT}" '默认 `easyall`'
 assert_contains "README documents same-zone Worker fetch handling" \
     "${README_CONTENT}" '`global_fetch_strictly_public`'
 assert_contains "README documents managed Worker extra nodes" \

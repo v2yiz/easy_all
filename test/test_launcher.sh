@@ -127,7 +127,7 @@ guide=$(show_install_guide 2>&1)
     && "${guide}" == *"全网综合优选"* \
     && "${guide}" == *"定向测速"* \
     && "${guide}" == *"Worker 为唯一公开聚合入口"* \
-    && "${guide}" == *"默认 EASYALL"* \
+    && "${guide}" == *"默认 easyall"* \
     && "${guide}" == *"VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）"* \
     && "${guide}" == *"XHTTP"* \
     && "${guide}" != *"AWS"* ]] \

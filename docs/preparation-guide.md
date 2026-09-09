@@ -225,7 +225,7 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 
 - 创建节点域名唯一的 proxied `A` 记录，指向 VPS 公网 IPv4。
 - 签发 15 年 Origin CA 证书并配置 Full (strict)。
-- 部署用户指定名称的模块 Worker（默认 `EASYALL`），关闭它的 `workers.dev` 和 Preview URL，
+- 部署用户指定名称的模块 Worker（默认 `easyall`），关闭它的 `workers.dev` 和 Preview URL，
   再将独立订阅域名绑定为唯一公开入口。
 - Worker 显式启用 `global_fetch_strictly_public`，通过节点域名的公共 Cloudflare 路径读取 Nginx
   私有订阅源；每次请求转发用户 Token，并附加独立的 `X-Easy-All-Worker-Source` 密钥，由 Nginx

@@ -24,7 +24,7 @@ readonly CLOUDFLARE_XHTTP_PADDING_BYTES="100-1000"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="/etc/easy_all/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cloudflare-origin"
-readonly DEFAULT_CLOUDFLARE_WORKER_NAME="EASYALL"
+readonly DEFAULT_CLOUDFLARE_WORKER_NAME="easyall"
 readonly CLOUDFLARE_WORKER_COMPATIBILITY_DATE="2026-09-09"
 readonly CLOUDFLARE_WORKER_SOURCE_HEADER="X-Easy-All-Worker-Source"
 readonly CLOUDFLARE_WORKER_SOURCE_FILE="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../worker-src/index.js"
@@ -85,7 +85,7 @@ cloudflare_api_request() {
 }
 
 validate_cloudflare_worker_name() {
-    [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
+    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
 normalize_worker_aggregation_config() {
@@ -184,7 +184,7 @@ choose_cloudflare_worker_name() {
         name=$(prompt_value "Cloudflare Worker 名称" "${name}")
     fi
     validate_cloudflare_worker_name "${name}" \
-        || die "Worker 名称只能包含字母、数字和短横线，长度 1-63，且不能以短横线开头或结尾"
+        || die "Worker 名称只能包含小写字母、数字和短横线，长度 1-63，且不能以短横线开头或结尾"
     CLOUDFLARE_WORKER_NAME=${name}
 }
 
@@ -287,7 +287,7 @@ cloudflare_upload_subscription_worker() {
     jq -e '.success == true' <<<"${response}" >/dev/null \
         || {
             printf '%s\n' "${response:-<empty>}" >&2
-            die "Cloudflare Worker 上传失败：PUT ${path}；请确认 Token 包含 Account / Workers Scripts / Write"
+            die "Cloudflare Worker 上传失败：PUT ${path}；请根据上方 Cloudflare API 错误码和消息排查"
         }
     [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
         || CLOUDFLARE_WORKER_CREATED=1

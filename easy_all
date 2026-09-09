@@ -119,7 +119,7 @@ easy_all install
    ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4，dual 时再验证域名 AAAA
    ├─ 固定输出 6 个 IPv4，按选择追加最多 3 个 IPv6，完全无域名兜底；内置单一 AUTO 组
    ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
-   ├─ Worker 名称可指定（默认 EASYALL），订阅域名必须与节点域名不同
+   ├─ Worker 名称可指定（默认 easyall），订阅域名必须与节点域名不同
    ├─ 可选输入不含 vpsSubUrl 的 config.local.json；本机注入源 URL 后构建 Worker
    ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移

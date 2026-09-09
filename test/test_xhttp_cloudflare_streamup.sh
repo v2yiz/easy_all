@@ -63,7 +63,7 @@ export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
 export CLOUDFLARE_ZONE_ID="test-zone-id"
 export CLOUDFLARE_ZONE_NAME="example.com"
 export CLOUDFLARE_ACCOUNT_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-export CLOUDFLARE_WORKER_NAME="EASYALL"
+export CLOUDFLARE_WORKER_NAME="easyall"
 export CLOUDFLARE_WORKER_DOMAIN_ID="test-worker-domain-id"
 export WORKER_SOURCE_SECRET="test-worker-source-secret-12345"
 export WORKER_AGGREGATION_CONFIG='{"allowedTokens":{"owner":"config-override-token-12345"},"externalSubUrl":"https://extra.example.com/subscribe?token=extra-token","fallbackCdnNodes":[],"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"Extra Reality","host":"extra.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"www.example.com","pbk":"extra-public-key","sid":"0123456789abcdef","fp":"chrome","ipVersion":"ipv4","port":4443}]}'
@@ -311,9 +311,18 @@ assert_contains "Worker nodes prompt first asks whether aggregation is needed" \
 (
     unset CLOUDFLARE_WORKER_NAME
     choose_cloudflare_worker_name
-    assert_equal "Worker name defaults to EASYALL" "EASYALL" \
+    assert_equal "Worker name defaults to easyall" "easyall" \
         "${CLOUDFLARE_WORKER_NAME}"
 )
+for name in easyall a worker-123 "$(printf '%063d' 0)"; do
+    validate_cloudflare_worker_name "${name}" || fail "Valid Worker name rejected: ${name}"
+done
+for name in EASYALL EasyAll worker_name 'worker name' -worker worker- '' "$(printf '%064d' 0)"; do
+    if validate_cloudflare_worker_name "${name}"; then
+        fail "Invalid Worker name accepted: ${name}"
+    fi
+done
+
 assert_equal "Worker config normalizer keeps one Reality node" "1" \
     "$(normalize_worker_aggregation_config "${WORKER_AGGREGATION_CONFIG}" | jq '.nodes | length')"
 ALLOWED_TOKENS='{"owner":"test-token-12345"}'
@@ -346,7 +355,7 @@ fi
     assert_equal "Worker custom domain ID is persisted from API response" \
         "new-worker-domain-id" "${CLOUDFLARE_WORKER_DOMAIN_ID}"
     assert_contains "Worker custom domain binds the selected service" \
-        "$(<"${api_calls}")" '"service":"EASYALL"'
+        "$(<"${api_calls}")" '"service":"easyall"'
 )
 
 # Dual mode keeps all IPv4 nodes and appends independently addressable IPv6 nodes.
@@ -459,7 +468,7 @@ assert_contains "State file persists Google egress mode" "${state_content}" \
 assert_contains "State file persists resolved Google family" "${state_content}" \
     'GOOGLE_EGRESS_RESOLVED=ipv4'
 assert_contains "State file persists Worker name" "${state_content}" \
-    'CLOUDFLARE_WORKER_NAME=EASYALL'
+    'CLOUDFLARE_WORKER_NAME=easyall'
 assert_contains "State file persists Worker domain ID" "${state_content}" \
     'CLOUDFLARE_WORKER_DOMAIN_ID=test-worker-domain-id'
 assert_contains "State file persists Cloudflare Account ID" "${state_content}" \
@@ -524,7 +533,7 @@ CLOUDFLARE_CLIENT_IP_FAMILY='ipv4'
 GOOGLE_EGRESS_MODE='auto'
 GOOGLE_EGRESS_RESOLVED='ipv4'
 CLOUDFLARE_ACCOUNT_ID='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-CLOUDFLARE_WORKER_NAME='EASYALL'
+CLOUDFLARE_WORKER_NAME='easyall'
 CLOUDFLARE_WORKER_DOMAIN_ID='test-worker-domain-id'
 WORKER_SOURCE_SECRET='test-worker-source-secret-12345'
 VLESS_UUID='11111111-2222-4111-8111-111111111111'
@@ -664,7 +673,7 @@ assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
     cloudflare_rollback_fresh_install_resources
     rollback_output=$(<"${rollback_calls}")
     assert_contains "Rollback removes the newly created Worker" \
-        "${rollback_output}" $'worker\tnew-worker-domain-id\tEASYALL'
+        "${rollback_output}" $'worker\tnew-worker-domain-id\teasyall'
     assert_contains "Rollback removes only a rule recorded during this run" \
         "${rollback_output}" $'rule\texisting-ruleset\tnew-rule-ref'
     assert_contains "Rollback removes the newly created ruleset" \

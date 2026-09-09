@@ -315,7 +315,7 @@ flowchart TD
 | Cloudflare API Token | Cloudflare XHTTP 必填；Reality 选择“部署订阅”时也必填，隐藏输入 | 无 | XHTTP 还需目标账号的 Workers Scripts Write；完整最小权限见前置准备手册 |
 | 订阅输出 | `1` 部署（仅当前服务器推荐） / `2` 仅输出节点（多节点聚合或已有订阅服务器推荐） | `1` | 部署当前模式对应的订阅服务 |
 | CDN 订阅链接完整域名 | Cloudflare/Gcore 部署订阅时出现；完整主机名，例如 `sub.example.com` | Cloudflare 为 `sub.<Zone>`；Gcore 为当前 CDN 节点域名 | Cloudflare 必须与节点域名不同并绑定 Worker；Gcore 可复用节点域名 |
-| Cloudflare Worker 名称 | 仅 Cloudflare 部署订阅时出现；字母、数字、短横线，1-63 字符 | `EASYALL` | 使用 `EASYALL` |
+| Cloudflare Worker 名称 | 仅 Cloudflare 部署订阅时出现；小写字母、数字、短横线，1-63 字符 | `easyall` | 使用 `easyall` |
 | 月度用户配额 | 仅选择“部署订阅”时出现；`1` 不启用 / `2` 启用 | `1` | 所有订阅用户共用当前节点 UUID |
 | 非配额用户 Token | `{用户名: Token}` 完整 JSON 字典 | 自动生成 `owner` | `update-sub` 中省略用户即删除，替换值即更换 Token |
 | 配额 Token 覆盖 | `{用户: Token}` JSON 子集 | `{}` | 使用自动生成或已有 Token |
@@ -758,7 +758,7 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
-  - Worker 名称可在安装时指定，默认 `EASYALL`；发现同名 Worker 时立即停止，不覆盖现有脚本。
+  - Worker 名称可在安装时指定，默认 `easyall`；发现同名 Worker 时立即停止，不覆盖现有脚本。
   - 选择聚合时输入一份不含 `vpsSubUrl` 的 `config.local.json`。安装器保留其中的 `nodes`、`externalSubUrl` 和 `fallbackCdnNodes`；如果包含 `allowedTokens`，它会覆盖之前在安装器中设置的用户 Token。随后注入本机生成的私有 `vpsSubUrl`、源密钥和鉴权策略。
   - 完整配置会交给 `scripts/build-worker.mjs` 校验并构建，而不是由 shell 拼接 Worker；构建成功后自动上传、绑定 Custom Domain 并输出订阅链接。
   - 公开请求只进入安装器创建的 Cloudflare Worker。Worker 校验 Token 格式后，将同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥转发给节点域名上的 Nginx，由 Nginx 执行最终用户/配额鉴权；直接请求 Nginx 源返回 `404`。
@@ -860,7 +860,7 @@ VPS_IP_FAMILY=ipv4|dual
 VPS_PUBLIC_IPV6=...  # 仅 dual
 CLOUDFLARE_CLIENT_IP_FAMILY=ipv4|dual  # 仅 Cloudflare XHTTP
 CLOUDFLARE_ACCOUNT_ID=...               # 仅 Cloudflare XHTTP
-CLOUDFLARE_WORKER_NAME=EASYALL          # 仅 Cloudflare Worker 订阅
+CLOUDFLARE_WORKER_NAME=easyall          # 仅 Cloudflare Worker 订阅
 CLOUDFLARE_WORKER_DOMAIN_ID=...         # 仅 Cloudflare Worker 订阅
 WORKER_SOURCE_SECRET=...                # Worker 访问 Nginx 私有源的密钥
 WORKER_AGGREGATION_CONFIG={...}         # 不含 vpsSubUrl 的聚合配置，root-only 状态
