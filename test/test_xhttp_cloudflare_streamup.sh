@@ -726,6 +726,83 @@ assert_contains "Worker failure includes response status" "${worker_error}" 'cur
 assert_contains "Worker failure includes upstream reason" "${worker_error}" 'CDN subscription returned HTTP 404'
 assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private-test-token'
 
+# During install/update, an upstream acceptance failure keeps the deployment
+# and emits a standalone Worker that can safely use configured fallback nodes.
+(
+    trap - EXIT
+    quota_enabled() { return 1; }
+    INSTALL_ROLLBACK_ON_EXIT=1
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    ALLOWED_TOKENS='{"owner":"recovery-test-token"}'
+    WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"https://extra.example.com/subscribe","fallbackCdnNodes":[]}'
+    CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE="${TMP_DIR}/home/worker.js"
+    mkdir -p "$(dirname "${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE}")"
+    curl() {
+        local header_file="" body_file=""
+        while (($#)); do
+            case "$1" in
+                -D) header_file=$2; shift ;;
+                -o) body_file=$2; shift ;;
+            esac
+            shift
+        done
+        printf 'X-Easy-All-CDN-Warning: CDN subscription returned HTTP 530\r\n' >"${header_file}"
+        printf 'vless://fallback-node' | openssl base64 -A >"${body_file}"
+        printf 200
+    }
+    cloudflare_validate_subscription_worker
+    [[ -s "${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE}" ]] \
+        || fail "Worker acceptance recovery must write a manual deployment artifact"
+    assert_equal "Worker acceptance recovery is marked for final reporting" \
+        "1" "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}"
+    recovery_worker=$(<"${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE}")
+    assert_contains "Recovery Worker embeds local Token validation" \
+        "${recovery_worker}" '"delegateTokenValidation":false'
+    assert_contains "Recovery Worker embeds the current Token set" \
+        "${recovery_worker}" '"owner":"recovery-test-token"'
+    assert_contains "Recovery Worker allows configured fallback nodes" \
+        "${recovery_worker}" '"requireDynamicCdn":false'
+    assert_contains "Recovery Worker retains private source authentication" \
+        "${recovery_worker}" '"sourceSecret":"test-worker-source-secret-12345"'
+    expected_vps_source=$(printf '"vpsSubUrl":"https://%s/subscribe"' "${VLESS_CDN_DOMAIN}")
+    assert_contains "Recovery Worker targets the current VPS source" \
+        "${recovery_worker}" "${expected_vps_source}"
+)
+
+# Quota mode must not emit a fallback-capable Worker that bypasses Nginx accounting.
+quota_recovery_error=$(
+    (
+        trap - EXIT
+        quota_enabled() { return 0; }
+        INSTALL_ROLLBACK_ON_EXIT=1
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+        CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE="${TMP_DIR}/home/quota-worker.js"
+        curl() {
+            local header_file="" body_file=""
+            while (($#)); do
+                if [[ "$1" == "-D" ]]; then
+                    header_file=$2
+                    shift
+                elif [[ "$1" == "-o" ]]; then
+                    body_file=$2
+                    shift
+                fi
+                shift
+            done
+            printf 'X-Easy-All-CDN-Warning: CDN subscription returned HTTP 530\r\n' >"${header_file}"
+            : >"${body_file}"
+            printf 502
+        }
+        cloudflare_validate_subscription_worker
+    ) 2>&1 || true
+)
+assert_contains "Quota mode refuses the fallback-capable recovery Worker" \
+    "${quota_recovery_error}" '配额模式不能生成绕过 Nginx 配额校验的手工 Worker'
+assert_contains "Quota mode keeps strict acceptance failure" \
+    "${quota_recovery_error}" 'Cloudflare Worker 订阅验收失败'
+[[ ! -e "${TMP_DIR}/home/quota-worker.js" ]] \
+    || fail "Quota mode must not create a manual recovery Worker"
+
 # A stale local resolver can use public DNS without changing TLS SNI or skipping auth checks.
 (
     quota_enabled() { return 1; }

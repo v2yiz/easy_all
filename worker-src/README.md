@@ -34,6 +34,10 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 启用配额时用户名必须与配额用户一致。安装器再注入本机私有源 URL 与鉴权字段。
 最终配置由 `../scripts/build-worker.mjs` 正式校验构建，不由 shell 直接拼接。
 
+非配额模式若持续无法通过 Worker 动态源验收，安装器会继续保留部署，并在执行用户的主目录生成
+`worker.js`。这个手工恢复版本内嵌当前 Token，动态源仍携带私有源密钥，但允许失败时使用
+`fallbackCdnNodes`。配额模式不会生成该版本，以免兜底路径绕过 Nginx 的流量核算。
+
 `externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。`vpsSubUrl` 获取失败时使用 `fallbackCdnNodes`。动态与兜底 CDN 节点按地址族分别命名：IPv4 为 `优选1`～`优选6`，IPv6 为 `优选IPv6-1`～`优选IPv6-3`。仅生成 PROXY 和备用优选两个策略组，备用优选最多包含 6 个 IPv4 和 3 个 IPv6；没有 CDN 节点时使用 REJECT。
 
 公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。中国大陆域名使用阿里与 DNSPod DoH，其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；代理节点域名仍由独立的直连 DoH 解析，避免启动循环。Reality 节点可显式选择 `ipv4` 或 `dual`，其中 `dual` 要求 VPS 公网 IPv6 和节点 AAAA 匹配。动态 Cloudflare 节点根据精选连接地址输出 `ipv4` 或 `ipv6`；Cloudflare 边缘 IPv6 不要求 VPS 有 IPv6，也不需要添加指向 VPS 的 AAAA。所有 Google 域名都进入代理，VPS 再按已持久化策略通过 `ForceIPv4` 或 `ForceIPv6` 固定出站。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅。

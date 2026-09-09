@@ -273,6 +273,79 @@ cloudflare_build_subscription_worker() {
     info "${build_output}"
 }
 
+cloudflare_manual_worker_recovery_path() {
+    local home=${HOME:-/root} passwd_entry
+    if [[ -n "${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE:-}" ]]; then
+        printf '%s\n' "${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE}"
+        return 0
+    fi
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]] \
+        && command -v getent >/dev/null 2>&1; then
+        passwd_entry=$(getent passwd "${SUDO_USER}" || true)
+        [[ -z "${passwd_entry}" ]] || home=$(cut -d: -f6 <<<"${passwd_entry}")
+    fi
+    [[ "${home}" == /* && -d "${home}" ]] || home=/root
+    printf '%s/worker.js\n' "${home%/}"
+}
+
+cloudflare_build_manual_worker_recovery() {
+    local reason=$1 target config_file config aggregation build_output
+    quota_enabled && {
+        warn "配额模式不能生成绕过 Nginx 配额校验的手工 Worker"
+        return 1
+    }
+    [[ -n "${ALLOWED_TOKENS:-}" ]] || {
+        warn "缺少可内嵌的订阅 Token，无法生成手工 Worker"
+        return 1
+    }
+    target=$(cloudflare_manual_worker_recovery_path)
+    [[ "${target}" == /* && -d "$(dirname "${target}")" ]] || {
+        warn "Worker 手工恢复路径无效：${target}"
+        return 1
+    }
+    aggregation=$(normalize_worker_aggregation_config \
+        "${WORKER_AGGREGATION_CONFIG:-}") || return 1
+    config=$(jq -cn \
+        --argjson aggregation "${aggregation}" \
+        --argjson allowed_tokens "${ALLOWED_TOKENS}" \
+        --arg source_url "https://${VLESS_CDN_DOMAIN}/subscribe" \
+        --arg source_secret "${WORKER_SOURCE_SECRET}" \
+        --arg download_name "${SUB_DOWNLOAD_NAME}" '{
+          allowedTokens:$allowed_tokens,
+          nodes:$aggregation.nodes,
+          externalSubUrl:$aggregation.externalSubUrl,
+          vpsSubUrl:$source_url,
+          vpsCdnUseRequestToken:true,
+          delegateTokenValidation:false,
+          requireDynamicCdn:false,
+          sourceSecret:$source_secret,
+          fallbackCdnNodes:$aggregation.fallbackCdnNodes,
+          subscriptionDownloadName:$download_name
+        }') || return 1
+    config_file="${RUNTIME_TMP}/worker-recovery-config.json"
+    printf '%s\n' "${config}" >"${config_file}"
+    chmod 0600 "${config_file}"
+    build_output=$(
+        EASY_ALL_WORKER_CONFIG_PATH="${config_file}" \
+        EASY_ALL_WORKER_OUTPUT_PATH="${target}" \
+        EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
+        EASY_ALL_WORKER_SOURCE_PATH="${CLOUDFLARE_WORKER_SOURCE_FILE}" \
+            node "${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
+    ) || {
+        warn "生成手工部署 Worker 失败"
+        return 1
+    }
+    chmod 0600 "${target}"
+    if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" \
+        && "${target}" == "$(dirname "${target}")/worker.js" ]]; then
+        chown "${SUDO_UID}:${SUDO_GID}" "${target}" 2>/dev/null || true
+    fi
+    CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED=1
+    CLOUDFLARE_WORKER_RECOVERY_FILE=${target}
+    warn "Cloudflare Worker 自动验收未通过：${reason:0:500}"
+    warn "已生成手工部署文件 ${target}（${build_output}）；本次配置将保留，不执行验收失败回滚"
+}
+
 cloudflare_upload_subscription_worker() {
     local script metadata headers response path
     script="${CLOUDFLARE_WORKER_BUILD_FILE}"
@@ -435,6 +508,13 @@ cloudflare_validate_subscription_worker() {
         if [[ -n "${token}" ]]; then
             warning=${warning//"${token}"/[redacted]}
             warning=${warning//"$(uri_encode "${token}")"/[redacted]}
+        fi
+        if [[ "${curl_status}" == "0" && -n "${warning}" \
+            && ( "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" \
+                || "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ) ]] \
+            && cloudflare_build_manual_worker_recovery \
+                "curl=${curl_status},HTTP=${status:-000}${warning:+，回源诊断：${warning:0:500}}"; then
+            return 0
         fi
         if ((curl_status == 6)); then
             die "订阅域名 ${SUBSCRIPTION_DOMAIN} DNS 解析失败（curl=6）；已等待公共 DNS 发布，请检查 Worker Custom Domain 的 DNS 状态"
@@ -1821,7 +1901,11 @@ install_all() {
     INSTALL_ROLLBACK_ON_EXIT=0
     cloudflare_clear_api_token
     show_subscription
-    success "easy_all Cloudflare CDN XHTTP 与 Worker 聚合订阅安装完成"
+    if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
+        warn "本机与 Cloudflare 资源已保留；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
+    else
+        success "easy_all Cloudflare CDN XHTTP 与 Worker 聚合订阅安装完成"
+    fi
     show_bbrv3_status
     prompt_bbrv3_reboot
 }
@@ -1871,7 +1955,11 @@ apply_cloud_resources() {
     install_globalping_refresh_timer
     cloudflare_clear_api_token
     commit_subscription_update
-    success "Cloudflare Worker、DNS、Origin CA、规则和本机配置已应用"
+    if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
+        warn "Cloudflare 资源和本机配置已应用；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
+    else
+        success "Cloudflare Worker、DNS、Origin CA、规则和本机配置已应用"
+    fi
 }
 
 update_subscription() {
@@ -1942,7 +2030,11 @@ update_subscription() {
     install_globalping_refresh_timer
     cloudflare_clear_api_token
     commit_subscription_update
-    success "Cloudflare Worker 订阅、Origin CA 与回源规则已更新"
+    if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
+        warn "订阅配置已保留；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
+    else
+        success "Cloudflare Worker 订阅、Origin CA 与回源规则已更新"
+    fi
 }
 
 purge_cloudflare_resources_before_uninstall() {

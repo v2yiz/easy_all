@@ -231,6 +231,8 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   私有订阅源；每次请求转发用户 Token，并附加独立的 `X-Easy-All-Worker-Source` 密钥，由 Nginx
   执行最终用户和配额鉴权。
 - 安装器验证 Worker 能取得动态节点、无效 Token 返回 `403`，同时确认直接请求 Nginx 节点源返回 `404`。
+- 非配额模式若持续无法通过 Worker 动态源验收，安装器保留当前部署，并在执行用户的主目录输出
+  权限为 `0600` 的 `worker.js` 供手工部署；配额模式仍失败回滚，避免兜底节点绕过流量核算。
 - 可选输入一份不含 `vpsSubUrl` 的 `config.local.json`；字段参考
   [`worker-src/config.example.json`](../worker-src/config.example.json)。安装器保留其中的
   `nodes`、`externalSubUrl`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的

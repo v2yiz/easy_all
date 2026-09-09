@@ -763,6 +763,7 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
   - 完整配置会交给 `scripts/build-worker.mjs` 校验并构建，而不是由 shell 拼接 Worker；构建成功后自动上传、绑定 Custom Domain 并输出订阅链接。
   - 公开请求只进入安装器创建的 Cloudflare Worker。Worker 校验 Token 格式后，将同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥转发给节点域名上的 Nginx，由 Nginx 执行最终用户/配额鉴权；直接请求 Nginx 源返回 `404`。
   - Worker 使用 `global_fetch_strictly_public` 并只绑定独立订阅域名，避免同 Zone 请求被 Worker 路由递归或触发 `1042`。源订阅请求使用 `cache: no-store`，安装、`apply-cloud` 和 `update-sub` 都会执行真实公网拉取验收。
+  - 非配额模式下，如果 Worker 动态源验收持续失败，安装器会保留本机与 Cloudflare 配置，并在执行用户的主目录生成权限为 `0600` 的 `worker.js` 供手工部署。该恢复版本在 Worker 内校验当前 Token，并允许动态源失败时使用已配置的兜底节点。配额模式不会生成可能绕过 Nginx 流量核算的恢复版本，仍按失败回滚。
 
 交互顺序固定为先完成用户 Token/配额，再询问聚合：
 
