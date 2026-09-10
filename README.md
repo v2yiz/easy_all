@@ -125,22 +125,18 @@ sudo easy_all self-update
 保留现有 Worker 聚合配置，脚本会重新生成订阅并构建部署 Worker，无需再执行 `apply-cloud`。
 最后在客户端更新订阅并重启代理内核。
 
-若旧更新器在克隆成功后报“下载的 easy_all 项目不完整”，可能是它仍要求新版已移除的模块。
-可从新克隆的项目执行一次 `register-command`，使用目标版本自己的清单校验并原子更新代码：
+仓库保留两个无功能的源码迁移占位文件，使移除 Gcore 前安装的旧更新器也能通过完整性检查。
+它们不会被当前清单加载、打包或安装到 `/usr/local/lib/easy_all`，不恢复任何已移除功能。
+正常用户仍只需执行：
 
 ```bash
-(
-  set -e
-  update_dir=$(mktemp -d)
-  trap 'rm -rf -- "$update_dir"' EXIT
-  git clone --depth 1 --branch dev https://github.com/v2yiz/easy_all.git "$update_dir/easy_all"
-  sudo bash "$update_dir/easy_all/easy_all" register-command
-)
+sudo easy_all self-update
+sudo easy_all update-sub
 ```
 
-看到“已注册命令”后再执行 `sudo easy_all update-sub`。上述恢复步骤不卸载、不修改已保存的
-Token、证书、Xray/Nginx 配置或云资源；不要用 `bootstrap.sh` 重装来修复这个文件清单错误。
-若新入口另报状态版本不兼容，应停止并核对错误，不要修改 `STATE_VERSION` 绕过校验。
+如果仍出现旧的“项目不完整”提示，通常表示使用了未同步的镜像或固定到兼容桥之前的提交；
+此时再从官方仓库的新入口执行 `register-command`。不要用 `bootstrap.sh` 重装，也不要修改
+`STATE_VERSION` 绕过校验。
 
 更新 Xray 核心请使用 `sudo easy_all update-core`。
 

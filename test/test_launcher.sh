@@ -55,6 +55,14 @@ launcher_content=$(<"${ROOT_DIR}/easy_all")
     && "${launcher_content}" == *'"scripts/build-worker.mjs"'* \
     && "${launcher_content}" == *'templates/mihomo.yaml'* ]] \
     || fail "runtime registration must use the organized profile and template paths"
+for migration_tombstone in profiles/xhttp-gcore.sh lib/gcore-ip-pool.sh; do
+    [[ -f "${ROOT_DIR}/${migration_tombstone}" ]] \
+        || fail "legacy self-update migration tombstone is missing: ${migration_tombstone}"
+    [[ "${launcher_content}" != *"${migration_tombstone}"* ]] \
+        || fail "migration tombstone must not be installed at runtime: ${migration_tombstone}"
+    ! grep -Eq '^[A-Za-z_][A-Za-z0-9_]*\(\)' "${ROOT_DIR}/${migration_tombstone}" \
+        || fail "migration tombstone must not contain executable functions: ${migration_tombstone}"
+done
 preserve_source="${TMP_DIR}/preserve-source"
 preserve_stage="${TMP_DIR}/preserve-stage"
 mkdir -p "${preserve_source}" "${preserve_stage}"
@@ -122,6 +130,16 @@ unified_self_update
 assert_equal "self-update delegates manifest validation to the target release" \
     "register-command" "$(<"${self_update_invocation}")"
 eval "${runtime_validator}"
+
+legacy_runtime_tree_is_complete() {
+    local root=$1 relative_path
+    for relative_path in easy_all templates/mihomo.yaml \
+        profiles/xhttp-gcore.sh lib/gcore-ip-pool.sh; do
+        [[ -f "${root}/${relative_path}" ]] || return 1
+    done
+}
+assert_equal "legacy updater accepts the migration tombstones" \
+    "yes" "$(legacy_runtime_tree_is_complete "${ROOT_DIR}" && printf 'yes')"
 
 rm -f -- "${self_update_invocation}"
 export -f git
