@@ -48,8 +48,8 @@ Steam 下载及 Apple/微软国内 CDN 使用国内 DoH 并直连；其他国内
 其余域名通过 `PROXY` 使用 Cloudflare 与 Google DoH。Kimi 等重叠服务仍由 CN 优先处理，不代理整个微软或共享 CDN。
 代理节点域名仍由独立的直连 DoH 解析，避免启动循环。
 
-Reality 和动态 Cloudflare 节点固定输出 `ipv4`。旧配置中的 `dual/ipv6` 标记会归一化为 IPv4；
-IPv6 literal 会被拒绝。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅。
+Reality 和动态 Cloudflare 节点固定输出 `ipv4`；IPv6 literal 会被拒绝。修改公共模板后需重新构建
+Worker，并在 VPS 重新生成模式 2 订阅。
 
 版本由构建脚本按北京时间生成，例如 `2026-09-06-v0`。同一天根据现有 `worker.js` 的版本递增，跨日从 `v0` 开始；构建失败不消耗版本。删除产物后也会从 `v0` 开始，因此需要连续编号时请保留上次构建的文件。版本通过 `X-Easy-All-Version` 响应头返回。
 

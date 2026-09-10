@@ -184,8 +184,12 @@ assert_contains "README documents merged scheduled maintenance" \
 assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" 'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" '不会生成数万条'
 assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
-assert_contains "README documents legacy family normalization" \
-    "${README_CONTENT}" '归一化并保存为 IPv4'
+assert_not_contains "README omits legacy family migration" \
+    "${README_CONTENT}" '旧状态中的双栈和 Google IPv6 值'
+assert_not_contains "README omits legacy Worker family migration" \
+    "${README_CONTENT}" '旧 `dual/ipv6` 标记归一化为 IPv4'
+assert_not_contains "README omits legacy cache migration" \
+    "${README_CONTENT}" '旧 schema'
 assert_contains "README documents fixed Google egress state" \
     "${README_CONTENT}" 'GOOGLE_EGRESS_RESOLVED=ipv4'
 assert_contains "README documents Chinese-only interactive prompts" \

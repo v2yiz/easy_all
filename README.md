@@ -403,7 +403,7 @@ Origin CA 证书；Reality 使用自己的 `easy_all reality subscription origin
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 读取已安装模式，安装或验收 XanMod LTS BBRv3、全局禁用 IPv6、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 将旧地址族状态归一化为 IPv4；保留订阅与端口模式，自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS。<br>4. 生成、重启并验收 IPv4-only Xray，保存状态、恢复配额任务后显示输出。 |
+| Reality | 1. 读取已安装模式，安装或验收 XanMod LTS BBRv3、全局禁用 IPv6、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 保留订阅与端口模式，自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS。<br>4. 生成、重启并验收 IPv4-only Xray，保存状态、恢复配额任务后显示输出。 |
 | Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置、WARP 凭据、Geo 数据和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3，全局禁用 IPv6，同步 UFW 与 Fail2ban。<br>3. 生成并验收 IPv4-only Xray 与 Nginx 私有节点源；启用 WARP 时验证实际出口。<br>4. 使用完整 6 个已验证 IPv4 重建源订阅，不生成域名或 IPv6 兜底。<br>5. 保存状态、恢复配额和 Globalping 刷新任务。复用 WARP 设备，不重新注册；Worker 动态读取节点源，因此普通 `apply` 不需要 Cloudflare Token，也不修改 Worker。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
@@ -738,7 +738,7 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
 - **流量容量不是 Cloudflare 提供的固定免费额度**：XHTTP 只做实时转发，用户上行由 VPS 发往目标站，用户下行由 VPS 发往 Cloudflare 边缘。若 VPS 仅计出站，用户上下行载荷之和会消耗 VPS 出站额度，因此该额度通常是主要容量上限；协议、TLS 和重传开销会让有效载荷低于账单流量。若 VPS 统计双向流量，同一载荷进入并离开 VPS 都可能计费，必须按服务商规则折算。Cloudflare 服务条款、账户风控和连接质量仍可能先于 VPS 额度形成限制。
 - **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
 - **三网定向精选 6 节点（平铺）**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针针对电信、联通、移动三网实测与 TLS 深度校验，每家运营商严格挑选 2 个最优节点平铺输出（节点名称统一为 `🇺🇸优选1` 到 `🇺🇸优选6`），**严格输出 6 个精选节点，绝不输出域名兜底节点**。
-- **全链路固定 IPv4**：VPS 候选池和订阅源只生成上述 6 个 Cloudflare IPv4 节点，不发现或下发 Cloudflare 边缘 IPv6；Worker 将旧 `dual/ipv6` 标记归一化为 IPv4，并拒绝 IPv6 literal。
+- **全链路固定 IPv4**：VPS 候选池和订阅源只生成上述 6 个 Cloudflare IPv4 节点，不发现或下发 Cloudflare 边缘 IPv6。
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
@@ -801,7 +801,7 @@ Reality 节点省略 `port` 时按北京时间三小时端口规则计算，也�
   - 后端开启 `ip_is_private` 私网阻断与 UDP 443 (QUIC) 阻断。
 - **定时刷新与客户端测速**：
   - VPS 使用 systemd timer 每小时更新缓存；安装、`apply` 和手动 `refresh-cdn-ips` 都会自动修复并验收该 timer。缓存必须包含完整 6 个已验证 IPv4；刷新失败时仅复用兼容缓存，不使用域名或内置 IP 凑数。
-  - 候选缓存使用 schema v8；旧 schema 或包含非 IPv4 候选的缓存会被拒绝并触发重新测量。
+  - 候选缓存使用 schema v8；格式不匹配或包含非 IPv4 候选的缓存会被拒绝并触发重新测量。
   - Mihomo 每 300 秒在客户端网络运行一次 `url-test` 自动选优。
 
 ### 精选 IP 的客户端要求
@@ -838,7 +838,7 @@ sudo easy_all warp
 `update-sub`、`update-core` 都遵循当前策略；定时配额刷新仅重建配置，不做 WARP 联网探测。
 
 路由优先级：私网阻断、UDP/443 阻断、WARP 业务例外、剩余 Google 原生路由、默认出口。
-WARP 故障时命中流量不会自动回退 VPS 原生出口；更新验证失败恢复旧状态、凭据、Geo 数据与配置。
+WARP 故障时命中流量不会自动回退 VPS 原生出口；更新验证失败恢复备份状态、凭据、Geo 数据与配置。
 域名规则依赖请求携带域名或 Xray 嗅探，无法从共享 Google IP 精确识别 Gemini。
 客户端保留 Google 代理/DNS 规则；聚合进来的其他 VPS 不会因此自动启用 WARP。
 
@@ -890,14 +890,12 @@ WORKER_SOURCE_SECRET=...                # Worker 访问 Nginx 私有源的密钥
 WORKER_AGGREGATION_CONFIG={...}         # 不含 vpsSubUrl 的聚合配置，root-only 状态
 GOOGLE_EGRESS_MODE=ipv4
 GOOGLE_EGRESS_RESOLVED=ipv4
-WARP_SCOPE=off|gemini|google|all  # 仅模式 2；旧 schema 9 缺失时按 off
+WARP_SCOPE=off|gemini|google|all  # 仅模式 2
 ```
 
-不提供跨版本状态自动迁移；状态版本或必填策略字段不匹配时需重新安装。
-可选的 `WARP_SCOPE` 缺失时按 `off`；WARP 凭据独立保存在 `warp/account.json`，权限 `root:root 0600`。
+WARP 凭据独立保存在 `warp/account.json`，权限 `root:root 0600`。
 
-Reality 与 Cloudflare 客户端节点族固定为 IPv4。旧状态中的双栈和 Google IPv6 值在 `apply`
-时归一化并保存为 IPv4。
+Reality 与 Cloudflare 客户端节点族固定为 IPv4。
 Reality 的 `CDN_PROVIDER` 为空。
 Globalping Token 由 Cloudflare 模式使用，单独保存在
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`，不会写入状态文件。
