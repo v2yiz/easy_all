@@ -109,7 +109,7 @@ warp_validate_unregister_credentials() {
 }
 
 warp_validate_account() {
-    local file=${1:-${WARP_ACCOUNT_FILE}} address host port
+    local file=${1:-${WARP_ACCOUNT_FILE}} address host port found_ipv4=0
     [[ -s "${file}" ]] || return 1
     jq -e '
       def key: type == "string" and test("^[A-Za-z0-9+/]{43}=$");
@@ -125,18 +125,18 @@ warp_validate_account() {
     ' "${file}" >/dev/null 2>&1 || return 1
     while IFS= read -r address; do
         case "${address}" in
-        */32) validate_ipv4 "${address%/32}" || return 1 ;;
+        */32) validate_ipv4 "${address%/32}" || return 1; found_ipv4=1 ;;
         */128) validate_ipv6 "${address%/128}" || return 1 ;;
         *) return 1 ;;
         esac
     done < <(jq -r '.addresses[]' "${file}")
+    [[ "${found_ipv4}" == "1" ]] || return 1
     host=$(jq -r '.peer.endpoint' "${file}")
     port=${host##*:}
     [[ "${port}" =~ ^[0-9]{1,5}$ ]] && ((10#${port} > 0 && 10#${port} <= 65535)) || return 1
     host=${host%:*}
     if [[ "${host}" == \[*\] ]]; then
-        host=${host#\[}
-        validate_ipv6 "${host%\]}" || return 1
+        return 1
     else
         validate_ipv4 "${host}" || validate_domain "${host}" || return 1
     fi
@@ -151,8 +151,7 @@ warp_account_from_response() {
       version:1, device_id:.id, access_token:.token,
       private_key:($private_key | gsub("[\r\n]"; "")),
       addresses:[
-        (.config.interface.addresses.v4 | select(type == "string" and length > 0) | . + "/32"),
-        (.config.interface.addresses.v6 | select(type == "string" and length > 0) | . + "/128")
+        (.config.interface.addresses.v4 | select(type == "string" and length > 0) | . + "/32")
       ],
       peer:{public_key:.config.peers[0].public_key, endpoint:.config.peers[0].endpoint.host},
       reserved:$reserved
@@ -161,6 +160,16 @@ warp_account_from_response() {
         warp_redact_response "${response}" >&2
         die "WARP POST /reg 响应缺少有效的密钥、地址或端点"
     }
+}
+
+warp_normalize_account_ipv4() {
+    local file=${1:-${WARP_ACCOUNT_FILE}} stage
+    warp_validate_account "${file}" || return 1
+    stage=$(make_temp_dir)
+    jq '.addresses |= map(select(endswith("/32")))' "${file}" >"${stage}/account.json" \
+        || return 1
+    warp_validate_account "${stage}/account.json" || return 1
+    install -m 0600 "${stage}/account.json" "${file}"
 }
 
 warp_ensure_account() {
@@ -172,6 +181,8 @@ warp_ensure_account() {
     fi
     if [[ -e "${WARP_ACCOUNT_FILE}" ]]; then
         warp_validate_account || die "WARP 凭据无效：${WARP_ACCOUNT_FILE}；不会自动重新注册"
+        warp_normalize_account_ipv4 \
+            || die "无法将 WARP 凭据归一化为 IPv4-only"
         return 0
     fi
     if [[ -e "${WARP_RECOVERY_FILE}" ]]; then
@@ -180,6 +191,8 @@ warp_ensure_account() {
         account_dir=$(dirname "${WARP_ACCOUNT_FILE}")
         install -d -m 0700 "${account_dir}"
         install -m 0600 "${WARP_RECOVERY_FILE}" "${WARP_ACCOUNT_FILE}"
+        warp_normalize_account_ipv4 \
+            || die "无法将 WARP 恢复凭据归一化为 IPv4-only"
         success "已恢复上次安装失败时保留的 WARP 设备凭据"
         return 0
     fi
@@ -274,9 +287,11 @@ warp_outbound_json() {
     warp_validate_account || die "WARP 凭据缺失或无效；请运行 easy_all warp"
     jq '{
       tag:"warp",protocol:"wireguard",settings:{
-        secretKey:.private_key,address:.addresses,reserved:.reserved,
+        secretKey:.private_key,
+        address:(.addresses | map(select(endswith("/32")))),
+        reserved:.reserved,
         peers:[{publicKey:.peer.public_key,endpoint:.peer.endpoint}],
-        mtu:1420,domainStrategy:"ForceIPv4v6",noKernelTun:true
+        mtu:1420,domainStrategy:"ForceIPv4",noKernelTun:true
       }
     }' "${WARP_ACCOUNT_FILE}"
 }

@@ -2,7 +2,7 @@ mixed-port: 1080
 allow-lan: false
 mode: rule
 log-level: error
-ipv6: true
+ipv6: false
 external-controller: '127.0.0.1:9090'
 unified-delay: false
 tcp-concurrent: true
@@ -22,7 +22,7 @@ sniffer:
     enable: true
     force-dns-mapping: true
     parse-pure-ip: true
-    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保规则和双栈 DNS 策略仍按域名生效。
+    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保分流仍按域名生效。
     override-destination: true
     sniff:
       HTTP:
@@ -43,33 +43,26 @@ tun:
     auto-detect-interface: true
     inet4-address:
       - 198.18.0.1/30
-    inet6-address:
-      - fdfe:dcba:9876::1/126
     dns-hijack:
       - any:53
       - tcp://any:53
     # Windows TUN + Reality/BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
     strict-route: false
-    # 通用局域网 IPv4/IPv6 地址绕过 TUN，保留内网直连能力。
+    # 通用局域网 IPv4 地址绕过 TUN，保留内网直连能力。
     route-exclude-address:
       - 10.0.0.0/8
       - 172.16.0.0/12
       - 192.168.0.0/16
       - 169.254.0.0/16
       - 100.64.0.0/10
-      - fc00::/7
-      - fe80::/10
-      - ::1/128
-      - ff00::/8
 
 dns:
     enable: true
-    ipv6: true
+    ipv6: false
     use-system-hosts: false
     listen: '127.0.0.1:5335'
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
-    fake-ip-range6: fdfe:dcba:9876::/64
     # 国内及已验证的兼容性例外返回真实 IP；是否直连仍由下方分流规则决定。
     fake-ip-filter-mode: rule
     fake-ip-filter:
@@ -147,7 +140,6 @@ dns:
       - DOMAIN-WILDCARD,*.*.*.srv.nintendo.net,real-ip
       - DOMAIN-WILDCARD,*.*.stun.playstation.net,real-ip
       - DOMAIN-WILDCARD,xbox.*.*.microsoft.com,real-ip
-      - DOMAIN-SUFFIX,ipv6.microsoft.com,real-ip
       - DOMAIN-WILDCARD,*.*.xboxlive.com,real-ip
       - DOMAIN,speedtest.cros.wr.pvp.net,real-ip
       - MATCH,fake-ip

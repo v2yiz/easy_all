@@ -47,92 +47,80 @@ warp_validate_account || fail "valid registration rejected"
 jq -e '.reserved == [1,128,255]' "${WARP_ACCOUNT_FILE}" >/dev/null \
     || fail "reserved bytes were corrupted"
 warp_ensure_account </dev/null || fail "existing device should be reused without prompts/network"
+jq -e '.addresses == ["172.16.0.2/32"]' "${WARP_ACCOUNT_FILE}" >/dev/null \
+    || fail "stored WARP account was not normalized to IPv4"
 jq -e '.settings.noKernelTun == true and .settings.mtu == 1420 and
-  .settings.domainStrategy == "ForceIPv4v6" and
-  .settings.address == ["172.16.0.2/32","2606:4700:110::2/128"]' \
+  .settings.domainStrategy == "ForceIPv4" and
+  .settings.address == ["172.16.0.2/32"]' \
   <<<"$(warp_outbound_json)" >/dev/null || fail "WireGuard settings differ from expected"
 
 for scope in off gemini google all; do
-    for family in ipv4 dual; do
-        WARP_SCOPE=${scope}
-        VPS_IP_FAMILY=${family}
-        GOOGLE_EGRESS_MODE=auto
-        GOOGLE_EGRESS_RESOLVED=ipv4
-        outbounds=$(xray_xhttp_outbounds_json)
-        routing=$(xray_xhttp_routing_json)
-        jq -e '.rules[0].outboundTag == "block" and .rules[0].ip[0] == "0.0.0.0/8" and
-          .rules[1].outboundTag == "block" and .rules[1].network == "udp" and
-          .rules[1].port == "443"' <<<"${routing}" >/dev/null || fail "safety rule order"
-        case "${scope}" in
-        off)
-            jq -e 'all(.[]; .tag != "warp")' <<<"${outbounds}" >/dev/null || fail "off emits WARP"
-            ;;
-        gemini)
-            jq -e '.rules[2].domain == ["geosite:google-gemini"] and .rules[2].outboundTag == "warp"
-              and .rules[-1].outboundTag == "direct"' <<<"${routing}" >/dev/null || fail "AI scope"
-            xray_geosite_required || fail "AI scope requires geodata even on IPv4"
-            if [[ "${family}" == dual ]]; then
-                jq -e '.rules[3].outboundTag == "direct-google-ipv4"' <<<"${routing}" >/dev/null \
-                    || fail "AI override must precede native Google"
-            fi
-            ;;
-        google | all)
-            jq -e 'all(.[]; (.tag | startswith("direct-google-")) | not)' \
-                <<<"${outbounds}" >/dev/null || fail "inactive native Google outbound"
-            jq -e 'all(.rules[]; (.outboundTag | startswith("direct-google-")) | not)' \
-                <<<"${routing}" >/dev/null || fail "inactive native Google rules"
-            if [[ "${scope}" == google ]]; then
-                jq -e '.rules[2].domain == ["geosite:google"] and
-                  .rules[3].ip == ["geoip:google"] and .rules[-1].outboundTag == "direct"' \
-                    <<<"${routing}" >/dev/null || fail "Google scope"
-                xray_geosite_required || fail "Google scope requires geodata"
-            else
-                jq -e '.[0].tag == "warp"' <<<"${outbounds}" >/dev/null || fail "default outbound must be WARP"
-                jq -e '.rules[-1].outboundTag == "warp"' <<<"${routing}" >/dev/null || fail "all scope"
-                if xray_geosite_required; then fail "all-WARP does not need unused geodata"; fi
-            fi
-            ;;
-        esac
-        # Every routing tag must have a matching outbound, in all eight configurations.
-        jq -en --argjson out "${outbounds}" --argjson route "${routing}" \
-            '($out | map(.tag)) as $tags | all($route.rules[]; .outboundTag as $tag | $tags | index($tag) != null)' \
-            >/dev/null || fail "dangling outbound tag"
-        if [[ -x "${XRAY_TEST_BIN:-}" ]]; then
-            jq -n --argjson out "${outbounds}" --argjson route "${routing}" \
-                '{log:{loglevel:"warning"},inbounds:[],outbounds:$out,routing:$route}' \
-                >"${TMP_DIR}/core-test.json"
-            XRAY_LOCATION_ASSET="${XRAY_TEST_ASSET_DIR:?}" \
-                "${XRAY_TEST_BIN}" run -test -config "${TMP_DIR}/core-test.json" >/dev/null \
-                || fail "real Xray rejected ${scope}/${family}"
-        fi
-    done
-done
-
-google_egress_probe_family() { printf 'called\n' >>"${TMP_DIR}/native-probes"; return 1; }
-for scope in google all; do
     WARP_SCOPE=${scope}
-    VPS_IP_FAMILY=ipv4
-    GOOGLE_EGRESS_MODE=ipv6
+    VPS_IP_FAMILY=dual
+    VPS_PUBLIC_IPV6=2001:db8::2
+    GOOGLE_EGRESS_MODE=auto
     GOOGLE_EGRESS_RESOLVED=ipv6
     choose_google_egress_mode </dev/null
-    refresh_google_egress_selection
-    validate_google_egress_policy_state || fail "inactive native IPv6 policy should be preserved"
-    [[ "${GOOGLE_EGRESS_MODE}:${GOOGLE_EGRESS_RESOLVED}" == "ipv6:ipv6" ]] || fail "saved native policy changed"
-    xray_xhttp_outbounds_json >/dev/null
-    [[ ! -e "${TMP_DIR}/native-probes" ]] || fail "WARP-only Google must never probe native egress"
+    outbounds=$(xray_xhttp_outbounds_json)
+    routing=$(xray_xhttp_routing_json)
+    [[ "${VPS_IP_FAMILY}:${VPS_PUBLIC_IPV6}:${GOOGLE_EGRESS_MODE}:${GOOGLE_EGRESS_RESOLVED}" \
+        == "ipv4::ipv4:ipv4" ]] || fail "WARP scope did not enforce IPv4-only state"
+    jq -e '.rules[0].outboundTag == "block" and .rules[0].ip[0] == "0.0.0.0/8" and
+      .rules[1].outboundTag == "block" and .rules[1].network == "udp" and
+      .rules[1].port == "443"' <<<"${routing}" >/dev/null || fail "safety rule order"
+    jq -e 'all(.[]; .settings.domainStrategy? != "ForceIPv4v6") and
+      all(.[]; (.settings.address? // []) | all(.[]; endswith("/32")))' \
+      <<<"${outbounds}" >/dev/null || fail "outbound contains IPv6"
+    case "${scope}" in
+    off)
+        jq -e 'map(.tag) == ["direct","block"]' <<<"${outbounds}" >/dev/null || fail "off emits WARP"
+        ;;
+    gemini)
+        jq -e '.rules[2].domain == ["geosite:google-gemini"] and .rules[2].outboundTag == "warp"
+          and .rules[-1].outboundTag == "direct"' <<<"${routing}" >/dev/null || fail "AI scope"
+        xray_geosite_required || fail "AI scope requires geodata"
+        ;;
+    google | all)
+        jq -e 'all(.[]; (.tag | startswith("direct-google-")) | not)' \
+            <<<"${outbounds}" >/dev/null || fail "native Google family outbound remains"
+        if [[ "${scope}" == google ]]; then
+            jq -e '.rules[2].domain == ["geosite:google"] and
+              .rules[3].ip == ["geoip:google"] and .rules[-1].outboundTag == "direct"' \
+                <<<"${routing}" >/dev/null || fail "Google scope"
+            xray_geosite_required || fail "Google scope requires geodata"
+        else
+            jq -e '.[0].tag == "warp"' <<<"${outbounds}" >/dev/null || fail "default outbound must be WARP"
+            jq -e '.rules[-1].outboundTag == "warp"' <<<"${routing}" >/dev/null || fail "all scope"
+            if xray_geosite_required; then fail "all-WARP does not need unused geodata"; fi
+        fi
+        ;;
+    esac
+    jq -en --argjson out "${outbounds}" --argjson route "${routing}" \
+        '($out | map(.tag)) as $tags | all($route.rules[]; .outboundTag as $tag | $tags | index($tag) != null)' \
+        >/dev/null || fail "dangling outbound tag"
+    if [[ -x "${XRAY_TEST_BIN:-}" ]]; then
+        jq -n --argjson out "${outbounds}" --argjson route "${routing}" \
+            '{log:{loglevel:"warning"},inbounds:[],outbounds:$out,routing:$route}' \
+            >"${TMP_DIR}/core-test.json"
+        XRAY_LOCATION_ASSET="${XRAY_TEST_ASSET_DIR:?}" \
+            "${XRAY_TEST_BIN}" run -test -config "${TMP_DIR}/core-test.json" >/dev/null \
+            || fail "real Xray rejected IPv4-only ${scope}"
+    fi
 done
-WARP_SCOPE=gemini
-VPS_IP_FAMILY=dual
-if (refresh_google_egress_selection) 2>/dev/null; then fail "AI-only must retain native Google probe"; fi
-[[ -e "${TMP_DIR}/native-probes" ]] || fail "native Google probe skipped for AI-only"
+
 WARP_SCOPE=off
-if (refresh_google_egress_selection) 2>/dev/null; then fail "disabled WARP must restore native probe"; fi
+VPS_IP_FAMILY=dual
+VPS_PUBLIC_IPV6=2001:db8::2
+GOOGLE_EGRESS_MODE=ipv6
+GOOGLE_EGRESS_RESOLVED=ipv6
+choose_google_egress_mode </dev/null
+validate_google_egress_policy_state || fail "legacy state did not normalize to IPv4"
 
 PROTOCOL=reality
 WARP_SCOPE=all
 native_google_egress_enabled || fail "Reality must ignore WARP scope"
 if warp_enabled; then fail "Reality must not enable WARP"; fi
-jq -e 'map(.tag) == ["direct","direct-google-ipv6","block"]' \
+jq -e 'map(.tag) == ["direct","block"] and .[0].targetStrategy == "ForceIPv4"' \
     <<<"$(xray_xhttp_outbounds_json)" >/dev/null || fail "Reality outbound changed"
 PROTOCOL=cloudflare-streamup
 WARP_SCOPE=bad

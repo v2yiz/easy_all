@@ -117,9 +117,17 @@ normalize_worker_aggregation_config() {
         error("allowedTokens/nodes/fallbackCdnNodes/externalSubUrl 类型无效")
       else
         {
-          nodes:(.nodes // []),
+          nodes:((.nodes // []) | map(
+            if ([.server // "", .host // ""] | any(tostring | contains(":"))) then
+              error("nodes 不允许 IPv6 literal")
+            else . + {ipVersion:"ipv4"} end
+          )),
           externalSubUrl:(.externalSubUrl // ""),
-          fallbackCdnNodes:(.fallbackCdnNodes // [])
+          fallbackCdnNodes:((.fallbackCdnNodes // []) | map(
+            if ([.server // "", .host // ""] | any(tostring | contains(":"))) then
+              error("fallbackCdnNodes 不允许 IPv6 literal")
+            else . + {ipVersion:"ipv4"} end
+          ))
         }
         + (if has("allowedTokens") then {allowedTokens:.allowedTokens} else {} end)
       end
@@ -1251,8 +1259,6 @@ collect_install_inputs() {
 
 load_state() {
     local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
-    local detected_ip_family=${VPS_IP_FAMILY:-}
-    local detected_public_ipv6=${VPS_PUBLIC_IPV6:-}
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED WARP_SCOPE
@@ -1275,10 +1281,7 @@ load_state() {
         env_name=$(env -i bash -c 'source "$1" && printf "%s" "${'"${variable}"':-}"' _ "${state_path}")
         printf -v "${variable}" '%s' "${env_name}"
     done
-    if [[ -n "${detected_ip_family}" ]]; then
-        VPS_IP_FAMILY=${detected_ip_family}
-        VPS_PUBLIC_IPV6=${detected_public_ipv6}
-    fi
+    enforce_ipv4_only_policy
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
@@ -1327,18 +1330,12 @@ load_state() {
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
     fi
-    case "${VPS_IP_FAMILY:-}" in
-    "") VPS_PUBLIC_IPV6="" ;;
-    ipv4) VPS_PUBLIC_IPV6="" ;;
-    dual)
-        validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
-            || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
-        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
-        ;;
-    *) die "状态文件中的 VPS_IP_FAMILY 无效：${VPS_IP_FAMILY}" ;;
-    esac
     WARP_SCOPE=${WARP_SCOPE:-off}
     validate_warp_scope || die "状态中的 WARP_SCOPE 无效"
+    if [[ -f "${WARP_ACCOUNT_FILE}" ]]; then
+        warp_normalize_account_ipv4 \
+            || die "无法将现有 WARP 凭据归一化为 IPv4-only"
+    fi
     validate_google_egress_policy_state \
         || die "状态缺少有效的 Google 出站策略；请重新安装"
     BACKEND="xray"
@@ -1349,6 +1346,7 @@ load_state() {
 save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
+    enforce_ipv4_only_policy
     WARP_SCOPE=${WARP_SCOPE:-off}
     validate_warp_scope || die "无法保存无效的 WARP_SCOPE"
     if warp_enabled; then
@@ -1698,11 +1696,7 @@ show_status() {
     else
         printf '公开订阅: 未部署\n'
     fi
-    if vps_dual_stack_enabled; then
-        printf 'VPS 网络栈: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
-    else
-        printf 'VPS 出站: IPv4-only\n'
-    fi
+    printf 'VPS 出站: IPv4-only（IPv6 全局禁用）\n'
     show_globalping_status
 }
 

@@ -22,11 +22,7 @@ set_ufw_ipv6() {
 }
 
 configure_ufw_ip_family() {
-    if vps_dual_stack_enabled; then
-        set_ufw_ipv6 yes
-    else
-        set_ufw_ipv6 no
-    fi
+    set_ufw_ipv6 no
 }
 
 disable_ufw_ipv6() {

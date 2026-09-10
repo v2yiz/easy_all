@@ -28,7 +28,12 @@ try {
     await writeFile(configPath, JSON.stringify(config));
     await buildWorker({ configPath, outputPath, now: now + 120_000 });
     source = await readFile(outputPath, 'utf8');
-    assert.ok(source.includes('"ipVersion":"dual"'), 'Reality nodes accept explicit dual-stack');
+    assert.ok(!source.includes('"ipVersion":"dual"'), 'legacy dual-stack flags are removed');
+    assert.ok(source.includes('"ipVersion":"ipv4"'), 'Reality nodes are normalized to IPv4');
+    config.nodes[0].host = '2001:db8::10';
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /IPv6 literals are disabled/);
+    config.nodes[0].host = 'reality.example.com';
     await writeFile(configPath, JSON.stringify(config));
     await buildWorker({ configPath, outputPath, now: now + 240_000 });
     source = await readFile(outputPath, 'utf8');
@@ -50,7 +55,7 @@ try {
     assert.equal(fallback.headers.get('X-Easy-All-Version'), '2026-09-07-v2');
     assert.equal(fallback.headers.get('X-Easy-All-Warning'), 'xflash-unavailable-local-only');
     const fallbackBody = await fallback.text();
-    assert.ok(fallbackBody.includes('ip-version: dual'));
+    assert.ok(fallbackBody.includes('ip-version: ipv4'));
     assert.ok(fallbackBody.includes('fallback.example.com'));
     assert.ok(fallbackBody.includes('hidden.example.com'));
     assert.ok(!fallbackBody.includes('vmiss.example.com'));
@@ -222,7 +227,7 @@ try {
     for (const body of [fallbackBody, liveBody]) {
         assert.equal(body.split('rules:\n')[1], template.split('rules:\n')[1]);
         assert.equal(body.split('\nproxies:\n')[0], template.split('\nproxies:\n')[0]);
-        assert.ok(body.includes('ipv6: true'));
+        assert.ok(body.includes('ipv6: false'));
     }
     assert.ok(liveBody.includes('remote.example.com') && liveBody.includes('192.0.2.1'));
     assert.ok(
@@ -271,8 +276,24 @@ try {
         /client upgrade placeholders/,
     );
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies: []'));
+    assert.throws(
+        () => api.buildClashConfig(
+            api.LOCAL_NODES,
+            [10000],
+            upstream.replace('ip-version: ipv4', 'ip-version: dual'),
+        ),
+        /IPv6 proxy nodes are disabled/,
+    );
     const flow = api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies:\n  - { name: Flow, type: ss, server: flow.example.com, port: 443 }\ndns: {}\n');
     assert.ok(flow.includes('name: Flow'));
+    assert.throws(
+        () => api.buildClashConfig(
+            api.LOCAL_NODES,
+            [10000],
+            'proxies:\n  - { name: IPv6 Flow, type: ss, server: "[2001:db8::10]", port: 443, ip-version: dual }\ndns: {}\n',
+        ),
+        /IPv6 proxy nodes are disabled/,
+    );
     const invalidUpstream = make(async url => new Response(new URL(url).origin === new URL(config.vpsSubUrl).origin ? cf : 'proxies: []'));
     assert.equal((await invalidUpstream(request())).headers.get('X-Easy-All-Warning'), 'xflash-unavailable-local-only');
     await assert.rejects(api.fetchXflashSubscription({headers: new Headers()}, config.externalSubUrl, {
@@ -292,6 +313,18 @@ try {
         xmux,
         'generic output preserves all XHTTP xmux settings',
     );
+    const ipv6Link = `vless://${config.nodes[0].uuid}@[2001:db8::10]:443?security=tls&type=xhttp#IPv6`;
+    const ipv6Vmess = `vmess://${btoa(JSON.stringify({ add: '2001:db8::20', port: 443 }))}`;
+    const ipv6Shadowsocks = `ss://${btoa('aes-128-gcm:password@[2001:db8::30]:443')}#IPv6`;
+    const ipv4OnlyGeneric = make(async url => new Response(
+        new URL(url).origin === new URL(config.vpsSubUrl).origin
+            ? cf
+            : `ss://example#Remote\n${ipv6Link}\n${ipv6Vmess}\n${ipv6Shadowsocks}`,
+    ));
+    const ipv4OnlyGenericBody = atob(await (await ipv4OnlyGeneric(genericRequest)).text());
+    assert.ok(!ipv4OnlyGenericBody.includes('[2001:db8::10]'), 'generic output drops IPv6 literals');
+    assert.ok(!ipv4OnlyGenericBody.includes(ipv6Vmess), 'generic output drops VMess IPv6 literals');
+    assert.ok(!ipv4OnlyGenericBody.includes(ipv6Shadowsocks), 'generic output drops Shadowsocks IPv6 literals');
     const ws = `vless://${config.nodes[0].uuid}@192.0.2.2:443?security=tls&type=ws&sni=ws.example.com&host=ws.example.com&path=%2Fws#WebSocket`;
     const wsLive = make(async url => new Response(
         new URL(url).origin === new URL(config.vpsSubUrl).origin ? btoa(ws) : upstream,

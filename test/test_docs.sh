@@ -50,7 +50,7 @@ assert_contains "README documents compatible-cache reuse" \
 assert_contains "README documents the official Cloudflare IPv4 pool" \
     "${README_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
 assert_contains "README documents IPv4-only Cloudflare edge nodes" \
-    "${README_CONTENT}" 'Cloudflare 客户端入口固定使用 IPv4'
+    "${README_CONTENT}" '全链路固定 IPv4'
 assert_contains "README documents Worker script permission" \
     "${README_CONTENT}" 'Workers Scripts Write'
 assert_contains "README documents the default Worker name" \
@@ -87,16 +87,12 @@ assert_not_contains "iOS client matrix excludes Clash Verge Rev" \
     "${IOS_CLIENT_ROW}" 'Clash Verge Rev'
 assert_contains "README explains the Cloudflare VPS traffic boundary" \
     "${README_CONTENT}" '用户上下行载荷之和会消耗 VPS 出站额度'
-assert_contains "README distinguishes VPS, proxy entry and Google egress families" \
-    "${README_CONTENT}" '“VPS 双栈”“代理节点入口地址族”和“Google 出站地址族”是三项独立能力'
-assert_contains "README documents automatic Reality client dual-stack" \
-    "${README_CONTENT}" '没有独立的 `dual` 选项'
-assert_contains "README documents the Reality AAAA requirement" \
-    "${README_CONTENT}" 'DNS only 节点域名的全部 AAAA 都指向该 VPS IPv6'
-assert_contains "README keeps VPS dual-stack independent from Cloudflare IPv4 edges" \
-    "${README_CONTENT}" '不影响 VPS 自身保留双栈能力'
-assert_not_contains "README does not pin Google to stale IPv4-only behavior" \
-    "${README_CONTENT}" '固定绑定 IPv4 出站'
+assert_contains "README documents global IPv4-only behavior" \
+    "${README_CONTENT}" '项目统一禁用 IPv6'
+assert_contains "README documents Reality AAAA rejection" \
+    "${README_CONTENT}" '域名不得发布 AAAA'
+assert_contains "README pins Xray to IPv4" \
+    "${README_CONTENT}" '`ForceIPv4` + `UseIPv4`'
 
 assert_contains "Preparation guide has the expected title" \
     "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
@@ -167,12 +163,10 @@ assert_contains "Preparation guide forbids hostname fallback" \
     "${PREPARATION_GUIDE_CONTENT}" '不使用内置 Anycast IP 或域名兜底凑数'
 assert_contains "Preparation guide documents the Mihomo requirement for selected IPs" \
     "${PREPARATION_GUIDE_CONTENT}" '精选 IP 订阅需要使用 Mihomo'
-assert_contains "Preparation guide documents automatic VPS dual-stack detection" \
-    "${PREPARATION_GUIDE_CONTENT}" '默认 IPv6 路由和可用 HTTPS'
-assert_contains "Preparation guide documents Reality IPv6 firewall prerequisites" \
-    "${PREPARATION_GUIDE_CONTENT}" '安全组'
-assert_contains "Preparation guide preserves VPS dual-stack behavior" \
-    "${PREPARATION_GUIDE_CONTENT}" 'VPS 双栈仍可用于 Reality 直连和目标站出站'
+assert_contains "Preparation guide documents global IPv6 disablement" \
+    "${PREPARATION_GUIDE_CONTENT}" '两种模式都全局禁用 IPv6'
+assert_contains "Preparation guide forbids Reality AAAA" \
+    "${PREPARATION_GUIDE_CONTENT}" '不能发布 AAAA'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \
     "${PREPARATION_GUIDE_CONTENT}" 'Shadowrocket 列为已验证客户端'
 assert_contains "Preparation guide explains outbound-only VPS accounting" \
@@ -190,12 +184,10 @@ assert_contains "README documents merged scheduled maintenance" \
 assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" 'UFW 的 `before.rules` 受管 NAT 区块'
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" '不会生成数万条'
 assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
-assert_contains "README documents conditional VPS dual-stack support" \
-    "${README_CONTENT}" '检测到可用公网 IPv6'
-assert_contains "README documents locked Google egress selection" \
-    "${README_CONTENT}" '再比较延迟中位数'
-assert_contains "README documents persisted Google egress state" \
-    "${README_CONTENT}" 'GOOGLE_EGRESS_RESOLVED=ipv4|ipv6'
+assert_contains "README documents legacy family normalization" \
+    "${README_CONTENT}" '自动归一化为 IPv4'
+assert_contains "README documents fixed Google egress state" \
+    "${README_CONTENT}" 'GOOGLE_EGRESS_RESOLVED=ipv4'
 assert_contains "README documents Chinese-only interactive prompts" \
     "${README_CONTENT}" '所有需要用户输入的交互提示仅显示中文'
 assert_contains "README documents client connection racing" \

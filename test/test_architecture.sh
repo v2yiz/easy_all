@@ -251,8 +251,8 @@ fi
     source "${ROOT_DIR}/lib/network.sh"
     VPS_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
-    [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "AsIs" ]] \
-        || fail "Xray direct egress must use automatic direct resolution"
+    [[ "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" == "UseIPv4" ]] \
+        || fail "Xray direct egress must resolve IPv4 only"
     jq -e '
         .tcpKeepAliveIdle == 300
         and .tcpKeepAliveInterval == 30
@@ -260,13 +260,16 @@ fi
         || fail "Xray inbound TCP keepalive policy drifted"
     jq -e '
         map(.tag) == ["direct","block"]
-        and .[0].settings.domainStrategy == "AsIs"
+        and .[0].settings.domainStrategy == "UseIPv4"
+        and .[0].targetStrategy == "ForceIPv4"
+        and .[0].sendThrough == "0.0.0.0"
         and .[1].protocol == "blackhole"
     ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
         || fail "shared direct outbound policy is invalid"
     jq -e '
         map(.tag) == ["direct","block"]
-        and .[0].settings.domainStrategy == "AsIs"
+        and .[0].settings.domainStrategy == "UseIPv4"
+        and .[0].targetStrategy == "ForceIPv4"
         and .[1].protocol == "blackhole"
     ' <<<"$(xray_xhttp_outbounds_json)" >/dev/null \
         || fail "shared XHTTP outbound policy must stay direct"
@@ -292,53 +295,24 @@ fi
 
     VPS_IP_FAMILY="dual"
     VPS_PUBLIC_IPV6="2001:db8::10"
-    GOOGLE_EGRESS_MODE="ipv4"
-    GOOGLE_EGRESS_RESOLVED="ipv4"
-    jq -e '
-        map(.tag) == ["direct","direct-google-ipv4","block"]
-        and .[1].settings.domainStrategy == "UseIPv4"
-        and .[1].targetStrategy == "ForceIPv4"
-        and .[1].sendThrough == "0.0.0.0"
-    ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
-        || fail "dual-stack Xray must add a Google IPv4-only outbound"
-    jq -e '
-        .rules[2].domain == ["geosite:google"]
-        and .rules[2].outboundTag == "direct-google-ipv4"
-        and .rules[2].ruleTag == "google-egress-locked"
-        and .rules[3].ip == ["geoip:google"]
-        and .rules[3].outboundTag == "direct-google-ipv4"
-    ' <<<"$(xray_direct_routing_json)" >/dev/null \
-        || fail "dual-stack Xray must route Google domains through IPv4"
-
     GOOGLE_EGRESS_MODE="ipv6"
     GOOGLE_EGRESS_RESOLVED="ipv6"
-    jq -e --arg source "${VPS_PUBLIC_IPV6}" '
-        map(.tag) == ["direct","direct-google-ipv6","block"]
-        and .[1].settings.domainStrategy == "UseIPv6"
-        and .[1].targetStrategy == "ForceIPv6"
-        and .[1].sendThrough == $source
-    ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
-        || fail "Google IPv6 lock must use a single ForceIPv6 outbound"
     jq -e '
-        .rules[2].outboundTag == "direct-google-ipv6"
-        and .rules[3].outboundTag == "direct-google-ipv6"
+        map(.tag) == ["direct","block"]
+        and .[0].settings.domainStrategy == "UseIPv4"
+        and .[0].targetStrategy == "ForceIPv4"
+        and .[0].sendThrough == "0.0.0.0"
+    ' <<<"$(xray_direct_outbounds_json)" >/dev/null \
+        || fail "legacy dual/IPv6 state must render IPv4-only outbounds"
+    jq -e '
+        .rules | length == 3
+        and .[2].outboundTag == "direct"
     ' <<<"$(xray_direct_routing_json)" >/dev/null \
-        || fail "Google IPv6 lock must route domain and IP rules consistently"
-
-    google_egress_probe_family() {
-        [[ "$1" == "ipv6" ]] && printf '3\t0.050000' || printf '3\t0.120000'
-    }
-    GOOGLE_EGRESS_MODE="auto"
-    GOOGLE_EGRESS_RESOLVED="ipv4"
+        || fail "legacy dual state must not emit Google family routes"
     refresh_google_egress_selection >/dev/null
-    [[ "${GOOGLE_EGRESS_RESOLVED}" == "ipv6" ]] \
-        || fail "Google auto mode must probe once and persist the selected family"
-    google_egress_probe_family() {
-        [[ "$1" == "ipv6" ]] && printf '2\t0.010000' || printf '3\t0.120000'
-    }
-    refresh_google_egress_selection >/dev/null
-    [[ "${GOOGLE_EGRESS_RESOLVED}" == "ipv4" ]] \
-        || fail "Google auto mode must prioritize probe success rate over latency"
+    [[ "${VPS_IP_FAMILY}:${VPS_PUBLIC_IPV6}:${GOOGLE_EGRESS_MODE}:${GOOGLE_EGRESS_RESOLVED}" \
+        == "ipv4::ipv4:ipv4" ]] \
+        || fail "legacy address-family state must normalize to IPv4"
 )
 
 printf 'ok - shared architecture tests passed\n'

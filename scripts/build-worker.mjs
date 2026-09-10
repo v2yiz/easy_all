@@ -71,11 +71,16 @@ export async function buildWorker({
             }
             requireValue(node.port === undefined || Number.isInteger(node.port) && node.port > 0 && node.port <= 65535, 'port');
             requireValue(node.server === undefined || nonempty(node.server), `${key} server`);
-            const allowedIpVersions = key === 'nodes' ? ['ipv4', 'dual'] : ['ipv4', 'ipv6'];
+            const allowedIpVersions = ['ipv4', 'ipv6', 'dual'];
             requireValue(
                 node.ipVersion === undefined || allowedIpVersions.includes(node.ipVersion),
                 `${key} IP family`
             );
+            requireValue(
+                ![node.server, node.host].some(value => String(value || '').includes(':')),
+                `${key} IPv6 literals are disabled`
+            );
+            node.ipVersion = 'ipv4';
         }
     }
     requireValue(

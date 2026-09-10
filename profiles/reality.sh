@@ -169,35 +169,29 @@ snapshot_fresh_install() {
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 
-configure_ipv6() {
-    local disable_ipv6=1
-    vps_dual_stack_enabled && disable_ipv6=0
-    [[ -d /proc/sys/net/ipv6 ]] || {
-        vps_dual_stack_enabled \
-            && die "状态要求双栈，但当前内核未暴露 IPv6"
-        return 0
-    }
-    cat >"${RUNTIME_TMP}/enable-ipv6.conf" <<EOF
-net.ipv6.conf.all.disable_ipv6 = ${disable_ipv6}
-net.ipv6.conf.default.disable_ipv6 = ${disable_ipv6}
-net.ipv6.conf.lo.disable_ipv6 = ${disable_ipv6}
+configure_ipv4_only() {
+    [[ -d /proc/sys/net/ipv6 ]] || return 0
+    cat >"${RUNTIME_TMP}/enable-ipv6.conf" <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
     install -m 0644 "${RUNTIME_TMP}/enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
     sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null \
-        || die "应用 IPv6 ${VPS_IP_FAMILY} 策略失败"
+        || die "应用全局 IPv4-only 策略失败"
 }
 
 initialize_server() {
     ensure_ssh_boot_service
     info "配置 XanMod LTS 内核 BBRv3"
     configure_bbr_tcp
-    info "配置每日重启与 ${VPS_IP_FAMILY} 网络栈"
+    info "配置每日重启与全局 IPv4-only 网络栈"
     configure_daily_reboot
-    configure_ipv6
+    configure_ipv4_only
 }
 
 validate_reality_node_dns() {
-    local record canonical expected records="" mismatch=""
+    local record records=""
     local resolver public_ipv4 answer resolved_ipv4=0
     local -a resolvers=("" "1.1.1.1" "8.8.8.8")
     validate_domain "${NODE_HOST}" || return 0
@@ -226,48 +220,17 @@ validate_reality_node_dns() {
         || die "${NODE_HOST} 未通过系统 DNS 或公共 DNS 解析到 IPv4 地址"
     while IFS= read -r record; do
         validate_ipv6 "${record}" || continue
-        canonical=$(canonicalize_ipv6 "${record}") || continue
         [[ -z "${records}" ]] || records+=$'\n'
-        records+=${canonical}
-    done < <(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" 2>/dev/null || true)
+        records+=${record}
+    done < <(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" \
+        @1.1.1.1 2>/dev/null || true)
 
-    if [[ -z "${records}" ]]; then
-        if vps_dual_stack_enabled; then
-            info "${NODE_HOST} 尚未发布 AAAA；当前使用 IPv4，添加 AAAA=${VPS_PUBLIC_IPV6} 后客户端可双栈接入"
-        fi
-        return 0
-    fi
-    vps_dual_stack_enabled \
-        || die "${NODE_HOST} 发布了 AAAA（${records//$'\n'/, }），但 VPS 没有可用公网 IPv6"
-    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
-    while IFS= read -r record; do
-        [[ "${record}" == "${expected}" ]] || mismatch=${record}
-    done <<<"${records}"
-    [[ -z "${mismatch}" ]] \
-        || die "${NODE_HOST} 的 AAAA ${mismatch} 未指向本机公网 IPv6 ${expected}"
-    success "Reality 域名 AAAA 已匹配本机公网 IPv6：${expected}"
-}
-
-reality_node_aaaa_matches_vps() {
-    local record canonical expected found=0
-    vps_dual_stack_enabled || return 1
-    validate_ipv6 "${VPS_PUBLIC_IPV6:-}" || return 1
-    validate_domain "${NODE_HOST:-}" || return 1
-    expected=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}") || return 1
-    while IFS= read -r record; do
-        validate_ipv6 "${record}" || continue
-        canonical=$(canonicalize_ipv6 "${record}") || continue
-        [[ "${canonical}" == "${expected}" ]] || return 1
-        found=1
-    done < <(dig +time=2 +tries=1 +short AAAA "${NODE_HOST}" 2>/dev/null || true)
-    [[ "${found}" == "1" ]]
+    [[ -z "${records}" ]] \
+        || die "${NODE_HOST} 发布了 AAAA（${records//$'\n'/, }）；easy_all 全局禁用 IPv6，请删除全部 AAAA"
 }
 
 resolve_reality_client_ip_family() {
     REALITY_CLIENT_IP_FAMILY_RESOLVED="ipv4"
-    if reality_node_aaaa_matches_vps; then
-        REALITY_CLIENT_IP_FAMILY_RESOLVED="dual"
-    fi
 }
 
 validate_reality_client_ip_family_runtime() {
@@ -314,6 +277,7 @@ load_state() {
         unset "${env_name}"
     done
     CDN_PROVIDER=""
+    enforce_ipv4_only_policy
     if [[ "${state_loaded}" == "1" ]]; then
         [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
         [[ -n "${SUBSCRIPTION_MODE:-}" ]] || die "状态缺少 SUBSCRIPTION_MODE；请重新安装"
@@ -355,23 +319,10 @@ load_state() {
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
     fi
-    case "${VPS_IP_FAMILY:-}" in
-    "")
-        VPS_PUBLIC_IPV6=""
-        ;;
-    ipv4)
-        VPS_PUBLIC_IPV6=""
-        ;;
-    dual)
-        validate_ipv6 "${VPS_PUBLIC_IPV6:-}" \
-            || die "双栈状态缺少有效的 VPS_PUBLIC_IPV6"
-        VPS_PUBLIC_IPV6=$(canonicalize_ipv6 "${VPS_PUBLIC_IPV6}")
-        ;;
-    *) die "状态文件中的 VPS_IP_FAMILY 无效：${VPS_IP_FAMILY}" ;;
-    esac
 }
 
 save_state() {
+    enforce_ipv4_only_policy
     install -d -m 0700 "${STATE_DIR}"
     local temp
     temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX")
@@ -670,15 +621,11 @@ write_ufw_nat_rules_for_family() {
 }
 
 write_ufw_nat_rules() {
-    local dynamic=0 dual_dynamic=0
+    local dynamic=0
     [[ "${SUB_PORT_MODE}" != "dynamic" ]] || dynamic=1
-    vps_dual_stack_enabled && dual_dynamic=${dynamic}
     write_ufw_nat_rules_for_family "${UFW_BEFORE_RULES}" iptables-restore \
         "${UFW_NAT_START}" "${UFW_NAT_END}" "${dynamic}" "IPv4"
-    if vps_dual_stack_enabled; then
-        write_ufw_nat_rules_for_family "${UFW_BEFORE6_RULES}" ip6tables-restore \
-            "${UFW_NAT6_START}" "${UFW_NAT6_END}" "${dual_dynamic}" "IPv6"
-    elif [[ -f "${UFW_BEFORE6_RULES}" ]] \
+    if [[ -f "${UFW_BEFORE6_RULES}" ]] \
         && grep -Fq "${UFW_NAT6_START}" "${UFW_BEFORE6_RULES}"; then
         write_ufw_nat_rules_for_family "${UFW_BEFORE6_RULES}" ip6tables-restore \
             "${UFW_NAT6_START}" "${UFW_NAT6_END}" 0 "IPv6"
@@ -864,7 +811,6 @@ write_xray_config() {
     managed_outbounds=$(xray_direct_outbounds_json)
     managed_routing=$(xray_direct_routing_json)
     inbound_sockopt=$(xray_inbound_sockopt_json)
-    vps_dual_stack_enabled && listen_address="::"
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
         local pair
@@ -1658,7 +1604,6 @@ update_subscription() {
     reality_cloudflare_clear_api_token
     end_quota_maintenance
     show_subscription
-    show_reality_dual_stack_notice
 }
 
 apply_easy_all() {
@@ -1666,7 +1611,7 @@ apply_easy_all() {
     collect_installed_state
     info "安装或验收 XanMod LTS BBRv3，并刷新 TCP 参数"
     configure_bbr_tcp
-    configure_ipv6
+    configure_ipv4_only
     register_easy_all_command
     update_subscription
 }
@@ -1761,32 +1706,15 @@ show_subscription() {
     printf '订阅方式: 未部署，仅输出节点信息\n\n'
 }
 
-show_reality_dual_stack_notice() {
-    local ports="IPv6 TCP 443"
-    vps_dual_stack_enabled || return 0
-    [[ "${SUB_PORT_MODE:-}" != "dynamic" ]] \
-        || ports+=" 和 10000-${DYNAMIC_PORT_MAX}"
-    warn "双栈提醒：已配置 VPS 内部 UFW；请在云厂商安全组手工放行 ${ports}。"
-    if validate_domain "${NODE_HOST:-}"; then
-        warn "DNS 提醒：Reality 节点域名需保留正确的 A，并将 AAAA 指向 ${VPS_PUBLIC_IPV6}。"
-    else
-        warn "DNS 提醒：当前节点使用 IPv4；如需客户端双栈，请改用同时配置正确 A/AAAA 的 DNS only 域名。"
-    fi
-}
-
 show_status() {
     require_root
     collect_installed_state
     printf '协议: %s\n' "${PROTOCOL}"
     show_bbrv3_status
-    if vps_dual_stack_enabled; then
-        printf 'VPS 网络栈: IPv4 + IPv6（%s）\n' "${VPS_PUBLIC_IPV6}"
-    else
-        printf 'VPS 网络栈: IPv4-only\n'
-    fi
+    printf 'VPS 网络栈: IPv4-only（IPv6 全局禁用）\n'
     printf 'Google 出站: %s\n' "$(google_egress_status)"
     resolve_reality_client_ip_family
-    printf 'Reality 客户端节点族: %s（仅 AAAA 匹配 VPS 时启用 dual）\n' \
+    printf 'Reality 客户端节点族: %s（固定）\n' \
         "${REALITY_CLIENT_IP_FAMILY_RESOLVED}"
     printf '节点: %s\nReality 目标: %s\n' "${NODE_HOST}" "${REALITY_TARGET}"
     printf '核心服务: '
@@ -2043,7 +1971,6 @@ run_reality_install_pipeline() {
     INSTALL_ROLLBACK_ON_EXIT=0
     reality_cloudflare_clear_api_token
     show_subscription
-    show_reality_dual_stack_notice
     show_bbrv3_status
     success "easy_all ${PROTOCOL} 安装完成"
     prompt_bbrv3_reboot
@@ -2067,7 +1994,7 @@ usage() {
   apply         将已安装代码应用到服务端与当前订阅模式
   update-sub    选择部署订阅服务或仅输出节点
   update-core   更新 Xray 核心
-  refresh-xray-assets  更新 Xray GeoSite/GeoIP（双栈 VPS）
+  refresh-xray-assets  更新当前路由所需的 Xray GeoSite/GeoIP
   renew-cert    强制轮换 Cloudflare Origin CA 订阅证书
   rotate-dynamic-ports  刷新动态端口 NAT 窗口与已部署订阅（内部任务）
   quota-status  显示每个用户的本月流量与配额状态

@@ -80,11 +80,11 @@ launcher_usage() {
   self-update      只更新 easy_all 项目代码
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN 云资源
-  update-sub       重新选择订阅、入口 IP 族与 Google 出站策略
-  warp             模式 2：修改 WARP 分流和剩余 Google 原生出站策略
+  update-sub       重新选择订阅与 WARP 分流策略
+  warp             模式 2：修改 WARP 分流策略
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
-  refresh-xray-assets  更新并校验当前 Google / WARP 路由所需 GeoSite/GeoIP
+  refresh-xray-assets  更新并校验当前 WARP 路由所需 GeoSite/GeoIP
   renew-cert       轮换当前 CDN 模式的源站/Provider 证书
   quota-status     显示用户配额与 Xray 本地统计
   quota-set        修改指定用户的月度额度
@@ -103,8 +103,8 @@ show_install_guide() {
 easy_all install
 ├─ [1 默认] 直连 Reality
 │  ├─ 适用线路：优化线路
-│  ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → 公网 IPv6 探测与双栈选择
-│  ├─ 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
+│  ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → 全局禁用 IPv6
+│  ├─ IPv4 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
 │  ├─ 选择订阅输出
 │  │  ├─ 部署：Cloudflare 一级子域名、Origin CA、文件名、Token/配额
 │  │  └─ 仅节点：不收集订阅服务参数
@@ -115,10 +115,10 @@ easy_all install
    ├─ 流量口径：实时回源；VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）
    ├─ 入口 IP 族：固定 IPv4，输出 6 个三网精选节点
    ├─ WARP 分流：关闭 / Google AI / 全部 Google / 全部代理流量
-   ├─ 剩余 Google 原生出口：auto 探测后锁定，或显式强制 IPv4 / IPv6；全部经 WARP 时跳过
+   ├─ VPS、Xray、WARP 与客户端统一固定 IPv4
    ├─ 采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up 极速流模式
-   ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4，dual 时再验证域名 AAAA
-   ├─ 固定输出 6 个 IPv4，按选择追加最多 3 个 IPv6，完全无域名兜底；内置单一 AUTO 组
+   ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4
+   ├─ 固定输出 6 个 IPv4，完全无域名或 IPv6 兜底；内置单一 AUTO 组
    ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
    ├─ Worker 名称可指定（默认 easyall），订阅域名必须与节点域名不同
    ├─ 可选输入不含 vpsSubUrl 的 config.local.json；本机注入源 URL 后构建 Worker

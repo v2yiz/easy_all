@@ -71,7 +71,7 @@ export CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
 export CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2035-01-01T00:00:00Z"
 export GLOBALPING_CACHE_FILE_OVERRIDE="${STATE_DIR}/cloudflare-cdn-ips.json"
 export XHTTP_NODE_NAME="TEST_NODE"
-export GOOGLE_EGRESS_MODE="auto"
+export GOOGLE_EGRESS_MODE="ipv4"
 export GOOGLE_EGRESS_RESOLVED="ipv4"
 export CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE=2
 export CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE=0
@@ -463,12 +463,12 @@ state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
 assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 'PROTOCOL=cloudflare-streamup'
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
-assert_contains "State file persists dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=dual'
-assert_contains "State file persists public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6=2001:db8::10'
+assert_contains "State file normalizes legacy dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=ipv4'
+assert_contains "State file clears public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6='
 assert_not_contains "State file omits removed Cloudflare client family" "${state_content}" \
     'CLOUDFLARE_CLIENT_IP_FAMILY='
 assert_contains "State file persists Google egress mode" "${state_content}" \
-    'GOOGLE_EGRESS_MODE=auto'
+    'GOOGLE_EGRESS_MODE=ipv4'
 assert_contains "State file persists resolved Google family" "${state_content}" \
     'GOOGLE_EGRESS_RESOLVED=ipv4'
 assert_contains "State file persists Worker name" "${state_content}" \
@@ -504,19 +504,16 @@ assert_contains "State file defaults WARP to off" "${state_content}" 'WARP_SCOPE
     WARP_SCOPE=off
     load_state
     assert_equal "WARP scope survives reload" google "${WARP_SCOPE}"
-    assert_equal "Inactive IPv6 policy survives IPv4-only reload" ipv6 "${GOOGLE_EGRESS_MODE}"
+    assert_equal "Inactive IPv6 policy normalizes to IPv4" ipv4 "${GOOGLE_EGRESS_MODE}"
+    assert_equal "Resolved IPv6 policy normalizes to IPv4" ipv4 "${GOOGLE_EGRESS_RESOLVED}"
 )
 
 missing_policy_state="${TMP_DIR}/state_missing_policy.env"
 grep -Ev '^(GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED)=' \
     "${EASY_ALL_STATE_FILE_OVERRIDE}" >"${missing_policy_state}"
-missing_policy_err=$(
-    bash -c 'source "$1"; EASY_ALL_STATE_FILE_OVERRIDE="$2" load_state' _ \
-        "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
-        "${missing_policy_state}" 2>&1 || true
-)
-assert_contains "load_state rejects state without the current Google family policy" \
-    "${missing_policy_err}" "状态缺少有效的 Google 出站策略"
+EASY_ALL_STATE_FILE_OVERRIDE="${missing_policy_state}" load_state
+assert_equal "Missing Google mode defaults to IPv4" ipv4 "${GOOGLE_EGRESS_MODE}"
+assert_equal "Missing Google family defaults to IPv4" ipv4 "${GOOGLE_EGRESS_RESOLVED}"
 
 missing_worker_state="${TMP_DIR}/state_missing_worker.env"
 grep -Ev '^(CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_WORKER_NAME|CLOUDFLARE_WORKER_DOMAIN_ID|WORKER_SOURCE_SECRET)=' \
@@ -580,10 +577,11 @@ EOF
 EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
-assert_equal "load_state preserves Google egress mode" \
-    "auto" "${GOOGLE_EGRESS_MODE}"
-assert_equal "load_state preserves the current detected VPS family" \
-    "dual" "${VPS_IP_FAMILY}"
+assert_equal "load_state normalizes Google egress mode" \
+    "ipv4" "${GOOGLE_EGRESS_MODE}"
+assert_equal "load_state normalizes the current VPS family" \
+    "ipv4" "${VPS_IP_FAMILY}"
+assert_equal "load_state clears legacy VPS IPv6" "" "${VPS_PUBLIC_IPV6}"
 VPS_IP_FAMILY="ipv4"
 VPS_PUBLIC_IPV6=""
 

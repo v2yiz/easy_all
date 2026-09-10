@@ -18,8 +18,8 @@ validate_mihomo_template() {
         || die "Mihomo 模板未使用 XFLASH fake-ip DNS"
     grep -Fq '    store-fake-ip: true' "${source}" \
         || die "Mihomo 模板未持久化 fake-ip 映射"
-    grep -Fq '    fake-ip-range6: fdfe:dcba:9876::/64' "${source}" \
-        || die "Mihomo 模板缺少 IPv6 fake-ip 地址池"
+    ! grep -Fq '    fake-ip-range6:' "${source}" \
+        || die "Mihomo 模板不应配置 IPv6 fake-ip 地址池"
     grep -Fq '    fake-ip-filter-mode: rule' "${source}" \
         || die "Mihomo 模板未使用 fake-ip 规则过滤"
     grep -Fq '      - MATCH,fake-ip' "${source}" \
@@ -28,10 +28,12 @@ validate_mihomo_template() {
         || die "Mihomo 模板 UDP 会话超时不是 300 秒"
     grep -Fq '    use-system-hosts: false' "${source}" \
         || die "Mihomo 模板未使用 XFLASH hosts 策略"
-    grep -Fqx 'ipv6: true' "${source}" \
-        || die "Mihomo 模板未启用客户端 IPv6"
-    grep -Fq '    ipv6: true' "${source}" \
-        || die "Mihomo DNS 未启用 IPv6"
+    grep -Fqx 'ipv6: false' "${source}" \
+        || die "Mihomo 模板未全局禁用客户端 IPv6"
+    grep -Fq '    ipv6: false' "${source}" \
+        || die "Mihomo DNS 未禁用 IPv6"
+    ! grep -Fq '    inet6-address:' "${source}" \
+        || die "Mihomo TUN 不应配置 IPv6 地址"
     grep -Fq 'unified-delay: false' "${source}" \
         || die "Mihomo 模板必须关闭 unified-delay"
     grep -Fqx 'geodata-mode: true' "${source}" \

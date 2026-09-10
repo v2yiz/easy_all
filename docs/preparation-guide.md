@@ -26,18 +26,9 @@ VPS 费用另计。
 | 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token                       | Globalping Token、gRPC 设置                        | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 
-公网 IPv6 不是任何模式的安装必需条件。安装器只有在 VPS 同时具备全局 IPv6 地址、
-默认 IPv6 路由和可用 HTTPS IPv6 出口时才启用 VPS 双栈，否则保持 IPv4-only。不同链路对 IPv6 和
-DNS 的要求如下：
-
-| 链路 | 客户端入口 IPv6 | VPS 需要公网 IPv6 | 用户需要配置 AAAA |
-| --- | --- | --- | --- |
-| Reality 直连 | 满足条件时自动启用，不提供独立开关 | 是 | 需要 IPv6 直连时，将 DNS only 节点域名的 AAAA 指向 VPS IPv6；只用 IPv4 时不发布 |
-| Cloudflare XHTTP | 固定下发 IPv4 节点 | 否 | 否；安装器只创建指向 VPS IPv4 的 proxied A |
-
-Reality 若要让客户端通过 IPv6 直连，还需在云厂商安全组放行 IPv6 TCP `443` 和动态端口范围。
-Cloudflare 客户端入口固定使用 IPv4。VPS 双栈仍可用于 Reality 直连和目标站出站；
-Google/YouTube 会按安装时选择的 `auto/ipv4/ipv6` 策略固定到单一地址族。
+两种模式都全局禁用 IPv6。VPS 只需公网 IPv4；安装器固定写入 `disable_ipv6=1`、UFW `IPV6=no`，
+Xray/WARP 使用 `ForceIPv4`，Mihomo 主开关和 DNS 均设置 `ipv6: false`。Reality 节点域名只能
+发布指向 VPS 的 A 记录，不得发布 AAAA；Cloudflare XHTTP 同样只创建和下发 IPv4。
 
 各链路建议使用的域名如下：
 
@@ -159,9 +150,7 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 `sub.example.com`。不要提前创建该名称的 DNS 记录；安装器会创建橙云/Proxied 记录并配置证书。
 
 Reality 的节点连接域名（例如 `node.example.com`）如有使用，必须保持灰云/DNS only 以便客户端直连 VPS；
-它必须发布指向 VPS 的 A 记录，且不能与橙云订阅域名相同。安装器检测到 VPS 具备可用公网 IPv6
-时，如果需要客户端通过 IPv6 直连，再发布指向该地址的 AAAA；所有 AAAA 都必须与安装器探测结果
-一致，否则安装会停止。只需要 IPv4 直连或 VPS 没有可用公网 IPv6 时不要发布 AAAA。Reality 不需要
+它必须只发布指向 VPS 的 A 记录，不能发布 AAAA，也不能与橙云订阅域名相同。Reality 不需要
 gRPC，也不会把节点数据流量经过 Cloudflare。
 
 ### 3.2 Cloudflare XHTTP：必须完成
@@ -173,7 +162,7 @@ gRPC，也不会把节点数据流量经过 Cloudflare。
    且不要提前创建 DNS 记录；安装器会把它直接绑定为 Worker Custom Domain。
 
 安装器始终为节点域名创建指向 VPS IPv4 的 proxied `A`，并只筛选和下发 Cloudflare IPv4 边缘节点。
-无需为 Cloudflare XHTTP 准备 AAAA；VPS 本身是否具备 IPv6 不影响该客户端入口。
+不得为 Cloudflare XHTTP 节点域名准备 AAAA；项目全链路固定 IPv4。
 
 ![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
 
@@ -259,13 +248,9 @@ IP 节点会连接失败；请以实际生成订阅的导入测试确认兼容�
 
 ### 5.2 VPS 出站 IP 族
 
-- Cloudflare 客户端入口固定使用 IPv4，不提供地址族选项；VPS 自身仍按探测结果保留 IPv4-only
-  或双栈状态。
-- Google/YouTube 出口默认 `auto`。安装和每次 `easy_all apply` 会分别执行三次 IPv4/IPv6
-  `generate_204` 探测，先比较成功次数，再比较延迟中位数，选择后写入状态并使用
-  `ForceIPv4` 或 `ForceIPv6`。它不会在每个连接上自动回退，因此同一轮运行中的 Google 新连接
-  使用同一地址族。
-- 显式选择 `ipv6` 时，VPS 必须具备可用公网 IPv6，且 Google IPv6 探测必须成功，否则操作立即停止。
+- Cloudflare 客户端入口、Reality、VPS 原生出站和 WARP 全部固定 IPv4，不提供地址族选项。
+- 已有状态中的 `dual`、`auto` 或 `ipv6` 会在下一次 `easy_all apply` 时归一化为 IPv4。
+- 外部聚合节点的旧 `dual/ipv6` 标记会改写为 IPv4；IPv6 literal 会被拒绝。
 
 “小火箭”通常指 Shadowrocket。它的官方版本记录已说明支持 XHTTP 和 XHTTP transport options，
 但没有逐项确认本项目所需的 IP/SNI/Host 分离及完整 Mihomo XHTTP 复用参数。因此本项目暂不把

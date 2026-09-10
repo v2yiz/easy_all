@@ -78,13 +78,8 @@ function uriAuthorityHost(value) {
     return host.includes(':') ? '[' + host + ']' : host;
 }
 
-function nodeIpVersion(node) {
-    if (node.ipVersion === 'dual') {
-        return 'dual';
-    }
-    return node.ipVersion === 'ipv6' || normalizeConnectHost(node.server || node.host).includes(':')
-        ? 'ipv6'
-        : 'ipv4';
+function nodeIpVersion() {
+    return 'ipv4';
 }
 
 function xhttpString(value, fallback) {
@@ -221,7 +216,6 @@ function vlessLink(node, port) {
 }
 
 function clashRealityNode(node, port) {
-    const ipVersion = node.ipVersion === 'dual' ? 'dual' : 'ipv4';
     return `  - name: ${yamlString(node.name)}
     type: vless
     server: ${yamlString(node.host)}
@@ -238,7 +232,7 @@ function clashRealityNode(node, port) {
       short-id: ${yamlString(node.sid)}
     client-fingerprint: ${yamlString(node.fp)}
     packet-encoding: xudp
-    ip-version: ${ipVersion}
+    ip-version: ipv4
     smux:
       enabled: false`;
 }
@@ -288,7 +282,7 @@ function parseVlessLink(link) {
     const name = decodeURIComponent(url.hash.replace(/^#/, ''));
     const params = url.searchParams;
     const network = params.get('type');
-    if (url.protocol !== 'vless:' || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(uuid) || !server || params.get('security') !== 'tls' || !['xhttp', 'ws'].includes(network)) {
+    if (url.protocol !== 'vless:' || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(uuid) || !server || server.includes(':') || params.get('security') !== 'tls' || !['xhttp', 'ws'].includes(network)) {
         throw new Error('Unsupported CF node');
     }
     let extra = {};
@@ -311,7 +305,7 @@ function parseVlessLink(link) {
         xhttpUplinkHttpMethod: extra.uplinkHTTPMethod || 'POST',
         xhttpNoGrpcHeader: Boolean(extra.noGRPCHeader),
         xhttpXmux: normalizeXhttpXmux(extra.xmux),
-        ipVersion: server.includes(':') ? 'ipv6' : 'ipv4',
+        ipVersion: 'ipv4',
     };
 }
 
@@ -519,6 +513,12 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
         )) {
             throw new Error('Unsupported XFLASH proxy indentation');
         }
+        if (lines.slice(start + 1, end).some(line =>
+            /(?:^|[\s,{])ip-version\s*:\s*(?:ipv6|dual)(?:[\s,}]|$)/i.test(line) ||
+            /(?:^|[\s,{])server\s*:\s*["']?\[?[0-9a-f]*:[0-9a-f:]+/i.test(line)
+        )) {
+            throw new Error('XFLASH IPv6 proxy nodes are disabled');
+        }
         upstreamLines = lines.slice(start + 1, end).map(line =>
             line.trim() ? '  ' + line.slice(indent) : ''
         );
@@ -662,7 +662,25 @@ function subscriptionLinks(content) {
         .replace(/\r\n?/g, '\n')
         .split('\n')
         .map((line) => line.trim())
-        .filter((line) => /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(line));
+        .filter((line) => /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(line))
+        .filter((line) => {
+            try {
+                if (line.toLowerCase().startsWith('vmess://')) {
+                    const vmess = JSON.parse(decodeBase64Utf8(line.slice(8)) || '{}');
+                    return !String(vmess.add || vmess.address || '').includes(':');
+                }
+                if (line.toLowerCase().startsWith('ss://')) {
+                    const payload = line.slice(5).split(/[?#]/, 1)[0];
+                    const decoded = payload.includes('@')
+                        ? payload
+                        : decodeBase64Utf8(payload) || '';
+                    return !/@\[?[0-9a-f]*:[0-9a-f:]+/i.test(decoded);
+                }
+                return !normalizeConnectHost(new URL(line).hostname).includes(':');
+            } catch {
+                return false;
+            }
+        });
     if (!links.length) {
         throw new Error('XFLASH did not return a reusable URI subscription');
     }

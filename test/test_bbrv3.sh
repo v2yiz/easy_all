@@ -164,8 +164,10 @@ assert_contains "IPv4-only Reality disables host IPv6" "$(<"${SYSCTL_CONFIG}")" 
 VPS_IP_FAMILY="dual"
 VPS_PUBLIC_IPV6="2001:db8::10"
 configure_bbr_tcp
-assert_contains "dual-stack Reality enables host IPv6" "$(<"${SYSCTL_CONFIG}")" \
-    'net.ipv6.conf.all.disable_ipv6 = 0'
+assert_contains "legacy dual state still disables host IPv6" "$(<"${SYSCTL_CONFIG}")" \
+    'net.ipv6.conf.all.disable_ipv6 = 1'
+[[ "${VPS_IP_FAMILY}:${VPS_PUBLIC_IPV6}" == "ipv4:" ]] \
+    || fail "legacy dual state must normalize to IPv4-only"
 VPS_IP_FAMILY="ipv4"
 VPS_PUBLIC_IPV6=""
 

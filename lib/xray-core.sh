@@ -7,9 +7,6 @@ export XRAY_LOCATION_ASSET="${XRAY_DIR}"
 XRAY_GEODATA_RELEASE_BASE="${XRAY_GEODATA_RELEASE_BASE_OVERRIDE:-https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download}"
 
 xray_geosite_required() {
-    if vps_dual_stack_enabled && native_google_egress_enabled; then
-        return 0
-    fi
     declare -F warp_geosite_required >/dev/null && warp_geosite_required
 }
 
@@ -108,7 +105,7 @@ download_xray() {
         XRAY_LOCATION_ASSET="${temp_dir}/xray" \
             "${temp_dir}/xray/xray" run -test -config "${asset_test_config}" \
             >/dev/null 2>&1 \
-            || die "Xray 发布资产缺少当前 Google / WARP 路由所需分类"
+            || die "Xray 发布资产缺少当前 WARP 路由所需分类"
         install -m 0644 "${temp_dir}/xray/geosite.dat" "${XRAY_DIR}/geosite.dat"
         install -m 0644 "${temp_dir}/xray/geoip.dat" "${XRAY_DIR}/geoip.dat"
     fi
@@ -120,19 +117,13 @@ ensure_xray_geosite_assets() {
     local stage asset
     xray_geosite_required || return 0
     validate_xray_google_assets && return 0
-    if [[ "${PROTOCOL:-}" != "cloudflare-streamup" ]]; then
-        info "双栈模式缺少有效的 Google GeoSite/GeoIP 资产，正在重新安装校验后的 Xray 发布资产"
-        download_xray
-        validate_xray_google_assets || die "双栈模式无法安装有效的 Google GeoSite/GeoIP 资产"
-        return 0
-    fi
-    info "正在安装当前 Google / WARP 路由所需的 GeoSite/GeoIP 资产"
+    info "正在安装当前 WARP 路由所需的 GeoSite/GeoIP 资产"
     stage=$(make_temp_dir)
     for asset in geosite.dat geoip.dat; do
         download_xray_geodata_asset "${asset}" "${stage}/${asset}"
     done
     validate_xray_google_assets_in_dir "${stage}" \
-        || die "GeoSite/GeoIP 缺少当前 Google / WARP 路由所需分类"
+        || die "GeoSite/GeoIP 缺少当前 WARP 路由所需分类"
     for asset in geosite.dat geoip.dat; do
         install -m 0644 "${stage}/${asset}" "${XRAY_DIR}/${asset}"
     done

@@ -11,20 +11,22 @@
 
 Cloudflare 提供纯 XHTTP stream-up（固定保留 6 个三网精选 IPv4）；Reality 用于直连。
 
-### 地址族与 DNS 的关系
+### 全局 IPv4-only
 
-项目中的“VPS 双栈”“代理节点入口地址族”和“Google 出站地址族”是三项独立能力，不应混为同一个开关：
+项目统一禁用 IPv6，不进行公网 IPv6 探测，也不提供双栈或 Google 地址族选择：
 
-| 范围 | 实际行为 | VPS 必须有公网 IPv6 | 需要用户配置 AAAA |
-| --- | --- | --- | --- |
-| VPS 网络栈 | 安装器自动探测全局 IPv6 地址、默认路由和 HTTPS IPv6 出口；三项均可用才记录为 `dual` | 这是 VPS 自身能力，不是安装选项 | 否 |
-| Reality 客户端入口 | 没有独立的 `dual` 选项；仅当 VPS 已为双栈，且 DNS only 节点域名的全部 AAAA 都指向该 VPS IPv6 时，节点自动输出 `ip-version: dual` | 是 | 仅需要 IPv6 直连时需要；否则不发布 AAAA，节点保持 IPv4 |
-| Cloudflare 客户端入口 | 固定下发 6 个 IPv4 节点 | 否 | 否；安装器只创建指向 VPS IPv4 的 proxied A |
-| Google/YouTube VPS 出站 | `auto/ipv4/ipv6` 决定 VPS 到 Google 的地址族，与客户端入口无关 | 仅选择或探测锁定到 `ipv6` 时需要 | 否 |
+| 范围 | 固定行为 |
+| --- | --- |
+| VPS 网络栈 | sysctl 固定 `disable_ipv6=1`，UFW 固定 `IPV6=no` |
+| Reality 客户端入口 | 只监听 IPv4，节点固定 `ip-version: ipv4`；域名不得发布 AAAA |
+| Cloudflare 客户端入口 | 固定下发 6 个 IPv4 节点，不接受 IPv6 literal 或 IPv6 兜底 |
+| Xray / Google 出站 | `ForceIPv4` + `UseIPv4`，绑定 `0.0.0.0` |
+| WARP | 仅使用注册响应中的 IPv4 地址，WireGuard `domainStrategy=ForceIPv4` |
+| Mihomo | 主开关和 DNS 均为 `ipv6: false`，TUN 不创建 IPv6 地址 |
 
-因此，公网 IPv6 对两种模式都不是安装必需条件。只有 Reality 想让客户端直接通过 IPv6 连接 VPS，
-或 Google 出站策略锁定 IPv6 时，才需要 VPS 具备可用公网 IPv6。Cloudflare 客户端入口固定使用 IPv4，
-不影响 VPS 自身保留双栈能力。
+已有状态中的 `dual`、`auto` 或 `ipv6` 会在下一次 `apply` 时自动归一化为 IPv4，无需重装。
+Reality 已安装节点升级后执行 `sudo easy_all apply`；模式 2 的 Worker 内嵌 Mihomo 模板，升级后必须
+执行 `sudo easy_all apply-cloud`（或 `update-sub`）并交互输入 Cloudflare Token，才能同步更新客户端订阅。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守
@@ -177,7 +179,6 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）先更新并校验 GeoSite/GeoIP，再重启；会中断已有连接。 |
 | Reality SNI/目标 | 直接回车 | 使用脚本验证过的默认值；不要随意填常见网站。 |
 | Reality 动态端口 | 直接回车 | 这是**节点连接端口**的轮换策略，不是订阅下载端口。 |
-| Google/YouTube VPS 出站 | 选 `1`（`auto`） | 安装或 `apply` 时比较 IPv4/IPv6 成功率和延迟中位数，选择后锁定；不会逐连接回退。 |
 
 所有提示中的 `[值]` 都表示直接按回车会采用该值；没有方括号且没有写“可留空”的输入必须填写。
 输入 Cloudflare 或 Globalping Token 时不会显示字符，粘贴后直接按回车即可。
@@ -289,7 +290,7 @@ graph TD
     B -->|1| R0["Reality（默认，优化线路推荐）"]
     R0 --> R1["1/9 系统预检、协议与冲突检查"]
     R1 --> R2["2/9 备份、依赖、SSH、BBRv3 与重启策略"]
-    R2 --> R3["3/9 自动探测双栈，收集连接地址、SNI、订阅端口与 Google 出站"]
+    R2 --> R3["3/9 全局禁用 IPv6，收集 IPv4 连接地址、SNI 与订阅端口"]
     R3 --> R4{"4/9 订阅输出选择"}
     R4 -->|部署| R5["收集订阅域名、文件名、Token 或用户配额"]
     R4 -->|仅节点| R6["不收集订阅服务参数"]
@@ -301,7 +302,7 @@ graph TD
 
     B -->|2| C0["Cloudflare CDN 精选 IP（非优化线路推荐）"]
     C0 --> C1["1/7 系统预检、冲突检查、备份、依赖、SSH、BBRv3 与重启策略"]
-    C1 --> C2["2/7 选择 WARP 分流、按需选择 Google 原生出站，收集节点域名、Globalping、订阅与 Worker 参数"]
+    C1 --> C2["2/7 全局禁用 IPv6，选择 WARP 分流，收集节点域名、Globalping、订阅与 Worker 参数"]
     C2 --> C3["3/7 配置 DNS、Origin CA、UFW、Xray 与 Nginx 私有节点源"]
     C3 --> C4["4/7 配置并验收 Full strict、HTTP2、gRPC、回源规则与 XHTTP"]
     C4 --> C5["5/7 Globalping 筛选 6 个 IPv4，生成并验收源订阅"]
@@ -329,7 +330,6 @@ graph TD
 | VPS 开通日期 | `YYYY-MM-DD` | 当前 UTC 日期 | 以默认日期的“日”作为每月账期边界 |
 | 安装模式 | `1` Reality / `2` Cloudflare | `1` | 安装 Reality |
 | WARP 分流（仅模式 2） | `1` 不分流 / `2` Google AI / `3` 全部 Google / `4` 全部代理流量 | `1` | 更新时保留当前选择；首次启用另行确认 WARP 服务条款 |
-| Google/YouTube VPS 出站 | `1` auto / `2` IPv4 / `3` IPv6 | `1` | auto 在安装或 apply 时探测并锁定一个 IP 族；WARP 选项 3、4 跳过选择及原生探测 |
 | 定时重启 | `1` 每日 04:00 / `2` 自定义 / `3` 不配置 | `1` | 按服务器 `Asia/Shanghai` 时区写入 root crontab；重启前最多用 10 分钟更新并校验 GeoSite/GeoIP，更新失败保留旧资产且不阻止重启 |
 | 自定义重启小时 | `0-23` | 无 | 不允许为空 |
 
@@ -337,13 +337,9 @@ graph TD
 UUID、Reality 密钥、XHTTP 路径和 Origin Key 属于自动生成项，不会作为交互选项询问。
 所有需要用户输入的交互提示仅显示中文；密码提示同样使用中文并继续隐藏输入。
 
-服务器在初始化阶段同时检查全局 IPv6 地址、默认路由和真实 HTTPS IPv6 出口：三项都可用时启用
-IPv4/IPv6 双栈，否则通过 sysctl 保持 IPv4-only。双栈模式从经过 SHA256 校验的 Xray 官方发布包安装
-`geosite.dat` 与 `geoip.dat`。Google/YouTube 出站支持 `ipv4`、`ipv6` 和 `auto`：显式模式分别使用
-`ForceIPv4` 或 `ForceIPv6`；`auto` 在安装及每次 `apply` 时分别探测两个地址族，先比较成功次数、
-再比较延迟中位数，将结果持久化并锁定到下次应用，不使用逐连接回退。
-每日重启前从 `Loyalsoldier/v2ray-rules-dat` 发布页下载独立 Geo 数据及其 SHA256 文件，只有哈希和
-Xray 分类校验都通过才原子替换。其他服务仍可使用 VPS IPv6。服务端与客户端规则默认阻断
+服务器初始化和每次 `apply` 都会把系统、UFW、Xray、WARP、Reality 节点及 Mihomo 订阅收口为
+IPv4-only。仅 WARP 的 Google AI/全部 Google 域名分流需要 GeoSite/GeoIP；每日重启前的资产更新在
+当前策略不需要 Geo 数据时直接跳过。服务端与客户端规则默认阻断
 境外 UDP/443（QUIC），使 HTTP/3 快速回退至 TCP；局域网与中国大陆 QUIC 仍保持直连。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
@@ -391,11 +387,11 @@ XanMod BBRv3。检测到 UEFI Secure Boot 时安装会提前停止，避免写�
 | `self-update` | 从 GitHub 下载并原子替换 easy_all 项目代码；不刷新部署，也不修改 Xray、Nginx、订阅或云端资源。 |
 | `apply` | 使用 VPS 已安装的代码按当前状态重新生成并验收运行时和订阅；Reality 部署订阅时会同步其 Cloudflare DNS、Strict TLS 与 Origin CA。 |
 | `apply-cloud` | Cloudflare 模式可用；应用本机配置并同步 DNS、证书、规则和 Worker。 |
-| `update-sub` | 重新选择订阅输出并管理用户/配额，同时可修改 Google 出站策略；Cloudflare 模式还可选择 WARP 分流、保留/替换/清空 Worker 聚合配置、重新构建部署 Worker 和刷新与当前入口策略兼容的缓存，并同步重建本机 Xray、Nginx 和订阅文件。 |
-| `warp` | 仅模式 2：交互选择 WARP 分流及剩余 Google 原生出站策略，验证出口并重启 Xray；不修改 Worker、订阅、Nginx 或系统默认路由。 |
+| `update-sub` | 重新选择订阅输出并管理用户/配额；Cloudflare 模式还可选择 WARP 分流、保留/替换/清空 Worker 聚合配置、重新构建部署 Worker 和刷新与当前入口策略兼容的缓存，并同步重建本机 Xray、Nginx 和订阅文件。 |
+| `warp` | 仅模式 2：交互选择 WARP 分流策略，验证 IPv4 出口并重启 Xray；不修改 Worker、订阅、Nginx 或系统默认路由。 |
 | `refresh-cdn-ips` | Cloudflare 模式可用；立即运行一次 Globalping 测量，更新本地缓存并重建订阅。 |
 | `update-core` | 下载并更新 Xray 核心；更新失败时恢复旧版本。 |
-| `refresh-xray-assets` | Google 原生双栈或 WARP 域名分流需要时，下载、校验并原子更新 Xray GeoSite/GeoIP；IPv4-only 的 WARP 选项 2、3 同样适用，下次重启加载。 |
+| `refresh-xray-assets` | WARP 域名分流需要时，下载、校验并原子更新 Xray GeoSite/GeoIP；下次重启加载。 |
 | `renew-cert` | 强制轮换当前模式的 Cloudflare Origin CA 证书并重新验收。 |
 | `quota-status` | 显示每用户月度配额和 Xray 本地统计。 |
 | `quota-set <用户> <GB>` | 修改指定用户的月度额度，不清零本月已用流量；`0` 表示不限量。 |
@@ -420,8 +416,8 @@ Origin CA 证书；Reality 使用自己的 `easy_all reality subscription origin
 
 | 当前模式 | `easy_all apply` 的执行步骤 |
 | --- | --- |
-| Reality | 1. 读取已安装模式，安装或验收 XanMod LTS BBRv3、应用已探测的 IPv4/双栈状态、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 重新探测并锁定 Google 出站 IP 族，校验 Xray GeoSite/GeoIP 资产；保留订阅与端口模式，自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS。<br>4. 生成、重启并验收 Xray，保存状态、恢复配额任务后显示输出。 |
-| Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置、WARP 凭据、Geo 数据和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3，仅对仍由 VPS 原生出站的 Google 探测并锁定 IP 族，同步 UFW 与 Fail2ban。<br>3. 生成并验收 Xray 与 Nginx 私有节点源；启用 WARP 时验证实际出口。<br>4. 使用完整 6 个已验证 IPv4 重建源订阅，不生成域名兜底。<br>5. 保存状态、恢复配额和 Globalping 刷新任务。复用 WARP 设备，不重新注册；Worker 动态读取节点源，因此普通 `apply` 不需要 Cloudflare Token，也不修改 Worker。 |
+| Reality | 1. 读取已安装模式，安装或验收 XanMod LTS BBRv3、全局禁用 IPv6、重写 TCP 参数并注册当前 easy_all 代码。<br>2. 备份 Xray/Nginx 配置、订阅文件、证书和 UFW 规则。<br>3. 将旧地址族状态归一化为 IPv4；保留订阅与端口模式，自托管模式同步 Cloudflare Proxied DNS、Origin CA 与 Strict TLS。<br>4. 生成、重启并验收 IPv4-only Xray，保存状态、恢复配额任务后显示输出。 |
+| Cloudflare CDN XHTTP | 1. 读取状态，备份 Xray/Nginx 配置、WARP 凭据、Geo 数据和订阅文件。<br>2. 安装或验收 XanMod LTS BBRv3，全局禁用 IPv6，同步 UFW 与 Fail2ban。<br>3. 生成并验收 IPv4-only Xray 与 Nginx 私有节点源；启用 WARP 时验证实际出口。<br>4. 使用完整 6 个已验证 IPv4 重建源订阅，不生成域名或 IPv6 兜底。<br>5. 保存状态、恢复配额和 Globalping 刷新任务。复用 WARP 设备，不重新注册；Worker 动态读取节点源，因此普通 `apply` 不需要 Cloudflare Token，也不修改 Worker。 |
 
 Reality 和 CDN 模式在订阅或运行时配置更新失败时，会恢复已备份的状态、
 Xray/Nginx 配置、TLS 证书与订阅文件。首次安装在云资源检查点之前失败时，会恢复 TCP sysctl、
@@ -698,12 +694,9 @@ Reality 的订阅模式：
 1. 部署 Nginx HTTPS `8443` 订阅。
 2. 不部署，仅输出节点信息。
 
-Mihomo 模板本身启用客户端 IPv4/IPv6 双栈 DNS 与 TUN，这不代表所有代理节点都必须双栈。
-Reality 没有手工选择客户端地址族的选项：只有在 VPS 公网 IPv6 可用且节点域名的 AAAA 全部指向
-该地址时才自动输出 `ip-version: dual`；使用 IPv4 地址或未发布 AAAA 时保持 `ip-version: ipv4`，
-AAAA 已发布但与 VPS 能力或地址不匹配时安装器会停止。Cloudflare 精选节点固定使用 IPv4；
-这不影响 VPS 保持双栈。客户端将整个 `GEOSITE,google` 交给代理，VPS 根据持久化的
-`GOOGLE_EGRESS_MODE=auto|ipv4|ipv6` 策略，将 Google 域名与 IP 流量统一锁定到同一地址族。
+Mihomo 模板全局设置 `ipv6: false`，DNS 不查询 AAAA，TUN 不创建 IPv6 地址。Reality 和
+Cloudflare 节点全部输出 `ip-version: ipv4`；Reality 域名若发布 AAAA，安装或 `apply` 会停止并要求删除。
+客户端将 Google 交给代理后，VPS 原生出站和 WARP 都固定使用 IPv4。
 
 Reality 服务端与 CDN XHTTP 均阻断 IPv4/IPv6 私网、链路本地、回环、组播及保留地址，
 避免订阅凭据泄露后被用于访问 VPS 内网或云元数据。
@@ -720,17 +713,13 @@ Reality 交互选项：
 | Mihomo 下载文件名 | `EASY_ALL` | 使用 `EASY_ALL` |
 | Token 字典 | 自动生成 `owner` Token | 使用屏幕显示的随机 Token |
 
-Reality 按安装时探测结果配置网络族：
+Reality 固定使用 IPv4：
 
-- 没有可用公网 IPv6时，sysctl 设置 `disable_ipv6=1`、UFW 设置 `IPV6=no`，Xray 监听
-  `0.0.0.0:443`，动态端口只写入 IPv4 NAT。
-- 检测到可用公网 IPv6时，sysctl 设置 `disable_ipv6=0`、UFW 设置 `IPV6=yes`，Xray 监听
-  `::`，动态端口同时写入 IPv4/IPv6 NAT。
-- 使用域名作为 Reality 连接地址时，A 记录必须指向当前 VPS 公网 IPv4。只需要 IPv4 直连时不要
-  发布 AAAA；需要 IPv6 直连时，所有 AAAA 都必须指向探测到的 VPS 公网 IPv6。
+- sysctl 设置 `disable_ipv6=1`、UFW 设置 `IPV6=no`，Xray 只监听 `0.0.0.0:443`。
+- 动态端口只写入 IPv4 NAT；应用新版本时会清除旧的 easy_all IPv6 NAT 块。
+- 使用域名作为 Reality 连接地址时，A 记录必须指向当前 VPS 公网 IPv4，且不得发布 AAAA。
 - Nginx 自托管订阅源站仍只监听 IPv4 `8443`，由 Cloudflare IPv4 回源白名单保护。
-- Xray 阻断私网目标和 UDP/443；双栈模式的普通出站允许 IPv4/IPv6，但 Google 域名及 IP
-  按 `GOOGLE_EGRESS_MODE` 的探测或显式选择结果固定到 IPv4 或 IPv6。
+- Xray 阻断私网目标和 UDP/443；普通出站固定 `ForceIPv4` + `UseIPv4`。
 
 自托管订阅域名必须是 Cloudflare Active Zone 下的一级子域名。安装器创建 Proxied A 记录；
 客户端由 Universal SSL 终止 TLS，Cloudflare 使用 Full (strict) 连接 VPS `8443` 上的 Origin CA：
@@ -762,7 +751,7 @@ API Token 只在当前进程使用，不写入状态。`uninstall` 默认保留�
 - **流量容量不是 Cloudflare 提供的固定免费额度**：XHTTP 只做实时转发，用户上行由 VPS 发往目标站，用户下行由 VPS 发往 Cloudflare 边缘。若 VPS 仅计出站，用户上下行载荷之和会消耗 VPS 出站额度，因此该额度通常是主要容量上限；协议、TLS 和重传开销会让有效载荷低于账单流量。若 VPS 统计双向流量，同一载荷进入并离开 VPS 都可能计费，必须按服务商规则折算。Cloudflare 服务条款、账户风控和连接质量仍可能先于 VPS 额度形成限制。
 - **完全适配 Cloudflare 的纯 XHTTP stream-up 架构**：后端与 Nginx 均针对 Cloudflare 边缘代理特性进行了深度调优，去除冗余的 WebSocket 与 Trojan 逻辑，采用单入站 `stream-up` 模式，配置 `scStreamUpServerSecs="20-40"` 与 `xPaddingBytes="100-1000"`，上行极速流式传输，下行分块响应，完美穿透 Cloudflare CDN 并大幅降低握手与排队延迟。
 - **三网定向精选 6 节点（平铺）**：基于 Cloudflare 官方 IPv4 CIDR 构建候选池，经 Globalping eyeball 探针针对电信、联通、移动三网实测与 TLS 深度校验，每家运营商严格挑选 2 个最优节点平铺输出（节点名称统一为 `🇺🇸优选1` 到 `🇺🇸优选6`），**严格输出 6 个精选节点，绝不输出域名兜底节点**。
-- **入口固定 IPv4**：VPS 候选池和订阅源只生成上述 6 个 Cloudflare IPv4 节点，不发现或下发 Cloudflare 边缘 IPv6；Worker 按源顺序聚合，不重复校验地址族。VPS 自身的 IPv6 探测、Reality 双栈和 Google IPv6 出站逻辑保持独立。
+- **全链路固定 IPv4**：VPS 候选池和订阅源只生成上述 6 个 Cloudflare IPv4 节点，不发现或下发 Cloudflare 边缘 IPv6；Worker 将旧 `dual/ipv6` 标记归一化为 IPv4，并拒绝 IPv6 literal。
 - **全能双模式订阅支持**：
   - **通用模式（Base64）**：默认直接输出或通过订阅链接提供标准 Base64 编码的 `vless://` 链接列表，兼容主流客户端（v2rayN、v2rayNG、Shadowrocket 等）。
   - **Clash 模式（`flag=clash`）**：支持在订阅 URL 附加 `flag=clash` 参数，直接返回 Mihomo / Clash Meta 格式配置，内置全局单一 `AUTO`（自动测速）策略组与 `PROXY` 选择器，剔除多子组干扰，大幅节省客户端后台电量与连接开销。
@@ -842,22 +831,22 @@ Reality 节点省略 `port` 时按北京时间三小时端口规则计算，也�
 采用 [3x-ui v3.7.0 的 WARP 注册与 Xray WireGuard 接入方式](https://github.com/MHSanaei/3x-ui/blob/v3.7.0/internal/web/service/integration/warp.go)，
 不安装 3x-ui 面板或系统 WARP 服务。首次启用时确认服务条款，按需安装 `wireguard-tools` 生成密钥，
 调用 WARP 注册接口取得地址、peer 和 `client_id`，解码为 `reserved`。Xray 使用用户态
-WireGuard（`noKernelTun: true`、MTU 1420、`ForceIPv4v6`），不修改系统默认路由或 SSH 出口。
+WireGuard（仅保留 IPv4 地址，`noKernelTun: true`、MTU 1420、`ForceIPv4`），不修改系统默认路由或 SSH 出口。
 
-| 选项 | 分流范围 | Google 原生出站策略 |
+| 选项 | 分流范围 | 未命中流量 |
 | --- | --- | --- |
-| 1（默认） | 不启用 WARP | 保留选择、探测与原有路由 |
-| 2 | `geosite:google-gemini`，当前包含 Gemini、AI Studio、NotebookLM 等 Google AI 服务 | 仅控制剩余 Google 服务，例如 YouTube |
-| 3 | `geosite:google` 与 `geoip:google`，包含 YouTube | 不询问、不探测、不生成 Google 原生专用出站及规则 |
-| 4 | 全部进入本机 Xray 的代理流量 | 同选项 3，默认出口改为 WARP |
+| 1（默认） | 不启用 WARP | VPS 原生 IPv4 |
+| 2 | `geosite:google-gemini`，当前包含 Gemini、AI Studio、NotebookLM 等 Google AI 服务 | VPS 原生 IPv4 |
+| 3 | `geosite:google` 与 `geoip:google`，包含 YouTube | VPS 原生 IPv4 |
+| 4 | 全部进入本机 Xray 的代理流量 | 默认出口为 WARP IPv4 |
 
-安装时在 Google 原生出站选择前询问；已有模式 2 安装先更新项目代码，再运行：
+安装时直接询问 WARP 分流；已有模式 2 安装先更新项目代码，再运行：
 
 ```bash
 sudo easy_all warp
 ```
 
-关闭 WARP 会保留设备凭据及此前 Google 原生策略供再次启用/恢复；原生策略重新生效时才探测。
+关闭 WARP 会保留设备凭据供再次启用；Google 原生出站始终固定 IPv4，不再探测地址族。
 没有 WARP 字段的现有 schema 9 状态默认为关闭，无需重装。`apply`、`apply-cloud`、
 `update-sub`、`update-core` 都遵循当前策略；定时配额刷新仅重建配置，不做 WARP 联网探测。
 
@@ -868,7 +857,7 @@ WARP 故障时命中流量不会自动回退 VPS 原生出口；更新验证失�
 
 验证使用临时本机 SOCKS 探针检查 Cloudflare trace 的 `warp=on/plus`，并要求 Xray access log
 明确记录 Gemini 请求命中 `warp-check -> warp`；仅返回 HTTP 状态不算路由验收通过。
-WARP 不保证国家、IP 信誉或 Gemini 账号可用性，
+WARP 只使用注册响应中的 IPv4 地址和 `ForceIPv4`，不保证国家、IP 信誉或 Gemini 账号可用性，
 需要客户端实际对话验收；不启用自动换 IP。WARP 注册接口及 WireGuard 可用性取决于 Cloudflare
 和 VPS 网络，公网 UDP 出站必须可用。凭据不下发到 Worker/订阅，接口失败展示方法、路径、HTTP 状态
 和脱敏后的完整响应。首次注册后若安装失败，会尝试注销本次设备；注销失败时将完整凭据以 `0600`
@@ -905,23 +894,23 @@ STATE_VERSION=7  # Reality
 STATE_VERSION=9  # Cloudflare XHTTP
 PROTOCOL=reality|cloudflare-streamup
 CDN_PROVIDER=cloudflare
-VPS_IP_FAMILY=ipv4|dual
-VPS_PUBLIC_IPV6=...  # 仅 dual
+VPS_IP_FAMILY=ipv4
+VPS_PUBLIC_IPV6=     # 始终为空
 CLOUDFLARE_ACCOUNT_ID=...               # 仅 Cloudflare XHTTP
 CLOUDFLARE_WORKER_NAME=easyall          # 仅 Cloudflare Worker 订阅
 CLOUDFLARE_WORKER_DOMAIN_ID=...         # 仅 Cloudflare Worker 订阅
 WORKER_SOURCE_SECRET=...                # Worker 访问 Nginx 私有源的密钥
 WORKER_AGGREGATION_CONFIG={...}         # 不含 vpsSubUrl 的聚合配置，root-only 状态
-GOOGLE_EGRESS_MODE=auto|ipv4|ipv6
-GOOGLE_EGRESS_RESOLVED=ipv4|ipv6
+GOOGLE_EGRESS_MODE=ipv4
+GOOGLE_EGRESS_RESOLVED=ipv4
 WARP_SCOPE=off|gemini|google|all  # 仅模式 2；旧 schema 9 缺失时按 off
 ```
 
 不提供跨版本状态自动迁移；状态版本或必填策略字段不匹配时需重新安装。
 可选的 `WARP_SCOPE` 缺失时按 `off`；WARP 凭据独立保存在 `warp/account.json`，权限 `root:root 0600`。
 
-Reality 的客户端节点族根据 VPS 双栈状态和节点 AAAA 实时生成，不单独持久化。Cloudflare
-客户端入口固定为 IPv4；VPS 网络栈和 Google 出口策略仍可独立使用 IPv6。
+Reality 与 Cloudflare 客户端节点族固定为 IPv4。旧状态中的双栈和 Google IPv6 值在 `apply`
+时归一化并保存为 IPv4。
 Reality 的 `CDN_PROVIDER` 为空。
 Globalping Token 由 Cloudflare 模式使用，单独保存在
 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`，不会写入状态文件。
@@ -946,7 +935,7 @@ easy_all
 │  ├─ quota.sh                     用户配额与统计
 │  ├─ platform.sh                  root/systemd/SSH 启动保障
 │  ├─ profile-common.sh            Profile 公共辅助、交互与字段校验
-│  ├─ network.sh                   公网 IPv4/IPv6 探测、Google 出站锁定与私网阻断
+│  ├─ network.sh                   全局 IPv4-only、Xray 出站与私网阻断
 │  ├─ mihomo-template.sh           Mihomo 模板加载与校验
 │  ├─ firewall.sh                  SSH 端口发现与受管 UFW 过滤规则
 │  ├─ xray-core.sh                 Xray/GeoSite/GeoIP 下载、校验与安装
@@ -968,8 +957,8 @@ Provider 云资源和网络策略；公共模块不反向依赖 Profile。Cloudf
 共享订阅渲染、配额用户展开、状态应用收尾、命令注册、证书和本机回滚实现。
 
 `profile-common.sh` 合并了公共交互、临时目录、统一命令注册和字段校验；
-`scheduled-maintenance.sh` 统一管理 Geo 数据预更新与可选定时重启。`network.sh` 负责公网
-IPv4/IPv6 探测和 Xray 出站策略，`firewall.sh` 负责具有系统副作用的 UFW 修改。
+`scheduled-maintenance.sh` 统一管理 Geo 数据预更新与可选定时重启。`network.sh` 负责全局
+IPv4-only 和 Xray 出站策略，`firewall.sh` 负责具有系统副作用的 UFW 修改。
 
 ## 测试
 
