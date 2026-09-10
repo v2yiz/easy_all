@@ -99,7 +99,7 @@ show_install_guide() {
 安装流程概览：
 easy_all install
 ├─ [1 默认] 直连 Reality
-│  ├─ 适用线路：优化线路
+│  ├─ 适用场景：直连效果良好，且 VPS 公网 IP 未被封锁
 │  ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → 全局禁用 IPv6
 │  ├─ IPv4 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
 │  ├─ 选择订阅输出
@@ -108,7 +108,8 @@ easy_all install
 │  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
 └─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）
-   ├─ 适用线路：非优化线路；域名需已接入 Cloudflare 完整托管 Zone
+   ├─ 适用场景：直连效果不佳、VPS 公网 IP 已被封，或明确追求 Cloudflare CDN 纯 XHTTP
+   ├─ 前提条件：域名需已接入 Cloudflare 完整托管 Zone
    ├─ 流量口径：实时回源；VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）
    ├─ 入口 IP 族：固定 IPv4，输出 6 个三网精选节点
    ├─ VPS、Xray 与客户端统一固定 IPv4
@@ -164,8 +165,8 @@ choose_install_mode() {
     local choice
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
-    printf '  1. 直连 - Reality（优化线路推荐）\n' >&2
-    printf '  2. Cloudflare CDN 精选 IP（非优化线路推荐）\n' >&2
+    printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
+    printf '  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;

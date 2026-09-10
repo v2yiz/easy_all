@@ -25,11 +25,11 @@ Cloudflare 提供纯 XHTTP stream-up（固定保留 6 个三网精选 IPv4）；
 
 | 你的情况 | 建议 | 需要额外准备 |
 | --- | --- | --- |
-| 第一次使用，或 VPS 直连已经可用 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
-| 明确要使用 Cloudflare CDN，追求纯 XHTTP | 选择 `2`：Cloudflare 纯 XHTTP | 同一 Active Zone 下互不相同的节点域名和 Worker 订阅域名、具备 Zone 权限及账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。固定下发 6 个三网精选 IPv4。 |
+| 直连效果良好且 VPS 公网 IP 未被封 | 选择 `1`：Reality | 只需 VPS；如需自托管订阅，另需 Cloudflare 域名和 API Token。 |
+| 直连效果不佳、VPS 公网 IP 已被封，或明确要使用 Cloudflare CDN、追求纯 XHTTP | 选择 `2`：Cloudflare 纯 XHTTP | 同一 Active Zone 下互不相同的节点域名和 Worker 订阅域名、具备 Zone 权限及账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token，并在控制台打开 gRPC。固定下发 6 个三网精选 IPv4。 |
 
-“优化线路”没有统一、可由脚本判断的标准。若不确定，先选择 Reality；只有直连体验不理想且你愿意
-处理 Cloudflare 前置准备时，再选择对应 CDN 模式。
+选择标准很简单：直连效果良好且 VPS 公网 IP 未被封时选择 Reality；直连效果不佳、VPS 公网 IP
+已被封，或明确要使用 Cloudflare CDN、追求纯 XHTTP 时选择 CDN。
 
 ### 2. 运行前检查清单
 
@@ -82,7 +82,8 @@ SSH 管理流量再次进入代理节点。
 
 ## 安装
 
-线路与费用提示：CDN 模式面向直连 VPS 体验不理想、且愿意维护域名和第三方账号的场景，并不保证一定更快。
+线路与费用提示：直连效果不佳或 VPS 公网 IP 已被封时，应选择 CDN 模式；明确追求纯 XHTTP
+时也选择 CDN 模式。该模式需要维护域名和第三方账号，并不保证一定更快。
 Cloudflare XHTTP 是实时回源链路，不会缓存隧道内的业务数据。若 VPS 仅统计出站流量，其月度出站额度
 通常是可用代理载荷的主要上限，但协议开销和 Cloudflare 服务规则会使两者并非严格等值；VPS 双向计费时
 还需按服务商口径同时计算入站与出站。Cloudflare Free Zone 的使用边界按 Provider 当前规则执行，
@@ -148,8 +149,8 @@ sudo ./easy_all install
 
 ```text
 请选择安装模式：
-  1. 直连 - Reality（优化线路推荐）
-  2. Cloudflare CDN 精选 IP（非优化线路推荐）
+  1. 直连 - Reality（直连效果良好且 IP 未被封时）
+  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）
  请选择 [1]（直接回车使用默认值）:
 ```
 
@@ -160,7 +161,7 @@ Xray email 等问题都可以直接阅读后文的进阶章节，不必现在填
 
 | 看到的选项 | 首次单用户建议 | 说明 |
 | --- | --- | --- |
-| 安装模式 | 不确定时选 `1` | `1` 是 Reality 直连，`2` 是 Cloudflare 纯 XHTTP stream-up。 |
+| 安装模式 | 直连效果良好且 IP 未被封选 `1`；直连不佳、IP 已被封或明确追求 Cloudflare CDN 纯 XHTTP 选 `2` | `1` 是 Reality 直连，`2` 是 Cloudflare 纯 XHTTP stream-up。 |
 | 订阅输出 | 选 `1` 或直接回车 | 在本机部署订阅，之后可从客户端按链接导入。已有别的订阅服务器才选 `2`。 |
 | 月度用户配额 | 选 `1` 或直接回车 | 单人通常不需要；启用后每个用户有独立凭据，适合之后再配置。 |
 | 定时重启 | 希望每天凌晨短暂断线选 `1`；否则选 `3` | 默认每天 `04:00`（服务器时区 `Asia/Shanghai`）重启；会中断已有连接。 |
@@ -274,7 +275,7 @@ sudo easy_all subscription
 graph TD
     A["easy_all install"] --> B{"选择安装模式"}
 
-    B -->|1| R0["Reality（默认，优化线路推荐）"]
+    B -->|1| R0["Reality（直连效果良好且 IP 未被封时）"]
     R0 --> R1["1/9 系统预检、协议与冲突检查"]
     R1 --> R2["2/9 备份、依赖、SSH、BBRv3 与重启策略"]
     R2 --> R3["3/9 全局禁用 IPv6，收集 IPv4 连接地址、SNI 与订阅端口"]
@@ -287,7 +288,7 @@ graph TD
     R8 --> R9["9/9 完成证书轮换、保存状态、注册命令与任务"]
     R9 --> Z["输出节点、订阅、BBRv3 状态与重启提示"]
 
-    B -->|2| C0["Cloudflare CDN 精选 IP（非优化线路推荐）"]
+    B -->|2| C0["Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）"]
     C0 --> C1["1/7 系统预检、冲突检查、备份、依赖、SSH、BBRv3 与重启策略"]
     C1 --> C2["2/7 全局禁用 IPv6，收集节点域名、Globalping、订阅与 Worker 参数"]
     C2 --> C3["3/7 配置 DNS、Origin CA、UFW、Xray 与 Nginx 私有节点源"]

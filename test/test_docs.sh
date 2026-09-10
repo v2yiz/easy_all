@@ -39,6 +39,12 @@ done
 
 assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
 assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
+assert_contains "README recommends Reality for healthy direct connectivity" \
+    "${README_CONTENT}" '直连效果良好且 VPS 公网 IP 未被封'
+assert_contains "README recommends CDN for blocked or poor direct connectivity" \
+    "${README_CONTENT}" '直连效果不佳、VPS 公网 IP 已被封'
+assert_contains "README identifies pure XHTTP as a CDN choice" \
+    "${README_CONTENT}" '明确要使用 Cloudflare CDN、追求纯 XHTTP'
 assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
 assert_contains "README documents root-only Globalping token storage" \
     "${README_CONTENT}" '/etc/easy_all/globalping.token'
@@ -141,7 +147,7 @@ assert_contains "Preparation guide embeds the Cloudflare gRPC illustration" \
     "${PREPARATION_GUIDE_CONTENT}" 'img/cloudflare/cloudflare-grpc.svg'
 assert_contains "Preparation guide documents the Globalping token page" \
     "${PREPARATION_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
-assert_contains "Preparation guide documents the optimized XHTTP mode" \
+assert_contains "Preparation guide documents the Cloudflare pure XHTTP mode" \
     "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
 assert_contains "Preparation guide requires an active Zone" \
     "${PREPARATION_GUIDE_CONTENT}" '**Active**'

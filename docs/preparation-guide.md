@@ -11,7 +11,8 @@ Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览�
 地方；VPS 是实际运行 easy_all 的远程服务器。把名称服务器改为 Cloudflare 并不等于把域名转移到
 该平台，注册商仍负责续费。
 
-线路与费用提示：CDN 模式面向直连 VPS 体验不理想、且愿意维护域名和第三方账号的场景，并不保证一定更快。
+线路与费用提示：直连效果不佳、VPS 公网 IP 已被封，或明确追求 Cloudflare CDN 纯 XHTTP 时选择 CDN
+模式。该模式需要维护域名和第三方账号，并不保证一定更快。
 Cloudflare XHTTP 的代理数据会实时经过 VPS：VPS 仅计出站时，其月度出站额度通常是可用代理载荷的
 主要上限，但协议开销和 Cloudflare 服务规则会使两者并非严格等值；VPS 双向计费时还需同时计算入站与
 出站。Cloudflare Free Zone 的使用边界按 Provider 当前规则执行；域名注册费和

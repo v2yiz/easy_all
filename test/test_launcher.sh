@@ -183,7 +183,8 @@ unset SELF_UPDATE_INVOCATION_FILE SELF_UPDATE_REPO_PATH_FILE SELF_UPDATE_BRANCH_
 
 guide=$(show_install_guide 2>&1)
 [[ "${guide}" == *"[1 默认] 直连 Reality"* \
-    && "${guide}" == *"适用线路：优化线路"* && "${guide}" == *"适用线路：非优化线路"* \
+    && "${guide}" == *"适用场景：直连效果良好，且 VPS 公网 IP 未被封锁"* \
+    && "${guide}" == *"适用场景：直连效果不佳、VPS 公网 IP 已被封，或明确追求 Cloudflare CDN 纯 XHTTP"* \
     && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
     && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
     && "${guide}" == *"[2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up"* \
@@ -216,10 +217,10 @@ readme=$(<"${ROOT_DIR}/README.md")
     && "$(<"${ROOT_DIR}/easy_all")" != *'Choose the installation mode:'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'Direct - Reality'* ]] \
     || fail "install mode prompt must be Chinese-only and explain the enter default"
-[[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（优化线路推荐）'* \
-    && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP（非优化线路推荐）'* \
+[[ "$(<"${ROOT_DIR}/easy_all")" == *'直连 - Reality（直连效果良好且 IP 未被封时）'* \
+    && "$(<"${ROOT_DIR}/easy_all")" == *'Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）'* \
     && "$(<"${ROOT_DIR}/easy_all")" != *'AWS CDN 精选 IP - XHTTP'* ]] \
-    || fail "install mode prompt must explain line recommendations"
+    || fail "install mode prompt must explain mode selection criteria"
 interactive_sources=$(
     cat "${ROOT_DIR}/easy_all" \
         "${ROOT_DIR}/lib/profile-common.sh" \
