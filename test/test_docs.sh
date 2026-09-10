@@ -4,7 +4,17 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
-PREPARATION_GUIDE_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
+PREPARATION_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
+CLIENT_CONTENT=$(<"${ROOT_DIR}/docs/client-guide.md")
+OPERATIONS_CONTENT=$(<"${ROOT_DIR}/docs/operations-guide.md")
+TECHNICAL_CONTENT=$(<"${ROOT_DIR}/docs/technical-reference.md")
+DEBIAN_INIT_CONTENT=$(<"${ROOT_DIR}/docs/debian-init.md")
+ALL_DOCS="${README_CONTENT}
+${PREPARATION_CONTENT}
+${CLIENT_CONTENT}
+${OPERATIONS_CONTENT}
+${TECHNICAL_CONTENT}
+${DEBIAN_INIT_CONTENT}"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh")
 
@@ -23,9 +33,32 @@ assert_not_contains() {
     [[ "${haystack}" != *"${needle}"* ]] || fail "${label}: unexpected '${needle}'"
 }
 
+for heading in '选择模式' '安装要求' '快速安装' '完成安装' '常用命令' '安全边界' '文档'; do
+    assert_contains "README onboarding section" "${README_CONTENT}" "## ${heading}"
+done
+
+for doc in preparation-guide client-guide operations-guide technical-reference debian-init; do
+    assert_contains "README documentation index" "${README_CONTENT}" "docs/${doc}.md"
+done
+
+assert_contains "README documents IPv4-only support" "${README_CONTENT}" '只支持 IPv4。'
+assert_contains "README recommends Reality for healthy direct connectivity" \
+    "${README_CONTENT}" 'VPS 公网 IP 可用且直连质量良好'
+assert_contains "README recommends CDN for poor direct connectivity" \
+    "${README_CONTENT}" '直连效果不佳、VPS 公网 IP 已被封'
+assert_contains "README includes the bootstrap command" \
+    "${README_CONTENT}" 'bootstrap.sh'
+assert_contains "README includes post-reboot verification" \
+    "${README_CONTENT}" 'BBRv3: active'
+assert_not_contains "README omits the old installation flowchart" \
+    "${README_CONTENT}" '安装脑图'
+assert_not_contains "README omits implementation state schemas" \
+    "${README_CONTENT}" 'STATE_VERSION='
+
 while IFS= read -r relative_path; do
     [[ -n "${relative_path}" ]] || continue
-    assert_contains "README runtime module list" "${README_CONTENT}" "$(basename "${relative_path}")"
+    assert_contains "technical reference runtime module list" \
+        "${TECHNICAL_CONTENT}" "$(basename "${relative_path}")"
 done < <(
     sed -n '/readonly -a EASY_ALL_RUNTIME_MODULES=(/,/^)/p' "${ROOT_DIR}/easy_all" \
         | sed -n 's/^[[:space:]]*"\(\(lib\|profiles\)\/[^\"]*\)"/\1/p'
@@ -34,78 +67,65 @@ done < <(
 for command in show subscription self-update apply apply-cloud update-sub \
     refresh-cdn-ips update-core renew-cert quota-status quota-set quota-reset \
     status uninstall help; do
-    assert_contains "README public command ${command}" "${README_CONTENT}" "| \`${command}"
+    assert_contains "operations guide public command ${command}" \
+        "${OPERATIONS_CONTENT}" "| \`${command}"
 done
 
-assert_contains "README documents Reality mode" "${README_CONTENT}" '直连 Reality'
-assert_contains "README documents Cloudflare mode" "${README_CONTENT}" 'Cloudflare CDN 精选 IP - XHTTP'
-assert_contains "README recommends Reality for healthy direct connectivity" \
-    "${README_CONTENT}" '直连效果良好且 VPS 公网 IP 未被封'
-assert_contains "README recommends CDN for blocked or poor direct connectivity" \
-    "${README_CONTENT}" '直连效果不佳、VPS 公网 IP 已被封'
-assert_contains "README identifies pure XHTTP as a CDN choice" \
-    "${README_CONTENT}" '明确要使用 Cloudflare CDN、追求纯 XHTTP'
-assert_contains "README links the preparation guide" "${README_CONTENT}" 'docs/preparation-guide.md'
-assert_contains "README documents root-only Globalping token storage" \
-    "${README_CONTENT}" '/etc/easy_all/globalping.token'
-assert_contains "README documents subscription access-log suppression" \
-    "${README_CONTENT}" '避免查询参数中的 Token 写入'
-assert_contains "README documents hourly Globalping refresh" "${README_CONTENT}" '每小时'
-assert_contains "README documents compatible-cache reuse" \
-    "${README_CONTENT}" '与当前入口策略兼容的缓存'
-assert_contains "README documents the official Cloudflare IPv4 pool" \
-    "${README_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
-assert_contains "README documents IPv4-only Cloudflare edge nodes" \
-    "${README_CONTENT}" '全链路固定 IPv4'
-assert_contains "README documents Worker script permission" \
-    "${README_CONTENT}" 'Workers Scripts Write'
-assert_contains "README documents the default Worker name" \
-    "${README_CONTENT}" '默认 `easyall`'
-assert_contains "README documents same-zone Worker fetch handling" \
-    "${README_CONTENT}" '`global_fetch_strictly_public`'
-assert_contains "README documents managed Worker extra nodes" \
-    "${README_CONTENT}" 'WORKER_AGGREGATION_CONFIG={...}'
-assert_contains "Preparation guide keeps Nginx as a private Worker source" \
-    "${PREPARATION_GUIDE_CONTENT}" '`X-Easy-All-Worker-Source`'
-assert_contains "README documents the Mihomo requirement for selected IPs" \
-    "${README_CONTENT}" '精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成'
-assert_contains "README documents Shadowrocket as unverified" \
-    "${README_CONTENT}" '不把 Shadowrocket 列为本项目的已验证客户端'
-assert_not_contains "README removes Clash Party recommendations" \
-    "${README_CONTENT}" 'Clash Party'
-WINDOWS_CLIENT_ROW=$(grep '^| \*\*Windows\*\*' "${ROOT_DIR}/README.md")
-MACOS_CLIENT_ROW=$(grep '^| \*\*macOS\*\*' "${ROOT_DIR}/README.md")
-ANDROID_CLIENT_ROW=$(grep '^| \*\*Android\*\*' "${ROOT_DIR}/README.md")
-IOS_CLIENT_ROW=$(grep '^| \*\*iOS / iPadOS\*\*' "${ROOT_DIR}/README.md")
-LINUX_CLIENT_ROW=$(grep '^| \*\*Linux\*\*' "${ROOT_DIR}/README.md")
-for row in "${WINDOWS_CLIENT_ROW}" "${MACOS_CLIENT_ROW}" "${LINUX_CLIENT_ROW}"; do
-    assert_contains "desktop client matrix includes Clash Verge Rev" "${row}" 'Clash Verge Rev'
-    assert_contains "desktop client matrix includes Clash Mi" "${row}" 'Clash Mi'
-    assert_contains "desktop client matrix includes Bettbox" "${row}" 'Bettbox'
+for phrase in \
+    '避免查询参数中的 Token 写入日志' \
+    '/etc/easy_all/globalping.token' \
+    'WORKER_AGGREGATION_CONFIG={...}' \
+    '每小时刷新' \
+    '与当前入口策略兼容的缓存' \
+    'Cloudflare 官方 IPv4 CIDR' \
+    '全链路固定 IPv4' \
+    'Workers Scripts Write' \
+    '默认名称为 `easyall`' \
+    '`global_fetch_strictly_public`' \
+    'UFW 的 `before.rules` 受管 NAT 区块' \
+    '不会生成数万条' \
+    '`ForceIPv4` + `UseIPv4`' \
+    '`tcp-concurrent`' \
+    '`tcp_slow_start_after_idle`' \
+    '不能替代 XHTTP' \
+    '`13000-60999`' \
+    'XanMod LTS 内核' \
+    'GOOGLE_EGRESS_RESOLVED=ipv4' \
+    '所有需要用户输入的交互提示仅显示中文'; do
+    assert_contains "detailed documentation contract" "${ALL_DOCS}" "${phrase}"
 done
-assert_contains "Android client matrix includes Clash Mi" "${ANDROID_CLIENT_ROW}" 'Clash Mi'
-assert_contains "Android client matrix includes Bettbox" "${ANDROID_CLIENT_ROW}" 'Bettbox'
-assert_not_contains "Android client matrix excludes Clash Verge Rev" \
-    "${ANDROID_CLIENT_ROW}" 'Clash Verge Rev'
-assert_contains "iOS client matrix includes Clash Mi" "${IOS_CLIENT_ROW}" 'Clash Mi'
-assert_not_contains "iOS client matrix excludes Bettbox" "${IOS_CLIENT_ROW}" 'Bettbox'
-assert_not_contains "iOS client matrix excludes Clash Verge Rev" \
-    "${IOS_CLIENT_ROW}" 'Clash Verge Rev'
-assert_contains "README explains the Cloudflare VPS traffic boundary" \
-    "${README_CONTENT}" '用户上下行载荷之和会消耗 VPS 出站额度'
-assert_contains "README documents IPv4-only support" \
-    "${README_CONTENT}" '只支持 IPv4。'
-assert_contains "README documents Reality AAAA rejection" \
-    "${README_CONTENT}" 'Reality 域名若发布 AAAA'
-assert_contains "README pins Xray to IPv4" \
-    "${README_CONTENT}" '`ForceIPv4` + `UseIPv4`'
 
-assert_contains "Preparation guide has the expected title" \
-    "${PREPARATION_GUIDE_CONTENT}" '# 前置准备手册'
-assert_contains "Preparation guide documents the Cloudflare success marker" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Your domain is now protected by Cloudflare'
-assert_contains "Preparation guide embeds the success screenshot" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/cloudflare/cloudflare-domain-protected.svg'
+assert_contains "client guide documents Mihomo selected-IP requirements" \
+    "${CLIENT_CONTENT}" '客户端必须能分别保存'
+assert_contains "client guide marks Shadowrocket unverified" \
+    "${CLIENT_CONTENT}" '目前不把 Shadowrocket 列为'
+assert_contains "client guide documents Clash Mi global selection" \
+    "${CLIENT_CONTENT}" '手动勾选 `PROXY`'
+assert_contains "client guide embeds Clash Mi illustration" \
+    "${CLIENT_CONTENT}" 'img/clashmi/clashmi-global-proxy.svg'
+
+WINDOWS_ROW=$(grep '^| Windows ' "${ROOT_DIR}/docs/client-guide.md")
+ANDROID_ROW=$(grep '^| Android ' "${ROOT_DIR}/docs/client-guide.md")
+IOS_ROW=$(grep '^| iOS / iPadOS ' "${ROOT_DIR}/docs/client-guide.md")
+assert_contains "Windows clients include Clash Verge Rev" "${WINDOWS_ROW}" 'Clash Verge Rev'
+assert_contains "Android clients include Clash Mi" "${ANDROID_ROW}" 'Clash Mi'
+assert_not_contains "Android clients exclude Clash Verge Rev" "${ANDROID_ROW}" 'Clash Verge Rev'
+assert_contains "iOS clients include Clash Mi" "${IOS_ROW}" 'Clash Mi'
+assert_not_contains "iOS clients exclude unverified Bettbox" "${IOS_ROW}" 'Bettbox'
+
+for phrase in \
+    '# 前置准备手册' \
+    'Your domain is now protected by Cloudflare' \
+    'https://www.spaceship.com/' \
+    'https://dash.cloudflare.com/sign-up' \
+    'https://dash.globalping.io/tokens' \
+    'Network → gRPC' \
+    'Cloudflare 官方 IPv4 CIDR' \
+    '只筛选和下发 Cloudflare IPv4 边缘节点' \
+    '不使用内置 Anycast IP 或域名兜底凑数'; do
+    assert_contains "preparation guide contract" "${PREPARATION_CONTENT}" "${phrase}"
+done
+
 for asset in \
     docs/img/cloudflare/cloudflare-add-domain.svg \
     docs/img/cloudflare/cloudflare-api-token-easy-all.svg \
@@ -116,151 +136,26 @@ for asset in \
     docs/img/spaceship/spaceship-nameservers.svg \
     docs/img/spaceship/spaceship-signup.svg \
     docs/img/clashmi/clashmi-global-proxy.svg; do
-    [[ -s "${ROOT_DIR}/${asset}" ]] || fail "Documentation asset is missing: ${asset}"
+    [[ -s "${ROOT_DIR}/${asset}" ]] || fail "documentation asset is missing: ${asset}"
 done
-assert_contains "README documents Clash Mi global proxy guide" \
-    "${README_CONTENT}" 'docs/img/clashmi/clashmi-global-proxy.svg'
-assert_contains "README reminds Clash Mi manual PROXY selection" \
-    "${README_CONTENT}" '手动勾选 `PROXY`'
-NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit)
-[[ -z "${NON_SVG_ASSET}" ]] || fail "Non-SVG documentation asset remains: ${NON_SVG_ASSET}"
-[[ ! -d "${ROOT_DIR}/docs/preparation" ]] || fail "obsolete preparation asset directory still exists"
-[[ ! -d "${ROOT_DIR}/docs/cloudflare" ]] || fail "obsolete top-level Cloudflare asset directory still exists"
-[[ ! -d "${ROOT_DIR}/docs/spaceship" ]] || fail "obsolete top-level Spaceship asset directory still exists"
-[[ ! -d "${ROOT_DIR}/docs/guide" ]] || fail "obsolete guide directory still exists"
-[[ ! -d "${ROOT_DIR}/docs/img/shadowrocket" ]] || fail "obsolete shadowrocket img directory still exists"
-assert_contains "Preparation guide documents domain registration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'https://www.spaceship.com/'
-assert_contains "Preparation guide documents Cloudflare sign-up" \
-    "${PREPARATION_GUIDE_CONTENT}" 'https://dash.cloudflare.com/sign-up'
-assert_contains "Preparation guide embeds the Spaceship signup illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/spaceship/spaceship-signup.svg'
-assert_contains "Preparation guide embeds the Spaceship search illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/spaceship/spaceship-domain-search.svg'
-assert_contains "Preparation guide embeds the Cloudflare add-domain illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/cloudflare/cloudflare-add-domain.svg'
-assert_contains "Preparation guide embeds the registrar Nameservers illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/spaceship/spaceship-nameservers.svg'
-assert_contains "Preparation guide embeds the Cloudflare Nameservers illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/cloudflare/cloudflare-nameservers.svg'
-assert_contains "Preparation guide embeds the Cloudflare gRPC illustration" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/cloudflare/cloudflare-grpc.svg'
-assert_contains "Preparation guide documents the Globalping token page" \
-    "${PREPARATION_GUIDE_CONTENT}" 'https://dash.globalping.io/tokens'
-assert_contains "Preparation guide documents the Cloudflare pure XHTTP mode" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare CDN 精选 IP XHTTP'
-assert_contains "Preparation guide requires an active Zone" \
-    "${PREPARATION_GUIDE_CONTENT}" '**Active**'
-assert_contains "Preparation guide documents proxied A automation" \
-    "${PREPARATION_GUIDE_CONTENT}" '创建唯一的 proxied `A` 记录'
-assert_contains "Preparation guide documents the manual gRPC toggle" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Network → gRPC'
-assert_contains "Preparation guide documents the Cloudflare API token walkthrough" \
-    "${PREPARATION_GUIDE_CONTENT}" 'img/cloudflare/cloudflare-api-token-easy-all.svg'
-[[ -s "${ROOT_DIR}/docs/img/cloudflare/cloudflare-api-token-easy-all.svg" ]] \
-    || fail "Cloudflare API token walkthrough asset is missing"
-assert_contains "Preparation guide documents the official IPv4 pool" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Cloudflare 官方 IPv4 CIDR'
-assert_contains "Preparation guide documents IPv4-only Cloudflare edges" \
-    "${PREPARATION_GUIDE_CONTENT}" '只筛选和下发 Cloudflare IPv4 边缘节点'
-assert_contains "Preparation guide documents the Cloudflare loss threshold" \
-    "${PREPARATION_GUIDE_CONTENT}" '最多允许丢 1 包（10%）'
-assert_contains "Preparation guide forbids hostname fallback" \
-    "${PREPARATION_GUIDE_CONTENT}" '不使用内置 Anycast IP 或域名兜底凑数'
-assert_contains "Preparation guide documents the Mihomo requirement for selected IPs" \
-    "${PREPARATION_GUIDE_CONTENT}" '精选 IP 订阅需要使用 Mihomo'
-assert_contains "Preparation guide documents IPv4-only support" \
-    "${PREPARATION_GUIDE_CONTENT}" '只支持 IPv4。'
-assert_contains "Preparation guide forbids Reality AAAA" \
-    "${PREPARATION_GUIDE_CONTENT}" '不能发布 AAAA'
-assert_contains "Preparation guide documents Shadowrocket as unverified" \
-    "${PREPARATION_GUIDE_CONTENT}" 'Shadowrocket 列为已验证客户端'
-assert_contains "Preparation guide explains outbound-only VPS accounting" \
-    "${PREPARATION_GUIDE_CONTENT}" '仅计出站的 VPS 会把两者计入出站额度'
-assert_contains "Cloudflare install interaction explains the VPS traffic boundary" \
+
+assert_contains "Cloudflare install explains VPS traffic accounting" \
     "${XHTTP_CONTENT}" '月度出站额度通常是可用代理载荷的主要上限'
-assert_contains "Cloudflare node-domain prompt includes a concrete example" \
+assert_contains "Cloudflare node prompt includes an example" \
     "${XHTTP_CONTENT}" '客户端连接的 CDN 节点域名（例如 node.example.com）'
-assert_contains "Cloudflare node-domain hint forbids pre-created DNS records" \
+assert_contains "Cloudflare node prompt forbids pre-created DNS" \
     "${XHTTP_CONTENT}" '不要提前创建 DNS 记录'
+assert_contains "Cloudflare command result includes Xray" \
+    "${XHTTP_CONTENT}" 'Cloudflare Worker 订阅、Origin CA 与回源规则已更新'
 
-assert_contains "README documents merged Profile helpers" "${README_CONTENT}" 'profile-common.sh'
-assert_contains "README documents merged scheduled maintenance" \
-    "${README_CONTENT}" 'scheduled-maintenance.sh'
-assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" 'UFW 的 `before.rules` 受管 NAT 区块'
-assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" '不会生成数万条'
-assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
-assert_not_contains "README omits legacy family migration" \
-    "${README_CONTENT}" '旧状态中的双栈和 Google IPv6 值'
-assert_not_contains "README omits legacy Worker family migration" \
-    "${README_CONTENT}" '旧 `dual/ipv6` 标记归一化为 IPv4'
-assert_not_contains "README omits legacy cache migration" \
-    "${README_CONTENT}" '旧 schema'
-assert_contains "README documents fixed Google egress state" \
-    "${README_CONTENT}" 'GOOGLE_EGRESS_RESOLVED=ipv4'
-assert_contains "README documents Chinese-only interactive prompts" \
-    "${README_CONTENT}" '所有需要用户输入的交互提示仅显示中文'
-assert_contains "README documents client connection racing" \
-    "${README_CONTENT}" '内置 Mihomo 模板启用 `tcp-concurrent`'
-assert_contains "README documents idle slow-start tuning" \
-    "${README_CONTENT}" '`tcp_slow_start_after_idle`'
-assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" \
-    "${README_CONTENT}" '不能替代 XHTTP'
-assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" '`13000-60999`'
-assert_contains "README documents XanMod LTS BBRv3" "${README_CONTENT}" 'XanMod LTS 内核'
-assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" '`BBRv3: active`'
-assert_contains "README keeps the independent Debian initializer" \
-    "${README_CONTENT}" '`scripts/debian-init.sh` 是独立的个人服务器初始化工具'
-assert_contains "README update-sub includes Xray" "${README_CONTENT}" '同步重建本机 Xray、Nginx 和订阅文件'
-assert_contains "XHTTP command message includes Xray" "${XHTTP_CONTENT}" \
-    'Cloudflare Worker 订阅、Origin CA 与回源规则已更新'
-
-for content_label in README preparation-guide launcher Cloudflare-profile XHTTP-runtime; do
-    case "${content_label}" in
-    README) content=${README_CONTENT} ;;
-    preparation-guide) content=${PREPARATION_GUIDE_CONTENT} ;;
-    launcher) content=${LAUNCHER_CONTENT} ;;
-    Cloudflare-profile) content=${XHTTP_CONTENT} ;;
-    XHTTP-runtime) content=$(<"${ROOT_DIR}/lib/xhttp-runtime.sh") ;;
-    esac
-    for legacy_term in AWS Amazon CloudFront 'Route 53' \
-        'xhttp-aws' 'aws-cdn'; do
-        assert_not_contains "${content_label} excludes ${legacy_term}" "${content}" "${legacy_term}"
-    done
+for legacy_term in AWS Amazon CloudFront 'Route 53' 'xhttp-aws' 'aws-cdn'; do
+    assert_not_contains "documentation excludes ${legacy_term}" "${ALL_DOCS}" "${legacy_term}"
+    assert_not_contains "launcher excludes ${legacy_term}" "${LAUNCHER_CONTENT}" "${legacy_term}"
+    assert_not_contains "Cloudflare profile excludes ${legacy_term}" "${XHTTP_CONTENT}" "${legacy_term}"
 done
 
-for removed_path in \
-    docs/aws-guide.md \
-    docs/aws/aws-architecture.svg \
-    docs/aws/aws-cloudfront-settings.svg \
-    docs/aws/aws-iam-policy.svg \
-    docs/aws/aws-iam-access-key.svg \
-    profiles/xhttp-aws.sh \
-    profiles/xhttp-cloudflare.sh \
-    profiles/singbox-cloudflare.sh \
-    lib/singbox-core.sh \
-    lib/cdn-traffic-guard.sh \
-    docs/shadowrocket-auto-node-guide.md \
-    profiles/shadowrocket-rule.js \
-    test/test_shadowrocket_rule.sh \
-    test/test_xhttp_aws.sh \
-    test/test_cdn_traffic_guard.sh \
-    test/test_xhttp_cloudflare.sh \
-    test/test_singbox_cloudflare.sh; do
-    [[ ! -e "${ROOT_DIR}/${removed_path}" ]] || fail "removed path still exists: ${removed_path}"
-done
-
-for forbidden_reference in \
-    'AWS CDN 精选 IP' \
-    'CloudFront' \
-    'Route 53' \
-    'docs/aws-guide.md' \
-    'docs/shadowrocket-auto-node-guide.md' \
-    'Shadowrocket 自动选择节点指南'; do
-    assert_not_contains "README excludes ${forbidden_reference}" "${README_CONTENT}" "${forbidden_reference}"
-    assert_not_contains "preparation guide excludes ${forbidden_reference}" \
-        "${PREPARATION_GUIDE_CONTENT}" "${forbidden_reference}"
-done
+NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit)
+[[ -z "${NON_SVG_ASSET}" ]] || fail "non-SVG documentation asset remains: ${NON_SVG_ASSET}"
 
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \

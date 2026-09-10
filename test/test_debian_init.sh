@@ -310,9 +310,9 @@ test_remote_script_contract() {
 }
 
 test_script_surface_contract() {
-    local content readme platform_content
+    local content guide platform_content
     content="$(<"${ROOT_DIR}/scripts/debian-init.sh")"
-    readme="$(<"${ROOT_DIR}/README.md")"
+    guide="$(<"${ROOT_DIR}/docs/debian-init.md")"
     platform_content="$(<"${ROOT_DIR}/lib/platform.sh")"
 
     assert_contains "script intro identifies Debian init" "Debian 服务器初始化与 SSH 密钥登录配置脚本" "${content}"
@@ -342,16 +342,16 @@ test_script_surface_contract() {
     assert_contains "local steps use normalized print_step" 'print_step "1/5"' "${content}"
     local old_name="init""_server.sh"
     assert_not_contains "script does not mention old filename" "${old_name}" "${content}"
-    assert_contains "README labels debian_init as independent" \
-        "独立工具：debian_init" "${readme}"
-    assert_contains "README says debian_init is not an easy_all prerequisite" \
-        '不是 `easy_all` 的组成部分或安装前置步骤' "${readme}"
-    assert_contains "README documents explicit extra UFW ports" \
-        "用户显式输入的额外 TCP 端口" "${readme}"
-    assert_contains "README documents Fail2ban SSH protection" \
-        '启用 Fail2ban 的 `sshd` jail' "${readme}"
-    assert_contains "README documents that SSH 65533 avoids the dynamic entry range" \
-        '新增 SSH 端口 `65533` 位于该范围之外' "${readme}"
+    assert_contains "guide labels debian_init as independent" \
+        "# Debian 初始化工具" "${guide}"
+    assert_contains "guide says debian_init is not an easy_all prerequisite" \
+        '不是 easy_all 的安装前置步骤' "${guide}"
+    assert_contains "guide documents explicit extra UFW ports" \
+        "UFW 额外 TCP 端口" "${guide}"
+    assert_contains "guide documents Fail2ban SSH protection" \
+        'Fail2ban' "${guide}"
+    assert_contains "guide documents the additional SSH listener" \
+        '额外监听 `65533`' "${guide}"
 }
 
 test_bbr_matches_easy_all() {
