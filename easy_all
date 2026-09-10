@@ -247,10 +247,15 @@ unified_self_update() {
     repo_dir="${temp_dir}/easy_all"
     git clone --depth 1 --branch "${target_branch}" "${EASY_ALL_REPOSITORY_URL}" "${repo_dir}" \
         || die "克隆 easy_all 仓库失败"
+    [[ -f "${repo_dir}/easy_all" ]] \
+        || die "下载的 easy_all 项目缺少入口：easy_all"
     [[ -f "${repo_dir}/templates/mihomo.yaml" ]] \
-        && runtime_tree_is_complete "${repo_dir}" \
-        || die "下载的 easy_all 项目不完整"
+        || die "下载的 easy_all 项目缺少模板：templates/mihomo.yaml"
+    bash -n "${repo_dir}/easy_all" \
+        || die "下载的 easy_all 入口语法校验失败"
 
+    # The target release owns its manifest; removed modules must not be required
+    # by the installed launcher. Registration validates and stages the new tree.
     chmod 0700 "${repo_dir}/easy_all"
     "${repo_dir}/easy_all" register-command
     rm -rf -- "${temp_dir}"

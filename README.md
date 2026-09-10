@@ -121,6 +121,27 @@ sudo easy_all self-update
 运行时、公共支持模块和 Mihomo 模板，不修改 Xray、Nginx、订阅文件、系统参数或云端 CDN 资源。
 代码包含配置生成变化时，再显式执行 `sudo easy_all apply` 将新代码应用到本机部署。
 
+仅更新订阅规则时，在 `self-update` 成功后执行 `sudo easy_all update-sub`；Cloudflare 模式选择
+保留现有 Worker 聚合配置，脚本会重新生成订阅并构建部署 Worker，无需再执行 `apply-cloud`。
+最后在客户端更新订阅并重启代理内核。
+
+若旧更新器在克隆成功后报“下载的 easy_all 项目不完整”，可能是它仍要求新版已移除的模块。
+可从新克隆的项目执行一次 `register-command`，使用目标版本自己的清单校验并原子更新代码：
+
+```bash
+(
+  set -e
+  update_dir=$(mktemp -d)
+  trap 'rm -rf -- "$update_dir"' EXIT
+  git clone --depth 1 --branch dev https://github.com/v2yiz/easy_all.git "$update_dir/easy_all"
+  sudo bash "$update_dir/easy_all/easy_all" register-command
+)
+```
+
+看到“已注册命令”后再执行 `sudo easy_all update-sub`。上述恢复步骤不卸载、不修改已保存的
+Token、证书、Xray/Nginx 配置或云资源；不要用 `bootstrap.sh` 重装来修复这个文件清单错误。
+若新入口另报状态版本不兼容，应停止并核对错误，不要修改 `STATE_VERSION` 绕过校验。
+
 更新 Xray 核心请使用 `sudo easy_all update-core`。
 
 安装引导脚本会：

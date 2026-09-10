@@ -83,10 +83,21 @@ git() {
         mkdir -p "${destination}/$(dirname -- "${relative_path}")"
         cp "${ROOT_DIR}/${relative_path}" "${destination}/${relative_path}"
     done
+    if [[ "${SELF_UPDATE_OMIT_TARGET_MODULE:-0}" != "1" ]]; then
+        printf '# target release module\n' >"${destination}/lib/target-only.sh"
+    fi
     printf '%s\n' '#!/usr/bin/env bash' \
+        'set -e' \
+        '[[ -f "$(dirname -- "$0")/lib/target-only.sh" ]] || { printf "missing target runtime module\n" >&2; exit 1; }' \
         'printf "%s\\n" "$*" >"${SELF_UPDATE_INVOCATION_FILE}"' \
         >"${destination}/easy_all"
     chmod 0700 "${destination}/easy_all"
+    if [[ -n "${SELF_UPDATE_MISSING_PATH:-}" ]]; then
+        rm -f -- "${destination}/${SELF_UPDATE_MISSING_PATH}"
+    fi
+    if [[ "${SELF_UPDATE_INVALID_LAUNCHER:-0}" == "1" ]]; then
+        printf 'if\n' >"${destination}/easy_all"
+    fi
 }
 make_temp_dir() { mktemp -d "${TMP_DIR}/self-update.XXXXXX"; }
 require_root() { :; }
@@ -104,6 +115,42 @@ self_update_repo=$(<"${self_update_repo_path}")
 unified_self_update "custom-feat"
 assert_equal "self-update respects custom branch argument" \
     "custom-feat" "$(<"${self_update_branch}")"
+
+runtime_validator=$(declare -f runtime_tree_is_complete)
+runtime_tree_is_complete() { fail "installed release still requires a removed module"; }
+unified_self_update
+assert_equal "self-update delegates manifest validation to the target release" \
+    "register-command" "$(<"${self_update_invocation}")"
+eval "${runtime_validator}"
+
+rm -f -- "${self_update_invocation}"
+export -f git
+assert_failure_contains "target release rejects its own missing module" \
+    "missing target runtime module" \
+    env ROOT_DIR="${ROOT_DIR}" TMP_DIR="${TMP_DIR}" SELF_UPDATE_OMIT_TARGET_MODULE=1 \
+    bash -c '
+        source "$1"
+        require_root() { :; }
+        make_temp_dir() { mktemp -d "${TMP_DIR}/update.XXXXXX"; }
+        die() { printf "%s\n" "$*" >&2; exit 1; }
+        success() { :; }
+        unified_self_update
+    ' _ "${ROOT_DIR}/easy_all"
+[[ ! -e "${self_update_invocation}" ]] \
+    || fail "incomplete target runtime must not be registered"
+
+for missing_path in easy_all templates/mihomo.yaml; do
+    SELF_UPDATE_MISSING_PATH="${missing_path}"
+    assert_failure_contains "self-update identifies missing ${missing_path}" \
+        "下载的 easy_all 项目缺少" unified_self_update
+done
+unset SELF_UPDATE_MISSING_PATH
+SELF_UPDATE_INVALID_LAUNCHER=1
+assert_failure_contains "self-update rejects invalid launcher syntax" \
+    "下载的 easy_all 入口语法校验失败" unified_self_update
+unset SELF_UPDATE_INVALID_LAUNCHER
+[[ ! -e "${self_update_invocation}" ]] \
+    || fail "invalid target entry must not be registered"
 
 unset -f git make_temp_dir require_root die success
 unset SELF_UPDATE_INVOCATION_FILE SELF_UPDATE_REPO_PATH_FILE SELF_UPDATE_BRANCH_FILE
