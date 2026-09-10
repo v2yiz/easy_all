@@ -152,6 +152,23 @@ dns:
       - DOMAIN,speedtest.cros.wr.pvp.net,real-ip
       - MATCH,fake-ip
     nameserver-policy:
+      # Google Play 的 services.googleapis.cn 也命中 cn，必须优先经代理解析。
+      'geosite:google':
+        - 'https://1.1.1.1/dns-query#PROXY'
+        - 'https://8.8.8.8/dns-query#PROXY'
+      'geosite:openai,anthropic':
+        - 'https://1.1.1.1/dns-query#PROXY'
+        - 'https://8.8.8.8/dns-query#PROXY'
+      'rule-set:proxy-services':
+        - 'https://1.1.1.1/dns-query#PROXY'
+        - 'https://8.8.8.8/dns-query#PROXY'
+      # 与直连规则使用相同集合，避免国内 CDN 按代理出口调度。
+      'rule-set:direct-cdn':
+        - https://223.5.5.5/dns-query
+        - https://1.12.12.12/dns-query
+      'geosite:apple-cn,microsoft@cn':
+        - https://223.5.5.5/dns-query
+        - https://1.12.12.12/dns-query
       'geosite:cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
@@ -159,6 +176,49 @@ dns:
       - 'https://1.1.1.1/dns-query#PROXY'
       - 'https://8.8.8.8/dns-query#PROXY'
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://1.1.1.1/dns-query']
+
+rule-providers:
+    # 内嵌小集合同时供 DNS、QUIC 与路由使用，不下载额外外部规则文件。
+    proxy-services:
+      type: inline
+      behavior: domain
+      payload:
+        # Copilot 与 Bing 依赖；不将整个 Microsoft 或共享 CDN 强制代理。
+        - '+.copilot.microsoft.com'
+        - sydney.bing.com
+        - www.bing.com
+        - r.bing.com
+        - '+.edgeservices.bing.com'
+        - services.bingapis.com
+        - gateway.bingviz.microsoft.net
+        - gateway.bingviz.microsoftapp.net
+        - '+.api.microsoftapp.net'
+        - '+.bing-shopping.microsoft-falcon.io'
+        - '+.githubcopilot.com'
+        - api.msn.com
+        - assets.msn.com
+        - in.appcenter.ms
+        - location.microsoft.com
+        - odc.officeapps.live.com
+        - self.events.data.microsoft.com
+        # 登录验证码端点，避免放大到整个 Cloudflare/Arkose 平台。
+        - challenges.cloudflare.com
+        - openai-api.arkoselabs.com
+        - '+.client-api.arkoselabs.com'
+        # cn 集合包含整个 .ms 后缀，显式保留微软短链及 OneDrive 更新出口。
+        - '+.aka.ms'
+        - '+.1drv.ms'
+        - '+.oneclient.sfx.ms'
+        - '+.steamcommunity.com'
+    direct-cdn:
+      type: inline
+      behavior: domain
+      payload:
+        - love.xflash.work
+        - '+.futooncdn.com'
+        - '+.steamcontent.com'
+        - '+.cm.steampowered.com'
+        - '+.steamserver.net'
 
 proxies:
 # EASY_ALL_PROXY_NODE
@@ -171,22 +231,30 @@ proxy-groups:
 # EASY_ALL_PROXY_GROUP
 
 rules:
-  - DOMAIN,love.xflash.work,DIRECT
-  - DOMAIN-SUFFIX,futooncdn.com,DIRECT
-  # Steam CDN 下载直连与社区代理分流，避免大流量游戏下载占用代理带宽
-  - DOMAIN-SUFFIX,steamcontent.com,DIRECT
-  - DOMAIN-SUFFIX,cm.steampowered.com,DIRECT
-  - DOMAIN-SUFFIX,steamserver.net,DIRECT
-  # 局域网与中国大陆域名优先直连；纯 IP 的国内 QUIC 通过 GeoIP 单独放行。
+  # 项目服务与 Steam 下载直连；社区由 proxy-services 单独代理。
+  - RULE-SET,direct-cdn,DIRECT
+  # 局域网直连。
   - GEOSITE,private,DIRECT
   - GEOIP,LAN,DIRECT,no-resolve
+  # Google 必须优先于 CN（包含 googleapis.cn），让 Play 接口与下载使用同一代理出口。
+  # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT
+  - GEOSITE,google,PROXY
+  # 明确代理的 AI 及服务例外优先于 CN/微软直连，且不能绕过 QUIC 拒绝。
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,openai)),REJECT
+  - GEOSITE,openai,PROXY
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,anthropic)),REJECT
+  - GEOSITE,anthropic,PROXY
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,proxy-services)),REJECT
+  - RULE-SET,proxy-services,PROXY
+  # 国内 CDN 与上方国内 DNS 策略对齐，保留直连下载及 QUIC。
+  - GEOSITE,apple-cn,DIRECT
+  - GEOSITE,microsoft@cn,DIRECT
+  # 其余中国大陆域名直连；纯 IP 的国内 QUIC 通过 GeoIP 单独放行。
   - GEOSITE,CN,DIRECT
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
-  # 所有 Google 服务经代理进入 VPS；双栈 VPS 再强制使用 IPv4 出站。
-  - GEOSITE,google,PROXY
-  - DOMAIN-SUFFIX,steamcommunity.com,PROXY
   - PROCESS-NAME,v2ray,DIRECT
   - PROCESS-NAME,xray,DIRECT
   - PROCESS-NAME,naive,DIRECT
@@ -212,17 +280,7 @@ rules:
   - PROCESS-NAME,Surge%204,DIRECT
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
-  # 大流量 CDN 优化 (Apple 与 Microsoft 国内 CDN 直连加速)
-  - GEOSITE,apple-cn,DIRECT
-  - GEOSITE,microsoft@cn,DIRECT
-  # 海外主流 AI 平台代理分流
-  - DOMAIN-SUFFIX,chatgpt.com,PROXY
-  - DOMAIN-SUFFIX,oaistatic.com,PROXY
-  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
-  - DOMAIN-SUFFIX,openai.com,PROXY
-  - DOMAIN-SUFFIX,anthropic.com,PROXY
-  - DOMAIN-SUFFIX,claude.ai,PROXY
-  - DOMAIN-SUFFIX,gemini.google.com,PROXY
+  # 其余 AI 分类保留在 CN 后，避免把 Kimi 等重叠服务无条件改成代理。
   - GEOSITE,category-ai-chat-!cn,PROXY
   # Telegram 专属 IP 段代理
   - GEOIP,telegram,PROXY,no-resolve

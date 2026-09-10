@@ -335,6 +335,7 @@ test_subscription_stage_dispatch() {
 test_mihomo_template() {
     local invalid="${TMP_DIR}/invalid.yaml" rule_count first_rule
     local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
+    local google_rule_line google_quic_rule_line google_dns_line cn_dns_line google_dns_policy
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
@@ -366,6 +367,18 @@ test_mihomo_template() {
     assert_contains "Mihomo resolves mainland domains with mainland DoH" \
         "'geosite:cn':" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    google_dns_line=$(grep -nF -- "      'geosite:google':" \
+        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    cn_dns_line=$(grep -nF -- "      'geosite:cn':" \
+        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    assert_success "Google DNS takes precedence over CN for services.googleapis.cn" \
+        bash -c '(( $1 > 0 && $1 < $2 ))' _ "${google_dns_line}" "${cn_dns_line}"
+    google_dns_policy=$(sed -n "/^      'geosite:google':/,/^      'geosite:cn':/p" \
+        "${ROOT_DIR}/templates/mihomo.yaml")
+    assert_contains "Google policy resolves Play APIs through proxied Cloudflare DoH" \
+        "https://1.1.1.1/dns-query#PROXY" "${google_dns_policy}"
+    assert_contains "Google policy resolves Play APIs through proxied Google DoH" \
+        "https://8.8.8.8/dns-query#PROXY" "${google_dns_policy}"
     assert_contains "Mihomo resolves other domains through Cloudflare DoH over PROXY" \
         "https://1.1.1.1/dns-query#PROXY" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
@@ -386,16 +399,20 @@ test_mihomo_template() {
         "- system" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" \
         | grep -Ec '^  - ')
-    assert_equal "Mihomo template contains optimized lightweight rules" \
-        "50" "${rule_count}"
+    assert_success "Mihomo template stays within the lightweight rule budget" \
+        bash -c '(( $1 > 0 && $1 <= 60 ))' _ "${rule_count}"
     assert_contains "Mihomo filters WeChat CDN from fake-ip" \
         "DOMAIN-SUFFIX,qpic.cn,real-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo filters WeChat domain from fake-ip" \
         "DOMAIN-SUFFIX,weixin.qq.com,real-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo bypasses Steam download CDN" \
-        "- DOMAIN-SUFFIX,steamcontent.com,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo proxies Steam community" \
-        "- DOMAIN-SUFFIX,steamcommunity.com,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo keeps Steam downloads in the direct CDN set" \
+        "- '+.steamcontent.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo routes the direct CDN set without a proxy" \
+        "- RULE-SET,direct-cdn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo keeps Steam community in the proxy services set" \
+        "- '+.steamcommunity.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo proxies the shared services set" \
+        "- RULE-SET,proxy-services,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not bypass routing by downloader process" \
         "PROCESS-NAME,qBittorrent,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not bypass routing by downloader process on Windows" \
@@ -403,9 +420,17 @@ test_mihomo_template() {
     first_rule=$(awk '/^rules:$/ { found=1; next } found && $0 !~ /^  #/ { print; exit }' \
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
-        '  - DOMAIN,love.xflash.work,DIRECT' "${first_rule}"
+        '  - RULE-SET,direct-cdn,DIRECT' "${first_rule}"
     cn_domain_rule_line=$(grep -nF -- '  - GEOSITE,CN,DIRECT' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    google_rule_line=$(grep -nF -- '  - GEOSITE,google,PROXY' \
+        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    google_quic_rule_line=$(grep -nF -- \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT' \
+        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+    assert_success "Play APIs and downloads share PROXY before any mainland bypass" \
+        bash -c '(( $1 > 0 && $1 < $2 && $2 < $3 ))' _ \
+        "${google_quic_rule_line}" "${google_rule_line}" "${cn_domain_rule_line}"
     cn_quic_rule_line=$(grep -nF -- \
         '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
@@ -481,8 +506,10 @@ test_subscription_generation() {
         "100.64.0.0/10" "${yaml}"
     assert_contains "Mihomo DNS resolves IPv6 for dual-stack direct traffic" \
         $'\n    ipv6: true\n' "${yaml}"
-    assert_contains "Mihomo subscription contains XFLASH rules" \
-        "DOMAIN,love.xflash.work,DIRECT" "${yaml}"
+    assert_contains "Mihomo subscription contains the inline direct rules" \
+        "RULE-SET,direct-cdn,DIRECT" "${yaml}"
+    assert_contains "Mihomo subscription preserves the XFLASH direct exception" \
+        "- love.xflash.work" "${yaml}"
     assert_contains "Mihomo subscription contains AI proxy rules" \
         "GEOSITE,category-ai-chat-!cn,PROXY" "${yaml}"
     assert_contains "Mihomo sends every Google domain through the VPS" \

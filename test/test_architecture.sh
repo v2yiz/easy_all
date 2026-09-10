@@ -144,10 +144,10 @@ grep -Fq 'commit_subscription_update' "${CLOUDFLARE_PROFILE}" \
 if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/templates/mihomo.yaml"; then
     fail "Mihomo subscription template must not force SSH ports to DIRECT"
 fi
-grep -Fq 'DOMAIN-SUFFIX,gemini.google.com,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
-    || fail "Mihomo subscription template must keep Gemini on the selected PROXY exit"
 grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
-    || fail "Mihomo subscription template must keep all Google services on the VPS exit"
+    || fail "Mihomo subscription template must keep Gemini and all Google services on the VPS exit"
+grep -Fq "'geosite:google':" "${ROOT_DIR}/templates/mihomo.yaml" \
+    || fail "Google services must have an explicit DNS policy matching their proxy route"
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'refresh-xray-assets'* \

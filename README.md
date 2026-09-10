@@ -329,8 +329,18 @@ Xray 分类校验都通过才原子替换。其他服务仍可使用 VPS IPv6。
 境外 UDP/443（QUIC），使 HTTP/3 快速回退至 TCP；局域网与中国大陆 QUIC 仍保持直连。
 
 内置 Mihomo 模板启用 `tcp-concurrent`，并发尝试节点域名解析出的候选地址以降低首次连接的
-尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。中国大陆域名使用国内 DoH，
-其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH，代理节点域名保留独立的国内 DoH 启动解析。
+尾延迟，同时持久化 fake-IP 映射以减少客户端重启后的连接扰动。Google、OpenAI、Anthropic
+及明确的 Copilot/验证码/微软短链例外在路由与 DNS 中优先于中国大陆分类和微软国内 CDN。
+Google Play 的 `services.googleapis.cn` 不再被 `.cn` 抢先直连；`r.bing.com`、
+`in.appcenter.ms`、`aka.ms`、`1drv.ms` 等也统一经 `PROXY`，相关 UDP/443 先拒绝以回退 TCP。
+
+仅新增两个 `type: inline` 的小域名集合：`proxy-services` 包含 24 条业务例外，
+`direct-cdn` 包含 5 条既有直连域名，直接内嵌订阅并供 DNS 与路由复用，不下载额外规则文件。
+Google/OpenAI/Anthropic 分类复用现有 `geosite.dat`，不引入大型外部代理集合。
+Steam 下载、Apple/微软国内 CDN 及其他中国大陆域名使用国内 DoH；其他域名通过 `PROXY`
+使用 Cloudflare 与 Google DoH。代理节点域名保留独立的直连 DoH 启动解析。
+不将 Microsoft、Cloudflare、Auth0 或 Stripe 整个平台强制代理；其余 AI 分类仍位于 CN 之后，
+Kimi、MiniMax 等重叠服务维持国内规则优先。Windows Update、Office 和 Steam 下载继续直连。
 VPS 使用 `fq + XanMod BBRv3`，并关闭
 `tcp_slow_start_after_idle`，避免复用的空闲 TCP 连接恢复传输时重新进入慢启动。
 

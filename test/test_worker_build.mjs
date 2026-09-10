@@ -313,8 +313,53 @@ try {
         'extra Reality nodes may pin a fixed port',
     );
     const rules = template.split('\nrules:\n')[1];
-    assert.ok(rules.indexOf('steamcontent.com,DIRECT') < rules.indexOf('AND,((NETWORK,UDP)'));
-    assert.ok(rules.indexOf('AND,((NETWORK,UDP)') < rules.indexOf('steamcommunity.com,PROXY'));
-    assert.ok(rules.indexOf('AND,((NETWORK,UDP)') < rules.indexOf('chatgpt.com,PROXY'));
+    const before = (text, first, second) => {
+        const a = text.indexOf(first);
+        const b = text.indexOf(second);
+        assert.ok(a >= 0 && b >= 0 && a < b, `${first} must precede ${second}`);
+    };
+    before(rules, 'RULE-SET,direct-cdn,DIRECT', 'AND,((NETWORK,UDP)');
+    for (const matcher of ['GEOSITE,google', 'GEOSITE,openai', 'GEOSITE,anthropic', 'RULE-SET,proxy-services']) {
+        before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},PROXY`);
+        before(rules, `${matcher},PROXY`, 'GEOSITE,apple-cn,DIRECT');
+        before(rules, `${matcher},PROXY`, 'GEOSITE,microsoft@cn,DIRECT');
+        before(rules, `${matcher},PROXY`, 'GEOSITE,CN,DIRECT');
+    }
+    before(rules, 'GEOSITE,microsoft@cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
+    before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
+    before(rules, 'GEOSITE,CN,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
+    const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
+    for (const key of ['geosite:google', 'geosite:openai,anthropic', 'rule-set:proxy-services']) {
+        assert.ok(dnsPolicy.includes(
+            `      '${key}':\n        - 'https://1.1.1.1/dns-query#PROXY'\n        - 'https://8.8.8.8/dns-query#PROXY'`
+        ), `${key} must use proxied DoH`);
+        before(dnsPolicy, `'${key}':`, "'geosite:apple-cn,microsoft@cn':");
+        before(dnsPolicy, `'${key}':`, "'geosite:cn':");
+    }
+    for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:cn']) {
+        assert.ok(dnsPolicy.includes(
+            `      '${key}':\n        - https://223.5.5.5/dns-query\n        - https://1.12.12.12/dns-query`
+        ), `${key} must use mainland DoH`);
+    }
+    const providers = template.split('\nrule-providers:\n')[1].split('\nproxies:\n')[0];
+    assert.equal((providers.match(/type: inline/g) || []).length, 2);
+    assert.equal((providers.match(/behavior: domain/g) || []).length, 2);
+    assert.ok(!/^\s+(url|path|interval):/m.test(providers), 'small service sets must not download external rules');
+    assert.ok(Buffer.byteLength(providers) <= 4096, 'inline policy budget is 4 KiB including comments');
+    const proxyServices = providers.split('    proxy-services:\n')[1].split('    direct-cdn:\n')[0];
+    const directCdn = providers.split('    direct-cdn:\n')[1];
+    for (const domain of [
+        "'+.copilot.microsoft.com'", 'r.bing.com', 'in.appcenter.ms', "'+.githubcopilot.com'",
+        'challenges.cloudflare.com', 'openai-api.arkoselabs.com', "'+.client-api.arkoselabs.com'",
+        "'+.aka.ms'", "'+.1drv.ms'", "'+.oneclient.sfx.ms'", "'+.steamcommunity.com'",
+    ]) {
+        assert.ok(proxyServices.includes(`        - ${domain}\n`), `${domain} must remain a proxy exception`);
+    }
+    for (const domain of ['kimi.ai', 'moonshot.ai', 'minimax.io', 'qoder.com', 'microsoft.com', 'cloudflare.com', 'auth0.com', 'stripe.com']) {
+        assert.ok(!proxyServices.includes(`        - '+.${domain}'\n`), `${domain} must not become a blanket proxy exception`);
+    }
+    for (const domain of ['love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'", "'+.cm.steampowered.com'", "'+.steamserver.net'"]) {
+        assert.ok(directCdn.includes(`        - ${domain}\n`), `${domain} must remain a direct exception`);
+    }
     console.log('Worker build, authentication, shared policy, node injection and fallback checks passed');
 } finally { await rm(temp, {recursive:true, force:true}); }

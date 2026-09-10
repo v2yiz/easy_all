@@ -40,7 +40,17 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 
 `externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用带版本的 Mihomo UA，使上游正确下发 Mieru 等需要能力识别的节点，同时避免透传客户端版本导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；仅生成 `PROXY` 和 `🇺🇸优选` 两个策略组，没有 CDN 节点时使用 REJECT。
 
-公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。中国大陆域名使用阿里与 DNSPod DoH，其他域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；代理节点域名仍由独立的直连 DoH 解析，避免启动循环。Reality 节点可显式选择 `ipv4` 或 `dual`，其中 `dual` 要求 VPS 公网 IPv6 和节点 AAAA 匹配。动态 Cloudflare 节点固定输出 `ipv4`；VPS 自身仍可保持双栈，并按已持久化策略通过 `ForceIPv4` 或 `ForceIPv6` 固定 Google 出站。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅。
+公共模板启用客户端 IPv4/IPv6 双栈，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。
+Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于 CN 和微软国内 CDN，
+统一经 `PROXY`；对应 UDP/443 先拒绝以回退 TCP。Google Play 接口、下载重定向和 APK CDN 保持同一代理策略。
+仅内嵌 `proxy-services`（24 条）与 `direct-cdn`（5 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
+Steam 下载及 Apple/微软国内 CDN 使用国内 DoH 并直连；其他国内域名沿用国内策略，
+其余域名通过 `PROXY` 使用 Cloudflare 与 Google DoH。Kimi 等重叠服务仍由 CN 优先处理，不代理整个微软或共享 CDN。
+代理节点域名仍由独立的直连 DoH 解析，避免启动循环。
+
+Reality 节点可显式选择 `ipv4` 或 `dual`，其中 `dual` 要求 VPS 公网 IPv6 和节点 AAAA 匹配。
+动态 Cloudflare 节点固定输出 `ipv4`；VPS 自身仍可保持双栈，并按已持久化策略通过 `ForceIPv4` 或 `ForceIPv6`
+固定 Google 出站。修改公共模板后需重新构建 Worker，并在 VPS 重新生成模式 2 订阅。
 
 版本由构建脚本按北京时间生成，例如 `2026-09-06-v0`。同一天根据现有 `worker.js` 的版本递增，跨日从 `v0` 开始；构建失败不消耗版本。删除产物后也会从 `v0` 开始，因此需要连续编号时请保留上次构建的文件。版本通过 `X-Easy-All-Version` 响应头返回。
 
