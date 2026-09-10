@@ -807,7 +807,6 @@ configure_ufw() {
 
 write_xray_config() {
     local clients managed_outbounds managed_routing inbound_sockopt listen_address="0.0.0.0"
-    ensure_xray_geosite_assets
     managed_outbounds=$(xray_direct_outbounds_json)
     managed_routing=$(xray_direct_routing_json)
     inbound_sockopt=$(xray_inbound_sockopt_json)
@@ -1994,7 +1993,6 @@ usage() {
   apply         将已安装代码应用到服务端与当前订阅模式
   update-sub    选择部署订阅服务或仅输出节点
   update-core   更新 Xray 核心
-  refresh-xray-assets  更新当前路由所需的 Xray GeoSite/GeoIP
   renew-cert    强制轮换 Cloudflare Origin CA 订阅证书
   rotate-dynamic-ports  刷新动态端口 NAT 窗口与已部署订阅（内部任务）
   quota-status  显示每个用户的本月流量与配额状态
@@ -2011,12 +2009,10 @@ EOF
 
 update_current_core() {
     local backup_bin="${RUNTIME_TMP}/core-backup" backup_version="${RUNTIME_TMP}/version-backup"
-    local backup_assets="${RUNTIME_TMP}/core-assets-backup"
     require_root
     begin_quota_maintenance
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
-    snapshot_xray_assets "${backup_assets}"
     [[ ! -f "${XRAY_DIR}/version" ]] \
         || install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
     if (
@@ -2030,7 +2026,6 @@ update_current_core() {
     fi
     warn "新核心验收失败，正在恢复旧版本"
     install -m 0755 "${backup_bin}" "${XRAY_BIN}"
-    restore_xray_assets "${backup_assets}"
     [[ ! -f "${backup_version}" ]] \
         || install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
     systemctl restart "${XRAY_SERVICE}"
@@ -2046,7 +2041,6 @@ main() {
     apply) apply_easy_all ;;
     update-sub) update_subscription 1 ;;
     update-core) update_current_core ;;
-    refresh-xray-assets) refresh_xray_assets ;;
     renew-cert) renew_subscription_certificate ;;
     rotate-dynamic-ports) rotate_dynamic_ports ;;
     quota-sync) quota_sync_usage ;;

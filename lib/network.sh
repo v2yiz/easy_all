@@ -51,7 +51,7 @@ enforce_ipv4_only_policy() {
 
 ensure_vps_ip_family() {
     enforce_ipv4_only_policy
-    info "全局 IPv4-only：已禁用 VPS、Xray、WARP 与客户端 IPv6"
+    info "全局 IPv4-only：已禁用 VPS、Xray 与客户端 IPv6"
 }
 
 validate_google_egress_mode() {
@@ -60,11 +60,6 @@ validate_google_egress_mode() {
 
 validate_google_egress_family() {
     [[ "$1" == "ipv4" ]]
-}
-
-native_google_egress_enabled() {
-    [[ "${PROTOCOL:-}" != "cloudflare-streamup" \
-        || ( "${WARP_SCOPE:-off}" != "google" && "${WARP_SCOPE:-off}" != "all" ) ]]
 }
 
 validate_google_egress_policy_state() {
@@ -79,10 +74,6 @@ normalize_google_egress_policy() {
 
 refresh_google_egress_selection() {
     normalize_google_egress_policy
-    if ! native_google_egress_enabled; then
-        info "Google 全部经 WARP 出站；跳过 VPS 原生 Google 探测"
-        return 0
-    fi
     info "Google 原生出站: IPv4（项目全局禁用 IPv6）"
 }
 
@@ -92,10 +83,6 @@ choose_google_egress_mode() {
 
 google_egress_status() {
     normalize_google_egress_policy
-    if ! native_google_egress_enabled; then
-        printf 'WARP（IPv4-only；原生 Google 探测已停用）'
-        return 0
-    fi
     printf 'IPv4（固定）'
 }
 
@@ -140,17 +127,9 @@ xray_direct_routing_json() {
 }
 
 xray_xhttp_outbounds_json() {
-    if declare -F warp_enabled >/dev/null && warp_enabled; then
-        warp_xhttp_outbounds_json
-        return
-    fi
     xray_direct_outbounds_json
 }
 
 xray_xhttp_routing_json() {
-    if declare -F warp_enabled >/dev/null && warp_enabled; then
-        warp_xhttp_routing_json
-        return
-    fi
     xray_direct_routing_json
 }

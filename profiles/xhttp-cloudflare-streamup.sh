@@ -46,8 +46,6 @@ source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
 source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"
 # shellcheck source=lib/xray-core.sh
 source "${XHTTP_PROFILE_ROOT}/xray-core.sh"
-# shellcheck source=lib/warp.sh
-source "${XHTTP_PROFILE_ROOT}/warp.sh"
 
 cloudflare_collect_api_token() {
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
@@ -1216,7 +1214,6 @@ collect_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
 
-    choose_warp_scope
     choose_google_egress_mode
 
     info "Cloudflare 数据面采用单域名架构；部署订阅时另用独立域名绑定 Worker。"
@@ -1261,7 +1258,7 @@ load_state() {
     local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
-        GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED WARP_SCOPE
+        GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
         XHTTP_NODE_NAME VLESS_UUID
@@ -1330,12 +1327,6 @@ load_state() {
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
     fi
-    WARP_SCOPE=${WARP_SCOPE:-off}
-    validate_warp_scope || die "状态中的 WARP_SCOPE 无效"
-    if [[ -f "${WARP_ACCOUNT_FILE}" ]]; then
-        warp_normalize_account_ipv4 \
-            || die "无法将现有 WARP 凭据归一化为 IPv4-only"
-    fi
     validate_google_egress_policy_state \
         || die "状态缺少有效的 Google 出站策略；请重新安装"
     BACKEND="xray"
@@ -1347,11 +1338,6 @@ save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
     enforce_ipv4_only_policy
-    WARP_SCOPE=${WARP_SCOPE:-off}
-    validate_warp_scope || die "无法保存无效的 WARP_SCOPE"
-    if warp_enabled; then
-        warp_validate_account || die "无法保存缺少有效 WARP 凭据的状态"
-    fi
     validate_google_egress_policy_state \
         || die "无法保存无效的 Google 出站策略"
     if subscription_enabled; then
@@ -1371,7 +1357,7 @@ save_state() {
     cleanup_files+=("${t}")
     {
         for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
-            GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED WARP_SCOPE \
+            GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
             CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID \
             WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
@@ -1403,7 +1389,6 @@ collect_installed_state() {
 
 xhttp_render_xray_config() {
     install -d -m 0755 "${XRAY_DIR}"
-    ensure_xray_geosite_assets
     local clients
     if quota_enabled; then
         clients=$(quota_active_clients_json)
@@ -1679,11 +1664,6 @@ show_status() {
     printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（数据面单域名）\nOrigin CA: %s（到期 %s）\n客户端入口 IP 族: IPv4\nGoogle 出站: %s\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}" \
         "$(google_egress_status)"
-    printf 'WARP 分流: %s\n' "$(warp_scope_label)"
-    if warp_enabled; then
-        printf 'WARP 传输: Xray 用户态 WireGuard；状态展示不执行联网探测\n'
-        warp_validate_account || warn "WARP 本机凭据缺失或无效，请运行 easy_all warp"
-    fi
     if subscription_enabled; then
         printf '公开订阅: Cloudflare Worker %s（%s）\n' \
             "${CLOUDFLARE_WORKER_NAME}" "${SUBSCRIPTION_DOMAIN}"
@@ -1747,7 +1727,6 @@ refresh_cloudflare_cdn_ips() {
 }
 
 rollback_fresh_install() {
-    warp_rollback_fresh_registration
     if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" ]]; then
         (cloudflare_rollback_fresh_install_resources) \
             || warn "首次安装创建的 Cloudflare 资源未能全部自动清理"
@@ -1826,7 +1805,6 @@ install_all() {
     cloudflare_issue_origin_certificate 0
     download_xray
     xhttp_render_xray_config
-    warp_validate_runtime
     install_xray_service
     write_nginx_config
     validate_protocol_runtime
@@ -1843,7 +1821,6 @@ install_all() {
     persist_globalping_token
     install_globalping_refresh_timer
     install_quota_timer
-    warp_finalize_recovery
     INSTALL_ROLLBACK_ON_EXIT=0
     cloudflare_clear_api_token
     show_subscription
@@ -1869,7 +1846,6 @@ apply_easy_all() {
         refresh_globalping_cache || warn "Globalping 刷新失败，将继续使用现有兼容缓存"
     fi
     finish_xhttp_apply 1 0 1
-    warp_validate_runtime
     save_state
     show_subscription
     install_globalping_refresh_timer
@@ -1887,7 +1863,6 @@ apply_cloud_resources() {
     refresh_google_egress_selection
     configure_ufw
     xhttp_render_xray_config
-    warp_validate_runtime
     cloudflare_prepare_origin
     cloudflare_issue_origin_certificate 0
     cloudflare_configure_cdn
@@ -1927,7 +1902,6 @@ update_subscription() {
         previous_worker_domain_id=${CLOUDFLARE_WORKER_DOMAIN_ID}
     fi
     snapshot_subscription_update
-    choose_warp_scope
     choose_google_egress_mode
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
@@ -1948,7 +1922,6 @@ update_subscription() {
         choose_monthly_quota 0
     fi
     xhttp_render_xray_config
-    warp_validate_runtime
     cloudflare_prepare_origin
     cloudflare_issue_origin_certificate 0
     cloudflare_configure_cdn
@@ -1988,24 +1961,6 @@ update_subscription() {
     else
         success "Cloudflare Worker 订阅、Origin CA 与回源规则已更新"
     fi
-}
-
-update_warp() {
-    [[ -t 0 ]] || die "easy_all warp 必须在交互终端中执行"
-    require_root
-    begin_quota_maintenance
-    collect_installed_state
-    snapshot_subscription_update
-    choose_warp_scope
-    choose_google_egress_mode
-    xhttp_render_xray_config
-    warp_validate_runtime
-    systemctl restart "${XRAY_SERVICE}" || die "应用 WARP 策略后重启 Xray 失败"
-    validate_protocol_runtime
-    save_state
-    register_easy_all_command
-    commit_subscription_update
-    success "WARP 分流已更新：$(warp_scope_label)；未修改 Worker、订阅、Nginx 或系统路由"
 }
 
 purge_cloudflare_resources_before_uninstall() {
@@ -2101,7 +2056,6 @@ uninstall_all() {
     restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
-    rm -f -- "${WARP_RECOVERY_FILE}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
     if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then

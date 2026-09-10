@@ -522,10 +522,6 @@ rebuild_traffic_runtime() {
 
 snapshot_subscription_update() {
     UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
-    snapshot_xray_assets "${UPDATE_SUB_BACKUP_DIR}/xray-assets"
-    if declare -F warp_snapshot >/dev/null; then
-        warp_snapshot "${UPDATE_SUB_BACKUP_DIR}"
-    fi
     [[ -f "${STATE_FILE}" ]] && install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
     if [[ -n "${XRAY_CONFIG:-}" && -f "${XRAY_CONFIG}" ]]; then
         install -m 0600 "${XRAY_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/xray-config.json"
@@ -562,10 +558,6 @@ rollback_subscription_update() {
     warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
     [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
         && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
-    restore_xray_assets "${UPDATE_SUB_BACKUP_DIR}/xray-assets"
-    if declare -F warp_restore >/dev/null; then
-        warp_restore "${UPDATE_SUB_BACKUP_DIR}"
-    fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" && -n "${XRAY_CONFIG:-}" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" "${XRAY_CONFIG}"
         systemctl restart "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 \
@@ -596,9 +588,6 @@ rollback_subscription_update() {
 }
 
 commit_subscription_update() {
-    if declare -F warp_finalize_recovery >/dev/null; then
-        warp_finalize_recovery
-    fi
     end_quota_maintenance
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
 }
@@ -632,13 +621,11 @@ update_current_core() {
     local backup_config="${RUNTIME_TMP}/xray-config-backup.json"
     local backup_version="${RUNTIME_TMP}/xray-version-backup"
     local version_missing="${RUNTIME_TMP}/xray-version.missing"
-    local backup_assets="${RUNTIME_TMP}/xray-assets-backup"
     require_root
     begin_quota_maintenance
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
     install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
-    snapshot_xray_assets "${backup_assets}"
     if [[ -f "${XRAY_DIR}/version" ]]; then
         install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
     else
@@ -648,9 +635,6 @@ update_current_core() {
         download_xray || exit 1
         systemctl restart "${XRAY_SERVICE}" || exit 1
         validate_protocol_runtime || exit 1
-        if declare -F warp_validate_runtime >/dev/null; then
-            warp_validate_runtime
-        fi
     ); then
         end_quota_maintenance
         success "Xray 已更新"
@@ -659,7 +643,6 @@ update_current_core() {
     warn "新核心验收失败，正在恢复旧二进制、版本与运行时配置"
     install -m 0755 "${backup_bin}" "${XRAY_BIN}"
     install -m 0600 "${backup_config}" "${XRAY_CONFIG}"
-    restore_xray_assets "${backup_assets}"
     if [[ -f "${backup_version}" ]]; then
         install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
     elif [[ -f "${version_missing}" ]]; then

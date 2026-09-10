@@ -37,14 +37,13 @@ configure_daily_reboot() {
     esac
     { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab -
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
-        pre_command="/usr/bin/timeout 10m \"${COMMAND_PATH}\" refresh-xray-assets >/dev/null 2>&1 || true"
         if declare -F scheduled_reboot_profile_pre_command >/dev/null 2>&1; then
             profile_pre_command=$(scheduled_reboot_profile_pre_command)
         fi
         if [[ -n "${profile_pre_command}" ]]; then
-            pre_command="${pre_command}; ${profile_pre_command}"
+            pre_command="${profile_pre_command}"
         fi
-        job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command} ) && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
+        job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command:-true} ) && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
         { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
     fi
 }

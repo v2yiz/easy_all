@@ -203,8 +203,6 @@ assert_contains "README distinguishes TCP keepalive from XHTTP keepalive" \
 assert_contains "README documents the managed ephemeral port range" "${README_CONTENT}" '`13000-60999`'
 assert_contains "README documents XanMod LTS BBRv3" "${README_CONTENT}" 'XanMod LTS 内核'
 assert_contains "README documents the BBRv3 reboot boundary" "${README_CONTENT}" '`BBRv3: active`'
-assert_contains "README documents GeoSite refresh before reboot" \
-    "${README_CONTENT}" '重启前最多用 10 分钟更新并校验 GeoSite/GeoIP'
 assert_contains "README keeps the independent Debian initializer" \
     "${README_CONTENT}" '`scripts/debian-init.sh` 是独立的个人服务器初始化工具'
 assert_contains "README update-sub includes Xray" "${README_CONTENT}" '同步重建本机 Xray、Nginx 和订阅文件'

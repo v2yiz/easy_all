@@ -759,7 +759,7 @@ test_rotate_dynamic_ports_command() {
     eval "${end_definition}"
 }
 
-test_scheduled_reboot_refreshes_dynamic_ports() {
+test_scheduled_reboot_keeps_dynamic_ports() {
     local cron_state_file="${TMP_DIR}/reboot.cron" cron_state
     : >"${cron_state_file}"
     crontab() {
@@ -774,15 +774,10 @@ test_scheduled_reboot_refreshes_dynamic_ports() {
     REBOOT_SCHEDULE_MODE=1
     configure_daily_reboot
     cron_state=$(<"${cron_state_file}")
-    assert_contains "daily reboot refreshes Xray GeoSite and GeoIP first" \
-        "refresh-xray-assets" "${cron_state}"
     assert_contains "daily Reality reboot refreshes dynamic NAT first" \
         "rotate-dynamic-ports" "${cron_state}"
-    assert_success "Geo refresh precedes Reality dynamic port refresh" \
-        bash -c '[[ "$1" == *refresh-xray-assets*rotate-dynamic-ports* ]]' _ \
-        "${cron_state}"
-    assert_contains "Geo refresh failure does not block the reboot pipeline" \
-        "refresh-xray-assets >/dev/null 2>&1 || true" "${cron_state}"
+    assert_not_contains "daily reboot no longer refreshes removed Xray Geo data" \
+        "refresh-xray-assets" "${cron_state}"
     assert_contains "daily Reality reboot remains scheduled" \
         "/usr/sbin/reboot" "${cron_state}"
     unset REBOOT_SCHEDULE_MODE
@@ -1075,21 +1070,12 @@ test_secure_download_transport() {
         "curl " "${xray_source}"
     assert_contains "Xray downloads are restricted to official release URLs" \
         "github.com/XTLS/Xray-core/releases/download" "${xray_source}"
-    assert_contains "Xray asset validation covers the Google GeoSite category" \
-        'domain:["geosite:google"]' "${xray_source}"
-    assert_contains "Xray asset validation covers the Google GeoIP category" \
-        'ip:["geoip:google"]' "${xray_source}"
     assert_contains "Xray service pins the resource asset directory" \
         "Environment=XRAY_LOCATION_ASSET=" "${xray_source}"
-    assert_contains "daily GeoSite updates use the dedicated release asset" \
-        "v2ray-rules-dat/releases/latest/download" "${xray_source}"
-    assert_contains "daily GeoSite updates require published SHA256 files" \
-        '.sha256sum' "${xray_source}"
 }
 
 test_xray_checksum_parsing() {
     local dgst_file="${TMP_DIR}/Xray-linux-64.zip.dgst"
-    local sha256_file="${TMP_DIR}/geosite.dat.sha256sum"
     local digest="23CD9AF937744D97776EE35ECAD4972CF4B2109D1E0FE6BE9930467608F7C8AE"
     local expected_digest="23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
 
@@ -1099,12 +1085,9 @@ SHA1= b55b06e74e89083b9cedfdecf0d68b579cd2af72
 SHA2-256= ${digest}
 SHA2-512= e8bc40a0687cac184bbe4b5c1f047e69064ccedc489fb25e208889ae287bbf8736dff16b108d68fc00dc33edc8bb53502e47a9698a277f4f51b67b83d899e518
 EOF
-    printf '%s  geosite.dat\n' "${digest}" >"${sha256_file}"
 
     assert_equal "Xray digest parser accepts the upstream SHA2-256 format" \
         "${expected_digest}" "$(parse_xray_dgst_sha256 "${dgst_file}")"
-    assert_equal "GeoData digest parser accepts sha256sum format" \
-        "${expected_digest}" "$(parse_sha256sum_digest "${sha256_file}")"
     assert_not_contains "checksum parsing avoids unsupported AWK interval expressions" \
         '{64}' "$(<"${ROOT_DIR}/lib/xray-core.sh")"
 }
@@ -1181,8 +1164,6 @@ EOF
 
     VPS_IP_FAMILY="dual"
     VPS_PUBLIC_IPV6="2001:db8::10"
-    printf 'test-geosite\n' >"${XRAY_DIR}/geosite.dat"
-    printf 'test-geoip\n' >"${XRAY_DIR}/geoip.dat"
     write_xray_config
     config=$(<"${XRAY_CONFIG}")
     assert_success "legacy dual state still renders IPv4-only Xray" \
@@ -1287,7 +1268,7 @@ test_nginx_and_firewall
 test_dynamic_port_year_boundary
 test_dynamic_port_boundaries_and_rule_set
 test_rotate_dynamic_ports_command
-test_scheduled_reboot_refreshes_dynamic_ports
+test_scheduled_reboot_keeps_dynamic_ports
 test_dynamic_port_rotation_schedule
 test_dynamic_port_rotation_rollback
 test_cloudflare_reality_contract

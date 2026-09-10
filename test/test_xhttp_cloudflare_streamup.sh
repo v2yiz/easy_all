@@ -481,32 +481,6 @@ assert_contains "State file persists private Worker source secret" "${state_cont
     'WORKER_SOURCE_SECRET=test-worker-source-secret-12345'
 assert_contains "State file persists Worker aggregation config" "${state_content}" \
     'WORKER_AGGREGATION_CONFIG='
-assert_contains "State file defaults WARP to off" "${state_content}" 'WARP_SCOPE=off'
-
-(
-    old_state="${TMP_DIR}/state_without_warp.env"
-    grep -v '^WARP_SCOPE=' "${EASY_ALL_STATE_FILE_OVERRIDE}" >"${old_state}"
-    WARP_SCOPE=all
-    EASY_ALL_STATE_FILE_OVERRIDE="${old_state}" load_state
-    assert_equal "Existing schema 9 does not inherit WARP from the environment" off "${WARP_SCOPE}"
-)
-(
-    WARP_SCOPE=invalid
-    if (save_state) >/dev/null 2>&1; then fail "Invalid WARP state must not be persisted"; fi
-    WARP_SCOPE=google
-    warp_validate_account() { return 0; }
-    GOOGLE_EGRESS_MODE=ipv6
-    GOOGLE_EGRESS_RESOLVED=ipv6
-    VPS_IP_FAMILY=ipv4
-    VPS_PUBLIC_IPV6=""
-    EASY_ALL_STATE_FILE_OVERRIDE="${TMP_DIR}/warp-only-state.env"
-    save_state
-    WARP_SCOPE=off
-    load_state
-    assert_equal "WARP scope survives reload" google "${WARP_SCOPE}"
-    assert_equal "Inactive IPv6 policy normalizes to IPv4" ipv4 "${GOOGLE_EGRESS_MODE}"
-    assert_equal "Resolved IPv6 policy normalizes to IPv4" ipv4 "${GOOGLE_EGRESS_RESOLVED}"
-)
 
 missing_policy_state="${TMP_DIR}/state_missing_policy.env"
 grep -Ev '^(GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED)=' \

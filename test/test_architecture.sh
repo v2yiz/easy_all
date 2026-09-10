@@ -150,9 +150,9 @@ grep -Fq "'geosite:google':" "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Google services must have an explicit DNS policy matching their proxy route"
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \
-    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'refresh-xray-assets'* \
+    && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" != *'refresh-xray-assets'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" != *'acme'* ]] \
-    || fail "scheduled maintenance must cover reboot policy without ACME"
+    || fail "scheduled maintenance must cover reboot policy without removed asset refresh or ACME"
 [[ "$(<"${XHTTP_RUNTIME}")" == *'snapshot_platform_security_state'* ]] \
     || fail "CDN fresh installs must snapshot shared platform security state"
 for profile in "${CLOUDFLARE_PROFILE}"; do

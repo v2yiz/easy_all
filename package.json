@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bash test/test_bootstrap.sh && bash test/test_launcher.sh && bash test/test_architecture.sh && bash test/test_docs.sh && bash test/test_warp.sh && bash test/test_quota.sh && bash test/test_globalping_cdn.sh && bash test/test_bbrv3.sh && bash test/test_easy_all.sh && bash test/test_cloudflare_ip_pool.sh && bash test/test_xhttp_cloudflare_streamup.sh && bash test/test_debian_init.sh && npm run test:worker",
+    "test": "bash test/test_bootstrap.sh && bash test/test_launcher.sh && bash test/test_architecture.sh && bash test/test_docs.sh && bash test/test_quota.sh && bash test/test_globalping_cdn.sh && bash test/test_bbrv3.sh && bash test/test_easy_all.sh && bash test/test_cloudflare_ip_pool.sh && bash test/test_xhttp_cloudflare_streamup.sh && bash test/test_debian_init.sh && npm run test:worker",
     "build:worker": "node scripts/build-worker.mjs",
     "test:worker": "node test/test_worker_build.mjs && node test/test_worker.mjs"
   }

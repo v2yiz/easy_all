@@ -4,51 +4,6 @@
 
 export XRAY_LOCATION_ASSET="${XRAY_DIR}"
 
-XRAY_GEODATA_RELEASE_BASE="${XRAY_GEODATA_RELEASE_BASE_OVERRIDE:-https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download}"
-
-xray_geosite_required() {
-    declare -F warp_geosite_required >/dev/null && warp_geosite_required
-}
-
-xray_geosite_ready() {
-    [[ -s "${XRAY_DIR}/geosite.dat" && -s "${XRAY_DIR}/geoip.dat" ]]
-}
-
-validate_xray_google_assets() {
-    validate_xray_google_assets_in_dir "${XRAY_DIR}"
-}
-
-validate_xray_google_assets_in_dir() {
-    local asset_dir=$1
-    local config="${RUNTIME_TMP}/xray-google-assets-test.json"
-    [[ -x "${XRAY_BIN}" ]] || return 1
-    [[ -s "${asset_dir}/geosite.dat" && -s "${asset_dir}/geoip.dat" ]] || return 1
-    write_xray_asset_test_config "${config}"
-    XRAY_LOCATION_ASSET="${asset_dir}" \
-        "${XRAY_BIN}" run -test -config "${config}" >/dev/null 2>&1
-}
-
-write_xray_asset_test_config() {
-    local gemini=false
-    if [[ "${PROTOCOL:-}" == "cloudflare-streamup" && "${WARP_SCOPE:-off}" == "gemini" ]]; then
-        gemini=true
-    fi
-    jq -n --argjson gemini "${gemini}" '{
-      log:{loglevel:"none"},
-      inbounds:[],
-      outbounds:[{protocol:"freedom",tag:"direct"}],
-      routing:{
-        domainStrategy:"AsIs",
-        rules: ([
-          {type:"field",domain:["geosite:google"],outboundTag:"direct"},
-          {type:"field",ip:["geoip:google"],outboundTag:"direct"}
-        ] + (if $gemini then [
-          {type:"field",domain:["geosite:google-gemini"],outboundTag:"direct"}
-        ] else [] end))
-      }
-    }' >"$1"
-}
-
 parse_xray_dgst_sha256() {
     awk '
         {
@@ -68,17 +23,8 @@ parse_xray_dgst_sha256() {
     ' "$1"
 }
 
-parse_sha256sum_digest() {
-    awk '
-        NR == 1 && length($1) == 64 && $1 !~ /[^A-Fa-f0-9]/ {
-            print tolower($1)
-        }
-    ' "$1"
-}
-
 download_xray() {
     local release_file archive_url dgst_url version temp_dir archive dgst expected actual
-    local asset_test_config
     temp_dir=$(make_temp_dir)
     release_file="${temp_dir}/release.json"
     download_https_file "${XRAY_RELEASES_API}" "${release_file}" \
@@ -111,121 +57,8 @@ download_xray() {
         || die "Xray SHA256 校验失败：期望 ${expected}，实际 ${actual}"
     unzip -qo "${archive}" -d "${temp_dir}/xray"
     install -d -m 0755 "${XRAY_DIR}"
-    if xray_geosite_required; then
-        [[ -s "${temp_dir}/xray/geosite.dat" ]] \
-            || die "Xray 发布包缺少 Google 固定地址族路由所需的 geosite.dat"
-        [[ -s "${temp_dir}/xray/geoip.dat" ]] \
-            || die "Xray 发布包缺少 Google 固定地址族路由所需的 geoip.dat"
-        asset_test_config="${temp_dir}/asset-test.json"
-        write_xray_asset_test_config "${asset_test_config}"
-        chmod 0755 "${temp_dir}/xray/xray"
-        XRAY_LOCATION_ASSET="${temp_dir}/xray" \
-            "${temp_dir}/xray/xray" run -test -config "${asset_test_config}" \
-            >/dev/null 2>&1 \
-            || die "Xray 发布资产缺少当前 WARP 路由所需分类"
-        install -m 0644 "${temp_dir}/xray/geosite.dat" "${XRAY_DIR}/geosite.dat"
-        install -m 0644 "${temp_dir}/xray/geoip.dat" "${XRAY_DIR}/geoip.dat"
-    fi
     install -m 0755 "${temp_dir}/xray/xray" "${XRAY_BIN}"
     printf '%s\n' "${version}" >"${XRAY_DIR}/version"
-}
-
-ensure_xray_geosite_assets() {
-    local stage asset
-    xray_geosite_required || return 0
-    validate_xray_google_assets && return 0
-    info "正在安装当前 WARP 路由所需的 GeoSite/GeoIP 资产"
-    stage=$(make_temp_dir)
-    for asset in geosite.dat geoip.dat; do
-        download_xray_geodata_asset "${asset}" "${stage}/${asset}"
-    done
-    validate_xray_google_assets_in_dir "${stage}" \
-        || die "GeoSite/GeoIP 缺少当前 WARP 路由所需分类"
-    for asset in geosite.dat geoip.dat; do
-        install -m 0644 "${stage}/${asset}" "${XRAY_DIR}/${asset}"
-    done
-}
-
-snapshot_xray_assets() {
-    local destination=$1 asset
-    install -d -m 0700 "${destination}"
-    for asset in geosite.dat geoip.dat; do
-        if [[ -f "${XRAY_DIR}/${asset}" ]]; then
-            install -m 0644 "${XRAY_DIR}/${asset}" "${destination}/${asset}"
-        else
-            install -m 0600 /dev/null "${destination}/${asset}.missing"
-        fi
-    done
-}
-
-restore_xray_assets() {
-    local source=$1 asset
-    for asset in geosite.dat geoip.dat; do
-        if [[ -f "${source}/${asset}" ]]; then
-            install -m 0644 "${source}/${asset}" "${XRAY_DIR}/${asset}"
-        elif [[ -f "${source}/${asset}.missing" ]]; then
-            rm -f -- "${XRAY_DIR}/${asset}"
-        fi
-    done
-}
-
-download_xray_geodata_asset() {
-    local asset=$1 destination=$2 checksum_file="${destination}.sha256sum"
-    local expected actual
-    download_https_file "${XRAY_GEODATA_RELEASE_BASE}/${asset}" \
-        "${destination}" " ${asset}"
-    download_https_file "${XRAY_GEODATA_RELEASE_BASE}/${asset}.sha256sum" \
-        "${checksum_file}" " ${asset} SHA256"
-    expected=$(parse_sha256sum_digest "${checksum_file}")
-    actual=$(sha256sum "${destination}" | awk '{print $1}')
-    [[ -n "${expected}" ]] \
-        || die "${asset} SHA256 校验文件格式无效"
-    [[ "${expected}" == "${actual}" ]] \
-        || die "${asset} SHA256 校验失败：期望 ${expected}，实际 ${actual}"
-}
-
-refresh_xray_assets() {
-    local stage backup asset changed=0
-    require_root
-    acquire_runtime_write_lock
-    collect_installed_state
-    if ! xray_geosite_required; then
-        info "当前出站策略无需 GeoSite/GeoIP 路由资产"
-        release_runtime_write_lock
-        return 0
-    fi
-
-    stage=$(make_temp_dir)
-    backup=$(make_temp_dir)
-    download_xray_geodata_asset geosite.dat "${stage}/geosite.dat"
-    download_xray_geodata_asset geoip.dat "${stage}/geoip.dat"
-    validate_xray_google_assets_in_dir "${stage}" \
-        || die "新 GeoSite/GeoIP 资产缺少可用的 Google 分类"
-    for asset in geosite.dat geoip.dat; do
-        cmp -s "${stage}/${asset}" "${XRAY_DIR}/${asset}" || changed=1
-    done
-    if [[ "${changed}" == "1" ]]; then
-        snapshot_xray_assets "${backup}"
-        if ! (
-            for asset in geosite.dat geoip.dat; do
-                install -m 0644 "${stage}/${asset}" "${XRAY_DIR}/${asset}.new"
-            done
-            for asset in geosite.dat geoip.dat; do
-                mv -f "${XRAY_DIR}/${asset}.new" "${XRAY_DIR}/${asset}"
-            done
-            validate_xray_google_assets
-        ); then
-            rm -f -- "${XRAY_DIR}/geosite.dat.new" "${XRAY_DIR}/geoip.dat.new"
-            restore_xray_assets "${backup}"
-            die "新 GeoSite/GeoIP 资产发布失败，已恢复旧版本"
-        fi
-    fi
-    release_runtime_write_lock
-    if [[ "${changed}" == "1" ]]; then
-        success "GeoSite/GeoIP 已更新，将在 Xray 下次启动时生效"
-    else
-        info "GeoSite/GeoIP 已是最新版本"
-    fi
 }
 
 install_xray_service() {
