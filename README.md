@@ -11,22 +11,9 @@
 
 Cloudflare 提供纯 XHTTP stream-up（固定保留 6 个三网精选 IPv4）；Reality 用于直连。
 
-### 全局 IPv4-only
+### IP 版本
 
-项目统一禁用 IPv6，不进行公网 IPv6 探测，也不提供双栈或 Google 地址族选择：
-
-| 范围 | 固定行为 |
-| --- | --- |
-| VPS 网络栈 | sysctl 固定 `disable_ipv6=1`，UFW 固定 `IPV6=no` |
-| Reality 客户端入口 | 只监听 IPv4，节点固定 `ip-version: ipv4`；域名不得发布 AAAA |
-| Cloudflare 客户端入口 | 固定下发 6 个 IPv4 节点，不接受 IPv6 literal 或 IPv6 兜底 |
-| Xray / Google 出站 | `ForceIPv4` + `UseIPv4`，绑定 `0.0.0.0` |
-| WARP | 仅使用注册响应中的 IPv4 地址，WireGuard `domainStrategy=ForceIPv4` |
-| Mihomo | 主开关和 DNS 均为 `ipv6: false`，TUN 不创建 IPv6 地址 |
-
-已有状态中的 `dual`、`auto` 或 `ipv6` 会在下一次 `apply` 时自动归一化为 IPv4，无需重装。
-Reality 已安装节点升级后执行 `sudo easy_all apply`；模式 2 的 Worker 内嵌 Mihomo 模板，升级后必须
-执行 `sudo easy_all apply-cloud`（或 `update-sub`）并交互输入 Cloudflare Token，才能同步更新客户端订阅。
+只支持 IPv4。
 
 同一台 VPS 只能安装一种模式。脚本会管理 Xray、Nginx、证书、UFW、BBR 和订阅文件，
 只适合不承载其他业务的专用 VPS。它不能承诺某条线路一定更快、更稳定或适合所有网络；请遵守

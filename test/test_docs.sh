@@ -87,10 +87,10 @@ assert_not_contains "iOS client matrix excludes Clash Verge Rev" \
     "${IOS_CLIENT_ROW}" 'Clash Verge Rev'
 assert_contains "README explains the Cloudflare VPS traffic boundary" \
     "${README_CONTENT}" '用户上下行载荷之和会消耗 VPS 出站额度'
-assert_contains "README documents global IPv4-only behavior" \
-    "${README_CONTENT}" '项目统一禁用 IPv6'
+assert_contains "README documents IPv4-only support" \
+    "${README_CONTENT}" '只支持 IPv4。'
 assert_contains "README documents Reality AAAA rejection" \
-    "${README_CONTENT}" '域名不得发布 AAAA'
+    "${README_CONTENT}" 'Reality 域名若发布 AAAA'
 assert_contains "README pins Xray to IPv4" \
     "${README_CONTENT}" '`ForceIPv4` + `UseIPv4`'
 
@@ -163,8 +163,8 @@ assert_contains "Preparation guide forbids hostname fallback" \
     "${PREPARATION_GUIDE_CONTENT}" '不使用内置 Anycast IP 或域名兜底凑数'
 assert_contains "Preparation guide documents the Mihomo requirement for selected IPs" \
     "${PREPARATION_GUIDE_CONTENT}" '精选 IP 订阅需要使用 Mihomo'
-assert_contains "Preparation guide documents global IPv6 disablement" \
-    "${PREPARATION_GUIDE_CONTENT}" '两种模式都全局禁用 IPv6'
+assert_contains "Preparation guide documents IPv4-only support" \
+    "${PREPARATION_GUIDE_CONTENT}" '只支持 IPv4。'
 assert_contains "Preparation guide forbids Reality AAAA" \
     "${PREPARATION_GUIDE_CONTENT}" '不能发布 AAAA'
 assert_contains "Preparation guide documents Shadowrocket as unverified" \
@@ -185,7 +185,7 @@ assert_contains "README dynamic ports describe NAT" "${README_CONTENT}" 'UFW 的
 assert_contains "README dynamic ports reject per-port allows" "${README_CONTENT}" '不会生成数万条'
 assert_contains "README documents the IPv4 client default" "${README_CONTENT}" '`ip-version: ipv4`'
 assert_contains "README documents legacy family normalization" \
-    "${README_CONTENT}" '自动归一化为 IPv4'
+    "${README_CONTENT}" '归一化并保存为 IPv4'
 assert_contains "README documents fixed Google egress state" \
     "${README_CONTENT}" 'GOOGLE_EGRESS_RESOLVED=ipv4'
 assert_contains "README documents Chinese-only interactive prompts" \

@@ -26,9 +26,7 @@ VPS 费用另计。
 | 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token                       | Globalping Token、gRPC 设置                        | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 
-两种模式都全局禁用 IPv6。VPS 只需公网 IPv4；安装器固定写入 `disable_ipv6=1`、UFW `IPV6=no`，
-Xray/WARP 使用 `ForceIPv4`，Mihomo 主开关和 DNS 均设置 `ipv6: false`。Reality 节点域名只能
-发布指向 VPS 的 A 记录，不得发布 AAAA；Cloudflare XHTTP 同样只创建和下发 IPv4。
+只支持 IPv4。
 
 各链路建议使用的域名如下：
 
@@ -248,9 +246,7 @@ IP 节点会连接失败；请以实际生成订阅的导入测试确认兼容�
 
 ### 5.2 VPS 出站 IP 族
 
-- Cloudflare 客户端入口、Reality、VPS 原生出站和 WARP 全部固定 IPv4，不提供地址族选项。
-- 已有状态中的 `dual`、`auto` 或 `ipv6` 会在下一次 `easy_all apply` 时归一化为 IPv4。
-- 外部聚合节点的旧 `dual/ipv6` 标记会改写为 IPv4；IPv6 literal 会被拒绝。
+只支持 IPv4。
 
 “小火箭”通常指 Shadowrocket。它的官方版本记录已说明支持 XHTTP 和 XHTTP transport options，
 但没有逐项确认本项目所需的 IP/SNI/Host 分离及完整 Mihomo XHTTP 复用参数。因此本项目暂不把

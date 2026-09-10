@@ -49,6 +49,33 @@ write_xray_asset_test_config() {
     }' >"$1"
 }
 
+parse_xray_dgst_sha256() {
+    awk '
+        {
+            line = toupper($0)
+            if (line !~ /SHA256|SHA2-256/) {
+                next
+            }
+            for (i = 1; i <= NF; i++) {
+                token = $i
+                gsub(/[^A-Fa-f0-9]/, "", token)
+                if (length(token) == 64 && token !~ /[^A-Fa-f0-9]/) {
+                    print tolower(token)
+                    exit
+                }
+            }
+        }
+    ' "$1"
+}
+
+parse_sha256sum_digest() {
+    awk '
+        NR == 1 && length($1) == 64 && $1 !~ /[^A-Fa-f0-9]/ {
+            print tolower($1)
+        }
+    ' "$1"
+}
+
 download_xray() {
     local release_file archive_url dgst_url version temp_dir archive dgst expected actual
     local asset_test_config
@@ -76,22 +103,12 @@ download_xray() {
     info "正在从 GitHub 官方 Release 下载 Xray ${version}"
     download_https_file "${archive_url}" "${archive}" " Xray ${version}"
     download_https_file "${dgst_url}" "${dgst}" " Xray 校验文件"
-    expected=$(awk '
-        BEGIN { IGNORECASE = 1 }
-        /SHA256|SHA2-256/ {
-            for (i = 1; i <= NF; i++) {
-                token = $i
-                gsub(/[^A-Fa-f0-9]/, "", token)
-                if (token ~ /^[A-Fa-f0-9]{64}$/) {
-                    print tolower(token)
-                    exit
-                }
-            }
-        }
-    ' "${dgst}")
+    expected=$(parse_xray_dgst_sha256 "${dgst}")
     actual=$(sha256sum "${archive}" | awk '{print $1}')
-    [[ -n "${expected}" && "${expected,,}" == "${actual,,}" ]] \
-        || die "Xray SHA256 校验失败"
+    [[ -n "${expected}" ]] \
+        || die "Xray SHA256 校验文件格式无效：未找到 SHA2-256 摘要"
+    [[ "${expected}" == "${actual}" ]] \
+        || die "Xray SHA256 校验失败：期望 ${expected}，实际 ${actual}"
     unzip -qo "${archive}" -d "${temp_dir}/xray"
     install -d -m 0755 "${XRAY_DIR}"
     if xray_geosite_required; then
@@ -159,11 +176,12 @@ download_xray_geodata_asset() {
         "${destination}" " ${asset}"
     download_https_file "${XRAY_GEODATA_RELEASE_BASE}/${asset}.sha256sum" \
         "${checksum_file}" " ${asset} SHA256"
-    expected=$(awk 'NR == 1 && $1 ~ /^[A-Fa-f0-9]{64}$/ {print tolower($1)}' \
-        "${checksum_file}")
+    expected=$(parse_sha256sum_digest "${checksum_file}")
     actual=$(sha256sum "${destination}" | awk '{print $1}')
-    [[ -n "${expected}" && "${expected}" == "${actual,,}" ]] \
-        || die "${asset} SHA256 校验失败"
+    [[ -n "${expected}" ]] \
+        || die "${asset} SHA256 校验文件格式无效"
+    [[ "${expected}" == "${actual}" ]] \
+        || die "${asset} SHA256 校验失败：期望 ${expected}，实际 ${actual}"
 }
 
 refresh_xray_assets() {
