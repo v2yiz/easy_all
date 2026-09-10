@@ -232,7 +232,8 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 - VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
   CDN 入口的地址；再按 Globalping 当前剩余免费额度限制本轮测量规模，避免耗尽额度。
 - 两阶段预筛：第一阶段使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
-  `eyeball-network` 探针分别发送 10 包 TCP/443，最多允许丢 1 包（10%）；第二阶段对低延迟候选进行真实 HTTP/TLS HEAD `/easy_all-health` 验证，彻底剔除 SNI 假通。
+  `eyeball-network` 探针分别发送 10 包 TCP/443，最多允许丢 2 包（20%）；第二阶段对低延迟候选进行
+  最多 3 轮真实 HTTP/TLS HEAD `/easy_all-health` 验证，仅重测尚未通过的候选，彻底剔除 SNI 假通。
 - 按电信、联通、移动三大运营商独立优选，每网输出 2 个通过本机 HTTP/2 和 Globalping HTTP/TLS
   验证的地址，统一生成 6 个纯 XHTTP 节点（`🇺🇸优选1` 到 `🇺🇸优选6`）。
 - 不使用内置 Anycast IP 或域名兜底凑数。刷新失败时继续使用格式兼容的上一版已验证缓存；从未生成

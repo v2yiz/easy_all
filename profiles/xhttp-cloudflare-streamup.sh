@@ -31,6 +31,7 @@ readonly CLOUDFLARE_WORKER_SOURCE_FILE="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../work
 readonly CLOUDFLARE_WORKER_BUILD_SCRIPT="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../scripts/build-worker.mjs"
 readonly CLOUDFLARE_WORKER_READY_ATTEMPTS="${CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE:-60}"
 readonly CLOUDFLARE_WORKER_READY_INTERVAL="${CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE:-5}"
+readonly CLOUDFLARE_WORKER_AUTH_ATTEMPTS="${CLOUDFLARE_WORKER_AUTH_ATTEMPTS_OVERRIDE:-6}"
 readonly CLOUDFLARE_XHTTP_PROBE_ATTEMPTS="${CLOUDFLARE_XHTTP_PROBE_ATTEMPTS_OVERRIDE:-6}"
 readonly CLOUDFLARE_XHTTP_PROBE_INTERVAL="${CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE:-5}"
 readonly CLOUDFLARE_XHTTP_PROBE_URL="${CLOUDFLARE_XHTTP_PROBE_URL_OVERRIDE:-https://www.gstatic.com/generate_204}"
@@ -469,6 +470,7 @@ cloudflare_delete_subscription_worker_resources() {
 
 cloudflare_validate_subscription_worker() {
     local token="" body headers status attempt decoded ready=0 curl_status=0 warning="" ip
+    local invalid_ready=0 invalid_curl_status=0 public_ip=""
     local worker_curl_args=(--noproxy '*')
     subscription_enabled || return 0
     if quota_enabled; then
@@ -505,6 +507,7 @@ cloudflare_validate_subscription_worker() {
             while IFS= read -r ip; do
                 validate_public_ipv4 "${ip}" || continue
                 worker_curl_args=(--noproxy '*' --resolve "${SUBSCRIPTION_DOMAIN}:443:${ip}")
+                public_ip=${ip}
                 info "订阅域名 ${SUBSCRIPTION_DOMAIN} 的本机 DNS 尚未更新，使用 1.1.1.1 的公共解析结果验收"
                 break
             done < <(dig +time=3 +tries=1 +short A "${SUBSCRIPTION_DOMAIN}" @1.1.1.1 2>/dev/null)
@@ -530,10 +533,35 @@ cloudflare_validate_subscription_worker() {
         die "Cloudflare Worker 订阅验收失败：curl=${curl_status},HTTP=${status:-000}${warning:+，回源诊断：${warning:0:500}}；请检查自定义域名证书及 Worker 到 ${VLESS_CDN_DOMAIN} 的公共 fetch"
     fi
 
-    status=$(curl -sS "${worker_curl_args[@]}" --connect-timeout 5 --max-time 20 \
-        -o /dev/null -w '%{http_code}' \
-        "https://${SUBSCRIPTION_DOMAIN}/subscribe?token=invalid" 2>/dev/null || true)
-    [[ "${status}" == "403" ]] || die "Cloudflare Worker 未拒绝无效订阅 Token（HTTP ${status:-000}）"
+    for ((attempt = 1; attempt <= CLOUDFLARE_WORKER_AUTH_ATTEMPTS; attempt += 1)); do
+        invalid_curl_status=0
+        status=$(curl -sS "${worker_curl_args[@]}" --connect-timeout 5 --max-time 20 \
+            -o /dev/null -w '%{http_code}' --get \
+            --data-urlencode "token=invalid" \
+            "https://${SUBSCRIPTION_DOMAIN}/subscribe" 2>/dev/null) \
+            || invalid_curl_status=$?
+        if [[ "${invalid_curl_status}" == "0" && "${status}" == "403" ]]; then
+            invalid_ready=1
+            break
+        fi
+        if ((invalid_curl_status != 0)) && [[ -z "${public_ip}" ]]; then
+            while IFS= read -r ip; do
+                validate_public_ipv4 "${ip}" || continue
+                public_ip=${ip}
+                worker_curl_args=(--noproxy '*' --resolve "${SUBSCRIPTION_DOMAIN}:443:${ip}")
+                info "无效 Token 验收连接失败，使用 1.1.1.1 的公共解析结果重试"
+                break
+            done < <(dig +time=3 +tries=1 +short A "${SUBSCRIPTION_DOMAIN}" @1.1.1.1 2>/dev/null)
+        fi
+        ((attempt == CLOUDFLARE_WORKER_AUTH_ATTEMPTS)) \
+            || sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
+    done
+    if ((invalid_ready != 1)); then
+        if ((invalid_curl_status != 0)); then
+            die "Cloudflare Worker 无效 Token 验收请求失败：curl=${invalid_curl_status},HTTP=${status:-000}；请检查自定义域名 DNS、证书及边缘传播状态"
+        fi
+        die "Cloudflare Worker 未拒绝无效订阅 Token（HTTP ${status:-000}）"
+    fi
 
     if [[ -n "${token}" ]]; then
         status=$(curl -sS --connect-timeout 5 --max-time 20 \
@@ -637,7 +665,7 @@ xhttp_configure_ufw() {
     ensure_ssh_fail2ban
 }
 
-cloudflare_find_parent_zone() {
+cloudflare_lookup_parent_zone() {
     local domain=$1 candidate zone
     candidate=${domain}
     while [[ "${candidate}" == *.* ]]; do
@@ -645,7 +673,66 @@ cloudflare_find_parent_zone() {
         if [[ -n "${zone}" ]]; then printf '%s' "${zone}"; return; fi
         candidate=${candidate#*.}
     done
-    die "Cloudflare active Zone 未覆盖域名：${domain}"
+    return 1
+}
+
+cloudflare_find_parent_zone() {
+    local domain=$1
+    cloudflare_lookup_parent_zone "${domain}" \
+        || die "Cloudflare active Zone 未覆盖域名：${domain}"
+}
+
+cloudflare_validate_node_domain_input() {
+    local domain=$1 zone_id zone zone_name prefix
+    CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR=""
+    zone_id=$(cloudflare_lookup_parent_zone "${domain}") || {
+        CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR="Cloudflare Active Zone 未覆盖 ${domain}"
+        return 1
+    }
+    zone=$(cloudflare_api_request GET "/zones/${zone_id}") || return 1
+    zone_name=$(jq -r '.name // empty | ascii_downcase' <<<"${zone}")
+    [[ -n "${zone_name}" ]] || {
+        CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR="Cloudflare Zone 未返回有效名称"
+        return 1
+    }
+    if [[ "${domain}" == "${zone_name}" ]]; then
+        CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR="不能直接使用主域名 ${zone_name}；请输入一级子域名，例如 node.${zone_name}"
+        return 1
+    fi
+    [[ "${domain}" == *."${zone_name}" ]] || {
+        CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR="${domain} 不属于 Cloudflare Zone ${zone_name}"
+        return 1
+    }
+    prefix=${domain%.${zone_name}}
+    [[ -n "${prefix}" && "${prefix}" != *.* ]] || {
+        CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR="仅支持 Cloudflare Zone 下的一级子域名，例如 node.${zone_name}"
+        return 1
+    }
+    CLOUDFLARE_ZONE_ID=${zone_id}
+    CLOUDFLARE_CDN_ZONE_ID=${zone_id}
+    CLOUDFLARE_ZONE_NAME=${zone_name}
+}
+
+collect_cloudflare_node_domain() {
+    local domain=${VLESS_CDN_DOMAIN:-}
+    while true; do
+        if [[ -z "${domain}" ]]; then
+            domain=$(prompt_value "客户端连接的 CDN 节点域名（例如 node.example.com）" "")
+        fi
+        domain=$(normalize_domain "${domain}")
+        if ! validate_domain "${domain}"; then
+            warn "CDN 节点域名格式无效，请重新输入完整的一级子域名"
+            domain=""
+            continue
+        fi
+        if ! cloudflare_validate_node_domain_input "${domain}"; then
+            warn "${CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR:-CDN 节点域名无效，请重新输入}"
+            domain=""
+            continue
+        fi
+        VLESS_CDN_DOMAIN=${domain}
+        return
+    done
 }
 
 cloudflare_record_list() { cloudflare_api_request GET "/zones/$1/dns_records?type=$2&name=$3&per_page=100"; }
@@ -1219,8 +1306,8 @@ collect_install_inputs() {
     info "Cloudflare 数据面采用单域名架构；部署订阅时另用独立域名绑定 Worker。"
     info "流量说明：代理数据实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是可用代理载荷的主要上限，但协议开销及 Cloudflare 服务规则会进一步约束；双向计费请按服务商口径折算。"
     info "节点域名提示：使用 Cloudflare Active Zone 下未占用的一级子域名，例如 node.example.com；不要提前创建 DNS 记录。"
-    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名（例如 node.example.com）" "")}")
-    validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
+    cloudflare_collect_api_token
+    collect_cloudflare_node_domain
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
 

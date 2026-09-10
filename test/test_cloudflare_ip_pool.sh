@@ -73,7 +73,7 @@ fi
 # ==============================================================================
 # Test 2: Globalping Budget Calculation & Stratified Proportional Reduction
 # ==============================================================================
-mock_remaining=50
+mock_remaining=90
 globalping_api_request() {
     local method=$1 path=$2
     if [[ "${path}" == "/limits" ]]; then
@@ -94,13 +94,13 @@ for i in {1..6}; do
     printf '162.158.1.%d\t162.158.0.0/15\n' "$i" >>"${source_cands}"
 done
 
-# When remaining is 50:
-# stage2_reserve = 15
-# tcp_remaining = 35
-# budget = 35 / 3 = 11 candidates
+# When remaining is 90:
+# stage2_reserve = 45 (15 candidates x up to 3 HTTP/TLS rounds)
+# tcp_remaining = 45
+# budget = 45 / 3 = 15 candidates
 cloudflare_limit_pool_to_globalping_budget "${source_cands}" "${dest_cands}"
 budgeted_count=$(wc -l <"${dest_cands}" | tr -d ' ')
-assert_equal "Budgeted candidate count is 11 when remaining is 50" "11" "${budgeted_count}"
+assert_equal "Budgeted candidate count is 15 when remaining is 90" "15" "${budgeted_count}"
 
 # Check that stratified reduction kept both priority and other candidates:
 dest_pri=0
@@ -112,11 +112,11 @@ while IFS=$'\t' read -r ip cidr; do
         dest_oth=$((dest_oth + 1))
     fi
 done <"${dest_cands}"
-assert_equal "Stratified reduction keeps 7 priority candidates" "7" "${dest_pri}"
-assert_equal "Stratified reduction keeps 4 other candidates" "4" "${dest_oth}"
+assert_equal "Stratified reduction keeps 10 priority candidates" "10" "${dest_pri}"
+assert_equal "Stratified reduction keeps 5 other candidates" "5" "${dest_oth}"
 
-# When remaining is <= 15 (e.g. 5), budget should be rejected
-mock_remaining=5
+# When remaining is <= the maximum Stage 2 reservation, budget should be rejected.
+mock_remaining=45
 if cloudflare_limit_pool_to_globalping_budget "${source_cands}" "${dest_cands}" 2>/dev/null; then
     fail "Budget calculation should fail when remaining is insufficient for Stage 2 reservation"
 fi
@@ -127,8 +127,12 @@ fi
 req_no_anchor=$(cloudflare_globalping_measurement_request "104.16.1.1")
 assert_equal "Default request specifies 3 eyeball networks" "3" \
     "$(jq '.locations | length' <<<"${req_no_anchor}")"
-assert_equal "Default request sends ten packets for a 10 percent loss threshold" "10" \
+assert_equal "Default request sends ten packets" "10" \
     "$(jq '.measurementOptions.packets' <<<"${req_no_anchor}")"
+assert_equal "TCP prefilter allows up to 20 percent packet loss" "20" \
+    "${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT}"
+assert_equal "HTTP/TLS verification allows up to three rounds" "3" \
+    "${CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS}"
 
 req_with_anchor=$(cloudflare_globalping_measurement_request "104.16.1.1" "base-meas-id-12345")
 assert_equal "Anchored request specifies magic location" "base-meas-id-12345" \
@@ -151,6 +155,7 @@ fi
 tls_mock_file="${TMP_DIR}/tls-mock.ndjson"
 cat <<'TLS_EOF' >"${tls_mock_file}"
 {"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":42.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":44.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
 {"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":35.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"ERR_TLS_CERT_ALTNAME_INVALID"}}}]}}
 {"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"}}}]}}
 {"ip":"104.16.1.4","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":50.0,"measurement":{"results":[{"result":{"status":"failed","statusCode":0,"error":"connection timeout"}}]}}
@@ -241,27 +246,70 @@ ultimate_count=$(jq 'length' <<<"${ultimate_fallback}")
 assert_equal "Empty observations produce no candidates" "0" "${ultimate_count}"
 
 # ==============================================================================
-# Test 9: Packet Loss Tolerance (loss <= 10%, rcv >= 9/10)
+# Test 9: Packet Loss Tolerance (loss <= 20%, rcv >= 8/10)
 # ==============================================================================
 meas_loss_file="${TMP_DIR}/test-meas-loss.ndjson"
 cat <<'MEAS_EOF' >"${meas_loss_file}"
 {"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.16.1.1","stats":{"loss":0,"rcv":10,"total":10,"drop":0,"avg":35.5}}}]}}
 {"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":4837,"tags":["eyeball-network"],"city":"Beijing","network":"China Unicom"},"result":{"status":"finished","resolvedAddress":"104.16.1.2","stats":{"loss":10,"rcv":9,"total":10,"drop":1,"avg":42.0}}}]}}
 {"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"tags":["eyeball-network"],"city":"Shanghai","network":"China Mobile"},"result":{"status":"finished","resolvedAddress":"104.16.1.3","stats":{"loss":20,"rcv":8,"total":10,"drop":2,"avg":50.0}}}]}}
+{"ip":"104.16.1.4","source_cidr":"104.16.0.0/13","measurement":{"results":[{"probe":{"country":"CN","asn":9808,"tags":["eyeball-network"],"city":"Shanghai","network":"China Mobile"},"result":{"status":"finished","resolvedAddress":"104.16.1.4","stats":{"loss":30,"rcv":7,"total":10,"drop":3,"avg":55.0}}}]}}
 MEAS_EOF
 
 loss_obs=$(cloudflare_acceptable_loss_observations "${meas_loss_file}")
 loss_obs_count=$(wc -l <<<"${loss_obs}" | tr -d ' ')
-assert_equal "Ping filter accepts 0% and 10% loss, rejecting 20% loss" "2" "${loss_obs_count}"
+assert_equal "Ping filter accepts up to 20% loss and rejects 30%" "3" "${loss_obs_count}"
 
 passing_loss_ips=$(jq -r '.ip' <<<"${loss_obs}" | tr '\n' ' ')
 [[ "${passing_loss_ips}" == *"104.16.1.1 "* ]] || fail "104.16.1.1 (0% loss) should pass"
 [[ "${passing_loss_ips}" == *"104.16.1.2 "* ]] || fail "104.16.1.2 (10% loss) should pass"
-[[ "${passing_loss_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (20% loss) must be rejected"
+[[ "${passing_loss_ips}" == *"104.16.1.3 "* ]] || fail "104.16.1.3 (20% loss) should pass"
+[[ "${passing_loss_ips}" != *"104.16.1.4 "* ]] || fail "104.16.1.4 (30% loss) must be rejected"
 
 if cloudflare_globalping_measurement_request \
     "2606:4700::6810:101" >/dev/null 2>&1; then
     fail "Cloudflare TCP probes must reject IPv6 edge candidates"
 fi
+
+# ==============================================================================
+# Test 10: HTTP/TLS Retries Only Failed Candidate/Carrier Pairs
+# ==============================================================================
+retry_candidates="${TMP_DIR}/retry-candidates.tsv"
+retry_measurements="${TMP_DIR}/retry-measurements.ndjson"
+retry_observations="${TMP_DIR}/retry-observations.ndjson"
+cat <<'RETRY_EOF' >"${retry_candidates}"
+104.16.1.1	104.16.0.0/13	4134	30
+104.16.1.2	104.16.0.0/13	4134	31
+104.16.2.1	104.16.0.0/13	4837	32
+104.16.2.2	104.16.0.0/13	4837	33
+104.16.3.1	104.16.0.0/13	9808	34
+104.16.3.2	104.16.0.0/13	9808	35
+RETRY_EOF
+
+tls_round_file="${TMP_DIR}/tls-round-count"
+printf '0\n' >"${tls_round_file}"
+cloudflare_collect_globalping_tls_measurements() {
+    local candidates_file=$1 destination=$3 round ip source_cidr asn rtt
+    round=$(( $(<"${tls_round_file}") + 1 ))
+    printf '%s\n' "${round}" >"${tls_round_file}"
+    : >"${destination}"
+    while IFS=$'\t' read -r ip source_cidr asn rtt; do
+        if [[ "${asn}" != 9808 || ( "${round}" == 2 && "${ip}" == "104.16.3.1" ) || "${round}" == 3 ]]; then
+            jq -cn --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
+                --argjson asn "${asn}" --argjson rtt "${rtt}" \
+                '{ip:$ip,source_cidr:$source_cidr,carrier_asn:$asn,avg_rtt_ms:$rtt,
+                  measurement:{results:[{result:{status:"finished",statusCode:200,
+                    tls:{protocol:"TLSv1.3",authorized:true}}}]}}'
+        fi
+    done <"${candidates_file}" >"${destination}"
+}
+
+cloudflare_collect_verified_tls_observations \
+    "${retry_candidates}" node.example.com \
+    "${retry_measurements}" "${retry_observations}"
+assert_equal "HTTP/TLS validation reaches the third round when needed" \
+    "3" "$(<"${tls_round_file}")"
+assert_equal "Three rounds recover six unique candidate/carrier pairs" \
+    "6" "$(jq -s '[.[] | [.carrier_asn, .ip]] | unique | length' "${retry_observations}")"
 
 printf 'ok - Cloudflare IP pool tests passed\n'

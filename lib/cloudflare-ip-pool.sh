@@ -4,10 +4,13 @@
 
 readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-120}"
 readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-10}"
+readonly CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT="${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT_OVERRIDE:-20}"
+readonly CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS="${CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS_OVERRIDE:-3}"
 readonly CLOUDFLARE_CANDIDATES_PER_CARRIER="${CLOUDFLARE_CANDIDATES_PER_CARRIER_OVERRIDE:-2}"
 readonly CLOUDFLARE_CANDIDATE_LIMIT=6
 readonly CLOUDFLARE_CACHE_VERSION=8
 readonly CLOUDFLARE_PROBES_PER_CANDIDATE=3
+readonly CLOUDFLARE_TLS_CANDIDATES_PER_CARRIER=5
 readonly CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
 
@@ -212,7 +215,8 @@ cloudflare_collect_globalping_measurements() {
 
 cloudflare_acceptable_loss_observations() {
     local measurements_file=$1
-    jq -c --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" '
+    jq -c --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" \
+        --argjson max_loss "${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT}" '
       . as $entry
       | .measurement.results[]?
       | select(.probe.country == "CN")
@@ -220,9 +224,9 @@ cloudflare_acceptable_loss_observations() {
       | select(.probe.asn == 4134 or .probe.asn == 4837 or .probe.asn == 9808)
       | select(.result.status == "finished")
       | select(.result.resolvedAddress == $entry.ip)
-      | (($packets * 9 + 9) / 10 | floor) as $required_received
+      | (($packets * (100 - $max_loss) + 99) / 100 | floor) as $required_received
       | select(
-          ((.result.stats.loss // 100) <= 10)
+          ((.result.stats.loss // 100) <= $max_loss)
           and ((.result.stats.total // 0) == $packets)
           and ((.result.stats.rcv // 0) >= $required_received)
           and (.result.stats.avg | type) == "number"
@@ -279,12 +283,20 @@ carriers = [
 
 carrier_items = []
 for c in carriers:
-    c_items = [
-        it for it in all_items
-        if it.get("carrier_asn") == c["asn"]
-        and it.get("tls_verified") is True
-        and it.get("address_family", "ipv4") == "ipv4"
-    ]
+    unique_items = {}
+    for it in all_items:
+        if (
+            it.get("carrier_asn") == c["asn"]
+            and it.get("tls_verified") is True
+            and it.get("address_family", "ipv4") == "ipv4"
+        ):
+            ip = it.get("ip")
+            if ip and (
+                ip not in unique_items
+                or float(it.get("avg_rtt_ms", 999)) < float(unique_items[ip].get("avg_rtt_ms", 999))
+            ):
+                unique_items[ip] = it
+    c_items = list(unique_items.values())
     c_items.sort(key=lambda x: (
         (float(x.get("avg_rtt_ms", 999)) - 5.0) if x.get("ip") in hist_ips else float(x.get("avg_rtt_ms", 999)),
         float(x.get("avg_rtt_ms", 999)),
@@ -388,23 +400,90 @@ cloudflare_collect_globalping_tls_measurements() {
 cloudflare_parse_tls_observations() {
     local tls_file=$1
     [[ -s "${tls_file}" ]] || return 0
-    jq -c '
-        select(
-            .measurement.results[]?
-            | select(.result.status == "finished")
-            | select(.result.tls != null and .result.tls.protocol != null and .result.tls.protocol != "")
-            | select(.result.tls.authorized == true)
-            | select(.result.statusCode == 200)
+    jq -sc '
+        map(
+            select(
+                .measurement.results[]?
+                | select(.result.status == "finished")
+                | select(.result.tls != null and .result.tls.protocol != null and .result.tls.protocol != "")
+                | select(.result.tls.authorized == true)
+                | select(.result.statusCode == 200)
+            )
+            | {
+                ip: .ip,
+                source_cidr: .source_cidr,
+                address_family: "ipv4",
+                carrier_asn: .carrier_asn,
+                avg_rtt_ms: .avg_rtt_ms,
+                tls_verified: true
+            }
         )
-        | {
-            ip: .ip,
-            source_cidr: .source_cidr,
-            address_family: "ipv4",
-            carrier_asn: .carrier_asn,
-            avg_rtt_ms: .avg_rtt_ms,
-            tls_verified: true
-        }
+        | sort_by([.carrier_asn, .ip, .avg_rtt_ms])
+        | unique_by([.carrier_asn, .ip])
+        | .[]
     ' "${tls_file}"
+}
+
+cloudflare_filter_unverified_tls_candidates() {
+    local candidates_file=$1 observations_file=$2 destination=$3
+    python3 - "${candidates_file}" "${observations_file}" "${destination}" <<'EOF'
+import json
+import sys
+
+candidates_path, observations_path, destination_path = sys.argv[1:4]
+verified = set()
+try:
+    with open(observations_path, "r", encoding="utf-8") as observations:
+        for line in observations:
+            try:
+                item = json.loads(line)
+                verified.add((str(item.get("ip", "")), int(item.get("carrier_asn", 0))))
+            except (ValueError, TypeError):
+                pass
+except FileNotFoundError:
+    pass
+
+with open(candidates_path, "r", encoding="utf-8") as candidates, \
+        open(destination_path, "w", encoding="utf-8") as destination:
+    for line in candidates:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) >= 3:
+            try:
+                key = (parts[0], int(parts[2]))
+            except ValueError:
+                continue
+            if key not in verified:
+                destination.write(line)
+EOF
+}
+
+cloudflare_collect_verified_tls_observations() {
+    local candidates_file=$1 domain=$2 measurements_file=$3 observations_file=$4
+    local pending_file round_file selected_file attempt pending_count selected_count
+    pending_file=$(make_temp_dir)/cloudflare-tls-pending.tsv
+    round_file=$(make_temp_dir)/cloudflare-tls-round.ndjson
+    selected_file=$(make_temp_dir)/cloudflare-tls-selected.json
+    cp "${candidates_file}" "${pending_file}"
+    : >"${measurements_file}"
+    : >"${observations_file}"
+
+    for ((attempt = 1; attempt <= CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS; attempt += 1)); do
+        pending_count=$(wc -l <"${pending_file}" | tr -d ' ')
+        ((pending_count > 0)) || break
+        info "Globalping HTTP/TLS 深度验证：第 ${attempt}/${CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS} 轮，探测 ${pending_count} 个未通过候选"
+        cloudflare_collect_globalping_tls_measurements \
+            "${pending_file}" "${domain}" "${round_file}" || true
+        cat "${round_file}" >>"${measurements_file}"
+        cloudflare_parse_tls_observations \
+            "${measurements_file}" >"${observations_file}" || true
+        cloudflare_select_carrier_candidates "${observations_file}" \
+            "${CLOUDFLARE_CANDIDATES_PER_CARRIER}" \
+            "${CLOUDFLARE_CANDIDATE_LIMIT}" >"${selected_file}"
+        selected_count=$(jq 'length' "${selected_file}")
+        ((selected_count >= CLOUDFLARE_CANDIDATE_LIMIT)) && break
+        cloudflare_filter_unverified_tls_candidates \
+            "${candidates_file}" "${observations_file}" "${pending_file}"
+    done
 }
 
 cloudflare_validate_pool_candidate() {
@@ -476,10 +555,7 @@ cloudflare_limit_pool_to_globalping_budget() {
         return 1
     }
 
-    local stage2_reserve=15
-    if (( remaining <= 25 )); then
-        stage2_reserve=6
-    fi
+    local stage2_reserve=$(( CLOUDFLARE_TLS_CANDIDATES_PER_CARRIER * 3 * CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS ))
     if (( remaining <= stage2_reserve )); then
         warn "Globalping 本小时剩余额度不足（剩余 ${remaining}，需预留 Stage 2 深度验证额度 ${stage2_reserve}）"
         return 1
@@ -597,14 +673,18 @@ cloudflare_build_official_pool_cache() {
     cloudflare_acceptable_loss_observations \
         "${measurements_file}" >"${observations_file}"
     [[ -s "${observations_file}" ]] || {
-        warn "Cloudflare 官方 IP 池没有丢包率不超过 10% 的候选"
+        warn "Cloudflare 官方 IP 池没有丢包率不超过 ${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT}% 的候选"
         return 1
     }
+    info "Globalping TCP 预筛有效候选：$(jq -sr '
+        [4134,4837,9808][] as $asn
+        | "AS\($asn)=\([.[] | select(.carrier_asn == $asn) | .ip] | unique | length)"
+    ' "${observations_file}" | tr '\n' ' ')"
 
     # Extract top 5 candidates per carrier for Stage 2 HTTP/TLS verification
-    jq -s -r '
+    jq -s -r --argjson per_carrier "${CLOUDFLARE_TLS_CANDIDATES_PER_CARRIER}" '
         group_by(.carrier_asn)
-        | map(sort_by([.loss, .avg_rtt_ms]) | .[0:5])
+        | map(sort_by([.loss, .avg_rtt_ms]) | .[0:$per_carrier])
         | add
         | .[]?
         | [.ip, .source_cidr, .carrier_asn, .avg_rtt_ms]
@@ -612,11 +692,10 @@ cloudflare_build_official_pool_cache() {
     ' "${observations_file}" >"${tcp_top_candidates_tsv}"
 
     if [[ -s "${tcp_top_candidates_tsv}" ]]; then
-        info "正在对候选执行 Globalping HTTP/TLS 深度验证（防 SNI 假通）"
-        cloudflare_collect_globalping_tls_measurements \
-            "${tcp_top_candidates_tsv}" "${VLESS_CDN_DOMAIN}" "${tls_measurements_file}" || true
-        cloudflare_parse_tls_observations \
-            "${tls_measurements_file}" >"${tls_observations_file}" || true
+        info "正在对候选执行 Globalping HTTP/TLS 深度验证（防 SNI 假通，最多 ${CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS} 轮）"
+        cloudflare_collect_verified_tls_observations \
+            "${tcp_top_candidates_tsv}" "${VLESS_CDN_DOMAIN}" \
+            "${tls_measurements_file}" "${tls_observations_file}"
     fi
 
     cloudflare_select_carrier_candidates "${tls_observations_file}" \

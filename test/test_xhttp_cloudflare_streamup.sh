@@ -75,6 +75,7 @@ export GOOGLE_EGRESS_MODE="ipv4"
 export GOOGLE_EGRESS_RESOLVED="ipv4"
 export CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE=2
 export CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE=0
+export CLOUDFLARE_WORKER_AUTH_ATTEMPTS_OVERRIDE=3
 export CLOUDFLARE_XHTTP_PROBE_ATTEMPTS_OVERRIDE=3
 export CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE=0
 
@@ -393,6 +394,36 @@ if cloudflare_globalping_cache_compatible; then
     fail "Cloudflare cache containing an IPv6 edge candidate must be rejected"
 fi
 cp "${TMP_DIR}/valid-cloudflare-cache.json" "${GLOBALPING_CACHE_FILE}"
+
+# The node hostname must be exactly one label below the active Cloudflare Zone.
+(
+    cloudflare_lookup_parent_zone() { printf 'test-zone-id'; }
+    cloudflare_api_request() { printf '{"name":"example.com"}\n'; }
+
+    if cloudflare_validate_node_domain_input example.com; then
+        fail "Cloudflare Zone root must not be accepted as the node domain"
+    fi
+    assert_contains "Root-domain rejection explains the required node hostname" \
+        "${CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR}" "node.example.com"
+    cloudflare_validate_node_domain_input node.example.com \
+        || fail "A first-level node subdomain should be accepted"
+    if cloudflare_validate_node_domain_input deep.node.example.com; then
+        fail "A nested node hostname must not be accepted"
+    fi
+
+    prompt_calls="${TMP_DIR}/node-domain-prompt-calls"
+    : >"${prompt_calls}"
+    VLESS_CDN_DOMAIN=example.com
+    prompt_value() {
+        printf 'prompt\n' >>"${prompt_calls}"
+        printf 'node.example.com'
+    }
+    collect_cloudflare_node_domain
+    assert_equal "Root domain is replaced by a prompted node subdomain" \
+        "node.example.com" "${VLESS_CDN_DOMAIN}"
+    assert_equal "Invalid root domain triggers one new prompt" \
+        "1" "$(wc -l <"${prompt_calls}" | tr -d ' ')"
+)
 
 # Test Mihomo proxy names under PROXY
 names_output=$(build_mihomo_proxy_names)
@@ -798,6 +829,50 @@ assert_contains "Quota mode keeps strict acceptance failure" \
         printf 200
     }
     cloudflare_validate_subscription_worker
+)
+
+# A transient transport failure during invalid-token validation is retried
+# through the same public-DNS fallback instead of being reported as an auth bug.
+(
+    quota_enabled() { return 1; }
+    ALLOWED_TOKENS='{"owner":"retry-test-token"}'
+    invalid_attempts_file="${TMP_DIR}/invalid-token-attempts"
+    printf '0\n' >"${invalid_attempts_file}"
+    dig() {
+        [[ " $* " == *" @1.1.1.1 "* ]] || return 98
+        printf '104.16.1.1\n'
+    }
+    sleep() { :; }
+    curl() {
+        local body_file="" invalid=0 source=0 resolved=0 attempts
+        while (($#)); do
+            case "$1" in
+                --resolve) resolved=1; shift ;;
+                -o) body_file=$2; shift ;;
+                *token=invalid*) invalid=1 ;;
+                "https://${VLESS_CDN_DOMAIN}/subscribe") source=1 ;;
+            esac
+            shift
+        done
+        if ((source)); then
+            printf 404
+        elif ((invalid)); then
+            attempts=$(( $(<"${invalid_attempts_file}") + 1 ))
+            printf '%s\n' "${attempts}" >"${invalid_attempts_file}"
+            if ((attempts == 1)); then
+                printf 000
+                return 28
+            fi
+            ((resolved == 1)) || return 97
+            printf 403
+        else
+            printf 'vless://test-node' | openssl base64 -A >"${body_file}"
+            printf 200
+        fi
+    }
+    cloudflare_validate_subscription_worker
+    assert_equal "Invalid-token transport failure is retried once" \
+        "2" "$(<"${invalid_attempts_file}")"
 )
 
 # Fresh-install rollback only removes resources recorded as created by that run.
