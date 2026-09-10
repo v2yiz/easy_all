@@ -7,7 +7,10 @@ export XRAY_LOCATION_ASSET="${XRAY_DIR}"
 XRAY_GEODATA_RELEASE_BASE="${XRAY_GEODATA_RELEASE_BASE_OVERRIDE:-https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download}"
 
 xray_geosite_required() {
-    vps_dual_stack_enabled
+    if vps_dual_stack_enabled && native_google_egress_enabled; then
+        return 0
+    fi
+    declare -F warp_geosite_required >/dev/null && warp_geosite_required
 }
 
 xray_geosite_ready() {
@@ -23,20 +26,30 @@ validate_xray_google_assets_in_dir() {
     local config="${RUNTIME_TMP}/xray-google-assets-test.json"
     [[ -x "${XRAY_BIN}" ]] || return 1
     [[ -s "${asset_dir}/geosite.dat" && -s "${asset_dir}/geoip.dat" ]] || return 1
-    jq -n '{
+    write_xray_asset_test_config "${config}"
+    XRAY_LOCATION_ASSET="${asset_dir}" \
+        "${XRAY_BIN}" run -test -config "${config}" >/dev/null 2>&1
+}
+
+write_xray_asset_test_config() {
+    local gemini=false
+    if [[ "${PROTOCOL:-}" == "cloudflare-streamup" && "${WARP_SCOPE:-off}" == "gemini" ]]; then
+        gemini=true
+    fi
+    jq -n --argjson gemini "${gemini}" '{
       log:{loglevel:"none"},
       inbounds:[],
       outbounds:[{protocol:"freedom",tag:"direct"}],
       routing:{
         domainStrategy:"AsIs",
-        rules:[
+        rules: ([
           {type:"field",domain:["geosite:google"],outboundTag:"direct"},
           {type:"field",ip:["geoip:google"],outboundTag:"direct"}
-        ]
+        ] + (if $gemini then [
+          {type:"field",domain:["geosite:google-gemini"],outboundTag:"direct"}
+        ] else [] end))
       }
-    }' >"${config}"
-    XRAY_LOCATION_ASSET="${asset_dir}" \
-        "${XRAY_BIN}" run -test -config "${config}" >/dev/null 2>&1
+    }' >"$1"
 }
 
 download_xray() {
@@ -90,23 +103,12 @@ download_xray() {
         [[ -s "${temp_dir}/xray/geoip.dat" ]] \
             || die "Xray 发布包缺少 Google 固定地址族路由所需的 geoip.dat"
         asset_test_config="${temp_dir}/asset-test.json"
-        jq -n '{
-          log:{loglevel:"none"},
-          inbounds:[],
-          outbounds:[{protocol:"freedom",tag:"direct"}],
-          routing:{
-            domainStrategy:"AsIs",
-            rules:[
-              {type:"field",domain:["geosite:google"],outboundTag:"direct"},
-              {type:"field",ip:["geoip:google"],outboundTag:"direct"}
-            ]
-          }
-        }' >"${asset_test_config}"
+        write_xray_asset_test_config "${asset_test_config}"
         chmod 0755 "${temp_dir}/xray/xray"
         XRAY_LOCATION_ASSET="${temp_dir}/xray" \
             "${temp_dir}/xray/xray" run -test -config "${asset_test_config}" \
             >/dev/null 2>&1 \
-            || die "Xray geosite.dat 缺少可用的 google 分类"
+            || die "Xray 发布资产缺少当前 Google / WARP 路由所需分类"
         install -m 0644 "${temp_dir}/xray/geosite.dat" "${XRAY_DIR}/geosite.dat"
         install -m 0644 "${temp_dir}/xray/geoip.dat" "${XRAY_DIR}/geoip.dat"
     fi
@@ -115,11 +117,25 @@ download_xray() {
 }
 
 ensure_xray_geosite_assets() {
+    local stage asset
     xray_geosite_required || return 0
     validate_xray_google_assets && return 0
-    info "双栈模式缺少有效的 Google GeoSite/GeoIP 资产，正在重新安装校验后的 Xray 发布资产"
-    download_xray
-    validate_xray_google_assets || die "双栈模式无法安装有效的 Google GeoSite/GeoIP 资产"
+    if [[ "${PROTOCOL:-}" != "cloudflare-streamup" ]]; then
+        info "双栈模式缺少有效的 Google GeoSite/GeoIP 资产，正在重新安装校验后的 Xray 发布资产"
+        download_xray
+        validate_xray_google_assets || die "双栈模式无法安装有效的 Google GeoSite/GeoIP 资产"
+        return 0
+    fi
+    info "正在安装当前 Google / WARP 路由所需的 GeoSite/GeoIP 资产"
+    stage=$(make_temp_dir)
+    for asset in geosite.dat geoip.dat; do
+        download_xray_geodata_asset "${asset}" "${stage}/${asset}"
+    done
+    validate_xray_google_assets_in_dir "${stage}" \
+        || die "GeoSite/GeoIP 缺少当前 Google / WARP 路由所需分类"
+    for asset in geosite.dat geoip.dat; do
+        install -m 0644 "${stage}/${asset}" "${XRAY_DIR}/${asset}"
+    done
 }
 
 snapshot_xray_assets() {
@@ -164,8 +180,8 @@ refresh_xray_assets() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
-    if ! vps_dual_stack_enabled; then
-        info "VPS 当前为 IPv4-only，无需更新 Google 双栈路由资产"
+    if ! xray_geosite_required; then
+        info "当前出站策略无需 GeoSite/GeoIP 路由资产"
         release_runtime_write_lock
         return 0
     fi

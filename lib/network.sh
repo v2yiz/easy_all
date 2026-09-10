@@ -128,10 +128,16 @@ validate_google_egress_family() {
     [[ "$1" == "ipv4" || "$1" == "ipv6" ]]
 }
 
+native_google_egress_enabled() {
+    [[ "${PROTOCOL:-}" != "cloudflare-streamup" \
+        || ( "${WARP_SCOPE:-off}" != "google" && "${WARP_SCOPE:-off}" != "all" ) ]]
+}
+
 validate_google_egress_policy_state() {
     validate_google_egress_mode "${GOOGLE_EGRESS_MODE:-}" \
         && validate_google_egress_family "${GOOGLE_EGRESS_RESOLVED:-}" \
         || return 1
+    native_google_egress_enabled || return 0
     if ! vps_dual_stack_enabled; then
         [[ "${GOOGLE_EGRESS_MODE}" != "ipv6" \
             && "${GOOGLE_EGRESS_RESOLVED}" == "ipv4" ]]
@@ -147,6 +153,12 @@ normalize_google_egress_policy() {
     GOOGLE_EGRESS_MODE=${GOOGLE_EGRESS_MODE:-${DEFAULT_GOOGLE_EGRESS_MODE}}
     validate_google_egress_mode "${GOOGLE_EGRESS_MODE}" \
         || die "GOOGLE_EGRESS_MODE 必须是 auto、ipv4 或 ipv6"
+    if ! native_google_egress_enabled; then
+        GOOGLE_EGRESS_RESOLVED=${GOOGLE_EGRESS_RESOLVED:-ipv4}
+        validate_google_egress_family "${GOOGLE_EGRESS_RESOLVED}" \
+            || die "保存的 Google 原生出站地址族无效"
+        return 0
+    fi
     if ! vps_dual_stack_enabled; then
         [[ "${GOOGLE_EGRESS_MODE}" != "ipv6" ]] \
             || die "Google IPv6 出站需要 VPS 具备可用公网 IPv6"
@@ -195,6 +207,10 @@ refresh_google_egress_selection() {
     local ipv4_score="" ipv6_score="" selected
     local ipv4_success=0 ipv6_success=0 ipv4_time=0 ipv6_time=0
     normalize_google_egress_policy
+    if ! native_google_egress_enabled; then
+        info "Google 全部经 WARP 出站；跳过 VPS 原生 Google 探测"
+        return 0
+    fi
     if ! vps_dual_stack_enabled; then
         GOOGLE_EGRESS_RESOLVED="ipv4"
         info "Google 出站: IPv4（VPS 当前没有可用公网 IPv6）"
@@ -246,6 +262,10 @@ refresh_google_egress_selection() {
 
 choose_google_egress_mode() {
     local choice default_choice=1
+    if ! native_google_egress_enabled; then
+        refresh_google_egress_selection
+        return
+    fi
     GOOGLE_EGRESS_MODE=${GOOGLE_EGRESS_MODE:-${DEFAULT_GOOGLE_EGRESS_MODE}}
     case "${GOOGLE_EGRESS_MODE}" in
     ipv4) default_choice=2 ;;
@@ -270,6 +290,10 @@ choose_google_egress_mode() {
 
 google_egress_status() {
     normalize_google_egress_policy
+    if ! native_google_egress_enabled; then
+        printf 'WARP（原生 Google 策略已停用，未执行原生探测）'
+        return 0
+    fi
     printf '%s（模式 %s）' "${GOOGLE_EGRESS_RESOLVED}" "${GOOGLE_EGRESS_MODE}"
 }
 
@@ -290,14 +314,14 @@ xray_direct_outbounds_json() {
     if [[ "${google_family}" == "ipv6" ]]; then
         google_strategy="ForceIPv6"
         google_domain_strategy="UseIPv6"
-        google_source=${VPS_PUBLIC_IPV6}
+        google_source=${VPS_PUBLIC_IPV6:-}
     else
         google_strategy="ForceIPv4"
         google_domain_strategy="UseIPv4"
         google_source="0.0.0.0"
     fi
     jq -cn --arg strategy "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" \
-        --argjson dual "$([[ "${VPS_IP_FAMILY:-ipv4}" == "dual" ]] \
+        --argjson dual "$(vps_dual_stack_enabled && native_google_egress_enabled \
             && printf true || printf false)" \
         --arg google_tag "${google_tag}" \
         --arg google_strategy "${google_strategy}" \
@@ -331,7 +355,7 @@ xray_direct_routing_json() {
     google_tag="direct-google-${GOOGLE_EGRESS_RESOLVED}"
     private_ranges=$(xray_private_ranges_json)
     jq -cn --argjson private "${private_ranges}" \
-        --argjson dual "$([[ "${VPS_IP_FAMILY:-ipv4}" == "dual" ]] \
+        --argjson dual "$(vps_dual_stack_enabled && native_google_egress_enabled \
             && printf true || printf false)" \
         --arg google_tag "${google_tag}" '{
       domainStrategy:"IPOnDemand",
@@ -360,9 +384,17 @@ xray_direct_routing_json() {
 }
 
 xray_xhttp_outbounds_json() {
+    if declare -F warp_enabled >/dev/null && warp_enabled; then
+        warp_xhttp_outbounds_json
+        return
+    fi
     xray_direct_outbounds_json
 }
 
 xray_xhttp_routing_json() {
+    if declare -F warp_enabled >/dev/null && warp_enabled; then
+        warp_xhttp_routing_json
+        return
+    fi
     xray_direct_routing_json
 }
