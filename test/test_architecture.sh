@@ -141,6 +141,26 @@ grep -Eq '^uri_encode\(\)' "${RUNTIME_CORE}" \
 ! grep -Eq '^(main|usage)\(\)' "${REALITY_PROFILE}" "${CLOUDFLARE_PROFILE}" \
     || fail "profiles must not own command dispatch or usage tables"
 
+# The declared protocol hooks may differ in protocol details, but these two carry
+# no protocol-specific reason to diverge and silently drifted once already.
+state_source_body=$(sed -n '/^source_state_file()/,/^}/p' "${XHTTP_RUNTIME}")
+[[ "${state_source_body}" == *'unset STATE_VERSION'* ]] \
+    || fail "state loading must not reuse a stale STATE_VERSION"
+subscription_acceptance_body=$(sed -n '/^validate_subscription_runtime()/,/^}/p' "${XHTTP_RUNTIME}")
+[[ "${subscription_acceptance_body}" == *'openssl base64 -d -A'* \
+    && "${subscription_acceptance_body}" == *"type=xhttp"* ]] \
+    || fail "CDN subscription acceptance must decode and validate the base64 payload"
+reality_acceptance_body=$(sed -n '/^validate_subscription_runtime()/,/^}/p' "${REALITY_PROFILE}")
+[[ "${reality_acceptance_body}" == *'openssl base64 -d -A'* \
+    && "${reality_acceptance_body}" == *'security=reality'* ]] \
+    || fail "Reality subscription acceptance must decode and validate the base64 payload"
+# `... | grep -q` exits as soon as it matches, and under `set -o pipefail` the upstream writer's
+# SIGPIPE turns the whole pipeline into a failure. Both hooks decode into a variable instead.
+for acceptance_body in "${subscription_acceptance_body}" "${reality_acceptance_body}"; do
+    ! grep -Eq '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q' <<<"${acceptance_body}" \
+        || fail "subscription acceptance must not pipe into grep -q under pipefail"
+done
+
 grep -Eq '^xhttp_render_xray_config\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare Profile does not implement the XHTTP render hook"
 ! grep -Eq '^write_subscriptions\(\)' "${CLOUDFLARE_PROFILE}" \

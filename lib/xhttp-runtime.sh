@@ -86,6 +86,9 @@ prompt_secret() {
 
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 状态文件不存在：${STATE_FILE}"
+    # The state file must declare its own version; clear any value left behind by
+    # an earlier `source` so a missing STATE_VERSION fails loudly instead of passing.
+    unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
@@ -315,7 +318,7 @@ validate_protocol_runtime() {
 }
 
 validate_subscription_runtime() {
-    local token base64_response mihomo_response marker
+    local token base64_response base64_decoded mihomo_response marker
     XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
@@ -336,6 +339,9 @@ validate_subscription_runtime() {
         --get --data-urlencode "token=${token}" \
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
+    base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
+        || die "通用订阅响应不是有效的 Base64"
+    grep -Fq 'type=xhttp' <<<"${base64_decoded}" || die "通用订阅响应缺少 XHTTP 节点"
     mihomo_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
         --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \

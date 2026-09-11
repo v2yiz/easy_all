@@ -1229,7 +1229,7 @@ EOF
 }
 
 validate_subscription_runtime() {
-    local token base64_response mihomo_response
+    local token base64_response base64_decoded mihomo_response
     validate_subscription_token_rejection \
         "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe" \
@@ -1246,8 +1246,10 @@ validate_subscription_runtime() {
         --get --data-urlencode "token=${token}" \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "Base64 订阅本机验收失败"
-    printf '%s' "${base64_response}" | openssl base64 -d -A \
-        | grep -Fq 'security=reality' || die "Base64 订阅响应无效"
+    [[ -n "${base64_response}" ]] || die "Base64 订阅响应为空"
+    base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
+        || die "Base64 订阅响应不是有效的 Base64"
+    grep -Fq 'security=reality' <<<"${base64_decoded}" || die "Base64 订阅响应缺少 Reality 节点"
     mihomo_response=$(curl -fsS --proto '=https' \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
         --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
