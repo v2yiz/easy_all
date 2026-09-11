@@ -16,4 +16,4 @@ worker.js
 /XFLASH
 
 /worker-src/config.local.json
-/.worker-build-*/
+**/.worker-build-*/

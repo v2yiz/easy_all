@@ -19,29 +19,9 @@ readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/stat
 readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
 readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
-readonly EASY_ALL_DEFAULT_BRANCH="dev"
+readonly EASY_ALL_DEFAULT_BRANCH="main"
 readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
-readonly -a EASY_ALL_RUNTIME_MODULES=(
-    "profiles/reality.sh"
-    "profiles/xhttp-cloudflare-streamup.sh"
-    "lib/xhttp-runtime.sh"
-    "lib/globalping-cdn.sh"
-    "lib/cloudflare-ip-pool.sh"
-    "lib/quota.sh"
-    "lib/platform.sh"
-    "lib/profile-common.sh"
-    "lib/network.sh"
-    "lib/mihomo-template.sh"
-    "lib/firewall.sh"
-    "lib/xray-core.sh"
-    "lib/scheduled-maintenance.sh"
-    "lib/subscription-auth.sh"
-    "lib/tcp-tuning.sh"
-)
-readonly -a EASY_ALL_RUNTIME_ASSETS=(
-    "worker-src/index.js"
-    "scripts/build-worker.mjs"
-)
+readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
 readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
@@ -58,15 +38,30 @@ launcher_read_bilingual() {
     printf -v "${variable}" '%s' "${input}"
 }
 
-runtime_tree_is_complete() {
+runtime_manifest_paths() {
     local root=$1 relative_path
+    local manifest="${root}/${EASY_ALL_RUNTIME_MANIFEST}"
+    [[ -f "${manifest}" ]] || return 1
+    while IFS= read -r relative_path || [[ -n "${relative_path}" ]]; do
+        relative_path=${relative_path%$'\r'}
+        [[ -n "${relative_path}" && "${relative_path}" != \#* ]] || continue
+        [[ "${relative_path}" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+        case "/${relative_path}/" in
+        *"/../"* | *"/./"* | *"//"*) return 1 ;;
+        esac
+        [[ "${relative_path}" != /* ]] || return 1
+        printf '%s\n' "${relative_path}"
+    done <"${manifest}"
+}
+
+runtime_tree_is_complete() {
+    local root=$1 relative_path paths
     [[ -f "${root}/easy_all" ]] || return 1
-    for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+    paths=$(runtime_manifest_paths "${root}") || return 1
+    [[ -n "${paths}" ]] || return 1
+    while IFS= read -r relative_path; do
         [[ -f "${root}/${relative_path}" ]] || return 1
-    done
-    for relative_path in "${EASY_ALL_RUNTIME_ASSETS[@]}"; do
-        [[ -f "${root}/${relative_path}" ]] || return 1
-    done
+    done <<<"${paths}"
 }
 
 launcher_usage() {
@@ -76,7 +71,8 @@ launcher_usage() {
   install          交互选择 Reality 或 Cloudflare CDN
   show             显示当前节点
   subscription     显示节点与订阅信息
-  self-update      只更新 easy_all 项目代码
+  self-update [--dev|--branch <分支>]
+                   更新项目代码；默认 main，--dev 使用 dev
   apply            将已安装代码应用到本机配置
   apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅输出与用户/配额
@@ -118,7 +114,7 @@ easy_all install
    ├─ 固定输出 6 个 IPv4，完全无域名或 IPv6 兜底；内置单一 AUTO 组
    ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
    ├─ Worker 名称可指定（默认 easyall），订阅域名必须与节点域名不同
-   ├─ 可选输入不含 vpsSubUrl 的 config.local.json；本机注入源 URL 后构建 Worker
+   ├─ 可选输入不含 vpsSubUrl 的 Worker 聚合 JSON；本机注入源 URL 后构建 Worker
    ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
@@ -197,30 +193,27 @@ stage_preserved_runtime_files() {
 
 unified_register_easy_all_command() {
     local source_root=${EASY_ALL_ROOT} destination="${EASY_ALL_INSTALL_DIR}/easy_all"
-    local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$" relative_path
+    local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$" relative_path paths
     local -a syntax_files
     require_root
     runtime_tree_is_complete "${source_root}" \
         || die "easy_all 运行时文件不完整：${source_root}"
+    paths=$(runtime_manifest_paths "${source_root}") \
+        || die "easy_all 运行时清单无效：${source_root}/${EASY_ALL_RUNTIME_MANIFEST}"
 
     install -d -m 0755 "$(dirname "${EASY_ALL_INSTALL_DIR}")" "$(dirname "${EASY_ALL_COMMAND_PATH}")"
     stage=$(mktemp -d "${EASY_ALL_INSTALL_DIR}.stage.XXXXXX")
-    install -d -m 0755 "${stage}/lib" "${stage}/profiles" "${stage}/templates" \
-        "${stage}/worker-src" "${stage}/scripts"
     install -m 0755 "${source_root}/easy_all" "${stage}/easy_all"
+    install -m 0644 "${source_root}/${EASY_ALL_RUNTIME_MANIFEST}" \
+        "${stage}/${EASY_ALL_RUNTIME_MANIFEST}"
     syntax_files=("${stage}/easy_all")
-    for relative_path in "${EASY_ALL_RUNTIME_MODULES[@]}"; do
+    while IFS= read -r relative_path; do
+        install -d -m 0755 "${stage}/$(dirname -- "${relative_path}")"
         install -m 0644 "${source_root}/${relative_path}" \
             "${stage}/${relative_path}"
-        syntax_files+=("${stage}/${relative_path}")
-    done
-    for relative_path in "${EASY_ALL_RUNTIME_ASSETS[@]}"; do
-        install -m 0644 "${source_root}/${relative_path}" \
-            "${stage}/${relative_path}"
-    done
-    [[ ! -f "${source_root}/templates/mihomo.yaml" ]] \
-        || install -m 0644 "${source_root}/templates/mihomo.yaml" \
-            "${stage}/templates/mihomo.yaml"
+        [[ "${relative_path}" != *.sh ]] \
+            || syntax_files+=("${stage}/${relative_path}")
+    done <<<"${paths}"
     stage_preserved_runtime_files "${EASY_ALL_INSTALL_DIR}" "${stage}"
     bash -n "${syntax_files[@]}" \
         || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
@@ -238,10 +231,25 @@ unified_register_easy_all_command() {
 }
 
 unified_self_update() {
-    local target_branch=${1:-${EASY_ALL_BRANCH}}
-    local temp_dir repo_dir
+    local target_branch="${EASY_ALL_BRANCH}" temp_dir repo_dir
     require_root
     command -v git >/dev/null 2>&1 || die "缺少 git；请先安装 git 与 ca-certificates"
+    case "$#" in
+    0) ;;
+    1)
+        [[ "$1" == "--dev" ]] \
+            || die "用法：easy_all self-update [--dev|--branch <分支>]"
+        target_branch="dev"
+        ;;
+    2)
+        [[ "$1" == "--branch" && -n "$2" ]] \
+            || die "用法：easy_all self-update [--dev|--branch <分支>]"
+        target_branch=$2
+        ;;
+    *) die "用法：easy_all self-update [--dev|--branch <分支>]" ;;
+    esac
+    git check-ref-format --branch "${target_branch}" >/dev/null 2>&1 \
+        || die "无效的 Git 分支：${target_branch}"
 
     temp_dir=$(make_temp_dir)
     repo_dir="${temp_dir}/easy_all"
@@ -249,14 +257,14 @@ unified_self_update() {
         || die "克隆 easy_all 仓库失败"
     [[ -f "${repo_dir}/easy_all" ]] \
         || die "下载的 easy_all 项目缺少入口：easy_all"
-    [[ -f "${repo_dir}/templates/mihomo.yaml" ]] \
-        || die "下载的 easy_all 项目缺少模板：templates/mihomo.yaml"
+    [[ -f "${repo_dir}/${EASY_ALL_RUNTIME_MANIFEST}" ]] \
+        || die "下载的 easy_all 项目缺少运行时清单：${EASY_ALL_RUNTIME_MANIFEST}"
     bash -n "${repo_dir}/easy_all" \
         || die "下载的 easy_all 入口语法校验失败"
 
-    # The target release owns its manifest; removed modules must not be required
-    # by the installed launcher. Registration validates and stages the new tree.
     chmod 0700 "${repo_dir}/easy_all"
+    "${repo_dir}/easy_all" verify-release \
+        || die "下载的 easy_all 项目未通过目标版本完整性校验"
     "${repo_dir}/easy_all" register-command
     rm -rf -- "${temp_dir}"
     success "easy_all 项目代码已更新；未修改 Xray、Nginx、订阅或云端 CDN 资源"
@@ -320,8 +328,8 @@ dispatch_profile_command() {
     self-update) unified_self_update "$@" ;;
     register-command) register_easy_all_command ;;
     uninstall) uninstall_all "$@" ;;
-    help | -h | --help) usage ;;
-    *) usage; return 1 ;;
+    help | -h | --help) launcher_usage ;;
+    *) launcher_usage; return 1 ;;
     esac
 }
 
@@ -331,6 +339,12 @@ main() {
 
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
         launcher_usage
+        return
+    fi
+    if [[ "${command}" == "verify-release" ]]; then
+        (($# == 0)) || launcher_die "verify-release 不接受参数"
+        runtime_tree_is_complete "${EASY_ALL_ROOT}" \
+            || launcher_die "easy_all 运行时文件不完整：${EASY_ALL_ROOT}"
         return
     fi
 

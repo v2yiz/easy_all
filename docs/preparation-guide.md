@@ -217,7 +217,7 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 - 非配额模式若持续无法通过 Worker 动态源验收，安装器保留当前部署，并在执行用户的主目录输出
   权限为 `0600` 的 `worker.js` 供手工部署；该 Worker 仍要求每次请求成功读取 VPS 动态源，失败
   时返回 `502`。配额模式仍失败回滚，不生成内嵌 Token 的恢复版本。
-- 可选输入一份不含 `vpsSubUrl` 的 `config.local.json`；字段参考
+- 可选输入一份不含 `vpsSubUrl` 的 Worker 聚合 JSON；字段参考
   [`worker-src/config.example.json`](../worker-src/config.example.json)。安装器保留其中的
   `nodes`、`externalSubUrl`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的
   用户 Token。安装器再注入本机生成的 `vpsSubUrl` 与私有源配置。交互先完成用户 Token/配额设置，

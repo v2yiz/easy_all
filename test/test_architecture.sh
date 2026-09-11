@@ -6,9 +6,12 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
 XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
+RUNTIME_CORE="${ROOT_DIR}/lib/runtime-core.sh"
 CLOUDFLARE_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
 BOOTSTRAP_CONTENT=$(<"${ROOT_DIR}/bootstrap.sh")
+RUNTIME_MANIFEST="${ROOT_DIR}/runtime.manifest"
+RUNTIME_MANIFEST_CONTENT=$(grep -Ev '^[[:space:]]*(#|$)' "${RUNTIME_MANIFEST}")
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -16,7 +19,7 @@ fail() {
 }
 
 module_functions() {
-    sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
+    sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
 }
 
 for script in "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
@@ -25,16 +28,11 @@ for script in "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     bash -n "${script}"
 done
 
-for required_path in \
-    profiles/reality.sh \
-    profiles/xhttp-cloudflare-streamup.sh \
-    lib/xhttp-runtime.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh lib/quota.sh \
-    lib/platform.sh lib/profile-common.sh lib/network.sh \
-    lib/mihomo-template.sh lib/firewall.sh lib/xray-core.sh \
-    lib/scheduled-maintenance.sh lib/subscription-auth.sh lib/tcp-tuning.sh; do
+[[ -f "${RUNTIME_MANIFEST}" ]] || fail "runtime manifest is missing"
+while IFS= read -r required_path; do
     [[ -f "${ROOT_DIR}/${required_path}" ]] \
         || fail "required runtime path is missing: ${required_path}"
-done
+done <<<"${RUNTIME_MANIFEST_CONTENT}"
 shared_modules=(
     quota.sh
     platform.sh
@@ -48,23 +46,22 @@ shared_modules=(
     tcp-tuning.sh
 )
 
-[[ "${LAUNCHER_CONTENT}" == *'"lib/globalping-cdn.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'lib/globalping-cdn.sh'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"'* ]] \
+[[ "${RUNTIME_MANIFEST_CONTENT}" == *'lib/globalping-cdn.sh'* \
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_LIB_DIR}/globalping-cdn.sh"'* ]] \
     || fail "Globalping CDN module is missing from the Cloudflare profile"
-[[ "${LAUNCHER_CONTENT}" == *'"lib/cloudflare-ip-pool.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"'* ]] \
+[[ "${RUNTIME_MANIFEST_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"'* ]] \
     || fail "Cloudflare official IP pool must remain scoped to Cloudflare streamup mode"
-[[ "${LAUNCHER_CONTENT}" == *'"profiles/xhttp-cloudflare-streamup.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'profiles/xhttp-cloudflare-streamup.sh'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xray-core.sh"'* ]] \
-    || fail "Cloudflare XHTTP Stream-up profile must reuse runtime and Xray core modules"
-[[ "${LAUNCHER_CONTENT}" == *'"lib/xhttp-runtime.sh"'* \
-    && "${BOOTSTRAP_CONTENT}" == *'lib/xhttp-runtime.sh'* \
-    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"'* ]] \
+[[ "${RUNTIME_MANIFEST_CONTENT}" == *'profiles/xhttp-cloudflare-streamup.sh'* \
+    && "${RUNTIME_MANIFEST_CONTENT}" == *'lib/xhttp-runtime.sh'* \
+    && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_LIB_DIR}/xhttp-runtime.sh"'* ]] \
     || fail "shared XHTTP runtime is missing from Profile packaging"
+[[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/runtime-core.sh"'* \
+    && "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/runtime-core.sh"'* ]] \
+    || fail "all profiles must reuse the protocol-neutral runtime core"
+[[ "${BOOTSTRAP_CONTENT}" == *'"${REPO_DIR}/easy_all" verify-release'* \
+    && "${BOOTSTRAP_CONTENT}" != *'lib/xhttp-runtime.sh'* ]] \
+    || fail "bootstrap must delegate target runtime validation to the target release"
 
 for retired_identifier in \
     XHTTP_PROFILE_FILE ENTRY_SCRIPT_FILE EASY_ALL_ENTRY_SCRIPT \
@@ -93,17 +90,13 @@ for retired_acme_identifier in \
         || fail "retired ACME identifier remains: ${retired_acme_identifier}"
 done
 for module in "${shared_modules[@]}"; do
-    [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
-        || fail "Reality does not source shared module ${module}"
-    [[ "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/'"${module}"'"'* ]] \
-        || fail "XHTTP runtime does not source shared module ${module}"
-    [[ "${LAUNCHER_CONTENT}" == *'"lib/'"${module}"'"'* ]] \
-        || fail "runtime installer does not register ${module}"
-    [[ "${BOOTSTRAP_CONTENT}" == *'lib/'"${module}"* ]] \
-        || fail "bootstrap does not validate ${module}"
+    [[ "$(<"${RUNTIME_CORE}")" == *'source "${RUNTIME_LIB_DIR}/'"${module}"'"'* ]] \
+        || fail "runtime core does not source shared module ${module}"
+    grep -Fxq "lib/${module}" "${RUNTIME_MANIFEST}" \
+        || fail "runtime manifest does not install ${module}"
 done
 
-for module in platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
+for module in log.sh runtime-core.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
     while read -r function_name; do
         [[ -n "${function_name}" ]] || continue
         ! grep -Eq "^${function_name}\\(\\)" "${REALITY_PROFILE}" \
@@ -114,6 +107,39 @@ for module in platform.sh profile-common.sh network.sh mihomo-template.sh firewa
             || fail "Cloudflare Profile redefines shared function ${function_name}"
     done < <(module_functions "${ROOT_DIR}/lib/${module}")
 done
+
+protocol_hook_names=(
+    check_install_conflicts configure_ufw install_packages rebuild_traffic_runtime
+    restore_preinstall_firewall rollback_subscription_update show_subscription
+    snapshot_fresh_install snapshot_subscription_update snapshot_ufw_state
+    source_state_file validate_protocol_runtime validate_subscription_runtime
+    write_xray_config
+)
+while IFS= read -r function_name; do
+    allowed_hook=0
+    for hook_name in "${protocol_hook_names[@]}"; do
+        [[ "${function_name}" != "${hook_name}" ]] || allowed_hook=1
+    done
+    [[ "${allowed_hook}" == "1" ]] \
+        || fail "Reality duplicates non-hook XHTTP runtime function ${function_name}"
+done < <(
+    comm -12 \
+        <(module_functions "${REALITY_PROFILE}" | sort -u) \
+        <(module_functions "${XHTTP_RUNTIME}" | sort -u)
+)
+
+grep -Eq '^update_current_core\(\)' "${RUNTIME_CORE}" \
+    && grep -Fq 'xray-version.missing' "${RUNTIME_CORE}" \
+    && ! grep -Eq '^update_current_core\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" \
+    || fail "Xray core update and complete rollback must be owned by runtime-core"
+grep -Eq '^cleanup\(\)' "${RUNTIME_CORE}" \
+    && ! grep -Eq '^cleanup\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" \
+    || fail "runtime cleanup must have one shared implementation"
+grep -Eq '^uri_encode\(\)' "${RUNTIME_CORE}" \
+    && ! grep -Eq '^uri_encode\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" \
+    || fail "runtime URI encoding must have one shared implementation"
+! grep -Eq '^(main|usage)\(\)' "${REALITY_PROFILE}" "${CLOUDFLARE_PROFILE}" \
+    || fail "profiles must not own command dispatch or usage tables"
 
 grep -Eq '^xhttp_render_xray_config\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare Profile does not implement the XHTTP render hook"

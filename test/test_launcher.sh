@@ -42,27 +42,30 @@ cron_path=$(
     || fail "launcher must restore administrative command paths for cron"
 
 launcher_content=$(<"${ROOT_DIR}/easy_all")
-[[ "${launcher_content}" == *'self-update      只更新 easy_all 项目代码'* \
+manifest_content=$(<"${ROOT_DIR}/runtime.manifest")
+[[ "${launcher_content}" == *'self-update [--dev|--branch <分支>]'* \
     && "${launcher_content}" == *'git clone --depth 1 --branch "${target_branch}"'* \
+    && "${launcher_content}" == *'"${repo_dir}/easy_all" verify-release'* \
     && "${launcher_content}" == *'"${repo_dir}/easy_all" register-command'* ]] \
     || fail "self-update must download and register the complete project"
 [[ "${launcher_content}" != *'cp -a "${EASY_ALL_INSTALL_DIR}/." "${stage}/"'* ]] \
     || fail "runtime registration must not retain files removed from the manifest"
-[[ "${launcher_content}" == *'"profiles/reality.sh"'* \
-    && "${launcher_content}" == *'"profiles/xhttp-cloudflare-streamup.sh"'* \
-    && "${launcher_content}" == *'"lib/globalping-cdn.sh"'* \
-    && "${launcher_content}" == *'"worker-src/index.js"'* \
-    && "${launcher_content}" == *'"scripts/build-worker.mjs"'* \
-    && "${launcher_content}" == *'templates/mihomo.yaml'* ]] \
+[[ "${manifest_content}" == *'profiles/reality.sh'* \
+    && "${manifest_content}" == *'profiles/xhttp-cloudflare-streamup.sh'* \
+    && "${manifest_content}" == *'lib/runtime-core.sh'* \
+    && "${manifest_content}" == *'lib/globalping-cdn.sh'* \
+    && "${manifest_content}" == *'worker-src/index.js'* \
+    && "${manifest_content}" == *'scripts/build-worker.mjs'* \
+    && "${manifest_content}" == *'templates/mihomo.yaml'* ]] \
     || fail "runtime registration must use the organized profile and template paths"
-for migration_tombstone in profiles/xhttp-gcore.sh lib/gcore-ip-pool.sh; do
-    [[ -f "${ROOT_DIR}/${migration_tombstone}" ]] \
-        || fail "legacy self-update migration tombstone is missing: ${migration_tombstone}"
-    [[ "${launcher_content}" != *"${migration_tombstone}"* ]] \
-        || fail "migration tombstone must not be installed at runtime: ${migration_tombstone}"
-    ! grep -Eq '^[A-Za-z_][A-Za-z0-9_]*\(\)' "${ROOT_DIR}/${migration_tombstone}" \
-        || fail "migration tombstone must not contain executable functions: ${migration_tombstone}"
-done
+runtime_tree_is_complete "${ROOT_DIR}" \
+    || fail "repository runtime must satisfy its manifest"
+invalid_manifest_root="${TMP_DIR}/invalid-manifest"
+mkdir -p "${invalid_manifest_root}"
+printf '../escape.sh\n' >"${invalid_manifest_root}/runtime.manifest"
+if runtime_manifest_paths "${invalid_manifest_root}" >/dev/null 2>&1; then
+    fail "runtime manifest must reject parent-directory traversal"
+fi
 preserve_source="${TMP_DIR}/preserve-source"
 preserve_stage="${TMP_DIR}/preserve-stage"
 mkdir -p "${preserve_source}" "${preserve_stage}"
@@ -81,23 +84,39 @@ export SELF_UPDATE_INVOCATION_FILE="${self_update_invocation}"
 export SELF_UPDATE_REPO_PATH_FILE="${self_update_repo_path}"
 export SELF_UPDATE_BRANCH_FILE="${self_update_branch}"
 git() {
+    if [[ "${1:-}" == "check-ref-format" ]]; then
+        [[ "${3:-}" != *..* && -n "${3:-}" ]]
+        return
+    fi
     [[ "${1:-}" == "clone" ]] || return 1
     local destination="${!#}" relative_path
     printf '%s\n' "${destination}" >"${SELF_UPDATE_REPO_PATH_FILE}"
     printf '%s\n' "$5" >"${SELF_UPDATE_BRANCH_FILE}"
     mkdir -p "${destination}"
-    for relative_path in easy_all templates/mihomo.yaml \
-        "${EASY_ALL_RUNTIME_MODULES[@]}" "${EASY_ALL_RUNTIME_ASSETS[@]}"; do
+    cp "${ROOT_DIR}/runtime.manifest" "${destination}/runtime.manifest"
+    while IFS= read -r relative_path; do
+        [[ -n "${relative_path}" && "${relative_path}" != \#* ]] || continue
         mkdir -p "${destination}/$(dirname -- "${relative_path}")"
         cp "${ROOT_DIR}/${relative_path}" "${destination}/${relative_path}"
-    done
+    done <"${ROOT_DIR}/runtime.manifest"
+    printf '%s\n' 'lib/target-only.sh' >>"${destination}/runtime.manifest"
     if [[ "${SELF_UPDATE_OMIT_TARGET_MODULE:-0}" != "1" ]]; then
         printf '# target release module\n' >"${destination}/lib/target-only.sh"
     fi
     printf '%s\n' '#!/usr/bin/env bash' \
         'set -e' \
-        '[[ -f "$(dirname -- "$0")/lib/target-only.sh" ]] || { printf "missing target runtime module\n" >&2; exit 1; }' \
-        'printf "%s\\n" "$*" >"${SELF_UPDATE_INVOCATION_FILE}"' \
+        'root=$(cd -- "$(dirname -- "$0")" && pwd)' \
+        'case "${1:-}" in' \
+        'verify-release)' \
+        '  [[ -f "${root}/lib/target-only.sh" ]] || { printf "missing target runtime module\n" >&2; exit 1; }' \
+        '  while IFS= read -r path; do' \
+        '    [[ -n "${path}" && "${path}" != \#* ]] || continue' \
+        '    [[ -f "${root}/${path}" ]] || { printf "missing manifest path: %s\n" "${path}" >&2; exit 1; }' \
+        '  done <"${root}/runtime.manifest"' \
+        '  ;;' \
+        'register-command) printf "%s\\n" "$*" >"${SELF_UPDATE_INVOCATION_FILE}" ;;' \
+        '*) exit 1 ;;' \
+        'esac' \
         >"${destination}/easy_all"
     chmod 0700 "${destination}/easy_all"
     if [[ -n "${SELF_UPDATE_MISSING_PATH:-}" ]]; then
@@ -114,15 +133,22 @@ success() { :; }
 unified_self_update
 assert_equal "self-update invokes register-command in the downloaded tree" \
     "register-command" "$(<"${self_update_invocation}")"
-assert_equal "self-update defaults to dev branch" \
-    "dev" "$(<"${self_update_branch}")"
+assert_equal "self-update defaults to main branch" \
+    "main" "$(<"${self_update_branch}")"
 self_update_repo=$(<"${self_update_repo_path}")
 [[ ! -e "${self_update_repo}" ]] \
     || fail "self-update must remove its temporary clone after registration"
 
-unified_self_update "custom-feat"
-assert_equal "self-update respects custom branch argument" \
+unified_self_update --dev
+assert_equal "self-update --dev selects dev" \
+    "dev" "$(<"${self_update_branch}")"
+unified_self_update --branch "custom-feat"
+assert_equal "self-update respects --branch" \
     "custom-feat" "$(<"${self_update_branch}")"
+assert_failure_contains "self-update rejects unknown options" \
+    "用法：easy_all self-update" unified_self_update --unknown
+assert_failure_contains "self-update rejects invalid branches" \
+    "无效的 Git 分支" unified_self_update --branch "bad..branch"
 
 runtime_validator=$(declare -f runtime_tree_is_complete)
 runtime_tree_is_complete() { fail "installed release still requires a removed module"; }
@@ -130,16 +156,6 @@ unified_self_update
 assert_equal "self-update delegates manifest validation to the target release" \
     "register-command" "$(<"${self_update_invocation}")"
 eval "${runtime_validator}"
-
-legacy_runtime_tree_is_complete() {
-    local root=$1 relative_path
-    for relative_path in easy_all templates/mihomo.yaml \
-        profiles/xhttp-gcore.sh lib/gcore-ip-pool.sh; do
-        [[ -f "${root}/${relative_path}" ]] || return 1
-    done
-}
-assert_equal "legacy updater accepts the migration tombstones" \
-    "yes" "$(legacy_runtime_tree_is_complete "${ROOT_DIR}" && printf 'yes')"
 
 rm -f -- "${self_update_invocation}"
 export -f git
@@ -157,11 +173,15 @@ assert_failure_contains "target release rejects its own missing module" \
 [[ ! -e "${self_update_invocation}" ]] \
     || fail "incomplete target runtime must not be registered"
 
-for missing_path in easy_all templates/mihomo.yaml; do
-    SELF_UPDATE_MISSING_PATH="${missing_path}"
-    assert_failure_contains "self-update identifies missing ${missing_path}" \
-        "下载的 easy_all 项目缺少" unified_self_update
-done
+SELF_UPDATE_MISSING_PATH="easy_all"
+assert_failure_contains "self-update identifies missing easy_all" \
+    "下载的 easy_all 项目缺少" unified_self_update
+SELF_UPDATE_MISSING_PATH="runtime.manifest"
+assert_failure_contains "self-update identifies missing runtime manifest" \
+    "下载的 easy_all 项目缺少运行时清单" unified_self_update
+SELF_UPDATE_MISSING_PATH="templates/mihomo.yaml"
+assert_failure_contains "self-update identifies missing manifest path" \
+    "missing manifest path" unified_self_update
 unset SELF_UPDATE_MISSING_PATH
 SELF_UPDATE_INVALID_LAUNCHER=1
 assert_failure_contains "self-update rejects invalid launcher syntax" \

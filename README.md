@@ -92,7 +92,8 @@ sudo easy_all subscription
 | `easy_all status` | 查看内核、服务、端口和订阅状态 |
 | `easy_all show` | 显示 VLESS 链接和 Mihomo 节点 |
 | `easy_all subscription` | 显示每个用户的订阅地址 |
-| `easy_all self-update` | 更新项目代码，不修改应用配置 |
+| `easy_all self-update` | 从 `main` 更新项目代码，不修改应用配置 |
+| `easy_all self-update --dev` | 从 `dev` 更新项目代码，用于验证待发布版本 |
 | `easy_all apply` | 重新应用当前配置 |
 | `easy_all update-sub` | 管理订阅、用户和配额 |
 | `easy_all update-core` | 更新 Xray 核心 |

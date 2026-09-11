@@ -6,21 +6,28 @@ Cloudflare XHTTP 模式选择“部署订阅服务”时，安装器会直接通
 在仓库根目录运行：
 
 ```sh
-cp worker-src/config.example.json worker-src/config.local.json
-# 填写 config.local.json 中的实际参数；已有配置时不要覆盖。
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/easy_all"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/easy_all"
+install -d -m 0700 "$config_dir" "$state_dir"
+[[ -e "$config_dir/worker.json" ]] ||
+  install -m 0600 worker-src/config.example.json "$config_dir/worker.json"
+# 填写 "$config_dir/worker.json" 中的实际参数；已有配置时不要覆盖。
 npm run build:worker
 npm run test:worker
 ```
 
-已迁移的环境直接执行 `npm run build:worker`，无需复制示例。
+旧版环境若仍使用 `worker-src/config.local.json`，先将它以 `0600` 权限迁移为
+`$config_dir/worker.json`；确认新路径构建成功后再删除仓库内旧文件。
 Node.js 18 或更新版本即可，无需安装 npm 依赖。
 
-- `config.local.json`：用户 Token、额外 Reality 节点、VPS 私有订阅源、外部订阅源和 CDN 兜底节点。独立构建时可填写完整字段；安装器聚合流程要求输入中不含 `vpsSubUrl`，再由本机自动注入。Reality 端口继续按北京时间每三小时轮换；所有节点统一输出 `ipVersion: ipv4`。
+- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点、VPS 私有订阅源、外部订阅源和 CDN 兜底节点。独立构建时可填写完整字段；安装器聚合流程要求输入中不含 `vpsSubUrl`，再由本机自动注入。Reality 端口继续按北京时间每三小时轮换；所有节点统一输出 `ipVersion: ipv4`。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。自定义模式 2 模板会与默认 Worker 配置不同。
-- `worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
+- `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
 
-本地配置和生成产物均被 Git 忽略，文件权限为 0600。构建先校验配置和产物语法，再原子替换旧产物；失败保留原文件。构建不会部署，也不清理 Git 历史。
+配置和生成产物默认位于仓库外，目录权限为 0700、文件权限为 0600。可通过
+`EASY_ALL_WORKER_CONFIG_PATH` 和 `EASY_ALL_WORKER_OUTPUT_PATH` 显式覆盖路径。构建先校验配置和
+产物语法，再原子替换旧产物；失败保留原文件。构建不会部署，也不清理 Git 历史。
 
 Worker 保留 `/subscribe?token=...`，`flag=clash` 返回完整配置，`flag=base64` 返回节点 URI 订阅；无 flag 时沿用客户端 User-Agent 判断。默认隐藏标记为 `optional`、`allOnly` 或名称/主机包含 `vmiss` 的节点；追加 `node=all` 时显示全部节点。
 
@@ -29,7 +36,7 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 `global_fetch_strictly_public`、关闭 `workers.dev` 和 Preview URL，并只绑定独立订阅 Custom Domain。
 自动部署脚本不内嵌公开用户 Token；Nginx 是用户与配额鉴权的唯一真源。订阅域名不得与节点域名相同；
 动态源失败时返回 `502`，源明确拒绝 Token 时返回 `403`，不会使用静态节点绕过用户配额。
-选择聚合时，安装器读取一份不含 `vpsSubUrl` 的 `config.local.json` JSON，保留其中的 `nodes`、
+选择聚合时，安装器读取一份不含 `vpsSubUrl` 的 Worker 聚合 JSON，保留其中的 `nodes`、
 `externalSubUrl` 和 `fallbackCdnNodes`；其中的 `allowedTokens` 会覆盖安装器先前设置的 Token。
 启用配额时用户名必须与配额用户一致。安装器再注入本机私有源 URL 与鉴权字段。
 最终配置由 `../scripts/build-worker.mjs` 正式校验构建，不由 shell 直接拼接。
@@ -51,7 +58,9 @@ Steam 下载及 Apple/微软国内 CDN 使用国内 DoH 并直连；其他国内
 Reality 和动态 Cloudflare 节点固定输出 `ipv4`；IPv6 literal 会被拒绝。修改公共模板后需重新构建
 Worker，并在 VPS 重新生成模式 2 订阅。
 
-版本由构建脚本按北京时间生成，例如 `2026-09-06-v0`。同一天根据现有 `worker.js` 的版本递增，跨日从 `v0` 开始；构建失败不消耗版本。删除产物后也会从 `v0` 开始，因此需要连续编号时请保留上次构建的文件。版本通过 `X-Easy-All-Version` 响应头返回。
+版本由构建脚本按北京时间生成，例如 `2026-09-06-v0`。同一天根据状态目录中现有 `worker.js`
+的版本递增，跨日从 `v0` 开始；构建失败不消耗版本。删除产物后也会从 `v0` 开始，因此需要
+连续编号时请保留上次构建的文件。版本通过 `X-Easy-All-Version` 响应头返回。
 
 ### Cloudflare 聚合只出现兜底节点
 

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY_URL="https://github.com/v2yiz/easy_all.git"
-readonly DEFAULT_BRANCH="dev"
+readonly DEFAULT_BRANCH="main"
 BRANCH="${EASY_ALL_BRANCH:-${DEFAULT_BRANCH}}"
 
 die() {
@@ -38,26 +38,9 @@ fi
 git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
     || die "克隆 easy_all 仓库失败"
 
-[[ -f "${REPO_DIR}/easy_all" \
-    && -f "${REPO_DIR}/profiles/reality.sh" \
-    && -f "${REPO_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
-    && -f "${REPO_DIR}/lib/xhttp-runtime.sh" \
-    && -f "${REPO_DIR}/lib/globalping-cdn.sh" \
-    && -f "${REPO_DIR}/lib/cloudflare-ip-pool.sh" \
-    && -f "${REPO_DIR}/lib/quota.sh" \
-    && -f "${REPO_DIR}/lib/platform.sh" \
-    && -f "${REPO_DIR}/lib/profile-common.sh" \
-    && -f "${REPO_DIR}/lib/network.sh" \
-    && -f "${REPO_DIR}/lib/mihomo-template.sh" \
-    && -f "${REPO_DIR}/lib/firewall.sh" \
-    && -f "${REPO_DIR}/lib/xray-core.sh" \
-    && -f "${REPO_DIR}/lib/scheduled-maintenance.sh" \
-    && -f "${REPO_DIR}/lib/subscription-auth.sh" \
-    && -f "${REPO_DIR}/lib/tcp-tuning.sh" \
-    && -f "${REPO_DIR}/worker-src/index.js" \
-    && -f "${REPO_DIR}/scripts/build-worker.mjs" \
-    && -f "${REPO_DIR}/templates/mihomo.yaml" ]] \
+[[ -f "${REPO_DIR}/easy_all" && -f "${REPO_DIR}/runtime.manifest" ]] \
     || die "下载的 easy_all 项目不完整"
-
 chmod 0700 "${REPO_DIR}/easy_all"
+"${REPO_DIR}/easy_all" verify-release \
+    || die "下载的 easy_all 项目不完整"
 "${SUDO[@]}" "${REPO_DIR}/easy_all" install

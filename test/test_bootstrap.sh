@@ -17,25 +17,12 @@ content=$(<"${SCRIPT}")
     || fail "bootstrap must install git before cloning"
 [[ "${content}" == *'git clone --depth 1 --branch "${BRANCH}"'* ]] \
     || fail "bootstrap must shallow-clone configured branch"
-[[ "${content}" == *'&& -f "${REPO_DIR}/profiles/reality.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/profiles/xhttp-cloudflare-streamup.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/xhttp-runtime.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/globalping-cdn.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/cloudflare-ip-pool.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/quota.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/platform.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/profile-common.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/network.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/mihomo-template.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/firewall.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/xray-core.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/scheduled-maintenance.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/subscription-auth.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/lib/tcp-tuning.sh"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/worker-src/index.js"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/scripts/build-worker.mjs"'* \
-    && "${content}" == *'&& -f "${REPO_DIR}/templates/mihomo.yaml"'* ]] \
-    || fail "bootstrap must validate the complete project"
+[[ "${content}" == *'readonly DEFAULT_BRANCH="main"'* ]] \
+    || fail "bootstrap must install main by default"
+[[ "${content}" == *'-f "${REPO_DIR}/runtime.manifest"'* \
+    && "${content}" == *'"${REPO_DIR}/easy_all" verify-release'* \
+    && "${content}" != *'lib/xhttp-runtime.sh'* ]] \
+    || fail "bootstrap must delegate manifest validation to the target release"
 [[ "${content}" == *'"${SUDO[@]}" "${REPO_DIR}/easy_all" install'* ]] \
     || fail "bootstrap must preserve interactive stdin when starting installation"
 [[ "${content}" != *'archive/refs/heads/main.tar.gz'* ]] \

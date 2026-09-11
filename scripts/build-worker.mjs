@@ -1,20 +1,25 @@
-import { readFile, writeFile, rename, rm, mkdtemp } from 'node:fs/promises';
+import { readFile, writeFile, rename, rm, mkdtemp, mkdir } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+const stateHome = process.env.XDG_STATE_HOME || join(homedir(), '.local/state');
+const defaultConfigPath = join(configHome, 'easy_all/worker.json');
+const defaultOutputPath = join(stateHome, 'easy_all/worker.js');
 
 export async function buildWorker({
-    configPath = resolve(root, 'worker-src/config.local.json'),
-    outputPath = resolve(root, 'worker-src/worker.js'),
+    configPath = defaultConfigPath,
+    outputPath = defaultOutputPath,
     templatePath = resolve(root, 'templates/mihomo.yaml'),
     sourcePath = resolve(root, 'worker-src/index.js'),
     now = Date.now(),
 } = {}) {
     let config;
     try { config = JSON.parse(await readFile(configPath, 'utf8')); }
-    catch { throw new Error('Cannot read private config; copy worker-src/config.example.json to config.local.json and fill it in.'); }
+    catch { throw new Error(`Cannot read private config: ${configPath}`); }
     const requireValue = (ok, label) => { if (!ok) throw new Error(`Invalid private config: ${label}`); };
     const nonempty = value => typeof value === 'string' && value.trim() && !/[\r\n\0]/.test(value);
     requireValue(config && typeof config === 'object', 'object required');
@@ -113,6 +118,7 @@ export async function buildWorker({
         + `const MIHOMO_TEMPLATE = ${JSON.stringify(template)};\n\n` + source;
     // Validate before touching the existing deployment artifact. Never print compiler
     // output: a syntax error could include a line containing embedded credentials.
+    await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 });
     const tempDir = await mkdtemp(join(dirname(outputPath), '.worker-build-'));
     try {
         const temp = join(tempDir, 'worker.mjs');

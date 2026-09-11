@@ -1,0 +1,21 @@
+# Files installed as the easy_all runtime.
+profiles/reality.sh
+profiles/xhttp-cloudflare-streamup.sh
+lib/log.sh
+lib/runtime-core.sh
+lib/xhttp-runtime.sh
+lib/globalping-cdn.sh
+lib/cloudflare-ip-pool.sh
+lib/quota.sh
+lib/platform.sh
+lib/profile-common.sh
+lib/network.sh
+lib/mihomo-template.sh
+lib/firewall.sh
+lib/xray-core.sh
+lib/scheduled-maintenance.sh
+lib/subscription-auth.sh
+lib/tcp-tuning.sh
+worker-src/index.js
+scripts/build-worker.mjs
+templates/mihomo.yaml

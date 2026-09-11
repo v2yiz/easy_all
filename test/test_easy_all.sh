@@ -53,7 +53,7 @@ assert_failure() {
 source_script_copy() {
     local module
     install -d -m 0755 "${TMP_DIR}/lib" "${TMP_DIR}/profiles"
-    for module in quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
+    for module in log.sh runtime-core.sh quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/lib/${module}"
     done
     sed \
@@ -145,12 +145,16 @@ test_syntax_and_reality_boundaries() {
         "多节点聚合或已有订阅服务器时推荐" "${subscription_module}"
     assert_contains "non-interactive uninstall requires FORCE" \
         "非交互卸载必须显式设置 FORCE=1" "${script}"
-    assert_contains "Reality uses the shared scheduled maintenance module" \
-        'source "${SCRIPT_DIR}/scheduled-maintenance.sh"' "${script}"
+    assert_contains "Reality uses the protocol-neutral runtime core" \
+        'source "${SCRIPT_DIR}/runtime-core.sh"' "${script}"
+    assert_contains "runtime core loads shared scheduled maintenance" \
+        'source "${RUNTIME_LIB_DIR}/scheduled-maintenance.sh"' \
+        "$(<"${ROOT_DIR}/lib/runtime-core.sh")"
     assert_contains "shared TCP tuning installs XanMod BBRv3 from the official source" \
         "https://dl.xanmod.org/archive.key" "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
-    assert_contains "installer uses the shared TCP tuning module" \
-        'source "${SCRIPT_DIR}/tcp-tuning.sh"' "${script}"
+    assert_contains "runtime core loads shared TCP tuning" \
+        'source "${RUNTIME_LIB_DIR}/tcp-tuning.sh"' \
+        "$(<"${ROOT_DIR}/lib/runtime-core.sh")"
     assert_contains "shared TCP tuning persists Google BBR module loading" \
         "BBR_MODULES_CONFIG" "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
 }
@@ -1193,6 +1197,39 @@ EOF
         <<<"${config}"
 }
 
+test_core_update_restores_missing_version_state() {
+    install -d -m 0755 "${XRAY_DIR}"
+    printf 'old-binary\n' >"${XRAY_BIN}"
+    chmod 0755 "${XRAY_BIN}"
+    printf '{"old":true}\n' >"${XRAY_CONFIG}"
+    rm -f -- "${XRAY_DIR}/version"
+
+    if (
+        require_root() { :; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
+        collect_installed_state() { :; }
+        download_xray() {
+            printf 'new-binary\n' >"${XRAY_BIN}"
+            chmod 0755 "${XRAY_BIN}"
+            printf 'v99.0.0\n' >"${XRAY_DIR}/version"
+        }
+        systemctl() { :; }
+        validate_protocol_runtime() { return 1; }
+        update_current_core
+    ) >/dev/null 2>&1; then
+        fail_test "failed core validation must return failure"
+    fi
+
+    assert_equal "failed core update restores the old binary" \
+        "old-binary" "$(<"${XRAY_BIN}")"
+    assert_equal "failed core update restores the old runtime config" \
+        '{"old":true}' "$(<"${XRAY_CONFIG}")"
+    [[ ! -e "${XRAY_DIR}/version" ]] \
+        || fail_test "failed core update must restore a missing version file"
+    TESTS_RUN=$((TESTS_RUN + 1))
+}
+
 test_install_pipeline_order() {
     local calls
     rm -f -- "${STATE_FILE}"
@@ -1275,6 +1312,7 @@ test_cloudflare_reality_contract
 test_secure_download_transport
 test_xray_checksum_parsing
 test_state_and_xray
+test_core_update_restores_missing_version_state
 test_install_pipeline_order
 test_apply_loads_reality_state_before_tcp_tuning
 

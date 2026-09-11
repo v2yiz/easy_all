@@ -11,6 +11,8 @@ sudo easy_all self-update
 ```
 
 `self-update` 只替换已安装的项目代码，不修改 Xray、Nginx、订阅、系统参数或云端资源。
+默认从 `main` 更新；验证待发布版本使用 `sudo easy_all self-update --dev`，其他分支使用
+`sudo easy_all self-update --branch <分支>`。
 代码包含配置生成变化时，再执行：
 
 ```bash
@@ -55,7 +57,7 @@ Worker。已成功变更的云资源不会自动回滚，只应在确实需要�
 | `show` | 显示当前 VLESS 链接和 Mihomo 节点片段。 |
 | `subscription` | 显示订阅部署状态和每个用户的订阅地址。 |
 | `status` | 显示 BBRv3、协议、服务、端口和订阅状态。 |
-| `self-update` | 更新 easy_all 项目代码，不修改应用配置。 |
+| `self-update [--dev\|--branch <分支>]` | 更新项目代码；默认 `main`，`--dev` 使用 `dev`。 |
 | `apply` | 重新应用当前配置。 |
 | `apply-cloud` | Cloudflare 模式下同步本机和云端资源。 |
 | `update-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
@@ -150,7 +152,7 @@ UUID 或订阅地址后，相关流量仍计入该用户。
 ## Worker 聚合
 
 Cloudflare 模式部署订阅时，Worker 使用与节点域名不同的同 Zone 一级子域。选择聚合后输入一份
-不含 `vpsSubUrl` 的 `config.local.json`；结构参考
+不含 `vpsSubUrl` 的 Worker 聚合 JSON；结构参考
 [`worker-src/config.example.json`](../worker-src/config.example.json)。
 
 安装器保留其中的 `nodes`、`externalSubUrl` 和 `fallbackCdnNodes`，并自动注入本机私有源。

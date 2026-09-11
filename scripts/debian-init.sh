@@ -183,7 +183,7 @@ load_platform_module() {
     candidate="${EASY_ALL_PLATFORM_MODULE_SOURCE}"
   else
     script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-    candidate="${script_dir}/lib/platform.sh"
+    candidate="${script_dir}/../lib/platform.sh"
   fi
   if [[ -r "${candidate}" ]]; then
     PLATFORM_MODULE_FILE="${candidate}"

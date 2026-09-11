@@ -98,10 +98,13 @@ CPU 能力选择 `linux-xanmod-lts-x64v1/v2/v3`；这里的 v1/v2/v3 是 CPU 指
 
 ```text
 easy_all
+├─ runtime.manifest
 ├─ profiles/
 │  ├─ reality.sh
 │  └─ xhttp-cloudflare-streamup.sh
 ├─ lib/
+│  ├─ log.sh
+│  ├─ runtime-core.sh
 │  ├─ xhttp-runtime.sh
 │  ├─ globalping-cdn.sh
 │  ├─ cloudflare-ip-pool.sh
@@ -124,9 +127,11 @@ easy_all
    └─ debian-init.sh
 ```
 
-入口负责模式选择、命令分发和运行时注册。Profile 负责协议编排，公共模块不反向依赖 Profile。
-`profile-common.sh` 提供公共交互和字段校验，`scheduled-maintenance.sh` 管理定时重启，
-`network.sh` 管理 IPv4-only 与 Xray 出站，`firewall.sh` 管理 UFW。
+入口负责模式选择、命令分发和按 `runtime.manifest` 注册运行时。Profile 负责协议编排；
+`runtime-core.sh` 统一日志、公共模块加载、退出回滚和 Xray 核心更新事务，协议验收由 Profile hook
+实现；`xhttp-runtime.sh` 只保留 XHTTP/Nginx 数据面逻辑。`profile-common.sh` 提供公共交互和字段
+校验，`scheduled-maintenance.sh` 管理定时重启，`network.sh` 管理 IPv4-only 与 Xray 出站，
+`firewall.sh` 管理 UFW。
 
 关键状态字段：
 

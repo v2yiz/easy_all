@@ -326,6 +326,8 @@ test_script_surface_contract() {
         'readonly EASY_ALL_ADDITIONAL_SSH_PORT="65533"' "${platform_content}"
     assert_contains "standalone init loads the shared platform module" \
         'load_platform_module' "${content}"
+    assert_contains "repository init resolves the sibling lib directory" \
+        'candidate="${script_dir}/../lib/platform.sh"' "${content}"
     assert_contains "standalone init uploads the shared platform module" \
         '"$PLATFORM_MODULE_FILE" "${target}:${remote_platform_module}"' "${content}"
     assert_contains "current SSH port is retained" \

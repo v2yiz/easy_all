@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 
-# Standalone installer for VLESS Reality Vision.
+# VLESS Reality Vision profile for the unified easy_all launcher.
 
 set -Eeuo pipefail
 umask 077
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    printf 'reality.sh 是 easy_all 的 Reality Profile；请使用：easy_all install\n' >&2
+    exit 2
+fi
 
 readonly REALITY_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 readonly SCRIPT_DIR="${REALITY_PROFILE_ROOT}/../lib"
@@ -70,61 +75,9 @@ readonly STATE_SCHEMA_VERSION="7"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
 
-# shellcheck source=lib/quota.sh
-source "${SCRIPT_DIR}/quota.sh"
-# shellcheck source=lib/platform.sh
-source "${SCRIPT_DIR}/platform.sh"
-# shellcheck source=lib/profile-common.sh
-source "${SCRIPT_DIR}/profile-common.sh"
-# shellcheck source=lib/network.sh
-source "${SCRIPT_DIR}/network.sh"
-# shellcheck source=lib/mihomo-template.sh
-source "${SCRIPT_DIR}/mihomo-template.sh"
-# shellcheck source=lib/firewall.sh
-source "${SCRIPT_DIR}/firewall.sh"
-# shellcheck source=lib/xray-core.sh
-source "${SCRIPT_DIR}/xray-core.sh"
-# shellcheck source=lib/scheduled-maintenance.sh
-source "${SCRIPT_DIR}/scheduled-maintenance.sh"
-# shellcheck source=lib/subscription-auth.sh
-source "${SCRIPT_DIR}/subscription-auth.sh"
-# shellcheck source=lib/tcp-tuning.sh
-source "${SCRIPT_DIR}/tcp-tuning.sh"
-
-RED='\033[31m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-CYAN='\033[1;36m'
-RESET='\033[0m'
-
-info() { printf '%b%s%b\n' "${CYAN}" "$*" "${RESET}"; }
-success() { printf '%b%s%b\n' "${GREEN}" "$*" "${RESET}"; }
-warn() { printf '%b%s%b\n' "${YELLOW}" "$*" "${RESET}"; }
-fail() { printf '%b%s%b\n' "${RED}" "$*" "${RESET}" >&2; return 1; }
-die() { fail "$*"; exit 1; }
-
-RUNTIME_TMP=$(mktemp -d)
-cleanup_files=("${RUNTIME_TMP}")
-INSTALL_ROLLBACK_ON_EXIT=0
-UPDATE_SUB_ROLLBACK_ON_EXIT=0
-UPDATE_SUB_BACKUP_DIR=""
-MIHOMO_TEMPLATE_FILE=""
-cleanup() {
-    local path
-    if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" \
-        && -n "${UPDATE_SUB_BACKUP_DIR:-}" ]]; then
-        UPDATE_SUB_ROLLBACK_ON_EXIT=0
-        rollback_subscription_update || true
-    elif [[ "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
-        INSTALL_ROLLBACK_ON_EXIT=0
-        rollback_fresh_install || true
-    fi
-    end_quota_maintenance || true
-    for path in "${cleanup_files[@]:-}"; do
-        [[ -n "${path}" ]] && rm -rf -- "${path}"
-    done
-}
-trap cleanup EXIT
+# shellcheck source=lib/runtime-core.sh
+EASY_ALL_RUNTIME_LIB_DIR="${SCRIPT_DIR}"
+source "${SCRIPT_DIR}/runtime-core.sh"
 
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
@@ -883,10 +836,6 @@ write_xray_config() {
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null \
         || die "Xray ${PROTOCOL} 配置校验失败"
     install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
-}
-
-uri_encode() {
-    jq -nr --arg v "$1" '$v|@uri'
 }
 
 build_reality_link() {
@@ -1981,80 +1930,3 @@ install_all() {
     [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || prompt_download_name=1
     run_reality_install_pipeline "${requested}" "${prompt_download_name}"
 }
-
-usage() {
-    cat <<EOF
-用法: $0 [命令]
-
-  install       交互安装 VLESS Reality Vision
-  show          显示当前协议节点和 Mihomo 节点
-  subscription  显示节点与订阅信息
-  self-update   只更新 easy_all 项目代码，不刷新部署
-  apply         将已安装代码应用到服务端与当前订阅模式
-  update-sub    选择部署订阅服务或仅输出节点
-  update-core   更新 Xray 核心
-  renew-cert    强制轮换 Cloudflare Origin CA 订阅证书
-  rotate-dynamic-ports  刷新动态端口 NAT 窗口与已部署订阅（内部任务）
-  quota-status  显示每个用户的本月流量与配额状态
-  quota-set     修改指定用户的月度额度
-  quota-reset   清零指定用户的本月已用量
-  status        显示当前协议、服务、端口和订阅状态
-  uninstall     删除本机数据；可追加 --purge-cloud 清理 DNS、Strict TLS 规则和证书
-  help          显示帮助
-
-Reality 默认使用 dynamic 订阅端口。
-订阅仅支持 deploy 与 link 两种选择。
-EOF
-}
-
-update_current_core() {
-    local backup_bin="${RUNTIME_TMP}/core-backup" backup_version="${RUNTIME_TMP}/version-backup"
-    require_root
-    begin_quota_maintenance
-    collect_installed_state
-    install -m 0755 "${XRAY_BIN}" "${backup_bin}"
-    [[ ! -f "${XRAY_DIR}/version" ]] \
-        || install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
-    if (
-        download_xray || exit 1
-        systemctl restart "${XRAY_SERVICE}" || exit 1
-        validate_protocol_runtime
-    ); then
-        end_quota_maintenance
-        success "${PROTOCOL} 核心已更新"
-        return 0
-    fi
-    warn "新核心验收失败，正在恢复旧版本"
-    install -m 0755 "${backup_bin}" "${XRAY_BIN}"
-    [[ ! -f "${backup_version}" ]] \
-        || install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
-    systemctl restart "${XRAY_SERVICE}"
-    validate_protocol_runtime
-    die "核心更新失败，已恢复旧版本"
-}
-
-main() {
-    case "${1:-install}" in
-    install) install_all "${2:-${PROTOCOL:-}}" ;;
-    show) require_root; show_node ;;
-    subscription) require_root; show_subscription ;;
-    apply) apply_easy_all ;;
-    update-sub) update_subscription 1 ;;
-    update-core) update_current_core ;;
-    renew-cert) renew_subscription_certificate ;;
-    rotate-dynamic-ports) rotate_dynamic_ports ;;
-    quota-sync) quota_sync_usage ;;
-    quota-status) require_root; collect_installed_state; show_quota_status ;;
-    quota-set) shift; quota_set_user "$@" ;;
-    quota-reset) shift; quota_reset_user "$@" ;;
-    status) show_status ;;
-    register-command) register_easy_all_command ;;
-    uninstall) uninstall_all "${2:-}" ;;
-    help | -h | --help) usage ;;
-    *) usage; return 1 ;;
-    esac
-}
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    main "$@"
-fi

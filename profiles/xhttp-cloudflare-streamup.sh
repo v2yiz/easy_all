@@ -16,7 +16,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 fi
 
 readonly XHTTP_CLOUDFLARE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-readonly XHTTP_PROFILE_ROOT="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../lib"
+readonly XHTTP_LIB_DIR="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../lib"
 readonly CLOUDFLARE_API_BASE="https://api.cloudflare.com/client/v4"
 readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
 readonly CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS="20-40"
@@ -38,15 +38,13 @@ readonly CLOUDFLARE_XHTTP_PROBE_URL="${CLOUDFLARE_XHTTP_PROBE_URL_OVERRIDE:-http
 
 # shellcheck source=lib/xhttp-runtime.sh
 SUBSCRIPTION_DEPLOY_DESCRIPTION_OVERRIDE="Cloudflare Worker 聚合；Nginx 仅作私有节点源"
-source "${XHTTP_PROFILE_ROOT}/xhttp-runtime.sh"
+source "${XHTTP_LIB_DIR}/xhttp-runtime.sh"
 readonly CLOUDFLARE_WORKER_BUILD_FILE="${CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE:-${STATE_DIR}/worker.js}"
 # shellcheck source=lib/globalping-cdn.sh
 GLOBALPING_CACHE_BASENAME_OVERRIDE="cloudflare-cdn-ips.json"
-source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
+source "${XHTTP_LIB_DIR}/globalping-cdn.sh"
 # shellcheck source=lib/cloudflare-ip-pool.sh
-source "${XHTTP_PROFILE_ROOT}/cloudflare-ip-pool.sh"
-# shellcheck source=lib/xray-core.sh
-source "${XHTTP_PROFILE_ROOT}/xray-core.sh"
+source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"
 
 cloudflare_collect_api_token() {
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
@@ -104,11 +102,11 @@ normalize_worker_aggregation_config() {
     [[ -n "${raw}" ]] || raw='{}'
     jq -cer '
       if type != "object" then
-        error("config.local.json 必须是 JSON object")
+        error("Worker 聚合配置必须是 JSON object")
       elif has("vpsSubUrl") then
-        error("config.local.json 不得包含 vpsSubUrl")
+        error("Worker 聚合配置不得包含 vpsSubUrl")
       elif ((keys - ["allowedTokens","nodes","externalSubUrl","fallbackCdnNodes"]) | length) != 0 then
-        error("config.local.json 包含不支持的字段")
+        error("Worker 聚合配置包含不支持的字段")
       elif ((.nodes // []) | type) != "array"
         or ((.fallbackCdnNodes // []) | type) != "array"
         or ((.externalSubUrl // "") | type) != "string"
@@ -137,19 +135,19 @@ apply_worker_allowed_tokens_override() {
     local config=$1 tokens token_users quota_users
     jq -e 'has("allowedTokens")' <<<"${config}" >/dev/null || return 0
     tokens=$(normalize_allowed_tokens "$(jq -c '.allowedTokens' <<<"${config}")") \
-        || die "config.local.json 中的 allowedTokens 无效"
+        || die "Worker 聚合配置中的 allowedTokens 无效"
     if quota_enabled; then
         token_users=$(jq -c 'keys | sort' <<<"${tokens}")
         quota_users=$(jq -c 'keys | sort' <<<"${USER_ACCOUNTS}")
         [[ "${token_users}" == "${quota_users}" ]] \
-            || die "启用配额时，config.local.json allowedTokens 的用户名必须与配额用户完全一致"
+            || die "启用配额时，Worker 聚合配置 allowedTokens 的用户名必须与配额用户完全一致"
         USER_ACCOUNTS=$(jq -c --argjson tokens "${tokens}" \
             'with_entries(.value.token = $tokens[.key])' <<<"${USER_ACCOUNTS}")
         validate_user_accounts "${USER_ACCOUNTS}" \
-            || die "config.local.json allowedTokens 覆盖后配额用户状态无效"
+            || die "Worker 聚合配置 allowedTokens 覆盖后配额用户状态无效"
     fi
     ALLOWED_TOKENS=${tokens}
-    info "config.local.json 的 allowedTokens 已覆盖安装器先前设置的用户 Token"
+    info "Worker 聚合配置的 allowedTokens 已覆盖安装器先前设置的用户 Token"
 }
 
 choose_worker_aggregation_config() {
@@ -160,16 +158,16 @@ choose_worker_aggregation_config() {
     count=$(jq '.nodes | length' <<<"${current}")
     has_upstream=$(jq -r '.externalSubUrl != ""' <<<"${current}")
     if [[ -t 0 ]]; then
-        printf '说明：config.local.json 不得包含 vpsSubUrl；若包含 allowedTokens，将覆盖刚设置的用户 Token。\n' >&2
+        printf '说明：Worker 聚合配置不得包含 vpsSubUrl；若包含 allowedTokens，将覆盖刚设置的用户 Token。\n' >&2
         if ((count > 0)) || [[ "${has_upstream}" == "true" ]]; then
             printf '当前 Worker 聚合配置：nodes=%s，externalSubUrl=%s\n' \
                 "${count}" "$([[ "${has_upstream}" == "true" ]] && printf 已配置 || printf 未配置)" >&2
-            printf '  1. 保留\n  2. 替换 config.local.json\n  3. 清空聚合配置\n' >&2
+            printf '  1. 保留\n  2. 替换 Worker 聚合 JSON\n  3. 清空聚合配置\n' >&2
             read_bilingual "请选择 [1]（直接回车保留）:" choice
             case "${choice:-1}" in
             1) raw=${current} ;;
             2)
-                raw=$(prompt_secret "新的 config.local.json JSON（不得包含 vpsSubUrl）") \
+                raw=$(prompt_secret "新的 Worker 聚合 JSON（不得包含 vpsSubUrl）") \
                     || die "读取 Worker 聚合配置失败"
                 ;;
             3) raw='{}' ;;
@@ -177,12 +175,12 @@ choose_worker_aggregation_config() {
             esac
         else
             printf '是否需要进行订阅聚合？\n' >&2
-            printf '  1. 不需要\n  2. 需要，输入 config.local.json\n' >&2
+            printf '  1. 不需要\n  2. 需要，输入 Worker 聚合 JSON\n' >&2
             read_bilingual "请选择 [1]（直接回车不聚合）:" choice
             case "${choice:-1}" in
             1) raw='{}' ;;
             2)
-                raw=$(prompt_secret "config.local.json JSON（不得包含 vpsSubUrl）") \
+                raw=$(prompt_secret "Worker 聚合 JSON（不得包含 vpsSubUrl）") \
                     || die "读取 Worker 聚合配置失败"
                 ;;
             *) die "Worker 聚合配置选项无效：${choice}" ;;
@@ -265,11 +263,11 @@ cloudflare_build_subscription_worker() {
           fallbackCdnNodes:$aggregation.fallbackCdnNodes,
           subscriptionDownloadName:$download_name
         }')
-    printf '%s\n' "${config}" >"${RUNTIME_TMP}/worker-config.local.json"
-    chmod 0600 "${RUNTIME_TMP}/worker-config.local.json"
+    printf '%s\n' "${config}" >"${RUNTIME_TMP}/worker-config.json"
+    chmod 0600 "${RUNTIME_TMP}/worker-config.json"
     install -d -m 0700 "$(dirname "${CLOUDFLARE_WORKER_BUILD_FILE}")"
     build_output=$(
-        EASY_ALL_WORKER_CONFIG_PATH="${RUNTIME_TMP}/worker-config.local.json" \
+        EASY_ALL_WORKER_CONFIG_PATH="${RUNTIME_TMP}/worker-config.json" \
         EASY_ALL_WORKER_OUTPUT_PATH="${CLOUDFLARE_WORKER_BUILD_FILE}" \
         EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
         EASY_ALL_WORKER_SOURCE_PATH="${CLOUDFLARE_WORKER_SOURCE_FILE}" \
@@ -1226,8 +1224,6 @@ cloudflare_purge_managed_dns_record() {
         "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null \
         || die "删除 Cloudflare DNS 记录失败：${host}"
 }
-
-usage() { printf 'Cloudflare Profile 只能由 easy_all 统一入口调用。\n'; }
 
 XRAY_XHTTP_LOOPBACK_PORT="${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT:-10086}}"
 ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET:-}"
