@@ -60,6 +60,21 @@ manifest_content=$(<"${ROOT_DIR}/runtime.manifest")
     || fail "runtime registration must use the organized profile and template paths"
 runtime_tree_is_complete "${ROOT_DIR}" \
     || fail "repository runtime must satisfy its manifest"
+
+# These tombstones bridge self-update for launchers that still validate the cloned
+# tree against their own baked-in manifest. They must exist in the source tree, but
+# must never be installed at runtime.
+for migration_tombstone in profiles/xhttp-gcore.sh lib/gcore-ip-pool.sh; do
+    [[ -f "${ROOT_DIR}/${migration_tombstone}" ]] \
+        || fail "legacy self-update migration tombstone is missing: ${migration_tombstone}"
+    [[ "${launcher_content}" != *"${migration_tombstone}"* ]] \
+        || fail "migration tombstone must not be installed at runtime: ${migration_tombstone}"
+    ! grep -Fxq "${migration_tombstone}" "${ROOT_DIR}/runtime.manifest" \
+        || fail "migration tombstone must stay out of the runtime manifest: ${migration_tombstone}"
+    ! grep -Eq '^[A-Za-z_][A-Za-z0-9_]*\(\)' "${ROOT_DIR}/${migration_tombstone}" \
+        || fail "migration tombstone must not contain executable functions: ${migration_tombstone}"
+done
+
 invalid_manifest_root="${TMP_DIR}/invalid-manifest"
 mkdir -p "${invalid_manifest_root}"
 printf '../escape.sh\n' >"${invalid_manifest_root}/runtime.manifest"
