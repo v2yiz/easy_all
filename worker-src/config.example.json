@@ -2,7 +2,6 @@
   "allowedTokens": {
     "owner": "replace-with-a-long-random-token"
   },
-  "vpsSubUrl": "https://cdn.example.com/subscribe?token=replace-me",
   "externalSubUrl": "https://subscription.example.com/replace-me",
   "fallbackCdnNodes": [{
       "type": "vless",

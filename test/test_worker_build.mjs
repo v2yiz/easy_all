@@ -9,6 +9,8 @@ const temp = await mkdtemp(join(tmpdir(), 'worker-test-'));
 try {
     const config = JSON.parse(await readFile(new URL('../worker-src/config.example.json', import.meta.url), 'utf8'));
     config.allowedTokens = { owner: 'offline-test-token' };
+    // The installer injects vpsSubUrl before deploying, so the shared example carries none.
+    config.vpsSubUrl = 'https://node.example.com/subscribe';
     config.nodes.push({ ...config.nodes[0], name: 'Hidden Reality', host: 'hidden.example.com' });
     config.nodes.push({ ...config.nodes[0], name: 'Optional VMISS', host: 'vmiss.example.com', optional: true });
     config.fallbackCdnNodes = [{ type: 'vless', security: 'tls', network: 'xhttp', name: 'Fallback CF', host: 'fallback.example.com', uuid: config.nodes[0].uuid, path: '/xhttp/', mode: 'stream-up' }];
@@ -394,5 +396,12 @@ try {
     for (const domain of ['love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'", "'+.cm.steampowered.com'", "'+.steamserver.net'"]) {
         assert.ok(directCdn.includes(`        - ${domain}\n`), `${domain} must remain a direct exception`);
     }
+    // An aggregation input carries no vpsSubUrl, so the validator must accept its absence
+    // instead of demanding a URL the caller never has.
+    const aggregationConfig = { ...config };
+    delete aggregationConfig.vpsSubUrl;
+    const aggregationConfigPath = join(temp, 'aggregation.json');
+    await writeFile(aggregationConfigPath, JSON.stringify(aggregationConfig));
+    await buildWorker({ configPath: aggregationConfigPath, outputPath: join(temp, 'aggregation.mjs') });
     console.log('Worker build, authentication, shared policy, node injection and fallback checks passed');
 } finally { await rm(temp, {recursive:true, force:true}); }

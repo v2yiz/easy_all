@@ -31,8 +31,11 @@ export async function buildWorker({
             (config.delegateTokenValidation === true || tokens.length > 0),
         'tokens must be unique strings of at least 16 characters'
     );
+    // Both URLs are optional. Without vpsSubUrl index.js falls back to fallbackCdnNodes, and the
+    // installer injects its own before deploying, so an aggregation input must omit it. When a
+    // URL is present it must still be a credential-free https endpoint.
     for (const key of ['externalSubUrl', 'vpsSubUrl']) {
-        if (key === 'externalSubUrl' && config[key] === '') continue;
+        if (config[key] === undefined || config[key] === '') continue;
         let url;
         try { url = new URL(config[key]); } catch {}
         requireValue(url?.protocol === 'https:' && !url.username && !url.password, key);

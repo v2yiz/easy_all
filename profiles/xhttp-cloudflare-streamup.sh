@@ -190,7 +190,7 @@ choose_worker_aggregation_config() {
         raw=${current}
     fi
     normalized=$(normalize_worker_aggregation_config "${raw}") \
-        || die "Worker 聚合配置无效；请参考 worker-src/config.example.json 并移除 vpsSubUrl"
+        || die "Worker 聚合配置无效；请参考 worker-src/config.example.json"
     apply_worker_allowed_tokens_override "${normalized}"
     WORKER_AGGREGATION_CONFIG=$(jq -c 'del(.allowedTokens)' <<<"${normalized}")
 }

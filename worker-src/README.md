@@ -16,11 +16,14 @@ npm run build:worker
 npm run test:worker
 ```
 
+`config.example.json` 与安装器聚合输入同形，**不含 `vpsSubUrl`**。该字段由安装器在部署前注入，
+本地配置不应出现；缺省时 Worker 直接退回 `fallbackCdnNodes`，不视为错误。
+
 旧版环境若仍使用 `worker-src/config.local.json`，先将它以 `0600` 权限迁移为
-`$config_dir/worker.json`；确认新路径构建成功后再删除仓库内旧文件。
+`$config_dir/worker.json`；它与聚合输入同形，可直接复用。确认新路径可用后再删除仓库内旧文件。
 Node.js 18 或更新版本即可，无需安装 npm 依赖。
 
-- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点、VPS 私有订阅源、外部订阅源和 CDN 兜底节点。独立构建时可填写完整字段；安装器聚合流程要求输入中不含 `vpsSubUrl`，再由本机自动注入。Reality 端口继续按北京时间每三小时轮换；所有节点统一输出 `ipVersion: ipv4`。
+- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点、外部订阅源和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口继续按北京时间每三小时轮换；所有节点统一输出 `ipVersion: ipv4`。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。自定义模式 2 模板会与默认 Worker 配置不同。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
