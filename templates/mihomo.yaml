@@ -66,6 +66,8 @@ dns:
     # 国内及已验证的兼容性例外返回真实 IP；是否直连仍由下方分流规则决定。
     fake-ip-filter-mode: rule
     fake-ip-filter:
+      # Android FCM 可能绕过 VPN，推送长连接不能使用仅在 TUN 内有效的 Fake-IP。
+      - GEOSITE,googlefcm,real-ip
       - GEOSITE,cn,real-ip
       - GEOSITE,private,real-ip
       - DOMAIN-SUFFIX,10jqka.com.cn,real-ip
@@ -228,6 +230,8 @@ rules:
   # 局域网直连。
   - GEOSITE,private,DIRECT
   - GEOIP,LAN,DIRECT,no-resolve
+  # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
+  - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
   # Google 必须优先于 CN（包含 googleapis.cn），让 Play 接口与下载使用同一代理出口。
   # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT

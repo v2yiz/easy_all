@@ -354,6 +354,17 @@ try {
         assert.ok(a >= 0 && b >= 0 && a < b, `${first} must precede ${second}`);
     };
     before(rules, 'RULE-SET,direct-cdn,DIRECT', 'AND,((NETWORK,UDP)');
+    const fcmRule = 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY';
+    before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmRule);
+    before(rules, fcmRule, 'GEOSITE,CN,DIRECT');
+    before(rules, fcmRule, 'GEOIP,CN,DIRECT');
+    const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
+    before(fakeIpFilter, 'GEOSITE,googlefcm,real-ip', 'MATCH,fake-ip');
+    // Both healthy and degraded aggregation must deliver the FCM DNS and IP-only routing fix.
+    for (const body of [liveBody, fallbackBody, allBody]) {
+        assert.ok(body.includes('      - GEOSITE,googlefcm,real-ip\n'));
+        assert.ok(body.includes(`  - ${fcmRule}\n`));
+    }
     for (const matcher of ['GEOSITE,google', 'GEOSITE,openai', 'GEOSITE,anthropic', 'RULE-SET,proxy-services']) {
         before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},PROXY`);
         before(rules, `${matcher},PROXY`, 'GEOSITE,apple-cn,DIRECT');

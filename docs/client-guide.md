@@ -41,6 +41,31 @@ Clash Mi 的 `GLOBAL` 分组默认指向 `DIRECT`。切换到“全局”模式�
 
 ![Clash Mi 规则模式与全局模式设置](img/clashmi/clashmi-global-proxy.svg)
 
+## Android 打开 App 才收到消息
+
+Telegram 等 App 前台正常、后台不推送时，先检查 Google FCM 推送通道。模板让
+`googlefcm` 域名返回真实 IP；进入代理内核的 TCP 5228–5230 流量走 `PROXY`
+（局域网仍直连），避免无域名的推送连接落入国内 IP 直连规则。FCM 的 443 回退和注册请求
+继续使用现有 Google 代理规则及代理 DNS。
+
+更新服务器订阅规则后，在客户端刷新订阅并重启代理内核。Worker 的模板在构建时内嵌，
+仅修改仓库文件或刷新客户端不会更新云端；安装器部署的订阅按[运维指南](operations-guide.md#更新与应用)
+运行 `self-update` 和 `update-sub`，独立 Worker 则重新构建并部署。
+
+Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）：
+
+- 关闭“允许绕过 VPN”，并让 Google Play 服务（`com.google.android.gms`）参与 VPN；
+  仅代理 Telegram 的应用白名单不能覆盖系统推送。
+- 如启用了智能启停或休眠，先关闭，确保锁屏后内核继续工作；允许 Bettbox 与 Google Play 服务后台运行。
+- 如果启用了 DNS 覆写，确认最终配置保留 `GEOSITE,googlefcm,real-ip`。重新连接网络或重启手机，
+  让旧 DNS 缓存和推送连接失效；不要清除 Google Play 服务的数据。
+
+验收时把 Telegram 切到后台并锁屏，请另一台设备发送消息；在 Bettbox 连接记录中检查
+`mtalk.google.com` / `alt*-mtalk.google.com` 或 TCP 5228–5230 是否经 `PROXY` 建立连接。
+如没有连接记录，优先检查 VPN 绕过、应用分流和系统后台限制。
+
+依据：[Google FCM 网络与 VPN 说明](https://firebase.google.com/docs/cloud-messaging/network-configuration)。
+
 ## 订阅更新失败
 
 若导入或刷新订阅时出现 `i/o timeout`、`connection refused` 或 `no such host`，先检查当前
