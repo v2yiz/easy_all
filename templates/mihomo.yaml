@@ -6,7 +6,6 @@ ipv6: false
 external-controller: '127.0.0.1:9090'
 unified-delay: false
 tcp-concurrent: true
-find-process-mode: strict
 geodata-mode: true
 geodata-loader: memconservative
 geo-auto-update: true
@@ -59,7 +58,7 @@ tun:
 dns:
     enable: true
     ipv6: false
-    use-system-hosts: false
+    use-system-hosts: true
     listen: '127.0.0.1:5335'
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
@@ -68,7 +67,7 @@ dns:
     fake-ip-filter:
       # Android FCM 可能绕过 VPN，推送长连接不能使用仅在 TUN 内有效的 Fake-IP。
       - GEOSITE,googlefcm,real-ip
-      - GEOSITE,cn,real-ip
+      - GEOSITE,geolocation-cn,real-ip
       - GEOSITE,private,real-ip
       - DOMAIN-SUFFIX,10jqka.com.cn,real-ip
       - DOMAIN-SUFFIX,qpic.cn,real-ip
@@ -114,7 +113,6 @@ dns:
       - DOMAIN,time2.google.com,real-ip
       - DOMAIN,time3.google.com,real-ip
       - DOMAIN,time4.google.com,real-ip
-      - DOMAIN,music.163.com,real-ip
       - DOMAIN-SUFFIX,music.163.com,real-ip
       - DOMAIN-SUFFIX,126.net,real-ip
       - DOMAIN,musicapi.taihe.com,real-ip
@@ -125,7 +123,6 @@ dns:
       - DOMAIN,api-jooxtt.sanook.com,real-ip
       - DOMAIN,api.joox.com,real-ip
       - DOMAIN,joox.com,real-ip
-      - DOMAIN,y.qq.com,real-ip
       - DOMAIN-SUFFIX,y.qq.com,real-ip
       - DOMAIN,streamoc.music.tc.qq.com,real-ip
       - DOMAIN,mobileoc.music.tc.qq.com,real-ip
@@ -135,7 +132,6 @@ dns:
       - DOMAIN,amobile.music.tc.qq.com,real-ip
       - DOMAIN-SUFFIX,xiami.com,real-ip
       - DOMAIN-SUFFIX,music.migu.cn,real-ip
-      - DOMAIN,music.migu.cn,real-ip
       - DOMAIN-SUFFIX,msftconnecttest.com,real-ip
       - DOMAIN-SUFFIX,msftncsi.com,real-ip
       - DOMAIN,localhost.ptlogin2.qq.com,real-ip
@@ -146,7 +142,9 @@ dns:
       - DOMAIN,speedtest.cros.wr.pvp.net,real-ip
       - MATCH,fake-ip
     nameserver-policy:
-      # Google Play 的 services.googleapis.cn 也命中 cn，必须优先经代理解析。
+      # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
+      'geosite:private': system
+      # 明确代理的服务优先于国内集合及 CDN。
       'geosite:google':
         - 'https://1.1.1.1/dns-query#PROXY'
         - 'https://8.8.8.8/dns-query#PROXY'
@@ -163,7 +161,7 @@ dns:
       'geosite:apple-cn,microsoft@cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
-      'geosite:cn':
+      'geosite:geolocation-cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
     nameserver:
@@ -199,7 +197,7 @@ rule-providers:
         - challenges.cloudflare.com
         - openai-api.arkoselabs.com
         - '+.client-api.arkoselabs.com'
-        # cn 集合包含整个 .ms 后缀，显式保留微软短链及 OneDrive 更新出口。
+        # 微软短链及 OneDrive 更新维持代理出口。
         - '+.aka.ms'
         - '+.1drv.ms'
         - '+.oneclient.sfx.ms'
@@ -232,7 +230,7 @@ rules:
   - GEOIP,LAN,DIRECT,no-resolve
   # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
   - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
-  # Google 必须优先于 CN（包含 googleapis.cn），让 Play 接口与下载使用同一代理出口。
+  # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口。
   # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT
   - GEOSITE,google,PROXY
@@ -246,34 +244,12 @@ rules:
   # 国内 CDN 与上方国内 DNS 策略对齐，保留直连下载及 QUIC。
   - GEOSITE,apple-cn,DIRECT
   - GEOSITE,microsoft@cn,DIRECT
-  # 其余中国大陆域名直连；纯 IP 的国内 QUIC 通过 GeoIP 单独放行。
-  - GEOSITE,CN,DIRECT
+  # 使用较窄的 geolocation-cn，不使用包含整个 .ms 的 ChinaMax cn 集合。
+  # 其余国内 IP 由 GeoIP 兜底；国内 QUIC 单独放行。
+  - GEOSITE,geolocation-cn,DIRECT
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
-  - PROCESS-NAME,v2ray,DIRECT
-  - PROCESS-NAME,xray,DIRECT
-  - PROCESS-NAME,naive,DIRECT
-  - PROCESS-NAME,trojan,DIRECT
-  - PROCESS-NAME,trojan-go,DIRECT
-  - PROCESS-NAME,ss-local,DIRECT
-  - PROCESS-NAME,privoxy,DIRECT
-  - PROCESS-NAME,leaf,DIRECT
-  - PROCESS-NAME,v2ray.exe,DIRECT
-  - PROCESS-NAME,xray.exe,DIRECT
-  - PROCESS-NAME,naive.exe,DIRECT
-  - PROCESS-NAME,trojan.exe,DIRECT
-  - PROCESS-NAME,trojan-go.exe,DIRECT
-  - PROCESS-NAME,ss-local.exe,DIRECT
-  - PROCESS-NAME,privoxy.exe,DIRECT
-  - PROCESS-NAME,leaf.exe,DIRECT
-  - PROCESS-NAME,Surge,DIRECT
-  - PROCESS-NAME,Surge 2,DIRECT
-  - PROCESS-NAME,Surge 3,DIRECT
-  - PROCESS-NAME,Surge 4,DIRECT
-  - PROCESS-NAME,Surge%202,DIRECT
-  - PROCESS-NAME,Surge%203,DIRECT
-  - PROCESS-NAME,Surge%204,DIRECT
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
   # 其余 AI 分类保留在 CN 后，避免把 Kimi 等重叠服务无条件改成代理。

@@ -14,56 +14,34 @@ validate_mihomo_template() {
             || die "Mihomo 模板标记无效：${marker} 应且只能出现一次"
     done
     grep -q '^rules:' "${source}" || die "Mihomo 模板缺少规则"
-    grep -Fq '    enhanced-mode: fake-ip' "${source}" \
-        || die "Mihomo 模板未使用 XFLASH fake-ip DNS"
-    grep -Fq '    store-fake-ip: true' "${source}" \
-        || die "Mihomo 模板未持久化 fake-ip 映射"
-    ! grep -Fq '    fake-ip-range6:' "${source}" \
-        || die "Mihomo 模板不应配置 IPv6 fake-ip 地址池"
-    grep -Fq '    fake-ip-filter-mode: rule' "${source}" \
-        || die "Mihomo 模板未使用 fake-ip 规则过滤"
-    grep -Fq '      - MATCH,fake-ip' "${source}" \
-        || die "Mihomo 模板缺少 fake-ip 默认规则"
-    grep -Fq '    udp-timeout: 300' "${source}" \
-        || die "Mihomo 模板 UDP 会话超时不是 300 秒"
-    grep -Fq '    use-system-hosts: false' "${source}" \
-        || die "Mihomo 模板未使用 XFLASH hosts 策略"
-    grep -Fqx 'ipv6: false' "${source}" \
-        || die "Mihomo 模板未全局禁用客户端 IPv6"
-    grep -Fq '    ipv6: false' "${source}" \
-        || die "Mihomo DNS 未禁用 IPv6"
-    ! grep -Fq '    inet6-address:' "${source}" \
-        || die "Mihomo TUN 不应配置 IPv6 地址"
-    grep -Fq 'unified-delay: false' "${source}" \
-        || die "Mihomo 模板必须关闭 unified-delay"
-    grep -Fqx 'geodata-mode: true' "${source}" \
-        || die "Mihomo 模板未启用 Geo DAT 数据"
-    grep -Fqx 'geo-auto-update: true' "${source}" \
-        || die "Mihomo 模板未启用 Geo 数据自动更新"
-    grep -Fqx 'geo-update-interval: 24' "${source}" \
-        || die "Mihomo 模板 Geo 数据更新周期不是 24 小时"
-    grep -Fq 'MetaCubeX/meta-rules-dat@release/geoip.dat' "${source}" \
-        || die "Mihomo 模板缺少 GeoIP 数据源"
-    grep -Fq 'MetaCubeX/meta-rules-dat@release/geosite.dat' "${source}" \
-        || die "Mihomo 模板缺少 GeoSite 数据源"
-    grep -Fq "      'geosite:cn':" "${source}" \
-        || die "Mihomo 模板缺少中国域名 DNS 策略"
-    grep -Fq 'https://1.1.1.1/dns-query#PROXY' "${source}" \
-        || die "Mihomo 模板缺少 Cloudflare 代理 DNS"
-    grep -Fq 'https://8.8.8.8/dns-query#PROXY' "${source}" \
-        || die "Mihomo 模板缺少 Google 代理 DNS"
-    grep -Fq "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://1.1.1.1/dns-query']" \
-        "${source}" || die "Mihomo 模板缺少 XFLASH 节点 DNS"
-    grep -Fq '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' "${source}" \
-        || die "Mihomo 模板未放行中国大陆 QUIC"
-    if grep -Eq '^[[:space:]]+- PROCESS-NAME,(Thunder|DownloadService|qBittorrent|qbittorrent|Transmission|fdm|aria2c|Folx|NetTransport|uTorrent|WebTorrent|BitComet|ThunderVIP|transmission-daemon|transmission-qt|aDrive)(\.exe)?,DIRECT$' \
-        "${source}"; then
-        die "Mihomo 模板不应按下载器进程无条件直连"
+    grep -Fxq 'ipv6: false' "${source}" \
+        && grep -Fq '    ipv6: false' "${source}" \
+        && ! grep -Eq '^[[:space:]]+(inet6-address|fake-ip-range6):' "${source}" \
+        || die "Mihomo 模板必须保持 IPv4-only"
+    # Bundled templates are checked with a pinned core in CI. Custom templates must
+    # pass the same parser locally before either subscription publisher accepts them.
+    local bundled binary check_dir result=0
+    bundled="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/templates/mihomo.yaml"
+    binary=${MIHOMO_CHECK_BIN:-mihomo}
+    if ! command -v "${binary}" >/dev/null 2>&1; then
+        [[ -z "${MIHOMO_CHECK_BIN:-}" ]] && cmp -s "${source}" "${bundled}" && return 0
+        die "自定义 Mihomo 模板须经内核校验：请安装 mihomo 或设置 MIHOMO_CHECK_BIN"
     fi
-    if grep -Eq '^[[:space:]]+(default-nameserver|direct-nameserver|respect-rules):' \
-        "${source}"; then
-        die "Mihomo 模板包含非 XFLASH DNS 覆盖"
-    fi
+    check_dir=$(mktemp -d) || die "无法创建 Mihomo 校验目录"
+    # Supply a harmless node so the core can validate the complete template.
+    awk '
+        $0 == "# EASY_ALL_PROXY_NODE" {
+            print "  - {name: easy-all-check, type: socks5, server: 127.0.0.1, port: 9}"
+            next
+        }
+        $0 == "# EASY_ALL_PROXY_NAME" { print "        - easy-all-check"; next }
+        $0 == "# EASY_ALL_PROXY_GROUP" { next }
+        { print }
+    ' "${source}" >"${check_dir}/config.yaml"
+    "${binary}" -t -d "${MIHOMO_CHECK_HOME:-${check_dir}}" \
+        -f "${check_dir}/config.yaml" >/dev/null 2>&1 || result=$?
+    rm -rf -- "${check_dir}"
+    ((result == 0)) || die "Mihomo 模板内核校验失败，请检查 YAML、规则及 Geo 数据"
 }
 
 fetch_mihomo_template() {
@@ -93,9 +71,17 @@ fetch_mihomo_template() {
 prepare_mihomo_template() {
     local template
     if [[ -n "${MIHOMO_TEMPLATE_FILE:-}" && -s "${MIHOMO_TEMPLATE_FILE}" ]]; then
+        validate_mihomo_template "${MIHOMO_TEMPLATE_FILE}"
         return 0
     fi
     template="${RUNTIME_TMP}/sample-mihomo.yaml"
     fetch_mihomo_template "${template}"
     MIHOMO_TEMPLATE_FILE=${template}
 }
+
+# The Worker builder uses this same gate; never print template contents/secrets.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    set -euo pipefail
+    die() { printf '%s\n' "$*" >&2; exit 1; }
+    validate_mihomo_template "$1"
+fi

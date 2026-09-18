@@ -52,7 +52,8 @@ assert_failure() {
 
 source_script_copy() {
     local module
-    install -d -m 0755 "${TMP_DIR}/lib" "${TMP_DIR}/profiles"
+    install -d -m 0755 "${TMP_DIR}/lib" "${TMP_DIR}/profiles" "${TMP_DIR}/templates"
+    install -m 0644 "${ROOT_DIR}/templates/mihomo.yaml" "${TMP_DIR}/templates/mihomo.yaml"
     for module in log.sh runtime-core.sh quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/lib/${module}"
     done
@@ -88,7 +89,7 @@ set_fixture() {
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
     REALITY_TARGET="www.cloudflare.com:443"
     REALITY_PRIVATE_KEY="test-private-key"
-    REALITY_PUBLIC_KEY="test-public-key"
+    REALITY_PUBLIC_KEY="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
     REALITY_SHORT_ID="0123456789abcdef"
     VPS_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
@@ -366,15 +367,15 @@ test_mihomo_template() {
         "MetaCubeX/meta-rules-dat@release/geosite.dat" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo resolves mainland domains with mainland DoH" \
-        "'geosite:cn':" \
+        "'geosite:geolocation-cn':" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     google_dns_line=$(grep -nF -- "      'geosite:google':" \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
-    cn_dns_line=$(grep -nF -- "      'geosite:cn':" \
+    cn_dns_line=$(grep -nF -- "      'geosite:geolocation-cn':" \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
     assert_success "Google DNS takes precedence over CN for services.googleapis.cn" \
         bash -c '(( $1 > 0 && $1 < $2 ))' _ "${google_dns_line}" "${cn_dns_line}"
-    google_dns_policy=$(sed -n "/^      'geosite:google':/,/^      'geosite:cn':/p" \
+    google_dns_policy=$(sed -n "/^      'geosite:google':/,/^      'geosite:geolocation-cn':/p" \
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_contains "Google policy resolves Play APIs through proxied Cloudflare DoH" \
         "https://1.1.1.1/dns-query#PROXY" "${google_dns_policy}"
@@ -396,8 +397,8 @@ test_mihomo_template() {
         "default-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not add a non-XFLASH direct nameserver" \
         "direct-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_not_contains "Mihomo does not add the system resolver" \
-        "- system" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo resolves private domains locally" \
+        "'geosite:private': system" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" \
         | grep -Ec '^  - ')
     assert_success "Mihomo template stays within the lightweight rule budget" \
@@ -422,7 +423,7 @@ test_mihomo_template() {
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
         '  - RULE-SET,direct-cdn,DIRECT' "${first_rule}"
-    cn_domain_rule_line=$(grep -nF -- '  - GEOSITE,CN,DIRECT' \
+    cn_domain_rule_line=$(grep -nF -- '  - GEOSITE,geolocation-cn,DIRECT' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
     google_rule_line=$(grep -nF -- '  - GEOSITE,google,PROXY' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
@@ -450,7 +451,7 @@ test_mihomo_template() {
     assert_contains "Mihomo routes Microsoft domestic CDN direct" \
         "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes mainland domains direct" \
-        "GEOSITE,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes mainland IP addresses direct" \
         "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo falls back to proxy for unclassified traffic" \
@@ -464,6 +465,13 @@ test_mihomo_template() {
         "${ROOT_DIR}/templates/mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \
         validate_mihomo_template "${invalid}"
+    cat "${ROOT_DIR}/templates/mihomo.yaml" >"${invalid}"
+    printf '\nbroken: [\n' >>"${invalid}"
+    assert_failure "template rejects malformed custom YAML" \
+        validate_mihomo_template "${invalid}"
+    assert_failure "preselected templates cannot bypass validation" \
+        bash -c 'source "$1"; die() { exit 1; }; MIHOMO_TEMPLATE_FILE=$2; prepare_mihomo_template' \
+        _ "${ROOT_DIR}/lib/mihomo-template.sh" "${invalid}"
 }
 
 test_subscription_generation() {
@@ -487,6 +495,11 @@ test_subscription_generation() {
         "${DYNAMIC_PORT_MAX}" "${EASY_ALL_ADDITIONAL_SSH_PORT}"
     MIHOMO_TEMPLATE_FILE=""
     generate_subscription_files "${base64_file}" "${mihomo_file}"
+    if [[ -n "${MIHOMO_CHECK_BIN:-}" ]]; then
+        assert_success "generated Reality subscription loads in Mihomo" \
+            "${MIHOMO_CHECK_BIN}" -t -d "${MIHOMO_CHECK_HOME:-${TMP_DIR}}" -f "${mihomo_file}"
+    fi
+
     decoded=$(openssl base64 -d -A <"${base64_file}")
     yaml=$(<"${mihomo_file}")
     assert_contains "Base64 subscription contains Reality" "security=reality" "${decoded}"
@@ -536,6 +549,11 @@ test_subscription_generation() {
     assert_contains "show node uses fixed port 443 in Mihomo" \
         "port: 443" "${node_output}"
     generate_subscription_files "${base64_file}" "${mihomo_file}"
+    if [[ -n "${MIHOMO_CHECK_BIN:-}" ]]; then
+        assert_success "generated Reality subscription loads in Mihomo" \
+            "${MIHOMO_CHECK_BIN}" -t -d "${MIHOMO_CHECK_HOME:-${TMP_DIR}}" -f "${mihomo_file}"
+    fi
+
     decoded=$(openssl base64 -d -A <"${base64_file}")
     assert_contains "fixed subscription mode uses port 443" \
         "@203.0.113.10:443?" "${decoded}"

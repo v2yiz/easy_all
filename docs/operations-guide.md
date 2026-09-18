@@ -26,8 +26,13 @@ sudo easy_all self-update
 sudo easy_all update-sub
 ```
 
-Cloudflare 模式选择保留现有 Worker 聚合配置即可，不需要再执行 `apply-cloud`。最后在客户端
-刷新订阅并重启代理内核。
+Cloudflare 模式保留现有订阅模式、Worker 名称、订阅域名、用户 Token 和配额；出现 Worker
+聚合配置选项时选择 `1. 保留`。此命令会重新构建并部署 Worker，并更新本机订阅，
+不需要再执行 `apply-cloud`。最后在客户端刷新订阅并重启代理内核。
+
+若代码推送在 `dev`，第一条命令改为 `sudo easy_all self-update --dev`。`self-update` 或
+`apply` 单独执行都不会更新 Cloudflare Worker 内嵌的规则。独立手工部署的 Worker 则需要
+在其构建环境重新构建并部署；VPS 无法自动更新未由安装器管理的 Worker。
 
 更新 Xray 核心：
 

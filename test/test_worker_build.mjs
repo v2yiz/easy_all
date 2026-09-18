@@ -3,12 +3,15 @@ import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 import { buildWorker } from '../scripts/build-worker.mjs';
 
 const temp = await mkdtemp(join(tmpdir(), 'worker-test-'));
 try {
     const config = JSON.parse(await readFile(new URL('../worker-src/config.example.json', import.meta.url), 'utf8'));
     config.allowedTokens = { owner: 'offline-test-token' };
+    config.nodes[0].pbk = Buffer.alloc(32, 1).toString('base64url');
+    config.nodes[0].sid = '0123456789abcdef';
     // The installer injects vpsSubUrl before deploying, so the shared example carries none.
     config.vpsSubUrl = 'https://node.example.com/subscribe';
     config.nodes.push({ ...config.nodes[0], name: 'Hidden Reality', host: 'hidden.example.com' });
@@ -20,6 +23,11 @@ try {
     const now = Date.UTC(2026, 8, 6, 15, 59);
     assert.equal(await buildWorker({ configPath, outputPath, now }), '2026-09-06-v0');
     const initial = await readFile(outputPath, 'utf8');
+    const invalidTemplatePath = join(temp, 'invalid.yaml');
+    await writeFile(invalidTemplatePath, await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8') + '\nbroken: [\n');
+    await assert.rejects(buildWorker({configPath, outputPath, templatePath: invalidTemplatePath}), /template validation failed/);
+    assert.equal(await readFile(outputPath, 'utf8'), initial, 'invalid template preserves previous Worker');
+
     assert.equal(await buildWorker({ configPath, outputPath, now }), '2026-09-06-v1');
     const second = await readFile(outputPath, 'utf8');
     assert.equal(second.replace('2026-09-06-v1', '2026-09-06-v0'), initial, 'only version changes on rebuild');
@@ -347,6 +355,15 @@ try {
         4443,
         'extra Reality nodes may pin a fixed port',
     );
+    // CI supplies a pinned core: parse actual healthy/degraded/all-node responses.
+    if (process.env.MIHOMO_CHECK_BIN) {
+        for (const [name, body] of Object.entries({liveBody, fallbackBody, allBody})) {
+            const file = join(temp, `${name}.yaml`);
+            await writeFile(file, body);
+            const checked = spawnSync(process.env.MIHOMO_CHECK_BIN, ['-t', '-d', process.env.MIHOMO_CHECK_HOME || temp, '-f', file], {encoding: 'utf8'});
+            assert.equal(checked.status, 0, `${name} core validation failed: ${checked.stdout} ${checked.stderr}`);
+        }
+    }
     const rules = template.split('\nrules:\n')[1];
     const before = (text, first, second) => {
         const a = text.indexOf(first);
@@ -354,9 +371,17 @@ try {
         assert.ok(a >= 0 && b >= 0 && a < b, `${first} must precede ${second}`);
     };
     before(rules, 'RULE-SET,direct-cdn,DIRECT', 'AND,((NETWORK,UDP)');
+    assert.ok(!rules.includes('PROCESS-NAME,'), 'process names must not bypass service routing');
+    assert.ok(!rules.includes('GEOSITE,CN,'), 'broad ChinaMax domain set is not used');
+    assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
+    assert.ok(template.includes('use-system-hosts: true'), 'local hosts are honored');
+    assert.ok(template.includes('GEOSITE,geolocation-cn,real-ip'), 'DNS and routing share the narrow mainland set');
+    for (const domain of ['music.163.com', 'y.qq.com', 'music.migu.cn']) {
+        assert.ok(!template.includes(`- DOMAIN,${domain},real-ip`), 'suffix filter already covers the exact domain');
+    }
     const fcmRule = 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY';
     before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmRule);
-    before(rules, fcmRule, 'GEOSITE,CN,DIRECT');
+    before(rules, fcmRule, 'GEOSITE,geolocation-cn,DIRECT');
     before(rules, fcmRule, 'GEOIP,CN,DIRECT');
     const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
     before(fakeIpFilter, 'GEOSITE,googlefcm,real-ip', 'MATCH,fake-ip');
@@ -369,20 +394,20 @@ try {
         before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},PROXY`);
         before(rules, `${matcher},PROXY`, 'GEOSITE,apple-cn,DIRECT');
         before(rules, `${matcher},PROXY`, 'GEOSITE,microsoft@cn,DIRECT');
-        before(rules, `${matcher},PROXY`, 'GEOSITE,CN,DIRECT');
+        before(rules, `${matcher},PROXY`, 'GEOSITE,geolocation-cn,DIRECT');
     }
     before(rules, 'GEOSITE,microsoft@cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
-    before(rules, 'GEOSITE,CN,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
+    before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
     const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
     for (const key of ['geosite:google', 'geosite:openai,anthropic', 'rule-set:proxy-services']) {
         assert.ok(dnsPolicy.includes(
             `      '${key}':\n        - 'https://1.1.1.1/dns-query#PROXY'\n        - 'https://8.8.8.8/dns-query#PROXY'`
         ), `${key} must use proxied DoH`);
         before(dnsPolicy, `'${key}':`, "'geosite:apple-cn,microsoft@cn':");
-        before(dnsPolicy, `'${key}':`, "'geosite:cn':");
+        before(dnsPolicy, `'${key}':`, "'geosite:geolocation-cn':");
     }
-    for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:cn']) {
+    for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:geolocation-cn']) {
         assert.ok(dnsPolicy.includes(
             `      '${key}':\n        - https://223.5.5.5/dns-query\n        - https://1.12.12.12/dns-query`
         ), `${key} must use mainland DoH`);

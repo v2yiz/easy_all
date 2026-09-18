@@ -14,8 +14,8 @@
 公网 IPv4。
 
 两种模式都会保留已检测到的 SSH 端口，并额外监听 TCP `65533`。UFW 在拒绝其他入站流量前
-放行这些端口，Fail2ban 监控实际 SSH 端口列表。生成的 Mihomo 配置将 TCP `22` 和 `65533`
-直连规则置顶，避免 TUN 把管理流量送回代理。
+放行这些端口，Fail2ban 监控实际 SSH 端口列表。订阅不按 SSH 端口或进程名强制直连；
+如需绕过代理管理 VPS，请在客户端添加该 VPS 地址的精确直连规则。
 
 ## 直连 Reality
 
@@ -76,9 +76,11 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 
 - Google、OpenAI、Anthropic、Copilot 依赖项走代理 DNS 和代理出口；
 - `services.googleapis.cn`、`r.bing.com`、`in.appcenter.ms`、`aka.ms`、`1drv.ms`
-  不被通用中国大陆规则抢先；
+  不被通用国内规则抢先；
 - Apple、微软国内 CDN、Steam 下载和其他中国大陆域名使用国内 DoH；
-- Kimi、MiniMax 等与国内集合重叠的服务维持直连优先。
+- 国内域名统一使用同源 `geolocation-cn`，避免 ChinaMax `cn` 将整个 `.ms` 后缀直连；
+- `kimi.com`、`minimaxi.com` 等国内入口维持直连；国际入口按实际集合与 GeoIP 分流；
+- 私有域名使用系统 DNS，本机 hosts 生效；移动端的覆盖方式见客户端指南。
 
 服务器 TCP keepalive 默认使用 `300/30/5`，用于回收半开连接，不能替代 XHTTP 的应用层保活。
 临时端口范围为 `13000-60999`，避开 Reality 动态入口和本机服务端口。
@@ -157,3 +159,14 @@ npm test
 
 测试覆盖入口和模块完整性、Reality、Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、
 订阅渲染、Token 鉴权、证书轮换、Worker 构建和更新顺序。
+
+订阅模板的发布检查固定使用 Mihomo v1.19.31，GitHub Actions 同时校验完整 Reality 订阅及
+Worker 正常、降级、全部节点输出。可在本机用已有内核和 Geo 数据运行同样检查：
+
+```bash
+MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
+```
+
+默认内置模板无需在 VPS 安装 Mihomo。自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
+可用 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
+模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。

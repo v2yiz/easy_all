@@ -1,0 +1,28 @@
+name: Test
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      MIHOMO_CHECK_BIN: ${{ runner.temp }}/mihomo
+      MIHOMO_CHECK_HOME: ${{ runner.temp }}/mihomo-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned validation core and Geo data
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          curl -fL --retry 3 --max-time 120 https://github.com/MetaCubeX/mihomo/releases/download/v1.19.31/mihomo-linux-amd64-v1.19.31.gz -o "$RUNNER_TEMP/mihomo.gz"
+          echo "d5e74bbddbdfff49a1aef7775bf5911da59f0d7196ed509a0ac914b3653dd5f1  $RUNNER_TEMP/mihomo.gz" | sha256sum -c -
+          gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$MIHOMO_CHECK_BIN"
+          chmod 700 "$MIHOMO_CHECK_BIN"
+          mkdir -p "$MIHOMO_CHECK_HOME"
+          for asset in geoip geosite; do
+            curl -fL --retry 3 --max-time 120 "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/$asset.dat" -o "$MIHOMO_CHECK_HOME/$asset.dat"
+          done
+      - run: npm test

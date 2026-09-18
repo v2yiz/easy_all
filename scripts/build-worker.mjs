@@ -108,6 +108,10 @@ export async function buildWorker({
     for (const marker of ['# EASY_ALL_PROXY_NODE', '# EASY_ALL_PROXY_GROUP', '# EASY_ALL_PROXY_NAME']) {
         requireValue(template.split('\n').filter(line => line === marker).length === 1, `template marker ${marker}`);
     }
+    const checkedTemplate = spawnSync('bash', [resolve(root, 'lib/mihomo-template.sh'), templatePath], { stdio: 'ignore' });
+    if (checkedTemplate.status !== 0) {
+        throw new Error('Mihomo template validation failed; custom templates require MIHOMO_CHECK_BIN and valid Geo data');
+    }
     const date = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
     let previous = '';
     try { previous = await readFile(outputPath, 'utf8'); }

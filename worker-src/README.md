@@ -21,11 +21,12 @@ npm run test:worker
 
 旧版环境若仍使用 `worker-src/config.local.json`，先将它以 `0600` 权限迁移为
 `$config_dir/worker.json`；它与聚合输入同形，可直接复用。确认新路径可用后再删除仓库内旧文件。
-Node.js 18 或更新版本即可，无需安装 npm 依赖。
+需要 Node.js 18 或更新版本及 Bash，无需安装 npm 依赖。自定义模板还需 Mihomo 内核校验，
+配置方法见[技术参考](../docs/technical-reference.md#测试)。
 
 - `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点、外部订阅源和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口继续按北京时间每三小时轮换；所有节点统一输出 `ipVersion: ipv4`。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
-- `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。自定义模式 2 模板会与默认 Worker 配置不同。
+- `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。安装器会把同一模板传给 Worker 构建。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
 
 配置和生成产物默认位于仓库外，目录权限为 0700、文件权限为 0600。可通过
@@ -51,11 +52,13 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 `externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用带版本的 Mihomo UA，使上游正确下发 Mieru 等需要能力识别的节点，同时避免透传客户端版本导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；仅生成 `PROXY` 和 `🇺🇸优选` 两个策略组，没有 CDN 节点时使用 REJECT。
 
 公共模板全局禁用 IPv6，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。
-Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于 CN 和微软国内 CDN，
+国内集合使用 `geolocation-cn`，不再引用包含整个 `.ms` 后缀的 ChinaMax `cn`。
+Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于国内集合和微软国内 CDN，
 统一经 `PROXY`；对应 UDP/443 先拒绝以回退 TCP。Google Play 接口、下载重定向和 APK CDN 保持同一代理策略。
 仅内嵌 `proxy-services`（24 条）与 `direct-cdn`（5 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
 Steam 下载及 Apple/微软国内 CDN 使用国内 DoH 并直连；其他国内域名沿用国内策略，
-其余域名通过 `PROXY` 使用 Cloudflare 与 Google DoH。Kimi 等重叠服务仍由 CN 优先处理，不代理整个微软或共享 CDN。
+其余公网域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；私有域名使用系统 DNS，并启用本机 hosts。
+`kimi.com`、`minimaxi.com` 等国内入口维持直连，国际入口按实际集合与 GeoIP 分流；不代理整个微软或共享 CDN。
 代理节点域名仍由独立的直连 DoH 解析，避免启动循环。
 
 Reality 和动态 Cloudflare 节点固定输出 `ipv4`；IPv6 literal 会被拒绝。修改公共模板后需重新构建

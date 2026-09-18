@@ -41,6 +41,17 @@ Clash Mi 的 `GLOBAL` 分组默认指向 `DIRECT`。切换到“全局”模式�
 
 ![Clash Mi 规则模式与全局模式设置](img/clashmi/clashmi-global-proxy.svg)
 
+## 局域网 DNS 与直连覆盖
+
+私有域名默认通过客户端系统 DNS 解析，并启用系统 hosts。若 `nas.lan` 等名称仍无法解析，
+在客户端 DNS 覆写中将 `nameserver-policy` 的 `geosite:private` 指向实际局域网 DNS，
+如路由器地址；不要使用 Mihomo 自己的 DNS 监听地址，避免解析循环。
+Clash Meta for Android 可使用 `dhcp://system` 获取系统 DNS；其他客户端按其 DNS 覆写能力设置。
+公共模板不写死网关地址，切换网络后应检查该覆盖是否仍适用。
+
+订阅不再按 v2ray、xray、Surge 等进程名无条件直连。如需管理 VPS 或串联其他代理，
+在客户端添加目标地址的精确直连规则；不要将所有 SSH 端口或下载器进程一律直连。
+
 ## Android 打开 App 才收到消息
 
 Telegram 等 App 前台正常、后台不推送时，先检查 Google FCM 推送通道。模板让
