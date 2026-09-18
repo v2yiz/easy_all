@@ -306,30 +306,30 @@ resolved_root=$(
 )
 assert_equal "symlinked command resolves the module root" "${ROOT_DIR}" "${resolved_root}"
 
-if command -v script >/dev/null 2>&1; then
-    pty_output=$(
-        printf '\n' | script -q /dev/null bash -c \
-            'source "$1"; mode=$(choose_install_mode); printf "MODE=<%s>\n" "$mode"' \
-            _ "${ROOT_DIR}/easy_all"
-    )
-    [[ "${pty_output}" == *"MODE=<reality>"* ]] \
-        || fail "interactive menu output polluted the selected mode: ${pty_output}"
-fi
-
 if command -v python3 >/dev/null 2>&1; then
-    pty_output_mode2=$(
-        python3 -c "import pty, os, subprocess, sys
-master, slave = os.openpty()
-p = subprocess.Popen(['bash', '-c', 'source \"\$1\"; mode=\$(choose_install_mode); printf \"MODE=<\$mode>\\n\"', '_', sys.argv[1]], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-os.close(slave)
-os.write(master, b'2\n')
-stdout, _ = p.communicate()
-os.close(master)
-sys.stdout.write(stdout.decode())" "${ROOT_DIR}/easy_all"
-    )
-    [[ "${pty_output_mode2}" == *"MODE=<cloudflare-streamup>"* ]] \
-        || fail "interactive menu choice 2 failed: ${pty_output_mode2}"
+    python3 - "${ROOT_DIR}/easy_all" <<'PYTHON'
+import os
+import subprocess
+import sys
 
+# Python's PTY works on both Linux and macOS; their script(1) flags differ.
+for answer, expected in [(b'\n', 'reality'), (b'2\n', 'cloudflare-streamup')]:
+    master, slave = os.openpty()
+    try:
+        process = subprocess.Popen(
+            ['bash', '-c', 'source "$1"; mode=$(choose_install_mode); printf "MODE=<%s>\\n" "$mode"', '_', sys.argv[1]],
+            stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        os.close(slave)
+        os.write(master, answer)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0 and f'MODE=<{expected}>' in stdout.decode(), (stdout, stderr)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
+PYTHON
 fi
 
 [[ "${launcher_content}" == *"1) printf 'reality"* \
