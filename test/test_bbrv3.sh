@@ -31,6 +31,7 @@ BBRV3_XANMOD_KEYRING_OVERRIDE="${TMP_DIR}/xanmod.gpg"
 BBRV3_XANMOD_SOURCE_OVERRIDE="${TMP_DIR}/xanmod.list"
 BBRV3_CPUINFO_FILE_OVERRIDE="${TMP_DIR}/cpuinfo"
 BBRV3_AVAILABLE_CC_FILE_OVERRIDE="${TMP_DIR}/tcp_available_congestion_control"
+SYSTEMD_SYSTEM_DIR="${TMP_DIR}/systemd-disabled"
 install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}" "${RUNTIME_TMP}"
 printf 'reno cubic bbr\n' >"${BBRV3_AVAILABLE_CC_FILE_OVERRIDE}"
 
