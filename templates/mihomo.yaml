@@ -79,6 +79,8 @@ dns:
       - '+.wxs.qq.com'
       - '+.res.wx.qq.com'
       - '+.wechat.com'
+      # 豆包输入法语音服务使用国内 DNS 和真实 IP。
+      - speech.bytedance.com
       - '+.lan'
       - 'stun.*.*.*'
       - 'stun.*.*'
@@ -225,6 +227,8 @@ rule-providers:
         - '+.wxs.qq.com'
         - '+.res.wx.qq.com'
         - '+.wechat.com'
+        # 豆包输入法语音服务。
+        - speech.bytedance.com
 
 proxies:
 # EASY_ALL_PROXY_NODE

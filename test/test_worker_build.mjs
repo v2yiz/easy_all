@@ -392,6 +392,7 @@ try {
     for (const domain of wechatDomains) {
         assert.ok(fakeIpFilter.includes(`      - '+.${domain}'\n`), `${domain} must bypass fake-IP`);
     }
+    assert.ok(fakeIpFilter.includes('      - speech.bytedance.com\n'), 'Doubao IME speech must bypass fake-IP');
     // Both healthy and degraded aggregation must deliver the FCM DNS and IP-only routing fix.
     for (const body of [liveBody, fallbackBody, allBody]) {
         assert.ok(body.includes("      - 'geosite:googlefcm'\n"));
@@ -439,6 +440,7 @@ try {
     for (const domain of [
         'love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'",
         "'+.cm.steampowered.com'", "'+.steamserver.net'", ...wechatDomains.map((domain) => `'+.${domain}'`),
+        'speech.bytedance.com',
     ]) {
         assert.ok(directCdn.includes(`        - ${domain}\n`), `${domain} must remain a direct exception`);
     }

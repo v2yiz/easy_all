@@ -422,6 +422,10 @@ test_mihomo_template() {
         assert_contains "Mihomo routes WeChat resource ${domain} direct" \
             "- '+.${domain}'" "${direct_cdn}"
     done
+    assert_contains "Mihomo resolves Doubao IME speech directly" \
+        "- speech.bytedance.com" "${fake_ip_filter}"
+    assert_contains "Mihomo routes Doubao IME speech direct" \
+        "- speech.bytedance.com" "${direct_cdn}"
     assert_contains "Mihomo keeps Steam downloads in the direct CDN set" \
         "- '+.steamcontent.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes the direct CDN set without a proxy" \

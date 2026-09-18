@@ -78,7 +78,7 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 - Google、OpenAI、Anthropic、Copilot 依赖项走代理 DNS 和代理出口；
 - `services.googleapis.cn`、`r.bing.com`、`in.appcenter.ms`、`aka.ms`、`1drv.ms`
   不被通用国内规则抢先；
-- Apple、微软国内 CDN、Steam 下载、微信图片资源和其他中国大陆域名使用国内 DoH；
+- Apple、微软国内 CDN、Steam 下载、微信图片资源、豆包输入法语音服务和其他中国大陆域名使用国内 DoH；
 - 国内域名统一使用同源 `geolocation-cn`，避免 ChinaMax `cn` 将整个 `.ms` 后缀直连；
 - `kimi.com`、`minimaxi.com` 等国内入口维持直连；国际入口按实际集合与 GeoIP 分流；
 - 私有域名使用系统 DNS，本机 hosts 生效；移动端的覆盖方式见客户端指南。
