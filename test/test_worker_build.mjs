@@ -373,6 +373,7 @@ try {
     before(rules, 'RULE-SET,direct-cdn,DIRECT', 'AND,((NETWORK,UDP)');
     assert.ok(!rules.includes('PROCESS-NAME,'), 'process names must not bypass service routing');
     assert.ok(!rules.includes('GEOSITE,CN,'), 'broad ChinaMax domain set is not used');
+    assert.ok(rules.includes('IP-CIDR,0.0.0.0/8,REJECT,no-resolve'), 'DNS sinkhole addresses must not enter the proxy');
     assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
     assert.ok(template.includes('use-system-hosts: true'), 'local hosts are honored');
     assert.ok(template.includes('fake-ip-filter-mode: blacklist'), 'fake-IP filtering remains compatible with client DNS overrides');
@@ -392,7 +393,6 @@ try {
     for (const domain of wechatDomains) {
         assert.ok(fakeIpFilter.includes(`      - '+.${domain}'\n`), `${domain} must bypass fake-IP`);
     }
-    assert.ok(fakeIpFilter.includes('      - speech.bytedance.com\n'), 'Doubao IME speech must bypass fake-IP');
     // Both healthy and degraded aggregation must deliver the FCM DNS and IP-only routing fix.
     for (const body of [liveBody, fallbackBody, allBody]) {
         assert.ok(body.includes("      - 'geosite:googlefcm'\n"));
@@ -408,7 +408,7 @@ try {
     before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
     const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
-    for (const key of ['geosite:google', 'geosite:openai,anthropic', 'rule-set:proxy-services']) {
+    for (const key of ['geosite:google', 'geosite:openai,anthropic', 'rule-set:proxy-services', 'geosite:geolocation-!cn,gfw']) {
         assert.ok(dnsPolicy.includes(
             `      '${key}':\n        - 'https://1.1.1.1/dns-query#PROXY'\n        - 'https://8.8.8.8/dns-query#PROXY'`
         ), `${key} must use proxied DoH`);
@@ -420,6 +420,15 @@ try {
             `      '${key}':\n        - https://223.5.5.5/dns-query\n        - https://1.12.12.12/dns-query`
         ), `${key} must use mainland DoH`);
     }
+    const defaultDns = template.split('    nameserver:\n')[1].split('    proxy-server-nameserver:')[0];
+    assert.ok(defaultDns.includes(
+        '      - https://223.5.5.5/dns-query\n      - https://1.12.12.12/dns-query\n'
+    ), 'unknown domains must use mainland DNS first');
+    assert.ok(defaultDns.includes(
+        "    fallback:\n      - 'https://1.1.1.1/dns-query#PROXY'\n      - 'https://8.8.8.8/dns-query#PROXY'\n"
+    ), 'foreign DNS fallback must use the proxy');
+    assert.ok(defaultDns.includes('      geoip: true\n      geoip-code: CN\n'));
+    assert.ok(defaultDns.includes('    fallback-lazy-query: true\n'));
     const providers = template.split('\nrule-providers:\n')[1].split('\nproxies:\n')[0];
     assert.equal((providers.match(/type: inline/g) || []).length, 2);
     assert.equal((providers.match(/behavior: domain/g) || []).length, 2);
@@ -440,10 +449,10 @@ try {
     for (const domain of [
         'love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'",
         "'+.cm.steampowered.com'", "'+.steamserver.net'", ...wechatDomains.map((domain) => `'+.${domain}'`),
-        'speech.bytedance.com',
     ]) {
         assert.ok(directCdn.includes(`        - ${domain}\n`), `${domain} must remain a direct exception`);
     }
+    assert.ok(!template.includes('speech.bytedance.com'), 'domestic DNS fallback must replace one-off Doubao patches');
     // An aggregation input carries no vpsSubUrl, so the validator must accept its absence
     // instead of demanding a URL the caller never has.
     const aggregationConfig = { ...config };

@@ -79,8 +79,6 @@ dns:
       - '+.wxs.qq.com'
       - '+.res.wx.qq.com'
       - '+.wechat.com'
-      # 豆包输入法语音服务使用国内 DNS 和真实 IP。
-      - speech.bytedance.com
       - '+.lan'
       - 'stun.*.*.*'
       - 'stun.*.*'
@@ -161,6 +159,9 @@ dns:
       'rule-set:proxy-services':
         - 'https://1.1.1.1/dns-query#PROXY'
         - 'https://8.8.8.8/dns-query#PROXY'
+      'geosite:geolocation-!cn,gfw':
+        - 'https://1.1.1.1/dns-query#PROXY'
+        - 'https://8.8.8.8/dns-query#PROXY'
       # 与直连规则使用相同集合，避免国内 CDN 按代理出口调度。
       'rule-set:direct-cdn':
         - https://223.5.5.5/dns-query
@@ -172,8 +173,16 @@ dns:
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
     nameserver:
+      - https://223.5.5.5/dns-query
+      - https://1.12.12.12/dns-query
+    # 国内 DNS 返回非中国地址时，改用经代理的海外 DNS，兼顾未知国内 CDN 与境外域名。
+    fallback:
       - 'https://1.1.1.1/dns-query#PROXY'
       - 'https://8.8.8.8/dns-query#PROXY'
+    fallback-filter:
+      geoip: true
+      geoip-code: CN
+    fallback-lazy-query: true
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://1.1.1.1/dns-query']
 
 rule-providers:
@@ -227,8 +236,6 @@ rule-providers:
         - '+.wxs.qq.com'
         - '+.res.wx.qq.com'
         - '+.wechat.com'
-        # 豆包输入法语音服务。
-        - speech.bytedance.com
 
 proxies:
 # EASY_ALL_PROXY_NODE
@@ -246,6 +253,8 @@ rules:
   # 局域网直连。
   - GEOSITE,private,DIRECT
   - GEOIP,LAN,DIRECT,no-resolve
+  # 0.0.0.0/8 是不可路由保留地址；DNS 黑洞结果不得进入代理出口。
+  - IP-CIDR,0.0.0.0/8,REJECT,no-resolve
   # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
   - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
   # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口。

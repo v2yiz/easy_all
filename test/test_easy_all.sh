@@ -337,7 +337,7 @@ test_subscription_stage_dispatch() {
 
 test_mihomo_template() {
     local invalid="${TMP_DIR}/invalid.yaml" party_compat="${TMP_DIR}/clash-party.yaml"
-    local rule_count first_rule fake_ip_filter direct_cdn domain
+    local rule_count first_rule fake_ip_filter direct_cdn dns_default domain
     local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
     local google_rule_line google_quic_rule_line google_dns_line cn_dns_line google_dns_policy
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
@@ -386,12 +386,24 @@ test_mihomo_template() {
         "https://1.1.1.1/dns-query#PROXY" "${google_dns_policy}"
     assert_contains "Google policy resolves Play APIs through proxied Google DoH" \
         "https://8.8.8.8/dns-query#PROXY" "${google_dns_policy}"
-    assert_contains "Mihomo resolves other domains through Cloudflare DoH over PROXY" \
+    assert_contains "Mihomo keeps Cloudflare DoH as the global fallback" \
         "https://1.1.1.1/dns-query#PROXY" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo resolves other domains through Google DoH over PROXY" \
+    assert_contains "Mihomo keeps Google DoH as the global fallback" \
         "https://8.8.8.8/dns-query#PROXY" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    dns_default=$(sed -n '/^    nameserver:$/,/^    proxy-server-nameserver:/p' \
+        "${ROOT_DIR}/templates/mihomo.yaml")
+    assert_contains "Mihomo defaults unknown domains to mainland DNS" \
+        "- https://223.5.5.5/dns-query" "${dns_default}"
+    assert_contains "Mihomo has a second mainland default DNS" \
+        "- https://1.12.12.12/dns-query" "${dns_default}"
+    assert_contains "Mihomo falls back when mainland DNS returns a foreign IP" \
+        "geoip-code: CN" "${dns_default}"
+    assert_contains "Mihomo avoids eager global fallback queries" \
+        "fallback-lazy-query: true" "${dns_default}"
+    assert_contains "Mihomo resolves known global domains through global DNS directly" \
+        "'geosite:geolocation-!cn,gfw':" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo no longer forces direct HTTP/3 DNS" \
         "https://223.6.6.6/dns-query#h3=true" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
@@ -422,10 +434,8 @@ test_mihomo_template() {
         assert_contains "Mihomo routes WeChat resource ${domain} direct" \
             "- '+.${domain}'" "${direct_cdn}"
     done
-    assert_contains "Mihomo resolves Doubao IME speech directly" \
-        "- speech.bytedance.com" "${fake_ip_filter}"
-    assert_contains "Mihomo routes Doubao IME speech direct" \
-        "- speech.bytedance.com" "${direct_cdn}"
+    assert_not_contains "Mihomo avoids per-domain Doubao DNS patches" \
+        "speech.bytedance.com" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo keeps Steam downloads in the direct CDN set" \
         "- '+.steamcontent.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes the direct CDN set without a proxy" \
@@ -438,6 +448,8 @@ test_mihomo_template() {
         "PROCESS-NAME,qBittorrent,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not bypass routing by downloader process on Windows" \
         "PROCESS-NAME,Thunder.exe,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo rejects unroutable DNS sinkhole addresses" \
+        "IP-CIDR,0.0.0.0/8,REJECT,no-resolve" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     first_rule=$(awk '/^rules:$/ { found=1; next } found && $0 !~ /^  #/ { print; exit }' \
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
