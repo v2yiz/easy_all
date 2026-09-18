@@ -52,10 +52,16 @@ Clash Meta for Android 可使用 `dhcp://system` 获取系统 DNS；其他客户
 订阅不再按 v2ray、xray、Surge 等进程名无条件直连。如需管理 VPS 或串联其他代理，
 在客户端添加目标地址的精确直连规则；不要将所有 SSH 端口或下载器进程一律直连。
 
+## Clash Party 与微信图片
+
+模板使用 `fake-ip-filter-mode: blacklist`，避免 Clash Party 接管 DNS 后把内置的 `*`
+过滤项误当成规则模式。微信的图片、头像和小程序资源域名会返回真实 IP，并使用国内 DNS
+与直连出口。更新订阅后应重启代理内核以清除旧 Fake-IP 映射；无需清除微信数据。
+
 ## Android 打开 App 才收到消息
 
 Telegram 等 App 前台正常、后台不推送时，先检查 Google FCM 推送通道。模板让
-`googlefcm` 域名返回真实 IP；进入代理内核的 TCP 5228–5230 流量走 `PROXY`
+`geosite:googlefcm` 域名返回真实 IP；进入代理内核的 TCP 5228–5230 流量走 `PROXY`
 （局域网仍直连），避免无域名的推送连接落入国内 IP 直连规则。FCM 的 443 回退和注册请求
 继续使用现有 Google 代理规则及代理 DNS。
 
@@ -68,7 +74,7 @@ Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）
 - 关闭“允许绕过 VPN”，并让 Google Play 服务（`com.google.android.gms`）参与 VPN；
   仅代理 Telegram 的应用白名单不能覆盖系统推送。
 - 如启用了智能启停或休眠，先关闭，确保锁屏后内核继续工作；允许 Bettbox 与 Google Play 服务后台运行。
-- 如果启用了 DNS 覆写，确认最终配置保留 `GEOSITE,googlefcm,real-ip`。重新连接网络或重启手机，
+- 如果启用了 DNS 覆写，确认最终配置保留 `geosite:googlefcm`。重新连接网络或重启手机，
   让旧 DNS 缓存和推送连接失效；不要清除 Google Play 服务的数据。
 
 验收时把 Telegram 切到后台并锁屏，请另一台设备发送消息；在 Bettbox 连接记录中检查

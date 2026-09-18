@@ -375,19 +375,26 @@ try {
     assert.ok(!rules.includes('GEOSITE,CN,'), 'broad ChinaMax domain set is not used');
     assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
     assert.ok(template.includes('use-system-hosts: true'), 'local hosts are honored');
-    assert.ok(template.includes('GEOSITE,geolocation-cn,real-ip'), 'DNS and routing share the narrow mainland set');
-    for (const domain of ['music.163.com', 'y.qq.com', 'music.migu.cn']) {
-        assert.ok(!template.includes(`- DOMAIN,${domain},real-ip`), 'suffix filter already covers the exact domain');
-    }
+    assert.ok(template.includes('fake-ip-filter-mode: blacklist'), 'fake-IP filtering remains compatible with client DNS overrides');
+    assert.ok(template.includes("'geosite:geolocation-cn'"), 'DNS and routing share the narrow mainland set');
     const fcmRule = 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY';
     before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmRule);
     before(rules, fcmRule, 'GEOSITE,geolocation-cn,DIRECT');
     before(rules, fcmRule, 'GEOIP,CN,DIRECT');
     const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
-    before(fakeIpFilter, 'GEOSITE,googlefcm,real-ip', 'MATCH,fake-ip');
+    assert.ok(fakeIpFilter.includes("      - 'geosite:googlefcm'\n"));
+    assert.ok(!fakeIpFilter.includes(',real-ip'), 'blacklist filters must not contain rule-mode actions');
+    assert.ok(!fakeIpFilter.includes('MATCH,fake-ip'), 'blacklist mode provides the unmatched fake-IP behavior');
+    const wechatDomains = [
+        'qpic.cn', 'qlogo.cn', 'wxqcloud.qq.com.cn', 'servicewechat.com',
+        'weixin.qq.com', 'wxs.qq.com', 'res.wx.qq.com', 'wechat.com',
+    ];
+    for (const domain of wechatDomains) {
+        assert.ok(fakeIpFilter.includes(`      - '+.${domain}'\n`), `${domain} must bypass fake-IP`);
+    }
     // Both healthy and degraded aggregation must deliver the FCM DNS and IP-only routing fix.
     for (const body of [liveBody, fallbackBody, allBody]) {
-        assert.ok(body.includes('      - GEOSITE,googlefcm,real-ip\n'));
+        assert.ok(body.includes("      - 'geosite:googlefcm'\n"));
         assert.ok(body.includes(`  - ${fcmRule}\n`));
     }
     for (const matcher of ['GEOSITE,google', 'GEOSITE,openai', 'GEOSITE,anthropic', 'RULE-SET,proxy-services']) {
@@ -429,7 +436,10 @@ try {
     for (const domain of ['kimi.ai', 'moonshot.ai', 'minimax.io', 'qoder.com', 'microsoft.com', 'cloudflare.com', 'auth0.com', 'stripe.com']) {
         assert.ok(!proxyServices.includes(`        - '+.${domain}'\n`), `${domain} must not become a blanket proxy exception`);
     }
-    for (const domain of ['love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'", "'+.cm.steampowered.com'", "'+.steamserver.net'"]) {
+    for (const domain of [
+        'love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'",
+        "'+.cm.steampowered.com'", "'+.steamserver.net'", ...wechatDomains.map((domain) => `'+.${domain}'`),
+    ]) {
         assert.ok(directCdn.includes(`        - ${domain}\n`), `${domain} must remain a direct exception`);
     }
     // An aggregation input carries no vpsSubUrl, so the validator must accept its absence

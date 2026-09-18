@@ -336,7 +336,8 @@ test_subscription_stage_dispatch() {
 }
 
 test_mihomo_template() {
-    local invalid="${TMP_DIR}/invalid.yaml" rule_count first_rule
+    local invalid="${TMP_DIR}/invalid.yaml" party_compat="${TMP_DIR}/clash-party.yaml"
+    local rule_count first_rule fake_ip_filter direct_cdn domain
     local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
     local google_rule_line google_quic_rule_line google_dns_line cn_dns_line google_dns_policy
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
@@ -348,10 +349,14 @@ test_mihomo_template() {
         "store-fake-ip: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo omits the IPv6 fake-IP pool" \
         "fake-ip-range6:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo uses rule-based fake-IP filtering" \
-        "fake-ip-filter-mode: rule" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo defaults unmatched domains to fake-IP" \
-        "- MATCH,fake-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo uses client-compatible fake-IP filtering" \
+        "fake-ip-filter-mode: blacklist" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    fake_ip_filter=$(sed -n '/^    fake-ip-filter:$/,/^    nameserver-policy:$/p' \
+        "${ROOT_DIR}/templates/mihomo.yaml")
+    assert_not_contains "Mihomo fake-IP filters omit rule-mode actions" \
+        ",real-ip" "${fake_ip_filter}"
+    assert_not_contains "Mihomo fake-IP filters omit the rule-mode fallback" \
+        "MATCH,fake-ip" "${fake_ip_filter}"
     assert_contains "Mihomo uses the default UDP session timeout" \
         "udp-timeout: 300" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses DAT-format Geo data" \
@@ -404,9 +409,19 @@ test_mihomo_template() {
     assert_success "Mihomo template stays within the lightweight rule budget" \
         bash -c '(( $1 > 0 && $1 <= 60 ))' _ "${rule_count}"
     assert_contains "Mihomo filters WeChat CDN from fake-ip" \
-        "DOMAIN-SUFFIX,qpic.cn,real-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "- '+.qpic.cn'" "${fake_ip_filter}"
     assert_contains "Mihomo filters WeChat domain from fake-ip" \
-        "DOMAIN-SUFFIX,weixin.qq.com,real-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "- '+.weixin.qq.com'" "${fake_ip_filter}"
+    direct_cdn=$(sed -n '/^    direct-cdn:$/,/^proxies:$/p' \
+        "${ROOT_DIR}/templates/mihomo.yaml")
+    for domain in \
+        qpic.cn qlogo.cn wxqcloud.qq.com.cn servicewechat.com \
+        weixin.qq.com wxs.qq.com res.wx.qq.com wechat.com; do
+        assert_contains "Mihomo filters WeChat resource ${domain} from fake-ip" \
+            "- '+.${domain}'" "${fake_ip_filter}"
+        assert_contains "Mihomo routes WeChat resource ${domain} direct" \
+            "- '+.${domain}'" "${direct_cdn}"
+    done
     assert_contains "Mihomo keeps Steam downloads in the direct CDN set" \
         "- '+.steamcontent.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes the direct CDN set without a proxy" \
@@ -461,6 +476,27 @@ test_mihomo_template() {
     assert_not_contains "Mihomo template omits latency test URLs" \
         "url: 'https://cp.cloudflare.com'" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    if [[ -n "${MIHOMO_CHECK_BIN:-}" ]]; then
+        awk '
+            $0 == "# EASY_ALL_PROXY_NODE" {
+                print "  - {name: easy-all-check, type: socks5, server: 127.0.0.1, port: 9}"
+                next
+            }
+            $0 == "# EASY_ALL_PROXY_NAME" { print "        - easy-all-check"; next }
+            $0 == "# EASY_ALL_PROXY_GROUP" { next }
+            /^    fake-ip-filter:$/ {
+                print
+                print "      - '\''*'\''"
+                replacing_filter=1
+                next
+            }
+            replacing_filter && /^    nameserver-policy:$/ { replacing_filter=0 }
+            !replacing_filter { print }
+        ' "${ROOT_DIR}/templates/mihomo.yaml" >"${party_compat}"
+        assert_success "Clash Party DNS override remains valid in Mihomo" \
+            "${MIHOMO_CHECK_BIN}" -t -d "${MIHOMO_CHECK_HOME:-${TMP_DIR}}" \
+            -f "${party_compat}"
+    fi
     grep -v '^# EASY_ALL_PROXY_NAME$' \
         "${ROOT_DIR}/templates/mihomo.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \

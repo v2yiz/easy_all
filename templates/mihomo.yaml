@@ -62,85 +62,90 @@ dns:
     listen: '127.0.0.1:5335'
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
-    # 国内及已验证的兼容性例外返回真实 IP；是否直连仍由下方分流规则决定。
-    fake-ip-filter-mode: rule
+    # 使用传统过滤格式，兼容会覆盖 fake-ip-filter 的 Clash Party 等客户端。
+    fake-ip-filter-mode: blacklist
     fake-ip-filter:
       # Android FCM 可能绕过 VPN，推送长连接不能使用仅在 TUN 内有效的 Fake-IP。
-      - GEOSITE,googlefcm,real-ip
-      - GEOSITE,geolocation-cn,real-ip
-      - GEOSITE,private,real-ip
-      - DOMAIN-SUFFIX,10jqka.com.cn,real-ip
-      - DOMAIN-SUFFIX,qpic.cn,real-ip
-      - DOMAIN-SUFFIX,weixin.qq.com,real-ip
-      - DOMAIN-SUFFIX,wechat.com,real-ip
-      - DOMAIN-SUFFIX,lan,real-ip
-      - DOMAIN-WILDCARD,stun.*.*.*,real-ip
-      - DOMAIN-WILDCARD,stun.*.*,real-ip
-      - DOMAIN,time.windows.com,real-ip
-      - DOMAIN,time.nist.gov,real-ip
-      - DOMAIN,time.apple.com,real-ip
-      - DOMAIN,time.asia.apple.com,real-ip
-      - DOMAIN-SUFFIX,ntp.org.cn,real-ip
-      - DOMAIN-SUFFIX,openwrt.pool.ntp.org,real-ip
-      - DOMAIN,time1.cloud.tencent.com,real-ip
-      - DOMAIN,time.ustc.edu.cn,real-ip
-      - DOMAIN,pool.ntp.org,real-ip
-      - DOMAIN,ntp.ubuntu.com,real-ip
-      - DOMAIN,ntp.aliyun.com,real-ip
-      - DOMAIN,ntp1.aliyun.com,real-ip
-      - DOMAIN,ntp2.aliyun.com,real-ip
-      - DOMAIN,ntp3.aliyun.com,real-ip
-      - DOMAIN,ntp4.aliyun.com,real-ip
-      - DOMAIN,ntp5.aliyun.com,real-ip
-      - DOMAIN,ntp6.aliyun.com,real-ip
-      - DOMAIN,ntp7.aliyun.com,real-ip
-      - DOMAIN,time1.aliyun.com,real-ip
-      - DOMAIN,time2.aliyun.com,real-ip
-      - DOMAIN,time3.aliyun.com,real-ip
-      - DOMAIN,time4.aliyun.com,real-ip
-      - DOMAIN,time5.aliyun.com,real-ip
-      - DOMAIN,time6.aliyun.com,real-ip
-      - DOMAIN,time7.aliyun.com,real-ip
-      - DOMAIN-SUFFIX,time.edu.cn,real-ip
-      - DOMAIN,time1.apple.com,real-ip
-      - DOMAIN,time2.apple.com,real-ip
-      - DOMAIN,time3.apple.com,real-ip
-      - DOMAIN,time4.apple.com,real-ip
-      - DOMAIN,time5.apple.com,real-ip
-      - DOMAIN,time6.apple.com,real-ip
-      - DOMAIN,time7.apple.com,real-ip
-      - DOMAIN,time1.google.com,real-ip
-      - DOMAIN,time2.google.com,real-ip
-      - DOMAIN,time3.google.com,real-ip
-      - DOMAIN,time4.google.com,real-ip
-      - DOMAIN-SUFFIX,music.163.com,real-ip
-      - DOMAIN-SUFFIX,126.net,real-ip
-      - DOMAIN,musicapi.taihe.com,real-ip
-      - DOMAIN,music.taihe.com,real-ip
-      - DOMAIN,songsearch.kugou.com,real-ip
-      - DOMAIN,trackercdn.kugou.com,real-ip
-      - DOMAIN-SUFFIX,kuwo.cn,real-ip
-      - DOMAIN,api-jooxtt.sanook.com,real-ip
-      - DOMAIN,api.joox.com,real-ip
-      - DOMAIN,joox.com,real-ip
-      - DOMAIN-SUFFIX,y.qq.com,real-ip
-      - DOMAIN,streamoc.music.tc.qq.com,real-ip
-      - DOMAIN,mobileoc.music.tc.qq.com,real-ip
-      - DOMAIN,isure.stream.qqmusic.qq.com,real-ip
-      - DOMAIN,dl.stream.qqmusic.qq.com,real-ip
-      - DOMAIN,aqqmusic.tc.qq.com,real-ip
-      - DOMAIN,amobile.music.tc.qq.com,real-ip
-      - DOMAIN-SUFFIX,xiami.com,real-ip
-      - DOMAIN-SUFFIX,music.migu.cn,real-ip
-      - DOMAIN-SUFFIX,msftconnecttest.com,real-ip
-      - DOMAIN-SUFFIX,msftncsi.com,real-ip
-      - DOMAIN,localhost.ptlogin2.qq.com,real-ip
-      - DOMAIN-WILDCARD,*.*.*.srv.nintendo.net,real-ip
-      - DOMAIN-WILDCARD,*.*.stun.playstation.net,real-ip
-      - DOMAIN-WILDCARD,xbox.*.*.microsoft.com,real-ip
-      - DOMAIN-WILDCARD,*.*.xboxlive.com,real-ip
-      - DOMAIN,speedtest.cros.wr.pvp.net,real-ip
-      - MATCH,fake-ip
+      - 'geosite:googlefcm'
+      - 'geosite:geolocation-cn'
+      - 'geosite:private'
+      - '+.10jqka.com.cn'
+      # 微信图片、头像、小程序资源在 TUN + Fake-IP 下必须返回真实 IP。
+      - '+.qpic.cn'
+      - '+.qlogo.cn'
+      - '+.wxqcloud.qq.com.cn'
+      - '+.servicewechat.com'
+      - '+.weixin.qq.com'
+      - '+.wxs.qq.com'
+      - '+.res.wx.qq.com'
+      - '+.wechat.com'
+      - '+.lan'
+      - 'stun.*.*.*'
+      - 'stun.*.*'
+      - time.windows.com
+      - time.nist.gov
+      - time.apple.com
+      - time.asia.apple.com
+      - '+.ntp.org.cn'
+      - '+.openwrt.pool.ntp.org'
+      - time1.cloud.tencent.com
+      - time.ustc.edu.cn
+      - pool.ntp.org
+      - ntp.ubuntu.com
+      - ntp.aliyun.com
+      - ntp1.aliyun.com
+      - ntp2.aliyun.com
+      - ntp3.aliyun.com
+      - ntp4.aliyun.com
+      - ntp5.aliyun.com
+      - ntp6.aliyun.com
+      - ntp7.aliyun.com
+      - time1.aliyun.com
+      - time2.aliyun.com
+      - time3.aliyun.com
+      - time4.aliyun.com
+      - time5.aliyun.com
+      - time6.aliyun.com
+      - time7.aliyun.com
+      - '+.time.edu.cn'
+      - time1.apple.com
+      - time2.apple.com
+      - time3.apple.com
+      - time4.apple.com
+      - time5.apple.com
+      - time6.apple.com
+      - time7.apple.com
+      - time1.google.com
+      - time2.google.com
+      - time3.google.com
+      - time4.google.com
+      - '+.music.163.com'
+      - '+.126.net'
+      - musicapi.taihe.com
+      - music.taihe.com
+      - songsearch.kugou.com
+      - trackercdn.kugou.com
+      - '+.kuwo.cn'
+      - api-jooxtt.sanook.com
+      - api.joox.com
+      - joox.com
+      - '+.y.qq.com'
+      - streamoc.music.tc.qq.com
+      - mobileoc.music.tc.qq.com
+      - isure.stream.qqmusic.qq.com
+      - dl.stream.qqmusic.qq.com
+      - aqqmusic.tc.qq.com
+      - amobile.music.tc.qq.com
+      - '+.xiami.com'
+      - '+.music.migu.cn'
+      - '+.msftconnecttest.com'
+      - '+.msftncsi.com'
+      - localhost.ptlogin2.qq.com
+      - '*.*.*.srv.nintendo.net'
+      - '*.*.stun.playstation.net'
+      - 'xbox.*.*.microsoft.com'
+      - '*.*.xboxlive.com'
+      - speedtest.cros.wr.pvp.net
     nameserver-policy:
       # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
       'geosite:private': system
@@ -211,6 +216,15 @@ rule-providers:
         - '+.steamcontent.com'
         - '+.cm.steampowered.com'
         - '+.steamserver.net'
+        # 微信图片资源使用国内 DNS 并直连，避免海外出口和 Fake-IP 兼容问题。
+        - '+.qpic.cn'
+        - '+.qlogo.cn'
+        - '+.wxqcloud.qq.com.cn'
+        - '+.servicewechat.com'
+        - '+.weixin.qq.com'
+        - '+.wxs.qq.com'
+        - '+.res.wx.qq.com'
+        - '+.wechat.com'
 
 proxies:
 # EASY_ALL_PROXY_NODE

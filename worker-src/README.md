@@ -55,8 +55,8 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 国内集合使用 `geolocation-cn`，不再引用包含整个 `.ms` 后缀的 ChinaMax `cn`。
 Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于国内集合和微软国内 CDN，
 统一经 `PROXY`；对应 UDP/443 先拒绝以回退 TCP。Google Play 接口、下载重定向和 APK CDN 保持同一代理策略。
-仅内嵌 `proxy-services`（24 条）与 `direct-cdn`（5 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
-Steam 下载及 Apple/微软国内 CDN 使用国内 DoH 并直连；其他国内域名沿用国内策略，
+仅内嵌 `proxy-services`（24 条）与 `direct-cdn`（13 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
+Steam 下载、微信资源及 Apple/微软国内 CDN 使用国内 DoH 并直连；其他国内域名沿用国内策略，
 其余公网域名通过 `PROXY` 使用 Cloudflare 与 Google DoH；私有域名使用系统 DNS，并启用本机 hosts。
 `kimi.com`、`minimaxi.com` 等国内入口维持直连，国际入口按实际集合与 GeoIP 分流；不代理整个微软或共享 CDN。
 代理节点域名仍由独立的直连 DoH 解析，避免启动循环。
