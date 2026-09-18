@@ -25,4 +25,12 @@ jobs:
           for asset in geoip geosite; do
             curl -fL --retry 3 --max-time 120 "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/$asset.dat" -o "$MIHOMO_CHECK_HOME/$asset.dat"
           done
-      - run: npm test
+      - name: Run tests
+        run: |
+          if ! npm test > "$RUNNER_TEMP/easy-all-test.log" 2>&1; then
+            tail -n 20 "$RUNNER_TEMP/easy-all-test.log" | while IFS= read -r line; do
+              printf '::error::%s\n' "$line"
+            done
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/easy-all-test.log"
