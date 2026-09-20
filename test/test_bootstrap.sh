@@ -17,8 +17,8 @@ content=$(<"${SCRIPT}")
     || fail "bootstrap must install git before cloning"
 [[ "${content}" == *'git clone --depth 1 --branch "${BRANCH}"'* ]] \
     || fail "bootstrap must shallow-clone configured branch"
-[[ "${content}" == *'readonly DEFAULT_BRANCH="main"'* ]] \
-    || fail "bootstrap must install main by default"
+[[ "${content}" == *'readonly DEFAULT_BRANCH="xx_intranet"'* ]] \
+    || fail "bootstrap must install xx_intranet by default"
 [[ "${content}" == *'-f "${REPO_DIR}/runtime.manifest"'* \
     && "${content}" == *'"${REPO_DIR}/easy_all" verify-release'* \
     && "${content}" != *'lib/xhttp-runtime.sh'* ]] \

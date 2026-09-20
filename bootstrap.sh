@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY_URL="https://github.com/v2yiz/easy_all.git"
-readonly DEFAULT_BRANCH="main"
+readonly DEFAULT_BRANCH="xx_intranet"
 BRANCH="${EASY_ALL_BRANCH:-${DEFAULT_BRANCH}}"
 
 die() {

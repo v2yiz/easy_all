@@ -5,6 +5,8 @@
 
 只支持 IPv4。同一台 VPS 只能安装一种模式，并应作为不承载其他业务的专用服务器。
 
+本分支 `xx_intranet`：Reality 安装时输入一个代理域名，该域名及其子域名、`ip111.cn` 及其子域名走 PROXY；保留全部原有直连规则，其余流量均 DIRECT。该策略仅随 Mihomo YAML 订阅生效，单独导入 VLESS 链接不携带分流规则。Cloudflare 模式不变。
+
 ## 选择模式
 
 | 模式 | 适用情况 | 协议与入口 |
@@ -46,7 +48,7 @@ ssh <登录用户>@<VPS公网IP> -p <SSH端口>
 看到 VPS 的 shell 提示符后运行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/xx_intranet/bootstrap.sh)
 ```
 
 请原样执行，不要改成 `curl ... | sudo bash`。安装器需要持续从当前终端读取选项，并在需要时

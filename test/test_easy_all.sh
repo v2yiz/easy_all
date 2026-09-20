@@ -84,6 +84,7 @@ source_script_copy() {
 
 set_fixture() {
     PROTOCOL="reality"
+    INTRANET_PROXY_DOMAIN="intranet.example.com"
     NODE_NAME="MY_REALITY"
     NODE_HOST="203.0.113.10"
     VLESS_UUID="00000000-0000-4000-8000-000000000001"
@@ -577,12 +578,24 @@ test_subscription_generation() {
         "RULE-SET,direct-cdn,DIRECT" "${yaml}"
     assert_contains "Mihomo subscription preserves the XFLASH direct exception" \
         "- love.xflash.work" "${yaml}"
-    assert_contains "Mihomo subscription contains AI proxy rules" \
+    assert_not_contains "Mihomo subscription removes AI proxy rules" \
         "GEOSITE,category-ai-chat-!cn,PROXY" "${yaml}"
-    assert_contains "Mihomo sends every Google domain through the VPS" \
+    assert_not_contains "Mihomo removes Google proxy rule" \
         "GEOSITE,google,PROXY" "${yaml}"
-    assert_contains "Mihomo subscription keeps the Telegram rule" \
+    assert_not_contains "Mihomo removes Telegram proxy rule" \
         "GEOIP,telegram,PROXY,no-resolve" "${yaml}"
+    assert_equal "only the two selected domains use proxy routing" "2" \
+        "$(sed -n '/^rules:/,$p' "${mihomo_file}" | grep -c ',PROXY$')"
+    assert_contains "custom domain has priority over direct rules" \
+        $'rules:\n  - DOMAIN-SUFFIX,intranet.example.com,PROXY\n  - DOMAIN-SUFFIX,ip111.cn,PROXY' "${yaml}"
+    assert_contains "unmatched traffic is direct" "  - MATCH,DIRECT" "${yaml}"
+    assert_not_contains "no global proxy DNS fallback" "    fallback:" "${yaml}"
+    assert_not_contains "no global QUIC rejection" ",REJECT" "${yaml}"
+    assert_equal "all original direct rules survive" \
+        "$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" | grep ',DIRECT')" \
+        "$(sed -n '/^rules:/,$p' "${mihomo_file}" | grep ',DIRECT' | grep -v 'MATCH,DIRECT')"
+    assert_failure "invalid domain cannot inject rules" \
+        bash -c 'source "$1"; INTRANET_PROXY_DOMAIN="bad,PROXY"; collect_intranet_proxy_domain' _ "${SCRIPT_COPY}"
     assert_not_contains "Mihomo subscription omits the latency test group" \
         "name: 延迟测试" "${yaml}"
     assert_equal "Mihomo node participates only in the PROXY group" \
@@ -1190,7 +1203,9 @@ test_state_and_xray() {
         "GOOGLE_EGRESS_MODE=ipv4" "${state}"
     assert_contains "state persists resolved Google family" \
         "GOOGLE_EGRESS_RESOLVED=ipv4" "${state}"
+    unset INTRANET_PROXY_DOMAIN
     load_state
+    assert_equal "state restores proxy domain" "intranet.example.com" "${INTRANET_PROXY_DOMAIN}"
     assert_equal "current VPS family remains IPv4" "ipv4" \
         "${VPS_IP_FAMILY:-}"
     assert_contains "state supports persisting the quota start date" \

@@ -64,7 +64,7 @@ readonly DEFAULT_REALITY_TARGET="swdist.apple.com:443"
 readonly DEFAULT_REALITY_PORT_MODE="dynamic"
 readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
-readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/templates/mihomo.yaml"
+readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/xx_intranet/templates/mihomo.yaml"
 readonly DEFAULT_REBOOT_HOUR="4"
 readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly CRON_DYNAMIC_PORT_MARKER="# easy_all-managed-dynamic-ports"
@@ -202,7 +202,7 @@ source_state_file() {
 load_state() {
     local variable env_name state_loaded=0
     local -a variables=(
-        PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
+        PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET INTRANET_PROXY_DOMAIN
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         VPS_IP_FAMILY VPS_PUBLIC_IPV6
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
@@ -284,6 +284,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'CDN_PROVIDER=%q\n' ""
+        printf 'INTRANET_PROXY_DOMAIN=%q\n' "${INTRANET_PROXY_DOMAIN:-}"
         printf 'NODE_NAME=%q\n' "${NODE_NAME}"
         printf 'NODE_HOST=%q\n' "${NODE_HOST:-}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID:-}"
@@ -498,11 +499,54 @@ collect_subscription_domain() {
     SUBSCRIPTION_DOMAIN=${domain}
 }
 
+collect_intranet_proxy_domain() {
+    if [[ -z "${INTRANET_PROXY_DOMAIN:-}" && -t 0 ]]; then
+        INTRANET_PROXY_DOMAIN=$(prompt_value "唯一需要代理的域名（含子域名；ip111.cn 自动代理）" "")
+    fi
+    INTRANET_PROXY_DOMAIN=$(normalize_domain "${INTRANET_PROXY_DOMAIN:-}")
+    validate_domain "${INTRANET_PROXY_DOMAIN}" && ! validate_ipv4 "${INTRANET_PROXY_DOMAIN}" \
+        || die "INTRANET_PROXY_DOMAIN 必须是有效域名（不含协议、路径或端口）"
+}
+
+# Only the Reality subscription uses the intranet routing policy.
+apply_intranet_routing() {
+    local file=$1
+    collect_intranet_proxy_domain
+    awk -v domain="${INTRANET_PROXY_DOMAIN}" '
+        /^    nameserver-policy:/ {
+            print "    nameserver-policy:"
+            print "      \047geosite:private\047: system"
+            print "      \047+." domain "\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
+            if (domain != "ip111.cn")
+                print "      \047+.ip111.cn\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
+            print "    nameserver:"
+            print "      - https://223.5.5.5/dns-query"
+            print "      - https://1.12.12.12/dns-query"
+            dns = 1
+            next
+        }
+        /^    proxy-server-nameserver:/ { dns = 0 }
+        dns { next }
+        /^rules:/ {
+            rules = 1
+            print
+            print "  - DOMAIN-SUFFIX," domain ",PROXY"
+            print "  - DOMAIN-SUFFIX,ip111.cn,PROXY"
+            next
+        }
+        rules { if (/^  - .*[,]DIRECT(,|$)/) print; next }
+        { print }
+        END { print "  - MATCH,DIRECT" }
+    ' "${file}" >"${file}.intranet"
+    mv -- "${file}.intranet" "${file}"
+}
+
 collect_reality_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
     NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
+    collect_intranet_proxy_domain
     collect_reality_node_host
     validate_domain "${NODE_HOST}" || validate_ipv4 "${NODE_HOST}" \
         || die "Reality 节点地址无效：${NODE_HOST}"
@@ -1149,6 +1193,7 @@ generate_subscription_files() {
     printf '\n' >>"${base64_file}"
     render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}" "${mihomo_file}" \
         "${NODE_NAME}"
+    apply_intranet_routing "${mihomo_file}"
     printf '%s' "$(<"${base64_file}")" | openssl base64 -d -A \
         | grep -Fq 'security=reality' || die "Base64 订阅内容无效"
     grep -Fq 'reality-opts:' "${mihomo_file}" || die "Mihomo 订阅缺少 Reality 节点"

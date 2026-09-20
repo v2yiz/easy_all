@@ -148,8 +148,8 @@ success() { :; }
 unified_self_update
 assert_equal "self-update invokes register-command in the downloaded tree" \
     "register-command" "$(<"${self_update_invocation}")"
-assert_equal "self-update defaults to main branch" \
-    "main" "$(<"${self_update_branch}")"
+assert_equal "self-update defaults to xx_intranet branch" \
+    "xx_intranet" "$(<"${self_update_branch}")"
 self_update_repo=$(<"${self_update_repo_path}")
 [[ ! -e "${self_update_repo}" ]] \
     || fail "self-update must remove its temporary clone after registration"
