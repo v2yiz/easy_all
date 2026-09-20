@@ -1384,6 +1384,26 @@ test_apply_loads_reality_state_before_tcp_tuning() {
         $'state\ntcp:reality:\nipv6-off\nregister\nupdate' "${calls}"
 }
 
+test_intranet_domain_list() (
+    local output domain bad
+    INTRANET_PROXY_DOMAIN=' Google.COM. , second.example.com,google.com,IP111.CN '
+    collect_intranet_proxy_domain
+    assert_equal "domain list normalizes and deduplicates" \
+        'google.com,second.example.com,ip111.cn' "${INTRANET_PROXY_DOMAIN}"
+    output=$(render_intranet_routing "${ROOT_DIR}/templates/mihomo.yaml")
+    assert_equal "multi-domain rules contain each domain once" \
+        $'rules:\n  - DOMAIN-SUFFIX,google.com,PROXY\n  - DOMAIN-SUFFIX,second.example.com,PROXY\n  - DOMAIN-SUFFIX,ip111.cn,PROXY\n  - MATCH,DIRECT' \
+        "$(sed -n '/^rules:/,$p' <<<"${output}")"
+    for domain in google.com second.example.com ip111.cn; do
+        assert_contains "each domain gets fake IP" "      - '+.${domain}'" "${output}"
+        assert_contains "each domain gets proxy DNS" "      '+.${domain}': ['https://1.1.1.1/dns-query#PROXY']" "${output}"
+    done
+    for bad in '' ',google.com' 'google.com,' 'google.com,,example.com' 'google.com，example.com' 'https://google.com' '143.20.112.230' 'google.com:443'; do
+        assert_failure "invalid list rejected: ${bad}" \
+            bash -c 'source "$1"; INTRANET_PROXY_DOMAIN=$2; collect_intranet_proxy_domain' _ "${SCRIPT_COPY}" "${bad}"
+    done
+)
+
 source_script_copy
 test_syntax_and_reality_boundaries
 test_validators_and_modes
@@ -1392,6 +1412,7 @@ test_reality_ip_family_dns_policy
 test_reality_target_preflight
 test_subscription_stage_dispatch
 test_mihomo_template
+test_intranet_domain_list
 test_subscription_generation
 test_ufw_reapply_preserves_existing_ssh
 test_restore_inactive_ufw_state

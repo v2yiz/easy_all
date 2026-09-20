@@ -80,19 +80,37 @@ prepare_mihomo_template() {
 }
 
 collect_intranet_proxy_domain() {
+    local remaining domain normalized=""
     if [[ -z "${INTRANET_PROXY_DOMAIN:-}" && -t 0 ]]; then
-        INTRANET_PROXY_DOMAIN=$(prompt_value "需要代理的域名（含子域名；ip111.cn 做为测试域名自动代理）" "")
+        INTRANET_PROXY_DOMAIN=$(prompt_value "需要代理的域名列表（含子域名，用英文逗号(,)分割；ip111.cn 做为测试域名自动代理）" "")
     fi
-    INTRANET_PROXY_DOMAIN=$(normalize_domain "${INTRANET_PROXY_DOMAIN:-}")
-    validate_domain "${INTRANET_PROXY_DOMAIN}" && ! validate_ipv4 "${INTRANET_PROXY_DOMAIN}" \
-        || die "INTRANET_PROXY_DOMAIN 必须是有效域名（不含协议、路径或端口）"
+    remaining="${INTRANET_PROXY_DOMAIN:-},"
+    while [[ "${remaining}" == *,* ]]; do
+        domain=${remaining%%,*}
+        remaining=${remaining#*,}
+        domain=${domain#"${domain%%[![:space:]]*}"}
+        domain=${domain%"${domain##*[![:space:]]}"}
+        domain=$(normalize_domain "${domain}")
+        validate_domain "${domain}" && ! validate_ipv4 "${domain}" \
+            || die "域名列表无效：请用英文逗号分隔有效域名，不含空项、协议、路径或端口"
+        case ",${normalized}," in
+            *",${domain},"*) ;;
+            *) normalized+="${normalized:+,}${domain}" ;;
+        esac
+    done
+    INTRANET_PROXY_DOMAIN=${normalized}
 }
 
 # Shared by Reality, CDN subscriptions and the Worker builder.
 render_intranet_routing() {
     local file=$1
     collect_intranet_proxy_domain
-    awk -v domain="${INTRANET_PROXY_DOMAIN}" '
+    awk -v list="${INTRANET_PROXY_DOMAIN},ip111.cn" '
+        BEGIN {
+            n = split(list, input, ",")
+            for (i = 1; i <= n; i++)
+                if (!seen[input[i]]++) domains[++count] = input[i]
+        }
         /^[[:space:]]*#/ && !/^# EASY_ALL_PROXY_/ { next }
         /^(geodata-mode|geodata-loader|geo-auto-update|geo-update-interval):/ { next }
         /^(geox-url|rule-providers):/ { block = 1; next }
@@ -101,16 +119,14 @@ render_intranet_routing() {
         /^    fake-ip-filter-mode:/ {
             print "    fake-ip-filter-mode: whitelist"
             print "    fake-ip-filter:"
-            print "      - \047+." domain "\047"
-            if (domain != "ip111.cn") print "      - \047+.ip111.cn\047"
+            for (i = 1; i <= count; i++) print "      - \047+." domains[i] "\047"
             dns = 1
             next
         }
         /^    nameserver-policy:/ {
             print "    nameserver-policy:"
-            print "      \047+." domain "\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
-            if (domain != "ip111.cn")
-                print "      \047+.ip111.cn\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
+            for (i = 1; i <= count; i++)
+                print "      \047+." domains[i] "\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
             print "    nameserver:"
             print "      - system"
             dns = 1
@@ -121,8 +137,7 @@ render_intranet_routing() {
         /^rules:/ {
             rules = 1
             print
-            print "  - DOMAIN-SUFFIX," domain ",PROXY"
-            print "  - DOMAIN-SUFFIX,ip111.cn,PROXY"
+            for (i = 1; i <= count; i++) print "  - DOMAIN-SUFFIX," domains[i] ",PROXY"
             next
         }
         rules { next }

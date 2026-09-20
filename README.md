@@ -5,7 +5,7 @@
 
 只支持 IPv4。同一台 VPS 只能安装一种模式，并应作为不承载其他业务的专用服务器。
 
-本分支 `xx_intranet`：Reality 和 Cloudflare CDN 安装时输入一个代理域名，该域名及其子域名、`ip111.cn` 及其子域名走 PROXY；其余流量由 `MATCH,DIRECT` 统一直连，不再保留冗余域名列表和 Geo 数据。DNS 仅为这两个代理域名分配 Fake-IP，其他域名使用系统 DNS。该策略仅随 Mihomo YAML 订阅生效，单独导入 VLESS 链接不携带分流规则。两种链路使用相同分流策略。
+本分支 `xx_intranet`：Reality 和 Cloudflare CDN 安装时输入英文逗号分隔的代理域名列表（例如 `google.com,example.com`），列表中域名及其子域名、`ip111.cn` 及其子域名走 PROXY；其余流量由 `MATCH,DIRECT` 统一直连，不再保留冗余域名列表和 Geo 数据。DNS 仅为列表及测试域名分配 Fake-IP，其他域名使用系统 DNS。该策略仅随 Mihomo YAML 订阅生效，单独导入 VLESS 链接不携带分流规则。两种链路使用相同分流策略。
 
 ## 选择模式
 

@@ -48,7 +48,7 @@ export NGINX_CONFIG="${TMP_DIR}/nginx.conf"
 export CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE="${TMP_DIR}/worker.js"
 export STATE_FILE="${STATE_DIR}/state.env"
 export EASY_ALL_STATE_FILE_OVERRIDE="${STATE_DIR}/state.env"
-export INTRANET_PROXY_DOMAIN="intranet.example.com"
+export INTRANET_PROXY_DOMAIN="intranet.example.com,second.example.com"
 export VLESS_CDN_DOMAIN="node.example.com"
 export CLOUDFLARE_ORIGIN_DOMAIN="node.example.com"
 export XHTTP_ORIGIN_DOMAIN="node.example.com"
@@ -276,6 +276,7 @@ cloudflare_build_subscription_worker
 node --check "${generated_worker}"
 generated_worker_content=$(<"${generated_worker}")
 assert_contains "Worker proxies configured domain" "${generated_worker_content}" 'DOMAIN-SUFFIX,intranet.example.com,PROXY'
+assert_contains "Worker proxies second configured domain" "${generated_worker_content}" 'DOMAIN-SUFFIX,second.example.com,PROXY'
 assert_contains "Worker proxies test domain" "${generated_worker_content}" 'DOMAIN-SUFFIX,ip111.cn,PROXY'
 assert_not_contains "Worker removes unused providers" "${generated_worker_content}" 'rule-providers:'
 assert_not_contains "Worker removes Geo data dependencies" "${generated_worker_content}" 'geosite:'
@@ -502,10 +503,10 @@ VPS_PUBLIC_IPV6="2001:db8::10"
 save_state
 [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file not created"
 state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
-assert_contains "State persists proxy domain" "${state_content}" 'INTRANET_PROXY_DOMAIN=intranet.example.com'
+assert_contains "State persists proxy domain" "${state_content}" 'INTRANET_PROXY_DOMAIN=intranet.example.com\,second.example.com'
 unset INTRANET_PROXY_DOMAIN
 load_state
-assert_equal "State restores proxy domain" "intranet.example.com" "${INTRANET_PROXY_DOMAIN}"
+assert_equal "State restores proxy domain" "intranet.example.com,second.example.com" "${INTRANET_PROXY_DOMAIN}"
 assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 'PROTOCOL=cloudflare-streamup'
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
@@ -595,7 +596,7 @@ ORIGIN_HEADER_SECRET='test-origin-secret-12345678'
 SUBSCRIPTION_MODE='deploy'
 EOF
 EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
-INTRANET_PROXY_DOMAIN="intranet.example.com"
+INTRANET_PROXY_DOMAIN="intranet.example.com,second.example.com"
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
 assert_equal "load_state normalizes Google egress mode" \
