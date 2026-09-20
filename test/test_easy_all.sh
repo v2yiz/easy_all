@@ -213,6 +213,13 @@ test_vps_ip_family_detection() {
 }
 
 test_reality_ip_family_dns_policy() {
+    NODE_HOST="143.20.112.230"
+    VPS_PUBLIC_IPV4="143.20.112.230"
+    dig() { printf 'called\n' >>"${TMP_DIR}/ipv4-dns-calls"; }
+    assert_success "literal IPv4 skips Reality DNS validation" \
+        validate_reality_node_dns
+    assert_success "literal IPv4 never queries DNS" \
+        test ! -e "${TMP_DIR}/ipv4-dns-calls"
     NODE_HOST="node.example.com"
     VPS_PUBLIC_IPV4="203.0.113.10"
     VPS_IP_FAMILY="ipv4"
