@@ -82,7 +82,7 @@ prepare_mihomo_template() {
 collect_intranet_proxy_domain() {
     local remaining domain normalized=""
     if [[ -z "${INTRANET_PROXY_DOMAIN:-}" && -t 0 ]]; then
-        INTRANET_PROXY_DOMAIN=$(prompt_value "需要代理的域名列表（含子域名，用英文逗号(,)分割；ip111.cn 做为测试域名自动代理）" "")
+        INTRANET_PROXY_DOMAIN=$(prompt_value "需要代理的域名列表（填写主域名即可，自动包含其下所有子域名；多个域名用英文逗号(,)分隔；ip111.cn 作为测试域名自动代理）" "")
     fi
     remaining="${INTRANET_PROXY_DOMAIN:-},"
     while [[ "${remaining}" == *,* ]]; do
