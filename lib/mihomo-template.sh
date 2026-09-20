@@ -93,15 +93,26 @@ render_intranet_routing() {
     local file=$1
     collect_intranet_proxy_domain
     awk -v domain="${INTRANET_PROXY_DOMAIN}" '
+        /^[[:space:]]*#/ && !/^# EASY_ALL_PROXY_/ { next }
+        /^(geodata-mode|geodata-loader|geo-auto-update|geo-update-interval):/ { next }
+        /^(geox-url|rule-providers):/ { block = 1; next }
+        block && /^[^[:space:]]/ { block = 0 }
+        block { next }
+        /^    fake-ip-filter-mode:/ {
+            print "    fake-ip-filter-mode: whitelist"
+            print "    fake-ip-filter:"
+            print "      - \047+." domain "\047"
+            if (domain != "ip111.cn") print "      - \047+.ip111.cn\047"
+            dns = 1
+            next
+        }
         /^    nameserver-policy:/ {
             print "    nameserver-policy:"
-            print "      \047geosite:private\047: system"
             print "      \047+." domain "\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
             if (domain != "ip111.cn")
                 print "      \047+.ip111.cn\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
             print "    nameserver:"
-            print "      - https://223.5.5.5/dns-query"
-            print "      - https://1.12.12.12/dns-query"
+            print "      - system"
             dns = 1
             next
         }
@@ -114,7 +125,7 @@ render_intranet_routing() {
             print "  - DOMAIN-SUFFIX,ip111.cn,PROXY"
             next
         }
-        rules { if (/^  - .*[,]DIRECT(,|$)/) print; next }
+        rules { next }
         { print }
         END { print "  - MATCH,DIRECT" }
     ' "${file}"

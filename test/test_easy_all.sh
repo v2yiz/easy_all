@@ -581,10 +581,13 @@ test_subscription_generation() {
         $'\n    ipv6: false\n' "${yaml}"
     assert_not_contains "Mihomo TUN omits IPv6 addresses" \
         "inet6-address:" "${yaml}"
-    assert_contains "Mihomo subscription contains the inline direct rules" \
-        "RULE-SET,direct-cdn,DIRECT" "${yaml}"
-    assert_contains "Mihomo subscription preserves the XFLASH direct exception" \
-        "- love.xflash.work" "${yaml}"
+    assert_not_contains "intranet subscription needs no rule providers" "rule-providers:" "${yaml}"
+    assert_not_contains "intranet subscription needs no Geo data" "geosite:" "${yaml}"
+    assert_not_contains "intranet subscription removes compatibility domain lists" "qpic.cn" "${yaml}"
+    assert_contains "only proxy domains get fake IPs" \
+        $'fake-ip-filter-mode: whitelist\n    fake-ip-filter:\n      - \047+.intranet.example.com\047\n      - \047+.ip111.cn\047' "${yaml}"
+    assert_contains "other domains use system DNS including intranet names" \
+        $'nameserver:\n      - system' "${yaml}"
     assert_not_contains "Mihomo subscription removes AI proxy rules" \
         "GEOSITE,category-ai-chat-!cn,PROXY" "${yaml}"
     assert_not_contains "Mihomo removes Google proxy rule" \
@@ -598,9 +601,9 @@ test_subscription_generation() {
     assert_contains "unmatched traffic is direct" "  - MATCH,DIRECT" "${yaml}"
     assert_not_contains "no global proxy DNS fallback" "    fallback:" "${yaml}"
     assert_not_contains "no global QUIC rejection" ",REJECT" "${yaml}"
-    assert_equal "all original direct rules survive" \
-        "$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" | grep ',DIRECT')" \
-        "$(sed -n '/^rules:/,$p' "${mihomo_file}" | grep ',DIRECT' | grep -v 'MATCH,DIRECT')"
+    assert_equal "routing consists of only two proxy rules and direct fallback" \
+        $'rules:\n  - DOMAIN-SUFFIX,intranet.example.com,PROXY\n  - DOMAIN-SUFFIX,ip111.cn,PROXY\n  - MATCH,DIRECT' \
+        "$(sed -n '/^rules:/,$p' "${mihomo_file}")"
     assert_failure "invalid domain cannot inject rules" \
         bash -c 'source "$1"; INTRANET_PROXY_DOMAIN="bad,PROXY"; collect_intranet_proxy_domain' _ "${SCRIPT_COPY}"
     assert_not_contains "Mihomo subscription omits the latency test group" \

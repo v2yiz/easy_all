@@ -277,6 +277,9 @@ node --check "${generated_worker}"
 generated_worker_content=$(<"${generated_worker}")
 assert_contains "Worker proxies configured domain" "${generated_worker_content}" 'DOMAIN-SUFFIX,intranet.example.com,PROXY'
 assert_contains "Worker proxies test domain" "${generated_worker_content}" 'DOMAIN-SUFFIX,ip111.cn,PROXY'
+assert_not_contains "Worker removes unused providers" "${generated_worker_content}" 'rule-providers:'
+assert_not_contains "Worker removes Geo data dependencies" "${generated_worker_content}" 'geosite:'
+assert_contains "Worker limits fake IP to selected domains" "${generated_worker_content}" 'fake-ip-filter-mode: whitelist'
 assert_contains "Worker defaults to direct" "${generated_worker_content}" 'MATCH,DIRECT'
 assert_not_contains "Worker removes broad proxy rules" "${generated_worker_content}" 'GEOSITE,google,PROXY'
 expected_template=$(render_intranet_routing "${MIHOMO_TEMPLATE_FILE}")
