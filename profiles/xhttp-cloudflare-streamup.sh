@@ -198,7 +198,7 @@ choose_worker_aggregation_config() {
 choose_cloudflare_worker_name() {
     local name=${CLOUDFLARE_WORKER_NAME:-${DEFAULT_CLOUDFLARE_WORKER_NAME}}
     if [[ -t 0 ]]; then
-        name=$(prompt_value "Cloudflare Worker 名称" "${name}")
+        name=$(prompt_value "Cloudflare Worker 名称（仅限小写字母、数字和短横线，长度 1-63，不能以短横线开头或结尾）" "${name}")
     fi
     validate_cloudflare_worker_name "${name}" \
         || die "Worker 名称只能包含小写字母、数字和短横线，长度 1-63，且不能以短横线开头或结尾"
