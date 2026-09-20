@@ -32,7 +32,7 @@ readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
-readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/templates/mihomo.yaml"
+readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/xx_intranet/templates/mihomo.yaml"
 readonly DEFAULT_REBOOT_HOUR="4"
 readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -390,6 +390,7 @@ write_subscriptions() {
                 render_mihomo_subscription "${template}" "${node_file}.${user}" \
                     "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
                     "${group_file}.${user}" "${name_file}.${user}"
+                apply_intranet_routing "${mihomo_file}.${user}"
             )
             grep -Fq "${marker}" "${mihomo_file}.${user}" \
                 || die "Mihomo 订阅缺少有效节点：${user}"
@@ -408,6 +409,7 @@ write_subscriptions() {
     printf '\n' >>"${base64_file}"
     render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
         "${XHTTP_NODE_NAME}" "${group_file}" "${name_file}"
+    apply_intranet_routing "${mihomo_file}"
 
     grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"

@@ -5,7 +5,7 @@
 
 只支持 IPv4。同一台 VPS 只能安装一种模式，并应作为不承载其他业务的专用服务器。
 
-本分支 `xx_intranet`：Reality 安装时输入一个代理域名，该域名及其子域名、`ip111.cn` 及其子域名走 PROXY；保留全部原有直连规则，其余流量均 DIRECT。该策略仅随 Mihomo YAML 订阅生效，单独导入 VLESS 链接不携带分流规则。Cloudflare 模式不变。
+本分支 `xx_intranet`：Reality 和 Cloudflare CDN 安装时输入一个代理域名，该域名及其子域名、`ip111.cn` 及其子域名走 PROXY；保留全部原有直连规则，其余流量均 DIRECT。该策略仅随 Mihomo YAML 订阅生效，单独导入 VLESS 链接不携带分流规则。两种链路使用相同分流策略。
 
 ## 选择模式
 

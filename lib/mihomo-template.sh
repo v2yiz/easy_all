@@ -79,9 +79,60 @@ prepare_mihomo_template() {
     MIHOMO_TEMPLATE_FILE=${template}
 }
 
+collect_intranet_proxy_domain() {
+    if [[ -z "${INTRANET_PROXY_DOMAIN:-}" && -t 0 ]]; then
+        INTRANET_PROXY_DOMAIN=$(prompt_value "需要代理的域名（含子域名；ip111.cn 做为测试域名自动代理）" "")
+    fi
+    INTRANET_PROXY_DOMAIN=$(normalize_domain "${INTRANET_PROXY_DOMAIN:-}")
+    validate_domain "${INTRANET_PROXY_DOMAIN}" && ! validate_ipv4 "${INTRANET_PROXY_DOMAIN}" \
+        || die "INTRANET_PROXY_DOMAIN 必须是有效域名（不含协议、路径或端口）"
+}
+
+# Shared by Reality, CDN subscriptions and the Worker builder.
+render_intranet_routing() {
+    local file=$1
+    collect_intranet_proxy_domain
+    awk -v domain="${INTRANET_PROXY_DOMAIN}" '
+        /^    nameserver-policy:/ {
+            print "    nameserver-policy:"
+            print "      \047geosite:private\047: system"
+            print "      \047+." domain "\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
+            if (domain != "ip111.cn")
+                print "      \047+.ip111.cn\047: [\047https://1.1.1.1/dns-query#PROXY\047]"
+            print "    nameserver:"
+            print "      - https://223.5.5.5/dns-query"
+            print "      - https://1.12.12.12/dns-query"
+            dns = 1
+            next
+        }
+        /^    proxy-server-nameserver:/ { dns = 0 }
+        dns { next }
+        /^rules:/ {
+            rules = 1
+            print
+            print "  - DOMAIN-SUFFIX," domain ",PROXY"
+            print "  - DOMAIN-SUFFIX,ip111.cn,PROXY"
+            next
+        }
+        rules { if (/^  - .*[,]DIRECT(,|$)/) print; next }
+        { print }
+        END { print "  - MATCH,DIRECT" }
+    ' "${file}"
+}
+
+apply_intranet_routing() {
+    render_intranet_routing "$1" >"$1.intranet"
+    mv -- "$1.intranet" "$1"
+}
+
 # The Worker builder uses this same gate; never print template contents/secrets.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -euo pipefail
     die() { printf '%s\n' "$*" >&2; exit 1; }
     validate_mihomo_template "$1"
+    if [[ $# -gt 1 ]]; then
+        source "$(dirname -- "${BASH_SOURCE[0]}")/profile-common.sh"
+        INTRANET_PROXY_DOMAIN=$2
+        render_intranet_routing "$1"
+    fi
 fi

@@ -242,6 +242,7 @@ cloudflare_build_subscription_worker() {
         || die "缺少 Worker 运行源码：${CLOUDFLARE_WORKER_SOURCE_FILE}"
     [[ -s "${CLOUDFLARE_WORKER_BUILD_SCRIPT}" ]] \
         || die "缺少 Worker 构建脚本：${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
+    collect_intranet_proxy_domain
     ensure_cloudflare_worker_builder
     prepare_mihomo_template
     aggregation=$(normalize_worker_aggregation_config \
@@ -267,6 +268,7 @@ cloudflare_build_subscription_worker() {
     chmod 0600 "${RUNTIME_TMP}/worker-config.json"
     install -d -m 0700 "$(dirname "${CLOUDFLARE_WORKER_BUILD_FILE}")"
     build_output=$(
+        INTRANET_PROXY_DOMAIN="${INTRANET_PROXY_DOMAIN}" \
         EASY_ALL_WORKER_CONFIG_PATH="${RUNTIME_TMP}/worker-config.json" \
         EASY_ALL_WORKER_OUTPUT_PATH="${CLOUDFLARE_WORKER_BUILD_FILE}" \
         EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
@@ -297,6 +299,7 @@ cloudflare_manual_worker_recovery_path() {
 
 cloudflare_build_manual_worker_recovery() {
     local reason=$1 target config_file config aggregation build_output
+    collect_intranet_proxy_domain
     quota_enabled && {
         warn "配额模式不能生成绕过 Nginx 配额校验的手工 Worker"
         return 1
@@ -333,6 +336,7 @@ cloudflare_build_manual_worker_recovery() {
     printf '%s\n' "${config}" >"${config_file}"
     chmod 0600 "${config_file}"
     build_output=$(
+        INTRANET_PROXY_DOMAIN="${INTRANET_PROXY_DOMAIN}" \
         EASY_ALL_WORKER_CONFIG_PATH="${config_file}" \
         EASY_ALL_WORKER_OUTPUT_PATH="${target}" \
         EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
@@ -1292,6 +1296,7 @@ collect_install_inputs() {
     PROTOCOL="cloudflare-streamup"
     BACKEND="xray"
     CDN_PROVIDER="cloudflare"
+    collect_intranet_proxy_domain
 
     XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
@@ -1340,7 +1345,7 @@ collect_install_inputs() {
 load_state() {
     local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local -a variables=(
-        STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
+        STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER INTRANET_PROXY_DOMAIN
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
@@ -1439,7 +1444,7 @@ save_state() {
     t=$(mktemp "${state_dir}/state.env.XXXXXX")
     cleanup_files+=("${t}")
     {
-        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
+        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER INTRANET_PROXY_DOMAIN \
             GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
             CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID \
             WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \

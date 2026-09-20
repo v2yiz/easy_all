@@ -48,6 +48,7 @@ export NGINX_CONFIG="${TMP_DIR}/nginx.conf"
 export CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE="${TMP_DIR}/worker.js"
 export STATE_FILE="${STATE_DIR}/state.env"
 export EASY_ALL_STATE_FILE_OVERRIDE="${STATE_DIR}/state.env"
+export INTRANET_PROXY_DOMAIN="intranet.example.com"
 export VLESS_CDN_DOMAIN="node.example.com"
 export CLOUDFLARE_ORIGIN_DOMAIN="node.example.com"
 export XHTTP_ORIGIN_DOMAIN="node.example.com"
@@ -274,6 +275,13 @@ generated_worker="${CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE}"
 cloudflare_build_subscription_worker
 node --check "${generated_worker}"
 generated_worker_content=$(<"${generated_worker}")
+assert_contains "Worker proxies configured domain" "${generated_worker_content}" 'DOMAIN-SUFFIX,intranet.example.com,PROXY'
+assert_contains "Worker proxies test domain" "${generated_worker_content}" 'DOMAIN-SUFFIX,ip111.cn,PROXY'
+assert_contains "Worker defaults to direct" "${generated_worker_content}" 'MATCH,DIRECT'
+assert_not_contains "Worker removes broad proxy rules" "${generated_worker_content}" 'GEOSITE,google,PROXY'
+expected_template=$(render_intranet_routing "${MIHOMO_TEMPLATE_FILE}")
+actual_template=$(node -e 'const fs=require("fs"); const s=fs.readFileSync(process.argv[1],"utf8"); console.log(JSON.parse(s.match(/^const MIHOMO_TEMPLATE = (.*);$/m)[1]));' "${generated_worker}")
+assert_equal "Worker and local Reality/CDN rendering use identical templates" "${expected_template}" "${actual_template}"
 assert_contains "Generated Worker enables request-token forwarding" \
     "${generated_worker_content}" '"vpsCdnUseRequestToken":true'
 assert_contains "Generated Worker delegates final Token validation to Nginx" \
@@ -491,6 +499,10 @@ VPS_PUBLIC_IPV6="2001:db8::10"
 save_state
 [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file not created"
 state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
+assert_contains "State persists proxy domain" "${state_content}" 'INTRANET_PROXY_DOMAIN=intranet.example.com'
+unset INTRANET_PROXY_DOMAIN
+load_state
+assert_equal "State restores proxy domain" "intranet.example.com" "${INTRANET_PROXY_DOMAIN}"
 assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 'PROTOCOL=cloudflare-streamup'
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
@@ -580,6 +592,7 @@ ORIGIN_HEADER_SECRET='test-origin-secret-12345678'
 SUBSCRIPTION_MODE='deploy'
 EOF
 EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
+INTRANET_PROXY_DOMAIN="intranet.example.com"
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
 assert_equal "load_state normalizes Google egress mode" \
@@ -755,6 +768,8 @@ assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private
     assert_equal "Worker acceptance recovery is marked for final reporting" \
         "1" "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}"
     recovery_worker=$(<"${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE}")
+    assert_contains "Recovery Worker preserves intranet routing" "${recovery_worker}" 'DOMAIN-SUFFIX,intranet.example.com,PROXY'
+    assert_not_contains "Recovery Worker has no catch-all proxy" "${recovery_worker}" 'MATCH,PROXY'
     assert_contains "Recovery Worker embeds local Token validation" \
         "${recovery_worker}" '"delegateTokenValidation":false'
     assert_contains "Recovery Worker embeds the current Token set" \
