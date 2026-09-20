@@ -502,7 +502,7 @@ collect_subscription_domain() {
 
 collect_intranet_proxy_domain() {
     if [[ -z "${INTRANET_PROXY_DOMAIN:-}" && -t 0 ]]; then
-        INTRANET_PROXY_DOMAIN=$(prompt_value "唯一需要代理的域名（含子域名；ip111.cn 自动代理）" "")
+        INTRANET_PROXY_DOMAIN=$(prompt_value "需要代理的域名（含子域名；ip111.cn 做为测试域名自动代理）" "")
     fi
     INTRANET_PROXY_DOMAIN=$(normalize_domain "${INTRANET_PROXY_DOMAIN:-}")
     validate_domain "${INTRANET_PROXY_DOMAIN}" && ! validate_ipv4 "${INTRANET_PROXY_DOMAIN}" \
