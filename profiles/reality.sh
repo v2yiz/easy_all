@@ -147,6 +147,7 @@ validate_reality_node_dns() {
     local record records=""
     local resolver public_ipv4 answer resolved_ipv4=0
     local -a resolvers=("" "1.1.1.1" "8.8.8.8")
+    validate_ipv4 "${NODE_HOST}" && return 0
     validate_domain "${NODE_HOST}" || return 0
 
     public_ipv4=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4 || true)}
