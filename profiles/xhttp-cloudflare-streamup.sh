@@ -118,7 +118,7 @@ normalize_worker_aggregation_config() {
             if ([.server // "", .host // ""] | any(tostring | contains(":"))) then
               error("nodes 不允许 IPv6 literal")
             else . + {
-              name:(if .name == "🇺🇸自建首选750G" then "晚上首选" else .name end),
+              name:(if .name == "🇺🇸自建首选750G" or .name == "晚上首选" then "🇺🇸晚上首选" else .name end),
               ipVersion:"ipv4"
             } end
           )),
