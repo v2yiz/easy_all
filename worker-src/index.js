@@ -11,7 +11,8 @@ const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
 const EXTERNAL_CLASH_USER_AGENT = 'mihomo/1.19.30';
 const EXTERNAL_URI_USER_AGENT = 'v2rayN';
 const CDN_NODE_LIMIT = 6;
-const CDN_GROUP_NAME = '🇺🇸优选';
+const CDN_NODE_NAME_PREFIX = '🇺🇸优选';
+const CDN_GROUP_NAME = '白天首选';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,
@@ -312,7 +313,7 @@ function parseVlessLink(link) {
 function normalizeCdnNodeNames(nodes) {
     return nodes
         .slice(0, CDN_NODE_LIMIT)
-        .map((node, index) => ({ ...node, name: CDN_GROUP_NAME + (index + 1) }));
+        .map((node, index) => ({ ...node, name: CDN_NODE_NAME_PREFIX + (index + 1) }));
 }
 
 async function fetchDynamicCdnNodes(url, {
@@ -537,7 +538,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),
         '# EASY_ALL_PROXY_GROUP': group,
-        '# EASY_ALL_PROXY_NAME': [...names.filter(name => !autoNodes.some(node => node.name === name)), CDN_GROUP_NAME].map(name => '        - ' + yamlString(name)).join('\n'),
+        '# EASY_ALL_PROXY_NAME': [CDN_GROUP_NAME, ...names.filter(name => !autoNodes.some(node => node.name === name))].map(name => '        - ' + yamlString(name)).join('\n'),
     };
     return MIHOMO_TEMPLATE.split('\n').map(line => replacements[line] ?? line).join('\n');
 }

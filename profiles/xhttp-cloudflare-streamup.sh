@@ -117,7 +117,10 @@ normalize_worker_aggregation_config() {
           nodes:((.nodes // []) | map(
             if ([.server // "", .host // ""] | any(tostring | contains(":"))) then
               error("nodes 不允许 IPv6 literal")
-            else . + {ipVersion:"ipv4"} end
+            else . + {
+              name:(if .name == "🇺🇸自建首选750G" then "晚上首选" else .name end),
+              ipVersion:"ipv4"
+            } end
           )),
           externalSubUrl:(.externalSubUrl // ""),
           fallbackCdnNodes:((.fallbackCdnNodes // []) | map(

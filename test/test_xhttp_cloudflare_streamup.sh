@@ -326,6 +326,10 @@ done
 
 assert_equal "Worker config normalizer keeps one Reality node" "1" \
     "$(normalize_worker_aggregation_config "${WORKER_AGGREGATION_CONFIG}" | jq '.nodes | length')"
+assert_equal "Worker config migrates the legacy preferred node name" "晚上首选" \
+    "$(normalize_worker_aggregation_config \
+        '{"nodes":[{"name":"🇺🇸自建首选750G"}],"externalSubUrl":"","fallbackCdnNodes":[]}' \
+        | jq -r '.nodes[0].name')"
 ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 QUOTA_ENABLED=0
 normalized_worker_config=$(normalize_worker_aggregation_config "${WORKER_AGGREGATION_CONFIG}")
