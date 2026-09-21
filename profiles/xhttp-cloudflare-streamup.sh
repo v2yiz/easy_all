@@ -1364,8 +1364,9 @@ load_state() {
     enforce_ipv4_only_policy
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
-    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
-        || die "不支持的 Cloudflare 状态版本：${STATE_VERSION:-缺失}；请重新安装"
+    [[ "${STATE_VERSION:-}" =~ ^[0-9]+$ ]] \
+        && ((10#${STATE_VERSION} >= 10#${MIN_COMPATIBLE_STATE_VERSION})) \
+        || die "不支持的 Cloudflare 状态版本：${STATE_VERSION:-缺失}；最低兼容版本为 ${MIN_COMPATIBLE_STATE_VERSION}"
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Cloudflare 状态缺少有效域名或 UUID"
     XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")

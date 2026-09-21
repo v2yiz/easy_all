@@ -169,9 +169,9 @@ grep -Eq '^xhttp_render_xray_config\(\)' "${CLOUDFLARE_PROFILE}" \
     || fail "CDN profiles must use shared apply finalization"
 ! grep -Eq 'cloudflare_cleanup_stale_header_rules' "${CLOUDFLARE_PROFILE}" \
     || fail "Cloudflare must not delete rules by zone-wide easy_all prefix"
-grep -Fq '[[ "${state_version}" == "7" || "${state_version}" == "6" ]]' "${ROOT_DIR}/easy_all" \
-    && grep -Fq '[[ "${state_version}" == "9" ]]' "${ROOT_DIR}/easy_all" \
-    || fail "all modes must enforce their current state schema"
+grep -Fq 'state_version_supported "${state_version}" "${REALITY_MIN_STATE_VERSION}"' "${ROOT_DIR}/easy_all" \
+    && grep -Fq 'state_version_supported "${state_version}" "${CLOUDFLARE_MIN_STATE_VERSION}"' "${ROOT_DIR}/easy_all" \
+    || fail "all modes must enforce their minimum compatible state schema"
 [[ "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/certificate.pem"'* \
     && "$(<"${XHTTP_RUNTIME}")" == *'"${UPDATE_SUB_BACKUP_DIR}/private.key"'* ]] \
     || fail "CDN rollback must preserve local TLS certificate and key"
