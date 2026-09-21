@@ -484,6 +484,8 @@ test_mihomo_template() {
         "GEOSITE,category-ai-chat-!cn,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo proxies all Google domains through the VPS" \
         "GEOSITE,google,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo proxies GitHub domains through the VPS" \
+        "GEOSITE,github,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes Apple domestic CDN direct" \
         "GEOSITE,apple-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes Microsoft domestic CDN direct" \

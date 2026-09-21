@@ -194,6 +194,10 @@ grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep Gemini and all Google services on the VPS exit"
 grep -Fq "'geosite:google':" "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Google services must have an explicit DNS policy matching their proxy route"
+grep -Fq 'GEOSITE,github,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
+    || fail "Mihomo subscription template must keep GitHub services on the VPS exit"
+grep -Fq "'geosite:github':" "${ROOT_DIR}/templates/mihomo.yaml" \
+    || fail "GitHub services must have an explicit DNS policy matching their proxy route"
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" != *'refresh-xray-assets'* \

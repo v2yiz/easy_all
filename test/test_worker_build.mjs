@@ -398,7 +398,7 @@ try {
         assert.ok(body.includes("      - 'geosite:googlefcm'\n"));
         assert.ok(body.includes(`  - ${fcmRule}\n`));
     }
-    for (const matcher of ['GEOSITE,google', 'GEOSITE,openai', 'GEOSITE,anthropic', 'RULE-SET,proxy-services']) {
+    for (const matcher of ['GEOSITE,google', 'GEOSITE,github', 'GEOSITE,openai', 'GEOSITE,anthropic', 'RULE-SET,proxy-services']) {
         before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},PROXY`);
         before(rules, `${matcher},PROXY`, 'GEOSITE,apple-cn,DIRECT');
         before(rules, `${matcher},PROXY`, 'GEOSITE,microsoft@cn,DIRECT');
@@ -408,7 +408,7 @@ try {
     before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
     const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
-    for (const key of ['geosite:google', 'geosite:openai,anthropic', 'rule-set:proxy-services', 'geosite:geolocation-!cn,gfw']) {
+    for (const key of ['geosite:google', 'geosite:github', 'geosite:openai,anthropic', 'rule-set:proxy-services', 'geosite:geolocation-!cn,gfw']) {
         assert.ok(dnsPolicy.includes(
             `      '${key}':\n        - 'https://1.1.1.1/dns-query#PROXY'\n        - 'https://8.8.8.8/dns-query#PROXY'`
         ), `${key} must use proxied DoH`);
