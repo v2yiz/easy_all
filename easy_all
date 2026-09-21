@@ -142,8 +142,8 @@ detect_installed_mode() {
         state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
         case "${protocol}" in
         reality)
-            [[ "${state_version}" == "7" ]] \
-                || launcher_die "Reality 状态版本无效（当前：${state_version:-缺失}，要求：7）；不支持原地升级。如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
+            [[ "${state_version}" == "7" || "${state_version}" == "6" ]] \
+                || launcher_die "Reality 状态版本无效（当前：${state_version:-缺失}，要求：7）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
             printf 'reality\n'
             ;;
         cloudflare-streamup)

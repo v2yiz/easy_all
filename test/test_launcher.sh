@@ -271,6 +271,14 @@ assert_equal "no state means no installed mode" "" "$(detect_installed_mode)"
 printf 'STATE_VERSION=7\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Reality state selects Reality profile" "reality" "$(detect_installed_mode)"
 
+printf 'STATE_VERSION=6\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "Reality state version 6 selects Reality profile" "reality" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=5\nPROTOCOL=reality\nCDN_PROVIDER=\n' >"${EASY_ALL_STATE_FILE}"
+assert_failure_contains "stale Reality state explains reinstall prerequisite" \
+    "如需全新安装，请先执行 easy_all uninstall" \
+    detect_installed_mode
+
 printf 'STATE_VERSION=9\nPROTOCOL=cloudflare-streamup\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_equal "Cloudflare streamup state selects cloudflare-streamup" "cloudflare-streamup" "$(detect_installed_mode)"
 

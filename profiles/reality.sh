@@ -196,8 +196,17 @@ source_state_file() {
     unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
-        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；请重新安装"
+    case "${STATE_VERSION:-}" in
+    6)
+        GOOGLE_EGRESS_MODE="ipv4"
+        GOOGLE_EGRESS_RESOLVED="ipv4"
+        VPS_IP_FAMILY="ipv4"
+        VPS_PUBLIC_IPV6=""
+        STATE_VERSION="${STATE_SCHEMA_VERSION}"
+        ;;
+    "${STATE_SCHEMA_VERSION}") ;;
+    *) die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；请重新安装" ;;
+    esac
 }
 
 load_state() {
