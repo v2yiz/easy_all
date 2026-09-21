@@ -12,7 +12,7 @@ const EXTERNAL_CLASH_USER_AGENT = 'mihomo/1.19.30';
 const EXTERNAL_URI_USER_AGENT = 'v2rayN';
 const CDN_NODE_LIMIT = 6;
 const CDN_NODE_NAME_PREFIX = '🇺🇸优选';
-const CDN_GROUP_NAME = '白天首选';
+const CDN_GROUP_NAME = '🇺🇸白天首选';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,

@@ -96,7 +96,7 @@ export async function buildWorker({
         'at least one node source'
     );
     const names = [...config.nodes, ...config.fallbackCdnNodes].map(node => node.name);
-    requireValue(new Set(names).size === names.length && names.every(name => !['PROXY', '白天首选', 'DIRECT', 'REJECT'].includes(name)), 'unique, non-reserved node names');
+    requireValue(new Set(names).size === names.length && names.every(name => !['PROXY', '🇺🇸白天首选', 'DIRECT', 'REJECT'].includes(name)), 'unique, non-reserved node names');
     requireValue(
         config.nodes.every(node => !/^🇺🇸优选[1-6]$/.test(node.name)),
         'Reality node names must not use reserved CDN names'
