@@ -22,6 +22,8 @@ readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://gi
 readonly EASY_ALL_DEFAULT_BRANCH="main"
 readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
 readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
+readonly REALITY_MIN_STATE_VERSION="6"
+readonly CLOUDFLARE_MIN_STATE_VERSION="9"
 readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
@@ -135,6 +137,10 @@ state_value() {
     printf '%s\n' "${value}"
 }
 
+state_version_supported() {
+    [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 10#$2))
+}
+
 detect_installed_mode() {
     local protocol="" state_version=""
     if [[ -f "${EASY_ALL_STATE_FILE}" ]]; then
@@ -142,13 +148,13 @@ detect_installed_mode() {
         state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
         case "${protocol}" in
         reality)
-            [[ "${state_version}" == "7" || "${state_version}" == "6" ]] \
-                || launcher_die "Reality 状态版本无效（当前：${state_version:-缺失}，要求：7）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
+            state_version_supported "${state_version}" "${REALITY_MIN_STATE_VERSION}" \
+                || launcher_die "Reality 状态版本无效（当前：${state_version:-缺失}，最低兼容：${REALITY_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
             printf 'reality\n'
             ;;
         cloudflare-streamup)
-            [[ "${state_version}" == "9" ]] \
-                || launcher_die "Cloudflare 状态版本无效（当前：${state_version:-缺失}，要求：9）；不支持原地升级。如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
+            state_version_supported "${state_version}" "${CLOUDFLARE_MIN_STATE_VERSION}" \
+                || launcher_die "Cloudflare 状态版本无效（当前：${state_version:-缺失}，最低兼容：${CLOUDFLARE_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
             printf 'cloudflare-streamup\n'
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;

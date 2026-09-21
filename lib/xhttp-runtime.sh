@@ -39,6 +39,7 @@ readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="9"
+readonly MIN_COMPATIBLE_STATE_VERSION="9"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-Cloudflare}"
@@ -91,8 +92,9 @@ source_state_file() {
     unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
-        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；请重新安装"
+    [[ "${STATE_VERSION:-}" =~ ^[0-9]+$ ]] \
+        && ((10#${STATE_VERSION} >= 10#${MIN_COMPATIBLE_STATE_VERSION})) \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；最低兼容版本为 ${MIN_COMPATIBLE_STATE_VERSION}"
 }
 
 subscription_link_domain() {

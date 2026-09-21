@@ -72,6 +72,7 @@ readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="7"
+readonly MIN_COMPATIBLE_STATE_VERSION="6"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
 
@@ -196,17 +197,16 @@ source_state_file() {
     unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    case "${STATE_VERSION:-}" in
-    6)
+    [[ "${STATE_VERSION:-}" =~ ^[0-9]+$ ]] \
+        && ((10#${STATE_VERSION} >= 10#${MIN_COMPATIBLE_STATE_VERSION})) \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；最低兼容版本为 ${MIN_COMPATIBLE_STATE_VERSION}"
+    if ((10#${STATE_VERSION} < 10#${STATE_SCHEMA_VERSION})); then
         GOOGLE_EGRESS_MODE="ipv4"
         GOOGLE_EGRESS_RESOLVED="ipv4"
         VPS_IP_FAMILY="ipv4"
         VPS_PUBLIC_IPV6=""
         STATE_VERSION="${STATE_SCHEMA_VERSION}"
-        ;;
-    "${STATE_SCHEMA_VERSION}") ;;
-    *) die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；请重新安装" ;;
-    esac
+    fi
 }
 
 load_state() {
