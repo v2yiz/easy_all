@@ -153,6 +153,9 @@ dns:
       'geosite:google':
         - 'https://1.1.1.1/dns-query#PROXY'
         - 'https://8.8.8.8/dns-query#PROXY'
+      'geosite:github':
+        - 'https://1.1.1.1/dns-query#PROXY'
+        - 'https://8.8.8.8/dns-query#PROXY'
       'geosite:openai,anthropic':
         - 'https://1.1.1.1/dns-query#PROXY'
         - 'https://8.8.8.8/dns-query#PROXY'
@@ -262,6 +265,8 @@ rules:
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT
   - GEOSITE,google,PROXY
   # 明确代理的 AI 及服务例外优先于 CN/微软直连，且不能绕过 QUIC 拒绝。
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,github)),REJECT
+  - GEOSITE,github,PROXY
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,openai)),REJECT
   - GEOSITE,openai,PROXY
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,anthropic)),REJECT
