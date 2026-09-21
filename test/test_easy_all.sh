@@ -1206,6 +1206,17 @@ test_state_and_xray() {
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
 
+    # Test state version 6 in-memory migration to version 7
+    grep -vE '^(STATE_VERSION|GOOGLE_EGRESS_)' "${STATE_FILE}" >"${STATE_FILE}.tmp"
+    printf 'STATE_VERSION=6\n' >>"${STATE_FILE}.tmp"
+    mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+    unset GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
+    load_state
+    assert_equal "version 6 state migrates Google egress mode" "ipv4" "${GOOGLE_EGRESS_MODE}"
+    assert_equal "version 6 state migrates Google egress resolved" "ipv4" "${GOOGLE_EGRESS_RESOLVED}"
+    save_state
+    assert_contains "save_state upgrades version 6 to version 7" "STATE_VERSION=7" "$(<"${STATE_FILE}")"
+
     install -d -m 0755 "${XRAY_DIR}"
     cat >"${XRAY_BIN}" <<'EOF'
 #!/bin/sh
