@@ -117,12 +117,13 @@ write_subscription_token_map() {
 
 render_mihomo_subscription() {
     local template=$1 node_file=$2 destination=$3 node_name=$4
-    local group_file=${5:-} name_file=${6:-}
+    local group_file=${5:-} name_file=${6:-} worker_rule_file=${7:-}
     local encoded_node_name
     encoded_node_name=$(jq -Rn --arg value "${node_name}" '$value')
     EASY_ALL_NODE_NAME="${encoded_node_name}" \
     awk -v node_file="${node_file}" \
-        -v group_file="${group_file}" -v name_file="${name_file}" '
+        -v group_file="${group_file}" -v name_file="${name_file}" \
+        -v worker_rule_file="${worker_rule_file}" '
         $0 == "# EASY_ALL_PROXY_NODE" {
             while ((getline line < node_file) > 0) print line
             close(node_file)
@@ -141,6 +142,13 @@ render_mihomo_subscription() {
                 close(name_file)
             } else {
                 print "        - " ENVIRON["EASY_ALL_NODE_NAME"]
+            }
+            next
+        }
+        $0 == "# EASY_ALL_WORKER_RULE" {
+            if (worker_rule_file != "") {
+                while ((getline line < worker_rule_file) > 0) print line
+                close(worker_rule_file)
             }
             next
         }

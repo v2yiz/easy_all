@@ -8,7 +8,8 @@ validate_mihomo_template() {
     for marker in \
         "# EASY_ALL_PROXY_NODE" \
         "# EASY_ALL_PROXY_GROUP" \
-        "# EASY_ALL_PROXY_NAME"; do
+        "# EASY_ALL_PROXY_NAME" \
+        "# EASY_ALL_WORKER_RULE"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \
             || die "Mihomo 模板标记无效：${marker} 应且只能出现一次"
@@ -36,6 +37,7 @@ validate_mihomo_template() {
         }
         $0 == "# EASY_ALL_PROXY_NAME" { print "        - easy-all-check"; next }
         $0 == "# EASY_ALL_PROXY_GROUP" { next }
+        $0 == "# EASY_ALL_WORKER_RULE" { next }
         { print }
     ' "${source}" >"${check_dir}/config.yaml"
     "${binary}" -t -d "${MIHOMO_CHECK_HOME:-${check_dir}}" \

@@ -260,6 +260,7 @@ rules:
   - IP-CIDR,0.0.0.0/8,REJECT,no-resolve
   # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
   - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
+# EASY_ALL_WORKER_RULE
   # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口。
   # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT

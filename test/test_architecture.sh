@@ -191,7 +191,9 @@ if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/templates/mihomo.yaml"; then
     fail "Mihomo subscription template must not force SSH ports to DIRECT"
 fi
 grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
-    || fail "Mihomo subscription template must keep Gemini and all Google services on the VPS exit"
+    || fail "Mihomo subscription template must keep non-YouTube Google services on the VPS exit"
+grep -Fxq '# EASY_ALL_WORKER_RULE' "${ROOT_DIR}/templates/mihomo.yaml" \
+    || fail "Mihomo subscription template must expose the conditional Worker rule marker"
 grep -Fq "'geosite:google':" "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Google services must have an explicit DNS policy matching their proxy route"
 grep -Fq 'GEOSITE,github,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \

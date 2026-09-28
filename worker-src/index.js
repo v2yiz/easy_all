@@ -551,12 +551,15 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
             ? clashUrlTestGroup(WORKER_GROUP_NAME, workerNames, 'https://www.gstatic.com/generate_204')
             : '',
     ].filter(Boolean).join('\n');
+    const workerRules = workerNames.length
+        ? `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT\n  - GEOSITE,youtube,${WORKER_GROUP_NAME}`
+        : '';
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),
         '# EASY_ALL_PROXY_GROUP': groups,
+        '# EASY_ALL_WORKER_RULE': workerRules,
         '# EASY_ALL_PROXY_NAME': [
             CDN_GROUP_NAME,
-            ...(workerNames.length ? [WORKER_GROUP_NAME] : []),
             ...names.filter(name => !autoNames.includes(name) && !workerNames.includes(name)),
         ].map(name => '        - ' + yamlString(name)).join('\n'),
     };

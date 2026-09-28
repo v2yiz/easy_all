@@ -153,7 +153,7 @@ assert.equal((yaml.match(/udp: false/g) || []).length, 6);
 const groups = yaml.split('proxy-groups:\n')[1].split('rules:\n')[0];
 const proxyGroup = groups.split('    - name: 🇺🇸白天首选')[0];
 const workerGroup = groups.split('    - name: 🇭🇰CF')[1];
-assert.ok(proxyGroup.includes('        - "🇭🇰CF"'));
+assert.ok(!proxyGroup.includes('        - "🇭🇰CF"'));
 assert.ok(!proxyGroup.includes('纯CF'));
 assert.ok(workerGroup.includes('      type: url-test'));
 assert.ok(workerGroup.includes('      url: https://www.gstatic.com/generate_204'));
@@ -162,6 +162,11 @@ assert.deepEqual(
     JSON.parse(workerGroup.match(/proxies: (\[[^\n]+\])/)[1]),
     ['🇭🇰CF1', '🇭🇰CF2', '🇭🇰CF3', '🇭🇰CF4', '🇭🇰CF5', '🇭🇰CF6'],
 );
+const rules = yaml.split('rules:\n')[1];
+const youtubeRule = rules.indexOf('  - GEOSITE,youtube,🇭🇰CF');
+const googleRule = rules.indexOf('  - GEOSITE,google,PROXY');
+assert.ok(youtubeRule >= 0 && youtubeRule < googleRule);
+assert.ok(rules.includes('  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT'));
 addresses = ['104.16.9.9'];
 response = await handler(request('base64'));
 const decoded = Buffer.from(await response.text(), 'base64').toString();
@@ -169,4 +174,9 @@ assert.equal(decoded.split('\n').filter(Boolean).length, 7);
 assert.ok(decoded.includes('104.16.9.9'));
 assert.ok(!decoded.includes('104.16.2.2'));
 assert.ok(!decoded.split('\n').filter(line => line.includes('type=ws')).some(line => line.includes('packetEncoding')));
+addresses = [];
+response = await handler(request('clash'));
+const yamlWithoutWorker = await response.text();
+assert.ok(!yamlWithoutWorker.includes('🇭🇰CF'));
+assert.ok(!yamlWithoutWorker.includes('EASY_ALL_WORKER_RULE'));
 console.log('Worker backup parser, relay, limits and dynamic aggregation checks passed');

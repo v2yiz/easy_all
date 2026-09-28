@@ -234,8 +234,9 @@ try {
     assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Hidden Reality', 'Remote', 'Mieru Remote']);
     assert.ok(!groups.includes('DIRECT'));
     const template = await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8');
+    const staticRules = template.split('rules:\n')[1].replace('# EASY_ALL_WORKER_RULE', '');
     for (const body of [fallbackBody, liveBody]) {
-        assert.equal(body.split('rules:\n')[1], template.split('rules:\n')[1]);
+        assert.equal(body.split('rules:\n')[1], staticRules);
         assert.equal(body.split('\nproxies:\n')[0], template.split('\nproxies:\n')[0]);
         assert.ok(body.includes('ipv6: false'));
     }

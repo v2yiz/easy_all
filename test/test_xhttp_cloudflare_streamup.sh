@@ -279,6 +279,7 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     WORKER_BACKUP_IPS='["104.16.1.1","104.16.2.2","104.16.3.3","104.16.4.4","104.16.5.5","104.16.6.6"]'
     worker_groups=$(build_mihomo_proxy_groups)
     worker_names=$(build_mihomo_proxy_names)
+    worker_rules=$(build_mihomo_worker_rules)
     assert_contains "Worker groups contain HK CF" "${worker_groups}" 'name: "🇭🇰CF"'
     assert_contains "HK CF uses url-test" "${worker_groups}" 'type: url-test'
     assert_contains "HK CF avoids Cloudflare-owned probe targets" \
@@ -286,8 +287,14 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     assert_not_contains "HK CF omits domain entry" "${worker_groups}" "${WORKER_BACKUP_DOMAIN}"
     assert_contains "HK CF contains first optimized entry" "${worker_groups}" '"🇭🇰CF1"'
     assert_contains "HK CF contains sixth optimized entry" "${worker_groups}" '"🇭🇰CF6"'
-    assert_contains "PROXY contains HK CF" "${worker_names}" '"🇭🇰CF"'
+    assert_not_contains "PROXY excludes the YouTube-only HK CF group" "${worker_names}" '"🇭🇰CF"'
     assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"🇭🇰CF1"'
+    assert_contains "Worker rules reject YouTube QUIC" "${worker_rules}" \
+        'AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT'
+    assert_contains "Worker rules route YouTube to HK CF" "${worker_rules}" \
+        'GEOSITE,youtube,🇭🇰CF'
+    WORKER_BACKUP_IPS='[]'
+    assert_equal "Worker rules are omitted without published Worker nodes" "" "$(build_mihomo_worker_rules)"
 )
 
 # Worker deployment source forwards the public token to the private Nginx source.

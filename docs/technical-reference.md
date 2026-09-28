@@ -61,6 +61,8 @@ Universal SSL 终止客户端 TLS，Origin CA 保护回源。
 独立纯 Worker 节点仅发布最多 6 个经 VLESS 转发探测成功的优选 IPv4，依次命名为
 `🇭🇰CF1` 至 `🇭🇰CF6`，不发布域名入口。这些节点归入 `🇭🇰CF` URL-Test 组；测速目标使用
 Google 的 `generate_204`，避免 Cloudflare Socket 禁止回连 Cloudflare 地址而产生误判。
+订阅仅在该组存在时，将 YouTube 的 TCP 流量直接路由到 `🇭🇰CF`；YouTube QUIC 被拒绝以触发
+TCP 回退，其他代理流量继续进入 `PROXY`，且 `PROXY` 不包含 `🇭🇰CF`。
 
 公开订阅只经过独立域名绑定的 Worker。Worker 使用 `global_fetch_strictly_public`，
 转发同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥，Nginx 执行最终鉴权；直接访问私有源

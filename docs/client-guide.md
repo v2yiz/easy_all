@@ -35,6 +35,7 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 ## Clash Mi 模式
 
 日常使用“规则”模式即可。订阅会让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
+启用纯 Worker 兜底后，YouTube 会单独使用 `🇭🇰CF`；其他代理流量仍使用 `PROXY`。
 
 Clash Mi 的 `GLOBAL` 分组默认指向 `DIRECT`。切换到“全局”模式后，还必须进入“代理”页面，
 点击 `GLOBAL` 并手动勾选 `PROXY`，否则流量仍然直连。

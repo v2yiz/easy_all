@@ -1744,11 +1744,7 @@ build_mihomo_nodes() {
 }
 
 build_mihomo_proxy_names() {
-    local worker_names
     printf '        - "AUTO"\n'
-    worker_names=$(worker_backup_nodes | jq -r '.name')
-    [[ -z "${worker_names}" ]] \
-        || printf '        - %s\n' "$(jq -Rn --arg value "${WORKER_BACKUP_GROUP_NAME}" '$value')"
 }
 
 write_mihomo_url_test_group() {
@@ -1787,6 +1783,14 @@ build_mihomo_proxy_groups() {
         "https://www.gstatic.com/generate_204"
 }
 
+build_mihomo_worker_rules() {
+    [[ -n "$(worker_backup_nodes | jq -r '.name')" ]] || return 0
+    cat <<EOF
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT
+  - GEOSITE,youtube,${WORKER_BACKUP_GROUP_NAME}
+EOF
+}
+
 show_node() {
     collect_installed_state
     printf '\n协议: VLESS XHTTP stream-up over Cloudflare CDN（6 个 IPv4）\n节点链接:\n%s\n\n' "$(build_node_links)"
@@ -1814,7 +1818,7 @@ show_status() {
     fi
     printf 'VPS 出站: IPv4-only（IPv6 全局禁用）\n'
     if worker_backup_enabled; then
-        printf 'Worker 兜底: %s，域名入口 + %s 个优选 IP，Placement=%s（不保证香港出口）\n' \
+        printf 'Worker 兜底: %s，发布 %s 个优选 IP（无域名入口），Placement=%s（不保证香港出口）\n' \
             "${WORKER_BACKUP_DOMAIN}" "$(jq length <<<"${WORKER_BACKUP_IPS:-[]}")" "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}"
     fi
     show_globalping_status

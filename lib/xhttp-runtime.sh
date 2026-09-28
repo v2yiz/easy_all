@@ -357,14 +357,14 @@ validate_subscription_runtime() {
 xhttp_require_subscription_hooks() {
     local hook
     for hook in build_node_links build_mihomo_nodes \
-        build_mihomo_proxy_groups build_mihomo_proxy_names; do
+        build_mihomo_proxy_groups build_mihomo_proxy_names build_mihomo_worker_rules; do
         declare -F "${hook}" >/dev/null 2>&1 \
             || die "CDN Profile 缺少订阅渲染钩子：${hook}"
     done
 }
 
 write_subscriptions() {
-    local template node_file group_file name_file base64_file mihomo_file user uuid user_dir marker
+    local template node_file group_file name_file worker_rule_file base64_file mihomo_file user uuid user_dir marker
     if declare -F cloudflare_refresh_backup_nodes >/dev/null 2>&1; then
         cloudflare_refresh_backup_nodes
     fi
@@ -374,11 +374,13 @@ write_subscriptions() {
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
     group_file="${RUNTIME_TMP}/mihomo-groups.yaml"
     name_file="${RUNTIME_TMP}/mihomo-names.yaml"
+    worker_rule_file="${RUNTIME_TMP}/mihomo-worker-rules.yaml"
     base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
         && marker=$(mihomo_transport_marker)
+    build_mihomo_worker_rules >"${worker_rule_file}"
 
     if quota_enabled; then
         rm -rf -- "${SUBSCRIPTION_DIR}"
@@ -394,7 +396,7 @@ write_subscriptions() {
                 printf '\n' >>"${base64_file}.${user}"
                 render_mihomo_subscription "${template}" "${node_file}.${user}" \
                     "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
-                    "${group_file}.${user}" "${name_file}.${user}"
+                    "${group_file}.${user}" "${name_file}.${user}" "${worker_rule_file}"
             )
             grep -Fq "${marker}" "${mihomo_file}.${user}" \
                 || die "Mihomo 订阅缺少有效节点：${user}"
@@ -412,7 +414,7 @@ write_subscriptions() {
     build_node_links | openssl base64 -A >"${base64_file}"
     printf '\n' >>"${base64_file}"
     render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
-        "${XHTTP_NODE_NAME}" "${group_file}" "${name_file}"
+        "${XHTTP_NODE_NAME}" "${group_file}" "${name_file}" "${worker_rule_file}"
 
     grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"

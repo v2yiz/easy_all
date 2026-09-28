@@ -22,7 +22,8 @@ Cloudflare 模式完全没有域名兜底，需要额外准备：
 还可选择部署一个独立的纯 Worker TCP 兜底节点。它使用单独的 Worker 名称、UUID、路径和
 同 Zone 一级域名，不经过 VPS，也不计入 VPS 用户配额。订阅仅发布 6 个探测成功的优选 IPv4，
 不发布域名入口；Mihomo 订阅会将这些节点放入
-`🇭🇰CF` URL-Test 组；原有 6 个 XHTTP 节点继续由 `🇺🇸白天首选` 自动测速。
+`🇭🇰CF` URL-Test 组，并仅将 YouTube 流量定向到该组。其他代理流量仍使用 `PROXY`；
+原有 6 个 XHTTP 节点继续由 `🇺🇸白天首选` 自动测速。
 
 完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择自托管订阅时才需要
 Cloudflare 域名和 API Token。

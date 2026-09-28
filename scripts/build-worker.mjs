@@ -105,7 +105,10 @@ export async function buildWorker({
         readFile(templatePath, 'utf8'),
         readFile(sourcePath, 'utf8'),
     ]);
-    for (const marker of ['# EASY_ALL_PROXY_NODE', '# EASY_ALL_PROXY_GROUP', '# EASY_ALL_PROXY_NAME']) {
+    for (const marker of [
+        '# EASY_ALL_PROXY_NODE', '# EASY_ALL_PROXY_GROUP',
+        '# EASY_ALL_PROXY_NAME', '# EASY_ALL_WORKER_RULE',
+    ]) {
         requireValue(template.split('\n').filter(line => line === marker).length === 1, `template marker ${marker}`);
     }
     const checkedTemplate = spawnSync('bash', [resolve(root, 'lib/mihomo-template.sh'), templatePath], { stdio: 'ignore' });
