@@ -145,7 +145,7 @@ cloudflare_deploy_backup_worker() {
     chmod 0600 "${metadata}"
     response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 60 -X PUT -H "@${headers}" \
         -F "metadata=@${metadata};type=application/json" \
-        -F "worker.js=@${backup_worker_src};type=application/javascript+module" \
+        -F "worker.js=@${backup_worker_src};filename=worker.js;type=application/javascript+module" \
         "${CLOUDFLARE_API_BASE}/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}") \
         || die "兜底 Worker 上传失败"
     if ! jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
@@ -160,7 +160,7 @@ cloudflare_deploy_backup_worker() {
             }' >"${metadata}"
             response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 60 -X PUT -H "@${headers}" \
                 -F "metadata=@${metadata};type=application/json" \
-                -F "worker.js=@${backup_worker_src};type=application/javascript+module" \
+                -F "worker.js=@${backup_worker_src};filename=worker.js;type=application/javascript+module" \
                 "${CLOUDFLARE_API_BASE}/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}") \
                 || die "兜底 Worker 上传失败"
             jq -e '.success == true' <<<"${response}" >/dev/null \

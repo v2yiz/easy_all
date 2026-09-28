@@ -47,6 +47,16 @@ CLOUDFLARE_API_TOKEN=test-token
 CLOUDFLARE_WORKER_READY_ATTEMPTS=1
 CLOUDFLARE_WORKER_READY_INTERVAL=0
 WORKER_BACKUP_DOMAIN_ID=''
+assert_worker_upload_module() {
+    local argument found=0
+    for argument in "$@"; do
+        if [[ "${argument}" == "worker.js=@${ROOT_DIR}/worker-src/backup.js;filename=worker.js;type=application/javascript+module" ]]; then
+            found=1
+            break
+        fi
+    done
+    [[ "${found}" == "1" ]] || fail 'Worker upload part filename must match metadata main_module'
+}
 cloudflare_api_request() {
     printf '%s %s\n' "$1" "$2" >>"${TMP_DIR}/calls"
     case "$2" in
@@ -55,6 +65,7 @@ cloudflare_api_request() {
     esac
 }
 curl() {
+    assert_worker_upload_module "$@"
     jq -e '.placement.region == "aws:ap-east-1" and .bindings[0].type == "secret_text" and .bindings[1].text == "/vless-test"' \
         "${TMP_DIR}/backup-worker-metadata.json" >/dev/null || fail 'Worker upload metadata'
     printf 'upload\n' >>"${TMP_DIR}/calls"
@@ -109,6 +120,7 @@ WORKER_BACKUP_DOMAIN_ID=''
 WORKER_BACKUP_CREATED=0
 : >"${TMP_DIR}/curl_count"
 curl() {
+    assert_worker_upload_module "$@"
     printf 'x' >>"${TMP_DIR}/curl_count"
     local count
     count=$(wc -c <"${TMP_DIR}/curl_count" | tr -d ' ')
