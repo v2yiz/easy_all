@@ -60,7 +60,7 @@ while IFS= read -r relative_path; do
     assert_contains "technical reference runtime module list" \
         "${TECHNICAL_CONTENT}" "$(basename "${relative_path}")"
 done < <(
-    sed -n '/^\(lib\|profiles\)\//p' "${ROOT_DIR}/runtime.manifest"
+    sed -En '/^(lib|profiles)\//p' "${ROOT_DIR}/runtime.manifest"
 )
 
 for command in show subscription self-update apply apply-cloud update-sub \

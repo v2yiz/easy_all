@@ -116,6 +116,7 @@ easy_all
 │  ├─ log.sh
 │  ├─ runtime-core.sh
 │  ├─ xhttp-runtime.sh
+│  ├─ worker-backup.sh
 │  ├─ globalping-cdn.sh
 │  ├─ cloudflare-ip-pool.sh
 │  ├─ quota.sh
@@ -131,9 +132,11 @@ easy_all
 ├─ templates/
 │  └─ mihomo.yaml
 ├─ worker-src/
-│  └─ index.js
+│  ├─ index.js
+│  └─ backup.js
 └─ scripts/
    ├─ build-worker.mjs
+   ├─ probe-worker-backup.py
    └─ debian-init.sh
 ```
 
