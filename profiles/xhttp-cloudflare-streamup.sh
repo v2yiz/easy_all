@@ -1744,27 +1744,23 @@ build_mihomo_nodes() {
 }
 
 build_mihomo_proxy_names() {
+    local worker_names
     printf '        - "AUTO"\n'
-    worker_backup_nodes | jq -r '"        - " + (.name|@json)'
+    worker_names=$(worker_backup_nodes | jq -r '.name')
+    [[ -z "${worker_names}" ]] \
+        || printf '        - %s\n' "$(jq -Rn --arg value "${WORKER_BACKUP_GROUP_NAME}" '$value')"
 }
 
-build_mihomo_proxy_groups() {
-    local -a all_nodes=()
-    local ip label carrier candidates
-    candidates=$(cloudflare_xhttp_streamup_client_candidates)
-    cloudflare_validate_client_candidate_counts "${candidates}"
-    while IFS=$'\t' read -r ip label carrier; do
-        [[ -n "${ip}" ]] || continue
-        all_nodes+=("🇺🇸优选${label}")
-    done <<<"${candidates}"
-
-    printf '    - name: "AUTO"\n'
+write_mihomo_url_test_group() {
+    local group_name=$1 nodes=$2 node
+    [[ -n "${nodes}" ]] || return 0
+    printf '    - name: %s\n' "$(jq -Rn --arg value "${group_name}" '$value')"
     printf '      type: url-test\n'
     printf '      proxies:\n'
-    local node
-    for node in "${all_nodes[@]}"; do
+    while IFS= read -r node; do
+        [[ -n "${node}" ]] || continue
         printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
-    done
+    done <<<"${nodes}"
     cat <<EOF
       url: https://cp.cloudflare.com/generate_204
       interval: 300
@@ -1772,6 +1768,21 @@ build_mihomo_proxy_groups() {
       timeout: 3000
       lazy: true
 EOF
+}
+
+build_mihomo_proxy_groups() {
+    local -a all_nodes=()
+    local ip label carrier candidates worker_nodes
+    candidates=$(cloudflare_xhttp_streamup_client_candidates)
+    cloudflare_validate_client_candidate_counts "${candidates}"
+    while IFS=$'\t' read -r ip label carrier; do
+        [[ -n "${ip}" ]] || continue
+        all_nodes+=("🇺🇸优选${label}")
+    done <<<"${candidates}"
+
+    write_mihomo_url_test_group "AUTO" "$(printf '%s\n' "${all_nodes[@]}")"
+    worker_nodes=$(worker_backup_nodes | jq -r '.name')
+    write_mihomo_url_test_group "${WORKER_BACKUP_GROUP_NAME}" "${worker_nodes}"
 }
 
 show_node() {

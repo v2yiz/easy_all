@@ -269,6 +269,24 @@ assert_contains "Groups test url" "${groups_output}" 'url: https://cp.cloudflare
 assert_contains "Groups tolerance is 30" "${groups_output}" 'tolerance: 30'
 assert_not_contains "Groups do not contain domain fallback" "${groups_output}" 'DOMAIN'
 
+# Worker fallback nodes use their own automatic latency-test group.
+(
+    WORKER_BACKUP_DOMAIN=backup.example.com
+    WORKER_BACKUP_NAME=easyall-backup-test
+    WORKER_BACKUP_DOMAIN_ID=test-backup-domain-id
+    WORKER_BACKUP_UUID=11111111-2222-4333-8444-555555555555
+    WORKER_BACKUP_PATH=/vless-test
+    WORKER_BACKUP_IPS='["104.16.1.1","104.16.2.2"]'
+    worker_groups=$(build_mihomo_proxy_groups)
+    worker_names=$(build_mihomo_proxy_names)
+    assert_contains "Worker groups contain CF大善人" "${worker_groups}" 'name: "CF大善人"'
+    assert_contains "CF大善人 uses url-test" "${worker_groups}" 'type: url-test'
+    assert_contains "CF大善人 contains domain entry" "${worker_groups}" '"Worker兜底-自动"'
+    assert_contains "CF大善人 contains optimized entry" "${worker_groups}" '"Worker兜底-优选2"'
+    assert_contains "PROXY contains CF大善人" "${worker_names}" '"CF大善人"'
+    assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"Worker兜底-自动"'
+)
+
 # Worker deployment source forwards the public token to the private Nginx source.
 generated_worker="${CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE}"
 cloudflare_build_subscription_worker

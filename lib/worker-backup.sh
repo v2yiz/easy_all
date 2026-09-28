@@ -2,6 +2,7 @@
 # Independent TCP Worker; shares CDN candidates and the authenticated node source.
 
 readonly WORKER_BACKUP_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+readonly WORKER_BACKUP_GROUP_NAME="CF大善人"
 
 worker_backup_enabled() {
     [[ "${WORKER_BACKUP_DECOMMISSION:-0}" != "1" && -n "${WORKER_BACKUP_DOMAIN:-}" ]]

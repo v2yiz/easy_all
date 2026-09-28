@@ -13,6 +13,7 @@ const EXTERNAL_URI_USER_AGENT = 'v2rayN';
 const CDN_NODE_LIMIT = 6;
 const CDN_NODE_NAME_PREFIX = '🇺🇸优选';
 const CDN_GROUP_NAME = '🇺🇸白天首选';
+const WORKER_GROUP_NAME = 'CF大善人';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,
@@ -482,6 +483,15 @@ function upstreamProxyNames(lines, start, end) {
     return names;
 }
 
+function clashUrlTestGroup(name, proxyNames) {
+    return [
+        `    - name: ${name}`, '      type: url-test',
+        '      url: https://cp.cloudflare.com/generate_204',
+        '      interval: 300', '      tolerance: 30', '      timeout: 3000',
+        '      lazy: true', '      proxies: ' + JSON.stringify(proxyNames),
+    ].join('\n');
+}
+
 function hasUpgradePlaceholder(names) {
     return names.some(name =>
         /请(?:更新|更换)客户端|客户端(?:版本过低|已不能使用)/.test(name)
@@ -530,20 +540,23 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
         );
     }
     const names = [...nodes.map(node => node.name), ...upstreamNames];
-    if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', CDN_GROUP_NAME, 'DIRECT', 'REJECT'].includes(name))) {
+    if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', CDN_GROUP_NAME, WORKER_GROUP_NAME, 'DIRECT', 'REJECT'].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
     const autoNames = autoNodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);
-    const group = [
-        `    - name: ${CDN_GROUP_NAME}`, '      type: url-test',
-        '      url: https://cp.cloudflare.com/generate_204',
-        '      interval: 300', '      tolerance: 30', '      timeout: 3000',
-        '      lazy: true', '      proxies: ' + JSON.stringify(autoNames.length ? autoNames : ['REJECT']),
-    ].join('\n');
+    const workerNames = autoNodes.filter(node => node.workerBackup).slice(0, 3).map(node => node.name);
+    const groups = [
+        clashUrlTestGroup(CDN_GROUP_NAME, autoNames.length ? autoNames : ['REJECT']),
+        workerNames.length ? clashUrlTestGroup(WORKER_GROUP_NAME, workerNames) : '',
+    ].filter(Boolean).join('\n');
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),
-        '# EASY_ALL_PROXY_GROUP': group,
-        '# EASY_ALL_PROXY_NAME': [CDN_GROUP_NAME, ...names.filter(name => !autoNames.includes(name))].map(name => '        - ' + yamlString(name)).join('\n'),
+        '# EASY_ALL_PROXY_GROUP': groups,
+        '# EASY_ALL_PROXY_NAME': [
+            CDN_GROUP_NAME,
+            ...(workerNames.length ? [WORKER_GROUP_NAME] : []),
+            ...names.filter(name => !autoNames.includes(name) && !workerNames.includes(name)),
+        ].map(name => '        - ' + yamlString(name)).join('\n'),
     };
     return MIHOMO_TEMPLATE.split('\n').map(line => replacements[line] ?? line).join('\n');
 }
