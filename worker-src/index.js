@@ -483,10 +483,10 @@ function upstreamProxyNames(lines, start, end) {
     return names;
 }
 
-function clashUrlTestGroup(name, proxyNames) {
+function clashUrlTestGroup(name, proxyNames, url = 'https://cp.cloudflare.com/generate_204') {
     return [
         `    - name: ${name}`, '      type: url-test',
-        '      url: https://cp.cloudflare.com/generate_204',
+        `      url: ${url}`,
         '      interval: 300', '      tolerance: 30', '      timeout: 3000',
         '      lazy: true', '      proxies: ' + JSON.stringify(proxyNames),
     ].join('\n');
@@ -547,7 +547,9 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     const workerNames = autoNodes.filter(node => node.workerBackup).slice(0, 3).map(node => node.name);
     const groups = [
         clashUrlTestGroup(CDN_GROUP_NAME, autoNames.length ? autoNames : ['REJECT']),
-        workerNames.length ? clashUrlTestGroup(WORKER_GROUP_NAME, workerNames) : '',
+        workerNames.length
+            ? clashUrlTestGroup(WORKER_GROUP_NAME, workerNames, 'https://www.gstatic.com/generate_204')
+            : '',
     ].filter(Boolean).join('\n');
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),

@@ -58,7 +58,8 @@ Universal SSL 终止客户端 TLS，Origin CA 保护回源。
 
 客户端节点的 `server` 是精选 IPv4，`servername` 与 `xhttp-opts.host` 是节点域名。因此精选 IP
 订阅按 Mihomo 的配置格式和 XHTTP 能力生成，客户端必须支持 IP、SNI、Host 分离。
-独立纯 Worker 节点归入 `CF大善人` URL-Test 组，使用与 `🇺🇸白天首选` 相同的自动测速参数。
+独立纯 Worker 节点归入 `CF大善人` URL-Test 组；测速目标使用 Google 的 `generate_204`，
+避免 Cloudflare Socket 禁止回连 Cloudflare 地址而产生误判。
 
 公开订阅只经过独立域名绑定的 Worker。Worker 使用 `global_fetch_strictly_public`，
 转发同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥，Nginx 执行最终鉴权；直接访问私有源

@@ -1752,7 +1752,8 @@ build_mihomo_proxy_names() {
 }
 
 write_mihomo_url_test_group() {
-    local group_name=$1 nodes=$2 node
+    local group_name=$1 nodes=$2
+    local test_url=${3:-https://cp.cloudflare.com/generate_204} node
     [[ -n "${nodes}" ]] || return 0
     printf '    - name: %s\n' "$(jq -Rn --arg value "${group_name}" '$value')"
     printf '      type: url-test\n'
@@ -1762,7 +1763,7 @@ write_mihomo_url_test_group() {
         printf '        - %s\n' "$(jq -Rn --arg value "${node}" '$value')"
     done <<<"${nodes}"
     cat <<EOF
-      url: https://cp.cloudflare.com/generate_204
+      url: ${test_url}
       interval: 300
       tolerance: 30
       timeout: 3000
@@ -1782,7 +1783,8 @@ build_mihomo_proxy_groups() {
 
     write_mihomo_url_test_group "AUTO" "$(printf '%s\n' "${all_nodes[@]}")"
     worker_nodes=$(worker_backup_nodes | jq -r '.name')
-    write_mihomo_url_test_group "${WORKER_BACKUP_GROUP_NAME}" "${worker_nodes}"
+    write_mihomo_url_test_group "${WORKER_BACKUP_GROUP_NAME}" "${worker_nodes}" \
+        "https://www.gstatic.com/generate_204"
 }
 
 show_node() {

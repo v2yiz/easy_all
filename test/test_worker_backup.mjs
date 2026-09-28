@@ -156,7 +156,7 @@ const workerGroup = groups.split('    - name: CF大善人')[1];
 assert.ok(proxyGroup.includes('        - "CF大善人"'));
 assert.ok(!proxyGroup.includes('Worker兜底-'));
 assert.ok(workerGroup.includes('      type: url-test'));
-assert.ok(workerGroup.includes('      url: https://cp.cloudflare.com/generate_204'));
+assert.ok(workerGroup.includes('      url: https://www.gstatic.com/generate_204'));
 assert.ok(workerGroup.includes('      interval: 300'));
 assert.deepEqual(
     JSON.parse(workerGroup.match(/proxies: (\[[^\n]+\])/)[1]),

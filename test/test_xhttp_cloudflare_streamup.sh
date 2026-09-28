@@ -281,6 +281,8 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     worker_names=$(build_mihomo_proxy_names)
     assert_contains "Worker groups contain CF大善人" "${worker_groups}" 'name: "CF大善人"'
     assert_contains "CF大善人 uses url-test" "${worker_groups}" 'type: url-test'
+    assert_contains "CF大善人 avoids Cloudflare-owned probe targets" \
+        "${worker_groups}" 'url: https://www.gstatic.com/generate_204'
     assert_contains "CF大善人 contains domain entry" "${worker_groups}" '"Worker兜底-自动"'
     assert_contains "CF大善人 contains optimized entry" "${worker_groups}" '"Worker兜底-优选2"'
     assert_contains "PROXY contains CF大善人" "${worker_names}" '"CF大善人"'
