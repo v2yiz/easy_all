@@ -365,6 +365,9 @@ xhttp_require_subscription_hooks() {
 
 write_subscriptions() {
     local template node_file group_file name_file base64_file mihomo_file user uuid user_dir marker
+    if declare -F cloudflare_refresh_backup_nodes >/dev/null 2>&1; then
+        cloudflare_refresh_backup_nodes
+    fi
     prepare_mihomo_template
     xhttp_require_subscription_hooks
     template=${MIHOMO_TEMPLATE_FILE}
@@ -502,6 +505,9 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
+    if declare -F cloudflare_rollback_backup_worker >/dev/null 2>&1; then
+        (cloudflare_rollback_backup_worker) || warn "新建兜底 Worker 回滚失败，请检查云端资源"
+    fi
     if declare -F rollback_provider_subscription_update >/dev/null 2>&1; then
         if ! (rollback_provider_subscription_update); then
             warn "恢复订阅更新前的云端 CDN/DNS 状态失败，请立即执行 easy_all apply-cloud 复核"

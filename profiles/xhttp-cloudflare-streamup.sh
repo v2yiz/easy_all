@@ -45,6 +45,8 @@ GLOBALPING_CACHE_BASENAME_OVERRIDE="cloudflare-cdn-ips.json"
 source "${XHTTP_LIB_DIR}/globalping-cdn.sh"
 # shellcheck source=lib/cloudflare-ip-pool.sh
 source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"
+# shellcheck source=lib/worker-backup.sh
+source "${XHTTP_LIB_DIR}/worker-backup.sh"
 
 cloudflare_collect_api_token() {
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
@@ -1338,15 +1340,18 @@ collect_install_inputs() {
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
         choose_monthly_quota 0
     fi
+    collect_worker_backup_inputs
 }
 
 load_state() {
-    local variable env_name state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    local variable env_name index=0 state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
+        WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID
+        WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT
         XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
         CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME
@@ -1360,10 +1365,19 @@ load_state() {
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     [[ -f "${state_path}" ]] || return 1
-    for variable in "${variables[@]}"; do
-        env_name=$(env -i bash -c 'source "$1" && printf "%s" "${'"${variable}"':-}"' _ "${state_path}")
-        printf -v "${variable}" '%s' "${env_name}"
-    done
+    while IFS= read -r -d '' env_name; do
+        ((index < ${#variables[@]})) || return 1
+        printf -v "${variables[${index}]}" '%s' "${env_name}"
+        index=$((index + 1))
+    done < <(env -i bash -c '
+        state_path=$1
+        shift
+        source "$state_path" || exit 1
+        for variable; do
+            printf "%s\0" "${!variable:-}"
+        done
+    ' _ "${state_path}" "${variables[@]}")
+    ((index == ${#variables[@]})) || return 1
     enforce_ipv4_only_policy
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
@@ -1414,6 +1428,7 @@ load_state() {
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
     fi
+    validate_worker_backup_state
     validate_google_egress_policy_state \
         || die "状态缺少有效的 Google 出站策略；请重新安装"
     BACKEND="xray"
@@ -1425,6 +1440,7 @@ save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
     enforce_ipv4_only_policy
+    validate_worker_backup_state
     validate_google_egress_policy_state \
         || die "无法保存无效的 Google 出站策略"
     if subscription_enabled; then
@@ -1447,6 +1463,8 @@ save_state() {
             GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
             CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID \
             WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \
+            WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID \
+            WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
             CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME \
             CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID \
@@ -1462,6 +1480,21 @@ save_state() {
             BACKEND) printf '%s=%q\n' "${v}" "xray" ;;
             CDN_PROVIDER) printf '%s=%q\n' "${v}" "cloudflare" ;;
             SUBSCRIPTION_DOMAIN) printf '%s=%q\n' "${v}" "$(subscription_link_domain)" ;;
+            WORKER_BACKUP_IPS)
+                if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
+                    printf '%s=%q\n' "${v}" "[]"
+                else
+                    printf '%s=%q\n' "${v}" "${!v:-}"
+                fi
+                ;;
+            WORKER_BACKUP_DOMAIN | WORKER_BACKUP_NAME | WORKER_BACKUP_DOMAIN_ID | \
+            WORKER_BACKUP_UUID | WORKER_BACKUP_PATH | WORKER_BACKUP_PLACEMENT)
+                if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
+                    printf '%s=%q\n' "${v}" ""
+                else
+                    printf '%s=%q\n' "${v}" "${!v:-}"
+                fi
+                ;;
             *) printf '%s=%q\n' "${v}" "${!v:-}" ;;
             esac
         done
@@ -1696,6 +1729,7 @@ build_node_links() {
         build_vless_xhttp_link "${ip}" "🇺🇸优选${label}"
         printf '\n'
     done <<<"${candidates}"
+    build_worker_backup_links
 }
 
 build_mihomo_nodes() {
@@ -1706,10 +1740,12 @@ build_mihomo_nodes() {
         [[ -n "${ip}" ]] || continue
         build_mihomo_xhttp_node "${ip}" "🇺🇸优选${label}"
     done <<<"${candidates}"
+    build_worker_backup_mihomo
 }
 
 build_mihomo_proxy_names() {
     printf '        - "AUTO"\n'
+    worker_backup_nodes | jq -r '"        - " + (.name|@json)'
 }
 
 build_mihomo_proxy_groups() {
@@ -1764,6 +1800,10 @@ show_status() {
         printf '公开订阅: 未部署\n'
     fi
     printf 'VPS 出站: IPv4-only（IPv6 全局禁用）\n'
+    if worker_backup_enabled; then
+        printf 'Worker 兜底: %s，域名入口 + %s 个优选 IP，Placement=%s（不保证香港出口）\n' \
+            "${WORKER_BACKUP_DOMAIN}" "$(jq length <<<"${WORKER_BACKUP_IPS:-[]}")" "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}"
+    fi
     show_globalping_status
 }
 
@@ -1805,6 +1845,8 @@ refresh_cloudflare_cdn_ips() {
     if subscription_enabled; then
         write_subscriptions
         validate_subscription_runtime
+    elif worker_backup_enabled; then
+        cloudflare_refresh_backup_nodes
     fi
     save_state
     commit_subscription_update
@@ -1834,6 +1876,7 @@ rollback_fresh_install() {
 
 cloudflare_rollback_fresh_install_resources() {
     local ruleset ref id failed=0
+    (cloudflare_rollback_backup_worker) || failed=1
     if [[ "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ]]; then
         (cloudflare_delete_subscription_worker_resources \
             "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${CLOUDFLARE_WORKER_NAME:-}") \
@@ -1899,7 +1942,11 @@ install_all() {
     cloudflare_validate_cdn_health
     refresh_globalping_cache \
         || die "首次 Globalping 测量失败"
+    cloudflare_deploy_backup_worker
     subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
+    if ! subscription_enabled && worker_backup_enabled; then
+        cloudflare_refresh_backup_nodes
+    fi
     cloudflare_deploy_subscription_worker
     cloudflare_validate_subscription_worker
     cloudflare_finalize_certificate_rotation
@@ -1908,6 +1955,7 @@ install_all() {
     persist_globalping_token
     install_globalping_refresh_timer
     install_quota_timer
+    cloudflare_finalize_backup_worker
     INSTALL_ROLLBACK_ON_EXIT=0
     cloudflare_clear_api_token
     show_subscription
@@ -1960,16 +2008,21 @@ apply_cloud_resources() {
         refresh_globalping_cache \
             || die "Cloudflare 入口策略变化后无法生成兼容缓存"
     fi
+    cloudflare_deploy_backup_worker
     finish_xhttp_apply 1 0 1
+    if ! subscription_enabled && worker_backup_enabled; then
+        cloudflare_refresh_backup_nodes
+    fi
     cloudflare_deploy_subscription_worker
     cloudflare_validate_subscription_worker
-    save_state
-    show_subscription
     cloudflare_validate_cdn_health
     cloudflare_finalize_certificate_rotation
+    save_state
     install_globalping_refresh_timer
-    cloudflare_clear_api_token
+    cloudflare_finalize_backup_worker
     commit_subscription_update
+    cloudflare_clear_api_token
+    show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
         warn "Cloudflare 资源和本机配置已应用；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
     else
@@ -2008,6 +2061,7 @@ update_subscription() {
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
         choose_monthly_quota 0
     fi
+    collect_worker_backup_inputs
     xhttp_render_xray_config
     cloudflare_prepare_origin
     cloudflare_issue_origin_certificate 0
@@ -2019,13 +2073,16 @@ update_subscription() {
         refresh_globalping_cache \
             || die "Cloudflare IPv4 入口池更新失败，已保留旧缓存"
     fi
+    cloudflare_deploy_backup_worker
     finish_xhttp_apply 1 0 1
+    if ! subscription_enabled && worker_backup_enabled; then
+        cloudflare_refresh_backup_nodes
+    fi
     if subscription_enabled; then
         cloudflare_deploy_subscription_worker
         cloudflare_validate_subscription_worker
         cloudflare_cleanup_previous_subscription_host \
             "${previous_subscription_host}" "${previous_worker_domain_id}"
-        save_state
     elif ((previous_subscription_enabled == 1)); then
         cloudflare_delete_subscription_worker_resources \
             "${previous_worker_domain_id}" "${CLOUDFLARE_WORKER_NAME}"
@@ -2033,16 +2090,15 @@ update_subscription() {
         CLOUDFLARE_WORKER_NAME=""
         WORKER_SOURCE_SECRET=""
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
-        save_state
-    else
-        save_state
     fi
-    show_subscription
     cloudflare_validate_cdn_health
     cloudflare_finalize_certificate_rotation
+    save_state
     install_globalping_refresh_timer
-    cloudflare_clear_api_token
+    cloudflare_finalize_backup_worker
     commit_subscription_update
+    cloudflare_clear_api_token
+    show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
         warn "订阅配置已保留；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
     else
@@ -2066,6 +2122,11 @@ purge_cloudflare_resources_before_uninstall() {
         fi
     fi
     cloudflare_collect_api_token
+
+    if worker_backup_enabled; then
+        cloudflare_delete_subscription_worker_resources "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME}" \
+            || die "兜底 Worker 清理失败，保留本机状态"
+    fi
 
     if subscription_enabled \
         && [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" \

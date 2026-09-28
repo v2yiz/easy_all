@@ -17,3 +17,5 @@ worker.js
 
 /worker-src/config.local.json
 **/.worker-build-*/
+__pycache__/
+*.pyc

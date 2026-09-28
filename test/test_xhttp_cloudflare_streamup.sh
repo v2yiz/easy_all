@@ -311,7 +311,7 @@ assert_contains "Worker nodes prompt first asks whether aggregation is needed" \
     "$(<"${PROFILE}")" '是否需要进行订阅聚合？'
 (
     unset CLOUDFLARE_WORKER_NAME
-    choose_cloudflare_worker_name
+    choose_cloudflare_worker_name </dev/null
     assert_equal "Worker name defaults to easyall" "easyall" \
         "${CLOUDFLARE_WORKER_NAME}"
 )
@@ -524,7 +524,16 @@ assert_contains "State file persists Worker aggregation config" "${state_content
 missing_policy_state="${TMP_DIR}/state_missing_policy.env"
 grep -Ev '^(GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED)=' \
     "${EASY_ALL_STATE_FILE_OVERRIDE}" >"${missing_policy_state}"
+load_state_env_calls="${TMP_DIR}/load-state-env-calls"
+: >"${load_state_env_calls}"
+env() {
+    printf 'x' >>"${load_state_env_calls}"
+    command env "$@"
+}
 EASY_ALL_STATE_FILE_OVERRIDE="${missing_policy_state}" load_state
+unset -f env
+assert_equal "load_state uses one isolated subprocess" "1" \
+    "$(wc -c <"${load_state_env_calls}" | tr -d ' ')"
 assert_equal "Missing Google mode defaults to IPv4" ipv4 "${GOOGLE_EGRESS_MODE}"
 assert_equal "Missing Google family defaults to IPv4" ipv4 "${GOOGLE_EGRESS_RESOLVED}"
 

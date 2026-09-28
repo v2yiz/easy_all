@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# Independent TCP Worker; shares CDN candidates and the authenticated node source.
+
+readonly WORKER_BACKUP_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+
+worker_backup_enabled() {
+    [[ "${WORKER_BACKUP_DECOMMISSION:-0}" != "1" && -n "${WORKER_BACKUP_DOMAIN:-}" ]]
+}
+
+validate_worker_backup_state() {
+    worker_backup_enabled || return 0
+    validate_domain "${WORKER_BACKUP_DOMAIN}" \
+        && validate_cloudflare_worker_name "${WORKER_BACKUP_NAME:-}" \
+        && validate_uuid "${WORKER_BACKUP_UUID:-}" \
+        && [[ "${WORKER_BACKUP_PATH:-}" =~ ^/[A-Za-z0-9/_-]+$ ]] \
+        || die "Worker 兜底配置无效"
+    [[ "${WORKER_BACKUP_DOMAIN}" != "${VLESS_CDN_DOMAIN}" \
+        && "${WORKER_BACKUP_DOMAIN}" != "${SUBSCRIPTION_DOMAIN:-}" \
+        && "${WORKER_BACKUP_NAME}" != "${CLOUDFLARE_WORKER_NAME:-}" ]] \
+        || die "兜底 Worker 必须使用独立域名和名称"
+    [[ "${WORKER_BACKUP_DOMAIN}" == *."${CLOUDFLARE_ZONE_NAME}" ]] \
+        || die "兜底域名必须属于当前 Cloudflare Zone"
+    [[ "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}" == "aws:ap-east-1" \
+        || "${WORKER_BACKUP_PLACEMENT:-}" == "off" ]] \
+        || die "Worker 兜底 Placement 仅支持 aws:ap-east-1 或 off"
+    # Worker traffic is independent and intentionally excluded from VPS quotas.
+    local ips=${WORKER_BACKUP_IPS:-[]}
+    jq -e 'type == "array" and length <= 2 and all(.[]; type == "string")' <<<"${ips}" >/dev/null \
+        || die "Worker 兜底 IP 状态无效"
+    local ip
+    while IFS= read -r ip; do
+        validate_public_ipv4 "${ip}" || die "Worker 兜底 IP 不是公网 IPv4"
+    done < <(jq -r '.[]' <<<"${ips}")
+}
+
+collect_worker_backup_inputs() {
+    local domain=${WORKER_BACKUP_DOMAIN:-} choice="" answer=""
+    if [[ -n "${domain}" && -t 0 ]]; then
+        printf '当前已配置独立 Worker 兜底节点：%s\n' "${domain}" >&2
+        printf '  1. 保留当前配置\n  2. 轮换凭据与路径 (UUID / Path)\n  3. 重新配置域名\n  4. 停用并清理兜底节点\n' >&2
+        read_bilingual "请选择 [1]（直接回车保留）:" choice
+        case "${choice:-1}" in
+        1) ;;
+        2)
+            WORKER_BACKUP_UUID=$(declare -F generate_user_uuid >/dev/null 2>&1 && generate_user_uuid || cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')
+            WORKER_BACKUP_PATH="/vless-$(openssl rand -hex 12)"
+            ;;
+        3)
+            WORKER_BACKUP_PREV_DOMAIN=${WORKER_BACKUP_DOMAIN}
+            WORKER_BACKUP_PREV_DOMAIN_ID=${WORKER_BACKUP_DOMAIN_ID:-}
+            WORKER_BACKUP_PREV_NAME=${WORKER_BACKUP_NAME}
+            domain=$(prompt_value "兜底 Worker 独立域名" "backup.${CLOUDFLARE_ZONE_NAME}")
+            WORKER_BACKUP_DOMAIN=$(normalize_domain "${domain}")
+            WORKER_BACKUP_NAME="easyall-backup-$(printf '%s' "${WORKER_BACKUP_DOMAIN}" | sha256sum | cut -c1-10)"
+            WORKER_BACKUP_DOMAIN_ID=""
+            ;;
+        4)
+            WORKER_BACKUP_DECOMMISSION=1
+            return 0
+            ;;
+        *)
+            die "选项无效：${choice}"
+            ;;
+        esac
+    elif [[ -z "${domain}" && -t 0 ]]; then
+        read_bilingual '部署独立 Worker 兜底节点？[Y/n]:' answer
+        [[ ! "${answer}" =~ ^[Nn]$ ]] || return 0
+        domain=$(prompt_value "兜底 Worker 独立域名" "backup.${CLOUDFLARE_ZONE_NAME}")
+    fi
+    [[ -n "${domain}" ]] || return 0
+    WORKER_BACKUP_DOMAIN=$(normalize_domain "${domain}")
+    WORKER_BACKUP_NAME=${WORKER_BACKUP_NAME:-easyall-backup-$(printf '%s' "${WORKER_BACKUP_DOMAIN}" | sha256sum | cut -c1-10)}
+    WORKER_BACKUP_UUID=${WORKER_BACKUP_UUID:-${VLESS_UUID:-$(declare -F generate_user_uuid >/dev/null 2>&1 && generate_user_uuid || cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')}}
+    WORKER_BACKUP_PATH=${WORKER_BACKUP_PATH:-/vless-$(openssl rand -hex 12)}
+    WORKER_BACKUP_PLACEMENT=${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}
+    WORKER_BACKUP_IPS=${WORKER_BACKUP_IPS:-[]}
+    validate_worker_backup_state
+}
+
+worker_backup_probe() {
+    local ip=${1:-}
+    jq -cn --arg domain "${WORKER_BACKUP_DOMAIN}" --arg ip "${ip}" \
+        --arg uuid "${WORKER_BACKUP_UUID}" --arg path "${WORKER_BACKUP_PATH}" \
+        '{domain:$domain,ip:$ip,uuid:$uuid,path:$path}' \
+        | python3 "${WORKER_BACKUP_SCRIPT_DIR}/scripts/probe-worker-backup.py"
+}
+
+cloudflare_deploy_backup_worker() {
+    if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
+        return 0
+    fi
+    worker_backup_enabled || return 0
+    validate_worker_backup_state
+    local scripts metadata headers response attempt ready=0
+    local backup_worker_src="${WORKER_BACKUP_SCRIPT_DIR}/worker-src/backup.js"
+    headers="${RUNTIME_TMP}/cloudflare-worker-api-headers"
+    printf 'Authorization: Bearer %s\n' "${CLOUDFLARE_API_TOKEN}" >"${headers}"
+    chmod 0600 "${headers}"
+    scripts=$(cloudflare_api_request GET "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts")
+    local exists
+    exists=$(jq --arg name "${WORKER_BACKUP_NAME}" '[.[] | select(.id == $name)] | length' <<<"${scripts}")
+    if [[ "${exists}" != "0" && -z "${WORKER_BACKUP_DOMAIN_ID:-}" ]]; then
+        die "兜底 Worker 名称已存在且无本机所有权记录，拒绝覆盖"
+    fi
+    if [[ -n "${WORKER_BACKUP_DOMAIN_ID:-}" ]]; then
+        local domains
+        domains=$(cloudflare_api_request GET "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains")
+        jq -e --arg id "${WORKER_BACKUP_DOMAIN_ID}" --arg name "${WORKER_BACKUP_NAME}" \
+            --arg host "${WORKER_BACKUP_DOMAIN}" \
+            'any(.[]; .id == $id and .service == $name and .hostname == $host)' <<<"${domains}" >/dev/null \
+            || die "兜底 Worker 自定义域名所有权不匹配，拒绝更新"
+    fi
+    if [[ "${exists}" != "0" ]]; then
+        local deployments
+        local prev_deployment="${RUNTIME_TMP}/backup-worker-deployment-prev.json"
+        deployments=$(cloudflare_api_request GET \
+            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}/deployments") \
+            || die "无法读取兜底 Worker 当前部署，中止更新"
+        jq -ce '
+          .deployments[0].versions
+          | select(type == "array" and length >= 1 and length <= 2)
+          | select(all(.[];
+              (.version_id | type) == "string"
+              and (.version_id | test("^[0-9A-Fa-f-]{36}$"))
+              and (.percentage | type) == "number"
+              and .percentage > 0))
+          | select((map(.percentage) | add) == 100)
+          | {
+              strategy:"percentage",
+              versions:map({version_id,percentage}),
+              annotations:{"workers/message":"easy_all automatic rollback"}
+            }
+        ' <<<"${deployments}" >"${prev_deployment}" \
+            || die "兜底 Worker 当前部署信息无效，中止更新以避免无法回滚"
+        chmod 0600 "${prev_deployment}"
+    fi
+    metadata="${RUNTIME_TMP}/backup-worker-metadata.json"
+    jq -n --arg uuid "${WORKER_BACKUP_UUID}" --arg path "${WORKER_BACKUP_PATH}" \
+        --arg placement "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}" '{
+          main_module:"worker.js",compatibility_date:"2026-09-28",
+          bindings:[{type:"secret_text",name:"UUID",text:$uuid},
+                    {type:"plain_text",name:"WS_PATH",text:$path}]
+        } + (if $placement == "off" then {} else {placement:{region:$placement}} end)' >"${metadata}"
+    chmod 0600 "${metadata}"
+    response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 60 -X PUT -H "@${headers}" \
+        -F "metadata=@${metadata};type=application/json" \
+        -F "worker.js=@${backup_worker_src};type=application/javascript+module" \
+        "${CLOUDFLARE_API_BASE}/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}") \
+        || die "兜底 Worker 上传失败"
+    if ! jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
+        if [[ "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}" != "off" ]] \
+            && grep -qi 'placement' <<<"${response}"; then
+            warn "Cloudflare 账户不支持 Smart Placement（${WORKER_BACKUP_PLACEMENT}），降级为标准 Worker（无固定区域出口）"
+            WORKER_BACKUP_PLACEMENT="off"
+            jq -n --arg uuid "${WORKER_BACKUP_UUID}" --arg path "${WORKER_BACKUP_PATH}" '{
+              main_module:"worker.js",compatibility_date:"2026-09-28",
+              bindings:[{type:"secret_text",name:"UUID",text:$uuid},
+                        {type:"plain_text",name:"WS_PATH",text:$path}]
+            }' >"${metadata}"
+            response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 60 -X PUT -H "@${headers}" \
+                -F "metadata=@${metadata};type=application/json" \
+                -F "worker.js=@${backup_worker_src};type=application/javascript+module" \
+                "${CLOUDFLARE_API_BASE}/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}") \
+                || die "兜底 Worker 上传失败"
+            jq -e '.success == true' <<<"${response}" >/dev/null \
+                || die "兜底 Worker 部署被 API 拒绝：$(jq -r '.errors[0].message // "未知错误"' <<<"${response}")"
+        else
+            die "兜底 Worker 部署被 API 拒绝：$(jq -r '.errors[0].message // "未知错误"' <<<"${response}")"
+        fi
+    fi
+    [[ "${exists}" != "0" ]] || WORKER_BACKUP_CREATED=1
+    cloudflare_api_request POST \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}/subdomain" \
+        '{"enabled":false,"previews_enabled":false}' >/dev/null
+    # Reuse Custom Domain conflict checks without changing the subscription Worker.
+    local CLOUDFLARE_WORKER_NAME=${WORKER_BACKUP_NAME} SUBSCRIPTION_DOMAIN=${WORKER_BACKUP_DOMAIN}
+    local CLOUDFLARE_WORKER_DOMAIN_ID=${WORKER_BACKUP_DOMAIN_ID:-} CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=""
+    cloudflare_attach_subscription_worker_domain
+    WORKER_BACKUP_DOMAIN_ID=${CLOUDFLARE_WORKER_DOMAIN_ID}
+    WORKER_BACKUP_CREATED_DOMAIN_ID=${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}
+    info "正在验收独立 Worker 的 TLS、WebSocket 与 VLESS TCP 转发"
+    for ((attempt=1; attempt<=CLOUDFLARE_WORKER_READY_ATTEMPTS; attempt++)); do
+        if worker_backup_probe >/dev/null 2>&1; then ready=1; break; fi
+        sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
+    done
+    ((ready == 1)) || die "兜底 Worker 转发验收失败，未发布节点"
+}
+
+cloudflare_refresh_backup_nodes() {
+    worker_backup_enabled || return 0
+    validate_worker_backup_state
+    [[ -n "${WORKER_BACKUP_DOMAIN_ID:-}" ]] || die "兜底 Worker 尚未部署"
+    local ip selected='[]' candidates
+    # Reuse the ranked CDN pool; its original-domain TLS verdict is not reusable.
+    # Keep historical addresses as candidates, but only publish fresh probe successes.
+    candidates=$( { cloudflare_client_candidates | cut -f1; jq -r '.[]' <<<"${WORKER_BACKUP_IPS:-[]}"; } | awk 'NF && !seen[$0]++')
+    while IFS= read -r ip; do
+        [[ -n "${ip}" ]] || continue
+        validate_public_ipv4 "${ip}" || continue
+        if worker_backup_probe "${ip}" >/dev/null 2>&1; then
+            selected=$(jq -c --arg ip "${ip}" '. + [$ip]' <<<"${selected}")
+            [[ "$(jq length <<<"${selected}")" -lt 2 ]] || break
+        fi
+    done <<<"${candidates}"
+    if [[ "${selected}" == '[]' ]]; then
+        warn "本轮 Worker 优选验证全部失败，保留上次入口；首次仅输出域名入口"
+        return 0
+    fi
+    WORKER_BACKUP_IPS=${selected}
+}
+
+worker_backup_nodes() {
+    worker_backup_enabled || return 0
+    [[ -n "${WORKER_BACKUP_DOMAIN_ID:-}" ]] || return 0
+    jq -cn --arg host "${WORKER_BACKUP_DOMAIN}" --arg uuid "${WORKER_BACKUP_UUID}" \
+        --arg path "${WORKER_BACKUP_PATH}" --argjson ips "${WORKER_BACKUP_IPS:-[]}" '
+        ([$host] + $ips) | to_entries[] | {
+          type:"vless",security:"tls",network:"ws",uuid:$uuid,host:$host,sni:$host,
+          server:.value,port:443,path:$path,udp:false,ipVersion:"ipv4",
+          name:(if .key == 0 then "Worker兜底-自动" else "Worker兜底-优选" + (.key|tostring) end)
+        }'
+}
+
+build_worker_backup_links() {
+    worker_backup_nodes | jq -r '
+        "vless://\(.uuid)@\(.server):443?encryption=none&security=tls&type=ws&alpn=http%2F1.1&host=\(.host)&sni=\(.sni)&path=\(.path|@uri)&easyAllBackup=1#\(.name|@uri)"'
+}
+
+build_worker_backup_mihomo() {
+    worker_backup_nodes | jq -r '
+        "  - name: \(.name|@json)\n    type: vless\n    server: \(.server|@json)\n    port: 443\n" +
+        "    uuid: \(.uuid|@json)\n    network: ws\n    tls: true\n    udp: false\n" +
+        "    skip-cert-verify: false\n    servername: \(.host|@json)\n    ip-version: ipv4\n" +
+        "    alpn: [http/1.1]\n    ws-opts:\n      path: \(.path|@json)\n      headers:\n        Host: \(.host|@json)"'
+}
+
+cloudflare_rollback_backup_worker() {
+    local prev_deployment="${RUNTIME_TMP}/backup-worker-deployment-prev.json"
+    local failed=0
+    if [[ "${WORKER_BACKUP_CREATED:-0}" == "1" ]]; then
+        cloudflare_delete_subscription_worker_resources "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME}" || failed=1
+    else
+        if [[ -n "${WORKER_BACKUP_CREATED_DOMAIN_ID:-}" ]]; then
+            cloudflare_api_request DELETE "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${WORKER_BACKUP_CREATED_DOMAIN_ID}" >/dev/null 2>&1 || true
+            WORKER_BACKUP_CREATED_DOMAIN_ID=""
+        fi
+        if [[ -s "${prev_deployment}" ]]; then
+            if (cloudflare_api_request POST \
+                "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}/deployments?force=true" \
+                "$(<"${prev_deployment}")" >/dev/null); then
+                rm -f -- "${prev_deployment}"
+            else
+                warn "恢复更新前的兜底 Worker 版本失败；部署快照已保留在 ${prev_deployment}"
+                failed=1
+            fi
+        fi
+    fi
+    ((failed == 0)) || return 1
+}
+
+cloudflare_finalize_backup_worker() {
+    local prev_deployment="${RUNTIME_TMP}/backup-worker-deployment-prev.json"
+    if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
+        if [[ -n "${WORKER_BACKUP_DOMAIN_ID:-}" || -n "${WORKER_BACKUP_NAME:-}" ]]; then
+            if ! (cloudflare_delete_subscription_worker_resources \
+                "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME:-}"); then
+                warn "清理旧兜底 Worker 资源失败，保留状态以便重试"
+                return 1
+            fi
+        fi
+        WORKER_BACKUP_DOMAIN=""
+        WORKER_BACKUP_NAME=""
+        WORKER_BACKUP_UUID=""
+        WORKER_BACKUP_PATH=""
+        WORKER_BACKUP_DOMAIN_ID=""
+        WORKER_BACKUP_IPS="[]"
+        WORKER_BACKUP_PLACEMENT=""
+        WORKER_BACKUP_DECOMMISSION=0
+    elif [[ -n "${WORKER_BACKUP_PREV_NAME:-}" ]]; then
+        if ! (cloudflare_delete_subscription_worker_resources \
+            "${WORKER_BACKUP_PREV_DOMAIN_ID:-}" "${WORKER_BACKUP_PREV_NAME}"); then
+            warn "清理旧兜底 Worker 资源失败，保留状态以便重试"
+            return 1
+        fi
+        WORKER_BACKUP_PREV_NAME=""
+        WORKER_BACKUP_PREV_DOMAIN_ID=""
+        WORKER_BACKUP_PREV_DOMAIN=""
+    fi
+    WORKER_BACKUP_CREATED=0
+    WORKER_BACKUP_CREATED_DOMAIN_ID=""
+    rm -f -- "${prev_deployment}"
+}

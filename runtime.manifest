@@ -19,3 +19,6 @@ lib/tcp-tuning.sh
 worker-src/index.js
 scripts/build-worker.mjs
 templates/mihomo.yaml
+lib/worker-backup.sh
+worker-src/backup.js
+scripts/probe-worker-backup.py

@@ -205,7 +205,8 @@ function vlessLink(node, port) {
         params.set('mode', node.mode || 'stream-up');
         params.set('extra', JSON.stringify(xhttpExtra(node)));
     } else if (node.network === 'ws') {
-        params.set('packetEncoding', 'xudp');
+        if (node.udp !== false) params.set('packetEncoding', 'xudp');
+        if (node.workerBackup) params.set('easyAllBackup', '1');
         params.set('alpn', node.alpn || 'http/1.1');
         params.set('host', wsHost(node));
         params.set('path', wsUriPath(node));
@@ -292,6 +293,8 @@ function parseVlessLink(link) {
     } catch {}
     return {
         type: 'vless',
+        workerBackup: network === 'ws' && params.get('easyAllBackup') === '1',
+        udp: !(network === 'ws' && params.get('easyAllBackup') === '1'),
         security: params.get('security') || 'tls',
         network,
         uuid,
@@ -311,9 +314,12 @@ function parseVlessLink(link) {
 }
 
 function normalizeCdnNodeNames(nodes) {
-    return nodes
-        .slice(0, CDN_NODE_LIMIT)
+    const primary = nodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT)
         .map((node, index) => ({ ...node, name: CDN_NODE_NAME_PREFIX + (index + 1) }));
+    const backup = nodes.filter(node => node.workerBackup).slice(0, 3)
+        .map((node, index) => ({ ...node, udp: false,
+            name: index === 0 ? 'Worker兜底-自动' : `Worker兜底-优选${index}` }));
+    return [...primary, ...backup];
 }
 
 async function fetchDynamicCdnNodes(url, {
@@ -392,12 +398,11 @@ function clashWebSocketNode(node, port) {
     uuid: ${yamlString(node.uuid)}
     network: ws
     tls: true
-    udp: true
+    udp: ${node.udp !== false}
     skip-cert-verify: false
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
-    packet-encoding: xudp
-    ip-version: ${ipVersion}
+${node.udp === false ? '' : '    packet-encoding: xudp\n'}    ip-version: ${ipVersion}
     alpn:
       - ${yamlString(node.alpn || 'http/1.1')}
     ws-opts:
@@ -528,7 +533,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', CDN_GROUP_NAME, 'DIRECT', 'REJECT'].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
-    const autoNames = autoNodes.slice(0, CDN_NODE_LIMIT).map(node => node.name);
+    const autoNames = autoNodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);
     const group = [
         `    - name: ${CDN_GROUP_NAME}`, '      type: url-test',
         '      url: https://cp.cloudflare.com/generate_204',
@@ -538,7 +543,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),
         '# EASY_ALL_PROXY_GROUP': group,
-        '# EASY_ALL_PROXY_NAME': [CDN_GROUP_NAME, ...names.filter(name => !autoNodes.some(node => node.name === name))].map(name => '        - ' + yamlString(name)).join('\n'),
+        '# EASY_ALL_PROXY_NAME': [CDN_GROUP_NAME, ...names.filter(name => !autoNames.includes(name))].map(name => '        - ' + yamlString(name)).join('\n'),
     };
     return MIHOMO_TEMPLATE.split('\n').map(line => replacements[line] ?? line).join('\n');
 }
