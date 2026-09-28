@@ -317,9 +317,9 @@ function parseVlessLink(link) {
 function normalizeCdnNodeNames(nodes) {
     const primary = nodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT)
         .map((node, index) => ({ ...node, name: CDN_NODE_NAME_PREFIX + (index + 1) }));
-    const backup = nodes.filter(node => node.workerBackup).slice(0, 3)
+    const backup = nodes.filter(node => node.workerBackup).slice(0, CDN_NODE_LIMIT)
         .map((node, index) => ({ ...node, udp: false,
-            name: index === 0 ? '纯CF(域名)' : `纯CF${index}` }));
+            name: `🇭🇰CF${index + 1}` }));
     return [...primary, ...backup];
 }
 
@@ -544,7 +544,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
     const autoNames = autoNodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);
-    const workerNames = autoNodes.filter(node => node.workerBackup).slice(0, 3).map(node => node.name);
+    const workerNames = autoNodes.filter(node => node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);
     const groups = [
         clashUrlTestGroup(CDN_GROUP_NAME, autoNames.length ? autoNames : ['REJECT']),
         workerNames.length

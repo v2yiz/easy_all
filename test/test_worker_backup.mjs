@@ -131,9 +131,9 @@ assert.equal(upgradeResp.status, 101);
 assert.equal(upgradeResp.headers.get('Sec-WebSocket-Protocol'), 'ZXhwb3J0');
 
 // Real aggregation handler: refreshed source is consumed on every request.
-let addresses = ['104.16.1.1', '104.16.2.2'];
+let addresses = Array.from({ length: 6 }, (_, i) => `104.16.${i + 1}.${i + 1}`);
 const primary = Array.from({ length: 6 }, (_, i) => `vless://${uuid}@104.17.0.${i + 1}:443?security=tls&type=xhttp&host=node.example.com&path=%2Fx#primary${i}`);
-const links = () => [...primary, ...['backup.example.com', ...addresses].map((address, i) =>
+const links = () => [...primary, ...addresses.map((address, i) =>
     `vless://${uuid}@${address}:443?security=tls&type=ws&host=backup.example.com&sni=backup.example.com&path=%2Fws&easyAllBackup=1#backup${i}`)].join('\n');
 const aggregation = await readFile(new URL('../worker-src/index.js', import.meta.url), 'utf8');
 const handler = vm.runInNewContext(aggregation.replace(/export default \{[\s\S]*$/, 'handleRequest;'), {
@@ -147,9 +147,9 @@ const request = flag => new Request(`https://sub.invalid/subscribe?token=test-to
 let response = await handler(request('clash'));
 assert.equal(response.status, 200);
 const yaml = await response.text();
-assert.equal((yaml.match(/network: ws/g) || []).length, 3);
+assert.equal((yaml.match(/network: ws/g) || []).length, 6);
 assert.equal((yaml.match(/network: xhttp/g) || []).length, 6);
-assert.equal((yaml.match(/udp: false/g) || []).length, 3);
+assert.equal((yaml.match(/udp: false/g) || []).length, 6);
 const groups = yaml.split('proxy-groups:\n')[1].split('rules:\n')[0];
 const proxyGroup = groups.split('    - name: 🇺🇸白天首选')[0];
 const workerGroup = groups.split('    - name: 🇭🇰CF')[1];
@@ -160,12 +160,12 @@ assert.ok(workerGroup.includes('      url: https://www.gstatic.com/generate_204'
 assert.ok(workerGroup.includes('      interval: 300'));
 assert.deepEqual(
     JSON.parse(workerGroup.match(/proxies: (\[[^\n]+\])/)[1]),
-    ['纯CF(域名)', '纯CF1', '纯CF2'],
+    ['🇭🇰CF1', '🇭🇰CF2', '🇭🇰CF3', '🇭🇰CF4', '🇭🇰CF5', '🇭🇰CF6'],
 );
 addresses = ['104.16.9.9'];
 response = await handler(request('base64'));
 const decoded = Buffer.from(await response.text(), 'base64').toString();
-assert.equal(decoded.split('\n').filter(Boolean).length, 8);
+assert.equal(decoded.split('\n').filter(Boolean).length, 7);
 assert.ok(decoded.includes('104.16.9.9'));
 assert.ok(!decoded.includes('104.16.2.2'));
 assert.ok(!decoded.split('\n').filter(line => line.includes('type=ws')).some(line => line.includes('packetEncoding')));

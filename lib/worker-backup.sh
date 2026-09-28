@@ -3,6 +3,7 @@
 
 readonly WORKER_BACKUP_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 readonly WORKER_BACKUP_GROUP_NAME="🇭🇰CF"
+readonly WORKER_BACKUP_NODE_LIMIT=6
 
 worker_backup_enabled() {
     [[ "${WORKER_BACKUP_DECOMMISSION:-0}" != "1" && -n "${WORKER_BACKUP_DOMAIN:-}" ]]
@@ -26,7 +27,8 @@ validate_worker_backup_state() {
         || die "Worker 兜底 Placement 仅支持 aws:ap-east-1 或 off"
     # Worker traffic is independent and intentionally excluded from VPS quotas.
     local ips=${WORKER_BACKUP_IPS:-[]}
-    jq -e 'type == "array" and length <= 2 and all(.[]; type == "string")' <<<"${ips}" >/dev/null \
+    jq -e --argjson limit "${WORKER_BACKUP_NODE_LIMIT}" \
+        'type == "array" and length <= $limit and all(.[]; type == "string")' <<<"${ips}" >/dev/null \
         || die "Worker 兜底 IP 状态无效"
     local ip
     while IFS= read -r ip; do
@@ -200,11 +202,11 @@ cloudflare_refresh_backup_nodes() {
         validate_public_ipv4 "${ip}" || continue
         if worker_backup_probe "${ip}" >/dev/null 2>&1; then
             selected=$(jq -c --arg ip "${ip}" '. + [$ip]' <<<"${selected}")
-            [[ "$(jq length <<<"${selected}")" -lt 2 ]] || break
+            [[ "$(jq length <<<"${selected}")" -lt "${WORKER_BACKUP_NODE_LIMIT}" ]] || break
         fi
     done <<<"${candidates}"
     if [[ "${selected}" == '[]' ]]; then
-        warn "本轮 Worker 优选验证全部失败，保留上次入口；首次仅输出域名入口"
+        warn "本轮 Worker 优选验证全部失败，保留上次优选 IP；首次不发布纯 Worker 节点"
         return 0
     fi
     WORKER_BACKUP_IPS=${selected}
@@ -215,10 +217,10 @@ worker_backup_nodes() {
     [[ -n "${WORKER_BACKUP_DOMAIN_ID:-}" ]] || return 0
     jq -cn --arg host "${WORKER_BACKUP_DOMAIN}" --arg uuid "${WORKER_BACKUP_UUID}" \
         --arg path "${WORKER_BACKUP_PATH}" --argjson ips "${WORKER_BACKUP_IPS:-[]}" '
-        ([$host] + $ips) | to_entries[] | {
+        $ips | to_entries[] | {
           type:"vless",security:"tls",network:"ws",uuid:$uuid,host:$host,sni:$host,
           server:.value,port:443,path:$path,udp:false,ipVersion:"ipv4",
-          name:(if .key == 0 then "纯CF(域名)" else "纯CF" + (.key|tostring) end)
+          name:("🇭🇰CF" + ((.key + 1)|tostring))
         }'
 }
 

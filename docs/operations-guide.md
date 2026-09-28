@@ -165,8 +165,8 @@ Cloudflare 模式部署订阅时，Worker 使用与节点域名不同的同 Zone
 完全一致。
 
 Cloudflare 模式还可部署独立的纯 Worker TCP 兜底节点。Mihomo 订阅将 6 个 XHTTP 节点放入
-`🇺🇸白天首选`，将纯 Worker 域名入口和优选 IP 放入 `🇭🇰CF`；两个组都使用 URL-Test 自动
-测速。纯 Worker 流量不经过 VPS，也不计入 VPS 用户配额。
+`🇺🇸白天首选`，将最多 6 个经独立探测成功的纯 Worker 优选 IPv4 放入 `🇭🇰CF`；两个组都使用
+URL-Test 自动测速。纯 Worker 不发布域名入口，其流量不经过 VPS，也不计入 VPS 用户配额。
 
 已有部署只需同步这一订阅逻辑时执行：
 

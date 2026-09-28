@@ -276,17 +276,18 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     WORKER_BACKUP_DOMAIN_ID=test-backup-domain-id
     WORKER_BACKUP_UUID=11111111-2222-4333-8444-555555555555
     WORKER_BACKUP_PATH=/vless-test
-    WORKER_BACKUP_IPS='["104.16.1.1","104.16.2.2"]'
+    WORKER_BACKUP_IPS='["104.16.1.1","104.16.2.2","104.16.3.3","104.16.4.4","104.16.5.5","104.16.6.6"]'
     worker_groups=$(build_mihomo_proxy_groups)
     worker_names=$(build_mihomo_proxy_names)
     assert_contains "Worker groups contain HK CF" "${worker_groups}" 'name: "🇭🇰CF"'
     assert_contains "HK CF uses url-test" "${worker_groups}" 'type: url-test'
     assert_contains "HK CF avoids Cloudflare-owned probe targets" \
         "${worker_groups}" 'url: https://www.gstatic.com/generate_204'
-    assert_contains "HK CF contains domain entry" "${worker_groups}" '"纯CF(域名)"'
-    assert_contains "HK CF contains optimized entry" "${worker_groups}" '"纯CF2"'
+    assert_not_contains "HK CF omits domain entry" "${worker_groups}" "${WORKER_BACKUP_DOMAIN}"
+    assert_contains "HK CF contains first optimized entry" "${worker_groups}" '"🇭🇰CF1"'
+    assert_contains "HK CF contains sixth optimized entry" "${worker_groups}" '"🇭🇰CF6"'
     assert_contains "PROXY contains HK CF" "${worker_names}" '"🇭🇰CF"'
-    assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"纯CF(域名)"'
+    assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"🇭🇰CF1"'
 )
 
 # Worker deployment source forwards the public token to the private Nginx source.

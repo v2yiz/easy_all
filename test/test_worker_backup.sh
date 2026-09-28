@@ -24,20 +24,27 @@ SUBSCRIPTION_DOMAIN=sub.example.com
 CLOUDFLARE_WORKER_NAME=easyall
 CLOUDFLARE_WORKER_DOMAIN_ID=subscription-domain
 validate_worker_backup_state
-cloudflare_client_candidates() { printf '104.16.1.1\tfirst\n104.16.2.2\tsecond\n104.16.3.3\tthird\n'; }
+cloudflare_client_candidates() {
+    printf '104.16.1.1\tfailed\n'
+    for index in 2 3 4 5 6 7; do
+        printf '104.16.%s.%s\tcandidate\n' "${index}" "${index}"
+    done
+}
 worker_backup_probe() { [[ "${1:-}" != '104.16.1.1' ]]; }
 WORKER_BACKUP_DOMAIN_ID=backup-domain
 cloudflare_refresh_backup_nodes
-[[ "${WORKER_BACKUP_IPS}" == '["104.16.2.2","104.16.3.3"]' ]] || fail 'select successful candidate IPs'
-[[ "$(build_worker_backup_links | wc -l | tr -d ' ')" == 3 ]] || fail 'domain plus two IPs'
+[[ "$(jq length <<<"${WORKER_BACKUP_IPS}")" == "6" ]] || fail 'select six successful candidate IPs'
+[[ "$(build_worker_backup_links | wc -l | tr -d ' ')" == 6 ]] || fail 'publish six IP nodes'
+[[ "$(build_worker_backup_links)" != *'@backup.example.com:443'* ]] || fail 'omit domain server entry'
 [[ "$(build_worker_backup_mihomo)" == *'udp: false'* ]] || fail 'TCP only'
 [[ "$(build_worker_backup_links)" == *'host=backup.example.com&sni=backup.example.com'* ]] || fail 'separate server and TLS hostname'
 worker_backup_probe() { return 1; }
+previous_ips=${WORKER_BACKUP_IPS}
 cloudflare_refresh_backup_nodes
-[[ "${WORKER_BACKUP_IPS}" == '["104.16.2.2","104.16.3.3"]' ]] || fail 'preserve last successful list on total failure'
+[[ "${WORKER_BACKUP_IPS}" == "${previous_ips}" ]] || fail 'preserve last successful list on total failure'
 WORKER_BACKUP_IPS='[]'
 cloudflare_refresh_backup_nodes
-[[ "$(build_worker_backup_links | wc -l | tr -d ' ')" == 1 ]] || fail 'first failure publishes domain only'
+[[ -z "$(build_worker_backup_links)" ]] || fail 'first failure publishes no domain fallback'
 # Deployment checks metadata, ordering and dynamic-scope isolation.
 RUNTIME_TMP=${TMP_DIR}
 XHTTP_CLOUDFLARE_PROFILE_ROOT=${ROOT_DIR}/profiles
