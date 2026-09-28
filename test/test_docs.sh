@@ -42,6 +42,10 @@ for doc in preparation-guide client-guide operations-guide technical-reference d
 done
 
 assert_contains "README documents IPv4-only support" "${README_CONTENT}" '只支持 IPv4。'
+assert_contains "README documents the independent Worker fallback" \
+    "${README_CONTENT}" '独立的纯 Worker TCP 兜底节点'
+assert_contains "README documents the Worker latency-test group" \
+    "${README_CONTENT}" '`CF大善人` URL-Test 组'
 assert_contains "README recommends Reality for healthy direct connectivity" \
     "${README_CONTENT}" 'VPS 公网 IP 可用且直连质量良好'
 assert_contains "README recommends CDN for poor direct connectivity" \

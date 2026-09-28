@@ -10,7 +10,7 @@
 | 模式 | 适用情况 | 协议与入口 |
 | --- | --- | --- |
 | **1. 直连 Reality** | VPS 公网 IP 可用且直连质量良好 | VLESS TCP Reality Vision，VPS `443` |
-| **2. Cloudflare CDN** | 直连效果不佳、VPS 公网 IP 已被封，或明确需要纯 XHTTP | VLESS XHTTP `stream-up`，6 个 Cloudflare 精选 IPv4 |
+| **2. Cloudflare CDN** | 直连效果不佳、VPS 公网 IP 已被封，或明确需要纯 XHTTP | VLESS XHTTP `stream-up`，6 个 Cloudflare 精选 IPv4；可选独立纯 Worker 兜底 |
 
 Cloudflare 模式完全没有域名兜底，需要额外准备：
 
@@ -18,6 +18,10 @@ Cloudflare 模式完全没有域名兜底，需要额外准备：
 - 具备 Zone 权限和账户级 Workers Scripts Write 权限的 API Token；
 - Globalping Token；
 - 在 Cloudflare 控制台手动开启 gRPC。
+
+还可选择部署一个独立的纯 Worker TCP 兜底节点。它使用单独的 Worker 名称、UUID、路径和
+同 Zone 一级域名，不经过 VPS，也不计入 VPS 用户配额。Mihomo 订阅会将这些节点放入
+`CF大善人` URL-Test 组；原有 6 个 XHTTP 节点继续由 `🇺🇸白天首选` 自动测速。
 
 完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择自托管订阅时才需要
 Cloudflare 域名和 API Token。
@@ -59,6 +63,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 | 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2` |
 | 订阅输出 | 选 `1` 或直接回车，在本机部署订阅 |
 | 月度用户配额 | 选 `1` 或直接回车，不启用 |
+| 独立 Worker 兜底 | 按需启用；必须使用区别于节点域名和订阅域名的同 Zone 一级域名 |
 | 定时重启 | 接受每日 `04:00` 重启选 `1`；不需要则选 `3` |
 | Reality SNI/目标 | 直接回车使用已验证默认值 |
 | Reality 动态端口 | 直接回车 |
@@ -95,6 +100,7 @@ sudo easy_all subscription
 | `easy_all self-update` | 从 `main` 更新项目代码，不修改应用配置 |
 | `easy_all self-update --dev` | 从 `dev` 更新项目代码，用于验证待发布版本 |
 | `easy_all apply` | 重新应用当前配置 |
+| `easy_all apply-cloud` | Cloudflare 模式同步本机配置和云端 Worker、DNS、证书及规则 |
 | `easy_all update-sub` | 管理订阅、用户和配额 |
 | `easy_all update-core` | 更新 Xray 核心 |
 | `easy_all refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP |
@@ -110,6 +116,16 @@ sudo easy_all apply
 
 `self-update` 不会自动修改当前部署。Cloudflare 模式只有在需要同步云端 DNS、证书、规则或
 Worker 时才使用 `sudo easy_all apply-cloud`。
+
+已有 Cloudflare 部署要启用最新 Worker 聚合分组，执行：
+
+```bash
+sudo easy_all self-update
+sudo easy_all apply-cloud
+```
+
+按提示输入 Cloudflare API Token，完成后在客户端刷新带 `flag=clash` 的 Mihomo 订阅。尚未
+配置独立 Worker 兜底时，改用 `sudo easy_all update-sub` 并在交互流程中启用。
 
 全部命令、用户管理、配额、证书、状态文件和卸载规则见[运维指南](docs/operations-guide.md)。
 

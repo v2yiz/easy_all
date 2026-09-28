@@ -164,6 +164,20 @@ Cloudflare 模式部署订阅时，Worker 使用与节点域名不同的同 Zone
 若配置包含 `allowedTokens`，它会覆盖前一步设置的 Token。启用配额时，其用户名必须与配额用户
 完全一致。
 
+Cloudflare 模式还可部署独立的纯 Worker TCP 兜底节点。Mihomo 订阅将 6 个 XHTTP 节点放入
+`🇺🇸白天首选`，将纯 Worker 域名入口和优选 IP 放入 `CF大善人`；两个组都使用 URL-Test 自动
+测速。纯 Worker 流量不经过 VPS，也不计入 VPS 用户配额。
+
+已有部署只需同步这一订阅逻辑时执行：
+
+```bash
+sudo easy_all self-update
+sudo easy_all apply-cloud
+```
+
+尚未启用独立 Worker 时，运行 `sudo easy_all update-sub`，在交互流程中启用并提供一个区别于
+节点域名和订阅域名的同 Zone 一级域名。
+
 ## 证书与 Reality 动态端口
 
 Reality 数据流量直连 VPS `443`，只有自托管订阅 HTTPS 使用 Cloudflare Origin CA 和 VPS
