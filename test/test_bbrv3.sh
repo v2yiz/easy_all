@@ -129,6 +129,40 @@ sysctl() {
 uname() { printf '6.18.42-x64v3-xanmod1\n'; }
 bbrv3_running_kernel_supported() { return 0; }
 
+# Stateful tc mock: tests must never change the host network.
+SYSTEMD_SYSTEM_DIR="${TMP_DIR}/systemd"
+mkdir -p "${SYSTEMD_SYSTEM_DIR}"
+export QDISC_STATE="${TMP_DIR}/qdisc.json"
+export QDISC_ORIGINAL="${TMP_DIR}/qdisc-original.json"
+cat >"${QDISC_ORIGINAL}" <<'JSON'
+[{"kind":"fq_codel","handle":"0:","root":true,"options":{"limit":2048,"flows":512,"quantum":1514,"target":7000,"interval":120000,"memory_limit":8388608,"ecn":true,"drop_batch":32}}]
+JSON
+cp "${QDISC_ORIGINAL}" "${QDISC_STATE}"
+ip() { printf 'default via 192.0.2.1 dev eth0 proto dhcp\n'; }
+systemctl() { [[ "${FAIL_SYSTEMCTL:-0}" != 1 ]]; }
+tc() {
+    case "$*" in
+    '-j qdisc show dev eth0') cat "${QDISC_STATE}" ;;
+    '-j filter show dev eth0 '*) printf '[]\n' ;;
+    'qdisc replace dev eth0 '*)
+        [[ "${FAIL_TC:-0}" != 1 ]] || return 1
+        [[ "${IGNORE_TC:-0}" != 1 ]] || return 0
+        local target=$5 kind=${!#} original
+        [[ "${target}" == root ]] || target=$6
+        if [[ "${kind}" == fq ]]; then
+            jq --arg target "${target}" 'map(if (if $target == "root" then .root == true else .parent == $target end) then .kind="fq" | .options={} else . end)' "${QDISC_STATE}" >"${QDISC_STATE}.tmp"
+        else
+            original=$(jq -c --arg target "${target}" '.[] | select(if $target == "root" then .root == true else .parent == $target end)' "${QDISC_ORIGINAL}")
+            jq --arg target "${target}" --argjson original "${original}" 'map(if (if $target == "root" then .root == true else .parent == $target end) then $original else . end)' "${QDISC_STATE}" >"${QDISC_STATE}.tmp"
+            printf '%s\n' "$*" >>"${QDISC_STATE}.restore-args"
+        fi
+        mv "${QDISC_STATE}.tmp" "${QDISC_STATE}"
+        ;;
+    *) return 1 ;;
+    esac
+}
+export -f tc ip
+
 install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
 PROTOCOL="reality"
 CDN_PROVIDER=""
@@ -148,7 +182,7 @@ assert_contains "TCP keepalive bounds unanswered probes" "$(<"${SYSCTL_CONFIG}")
 assert_contains "ephemeral ports avoid managed ingress ranges" "$(<"${SYSCTL_CONFIG}")" \
     'net.ipv4.ip_local_port_range = 13000 60999'
 assert_contains "HTTP/2 and gRPC anti-bufferbloat tcp_notsent_lowat" "$(<"${SYSCTL_CONFIG}")" \
-    'net.ipv4.tcp_notsent_lowat = 131072'
+    'net.ipv4.tcp_notsent_lowat = 32768'
 assert_contains "fast TIME_WAIT socket recycling" "$(<"${SYSCTL_CONFIG}")" \
     'net.ipv4.tcp_tw_reuse = 1'
 assert_contains "FIN-WAIT-2 timeout reduced to 15s" "$(<"${SYSCTL_CONFIG}")" \
@@ -232,27 +266,71 @@ configure_bbr_tcp
     assert_equal "reboot was triggered" "1" "${reboot_called}"
 )
 
-# Test physical FQ qdisc application and service setup/removal
-(
-    SYSTEMD_SYSTEM_DIR="${TMP_DIR}/systemd"
-    mkdir -p "${SYSTEMD_SYSTEM_DIR}"
-    tc_args=""
-    tc() { tc_args="$*"; }
-    ip() { printf 'default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.100 metric 100\n'; }
-    systemctl_calls=()
-    systemctl() { systemctl_calls+=("$*"); }
+# Actual qdisc verification, repeat application, boot helper and restoration.
+bbrv3_running_kernel_supported() { return 0; }
+assert_contains "status checks the actual qdisc" "$(show_bbrv3_status)" 'BBRv3: active'
+bash "${STATE_DIR}/apply-fq.sh"
+assert_equal "first snapshot survives repeat application" \
+    "$(jq -Sc . "${QDISC_ORIGINAL}")" "$(jq -Sc . "${BACKUP_DIR}/qdisc/eth0.json")"
+restore_tcp_runtime
+assert_equal "restore keeps original fq_codel parameters" \
+    "$(jq -Sc . "${QDISC_ORIGINAL}")" "$(jq -Sc . "${QDISC_STATE}")"
+assert_contains "restore uses original parameters and microsecond units" \
+    "$(cat "${QDISC_STATE}.restore-args")" 'target 7000us interval 120000us memory_limit 8388608'
+[[ ! -f "${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service" ]] || fail "FQ service not removed"
+assert_contains "status cannot report active for fq_codel" "$(show_bbrv3_status)" 'BBRv3: degraded'
 
-    apply_physical_fq_qdisc
-    assert_equal "tc replaces root qdisc with fq on default iface" \
-        "qdisc replace dev eth0 root fq" "${tc_args}"
-    [[ -f "${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service" ]] \
-        || fail "easy_all-fq.service was not created"
-    assert_contains "fq service file sets fq" "$(<"${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service")" \
-        'tc qdisc replace dev "$iface" root fq'
+expect_qdisc_failure() {
+    local label=$1
+    shift
+    if (die() { exit 73; }; "$@") >/dev/null 2>&1; then
+        fail "${label} unexpectedly succeeded"
+    fi
+}
+FAIL_TC=1 expect_qdisc_failure "tc error" configure_physical_fq
+IGNORE_TC=1 expect_qdisc_failure "tc success without actual FQ" configure_physical_fq
+FAIL_SYSTEMCTL=1 expect_qdisc_failure "service failure" apply_physical_fq_qdisc
+restore_tcp_runtime
 
-    remove_physical_fq_qdisc_service
-    [[ ! -f "${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service" ]] \
-        || fail "easy_all-fq.service was not removed"
-)
+# mq stays intact; only its leaves change and regain their original options.
+rm -f "${BACKUP_DIR}/qdisc/eth0.json"
+jq '[{"kind":"mq","handle":"0:","root":true}, (.[0] | del(.root) | .parent=":1"), (.[0] | del(.root) | .parent=":2")]' "${QDISC_ORIGINAL}" >"${QDISC_ORIGINAL}.tmp"
+mv "${QDISC_ORIGINAL}.tmp" "${QDISC_ORIGINAL}"
+cp "${QDISC_ORIGINAL}" "${QDISC_STATE}"
+apply_physical_fq_qdisc
+physical_fq_active || fail "mq with FQ leaves should pass verification"
+assert_equal "mq root preserved" mq "$(jq -r '.[0].kind' "${QDISC_STATE}")"
+restore_tcp_runtime
+assert_equal "mq children restored" \
+    "$(jq -Sc . "${QDISC_ORIGINAL}")" "$(jq -Sc . "${QDISC_STATE}")"
+
+# The serializer preserves disabled ECN, CE selector and explicit handles.
+assert_equal "fq_codel restore argument serialization" \
+    'root handle 1: fq_codel target 7000us interval 120000us noecn ce_threshold_selector 1/3 ' \
+    "$(qdisc_restore_args <<<'{"root":true,"handle":"1:","kind":"fq_codel","options":{"target":7000,"interval":120000,"ce_threshold_selector":1,"ce_threshold_mask":3}}' | tr '\n' ' ')"
+# Unknown options must be rejected rather than silently lost on restoration.
+jq '.[1].options.future_option=1' "${QDISC_ORIGINAL}" >"${QDISC_STATE}"
+expect_qdisc_failure "unknown qdisc option" configure_physical_fq
+cp "${QDISC_ORIGINAL}" "${QDISC_STATE}"
+apply_physical_fq_qdisc
+FAIL_TC=1 expect_qdisc_failure "restore command failure" restore_tcp_runtime
+IGNORE_TC=1 expect_qdisc_failure "restore verification failure" restore_tcp_runtime
+restore_tcp_runtime
+
+# pfifo_fast can be restored without inventing unsupported tc arguments.
+rm -f "${BACKUP_DIR}/qdisc/eth0.json"
+printf '[{"kind":"pfifo_fast","root":true,"handle":"0:","options":{"bands":3,"priomap":[1,2,2,2,1,2,0,0,1,1,1,1,1,1,1,1]}}]\n' >"${QDISC_ORIGINAL}"
+cp "${QDISC_ORIGINAL}" "${QDISC_STATE}"
+apply_physical_fq_qdisc
+restore_tcp_runtime
+assert_equal "pfifo_fast restored" pfifo_fast "$(jq -r '.[0].kind' "${QDISC_STATE}")"
+assert_contains "pfifo_fast restore command" "$(cat "${QDISC_STATE}.restore-args")" 'qdisc replace dev eth0 root pfifo_fast'
+
+# Custom classful trees must not be destroyed; failures keep recovery data.
+printf '[{"kind":"htb","handle":"1:","root":true}]\n' >"${QDISC_STATE}"
+expect_qdisc_failure "custom qdisc" configure_physical_fq
+assert_equal "custom qdisc remains unchanged" htb "$(jq -r '.[0].kind' "${QDISC_STATE}")"
+expect_qdisc_failure "externally changed qdisc" restore_tcp_runtime
+[[ -s "${BACKUP_DIR}/qdisc/eth0.json" ]] || fail "failed restore lost backup"
 
 printf 'ok - BBRv3 shell tests passed\n'

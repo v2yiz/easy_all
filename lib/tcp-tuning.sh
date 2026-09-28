@@ -56,9 +56,11 @@ snapshot_tcp_runtime() {
 restore_tcp_runtime() {
     local source="${BACKUP_DIR}/pre-install-tcp-runtime.conf"
     remove_physical_fq_qdisc_service
-    [[ -s "${source}" ]] || return 0
-    sysctl -p "${source}" >/dev/null 2>&1 \
-        || warn "恢复安装前 TCP 运行参数失败，请检查 ${source}"
+    if [[ -s "${source}" ]]; then
+        sysctl -p "${source}" >/dev/null 2>&1 \
+            || warn "恢复安装前 TCP 运行参数失败，请检查 ${source}"
+    fi
+    restore_physical_qdisc
 }
 
 restore_bbr_tcp_install_state() {
@@ -216,6 +218,10 @@ show_bbrv3_status() {
     if bbrv3_running_kernel_supported \
         && [[ "$(sysctl -n net.core.default_qdisc 2>/dev/null || true)" == "fq" ]] \
         && [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)" == "bbr" ]]; then
+        if ! physical_fq_active 2>/dev/null; then
+            printf 'BBRv3: degraded（实际出口 FQ 未生效；请执行 easy_all apply）\n'
+            return 0
+        fi
         printf 'BBRv3: active（XanMod %s，fq + bbr）\n' "${release}"
     elif bbrv3_kernel_image_installed; then
         printf 'BBRv3: pending-reboot（当前内核 %s；请重启进入 XanMod）\n' "${release}"
@@ -246,7 +252,7 @@ net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_slow_start_after_idle = 0
 
 # HTTP/2 & gRPC anti-bufferbloat: limit unsent bytes in write queue
-net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_notsent_lowat = 32768
 
 # High-concurrency socket recycling & queue optimization
 net.ipv4.tcp_tw_reuse = 1
@@ -301,50 +307,162 @@ EOF
     fi
 }
 
-apply_physical_fq_qdisc() {
-    local default_iface=""
-    if command -v ip >/dev/null 2>&1; then
-        default_iface=$(ip -o -4 route show to default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
-        if [[ -z "${default_iface}" ]]; then
-            default_iface=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
-        fi
-    fi
-    if [[ -n "${default_iface}" ]] && command -v tc >/dev/null 2>&1; then
-        tc qdisc replace dev "${default_iface}" root fq >/dev/null 2>&1 || true
-    fi
+default_route_iface() {
+    ip -o -4 route show to default | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}'
+}
 
+physical_fq_active() {
+    local iface
+    iface=$(default_route_iface) || return 1
+    [[ -n "${iface}" ]] || return 1
+    tc -j qdisc show dev "${iface}" | jq -e '
+        [.[] | select(.kind != "ingress" and .kind != "clsact")] |
+        any(.[]; .root == true and (.kind == "fq" or .kind == "mq")) and
+        ([.[] | select(.kind != "mq")] | length > 0 and all(.[]; .kind == "fq"))
+    ' >/dev/null
+}
+
+# Only reversible, classless schedulers are managed; preserve mq and ingress.
+validate_qdisc_snapshot() {
+    jq -e '
+        [.[] | select(.kind != "ingress" and .kind != "clsact")] |
+        any(.[]; .root == true and (.kind == "fq" or .kind == "fq_codel" or .kind == "pfifo_fast" or .kind == "mq")) and
+        ([.[] | select(.kind != "mq")] | length > 0 and all(.[];
+            (.root == true or (.parent | type == "string")) and
+            (.handle | test("^[0-9a-fA-F]+:$")) and
+            (if .kind == "fq" then true
+             elif .kind == "fq_codel" then
+                ((.options // {} | keys) - ["limit", "flows", "quantum", "target", "interval", "memory_limit", "ecn", "ce_threshold", "ce_threshold_selector", "ce_threshold_mask", "drop_batch"] | length == 0)
+             elif .kind == "pfifo_fast" then
+                .options.bands == 3 and .options.priomap == [1,2,2,2,1,2,0,0,1,1,1,1,1,1,1,1]
+             else false end)))
+    ' "$1" >/dev/null
+}
+
+qdisc_restore_args() {
+    jq -r '
+        (if .root then ["root"] else ["parent", .parent] end) +
+        (if .handle == "0:" then [] else ["handle", .handle] end) + [.kind] +
+        (if .kind == "fq_codel" then
+            [(.options // {} | to_entries[]) |
+                if .key == "ecn" or .key == "ce_threshold_selector" or .key == "ce_threshold_mask" then empty
+                elif .key == "target" or .key == "interval" or .key == "ce_threshold" then .key, ((.value | tostring) + "us")
+                else .key, (.value | tostring) end] +
+            [if .options.ecn then "ecn" else "noecn" end] +
+            (if .options.ce_threshold_selector != null then
+                ["ce_threshold_selector", "\(.options.ce_threshold_selector)/\(.options.ce_threshold_mask)"] else [] end)
+         else [] end) | .[]
+    '
+}
+
+configure_physical_fq() {
+    local iface current snapshot entry target filters
+    local -a args
+    command -v tc >/dev/null && command -v jq >/dev/null || die "FQ 配置需要 tc 和 jq"
+    iface=$(default_route_iface) || die "无法读取 IPv4 默认出口"
+    [[ "${iface}" =~ ^[a-zA-Z0-9_.:-]+$ && "${iface}" != .* ]] || die "无法确定安全的默认出口接口名"
+    current=$(tc -j qdisc show dev "${iface}") || die "读取 ${iface} qdisc 失败"
+    install -d -m 0700 "${BACKUP_DIR}/qdisc"
+    snapshot="${BACKUP_DIR}/qdisc/${iface}.json"
+    printf '%s\n' "${current}" >"${snapshot}.tmp"
+    validate_qdisc_snapshot "${snapshot}.tmp" || die "${iface} 存在不支持自动恢复的 qdisc；未修改队列"
+    filters=$(tc -j filter show dev "${iface}" root) || die "读取 ${iface} 根过滤器失败"
+    [[ "$(jq 'length' <<<"${filters}")" == 0 ]] || die "${iface} 存在根过滤器；拒绝替换队列"
+    while IFS= read -r target; do
+        [[ "${target}" != "0:" ]] || continue
+        filters=$(tc -j filter show dev "${iface}" parent "${target}") || die "读取 ${iface} 子队列过滤器失败"
+        [[ "$(jq 'length' <<<"${filters}")" == 0 ]] || die "${iface} 存在子队列过滤器；拒绝替换队列"
+    done < <(jq -r '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast") | .handle' <<<"${current}")
+    if [[ ! -e "${snapshot}" ]]; then
+        mv -- "${snapshot}.tmp" "${snapshot}"
+        chmod 0600 "${snapshot}"
+    else
+        validate_qdisc_snapshot "${snapshot}" || die "原 qdisc 备份无效；停止修改：${snapshot}"
+        rm -f -- "${snapshot}.tmp"
+    fi
+    while IFS= read -r entry; do
+        args=()
+        if [[ "$(jq -r '.root // false' <<<"${entry}")" == true ]]; then
+            args=(root)
+        else
+            target=$(jq -r '.parent' <<<"${entry}")
+            args=(parent "${target}")
+        fi
+        tc qdisc replace dev "${iface}" "${args[@]}" fq || die "${iface} FQ 应用失败；原配置保存在 ${snapshot}"
+    done < <(jq -c '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast")' <<<"${current}")
+    physical_fq_active || die "${iface} 实际 qdisc 未通过 FQ 验收"
+}
+
+restore_physical_qdisc() {
+    local snapshot iface entry actual expected target arg
+    local -a args
+    for snapshot in "${BACKUP_DIR}/qdisc/"*.json; do
+        [[ -f "${snapshot}" ]] || continue
+        validate_qdisc_snapshot "${snapshot}" || die "qdisc 备份无效；保留备份 ${snapshot}"
+        iface=${snapshot##*/}
+        iface=${iface%.json}
+        while IFS= read -r entry; do
+            target=$(jq -r 'if .root then "root" else .parent end' <<<"${entry}")
+            actual=$(tc -j qdisc show dev "${iface}" | jq -Sc --arg target "${target}" '
+                .[] | select(if $target == "root" then .root == true else .parent == $target end)') \
+                || die "无法读取 ${iface} 队列；保留备份 ${snapshot}"
+            expected=$(jq -Sc '{kind, options}' <<<"${entry}")
+            [[ "$(jq -Sc '{kind, options}' <<<"${actual}")" != "${expected}" ]] || continue
+            [[ "$(jq -r '.kind' <<<"${actual}")" == fq ]] \
+                || die "${iface} 队列已被其他配置改变；请按 ${snapshot} 手动恢复"
+            args=()
+            while IFS= read -r arg; do args+=("${arg}"); done < <(qdisc_restore_args <<<"${entry}")
+            tc qdisc replace dev "${iface}" "${args[@]}" || die "恢复 ${iface} qdisc 失败；保留备份 ${snapshot}"
+            actual=$(tc -j qdisc show dev "${iface}" | jq -Sc --arg target "${target}" '
+                .[] | select(if $target == "root" then .root == true else .parent == $target end) | {kind, options}') \
+                || die "恢复 ${iface} 后读取队列失败；保留备份 ${snapshot}"
+            [[ "${actual}" == "${expected}" ]] || die "${iface} qdisc 恢复验收失败；保留备份 ${snapshot}"
+        done < <(jq -c '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast")' "${snapshot}")
+    done
+}
+
+apply_physical_fq_qdisc() {
+    configure_physical_fq
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local fq_service_file="${systemd_dir}/easy_all-fq.service"
-    if [[ -d "${systemd_dir}" ]] && command -v systemctl >/dev/null 2>&1; then
-        cat >"${RUNTIME_TMP:-/tmp}/easy_all-fq.service" <<'EOF'
+    local helper="${STATE_DIR}/apply-fq.sh"
+    {
+        printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
+        printf 'BACKUP_DIR=%q\n' "${BACKUP_DIR}"
+        printf 'die() { printf "%%s\\n" "$*" >&2; exit 1; }\n'
+        declare -f default_route_iface physical_fq_active validate_qdisc_snapshot configure_physical_fq
+        printf 'configure_physical_fq\n'
+    } >"${helper}"
+    chmod 0700 "${helper}"
+    cat >"${fq_service_file}" <<EOF_SERVICE
 [Unit]
-Description=Ensure FQ qdisc on default network interface for BBR
-After=network.target network-online.target
+Description=Ensure and verify FQ on the default network interface
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'iface=$(ip -o -4 route show to default 2>/dev/null | awk "{for(i=1;i<=NF;i++) if(\$i==\"dev\") {print \$(i+1); exit}}"); [ -n "$iface" ] && command -v tc >/dev/null 2>&1 && tc qdisc replace dev "$iface" root fq'
+ExecStart=/bin/bash "${helper}"
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-EOF
-        install -m 0644 "${RUNTIME_TMP:-/tmp}/easy_all-fq.service" "${fq_service_file}"
-        systemctl daemon-reload >/dev/null 2>&1 || true
-        systemctl enable easy_all-fq.service >/dev/null 2>&1 || true
-        systemctl start easy_all-fq.service >/dev/null 2>&1 || true
-    fi
+EOF_SERVICE
+    systemctl daemon-reload || die "重新加载 FQ 服务失败"
+    systemctl enable easy_all-fq.service || die "启用 FQ 开机服务失败"
+    systemctl restart easy_all-fq.service || die "启动 FQ 服务失败"
+    physical_fq_active || die "FQ 服务启动后实际队列验收失败"
 }
 
 remove_physical_fq_qdisc_service() {
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local fq_service_file="${systemd_dir}/easy_all-fq.service"
-    if [[ -f "${fq_service_file}" ]] && command -v systemctl >/dev/null 2>&1; then
-        systemctl disable --now easy_all-fq.service >/dev/null 2>&1 || true
+    if [[ -f "${fq_service_file}" ]]; then
+        systemctl disable --now easy_all-fq.service || die "停止 FQ 服务失败；请保留队列备份"
         rm -f -- "${fq_service_file}"
-        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl daemon-reload || die "重新加载 systemd 失败"
     fi
+    rm -f -- "${STATE_DIR}/apply-fq.sh"
 }
 
 prompt_bbrv3_reboot() {
