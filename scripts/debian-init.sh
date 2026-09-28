@@ -556,7 +556,7 @@ net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 
 # HTTP/2 & gRPC anti-bufferbloat: limit unsent bytes in write queue
-net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_notsent_lowat = 32768
 
 # High-concurrency socket recycling & queue optimization
 net.ipv4.tcp_tw_reuse = 1
