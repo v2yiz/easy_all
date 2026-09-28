@@ -13,7 +13,7 @@ const EXTERNAL_URI_USER_AGENT = 'v2rayN';
 const CDN_NODE_LIMIT = 6;
 const CDN_NODE_NAME_PREFIX = '🇺🇸优选';
 const CDN_GROUP_NAME = '🇺🇸白天首选';
-const WORKER_GROUP_NAME = 'CF大善人';
+const WORKER_GROUP_NAME = '🇭🇰CF';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,
@@ -319,7 +319,7 @@ function normalizeCdnNodeNames(nodes) {
         .map((node, index) => ({ ...node, name: CDN_NODE_NAME_PREFIX + (index + 1) }));
     const backup = nodes.filter(node => node.workerBackup).slice(0, 3)
         .map((node, index) => ({ ...node, udp: false,
-            name: index === 0 ? 'Worker兜底-自动' : `Worker兜底-优选${index}` }));
+            name: index === 0 ? '纯CF(兜底域名)' : `纯CF${index}` }));
     return [...primary, ...backup];
 }
 

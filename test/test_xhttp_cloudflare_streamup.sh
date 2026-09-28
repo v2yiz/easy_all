@@ -279,14 +279,14 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     WORKER_BACKUP_IPS='["104.16.1.1","104.16.2.2"]'
     worker_groups=$(build_mihomo_proxy_groups)
     worker_names=$(build_mihomo_proxy_names)
-    assert_contains "Worker groups contain CF大善人" "${worker_groups}" 'name: "CF大善人"'
-    assert_contains "CF大善人 uses url-test" "${worker_groups}" 'type: url-test'
-    assert_contains "CF大善人 avoids Cloudflare-owned probe targets" \
+    assert_contains "Worker groups contain HK CF" "${worker_groups}" 'name: "🇭🇰CF"'
+    assert_contains "HK CF uses url-test" "${worker_groups}" 'type: url-test'
+    assert_contains "HK CF avoids Cloudflare-owned probe targets" \
         "${worker_groups}" 'url: https://www.gstatic.com/generate_204'
-    assert_contains "CF大善人 contains domain entry" "${worker_groups}" '"Worker兜底-自动"'
-    assert_contains "CF大善人 contains optimized entry" "${worker_groups}" '"Worker兜底-优选2"'
-    assert_contains "PROXY contains CF大善人" "${worker_names}" '"CF大善人"'
-    assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"Worker兜底-自动"'
+    assert_contains "HK CF contains domain entry" "${worker_groups}" '"纯CF(兜底域名)"'
+    assert_contains "HK CF contains optimized entry" "${worker_groups}" '"纯CF2"'
+    assert_contains "PROXY contains HK CF" "${worker_names}" '"🇭🇰CF"'
+    assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"纯CF(兜底域名)"'
 )
 
 # Worker deployment source forwards the public token to the private Nginx source.

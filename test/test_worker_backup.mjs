@@ -152,15 +152,15 @@ assert.equal((yaml.match(/network: xhttp/g) || []).length, 6);
 assert.equal((yaml.match(/udp: false/g) || []).length, 3);
 const groups = yaml.split('proxy-groups:\n')[1].split('rules:\n')[0];
 const proxyGroup = groups.split('    - name: 🇺🇸白天首选')[0];
-const workerGroup = groups.split('    - name: CF大善人')[1];
-assert.ok(proxyGroup.includes('        - "CF大善人"'));
-assert.ok(!proxyGroup.includes('Worker兜底-'));
+const workerGroup = groups.split('    - name: 🇭🇰CF')[1];
+assert.ok(proxyGroup.includes('        - "🇭🇰CF"'));
+assert.ok(!proxyGroup.includes('纯CF'));
 assert.ok(workerGroup.includes('      type: url-test'));
 assert.ok(workerGroup.includes('      url: https://www.gstatic.com/generate_204'));
 assert.ok(workerGroup.includes('      interval: 300'));
 assert.deepEqual(
     JSON.parse(workerGroup.match(/proxies: (\[[^\n]+\])/)[1]),
-    ['Worker兜底-自动', 'Worker兜底-优选1', 'Worker兜底-优选2'],
+    ['纯CF(兜底域名)', '纯CF1', '纯CF2'],
 );
 addresses = ['104.16.9.9'];
 response = await handler(request('base64'));

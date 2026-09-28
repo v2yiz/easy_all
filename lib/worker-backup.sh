@@ -2,7 +2,7 @@
 # Independent TCP Worker; shares CDN candidates and the authenticated node source.
 
 readonly WORKER_BACKUP_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
-readonly WORKER_BACKUP_GROUP_NAME="CF大善人"
+readonly WORKER_BACKUP_GROUP_NAME="🇭🇰CF"
 
 worker_backup_enabled() {
     [[ "${WORKER_BACKUP_DECOMMISSION:-0}" != "1" && -n "${WORKER_BACKUP_DOMAIN:-}" ]]
@@ -218,7 +218,7 @@ worker_backup_nodes() {
         ([$host] + $ips) | to_entries[] | {
           type:"vless",security:"tls",network:"ws",uuid:$uuid,host:$host,sni:$host,
           server:.value,port:443,path:$path,udp:false,ipVersion:"ipv4",
-          name:(if .key == 0 then "Worker兜底-自动" else "Worker兜底-优选" + (.key|tostring) end)
+          name:(if .key == 0 then "纯CF(兜底域名)" else "纯CF" + (.key|tostring) end)
         }'
 }
 
