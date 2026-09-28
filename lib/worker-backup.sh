@@ -218,7 +218,7 @@ worker_backup_nodes() {
         ([$host] + $ips) | to_entries[] | {
           type:"vless",security:"tls",network:"ws",uuid:$uuid,host:$host,sni:$host,
           server:.value,port:443,path:$path,udp:false,ipVersion:"ipv4",
-          name:(if .key == 0 then "纯CF(兜底域名)" else "纯CF" + (.key|tostring) end)
+          name:(if .key == 0 then "纯CF(域名)" else "纯CF" + (.key|tostring) end)
         }'
 }
 

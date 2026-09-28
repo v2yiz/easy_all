@@ -160,7 +160,7 @@ assert.ok(workerGroup.includes('      url: https://www.gstatic.com/generate_204'
 assert.ok(workerGroup.includes('      interval: 300'));
 assert.deepEqual(
     JSON.parse(workerGroup.match(/proxies: (\[[^\n]+\])/)[1]),
-    ['纯CF(兜底域名)', '纯CF1', '纯CF2'],
+    ['纯CF(域名)', '纯CF1', '纯CF2'],
 );
 addresses = ['104.16.9.9'];
 response = await handler(request('base64'));

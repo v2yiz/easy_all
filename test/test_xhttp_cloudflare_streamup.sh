@@ -283,10 +283,10 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     assert_contains "HK CF uses url-test" "${worker_groups}" 'type: url-test'
     assert_contains "HK CF avoids Cloudflare-owned probe targets" \
         "${worker_groups}" 'url: https://www.gstatic.com/generate_204'
-    assert_contains "HK CF contains domain entry" "${worker_groups}" '"纯CF(兜底域名)"'
+    assert_contains "HK CF contains domain entry" "${worker_groups}" '"纯CF(域名)"'
     assert_contains "HK CF contains optimized entry" "${worker_groups}" '"纯CF2"'
     assert_contains "PROXY contains HK CF" "${worker_names}" '"🇭🇰CF"'
-    assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"纯CF(兜底域名)"'
+    assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"纯CF(域名)"'
 )
 
 # Worker deployment source forwards the public token to the private Nginx source.

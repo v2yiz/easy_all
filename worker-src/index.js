@@ -319,7 +319,7 @@ function normalizeCdnNodeNames(nodes) {
         .map((node, index) => ({ ...node, name: CDN_NODE_NAME_PREFIX + (index + 1) }));
     const backup = nodes.filter(node => node.workerBackup).slice(0, 3)
         .map((node, index) => ({ ...node, udp: false,
-            name: index === 0 ? '纯CF(兜底域名)' : `纯CF${index}` }));
+            name: index === 0 ? '纯CF(域名)' : `纯CF${index}` }));
     return [...primary, ...backup];
 }
 
