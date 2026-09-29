@@ -97,6 +97,28 @@ await tick();
 assert.equal(closeCount, 1);
 assert.equal(timers.size, 0);
 
+// A stalled WebSocket never drains: the TCP source must not be read indefinitely.
+const stalled = websocket();
+let reads = 0, sourceClosed = false;
+relay(stalled, uuid, header, () => ({
+    opened: Promise.resolve(), closed: new Promise(() => {}),
+    readable: new ReadableStream({
+        pull(controller) {
+            if (++reads <= 256) controller.enqueue(new Uint8Array(64 * 1024));
+            else controller.close();
+        },
+    }, { highWaterMark: 0 }),
+    writable: new WritableStream(),
+    close: async () => { sourceClosed = true; },
+}));
+for (let i = 0; i < 300 && stalled.closes.length === 0; i++) await tick();
+assert.ok(stalled.sent.reduce((n, chunk) => n + chunk.length, 0) <= 8 * 1024 * 1024,
+    'stalled downstream stays within the connection byte budget');
+assert.ok(reads < 256, 'stop reading the TCP source when the budget is exhausted');
+assert.deepEqual(stalled.closes, [1009]);
+assert.equal(sourceClosed, true);
+assert.equal(timers.size, 0);
+
 const bad = websocket();
 relay(bad, uuid, new Uint8Array(), () => { throw Error('Must not dial'); });
 const wrong = Buffer.from(header); wrong[1] ^= 1;
@@ -167,6 +189,7 @@ assert.ok(!globalGroup.includes('DIRECT') && !globalGroup.includes('REJECT'));
 assert.ok(workerGroup.includes('      type: url-test'));
 assert.ok(workerGroup.includes('      url: https://www.gstatic.com/generate_204'));
 assert.ok(workerGroup.includes('      interval: 300'));
+assert.ok(workerGroup.includes('      timeout: 5000'));
 assert.deepEqual(
     JSON.parse(workerGroup.match(/proxies: (\[[^\n]+\])/)[1]),
     ['🇭🇰CF1', '🇭🇰CF2', '🇭🇰CF3', '🇭🇰CF4', '🇭🇰CF5', '🇭🇰CF6'],
@@ -176,8 +199,9 @@ const youtubeModeRule = rules.indexOf('  - GEOSITE,youtube,代理模式');
 const youtubeRule = rules.indexOf('  - GEOSITE,youtube,🇭🇰CF');
 const googleRule = rules.indexOf('  - GEOSITE,google,PROXY');
 assert.ok(youtubeModeRule >= 0 && youtubeModeRule < youtubeRule && youtubeRule < googleRule);
-assert.ok(rules.includes('  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),代理模式'));
-assert.ok(rules.includes('  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT'));
+assert.ok(!rules.includes('  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),代理模式'));
+const youtubeQuicReject = rules.indexOf('  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT');
+assert.ok(youtubeQuicReject >= 0 && youtubeQuicReject < youtubeModeRule);
 addresses = ['104.16.9.9'];
 response = await handler(request('base64'));
 const decoded = Buffer.from(await response.text(), 'base64').toString();

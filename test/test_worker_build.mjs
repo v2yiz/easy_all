@@ -422,7 +422,8 @@ try {
         assert.ok(body.includes(`  - ${fcmProxyRule}\n`));
     }
     for (const matcher of ['GEOSITE,google', 'GEOSITE,github', 'GEOSITE,openai', 'GEOSITE,anthropic', 'RULE-SET,proxy-services']) {
-        before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),代理模式`, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`);
+        assert.ok(!rules.includes(`AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),代理模式`));
+        before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},代理模式`);
         before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},PROXY`);
         before(rules, `${matcher},代理模式`, `${matcher},PROXY`);
         before(rules, `${matcher},PROXY`, 'GEOSITE,apple-cn,DIRECT');

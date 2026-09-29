@@ -61,13 +61,22 @@ Universal SSL 终止客户端 TLS，Origin CA 保护回源。
 独立纯 Worker 节点仅发布最多 6 个经 VLESS 转发探测成功的优选 IPv4，依次命名为
 `🇭🇰CF1` 至 `🇭🇰CF6`，不发布域名入口。这些节点归入 `🇭🇰CF` URL-Test 组；测速目标使用
 Google 的 `generate_204`，避免 Cloudflare Socket 禁止回连 Cloudflare 地址而产生误判。
+两类 URL-Test 组的测速超时均为 `5000` ms，间隔和容差保持 `300` 秒、`30` ms。
 订阅仅在该组存在时，将 YouTube 的 TCP 流量直接路由到 `🇭🇰CF`；YouTube QUIC 被拒绝以触发
 TCP 回退，其他代理流量继续进入 `PROXY`，且 `PROXY` 不包含 `🇭🇰CF`。
 `代理模式` 提供 `DEFAULT` 和 `PROXY` 两个选项。隐藏的 `DEFAULT` 组只包含 Mihomo 内置
 `PASS`，使规则继续匹配到 YouTube 或普通 `PROXY` 默认出口；选择 `PROXY` 时则在前置规则
 直接使用 `PROXY` 当前选择。两个分组的选择状态相互独立。
+规则模式下，代理服务的 UDP/443 拒绝规则优先于手动分组选择，与自建 Xray 的拒绝策略一致；
+国内直连 QUIC 仍保留。订阅不自动为第三方节点开放代理 QUIC。
 模板显式定义 `GLOBAL` 且只包含 `PROXY`。全局模式因此统一复用 `PROXY` 当前选择，不暴露
 Mihomo 自动生成的 `DIRECT`、`REJECT` 与节点平铺列表；局域网 IPv4 继续由 TUN 路由排除。
+全局模式不执行客户端规则，UDP/443 由自建 Xray 的服务端策略拒绝。
+
+纯 Worker 的 WebSocketPair 没有发送完成或积压查询接口，因此下行采用每连接 `8 MiB`
+累计发送预算（含 VLESS 响应头），上行待写入预算仍为 `1 MiB`。下行预算不会随时间重置；
+超限会关闭 TCP 和 WebSocket，避免慢客户端导致持续无界入队。这不是背压实现，
+长视频连接或大文件下载可能中断；需要持续传输时可将 `代理模式` 切换为 `PROXY`。
 
 公开订阅只经过独立域名绑定的 Worker。Worker 使用 `global_fetch_strictly_public`，
 转发同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥，Nginx 执行最终鉴权；直接访问私有源
@@ -98,9 +107,12 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 临时端口范围为 `13000-60999`，避开 Reality 动态入口和本机服务端口。
 
 TCP 未发送数据阈值 `tcp_notsent_lowat` 为 `32768`（32 KiB）。FQ 应用和状态检查会读取
-默认 IPv4 出口的实际 qdisc；多队列网卡保留 `mq`，只将叶子队列切换为 `fq`。
+默认 IPv4 出口的实际 qdisc；多队列网卡保留 `mq` 类型，叶子队列切换为 `fq`。
+内核默认的 `mq 0:` 无法通过 `parent :N` 修改子队列，会在保存配置后重建为 `mq ea00:`，
+并映射子队列 parent；应用失败时恢复本次应用前的叶子参数。开机服务使用相同逻辑。
 首次接管前保存 `fq_codel` / `pfifo_fast` 配置，重复 apply 与开机服务不会覆盖备份；
 卸载和安装回滚会恢复并验收原参数。已有 `fq` 保持不变，自定义或无法可靠恢复的队列拒绝接管。
+恢复叶子参数后保留可寻址的非零 mq handle；混合已有 FQ 的零 handle mq 拒绝重建，以免丢失自定义参数。
 恢复失败会停止清理并保留备份。旧版安装未保存过原队列，升级只能记录升级时的状态，无法追溯安装前配置。
 
 ## BBRv3

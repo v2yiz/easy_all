@@ -489,7 +489,7 @@ function clashUrlTestGroup(name, proxyNames, url = 'https://cp.cloudflare.com/ge
     return [
         `    - name: ${name}`, '      type: url-test',
         `      url: ${url}`,
-        '      interval: 300', '      tolerance: 30', '      timeout: 3000',
+        '      interval: 300', '      tolerance: 30', '      timeout: 5000',
         '      lazy: true', '      proxies: ' + JSON.stringify(proxyNames),
     ].join('\n');
 }
@@ -558,8 +558,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
             : '',
     ].filter(Boolean).join('\n');
     const workerRules = workerNames.length
-        ? `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),${MODE_GROUP_NAME}\n` +
-            `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT\n` +
+        ? `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT\n` +
             `  - GEOSITE,youtube,${MODE_GROUP_NAME}\n  - GEOSITE,youtube,${WORKER_GROUP_NAME}`
         : '';
     const replacements = {

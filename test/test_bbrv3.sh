@@ -149,10 +149,23 @@ tc() {
         [[ "${IGNORE_TC:-0}" != 1 ]] || return 0
         local target=$5 kind=${!#} original
         [[ "${target}" == root ]] || target=$6
-        if [[ "${kind}" == fq ]]; then
+        if [[ "${target}" == :* || "${target}" == 0:* ]]; then
+            printf 'Failed to find specified qdisc\n' >&2
+            return 1
+        fi
+        if [[ "${kind}" == mq ]]; then
+            [[ "$*" == 'qdisc replace dev eth0 root handle ea00: mq' ]] || return 1
+            jq 'map(if .root then .handle="ea00:"
+                    elif .parent then .parent=("ea00:" + (.parent | split(":")[1])) | .kind="fq" | .options={}
+                    else . end)' "${QDISC_STATE}" >"${QDISC_STATE}.tmp"
+        elif [[ "${kind}" == fq ]]; then
+            if [[ "${FAIL_LEAF_ONCE:-0}" == 1 && "${target}" == ea00:2 && ! -e "${QDISC_STATE}.failed" ]]; then
+                touch "${QDISC_STATE}.failed"
+                return 1
+            fi
             jq --arg target "${target}" 'map(if (if $target == "root" then .root == true else .parent == $target end) then .kind="fq" | .options={} else . end)' "${QDISC_STATE}" >"${QDISC_STATE}.tmp"
         else
-            original=$(jq -c --arg target "${target}" '.[] | select(if $target == "root" then .root == true else .parent == $target end)' "${QDISC_ORIGINAL}")
+            original=$(jq -c --arg target "${target}" '.[] | select(if $target == "root" then .root == true else (.parent // "" | split(":")[1]) == ($target | split(":")[1]) end) | if $target == "root" then . else .parent=$target end' "${QDISC_ORIGINAL}")
             jq --arg target "${target}" --argjson original "${original}" 'map(if (if $target == "root" then .root == true else .parent == $target end) then $original else . end)' "${QDISC_STATE}" >"${QDISC_STATE}.tmp"
             printf '%s\n' "$*" >>"${QDISC_STATE}.restore-args"
         fi
@@ -292,7 +305,7 @@ IGNORE_TC=1 expect_qdisc_failure "tc success without actual FQ" configure_physic
 FAIL_SYSTEMCTL=1 expect_qdisc_failure "service failure" apply_physical_fq_qdisc
 restore_tcp_runtime
 
-# mq stays intact; only its leaves change and regain their original options.
+# Kernel-created mq 0: must be rebuilt before its children can be addressed.
 rm -f "${BACKUP_DIR}/qdisc/eth0.json"
 jq '[{"kind":"mq","handle":"0:","root":true}, (.[0] | del(.root) | .parent=":1"), (.[0] | del(.root) | .parent=":2")]' "${QDISC_ORIGINAL}" >"${QDISC_ORIGINAL}.tmp"
 mv "${QDISC_ORIGINAL}.tmp" "${QDISC_ORIGINAL}"
@@ -300,9 +313,18 @@ cp "${QDISC_ORIGINAL}" "${QDISC_STATE}"
 apply_physical_fq_qdisc
 physical_fq_active || fail "mq with FQ leaves should pass verification"
 assert_equal "mq root preserved" mq "$(jq -r '.[0].kind' "${QDISC_STATE}")"
+assert_equal "mq uses an addressable handle" ea00: "$(jq -r '.[0].handle' "${QDISC_STATE}")"
+cp "${QDISC_ORIGINAL}" "${QDISC_STATE}" # Reboot recreates mq 0:.
+bash "${STATE_DIR}/apply-fq.sh"
+physical_fq_active || fail "boot helper must remap kernel-created mq"
 restore_tcp_runtime
 assert_equal "mq children restored" \
-    "$(jq -Sc . "${QDISC_ORIGINAL}")" "$(jq -Sc . "${QDISC_STATE}")"
+    "$(jq -Sc 'map(if .root then .handle="ea00:" else .parent=("ea00:" + (.parent | split(":")[1])) end)' "${QDISC_ORIGINAL}")" "$(jq -Sc . "${QDISC_STATE}")"
+cp "${QDISC_ORIGINAL}" "${QDISC_STATE}"
+FAIL_LEAF_ONCE=1 expect_qdisc_failure "second mq leaf failure" configure_physical_fq
+assert_equal "failed application restores original leaf parameters" \
+    "$(jq -Sc '[.[] | select(.parent) | .options]' "${QDISC_ORIGINAL}")" \
+    "$(jq -Sc '[.[] | select(.parent) | .options]' "${QDISC_STATE}")"
 
 # The serializer preserves disabled ECN, CE selector and explicit handles.
 assert_equal "fq_codel restore argument serialization" \
@@ -316,6 +338,18 @@ apply_physical_fq_qdisc
 FAIL_TC=1 expect_qdisc_failure "restore command failure" restore_tcp_runtime
 IGNORE_TC=1 expect_qdisc_failure "restore verification failure" restore_tcp_runtime
 restore_tcp_runtime
+
+# Preserve existing fq settings; mixed zero-handle mq cannot be rebuilt losslessly.
+jq '.[1].kind="fq" | .[1].options={pacing: true}' "${QDISC_ORIGINAL}" >"${QDISC_STATE}"
+mixed_before=$(cat "${QDISC_STATE}")
+expect_qdisc_failure "mixed zero-handle mq" configure_physical_fq
+assert_equal "mixed mq remains unchanged" "${mixed_before}" "$(cat "${QDISC_STATE}")"
+rm -f "${BACKUP_DIR}/qdisc/eth0.json"
+jq 'map(if .parent then .kind="fq" | .options={pacing: true} else . end)' "${QDISC_ORIGINAL}" >"${QDISC_STATE}"
+fq_before=$(cat "${QDISC_STATE}")
+apply_physical_fq_qdisc
+restore_tcp_runtime
+assert_equal "existing zero-handle mq fq needs no rebuild or restore" "${fq_before}" "$(cat "${QDISC_STATE}")"
 
 # pfifo_fast can be restored without inventing unsupported tc arguments.
 rm -f "${BACKUP_DIR}/qdisc/eth0.json"

@@ -437,8 +437,8 @@ cloudflare_deploy_subscription_worker() {
 }
 
 cloudflare_delete_subscription_worker_resources() {
-    local domain_id=${1:-${CLOUDFLARE_WORKER_DOMAIN_ID:-}}
-    local worker_name=${2:-${CLOUDFLARE_WORKER_NAME:-}}
+    local domain_id=${1-${CLOUDFLARE_WORKER_DOMAIN_ID:-}}
+    local worker_name=${2-${CLOUDFLARE_WORKER_NAME:-}}
     local domains scripts extra_domains
     if [[ -n "${worker_name}" ]]; then
         domains=$(cloudflare_api_request GET \
@@ -1352,6 +1352,7 @@ load_state() {
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
         WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID
         WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT
+        WORKER_BACKUP_RETIREMENTS
         XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
         CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME
@@ -1465,6 +1466,7 @@ save_state() {
             WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \
             WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID \
             WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT \
+            WORKER_BACKUP_RETIREMENTS \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
             CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME \
             CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID \
@@ -1762,7 +1764,7 @@ write_mihomo_url_test_group() {
       url: ${test_url}
       interval: 300
       tolerance: 30
-      timeout: 3000
+      timeout: 5000
       lazy: true
 EOF
 }
@@ -1786,7 +1788,6 @@ build_mihomo_proxy_groups() {
 build_mihomo_worker_rules() {
     [[ -n "$(worker_backup_nodes | jq -r '.name')" ]] || return 0
     cat <<EOF
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),代理模式
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT
   - GEOSITE,youtube,代理模式
   - GEOSITE,youtube,${WORKER_BACKUP_GROUP_NAME}
@@ -1969,13 +1970,14 @@ install_all() {
     cloudflare_deploy_subscription_worker
     cloudflare_validate_subscription_worker
     cloudflare_finalize_certificate_rotation
+    cloudflare_prepare_backup_retirement
     save_state
     register_easy_all_command
     persist_globalping_token
     install_globalping_refresh_timer
     install_quota_timer
-    cloudflare_finalize_backup_worker
     INSTALL_ROLLBACK_ON_EXIT=0
+    cloudflare_finalize_backup_worker
     cloudflare_clear_api_token
     show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
@@ -2036,10 +2038,11 @@ apply_cloud_resources() {
     cloudflare_validate_subscription_worker
     cloudflare_validate_cdn_health
     cloudflare_finalize_certificate_rotation
+    cloudflare_prepare_backup_retirement
     save_state
     install_globalping_refresh_timer
-    cloudflare_finalize_backup_worker
     commit_subscription_update
+    cloudflare_finalize_backup_worker
     cloudflare_clear_api_token
     show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
@@ -2112,10 +2115,11 @@ update_subscription() {
     fi
     cloudflare_validate_cdn_health
     cloudflare_finalize_certificate_rotation
+    cloudflare_prepare_backup_retirement
     save_state
     install_globalping_refresh_timer
-    cloudflare_finalize_backup_worker
     commit_subscription_update
+    cloudflare_finalize_backup_worker
     cloudflare_clear_api_token
     show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then

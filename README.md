@@ -27,6 +27,7 @@ Cloudflare 模式完全没有域名兜底，需要额外准备：
 `代理模式` 默认选择 `DEFAULT`：YouTube 使用 `🇭🇰CF`，其他代理流量复用 `PROXY` 当前选择；
 切换为 `PROXY` 后，所有命中代理规则的流量统一使用该选择。
 Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择，不再平铺所有节点。
+纯 Worker 每连接累计下行最多 8 MiB，超限会断开以限制内存积压；长视频或下载可切换到 `PROXY`。
 
 完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择自托管订阅时才需要
 Cloudflare 域名和 API Token。

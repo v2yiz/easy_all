@@ -2,6 +2,10 @@
 import { connect } from 'cloudflare:sockets';
 
 const MAX_PENDING = 1024 * 1024;
+// WebSocketPair exposes neither drain nor bufferedAmount. Bound all bytes ever
+// queued on this connection; this is a lifetime limit, NOT measured backpressure.
+// A timer/rate limit cannot bound memory for a peer that stops receiving.
+const MAX_DOWNSTREAM = 8 * 1024 * 1024;
 const HEADER_LIMIT = 1024;
 const IDLE_MS = 120_000;
 
@@ -48,6 +52,7 @@ export function parseHeader(bytes, uuid) {
 
 export function relay(ws, uuid, earlyData = new Uint8Array(), dial = connect) {
     let socket, writer, header = new Uint8Array(), pending = 0, stopped = false;
+    let downstream = 2; // VLESS response header shares the same budget.
     let chain = Promise.resolve();
     let timer;
     const finish = (code = 1000) => {
@@ -68,14 +73,19 @@ export function relay(ws, uuid, earlyData = new Uint8Array(), dial = connect) {
                 if (ws.readyState !== undefined && ws.readyState !== 1) break;
                 const { value, done } = await reader.read();
                 if (stopped || done || (ws.readyState !== undefined && ws.readyState !== 1)) break;
+                if (value.byteLength > MAX_DOWNSTREAM - downstream) {
+                    finish(1009);
+                    break;
+                }
                 touch();
                 try {
                     ws.send(value);
+                    downstream += value.byteLength;
                 } catch {
                     break;
                 }
-                // WebSocketPair has no writable backpressure signal. Keep TCP reads
-                // serialized and yield between sends so the runtime can flush frames.
+                if (downstream === MAX_DOWNSTREAM) { finish(1009); break; }
+                // Fairness only; yielding does not acknowledge delivery.
                 await new Promise(resolve => setTimeout(resolve, 0));
             }
             finish();

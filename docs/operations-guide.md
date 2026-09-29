@@ -170,6 +170,15 @@ URL-Test 自动测速。仅 YouTube 流量直接使用 `🇭🇰CF`，其他代�
 不发布域名入口，其流量不经过 VPS，也不计入 VPS 用户配额。
 `代理模式` 默认选择隐藏的 `DEFAULT`（`PASS`）组，以执行上述分流；切换为 `PROXY` 后，
 YouTube 和其他命中代理规则的流量都会使用 `PROXY` 当前选择。
+测速超时统一为 5 秒。规则模式下，代理流量的 QUIC 拒绝不受手动节点选择影响。
+纯 Worker 为限制 WebSocket 下行积压，每连接累计下行最多 8 MiB，达到预算会断开；
+长视频或下载遇到中断时，将 `代理模式` 切换为 `PROXY` 使用 VPS 出口。
+
+停用或更换兜底 Worker 时，旧资源先记入 `state.env` 的 `WORKER_BACKUP_RETIREMENTS`，
+等新订阅和状态提交后才删除。部分删除失败不会回滚到已失效的旧节点，
+下次 `apply-cloud` 会按账户、名称和域名 ID 重试清理。
+若更新失败且旧 Worker 部署也无法恢复，部署版本快照保存在
+`/etc/easy_all/recovery/backup-worker-deployment.*`（权限 `0600`），退出清理不会删除。
 
 已有部署只需同步这一订阅逻辑时执行：
 

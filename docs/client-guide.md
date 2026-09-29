@@ -38,6 +38,8 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 启用纯 Worker 兜底后，YouTube 会单独使用 `🇭🇰CF`；其他代理流量仍使用 `PROXY`。
 `代理模式` 默认选择 `DEFAULT`。需要临时让 YouTube 也使用当前 `PROXY` 出口时，将
 `代理模式` 切换为 `PROXY`；`PROXY` 中选择的白天首选、晚上首选或其他节点会独立保留。
+纯 Worker 每条连接累计下行限额为 8 MiB，长视频或下载可能中断；此时可切换到 `PROXY`。
+规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
 订阅显式定义 `GLOBAL → PROXY`。切换到“全局”模式后，Mihomo 忽略域名和 GeoIP 分流规则，
 所有被接管的流量使用 `PROXY` 当前选择，无需再操作 `GLOBAL`。TUN 排除的局域网 IPv4 地址

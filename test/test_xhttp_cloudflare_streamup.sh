@@ -289,7 +289,7 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     assert_contains "HK CF contains sixth optimized entry" "${worker_groups}" '"🇭🇰CF6"'
     assert_not_contains "PROXY excludes the YouTube-only HK CF group" "${worker_names}" '"🇭🇰CF"'
     assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"🇭🇰CF1"'
-    assert_contains "Worker rules consult proxy mode before YouTube QUIC fallback" "${worker_rules}" \
+    assert_not_contains "Manual mode cannot bypass YouTube QUIC rejection" "${worker_rules}" \
         'AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),代理模式'
     assert_contains "Worker rules reject YouTube QUIC" "${worker_rules}" \
         'AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT'
@@ -528,6 +528,8 @@ VPS_IP_FAMILY="dual"
 VPS_PUBLIC_IPV6="2001:db8::10"
 
 # Verify state save & load
+WORKER_BACKUP_RETIREMENTS='[{"account":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","name":"old-backup","id":"old-domain"}]'
+expected_retirements=${WORKER_BACKUP_RETIREMENTS}
 save_state
 [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file not created"
 state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
@@ -562,8 +564,10 @@ env() {
     printf 'x' >>"${load_state_env_calls}"
     command env "$@"
 }
+WORKER_BACKUP_RETIREMENTS=""
 EASY_ALL_STATE_FILE_OVERRIDE="${missing_policy_state}" load_state
 unset -f env
+assert_equal "Retirements survive a real state save and reload" "${expected_retirements}" "${WORKER_BACKUP_RETIREMENTS}"
 assert_equal "load_state uses one isolated subprocess" "1" \
     "$(wc -c <"${load_state_env_calls}" | tr -d ' ')"
 assert_equal "Missing Google mode defaults to IPv4" ipv4 "${GOOGLE_EGRESS_MODE}"

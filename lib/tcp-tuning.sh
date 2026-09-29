@@ -355,8 +355,27 @@ qdisc_restore_args() {
     '
 }
 
+# Linux cannot address children of the kernel-created mq handle 0:. Rebuild only
+# supported, fully snapshotted trees with a nonzero handle, retaining mq itself.
+normalize_mq_handle() {
+    local iface=$1 current=$2
+    if jq -e 'any(.[]; .root == true and .kind == "mq" and .handle == "0:")' <<<"${current}" >/dev/null; then
+        # Rebuilding would discard custom fq options, which we cannot serialize.
+        jq -e 'all(.[]; .kind != "fq") and all(.[]; .handle != "ea00:")' <<<"${current}" >/dev/null \
+            || return 1
+        tc qdisc replace dev "${iface}" root handle ea00: mq || return 1
+    fi
+}
+
+map_qdisc_parents() {
+    local handle=$1
+    jq --arg handle "${handle}" '
+      map(if .parent and (.kind == "fq" or .kind == "fq_codel" or .kind == "pfifo_fast")
+          then .parent = ($handle + (.parent | split(":")[1])) else . end)'
+}
+
 configure_physical_fq() {
-    local iface current snapshot entry target filters
+    local iface current snapshot entry target filters attempt handle failed=0
     local -a args
     command -v tc >/dev/null && command -v jq >/dev/null || die "FQ 配置需要 tc 和 jq"
     iface=$(default_route_iface) || die "无法读取 IPv4 默认出口"
@@ -380,6 +399,18 @@ configure_physical_fq() {
         validate_qdisc_snapshot "${snapshot}" || die "原 qdisc 备份无效；停止修改：${snapshot}"
         rm -f -- "${snapshot}.tmp"
     fi
+    # Per-attempt snapshot also protects repeat applications after reboot.
+    attempt="${snapshot}.apply"
+    printf '%s\n' "${current}" >"${attempt}"
+    chmod 0600 "${attempt}"
+    if ! physical_fq_active; then
+        normalize_mq_handle "${iface}" "${current}" \
+            || die "${iface} mq 重建失败或存在无法恢复的 FQ 参数；备份：${attempt}"
+    fi
+    handle=$(tc -j qdisc show dev "${iface}" | jq -r '.[] | select(.root == true and .kind == "mq") | .handle')
+    if [[ -n "${handle}" ]]; then
+        current=$(map_qdisc_parents "${handle}" <<<"${current}")
+    fi
     while IFS= read -r entry; do
         args=()
         if [[ "$(jq -r '.root // false' <<<"${entry}")" == true ]]; then
@@ -388,36 +419,64 @@ configure_physical_fq() {
             target=$(jq -r '.parent' <<<"${entry}")
             args=(parent "${target}")
         fi
-        tc qdisc replace dev "${iface}" "${args[@]}" fq || die "${iface} FQ 应用失败；原配置保存在 ${snapshot}"
+        if ! tc qdisc replace dev "${iface}" "${args[@]}" fq; then
+            failed=1
+            break
+        fi
     done < <(jq -c '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast")' <<<"${current}")
-    physical_fq_active || die "${iface} 实际 qdisc 未通过 FQ 验收"
+    if ((failed)) || ! physical_fq_active; then
+        restore_qdisc_snapshot "${iface}" "${attempt}" 1 \
+            || die "${iface} FQ 应用及回滚失败；备份：${attempt}"
+        die "${iface} FQ 应用失败，已恢复原队列；备份：${attempt}"
+    fi
+    rm -f -- "${attempt}"
+}
+
+restore_qdisc_snapshot() {
+    local iface=$1 snapshot=$2 force=${3:-0}
+    local entry actual expected target arg current handle entries
+    local -a args
+    current=$(tc -j qdisc show dev "${iface}") || return 1
+    entries=$(cat "${snapshot}")
+    jq -e 'any(.[]; .kind == "fq_codel" or .kind == "pfifo_fast")' <<<"${entries}" >/dev/null \
+        || return 0
+    if jq -e 'any(.[]; .root == true and .kind == "mq")' <<<"${entries}" >/dev/null; then
+        jq -e 'any(.[]; .root == true and .kind == "mq")' <<<"${current}" >/dev/null || return 1
+        if jq -e 'any(.[]; .root == true and .handle == "0:")' <<<"${current}" >/dev/null; then
+            validate_qdisc_snapshot <(printf '%s\n' "${current}") || return 1
+            normalize_mq_handle "${iface}" "${current}" || return 1
+            force=1
+        fi
+        handle=$(tc -j qdisc show dev "${iface}" | jq -r '.[] | select(.root == true and .kind == "mq") | .handle')
+        entries=$(map_qdisc_parents "${handle}" <<<"${entries}")
+    fi
+    while IFS= read -r entry; do
+        target=$(jq -r 'if .root then "root" else .parent end' <<<"${entry}")
+        actual=$(tc -j qdisc show dev "${iface}" | jq -Sc --arg target "${target}" '
+            .[] | select(if $target == "root" then .root == true else .parent == $target end)') \
+            || die "无法读取 ${iface} 队列；保留备份 ${snapshot}"
+        expected=$(jq -Sc '{kind, options}' <<<"${entry}")
+        [[ "$(jq -Sc '{kind, options}' <<<"${actual}")" != "${expected}" ]] || continue
+        [[ "${force}" == 1 || "$(jq -r '.kind' <<<"${actual}")" == fq ]] \
+            || die "${iface} 队列已被其他配置改变；请按 ${snapshot} 手动恢复"
+        args=()
+        while IFS= read -r arg; do args+=("${arg}"); done < <(qdisc_restore_args <<<"${entry}")
+        tc qdisc replace dev "${iface}" "${args[@]}" || die "恢复 ${iface} qdisc 失败；保留备份 ${snapshot}"
+        actual=$(tc -j qdisc show dev "${iface}" | jq -Sc --arg target "${target}" '
+            .[] | select(if $target == "root" then .root == true else .parent == $target end) | {kind, options}') \
+            || die "恢复 ${iface} 后读取队列失败；保留备份 ${snapshot}"
+        [[ "${actual}" == "${expected}" ]] || die "${iface} qdisc 恢复验收失败；保留备份 ${snapshot}"
+    done < <(jq -c '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast")' <<<"${entries}")
 }
 
 restore_physical_qdisc() {
-    local snapshot iface entry actual expected target arg
-    local -a args
+    local snapshot iface
     for snapshot in "${BACKUP_DIR}/qdisc/"*.json; do
         [[ -f "${snapshot}" ]] || continue
         validate_qdisc_snapshot "${snapshot}" || die "qdisc 备份无效；保留备份 ${snapshot}"
         iface=${snapshot##*/}
         iface=${iface%.json}
-        while IFS= read -r entry; do
-            target=$(jq -r 'if .root then "root" else .parent end' <<<"${entry}")
-            actual=$(tc -j qdisc show dev "${iface}" | jq -Sc --arg target "${target}" '
-                .[] | select(if $target == "root" then .root == true else .parent == $target end)') \
-                || die "无法读取 ${iface} 队列；保留备份 ${snapshot}"
-            expected=$(jq -Sc '{kind, options}' <<<"${entry}")
-            [[ "$(jq -Sc '{kind, options}' <<<"${actual}")" != "${expected}" ]] || continue
-            [[ "$(jq -r '.kind' <<<"${actual}")" == fq ]] \
-                || die "${iface} 队列已被其他配置改变；请按 ${snapshot} 手动恢复"
-            args=()
-            while IFS= read -r arg; do args+=("${arg}"); done < <(qdisc_restore_args <<<"${entry}")
-            tc qdisc replace dev "${iface}" "${args[@]}" || die "恢复 ${iface} qdisc 失败；保留备份 ${snapshot}"
-            actual=$(tc -j qdisc show dev "${iface}" | jq -Sc --arg target "${target}" '
-                .[] | select(if $target == "root" then .root == true else .parent == $target end) | {kind, options}') \
-                || die "恢复 ${iface} 后读取队列失败；保留备份 ${snapshot}"
-            [[ "${actual}" == "${expected}" ]] || die "${iface} qdisc 恢复验收失败；保留备份 ${snapshot}"
-        done < <(jq -c '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast")' "${snapshot}")
+        restore_qdisc_snapshot "${iface}" "${snapshot}" || die "恢复 ${iface} 失败；备份：${snapshot}"
     done
 }
 
@@ -430,7 +489,8 @@ apply_physical_fq_qdisc() {
         printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
         printf 'BACKUP_DIR=%q\n' "${BACKUP_DIR}"
         printf 'die() { printf "%%s\\n" "$*" >&2; exit 1; }\n'
-        declare -f default_route_iface physical_fq_active validate_qdisc_snapshot configure_physical_fq
+        declare -f default_route_iface physical_fq_active validate_qdisc_snapshot \
+            normalize_mq_handle map_qdisc_parents qdisc_restore_args restore_qdisc_snapshot configure_physical_fq
         printf 'configure_physical_fq\n'
     } >"${helper}"
     chmod 0700 "${helper}"

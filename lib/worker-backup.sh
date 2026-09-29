@@ -253,7 +253,20 @@ cloudflare_rollback_backup_worker() {
                 "$(<"${prev_deployment}")" >/dev/null); then
                 rm -f -- "${prev_deployment}"
             else
-                warn "恢复更新前的兜底 Worker 版本失败；部署快照已保留在 ${prev_deployment}"
+                local recovery_dir="${STATE_DIR}/recovery" recovery
+                if install -d -m 0700 "${recovery_dir}" \
+                    && recovery=$(mktemp "${recovery_dir}/backup-worker-deployment.XXXXXX") \
+                    && install -m 0600 "${prev_deployment}" "${recovery}"; then
+                    warn "恢复兜底 Worker ${WORKER_BACKUP_NAME} 版本失败；账户 ${CLOUDFLARE_ACCOUNT_ID} 的部署快照已保留在 ${recovery}"
+                else
+                    # Never let the outer EXIT cleanup remove the only recovery copy.
+                    local retained="${RUNTIME_TMP}.deployment-recovery.json"
+                    if install -m 0600 "${prev_deployment}" "${retained}"; then
+                        warn "无法写入恢复目录；部署快照保留在 ${retained}"
+                    else
+                        warn "无法持久化部署快照；恢复请求内容：$(<"${prev_deployment}")"
+                    fi
+                fi
                 failed=1
             fi
         fi
@@ -261,16 +274,41 @@ cloudflare_rollback_backup_worker() {
     ((failed == 0)) || return 1
 }
 
-cloudflare_finalize_backup_worker() {
-    local prev_deployment="${RUNTIME_TMP}/backup-worker-deployment-prev.json"
+# Stage retirement in the same state transaction as the replacement subscription.
+# No remote deletion is allowed until that transaction has committed.
+validate_backup_retirements() {
+    jq -e 'type == "array" and all(.[];
+        (.account | type == "string" and test("^[A-Za-z0-9_-]+$")) and
+        (.name | type == "string" and test("^[a-z0-9][a-z0-9-]{0,62}$")) and
+        (.id | type == "string" and test("^[A-Za-z0-9_-]*$")))' \
+        <<<"${WORKER_BACKUP_RETIREMENTS:-[]}" >/dev/null
+}
+
+cloudflare_prepare_backup_retirement() {
+    local name="" id=""
+    validate_backup_retirements || die "兜底 Worker 待清理记录无效；停止提交"
     if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
-        if [[ -n "${WORKER_BACKUP_DOMAIN_ID:-}" || -n "${WORKER_BACKUP_NAME:-}" ]]; then
-            if ! (cloudflare_delete_subscription_worker_resources \
-                "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME:-}"); then
-                warn "清理旧兜底 Worker 资源失败，保留状态以便重试"
-                return 1
-            fi
-        fi
+        name=${WORKER_BACKUP_NAME:-}
+        id=${WORKER_BACKUP_DOMAIN_ID:-}
+    elif [[ -n "${WORKER_BACKUP_PREV_NAME:-}" ]]; then
+        name=${WORKER_BACKUP_PREV_NAME}
+        id=${WORKER_BACKUP_PREV_DOMAIN_ID:-}
+    fi
+    [[ -n "${name}" ]] || return 0
+    WORKER_BACKUP_RETIREMENTS=$(jq -ce --arg account "${CLOUDFLARE_ACCOUNT_ID}" \
+        --arg name "${name}" --arg id "${id}" \
+        '. + [{account:$account,name:$name,id:$id}] | unique_by([.account,.name,.id])' \
+        <<<"${WORKER_BACKUP_RETIREMENTS:-[]}") || die "无法保存兜底 Worker 待清理记录"
+}
+
+cloudflare_finalize_backup_worker() {
+    # The callers must commit before this function. Failed partial deletions are
+    # retried from durable state and never reactivate the retired subscription.
+    if ! validate_backup_retirements; then
+        warn "兜底 Worker 待清理记录无效；保留记录，请检查 state.env"
+        return 0
+    fi
+    if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
         WORKER_BACKUP_DOMAIN=""
         WORKER_BACKUP_NAME=""
         WORKER_BACKUP_UUID=""
@@ -279,17 +317,29 @@ cloudflare_finalize_backup_worker() {
         WORKER_BACKUP_IPS="[]"
         WORKER_BACKUP_PLACEMENT=""
         WORKER_BACKUP_DECOMMISSION=0
-    elif [[ -n "${WORKER_BACKUP_PREV_NAME:-}" ]]; then
-        if ! (cloudflare_delete_subscription_worker_resources \
-            "${WORKER_BACKUP_PREV_DOMAIN_ID:-}" "${WORKER_BACKUP_PREV_NAME}"); then
-            warn "清理旧兜底 Worker 资源失败，保留状态以便重试"
-            return 1
-        fi
-        WORKER_BACKUP_PREV_NAME=""
-        WORKER_BACKUP_PREV_DOMAIN_ID=""
-        WORKER_BACKUP_PREV_DOMAIN=""
     fi
+    WORKER_BACKUP_PREV_NAME=""
+    WORKER_BACKUP_PREV_DOMAIN_ID=""
+    WORKER_BACKUP_PREV_DOMAIN=""
     WORKER_BACKUP_CREATED=0
     WORKER_BACKUP_CREATED_DOMAIN_ID=""
-    rm -f -- "${prev_deployment}"
+    rm -f -- "${RUNTIME_TMP}/backup-worker-deployment-prev.json"
+    local entry account name id remaining='[]'
+    local retirements=${WORKER_BACKUP_RETIREMENTS:-[]}
+    while IFS= read -r entry; do
+        account=$(jq -r '.account' <<<"${entry}")
+        name=$(jq -r '.name' <<<"${entry}")
+        id=$(jq -r '.id' <<<"${entry}")
+        if [[ "${account}" != "${CLOUDFLARE_ACCOUNT_ID}" \
+            || "${name}" == "${WORKER_BACKUP_NAME:-}" \
+            || "${name}" == "${CLOUDFLARE_WORKER_NAME:-}" ]] \
+            || ! (cloudflare_delete_subscription_worker_resources "${id}" "${name}"); then
+            warn "旧兜底 Worker ${name} 尚未清理；已保留记录，下次 apply-cloud 重试"
+            remaining=$(jq -c --argjson entry "${entry}" '. + [$entry]' <<<"${remaining}")
+        fi
+    done < <(jq -c '.[]' <<<"${retirements}")
+    WORKER_BACKUP_RETIREMENTS=${remaining}
+    if [[ "${remaining}" != "${retirements}" ]]; then
+        save_state || warn "清理结果保存失败；下次将重新核对云端资源"
+    fi
 }

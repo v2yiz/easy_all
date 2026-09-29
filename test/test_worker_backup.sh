@@ -8,6 +8,11 @@ fail() { printf 'not ok - %s\n' "$*" >&2; exit 1; }
 die() { fail "$@"; }
 info() { :; }
 warn() { :; }
+STATE_DIR="${TMP_DIR}/state"
+mkdir -p "${STATE_DIR}"
+save_state() {
+    printf '%s\n' "${WORKER_BACKUP_RETIREMENTS:-[]}" >"${STATE_DIR}/retirements.json"
+}
 validate_domain() { [[ "$1" == *.* ]]; }
 validate_cloudflare_worker_name() { [[ "$1" =~ ^[a-z0-9-]+$ ]]; }
 validate_uuid() { [[ "$1" =~ ^[0-9a-f-]{36}$ ]]; }
@@ -112,8 +117,10 @@ for function in install_all apply_cloud_resources update_subscription; do
     if [[ "${function}" != "install_all" ]]; then
         health=$(grep -n 'cloudflare_validate_cdn_health$' <<<"${body}" | cut -d: -f1)
         commit=$(grep -n 'commit_subscription_update$' <<<"${body}" | cut -d: -f1)
-        [[ -n "${health}" && "${health}" -lt "${finalize}" && "${finalize}" -lt "${commit}" ]] || fail "${function} health before finalize before commit"
+        [[ -n "${health}" && "${health}" -lt "${commit}" && "${commit}" -lt "${finalize}" ]] || fail "${function} health before commit before cleanup"
     fi
+    prepare=$(grep -n '^    cloudflare_prepare_backup_retirement$' <<<"${body}" | cut -d: -f1)
+    [[ -n "${prepare}" && "${prepare}" -lt "${save}" ]] || fail "${function} persists retirement before commit"
 done
 body=$(sed -n '/^write_subscriptions()/,/^}/p' "${ROOT_DIR}/lib/xhttp-runtime.sh")
 [[ "${body}" == *cloudflare_refresh_backup_nodes* ]] || fail 'node refresh hook'
@@ -198,12 +205,25 @@ if (cloudflare_deploy_backup_worker 2>/dev/null); then
 fi
 [[ ! -e "${TMP_DIR}/unexpected-upload" ]] || fail 'invalid deployment snapshot prevented upload'
 
-# Verify rollback API failure preserves snapshot
-printf '{"strategy":"percentage","versions":[{"version_id":"11111111-1111-4111-8111-111111111111","percentage":100}]}' >"${snapshot}"
-cloudflare_api_request() { return 1; }
-(cloudflare_rollback_backup_worker 2>/dev/null) && fail 'rollback should fail on API rejection' || true
-[[ -f "${snapshot}" ]] || fail 'deployment snapshot preserved on rollback failure'
-rm -f -- "${snapshot}"
+# Verify failed rollback recovery survives the real outer EXIT cleanup.
+(
+    RUNTIME_TMP="${TMP_DIR}/failed-runtime"
+    mkdir -p "${RUNTIME_TMP}"
+    printf '{"strategy":"percentage","versions":[{"version_id":"11111111-1111-4111-8111-111111111111","percentage":100}]}' >"${RUNTIME_TMP}/backup-worker-deployment-prev.json"
+    eval "$(sed -n '/^cleanup()/,/^}/p' "${ROOT_DIR}/lib/runtime-core.sh")"
+    cleanup_files=("${RUNTIME_TMP}")
+    UPDATE_SUB_ROLLBACK_ON_EXIT=1
+    UPDATE_SUB_BACKUP_DIR="${RUNTIME_TMP}"
+    cloudflare_api_request() { return 1; }
+    rollback_subscription_update() { cloudflare_rollback_backup_worker; }
+    end_quota_maintenance() { :; }
+    trap cleanup EXIT
+)
+[[ ! -d "${TMP_DIR}/failed-runtime" ]] || fail 'outer cleanup executed'
+recovery=$(find "${STATE_DIR}/recovery" -type f -name 'backup-worker-deployment.*')
+[[ -s "${recovery}" ]] || fail 'recovery survives outer cleanup'
+jq -e '.versions[0].percentage == 100' "${recovery}" >/dev/null || fail 'recovery preserves versions'
+[[ "$(stat -f '%Lp' "${recovery}" 2>/dev/null || stat -c '%a' "${recovery}")" == 600 ]] || fail 'private recovery file'
 
 # Verify decommissioning is transactional: deploy does not delete; finalize does
 WORKER_BACKUP_DOMAIN=backup.example.com
@@ -218,12 +238,15 @@ cloudflare_deploy_backup_worker
 [[ ! -e "${TMP_DIR}/decommission-deleted" ]] || fail 'decommission must not delete during deploy'
 [[ "${WORKER_BACKUP_DOMAIN}" == "backup.example.com" ]] || fail 'decommission preserves domain before finalize'
 ! worker_backup_enabled || fail 'decommissioned worker must report disabled'
+cloudflare_prepare_backup_retirement
+save_state
+[[ ! -e "${TMP_DIR}/decommission-deleted" ]] || fail 'staging must not delete'
 cloudflare_finalize_backup_worker
 [[ "$(<"${TMP_DIR}/decommission-deleted")" == "old-domain-id:easyall-backup-test" ]] || fail 'decommission deleted on finalize'
 [[ -z "${WORKER_BACKUP_DOMAIN}" && -z "${WORKER_BACKUP_NAME}" \
     && -z "${WORKER_BACKUP_PLACEMENT}" ]] || fail 'decommission cleared state'
 
-# A failed final cleanup must leave the old identifiers available for retry/rollback.
+# A failed post-commit cleanup preserves only retirement records, never active nodes.
 WORKER_BACKUP_DOMAIN=backup.example.com
 WORKER_BACKUP_NAME=easyall-backup-test
 WORKER_BACKUP_DOMAIN_ID=old-domain-id
@@ -233,14 +256,13 @@ WORKER_BACKUP_IPS='["104.16.2.2"]'
 WORKER_BACKUP_PLACEMENT=off
 WORKER_BACKUP_DECOMMISSION=1
 cloudflare_delete_subscription_worker_resources() { return 1; }
-if cloudflare_finalize_backup_worker; then
-    fail 'decommission finalize must fail when resource deletion fails'
-fi
-[[ "${WORKER_BACKUP_DOMAIN}" == backup.example.com \
-    && "${WORKER_BACKUP_NAME}" == easyall-backup-test \
-    && "${WORKER_BACKUP_DOMAIN_ID}" == old-domain-id \
-    && "${WORKER_BACKUP_PLACEMENT}" == off \
-    && "${WORKER_BACKUP_DECOMMISSION}" == 1 ]] || fail 'failed finalize preserved state'
+cloudflare_prepare_backup_retirement
+save_state
+cloudflare_finalize_backup_worker
+[[ -z "${WORKER_BACKUP_DOMAIN}" && -z "${WORKER_BACKUP_NAME}" ]] || fail 'failed cleanup must not reactivate worker'
+jq -e '.[0].id == "old-domain-id" and .[0].name == "easyall-backup-test"' "${STATE_DIR}/retirements.json" >/dev/null \
+    || fail 'failed cleanup preserved durable identifiers'
+WORKER_BACKUP_RETIREMENTS='[]'
 
 # Verify domain rotation transaction: deploy does not delete old worker; finalize deletes old worker
 WORKER_BACKUP_DECOMMISSION=0
@@ -253,9 +275,52 @@ rm -f -- "${TMP_DIR}/previous-deleted"
 cloudflare_delete_subscription_worker_resources() {
     printf '%s:%s' "$1" "$2" >"${TMP_DIR}/previous-deleted"
 }
+cloudflare_prepare_backup_retirement
+save_state
 cloudflare_finalize_backup_worker
 [[ "$(<"${TMP_DIR}/previous-deleted")" == "prev-domain-id:easyall-backup-prev" ]] || fail 'domain rotation deleted old worker on finalize'
 [[ -z "${WORKER_BACKUP_PREV_NAME}" ]] || fail 'cleared prev worker name'
+
+# Real deletion helper: explicit empty backup domain must not use subscription ID.
+eval "$(sed -n '/^cloudflare_delete_subscription_worker_resources()/,/^}/p' "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh")"
+uri_encode() { printf '%s' "$1"; }
+cloudflare_api_request() {
+    printf '%s %s\n' "$1" "$2" >>"${TMP_DIR}/orphan-calls"
+    case "$1 $2" in
+    "GET "*/workers/domains) printf '[{"id":"subscription-domain","service":"easyall"}]' ;;
+    "GET "*/workers/scripts) printf '[{"id":"orphan-backup"}]' ;;
+    esac
+}
+WORKER_BACKUP_CREATED=1
+WORKER_BACKUP_NAME=orphan-backup
+WORKER_BACKUP_DOMAIN_ID=""
+cloudflare_rollback_backup_worker
+grep -q 'DELETE .*/scripts/orphan-backup' "${TMP_DIR}/orphan-calls" || fail 'unbound script removed'
+! grep -q 'DELETE .*/domains/' "${TMP_DIR}/orphan-calls" || fail 'subscription domain untouched'
+
+# Real helper deletes the domain, then fails script deletion; a new run retries.
+WORKER_BACKUP_CREATED=0
+WORKER_BACKUP_NAME=""
+WORKER_BACKUP_RETIREMENTS='[{"account":"account","name":"retired-backup","id":"retired-domain"}]'
+save_state
+cloudflare_api_request() {
+    case "$1 $2" in
+    "GET "*/workers/domains)
+        if [[ -e "${TMP_DIR}/domain-removed" ]]; then printf '[]'
+        else printf '[{"id":"retired-domain","service":"retired-backup"}]'; fi ;;
+    "DELETE "*/domains/retired-domain) touch "${TMP_DIR}/domain-removed" ;;
+    "GET "*/workers/scripts) printf '[{"id":"retired-backup"}]' ;;
+    "DELETE "*/scripts/retired-backup)
+        [[ -e "${TMP_DIR}/retry-cleanup" ]] || return 1
+        touch "${TMP_DIR}/script-removed" ;;
+    esac
+}
+cloudflare_finalize_backup_worker
+[[ -e "${TMP_DIR}/domain-removed" && ! -e "${TMP_DIR}/script-removed" ]] || fail 'partial remote deletion reproduced'
+WORKER_BACKUP_RETIREMENTS=$(cat "${STATE_DIR}/retirements.json")
+touch "${TMP_DIR}/retry-cleanup"
+cloudflare_finalize_backup_worker
+[[ -e "${TMP_DIR}/script-removed" && "$(<"${STATE_DIR}/retirements.json")" == '[]' ]] || fail 'durable cleanup retried successfully'
 
 # Verify link mode allows backup worker in collect_install_inputs & update_subscription
 for func in collect_install_inputs update_subscription; do
