@@ -223,7 +223,7 @@ fi
 recovery=$(find "${STATE_DIR}/recovery" -type f -name 'backup-worker-deployment.*')
 [[ -s "${recovery}" ]] || fail 'recovery survives outer cleanup'
 jq -e '.versions[0].percentage == 100' "${recovery}" >/dev/null || fail 'recovery preserves versions'
-[[ "$(stat -f '%Lp' "${recovery}" 2>/dev/null || stat -c '%a' "${recovery}")" == 600 ]] || fail 'private recovery file'
+[[ "$(stat -c '%a' "${recovery}" 2>/dev/null || stat -f '%Lp' "${recovery}")" == 600 ]] || fail 'private recovery file'
 
 # Verify decommissioning is transactional: deploy does not delete; finalize does
 WORKER_BACKUP_DOMAIN=backup.example.com
