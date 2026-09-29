@@ -10,6 +10,10 @@ bash -n "${ROOT_DIR}/scripts/debian-init.sh"
 
 TESTS_RUN=0
 SCRIPT_LOADED=0
+CURRENT_TEST=setup
+
+trap 'status=$?; printf "not ok - %s failed at line %s (status %s)\n" \
+    "${CURRENT_TEST}" "${LINENO}" "${status}" >&2' ERR
 
 fail_test() {
     printf 'not ok - %s\n' "$*" >&2
@@ -388,11 +392,17 @@ test_bbr_matches_easy_all() {
     done
 }
 
+CURRENT_TEST=test_validators_and_normalizers
 test_validators_and_normalizers
+CURRENT_TEST=test_collected_ssh_ports
 test_collected_ssh_ports
+CURRENT_TEST=test_managed_ssh_config
 test_managed_ssh_config
+CURRENT_TEST=test_remote_script_contract
 test_remote_script_contract
+CURRENT_TEST=test_script_surface_contract
 test_script_surface_contract
+CURRENT_TEST=test_bbr_matches_easy_all
 test_bbr_matches_easy_all
 
 printf 'ok - debian_init shell tests passed (%s assertions)\n' "${TESTS_RUN}"
