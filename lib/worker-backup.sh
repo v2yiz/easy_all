@@ -4,6 +4,7 @@
 readonly WORKER_BACKUP_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 readonly WORKER_BACKUP_GROUP_NAME="🇭🇰CF"
 readonly WORKER_BACKUP_NODE_LIMIT=6
+WORKER_BACKUP_PROBE_PID=0
 
 worker_backup_enabled() {
     [[ "${WORKER_BACKUP_DECOMMISSION:-0}" != "1" && -n "${WORKER_BACKUP_DOMAIN:-}" ]]
@@ -22,8 +23,8 @@ validate_worker_backup_state() {
         || die "兜底 Worker 必须使用独立域名和名称"
     [[ "${WORKER_BACKUP_DOMAIN}" == *."${CLOUDFLARE_ZONE_NAME}" ]] \
         || die "兜底域名必须属于当前 Cloudflare Zone"
-    [[ "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}" == "aws:ap-east-1" \
-        || "${WORKER_BACKUP_PLACEMENT:-}" == "off" ]] \
+    [[ "${WORKER_BACKUP_PLACEMENT:-off}" == "aws:ap-east-1" \
+        || "${WORKER_BACKUP_PLACEMENT:-off}" == "off" ]] \
         || die "Worker 兜底 Placement 仅支持 aws:ap-east-1 或 off"
     # Worker traffic is independent and intentionally excluded from VPS quotas.
     local ips=${WORKER_BACKUP_IPS:-[]}
@@ -75,17 +76,91 @@ collect_worker_backup_inputs() {
     WORKER_BACKUP_NAME=${WORKER_BACKUP_NAME:-easyall-backup-$(printf '%s' "${WORKER_BACKUP_DOMAIN}" | sha256sum | cut -c1-10)}
     WORKER_BACKUP_UUID=${WORKER_BACKUP_UUID:-${VLESS_UUID:-$(declare -F generate_user_uuid >/dev/null 2>&1 && generate_user_uuid || cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')}}
     WORKER_BACKUP_PATH=${WORKER_BACKUP_PATH:-/vless-$(openssl rand -hex 12)}
-    WORKER_BACKUP_PLACEMENT=${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}
+    WORKER_BACKUP_PLACEMENT=${WORKER_BACKUP_PLACEMENT:-off}
     WORKER_BACKUP_IPS=${WORKER_BACKUP_IPS:-[]}
     validate_worker_backup_state
 }
 
+worker_backup_probe_config() {
+    local address=$1 port=$2
+    local client_path="${WORKER_BACKUP_PATH%/}/"
+    jq -n --arg address "${address}" --arg host "${WORKER_BACKUP_DOMAIN}" \
+        --arg uuid "${WORKER_BACKUP_UUID}" --arg path "${client_path}" \
+        --argjson port "${port}" '{
+          log:{loglevel:"warning"},
+          inbounds:[{
+            tag:"worker-backup-probe-socks",listen:"127.0.0.1",port:$port,
+            protocol:"socks",settings:{udp:false}
+          }],
+          outbounds:[{
+            tag:"proxy",protocol:"vless",
+            settings:{vnext:[{address:$address,port:443,
+                              users:[{id:$uuid,encryption:"none"}]}]},
+            streamSettings:{
+              network:"xhttp",security:"tls",
+              tlsSettings:{serverName:$host,alpn:["h2"],fingerprint:"chrome"},
+              xhttpSettings:{
+                host:$host,path:$path,mode:"stream-one",
+                extra:{uplinkHTTPMethod:"POST",noGRPCHeader:false}
+              }
+            }
+          }]
+        }'
+}
+
+worker_backup_stop_probe() {
+    local pid=${WORKER_BACKUP_PROBE_PID:-0}
+    WORKER_BACKUP_PROBE_PID=0
+    [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || return 0
+    kill "${pid}" >/dev/null 2>&1 || true
+    wait "${pid}" >/dev/null 2>&1 || true
+}
+
 worker_backup_probe() {
-    local ip=${1:-}
-    jq -cn --arg domain "${WORKER_BACKUP_DOMAIN}" --arg ip "${ip}" \
-        --arg uuid "${WORKER_BACKUP_UUID}" --arg path "${WORKER_BACKUP_PATH}" \
-        '{domain:$domain,ip:$ip,uuid:$uuid,path:$path}' \
-        | python3 "${WORKER_BACKUP_SCRIPT_DIR}/scripts/probe-worker-backup.py"
+    local ip=${1:-} address probe_dir probe_config probe_log
+    local probe_port=0 attempt http_code="" curl_status=0
+    address=${ip:-${WORKER_BACKUP_DOMAIN}}
+    [[ -x "${XRAY_BIN:-}" ]] || return 1
+    probe_dir="${RUNTIME_TMP}/worker-backup-probe"
+    probe_config="${probe_dir}/config.json"
+    probe_log="${probe_dir}/xray.log"
+    install -d -m 0700 "${probe_dir}" || return 1
+    for attempt in {1..20}; do
+        probe_port=$((20000 + RANDOM % 20000))
+        ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q . || break
+        probe_port=0
+    done
+    ((probe_port != 0)) || return 1
+    worker_backup_probe_config "${address}" "${probe_port}" >"${probe_config}" || return 1
+    if ! "${XRAY_BIN}" run -test -config "${probe_config}" >/dev/null 2>"${probe_log}"; then
+        return 1
+    fi
+    "${XRAY_BIN}" run -config "${probe_config}" >"${probe_log}" 2>&1 &
+    WORKER_BACKUP_PROBE_PID=$!
+    for attempt in {1..10}; do
+        if kill -0 "${WORKER_BACKUP_PROBE_PID}" >/dev/null 2>&1 \
+            && ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q .; then
+            break
+        fi
+        kill -0 "${WORKER_BACKUP_PROBE_PID}" >/dev/null 2>&1 || break
+        sleep 1
+    done
+    if kill -0 "${WORKER_BACKUP_PROBE_PID}" >/dev/null 2>&1 \
+        && ss -H -ltn "sport = :${probe_port}" 2>/dev/null | grep -q .; then
+        if http_code=$(curl -sS --noproxy '' \
+            --proxy "socks5h://127.0.0.1:${probe_port}" \
+            --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' \
+            "${CLOUDFLARE_XHTTP_PROBE_URL:-https://www.gstatic.com/generate_204}" \
+            2>>"${probe_log}"); then
+            curl_status=0
+        else
+            curl_status=$?
+        fi
+    else
+        curl_status=1
+    fi
+    worker_backup_stop_probe
+    ((curl_status == 0)) && [[ "${http_code}" == "204" ]]
 }
 
 cloudflare_deploy_backup_worker() {
@@ -139,7 +214,7 @@ cloudflare_deploy_backup_worker() {
     fi
     metadata="${RUNTIME_TMP}/backup-worker-metadata.json"
     jq -n --arg uuid "${WORKER_BACKUP_UUID}" --arg path "${WORKER_BACKUP_PATH}" \
-        --arg placement "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}" '{
+        --arg placement "${WORKER_BACKUP_PLACEMENT:-off}" '{
           main_module:"worker.js",compatibility_date:"2026-09-28",
           bindings:[{type:"secret_text",name:"UUID",text:$uuid},
                     {type:"plain_text",name:"WS_PATH",text:$path}]
@@ -151,7 +226,7 @@ cloudflare_deploy_backup_worker() {
         "${CLOUDFLARE_API_BASE}/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_BACKUP_NAME}") \
         || die "兜底 Worker 上传失败"
     if ! jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
-        if [[ "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}" != "off" ]] \
+        if [[ "${WORKER_BACKUP_PLACEMENT:-off}" != "off" ]] \
             && grep -qi 'placement' <<<"${response}"; then
             warn "Cloudflare 账户不支持 Smart Placement（${WORKER_BACKUP_PLACEMENT}），降级为标准 Worker（无固定区域出口）"
             WORKER_BACKUP_PLACEMENT="off"
@@ -181,7 +256,7 @@ cloudflare_deploy_backup_worker() {
     cloudflare_attach_subscription_worker_domain
     WORKER_BACKUP_DOMAIN_ID=${CLOUDFLARE_WORKER_DOMAIN_ID}
     WORKER_BACKUP_CREATED_DOMAIN_ID=${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}
-    info "正在验收独立 Worker 的 TLS、WebSocket 与 VLESS TCP 转发"
+    info "正在验收独立 Worker 的 TLS、XHTTP stream-one 与 VLESS TCP 转发"
     for ((attempt=1; attempt<=CLOUDFLARE_WORKER_READY_ATTEMPTS; attempt++)); do
         if worker_backup_probe >/dev/null 2>&1; then ready=1; break; fi
         sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
@@ -218,7 +293,7 @@ worker_backup_nodes() {
     jq -cn --arg host "${WORKER_BACKUP_DOMAIN}" --arg uuid "${WORKER_BACKUP_UUID}" \
         --arg path "${WORKER_BACKUP_PATH}" --argjson ips "${WORKER_BACKUP_IPS:-[]}" '
         $ips | to_entries[] | {
-          type:"vless",security:"tls",network:"ws",uuid:$uuid,host:$host,sni:$host,
+          type:"vless",security:"tls",network:"xhttp",mode:"stream-one",uuid:$uuid,host:$host,sni:$host,
           server:.value,port:443,path:$path,udp:false,ipVersion:"ipv4",
           name:("🇭🇰CF" + ((.key + 1)|tostring))
         }'
@@ -226,15 +301,15 @@ worker_backup_nodes() {
 
 build_worker_backup_links() {
     worker_backup_nodes | jq -r '
-        "vless://\(.uuid)@\(.server):443?encryption=none&security=tls&type=ws&alpn=http%2F1.1&host=\(.host)&sni=\(.sni)&path=\(.path|@uri)&easyAllBackup=1#\(.name|@uri)"'
+        "vless://\(.uuid)@\(.server):443?encryption=none&security=tls&type=xhttp&mode=stream-one&alpn=h2&host=\(.host)&sni=\(.sni)&path=\(.path|@uri)&easyAllBackup=1#\(.name|@uri)"'
 }
 
 build_worker_backup_mihomo() {
     worker_backup_nodes | jq -r '
         "  - name: \(.name|@json)\n    type: vless\n    server: \(.server|@json)\n    port: 443\n" +
-        "    uuid: \(.uuid|@json)\n    network: ws\n    tls: true\n    udp: false\n" +
+        "    uuid: \(.uuid|@json)\n    network: xhttp\n    tls: true\n    udp: false\n" +
         "    skip-cert-verify: false\n    servername: \(.host|@json)\n    ip-version: ipv4\n" +
-        "    alpn: [http/1.1]\n    ws-opts:\n      path: \(.path|@json)\n      headers:\n        Host: \(.host|@json)"'
+        "    alpn: [h2]\n    xhttp-opts:\n      host: \(.host|@json)\n      path: \(.path|@json)\n      mode: stream-one\n      no-grpc-header: false"'
 }
 
 cloudflare_rollback_backup_worker() {

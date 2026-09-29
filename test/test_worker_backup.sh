@@ -29,6 +29,26 @@ SUBSCRIPTION_DOMAIN=sub.example.com
 CLOUDFLARE_WORKER_NAME=easyall
 CLOUDFLARE_WORKER_DOMAIN_ID=subscription-domain
 validate_worker_backup_state
+probe_config=$(worker_backup_probe_config 104.16.2.2 23456)
+jq -e '
+    .inbounds[0].port == 23456
+    and .outbounds[0].settings.vnext[0].address == "104.16.2.2"
+    and .outbounds[0].streamSettings.network == "xhttp"
+    and .outbounds[0].streamSettings.tlsSettings.serverName == "backup.example.com"
+    and .outbounds[0].streamSettings.tlsSettings.alpn == ["h2"]
+    and .outbounds[0].streamSettings.xhttpSettings.path == "/vless-test/"
+    and .outbounds[0].streamSettings.xhttpSettings.mode == "stream-one"
+    and .outbounds[0].streamSettings.xhttpSettings.extra.noGRPCHeader == false
+' <<<"${probe_config}" >/dev/null || fail 'real Xray probe configuration'
+(
+    WORKER_BACKUP_PROBE_PID=12345
+    kill() { [[ "$1" == "12345" ]] && printf 'killed\n' >"${TMP_DIR}/probe-killed"; }
+    wait() { [[ "$1" == "12345" ]] && printf 'waited\n' >"${TMP_DIR}/probe-waited"; }
+    worker_backup_stop_probe
+    [[ "${WORKER_BACKUP_PROBE_PID}" == "0" ]] || fail 'probe cleanup resets tracked PID'
+)
+[[ -f "${TMP_DIR}/probe-killed" && -f "${TMP_DIR}/probe-waited" ]] \
+    || fail 'probe cleanup stops and reaps the tracked Xray process'
 cloudflare_client_candidates() {
     printf '104.16.1.1\tfailed\n'
     for index in 2 3 4 5 6 7; do
@@ -41,6 +61,10 @@ cloudflare_refresh_backup_nodes
 [[ "$(jq length <<<"${WORKER_BACKUP_IPS}")" == "6" ]] || fail 'select six successful candidate IPs'
 [[ "$(build_worker_backup_links | wc -l | tr -d ' ')" == 6 ]] || fail 'publish six IP nodes'
 [[ "$(build_worker_backup_links)" != *'@backup.example.com:443'* ]] || fail 'omit domain server entry'
+[[ "$(build_worker_backup_links)" == *'type=xhttp'* ]] || fail 'XHTTP network'
+[[ "$(build_worker_backup_links)" == *'mode=stream-one'* ]] || fail 'stream-one mode'
+[[ "$(build_worker_backup_mihomo)" == *'network: xhttp'* ]] || fail 'Mihomo XHTTP'
+[[ "$(build_worker_backup_mihomo)" == *'mode: stream-one'* ]] || fail 'Mihomo stream-one'
 [[ "$(build_worker_backup_mihomo)" == *'udp: false'* ]] || fail 'TCP only'
 [[ "$(build_worker_backup_links)" == *'host=backup.example.com&sni=backup.example.com'* ]] || fail 'separate server and TLS hostname'
 worker_backup_probe() { return 1; }
@@ -78,7 +102,7 @@ cloudflare_api_request() {
 }
 curl() {
     assert_worker_upload_module "$@"
-    jq -e '.placement.region == "aws:ap-east-1" and .bindings[0].type == "secret_text" and .bindings[1].text == "/vless-test"' \
+    jq -e '(has("placement") | not) and .bindings[0].type == "secret_text" and .bindings[1].text == "/vless-test"' \
         "${TMP_DIR}/backup-worker-metadata.json" >/dev/null || fail 'Worker upload metadata'
     printf 'upload\n' >>"${TMP_DIR}/calls"
     printf '{"success":true}'
@@ -139,6 +163,7 @@ curl() {
     local count
     count=$(wc -c <"${TMP_DIR}/curl_count" | tr -d ' ')
     if [[ "${count}" -eq 1 ]]; then
+        jq -e '.placement.region == "aws:ap-east-1"' "${TMP_DIR}/backup-worker-metadata.json" >/dev/null || fail 'Explicit Hong Kong placement preserved'
         printf '{"success":false,"errors":[{"message":"Smart placement is not enabled"}]}'
     else
         jq -e 'has("placement") | not' "${TMP_DIR}/backup-worker-metadata.json" >/dev/null || fail 'Placement removed on fallback'
@@ -205,7 +230,7 @@ if (cloudflare_deploy_backup_worker 2>/dev/null); then
 fi
 [[ ! -e "${TMP_DIR}/unexpected-upload" ]] || fail 'invalid deployment snapshot prevented upload'
 
-# Verify failed rollback recovery survives the real outer EXIT cleanup.
+# Verify failed rollback recovery survives the outer cleanup function.
 (
     RUNTIME_TMP="${TMP_DIR}/failed-runtime"
     mkdir -p "${RUNTIME_TMP}"
@@ -217,9 +242,15 @@ fi
     cloudflare_api_request() { return 1; }
     rollback_subscription_update() { cloudflare_rollback_backup_worker; }
     end_quota_maintenance() { :; }
+    worker_backup_stop_probe() {
+        printf 'stopped\n' >"${TMP_DIR}/probe-cleanup-called"
+    }
     trap cleanup EXIT
+    cleanup
+    trap - EXIT
 )
 [[ ! -d "${TMP_DIR}/failed-runtime" ]] || fail 'outer cleanup executed'
+[[ -f "${TMP_DIR}/probe-cleanup-called" ]] || fail 'outer cleanup stops the active Worker backup probe'
 recovery=$(find "${STATE_DIR}/recovery" -type f -name 'backup-worker-deployment.*')
 [[ -s "${recovery}" ]] || fail 'recovery survives outer cleanup'
 jq -e '.versions[0].percentage == 100' "${recovery}" >/dev/null || fail 'recovery preserves versions'

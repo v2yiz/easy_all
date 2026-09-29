@@ -170,8 +170,14 @@ URL-Test 自动测速并设置 `hidden: true`，作为 PROXY 内的选项，不�
 所有代理流量（包括 YouTube）统一使用 PROXY 当前选择。纯 Worker 不发布域名入口，
 其流量不经过 VPS，也不计入 VPS 用户配额。
 测速超时统一为 5 秒。规则模式下，代理流量的 QUIC 拒绝不受手动节点选择影响。
-纯 Worker 为限制 WebSocket 下行积压，每连接累计下行最多 8 MiB，达到预算会断开；
-长视频或下载遇到中断时，在 `PROXY` 中选择 VPS 出口。
+纯 Worker 节点全面使用 XHTTP stream-one 原生流传输，TCP 两端通过原生 Stream `pipeTo()`
+传递背压，支持超过 8 MiB 的持续大文件下载，不保留旧 WebSocket 模式。stream-one 的全部上行
+位于单个 HTTP POST 请求体内，因此仍受 Cloudflare 套餐的请求体大小限制（Free/Pro 通常为
+100 MB）；大文件上传应改用 VPS 节点。
+新配置的纯 Worker 默认就近运行（`WORKER_BACKUP_PLACEMENT=off`）。已有香港定向配置不会自动覆盖；
+如需比较就近执行与香港定向的速度，在 `/etc/easy_all/state.env` 将该项改为 `off`，然后运行
+`sudo easy_all apply-cloud` 重新部署。保留原值 `aws:ap-east-1` 可恢复香港定向；两者均不保证固定出口 IP。
+仅刷新客户端订阅不会更新 Worker 转发代码；更新 VPS 上的项目代码后，需重新部署纯 Worker。
 
 停用或更换兜底 Worker 时，旧资源先记入 `state.env` 的 `WORKER_BACKUP_RETIREMENTS`，
 等新订阅和状态提交后才删除。部分删除失败不会回滚到已失效的旧节点，

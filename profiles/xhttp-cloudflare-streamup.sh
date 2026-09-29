@@ -1820,7 +1820,7 @@ show_status() {
     printf 'VPS 出站: IPv4-only（IPv6 全局禁用）\n'
     if worker_backup_enabled; then
         printf 'Worker 兜底: %s，发布 %s 个优选 IP（无域名入口），Placement=%s（不保证香港出口）\n' \
-            "${WORKER_BACKUP_DOMAIN}" "$(jq length <<<"${WORKER_BACKUP_IPS:-[]}")" "${WORKER_BACKUP_PLACEMENT:-aws:ap-east-1}"
+            "${WORKER_BACKUP_DOMAIN}" "$(jq length <<<"${WORKER_BACKUP_IPS:-[]}")" "${WORKER_BACKUP_PLACEMENT:-off}"
     fi
     show_globalping_status
 }

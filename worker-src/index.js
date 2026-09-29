@@ -193,13 +193,14 @@ function vlessLink(node, port) {
         fp: node.fp || 'chrome',
     });
 
+    if (node.workerBackup) params.set('easyAllBackup', '1');
     if (node.security === 'reality') {
         params.set('packetEncoding', 'xudp');
         params.set('flow', 'xtls-rprx-vision');
         params.set('pbk', node.pbk);
         params.set('sid', node.sid);
     } else if (node.network === 'xhttp') {
-        params.set('packetEncoding', 'xudp');
+        if (node.udp !== false) params.set('packetEncoding', 'xudp');
         params.set('alpn', 'h2');
         params.set('host', node.host);
         params.set('path', xhttpClientPath(node));
@@ -207,7 +208,6 @@ function vlessLink(node, port) {
         params.set('extra', JSON.stringify(xhttpExtra(node)));
     } else if (node.network === 'ws') {
         if (node.udp !== false) params.set('packetEncoding', 'xudp');
-        if (node.workerBackup) params.set('easyAllBackup', '1');
         params.set('alpn', node.alpn || 'http/1.1');
         params.set('host', wsHost(node));
         params.set('path', wsUriPath(node));
@@ -262,12 +262,11 @@ function clashXhttpNode(node, port) {
     uuid: ${yamlString(node.uuid)}
     network: xhttp
     tls: true
-    udp: true
+    udp: ${node.udp !== false}
     skip-cert-verify: false
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
-    packet-encoding: xudp
-    ip-version: ${ipVersion}
+${node.udp === false ? '' : '    packet-encoding: xudp\n'}    ip-version: ${ipVersion}
     alpn:
       - h2
     xhttp-opts:
@@ -294,8 +293,8 @@ function parseVlessLink(link) {
     } catch {}
     return {
         type: 'vless',
-        workerBackup: network === 'ws' && params.get('easyAllBackup') === '1',
-        udp: !(network === 'ws' && params.get('easyAllBackup') === '1'),
+        workerBackup: params.get('easyAllBackup') === '1',
+        udp: params.get('easyAllBackup') !== '1',
         security: params.get('security') || 'tls',
         network,
         uuid,

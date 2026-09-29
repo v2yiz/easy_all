@@ -26,7 +26,9 @@ Cloudflare 模式完全没有域名兜底，需要额外准备：
 白天首选和 🇭🇰CF 设置 `hidden: true`，在 PROXY 中可选，内部自动测速选优，不单独展示分组。
 所有代理流量使用 PROXY 当前选择，不再单独分流 YouTube。
 Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择，不再平铺所有节点。
-纯 Worker 每连接累计下行最多 8 MiB，超限会断开以限制内存积压；长视频或下载可在 `PROXY` 中选择 VPS 节点。
+纯 Worker 使用 XHTTP `stream-one` 和原生流背压，支持持续下载；全部上行位于单个 HTTP
+请求体内，仍受 Cloudflare 套餐请求体大小限制（Free/Pro 通常为 100 MB），大文件上传应在
+`PROXY` 中选择 VPS 节点。
 
 完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择自托管订阅时才需要
 Cloudflare 域名和 API Token。

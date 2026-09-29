@@ -36,6 +36,9 @@ MIHOMO_TEMPLATE_FILE=""
 
 cleanup() {
     local path
+    if declare -F worker_backup_stop_probe >/dev/null 2>&1; then
+        worker_backup_stop_probe || true
+    fi
     if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         if [[ -n "${UPDATE_SUB_BACKUP_DIR:-}" ]]; then

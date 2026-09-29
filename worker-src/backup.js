@@ -1,13 +1,8 @@
-// Standalone VLESS-over-WebSocket TCP fallback. No DNS, routing or subscriptions.
+// Standalone VLESS TCP fallback: pure XHTTP stream-one.
 import { connect } from 'cloudflare:sockets';
 
-const MAX_PENDING = 1024 * 1024;
-// WebSocketPair exposes neither drain nor bufferedAmount. Bound all bytes ever
-// queued on this connection; this is a lifetime limit, NOT measured backpressure.
-// A timer/rate limit cannot bound memory for a peer that stops receiving.
-const MAX_DOWNSTREAM = 8 * 1024 * 1024;
 const HEADER_LIMIT = 1024;
-const IDLE_MS = 120_000;
+const CONNECT_TIMEOUT_MS = 10_000;
 
 export function parseHeader(bytes, uuid) {
     if (bytes.length < 18) return null;
@@ -50,94 +45,81 @@ export function parseHeader(bytes, uuid) {
     return { hostname, port, offset };
 }
 
-export function relay(ws, uuid, earlyData = new Uint8Array(), dial = connect) {
-    let socket, writer, header = new Uint8Array(), pending = 0, stopped = false;
-    let downstream = 2; // VLESS response header shares the same budget.
-    let chain = Promise.resolve();
+// Native response pulls propagate backpressure to TCP. Unlike WebSocket,
+// this path needs no lifetime byte limit or artificial per-chunk timer.
+export async function streamOne(request, uuid, dial = connect) {
+    if (!request.body) return new Response('Missing body', { status: 400 });
+    const input = request.body.getReader();
+    const relayAbort = new AbortController();
+    let socket, stopped = false;
     let timer;
-    const finish = (code = 1000) => {
+    const finish = (error) => {
         if (stopped) return;
         stopped = true;
         clearTimeout(timer);
-        try { ws.close(code, code === 1000 ? 'Closed' : 'Connection failed'); } catch {}
+        request.signal?.removeEventListener('abort', disconnected);
+        try { relayAbort.abort(error); } catch {}
+        try { input.cancel(error).catch(() => {}); } catch {}
         try { socket?.close().catch(() => {}); } catch {}
     };
-    const touch = (timeout = IDLE_MS) => {
-        clearTimeout(timer);
-        timer = setTimeout(() => finish(1008), timeout);
-    };
-    async function readRemote() {
-        const reader = socket.readable.getReader();
-        try {
-            while (!stopped) {
-                if (ws.readyState !== undefined && ws.readyState !== 1) break;
-                const { value, done } = await reader.read();
-                if (stopped || done || (ws.readyState !== undefined && ws.readyState !== 1)) break;
-                if (value.byteLength > MAX_DOWNSTREAM - downstream) {
-                    finish(1009);
-                    break;
-                }
-                touch();
-                try {
-                    ws.send(value);
-                    downstream += value.byteLength;
-                } catch {
-                    break;
-                }
-                if (downstream === MAX_DOWNSTREAM) { finish(1009); break; }
-                // Fairness only; yielding does not acknowledge delivery.
-                await new Promise(resolve => setTimeout(resolve, 0));
-            }
-            finish();
-        } catch { finish(1011); }
-        finally { reader.releaseLock(); }
-    }
-    async function write(bytes) {
-        if (stopped) return;
-        if (!writer) {
-            // Only copy enough bytes to parse the bounded header; keep payload zero-copy.
-            const prefix = bytes.subarray(0, HEADER_LIMIT - header.length);
+    const disconnected = () => finish(new Error('Client disconnected'));
+    timer = setTimeout(() => finish(new Error('Connection timeout')), CONNECT_TIMEOUT_MS);
+    request.signal?.addEventListener('abort', disconnected, { once: true });
+    if (request.signal?.aborted) disconnected();
+    let status = 400;
+    try {
+        let header = new Uint8Array(), first, parsed;
+        while (!parsed) {
+            const { value, done } = await input.read();
+            if (stopped || done) throw new Error('Incomplete header');
+            const prefix = value.subarray(0, HEADER_LIMIT - header.length);
             const joined = new Uint8Array(header.length + prefix.length);
             joined.set(header);
             joined.set(prefix, header.length);
-            const parsed = parseHeader(joined, uuid);
-            if (!parsed) {
-                if (joined.length >= HEADER_LIMIT) throw new Error('Header too large');
-                header = joined;
-                return;
+            parsed = parseHeader(joined, uuid);
+            if (parsed) first = value.subarray(parsed.offset - header.length);
+            else if (joined.length >= HEADER_LIMIT) throw new Error('Header too large');
+            header = joined;
+        }
+        status = 502;
+        socket = dial({ hostname: parsed.hostname, port: parsed.port }, { secureTransport: 'off', allowHalfOpen: true });
+        void socket.closed.then(() => finish(), finish);
+        await socket.opened;
+        if (stopped) throw new Error('Relay closed');
+
+        const initialWriter = socket.writable.getWriter();
+        try {
+            if (first.length) await initialWriter.write(first);
+        } finally {
+            initialWriter.releaseLock();
+            input.releaseLock();
+        }
+        clearTimeout(timer);
+
+        const upstream = request.body.pipeTo(socket.writable, { signal: relayAbort.signal });
+        const downstream = typeof IdentityTransformStream !== 'undefined'
+            ? new IdentityTransformStream()
+            : new TransformStream();
+        const downstreamPump = (async () => {
+            const writer = downstream.writable.getWriter();
+            try {
+                await writer.write(new Uint8Array([0, 0]));
+            } finally {
+                writer.releaseLock();
             }
-            const consumed = parsed.offset - header.length;
-            socket = dial({ hostname: parsed.hostname, port: parsed.port }, { secureTransport: 'off' });
-            socket.closed.catch(() => finish(1011));
-            touch(10_000);
-            await socket.opened;
-            if (stopped) return;
-            writer = socket.writable.getWriter();
-            header = new Uint8Array();
-            ws.send(new Uint8Array([0, 0]));
-            void readRemote();
-            bytes = bytes.subarray(consumed);
-        }
-        touch();
-        if (bytes.length) await writer.write(bytes);
+            await socket.readable.pipeTo(downstream.writable, { signal: relayAbort.signal });
+        })();
+
+        void upstream.catch(finish);
+        void downstreamPump.catch(finish);
+        return new Response(downstream.readable, {
+            headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' },
+        });
+    } catch (error) {
+        finish(error);
+        try { input.releaseLock(); } catch {}
+        return new Response(status === 400 ? 'Bad request' : 'Relay unavailable', { status });
     }
-    function enqueue(data) {
-        if (stopped) return;
-        if (!(data instanceof ArrayBuffer) && !(data instanceof Uint8Array)) {
-            finish(1003);
-            return;
-        }
-        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-        pending += bytes.length;
-        if (pending > MAX_PENDING) { finish(1009); return; }
-        chain = chain.then(() => write(bytes)).catch(() => finish(1008))
-            .finally(() => { pending -= bytes.length; });
-    }
-    ws.addEventListener('message', event => enqueue(event.data));
-    ws.addEventListener('close', () => finish());
-    ws.addEventListener('error', () => finish(1011));
-    touch(10_000);
-    if (earlyData.length) enqueue(earlyData);
 }
 
 export default {
@@ -147,27 +129,8 @@ export default {
             !/^\/[A-Za-z0-9/_-]+$/.test(env.WS_PATH || '')) {
             return new Response('Unavailable', { status: 503 });
         }
-        if (url.pathname !== env.WS_PATH) return new Response('Not Found', { status: 404 });
-        if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
-            return new Response('WebSocket required', { status: 426 });
-        }
-        let earlyData = new Uint8Array();
-        const encoded = request.headers.get('Sec-WebSocket-Protocol');
-        if (encoded) {
-            if (encoded.length > 4096 || !/^[A-Za-z0-9_-]+={0,2}$/.test(encoded)) {
-                return new Response('Invalid early data', { status: 400 });
-            }
-            try { earlyData = Uint8Array.from(atob(encoded.replaceAll('-', '+').replaceAll('_', '/')), c => c.charCodeAt(0)); }
-            catch { return new Response('Invalid early data', { status: 400 }); }
-        }
-        const [client, server] = Object.values(new WebSocketPair());
-        server.binaryType = 'arraybuffer';
-        server.accept();
-        relay(server, env.UUID, earlyData);
-        return new Response(null, {
-            status: 101,
-            webSocket: client,
-            headers: encoded ? { 'Sec-WebSocket-Protocol': encoded } : undefined,
-        });
+        if (url.pathname.replace(/\/$/, '') !== env.WS_PATH.replace(/\/$/, '')) return new Response('Not Found', { status: 404 });
+        if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+        return streamOne(request, env.UUID);
     },
 };

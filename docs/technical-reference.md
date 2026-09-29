@@ -71,10 +71,15 @@ PROXY 依次包含已配置的 US_VMISS、白天首选、晚上首选、🇭🇰
 Mihomo 自动生成的 `DIRECT`、`REJECT` 与节点平铺列表；局域网 IPv4 继续由 TUN 路由排除。
 全局模式不执行客户端规则，UDP/443 由自建 Xray 的服务端策略拒绝。
 
-纯 Worker 的 WebSocketPair 没有发送完成或积压查询接口，因此下行采用每连接 `8 MiB`
-累计发送预算（含 VLESS 响应头），上行待写入预算仍为 `1 MiB`。下行预算不会随时间重置；
-超限会关闭 TCP 和 WebSocket，避免慢客户端导致持续无界入队。这不是背压实现，
-长视频连接或大文件下载可能中断；需要持续传输时可在 `PROXY` 中选择 VPS 节点。
+纯 Worker 节点全面采用 XHTTP stream-one。首包解析和目标连接完成后，请求体与 TCP 上行、
+TCP 下行与 `IdentityTransformStream` 分别通过原生 `pipeTo()` 直通，由底层流传递背压，
+无需单连接 8 MiB 下行限制。连接建立阶段限制为 10 秒，后续生命周期由 HTTP、TCP 与客户端共同管理。
+stream-one 的全部上行位于单个 HTTP 请求体内，仍受 Cloudflare 套餐请求体大小限制；
+Free/Pro 通常为 100 MB，因此大文件上传应选择 VPS 节点。
+部署验收和优选 IP 刷新会启动临时 Xray SOCKS 入站，以与订阅相同的候选 IP、SNI、Host、
+HTTP/2 和 stream-one 参数访问 Google `generate_204`，避免普通 HTTP 请求产生误判。
+新配置默认 `WORKER_BACKUP_PLACEMENT=off`，使用 Cloudflare 默认就近执行，避免无条件定向香港。
+已有显式 `aws:ap-east-1` 设置继续保留；`🇭🇰CF` 是分组名称，不保证实际出口位于香港。
 
 公开订阅只经过独立域名绑定的 Worker。Worker 使用 `global_fetch_strictly_public`，
 转发同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥，Nginx 执行最终鉴权；直接访问私有源
@@ -156,7 +161,6 @@ easy_all
 │  └─ backup.js
 └─ scripts/
    ├─ build-worker.mjs
-   ├─ probe-worker-backup.py
    └─ debian-init.sh
 ```
 
