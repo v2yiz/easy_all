@@ -49,7 +49,7 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 `worker.js`。这个手工恢复版本内嵌当前 Token，动态源仍携带私有源密钥，并继续要求每次请求
 成功读取 VPS 节点；源不可用时返回 `502`。配额模式不会生成内嵌 Token 的恢复版本。
 
-`externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用带版本的 Mihomo UA，使上游正确下发 Mieru 等需要能力识别的节点，同时避免透传客户端版本导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；`🇺🇸白天首选` 位于 `PROXY` 选项首位，紧跟 `PROXY` 的 `油管兜底`/`PASS` 组配合 `代理模式` 控制 YouTube 专用分流或统一使用 `PROXY`，显式 `GLOBAL` 组仅包含 `PROXY`，没有 CDN 节点时使用 REJECT。
+`externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用带版本的 Mihomo UA，使上游正确下发 Mieru 等需要能力识别的节点，同时避免透传客户端版本导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；PROXY 依次列出已配置的 US_VMISS、`🇺🇸白天首选`、`🇺🇸晚上首选`、`🇭🇰CF` 和其他 xflash 节点。白天首选和 🇭🇰CF 是隐藏的自动测速组，所有代理流量统一使用 PROXY 当前选择。显式隐藏 `GLOBAL` 组仅包含 `PROXY`，没有 CDN 节点时白天首选使用 REJECT。
 
 公共模板全局禁用 IPv6，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。
 国内集合使用 `geolocation-cn`，不再引用包含整个 `.ms` 后缀的 ChinaMax `cn`。

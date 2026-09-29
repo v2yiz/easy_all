@@ -166,13 +166,12 @@ Cloudflare 模式部署订阅时，Worker 使用与节点域名不同的同 Zone
 
 Cloudflare 模式还可部署独立的纯 Worker TCP 兜底节点。Mihomo 订阅将 6 个 XHTTP 节点放入
 `🇺🇸白天首选`，将最多 6 个经独立探测成功的纯 Worker 优选 IPv4 放入 `🇭🇰CF`；两个组都使用
-URL-Test 自动测速。仅 YouTube 流量直接使用 `🇭🇰CF`，其他代理流量仍使用 `PROXY`；纯 Worker
-不发布域名入口，其流量不经过 VPS，也不计入 VPS 用户配额。
-`代理模式` 默认选择紧跟 `PROXY` 显示的 `油管兜底`（`PASS`）组，以执行上述分流；切换为 `PROXY` 后，
-YouTube 和其他命中代理规则的流量都会使用 `PROXY` 当前选择。
+URL-Test 自动测速并设置 `hidden: true`，作为 PROXY 内的选项，不单独展示。
+所有代理流量（包括 YouTube）统一使用 PROXY 当前选择。纯 Worker 不发布域名入口，
+其流量不经过 VPS，也不计入 VPS 用户配额。
 测速超时统一为 5 秒。规则模式下，代理流量的 QUIC 拒绝不受手动节点选择影响。
 纯 Worker 为限制 WebSocket 下行积压，每连接累计下行最多 8 MiB，达到预算会断开；
-长视频或下载遇到中断时，将 `代理模式` 切换为 `PROXY` 使用 VPS 出口。
+长视频或下载遇到中断时，在 `PROXY` 中选择 VPS 出口。
 
 停用或更换兜底 Worker 时，旧资源先记入 `state.env` 的 `WORKER_BACKUP_RETIREMENTS`，
 等新订阅和状态提交后才删除。部分删除失败不会回滚到已失效的旧节点，

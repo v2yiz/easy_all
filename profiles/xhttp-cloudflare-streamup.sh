@@ -1747,6 +1747,9 @@ build_mihomo_nodes() {
 
 build_mihomo_proxy_names() {
     printf '        - "AUTO"\n'
+    if [[ -n "$(worker_backup_nodes | jq -r '.name')" ]]; then
+        printf '        - "%s"\n' "${WORKER_BACKUP_GROUP_NAME}"
+    fi
 }
 
 write_mihomo_url_test_group() {
@@ -1754,7 +1757,7 @@ write_mihomo_url_test_group() {
     local test_url=${3:-https://cp.cloudflare.com/generate_204} node
     [[ -n "${nodes}" ]] || return 0
     printf '    - name: %s\n' "$(jq -Rn --arg value "${group_name}" '$value')"
-    printf '      type: url-test\n'
+    printf '      type: url-test\n      hidden: true\n'
     printf '      proxies:\n'
     while IFS= read -r node; do
         [[ -n "${node}" ]] || continue
@@ -1786,12 +1789,7 @@ build_mihomo_proxy_groups() {
 }
 
 build_mihomo_worker_rules() {
-    [[ -n "$(worker_backup_nodes | jq -r '.name')" ]] || return 0
-    cat <<EOF
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT
-  - GEOSITE,youtube,代理模式
-  - GEOSITE,youtube,${WORKER_BACKUP_GROUP_NAME}
-EOF
+    :
 }
 
 show_node() {

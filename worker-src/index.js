@@ -14,8 +14,6 @@ const CDN_NODE_LIMIT = 6;
 const CDN_NODE_NAME_PREFIX = '🇺🇸优选';
 const CDN_GROUP_NAME = '🇺🇸白天首选';
 const WORKER_GROUP_NAME = '🇭🇰CF';
-const MODE_GROUP_NAME = '代理模式';
-const DEFAULT_GROUP_NAME = '油管兜底';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,
@@ -487,7 +485,7 @@ function upstreamProxyNames(lines, start, end) {
 
 function clashUrlTestGroup(name, proxyNames, url = 'https://cp.cloudflare.com/generate_204') {
     return [
-        `    - name: ${name}`, '      type: url-test',
+        `    - name: ${name}`, '      type: url-test', '      hidden: true',
         `      url: ${url}`,
         '      interval: 300', '      tolerance: 30', '      timeout: 5000',
         '      lazy: true', '      proxies: ' + JSON.stringify(proxyNames),
@@ -544,7 +542,7 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     const names = [...nodes.map(node => node.name), ...upstreamNames];
     if (!names.length || new Set(names).size !== names.length ||
         names.some(name => [
-            'PROXY', 'GLOBAL', MODE_GROUP_NAME, DEFAULT_GROUP_NAME, 'PASS',
+            'PROXY', 'GLOBAL', 'PASS',
             CDN_GROUP_NAME, WORKER_GROUP_NAME, 'DIRECT', 'REJECT',
         ].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
@@ -557,17 +555,19 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
             ? clashUrlTestGroup(WORKER_GROUP_NAME, workerNames, 'https://www.gstatic.com/generate_204')
             : '',
     ].filter(Boolean).join('\n');
-    const workerRules = workerNames.length
-        ? `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT\n` +
-            `  - GEOSITE,youtube,${MODE_GROUP_NAME}\n  - GEOSITE,youtube,${WORKER_GROUP_NAME}`
-        : '';
+    const manualNames = names.filter(name => !autoNames.includes(name) && !workerNames.includes(name));
+    const vmissNames = manualNames.filter(name => /US[_ -]?VMISS/i.test(name));
+    const eveningNames = manualNames.filter(name => name.includes('晚上首选'));
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),
         '# EASY_ALL_PROXY_GROUP': groups,
-        '# EASY_ALL_WORKER_RULE': workerRules,
+        '# EASY_ALL_WORKER_RULE': '',
         '# EASY_ALL_PROXY_NAME': [
+            ...vmissNames,
             CDN_GROUP_NAME,
-            ...names.filter(name => !autoNames.includes(name) && !workerNames.includes(name)),
+            ...eveningNames,
+            ...(workerNames.length ? [WORKER_GROUP_NAME] : []),
+            ...manualNames.filter(name => !vmissNames.includes(name) && !eveningNames.includes(name)),
         ].map(name => '        - ' + yamlString(name)).join('\n'),
     };
     return MIHOMO_TEMPLATE.split('\n').map(line => replacements[line] ?? line).join('\n');

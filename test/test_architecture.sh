@@ -203,11 +203,9 @@ awk '
     END { exit !(in_global && has_proxy) }
 ' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo template must define GLOBAL as a PROXY-only group"
-grep -Fq '    - name: 代理模式' "${ROOT_DIR}/templates/mihomo.yaml" \
-    && grep -Fq '      default-selected: 油管兜底' "${ROOT_DIR}/templates/mihomo.yaml" \
-    && grep -Fq '    - name: 油管兜底' "${ROOT_DIR}/templates/mihomo.yaml" \
-    && grep -Fq '        - PASS' "${ROOT_DIR}/templates/mihomo.yaml" \
-    || fail "Mihomo template must define the YouTube fallback/PASS two-level proxy mode"
+if grep -Eq '代理模式|油管兜底' "${ROOT_DIR}/templates/mihomo.yaml"; then
+    fail "Mihomo must use PROXY directly"
+fi
 grep -Fq 'GEOSITE,github,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep GitHub services on the VPS exit"
 grep -Fq "'geosite:github':" "${ROOT_DIR}/templates/mihomo.yaml" \

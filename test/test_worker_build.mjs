@@ -228,16 +228,9 @@ try {
     assert.equal(liveResponse.headers.get('X-Easy-All-Warning'), null);
     const liveBody = await liveResponse.text();
     const groups = liveBody.split('proxy-groups:\n')[1].split('rules:\n')[0];
-    assert.equal((groups.match(/name:/g) || []).length, 5);
-    assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 油管兜底'));
-    assert.ok(groups.indexOf('name: 油管兜底') < groups.indexOf('name: 代理模式'));
-    assert.ok(groups.indexOf('name: 代理模式') < groups.indexOf('name: GLOBAL'));
-    assert.ok(groups.indexOf('name: GLOBAL') < groups.indexOf('name: 🇺🇸白天首选'));
-    const fallbackGroup = groups.split('name: 油管兜底')[1].split('name: 代理模式')[0];
-    assert.match(fallbackGroup, /proxies:\s*\n\s*- PASS\s*$/m);
-    const modeGroup = groups.split('name: 代理模式')[1].split('name: GLOBAL')[0];
-    assert.match(modeGroup, /default-selected: 油管兜底/);
-    assert.match(modeGroup, /proxies:\s*\n\s*- 油管兜底\s*\n\s*- PROXY/m);
+    assert.equal((groups.match(/name:/g) || []).length, 3);
+    assert.equal((groups.match(/hidden: true/g) || []).length, 2);
+    assert.ok(!groups.includes('油管兜底') && !groups.includes('代理模式'));
     const globalGroup = groups.split('name: GLOBAL')[1].split('name: 🇺🇸白天首选')[0];
     assert.match(globalGroup, /proxies:\s*\n\s*- PROXY\s*$/m);
     assert.ok(!globalGroup.includes('DIRECT') && !globalGroup.includes('REJECT'));
@@ -286,10 +279,19 @@ try {
     assert.ok(sixCf.every(node => !sixProxy.includes(node.name)), 'CF nodes only appear inside backup group');
     assert.ok(!fallbackBody.split('proxy-groups:')[1].split('name: 🇺🇸白天首选')[0].includes('Fallback CF'));
     assert.deepEqual(JSON.parse(sixBody.split('name: 🇺🇸白天首选')[1].match(/proxies: (\[[^\n]+\])/)[1]), sixCf.slice(0, 6).map(n => n.name));
+    const ordered = api.buildClashConfig(
+        [...['🇺🇸晚上首选', '🇺🇸US_VMISS'].map(name => ({ ...api.LOCAL_NODES[0], name })), ...sixCf,
+            { ...sixCf[0], name: '🇭🇰CF1', workerBackup: true }],
+        Array(9).fill(443), upstream,
+        [...sixCf, { ...sixCf[0], name: '🇭🇰CF1', workerBackup: true }],
+    );
+    const orderedProxy = ordered.split('proxy-groups:')[1].split('    - name: GLOBAL')[0];
+    const orderedNames = [...orderedProxy.matchAll(/^        - (.+)$/gm)].map(match => JSON.parse(match[1]));
+    assert.deepEqual(orderedNames, ['🇺🇸US_VMISS', '🇺🇸白天首选', '🇺🇸晚上首选', '🇭🇰CF', 'Remote', 'Mieru Remote']);
     assert.ok(!liveBody.includes('malicious.invalid'));
     assert.ok(liveBody.includes('ip-version: ipv4'));
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 🇺🇸白天首选')));
-    for (const reserved of ['GLOBAL', '代理模式', '油管兜底', 'PASS']) {
+    for (const reserved of ['GLOBAL', '🇭🇰CF', 'PASS']) {
         assert.throws(() => api.buildClashConfig(
             api.LOCAL_NODES,
             [10000],
@@ -397,10 +399,9 @@ try {
     assert.ok(template.includes('use-system-hosts: true'), 'local hosts are honored');
     assert.ok(template.includes('fake-ip-filter-mode: blacklist'), 'fake-IP filtering remains compatible with client DNS overrides');
     assert.ok(template.includes("'geosite:geolocation-cn'"), 'DNS and routing share the narrow mainland set');
-    const fcmModeRule = 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),代理模式';
     const fcmProxyRule = 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY';
-    before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmModeRule);
-    before(rules, fcmModeRule, fcmProxyRule);
+    before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmProxyRule);
+    assert.ok(!rules.includes('代理模式'));
     before(rules, fcmProxyRule, 'GEOSITE,geolocation-cn,DIRECT');
     before(rules, fcmProxyRule, 'GEOIP,CN,DIRECT');
     const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
@@ -417,24 +418,18 @@ try {
     // Both healthy and degraded aggregation must deliver the FCM DNS and IP-only routing fix.
     for (const body of [liveBody, fallbackBody, allBody]) {
         assert.ok(body.includes("      - 'geosite:googlefcm'\n"));
-        assert.ok(body.includes(`  - ${fcmModeRule}\n`));
         assert.ok(body.includes(`  - ${fcmProxyRule}\n`));
     }
     for (const matcher of ['GEOSITE,google', 'GEOSITE,github', 'GEOSITE,openai', 'GEOSITE,anthropic', 'RULE-SET,proxy-services']) {
         assert.ok(!rules.includes(`AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),代理模式`));
-        before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},代理模式`);
         before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},PROXY`);
-        before(rules, `${matcher},代理模式`, `${matcher},PROXY`);
         before(rules, `${matcher},PROXY`, 'GEOSITE,apple-cn,DIRECT');
         before(rules, `${matcher},PROXY`, 'GEOSITE,microsoft@cn,DIRECT');
         before(rules, `${matcher},PROXY`, 'GEOSITE,geolocation-cn,DIRECT');
     }
     before(rules, 'GEOSITE,microsoft@cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
-    before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,代理模式');
-    before(rules, 'GEOSITE,category-ai-chat-!cn,代理模式', 'GEOSITE,category-ai-chat-!cn,PROXY');
     before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
-    before(rules, 'MATCH,代理模式', 'MATCH,PROXY');
     const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
     for (const key of ['geosite:google', 'geosite:github', 'geosite:openai,anthropic', 'rule-set:proxy-services', 'geosite:geolocation-!cn,gfw']) {
         assert.ok(dnsPolicy.includes(

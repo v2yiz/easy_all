@@ -287,16 +287,10 @@ assert_not_contains "Groups do not contain domain fallback" "${groups_output}" '
     assert_not_contains "HK CF omits domain entry" "${worker_groups}" "${WORKER_BACKUP_DOMAIN}"
     assert_contains "HK CF contains first optimized entry" "${worker_groups}" '"🇭🇰CF1"'
     assert_contains "HK CF contains sixth optimized entry" "${worker_groups}" '"🇭🇰CF6"'
-    assert_not_contains "PROXY excludes the YouTube-only HK CF group" "${worker_names}" '"🇭🇰CF"'
+    assert_contains "PROXY includes HK CF" "${worker_names}" '"🇭🇰CF"'
     assert_not_contains "PROXY omits raw Worker nodes" "${worker_names}" '"🇭🇰CF1"'
-    assert_not_contains "Manual mode cannot bypass YouTube QUIC rejection" "${worker_rules}" \
-        'AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),代理模式'
-    assert_contains "Worker rules reject YouTube QUIC" "${worker_rules}" \
-        'AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT'
-    assert_contains "Worker rules consult proxy mode before YouTube routing" "${worker_rules}" \
-        'GEOSITE,youtube,代理模式'
-    assert_contains "Worker rules route YouTube to HK CF" "${worker_rules}" \
-        'GEOSITE,youtube,🇭🇰CF'
+    assert_contains "Automatic groups are hidden" "${worker_groups}" 'hidden: true'
+    assert_equal "No special Worker routing" "" "${worker_rules}"
     WORKER_BACKUP_IPS='[]'
     assert_equal "Worker rules are omitted without published Worker nodes" "" "$(build_mihomo_worker_rules)"
 )

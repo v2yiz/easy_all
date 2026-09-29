@@ -22,12 +22,11 @@ Cloudflare 模式完全没有域名兜底，需要额外准备：
 还可选择部署一个独立的纯 Worker TCP 兜底节点。它使用单独的 Worker 名称、UUID、路径和
 同 Zone 一级域名，不经过 VPS，也不计入 VPS 用户配额。订阅仅发布 6 个探测成功的优选 IPv4，
 不发布域名入口；Mihomo 订阅会将这些节点放入
-`🇭🇰CF` URL-Test 组，并仅将 YouTube 流量定向到该组。其他代理流量仍使用 `PROXY`；
-原有 6 个 XHTTP 节点继续由 `🇺🇸白天首选` 自动测速。
-`代理模式` 默认选择 `油管兜底`：YouTube 使用 `🇭🇰CF`，其他代理流量复用 `PROXY` 当前选择；
-切换为 `PROXY` 后，所有命中代理规则的流量统一使用该选择。
+`🇭🇰CF` URL-Test 组。PROXY 依次列出 US_VMISS、`🇺🇸白天首选`、`🇺🇸晚上首选`、`🇭🇰CF` 和其他 xflash 节点（仅显示已配置的节点）。
+白天首选和 🇭🇰CF 设置 `hidden: true`，在 PROXY 中可选，内部自动测速选优，不单独展示分组。
+所有代理流量使用 PROXY 当前选择，不再单独分流 YouTube。
 Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择，不再平铺所有节点。
-纯 Worker 每连接累计下行最多 8 MiB，超限会断开以限制内存积压；长视频或下载可切换到 `PROXY`。
+纯 Worker 每连接累计下行最多 8 MiB，超限会断开以限制内存积压；长视频或下载可在 `PROXY` 中选择 VPS 节点。
 
 完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择自托管订阅时才需要
 Cloudflare 域名和 API Token。

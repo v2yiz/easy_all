@@ -62,11 +62,9 @@ Universal SSL 终止客户端 TLS，Origin CA 保护回源。
 `🇭🇰CF1` 至 `🇭🇰CF6`，不发布域名入口。这些节点归入 `🇭🇰CF` URL-Test 组；测速目标使用
 Google 的 `generate_204`，避免 Cloudflare Socket 禁止回连 Cloudflare 地址而产生误判。
 两类 URL-Test 组的测速超时均为 `5000` ms，间隔和容差保持 `300` 秒、`30` ms。
-订阅仅在该组存在时，将 YouTube 的 TCP 流量直接路由到 `🇭🇰CF`；YouTube QUIC 被拒绝以触发
-TCP 回退，其他代理流量继续进入 `PROXY`，且 `PROXY` 不包含 `🇭🇰CF`。
-`代理模式` 提供 `油管兜底` 和 `PROXY` 两个选项。紧跟 `PROXY` 的 `油管兜底` 组只包含 Mihomo 内置
-`PASS`，使规则继续匹配到 YouTube 或普通 `PROXY` 默认出口；选择 `PROXY` 时则在前置规则
-直接使用 `PROXY` 当前选择。两个分组的选择状态相互独立。
+白天首选和 🇭🇰CF 均设置 `hidden: true`，作为 PROXY 内的选项，内部自动选择低延迟节点。
+PROXY 依次包含已配置的 US_VMISS、白天首选、晚上首选、🇭🇰CF 和其他 xflash 节点。
+所有代理流量（包括 YouTube）统一使用 PROXY 当前选择，没有额外模式或专用分流。
 规则模式下，代理服务的 UDP/443 拒绝规则优先于手动分组选择，与自建 Xray 的拒绝策略一致；
 国内直连 QUIC 仍保留。订阅不自动为第三方节点开放代理 QUIC。
 模板显式定义 `GLOBAL` 且只包含 `PROXY`。全局模式因此统一复用 `PROXY` 当前选择，不暴露
@@ -76,7 +74,7 @@ Mihomo 自动生成的 `DIRECT`、`REJECT` 与节点平铺列表；局域网 IPv
 纯 Worker 的 WebSocketPair 没有发送完成或积压查询接口，因此下行采用每连接 `8 MiB`
 累计发送预算（含 VLESS 响应头），上行待写入预算仍为 `1 MiB`。下行预算不会随时间重置；
 超限会关闭 TCP 和 WebSocket，避免慢客户端导致持续无界入队。这不是背压实现，
-长视频连接或大文件下载可能中断；需要持续传输时可将 `代理模式` 切换为 `PROXY`。
+长视频连接或大文件下载可能中断；需要持续传输时可在 `PROXY` 中选择 VPS 节点。
 
 公开订阅只经过独立域名绑定的 Worker。Worker 使用 `global_fetch_strictly_public`，
 转发同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥，Nginx 执行最终鉴权；直接访问私有源
