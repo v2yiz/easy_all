@@ -28,7 +28,9 @@ jobs:
       - name: Run tests
         run: |
           if ! npm test > "$RUNNER_TEMP/easy-all-test.log" 2>&1; then
-            summary="$(tail -n 100 "$RUNNER_TEMP/easy-all-test.log")"
+            summary="$(sed -E $'s/\\x1b\\[[0-9;]*[[:alpha:]]//g' \
+              "$RUNNER_TEMP/easy-all-test.log" \
+              | grep -v '^time=' | tail -n 100)"
             summary="${summary//'%'/'%25'}"
             summary="${summary//$'\r'/'%0D'}"
             summary="${summary//$'\n'/'%0A'}"
