@@ -130,59 +130,43 @@ test_validators_and_normalizers() {
 test_collected_ssh_ports() {
     source_script_copy
 
-    local unchanged changed
-    unchanged="$(
-        collect_inputs >/dev/null <<'EOF'
-203.0.113.10
-root
+    local original_read_bilingual
+    original_read_bilingual="$(declare -f read_bilingual)"
+    read_bilingual() {
+        local label=$1 variable=$2 answer=""
+        case "${label}" in
+        "服务器 IP/域名:") answer="203.0.113.10" ;;
+        "初始 SSH 登录用户 "*) answer="root" ;;
+        "初始 SSH 登录用户当前密码"*) answer="" ;;
+        "最终 SSH 登录的普通用户名:") answer="deploy" ;;
+        "普通用户 deploy 的 sudo 密码:" | "再次输入普通用户 deploy 的 sudo 密码:")
+            answer="secret"
+            ;;
+        "本地 ssh_config Host 别名 "*) answer="${TEST_HOST_ALIAS}" ;;
+        "服务器当前 SSH 端口 "*) answer="${TEST_CURRENT_PORT}" ;;
+        "UFW 额外放行 TCP 端口"*) answer="" ;;
+        *) fail_test "unexpected input prompt: ${label}" ;;
+        esac
+        printf -v "${variable}" '%s' "${answer}"
+    }
 
-deploy
-secret
-secret
-node-a
-22
+    TEST_HOST_ALIAS=node-a TEST_CURRENT_PORT=22 collect_inputs >/dev/null
+    validate_collected_inputs
+    assert_equal "current SSH port is retained while 65533 is added" \
+        "22:65533:yes" "${CURRENT_PORT}:${FINAL_PORT}:${CHANGE_PORT}"
 
-EOF
-        validate_collected_inputs
-        printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
-    )"
-    assert_equal "current SSH port is retained while 65533 is added" "22:65533:yes" "$unchanged"
-
-    changed="$(
-        collect_inputs >/dev/null <<'EOF'
-203.0.113.10
-root
-
-deploy
-secret
-secret
-node-b
-22
-
-EOF
-        validate_collected_inputs
-        printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
-    )"
-    assert_equal "additional SSH port is deterministic" "22:65533:yes" "$changed"
+    TEST_HOST_ALIAS=node-b TEST_CURRENT_PORT=22 collect_inputs >/dev/null
+    validate_collected_inputs
+    assert_equal "additional SSH port is deterministic" \
+        "22:65533:yes" "${CURRENT_PORT}:${FINAL_PORT}:${CHANGE_PORT}"
     assert_equal "additional SSH port" "65533" "$EASY_ALL_ADDITIONAL_SSH_PORT"
 
-    local same_port
-    same_port="$(
-        collect_inputs >/dev/null <<'EOF'
-203.0.113.10
-root
+    TEST_HOST_ALIAS=node-c TEST_CURRENT_PORT=65533 collect_inputs >/dev/null
+    validate_collected_inputs
+    assert_equal "existing 65533 SSH port is not duplicated" \
+        "65533:65533:no" "${CURRENT_PORT}:${FINAL_PORT}:${CHANGE_PORT}"
 
-deploy
-secret
-secret
-node-c
-65533
-
-EOF
-        validate_collected_inputs
-        printf '%s:%s:%s' "$CURRENT_PORT" "$FINAL_PORT" "$CHANGE_PORT"
-    )"
-    assert_equal "existing 65533 SSH port is not duplicated" "65533:65533:no" "$same_port"
+    eval "${original_read_bilingual}"
 
     unset FINAL_PORT
     assert_failure "missing final SSH port is rejected before remote changes" validate_collected_inputs
