@@ -229,16 +229,15 @@ try {
     const liveBody = await liveResponse.text();
     const groups = liveBody.split('proxy-groups:\n')[1].split('rules:\n')[0];
     assert.equal((groups.match(/name:/g) || []).length, 5);
-    assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 代理模式'));
-    assert.ok(groups.indexOf('name: 代理模式') < groups.indexOf('name: DEFAULT'));
-    assert.ok(groups.indexOf('name: DEFAULT') < groups.indexOf('name: GLOBAL'));
+    assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 油管兜底'));
+    assert.ok(groups.indexOf('name: 油管兜底') < groups.indexOf('name: 代理模式'));
+    assert.ok(groups.indexOf('name: 代理模式') < groups.indexOf('name: GLOBAL'));
     assert.ok(groups.indexOf('name: GLOBAL') < groups.indexOf('name: 🇺🇸白天首选'));
-    const modeGroup = groups.split('name: 代理模式')[1].split('name: DEFAULT')[0];
-    assert.match(modeGroup, /default-selected: DEFAULT/);
-    assert.match(modeGroup, /proxies:\s*\n\s*- DEFAULT\s*\n\s*- PROXY/m);
-    const defaultGroup = groups.split('name: DEFAULT')[1].split('name: GLOBAL')[0];
-    assert.match(defaultGroup, /hidden: true/);
-    assert.match(defaultGroup, /proxies:\s*\n\s*- PASS\s*$/m);
+    const fallbackGroup = groups.split('name: 油管兜底')[1].split('name: 代理模式')[0];
+    assert.match(fallbackGroup, /proxies:\s*\n\s*- PASS\s*$/m);
+    const modeGroup = groups.split('name: 代理模式')[1].split('name: GLOBAL')[0];
+    assert.match(modeGroup, /default-selected: 油管兜底/);
+    assert.match(modeGroup, /proxies:\s*\n\s*- 油管兜底\s*\n\s*- PROXY/m);
     const globalGroup = groups.split('name: GLOBAL')[1].split('name: 🇺🇸白天首选')[0];
     assert.match(globalGroup, /proxies:\s*\n\s*- PROXY\s*$/m);
     assert.ok(!globalGroup.includes('DIRECT') && !globalGroup.includes('REJECT'));
@@ -290,7 +289,7 @@ try {
     assert.ok(!liveBody.includes('malicious.invalid'));
     assert.ok(liveBody.includes('ip-version: ipv4'));
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 🇺🇸白天首选')));
-    for (const reserved of ['GLOBAL', '代理模式', 'DEFAULT', 'PASS']) {
+    for (const reserved of ['GLOBAL', '代理模式', '油管兜底', 'PASS']) {
         assert.throws(() => api.buildClashConfig(
             api.LOCAL_NODES,
             [10000],

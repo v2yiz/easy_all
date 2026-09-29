@@ -248,17 +248,16 @@ proxy-groups:
       type: select
       proxies:
 # EASY_ALL_PROXY_NAME
-    - name: 代理模式
+    - name: 油管兜底
       type: select
-      default-selected: DEFAULT
-      proxies:
-        - DEFAULT
-        - PROXY
-    - name: DEFAULT
-      type: select
-      hidden: true
       proxies:
         - PASS
+    - name: 代理模式
+      type: select
+      default-selected: 油管兜底
+      proxies:
+        - 油管兜底
+        - PROXY
     - name: GLOBAL
       type: select
       proxies:

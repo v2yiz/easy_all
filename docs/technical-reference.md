@@ -64,7 +64,7 @@ Google 的 `generate_204`，避免 Cloudflare Socket 禁止回连 Cloudflare 地
 两类 URL-Test 组的测速超时均为 `5000` ms，间隔和容差保持 `300` 秒、`30` ms。
 订阅仅在该组存在时，将 YouTube 的 TCP 流量直接路由到 `🇭🇰CF`；YouTube QUIC 被拒绝以触发
 TCP 回退，其他代理流量继续进入 `PROXY`，且 `PROXY` 不包含 `🇭🇰CF`。
-`代理模式` 提供 `DEFAULT` 和 `PROXY` 两个选项。隐藏的 `DEFAULT` 组只包含 Mihomo 内置
+`代理模式` 提供 `油管兜底` 和 `PROXY` 两个选项。紧跟 `PROXY` 的 `油管兜底` 组只包含 Mihomo 内置
 `PASS`，使规则继续匹配到 YouTube 或普通 `PROXY` 默认出口；选择 `PROXY` 时则在前置规则
 直接使用 `PROXY` 当前选择。两个分组的选择状态相互独立。
 规则模式下，代理服务的 UDP/443 拒绝规则优先于手动分组选择，与自建 Xray 的拒绝策略一致；

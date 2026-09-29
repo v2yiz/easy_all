@@ -15,7 +15,7 @@ const CDN_NODE_NAME_PREFIX = '🇺🇸优选';
 const CDN_GROUP_NAME = '🇺🇸白天首选';
 const WORKER_GROUP_NAME = '🇭🇰CF';
 const MODE_GROUP_NAME = '代理模式';
-const DEFAULT_GROUP_NAME = 'DEFAULT';
+const DEFAULT_GROUP_NAME = '油管兜底';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,

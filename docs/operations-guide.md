@@ -168,7 +168,7 @@ Cloudflare 模式还可部署独立的纯 Worker TCP 兜底节点。Mihomo 订�
 `🇺🇸白天首选`，将最多 6 个经独立探测成功的纯 Worker 优选 IPv4 放入 `🇭🇰CF`；两个组都使用
 URL-Test 自动测速。仅 YouTube 流量直接使用 `🇭🇰CF`，其他代理流量仍使用 `PROXY`；纯 Worker
 不发布域名入口，其流量不经过 VPS，也不计入 VPS 用户配额。
-`代理模式` 默认选择隐藏的 `DEFAULT`（`PASS`）组，以执行上述分流；切换为 `PROXY` 后，
+`代理模式` 默认选择紧跟 `PROXY` 显示的 `油管兜底`（`PASS`）组，以执行上述分流；切换为 `PROXY` 后，
 YouTube 和其他命中代理规则的流量都会使用 `PROXY` 当前选择。
 测速超时统一为 5 秒。规则模式下，代理流量的 QUIC 拒绝不受手动节点选择影响。
 纯 Worker 为限制 WebSocket 下行积压，每连接累计下行最多 8 MiB，达到预算会断开；

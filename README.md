@@ -24,7 +24,7 @@ Cloudflare 模式完全没有域名兜底，需要额外准备：
 不发布域名入口；Mihomo 订阅会将这些节点放入
 `🇭🇰CF` URL-Test 组，并仅将 YouTube 流量定向到该组。其他代理流量仍使用 `PROXY`；
 原有 6 个 XHTTP 节点继续由 `🇺🇸白天首选` 自动测速。
-`代理模式` 默认选择 `DEFAULT`：YouTube 使用 `🇭🇰CF`，其他代理流量复用 `PROXY` 当前选择；
+`代理模式` 默认选择 `油管兜底`：YouTube 使用 `🇭🇰CF`，其他代理流量复用 `PROXY` 当前选择；
 切换为 `PROXY` 后，所有命中代理规则的流量统一使用该选择。
 Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择，不再平铺所有节点。
 纯 Worker 每连接累计下行最多 8 MiB，超限会断开以限制内存积压；长视频或下载可切换到 `PROXY`。
