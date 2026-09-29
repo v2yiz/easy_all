@@ -1786,7 +1786,9 @@ build_mihomo_proxy_groups() {
 build_mihomo_worker_rules() {
     [[ -n "$(worker_backup_nodes | jq -r '.name')" ]] || return 0
     cat <<EOF
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),代理模式
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT
+  - GEOSITE,youtube,代理模式
   - GEOSITE,youtube,${WORKER_BACKUP_GROUP_NAME}
 EOF
 }

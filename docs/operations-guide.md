@@ -168,6 +168,8 @@ Cloudflare 模式还可部署独立的纯 Worker TCP 兜底节点。Mihomo 订�
 `🇺🇸白天首选`，将最多 6 个经独立探测成功的纯 Worker 优选 IPv4 放入 `🇭🇰CF`；两个组都使用
 URL-Test 自动测速。仅 YouTube 流量直接使用 `🇭🇰CF`，其他代理流量仍使用 `PROXY`；纯 Worker
 不发布域名入口，其流量不经过 VPS，也不计入 VPS 用户配额。
+`代理模式` 默认选择隐藏的 `DEFAULT`（`PASS`）组，以执行上述分流；切换为 `PROXY` 后，
+YouTube 和其他命中代理规则的流量都会使用 `PROXY` 当前选择。
 
 已有部署只需同步这一订阅逻辑时执行：
 

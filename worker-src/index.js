@@ -14,6 +14,8 @@ const CDN_NODE_LIMIT = 6;
 const CDN_NODE_NAME_PREFIX = '🇺🇸优选';
 const CDN_GROUP_NAME = '🇺🇸白天首选';
 const WORKER_GROUP_NAME = '🇭🇰CF';
+const MODE_GROUP_NAME = '代理模式';
+const DEFAULT_GROUP_NAME = 'DEFAULT';
 const {
     allowedTokens: ALLOWED_TOKENS,
     nodes: LOCAL_NODES,
@@ -541,7 +543,10 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
     }
     const names = [...nodes.map(node => node.name), ...upstreamNames];
     if (!names.length || new Set(names).size !== names.length ||
-        names.some(name => ['PROXY', 'GLOBAL', CDN_GROUP_NAME, WORKER_GROUP_NAME, 'DIRECT', 'REJECT'].includes(name))) {
+        names.some(name => [
+            'PROXY', 'GLOBAL', MODE_GROUP_NAME, DEFAULT_GROUP_NAME, 'PASS',
+            CDN_GROUP_NAME, WORKER_GROUP_NAME, 'DIRECT', 'REJECT',
+        ].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
     const autoNames = autoNodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);
@@ -553,7 +558,9 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
             : '',
     ].filter(Boolean).join('\n');
     const workerRules = workerNames.length
-        ? `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT\n  - GEOSITE,youtube,${WORKER_GROUP_NAME}`
+        ? `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),${MODE_GROUP_NAME}\n` +
+            `  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,youtube)),REJECT\n` +
+            `  - GEOSITE,youtube,${MODE_GROUP_NAME}\n  - GEOSITE,youtube,${WORKER_GROUP_NAME}`
         : '';
     const replacements = {
         '# EASY_ALL_PROXY_NODE': [...nodes.map((node, i) => clashNode(node, ports[i])), ...upstreamLines].join('\n'),
