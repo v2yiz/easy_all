@@ -28,9 +28,11 @@ jobs:
       - name: Run tests
         run: |
           if ! npm test > "$RUNNER_TEMP/easy-all-test.log" 2>&1; then
-            tail -n 20 "$RUNNER_TEMP/easy-all-test.log" | while IFS= read -r line; do
-              printf '::error::%s\n' "$line"
-            done
+            summary="$(tail -n 100 "$RUNNER_TEMP/easy-all-test.log")"
+            summary="${summary//'%'/'%25'}"
+            summary="${summary//$'\r'/'%0D'}"
+            summary="${summary//$'\n'/'%0A'}"
+            printf '::error title=Test suite failed::%s\n' "$summary"
             exit 1
           fi
           cat "$RUNNER_TEMP/easy-all-test.log"
