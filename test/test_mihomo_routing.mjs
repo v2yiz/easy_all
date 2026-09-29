@@ -69,7 +69,14 @@ try {
     const api = `http://127.0.0.1:${controller}`;
     let ready = false;
     for (let attempt = 0; attempt < 100; attempt++) {
-        try { ready = (await fetch(`${api}/version`)).ok; } catch {}
+        // The controller can start before the DNS resolver is initialized.
+        // Wait for an answer, leaving DNS selection to the assertions below.
+        try {
+            const response = await fetch(`${api}/dns/query?name=m5-x.amap.com&type=A`, {
+                signal: AbortSignal.timeout(1000),
+            });
+            ready = response.ok && Array.isArray((await response.json()).Answer);
+        } catch {}
         if (ready || core.exitCode !== null) break;
         await delay(100);
     }
