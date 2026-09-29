@@ -404,7 +404,7 @@ try {
     before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmProxyRule);
     assert.ok(!rules.includes('代理模式'));
     before(rules, fcmProxyRule, 'GEOSITE,geolocation-cn,DIRECT');
-    before(rules, fcmProxyRule, 'GEOIP,CN,DIRECT,no-resolve');
+    before(rules, fcmProxyRule, 'GEOIP,CN,DIRECT');
     const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
     assert.ok(fakeIpFilter.includes("      - 'geosite:googlefcm'\n"));
     assert.ok(!fakeIpFilter.includes(',real-ip'), 'blacklist filters must not contain rule-mode actions');
@@ -432,10 +432,14 @@ try {
     before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
     assert.ok(
-        rules.includes('AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT'),
-        'mainland QUIC matching must not trigger DNS resolution',
+        rules.includes('AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT'),
+        'mainland QUIC matching must allow DNS resolution',
     );
-    assert.ok(rules.includes('GEOIP,CN,DIRECT,no-resolve'), 'mainland IP fallback must not trigger DNS resolution');
+    assert.ok(rules.split('\n').includes('  - GEOIP,CN,DIRECT'), 'mainland IP fallback must allow DNS resolution');
+    assert.ok(!rules.includes('GEOIP,CN,no-resolve') && !rules.includes('GEOIP,CN,DIRECT,no-resolve'));
+    assert.ok(rules.includes('GEOIP,telegram,PROXY,no-resolve'));
+    before(rules, 'AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
+    before(rules, 'GEOIP,CN,DIRECT', 'MATCH,PROXY');
     const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
     for (const key of ['geosite:google', 'geosite:github', 'geosite:openai,anthropic', 'rule-set:proxy-services', 'geosite:geolocation-!cn,gfw']) {
         assert.ok(!dnsPolicy.includes(`'${key}':`), `${key} must use the default proxied DoH`);

@@ -263,9 +263,9 @@ rules:
   - GEOSITE,apple-cn,DIRECT
   - GEOSITE,microsoft@cn,DIRECT
   # 使用较窄的 geolocation-cn，不使用包含整个 .ms 的 ChinaMax cn 集合。
-  # 仅对已有真实目标 IP 的连接使用 GeoIP；避免为 Fake-IP 域名主动解析。
+  # 国内 IP 兜底允许解析未命中域名规则的请求，国内 QUIC 单独放行。
   - GEOSITE,geolocation-cn,DIRECT
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - DOMAIN,clash.razord.top,DIRECT
@@ -274,7 +274,7 @@ rules:
   - GEOSITE,category-ai-chat-!cn,PROXY
   # Telegram 专属 IP 段代理
   - GEOIP,telegram,PROXY,no-resolve
-  # 已有真实目标 IP 的中国大陆连接直连；未知 Fake-IP 域名交给代理端解析。
-  - GEOIP,CN,DIRECT,no-resolve
+  # 未命中域名规则时解析真实 IP，中国大陆地址直连。
+  - GEOIP,CN,DIRECT
   # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY

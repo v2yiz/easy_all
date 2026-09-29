@@ -60,7 +60,8 @@ Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在
 DNS 或使用 GeoIP fallback；Steam 下载、微信资源及 Apple/微软国内 CDN 直接使用国内 DoH。私有域名
 使用系统 DNS，并启用本机 hosts。
 `kimi.com`、`minimaxi.com` 等国内入口维持直连，国际入口按实际集合与 GeoIP 分流；不代理整个微软或共享 CDN。
-两处中国 GeoIP 规则仅匹配已有真实目标 IP，不主动解析 Fake-IP 域名；未收录的域名交给代理端解析。
+两处中国 GeoIP 兜底允许解析未命中域名规则的请求，返回中国大陆 IP 则直连。未知域名仍经代理查询
+海外 DoH；首次连接可能增加解析延迟，返回境外 CDN 地址时仍走代理。
 代理节点域名仍由阿里与腾讯两个独立的直连 DoH 解析，避免启动循环。
 
 Reality 和动态 Cloudflare 节点固定输出 `ipv4`；IPv6 literal 会被拒绝。修改公共模板后需重新构建

@@ -460,7 +460,7 @@ test_mihomo_template() {
         bash -c '(( $1 > 0 && $1 < $2 && $2 < $3 ))' _ \
         "${google_quic_rule_line}" "${google_rule_line}" "${cn_domain_rule_line}"
     cn_quic_rule_line=$(grep -nF -- \
-        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT' \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
     quic_reject_rule_line=$(grep -nF -- \
         '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' \
@@ -480,8 +480,8 @@ test_mihomo_template() {
         "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes mainland domains direct" \
         "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo routes known mainland IP addresses direct without DNS lookup" \
-        "GEOIP,CN,DIRECT,no-resolve" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo resolves unclassified domains for mainland IP fallback" \
+        "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo falls back to proxy for unclassified traffic" \
         "MATCH,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \

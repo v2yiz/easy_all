@@ -62,7 +62,8 @@ Clash Meta for Android 可使用 `dhcp://system` 获取系统 DNS；其他客户
 模板使用 `fake-ip-filter-mode: blacklist`，避免 Clash Party 接管 DNS 后把内置的 `*`
 过滤项误当成规则模式。微信的图片、头像和小程序资源域名会返回真实 IP，并使用国内 DNS
 与直连出口。未匹配策略且确需真实解析的公网域名默认使用经代理的海外 DNS，不再先查询国内
-DNS；中国 GeoIP 规则只匹配已有真实目标 IP，因此未被 `geolocation-cn` 收录的域名可能改走代理。
+DNS；未被 `geolocation-cn` 收录的域名会在中国 GeoIP 兜底处解析，返回中国大陆 IP 则直连。
+首次连接可能增加解析延迟；若海外 DNS 返回境外 CDN 地址，仍会走代理。
 更新订阅后应重启代理内核以清除旧 Fake-IP 和 DNS 缓存；无需清除应用数据。
 
 ## Android 打开 App 才收到消息
