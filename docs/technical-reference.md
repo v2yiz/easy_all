@@ -103,11 +103,14 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 - Google、OpenAI、Anthropic、Copilot 依赖项走代理 DNS 和代理出口；
 - `services.googleapis.cn`、`r.bing.com`、`in.appcenter.ms`、`aka.ms`、`1drv.ms`
   不被通用国内规则抢先；
-- 默认先使用国内 DoH；结果不是中国 IP 时自动回退到经代理的海外 DoH；
+- 未匹配策略且确需真实解析的公网域名默认使用经代理的海外 DoH，不再先查询国内 DNS 或使用
+  GeoIP fallback；
 - Apple、微软国内 CDN、Steam 下载、微信图片资源和其他中国大陆域名使用国内 DoH 并直连；
 - 国内域名统一使用同源 `geolocation-cn`，避免 ChinaMax `cn` 将整个 `.ms` 后缀直连；
+- 中国 GeoIP 规则仅匹配已有真实目标 IP，避免为 Fake-IP 域名主动解析；未收录域名由代理端解析；
 - `kimi.com`、`minimaxi.com` 等国内入口维持直连；国际入口按实际集合与 GeoIP 分流；
-- 私有域名使用系统 DNS，本机 hosts 生效；移动端的覆盖方式见客户端指南。
+- 私有域名使用系统 DNS，本机 hosts 生效；代理节点域名由两个独立的国内 DoH 解析；移动端的覆盖
+  方式见客户端指南。
 
 服务器 TCP keepalive 默认使用 `300/30/5`，用于回收半开连接，不能替代 XHTTP 的应用层保活。
 临时端口范围为 `13000-60999`，避开 Reality 动态入口和本机服务端口。

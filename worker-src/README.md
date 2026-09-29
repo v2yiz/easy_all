@@ -56,10 +56,12 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于国内集合和微软国内 CDN，
 统一经 `PROXY`；对应 UDP/443 先拒绝以回退 TCP。Google Play 接口、下载重定向和 APK CDN 保持同一代理策略。
 仅内嵌 `proxy-services`（24 条）与 `direct-cdn`（13 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
-默认先使用国内 DoH，结果不是中国 IP 时回退到经 `PROXY` 的 Cloudflare 与 Google DoH；
-Steam 下载、微信资源及 Apple/微软国内 CDN 直接使用国内 DoH。私有域名使用系统 DNS，并启用本机 hosts。
+未匹配策略且确需真实解析的公网域名默认使用经 `PROXY` 的 Cloudflare 与 Google DoH，不再先查询国内
+DNS 或使用 GeoIP fallback；Steam 下载、微信资源及 Apple/微软国内 CDN 直接使用国内 DoH。私有域名
+使用系统 DNS，并启用本机 hosts。
 `kimi.com`、`minimaxi.com` 等国内入口维持直连，国际入口按实际集合与 GeoIP 分流；不代理整个微软或共享 CDN。
-代理节点域名仍由独立的直连 DoH 解析，避免启动循环。
+两处中国 GeoIP 规则仅匹配已有真实目标 IP，不主动解析 Fake-IP 域名；未收录的域名交给代理端解析。
+代理节点域名仍由阿里与腾讯两个独立的直连 DoH 解析，避免启动循环。
 
 Reality 和动态 Cloudflare 节点固定输出 `ipv4`；IPv6 literal 会被拒绝。修改公共模板后需重新构建
 Worker，并在 VPS 重新生成模式 2 订阅。

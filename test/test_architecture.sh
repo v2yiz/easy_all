@@ -194,8 +194,8 @@ grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep non-YouTube Google services on the VPS exit"
 grep -Fxq '# EASY_ALL_WORKER_RULE' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must expose the conditional Worker rule marker"
-grep -Fq "'geosite:google':" "${ROOT_DIR}/templates/mihomo.yaml" \
-    || fail "Google services must have an explicit DNS policy matching their proxy route"
+grep -Fq "'https://1.1.1.1/dns-query#PROXY'" "${ROOT_DIR}/templates/mihomo.yaml" \
+    || fail "Mihomo public DNS must use a proxied resolver"
 awk '
     $0 == "    - name: GLOBAL" { in_global=1; next }
     in_global && $0 == "        - PROXY" { has_proxy=1; next }
@@ -208,8 +208,9 @@ if grep -Eq '代理模式|油管兜底' "${ROOT_DIR}/templates/mihomo.yaml"; the
 fi
 grep -Fq 'GEOSITE,github,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep GitHub services on the VPS exit"
-grep -Fq "'geosite:github':" "${ROOT_DIR}/templates/mihomo.yaml" \
-    || fail "GitHub services must have an explicit DNS policy matching their proxy route"
+if grep -Fq "'geosite:github':" "${ROOT_DIR}/templates/mihomo.yaml"; then
+    fail "GitHub DNS should inherit the default proxied resolver"
+fi
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \
     && "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" != *'refresh-xray-assets'* \

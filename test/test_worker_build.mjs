@@ -397,13 +397,14 @@ try {
     assert.ok(rules.includes('IP-CIDR,0.0.0.0/8,REJECT,no-resolve'), 'DNS sinkhole addresses must not enter the proxy');
     assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
     assert.ok(template.includes('use-system-hosts: true'), 'local hosts are honored');
+    assert.ok(template.includes('respect-rules: false'), 'DNS upstream routing must remain explicit');
     assert.ok(template.includes('fake-ip-filter-mode: blacklist'), 'fake-IP filtering remains compatible with client DNS overrides');
     assert.ok(template.includes("'geosite:geolocation-cn'"), 'DNS and routing share the narrow mainland set');
     const fcmProxyRule = 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY';
     before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmProxyRule);
     assert.ok(!rules.includes('代理模式'));
     before(rules, fcmProxyRule, 'GEOSITE,geolocation-cn,DIRECT');
-    before(rules, fcmProxyRule, 'GEOIP,CN,DIRECT');
+    before(rules, fcmProxyRule, 'GEOIP,CN,DIRECT,no-resolve');
     const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
     assert.ok(fakeIpFilter.includes("      - 'geosite:googlefcm'\n"));
     assert.ok(!fakeIpFilter.includes(',real-ip'), 'blacklist filters must not contain rule-mode actions');
@@ -430,13 +431,14 @@ try {
     before(rules, 'GEOSITE,microsoft@cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
+    assert.ok(
+        rules.includes('AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT'),
+        'mainland QUIC matching must not trigger DNS resolution',
+    );
+    assert.ok(rules.includes('GEOIP,CN,DIRECT,no-resolve'), 'mainland IP fallback must not trigger DNS resolution');
     const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
     for (const key of ['geosite:google', 'geosite:github', 'geosite:openai,anthropic', 'rule-set:proxy-services', 'geosite:geolocation-!cn,gfw']) {
-        assert.ok(dnsPolicy.includes(
-            `      '${key}':\n        - 'https://1.1.1.1/dns-query#PROXY'\n        - 'https://8.8.8.8/dns-query#PROXY'`
-        ), `${key} must use proxied DoH`);
-        before(dnsPolicy, `'${key}':`, "'geosite:apple-cn,microsoft@cn':");
-        before(dnsPolicy, `'${key}':`, "'geosite:geolocation-cn':");
+        assert.ok(!dnsPolicy.includes(`'${key}':`), `${key} must use the default proxied DoH`);
     }
     for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:geolocation-cn']) {
         assert.ok(dnsPolicy.includes(
@@ -445,13 +447,14 @@ try {
     }
     const defaultDns = template.split('    nameserver:\n')[1].split('    proxy-server-nameserver:')[0];
     assert.ok(defaultDns.includes(
-        '      - https://223.5.5.5/dns-query\n      - https://1.12.12.12/dns-query\n'
-    ), 'unknown domains must use mainland DNS first');
-    assert.ok(defaultDns.includes(
-        "    fallback:\n      - 'https://1.1.1.1/dns-query#PROXY'\n      - 'https://8.8.8.8/dns-query#PROXY'\n"
-    ), 'foreign DNS fallback must use the proxy');
-    assert.ok(defaultDns.includes('      geoip: true\n      geoip-code: CN\n'));
-    assert.ok(defaultDns.includes('    fallback-lazy-query: true\n'));
+        "      - 'https://1.1.1.1/dns-query#PROXY'\n      - 'https://8.8.8.8/dns-query#PROXY'\n"
+    ), 'unknown public domains must use proxied DoH');
+    assert.ok(!template.includes('\n    fallback:'), 'split fallback DNS must remain disabled');
+    assert.ok(!template.includes('\n    fallback-filter:'), 'fallback filtering must remain disabled');
+    assert.ok(!template.includes('\n    fallback-lazy-query:'), 'lazy fallback queries must remain disabled');
+    assert.ok(template.includes(
+        "    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']"
+    ), 'proxy node bootstrap must retain two direct DoH providers');
     const providers = template.split('\nrule-providers:\n')[1].split('\nproxies:\n')[0];
     assert.equal((providers.match(/type: inline/g) || []).length, 2);
     assert.equal((providers.match(/behavior: domain/g) || []).length, 2);
@@ -475,7 +478,7 @@ try {
     ]) {
         assert.ok(directCdn.includes(`        - ${domain}\n`), `${domain} must remain a direct exception`);
     }
-    assert.ok(!template.includes('speech.bytedance.com'), 'domestic DNS fallback must replace one-off Doubao patches');
+    assert.ok(!template.includes('speech.bytedance.com'), 'shared domain policy must replace one-off Doubao patches');
     // An aggregation input carries no vpsSubUrl, so the validator must accept its absence
     // instead of demanding a URL the caller never has.
     const aggregationConfig = { ...config };

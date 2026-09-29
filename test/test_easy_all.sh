@@ -381,41 +381,29 @@ test_mihomo_template() {
     assert_contains "Mihomo resolves mainland domains with mainland DoH" \
         "'geosite:geolocation-cn':" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    google_dns_line=$(grep -nF -- "      'geosite:google':" \
-        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
-    cn_dns_line=$(grep -nF -- "      'geosite:geolocation-cn':" \
-        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
-    assert_success "Google DNS takes precedence over CN for services.googleapis.cn" \
-        bash -c '(( $1 > 0 && $1 < $2 ))' _ "${google_dns_line}" "${cn_dns_line}"
-    google_dns_policy=$(sed -n "/^      'geosite:google':/,/^      'geosite:geolocation-cn':/p" \
+    assert_contains "Mihomo keeps DNS upstream routing explicit" \
+        "respect-rules: false" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    dns_policy=$(sed -n '/^    nameserver-policy:$/,/^    nameserver:$/p' \
         "${ROOT_DIR}/templates/mihomo.yaml")
-    assert_contains "Google policy resolves Play APIs through proxied Cloudflare DoH" \
-        "https://1.1.1.1/dns-query#PROXY" "${google_dns_policy}"
-    assert_contains "Google policy resolves Play APIs through proxied Google DoH" \
-        "https://8.8.8.8/dns-query#PROXY" "${google_dns_policy}"
-    assert_contains "Mihomo keeps Cloudflare DoH as the global fallback" \
+    assert_not_contains "Known global domains use the default proxied DNS" \
+        "'geosite:google':" "${dns_policy}"
+    assert_contains "Mihomo defaults public DNS to proxied Cloudflare DoH" \
         "https://1.1.1.1/dns-query#PROXY" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo keeps Google DoH as the global fallback" \
+    assert_contains "Mihomo defaults public DNS to proxied Google DoH" \
         "https://8.8.8.8/dns-query#PROXY" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    dns_default=$(sed -n '/^    nameserver:$/,/^    proxy-server-nameserver:/p' \
-        "${ROOT_DIR}/templates/mihomo.yaml")
-    assert_contains "Mihomo defaults unknown domains to mainland DNS" \
-        "- https://223.5.5.5/dns-query" "${dns_default}"
-    assert_contains "Mihomo has a second mainland default DNS" \
-        "- https://1.12.12.12/dns-query" "${dns_default}"
-    assert_contains "Mihomo falls back when mainland DNS returns a foreign IP" \
-        "geoip-code: CN" "${dns_default}"
-    assert_contains "Mihomo avoids eager global fallback queries" \
-        "fallback-lazy-query: true" "${dns_default}"
-    assert_contains "Mihomo resolves known global domains through global DNS directly" \
-        "'geosite:geolocation-!cn,gfw':" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_not_contains "Mihomo does not use split fallback DNS" \
+        "fallback:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_not_contains "Mihomo does not use fallback GeoIP filtering" \
+        "fallback-filter:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_not_contains "Mihomo does not use lazy fallback queries" \
+        "fallback-lazy-query:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo no longer forces direct HTTP/3 DNS" \
         "https://223.6.6.6/dns-query#h3=true" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo uses the XFLASH proxy bootstrap DNS endpoints" \
-        "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://1.1.1.1/dns-query']" \
+    assert_contains "Mihomo uses two direct proxy bootstrap DNS endpoints" \
+        "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo does not add a non-XFLASH default nameserver" \
         "default-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
@@ -472,7 +460,7 @@ test_mihomo_template() {
         bash -c '(( $1 > 0 && $1 < $2 && $2 < $3 ))' _ \
         "${google_quic_rule_line}" "${google_rule_line}" "${cn_domain_rule_line}"
     cn_quic_rule_line=$(grep -nF -- \
-        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
     quic_reject_rule_line=$(grep -nF -- \
         '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' \
@@ -492,8 +480,8 @@ test_mihomo_template() {
         "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes mainland domains direct" \
         "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    assert_contains "Mihomo routes mainland IP addresses direct" \
-        "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+    assert_contains "Mihomo routes known mainland IP addresses direct without DNS lookup" \
+        "GEOIP,CN,DIRECT,no-resolve" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo falls back to proxy for unclassified traffic" \
         "MATCH,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \

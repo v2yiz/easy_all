@@ -58,6 +58,8 @@ tun:
 dns:
     enable: true
     ipv6: false
+    # DNS 上游已显式指定 DIRECT/PROXY 语义，不再让 DNS 连接递归参与业务分流。
+    respect-rules: false
     use-system-hosts: true
     listen: '127.0.0.1:5335'
     enhanced-mode: fake-ip
@@ -149,22 +151,6 @@ dns:
     nameserver-policy:
       # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
       'geosite:private': system
-      # 明确代理的服务优先于国内集合及 CDN。
-      'geosite:google':
-        - 'https://1.1.1.1/dns-query#PROXY'
-        - 'https://8.8.8.8/dns-query#PROXY'
-      'geosite:github':
-        - 'https://1.1.1.1/dns-query#PROXY'
-        - 'https://8.8.8.8/dns-query#PROXY'
-      'geosite:openai,anthropic':
-        - 'https://1.1.1.1/dns-query#PROXY'
-        - 'https://8.8.8.8/dns-query#PROXY'
-      'rule-set:proxy-services':
-        - 'https://1.1.1.1/dns-query#PROXY'
-        - 'https://8.8.8.8/dns-query#PROXY'
-      'geosite:geolocation-!cn,gfw':
-        - 'https://1.1.1.1/dns-query#PROXY'
-        - 'https://8.8.8.8/dns-query#PROXY'
       # 与直连规则使用相同集合，避免国内 CDN 按代理出口调度。
       'rule-set:direct-cdn':
         - https://223.5.5.5/dns-query
@@ -175,18 +161,12 @@ dns:
       'geosite:geolocation-cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
+    # 未命中策略且确需真实解析的公网域名统一通过代理查询。
     nameserver:
-      - https://223.5.5.5/dns-query
-      - https://1.12.12.12/dns-query
-    # 国内 DNS 返回非中国地址时，改用经代理的海外 DNS，兼顾未知国内 CDN 与境外域名。
-    fallback:
       - 'https://1.1.1.1/dns-query#PROXY'
       - 'https://8.8.8.8/dns-query#PROXY'
-    fallback-filter:
-      geoip: true
-      geoip-code: CN
-    fallback-lazy-query: true
-    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query', 'https://1.1.1.1/dns-query']
+    # 节点域名启动解析保持直连，并使用两个独立国内 DoH 提供冗余。
+    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
 
 rule-providers:
     # 内嵌小集合同时供 DNS、QUIC 与路由使用，不下载额外外部规则文件。
@@ -283,9 +263,9 @@ rules:
   - GEOSITE,apple-cn,DIRECT
   - GEOSITE,microsoft@cn,DIRECT
   # 使用较窄的 geolocation-cn，不使用包含整个 .ms 的 ChinaMax cn 集合。
-  # 其余国内 IP 由 GeoIP 兜底；国内 QUIC 单独放行。
+  # 仅对已有真实目标 IP 的连接使用 GeoIP；避免为 Fake-IP 域名主动解析。
   - GEOSITE,geolocation-cn,DIRECT
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - DOMAIN,clash.razord.top,DIRECT
@@ -294,7 +274,7 @@ rules:
   - GEOSITE,category-ai-chat-!cn,PROXY
   # Telegram 专属 IP 段代理
   - GEOIP,telegram,PROXY,no-resolve
-  # 中国大陆 IP 直连 (涵盖国内音视频、国内云 CDN)
-  - GEOIP,CN,DIRECT
+  # 已有真实目标 IP 的中国大陆连接直连；未知 Fake-IP 域名交给代理端解析。
+  - GEOIP,CN,DIRECT,no-resolve
   # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY
