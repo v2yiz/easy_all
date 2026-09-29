@@ -63,6 +63,8 @@ Universal SSL 终止客户端 TLS，Origin CA 保护回源。
 Google 的 `generate_204`，避免 Cloudflare Socket 禁止回连 Cloudflare 地址而产生误判。
 订阅仅在该组存在时，将 YouTube 的 TCP 流量直接路由到 `🇭🇰CF`；YouTube QUIC 被拒绝以触发
 TCP 回退，其他代理流量继续进入 `PROXY`，且 `PROXY` 不包含 `🇭🇰CF`。
+模板显式定义 `GLOBAL` 且只包含 `PROXY`。全局模式因此统一复用 `PROXY` 当前选择，不暴露
+Mihomo 自动生成的 `DIRECT`、`REJECT` 与节点平铺列表；局域网 IPv4 继续由 TUN 路由排除。
 
 公开订阅只经过独立域名绑定的 Worker。Worker 使用 `global_fetch_strictly_public`，
 转发同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥，Nginx 执行最终鉴权；直接访问私有源

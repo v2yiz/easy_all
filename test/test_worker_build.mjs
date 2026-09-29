@@ -228,8 +228,12 @@ try {
     assert.equal(liveResponse.headers.get('X-Easy-All-Warning'), null);
     const liveBody = await liveResponse.text();
     const groups = liveBody.split('proxy-groups:\n')[1].split('rules:\n')[0];
-    assert.equal((groups.match(/name:/g) || []).length, 2);
-    assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: 🇺🇸白天首选'));
+    assert.equal((groups.match(/name:/g) || []).length, 3);
+    assert.ok(groups.indexOf('name: PROXY') < groups.indexOf('name: GLOBAL'));
+    assert.ok(groups.indexOf('name: GLOBAL') < groups.indexOf('name: 🇺🇸白天首选'));
+    const globalGroup = groups.split('name: GLOBAL')[1].split('name: 🇺🇸白天首选')[0];
+    assert.match(globalGroup, /proxies:\s*\n\s*- PROXY\s*$/m);
+    assert.ok(!globalGroup.includes('DIRECT') && !globalGroup.includes('REJECT'));
     const proxyMembers = groups.split('name: 🇺🇸白天首选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
     assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Hidden Reality', 'Remote', 'Mieru Remote']);
     assert.ok(!groups.includes('DIRECT'));
@@ -278,6 +282,7 @@ try {
     assert.ok(!liveBody.includes('malicious.invalid'));
     assert.ok(liveBody.includes('ip-version: ipv4'));
     assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 🇺🇸白天首选')));
+    assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: GLOBAL')));
     assert.throws(
         () => api.buildClashConfig(
             api.LOCAL_NODES,

@@ -540,7 +540,8 @@ function buildClashConfig(nodes, ports, upstream = '', autoNodes = []) {
         );
     }
     const names = [...nodes.map(node => node.name), ...upstreamNames];
-    if (!names.length || new Set(names).size !== names.length || names.some(name => ['PROXY', CDN_GROUP_NAME, WORKER_GROUP_NAME, 'DIRECT', 'REJECT'].includes(name))) {
+    if (!names.length || new Set(names).size !== names.length ||
+        names.some(name => ['PROXY', 'GLOBAL', CDN_GROUP_NAME, WORKER_GROUP_NAME, 'DIRECT', 'REJECT'].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
     const autoNames = autoNodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);

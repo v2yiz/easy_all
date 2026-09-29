@@ -196,6 +196,13 @@ grep -Fxq '# EASY_ALL_WORKER_RULE' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must expose the conditional Worker rule marker"
 grep -Fq "'geosite:google':" "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Google services must have an explicit DNS policy matching their proxy route"
+awk '
+    $0 == "    - name: GLOBAL" { in_global=1; next }
+    in_global && $0 == "        - PROXY" { has_proxy=1; next }
+    in_global && /^    - name:/ { exit }
+    END { exit !(in_global && has_proxy) }
+' "${ROOT_DIR}/templates/mihomo.yaml" \
+    || fail "Mihomo template must define GLOBAL as a PROXY-only group"
 grep -Fq 'GEOSITE,github,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
     || fail "Mihomo subscription template must keep GitHub services on the VPS exit"
 grep -Fq "'geosite:github':" "${ROOT_DIR}/templates/mihomo.yaml" \

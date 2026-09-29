@@ -24,6 +24,7 @@ Cloudflare 模式完全没有域名兜底，需要额外准备：
 不发布域名入口；Mihomo 订阅会将这些节点放入
 `🇭🇰CF` URL-Test 组，并仅将 YouTube 流量定向到该组。其他代理流量仍使用 `PROXY`；
 原有 6 个 XHTTP 节点继续由 `🇺🇸白天首选` 自动测速。
+Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择，不再平铺所有节点。
 
 完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择自托管订阅时才需要
 Cloudflare 域名和 API Token。

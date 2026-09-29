@@ -102,10 +102,8 @@ assert_contains "client guide documents Mihomo selected-IP requirements" \
     "${CLIENT_CONTENT}" '客户端必须能分别保存'
 assert_contains "client guide marks Shadowrocket unverified" \
     "${CLIENT_CONTENT}" '目前不把 Shadowrocket 列为'
-assert_contains "client guide documents Clash Mi global selection" \
-    "${CLIENT_CONTENT}" '手动勾选 `PROXY`'
-assert_contains "client guide embeds Clash Mi illustration" \
-    "${CLIENT_CONTENT}" 'img/clashmi/clashmi-global-proxy.svg'
+assert_contains "client guide documents explicit GLOBAL routing" \
+    "${CLIENT_CONTENT}" '显式定义 `GLOBAL → PROXY`'
 
 WINDOWS_ROW=$(grep '^| Windows ' "${ROOT_DIR}/docs/client-guide.md")
 ANDROID_ROW=$(grep '^| Android ' "${ROOT_DIR}/docs/client-guide.md")
@@ -137,8 +135,7 @@ for asset in \
     docs/img/cloudflare/cloudflare-nameservers.svg \
     docs/img/spaceship/spaceship-domain-search.svg \
     docs/img/spaceship/spaceship-nameservers.svg \
-    docs/img/spaceship/spaceship-signup.svg \
-    docs/img/clashmi/clashmi-global-proxy.svg; do
+    docs/img/spaceship/spaceship-signup.svg; do
     [[ -s "${ROOT_DIR}/${asset}" ]] || fail "documentation asset is missing: ${asset}"
 done
 

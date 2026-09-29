@@ -248,6 +248,10 @@ proxy-groups:
       type: select
       proxies:
 # EASY_ALL_PROXY_NAME
+    - name: GLOBAL
+      type: select
+      proxies:
+        - PROXY
 # EASY_ALL_PROXY_GROUP
 
 rules:
