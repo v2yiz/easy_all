@@ -106,7 +106,8 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 - 未匹配策略且确需真实解析的公网域名默认使用经代理的海外 DoH，不再先查询国内 DNS 或使用
   GeoIP fallback；
 - Apple、微软国内 CDN、Steam 下载、微信图片资源和其他中国大陆域名使用国内 DoH 并直连；
-- 国内域名统一使用同源 `geolocation-cn`，避免 ChinaMax `cn` 将整个 `.ms` 后缀直连；
+- 国内路由、DNS 与 Fake-IP 过滤统一使用完整 `cn` 集合，覆盖高德、微信、豆包等服务；
+- `.ms` 在代理服务集合中优先匹配；Google、GitHub、OpenAI、Anthropic 和代理服务的 DNS 策略优先于 `cn`；
 - 两处中国 GeoIP 兜底允许解析未命中域名规则的请求，真实 IP 属于中国大陆则直连；未知域名仍经代理查询海外 DoH；
 - `kimi.com`、`minimaxi.com` 等国内入口维持直连；国际入口按实际集合与 GeoIP 分流；
 - 私有域名使用系统 DNS，本机 hosts 生效；代理节点域名由两个独立的国内 DoH 解析；移动端的覆盖

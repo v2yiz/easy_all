@@ -52,10 +52,11 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 `externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用带版本的 Mihomo UA，使上游正确下发 Mieru 等需要能力识别的节点，同时避免透传客户端版本导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；PROXY 依次列出已配置的 US_VMISS、`🇺🇸白天首选`、`🇺🇸晚上首选`、`🇭🇰CF` 和其他 xflash 节点。白天首选和 🇭🇰CF 是隐藏的自动测速组，所有代理流量统一使用 PROXY 当前选择。显式隐藏 `GLOBAL` 组仅包含 `PROXY`，没有 CDN 节点时白天首选使用 REJECT。
 
 公共模板全局禁用 IPv6，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。
-国内集合使用 `geolocation-cn`，不再引用包含整个 `.ms` 后缀的 ChinaMax `cn`。
+国内路由、DNS 与 Fake-IP 过滤统一使用完整 `cn` 集合，覆盖高德、微信、豆包等服务。
+ChinaMax `cn` 包含整个 `.ms` 后缀，因此 `.ms` 在代理服务集合及代理 DNS 策略中优先匹配。
 Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于国内集合和微软国内 CDN，
 统一经 `PROXY`；对应 UDP/443 先拒绝以回退 TCP。Google Play 接口、下载重定向和 APK CDN 保持同一代理策略。
-仅内嵌 `proxy-services`（24 条）与 `direct-cdn`（13 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
+仅内嵌 `proxy-services`（25 条）与 `direct-cdn`（13 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
 未匹配策略且确需真实解析的公网域名默认使用经 `PROXY` 的 Cloudflare 与 Google DoH，不再先查询国内
 DNS 或使用 GeoIP fallback；Steam 下载、微信资源及 Apple/微软国内 CDN 直接使用国内 DoH。私有域名
 使用系统 DNS，并启用本机 hosts。

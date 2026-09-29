@@ -69,7 +69,7 @@ dns:
     fake-ip-filter:
       # Android FCM 可能绕过 VPN，推送长连接不能使用仅在 TUN 内有效的 Fake-IP。
       - 'geosite:googlefcm'
-      - 'geosite:geolocation-cn'
+      - 'geosite:cn'
       - 'geosite:private'
       - '+.10jqka.com.cn'
       # 微信图片、头像、小程序资源在 TUN + Fake-IP 下必须返回真实 IP。
@@ -151,6 +151,13 @@ dns:
     nameserver-policy:
       # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
       'geosite:private': system
+      # 明确代理的服务优先于完整 cn 集合，避免重叠域名查询国内 DNS。
+      'geosite:google,github,openai,anthropic':
+        - 'https://1.1.1.1/dns-query#PROXY'
+        - 'https://8.8.8.8/dns-query#PROXY'
+      'rule-set:proxy-services':
+        - 'https://1.1.1.1/dns-query#PROXY'
+        - 'https://8.8.8.8/dns-query#PROXY'
       # 与直连规则使用相同集合，避免国内 CDN 按代理出口调度。
       'rule-set:direct-cdn':
         - https://223.5.5.5/dns-query
@@ -158,7 +165,7 @@ dns:
       'geosite:apple-cn,microsoft@cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
-      'geosite:geolocation-cn':
+      'geosite:cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
     # 未命中策略且确需真实解析的公网域名统一通过代理查询。
@@ -196,6 +203,8 @@ rule-providers:
         - challenges.cloudflare.com
         - openai-api.arkoselabs.com
         - '+.client-api.arkoselabs.com'
+        # ChinaMax cn 包含整个 .ms；优先保持该后缀代理，避免误直连。
+        - '+.ms'
         # 微软短链及 OneDrive 更新维持代理出口。
         - '+.aka.ms'
         - '+.1drv.ms'
@@ -262,9 +271,9 @@ rules:
   # 国内 CDN 与上方国内 DNS 策略对齐，保留直连下载及 QUIC。
   - GEOSITE,apple-cn,DIRECT
   - GEOSITE,microsoft@cn,DIRECT
-  # 使用较窄的 geolocation-cn，不使用包含整个 .ms 的 ChinaMax cn 集合。
+  # 完整国内域名集合；Google、AI 与 .ms 例外已在上方优先处理。
   # 国内 IP 兜底允许解析未命中域名规则的请求，国内 QUIC 单独放行。
-  - GEOSITE,geolocation-cn,DIRECT
+  - GEOSITE,cn,DIRECT
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT

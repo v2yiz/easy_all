@@ -379,14 +379,14 @@ test_mihomo_template() {
         "MetaCubeX/meta-rules-dat@release/geosite.dat" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo resolves mainland domains with mainland DoH" \
-        "'geosite:geolocation-cn':" \
+        "'geosite:cn':" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo keeps DNS upstream routing explicit" \
         "respect-rules: false" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     dns_policy=$(sed -n '/^    nameserver-policy:$/,/^    nameserver:$/p' \
         "${ROOT_DIR}/templates/mihomo.yaml")
-    assert_not_contains "Known global domains use the default proxied DNS" \
-        "'geosite:google':" "${dns_policy}"
+    assert_contains "Known global domains override the mainland DNS policy" \
+        "'geosite:google,github,openai,anthropic':" "${dns_policy}"
     assert_contains "Mihomo defaults public DNS to proxied Cloudflare DoH" \
         "https://1.1.1.1/dns-query#PROXY" \
         "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
@@ -449,7 +449,7 @@ test_mihomo_template() {
         "${ROOT_DIR}/templates/mihomo.yaml")
     assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
         '  - RULE-SET,direct-cdn,DIRECT' "${first_rule}"
-    cn_domain_rule_line=$(grep -nF -- '  - GEOSITE,geolocation-cn,DIRECT' \
+    cn_domain_rule_line=$(grep -nF -- '  - GEOSITE,cn,DIRECT' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
     google_rule_line=$(grep -nF -- '  - GEOSITE,google,PROXY' \
         "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
@@ -479,7 +479,7 @@ test_mihomo_template() {
     assert_contains "Mihomo routes Microsoft domestic CDN direct" \
         "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo routes mainland domains direct" \
-        "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo resolves unclassified domains for mainland IP fallback" \
         "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo falls back to proxy for unclassified traffic" \

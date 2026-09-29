@@ -393,17 +393,17 @@ try {
     };
     before(rules, 'RULE-SET,direct-cdn,DIRECT', 'AND,((NETWORK,UDP)');
     assert.ok(!rules.includes('PROCESS-NAME,'), 'process names must not bypass service routing');
-    assert.ok(!rules.includes('GEOSITE,CN,'), 'broad ChinaMax domain set is not used');
+    assert.ok(rules.includes('GEOSITE,cn,DIRECT'), 'complete mainland domain set is used');
     assert.ok(rules.includes('IP-CIDR,0.0.0.0/8,REJECT,no-resolve'), 'DNS sinkhole addresses must not enter the proxy');
     assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
     assert.ok(template.includes('use-system-hosts: true'), 'local hosts are honored');
     assert.ok(template.includes('respect-rules: false'), 'DNS upstream routing must remain explicit');
     assert.ok(template.includes('fake-ip-filter-mode: blacklist'), 'fake-IP filtering remains compatible with client DNS overrides');
-    assert.ok(template.includes("'geosite:geolocation-cn'"), 'DNS and routing share the narrow mainland set');
+    assert.ok(template.includes("'geosite:cn'"), 'DNS and routing share the complete mainland set');
     const fcmProxyRule = 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY';
     before(rules, 'GEOIP,LAN,DIRECT,no-resolve', fcmProxyRule);
     assert.ok(!rules.includes('代理模式'));
-    before(rules, fcmProxyRule, 'GEOSITE,geolocation-cn,DIRECT');
+    before(rules, fcmProxyRule, 'GEOSITE,cn,DIRECT');
     before(rules, fcmProxyRule, 'GEOIP,CN,DIRECT');
     const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
     assert.ok(fakeIpFilter.includes("      - 'geosite:googlefcm'\n"));
@@ -426,11 +426,11 @@ try {
         before(rules, `AND,((NETWORK,UDP),(DST-PORT,443),(${matcher})),REJECT`, `${matcher},PROXY`);
         before(rules, `${matcher},PROXY`, 'GEOSITE,apple-cn,DIRECT');
         before(rules, `${matcher},PROXY`, 'GEOSITE,microsoft@cn,DIRECT');
-        before(rules, `${matcher},PROXY`, 'GEOSITE,geolocation-cn,DIRECT');
+        before(rules, `${matcher},PROXY`, 'GEOSITE,cn,DIRECT');
     }
     before(rules, 'GEOSITE,microsoft@cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOSITE,apple-cn,DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
-    before(rules, 'GEOSITE,geolocation-cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
+    before(rules, 'GEOSITE,cn,DIRECT', 'GEOSITE,category-ai-chat-!cn,PROXY');
     assert.ok(
         rules.includes('AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT'),
         'mainland QUIC matching must allow DNS resolution',
@@ -441,10 +441,14 @@ try {
     before(rules, 'AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT', 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
     before(rules, 'GEOIP,CN,DIRECT', 'MATCH,PROXY');
     const dnsPolicy = template.split('    nameserver-policy:\n')[1].split('    nameserver:\n')[0];
-    for (const key of ['geosite:google', 'geosite:github', 'geosite:openai,anthropic', 'rule-set:proxy-services', 'geosite:geolocation-!cn,gfw']) {
-        assert.ok(!dnsPolicy.includes(`'${key}':`), `${key} must use the default proxied DoH`);
+    for (const key of ['geosite:google,github,openai,anthropic', 'rule-set:proxy-services']) {
+        assert.ok(dnsPolicy.includes(
+            `      '${key}':\n        - 'https://1.1.1.1/dns-query#PROXY'\n        - 'https://8.8.8.8/dns-query#PROXY'`
+        ), `${key} must use proxied DoH even when overlapping cn`);
+        before(dnsPolicy, `'${key}':`, "'geosite:cn':");
     }
-    for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:geolocation-cn']) {
+    assert.ok(fakeIpFilter.includes("      - 'geosite:cn'\n"));
+    for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:cn']) {
         assert.ok(dnsPolicy.includes(
             `      '${key}':\n        - https://223.5.5.5/dns-query\n        - https://1.12.12.12/dns-query`
         ), `${key} must use mainland DoH`);
@@ -469,7 +473,7 @@ try {
     for (const domain of [
         "'+.copilot.microsoft.com'", 'r.bing.com', 'in.appcenter.ms', "'+.githubcopilot.com'",
         'challenges.cloudflare.com', 'openai-api.arkoselabs.com', "'+.client-api.arkoselabs.com'",
-        "'+.aka.ms'", "'+.1drv.ms'", "'+.oneclient.sfx.ms'", "'+.steamcommunity.com'",
+        "'+.ms'", "'+.aka.ms'", "'+.1drv.ms'", "'+.oneclient.sfx.ms'", "'+.steamcommunity.com'",
     ]) {
         assert.ok(proxyServices.includes(`        - ${domain}\n`), `${domain} must remain a proxy exception`);
     }
