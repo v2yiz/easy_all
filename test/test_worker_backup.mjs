@@ -98,7 +98,7 @@ const streamOneResp = await streamOne(streamOneReq, uuid, address => {
 });
 assert.equal(streamOneCalls, 1);
 assert.equal(streamOneResp.status, 200);
-assert.equal(streamOneResp.headers.get('Content-Type'), 'application/octet-stream');
+assert.equal(streamOneResp.headers.get('Content-Type'), 'text/event-stream');
 assert.equal(streamOneResp.headers.get('Cache-Control'), 'no-store');
 const streamOneReader = streamOneResp.body.getReader();
 const { value: firstChunk, done: firstDone } = await streamOneReader.read();
@@ -294,8 +294,20 @@ assert.equal(timers.size, 0);
 
 // Dynamic aggregation handler: refreshed source is consumed on every request.
 const primary = Array.from({ length: 6 }, (_, i) => `vless://${uuid}@104.17.0.${i + 1}:443?security=tls&type=xhttp&host=node.example.com&path=%2Fx#primary${i}`);
+const workerXmux = {
+    maxConnections: 4,
+    cMaxReuseTimes: 0,
+    hMaxRequestTimes: '300-600',
+    hMaxReusableSecs: '900-1800',
+    hKeepAlivePeriod: 0,
+};
+const workerExtra = encodeURIComponent(JSON.stringify({
+    uplinkHTTPMethod: 'POST',
+    noGRPCHeader: false,
+    xmux: workerXmux,
+}));
 const xhttpBackupLinks = Array.from({ length: 6 }, (_, i) =>
-    `vless://${uuid}@104.16.${i + 1}.${i + 1}:443?encryption=none&security=tls&type=xhttp&mode=stream-one&alpn=h2&host=backup.example.com&sni=backup.example.com&path=%2Fws&easyAllBackup=1#backup${i}`);
+    `vless://${uuid}@104.16.${i + 1}.${i + 1}:443?encryption=none&security=tls&type=xhttp&mode=stream-one&alpn=h2&host=backup.example.com&sni=backup.example.com&path=%2Fws&extra=${workerExtra}&easyAllBackup=1#backup${i}`);
 const aggregation = await readFile(new URL('../worker-src/index.js', import.meta.url), 'utf8');
 const handler = vm.runInNewContext(aggregation.replace(/export default \{[\s\S]*$/, 'handleRequest;'), {
     PRIVATE_CONFIG: { allowedTokens: { owner: 'test-token' }, nodes: [], fallbackCdnNodes: [], vpsSubUrl: 'https://source.invalid/', requireDynamicCdn: true },
@@ -313,6 +325,9 @@ assert.equal((yaml.match(/network: xhttp/g) || []).length, 12);
 assert.equal((yaml.match(/mode: "stream-one"/g) || []).length, 6);
 assert.equal((yaml.match(/no-grpc-header: false/g) || []).length, 12);
 assert.equal((yaml.match(/udp: false/g) || []).length, 6);
+assert.equal((yaml.match(/max-connections: 4/g) || []).length, 6);
+assert.equal((yaml.match(/h-max-request-times: "300-600"/g) || []).length, 6);
+assert.equal((yaml.match(/path: "\/ws\/"/g) || []).length, 6);
 const groups = yaml.split('proxy-groups:\n')[1].split('rules:\n')[0];
 const proxyGroup = groups.split('    - name: 🇺🇸白天首选')[0];
 const globalGroup = groups.split('    - name: GLOBAL')[1].split('    - name: 🇺🇸白天首选')[0];
@@ -342,6 +357,9 @@ assert.equal(decoded.split('\n').filter(Boolean).length, 12);
 assert.ok(decoded.includes('mode=stream-one'));
 assert.ok(decoded.includes('easyAllBackup=1'));
 assert.ok(!decoded.includes('type=ws'));
+const renderedBackup = decoded.split('\n').find(line => line.includes('easyAllBackup=1'));
+assert.deepEqual(JSON.parse(new URL(renderedBackup).searchParams.get('extra')).xmux, workerXmux);
+assert.equal(new URL(renderedBackup).searchParams.get('path'), '/ws/');
 
 // Empty worker backup removes group
 const emptyHandler = vm.runInNewContext(aggregation.replace(/export default \{[\s\S]*$/, 'handleRequest;'), {

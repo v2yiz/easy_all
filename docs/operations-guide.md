@@ -173,7 +173,8 @@ URL-Test 自动测速并设置 `hidden: true`，作为 PROXY 内的选项，不�
 纯 Worker 节点全面使用 XHTTP stream-one 原生流传输，TCP 两端通过原生 Stream `pipeTo()`
 传递背压，支持超过 8 MiB 的持续大文件下载，不保留旧 WebSocket 模式。stream-one 的全部上行
 位于单个 HTTP POST 请求体内，因此仍受 Cloudflare 套餐的请求体大小限制（Free/Pro 通常为
-100 MB）；大文件上传应改用 VPS 节点。
+100 MB）；大文件上传应改用 VPS 节点。客户端 XMUX 最多建立 4 条底层 HTTP/2 连接，
+避免多个并发代理请求全部挤在同一条 TCP 连接上。
 新配置的纯 Worker 默认就近运行（`WORKER_BACKUP_PLACEMENT=off`）。已有香港定向配置不会自动覆盖；
 如需比较就近执行与香港定向的速度，在 `/etc/easy_all/state.env` 将该项改为 `off`，然后运行
 `sudo easy_all apply-cloud` 重新部署。保留原值 `aws:ap-east-1` 可恢复香港定向；两者均不保证固定出口 IP。

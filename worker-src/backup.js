@@ -113,7 +113,7 @@ export async function streamOne(request, uuid, dial = connect) {
         void upstream.catch(finish);
         void downstreamPump.catch(finish);
         return new Response(downstream.readable, {
-            headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' },
+            headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' },
         });
     } catch (error) {
         finish(error);

@@ -75,7 +75,10 @@ Mihomo 自动生成的 `DIRECT`、`REJECT` 与节点平铺列表；局域网 IPv
 TCP 下行与 `IdentityTransformStream` 分别通过原生 `pipeTo()` 直通，由底层流传递背压，
 无需单连接 8 MiB 下行限制。连接建立阶段限制为 10 秒，后续生命周期由 HTTP、TCP 与客户端共同管理。
 stream-one 的全部上行位于单个 HTTP 请求体内，仍受 Cloudflare 套餐请求体大小限制；
-Free/Pro 通常为 100 MB，因此大文件上传应选择 VPS 节点。
+Free/Pro 通常为 100 MB，因此大文件上传应选择 VPS 节点。Worker 客户端 XMUX 使用
+`maxConnections=4`，将并发代理请求分散到最多 4 条底层 HTTP/2 连接；单条 TCP 流仍保持有序，
+不会拆分为多路传输。客户端路径统一规范为单个尾斜杠，Worker 下行使用
+`Content-Type: text/event-stream` 并禁用缓存和代理缓冲。
 部署验收和优选 IP 刷新会启动临时 Xray SOCKS 入站，以与订阅相同的候选 IP、SNI、Host、
 HTTP/2 和 stream-one 参数访问 Google `generate_204`，避免普通 HTTP 请求产生误判。
 新配置默认 `WORKER_BACKUP_PLACEMENT=off`，使用 Cloudflare 默认就近执行，避免无条件定向香港。

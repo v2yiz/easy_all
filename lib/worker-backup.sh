@@ -101,7 +101,17 @@ worker_backup_probe_config() {
               tlsSettings:{serverName:$host,alpn:["h2"],fingerprint:"chrome"},
               xhttpSettings:{
                 host:$host,path:$path,mode:"stream-one",
-                extra:{uplinkHTTPMethod:"POST",noGRPCHeader:false}
+                extra:{
+                  uplinkHTTPMethod:"POST",
+                  noGRPCHeader:false,
+                  xmux:{
+                    maxConnections:4,
+                    cMaxReuseTimes:0,
+                    hMaxRequestTimes:"300-600",
+                    hMaxReusableSecs:"900-1800",
+                    hKeepAlivePeriod:0
+                  }
+                }
               }
             }
           }]
@@ -290,18 +300,29 @@ cloudflare_refresh_backup_nodes() {
 worker_backup_nodes() {
     worker_backup_enabled || return 0
     [[ -n "${WORKER_BACKUP_DOMAIN_ID:-}" ]] || return 0
+    local client_path="${WORKER_BACKUP_PATH%/}/"
     jq -cn --arg host "${WORKER_BACKUP_DOMAIN}" --arg uuid "${WORKER_BACKUP_UUID}" \
-        --arg path "${WORKER_BACKUP_PATH}" --argjson ips "${WORKER_BACKUP_IPS:-[]}" '
+        --arg path "${client_path}" --argjson ips "${WORKER_BACKUP_IPS:-[]}" '
         $ips | to_entries[] | {
           type:"vless",security:"tls",network:"xhttp",mode:"stream-one",uuid:$uuid,host:$host,sni:$host,
           server:.value,port:443,path:$path,udp:false,ipVersion:"ipv4",
+          xhttpUplinkHttpMethod:"POST",xhttpNoGrpcHeader:false,
+          xhttpXmux:{
+            maxConnections:4,
+            cMaxReuseTimes:0,
+            hMaxRequestTimes:"300-600",
+            hMaxReusableSecs:"900-1800",
+            hKeepAlivePeriod:0
+          },
           name:("🇭🇰CF" + ((.key + 1)|tostring))
         }'
 }
 
 build_worker_backup_links() {
     worker_backup_nodes | jq -r '
-        "vless://\(.uuid)@\(.server):443?encryption=none&security=tls&type=xhttp&mode=stream-one&alpn=h2&host=\(.host)&sni=\(.sni)&path=\(.path|@uri)&easyAllBackup=1#\(.name|@uri)"'
+        ({uplinkHTTPMethod:.xhttpUplinkHttpMethod,noGRPCHeader:.xhttpNoGrpcHeader,xmux:.xhttpXmux}
+          | tojson | @uri) as $extra |
+        "vless://\(.uuid)@\(.server):443?encryption=none&security=tls&type=xhttp&mode=stream-one&alpn=h2&host=\(.host)&sni=\(.sni)&path=\(.path|@uri)&extra=\($extra)&easyAllBackup=1#\(.name|@uri)"'
 }
 
 build_worker_backup_mihomo() {
@@ -309,7 +330,13 @@ build_worker_backup_mihomo() {
         "  - name: \(.name|@json)\n    type: vless\n    server: \(.server|@json)\n    port: 443\n" +
         "    uuid: \(.uuid|@json)\n    network: xhttp\n    tls: true\n    udp: false\n" +
         "    skip-cert-verify: false\n    servername: \(.host|@json)\n    ip-version: ipv4\n" +
-        "    alpn: [h2]\n    xhttp-opts:\n      host: \(.host|@json)\n      path: \(.path|@json)\n      mode: stream-one\n      no-grpc-header: false"'
+        "    alpn: [h2]\n    xhttp-opts:\n      host: \(.host|@json)\n      path: \(.path|@json)\n      mode: stream-one\n" +
+        "      no-grpc-header: false\n      uplink-http-method: POST\n      reuse-settings:\n" +
+        "        max-connections: \(.xhttpXmux.maxConnections)\n" +
+        "        c-max-reuse-times: \(.xhttpXmux.cMaxReuseTimes)\n" +
+        "        h-max-request-times: \(.xhttpXmux.hMaxRequestTimes)\n" +
+        "        h-max-reusable-secs: \(.xhttpXmux.hMaxReusableSecs)\n" +
+        "        h-keep-alive-period: \(.xhttpXmux.hKeepAlivePeriod)"'
 }
 
 cloudflare_rollback_backup_worker() {

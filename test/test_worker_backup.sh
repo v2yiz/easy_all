@@ -39,6 +39,13 @@ jq -e '
     and .outbounds[0].streamSettings.xhttpSettings.path == "/vless-test/"
     and .outbounds[0].streamSettings.xhttpSettings.mode == "stream-one"
     and .outbounds[0].streamSettings.xhttpSettings.extra.noGRPCHeader == false
+    and .outbounds[0].streamSettings.xhttpSettings.extra.xmux == {
+        maxConnections:4,
+        cMaxReuseTimes:0,
+        hMaxRequestTimes:"300-600",
+        hMaxReusableSecs:"900-1800",
+        hKeepAlivePeriod:0
+    }
 ' <<<"${probe_config}" >/dev/null || fail 'real Xray probe configuration'
 (
     WORKER_BACKUP_PROBE_PID=12345
@@ -67,6 +74,24 @@ cloudflare_refresh_backup_nodes
 [[ "$(build_worker_backup_mihomo)" == *'mode: stream-one'* ]] || fail 'Mihomo stream-one'
 [[ "$(build_worker_backup_mihomo)" == *'udp: false'* ]] || fail 'TCP only'
 [[ "$(build_worker_backup_links)" == *'host=backup.example.com&sni=backup.example.com'* ]] || fail 'separate server and TLS hostname'
+backup_link=$(build_worker_backup_links | head -n 1)
+backup_extra=$(node -e 'process.stdout.write(new URL(process.argv[1]).searchParams.get("extra") || "")' "${backup_link}")
+backup_path=$(node -e 'process.stdout.write(new URL(process.argv[1]).searchParams.get("path") || "")' "${backup_link}")
+[[ "${backup_path}" == "/vless-test/" ]] || fail 'VLESS link normalizes the Worker path suffix'
+jq -e '.xmux.maxConnections == 4
+    and .xmux.cMaxReuseTimes == 0
+    and .xmux.hMaxRequestTimes == "300-600"
+    and .xmux.hMaxReusableSecs == "900-1800"
+    and .xmux.hKeepAlivePeriod == 0' <<<"${backup_extra}" >/dev/null \
+    || fail 'VLESS link carries Worker XMUX settings'
+mihomo_backup=$(build_worker_backup_mihomo)
+[[ "${mihomo_backup}" == *'max-connections: 4'* \
+    && "${mihomo_backup}" == *'c-max-reuse-times: 0'* \
+    && "${mihomo_backup}" == *'h-max-request-times: 300-600'* \
+    && "${mihomo_backup}" == *'h-max-reusable-secs: 900-1800'* \
+    && "${mihomo_backup}" == *'h-keep-alive-period: 0'* ]] \
+    || fail 'Mihomo Worker node carries four-connection XMUX settings'
+[[ "${mihomo_backup}" == *'path: "/vless-test/"'* ]] || fail 'Mihomo normalizes the Worker path suffix'
 worker_backup_probe() { return 1; }
 previous_ips=${WORKER_BACKUP_IPS}
 cloudflare_refresh_backup_nodes
