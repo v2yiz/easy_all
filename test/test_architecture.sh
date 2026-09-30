@@ -18,6 +18,9 @@ fail() {
     exit 1
 }
 
+[[ "${LAUNCHER_CONTENT}" == *'export LANG=C.UTF-8 LC_ALL=C.UTF-8'* ]] \
+    || fail "launcher must normalize inherited locale settings"
+
 module_functions() {
     sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
 }

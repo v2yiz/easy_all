@@ -2,6 +2,7 @@
 
 set -Eeuo pipefail
 umask 077
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # Cron commonly starts commands with only /usr/bin:/bin. easy_all also needs
 # administrative tools such as ufw and iptables-restore from the sbin paths.
