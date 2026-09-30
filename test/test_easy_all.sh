@@ -834,7 +834,7 @@ test_rotate_dynamic_ports_command() {
 }
 
 test_scheduled_reboot_keeps_dynamic_ports() {
-    local cron_state_file="${TMP_DIR}/reboot.cron" cron_state
+    local cron_state_file="${TMP_DIR}/reboot.cron" cron_state reboot_hook_definition
     : >"${cron_state_file}"
     crontab() {
         if [[ "${1:-}" == "-l" ]]; then
@@ -854,6 +854,13 @@ test_scheduled_reboot_keeps_dynamic_ports() {
         "refresh-xray-assets" "${cron_state}"
     assert_contains "daily Reality reboot remains scheduled" \
         "/usr/sbin/reboot" "${cron_state}"
+    reboot_hook_definition=$(declare -f scheduled_reboot_profile_pre_command)
+    unset -f scheduled_reboot_profile_pre_command
+    configure_daily_reboot
+    cron_state=$(<"${cron_state_file}")
+    assert_contains "daily reboot works without a profile pre-command" \
+        "( true )" "${cron_state}"
+    eval "${reboot_hook_definition}"
     unset REBOOT_SCHEDULE_MODE
     unset -f crontab
 }

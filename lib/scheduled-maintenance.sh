@@ -20,7 +20,7 @@ read_root_crontab() {
 
 configure_daily_reboot() {
     local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job current
-    local pre_command profile_pre_command=""
+    local pre_command="" profile_pre_command=""
     if [[ -z "${mode}" && -t 0 ]]; then
         printf '请选择定时重启策略：\n'
         printf '  1. 每天凌晨 4 点重启（默认）\n'
