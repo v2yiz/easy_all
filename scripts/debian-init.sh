@@ -192,7 +192,8 @@ load_platform_module() {
   else
     downloaded="$(mktemp)"
     LOCAL_TEMP_FILES+=("${downloaded}")
-    curl -fsSL --retry 3 "${DEFAULT_PLATFORM_MODULE_URL}" -o "${downloaded}" \
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+        "${DEFAULT_PLATFORM_MODULE_URL}" -o "${downloaded}" \
       || die "下载公共平台模块失败：${DEFAULT_PLATFORM_MODULE_URL}"
     PLATFORM_MODULE_FILE="${downloaded}"
   fi
@@ -216,7 +217,8 @@ load_platform_module() {
   else
     firewall_downloaded="$(mktemp)"
     LOCAL_TEMP_FILES+=("${firewall_downloaded}")
-    curl -fsSL --retry 3 "${DEFAULT_FIREWALL_MODULE_URL}" -o "${firewall_downloaded}" \
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+        "${DEFAULT_FIREWALL_MODULE_URL}" -o "${firewall_downloaded}" \
       || die "下载公共防火墙模块失败：${DEFAULT_FIREWALL_MODULE_URL}"
     FIREWALL_MODULE_FILE="${firewall_downloaded}"
   fi

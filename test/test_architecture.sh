@@ -33,6 +33,16 @@ while IFS= read -r required_path; do
     [[ -f "${ROOT_DIR}/${required_path}" ]] \
         || fail "required runtime path is missing: ${required_path}"
 done <<<"${RUNTIME_MANIFEST_CONTENT}"
+while IFS= read -r runtime_path; do
+    [[ "${runtime_path}" == *.sh ]] || continue
+    while IFS= read -r sourced_module; do
+        grep -Fxq "lib/${sourced_module}" "${RUNTIME_MANIFEST}" \
+            || fail "runtime manifest omits sourced module lib/${sourced_module}"
+    done < <(
+        sed -nE 's@^[[:space:]]*source "\$\{[^}]+\}/([^"/]+\.sh)".*@\1@p' \
+            "${ROOT_DIR}/${runtime_path}"
+    )
+done <<<"${RUNTIME_MANIFEST_CONTENT}"
 shared_modules=(
     quota.sh
     platform.sh
@@ -270,11 +280,9 @@ fi
     && "$(<"${XHTTP_RUNTIME}")" == *'ca-certificates curl wget gnupg'* ]] \
     || fail "all Profiles must install gnupg before verifying the XanMod key"
 
-[[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" == *'bash "${launcher}" register-command'* ]] \
-    || fail "profiles must delegate command registration to the unified launcher"
-[[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" != *'已注册单文件命令'* \
+[[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" != *'register_easy_all_command()'* \
     && "$(<"${ROOT_DIR}/lib/profile-common.sh")" == *'validate_domain()'* ]] \
-    || fail "profile common helpers must include validation and unified registration"
+    || fail "profile common must not retain dead launcher registration code"
 
 (
     BACKUP_DIR=$(mktemp -d)

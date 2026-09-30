@@ -402,21 +402,50 @@ fi
     assert_equal "Reused domain is not marked as new" '' "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}"
 )
 
-# Reusing a script must not mark it as newly created, even without a saved domain ID.
+# Existing scripts require a saved ownership record; owned scripts are snapshotted.
 (
     CLOUDFLARE_WORKER_DOMAIN_ID=""
     CLOUDFLARE_API_TOKEN=test-api-token-placeholder
     CLOUDFLARE_WORKER_BUILD_CURRENT=1
+    mock_scripts='[{"id":"easyall"}]'
     cloudflare_api_request() { printf '%s\n' "${mock_scripts}"; }
     curl() { printf '{"success":true}\n'; }
+    if (cloudflare_validate_worker_access >/dev/null 2>&1); then
+        fail "Unowned existing Worker must not be overwritten"
+    fi
+    CLOUDFLARE_WORKER_DOMAIN_ID=test-worker-domain-id
+    cloudflare_api_request() {
+        case "$2" in
+        */workers/domains)
+            printf '[{"id":"test-worker-domain-id","hostname":"sub.example.com","service":"easyall"}]\n'
+            ;;
+        */deployments)
+            printf '{"deployments":[{"versions":[{"version_id":"11111111-1111-4111-8111-111111111111","percentage":100}]}]}\n'
+            ;;
+        *) printf '%s\n' "${mock_scripts}" ;;
+        esac
+    }
+    CLOUDFLARE_WORKER_DOMAIN_ID=wrong-worker-domain-id
+    if (cloudflare_validate_worker_access >/dev/null 2>&1); then
+        fail "Mismatched Worker domain ownership must not authorize overwrite"
+    fi
+    CLOUDFLARE_WORKER_DOMAIN_ID=test-worker-domain-id
     for mock_scripts in '[{"id":"easyall"}]' '[]'; do
         unset CLOUDFLARE_WORKER_CREATED
+        rm -f -- "${RUNTIME_TMP}/subscription-worker-deployment-prev.json"
+        if [[ "${mock_scripts}" == '[]' ]]; then
+            CLOUDFLARE_WORKER_DOMAIN_ID=""
+        else
+            CLOUDFLARE_WORKER_DOMAIN_ID=test-worker-domain-id
+        fi
         cloudflare_validate_worker_access
         cloudflare_upload_subscription_worker
         if [[ "${mock_scripts}" == '[]' ]]; then
             assert_equal "New Worker is tracked for rollback" 1 "${CLOUDFLARE_WORKER_CREATED:-0}"
         else
-            assert_equal "Reused Worker is retained on rollback" 0 "${CLOUDFLARE_WORKER_CREATED:-0}"
+            assert_equal "Owned Worker is retained on rollback" 0 "${CLOUDFLARE_WORKER_CREATED:-0}"
+            [[ -s "${RUNTIME_TMP}/subscription-worker-deployment-prev.json" ]] \
+                || fail "Owned Worker deployment must be snapshotted"
         fi
     done
 )

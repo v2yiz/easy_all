@@ -3,7 +3,7 @@
 # Shared Mihomo template loading and validation.
 
 validate_mihomo_template() {
-    local source=$1 marker count
+    local source=$1 trusted_without_core=${2:-0} marker count
     [[ -s "${source}" ]] || die "Mihomo 模板为空：${source}"
     for marker in \
         "# EASY_ALL_PROXY_NODE" \
@@ -25,7 +25,10 @@ validate_mihomo_template() {
     bundled="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/templates/mihomo.yaml"
     binary=${MIHOMO_CHECK_BIN:-mihomo}
     if ! command -v "${binary}" >/dev/null 2>&1; then
-        [[ -z "${MIHOMO_CHECK_BIN:-}" ]] && cmp -s "${source}" "${bundled}" && return 0
+        if [[ -z "${MIHOMO_CHECK_BIN:-}" ]] \
+            && { [[ "${trusted_without_core}" == "1" ]] || cmp -s "${source}" "${bundled}"; }; then
+            return 0
+        fi
         die "自定义 Mihomo 模板须经内核校验：请安装 mihomo 或设置 MIHOMO_CHECK_BIN"
     fi
     check_dir=$(mktemp -d) || die "无法创建 Mihomo 校验目录"
@@ -47,7 +50,7 @@ validate_mihomo_template() {
 }
 
 fetch_mihomo_template() {
-    local destination=$1 source=${MIHOMO_TEMPLATE_SOURCE:-} url
+    local destination=$1 source=${MIHOMO_TEMPLATE_SOURCE:-} url trusted_without_core=0
     if [[ -n "${source}" ]]; then
         if [[ -f "${source}" ]]; then
             install -m 0600 "${source}" "${destination}"
@@ -60,14 +63,16 @@ fetch_mihomo_template() {
         fi
     elif [[ -f "${SCRIPT_DIR}/../templates/mihomo.yaml" ]]; then
         install -m 0600 "${SCRIPT_DIR}/../templates/mihomo.yaml" "${destination}"
+        trusted_without_core=1
     else
         url=${MIHOMO_TEMPLATE_URL:-${DEFAULT_MIHOMO_TEMPLATE_URL}}
         [[ "${url}" =~ ^https:// ]] \
             || die "MIHOMO_TEMPLATE_URL 必须使用 HTTPS：${url}"
         curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 "${url}" -o "${destination}" \
             || die "下载 Mihomo 模板失败：${url}"
+        [[ "${url}" == "${DEFAULT_MIHOMO_TEMPLATE_URL}" ]] && trusted_without_core=1
     fi
-    validate_mihomo_template "${destination}"
+    validate_mihomo_template "${destination}" "${trusted_without_core}"
 }
 
 prepare_mihomo_template() {

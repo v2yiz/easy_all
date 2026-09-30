@@ -64,20 +64,24 @@ cloudflare_clear_api_token() {
 
 cloudflare_api_request() {
     local method=$1 path=$2 payload=${3:-} response headers payload_file status
+    local -a retry_args=(--retry 0)
     [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "缺少 CLOUDFLARE_API_TOKEN"
     headers="${RUNTIME_TMP}/cloudflare-api-headers"
     printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
         "${CLOUDFLARE_API_TOKEN}" >"${headers}"
     chmod 0600 "${headers}"
+    case "${method}" in
+    GET | HEAD | PUT) retry_args=(--retry 2) ;;
+    esac
     if [[ -n "${payload}" ]]; then
         payload_file="${RUNTIME_TMP}/cloudflare-api-payload"
         printf '%s' "${payload}" >"${payload_file}"
         chmod 0600 "${payload_file}"
-        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
+        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
             -H "@${headers}" \
             --data-binary "@${payload_file}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     else
-        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
+        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
             -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
     fi
     status=${response##*$'\n'}
@@ -211,7 +215,7 @@ choose_cloudflare_worker_name() {
 }
 
 cloudflare_validate_worker_access() {
-    local scripts count
+    local scripts domains count
     subscription_enabled || return 0
     [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ ]] \
         || die "Cloudflare Zone 未返回有效 Account ID"
@@ -223,11 +227,88 @@ cloudflare_validate_worker_access() {
     ((count <= 1)) || die "Cloudflare 返回多个同名 Worker：${CLOUDFLARE_WORKER_NAME}"
     CLOUDFLARE_WORKER_EXISTS=${count}
     if ((count == 1)); then
+        [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
+            || die "Worker ${CLOUDFLARE_WORKER_NAME} 已存在且无本机所有权记录，拒绝覆盖"
+        domains=$(cloudflare_api_request GET \
+            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") \
+            || die "无法验证 Worker ${CLOUDFLARE_WORKER_NAME} 的自定义域名所有权"
+        jq -e --arg id "${CLOUDFLARE_WORKER_DOMAIN_ID}" \
+            --arg service "${CLOUDFLARE_WORKER_NAME}" \
+            'any(.[]; .id == $id and .service == $service)' \
+            <<<"${domains}" >/dev/null \
+            || die "Worker ${CLOUDFLARE_WORKER_NAME} 所有权记录与 Cloudflare 不一致，拒绝覆盖"
+        cloudflare_snapshot_worker_deployment \
+            "${CLOUDFLARE_WORKER_NAME}" \
+            "${RUNTIME_TMP}/subscription-worker-deployment-prev.json"
         info "复用 Worker ${CLOUDFLARE_WORKER_NAME}，将更新订阅脚本"
     fi
     if [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" && "${count}" != "1" ]]; then
         die "状态中的 Worker ${CLOUDFLARE_WORKER_NAME} 不存在；拒绝创建来源不明的新 Worker"
     fi
+}
+
+cloudflare_snapshot_worker_deployment() {
+    local name=$1 destination=$2 deployments
+    [[ ! -s "${destination}" ]] || return 0
+    deployments=$(cloudflare_api_request GET \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${name}")/deployments") \
+        || die "无法读取 Worker ${name} 当前部署，中止更新"
+    jq -ce '
+      .deployments[0].versions
+      | select(type == "array" and length >= 1 and length <= 2)
+      | select(all(.[];
+          (.version_id | type) == "string"
+          and (.version_id | test("^[0-9A-Fa-f-]{36}$"))
+          and (.percentage | type) == "number"
+          and .percentage > 0))
+      | select((map(.percentage) | add) == 100)
+      | {
+          strategy:"percentage",
+          versions:map({version_id,percentage}),
+          annotations:{"workers/message":"easy_all automatic rollback"}
+        }
+    ' <<<"${deployments}" >"${destination}" \
+        || die "Worker ${name} 当前部署信息无效，中止更新以避免无法回滚"
+    chmod 0600 "${destination}"
+}
+
+cloudflare_restore_worker_deployment() {
+    local name=$1 source=$2
+    [[ -s "${source}" ]] || return 0
+    cloudflare_api_request POST \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${name}")/deployments?force=true" \
+        "$(<"${source}")" >/dev/null
+}
+
+rollback_provider_subscription_update() {
+    local worker_name=${CLOUDFLARE_WORKER_NAME:-} failed=0
+    local deployment="${RUNTIME_TMP}/subscription-worker-deployment-prev.json"
+    if [[ "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ]]; then
+        cloudflare_delete_subscription_worker_resources \
+            "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${worker_name}" || failed=1
+    else
+        if [[ -n "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}" ]]; then
+            cloudflare_api_request DELETE \
+                "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}" \
+                >/dev/null || failed=1
+        fi
+        [[ -z "${worker_name}" ]] \
+            || cloudflare_restore_worker_deployment "${worker_name}" "${deployment}" \
+            || failed=1
+    fi
+    if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
+        cloudflare_api_request DELETE \
+            "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null \
+            || failed=1
+    fi
+    ((failed == 0))
+}
+
+cloudflare_commit_provider_subscription_update() {
+    rm -f -- "${RUNTIME_TMP}/subscription-worker-deployment-prev.json"
+    CLOUDFLARE_WORKER_CREATED=0
+    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=""
+    CLOUDFLARE_CREATED_ORIGIN_CERT_ID=""
 }
 
 ensure_cloudflare_worker_builder() {
@@ -1359,7 +1440,7 @@ load_state() {
         CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID
         CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
         CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID
-        VPS_IP_FAMILY VPS_PUBLIC_IPV6
+        VPS_IP_FAMILY VPS_PUBLIC_IPV4 VPS_PUBLIC_IPV6
         XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH
         ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
@@ -1472,7 +1553,7 @@ save_state() {
             CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID \
             CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON \
             CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID \
-            VPS_IP_FAMILY VPS_PUBLIC_IPV6 \
+            VPS_IP_FAMILY VPS_PUBLIC_IPV4 VPS_PUBLIC_IPV6 \
             XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH ORIGIN_HEADER_SECRET ALLOWED_TOKENS \
             SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
             QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
@@ -1896,7 +1977,7 @@ rollback_fresh_install() {
     cloudflare_remove_origin_firewall_rules
     restore_platform_security_state
     restore_preinstall_firewall
-    restore_bbr_tcp_install_state
+    restore_bbr_tcp_install_state 1
     restore_preinstall_crontab
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -1979,7 +2060,6 @@ install_all() {
     fi
     cloudflare_deploy_subscription_worker
     cloudflare_validate_subscription_worker
-    cloudflare_finalize_certificate_rotation
     cloudflare_prepare_backup_retirement
     save_state
     register_easy_all_command
@@ -1987,7 +2067,9 @@ install_all() {
     install_globalping_refresh_timer
     install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
+    cloudflare_finalize_certificate_rotation
     cloudflare_finalize_backup_worker
+    cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
@@ -2047,12 +2129,13 @@ apply_cloud_resources() {
     cloudflare_deploy_subscription_worker
     cloudflare_validate_subscription_worker
     cloudflare_validate_cdn_health
-    cloudflare_finalize_certificate_rotation
     cloudflare_prepare_backup_retirement
     save_state
     install_globalping_refresh_timer
     commit_subscription_update
+    cloudflare_finalize_certificate_rotation
     cloudflare_finalize_backup_worker
+    cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
@@ -2063,7 +2146,7 @@ apply_cloud_resources() {
 }
 
 update_subscription() {
-    local previous_subscription_host="" previous_worker_domain_id=""
+    local previous_subscription_host="" previous_worker_domain_id="" previous_worker_name=""
     local previous_subscription_enabled=0
     require_root
     begin_quota_maintenance
@@ -2072,6 +2155,7 @@ update_subscription() {
         previous_subscription_enabled=1
         previous_subscription_host=$(active_subscription_link_domain)
         previous_worker_domain_id=${CLOUDFLARE_WORKER_DOMAIN_ID}
+        previous_worker_name=${CLOUDFLARE_WORKER_NAME}
     fi
     snapshot_subscription_update
     choose_google_egress_mode
@@ -2113,23 +2197,28 @@ update_subscription() {
     if subscription_enabled; then
         cloudflare_deploy_subscription_worker
         cloudflare_validate_subscription_worker
-        cloudflare_cleanup_previous_subscription_host \
-            "${previous_subscription_host}" "${previous_worker_domain_id}"
     elif ((previous_subscription_enabled == 1)); then
-        cloudflare_delete_subscription_worker_resources \
-            "${previous_worker_domain_id}" "${CLOUDFLARE_WORKER_NAME}"
         CLOUDFLARE_WORKER_DOMAIN_ID=""
         CLOUDFLARE_WORKER_NAME=""
         WORKER_SOURCE_SECRET=""
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
     fi
     cloudflare_validate_cdn_health
-    cloudflare_finalize_certificate_rotation
     cloudflare_prepare_backup_retirement
     save_state
     install_globalping_refresh_timer
     commit_subscription_update
+    cloudflare_finalize_certificate_rotation
     cloudflare_finalize_backup_worker
+    if subscription_enabled; then
+        cloudflare_cleanup_previous_subscription_host \
+            "${previous_subscription_host}" "${previous_worker_domain_id}"
+    elif ((previous_subscription_enabled == 1)); then
+        cloudflare_delete_subscription_worker_resources \
+            "${previous_worker_domain_id}" "${previous_worker_name}" \
+            || warn "旧订阅 Worker 尚未清理，请稍后执行 easy_all apply-cloud 重试"
+    fi
+    cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then

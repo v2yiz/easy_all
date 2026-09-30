@@ -97,6 +97,9 @@ assert_equal "quota map is normalized" '{"owner":0,"user1":100}' "${quotas}"
 if normalize_monthly_quotas '{}' >/dev/null 2>&1; then
     fail "quota map must contain at least one user"
 fi
+if normalize_monthly_quotas '{" owner ":100,"owner":200}' >/dev/null 2>&1; then
+    fail "quota map must reject usernames duplicated after trimming"
+fi
 
 generated_tokens=$(build_quota_tokens "${quotas}" '{"owner":"owner-token-123"}')
 assert_equal "existing owner token is preserved" "owner-token-123" \

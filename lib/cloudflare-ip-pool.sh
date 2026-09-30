@@ -12,7 +12,8 @@ readonly CLOUDFLARE_CACHE_VERSION=8
 readonly CLOUDFLARE_PROBES_PER_CANDIDATE=3
 readonly CLOUDFLARE_TLS_CANDIDATES_PER_CARRIER=5
 readonly CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY=12
-readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-20}"
+readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-60}"
+readonly GLOBALPING_POLL_TIMEOUT_SECONDS="${GLOBALPING_POLL_TIMEOUT_SECONDS_OVERRIDE:-120}"
 
 readonly CLOUDFLARE_PRIORITY_IPV4_CIDRS=(
     "104.16.0.0/13"
@@ -160,25 +161,30 @@ cloudflare_globalping_measurement_request() {
 }
 
 cloudflare_wait_globalping_measurement() {
-    local measurement_id=$1 result status attempt
-    for ((attempt = 1; attempt <= GLOBALPING_POLL_ATTEMPTS; attempt += 1)); do
-        result=$(globalping_api_request GET "/measurements/${measurement_id}") \
-            || return 1
+    local measurement_id=$1 result status attempt=0
+    local deadline=$(( $(date +%s) + GLOBALPING_POLL_TIMEOUT_SECONDS ))
+    while ((attempt < GLOBALPING_POLL_ATTEMPTS && $(date +%s) < deadline)); do
+        attempt=$((attempt + 1))
+        if ! result=$(globalping_api_request GET "/measurements/${measurement_id}"); then
+            sleep 2
+            continue
+        fi
         status=$(jq -r '.status // empty' <<<"${result}")
         if [[ "${status}" != "in-progress" ]]; then
             [[ "${status}" == "finished" ]] || return 1
             printf '%s\n' "${result}"
             return 0
         fi
-        sleep 1
+        sleep 2
     done
     return 1
 }
 
 cloudflare_collect_globalping_measurements() {
-    local pool_file=$1 destination=$2 jobs_file
-    local ip source_cidr created measurement_id result submitted=0 completed=0
+    local pool_file=$1 destination=$2 jobs_file results_dir part index=0
+    local ip source_cidr created measurement_id submitted=0 completed=0
     jobs_file=$(make_temp_dir)/cloudflare-globalping-jobs.tsv
+    results_dir=$(make_temp_dir)
     : >"${jobs_file}"
     : >"${destination}"
 
@@ -200,13 +206,25 @@ cloudflare_collect_globalping_measurements() {
 
     sleep 2
     while IFS=$'\t' read -r measurement_id ip source_cidr; do
-        result=$(cloudflare_wait_globalping_measurement "${measurement_id}") \
-            || continue
-        jq -c --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
-            '{ip:$ip,source_cidr:$source_cidr,address_family:"ipv4",measurement:.}' \
-            <<<"${result}" >>"${destination}"
-        completed=$((completed + 1))
+        index=$((index + 1))
+        part="${results_dir}/$(printf '%06d' "${index}").json"
+        (
+            result=$(cloudflare_wait_globalping_measurement "${measurement_id}") \
+                || exit 0
+            jq -c --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
+                '{ip:$ip,source_cidr:$source_cidr,address_family:"ipv4",measurement:.}' \
+                <<<"${result}" >"${part}"
+        ) &
+        if ((index % CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY == 0)); then
+            wait || true
+        fi
     done <"${jobs_file}"
+    wait || true
+    for part in "${results_dir}"/*.json; do
+        [[ -s "${part}" ]] || continue
+        cat "${part}" >>"${destination}"
+        completed=$((completed + 1))
+    done
     ((completed > 0)) || {
         warn "Cloudflare 官方 IP 池的 Globalping 测量均未完成"
         return 1
@@ -365,9 +383,10 @@ cloudflare_globalping_tls_measurement_request() {
 }
 
 cloudflare_collect_globalping_tls_measurements() {
-    local candidates_file=$1 domain=$2 destination=$3 jobs_file
-    local ip source_cidr asn rtt created measurement_id result submitted=0 completed=0
+    local candidates_file=$1 domain=$2 destination=$3 jobs_file results_dir part index=0
+    local ip source_cidr asn rtt created measurement_id submitted=0 completed=0
     jobs_file=$(make_temp_dir)/cloudflare-globalping-tls-jobs.tsv
+    results_dir=$(make_temp_dir)
     : >"${jobs_file}"
     : >"${destination}"
 
@@ -387,21 +406,33 @@ cloudflare_collect_globalping_tls_measurements() {
 
     sleep 2
     while IFS=$'\t' read -r measurement_id ip source_cidr asn rtt; do
-        result=$(cloudflare_wait_globalping_measurement "${measurement_id}") \
-            || continue
-        jq -c --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
-            --argjson asn "${asn}" --argjson rtt "${rtt}" \
-            '{ip:$ip,source_cidr:$source_cidr,address_family:"ipv4",carrier_asn:$asn,avg_rtt_ms:$rtt,measurement:.}' \
-            <<<"${result}" >>"${destination}"
-        completed=$((completed + 1))
+        index=$((index + 1))
+        part="${results_dir}/$(printf '%06d' "${index}").json"
+        (
+            result=$(cloudflare_wait_globalping_measurement "${measurement_id}") \
+                || exit 0
+            jq -c --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
+                --argjson asn "${asn}" --argjson rtt "${rtt}" \
+                '{ip:$ip,source_cidr:$source_cidr,address_family:"ipv4",carrier_asn:$asn,avg_rtt_ms:$rtt,measurement:.}' \
+                <<<"${result}" >"${part}"
+        ) &
+        if ((index % CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY == 0)); then
+            wait || true
+        fi
     done <"${jobs_file}"
+    wait || true
+    for part in "${results_dir}"/*.json; do
+        [[ -s "${part}" ]] || continue
+        cat "${part}" >>"${destination}"
+        completed=$((completed + 1))
+    done
 }
 
 cloudflare_parse_tls_observations() {
     local tls_file=$1
     [[ -s "${tls_file}" ]] || return 0
-    jq -sc '
-        map(
+    jq -Rsc '
+        split("\n") | map(select(length > 0) | fromjson?) | map(
             . as $entry
             | select(
                 any(.measurement.results[]?;
@@ -717,7 +748,8 @@ cloudflare_build_official_pool_cache() {
         "${CLOUDFLARE_CANDIDATE_LIMIT}" \
         "${history_candidates_tsv}" >"${preliminary_file}"
 
-    count=$(jq 'length' "${preliminary_file}")
+    count=$(jq -er 'length' "${preliminary_file}") \
+        || { warn "Globalping 候选结果不是有效 JSON"; return 1; }
     if (( count < CLOUDFLARE_CANDIDATE_LIMIT )); then
         warn "Globalping HTTP/TLS 有效候选：$(jq -sr '
             [4134,4837,9808][] as $asn

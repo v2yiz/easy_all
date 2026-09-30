@@ -6,19 +6,25 @@
 # info/warn/die. Profile modules remain responsible for snapshots and NAT rules.
 
 set_ufw_ipv6() {
-    local enabled=$1
-    local candidate="${RUNTIME_TMP}/ufw-default"
+    local enabled=$1 candidate
     [[ "${enabled}" == "yes" || "${enabled}" == "no" ]] \
         || die "UFW IPv6 开关无效：${enabled}"
     [[ -f "${UFW_DEFAULT_CONFIG}" ]] \
         || die "缺少 UFW 默认配置：${UFW_DEFAULT_CONFIG}"
+    candidate=$(mktemp "$(dirname -- "${UFW_DEFAULT_CONFIG}")/.easy-all-ufw-default.XXXXXX") \
+        || die "无法创建 UFW 默认配置候选文件"
+    cleanup_files+=("${candidate}")
     awk -v enabled="${enabled}" '
         BEGIN {updated=0}
         /^IPV6=/ {print "IPV6=" enabled; updated=1; next}
         {print}
         END {if (!updated) print "IPV6=" enabled}
-    ' "${UFW_DEFAULT_CONFIG}" >"${candidate}"
-    install -m 0644 "${candidate}" "${UFW_DEFAULT_CONFIG}"
+    ' "${UFW_DEFAULT_CONFIG}" >"${candidate}" \
+        || die "生成 UFW 默认配置失败"
+    [[ -s "${candidate}" ]] || die "生成的 UFW 默认配置为空"
+    chmod 0644 "${candidate}"
+    mv -f -- "${candidate}" "${UFW_DEFAULT_CONFIG}" \
+        || die "替换 UFW 默认配置失败"
 }
 
 configure_ufw_ip_family() {

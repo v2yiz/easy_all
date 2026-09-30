@@ -100,6 +100,28 @@ assert_contains "Secure Boot is rejected before a new kernel install" "${module_
     'bbrv3_secure_boot_enabled'
 assert_contains "BBRv3 requires a reboot marker" "${module_content}" \
     'BBRV3_REBOOT_MARKER'
+assert_contains "BBRv3 verifies the installed initramfs" "${module_content}" \
+    'initrd.img-${release}'
+
+gpg() {
+    case "${MOCK_GPG_KEYS}" in
+    one)
+        printf 'pub:::::::::\nfpr:::::::::%s:\n' "${BBRV3_XANMOD_KEY_FINGERPRINT}"
+        ;;
+    two)
+        printf 'pub:::::::::\nfpr:::::::::%s:\npub:::::::::\nfpr:::::::::BAD:\n' \
+            "${BBRV3_XANMOD_KEY_FINGERPRINT}"
+        ;;
+    esac
+}
+MOCK_GPG_KEYS=one
+assert_equal "one primary signing key is accepted" "${BBRV3_XANMOD_KEY_FINGERPRINT}" \
+    "$(xanmod_key_fingerprint unused)"
+MOCK_GPG_KEYS=two
+if xanmod_key_fingerprint unused >/dev/null 2>&1; then
+    fail "concatenated XanMod signing keys must be rejected"
+fi
+unset -f gpg
 
 xanmod_key_fingerprint() { printf '%s\n' "${BBRV3_XANMOD_KEY_FINGERPRINT}"; }
 bbrv3_debian_codename() { printf 'bookworm\n'; }

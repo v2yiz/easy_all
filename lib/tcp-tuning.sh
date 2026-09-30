@@ -45,9 +45,14 @@ EOF
 
 snapshot_tcp_runtime() {
     local destination="${BACKUP_DIR}/pre-install-tcp-runtime.conf"
+    local packages="${BACKUP_DIR}/pre-install-xanmod-packages"
     local key value
-    [[ ! -e "${destination}" ]] || return 0
     install -d -m 0700 "${BACKUP_DIR}"
+    if [[ ! -e "${packages}" ]]; then
+        xanmod_installed_packages >"${packages}"
+        chmod 0600 "${packages}"
+    fi
+    [[ ! -e "${destination}" ]] || return 0
     install -m 0600 /dev/null "${destination}"
     while IFS= read -r key; do
         value=$(sysctl -n "${key}" 2>/dev/null) || continue
@@ -66,6 +71,7 @@ restore_tcp_runtime() {
 }
 
 restore_bbr_tcp_install_state() {
+    local restore_packages=${1:-0}
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
     elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
@@ -78,6 +84,32 @@ restore_bbr_tcp_install_state() {
         rm -f -- "${BBR_MODULES_CONFIG}"
     fi
     restore_tcp_runtime
+    [[ "${restore_packages}" != "1" ]] || restore_preinstall_xanmod_packages
+}
+
+xanmod_installed_packages() {
+    command -v dpkg-query >/dev/null 2>&1 || return 0
+    { dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' \
+        '*xanmod*' 2>/dev/null || true; } \
+        | awk -F '\t' '$2 == "ii " {print $1}' | sort -u
+}
+
+restore_preinstall_xanmod_packages() {
+    local snapshot="${BACKUP_DIR}/pre-install-xanmod-packages"
+    local current package running="linux-image-$(uname -r)"
+    local -a added=()
+    [[ -f "${snapshot}" ]] || return 0
+    current=$(mktemp "${RUNTIME_TMP}/xanmod-packages.XXXXXX")
+    xanmod_installed_packages >"${current}"
+    while IFS= read -r package; do
+        [[ -n "${package}" && "${package}" != "${running}" ]] || continue
+        added+=("${package}")
+    done < <(comm -13 "${snapshot}" "${current}")
+    ((${#added[@]} > 0)) || return 0
+    apt-get -o DPkg::Lock::Timeout=300 purge -y "${added[@]}" >/dev/null \
+        || warn "移除本次失败流程新装的 XanMod 包失败：${added[*]}"
+    command -v update-grub >/dev/null 2>&1 && update-grub >/dev/null 2>&1 \
+        || true
 }
 
 bbrv3_cpu_level() {
@@ -136,7 +168,17 @@ bbrv3_secure_boot_enabled() {
 
 xanmod_key_fingerprint() {
     gpg --batch --show-keys --with-colons "$1" 2>/dev/null \
-        | awk -F: '$1 == "fpr" {print $10; exit}'
+        | awk -F: '
+            $1 == "pub" {pubs += 1; want_fingerprint = 1; next}
+            $1 == "fpr" && want_fingerprint {
+                if (pubs == 1) fingerprint = $10
+                want_fingerprint = 0
+            }
+            END {
+                if (pubs == 1 && fingerprint != "") print fingerprint
+                else exit 1
+            }
+        '
 }
 
 xanmod_repository_line() {
@@ -168,6 +210,7 @@ ensure_xanmod_repository() {
     keyring="${RUNTIME_TMP}/xanmod-archive-keyring.gpg"
     source="${RUNTIME_TMP}/xanmod-release.list"
     curl -fL --proto '=https' --tlsv1.2 --retry 3 \
+        --connect-timeout 10 --max-time 60 \
         "${BBRV3_XANMOD_KEY_URL}" -o "${key}" \
         || die "下载 XanMod 官方 APT 公钥失败"
     fingerprint=$(xanmod_key_fingerprint "${key}")
@@ -189,9 +232,20 @@ bbrv3_meta_package_installed() {
         | grep -qx 'ii '
 }
 
+bbrv3_latest_kernel_release() {
+    local image release
+    for image in /boot/vmlinuz-*xanmod*; do
+        [[ -s "${image}" ]] || continue
+        release=${image##*/vmlinuz-}
+        printf '%s\n' "${release}"
+    done | sort -V | tail -n 1
+}
+
 bbrv3_kernel_image_installed() {
-    find /boot -maxdepth 1 -type f -name 'vmlinuz-*xanmod*' -size +0c \
-        -print -quit 2>/dev/null | grep -q .
+    local release
+    release=$(bbrv3_latest_kernel_release)
+    [[ -n "${release}" && -s "/boot/vmlinuz-${release}" \
+        && -s "/boot/initrd.img-${release}" ]]
 }
 
 bbrv3_running_kernel_supported() {
@@ -216,7 +270,8 @@ ensure_bbrv3_kernel() {
     fi
     bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}" \
         || die "XanMod BBRv3 元包安装后验收失败：${BBRV3_KERNEL_PACKAGE}"
-    bbrv3_kernel_image_installed || die "未找到已安装的 XanMod BBRv3 内核镜像"
+    bbrv3_kernel_image_installed \
+        || die "最新 XanMod BBRv3 内核缺少可用的 vmlinuz 或 initrd"
     if command -v update-grub >/dev/null 2>&1; then
         update-grub >/dev/null || die "更新 GRUB 的 XanMod BBRv3 启动项失败"
     fi

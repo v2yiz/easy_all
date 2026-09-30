@@ -346,8 +346,13 @@ cloudflare_rollback_backup_worker() {
         cloudflare_delete_subscription_worker_resources "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME}" || failed=1
     else
         if [[ -n "${WORKER_BACKUP_CREATED_DOMAIN_ID:-}" ]]; then
-            cloudflare_api_request DELETE "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${WORKER_BACKUP_CREATED_DOMAIN_ID}" >/dev/null 2>&1 || true
-            WORKER_BACKUP_CREATED_DOMAIN_ID=""
+            if cloudflare_api_request DELETE \
+                "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${WORKER_BACKUP_CREATED_DOMAIN_ID}" \
+                >/dev/null 2>&1; then
+                WORKER_BACKUP_CREATED_DOMAIN_ID=""
+            else
+                failed=1
+            fi
         fi
         if [[ -s "${prev_deployment}" ]]; then
             if (cloudflare_api_request POST \

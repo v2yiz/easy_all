@@ -93,7 +93,10 @@ normalize_monthly_quotas() {
     local raw=$1
     jq -ce '
         if type != "object" then error("配额必须是 JSON object") else . end |
-        with_entries(.key |= gsub("^\\s+|\\s+$"; "")) |
+        to_entries as $entries |
+        ($entries | map(.key |= gsub("^\\s+|\\s+$"; ""))) as $clean |
+        if (($clean | map(.key) | unique | length) != ($clean | length))
+        then error("配额清洗后存在重复用户名") else ($clean | from_entries) end |
         if length > 0 and all(to_entries[];
             (.key|test("^[A-Za-z0-9._-]{1,64}$")) and
             (.key != "__denied__") and
@@ -435,8 +438,13 @@ quota_sync_usage() {
             .runtime_id=$runtime_id |
             .users |= with_entries(.value.last_uplink=0 | .value.last_downlink=0)' <<<"${usage}")
     fi
-    stats=$("${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}") \
-        || die "读取 Xray 用户流量统计失败"
+    if command -v timeout >/dev/null 2>&1; then
+        stats=$(timeout 15 "${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}") \
+            || die "读取 Xray 用户流量统计失败或超时"
+    else
+        stats=$("${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}") \
+            || die "读取 Xray 用户流量统计失败"
+    fi
     usage=$(jq -c \
         --argjson accounts "${USER_ACCOUNTS}" \
         --argjson stats "${stats}" \

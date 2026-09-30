@@ -172,6 +172,9 @@ test_validators_and_modes() {
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
+    assert_failure "token names must remain unique after case normalization" \
+        normalize_allowed_tokens \
+        '{"Owner":"owner-token-123","owner":"other-token-123"}'
     SUBSCRIPTION_MODE="1"
     choose_subscription_mode
     assert_equal "choice 1 deploys the subscription service" "deploy" "${SUBSCRIPTION_MODE}"
@@ -634,7 +637,7 @@ test_nginx_and_firewall() {
     assert_not_contains "Nginx does not authorize token labels" '"owner" 1;' "${config}"
     assert_contains "Nginx keeps static files internal" \
         "location = /_easy_all_subscription/mihomo" "${config}"
-    assert_equal "Subscription location suppresses token-bearing access logs" "1" \
+    assert_equal "Subscription and internal locations suppress token-bearing access logs" "3" \
         "$(grep -c 'access_log off;' <<<"${config}")"
     assert_contains "Mihomo download keeps the configured filename without an extension" \
         'Content-Disposition "attachment; filename=MY_SUB"' "${config}"

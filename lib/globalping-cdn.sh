@@ -57,7 +57,9 @@ persist_globalping_token() {
     temp=$(mktemp "${STATE_DIR}/globalping.token.XXXXXX")
     cleanup_files+=("${temp}")
     printf '%s\n' "${GLOBALPING_TOKEN}" >"${temp}"
-    install -o root -g root -m 0600 "${temp}" "${GLOBALPING_TOKEN_FILE}"
+    chmod 0600 "${temp}"
+    chown root:root "${temp}"
+    mv -f -- "${temp}" "${GLOBALPING_TOKEN_FILE}"
 }
 
 globalping_token_value() {
@@ -78,7 +80,7 @@ globalping_api_request() {
         warn "缺少 Globalping Token，无法刷新 Cloudflare CDN 精选 IP"
         return 1
     }
-    headers=$(make_temp_dir)/globalping-headers
+    headers="${RUNTIME_TMP}/globalping-headers"
     printf 'Authorization: Bearer %s\n' "${token}" >"${headers}"
     chmod 0600 "${headers}"
     if [[ "${method}" == "POST" ]]; then
@@ -89,7 +91,7 @@ globalping_api_request() {
             -H 'User-Agent: easy_all/globalping-cdn' \
             --data "${body}"
     else
-        curl -fsS --connect-timeout 10 --max-time 25 \
+        curl -fsS --retry 2 --connect-timeout 10 --max-time 25 \
             "${GLOBALPING_API_BASE}${path}" \
             -H "@${headers}" \
             -H 'Accept: application/json' \

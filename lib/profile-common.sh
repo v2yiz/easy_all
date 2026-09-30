@@ -49,13 +49,6 @@ prompt_value() {
     fi
 }
 
-register_easy_all_command() {
-    local launcher="${SCRIPT_DIR}/../easy_all"
-    [[ -f "${launcher}" ]] \
-        || die "缺少统一入口，Profile 不能独立注册：${launcher}"
-    bash "${launcher}" register-command
-}
-
 validate_domain() {
     local domain=$1 label tld
     local -a labels

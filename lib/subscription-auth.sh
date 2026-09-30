@@ -74,9 +74,9 @@ normalize_allowed_tokens() {
                     error("ALLOWED_TOKENS 用户名只能包含字母、数字、点、下划线、短横线，长度 1-64")
                     elif any($clean[]; (.value | test("^[A-Za-z0-9._~-]{8,128}$") | not)) then
                     error("ALLOWED_TOKENS token 只能包含 URL 安全字符 A-Z a-z 0-9 . _ ~ -，长度 8-128")
-                    elif (($clean | map(.key) | unique | length) != ($clean | length)) then
+                    elif (($clean | map(.key | ascii_downcase) | unique | length) != ($clean | length)) then
                     error("ALLOWED_TOKENS 清洗后存在重复用户名")
-                    elif (($clean | map(.value) | unique | length) != ($clean | length)) then
+                    elif (($clean | map(.value | ascii_downcase) | unique | length) != ($clean | length)) then
                     error("ALLOWED_TOKENS 不允许重复 token")
                     else
                     $clean | from_entries
@@ -210,6 +210,7 @@ EOF
 
     location = /_easy_all_subscription/base64 {
         internal;
+        access_log off;
         alias ${base64_alias};
         default_type text/plain;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
@@ -220,6 +221,7 @@ EOF
 
     location = /_easy_all_subscription/mihomo {
         internal;
+        access_log off;
         alias ${mihomo_alias};
         default_type text/yaml;
         add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
@@ -245,7 +247,8 @@ validate_subscription_token_rejection() {
             break
         fi
     done
-    status=$(curl -sS "${tls_args[@]}" --noproxy '*' -o /dev/null -w '%{http_code}' \
+    status=$(curl -sS "${tls_args[@]}" --noproxy '*' --connect-timeout 5 --max-time 20 \
+        -o /dev/null -w '%{http_code}' \
         --resolve "${resolve}" "$@" --get --data-urlencode "token=invalid" "${url}") \
         || die "无效订阅 Token 验收请求失败"
     [[ "${status}" == "403" ]] || die "无效订阅 Token 未被拒绝（HTTP ${status}）"

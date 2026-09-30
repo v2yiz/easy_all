@@ -525,22 +525,28 @@ collect_reality_inputs() {
 }
 
 check_install_conflicts() {
-    if ss -H -ltn "sport = :${SERVICE_PORT}" 2>/dev/null | grep -q .; then
+    if ss -H -ltn "sport = :${SERVICE_PORT}" 2>/dev/null \
+        | awk 'NR {found=1} END {exit !found}'; then
         die "TCP ${SERVICE_PORT} 已被占用；easy_all 仅支持专用 VPS"
     fi
 }
 
 snapshot_ufw_state() {
+    local status
     [[ ! -e "${BACKUP_DIR}/pre-install-ufw.active" \
         && ! -e "${BACKUP_DIR}/pre-install-ufw.inactive" \
         && ! -e "${BACKUP_DIR}/pre-install-ufw.missing" ]] || return 0
     install -d -m 0700 "${BACKUP_DIR}"
     if ! command -v ufw >/dev/null 2>&1; then
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.missing"
-    elif LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.active"
     else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive"
+        status=$(LC_ALL=C ufw status 2>&1) \
+            || die "读取安装前 UFW 状态失败：${status:-未知错误}"
+        case "${status}" in
+        *'Status: active'*) install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.active" ;;
+        *'Status: inactive'*) install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive" ;;
+        *) die "无法识别安装前 UFW 状态" ;;
+        esac
     fi
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
         install -m 0600 "${UFW_BEFORE_RULES}" "${BACKUP_DIR}/pre-install-ufw-before.rules"
@@ -657,7 +663,12 @@ days_in_year() {
 write_dynamic_nat_rules() {
     local day_of_year current_year previous_year previous_year_windows
     local current_year_days today_start_rotation next_day_start_rotation
-    local offset rotation port
+    local offset rotation port ssh_port skip
+    if declare -F detect_ssh_ports >/dev/null 2>&1; then
+        detect_ssh_ports
+    else
+        SSH_PORTS=${SSH_PORTS:-22}
+    fi
     day_of_year=$(TZ=Asia/Shanghai date +%j)
     current_year=$(TZ=Asia/Shanghai date +%Y)
     previous_year=$((10#${current_year} - 1))
@@ -676,18 +687,33 @@ write_dynamic_nat_rules() {
             rotation=$((previous_year_windows + rotation))
         fi
         port=$((PORT_BASE + rotation))
+        skip=0
+        for ssh_port in ${SSH_PORTS}; do
+            [[ "${port}" != "${ssh_port}" ]] || skip=1
+        done
+        ((skip == 0)) || continue
         printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
             "${port}" "${SERVICE_PORT}"
     done
     for ((offset = 0; offset < DYNAMIC_PORT_TODAY_WINDOWS; offset++)); do
         rotation=$((today_start_rotation + offset))
         port=$((PORT_BASE + rotation))
+        skip=0
+        for ssh_port in ${SSH_PORTS}; do
+            [[ "${port}" != "${ssh_port}" ]] || skip=1
+        done
+        ((skip == 0)) || continue
         printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
             "${port}" "${SERVICE_PORT}"
     done
     for ((offset = 0; offset < DYNAMIC_PORT_NEXT_DAY_WINDOWS; offset++)); do
         rotation=$((next_day_start_rotation + offset))
         port=$((PORT_BASE + rotation))
+        skip=0
+        for ssh_port in ${SSH_PORTS}; do
+            [[ "${port}" != "${ssh_port}" ]] || skip=1
+        done
+        ((skip == 0)) || continue
         printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
             "${port}" "${SERVICE_PORT}"
     done
@@ -770,7 +796,8 @@ configure_ufw() {
     write_ufw_nat_rules
     ufw reload >/dev/null || die "加载 UFW NAT 规则失败"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
-    LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
+    LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' \
+        || die "UFW 未处于 active 状态"
     ensure_ssh_fail2ban
 }
 
@@ -937,18 +964,22 @@ reality_cloudflare_clear_api_token() {
 
 reality_cloudflare_api_request() {
     local method=$1 path=$2 payload=${3:-} response headers
+    local -a retry_args=(--retry 0)
     [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "缺少 CLOUDFLARE_API_TOKEN"
     headers="${RUNTIME_TMP}/reality-cloudflare-api-headers"
     printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
         "${CLOUDFLARE_API_TOKEN}" >"${headers}"
     chmod 0600 "${headers}"
+    case "${method}" in
+    GET | HEAD | PUT) retry_args=(--retry 2) ;;
+    esac
     if [[ -n "${payload}" ]]; then
-        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 \
+        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 \
             -X "${method}" -H "@${headers}" --data "${payload}" \
             "${CLOUDFLARE_API_BASE}${path}") \
             || die "Cloudflare API 请求失败：${method} ${path}"
     else
-        response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 \
+        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 \
             -X "${method}" -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") \
             || die "Cloudflare API 请求失败：${method} ${path}"
     fi
@@ -1133,7 +1164,8 @@ write_subscription_web_root() {
 write_subscription_bootstrap_nginx() {
     write_subscription_web_root
     if [[ ! -f "${NGINX_CONFIG}" ]]; then
-        ss -H -ltn "sport = :${SUBSCRIPTION_HTTPS_PORT}" 2>/dev/null | grep -q . \
+        ss -H -ltn "sport = :${SUBSCRIPTION_HTTPS_PORT}" 2>/dev/null \
+            | awk 'NR {found=1} END {exit !found}' \
             && die "TCP ${SUBSCRIPTION_HTTPS_PORT} 已被占用"
     fi
     rm -f -- /etc/nginx/sites-enabled/default
@@ -1256,20 +1288,22 @@ validate_subscription_runtime() {
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     fi
-    base64_response=$(curl -fsS --proto '=https' \
+    base64_response=$(printf '%s' "${token}" | curl -fsS --proto '=https' \
+        --connect-timeout 5 --max-time 20 \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
         --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
-        --get --data-urlencode "token=${token}" \
+        --get --data-urlencode 'token@-' \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "Base64 订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "Base64 订阅响应为空"
     base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
         || die "Base64 订阅响应不是有效的 Base64"
     grep -Fq 'security=reality' <<<"${base64_decoded}" || die "Base64 订阅响应缺少 Reality 节点"
-    mihomo_response=$(curl -fsS --proto '=https' \
+    mihomo_response=$(printf '%s' "${token}" | curl -fsS --proto '=https' \
+        --connect-timeout 5 --max-time 20 \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
         --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
-        --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
+        --get --data-urlencode 'token@-' --data-urlencode "flag=clash" \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "Mihomo 订阅本机验收失败"
     grep -Fq 'reality-opts:' <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
@@ -1587,7 +1621,8 @@ collect_installed_state() {
     load_state
     validate_protocol "${PROTOCOL:-}" || die "状态文件中的 PROTOCOL 无效"
     [[ -n "${NODE_HOST:-}" && -n "${VLESS_UUID:-}" \
-        && -n "${REALITY_PUBLIC_KEY:-}" && -n "${REALITY_SHORT_ID:-}" ]] \
+        && -n "${REALITY_PRIVATE_KEY:-}" && -n "${REALITY_PUBLIC_KEY:-}" \
+        && -n "${REALITY_SHORT_ID:-}" ]] \
         || die "Reality 状态不完整"
 }
 
@@ -1687,7 +1722,9 @@ show_status() {
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
         && printf 'active\n' || printf 'inactive\n'
     printf 'TCP 443: '
-    ss -H -ltn "sport = :443" 2>/dev/null | grep -q . && printf 'listening\n' || printf 'not listening\n'
+    ss -H -ltn "sport = :443" 2>/dev/null \
+        | awk 'NR {found=1} END {exit !found}' \
+        && printf 'listening\n' || printf 'not listening\n'
     if subscription_enabled; then
         printf '自托管订阅: https://%s:%s/subscribe\n' \
             "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}"
@@ -1786,7 +1823,8 @@ restore_preinstall_firewall() {
         command -v ufw >/dev/null 2>&1 \
             && ufw --force disable >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1 \
-        && LC_ALL=C ufw status numbered 2>/dev/null | grep -q '^[[:space:]]*\['; then
+        && LC_ALL=C ufw status numbered 2>/dev/null \
+            | awk '/^[[:space:]]*\[/ {found=1} END {exit !found}'; then
         ufw --force enable >/dev/null 2>&1 || true
         ufw reload >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1; then
@@ -1864,7 +1902,7 @@ rollback_fresh_install() {
     restore_platform_security_state
     restore_preinstall_firewall
     restore_preinstall_ipv6
-    restore_bbr_tcp_install_state
+    restore_bbr_tcp_install_state 1
     restore_preinstall_crontab
     if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" \
         && -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
@@ -1876,7 +1914,7 @@ rollback_fresh_install() {
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${COMMAND_INSTALL_DIR}" "${WEB_ROOT}"
-    warn "首次安装产生的服务数据已清理；系统软件包和已安装内核不会降级"
+    warn "首次安装产生的服务数据已清理；本次新装且未运行的 XanMod 包已尝试移除"
 }
 
 prepare_protocol_assets() {
@@ -1892,7 +1930,8 @@ install_protocol_runtime() {
 validate_protocol_runtime() {
     local attempt
     for attempt in 1 2 3 4 5; do
-        if ss -H -ltn "sport = :443" 2>/dev/null | grep -q . \
+        if ss -H -ltn "sport = :443" 2>/dev/null \
+            | awk 'NR {found=1} END {exit !found}' \
             && systemctl is-active --quiet "${XRAY_SERVICE}"; then
             validate_quota_api
             return 0

@@ -55,6 +55,7 @@ configure_daily_reboot() {
         if [[ -n "${profile_pre_command}" ]]; then
             pre_command="${profile_pre_command}"
         fi
+        pre_command=${pre_command//%/\\%}
         job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command:-true} ) && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
     fi
     { printf '%s\n' "${current}" | filter_managed_reboot_cron; \

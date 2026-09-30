@@ -127,7 +127,8 @@ collect_subscription_link_domain() {
 check_install_conflicts() {
     local port
     for port in 80 443; do
-        if ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .; then
+        if ss -H -ltn "sport = :${port}" 2>/dev/null \
+            | awk 'NR {found=1} END {exit !found}'; then
             die "TCP ${port} 已被占用；easy_all 仅支持专用 VPS"
         fi
     done
@@ -171,16 +172,21 @@ snapshot_fresh_install() {
 }
 
 snapshot_ufw_state() {
+    local status
     [[ ! -e "${BACKUP_DIR}/pre-install-ufw.active" \
         && ! -e "${BACKUP_DIR}/pre-install-ufw.inactive" \
         && ! -e "${BACKUP_DIR}/pre-install-ufw.missing" ]] || return 0
     install -d -m 0700 "${BACKUP_DIR}"
     if ! command -v ufw >/dev/null 2>&1; then
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.missing"
-    elif LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.active"
     else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive"
+        status=$(LC_ALL=C ufw status 2>&1) \
+            || die "读取安装前 UFW 状态失败：${status:-未知错误}"
+        case "${status}" in
+        *'Status: active'*) install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.active" ;;
+        *'Status: inactive'*) install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive" ;;
+        *) die "无法识别安装前 UFW 状态" ;;
+        esac
     fi
     if [[ -f "${UFW_DEFAULT_CONFIG}" ]]; then
         install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
@@ -208,7 +214,8 @@ configure_ufw() {
     desired_ports="${SSH_PORTS} 80 443"
     apply_managed_ufw_tcp_ports "${desired_ports}"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
-    LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
+    LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' \
+        || die "UFW 未处于 active 状态"
     ensure_ssh_fail2ban
 }
 
@@ -305,8 +312,10 @@ validate_protocol_runtime() {
     for attempt in 1 2 3 4 5; do
         if systemctl is-active --quiet "${XRAY_SERVICE}" \
             && systemctl is-active --quiet nginx \
-            && ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
-            response=$(curl -fsS "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
+            && ss -H -ltn "sport = :443" 2>/dev/null \
+                | awk 'NR {found=1} END {exit !found}'; then
+            response=$(curl -fsS --connect-timeout 5 --max-time 20 \
+                "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
                 --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
                 "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
@@ -336,17 +345,19 @@ validate_subscription_runtime() {
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     fi
-    base64_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
+    base64_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
+        --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        --get --data-urlencode "token=${token}" \
+        --get --data-urlencode 'token@-' \
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
     base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
         || die "通用订阅响应不是有效的 Base64"
     grep -Fq 'type=xhttp' <<<"${base64_decoded}" || die "通用订阅响应缺少 XHTTP 节点"
-    mihomo_response=$(curl -fsS --noproxy '*' "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
+    mihomo_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
+        --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        --get --data-urlencode "token=${token}" --data-urlencode "flag=clash" \
+        --get --data-urlencode 'token@-' --data-urlencode "flag=clash" \
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
@@ -595,7 +606,8 @@ restore_preinstall_firewall() {
         command -v ufw >/dev/null 2>&1 \
             && ufw --force disable >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1 \
-        && LC_ALL=C ufw status numbered 2>/dev/null | grep -q '^[[:space:]]*\['; then
+        && LC_ALL=C ufw status numbered 2>/dev/null \
+            | awk '/^[[:space:]]*\[/ {found=1} END {exit !found}'; then
         ufw --force enable >/dev/null 2>&1 || true
         ufw reload >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1; then

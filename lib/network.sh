@@ -7,21 +7,23 @@ readonly XRAY_INBOUND_TCP_KEEPALIVE_IDLE="300"
 readonly XRAY_INBOUND_TCP_KEEPALIVE_INTERVAL="30"
 
 validate_ipv6() {
-    local ip=${1%%%*} segment rest colons
+    local ip=${1%%%*} segment rest groups=0
     [[ -n "${ip}" && ${#ip} -le 39 && "${ip}" == *:* \
         && "${ip}" =~ ^[0-9A-Fa-f:]+$ && "${ip}" != *:::* ]] || return 1
-    colons=${ip//[^:]/}
     if [[ "${ip}" == *::* ]]; then
         rest=${ip#*::}
         [[ "${rest}" != *::* ]] || return 1
-        ((${#colons} >= 2 && ${#colons} <= 8)) || return 1
-    else
-        ((${#colons} == 7)) || return 1
     fi
     for segment in ${ip//:/ }; do
+        groups=$((groups + 1))
         [[ ${#segment} -ge 1 && ${#segment} -le 4 \
             && "${segment}" =~ ^[0-9A-Fa-f]+$ ]] || return 1
     done
+    if [[ "${ip}" == *::* ]]; then
+        ((groups < 8))
+    else
+        ((groups == 8))
+    fi
 }
 
 detect_public_ipv4() {
