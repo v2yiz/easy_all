@@ -19,3 +19,4 @@ worker.js
 **/.worker-build-*/
 __pycache__/
 *.pyc
+.dsh/skills/budget-review.md
