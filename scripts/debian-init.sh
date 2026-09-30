@@ -18,7 +18,9 @@ SSH_PUBLIC_KEY_ONLY_OPTS=(
 )
 LOCAL_TEMP_FILES=()
 readonly DEFAULT_PLATFORM_MODULE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/lib/platform.sh"
+readonly DEFAULT_FIREWALL_MODULE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/lib/firewall.sh"
 PLATFORM_MODULE_FILE=""
+FIREWALL_MODULE_FILE=""
 
 cleanup_local_temp_files() {
   local file
@@ -176,8 +178,8 @@ require_cmd() {
 }
 
 load_platform_module() {
-  local script_dir candidate downloaded
-  [[ -z "${PLATFORM_MODULE_FILE}" ]] || return 0
+  local script_dir candidate downloaded firewall_candidate firewall_downloaded
+  [[ -z "${PLATFORM_MODULE_FILE}" || -z "${FIREWALL_MODULE_FILE}" ]] || return 0
 
   if [[ -n "${EASY_ALL_PLATFORM_MODULE_SOURCE:-}" ]]; then
     candidate="${EASY_ALL_PLATFORM_MODULE_SOURCE}"
@@ -201,6 +203,28 @@ load_platform_module() {
     && declare -F ensure_ssh_fail2ban >/dev/null \
     && [[ "${EASY_ALL_ADDITIONAL_SSH_PORT:-}" =~ ^[0-9]+$ ]] \
     || die "公共平台模块缺少 SSH 端口或 Fail2ban 实现"
+
+  if [[ -n "${EASY_ALL_FIREWALL_MODULE_SOURCE:-}" ]]; then
+    firewall_candidate="${EASY_ALL_FIREWALL_MODULE_SOURCE}"
+  elif [[ -n "${EASY_ALL_PLATFORM_MODULE_SOURCE:-}" ]]; then
+    firewall_candidate="$(dirname -- "${EASY_ALL_PLATFORM_MODULE_SOURCE}")/firewall.sh"
+  else
+    firewall_candidate="${script_dir}/../lib/firewall.sh"
+  fi
+  if [[ -r "${firewall_candidate}" ]]; then
+    FIREWALL_MODULE_FILE="${firewall_candidate}"
+  else
+    firewall_downloaded="$(mktemp)"
+    LOCAL_TEMP_FILES+=("${firewall_downloaded}")
+    curl -fsSL --retry 3 "${DEFAULT_FIREWALL_MODULE_URL}" -o "${firewall_downloaded}" \
+      || die "下载公共防火墙模块失败：${DEFAULT_FIREWALL_MODULE_URL}"
+    FIREWALL_MODULE_FILE="${firewall_downloaded}"
+  fi
+  bash -n "${FIREWALL_MODULE_FILE}" || die "公共防火墙模块语法校验失败"
+  # shellcheck source=lib/firewall.sh
+  source "${FIREWALL_MODULE_FILE}"
+  declare -F apply_managed_ufw_tcp_ports >/dev/null \
+    || die "公共防火墙模块缺少受管 UFW 实现"
 }
 
 # ================= SSH 连接与本地配置 =================
@@ -298,7 +322,7 @@ select_or_create_key() {
   done < <(find "$SSH_DIR" -maxdepth 1 -type f -name "*.pub" | sort)
 
   local i=1
-  for file in "${pub_keys[@]}"; do
+  for file in "${pub_keys[@]:-}"; do
     echo "  ${i}) $file"
     i=$((i + 1))
   done
@@ -412,6 +436,7 @@ run_remote_initialization() {
   local remote_password_file="/tmp/setup_debian_normal_user_password_$$.txt"
   local remote_public_key_file="/tmp/setup_debian_normal_user_authorized_key_$$.pub"
   local remote_platform_module="/tmp/easy_all_platform_$$.sh"
+  local remote_firewall_module="/tmp/easy_all_firewall_$$.sh"
   local local_script
   local local_password_file
   local_script="$(mktemp)"
@@ -432,6 +457,7 @@ normal_user_password_file="$5"
 normal_user_public_key_file="$6"
 extra_tcp_ports="$7"
 platform_module="$8"
+firewall_module="$9"
 
 config_dir="/etc/ssh/sshd_config.d"
 config_file="${config_dir}/00-debian-init-hardening.conf"
@@ -439,7 +465,8 @@ sysctl_config="/etc/sysctl.d/99-debian-init-bbr.conf"
 bbr_modules_config="/etc/modules-load.d/debian-init-bbr.conf"
 
 cleanup_sensitive_files() {
-  rm -f "$normal_user_password_file" "$normal_user_public_key_file" "$platform_module"
+  rm -f "$normal_user_password_file" "$normal_user_public_key_file" \
+    "$platform_module" "$firewall_module"
 }
 trap cleanup_sensitive_files EXIT INT TERM
 
@@ -458,6 +485,10 @@ info() {
 
 # shellcheck source=lib/platform.sh
 source "$platform_module"
+UFW_RULE_COMMENT="debian-init-managed"
+UFW_DEFAULT_CONFIG="/etc/default/ufw"
+# shellcheck source=lib/firewall.sh
+source "$firewall_module"
 EASY_ALL_SSH_PRESERVE_PORTS="$current_port"
 [[ "$final_port" == "$EASY_ALL_ADDITIONAL_SSH_PORT" ]] \
   || die "远端新增 SSH 端口与公共平台模块不一致"
@@ -671,15 +702,8 @@ collect_allowed_ports() {
   '
 }
 
-managed_ufw_rule_numbers() {
-  LC_ALL=C ufw status numbered 2>/dev/null \
-    | sed -n '/debian-init-managed/s/^[[:space:]]*\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' \
-    | sort -rn
-}
-
 configure_ufw() {
   ports="$(collect_allowed_ports)"
-  old_rule_numbers="$(managed_ufw_rule_numbers)"
   [ -n "$ports" ] || return 0
 
   command -v ufw >/dev/null 2>&1 || {
@@ -690,13 +714,7 @@ configure_ufw() {
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
   ufw default deny routed >/dev/null
-  for port in $ports; do
-    ufw allow "${port}/tcp" comment "debian-init-managed" >/dev/null
-  done
-  for rule_number in $old_rule_numbers; do
-    ufw --force delete "$rule_number" >/dev/null
-  done
-  ufw --force enable >/dev/null
+  apply_managed_ufw_tcp_ports "$ports"
   systemctl enable ufw >/dev/null 2>&1
   LC_ALL=C ufw status | grep -q '^Status: active' || {
     printf '%s\n' "错误: UFW 未处于 active 状态" >&2
@@ -727,10 +745,10 @@ fi
 # 使用 sshd_config.d 独立片段管理本脚本配置，便于审计和回滚。
 {
   echo "PubkeyAuthentication yes"
-  echo "PasswordAuthentication yes"
+  echo "PasswordAuthentication no"
   echo "KbdInteractiveAuthentication no"
   echo "ChallengeResponseAuthentication no"
-  echo "PermitRootLogin yes"
+  echo "PermitRootLogin prohibit-password"
   echo "LoginGraceTime 30"
   echo "MaxAuthTries 6"
   echo "MaxStartups 20:30:100"
@@ -739,12 +757,11 @@ fi
 } > "$config_file"
 
 "$sshd_bin" -t
-"$sshd_bin" -t
 ensure_ssh_boot_service
 configure_ufw
 ensure_ssh_fail2ban
 
-"$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|logingracetime|maxauthtries|maxstartups|persourcemaxstartups|persourcenetblocksize|port|listenaddress) '
+"$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|logingracetime|maxauthtries|maxstartups|persourcemaxstartups|persourcenetblocksize|port|listenaddress) ' || true
 REMOTE
 
   if ! scp_with_password_if_possible "$current_port" "$local_script" "${target}:${remote_script}"; then
@@ -755,14 +772,19 @@ REMOTE
       "rm -f '$remote_script' '$remote_platform_module'" >/dev/null 2>&1 || true
     return 1
   fi
+  if ! scp_with_password_if_possible "$current_port" "$FIREWALL_MODULE_FILE" "${target}:${remote_firewall_module}"; then
+    ssh_with_password_if_possible "$current_port" "$target" \
+      "rm -f '$remote_script' '$remote_platform_module' '$remote_firewall_module'" >/dev/null 2>&1 || true
+    return 1
+  fi
   if ! scp_with_password_if_possible "$current_port" "$local_password_file" "${target}:${remote_password_file}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'" >/dev/null 2>&1 || true
+      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'" >/dev/null 2>&1 || true
     return 1
   fi
   if ! scp_with_password_if_possible "$current_port" "$public_key" "${target}:${remote_public_key_file}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'" >/dev/null 2>&1 || true
+      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'" >/dev/null 2>&1 || true
     return 1
   fi
   rm -f "$local_script"
@@ -773,14 +795,14 @@ REMOTE
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'; exit \$rc"
+      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'; exit \$rc"
   else
     ssh \
       -tt \
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module'; exit \$rc"
+      "sudo bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'; exit \$rc"
   fi
 }
 
@@ -808,7 +830,7 @@ print_intro() {
   echo "  1. 使用初始 SSH 用户连接服务器，默认 root。"
   echo "  2. 安装基础包、配置 Debian 官方内核 Google BBR/TCP、UFW、uv 和 Python 3.12。"
   echo "  3. 创建或更新普通用户，并把同一把 SSH 公钥写入该用户。"
-  echo "  4. 保留 SSH 密码和密钥登录，新增 TCP ${EASY_ALL_ADDITIONAL_SSH_PORT} 作为低扫描量 SSH 入口。"
+  echo "  4. 验证密钥后关闭 SSH 密码登录，新增 TCP ${EASY_ALL_ADDITIONAL_SSH_PORT} 作为低扫描量 SSH 入口。"
   echo
   echo "敏感信息说明：服务器当前密码和普通用户 sudo 密码只在本次执行中使用。"
   if ! command -v sshpass >/dev/null 2>&1; then

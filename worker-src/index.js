@@ -934,6 +934,9 @@ function createWorkerHandler({
         if (url.pathname !== SUBSCRIPTION_PATH) {
             return workerResponse(request, 'Not Found', 404);
         }
+        if (delegateTokenValidation && !vpsSubUrl) {
+            return workerResponse(request, 'Subscription source unavailable', 503);
+        }
         const requestToken = url.searchParams.get('token');
         if (
             delegateTokenValidation

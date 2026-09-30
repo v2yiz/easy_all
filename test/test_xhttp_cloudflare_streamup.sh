@@ -982,4 +982,31 @@ if declare -F cloudflare_cleanup_stale_header_rules >/dev/null 2>&1; then
     fail "Cloudflare must not scan and delete rules owned by other deployments"
 fi
 
+version_dir="${TMP_DIR}/version-test"
+mkdir -p "${version_dir}"
+printf 'v25.9.30\n' >"${version_dir}/version"
+installed_version=$(env XRAY_DIR="${version_dir}" bash -c \
+    'source "$1"; xray_installed_version' _ "${CORE_LIB}")
+assert_equal "Xray version helper reads the installed version" "v25.9.30" "${installed_version}"
+status_output=$(
+    require_root() { :; }
+    collect_installed_state() { :; }
+    show_bbrv3_status() { printf 'BBRv3: active\n'; }
+    show_globalping_status() { printf 'Globalping: active\n'; }
+    show_quota_status() { printf '配额: active\n'; }
+    xray_installed_version() { printf 'v25.9.30\n'; }
+    worker_backup_enabled() { return 1; }
+    systemctl() { [[ "${1:-}" == "is-active" ]]; }
+    ss() { printf 'LISTEN\n'; }
+    show_status
+)
+assert_contains "Cloudflare status reports the installed Xray version" \
+    "${status_output}" '后端: Xray (v25.9.30)'
+assert_contains "Cloudflare status reports BBRv3" "${status_output}" 'BBRv3: active'
+assert_contains "Cloudflare status reports Xray health" "${status_output}" '核心服务: active'
+assert_contains "Cloudflare status reports backend listener health" \
+    "${status_output}" '后端 TCP 10086: listening'
+assert_contains "Cloudflare status reports Nginx health" "${status_output}" 'Nginx: active'
+assert_contains "Cloudflare status reports quota health" "${status_output}" '配额: active'
+
 printf 'ok - Cloudflare pure XHTTP stream-up (Mode 2) tests passed\n'

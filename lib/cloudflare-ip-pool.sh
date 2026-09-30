@@ -402,12 +402,17 @@ cloudflare_parse_tls_observations() {
     [[ -s "${tls_file}" ]] || return 0
     jq -sc '
         map(
-            select(
-                .measurement.results[]?
-                | select(.result.status == "finished")
-                | select(.result.tls != null and .result.tls.protocol != null and .result.tls.protocol != "")
-                | select(.result.tls.authorized == true)
-                | select(.result.statusCode == 200)
+            . as $entry
+            | select(
+                any(.measurement.results[]?;
+                    .probe.country == "CN"
+                    and ((.probe.tags // []) | index("eyeball-network"))
+                    and .probe.asn == $entry.carrier_asn
+                    and .result.status == "finished"
+                    and (.result.tls != null and .result.tls.protocol != null and .result.tls.protocol != "")
+                    and .result.tls.authorized == true
+                    and .result.statusCode == 200
+                )
             )
             | {
                 ip: .ip,
@@ -597,12 +602,21 @@ with open(source_path, "r", encoding="utf-8") as f:
         except Exception:
             oth_lines.append(line)
 
-pri_target = max(1, min(len(pri_lines), budget * 7 // 10))
-oth_target = min(len(oth_lines), budget - pri_target)
+if pri_lines and oth_lines:
+    pri_target = max(1, min(len(pri_lines), budget * 7 // 10))
+    oth_target = min(len(oth_lines), budget - pri_target)
+elif pri_lines:
+    pri_target = min(len(pri_lines), budget)
+    oth_target = 0
+else:
+    pri_target = 0
+    oth_target = min(len(oth_lines), budget)
 if pri_target + oth_target < budget and len(pri_lines) > pri_target:
     pri_target = min(len(pri_lines), budget - oth_target)
 
 selected = pri_lines[:pri_target] + oth_lines[:oth_target]
+if not selected:
+    sys.exit(1)
 with open(dest_path, "w", encoding="utf-8") as f:
     for line in selected:
         f.write(line + "\n")

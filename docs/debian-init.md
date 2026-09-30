@@ -20,7 +20,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
 - 创建或更新普通用户、sudo 密码和 SSH 公钥。
 - 为普通用户安装 `uv` 和 Python 3.12。
-- 写入受管 `sshd_config.d` 配置。
+- 写入受管 `sshd_config.d` 配置，关闭 SSH 密码登录，并限制 root 只能使用密钥登录。
 - 在本地 `~/.ssh/config` 写入 Host、连接重试和保活参数。
 
 ## 主要输入

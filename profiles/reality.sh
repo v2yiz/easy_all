@@ -600,8 +600,9 @@ filter_dynamic_port_cron() {
 }
 
 restore_dynamic_port_rotation_schedule() {
-    local snapshot=$1 candidate="${RUNTIME_TMP}/rollback-dynamic-port.cron"
-    { crontab -l 2>/dev/null || true; } | filter_dynamic_port_cron >"${candidate}"
+    local snapshot=$1 candidate="${RUNTIME_TMP}/rollback-dynamic-port.cron" current
+    current=$(read_root_crontab) || return 1
+    printf '%s\n' "${current}" | filter_dynamic_port_cron >"${candidate}"
     if [[ -f "${snapshot}" ]]; then
         awk -v marker="${CRON_DYNAMIC_PORT_MARKER}" \
             'index($0, marker) != 0' "${snapshot}" >>"${candidate}"
@@ -611,17 +612,22 @@ restore_dynamic_port_rotation_schedule() {
 }
 
 configure_dynamic_port_rotation() {
-    local job
-    { crontab -l 2>/dev/null || true; } | filter_dynamic_port_cron | crontab -
+    local current job
+    current=$(read_root_crontab) || return 1
     if [[ "${SUB_PORT_MODE:-}" != "dynamic" ]]; then
+        printf '%s\n' "${current}" | filter_dynamic_port_cron | crontab - \
+            || die "写入 root crontab 失败"
         return 0
     fi
     job="1 */${DYNAMIC_PORT_ROTATION_HOURS} * * * \"${COMMAND_PATH}\" rotate-dynamic-ports >/dev/null 2>&1 ${CRON_DYNAMIC_PORT_MARKER}"
-    { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
+    { printf '%s\n' "${current}" | filter_dynamic_port_cron; printf '%s\n' "${job}"; } \
+        | crontab - || die "写入 root crontab 失败"
 }
 
 remove_dynamic_port_rotation() {
-    { crontab -l 2>/dev/null || true; } | filter_dynamic_port_cron | crontab - \
+    local current
+    current=$(read_root_crontab) || return 1
+    printf '%s\n' "${current}" | filter_dynamic_port_cron | crontab - \
         || warn "移除 easy_all 动态端口定时任务失败，请手动检查 root crontab"
 }
 

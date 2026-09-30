@@ -205,9 +205,10 @@ test_remote_script_contract() {
 
     assert_success "embedded remote script is valid Bash" bash -n "${remote_script}"
 
-    local content platform_content
+    local content platform_content firewall_content
     content="$(<"${remote_script}")"
     platform_content="$(<"${ROOT_DIR}/lib/platform.sh")"
+    firewall_content="$(<"${ROOT_DIR}/lib/firewall.sh")"
     assert_contains "remote installs tmux" "vim tmux curl wget" "${content}"
     assert_contains "remote installs build-essential" "git build-essential" "${content}"
     assert_contains "remote installs Fail2ban systemd backend" \
@@ -240,12 +241,14 @@ test_remote_script_contract() {
     assert_contains "remote includes explicit extra ports" 'printf '\''%s\n'\'' $extra_tcp_ports' "${content}"
     assert_contains "remote defaults UFW incoming to deny" "ufw default deny incoming" "${content}"
     assert_contains "remote defaults UFW routed to deny" "ufw default deny routed" "${content}"
-    assert_contains "remote enables UFW" "ufw --force enable" "${content}"
+    assert_contains "shared firewall enables UFW" "ufw --force enable" "${firewall_content}"
     assert_contains "remote marks managed UFW rules" "debian-init-managed" "${content}"
     assert_not_contains "remote does not touch firewalld" "firewall-cmd" "${content}"
     assert_not_contains "remote does not touch nftables" "nft insert rule" "${content}"
-    assert_contains "remote preserves SSH password login" "PasswordAuthentication yes" "${content}"
-    assert_contains "remote preserves root password login" "PermitRootLogin yes" "${content}"
+    assert_contains "remote disables SSH password login after key installation" \
+        "PasswordAuthentication no" "${content}"
+    assert_contains "remote restricts root to key login" \
+        "PermitRootLogin prohibit-password" "${content}"
     assert_contains "remote shortens unauthenticated SSH lifetime" "LoginGraceTime 30" "${content}"
     assert_contains "remote preserves password fallback after key attempts" "MaxAuthTries 6" "${content}"
     assert_contains "remote preserves legitimate pre-auth capacity" "MaxStartups 20:30:100" "${content}"
@@ -253,6 +256,8 @@ test_remote_script_contract() {
     assert_contains "remote groups IPv6 scanners by source prefix" "PerSourceNetBlockSize 32:64" "${content}"
     assert_contains "remote sources the shared platform module" \
         'source "$platform_module"' "${content}"
+    assert_contains "remote sources the shared firewall module" \
+        'source "$firewall_module"' "${content}"
     assert_contains "remote preserves all previously detected SSH ports" \
         'EASY_ALL_SSH_PRESERVE_PORTS="${SSH_PORTS} ${current_port}"' "${content}"
     assert_contains "remote delegates SSH listeners to the shared platform module" \
@@ -287,8 +292,8 @@ test_remote_script_contract() {
         "bantime.maxtime = 1w" "${platform_content}"
     assert_contains "shared platform always persists the additional SSH listener" \
         'append_ssh_port "${EASY_ALL_ADDITIONAL_SSH_PORT}"' "${platform_content}"
-    assert_contains "remote snapshots old managed rules before adding replacements" \
-        'old_rule_numbers="$(managed_ufw_rule_numbers)"' "${content}"
+    assert_contains "remote reuses idempotent managed UFW updates" \
+        'apply_managed_ufw_tcp_ports "$ports"' "${content}"
     assert_contains "shared platform enables SSH at boot" \
         'systemctl enable --now "${unit}"' "${platform_content}"
     assert_contains "shared platform verifies SSH boot enablement" \
@@ -318,6 +323,10 @@ test_script_surface_contract() {
         'candidate="${script_dir}/../lib/platform.sh"' "${content}"
     assert_contains "standalone init uploads the shared platform module" \
         '"$PLATFORM_MODULE_FILE" "${target}:${remote_platform_module}"' "${content}"
+    assert_contains "standalone init uploads the shared firewall module" \
+        '"$FIREWALL_MODULE_FILE" "${target}:${remote_firewall_module}"' "${content}"
+    assert_contains "empty SSH key lists work with older Bash nounset behavior" \
+        '"${pub_keys[@]:-}"' "${content}"
     assert_contains "current SSH port is retained" \
         '保留当前 SSH 端口 ${CURRENT_PORT}' "${content}"
     assert_contains "intro documents Google BBR" \
@@ -342,6 +351,8 @@ test_script_surface_contract() {
         'Fail2ban' "${guide}"
     assert_contains "guide documents the additional SSH listener" \
         '额外监听 `65533`' "${guide}"
+    assert_contains "guide documents disabled SSH password login" \
+        '关闭 SSH 密码登录' "${guide}"
 }
 
 test_bbr_matches_easy_all() {

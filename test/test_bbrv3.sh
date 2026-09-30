@@ -31,6 +31,8 @@ BBRV3_XANMOD_KEYRING_OVERRIDE="${TMP_DIR}/xanmod.gpg"
 BBRV3_XANMOD_SOURCE_OVERRIDE="${TMP_DIR}/xanmod.list"
 BBRV3_CPUINFO_FILE_OVERRIDE="${TMP_DIR}/cpuinfo"
 BBRV3_AVAILABLE_CC_FILE_OVERRIDE="${TMP_DIR}/tcp_available_congestion_control"
+BBRV3_EFI_DIR_OVERRIDE="${TMP_DIR}/efi"
+BBRV3_EFIVARS_DIR_OVERRIDE="${BBRV3_EFI_DIR_OVERRIDE}/efivars"
 SYSTEMD_SYSTEM_DIR="${TMP_DIR}/systemd-disabled"
 install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}" "${RUNTIME_TMP}"
 printf 'reno cubic bbr\n' >"${BBRV3_AVAILABLE_CC_FILE_OVERRIDE}"
@@ -66,6 +68,22 @@ write_cpu_flags "${v3_flags}"
 assert_equal "x86-64-v3 CPU detection" "3" "$(bbrv3_cpu_level)"
 assert_equal "x64v3 package selection" "linux-xanmod-lts-x64v3" \
     "$(bbrv3_kernel_package)"
+
+if bbrv3_secure_boot_enabled; then
+    fail "legacy BIOS without EFI must not be treated as Secure Boot"
+fi
+mkdir -p "${BBRV3_EFI_DIR}"
+bbrv3_secure_boot_enabled \
+    || fail "EFI with unavailable efivars must fail closed"
+mkdir -p "${BBRV3_EFIVARS_DIR}"
+secure_boot_var="${BBRV3_EFIVARS_DIR}/SecureBoot-test"
+printf '\0\0\0\0\0' >"${secure_boot_var}"
+if bbrv3_secure_boot_enabled; then
+    fail "an explicit disabled Secure Boot variable must be accepted"
+fi
+printf '\0\0\0\0\1' >"${secure_boot_var}"
+bbrv3_secure_boot_enabled \
+    || fail "an enabled Secure Boot variable must be rejected"
 
 module_content=$(<"${ROOT_DIR}/lib/tcp-tuning.sh")
 assert_contains "XanMod key fingerprint is pinned" "${module_content}" \

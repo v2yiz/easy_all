@@ -115,6 +115,12 @@ done <"${dest_cands}"
 assert_equal "Stratified reduction keeps 10 priority candidates" "10" "${dest_pri}"
 assert_equal "Stratified reduction keeps 5 other candidates" "5" "${dest_oth}"
 
+mock_remaining=48
+printf '162.158.1.1\t162.158.0.0/15\n162.158.1.2\t162.158.0.0/15\n' >"${source_cands}"
+cloudflare_limit_pool_to_globalping_budget "${source_cands}" "${dest_cands}"
+assert_equal "A one-candidate budget remains usable without priority candidates" \
+    "1" "$(wc -l <"${dest_cands}" | tr -d ' ')"
+
 # When remaining is <= the maximum Stage 2 reservation, budget should be rejected.
 mock_remaining=45
 if cloudflare_limit_pool_to_globalping_budget "${source_cands}" "${dest_cands}" 2>/dev/null; then
@@ -154,13 +160,14 @@ fi
 
 tls_mock_file="${TMP_DIR}/tls-mock.ndjson"
 cat <<'TLS_EOF' >"${tls_mock_file}"
-{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":42.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
-{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":44.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
-{"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":35.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"ERR_TLS_CERT_ALTNAME_INVALID"}}}]}}
-{"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"}}}]}}
-{"ip":"104.16.1.4","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":50.0,"measurement":{"results":[{"result":{"status":"failed","statusCode":0,"error":"connection timeout"}}]}}
-{"ip":"104.16.1.5","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":48.0,"measurement":{"results":[{"result":{"status":"finished","statusCode":502,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
-{"ip":"104.16.1.6","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":40,"measurement":{"results":[{"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":42.0,"measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"]},"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":44.0,"measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"]},"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.2","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":35.0,"measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"]},"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"ERR_TLS_CERT_ALTNAME_INVALID"}}}]}}
+{"ip":"104.16.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":30.0,"measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"]},"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":false,"error":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"}}}]}}
+{"ip":"104.16.1.4","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":50.0,"measurement":{"results":[{"probe":{"country":"CN","asn":4837,"tags":["eyeball-network"]},"result":{"status":"failed","statusCode":0,"error":"connection timeout"}}]}}
+{"ip":"104.16.1.5","source_cidr":"104.16.0.0/13","carrier_asn":4837,"avg_rtt_ms":48.0,"measurement":{"results":[{"probe":{"country":"CN","asn":4837,"tags":["eyeball-network"]},"result":{"status":"finished","statusCode":502,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.6","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":40,"measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"]},"result":{"status":"finished","statusCode":403,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
+{"ip":"104.16.1.7","source_cidr":"104.16.0.0/13","carrier_asn":4134,"avg_rtt_ms":39,"measurement":{"results":[{"probe":{"country":"CN","asn":9808,"tags":["eyeball-network"]},"result":{"status":"finished","statusCode":200,"tls":{"protocol":"TLSv1.3","authorized":true}}}]}}
 TLS_EOF
 
 parsed_tls=$(cloudflare_parse_tls_observations "${tls_mock_file}")
@@ -173,6 +180,7 @@ passing_ips=$(jq -r '.ip' <<<"${parsed_tls}" | tr '\n' ' ')
 [[ "${passing_ips}" != *"104.16.1.3 "* ]] || fail "104.16.1.3 (UNABLE_TO_VERIFY_LEAF_SIGNATURE) must be rejected"
 [[ "${passing_ips}" != *"104.16.1.4 "* ]] || fail "104.16.1.4 (failed) must be rejected"
 [[ "${passing_ips}" != *"104.16.1.5 "* ]] || fail "104.16.1.5 (HTTP 502) must be rejected"
+[[ "${passing_ips}" != *"104.16.1.7 "* ]] || fail "104.16.1.7 (wrong carrier probe) must be rejected"
 
 # ==============================================================================
 # Test 5: Strict Cross-Carrier Deduplication & 6 Unique Candidates Output
@@ -298,7 +306,7 @@ cloudflare_collect_globalping_tls_measurements() {
             jq -cn --arg ip "${ip}" --arg source_cidr "${source_cidr}" \
                 --argjson asn "${asn}" --argjson rtt "${rtt}" \
                 '{ip:$ip,source_cidr:$source_cidr,carrier_asn:$asn,avg_rtt_ms:$rtt,
-                  measurement:{results:[{result:{status:"finished",statusCode:200,
+                  measurement:{results:[{probe:{country:"CN",asn:$asn,tags:["eyeball-network"]},result:{status:"finished",statusCode:200,
                     tls:{protocol:"TLSv1.3",authorized:true}}}]}}'
         fi
     done <"${candidates_file}" >"${destination}"

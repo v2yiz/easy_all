@@ -6,8 +6,20 @@ filter_managed_reboot_cron() {
     awk -v marker="${CRON_REBOOT_MARKER}" 'index($0, marker) == 0'
 }
 
+read_root_crontab() {
+    local output status
+    if output=$(LC_ALL=C crontab -l 2>&1); then
+        printf '%s\n' "${output}"
+        return 0
+    else
+        status=$?
+    fi
+    [[ "${output}" == "no crontab for "* ]] || \
+        die "读取 root crontab 失败（退出码 ${status}）：${output:-无错误信息}"
+}
+
 configure_daily_reboot() {
-    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job
+    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job current
     local pre_command profile_pre_command=""
     if [[ -z "${mode}" && -t 0 ]]; then
         printf '请选择定时重启策略：\n'
@@ -35,7 +47,7 @@ configure_daily_reboot() {
         ;;
     *) die "定时重启选项无效：${mode}" ;;
     esac
-    { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab -
+    current=$(read_root_crontab) || return 1
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
         if declare -F scheduled_reboot_profile_pre_command >/dev/null 2>&1; then
             profile_pre_command=$(scheduled_reboot_profile_pre_command)
@@ -44,8 +56,10 @@ configure_daily_reboot() {
             pre_command="${profile_pre_command}"
         fi
         job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command:-true} ) && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
-        { crontab -l 2>/dev/null || true; printf '%s\n' "${job}"; } | crontab -
     fi
+    { printf '%s\n' "${current}" | filter_managed_reboot_cron; \
+        [[ -z "${job:-}" ]] || printf '%s\n' "${job}"; } | crontab - \
+        || die "写入 root crontab 失败"
 }
 
 refresh_saved_daily_reboot_schedule() {
@@ -60,7 +74,9 @@ refresh_saved_daily_reboot_schedule() {
 }
 
 remove_daily_reboot_schedule() {
-    { crontab -l 2>/dev/null || true; } | filter_managed_reboot_cron | crontab - \
+    local current
+    current=$(read_root_crontab) || return 1
+    printf '%s\n' "${current}" | filter_managed_reboot_cron | crontab - \
         || warn "移除 easy_all 定时重启任务失败，请手动检查 root crontab"
 }
 

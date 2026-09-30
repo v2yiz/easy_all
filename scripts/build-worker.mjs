@@ -54,6 +54,11 @@ export async function buildWorker({
         'delegateTokenValidation'
     );
     requireValue(
+        config.delegateTokenValidation !== true ||
+            (nonempty(config.vpsSubUrl) && config.requireDynamicCdn === true),
+        'delegateTokenValidation requires vpsSubUrl and requireDynamicCdn'
+    );
+    requireValue(
         config.sourceSecret === undefined || nonempty(config.sourceSecret),
         'sourceSecret'
     );

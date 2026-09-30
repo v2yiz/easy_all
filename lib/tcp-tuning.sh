@@ -9,6 +9,8 @@ readonly BBRV3_XANMOD_KEYRING="${BBRV3_XANMOD_KEYRING_OVERRIDE:-/etc/apt/keyring
 readonly BBRV3_XANMOD_SOURCE="${BBRV3_XANMOD_SOURCE_OVERRIDE:-/etc/apt/sources.list.d/xanmod-release.list}"
 readonly BBRV3_CPUINFO_FILE="${BBRV3_CPUINFO_FILE_OVERRIDE:-/proc/cpuinfo}"
 readonly BBRV3_AVAILABLE_CC_FILE="${BBRV3_AVAILABLE_CC_FILE_OVERRIDE:-/proc/sys/net/ipv4/tcp_available_congestion_control}"
+readonly BBRV3_EFI_DIR="${BBRV3_EFI_DIR_OVERRIDE:-/sys/firmware/efi}"
+readonly BBRV3_EFIVARS_DIR="${BBRV3_EFIVARS_DIR_OVERRIDE:-${BBRV3_EFI_DIR}/efivars}"
 readonly BBRV3_MINIMUM_XANMOD_VERSION="6.4.11"
 readonly BBRV3_REBOOT_MARKER="${STATE_DIR}/bbrv3-reboot-required"
 
@@ -115,13 +117,21 @@ bbrv3_debian_codename() {
 }
 
 bbrv3_secure_boot_enabled() {
-    local variable value
-    for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
+    local variable value disabled=0
+    [[ -d "${BBRV3_EFI_DIR}" ]] || return 1
+    [[ -d "${BBRV3_EFIVARS_DIR}" ]] || return 0
+    for variable in "${BBRV3_EFIVARS_DIR}"/SecureBoot-*; do
         [[ -r "${variable}" ]] || continue
-        value=$(od -An -j4 -N1 -tu1 "${variable}" 2>/dev/null | tr -d '[:space:]')
-        [[ "${value}" != "1" ]] || return 0
+        value=$(od -An -j4 -N1 -tu1 "${variable}" 2>/dev/null | tr -d '[:space:]') \
+            || return 0
+        case "${value}" in
+        0) disabled=1 ;;
+        1) return 0 ;;
+        *) return 0 ;;
+        esac
     done
-    return 1
+    ((disabled == 1)) && return 1
+    return 0
 }
 
 xanmod_key_fingerprint() {

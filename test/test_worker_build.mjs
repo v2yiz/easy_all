@@ -20,6 +20,18 @@ try {
     const configPath = join(temp, 'config.json');
     const outputPath = join(temp, 'worker.mjs');
     await writeFile(configPath, JSON.stringify(config));
+    const unsafeDelegatePath = join(temp, 'unsafe-delegate.json');
+    await writeFile(unsafeDelegatePath, JSON.stringify({
+        ...config,
+        allowedTokens: {},
+        vpsSubUrl: '',
+        delegateTokenValidation: true,
+        requireDynamicCdn: true,
+    }));
+    await assert.rejects(
+        buildWorker({ configPath: unsafeDelegatePath, outputPath: join(temp, 'unsafe-worker.mjs') }),
+        /delegateTokenValidation requires vpsSubUrl/,
+    );
     const now = Date.UTC(2026, 8, 6, 15, 59);
     assert.equal(await buildWorker({ configPath, outputPath, now }), '2026-09-06-v0');
     const initial = await readFile(outputPath, 'utf8');
@@ -188,6 +200,21 @@ try {
         ))).status,
         502,
         'private source failures must not fall back around quota enforcement'
+    );
+    const unsafeDelegateHandler = api.createWorkerHandler({
+        allowedTokenValues: new Set(),
+        localNodes: api.LOCAL_NODES,
+        externalSubUrl: '',
+        vpsSubUrl: '',
+        delegateTokenValidation: true,
+        requireDynamicCdn: true,
+    });
+    assert.equal(
+        (await unsafeDelegateHandler(new Request(
+            'https://sub.example.com/subscribe?token=public-user-token'
+        ))).status,
+        503,
+        'delegated validation without a private source must fail closed'
     );
     let upstreamUA = '';
     await api.fetchXflashSubscription(

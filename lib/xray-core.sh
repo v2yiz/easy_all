@@ -4,6 +4,11 @@
 
 export XRAY_LOCATION_ASSET="${XRAY_DIR}"
 
+xray_installed_version() {
+    [[ -s "${XRAY_DIR}/version" ]] \
+        && cat "${XRAY_DIR}/version" || printf 'unknown\n'
+}
+
 parse_xray_dgst_sha256() {
     awk '
         {

@@ -1802,9 +1802,17 @@ show_node() {
 show_status() {
     require_root
     collect_installed_state
-    printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（数据面单域名）\nOrigin CA: %s（到期 %s）\n客户端入口 IP 族: IPv4\nGoogle 出站: %s\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled\n' \
+    printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n'
+    show_bbrv3_status
+    printf '后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（数据面单域名）\nOrigin CA: %s（到期 %s）\n客户端入口 IP 族: IPv4\nGoogle 出站: %s\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}" \
         "$(google_egress_status)"
+    printf '核心服务: '
+    systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
+        && printf 'active\n' || printf 'inactive\n'
+    printf '后端 TCP %s: ' "${XRAY_XHTTP_LOOPBACK_PORT}"
+    [[ -n "$(ss -H -ltn "sport = :${XRAY_XHTTP_LOOPBACK_PORT}" 2>/dev/null || true)" ]] \
+        && printf 'listening\n' || printf 'not listening\n'
     if subscription_enabled; then
         printf '公开订阅: Cloudflare Worker %s（%s）\n' \
             "${CLOUDFLARE_WORKER_NAME}" "${SUBSCRIPTION_DOMAIN}"
@@ -1814,6 +1822,9 @@ show_status() {
             "$(jq -r 'if .externalSubUrl == "" then "未配置" else "已配置（URL 隐藏）" end' \
                 <<<"${WORKER_AGGREGATION_CONFIG}")" \
             "$(jq '.fallbackCdnNodes | length' <<<"${WORKER_AGGREGATION_CONFIG}")"
+        printf 'Nginx: '
+        systemctl is-active --quiet nginx 2>/dev/null \
+            && printf 'active\n' || printf 'inactive\n'
     else
         printf '公开订阅: 未部署\n'
     fi
@@ -1823,6 +1834,7 @@ show_status() {
             "${WORKER_BACKUP_DOMAIN}" "$(jq length <<<"${WORKER_BACKUP_IPS:-[]}")" "${WORKER_BACKUP_PLACEMENT:-off}"
     fi
     show_globalping_status
+    show_quota_status
 }
 
 show_subscription() {

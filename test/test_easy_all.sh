@@ -855,6 +855,38 @@ test_scheduled_reboot_keeps_dynamic_ports() {
     unset -f crontab
 }
 
+test_crontab_read_failure_is_fail_closed() {
+    local write_marker="${TMP_DIR}/crontab-overwritten"
+    crontab() {
+        if [[ "${1:-}" == "-l" ]]; then
+            printf 'temporary spool failure\n' >&2
+            return 2
+        fi
+        touch "${write_marker}"
+    }
+    REBOOT_SCHEDULE_MODE=none
+    if (configure_daily_reboot) >/dev/null 2>&1; then
+        fail_test "crontab read failures must stop schedule updates"
+    fi
+    [[ ! -e "${write_marker}" ]] \
+        || fail_test "crontab read failures must never overwrite the existing crontab"
+
+    crontab() {
+        if [[ "${1:-}" == "-l" ]]; then
+            printf 'no crontab for root\n' >&2
+            return 1
+        fi
+        [[ "${1:-}" == "-" ]] || return 1
+        cat >"${write_marker}"
+    }
+    configure_daily_reboot
+    [[ -e "${write_marker}" ]] \
+        || fail_test "an absent crontab must still allow schedule updates"
+    unset REBOOT_SCHEDULE_MODE
+    unset -f crontab
+    TESTS_RUN=$((TESTS_RUN + 2))
+}
+
 test_dynamic_port_rotation_schedule() {
     local cron_state_file="${TMP_DIR}/dynamic-port.cron" cron_state
     : >"${cron_state_file}"
@@ -1384,6 +1416,7 @@ test_dynamic_port_year_boundary
 test_dynamic_port_boundaries_and_rule_set
 test_rotate_dynamic_ports_command
 test_scheduled_reboot_keeps_dynamic_ports
+test_crontab_read_failure_is_fail_closed
 test_dynamic_port_rotation_schedule
 test_dynamic_port_rotation_rollback
 test_cloudflare_reality_contract
