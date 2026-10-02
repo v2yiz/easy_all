@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# `[[ ... ]]` as a top-level list item is not fatal under `set -e` (not even in
+# bash 5), so a failing assertion would leave the test reporting "ok" while the
+# behavior under test is broken.  Evaluate the condition inside this helper, which
+# refuses to return success on a mismatch:
+#     assert_true "<description>" '<condition>'
+assert_true() {
+    local description=$1 condition=$2
+    if ! eval "[[ ${condition} ]]"; then
+        printf 'not ok - %s\n' "${description}" >&2
+        exit 1
+    fi
+}
+
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 if [[ $# == 0 ]]; then
@@ -57,12 +70,15 @@ curl() {
         *token=invalid*) printf '403' ;;
         *flag=clash*) printf 'network: xhttp' ;;
         *easy_all-health*) printf '%s' "${health_response:-easy_all ok}" ;;
-        *) printf 'subscription' ;;
+        # The generic subscription endpoint is validated as base64 whose decoded
+        # body carries an XHTTP node, so the fixture has to be encoded like the
+        # real endpoint instead of returning a plain string.
+        *) printf '%s' 'type=xhttp' | openssl base64 -A ;;
     esac
 }
 validate_protocol_runtime
 validate_subscription_runtime
-[[ $(wc -l <"${RUNTIME_TMP}/curl.log") -eq 4 ]]
+assert_true "运行时验收产生的 curl 调用次数应为 4" '$(wc -l <"${RUNTIME_TMP}/curl.log") -eq 4'
 if (health_response=broken; validate_protocol_runtime) >/dev/null 2>&1; then
     printf 'not ok - invalid health response accepted\n' >&2
     exit 1
@@ -76,9 +92,9 @@ expected_accounts=${USER_ACCOUNTS}
 save_state
 unset QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
 load_state
-[[ "${QUOTA_ENABLED}" == 1 && "${USER_ACCOUNTS}" == "${expected_accounts}" && "${QUOTA_START_DATE}" == 2026-01-01 ]]
+assert_true "重新载入后应恢复 QUOTA_ENABLED / USER_ACCOUNTS / QUOTA_START_DATE" '"${QUOTA_ENABLED}" == 1 && "${USER_ACCOUNTS}" == "${expected_accounts}" && "${QUOTA_START_DATE}" == 2026-01-01'
 QUOTA_ENABLED=0
 save_state
 load_state
-[[ -z "${USER_ACCOUNTS}" && -z "${QUOTA_START_DATE}" ]]
+assert_true "关闭配额后不应残留 USER_ACCOUNTS / QUOTA_START_DATE" '-z "${USER_ACCOUNTS}" && -z "${QUOTA_START_DATE}"'
 printf 'ok - %s runtime authentication and state\n' "${profile}"
