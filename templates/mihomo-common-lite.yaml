@@ -1,26 +1,18 @@
-# XFLASH 兼容订阅模板（隐私清理 + 低内存优化版）
+# COMMON 订阅模板 · 低内存精简版（目标 50MB 以内）
 #
-# 基于 XFLASH.yaml 的分流语义改写，面向 easy_all 订阅生成流程：
-#   1. 已删除账号凭据、节点服务器与提供商专属条目（节点主机名、UUID、
-#      专属 IP/域名、提供商组名与直连例外）；
-#   2. 原 13 个外部文本规则文件（约 14.5 万条域名 + 9700 条 CIDR，3.2 MB）
-#      替换为 7 个 MRS 二进制规则集（合计约 0.8 MB）：
-#        icloud + apple            -> geosite apple.mrs
-#        google                    -> geosite google.mrs
-#        gfw + greatfire + proxy + tld-not-cn -> geosite geolocation-!cn.mrs
-#        direct                    -> geosite cn.mrs
-#        cncidr + lancidr          -> geoip cn.mrs + GEOIP,LAN
-#        telegramcidr              -> geoip telegram.mrs
-#        private                   -> geosite private.mrs
-#   3. 保留 XFLASH 的 AI / Copilot / 泄漏检测站点例外；
-#   4. 补回项目既有安全网：FCM 端口代理、代理流量 QUIC 拒绝、GLOBAL 仅指向 PROXY。
+# 在 mihomo-common.yaml 基础上进一步裁剪，只保留体积最小的关键规则集：
+#   - 已删除 geosite-cn（11.2 万条域名）与 geosite-foreign（2.7 万条域名）；
+#   - 国内直连改由 geoip-cn（9609 条 CIDR，37 KB）在解析后判定，
+#     未命中则回落 MATCH,PROXY；境外域名多一次本地 DNS 解析（有缓存）。
+#   - 保留 Apple / Google / 私有域名 / Telegram 等小规则集与全部手写例外。
 #
-# 内存实测（mihomo v1.19.32 darwin-arm64，仅回环、关闭 TUN）：
-#   原始 XFLASH 的 13 个文本规则文件：约 96-99 MB
-#   本模板（MRS 规则集）：约 48-50 MB
+# 内存实测（mihomo v1.19.32 darwin-arm64，仅回环、关闭 TUN，加载规则后）：
+#   原始 13 个文本规则文件：约 96-99 MB
+#   mihomo-common.yaml（含 cn + foreign）：约 44-46 MB
+#   本精简版：约 37-38 MB（空规则基线约 33-34 MB）
 #
-# MRS 规则集由 jsDelivr 国内镜像提供，首次启动需联网下载约 0.8 MB；
-# 客户端内核需支持 mihomo 的 mrs 规则格式（Clash Mi 等新版客户端）。
+# 规则集使用 mrs 格式与 jsDelivr 国内镜像，首次启动下载约 65 KB。
+
 mixed-port: 1080
 allow-lan: false
 mode: rule
@@ -36,7 +28,7 @@ tun:
     enable: true
     stack: mixed
     mtu: 1500
-    udp-timeout: 300
+    udp-timeout: 60
     auto-route: true
     auto-detect-interface: true
     inet4-address:
@@ -84,19 +76,15 @@ proxy-groups:
 # EASY_ALL_PROXY_GROUP
 
 rule-providers:
-    # MRS 二进制规则集，体积与内存均远小于文本规则文件。
-    # proxy: DIRECT 让规则集在隧道就绪前直连下载；若 jsDelivr 不可达，
-    # 可把这些文件镜像到自己的 VPS/Worker 后替换 URL。
+    # 仅保留 5 个最小规则集；proxy: DIRECT 保证隧道就绪前可直连下载。
     geosite-private: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.mrs', path: ./ruleset/geosite-private.mrs, interval: 86400 }
     geosite-apple: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple.mrs', path: ./ruleset/geosite-apple.mrs, interval: 86400 }
     geosite-google: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.mrs', path: ./ruleset/geosite-google.mrs, interval: 86400 }
-    geosite-foreign: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/geolocation-!cn.mrs', path: ./ruleset/geosite-foreign.mrs, interval: 86400 }
-    geosite-cn: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.mrs', path: ./ruleset/geosite-cn.mrs, interval: 86400 }
     geoip-cn: { type: http, behavior: ipcidr, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs', path: ./ruleset/geoip-cn.mrs, interval: 86400 }
     geoip-telegram: { type: http, behavior: ipcidr, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs', path: ./ruleset/geoip-telegram.mrs, interval: 86400 }
 
 rules:
-    # ---- 原 XFLASH 手写规则（已剔除账号、节点与提供商私有条目）----
+    # ---- COMMON 手写规则（已剔除账号、节点与提供商私有条目）----
     # 原始配置把 ssl.gstatic.com 单独直连；如希望 Google 全部走代理，可删除这一行。
     - 'DOMAIN,ssl.gstatic.com,DIRECT'
     - 'DOMAIN-SUFFIX,gstatic.com,PROXY'
@@ -205,24 +193,19 @@ rules:
     - 'DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY'
     - 'DOMAIN,clash.razord.top,DIRECT'
     - 'DOMAIN,yacd.haishan.me,DIRECT'
-    # ---- 项目安全网：私有地址、FCM 推送与 Worker 标记 ----
+    # ---- 项目安全网 ----
     - 'RULE-SET,geosite-private,DIRECT'
     - 'GEOIP,LAN,DIRECT,no-resolve'
-    # FCM 拿到真实 IP 后可能丢域名；TCP 5228-5230 仍固定走代理。
     - 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY'
 # EASY_ALL_WORKER_RULE
-    # ---- 用 MRS 规则集替代 XFLASH 的 13 个外部文本规则文件 ----
-    # Apple/iCloud 按原语义整体直连。
+    # Apple/iCloud 直连。
     - 'RULE-SET,geosite-apple,DIRECT'
-    # Google 先拒绝 QUIC 回退 TCP，再走代理（兼容 Reality/XHTTP 等 TCP 隧道）。
+    # Google 先拒绝 QUIC 再代理。
     - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT'
     - 'RULE-SET,geosite-google,PROXY'
-    # 等价原 gfw + greatfire + proxy + tld-not-cn：其余境外域名统一代理。
-    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-foreign)),REJECT'
-    - 'RULE-SET,geosite-foreign,PROXY'
-    # 国内域名/IP 直连；Telegram 段优先代理。
-    - 'RULE-SET,geosite-cn,DIRECT'
+    # Telegram IP 段代理。
     - 'RULE-SET,geoip-telegram,PROXY,no-resolve'
+    # 其余域名解析后按 IP 判定：国内直连，境外走代理。
     - 'RULE-SET,geoip-cn,DIRECT'
     # 其余 QUIC 一律回退 TCP；未命中域名走代理。
     - 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT'

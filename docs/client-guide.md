@@ -93,13 +93,13 @@ Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）
 
 ## 低内存客户端（旧款 iPhone）
 
-规则集数量决定客户端内核的常驻内存。仓库另带两套 XFLASH 兼容模板，随运行时清单安装，供规则
+规则集数量决定客户端内核的常驻内存。仓库另带两套 COMMON 兼容模板，随运行时清单安装，供规则
 覆盖优先或内存受限的设备选择：
 
 | 模板 | 规则覆盖 | 实测内存 |
 | --- | --- | --- |
-| `templates/mihomo-xflash.yaml` | XFLASH 手写例外，加国内域名、境外域名两套 MRS 规则集 | 约 44–46 MB |
-| `templates/mihomo-xflash-lite.yaml` | 保留手写例外与 Apple、Google、私有域名、Telegram 规则集；国内直连改由 `geoip-cn.mrs` 判定 | 约 37–38 MB |
+| `templates/mihomo-common.yaml` | COMMON 手写例外，加国内域名、境外域名两套 MRS 规则集 | 约 44–46 MB |
+| `templates/mihomo-common-lite.yaml` | 保留手写例外与 Apple、Google、私有域名、Telegram 规则集；国内直连改由 `geoip-cn.mrs` 判定 | 约 37–38 MB |
 
 实测条件为 mihomo v1.19.32（darwin-arm64）、关闭 TUN、加载规则并解析若干域名之后；不同内核与
 客户端的内存口径会有差异。旧款 iPhone 建议选精简版，代价是未收录的国内域名要多做一次本地
@@ -108,13 +108,13 @@ Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）
 在发布订阅的服务器上选择模板，客户端只需刷新订阅：
 
 ```bash
-sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-xflash-lite.yaml easy_all update-sub
+sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common-lite.yaml easy_all update-sub
 ```
 
 Cloudflare 聚合 Worker 会重新构建并内嵌所选模板，改用
 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply-cloud` 即可让所有客户端生效。自定义模板路径
-同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板已在 CI 用固定内核校验，其他来源仍须在服务器上
-安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。
+同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板已在 CI 用固定
+内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。
 
 ## 订阅更新失败
 

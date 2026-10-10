@@ -104,8 +104,8 @@ assert_contains "client guide marks Shadowrocket unverified" \
     "${CLIENT_CONTENT}" '目前不把 Shadowrocket 列为'
 assert_contains "client guide documents explicit GLOBAL routing" \
     "${CLIENT_CONTENT}" '显式定义 `GLOBAL → PROXY`'
-assert_contains "client guide documents the low-memory XFLASH template" \
-    "${CLIENT_CONTENT}" '`templates/mihomo-xflash-lite.yaml`'
+assert_contains "client guide documents the low-memory COMMON template" \
+    "${CLIENT_CONTENT}" '`templates/mihomo-common-lite.yaml`'
 assert_contains "client guide documents template selection" \
     "${CLIENT_CONTENT}" 'MIHOMO_TEMPLATE_SOURCE'
 

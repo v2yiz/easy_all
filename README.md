@@ -96,7 +96,7 @@ sudo easy_all subscription
 `flag=clash` 的 Mihomo 地址，在客户端通过 URL 导入。订阅地址与 UUID 都是访问凭据，不要公开。
 
 客户端选择、Clash Mi 设置和订阅 DNS 排障见[客户端使用指南](docs/client-guide.md)。
-内存受限的客户端（如旧款 iPhone）可改用仓库内置的 XFLASH 兼容模板，见
+内存受限的客户端（如旧款 iPhone）可改用仓库内置的 COMMON 兼容模板，见
 [低内存客户端](docs/client-guide.md#低内存客户端旧款-iphone)。
 
 ## 常用命令

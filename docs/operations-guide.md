@@ -30,7 +30,7 @@ Cloudflare 模式保留现有订阅模式、Worker 名称、订阅域名、用�
 聚合配置选项时选择 `1. 保留`。此命令会重新构建并部署 Worker，并更新本机订阅，
 不需要再执行 `apply-cloud`。最后在客户端刷新订阅并重启代理内核。
 
-使用仓库内置的可选模板（例如 `templates/mihomo-xflash-lite.yaml`）发布订阅时，在命令前传入
+使用仓库内置的可选模板（例如 `templates/mihomo-common-lite.yaml`）发布订阅时，在命令前传入
 `MIHOMO_TEMPLATE_SOURCE=<模板绝对路径或 HTTPS URL>`；Cloudflare 模式会重新构建并内嵌所选模板。模板差异与
 内存实测见[客户端使用指南](client-guide.md#低内存客户端旧款-iphone)。
 

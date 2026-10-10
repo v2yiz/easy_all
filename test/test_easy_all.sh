@@ -353,7 +353,7 @@ test_mihomo_template() {
     local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
     local google_rule_line google_quic_rule_line google_dns_line cn_dns_line google_dns_policy
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
-    # Optional bundled templates (XFLASH compatibility) must clear the same gate.
+    # Optional bundled templates (COMMON compatibility) must clear the same gate.
     for bundled_template in "${ROOT_DIR}"/templates/*.yaml; do
         validate_mihomo_template "${bundled_template}"
     done

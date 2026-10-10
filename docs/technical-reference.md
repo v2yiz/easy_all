@@ -163,8 +163,8 @@ easy_all
 │  └─ tcp-tuning.sh
 ├─ templates/
 │  ├─ mihomo.yaml
-│  ├─ mihomo-xflash.yaml
-│  └─ mihomo-xflash-lite.yaml
+│  ├─ mihomo-common.yaml
+│  └─ mihomo-common-lite.yaml
 ├─ worker-src/
 │  ├─ index.js
 │  └─ backup.js
@@ -214,6 +214,6 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 默认内置模板无需在 VPS 安装 Mihomo。自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
 可用 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。
-`templates/mihomo-xflash.yaml` 与 `templates/mihomo-xflash-lite.yaml` 是面向低内存客户端的
+`templates/mihomo-common.yaml` 与 `templates/mihomo-common-lite.yaml` 是面向低内存客户端的
 可选模板，随运行时清单安装，通过 `MIHOMO_TEMPLATE_SOURCE` 选择；两者与默认模板共用同一套结构
 校验与 Worker 构建流程。
