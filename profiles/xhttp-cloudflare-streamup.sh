@@ -714,6 +714,11 @@ cloudflare_configure_origin_firewall() {
     done <"${next}"
     ufw --force enable >/dev/null || die "启用 UFW 失败"
     ufw reload >/dev/null || die "重载 UFW 失败"
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        ufw_tcp_port_is_allowed 443 "${cidr}" \
+            || die "UFW 未有效放行 Cloudflare 回源：${cidr}"
+    done <"${next}"
 
     while IFS= read -r cidr; do
         [[ -n "${cidr}" ]] || continue
@@ -741,7 +746,7 @@ xhttp_configure_ufw() {
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
     desired_ports=${SSH_PORTS}
-    apply_managed_ufw_tcp_ports "${desired_ports} 443"
+    apply_managed_ufw_tcp_ports "${desired_ports}"
     cloudflare_configure_origin_firewall
     apply_managed_ufw_tcp_ports "${desired_ports}"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"

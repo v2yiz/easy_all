@@ -90,16 +90,20 @@ stale_managed_ufw_rule_numbers() {
 }
 
 ufw_tcp_port_is_allowed() {
-    local port=$1
+    local port=$1 source=${2:-}
     LC_ALL=C ufw status numbered 2>/dev/null \
-        | awk -v expected="${port}/tcp" '
+        | awk -v expected="${port}/tcp" -v source="${source}" '
             {
                 line=$0
                 sub(/^[[:space:]]*\[[[:space:]]*[^]]*\][[:space:]]*/, "", line)
                 endpoint=line
                 sub(/[[:space:]].*$/, "", endpoint)
                 if (endpoint == expected &&
-                    line ~ /^[0-9]+\/tcp([[:space:]]+\(v6\))?[[:space:]]+ALLOW[[:space:]]+IN([[:space:]]|$)/) found=1
+                    line ~ /^[0-9]+\/tcp([[:space:]]+\(v6\))?[[:space:]]+ALLOW[[:space:]]+IN([[:space:]]|$)/) {
+                    sub(/^[0-9]+\/tcp([[:space:]]+\(v6\))?[[:space:]]+ALLOW[[:space:]]+IN[[:space:]]*/, "", line)
+                    sub(/[[:space:]].*$/, "", line)
+                    if (source == "" || line == source) found=1
+                }
             }
             END {exit(found ? 0 : 1)}
         '

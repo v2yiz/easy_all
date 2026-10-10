@@ -676,6 +676,8 @@ test_nginx_and_firewall() {
     ufw() {
         if [[ "${1:-}" == "status" ]]; then
             printf 'Status: active\n'
+            [[ "${2:-}" != "numbered" ]] \
+                || printf '[ 1] 8443/tcp ALLOW IN 173.245.48.0/20 # easy_all-cloudflare-subscription\n'
         else
             printf '%s\n' "$*" >>"${ufw_log}"
         fi
@@ -704,9 +706,9 @@ EOF
     configure_ufw
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
-    assert_contains "self-hosting stages 8443 before the Cloudflare allowlist" \
+    assert_not_contains "self-hosting never stages unrestricted 8443" \
         "managed-ports 22 65533 443 8443" "$(<"${ufw_log}")"
-    assert_contains "self-hosting removes unrestricted 8443 after staging" \
+    assert_contains "self-hosting protects SSH and Reality before the Cloudflare allowlist" \
         "managed-ports 22 65533 443" "$(<"${ufw_log}")"
     assert_contains "self-hosting allows Cloudflare ranges to 8443" \
         "allow proto tcp from 173.245.48.0/20 to any port 8443" "$(<"${ufw_log}")"

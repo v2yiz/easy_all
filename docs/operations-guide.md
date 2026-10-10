@@ -19,6 +19,10 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
+`2026-10-10-v1` 修复订阅和防火墙刷新窗口，按以上两步升级即可生效，订阅 URL 和用户配置无需修改。
+该版本号是源码 Git 标签；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头，
+本次修复无需重新部署 Worker。
+
 只更新订阅规则时：
 
 ```bash

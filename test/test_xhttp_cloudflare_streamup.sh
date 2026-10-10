@@ -81,6 +81,18 @@ export CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE=0
 
 mkdir -p "${STATE_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" "${WEB_ROOT}" "${TMP_DIR}/xray"
 touch "${CERT_FILE}" "${KEY_FILE}"
+mkdir -p "${TMP_DIR}/profiles"
+cp -R "${ROOT_DIR}/lib" "${TMP_DIR}/lib"
+sed -e "s|^readonly STATE_DIR=.*|readonly STATE_DIR=\"${STATE_DIR}\"|" \
+    -e "s|^readonly WEB_ROOT=.*|readonly WEB_ROOT=\"${WEB_ROOT}\"|" \
+    -e "s|^readonly NGINX_CONFIG=.*|readonly NGINX_CONFIG=\"${NGINX_CONFIG}\"|" \
+    -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
+    "${ROOT_DIR}/lib/xhttp-runtime.sh" >"${TMP_DIR}/lib/xhttp-runtime.sh"
+sed -e "s|^readonly CLOUDFLARE_ORIGIN_IPS_FILE=.*|readonly CLOUDFLARE_ORIGIN_IPS_FILE=\"${STATE_DIR}/cloudflare-origin-ipv4.txt\"|" \
+    "${PROFILE}" >"${TMP_DIR}/profiles/xhttp-cloudflare-streamup.sh"
+for directory in templates scripts worker-src; do
+    ln -s "${ROOT_DIR}/${directory}" "${TMP_DIR}/${directory}"
+done
 
 install() {
     local args=()
@@ -122,7 +134,8 @@ rm() {
 }
 
 # shellcheck source=profiles/xhttp-cloudflare-streamup.sh
-source "${PROFILE}"
+source "${TMP_DIR}/profiles/xhttp-cloudflare-streamup.sh"
+trap 'status=$?; cleanup; rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
 
 # 3. Test xhttp_render_xray_config
 xhttp_render_xray_config
@@ -543,10 +556,63 @@ write_subscriptions
 friend_links=$(openssl base64 -d -A <"${TMP_DIR}/web/subscriptions/friend/base64.txt")
 assert_contains "Quota subscription uses the user's UUID" \
     "${friend_links}" "22222222-2222-4222-8222-222222222222"
+
+# Every old file remains readable during rendering and each publication rename.
+(
+    eval "$(declare -f render_mihomo_subscription | sed '1s/render_mihomo_subscription/original_render/')"
+    render_mihomo_subscription() {
+        [[ -s "${SUBSCRIPTION_DIR}/owner/base64.txt" && -s "${SUBSCRIPTION_DIR}/friend/mihomo.yaml" ]] \
+            || fail "Quota rendering removed live subscriptions"
+        original_render "$@"
+    }
+    mv() {
+        local file
+        for file in owner/base64.txt owner/mihomo.yaml friend/base64.txt friend/mihomo.yaml; do
+            [[ -s "${SUBSCRIPTION_DIR}/${file}" ]] || fail "Publication removed ${file}"
+        done
+        command mv "$@"
+        printf 'rename\n' >>"${TMP_DIR}/subscription-renames"
+    }
+    write_subscriptions
+    assert_equal "Quota refresh atomically replaces all four files" 4 \
+        "$(wc -l <"${TMP_DIR}/subscription-renames" | tr -d ' ')"
+)
+cp -a "${SUBSCRIPTION_DIR}" "${TMP_DIR}/subscriptions-before-failure"
+if (
+    render_mihomo_subscription() { die "injected rendering failure"; }
+    write_subscriptions
+) >/dev/null 2>&1; then
+    fail "Injected rendering failure must stop publication"
+fi
+diff -r "${TMP_DIR}/subscriptions-before-failure" "${SUBSCRIPTION_DIR}" \
+    || fail "Rendering failure changed live subscriptions"
+if (
+    trap - EXIT
+    mv() {
+        command mv "$@"
+        command bash -c 'kill -KILL "$PPID"'
+    }
+    write_subscriptions
+) >/dev/null 2>&1; then
+    fail "Interrupted publication must fail"
+else
+    assert_equal "Publication was interrupted by SIGKILL" 137 "$?"
+fi
+diff -r "${TMP_DIR}/subscriptions-before-failure" "${SUBSCRIPTION_DIR}" \
+    || fail "Interrupted publication removed or truncated a live subscription"
+
+# Switching modes still handles usernames that collide with shared filenames.
+USER_ACCOUNTS='{"base64.txt":{"uuid":"11111111-2222-4111-8111-111111111111","token":"owner-token-123","quota_gb":10}}'
+write_subscriptions
+[[ -s "${SUBSCRIPTION_DIR}/base64.txt/base64.txt" && ! -e "${SUBSCRIPTION_DIR}/friend" ]] \
+    || fail "Quota publication must remove retired users and support filename-like usernames"
 QUOTA_ENABLED=0
 USER_ACCOUNTS=""
 QUOTA_START_DATE=""
 ALLOWED_TOKENS='{"owner":"test-token-12345"}'
+write_subscriptions
+[[ -f "${SUBSCRIPTION_BASE64_FILE}" && -f "${SUBSCRIPTION_MIHOMO_FILE}" && ! -e "${SUBSCRIPTION_DIR}/owner" ]] \
+    || fail "Switching off quota must publish shared files and remove per-user files"
 VPS_IP_FAMILY="dual"
 VPS_PUBLIC_IPV6="2001:db8::10"
 

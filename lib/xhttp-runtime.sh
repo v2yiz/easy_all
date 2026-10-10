@@ -375,7 +375,7 @@ xhttp_require_subscription_hooks() {
 }
 
 write_subscriptions() {
-    local template node_file group_file name_file worker_rule_file base64_file mihomo_file user uuid user_dir marker
+    local template node_file group_file name_file worker_rule_file base64_file mihomo_file user uuid user_dir marker stage_dir
     if declare -F cloudflare_refresh_backup_nodes >/dev/null 2>&1; then
         cloudflare_refresh_backup_nodes
     fi
@@ -393,30 +393,37 @@ write_subscriptions() {
         && marker=$(mihomo_transport_marker)
     build_mihomo_worker_rules >"${worker_rule_file}"
 
+    install -d -m 0755 "${WEB_ROOT}"
+    stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
+        || die "创建订阅暂存目录失败"
+    cleanup_files+=("${stage_dir}")
     if quota_enabled; then
-        rm -rf -- "${SUBSCRIPTION_DIR}"
-        install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
         while IFS=$'\t' read -r user uuid; do
-            user_dir="${SUBSCRIPTION_DIR}/${user}"
+            user_dir="${stage_dir}/${user}"
             (
                 VLESS_UUID=${uuid}
-                build_mihomo_nodes >"${node_file}.${user}"
-                build_mihomo_proxy_groups >"${group_file}.${user}"
-                build_mihomo_proxy_names >"${name_file}.${user}"
-                build_node_links | openssl base64 -A >"${base64_file}.${user}"
+                build_mihomo_nodes >"${node_file}.${user}" || exit 1
+                build_mihomo_proxy_groups >"${group_file}.${user}" || exit 1
+                build_mihomo_proxy_names >"${name_file}.${user}" || exit 1
+                build_node_links | openssl base64 -A >"${base64_file}.${user}" || exit 1
                 printf '\n' >>"${base64_file}.${user}"
                 render_mihomo_subscription "${template}" "${node_file}.${user}" \
                     "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
                     "${group_file}.${user}" "${name_file}.${user}" "${worker_rule_file}"
-            )
+            ) || die "生成用户订阅失败：${user}"
             grep -Fq "${marker}" "${mihomo_file}.${user}" \
                 || die "Mihomo 订阅缺少有效节点：${user}"
-            install -d -o root -g www-data -m 0750 "${user_dir}"
+            install -d -o root -g www-data -m 0750 "${user_dir}" \
+                || die "创建用户订阅暂存目录失败：${user}"
             install -o root -g www-data -m 0640 \
-                "${base64_file}.${user}" "${user_dir}/base64.txt"
+                "${base64_file}.${user}" "${user_dir}/base64.txt" \
+                || die "暂存用户 Base64 订阅失败：${user}"
             install -o root -g www-data -m 0640 \
-                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml"
+                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml" \
+                || die "暂存用户 Mihomo 订阅失败：${user}"
         done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
+        publish_subscription_files "${stage_dir}"
+        rm -rf -- "${stage_dir}"
         return 0
     fi
     build_mihomo_nodes >"${node_file}"
@@ -429,10 +436,10 @@ write_subscriptions() {
 
     grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
-    rm -rf -- "${SUBSCRIPTION_DIR}"
-    install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
-    install -o root -g www-data -m 0640 "${base64_file}" "${SUBSCRIPTION_BASE64_FILE}"
-    install -o root -g www-data -m 0640 "${mihomo_file}" "${SUBSCRIPTION_MIHOMO_FILE}"
+    install -m 0640 "${base64_file}" "${stage_dir}/base64.txt" || die "暂存 Base64 订阅失败"
+    install -m 0640 "${mihomo_file}" "${stage_dir}/mihomo.yaml" || die "暂存 Mihomo 订阅失败"
+    publish_subscription_files "${stage_dir}"
+    rm -rf -- "${stage_dir}"
 }
 
 remove_subscriptions() {
@@ -549,10 +556,10 @@ rollback_subscription_update() {
     else
         rm -f -- "${KEY_FILE}"
     fi
-    rm -rf -- "${SUBSCRIPTION_DIR}"
     if [[ -d "${UPDATE_SUB_BACKUP_DIR}/subscriptions" ]]; then
-        install -d -o root -g www-data -m 0750 "$(dirname "${SUBSCRIPTION_DIR}")"
-        cp -a "${UPDATE_SUB_BACKUP_DIR}/subscriptions" "${SUBSCRIPTION_DIR}"
+        publish_subscription_files "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
+    else
+        rm -rf -- "${SUBSCRIPTION_DIR}"
     fi
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 \
         || warn "恢复订阅更新前 Nginx 配置失败"

@@ -174,6 +174,39 @@ map $arg_flag $easy_all_subscription_uri {
 EOF
 }
 
+publish_subscription_files() {
+    local source_dir=$1 files file relative target target_dir candidate
+    files=$(find "${source_dir}" -type f) || die "读取待发布订阅失败"
+    [[ -n "${files}" ]] || die "待发布订阅为空"
+    while IFS= read -r file; do
+        [[ -s "${file}" ]] || die "待发布订阅文件为空：${file}"
+    done <<<"${files}"
+
+    install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
+    # shortcut: files switch independently; use a version pointer if a whole-generation snapshot is required.
+    while IFS= read -r file; do
+        relative=${file#"${source_dir}/"}
+        target="${SUBSCRIPTION_DIR}/${relative}"
+        target_dir=$(dirname -- "${target}")
+        # A quota username may equal a non-quota filename when changing modes.
+        [[ -d "${target_dir}" || ! -e "${target_dir}" ]] || rm -f -- "${target_dir}"
+        install -d -o root -g www-data -m 0750 "${target_dir}"
+        candidate=$(mktemp "${target_dir}/.subscription.XXXXXX") \
+            || die "创建订阅发布候选文件失败"
+        cleanup_files+=("${candidate}")
+        install -o root -g www-data -m 0640 "${file}" "${candidate}" \
+            || die "写入订阅发布候选文件失败"
+        [[ ! -d "${target}" ]] || rm -rf -- "${target}"
+        mv -f -- "${candidate}" "${target}" || die "发布订阅文件失败"
+    done <<<"${files}"
+
+    while IFS= read -r file; do
+        relative=${file#"${SUBSCRIPTION_DIR}/"}
+        [[ -f "${source_dir}/${relative}" ]] || rm -f -- "${file}"
+    done < <(find "${SUBSCRIPTION_DIR}" -type f)
+    find "${SUBSCRIPTION_DIR}" -mindepth 1 -depth -type d -empty -delete
+}
+
 write_subscription_nginx_locations() {
     local origin_header_secret=${1:-}
     local worker_source_secret=${2:-}

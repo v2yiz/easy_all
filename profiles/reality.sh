@@ -749,7 +749,7 @@ reality_cloudflare_remove_subscription_firewall_rules() {
 }
 
 reality_cloudflare_configure_subscription_firewall() {
-    local next cidr
+    local next current cidr
     next="${RUNTIME_TMP}/reality-cloudflare-origin-ipv4.txt"
     if ! reality_cloudflare_fetch_origin_ipv4_ranges >"${next}" || [[ ! -s "${next}" ]]; then
         if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
@@ -759,13 +759,30 @@ reality_cloudflare_configure_subscription_firewall() {
             die "无法获取 Cloudflare 官方 IPv4 段，且没有可回退的订阅回源白名单"
         fi
     fi
-    reality_cloudflare_remove_subscription_firewall_rules
+    current="${RUNTIME_TMP}/reality-cloudflare-origin-ipv4.current"
+    if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
+        install -m 0600 "${CLOUDFLARE_ORIGIN_IPS_FILE}" "${current}"
+    else
+        : >"${current}"
+    fi
     while IFS= read -r cidr; do
         [[ -n "${cidr}" ]] || continue
         ufw allow proto tcp from "${cidr}" to any port "${SUBSCRIPTION_HTTPS_PORT}" \
             comment "${CLOUDFLARE_SUBSCRIPTION_UFW_COMMENT}" >/dev/null \
             || die "添加 Cloudflare 订阅回源规则失败：${cidr}"
     done <"${next}"
+    ufw reload >/dev/null || die "重载 UFW 失败"
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        ufw_tcp_port_is_allowed "${SUBSCRIPTION_HTTPS_PORT}" "${cidr}" \
+            || die "UFW 未有效放行 Cloudflare 订阅回源：${cidr}"
+    done <"${next}"
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        grep -Fxq "${cidr}" "${next}" && continue
+        ufw --force delete allow proto tcp from "${cidr}" to any port "${SUBSCRIPTION_HTTPS_PORT}" \
+            >/dev/null || warn "删除过期 Cloudflare 订阅回源规则失败：${cidr}"
+    done <"${current}"
     install -m 0600 "${next}" "${CLOUDFLARE_ORIGIN_IPS_FILE}"
 }
 
@@ -787,7 +804,7 @@ configure_ufw() {
     if subscription_enabled; then
         ufw_tcp_port_has_unmanaged_anywhere_allow "${SUBSCRIPTION_HTTPS_PORT}" \
             && die "检测到非 easy_all 管理的 TCP ${SUBSCRIPTION_HTTPS_PORT} 全网放行规则；请先删除该规则，避免绕过 Cloudflare 回源白名单"
-        apply_managed_ufw_tcp_ports "${desired_ports} ${SUBSCRIPTION_HTTPS_PORT}"
+        apply_managed_ufw_tcp_ports "${desired_ports}"
         reality_cloudflare_configure_subscription_firewall
     else
         reality_cloudflare_remove_subscription_firewall_rules
@@ -1206,11 +1223,11 @@ generate_subscription_files() {
 install_static_subscriptions() {
     local base64_file="${RUNTIME_TMP}/subscription-base64.txt"
     local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
-    local stage_dir="${WEB_ROOT}/.subscriptions.stage.$$"
-    local previous_dir="${WEB_ROOT}/.subscriptions.previous.$$"
-    local user uuid user_dir had_previous=0
+    local stage_dir user uuid user_dir
     install -d -m 0755 "${WEB_ROOT}"
-    rm -rf -- "${stage_dir}" "${previous_dir}"
+    stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
+        || die "创建订阅暂存目录失败"
+    cleanup_files+=("${stage_dir}")
     install -d -o root -g www-data -m 0750 "${stage_dir}"
     if quota_enabled; then
         while IFS=$'\t' read -r user uuid; do
@@ -1232,18 +1249,8 @@ install_static_subscriptions() {
         install -o root -g www-data -m 0640 "${mihomo_file}" \
             "${stage_dir}/mihomo.yaml"
     fi
-    if [[ -d "${SUBSCRIPTION_DIR}" ]]; then
-        mv "${SUBSCRIPTION_DIR}" "${previous_dir}" \
-            || die "备份当前订阅目录失败"
-        had_previous=1
-    fi
-    if ! mv "${stage_dir}" "${SUBSCRIPTION_DIR}"; then
-        [[ "${had_previous}" != "1" ]] \
-            || mv "${previous_dir}" "${SUBSCRIPTION_DIR}" >/dev/null 2>&1 \
-            || true
-        die "发布新订阅目录失败"
-    fi
-    rm -rf -- "${previous_dir}"
+    publish_subscription_files "${stage_dir}"
+    rm -rf -- "${stage_dir}"
 }
 
 write_subscription_nginx_config() {
@@ -1484,8 +1491,7 @@ rollback_subscription_update() {
         rm -f -- "${NGINX_CONFIG}"
     fi
     if [[ -d "${UPDATE_SUB_BACKUP_DIR}/subscriptions" ]]; then
-        install -d -o root -g www-data -m 0750 "${SUBSCRIPTION_DIR}"
-        cp -a "${UPDATE_SUB_BACKUP_DIR}/subscriptions/." "${SUBSCRIPTION_DIR}/"
+        publish_subscription_files "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
     else
         rm -rf -- "${SUBSCRIPTION_DIR}"
     fi
