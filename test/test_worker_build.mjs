@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm, stat, symlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { buildWorker } from '../scripts/build-worker.mjs';
@@ -521,5 +523,42 @@ try {
     const aggregationConfigPath = join(temp, 'aggregation.json');
     await writeFile(aggregationConfigPath, JSON.stringify(aggregationConfig));
     await buildWorker({ configPath: aggregationConfigPath, outputPath: join(temp, 'aggregation.mjs') });
+
+    // The installer accepts 8-128 character tokens, so an embedded-token Worker must build
+    // with the same short tokens instead of failing the manual recovery path.
+    const shortTokenConfig = {
+        ...config,
+        allowedTokens: { owner: 'shorttok' },
+        vpsSubUrl: '',
+        delegateTokenValidation: false,
+    };
+    const shortTokenPath = join(temp, 'short-token.json');
+    await writeFile(shortTokenPath, JSON.stringify(shortTokenConfig));
+    await buildWorker({ configPath: shortTokenPath, outputPath: join(temp, 'short-token.mjs') });
+    config.allowedTokens = { owner: 'shortto' };
+    const tooShortPath = join(temp, 'too-short-token.json');
+    await writeFile(tooShortPath, JSON.stringify(config));
+    await assert.rejects(
+        buildWorker({ configPath: tooShortPath, outputPath: join(temp, 'too-short.mjs') }),
+        /at least 8 characters/,
+    );
+    config.allowedTokens = { owner: 'offline-test-token' };
+
+    // A symlinked checkout path must still run the CLI entry point; comparing unresolved
+    // paths used to skip the CLI block and exit 0 without producing any artifact.
+    const cliLink = join(temp, 'linked-builder.mjs');
+    await symlink(fileURLToPath(new URL('../scripts/build-worker.mjs', import.meta.url)), cliLink);
+    const linkedOutput = join(temp, 'linked-worker.mjs');
+    const cliRun = spawnSync(process.execPath, [cliLink], {
+        encoding: 'utf8',
+        env: {
+            ...process.env,
+            EASY_ALL_WORKER_CONFIG_PATH: shortTokenPath,
+            EASY_ALL_WORKER_OUTPUT_PATH: linkedOutput,
+        },
+    });
+    assert.equal(cliRun.status, 0, `symlinked CLI must succeed: ${cliRun.stderr}`);
+    assert.ok(existsSync(linkedOutput), 'symlinked CLI must still produce the Worker artifact');
+
     console.log('Worker build, authentication, shared policy, node injection and fallback checks passed');
 } finally { await rm(temp, {recursive:true, force:true}); }

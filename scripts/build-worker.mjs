@@ -1,4 +1,5 @@
 import { readFile, writeFile, rename, rm, mkdtemp, mkdir } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -26,10 +27,10 @@ export async function buildWorker({
     requireValue(config.allowedTokens && !Array.isArray(config.allowedTokens) && typeof config.allowedTokens === 'object', 'allowedTokens');
     const tokens = Object.values(config.allowedTokens);
     requireValue(
-        tokens.every(value => nonempty(value) && value.length >= 16) &&
+        tokens.every(value => nonempty(value) && value.length >= 8) &&
             new Set(tokens).size === tokens.length &&
             (config.delegateTokenValidation === true || tokens.length > 0),
-        'tokens must be unique strings of at least 16 characters'
+        'tokens must be unique strings of at least 8 characters'
     );
     // Both URLs are optional. Without vpsSubUrl index.js falls back to fallbackCdnNodes, and the
     // installer injects its own before deploying, so an aggregation input must omit it. When a
@@ -149,7 +150,15 @@ export async function buildWorker({
     return version;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Compare real paths: a symlinked checkout path (macOS /tmp, symlinked repo root)
+// would otherwise make this guard false and turn the CLI into a silent no-op.
+const scriptPath = fileURLToPath(import.meta.url);
+const invokedDirectly = (() => {
+    if (!process.argv[1]) return false;
+    try { return realpathSync(process.argv[1]) === realpathSync(scriptPath); }
+    catch { return resolve(process.argv[1]) === scriptPath; }
+})();
+if (invokedDirectly) {
     const configPath = process.env.EASY_ALL_WORKER_CONFIG_PATH
         ? resolve(process.env.EASY_ALL_WORKER_CONFIG_PATH)
         : undefined;
