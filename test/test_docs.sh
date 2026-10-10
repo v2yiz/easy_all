@@ -104,10 +104,20 @@ assert_contains "client guide marks Shadowrocket unverified" \
     "${CLIENT_CONTENT}" '目前不把 Shadowrocket 列为'
 assert_contains "client guide documents explicit GLOBAL routing" \
     "${CLIENT_CONTENT}" '显式定义 `GLOBAL → PROXY`'
-assert_contains "client guide documents the low-memory COMMON template" \
-    "${CLIENT_CONTENT}" '`templates/mihomo-common-lite.yaml`'
+assert_contains "client guide documents the COMMON full template" \
+    "${CLIENT_CONTENT}" '`templates/mihomo-common.yaml`'
+assert_contains "client guide documents the classic template" \
+    "${CLIENT_CONTENT}" '`templates/mihomo-classic.yaml`'
 assert_contains "client guide documents template selection" \
     "${CLIENT_CONTENT}" 'MIHOMO_TEMPLATE_SOURCE'
+assert_contains "client guide documents shared private DNS and routing" \
+    "${CLIENT_CONTENT}" 'rule-set:private-fallback,geosite-private'
+assert_contains "operations guide documents retired lite template migration" \
+    "${OPERATIONS_CONTENT}" 'templates/mihomo-common-lite.yaml'
+assert_contains "operations guide provides a classic rollback command" \
+    "${OPERATIONS_CONTENT}" 'sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-classic.yaml easy_all update-sub'
+assert_contains "operations guide documents non-persistent template selection" \
+    "${OPERATIONS_CONTENT}" '模板选择不持久化'
 
 WINDOWS_ROW=$(grep '^| Windows ' "${ROOT_DIR}/docs/client-guide.md")
 ANDROID_ROW=$(grep '^| Android ' "${ROOT_DIR}/docs/client-guide.md")

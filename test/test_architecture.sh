@@ -206,29 +206,52 @@ grep -Fq 'commit_subscription_update' "${CLOUDFLARE_PROFILE}" \
 [[ "$(<"${ROOT_DIR}/lib/network.sh")" != *'fetch_mihomo_template'* ]] \
     || fail "network module must not depend on Profile template functions"
 
-if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/templates/mihomo.yaml"; then
+if grep -Eq 'DST-PORT,(22|65533),' "${ROOT_DIR}/templates/mihomo-classic.yaml"; then
     fail "Mihomo subscription template must not force SSH ports to DIRECT"
 fi
-grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
+grep -Fq 'GEOSITE,google,PROXY' "${ROOT_DIR}/templates/mihomo-classic.yaml" \
     || fail "Mihomo subscription template must keep non-YouTube Google services on the VPS exit"
-grep -Fxq '# EASY_ALL_WORKER_RULE' "${ROOT_DIR}/templates/mihomo.yaml" \
+grep -Fxq '# EASY_ALL_WORKER_RULE' "${ROOT_DIR}/templates/mihomo-classic.yaml" \
     || fail "Mihomo subscription template must expose the conditional Worker rule marker"
-grep -Fq "'https://1.1.1.1/dns-query#PROXY'" "${ROOT_DIR}/templates/mihomo.yaml" \
+grep -Fq "'https://1.1.1.1/dns-query#PROXY'" "${ROOT_DIR}/templates/mihomo-classic.yaml" \
     || fail "Mihomo public DNS must use a proxied resolver"
 awk '
     $0 == "    - name: GLOBAL" { in_global=1; next }
     in_global && $0 == "        - PROXY" { has_proxy=1; next }
     in_global && /^    - name:/ { exit }
     END { exit !(in_global && has_proxy) }
-' "${ROOT_DIR}/templates/mihomo.yaml" \
+' "${ROOT_DIR}/templates/mihomo-classic.yaml" \
     || fail "Mihomo template must define GLOBAL as a PROXY-only group"
-if grep -Eq '代理模式|油管兜底' "${ROOT_DIR}/templates/mihomo.yaml"; then
+if grep -Eq '代理模式|油管兜底' "${ROOT_DIR}/templates/mihomo-classic.yaml"; then
     fail "Mihomo must use PROXY directly"
 fi
-grep -Fq 'GEOSITE,github,PROXY' "${ROOT_DIR}/templates/mihomo.yaml" \
+grep -Fq 'GEOSITE,github,PROXY' "${ROOT_DIR}/templates/mihomo-classic.yaml" \
     || fail "Mihomo subscription template must keep GitHub services on the VPS exit"
-if grep -Fq "'geosite:github':" "${ROOT_DIR}/templates/mihomo.yaml"; then
+if grep -Fq "'geosite:github':" "${ROOT_DIR}/templates/mihomo-classic.yaml"; then
     fail "GitHub DNS should inherit the default proxied resolver"
+fi
+# The shipped default is the COMMON lite template and must keep the same exit policy.
+default_template="${ROOT_DIR}/templates/mihomo.yaml"
+if grep -Eq 'DST-PORT,(22|65533),' "${default_template}"; then
+    fail "default Mihomo template must not force SSH ports to DIRECT"
+fi
+grep -Fq 'RULE-SET,geosite-google,PROXY' "${default_template}" \
+    || fail "default Mihomo template must keep Google services on the VPS exit"
+grep -Fq 'MATCH,PROXY' "${default_template}" \
+    || fail "default Mihomo template must fall back to PROXY"
+grep -Fq 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' "${default_template}" \
+    || fail "default Mihomo template must reject QUIC before the TCP fallback"
+grep -Fq 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY' "${default_template}" \
+    || fail "default Mihomo template must keep the FCM push ports on PROXY"
+awk '
+    $0 == "    - name: GLOBAL" { in_global=1; next }
+    in_global && $0 == "        - PROXY" { has_proxy=1; next }
+    in_global && /^    - name:/ { exit }
+    END { exit !(in_global && has_proxy) }
+' "${default_template}" \
+    || fail "default Mihomo template must define GLOBAL as a PROXY-only group"
+if grep -Eq '代理模式|油管兜底' "${default_template}"; then
+    fail "default Mihomo template must use PROXY directly"
 fi
 
 [[ "$(<"${ROOT_DIR}/lib/scheduled-maintenance.sh")" == *'configure_daily_reboot()'* \

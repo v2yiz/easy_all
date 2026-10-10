@@ -20,6 +20,6 @@ worker-src/index.js
 scripts/build-worker.mjs
 templates/mihomo.yaml
 templates/mihomo-common.yaml
-templates/mihomo-common-lite.yaml
+templates/mihomo-classic.yaml
 lib/worker-backup.sh
 worker-src/backup.js

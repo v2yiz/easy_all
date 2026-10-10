@@ -1,43 +1,28 @@
+# COMMON 默认精简版：面向低内存客户端，目标 50MB，非 iOS 峰值保证。
+# 采用 Mihomo 常用的 Fake-IP、分流 DNS、MRS 与域名优先/IP 兜底组合。
+# 小型内联集合同时用于 DNS、QUIC 和路由，核心服务不依赖首次下载成功。
+# 不加载整库 DAT；精简版不加载 cn / geolocation-!cn 域名库。
+# 未收录域名经代理查询海外 DNS，再按中国 IP 直连；未命中仍走 PROXY。
+# 与原配置不同：移除宽泛关键字和 ssl.gstatic.com 直连，Google 统一代理。
+# MRS 下载失败保留可用缓存；冷启动依靠内联基础规则，不等价于完整规则覆盖。
+# 内存必须以实际客户端、节点数、TUN 和并发流量的峰值为准，见客户端指南。
 mixed-port: 1080
 allow-lan: false
 mode: rule
-log-level: error
+log-level: warning
 ipv6: false
 external-controller: '127.0.0.1:9090'
-unified-delay: false
-tcp-concurrent: true
-geodata-mode: true
-geodata-loader: memconservative
-geo-auto-update: true
-geo-update-interval: 24
-geox-url:
-    geoip: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat'
-    geosite: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat'
+unified-delay: true
+tcp-concurrent: false
 profile:
     store-selected: true
     store-fake-ip: true
-
-sniffer:
-    enable: true
-    force-dns-mapping: true
-    parse-pure-ip: true
-    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保分流仍按域名生效。
-    override-destination: true
-    sniff:
-      HTTP:
-        ports: [80, 8080-8880]
-        override-destination: true
-      TLS:
-        ports: [443, 8443]
-      QUIC:
-        ports: [443, 8443]
 
 tun:
     enable: true
     stack: mixed
     mtu: 1500
-    # 使用 Mihomo 默认的 5 分钟 UDP NAT 会话超时，避免长期保留失效映射。
-    udp-timeout: 300
+    udp-timeout: 60
     auto-route: true
     auto-detect-interface: true
     inet4-address:
@@ -45,9 +30,7 @@ tun:
     dns-hijack:
       - any:53
       - tcp://any:53
-    # Windows TUN + Reality/BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
     strict-route: false
-    # 通用局域网 IPv4 地址绕过 TUN，保留内网直连能力。
     route-exclude-address:
       - 10.0.0.0/8
       - 172.16.0.0/12
@@ -58,176 +41,112 @@ tun:
 dns:
     enable: true
     ipv6: false
-    # DNS 上游已显式指定 DIRECT/PROXY 语义，不再让 DNS 连接递归参与业务分流。
     respect-rules: false
     use-system-hosts: true
     listen: '127.0.0.1:5335'
     enhanced-mode: fake-ip
     fake-ip-range: 198.18.0.1/16
-    # 使用传统过滤格式，兼容会覆盖 fake-ip-filter 的 Clash Party 等客户端。
     fake-ip-filter-mode: blacklist
     fake-ip-filter:
-      # Android FCM 可能绕过 VPN，推送长连接不能使用仅在 TUN 内有效的 Fake-IP。
-      - 'geosite:googlefcm'
-      - 'geosite:cn'
-      - 'geosite:private'
-      - '+.10jqka.com.cn'
-      # 微信图片、头像、小程序资源在 TUN + Fake-IP 下必须返回真实 IP。
-      - '+.qpic.cn'
-      - '+.qlogo.cn'
-      - '+.wxqcloud.qq.com.cn'
-      - '+.servicewechat.com'
-      - '+.weixin.qq.com'
-      - '+.wxs.qq.com'
-      - '+.res.wx.qq.com'
-      - '+.wechat.com'
-      - '+.lan'
+      - 'rule-set:private-fallback'
+      - 'rule-set:geosite-private'
+      - 'rule-set:wechat-services'
       - 'stun.*.*.*'
       - 'stun.*.*'
-      - time.windows.com
-      - time.nist.gov
-      - time.apple.com
-      - time.asia.apple.com
-      - '+.ntp.org.cn'
-      - '+.openwrt.pool.ntp.org'
-      - time1.cloud.tencent.com
-      - time.ustc.edu.cn
-      - pool.ntp.org
-      - ntp.ubuntu.com
-      - ntp.aliyun.com
-      - ntp1.aliyun.com
-      - ntp2.aliyun.com
-      - ntp3.aliyun.com
-      - ntp4.aliyun.com
-      - ntp5.aliyun.com
-      - ntp6.aliyun.com
-      - ntp7.aliyun.com
-      - time1.aliyun.com
-      - time2.aliyun.com
-      - time3.aliyun.com
-      - time4.aliyun.com
-      - time5.aliyun.com
-      - time6.aliyun.com
-      - time7.aliyun.com
-      - '+.time.edu.cn'
-      - time1.apple.com
-      - time2.apple.com
-      - time3.apple.com
-      - time4.apple.com
-      - time5.apple.com
-      - time6.apple.com
-      - time7.apple.com
-      - time1.google.com
-      - time2.google.com
-      - time3.google.com
-      - time4.google.com
-      - '+.music.163.com'
-      - '+.126.net'
-      - musicapi.taihe.com
-      - music.taihe.com
-      - songsearch.kugou.com
-      - trackercdn.kugou.com
-      - '+.kuwo.cn'
-      - api-jooxtt.sanook.com
-      - api.joox.com
-      - joox.com
-      - '+.y.qq.com'
-      - streamoc.music.tc.qq.com
-      - mobileoc.music.tc.qq.com
-      - isure.stream.qqmusic.qq.com
-      - dl.stream.qqmusic.qq.com
-      - aqqmusic.tc.qq.com
-      - amobile.music.tc.qq.com
-      - '+.xiami.com'
-      - '+.music.migu.cn'
-      - '+.msftconnecttest.com'
-      - '+.msftncsi.com'
-      - localhost.ptlogin2.qq.com
+      - 'time.windows.com'
+      - 'time.nist.gov'
+      - 'time.apple.com'
+      - 'time.asia.apple.com'
+      - '*.ntp.org.cn'
+      - '*.openwrt.pool.ntp.org'
+      - 'time1.cloud.tencent.com'
+      - 'time.ustc.edu.cn'
+      - 'pool.ntp.org'
+      - 'ntp.ubuntu.com'
+      - 'ntp.aliyun.com'
+      - 'ntp1.aliyun.com'
+      - 'ntp2.aliyun.com'
+      - 'ntp3.aliyun.com'
+      - 'ntp4.aliyun.com'
+      - 'ntp5.aliyun.com'
+      - 'ntp6.aliyun.com'
+      - 'ntp7.aliyun.com'
+      - 'time1.aliyun.com'
+      - 'time2.aliyun.com'
+      - 'time3.aliyun.com'
+      - 'time4.aliyun.com'
+      - 'time5.aliyun.com'
+      - 'time6.aliyun.com'
+      - 'time7.aliyun.com'
+      - '*.time.edu.cn'
+      - 'time1.apple.com'
+      - 'time2.apple.com'
+      - 'time3.apple.com'
+      - 'time4.apple.com'
+      - 'time5.apple.com'
+      - 'time6.apple.com'
+      - 'time7.apple.com'
+      - 'time1.google.com'
+      - 'time2.google.com'
+      - 'time3.google.com'
+      - 'time4.google.com'
+      - 'music.163.com'
+      - '*.music.163.com'
+      - '*.126.net'
+      - 'musicapi.taihe.com'
+      - 'music.taihe.com'
+      - 'songsearch.kugou.com'
+      - 'trackercdn.kugou.com'
+      - '*.kuwo.cn'
+      - 'api-jooxtt.sanook.com'
+      - 'api.joox.com'
+      - 'joox.com'
+      - 'y.qq.com'
+      - '*.y.qq.com'
+      - 'streamoc.music.tc.qq.com'
+      - 'mobileoc.music.tc.qq.com'
+      - 'isure.stream.qqmusic.qq.com'
+      - 'dl.stream.qqmusic.qq.com'
+      - 'aqqmusic.tc.qq.com'
+      - 'amobile.music.tc.qq.com'
+      - '*.xiami.com'
+      - '*.music.migu.cn'
+      - 'music.migu.cn'
+      - '*.msftconnecttest.com'
+      - '*.msftncsi.com'
+      - 'localhost.ptlogin2.qq.com'
       - '*.*.*.srv.nintendo.net'
       - '*.*.stun.playstation.net'
       - 'xbox.*.*.microsoft.com'
+      - '*.ipv6.microsoft.com'
       - '*.*.xboxlive.com'
-      - speedtest.cros.wr.pvp.net
-    nameserver-policy:
-      # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
-      'geosite:private': system
-      # 明确代理的服务优先于完整 cn 集合，避免重叠域名查询国内 DNS。
-      'geosite:google,github,openai,anthropic':
-        - 'https://1.1.1.1/dns-query#PROXY'
-        - 'https://8.8.8.8/dns-query#PROXY'
-      'rule-set:proxy-services':
-        - 'https://1.1.1.1/dns-query#PROXY'
-        - 'https://8.8.8.8/dns-query#PROXY'
-      # 与直连规则使用相同集合，避免国内 CDN 按代理出口调度。
-      'rule-set:direct-cdn':
-        - https://223.5.5.5/dns-query
-        - https://1.12.12.12/dns-query
-      'geosite:apple-cn,microsoft@cn':
-        - https://223.5.5.5/dns-query
-        - https://1.12.12.12/dns-query
-      'geosite:cn':
-        - https://223.5.5.5/dns-query
-        - https://1.12.12.12/dns-query
-    # 未命中策略且确需真实解析的公网域名统一通过代理查询。
-    nameserver:
-      - 'https://1.1.1.1/dns-query#PROXY'
-      - 'https://8.8.8.8/dns-query#PROXY'
-    # 节点域名启动解析保持直连，并使用两个独立国内 DoH 提供冗余。
+      - 'speedtest.cros.wr.pvp.net'
+      - 'mtalk.google.com'
+      - '*.mtalk.google.com'
+      - 'android.clients.google.com'
+      - 'mtalk4.google.com'
+      - 'mtalk-staging.google.com'
+      - 'mtalk-dev.google.com'
+      - 'alt1-mtalk.google.com'
+      - 'alt2-mtalk.google.com'
+      - 'alt3-mtalk.google.com'
+      - 'alt4-mtalk.google.com'
+      - 'alt5-mtalk.google.com'
+      - 'alt6-mtalk.google.com'
+      - 'alt7-mtalk.google.com'
+      - 'alt8-mtalk.google.com'
+    # 节点引导独立直连，避免海外 DoH 与代理节点解析互相依赖。
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
-
-rule-providers:
-    # 内嵌小集合同时供 DNS、QUIC 与路由使用，不下载额外外部规则文件。
-    proxy-services:
-      type: inline
-      behavior: domain
-      payload:
-        # Copilot 与 Bing 依赖；不将整个 Microsoft 或共享 CDN 强制代理。
-        - '+.copilot.microsoft.com'
-        - sydney.bing.com
-        - www.bing.com
-        - r.bing.com
-        - '+.edgeservices.bing.com'
-        - services.bingapis.com
-        - gateway.bingviz.microsoft.net
-        - gateway.bingviz.microsoftapp.net
-        - '+.api.microsoftapp.net'
-        - '+.bing-shopping.microsoft-falcon.io'
-        - '+.githubcopilot.com'
-        - api.msn.com
-        - assets.msn.com
-        - in.appcenter.ms
-        - location.microsoft.com
-        - odc.officeapps.live.com
-        - self.events.data.microsoft.com
-        # 登录验证码端点，避免放大到整个 Cloudflare/Arkose 平台。
-        - challenges.cloudflare.com
-        - openai-api.arkoselabs.com
-        - '+.client-api.arkoselabs.com'
-        # ChinaMax cn 包含整个 .ms；优先保持该后缀代理，避免误直连。
-        - '+.ms'
-        # 微软短链及 OneDrive 更新维持代理出口。
-        - '+.aka.ms'
-        - '+.1drv.ms'
-        - '+.oneclient.sfx.ms'
-        - '+.steamcommunity.com'
-    direct-cdn:
-      type: inline
-      behavior: domain
-      payload:
-        - love.xflash.work
-        - '+.futooncdn.com'
-        - '+.steamcontent.com'
-        - '+.cm.steampowered.com'
-        - '+.steamserver.net'
-        # 微信图片资源使用国内 DNS 并直连，避免海外出口和 Fake-IP 兼容问题。
-        - '+.qpic.cn'
-        - '+.qlogo.cn'
-        - '+.wxqcloud.qq.com.cn'
-        - '+.servicewechat.com'
-        - '+.weixin.qq.com'
-        - '+.wxs.qq.com'
-        - '+.res.wx.qq.com'
-        - '+.wechat.com'
+    nameserver: ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
+    nameserver-policy:
+      'rule-set:private-fallback,geosite-private': system
+      'testingcf.jsdelivr.net': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+      # 代理域名优先于国内集合（例如 services.googleapis.cn）。
+      'rule-set:proxy-services,geosite-google': ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
+      # 微信资源与 Steam 下载优先于完整版的通用境外域名集合。
+      'rule-set:wechat-services,steam-download': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+      'rule-set:apple-cn-fallback,geosite-apple-cn': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+      'rule-set:direct-services': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
 
 proxies:
 # EASY_ALL_PROXY_NODE
@@ -244,46 +163,347 @@ proxy-groups:
         - PROXY
 # EASY_ALL_PROXY_GROUP
 
+rule-providers:
+    # 基础集合始终可用；远程 MRS 仅扩充覆盖，避免单镜像失败使全部规则失效。
+    private-fallback:
+        type: inline
+        behavior: domain
+        payload:
+          - 'localhost'
+          - '+.localhost'
+          - '+.lan'
+          - '+.local'
+          - '+.internal'
+          - '+.localdomain'
+          - '+.home.arpa'
+    proxy-services:
+        type: inline
+        behavior: domain
+        payload:
+          - '+.gstatic.com'
+          - '+.ipleak.net'
+          - '+.browserscan.net'
+          - '+.surfsharkdns.com'
+          - '+.edns.ip-api.com'
+          - '+.dnsleaktest.com'
+          - '+.dnsleak.com'
+          - '+.expressvpn.com'
+          - '+.nordvpn.com'
+          - '+.surfshark.com'
+          - '+.perfect-privacy.com'
+          - '+.browserleaks.com'
+          - '+.browserleaks.org'
+          - '+.browserleaks.net'
+          - '+.vpnunlimited.com'
+          - '+.whoer.net'
+          - '+.whrq.net'
+          - '+.asmr.one'
+          - 'browser-intake-datadoghq.com'
+          - 'chat.openai.com.cdn.cloudflare.net'
+          - 'openai-api.arkoselabs.com'
+          - 'openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net'
+          - 'openaicomproductionae4b.blob.core.windows.net'
+          - 'production-openaicom-storage.azureedge.net'
+          - 'static.cloudflareinsights.com'
+          - '+.ai.com'
+          - '+.algolia.net'
+          - '+.api.statsig.com'
+          - '+.auth0.com'
+          - '+.chatgpt.com'
+          - '+.chatgpt.livekit.cloud'
+          - '+.client-api.arkoselabs.com'
+          - '+.events.statsigapi.net'
+          - '+.featuregates.org'
+          - '+.host.livekit.cloud'
+          - '+.identrust.com'
+          - '+.intercom.io'
+          - '+.intercomcdn.com'
+          - '+.launchdarkly.com'
+          - '+.oaistatic.com'
+          - '+.oaiusercontent.com'
+          - '+.observeit.net'
+          - '+.openai.com'
+          - '+.openaiapi-site.azureedge.net'
+          - '+.openaicom.imgix.net'
+          - '+.segment.io'
+          - '+.sentry.io'
+          - '+.stripe.com'
+          - '+.turn.livekit.cloud'
+          - '+.sora.com'
+          - 'api.msn.com'
+          - 'assets.msn.com'
+          - 'copilot.microsoft.com'
+          - 'gateway.bingviz.microsoft.net'
+          - 'gateway.bingviz.microsoftapp.net'
+          - 'in.appcenter.ms'
+          - 'location.microsoft.com'
+          - 'odc.officeapps.live.com'
+          - 'r.bing.com'
+          - 'self.events.data.microsoft.com'
+          - 'services.bingapis.com'
+          - 'sydney.bing.com'
+          - 'www.bing.com'
+          - '+.api.microsoftapp.net'
+          - '+.bing-shopping.microsoft-falcon.io'
+          - '+.challenges.cloudflare.com'
+          - '+.edgeservices.bing.com'
+          - '+.githubcopilot.com'
+          - '+.gvt2.com'
+          - 'ai.google.dev'
+          - 'alkalimakersuite-pa.clients6.google.com'
+          - 'makersuite.google.com'
+          - '+.bard.google.com'
+          - '+.deepmind.com'
+          - '+.deepmind.google'
+          - '+.gemini.google.com'
+          - '+.generativeai.google'
+          - '+.proactivebackend-pa.googleapis.com'
+          - '+.apis.google.com'
+          - 'cdn.usefathom.com'
+          - '+.anthropic.com'
+          - '+.claude.ai'
+          - '+.grazie.ai'
+          - '+.grazie.aws.intellij.net'
+          - '+.jetbrains.ai'
+          - '+.meta.com'
+          - '+.services.googleapis.cn'
+          - '+.xn--ngstr-lra8j.com'
+          - '+.google.com'
+          - '+.google.cn'
+          - '+.googleapis.com'
+          - '+.googleapis.cn'
+          - '+.googleusercontent.com'
+          - '+.gstatic.cn'
+          - '+.googlevideo.com'
+          - '+.youtube.com'
+          - '+.youtu.be'
+          - '+.ytimg.com'
+          - '+.ggpht.com'
+          - '+.gvt1.com'
+          - '+.gvt3.com'
+          - '+.google.dev'
+          - '+.google.ai'
+          - '+.googleblog.com'
+          - '+.googleadservices.com'
+          - '+.googlesyndication.com'
+          - '+.github.com'
+          - '+.github.io'
+          - '+.githubusercontent.com'
+          - '+.githubassets.com'
+          - '+.githubstatus.com'
+          - '+.gitlab.com'
+          - '+.steamcommunity.com'
+          - '+.aka.ms'
+          - '+.1drv.ms'
+          - '+.onedrive.com'
+          - '+.telegram.org'
+          - '+.telegram.me'
+          - '+.t.me'
+          - '+.telegra.ph'
+          - '+.tdesktop.com'
+          - '+.telesco.pe'
+          - '+.wikipedia.org'
+          - '+.wikimedia.org'
+          - '+.twitter.com'
+          - '+.x.com'
+          - '+.t.co'
+          - '+.twimg.com'
+          - '+.facebook.com'
+          - '+.fbcdn.net'
+          - '+.instagram.com'
+          - '+.cdninstagram.com'
+          - '+.whatsapp.com'
+          - '+.whatsapp.net'
+          - '+.signal.org'
+          - '+.discord.com'
+          - '+.discord.gg'
+          - '+.discordapp.com'
+          - '+.discordapp.net'
+    wechat-services:
+        type: inline
+        behavior: domain
+        payload:
+          - '+.qpic.cn'
+          - '+.qlogo.cn'
+          - '+.wxqcloud.qq.com.cn'
+          - '+.servicewechat.com'
+          - '+.weixin.qq.com'
+          - '+.wxs.qq.com'
+          - '+.res.wx.qq.com'
+          - '+.wechat.com'
+    steam-download:
+        type: inline
+        behavior: domain
+        payload:
+          - '+.steamcontent.com'
+          - '+.cm.steampowered.com'
+          - '+.steamserver.net'
+    apple-cn-fallback:
+        type: inline
+        behavior: domain
+        payload:
+          - 'www.apple.com'
+          - 'apps.apple.com'
+          - 'itunes.apple.com'
+          - 'music.apple.com'
+          - 'mesu.apple.com'
+          - 'swcdn.apple.com'
+          - 'swdist.apple.com'
+          - 'swscan.apple.com'
+          - 'updates.cdn-apple.com'
+          - 'updates-http.cdn-apple.com'
+          - 'is1-ssl.mzstatic.com'
+          - 'is2-ssl.mzstatic.com'
+    direct-services:
+        type: inline
+        behavior: domain
+        payload:
+          - '+.cn'
+          - '+.qq.com'
+          - '+.weixin.com'
+          - '+.gtimg.com'
+          - '+.tencent.com'
+          - '+.tencent-cloud.net'
+          - '+.myqcloud.com'
+          - '+.qcloud.com'
+          - '+.tencentcs.com'
+          - '+.amap.com'
+          - '+.gaode.com'
+          - '+.autonav.com'
+          - '+.alibaba.com'
+          - '+.alicdn.com'
+          - '+.aliyun.com'
+          - '+.aliyuncs.com'
+          - '+.alipay.com'
+          - '+.alipayobjects.com'
+          - '+.taobao.com'
+          - '+.tmall.com'
+          - '+.jd.com'
+          - '+.360buyimg.com'
+          - '+.baidu.com'
+          - '+.bdstatic.com'
+          - '+.bdimg.com'
+          - '+.bilibili.com'
+          - '+.bilivideo.com'
+          - '+.hdslb.com'
+          - '+.163.com'
+          - '+.126.com'
+          - '+.netease.com'
+          - '+.127.net'
+          - '+.bytedance.com'
+          - '+.byteimg.com'
+          - '+.bytecdn.cn'
+          - '+.ibytedtos.com'
+          - '+.pstatp.com'
+          - '+.douyin.com'
+          - '+.doubaopay.com'
+          - '+.doubao.com'
+          - '+.toutiao.com'
+          - '+.vivo.com'
+          - '+.oppo.com'
+          - '+.heytap.com'
+          - '+.xiaomi.com'
+          - '+.mi.com'
+          - '+.mi-img.com'
+          - '+.huawei.com'
+          - '+.hicloud.com'
+          - '+.meituan.com'
+          - '+.dianping.com'
+          - '+.zhihu.com'
+          - '+.zhimg.com'
+          - '+.weibo.com'
+          - '+.sina.com.cn'
+          - '+.xiaohongshu.com'
+          - '+.xhscdn.com'
+          - '+.kimi.com'
+          - '+.moonshot.cn'
+          - '+.minimaxi.com'
+    telegram-fallback:
+        type: inline
+        behavior: ipcidr
+        payload:
+          - '91.105.192.0/23'
+          - '91.108.4.0/22'
+          - '91.108.8.0/21'
+          - '91.108.16.0/21'
+          - '91.108.56.0/22'
+          - '95.161.64.0/20'
+          - '149.154.160.0/20'
+          - '185.76.151.0/24'
+    geosite-private:
+        type: http
+        behavior: domain
+        format: mrs
+        proxy: DIRECT
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.mrs'
+        path: ./ruleset/geosite-private.mrs
+        interval: 86400
+        size-limit: 262144
+    geosite-apple-cn:
+        type: http
+        behavior: domain
+        format: mrs
+        proxy: DIRECT
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple-cn.mrs'
+        path: ./ruleset/geosite-apple-cn.mrs
+        interval: 86400
+        size-limit: 262144
+    geosite-google:
+        type: http
+        behavior: domain
+        format: mrs
+        proxy: DIRECT
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.mrs'
+        path: ./ruleset/geosite-google.mrs
+        interval: 86400
+        size-limit: 262144
+    geoip-cn:
+        type: http
+        behavior: ipcidr
+        format: mrs
+        proxy: DIRECT
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs'
+        path: ./ruleset/geoip-cn.mrs
+        interval: 86400
+        size-limit: 262144
+    geoip-telegram:
+        type: http
+        behavior: ipcidr
+        format: mrs
+        proxy: DIRECT
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs'
+        path: ./ruleset/geoip-telegram.mrs
+        interval: 86400
+        size-limit: 262144
+
 rules:
-  # 项目服务与 Steam 下载直连；社区由 proxy-services 单独代理。
-  - RULE-SET,direct-cdn,DIRECT
-  # 局域网直连。
-  - GEOSITE,private,DIRECT
-  - GEOIP,LAN,DIRECT,no-resolve
-  # 0.0.0.0/8 是不可路由保留地址；DNS 黑洞结果不得进入代理出口。
-  - IP-CIDR,0.0.0.0/8,REJECT,no-resolve
-  # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
-  - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
+    - 'RULE-SET,private-fallback,DIRECT'
+    - 'RULE-SET,geosite-private,DIRECT'
+    # 零地址拒绝优先于 LAN，避免 0.0.0.0 被当作本地地址直连。
+    - 'IP-CIDR,0.0.0.0/8,REJECT,no-resolve'
+    - 'GEOIP,LAN,DIRECT,no-resolve'
+    - 'DOMAIN,clash.razord.top,DIRECT'
+    - 'DOMAIN,yacd.haishan.me,DIRECT'
 # EASY_ALL_WORKER_RULE
-  # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口。
-  # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT
-  - GEOSITE,google,PROXY
-  # 明确代理的 AI 及服务例外优先于 CN/微软直连，且不能绕过 QUIC 拒绝。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,github)),REJECT
-  - GEOSITE,github,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,openai)),REJECT
-  - GEOSITE,openai,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,anthropic)),REJECT
-  - GEOSITE,anthropic,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,proxy-services)),REJECT
-  - RULE-SET,proxy-services,PROXY
-  # 国内 CDN 与上方国内 DNS 策略对齐，保留直连下载及 QUIC。
-  - GEOSITE,apple-cn,DIRECT
-  - GEOSITE,microsoft@cn,DIRECT
-  # 完整国内域名集合；Google、AI 与 .ms 例外已在上方优先处理。
-  # 国内 IP 兜底允许解析未命中域名规则的请求，国内 QUIC 单独放行。
-  - GEOSITE,cn,DIRECT
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
-  # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
-  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
-  - DOMAIN,clash.razord.top,DIRECT
-  - DOMAIN,yacd.haishan.me,DIRECT
-  # 其余 AI 分类保留在 CN 后，避免把 Kimi 等重叠服务无条件改成代理。
-  - GEOSITE,category-ai-chat-!cn,PROXY
-  # Telegram 专属 IP 段代理
-  - GEOIP,telegram,PROXY,no-resolve
-  # 未命中域名规则时解析真实 IP，中国大陆地址直连。
-  - GEOIP,CN,DIRECT
-  # 最终兜底：其余国外网站/视频/服务全部走代理
-  - MATCH,PROXY
+    # 保留 FCM 无域名连接的端口兜底，仅 TCP；局域网例外已经优先处理。
+    - 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY'
+    # 必须先拒绝 QUIC，再匹配代理域名，避免手写 AI 规则绕过拒绝。
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,proxy-services)),REJECT'
+    - 'RULE-SET,proxy-services,PROXY'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT'
+    - 'RULE-SET,geosite-google,PROXY'
+    - 'RULE-SET,wechat-services,DIRECT'
+    - 'RULE-SET,steam-download,DIRECT'
+    - 'RULE-SET,apple-cn-fallback,DIRECT'
+    - 'RULE-SET,geosite-apple-cn,DIRECT'
+    - 'RULE-SET,direct-services,DIRECT'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,telegram-fallback)),REJECT'
+    - 'RULE-SET,telegram-fallback,PROXY,no-resolve'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geoip-telegram)),REJECT'
+    - 'RULE-SET,geoip-telegram,PROXY,no-resolve'
+    # 这两条允许解析，防止未收录的国内/内网域名无条件走代理。
+    - 'GEOIP,LAN,DIRECT'
+    - 'RULE-SET,geoip-cn,DIRECT'
+    # 国内业务已优先直连并保留 QUIC，其余 UDP/443 回退 TCP。
+    - 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT'
+    - 'MATCH,PROXY'

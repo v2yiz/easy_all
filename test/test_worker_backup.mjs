@@ -311,7 +311,7 @@ const xhttpBackupLinks = Array.from({ length: 6 }, (_, i) =>
 const aggregation = await readFile(new URL('../worker-src/index.js', import.meta.url), 'utf8');
 const handler = vm.runInNewContext(aggregation.replace(/export default \{[\s\S]*$/, 'handleRequest;'), {
     PRIVATE_CONFIG: { allowedTokens: { owner: 'test-token' }, nodes: [], fallbackCdnNodes: [], vpsSubUrl: 'https://source.invalid/', requireDynamicCdn: true },
-    MIHOMO_TEMPLATE: await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8'),
+    MIHOMO_TEMPLATE: await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8'),
     WORKER_VERSION: 'test', URL, URLSearchParams, Headers, Response, AbortController, TextEncoder, TextDecoder,
     atob, btoa, setTimeout, clearTimeout, console,
     fetch: async () => new Response(Buffer.from([...primary, ...xhttpBackupLinks].join('\n')).toString('base64')),
@@ -364,7 +364,7 @@ assert.equal(new URL(renderedBackup).searchParams.get('path'), '/ws/');
 // Empty worker backup removes group
 const emptyHandler = vm.runInNewContext(aggregation.replace(/export default \{[\s\S]*$/, 'handleRequest;'), {
     PRIVATE_CONFIG: { allowedTokens: { owner: 'test-token' }, nodes: [], fallbackCdnNodes: [], vpsSubUrl: 'https://source.invalid/', requireDynamicCdn: true },
-    MIHOMO_TEMPLATE: await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8'),
+    MIHOMO_TEMPLATE: await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8'),
     WORKER_VERSION: 'test', URL, URLSearchParams, Headers, Response, AbortController, TextEncoder, TextDecoder,
     atob, btoa, setTimeout, clearTimeout, console,
     fetch: async () => new Response(Buffer.from(primary.join('\n')).toString('base64')),

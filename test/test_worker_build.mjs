@@ -6,7 +6,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
-import { buildWorker } from '../scripts/build-worker.mjs';
+import { buildWorker as buildWorkerWithTemplate } from '../scripts/build-worker.mjs';
+
+// These checks pin the classic template policy; the shipped default is the COMMON set.
+const classicTemplatePath = fileURLToPath(new URL('../templates/mihomo-classic.yaml', import.meta.url));
+const buildWorker = options => buildWorkerWithTemplate({ templatePath: classicTemplatePath, ...options });
 
 const temp = await mkdtemp(join(tmpdir(), 'worker-test-'));
 try {
@@ -38,7 +42,7 @@ try {
     assert.equal(await buildWorker({ configPath, outputPath, now }), '2026-09-06-v0');
     const initial = await readFile(outputPath, 'utf8');
     const invalidTemplatePath = join(temp, 'invalid.yaml');
-    await writeFile(invalidTemplatePath, await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8') + '\nbroken: [\n');
+    await writeFile(invalidTemplatePath, await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8') + '\nbroken: [\n');
     await assert.rejects(buildWorker({configPath, outputPath, templatePath: invalidTemplatePath}), /template validation failed/);
     assert.equal(await readFile(outputPath, 'utf8'), initial, 'invalid template preserves previous Worker');
 
@@ -256,7 +260,7 @@ try {
     const liveResponse = await live(request());
     assert.equal(liveResponse.headers.get('X-Easy-All-Warning'), null);
     const liveBody = await liveResponse.text();
-    const groups = liveBody.split('proxy-groups:\n')[1].split('rules:\n')[0];
+    const groups = liveBody.split('proxy-groups:\n')[1].split(/\n[^\s]/)[0];
     assert.equal((groups.match(/name:/g) || []).length, 3);
     assert.equal((groups.match(/hidden: true/g) || []).length, 2);
     assert.ok(!groups.includes('油管兜底') && !groups.includes('代理模式'));
@@ -266,7 +270,7 @@ try {
     const proxyMembers = groups.split('name: 🇺🇸白天首选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
     assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Hidden Reality', 'Remote', 'Mieru Remote']);
     assert.ok(!groups.includes('DIRECT'));
-    const template = await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8');
+    const template = await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8');
     const staticRules = template.split('rules:\n')[1].replace('# EASY_ALL_WORKER_RULE', '');
     for (const body of [fallbackBody, liveBody]) {
         assert.equal(body.split('rules:\n')[1], staticRules);
@@ -424,6 +428,7 @@ try {
     assert.ok(!rules.includes('PROCESS-NAME,'), 'process names must not bypass service routing');
     assert.ok(rules.includes('GEOSITE,cn,DIRECT'), 'complete mainland domain set is used');
     assert.ok(rules.includes('IP-CIDR,0.0.0.0/8,REJECT,no-resolve'), 'DNS sinkhole addresses must not enter the proxy');
+    before(rules, 'IP-CIDR,0.0.0.0/8,REJECT,no-resolve', 'GEOIP,LAN,DIRECT,no-resolve');
     assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
     assert.ok(template.includes('use-system-hosts: true'), 'local hosts are honored');
     assert.ok(template.includes('respect-rules: false'), 'DNS upstream routing must remain explicit');

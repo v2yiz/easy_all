@@ -81,7 +81,7 @@ source_script_copy() {
     EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban-state"
     # shellcheck source=/dev/null
     source "${SCRIPT_COPY}"
-    MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/templates/mihomo.yaml"
+    MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/templates/mihomo-classic.yaml"
 }
 
 set_fixture() {
@@ -352,75 +352,91 @@ test_mihomo_template() {
     local rule_count first_rule fake_ip_filter direct_cdn dns_default domain
     local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
     local google_rule_line google_quic_rule_line google_dns_line cn_dns_line google_dns_policy
-    validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
+    validate_mihomo_template "${ROOT_DIR}/templates/mihomo-classic.yaml"
     # Optional bundled templates (COMMON compatibility) must clear the same gate.
     for bundled_template in "${ROOT_DIR}"/templates/*.yaml; do
         validate_mihomo_template "${bundled_template}"
     done
+    # The shipped default is the COMMON lite template; pin its routing contract.
+    local default_template="${ROOT_DIR}/templates/mihomo.yaml"
+    assert_contains "Default template proxies Google through MRS sets" \
+        "RULE-SET,geosite-google,PROXY" "$(<"${default_template}")"
+    assert_contains "Default template keeps mainland Apple delivery domains direct" \
+        "RULE-SET,geosite-apple-cn,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template routes mainland IPv4 direct" \
+        "RULE-SET,geoip-cn,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template proxies Telegram ranges" \
+        "RULE-SET,geoip-telegram,PROXY,no-resolve" "$(<"${default_template}")"
+    assert_contains "Default template keeps FCM push ports on PROXY" \
+        "AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY" "$(<"${default_template}")"
+    assert_contains "Default template rejects QUIC before the TCP fallback" \
+        "AND,((NETWORK,UDP),(DST-PORT,443)),REJECT" "$(<"${default_template}")"
+    assert_contains "Default template falls back to PROXY" \
+        "MATCH,PROXY" "$(<"${default_template}")"
     assert_contains "Mihomo races resolved proxy addresses" \
-        "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo uses the XFLASH fake-IP DNS mode" \
-        "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo persists fake-IP mappings" \
-        "store-fake-ip: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "store-fake-ip: true" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo omits the IPv6 fake-IP pool" \
-        "fake-ip-range6:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "fake-ip-range6:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo uses client-compatible fake-IP filtering" \
-        "fake-ip-filter-mode: blacklist" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "fake-ip-filter-mode: blacklist" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     fake_ip_filter=$(sed -n '/^    fake-ip-filter:$/,/^    nameserver-policy:$/p' \
-        "${ROOT_DIR}/templates/mihomo.yaml")
+        "${ROOT_DIR}/templates/mihomo-classic.yaml")
     assert_not_contains "Mihomo fake-IP filters omit rule-mode actions" \
         ",real-ip" "${fake_ip_filter}"
     assert_not_contains "Mihomo fake-IP filters omit the rule-mode fallback" \
         "MATCH,fake-ip" "${fake_ip_filter}"
     assert_contains "Mihomo uses the default UDP session timeout" \
-        "udp-timeout: 300" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "udp-timeout: 300" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo uses DAT-format Geo data" \
-        "geodata-mode: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "geodata-mode: true" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo updates Geo data automatically" \
-        "geo-auto-update: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "geo-auto-update: true" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo refreshes Geo data every 24 hours" \
-        "geo-update-interval: 24" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "geo-update-interval: 24" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo uses the MetaCubeX GeoIP source" \
         "MetaCubeX/meta-rules-dat@release/geoip.dat" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo uses the MetaCubeX GeoSite source" \
         "MetaCubeX/meta-rules-dat@release/geosite.dat" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo resolves mainland domains with mainland DoH" \
         "'geosite:cn':" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo keeps DNS upstream routing explicit" \
-        "respect-rules: false" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "respect-rules: false" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     dns_policy=$(sed -n '/^    nameserver-policy:$/,/^    nameserver:$/p' \
-        "${ROOT_DIR}/templates/mihomo.yaml")
+        "${ROOT_DIR}/templates/mihomo-classic.yaml")
     assert_contains "Known global domains override the mainland DNS policy" \
         "'geosite:google,github,openai,anthropic':" "${dns_policy}"
     assert_contains "Mihomo defaults public DNS to proxied Cloudflare DoH" \
         "https://1.1.1.1/dns-query#PROXY" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo defaults public DNS to proxied Google DoH" \
         "https://8.8.8.8/dns-query#PROXY" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not use split fallback DNS" \
-        "fallback:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "fallback:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not use fallback GeoIP filtering" \
-        "fallback-filter:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "fallback-filter:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not use lazy fallback queries" \
-        "fallback-lazy-query:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "fallback-lazy-query:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo no longer forces direct HTTP/3 DNS" \
         "https://223.6.6.6/dns-query#h3=true" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo uses two direct proxy bootstrap DNS endpoints" \
         "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not add a non-XFLASH default nameserver" \
-        "default-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "default-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not add a non-XFLASH direct nameserver" \
-        "direct-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "direct-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo resolves private domains locally" \
-        "'geosite:private': system" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
-    rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo.yaml" \
+        "'geosite:private': system" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    rule_count=$(sed -n '/^rules:/,$p' "${ROOT_DIR}/templates/mihomo-classic.yaml" \
         | grep -Ec '^  - ')
     assert_success "Mihomo template stays within the lightweight rule budget" \
         bash -c '(( $1 > 0 && $1 <= 60 ))' _ "${rule_count}"
@@ -429,7 +445,7 @@ test_mihomo_template() {
     assert_contains "Mihomo filters WeChat domain from fake-ip" \
         "- '+.weixin.qq.com'" "${fake_ip_filter}"
     direct_cdn=$(sed -n '/^    direct-cdn:$/,/^proxies:$/p' \
-        "${ROOT_DIR}/templates/mihomo.yaml")
+        "${ROOT_DIR}/templates/mihomo-classic.yaml")
     for domain in \
         qpic.cn qlogo.cn wxqcloud.qq.com.cn servicewechat.com \
         weixin.qq.com wxs.qq.com res.wx.qq.com wechat.com; do
@@ -439,65 +455,65 @@ test_mihomo_template() {
             "- '+.${domain}'" "${direct_cdn}"
     done
     assert_not_contains "Mihomo avoids per-domain Doubao DNS patches" \
-        "speech.bytedance.com" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "speech.bytedance.com" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo keeps Steam downloads in the direct CDN set" \
-        "- '+.steamcontent.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "- '+.steamcontent.com'" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes the direct CDN set without a proxy" \
-        "- RULE-SET,direct-cdn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "- RULE-SET,direct-cdn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo keeps Steam community in the proxy services set" \
-        "- '+.steamcommunity.com'" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "- '+.steamcommunity.com'" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo proxies the shared services set" \
-        "- RULE-SET,proxy-services,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "- RULE-SET,proxy-services,PROXY" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not bypass routing by downloader process" \
-        "PROCESS-NAME,qBittorrent,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "PROCESS-NAME,qBittorrent,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not bypass routing by downloader process on Windows" \
-        "PROCESS-NAME,Thunder.exe,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "PROCESS-NAME,Thunder.exe,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo rejects unroutable DNS sinkhole addresses" \
-        "IP-CIDR,0.0.0.0/8,REJECT,no-resolve" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "IP-CIDR,0.0.0.0/8,REJECT,no-resolve" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     first_rule=$(awk '/^rules:$/ { found=1; next } found && $0 !~ /^  #/ { print; exit }' \
-        "${ROOT_DIR}/templates/mihomo.yaml")
+        "${ROOT_DIR}/templates/mihomo-classic.yaml")
     assert_equal "Mihomo preserves explicit direct exceptions before rejecting UDP 443" \
         '  - RULE-SET,direct-cdn,DIRECT' "${first_rule}"
     cn_domain_rule_line=$(grep -nF -- '  - GEOSITE,cn,DIRECT' \
-        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+        "${ROOT_DIR}/templates/mihomo-classic.yaml" | cut -d: -f1)
     google_rule_line=$(grep -nF -- '  - GEOSITE,google,PROXY' \
-        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+        "${ROOT_DIR}/templates/mihomo-classic.yaml" | cut -d: -f1)
     google_quic_rule_line=$(grep -nF -- \
         '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT' \
-        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+        "${ROOT_DIR}/templates/mihomo-classic.yaml" | cut -d: -f1)
     assert_success "Play APIs and downloads share PROXY before any mainland bypass" \
         bash -c '(( $1 > 0 && $1 < $2 && $2 < $3 ))' _ \
         "${google_quic_rule_line}" "${google_rule_line}" "${cn_domain_rule_line}"
     cn_quic_rule_line=$(grep -nF -- \
         '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' \
-        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+        "${ROOT_DIR}/templates/mihomo-classic.yaml" | cut -d: -f1)
     quic_reject_rule_line=$(grep -nF -- \
         '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' \
-        "${ROOT_DIR}/templates/mihomo.yaml" | cut -d: -f1)
+        "${ROOT_DIR}/templates/mihomo-classic.yaml" | cut -d: -f1)
     assert_success "Mihomo routes mainland QUIC before rejecting other UDP 443" \
         bash -c '(( $1 < $2 && $2 < $3 ))' _ \
         "${cn_domain_rule_line}" "${cn_quic_rule_line}" "${quic_reject_rule_line}"
     assert_contains "Mihomo proxies non-CN AI services" \
-        "GEOSITE,category-ai-chat-!cn,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,category-ai-chat-!cn,PROXY" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo proxies all Google domains through the VPS" \
-        "GEOSITE,google,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,google,PROXY" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo proxies GitHub domains through the VPS" \
-        "GEOSITE,github,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,github,PROXY" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes Apple domestic CDN direct" \
-        "GEOSITE,apple-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,apple-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes Microsoft domestic CDN direct" \
-        "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes mainland domains direct" \
-        "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo resolves unclassified domains for mainland IP fallback" \
-        "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo falls back to proxy for unclassified traffic" \
-        "MATCH,PROXY" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "MATCH,PROXY" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \
-        "name: 延迟测试" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "name: 延迟测试" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo template omits latency test URLs" \
         "url: 'https://cp.cloudflare.com'" \
-        "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     if [[ -n "${MIHOMO_CHECK_BIN:-}" ]]; then
         awk '
             $0 == "# EASY_ALL_PROXY_NODE" {
@@ -514,16 +530,16 @@ test_mihomo_template() {
             }
             replacing_filter && /^    nameserver-policy:$/ { replacing_filter=0 }
             !replacing_filter { print }
-        ' "${ROOT_DIR}/templates/mihomo.yaml" >"${party_compat}"
+        ' "${ROOT_DIR}/templates/mihomo-classic.yaml" >"${party_compat}"
         assert_success "Clash Party DNS override remains valid in Mihomo" \
             "${MIHOMO_CHECK_BIN}" -t -d "${MIHOMO_CHECK_HOME:-${TMP_DIR}}" \
             -f "${party_compat}"
     fi
     grep -v '^# EASY_ALL_PROXY_NAME$' \
-        "${ROOT_DIR}/templates/mihomo.yaml" >"${invalid}"
+        "${ROOT_DIR}/templates/mihomo-classic.yaml" >"${invalid}"
     assert_failure "template rejects a missing proxy marker" \
         validate_mihomo_template "${invalid}"
-    cat "${ROOT_DIR}/templates/mihomo.yaml" >"${invalid}"
+    cat "${ROOT_DIR}/templates/mihomo-classic.yaml" >"${invalid}"
     printf '\nbroken: [\n' >>"${invalid}"
     assert_failure "template rejects malformed custom YAML" \
         validate_mihomo_template "${invalid}"

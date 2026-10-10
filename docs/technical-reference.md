@@ -97,9 +97,31 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 
 ## DNS 与分流
 
-内置 Mihomo 模板启用 `tcp-concurrent` 和 fake-IP 持久化。Fake-IP 例外使用传统
-`blacklist` 格式，兼容 Clash Party 等会接管 DNS 列表的客户端。业务例外先于宽泛分类：
+默认内置模板是 COMMON 精简版（`templates/mihomo.yaml`）：小型内联集合加五个 MRS 规则集，
+国内常用域名优先直连，其他流量按中国 IP 兜底，未命中回落 `MATCH,PROXY`。国内常用服务和
+Apple 国内调度域名使用国内 DoH，未知公网域名及代理服务使用经代理的海外 DoH，节点引导解析独立直连。
+Apple 使用 `apple-cn.mrs` 加少量精确域名兜底，不强制整个 Apple/iCloud/CDN 直连；DNS 与路由共用
+同一集合，其余 Apple 域名继续按普通域名/IP 规则分流。新的 `geosite-apple-cn.mrs` 缓存路径避免复用
+旧全量 Apple 缓存；规则集数量仍为精简版五个、完整版七个，不引入 DAT。
+三套模板的 `0.0.0.0/8` 拒绝均优先于 LAN 规则，包含会被 LAN 识别为本地地址的 `0.0.0.0`。
+COMMON 的 UDP NAT 空闲超时有意从 300 秒缩短为 60 秒，以更早回收空闲映射；后续通信可能需要
+重建映射，而不是活跃会话定时断开。保留 `store-fake-ip: true` 用于跨重启复用映射，不承诺降低内存。
+COMMON 不启用嗅探；没有域名或 DNS 映射的真实 IP 连接无法应用域名规则，即使对应域名已在内联集合中；
+这些连接按 IP、端口及最终兜底规则分流。
+境外服务使用中国 IP 时仍可能直连，是否开启嗅探应通过实际客户端连接记录与内存峰值验证。
+私有域名的系统 DNS、真实 IP 例外和直连共用内联基础集合与私有域名 MRS；`.internal`、`.localdomain`
+在无缓存且下载失败时仍受保护。微信资源共用内联集合完成国内 DNS、真实 IP 和直连；Steam 下载域名
+显式使用国内 DNS 并直连，社区保持代理。这些例外优先于完整版的通用境外域名集合。
+基础规则不依赖首次下载，MRS 更新失败保留可用缓存；精简版不加载大型 cn/foreign 域名库。
+`test/test_mihomo_common.mjs` 同时验证默认/完整模板的 Worker 输出及真实内核的 DNS、FCM、微信与内网真实 IP、
+Apple 国内/境外分流、旧 Apple 缓存隔离、零地址拒绝、TCP/UDP 分流、重叠规则优先级、冷启动下载失败、缓存更新失败；
+没有 `MIHOMO_CHECK_BIN` 时明确报告跳过真实内核
+测试，CI 提供固定内核并生成小型 MRS 测试样本，无需在线下载规则才能运行这些回归。
+实际 iOS 峰值仍需设备验证，下载体积限制不等于 50MB 内存保证。需要 geodata 模式与更细的 DNS 分流时，用
+`MIHOMO_TEMPLATE_SOURCE` 选择经典模板 `templates/mihomo-classic.yaml`，其行为如下：
 
+- 启用 `tcp-concurrent` 和 fake-IP 持久化，Fake-IP 例外使用传统 `blacklist` 格式，兼容
+  Clash Party 等会接管 DNS 列表的客户端；
 - Google、OpenAI、Anthropic、Copilot 依赖项走代理 DNS 和代理出口；
 - `services.googleapis.cn`、`r.bing.com`、`in.appcenter.ms`、`aka.ms`、`1drv.ms`
   不被通用国内规则抢先；
@@ -164,7 +186,7 @@ easy_all
 ├─ templates/
 │  ├─ mihomo.yaml
 │  ├─ mihomo-common.yaml
-│  └─ mihomo-common-lite.yaml
+│  └─ mihomo-classic.yaml
 ├─ worker-src/
 │  ├─ index.js
 │  └─ backup.js
@@ -211,9 +233,8 @@ Worker 正常、降级、全部节点输出。可在本机用已有内核和 Geo
 MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 ```
 
-默认内置模板无需在 VPS 安装 Mihomo。自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
+仓库内置模板（默认 `templates/mihomo.yaml`、`templates/mihomo-common.yaml`、
+`templates/mihomo-classic.yaml`）随运行时清单安装，无需在 VPS 安装 Mihomo，在发布命令前用
+`MIHOMO_TEMPLATE_SOURCE` 选择。其他自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
 可用 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。
-`templates/mihomo-common.yaml` 与 `templates/mihomo-common-lite.yaml` 是面向低内存客户端的
-可选模板，随运行时清单安装，通过 `MIHOMO_TEMPLATE_SOURCE` 选择；两者与默认模板共用同一套结构
-校验与 Worker 构建流程。

@@ -96,7 +96,8 @@ sudo easy_all subscription
 `flag=clash` 的 Mihomo 地址，在客户端通过 URL 导入。订阅地址与 UUID 都是访问凭据，不要公开。
 
 客户端选择、Clash Mi 设置和订阅 DNS 排障见[客户端使用指南](docs/client-guide.md)。
-内存受限的客户端（如旧款 iPhone）可改用仓库内置的 COMMON 兼容模板，见
+默认订阅模板是 COMMON 精简规则（以低内存为目标，不保证 iPhone 峰值低于 50MB）；需要完整 COMMON 规则或经典
+geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 [低内存客户端](docs/client-guide.md#低内存客户端旧款-iphone)。
 
 ## 常用命令
@@ -153,6 +154,7 @@ Cloudflare 和 Globalping 的服务条款。
 
 | 文档 | 内容 |
 | --- | --- |
+| [更新记录](CHANGELOG.md) | 版本标识与重要功能变化 |
 | [前置准备手册](docs/preparation-guide.md) | 域名、Cloudflare、Token、gRPC 和 Globalping |
 | [客户端使用指南](docs/client-guide.md) | Mihomo 客户端、导入、Clash Mi 和 DNS 排障 |
 | [运维指南](docs/operations-guide.md) | 更新、用户、配额、Worker 聚合、证书、卸载和故障处理 |

@@ -47,7 +47,7 @@ try {
     const foreign = await dnsServer(2);
     const port = await unusedPort();
     const controller = await unusedPort();
-    let config = await readFile(new URL('../templates/mihomo.yaml', import.meta.url), 'utf8');
+    let config = await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8');
     config = config.replace(/^mixed-port:.*$/m, `mixed-port: ${port}`)
         .replace(/^external-controller:.*$/m, `external-controller: '127.0.0.1:${controller}'`)
         .replace('log-level: error', 'log-level: info')
@@ -81,19 +81,22 @@ try {
         await delay(100);
     }
     assert.ok(ready, logs);
-    const domesticDomains = ['m5-x.amap.com', 'sync.amap.com', 'short.weixin.qq.com', 'speech.bytedance.com', 'www.doubao.com', 'weatherapi.vivo.com'];
-    const foreignDomains = ['services.googleapis.cn', 'github.com', 'api.openai.com', 'api.anthropic.com', 'in.appcenter.ms', 'unknown.ms'];
-    for (const [domains, ip, route] of [[domesticDomains, '203.0.113.1', 'TEST-DIRECT'], [foreignDomains, '203.0.113.2', 'PROXY']]) {
+    const domesticDomains = ['m5-x.amap.com', 'sync.amap.com', 'short.weixin.qq.com', 'speech.bytedance.com', 'www.doubao.com', 'weatherapi.vivo.com', 'swcdn.apple.com'];
+    const foreignDomains = ['services.googleapis.cn', 'github.com', 'api.openai.com', 'api.anthropic.com', 'in.appcenter.ms', 'unknown.ms', 'www.icloud.com'];
+    const sinkholes = ['0.0.0.0', '0.0.0.1', '0.255.255.254'];
+    for (const [domains, ip, route] of [[domesticDomains, '203.0.113.1', 'TEST-DIRECT'], [foreignDomains, '203.0.113.2', 'PROXY'], [sinkholes, null, 'REJECT']]) {
         for (const domain of domains) {
-            const result = await (await fetch(`${api}/dns/query?name=${domain}&type=A`)).json();
-            assert.ok(result.Answer?.some(answer => answer.data === ip), `${domain} DNS: ${JSON.stringify(result)}`);
+            if (ip) {
+                const result = await (await fetch(`${api}/dns/query?name=${domain}&type=A`)).json();
+                assert.ok(result.Answer?.some(answer => answer.data === ip), `${domain} DNS: ${JSON.stringify(result)}`);
+            }
             const socket = createConnection({host: '127.0.0.1', port});
             socket.setTimeout(2000, () => socket.destroy());
             socket.on('error', () => {});
             socket.on('data', () => {});
             socket.on('connect', () => socket.write(`CONNECT ${domain}:443 HTTP/1.1\r\nHost: ${domain}:443\r\n\r\n`));
             await once(socket, 'close');
-            assert.ok(logs.split('\n').some(line => line.includes(`${domain}:443`) && line.includes(`using ${route}`)), `${domain} routing:\n${logs}`);
+            assert.ok(logs.split('\n').some(line => line.includes(`${domain}:443`) && line.includes(`using ${route}`) && (ip || line.includes('IPCIDR(0.0.0.0/8)'))), `${domain} routing:\n${logs}`);
         }
     }
     console.log('Mihomo real-core domestic routing and DNS exception checks passed');
