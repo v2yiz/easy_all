@@ -1,0 +1,229 @@
+# XFLASH 兼容订阅模板（隐私清理 + 低内存优化版）
+#
+# 基于 XFLASH.yaml 的分流语义改写，面向 easy_all 订阅生成流程：
+#   1. 已删除账号凭据、节点服务器与提供商专属条目（节点主机名、UUID、
+#      专属 IP/域名、提供商组名与直连例外）；
+#   2. 原 13 个外部文本规则文件（约 14.5 万条域名 + 9700 条 CIDR，3.2 MB）
+#      替换为 7 个 MRS 二进制规则集（合计约 0.8 MB）：
+#        icloud + apple            -> geosite apple.mrs
+#        google                    -> geosite google.mrs
+#        gfw + greatfire + proxy + tld-not-cn -> geosite geolocation-!cn.mrs
+#        direct                    -> geosite cn.mrs
+#        cncidr + lancidr          -> geoip cn.mrs + GEOIP,LAN
+#        telegramcidr              -> geoip telegram.mrs
+#        private                   -> geosite private.mrs
+#   3. 保留 XFLASH 的 AI / Copilot / 泄漏检测站点例外；
+#   4. 补回项目既有安全网：FCM 端口代理、代理流量 QUIC 拒绝、GLOBAL 仅指向 PROXY。
+#
+# 内存实测（mihomo v1.19.32 darwin-arm64，仅回环、关闭 TUN）：
+#   原始 XFLASH 的 13 个文本规则文件：约 96-99 MB
+#   本模板（MRS 规则集）：约 48-50 MB
+#
+# MRS 规则集由 jsDelivr 国内镜像提供，首次启动需联网下载约 0.8 MB；
+# 客户端内核需支持 mihomo 的 mrs 规则格式（Clash Mi 等新版客户端）。
+mixed-port: 1080
+allow-lan: false
+mode: rule
+log-level: warning
+ipv6: false
+external-controller: '127.0.0.1:9090'
+unified-delay: true
+tcp-concurrent: true
+profile:
+    store-selected: true
+
+tun:
+    enable: true
+    stack: mixed
+    mtu: 1500
+    udp-timeout: 300
+    auto-route: true
+    auto-detect-interface: true
+    inet4-address:
+      - 198.18.0.1/30
+    dns-hijack:
+      - any:53
+      - tcp://any:53
+    strict-route: false
+    route-exclude-address:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+      - 100.64.0.0/10
+
+dns:
+    enable: true
+    ipv6: false
+    respect-rules: false
+    use-system-hosts: false
+    listen: '127.0.0.1:5335'
+    enhanced-mode: fake-ip
+    fake-ip-range: 198.18.0.1/16
+    fake-ip-filter: ['*.lan', '*.local', 'stun.*.*.*', 'stun.*.*', time.windows.com, time.nist.gov, time.apple.com, time.asia.apple.com, '*.ntp.org.cn', '*.openwrt.pool.ntp.org', time1.cloud.tencent.com, time.ustc.edu.cn, pool.ntp.org, ntp.ubuntu.com, ntp.aliyun.com, ntp1.aliyun.com, ntp2.aliyun.com, ntp3.aliyun.com, ntp4.aliyun.com, ntp5.aliyun.com, ntp6.aliyun.com, ntp7.aliyun.com, time1.aliyun.com, time2.aliyun.com, time3.aliyun.com, time4.aliyun.com, time5.aliyun.com, time6.aliyun.com, time7.aliyun.com, '*.time.edu.cn', time1.apple.com, time2.apple.com, time3.apple.com, time4.apple.com, time5.apple.com, time6.apple.com, time7.apple.com, time1.google.com, time2.google.com, time3.google.com, time4.google.com, music.163.com, '*.music.163.com', '*.126.net', musicapi.taihe.com, music.taihe.com, songsearch.kugou.com, trackercdn.kugou.com, '*.kuwo.cn', api-jooxtt.sanook.com, api.joox.com, joox.com, y.qq.com, '*.y.qq.com', streamoc.music.tc.qq.com, mobileoc.music.tc.qq.com, isure.stream.qqmusic.qq.com, dl.stream.qqmusic.qq.com, aqqmusic.tc.qq.com, amobile.music.tc.qq.com, '*.xiami.com', '*.music.migu.cn', music.migu.cn, '*.msftconnecttest.com', '*.msftncsi.com', localhost.ptlogin2.qq.com, '*.*.*.srv.nintendo.net', '*.*.stun.playstation.net', 'xbox.*.*.microsoft.com', '*.ipv6.microsoft.com', '*.*.xboxlive.com', speedtest.cros.wr.pvp.net, mtalk.google.com, '*.mtalk.google.com', android.clients.google.com]
+    nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+    nameserver-policy:
+      # 局域网名称交给客户端系统 DNS，避免解析循环。
+      '+.lan': system
+      '+.local': system
+
+proxies:
+# EASY_ALL_PROXY_NODE
+
+proxy-groups:
+    - name: PROXY
+      type: select
+      proxies:
+# EASY_ALL_PROXY_NAME
+    - name: GLOBAL
+      hidden: true
+      type: select
+      proxies:
+        - PROXY
+# EASY_ALL_PROXY_GROUP
+
+rule-providers:
+    # MRS 二进制规则集，体积与内存均远小于文本规则文件。
+    # proxy: DIRECT 让规则集在隧道就绪前直连下载；若 jsDelivr 不可达，
+    # 可把这些文件镜像到自己的 VPS/Worker 后替换 URL。
+    geosite-private: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.mrs', path: ./ruleset/geosite-private.mrs, interval: 86400 }
+    geosite-apple: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple.mrs', path: ./ruleset/geosite-apple.mrs, interval: 86400 }
+    geosite-google: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.mrs', path: ./ruleset/geosite-google.mrs, interval: 86400 }
+    geosite-foreign: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/geolocation-!cn.mrs', path: ./ruleset/geosite-foreign.mrs, interval: 86400 }
+    geosite-cn: { type: http, behavior: domain, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.mrs', path: ./ruleset/geosite-cn.mrs, interval: 86400 }
+    geoip-cn: { type: http, behavior: ipcidr, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs', path: ./ruleset/geoip-cn.mrs, interval: 86400 }
+    geoip-telegram: { type: http, behavior: ipcidr, format: mrs, proxy: DIRECT, url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs', path: ./ruleset/geoip-telegram.mrs, interval: 86400 }
+
+rules:
+    # ---- 原 XFLASH 手写规则（已剔除账号、节点与提供商私有条目）----
+    # 原始配置把 ssl.gstatic.com 单独直连；如希望 Google 全部走代理，可删除这一行。
+    - 'DOMAIN,ssl.gstatic.com,DIRECT'
+    - 'DOMAIN-SUFFIX,gstatic.com,PROXY'
+    # 出口/DNS 泄漏检测站；确保测试看到的是代理出口。
+    - 'DOMAIN-SUFFIX,ipleak.net,PROXY'
+    - 'DOMAIN-SUFFIX,browserscan.net,PROXY'
+    - 'DOMAIN-SUFFIX,surfsharkdns.com,PROXY'
+    - 'DOMAIN-SUFFIX,edns.ip-api.com,PROXY'
+    - 'DOMAIN-SUFFIX,dnsleaktest.com,PROXY'
+    - 'DOMAIN-SUFFIX,dnsleak.com,PROXY'
+    - 'DOMAIN-SUFFIX,expressvpn.com,PROXY'
+    - 'DOMAIN-SUFFIX,nordvpn.com,PROXY'
+    - 'DOMAIN-SUFFIX,surfshark.com,PROXY'
+    - 'DOMAIN-SUFFIX,perfect-privacy.com,PROXY'
+    - 'DOMAIN-SUFFIX,browserleaks.com,PROXY'
+    - 'DOMAIN-SUFFIX,browserleaks.org,PROXY'
+    - 'DOMAIN-SUFFIX,browserleaks.net,PROXY'
+    - 'DOMAIN-SUFFIX,vpnunlimited.com,PROXY'
+    - 'DOMAIN-SUFFIX,whoer.net,PROXY'
+    - 'DOMAIN-SUFFIX,whrq.net,PROXY'
+    - 'DOMAIN-SUFFIX,asmr.one,PROXY'
+    # OpenAI 静态资源、人机校验、Azure 前端与遥测端点。
+    - 'DOMAIN,browser-intake-datadoghq.com,PROXY'
+    - 'DOMAIN,chat.openai.com.cdn.cloudflare.net,PROXY'
+    - 'DOMAIN,openai-api.arkoselabs.com,PROXY'
+    - 'DOMAIN,openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net,PROXY'
+    - 'DOMAIN,openaicomproductionae4b.blob.core.windows.net,PROXY'
+    - 'DOMAIN,production-openaicom-storage.azureedge.net,PROXY'
+    - 'DOMAIN,static.cloudflareinsights.com,PROXY'
+    # ChatGPT/OpenAI 的登录、功能开关、支付、客服与音视频依赖。
+    # auth0.com / stripe.com / sentry.io / segment.io / algolia.net / intercom.io
+    # 是共享服务；若其他应用出现异常，删除对应行即可收窄。
+    - 'DOMAIN-SUFFIX,ai.com,PROXY'
+    - 'DOMAIN-SUFFIX,algolia.net,PROXY'
+    - 'DOMAIN-SUFFIX,api.statsig.com,PROXY'
+    - 'DOMAIN-SUFFIX,auth0.com,PROXY'
+    - 'DOMAIN-SUFFIX,chatgpt.com,PROXY'
+    - 'DOMAIN-SUFFIX,chatgpt.livekit.cloud,PROXY'
+    - 'DOMAIN-SUFFIX,client-api.arkoselabs.com,PROXY'
+    - 'DOMAIN-SUFFIX,events.statsigapi.net,PROXY'
+    - 'DOMAIN-SUFFIX,featuregates.org,PROXY'
+    - 'DOMAIN-SUFFIX,host.livekit.cloud,PROXY'
+    - 'DOMAIN-SUFFIX,identrust.com,PROXY'
+    - 'DOMAIN-SUFFIX,intercom.io,PROXY'
+    - 'DOMAIN-SUFFIX,intercomcdn.com,PROXY'
+    - 'DOMAIN-SUFFIX,launchdarkly.com,PROXY'
+    - 'DOMAIN-SUFFIX,oaistatic.com,PROXY'
+    - 'DOMAIN-SUFFIX,oaiusercontent.com,PROXY'
+    - 'DOMAIN-SUFFIX,observeit.net,PROXY'
+    - 'DOMAIN-SUFFIX,openai.com,PROXY'
+    - 'DOMAIN-SUFFIX,openaiapi-site.azureedge.net,PROXY'
+    - 'DOMAIN-SUFFIX,openaicom.imgix.net,PROXY'
+    - 'DOMAIN-SUFFIX,segment.io,PROXY'
+    - 'DOMAIN-SUFFIX,sentry.io,PROXY'
+    - 'DOMAIN-SUFFIX,stripe.com,PROXY'
+    - 'DOMAIN-SUFFIX,turn.livekit.cloud,PROXY'
+    - 'DOMAIN-SUFFIX,sora.com,PROXY'
+    # 关键字兜底（原文如此）。
+    - 'DOMAIN-KEYWORD,openai,PROXY'
+    # Microsoft Copilot / Bing。
+    - 'DOMAIN,api.msn.com,PROXY'
+    - 'DOMAIN,assets.msn.com,PROXY'
+    - 'DOMAIN,copilot.microsoft.com,PROXY'
+    - 'DOMAIN,gateway.bingviz.microsoft.net,PROXY'
+    - 'DOMAIN,gateway.bingviz.microsoftapp.net,PROXY'
+    - 'DOMAIN,in.appcenter.ms,PROXY'
+    - 'DOMAIN,location.microsoft.com,PROXY'
+    - 'DOMAIN,odc.officeapps.live.com,PROXY'
+    - 'DOMAIN,r.bing.com,PROXY'
+    - 'DOMAIN,self.events.data.microsoft.com,PROXY'
+    - 'DOMAIN,services.bingapis.com,PROXY'
+    - 'DOMAIN,sydney.bing.com,PROXY'
+    - 'DOMAIN,www.bing.com,PROXY'
+    - 'DOMAIN-SUFFIX,api.microsoftapp.net,PROXY'
+    - 'DOMAIN-SUFFIX,bing-shopping.microsoft-falcon.io,PROXY'
+    - 'DOMAIN-SUFFIX,challenges.cloudflare.com,PROXY'
+    - 'DOMAIN-SUFFIX,edgeservices.bing.com,PROXY'
+    - 'DOMAIN-SUFFIX,githubcopilot.com,PROXY'
+    - 'DOMAIN-KEYWORD,openaicom-api,PROXY'
+    # Google AI（Gemini / Bard / DeepMind / MakerSuite / Colab）。
+    - 'DOMAIN-SUFFIX,gvt2.com,PROXY'
+    - 'DOMAIN,ai.google.dev,PROXY'
+    - 'DOMAIN,alkalimakersuite-pa.clients6.google.com,PROXY'
+    - 'DOMAIN,makersuite.google.com,PROXY'
+    - 'DOMAIN-SUFFIX,bard.google.com,PROXY'
+    - 'DOMAIN-SUFFIX,deepmind.com,PROXY'
+    - 'DOMAIN-SUFFIX,deepmind.google,PROXY'
+    - 'DOMAIN-SUFFIX,gemini.google.com,PROXY'
+    - 'DOMAIN-SUFFIX,generativeai.google,PROXY'
+    - 'DOMAIN-SUFFIX,proactivebackend-pa.googleapis.com,PROXY'
+    - 'DOMAIN-SUFFIX,apis.google.com,PROXY'
+    - 'DOMAIN-KEYWORD,colab,PROXY'
+    - 'DOMAIN-KEYWORD,developerprofiles,PROXY'
+    - 'DOMAIN-KEYWORD,generativelanguage,PROXY'
+    # AI 站点统计。
+    - 'DOMAIN,cdn.usefathom.com,PROXY'
+    # Anthropic / Claude 与 JetBrains AI。
+    - 'DOMAIN-SUFFIX,anthropic.com,PROXY'
+    - 'DOMAIN-SUFFIX,claude.ai,PROXY'
+    - 'DOMAIN-SUFFIX,razie.ai,PROXY'
+    - 'DOMAIN-SUFFIX,razie.aws.intellij.net,PROXY'
+    - 'DOMAIN-SUFFIX,jetbrains.ai,PROXY'
+    # Meta 与 Google Play 中国大陆入口。
+    - 'DOMAIN-SUFFIX,meta.com,PROXY'
+    - 'DOMAIN-SUFFIX,services.googleapis.cn,PROXY'
+    - 'DOMAIN-SUFFIX,xn--ngstr-lra8j.com,PROXY'
+    - 'DOMAIN,clash.razord.top,DIRECT'
+    - 'DOMAIN,yacd.haishan.me,DIRECT'
+    # ---- 项目安全网：私有地址、FCM 推送与 Worker 标记 ----
+    - 'RULE-SET,geosite-private,DIRECT'
+    - 'GEOIP,LAN,DIRECT,no-resolve'
+    # FCM 拿到真实 IP 后可能丢域名；TCP 5228-5230 仍固定走代理。
+    - 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY'
+# EASY_ALL_WORKER_RULE
+    # ---- 用 MRS 规则集替代 XFLASH 的 13 个外部文本规则文件 ----
+    # Apple/iCloud 按原语义整体直连。
+    - 'RULE-SET,geosite-apple,DIRECT'
+    # Google 先拒绝 QUIC 回退 TCP，再走代理（兼容 Reality/XHTTP 等 TCP 隧道）。
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT'
+    - 'RULE-SET,geosite-google,PROXY'
+    # 等价原 gfw + greatfire + proxy + tld-not-cn：其余境外域名统一代理。
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-foreign)),REJECT'
+    - 'RULE-SET,geosite-foreign,PROXY'
+    # 国内域名/IP 直连；Telegram 段优先代理。
+    - 'RULE-SET,geosite-cn,DIRECT'
+    - 'RULE-SET,geoip-telegram,PROXY,no-resolve'
+    - 'RULE-SET,geoip-cn,DIRECT'
+    # 其余 QUIC 一律回退 TCP；未命中域名走代理。
+    - 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT'
+    - 'MATCH,PROXY'

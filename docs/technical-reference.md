@@ -162,7 +162,9 @@ easy_all
 │  ├─ subscription-auth.sh
 │  └─ tcp-tuning.sh
 ├─ templates/
-│  └─ mihomo.yaml
+│  ├─ mihomo.yaml
+│  ├─ mihomo-xflash.yaml
+│  └─ mihomo-xflash-lite.yaml
 ├─ worker-src/
 │  ├─ index.js
 │  └─ backup.js
@@ -202,7 +204,7 @@ npm test
 测试覆盖入口和模块完整性、Reality、Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、
 订阅渲染、Token 鉴权、证书轮换、Worker 构建和更新顺序。
 
-订阅模板的发布检查固定使用 Mihomo v1.19.31，GitHub Actions 同时校验完整 Reality 订阅及
+订阅模板的发布检查固定使用 Mihomo v1.19.32，GitHub Actions 同时校验完整 Reality 订阅及
 Worker 正常、降级、全部节点输出。可在本机用已有内核和 Geo 数据运行同样检查：
 
 ```bash
@@ -212,3 +214,6 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 默认内置模板无需在 VPS 安装 Mihomo。自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
 可用 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。
+`templates/mihomo-xflash.yaml` 与 `templates/mihomo-xflash-lite.yaml` 是面向低内存客户端的
+可选模板，随运行时清单安装，通过 `MIHOMO_TEMPLATE_SOURCE` 选择；两者与默认模板共用同一套结构
+校验与 Worker 构建流程。

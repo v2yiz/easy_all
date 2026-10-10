@@ -20,6 +20,8 @@ fail() {
 
 [[ "${LAUNCHER_CONTENT}" == *'export LANG=C.UTF-8 LC_ALL=C.UTF-8'* ]] \
     || fail "launcher must normalize inherited locale settings"
+[[ "${LAUNCHER_CONTENT}" == *'-z "${MIHOMO_TEMPLATE_SOURCE:-}"'* ]] \
+    || fail "launcher must keep an operator-provided Mihomo template source"
 
 module_functions() {
     sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
@@ -36,6 +38,10 @@ while IFS= read -r required_path; do
     [[ -f "${ROOT_DIR}/${required_path}" ]] \
         || fail "required runtime path is missing: ${required_path}"
 done <<<"${RUNTIME_MANIFEST_CONTENT}"
+while IFS= read -r template_path; do
+    grep -Fxq "templates/$(basename -- "${template_path}")" "${RUNTIME_MANIFEST}" \
+        || fail "bundled Mihomo template is missing from the runtime manifest: ${template_path}"
+done < <(find "${ROOT_DIR}/templates" -maxdepth 1 -type f -name '*.yaml' | sort)
 while IFS= read -r runtime_path; do
     [[ "${runtime_path}" == *.sh ]] || continue
     while IFS= read -r sourced_module; do

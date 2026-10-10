@@ -2,6 +2,18 @@
 
 # Shared Mihomo template loading and validation.
 
+# Bundled templates ship with the repository and are checked against a pinned core in
+# CI, so a host without the core can still publish one of them by path. Compare
+# content instead of location so staged copies keep working.
+mihomo_template_matches_bundled() {
+    local source=$1 bundled_dir=$2 candidate
+    for candidate in "${bundled_dir}"/*.yaml; do
+        [[ -f "${candidate}" ]] || continue
+        cmp -s "${source}" "${candidate}" && return 0
+    done
+    return 1
+}
+
 validate_mihomo_template() {
     local source=$1 trusted_without_core=${2:-0} marker count
     [[ -s "${source}" ]] || die "Mihomo 模板为空：${source}"
@@ -21,12 +33,13 @@ validate_mihomo_template() {
         || die "Mihomo 模板必须保持 IPv4-only"
     # Bundled templates are checked with a pinned core in CI. Custom templates must
     # pass the same parser locally before either subscription publisher accepts them.
-    local bundled binary check_dir result=0
-    bundled="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/templates/mihomo.yaml"
+    local bundled_dir binary check_dir result=0
+    bundled_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/templates"
     binary=${MIHOMO_CHECK_BIN:-mihomo}
     if ! command -v "${binary}" >/dev/null 2>&1; then
         if [[ -z "${MIHOMO_CHECK_BIN:-}" ]] \
-            && { [[ "${trusted_without_core}" == "1" ]] || cmp -s "${source}" "${bundled}"; }; then
+            && { [[ "${trusted_without_core}" == "1" ]] \
+                || mihomo_template_matches_bundled "${source}" "${bundled_dir}"; }; then
             return 0
         fi
         die "自定义 Mihomo 模板须经内核校验：请安装 mihomo 或设置 MIHOMO_CHECK_BIN"

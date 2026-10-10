@@ -19,5 +19,7 @@ lib/tcp-tuning.sh
 worker-src/index.js
 scripts/build-worker.mjs
 templates/mihomo.yaml
+templates/mihomo-xflash.yaml
+templates/mihomo-xflash-lite.yaml
 lib/worker-backup.sh
 worker-src/backup.js

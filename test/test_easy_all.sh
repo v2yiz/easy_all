@@ -51,9 +51,11 @@ assert_failure() {
 }
 
 source_script_copy() {
-    local module
+    local module template
     install -d -m 0755 "${TMP_DIR}/lib" "${TMP_DIR}/profiles" "${TMP_DIR}/templates"
-    install -m 0644 "${ROOT_DIR}/templates/mihomo.yaml" "${TMP_DIR}/templates/mihomo.yaml"
+    for template in "${ROOT_DIR}"/templates/*.yaml; do
+        install -m 0644 "${template}" "${TMP_DIR}/templates/$(basename -- "${template}")"
+    done
     for module in log.sh runtime-core.sh quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/lib/${module}"
     done
@@ -351,6 +353,10 @@ test_mihomo_template() {
     local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
     local google_rule_line google_quic_rule_line google_dns_line cn_dns_line google_dns_policy
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo.yaml"
+    # Optional bundled templates (XFLASH compatibility) must clear the same gate.
+    for bundled_template in "${ROOT_DIR}"/templates/*.yaml; do
+        validate_mihomo_template "${bundled_template}"
+    done
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo.yaml")"
     assert_contains "Mihomo uses the XFLASH fake-IP DNS mode" \

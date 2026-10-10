@@ -17,8 +17,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
-          curl -fL --retry 3 --max-time 120 https://github.com/MetaCubeX/mihomo/releases/download/v1.19.31/mihomo-linux-amd64-v1.19.31.gz -o "$RUNNER_TEMP/mihomo.gz"
-          echo "d5e74bbddbdfff49a1aef7775bf5911da59f0d7196ed509a0ac914b3653dd5f1  $RUNNER_TEMP/mihomo.gz" | sha256sum -c -
+          curl -fL --retry 3 --max-time 120 https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-amd64-v1.19.32.gz -o "$RUNNER_TEMP/mihomo.gz"
+          echo "8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10  $RUNNER_TEMP/mihomo.gz" | sha256sum -c -
           gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$MIHOMO_CHECK_BIN"
           chmod 700 "$MIHOMO_CHECK_BIN"
           mkdir -p "$MIHOMO_CHECK_HOME"

@@ -30,6 +30,10 @@ Cloudflare 模式保留现有订阅模式、Worker 名称、订阅域名、用�
 聚合配置选项时选择 `1. 保留`。此命令会重新构建并部署 Worker，并更新本机订阅，
 不需要再执行 `apply-cloud`。最后在客户端刷新订阅并重启代理内核。
 
+使用仓库内置的可选模板（例如 `templates/mihomo-xflash-lite.yaml`）发布订阅时，在命令前传入
+`MIHOMO_TEMPLATE_SOURCE=<模板绝对路径或 HTTPS URL>`；Cloudflare 模式会重新构建并内嵌所选模板。模板差异与
+内存实测见[客户端使用指南](client-guide.md#低内存客户端旧款-iphone)。
+
 若代码推送在 `dev`，第一条命令改为 `sudo easy_all self-update --dev`。`self-update` 或
 `apply` 单独执行都不会更新 Cloudflare Worker 内嵌的规则。独立手工部署的 Worker 则需要
 在其构建环境重新构建并部署；VPS 无法自动更新未由安装器管理的 Worker。
