@@ -35,7 +35,7 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 ## Clash Mi 模式
 
 日常使用“规则”模式即可。订阅会让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
-在 `PROXY` 中直接选择 US_VMISS、白天首选、晚上首选、🇭🇰CF 或其他 xflash 节点。
+在 `PROXY` 中直接选择 US_VMISS、白天首选、晚上首选、🇭🇰CF 或其他已配置的节点。
 白天首选和 🇭🇰CF 是隐藏的自动测速组，仍可作为 PROXY 选项；内部节点不平铺。
 YouTube 与其他代理流量统一使用当前选择。纯 Worker 通过原生流背压支持持续下载，但
 `stream-one` 的全部上行位于单个 HTTP 请求体内，仍受 Cloudflare 套餐请求体大小限制；

@@ -63,7 +63,7 @@ Universal SSL 终止客户端 TLS，Origin CA 保护回源。
 Google 的 `generate_204`，避免 Cloudflare Socket 禁止回连 Cloudflare 地址而产生误判。
 两类 URL-Test 组的测速超时均为 `5000` ms，间隔和容差保持 `300` 秒、`30` ms。
 白天首选和 🇭🇰CF 均设置 `hidden: true`，作为 PROXY 内的选项，内部自动选择低延迟节点。
-PROXY 依次包含已配置的 US_VMISS、白天首选、晚上首选、🇭🇰CF 和其他 xflash 节点。
+PROXY 依次包含已配置的 US_VMISS、白天首选、晚上首选、🇭🇰CF 和其他已配置的节点。
 所有代理流量（包括 YouTube）统一使用 PROXY 当前选择，没有额外模式或专用分流。
 规则模式下，代理服务的 UDP/443 拒绝规则优先于手动分组选择，与自建 Xray 的拒绝策略一致；
 国内直连 QUIC 仍保留。订阅不自动为第三方节点开放代理 QUIC。
