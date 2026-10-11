@@ -147,6 +147,17 @@ USER_ACCOUNTS=${accounts}
 ALLOWED_TOKENS=${tokens}
 QUOTA_START_DATE="2025-01-15"
 unset ENABLE_MONTHLY_QUOTA MONTHLY_QUOTAS_GB QUOTA_TOKEN_OVERRIDES
+(
+    info() { printf '%s\n' "$*"; }
+    choose_monthly_quota 1
+) >"${TMP_DIR}/quota-prompt.log"
+assert_equal "quota setup reports only the token count" "已生成或复用 2 个用户的 Token" \
+    "$(<"${TMP_DIR}/quota-prompt.log")"
+while IFS= read -r token; do
+    if grep -Fq -- "${token}" "${TMP_DIR}/quota-prompt.log"; then
+        fail "quota setup must not print subscription credentials"
+    fi
+done < <(jq -r '.[]' <<<"${tokens}")
 choose_monthly_quota 1
 assert_equal "non-interactive update preserves enabled quota mode" "1" "${QUOTA_ENABLED}"
 assert_equal "non-interactive update preserves an existing user quota" "100" \

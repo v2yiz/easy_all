@@ -106,7 +106,7 @@ export async function buildWorker({
         !['PROXY', 'GLOBAL', 'PASS', '🇭🇰CF', '🇺🇸白天首选', 'DIRECT', 'REJECT'].includes(name)
     ), 'unique, non-reserved node names');
     requireValue(
-        config.nodes.every(node => !/^🇺🇸优选[1-6]$/.test(node.name)),
+        config.nodes.every(node => !/^(?:🇺🇸优选|🇭🇰CF)[1-6]$/.test(node.name)),
         'Reality node names must not use reserved CDN names'
     );
     const [template, source] = await Promise.all([

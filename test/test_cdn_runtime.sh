@@ -89,7 +89,26 @@ QUOTA_ENABLED=1
 QUOTA_START_DATE=2026-01-01
 USER_ACCOUNTS='{"owner":{"uuid":"11111111-2222-4111-8111-111111111111","token":"test-token-12345","quota_gb":10}}'
 expected_accounts=${USER_ACCOUNTS}
+printf 'old-cdn-state\n' >"${EASY_ALL_STATE_FILE_OVERRIDE}"
+exec {old_state_fd}<"${EASY_ALL_STATE_FILE_OVERRIDE}"
+state_published=0
+mv() {
+    local -a args=("$@")
+    local target=${args[${#args[@]}-1]} stage=${args[${#args[@]}-2]}
+    if [[ "${target}" == "${EASY_ALL_STATE_FILE_OVERRIDE}" ]]; then
+        assert_true "rename 前仍发布完整旧状态" '$(<"${target}") == old-cdn-state'
+        assert_true "rename 前暂存状态为 0600 且与目标同目录" \
+            '$(stat -c "%a" "${stage}") == 600 && $(dirname -- "${stage}") == $(dirname -- "${target}")'
+        state_published=1
+    fi
+    command mv "$@"
+}
 save_state
+unset -f mv
+assert_true "状态通过 rename 发布" '"${state_published}" == 1'
+assert_true "原子保存后旧状态读取者仍看到旧内容" '$(cat <&"${old_state_fd}") == old-cdn-state'
+exec {old_state_fd}<&-
+assert_true "保存后的状态权限应为 0600" '$(stat -c "%a" "${EASY_ALL_STATE_FILE_OVERRIDE}") == 600'
 unset QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
 load_state
 assert_true "重新载入后应恢复 QUOTA_ENABLED / USER_ACCOUNTS / QUOTA_START_DATE" '"${QUOTA_ENABLED}" == 1 && "${USER_ACCOUNTS}" == "${expected_accounts}" && "${QUOTA_START_DATE}" == 2026-01-01'
@@ -97,4 +116,51 @@ QUOTA_ENABLED=0
 save_state
 load_state
 assert_true "关闭配额后不应残留 USER_ACCOUNTS / QUOTA_START_DATE" '-z "${USER_ACCOUNTS}" && -z "${QUOTA_START_DATE}"'
+# Execute the real shared rollback function with every filesystem path isolated.
+bash -s -- "${ROOT_DIR}" "${RUNTIME_TMP}/rollback-test" "$(declare -f rollback_subscription_update)" <<'BASH'
+set -Eeuo pipefail
+source "$1/lib/profile-common.sh"
+fixture=$2
+eval "$3"
+mkdir -p "${fixture}/backup"
+STATE_FILE="${fixture}/state.env"
+UPDATE_SUB_BACKUP_DIR="${fixture}/backup"
+XRAY_CONFIG="${fixture}/xray.json"
+NGINX_CONFIG="${fixture}/nginx.conf"
+CERT_FILE="${fixture}/cert.pem"
+KEY_FILE="${fixture}/key.pem"
+SUBSCRIPTION_DIR="${fixture}/subscriptions"
+cleanup_files=()
+warn() { :; }
+die() { printf '%s\n' "$*" >&2; exit 1; }
+nginx() { :; }
+systemctl() { :; }
+printf 'before-state\n' >"${UPDATE_SUB_BACKUP_DIR}/state.env"
+printf 'after-state\n' >"${STATE_FILE}"
+exec {old_state_fd}<"${STATE_FILE}"
+restored_by_rename=0
+mv() {
+    local -a args=("$@")
+    local target=${args[${#args[@]}-1]} stage=${args[${#args[@]}-2]}
+    [[ "$1" == -fT && "${target}" == "${STATE_FILE}" \
+        && "$(<"${STATE_FILE}")" == after-state \
+        && "$(stat -c '%a' "${stage}")" == 600 \
+        && "$(dirname -- "${stage}")" == "${fixture}" ]] || exit 1
+    restored_by_rename=1
+    command mv "$@"
+}
+rollback_subscription_update
+unset -f mv
+[[ "${restored_by_rename}" == 1 && "$(cat <&"${old_state_fd}")" == after-state && "$(<"${STATE_FILE}")" == before-state \
+    && "$(stat -c '%a' "${STATE_FILE}")" == 600 ]] \
+    || { printf 'not ok - CDN rollback must atomically restore private state\n' >&2; exit 1; }
+exec {old_state_fd}<&-
+# A failed restore must leave the published state intact even in an OR-list.
+if (restore_state_file "${fixture}/missing-backup" "${STATE_FILE}") >/dev/null 2>&1; then
+    printf 'not ok - failed state restore accepted\n' >&2
+    exit 1
+fi
+[[ "$(<"${STATE_FILE}")" == before-state ]] \
+    || { printf 'not ok - failed restore changed published state\n' >&2; exit 1; }
+BASH
 printf 'ok - %s runtime authentication and state\n' "${profile}"

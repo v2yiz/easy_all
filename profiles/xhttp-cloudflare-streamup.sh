@@ -94,9 +94,10 @@ cloudflare_api_request() {
         printf '%s\n' "${response:-<empty>}" >&2
         die "Cloudflare API HTTP ${status:-000}：${method} ${path}"
     }
-    jq -e '.success == true' <<<"${response}" >/dev/null \
+    jq -se 'length == 1 and (.[0] | type == "object" and .success == true)' \
+        <<<"${response}" >/dev/null \
         || { printf '%s\n' "${response:-<empty>}" >&2; die "Cloudflare API 返回错误（HTTP ${status}）：${method} ${path}"; }
-    jq -c '.result' <<<"${response}"
+    jq -sc '.[0].result' <<<"${response}"
 }
 
 validate_cloudflare_worker_name() {
@@ -219,6 +220,7 @@ cloudflare_validate_worker_access() {
     subscription_enabled || return 0
     [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ ]] \
         || die "Cloudflare Zone 未返回有效 Account ID"
+    cloudflare_reconcile_pending_subscription_worker
     scripts=$(cloudflare_api_request GET \
         "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts") \
         || die "当前 Cloudflare Token 缺少 Account / Workers Scripts / Write 权限"
@@ -1072,30 +1074,142 @@ cloudflare_delete_managed_rule() {
     fi
 }
 
-cloudflare_cleanup_previous_subscription_host() {
-    local old_host=$1 old_domain_id=${2:-} current_host domains
-    [[ -n "${old_host}" && "${old_host}" != "${VLESS_CDN_DOMAIN}" ]] || return 0
-    current_host=$(active_subscription_link_domain)
-    [[ "${old_host}" != "${current_host}" ]] || return 0
-    [[ -n "${old_domain_id}" ]] || {
-        warn "旧订阅域名 ${old_host} 缺少 Worker Domain ID，未自动删除"
-        return 0
-    }
+validate_subscription_worker_retirements() {
+    jq -se 'length == 1 and (.[0] | type == "array" and all(.[];
+        (.account | type == "string" and test("^[0-9A-Fa-f]{32}$")) and
+        (.name | type == "string" and test("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")) and
+        (.id | type == "string" and test("^[A-Za-z0-9_-]+$")) and
+        (.host | type == "string" and test("^[a-z0-9.-]+$")) and
+        (.delete_script | type == "boolean")))' \
+        <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}" >/dev/null
+}
+
+# Persist old ownership with the replacement state, before any remote deletion.
+cloudflare_prepare_subscription_worker_retirement() {
+    local account=$1 host=$2 id=$3 name=$4 delete_script=true
+    [[ -n "${name}" ]] || return 0
+    if subscription_enabled && [[ "${account}" == "${CLOUDFLARE_ACCOUNT_ID}" \
+        && "${name}" == "${CLOUDFLARE_WORKER_NAME}" ]]; then
+        [[ "${id}" != "${CLOUDFLARE_WORKER_DOMAIN_ID}" ]] || return 0
+        delete_script=false
+    fi
+    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c \
+        --arg account "${account}" --arg host "${host}" --arg id "${id}" \
+        --arg name "${name}" --argjson delete_script "${delete_script}" \
+        '. + [{account:$account,host:$host,id:$id,name:$name,delete_script:$delete_script}]
+         | unique_by([.account,.name,.id,.delete_script])' \
+        <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}") \
+        || die "无法保存旧订阅 Worker 待清理记录"
+    validate_subscription_worker_retirements || die "旧订阅 Worker 待清理记录无效；停止提交"
+}
+
+# A disabled subscription has no active identity. Drain its matching pending
+# ownership before access checks, without saving uncommitted replacement state.
+cloudflare_reconcile_pending_subscription_worker() {
+    [[ -z "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] || return 0
+    validate_subscription_worker_retirements || die "旧订阅 Worker 待清理记录无效"
+    local entry pending
+    pending=$(jq -c --arg account "${CLOUDFLARE_ACCOUNT_ID}" \
+        --arg name "${CLOUDFLARE_WORKER_NAME}" \
+        '[.[] | select(.account == $account and .name == $name)] | sort_by(.delete_script)' \
+        <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}") \
+        || die "无法读取旧订阅 Worker 待清理记录"
+    while IFS= read -r entry; do
+        # Only the recorded old identity may be retired; backup guards still apply.
+        if ! (SUBSCRIPTION_MODE=link cloudflare_delete_retired_subscription_worker \
+            "$(jq -r '.account' <<<"${entry}")" "$(jq -r '.host' <<<"${entry}")" \
+            "$(jq -r '.id' <<<"${entry}")" "$(jq -r '.name' <<<"${entry}")" \
+            "$(jq -r '.delete_script' <<<"${entry}")"); then
+            die "旧订阅 Worker 清理失败；保留待清理记录，停止重新启用"
+        fi
+    done < <(jq -c '.[]' <<<"${pending}")
+    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c --argjson pending "${pending}" \
+        '. - $pending' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}") \
+        || die "无法更新旧订阅 Worker 待清理记录"
+}
+
+# Reusing a formerly retired binding makes it active again. Verify its complete
+# cloud identity before canceling retirement or retaining only an old domain.
+cloudflare_reconcile_active_subscription_retirements() {
+    subscription_enabled || return 0
+    local pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]} domains
+    jq -e --arg account "${CLOUDFLARE_ACCOUNT_ID}" --arg name "${CLOUDFLARE_WORKER_NAME}" \
+        'any(.[]; .account == $account and .name == $name)' <<<"${pending}" >/dev/null \
+        || return 0
+    domains=$(cloudflare_api_request GET "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") \
+        || die "无法核对重新接管的订阅 Worker 域名"
+    jq -e --arg id "${CLOUDFLARE_WORKER_DOMAIN_ID}" --arg host "${SUBSCRIPTION_DOMAIN}" \
+        --arg name "${CLOUDFLARE_WORKER_NAME}" '
+        type == "array" and
+        ([.[] | select(.id == $id or (.hostname | ascii_downcase) == $host)]
+         | length == 1 and all(.[];
+             .id == $id and (.hostname | ascii_downcase) == $host and .service == $name))' \
+        <<<"${domains}" >/dev/null || die "重新接管的订阅 Worker 域名所有权不一致；停止提交"
+    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c \
+        --arg account "${CLOUDFLARE_ACCOUNT_ID}" --arg name "${CLOUDFLARE_WORKER_NAME}" \
+        --arg id "${CLOUDFLARE_WORKER_DOMAIN_ID}" --arg host "${SUBSCRIPTION_DOMAIN}" '
+        map(if .account == $account and .name == $name then
+            if .id == $id and .host == $host then empty
+            elif .id != $id and .host != $host then .delete_script = false
+            else . end
+            else . end)' <<<"${pending}") \
+        || die "无法更新重新接管的订阅 Worker 待清理记录"
+}
+
+cloudflare_delete_retired_subscription_worker() {
+    local account=$1 host=$2 id=$3 name=$4 delete_script=$5 domains
+    [[ "${account}" == "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || return 1
+    # Domain-only retirement can share the active script, never its binding.
+    if subscription_enabled; then
+        [[ "${id}" != "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" \
+            && "${host}" != "${SUBSCRIPTION_DOMAIN:-}" ]] || return 1
+        [[ "${delete_script}" != true || "${name}" != "${CLOUDFLARE_WORKER_NAME:-}" ]] || return 1
+    fi
+    if worker_backup_enabled; then
+        [[ "${id}" != "${WORKER_BACKUP_DOMAIN_ID:-}" \
+            && "${host}" != "${WORKER_BACKUP_DOMAIN}" ]] || return 1
+        [[ "${delete_script}" != true || "${name}" != "${WORKER_BACKUP_NAME:-}" ]] || return 1
+    fi
     domains=$(cloudflare_api_request GET \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") || {
-        warn "读取旧 Worker 订阅域名失败，保留 ${old_host}"
+        "/accounts/${account}/workers/domains") || return 1
+    # A missing old binding is idempotent; a rebound hostname/ID is not ours.
+    jq -e --arg id "${id}" --arg host "${host}" --arg name "${name}" '
+        type == "array" and
+        ([.[] | select(.id == $id)] | length <= 1) and
+        all(.[]; if .id == $id or (.hostname | ascii_downcase) == $host then
+            .id == $id and (.hostname | ascii_downcase) == $host and .service == $name
+            else true end)' <<<"${domains}" >/dev/null || return 1
+    if [[ "${delete_script}" == true ]]; then
+        cloudflare_delete_subscription_worker_resources "${id}" "${name}"
+    elif jq -e --arg id "${id}" 'any(.[]; .id == $id)' <<<"${domains}" >/dev/null; then
+        cloudflare_api_request DELETE \
+            "/accounts/${account}/workers/domains/${id}" >/dev/null
+    fi
+}
+
+cloudflare_finalize_subscription_worker_retirements() {
+    validate_subscription_worker_retirements || {
+        warn "旧订阅 Worker 待清理记录无效；保留记录，请检查 state.env"
         return 0
     }
-    jq -e --arg id "${old_domain_id}" --arg host "${old_host}" \
-        --arg service "${CLOUDFLARE_WORKER_NAME}" \
-        'any(.[]; .id == $id and (.hostname | ascii_downcase) == $host and .service == $service)' \
-        <<<"${domains}" >/dev/null || {
-        warn "旧 Worker 订阅域名 ${old_host} 的所有权与状态不一致，予以保留"
-        return 0
-    }
-    cloudflare_api_request DELETE \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${old_domain_id}" >/dev/null \
-        || warn "删除旧 Worker 订阅域名失败：${old_host}"
+    local entry remaining='[]' retirements=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}
+    while IFS= read -r entry; do
+        # API/ownership checks may call die (exit); isolate each attempt.
+        if ! (cloudflare_delete_retired_subscription_worker \
+            "$(jq -r '.account' <<<"${entry}")" "$(jq -r '.host' <<<"${entry}")" \
+            "$(jq -r '.id' <<<"${entry}")" "$(jq -r '.name' <<<"${entry}")" \
+            "$(jq -r '.delete_script' <<<"${entry}")"); then
+            warn "旧订阅 Worker/域名尚未清理；已保留记录，下次 apply-cloud 或 uninstall --purge-cloud 重试"
+            remaining=$(jq -c --argjson entry "${entry}" '. + [$entry]' <<<"${remaining}")
+        fi
+    done < <(jq -c 'sort_by(.delete_script) | .[]' <<<"${retirements}")
+    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=${remaining}
+    if [[ "${remaining}" != "${retirements}" ]]; then
+        if ! (save_state); then
+            CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=${retirements}
+            warn "清理结果保存失败；保留记录，下次将重新核对云端资源"
+        fi
+    fi
 }
 
 cloudflare_configure_cdn() {
@@ -1436,6 +1550,7 @@ load_state() {
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
+        CLOUDFLARE_SUBSCRIPTION_RETIREMENTS
         WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID
         WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT
         WORKER_BACKUP_RETIREMENTS
@@ -1515,6 +1630,8 @@ load_state() {
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
     fi
+    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}
+    validate_subscription_worker_retirements || die "状态中的旧订阅 Worker 待清理记录无效"
     validate_worker_backup_state
     validate_google_egress_policy_state \
         || die "状态缺少有效的 Google 出站策略；请重新安装"
@@ -1527,6 +1644,7 @@ save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
     enforce_ipv4_only_policy
+    validate_subscription_worker_retirements || die "无法保存无效的旧订阅 Worker 待清理记录"
     validate_worker_backup_state
     validate_google_egress_policy_state \
         || die "无法保存无效的 Google 出站策略"
@@ -1540,16 +1658,18 @@ save_state() {
             "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
             || die "无法保存无效的 Worker 聚合配置"
     fi
-    state_dir="$(dirname "${target}")"
-    install -d -m 0700 "${state_dir}"
-    local t
-    t=$(mktemp "${state_dir}/state.env.XXXXXX")
+    state_dir="$(dirname "${target}")" || die "无法确定状态文件目录"
+    install -d -m 0700 "${state_dir}" || die "无法创建状态文件目录"
+    local t v value
+    t=$(mktemp "${state_dir}/state.env.XXXXXX") || die "无法创建临时状态文件"
+    [[ -n "${t}" && -f "${t}" ]] || die "临时状态文件无效"
     cleanup_files+=("${t}")
     {
         for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
             GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
             CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID \
             WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \
+            CLOUDFLARE_SUBSCRIPTION_RETIREMENTS \
             WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID \
             WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT \
             WORKER_BACKUP_RETIREMENTS \
@@ -1563,31 +1683,35 @@ save_state() {
             SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
             QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
             case "${v}" in
-            STATE_VERSION) printf '%s=%q\n' "${v}" "${STATE_SCHEMA_VERSION}" ;;
-            PROTOCOL) printf '%s=%q\n' "${v}" "cloudflare-streamup" ;;
-            BACKEND) printf '%s=%q\n' "${v}" "xray" ;;
-            CDN_PROVIDER) printf '%s=%q\n' "${v}" "cloudflare" ;;
-            SUBSCRIPTION_DOMAIN) printf '%s=%q\n' "${v}" "$(subscription_link_domain)" ;;
+            STATE_VERSION) value=${STATE_SCHEMA_VERSION} ;;
+            PROTOCOL) value=cloudflare-streamup ;;
+            BACKEND) value=xray ;;
+            CDN_PROVIDER) value=cloudflare ;;
+            SUBSCRIPTION_DOMAIN)
+                value=$(subscription_link_domain) || die "无法读取订阅域名"
+                ;;
             WORKER_BACKUP_IPS)
                 if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
-                    printf '%s=%q\n' "${v}" "[]"
+                    value='[]'
                 else
-                    printf '%s=%q\n' "${v}" "${!v:-}"
+                    value=${!v:-}
                 fi
                 ;;
             WORKER_BACKUP_DOMAIN | WORKER_BACKUP_NAME | WORKER_BACKUP_DOMAIN_ID | \
             WORKER_BACKUP_UUID | WORKER_BACKUP_PATH | WORKER_BACKUP_PLACEMENT)
                 if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
-                    printf '%s=%q\n' "${v}" ""
+                    value=''
                 else
-                    printf '%s=%q\n' "${v}" "${!v:-}"
+                    value=${!v:-}
                 fi
                 ;;
-            *) printf '%s=%q\n' "${v}" "${!v:-}" ;;
+            *) value=${!v:-} ;;
             esac
+            printf '%s=%q\n' "${v}" "${value}" || die "写入临时状态文件失败：${v}"
         done
-    } >"${t}"
-    install -m 0600 "${t}" "${target}"
+    } >"${t}" || die "无法打开临时状态文件"
+    chmod 0600 "${t}" || die "无法设置状态文件权限"
+    mv -f -- "${t}" "${target}" || die "无法原子替换状态文件"
 }
 
 collect_installed_state() {
@@ -2135,11 +2259,13 @@ apply_cloud_resources() {
     cloudflare_validate_subscription_worker
     cloudflare_validate_cdn_health
     cloudflare_prepare_backup_retirement
+    cloudflare_reconcile_active_subscription_retirements
     save_state
     install_globalping_refresh_timer
     commit_subscription_update
     cloudflare_finalize_certificate_rotation
     cloudflare_finalize_backup_worker
+    cloudflare_finalize_subscription_worker_retirements
     cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     show_subscription
@@ -2152,6 +2278,7 @@ apply_cloud_resources() {
 
 update_subscription() {
     local previous_subscription_host="" previous_worker_domain_id="" previous_worker_name=""
+    local previous_account_id=""
     local previous_subscription_enabled=0
     require_root
     begin_quota_maintenance
@@ -2161,6 +2288,7 @@ update_subscription() {
         previous_subscription_host=$(active_subscription_link_domain)
         previous_worker_domain_id=${CLOUDFLARE_WORKER_DOMAIN_ID}
         previous_worker_name=${CLOUDFLARE_WORKER_NAME}
+        previous_account_id=${CLOUDFLARE_ACCOUNT_ID}
     fi
     snapshot_subscription_update
     choose_google_egress_mode
@@ -2209,20 +2337,19 @@ update_subscription() {
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
     fi
     cloudflare_validate_cdn_health
+    if ((previous_subscription_enabled == 1)); then
+        cloudflare_prepare_subscription_worker_retirement \
+            "${previous_account_id}" "${previous_subscription_host}" \
+            "${previous_worker_domain_id}" "${previous_worker_name}"
+    fi
     cloudflare_prepare_backup_retirement
+    cloudflare_reconcile_active_subscription_retirements
     save_state
     install_globalping_refresh_timer
     commit_subscription_update
     cloudflare_finalize_certificate_rotation
     cloudflare_finalize_backup_worker
-    if subscription_enabled; then
-        cloudflare_cleanup_previous_subscription_host \
-            "${previous_subscription_host}" "${previous_worker_domain_id}"
-    elif ((previous_subscription_enabled == 1)); then
-        cloudflare_delete_subscription_worker_resources \
-            "${previous_worker_domain_id}" "${previous_worker_name}" \
-            || warn "旧订阅 Worker 尚未清理，请稍后执行 easy_all apply-cloud 重试"
-    fi
+    cloudflare_finalize_subscription_worker_retirements
     cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     show_subscription
@@ -2249,6 +2376,9 @@ purge_cloudflare_resources_before_uninstall() {
         fi
     fi
     cloudflare_collect_api_token
+    cloudflare_finalize_subscription_worker_retirements
+    [[ "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}" == "[]" ]] \
+        || die "旧订阅 Worker 或域名清理失败，已停止卸载；本机状态仍保留"
 
     if worker_backup_enabled; then
         cloudflare_delete_subscription_worker_resources "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME}" \

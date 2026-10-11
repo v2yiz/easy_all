@@ -46,6 +46,32 @@ try {
     await assert.rejects(buildWorker({configPath, outputPath, templatePath: invalidTemplatePath}), /template validation failed/);
     assert.equal(await readFile(outputPath, 'utf8'), initial, 'invalid template preserves previous Worker');
 
+    const reservedNamePath = join(temp, 'reserved-name.json');
+    for (const prefix of ['🇺🇸优选', '🇭🇰CF']) {
+        for (let i = 1; i <= 6; i++) {
+            const name = `${prefix}${i}`;
+            await writeFile(reservedNamePath, JSON.stringify({
+                ...config, nodes: [{ ...config.nodes[0], name }],
+            }));
+            await assert.rejects(
+                buildWorker({ configPath: reservedNamePath, outputPath, now }),
+                /Reality node names must not use reserved CDN names/,
+                `${name} must be reserved for generated CDN nodes`,
+            );
+            assert.equal(await readFile(outputPath, 'utf8'), initial, 'name conflict preserves previous Worker');
+        }
+    }
+    // Only generated names 1..6 are reserved for Reality nodes. Fallback input
+    // names may use them because normalizeCdnNodeNames replaces those names.
+    await writeFile(reservedNamePath, JSON.stringify({
+        ...config,
+        nodes: ['🇭🇰CF0', '🇭🇰CF7', '🇭🇰CF10', '🇭🇰CF1-extra'].map(name => ({ ...config.nodes[0], name })),
+        fallbackCdnNodes: Array.from({ length: 6 }, (_, i) => ({
+            ...config.fallbackCdnNodes[0], name: `🇭🇰CF${i + 1}`, workerBackup: true,
+        })),
+    }));
+    await buildWorker({ configPath: reservedNamePath, outputPath: join(temp, 'allowed-names.mjs'), now });
+
     assert.equal(await buildWorker({ configPath, outputPath, now }), '2026-09-06-v1');
     const second = await readFile(outputPath, 'utf8');
     assert.equal(second.replace('2026-09-06-v1', '2026-09-06-v0'), initial, 'only version changes on rebuild');
@@ -120,6 +146,36 @@ try {
         assert.equal(result.error, null);
         assert.equal(result.nodes.length, 6, 'limit applies to supported nodes');
         assert.equal(result.nodes[0].name, '🇺🇸优选1');
+    }
+    const backupLink = cf.replace('?security=tls', '?easyAllBackup=1&security=tls');
+    const backupResult = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
+        fetchImpl: async () => new Response(Array(6).fill(backupLink).join('\n')),
+    });
+    assert.equal(backupResult.error, null);
+    assert.deepEqual(Array.from(backupResult.nodes, node => node.name),
+        Array.from({ length: 6 }, (_, i) => `🇭🇰CF${i + 1}`));
+    for (const backupNode of backupResult.nodes) {
+        const realityNode = { ...api.LOCAL_NODES[0], name: backupNode.name };
+        assert.ok(api.buildClashConfig([realityNode], [10000]).includes(realityNode.host),
+            'a backup name alone does not collide at runtime');
+        for (const external of ['', upstream]) {
+            assert.throws(() => api.buildClashConfig(
+                [realityNode, ...backupResult.nodes], Array(7).fill(443), external, backupResult.nodes,
+            ), /Missing, duplicate or reserved proxy names/, 'generated backup name collides with Reality');
+        }
+    }
+    for (const externalSubUrl of ['', config.externalSubUrl]) {
+        const collisionHandler = api.createWorkerHandler({
+            allowedTokenValues: new Set(['offline-test-token']),
+            localNodes: [{ ...api.LOCAL_NODES[0], name: '🇭🇰CF1' }],
+            externalSubUrl,
+            vpsSubUrl: config.vpsSubUrl,
+            fetchImpl: async url => new Response(
+                new URL(url).origin === new URL(config.vpsSubUrl).origin ? backupLink : upstream,
+            ),
+        });
+        await assert.rejects(collisionHandler(request()), /Missing, duplicate or reserved proxy names/,
+            'a local name collision also prevents the local-only Clash fallback');
     }
     const fixedSourceUA = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
         userAgent: 'client-subscription/1.0',

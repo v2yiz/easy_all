@@ -842,10 +842,11 @@ refresh_globalping_cache() {
     local temp
     collect_globalping_token
     install -d -m 0700 "${STATE_DIR}"
-    temp=$(mktemp "${STATE_DIR}/cloudflare-cdn-ips.json.XXXXXX")
+    temp=$(mktemp "${GLOBALPING_CACHE_FILE}.XXXXXX") || return 1
     cleanup_files+=("${temp}")
     cloudflare_build_official_pool_cache "${temp}" || return 1
-    install -o root -g root -m 0600 "${temp}" "${GLOBALPING_CACHE_FILE}"
+    chown root:root "${temp}" && chmod 0600 "${temp}" \
+        && mv -fT -- "${temp}" "${GLOBALPING_CACHE_FILE}" || return 1
     success "Cloudflare IPv4 入口池已更新：$(jq '.candidates | length' \
         "${GLOBALPING_CACHE_FILE}") 个节点"
 }

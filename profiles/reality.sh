@@ -288,7 +288,8 @@ save_state() {
     enforce_ipv4_only_policy
     install -d -m 0700 "${STATE_DIR}"
     local temp
-    temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX")
+    temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX") \
+        || die "创建状态暂存文件失败"
     cleanup_files+=("${temp}")
     {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
@@ -322,8 +323,9 @@ save_state() {
         printf 'CLOUDFLARE_STRICT_RULESET_ID=%q\n' "${CLOUDFLARE_STRICT_RULESET_ID:-}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
-    } >"${temp}"
-    install -m 0600 "${temp}" "${STATE_FILE}"
+    } >"${temp}" || die "写入状态暂存文件失败"
+    chmod 0600 "${temp}" && mv -fT -- "${temp}" "${STATE_FILE}" \
+        || die "原子保存状态文件失败：${STATE_FILE}"
 }
 
 validate_protocol() {
@@ -1000,8 +1002,9 @@ reality_cloudflare_api_request() {
             -X "${method}" -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") \
             || die "Cloudflare API 请求失败：${method} ${path}"
     fi
-    jq -e '.success == true' <<<"${response}" >/dev/null \
-        || { jq -c '.errors // .' <<<"${response}" >&2; die "Cloudflare API 返回错误：${method} ${path}"; }
+    jq -es 'length == 1 and (.[0] | type == "object" and .success == true)' \
+        <<<"${response}" >/dev/null \
+        || { jq -c '.errors // .' <<<"${response}" >&2 || true; die "Cloudflare API 返回错误：${method} ${path}"; }
     jq -c '.result' <<<"${response}"
 }
 
@@ -1025,37 +1028,41 @@ reality_cloudflare_record_list() {
 }
 
 reality_cloudflare_ensure_proxied_a() {
-    local records record id content proxied comment type payload count
+    local records record="" id content proxied comment type payload count
+    # Check every conflicting record type before returning or changing DNS.
     for type in A AAAA CNAME; do
         records=$(reality_cloudflare_record_list \
-            "${CLOUDFLARE_ZONE_ID}" "${type}" "${SUBSCRIPTION_DOMAIN}")
-        count=$(jq length <<<"${records}")
+            "${CLOUDFLARE_ZONE_ID}" "${type}" "${SUBSCRIPTION_DOMAIN}") \
+            || die "读取 Cloudflare ${type} 记录失败"
+        count=$(jq -er 'if type == "array" then length else error("expected records array") end' \
+            <<<"${records}") || die "Cloudflare ${type} 记录响应无效"
         ((count <= 1)) || die "Cloudflare 中发现多个同名 ${type} 记录，拒绝覆盖"
         [[ "${type}" == A ]] || ((count == 0)) \
             || die "${SUBSCRIPTION_DOMAIN} 已有 ${type} 记录；拒绝覆盖"
         if [[ "${type}" == A && "${count}" == 1 ]]; then
             record=$(jq -c '.[0]' <<<"${records}")
-            id=$(jq -r '.id' <<<"${record}")
-            content=$(jq -r '.content' <<<"${record}")
-            proxied=$(jq -r '.proxied' <<<"${record}")
-            comment=$(jq -r '.comment // empty' <<<"${record}")
-            if [[ "${content}" == "${VPS_PUBLIC_IPV4}" && "${proxied}" == true ]]; then
-                return 0
-            fi
-            [[ "${comment}" == "easy_all reality subscription origin" ]] \
-                || die "${SUBSCRIPTION_DOMAIN} 的 A 记录不属于 easy_all 或目标不一致；拒绝覆盖"
-            payload=$(jq -cn --arg name "${SUBSCRIPTION_DOMAIN}" \
-                --arg content "${VPS_PUBLIC_IPV4}" \
-                '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all reality subscription origin"}')
-            reality_cloudflare_api_request PATCH \
-                "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" "${payload}" >/dev/null
-            return 0
         fi
     done
-    reality_cloudflare_api_request POST \
-        "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
-        "$(jq -cn --arg name "${SUBSCRIPTION_DOMAIN}" --arg content "${VPS_PUBLIC_IPV4}" \
-            '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all reality subscription origin"}')" >/dev/null
+    if [[ -n "${record}" ]]; then
+        id=$(jq -r '.id' <<<"${record}")
+        content=$(jq -r '.content' <<<"${record}")
+        proxied=$(jq -r '.proxied' <<<"${record}")
+        comment=$(jq -r '.comment // empty' <<<"${record}")
+        if [[ "${content}" == "${VPS_PUBLIC_IPV4}" && "${proxied}" == true ]]; then
+            return 0
+        fi
+        [[ "${comment}" == "easy_all reality subscription origin" ]] \
+            || die "${SUBSCRIPTION_DOMAIN} 的 A 记录不属于 easy_all 或目标不一致；拒绝覆盖"
+    fi
+    payload=$(jq -cn --arg name "${SUBSCRIPTION_DOMAIN}" --arg content "${VPS_PUBLIC_IPV4}" \
+        '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all reality subscription origin"}')
+    if [[ -n "${record}" ]]; then
+        reality_cloudflare_api_request PATCH \
+            "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" "${payload}" >/dev/null
+    else
+        reality_cloudflare_api_request POST \
+            "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" "${payload}" >/dev/null
+    fi
 }
 
 reality_cloudflare_prepare_subscription() {
@@ -1476,7 +1483,7 @@ snapshot_subscription_update() {
 
 rollback_subscription_update() {
     warn "本机配置更新失败，正在恢复服务端配置、订阅文件、端口模式和 UFW"
-    install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
+    restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" \
             "${XRAY_CONFIG}"

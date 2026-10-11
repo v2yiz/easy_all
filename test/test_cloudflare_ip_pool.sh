@@ -320,4 +320,32 @@ assert_equal "HTTP/TLS validation reaches the third round when needed" \
 assert_equal "Three rounds recover six unique candidate/carrier pairs" \
     "6" "$(jq -s '[.[] | [.carrier_asn, .ip]] | unique | length' "${retry_observations}")"
 
+# Cache publication preserves the previous complete file up to rename.
+(
+    collect_globalping_token() { :; }
+    # Ownership changes are unavailable on the mounted test filesystem.
+    chown() { :; }
+    cloudflare_build_official_pool_cache() { printf '%s\n' '{"candidates":[{"ip":"104.16.1.1"}]}' >"$1"; }
+    printf '%s\n' '{"candidates":[]}' >"${GLOBALPING_CACHE_FILE}"
+    chmod 0600 "${GLOBALPING_CACHE_FILE}"
+    mv() {
+        assert_equal "old cache remains complete until rename" '{"candidates":[]}' "$(<"${GLOBALPING_CACHE_FILE}")"
+        local staged=${@: -2:1}
+        assert_equal "cache candidate is private" 600 "$(stat -c %a "${staged}")"
+        command mv "$@"
+    }
+    refresh_globalping_cache || fail "cache refresh should publish successfully"
+    assert_equal "new cache is published" 1 "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")"
+    mv() { return 1; }
+    if refresh_globalping_cache; then
+        fail "failed cache rename must propagate failure"
+    fi
+    assert_equal "rename failure preserves old cache" 1 "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")"
+    cloudflare_build_official_pool_cache() { printf 'partial' >"$1"; return 1; }
+    if refresh_globalping_cache; then
+        fail "failed cache generation must propagate failure"
+    fi
+    assert_equal "generation failure preserves old cache" 1 "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}")"
+)
+
 printf 'ok - Cloudflare IP pool tests passed\n'

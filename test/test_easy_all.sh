@@ -162,6 +162,66 @@ test_syntax_and_reality_boundaries() {
         "BBR_MODULES_CONFIG" "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
 }
 
+test_reality_prompt_secret() {
+    assert_failure "sourced Reality secret prompt refuses non-tty stdin" \
+        env -i PATH="${PATH}" bash -c \
+        'source "$1"; prompt_secret "test secret"' _ "${ROOT_DIR}/profiles/reality.sh" </dev/null
+    # Source the actual profile in a fresh process; no XHTTP functions can leak in.
+    assert_success "sourced Reality reads a secret silently from a pseudo-tty" \
+        python3 -I - "${ROOT_DIR}/profiles/reality.sh" <<'PY'
+import errno
+import os
+import pty
+import select
+import subprocess
+import sys
+import termios
+import time
+
+master, slave = pty.openpty()
+secret = r"  test-token-1234567890\literal  "
+proc = subprocess.Popen(
+    ["bash", "-c", 'source "$1"; declare -F prompt_secret >/dev/null || exit 1; '
+     'value=$(prompt_secret "test secret") || exit 1; printf "%s" "$value"',
+     "_", sys.argv[1]],
+    stdin=slave, stderr=slave, stdout=subprocess.PIPE,
+    env={"PATH": os.environ["PATH"]},
+)
+terminal = b""
+try:
+    deadline = time.monotonic() + 10
+    while b"> " not in terminal or termios.tcgetattr(slave)[3] & termios.ECHO:
+        if proc.poll() is not None or time.monotonic() >= deadline:
+            raise AssertionError("secret prompt did not enter silent tty read")
+        if select.select([master], [], [], 0.05)[0]:
+            terminal += os.read(master, 4096)
+    os.write(master, secret.encode() + b"\n")
+    output, _ = proc.communicate(timeout=10)
+    os.close(slave)
+    slave = None
+    while select.select([master], [], [], 0.2)[0]:
+        try:
+            chunk = os.read(master, 4096)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        terminal += chunk
+    assert proc.returncode == 0, terminal.decode(errors="replace")
+    assert output == secret.encode(), "secret bytes were changed or omitted"
+    assert secret.strip().encode() not in terminal, "secret echoed on terminal"
+finally:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
+    os.close(master)
+    if slave is not None:
+        os.close(slave)
+PY
+}
+
 test_validators_and_modes() {
     assert_success "Reality target accepts host and port" \
         validate_reality_target "www.cloudflare.com:443"
@@ -953,7 +1013,7 @@ test_dynamic_port_rotation_schedule() {
 
 test_dynamic_port_rotation_rollback() {
     local cron_state_file="${TMP_DIR}/dynamic-port-rollback.cron"
-    local cron_state snapshot_state source_state_definition
+    local cron_state snapshot_state source_state_definition old_state_fd
     source_state_definition=$(declare -f source_state_file)
     install -d -m 0700 "${STATE_DIR}"
     printf 'before-state\n' >"${STATE_FILE}"
@@ -988,7 +1048,11 @@ EOF
     nginx() { :; }
     source_state_file() { SUBSCRIPTION_MODE="link"; }
     configure_ufw() { :; }
+    exec {old_state_fd}<"${STATE_FILE}"
     rollback_subscription_update
+    assert_equal "Reality rollback leaves existing state readers unchanged" "after-state" "$(cat <&"${old_state_fd}")"
+    exec {old_state_fd}<&-
+    assert_equal "restored Reality state is private" "600" "$(stat -c '%a' "${STATE_FILE}")"
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     cron_state=$(<"${cron_state_file}")
     assert_contains "subscription rollback restores the previous managed schedule" \
@@ -1163,6 +1227,78 @@ test_cloudflare_reality_contract() {
         "acme" "${maintenance_source}"
 }
 
+test_reality_cloudflare_api_responses() (
+    local fixture result
+    CLOUDFLARE_API_TOKEN=test-token-123456789012345
+    curl() { printf '%s' "${fixture}"; }
+    fixture='{"success":true,"result":{"id":"valid"}}'
+    result=$(reality_cloudflare_api_request GET /test)
+    assert_equal "Cloudflare API returns result from one successful object" '{"id":"valid"}' "${result}"
+    for fixture in '' '   ' 'null' '[]' 'true' '{}' \
+        '{"success":false,"errors":[{"message":"denied"}]}' \
+        '{"success":"true","result":{}}' \
+        '{"success":true}{"success":true}' \
+        '{"success":false}{"success":true}' \
+        '{"success":true}{"success":false}' \
+        '{"success":true}broken'; do
+        result="${TMP_DIR}/api-invalid-result"
+        if (reality_cloudflare_api_request GET /test) >"${result}" 2>/dev/null; then
+            fail_test "Cloudflare API accepted an empty, malformed or multiple JSON response"
+        fi
+        assert_equal "rejected API response emits no result" "" "$(<"${result}")"
+    done
+)
+
+test_reality_cloudflare_dns_conflicts() (
+    local conflict proxied records_a records_aaaa records_cname calls
+    local log="${TMP_DIR}/reality-dns-api.log"
+    set_fixture
+    VPS_PUBLIC_IPV4=203.0.113.10
+    reality_cloudflare_record_list() {
+        printf 'GET %s\n' "$2" >>"${log}"
+        case "$2" in
+        A) printf '%s' "${records_a}" ;;
+        AAAA) printf '%s' "${records_aaaa}" ;;
+        CNAME) printf '%s' "${records_cname}" ;;
+        *) return 1 ;;
+        esac
+    }
+    reality_cloudflare_api_request() { printf '%s\n' "$1" >>"${log}"; }
+    for conflict in AAAA CNAME; do
+        for proxied in true false; do
+            records_a="[{\"id\":\"a-id\",\"content\":\"203.0.113.10\",\"proxied\":${proxied},\"comment\":\"easy_all reality subscription origin\"}]"
+            records_aaaa='[]'
+            records_cname='[]'
+            if [[ "${conflict}" == AAAA ]]; then
+                records_aaaa='[{"id":"v6-id","content":"2001:db8::1"}]'
+            else
+                records_cname='[{"id":"alias-id","content":"other.example.com"}]'
+            fi
+            : >"${log}"
+            assert_failure "A plus ${conflict} is refused before DNS mutation (proxied=${proxied})" \
+                reality_cloudflare_ensure_proxied_a
+            calls=$(<"${log}")
+            assert_contains "conflicting ${conflict} records are queried" "GET ${conflict}" "${calls}"
+            assert_not_contains "conflicting DNS cannot PATCH the owned A" "PATCH" "${calls}"
+            assert_not_contains "conflicting DNS cannot POST an A" "POST" "${calls}"
+        done
+    done
+    records_aaaa='[]'
+    records_cname='[]'
+    records_a='[{"id":"a-id","content":"203.0.113.10","proxied":true}]'
+    : >"${log}"
+    assert_success "matching A is reused after checking all record types" reality_cloudflare_ensure_proxied_a
+    assert_equal "matching A checks AAAA and CNAME without mutation" $'GET A\nGET AAAA\nGET CNAME' "$(<"${log}")"
+    records_a='[{"id":"a-id","content":"203.0.113.20","proxied":false,"comment":"easy_all reality subscription origin"}]'
+    : >"${log}"
+    assert_success "owned A is updated after conflict checks" reality_cloudflare_ensure_proxied_a
+    assert_equal "PATCH follows all DNS reads" $'GET A\nGET AAAA\nGET CNAME\nPATCH' "$(<"${log}")"
+    records_a='[]'
+    : >"${log}"
+    assert_success "missing A is created after conflict checks" reality_cloudflare_ensure_proxied_a
+    assert_equal "POST follows all DNS reads" $'GET A\nGET AAAA\nGET CNAME\nPOST' "$(<"${log}")"
+)
+
 test_secure_download_transport() {
     local destination="${TMP_DIR}/wget-download.test" wget_call=""
     timeout() {
@@ -1230,10 +1366,30 @@ EOF
 }
 
 test_state_and_xray() {
-    local state config
+    local state config old_state_fd state_published=0
     install -d -m 0700 "${STATE_DIR}"
     set_fixture
+    printf 'old-state\n' >"${STATE_FILE}"
+    exec {old_state_fd}<"${STATE_FILE}"
+    # Check the publication boundary as well as old readers: GNU install can
+    # unlink the old inode and still expose a missing/partial destination.
+    mv() {
+        local -a args=("$@")
+        local target=${args[${#args[@]}-1]} stage=${args[${#args[@]}-2]}
+        if [[ "${target}" == "${STATE_FILE}" ]]; then
+            assert_equal "old state remains published until rename" "old-state" "$(<"${STATE_FILE}")"
+            assert_equal "state stage is private before rename" "600" "$(stat -c '%a' "${stage}")"
+            assert_equal "state stage and destination share a directory" "${STATE_DIR}" "$(dirname -- "${stage}")"
+            state_published=1
+        fi
+        command mv "$@"
+    }
     save_state
+    unset -f mv
+    assert_equal "state is published by rename" "1" "${state_published}"
+    assert_equal "atomic save leaves existing state readers unchanged" "old-state" "$(cat <&"${old_state_fd}")"
+    exec {old_state_fd}<&-
+    assert_equal "saved state is private" "600" "$(stat -c '%a' "${STATE_FILE}")"
     state=$(<"${STATE_FILE}")
     assert_contains "state persists subscription mode" \
         "SUBSCRIPTION_MODE=deploy" "${state}"
@@ -1435,6 +1591,9 @@ test_apply_loads_reality_state_before_tcp_tuning() {
 
 source_script_copy
 test_syntax_and_reality_boundaries
+test_reality_prompt_secret
+test_reality_cloudflare_api_responses
+test_reality_cloudflare_dns_conflicts
 test_validators_and_modes
 test_vps_ip_family_detection
 test_reality_ip_family_dns_policy

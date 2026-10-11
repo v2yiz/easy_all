@@ -49,6 +49,23 @@ prompt_value() {
     fi
 }
 
+prompt_secret() {
+    local label=$1 value
+    [[ -t 0 ]] || return 1
+    read_bilingual "${label}，粘贴后按回车键；输入过程不会显示任何字符:" value 1
+    printf '%s' "${value}"
+}
+
+restore_state_file() {
+    local backup=$1 target=$2 temp
+    temp=$(mktemp "$(dirname -- "${target}")/state.env.XXXXXX") \
+        || die "创建状态恢复暂存文件失败"
+    cleanup_files+=("${temp}")
+    install -m 0600 "${backup}" "${temp}" \
+        && mv -fT -- "${temp}" "${target}" \
+        || die "原子恢复状态文件失败：${target}"
+}
+
 validate_domain() {
     local domain=$1 label tld
     local -a labels

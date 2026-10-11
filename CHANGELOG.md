@@ -1,5 +1,19 @@
 # 更新记录
 
+## 2026-10-11
+
+- 修复 Reality 自托管订阅在交互安装时调用未定义的 `prompt_secret`：`reality_cloudflare_collect_api_token` 依赖仅由 XHTTP 模式加载的输入函数，选择部署订阅后 Token 输入必然失败。`prompt_secret` 上移至 `lib/profile-common.sh` 供两种模式共用。
+- 修复 Cloudflare API 空响应及多文档校验：jq 1.6 对空输入的 `jq -e` 返回 0，原校验也未限制响应只能包含一份 JSON 文档。两种 Profile 的 API 请求改用 `jq -s` 要求恰好一份成功信封；Cloudflare 模式保留成功 DELETE 空响应的处理，本地测试套件在 jq 1.6 上恢复通过。
+- 修复关闭或更换订阅域名时旧订阅 Worker 清理失败后身份丢失、无法重试：新增 `CLOUDFLARE_SUBSCRIPTION_RETIREMENTS` 持久化待清理身份，`apply-cloud` 与 `uninstall --purge-cloud` 自动重试；补齐切换回旧域名与关闭后重新启用同名 Worker 的接管校验，清理失败时保留身份，避免因丢失所有权记录而无法恢复。
+- 修复 `state.env` 与 Globalping 优选缓存以 `install` 就地覆写：改用同目录暂存加 `mv -f` 原子替换，写入失败保留旧文件；状态写入逐步检查失败，不再发布不完整状态。
+- 修复 Reality 订阅域名已有正确 A 记录时跳过 AAAA/CNAME 冲突检查：三类记录核对完成后才复用或修改 DNS，避免后续加入的 AAAA/CNAME 被静默接受。
+- 修复配额安装提示输出全体用户 Token：改为仅输出用户数量。
+- 修复 Worker 构建允许 Reality 节点占用 `🇭🇰CF1`–`🇭🇰CF6` 保留名：该名称由兜底 CDN 节点自动生成，重名会导致 Clash 订阅请求整体失败，构建期改为直接拒绝。
+- 补充隐藏输入、空/多文档 API 响应、DNS 冲突、订阅 Worker 清理重试与重新接管、状态与缓存发布边界、保留名冲突的回归检查。
+- 源码发布版本为 Git 标签 `2026-10-11`；Worker 的 `X-Easy-All-Version` 是独立构建版本，继续按北京时间自动递增。本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker；构建期保留名检查在下次构建时生效。状态版本保持 Reality v7、Cloudflare v9，旧状态缺少待清理字段时按空列表加载。
+
+升级执行 `sudo easy_all self-update`，再执行 `sudo easy_all apply`；详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 2026-10-10-v1
 
 - 修复 Cloudflare 每小时刷新先删除订阅目录造成的 502 窗口：全部渲染并校验后，逐文件原子替换；Reality 发布与本机订阅回滚共用该流程。

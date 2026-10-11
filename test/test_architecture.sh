@@ -115,6 +115,15 @@ for module in "${shared_modules[@]}"; do
         || fail "runtime manifest does not install ${module}"
 done
 
+grep -Eq '^prompt_secret\(\)' "${ROOT_DIR}/lib/profile-common.sh" \
+    && ! grep -Eq '^prompt_secret\(\)' "${XHTTP_RUNTIME}" "${REALITY_PROFILE}" \
+    || fail "secret prompts must be shared by independently sourced Reality and CDN profiles"
+for runtime in "${REALITY_PROFILE}" "${XHTTP_RUNTIME}"; do
+    rollback_body=$(sed -n '/^rollback_subscription_update()/,/^}/p' "${runtime}")
+    [[ "${rollback_body}" == *'restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"'* ]] \
+        || fail "subscription rollback must use shared atomic state restoration"
+done
+
 for module in log.sh runtime-core.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
     while read -r function_name; do
         [[ -n "${function_name}" ]] || continue

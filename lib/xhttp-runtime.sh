@@ -78,13 +78,6 @@ generate_xhttp_path() {
     printf '/vless-%s' "$(openssl rand -hex 12)"
 }
 
-prompt_secret() {
-    local label=$1 value
-    [[ -t 0 ]] || return 1
-    read_bilingual "${label}，粘贴后按回车键；输入过程不会显示任何字符:" value 1
-    printf '%s' "${value}"
-}
-
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 状态文件不存在：${STATE_FILE}"
     # The state file must declare its own version; clear any value left behind by
@@ -534,8 +527,9 @@ rollback_subscription_update() {
         fi
     fi
     warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
-    [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]] \
-        && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]]; then
+        restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
+    fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" && -n "${XRAY_CONFIG:-}" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" "${XRAY_CONFIG}"
         systemctl restart "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 \

@@ -619,6 +619,8 @@ VPS_PUBLIC_IPV6="2001:db8::10"
 # Verify state save & load
 WORKER_BACKUP_RETIREMENTS='[{"account":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","name":"old-backup","id":"old-domain"}]'
 expected_retirements=${WORKER_BACKUP_RETIREMENTS}
+CLOUDFLARE_SUBSCRIPTION_RETIREMENTS='[{"account":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","host":"old-sub.example.com","name":"old-sub","id":"old-sub-domain","delete_script":true}]'
+expected_subscription_retirements=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
 save_state
 [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file not created"
 state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
@@ -654,9 +656,12 @@ env() {
     command env "$@"
 }
 WORKER_BACKUP_RETIREMENTS=""
+CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=""
 EASY_ALL_STATE_FILE_OVERRIDE="${missing_policy_state}" load_state
 unset -f env
 assert_equal "Retirements survive a real state save and reload" "${expected_retirements}" "${WORKER_BACKUP_RETIREMENTS}"
+assert_equal "Subscription retirements survive a real state save and reload" \
+    "${expected_subscription_retirements}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
 assert_equal "load_state uses one isolated subprocess" "1" \
     "$(wc -c <"${load_state_env_calls}" | tr -d ' ')"
 assert_equal "Missing Google mode defaults to IPv4" ipv4 "${GOOGLE_EGRESS_MODE}"
@@ -722,6 +727,8 @@ ORIGIN_HEADER_SECRET='test-origin-secret-12345678'
 SUBSCRIPTION_MODE='deploy'
 EOF
 EASY_ALL_STATE_FILE_OVERRIDE="${corrupted_state}" load_state
+assert_equal "v9 states without subscription retirements default to an empty list" \
+    '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
 assert_equal "load_state normalizes corrupted XHTTP_PATH" \
     "/xhttp-0123456789abcdef" "${XHTTP_PATH}"
 assert_equal "load_state normalizes Google egress mode" \
@@ -835,10 +842,402 @@ assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
             fail "Failed or ambiguous API response must not pass"
         fi
     done
-    mock_response=$'\n204'
-    if (cloudflare_api_request GET /test) >/dev/null 2>&1; then
-        fail "GET still requires JSON"
+    for method in GET POST PUT PATCH HEAD; do
+        for mock_response in $'\n200' $'\n204' $' \n\t\n200' \
+            $'{"success":true}\n{"success":true}\n200' \
+            $'{"success":false}\n{"success":true}\n200' \
+            $'[{"success":true}]\n200' $'true\n200'; do
+            if (cloudflare_api_request "${method}" /test) >/dev/null 2>&1; then
+                fail "${method} must require exactly one successful object envelope"
+            fi
+        done
+    done
+    mock_response=$'{"success":true}\n{"success":true}\n200'
+    if (cloudflare_api_request DELETE /test) >/dev/null 2>&1; then
+        fail "Nonempty DELETE must also reject multiple envelopes"
     fi
+)
+
+# Exercise real update/apply/purge orchestration and state I/O against a local API.
+(
+    trap - EXIT
+    retirement_dir="${TMP_DIR}/subscription-retirement"
+    mkdir -p "${retirement_dir}"
+    EASY_ALL_STATE_FILE_OVERRIDE="${retirement_dir}/state.env"
+    domains_file="${retirement_dir}/domains.json"
+    scripts_file="${retirement_dir}/scripts.json"
+    api_calls="${retirement_dir}/api-calls"
+    : >"${api_calls}"
+    fail_delete=""
+    next_mode=link
+    next_host=new-sub.example.com
+    CLOUDFLARE_HEADER_RULESET_ID=test-header-ruleset
+    CLOUDFLARE_STRICT_RULESET_ID=test-strict-ruleset
+    WORKER_BACKUP_RETIREMENTS='[]'
+    WORKER_BACKUP_DOMAIN=""
+    WORKER_BACKUP_NAME=""
+    WORKER_BACKUP_DOMAIN_ID=""
+    WORKER_BACKUP_DECOMMISSION=0
+    QUOTA_ENABLED=0
+    FORCE=1
+    real_snapshot_subscription_update=$(declare -f snapshot_subscription_update)
+    for stub in require_root begin_quota_maintenance snapshot_subscription_update \
+        choose_google_egress_mode choose_subscription_download_name choose_monthly_quota \
+        ensure_allowed_tokens choose_worker_aggregation_config cloudflare_build_subscription_worker \
+        collect_worker_backup_inputs xhttp_render_xray_config cloudflare_validate_zones \
+        cloudflare_ensure_proxied_a cloudflare_snapshot_worker_deployment \
+        cloudflare_issue_origin_certificate cloudflare_configure_cdn cloudflare_deploy_backup_worker \
+        finish_xhttp_apply cloudflare_validate_subscription_worker cloudflare_validate_cdn_health \
+        cloudflare_prepare_backup_retirement install_globalping_refresh_timer \
+        cloudflare_finalize_certificate_rotation cloudflare_finalize_backup_worker \
+        cloudflare_commit_provider_subscription_update cloudflare_clear_api_token \
+        show_subscription configure_bbr_tcp refresh_google_egress_selection configure_ufw \
+        cloudflare_collect_api_token cloudflare_purge_managed_rule \
+        cloudflare_purge_empty_owned_ruleset cloudflare_purge_managed_dns_record; do
+        eval "${stub}() { :; }"
+    done
+    globalping_cache_valid() { return 0; }
+    collect_installed_state() { load_state; }
+    choose_subscription_mode() { SUBSCRIPTION_MODE=${next_mode}; }
+    collect_cloudflare_worker_inputs() {
+        SUBSCRIPTION_DOMAIN=${next_host}
+        CLOUDFLARE_WORKER_NAME=${CLOUDFLARE_WORKER_NAME:-easyall}
+        WORKER_SOURCE_SECRET=test-worker-source-secret-12345
+        ALLOWED_TOKENS='{"owner":"test-token-12345"}'
+    }
+    cloudflare_deploy_subscription_worker() {
+        subscription_enabled || return 0
+        cloudflare_validate_worker_access
+        if [[ "${CLOUDFLARE_WORKER_EXISTS}" == 0 ]]; then
+            printf '[{"id":"easyall"}]\n' >"${scripts_file}"
+            CLOUDFLARE_WORKER_CREATED=1
+        fi
+        cloudflare_attach_subscription_worker_domain
+    }
+    commit_subscription_update() {
+        # Every pending change must be durable when the transaction commits.
+        durable=$(env -i bash -c 'source "$1"; printf "%s" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"' \
+            _ "${EASY_ALL_STATE_FILE_OVERRIDE}")
+        assert_equal "Pending ownership is persisted before commit" \
+            "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}" "${durable}"
+        UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    }
+    cloudflare_record_list() { printf '[]\n'; }
+    cloudflare_api_request() {
+        printf '%s %s\n' "$1" "$2" >>"${api_calls}"
+        case "$1 $2" in
+            "GET /accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") cat "${domains_file}" ;;
+            "GET /accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts") cat "${scripts_file}" ;;
+            "PUT /accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains")
+                binding=$(jq -c '. + {id:"new-domain"}' <<<"$3")
+                jq --argjson binding "${binding}" '. + [$binding]' \
+                    "${domains_file}" >"${domains_file}.new"
+                mv "${domains_file}.new" "${domains_file}"
+                printf '%s\n' "${binding}"
+                ;;
+            DELETE*)
+                [[ "$2" != "${fail_delete}" ]] || die "mock DELETE failed"
+                case "$2" in
+                    */workers/domains/*)
+                        jq --arg id "${2##*/}" 'map(select(.id != $id))' "${domains_file}" >"${domains_file}.new"
+                        mv "${domains_file}.new" "${domains_file}" ;;
+                    */workers/scripts/*)
+                        jq --arg id "${2##*/}" 'map(select(.id != $id))' "${scripts_file}" >"${scripts_file}.new"
+                        mv "${scripts_file}.new" "${scripts_file}" ;;
+                    /certificates/*) : ;;
+                    *) fail "Unexpected DELETE: $2" ;;
+                esac
+                ;;
+            *) fail "Unexpected retirement API call: $1 $2" ;;
+        esac
+    }
+    reset_subscription_fixture() {
+        SUBSCRIPTION_MODE=deploy
+        SUBSCRIPTION_DOMAIN=old-sub.example.com
+        CLOUDFLARE_WORKER_NAME=easyall
+        CLOUDFLARE_WORKER_DOMAIN_ID=old-domain
+        WORKER_SOURCE_SECRET=test-worker-source-secret-12345
+        ALLOWED_TOKENS='{"owner":"test-token-12345"}'
+        CLOUDFLARE_SUBSCRIPTION_RETIREMENTS='[]'
+        CLOUDFLARE_WORKER_CREATED=0
+        CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=""
+        fail_delete=""
+        next_host=new-sub.example.com
+        printf '[{"id":"old-domain","hostname":"old-sub.example.com","service":"easyall"}]\n' >"${domains_file}"
+        printf '[{"id":"easyall"}]\n' >"${scripts_file}"
+        : >"${api_calls}"
+        save_state
+    }
+
+    reset_subscription_fixture
+    # Deleting the binding succeeds, deleting the script exits via die.
+    fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/easyall"
+    update_subscription
+    load_state
+    assert_equal "Disabled subscription remains disabled after cleanup exits" link "${SUBSCRIPTION_MODE}"
+    assert_equal "Disabled active Worker identity is cleared" '' "${CLOUDFLARE_WORKER_NAME}"
+    assert_equal "Old script identity survives partial deletion" easyall \
+        "$(jq -r '.[0].name' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}")"
+    assert_equal "Old hostname survives partial deletion" old-sub.example.com \
+        "$(jq -r '.[0].host' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}")"
+    assert_equal "The binding really was deleted before failure" '[]' "$(jq -c . "${domains_file}")"
+    fail_delete=""
+    apply_cloud_resources
+    load_state
+    assert_equal "apply-cloud retries and clears completed retirements" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    assert_equal "apply-cloud deletes the old script after its binding is gone" '[]' "$(jq -c . "${scripts_file}")"
+
+    reset_subscription_fixture
+    next_mode=deploy
+    fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/old-domain"
+    update_subscription
+    load_state
+    assert_equal "Switch commits the new domain despite cleanup exiting" new-sub.example.com "${SUBSCRIPTION_DOMAIN}"
+    assert_equal "Switch only retires the old binding" false \
+        "$(jq -r '.[0].delete_script' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}")"
+    assert_equal "Switch persists the old binding ID" old-domain \
+        "$(jq -r '.[0].id' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}")"
+    fail_delete=""
+    cloudflare_finalize_subscription_worker_retirements
+    load_state
+    assert_equal "Domain retry clears the completed record" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    assert_equal "Domain retry preserves the active script" '[{"id":"easyall"}]' "$(jq -c . "${scripts_file}")"
+    assert_equal "Domain retry preserves the new binding" new-domain "$(jq -r '.[0].id' "${domains_file}")"
+    assert_not_contains "Switch must never delete its shared script" "$(<"${api_calls}")" 'DELETE /accounts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/workers/scripts/'
+
+    # A -> B with failed A deletion -> A must cancel A's pending identity.
+    reset_subscription_fixture
+    next_mode=deploy
+    fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/old-domain"
+    update_subscription
+    next_host=old-sub.example.com
+    fail_delete=""
+    : >"${api_calls}"
+    update_subscription
+    load_state
+    assert_equal "Switching back reuses A's binding" old-domain "${CLOUDFLARE_WORKER_DOMAIN_ID}"
+    assert_equal "Reclaimed active binding has no pending retirement" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    assert_equal "Switching back preserves A's cloud binding" old-domain "$(jq -r '.[0].id' "${domains_file}")"
+    assert_not_contains "Reclaimed A is never retired" "$(<"${api_calls}")" 'DELETE /accounts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/workers/domains/old-domain'
+    assert_not_contains "Shared active script is never retired" "$(<"${api_calls}")" '/workers/scripts/easyall'
+    UNINSTALL_PURGE_CLOUD=1 purge_cloudflare_resources_before_uninstall
+    assert_equal "Purge is not blocked by reclaimed pending ownership" '[]' "$(jq -c . "${domains_file}")"
+    assert_equal "Purge deletes the active script normally" '[]' "$(jq -c . "${scripts_file}")"
+
+    # Both partial disable failures can re-enable the same Worker name.
+    for failed_resource in domains/old-domain scripts/easyall; do
+        reset_subscription_fixture
+        next_mode=link
+        fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/${failed_resource}"
+        update_subscription
+        load_state
+        pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
+        assert_equal "Partial disable clears active identity (${failed_resource})" '' "${CLOUDFLARE_WORKER_DOMAIN_ID}"
+        [[ "${pending}" != '[]' ]] || fail "Partial disable must retain ownership"
+        next_mode=deploy
+        next_host=old-sub.example.com
+        if (update_subscription) >"${retirement_dir}/reenable-error" 2>&1; then
+            fail "Re-enable must stop while retirement still fails (${failed_resource})"
+        fi
+        load_state
+        assert_equal "Failed re-enable preserves pending (${failed_resource})" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+        assert_equal "Failed re-enable preserves disabled state (${failed_resource})" link "${SUBSCRIPTION_MODE}"
+        fail_delete=""
+        update_subscription
+        load_state
+        assert_equal "Re-enable succeeds after partial deletion (${failed_resource})" deploy "${SUBSCRIPTION_MODE}"
+        assert_equal "Re-enable commits completed retirement (${failed_resource})" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+        assert_equal "Re-enable creates a fresh binding (${failed_resource})" new-domain "${CLOUDFLARE_WORKER_DOMAIN_ID}"
+        assert_equal "Re-enable recreates the same owned script (${failed_resource})" '[{"id":"easyall"}]' "$(jq -c . "${scripts_file}")"
+    done
+
+    # Pending ownership does not authorize deleting a rebound/foreign resource.
+    for mismatch in service hostname rebound-host extra-domain account active-backup; do
+        reset_subscription_fixture
+        next_mode=link
+        fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/old-domain"
+        update_subscription
+        load_state
+        case "${mismatch}" in
+            service) printf '[{"id":"old-domain","hostname":"old-sub.example.com","service":"foreign"}]' >"${domains_file}" ;;
+            hostname) printf '[{"id":"old-domain","hostname":"foreign.example.com","service":"easyall"}]' >"${domains_file}" ;;
+            rebound-host) printf '[{"id":"foreign-domain","hostname":"old-sub.example.com","service":"foreign"}]' >"${domains_file}" ;;
+            extra-domain) printf '[{"id":"old-domain","hostname":"old-sub.example.com","service":"easyall"},{"id":"foreign-domain","hostname":"foreign.example.com","service":"easyall"}]' >"${domains_file}" ;;
+            account) CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c '.[0].account = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"); save_state ;;
+            active-backup) WORKER_BACKUP_DOMAIN=backup.example.com; WORKER_BACKUP_NAME=easyall ;;
+        esac
+        fail_delete=""
+        next_mode=deploy
+        pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
+        : >"${api_calls}"
+        if (
+            # collect_installed_state only reloads persistent state; leave the
+            # simulated active backup guard in place for this access attempt.
+            collect_installed_state() { :; }
+            update_subscription
+        ) >"${retirement_dir}/ownership-error" 2>&1; then
+            fail "Re-enable must reject ${mismatch} pending ownership"
+        fi
+        assert_not_contains "Re-enable ${mismatch} issues no DELETE" "$(<"${api_calls}")" 'DELETE '
+        load_state
+        assert_equal "Re-enable ${mismatch} retains pending ownership" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+        WORKER_BACKUP_DOMAIN=""
+        WORKER_BACKUP_NAME=""
+    done
+
+    # Completed pre-access cleanup must not save tentative enable state. A later
+    # failure uses the real transaction rollback and restores the disabled state.
+    (
+        reset_subscription_fixture
+        next_mode=link
+        fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/easyall"
+        update_subscription
+        load_state
+        pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
+        cp "${EASY_ALL_STATE_FILE_OVERRIDE}" "${STATE_FILE}"
+        expected_old_state=$(<"${STATE_FILE}")
+        eval "${real_snapshot_subscription_update}"
+        fail_delete=""
+        next_mode=deploy
+        cloudflare_issue_origin_certificate() {
+            assert_equal "Pre-access cleanup leaves previous durable state intact" \
+                "${expected_old_state}" "$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")"
+            die "mock failure after pending cleanup"
+        }
+        if (
+            trap 'if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == 1 ]]; then rollback_subscription_update; fi' EXIT
+            update_subscription
+        ) >"${retirement_dir}/rollback-error" 2>&1; then
+            fail "Later update failure must roll back"
+        fi
+        assert_equal "Rollback restores the previous state exactly" "${expected_old_state}" "$(<"${STATE_FILE}")"
+        EASY_ALL_STATE_FILE_OVERRIDE="${STATE_FILE}" load_state
+        assert_equal "Rollback retains pending identity for idempotent retry" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+        assert_equal "Rollback retains disabled mode" link "${SUBSCRIPTION_MODE}"
+    )
+
+    # Repeated switching then disabling must detach retired bindings first.
+    reset_subscription_fixture
+    next_mode=deploy
+    fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/old-domain"
+    update_subscription
+    next_mode=link
+    fail_delete=""
+    update_subscription
+    load_state
+    assert_equal "Disable drains earlier domain and script retirements" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    assert_equal "Disable deletes the script after all owned bindings" '[]' "$(jq -c . "${scripts_file}")"
+
+    reset_subscription_fixture
+    next_mode=link
+    fail_delete="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/old-domain"
+    update_subscription
+    load_state
+    pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
+    stop_services() { printf 'stopped\n' >"${retirement_dir}/stopped"; }
+    if (uninstall_all --purge-cloud) >"${retirement_dir}/uninstall-error" 2>&1; then
+        fail "Failed retirement must stop uninstall --purge-cloud"
+    fi
+    [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" && ! -e "${retirement_dir}/stopped" ]] \
+        || fail "Failed purge must preserve state and local services"
+    load_state
+    assert_equal "Failed purge retains old ownership" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    fail_delete=""
+    UNINSTALL_PURGE_CLOUD=1 purge_cloudflare_resources_before_uninstall
+    load_state
+    assert_equal "Purge retries old subscription ownership while mode is link" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+
+    # Missing bindings are already clean, and failed result persistence keeps ownership.
+    reset_subscription_fixture
+    SUBSCRIPTION_MODE=link
+    cloudflare_prepare_subscription_worker_retirement \
+        "${CLOUDFLARE_ACCOUNT_ID}" old-sub.example.com old-domain easyall
+    save_state
+    pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
+    printf '[]\n' >"${domains_file}"
+    printf '[]\n' >"${scripts_file}"
+    (
+        save_state() { die "mock state save failed"; }
+        cloudflare_finalize_subscription_worker_retirements
+        assert_equal "Failed save retains in-memory retirement" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    )
+    load_state
+    assert_equal "Failed save retains durable retirement" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    (
+        mv() { return 1; }
+        cloudflare_finalize_subscription_worker_retirements
+        assert_equal "Failed atomic replacement retains retirement" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    )
+    load_state
+    assert_equal "Failed atomic replacement leaves the previous state readable" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    expected_old_state=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
+    for save_failure in mktemp printf-first printf-middle printf-last invalid-temp chmod; do
+        (
+            case "${save_failure}" in
+                mktemp) mktemp() { return 1; } ;;
+                printf-*)
+                    printf() {
+                        if [[ "$1" == '%s=%q\n' ]]; then
+                            case "${save_failure}:$2" in
+                                printf-first:STATE_VERSION | printf-middle:CLOUDFLARE_SUBSCRIPTION_RETIREMENTS | printf-last:QUOTA_START_DATE)
+                                    # Leave partial bytes, then simulate a failed write.
+                                    builtin printf '%s=' "$2"
+                                    return 1
+                                    ;;
+                            esac
+                        fi
+                        builtin printf "$@"
+                    }
+                    ;;
+                invalid-temp) mktemp() { builtin printf '%s\n' "${retirement_dir}"; } ;;
+                chmod) chmod() { return 1; } ;;
+            esac
+            if (save_state) >"${retirement_dir}/save-error" 2>&1; then
+                fail "save_state must propagate ${save_failure} even in a conditional"
+            fi
+            cloudflare_finalize_subscription_worker_retirements
+            assert_equal "${save_failure} retains in-memory ownership" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+            assert_equal "${save_failure} leaves durable state byte-for-byte unchanged" \
+                "${expected_old_state}" "$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")"
+            load_state
+            assert_equal "${save_failure} leaves the previous state readable" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+        )
+    done
+    cloudflare_finalize_subscription_worker_retirements
+    load_state
+    assert_equal "Missing cloud resources complete retirement idempotently" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+    assert_not_contains "Missing resources require no DELETE" "$(<"${api_calls}")" 'DELETE '
+
+    SUBSCRIPTION_MODE=deploy
+    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS='[{"account":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","host":"old-sub.example.com","name":"easyall","id":"old-domain","delete_script":false}]'
+    printf '[{"id":"new-domain","hostname":"new-sub.example.com","service":"easyall"}]\n' >"${domains_file}"
+    SUBSCRIPTION_DOMAIN=new-sub.example.com
+    CLOUDFLARE_WORKER_DOMAIN_ID=new-domain
+    cloudflare_finalize_subscription_worker_retirements
+    assert_equal "An absent retired binding also completes domain-only cleanup" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+
+    # API ownership mismatches must retain records and issue no DELETE.
+    for mismatch in service hostname extra-domain rebound-host account active-script active-backup; do
+        reset_subscription_fixture
+        SUBSCRIPTION_MODE=link
+        cloudflare_prepare_subscription_worker_retirement \
+            "${CLOUDFLARE_ACCOUNT_ID}" old-sub.example.com old-domain easyall
+        case "${mismatch}" in
+            service) printf '[{"id":"old-domain","hostname":"old-sub.example.com","service":"foreign"}]' >"${domains_file}" ;;
+            hostname) printf '[{"id":"old-domain","hostname":"foreign.example.com","service":"easyall"}]' >"${domains_file}" ;;
+            extra-domain) printf '[{"id":"old-domain","hostname":"old-sub.example.com","service":"easyall"},{"id":"foreign-domain","hostname":"foreign.example.com","service":"easyall"}]' >"${domains_file}" ;;
+            rebound-host) printf '[{"id":"foreign-domain","hostname":"old-sub.example.com","service":"foreign"}]' >"${domains_file}" ;;
+            account) CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c '.[0].account = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}") ;;
+            active-script) SUBSCRIPTION_MODE=deploy; SUBSCRIPTION_DOMAIN=new-sub.example.com; CLOUDFLARE_WORKER_DOMAIN_ID=new-domain ;;
+            active-backup) WORKER_BACKUP_DOMAIN=backup.example.com; WORKER_BACKUP_NAME=easyall ;;
+        esac
+        pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
+        cloudflare_finalize_subscription_worker_retirements
+        assert_equal "${mismatch} preserves retirement" "${pending}" "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
+        assert_not_contains "${mismatch} refuses deletion" "$(<"${api_calls}")" 'DELETE '
+        WORKER_BACKUP_DOMAIN=""
+        WORKER_BACKUP_NAME=""
+    done
 )
 
 # Worker acceptance exposes upstream failures while redacting the subscription token.

@@ -286,7 +286,7 @@ choose_monthly_quota() {
         quotas=$(normalize_monthly_quotas "${quotas}") \
             || die "MONTHLY_QUOTAS_GB 无效"
         generated_tokens=$(build_quota_tokens "${quotas}" "${ALLOWED_TOKENS:-}")
-        info "已生成或复用用户 Token：${generated_tokens}"
+        info "已生成或复用 $(jq 'length' <<<"${generated_tokens}") 个用户的 Token"
         token_overrides=${QUOTA_TOKEN_OVERRIDES:-}
         if [[ -z "${token_overrides}" && -t 0 ]]; then
             token_overrides=$(prompt_value \

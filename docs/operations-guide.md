@@ -19,9 +19,11 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
-`2026-10-10-v1` 修复订阅和防火墙刷新窗口，按以上两步升级即可生效，订阅 URL 和用户配置无需修改。
-该版本号是源码 Git 标签；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头，
-本次修复无需重新部署 Worker。
+`2026-10-11` 修复 Reality Token 输入、jq 1.6 API 响应校验、状态与缓存发布、订阅 Worker 清理重试及节点保留名检查。按以上两步更新并应用，现有订阅 URL 和用户配置无需修改；Reality 自托管订阅仍会提示输入本次进程使用的 Cloudflare API Token。
+该版本号是源码 Git 标签；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头。
+本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker；节点保留名检查在下次构建时生效。
+
+从本版本起，关闭或更换订阅后未能清理的旧 Worker 身份会保存在状态文件中。若提示旧资源尚未清理，恢复 API 权限或网络后运行 `sudo easy_all apply-cloud` 重试；`uninstall --purge-cloud` 也会重试，清理失败会停止卸载并保留本机状态。普通 `apply` 不执行该云端清理。旧版本已经丢失身份的孤立资源无法由本次升级自动追溯，仍需在 Cloudflare 控制台核对并手工清理。
 
 只更新订阅规则时：
 
