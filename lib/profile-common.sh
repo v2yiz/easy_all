@@ -62,7 +62,7 @@ restore_state_file() {
         || die "创建状态恢复暂存文件失败"
     cleanup_files+=("${temp}")
     install -m 0600 "${backup}" "${temp}" \
-        && mv -fT -- "${temp}" "${target}" \
+        && mv -f -- "${temp}" "${target}" \
         || die "原子恢复状态文件失败：${target}"
 }
 

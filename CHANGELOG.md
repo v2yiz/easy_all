@@ -1,5 +1,12 @@
 # 更新记录
 
+## 2026-10-12
+
+- 修复状态保存、订阅更新回滚和 Globalping 优选缓存的原子替换依赖 GNU 专有选项 `mv -fT`：在非 GNU 环境（macOS/BSD 的 `mv`）会报 `mv: illegal option -- T`，使本机回滚在恢复 `state.env` 时中断。三处统一为与订阅发布等既有路径一致的 `mv -f --`；Debian 12/13 上仍是同目录重命名，行为不变。
+- 源码发布版本为 Git 标签 `2026-10-12`；Worker 的 `X-Easy-All-Version` 是独立构建版本，继续按北京时间自动递增。本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker。状态版本保持 Reality v7、Cloudflare v9，无需迁移。
+
+升级执行 `sudo easy_all self-update`；本次不涉及配置生成，无需再执行 `sudo easy_all apply`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 2026-10-11
 
 - 修复 Reality 自托管订阅在交互安装时调用未定义的 `prompt_secret`：`reality_cloudflare_collect_api_token` 依赖仅由 XHTTP 模式加载的输入函数，选择部署订阅后 Token 输入必然失败。`prompt_secret` 上移至 `lib/profile-common.sh` 供两种模式共用。

@@ -324,7 +324,7 @@ save_state() {
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
     } >"${temp}" || die "写入状态暂存文件失败"
-    chmod 0600 "${temp}" && mv -fT -- "${temp}" "${STATE_FILE}" \
+    chmod 0600 "${temp}" && mv -f -- "${temp}" "${STATE_FILE}" \
         || die "原子保存状态文件失败：${STATE_FILE}"
 }
 

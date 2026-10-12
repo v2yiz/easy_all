@@ -846,7 +846,7 @@ refresh_globalping_cache() {
     cleanup_files+=("${temp}")
     cloudflare_build_official_pool_cache "${temp}" || return 1
     chown root:root "${temp}" && chmod 0600 "${temp}" \
-        && mv -fT -- "${temp}" "${GLOBALPING_CACHE_FILE}" || return 1
+        && mv -f -- "${temp}" "${GLOBALPING_CACHE_FILE}" || return 1
     success "Cloudflare IPv4 入口池已更新：$(jq '.candidates | length' \
         "${GLOBALPING_CACHE_FILE}") 个节点"
 }
