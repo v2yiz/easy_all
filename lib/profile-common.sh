@@ -6,6 +6,19 @@ make_temp_dir() {
     mktemp -d "${RUNTIME_TMP}/part.XXXXXX"
 }
 
+nginx_supports_http2_directive() {
+    command -v nginx >/dev/null 2>&1 || return 1
+    local ver major minor patch
+    ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
+    [[ -n "${ver}" ]] || return 1
+    IFS=. read -r major minor patch <<<"${ver}"
+    patch=${patch:-0}
+    if (( major > 1 || (major == 1 && minor > 25) || (major == 1 && minor == 25 && patch >= 1) )); then
+        return 0
+    fi
+    return 1
+}
+
 download_https_file() {
     local url=$1 destination=$2 description=${3:-文件}
     local -a wget_args=(

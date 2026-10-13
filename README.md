@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2026-10-12](CHANGELOG.md#2026-10-12)。
+当前源码版本：[2026-10-13](CHANGELOG.md#2026-10-13)。
 
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点交互安装器。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 XanMod BBRv3。
@@ -165,8 +165,12 @@ Cloudflare 和 Globalping 的服务条款。
 
 ## 开发与测试
 
-项目结构和运行原理见[技术参考](docs/technical-reference.md)。运行完整测试：
+项目结构和运行原理见[技术参考](docs/technical-reference.md)。完整测试需要 Bash 4.1+ 和
+GNU coreutils（`stat`、`date`），建议在 Linux 或容器环境中运行；入口会先检查这些要求：
 
 ```bash
 npm test
 ```
+
+macOS 默认 Bash 3.2 与 BSD 工具不满足完整测试要求，可单独运行 `npm run test:worker`。
+Worker 测试需要 Node.js 18+ 和 Bash；未配置 Mihomo 内核时会明确跳过真实内核检查。

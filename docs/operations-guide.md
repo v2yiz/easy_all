@@ -19,11 +19,11 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
-`2026-10-12` 将状态保存、订阅更新回滚和 Globalping 优选缓存的原子替换从 GNU 专有的 `mv -fT` 改为通用的 `mv -f --`，修复非 GNU 环境（macOS/BSD 的 `mv`）恢复 `state.env` 时报 `mv: illegal option -- T` 的问题。执行 `sudo easy_all self-update` 即可，本次不涉及配置生成，无需再执行 `apply`；现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需修改。
+`2026-10-13` 修复 Reality 自托管订阅在现代 Nginx 上的 HTTP/2 弃用告警：Nginx 1.25.1+ 使用独立的 `http2 on;`，旧版本继续使用 `listen ... ssl http2;`。执行 `sudo easy_all self-update` 后，Reality 自托管订阅再执行 `sudo easy_all apply` 重新生成配置；现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需迁移。Cloudflare 模式的配置生成行为不变。
 该版本号是源码 Git 标签；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头。
-本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker；Reality 自托管订阅仍会提示输入本次进程使用的 Cloudflare API Token，订阅 Worker 的节点保留名检查在下次构建时生效。
+本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker；Reality 自托管订阅的 `apply` 仍会提示输入本次进程使用的 Cloudflare API Token。
 
-从本版本起，关闭或更换订阅后未能清理的旧 Worker 身份会保存在状态文件中。若提示旧资源尚未清理，恢复 API 权限或网络后运行 `sudo easy_all apply-cloud` 重试；`uninstall --purge-cloud` 也会重试，清理失败会停止卸载并保留本机状态。普通 `apply` 不执行该云端清理。旧版本已经丢失身份的孤立资源无法由本次升级自动追溯，仍需在 Cloudflare 控制台核对并手工清理。
+从 `2026-10-11` 起，关闭或更换订阅后未能清理的旧 Worker 身份会保存在状态文件中。若提示旧资源尚未清理，恢复 API 权限或网络后运行 `sudo easy_all apply-cloud` 重试；`uninstall --purge-cloud` 也会重试，清理失败会停止卸载并保留本机状态。普通 `apply` 不执行该云端清理。旧版本已经丢失身份的孤立资源无法由该升级自动追溯，仍需在 Cloudflare 控制台核对并手工清理。
 
 只更新订阅规则时：
 

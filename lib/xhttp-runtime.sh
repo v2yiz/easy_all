@@ -53,19 +53,6 @@ source "${SCRIPT_DIR}/runtime-core.sh"
 # local probes to HTTPS is also the intended behavior for every provider.
 XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
 
-nginx_supports_http2_directive() {
-    command -v nginx >/dev/null 2>&1 || return 1
-    local ver major minor patch
-    ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
-    [[ -n "${ver}" ]] || return 1
-    IFS=. read -r major minor patch <<<"${ver}"
-    patch=${patch:-0}
-    if (( major > 1 || (major == 1 && minor > 25) || (major == 1 && minor == 25 && patch >= 1) )); then
-        return 0
-    fi
-    return 1
-}
-
 validate_xhttp_path() {
     [[ ${#1} -ge 9 && ${#1} -le 96 && "$1" =~ ^/[A-Za-z0-9._~-]+$ ]]
 }

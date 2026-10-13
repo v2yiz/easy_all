@@ -227,9 +227,15 @@ GOOGLE_EGRESS_RESOLVED=ipv4
 
 ## 测试
 
+完整测试需要 Node.js 18+、Bash 4.1+、GNU coreutils（`stat`、`date`）及 `jq`，
+建议在 Linux/容器中运行。`npm test` 首先检查 Bash 和 GNU 工具，环境不满足时立即给出明确提示。
+
 ```bash
 npm test
 ```
+
+macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm run test:worker`
+验证 Worker 构建与离线逻辑；该命令需要 Node.js 18+ 和 Bash，未配置 Mihomo 时跳过真实内核检查。
 
 测试覆盖入口和模块完整性、Reality、Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、
 订阅渲染、Token 鉴权、证书轮换、Worker 构建和更新顺序。

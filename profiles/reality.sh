@@ -1186,6 +1186,11 @@ write_subscription_web_root() {
 }
 
 write_subscription_bootstrap_nginx() {
+    local http2_directive="" listen_h2=" http2"
+    if nginx_supports_http2_directive; then
+        http2_directive=$'\n    http2 on;'
+        listen_h2=""
+    fi
     write_subscription_web_root
     if [[ ! -f "${NGINX_CONFIG}" ]]; then
         ss -H -ltn "sport = :${SUBSCRIPTION_HTTPS_PORT}" 2>/dev/null \
@@ -1195,7 +1200,7 @@ write_subscription_bootstrap_nginx() {
     rm -f -- /etc/nginx/sites-enabled/default
     cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
 server {
-    listen ${SUBSCRIPTION_HTTPS_PORT} ssl http2;
+    listen ${SUBSCRIPTION_HTTPS_PORT} ssl${listen_h2};${http2_directive}
     server_name ${SUBSCRIPTION_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -1261,12 +1266,17 @@ install_static_subscriptions() {
 }
 
 write_subscription_nginx_config() {
+    local http2_directive="" listen_h2=" http2"
+    if nginx_supports_http2_directive; then
+        http2_directive=$'\n    http2 on;'
+        listen_h2=""
+    fi
     write_subscription_web_root
     {
         write_subscription_nginx_maps
         cat <<EOF
 server {
-    listen ${SUBSCRIPTION_HTTPS_PORT} ssl http2;
+    listen ${SUBSCRIPTION_HTTPS_PORT} ssl${listen_h2};${http2_directive}
     server_name ${SUBSCRIPTION_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};

@@ -703,6 +703,35 @@ test_subscription_generation() {
     unset -f collect_installed_state dig
 }
 
+test_nginx_http2_compatibility() (
+    local version renderer config
+    set_fixture
+    install -d -m 0700 "${STATE_DIR}" "${CERT_DIR}"
+    install -m 0600 /dev/null "${NGINX_CONFIG}"
+    systemctl() { :; }
+    rm() {
+        [[ "${*: -1}" == /etc/nginx/sites-enabled/default ]] || command rm "$@"
+    }
+    for version in 1.22.1 1.25.0 1.25.1 1.26.3; do
+        nginx() { [[ "${1:-}" != -v ]] || printf 'nginx version: nginx/%s\n' "${version}" >&2; }
+        for renderer in write_subscription_bootstrap_nginx write_subscription_nginx_config; do
+            "${renderer}"
+            config=$(<"${NGINX_CONFIG}")
+            case "${version}" in
+                1.22.1|1.25.0)
+                    assert_contains "${renderer} ${version} legacy HTTP/2" "listen 8443 ssl http2;" "${config}"
+                    assert_not_contains "${renderer} ${version} no unsupported directive" "http2 on;" "${config}"
+                    ;;
+                *)
+                    assert_contains "${renderer} ${version} listens on 8443" "listen 8443 ssl;" "${config}"
+                    assert_contains "${renderer} ${version} enables HTTP/2" "http2 on;" "${config}"
+                    assert_not_contains "${renderer} ${version} no deprecated syntax" "ssl http2;" "${config}"
+                    ;;
+            esac
+        done
+    done
+)
+
 test_nginx_and_firewall() {
     local config ufw_config ufw6_config ufw_log="${TMP_DIR}/ufw.log" dynamic_rule_count
     set_fixture
@@ -1604,6 +1633,7 @@ test_subscription_generation
 test_ufw_reapply_preserves_existing_ssh
 test_restore_inactive_ufw_state
 test_platform_security_snapshot_and_restore
+test_nginx_http2_compatibility
 test_nginx_and_firewall
 test_dynamic_port_year_boundary
 test_dynamic_port_boundaries_and_rule_set
