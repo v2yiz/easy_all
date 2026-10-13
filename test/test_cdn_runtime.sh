@@ -142,7 +142,7 @@ restored_by_rename=0
 mv() {
     local -a args=("$@")
     local target=${args[${#args[@]}-1]} stage=${args[${#args[@]}-2]}
-    [[ "$1" == -fT && "${target}" == "${STATE_FILE}" \
+    [[ "$1" == -f && "${target}" == "${STATE_FILE}" \
         && "$(<"${STATE_FILE}")" == after-state \
         && "$(stat -c '%a' "${stage}")" == 600 \
         && "$(dirname -- "${stage}")" == "${fixture}" ]] || exit 1
