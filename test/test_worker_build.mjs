@@ -303,6 +303,15 @@ try {
         },
     );
     assert.equal(upstreamUA, 'mihomo/1.19.30', 'Clash aggregation advertises current Mieru support');
+    for (const status of [403, 429]) {
+        await assert.rejects(
+            api.fetchXflashSubscription(request(), config.externalSubUrl, {
+                fetchImpl: async () => new Response('', {status}),
+            }),
+            error => error.httpStatus === status && error.message.includes(`HTTP ${status}`),
+            'upstream HTTP errors preserve the numeric status for callers',
+        );
+    }
     for (const [status, headers, warning] of [
         [403, {}, 'HTTP 403'],
         [200, {'cf-mitigated': 'challenge'}, 'Cloudflare challenge'],

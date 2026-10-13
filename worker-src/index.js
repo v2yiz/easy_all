@@ -80,10 +80,6 @@ function uriAuthorityHost(value) {
     return host.includes(':') ? '[' + host + ']' : host;
 }
 
-function nodeIpVersion() {
-    return 'ipv4';
-}
-
 function xhttpString(value, fallback) {
     if (typeof value === 'string' || typeof value === 'number') {
         const result = String(value).trim();
@@ -254,7 +250,6 @@ function clashXhttpNode(node, port) {
             )
             .join('\n')}`
         : '';
-    const ipVersion = nodeIpVersion(node);
     return `  - name: ${yamlString(node.name)}
     type: vless
     server: ${yamlString(normalizeConnectHost(node.server || node.host))}
@@ -266,7 +261,7 @@ function clashXhttpNode(node, port) {
     skip-cert-verify: false
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
-${node.udp === false ? '' : '    packet-encoding: xudp\n'}    ip-version: ${ipVersion}
+${node.udp === false ? '' : '    packet-encoding: xudp\n'}    ip-version: ipv4
     alpn:
       - h2
     xhttp-opts:
@@ -390,7 +385,6 @@ function clashWebSocketNode(node, port) {
     const earlyData = maxEarlyData
         ? `\n      max-early-data: ${maxEarlyData}\n      early-data-header-name: ${yamlString(node.earlyDataHeaderName || 'Sec-WebSocket-Protocol')}`
         : '';
-    const ipVersion = nodeIpVersion(node);
     return `  - name: ${yamlString(node.name)}
     type: vless
     server: ${yamlString(normalizeConnectHost(node.server || node.host))}
@@ -402,7 +396,7 @@ function clashWebSocketNode(node, port) {
     skip-cert-verify: false
     servername: ${yamlString(node.sni || node.host)}
     client-fingerprint: ${yamlString(node.fp || 'chrome')}
-${node.udp === false ? '' : '    packet-encoding: xudp\n'}    ip-version: ${ipVersion}
+${node.udp === false ? '' : '    packet-encoding: xudp\n'}    ip-version: ipv4
     alpn:
       - ${yamlString(node.alpn || 'http/1.1')}
     ws-opts:
@@ -654,8 +648,10 @@ async function fetchXflashSubscription(
                 : response.status === 429
                     ? ' (rate-limited by upstream)'
                     : '';
-            const error = new Error(`${label} returned HTTP ${response.status}${hint}`);
-            error.httpStatus = response.status;
+            const error = Object.assign(
+                new Error(`${label} returned HTTP ${response.status}${hint}`),
+                { httpStatus: response.status },
+            );
             throw error;
         }
 

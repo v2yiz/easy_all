@@ -19,9 +19,9 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
-`2026-10-13` 修复 Reality 自托管订阅在现代 Nginx 上的 HTTP/2 弃用告警：Nginx 1.25.1+ 使用独立的 `http2 on;`，旧版本继续使用 `listen ... ssl http2;`。执行 `sudo easy_all self-update` 后，Reality 自托管订阅再执行 `sudo easy_all apply` 重新生成配置；现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需迁移。Cloudflare 模式的配置生成行为不变。
+`2026-10-13-v1` 修复聚合 Worker 的三处编辑器类型诊断，保持现有 IPv4 策略、上游错误提示和鉴权行为。执行 `sudo easy_all self-update` 后，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`，聚合配置选择“保留”，重新构建并部署 Worker；独立手工部署的 Worker 在其构建环境重新构建并部署。现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需迁移。
 该版本号是源码 Git 标签；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头。
-本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker；Reality 自托管订阅的 `apply` 仍会提示输入本次进程使用的 Cloudflare API Token。
+本次修改了 Worker 运行源码，单独执行 `self-update` 不会更新线上 Worker；安装器与独立聚合构建均使用修复后的同一份公共源码。
 
 从 `2026-10-11` 起，关闭或更换订阅后未能清理的旧 Worker 身份会保存在状态文件中。若提示旧资源尚未清理，恢复 API 权限或网络后运行 `sudo easy_all apply-cloud` 重试；`uninstall --purge-cloud` 也会重试，清理失败会停止卸载并保留本机状态。普通 `apply` 不执行该云端清理。旧版本已经丢失身份的孤立资源无法由该升级自动追溯，仍需在 Cloudflare 控制台核对并手工清理。
 

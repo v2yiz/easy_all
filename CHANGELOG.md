@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2026-10-13-v1
+
+- 修复聚合订阅生成的 Worker 在编辑器中的三处类型诊断：XHTTP 与 WebSocket 节点直接输出固定的 `ip-version: ipv4`，移除仅返回常量的无参函数及多余参数；上游 HTTP 错误在构造时附带 `httpStatus`，消除标准 `Error` 不包含该属性的诊断。
+- 保持订阅 IPv4 策略、上游失败提示及鉴权返回行为；补充生成 Worker 的 HTTP 403/429 状态码保留检查。
+- 源码发布版本为 Git 标签 `2026-10-13-v1`；Worker 构建版本继续独立递增，现有 Worker 需重新构建并部署才能消除这些诊断。状态版本保持 Reality v7、Cloudflare v9，无需迁移。
+
+升级执行 `sudo easy_all self-update`；Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`，聚合配置选择“保留”。独立手工部署的 Worker 在其构建环境重新构建并部署。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 2026-10-13
 
 - 修复 Reality 自托管订阅的 Nginx HTTP/2 弃用告警：将已有版本检测移入通用模块，订阅引导与正式配置在 Nginx 1.25.1+ 使用 `listen ... ssl;` 和 `http2 on;`，旧版本保留 `listen ... ssl http2;`，兼容 Debian 12/13。Cloudflare 模式复用同一检测，配置行为不变。
