@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 README_CONTENT=$(<"${ROOT_DIR}/README.md")
+CHANGELOG_CONTENT=$(<"${ROOT_DIR}/CHANGELOG.md")
 PREPARATION_CONTENT=$(<"${ROOT_DIR}/docs/preparation-guide.md")
 CLIENT_CONTENT=$(<"${ROOT_DIR}/docs/client-guide.md")
 OPERATIONS_CONTENT=$(<"${ROOT_DIR}/docs/operations-guide.md")
@@ -32,6 +33,13 @@ assert_not_contains() {
     local label=$1 haystack=$2 needle=$3
     [[ "${haystack}" != *"${needle}"* ]] || fail "${label}: unexpected '${needle}'"
 }
+
+source_version=$(sed -nE 's/^当前源码版本：\[([^]]+)\].*/\1/p' <<<"${README_CONTENT}")
+changelog_version=$(awk '$1 == "##" { print $2; exit }' <<<"${CHANGELOG_CONTENT}")
+[[ -n "${source_version}" && "${source_version}" == "${changelog_version}" ]] \
+    || fail "README source version must match the newest CHANGELOG entry"
+assert_contains "README links to its release notes" "${README_CONTENT}" \
+    "[${source_version}](CHANGELOG.md#${source_version})"
 
 for heading in '选择模式' '安装要求' '快速安装' '完成安装' '常用命令' '安全边界' '文档'; do
     assert_contains "README onboarding section" "${README_CONTENT}" "## ${heading}"
@@ -67,12 +75,23 @@ done < <(
     sed -En '/^(lib|profiles)\//p' "${ROOT_DIR}/runtime.manifest"
 )
 
-for command in show subscription self-update apply apply-cloud update-sub \
+for command in show subscription self-update apply tcp apply-cloud update-sub \
     refresh-cdn-ips update-core renew-cert quota-status quota-set quota-reset \
     status uninstall help; do
     assert_contains "operations guide public command ${command}" \
         "${OPERATIONS_CONTENT}" "| \`${command}"
 done
+
+for content in "${README_CONTENT}" "${OPERATIONS_CONTENT}" "${TECHNICAL_CONTENT}"; do
+    assert_contains "TCP acceleration documents the default" "${content}" 'BBRv3'
+    assert_contains "Skyline requires extreme non-congestive loss" "${content}" '非拥塞随机丢包'
+    assert_contains "Skyline requires a compatible kernel" "${content}" '6.12+'
+    assert_contains "TCP acceleration can be selected after installation" "${content}" 'easy_all tcp'
+    assert_contains "Skyline needs only one final reboot" "${content}" '重启一次'
+    assert_contains "Skyline activation resumes automatically" "${content}" '自动安装并启用 Skyline'
+done
+assert_contains "Skyline boot progress is observable" "${OPERATIONS_CONTENT}" \
+    'journalctl -u easy_all-skyline-setup.service -b -f'
 
 for phrase in \
     '避免查询参数中的 Token 写入日志' \

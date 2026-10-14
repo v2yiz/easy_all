@@ -35,9 +35,11 @@ generate_secret() {
 info() { :; }
 
 FAKE_FLOCK_HELD=0
+FAKE_FLOCK_WAIT=""
 flock() {
     case "${1:-}" in
-    -n)
+    -w)
+        FAKE_FLOCK_WAIT=$2
         [[ "${FAKE_FLOCK_HELD}" == "0" ]] || return 1
         FAKE_FLOCK_HELD=1
         ;;
@@ -75,6 +77,7 @@ assert_equal() {
 begin_quota_maintenance
 [[ "${FAKE_FLOCK_HELD}" == "1" && -f "${QUOTA_MAINTENANCE_FILE}" ]] \
     || fail "maintenance must hold the shared runtime write lock"
+assert_equal "interactive writers do not wait for a busy lock" 0 "${FAKE_FLOCK_WAIT}"
 end_quota_maintenance
 [[ "${FAKE_FLOCK_HELD}" == "0" && ! -e "${QUOTA_MAINTENANCE_FILE}" ]] \
     || fail "maintenance must release the shared runtime write lock"
@@ -89,6 +92,14 @@ try_acquire_runtime_write_lock \
 [[ ! -e "${QUOTA_MAINTENANCE_FILE}" ]] \
     || fail "a new lock owner must clear a stale maintenance marker"
 release_runtime_write_lock
+acquire_runtime_write_lock 60
+assert_equal "boot writers can wait for a transient lock holder" 60 "${FAKE_FLOCK_WAIT}"
+release_runtime_write_lock
+FAKE_FLOCK_HELD=1
+if (acquire_runtime_write_lock 60) 2>/dev/null; then
+    fail "an exhausted lock wait must fail rather than proceed without ownership"
+fi
+FAKE_FLOCK_HELD=0
 
 tokens='{"user1":"user1-token-123","owner":"owner-token-123"}'
 quotas=$(normalize_monthly_quotas '{"owner":0,"user1":100}')

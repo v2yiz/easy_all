@@ -627,6 +627,7 @@ state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
 assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 'PROTOCOL=cloudflare-streamup'
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
+assert_contains "State defaults to BBRv3" "${state_content}" 'TCP_ACCELERATION=bbrv3'
 assert_contains "State file normalizes legacy dual-stack mode" "${state_content}" 'VPS_IP_FAMILY=ipv4'
 assert_contains "State file clears public IPv6" "${state_content}" 'VPS_PUBLIC_IPV6='
 assert_not_contains "State file omits removed Cloudflare client family" "${state_content}" \
@@ -646,8 +647,16 @@ assert_contains "State file persists private Worker source secret" "${state_cont
 assert_contains "State file persists Worker aggregation config" "${state_content}" \
     'WORKER_AGGREGATION_CONFIG='
 
+TCP_ACCELERATION=skyline
+save_state
+unset TCP_ACCELERATION
+load_state
+assert_equal "Cloudflare preserves Skyline across save and reload" skyline "${TCP_ACCELERATION}"
+TCP_ACCELERATION=bbrv3
+save_state
+
 missing_policy_state="${TMP_DIR}/state_missing_policy.env"
-grep -Ev '^(GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED)=' \
+grep -Ev '^(GOOGLE_EGRESS_MODE|GOOGLE_EGRESS_RESOLVED|TCP_ACCELERATION)=' \
     "${EASY_ALL_STATE_FILE_OVERRIDE}" >"${missing_policy_state}"
 load_state_env_calls="${TMP_DIR}/load-state-env-calls"
 : >"${load_state_env_calls}"
@@ -666,6 +675,7 @@ assert_equal "load_state uses one isolated subprocess" "1" \
     "$(wc -c <"${load_state_env_calls}" | tr -d ' ')"
 assert_equal "Missing Google mode defaults to IPv4" ipv4 "${GOOGLE_EGRESS_MODE}"
 assert_equal "Missing Google family defaults to IPv4" ipv4 "${GOOGLE_EGRESS_RESOLVED}"
+assert_equal "Legacy Cloudflare state defaults to BBRv3" bbrv3 "${TCP_ACCELERATION}"
 
 missing_worker_state="${TMP_DIR}/state_missing_worker.env"
 grep -Ev '^(CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_WORKER_NAME|CLOUDFLARE_WORKER_DOMAIN_ID|WORKER_SOURCE_SECRET)=' \
@@ -878,6 +888,7 @@ assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
     WORKER_BACKUP_NAME=""
     WORKER_BACKUP_DOMAIN_ID=""
     WORKER_BACKUP_DECOMMISSION=0
+    VPS_PUBLIC_IPV4=203.0.113.10
     QUOTA_ENABLED=0
     FORCE=1
     real_snapshot_subscription_update=$(declare -f snapshot_subscription_update)

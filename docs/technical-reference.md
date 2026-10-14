@@ -5,7 +5,7 @@
 - 只支持 IPv4。
 - 服务器为 Debian 12/13、amd64、systemd、非容器环境。
 - 同一台 VPS 只能安装一种模式，且应由 easy_all 独占 Xray、Nginx 和相关端口。
-- 两种模式都安装 XanMod LTS 内核，使用 `fq + BBRv3`，并关闭
+- 两种模式默认安装 XanMod LTS 内核并使用 `fq + BBRv3`，可选 Skyline Speeder；均关闭
   `tcp_slow_start_after_idle`。
 - Xray 阻断私网、链路本地、回环、组播和保留地址，并拒绝境外 UDP/443，使 QUIC 回退 TCP。
 - Mihomo 节点固定使用 `ip-version: ipv4`；普通出站使用 `ForceIPv4` + `UseIPv4`。
@@ -163,6 +163,42 @@ CPU 能力选择 `linux-xanmod-lts-x64v1/v2/v3`；这里的 v1/v2/v3 是 CPU 指
 安装后不会自动重启。执行 `sudo reboot` 并重新登录后，只有
 `sudo easy_all status` 显示 `BBRv3: active` 才表示新内核已生效。检测到 UEFI Secure Boot
 时安装会提前停止。
+
+## Skyline Speeder（可选）
+
+默认和旧状态文件均使用 `TCP_ACCELERATION=bbrv3`；选择 Skyline 时保存为
+`TCP_ACCELERATION=skyline`。首次安装提供菜单，安装后用 `easy_all tcp [bbrv3|skyline]` 切换，
+`apply` / `apply-cloud` 沿用已保存的选择。
+
+**仅在丢包率极高且确认为非拥塞随机丢包时选择 Skyline Speeder**；它不适合拥塞瓶颈，也不保证
+与其他流公平分享带宽，默认冗余会额外消耗出站流量。作用范围为 VPS 新建 TCP 连接的发送方向，
+已有连接保留原算法，独立 Worker 节点不受影响。
+
+启用要求当前运行 Linux 6.12+、内核 BTF 和统一 cgroup v2。旧内核上选择 Skyline 时复用
+XanMod LTS 安装流程，已有旧元包但内核不足 6.12 时也会刷新 APT 并升级，安装后验收内核版本
+及 vmlinuz/initrd。暂不重启，写入 `bbr` 回退和重启标记，注册一次性开机任务
+`easy_all-skyline-setup.service`，继续完成其余安装并保存 Skyline 选择，状态显示 `pending-reboot`。
+安装结束只需重启一次；任务在网络、sysctl 和物理 FQ 就绪后，通过内部 `tcp-resume` 命令
+读取已保存的选择，最多等待运行时写锁 60 秒，自动安装并启用 Skyline，期间显示 `pending-activation`。开机安装需要联网，
+允许较长的源码编译时间。成功后删除任务和标记；失败时保留 BBR 回退、任务和日志，显示
+`degraded` 和实际拥塞控制，修复后可用 `sudo easy_all tcp skyline` 重试，或用 `sudo easy_all tcp bbrv3` 切回 BBRv3。兼容内核上没有开机任务但 Skyline 未启用时同样显示 `degraded`。任务不在旧内核上加载 BPF，
+也不会再次升级内核或发起重启；已切回 BBRv3 的状态不会被旧任务覆盖。
+
+首次接入校验固定 v0.5.1 源码的 SHA256，再调用[官方安装器](https://github.com/CYBERVERSE-Research/skyline-speeder)
+执行平台、BPF verifier 与服务检查。glibc 2.38+ 使用固定版本的预编译包，先在本地按固定
+SHA256 验证，再把已验证的本地包交给安装器；下载或校验失败均停止，不降级为仅信任 TLS。
+Debian 12 的旧 glibc 会明确提示后由官方安装器从固定源码构建 Rust/BPF，可能需要较长时间、
+额外编译依赖及 CPU/内存/磁盘资源。源码目录记录 `.easy-all-commit`，成功安装后记录
+`.easy-all-installed`；后续应用同时核对记录、二进制版本和两个服务文件，匹配时复用，
+否则就地安装项目固定版本，包括将手工安装的更新版本降级。更新源码先下载、校验并检查新安装器，再替换旧目录；替换失败恢复
+旧安装器，残留的不完整目录不会导致嵌套。旧安装没有记录时会重新校验安装一次。
+GitHub 源码归档的压缩字节可能变化；SHA256 不匹配时停止，维护者核实提交内容后再更新固定值。
+
+共用现有 TCP 参数及物理出口 FQ 备份；sysctl 保留 `bbr` 作为开机回退，官方
+`skyline-speeder-enable.service` 在守护进程就绪后附加 `skyline_cc`。状态检查同时验证两个服务、
+实际拥塞算法和 FQ 队列。切回 BBRv3 先取消开机安装任务，再停止并禁用 Skyline 两个服务，
+防止 drift guard 抢回算法，此切换仅停用、不卸载 Skyline；安装回滚与卸载也会取消任务，调用保留的官方卸载器，
+再恢复 easy_all 的 TCP/FQ 备份。
 
 ## 模块边界
 

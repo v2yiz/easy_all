@@ -1,9 +1,9 @@
 # easy_all
 
-当前源码版本：[2026-10-13-v1](CHANGELOG.md#2026-10-13-v1)。
+当前源码版本：[2026-10-14](CHANGELOG.md#2026-10-14)。
 
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点交互安装器。它统一配置 Xray、Nginx、
-订阅、UFW、Fail2ban 和 XanMod BBRv3。
+订阅、UFW、Fail2ban 和 TCP 加速（默认 XanMod BBRv3，可选 Skyline Speeder）。
 
 只支持 IPv4。同一台 VPS 只能安装一种模式，并应作为不承载其他业务的专用服务器。
 
@@ -70,6 +70,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 | 提示 | 建议 |
 | --- | --- |
 | 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2` |
+| TCP 加速 | 选 `1` 或直接回车使用 BBRv3；只有丢包率极高且确认为非拥塞随机丢包时才选 Skyline Speeder |
 | 订阅输出 | 选 `1` 或直接回车，在本机部署订阅 |
 | 月度用户配额 | 选 `1` 或直接回车，不启用 |
 | 独立 Worker 兜底 | 按需启用；必须使用区别于节点域名和订阅域名的同 Zone 一级域名 |
@@ -94,7 +95,8 @@ sudo easy_all status
 sudo easy_all subscription
 ```
 
-`status` 显示 `BBRv3: active` 才表示新内核已经生效。复制 `subscription` 输出中带
+默认 BBRv3 模式下，`status` 显示 `BBRv3: active` 才表示新内核已经生效。选择 Skyline 时应显示
+`Skyline Speeder: active`。复制 `subscription` 输出中带
 `flag=clash` 的 Mihomo 地址，在客户端通过 URL 导入。订阅地址与 UUID 都是访问凭据，不要公开。
 
 客户端选择、Clash Mi 设置和订阅 DNS 排障见[客户端使用指南](docs/client-guide.md)。
@@ -112,12 +114,33 @@ geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 | `easy_all self-update` | 从 `main` 更新项目代码，不修改应用配置 |
 | `easy_all self-update --dev` | 从 `dev` 更新项目代码，用于验证待发布版本 |
 | `easy_all apply` | 重新应用当前配置 |
+| `easy_all tcp` | 交互选择 TCP 加速；也可指定 `bbrv3` 或 `skyline` |
 | `easy_all apply-cloud` | Cloudflare 模式同步本机配置和云端 Worker、DNS、证书及规则 |
 | `easy_all update-sub` | 管理订阅、用户和配额 |
 | `easy_all update-core` | 更新 Xray 核心 |
 | `easy_all refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP |
 | `easy_all uninstall` | 卸载本机资源 |
 | `easy_all help` | 查看全部命令 |
+
+仅在丢包率极高且确认为**非拥塞随机丢包**时，才选择
+[Skyline Speeder](https://github.com/CYBERVERSE-Research/skyline-speeder)。启用时要求当前已运行 Linux
+6.12+，并具备内核 BTF 和 cgroup v2。普通线路继续使用默认 BBRv3；拥塞丢包可能恶化，默认冗余
+也会增加出站流量。安装后可切换：
+
+```bash
+sudo easy_all tcp skyline
+sudo easy_all tcp bbrv3
+```
+
+当前内核低于 6.12 时，先安装或升级 XanMod LTS，暂不重启，再完成节点、订阅等其余安装，
+期间暂用 BBR，状态显示 `Skyline Speeder: pending-reboot`。保存节点和订阅链接后，只需重启一次，
+开机任务就会自动安装并启用 Skyline，无需再输入启用命令；安装期间显示 `pending-activation`。
+选择会保留到后续 `apply` 和重启；Skyline 只加速这台 VPS 的发送方向，不影响独立 Worker 兜底节点。
+开机安装需要联网；Debian 12 的旧 glibc 需要从源码编译 Rust/BPF，可能耗时较长，期间继续使用 BBR。
+自动安装失败时 `status` 显示 `degraded`，可查看日志并修复后执行 `sudo easy_all tcp skyline` 重试。
+以后更新项目代码并执行 `sudo easy_all apply`，会按项目固定的 Skyline 版本就地升级，无需卸载；
+手工安装的更新版本也可能被降级到项目固定版本。
+切回 `bbrv3` 仅停用 Skyline，完整卸载随 `easy_all uninstall` 执行。
 
 更新代码并应用配置：
 

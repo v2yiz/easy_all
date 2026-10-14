@@ -28,7 +28,7 @@ try_acquire_runtime_write_lock() {
     install -d -m 0700 "${STATE_DIR}"
     exec 9>"${RUNTIME_WRITE_LOCK_FILE}" \
         || die "无法打开 easy_all 运行时锁：${RUNTIME_WRITE_LOCK_FILE}"
-    if ! flock -n 9; then
+    if ! flock -w "${1:-0}" 9; then
         exec 9>&-
         return 1
     fi
@@ -38,7 +38,7 @@ try_acquire_runtime_write_lock() {
 }
 
 acquire_runtime_write_lock() {
-    try_acquire_runtime_write_lock \
+    try_acquire_runtime_write_lock "${1:-0}" \
         || die "另一个 easy_all 配置或流量统计任务正在运行，请稍后重试"
 }
 

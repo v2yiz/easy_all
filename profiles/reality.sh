@@ -137,8 +137,9 @@ EOF
 
 initialize_server() {
     ensure_ssh_boot_service
-    info "配置 XanMod LTS 内核 BBRv3"
-    configure_bbr_tcp
+    choose_tcp_acceleration
+    info "配置 TCP 加速：${TCP_ACCELERATION}"
+    configure_tcp_acceleration
     info "配置每日重启与全局 IPv4-only 网络栈"
     configure_daily_reboot
     configure_ipv4_only
@@ -212,7 +213,7 @@ source_state_file() {
 load_state() {
     local variable env_name state_loaded=0
     local -a variables=(
-        PROTOCOL CDN_PROVIDER NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
+        PROTOCOL CDN_PROVIDER TCP_ACCELERATION NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         VPS_IP_FAMILY VPS_PUBLIC_IPV6
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
@@ -240,6 +241,8 @@ load_state() {
         unset "${env_name}"
     done
     CDN_PROVIDER=""
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+        || die "状态文件中的 TCP_ACCELERATION 无效"
     enforce_ipv4_only_policy
     if [[ "${state_loaded}" == "1" ]]; then
         [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
@@ -286,6 +289,8 @@ load_state() {
 
 save_state() {
     enforce_ipv4_only_policy
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+        || die "无法保存无效的 TCP_ACCELERATION"
     install -d -m 0700 "${STATE_DIR}"
     local temp
     temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX") \
@@ -295,6 +300,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         printf 'PROTOCOL=%q\n' "${PROTOCOL}"
         printf 'CDN_PROVIDER=%q\n' ""
+        printf 'TCP_ACCELERATION=%q\n' "${TCP_ACCELERATION}"
         printf 'NODE_NAME=%q\n' "${NODE_NAME}"
         printf 'NODE_HOST=%q\n' "${NODE_HOST:-}"
         printf 'VLESS_UUID=%q\n' "${VLESS_UUID:-}"
@@ -1631,12 +1637,14 @@ update_subscription() {
 
 apply_easy_all() {
     require_root
+    begin_quota_maintenance
     collect_installed_state
-    info "安装或验收 XanMod LTS BBRv3，并刷新 TCP 参数"
-    configure_bbr_tcp
+    info "应用 TCP 加速并刷新 TCP 参数"
+    configure_tcp_acceleration
     configure_ipv4_only
     register_easy_all_command
     update_subscription
+    end_quota_maintenance
 }
 
 collect_installed_state() {
@@ -1734,7 +1742,7 @@ show_status() {
     require_root
     collect_installed_state
     printf '协议: %s\n' "${PROTOCOL}"
-    show_bbrv3_status
+    show_tcp_acceleration_status
     printf 'VPS 网络栈: IPv4-only（IPv6 全局禁用）\n'
     printf 'Google 出站: %s\n' "$(google_egress_status)"
     resolve_reality_client_ip_family
@@ -1999,7 +2007,7 @@ run_reality_install_pipeline() {
     INSTALL_ROLLBACK_ON_EXIT=0
     reality_cloudflare_clear_api_token
     show_subscription
-    show_bbrv3_status
+    show_tcp_acceleration_status
     success "easy_all ${PROTOCOL} 安装完成"
     prompt_bbrv3_reboot
 }

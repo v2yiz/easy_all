@@ -1,5 +1,16 @@
 # 更新记录
 
+## 2026-10-14
+
+- 新增可选 Skyline Speeder TCP 加速，默认和旧状态仍使用 XanMod BBRv3。仅建议用于丢包率极高且确认为非拥塞随机丢包的线路；菜单、帮助和文档明确额外出站流量及适用范围。
+- 旧内核选择 Skyline 时先安装或升级 XanMod LTS 并验收 Linux 6.12+，继续完成其余安装；结束后重启一次，开机任务自动安装并启用 Skyline。任务最多等待运行时写锁 60 秒，成功后移除自身，失败保留回退配置、日志及重试状态；Reality 的 TCP 应用步骤也纳入运行时锁。
+- 固定 Skyline v0.5.1 源码提交和预编译包 SHA256；旧 glibc 明确提示后从源码编译 Rust/BPF。按源码提交、安装记录及二进制版本决定复用或就地升级，下载、检查及替换失败保留旧安装器，支持修复残留源码目录。
+- 状态核对两个服务、实际拥塞控制及物理 FQ，失败时统一给出重试和切回 BBRv3 的命令；切回 BBRv3 只停用 Skyline，安装回滚和卸载清理开机任务及托管的 Skyline 安装。
+- 开机等锁超时日志给出专用恢复命令，版本验收失败显示期望及实际输出；文档说明交互应用遇锁占用时重试，以及手工安装的更新版可能被固定版本覆盖。
+- 补充版本升级、替换失败恢复、运行时锁等待、BBR 回退、开机任务生命周期和 README/CHANGELOG 版本一致性回归测试。状态版本保持 Reality v7、Cloudflare v9；本次不修改 Worker 运行源码，无需仅为此重建 Worker。
+
+源码版本标识为 `2026-10-14`。已有部署执行 `sudo easy_all self-update` 后，可用 `sudo easy_all tcp skyline` 选择 Skyline；已选择 Skyline 的部署执行 `sudo easy_all apply` 更新到项目固定版本，无需先卸载。详见[运维指南](docs/operations-guide.md#tcp-加速选择)。
+
 ## 2026-10-13-v1
 
 - 修复聚合订阅生成的 Worker 在编辑器中的三处类型诊断：XHTTP 与 WebSocket 节点直接输出固定的 `ip-version: ipv4`，移除仅返回常量的无参函数及多余参数；上游 HTTP 错误在构造时附带 `httpStatus`，消除标准 `Error` 不包含该属性的诊断。

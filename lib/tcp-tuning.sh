@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared XanMod LTS BBRv3 kernel management and conservative TCP tuning.
+# Shared TCP acceleration and conservative TCP tuning.
 
 readonly BBRV3_XANMOD_KEY_URL="https://dl.xanmod.org/archive.key"
 readonly BBRV3_XANMOD_KEY_FINGERPRINT="D38D7D1DA1349567ADED882D86F7D09EE734E623"
@@ -15,6 +15,273 @@ readonly BBRV3_MINIMUM_XANMOD_VERSION="6.4.11"
 readonly BBRV3_REBOOT_MARKER="${STATE_DIR}/bbrv3-reboot-required"
 
 BBRV3_KERNEL_PACKAGE=""
+
+readonly SKYLINE_VERSION="v0.5.1"
+readonly SKYLINE_COMMIT="3b371629831da9823503ef303ba2028b40ba208a"
+readonly SKYLINE_SOURCE_SHA256="7ae2a724f802e35dced7e61f0f51aa2449944fff8955222e02971e4b21174d44"
+readonly SKYLINE_ARTIFACT_SHA256="7bf33c0a814ad6a7e40b11fe5819cd822db10fad1f882587c6da5023ac678858"
+readonly SKYLINE_MINIMUM_KERNEL_VERSION="6.12"
+readonly SKYLINE_SOURCE_DIR="${STATE_DIR}/skyline-speeder"
+readonly SKYLINE_BTF_FILE="${SKYLINE_BTF_FILE_OVERRIDE:-/sys/kernel/btf/vmlinux}"
+readonly SKYLINE_CGROUP_FILE="${SKYLINE_CGROUP_FILE_OVERRIDE:-/sys/fs/cgroup/cgroup.controllers}"
+
+normalize_tcp_acceleration() {
+    case "${1:-bbrv3}" in
+    1 | bbrv3) printf 'bbrv3\n' ;;
+    2 | skyline) printf 'skyline\n' ;;
+    *) return 1 ;;
+    esac
+}
+
+choose_tcp_acceleration() {
+    local requested=${1:-${TCP_ACCELERATION:-}}
+    if [[ -z "${requested}" && -t 0 ]]; then
+        printf '请选择 TCP 加速方案：\n'
+        printf '  1. BBRv3（默认，推荐）\n'
+        printf '  2. Skyline Speeder（仅在丢包率极高且确认为非拥塞随机丢包时选择；旧内核会先升级，安装结束重启一次后自动启用）\n'
+        read_bilingual '请选择 [1]（直接回车使用默认值）:' requested
+    fi
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${requested}") \
+        || die "TCP 加速选项无效：${requested}"
+}
+
+skyline_running_kernel_supported() {
+    local release
+    release=$(uname -r)
+    dpkg --compare-versions "${release%%-*}" ge "${SKYLINE_MINIMUM_KERNEL_VERSION}"
+}
+
+check_skyline_requirements() {
+    skyline_running_kernel_supported \
+        || die "Skyline Speeder 需要 Linux 6.12+；请重启进入已安装的兼容内核后重试"
+    [[ -r "${SKYLINE_BTF_FILE}" ]] \
+        || die "Skyline Speeder 需要内核 BTF：${SKYLINE_BTF_FILE}"
+    [[ -f "${SKYLINE_CGROUP_FILE}" ]] \
+        || die "Skyline Speeder 需要挂载统一的 cgroup v2"
+}
+
+install_skyline_speeder() {
+    local archive="${RUNTIME_TMP}/skyline-speeder.tar.gz"
+    local stage previous
+    if [[ -x "${SKYLINE_SOURCE_DIR}/install.sh" && -r "${SKYLINE_SOURCE_DIR}/.easy-all-commit" ]] \
+        && [[ "$(<"${SKYLINE_SOURCE_DIR}/.easy-all-commit")" == "${SKYLINE_COMMIT}" ]]; then
+        return 0
+    fi
+    curl -fL --proto '=https' --tlsv1.2 --retry 3 \
+        --connect-timeout 10 --max-time 180 \
+        "https://codeload.github.com/CYBERVERSE-Research/skyline-speeder/tar.gz/${SKYLINE_COMMIT}" \
+        -o "${archive}" || die "下载 Skyline Speeder 安装器失败"
+    printf '%s  %s\n' "${SKYLINE_SOURCE_SHA256}" "${archive}" \
+        | sha256sum -c - >/dev/null || die "Skyline Speeder 源码 SHA256 校验失败"
+    install -d -m 0700 "${STATE_DIR}"
+    stage=$(mktemp -d "${STATE_DIR}/skyline-speeder.stage.XXXXXX") \
+        || die "创建 Skyline Speeder 暂存目录失败"
+    cleanup_files+=("${stage}")
+    tar -xzf "${archive}" -C "${stage}" --strip-components=1 \
+        || die "解压 Skyline Speeder 安装器失败"
+    bash "${stage}/install.sh" --check || die "Skyline Speeder 安装前检查失败"
+    printf '%s\n' "${SKYLINE_COMMIT}" >"${stage}/.easy-all-commit" \
+        || die "保存 Skyline Speeder 源码版本失败"
+    # Retain the previous uninstaller until the verified replacement is in place.
+    previous="${stage}.previous"
+    if [[ -e "${SKYLINE_SOURCE_DIR}" ]]; then
+        mv -- "${SKYLINE_SOURCE_DIR}" "${previous}" || die "备份 Skyline Speeder 安装器失败"
+    fi
+    if ! mv -- "${stage}" "${SKYLINE_SOURCE_DIR}"; then
+        if [[ -e "${previous}" ]]; then
+            mv -- "${previous}" "${SKYLINE_SOURCE_DIR}" \
+                || warn "旧 Skyline Speeder 安装器保留在 ${previous}，请先恢复后重试"
+        fi
+        die "保留 Skyline Speeder 安装器失败"
+    fi
+    rm -rf -- "${previous}"
+}
+
+stop_skyline_speeder() {
+    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}" unit
+    for unit in skyline-speeder-enable.service skyline-speederd.service; do
+        [[ -f "${systemd_dir}/${unit}" ]] || continue
+        systemctl disable --now "${unit}" \
+            || die "停止 Skyline Speeder 失败：${unit}；请保留安装状态后重试"
+    done
+}
+
+install_skyline_boot_setup() {
+    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+    cat >"${systemd_dir}/easy_all-skyline-setup.service" <<EOF_SERVICE
+[Unit]
+Description=Install and activate Skyline Speeder after the kernel upgrade
+After=network-online.target systemd-sysctl.service easy_all-fq.service
+Wants=network-online.target
+ConditionPathExists=${STATE_FILE}
+ConditionPathExists=${BBRV3_REBOOT_MARKER}
+
+[Service]
+Type=oneshot
+ExecStart="${COMMAND_PATH}" tcp-resume
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF_SERVICE
+    systemctl daemon-reload || die "重新加载 Skyline 开机安装任务失败"
+    systemctl enable easy_all-skyline-setup.service || die "启用 Skyline 开机安装任务失败"
+}
+
+remove_skyline_boot_setup() {
+    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+    [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] || return 0
+    # A setup removing itself passes 0; cancellation must also stop an active job.
+    if [[ "${1:-1}" == "1" ]]; then
+        systemctl stop easy_all-skyline-setup.service || die "停止 Skyline 开机安装任务失败"
+    fi
+    systemctl disable easy_all-skyline-setup.service || die "取消 Skyline 开机安装任务失败"
+    rm -f -- "${systemd_dir}/easy_all-skyline-setup.service"
+    systemctl daemon-reload || die "重新加载 Skyline 开机安装任务失败"
+}
+
+resume_skyline_after_reboot() {
+    (($# == 0)) || die "tcp-resume 不接受参数"
+    require_root
+    try_acquire_runtime_write_lock 60 \
+        || die "Skyline 开机任务等待运行时锁 60 秒超时；已保留回退配置和开机任务，请在其他任务结束后执行 sudo easy_all tcp skyline 重试"
+    collect_installed_state
+    if [[ "${TCP_ACCELERATION}" != "skyline" || ! -f "${BBRV3_REBOOT_MARKER}" ]]; then
+        remove_skyline_boot_setup 0
+    else
+        # A boot into the old kernel must fail, not schedule another upgrade/reboot.
+        check_skyline_requirements
+        configure_tcp_acceleration
+    fi
+    release_runtime_write_lock
+}
+
+configure_tcp_acceleration() {
+    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+    local glibc artifact="${RUNTIME_TMP}/skyline-speeder-${SKYLINE_VERSION}.tar.gz"
+    local installed_commit="" installed_version
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+        || die "TCP 加速选项无效：${TCP_ACCELERATION}"
+    if [[ "${TCP_ACCELERATION}" == "bbrv3" ]]; then
+        configure_bbr_tcp
+        return
+    fi
+    warn "仅在丢包率极高且确认为非拥塞随机丢包时选择 Skyline Speeder；拥塞丢包可能恶化，默认冗余会增加出站流量"
+    if ! skyline_running_kernel_supported; then
+        info "当前内核 $(uname -r) 低于 Linux 6.12，正在安装或升级兼容的 XanMod LTS 内核"
+        ensure_bbrv3_kernel "${SKYLINE_MINIMUM_KERNEL_VERSION}"
+        stop_skyline_speeder
+        configure_tcp_parameters
+        install -d -m 0700 "${STATE_DIR}"
+        install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
+        install_skyline_boot_setup
+        warn "兼容内核已准备；当前暂用 BBR。其余安装完成后只需重启一次，开机将自动安装并启用 Skyline，无需再次执行命令"
+        return 0
+    fi
+    check_skyline_requirements
+    install_skyline_speeder
+    stop_skyline_speeder
+    configure_tcp_parameters
+    [[ ! -r "${SKYLINE_SOURCE_DIR}/.easy-all-installed" ]] \
+        || installed_commit=$(<"${SKYLINE_SOURCE_DIR}/.easy-all-installed")
+    installed_version=$(skyline-speederd --version 2>/dev/null) || installed_version=""
+    if [[ "${installed_commit}" != "${SKYLINE_COMMIT}" \
+        || "${installed_version}" != "skyline-speederd ${SKYLINE_VERSION#v}" \
+        || ! -f "${systemd_dir}/skyline-speederd.service" \
+        || ! -f "${systemd_dir}/skyline-speeder-enable.service" ]]; then
+        glibc=$(getconf GNU_LIBC_VERSION) || die "无法检测 Skyline Speeder 的 glibc 兼容性"
+        glibc=${glibc##* }
+        if dpkg --compare-versions "${glibc}" lt 2.38; then
+            warn "当前 glibc ${glibc} 不支持预编译包，将从源码编译 Rust/BPF；可能耗时较长并占用较多 CPU、内存及磁盘，请勿中断安装"
+            bash "${SKYLINE_SOURCE_DIR}/install.sh" --source --no-enable \
+                || die "Skyline Speeder 源码安装失败；请执行 easy_all tcp bbrv3 恢复"
+        else
+            curl -fL --proto '=https' --tlsv1.2 --retry 3 \
+                --connect-timeout 10 --max-time 180 \
+                "https://github.com/CYBERVERSE-Research/skyline-speeder/releases/download/${SKYLINE_VERSION}/skyline-speeder-${SKYLINE_VERSION}-x86_64.tar.gz" \
+                -o "${artifact}" || die "下载 Skyline Speeder 预编译包失败"
+            printf '%s  %s\n' "${SKYLINE_ARTIFACT_SHA256}" "${artifact}" >"${artifact}.sha256"
+            sha256sum -c "${artifact}.sha256" >/dev/null \
+                || die "Skyline Speeder 预编译包 SHA256 校验失败"
+            SKYLINE_ARTIFACT_URL="${artifact}" \
+                bash "${SKYLINE_SOURCE_DIR}/install.sh" --prebuilt --no-enable \
+                || die "Skyline Speeder 安装失败；请执行 easy_all tcp bbrv3 恢复"
+        fi
+        installed_version=$(skyline-speederd --version 2>/dev/null) || installed_version=""
+        if [[ "${installed_version}" != "skyline-speederd ${SKYLINE_VERSION#v}" ]]; then
+            stop_skyline_speeder
+            sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "恢复 BBR 回退配置失败"
+            die "Skyline Speeder 版本验收失败（期望 skyline-speederd ${SKYLINE_VERSION#v}，实际 ${installed_version:-未能读取}），已回退 bbr；请核对安装日志及上游版本格式后执行 sudo easy_all tcp skyline 重试"
+        fi
+        printf '%s\n' "${SKYLINE_COMMIT}" >"${SKYLINE_SOURCE_DIR}/.easy-all-installed" \
+            || die "保存 Skyline Speeder 安装版本失败"
+    fi
+    systemctl enable --now skyline-speederd.service \
+        || die "启动 Skyline Speeder 守护进程失败"
+    if ! systemctl enable --now skyline-speeder-enable.service || ! skyline_speeder_active; then
+        stop_skyline_speeder
+        sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "恢复 BBR 回退配置失败"
+        die "Skyline Speeder 启用后验收失败，已停用并回退 bbr；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3"
+    fi
+    remove_skyline_boot_setup 0
+    rm -f -- "${BBRV3_REBOOT_MARKER}"
+    success "Skyline Speeder 已启用（fq + skyline_cc）"
+}
+
+skyline_speeder_active() {
+    systemctl is-active --quiet skyline-speederd.service \
+        && systemctl is-active --quiet skyline-speeder-enable.service \
+        && [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "skyline_cc" ]] \
+        && [[ "$(sysctl -n net.core.default_qdisc)" == "fq" ]] \
+        && physical_fq_active
+}
+
+show_tcp_acceleration_status() {
+    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+    local current_cc
+    if [[ "${TCP_ACCELERATION:-bbrv3}" == "skyline" ]]; then
+        current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || current_cc="unknown"
+        if skyline_speeder_active 2>/dev/null; then
+            printf 'Skyline Speeder: active（fq + skyline_cc）\n'
+        elif [[ -f "${BBRV3_REBOOT_MARKER}" ]]; then
+            if [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] \
+                && systemctl is-failed --quiet easy_all-skyline-setup.service; then
+                printf 'Skyline Speeder: degraded（开机自动安装或启用失败，当前拥塞控制 %s；查看 journalctl -u easy_all-skyline-setup.service -b；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3）\n' "${current_cc}"
+            elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] && skyline_running_kernel_supported; then
+                printf 'Skyline Speeder: pending-activation（开机任务将自动安装并启用；进度查看 journalctl -u easy_all-skyline-setup.service -b -f）\n'
+            elif skyline_running_kernel_supported; then
+                printf 'Skyline Speeder: degraded（兼容内核已运行，但无开机安装任务，当前拥塞控制 %s；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3）\n' "${current_cc}"
+            elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]]; then
+                printf 'Skyline Speeder: pending-reboot（当前内核 %s；其余安装完成后重启一次，将自动安装并启用）\n' "$(uname -r)"
+            else
+                printf 'Skyline Speeder: pending-reboot（当前内核 %s；请执行 sudo easy_all tcp skyline 准备开机自动启用任务）\n' "$(uname -r)"
+            fi
+        else
+            printf 'Skyline Speeder: degraded（服务、拥塞控制或 FQ 未生效，当前拥塞控制 %s；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3）\n' "${current_cc}"
+        fi
+    else
+        show_bbrv3_status
+    fi
+}
+
+update_tcp_acceleration() {
+    (($# <= 1)) || die "用法：easy_all tcp [bbrv3|skyline]"
+    require_root
+    acquire_runtime_write_lock
+    collect_installed_state
+    if (($# == 0)); then
+        [[ -t 0 ]] || die "非交互模式请指定：easy_all tcp bbrv3 或 easy_all tcp skyline"
+        TCP_ACCELERATION=""
+        choose_tcp_acceleration
+    else
+        choose_tcp_acceleration "$1"
+    fi
+    configure_tcp_acceleration
+    save_state
+    release_runtime_write_lock
+    show_tcp_acceleration_status
+    prompt_bbrv3_reboot
+}
 
 tcp_runtime_keys() {
     cat <<'EOF'
@@ -72,6 +339,11 @@ restore_tcp_runtime() {
 
 restore_bbr_tcp_install_state() {
     local restore_packages=${1:-0}
+    remove_skyline_boot_setup
+    if [[ -x "${SKYLINE_SOURCE_DIR}/install.sh" ]]; then
+        bash "${SKYLINE_SOURCE_DIR}/install.sh" --uninstall \
+            || die "卸载 Skyline Speeder 失败；请保留安装状态后重试"
+    fi
     if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
         install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
     elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
@@ -257,14 +529,18 @@ bbrv3_running_kernel_supported() {
 }
 
 ensure_bbrv3_kernel() {
+    local minimum_version=${1:-${BBRV3_MINIMUM_XANMOD_VERSION}} release
     BBRV3_KERNEL_PACKAGE=$(bbrv3_kernel_package)
     if ! bbrv3_running_kernel_supported && bbrv3_secure_boot_enabled; then
         die "检测到 UEFI Secure Boot；拒绝安装或切换到无法确认可启动的 XanMod BBRv3 内核"
     fi
     ensure_xanmod_repository
-    if ! bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}"; then
-        info "安装 XanMod LTS BBRv3 内核：${BBRV3_KERNEL_PACKAGE}"
-        apt-get -o DPkg::Lock::Timeout=300 update
+    release=$(bbrv3_latest_kernel_release)
+    if ! bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}" \
+        || [[ -z "${release}" ]] \
+        || ! dpkg --compare-versions "${release%%-*}" ge "${minimum_version}"; then
+        info "安装或升级 XanMod LTS 内核：${BBRV3_KERNEL_PACKAGE}"
+        apt-get -o DPkg::Lock::Timeout=300 update || die "刷新 XanMod APT 索引失败"
         apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}" \
             || die "安装 XanMod LTS BBRv3 内核失败"
     fi
@@ -272,6 +548,9 @@ ensure_bbrv3_kernel() {
         || die "XanMod BBRv3 元包安装后验收失败：${BBRV3_KERNEL_PACKAGE}"
     bbrv3_kernel_image_installed \
         || die "最新 XanMod BBRv3 内核缺少可用的 vmlinuz 或 initrd"
+    release=$(bbrv3_latest_kernel_release)
+    dpkg --compare-versions "${release%%-*}" ge "${minimum_version}" \
+        || die "已安装的 XanMod 内核 ${release} 低于所需版本 ${minimum_version}；请检查 APT 仓库或软件包锁定状态"
     if command -v update-grub >/dev/null 2>&1; then
         update-grub >/dev/null || die "更新 GRUB 的 XanMod BBRv3 启动项失败"
     fi
@@ -296,10 +575,24 @@ show_bbrv3_status() {
 }
 
 configure_bbr_tcp() {
-    ensure_vps_ip_family
     ensure_bbrv3_kernel
+    remove_skyline_boot_setup
+    stop_skyline_speeder
+    configure_tcp_parameters
+    if bbrv3_running_kernel_supported; then
+        rm -f -- "${BBRV3_REBOOT_MARKER}"
+        success "XanMod BBRv3 已启用（$(uname -r)，fq + bbr）"
+    else
+        install -d -m 0700 "${STATE_DIR}"
+        install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
+        warn "XanMod BBRv3 内核已安装；当前仍为 $(uname -r)，请在安装结束后执行 sudo reboot"
+    fi
+}
+
+configure_tcp_parameters() {
+    ensure_vps_ip_family
     cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
-# XanMod BBRv3 (the kernel registers it as tcp_bbr / bbr)
+# BBR fallback; Skyline Speeder attaches skyline_cc after sysctl at boot.
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
@@ -356,20 +649,12 @@ EOF
     printf '%s\n' tcp_bbr >"${RUNTIME_TMP}/easy_all-bbr.conf"
     install -m 0644 "${RUNTIME_TMP}/easy_all-bbr.conf" "${BBR_MODULES_CONFIG}"
     install -m 0644 "${RUNTIME_TMP}/bbr.conf" "${SYSCTL_CONFIG}"
-    sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "应用 BBR sysctl 配置失败"
+    sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "应用 TCP sysctl 配置失败"
     [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
         || die "拥塞控制算法未成功设置为 bbr"
     [[ -f "${BBR_MODULES_CONFIG}" && -f "${SYSCTL_CONFIG}" ]] \
-        || die "BBRv3 开机配置写入失败"
+        || die "TCP 开机配置写入失败"
     apply_physical_fq_qdisc
-    if bbrv3_running_kernel_supported; then
-        rm -f -- "${BBRV3_REBOOT_MARKER}"
-        success "XanMod BBRv3 已启用（$(uname -r)，fq + bbr）"
-    else
-        install -d -m 0700 "${STATE_DIR}"
-        install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
-        warn "XanMod BBRv3 内核已安装；当前仍为 $(uname -r)，请在安装结束后执行 sudo reboot"
-    fi
 }
 
 default_route_iface() {
@@ -592,21 +877,32 @@ remove_physical_fq_qdisc_service() {
 
 prompt_bbrv3_reboot() {
     local choice
-    if bbrv3_running_kernel_supported; then
+    if [[ "${TCP_ACCELERATION:-bbrv3}" == "skyline" ]]; then
+        [[ -f "${BBRV3_REBOOT_MARKER}" ]] || return 0
+        if skyline_running_kernel_supported; then
+            return 0
+        fi
+    elif bbrv3_running_kernel_supported; then
         return 0
     fi
     printf '\n'
     printf '%s\n' "========================================================================"
-    printf '%s\n' "⚠️  【重要提示：请立即重启服务器以激活 BBRv3】"
-    printf '%s\n' "XanMod LTS 内核已安装完成，当前运行仍为原版内核 ($(uname -r))。"
-    printf '%s\n' "系统必须重启后才会真正载入 XanMod BBRv3 内核！"
+    if [[ "${TCP_ACCELERATION:-bbrv3}" == "skyline" ]]; then
+        printf '%s\n' "【重要提示：请重启服务器以加载 Skyline Speeder 所需的兼容内核】"
+        printf '%s\n' "其余安装已完成，只需重启一次；开机将自动安装并启用 Skyline，无需再次执行命令。"
+        printf '%s\n' "开机安装期间暂用 BBR；进度查看 journalctl -u easy_all-skyline-setup.service -b -f。"
+    else
+        printf '%s\n' "⚠️  【重要提示：请立即重启服务器以激活 BBRv3】"
+    fi
+    printf '%s\n' "XanMod LTS 内核已安装完成，当前运行仍为 $(uname -r)。"
+    printf '%s\n' "系统必须重启后才会真正载入新内核！"
     printf '%s\n' "请保存好上方的节点与订阅链接后，立即重启服务器。"
     printf '%s\n' "========================================================================"
     if [[ "${EASY_ALL_NO_REBOOT:-0}" == "1" ]]; then
         return 0
     fi
     if [[ -t 0 ]]; then
-        printf '是否现在立即重启服务器以生效 BBRv3？[y/N]: '
+        printf '是否现在立即重启服务器以载入新内核？[y/N]: '
         read -r choice || choice="n"
         case "${choice}" in
             [yY]|[yY][eE][sS])

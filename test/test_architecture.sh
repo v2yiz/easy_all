@@ -313,7 +313,7 @@ fi
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_slow_start_after_idle = 0'* \
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'linux-xanmod-lts-x64v'* \
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'show_bbrv3_status()'* \
-    && "$(<"${REALITY_PROFILE}")" == *'show_bbrv3_status'* \
+    && "$(<"${REALITY_PROFILE}")" == *'show_tcp_acceleration_status'* \
     && "$(<"${REALITY_PROFILE}")" != *'BBR_ALLOW_EXISTING_XANMOD'* \
     && "$(<"${XHTTP_RUNTIME}")" != *'BBR_ALLOW_EXISTING_XANMOD'* ]] \
     || fail "shared XanMod BBRv3 kernel and TCP tuning policy drifted"

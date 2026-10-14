@@ -61,6 +61,19 @@ manifest_content=$(<"${ROOT_DIR}/runtime.manifest")
 runtime_tree_is_complete "${ROOT_DIR}" \
     || fail "repository runtime must satisfy its manifest"
 
+(
+    update_tcp_acceleration() { printf 'tcp:%s\n' "$*"; }
+    assert_equal "Reality dispatches TCP selection" 'tcp:skyline' \
+        "$(dispatch_profile_command reality tcp skyline)"
+    assert_equal "Cloudflare dispatches TCP selection" 'tcp:bbrv3' \
+        "$(dispatch_profile_command cloudflare-streamup tcp bbrv3)"
+    resume_skyline_after_reboot() { printf 'tcp:resume\n'; }
+    for mode in reality cloudflare-streamup; do
+        assert_equal "${mode} dispatches one-time Skyline setup" 'tcp:resume' \
+            "$(dispatch_profile_command "${mode}" tcp-resume)"
+    done
+)
+
 # These tombstones bridge self-update for launchers that still validate the cloned
 # tree against their own baked-in manifest. They must exist in the source tree, but
 # must never be installed at runtime.

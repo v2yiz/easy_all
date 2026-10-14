@@ -1420,6 +1420,7 @@ test_state_and_xray() {
     exec {old_state_fd}<&-
     assert_equal "saved state is private" "600" "$(stat -c '%a' "${STATE_FILE}")"
     state=$(<"${STATE_FILE}")
+    assert_contains "state defaults to BBRv3" "TCP_ACCELERATION=bbrv3" "${state}"
     assert_contains "state persists subscription mode" \
         "SUBSCRIPTION_MODE=deploy" "${state}"
     assert_contains "state persists subscription domain" \
@@ -1445,14 +1446,23 @@ test_state_and_xray() {
         "QUOTA_START_DATE=" "${state}"
     assert_not_contains "state has no Cloudflare account" "CF_ACCOUNT_ID=" "${state}"
 
+    TCP_ACCELERATION=skyline
+    save_state
+    unset TCP_ACCELERATION
+    load_state
+    assert_equal "Reality preserves Skyline across save and reload" skyline "${TCP_ACCELERATION}"
+    TCP_ACCELERATION=bbrv3
+    save_state
+
     # Test state version 6 in-memory migration to version 7
-    grep -vE '^(STATE_VERSION|GOOGLE_EGRESS_)' "${STATE_FILE}" >"${STATE_FILE}.tmp"
+    grep -vE '^(STATE_VERSION|GOOGLE_EGRESS_|TCP_ACCELERATION=)' "${STATE_FILE}" >"${STATE_FILE}.tmp"
     printf 'STATE_VERSION=6\n' >>"${STATE_FILE}.tmp"
     mv "${STATE_FILE}.tmp" "${STATE_FILE}"
-    unset GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
+    unset GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED TCP_ACCELERATION
     load_state
     assert_equal "version 6 state migrates Google egress mode" "ipv4" "${GOOGLE_EGRESS_MODE}"
     assert_equal "version 6 state migrates Google egress resolved" "ipv4" "${GOOGLE_EGRESS_RESOLVED}"
+    assert_equal "legacy Reality state defaults to BBRv3" bbrv3 "${TCP_ACCELERATION}"
     save_state
     assert_contains "save_state upgrades version 6 to version 7" "STATE_VERSION=7" "$(<"${STATE_FILE}")"
 
@@ -1603,19 +1613,21 @@ test_apply_loads_reality_state_before_tcp_tuning() {
         unset PROTOCOL CDN_PROVIDER
         require_root() { :; }
         info() { :; }
+        begin_quota_maintenance() { printf 'lock\n'; }
+        end_quota_maintenance() { printf 'unlock\n'; }
         collect_installed_state() {
             PROTOCOL="reality"
             CDN_PROVIDER=""
             printf 'state\n'
         }
-        configure_bbr_tcp() { printf 'tcp:%s:%s\n' "${PROTOCOL:-}" "${CDN_PROVIDER:-}"; }
+        configure_tcp_acceleration() { printf 'tcp:%s:%s\n' "${PROTOCOL:-}" "${CDN_PROVIDER:-}"; }
         configure_ipv4_only() { printf 'ipv6-off\n'; }
         register_easy_all_command() { printf 'register\n'; }
         update_subscription() { printf 'update\n'; }
         apply_easy_all
     )
     assert_equal "Reality apply loads protocol before selecting TCP tuning" \
-        $'state\ntcp:reality:\nipv6-off\nregister\nupdate' "${calls}"
+        $'lock\nstate\ntcp:reality:\nipv6-off\nregister\nupdate\nunlock' "${calls}"
 }
 
 source_script_copy

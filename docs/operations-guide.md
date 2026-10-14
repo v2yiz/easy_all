@@ -19,9 +19,15 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
-`2026-10-13-v1` 修复聚合 Worker 的三处编辑器类型诊断，保持现有 IPv4 策略、上游错误提示和鉴权行为。执行 `sudo easy_all self-update` 后，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`，聚合配置选择“保留”，重新构建并部署 Worker；独立手工部署的 Worker 在其构建环境重新构建并部署。现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需迁移。
-该版本号是源码 Git 标签；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头。
-本次修改了 Worker 运行源码，单独执行 `self-update` 不会更新线上 Worker；安装器与独立聚合构建均使用修复后的同一份公共源码。
+`apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
+
+`2026-10-14` 新增可选 Skyline Speeder，默认和旧状态继续使用 BBRv3。已有部署更新代码后执行
+`sudo easy_all tcp skyline` 选择；已选择 Skyline 时执行 `sudo easy_all apply`，会核对并更新到项目
+固定的 Skyline 版本。本次无需重建 Worker，现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需迁移。
+
+此前的 `2026-10-13-v1` 修复聚合 Worker 的三处编辑器类型诊断，保持现有 IPv4 策略、上游错误提示和鉴权行为。若尚未应用该历史版本的 Worker 修复，执行 `sudo easy_all self-update` 后，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`，聚合配置选择“保留”，重新构建并部署 Worker；独立手工部署的 Worker 在其构建环境重新构建并部署。
+源码版本使用 Git 标签标识；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头。
+该历史版本修改了 Worker 运行源码，单独执行 `self-update` 不会更新线上 Worker；安装器与独立聚合构建均使用修复后的同一份公共源码。
 
 从 `2026-10-11` 起，关闭或更换订阅后未能清理的旧 Worker 身份会保存在状态文件中。若提示旧资源尚未清理，恢复 API 权限或网络后运行 `sudo easy_all apply-cloud` 重试；`uninstall --purge-cloud` 也会重试，清理失败会停止卸载并保留本机状态。普通 `apply` 不执行该云端清理。旧版本已经丢失身份的孤立资源无法由该升级自动追溯，仍需在 Cloudflare 控制台核对并手工清理。
 
@@ -84,9 +90,10 @@ Worker。已成功变更的云资源不会自动回滚，只应在确实需要�
 | --- | --- |
 | `show` | 显示当前 VLESS 链接和 Mihomo 节点片段。 |
 | `subscription` | 显示订阅部署状态和每个用户的订阅地址。 |
-| `status` | 显示 BBRv3、协议、服务、端口和订阅状态。 |
+| `status` | 显示当前 TCP 加速、协议、服务、端口和订阅状态。 |
 | `self-update [--dev\|--branch <分支>]` | 更新项目代码；默认 `main`，`--dev` 使用 `dev`。 |
 | `apply` | 重新应用当前配置。 |
+| `tcp [bbrv3\|skyline]` | 选择 TCP 加速；无参数时显示交互菜单，默认 BBRv3。 |
 | `apply-cloud` | Cloudflare 模式下同步本机和云端资源。 |
 | `update-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
 | `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅。 |
@@ -97,6 +104,44 @@ Worker。已成功变更的云资源不会自动回滚，只应在确实需要�
 | `quota-reset <用户>` | 清零指定用户本月流量。 |
 | `uninstall` | 卸载本机资源；`--purge-cloud` 同时清理本工具创建的云资源。 |
 | `help` | 显示命令帮助。 |
+
+## TCP 加速选择
+
+首次安装直接回车使用 BBRv3。已有部署可用 `sudo easy_all tcp` 打开选择菜单，或明确指定：
+
+```bash
+sudo easy_all tcp skyline
+sudo easy_all tcp bbrv3
+```
+
+**只有在丢包率极高且确认为非拥塞随机丢包时才选择 Skyline Speeder。** 拥塞、队列溢出造成的
+丢包不适用，普通线路继续使用 BBRv3。默认首段冗余会增加出站流量；计费线路需评估成本。
+Skyline 是服务器发送端加速，客户端不需要额外安装，独立 Worker 节点不会受益。
+
+Skyline 启用时要求当前运行 Linux 6.12+、可读的 `/sys/kernel/btf/vmlinux` 和统一 cgroup v2。
+当前内核低于 6.12 时，会先安装或升级兼容的 XanMod LTS；即使已有旧版元包也会尝试升级，
+并验收实际安装的内核版本。此时暂不重启，继续完成节点、订阅等安装，期间暂用 BBR，状态显示
+`Skyline Speeder: pending-reboot`。保存链接后重启一次，开机任务会自动安装并启用 Skyline，
+不必重新输入命令，也不会再次自动升级内核或重启。自动安装期间显示 `pending-activation`，
+完成后应显示 `Skyline Speeder: active`。开机安装需要联网；Debian 12 会从源码编译 Rust/BPF，
+可能耗时较长并占用 CPU、内存和磁盘，期间继续使用 BBR。可查看进度：
+
+```bash
+sudo journalctl -u easy_all-skyline-setup.service -b -f
+```
+
+开机任务遇到配额统计等任务占用运行时锁时，最多等待 60 秒。等待超时、缺少 BTF、cgroup v2，
+或其他安装/启用失败时，任务会停止，保留 BBR 回退及重试状态；`status` 显示 `degraded` 和
+当前实际拥塞控制。根据日志修复后执行 `sudo easy_all tcp skyline` 重试，或执行
+`sudo easy_all tcp bbrv3` 切回 BBRv3。
+切回 BBRv3 会取消待执行的开机安装任务，并停用 Skyline 两个服务及其开机启动，
+后续 `apply` 保留选择；此操作不会卸载 Skyline。
+
+Skyline 版本跟随 easy_all 的固定版本。更新项目代码后执行 `sudo easy_all apply` 即可就地升级，
+无需先卸载；手工安装的其他版本也会被替换，更新版本可能被降级到项目固定版本。
+版本及安装记录匹配时复用已有二进制。旧安装缺少版本记录时，首次应用会重新校验
+并安装一次；Debian 12 可能再次编译源码。升级失败保留已验证的安装器供重试和卸载。
+卸载 easy_all 时会调用官方卸载器清理托管的 Skyline 安装。
 
 ## 轮换 UUID
 

@@ -151,6 +151,42 @@ assert_equal "Secure Boot stops BBRv3 before repository changes" "73" \
 [[ ! -e "${secure_boot_repo_write}" ]] \
     || fail "Secure Boot rejection must happen before writing the XanMod repository"
 
+(
+    kernel_calls="${TMP_DIR}/kernel-upgrade-calls"
+    installed_release=6.6.99-xanmod1
+    bbrv3_kernel_package() { printf 'linux-xanmod-lts-x64v1\n'; }
+    bbrv3_running_kernel_supported() { return 0; }
+    ensure_xanmod_repository() { :; }
+    bbrv3_meta_package_installed() { return 0; }
+    bbrv3_kernel_image_installed() { return 0; }
+    bbrv3_latest_kernel_release() { printf '%s\n' "${installed_release}"; }
+    dpkg() {
+        case "$*" in
+        '--compare-versions 6.6.99 ge 6.12') return 1 ;;
+        '--compare-versions 6.12.101 ge 6.12') return 0 ;;
+        *) fail "unexpected version comparison: $*" ;;
+        esac
+    }
+    apt-get() {
+        printf '%s\n' "$*" >>"${kernel_calls}"
+        if [[ "$*" == *' install '* && "${KEEP_OLD_KERNEL:-0}" != 1 ]]; then
+            installed_release=6.12.101-xanmod1
+        fi
+    }
+    update-grub() { :; }
+    ensure_bbrv3_kernel 6.12
+    assert_contains "an installed but outdated meta package must still be upgraded" \
+        "$(cat "${kernel_calls}")" 'install -y --no-install-recommends linux-xanmod-lts-x64v1'
+    : >"${kernel_calls}"
+    ensure_bbrv3_kernel 6.12
+    assert_equal "a compatible installed kernel does not repeat APT work" '' "$(cat "${kernel_calls}")"
+    installed_release=6.6.99-xanmod1
+    if failure=$(KEEP_OLD_KERNEL=1 ensure_bbrv3_kernel 6.12 2>&1); then
+        fail "a stale repository must not be reported as a successful kernel upgrade"
+    fi
+    assert_contains "the post-install version is checked" "${failure}" '低于所需版本 6.12'
+)
+
 ensure_bbrv3_kernel() { BBRV3_KERNEL_PACKAGE="linux-xanmod-lts-x64v3"; }
 modprobe() { [[ "$1" == "tcp_bbr" ]]; }
 sysctl() {

@@ -77,6 +77,8 @@ launcher_usage() {
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
   apply            将已安装代码应用到本机配置
+  tcp [bbrv3|skyline]
+                   选择 TCP 加速（默认 BBRv3；Skyline 仅用于极高非拥塞随机丢包）
   apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅输出与用户/配额
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
@@ -99,7 +101,7 @@ show_install_guide() {
 easy_all install
 ├─ [1 默认] 直连 Reality
 │  ├─ 适用场景：直连效果良好，且 VPS 公网 IP 未被封锁
-│  ├─ 系统检查 → 依赖/XanMod LTS BBRv3/重启策略 → 全局禁用 IPv6
+│  ├─ 系统检查 → 依赖/TCP 加速（默认 BBRv3，可选 Skyline Speeder）/重启策略 → 全局禁用 IPv6
 │  ├─ IPv4 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
 │  ├─ 选择订阅输出
 │  │  ├─ 部署：Cloudflare 一级子域名、Origin CA、文件名、Token/配额
@@ -121,6 +123,7 @@ easy_all install
    ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
    └─ 零损失就地平滑安装/迁移
 订阅输出：只有当前服务器时推荐部署订阅服务；多节点聚合或已有订阅服务器时推荐仅输出节点信息。
+TCP 加速：默认 BBRv3；仅在丢包率极高且确认为非拥塞随机丢包时选择 Skyline Speeder（Linux 6.12+，旧内核先升级，安装结束重启一次后自动启用）。
 
 提示：方括号中的值是直接回车采用的默认值；没有方括号的输入必须填写。
 EOF
@@ -288,6 +291,8 @@ dispatch_profile_command() {
     apply)
         apply_easy_all
         ;;
+    tcp) update_tcp_acceleration "$@" ;;
+    tcp-resume) resume_skyline_after_reboot "$@" ;;
     apply-cloud)
         [[ "${mode}" == "cloudflare-streamup" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"

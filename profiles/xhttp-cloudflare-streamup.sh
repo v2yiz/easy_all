@@ -1546,7 +1546,7 @@ collect_install_inputs() {
 load_state() {
     local variable env_name index=0 state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local -a variables=(
-        STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER
+        STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER TCP_ACCELERATION
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
@@ -1580,6 +1580,8 @@ load_state() {
         done
     ' _ "${state_path}" "${variables[@]}")
     ((index == ${#variables[@]})) || return 1
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+        || die "状态文件中的 TCP_ACCELERATION 无效"
     enforce_ipv4_only_policy
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
@@ -1644,6 +1646,8 @@ save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
     enforce_ipv4_only_policy
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+        || die "无法保存无效的 TCP_ACCELERATION"
     validate_subscription_worker_retirements || die "无法保存无效的旧订阅 Worker 待清理记录"
     validate_worker_backup_state
     validate_google_egress_policy_state \
@@ -1665,7 +1669,7 @@ save_state() {
     [[ -n "${t}" && -f "${t}" ]] || die "临时状态文件无效"
     cleanup_files+=("${t}")
     {
-        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER \
+        for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER TCP_ACCELERATION \
             GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
             CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID \
             WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \
@@ -2013,7 +2017,7 @@ show_status() {
     require_root
     collect_installed_state
     printf '协议: VLESS XHTTP stream-up（Cloudflare CDN 纯流模式）\n'
-    show_bbrv3_status
+    show_tcp_acceleration_status
     printf '后端: Xray (%s)\n客户端 CDN 节点域名: %s\nCloudflare 回源域名: %s（数据面单域名）\nOrigin CA: %s（到期 %s）\n客户端入口 IP 族: IPv4\nGoogle 出站: %s\n候选来源: Cloudflare 官方 IPv4 CIDR / 三网 Globalping eyeball 探针\n域名兜底: disabled\n' \
         "$(xray_installed_version)" "${VLESS_CDN_DOMAIN}" "${CLOUDFLARE_ORIGIN_DOMAIN}" "${CLOUDFLARE_ORIGIN_CERT_ID}" "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}" \
         "$(google_egress_status)"
@@ -2166,7 +2170,8 @@ install_all() {
     snapshot_fresh_install
     install_packages
     ensure_ssh_boot_service
-    configure_bbr_tcp
+    choose_tcp_acceleration
+    configure_tcp_acceleration
     configure_daily_reboot
     collect_install_inputs
     cloudflare_prepare_origin
@@ -2206,7 +2211,7 @@ install_all() {
     else
         success "easy_all Cloudflare CDN XHTTP 与 Worker 聚合订阅安装完成"
     fi
-    show_bbrv3_status
+    show_tcp_acceleration_status
     prompt_bbrv3_reboot
 }
 
@@ -2215,7 +2220,7 @@ apply_easy_all() {
     begin_quota_maintenance
     collect_installed_state
     snapshot_subscription_update
-    configure_bbr_tcp
+    configure_tcp_acceleration
     refresh_google_egress_selection
     configure_ufw
     if ! globalping_cache_valid; then
@@ -2236,7 +2241,7 @@ apply_cloud_resources() {
     begin_quota_maintenance
     collect_installed_state
     snapshot_subscription_update
-    configure_bbr_tcp
+    configure_tcp_acceleration
     refresh_google_egress_selection
     configure_ufw
     xhttp_render_xray_config
