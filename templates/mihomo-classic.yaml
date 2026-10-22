@@ -74,6 +74,7 @@ dns:
       - 'geosite:googlefcm'
       - 'geosite:cn'
       - 'geosite:private'
+      - 'rule-set:captive-portal'
       - '+.10jqka.com.cn'
       # 微信图片、头像、小程序资源在 TUN + Fake-IP 下必须返回真实 IP。
       - '+.qpic.cn'
@@ -154,6 +155,7 @@ dns:
     nameserver-policy:
       # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
       'geosite:private': system
+      'rule-set:captive-portal': system
       # 明确代理的服务优先于完整 cn 集合，避免重叠域名查询国内 DNS。
       'geosite:google,github,openai,anthropic':
         - 'https://1.1.1.1/dns-query#PROXY'
@@ -180,6 +182,29 @@ dns:
 
 rule-providers:
     # 内嵌小集合同时供 DNS、QUIC 与路由使用，不下载额外外部规则文件。
+    captive-portal:
+      type: inline
+      behavior: domain
+      payload:
+        - 'connectivitycheck.gstatic.com'
+        - 'connectivitycheck.gstatic.cn'
+        - 'connectivitycheck.android.com'
+        - 'clients3.google.com'
+        - 'captive.apple.com'
+        - 'detectportal.firefox.com'
+        - 'nmcheck.gnome.org'
+        - 'networkcheck.kde.org'
+        - 'www.msftconnecttest.com'
+        - 'ipv6.msftconnecttest.com'
+        - 'www.msftncsi.com'
+        - 'dns.msftncsi.com'
+        - 'wifi.vivo.com.cn'
+        - 'connect.rom.miui.com'
+        - 'connectivitycheck.platform.hicloud.com'
+        - 'connectivitycheck.platform.hihonorcloud.com'
+        - 'connectivitycheck.oppomobile.com'
+        - 'conn1.oppomobile.com'
+        - 'connectivitycheck.heytap.com'
     proxy-services:
       type: inline
       behavior: domain
@@ -255,6 +280,9 @@ rules:
   # 零地址拒绝优先于 LAN；DNS 黑洞结果不得进入直连或代理出口。
   - IP-CIDR,0.0.0.0/8,REJECT,no-resolve
   - GEOIP,LAN,DIRECT,no-resolve
+  # 单标签主机名不是公网域名；认证门户检测必须在本地直连。
+  - DOMAIN-REGEX,^[^.]+$,DIRECT
+  - RULE-SET,captive-portal,DIRECT
   # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
   - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
 # EASY_ALL_WORKER_RULE

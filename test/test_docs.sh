@@ -141,6 +141,10 @@ assert_contains "client guide documents unknown-domain proxy fallback" \
     "${CLIENT_CONTENT}" '不会仅为了 CN GeoIP 判断额外解析'
 assert_contains "client guide documents bare hostname limits" \
     "${CLIENT_CONTENT}" '裸主机名'
+assert_contains "client guide documents single-label routing" \
+    "${CLIENT_CONTENT}" '单标签主机名'
+assert_contains "client guide documents captive portal routing" \
+    "${CLIENT_CONTENT}" '认证门户'
 assert_contains "client guide describes exit-side resolution for unlisted domains" \
     "${CLIENT_CONTENT}" '在出口侧解析'
 assert_not_contains "documentation does not claim local overseas DNS for unlisted domains" \

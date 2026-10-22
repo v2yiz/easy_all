@@ -122,6 +122,9 @@ COMMON 不启用嗅探；没有域名或 DNS 映射的真实 IP 连接无法应�
 在无缓存且下载失败时仍受保护。微信资源共用内联集合完成国内 DNS、真实 IP 和直连；Steam 下载域名
 显式使用国内 DNS 并直连，社区保持代理。这些例外优先于完整版的通用境外域名集合。
 基础规则不依赖首次下载，MRS 更新失败保留可用缓存；默认加载 cn 与 geolocation-cn 域名库，不加载 geolocation-!cn 域名库。
+单标签主机名（无点）使用 `DOMAIN-REGEX,^[^.]+$,DIRECT`；认证门户与连接性检测域名共用 `captive-portal`
+内联集合，`fake-ip-filter` 返回真实 IP、`nameserver-policy` 使用系统 DNS、路由直连，并排在
+`proxy-services` 之前，因此 `connectivitycheck.gstatic.*` 不再走代理。
 `test/test_mihomo_common.mjs` 同时验证默认/完整模板的 Worker 输出及真实内核的 DNS、FCM、微信与内网真实 IP、
 Apple 国内/境外分流、旧 Apple 缓存隔离、零地址拒绝、TCP/UDP 分流、重叠规则优先级、冷启动下载失败、缓存更新失败；
 没有 `MIHOMO_CHECK_BIN` 时明确报告跳过真实内核

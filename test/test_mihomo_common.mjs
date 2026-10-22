@@ -174,6 +174,14 @@ try {
             `${filename}: domestic DNS policy must cover the cn domain library`,
         );
         assert.ok(
+            template.includes("'rule-set:captive-portal': system"),
+            `${filename}: captive portal probes must use the system resolver`,
+        );
+        assert.ok(
+            template.includes('DOMAIN-REGEX,^[^.]+$,DIRECT'),
+            `${filename}: single-label hosts must stay direct`,
+        );
+        assert.ok(
             template.includes("'RULE-SET,geoip-cn,DIRECT,no-resolve'"),
             `${filename}: CN GeoIP fallback must not resolve unknown domains`,
         );
@@ -334,6 +342,9 @@ try {
                 await routed('1.2.4.9', cold ? 'PROXY' : 'TEST-DIRECT');
                 await routed('1.2.4.9', 'PROXY', false, 5228);
                 await routed('192.168.1.1', 'TEST-DIRECT', false, 5228);
+                assert.match(await routed('connectivitycheck.gstatic.com', 'TEST-DIRECT'), /RuleSet\(captive-portal\)/);
+                assert.match(await routed('getmobileredirecthost', 'TEST-DIRECT'), /DomainRegex/);
+                assert.match(await routed('wpad', 'TEST-DIRECT'), /DomainRegex/);
                 if (!cold) {
                     const privateHost = 'nas.private-fixture.net';
                     assert.ok((await query(privateHost))?.some(answer => answer.data === '192.168.50.1'));

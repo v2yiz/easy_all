@@ -50,6 +50,7 @@ dns:
     fake-ip-filter:
       - 'rule-set:private-fallback'
       - 'rule-set:geosite-private'
+      - 'rule-set:captive-portal'
       - 'rule-set:wechat-services'
       - 'stun.*.*.*'
       - 'stun.*.*'
@@ -140,6 +141,7 @@ dns:
     nameserver: ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
     nameserver-policy:
       'rule-set:private-fallback,geosite-private': system
+      'rule-set:captive-portal': system
       'testingcf.jsdelivr.net': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
       # 代理域名优先于国内集合（例如 services.googleapis.cn）。
       'rule-set:proxy-services,geosite-google': ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
@@ -177,6 +179,29 @@ rule-providers:
           - '+.internal'
           - '+.localdomain'
           - '+.home.arpa'
+    captive-portal:
+        type: inline
+        behavior: domain
+        payload:
+          - 'connectivitycheck.gstatic.com'
+          - 'connectivitycheck.gstatic.cn'
+          - 'connectivitycheck.android.com'
+          - 'clients3.google.com'
+          - 'captive.apple.com'
+          - 'detectportal.firefox.com'
+          - 'nmcheck.gnome.org'
+          - 'networkcheck.kde.org'
+          - 'www.msftconnecttest.com'
+          - 'ipv6.msftconnecttest.com'
+          - 'www.msftncsi.com'
+          - 'dns.msftncsi.com'
+          - 'wifi.vivo.com.cn'
+          - 'connect.rom.miui.com'
+          - 'connectivitycheck.platform.hicloud.com'
+          - 'connectivitycheck.platform.hihonorcloud.com'
+          - 'connectivitycheck.oppomobile.com'
+          - 'conn1.oppomobile.com'
+          - 'connectivitycheck.heytap.com'
     proxy-services:
         type: inline
         behavior: domain
@@ -510,6 +535,9 @@ rules:
     # 零地址拒绝优先于 LAN，避免 0.0.0.0 被当作本地地址直连。
     - 'IP-CIDR,0.0.0.0/8,REJECT,no-resolve'
     - 'GEOIP,LAN,DIRECT,no-resolve'
+    # 单标签主机名不是公网域名；认证门户检测必须在本地直连。
+    - 'DOMAIN-REGEX,^[^.]+$,DIRECT'
+    - 'RULE-SET,captive-portal,DIRECT'
     - 'DOMAIN,clash.razord.top,DIRECT'
     - 'DOMAIN,yacd.haishan.me,DIRECT'
 # EASY_ALL_WORKER_RULE

@@ -57,7 +57,22 @@ YouTube 与其他代理流量统一使用当前选择。纯 Worker 通过原生�
 Clash Meta for Android 可使用 `dhcp://system` 获取系统 DNS；其他客户端按其 DNS 覆写能力设置。
 公共模板不写死网关地址，切换网络后应检查该覆盖是否仍适用。
 只有带上述后缀或已收录的私有域名会自动使用系统 DNS；未带后缀的裸主机名（如 `http://nas/`）
-不会为 GeoIP 兜底触发解析，请改用 `.lan` 等后缀、写入本机 hosts，或在客户端 DNS 覆写中按名称指定。
+按单标签规则直连，不再走代理；它不会为 GeoIP 兜底触发解析，请改用 `.lan` 等后缀、写入本机 hosts，
+或在客户端 DNS 覆写中按名称指定，否则直连解析可能失败。
+
+### 单标签主机与认证门户
+
+没有点的单标签主机名（`getmobileredirecthost`、`wpad`、`isatap` 以及 `nas`、`router` 等裸设备名）
+统一走 `DOMAIN-REGEX,^[^.]+$,DIRECT`，不再落入 `MATCH,PROXY`。它们不是公网域名，公网 DoH 无法解析；
+直连是否成功取决于本机 hosts、局域网 DNS 或客户端 DNS 覆写。
+
+连接性检测/认证门户域名共用内联集合 `captive-portal`：Android 的 `connectivitycheck.gstatic.com`、
+`connectivitycheck.gstatic.cn`、`connectivitycheck.android.com`、`clients3.google.com`，华为
+`connectivitycheck.platform.hicloud.com`，荣耀 `connectivitycheck.platform.hihonorcloud.com`，
+小米 `connect.rom.miui.com`，OPPO `connectivitycheck.oppomobile.com`，vivo `wifi.vivo.com.cn`，
+Apple `captive.apple.com`，Firefox `detectportal.firefox.com`，GNOME `nmcheck.gnome.org`，
+Windows `www.msftconnecttest.com` 等。它们使用系统 DNS 并直连，并排在 `proxy-services` 之前；
+这样认证门户能正常弹出，但受限网络下 Android 可能显示“无网络”而不是被代理掩盖。
 
 订阅不再按 v2ray、xray、Surge 等进程名无条件直连。如需管理 VPS 或串联其他代理，
 在客户端添加目标地址的精确直连规则；不要将所有 SSH 端口或下载器进程一律直连。

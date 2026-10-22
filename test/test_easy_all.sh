@@ -433,6 +433,12 @@ test_mihomo_template() {
         "rule-set:direct-services,geosite-cn,geosite-geolocation-cn" "$(<"${default_template}")"
     assert_contains "Default template routes existing mainland IPs direct without resolution" \
         "RULE-SET,geoip-cn,DIRECT,no-resolve" "$(<"${default_template}")"
+    assert_contains "Default template routes single-label hosts direct" \
+        "DOMAIN-REGEX,^[^.]+$,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template routes captive portal probes direct" \
+        "RULE-SET,captive-portal,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template resolves captive portal probes via system DNS" \
+        "'rule-set:captive-portal': system" "$(<"${default_template}")"
     assert_not_contains "Default template does not resolve unknown domains for the CN IP fallback" \
         "'RULE-SET,geoip-cn,DIRECT'" "$(<"${default_template}")"
     assert_equal "Default template keeps one LAN no-resolve rule" "1" \
@@ -612,6 +618,12 @@ test_mihomo_template() {
         "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes mainland SDK domains direct" \
         "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    assert_contains "Mihomo routes single-label hosts direct" \
+        "DOMAIN-REGEX,^[^.]+$,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    assert_contains "Mihomo routes captive portal probes direct" \
+        "RULE-SET,captive-portal,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    assert_contains "Mihomo resolves captive portal probes via system DNS" \
+        "'rule-set:captive-portal': system" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo resolves mainland SDK domains through CN DoH" \
         "'geosite:cn,geolocation-cn':" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo matches only existing mainland IPs without resolution" \

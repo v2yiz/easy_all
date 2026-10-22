@@ -493,6 +493,9 @@ try {
     assert.ok(!rules.includes('PROCESS-NAME,'), 'process names must not bypass service routing');
     assert.ok(rules.includes('GEOSITE,cn,DIRECT'), 'complete mainland domain set is used');
     assert.ok(rules.includes('GEOSITE,geolocation-cn,DIRECT'), 'mainland SDK domain set is used');
+    assert.ok(rules.includes('DOMAIN-REGEX,^[^.]+$,DIRECT'), 'single-label hosts stay direct');
+    assert.ok(rules.includes('RULE-SET,captive-portal,DIRECT'), 'captive portal probes stay direct');
+    assert.ok(template.includes("'rule-set:captive-portal': system"), 'captive portal probes use system DNS');
     assert.ok(rules.includes('IP-CIDR,0.0.0.0/8,REJECT,no-resolve'), 'DNS sinkhole addresses must not enter the proxy');
     before(rules, 'IP-CIDR,0.0.0.0/8,REJECT,no-resolve', 'GEOIP,LAN,DIRECT,no-resolve');
     assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
@@ -507,6 +510,7 @@ try {
     before(rules, fcmProxyRule, 'GEOIP,CN,DIRECT,no-resolve');
     const fakeIpFilter = template.split('    fake-ip-filter:\n')[1].split('    nameserver-policy:\n')[0];
     assert.ok(fakeIpFilter.includes("      - 'geosite:googlefcm'\n"));
+    assert.ok(fakeIpFilter.includes("      - 'rule-set:captive-portal'\n"));
     assert.ok(!fakeIpFilter.includes(',real-ip'), 'blacklist filters must not contain rule-mode actions');
     assert.ok(!fakeIpFilter.includes('MATCH,fake-ip'), 'blacklist mode provides the unmatched fake-IP behavior');
     const wechatDomains = [
@@ -577,10 +581,11 @@ try {
         "    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']"
     ), 'proxy node bootstrap must retain two direct DoH providers');
     const providers = template.split('\nrule-providers:\n')[1].split('\nproxies:\n')[0];
-    assert.equal((providers.match(/type: inline/g) || []).length, 2);
-    assert.equal((providers.match(/behavior: domain/g) || []).length, 2);
+    assert.equal((providers.match(/type: inline/g) || []).length, 3);
+    assert.equal((providers.match(/behavior: domain/g) || []).length, 3);
     assert.ok(!/^\s+(url|path|interval):/m.test(providers), 'small service sets must not download external rules');
-    assert.ok(Buffer.byteLength(providers) <= 4096, 'inline policy budget is 4 KiB including comments');
+    assert.ok(Buffer.byteLength(providers) <= 8192, 'inline policy budget is 8 KiB including comments');
+    assert.ok(providers.includes('    captive-portal:\n'), 'captive portal set must be inline');
     const proxyServices = providers.split('    proxy-services:\n')[1].split('    direct-cdn:\n')[0];
     const directCdn = providers.split('    direct-cdn:\n')[1];
     for (const domain of [
