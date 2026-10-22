@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.6.5 更新说明（2026-10-22）
+
+- 补充国内认证、HTTPDNS 与 SDK 域名直连：`cmpassport.com`（中国移动认证，含 log2/config 子域）、`httpdns.pro`（HTTPDNS，含 kuaishou 子域）、`ctobsnssdk.com`（穿山甲/字节 SDK 日志）。三者不在 `cn`/`geolocation-cn` 集合中，fake-IP 下此前会落到 `MATCH,PROXY`。
+- 三套模板同步加入 `direct-services`/`direct-cdn`；两套内联集合同时用于 `nameserver-policy`，因此这些域名使用国内 DoH 并直连。
+- 新增 `log2.cmpassport.com`、`config.cmpassport.com`、`kuaishou.httpdns.pro`、`toblog.ctobsnssdk.com` 的真实内核路由断言。
+- 说明：`ctobsnssdk.com` 属于广告/统计 SDK；本项目不做广告拦截，按国内域名直连；如需拦截应另加 REJECT 规则。`httpdns.pro` 是共享 HTTPDNS 域名，整域直连。
+- 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
+
+源码版本标识为 `1.6.5`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.4 更新说明（2026-10-22）
 
 - 单标签主机名（无点，如 `getmobileredirecthost`、`wpad`、`isatap` 及 `nas`、`router` 等裸设备名）改为 `DOMAIN-REGEX,^[^.]+$,DIRECT`，不再落到 `MATCH,PROXY`；这类名字不是公网域名，直连时依赖本机 hosts 或局域网 DNS。
