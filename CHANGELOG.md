@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.6.8 更新说明（2026-10-22）
+
+- 修复配额统计与 Xray `ExecStop` 钩子的写锁死锁竞争：当维护命令（`apply`、`update-sub`、`quota-set/reset`）持有运行时锁重启 Xray 时，`quota_sync_usage` 识别到维护标记立即让渡，不再因尝试跨进程获取锁而导致 15 秒死锁停顿。
+- 修复服务停机/重启时流量同步被跳过导致数据丢失的缺陷：`quota_sync_usage` 兼容 systemd `deactivating` 状态，确保在正常关停与重启前完整统计并持久化当轮流量。
+- 修复全员超额停用时 Xray 因客户端为空崩溃的边界问题，以及 Worker 委托鉴权模式下的源站 403 负向缓存收敛。
+- 补充对应 systemd 状态感知与维护锁跳过的单元测试。
+- 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移。
+
+源码版本标识为 `1.6.8`。升级执行 `sudo easy_all self-update` 并执行 `sudo easy_all apply`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.7 更新说明（2026-10-22）
 
 - 补充中国电信天翼账号/本机号码一键登录域名 `id6.me` 直连。该域名解析到中国电信云（`42.123.76.150`、`42.123.77.138`，PTR `mta.e.189.cn`），但不在 `cn`/`geolocation-cn` 集合中，fake-IP 下此前会落到 `MATCH,PROXY`；一键登录依赖运营商网关识别请求源，走代理会直接失败。

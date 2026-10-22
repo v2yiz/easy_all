@@ -21,6 +21,8 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.8` 修复配额统计与 Xray `ExecStop` 写锁竞争导致的 15 秒死锁停顿，并兼容 systemd `deactivating` 状态避免服务关机/重启时流量统计丢失。已有部署执行 `sudo easy_all self-update` 并执行 `sudo easy_all apply`。状态版本与订阅 URL 不变。
+
 `1.6.7` 补充中国电信天翼账号 `id6.me` 直连，本机号码一键登录不再因代理出口无法取号。
 已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
 `sudo easy_all update-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
