@@ -452,6 +452,9 @@ quota_sync_usage() {
     local runtime_id previous_runtime_id
     local period_reset=0
     require_root
+    if [[ "${QUOTA_MAINTENANCE_ACTIVE}" == "1" || -f "${QUOTA_MAINTENANCE_FILE}" ]]; then
+        return 0
+    fi
     if ! try_acquire_runtime_write_lock 15; then
         warn "另一个 easy_all 任务正在运行，本轮配额统计已跳过；锁释放后由定时任务补算"
         install -d -m 0700 "${STATE_DIR}"
@@ -459,7 +462,7 @@ quota_sync_usage() {
         return 0
     fi
     rm -f -- "${QUOTA_SYNC_PENDING_FILE}"
-    if [[ "${QUOTA_MAINTENANCE_ACTIVE}" == "1" ]]; then
+    if [[ "${QUOTA_MAINTENANCE_ACTIVE}" == "1" || -f "${QUOTA_MAINTENANCE_FILE}" ]]; then
         release_runtime_write_lock
         return 0
     fi
@@ -488,10 +491,14 @@ quota_sync_usage() {
             .runtime_id=$runtime_id |
             .users |= with_entries(.value.last_uplink=0 | .value.last_downlink=0)' <<<"${usage}")
     fi
-    if command -v systemctl >/dev/null 2>&1 && ! systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null; then
-        warn "Xray 服务未运行，跳过流量统计"
-        release_runtime_write_lock
-        return 0
+    if command -v systemctl >/dev/null 2>&1; then
+        local svc_state
+        svc_state=$(systemctl show "${XRAY_SERVICE}" -p ActiveState --value 2>/dev/null || true)
+        if [[ -n "${svc_state}" && "${svc_state}" != "active" && "${svc_state}" != "deactivating" ]]; then
+            warn "Xray 服务未运行，跳过流量统计"
+            release_runtime_write_lock
+            return 0
+        fi
     fi
     if command -v timeout >/dev/null 2>&1; then
         stats=$(timeout 15 "${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}") \
@@ -541,12 +548,19 @@ quota_sync_usage() {
     printf '%s\n' "${usage}" >"${temp}"
     install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
     if [[ "${changed}" == "1" ]]; then
+        install -d -m 0700 "${STATE_DIR}"
+        install -m 0600 /dev/null "${QUOTA_MAINTENANCE_FILE}"
+        QUOTA_MAINTENANCE_ACTIVE=1
         if ! (rebuild_traffic_runtime); then
+            rm -f -- "${QUOTA_MAINTENANCE_FILE}"
+            QUOTA_MAINTENANCE_ACTIVE=0
             printf '%s\n' "${original_usage}" >"${temp}"
             install -m 0600 "${temp}" "${QUOTA_USAGE_FILE}"
             release_runtime_write_lock
             die "应用月度流量配额状态失败，已恢复旧统计状态并将在下次重试"
         fi
+        rm -f -- "${QUOTA_MAINTENANCE_FILE}"
+        QUOTA_MAINTENANCE_ACTIVE=0
     fi
     release_runtime_write_lock
 }

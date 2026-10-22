@@ -325,6 +325,44 @@ quota_sync_usage
 assert_equal "the retried sync accumulates traffic" "1100000000" \
     "$(jq -r '.users.owner.used_bytes' "${QUOTA_USAGE_FILE}")"
 
+# Quota sync during maintenance must skip immediately without waiting on flock.
+touch "${QUOTA_MAINTENANCE_FILE}"
+FAKE_FLOCK_WAIT=""
+quota_sync_usage
+assert_equal "quota sync during maintenance skips without waiting on flock" "" "${FAKE_FLOCK_WAIT}"
+rm -f -- "${QUOTA_MAINTENANCE_FILE}"
+
+# Xray service in deactivating state (ExecStop) must still sync traffic before shutdown.
+FAKE_SYSTEMCTL_STATE="deactivating"
+systemctl() {
+    if [[ "$1" == "show" ]]; then
+        printf '%s\n' "${FAKE_SYSTEMCTL_STATE}"
+        return 0
+    fi
+    return 1
+}
+USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":5}}'
+cat >"${QUOTA_USAGE_FILE}" <<EOF
+{"period":"${period}","runtime_id":"","users":{
+  "owner":{"used_bytes":0,"last_uplink":0,"last_downlink":0,"disabled":false}
+}}
+EOF
+quota_sync_usage
+assert_equal "deactivating state successfully syncs traffic during ExecStop" "1100000000" \
+    "$(jq -r '.users.owner.used_bytes' "${QUOTA_USAGE_FILE}")"
+
+# Xray service in inactive state skips traffic sync.
+FAKE_SYSTEMCTL_STATE="inactive"
+cat >"${QUOTA_USAGE_FILE}" <<EOF
+{"period":"${period}","runtime_id":"","users":{
+  "owner":{"used_bytes":100,"last_uplink":0,"last_downlink":0,"disabled":false}
+}}
+EOF
+quota_sync_usage
+assert_equal "inactive service skips traffic sync" "100" \
+    "$(jq -r '.users.owner.used_bytes' "${QUOTA_USAGE_FILE}")"
+unset -f systemctl
+
 # A corrupt state file must block publication instead of resetting users.
 printf '{"period":"%s","users":[]}\n' "${period}" >"${QUOTA_USAGE_FILE}"
 corrupt_usage=$(<"${QUOTA_USAGE_FILE}")
