@@ -259,6 +259,7 @@ rule-providers:
         - '+.cmpassport.com'
         - '+.httpdns.pro'
         - '+.ctobsnssdk.com'
+        - '+.ugdtimg.com'
 
 proxies:
 # EASY_ALL_PROXY_NODE

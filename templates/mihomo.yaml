@@ -447,6 +447,7 @@ rule-providers:
           - '+.cmpassport.com'
           - '+.httpdns.pro'
           - '+.ctobsnssdk.com'
+          - '+.ugdtimg.com'
     telegram-fallback:
         type: inline
         behavior: ipcidr
