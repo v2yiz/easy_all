@@ -1,5 +1,17 @@
 # 更新记录
 
+## 1.6.1 更新说明（2026-10-22）
+
+- 三套 Mihomo 模板的 CN GeoIP 兜底改为只匹配已有目标 IP：默认与完整模板使用 `RULE-SET,geoip-cn,DIRECT,no-resolve`，经典模板的 `GEOIP,CN` 与国内 QUIC 子规则同步加上 `no-resolve`；未命中域名集合的域名不再为了 GeoIP 判断额外解析，直接交给 `MATCH,PROXY`。
+- Telegram 的 QUIC 拒绝子规则与 ipcidr 集合改用 `no-resolve`，并删除默认与完整模板中重复的解析版 `GEOIP,LAN,DIRECT`；未带 `.lan` 等后缀的裸主机名不再由 GeoIP 兜底解析，需使用私有后缀、本机 hosts 或客户端 DNS 覆写。
+- 私有域名与既有例外不变：`private-fallback`/`geosite-private` 继续用于 Fake-IP 例外、系统 DNS 与直连；微信、Steam、Apple 国内调度等直连集合、QUIC 回退顺序与最终 `MATCH,PROXY` 均保持原语义。
+- 客户端指南、技术参考、Worker 说明与运维指南同步为「只匹配已有真实 IP、未收录域名在出口侧解析、未知 QUIC 回退 TCP」，并补充裸主机名边界与非零 DNS 声明。
+- 测试新增 `unknown-cn-mapped.net` 用例：先让域名在国内 DNS 中解析出中国 IP，再验证域名连接不会命中 CN GeoIP 缓存，而是 TCP 走代理、UDP/443 被拒绝；同时增加模板与文档断言，锁定解析版兜底不得回归，真实内核矩阵由 CI 的固定 v1.19.32 执行。
+- 测试脚本改为只面向 Debian 12/13：移除 `stat -f` 回退与 macOS Bash 3.2 的动态 fd 兼容，统一使用 GNU `stat -c` 与 Bash 4.1+ 的 `exec {fd}<`；本地 `.pi/` 配置目录不再进入版本控制。
+- 兼容性：仅修改订阅模板规则、文档与测试，不改变协议、状态或数据结构；Reality 状态保持 v7、Cloudflare v9，无需迁移。默认/完整模板的规则集数量与内存预算不变（5/7 个 MRS），Worker 内嵌模板随本次变化，Cloudflare 聚合订阅需重新构建。
+
+源码版本标识为 `1.6.1`（Git 标签 `1.6.1`）。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 2026-10-14
 
 - 新增可选 Skyline Speeder TCP 加速，默认和旧状态仍使用 XanMod BBRv3。仅建议用于丢包率极高且确认为非拥塞随机丢包的线路；菜单、帮助和文档明确额外出站流量及适用范围。

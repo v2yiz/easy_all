@@ -21,6 +21,11 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.1` 把 CN/LAN GeoIP 兜底改为只匹配已有真实 IP，未收录域名不再为 GeoIP 判断额外解析。
+已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，
+Cloudflare 聚合订阅再执行 `sudo easy_all update-sub` 重新构建内嵌模板。状态版本（Reality v7、
+Cloudflare v9）与订阅 URL 不变，无需迁移。
+
 `2026-10-14` 新增可选 Skyline Speeder，默认和旧状态继续使用 BBRv3。已有部署更新代码后执行
 `sudo easy_all tcp skyline` 选择；已选择 Skyline 时执行 `sudo easy_all apply`，会核对并更新到项目
 固定的 Skyline 版本。本次无需重建 Worker，现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需迁移。
