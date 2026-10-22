@@ -107,9 +107,9 @@ Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）
 
 ## 低内存客户端（旧款 iPhone）
 
-默认订阅模板 `templates/mihomo.yaml` 就是 COMMON 精简规则：小型内联集合加 Apple 国内调度、Google、私有
-域名、Telegram 和中国 IP 的五个 MRS 规则集。安装器、Worker 构建和本机订阅都会直接使用它，
-不需要任何额外参数。不加载整库 DAT，也不加载大型国内/境外域名库。
+默认订阅模板 `templates/mihomo.yaml` 就是 COMMON 精简规则：小型内联集合加 国内域名库（约 11 万条）、
+Apple 国内调度、Google、私有域名、Telegram 和中国 IP 的六个 MRS 规则集。安装器、Worker 构建和本机订阅都会直接使用它，
+不需要任何额外参数。不加载整库 DAT，也不加载境外域名库。
 
 代理服务、国内常用服务、Apple 国内调度、局域网和 Telegram IP 的基础规则内联，首次下载失败仍可用；
 成功下载的 MRS 扩充覆盖，更新失败保留可用缓存。下载体积有上限，但它不是运行内存上限。
@@ -138,13 +138,13 @@ COMMON 不启用嗅探：应用自行使用 DoH 或直接连接真实 IP 时，�
 
 | 模板 | 规则覆盖 | 内存取舍 |
 | --- | --- | --- |
-| `templates/mihomo.yaml`（默认） | 国内常用域名直接分流，已有目标 IP 再按 LAN/CN GeoIP 兜底 | 最低规则开销，iOS 峰值待实测 |
-| `templates/mihomo-common.yaml` | 精简版加国内域名、境外域名两套 MRS | 覆盖更全，但不作为 50MB 首选 |
+| `templates/mihomo.yaml`（默认） | 国内域名库与常用域名直接分流，已有目标 IP 再按 LAN/CN GeoIP 兜底 | 六个 MRS，内存仍以 50MB 为优化目标 |
+| `templates/mihomo-common.yaml` | 默认模板再加境外域名 MRS | 覆盖更全，但常驻内存高于默认模板 |
 | `templates/mihomo-classic.yaml` | 经典 geodata 模式与完整国内 DNS 分流 | 整库 Geo 数据开销更大 |
 
-精简版的代价：未收录国内域名不会为 GeoIP 兜底额外解析，会直接走代理并在出口侧解析，可能得到
-境外 CDN；远程中国 IP 规则不可用时，未命中基础域名集合的国内流量同样保守走代理，不承诺完整
-国内直连覆盖。
+默认模板加载约 11 万条国内域名库，绝大多数国内站点（含 `.com`、`.org` 等非 `.cn` 域名）无需解析即可直连；
+不在库内的域名不会为 GeoIP 兜底额外解析，会直接走代理并在出口侧解析，可能得到境外 CDN。
+远程中国 IP 规则不可用时，未命中域名集合的国内流量同样保守走代理，不承诺完整国内直连覆盖。
 需要完整覆盖时选完整版或经典模板。FCM 端口兜底仍会影响其他 TCP 5228–5230 应用；共享的
 Auth0、Stripe、Intercom 等服务仍整体代理，可按实际日志收窄 `proxy-services`。
 

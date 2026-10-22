@@ -1,7 +1,7 @@
-# COMMON 完整版：增加国内/境外域名 MRS；低内存客户端优先使用 mihomo.yaml。
+# COMMON 完整版：在默认模板上增加境外域名 MRS；低内存客户端优先使用 mihomo.yaml。
 # 采用 Mihomo 常用的 Fake-IP、分流 DNS、MRS 与域名优先/IP 兜底组合。
 # 小型内联集合同时用于 DNS、QUIC 和路由，核心服务不依赖首次下载成功。
-# 不加载整库 DAT；精简版不加载 cn / geolocation-!cn 域名库。
+# 不加载整库 DAT；默认与完整版均加载 cn，均不加载 geolocation-!cn 域名库。
 # 未收录域名默认走 PROXY；LAN/CN IP 兜底仅匹配已有真实目标 IP。
 # 与原配置不同：移除宽泛关键字和 ssl.gstatic.com 直连，Google 统一代理。
 # MRS 下载失败保留可用缓存；冷启动依靠内联基础规则，不等价于完整规则覆盖。

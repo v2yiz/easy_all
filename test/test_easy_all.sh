@@ -425,6 +425,10 @@ test_mihomo_template() {
         "RULE-SET,geosite-google,PROXY" "$(<"${default_template}")"
     assert_contains "Default template keeps mainland Apple delivery domains direct" \
         "RULE-SET,geosite-apple-cn,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template routes the domestic domain library direct" \
+        "RULE-SET,geosite-cn,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template resolves the domestic domain library through CN DoH" \
+        "rule-set:direct-services,geosite-cn" "$(<"${default_template}")"
     assert_contains "Default template routes existing mainland IPs direct without resolution" \
         "RULE-SET,geoip-cn,DIRECT,no-resolve" "$(<"${default_template}")"
     assert_not_contains "Default template does not resolve unknown domains for the CN IP fallback" \
