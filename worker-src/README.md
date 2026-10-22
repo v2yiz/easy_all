@@ -82,7 +82,7 @@ Worker，并在 VPS 重新生成模式 2 订阅。
 
 - `X-Easy-All-Version`：确认线上已更新。
 - `X-Easy-All-CDN-Nodes`：动态获取成功的节点数量。
-- `X-Easy-All-CDN-Warning`：动态获取失败原因；HTTP 403 检查 Cloudflare Security Events，challenge 表示收到 Cloudflare 挑战，解析错误表示正文没有可用节点，超时检查 Worker 到订阅域名的连接。上游错误的 `Content-Type` 不代表正文无效，外部订阅服务可能用 `text/html` 返回 Base64 或 YAML。
+- `X-Easy-All-CDN-Warning`：动态获取失败原因（委托鉴权模式下恒为 `source-unavailable`，细节见 Worker 日志）；HTTP 403 检查 Cloudflare Security Events，challenge 表示收到 Cloudflare 挑战，解析错误表示正文没有可用节点，超时检查 Worker 到订阅域名的连接。上游错误的 `Content-Type` 不代表正文无效，外部订阅服务可能用 `text/html` 返回 Base64 或 YAML。
 - `X-Easy-All-Warning`：独立的 `externalSubUrl` 上游状态，与 VPS 动态节点获取结果不同。
 
 Cloudflare 配置问题不能靠更换 UA 修复。[Bot Fight Mode 不能被 WAF Skip 规则跳过](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/)；Super Bot Fight Mode 才支持该例外。[1042 表示同 Zone 的 Worker 子请求限制](https://developers.cloudflare.com/workers/observability/errors/)；自动部署固定启用 `global_fetch_strictly_public`，并将 Worker 与节点源绑定到不同主机名以避免递归。

@@ -163,6 +163,30 @@ test_syntax_and_reality_boundaries() {
         "BBR_MODULES_CONFIG" "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")"
 }
 
+test_install_xray_service_under_nounset() {
+    assert_success "Xray service installs with MAINPID unset under nounset" \
+        bash -eu -c '
+            unset MAINPID
+            RUNTIME_TMP=$2
+            XRAY_DIR=$2/xray
+            XRAY_BIN=$XRAY_DIR/xray
+            XRAY_CONFIG=$XRAY_DIR/config.json
+            XRAY_SERVICE_FILE=$2/installed-xray.service
+            XRAY_SERVICE=easy_all-xray
+            COMMAND_PATH=$2/easy_all
+            source "$1/lib/xray-core.sh"
+            install() { cp "$3" "$4"; }
+            systemctl() { :; }
+            install_xray_service
+        ' _ "${ROOT_DIR}" "${TMP_DIR}"
+    local unit
+    unit=$(<"${TMP_DIR}/installed-xray.service")
+    assert_contains "Xray unit retains a non-failing quota sync stop hook" \
+        "ExecStop=/bin/sh -c '${TMP_DIR}/easy_all quota-sync || true'" "${unit}"
+    assert_not_contains "Xray unit does not emit an empty kill command" \
+        "kill -s TERM " "${unit}"
+}
+
 test_reality_prompt_secret() {
     assert_failure "sourced Reality secret prompt refuses non-tty stdin" \
         env -i PATH="${PATH}" bash -c \
@@ -1837,6 +1861,7 @@ test_quota_read_failure_is_fail_closed() {
 }
 
 source_script_copy
+test_install_xray_service_under_nounset
 test_syntax_and_reality_boundaries
 test_reality_prompt_secret
 test_reality_cloudflare_api_responses

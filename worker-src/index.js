@@ -7,6 +7,8 @@ const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
 const UPSTREAM_FETCH_TIMEOUT_MS = 12_000;
 const UPSTREAM_GENERIC_FETCH_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_SUBSCRIPTION_SIZE = 512 * 1024;
+const DELEGATED_TOKEN_DENIAL_TTL_MS = 60_000;
+const MAX_DELEGATED_TOKEN_DENIALS = 500;
 // The upstream capability filter omits Mieru unless the Mihomo UA has a version.
 const EXTERNAL_CLASH_USER_AGENT = 'mihomo/1.19.30';
 const EXTERNAL_URI_USER_AGENT = 'v2rayN';
@@ -799,6 +801,8 @@ function createWorkerHandler({
     now = Date.now,
     fetchImpl = fetch,
 }) {
+    const deniedTokens = new Map();
+
     async function buildClashSubscription(request, nodes, ports, autoNodes) {
         const upstream = await fetchXflashClashConfig(request, externalSubUrl, {
             fetchImpl,
@@ -839,6 +843,14 @@ function createWorkerHandler({
 
     async function handleSubscription(request, env, url) {
         const requestToken = url.searchParams.get('token');
+        if (delegateTokenValidation && deniedTokens.has(requestToken)) {
+            if (deniedTokens.get(requestToken) > now()) {
+                return workerResponse(request, 'Forbidden', 403, new Headers({
+                    'X-Easy-All-CDN-Warning': 'source-unavailable',
+                }));
+            }
+            deniedTokens.delete(requestToken);
+        }
         const format = subscriptionFormat(
             request,
             url.searchParams.get('flag')
@@ -854,13 +866,23 @@ function createWorkerHandler({
             sourceSecret,
         });
         if (requireDynamicCdn && dynamicCdnError) {
+            if (delegateTokenValidation && sourceStatus === 403) {
+                deniedTokens.set(requestToken, now() + DELEGATED_TOKEN_DENIAL_TTL_MS);
+                if (deniedTokens.size > MAX_DELEGATED_TOKEN_DENIALS) {
+                    deniedTokens.delete(deniedTokens.keys().next().value);
+                }
+            }
             return workerResponse(
                 request,
                 sourceStatus === 403 && delegateTokenValidation
                     ? 'Forbidden'
                     : 'Subscription source unavailable',
                 sourceStatus === 403 && delegateTokenValidation ? 403 : 502,
-                new Headers({ 'X-Easy-All-CDN-Warning': dynamicCdnError })
+                new Headers({
+                    'X-Easy-All-CDN-Warning': delegateTokenValidation
+                        ? 'source-unavailable'
+                        : dynamicCdnError,
+                })
             );
         }
         const selectedLocalNodes = selectLocalNodes(localNodes, url);
