@@ -427,8 +427,10 @@ test_mihomo_template() {
         "RULE-SET,geosite-apple-cn,DIRECT" "$(<"${default_template}")"
     assert_contains "Default template routes the domestic domain library direct" \
         "RULE-SET,geosite-cn,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template routes mainland SDK domains direct" \
+        "RULE-SET,geosite-geolocation-cn,DIRECT" "$(<"${default_template}")"
     assert_contains "Default template resolves the domestic domain library through CN DoH" \
-        "rule-set:direct-services,geosite-cn" "$(<"${default_template}")"
+        "rule-set:direct-services,geosite-cn,geosite-geolocation-cn" "$(<"${default_template}")"
     assert_contains "Default template routes existing mainland IPs direct without resolution" \
         "RULE-SET,geoip-cn,DIRECT,no-resolve" "$(<"${default_template}")"
     assert_not_contains "Default template does not resolve unknown domains for the CN IP fallback" \
@@ -504,7 +506,7 @@ test_mihomo_template() {
         "MetaCubeX/meta-rules-dat@release/geosite.dat" \
         "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo resolves mainland domains with mainland DoH" \
-        "'geosite:cn':" \
+        "'geosite:cn,geolocation-cn':" \
         "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo keeps DNS upstream routing explicit" \
         "respect-rules: false" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
@@ -608,6 +610,10 @@ test_mihomo_template() {
         "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes mainland domains direct" \
         "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    assert_contains "Mihomo routes mainland SDK domains direct" \
+        "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    assert_contains "Mihomo resolves mainland SDK domains through CN DoH" \
+        "'geosite:cn,geolocation-cn':" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo matches only existing mainland IPs without resolution" \
         "GEOIP,CN,DIRECT,no-resolve" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo does not resolve unknown domains for the CN IP fallback" \

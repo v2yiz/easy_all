@@ -492,6 +492,7 @@ try {
     before(rules, 'RULE-SET,direct-cdn,DIRECT', 'AND,((NETWORK,UDP)');
     assert.ok(!rules.includes('PROCESS-NAME,'), 'process names must not bypass service routing');
     assert.ok(rules.includes('GEOSITE,cn,DIRECT'), 'complete mainland domain set is used');
+    assert.ok(rules.includes('GEOSITE,geolocation-cn,DIRECT'), 'mainland SDK domain set is used');
     assert.ok(rules.includes('IP-CIDR,0.0.0.0/8,REJECT,no-resolve'), 'DNS sinkhole addresses must not enter the proxy');
     before(rules, 'IP-CIDR,0.0.0.0/8,REJECT,no-resolve', 'GEOIP,LAN,DIRECT,no-resolve');
     assert.ok(template.includes("'geosite:private': system"), 'private DNS is local');
@@ -557,10 +558,10 @@ try {
         assert.ok(dnsPolicy.includes(
             `      '${key}':\n        - 'https://1.1.1.1/dns-query#PROXY'\n        - 'https://8.8.8.8/dns-query#PROXY'`
         ), `${key} must use proxied DoH even when overlapping cn`);
-        before(dnsPolicy, `'${key}':`, "'geosite:cn':");
+        before(dnsPolicy, `'${key}':`, "'geosite:cn,geolocation-cn':");
     }
     assert.ok(fakeIpFilter.includes("      - 'geosite:cn'\n"));
-    for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:cn']) {
+    for (const key of ['rule-set:direct-cdn', 'geosite:apple-cn,microsoft@cn', 'geosite:cn,geolocation-cn']) {
         assert.ok(dnsPolicy.includes(
             `      '${key}':\n        - https://223.5.5.5/dns-query\n        - https://1.12.12.12/dns-query`
         ), `${key} must use mainland DoH`);

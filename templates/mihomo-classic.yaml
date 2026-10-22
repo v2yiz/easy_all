@@ -168,7 +168,7 @@ dns:
       'geosite:apple-cn,microsoft@cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
-      'geosite:cn':
+      'geosite:cn,geolocation-cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
     # 未命中策略且确需真实解析的公网域名统一通过代理查询。
@@ -277,6 +277,7 @@ rules:
   # 完整国内域名集合；Google、AI 与 .ms 例外已在上方优先处理。
   # 国内 QUIC 例外只匹配已有目标 IP；未知域名不会仅为 GEOIP 判断额外解析。
   - GEOSITE,cn,DIRECT
+  - GEOSITE,geolocation-cn,DIRECT
   - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT

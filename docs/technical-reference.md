@@ -105,13 +105,13 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 
 ## DNS 与分流
 
-默认内置模板是 COMMON 精简版（`templates/mihomo.yaml`）：小型内联集合加六个 MRS 规则集，
-国内域名库与常用域名优先直连；已有真实目标 IP 的其余连接按 LAN/CN GeoIP 兜底，未知域名不会仅因该兜底
+默认内置模板是 COMMON 精简版（`templates/mihomo.yaml`）：小型内联集合加七个 MRS 规则集，
+国内域名库、国内 SDK 域名与常用域名优先直连；已有真实目标 IP 的其余连接按 LAN/CN GeoIP 兜底，未知域名不会仅因该兜底
 额外解析，未命中时回落 `MATCH,PROXY`。国内常用服务和
 Apple 国内调度域名使用国内 DoH，未知公网域名及代理服务使用经代理的海外 DoH，节点引导解析独立直连。
 Apple 使用 `apple-cn.mrs` 加少量精确域名兜底，不强制整个 Apple/iCloud/CDN 直连；DNS 与路由共用
 同一集合，其余 Apple 域名继续按普通域名/IP 规则分流。新的 `geosite-apple-cn.mrs` 缓存路径避免复用
-旧全量 Apple 缓存；规则集数量仍为默认六个、完整版七个，不引入 DAT。
+旧全量 Apple 缓存；规则集数量仍为默认七个、完整版八个，不引入 DAT。
 三套模板的 `0.0.0.0/8` 拒绝均优先于 LAN 规则，包含会被 LAN 识别为本地地址的 `0.0.0.0`。
 COMMON 的 UDP NAT 空闲超时有意从 300 秒缩短为 60 秒，以更早回收空闲映射；后续通信可能需要
 重建映射，而不是活跃会话定时断开。保留 `store-fake-ip: true` 用于跨重启复用映射，不承诺降低内存。
@@ -121,7 +121,7 @@ COMMON 不启用嗅探；没有域名或 DNS 映射的真实 IP 连接无法应�
 私有域名的系统 DNS、真实 IP 例外和直连共用内联基础集合与私有域名 MRS；`.internal`、`.localdomain`
 在无缓存且下载失败时仍受保护。微信资源共用内联集合完成国内 DNS、真实 IP 和直连；Steam 下载域名
 显式使用国内 DNS 并直连，社区保持代理。这些例外优先于完整版的通用境外域名集合。
-基础规则不依赖首次下载，MRS 更新失败保留可用缓存；默认加载 cn 域名库，不加载 geolocation-!cn 域名库。
+基础规则不依赖首次下载，MRS 更新失败保留可用缓存；默认加载 cn 与 geolocation-cn 域名库，不加载 geolocation-!cn 域名库。
 `test/test_mihomo_common.mjs` 同时验证默认/完整模板的 Worker 输出及真实内核的 DNS、FCM、微信与内网真实 IP、
 Apple 国内/境外分流、旧 Apple 缓存隔离、零地址拒绝、TCP/UDP 分流、重叠规则优先级、冷启动下载失败、缓存更新失败；
 没有 `MIHOMO_CHECK_BIN` 时明确报告跳过真实内核

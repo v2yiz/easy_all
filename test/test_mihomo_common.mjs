@@ -33,6 +33,7 @@ const fixtures = {
     'geoip-cn': ['ipcidr', '1.2.4.0/24'],
     'geoip-telegram': ['ipcidr', '149.154.160.0/20'],
     'geosite-cn': ['domain', ['+.cn-fixture.net', '+.hxkba.com'].join('\n')],
+    'geosite-geolocation-cn': ['domain', '+.getui.com'],
     'geosite-foreign': ['domain', ['+.foreign-fixture.net', '+.apple.com', '+.icloud.com',
         '+.cdn-apple.com', '+.mzstatic.com', '+.aaplimg.com', '+.apple-cloudkit.com', '+.servicewechat.com',
         '+.qpic.cn', '+.steamcontent.com', '+.cm.steampowered.com', '+.steamserver.net',
@@ -169,7 +170,7 @@ try {
         assert.ok(!template.includes('DOMAIN-KEYWORD,'), 'broad keywords must not override domestic services');
         assert.ok(template.includes('/apple-cn.mrs\''), 'Apple provider must load the mainland delivery subset');
         assert.ok(
-            template.includes("'rule-set:direct-services,geosite-cn'"),
+            template.includes("'rule-set:direct-services,geosite-cn,geosite-geolocation-cn'"),
             `${filename}: domestic DNS policy must cover the cn domain library`,
         );
         assert.ok(
@@ -239,7 +240,7 @@ try {
                 const home = join(temp, `${filename}-${cold ? 'cold' : 'cached'}`);
                 await mkdir(join(home, 'ruleset'), {recursive: true});
                 const names = [...template.matchAll(/path: \.\/ruleset\/(\S+)\.mrs/g)].map(match => match[1]);
-                assert.equal(names.length, filename === 'mihomo.yaml' ? 6 : 7, 'keep the MRS memory budget');
+                assert.equal(names.length, filename === 'mihomo.yaml' ? 7 : 8, 'keep the MRS memory budget');
                 // Do not reuse the old full-Apple cache, even when the new subset download fails.
                 await copyFile(join(temp, 'geosite-apple.mrs'), join(home, 'ruleset', 'geosite-apple.mrs'));
                 if (!cold) for (const name of names) await copyFile(join(temp, `${name}.mrs`), join(home, 'ruleset', `${name}.mrs`));
@@ -353,6 +354,7 @@ try {
                     await routed('unknown-cn-mapped.net', 'PROXY');
                     assert.match(await routed('www.cn-fixture.net', 'TEST-DIRECT'), /RuleSet\(geosite-cn\)/);
                     assert.match(await routed('www.hxkba.com', 'TEST-DIRECT'), /RuleSet\(geosite-cn\)/);
+                    assert.match(await routed('cm-10-134.getui.com', 'TEST-DIRECT'), /RuleSet\(geosite-geolocation-cn\)/);
                     if (filename === 'mihomo-common.yaml') {
                         assert.match(await routed('www.foreign-fixture.net', 'PROXY'), /RuleSet\(geosite-foreign\)/);
                     }
