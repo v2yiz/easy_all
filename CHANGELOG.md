@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.6.7 更新说明（2026-10-22）
+
+- 补充中国电信天翼账号/本机号码一键登录域名 `id6.me` 直连。该域名解析到中国电信云（`42.123.76.150`、`42.123.77.138`，PTR `mta.e.189.cn`），但不在 `cn`/`geolocation-cn` 集合中，fake-IP 下此前会落到 `MATCH,PROXY`；一键登录依赖运营商网关识别请求源，走代理会直接失败。
+- 三套模板同步加入 `direct-services`/`direct-cdn`；`id6.me` 使用国内 DoH 并直连。其余运营商认证域名（`*.cmpassport.com`、`*.189.cn`、`*.wo.cn`、`*.wostore.cn`、`*.wosms.cn`、`mob.com`、`geetest.com`、`gepush.com` 等）已由 `direct-services` 的 `+.cn` 或 cn/geolocation-cn 集合覆盖。
+- 新增 `id6.me` 的真实内核直连断言。
+- 说明：这类域名涉及运营商取号；如不使用一键登录而想减少后台取号，可自行改为 REJECT，但会破坏相关 App 的一键登录。
+- 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
+
+源码版本标识为 `1.6.7`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.6 更新说明（2026-10-22）
 
 - 补充腾讯广点通图片域名 `ugdtimg.com` 直连（`pgdt.ugdtimg.com` 等子域）。该域名不在 `cn`/`geolocation-cn` 集合中（同源的 `gdtimg.com` 已在 `geolocation-cn`），fake-IP 下此前会落到 `MATCH,PROXY`。

@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[1.6.6](CHANGELOG.md#166-更新说明2026-10-22)。
+当前源码版本：[1.6.7](CHANGELOG.md#167-更新说明2026-10-22)。
 
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点交互安装器。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认 XanMod BBRv3，可选 Skyline Speeder）。

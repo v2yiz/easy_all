@@ -21,6 +21,10 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.7` 补充中国电信天翼账号 `id6.me` 直连，本机号码一键登录不再因代理出口无法取号。
+已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
+`sudo easy_all update-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
+
 `1.6.6` 补充腾讯广点通图片域名 `ugdtimg.com` 直连，`pgdt.ugdtimg.com` 不再落入代理。
 已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
 `sudo easy_all update-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
