@@ -21,6 +21,11 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.2` 让默认模板加载国内域名库（约 11 万条），未收录的国内站点不再直接落入代理。已有部署执行
+`sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
+`sudo easy_all update-sub` 重建内嵌模板。状态版本与订阅 URL 不变；首次启动会下载约 535 KB 的
+`geosite-cn.mrs`，失败时仍使用内联集合。
+
 `1.6.1` 把 CN/LAN GeoIP 兜底改为只匹配已有真实 IP，未收录域名不再为 GeoIP 判断额外解析。
 已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，
 Cloudflare 聚合订阅再执行 `sudo easy_all update-sub` 重新构建内嵌模板。状态版本（Reality v7、

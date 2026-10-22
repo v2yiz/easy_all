@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.6.2 更新说明（2026-10-22）
+
+- 默认模板新增国内域名库 `geosite-cn`（约 11 万条，含 `.cn` 与大量 `.com`、`.org` 等国内站点），规则集由五个增至六个；此前默认模板不加载该集合，`www.hxkba.com` 这类未收录的国内站点会落到 `MATCH,PROXY`，而完整版与经典模板已经覆盖。
+- `nameserver-policy` 同步把 `geosite-cn` 归入国内 DoH；代理例外 `proxy-services`/`geosite-google` 仍排在前面，`google.cn`、`services.googleapis.cn` 继续走代理，QUIC 回退顺序不变。
+- 本机 TUN 关闭、真实 MRS、50ms 采样下默认模板峰值约 42.7 MiB，仍在 50MB 优化目标内；MRS 冷启动下载失败时回退内联集合，已收录域名之外的行为不变。
+- 新增 `www.hxkba.com` 的 `geosite-cn` 路由断言，并补充默认模板缓存/冷启动、完整版与经典模板的回归覆盖；文档同步为“默认加载国内域名库，仍不加载境外域名库”。
+- 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。新增规则集意味着默认模板首次启动会下载约 535 KB 的 `geosite-cn.mrs`。
+
+源码版本标识为 `1.6.2`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.1 更新说明（2026-10-22）
 
 - 三套 Mihomo 模板的 CN GeoIP 兜底改为只匹配已有目标 IP：默认与完整模板使用 `RULE-SET,geoip-cn,DIRECT,no-resolve`，经典模板的 `GEOIP,CN` 与国内 QUIC 子规则同步加上 `no-resolve`；未命中域名集合的域名不再为了 GeoIP 判断额外解析，直接交给 `MATCH,PROXY`。
