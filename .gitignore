@@ -20,3 +20,6 @@ worker.js
 __pycache__/
 *.pyc
 .dsh/skills/budget-review.md
+
+# Local agent harness configuration
+.pi/
