@@ -429,7 +429,7 @@ test_mihomo_template() {
         "RULE-SET,geosite-cn,DIRECT" "$(<"${default_template}")"
     assert_contains "Default template routes mainland SDK domains direct" \
         "RULE-SET,geosite-geolocation-cn,DIRECT" "$(<"${default_template}")"
-    for domain in cmpassport.com httpdns.pro ctobsnssdk.com ugdtimg.com; do
+    for domain in cmpassport.com httpdns.pro ctobsnssdk.com ugdtimg.com id6.me; do
         assert_contains "Default template routes ${domain} direct" \
             "'+.${domain}'" "$(<"${default_template}")"
     done
@@ -622,7 +622,7 @@ test_mihomo_template() {
         "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes mainland SDK domains direct" \
         "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
-    for domain in cmpassport.com httpdns.pro ctobsnssdk.com ugdtimg.com; do
+    for domain in cmpassport.com httpdns.pro ctobsnssdk.com ugdtimg.com id6.me; do
         assert_contains "Mihomo routes ${domain} direct" \
             "'+.${domain}'" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     done

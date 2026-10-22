@@ -448,6 +448,7 @@ rule-providers:
           - '+.httpdns.pro'
           - '+.ctobsnssdk.com'
           - '+.ugdtimg.com'
+          - '+.id6.me'
     telegram-fallback:
         type: inline
         behavior: ipcidr

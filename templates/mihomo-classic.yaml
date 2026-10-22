@@ -260,6 +260,7 @@ rule-providers:
         - '+.httpdns.pro'
         - '+.ctobsnssdk.com'
         - '+.ugdtimg.com'
+        - '+.id6.me'
 
 proxies:
 # EASY_ALL_PROXY_NODE
