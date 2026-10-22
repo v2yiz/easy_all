@@ -256,6 +256,9 @@ rule-providers:
         - '+.wxs.qq.com'
         - '+.res.wx.qq.com'
         - '+.wechat.com'
+        - '+.cmpassport.com'
+        - '+.httpdns.pro'
+        - '+.ctobsnssdk.com'
 
 proxies:
 # EASY_ALL_PROXY_NODE

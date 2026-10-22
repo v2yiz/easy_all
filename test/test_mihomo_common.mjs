@@ -345,6 +345,9 @@ try {
                 assert.match(await routed('connectivitycheck.gstatic.com', 'TEST-DIRECT'), /RuleSet\(captive-portal\)/);
                 assert.match(await routed('getmobileredirecthost', 'TEST-DIRECT'), /DomainRegex/);
                 assert.match(await routed('wpad', 'TEST-DIRECT'), /DomainRegex/);
+                for (const host of ['log2.cmpassport.com', 'config.cmpassport.com', 'kuaishou.httpdns.pro', 'toblog.ctobsnssdk.com']) {
+                    assert.match(await routed(host, 'TEST-DIRECT'), /RuleSet\(direct-services\)/);
+                }
                 if (!cold) {
                     const privateHost = 'nas.private-fixture.net';
                     assert.ok((await query(privateHost))?.some(answer => answer.data === '192.168.50.1'));

@@ -429,6 +429,10 @@ test_mihomo_template() {
         "RULE-SET,geosite-cn,DIRECT" "$(<"${default_template}")"
     assert_contains "Default template routes mainland SDK domains direct" \
         "RULE-SET,geosite-geolocation-cn,DIRECT" "$(<"${default_template}")"
+    for domain in cmpassport.com httpdns.pro ctobsnssdk.com; do
+        assert_contains "Default template routes ${domain} direct" \
+            "'+.${domain}'" "$(<"${default_template}")"
+    done
     assert_contains "Default template resolves the domestic domain library through CN DoH" \
         "rule-set:direct-services,geosite-cn,geosite-geolocation-cn" "$(<"${default_template}")"
     assert_contains "Default template routes existing mainland IPs direct without resolution" \
@@ -618,6 +622,10 @@ test_mihomo_template() {
         "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes mainland SDK domains direct" \
         "GEOSITE,geolocation-cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    for domain in cmpassport.com httpdns.pro ctobsnssdk.com; do
+        assert_contains "Mihomo routes ${domain} direct" \
+            "'+.${domain}'" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    done
     assert_contains "Mihomo routes single-label hosts direct" \
         "DOMAIN-REGEX,^[^.]+$,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes captive portal probes direct" \

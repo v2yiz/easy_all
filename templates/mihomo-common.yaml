@@ -444,6 +444,9 @@ rule-providers:
           - '+.kimi.com'
           - '+.moonshot.cn'
           - '+.minimaxi.com'
+          - '+.cmpassport.com'
+          - '+.httpdns.pro'
+          - '+.ctobsnssdk.com'
     telegram-fallback:
         type: inline
         behavior: ipcidr

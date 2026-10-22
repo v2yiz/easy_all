@@ -600,7 +600,8 @@ try {
     }
     for (const domain of [
         'love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'",
-        "'+.cm.steampowered.com'", "'+.steamserver.net'", ...wechatDomains.map((domain) => `'+.${domain}'`),
+        "'+.cm.steampowered.com'", "'+.steamserver.net'", "'+.cmpassport.com'",
+        "'+.httpdns.pro'", "'+.ctobsnssdk.com'", ...wechatDomains.map((domain) => `'+.${domain}'`),
     ]) {
         assert.ok(directCdn.includes(`        - ${domain}\n`), `${domain} must remain a direct exception`);
     }
