@@ -61,6 +61,12 @@ const badHeaderResp = await worker.fetch(new Request('https://test.invalid/ws', 
 assert.equal(badHeaderResp.status, 400);
 assert.equal(await badHeaderResp.text(), 'Bad request');
 
+// streamOne: POST with header exceeding HEADER_LIMIT -> 400
+const oversizedResp = await worker.fetch(new Request('https://test.invalid/ws', {
+    method: 'POST', body: Buffer.alloc(2049, 0), duplex: 'half',
+}), { UUID: uuid, WS_PATH: '/ws' });
+assert.equal(oversizedResp.status, 400);
+
 // streamOne: POST with trailing slash matches WS_PATH
 const trailingSlashResp = await worker.fetch(new Request('https://test.invalid/ws/', {
     method: 'POST', body: Buffer.from([0, 1, 2, 3]), duplex: 'half',

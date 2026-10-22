@@ -417,26 +417,23 @@ fail2ban_cidr_network_for_ip() {
 }
 
 fail2ban_cidr_acquire_lock() {
-    local attempt owner
-    for attempt in {1..100}; do
-        if mkdir "${LOCK_DIR}" 2>/dev/null; then
-            printf '%s\n' "$$" >"${LOCK_DIR}/pid"
-            return 0
-        fi
-        if [[ -r "${LOCK_DIR}/pid" ]]; then
-            read -r owner <"${LOCK_DIR}/pid" || owner=""
-            if [[ "${owner}" =~ ^[0-9]+$ ]] && ! kill -0 "${owner}" 2>/dev/null; then
-                rm -f -- "${LOCK_DIR}/pid"
-                rmdir "${LOCK_DIR}" 2>/dev/null || true
-                continue
+    exec 9>"${LOCK_FILE}" || return 1
+    if command -v flock >/dev/null 2>&1; then
+        flock -w 10 9 || {
+            printf 'timed out waiting for Fail2ban CIDR ban lock\n' >&2
+            return 1
+        }
+    else
+        local attempt
+        for attempt in {1..100}; do
+            if mkdir "${LOCK_FILE}.d" 2>/dev/null; then
+                return 0
             fi
-        elif ((attempt > 1)); then
-            rmdir "${LOCK_DIR}" 2>/dev/null && continue
-        fi
-        sleep 0.1
-    done
-    printf 'timed out waiting for Fail2ban CIDR ban lock\n' >&2
-    return 1
+            sleep 0.1
+        done
+        printf 'timed out waiting for Fail2ban CIDR ban lock\n' >&2
+        return 1
+    fi
 }
 
 fail2ban_cidr_rule_exists() {
@@ -448,8 +445,9 @@ fail2ban_cidr_rule_exists() {
 }
 
 fail2ban_cidr_release_lock() {
-    rm -f -- "${LOCK_DIR}/pid"
-    rmdir "${LOCK_DIR}" 2>/dev/null || true
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&- 2>/dev/null || true
+    rmdir "${LOCK_FILE}.d" 2>/dev/null || true
 }
 
 fail2ban_cidr_read_count() {
@@ -480,7 +478,7 @@ fail2ban_cidr_main() {
         exit 1
     }
     install -d -m 0700 "${state_dir}"
-    LOCK_DIR="${state_dir}/.lock"
+    LOCK_FILE="${state_dir}/.lock"
     COUNT_FILE="${state_dir}/${STATE_KEY}.count"
     fail2ban_cidr_acquire_lock
     trap fail2ban_cidr_release_lock EXIT

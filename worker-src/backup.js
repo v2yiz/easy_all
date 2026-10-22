@@ -1,7 +1,7 @@
 // Standalone VLESS TCP fallback: pure XHTTP stream-one.
 import { connect } from 'cloudflare:sockets';
 
-const HEADER_LIMIT = 1024;
+const HEADER_LIMIT = 2048;
 const CONNECT_TIMEOUT_MS = 10_000;
 
 export function parseHeader(bytes, uuid) {

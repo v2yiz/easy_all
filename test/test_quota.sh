@@ -35,6 +35,8 @@ generate_secret() {
 
 info() { :; }
 warn() { :; }
+read_bilingual() { :; }
+systemctl() { return 0; }
 
 FAKE_FLOCK_HELD=0
 FAKE_FLOCK_WAIT=""
@@ -194,6 +196,20 @@ assert_equal "disabled user is removed from active accounts" '["owner"]' \
 clients=$(quota_active_clients_json "xtls-rprx-vision")
 assert_equal "only active user is emitted to Xray" '["easy_all.owner"]' \
     "$(jq -c 'map(.email)' <<<"${clients}")"
+
+cat >"${QUOTA_USAGE_FILE}" <<'EOF'
+{"period":"2025-01-15/2025-02-15","users":{
+  "owner":{"used_bytes":100000000000,"last_uplink":0,"last_downlink":0,"disabled":true},
+  "user1":{"used_bytes":100000000000,"last_uplink":0,"last_downlink":0,"disabled":true}
+}}
+EOF
+all_disabled_clients=$(quota_active_clients_json "xtls-rprx-vision")
+assert_equal "all users disabled emits dummy blackhole client" '["easy_all.__disabled__"]' \
+    "$(jq -c 'map(.email)' <<<"${all_disabled_clients}")"
+assert_equal "dummy client has nil UUID" "00000000-0000-0000-0000-000000000000" \
+    "$(jq -r '.[0].id' <<<"${all_disabled_clients}")"
+assert_equal "dummy client preserves flow" "xtls-rprx-vision" \
+    "$(jq -r '.[0].flow' <<<"${all_disabled_clients}")"
 
 USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":1}}'
 cat >"${QUOTA_USAGE_FILE}" <<EOF

@@ -320,9 +320,14 @@ quota_active_clients_json() {
     local flow=${1:-} accounts
     accounts=$(quota_active_accounts_json)
     jq -cn --argjson accounts "${accounts}" --arg flow "${flow}" '
-        [$accounts|to_entries[] |
-          {id:.value.uuid,email:("easy_all." + .key)}
-          + (if $flow == "" then {} else {flow:$flow} end)]'
+        if ($accounts | length) == 0 then
+          [{id:"00000000-0000-0000-0000-000000000000",email:"easy_all.__disabled__"}
+           + (if $flow == "" then {} else {flow:$flow} end)]
+        else
+          [$accounts|to_entries[] |
+            {id:.value.uuid,email:("easy_all." + .key)}
+            + (if $flow == "" then {} else {flow:$flow} end)]
+        end'
 }
 
 quota_usage_file_valid() {
@@ -482,6 +487,11 @@ quota_sync_usage() {
         usage=$(jq --arg runtime_id "${runtime_id}" '
             .runtime_id=$runtime_id |
             .users |= with_entries(.value.last_uplink=0 | .value.last_downlink=0)' <<<"${usage}")
+    fi
+    if command -v systemctl >/dev/null 2>&1 && ! systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null; then
+        warn "Xray 服务未运行，跳过流量统计"
+        release_runtime_write_lock
+        return 0
     fi
     if command -v timeout >/dev/null 2>&1; then
         stats=$(timeout 15 "${XRAY_BIN}" api statsquery --server="${QUOTA_API_LISTEN}") \

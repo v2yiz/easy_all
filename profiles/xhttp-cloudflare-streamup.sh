@@ -748,6 +748,8 @@ xhttp_configure_ufw() {
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw default deny routed >/dev/null
+    ufw_tcp_port_has_unmanaged_anywhere_allow 443 \
+        && die "检测到非 easy_all 管理的 TCP 443 全网放行规则；请先删除该规则，避免暴露源站与绕过 Cloudflare 回源白名单"
     desired_ports=${SSH_PORTS}
     apply_managed_ufw_tcp_ports "${desired_ports}"
     cloudflare_configure_origin_firewall
