@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.6.4 更新说明（2026-10-22）
+
+- 单标签主机名（无点，如 `getmobileredirecthost`、`wpad`、`isatap` 及 `nas`、`router` 等裸设备名）改为 `DOMAIN-REGEX,^[^.]+$,DIRECT`，不再落到 `MATCH,PROXY`；这类名字不是公网域名，直连时依赖本机 hosts 或局域网 DNS。
+- 新增内联 `captive-portal` 集合，覆盖 Android（gstatic/android/clients3）、华为、荣耀、小米、OPPO、vivo、Apple、Firefox、GNOME、KDE 与 Windows NCSI 的连接性检测域名；这些域名使用系统 DNS 并直连，避免被 `proxy-services` 送进代理后无法弹出认证门户或误判网络。
+- `captive-portal` 在 `nameserver-policy` 与规则中都排在 `proxy-services` 之前；单标签规则排在代理规则之前。规则集数量与 MRS 内存预算不变（默认七个、完整版八个）。
+- 新增 `connectivitycheck.gstatic.com`、`getmobileredirecthost`、`wpad` 的真实内核断言；更新 classic 内联集合计数与 8 KiB 预算；文档同步。
+- 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
+
+源码版本标识为 `1.6.4`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.3 更新说明（2026-10-22）
 
 - 默认与完整模板、经典模板新增国内 SDK 域名库 `geosite-geolocation-cn`（约 5 千条，覆盖个推、极光、友盟、GrowingIO、Sensors 等国内推送/统计域名），修复 `cm-10-134.getui.com` 这类域名因不在 `geosite-cn` 中而落到 `MATCH,PROXY`；`geosite-cn` 仍负责约 11 万条国内站点长尾。

@@ -21,6 +21,11 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.4` 让单标签主机名与认证门户/连接性检测域名直连，并使用系统 DNS；单标签主机名不再落入代理。
+已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
+`sudo easy_all update-sub` 重建内嵌模板。认证门户检测域名（含 `connectivitycheck.gstatic.*`）改为直连后，
+受限网络下 Android 可能显示“无网络”，这是本地探测的真实结果。
+
 `1.6.3` 让默认与完整模板、经典模板补上国内 SDK 域名库，`cm-10-134.getui.com` 这类推送/统计域名不再落入代理。
 已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
 `sudo easy_all update-sub` 重建内嵌模板。首次启动会额外下载约 34 KB 的 `geosite-geolocation-cn.mrs`，失败时仍使用内联集合。
