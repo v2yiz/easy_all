@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.6.6 更新说明（2026-10-22）
+
+- 补充腾讯广点通图片域名 `ugdtimg.com` 直连（`pgdt.ugdtimg.com` 等子域）。该域名不在 `cn`/`geolocation-cn` 集合中（同源的 `gdtimg.com` 已在 `geolocation-cn`），fake-IP 下此前会落到 `MATCH,PROXY`。
+- 三套模板同步加入 `direct-services`/`direct-cdn`；国内 DoH 会返回大陆腾讯边缘（实测阿里/腾讯 DoH 为 `112.16.242.130`），避免经代理走香港边缘。
+- 新增 `pgdt.ugdtimg.com` 的真实内核直连断言。
+- 说明：这是广告素材域名，本项目不做广告拦截；如需屏蔽请另加 REJECT 规则。
+- 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
+
+源码版本标识为 `1.6.6`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.5 更新说明（2026-10-22）
 
 - 补充国内认证、HTTPDNS 与 SDK 域名直连：`cmpassport.com`（中国移动认证，含 log2/config 子域）、`httpdns.pro`（HTTPDNS，含 kuaishou 子域）、`ctobsnssdk.com`（穿山甲/字节 SDK 日志）。三者不在 `cn`/`geolocation-cn` 集合中，fake-IP 下此前会落到 `MATCH,PROXY`。

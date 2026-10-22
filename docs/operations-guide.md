@@ -21,6 +21,10 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.6` 补充腾讯广点通图片域名 `ugdtimg.com` 直连，`pgdt.ugdtimg.com` 不再落入代理。
+已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
+`sudo easy_all update-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
+
 `1.6.5` 补充中国移动认证、HTTPDNS 与字节 SDK 域名的直连，避免这些国内服务在 fake-IP 下落入代理。
 已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
 `sudo easy_all update-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
