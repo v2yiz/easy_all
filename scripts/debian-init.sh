@@ -346,15 +346,8 @@ select_or_create_key() {
     PUBLIC_KEY="${PRIVATE_KEY}.pub"
     [[ ! -e "$PRIVATE_KEY" && ! -e "$PUBLIC_KEY" ]] || die "密钥已存在: $PRIVATE_KEY"
 
-    echo "建议为人工登录设置 passphrase；如需完全免交互，直接回车使用空 passphrase。"
-    local passphrase passphrase_confirm
-    passphrase="$(prompt_secret "新私钥 passphrase，回车为空")"
-    if [[ -n "$passphrase" ]]; then
-      passphrase_confirm="$(prompt_secret "再次输入 passphrase")"
-      [[ "$passphrase" == "$passphrase_confirm" ]] || die "两次输入的 passphrase 不一致"
-    fi
-
-    ssh-keygen -t ed25519 -f "$PRIVATE_KEY" -C "${HOST_ALIAS}@${SERVER_HOST}" -N "$passphrase"
+    echo "新密钥的 passphrase 由 ssh-keygen 直接交互设置；如需完全免交互，在提示处直接回车使用空 passphrase。"
+    ssh-keygen -t ed25519 -f "$PRIVATE_KEY" -C "${HOST_ALIAS}@${SERVER_HOST}"
     return
   fi
 
@@ -434,11 +427,8 @@ run_remote_initialization() {
   local normal_user_password="$6"
   local public_key="$7"
   local extra_tcp_ports="$8"
-  local remote_script="/tmp/setup_debian_ssh_key_only_$$.sh"
-  local remote_password_file="/tmp/setup_debian_normal_user_password_$$.txt"
-  local remote_public_key_file="/tmp/setup_debian_normal_user_authorized_key_$$.pub"
-  local remote_platform_module="/tmp/easy_all_platform_$$.sh"
-  local remote_firewall_module="/tmp/easy_all_firewall_$$.sh"
+  local remote_dir remote_script remote_password_file remote_public_key_file
+  local remote_platform_module remote_firewall_module
   local local_script
   local local_password_file
   local_script="$(mktemp)"
@@ -766,27 +756,45 @@ ensure_ssh_fail2ban
 "$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|logingracetime|maxauthtries|maxstartups|persourcemaxstartups|persourcenetblocksize|port|listenaddress) ' || true
 REMOTE
 
+  # 远端临时目录由远端 mktemp 创建，避免固定 /tmp 路径被抢占或残留。
+  if ! remote_dir=$(ssh_with_password_if_possible "$current_port" "$target" \
+    'mktemp -d -p /tmp easy_all_init.XXXXXXXX'); then
+    printf '%s\n' "错误: 无法在远端创建临时目录" >&2
+    return 1
+  fi
+  if [[ ! "$remote_dir" =~ ^/tmp/easy_all_init\.[A-Za-z0-9]+$ ]]; then
+    printf '%s\n' "错误: 远端返回的临时目录无效: $remote_dir" >&2
+    return 1
+  fi
+  remote_script="${remote_dir}/setup_debian_ssh_key_only.sh"
+  remote_password_file="${remote_dir}/normal_user_password.txt"
+  remote_public_key_file="${remote_dir}/normal_user_authorized_key.pub"
+  remote_platform_module="${remote_dir}/platform.sh"
+  remote_firewall_module="${remote_dir}/firewall.sh"
+
   if ! scp_with_password_if_possible "$current_port" "$local_script" "${target}:${remote_script}"; then
+    ssh_with_password_if_possible "$current_port" "$target" \
+      "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
     return 1
   fi
   if ! scp_with_password_if_possible "$current_port" "$PLATFORM_MODULE_FILE" "${target}:${remote_platform_module}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_platform_module'" >/dev/null 2>&1 || true
+      "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
     return 1
   fi
   if ! scp_with_password_if_possible "$current_port" "$FIREWALL_MODULE_FILE" "${target}:${remote_firewall_module}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_platform_module' '$remote_firewall_module'" >/dev/null 2>&1 || true
+      "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
     return 1
   fi
   if ! scp_with_password_if_possible "$current_port" "$local_password_file" "${target}:${remote_password_file}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'" >/dev/null 2>&1 || true
+      "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
     return 1
   fi
   if ! scp_with_password_if_possible "$current_port" "$public_key" "${target}:${remote_public_key_file}"; then
     ssh_with_password_if_possible "$current_port" "$target" \
-      "rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'" >/dev/null 2>&1 || true
+      "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
     return 1
   fi
   rm -f "$local_script"
@@ -797,14 +805,14 @@ REMOTE
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'; exit \$rc"
+      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
   else
     ssh \
       -tt \
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -f '$remote_script' '$remote_password_file' '$remote_public_key_file' '$remote_platform_module' '$remote_firewall_module'; exit \$rc"
+      "sudo bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
   fi
 }
 

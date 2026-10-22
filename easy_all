@@ -376,11 +376,6 @@ main() {
 
     module=$(profile_file "${mode}")
     export EASY_ALL_SELECTED_MODE="${mode}"
-    # The caller may point MIHOMO_TEMPLATE_SOURCE at another bundled or custom
-    # template (file or HTTPS URL); otherwise publish the bundled default.
-    if [[ -z "${MIHOMO_TEMPLATE_SOURCE:-}" && -f "${EASY_ALL_ROOT}/templates/mihomo.yaml" ]]; then
-        export MIHOMO_TEMPLATE_SOURCE="${EASY_ALL_ROOT}/templates/mihomo.yaml"
-    fi
     # shellcheck source=/dev/null
     source "${module}"
 

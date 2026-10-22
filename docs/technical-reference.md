@@ -208,6 +208,17 @@ GitHub 源码归档的压缩字节可能变化；SHA256 不匹配时停止，维
 防止 drift guard 抢回算法，此切换仅停用、不卸载 Skyline；安装回滚与卸载也会取消任务，调用保留的官方卸载器，
 再恢复 easy_all 的 TCP/FQ 备份。
 
+## 月度配额
+
+配额统计任务每分钟读取 Xray 的用户计数并累加。它与配置更新、核心更新共用同一把运行时写锁：
+锁被占用时本轮最多等待 15 秒，超时则跳过并写入 `/etc/easy_all/quota-sync-pending` 标记；Xray
+进程未重启时，后续定时任务会在锁释放后补算已累计的计数。
+
+`quota-usage.json` 损坏时拒绝继续发布配置，命令直接失败并提示从备份恢复或重新启用配额，
+不会把用户当作新账期清零或重新启用。丢失窗口取决于是否重启：持锁的长任务（如 `update-core`
+下载后重启 Xray）期间统计会连续跳过，若长任务结束后 Xray 进程已重启，自上次成功统计以来的
+整个未同步窗口都可能丢失，因为新进程的 Xray 计数从零开始；卸载同样会丢弃未同步的尾部计数。
+
 ## 模块边界
 
 依赖方向为“统一入口 → Profile → 公共模块”：
@@ -293,6 +304,9 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 
 仓库内置模板（默认 `templates/mihomo.yaml`、`templates/mihomo-common.yaml`、
 `templates/mihomo-classic.yaml`）随运行时清单安装，无需在 VPS 安装 Mihomo，在发布命令前用
-`MIHOMO_TEMPLATE_SOURCE` 选择。其他自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
+`MIHOMO_TEMPLATE_SOURCE` 选择。Reality 自托管订阅把选中的模板保存为
+`/etc/easy_all/mihomo-template.yaml`，后续发布沿用该文件；该快照在发布成功时原子替换，但不在
+`update-sub` 失败回滚范围内，回滚后可能比 `state.env` 新。Cloudflare 聚合订阅必须在
+`update-sub` 时传入模板才能重建 Worker。其他自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
 可用 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。

@@ -16,6 +16,7 @@ readonly SCRIPT_DIR="${REALITY_PROFILE_ROOT}/../lib"
 readonly STATE_DIR="/etc/easy_all"
 readonly BACKUP_DIR="${STATE_DIR}/backups"
 readonly STATE_FILE="${STATE_DIR}/state.env"
+readonly MIHOMO_TEMPLATE_SNAPSHOT_FILE="${MIHOMO_TEMPLATE_SNAPSHOT_FILE_OVERRIDE:-${STATE_DIR}/mihomo-template.yaml}"
 readonly CERT_DIR="${STATE_DIR}/certs"
 readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
 readonly KEY_FILE="${CERT_DIR}/private.key"
@@ -210,8 +211,51 @@ source_state_file() {
     fi
 }
 
+resolve_persisted_mihomo_template() {
+    MIHOMO_TEMPLATE_SNAPSHOT=${MIHOMO_TEMPLATE_SNAPSHOT:-0}
+    [[ "${MIHOMO_TEMPLATE_SNAPSHOT}" == "1" ]] || return 0
+    if [[ -r "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" && -s "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" ]]; then
+        # Only preselect the persisted file: an explicit MIHOMO_TEMPLATE_SOURCE in this
+        # process still wins, and validation stays mandatory in prepare_mihomo_template.
+        MIHOMO_TEMPLATE_FILE=${MIHOMO_TEMPLATE_SNAPSHOT_FILE}
+        MIHOMO_TEMPLATE_TRUSTED=1
+        return 0
+    fi
+    MIHOMO_TEMPLATE_SNAPSHOT=0
+    MIHOMO_TEMPLATE_FILE=""
+}
+
+persist_mihomo_template_snapshot() {
+    local temp
+    [[ -n "${MIHOMO_TEMPLATE_FILE:-}" && -s "${MIHOMO_TEMPLATE_FILE}" ]] \
+        || die "缺少待持久化的 Mihomo 模板"
+    install -d -m 0700 "${STATE_DIR}" || die "创建状态目录失败"
+    if [[ -s "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" ]] \
+        && cmp -s "${MIHOMO_TEMPLATE_FILE}" "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"; then
+        MIHOMO_TEMPLATE_FILE=${MIHOMO_TEMPLATE_SNAPSHOT_FILE}
+    else
+        temp=$(mktemp "${STATE_DIR}/mihomo-template.yaml.XXXXXX") \
+            || die "创建 Mihomo 模板快照暂存文件失败"
+        cleanup_files+=("${temp}")
+        install -m 0600 "${MIHOMO_TEMPLATE_FILE}" "${temp}" \
+            || die "复制 Mihomo 模板快照失败"
+        mv -f -- "${temp}" "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" \
+            || die "原子替换 Mihomo 模板快照失败"
+        MIHOMO_TEMPLATE_FILE=${MIHOMO_TEMPLATE_SNAPSHOT_FILE}
+    fi
+    MIHOMO_TEMPLATE_SNAPSHOT=1
+    MIHOMO_TEMPLATE_TRUSTED=1
+    MIHOMO_TEMPLATE_PREPARED=1
+}
+
 load_state() {
-    local variable env_name state_loaded=0
+    local variable env_name state_loaded=0 reload=0
+    if [[ "${1:-}" == "--reload" ]]; then
+        # --reload 读取磁盘真值：不回填调用方当前值，否则拿不到已变更的持久化身份。
+        reload=1
+    elif (($# > 0)); then
+        die "load_state 不支持参数：$1"
+    fi
     local -a variables=(
         PROTOCOL CDN_PROVIDER TCP_ACCELERATION NODE_NAME NODE_HOST VLESS_UUID REALITY_TARGET
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
@@ -223,23 +267,29 @@ load_state() {
         CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_STRICT_RULESET_ID
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
+        MIHOMO_TEMPLATE_SNAPSHOT
     )
     for variable in "${variables[@]}"; do
-        env_name="EASY_ALL_ENV_${variable}"
-        printf -v "${env_name}" '%s' "${!variable:-}"
+        if [[ "${reload}" != "1" ]]; then
+            env_name="EASY_ALL_ENV_${variable}"
+            printf -v "${env_name}" '%s' "${!variable:-}"
+        fi
         printf -v "${variable}" '%s' ""
     done
     if [[ -f "${STATE_FILE}" ]]; then
         source_state_file
         state_loaded=1
     fi
-    for variable in "${variables[@]}"; do
-        env_name="EASY_ALL_ENV_${variable}"
-        if [[ -n "${!env_name:-}" ]]; then
-            printf -v "${variable}" '%s' "${!env_name}"
-        fi
-        unset "${env_name}"
-    done
+    if [[ "${reload}" != "1" ]]; then
+        for variable in "${variables[@]}"; do
+            env_name="EASY_ALL_ENV_${variable}"
+            if [[ -n "${!env_name:-}" ]]; then
+                printf -v "${variable}" '%s' "${!env_name}"
+            fi
+            unset "${env_name}"
+        done
+    fi
+    resolve_persisted_mihomo_template
     CDN_PROVIDER=""
     TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
         || die "状态文件中的 TCP_ACCELERATION 无效"
@@ -319,6 +369,7 @@ save_state() {
         printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
         printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
         printf 'QUOTA_START_DATE=%q\n' "${QUOTA_START_DATE:-}"
+        printf 'MIHOMO_TEMPLATE_SNAPSHOT=%q\n' "${MIHOMO_TEMPLATE_SNAPSHOT:-0}"
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-link}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
         printf 'SUBSCRIPTION_DOMAIN=%q\n' "${SUBSCRIPTION_DOMAIN:-}"
@@ -959,6 +1010,8 @@ rotate_dynamic_ports() {
     ufw reload >/dev/null || die "刷新动态端口 NAT 规则失败"
     if subscription_enabled; then
         install_static_subscriptions
+        # Persist the snapshot flag so later scheduled rotations reuse the same template.
+        save_state
     fi
     end_quota_maintenance
     success "动态端口 NAT 已刷新：开放 ${DYNAMIC_PORT_OPEN_WINDOWS} 个端口，覆盖最近 ${DYNAMIC_PORT_RETENTION_DAYS} 天并预开放当天及次日凌晨端口"
@@ -1243,6 +1296,8 @@ install_static_subscriptions() {
     local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
     local stage_dir user uuid user_dir
     install -d -m 0755 "${WEB_ROOT}"
+    prepare_mihomo_template
+    persist_mihomo_template_snapshot
     stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
         || die "创建订阅暂存目录失败"
     cleanup_files+=("${stage_dir}")
@@ -1307,13 +1362,14 @@ EOF
 }
 
 validate_subscription_runtime() {
-    local token base64_response base64_decoded mihomo_response
+    local token base64_response base64_decoded mihomo_response accounts
     validate_subscription_token_rejection \
         "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe" \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
     if quota_enabled; then
-        token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
+        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
+        token=$(jq -r 'first(.[].token) // empty' <<<"${accounts}")
         [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
@@ -1708,6 +1764,10 @@ rebuild_traffic_runtime() {
 show_node() {
     local port
     collect_installed_state
+    if quota_enabled; then
+        printf '\n配额已启用：owner 凭据为不限量账号，请使用 show_subscription 输出的各用户订阅地址，避免分发 owner 节点绕过配额。\n\n'
+        return 0
+    fi
     port=$(generate_subscription_port)
     printf '\n协议: %s\n节点链接:\n%s\n\n' \
         "${PROTOCOL}" "$(build_node_link "${port}")"
@@ -1896,6 +1956,13 @@ uninstall_all() {
                 '删除 easy_all 本机服务、状态和备份（保留 Cloudflare 资源）？[y/N]:' answer
         fi
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
+    fi
+    stop_maintenance_services
+    acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
+    # 必须读磁盘真值：等待锁期间其他任务可能已改写模式/域名/Zone/证书/ruleset，
+    # 普通 load_state 会回填等待前的内存值，导致漏删或错删 Cloudflare 资源。
+    if [[ -f "${STATE_FILE}" ]]; then
+        load_state --reload
     fi
     UNINSTALL_PURGE_CLOUD=0
     [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1

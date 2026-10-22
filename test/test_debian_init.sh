@@ -353,6 +353,16 @@ test_script_surface_contract() {
         '额外监听 `65533`' "${guide}"
     assert_contains "guide documents disabled SSH password login" \
         '关闭 SSH 密码登录' "${guide}"
+    assert_not_contains "script does not reuse a predictable remote script path" \
+        '/tmp/setup_debian_ssh_key_only_$$' "${content}"
+    assert_not_contains "script does not reuse a predictable remote password path" \
+        '/tmp/setup_debian_normal_user_password_$$' "${content}"
+    assert_contains "script creates an unpredictable remote work directory" \
+        'mktemp -d -p /tmp easy_all_init.XXXXXXXX' "${content}"
+    assert_contains "script validates the remote work directory" \
+        '^/tmp/easy_all_init\.[A-Za-z0-9]+$' "${content}"
+    assert_not_contains "script never passes the key passphrase in argv" \
+        ' -N "$passphrase"' "${content}"
 }
 
 test_bbr_matches_easy_all() {

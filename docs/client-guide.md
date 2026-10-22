@@ -176,7 +176,8 @@ sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common.yaml
 Cloudflare 聚合 Worker 会重新构建并内嵌所选模板，改用
 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply-cloud` 即可让所有客户端生效。自定义模板路径
 同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板已在 CI 用固定
-内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。
+内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。Reality 自托管订阅
+会把选中的模板保存在服务器上，后续 `apply`、`update-sub` 与动态端口轮换沿用同一模板。
 
 ## 订阅更新失败
 

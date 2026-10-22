@@ -74,7 +74,9 @@ collect_worker_backup_inputs() {
     [[ -n "${domain}" ]] || return 0
     WORKER_BACKUP_DOMAIN=$(normalize_domain "${domain}")
     WORKER_BACKUP_NAME=${WORKER_BACKUP_NAME:-easyall-backup-$(printf '%s' "${WORKER_BACKUP_DOMAIN}" | sha256sum | cut -c1-10)}
-    WORKER_BACKUP_UUID=${WORKER_BACKUP_UUID:-${VLESS_UUID:-$(declare -F generate_user_uuid >/dev/null 2>&1 && generate_user_uuid || cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')}}
+    # The fallback Worker keeps an independent UUID; reusing the VPS node UUID would
+    # couple the two deployments' credentials.
+    WORKER_BACKUP_UUID=${WORKER_BACKUP_UUID:-$(declare -F generate_user_uuid >/dev/null 2>&1 && generate_user_uuid || cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')}
     WORKER_BACKUP_PATH=${WORKER_BACKUP_PATH:-/vless-$(openssl rand -hex 12)}
     WORKER_BACKUP_PLACEMENT=${WORKER_BACKUP_PLACEMENT:-off}
     WORKER_BACKUP_IPS=${WORKER_BACKUP_IPS:-[]}

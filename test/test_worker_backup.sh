@@ -389,4 +389,19 @@ done
 # Old installations remain unchanged.
 unset WORKER_BACKUP_DOMAIN
 [[ -z "$(build_worker_backup_links)" ]] || fail 'legacy installation'
+
+# A new fallback Worker must never inherit the VPS node UUID.
+(
+    unset WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_UUID WORKER_BACKUP_PATH \
+        WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT WORKER_BACKUP_DECOMMISSION
+    generate_user_uuid() { printf '22222222-3333-4444-8555-666666666666'; }
+    normalize_domain() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+    VLESS_UUID=11111111-2222-4333-8444-555555555555
+    WORKER_BACKUP_DOMAIN=backup.example.com
+    collect_worker_backup_inputs </dev/null
+    [[ "${WORKER_BACKUP_UUID}" != "${VLESS_UUID}" ]] \
+        || fail 'a new Worker backup must not reuse the VPS node UUID'
+    [[ "${WORKER_BACKUP_UUID}" == "22222222-3333-4444-8555-666666666666" ]] \
+        || fail 'a new Worker backup must use the generated UUID helper'
+)
 printf 'ok - Worker backup deployment, independent quota, refresh and rollback\n'

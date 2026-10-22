@@ -573,9 +573,10 @@ cloudflare_validate_subscription_worker() {
         : >"${headers}"
         : >"${body}"
         curl_status=0
-        status=$(curl -sS "${worker_curl_args[@]}" --connect-timeout 5 --max-time 30 \
+        status=$(printf '%s' "${token:-invalid}" | curl -sS "${worker_curl_args[@]}" \
+            --connect-timeout 5 --max-time 30 \
             -D "${headers}" -o "${body}" -w '%{http_code}' \
-            --get --data-urlencode "token=${token:-invalid}" \
+            --get --data-urlencode 'token@-' \
             --data-urlencode "flag=base64" \
             "https://${SUBSCRIPTION_DOMAIN}/subscribe" 2>/dev/null) || curl_status=$?
         if [[ "${curl_status}" == "0" && -n "${token}" && "${status}" == "200" ]] \
@@ -650,9 +651,9 @@ cloudflare_validate_subscription_worker() {
     fi
 
     if [[ -n "${token}" ]]; then
-        status=$(curl -sS --connect-timeout 5 --max-time 20 \
+        status=$(printf '%s' "${token}" | curl -sS --connect-timeout 5 --max-time 20 \
             -o /dev/null -w '%{http_code}' --get \
-            --data-urlencode "token=${token}" \
+            --data-urlencode 'token@-' \
             "https://${VLESS_CDN_DOMAIN}/subscribe" 2>/dev/null || true)
         [[ "${status}" == "404" ]] \
             || die "Nginx 节点源可被绕过 Worker 直接访问（HTTP ${status:-000}）"
@@ -2433,7 +2434,7 @@ purge_cloudflare_resources_before_uninstall() {
 }
 
 uninstall_all() {
-    local mode=${1:-} answer
+    local mode=${1:-} answer state_path
     require_root
     [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
         || die "uninstall 不支持参数：${mode}"
@@ -2455,6 +2456,13 @@ uninstall_all() {
                 '删除本机内容（Cloudflare 资源保留）？[y/N]:' answer
         fi
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
+    fi
+    stop_maintenance_services
+    acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
+    # 拿到写锁后重新读取状态，避免使用等待期间已被其他任务更新的旧值。
+    state_path="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
+    if [[ -f "${state_path}" ]]; then
+        load_state
     fi
     purge_cloudflare_resources_before_uninstall
     stop_services

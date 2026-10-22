@@ -157,8 +157,8 @@ assert_contains "operations guide documents retired lite template migration" \
     "${OPERATIONS_CONTENT}" 'templates/mihomo-common-lite.yaml'
 assert_contains "operations guide provides a classic rollback command" \
     "${OPERATIONS_CONTENT}" 'sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-classic.yaml easy_all update-sub'
-assert_contains "operations guide documents non-persistent template selection" \
-    "${OPERATIONS_CONTENT}" '模板选择不持久化'
+assert_contains "operations guide documents persisted Reality template selection" \
+    "${OPERATIONS_CONTENT}" 'Reality 自托管订阅会把选中的模板持久化到 `/etc/easy_all/mihomo-template.yaml`'
 
 WINDOWS_ROW=$(grep '^| Windows ' "${ROOT_DIR}/docs/client-guide.md")
 ANDROID_ROW=$(grep '^| Android ' "${ROOT_DIR}/docs/client-guide.md")

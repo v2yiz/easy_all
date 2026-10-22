@@ -20,8 +20,10 @@ fail() {
 
 [[ "${LAUNCHER_CONTENT}" == *'export LANG=C.UTF-8 LC_ALL=C.UTF-8'* ]] \
     || fail "launcher must normalize inherited locale settings"
-[[ "${LAUNCHER_CONTENT}" == *'-z "${MIHOMO_TEMPLATE_SOURCE:-}"'* ]] \
-    || fail "launcher must keep an operator-provided Mihomo template source"
+[[ "${LAUNCHER_CONTENT}" != *'export MIHOMO_TEMPLATE_SOURCE='* ]] \
+    || fail "launcher must not inject a default Mihomo template source"
+[[ "$(<"${CLOUDFLARE_PROFILE}")" != *'--data-urlencode "token=${token'* ]] \
+    || fail "Cloudflare Worker validation must not pass subscription tokens on the command line"
 
 module_functions() {
     sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' "$1"
@@ -166,6 +168,19 @@ grep -Eq '^cleanup\(\)' "${RUNTIME_CORE}" \
 grep -Eq '^uri_encode\(\)' "${RUNTIME_CORE}" \
     && ! grep -Eq '^uri_encode\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" \
     || fail "runtime URI encoding must have one shared implementation"
+[[ "$(<"${RUNTIME_CORE}")" == *'stop easy_all-quota.service easy_all-globalping-refresh.service'* ]] \
+    || fail "runtime core must own stopping one-shot maintenance services"
+for uninstall_profile in "${REALITY_PROFILE}" "${CLOUDFLARE_PROFILE}"; do
+    uninstall_body=$(sed -n '/^uninstall_all()/,/^}/p' "${uninstall_profile}")
+    stop_maintenance_line=$(grep -n '^    stop_maintenance_services$' <<<"${uninstall_body}" | cut -d: -f1)
+    write_lock_line=$(grep -n '^    acquire_runtime_write_lock ' <<<"${uninstall_body}" | cut -d: -f1)
+    first_delete_line=$(grep -nE '^[[:space:]]*(purge_cloudflare_resources_before_uninstall|reality_cloudflare_purge_managed_resources|stop_protocol_services|stop_services)\b' \
+        <<<"${uninstall_body}" | head -n 1 | cut -d: -f1)
+    [[ -n "${stop_maintenance_line}" && -n "${write_lock_line}" && -n "${first_delete_line}" \
+        && "${stop_maintenance_line}" -lt "${write_lock_line}" \
+        && "${write_lock_line}" -lt "${first_delete_line}" ]] \
+        || fail "uninstall must stop maintenance units and take the runtime write lock before deleting (${uninstall_profile})"
+done
 ! grep -Eq '^(main|usage)\(\)' "${REALITY_PROFILE}" "${CLOUDFLARE_PROFILE}" \
     || fail "profiles must not own command dispatch or usage tables"
 
@@ -308,6 +323,23 @@ if normalize_allowed_tokens \
     '{"owner":"test-token"," owner ":"friend-token"}' >/dev/null 2>&1; then
     fail "shared subscription auth accepts duplicate normalized usernames"
 fi
+
+(
+    quota_enabled() { return 0; }
+    quota_active_accounts_json() { return 1; }
+    die() { exit 1; }
+    if (write_subscription_token_map) >/dev/null 2>&1; then
+        fail "token map must fail when quota accounts cannot be read"
+    fi
+)
+(
+    quota_enabled() { return 0; }
+    quota_active_accounts_json() { printf '%s' '{"owner":{"token":"t"}}'; }
+    output=$(write_subscription_token_map) \
+        || fail "token map must still render readable quota accounts"
+    [[ "${output}" == *'"t" "owner";'* ]] \
+        || fail "token map must include the active quota token"
+)
 
 [[ "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_mtu_probing = 1'* \
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'net.ipv4.tcp_slow_start_after_idle = 0'* \

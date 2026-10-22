@@ -90,8 +90,22 @@ fetch_mihomo_template() {
 
 prepare_mihomo_template() {
     local template
-    if [[ -n "${MIHOMO_TEMPLATE_FILE:-}" && -s "${MIHOMO_TEMPLATE_FILE}" ]]; then
-        validate_mihomo_template "${MIHOMO_TEMPLATE_FILE}"
+    # A template already prepared by this process is reused as-is; other callers must
+    # still pass through validation below.
+    if [[ "${MIHOMO_TEMPLATE_PREPARED:-0}" == "1" \
+        && -n "${MIHOMO_TEMPLATE_FILE:-}" && -r "${MIHOMO_TEMPLATE_FILE}" \
+        && -s "${MIHOMO_TEMPLATE_FILE}" ]]; then
+        return 0
+    fi
+    # An explicit source always wins over a preselected or persisted template file.
+    if [[ -n "${MIHOMO_TEMPLATE_SOURCE:-}" ]]; then
+        template="${RUNTIME_TMP}/sample-mihomo.yaml"
+        fetch_mihomo_template "${template}"
+        MIHOMO_TEMPLATE_FILE=${template}
+        return 0
+    fi
+    if [[ -n "${MIHOMO_TEMPLATE_FILE:-}" ]]; then
+        validate_mihomo_template "${MIHOMO_TEMPLATE_FILE}" "${MIHOMO_TEMPLATE_TRUSTED:-0}"
         return 0
     fi
     template="${RUNTIME_TMP}/sample-mihomo.yaml"

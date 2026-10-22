@@ -48,6 +48,7 @@ export NGINX_CONFIG="${TMP_DIR}/nginx.conf"
 export CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE="${TMP_DIR}/worker.js"
 export STATE_FILE="${STATE_DIR}/state.env"
 export EASY_ALL_STATE_FILE_OVERRIDE="${STATE_DIR}/state.env"
+export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP_DIR}/runtime-write.lock"
 export VLESS_CDN_DOMAIN="node.example.com"
 export CLOUDFLARE_ORIGIN_DOMAIN="node.example.com"
 export XHTTP_ORIGIN_DOMAIN="node.example.com"
@@ -508,6 +509,7 @@ assert_not_contains "Names do not contain 🇺🇸优选1" "${names_output}" '"�
 assert_not_contains "Names do not contain 电信优选" "${names_output}" '"电信优选"'
 
 # Test write_subscriptions: supports Universal (Base64) and Clash (Mihomo)
+original_validate_subscription_runtime=$(declare -f validate_subscription_runtime)
 validate_subscription_runtime() { :; }
 write_subscriptions
 
@@ -1158,6 +1160,43 @@ assert_contains "Cloudflare 525 is auxiliary evidence after XHTTP retries" \
     load_state
     assert_equal "Purge retries old subscription ownership while mode is link" '[]' "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}"
 
+    # A busy runtime writer must stop uninstall before any purge or local change.
+    reset_subscription_fixture
+    stop_services() { printf 'stopped\n' >"${retirement_dir}/stopped-services"; }
+    stop_maintenance_services() { printf 'stopped\n' >"${retirement_dir}/stopped-maintenance"; }
+    if (
+        acquire_runtime_write_lock() { die "mock busy runtime lock"; }
+        uninstall_all --purge-cloud
+    ) >"${retirement_dir}/lock-error" 2>&1; then
+        fail "Uninstall must abort when the runtime lock cannot be taken"
+    fi
+    [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] \
+        || fail "A failed lock wait must preserve local state"
+    [[ -f "${retirement_dir}/stopped-maintenance" ]] \
+        || fail "Uninstall must stop maintenance units before the lock wait"
+    [[ ! -e "${retirement_dir}/stopped-services" ]] \
+        || fail "A failed lock wait must not stop local services"
+    [[ ! -e "${retirement_dir}/stopped" ]] \
+        || fail "A failed lock wait must not purge anything else"
+    if command -v flock >/dev/null 2>&1; then
+        exec {held_lock_fd}>"${RUNTIME_WRITE_LOCK_FILE}"
+        flock -w 5 "${held_lock_fd}" || fail "Unable to hold the runtime write lock for the test"
+        if (UNINSTALL_LOCK_WAIT_OVERRIDE=1 uninstall_all --purge-cloud) \
+            >"${retirement_dir}/lock-error" 2>&1; then
+            fail "A busy runtime lock must stop uninstall"
+        fi
+        flock -u "${held_lock_fd}"
+        exec {held_lock_fd}>&-
+        [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] \
+            || fail "A failed lock wait must preserve local state"
+        [[ -f "${retirement_dir}/stopped-maintenance" ]] \
+            || fail "Uninstall must stop maintenance units before waiting for the lock"
+        [[ ! -e "${retirement_dir}/stopped-services" ]] \
+            || fail "A failed lock wait must not stop local services"
+        [[ ! -e "${retirement_dir}/stopped" ]] \
+            || fail "A failed lock wait must not purge anything else"
+    fi
+
     # Missing bindings are already clean, and failed result persistence keeps ownership.
     reset_subscription_fixture
     SUBSCRIPTION_MODE=link
@@ -1362,20 +1401,26 @@ assert_contains "Quota mode keeps strict acceptance failure" \
         printf 'not-an-ip\n127.0.0.1\n104.16.1.1\n'
     }
     curl() {
-        local header_file="" body_file="" resolved=0 invalid=0 source=0
+        local header_file="" body_file="" resolved=0 source=0 request_token=""
         while (($#)); do
             case "$1" in
                 --resolve) [[ "$2" == "${SUBSCRIPTION_DOMAIN}:443:104.16.1.1" ]] || return 99; resolved=1; shift ;;
                 -D) header_file=$2; shift ;;
                 -o) body_file=$2; shift ;;
-                *token=invalid*) invalid=1 ;;
+                --data-urlencode) [[ "$2" != "token@-" ]] || request_token=$(cat); shift ;;
                 "https://${VLESS_CDN_DOMAIN}/subscribe") source=1 ;;
             esac
             shift
         done
         if ((source)); then printf 404; return; fi
         if (( ! resolved )); then printf 000; return 6; fi
-        if ((invalid)); then printf 403; return; fi
+        # The token arrives on stdin (never in argv); an unknown token must be rejected.
+        if [[ -z "${request_token}" ]] \
+            || ! jq -e --arg token "${request_token}" 'any(.[]; . == $token)' \
+                <<<"${ALLOWED_TOKENS}" >/dev/null 2>&1; then
+            printf 403
+            return
+        fi
         : >"${header_file}"
         printf 'vless://test-node' | openssl base64 -A >"${body_file}"
         printf 200
@@ -1513,5 +1558,21 @@ assert_contains "Cloudflare status reports backend listener health" \
     "${status_output}" '后端 TCP 10086: listening'
 assert_contains "Cloudflare status reports Nginx health" "${status_output}" 'Nginx: active'
 assert_contains "Cloudflare status reports quota health" "${status_output}" '配额: active'
+
+# Subscription acceptance must fail closed when the quota usage file cannot be read
+# instead of treating the failure as "all quota users are disabled".
+if (
+    eval "${original_validate_subscription_runtime}"
+    xhttp_validate_local_tls_curl_args() { :; }
+    validate_subscription_token_rejection() { :; }
+    quota_enabled() { return 0; }
+    quota_active_accounts_json() { return 1; }
+    die() { exit 1; }
+    XHTTP_ORIGIN_DOMAIN=x
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
+    validate_subscription_runtime
+); then
+    fail "subscription acceptance must fail when quota accounts cannot be read"
+fi
 
 printf 'ok - Cloudflare pure XHTTP stream-up (Mode 2) tests passed\n'

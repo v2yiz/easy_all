@@ -309,7 +309,7 @@ validate_protocol_runtime() {
 }
 
 validate_subscription_runtime() {
-    local token base64_response base64_decoded mihomo_response marker
+    local token base64_response base64_decoded mihomo_response marker accounts
     XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
@@ -320,7 +320,8 @@ validate_subscription_runtime() {
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe" \
         "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}"
     if quota_enabled; then
-        token=$(jq -r 'first(.[].token) // empty' <<<"$(quota_active_accounts_json)")
+        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
+        token=$(jq -r 'first(.[].token) // empty' <<<"${accounts}")
         [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")

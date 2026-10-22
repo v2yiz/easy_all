@@ -9,7 +9,8 @@ readonly QUOTA_TIMER_FILE="/etc/systemd/system/easy_all-quota.timer"
 readonly QUOTA_SERVICE="easy_all-quota.service"
 readonly QUOTA_TIMER="easy_all-quota.timer"
 readonly QUOTA_MAINTENANCE_FILE="${STATE_DIR}/quota-maintenance"
-readonly RUNTIME_WRITE_LOCK_FILE="${STATE_DIR}/runtime-write.lock"
+readonly QUOTA_SYNC_PENDING_FILE="${STATE_DIR}/quota-sync-pending"
+readonly RUNTIME_WRITE_LOCK_FILE="${RUNTIME_WRITE_LOCK_FILE_OVERRIDE:-${STATE_DIR}/runtime-write.lock}"
 
 RUNTIME_WRITE_LOCK_DEPTH=0
 QUOTA_MAINTENANCE_ACTIVE=0
@@ -25,7 +26,10 @@ try_acquire_runtime_write_lock() {
     fi
     command -v flock >/dev/null 2>&1 \
         || die "缺少 flock；无法保护 easy_all 运行时更新"
-    install -d -m 0700 "${STATE_DIR}"
+    # Only the lock file's own directory is needed here; callers that own state create
+    # STATE_DIR separately.
+    install -d -m 0700 "$(dirname "${RUNTIME_WRITE_LOCK_FILE}")" \
+        || die "无法创建 easy_all 运行时锁目录"
     exec 9>"${RUNTIME_WRITE_LOCK_FILE}" \
         || die "无法打开 easy_all 运行时锁：${RUNTIME_WRITE_LOCK_FILE}"
     if ! flock -w "${1:-0}" 9; then
@@ -321,11 +325,43 @@ quota_active_clients_json() {
           + (if $flow == "" then {} else {flow:$flow} end)]'
 }
 
+quota_usage_file_valid() {
+    [[ -e "${QUOTA_USAGE_FILE}" ]] || return 0
+    [[ -s "${QUOTA_USAGE_FILE}" ]] || return 1
+    # A half-written or hand-edited file must never be read as an empty period: every
+    # accounting field is required, only runtime_id stays optional for older imports.
+    # Slurp and require exactly one top-level value so two concatenated legal usage
+    # objects cannot bypass the structural check (jq evaluates multiple inputs
+    # independently and only its final exit status is observed here).
+    jq -es '
+        try (
+          length == 1
+          and (.[0] | type == "object")
+          and ((.[0].period | type) == "string")
+          and (.[0].period | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
+          and ((.[0].users | type) == "object")
+          and all(.[0].users[];
+              (type == "object")
+              and ((.used_bytes | type) == "number") and (.used_bytes >= 0)
+              and ((.last_uplink | type) == "number") and (.last_uplink >= 0)
+              and ((.last_downlink | type) == "number") and (.last_downlink >= 0)
+              and ((.disabled | type) == "boolean"))
+          and ((.[0] | has("runtime_id") | not) or ((.[0].runtime_id | type) == "string"))
+        ) catch false' "${QUOTA_USAGE_FILE}" >/dev/null 2>&1
+}
+
+require_quota_usage_file_valid() {
+    quota_usage_file_valid \
+        || die "配额状态文件损坏：${QUOTA_USAGE_FILE}；请从备份恢复或重新启用配额"
+}
+
 quota_active_accounts_json() {
     local disabled='[]'
-    if [[ -s "${QUOTA_USAGE_FILE}" ]]; then
+    if [[ -e "${QUOTA_USAGE_FILE}" ]]; then
+        require_quota_usage_file_valid
         disabled=$(jq -c '[.users|to_entries[]?|select(.value.disabled == true)|.key]' \
-            "${QUOTA_USAGE_FILE}" 2>/dev/null || printf '[]')
+            "${QUOTA_USAGE_FILE}") \
+            || die "配额状态文件损坏：${QUOTA_USAGE_FILE}；请从备份恢复或重新启用配额"
     fi
     jq -cn --argjson accounts "${USER_ACCOUNTS}" --argjson disabled "${disabled}" '
         reduce (($accounts|to_entries[]) as $item |
@@ -338,7 +374,9 @@ initialize_quota_usage() {
     quota_enabled || return 0
     period=$(quota_current_period)
     install -d -m 0700 "${STATE_DIR}"
-    if [[ ! -s "${QUOTA_USAGE_FILE}" ]]; then
+    # Only a truly missing file is initialised; an existing but empty/corrupt file is
+    # left untouched and rejected later by require_quota_usage_file_valid.
+    if [[ ! -e "${QUOTA_USAGE_FILE}" ]]; then
         jq -n --arg period "${period}" --argjson accounts "${USER_ACCOUNTS}" '
             {period:$period,runtime_id:"",users:
               (reduce ($accounts|keys[]) as $user ({};
@@ -409,7 +447,13 @@ quota_sync_usage() {
     local runtime_id previous_runtime_id
     local period_reset=0
     require_root
-    try_acquire_runtime_write_lock || return 0
+    if ! try_acquire_runtime_write_lock 15; then
+        warn "另一个 easy_all 任务正在运行，本轮配额统计已跳过；锁释放后由定时任务补算"
+        install -d -m 0700 "${STATE_DIR}"
+        install -m 0600 /dev/null "${QUOTA_SYNC_PENDING_FILE}"
+        return 0
+    fi
+    rm -f -- "${QUOTA_SYNC_PENDING_FILE}"
     if [[ "${QUOTA_MAINTENANCE_ACTIVE}" == "1" ]]; then
         release_runtime_write_lock
         return 0
@@ -420,6 +464,7 @@ quota_sync_usage() {
         return 0
     fi
     initialize_quota_usage
+    require_quota_usage_file_valid
     period=$(quota_current_period)
     usage=$(<"${QUOTA_USAGE_FILE}")
     original_usage=${usage}
@@ -503,9 +548,13 @@ show_quota_status() {
         return 0
     fi
     initialize_quota_usage
+    require_quota_usage_file_valid
     usage=$(<"${QUOTA_USAGE_FILE}")
     printf '月度流量配额: enabled（UTC 账期 %s，锚定开通日 %s）\n' \
         "$(jq -r '.period' <<<"${usage}")" "${QUOTA_START_DATE}"
+    if [[ -f "${QUOTA_SYNC_PENDING_FILE}" ]]; then
+        printf '配额统计暂停中：另有任务持有运行时锁，锁释放后自动补算\n'
+    fi
     while IFS=$'\t' read -r user quota; do
         used=$(jq -r --arg user "${user}" '.users[$user].used_bytes // 0' <<<"${usage}")
         disabled=$(jq -r --arg user "${user}" '.users[$user].disabled // false' <<<"${usage}")

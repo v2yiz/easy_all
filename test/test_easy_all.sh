@@ -79,6 +79,7 @@ source_script_copy() {
     EASY_ALL_FAIL2BAN_ACTION_CONFIG="${TMP_DIR}/fail2ban/action.d/easy-all-ufw-cidr.conf"
     EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/cmd/fail2ban-ufw-cidr.sh"
     EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban-state"
+    MIHOMO_TEMPLATE_SNAPSHOT_FILE_OVERRIDE="${TMP_DIR}/state/mihomo-template.yaml"
     # shellcheck source=/dev/null
     source "${SCRIPT_COPY}"
     MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/templates/mihomo-classic.yaml"
@@ -691,6 +692,13 @@ test_subscription_generation() {
         "@203.0.113.10:${expected_dynamic_port}?" "${node_output}"
     assert_contains "show node uses the same dynamic port in Mihomo" \
         "port: ${expected_dynamic_port}" "${node_output}"
+    QUOTA_ENABLED=1
+    node_output=$(show_node)
+    QUOTA_ENABLED=0
+    assert_not_contains "quota mode hides the unlimited owner node link" \
+        "vless://" "${node_output}"
+    assert_contains "quota mode points to per-user subscriptions" \
+        "避免分发 owner 节点绕过配额" "${node_output}"
     assert_equal "dynamic subscription port follows the current three-hour window" \
         "${expected_dynamic_port}" "$(generate_subscription_port)"
     assert_equal "dynamic subscription port is stable within the same window" \
@@ -772,6 +780,63 @@ test_subscription_generation() {
     assert_contains "legacy dual state still renders an IPv4-only client node" \
         "ip-version: ipv4" "$(build_mihomo_node 443)"
     unset -f collect_installed_state dig
+}
+
+test_mihomo_template_snapshot() {
+    local source="${ROOT_DIR}/templates/mihomo-classic.yaml"
+    local saved_source=${MIHOMO_TEMPLATE_SOURCE:-}
+    set_fixture
+    QUOTA_ENABLED=0
+    install -d -m 0700 "${STATE_DIR}"
+    rm -f -- "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"
+    MIHOMO_TEMPLATE_SOURCE=""
+    MIHOMO_TEMPLATE_FILE=${source}
+    MIHOMO_TEMPLATE_PREPARED=0
+    MIHOMO_TEMPLATE_TRUSTED=0
+    MIHOMO_TEMPLATE_SNAPSHOT=0
+    persist_mihomo_template_snapshot
+    assert_equal "selected template is persisted beside the state file" \
+        "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" "${MIHOMO_TEMPLATE_FILE}"
+    assert_equal "persisting a snapshot records the state flag" \
+        "1" "${MIHOMO_TEMPLATE_SNAPSHOT}"
+    assert_success "snapshot copies the selected template byte for byte" \
+        cmp -s "${source}" "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"
+
+    MIHOMO_TEMPLATE_FILE=""
+    MIHOMO_TEMPLATE_PREPARED=0
+    MIHOMO_TEMPLATE_SNAPSHOT=1
+    resolve_persisted_mihomo_template
+    assert_equal "persisted snapshot is preselected without a source" \
+        "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" "${MIHOMO_TEMPLATE_FILE}"
+    assert_equal "persisted snapshot is trusted without the core" \
+        "1" "${MIHOMO_TEMPLATE_TRUSTED}"
+    prepare_mihomo_template
+    assert_equal "preparing a persisted snapshot neither downloads nor rewrites it" \
+        "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" "${MIHOMO_TEMPLATE_FILE}"
+
+    save_state
+    assert_contains "state file records the persisted template flag" \
+        "MIHOMO_TEMPLATE_SNAPSHOT=1" "$(<"${STATE_FILE}")"
+    unset MIHOMO_TEMPLATE_SNAPSHOT MIHOMO_TEMPLATE_FILE MIHOMO_TEMPLATE_PREPARED
+    load_state
+    assert_equal "reloading state resolves the same snapshot" \
+        "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" "${MIHOMO_TEMPLATE_FILE}"
+    assert_equal "reloaded snapshot stays trusted" "1" "${MIHOMO_TEMPLATE_TRUSTED}"
+
+    rm -f -- "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"
+    MIHOMO_TEMPLATE_SNAPSHOT=1
+    MIHOMO_TEMPLATE_FILE="${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"
+    resolve_persisted_mihomo_template
+    assert_equal "a missing snapshot clears the persisted flag" \
+        "0" "${MIHOMO_TEMPLATE_SNAPSHOT}"
+    assert_equal "a missing snapshot drops the preselected file" \
+        "" "${MIHOMO_TEMPLATE_FILE}"
+
+    MIHOMO_TEMPLATE_SOURCE=${saved_source}
+    MIHOMO_TEMPLATE_FILE=""
+    MIHOMO_TEMPLATE_PREPARED=0
+    MIHOMO_TEMPLATE_TRUSTED=0
+    MIHOMO_TEMPLATE_SNAPSHOT=0
 }
 
 test_nginx_http2_compatibility() (
@@ -1607,6 +1672,62 @@ EOF
         <<<"${config}"
 }
 
+test_load_state_reload_from_disk() {
+    set_fixture
+    QUOTA_ENABLED=0
+    install -d -m 0700 "${STATE_DIR}"
+    # A：link 模式，节点 A
+    SUBSCRIPTION_MODE="link"
+    NODE_HOST="203.0.113.10"
+    SUBSCRIPTION_DOMAIN="sub-a.example.com"
+    CLOUDFLARE_ZONE_ID="zone-a"
+    save_state
+    install -m 0600 "${STATE_FILE}" "${TMP_DIR}/reload-a.env"
+    # B：deploy 模式，节点 B 与另一套 Cloudflare 身份
+    SUBSCRIPTION_MODE="deploy"
+    NODE_HOST="198.51.100.20"
+    SUBSCRIPTION_DOMAIN="sub-b.example.com"
+    CLOUDFLARE_ZONE_ID="zone-b"
+    save_state
+    install -m 0600 "${STATE_FILE}" "${TMP_DIR}/reload-b.env"
+
+    # --reload 丢弃内存值，读到磁盘上的 A
+    install -m 0600 "${TMP_DIR}/reload-a.env" "${STATE_FILE}"
+    load_state --reload
+    assert_equal "reload reads the persisted node host" "203.0.113.10" "${NODE_HOST}"
+    assert_equal "reload reads the persisted subscription mode" \
+        "link" "${SUBSCRIPTION_MODE}"
+
+    # 磁盘已换成 B：无参数 load_state 会回填当前内存值，拿不到真值
+    install -m 0600 "${TMP_DIR}/reload-b.env" "${STATE_FILE}"
+    load_state
+    assert_equal "plain load_state keeps the caller values instead of the disk state" \
+        "203.0.113.10" "${NODE_HOST}"
+    assert_equal "plain load_state keeps the caller subscription mode" \
+        "link" "${SUBSCRIPTION_MODE}"
+
+    load_state --reload
+    assert_equal "reload reads the changed node host from disk" \
+        "198.51.100.20" "${NODE_HOST}"
+    assert_equal "reload reads the changed subscription mode from disk" \
+        "deploy" "${SUBSCRIPTION_MODE}"
+    assert_equal "reload reads the changed subscription domain from disk" \
+        "sub-b.example.com" "${SUBSCRIPTION_DOMAIN}"
+    assert_equal "reload reads the changed Cloudflare zone from disk" \
+        "zone-b" "${CLOUDFLARE_ZONE_ID}"
+    [[ -z "${EASY_ALL_ENV_NODE_HOST:-}" && -z "${EASY_ALL_ENV_SUBSCRIPTION_MODE:-}" ]] \
+        || fail_test "reload must not leave saved EASY_ALL_ENV_ values behind"
+
+    # 无参数调用仍通过 EASY_ALL_ENV_* 回填：空值由磁盘补齐，非空值优先
+    NODE_HOST=""
+    SUBSCRIPTION_MODE=""
+    load_state
+    assert_equal "plain load_state still fills empty values from disk" \
+        "198.51.100.20" "${NODE_HOST}"
+    assert_equal "plain load_state still fills the mode from disk" \
+        "deploy" "${SUBSCRIPTION_MODE}"
+}
+
 test_core_update_restores_missing_version_state() {
     install -d -m 0755 "${XRAY_DIR}"
     printf 'old-binary\n' >"${XRAY_BIN}"
@@ -1701,6 +1822,20 @@ test_apply_loads_reality_state_before_tcp_tuning() {
         $'lock\nstate\ntcp:reality:\nipv6-off\nregister\nupdate\nunlock' "${calls}"
 }
 
+test_quota_read_failure_is_fail_closed() {
+    set_fixture
+    if (
+        validate_subscription_token_rejection() { :; }
+        quota_enabled() { return 0; }
+        quota_active_accounts_json() { return 1; }
+        die() { exit 1; }
+        validate_subscription_runtime
+    ); then
+        fail_test "subscription acceptance must fail when quota accounts cannot be read"
+    fi
+    TESTS_RUN=$((TESTS_RUN + 1))
+}
+
 source_script_copy
 test_syntax_and_reality_boundaries
 test_reality_prompt_secret
@@ -1712,6 +1847,7 @@ test_reality_ip_family_dns_policy
 test_reality_target_preflight
 test_subscription_stage_dispatch
 test_mihomo_template
+test_mihomo_template_snapshot
 test_subscription_generation
 test_ufw_reapply_preserves_existing_ssh
 test_restore_inactive_ufw_state
@@ -1729,8 +1865,10 @@ test_cloudflare_reality_contract
 test_secure_download_transport
 test_xray_checksum_parsing
 test_state_and_xray
+test_load_state_reload_from_disk
 test_core_update_restores_missing_version_state
 test_install_pipeline_order
 test_apply_loads_reality_state_before_tcp_tuning
+test_quota_read_failure_is_fail_closed
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"

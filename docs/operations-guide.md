@@ -87,7 +87,12 @@ Cloudflare 模式保留现有订阅模式、Worker 名称、订阅域名、用�
 sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-classic.yaml easy_all update-sub
 ```
 
-模板选择不持久化，后续重新生成订阅时仍须传入相同参数。客户端使用同一聚合订阅时，只需在管理该
+Reality 自托管订阅会把选中的模板持久化到 `/etc/easy_all/mihomo-template.yaml`，之后的
+`apply`、`update-sub` 和动态端口轮换都沿用该模板；更换模板时在命令前传入新的
+`MIHOMO_TEMPLATE_SOURCE`，安装器会用新模板覆盖上述文件。该快照随发布原子替换，但不在
+`update-sub` 失败回滚的恢复范围内：回滚只恢复 `state.env`、运行配置、订阅、证书、UFW 与
+crontab，快照可能比回滚后的状态新（后续 `apply` 或轮换会使用新模板）。Cloudflare 聚合订阅仍需在
+`update-sub` 时传入模板，以重建并内嵌所选规则的 Worker。客户端使用同一聚合订阅时，只需在管理该
 Worker 的服务器更新一次，再让各客户端刷新订阅并重启内核；其他独立订阅需要分别更新。
 
 若代码推送在 `dev`，第一条命令改为 `sudo easy_all self-update --dev`。`self-update` 或
@@ -250,8 +255,10 @@ sudo easy_all quota-reset user1
 `quota-set` 不清零已用量；新额度不高于已用量时用户立即停用，调高后可立即恢复。
 `quota-reset` 只清零指定用户当前账期的用量，不修改额度和凭据。
 
-配额任务每分钟累计 Xray 看到的上下行载荷，属于近实时控制，不是精确计费系统。用户分享自己的
-UUID 或订阅地址后，相关流量仍计入该用户。
+配额任务每分钟累计 Xray 看到的上下行载荷，属于近实时控制，不是精确计费系统。写锁被其他任务
+占用时本轮统计最多等待 15 秒后跳过，并在锁释放后由定时任务补算（未重启 Xray 时）；
+`quota-status` 会提示统计暂停。若持锁的长任务结束后 Xray 已重启，自上次成功统计以来的整个
+未同步窗口可能丢失。用户分享自己的 UUID 或订阅地址后，相关流量仍计入该用户。
 
 ## Worker 聚合
 

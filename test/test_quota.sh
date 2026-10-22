@@ -7,6 +7,7 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
 
 STATE_DIR="${TMP_DIR}/state"
+RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP_DIR}/runtime-lock/runtime-write.lock"
 SUBSCRIPTION_DIR="${TMP_DIR}/subscriptions"
 SUB_DOWNLOAD_NAME="EASY_ALL"
 XRAY_SERVICE="easy_all-xray.service"
@@ -33,6 +34,7 @@ generate_secret() {
 }
 
 info() { :; }
+warn() { :; }
 
 FAKE_FLOCK_HELD=0
 FAKE_FLOCK_WAIT=""
@@ -77,6 +79,8 @@ assert_equal() {
 begin_quota_maintenance
 [[ "${FAKE_FLOCK_HELD}" == "1" && -f "${QUOTA_MAINTENANCE_FILE}" ]] \
     || fail "maintenance must hold the shared runtime write lock"
+[[ -f "${RUNTIME_WRITE_LOCK_FILE}" ]] \
+    || fail "runtime write lock must create its own directory without STATE_DIR"
 assert_equal "interactive writers do not wait for a busy lock" 0 "${FAKE_FLOCK_WAIT}"
 end_quota_maintenance
 [[ "${FAKE_FLOCK_HELD}" == "0" && ! -e "${QUOTA_MAINTENANCE_FILE}" ]] \
@@ -179,7 +183,7 @@ period=$(quota_current_period)
 assert_equal "usage period follows the configured billing anchor" "${period}" \
     "$(quota_current_period)"
 cat >"${QUOTA_USAGE_FILE}" <<'EOF'
-{"period":"2026-08","users":{
+{"period":"2025-01-15/2025-02-15","users":{
   "owner":{"used_bytes":0,"last_uplink":0,"last_downlink":0,"disabled":false},
   "user1":{"used_bytes":100000000000,"last_uplink":0,"last_downlink":0,"disabled":true}
 }}
@@ -232,7 +236,7 @@ assert_equal "failed runtime transition restores previous accounting state" "0" 
 rebuild_traffic_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
 
 cat >"${QUOTA_USAGE_FILE}" <<'EOF'
-{"period":"2000-01","runtime_id":"","users":{
+{"period":"2000-01-15/2000-02-15","runtime_id":"","users":{
   "owner":{"used_bytes":900000000,"last_uplink":600000000,"last_downlink":500000000,"disabled":true}
 }}
 EOF
@@ -252,6 +256,7 @@ cat >"${QUOTA_USAGE_FILE}" <<EOF
 EOF
 save_state() { :; }
 success() { :; }
+real_show_quota_status=$(declare -f show_quota_status)
 show_quota_status() { :; }
 rebuild_traffic_runtime() { printf 'rebuilt\n' >"${TMP_DIR}/rebuilt"; }
 rm -f -- "${TMP_DIR}/rebuilt"
@@ -280,5 +285,103 @@ quota_reset_user owner
 assert_equal "quota-reset immediately restores a disabled user" "false" \
     "$(jq -r '.users.owner.disabled' "${QUOTA_USAGE_FILE}")"
 [[ -f "${TMP_DIR}/rebuilt" ]] || fail "resetting a disabled user must rebuild runtime"
+
+# A busy runtime lock skips this round, leaves a pending marker and never rewrites state.
+USER_ACCOUNTS='{"owner":{"token":"owner-token-123","uuid":"00000000-0000-4000-8000-000000000001","quota_gb":1}}'
+cat >"${QUOTA_USAGE_FILE}" <<EOF
+{"period":"${period}","runtime_id":"","users":{
+  "owner":{"used_bytes":0,"last_uplink":0,"last_downlink":0,"disabled":false}
+}}
+EOF
+rm -f -- "${QUOTA_SYNC_PENDING_FILE}"
+before_usage=$(<"${QUOTA_USAGE_FILE}")
+FAKE_FLOCK_HELD=1
+quota_sync_usage
+assert_equal "a busy lock makes the quota sync wait at most fifteen seconds" 15 "${FAKE_FLOCK_WAIT}"
+[[ -f "${QUOTA_SYNC_PENDING_FILE}" ]] \
+    || fail "a skipped quota sync must leave a pending marker"
+assert_equal "a skipped quota sync leaves accounting untouched" \
+    "${before_usage}" "$(<"${QUOTA_USAGE_FILE}")"
+FAKE_FLOCK_HELD=0
+quota_sync_usage
+[[ ! -e "${QUOTA_SYNC_PENDING_FILE}" ]] \
+    || fail "a successful quota sync must clear the pending marker"
+assert_equal "the retried sync accumulates traffic" "1100000000" \
+    "$(jq -r '.users.owner.used_bytes' "${QUOTA_USAGE_FILE}")"
+
+# A corrupt state file must block publication instead of resetting users.
+printf '{"period":"%s","users":[]}\n' "${period}" >"${QUOTA_USAGE_FILE}"
+corrupt_usage=$(<"${QUOTA_USAGE_FILE}")
+if (quota_active_accounts_json) >/dev/null 2>&1; then
+    fail "a corrupt quota state must not be treated as an empty disabled list"
+fi
+assert_equal "reading a corrupt quota state leaves the file untouched" \
+    "${corrupt_usage}" "$(<"${QUOTA_USAGE_FILE}")"
+if (quota_sync_usage) >/dev/null 2>&1; then
+    fail "a corrupt quota state must stop the sync rather than rebuild the period"
+fi
+assert_equal "a failed sync leaves the corrupt quota state untouched" \
+    "${corrupt_usage}" "$(<"${QUOTA_USAGE_FILE}")"
+
+# A zero-byte file is corruption, not a missing file: every entry fails and no writer
+# may silently replace it with a fresh period.
+eval "${real_show_quota_status}"
+: >"${QUOTA_USAGE_FILE}"
+for entry in quota_active_accounts_json quota_sync_usage show_quota_status; do
+    if ("${entry}") >/dev/null 2>&1; then
+        fail "${entry} must reject an existing zero-byte quota state"
+    fi
+    [[ -f "${QUOTA_USAGE_FILE}" && ! -s "${QUOTA_USAGE_FILE}" ]] \
+        || fail "${entry} must leave the zero-byte quota state untouched"
+done
+
+# Missing billing fields must fail closed instead of being read as a new period.
+for broken in \
+    '{"users":{"owner":{"used_bytes":0,"last_uplink":0,"last_downlink":0,"disabled":false}}}' \
+    '{"period":"2026-08-15/2026-09-15","users":{"owner":{"used_bytes":0,"last_uplink":0,"last_downlink":0}}}' \
+    '{"period":"2026-08-15/2026-09-15","users":{"owner":{"used_bytes":0,"last_uplink":0,"last_downlink":0,"disabled":"no"}}}'; do
+    printf '%s\n' "${broken}" >"${QUOTA_USAGE_FILE}"
+    if (quota_active_accounts_json) >/dev/null 2>&1; then
+        fail "a quota state without required billing fields must not be published"
+    fi
+    if (quota_sync_usage) >/dev/null 2>&1; then
+        fail "a quota state without required billing fields must not be synced"
+    fi
+    assert_equal "a rejected quota state keeps its original content" \
+        "${broken}" "$(<"${QUOTA_USAGE_FILE}")"
+done
+
+# Two concatenated legal usage objects must not bypass the structural check:
+# without slurping, jq evaluates each top-level value independently and only its
+# final exit status is observed, so a combined file would look valid here.
+usage_object=$(jq -cn --arg period "${period}" '
+    {period:$period,runtime_id:"",users:{
+      owner:{used_bytes:0,last_uplink:0,last_downlink:0,disabled:true}}}')
+printf '%s\n%s\n' "${usage_object}" "${usage_object}" >"${QUOTA_USAGE_FILE}"
+double_usage=$(<"${QUOTA_USAGE_FILE}")
+if quota_usage_file_valid; then
+    fail "two concatenated usage objects must fail the structural check"
+fi
+if (quota_active_accounts_json) >/dev/null 2>&1; then
+    fail "two concatenated usage objects must not be published"
+fi
+if (quota_sync_usage) >/dev/null 2>&1; then
+    fail "two concatenated usage objects must stop the sync rather than rebuild the period"
+fi
+assert_equal "rejecting two concatenated usage objects leaves the file untouched" \
+    "${double_usage}" "$(<"${QUOTA_USAGE_FILE}")"
+
+# Older imports without runtime_id stay readable.
+printf '%s\n' \
+    '{"period":"2026-08-15/2026-09-15","users":{"owner":{"used_bytes":10,"last_uplink":5,"last_downlink":5,"disabled":false}}}' \
+    >"${QUOTA_USAGE_FILE}"
+quota_usage_file_valid || fail "a legacy quota state without runtime_id must stay valid"
+assert_equal "a legacy quota state still publishes active accounts" '["owner"]' \
+    "$(quota_active_accounts_json | jq -c 'keys')"
+if ! (show_quota_status) >"${TMP_DIR}/legacy-quota-status" 2>&1; then
+    fail "a legacy quota state must still render quota status"
+fi
+grep -q 'owner' "${TMP_DIR}/legacy-quota-status" \
+    || fail "legacy quota status must list the owner row"
 
 printf 'easy_all quota tests passed\n'

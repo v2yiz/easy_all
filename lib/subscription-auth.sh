@@ -107,9 +107,11 @@ ensure_allowed_tokens() {
 }
 
 write_subscription_token_map() {
+    local accounts
     if quota_enabled; then
+        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
         jq -r 'to_entries[] | "    \"" + .value.token + "\" \"" + .key + "\";"' \
-            <<<"$(quota_active_accounts_json)"
+            <<<"${accounts}"
         return 0
     fi
     jq -r '.[] | "    \"" + . + "\" 1;"' <<<"${ALLOWED_TOKENS}"

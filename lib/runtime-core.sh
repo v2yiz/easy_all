@@ -57,6 +57,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# One-shot maintenance units write runtime state on exit, so an uninstall must wait for
+# any running job to finish (including its own rollback) before deleting files.
+stop_maintenance_services() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl stop easy_all-quota.service easy_all-globalping-refresh.service \
+        2>/dev/null || true
+}
+
 uri_encode() {
     jq -rn --arg value "$1" '$value|@uri'
 }
