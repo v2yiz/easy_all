@@ -58,18 +58,25 @@ async function unusedPort() {
     await new Promise(resolve => server.close(resolve));
     return port;
 }
-async function dnsServer(ip) {
+async function dnsServer(ip, overrides = {}) {
     const socket = createSocket('udp4');
     resources.push(() => socket.close());
     socket.on('message', (query, peer) => {
         let end = 12;
-        while (query[end]) end += query[end] + 1;
+        const labels = [];
+        while (query[end]) {
+            const length = query[end];
+            labels.push(query.subarray(end + 1, end + 1 + length).toString('ascii'));
+            end += length + 1;
+        }
+        const host = labels.join('.');
         end += 5;
         const header = Buffer.from(query.subarray(0, 12));
         header.writeUInt16BE(0x8180, 2);
         const isA = query.readUInt16BE(end - 4) === 1;
         header.writeUInt16BE(Number(isA), 6);
-        const answer = isA ? Buffer.from([0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, ...ip.split('.').map(Number)]) : Buffer.alloc(0);
+        const answerIp = overrides[host] || ip;
+        const answer = isA ? Buffer.from([0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, ...answerIp.split('.').map(Number)]) : Buffer.alloc(0);
         socket.send(Buffer.concat([header, query.subarray(12, end), answer]), peer.port, peer.address);
     });
     socket.bind(0, '127.0.0.1');
@@ -161,6 +168,48 @@ try {
         assert.ok(!template.includes('GEOSITE,'), 'COMMON must not load the DAT domain database');
         assert.ok(!template.includes('DOMAIN-KEYWORD,'), 'broad keywords must not override domestic services');
         assert.ok(template.includes('/apple-cn.mrs\''), 'Apple provider must load the mainland delivery subset');
+        assert.ok(
+            template.includes("'RULE-SET,geoip-cn,DIRECT,no-resolve'"),
+            `${filename}: CN GeoIP fallback must not resolve unknown domains`,
+        );
+        assert.ok(
+            !template.includes("'RULE-SET,geoip-cn,DIRECT'"),
+            `${filename}: resolving CN GeoIP fallback must remain removed`,
+        );
+        assert.equal(
+            (template.match(/^    - 'GEOIP,LAN,DIRECT,no-resolve'$/gm) || []).length,
+            1,
+            `${filename}: exactly one LAN no-resolve rule must remain`,
+        );
+        assert.ok(
+            !/^\s+- 'GEOIP,LAN,DIRECT'$/m.test(template),
+            `${filename}: resolving duplicate LAN rule must remain removed`,
+        );
+        const rules = template.split('\nrules:\n')[1];
+        for (const name of ['telegram-fallback', 'geoip-telegram']) {
+            const quicRejectRule = `AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,${name},no-resolve)),REJECT`;
+            const proxyRule = `RULE-SET,${name},PROXY,no-resolve`;
+            assert.ok(
+                rules.includes(quicRejectRule),
+                `${filename}: ${name} QUIC rejection must not resolve unknown domains`,
+            );
+            assert.ok(
+                !rules.includes(`AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,${name})),REJECT`),
+                `${filename}: resolving ${name} QUIC rejection must remain removed`,
+            );
+            assert.ok(
+                rules.indexOf(quicRejectRule) >= 0 && rules.indexOf(quicRejectRule) < rules.indexOf(proxyRule),
+                `${filename}: ${name} QUIC rejection must remain before its TCP proxy rule`,
+            );
+        }
+        assert.ok(
+            template.includes('# 未收录域名默认走 PROXY；LAN/CN IP 兜底仅匹配已有真实目标 IP。'),
+            `${filename}: header must document the no-resolve fallback`,
+        );
+        assert.ok(
+            !template.includes('# 未收录域名经代理查询海外 DNS，再按中国 IP 直连；未命中仍走 PROXY。'),
+            `${filename}: stale resolving fallback header must remain removed`,
+        );
         for (const host of fcm) assert.ok(template.includes(`      - '${host}'\n`), host);
     }
     console.log('COMMON default/full Worker embedding and rendered policy checks passed');
@@ -174,7 +223,7 @@ try {
             assert.equal(converted.status, 0, converted.stdout + converted.stderr);
         }
         const domestic = await dnsServer('1.2.4.8');
-        const foreign = await dnsServer('203.0.113.8');
+        const foreign = await dnsServer('203.0.113.8', {'unknown-cn-mapped.net': '1.2.4.9'});
         const lan = await dnsServer('192.168.50.1');
         let downloads = 0;
         const broken = createHttpServer((request, response) => { downloads++; response.end('invalid MRS'); });
@@ -292,6 +341,12 @@ try {
                     const response = await fetch(`${api}/providers/rules/geoip-cn`, {method: 'PUT', signal: AbortSignal.timeout(2000)});
                     assert.ok(!response.ok, 'malformed MRS update must fail');
                     await routed('1.2.4.10', 'TEST-DIRECT');
+                    assert.ok(
+                        (await query('unknown-cn-mapped.net'))?.some(answer => answer.data === '1.2.4.9'),
+                        'unmatched domain must resolve to the CN fixture IP',
+                    );
+                    await routed('unknown-cn-mapped.net', 'REJECT', true);
+                    await routed('unknown-cn-mapped.net', 'PROXY');
                     if (filename === 'mihomo-common.yaml') {
                         assert.match(await routed('www.cn-fixture.net', 'TEST-DIRECT'), /RuleSet\(geosite-cn\)/);
                         assert.match(await routed('www.foreign-fixture.net', 'PROXY'), /RuleSet\(geosite-foreign\)/);

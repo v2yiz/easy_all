@@ -57,12 +57,14 @@ ChinaMax `cn` 包含整个 `.ms` 后缀，因此 `.ms` 在代理服务集合及�
 Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于国内集合和微软国内 CDN，
 统一经 `PROXY`；对应 UDP/443 先拒绝以回退 TCP。Google Play 接口、下载重定向和 APK CDN 保持同一代理策略。
 仅内嵌 `proxy-services`（25 条）与 `direct-cdn`（13 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
-未匹配策略且确需真实解析的公网域名默认使用经 `PROXY` 的 Cloudflare 与 Google DoH，不再先查询国内
-DNS 或使用 GeoIP fallback；Steam 下载、微信资源及 Apple/微软国内 CDN 直接使用国内 DoH。私有域名
+域名规则未命中时，正常 DNS 请求仍可按客户端、应用或模板 DNS 流程发生，但 CN GeoIP 兜底不会
+额外触发解析；Steam 下载、微信资源及 Apple/微软国内 CDN 直接使用国内 DoH。私有域名
 使用系统 DNS，并启用本机 hosts。
 `kimi.com`、`minimaxi.com` 等国内入口维持直连，国际入口按实际集合与 GeoIP 分流；不代理整个微软或共享 CDN。
-两处中国 GeoIP 兜底允许解析未命中域名规则的请求，返回中国大陆 IP 则直连。未知域名仍经代理查询
-海外 DoH；首次连接可能增加解析延迟，返回境外 CDN 地址时仍走代理。
+CN GeoIP 兜底只匹配已有目标 IP：`GEOIP,CN,DIRECT,no-resolve` 不触发解析；国内 QUIC 子规则
+同样使用 `no-resolve`，未知 QUIC 由后续全局 UDP/443 拒绝处理并要求应用回退 TCP。未命中域名
+集合的未知域名默认交给 `MATCH,PROXY`，这是首连等待与可预测性优先的取舍：未收录的国内域名
+默认代理，需要覆盖时应扩充域名集合。规则不承诺零 DNS，也不构成绝对无泄漏保证。
 代理节点域名仍由阿里与腾讯两个独立的直连 DoH 解析，避免启动循环。
 
 Reality 和动态 Cloudflare 节点固定输出 `ipv4`；IPv6 literal 会被拒绝。修改公共模板后需重新构建

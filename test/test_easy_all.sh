@@ -411,6 +411,8 @@ test_mihomo_template() {
     local invalid="${TMP_DIR}/invalid.yaml" party_compat="${TMP_DIR}/clash-party.yaml"
     local rule_count first_rule fake_ip_filter direct_cdn dns_default domain
     local cn_domain_rule_line cn_quic_rule_line quic_reject_rule_line
+    local telegram_quic_rule_line telegram_proxy_rule_line
+    local geoip_telegram_quic_rule_line geoip_telegram_proxy_rule_line
     local google_rule_line google_quic_rule_line google_dns_line cn_dns_line google_dns_policy
     validate_mihomo_template "${ROOT_DIR}/templates/mihomo-classic.yaml"
     # Optional bundled templates (COMMON compatibility) must clear the same gate.
@@ -423,8 +425,42 @@ test_mihomo_template() {
         "RULE-SET,geosite-google,PROXY" "$(<"${default_template}")"
     assert_contains "Default template keeps mainland Apple delivery domains direct" \
         "RULE-SET,geosite-apple-cn,DIRECT" "$(<"${default_template}")"
-    assert_contains "Default template routes mainland IPv4 direct" \
-        "RULE-SET,geoip-cn,DIRECT" "$(<"${default_template}")"
+    assert_contains "Default template routes existing mainland IPs direct without resolution" \
+        "RULE-SET,geoip-cn,DIRECT,no-resolve" "$(<"${default_template}")"
+    assert_not_contains "Default template does not resolve unknown domains for the CN IP fallback" \
+        "'RULE-SET,geoip-cn,DIRECT'" "$(<"${default_template}")"
+    assert_equal "Default template keeps one LAN no-resolve rule" "1" \
+        "$(grep -Fxc -- "    - 'GEOIP,LAN,DIRECT,no-resolve'" "${default_template}" || true)"
+    assert_not_contains "Default template omits the resolving duplicate LAN rule" \
+        $'\n    - \'GEOIP,LAN,DIRECT\'\n' "$(<"${default_template}")"
+    telegram_quic_rule_line=$(grep -nF -- \
+        "    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,telegram-fallback,no-resolve)),REJECT'" \
+        "${default_template}" | cut -d: -f1 || true)
+    telegram_proxy_rule_line=$(grep -nF -- \
+        "    - 'RULE-SET,telegram-fallback,PROXY,no-resolve'" \
+        "${default_template}" | cut -d: -f1 || true)
+    assert_success "Default template rejects Telegram QUIC before its TCP proxy rule" \
+        bash -c '(( $1 > 0 && $1 < $2 ))' _ \
+        "${telegram_quic_rule_line}" "${telegram_proxy_rule_line}"
+    geoip_telegram_quic_rule_line=$(grep -nF -- \
+        "    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geoip-telegram,no-resolve)),REJECT'" \
+        "${default_template}" | cut -d: -f1 || true)
+    geoip_telegram_proxy_rule_line=$(grep -nF -- \
+        "    - 'RULE-SET,geoip-telegram,PROXY,no-resolve'" \
+        "${default_template}" | cut -d: -f1 || true)
+    assert_success "Default template rejects Telegram GeoIP QUIC before its TCP proxy rule" \
+        bash -c '(( $1 > 0 && $1 < $2 ))' _ \
+        "${geoip_telegram_quic_rule_line}" "${geoip_telegram_proxy_rule_line}"
+    assert_not_contains "Default template does not resolve unknown domains for Telegram QUIC" \
+        "(RULE-SET,telegram-fallback)),REJECT" "$(<"${default_template}")"
+    assert_not_contains "Default template does not resolve unknown domains for Telegram GeoIP QUIC" \
+        "(RULE-SET,geoip-telegram)),REJECT" "$(<"${default_template}")"
+    assert_contains "Default template documents no-resolve fallback semantics" \
+        "# 未收录域名默认走 PROXY；LAN/CN IP 兜底仅匹配已有真实目标 IP。" \
+        "$(<"${default_template}")"
+    assert_not_contains "Default template omits the stale resolving fallback header" \
+        "# 未收录域名经代理查询海外 DNS，再按中国 IP 直连；未命中仍走 PROXY。" \
+        "$(<"${default_template}")"
     assert_contains "Default template proxies Telegram ranges" \
         "RULE-SET,geoip-telegram,PROXY,no-resolve" "$(<"${default_template}")"
     assert_contains "Default template keeps FCM push ports on PROXY" \
@@ -545,8 +581,11 @@ test_mihomo_template() {
         bash -c '(( $1 > 0 && $1 < $2 && $2 < $3 ))' _ \
         "${google_quic_rule_line}" "${google_rule_line}" "${cn_domain_rule_line}"
     cn_quic_rule_line=$(grep -nF -- \
-        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT' \
         "${ROOT_DIR}/templates/mihomo-classic.yaml" | cut -d: -f1)
+    assert_not_contains "Mihomo does not resolve unknown domains for mainland QUIC" \
+        '  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT' \
+        "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     quic_reject_rule_line=$(grep -nF -- \
         '  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT' \
         "${ROOT_DIR}/templates/mihomo-classic.yaml" | cut -d: -f1)
@@ -565,8 +604,10 @@ test_mihomo_template() {
         "GEOSITE,microsoft@cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo routes mainland domains direct" \
         "GEOSITE,cn,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
-    assert_contains "Mihomo resolves unclassified domains for mainland IP fallback" \
-        "GEOIP,CN,DIRECT" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    assert_contains "Mihomo matches only existing mainland IPs without resolution" \
+        "GEOIP,CN,DIRECT,no-resolve" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
+    assert_not_contains "Mihomo does not resolve unknown domains for the CN IP fallback" \
+        $'\n  - GEOIP,CN,DIRECT\n' "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo falls back to proxy for unclassified traffic" \
         "MATCH,PROXY" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_not_contains "Mihomo template omits the latency test group" \

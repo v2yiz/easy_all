@@ -106,7 +106,8 @@ Cloudflare XHTTP 是实时回源，不缓存隧道业务数据。若 VPS 仅统�
 ## DNS 与分流
 
 默认内置模板是 COMMON 精简版（`templates/mihomo.yaml`）：小型内联集合加五个 MRS 规则集，
-国内常用域名优先直连，其他流量按中国 IP 兜底，未命中回落 `MATCH,PROXY`。国内常用服务和
+国内常用域名优先直连；已有真实目标 IP 的其余连接按 LAN/CN GeoIP 兜底，未知域名不会仅因该兜底
+额外解析，未命中时回落 `MATCH,PROXY`。国内常用服务和
 Apple 国内调度域名使用国内 DoH，未知公网域名及代理服务使用经代理的海外 DoH，节点引导解析独立直连。
 Apple 使用 `apple-cn.mrs` 加少量精确域名兜底，不强制整个 Apple/iCloud/CDN 直连；DNS 与路由共用
 同一集合，其余 Apple 域名继续按普通域名/IP 规则分流。新的 `geosite-apple-cn.mrs` 缓存路径避免复用
@@ -138,7 +139,11 @@ Apple 国内/境外分流、旧 Apple 缓存隔离、零地址拒绝、TCP/UDP �
 - Apple、微软国内 CDN、Steam 下载、微信图片资源和其他中国大陆域名使用国内 DoH 并直连；
 - 国内路由、DNS 与 Fake-IP 过滤统一使用完整 `cn` 集合，覆盖高德、微信、豆包等服务；
 - `.ms` 在代理服务集合中优先匹配；Google、GitHub、OpenAI、Anthropic 和代理服务的 DNS 策略优先于 `cn`；
-- 两处中国 GeoIP 兜底允许解析未命中域名规则的请求，真实 IP 属于中国大陆则直连；未知域名仍经代理查询海外 DoH；
+- CN GeoIP 兜底只匹配已有目标 IP：`RULE-SET,geoip-cn,DIRECT,no-resolve` 与
+  `GEOIP,CN,DIRECT,no-resolve` 均不触发解析；国内 QUIC 子规则同样使用 `no-resolve`，
+  未知 QUIC 由后续全局 UDP/443 拒绝处理并由应用回退 TCP；
+- 这是首连等待与可预测性优先的取舍：未收录的国内域名默认代理，如需覆盖应使用更完整的域名集合；
+  规则不承诺零 DNS，也不构成绝对无泄漏保证；
 - `kimi.com`、`minimaxi.com` 等国内入口维持直连；国际入口按实际集合与 GeoIP 分流；
 - 私有域名使用系统 DNS，本机 hosts 生效；代理节点域名由两个独立的国内 DoH 解析；移动端的覆盖
   方式见客户端指南。

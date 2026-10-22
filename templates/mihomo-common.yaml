@@ -2,7 +2,7 @@
 # 采用 Mihomo 常用的 Fake-IP、分流 DNS、MRS 与域名优先/IP 兜底组合。
 # 小型内联集合同时用于 DNS、QUIC 和路由，核心服务不依赖首次下载成功。
 # 不加载整库 DAT；精简版不加载 cn / geolocation-!cn 域名库。
-# 未收录域名经代理查询海外 DNS，再按中国 IP 直连；未命中仍走 PROXY。
+# 未收录域名默认走 PROXY；LAN/CN IP 兜底仅匹配已有真实目标 IP。
 # 与原配置不同：移除宽泛关键字和 ssl.gstatic.com 直连，Google 统一代理。
 # MRS 下载失败保留可用缓存；冷启动依靠内联基础规则，不等价于完整规则覆盖。
 # 内存必须以实际客户端、节点数、TUN 和并发流量的峰值为准，见客户端指南。
@@ -519,13 +519,13 @@ rules:
     - 'RULE-SET,geosite-foreign,PROXY'
     - 'RULE-SET,direct-services,DIRECT'
     - 'RULE-SET,geosite-cn,DIRECT'
-    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,telegram-fallback)),REJECT'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,telegram-fallback,no-resolve)),REJECT'
     - 'RULE-SET,telegram-fallback,PROXY,no-resolve'
-    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geoip-telegram)),REJECT'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geoip-telegram,no-resolve)),REJECT'
     - 'RULE-SET,geoip-telegram,PROXY,no-resolve'
-    # 这两条允许解析，防止未收录的国内/内网域名无条件走代理。
-    - 'GEOIP,LAN,DIRECT'
-    - 'RULE-SET,geoip-cn,DIRECT'
+    # LAN 已在前面按已有目标 IP 直连；CN GeoIP 兜底同样不触发解析。
+    # 未命中域名集合的未知域名不会仅为 GEOIP 判断额外解析，默认交给 MATCH,PROXY。
+    - 'RULE-SET,geoip-cn,DIRECT,no-resolve'
     # 国内业务已优先直连并保留 QUIC，其余 UDP/443 回退 TCP。
     - 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT'
     - 'MATCH,PROXY'

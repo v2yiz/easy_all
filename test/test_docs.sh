@@ -35,11 +35,15 @@ assert_not_contains() {
 }
 
 source_version=$(sed -nE 's/^当前源码版本：\[([^]]+)\].*/\1/p' <<<"${README_CONTENT}")
+changelog_heading=$(awk '$1 == "##" { sub(/^##[[:space:]]+/, ""); print; exit }' <<<"${CHANGELOG_CONTENT}")
 changelog_version=$(awk '$1 == "##" { print $2; exit }' <<<"${CHANGELOG_CONTENT}")
+# GitHub anchors drop dots/parentheses and turn spaces into hyphens.
+changelog_anchor=$(printf '%s' "${changelog_heading}" | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/[.（）()]//g' -e 's/[[:space:]][[:space:]]*/-/g')
 [[ -n "${source_version}" && "${source_version}" == "${changelog_version}" ]] \
     || fail "README source version must match the newest CHANGELOG entry"
 assert_contains "README links to its release notes" "${README_CONTENT}" \
-    "[${source_version}](CHANGELOG.md#${source_version})"
+    "[${source_version}](CHANGELOG.md#${changelog_anchor})"
 
 for heading in '选择模式' '安装要求' '快速安装' '完成安装' '常用命令' '安全边界' '文档'; do
     assert_contains "README onboarding section" "${README_CONTENT}" "## ${heading}"
@@ -131,6 +135,20 @@ assert_contains "client guide documents template selection" \
     "${CLIENT_CONTENT}" 'MIHOMO_TEMPLATE_SOURCE'
 assert_contains "client guide documents shared private DNS and routing" \
     "${CLIENT_CONTENT}" 'rule-set:private-fallback,geosite-private'
+assert_contains "technical reference documents existing-IP CN GeoIP fallback" \
+    "${TECHNICAL_CONTENT}" 'CN GeoIP 兜底只匹配已有目标 IP'
+assert_contains "client guide documents unknown-domain proxy fallback" \
+    "${CLIENT_CONTENT}" '不会仅为了 CN GeoIP 判断额外解析'
+assert_contains "client guide documents bare hostname limits" \
+    "${CLIENT_CONTENT}" '裸主机名'
+assert_contains "client guide describes exit-side resolution for unlisted domains" \
+    "${CLIENT_CONTENT}" '在出口侧解析'
+assert_not_contains "documentation does not claim local overseas DNS for unlisted domains" \
+    "${ALL_DOCS}" '未收录国内域名经海外 DNS 查询'
+assert_contains "client guide avoids claiming zero DNS" \
+    "${CLIENT_CONTENT}" '这不是零 DNS 承诺'
+assert_not_contains "documentation does not claim CN GeoIP resolves unknown domains" \
+    "${ALL_DOCS}" '两处中国 GeoIP 兜底允许解析'
 assert_contains "operations guide documents retired lite template migration" \
     "${OPERATIONS_CONTENT}" 'templates/mihomo-common-lite.yaml'
 assert_contains "operations guide provides a classic rollback command" \

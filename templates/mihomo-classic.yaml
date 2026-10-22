@@ -275,9 +275,9 @@ rules:
   - GEOSITE,apple-cn,DIRECT
   - GEOSITE,microsoft@cn,DIRECT
   # 完整国内域名集合；Google、AI 与 .ms 例外已在上方优先处理。
-  # 国内 IP 兜底允许解析未命中域名规则的请求，国内 QUIC 单独放行。
+  # 国内 QUIC 例外只匹配已有目标 IP；未知域名不会仅为 GEOIP 判断额外解析。
   - GEOSITE,cn,DIRECT
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - DOMAIN,clash.razord.top,DIRECT
@@ -286,7 +286,8 @@ rules:
   - GEOSITE,category-ai-chat-!cn,PROXY
   # Telegram 专属 IP 段代理
   - GEOIP,telegram,PROXY,no-resolve
-  # 未命中域名规则时解析真实 IP，中国大陆地址直连。
-  - GEOIP,CN,DIRECT
+  # CN GeoIP 兜底只匹配已有目标 IP；未知域名不会仅为 GEOIP 判断额外解析，
+  # 未命中域名集合时交给 MATCH,PROXY。需要覆盖未收录国内域名时应扩充域名集合。
+  - GEOIP,CN,DIRECT,no-resolve
   # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY
