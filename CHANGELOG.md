@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.6.3 更新说明（2026-10-22）
+
+- 默认与完整模板、经典模板新增国内 SDK 域名库 `geosite-geolocation-cn`（约 5 千条，覆盖个推、极光、友盟、GrowingIO、Sensors 等国内推送/统计域名），修复 `cm-10-134.getui.com` 这类域名因不在 `geosite-cn` 中而落到 `MATCH,PROXY`；`geosite-cn` 仍负责约 11 万条国内站点长尾。
+- 默认模板规则集由六个增至七个（完整版八个）；`nameserver-policy` 把两套集合都归入国内 DoH，代理例外与 QUIC 回退顺序不变。
+- 本机 TUN 关闭、真实 MRS、50ms 采样下默认模板峰值约 42 MiB（两套集合合计约 570 KB 下载），仍在 50MB 优化目标内；冷启动失败回退内联集合。
+- 新增 `www.hxkba.com`、`cm-10-134.getui.com` 路由断言，覆盖默认/完整/经典模板的缓存与冷启动；文档同步为“默认加载国内与 SDK 域名库”。
+- 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
+
+源码版本标识为 `1.6.3`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.2 更新说明（2026-10-22）
 
 - 默认模板新增国内域名库 `geosite-cn`（约 11 万条，含 `.cn` 与大量 `.com`、`.org` 等国内站点），规则集由五个增至六个；此前默认模板不加载该集合，`www.hxkba.com` 这类未收录的国内站点会落到 `MATCH,PROXY`，而完整版与经典模板已经覆盖。
