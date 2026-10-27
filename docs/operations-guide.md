@@ -132,6 +132,7 @@ Worker。已成功变更的云资源不会自动回滚，只应在确实需要�
 | `self-update [--dev\|--branch <分支>]` | 更新项目代码；默认 `main`，`--dev` 使用 `dev`。 |
 | `apply` | 重新应用当前配置。 |
 | `tcp [bbrv3\|skyline]` | 选择 TCP 加速；无参数时显示交互菜单，默认 BBRv3。 |
+| `reality-target [域名:端口]` | 修改 Reality SNI（伪装目标）并重新应用，仅 Reality 模式；无参数时交互输入。 |
 | `apply-cloud` | Cloudflare 模式下同步本机和云端资源。 |
 | `update-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
 | `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅。 |
@@ -313,6 +314,25 @@ Reality 数据流量直连 VPS `443`，只有自托管订阅 HTTPS 使用 Cloudf
 Reality 动态端口范围为 `10000-12927`，每 3 小时固定生成一个端口。UFW NAT 会保留近期窗口，
 并预开放当天和次日凌晨所需端口；不会生成数万条单端口 allow 规则。
 
+### 修改 Reality SNI
+
+Reality 的 SNI 与回源目标由同一个值决定，安装后可用 `reality-target` 修改：
+
+```bash
+sudo easy_all reality-target                      # 交互输入，默认显示当前值
+sudo easy_all reality-target www.example.com:443  # 直接指定
+```
+
+新目标先接受带 SNI 的 TLS 1.3 握手和 ASN 比对，再重写 Xray 配置、重启服务；部署自托管
+订阅时再重新生成订阅。握手验收失败时自动恢复旧配置，状态文件保持旧值。订阅重发失败或中断
+时服务端已是新目标，重跑同一条命令不会重复切换，并会提示执行 `sudo easy_all apply` 补齐订阅。
+修改后必须让客户端刷新订阅或重新导入节点：旧配置仍带旧 SNI，服务端 `serverNames` 不认，
+表现是 TCP 与 TLS 都正常但不走流量。使用聚合配置下发节点的部署，还需同步该配置里的 `sni`
+并重新构建 Worker。
+
+目标域名必须支持 TLS 1.3，建议同时支持 HTTP/2，且不能套 CDN 代理；目标在大陆的可达性需自
+行确认，因为客户端 TLS ClientHello 里的 SNI 就是它。
+
 ## 卸载
 
 默认只删除本机资源：
@@ -360,4 +380,5 @@ Globalping Token 单独保存在 `/etc/easy_all/globalping.token`，权限为 `r
 | API Token 权限不足或 DNS 冲突 | 按[前置准备手册](preparation-guide.md)核对权限并换用未占用的一级子域。 |
 | Globalping 额度不足 | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；与当前入口策略兼容的缓存会继续使用。 |
 | `status` 显示 `pending-reboot` | 执行 `sudo reboot`，重新登录后确认 `BBRv3: active`。 |
+| 想更换伪装目标（SNI） | 执行 `sudo easy_all reality-target <域名:端口>`，再按部署方式刷新订阅或重新导入节点。 |
 | 订阅能下载但节点无法连接 | 先看[客户端指南](client-guide.md)，再检查 Cloudflare gRPC 和 Xray/Nginx 日志。 |

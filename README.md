@@ -115,6 +115,7 @@ geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 | `easy_all self-update --dev` | 从 `dev` 更新项目代码，用于验证待发布版本 |
 | `easy_all apply` | 重新应用当前配置 |
 | `easy_all tcp` | 交互选择 TCP 加速；也可指定 `bbrv3` 或 `skyline` |
+| `easy_all reality-target [域名:端口]` | Reality 模式修改 SNI（伪装目标）并重新应用 |
 | `easy_all apply-cloud` | Cloudflare 模式同步本机配置和云端 Worker、DNS、证书及规则 |
 | `easy_all update-sub` | 管理订阅、用户和配额 |
 | `easy_all update-core` | 更新 Xray 核心 |

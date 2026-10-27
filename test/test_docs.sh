@@ -79,7 +79,7 @@ done < <(
     sed -En '/^(lib|profiles)\//p' "${ROOT_DIR}/runtime.manifest"
 )
 
-for command in show subscription self-update apply tcp apply-cloud update-sub \
+for command in show subscription self-update apply tcp reality-target apply-cloud update-sub \
     refresh-cdn-ips update-core renew-cert quota-status quota-set quota-reset \
     status uninstall help; do
     assert_contains "operations guide public command ${command}" \

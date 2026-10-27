@@ -1703,6 +1703,51 @@ apply_easy_all() {
     end_quota_maintenance
 }
 
+update_reality_target() {
+    (($# <= 1)) || die "用法：easy_all reality-target [域名:端口]"
+    local current requested
+    require_root
+    begin_quota_maintenance
+    collect_installed_state
+    current=${REALITY_TARGET}
+    requested=${1:-}
+    if [[ -z "${requested}" ]]; then
+        [[ -t 0 ]] || die "非交互模式请指定：easy_all reality-target <域名:端口>"
+        info "当前 Reality SNI / 伪装目标：${current}"
+        requested=$(prompt_value \
+            "新的 Reality SNI / 伪装目标（域名:端口）" "${current}")
+    fi
+    validate_reality_target "${requested}" \
+        || die "Reality 目标无效，需为 域名:端口：${requested}"
+    requested="$(normalize_domain "${requested%:*}"):${requested##*:}"
+    # Never republish the subscriptions here: a failed state write can leave the runtime ahead
+    # of the state file, and republishing would push the stale target to clients.
+    if [[ "${requested}" == "${current}" ]]; then
+        info "Reality 目标未变化：${current}"
+        if subscription_enabled; then
+            info "如需重新下发订阅（例如上次重发中断），执行 sudo easy_all apply"
+        fi
+        end_quota_maintenance
+        return 0
+    fi
+    REALITY_TARGET=${requested}
+    # Validate and restart before persisting: a failed handshake restores the old runtime
+    # config inside refresh_protocol_runtime_config, so the state file must keep matching it.
+    refresh_protocol_runtime_config
+    # Persist as soon as the new target is live: a failed republication must not leave the
+    # state file on the previous SNI while Xray already serves the new one. The second save
+    # persists the Mihomo template snapshot written by the republication.
+    save_state
+    if subscription_enabled; then
+        install_static_subscriptions
+        save_state
+    fi
+    end_quota_maintenance
+    success "Reality 目标已更新：${current} → ${REALITY_TARGET}"
+    show_node
+    info "客户端需刷新订阅或重新导入节点；使用聚合配置下发的还需同步聚合配置里的 sni"
+}
+
 collect_installed_state() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     load_state

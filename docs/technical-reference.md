@@ -37,6 +37,8 @@ type=tcp
 
 默认伪装目标为 `swdist.apple.com:443`。安装器会执行带 SNI 的 TLS 1.3 握手，并通过 RIPE
 Stat 尝试比较 VPS 与目标 IPv4 的 ASN；ASN 不同或查询不可用只告警，握手失败会停止应用。
+安装后修改该值使用 `sudo easy_all reality-target <域名:端口>`，它把 SNI 与回源目标一起替换并重新
+访问同样的验收；切换完成后服务端 `serverNames` 与客户端链接里的 `sni` 指向同一个域名。
 
 动态端口按上海时间每 3 小时生成一个 `10000-12927` 范围内的共享端口，由
 UFW 的 `before.rules` 受管 NAT 区块转发到 Xray `443`。规则保留近期历史窗口并预开放当天和

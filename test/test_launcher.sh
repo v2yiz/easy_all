@@ -74,6 +74,15 @@ runtime_tree_is_complete "${ROOT_DIR}" \
     done
 )
 
+assert_failure_contains "Reality target change is Reality-only" \
+    "reality-target 仅适用于 Reality 模式" \
+    dispatch_profile_command cloudflare-streamup reality-target www.example.com:443
+(
+    update_reality_target() { printf 'target:%s\n' "$*"; }
+    assert_equal "Reality dispatches Reality target changes" 'target:www.example.com:443' \
+        "$(dispatch_profile_command reality reality-target www.example.com:443)"
+)
+
 # These tombstones bridge self-update for launchers that still validate the cloned
 # tree against their own baked-in manifest. They must exist in the source tree, but
 # must never be installed at runtime.

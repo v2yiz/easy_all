@@ -79,6 +79,8 @@ launcher_usage() {
   apply            将已安装代码应用到本机配置
   tcp [bbrv3|skyline]
                    选择 TCP 加速（默认 BBRv3；Skyline 仅用于极高非拥塞随机丢包）
+  reality-target [域名:端口]
+                   修改 Reality SNI（伪装目标）并重新应用
   apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅输出与用户/配额
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
@@ -293,6 +295,11 @@ dispatch_profile_command() {
         ;;
     tcp) update_tcp_acceleration "$@" ;;
     tcp-resume) resume_skyline_after_reboot "$@" ;;
+    reality-target)
+        [[ "${mode}" == "reality" ]] \
+            || launcher_die "reality-target 仅适用于 Reality 模式"
+        update_reality_target "$@"
+        ;;
     apply-cloud)
         [[ "${mode}" == "cloudflare-streamup" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"

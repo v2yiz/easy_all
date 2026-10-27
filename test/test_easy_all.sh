@@ -1106,6 +1106,86 @@ test_rotate_dynamic_ports_command() {
     eval "${end_definition}"
 }
 
+test_update_reality_target_command() {
+    local calls="" output marker="${TMP_DIR}/reality-target-calls"
+    local require_root_definition collect_definition refresh_definition save_definition
+    local install_definition show_definition begin_definition end_definition
+    set_fixture
+    require_root_definition=$(declare -f require_root)
+    collect_definition=$(declare -f collect_installed_state)
+    refresh_definition=$(declare -f refresh_protocol_runtime_config)
+    save_definition=$(declare -f save_state)
+    install_definition=$(declare -f install_static_subscriptions)
+    show_definition=$(declare -f show_node)
+    begin_definition=$(declare -f begin_quota_maintenance)
+    end_definition=$(declare -f end_quota_maintenance)
+    require_root() { :; }
+    begin_quota_maintenance() { calls+="lock "; }
+    end_quota_maintenance() { calls+="unlock "; }
+    collect_installed_state() { :; }
+    refresh_protocol_runtime_config() { calls+="refresh "; }
+    save_state() { calls+="save "; }
+    install_static_subscriptions() { calls+="subscriptions "; }
+    show_node() { calls+="show "; }
+
+    if output=$( (update_reality_target </dev/null) 2>&1 ); then
+        fail_test "non-interactive Reality target change must require an argument"
+    fi
+    assert_contains "non-interactive Reality target change asks for an explicit target" \
+        "非交互模式请指定" "${output}"
+
+    update_reality_target "WWW.Example.COM:443"
+    assert_equal "Reality target change refreshes runtime, persists state, republishes subscriptions" \
+        "lock refresh save subscriptions save unlock show " "${calls}"
+    assert_equal "Reality target change normalizes the SNI host" \
+        "www.example.com:443" "${REALITY_TARGET}"
+
+    calls=""
+    update_reality_target "WWW.EXAMPLE.COM:443"
+    assert_equal "unchanged Reality target performs no runtime work" \
+        "lock unlock " "${calls}"
+    assert_equal "unchanged Reality target keeps the normalized value" \
+        "www.example.com:443" "${REALITY_TARGET}"
+
+    SUBSCRIPTION_MODE="link"
+    calls=""
+    update_reality_target "sub.example.net:8443"
+    assert_equal "node-only Reality target change still refreshes the runtime" \
+        "lock refresh save unlock show " "${calls}"
+
+    if output=$( (update_reality_target "example.com") 2>&1 ); then
+        fail_test "Reality target without a port must be rejected"
+    fi
+    assert_contains "invalid Reality target reports the required format" \
+        "Reality 目标无效" "${output}"
+
+    if output=$( (update_reality_target "a.example.com:443" extra) 2>&1 ); then
+        fail_test "Reality target change must reject extra arguments"
+    fi
+    assert_contains "extra arguments report the command usage" \
+        "用法：easy_all reality-target" "${output}"
+
+    : >"${marker}"
+    refresh_protocol_runtime_config() { printf 'refresh\n' >>"${marker}"; exit 1; }
+    save_state() { printf 'save\n' >>"${marker}"; }
+    assert_failure "failed runtime acceptance aborts the change" \
+        update_reality_target "new.example.com:443"
+    assert_equal "failed runtime acceptance never persists the new target" \
+        "refresh" "$(<"${marker}")"
+
+    unset -f require_root collect_installed_state refresh_protocol_runtime_config \
+        save_state install_static_subscriptions show_node
+    eval "${require_root_definition}"
+    eval "${collect_definition}"
+    eval "${refresh_definition}"
+    eval "${save_definition}"
+    eval "${install_definition}"
+    eval "${show_definition}"
+    eval "${begin_definition}"
+    eval "${end_definition}"
+    set_fixture
+}
+
 test_scheduled_reboot_keeps_dynamic_ports() {
     local cron_state_file="${TMP_DIR}/reboot.cron" cron_state reboot_hook_definition
     : >"${cron_state_file}"
@@ -1882,6 +1962,7 @@ test_nginx_and_firewall
 test_dynamic_port_year_boundary
 test_dynamic_port_boundaries_and_rule_set
 test_rotate_dynamic_ports_command
+test_update_reality_target_command
 test_scheduled_reboot_keeps_dynamic_ports
 test_crontab_read_failure_is_fail_closed
 test_dynamic_port_rotation_schedule
