@@ -21,7 +21,9 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
-`1.6.10` 修复 Xray 26.9.8 起 REALITY 服务端要求 `X25519MLKEM768` key share、而 mihomo 默认剥离导致的“握手成功但不走流量”：自托管订阅在本机 Xray ≥ 26.9.8 时写入 `support-x25519mlkem768: true`，Worker 聚合默认写入并可用 `supportX25519Mlkem768: false` 关闭。该字段需 mihomo 1.19.9+，旧内核会忽略。已有部署执行 `sudo easy_all self-update` 后 Reality 自托管订阅执行 `sudo easy_all apply`（核心低于 26.9.8 请先 `update-core`），Cloudflare 聚合订阅执行 `sudo easy_all update-sub` 重建 Worker。状态版本与订阅 URL 不变。
+`1.6.11` 让 `update-core` 在核心验收通过后自动重新生成 Reality 自托管订阅，不再需要额外执行 `apply`；核心更新失败仍按原逻辑回滚，订阅重发失败时核心保持新版本并提示执行 `sudo easy_all apply`。已有部署执行 `sudo easy_all self-update`；状态版本与订阅 URL 不变。
+
+`1.6.10` 修复 Xray 26.9.8 起 REALITY 服务端要求 `X25519MLKEM768` key share、而 mihomo 默认剥离导致的“握手成功但不走流量”：自托管订阅在本机 Xray ≥ 26.9.8 时写入 `support-x25519mlkem768: true`，Worker 聚合默认写入并可用 `supportX25519Mlkem768: false` 关闭。该字段需 mihomo 1.19.9+，旧 mihomo 内核会忽略。已有部署执行 `sudo easy_all self-update` 后 Reality 自托管订阅执行 `sudo easy_all apply`（核心低于 26.9.8 请先 `update-core`），Cloudflare 聚合订阅执行 `sudo easy_all update-sub` 重建 Worker。状态版本与订阅 URL 不变。
 
 `1.6.9` 新增 `sudo easy_all reality-target <域名:端口>`，安装后可修改 Reality SNI 与回源目标；新目标沿用带 SNI 的 TLS 1.3 验收，失败自动恢复旧配置。存量部署无需重新执行 `apply`，需要更换伪装目标时再执行该命令并刷新客户端订阅；状态版本与订阅 URL 不变。
 
@@ -112,7 +114,8 @@ sudo easy_all update-core
 ```
 
 Reality 自托管订阅的内容取决于本机核心版本（26.9.8 起才写入 `support-x25519mlkem768`），
-所以升级核心后需再执行 `sudo easy_all apply` 重新生成订阅。
+因此 `update-core` 在验收通过后会自动重新生成订阅。仅当重发失败时才会提示再执行
+`sudo easy_all apply`；核心更新本身失败时会回滚二进制、版本文件与运行时配置，不重发订阅。
 
 ### `apply` 与 `apply-cloud`
 

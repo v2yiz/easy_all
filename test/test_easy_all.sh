@@ -1902,6 +1902,76 @@ test_core_update_restores_missing_version_state() {
     TESTS_RUN=$((TESTS_RUN + 1))
 }
 
+test_core_update_refreshes_subscription() {
+    local marker="${TMP_DIR}/core-refresh.log"
+    install -d -m 0755 "${XRAY_DIR}"
+    printf 'old-binary\n' >"${XRAY_BIN}"
+    chmod 0755 "${XRAY_BIN}"
+    printf '{"old":true}\n' >"${XRAY_CONFIG}"
+    printf 'v26.9.7\n' >"${XRAY_DIR}/version"
+
+    : >"${marker}"
+    (
+        require_root() { :; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
+        collect_installed_state() { :; }
+        download_xray() {
+            printf 'new-binary\n' >"${XRAY_BIN}"
+            chmod 0755 "${XRAY_BIN}"
+            printf 'v26.10.21\n' >"${XRAY_DIR}/version"
+        }
+        systemctl() { :; }
+        validate_protocol_runtime() { return 0; }
+        refresh_runtime_subscription() { printf 'refresh\n' >>"${marker}"; }
+        update_current_core
+    ) >/dev/null 2>&1
+    assert_equal "core update republishes the Reality subscription" \
+        "refresh" "$(<"${marker}")"
+
+    : >"${marker}"
+    if (
+        require_root() { :; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
+        collect_installed_state() { :; }
+        download_xray() { printf 'bad-binary\n' >"${XRAY_BIN}"; }
+        systemctl() { :; }
+        validate_protocol_runtime() { return 1; }
+        refresh_runtime_subscription() { printf 'refresh\n' >>"${marker}"; }
+        update_current_core
+    ) >/dev/null 2>&1; then
+        fail_test "failed core validation must return failure"
+    fi
+    assert_equal "failed core update does not republish the subscription" \
+        "" "$(<"${marker}")"
+    assert_equal "failed core update restores the previous version file" \
+        "v26.10.21" "$(<"${XRAY_DIR}/version")"
+
+    : >"${marker}"
+    (
+        require_root() { :; }
+        begin_quota_maintenance() { :; }
+        end_quota_maintenance() { :; }
+        collect_installed_state() { :; }
+        download_xray() {
+            printf 'new-binary\n' >"${XRAY_BIN}"
+            chmod 0755 "${XRAY_BIN}"
+            printf 'v26.10.21\n' >"${XRAY_DIR}/version"
+        }
+        systemctl() { :; }
+        validate_protocol_runtime() { return 0; }
+        refresh_runtime_subscription() { printf 'refresh\n' >>"${marker}"; return 1; }
+        update_current_core
+    ) >/dev/null 2>&1 \
+        || fail_test "a failed republication must not fail the core update"
+    assert_equal "a failed republication is attempted once" \
+        "refresh" "$(<"${marker}")"
+    assert_equal "the core stays updated when the republication fails" \
+        "v26.10.21" "$(<"${XRAY_DIR}/version")"
+    rm -f -- "${XRAY_DIR}/version"
+}
+
 test_install_pipeline_order() {
     local calls
     rm -f -- "${STATE_FILE}"
@@ -2011,6 +2081,7 @@ test_xray_checksum_parsing
 test_state_and_xray
 test_load_state_reload_from_disk
 test_core_update_restores_missing_version_state
+test_core_update_refreshes_subscription
 test_install_pipeline_order
 test_apply_loads_reality_state_before_tcp_tuning
 test_quota_read_failure_is_fail_closed

@@ -69,6 +69,15 @@ uri_encode() {
     jq -rn --arg value "$1" '$value|@uri'
 }
 
+# Profiles whose local subscription content depends on the installed core version define this
+# hook (Reality's ML-KEM gate); CDN modes render core-independent content and omit it.
+refresh_runtime_subscription_after_core_update() {
+    declare -F refresh_runtime_subscription >/dev/null 2>&1 || return 0
+    # Run in a subshell so a republication failure cannot abort the completed core swap.
+    (refresh_runtime_subscription) \
+        || warn "核心已更新，但订阅未重新生成；请执行 sudo easy_all apply"
+}
+
 update_current_core() {
     local backup_bin="${RUNTIME_TMP}/xray-backup"
     local backup_config="${RUNTIME_TMP}/xray-config-backup.json"
@@ -89,6 +98,7 @@ update_current_core() {
         systemctl restart "${XRAY_SERVICE}" || exit 1
         validate_protocol_runtime || exit 1
     ); then
+        refresh_runtime_subscription_after_core_update
         end_quota_maintenance
         success "Xray 已更新"
         return 0

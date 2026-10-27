@@ -1319,6 +1319,9 @@ install_static_subscriptions() {
     install -d -m 0755 "${WEB_ROOT}"
     prepare_mihomo_template
     persist_mihomo_template_snapshot
+    # A republication that died inside a subshell cannot unregister its stage dir, so sweep
+    # leftovers from earlier failed runs before staging a new generation.
+    rm -rf -- "${WEB_ROOT}"/.subscriptions.stage.* 2>/dev/null || true
     stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
         || die "创建订阅暂存目录失败"
     cleanup_files+=("${stage_dir}")
@@ -1777,6 +1780,12 @@ collect_installed_state() {
         && -n "${REALITY_PRIVATE_KEY:-}" && -n "${REALITY_PUBLIC_KEY:-}" \
         && -n "${REALITY_SHORT_ID:-}" ]] \
         || die "Reality 状态不完整"
+}
+
+refresh_runtime_subscription() {
+    subscription_enabled || return 0
+    install_static_subscriptions
+    save_state
 }
 
 refresh_protocol_runtime_config() {

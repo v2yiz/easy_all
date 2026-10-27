@@ -124,6 +124,9 @@ for reality_renderer in "${REALITY_PROFILE}" "${ROOT_DIR}/worker-src/index.js"; 
     grep -Fq 'support-x25519mlkem768: true' "${reality_renderer}" \
         || fail "Reality ML-KEM key share flag is missing from ${reality_renderer}"
 done
+grep -Eq '^refresh_runtime_subscription\(\)' "${REALITY_PROFILE}" \
+    && ! grep -Eq '^refresh_runtime_subscription\(\)' "${XHTTP_RUNTIME}" \
+    || fail "the core-update subscription hook must belong to Reality only"
 for runtime in "${REALITY_PROFILE}" "${XHTTP_RUNTIME}"; do
     rollback_body=$(sed -n '/^rollback_subscription_update()/,/^}/p' "${runtime}")
     [[ "${rollback_body}" == *'restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"'* ]] \
