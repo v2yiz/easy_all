@@ -969,19 +969,40 @@ build_node_link() {
     build_reality_link "${1:-443}"
 }
 
+# Xray 26.9.8+ rejects a REALITY ClientHello without an X25519MLKEM768 key share, and mihomo
+# strips that share unless reality-opts.support-x25519mlkem768 is set (mihomo 5cf0f18, v1.19.9).
+# Older servers may fail authentication on a hybrid share, so gate on the installed core.
+# The version encoding assumes minor and patch stay below 100, which holds for Xray releases.
+reality_mlkem_required() {
+    local version major minor patch
+    version=$(xray_installed_version)
+    version=${version//[[:space:]]/}
+    version=${version#v}
+    IFS=. read -r major minor patch _ <<<"${version}"
+    if [[ ! "${major}" =~ ^[0-9]+$ || ! "${minor}" =~ ^[0-9]+$ || ! "${patch}" =~ ^[0-9]+$ ]]; then
+        warn "无法确定 Xray 核心版本，Reality 订阅未下发 support-x25519mlkem768；执行 sudo easy_all update-core 可恢复" >&2
+        return 1
+    fi
+    ((10#${major} * 10000 + 10#${minor} * 100 + 10#${patch} >= 260908))
+}
+
 build_mihomo_node() {
-    local port=${1:-443}
+    local port=${1:-443} mlkem=0
     resolve_reality_client_ip_family
+    if reality_mlkem_required; then
+        mlkem=1
+    fi
     jq -nr \
             --arg name "${NODE_NAME}" --arg server "${NODE_HOST}" \
             --arg uuid "${VLESS_UUID}" --arg sni "${REALITY_TARGET%:*}" \
             --arg pbk "${REALITY_PUBLIC_KEY}" --arg sid "${REALITY_SHORT_ID}" \
             --arg ip_version "${REALITY_CLIENT_IP_FAMILY_RESOLVED}" \
-            --argjson port "${port}" '
+            --argjson port "${port}" --argjson mlkem "${mlkem}" '
             "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: \($port)\n" +
             "    uuid: \($uuid|@json)\n    network: tcp\n    tls: true\n    udp: true\n" +
             "    skip-cert-verify: false\n    flow: xtls-rprx-vision\n    servername: \($sni|@json)\n" +
             "    reality-opts:\n      public-key: \($pbk|@json)\n      short-id: \($sid|@json)\n" +
+            (if $mlkem == 1 then "      support-x25519mlkem768: true\n" else "" end) +
             "    client-fingerprint: chrome\n    packet-encoding: xudp\n    ip-version: \($ip_version)\n" +
             "    smux:\n      enabled: false\n"'
 }

@@ -217,6 +217,10 @@ function vlessLink(node, port) {
 }
 
 function clashRealityNode(node, port) {
+    // Xray 26.9.8+ requires this hybrid key share; mihomo strips it unless asked to keep it.
+    const mlkem = node.supportX25519Mlkem768 === false
+        ? ''
+        : '\n      support-x25519mlkem768: true';
     return `  - name: ${yamlString(node.name)}
     type: vless
     server: ${yamlString(node.host)}
@@ -230,7 +234,7 @@ function clashRealityNode(node, port) {
     servername: ${yamlString(node.sni)}
     reality-opts:
       public-key: ${yamlString(node.pbk)}
-      short-id: ${yamlString(node.sid)}
+      short-id: ${yamlString(node.sid)}${mlkem}
     client-fingerprint: ${yamlString(node.fp)}
     packet-encoding: xudp
     ip-version: ipv4

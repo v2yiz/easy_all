@@ -806,6 +806,43 @@ test_subscription_generation() {
     unset -f collect_installed_state dig
 }
 
+test_reality_mlkem_delivery() {
+    local definition output base64_file mihomo_file yaml
+    set_fixture
+    definition=$(declare -f xray_installed_version)
+    xray_installed_version() { printf 'v26.10.21\n'; }
+    output=$(build_mihomo_node 443)
+    assert_contains "Reality nodes advertise the ML-KEM key share against Xray 26.9.8+" \
+        "support-x25519mlkem768: true" "${output}"
+    xray_installed_version() { printf 'v26.9.8\n'; }
+    assert_contains "the 26.9.8 boundary already requires the ML-KEM key share" \
+        "support-x25519mlkem768: true" "$(build_mihomo_node 443)"
+    xray_installed_version() { printf 'v26.9.7\n'; }
+    assert_not_contains "older cores keep the previous ClientHello" \
+        "support-x25519mlkem768" "$(build_mihomo_node 443)"
+    xray_installed_version() { printf 'unknown\n'; }
+    assert_not_contains "an unparsable core version stays conservative" \
+        "support-x25519mlkem768" "$(build_mihomo_node 443 2>/dev/null)"
+    unset -f xray_installed_version
+    eval "${definition}"
+
+    # Drive the real version marker so the CI kernel check parses a rendered Reality YAML.
+    base64_file="${TMP_DIR}/mlkem-base64.txt"
+    mihomo_file="${TMP_DIR}/mlkem-mihomo.yaml"
+    MIHOMO_TEMPLATE_FILE=""
+    install -d -m 0700 "${XRAY_DIR}"
+    printf 'v26.10.21\n' >"${XRAY_DIR}/version"
+    generate_subscription_files "${base64_file}" "${mihomo_file}"
+    yaml=$(<"${mihomo_file}")
+    assert_contains "the deployed subscription carries the ML-KEM flag for a new core" \
+        "support-x25519mlkem768: true" "${yaml}"
+    if [[ -n "${MIHOMO_CHECK_BIN:-}" ]]; then
+        assert_success "a Reality subscription with the ML-KEM flag loads in Mihomo" \
+            "${MIHOMO_CHECK_BIN}" -t -d "${MIHOMO_CHECK_HOME:-${TMP_DIR}}" -f "${mihomo_file}"
+    fi
+    rm -f -- "${XRAY_DIR}/version"
+}
+
 test_mihomo_template_snapshot() {
     local source="${ROOT_DIR}/templates/mihomo-classic.yaml"
     local saved_source=${MIHOMO_TEMPLATE_SOURCE:-}
@@ -1954,6 +1991,7 @@ test_subscription_stage_dispatch
 test_mihomo_template
 test_mihomo_template_snapshot
 test_subscription_generation
+test_reality_mlkem_delivery
 test_ufw_reapply_preserves_existing_ssh
 test_restore_inactive_ufw_state
 test_platform_security_snapshot_and_restore

@@ -116,6 +116,8 @@ for phrase in \
     '不能替代 XHTTP' \
     '`13000-60999`' \
     'XanMod LTS 内核' \
+    'support-x25519mlkem768' \
+    'mihomo 1.19.9' \
     'GOOGLE_EGRESS_RESOLVED=ipv4' \
     '所有需要用户输入的交互提示仅显示中文'; do
     assert_contains "detailed documentation contract" "${ALL_DOCS}" "${phrase}"

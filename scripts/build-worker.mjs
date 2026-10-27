@@ -84,6 +84,10 @@ export async function buildWorker({
                 requireValue(node.security === 'tls' && ['xhttp', 'ws'].includes(node.network) && nonempty(node.path) && node.path.startsWith('/'), 'CDN parameters');
             }
             requireValue(node.port === undefined || Number.isInteger(node.port) && node.port > 0 && node.port <= 65535, 'port');
+            requireValue(
+                node.supportX25519Mlkem768 === undefined || typeof node.supportX25519Mlkem768 === 'boolean',
+                `${key} ML-KEM flag`
+            );
             requireValue(node.server === undefined || nonempty(node.server), `${key} server`);
             const allowedIpVersions = ['ipv4', 'ipv6', 'dual'];
             requireValue(

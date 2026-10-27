@@ -35,6 +35,13 @@ npm run test:worker
 
 Worker 保留 `/subscribe?token=...`，`flag=clash` 返回完整配置，`flag=base64` 返回节点 URI 订阅；无 flag 时沿用客户端 User-Agent 判断。默认隐藏标记为 `optional`、`allOnly` 或名称/主机包含 `vmiss` 的节点；追加 `node=all` 时显示全部节点。
 
+`flag=clash` 的 Reality 节点默认在 `reality-opts` 下输出 `support-x25519mlkem768: true`：Xray
+26.9.8 起的 REALITY 服务端要求 ClientHello 携带该混合密钥交换，而 mihomo 默认会剥离它。该字段需
+mihomo 1.19.9 及以上才生效，更旧的 mihomo 内核会忽略它（不会报错）；`flag=base64` 的 URI 订阅不携带此参数，
+Xray 系客户端自行协商。需要退回上一种 ClientHello 的节点，可在聚合配置里设置
+`"supportX25519Mlkem768": false`：只对 `nodes` 里的 Reality 节点生效，指向 Xray 低于 26.9.8 的
+服务端时请设成 `false`。
+
 安装器自动部署的 Worker 不依赖外部 `externalSubUrl`：它将公开请求的 Token 转发到节点域名上的
 Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 显式启用
 `global_fetch_strictly_public`、关闭 `workers.dev` 和 Preview URL，并只绑定独立订阅 Custom Domain。

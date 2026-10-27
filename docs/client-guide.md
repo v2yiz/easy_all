@@ -21,6 +21,13 @@ sudo easy_all subscription
 
 请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。
 
+自托管订阅在服务端核心为 Xray 26.9.8 及以上时，Reality 节点会带 `support-x25519mlkem768: true`，
+用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；Cloudflare 聚合订阅
+（`flag=clash`）默认就带该字段。该字段需 mihomo 1.19.9 及以上内核才生效，更旧的 mihomo 内核会
+忽略它（不会报错）；若内核过旧且节点握手正常但无流量，请升级客户端，或改用 v2rayNG 等 Xray 系
+客户端（它们会自行发送该密钥交换）。聚合配置里指向 Xray 低于 26.9.8 的 Reality 节点需设置
+`supportX25519Mlkem768: false`。
+
 Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。客户端必须能分别保存：
 
 - Cloudflare IPv4 节点地址；

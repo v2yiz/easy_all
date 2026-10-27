@@ -120,6 +120,10 @@ done
 grep -Eq '^prompt_secret\(\)' "${ROOT_DIR}/lib/profile-common.sh" \
     && ! grep -Eq '^prompt_secret\(\)' "${XHTTP_RUNTIME}" "${REALITY_PROFILE}" \
     || fail "secret prompts must be shared by independently sourced Reality and CDN profiles"
+for reality_renderer in "${REALITY_PROFILE}" "${ROOT_DIR}/worker-src/index.js"; do
+    grep -Fq 'support-x25519mlkem768: true' "${reality_renderer}" \
+        || fail "Reality ML-KEM key share flag is missing from ${reality_renderer}"
+done
 for runtime in "${REALITY_PROFILE}" "${XHTTP_RUNTIME}"; do
     rollback_body=$(sed -n '/^rollback_subscription_update()/,/^}/p' "${runtime}")
     [[ "${rollback_body}" == *'restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"'* ]] \

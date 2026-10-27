@@ -40,6 +40,16 @@ Stat 尝试比较 VPS 与目标 IPv4 的 ASN；ASN 不同或查询不可用只�
 安装后修改该值使用 `sudo easy_all reality-target <域名:端口>`，它把 SNI 与回源目标一起替换并重新
 访问同样的验收；切换完成后服务端 `serverNames` 与客户端链接里的 `sni` 指向同一个域名。
 
+Xray 26.9.8 起，REALITY 服务端会拒绝不含 `X25519MLKEM768` key share 的 ClientHello，而 mihomo
+默认会剥离该 key share。因此：自托管订阅在本机 Xray 版本不低于 26.9.8 时，于 `reality-opts`
+下输出 `support-x25519mlkem768: true`（其它版本、或版本文件无法解析时不输出）；Worker 聚合的
+`flag=clash` 输出默认携带该字段，可用节点字段 `supportX25519Mlkem768: false` 关闭（仅对 `nodes`
+里的 Reality 节点生效）。该字段需 mihomo 1.19.9 及以上才生效，更旧的 mihomo 内核会忽略；
+`flag=base64` 的 URI 订阅不携带此参数，Xray 系客户端自行协商。
+
+聚合配置里的 Reality 节点若指向 Xray 低于 26.9.8 的服务端，请为该节点设置
+`supportX25519Mlkem768: false`；旧 REALITY 服务端拿到混合 key share 可能直接认证失败。
+
 动态端口按上海时间每 3 小时生成一个 `10000-12927` 范围内的共享端口，由
 UFW 的 `before.rules` 受管 NAT 区块转发到 Xray `443`。规则保留近期历史窗口并预开放当天和
 次日凌晨，不会生成数万条单端口 allow 规则。

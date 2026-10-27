@@ -88,6 +88,10 @@ try {
     await writeFile(configPath, JSON.stringify(config));
     await assert.rejects(buildWorker({ configPath, outputPath }), /IPv6 literals are disabled/);
     config.nodes[0].host = 'reality.example.com';
+    config.nodes[0].supportX25519Mlkem768 = 'false';
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /ML-KEM flag/);
+    delete config.nodes[0].supportX25519Mlkem768;
     await writeFile(configPath, JSON.stringify(config));
     await buildWorker({ configPath, outputPath, now: now + 240_000 });
     source = await readFile(outputPath, 'utf8');
@@ -113,6 +117,10 @@ try {
     assert.ok(fallbackBody.includes('fallback.example.com'));
     assert.ok(fallbackBody.includes('hidden.example.com'));
     assert.ok(!fallbackBody.includes('vmiss.example.com'));
+    assert.ok(fallbackBody.includes('support-x25519mlkem768: true'),
+        'Reality nodes advertise the ML-KEM key share');
+    assert.ok(!api.buildClashConfig([{ ...api.LOCAL_NODES[0], supportX25519Mlkem768: false }], [10000])
+        .includes('support-x25519mlkem768'), 'the per-node switch disables the key share');
     const allBody = await (await offline(request('&node=all'))).text();
     assert.ok(allBody.includes('hidden.example.com'));
     assert.ok(allBody.includes('vmiss.example.com'));
