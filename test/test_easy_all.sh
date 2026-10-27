@@ -1112,10 +1112,18 @@ test_dynamic_port_boundaries_and_rule_set() {
 }
 
 test_rotate_dynamic_ports_command() {
-    local calls="" begin_definition end_definition
+    local calls="" definition
+    local require_root_definition collect_definition install_definition write_definition
+    local begin_definition end_definition
     set_fixture
-    begin_definition=$(declare -f begin_quota_maintenance)
-    end_definition=$(declare -f end_quota_maintenance)
+    # Restore every stubbed shared function: later cases capture definitions with
+    # `declare -f`, and a missing one would abort the suite through the assignment status.
+    require_root_definition=$(declare -f require_root || true)
+    collect_definition=$(declare -f collect_installed_state || true)
+    install_definition=$(declare -f install_static_subscriptions || true)
+    write_definition=$(declare -f write_ufw_nat_rules || true)
+    begin_definition=$(declare -f begin_quota_maintenance || true)
+    end_definition=$(declare -f end_quota_maintenance || true)
     require_root() { :; }
     begin_quota_maintenance() { calls+="lock "; }
     end_quota_maintenance() { calls+="unlock "; }
@@ -1139,8 +1147,11 @@ test_rotate_dynamic_ports_command() {
     fi
     unset -f require_root collect_installed_state write_ufw_nat_rules ufw \
         install_static_subscriptions
-    eval "${begin_definition}"
-    eval "${end_definition}"
+    for definition in "${require_root_definition}" "${collect_definition}" \
+        "${install_definition}" "${write_definition}" \
+        "${begin_definition}" "${end_definition}"; do
+        [[ -z "${definition}" ]] || eval "${definition}"
+    done
 }
 
 test_update_reality_target_command() {
@@ -1148,8 +1159,8 @@ test_update_reality_target_command() {
     local require_root_definition collect_definition refresh_definition save_definition
     local install_definition show_definition begin_definition end_definition
     set_fixture
-    # Earlier tests unset some of these stubs without restoring the original definitions, so a
-    # missing function here must not abort the suite through the assignment status.
+    # A missing function must not abort the suite: `x=$(declare -f fn)` hands the failure status
+    # to the assignment, which `set -e` turns into a silent exit.
     require_root_definition=$(declare -f require_root || true)
     collect_definition=$(declare -f collect_installed_state || true)
     refresh_definition=$(declare -f refresh_protocol_runtime_config || true)
