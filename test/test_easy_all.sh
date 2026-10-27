@@ -1144,18 +1144,20 @@ test_rotate_dynamic_ports_command() {
 }
 
 test_update_reality_target_command() {
-    local calls="" output marker="${TMP_DIR}/reality-target-calls"
+    local calls="" output marker="${TMP_DIR}/reality-target-calls" definition
     local require_root_definition collect_definition refresh_definition save_definition
     local install_definition show_definition begin_definition end_definition
     set_fixture
-    require_root_definition=$(declare -f require_root)
-    collect_definition=$(declare -f collect_installed_state)
-    refresh_definition=$(declare -f refresh_protocol_runtime_config)
-    save_definition=$(declare -f save_state)
-    install_definition=$(declare -f install_static_subscriptions)
-    show_definition=$(declare -f show_node)
-    begin_definition=$(declare -f begin_quota_maintenance)
-    end_definition=$(declare -f end_quota_maintenance)
+    # Earlier tests unset some of these stubs without restoring the original definitions, so a
+    # missing function here must not abort the suite through the assignment status.
+    require_root_definition=$(declare -f require_root || true)
+    collect_definition=$(declare -f collect_installed_state || true)
+    refresh_definition=$(declare -f refresh_protocol_runtime_config || true)
+    save_definition=$(declare -f save_state || true)
+    install_definition=$(declare -f install_static_subscriptions || true)
+    show_definition=$(declare -f show_node || true)
+    begin_definition=$(declare -f begin_quota_maintenance || true)
+    end_definition=$(declare -f end_quota_maintenance || true)
     require_root() { :; }
     begin_quota_maintenance() { calls+="lock "; }
     end_quota_maintenance() { calls+="unlock "; }
@@ -1212,14 +1214,11 @@ test_update_reality_target_command() {
 
     unset -f require_root collect_installed_state refresh_protocol_runtime_config \
         save_state install_static_subscriptions show_node
-    eval "${require_root_definition}"
-    eval "${collect_definition}"
-    eval "${refresh_definition}"
-    eval "${save_definition}"
-    eval "${install_definition}"
-    eval "${show_definition}"
-    eval "${begin_definition}"
-    eval "${end_definition}"
+    for definition in "${require_root_definition}" "${collect_definition}" \
+        "${refresh_definition}" "${save_definition}" "${install_definition}" \
+        "${show_definition}" "${begin_definition}" "${end_definition}"; do
+        [[ -z "${definition}" ]] || eval "${definition}"
+    done
     set_fixture
 }
 
