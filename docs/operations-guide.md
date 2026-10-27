@@ -21,6 +21,8 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.9` 新增 `sudo easy_all reality-target <域名:端口>`，安装后可修改 Reality SNI 与回源目标；新目标沿用带 SNI 的 TLS 1.3 验收，失败自动恢复旧配置。存量部署无需重新执行 `apply`，需要更换伪装目标时再执行该命令并刷新客户端订阅；状态版本与订阅 URL 不变。
+
 `1.6.8` 修复配额统计与 Xray `ExecStop` 写锁竞争导致的 15 秒死锁停顿，并兼容 systemd `deactivating` 状态避免服务关机/重启时流量统计丢失。已有部署执行 `sudo easy_all self-update` 并执行 `sudo easy_all apply`。状态版本与订阅 URL 不变。
 
 `1.6.7` 补充中国电信天翼账号 `id6.me` 直连，本机号码一键登录不再因代理出口无法取号。

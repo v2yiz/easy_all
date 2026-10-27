@@ -1,5 +1,16 @@
 # 更新记录
 
+## 1.6.9 更新说明（2026-10-27）
+
+- 新增 `easy_all reality-target [域名:端口]`：安装后可修改 Reality SNI（伪装目标）与回源目标，无参数时交互输入，带参数可直接脚本化。该命令仅适用于 Reality 模式，Cloudflare 模式会明确拒绝。
+- 新目标沿用安装期验收：带 SNI 的 TLS 1.3 握手与 ASN 比对；握手失败时恢复旧 `config.json`，状态文件保持旧值，不留下半改状态。
+- 运行时就绪后立即落盘，部署自托管订阅时同步重写订阅文件；link 模式不生成订阅。同值重跑只进出维护锁、不重复切换，并提示用 `sudo easy_all apply` 补齐中断的订阅重发。
+- 补充命令分派、模式守卫、执行序列与文档收录的测试。
+- 使用聚合配置下发节点的部署，修改 SNI 后仍需同步聚合配置里的 `sni` 并重建 Worker。
+- 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移；订阅 URL 不变，但切换后客户端必须刷新订阅或重新导入节点。
+
+源码版本标识为 `1.6.9`。本次为新增命令，存量部署无需重新执行 `apply`；需要更换伪装目标时执行 `sudo easy_all reality-target <域名:端口>`。详见[运维指南](docs/operations-guide.md#修改-reality-sni)。
+
 ## 1.6.8 更新说明（2026-10-22）
 
 - 修复配额统计与 Xray `ExecStop` 钩子的写锁死锁竞争：当维护命令（`apply`、`update-sub`、`quota-set/reset`）持有运行时锁重启 Xray 时，`quota_sync_usage` 识别到维护标记立即让渡，不再因尝试跨进程获取锁而导致 15 秒死锁停顿。
