@@ -1,5 +1,18 @@
 # 更新记录
 
+## 1.6.10 更新说明（2026-10-27）
+
+- 修复 Xray 26.9.8 起 REALITY 服务端要求 ClientHello 携带 `X25519MLKEM768` key share、而 mihomo 默认剥离该 key share 导致的“握手成功但不走流量”：自托管订阅在本机 Xray 版本不低于 26.9.8 时于 `reality-opts` 下输出 `support-x25519mlkem768: true`，其它版本或版本文件无法解析时不输出。
+- Worker 聚合订阅的 `flag=clash` 输出默认携带同一字段，可用节点字段 `supportX25519Mlkem768: false` 关闭；`flag=base64` 的 URI 订阅不携带该参数，Xray 系客户端（v2rayNG 等）自行协商。
+- 该字段需 mihomo 1.19.9 及以上内核才生效；更旧的 mihomo 内核会忽略它，客户端侧不产生回归。聚合配置里的 Reality 节点若指向 Xray 低于 26.9.8 的服务端，请为该节点设置 `supportX25519Mlkem768: false`。
+- 补充按核心版本门控、Worker 开关类型校验与两条渲染路径一致性的测试。
+- 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移；订阅 URL 不变。
+
+源码版本标识为 `1.6.10`。已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行
+`sudo easy_all apply` 重新生成订阅（是否带该字段取决于本机核心版本，低于 26.9.8 时不写入，
+旧服务端不需要它；升级核心后请再执行一次 `apply`）；Cloudflare 聚合订阅再执行
+`sudo easy_all update-sub` 重建 Worker。详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.9 更新说明（2026-10-27）
 
 - 新增 `easy_all reality-target [域名:端口]`：安装后可修改 Reality SNI（伪装目标）与回源目标，无参数时交互输入，带参数可直接脚本化。该命令仅适用于 Reality 模式，Cloudflare 模式会明确拒绝。
