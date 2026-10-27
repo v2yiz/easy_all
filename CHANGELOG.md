@@ -1,5 +1,16 @@
 # 更新记录
 
+## 1.6.11 更新说明（2026-10-27）
+
+- `update-core` 在核心验收通过后自动重新生成 Reality 自托管订阅：订阅是否携带 `support-x25519mlkem768` 取决于本机核心版本，升级核心后旧订阅会与新核心不一致，现不再需要额外执行 `apply`。
+- 核心更新失败仍按原逻辑回滚二进制、版本文件与运行时配置，不触发订阅重发；订阅重发失败时核心保持新版本，并提示执行 `sudo easy_all apply`。
+- 补充核心更新成功与失败两条路径的订阅重发测试。
+- 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移；订阅 URL 不变。
+
+源码版本标识为 `1.6.11`。已有部署执行 `sudo easy_all self-update`；需要更新核心时执行
+`sudo easy_all update-core`，升级到 26.9.8+ 后订阅会自动换成携带 `support-x25519mlkem768` 的版本。
+详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.10 更新说明（2026-10-27）
 
 - 修复 Xray 26.9.8 起 REALITY 服务端要求 ClientHello 携带 `X25519MLKEM768` key share、而 mihomo 默认剥离该 key share 导致的“握手成功但不走流量”：自托管订阅在本机 Xray 版本不低于 26.9.8 时于 `reality-opts` 下输出 `support-x25519mlkem768: true`，其它版本或版本文件无法解析时不输出。
