@@ -1189,10 +1189,19 @@ reality_cloudflare_origin_certificate_is_current() {
             | sha256sum | cut -d' ' -f1)" ]]
 }
 
+reality_cloudflare_origin_certificate_is_reusable() {
+    # A current certificate on disk is only reusable with the Cloudflare side
+    # metadata that save_state persists and load_state requires. Reusing one
+    # without it (e.g. deploy -> link -> deploy clears the ID) writes an
+    # incomplete state file that later hard-fails as "订阅状态不完整".
+    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" && -n "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" ]] \
+        && reality_cloudflare_origin_certificate_is_current
+}
+
 reality_cloudflare_issue_origin_certificate() {
     local force=${1:-0} key csr result cert expires old_id
     reality_cloudflare_ensure_origin_ca_root
-    if [[ "${force}" != 1 ]] && reality_cloudflare_origin_certificate_is_current; then
+    if [[ "${force}" != 1 ]] && reality_cloudflare_origin_certificate_is_reusable; then
         return 0
     fi
     reality_cloudflare_collect_api_token

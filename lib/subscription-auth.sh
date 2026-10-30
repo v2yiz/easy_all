@@ -272,7 +272,7 @@ EOF
 validate_subscription_token_rejection() {
     local resolve=$1 url=$2
     shift 2
-    local status arg
+    local status arg attempt
     local -a tls_args=(-k)
     for arg in "$@"; do
         if [[ "${arg}" == "--cacert" ]]; then
@@ -282,9 +282,19 @@ validate_subscription_token_rejection() {
             break
         fi
     done
-    status=$(curl -sS "${tls_args[@]}" --noproxy '*' --connect-timeout 5 --max-time 20 \
-        -o /dev/null -w '%{http_code}' \
-        --resolve "${resolve}" "$@" --get --data-urlencode "token=invalid" "${url}") \
-        || die "无效订阅 Token 验收请求失败"
+    # `systemctl reload nginx` returns before every worker has switched to the
+    # new config, so a request can still be answered from the previous one.
+    # Right after a deploy that previous worker only knows the bootstrap server,
+    # which has no /subscribe location and answers `location / { return 404; }`,
+    # so a 404 can mean "worker not switched yet" rather than "token missing".
+    # Poll briefly for the real 403 and fail fast on any other status.
+    for attempt in {1..20}; do
+        status=$(curl -sS "${tls_args[@]}" --noproxy '*' --connect-timeout 5 --max-time 20 \
+            -o /dev/null -w '%{http_code}' \
+            --resolve "${resolve}" "$@" --get --data-urlencode "token=invalid" "${url}") \
+            || die "无效订阅 Token 验收请求失败"
+        [[ "${status}" == "404" ]] || break
+        sleep 0.25
+    done
     [[ "${status}" == "403" ]] || die "无效订阅 Token 未被拒绝（HTTP ${status}）"
 }

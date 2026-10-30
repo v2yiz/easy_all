@@ -945,10 +945,19 @@ cloudflare_origin_certificate_hosts() {
     jq -cn --arg cdn "${VLESS_CDN_DOMAIN}" '[$cdn]'
 }
 
+cloudflare_origin_certificate_is_reusable() {
+    # A current certificate on disk is only reusable with the Cloudflare side
+    # metadata that save_state persists and load_state requires; reusing one
+    # without the ID/expiry would persist an incomplete state that renew and
+    # uninstall cannot resolve afterwards.
+    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" && -n "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" ]] \
+        && cloudflare_origin_certificate_is_current
+}
+
 cloudflare_issue_origin_certificate() {
     local force=${1:-0} key csr result cert expires hosts san old_id
     cloudflare_ensure_origin_ca_root
-    if [[ "${force}" != "1" ]] && cloudflare_origin_certificate_is_current; then
+    if [[ "${force}" != "1" ]] && cloudflare_origin_certificate_is_reusable; then
         return 0
     fi
     cloudflare_collect_api_token

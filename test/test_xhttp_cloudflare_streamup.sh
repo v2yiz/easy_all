@@ -1575,4 +1575,41 @@ if (
     fail "subscription acceptance must fail when quota accounts cannot be read"
 fi
 
+# Origin CA reuse must keep the Cloudflare metadata that save_state persists,
+# otherwise the state loses the certificate ID that renew and uninstall resolve.
+origin_certificate_body=$(sed -n '/^cloudflare_issue_origin_certificate()/,/^}/p' "${PROFILE}")
+assert_contains "Cloudflare certificate reuse consults the metadata-aware predicate" \
+    "${origin_certificate_body}" 'cloudflare_origin_certificate_is_reusable; then'
+# Reaching the API token lookup proves the certificate is being reissued.
+if ! (
+    CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
+    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2035-01-01T00:00:00Z"
+    cloudflare_ensure_origin_ca_root() { :; }
+    cloudflare_origin_certificate_is_current() { return 0; }
+    cloudflare_collect_api_token() { exit 9; }
+    cloudflare_issue_origin_certificate 0
+); then
+    fail "a current certificate with stored metadata must be reused without an API call"
+fi
+if (
+    CLOUDFLARE_ORIGIN_CERT_ID=""
+    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=""
+    cloudflare_ensure_origin_ca_root() { :; }
+    cloudflare_origin_certificate_is_current() { return 0; }
+    cloudflare_collect_api_token() { exit 9; }
+    cloudflare_issue_origin_certificate 0
+); then
+    fail "a current certificate without stored Cloudflare metadata must be reissued"
+fi
+if (
+    CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
+    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2035-01-01T00:00:00Z"
+    cloudflare_ensure_origin_ca_root() { :; }
+    cloudflare_origin_certificate_is_current() { return 0; }
+    cloudflare_collect_api_token() { exit 9; }
+    cloudflare_issue_origin_certificate 1
+); then
+    fail "forced rotation must not reuse the current certificate"
+fi
+
 printf 'ok - Cloudflare pure XHTTP stream-up (Mode 2) tests passed\n'

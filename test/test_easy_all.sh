@@ -2057,6 +2057,77 @@ test_quota_read_failure_is_fail_closed() {
     TESTS_RUN=$((TESTS_RUN + 1))
 }
 
+test_subscription_token_rejection_waits_for_stale_nginx_workers() {
+    local log="${TMP_DIR}/token-rejection.log" attempts stale
+    probe() (
+        local sequence=$1
+        : >"${log}"
+        curl() {
+            printf '%s\n' "$*" >>"${log}"
+            sed -n "$(wc -l <"${log}" | tr -d ' ')p" <<<"${sequence}"
+        }
+        sleep() { :; }
+        validate_subscription_token_rejection \
+            "sub.example.com:443:127.0.0.1" "https://sub.example.com:443/subscribe" \
+            --cacert "${TMP_DIR}/origin-ca.pem"
+    )
+    assert_success "stale-worker 404s are retried until the 403 arrives" \
+        probe $'404\n404\n403'
+    attempts=$(wc -l <"${log}" | tr -d ' ')
+    assert_equal "retry stops at the first 403" "3" "${attempts}"
+    assert_contains "every retry keeps probing with the invalid token" \
+        "--data-urlencode token=invalid" "$(<"${log}")"
+    assert_success "a first-attempt 403 is accepted without retrying" probe 403
+    attempts=$(wc -l <"${log}" | tr -d ' ')
+    assert_equal "an immediate 403 issues one request" "1" "${attempts}"
+    assert_failure "a status that is neither 403 nor 404 is not retried" probe 500
+    attempts=$(wc -l <"${log}" | tr -d ' ')
+    assert_equal "an unexpected status fails after one request" "1" "${attempts}"
+    stale=$(printf '404\n%.0s' {1..20})
+    assert_failure "a persistent 404 still fails the acceptance" probe "${stale}"
+    attempts=$(wc -l <"${log}" | tr -d ' ')
+    assert_equal "a persistent 404 exhausts the retry budget" "20" "${attempts}"
+}
+
+test_reality_origin_certificate_reuse_requires_metadata() {
+    local reality_source
+    reality_source=$(<"${ROOT_DIR}/profiles/reality.sh")
+    assert_contains "certificate reuse consults the metadata-aware predicate" \
+        'reality_cloudflare_origin_certificate_is_reusable; then' "${reality_source}"
+    # Reaching the API token lookup proves the certificate is being reissued.
+    if ! (
+        CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
+        CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2041-08-31T00:00:00Z"
+        reality_cloudflare_ensure_origin_ca_root() { :; }
+        reality_cloudflare_origin_certificate_is_current() { return 0; }
+        reality_cloudflare_collect_api_token() { exit 9; }
+        reality_cloudflare_issue_origin_certificate 0
+    ); then
+        fail_test "a current certificate with stored metadata must be reused without an API call"
+    fi
+    if (
+        CLOUDFLARE_ORIGIN_CERT_ID=""
+        CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=""
+        reality_cloudflare_ensure_origin_ca_root() { :; }
+        reality_cloudflare_origin_certificate_is_current() { return 0; }
+        reality_cloudflare_collect_api_token() { exit 9; }
+        reality_cloudflare_issue_origin_certificate 0
+    ); then
+        fail_test "a current certificate without stored Cloudflare metadata must be reissued"
+    fi
+    if (
+        CLOUDFLARE_ORIGIN_CERT_ID="test-origin-cert-id"
+        CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2041-08-31T00:00:00Z"
+        reality_cloudflare_ensure_origin_ca_root() { :; }
+        reality_cloudflare_origin_certificate_is_current() { return 0; }
+        reality_cloudflare_collect_api_token() { exit 9; }
+        reality_cloudflare_issue_origin_certificate 1
+    ); then
+        fail_test "forced rotation must not reuse the current certificate"
+    fi
+    TESTS_RUN=$((TESTS_RUN + 1))
+}
+
 source_script_copy
 test_install_xray_service_under_nounset
 test_syntax_and_reality_boundaries
@@ -2095,5 +2166,7 @@ test_core_update_refreshes_subscription
 test_install_pipeline_order
 test_apply_loads_reality_state_before_tcp_tuning
 test_quota_read_failure_is_fail_closed
+test_subscription_token_rejection_waits_for_stale_nginx_workers
+test_reality_origin_certificate_reuse_requires_metadata
 
 printf 'ok - easy_all shell tests passed (%s assertions)\n' "${TESTS_RUN}"
