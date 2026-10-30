@@ -21,6 +21,8 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.12` 修复 Reality 部署订阅时验收偶发的 404：Nginx reload 未覆盖全部 worker 时，无效 Token 探测可能落到仍服务引导配置的旧 worker，现已对 404 短暂重试并在命中 403 后立即通过；源站证书复用同时要求状态中存在 Cloudflare 证书 ID 与到期时间，Reality 与 XHTTP 两个 Profile 一致。已有部署执行 `sudo easy_all self-update` 即可，无需重新执行 `apply` 或 `update-sub`。状态版本与订阅 URL 不变。
+
 `1.6.11` 让 `update-core` 在核心验收通过后自动重新生成 Reality 自托管订阅，不再需要额外执行 `apply`；核心更新失败仍按原逻辑回滚，订阅重发失败时核心保持新版本并提示执行 `sudo easy_all apply`。已有部署执行 `sudo easy_all self-update`；状态版本与订阅 URL 不变。
 
 `1.6.10` 修复 Xray 26.9.8 起 REALITY 服务端要求 `X25519MLKEM768` key share、而 mihomo 默认剥离导致的“握手成功但不走流量”：自托管订阅在本机 Xray ≥ 26.9.8 时写入 `support-x25519mlkem768: true`，Worker 聚合默认写入并可用 `supportX25519Mlkem768: false` 关闭。该字段需 mihomo 1.19.9+，旧 mihomo 内核会忽略。已有部署执行 `sudo easy_all self-update` 后 Reality 自托管订阅执行 `sudo easy_all apply`（核心低于 26.9.8 请先 `update-core`），Cloudflare 聚合订阅执行 `sudo easy_all update-sub` 重建 Worker。状态版本与订阅 URL 不变。

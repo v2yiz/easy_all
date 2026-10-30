@@ -1,5 +1,17 @@
 # 更新记录
 
+## 1.6.12 更新说明（2026-10-30）
+
+- 修复直连（Reality）安装并部署订阅时验收偶发 404：Nginx 先写入只含 `location / { return 404; }` 的引导配置，再写入正式订阅配置并 `systemctl reload nginx`；reload 在所有 worker 切换完成前返回，随后的无效 Token 探测可能命中仍服务引导配置的 worker。共享验收函数现在对 404 短暂重试（最多 20 次 × 0.25s），命中 403 立即通过，其它状态仍然立即失败，不会放过真正的鉴权放宽或配置未生效。
+- 修复 Origin CA 证书复用缺少云端元数据：磁盘证书仍然有效但状态中的 `CLOUDFLARE_ORIGIN_CERT_ID`/`CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON` 为空（例如 Reality 从 deploy 切到 link 再切回 deploy 会清空这两项）时改为重新签发，避免写下不完整状态、下次 `load_state` 直接失败「订阅状态不完整」。
+- Cloudflare XHTTP 的源站证书复用采用同一规则，避免状态缺少证书 ID 后 `renew-cert` 与 `uninstall --purge-cloud` 无法定位云端资源。
+- 补充订阅 Token 验收重试、两个 Profile 证书元数据门控与强制轮换不复用的测试。
+- 已因上述问题写下不完整状态的部署无法用 `renew-cert` 修复（`load_state` 会先拒绝），需要重新安装订阅，或手工补齐状态文件中的 `CLOUDFLARE_ORIGIN_CERT_ID` 与 `CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON`。
+- 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移；订阅 URL 不变。
+
+源码版本标识为 `1.6.12`。已有部署执行 `sudo easy_all self-update` 即可；本次不改变订阅内容与状态版本，无需重新执行 `apply` 或 `update-sub`。
+详见[运维指南](docs/operations-guide.md#更新与应用)。
+
 ## 1.6.11 更新说明（2026-10-27）
 
 - `update-core` 在核心验收通过后自动重新生成 Reality 自托管订阅：订阅是否携带 `support-x25519mlkem768` 取决于本机核心版本，升级核心后旧订阅会与新核心不一致，现不再需要额外执行 `apply`。
