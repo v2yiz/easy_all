@@ -91,7 +91,7 @@ subscription[format]({
 `);
 function shell(script) {
     const scriptBody = setup + `
-trap 'printf "fixture error at line %s\\n" "$LINENO" >&2' ERR
+trap 'printf "fixture error at line %s\\n" "$LINENO" >&2; exit 1' ERR
 ` + script;
     const result = spawnSync('bash', ['-c', scriptBody], {
         env: { ...process.env, FIXTURE: fixture, TMPDIR: fixture }, encoding: 'utf8', timeout: 30000,
@@ -189,7 +189,13 @@ printf '*filter\\nCOMMIT\\n' >"$UFW_BEFORE_RULES"
 eval "$reboot_command"
 grep -Fxq -- "$expected" "$FIXTURE/active-nat.rules"
 [[ "$RUNTIME_WRITE_LOCK_DEPTH" == 0 && "$QUOTA_MAINTENANCE_ACTIVE" == 0 ]]
-if (ufw() { return 1; }; rotate_dynamic_ports); then exit 1; fi
+if (
+    # The fixture replaces the profile's EXIT trap; retain maintenance cleanup on failure.
+    trap 'end_quota_maintenance' EXIT
+    ufw() { return 1; }
+    rotate_dynamic_ports
+); then exit 1; fi
+[[ ! -e "$QUOTA_MAINTENANCE_FILE" ]]
 # Fixed mode removes historical hourly entries and the new boot entry by marker only.
 printf '1 */1 * * * /fixture/old-command rotate-dynamic-ports %s\\n' "$CRON_DYNAMIC_PORT_MARKER" >>"$FIXTURE/ports.cron"
 SUB_PORT_MODE=443
