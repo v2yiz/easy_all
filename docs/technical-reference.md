@@ -515,6 +515,8 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 `update-sub` 失败回滚范围内，回滚后可能比 `state.env` 新。Cloudflare 聚合订阅必须在
 `update-sub` 时传入模板才能重建 Worker。Reality Worker 聚合的源域名、Worker 名称和聚合 JSON
 由 `lib/worker-config.sh` 与 `scripts/build-worker.mjs` 共同校验；Worker 名称安装后不能就地改名。
-其他自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
-可用 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
+持久化快照在安装时已经验证过；`update-sub` 重建 Worker 时通过
+`MIHOMO_TEMPLATE_TRUSTED=1` 复用该快照，不要求 VPS 安装 `mihomo`。**新提供**的自定义
+`MIHOMO_TEMPLATE_SOURCE` 仍须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，可用
+`MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。

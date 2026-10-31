@@ -64,6 +64,21 @@ try {
     await writeFile(invalidTemplatePath, await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8') + '\nbroken: [\n');
     await assert.rejects(buildWorker({configPath, outputPath, templatePath: invalidTemplatePath}), /template validation failed/);
     assert.equal(await readFile(outputPath, 'utf8'), initial, 'invalid template preserves previous Worker');
+    // A persisted template was already validated by the installer. The Worker
+    // builder must be able to reuse it without a local mihomo binary.
+    const customTemplatePath = join(temp, 'trusted-template.yaml');
+    await writeFile(customTemplatePath,
+        await readFile(classicTemplatePath, 'utf8') + '\n# trusted custom template\n');
+    const validatorPath = fileURLToPath(new URL('../lib/mihomo-template.sh', import.meta.url));
+    const validatorEnv = { ...process.env, PATH: '/usr/bin:/bin', MIHOMO_CHECK_BIN: '' };
+    const untrustedTemplate = spawnSync('/bin/bash', [validatorPath, customTemplatePath], {
+        env: { ...validatorEnv, MIHOMO_TEMPLATE_TRUSTED: '0' }, encoding: 'utf8',
+    });
+    assert.notEqual(untrustedTemplate.status, 0, 'custom templates still require the core');
+    const trustedTemplate = spawnSync('/bin/bash', [validatorPath, customTemplatePath], {
+        env: { ...validatorEnv, MIHOMO_TEMPLATE_TRUSTED: '1' }, encoding: 'utf8',
+    });
+    assert.equal(trustedTemplate.status, 0, trustedTemplate.stderr);
 
     const reservedNamePath = join(temp, 'reserved-name.json');
     for (const prefix of ['🇺🇸优选', '🇭🇰CF']) {

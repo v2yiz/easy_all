@@ -103,6 +103,13 @@ shared_modules=(
 [[ "${RUNTIME_MANIFEST_CONTENT}" == *'lib/worker-config.sh'* \
     && "$(<"${RUNTIME_CORE}")" == *'source "${RUNTIME_LIB_DIR}/worker-config.sh"'* ]] \
     || fail "shared Worker aggregation input handling must be packaged"
+grep -Fq 'validate_mihomo_template "$1" "${MIHOMO_TEMPLATE_TRUSTED:-0}"' \
+    "${ROOT_DIR}/lib/mihomo-template.sh" \
+    || fail "standalone Mihomo validation must honor a trusted persisted template"
+for worker_profile in "${REALITY_PROFILE}" "${CLOUDFLARE_PROFILE}"; do
+    grep -Fq 'MIHOMO_TEMPLATE_TRUSTED="${MIHOMO_TEMPLATE_TRUSTED:-0}"' "${worker_profile}" \
+        || fail "Worker builds must pass the trusted template flag ($(basename "${worker_profile}"))"
+done
 reality_current=$(<"${REALITY_PROFILE}")
 [[ "${reality_current}" == *'reality_worker_delete_resources "${previous_worker_domain_id}"'* \
     && "${reality_current}" == *'reality_worker_detach_domain "${previous_account_id}"'* \

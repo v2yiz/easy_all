@@ -242,6 +242,7 @@ cloudflare_build_subscription_worker() {
         EASY_ALL_WORKER_CONFIG_PATH="${RUNTIME_TMP}/worker-config.json" \
         EASY_ALL_WORKER_OUTPUT_PATH="${CLOUDFLARE_WORKER_BUILD_FILE}" \
         EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
+        MIHOMO_TEMPLATE_TRUSTED="${MIHOMO_TEMPLATE_TRUSTED:-0}" \
         EASY_ALL_WORKER_SOURCE_PATH="${CLOUDFLARE_WORKER_SOURCE_FILE}" \
             node "${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
     ) || die "Worker 构建失败"
@@ -307,6 +308,7 @@ cloudflare_build_manual_worker_recovery() {
         EASY_ALL_WORKER_CONFIG_PATH="${config_file}" \
         EASY_ALL_WORKER_OUTPUT_PATH="${target}" \
         EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
+        MIHOMO_TEMPLATE_TRUSTED="${MIHOMO_TEMPLATE_TRUSTED:-0}" \
         EASY_ALL_WORKER_SOURCE_PATH="${CLOUDFLARE_WORKER_SOURCE_FILE}" \
             node "${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
     ) || {

@@ -117,5 +117,5 @@ prepare_mihomo_template() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -euo pipefail
     die() { printf '%s\n' "$*" >&2; exit 1; }
-    validate_mihomo_template "$1"
+    validate_mihomo_template "$1" "${MIHOMO_TEMPLATE_TRUSTED:-0}"
 fi
