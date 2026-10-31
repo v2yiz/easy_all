@@ -472,9 +472,39 @@ try {
     assert.ok(wsBody.includes('Host: "ws.example.com"'), 'WebSocket HTTP Host remains the CDN domain');
     const degradedGeneric = atob(await (await offline(genericRequest)).text());
     assert.ok(degradedGeneric.includes('fallback.example.com'));
+    const yearStartUtc8 = Date.UTC(2025, 11, 31, 16, 0, 0);
+    assert.deepEqual(
+        Array.from({ length: 6 }, (_, i) =>
+            api.resolveNodePorts(api.LOCAL_NODES, { now: () => yearStartUtc8 + i })[0]
+        ),
+        [10000, 10001, 10002, 10003, 10004, 10005],
+        'first hour of the year exposes 10000..10005 across millisecond timestamps',
+    );
+    assert.deepEqual(
+        Array.from({ length: 6 }, (_, i) =>
+            api.resolveNodePorts(api.LOCAL_NODES, { now: () => yearStartUtc8 + i * 1000 })[0]
+        ),
+        [10000, 10001, 10002, 10003, 10004, 10005],
+        'first hour of the year exposes 10000..10005 across second timestamps',
+    );
+    assert.equal(
+        api.resolveNodePorts(api.LOCAL_NODES, { now: () => yearStartUtc8 + 6 })[0],
+        10000,
+        'port selection wraps within the current hour slot pool',
+    );
     const ports = api.resolveNodePorts(api.LOCAL_NODES, {now: () => Date.UTC(2026, 0, 1)});
-    assert.equal(ports[0], 10002);
-    assert.equal(api.resolveNodePorts(api.LOCAL_NODES, {now: () => Date.UTC(2026, 0, 1, 3)})[0], 10003);
+    assert.equal(ports[0], 10048);
+    assert.equal(api.resolveNodePorts(api.LOCAL_NODES, {now: () => Date.UTC(2026, 0, 1, 1)})[0], 10054);
+    assert.equal(
+        api.resolveNodePorts(api.LOCAL_NODES, {now: () => Date.UTC(2026, 11, 31, 15, 59, 59)})[0],
+        62559,
+        'common-year final slot reaches 62559 (52,560 ports)',
+    );
+    assert.equal(
+        api.resolveNodePorts(api.LOCAL_NODES, {now: () => Date.UTC(2028, 11, 31, 15, 59, 59)})[0],
+        62703,
+        'leap-year final slot reaches 62703 (52,704 ports)',
+    );
     assert.equal(
         api.resolveNodePorts([{...api.LOCAL_NODES[0], port: 4443}], {
             now: () => Date.UTC(2026, 0, 1),

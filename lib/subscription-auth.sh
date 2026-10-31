@@ -212,6 +212,8 @@ publish_subscription_files() {
 write_subscription_nginx_locations() {
     local origin_header_secret=${1:-}
     local worker_source_secret=${2:-}
+    local renderer=${3:-static} error_log="" base64_content="" mihomo_content=""
+    case "${renderer}" in static | reality) ;; *) die "订阅渲染类型无效" ;; esac
     local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
     local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
     local origin_guard=""
@@ -231,6 +233,19 @@ write_subscription_nginx_locations() {
         base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
         mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.yaml"
     fi
+    if [[ "${renderer}" == "reality" ]]; then
+        [[ "${SUB_PORT_MODE:-}" == "dynamic" || "${SUB_PORT_MODE:-}" == "443" ]] \
+            || die "Reality 订阅端口模式无效"
+        if quota_enabled; then
+            base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.port-template"
+            mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.port-template"
+        fi
+        error_log="        error_log /dev/null;"
+        base64_content="        set \$easy_all_reality_port_mode ${SUB_PORT_MODE};
+        js_content easy_all_reality_subscription.base64;"
+        mihomo_content="        set \$easy_all_reality_port_mode ${SUB_PORT_MODE};
+        js_content easy_all_reality_subscription.mihomo;"
+    fi
     cat <<'EOF'
     location = /subscribe {
 EOF
@@ -238,6 +253,7 @@ EOF
     [[ -z "${worker_guard}" ]] || printf '%s\n' "${worker_guard}"
     cat <<EOF
         access_log off;
+${error_log}
         if (\$request_method !~ ^(GET|HEAD)$) { return 405; }
         if (\$easy_all_subscription_allowed = __denied__) { return 403; }
         rewrite ^ \$easy_all_subscription_uri last;
@@ -246,7 +262,9 @@ EOF
     location = /_easy_all_subscription/base64 {
         internal;
         access_log off;
+${error_log}
         alias ${base64_alias};
+${base64_content}
         default_type text/plain;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;
@@ -257,7 +275,9 @@ EOF
     location = /_easy_all_subscription/mihomo {
         internal;
         access_log off;
+${error_log}
         alias ${mihomo_alias};
+${mihomo_content}
         default_type text/yaml;
         add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;

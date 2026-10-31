@@ -54,6 +54,16 @@ while IFS= read -r runtime_path; do
             "${ROOT_DIR}/${runtime_path}"
     )
 done <<<"${RUNTIME_MANIFEST_CONTENT}"
+grep -Fxq 'lib/reality-subscription.js' "${RUNTIME_MANIFEST}" \
+    || fail "Reality njs renderer must be installed with the runtime"
+for lifecycle in remove_subscription_service_runtime rollback_fresh_install uninstall_all; do
+    lifecycle_body=$(sed -n "/^${lifecycle}()/,/^}/p" "${REALITY_PROFILE}")
+    [[ "${lifecycle_body}" == *'"${REALITY_SUBSCRIPTION_JS}"'* ]] \
+        || fail "Reality renderer cleanup is missing from ${lifecycle}"
+done
+[[ "$(<"${XHTTP_RUNTIME}")" != *'reality-subscription.js'* \
+    && "$(<"${XHTTP_RUNTIME}")" != *'libnginx-mod-http-js'* ]] \
+    || fail "XHTTP must retain its existing static renderer and dependencies"
 shared_modules=(
     quota.sh
     platform.sh

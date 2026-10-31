@@ -1,6 +1,6 @@
 const PORT_BASE = 10000;
-// All Reality nodes share one port and rotate it every three hours.
-const PORT_ROTATION_HOURS = 3;
+// All Reality nodes share six ports per hour and pick one per request by timestamp.
+const PORTS_PER_HOUR = 6;
 const TLS_PORT = 443;
 const SUBSCRIPTION_PATH = '/subscribe';
 const DEFAULT_SUB_DOWNLOAD_NAME = 'EASY_ALL';
@@ -38,14 +38,19 @@ function getHourCount(now = Date.now()) {
     return Math.floor((nowUtc8.getTime() - yearStart) / 3_600_000);
 }
 
-function dynamicPort(rotationCount) {
-    return PORT_BASE + rotationCount;
+function dynamicPortSlot(now = Date.now()) {
+    const whole = Math.max(0, Math.trunc(now));
+    return (Math.floor(whole / 1000) + (whole % 1000)) % PORTS_PER_HOUR;
+}
+
+function dynamicPort(hourCount, slot = 0) {
+    return PORT_BASE + hourCount * PORTS_PER_HOUR + slot;
 }
 
 function nodePort({ now = Date.now } = {}) {
-    const hourCount = getHourCount(now());
-    const rotationCount = Math.floor(hourCount / PORT_ROTATION_HOURS);
-    return dynamicPort(rotationCount);
+    const timestamp = now();
+    const hourCount = getHourCount(timestamp);
+    return dynamicPort(hourCount, dynamicPortSlot(timestamp));
 }
 
 function resolveNodePorts(nodes, dependencies) {

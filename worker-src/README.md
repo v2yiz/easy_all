@@ -24,7 +24,7 @@ npm run test:worker
 需要 Node.js 18 或更新版本及 Bash，无需安装 npm 依赖。自定义模板还需 Mihomo 内核校验，
 配置方法见[技术参考](../docs/technical-reference.md#测试)。
 
-- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点、外部订阅源和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口继续按北京时间每三小时轮换；所有节点统一输出 `ipVersion: ipv4`。
+- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点、外部订阅源和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口按北京时间每小时提供 6 个（`10000-62703`）并在每次请求时按时间挑选下发；所有节点统一输出 `ipVersion: ipv4`。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。安装器会把同一模板传给 Worker 构建。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。

@@ -53,10 +53,11 @@ assert_failure() {
 source_script_copy() {
     local module template
     install -d -m 0755 "${TMP_DIR}/lib" "${TMP_DIR}/profiles" "${TMP_DIR}/templates"
+    printf '{"type":"module"}\n' >"${TMP_DIR}/package.json"
     for template in "${ROOT_DIR}"/templates/*.yaml; do
         install -m 0644 "${template}" "${TMP_DIR}/templates/$(basename -- "${template}")"
     done
-    for module in log.sh runtime-core.sh quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh tcp-tuning.sh; do
+    for module in log.sh runtime-core.sh quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh reality-subscription.js tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/lib/${module}"
     done
     sed \
@@ -69,6 +70,7 @@ source_script_copy() {
         -e "s|^readonly XRAY_CONFIG=.*|readonly XRAY_CONFIG=\"${TMP_DIR}/state/xray/config.json\"|" \
         -e "s|^readonly XRAY_SERVICE_FILE=.*|readonly XRAY_SERVICE_FILE=\"${TMP_DIR}/easy_all-xray.service\"|" \
         -e "s|^readonly NGINX_CONFIG=.*|readonly NGINX_CONFIG=\"${TMP_DIR}/easy_all.conf\"|" \
+        -e "s|^readonly REALITY_SUBSCRIPTION_JS=.*|readonly REALITY_SUBSCRIPTION_JS=\"${TMP_DIR}/reality-subscription.js\"|" \
         -e "s|^readonly UFW_BEFORE_RULES=.*|readonly UFW_BEFORE_RULES=\"${TMP_DIR}/before.rules\"|" \
         -e "s|^readonly UFW_BEFORE6_RULES=.*|readonly UFW_BEFORE6_RULES=\"${TMP_DIR}/before6.rules\"|" \
         -e "s|^readonly UFW_DEFAULT_CONFIG=.*|readonly UFW_DEFAULT_CONFIG=\"${TMP_DIR}/ufw-default\"|" \
@@ -704,10 +706,35 @@ test_mihomo_template() {
         _ "${ROOT_DIR}/lib/mihomo-template.sh" "${invalid}"
 }
 
+render_test_subscription_files() {
+    local base64_file=$1 mihomo_file=$2
+    generate_subscription_files "${base64_file}.port-template" "${mihomo_file}.port-template"
+    node --input-type=module - "${TMP_DIR}/lib/reality-subscription.js" \
+        "${base64_file}" "${mihomo_file}" "${SUB_PORT_MODE}" <<'JS'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [modulePath, base64File, mihomoFile, mode] = process.argv.slice(2);
+const { default: subscription } = await import(pathToFileURL(modulePath));
+const timestamp = Date.now();
+Date.now = () => timestamp;
+for (const [format, output] of [['base64', base64File], ['mihomo', mihomoFile]]) {
+    subscription[format]({
+        method: 'GET', headersOut: {},
+        variables: { request_filename: output + '.port-template', easy_all_reality_port_mode: mode },
+        return(status, body) {
+            if (status !== 200) throw new Error('Fixture rendering failed');
+            fs.writeFileSync(output, body);
+        },
+    });
+}
+JS
+}
+
 test_subscription_generation() {
     local base64_file="${TMP_DIR}/base64.txt"
     local mihomo_file="${TMP_DIR}/mihomo.yaml"
     local decoded port yaml node_output expected_dynamic_port
+    local DYNAMIC_PORT_SLOT=2
     set_fixture
     expected_dynamic_port=$(dynamic_port_for_current_window)
     collect_installed_state() { :; }
@@ -723,15 +750,21 @@ test_subscription_generation() {
         "vless://" "${node_output}"
     assert_contains "quota mode points to per-user subscriptions" \
         "避免分发 owner 节点绕过配额" "${node_output}"
-    assert_equal "dynamic subscription port follows the current three-hour window" \
+    assert_equal "dynamic subscription port follows the current one-hour window slot" \
         "${expected_dynamic_port}" "$(generate_subscription_port)"
-    assert_equal "dynamic subscription port is stable within the same window" \
+    assert_equal "dynamic subscription port is stable for the same slot" \
         "${expected_dynamic_port}" "$(generate_subscription_port)"
     assert_success "dynamic port range excludes the additional SSH port" \
         bash -c '(( $1 < $2 ))' _ \
         "${DYNAMIC_PORT_MAX}" "${EASY_ALL_ADDITIONAL_SSH_PORT}"
     MIHOMO_TEMPLATE_FILE=""
-    generate_subscription_files "${base64_file}" "${mihomo_file}"
+    render_test_subscription_files "${base64_file}" "${mihomo_file}"
+    assert_contains "Base64 port template contains its unique authority placeholder" \
+        ':__EASY_ALL_REALITY_PORT__?' "$(openssl base64 -d -A <"${base64_file}.port-template")"
+    assert_equal "YAML port template ends with its completeness marker" \
+        '# EASY_ALL_REALITY_TEMPLATE_END_V1' "$(tail -n 1 "${mihomo_file}.port-template")"
+    assert_not_contains "rendered responses omit the internal EOF marker" \
+        'EASY_ALL_REALITY_TEMPLATE_END_V1' "$(<"${mihomo_file}")"
     if [[ -n "${MIHOMO_CHECK_BIN:-}" ]]; then
         assert_success "generated Reality subscription loads in Mihomo" \
             "${MIHOMO_CHECK_BIN}" -t -d "${MIHOMO_CHECK_HOME:-${TMP_DIR}}" -f "${mihomo_file}"
@@ -785,7 +818,7 @@ test_subscription_generation() {
         "@203.0.113.10:443?" "${node_output}"
     assert_contains "show node uses fixed port 443 in Mihomo" \
         "port: 443" "${node_output}"
-    generate_subscription_files "${base64_file}" "${mihomo_file}"
+    render_test_subscription_files "${base64_file}" "${mihomo_file}"
     if [[ -n "${MIHOMO_CHECK_BIN:-}" ]]; then
         assert_success "generated Reality subscription loads in Mihomo" \
             "${MIHOMO_CHECK_BIN}" -t -d "${MIHOMO_CHECK_HOME:-${TMP_DIR}}" -f "${mihomo_file}"
@@ -832,7 +865,7 @@ test_reality_mlkem_delivery() {
     MIHOMO_TEMPLATE_FILE=""
     install -d -m 0700 "${XRAY_DIR}"
     printf 'v26.10.21\n' >"${XRAY_DIR}/version"
-    generate_subscription_files "${base64_file}" "${mihomo_file}"
+    render_test_subscription_files "${base64_file}" "${mihomo_file}"
     yaml=$(<"${mihomo_file}")
     assert_contains "the deployed subscription carries the ML-KEM flag for a new core" \
         "support-x25519mlkem768: true" "${yaml}"
@@ -1002,13 +1035,13 @@ EOF
         "managed-ports 22 65533 443 80" "$(<"${ufw_log}")"
     assert_contains "Reality enables shared Fail2ban after UFW" \
         "fail2ban-sshd" "$(<"${ufw_log}")"
-    dynamic_rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw_config}")
-    assert_equal "dynamic Reality forwarding retains history and pre-opens today and tomorrow" \
-        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${dynamic_rule_count}"
+    dynamic_rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+(:[0-9]+)? -j REDIRECT --to-ports 443$' <<<"${ufw_config}")
+    assert_equal "dynamic Reality forwarding installs a single full-year range rule" \
+        "1" "${dynamic_rule_count}"
     assert_equal "Reality never creates IPv6 dynamic NAT rules" "0" \
-        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
-    assert_contains "dynamic Reality forwarding includes the current port" \
-        "--dport $(dynamic_port_for_current_window) -j REDIRECT --to-ports ${SERVICE_PORT}" \
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+(:[0-9]+)? -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
+    assert_contains "dynamic Reality forwarding covers the full annual port range" \
+        "--dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT --to-ports ${SERVICE_PORT}" \
         "${ufw_config}"
 
     VPS_IP_FAMILY="dual"
@@ -1017,7 +1050,7 @@ EOF
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
     assert_equal "legacy dual state does not recreate IPv6 NAT rules" \
         "0" \
-        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+(:[0-9]+)? -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
     assert_contains "legacy dual state still disables UFW IPv6" \
         "IPV6=no" "$(<"${UFW_DEFAULT_CONFIG}")"
 
@@ -1028,11 +1061,11 @@ EOF
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
     assert_equal "fixed Reality mode removes IPv4 dynamic NAT rules" "0" \
-        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw_config}")"
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+(:[0-9]+)? -j REDIRECT --to-ports 443$' <<<"${ufw_config}")"
     assert_equal "fixed Reality mode removes IPv6 dynamic NAT rules" "0" \
-        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
+        "$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+(:[0-9]+)? -j REDIRECT --to-ports 443$' <<<"${ufw6_config}")"
     assert_not_contains "fixed Reality mode does not retain a dynamic port" \
-        "--dport ${PORT_BASE} -j REDIRECT" "${ufw_config}"
+        "--dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT" "${ufw_config}"
     assert_contains "Reality disables UFW IPv6" \
         "IPV6=no" "$(<"${UFW_DEFAULT_CONFIG}")"
     assert_contains "Reality reloads UFW after writing NAT rules" \
@@ -1042,72 +1075,78 @@ EOF
 }
 
 test_dynamic_port_year_boundary() {
-    local rules rule_count
+    local rules
     set_fixture
-    date() {
-        case "$*" in
-        +%j) printf '001\n' ;;
-        +%H) printf '00\n' ;;
-        +%Y) printf '2026\n' ;;
-        *) return 1 ;;
-        esac
-    }
+    detect_ssh_ports() { SSH_PORTS="22 65533"; }
     rules=$(write_dynamic_nat_rules)
-    rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${rules}")
-    assert_equal "dynamic NAT keeps history and pre-opens across a year boundary" \
-        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${rule_count}"
-    assert_contains "dynamic NAT keeps the last port from the previous year" \
-        "--dport 12919 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
-    assert_contains "dynamic NAT pre-opens the next day's 00:00 port" \
-        "--dport 10008 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
-    assert_contains "dynamic NAT pre-opens the next day's 03:00 port" \
-        "--dport 10009 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
-    assert_not_contains "dynamic NAT does not pre-open the next day's 06:00 port" \
-        "--dport 10010 -j REDIRECT --to-ports ${SERVICE_PORT}" "${rules}"
-    unset -f date
+    assert_equal "full-year dynamic port max covers 366 days at 6 ports per hour" \
+        "62703" "${DYNAMIC_PORT_MAX}"
+    assert_equal "static NAT range rule covers the entire annual port range without SSH overlap" \
+        "-A PREROUTING -p tcp --dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT --to-ports ${SERVICE_PORT}" \
+        "${rules}"
+    detect_ssh_ports() { SSH_PORTS="22222 65533"; }
+    rules=$(write_dynamic_nat_rules)
+    assert_equal "custom SSH ports inside the dynamic range are exempted before REDIRECT" \
+        $'-A PREROUTING -p tcp --dport 22222 -j RETURN\n'"-A PREROUTING -p tcp --dport ${PORT_BASE}:${DYNAMIC_PORT_MAX} -j REDIRECT --to-ports ${SERVICE_PORT}" \
+        "${rules}"
+    unset -f detect_ssh_ports
 }
 
 test_dynamic_port_boundaries_and_rule_set() {
-    local rules rule_ports rule_count unique_count minimum maximum
-    local mock_day=1 mock_hour=2 mock_year=2026
+    local slot
+    local mock_day=1 mock_hour=0 mock_year=2026 mock_sec=0
     set_fixture
     date() {
         case "$*" in
         +%j) printf '%03d\n' "${mock_day}" ;;
         +%H) printf '%02d\n' "${mock_hour}" ;;
         +%Y) printf '%04d\n' "${mock_year}" ;;
+        +%s) printf '%d\n' "${mock_sec}" ;;
         *) return 1 ;;
         esac
     }
-    assert_equal "dynamic port remains in the first window before 03:00" \
+    for ((slot = 0; slot < 6; slot++)); do
+        mock_sec=${slot}
+        assert_equal "first hour exposes slot ${slot}" \
+            "$((10000 + slot))" "$(dynamic_port_for_current_window)"
+    done
+    mock_sec=6
+    assert_equal "port selection wraps within the same hour" \
         "10000" "$(dynamic_port_for_current_window)"
-    mock_hour=3
-    assert_equal "dynamic port advances at 03:00" \
-        "10001" "$(dynamic_port_for_current_window)"
+    mock_hour=1
+    mock_sec=0
+    assert_equal "dynamic port advances by 6 at 01:00" \
+        "10006" "$(dynamic_port_for_current_window)"
+    mock_sec=5
+    assert_equal "second hour last slot reaches 10011" \
+        "10011" "$(dynamic_port_for_current_window)"
     mock_day=2
     mock_hour=0
-    assert_equal "dynamic port advances at the next day's 00:00" \
-        "10008" "$(dynamic_port_for_current_window)"
+    mock_sec=0
+    assert_equal "dynamic port advances by 144 at the next day's 00:00" \
+        "10144" "$(dynamic_port_for_current_window)"
+
+    mock_year=2026
+    mock_day=365
+    mock_hour=23
+    mock_sec=5
+    assert_equal "common-year final slot reaches 62559" \
+        "62559" "$(dynamic_port_for_current_window)"
 
     mock_year=2028
     mock_day=366
-    mock_hour=21
+    mock_hour=23
+    mock_sec=5
     assert_equal "leap-year final window reaches the configured upper bound" \
         "${DYNAMIC_PORT_MAX}" "$(dynamic_port_for_current_window)"
-    rules=$(write_dynamic_nat_rules)
-    rule_ports=$(grep -E -- '^-A PREROUTING -p tcp --dport [0-9]+ -j REDIRECT --to-ports 443$' <<<"${rules}" \
-        | awk '{print $6}')
-    rule_count=$(wc -l <<<"${rule_ports}" | tr -d ' ')
-    unique_count=$(sort -n -u <<<"${rule_ports}" | wc -l | tr -d ' ')
-    minimum=$(sort -n <<<"${rule_ports}" | head -n1)
-    maximum=$(sort -n <<<"${rule_ports}" | tail -n1)
-    assert_equal "dynamic NAT rule set has the configured number of entries" \
-        "${DYNAMIC_PORT_OPEN_WINDOWS}" "${rule_count}"
-    assert_equal "dynamic NAT rule set has no duplicate ports" \
-        "${rule_count}" "${unique_count}"
-    assert_equal "dynamic NAT rule set starts at the base port" "${PORT_BASE}" "${minimum}"
-    assert_equal "dynamic NAT rule set stays below the reserved upper bound" \
-        "${DYNAMIC_PORT_MAX}" "${maximum}"
+
+    mock_day=1
+    mock_hour=0
+    mock_sec=0
+    SSH_PORTS="10000 65533"
+    assert_equal "colliding SSH port in the current hour slot advances to the next slot" \
+        "10001" "$(dynamic_port_for_current_window)"
+    unset SSH_PORTS
     unset -f date
 }
 
@@ -1311,8 +1350,8 @@ test_dynamic_port_rotation_schedule() {
     }
     configure_dynamic_port_rotation
     cron_state=$(<"${cron_state_file}")
-    assert_contains "dynamic port rotation runs after every three-hour boundary" \
-        "1 */3 * * *" "${cron_state}"
+    assert_contains "dynamic port rotation runs after every hour boundary" \
+        "1 */1 * * *" "${cron_state}"
     assert_contains "dynamic port rotation calls the managed command" \
         "rotate-dynamic-ports" "${cron_state}"
     SUB_PORT_MODE="443"

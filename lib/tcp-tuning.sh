@@ -624,8 +624,8 @@ net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 5
 
-# Outbound TCP/UDP source ports. Keep clear of easy_all's 10000-12927 Reality
-# ingress range and the high 65533 SSH listener.
+# Outbound TCP/UDP source ports. Keep clear of the high 65533 SSH listener;
+# easy_all's 10000-62703 Reality ingress range uses PREROUTING NAT only.
 net.ipv4.ip_local_port_range = 13000 60999
 EOF
     cat >>"${RUNTIME_TMP}/bbr.conf" <<EOF

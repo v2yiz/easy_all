@@ -50,9 +50,8 @@ Xray 26.9.8 起，REALITY 服务端会拒绝不含 `X25519MLKEM768` key share �
 聚合配置里的 Reality 节点若指向 Xray 低于 26.9.8 的服务端，请为该节点设置
 `supportX25519Mlkem768: false`；旧 REALITY 服务端拿到混合 key share 可能直接认证失败。
 
-动态端口按上海时间每 3 小时生成一个 `10000-12927` 范围内的共享端口，由
-UFW 的 `before.rules` 受管 NAT 区块转发到 Xray `443`。规则保留近期历史窗口并预开放当天和
-次日凌晨，不会生成数万条单端口 allow 规则。
+动态端口按上海时间每小时提供 6 个 `10000-62703` 范围内的共享端口（覆盖闰年 366 天，每次请求按时间从当前小时的 6 个端口中挑选下发），由
+UFW 的 `before.rules` 受管 NAT 区块以单条范围规则转发到 Xray `443`（并对落在该范围内的 SSH 端口前置 `RETURN` 豁免），不会生成数万条单端口 allow 规则。
 
 自托管订阅使用独立的 Cloudflare 一级子域：
 
@@ -257,6 +256,7 @@ easy_all
 │  ├─ xray-core.sh
 │  ├─ scheduled-maintenance.sh
 │  ├─ subscription-auth.sh
+│  ├─ reality-subscription.js
 │  └─ tcp-tuning.sh
 ├─ templates/
 │  ├─ mihomo.yaml
@@ -275,6 +275,21 @@ easy_all
 实现；`xhttp-runtime.sh` 只保留 XHTTP/Nginx 数据面逻辑。`profile-common.sh` 提供公共交互和字段
 校验，`scheduled-maintenance.sh` 管理定时重启，`network.sh` 管理 IPv4-only 与 Xray 出站，
 `firewall.sh` 管理 UFW。
+
+Reality 自托管订阅的数据流是 token map → exact internal alias → `reality-subscription.js`
+读取 `$request_filename` → 单次时间戳选择六槽位端口 → 完整响应；njs 不读取 query 或状态文件。
+每用户只发布 `base64.port-template`、`mihomo.port-template` 两个专用端口模板。
+生成期间的数字文件只用于临时校验，运行时目录不保留数字快照。只在生成的 Reality 节点端口
+插入唯一 `__EASY_ALL_REALITY_PORT__`；YAML 模板最后有唯一完整 EOF 注释标记，读取时验证并
+剥离，保留合法占位行的尾部截断也返回通用 503。标记只验证受信生成器的终止边界，不检测保留
+合法尾行的任意中间改写，不代替 YAML parser 或文件权限。
+
+运行时源文件随 manifest 安装，再原子复制到 `/etc/nginx/easy_all-reality-subscription.js`
+（root:root 0644）；用户模板为 root:www-data 0640，目录 0750。Reality 配额重建始终使用
+同一 njs writer；正常更新失败时先恢复脚本、模板和证书，再恢复完整配置并校验、重载。
+共享 XHTTP locations 默认保持 static。安装与诊断步骤见
+[运维指南](operations-guide.md#证书与-reality-动态端口)。
+
 
 关键状态字段：
 
@@ -303,6 +318,10 @@ npm test
 
 macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm run test:worker`
 验证 Worker 构建与离线逻辑；该命令需要 Node.js 18+ 和 Bash，未配置 Mihomo 时跳过真实内核检查。
+`npm run test:subscription` 使用 Node、Bash、jq 和 OpenSSL，在隔离 fixture 中验证真实 Shell
+模板生成、njs handler、Worker 算法对照、截断错误及新装/配额/更新恢复；不安装宿主依赖。
+这些测试使用伪请求对象，真实 Debian 12/13 包激活、alias+njs 权限、HTTP HEAD/Content-Length
+和日志隔离仍需要完整 OS 隔离环境的 Nginx 集成验证，不能把本机模拟结果当成真实 HTTP 通过。
 
 测试覆盖入口和模块完整性、Reality、Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、
 订阅渲染、Token 鉴权、证书轮换、Worker 构建和更新顺序。

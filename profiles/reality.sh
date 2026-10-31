@@ -22,8 +22,8 @@ readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
 readonly KEY_FILE="${CERT_DIR}/private.key"
 readonly WEB_ROOT="/var/www/easy_all"
 readonly SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
-readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
-readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
+readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.port-template"
+readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.port-template"
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly ENTRY_COMMAND_NAME="${EASY_ALL_ENTRY_COMMAND:-easy_all}"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
@@ -34,6 +34,7 @@ readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
 readonly XRAY_SERVICE="easy_all-xray.service"
 readonly XRAY_SERVICE_DESCRIPTION="Xray VLESS Reality managed by easy_all"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
+readonly REALITY_SUBSCRIPTION_JS="/etc/nginx/easy_all-reality-subscription.js"
 readonly CLOUDFLARE_API_BASE="https://api.cloudflare.com/client/v4"
 readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
@@ -54,13 +55,9 @@ readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
 readonly SERVICE_PORT="443"
 readonly SUBSCRIPTION_HTTPS_PORT="8443"
 readonly PORT_BASE="10000"
-readonly DYNAMIC_PORT_ROTATION_HOURS="3"
-readonly DYNAMIC_PORT_MAX="$((PORT_BASE + 366 * 24 / DYNAMIC_PORT_ROTATION_HOURS - 1))"
-readonly DYNAMIC_PORT_RETENTION_DAYS="7"
-readonly DYNAMIC_PORT_RETENTION_WINDOWS="$((DYNAMIC_PORT_RETENTION_DAYS * 24 / DYNAMIC_PORT_ROTATION_HOURS))"
-readonly DYNAMIC_PORT_TODAY_WINDOWS="$((24 / DYNAMIC_PORT_ROTATION_HOURS))"
-readonly DYNAMIC_PORT_NEXT_DAY_WINDOWS="$((6 / DYNAMIC_PORT_ROTATION_HOURS))"
-readonly DYNAMIC_PORT_OPEN_WINDOWS="$((DYNAMIC_PORT_RETENTION_WINDOWS + DYNAMIC_PORT_TODAY_WINDOWS + DYNAMIC_PORT_NEXT_DAY_WINDOWS))"
+readonly DYNAMIC_PORTS_PER_HOUR="6"
+readonly DYNAMIC_PORT_ROTATION_HOURS="1"
+readonly DYNAMIC_PORT_MAX="$((PORT_BASE + 366 * 24 * DYNAMIC_PORTS_PER_HOUR - 1))"
 readonly DEFAULT_REALITY_TARGET="swdist.apple.com:443"
 readonly DEFAULT_REALITY_PORT_MODE="dynamic"
 readonly DEFAULT_REALITY_NODE_NAME="MY_REALITY"
@@ -540,8 +537,8 @@ collect_sub_port_mode() {
     if [[ -z "${requested}" && -t 0 ]]; then
         printf '请选择订阅端口模式：\n'
         printf '  1. 固定 443\n'
-        printf '  2. dynamic（订阅每 3 小时轮换端口 %s-%s，默认）\n' \
-            "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
+        printf '  2. dynamic（订阅每小时提供 %s 个动态端口 %s-%s，默认）\n' \
+            "${DYNAMIC_PORTS_PER_HOUR}" "${PORT_BASE}" "${DYNAMIC_PORT_MAX}"
         read_bilingual \
             "请选择 [${default_choice}]（直接回车使用默认值）:" requested
     fi
@@ -704,78 +701,60 @@ dynamic_port_rotation_for_now() {
     printf '%s\n' "$((elapsed_hours / DYNAMIC_PORT_ROTATION_HOURS))"
 }
 
-dynamic_port_for_current_window() {
-    local rotation
-    rotation=$(dynamic_port_rotation_for_now)
-    printf '%s\n' "$((PORT_BASE + rotation))"
-}
-
-days_in_year() {
-    local year=$1
-    if (( year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) )); then
-        printf '366\n'
+dynamic_port_slot_for_now() {
+    local requested=${1:-${DYNAMIC_PORT_SLOT:-}}
+    local epoch_seconds
+    if [[ "${requested}" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$((10#${requested} % DYNAMIC_PORTS_PER_HOUR))"
+        return 0
+    fi
+    epoch_seconds=$(TZ=Asia/Shanghai date +%s)
+    if [[ "${epoch_seconds}" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$((10#${epoch_seconds} % DYNAMIC_PORTS_PER_HOUR))"
     else
-        printf '365\n'
+        printf '0\n'
     fi
 }
 
-write_dynamic_nat_rules() {
-    local day_of_year current_year previous_year previous_year_windows
-    local current_year_days today_start_rotation next_day_start_rotation
-    local offset rotation port ssh_port skip
+dynamic_port_for_current_window() {
+    local rotation slot offset candidate port ssh_port skip
+    rotation=$(dynamic_port_rotation_for_now)
+    slot=$(dynamic_port_slot_for_now "${1:-}")
     if declare -F detect_ssh_ports >/dev/null 2>&1; then
         detect_ssh_ports
     else
         SSH_PORTS=${SSH_PORTS:-22}
     fi
-    day_of_year=$(TZ=Asia/Shanghai date +%j)
-    current_year=$(TZ=Asia/Shanghai date +%Y)
-    previous_year=$((10#${current_year} - 1))
-    previous_year_windows=$(( $(days_in_year "${previous_year}") * 24 / DYNAMIC_PORT_ROTATION_HOURS ))
-    current_year_days=$(days_in_year "${current_year}")
-    today_start_rotation=$(( (10#${day_of_year} - 1) * DYNAMIC_PORT_TODAY_WINDOWS ))
-    if (( 10#${day_of_year} < current_year_days )); then
-        next_day_start_rotation=$((today_start_rotation + DYNAMIC_PORT_TODAY_WINDOWS))
-    else
-        next_day_start_rotation=0
-    fi
-
-    for ((offset = 1; offset <= DYNAMIC_PORT_RETENTION_WINDOWS; offset++)); do
-        rotation=$((today_start_rotation - offset))
-        if (( rotation < 0 )); then
-            rotation=$((previous_year_windows + rotation))
+    for ((offset = 0; offset < DYNAMIC_PORTS_PER_HOUR; offset++)); do
+        candidate=$(( (slot + offset) % DYNAMIC_PORTS_PER_HOUR ))
+        port=$((PORT_BASE + rotation * DYNAMIC_PORTS_PER_HOUR + candidate))
+        skip=0
+        for ssh_port in ${SSH_PORTS}; do
+            [[ "${port}" != "${ssh_port}" ]] || skip=1
+        done
+        if (( skip == 0 )); then
+            printf '%s\n' "${port}"
+            return 0
         fi
-        port=$((PORT_BASE + rotation))
-        skip=0
-        for ssh_port in ${SSH_PORTS}; do
-            [[ "${port}" != "${ssh_port}" ]] || skip=1
-        done
-        ((skip == 0)) || continue
-        printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
-            "${port}" "${SERVICE_PORT}"
     done
-    for ((offset = 0; offset < DYNAMIC_PORT_TODAY_WINDOWS; offset++)); do
-        rotation=$((today_start_rotation + offset))
-        port=$((PORT_BASE + rotation))
-        skip=0
-        for ssh_port in ${SSH_PORTS}; do
-            [[ "${port}" != "${ssh_port}" ]] || skip=1
-        done
-        ((skip == 0)) || continue
-        printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
-            "${port}" "${SERVICE_PORT}"
+    printf '%s\n' "$((PORT_BASE + rotation * DYNAMIC_PORTS_PER_HOUR + slot))"
+}
+
+write_dynamic_nat_rules() {
+    local ssh_port
+    if declare -F detect_ssh_ports >/dev/null 2>&1; then
+        detect_ssh_ports
+    else
+        SSH_PORTS=${SSH_PORTS:-22}
+    fi
+    for ssh_port in ${SSH_PORTS}; do
+        [[ "${ssh_port}" =~ ^[0-9]+$ ]] || continue
+        if (( 10#${ssh_port} >= PORT_BASE && 10#${ssh_port} <= DYNAMIC_PORT_MAX )); then
+            printf -- '-A PREROUTING -p tcp --dport %s -j RETURN\n' "${ssh_port}"
+        fi
     done
-    for ((offset = 0; offset < DYNAMIC_PORT_NEXT_DAY_WINDOWS; offset++)); do
-        rotation=$((next_day_start_rotation + offset))
-        port=$((PORT_BASE + rotation))
-        skip=0
-        for ssh_port in ${SSH_PORTS}; do
-            [[ "${port}" != "${ssh_port}" ]] || skip=1
-        done
-        ((skip == 0)) || continue
-        printf -- '-A PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s\n' \
-            "${port}" "${SERVICE_PORT}"
-    done
+    printf -- '-A PREROUTING -p tcp --dport %s:%s -j REDIRECT --to-ports %s\n' \
+        "${PORT_BASE}" "${DYNAMIC_PORT_MAX}" "${SERVICE_PORT}"
 }
 
 reality_cloudflare_fetch_origin_ipv4_ranges() {
@@ -1035,13 +1014,14 @@ rotate_dynamic_ports() {
         save_state
     fi
     end_quota_maintenance
-    success "动态端口 NAT 已刷新：开放 ${DYNAMIC_PORT_OPEN_WINDOWS} 个端口，覆盖最近 ${DYNAMIC_PORT_RETENTION_DAYS} 天并预开放当天及次日凌晨端口"
+    success "动态端口 NAT 与订阅快照已刷新：开放 ${PORT_BASE}-${DYNAMIC_PORT_MAX} 转发至 ${SERVICE_PORT}（每小时 ${DYNAMIC_PORTS_PER_HOUR} 个端口）"
 }
 
 install_subscription_dependencies() {
     export DEBIAN_FRONTEND=noninteractive
-    apt-get -o DPkg::Lock::Timeout=300 update
-    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx cron
+    apt-get -o DPkg::Lock::Timeout=300 update || return 1
+    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx cron libnginx-mod-http-js \
+        || return 1
     command -v nginx >/dev/null 2>&1 || die "Nginx 安装后不可用"
 }
 
@@ -1305,68 +1285,115 @@ EOF
 }
 
 generate_subscription_files() {
-    local base64_file=$1 mihomo_file=$2 node_file port
+    local base64_template=$1 mihomo_template=$2 node_file port link placeholder end_token
+    # Numeric files validate generation only; runtime publication contains two port templates.
+    local base64_file="${RUNTIME_TMP}/subscription-base64.validation.txt"
+    local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.validation.yaml"
+    placeholder=__EASY_ALL_REALITY_PORT__
+    end_token=EASY_ALL_REALITY_TEMPLATE_END_V1
     ensure_allowed_tokens
     prepare_mihomo_template
     port=$(generate_subscription_port)
     node_file="${RUNTIME_TMP}/subscription-node.yaml"
-    build_mihomo_node "${port}" >"${node_file}"
-    printf '%s' "$(build_node_link "${port}")" | openssl base64 -A >"${base64_file}"
+    build_mihomo_node "${port}" >"${node_file}" || return 1
+    link=$(build_node_link "${port}") || return 1
+    printf '%s' "${link}" | openssl base64 -A >"${base64_file}" || return 1
     printf '\n' >>"${base64_file}"
     render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}" "${mihomo_file}" \
-        "${NODE_NAME}"
+        "${NODE_NAME}" || return 1
     printf '%s' "$(<"${base64_file}")" | openssl base64 -d -A \
         | grep -Fq 'security=reality' || die "Base64 订阅内容无效"
     grep -Fq 'reality-opts:' "${mihomo_file}" || die "Mihomo 订阅缺少 Reality 节点"
     grep -Fq 'rules:' "${mihomo_file}" || die "Mihomo 订阅缺少规则"
+    if grep -Fq "${placeholder}" "${mihomo_file}" \
+        || grep -Fq "${end_token}" "${mihomo_file}" \
+        || [[ "${link}" == *"${placeholder}"* ]]; then
+        die "订阅模板包含保留标记"
+    fi
+    awk -v port="${port}" -v placeholder="${placeholder}" '
+        $0 == "    port: " port { $0="    port: " placeholder; count++ }
+        { print }
+        END { if (count != 1) exit 1 }
+    ' "${node_file}" >"${node_file}.port-template" \
+        || die "Reality 节点端口模板无效"
+    render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}.port-template" \
+        "${mihomo_template}" "${NODE_NAME}" || return 1
+    awk -v placeholder="${placeholder}" '
+        { line=$0; while ((pos=index(line,placeholder)) > 0) {
+            count++; line=substr(line,pos+length(placeholder))
+        } }
+        $0 == "    port: " placeholder { ports++ }
+        END { if (count != 1 || ports != 1) exit 1 }
+    ' "${mihomo_template}" || die "Reality YAML 端口模板无效"
+    printf '# %s\n' "${end_token}" >>"${mihomo_template}" || return 1
+    # The marker shares the staging file and is appended only after complete rendering.
+    [[ "$(tail -n 1 "${mihomo_template}")" == "# ${end_token}" ]] \
+        && [[ "$(grep -Fc "${end_token}" "${mihomo_template}")" == 1 ]] \
+        || die "Reality YAML 终止标记无效"
+    link=$(build_node_link "${placeholder}") || return 1
+    [[ "${link}" == *":${placeholder}?"* \
+        && "${link#*${placeholder}}" != *"${placeholder}"* ]] \
+        || die "Reality 链接端口模板无效"
+    printf '%s' "${link}" | openssl base64 -A >"${base64_template}" || return 1
+    printf '\n' >>"${base64_template}"
 }
 
 install_static_subscriptions() {
-    local base64_file="${RUNTIME_TMP}/subscription-base64.txt"
-    local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
+    local base64_file="${RUNTIME_TMP}/subscription-base64.port-template"
+    local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.port-template"
     local stage_dir user uuid user_dir
-    install -d -m 0755 "${WEB_ROOT}"
-    prepare_mihomo_template
-    persist_mihomo_template_snapshot
+    install -d -m 0755 "${WEB_ROOT}" || return 1
+    prepare_mihomo_template || return 1
+    persist_mihomo_template_snapshot || return 1
     # A republication that died inside a subshell cannot unregister its stage dir, so sweep
     # leftovers from earlier failed runs before staging a new generation.
     rm -rf -- "${WEB_ROOT}"/.subscriptions.stage.* 2>/dev/null || true
     stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
         || die "创建订阅暂存目录失败"
     cleanup_files+=("${stage_dir}")
-    install -d -o root -g www-data -m 0750 "${stage_dir}"
+    install -d -o root -g www-data -m 0750 "${stage_dir}" || return 1
     if quota_enabled; then
         while IFS=$'\t' read -r user uuid; do
             user_dir="${stage_dir}/${user}"
             (
                 VLESS_UUID=${uuid}
                 generate_subscription_files "${base64_file}.${user}" "${mihomo_file}.${user}"
-            )
-            install -d -o root -g www-data -m 0750 "${user_dir}"
+            ) || return 1
+            install -d -o root -g www-data -m 0750 "${user_dir}" || return 1
             install -o root -g www-data -m 0640 \
-                "${base64_file}.${user}" "${user_dir}/base64.txt"
+                "${base64_file}.${user}" "${user_dir}/base64.port-template" || return 1
             install -o root -g www-data -m 0640 \
-                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml"
+                "${mihomo_file}.${user}" "${user_dir}/mihomo.port-template" || return 1
         done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
     else
-        generate_subscription_files "${base64_file}" "${mihomo_file}"
+        generate_subscription_files "${base64_file}" "${mihomo_file}" || return 1
         install -o root -g www-data -m 0640 "${base64_file}" \
-            "${stage_dir}/base64.txt"
+            "${stage_dir}/base64.port-template" || return 1
         install -o root -g www-data -m 0640 "${mihomo_file}" \
-            "${stage_dir}/mihomo.yaml"
+            "${stage_dir}/mihomo.port-template" || return 1
     fi
-    publish_subscription_files "${stage_dir}"
+    publish_subscription_files "${stage_dir}" || return 1
     rm -rf -- "${stage_dir}"
 }
 
+install_reality_subscription_renderer() {
+    local candidate
+    candidate=$(mktemp "${REALITY_SUBSCRIPTION_JS}.XXXXXX") || return 1
+    cleanup_files+=("${candidate}")
+    install -o root -g root -m 0644 "${SCRIPT_DIR}/reality-subscription.js" "${candidate}" \
+        || return 1
+    mv -f -- "${candidate}" "${REALITY_SUBSCRIPTION_JS}"
+}
+
 write_subscription_nginx_config() {
-    local http2_directive="" listen_h2=" http2"
+    local http2_directive="" listen_h2=" http2" candidate
     if nginx_supports_http2_directive; then
         http2_directive=$'\n    http2 on;'
         listen_h2=""
     fi
     write_subscription_web_root
     {
+        printf 'js_import easy_all_reality_subscription from %s;\n' "${REALITY_SUBSCRIPTION_JS}"
         write_subscription_nginx_maps
         cat <<EOF
 server {
@@ -1382,31 +1409,60 @@ server {
     }
 
 EOF
-        write_subscription_nginx_locations
+        write_subscription_nginx_locations "" "" reality
         cat <<'EOF'
     location / { return 404; }
 }
 EOF
     } >"${RUNTIME_TMP}/easy_all.conf"
-    install -m 0600 "${RUNTIME_TMP}/easy_all.conf" "${NGINX_CONFIG}"
+    candidate=$(mktemp "${NGINX_CONFIG}.XXXXXX") || return 1
+    cleanup_files+=("${candidate}")
+    install -m 0600 "${RUNTIME_TMP}/easy_all.conf" "${candidate}" || return 1
+    mv -f -- "${candidate}" "${NGINX_CONFIG}" || return 1
     nginx -t >/dev/null || die "Nginx 订阅配置校验失败"
     systemctl enable --now nginx >/dev/null
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
+validate_subscription_response_port() {
+    local port=$1 start=$2 finish=$3 instant hour base
+    [[ "${port}" =~ ^[0-9]+$ ]] || die "订阅响应端口无效"
+    if [[ "${SUB_PORT_MODE}" == "443" ]]; then
+        [[ "${port}" == 443 ]] || die "订阅响应端口不符合固定模式"
+        return 0
+    fi
+    for instant in "${start}" "${finish}"; do
+        hour=$(TZ=Asia/Shanghai date -d "@${instant}" '+%j %H') || return 1
+        base=$((PORT_BASE + ((10#${hour% *} - 1) * 24 + 10#${hour#* }) * DYNAMIC_PORTS_PER_HOUR))
+        ((port >= base && port < base + DYNAMIC_PORTS_PER_HOUR)) && return 0
+    done
+    die "订阅响应端口不在请求时段的小时池中"
+}
+
 validate_subscription_runtime() {
-    local token base64_response base64_decoded mihomo_response accounts
+    local token base64_response base64_decoded mihomo_response accounts uuid start finish port flag headers method_status
     validate_subscription_token_rejection \
         "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe" \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
+    method_status=$(curl -sS --proto '=https' --request POST \
+        --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' \
+        --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
+        --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+        --get --data-urlencode 'token=invalid' \
+        "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
+        || die "订阅方法限制本机验收失败"
+    [[ "${method_status}" == 405 ]] || die "订阅方法限制未生效"
     if quota_enabled; then
         accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
         token=$(jq -r 'first(.[].token) // empty' <<<"${accounts}")
+        uuid=$(jq -r 'first(.[].uuid) // empty' <<<"${accounts}")
         [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
     else
         token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+        uuid=${VLESS_UUID}
     fi
+    start=$(date +%s)
     base64_response=$(printf '%s' "${token}" | curl -fsS --proto '=https' \
         --connect-timeout 5 --max-time 20 \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
@@ -1414,10 +1470,17 @@ validate_subscription_runtime() {
         --get --data-urlencode 'token@-' \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "Base64 订阅本机验收失败"
+    finish=$(date +%s)
     [[ -n "${base64_response}" ]] || die "Base64 订阅响应为空"
     base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
         || die "Base64 订阅响应不是有效的 Base64"
     grep -Fq 'security=reality' <<<"${base64_decoded}" || die "Base64 订阅响应缺少 Reality 节点"
+    [[ "${base64_decoded}" == "vless://${uuid}@"* \
+        && "${base64_decoded}" != *"__EASY_ALL_REALITY_PORT__"* ]] \
+        || die "Base64 订阅响应节点无效"
+    port=${base64_decoded%%\?*}; port=${port##*:}
+    validate_subscription_response_port "${port}" "${start}" "${finish}" || return 1
+    start=$(date +%s)
     mihomo_response=$(printf '%s' "${token}" | curl -fsS --proto '=https' \
         --connect-timeout 5 --max-time 20 \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
@@ -1425,7 +1488,33 @@ validate_subscription_runtime() {
         --get --data-urlencode 'token@-' --data-urlencode "flag=clash" \
         "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "Mihomo 订阅本机验收失败"
+    finish=$(date +%s)
     grep -Fq 'reality-opts:' <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
+    [[ "${mihomo_response}" != *"__EASY_ALL_REALITY_PORT__"* \
+        && "${mihomo_response}" != *"EASY_ALL_REALITY_TEMPLATE_END_V1"* ]] \
+        || die "Mihomo 订阅响应模板无效"
+    port=$(awk -v uuid="${uuid}" '
+        /^    port: [0-9]+$/ { port=$2 }
+        $0 == "    uuid: \"" uuid "\"" { print port; count++ }
+        END { if (count != 1) exit 1 }
+    ' <<<"${mihomo_response}") || die "Mihomo 订阅响应节点无效"
+    validate_subscription_response_port "${port}" "${start}" "${finish}" || return 1
+    for flag in base64 clash; do
+        headers=$(printf '%s' "${token}" | curl -fsS --head --proto '=https' \
+            --connect-timeout 5 --max-time 20 \
+            --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
+            --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+            --get --data-urlencode 'token@-' --data-urlencode "flag=${flag}" \
+            "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
+            || die "订阅 HEAD 本机验收失败"
+        grep -Eiq '^content-length: [1-9][0-9]*' <<<"${headers}" \
+            || die "订阅 HEAD 缺少完整表示长度"
+        if [[ "${flag}" == clash ]]; then
+            grep -Eiq '^content-type: text/yaml' <<<"${headers}" || die "订阅 HEAD 类型无效"
+        else
+            grep -Eiq '^content-type: text/plain' <<<"${headers}" || die "订阅 HEAD 类型无效"
+        fi
+    done
 }
 
 reality_cloudflare_validate_public_subscription() {
@@ -1487,14 +1576,15 @@ collect_subscription_inputs() {
 }
 
 deploy_subscription_service() {
-    install_subscription_dependencies
+    install_subscription_dependencies || return 1
+    install_reality_subscription_renderer || return 1
     reality_cloudflare_prepare_subscription
     reality_cloudflare_issue_origin_certificate 0
     reality_cloudflare_configure_strict_tls
     write_subscription_bootstrap_nginx
-    install_static_subscriptions
-    write_subscription_nginx_config
-    validate_subscription_runtime
+    install_static_subscriptions || return 1
+    write_subscription_nginx_config || return 1
+    validate_subscription_runtime || return 1
     reality_cloudflare_validate_public_subscription
 }
 
@@ -1504,6 +1594,7 @@ remove_subscription_service_runtime() {
         rm -f -- "${NGINX_CONFIG}"
         rm -rf -- "${WEB_ROOT}"
     fi
+    rm -f -- "${REALITY_SUBSCRIPTION_JS}"
 }
 
 deploy_subscription_output() {
@@ -1547,6 +1638,11 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/nginx.conf.missing"
     fi
+    if [[ -f "${REALITY_SUBSCRIPTION_JS}" ]]; then
+        install -m 0600 "${REALITY_SUBSCRIPTION_JS}" "${UPDATE_SUB_BACKUP_DIR}/reality-subscription.js"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/reality-subscription.js.missing"
+    fi
     if [[ -d "${SUBSCRIPTION_DIR}" ]]; then
         install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
         cp -a "${SUBSCRIPTION_DIR}/." "${UPDATE_SUB_BACKUP_DIR}/subscriptions/"
@@ -1587,6 +1683,7 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
+    local candidate rollback_status=0
     warn "本机配置更新失败，正在恢复服务端配置、订阅文件、端口模式和 UFW"
     restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
@@ -1597,26 +1694,50 @@ rollback_subscription_update() {
     else
         rm -f -- "${XRAY_CONFIG}"
     fi
-    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" ]]; then
-        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" "${NGINX_CONFIG}"
+    # Isolate fatal asset errors so firewall and port-mode recovery can still run.
+    if (
+        restore_cleanup_count=${#cleanup_files[@]}
+        trap 'for ((i=restore_cleanup_count; i<${#cleanup_files[@]}; i++)); do
+            rm -f -- "${cleanup_files[i]}"
+        done' EXIT
+        if [[ -f "${UPDATE_SUB_BACKUP_DIR}/reality-subscription.js" ]]; then
+            install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/reality-subscription.js" "${REALITY_SUBSCRIPTION_JS}" \
+                || { warn "恢复订阅渲染脚本失败"; return 1; }
+        elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/reality-subscription.js.missing" ]]; then
+            rm -f -- "${REALITY_SUBSCRIPTION_JS}" || return 1
+        fi
+        if [[ -d "${UPDATE_SUB_BACKUP_DIR}/subscriptions" ]]; then
+            publish_subscription_files "${UPDATE_SUB_BACKUP_DIR}/subscriptions" || return 1
+        else
+            rm -rf -- "${SUBSCRIPTION_DIR}"
+        fi
+        if [[ -f "${UPDATE_SUB_BACKUP_DIR}/fullchain.pem" ]]; then
+            install -d -m 0700 "${CERT_DIR}"
+            install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/fullchain.pem" "${CERT_FILE}" || return 1
+            install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/private.key" "${KEY_FILE}" || return 1
+        fi
+        if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" ]]; then
+            candidate=$(mktemp "${NGINX_CONFIG}.XXXXXX") || return 1
+            cleanup_files+=("${candidate}")
+            install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" "${candidate}" || return 1
+            mv -f -- "${candidate}" "${NGINX_CONFIG}" || return 1
+        else
+            rm -f -- "${NGINX_CONFIG}"
+        fi
+        if [[ -f "${NGINX_CONFIG}" ]]; then
+            nginx -t >/dev/null 2>&1 \
+                && systemctl enable --now nginx >/dev/null 2>&1 \
+                && systemctl reload nginx >/dev/null 2>&1 \
+                || { warn "恢复订阅配置后 Nginx 校验或重载失败"; return 1; }
+        elif command -v nginx >/dev/null 2>&1; then
+            nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 \
+                || { warn "恢复 Nginx 配置失败"; return 1; }
+        fi
+    ); then
+        :
     else
-        rm -f -- "${NGINX_CONFIG}"
-    fi
-    if [[ -d "${UPDATE_SUB_BACKUP_DIR}/subscriptions" ]]; then
-        publish_subscription_files "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
-    else
-        rm -rf -- "${SUBSCRIPTION_DIR}"
-    fi
-    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/fullchain.pem" ]]; then
-        install -d -m 0700 "${CERT_DIR}"
-        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/fullchain.pem" "${CERT_FILE}"
-        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/private.key" "${KEY_FILE}"
-    fi
-    if [[ -f "${NGINX_CONFIG}" ]]; then
-        systemctl enable --now nginx >/dev/null 2>&1 || true
-        systemctl reload nginx >/dev/null 2>&1 || true
-    else
-        nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+        rollback_status=1
+        warn "订阅资产或 Nginx 恢复失败，继续恢复端口模式、定时任务和 UFW"
     fi
     [[ ! -f "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules" ]] \
         || install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules" \
@@ -1635,8 +1756,10 @@ rollback_subscription_update() {
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
         || die "备份状态中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
     restore_dynamic_port_rotation_schedule \
-        "${UPDATE_SUB_BACKUP_DIR}/root.crontab"
-    configure_ufw || warn "恢复订阅更新前 UFW 失败"
+        "${UPDATE_SUB_BACKUP_DIR}/root.crontab" \
+        || { warn "恢复订阅更新前定时任务失败"; rollback_status=1; }
+    configure_ufw || { warn "恢复订阅更新前 UFW 失败"; rollback_status=1; }
+    return "${rollback_status}"
 }
 
 update_subscription() {
@@ -1831,8 +1954,8 @@ rebuild_traffic_runtime() {
     install -m 0600 "${XRAY_CONFIG}" "${backup}/xray.json"
     install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
     if (
-        write_xray_config
-        write_subscription_nginx_config
+        write_xray_config || exit 1
+        write_subscription_nginx_config || exit 1
         systemctl restart "${XRAY_SERVICE}"
         validate_protocol_runtime
     ); then
@@ -2066,7 +2189,7 @@ uninstall_all() {
     restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
     remove_dynamic_port_rotation
-    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${COMMAND_INSTALL_DIR}" "${WEB_ROOT}"
     if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
@@ -2093,7 +2216,7 @@ rollback_fresh_install() {
             "${CLOUDFLARE_STRICT_RULESET_ID:-}" "${CLOUDFLARE_ORIGIN_CERT_ID:-}") \
             || warn "首次安装创建的 Cloudflare 资源未能自动清理"
     fi
-    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${COMMAND_INSTALL_DIR}" "${WEB_ROOT}"
     warn "首次安装产生的服务数据已清理；本次新装且未运行的 XanMod 包已尝试移除"
