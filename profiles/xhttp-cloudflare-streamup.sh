@@ -743,7 +743,7 @@ xhttp_configure_ufw() {
         apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends ufw
     fi
     ensure_ssh_boot_service
-    detect_ssh_ports
+    SSH_PORTS="${EASY_ALL_ADDITIONAL_SSH_PORT}"
     configure_ufw_ip_family
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
@@ -751,9 +751,9 @@ xhttp_configure_ufw() {
     ufw_tcp_port_has_unmanaged_anywhere_allow 443 \
         && die "检测到非 easy_all 管理的 TCP 443 全网放行规则；请先删除该规则，避免暴露源站与绕过 Cloudflare 回源白名单"
     desired_ports=${SSH_PORTS}
-    apply_managed_ufw_tcp_ports "${desired_ports}"
+    apply_ssh_ufw_policy "${desired_ports}"
     cloudflare_configure_origin_firewall
-    apply_managed_ufw_tcp_ports "${desired_ports}"
+    apply_ssh_ufw_policy "${desired_ports}"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
     LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
     ensure_ssh_fail2ban
@@ -2120,7 +2120,10 @@ rollback_fresh_install() {
     remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
-    restore_platform_security_state
+    restore_platform_security_state || {
+        warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
+        return 1
+    }
     restore_preinstall_firewall
     restore_bbr_tcp_install_state 1
     restore_preinstall_crontab
@@ -2480,7 +2483,10 @@ uninstall_all() {
     remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
-    restore_platform_security_state
+    restore_platform_security_state || {
+        warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
+        return 1
+    }
     restore_preinstall_firewall
     restore_bbr_tcp_install_state
     remove_daily_reboot_schedule

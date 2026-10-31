@@ -167,8 +167,9 @@ sudo easy_all apply-cloud
 
 ## 安全边界
 
-- 两种模式都会保留已检测到的 SSH 端口，并额外监听 TCP `65533`。
-- UFW 默认拒绝其他入站和转发流量；Fail2ban 保护实际 SSH 端口。
+- 两种模式成功安装或应用后，SSH 仅监听 TCP `65533`，UFW 优先阻断 TCP `22`。
+- 先在云安全组放行 `65533`，以后使用 `ssh -p 65533 用户@服务器`；保留当前会话直到新连接验证成功。
+- UFW 默认拒绝其他入站和转发流量；Fail2ban 仅保护 SSH `65533`。[监听冲突和恢复规则](docs/technical-reference.md)见技术参考。
 - Xray 阻断私网和云元数据地址，并让境外 QUIC 回退到 TCP。
 - Cloudflare XHTTP 实时回源，不缓存隧道业务数据，也不承诺固定免费流量。
 - 默认卸载只清理本机；`--purge-cloud` 仅删除所有权和值均匹配的 easy_all 云资源。

@@ -19,6 +19,10 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
+安装或 `apply` 会将 SSH 收敛到仅监听 TCP `65533`，并在 UFW 优先阻断 `22`。执行前先在
+云安全组放行 `65533`，保留当前会话，另开终端使用 `ssh -p 65533 用户@服务器` 验证。
+监听冲突、检查命令与恢复规则见[技术参考](technical-reference.md)。
+
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
 `1.6.12` 修复 Reality 部署订阅时验收偶发的 404：Nginx reload 未覆盖全部 worker 时，无效 Token 探测可能落到仍服务引导配置的旧 worker，现已对 404 短暂重试并在命中 403 后立即通过；源站证书复用同时要求状态中存在 Cloudflare 证书 ID 与到期时间，Reality 与 XHTTP 两个 Profile 一致。已有部署执行 `sudo easy_all self-update` 即可，无需重新执行 `apply` 或 `update-sub`。状态版本与订阅 URL 不变。
@@ -372,6 +376,10 @@ sudo easy_all reality-target www.example.com:443  # 直接指定
 ```bash
 sudo easy_all uninstall
 ```
+
+卸载须先恢复并验证安装前 SSH 监听，再撤销并验证受管 deny22，之后才移除65533放行和本地
+状态；原配置使用 `22` 时，成功恢复会重新允许 `22`。SSH 恢复或 deny22 撤销失败会中止清理，
+恢复 `65533` 配置并保留其放行及备份，请通过 Console 检查后重试，不能视为卸载成功。
 
 同时清理本工具创建的远端资源：
 

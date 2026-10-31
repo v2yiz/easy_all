@@ -382,8 +382,9 @@ ufw() {
     if [[ "$1" == status ]]; then
         printf 'Status: active\\n'
         if [[ "\${2:-}" == numbered ]]; then
-            printf '[ 1] 65533/tcp ALLOW IN Anywhere # easy_all-managed\\n'
-            printf '[ 2] 443/tcp ALLOW IN Anywhere # easy_all-managed\\n'
+            printf '[ 1] 22/tcp DENY IN Anywhere # easy_all-managed\\n'
+            printf '[ 2] 65533/tcp ALLOW IN Anywhere # easy_all-managed\\n'
+            printf '[ 3] 443/tcp ALLOW IN Anywhere # easy_all-managed\\n'
         fi
     elif [[ "$1" == reload ]]; then
         cat "$UFW_BEFORE_RULES" >"$FIXTURE/active-nat.rules"

@@ -827,7 +827,7 @@ reality_cloudflare_configure_subscription_firewall() {
 configure_ufw() {
     local desired_ports
     ensure_ssh_boot_service
-    detect_ssh_ports
+    SSH_PORTS="${EASY_ALL_ADDITIONAL_SSH_PORT}"
     info "UFW 将放行 SSH 端口：${SSH_PORTS}"
     snapshot_ufw_state
     if ! command -v ufw >/dev/null 2>&1; then
@@ -842,12 +842,12 @@ configure_ufw() {
     if subscription_enabled; then
         ufw_tcp_port_has_unmanaged_anywhere_allow "${SUBSCRIPTION_HTTPS_PORT}" \
             && die "检测到非 easy_all 管理的 TCP ${SUBSCRIPTION_HTTPS_PORT} 全网放行规则；请先删除该规则，避免绕过 Cloudflare 回源白名单"
-        apply_managed_ufw_tcp_ports "${desired_ports}"
+        apply_ssh_ufw_policy "${desired_ports}"
         reality_cloudflare_configure_subscription_firewall
     else
         reality_cloudflare_remove_subscription_firewall_rules
     fi
-    apply_managed_ufw_tcp_ports "${desired_ports}"
+    apply_ssh_ufw_policy "${desired_ports}"
     write_ufw_nat_rules
     ufw reload >/dev/null || die "加载 UFW NAT 规则失败"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
@@ -2183,7 +2183,10 @@ uninstall_all() {
     stop_protocol_services
     remove_quota_timer
     reality_cloudflare_remove_subscription_firewall_rules
-    restore_platform_security_state
+    restore_platform_security_state || {
+        warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
+        return 1
+    }
     restore_preinstall_firewall
     restore_preinstall_ipv6
     restore_bbr_tcp_install_state
@@ -2204,7 +2207,10 @@ rollback_fresh_install() {
     stop_protocol_services
     remove_quota_timer
     reality_cloudflare_remove_subscription_firewall_rules
-    restore_platform_security_state
+    restore_platform_security_state || {
+        warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
+        return 1
+    }
     restore_preinstall_firewall
     restore_preinstall_ipv6
     restore_bbr_tcp_install_state 1

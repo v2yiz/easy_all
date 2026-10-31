@@ -90,26 +90,60 @@ remove_managed_fail2ban_ufw_rules() {
 restore_platform_security_state() {
     local sshd_bin="" unit="" sentinel="${BACKUP_DIR}/pre-install-platform-security.snapshotted"
     local current_ssh_config="${RUNTIME_TMP}/current-easy-all-ssh-port.conf" current_ssh_had=0
-    local remove_helper_after_restart=0 helper_safe_to_remove=0
+    local remove_helper_after_restart=0 helper_safe_to_remove=0 ssh_config_restored=1
     if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]]; then
-        install -m 0600 "${EASY_ALL_SSH_PORT_CONFIG}" "${current_ssh_config}"
+        install -m 0600 "${EASY_ALL_SSH_PORT_CONFIG}" "${current_ssh_config}" || return 1
         current_ssh_had=1
     fi
-    if remove_managed_fail2ban_ufw_rules; then
-        rm -rf -- "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
-    else
-        warn "Fail2ban UFW 规则未全部删除，保留 CIDR 计数状态以便后续重试"
-    fi
-
     if [[ -f "${BACKUP_DIR}/pre-install-ssh-port.conf" ]]; then
-        install -d -m 0755 "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")"
-        install -m 0644 "${BACKUP_DIR}/pre-install-ssh-port.conf" \
-            "${EASY_ALL_SSH_PORT_CONFIG}"
+        if ! install -d -m 0755 "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")" \
+            || ! install -m 0644 "${BACKUP_DIR}/pre-install-ssh-port.conf" \
+                "${EASY_ALL_SSH_PORT_CONFIG}"; then
+            ssh_config_restored=0
+        fi
     elif [[ -f "${BACKUP_DIR}/pre-install-ssh-port.conf.missing" \
         || ( ! -e "${sentinel}" \
             && -f "${EASY_ALL_SSH_PORT_CONFIG}" \
             && "$(<"${EASY_ALL_SSH_PORT_CONFIG}")" == *"Managed by easy_all"* ) ]]; then
-        rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}"
+        rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}" || ssh_config_restored=0
+    fi
+
+    sshd_bin=$(command -v sshd 2>/dev/null || true)
+    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    local expected_listeners="" ssh_restored=0 attempt
+    if ((ssh_config_restored == 1)) && [[ -n "${sshd_bin}" ]] && "${sshd_bin}" -t >/dev/null 2>&1; then
+        expected_listeners=$(ssh_effective_listeners "${sshd_bin}") || expected_listeners=""
+        for unit in ssh.service sshd.service; do
+            systemctl cat "${unit}" >/dev/null 2>&1 || continue
+            if [[ -n "${expected_listeners}" ]] && systemctl reload "${unit}" >/dev/null 2>&1; then
+                for attempt in {1..10}; do
+                    if ssh_listeners_match "${expected_listeners}"; then
+                        ssh_restored=1
+                        break
+                    fi
+                    sleep 0.5
+                done
+            fi
+            break
+        done
+    fi
+    # Revoke and verify our deny22 before callers can delete allow65533. A
+    # failed UFW deletion must take the same guarded recovery path as SSH failure.
+    if ((ssh_restored == 1)) && ! remove_managed_ssh22_ufw_deny; then
+        warn "撤销受管 UFW deny22 未通过验证"
+        ssh_restored=0
+    fi
+    if ((ssh_restored == 0)); then
+        warn "SSH 配置、实际监听或 deny22 撤销检查失败；保留当前 65533 配置、防火墙、状态与备份，卸载/回滚未完成"
+        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${current_ssh_config}" "${current_ssh_had}" \
+            || warn "尝试保留恢复前的 SSH 配置或重载失败，请立即通过 Console 检查"
+        return 1
+    fi
+
+    if remove_managed_fail2ban_ufw_rules; then
+        rm -rf -- "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
+    else
+        warn "Fail2ban UFW 规则未全部删除，保留 CIDR 计数状态以便后续重试"
     fi
 
     if [[ -f "${BACKUP_DIR}/pre-install-fail2ban-jail.conf" ]]; then
@@ -129,26 +163,6 @@ restore_platform_security_state() {
             "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
     else
         remove_helper_after_restart=1
-    fi
-
-    sshd_bin=$(command -v sshd 2>/dev/null || true)
-    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
-    if [[ -n "${sshd_bin}" ]] && "${sshd_bin}" -t >/dev/null 2>&1; then
-        for unit in ssh.service sshd.service; do
-            systemctl cat "${unit}" >/dev/null 2>&1 || continue
-            systemctl reload "${unit}" >/dev/null 2>&1 \
-                || warn "恢复 SSH 配置后重载 ${unit} 失败"
-            break
-        done
-    else
-        warn "恢复 SSH 配置后校验失败，请检查 ${EASY_ALL_SSH_PORT_CONFIG}"
-        if ((current_ssh_had == 1)); then
-            install -m 0644 "${current_ssh_config}" "${EASY_ALL_SSH_PORT_CONFIG}"
-        else
-            rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}"
-        fi
-        [[ -z "${sshd_bin}" ]] || "${sshd_bin}" -t >/dev/null 2>&1 \
-            || warn "回退到恢复前 SSH 配置后校验仍失败，请立即人工检查"
     fi
 
     if [[ -e "${sentinel}" ]]; then
@@ -233,25 +247,60 @@ detect_ssh_ports() {
     [[ -n "${SSH_PORTS}" ]] || SSH_PORTS="22"
 }
 
-ssh_effective_port_exists() {
-    local sshd_bin=$1 expected_port=$2
-    "${sshd_bin}" -T 2>/dev/null | awk -v expected="${expected_port}" '
-        $1 == "port" && $2 == expected {found=1}
+# sshd -T may retain Port entries alongside explicit ListenAddress endpoints.
+# Only the effective IPv4 endpoints determine the supported listener set.
+ssh_effective_listeners() {
+    local output
+    output=$("$1" -T 2>/dev/null) || return 1
+    awk '$1 == "listenaddress" && $2 !~ /\[/ {print $2}' <<<"${output}" | sort -u
+}
+
+ssh_actual_listeners() {
+    local output
+    output=$(ss -H -ltnp 2>/dev/null) || return 1
+    awk '/users:\(\("(sshd|systemd)"/ {print $4}' <<<"${output}" | sort -u
+}
+
+ssh_listeners_match() {
+    local expected=$1 actual endpoint
+    [[ -n "${expected}" ]] || return 1
+    actual=$(ssh_actual_listeners) || return 1
+    [[ "${actual}" == "${expected}" ]] || return 1
+    # Endpoint equality alone cannot prove that a systemd socket serves SSH.
+    while read -r endpoint; do
+        ssh_managed_port_is_listening "${endpoint##*:}" || return 1
+    done <<<"${expected}"
+}
+
+ssh_effective_listeners_are_exclusive() {
+    local output
+    output=$("$1" -T 2>/dev/null) || return 1
+    awk -v port="${EASY_ALL_ADDITIONAL_SSH_PORT}" '
         $1 == "listenaddress" {
-            address=$2
-            sub(/^.*\]:/, "", address)
-            sub(/^.*:/, "", address)
-            if (address == expected) found=1
+            endpoint=$2
+            if (endpoint !~ /^[0-9.]+:[0-9]+$/) invalid=1
+            sub(/^.*:/, "", endpoint)
+            if (endpoint != port) invalid=1
+            found=1
         }
-        END {exit(found ? 0 : 1)}
-    '
+        END {exit (!found || invalid)}
+    ' <<<"${output}"
+}
+
+ssh_only_managed_port_is_listening() {
+    local expected
+    ssh_effective_listeners_are_exclusive "$1" || return 1
+    expected=$(ssh_effective_listeners "$1") || return 1
+    ssh_listeners_match "${expected}"
 }
 
 ssh_managed_port_is_listening() {
     local port=$1 output
     output=$(ss -H -ltnp "sport = :${port}" 2>/dev/null || true)
     [[ -n "${output}" ]] || return 1
-    grep -Eq 'users:\(\("(sshd|systemd)"' <<<"${output}"
+    # A systemd-owned socket alone does not identify its protocol. Require an
+    # sshd owner, including sockets whose users list starts with systemd.
+    ! grep -Ev 'users:.*\("sshd"' <<<"${output}" >/dev/null
 }
 
 ssh_port_is_listening() {
@@ -263,27 +312,23 @@ ssh_port_is_listening() {
 restore_managed_ssh_port_config() {
     local sshd_bin=$1 unit=$2 backup_file=$3 had_config=$4
     if [[ "${had_config}" == "1" ]]; then
-        install -m 0644 "${backup_file}" "${EASY_ALL_SSH_PORT_CONFIG}"
+        install -m 0644 "${backup_file}" "${EASY_ALL_SSH_PORT_CONFIG}" || return 1
     else
-        rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}"
+        rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}" || return 1
     fi
-    "${sshd_bin}" -t >/dev/null 2>&1 && systemctl reload "${unit}" >/dev/null 2>&1 || true
+    "${sshd_bin}" -t >/dev/null 2>&1 && systemctl reload "${unit}" >/dev/null 2>&1
 }
 
 ensure_additional_ssh_port() {
-    local sshd_bin=$1 unit=$2 candidate backup had_config=0 address_family port attempt
-    local preserve_port
+    local sshd_bin=$1 unit=$2 candidate backup had_config=0 address_family attempt
 
     [[ "${EASY_ALL_ADDITIONAL_SSH_PORT}" =~ ^[0-9]+$ ]] \
         && ((10#${EASY_ALL_ADDITIONAL_SSH_PORT} >= 1 \
             && 10#${EASY_ALL_ADDITIONAL_SSH_PORT} <= 65535)) \
         || die "新增 SSH 端口无效：${EASY_ALL_ADDITIONAL_SSH_PORT}"
 
-    detect_ssh_ports
-    for preserve_port in ${EASY_ALL_SSH_PRESERVE_PORTS:-}; do
-        append_ssh_port "${preserve_port}"
-    done
-    append_ssh_port "${EASY_ALL_ADDITIONAL_SSH_PORT}"
+    "${sshd_bin}" -t || die "sshd 配置校验失败；拒绝切换 SSH 端口"
+    info "SSH 将仅监听 ${EASY_ALL_ADDITIONAL_SSH_PORT}；请先在云安全组放行该端口，今后使用 ssh -p ${EASY_ALL_ADDITIONAL_SSH_PORT}"
     if ssh_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}" \
         && ! ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}"; then
         die "TCP ${EASY_ALL_ADDITIONAL_SSH_PORT} 已被非 SSH 进程占用；拒绝修改 sshd"
@@ -303,47 +348,46 @@ ensure_additional_ssh_port() {
         || die "sshd 仅允许 IPv6，但 easy_all 已全局禁用 IPv6"
 
     {
-        printf '%s\n' '# Managed by easy_all. Keep every detected SSH port and add 65533.'
-        for port in ${SSH_PORTS}; do
-            printf 'Port %s\n' "${port}"
-        done
-        for port in ${SSH_PORTS}; do
-            printf 'ListenAddress 0.0.0.0:%s\n' "${port}"
-        done
+        printf '%s\n' '# Managed by easy_all. SSH listens only on TCP 65533.'
+        printf 'Port %s\n' "${EASY_ALL_ADDITIONAL_SSH_PORT}"
+        printf 'ListenAddress 0.0.0.0:%s\n' "${EASY_ALL_ADDITIONAL_SSH_PORT}"
     } >"${candidate}"
 
     if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] \
         && cmp -s "${candidate}" "${EASY_ALL_SSH_PORT_CONFIG}" \
-        && ssh_effective_port_exists "${sshd_bin}" "${EASY_ALL_ADDITIONAL_SSH_PORT}" \
-        && ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}"; then
+        && "${sshd_bin}" -t \
+        && ssh_only_managed_port_is_listening "${sshd_bin}"; then
         rm -f -- "${candidate}" "${backup}"
-        info "SSH 已同时监听现有端口与新增端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}"
+        info "SSH 仅监听端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}"
         return 0
     fi
 
     install -m 0644 "${candidate}" "${EASY_ALL_SSH_PORT_CONFIG}"
     if ! "${sshd_bin}" -t \
-        || ! ssh_effective_port_exists "${sshd_bin}" "${EASY_ALL_ADDITIONAL_SSH_PORT}"; then
-        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}"
+        || ! ssh_effective_listeners_are_exclusive "${sshd_bin}"; then
+        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}" \
+            || warn "尝试恢复原 SSH 服务失败，请立即通过 Console 检查"
         rm -f -- "${candidate}" "${backup}"
-        die "sshd 未接受新增端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}，已恢复原 SSH 配置"
+        die "sshd 有效监听未收敛到唯一端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}，已恢复原 SSH 配置"
     fi
     if ! systemctl reload "${unit}" >/dev/null 2>&1; then
-        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}"
+        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}" \
+            || warn "尝试恢复原 SSH 服务失败，请立即通过 Console 检查"
         rm -f -- "${candidate}" "${backup}"
         die "重载 ${unit} 失败，已恢复原 SSH 配置"
     fi
     for attempt in {1..10}; do
-        ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}" && break
+        ssh_only_managed_port_is_listening "${sshd_bin}" && break
         sleep 0.5
     done
-    if ! ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}"; then
-        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}"
+    if ! ssh_only_managed_port_is_listening "${sshd_bin}"; then
+        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}" \
+            || warn "尝试恢复原 SSH 服务失败，请立即通过 Console 检查"
         rm -f -- "${candidate}" "${backup}"
-        die "sshd 重载后仍未监听 ${EASY_ALL_ADDITIONAL_SSH_PORT}，已恢复原 SSH 配置"
+        die "sshd 重载后未能仅监听 ${EASY_ALL_ADDITIONAL_SSH_PORT}，已恢复原 SSH 配置"
     fi
     rm -f -- "${candidate}" "${backup}"
-    info "SSH 已同时监听现有端口与新增端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}"
+    info "SSH 仅监听端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}"
 }
 
 install_fail2ban_dependencies() {
@@ -541,9 +585,8 @@ ensure_ssh_fail2ban() {
 
     install_fail2ban_dependencies
     command -v ufw >/dev/null 2>&1 || die "未找到 UFW；无法启用 Fail2ban SSH 防护"
-    detect_ssh_ports
-    append_ssh_port "${EASY_ALL_ADDITIONAL_SSH_PORT}"
-    ports_csv=${SSH_PORTS// /,}
+    SSH_PORTS="${EASY_ALL_ADDITIONAL_SSH_PORT}"
+    ports_csv="${EASY_ALL_ADDITIONAL_SSH_PORT}"
     [[ -n "${ports_csv}" ]] || die "无法确定 Fail2ban 需要保护的 SSH 端口"
 
     install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")" \

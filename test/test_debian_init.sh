@@ -152,12 +152,12 @@ test_collected_ssh_ports() {
 
     TEST_HOST_ALIAS=node-a TEST_CURRENT_PORT=22 collect_inputs >/dev/null
     validate_collected_inputs
-    assert_equal "current SSH port is retained while 65533 is added" \
+    assert_equal "current SSH port is used to connect before switching to65533" \
         "22:65533:yes" "${CURRENT_PORT}:${FINAL_PORT}:${CHANGE_PORT}"
 
     TEST_HOST_ALIAS=node-b TEST_CURRENT_PORT=22 collect_inputs >/dev/null
     validate_collected_inputs
-    assert_equal "additional SSH port is deterministic" \
+    assert_equal "final SSH port is deterministic" \
         "22:65533:yes" "${CURRENT_PORT}:${FINAL_PORT}:${CHANGE_PORT}"
     assert_equal "additional SSH port" "65533" "$EASY_ALL_ADDITIONAL_SSH_PORT"
 
@@ -237,7 +237,6 @@ test_remote_script_contract() {
     assert_contains "remote persists the BBR module" "debian-init-bbr.conf" "${content}"
     assert_not_contains "remote does not install XanMod" "dl.xanmod.org" "${content}"
     assert_not_contains "remote does not hardcode application ports" "80 443 8080 8443 8888" "${content}"
-    assert_contains "remote reads sshd effective ports" "sshd_bin\" -T" "${content}"
     assert_contains "remote includes explicit extra ports" 'printf '\''%s\n'\'' $extra_tcp_ports' "${content}"
     assert_contains "remote defaults UFW incoming to deny" "ufw default deny incoming" "${content}"
     assert_contains "remote defaults UFW routed to deny" "ufw default deny routed" "${content}"
@@ -258,8 +257,8 @@ test_remote_script_contract() {
         'source "$platform_module"' "${content}"
     assert_contains "remote sources the shared firewall module" \
         'source "$firewall_module"' "${content}"
-    assert_contains "remote preserves all previously detected SSH ports" \
-        'EASY_ALL_SSH_PRESERVE_PORTS="${SSH_PORTS} ${current_port}"' "${content}"
+    assert_not_contains "remote never preserves old SSH ports" \
+        'EASY_ALL_SSH_PRESERVE_PORTS' "${content}"
     assert_contains "remote delegates SSH listeners to the shared platform module" \
         'ensure_ssh_boot_service' "${content}"
     assert_contains "remote delegates Fail2ban to the shared platform module" \
@@ -274,8 +273,8 @@ test_remote_script_contract() {
         "ListenAddress [::]" "${platform_content}"
     assert_contains "shared platform enables Fail2ban SSH jail" \
         "fail2ban-client status sshd" "${platform_content}"
-    assert_contains "shared Fail2ban monitors detected SSH ports" \
-        'ports_csv=${SSH_PORTS// /,}' "${platform_content}"
+    assert_contains "shared Fail2ban monitors only65533" \
+        'ports_csv="${EASY_ALL_ADDITIONAL_SSH_PORT}"' "${platform_content}"
     assert_contains "shared platform uses CIDR-aware UFW Fail2ban bans" \
         "banaction = easy-all-ufw-cidr" "${platform_content}"
     assert_contains "shared platform limits IPv4 Fail2ban bans to one address" \
@@ -290,10 +289,10 @@ test_remote_script_contract() {
         "bantime = 3h" "${platform_content}"
     assert_contains "shared platform caps repeated-source bans" \
         "bantime.maxtime = 1w" "${platform_content}"
-    assert_contains "shared platform always persists the additional SSH listener" \
-        'append_ssh_port "${EASY_ALL_ADDITIONAL_SSH_PORT}"' "${platform_content}"
+    assert_contains "shared platform persists the sole SSH listener" \
+        'SSH listens only on TCP 65533.' "${platform_content}"
     assert_contains "remote reuses idempotent managed UFW updates" \
-        'apply_managed_ufw_tcp_ports "$ports"' "${content}"
+        'apply_ssh_ufw_policy "$ports"' "${content}"
     assert_contains "shared platform enables SSH at boot" \
         'systemctl enable --now "${unit}"' "${platform_content}"
     assert_contains "shared platform verifies SSH boot enablement" \
@@ -327,13 +326,13 @@ test_script_surface_contract() {
         '"$FIREWALL_MODULE_FILE" "${target}:${remote_firewall_module}"' "${content}"
     assert_contains "empty SSH key lists work with older Bash nounset behavior" \
         '"${pub_keys[@]:-}"' "${content}"
-    assert_contains "current SSH port is retained" \
-        '保留当前 SSH 端口 ${CURRENT_PORT}' "${content}"
+    assert_contains "current SSH port is replaced" \
+        '切换为仅监听 ${FINAL_PORT}' "${content}"
     assert_contains "intro documents Google BBR" \
         "Debian 官方内核 Google BBR/TCP" "${content}"
     assert_not_contains "normal user has no default constant" "DEFAULT_NORMAL_USER" "${content}"
-    assert_contains "remote stage failure probes final login" "第 3 步 SSH 连接中断或远端命令返回失败" "${content}"
-    assert_contains "remote stage fallback verifies normal user" 'verify_key_login "${NORMAL_USER}@${SERVER_HOST}" "$FINAL_PORT"' "${content}"
+    assert_not_contains "remote failure has no successful-login fallback" "第 3 步 SSH 连接中断或远端命令返回失败" "${content}"
+    assert_contains "remote success verifies normal user" 'verify_key_login "${NORMAL_USER}@${SERVER_HOST}" "$FINAL_PORT"' "${content}"
     assert_contains "remote stage propagates initialization failures" \
         '"$PUBLIC_KEY" "$EXTRA_TCP_PORTS" \' "${content}"
     assert_contains "local temporary cleanup returns success" "cleanup_local_temp_files" "${content}"
@@ -349,8 +348,8 @@ test_script_surface_contract() {
         "UFW 额外 TCP 端口" "${guide}"
     assert_contains "guide documents Fail2ban SSH protection" \
         'Fail2ban' "${guide}"
-    assert_contains "guide documents the additional SSH listener" \
-        '额外监听 `65533`' "${guide}"
+    assert_contains "guide documents the sole SSH listener" \
+        '仅监听 `65533`' "${guide}"
     assert_contains "guide documents disabled SSH password login" \
         '关闭 SSH 密码登录' "${guide}"
     assert_not_contains "script does not reuse a predictable remote script path" \

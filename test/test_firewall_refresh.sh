@@ -16,6 +16,7 @@ for profile in xhttp-cloudflare-streamup reality; do
         RUNTIME_TMP="${TMP_DIR}/${profile}"
         mkdir -p "${RUNTIME_TMP}"
         CLOUDFLARE_ORIGIN_IPS_FILE="${RUNTIME_TMP}/ranges"
+        EASY_ALL_ADDITIONAL_SSH_PORT=65533
         UFW_RULE_COMMENT=easy_all-managed
         CLOUDFLARE_UFW_COMMENT=easy_all-cloudflare-origin
         CLOUDFLARE_SUBSCRIPTION_UFW_COMMENT=easy_all-cloudflare-subscription
@@ -44,7 +45,7 @@ for profile in xhttp-cloudflare-streamup reality; do
             local port source rule
             if [[ "$1" == status ]]; then
                 printf 'Status: active\n'
-                awk -F'|' -v managed="${UFW_RULE_COMMENT}" '{printf "[ %d] %s/tcp ALLOW IN %s # %s\n", NR, $1, $2, ($2 == "Anywhere" ? managed : "cloudflare")}' "${state}"
+                awk -F'|' -v managed="${UFW_RULE_COMMENT}" '{printf "[ %d] %s/tcp %s IN %s # %s\n", NR, ($1 == "22-deny" ? "22" : $1), ($1 == "22-deny" ? "DENY" : "ALLOW"), $2, ($2 == "Anywhere" ? managed : "cloudflare")}' "${state}"
                 return 0
             fi
             printf '%s\n' "$*" >>"${log}"
@@ -63,11 +64,18 @@ for profile in xhttp-cloudflare-streamup reality; do
                 fi
                 rule="${port}|${source}"
                 grep -Fxq "${rule}" "${state}" || printf '%s\n' "${rule}" >>"${state}"
+            elif [[ "$1" == insert ]]; then
+                { printf '22-deny|Anywhere\n'; cat "${state}"; } >"${state}.next"
+                mv "${state}.next" "${state}"
             elif [[ "$1 ${2:-}" == '--force enable' ]]; then
-                grep -Fxq '22|Anywhere' "${state}" || die "UFW enabled before SSH was protected"
+                grep -Fxq '65533|Anywhere' "${state}" || die "UFW enabled before SSH was protected"
             elif [[ "$1 ${2:-}" == '--force delete' ]]; then
-                rule="${11}|$7"
-                awk -v rule="${rule}" '$0 != rule' "${state}" >"${state}.next"
+                if [[ "$3" =~ ^[0-9]+$ ]]; then
+                    awk -v n="$3" 'NR != n' "${state}" >"${state}.next"
+                else
+                    rule="${11}|$7"
+                    awk -v rule="${rule}" '$0 != rule' "${state}" >"${state}.next"
+                fi
                 mv "${state}.next" "${state}"
             fi
         }

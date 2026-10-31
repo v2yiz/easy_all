@@ -162,3 +162,96 @@ apply_managed_ufw_tcp_ports() {
     ufw reload >/dev/null || die "重载 UFW 失败"
     verify_ufw_tcp_ports "${desired_ports}"
 }
+
+# UFW is ordered. An earlier deny can make an existing allow ineffective.
+ufw_ssh_port_is_allowed() {
+    LC_ALL=C ufw status numbered 2>/dev/null | awk -v port="${EASY_ALL_ADDITIONAL_SSH_PORT}" '
+        /\(v6\)/ {next}
+        {
+            line=$0
+            sub(/^[[:space:]]*\[[[:space:]]*[^]]*\][[:space:]]*/, "", line)
+            split(line, fields, /[[:space:]]+/)
+            endpoint=fields[1]
+            sub(/\/tcp$/, "", endpoint)
+            relevant=(endpoint == port || endpoint == "Anywhere")
+            count=split(endpoint, ranges, ",")
+            for (i=1; i<=count; i++) {
+                if (ranges[i] == port) relevant=1
+                if (split(ranges[i], bounds, ":") == 2 && port >= bounds[1] && port <= bounds[2]) relevant=1
+            }
+            if (!relevant) next
+            action=2
+            if (fields[2] == "on") action=4
+            if (fields[action+1] != "IN") next
+            if (fields[action] == "DENY" || fields[action] == "REJECT") exit
+            # An interface-only allow cannot establish global SSH reachability.
+            if (action == 2 && fields[action] == "ALLOW" && fields[action+2] == "Anywhere") {allowed=1; exit}
+        }
+        END {exit !allowed}
+    '
+}
+
+ufw_ssh22_deny_is_first() {
+    LC_ALL=C ufw status numbered 2>/dev/null | awk -v comment="${UFW_RULE_COMMENT}" '
+        /^[[:space:]]*\[/ {
+            marker=$0
+            sub(/^.*#[[:space:]]*/, "", marker)
+            if ($0 ~ /^[[:space:]]*\[[[:space:]]*1\][[:space:]]+22\/tcp[[:space:]]+DENY[[:space:]]+IN[[:space:]]+Anywhere[[:space:]]/ &&
+                marker == comment) found=1
+            exit
+        }
+        END {exit !found}
+    '
+}
+
+managed_ssh22_ufw_rule_numbers() {
+    local status
+    command -v ufw >/dev/null 2>&1 || return 0
+    status=$(LC_ALL=C ufw status numbered 2>/dev/null) || return 1
+    awk -v comment="${UFW_RULE_COMMENT}" '
+        {
+            marker=$0; sub(/^.*#[[:space:]]*/, "", marker)
+            if (marker != comment) next
+            number=$0
+            sub(/^[[:space:]]*\[[[:space:]]*/, "", number); sub(/\].*$/, "", number)
+            line=$0; sub(/^[[:space:]]*\[[^]]*\][[:space:]]*/, "", line)
+            if (number ~ /^[0-9]+$/ && line ~ /^22\/tcp([[:space:]]+\(v6\))?[[:space:]]+DENY[[:space:]]+IN[[:space:]]+Anywhere([[:space:]]|$)/) print number
+        }
+    ' <<<"${status}" | sort -rn
+}
+
+remove_managed_ssh22_ufw_deny() {
+    local numbers number remaining
+    numbers=$(managed_ssh22_ufw_rule_numbers) || return 1
+    [[ -n "${numbers}" ]] || return 0
+    while read -r number; do
+        ufw --force delete "${number}" >/dev/null || return 1
+    done <<<"${numbers}"
+    ufw reload >/dev/null || return 1
+    remaining=$(managed_ssh22_ufw_rule_numbers) || return 1
+    [[ -z "${remaining}" ]]
+}
+
+apply_ssh_ufw_policy() {
+    local desired_ports port
+    desired_ports=$(normalize_ufw_tcp_ports "$1") || die "SSH UFW 端口列表无效"
+    for port in ${desired_ports}; do
+        ((10#${port} != 22)) || die "TCP 22 是禁用的 SSH 端口；不能加入额外放行列表"
+    done
+    case " ${desired_ports} " in
+    *" ${EASY_ALL_ADDITIONAL_SSH_PORT} "*) ;;
+    *) die "SSH UFW 策略必须放行 ${EASY_ALL_ADDITIONAL_SSH_PORT}" ;;
+    esac
+    apply_managed_ufw_tcp_ports "${desired_ports}"
+    ufw_ssh_port_is_allowed || die "UFW 未有效放行 SSH 65533；拒绝关闭 22"
+    if ! ufw_ssh22_deny_is_first; then
+        # Delete only this tool's misplaced deny after the replacement SSH allow
+        # has been verified. UFW otherwise skips an identical insert as duplicate.
+        remove_managed_ssh22_ufw_deny || die "删除过期 SSH 22 deny 失败"
+        ufw insert 1 deny 22/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
+            || die "添加优先 SSH 22 deny 失败"
+        ufw reload >/dev/null || die "重载 UFW 失败"
+    fi
+    ufw_ssh_port_is_allowed || die "UFW SSH 65533 放行验证失败"
+    ufw_ssh22_deny_is_first || die "UFW TCP 22 优先拒绝规则未生效"
+}

@@ -154,6 +154,10 @@ validate_collected_inputs() {
   validate_port "$CURRENT_PORT"
   validate_port "$FINAL_PORT"
   EXTRA_TCP_PORTS="$(normalize_port_list "${EXTRA_TCP_PORTS:-}")"
+  local port
+  for port in ${EXTRA_TCP_PORTS}; do
+    ((10#${port} != 22)) || die "TCP 22 是禁用端口，不能加入 UFW 额外放行列表"
+  done
 }
 
 validate_linux_user() {
@@ -422,11 +426,10 @@ run_remote_initialization() {
   local target="$1"
   local current_port="$2"
   local final_port="$3"
-  local keep_current_port="$4"
-  local normal_user="$5"
-  local normal_user_password="$6"
-  local public_key="$7"
-  local extra_tcp_ports="$8"
+  local normal_user="$4"
+  local normal_user_password="$5"
+  local public_key="$6"
+  local extra_tcp_ports="$7"
   local remote_dir remote_script remote_password_file remote_public_key_file
   local remote_platform_module remote_firewall_module
   local local_script
@@ -443,13 +446,12 @@ set -Eeuo pipefail
 
 current_port="$1"
 final_port="$2"
-keep_current_port="$3"
-normal_user="$4"
-normal_user_password_file="$5"
-normal_user_public_key_file="$6"
-extra_tcp_ports="$7"
-platform_module="$8"
-firewall_module="$9"
+normal_user="$3"
+normal_user_password_file="$4"
+normal_user_public_key_file="$5"
+extra_tcp_ports="$6"
+platform_module="$7"
+firewall_module="$8"
 
 config_dir="/etc/ssh/sshd_config.d"
 config_file="${config_dir}/00-debian-init-hardening.conf"
@@ -481,9 +483,15 @@ UFW_RULE_COMMENT="debian-init-managed"
 UFW_DEFAULT_CONFIG="/etc/default/ufw"
 # shellcheck source=lib/firewall.sh
 source "$firewall_module"
-EASY_ALL_SSH_PRESERVE_PORTS="$current_port"
 [[ "$final_port" == "$EASY_ALL_ADDITIONAL_SSH_PORT" ]] \
-  || die "远端新增 SSH 端口与公共平台模块不一致"
+  || die "远端最终 SSH 端口与公共平台模块不一致"
+
+if [[ -n "$extra_tcp_ports" ]]; then
+  extra_tcp_ports=$(normalize_ufw_tcp_ports "$extra_tcp_ports") || die "额外 TCP 端口列表无效"
+  for port in $extra_tcp_ports; do
+    ((10#${port} != 22)) || die "TCP 22 是禁用端口，不能加入 UFW 额外放行列表"
+  done
+fi
 
 validate_normal_user() {
 case "$normal_user" in
@@ -685,9 +693,8 @@ install_normal_user_authorized_key() {
 }
 
 collect_allowed_ports() {
-  detect_ssh_ports
   {
-    printf '%s\n' $SSH_PORTS
+    printf '%s\n' "$EASY_ALL_ADDITIONAL_SSH_PORT"
     [ -z "$extra_tcp_ports" ] || printf '%s\n' $extra_tcp_ports
   } | awk '
     /^[0-9]+$/ && $1 >= 1 && $1 <= 65535 && !seen[$1]++ { print $1 }
@@ -706,7 +713,7 @@ configure_ufw() {
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
   ufw default deny routed >/dev/null
-  apply_managed_ufw_tcp_ports "$ports"
+  apply_ssh_ufw_policy "$ports"
   systemctl enable ufw >/dev/null 2>&1
   LC_ALL=C ufw status | grep -q '^Status: active' || {
     printf '%s\n' "错误: UFW 未处于 active 状态" >&2
@@ -722,8 +729,6 @@ if [ -x /usr/sbin/sshd ]; then
 else
   sshd_bin="$(command -v sshd)"
 fi
-detect_ssh_ports
-EASY_ALL_SSH_PRESERVE_PORTS="${SSH_PORTS} ${current_port}"
 configure_google_bbr_and_tcp
 configure_timezone_and_time_sync
 configure_sudo_user
@@ -805,14 +810,14 @@ REMOTE
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
+      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
   else
     ssh \
       -tt \
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo bash '$remote_script' '$current_port' '$final_port' '$keep_current_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
+      "sudo bash '$remote_script' '$current_port' '$final_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
   fi
 }
 
@@ -840,8 +845,9 @@ print_intro() {
   echo "  1. 使用初始 SSH 用户连接服务器，默认 root。"
   echo "  2. 安装基础包、配置 Debian 官方内核 Google BBR/TCP、UFW、uv 和 Python 3.12。"
   echo "  3. 创建或更新普通用户，并把同一把 SSH 公钥写入该用户。"
-  echo "  4. 验证密钥后关闭 SSH 密码登录，新增 TCP ${EASY_ALL_ADDITIONAL_SSH_PORT} 作为低扫描量 SSH 入口。"
+  echo "  4. 验证密钥后关闭 SSH 密码登录，只保留 TCP ${EASY_ALL_ADDITIONAL_SSH_PORT}，UFW 阻断 TCP 22。"
   echo
+  echo "请先在云安全组放行 TCP 65533；以后使用 ssh -p 65533，保留当前会话直到新连接验证成功。"
   echo "敏感信息说明：服务器当前密码和普通用户 sudo 密码只在本次执行中使用。"
   if ! command -v sshpass >/dev/null 2>&1; then
     echo "提示：未检测到 sshpass，首次登录和 sudo 可能需要按 ssh 提示手动输入密码。"
@@ -880,9 +886,9 @@ collect_inputs() {
   CHANGE_PORT="yes"
   if [[ "$FINAL_PORT" == "$CURRENT_PORT" ]]; then
     CHANGE_PORT="no"
-    echo "当前 SSH 端口已经是 ${EASY_ALL_ADDITIONAL_SSH_PORT}，不会重复添加。"
+    echo "当前 SSH 端口已经是 ${EASY_ALL_ADDITIONAL_SSH_PORT}，将检查独占监听。"
   else
-    echo "将保留当前 SSH 端口 ${CURRENT_PORT}，并新增 ${FINAL_PORT}。"
+    echo "将从当前 SSH 端口 ${CURRENT_PORT} 切换为仅监听 ${FINAL_PORT}，并阻断 22。"
   fi
 
   local extra_tcp_ports_raw
@@ -895,24 +901,11 @@ collect_inputs() {
 configure_remote_stage() {
   local target="$1"
 
-  if [[ "$CHANGE_PORT" == "yes" ]]; then
-    echo "端口扩展：保留当前端口 ${CURRENT_PORT}，新增 SSH 端口 ${FINAL_PORT}，并在应用后验证新端口。"
-    run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" "yes" \
-      "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY" "$EXTRA_TCP_PORTS" \
-      || return 1
-    echo "验证新端口 ${FINAL_PORT} 可用"
-    ssh \
-      -o StrictHostKeyChecking=accept-new \
-      "${SSH_PUBLIC_KEY_ONLY_OPTS[@]}" \
-      -i "$PRIVATE_KEY" \
-      -p "$FINAL_PORT" \
-      "$target" \
-      'echo "新端口验证成功"' || return 1
-  else
-    run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" "no" \
-      "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY" "$EXTRA_TCP_PORTS" \
-      || return 1
-  fi
+  echo "SSH 将仅监听 ${FINAL_PORT}；请先在云安全组放行，今后使用 ssh -p ${FINAL_PORT}。"
+  run_remote_initialization "$target" "$CURRENT_PORT" "$FINAL_PORT" \
+    "$NORMAL_USER" "$NORMAL_USER_PASSWORD" "$PUBLIC_KEY" "$EXTRA_TCP_PORTS" \
+    || return 1
+  verify_key_login "${NORMAL_USER}@${SERVER_HOST}" "$FINAL_PORT"
 }
 
 # ================= 主流程 =================
@@ -938,12 +931,8 @@ main() {
   verify_key_login "$target" "$CURRENT_PORT"
 
   print_step "3/5" "执行远端初始化并加固 SSH"
-  if ! configure_remote_stage "$target"; then
-    echo "第 3 步 SSH 连接中断或远端命令返回失败，尝试验证最终普通用户登录是否已经可用..."
-    verify_key_login "${NORMAL_USER}@${SERVER_HOST}" "$FINAL_PORT" \
-      || die "远端初始化未确认完成；请检查上方远端日志，或通过 VPS 控制台确认 SSH、公钥和防火墙状态后重试"
-    echo "最终普通用户密钥登录已可用，继续写入本地 ssh_config。"
-  fi
+  configure_remote_stage "$target" \
+    || die "远端初始化未确认完成；请检查远端日志或 VPS 控制台，修正后可从 65533 重试"
 
   print_step "4/5" "写入本地 ssh_config"
   echo "目标：ssh ${HOST_ALIAS} 将以普通用户 ${NORMAL_USER} 登录。"

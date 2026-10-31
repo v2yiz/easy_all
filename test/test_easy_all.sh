@@ -989,7 +989,7 @@ test_nginx_and_firewall() {
     ensure_ssh_fail2ban() { printf 'fail2ban-sshd\n' >>"${ufw_log}"; }
     detect_ssh_ports() { SSH_PORTS="22 65533"; }
     reality_cloudflare_fetch_origin_ipv4_ranges() { printf '173.245.48.0/20\n'; }
-    apply_managed_ufw_tcp_ports() {
+    apply_ssh_ufw_policy() {
         printf 'managed-ports %s\n' "$1" >>"${ufw_log}"
     }
     ufw() {
@@ -1026,13 +1026,13 @@ EOF
     ufw_config=$(<"${UFW_BEFORE_RULES}")
     ufw6_config=$(<"${UFW_BEFORE6_RULES}")
     assert_not_contains "self-hosting never stages unrestricted 8443" \
-        "managed-ports 22 65533 443 8443" "$(<"${ufw_log}")"
+        "managed-ports 65533 443 8443" "$(<"${ufw_log}")"
     assert_contains "self-hosting protects SSH and Reality before the Cloudflare allowlist" \
-        "managed-ports 22 65533 443" "$(<"${ufw_log}")"
+        "managed-ports 65533 443" "$(<"${ufw_log}")"
     assert_contains "self-hosting allows Cloudflare ranges to 8443" \
         "allow proto tcp from 173.245.48.0/20 to any port 8443" "$(<"${ufw_log}")"
     assert_not_contains "self-hosting does not open HTTP 80" \
-        "managed-ports 22 65533 443 80" "$(<"${ufw_log}")"
+        "managed-ports 65533 443 80" "$(<"${ufw_log}")"
     assert_contains "Reality enables shared Fail2ban after UFW" \
         "fail2ban-sshd" "$(<"${ufw_log}")"
     dynamic_rule_count=$(grep -Ec -- '^-A PREROUTING -p tcp --dport [0-9]+(:[0-9]+)? -j REDIRECT --to-ports 443$' <<<"${ufw_config}")
@@ -1070,7 +1070,7 @@ EOF
         "IPV6=no" "$(<"${UFW_DEFAULT_CONFIG}")"
     assert_contains "Reality reloads UFW after writing NAT rules" \
         "reload" "$(<"${ufw_log}")"
-    unset -f nginx systemctl ensure_ssh_boot_service ensure_ssh_fail2ban detect_ssh_ports apply_managed_ufw_tcp_ports ufw \
+    unset -f nginx systemctl ensure_ssh_boot_service ensure_ssh_fail2ban detect_ssh_ports apply_ssh_ufw_policy ufw \
         iptables-restore ip6tables-restore
 }
 
@@ -1532,7 +1532,8 @@ test_platform_security_snapshot_and_restore() {
     printf 'managed-action\n' >"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
     printf 'managed-helper\n' >"${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
     install -d -m 0700 "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
-    sshd() { return 0; }
+    sshd() { [[ "${1:-}" != -T ]] || printf 'listenaddress 0.0.0.0:22\n'; }
+    ss() { printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=12,fd=3))\n'; }
     fail2ban-client() { return 0; }
     ufw() {
         if [[ "${1:-}" == "status" ]]; then
@@ -1558,7 +1559,7 @@ test_platform_security_snapshot_and_restore() {
         "systemctl restart fail2ban.service" "$(<"${log}")"
     assert_contains "platform restore removes Fail2ban UFW rules" \
         "ufw --force delete 1" "$(<"${log}")"
-    unset -f systemctl sshd fail2ban-client ufw
+    unset -f systemctl sshd ss fail2ban-client ufw
 }
 
 test_cloudflare_reality_contract() {

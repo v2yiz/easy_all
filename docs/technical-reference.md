@@ -13,9 +13,41 @@
 脚本全局禁用 IPv6。Reality 域名若发布 AAAA，安装或 `apply` 会停止；A 记录必须指向当前 VPS
 公网 IPv4。
 
-两种模式都会保留已检测到的 SSH 端口，并额外监听 TCP `65533`。UFW 在拒绝其他入站流量前
-放行这些端口，Fail2ban 监控实际 SSH 端口列表。订阅不按 SSH 端口或进程名强制直连；
+两种模式成功安装或应用后，SSH 仅监听 TCP `65533`。UFW 先添加并验证 `65533` 放行，再将
+本工具的 TCP `22` deny 放到首位，优先于已有的 OpenSSH/22 allow；重复应用不累积 deny。
+Fail2ban 的 SSH jail 端口固定为 `65533`。旧连接中的端口仅用于诊断，不进入最终放行集合。
+订阅不按 SSH 端口或进程名强制直连；
 如需绕过代理管理 VPS，请在客户端添加该 VPS 地址的精确直连规则。
+
+执行安装或 `apply` 前，先在云安全组放行 TCP `65533`，保留当前 SSH 会话。今后使用
+`ssh -p 65533 用户@服务器`，另开终端验证成功后再关闭旧会话。本工具不自动修改云防火墙。
+
+SSH 使用单个受管 drop-in，先检查语法与有效 `ListenAddress`，重载后确认实际 SSH 监听
+端点与其一致且仅含 IPv4 `65533`。目标端口必须有 `sshd` 持有；仅由 `systemd` 持有、无法
+确认属于 SSH 的 socket 按占用冲突处理。主配置或其他 Include 显式保留 `22`/自定义监听、外部
+socket activation 持续监听旧端口、或 `65533` 被其他服务占用，均会失败并尝试恢复受管配置和
+原服务。请通过服务商 Console 检查冲突，本工具不会批量改写管理员 SSH 文件或关闭其他服务。
+
+卸载或首次安装回滚会恢复安装前的 SSH 配置，并检查语法、reload 及实际监听。每个恢复端口
+都必须有 `sshd` 持有者，未知的 systemd socket 不能作为 SSH 恢复成功的依据。随后先撤销并
+验证本工具的 UFW deny22，成功后才允许移除 allow65533 和恢复原防火墙状态。因此恢复原状态
+可能重新开放 `22`。SSH 恢复或 deny22 撤销失败时恢复当前 `65533` 配置，保留该端口放行、
+状态及备份，明确返回失败，修正后重试。带网卡限定的早期 deny65533 同样会阻止关闭 `22`。
+
+在支持的 Debian 主机上可手动核对（本仓库测试使用隔离命令替身）：
+
+```bash
+sudo sshd -t
+sudo sshd -T | grep -E '^(port|listenaddress) '
+sudo ss -ltnp
+sudo ufw status numbered
+sudo fail2ban-client get sshd actions
+ssh -p 65533 用户@服务器
+```
+
+有效 `Port` 条目可能包含管理员配置的值；最终以有效 `ListenAddress` 与实际监听端点为准。
+macOS 的 `npm run test:ssh` 验证隔离行为；真实 Debian 的 sshd/systemd/socket/UFW 与外网
+密钥登录仍需部署环境验收。
 
 订阅先在暂存目录完整渲染、校验，再通过同目录候选文件逐文件原子替换；正常回滚使用相同发布流程。
 同一订阅布局刷新期间保留现有路径，渲染失败不改动线上文件。发布途中被强制终止时，可能同时保留
