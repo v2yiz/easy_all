@@ -1,3 +1,15 @@
+## 1.6.13 更新说明（2026-11-05）
+
+- 直连 Reality 安装新增第三档订阅输出，安装菜单变为「1 仅节点（默认）」「2 本机订阅」「3 Worker 订阅聚合」。默认值与「多节点聚合或已有订阅服务器时推荐仅输出节点信息」的既有建议一致；升级不会改动已安装配置。
+- Worker 订阅聚合复用 Cloudflare Worker 下发：公开订阅域名绑定 Worker Custom Domain，同 Zone 的私有节点源域名由 Cloudflare 代理回本机 `8443` 且仅允许 Cloudflare 回源；Nginx 继续是 Token 与配额的唯一真源，源不可用返回 `502`，Token 被拒返回 `403`。安装器自动注入 `vpsSubUrl`、`sourceSecret`，并保持不内嵌公开 Token。
+- Worker 现在可以解析 Reality 私有源返回的 `security=reality&type=tcp` URI 订阅：保留节点名与动态端口，直接列入 `PROXY`，不改名为 `🇺🇸优选N`，也不放入 CDN/Worker 测速组；CDN 源节点行为不变。
+- 聚合配置校验、Worker 名称与 prompt 提取到 `lib/worker-config.sh`，由两个 Profile 共享，避免 Reality 与 Cloudflare 各维护一套 JSON 解析。Reality 聚合会校验额外节点名不能与本机节点名重复。
+- `update-sub` 支持在三种输出之间切换，并在新模式生效后清理上一模式的 Worker、Custom Domain、Origin CA、Strict TLS 规则和源站 DNS；`uninstall --purge-cloud` 同时删除 Worker 与其 Custom Domain。Worker 名称安装后不能就地改名。
+- 补充 Reality 三种模式的分发、状态读写、域名约束、Worker 源解析与文档一致性测试。
+- 兼容性：状态版本从 Reality v7 升到 v8（新增 `SUB_SOURCE_DOMAIN`、Worker 名称/Custom Domain/Account ID 与源密钥字段），旧状态自动升级；`link`/`deploy` 的订阅 URL 与行为不变，状态中的 `SUBSCRIPTION_MODE` 仍是这两个规范值。非交互脚本请使用 `link`/`deploy`/`worker` 名称，不再接受数字别名。
+
+源码版本标识为 `1.6.13`。已有部署执行 `sudo easy_all self-update` 即可；本次不改变现有订阅内容，未切换订阅模式时无需重新执行 `apply` 或 `update-sub`。需要 Worker 聚合的部署执行 `sudo easy_all update-sub`，选择第 3 项并按提示准备两个同 Zone 一级子域名与 Workers Scripts Write 权限。
+
 # 更新记录
 
 ## 1.6.12 更新说明（2026-10-30）

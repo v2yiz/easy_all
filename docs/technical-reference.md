@@ -81,6 +81,7 @@ Xray 26.9.8 起，REALITY 服务端会拒绝不含 `X25519MLKEM768` key share �
 
 聚合配置里的 Reality 节点若指向 Xray 低于 26.9.8 的服务端，请为该节点设置
 `supportX25519Mlkem768: false`；旧 REALITY 服务端拿到混合 key share 可能直接认证失败。
+Reality 私有源下发的链接在本机核心低于 26.9.8 时携带 `mlkem=0`，Worker 解析后同样关闭该字段。
 
 动态端口按上海时间每小时提供 6 个 `10000-62703` 范围内的共享端口（覆盖闰年 366 天，每次请求按时间从当前小时的 6 个端口中挑选下发），由
 UFW 的 `before.rules` 受管 NAT 区块以单条范围规则转发到 Xray `443`（并对落在该范围内的 SSH 端口前置 `RETURN` 豁免），不会生成数万条单端口 allow 规则。
@@ -142,6 +143,12 @@ HTTP/2 和 stream-one 参数访问 Google `generate_204`，避免普通 HTTP 请
 公开订阅只经过独立域名绑定的 Worker。Worker 使用 `global_fetch_strictly_public`，
 转发同一 Token 和私有 `X-Easy-All-Worker-Source` 密钥，Nginx 执行最终鉴权；直接访问私有源
 返回 `404`。
+
+Reality 的 Worker 订阅聚合复用同一套 Worker、聚合 JSON 校验和私有源 HTTP 契约，区别有两点：
+公开订阅域名与私有节点源域名是两个同 Zone 一级子域，回源 URL 带 `8443`；节点源返回的是
+Reality URI 订阅。Worker 解析 `security=reality&type=tcp` 的链接并保留其发布名和动态端口，
+这些节点直接列入 `PROXY`，不改名为 `🇺🇸优选N`，也不进入 `🇭🇰白天首选`/`🇭🇰CF` 测速组；
+CDN 源节点仍按原有命名和分组处理。源不可用时仍返回 `502`，Token 被源拒绝时返回 `403`。
 
 该模式使用 Cloudflare 官方 IPv4 CIDR，实现全链路固定 IPv4。API Token 需要目标 Zone 的
 读取、DNS、Transform Rules、Config Rules、Zone Settings、SSL 权限，以及目标 Account 的
@@ -292,6 +299,7 @@ easy_all
 │  ├─ xray-core.sh
 │  ├─ scheduled-maintenance.sh
 │  ├─ subscription-auth.sh
+│  ├─ worker-config.sh
 │  ├─ reality-subscription.js
 │  └─ tcp-tuning.sh
 ├─ templates/
@@ -312,7 +320,8 @@ easy_all
 校验，`scheduled-maintenance.sh` 管理定时重启，`network.sh` 管理 IPv4-only 与 Xray 出站，
 `firewall.sh` 管理 UFW。
 
-Reality 自托管订阅的数据流是 token map → exact internal alias → `reality-subscription.js`
+Reality 本机订阅与 Worker 聚合共用同一份私有节点源：token map → exact internal alias →
+`reality-subscription.js`
 读取 `$request_filename` → 单次时间戳选择六槽位端口 → 完整响应；njs 不读取 query 或状态文件。
 每用户只发布 `base64.port-template`、`mihomo.port-template` 两个专用端口模板。
 生成期间的数字文件只用于临时校验，运行时目录不保留数字快照。只在生成的 Reality 节点端口
@@ -330,13 +339,17 @@ Reality 自托管订阅的数据流是 token map → exact internal alias → `r
 关键状态字段：
 
 ```text
-STATE_VERSION=7  # Reality
+STATE_VERSION=8  # Reality
 STATE_VERSION=9  # Cloudflare XHTTP
 PROTOCOL=reality|cloudflare-streamup
 CDN_PROVIDER=cloudflare
 VPS_IP_FAMILY=ipv4
 VPS_PUBLIC_IPV6=
-WORKER_AGGREGATION_CONFIG={...}
+SUBSCRIPTION_MODE=link|deploy|worker
+SUBSCRIPTION_DOMAIN=公开订阅域名（Worker 模式下为 Worker Custom Domain）
+SUB_SOURCE_DOMAIN=私有节点源域名（仅 Reality Worker 聚合）
+CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKER_NAME/CLOUDFLARE_WORKER_DOMAIN_ID
+WORKER_SOURCE_SECRET/WORKER_AGGREGATION_CONFIG={...}
 GOOGLE_EGRESS_MODE=ipv4
 GOOGLE_EGRESS_RESOLVED=ipv4
 ```
@@ -374,6 +387,8 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 `MIHOMO_TEMPLATE_SOURCE` 选择。Reality 自托管订阅把选中的模板保存为
 `/etc/easy_all/mihomo-template.yaml`，后续发布沿用该文件；该快照在发布成功时原子替换，但不在
 `update-sub` 失败回滚范围内，回滚后可能比 `state.env` 新。Cloudflare 聚合订阅必须在
-`update-sub` 时传入模板才能重建 Worker。其他自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
+`update-sub` 时传入模板才能重建 Worker。Reality Worker 聚合的源域名、Worker 名称和聚合 JSON
+由 `lib/worker-config.sh` 与 `scripts/build-worker.mjs` 共同校验；Worker 名称安装后不能就地改名。
+其他自定义模板须安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`，
 可用 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。

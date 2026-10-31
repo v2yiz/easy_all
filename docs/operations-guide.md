@@ -25,6 +25,13 @@ sudo easy_all apply
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
+`1.6.13` 为直连 Reality 增加第三档订阅输出：安装时可以选择「仅节点（默认）」「本机订阅」或
+「Worker 订阅聚合」。Worker 聚合把公开订阅域名绑定到 Cloudflare Worker，另用同 Zone 的私有
+节点源域名由 Cloudflare 代理回本机 `8443`，Nginx 仍是 Token 与配额的唯一真源；其余直连节点
+写入聚合 JSON 的 `nodes`，Worker 按请求实时回源并在源不可用时返回 `502`。Reality 自托管订阅的
+默认选项改为仅节点，与「多节点聚合」场景保持一致。已有部署执行 `sudo easy_all self-update`
+即可，未主动执行 `update-sub` 的部署保持原模式与订阅 URL；状态版本升到 8，旧状态自动升级。
+
 `1.6.12` 修复 Reality 部署订阅时验收偶发的 404：Nginx reload 未覆盖全部 worker 时，无效 Token 探测可能落到仍服务引导配置的旧 worker，现已对 404 短暂重试并在命中 403 后立即通过；源站证书复用同时要求状态中存在 Cloudflare 证书 ID 与到期时间，Reality 与 XHTTP 两个 Profile 一致。已有部署执行 `sudo easy_all self-update` 即可，无需重新执行 `apply` 或 `update-sub`。状态版本与订阅 URL 不变。
 
 `1.6.11` 让 `update-core` 在核心验收通过后自动重新生成 Reality 自托管订阅，不再需要额外执行 `apply`；核心更新失败仍按原逻辑回滚，订阅重发失败时核心保持新版本并提示执行 `sudo easy_all apply`。已有部署执行 `sudo easy_all self-update`；状态版本与订阅 URL 不变。
@@ -216,6 +223,9 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 sudo easy_all update-sub
 ```
 
+Reality 模式会先让你选择订阅输出（`1` 仅节点、`2` 本机订阅、`3` Worker 聚合，默认保持当前值）；
+Cloudflare 模式仍是 `1` 部署 Worker / `2` 不部署。
+
 该命令接收的是完整用户清单：保留的用户必须继续填写，新增用户名会创建用户，省略已有用户名
 会删除用户。完成后运行 `sudo easy_all subscription` 查看最终地址。
 
@@ -281,6 +291,22 @@ sudo easy_all quota-reset user1
 
 ## Worker 聚合
 
+Reality 直连模式也可以选择 Worker 聚合（安装菜单第 `3` 项）。它会占用同 Zone 两个一级域名：
+
+- 公开订阅域名：绑定 Worker 的 Custom Domain，客户端只访问 `https://<公开域名>/subscribe`；
+- 私有节点源域名：Cloudflare 代理到本机 `8443`，仅放行 Cloudflare 回源，
+  路径 `/subscribe` 还要求独立的 `X-Easy-All-Worker-Source` 密钥，因此不能当公开订阅地址分发。
+
+Nginx 仍负责 Token 校验和配额，所以 Worker 只是下发入口，不缓存节点、不绕过配额。源不可达时
+Worker 返回 `502`；Token 被源拒绝时返回 `403`。本机 Reality 节点来自私有源，其余直连节点写在
+聚合 JSON 的 `nodes` 中（名称必须互不重复，且不能与本机节点同名）。Reality 节点的展示名保持
+原样并直接列在 `PROXY`，不会被改名成 `🇺🇸优选N` 或放进隐藏测速组。
+
+切换订阅输出或更换域名时，`update-sub` 会先部署新模式，再清理上一模式的 Worker、Custom Domain、
+Origin CA、Strict TLS 规则和源站 DNS。Worker 名称在安装后不能就地改名，需要重新安装。
+本机订阅的橙云记录与 Worker Custom Domain 不能共用同一个主机名，因此在本机订阅与 Worker 聚合
+之间切换时，`update-sub` 会要求重新输入未被占用的公开订阅域名和私有节点源域名。
+
 Cloudflare 模式部署订阅时，Worker 使用与节点域名不同的同 Zone 一级子域。选择聚合后输入一份
 不含 `vpsSubUrl` 的 Worker 聚合 JSON；结构参考
 [`worker-src/config.example.json`](../worker-src/config.example.json)。
@@ -323,8 +349,9 @@ sudo easy_all apply-cloud
 
 ## 证书与 Reality 动态端口
 
-Reality 数据流量直连 VPS `443`，只有自托管订阅 HTTPS 使用 Cloudflare Origin CA 和 VPS
-`8443`。证书仍匹配域名且剩余至少 30 天时，`apply` 不重复签发；需要强制轮换时执行
+Reality 数据流量直连 VPS `443`，只有订阅回源 HTTPS 使用 Cloudflare Origin CA 和 VPS
+`8443`：本机订阅模式的回源域名就是公开订阅域名，Worker 聚合模式则是私有节点源域名。
+证书仍匹配回源域名且剩余至少 30 天时，`apply` 不重复签发；需要强制轮换时执行
 `sudo easy_all renew-cert`。
 
 Reality 动态端口范围为 `10000-62703`（覆盖整年 366 天），每小时提供 6 个端口并在每次订阅请求时按时间挑选下发。
@@ -412,7 +439,9 @@ Cloudflare 控制台复核。
 ```
 
 Globalping Token 单独保存在 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`。
-`WORKER_AGGREGATION_CONFIG={...}` 保存在 root-only 状态中。状态文件由安装器维护，不应手工修改。
+`WORKER_AGGREGATION_CONFIG={...}`、`SUB_SOURCE_DOMAIN`、Worker 名称与 Custom Domain ID 保存在
+root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（同样 `0600`），不要提交或公开。
+状态文件由安装器维护，不应手工修改。
 
 ## 常见问题
 

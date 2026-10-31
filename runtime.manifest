@@ -15,6 +15,7 @@ lib/firewall.sh
 lib/xray-core.sh
 lib/scheduled-maintenance.sh
 lib/subscription-auth.sh
+lib/worker-config.sh
 lib/reality-subscription.js
 lib/tcp-tuning.sh
 worker-src/index.js

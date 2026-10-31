@@ -74,6 +74,7 @@ shared_modules=(
     xray-core.sh
     scheduled-maintenance.sh
     subscription-auth.sh
+    worker-config.sh
     tcp-tuning.sh
 )
 
@@ -90,6 +91,15 @@ shared_modules=(
 [[ "$(<"${REALITY_PROFILE}")" == *'source "${SCRIPT_DIR}/runtime-core.sh"'* \
     && "$(<"${XHTTP_RUNTIME}")" == *'source "${SCRIPT_DIR}/runtime-core.sh"'* ]] \
     || fail "all profiles must reuse the protocol-neutral runtime core"
+[[ "${RUNTIME_MANIFEST_CONTENT}" == *'lib/worker-config.sh'* \
+    && "$(<"${RUNTIME_CORE}")" == *'source "${RUNTIME_LIB_DIR}/worker-config.sh"'* ]] \
+    || fail "shared Worker aggregation input handling must be packaged"
+reality_current=$(<"${REALITY_PROFILE}")
+[[ "${reality_current}" == *'reality_worker_delete_resources "${previous_worker_domain_id}"'* \
+    && "${reality_current}" == *'reality_worker_detach_domain "${previous_account_id}"'* \
+    && "${reality_current}" == *'subscription_origin_domain()'* \
+    && "${reality_current}" == *'PREVIOUS_SUBSCRIPTION_MODE'* ]] \
+    || fail "Reality Worker aggregation must clean up the previous mode and its domains"
 [[ "${BOOTSTRAP_CONTENT}" == *'"${REPO_DIR}/easy_all" verify-release'* \
     && "${BOOTSTRAP_CONTENT}" != *'lib/xhttp-runtime.sh'* ]] \
     || fail "bootstrap must delegate target runtime validation to the target release"

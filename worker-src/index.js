@@ -285,8 +285,39 @@ function parseVlessLink(link) {
     const name = decodeURIComponent(url.hash.replace(/^#/, ''));
     const params = url.searchParams;
     const network = params.get('type');
-    if (url.protocol !== 'vless:' || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(uuid) || !server || server.includes(':') || params.get('security') !== 'tls' || !['xhttp', 'ws'].includes(network)) {
+    const security = params.get('security');
+    const reality = security === 'reality';
+    if (url.protocol !== 'vless:' || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(uuid) || !server || server.includes(':') ||
+        !(reality ? network === 'tcp' : security === 'tls' && ['xhttp', 'ws'].includes(network))) {
         throw new Error('Unsupported CF node');
+    }
+    if (reality) {
+        const pbk = params.get('pbk') || '';
+        const sid = params.get('sid') || '';
+        const sni = params.get('sni') || '';
+        if (!pbk || sid.length > 16 || !sni || !name) {
+            throw new Error('Unsupported Reality node');
+        }
+        return {
+            type: 'vless',
+            workerBackup: false,
+            udp: true,
+            security: 'reality',
+            network: 'tcp',
+            uuid,
+            server,
+            port,
+            host: server,
+            sni,
+            name,
+            pbk,
+            sid,
+            fp: params.get('fp') || 'chrome',
+            // Sources built for pre-26.9.8 Xray servers opt out of the hybrid
+            // key share with mlkem=0; otherwise Mihomo keeps the default.
+            supportX25519Mlkem768: params.get('mlkem') !== '0',
+            ipVersion: 'ipv4',
+        };
     }
     let extra = {};
     try {
@@ -296,7 +327,7 @@ function parseVlessLink(link) {
         type: 'vless',
         workerBackup: params.get('easyAllBackup') === '1',
         udp: params.get('easyAllBackup') !== '1',
-        security: params.get('security') || 'tls',
+        security: security || 'tls',
         network,
         uuid,
         server,
@@ -321,6 +352,15 @@ function normalizeCdnNodeNames(nodes) {
         .map((node, index) => ({ ...node, udp: false,
             name: `🇭🇰CF${index + 1}` }));
     return [...primary, ...backup];
+}
+
+// Reality sources keep the node names they publish: they are ordinary direct
+// nodes, not CDN entries, so they stay visible in PROXY instead of being moved
+// into the hidden CDN latency-test group.
+function normalizeSourceNodes(nodes) {
+    const reality = nodes.filter(node => node.security === 'reality');
+    const cdn = nodes.filter(node => node.security !== 'reality');
+    return { reality, cdn: normalizeCdnNodeNames(cdn) };
 }
 
 async function fetchDynamicCdnNodes(url, {
@@ -370,7 +410,11 @@ async function fetchDynamicCdnNodes(url, {
         if (nodes.length === 0) {
             throw new Error('Failed to parse any vless links from VPS subscription');
         }
-        return { nodes: normalizeCdnNodeNames(nodes), error: null };
+        const normalized = normalizeSourceNodes(nodes);
+        return {
+            nodes: [...normalized.reality, ...normalized.cdn],
+            error: null,
+        };
     } catch (error) {
         console.warn('Dynamic CF subscription unavailable; using configured fallback nodes:', error.message);
         return {
@@ -443,8 +487,10 @@ function buildClashConfig(nodes, ports, autoNodes = []) {
         ].includes(name))) {
         throw new Error('Missing, duplicate or reserved proxy names');
     }
-    const autoNames = autoNodes.filter(node => !node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);
-    const workerNames = autoNodes.filter(node => node.workerBackup).slice(0, CDN_NODE_LIMIT).map(node => node.name);
+    const autoNames = autoNodes.filter(node => !node.workerBackup && node.security !== 'reality')
+        .slice(0, CDN_NODE_LIMIT).map(node => node.name);
+    const workerNames = autoNodes.filter(node => node.workerBackup && node.security !== 'reality')
+        .slice(0, CDN_NODE_LIMIT).map(node => node.name);
     const groups = [
         clashUrlTestGroup(CDN_GROUP_NAME, autoNames.length ? autoNames : ['REJECT']),
         workerNames.length

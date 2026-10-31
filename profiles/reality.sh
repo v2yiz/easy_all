@@ -69,10 +69,21 @@ readonly CRON_DYNAMIC_PORT_MARKER="# easy_all-managed-dynamic-ports"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="7"
+readonly STATE_SCHEMA_VERSION="8"
 readonly MIN_COMPATIBLE_STATE_VERSION="6"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
+readonly SUBSCRIPTION_AGGREGATION_DESCRIPTION="Cloudflare Worker 下发；Nginx 仅作私有节点源"
+readonly SUBSCRIPTION_AGGREGATION_ENABLED=1
+readonly SUBSCRIPTION_DEFAULT_MODE="link"
+readonly DEFAULT_CLOUDFLARE_WORKER_NAME="easyall-reality"
+readonly CLOUDFLARE_WORKER_COMPATIBILITY_DATE="2026-09-09"
+readonly CLOUDFLARE_WORKER_SOURCE_HEADER="X-Easy-All-Worker-Source"
+readonly CLOUDFLARE_WORKER_SOURCE_FILE="${REALITY_PROFILE_ROOT}/../worker-src/index.js"
+readonly CLOUDFLARE_WORKER_BUILD_SCRIPT="${REALITY_PROFILE_ROOT}/../scripts/build-worker.mjs"
+readonly CLOUDFLARE_WORKER_BUILD_FILE="${CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE:-${STATE_DIR}/worker.js}"
+readonly CLOUDFLARE_WORKER_READY_ATTEMPTS="${CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE:-30}"
+readonly CLOUDFLARE_WORKER_READY_INTERVAL="${CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE:-5}"
 
 # shellcheck source=lib/runtime-core.sh
 EASY_ALL_RUNTIME_LIB_DIR="${SCRIPT_DIR}"
@@ -259,9 +270,12 @@ load_state() {
         VPS_IP_FAMILY VPS_PUBLIC_IPV6
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
         SUB_PORT_MODE ALLOWED_TOKENS
-        SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
-        CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_ORIGIN_CERT_ID
+        SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN SUB_SOURCE_DOMAIN
+        CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_ACCOUNT_ID
+        CLOUDFLARE_ORIGIN_CERT_ID
         CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON CLOUDFLARE_STRICT_RULESET_ID
+        CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
+        WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
         QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
         MIHOMO_TEMPLATE_SNAPSHOT
@@ -307,7 +321,12 @@ load_state() {
         validate_domain "${SUBSCRIPTION_DOMAIN}" \
             || die "状态文件中的 SUBSCRIPTION_DOMAIN 无效：${SUBSCRIPTION_DOMAIN}"
     fi
-    if [[ "${SUBSCRIPTION_MODE}" == "deploy" ]]; then
+    if [[ -n "${SUB_SOURCE_DOMAIN:-}" ]]; then
+        SUB_SOURCE_DOMAIN=$(normalize_domain "${SUB_SOURCE_DOMAIN}")
+        validate_domain "${SUB_SOURCE_DOMAIN}" \
+            || die "状态文件中的 SUB_SOURCE_DOMAIN 无效：${SUB_SOURCE_DOMAIN}"
+    fi
+    if subscription_enabled; then
         [[ "${SUBSCRIPTION_DOMAIN}" != "${NODE_HOST:-}" ]] \
             || die "订阅域名不能与 Reality 直连节点域名相同；请重新安装"
         [[ -n "${CLOUDFLARE_ZONE_ID:-}" && -n "${CLOUDFLARE_ZONE_NAME:-}" \
@@ -315,6 +334,28 @@ load_state() {
             && -n "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" \
             && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
             || die "Reality Cloudflare 订阅状态不完整；请重新安装"
+    fi
+    if worker_subscription_enabled; then
+        [[ -n "${SUB_SOURCE_DOMAIN:-}" && "${SUB_SOURCE_DOMAIN}" != "${SUBSCRIPTION_DOMAIN}" \
+            && "${SUB_SOURCE_DOMAIN}" != "${NODE_HOST:-}" ]] \
+            || die "Worker 聚合的私有源域名缺失或与公开域名相同；请重新安装"
+        [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ ]] \
+            || die "状态缺少有效的 Cloudflare Account ID；请重新安装"
+        validate_cloudflare_worker_name "${CLOUDFLARE_WORKER_NAME:-}" \
+            || die "状态缺少有效的 Cloudflare Worker 名称；请重新安装"
+        [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
+            || die "状态缺少 Worker 自定义域名 ID；请重新安装"
+        [[ "${WORKER_SOURCE_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+            || die "状态缺少有效的 Worker 订阅源密钥；请重新安装"
+        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
+            "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
+            || die "状态中的 Worker 聚合配置无效；请重新安装"
+    else
+        SUB_SOURCE_DOMAIN=""
+        CLOUDFLARE_WORKER_NAME=""
+        CLOUDFLARE_WORKER_DOMAIN_ID=""
+        WORKER_SOURCE_SECRET=""
+        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
     fi
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
@@ -338,8 +379,20 @@ save_state() {
     enforce_ipv4_only_policy
     TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
         || die "无法保存无效的 TCP_ACCELERATION"
+    if worker_subscription_enabled; then
+        [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ \
+            && -n "${SUB_SOURCE_DOMAIN:-}" \
+            && -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" \
+            && "${WORKER_SOURCE_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+            && validate_cloudflare_worker_name "${CLOUDFLARE_WORKER_NAME:-}" \
+            || die "无法保存不完整的 Worker 聚合状态"
+        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
+            "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
+            || die "无法保存无效的 Worker 聚合配置"
+    fi
     install -d -m 0700 "${STATE_DIR}"
-    local temp
+    local temp aggregation empty_aggregation='{"nodes":[],"fallbackCdnNodes":[]}'
+    aggregation=${WORKER_AGGREGATION_CONFIG:-${empty_aggregation}}
     temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX") \
         || die "创建状态暂存文件失败"
     cleanup_files+=("${temp}")
@@ -370,11 +423,17 @@ save_state() {
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-link}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
         printf 'SUBSCRIPTION_DOMAIN=%q\n' "${SUBSCRIPTION_DOMAIN:-}"
+        printf 'SUB_SOURCE_DOMAIN=%q\n' "${SUB_SOURCE_DOMAIN:-}"
         printf 'CLOUDFLARE_ZONE_ID=%q\n' "${CLOUDFLARE_ZONE_ID:-}"
         printf 'CLOUDFLARE_ZONE_NAME=%q\n' "${CLOUDFLARE_ZONE_NAME:-}"
+        printf 'CLOUDFLARE_ACCOUNT_ID=%q\n' "${CLOUDFLARE_ACCOUNT_ID:-}"
         printf 'CLOUDFLARE_ORIGIN_CERT_ID=%q\n' "${CLOUDFLARE_ORIGIN_CERT_ID:-}"
         printf 'CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=%q\n' "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}"
         printf 'CLOUDFLARE_STRICT_RULESET_ID=%q\n' "${CLOUDFLARE_STRICT_RULESET_ID:-}"
+        printf 'CLOUDFLARE_WORKER_NAME=%q\n' "${CLOUDFLARE_WORKER_NAME:-}"
+        printf 'CLOUDFLARE_WORKER_DOMAIN_ID=%q\n' "${CLOUDFLARE_WORKER_DOMAIN_ID:-}"
+        printf 'WORKER_SOURCE_SECRET=%q\n' "${WORKER_SOURCE_SECRET:-}"
+        printf 'WORKER_AGGREGATION_CONFIG=%q\n' "${aggregation}"
         printf 'SCHEDULED_REBOOT_ENABLED=%q\n' "${SCHEDULED_REBOOT_ENABLED:-0}"
         printf 'SCHEDULED_REBOOT_HOUR=%q\n' "${SCHEDULED_REBOOT_HOUR:-}"
     } >"${temp}" || die "写入状态暂存文件失败"
@@ -406,6 +465,16 @@ protocol_default_node_name() {
 protocol_default_port_mode() {
     validate_protocol "${PROTOCOL}" || die "无法确定未知协议的默认订阅端口模式：${PROTOCOL:-空}"
     printf '%s' "${DEFAULT_REALITY_PORT_MODE}"
+}
+
+# Nginx always serves the private node source. Local subscription mode publishes
+# that host directly; Worker aggregation keeps it private behind a custom domain.
+subscription_origin_domain() {
+    if worker_subscription_enabled; then
+        printf '%s' "${SUB_SOURCE_DOMAIN:-}"
+    else
+        printf '%s' "${SUBSCRIPTION_DOMAIN:-}"
+    fi
 }
 
 validate_reality_target() {
@@ -552,6 +621,9 @@ collect_sub_port_mode() {
 
 collect_subscription_domain() {
     local domain=${SUBSCRIPTION_DOMAIN:-}
+    # A Worker Custom Domain owns the hostname; switching back to a local
+    # subscription must not try to reuse it as a proxied origin record.
+    [[ "${PREVIOUS_SUBSCRIPTION_MODE:-}" != "worker" ]] || domain=""
     if [[ -z "${domain}" && -t 0 ]]; then
         domain=$(prompt_value "Cloudflare 代理的订阅域名（Zone 下一级子域名）" "")
     fi
@@ -937,11 +1009,16 @@ write_xray_config() {
 }
 
 build_reality_link() {
-    local port=${1:-443}
-    printf 'vless://%s@%s:%s?encryption=none&security=reality&type=tcp&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision&packetEncoding=xudp#%s' \
+    local port=${1:-443} mlkem_param=""
+    # Xray clients negotiate ML-KEM themselves; the hint only lets the Worker
+    # mirror this server's capability in its Mihomo output.
+    if ! reality_mlkem_required; then
+        mlkem_param="&mlkem=0"
+    fi
+    printf 'vless://%s@%s:%s?encryption=none&security=reality&type=tcp&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision&packetEncoding=xudp%s#%s' \
         "${VLESS_UUID}" "${NODE_HOST}" "${port}" "${REALITY_TARGET%:*}" \
         "$(uri_encode "${REALITY_PUBLIC_KEY}")" "$(uri_encode "${REALITY_SHORT_ID}")" \
-        "$(uri_encode "${NODE_NAME}")"
+        "${mlkem_param}" "$(uri_encode "${NODE_NAME}")"
 }
 
 build_node_link() {
@@ -1034,7 +1111,9 @@ reality_cloudflare_collect_api_token() {
 
 reality_cloudflare_clear_api_token() {
     unset CLOUDFLARE_API_TOKEN
-    rm -f -- "${RUNTIME_TMP}/reality-cloudflare-api-headers"
+    rm -f -- "${RUNTIME_TMP}/reality-cloudflare-api-headers" \
+        "${RUNTIME_TMP}/reality-cloudflare-worker-api-headers" \
+        "${RUNTIME_TMP}/reality-worker-config.json"
 }
 
 reality_cloudflare_api_request() {
@@ -1085,16 +1164,18 @@ reality_cloudflare_record_list() {
 
 reality_cloudflare_ensure_proxied_a() {
     local records record="" id content proxied comment type payload count
+    local origin_domain
+    origin_domain=$(subscription_origin_domain)
     # Check every conflicting record type before returning or changing DNS.
     for type in A AAAA CNAME; do
         records=$(reality_cloudflare_record_list \
-            "${CLOUDFLARE_ZONE_ID}" "${type}" "${SUBSCRIPTION_DOMAIN}") \
+            "${CLOUDFLARE_ZONE_ID}" "${type}" "${origin_domain}") \
             || die "读取 Cloudflare ${type} 记录失败"
         count=$(jq -er 'if type == "array" then length else error("expected records array") end' \
             <<<"${records}") || die "Cloudflare ${type} 记录响应无效"
         ((count <= 1)) || die "Cloudflare 中发现多个同名 ${type} 记录，拒绝覆盖"
         [[ "${type}" == A ]] || ((count == 0)) \
-            || die "${SUBSCRIPTION_DOMAIN} 已有 ${type} 记录；拒绝覆盖"
+            || die "${origin_domain} 已有 ${type} 记录；拒绝覆盖"
         if [[ "${type}" == A && "${count}" == 1 ]]; then
             record=$(jq -c '.[0]' <<<"${records}")
         fi
@@ -1108,9 +1189,9 @@ reality_cloudflare_ensure_proxied_a() {
             return 0
         fi
         [[ "${comment}" == "easy_all reality subscription origin" ]] \
-            || die "${SUBSCRIPTION_DOMAIN} 的 A 记录不属于 easy_all 或目标不一致；拒绝覆盖"
+            || die "${origin_domain} 的 A 记录不属于 easy_all 或目标不一致；拒绝覆盖"
     fi
-    payload=$(jq -cn --arg name "${SUBSCRIPTION_DOMAIN}" --arg content "${VPS_PUBLIC_IPV4}" \
+    payload=$(jq -cn --arg name "${origin_domain}" --arg content "${VPS_PUBLIC_IPV4}" \
         '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all reality subscription origin"}')
     if [[ -n "${record}" ]]; then
         reality_cloudflare_api_request PATCH \
@@ -1122,17 +1203,22 @@ reality_cloudflare_ensure_proxied_a() {
 }
 
 reality_cloudflare_prepare_subscription() {
-    local zone prefix
+    local zone prefix origin_domain
+    origin_domain=$(subscription_origin_domain)
+    [[ -n "${origin_domain}" ]] || die "当前订阅模式缺少 Cloudflare 回源域名"
     reality_cloudflare_collect_api_token
-    CLOUDFLARE_ZONE_ID=$(reality_cloudflare_find_parent_zone "${SUBSCRIPTION_DOMAIN}")
+    CLOUDFLARE_ZONE_ID=$(reality_cloudflare_find_parent_zone "${origin_domain}")
     zone=$(reality_cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}")
     CLOUDFLARE_ZONE_NAME=$(jq -r '.name // empty | ascii_downcase' <<<"${zone}")
     [[ -n "${CLOUDFLARE_ZONE_NAME}" \
-        && "${SUBSCRIPTION_DOMAIN}" == *."${CLOUDFLARE_ZONE_NAME}" ]] \
-        || die "订阅域名不属于 Cloudflare Zone"
-    prefix=${SUBSCRIPTION_DOMAIN%.${CLOUDFLARE_ZONE_NAME}}
+        && "${origin_domain}" == *."${CLOUDFLARE_ZONE_NAME}" ]] \
+        || die "订阅回源域名不属于 Cloudflare Zone"
+    prefix=${origin_domain%.${CLOUDFLARE_ZONE_NAME}}
     [[ -n "${prefix}" && "${prefix}" != *.* ]] \
         || die "Reality 的 Cloudflare 订阅仅支持 Zone 下一级子域名"
+    CLOUDFLARE_ACCOUNT_ID=$(jq -r '.account.id // empty' <<<"${zone}")
+    [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9A-Fa-f]{32}$ ]] \
+        || die "Cloudflare Zone 未返回有效 Account ID"
     VPS_PUBLIC_IPV4=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} \
         || die "无法探测当前 VPS 公网 IPv4"
     validate_ipv4 "${VPS_PUBLIC_IPV4}" || die "VPS_PUBLIC_IPV4 无效：${VPS_PUBLIC_IPV4}"
@@ -1158,7 +1244,7 @@ reality_cloudflare_ensure_origin_ca_root() {
 reality_cloudflare_origin_certificate_is_current() {
     [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" ]] || return 1
     openssl x509 -in "${CERT_FILE}" -checkend 2592000 -noout >/dev/null 2>&1 \
-        && openssl x509 -in "${CERT_FILE}" -checkhost "${SUBSCRIPTION_DOMAIN}" -noout >/dev/null 2>&1 \
+        && openssl x509 -in "${CERT_FILE}" -checkhost "$(subscription_origin_domain)" -noout >/dev/null 2>&1 \
         && [[ "$(openssl x509 -in "${CERT_FILE}" -pubkey -noout 2>/dev/null \
             | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)" \
             == "$(openssl pkey -in "${KEY_FILE}" -pubout -outform DER 2>/dev/null \
@@ -1175,7 +1261,9 @@ reality_cloudflare_origin_certificate_is_reusable() {
 }
 
 reality_cloudflare_issue_origin_certificate() {
-    local force=${1:-0} key csr result cert expires old_id
+    local force=${1:-0} key csr result cert expires old_id origin_domain
+    origin_domain=$(subscription_origin_domain)
+    [[ -n "${origin_domain}" ]] || die "当前订阅模式缺少 Cloudflare 回源域名"
     reality_cloudflare_ensure_origin_ca_root
     if [[ "${force}" != 1 ]] && reality_cloudflare_origin_certificate_is_reusable; then
         return 0
@@ -1186,10 +1274,10 @@ reality_cloudflare_issue_origin_certificate() {
     csr="${RUNTIME_TMP}/reality-cloudflare-origin.csr"
     openssl ecparam -name prime256v1 -genkey -noout -out "${key}"
     chmod 0600 "${key}"
-    openssl req -new -sha256 -key "${key}" -subj "/CN=${SUBSCRIPTION_DOMAIN}" \
-        -addext "subjectAltName=DNS:${SUBSCRIPTION_DOMAIN}" -out "${csr}"
+    openssl req -new -sha256 -key "${key}" -subj "/CN=${origin_domain}" \
+        -addext "subjectAltName=DNS:${origin_domain}" -out "${csr}"
     result=$(reality_cloudflare_api_request POST '/certificates' \
-        "$(jq -cn --arg csr "$(<"${csr}")" --arg host "${SUBSCRIPTION_DOMAIN}" \
+        "$(jq -cn --arg csr "$(<"${csr}")" --arg host "${origin_domain}" \
             --argjson validity "${CLOUDFLARE_ORIGIN_VALIDITY_DAYS}" \
             '{hostnames:[$host],requested_validity:$validity,request_type:"origin-ecc",csr:$csr}')")
     cert=$(jq -r '.certificate // empty' <<<"${result}")
@@ -1226,8 +1314,8 @@ reality_cloudflare_configure_strict_tls() {
             | jq -r '.id // empty')
     fi
     [[ -n "${ruleset}" ]] || die "Cloudflare 未返回 Strict TLS ruleset ID"
-    ref=$(reality_cloudflare_ref "reality-strict:${SUBSCRIPTION_DOMAIN}")
-    payload=$(jq -cn --arg ref "${ref}" --arg host "${SUBSCRIPTION_DOMAIN}" \
+    ref=$(reality_cloudflare_ref "reality-strict:$(subscription_origin_domain)")
+    payload=$(jq -cn --arg ref "${ref}" --arg host "$(subscription_origin_domain)" \
         '{ref:$ref,description:"easy_all reality subscription strict TLS",expression:("http.host eq \""+$host+"\""),action:"set_config",action_parameters:{ssl:"strict"}}')
     rules=$(reality_cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
     rule_matches=$(jq -c --arg ref "${ref}" '[.rules[]? | select(.ref==$ref)]' <<<"${rules}")
@@ -1266,7 +1354,7 @@ write_subscription_bootstrap_nginx() {
     cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
 server {
     listen ${SUBSCRIPTION_HTTPS_PORT} ssl${listen_h2};${http2_directive}
-    server_name ${SUBSCRIPTION_DOMAIN};
+    server_name $(subscription_origin_domain);
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -1394,7 +1482,7 @@ write_subscription_nginx_config() {
         cat <<EOF
 server {
     listen ${SUBSCRIPTION_HTTPS_PORT} ssl${listen_h2};${http2_directive}
-    server_name ${SUBSCRIPTION_DOMAIN};
+    server_name $(subscription_origin_domain);
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -1405,7 +1493,11 @@ server {
     }
 
 EOF
-        write_subscription_nginx_locations "" "" reality
+        if worker_subscription_enabled; then
+            write_subscription_nginx_locations "" "${WORKER_SOURCE_SECRET:-}" reality
+        else
+            write_subscription_nginx_locations "" "" reality
+        fi
         cat <<'EOF'
     location / { return 404; }
 }
@@ -1435,18 +1527,53 @@ validate_subscription_response_port() {
     die "订阅响应端口不在请求时段的小时池中"
 }
 
+# The Worker keeps the Nginx source private; local probes must present the
+# same shared secret the Worker sends on every upstream fetch. The secret goes
+# into a 0600 header file so it never appears on the curl argv.
+reality_prepare_worker_source_header() {
+    worker_subscription_enabled || return 0
+    [[ "${WORKER_SOURCE_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+        || die "Worker 聚合模式缺少有效的订阅源密钥"
+    REALITY_WORKER_SOURCE_HEADER_FILE="${RUNTIME_TMP}/reality-worker-source-headers"
+    printf 'X-Easy-All-Worker-Source: %s\n' "${WORKER_SOURCE_SECRET}" \
+        >"${REALITY_WORKER_SOURCE_HEADER_FILE}" \
+        || die "写入 Worker 订阅源请求头文件失败"
+    chmod 0600 "${REALITY_WORKER_SOURCE_HEADER_FILE}"
+}
+
+reality_subscription_curl() {
+    reality_prepare_worker_source_header
+    if [[ -n "${REALITY_WORKER_SOURCE_HEADER_FILE:-}" ]]; then
+        curl -H "@${REALITY_WORKER_SOURCE_HEADER_FILE}" "$@"
+        return
+    fi
+    curl "$@"
+}
+
 validate_subscription_runtime() {
     local token base64_response base64_decoded mihomo_response accounts uuid start finish port flag headers method_status
-    validate_subscription_token_rejection \
-        "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
-        "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe" \
-        --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
-    method_status=$(curl -sS --proto '=https' --request POST \
+    local origin_domain
+    origin_domain=$(subscription_origin_domain)
+    [[ -n "${origin_domain}" ]] || die "当前订阅模式缺少 Cloudflare 回源域名"
+    if worker_subscription_enabled; then
+        reality_prepare_worker_source_header
+        validate_subscription_token_rejection \
+            "${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+            "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/subscribe" \
+            --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" \
+            -H "@${REALITY_WORKER_SOURCE_HEADER_FILE}"
+    else
+        validate_subscription_token_rejection \
+            "${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+            "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/subscribe" \
+            --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
+    fi
+    method_status=$(reality_subscription_curl -sS --proto '=https' --request POST \
         --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
-        --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+        --resolve "${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         --get --data-urlencode 'token=invalid' \
-        "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
+        "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "订阅方法限制本机验收失败"
     [[ "${method_status}" == 405 ]] || die "订阅方法限制未生效"
     if quota_enabled; then
@@ -1459,12 +1586,12 @@ validate_subscription_runtime() {
         uuid=${VLESS_UUID}
     fi
     start=$(date +%s)
-    base64_response=$(printf '%s' "${token}" | curl -fsS --proto '=https' \
+    base64_response=$(printf '%s' "${token}" | reality_subscription_curl -fsS --proto '=https' \
         --connect-timeout 5 --max-time 20 \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
-        --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+        --resolve "${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         --get --data-urlencode 'token@-' \
-        "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
+        "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "Base64 订阅本机验收失败"
     finish=$(date +%s)
     [[ -n "${base64_response}" ]] || die "Base64 订阅响应为空"
@@ -1477,12 +1604,12 @@ validate_subscription_runtime() {
     port=${base64_decoded%%\?*}; port=${port##*:}
     validate_subscription_response_port "${port}" "${start}" "${finish}" || return 1
     start=$(date +%s)
-    mihomo_response=$(printf '%s' "${token}" | curl -fsS --proto '=https' \
+    mihomo_response=$(printf '%s' "${token}" | reality_subscription_curl -fsS --proto '=https' \
         --connect-timeout 5 --max-time 20 \
         --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
-        --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+        --resolve "${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
         --get --data-urlencode 'token@-' --data-urlencode "flag=clash" \
-        "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
+        "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "Mihomo 订阅本机验收失败"
     finish=$(date +%s)
     grep -Fq 'reality-opts:' <<<"${mihomo_response}" || die "Mihomo 订阅响应无效"
@@ -1496,12 +1623,12 @@ validate_subscription_runtime() {
     ' <<<"${mihomo_response}") || die "Mihomo 订阅响应节点无效"
     validate_subscription_response_port "${port}" "${start}" "${finish}" || return 1
     for flag in base64 clash; do
-        headers=$(printf '%s' "${token}" | curl -fsS --head --proto '=https' \
+        headers=$(printf '%s' "${token}" | reality_subscription_curl -fsS --head --proto '=https' \
             --connect-timeout 5 --max-time 20 \
             --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" --noproxy '*' \
-            --resolve "${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
+            --resolve "${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}:127.0.0.1" \
             --get --data-urlencode 'token@-' --data-urlencode "flag=${flag}" \
-            "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
+            "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
             || die "订阅 HEAD 本机验收失败"
         grep -Eiq '^content-length: [1-9][0-9]*' <<<"${headers}" \
             || die "订阅 HEAD 缺少完整表示长度"
@@ -1514,18 +1641,19 @@ validate_subscription_runtime() {
 }
 
 reality_cloudflare_validate_public_subscription() {
-    local attempt response
+    local attempt response origin_domain
+    origin_domain=$(subscription_origin_domain)
     for attempt in {1..60}; do
         response=$(curl -fsS --connect-timeout 5 --max-time 15 \
-            "https://${SUBSCRIPTION_DOMAIN}:${SUBSCRIPTION_HTTPS_PORT}/easy_all-health" \
+            "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/easy_all-health" \
             2>/dev/null || true)
         if [[ "${response}" == "easy_all ok" ]]; then
-            success "Cloudflare Reality 订阅公网验收通过"
+            success "Cloudflare Reality 订阅回源验收通过"
             return 0
         fi
         sleep 5
     done
-    die "Cloudflare 订阅公网验收失败；请检查 Proxied DNS、Origin CA、Strict TLS 与 8443 回源"
+    die "Cloudflare 订阅回源验收失败；请检查 Proxied DNS、Origin CA、Strict TLS 与 8443 回源"
 }
 
 reality_cloudflare_finalize_certificate_rotation() {
@@ -1539,6 +1667,14 @@ reality_cloudflare_finalize_certificate_rotation() {
     CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=""
 }
 
+reset_worker_subscription_inputs() {
+    SUB_SOURCE_DOMAIN=""
+    CLOUDFLARE_WORKER_NAME=""
+    CLOUDFLARE_WORKER_DOMAIN_ID=""
+    WORKER_SOURCE_SECRET=""
+    WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
+}
+
 collect_deployed_subscription_inputs() {
     local prompt_options=${1:-1} prompt_download_name=${2:-0}
     collect_subscription_domain
@@ -1547,7 +1683,87 @@ collect_deployed_subscription_inputs() {
         choose_monthly_quota 1
     fi
     quota_enabled || ensure_allowed_tokens "${prompt_options}"
+    reset_worker_subscription_inputs
     SUBSCRIPTION_MODE="deploy"
+}
+
+collect_worker_public_domain() {
+    local prompt_options=${1:-1} domain=${SUBSCRIPTION_DOMAIN:-}
+    # The previous local subscription already uses SUBSCRIPTION_DOMAIN as its
+    # proxied origin, so only a previous Worker deployment may reuse it.
+    [[ "${PREVIOUS_SUBSCRIPTION_MODE:-}" == "worker" ]] || domain=""
+    if [[ "${prompt_options}" == "1" && -t 0 ]]; then
+        domain=$(prompt_value \
+            "Cloudflare Worker 订阅域名（公开入口，Zone 下一级子域名）" "${domain}")
+    fi
+    [[ -n "${domain}" ]] \
+        || die "Worker 订阅聚合必须设置 SUBSCRIPTION_DOMAIN"
+    domain=$(normalize_domain "${domain}")
+    validate_domain "${domain}" || die "SUBSCRIPTION_DOMAIN 无效：${domain}"
+    [[ "${domain}" != "${NODE_HOST:-}" ]] \
+        || die "订阅域名不能与 Reality 直连节点域名相同；请使用独立的 Cloudflare 一级子域名"
+    SUBSCRIPTION_DOMAIN=${domain}
+}
+
+collect_worker_source_domain() {
+    local prompt_options=${1:-1} domain=${SUB_SOURCE_DOMAIN:-}
+    [[ "${PREVIOUS_SUBSCRIPTION_MODE:-}" == "worker" ]] || domain=""
+    if [[ "${prompt_options}" == "1" && -t 0 ]]; then
+        domain=$(prompt_value \
+            "私有节点源域名（Cloudflare 代理到本机，仅供 Worker 回源；必须与公开域名不同）" "${domain}")
+    fi
+    [[ -n "${domain}" ]] \
+        || die "Worker 订阅聚合必须设置 SUB_SOURCE_DOMAIN"
+    domain=$(normalize_domain "${domain}")
+    validate_domain "${domain}" || die "SUB_SOURCE_DOMAIN 无效：${domain}"
+    [[ "${domain}" != "${SUBSCRIPTION_DOMAIN}" ]] \
+        || die "私有节点源域名不能与 Worker 公开订阅域名相同"
+    [[ "${domain}" != "${NODE_HOST:-}" ]] \
+        || die "私有节点源域名不能与 Reality 直连节点域名相同"
+    SUB_SOURCE_DOMAIN=${domain}
+}
+
+validate_worker_aggregation_node_names() {
+    local name empty_aggregation='{"nodes":[],"fallbackCdnNodes":[]}'
+    while IFS= read -r name; do
+        [[ -n "${name}" ]] || continue
+        [[ "${name}" != "${NODE_NAME}" ]] \
+            || die "Worker 聚合配置中的节点名与本地 Reality 节点名重复：${name}；请改用不重复的名称"
+    done < <(jq -r '.nodes[]?.name // empty' \
+        <<<"${WORKER_AGGREGATION_CONFIG:-${empty_aggregation}}")
+}
+
+collect_worker_subscription_inputs() {
+    local prompt_options=${1:-1} prompt_download_name=${2:-0}
+    local WORKER_AGGREGATION_QUESTION="是否写入其他直连节点的聚合 JSON（另外两台节点的信息）？"
+    collect_worker_public_domain "${prompt_options}"
+    collect_worker_source_domain "${prompt_options}"
+    if [[ "${prompt_options}" == "1" ]]; then
+        choose_cloudflare_worker_name
+        NODE_NAME=$(prompt_value \
+            "本机节点名称（聚合后作为客户端展示名，必须与其他节点不同）" \
+            "${NODE_NAME}")
+    else
+        validate_cloudflare_worker_name "${CLOUDFLARE_WORKER_NAME:-}" \
+            || die "Worker 名称无效：${CLOUDFLARE_WORKER_NAME:-空}"
+    fi
+    choose_subscription_download_name "${prompt_download_name}"
+    if [[ "${prompt_options}" == "1" ]]; then
+        choose_monthly_quota 1
+    fi
+    quota_enabled || ensure_allowed_tokens "${prompt_options}"
+    WORKER_SOURCE_SECRET=${WORKER_SOURCE_SECRET:-$(generate_secret)}
+    [[ "${WORKER_SOURCE_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+        || die "WORKER_SOURCE_SECRET 格式无效"
+    if [[ "${prompt_options}" == "1" ]]; then
+        choose_worker_aggregation_config
+    else
+        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
+            "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
+            || die "Worker 聚合配置无效；请执行 sudo easy_all update-sub 重新配置"
+    fi
+    validate_worker_aggregation_node_names
+    SUBSCRIPTION_MODE="worker"
 }
 
 collect_link_subscription_inputs() {
@@ -1555,6 +1771,7 @@ collect_link_subscription_inputs() {
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     ALLOWED_TOKENS=""
+    reset_worker_subscription_inputs
     choose_monthly_quota 0
 }
 
@@ -1566,9 +1783,354 @@ collect_subscription_inputs() {
         collect_deployed_subscription_inputs \
             "${prompt_options}" "${prompt_download_name}"
         ;;
+    worker)
+        collect_worker_subscription_inputs \
+            "${prompt_options}" "${prompt_download_name}"
+        ;;
     link) collect_link_subscription_inputs ;;
     *) die "无法收集未知订阅输出方式：${SUBSCRIPTION_MODE:-空}" ;;
     esac
+}
+
+reality_worker_source_url() {
+    printf 'https://%s:%s/subscribe' \
+        "${SUB_SOURCE_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}"
+}
+
+ensure_reality_worker_builder() {
+    local major
+    if ! command -v node >/dev/null 2>&1; then
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nodejs \
+            || die "安装 Worker 构建依赖 nodejs 失败"
+    fi
+    major=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)
+    [[ "${major}" =~ ^[0-9]+$ && "${major}" -ge 18 ]] \
+        || die "Worker 构建需要 Node.js 18 或更高版本"
+}
+
+reality_worker_build() {
+    local config aggregation build_output
+    [[ -s "${CLOUDFLARE_WORKER_SOURCE_FILE}" ]] \
+        || die "缺少 Worker 运行源码：${CLOUDFLARE_WORKER_SOURCE_FILE}"
+    [[ -s "${CLOUDFLARE_WORKER_BUILD_SCRIPT}" ]] \
+        || die "缺少 Worker 构建脚本：${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
+    ensure_reality_worker_builder
+    prepare_mihomo_template
+    aggregation=$(normalize_worker_aggregation_config \
+        "${WORKER_AGGREGATION_CONFIG:-}") \
+        || die "Worker 聚合配置无效"
+    config=$(jq -cn \
+        --argjson aggregation "${aggregation}" \
+        --arg source_url "$(reality_worker_source_url)" \
+        --arg source_secret "${WORKER_SOURCE_SECRET}" \
+        --arg download_name "${SUB_DOWNLOAD_NAME}" '{
+          allowedTokens:{},
+          nodes:$aggregation.nodes,
+          vpsSubUrl:$source_url,
+          vpsCdnUseRequestToken:true,
+          delegateTokenValidation:true,
+          requireDynamicCdn:true,
+          sourceSecret:$source_secret,
+          fallbackCdnNodes:$aggregation.fallbackCdnNodes,
+          subscriptionDownloadName:$download_name
+        }')
+    printf '%s\n' "${config}" >"${RUNTIME_TMP}/reality-worker-config.json"
+    chmod 0600 "${RUNTIME_TMP}/reality-worker-config.json"
+    install -d -m 0700 "$(dirname "${CLOUDFLARE_WORKER_BUILD_FILE}")"
+    build_output=$(
+        EASY_ALL_WORKER_CONFIG_PATH="${RUNTIME_TMP}/reality-worker-config.json" \
+        EASY_ALL_WORKER_OUTPUT_PATH="${CLOUDFLARE_WORKER_BUILD_FILE}" \
+        EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
+        EASY_ALL_WORKER_SOURCE_PATH="${CLOUDFLARE_WORKER_SOURCE_FILE}" \
+            node "${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
+    ) || die "Worker 构建失败"
+    [[ -s "${CLOUDFLARE_WORKER_BUILD_FILE}" ]] \
+        || die "Worker 构建未生成输出文件"
+    chmod 0600 "${CLOUDFLARE_WORKER_BUILD_FILE}"
+    info "${build_output}"
+}
+
+reality_worker_snapshot_deployment() {
+    local name=$1 destination=$2 deployments
+    [[ ! -s "${destination}" ]] || return 0
+    deployments=$(reality_cloudflare_api_request GET \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${name}")/deployments") \
+        || die "无法读取 Worker ${name} 当前部署，中止更新"
+    jq -ce '
+      .deployments[0].versions
+      | select(type == "array" and length >= 1 and length <= 2)
+      | select(all(.[];
+          (.version_id | type) == "string"
+          and (.version_id | test("^[0-9A-Fa-f-]{36}$"))
+          and (.percentage | type) == "number"
+          and .percentage > 0))
+      | select((map(.percentage) | add) == 100)
+      | {
+          strategy:"percentage",
+          versions:map({version_id,percentage}),
+          annotations:{"workers/message":"easy_all automatic rollback"}
+        }
+    ' <<<"${deployments}" >"${destination}" \
+        || die "Worker ${name} 当前部署信息无效，中止更新以避免无法回滚"
+    chmod 0600 "${destination}"
+}
+
+reality_worker_restore_deployment() {
+    local name=$1 source=$2
+    [[ -s "${source}" ]] || return 1
+    reality_cloudflare_api_request POST \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${name}")/deployments?force=true" \
+        "$(<"${source}")" >/dev/null
+}
+
+reality_worker_validate_access() {
+    local scripts domains count
+    worker_subscription_enabled || return 0
+    [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ ]] \
+        || die "Cloudflare Zone 未返回有效 Account ID"
+    scripts=$(reality_cloudflare_api_request GET \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts") \
+        || die "当前 Cloudflare Token 缺少 Account / Workers Scripts / Write 权限"
+    count=$(jq --arg name "${CLOUDFLARE_WORKER_NAME}" \
+        '[.[] | select(.id == $name)] | length' <<<"${scripts}")
+    ((count <= 1)) || die "Cloudflare 返回多个同名 Worker：${CLOUDFLARE_WORKER_NAME}"
+    CLOUDFLARE_WORKER_EXISTS=${count}
+    if ((count == 1)); then
+        [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
+            || die "Worker ${CLOUDFLARE_WORKER_NAME} 已存在且无本机所有权记录，拒绝覆盖"
+        domains=$(reality_cloudflare_api_request GET \
+            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") \
+            || die "无法验证 Worker ${CLOUDFLARE_WORKER_NAME} 的自定义域名所有权"
+        jq -e --arg id "${CLOUDFLARE_WORKER_DOMAIN_ID}" \
+            --arg service "${CLOUDFLARE_WORKER_NAME}" \
+            'any(.[]; .id == $id and .service == $service)' \
+            <<<"${domains}" >/dev/null \
+            || die "Worker ${CLOUDFLARE_WORKER_NAME} 所有权记录与 Cloudflare 不一致，拒绝覆盖"
+        reality_worker_snapshot_deployment "${CLOUDFLARE_WORKER_NAME}" \
+            "${RUNTIME_TMP}/reality-worker-deployment-prev.json"
+        info "复用 Worker ${CLOUDFLARE_WORKER_NAME}，将更新订阅脚本"
+    fi
+    if [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" && "${count}" != "1" ]]; then
+        die "状态中的 Worker ${CLOUDFLARE_WORKER_NAME} 不存在：Worker 名称不能在 update-sub 中就地修改，请改回原名称或重新安装"
+    fi
+}
+
+reality_worker_upload() {
+    local script metadata headers response path
+    script="${CLOUDFLARE_WORKER_BUILD_FILE}"
+    metadata="${RUNTIME_TMP}/reality-worker-metadata.json"
+    headers="${RUNTIME_TMP}/reality-cloudflare-worker-api-headers"
+    [[ -s "${script}" ]] || die "缺少已构建的 Worker 文件"
+    jq -n \
+        --arg date "${CLOUDFLARE_WORKER_COMPATIBILITY_DATE}" '{
+          main_module:"worker.js",
+          compatibility_date:$date,
+          compatibility_flags:["global_fetch_strictly_public"]
+        }' >"${metadata}"
+    printf 'Authorization: Bearer %s\n' "${CLOUDFLARE_API_TOKEN}" >"${headers}"
+    chmod 0600 "${headers}" "${metadata}"
+    path="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${CLOUDFLARE_WORKER_NAME}")"
+    response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 60 \
+        -X PUT -H "@${headers}" \
+        -F "metadata=@${metadata};type=application/json" \
+        -F "worker.js=@${script};type=application/javascript+module" \
+        "${CLOUDFLARE_API_BASE}${path}") \
+        || die "Cloudflare API 请求失败：PUT ${path}"
+    jq -e '.success == true' <<<"${response}" >/dev/null \
+        || {
+            printf '%s\n' "${response:-<empty>}" >&2
+            die "Cloudflare Worker 上传失败：PUT ${path}；请根据上方 Cloudflare API 错误码和消息排查"
+        }
+    if [[ "${CLOUDFLARE_WORKER_EXISTS:-1}" == "0" ]]; then
+        CLOUDFLARE_WORKER_CREATED=1
+    fi
+}
+
+reality_worker_attach_domain() {
+    local domains matches count existing_service result records type
+    domains=$(reality_cloudflare_api_request GET \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") \
+        || die "无法读取 Worker 自定义域名列表"
+    matches=$(jq -c --arg host "${SUBSCRIPTION_DOMAIN}" \
+        '[.[] | select((.hostname | ascii_downcase) == $host)]' <<<"${domains}")
+    count=$(jq 'length' <<<"${matches}")
+    ((count <= 1)) || die "Cloudflare 中存在多个订阅 Worker 自定义域名：${SUBSCRIPTION_DOMAIN}"
+    if ((count == 1)); then
+        existing_service=$(jq -r '.[0].service // empty' <<<"${matches}")
+        [[ "${existing_service}" == "${CLOUDFLARE_WORKER_NAME}" ]] \
+            || die "订阅域名 ${SUBSCRIPTION_DOMAIN} 已绑定到其他 Worker：${existing_service}"
+        CLOUDFLARE_WORKER_DOMAIN_ID=$(jq -r '.[0].id // empty' <<<"${matches}")
+        [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID}" ]] \
+            || die "Cloudflare Worker 自定义域名缺少 ID"
+        return 0
+    fi
+    for type in A AAAA CNAME; do
+        records=$(reality_cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" \
+            "${type}" "${SUBSCRIPTION_DOMAIN}")
+        [[ "$(jq 'length' <<<"${records}")" == "0" ]] \
+            || die "订阅域名 ${SUBSCRIPTION_DOMAIN} 已有 ${type} 记录；拒绝由 Worker Custom Domain 接管"
+    done
+    result=$(reality_cloudflare_api_request PUT \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
+        "$(jq -cn --arg host "${SUBSCRIPTION_DOMAIN}" \
+            --arg service "${CLOUDFLARE_WORKER_NAME}" \
+            --arg zone_id "${CLOUDFLARE_ZONE_ID}" \
+            --arg zone_name "${CLOUDFLARE_ZONE_NAME}" \
+            '{hostname:$host,service:$service,zone_id:$zone_id,zone_name:$zone_name}')")
+    CLOUDFLARE_WORKER_DOMAIN_ID=$(jq -r '.id // empty' <<<"${result}")
+    [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID}" ]] \
+        || die "Cloudflare 未返回 Worker 自定义域名 ID"
+    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=${CLOUDFLARE_WORKER_DOMAIN_ID}
+}
+
+reality_worker_detach_domain() {
+    local account_id=$1 domain_id=$2 service=$3 domains
+    [[ -n "${account_id}" && -n "${domain_id}" ]] || return 0
+    domains=$(reality_cloudflare_api_request GET \
+        "/accounts/${account_id}/workers/domains") || return 1
+    jq -e --arg id "${domain_id}" --arg service "${service}" \
+        'any(.[]; .id == $id and .service == $service)' <<<"${domains}" >/dev/null \
+        || return 0
+    reality_cloudflare_api_request DELETE \
+        "/accounts/${account_id}/workers/domains/${domain_id}" >/dev/null
+}
+
+reality_worker_deploy() {
+    worker_subscription_enabled || return 0
+    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
+        || die "Worker 聚合需要先完成 Cloudflare 回源域名、Origin CA 与 Strict TLS 配置"
+    CLOUDFLARE_WORKER_CREATED=0
+    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=""
+    rm -f -- "${RUNTIME_TMP}/reality-worker-deployment-prev.json"
+    [[ "${SUBSCRIPTION_DOMAIN}" == *."${CLOUDFLARE_ZONE_NAME}" ]] \
+        || die "Worker 公开订阅域名必须与私有节点源域名位于同一 Cloudflare Zone"
+    local public_prefix=${SUBSCRIPTION_DOMAIN%.${CLOUDFLARE_ZONE_NAME}}
+    [[ -n "${public_prefix}" && "${public_prefix}" != *.* ]] \
+        || die "Worker 公开订阅域名必须是 Zone 下一级子域名"
+    reality_worker_validate_access
+    reality_worker_build
+    reality_worker_upload
+    reality_cloudflare_api_request POST \
+        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${CLOUDFLARE_WORKER_NAME}")/subdomain" \
+        "$(jq -cn '{enabled:false,previews_enabled:false}')" >/dev/null
+    reality_worker_attach_domain
+    reality_worker_validate_public
+}
+
+reality_worker_delete_resources() {
+    local domain_id=${1-${CLOUDFLARE_WORKER_DOMAIN_ID:-}} \
+        worker_name=${2-${CLOUDFLARE_WORKER_NAME:-}} \
+        account_id=${3-${CLOUDFLARE_ACCOUNT_ID:-}} \
+        domains="" scripts="" extra_domains
+    if [[ -n "${worker_name}" && -n "${account_id}" ]]; then
+        domains=$(reality_cloudflare_api_request GET \
+            "/accounts/${account_id}/workers/domains") || return 1
+        extra_domains=$(jq --arg name "${worker_name}" --arg id "${domain_id}" \
+            '[.[] | select(.service == $name and .id != $id)] | length' <<<"${domains}")
+        ((extra_domains == 0)) \
+            || die "Worker ${worker_name} 还绑定了非本安装管理的 Custom Domain，拒绝删除"
+    fi
+    if [[ -n "${domain_id}" && -n "${domains}" ]]; then
+        if jq -e --arg id "${domain_id}" \
+            'any(.[]; .id == $id)' <<<"${domains}" >/dev/null; then
+            jq -e --arg id "${domain_id}" --arg name "${worker_name}" \
+                'any(.[]; .id == $id and .service == $name)' <<<"${domains}" >/dev/null \
+                || die "Worker Custom Domain 所有权与状态不一致，拒绝删除"
+            reality_cloudflare_api_request DELETE \
+                "/accounts/${account_id}/workers/domains/${domain_id}" >/dev/null \
+                || return 1
+        fi
+    fi
+    if [[ -n "${worker_name}" && -n "${account_id}" ]]; then
+        scripts=$(reality_cloudflare_api_request GET \
+            "/accounts/${account_id}/workers/scripts") || return 1
+        if jq -e --arg name "${worker_name}" \
+            'any(.[]; .id == $name)' <<<"${scripts}" >/dev/null; then
+            reality_cloudflare_api_request DELETE \
+                "/accounts/${account_id}/workers/scripts/$(uri_encode "${worker_name}")" >/dev/null \
+                || return 1
+        fi
+    fi
+}
+
+reality_worker_rollback_created() {
+    local failed=0
+    if [[ "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}" != "" ]]; then
+        reality_cloudflare_api_request DELETE \
+            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}" \
+            >/dev/null || failed=1
+    fi
+    if [[ -s "${RUNTIME_TMP}/reality-worker-deployment-prev.json" ]] \
+        && [[ -n "${CLOUDFLARE_WORKER_NAME:-}" && "${CLOUDFLARE_WORKER_CREATED:-0}" != "1" ]]; then
+        reality_worker_restore_deployment "${CLOUDFLARE_WORKER_NAME}" \
+            "${RUNTIME_TMP}/reality-worker-deployment-prev.json" || failed=1
+    fi
+    if [[ "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ]]; then
+        reality_worker_delete_resources \
+            "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-${CLOUDFLARE_WORKER_DOMAIN_ID:-}}" \
+            "${CLOUDFLARE_WORKER_NAME:-}" "${CLOUDFLARE_ACCOUNT_ID:-}" || failed=1
+    fi
+    rm -f -- "${RUNTIME_TMP}/reality-worker-deployment-prev.json"
+    CLOUDFLARE_WORKER_CREATED=0
+    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=""
+    ((failed == 0))
+}
+
+reality_worker_validate_public() {
+    local attempt token="" status decoded clash_response accounts uuid first_aggregate
+    worker_subscription_enabled || return 0
+    [[ -n "${SUBSCRIPTION_DOMAIN:-}" ]] || die "缺少 Worker 公开订阅域名"
+    for attempt in $(seq 1 "${CLOUDFLARE_WORKER_READY_ATTEMPTS}"); do
+        status=$(curl -sS --noproxy '*' --connect-timeout 5 --max-time 20 \
+            -o /dev/null -w '%{http_code}' \
+            "https://${SUBSCRIPTION_DOMAIN}/subscribe?token=invalid") || status="000"
+        [[ "${status}" != "403" ]] || break
+        sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
+    done
+    [[ "${status}" == "403" ]] \
+        || die "Worker 未按预期拒绝无效 Token（HTTP ${status}）；请检查 Cloudflare Worker、Custom Domain 与 TLS 状态"
+    if quota_enabled; then
+        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
+        token=$(jq -r 'first(.[].token) // empty' <<<"${accounts}")
+        uuid=$(jq -r 'first(.[].uuid) // empty' <<<"${accounts}")
+        [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过 Worker 订阅内容验收"; return 0; }
+    else
+        token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+        uuid=${VLESS_UUID}
+    fi
+    decoded=""
+    for attempt in $(seq 1 "${CLOUDFLARE_WORKER_READY_ATTEMPTS}"); do
+        decoded=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
+            --connect-timeout 5 --max-time 20 \
+            --get --data-urlencode 'token@-' \
+            "https://${SUBSCRIPTION_DOMAIN}/subscribe" 2>/dev/null \
+            | openssl base64 -d -A 2>/dev/null || true)
+        if [[ "${decoded}" == *"security=reality"* && "${decoded}" == *"vless://${uuid}@"* ]]; then
+            break
+        fi
+        sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
+    done
+    [[ "${decoded}" == *"security=reality"* ]] \
+        || die "Worker 聚合订阅未返回 Reality 节点；请检查私有节点源与 Worker 日志"
+    [[ "${decoded}" == *"vless://${uuid}@"* ]] \
+        || die "Worker 聚合订阅缺少本机 Reality 节点；请检查私有节点源与配额用户"
+    clash_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
+        --connect-timeout 5 --max-time 20 --get --data-urlencode 'token@-' \
+        --data-urlencode 'flag=clash' \
+        "https://${SUBSCRIPTION_DOMAIN}/subscribe") \
+        || die "Worker Mihomo 订阅验收失败"
+    grep -Fq 'reality-opts:' <<<"${clash_response}" || die "Worker Mihomo 订阅缺少 Reality 节点"
+    grep -Fq -- "${NODE_NAME}" <<<"${clash_response}" \
+        || die "Worker Mihomo 订阅缺少本机节点名称"
+    if jq -e '.nodes | length > 0' \
+        <<<"${WORKER_AGGREGATION_CONFIG:-{\"nodes\":[]}}" >/dev/null; then
+        first_aggregate=$(jq -r '.nodes[0].name' \
+            <<<"${WORKER_AGGREGATION_CONFIG}" 2>/dev/null || true)
+        [[ -z "${first_aggregate}" ]] \
+            || grep -Fq -- "${first_aggregate}" <<<"${clash_response}" \
+            || die "Worker Mihomo 订阅缺少聚合节点：${first_aggregate}"
+    fi
+    success "Cloudflare Worker 订阅聚合公网验收通过"
 }
 
 deploy_subscription_service() {
@@ -1596,6 +2158,10 @@ remove_subscription_service_runtime() {
 deploy_subscription_output() {
     case "${SUBSCRIPTION_MODE:-}" in
     deploy) deploy_subscription_service ;;
+    worker)
+        deploy_subscription_service
+        reality_worker_deploy
+        ;;
     link) remove_subscription_service_runtime ;;
     *) die "无法部署未知订阅输出方式：${SUBSCRIPTION_MODE:-空}" ;;
     esac
@@ -1681,6 +2247,10 @@ snapshot_subscription_update() {
 rollback_subscription_update() {
     local candidate rollback_status=0
     warn "本机配置更新失败，正在恢复服务端配置、订阅文件、端口模式和 UFW"
+    if declare -F reality_worker_rollback_created >/dev/null 2>&1; then
+        (reality_worker_rollback_created) \
+            || warn "回滚本次新建的 Worker 资源失败，请手工检查 Cloudflare"
+    fi
     restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" \
@@ -1762,8 +2332,10 @@ update_subscription() {
     local prompt_options=${1:-0}
     local requested_port_mode=${SUB_PORT_MODE:-}
     local requested_download_name=${SUB_DOWNLOAD_NAME:-} stored_port_mode
-    local prompt_download_name=0 previous_subscription_mode previous_subscription_domain
+    local prompt_download_name=0 previous_subscription_mode previous_origin_domain
     local previous_cloudflare_zone_id previous_cloudflare_ruleset_id previous_cloudflare_cert_id
+    local previous_worker_name previous_worker_domain_id previous_account_id
+    local current_origin_domain PREVIOUS_SUBSCRIPTION_MODE
     require_root
     begin_quota_maintenance
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
@@ -1774,10 +2346,14 @@ update_subscription() {
     )
     collect_installed_state
     previous_subscription_mode=${SUBSCRIPTION_MODE}
-    previous_subscription_domain=${SUBSCRIPTION_DOMAIN:-}
+    PREVIOUS_SUBSCRIPTION_MODE=${previous_subscription_mode}
+    previous_origin_domain=$(subscription_origin_domain)
     previous_cloudflare_zone_id=${CLOUDFLARE_ZONE_ID:-}
     previous_cloudflare_ruleset_id=${CLOUDFLARE_STRICT_RULESET_ID:-}
     previous_cloudflare_cert_id=${CLOUDFLARE_ORIGIN_CERT_ID:-}
+    previous_worker_name=${CLOUDFLARE_WORKER_NAME:-}
+    previous_worker_domain_id=${CLOUDFLARE_WORKER_DOMAIN_ID:-}
+    previous_account_id=${CLOUDFLARE_ACCOUNT_ID:-}
     refresh_saved_daily_reboot_schedule
     if [[ "${prompt_options}" == "1" ]]; then
         SUB_PORT_MODE=${requested_port_mode}
@@ -1818,25 +2394,47 @@ update_subscription() {
     save_state
     configure_dynamic_port_rotation
     install_quota_timer
+    # The new deployment is live and persisted: cleanup failures below must not
+    # roll the machine back to a state whose cloud resources are already gone.
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    if [[ "${previous_subscription_mode}" == "deploy" \
-        && ( "${SUBSCRIPTION_MODE}" != "deploy" \
-            || "${SUBSCRIPTION_DOMAIN:-}" != "${previous_subscription_domain}" ) ]]; then
-        if [[ "${SUBSCRIPTION_MODE}" == "deploy" ]]; then
+    current_origin_domain=$(subscription_origin_domain)
+    if [[ "${previous_subscription_mode}" != "link" \
+        && ( "${SUBSCRIPTION_MODE}" == "link" \
+            || "${current_origin_domain}" != "${previous_origin_domain}" ) ]]; then
+        if [[ "${SUBSCRIPTION_MODE}" != "link" ]]; then
             reality_cloudflare_purge_managed_resources \
-                "${previous_subscription_domain}" "${previous_cloudflare_zone_id}" \
+                "${previous_origin_domain}" "${previous_cloudflare_zone_id}" \
                 "${previous_cloudflare_ruleset_id}" ""
+            info "已清理上一订阅回源域名的 Cloudflare Strict TLS 规则与 DNS：${previous_origin_domain}"
         else
             reality_cloudflare_purge_managed_resources \
-                "${previous_subscription_domain}" "${previous_cloudflare_zone_id}" \
+                "${previous_origin_domain}" "${previous_cloudflare_zone_id}" \
                 "${previous_cloudflare_ruleset_id}" "${previous_cloudflare_cert_id}"
-            CLOUDFLARE_ZONE_ID=""
-            CLOUDFLARE_ZONE_NAME=""
-            CLOUDFLARE_ORIGIN_CERT_ID=""
-            CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=""
-            CLOUDFLARE_STRICT_RULESET_ID=""
-            save_state
         fi
+    fi
+    if [[ "${previous_subscription_mode}" == "worker" ]]; then
+        if [[ "${SUBSCRIPTION_MODE}" != "worker" \
+            || "${CLOUDFLARE_WORKER_NAME:-}" != "${previous_worker_name}" ]]; then
+            reality_worker_delete_resources "${previous_worker_domain_id}" \
+                "${previous_worker_name}" "${previous_account_id}"
+        elif [[ "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" != "${previous_worker_domain_id}" ]]; then
+            reality_worker_detach_domain "${previous_account_id}" \
+                "${previous_worker_domain_id}" "${previous_worker_name}"
+        fi
+    fi
+    if [[ "${SUBSCRIPTION_MODE}" == "link" ]]; then
+        CLOUDFLARE_ZONE_ID=""
+        CLOUDFLARE_ZONE_NAME=""
+        CLOUDFLARE_ACCOUNT_ID=""
+        CLOUDFLARE_ORIGIN_CERT_ID=""
+        CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=""
+        CLOUDFLARE_STRICT_RULESET_ID=""
+        SUB_SOURCE_DOMAIN=""
+        CLOUDFLARE_WORKER_NAME=""
+        CLOUDFLARE_WORKER_DOMAIN_ID=""
+        WORKER_SOURCE_SECRET=""
+        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
+        save_state
     fi
     reality_cloudflare_clear_api_token
     end_quota_maintenance
@@ -1980,10 +2578,30 @@ show_node() {
 }
 
 show_subscription() {
-    local user token
+    local user token aggregation_count=0 empty_aggregation='{"nodes":[],"fallbackCdnNodes":[]}'
     collect_installed_state
     show_node
     printf 'Clash 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
+    if worker_subscription_enabled; then
+        [[ -n "${ALLOWED_TOKENS:-}" ]] || die "Worker 聚合订阅 Token 字典缺失"
+        aggregation_count=$(jq '.nodes | length' \
+            <<<"${WORKER_AGGREGATION_CONFIG:-${empty_aggregation}}")
+        printf '订阅方式: Cloudflare Worker 聚合（Nginx 私有源 :%s 仅供回源）\n' \
+            "${SUBSCRIPTION_HTTPS_PORT}"
+        printf 'Worker: %s\n私有节点源: https://%s:%s/subscribe（请勿直接分发）\n' \
+            "${CLOUDFLARE_WORKER_NAME}" "${SUB_SOURCE_DOMAIN}" \
+            "${SUBSCRIPTION_HTTPS_PORT}"
+        printf '聚合配置额外节点: %s\n' "${aggregation_count}"
+        printf '\n订阅地址:\n'
+        while IFS=$'\t' read -r user token; do
+            printf '通用订阅 (%s): https://%s/subscribe?token=%s\n' \
+                "${user}" "${SUBSCRIPTION_DOMAIN}" "${token}"
+            printf 'Mihomo (%s): https://%s/subscribe?token=%s&flag=clash\n' \
+                "${user}" "${SUBSCRIPTION_DOMAIN}" "${token}"
+        done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"${ALLOWED_TOKENS}")
+        printf '\n'
+        return 0
+    fi
     if subscription_enabled; then
         [[ -n "${ALLOWED_TOKENS:-}" ]] || die "自托管订阅 Token 字典缺失"
         printf '订阅方式: Cloudflare Universal SSL → Origin CA :%s\n' \
@@ -2020,8 +2638,15 @@ show_status() {
         | awk 'NR {found=1} END {exit !found}' \
         && printf 'listening\n' || printf 'not listening\n'
     if subscription_enabled; then
-        printf '自托管订阅: https://%s:%s/subscribe\n' \
-            "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}"
+        if worker_subscription_enabled; then
+            printf '订阅聚合: https://%s/subscribe（Worker %s）\n' \
+                "${SUBSCRIPTION_DOMAIN}" "${CLOUDFLARE_WORKER_NAME}"
+            printf '私有节点源: https://%s:%s/subscribe（仅供 Worker 回源）\n' \
+                "${SUB_SOURCE_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}"
+        else
+            printf '自托管订阅: https://%s:%s/subscribe\n' \
+                "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}"
+        fi
         printf 'Cloudflare Origin CA 到期: %s\n' \
             "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON}"
         printf 'Nginx: '
@@ -2169,11 +2794,19 @@ uninstall_all() {
     fi
     UNINSTALL_PURGE_CLOUD=0
     [[ "${mode}" == "--purge-cloud" ]] && UNINSTALL_PURGE_CLOUD=1
-    if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 && "${SUBSCRIPTION_MODE:-}" == "deploy" ]]; then
+    if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 && "${SUBSCRIPTION_MODE:-}" != "link" ]]; then
         [[ -n "${CLOUDFLARE_ZONE_ID:-}" && -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] \
             || die "状态缺少 Cloudflare Zone 或 Origin CA 证书 ID；本机内容未删除"
+        if worker_subscription_enabled; then
+            [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" && -n "${CLOUDFLARE_WORKER_NAME:-}" ]] \
+                || die "状态缺少 Cloudflare Account ID 或 Worker 名称；本机内容未删除"
+            reality_cloudflare_collect_api_token
+            reality_worker_delete_resources "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" \
+                "${CLOUDFLARE_WORKER_NAME}" "${CLOUDFLARE_ACCOUNT_ID}" \
+                || die "Worker ${CLOUDFLARE_WORKER_NAME} 删除失败；本机内容未删除"
+        fi
         reality_cloudflare_purge_managed_resources \
-            "${SUBSCRIPTION_DOMAIN}" "${CLOUDFLARE_ZONE_ID}" \
+            "$(subscription_origin_domain)" "${CLOUDFLARE_ZONE_ID}" \
             "${CLOUDFLARE_STRICT_RULESET_ID:-}" "${CLOUDFLARE_ORIGIN_CERT_ID}"
     fi
     stop_protocol_services
@@ -2213,8 +2846,14 @@ rollback_fresh_install() {
     restore_preinstall_crontab
     if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" \
         && -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
+        if worker_subscription_enabled; then
+            (reality_worker_delete_resources \
+                "${CLOUDFLARE_WORKER_DOMAIN_ID:-${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}}" \
+                "${CLOUDFLARE_WORKER_NAME:-}" "${CLOUDFLARE_ACCOUNT_ID:-}") \
+                || warn "首次安装创建的 Worker 资源未能自动清理"
+        fi
         (reality_cloudflare_purge_managed_resources \
-            "${SUBSCRIPTION_DOMAIN}" "${CLOUDFLARE_ZONE_ID}" \
+            "$(subscription_origin_domain)" "${CLOUDFLARE_ZONE_ID}" \
             "${CLOUDFLARE_STRICT_RULESET_ID:-}" "${CLOUDFLARE_ORIGIN_CERT_ID:-}") \
             || warn "首次安装创建的 Cloudflare 资源未能自动清理"
     fi

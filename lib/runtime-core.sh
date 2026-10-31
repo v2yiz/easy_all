@@ -24,6 +24,8 @@ source "${RUNTIME_LIB_DIR}/xray-core.sh"
 source "${RUNTIME_LIB_DIR}/scheduled-maintenance.sh"
 # shellcheck source=lib/subscription-auth.sh
 source "${RUNTIME_LIB_DIR}/subscription-auth.sh"
+# shellcheck source=lib/worker-config.sh
+source "${RUNTIME_LIB_DIR}/worker-config.sh"
 # shellcheck source=lib/tcp-tuning.sh
 source "${RUNTIME_LIB_DIR}/tcp-tuning.sh"
 

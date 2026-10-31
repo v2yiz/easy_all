@@ -242,8 +242,11 @@ guide=$(show_install_guide 2>&1)
 [[ "${guide}" == *"[1 默认] 直连 Reality"* \
     && "${guide}" == *"适用场景：直连效果良好，且 VPS 公网 IP 未被封锁"* \
     && "${guide}" == *"适用场景：直连效果不佳、VPS 公网 IP 已被封，或明确追求 Cloudflare CDN 纯 XHTTP"* \
-    && "${guide}" == *"只有当前服务器时推荐部署订阅服务"* \
-    && "${guide}" == *"多节点聚合或已有订阅服务器时推荐仅输出节点信息"* \
+    && "${guide}" == *"选择订阅输出（默认不部署订阅）"* \
+    && "${guide}" == *"本机订阅"* \
+    && "${guide}" == *"Worker 聚合"* \
+    && "${guide}" == *"只有当前服务器时推荐本机订阅"* \
+    && "${guide}" == *"多台直连节点需要统一下发时选择 Worker 订阅聚合"* \
     && "${guide}" == *"[2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up"* \
     && "${guide}" == *"全网综合优选"* \
     && "${guide}" == *"Worker 为唯一公开聚合入口"* \

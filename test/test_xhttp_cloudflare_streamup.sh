@@ -349,7 +349,7 @@ update_nodes_line=$(grep -n 'choose_worker_aggregation_config' <<<"${update_inpu
 ((install_token_line < install_nodes_line && update_token_line < update_nodes_line)) \
     || fail "Worker nodes prompt must run after user Token configuration"
 assert_contains "Worker nodes prompt first asks whether aggregation is needed" \
-    "$(<"${PROFILE}")" '是否需要进行订阅聚合？'
+    "$(<"${ROOT_DIR}/lib/worker-config.sh")" '是否需要进行订阅聚合？'
 (
     unset CLOUDFLARE_WORKER_NAME
     choose_cloudflare_worker_name </dev/null

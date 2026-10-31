@@ -57,7 +57,9 @@ source_script_copy() {
     for template in "${ROOT_DIR}"/templates/*.yaml; do
         install -m 0644 "${template}" "${TMP_DIR}/templates/$(basename -- "${template}")"
     done
-    for module in log.sh runtime-core.sh quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh reality-subscription.js tcp-tuning.sh; do
+    ln -s "${ROOT_DIR}/worker-src" "${TMP_DIR}/worker-src"
+    ln -s "${ROOT_DIR}/scripts" "${TMP_DIR}/scripts"
+    for module in log.sh runtime-core.sh quota.sh platform.sh profile-common.sh network.sh mihomo-template.sh firewall.sh xray-core.sh scheduled-maintenance.sh subscription-auth.sh worker-config.sh reality-subscription.js tcp-tuning.sh; do
         install -m 0644 "${ROOT_DIR}/lib/${module}" "${TMP_DIR}/lib/${module}"
     done
     sed \
@@ -82,6 +84,7 @@ source_script_copy() {
     EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/cmd/fail2ban-ufw-cidr.sh"
     EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban-state"
     MIHOMO_TEMPLATE_SNAPSHOT_FILE_OVERRIDE="${TMP_DIR}/state/mihomo-template.yaml"
+    CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE="${TMP_DIR}/worker.js"
     # shellcheck source=/dev/null
     source "${SCRIPT_COPY}"
     MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/templates/mihomo-classic.yaml"
@@ -257,19 +260,24 @@ test_validators_and_modes() {
     assert_equal "Reality defaults to dynamic subscriptions" \
         "dynamic" "${DEFAULT_REALITY_PORT_MODE}"
     assert_equal "Reality state schema records canonical subscription modes" \
-        "7" "${STATE_SCHEMA_VERSION}"
+        "8" "${STATE_SCHEMA_VERSION}"
     assert_equal "token dictionary is normalized" \
         '{"owner":"test-token"}' \
         "$(normalize_allowed_tokens '{" owner ":" test-token "}')"
     assert_failure "token names must remain unique after case normalization" \
         normalize_allowed_tokens \
         '{"Owner":"owner-token-123","owner":"other-token-123"}'
-    SUBSCRIPTION_MODE="1"
+    SUBSCRIPTION_MODE="deploy"
     choose_subscription_mode
-    assert_equal "choice 1 deploys the subscription service" "deploy" "${SUBSCRIPTION_MODE}"
-    SUBSCRIPTION_MODE="2"
+    assert_equal "deploy keeps the subscription service" "deploy" "${SUBSCRIPTION_MODE}"
+    SUBSCRIPTION_MODE="link"
     choose_subscription_mode
-    assert_equal "choice 2 selects links only" "link" "${SUBSCRIPTION_MODE}"
+    assert_equal "link keeps links only" "link" "${SUBSCRIPTION_MODE}"
+    SUBSCRIPTION_MODE="worker"
+    choose_subscription_mode
+    assert_equal "worker keeps the aggregation mode" "worker" "${SUBSCRIPTION_MODE}"
+    assert_failure "single-digit subscription modes are rejected" \
+        normalize_subscription_mode 1
 
     SUBSCRIPTION_MODE="link"
     PROMPT_SUBSCRIPTION_MODE=1
@@ -413,6 +421,17 @@ test_subscription_stage_dispatch() {
     assert_equal "subscription deployment dispatches exactly one selected branch" \
         $'deploy\nlink' "${calls}"
 
+    calls=$(
+        deploy_subscription_service() { printf 'deploy\n'; }
+        reality_worker_deploy() { printf 'worker:%s\n' "${CLOUDFLARE_WORKER_NAME:-}"; }
+        remove_subscription_service_runtime() { printf 'link\n'; }
+        CLOUDFLARE_WORKER_NAME="easyall-reality"
+        SUBSCRIPTION_MODE="worker"
+        deploy_subscription_output
+    )
+    assert_equal "Worker aggregation deploys the private source before the Worker" \
+        $'deploy\nworker:easyall-reality' "${calls}"
+
     input_calls=$(
         collect_subscription_domain() { printf 'domain\n'; }
         choose_subscription_download_name() { printf 'download:%s\n' "$1"; }
@@ -432,6 +451,118 @@ test_subscription_stage_dispatch() {
     )
     assert_equal "interactive install collects all self-hosted subscription inputs" \
         $'domain\ndownload:1\nquota' "${input_calls}"
+}
+
+test_worker_subscription_mode_and_state() {
+    local state_content
+    assert_equal "worker alias normalizes for scripts" "worker" \
+        "$(normalize_subscription_mode worker)"
+    assert_equal "Worker mode still deploys the private node source" "enabled" \
+        "$(SUBSCRIPTION_MODE=worker; subscription_enabled && printf enabled)"
+    assert_equal "Worker mode uses the private source domain as the origin" \
+        "source.example.com" \
+        "$(SUBSCRIPTION_MODE=worker; SUBSCRIPTION_DOMAIN=sub.example.com; \
+            SUB_SOURCE_DOMAIN=source.example.com; subscription_origin_domain)"
+    assert_equal "local mode keeps the public subscription domain as the origin" \
+        "sub.example.com" \
+        "$(SUBSCRIPTION_MODE=deploy; SUBSCRIPTION_DOMAIN=sub.example.com; \
+            SUB_SOURCE_DOMAIN=; subscription_origin_domain)"
+    assert_failure "Worker source domain must differ from the public domain" \
+        env SUBSCRIPTION_MODE=worker SUBSCRIPTION_DOMAIN=sub.example.com \
+        SUB_SOURCE_DOMAIN=sub.example.com bash -c \
+        'source "$1"; collect_worker_source_domain' _ "${SCRIPT_COPY}"
+    assert_failure "Worker source domain must differ from the direct node host" \
+        env SUBSCRIPTION_MODE=worker SUBSCRIPTION_DOMAIN=sub.example.com \
+        SUB_SOURCE_DOMAIN=203.0.113.10 NODE_HOST=203.0.113.10 bash -c \
+        'source "$1"; NODE_HOST=203.0.113.10; collect_worker_source_domain' \
+        _ "${SCRIPT_COPY}"
+    NODE_NAME="MY_REALITY"
+    WORKER_AGGREGATION_CONFIG='{"nodes":[{"name":"MY_REALITY"}],"fallbackCdnNodes":[]}'
+    assert_failure "aggregation nodes must not reuse the local node name" \
+        validate_worker_aggregation_node_names
+    WORKER_AGGREGATION_CONFIG='{"nodes":[{"name":"HK_DIRECT"}],"fallbackCdnNodes":[]}'
+    assert_success "aggregation nodes keep distinct names" \
+        validate_worker_aggregation_node_names
+
+    install -d -m 0700 "${STATE_DIR}"
+    set_fixture
+    SUBSCRIPTION_MODE="worker"
+    SUB_SOURCE_DOMAIN="source.example.com"
+    CLOUDFLARE_ACCOUNT_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    CLOUDFLARE_WORKER_NAME="easyall-reality"
+    CLOUDFLARE_WORKER_DOMAIN_ID="test-worker-domain-id"
+    WORKER_SOURCE_SECRET="test-src-oyvbwp-wahjcb-6601"
+    WORKER_AGGREGATION_CONFIG='{"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"HK_DIRECT","host":"hk.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"www.example.com","pbk":"hk-public-key","sid":"0123456789abcdef","fp":"chrome"}],"fallbackCdnNodes":[],"allowedTokens":{"owner":"overridden-token"}}'
+    save_state
+    state_content=$(<"${STATE_FILE}")
+    assert_contains "Worker state records the private source domain" \
+        "SUB_SOURCE_DOMAIN=source.example.com" "${state_content}"
+    assert_contains "Worker state records the Worker identity" \
+        "CLOUDFLARE_WORKER_NAME=easyall-reality" "${state_content}"
+    assert_contains "Worker state records the Account ID" \
+        "CLOUDFLARE_ACCOUNT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "${state_content}"
+
+    SUBSCRIPTION_MODE=""
+    SUB_SOURCE_DOMAIN=""
+    CLOUDFLARE_ACCOUNT_ID=""
+    CLOUDFLARE_WORKER_NAME=""
+    CLOUDFLARE_WORKER_DOMAIN_ID=""
+    WORKER_SOURCE_SECRET=""
+    WORKER_AGGREGATION_CONFIG=""
+    load_state
+    assert_equal "Worker state reloads the canonical mode" "worker" \
+        "${SUBSCRIPTION_MODE}"
+    assert_equal "Worker state reloads the private source domain" \
+        "source.example.com" "${SUB_SOURCE_DOMAIN}"
+    assert_equal "Worker state reloads the Worker custom domain" \
+        "test-worker-domain-id" "${CLOUDFLARE_WORKER_DOMAIN_ID}"
+    assert_equal "Worker state rewrites the origin for Strict TLS" \
+        "source.example.com" \
+        "$(subscription_origin_domain)"
+    assert_equal "Worker aggregation input keeps its extra nodes" "1" \
+        "$(jq '.nodes | length' <<<"${WORKER_AGGREGATION_CONFIG}")"
+    assert_equal "Worker aggregation input drops embedded Tokens on reload" "false" \
+        "$(jq 'has("allowedTokens")' <<<"${WORKER_AGGREGATION_CONFIG}")"
+
+    # link mode must not keep Worker identity in a reloaded state
+    SUBSCRIPTION_MODE="link"
+    SUBSCRIPTION_DOMAIN=""
+    save_state
+    load_state
+    assert_equal "link state clears the Worker name" "" "${CLOUDFLARE_WORKER_NAME}"
+    assert_equal "link state clears the private source domain" "" "${SUB_SOURCE_DOMAIN}"
+}
+
+test_worker_aggregation_build_config() {
+    local build_file="${TMP_DIR}/worker.js"
+    command -v node >/dev/null 2>&1 || return 0
+    set_fixture
+    SUBSCRIPTION_MODE="worker"
+    SUB_SOURCE_DOMAIN="source.example.com"
+    SUB_DOWNLOAD_NAME="MY_SUB"
+    WORKER_SOURCE_SECRET="test-src-oyvbwp-wahjcb-6601"
+    WORKER_AGGREGATION_CONFIG='{"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"HK_DIRECT","host":"hk.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"www.example.com","pbk":"hk-public-key","sid":"0123456789abcdef","fp":"chrome","ipVersion":"ipv4"}],"fallbackCdnNodes":[]}'
+    MIHOMO_TEMPLATE_PREPARED=0
+    MIHOMO_TEMPLATE_FILE=""
+    MIHOMO_TEMPLATE_TRUSTED=0
+    MIHOMO_TEMPLATE_SOURCE="${ROOT_DIR}/templates/mihomo-classic.yaml"
+    reality_worker_build >/dev/null
+    [[ -s "${build_file}" ]] || fail_test "Worker aggregation build produced no artifact"
+    assert_contains "Worker source URL points at the private origin on 8443" \
+        '"vpsSubUrl":"https://'"${SUB_SOURCE_DOMAIN}"':8443/subscribe"' "$(<"${build_file}")"
+    assert_contains "Worker delegates Token validation to Nginx" \
+        '"delegateTokenValidation":true' "$(<"${build_file}")"
+    assert_contains "Worker requires the private dynamic source" \
+        '"requireDynamicCdn":true' "$(<"${build_file}")"
+    assert_contains "Worker forwards the public Token to the private source" \
+        '"vpsCdnUseRequestToken":true' "$(<"${build_file}")"
+    assert_contains "Worker config carries the source secret" \
+        '"sourceSecret":"test-src-oyvbwp-wahjcb-6601"' "$(<"${build_file}")"
+    assert_contains "Worker config keeps aggregation nodes" \
+        '"name":"HK_DIRECT"' "$(<"${build_file}")"
+    assert_not_contains "Worker config never embeds public Tokens" \
+        'test-token' "$(<"${build_file}")"
+    rm -f -- "${build_file}"
 }
 
 test_mihomo_template() {
@@ -845,12 +976,16 @@ test_reality_mlkem_delivery() {
     output=$(build_mihomo_node 443)
     assert_contains "Reality nodes advertise the ML-KEM key share against Xray 26.9.8+" \
         "support-x25519mlkem768: true" "${output}"
+    assert_not_contains "newer cores omit the Worker mlkem hint" \
+        "mlkem=0" "$(build_node_link 443)"
     xray_installed_version() { printf 'v26.9.8\n'; }
     assert_contains "the 26.9.8 boundary already requires the ML-KEM key share" \
         "support-x25519mlkem768: true" "$(build_mihomo_node 443)"
     xray_installed_version() { printf 'v26.9.7\n'; }
     assert_not_contains "older cores keep the previous ClientHello" \
         "support-x25519mlkem768" "$(build_mihomo_node 443)"
+    assert_contains "older cores mark the link so the Worker omits the key share" \
+        "mlkem=0" "$(build_node_link 443)"
     xray_installed_version() { printf 'unknown\n'; }
     assert_not_contains "an unparsable core version stays conservative" \
         "support-x25519mlkem768" "$(build_mihomo_node 443 2>/dev/null)"
@@ -982,6 +1117,26 @@ test_nginx_and_firewall() {
         'Content-Disposition "attachment; filename=MY_SUB"' "${config}"
     assert_not_contains "Mihomo download does not append yaml to the filename" \
         'filename=MY_SUB.yaml' "${config}"
+
+    SUBSCRIPTION_MODE="worker"
+    SUB_SOURCE_DOMAIN="source.example.com"
+    WORKER_SOURCE_SECRET="test-src-oyvbwp-wahjcb-6601"
+    write_subscription_nginx_config
+    config=$(<"${NGINX_CONFIG}")
+    assert_contains "Worker aggregation serves the private source host" \
+        "server_name source.example.com;" "${config}"
+    assert_contains "Worker aggregation guards the source with its shared secret" \
+        'if ($http_x_easy_all_worker_source != "test-src-oyvbwp-wahjcb-6601") { return 404; }' \
+        "${config}"
+    assert_not_contains "Worker aggregation does not publish the Worker domain in Nginx" \
+        "server_name sub.example.com;" "${config}"
+    WORKER_SOURCE_SECRET=""
+    assert_failure "Worker aggregation refuses an unguarded private source" \
+        write_subscription_nginx_config
+    WORKER_SOURCE_SECRET="test-src-oyvbwp-wahjcb-6601"
+    SUBSCRIPTION_MODE="deploy"
+    SUB_SOURCE_DOMAIN=""
+    WORKER_SOURCE_SECRET=""
 
     ensure_ssh_boot_service() { return 0; }
     ensure_ssh_fail2ban() { printf 'fail2ban-sshd\n' >>"${ufw_log}"; }
@@ -1795,7 +1950,7 @@ test_state_and_xray() {
     TCP_ACCELERATION=bbrv3
     save_state
 
-    # Test state version 6 in-memory migration to version 7
+    # Test state version 6 in-memory migration to the current schema
     grep -vE '^(STATE_VERSION|GOOGLE_EGRESS_|TCP_ACCELERATION=)' "${STATE_FILE}" >"${STATE_FILE}.tmp"
     printf 'STATE_VERSION=6\n' >>"${STATE_FILE}.tmp"
     mv "${STATE_FILE}.tmp" "${STATE_FILE}"
@@ -1805,7 +1960,7 @@ test_state_and_xray() {
     assert_equal "version 6 state migrates Google egress resolved" "ipv4" "${GOOGLE_EGRESS_RESOLVED}"
     assert_equal "legacy Reality state defaults to BBRv3" bbrv3 "${TCP_ACCELERATION}"
     save_state
-    assert_contains "save_state upgrades version 6 to version 7" "STATE_VERSION=7" "$(<"${STATE_FILE}")"
+    assert_contains "save_state upgrades version 6 to the current schema" "STATE_VERSION=8" "$(<"${STATE_FILE}")"
 
     install -d -m 0755 "${XRAY_DIR}"
     cat >"${XRAY_BIN}" <<'EOF'
@@ -2193,6 +2348,8 @@ test_vps_ip_family_detection
 test_reality_ip_family_dns_policy
 test_reality_target_preflight
 test_subscription_stage_dispatch
+test_worker_subscription_mode_and_state
+test_worker_aggregation_build_config
 test_mihomo_template
 test_mihomo_template_snapshot
 test_subscription_generation

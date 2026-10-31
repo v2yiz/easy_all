@@ -1,10 +1,10 @@
 # 前置准备手册
 
 本手册覆盖 Reality 与 Cloudflare 两种模式所需的域名、账号、DNS 和 Token 准备。Reality 节点数据仍然直连，
-但选择“部署订阅”时，订阅服务会使用 Cloudflare Universal SSL 与 Origin CA。
+但选择“本机订阅”或“Worker 订阅聚合”时，订阅回源会使用 Cloudflare Universal SSL 与 Origin CA。
 
-Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality **只有选择部署订阅**时才阅读第 1、3.1、4 节。
-Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览器和账号侧操作；VPS 登录、安装、重启和
+Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality **只有选择订阅输出（本机订阅或 Worker 聚合）**
+时才阅读第 1、3.1、4 节。Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览器和账号侧操作；VPS 登录、安装、重启和
 客户端导入请回到 [README 的第一次安装路径](../README.md#第一次安装先看这里)。
 
 先区分三个容易混淆的概念：域名注册商是你购买/续费域名的地方；Cloudflare 是管理该域名 DNS 和代理的
@@ -24,7 +24,7 @@ VPS 费用另计。
 
 | 链路                     | 必须准备                                                                                                                                                                       | 不需要准备                                         | 继续阅读                                                                      |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------- |
-| 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；部署订阅时还需 Cloudflare Active Zone、一级订阅子域名和 API Token                       | Globalping Token、gRPC 设置                        | 不部署订阅：直接看 README；部署订阅：第 1、3.1、4 节及 README 的 Reality 章节 |
+| 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；本机订阅还需 Cloudflare Active Zone、一个一级子域和 API Token；Worker 聚合还需同 Zone 第二个一级子域、具备 Workers Scripts Write 的 API Token | Globalping Token、gRPC 设置                        | 仅节点：直接看 README；本机订阅或 Worker 聚合：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 
 只支持 IPv4。
@@ -32,7 +32,8 @@ VPS 费用另计。
 各链路建议使用的域名如下：
 
 ```text
-Reality:    node.example.com（可选）；sub.example.com（仅自托管订阅需要）
+Reality:    node.example.com（可选）；sub.example.com（本机订阅需要）；
+            sub.example.com + source.example.com（Worker 聚合需要，公开入口与私有源各一个）
 Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 Worker）
 ```
 
@@ -145,10 +146,19 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 
 ## 3. 域名准备：Reality 订阅与 Cloudflare XHTTP
 
-### 3.1 Reality：只在部署订阅时阅读
+### 3.1 Reality：只在选择订阅输出时阅读
 
-如果 Reality 安装时选择“部署订阅”，准备一个位于 **Active** Cloudflare Zone 下的一级子域名，例如
-`sub.example.com`。不要提前创建该名称的 DNS 记录；安装器会创建橙云/Proxied 记录并配置证书。
+Reality 安装时先选择订阅输出，默认「1. 仅节点」不需要域名和 API Token；需要订阅时准备：
+
+| 选项 | 需要准备的 Cloudflare 资源 |
+| --- | --- |
+| 1. 仅节点（默认） | 无；只输出 VLESS 链接和 Mihomo 节点 |
+| 2. 本机订阅 | 一个 **Active** Zone 下的一级子域名（如 `sub.example.com`）；不要提前创建 DNS 记录 |
+| 3. Worker 订阅聚合 | 同 Zone 两个一级子域名：公开订阅域名（如 `sub.example.com`，绑定 Worker）和私有节点源域名（如 `source.example.com`，代理回本机 `8443`）；两者都不能与本机节点域名相同，也不要提前创建 DNS 记录 |
+
+本机订阅由安装器创建橙云/Proxied 记录并签发 Origin CA。Worker 聚合只在其公开订阅域名上提供
+客户端地址；私有节点源域名仅允许 Cloudflare 回源，并额外要求 `X-Easy-All-Worker-Source` 密钥，
+不能公开分发。
 
 Reality 的节点连接域名（例如 `node.example.com`）如有使用，必须保持灰云/DNS only 以便客户端直连 VPS；
 它必须只发布指向 VPS 的 A 记录，不能发布 AAAA，也不能与橙云订阅域名相同。Reality 不需要
@@ -182,8 +192,9 @@ Account Resources → Include → Specific account → 你的 Cloudflare 账号
 Include → Specific zone → example.com
 ```
 
-XHTTP 模式添加以下七项权限；Reality 仅部署订阅时只需其中 `Zone / Zone / Read`、
-`Zone / DNS / Edit`、`Zone / Config Rules / Edit` 和 `Zone / SSL and Certificates / Edit`：
+XHTTP 模式添加以下七项权限；Reality 本机订阅只需其中 `Zone / Zone / Read`、
+`Zone / DNS / Edit`、`Zone / Config Rules / Edit` 和 `Zone / SSL and Certificates / Edit`；
+Reality 选择 Worker 订阅聚合时还要加上 `Account / Workers Scripts / Edit`：
 
 | 权限                                   | 用途                            |
 | -------------------------------------- | ------------------------------- |
@@ -202,8 +213,8 @@ Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需
 使用同一枚 Token，但 `Workers Scripts Write` 必须限制到目标账号，六项 Zone 权限必须限制到目标 Zone；
 请勿选择所有账号、所有 Zone 或添加其他权限。原来的纯 Zone Token 不足以部署 Worker。
 
-通常 `easy_all apply` 不需要 Cloudflare Token；`apply-cloud`、证书轮换、Reality 自托管订阅的云端同步，
-以及 `uninstall --purge-cloud` 等操作可能会要求它。Token 遗失时可在 Cloudflare 新建一枚相同最小权限的
+通常 `easy_all apply` 不需要 Cloudflare Token；`apply-cloud`、证书轮换、Reality 订阅（含 Worker 聚合）
+的云端同步，以及 `uninstall --purge-cloud` 等操作可能会要求它。Token 遗失时可在 Cloudflare 新建一枚相同最小权限的
 Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
 
 ## 5. 安装器会自动完成的事项

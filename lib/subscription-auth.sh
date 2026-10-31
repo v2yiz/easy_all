@@ -4,37 +4,74 @@
 
 normalize_subscription_mode() {
     case "$1" in
-    1 | deploy) printf 'deploy\n' ;;
-    2 | link) printf 'link\n' ;;
+    deploy | local) printf 'deploy\n' ;;
+    link | none) printf 'link\n' ;;
+    worker | aggregate | aggregation) printf 'worker\n' ;;
     *) return 1 ;;
     esac
 }
 
 choose_subscription_mode() {
-    local mode=${SUBSCRIPTION_MODE:-} current_mode default_choice=1
+    local mode=${SUBSCRIPTION_MODE:-} current_mode default_choice choice
     local deploy_description=${SUBSCRIPTION_DEPLOY_DESCRIPTION:-Nginx}
+    local default_mode=${SUBSCRIPTION_DEFAULT_MODE:-deploy}
     if [[ "${PROMPT_SUBSCRIPTION_MODE:-0}" == "1" || -z "${mode}" ]]; then
         if [[ -t 0 ]]; then
-            current_mode=$(normalize_subscription_mode "${mode:-deploy}") \
+            current_mode=$(normalize_subscription_mode "${mode:-${default_mode}}") \
                 || die "当前订阅服务模式无效：${mode}"
-            [[ "${current_mode}" == "link" ]] && default_choice=2
-            printf '请选择是否部署订阅服务：\n'
-            printf '  1. 部署订阅服务（%s；只有当前服务器时推荐）\n' \
-                "${deploy_description}"
-            printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-            read_bilingual \
-                "请选择 [${default_choice}]（直接回车使用默认值）:" mode
-            mode=${mode:-${current_mode}}
+            if [[ "${SUBSCRIPTION_AGGREGATION_ENABLED:-0}" == "1" ]]; then
+                case "${current_mode}" in
+                link) default_choice=1 ;;
+                deploy) default_choice=2 ;;
+                worker) default_choice=3 ;;
+                esac
+                printf '请选择订阅输出方式：\n'
+                printf '  1. 不部署订阅，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
+                printf '  2. 部署本机订阅服务（%s；只有当前服务器时推荐）\n' \
+                    "${deploy_description}"
+                printf '  3. 部署订阅聚合（%s）\n' \
+                    "${SUBSCRIPTION_AGGREGATION_DESCRIPTION:-Cloudflare Worker}"
+                read_bilingual \
+                    "请选择 [${default_choice}]（直接回车使用默认值）:" choice
+                case "${choice:-${default_choice}}" in
+                1) mode=link ;;
+                2) mode=deploy ;;
+                3) mode=worker ;;
+                *) die "订阅输出选项无效：${choice}" ;;
+                esac
+            else
+                [[ "${current_mode}" == "link" ]] && default_choice=2 || default_choice=1
+                printf '请选择是否部署订阅服务：\n'
+                printf '  1. 部署订阅服务（%s；只有当前服务器时推荐）\n' \
+                    "${deploy_description}"
+                printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
+                read_bilingual \
+                    "请选择 [${default_choice}]（直接回车使用默认值）:" choice
+                case "${choice:-}" in
+                "") mode=${current_mode} ;;
+                1) mode=deploy ;;
+                2) mode=link ;;
+                deploy | link) mode=${choice} ;;
+                *) die "订阅输出选项无效：${choice}" ;;
+                esac
+            fi
         elif [[ -z "${mode}" ]]; then
+            if [[ "${SUBSCRIPTION_AGGREGATION_ENABLED:-0}" == "1" ]]; then
+                die "非交互模式必须设置 SUBSCRIPTION_MODE=link、SUBSCRIPTION_MODE=deploy 或 SUBSCRIPTION_MODE=worker"
+            fi
             die "非交互模式必须设置 SUBSCRIPTION_MODE=deploy 或 SUBSCRIPTION_MODE=link"
         fi
     fi
-    SUBSCRIPTION_MODE=$(normalize_subscription_mode "${mode:-deploy}") \
+    SUBSCRIPTION_MODE=$(normalize_subscription_mode "${mode:-${default_mode}}") \
         || die "订阅服务选项无效：${mode}"
 }
 
 subscription_enabled() {
-    [[ "${SUBSCRIPTION_MODE:-deploy}" == "deploy" ]]
+    [[ "${SUBSCRIPTION_MODE:-deploy}" != "link" ]]
+}
+
+worker_subscription_enabled() {
+    [[ "${SUBSCRIPTION_MODE:-}" == "worker" ]]
 }
 
 choose_subscription_download_name() {
@@ -223,6 +260,10 @@ write_subscription_nginx_locations() {
         [[ "${origin_header_secret}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
             || die "订阅源站保护密钥格式无效"
         origin_guard="        if (\$http_x_easy_all_origin_key != \"${origin_header_secret}\") { return 404; }"
+    fi
+    if worker_subscription_enabled && [[ -z "${worker_source_secret}" ]]; then
+        # The private source must never be reachable with only a public Token.
+        die "Worker 聚合模式必须为私有节点源设置 X-Easy-All-Worker-Source 密钥"
     fi
     if [[ -n "${worker_source_secret}" ]]; then
         [[ "${worker_source_secret}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \

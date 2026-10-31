@@ -123,6 +123,26 @@ for phrase in \
     assert_contains "detailed documentation contract" "${ALL_DOCS}" "${phrase}"
 done
 
+for content in "${README_CONTENT}" "${PREPARATION_CONTENT}" "${OPERATIONS_CONTENT}" "${TECHNICAL_CONTENT}"; do
+    assert_contains "Reality subscription output is documented" "${content}" 'Worker 订阅聚合'
+    assert_contains "Reality aggregation documents the private source domain" "${content}" '私有节点源域名'
+done
+assert_contains "README documents the new Reality default" "${README_CONTENT}" '1. 仅节点（默认）'
+assert_contains "operations guide documents the Reality three-way menu" \
+    "${OPERATIONS_CONTENT}" '「仅节点（默认）」「本机订阅」或'
+assert_contains "operations guide documents Worker rename limits" \
+    "${OPERATIONS_CONTENT}" 'Worker 名称在安装后不能就地改名'
+assert_contains "technical reference documents the shared Worker config module" \
+    "${TECHNICAL_CONTENT}" 'worker-config.sh'
+assert_contains "technical reference documents Reality source parsing" \
+    "${TECHNICAL_CONTENT}" 'security=reality&type=tcp'
+assert_contains "technical reference documents the Reality state version" \
+    "${TECHNICAL_CONTENT}" 'STATE_VERSION=8  # Reality'
+assert_contains "preparation guide requires Workers Scripts Write for aggregation" \
+    "${PREPARATION_CONTENT}" 'Reality 选择 Worker 订阅聚合时还要加上'
+assert_contains "worker README documents Reality source naming" \
+    "$(<"${ROOT_DIR}/worker-src/README.md")" '保留原始节点名和端口'
+
 assert_contains "client guide documents Mihomo selected-IP requirements" \
     "${CLIENT_CONTENT}" '客户端必须能分别保存'
 assert_contains "client guide marks Shadowrocket unverified" \

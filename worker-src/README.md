@@ -1,7 +1,8 @@
 # Worker 构建
 
-Cloudflare XHTTP 模式选择“部署订阅服务”时，安装器会直接通过 Cloudflare API 生成并部署该 Worker，
-默认名称为 `easyall`，无需手工执行本节命令。下面的本地构建流程只用于独立维护或聚合额外节点。
+Cloudflare XHTTP 模式选择“部署订阅服务”，或 Reality 直连模式选择“Worker 订阅聚合”时，安装器会
+直接通过 Cloudflare API 生成并部署该 Worker。XHTTP 默认名称为 `easyall`，Reality 聚合默认名称为
+`easyall-reality`；无需手工执行本节命令。下面的本地构建流程只用于独立维护或聚合额外节点。
 
 在仓库根目录运行：
 
@@ -25,6 +26,7 @@ npm run test:worker
 配置方法见[技术参考](../docs/technical-reference.md#测试)。
 
 - `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口按北京时间每小时提供 6 个（`10000-62703`）并在每次请求时按时间挑选下发；所有节点统一输出 `ipVersion: ipv4`。
+  Reality 安装器注入的 `vpsSubUrl` 指向私有节点源（`https://<源域名>:8443/subscribe`），源返回 Reality URI 订阅；Worker 解析后保留原始节点名和端口，把它们直接放进 `PROXY`，不改名成 `🇺🇸优选N`，也不放进 CDN/Worker 测速组。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。安装器会把同一模板传给 Worker 构建。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
@@ -39,11 +41,12 @@ Worker 保留 `/subscribe?token=...`，`flag=clash` 返回完整配置，`flag=b
 26.9.8 起的 REALITY 服务端要求 ClientHello 携带该混合密钥交换，而 mihomo 默认会剥离它。该字段需
 mihomo 1.19.9 及以上才生效，更旧的 mihomo 内核会忽略它（不会报错）；`flag=base64` 的 URI 订阅不携带此参数，
 Xray 系客户端自行协商。需要退回上一种 ClientHello 的节点，可在聚合配置里设置
-`"supportX25519Mlkem768": false`：只对 `nodes` 里的 Reality 节点生效，指向 Xray 低于 26.9.8 的
-服务端时请设成 `false`。
+`"supportX25519Mlkem768": false`：对 `nodes` 里的 Reality 节点和私有源下发的 Reality 节点都生效，
+指向 Xray 低于 26.9.8 的服务端时请设成 `false`。安装器生成 Reality 链路时，若本机核心低于
+26.9.8 会追加 `mlkem=0`，Worker 据此对源节点关闭该字段。
 
 安装器自动部署的 Worker 将公开请求的 Token 转发到节点域名上的
-Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 显式启用
+Nginx 私有源（Reality 聚合为私有源域名的 `8443`），并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 显式启用
 `global_fetch_strictly_public`、关闭 `workers.dev` 和 Preview URL，并只绑定独立订阅 Custom Domain。
 自动部署脚本不内嵌公开用户 Token；Nginx 是用户与配额鉴权的唯一真源。订阅域名不得与节点域名相同；
 动态源失败时返回 `502`，源明确拒绝 Token 时返回 `403`，不会使用静态节点绕过用户配额。
@@ -83,7 +86,11 @@ Worker，并在 VPS 重新生成模式 2 订阅。
 
 ### Cloudflare 聚合只出现兜底节点
 
-动态 VPS 节点获取或解析失败时，安装器部署的正式及手工恢复 Worker 都返回 `502`；不会用单个 `fallbackCdnNodes` 伪装成完整动态订阅。Worker 请求 `vpsSubUrl` 时固定追加 `flag=base64` 并使用 URI 客户端 UA，解析后按源顺序保留最多 6 个节点。Cloudflare 地址族约束由 VPS 节点源负责。
+动态 VPS 节点获取或解析失败时，安装器部署的正式及手工恢复 Worker 都返回 `502`；不会用单个 `fallbackCdnNodes` 伪装成完整动态订阅。Worker 请求 `vpsSubUrl` 时固定追加 `flag=base64` 并使用 URI 客户端 UA，解析后按源顺序保留最多 6 个 CDN 节点；Reality 源节点不占用这 6 个名额。Cloudflare 地址族约束由 VPS 节点源负责。
+
+Reality 直连聚合的私有源响应同样是 Base64 的 VLESS URI；Worker 只接受
+`security=reality&type=tcp` 且带 `pbk`、`sid`、`sni` 的节点，其它 Reality 链接会被跳过。
+本机节点名与聚合 JSON 的 `nodes` 名称必须互不重复，否则 Clash 输出现有校验会直接拒绝生成。
 
 部署重新构建的 `worker.js` 后，检查订阅响应头（不要公开含 token 的链接）：
 

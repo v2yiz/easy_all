@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[1.6.12](CHANGELOG.md#1612-更新说明2026-10-30)。
+当前源码版本：[1.6.13](CHANGELOG.md#1613-更新说明2026-11-05)。
 
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点交互安装器。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认 XanMod BBRv3，可选 Skyline Speeder）。
@@ -32,8 +32,21 @@ Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择�
 请求体内，仍受 Cloudflare 套餐请求体大小限制（Free/Pro 通常为 100 MB），大文件上传应在
 `PROXY` 中选择 VPS 节点。
 
-完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择自托管订阅时才需要
-Cloudflare 域名和 API Token。
+直连 Reality 安装时会选择订阅输出，默认不部署订阅：
+
+| 选项 | 适用情况 | 需要准备 |
+| --- | --- | --- |
+| **1. 仅节点（默认）** | 只需要节点链接，自己维护订阅 | 无 |
+| **2. 本机订阅** | 只有当前这一台直连节点 | 一个 Cloudflare 一级订阅域名、API Token |
+| **3. Worker 订阅聚合** | 多台直连节点统一下发，仍希望走 Workers | 同 Zone 两个一级域名（公开订阅域名 + 私有节点源域名）、具备 Workers Scripts Write 的 API Token |
+
+Worker 聚合只在其中一台 VPS 部署：公开订阅域名绑定 Worker，私有节点源域名由 Cloudflare 代理回
+本机 `8443` 且仅允许 Cloudflare 回源，Nginx 继续是 Token 与配额的唯一真源；其余直连节点以
+聚合 JSON 的 `nodes` 形式写入，节点名必须互不重复。Worker 按请求实时回源，源不可用时返回
+`502`，不会用静态节点绕过配额。
+
+完整步骤见[前置准备手册](docs/preparation-guide.md)。Reality 只有在选择本机订阅或 Worker 聚合时
+才需要 Cloudflare 域名和 API Token。
 
 ## 安装要求
 
@@ -72,7 +85,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 | --- | --- |
 | 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2` |
 | TCP 加速 | 选 `1` 或直接回车使用 BBRv3；只有丢包率极高且确认为非拥塞随机丢包时才选 Skyline Speeder |
-| 订阅输出 | 选 `1` 或直接回车，在本机部署订阅 |
+| 订阅输出 | 直接回车不部署订阅；单机自用选 `2` 部署本机订阅；多台直连节点统一走 Workers 下发选 `3` |
 | 月度用户配额 | 选 `1` 或直接回车，不启用 |
 | 独立 Worker 兜底 | 按需启用；必须使用区别于节点域名和订阅域名的同 Zone 一级域名 |
 | 定时重启 | 接受每日 `04:00` 重启选 `1`；不需要则选 `3` |

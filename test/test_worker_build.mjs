@@ -15,8 +15,8 @@ const buildWorker = options => buildWorkerWithTemplate({ templatePath: classicTe
 const temp = await mkdtemp(join(tmpdir(), 'worker-test-'));
 try {
     const config = JSON.parse(await readFile(new URL('../worker-src/config.example.json', import.meta.url), 'utf8'));
-    const profile = await readFile(new URL('../profiles/xhttp-cloudflare-streamup.sh', import.meta.url), 'utf8');
-    const normalizeAggregation = profile.match(/^normalize_worker_aggregation_config\(\) \{[\s\S]*?^\}/m)[0];
+    const sharedWorkerConfig = await readFile(new URL('../lib/worker-config.sh', import.meta.url), 'utf8');
+    const normalizeAggregation = sharedWorkerConfig.match(/^normalize_worker_aggregation_config\(\) \{[\s\S]*?^\}/m)[0];
     const normalizeInShell = value => spawnSync('bash', ['-c',
         normalizeAggregation + '\nnormalize_worker_aggregation_config "$(cat)"',
     ], { input: JSON.stringify(value), encoding: 'utf8', timeout: 10_000 });
@@ -196,6 +196,39 @@ try {
     assert.equal(backupResult.error, null);
     assert.deepEqual(Array.from(backupResult.nodes, node => node.name),
         Array.from({ length: 6 }, (_, i) => `🇭🇰CF${i + 1}`));
+    // Reality sources stay visible direct nodes: names are preserved and the
+    // hidden CDN latency-test group never receives them.
+    const sourceReality = `vless://${config.nodes[0].uuid}@198.51.100.7:10042?encryption=none&security=reality&type=tcp&sni=www.example.com&fp=chrome&pbk=${encodeURIComponent(Buffer.alloc(32, 2).toString('base64url'))}&sid=0123456789abcdef&flow=xtls-rprx-vision&packetEncoding=xudp#MY_REALITY`;
+    const realitySource = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
+        fetchImpl: async () => new Response(btoa(sourceReality)),
+    });
+    assert.equal(realitySource.error, null);
+    assert.deepEqual(Array.from(realitySource.nodes, node => node.name), ['MY_REALITY']);
+    assert.equal(realitySource.nodes[0].port, 10042, 'Reality source keeps its published port');
+    assert.equal(realitySource.nodes[0].security, 'reality');
+    const realityBody = await (await make(async () => new Response(btoa(sourceReality)))(request())).text();
+    assert.ok(realityBody.includes('name: "MY_REALITY"'), 'Reality source name is preserved');
+    assert.ok(!realityBody.includes('🇺🇸优选1'), 'Reality source is not renamed as a CDN node');
+    const realityProxy = realityBody.split('proxy-groups:')[1].split('name: 🇺🇸白天首选')[0];
+    assert.ok(realityProxy.includes('- "MY_REALITY"'), 'Reality source stays visible in PROXY');
+    assert.deepEqual(
+        JSON.parse(realityBody.split('name: 🇺🇸白天首选')[1].match(/proxies: (\[[^\n]+\])/)[1]),
+        ['REJECT'],
+        'without CDN source nodes the CDN group falls back to REJECT',
+    );
+    const legacyReality = sourceReality.replace('&packetEncoding=xudp', '&packetEncoding=xudp&mlkem=0');
+    const legacySource = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
+        fetchImpl: async () => new Response(btoa(legacyReality)),
+    });
+    assert.equal(legacySource.error, null);
+    assert.equal(legacySource.nodes[0].supportX25519Mlkem768, false);
+    assert.ok(!api.buildClashConfig([legacySource.nodes[0]], [legacySource.nodes[0].port])
+        .includes('support-x25519mlkem768'),
+    'pre-26.9.8 source nodes opt out of the hybrid key share');
+    const realityUri = atob(await (await make(async () => new Response(btoa(sourceReality)))(genericRequest)).text());
+    const realityLine = realityUri.split('\n').find(link => link.includes('#MY_REALITY'));
+    assert.ok(realityLine && realityLine.includes('security=reality') && realityLine.includes('flow=xtls-rprx-vision'),
+        'URI output preserves Reality parameters from the source');
     for (const backupNode of backupResult.nodes) {
         const realityNode = { ...api.LOCAL_NODES[0], name: backupNode.name };
         assert.ok(api.buildClashConfig([realityNode], [10000]).includes(realityNode.host),
