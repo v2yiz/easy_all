@@ -459,6 +459,23 @@ test_nat_and_cron() {
         'rotate-dynamic-ports' "$(<"${TMP_DIR}/crontab")"
 }
 
+test_daily_reboot() {
+    printf '%s\n' '# user cron' >"${TMP_DIR}/crontab"
+    REBOOT_SCHEDULE_MODE=1
+    SCHEDULED_REBOOT_ENABLED=0
+    SCHEDULED_REBOOT_HOUR=""
+    configure_daily_reboot
+    assert_contains "daily reboot installs the 04:00 job" \
+        '0 4 * * *' "$(<"${TMP_DIR}/crontab")"
+    assert_contains "daily reboot uses the managed marker" \
+        '# easy_all-managed-reboot' "$(<"${TMP_DIR}/crontab")"
+    remove_daily_reboot_schedule
+    assert_not_contains "daily reboot removal deletes the managed job" \
+        '# easy_all-managed-reboot' "$(<"${TMP_DIR}/crontab")"
+    assert_contains "daily reboot removal preserves unrelated cron" \
+        '# user cron' "$(<"${TMP_DIR}/crontab")"
+}
+
 test_syntax_and_wiring
 prepare_profile_copy
 setup_stubs
@@ -475,6 +492,7 @@ set_fixture
 test_release_download
 set_fixture
 test_nat_and_cron
+test_daily_reboot
 test_install_pipeline
 
 printf 'ok - %d Mieru direct assertions passed\n' "${TESTS_RUN}"
