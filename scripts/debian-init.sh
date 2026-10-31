@@ -715,7 +715,7 @@ configure_ufw() {
   ufw default deny routed >/dev/null
   apply_ssh_ufw_policy "$ports"
   systemctl enable ufw >/dev/null 2>&1
-  LC_ALL=C ufw status | grep -q '^Status: active' || {
+  LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' || {
     printf '%s\n' "错误: UFW 未处于 active 状态" >&2
     exit 1
   }

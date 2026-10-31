@@ -638,7 +638,8 @@ xhttp_configure_ufw() {
     cloudflare_configure_origin_firewall
     apply_ssh_ufw_policy "${desired_ports}"
     systemctl enable ufw >/dev/null 2>&1 || die "设置 UFW 开机启动失败"
-    LC_ALL=C ufw status | grep -q '^Status: active' || die "UFW 未处于 active 状态"
+    LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' \
+        || die "UFW 未处于 active 状态"
     ensure_ssh_fail2ban
 }
 

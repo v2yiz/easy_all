@@ -98,7 +98,10 @@ ufw() {
     if [[ "$1" == status ]]; then
         echo 'Status: active'
         awk -F'|' '{printf "[ %d] %s/tcp%s %s IN Anywhere # %s\n", NR,$1,($4 == "" ? "" : " on " $4),$2,$3}' "$FIXTURE/rules"
-        return
+        local status_rc=$?
+        # Return explicitly: a bare `return` can inherit an unrelated status and
+        # make `pipefail` callers misread a successful `ufw status`.
+        return "${status_rc}"
     fi
     echo "$*" >> "$FIXTURE/ufw.log"
     if [[ "$1" == allow ]]; then

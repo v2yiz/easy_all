@@ -168,6 +168,7 @@ ufw_ssh_port_is_allowed() {
     LC_ALL=C ufw status numbered 2>/dev/null | awk -v port="${EASY_ALL_ADDITIONAL_SSH_PORT}" '
         /\(v6\)/ {next}
         {
+            if (decided) next
             line=$0
             sub(/^[[:space:]]*\[[[:space:]]*[^]]*\][[:space:]]*/, "", line)
             split(line, fields, /[[:space:]]+/)
@@ -183,9 +184,11 @@ ufw_ssh_port_is_allowed() {
             action=2
             if (fields[2] == "on") action=4
             if (fields[action+1] != "IN") next
-            if (fields[action] == "DENY" || fields[action] == "REJECT") exit
+            # Keep reading after a decision: an early `exit` closes the pipe and
+            # `pipefail` then reports SIGPIPE from `ufw status` as a real failure.
+            if (fields[action] == "DENY" || fields[action] == "REJECT") {decided=1; next}
             # An interface-only allow cannot establish global SSH reachability.
-            if (action == 2 && fields[action] == "ALLOW" && fields[action+2] == "Anywhere") {allowed=1; exit}
+            if (action == 2 && fields[action] == "ALLOW" && fields[action+2] == "Anywhere") {allowed=1; decided=1}
         }
         END {exit !allowed}
     '
@@ -193,12 +196,15 @@ ufw_ssh_port_is_allowed() {
 
 ufw_ssh22_deny_is_first() {
     LC_ALL=C ufw status numbered 2>/dev/null | awk -v comment="${UFW_RULE_COMMENT}" '
+        # Consume the whole stream: stopping early would SIGPIPE `ufw status`
+        # and `pipefail` would turn a correct rule order into a failure.
         /^[[:space:]]*\[/ {
+            if (checked) next
+            checked=1
             marker=$0
             sub(/^.*#[[:space:]]*/, "", marker)
             if ($0 ~ /^[[:space:]]*\[[[:space:]]*1\][[:space:]]+22\/tcp[[:space:]]+DENY[[:space:]]+IN[[:space:]]+Anywhere[[:space:]]/ &&
                 marker == comment) found=1
-            exit
         }
         END {exit !found}
     '
