@@ -514,7 +514,7 @@ test_mihomo_template() {
         "MATCH,PROXY" "$(<"${default_template}")"
     assert_contains "Mihomo races resolved proxy addresses" \
         "tcp-concurrent: true" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
-    assert_contains "Mihomo uses the XFLASH fake-IP DNS mode" \
+    assert_contains "Mihomo uses the fake-IP DNS mode" \
         "enhanced-mode: fake-ip" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo persists fake-IP mappings" \
         "store-fake-ip: true" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
@@ -569,9 +569,9 @@ test_mihomo_template() {
     assert_contains "Mihomo uses two direct proxy bootstrap DNS endpoints" \
         "proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']" \
         "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
-    assert_not_contains "Mihomo does not add a non-XFLASH default nameserver" \
+    assert_not_contains "Mihomo does not add a default nameserver" \
         "default-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
-    assert_not_contains "Mihomo does not add a non-XFLASH direct nameserver" \
+    assert_not_contains "Mihomo does not add a direct nameserver" \
         "direct-nameserver:" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
     assert_contains "Mihomo resolves private domains locally" \
         "'geosite:private': system" "$(<"${ROOT_DIR}/templates/mihomo-classic.yaml")"
@@ -793,8 +793,6 @@ test_subscription_generation() {
         "inet6-address:" "${yaml}"
     assert_contains "Mihomo subscription contains the inline direct rules" \
         "RULE-SET,direct-cdn,DIRECT" "${yaml}"
-    assert_contains "Mihomo subscription preserves the XFLASH direct exception" \
-        "- love.xflash.work" "${yaml}"
     assert_contains "Mihomo subscription contains AI proxy rules" \
         "GEOSITE,category-ai-chat-!cn,PROXY" "${yaml}"
     assert_contains "Mihomo sends every Google domain through the VPS" \
@@ -1272,8 +1270,8 @@ test_update_reality_target_command() {
     set_fixture
 }
 
-test_scheduled_reboot_keeps_dynamic_ports() {
-    local cron_state_file="${TMP_DIR}/reboot.cron" cron_state reboot_hook_definition
+test_scheduled_reboot_without_port_refresh() {
+    local cron_state_file="${TMP_DIR}/reboot.cron" cron_state
     : >"${cron_state_file}"
     crontab() {
         if [[ "${1:-}" == "-l" ]]; then
@@ -1287,19 +1285,19 @@ test_scheduled_reboot_keeps_dynamic_ports() {
     REBOOT_SCHEDULE_MODE=1
     configure_daily_reboot
     cron_state=$(<"${cron_state_file}")
-    assert_contains "daily Reality reboot refreshes dynamic NAT first" \
+    assert_not_contains "daily Reality reboot does not refresh NAT before reboot" \
         "rotate-dynamic-ports" "${cron_state}"
     assert_not_contains "daily reboot no longer refreshes removed Xray Geo data" \
         "refresh-xray-assets" "${cron_state}"
     assert_contains "daily Reality reboot remains scheduled" \
         "/usr/sbin/reboot" "${cron_state}"
-    reboot_hook_definition=$(declare -f scheduled_reboot_profile_pre_command)
-    unset -f scheduled_reboot_profile_pre_command
-    configure_daily_reboot
-    cron_state=$(<"${cron_state_file}")
     assert_contains "daily reboot works without a profile pre-command" \
         "( true )" "${cron_state}"
-    eval "${reboot_hook_definition}"
+    scheduled_reboot_profile_pre_command() { printf 'profile-fixture-command'; }
+    configure_daily_reboot
+    assert_contains "shared reboot maintenance still supports another profile hook" \
+        "( profile-fixture-command )" "$(<"${cron_state_file}")"
+    unset -f scheduled_reboot_profile_pre_command
     unset REBOOT_SCHEDULE_MODE
     unset -f crontab
 }
@@ -1338,7 +1336,13 @@ test_crontab_read_failure_is_fail_closed() {
 
 test_dynamic_port_rotation_schedule() {
     local cron_state_file="${TMP_DIR}/dynamic-port.cron" cron_state
-    : >"${cron_state_file}"
+    set_fixture
+    cat >"${cron_state_file}" <<EOF
+15 2 * * * /usr/local/bin/user-job
+1 */1 * * * /usr/local/bin/old-easy-all rotate-dynamic-ports ${CRON_DYNAMIC_PORT_MARKER}
+1 */1 * * * /usr/local/bin/old-easy-all rotate-dynamic-ports ${CRON_DYNAMIC_PORT_MARKER}
+@reboot /usr/local/bin/old-easy-all rotate-dynamic-ports ${CRON_DYNAMIC_PORT_MARKER}
+EOF
     crontab() {
         if [[ "${1:-}" == "-l" ]]; then
             cat "${cron_state_file}"
@@ -1350,8 +1354,16 @@ test_dynamic_port_rotation_schedule() {
     }
     configure_dynamic_port_rotation
     cron_state=$(<"${cron_state_file}")
-    assert_contains "dynamic port rotation runs after every hour boundary" \
+    assert_contains "dynamic port refresh runs after reboot" \
+        "@reboot \"${COMMAND_PATH}\" rotate-dynamic-ports" "${cron_state}"
+    assert_not_contains "dynamic port refresh replaces the old hourly job" \
         "1 */1 * * *" "${cron_state}"
+    assert_equal "dynamic port refresh has one managed entry" "1" \
+        "$(grep -Fc "${CRON_DYNAMIC_PORT_MARKER}" "${cron_state_file}")"
+    configure_dynamic_port_rotation
+    assert_equal "dynamic port schedule is idempotent" "${cron_state}" "$(<"${cron_state_file}")"
+    assert_contains "dynamic port schedule preserves user jobs" \
+        "15 2 * * * /usr/local/bin/user-job" "${cron_state}"
     assert_contains "dynamic port rotation calls the managed command" \
         "rotate-dynamic-ports" "${cron_state}"
     SUB_PORT_MODE="443"
@@ -1359,6 +1371,8 @@ test_dynamic_port_rotation_schedule() {
     cron_state=$(<"${cron_state_file}")
     assert_not_contains "fixed port mode does not install dynamic rotation" \
         "rotate-dynamic-ports" "${cron_state}"
+    assert_contains "fixed port mode preserves user jobs" \
+        "15 2 * * * /usr/local/bin/user-job" "${cron_state}"
     remove_dynamic_port_rotation
     cron_state=$(<"${cron_state_file}")
     assert_not_contains "dynamic port rotation can be removed" \
@@ -2192,7 +2206,7 @@ test_dynamic_port_year_boundary
 test_dynamic_port_boundaries_and_rule_set
 test_rotate_dynamic_ports_command
 test_update_reality_target_command
-test_scheduled_reboot_keeps_dynamic_ports
+test_scheduled_reboot_without_port_refresh
 test_crontab_read_failure_is_fail_closed
 test_dynamic_port_rotation_schedule
 test_dynamic_port_rotation_rollback

@@ -15,7 +15,25 @@ const buildWorker = options => buildWorkerWithTemplate({ templatePath: classicTe
 const temp = await mkdtemp(join(tmpdir(), 'worker-test-'));
 try {
     const config = JSON.parse(await readFile(new URL('../worker-src/config.example.json', import.meta.url), 'utf8'));
+    const profile = await readFile(new URL('../profiles/xhttp-cloudflare-streamup.sh', import.meta.url), 'utf8');
+    const normalizeAggregation = profile.match(/^normalize_worker_aggregation_config\(\) \{[\s\S]*?^\}/m)[0];
+    const normalizeInShell = value => spawnSync('bash', ['-c',
+        normalizeAggregation + '\nnormalize_worker_aggregation_config "$(cat)"',
+    ], { input: JSON.stringify(value), encoding: 'utf8', timeout: 10_000 });
+    for (const externalSubUrl of ['https://subscription.example.com/stale-shell-sentinel', { obsolete: true }, 42]) {
+        const normalized = normalizeInShell({ ...config, externalSubUrl });
+        assert.equal(normalized.status, 0, normalized.stderr);
+        const result = JSON.parse(normalized.stdout);
+        assert.equal(result.externalSubUrl, undefined, 'actual shell normalization drops legacy values');
+        assert.deepEqual(result.nodes, config.nodes);
+        assert.deepEqual(result.fallbackCdnNodes, config.fallbackCdnNodes);
+        assert.deepEqual(result.allowedTokens, config.allowedTokens);
+    }
+    for (const invalid of [{ ...config, unrelatedUnknown: true }, { ...config, vpsSubUrl: 'https://source.invalid/' }, []]) {
+        assert.notEqual(normalizeInShell(invalid).status, 0, 'unrelated shell input validation is preserved');
+    }
     config.allowedTokens = { owner: 'offline-test-token' };
+    config.externalSubUrl = 'https://subscription.example.com/removed-url-sentinel';
     config.nodes[0].pbk = Buffer.alloc(32, 1).toString('base64url');
     config.nodes[0].sid = '0123456789abcdef';
     // The installer injects vpsSubUrl before deploying, so the shared example carries none.
@@ -99,10 +117,27 @@ try {
     await assert.rejects(buildWorker({ configPath, outputPath }));
     assert.equal(await readFile(outputPath, 'utf8'), source, 'failed build preserves artifact');
     const context = vm.createContext({ URL, URLSearchParams, Headers, Response, AbortController, TextEncoder, TextDecoder, atob, btoa, setTimeout, clearTimeout, fetch: async () => { throw Error('offline'); }, console: { error() {}, warn() {} } });
-    const api = vm.runInContext(source.replace(/export default \{[\s\S]*$/, '({createWorkerHandler, resolveNodePorts, buildClashConfig, fetchXflashSubscription, PRIVATE_CONFIG, LOCAL_NODES});'), context);
-    const make = fetchImpl => api.createWorkerHandler({ allowedTokenValues: new Set(['offline-test-token']), localNodes: api.LOCAL_NODES, externalSubUrl: config.externalSubUrl, vpsSubUrl: config.vpsSubUrl, requireDynamicCdn: false, now: () => Date.UTC(2026, 0, 1), fetchImpl });
-    const request = (suffix = '', token = 'offline-test-token', method = 'GET') => new Request(`https://worker.invalid/subscribe?token=${token}&flag=clash${suffix}`, {method});
-    const genericRequest = new Request('https://worker.invalid/subscribe?token=offline-test-token&flag=base64');
+    const api = vm.runInContext(source.replace(/export default \{[\s\S]*$/, '({createWorkerHandler, resolveNodePorts, buildClashConfig, fetchVpsSubscription, PRIVATE_CONFIG, LOCAL_NODES});'), context);
+    assert.ok(!source.includes(config.externalSubUrl), 'build strips the removed source URL');
+    assert.equal(api.PRIVATE_CONFIG.externalSubUrl, undefined);
+    const sourceCalls = [];
+    const make = fetchImpl => api.createWorkerHandler({
+        allowedTokenValues: new Set([config.allowedTokens.owner]),
+        localNodes: api.LOCAL_NODES,
+        externalSubUrl: config.externalSubUrl,
+        vpsSubUrl: config.vpsSubUrl,
+        requireDynamicCdn: false,
+        now: () => Date.UTC(2026, 0, 1),
+        fetchImpl: async (url, options) => {
+            const requested = new URL(url);
+            assert.equal(requested.origin + requested.pathname, config.vpsSubUrl, 'only the configured own source is requested');
+            assert.equal(requested.searchParams.get('flag'), 'base64');
+            sourceCalls.push(url);
+            return fetchImpl(url, options);
+        },
+    });
+    const request = (suffix = '', token = config.allowedTokens.owner, method = 'GET') => new Request(`https://worker.invalid/subscribe?token=${token}&flag=clash${suffix}`, {method});
+    const genericRequest = new Request(`https://worker.invalid/subscribe?token=${config.allowedTokens.owner}`);
     let calls = 0;
     const offline = make(async () => { calls++; throw Error('offline'); });
     assert.equal((await offline(request('', 'bad'))).status, 403);
@@ -111,7 +146,7 @@ try {
     assert.equal(calls, 0, 'reject before upstream access');
     const fallback = await offline(request());
     assert.equal(fallback.headers.get('X-Easy-All-Version'), '2026-09-07-v2');
-    assert.equal(fallback.headers.get('X-Easy-All-Warning'), 'xflash-unavailable-local-only');
+    assert.equal(fallback.headers.get('X-Easy-All-Warning'), null);
     const fallbackBody = await fallback.text();
     assert.ok(fallbackBody.includes('ip-version: ipv4'));
     assert.ok(fallbackBody.includes('fallback.example.com'));
@@ -125,7 +160,6 @@ try {
     assert.ok(allBody.includes('hidden.example.com'));
     assert.ok(allBody.includes('vmiss.example.com'));
     assert.equal(await (await offline(request('', 'offline-test-token', 'HEAD'))).text(), '');
-    const upstream = `dns:\n  nameserver: [malicious.invalid]\nproxies:\n    - name: Remote\n      type: vless\n      server: remote.example.com\n      port: 443\n      uuid: ${config.nodes[0].uuid}\n      network: xhttp\n      ip-version: ipv4\n      alpn:\n        - h2\n    - { name: Mieru Remote, type: mieru, server: mieru.example.com, port: 443, username: test-user, password: test-password, transport: TCP, multiplexing: MULTIPLEXING_LOW }\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n`;
     const xmux = {
         maxConnections: 4,
         cMaxReuseTimes: 0,
@@ -139,11 +173,11 @@ try {
         xmux,
     }));
     const cf = `vless://${config.nodes[0].uuid}@192.0.2.1:443?security=tls&type=xhttp&host=cdn.example.com&path=%2Fxhttp%2F&mode=stream-up&extra=${cfExtra}#CF`;
-    const live = make(async url => new Response(new URL(url).origin === new URL(config.vpsSubUrl).origin ? btoa(cf) : upstream));
+    const live = make(async () => new Response(btoa(cf)));
     // Format must be pinned even when a copied VPS link requests Clash YAML.
     const dynamicApi = vm.runInContext('({fetchDynamicCdnNodes})', context);
     for (const encoded of [false, true]) {
-        const result = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl + '&flag=clash', {
+        const result = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl + '?flag=clash', {
             fetchImpl: async (url, options) => {
                 assert.equal(new URL(url).searchParams.get('flag'), 'base64');
                 assert.equal(options.headers.get('User-Agent'), 'v2rayN');
@@ -166,27 +200,19 @@ try {
         const realityNode = { ...api.LOCAL_NODES[0], name: backupNode.name };
         assert.ok(api.buildClashConfig([realityNode], [10000]).includes(realityNode.host),
             'a backup name alone does not collide at runtime');
-        for (const external of ['', upstream]) {
-            assert.throws(() => api.buildClashConfig(
-                [realityNode, ...backupResult.nodes], Array(7).fill(443), external, backupResult.nodes,
-            ), /Missing, duplicate or reserved proxy names/, 'generated backup name collides with Reality');
-        }
+        assert.throws(() => api.buildClashConfig(
+            [realityNode, ...backupResult.nodes], Array(7).fill(443), backupResult.nodes,
+        ), /Missing, duplicate or reserved proxy names/, 'generated backup name collides with Reality');
     }
-    for (const externalSubUrl of ['', config.externalSubUrl]) {
-        const collisionHandler = api.createWorkerHandler({
-            allowedTokenValues: new Set(['offline-test-token']),
-            localNodes: [{ ...api.LOCAL_NODES[0], name: '🇭🇰CF1' }],
-            externalSubUrl,
-            vpsSubUrl: config.vpsSubUrl,
-            fetchImpl: async url => new Response(
-                new URL(url).origin === new URL(config.vpsSubUrl).origin ? backupLink : upstream,
-            ),
-        });
-        await assert.rejects(collisionHandler(request()), /Missing, duplicate or reserved proxy names/,
-            'a local name collision also prevents the local-only Clash fallback');
-    }
+    const collisionHandler = api.createWorkerHandler({
+        allowedTokenValues: new Set([config.allowedTokens.owner]),
+        localNodes: [{ ...api.LOCAL_NODES[0], name: '🇭🇰CF1' }],
+        vpsSubUrl: config.vpsSubUrl,
+        fetchImpl: async () => new Response(backupLink),
+    });
+    await assert.rejects(collisionHandler(request()), /Missing, duplicate or reserved proxy names/,
+        'a local name collision prevents the Clash response');
     const fixedSourceUA = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
-        userAgent: 'client-subscription/1.0',
         fetchImpl: async (_url, options) => {
             assert.equal(options.headers.get('User-Agent'), 'v2rayN');
             return new Response(btoa(cf));
@@ -196,13 +222,12 @@ try {
     const strictByDefault = api.createWorkerHandler({
         allowedTokenValues: new Set(['offline-test-token']),
         localNodes: api.LOCAL_NODES,
-        externalSubUrl: '',
         vpsSubUrl: 'https://node.example.com/subscribe',
         fetchImpl: async () => { throw new Error('source offline'); },
     });
     assert.equal(
         (await strictByDefault(new Request(
-            'https://sub.example.com/subscribe?token=offline-test-token'
+            `https://sub.example.com/subscribe?token=${config.allowedTokens.owner}`
         ))).status,
         502,
         'a configured VPS source is required unless fallback is explicitly enabled',
@@ -211,7 +236,6 @@ try {
     const privateSourceHandler = api.createWorkerHandler({
         allowedTokenValues: new Set(),
         localNodes: [],
-        externalSubUrl: '',
         vpsSubUrl: 'https://node.example.com/subscribe',
         vpsCdnUseRequestToken: true,
         delegateTokenValidation: true,
@@ -223,7 +247,7 @@ try {
         },
     });
     const privateSourceResponse = await privateSourceHandler(new Request(
-        'https://sub.example.com/subscribe?token=public-user-token&flag=base64'
+        'https://sub.example.com/subscribe?token=public-user-token'
     ));
     assert.equal(privateSourceResponse.status, 200);
     assert.equal(privateSourceRequest.url.hostname, 'node.example.com');
@@ -238,7 +262,6 @@ try {
     const rejectedPrivateSource = api.createWorkerHandler({
         allowedTokenValues: new Set(),
         localNodes: [],
-        externalSubUrl: '',
         vpsSubUrl: 'https://node.example.com/subscribe',
         vpsCdnUseRequestToken: true,
         delegateTokenValidation: true,
@@ -256,7 +279,6 @@ try {
     const unavailablePrivateSource = api.createWorkerHandler({
         allowedTokenValues: new Set(),
         localNodes: [],
-        externalSubUrl: '',
         vpsSubUrl: 'https://node.example.com/subscribe',
         vpsCdnUseRequestToken: true,
         delegateTokenValidation: true,
@@ -274,7 +296,6 @@ try {
     const unsafeDelegateHandler = api.createWorkerHandler({
         allowedTokenValues: new Set(),
         localNodes: api.LOCAL_NODES,
-        externalSubUrl: '',
         vpsSubUrl: '',
         delegateTokenValidation: true,
         requireDynamicCdn: true,
@@ -286,34 +307,9 @@ try {
         503,
         'delegated validation without a private source must fail closed'
     );
-    let upstreamUA = '';
-    await api.fetchXflashSubscription(
-        { headers: new Headers({ 'User-Agent': 'curl/8.0' }) },
-        config.externalSubUrl,
-        {
-            format: 'base64',
-            fetchImpl: async (_url, options) => {
-                upstreamUA = options.headers.get('User-Agent');
-                return new Response(btoa(cf));
-            },
-        },
-    );
-    assert.equal(upstreamUA, 'v2rayN', 'unknown URI clients use a supported XFLASH UA');
-    await api.fetchXflashSubscription(
-        { headers: new Headers({ 'User-Agent': 'clash-verge/v1.7.7' }) },
-        config.externalSubUrl,
-        {
-            format: 'clash',
-            fetchImpl: async (_url, options) => {
-                upstreamUA = options.headers.get('User-Agent');
-                return new Response(upstream);
-            },
-        },
-    );
-    assert.equal(upstreamUA, 'mihomo/1.19.30', 'Clash aggregation advertises current Mieru support');
     for (const status of [403, 429]) {
         await assert.rejects(
-            api.fetchXflashSubscription(request(), config.externalSubUrl, {
+            api.fetchVpsSubscription(config.vpsSubUrl, {
                 fetchImpl: async () => new Response('', {status}),
             }),
             error => error.httpStatus === status && error.message.includes(`HTTP ${status}`),
@@ -341,7 +337,7 @@ try {
     assert.match(globalGroup, /proxies:\s*\n\s*- PROXY\s*$/m);
     assert.ok(!globalGroup.includes('DIRECT') && !globalGroup.includes('REJECT'));
     const proxyMembers = groups.split('name: 🇺🇸白天首选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
-    assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Hidden Reality', 'Remote', 'Mieru Remote']);
+    assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Hidden Reality']);
     assert.ok(!groups.includes('DIRECT'));
     const template = await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8');
     const staticRules = template.split('rules:\n')[1].replace('# EASY_ALL_WORKER_RULE', '');
@@ -350,13 +346,9 @@ try {
         assert.equal(body.split('\nproxies:\n')[0], template.split('\nproxies:\n')[0]);
         assert.ok(body.includes('ipv6: false'));
     }
-    assert.ok(liveBody.includes('remote.example.com') && liveBody.includes('192.0.2.1'));
-    assert.ok(
-        liveBody.includes('type: mieru') &&
-        liveBody.includes('mieru.example.com') &&
-        groups.split('name: 🇺🇸白天首选')[0].includes('Mieru Remote'),
-        'Clash output preserves upstream Mieru nodes and adds them to PROXY',
-    );
+    assert.ok(liveBody.includes('192.0.2.1'));
+    assert.ok(!/xflash|remote.example.com|mieru.example.com/i.test(liveBody));
+    assert.equal((liveBody.split('\nproxy-groups:')[0].match(/^  - name:/gm) || []).length, 3);
     for (const expected of [
         'reuse-settings:',
         'max-connections: 4',
@@ -368,19 +360,16 @@ try {
         assert.ok(liveBody.includes(expected), `Clash output preserves XHTTP ${expected}`);
     }
     assert.deepEqual(JSON.parse(groups.split('name: 🇺🇸白天首选')[1].match(/proxies: (\[[^\n]+\])/)[1]), ['🇺🇸优选1']);
-    assert.ok(groups.split('name: 🇺🇸白天首选')[0].includes('Remote'), 'PROXY includes upstream');
-    const encodedXflash = btoa(upstream);
-    const htmlTyped = make(async url => new Response(
-        new URL(url).origin === new URL(config.vpsSubUrl).origin ? btoa(cf) : encodedXflash,
-        { headers: { 'content-type': 'text/html; charset=utf-8' } },
-    ));
+    const htmlTyped = make(async () => new Response(btoa(cf), {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+    }));
     const htmlTypedBody = await htmlTyped(request());
-    assert.equal(htmlTypedBody.headers.get('X-Easy-All-Warning'), null, 'base64 XFLASH must not be rejected by content type');
-    assert.ok((await htmlTypedBody.text()).includes('remote.example.com'));
+    assert.equal(htmlTypedBody.headers.get('X-Easy-All-CDN-Warning'), null, 'valid source content is independent of content type');
+    assert.ok((await htmlTypedBody.text()).includes('192.0.2.1'));
     const fallbackAuto = fallbackBody.split('name: 🇺🇸白天首选')[1].split('rules:\n')[0];
     assert.deepEqual(JSON.parse(fallbackAuto.match(/proxies: (\[[^\n]+\])/)[1]), ['🇺🇸优选1']);
     const sixCf = [1, 2, 3, 4, 5, 6].map(i => ({ ...config.fallbackCdnNodes[0], name: `🇺🇸优选${i}` }));
-    const sixBody = api.buildClashConfig([...api.LOCAL_NODES, ...sixCf], [10000, 10000, 443, 443, 443, 443, 443, 443], upstream, sixCf);
+    const sixBody = api.buildClashConfig([...api.LOCAL_NODES, ...sixCf], [10000, 10000, 443, 443, 443, 443, 443, 443], sixCf);
     const sixProxy = sixBody.split('proxy-groups:')[1].split('name: 🇺🇸白天首选')[0];
     assert.ok(sixCf.every(node => !sixProxy.includes(node.name)), 'CF nodes only appear inside backup group');
     assert.ok(!fallbackBody.split('proxy-groups:')[1].split('name: 🇺🇸白天首选')[0].includes('Fallback CF'));
@@ -388,61 +377,43 @@ try {
     const ordered = api.buildClashConfig(
         [...['🇺🇸晚上首选', '🇺🇸US_VMISS'].map(name => ({ ...api.LOCAL_NODES[0], name })), ...sixCf,
             { ...sixCf[0], name: '🇭🇰CF1', workerBackup: true }],
-        Array(9).fill(443), upstream,
+        Array(9).fill(443),
         [...sixCf, { ...sixCf[0], name: '🇭🇰CF1', workerBackup: true }],
     );
     const orderedProxy = ordered.split('proxy-groups:')[1].split('    - name: GLOBAL')[0];
     const orderedNames = [...orderedProxy.matchAll(/^        - (.+)$/gm)].map(match => JSON.parse(match[1]));
-    assert.deepEqual(orderedNames, ['🇺🇸US_VMISS', '🇺🇸白天首选', '🇺🇸晚上首选', '🇭🇰CF', 'Remote', 'Mieru Remote']);
-    assert.ok(!liveBody.includes('malicious.invalid'));
+    assert.deepEqual(orderedNames, ['🇺🇸US_VMISS', '🇺🇸白天首选', '🇺🇸晚上首选', '🇭🇰CF']);
     assert.ok(liveBody.includes('ip-version: ipv4'));
-    assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], upstream.replace('name: Remote', 'name: 🇺🇸白天首选')));
-    for (const reserved of ['GLOBAL', '🇭🇰CF', 'PASS']) {
+    for (const reserved of ['PROXY', 'GLOBAL', '🇭🇰CF', 'PASS', '🇺🇸白天首选']) {
         assert.throws(() => api.buildClashConfig(
-            api.LOCAL_NODES,
-            [10000],
-            upstream.replace('name: Remote', `name: ${reserved}`),
-        ));
+            [{ ...api.LOCAL_NODES[0], name: reserved }], [10000],
+        ), /Missing, duplicate or reserved proxy names/);
     }
-    assert.throws(
-        () => api.buildClashConfig(
-            api.LOCAL_NODES,
-            [10000],
-            upstream.replace('name: Remote', 'name: 请更新客户端，此客户端版本过低'),
-        ),
-        /client upgrade placeholders/,
-    );
-    assert.throws(() => api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies: []'));
-    assert.throws(
-        () => api.buildClashConfig(
-            api.LOCAL_NODES,
-            [10000],
-            upstream.replace('ip-version: ipv4', 'ip-version: dual'),
-        ),
-        /IPv6 proxy nodes are disabled/,
-    );
-    const flow = api.buildClashConfig(api.LOCAL_NODES, [10000], 'proxies:\n  - { name: Flow, type: ss, server: flow.example.com, port: 443 }\ndns: {}\n');
-    assert.ok(flow.includes('name: Flow'));
-    assert.throws(
-        () => api.buildClashConfig(
-            api.LOCAL_NODES,
-            [10000],
-            'proxies:\n  - { name: IPv6 Flow, type: ss, server: "[2001:db8::10]", port: 443, ip-version: dual }\ndns: {}\n',
-        ),
-        /IPv6 proxy nodes are disabled/,
-    );
-    const invalidUpstream = make(async url => new Response(new URL(url).origin === new URL(config.vpsSubUrl).origin ? cf : 'proxies: []'));
-    assert.equal((await invalidUpstream(request())).headers.get('X-Easy-All-Warning'), 'xflash-unavailable-local-only');
-    await assert.rejects(api.fetchXflashSubscription({headers: new Headers()}, config.externalSubUrl, {
+    for (const malformed of [
+        'proxies: []',
+        cf.replace('192.0.2.1', '[2001:db8::10]'),
+        cf.replace('type=xhttp', 'type=tcp'),
+        cf.replace(config.nodes[0].uuid, 'bad-uuid'),
+    ]) {
+        const result = await dynamicApi.fetchDynamicCdnNodes(config.vpsSubUrl, {
+            fetchImpl: async () => new Response(malformed),
+        });
+        assert.ok(result.error, 'malformed own-source nodes must fail parsing');
+        assert.equal(result.nodes[0].host, 'fallback.example.com');
+    }
+    await assert.rejects(api.fetchVpsSubscription(config.vpsSubUrl, {
         timeoutMs: 5,
         fetchImpl: async (url, {signal}) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Error('aborted')))),
     }));
-    await assert.rejects(api.fetchXflashSubscription({headers: new Headers()}, config.externalSubUrl, {
-        maxSize: 3, fetchImpl: async () => new Response('oversized'),
-    }));
-    const generic = make(async url => new Response(new URL(url).origin === new URL(config.vpsSubUrl).origin ? cf : 'ss://example#Remote'));
+    for (const headers of [{}, { 'content-length': '100' }]) {
+        await assert.rejects(api.fetchVpsSubscription(config.vpsSubUrl, {
+            maxSize: 3, fetchImpl: async () => new Response('oversized', { headers }),
+        }), /subscription is too large/);
+    }
+    const generic = make(async () => new Response(cf));
     const genericBody = atob(await (await generic(genericRequest)).text());
-    assert.ok(genericBody.includes('ss://example#Remote') && genericBody.includes('192.0.2.1'));
+    assert.ok(!/^ss:\/\//m.test(genericBody) && genericBody.includes('192.0.2.1'));
+    assert.equal(genericBody.split('\n').length, 3, 'URI output contains only Reality and own-source nodes');
     const genericCf = genericBody.split('\n').find(link => link.includes('@192.0.2.1:443'));
     assert.ok(genericCf, 'generic output preserves the XHTTP connection IP');
     assert.deepEqual(
@@ -450,22 +421,8 @@ try {
         xmux,
         'generic output preserves all XHTTP xmux settings',
     );
-    const ipv6Link = `vless://${config.nodes[0].uuid}@[2001:db8::10]:443?security=tls&type=xhttp#IPv6`;
-    const ipv6Vmess = `vmess://${btoa(JSON.stringify({ add: '2001:db8::20', port: 443 }))}`;
-    const ipv6Shadowsocks = `ss://${btoa('aes-128-gcm:password@[2001:db8::30]:443')}#IPv6`;
-    const ipv4OnlyGeneric = make(async url => new Response(
-        new URL(url).origin === new URL(config.vpsSubUrl).origin
-            ? cf
-            : `ss://example#Remote\n${ipv6Link}\n${ipv6Vmess}\n${ipv6Shadowsocks}`,
-    ));
-    const ipv4OnlyGenericBody = atob(await (await ipv4OnlyGeneric(genericRequest)).text());
-    assert.ok(!ipv4OnlyGenericBody.includes('[2001:db8::10]'), 'generic output drops IPv6 literals');
-    assert.ok(!ipv4OnlyGenericBody.includes(ipv6Vmess), 'generic output drops VMess IPv6 literals');
-    assert.ok(!ipv4OnlyGenericBody.includes(ipv6Shadowsocks), 'generic output drops Shadowsocks IPv6 literals');
     const ws = `vless://${config.nodes[0].uuid}@192.0.2.2:443?security=tls&type=ws&sni=ws.example.com&host=ws.example.com&path=%2Fws#WebSocket`;
-    const wsLive = make(async url => new Response(
-        new URL(url).origin === new URL(config.vpsSubUrl).origin ? btoa(ws) : upstream,
-    ));
+    const wsLive = make(async () => new Response(btoa(ws)));
     const wsBody = await (await wsLive(request())).text();
     assert.ok(wsBody.includes('server: "192.0.2.2"'), 'Clash output preserves the WebSocket connection IP');
     assert.ok(wsBody.includes('servername: "ws.example.com"'), 'WebSocket TLS SNI remains the CDN domain');
@@ -512,7 +469,7 @@ try {
         4443,
         'extra Reality nodes may pin a fixed port',
     );
-    // CI supplies a pinned core: parse actual healthy/degraded/all-node responses.
+    // CI supplies a pinned core: parse actual healthy/fallback/all-node responses.
     if (process.env.MIHOMO_CHECK_BIN) {
         for (const [name, body] of Object.entries({liveBody, fallbackBody, allBody})) {
             const file = join(temp, `${name}.yaml`);
@@ -558,7 +515,7 @@ try {
     for (const domain of wechatDomains) {
         assert.ok(fakeIpFilter.includes(`      - '+.${domain}'\n`), `${domain} must bypass fake-IP`);
     }
-    // Both healthy and degraded aggregation must deliver the FCM DNS and IP-only routing fix.
+    // Both healthy and fallback subscriptions must deliver the FCM DNS and IP-only routing fix.
     for (const body of [liveBody, fallbackBody, allBody]) {
         assert.ok(body.includes("      - 'geosite:googlefcm'\n"));
         assert.ok(body.includes(`  - ${fcmProxyRule}\n`));
@@ -637,7 +594,7 @@ try {
         assert.ok(!proxyServices.includes(`        - '+.${domain}'\n`), `${domain} must not become a blanket proxy exception`);
     }
     for (const domain of [
-        'love.xflash.work', "'+.futooncdn.com'", "'+.steamcontent.com'",
+        "'+.futooncdn.com'", "'+.steamcontent.com'",
         "'+.cm.steampowered.com'", "'+.steamserver.net'", "'+.cmpassport.com'",
         "'+.httpdns.pro'", "'+.ctobsnssdk.com'", "'+.ugdtimg.com'", "'+.id6.me'", ...wechatDomains.map((domain) => `'+.${domain}'`),
     ]) {
@@ -688,5 +645,6 @@ try {
     assert.equal(cliRun.status, 0, `symlinked CLI must succeed: ${cliRun.stderr}`);
     assert.ok(existsSync(linkedOutput), 'symlinked CLI must still produce the Worker artifact');
 
+    assert.ok(sourceCalls.length > 0, 'own-source fetch spy must observe real requests');
     console.log('Worker build, authentication, shared policy, node injection and fallback checks passed');
 } finally { await rm(temp, {recursive:true, force:true}); }

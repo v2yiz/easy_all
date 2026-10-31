@@ -46,7 +46,7 @@ CLOUDFLARE_ORIGIN_CERT_ID=test-cert
 CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=2035-01-01T00:00:00Z
 ORIGIN_HEADER_SECRET=test-origin-secret-12345678
 WORKER_SOURCE_SECRET=test-worker-source-secret-12345
-WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
+WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
 SUBSCRIPTION_DOMAIN=sub.example.com
 cloudflare_ensure_origin_ca_root() { CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"; }
 systemctl() { :; }

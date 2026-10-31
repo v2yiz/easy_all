@@ -46,7 +46,8 @@ Cloudflare 域名和 API Token。
 
 安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务。建议先创建 VPS 快照，并保留当前
 SSH 会话，直到重启后确认新会话可以登录。服务商的安全组或云防火墙还需自行放行当前 SSH 端口
-以及业务所需的 TCP `443`。
+以及业务所需的 TCP `443`。Reality 使用动态端口时，还需放行 TCP `10000-62703`；VPS 安装和
+`apply` 会立即加载整段 NAT，重启后由 UFW 持久化规则和 `@reboot` 刷新任务恢复。
 
 ## 快速安装
 

@@ -242,7 +242,6 @@ rule-providers:
       type: inline
       behavior: domain
       payload:
-        - love.xflash.work
         - '+.futooncdn.com'
         - '+.steamcontent.com'
         - '+.cm.steampowered.com'

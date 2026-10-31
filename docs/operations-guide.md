@@ -102,10 +102,10 @@ sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-classic.yam
 ```
 
 Reality 自托管订阅会把选中的模板持久化到 `/etc/easy_all/mihomo-template.yaml`，之后的
-`apply`、`update-sub` 和动态端口轮换都沿用该模板；更换模板时在命令前传入新的
+`apply`、`update-sub` 和重启后的端口刷新都沿用该模板；更换模板时在命令前传入新的
 `MIHOMO_TEMPLATE_SOURCE`，安装器会用新模板覆盖上述文件。该快照随发布原子替换，但不在
 `update-sub` 失败回滚的恢复范围内：回滚只恢复 `state.env`、运行配置、订阅、证书、UFW 与
-crontab，快照可能比回滚后的状态新（后续 `apply` 或轮换会使用新模板）。Cloudflare 聚合订阅仍需在
+crontab，快照可能比回滚后的状态新（后续 `apply` 或重启刷新会使用新模板）。Cloudflare 聚合订阅仍需在
 `update-sub` 时传入模板，以重建并内嵌所选规则的 Worker。客户端使用同一聚合订阅时，只需在管理该
 Worker 的服务器更新一次，再让各客户端刷新订阅并重启内核；其他独立订阅需要分别更新。
 
@@ -285,7 +285,7 @@ Cloudflare 模式部署订阅时，Worker 使用与节点域名不同的同 Zone
 不含 `vpsSubUrl` 的 Worker 聚合 JSON；结构参考
 [`worker-src/config.example.json`](../worker-src/config.example.json)。
 
-安装器保留其中的 `nodes`、`externalSubUrl` 和 `fallbackCdnNodes`，并自动注入本机私有源。
+安装器保留其中的 `nodes` 和 `fallbackCdnNodes`，并自动注入本机私有源。
 若配置包含 `allowedTokens`，它会覆盖前一步设置的 Token。启用配额时，其用户名必须与配额用户
 完全一致。
 
@@ -329,11 +329,16 @@ Reality 数据流量直连 VPS `443`，只有自托管订阅 HTTPS 使用 Cloudf
 
 Reality 动态端口范围为 `10000-62703`（覆盖整年 366 天），每小时提供 6 个端口并在每次订阅请求时按时间挑选下发。
 UFW NAT 通过单条端口范围规则整段转发到 `443`（并对落在该范围内的 SSH 端口前置 `RETURN` 豁免），不会生成数万条单端口 allow 规则。
+安装和正常 `apply` 会立即生成并加载整段规则；即使在 `11:30` 安装，也无需等待整点。
+UFW 持久化这些规则并在开机时加载，受管 cron 使用单个 `@reboot` 任务再次刷新整段范围，替换旧的每小时任务。
+每日定时重启前不再刷新 NAT 或订阅，避免刷新失败阻止重启。固定 `443` 模式会移除受管动态端口任务。
+云安全组或服务商防火墙必须额外放行原始目标 TCP `10000-62703`；只放行 `443` 无法让动态端口到达 VPS。
+VPS 上的 UFW 在 NAT 重定向后按 `443` 规则放行，SSH `65533` 不在动态范围内。
 
 Reality 自托管订阅通过 Nginx njs 在每次 GET/HEAD 中读取当前用户模板，并按与 Worker 相同的
 上海时间算法选择端口；这是时间决定的六槽位选择，重复时间可以选中同一端口。固定 `443` 模式
-始终下发 `443`。DNS 监听、外部节点等模板端口保持原值。定时轮换继续重发模板，但请求端口
-不依赖模板重发。
+始终下发 `443`。DNS 监听、其他节点等模板端口保持原值。开机刷新仍会重新生成已部署的订阅模板，
+每次请求的六槽位端口选择独立于 cron，不依赖模板重发。
 
 全新安装的 Debian 12/13 Reality 自托管订阅使用系统仓库 `libnginx-mod-http-js`。
 安装与正常 `apply` 原子安装本服务脚本和两个端口模板，再运行 `nginx -t` 和本机

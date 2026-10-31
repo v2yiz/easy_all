@@ -121,6 +121,107 @@ function unavailable(response) {
 }
 
 try {
+    shell(`
+mkdir -p "$STATE_DIR" "$XRAY_DIR"
+printf '*filter\\nCOMMIT\\n' >"$UFW_BEFORE_RULES"
+printf '*filter\\nCOMMIT\\n' >"$UFW_BEFORE6_RULES"
+printf 'IPV6=no\\n' >"$UFW_DEFAULT_CONFIG"
+SUBSCRIPTION_MODE=link
+flock() { :; }
+ensure_ssh_boot_service() { :; }
+ensure_ssh_fail2ban() { :; }
+detect_ssh_ports() { SSH_PORTS=65533; }
+iptables-restore() { cat >/dev/null; }
+ufw() {
+    if [[ "$1" == status ]]; then
+        printf 'Status: active\\n'
+        if [[ "\${2:-}" == numbered ]]; then
+            printf '[ 1] 22/tcp DENY IN Anywhere # easy_all-managed\\n'
+            printf '[ 2] 65533/tcp ALLOW IN Anywhere # easy_all-managed\\n'
+            printf '[ 3] 443/tcp ALLOW IN Anywhere # easy_all-managed\\n'
+        fi
+    elif [[ "$1" == reload ]]; then
+        cp "$UFW_BEFORE_RULES" "$FIXTURE/active-nat.rules"
+    fi
+}
+crontab() {
+    if [[ "$1" == -l ]]; then cat "$FIXTURE/ports.cron"
+    elif [[ "$1" == - ]]; then cat >"$FIXTURE/ports.cron"
+    else cat "$1" >"$FIXTURE/ports.cron"; fi
+}
+# Installation/apply activates NAT synchronously, including an 11:30 installation.
+mock_hour=11
+mock_minute=30
+date() {
+    case "$*" in +%H) printf '%s\\n' "$mock_hour" ;; +%M) printf '%s\\n' "$mock_minute" ;; *) command date "$@" ;; esac
+}
+configure_ufw
+[[ "$DYNAMIC_PORT_MAX" == 62703 && "$DYNAMIC_PORT_MAX" -lt 65533 ]]
+expected='-A PREROUTING -p tcp --dport 10000:62703 -j REDIRECT --to-ports 443'
+[[ "$(grep -c '^-A PREROUTING' "$FIXTURE/active-nat.rules")" == 1 ]]
+grep -Fxq -- "$expected" "$FIXTURE/active-nat.rules"
+grep '^-A PREROUTING' "$FIXTURE/active-nat.rules" >"$FIXTURE/immediate-nat.rules"
+mock_hour=23
+mock_minute=59
+configure_ufw
+grep '^-A PREROUTING' "$FIXTURE/active-nat.rules" >"$FIXTURE/reapplied-nat.rules"
+cmp "$FIXTURE/immediate-nat.rules" "$FIXTURE/reapplied-nat.rules"
+cat >"$FIXTURE/ports.cron" <<CRON
+15 2 * * * /fixture/user-job
+1 */1 * * * /fixture/old-command rotate-dynamic-ports $CRON_DYNAMIC_PORT_MARKER
+1 */1 * * * /fixture/old-command rotate-dynamic-ports $CRON_DYNAMIC_PORT_MARKER
+@reboot /fixture/old-command rotate-dynamic-ports $CRON_DYNAMIC_PORT_MARKER
+CRON
+cp "$FIXTURE/ports.cron" "$FIXTURE/historical.cron"
+configure_dynamic_port_rotation
+managed=$(grep -F "$CRON_DYNAMIC_PORT_MARKER" "$FIXTURE/ports.cron")
+[[ "$(grep -Fc "$CRON_DYNAMIC_PORT_MARKER" "$FIXTURE/ports.cron")" == 1 ]]
+[[ "$managed" == "@reboot \\"$COMMAND_PATH\\" rotate-dynamic-ports >/dev/null 2>&1 $CRON_DYNAMIC_PORT_MARKER" ]] || { printf 'expected one @reboot refresh job\\n' >&2; exit 1; }
+grep -Fxq '15 2 * * * /fixture/user-job' "$FIXTURE/ports.cron"
+cp "$FIXTURE/ports.cron" "$FIXTURE/registered.cron"
+configure_dynamic_port_rotation
+cmp "$FIXTURE/registered.cron" "$FIXTURE/ports.cron"
+# Dispatch the generated command through an isolated CLI boundary; run the real refresh.
+fixture_command() { [[ "$1" == rotate-dynamic-ports ]]; rotate_dynamic_ports; }
+reboot_command=\${managed#@reboot }
+reboot_command=\${reboot_command/\\"$COMMAND_PATH\\"/fixture_command}
+printf '*filter\\nCOMMIT\\n' >"$UFW_BEFORE_RULES"
+eval "$reboot_command"
+grep -Fxq -- "$expected" "$FIXTURE/active-nat.rules"
+[[ "$RUNTIME_WRITE_LOCK_DEPTH" == 0 && "$QUOTA_MAINTENANCE_ACTIVE" == 0 ]]
+if (ufw() { return 1; }; rotate_dynamic_ports); then exit 1; fi
+# Fixed mode removes historical hourly entries and the new boot entry by marker only.
+printf '1 */1 * * * /fixture/old-command rotate-dynamic-ports %s\\n' "$CRON_DYNAMIC_PORT_MARKER" >>"$FIXTURE/ports.cron"
+SUB_PORT_MODE=443
+configure_dynamic_port_rotation
+! grep -Fq "$CRON_DYNAMIC_PORT_MARKER" "$FIXTURE/ports.cron"
+grep -Fxq '15 2 * * * /fixture/user-job' "$FIXTURE/ports.cron"
+# Rollback restores arbitrary saved managed content, preserving concurrent user jobs.
+printf '30 3 * * * /fixture/concurrent-job\\n' >>"$FIXTURE/ports.cron"
+restore_dynamic_port_rotation_schedule "$FIXTURE/historical.cron"
+grep -F "$CRON_DYNAMIC_PORT_MARKER" "$FIXTURE/ports.cron" >"$FIXTURE/restored-managed"
+grep -F "$CRON_DYNAMIC_PORT_MARKER" "$FIXTURE/historical.cron" >"$FIXTURE/saved-managed"
+cmp "$FIXTURE/saved-managed" "$FIXTURE/restored-managed"
+grep -Fxq '30 3 * * * /fixture/concurrent-job' "$FIXTURE/ports.cron"
+# Daily reboot uses the shared fallback and never performs a pre-reboot refresh.
+REBOOT_SCHEDULE_MODE=default
+configure_daily_reboot
+daily=$(grep -F "$CRON_REBOOT_MARKER" "$FIXTURE/ports.cron")
+[[ "$daily" == '0 4 * * * ( true ) && /usr/sbin/reboot '* ]]
+[[ "$daily" != *rotate-dynamic-ports* ]]
+fixture_reboot() { printf 'reboot\\n' >"$FIXTURE/reboot-called"; }
+daily_command=\${daily#'0 4 * * * '}
+daily_command=\${daily_command/\\/usr\\/sbin\\/reboot/fixture_reboot}
+eval "$daily_command"
+[[ "$(cat "$FIXTURE/reboot-called")" == reboot ]]
+# A genuine crontab read failure must never overwrite the saved schedule.
+if (
+    crontab() { [[ "$1" == -l ]] && { printf 'spool error\\n' >&2; return 2; }; touch "$FIXTURE/unexpected-cron-write"; }
+    SUB_PORT_MODE=dynamic
+    configure_dynamic_port_rotation
+); then exit 1; fi
+[[ ! -e "$FIXTURE/unexpected-cron-write" ]]
+`);
     shell(`mkdir -p "$STATE_DIR" "$XRAY_DIR"
 generate_subscription_files "$FIXTURE/base64.port-template" "$FIXTURE/mihomo.port-template"
 build_mihomo_node 443 >"$FIXTURE/reference-node.yaml"
@@ -405,6 +506,7 @@ source_state_file
 configure_ufw
 configure_dynamic_port_rotation
 cp "$STATE_FILE" "$FIXTURE/link-state.before"
+cp "$FIXTURE/rollback.cron" "$FIXTURE/link-cron.before"
 cp "$UFW_BEFORE_RULES" "$FIXTURE/link-nat.before"
 : >"$FIXTURE/rollback.log"
 apt-get() {
@@ -417,6 +519,7 @@ apt-get() {
 SUB_PORT_MODE=443
 if update_subscription 0; then printf 'failed deploy unexpectedly succeeded\\n' >&2; exit 1; fi
 cmp "$FIXTURE/link-state.before" "$STATE_FILE"
+cmp "$FIXTURE/link-cron.before" "$FIXTURE/rollback.cron"
 [[ "$SUB_PORT_MODE" == dynamic && "$SUBSCRIPTION_MODE" == link ]]
 diff -B "$FIXTURE/link-nat.before" "$UFW_BEFORE_RULES"
 grep -Fq -- '--dport 10000:62703' "$FIXTURE/active-nat.rules"
@@ -439,6 +542,7 @@ write_subscription_nginx_config
 configure_ufw
 snapshot_subscription_update
 cp "$STATE_FILE" "$FIXTURE/deploy-state.before"
+cp "$FIXTURE/rollback.cron" "$FIXTURE/deploy-cron.before"
 cp "$UFW_BEFORE_RULES" "$FIXTURE/deploy-nat.before"
 SUB_PORT_MODE=443
 configure_ufw
@@ -448,6 +552,7 @@ nginx() { printf 'nginx-validation-failed\\n' >>"$FIXTURE/rollback.log"; return 
 if rollback_subscription_update; then printf 'nginx recovery failure was hidden\\n' >&2; exit 1; fi
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 cmp "$FIXTURE/deploy-state.before" "$STATE_FILE"
+cmp "$FIXTURE/deploy-cron.before" "$FIXTURE/rollback.cron"
 [[ "$SUB_PORT_MODE" == dynamic && "$SUBSCRIPTION_MODE" == deploy ]]
 diff -B "$FIXTURE/deploy-nat.before" "$UFW_BEFORE_RULES"
 grep -Fq -- '--dport 10000:62703' "$FIXTURE/active-nat.rules"

@@ -24,7 +24,7 @@ npm run test:worker
 需要 Node.js 18 或更新版本及 Bash，无需安装 npm 依赖。自定义模板还需 Mihomo 内核校验，
 配置方法见[技术参考](../docs/technical-reference.md#测试)。
 
-- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点、外部订阅源和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口按北京时间每小时提供 6 个（`10000-62703`）并在每次请求时按时间挑选下发；所有节点统一输出 `ipVersion: ipv4`。
+- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口按北京时间每小时提供 6 个（`10000-62703`）并在每次请求时按时间挑选下发；所有节点统一输出 `ipVersion: ipv4`。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。安装器会把同一模板传给 Worker 构建。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。
@@ -42,13 +42,13 @@ Xray 系客户端自行协商。需要退回上一种 ClientHello 的节点，�
 `"supportX25519Mlkem768": false`：只对 `nodes` 里的 Reality 节点生效，指向 Xray 低于 26.9.8 的
 服务端时请设成 `false`。
 
-安装器自动部署的 Worker 不依赖外部 `externalSubUrl`：它将公开请求的 Token 转发到节点域名上的
+安装器自动部署的 Worker 将公开请求的 Token 转发到节点域名上的
 Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 显式启用
 `global_fetch_strictly_public`、关闭 `workers.dev` 和 Preview URL，并只绑定独立订阅 Custom Domain。
 自动部署脚本不内嵌公开用户 Token；Nginx 是用户与配额鉴权的唯一真源。订阅域名不得与节点域名相同；
 动态源失败时返回 `502`，源明确拒绝 Token 时返回 `403`，不会使用静态节点绕过用户配额。
 选择聚合时，安装器读取一份不含 `vpsSubUrl` 的 Worker 聚合 JSON，保留其中的 `nodes`、
-`externalSubUrl` 和 `fallbackCdnNodes`；其中的 `allowedTokens` 会覆盖安装器先前设置的 Token。
+`fallbackCdnNodes`；其中的 `allowedTokens` 会覆盖安装器先前设置的 Token。
 启用配额时用户名必须与配额用户一致。安装器再注入本机私有源 URL 与鉴权字段。
 最终配置由 `../scripts/build-worker.mjs` 正式校验构建，不由 shell 直接拼接。
 
@@ -56,14 +56,14 @@ Nginx 私有源，并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 
 `worker.js`。这个手工恢复版本内嵌当前 Token，动态源仍携带私有源密钥，并继续要求每次请求
 成功读取 VPS 节点；源不可用时返回 `502`。配额模式不会生成内嵌 Token 的恢复版本。
 
-`externalSubUrl` 指向的 Clash 上游仅提供 `proxies`。Worker 固定使用带版本的 Mihomo UA，使上游正确下发 Mieru 等需要能力识别的节点，同时避免透传客户端版本导致上游返回升级提示占位节点。支持缩进的 YAML block list，节点以 `name` 开头，或以 `name` 为首字段的单行 flow map；不支持任意 YAML 文档、外部锚点或依赖已移除上游策略组的节点。获取失败、格式不支持、升级提示占位节点或节点名称冲突时使用本地节点，响应带 `X-Easy-All-Warning: xflash-unavailable-local-only`。动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；PROXY 依次列出已配置的 US_VMISS、`🇺🇸白天首选`、`🇺🇸晚上首选`、`🇭🇰CF` 和其他已配置的节点。白天首选和 🇭🇰CF 是隐藏的自动测速组，所有代理流量统一使用 PROXY 当前选择。显式隐藏 `GLOBAL` 组仅包含 `PROXY`，没有 CDN 节点时白天首选使用 REJECT。
+动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；PROXY 依次列出已配置的 US_VMISS、`🇺🇸白天首选`、`🇺🇸晚上首选`、`🇭🇰CF` 和其他已配置的节点。白天首选和 🇭🇰CF 是隐藏的自动测速组，所有代理流量统一使用 PROXY 当前选择。显式隐藏 `GLOBAL` 组仅包含 `PROXY`，没有 CDN 节点时白天首选使用 REJECT。
 
 公共模板全局禁用 IPv6，保留国内 fake-ip 兼容性排除，是否直连仍由分流规则决定。
 国内路由、DNS 与 Fake-IP 过滤统一使用完整 `cn` 集合，覆盖高德、微信、豆包等服务。
 ChinaMax `cn` 包含整个 `.ms` 后缀，因此 `.ms` 在代理服务集合及代理 DNS 策略中优先匹配。
 Google/OpenAI/Anthropic 和明确的 Copilot、验证码、微软短链例外在分流与 DNS 中优先于国内集合和微软国内 CDN，
 统一经 `PROXY`；对应 UDP/443 先拒绝以回退 TCP。Google Play 接口、下载重定向和 APK CDN 保持同一代理策略。
-仅内嵌 `proxy-services`（25 条）与 `direct-cdn`（13 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
+仅内嵌 `proxy-services`（25 条）与 `direct-cdn`（12 条）两个小域名集合，复用于 DNS/路由，不新增外部规则下载。
 域名规则未命中时，正常 DNS 请求仍可按客户端、应用或模板 DNS 流程发生，但 CN GeoIP 兜底不会
 额外触发解析；Steam 下载、微信资源及 Apple/微软国内 CDN 直接使用国内 DoH。私有域名
 使用系统 DNS，并启用本机 hosts。
@@ -89,7 +89,6 @@ Worker，并在 VPS 重新生成模式 2 订阅。
 
 - `X-Easy-All-Version`：确认线上已更新。
 - `X-Easy-All-CDN-Nodes`：动态获取成功的节点数量。
-- `X-Easy-All-CDN-Warning`：动态获取失败原因（委托鉴权模式下恒为 `source-unavailable`，细节见 Worker 日志）；HTTP 403 检查 Cloudflare Security Events，challenge 表示收到 Cloudflare 挑战，解析错误表示正文没有可用节点，超时检查 Worker 到订阅域名的连接。上游错误的 `Content-Type` 不代表正文无效，外部订阅服务可能用 `text/html` 返回 Base64 或 YAML。
-- `X-Easy-All-Warning`：独立的 `externalSubUrl` 上游状态，与 VPS 动态节点获取结果不同。
+- `X-Easy-All-CDN-Warning`：动态获取失败原因（委托鉴权模式下恒为 `source-unavailable`，细节见 Worker 日志）；HTTP 403 检查 Cloudflare Security Events，challenge 表示收到 Cloudflare 挑战，解析错误表示正文没有可用节点，超时检查 Worker 到订阅域名的连接。源响应的 `Content-Type` 不代表正文无效，VPS 源可能用 `text/html` 返回 Base64。
 
 Cloudflare 配置问题不能靠更换 UA 修复。[Bot Fight Mode 不能被 WAF Skip 规则跳过](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/)；Super Bot Fight Mode 才支持该例外。[1042 表示同 Zone 的 Worker 子请求限制](https://developers.cloudflare.com/workers/observability/errors/)；自动部署固定启用 `global_fetch_strictly_public`，并将 Worker 与节点源绑定到不同主机名以避免递归。

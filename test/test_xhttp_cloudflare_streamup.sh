@@ -324,9 +324,10 @@ assert_contains "Generated Worker embeds the private source secret" \
     "${generated_worker_content}" '"sourceSecret":"test-worker-source-secret-12345"'
 assert_contains "Generated Worker embeds optional extra nodes" \
     "${generated_worker_content}" '"name":"Extra Reality"'
-assert_contains "Generated Worker preserves config.local externalSubUrl" \
-    "${generated_worker_content}" \
-    '"externalSubUrl":"https://extra.example.com/subscribe?token=extra-token"'
+assert_not_contains "Generated Worker strips the retired external source field" \
+    "${generated_worker_content}" 'externalSubUrl'
+assert_not_contains "Generated Worker strips the retired source URL" \
+    "${generated_worker_content}" 'https://extra.example.com/subscribe?token=extra-token'
 assert_contains "Generated Worker injects the locally generated vpsSubUrl" \
     "${generated_worker_content}" '"vpsSubUrl":"https://node.example.com/subscribe"'
 assert_not_contains "Generated Worker does not embed public subscription Tokens" \
@@ -368,15 +369,23 @@ assert_equal "Worker config normalizer keeps one Reality node" "1" \
     "$(normalize_worker_aggregation_config "${WORKER_AGGREGATION_CONFIG}" | jq '.nodes | length')"
 assert_equal "Worker config migrates the legacy preferred node name" "🇺🇸晚上首选" \
     "$(normalize_worker_aggregation_config \
-        '{"nodes":[{"name":"🇺🇸自建首选750G"}],"externalSubUrl":"","fallbackCdnNodes":[]}' \
+        '{"nodes":[{"name":"🇺🇸自建首选750G"}],"fallbackCdnNodes":[]}' \
         | jq -r '.nodes[0].name')"
 assert_equal "Worker config adds the country marker to the preferred node" "🇺🇸晚上首选" \
     "$(normalize_worker_aggregation_config \
-        '{"nodes":[{"name":"晚上首选"}],"externalSubUrl":"","fallbackCdnNodes":[]}' \
+        '{"nodes":[{"name":"晚上首选"}],"fallbackCdnNodes":[]}' \
         | jq -r '.nodes[0].name')"
 ALLOWED_TOKENS='{"owner":"test-token-12345"}'
 QUOTA_ENABLED=0
 normalized_worker_config=$(normalize_worker_aggregation_config "${WORKER_AGGREGATION_CONFIG}")
+assert_equal "Worker normalization drops the retired external source field" false \
+    "$(jq 'has("externalSubUrl")' <<<"${normalized_worker_config}")"
+assert_equal "Worker normalization accepts an inert legacy value of any type" \
+    '{"nodes":[],"fallbackCdnNodes":[]}' \
+    "$(normalize_worker_aggregation_config '{"externalSubUrl":{"stale":true}}')"
+if normalize_worker_aggregation_config '{"unrelatedUnknown":true}' >/dev/null 2>&1; then
+    fail "Worker config must still reject unrelated unknown fields"
+fi
 apply_worker_allowed_tokens_override "${normalized_worker_config}"
 assert_equal "config.local allowedTokens override installer tokens" \
     '{"owner":"config-override-token-12345"}' "${ALLOWED_TOKENS}"
@@ -626,6 +635,21 @@ expected_subscription_retirements=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS}
 save_state
 [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE}" ]] || fail "State file not created"
 state_content=$(<"${EASY_ALL_STATE_FILE_OVERRIDE}")
+assert_not_contains "State strips the retired external source field" "${state_content}" 'externalSubUrl'
+assert_not_contains "State strips the retired source URL" "${state_content}" 'extra.example.com/subscribe'
+(
+    # Load a real old state, then serialize it again with the retired field removed.
+    legacy_state="${TMP_DIR}/legacy-worker-state.env"
+    cp "${EASY_ALL_STATE_FILE_OVERRIDE}" "${legacy_state}"
+    legacy_aggregation=$(jq -c '. + {externalSubUrl:"https://extra.example.com/stale-state-sentinel"}' \
+        <<<"${WORKER_AGGREGATION_CONFIG}")
+    printf 'WORKER_AGGREGATION_CONFIG=%q\n' "${legacy_aggregation}" >>"${legacy_state}"
+    EASY_ALL_STATE_FILE_OVERRIDE=${legacy_state}
+    load_state
+    assert_not_contains "Loaded state discards the retired source" "${WORKER_AGGREGATION_CONFIG}" 'externalSubUrl'
+    save_state
+    assert_not_contains "Resaved state omits the retired URL" "$(<"${legacy_state}")" 'stale-state-sentinel'
+)
 assert_contains "State file protocol is cloudflare-streamup" "${state_content}" 'PROTOCOL=cloudflare-streamup'
 assert_contains "State file backend is xray" "${state_content}" 'BACKEND=xray'
 assert_contains "State file cdn is cloudflare" "${state_content}" 'CDN_PROVIDER=cloudflare'
@@ -1346,6 +1370,12 @@ assert_not_contains "Worker diagnostics redact token" "${worker_error}" 'private
     assert_equal "Worker acceptance recovery is marked for final reporting" \
         "1" "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}"
     recovery_worker=$(<"${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE}")
+    assert_not_contains "Manual recovery strips the retired external source field" \
+        "${recovery_worker}" 'externalSubUrl'
+    assert_not_contains "Manual recovery strips the retired source URL" \
+        "${recovery_worker}" 'extra.example.com/subscribe'
+    assert_not_contains "Manual recovery config strips the retired field" \
+        "$(<"${RUNTIME_TMP}/worker-recovery-config.json")" 'externalSubUrl'
     assert_contains "Recovery Worker embeds local Token validation" \
         "${recovery_worker}" '"delegateTokenValidation":false'
     assert_contains "Recovery Worker embeds the current Token set" \

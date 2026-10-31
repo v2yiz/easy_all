@@ -32,14 +32,12 @@ export async function buildWorker({
             (config.delegateTokenValidation === true || tokens.length > 0),
         'tokens must be unique strings of at least 8 characters'
     );
-    // Both URLs are optional. Without vpsSubUrl index.js falls back to fallbackCdnNodes, and the
-    // installer injects its own before deploying, so an aggregation input must omit it. When a
-    // URL is present it must still be a credential-free https endpoint.
-    for (const key of ['externalSubUrl', 'vpsSubUrl']) {
-        if (config[key] === undefined || config[key] === '') continue;
+    delete config.externalSubUrl;
+    // The installer injects its own VPS source before deploying an aggregation input.
+    if (config.vpsSubUrl !== undefined && config.vpsSubUrl !== '') {
         let url;
-        try { url = new URL(config[key]); } catch {}
-        requireValue(url?.protocol === 'https:' && !url.username && !url.password, key);
+        try { url = new URL(config.vpsSubUrl); } catch {}
+        requireValue(url?.protocol === 'https:' && !url.username && !url.password, 'vpsSubUrl');
     }
     requireValue(
         config.vpsCdnUseRequestToken === undefined || typeof config.vpsCdnUseRequestToken === 'boolean',
@@ -102,7 +100,7 @@ export async function buildWorker({
         }
     }
     requireValue(
-        config.nodes.length > 0 || config.requireDynamicCdn === true || Boolean(config.externalSubUrl),
+        config.nodes.length > 0 || config.requireDynamicCdn === true,
         'at least one node source'
     );
     const names = [...config.nodes, ...config.fallbackCdnNodes].map(node => node.name);

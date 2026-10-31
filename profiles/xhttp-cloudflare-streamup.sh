@@ -108,17 +108,17 @@ normalize_worker_aggregation_config() {
     local raw=${1:-}
     [[ -n "${raw}" ]] || raw='{}'
     jq -cer '
+      del(.externalSubUrl) |
       if type != "object" then
         error("Worker 聚合配置必须是 JSON object")
       elif has("vpsSubUrl") then
         error("Worker 聚合配置不得包含 vpsSubUrl")
-      elif ((keys - ["allowedTokens","nodes","externalSubUrl","fallbackCdnNodes"]) | length) != 0 then
+      elif ((keys - ["allowedTokens","nodes","fallbackCdnNodes"]) | length) != 0 then
         error("Worker 聚合配置包含不支持的字段")
       elif ((.nodes // []) | type) != "array"
         or ((.fallbackCdnNodes // []) | type) != "array"
-        or ((.externalSubUrl // "") | type) != "string"
         or (has("allowedTokens") and (.allowedTokens | type) != "object") then
-        error("allowedTokens/nodes/fallbackCdnNodes/externalSubUrl 类型无效")
+        error("allowedTokens/nodes/fallbackCdnNodes 类型无效")
       else
         {
           nodes:((.nodes // []) | map(
@@ -129,7 +129,6 @@ normalize_worker_aggregation_config() {
               ipVersion:"ipv4"
             } end
           )),
-          externalSubUrl:(.externalSubUrl // ""),
           fallbackCdnNodes:((.fallbackCdnNodes // []) | map(
             if ([.server // "", .host // ""] | any(tostring | contains(":"))) then
               error("fallbackCdnNodes 不允许 IPv6 literal")
@@ -161,17 +160,15 @@ apply_worker_allowed_tokens_override() {
 }
 
 choose_worker_aggregation_config() {
-    local choice="" count has_upstream raw current normalized
+    local choice="" count raw current normalized
     current=$(normalize_worker_aggregation_config \
         "${WORKER_AGGREGATION_CONFIG:-}") \
         || die "当前 Worker 聚合配置无效"
     count=$(jq '.nodes | length' <<<"${current}")
-    has_upstream=$(jq -r '.externalSubUrl != ""' <<<"${current}")
     if [[ -t 0 ]]; then
         printf '说明：Worker 聚合配置不得包含 vpsSubUrl；若包含 allowedTokens，将覆盖刚设置的用户 Token。\n' >&2
-        if ((count > 0)) || [[ "${has_upstream}" == "true" ]]; then
-            printf '当前 Worker 聚合配置：nodes=%s，externalSubUrl=%s\n' \
-                "${count}" "$([[ "${has_upstream}" == "true" ]] && printf 已配置 || printf 未配置)" >&2
+        if ((count > 0)); then
+            printf '当前 Worker 聚合配置：nodes=%s\n' "${count}" >&2
             printf '  1. 保留\n  2. 替换 Worker 聚合 JSON\n  3. 清空聚合配置\n' >&2
             read_bilingual "请选择 [1]（直接回车保留）:" choice
             case "${choice:-1}" in
@@ -342,7 +339,6 @@ cloudflare_build_subscription_worker() {
         --arg download_name "${SUB_DOWNLOAD_NAME}" '{
           allowedTokens:{},
           nodes:$aggregation.nodes,
-          externalSubUrl:$aggregation.externalSubUrl,
           vpsSubUrl:$source_url,
           vpsCdnUseRequestToken:true,
           delegateTokenValidation:true,
@@ -408,7 +404,6 @@ cloudflare_build_manual_worker_recovery() {
         --arg download_name "${SUB_DOWNLOAD_NAME}" '{
           allowedTokens:$allowed_tokens,
           nodes:$aggregation.nodes,
-          externalSubUrl:$aggregation.externalSubUrl,
           vpsSubUrl:$source_url,
           vpsCdnUseRequestToken:true,
           delegateTokenValidation:false,
@@ -1549,7 +1544,7 @@ collect_install_inputs() {
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
-        WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
+        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
         choose_monthly_quota 0
     fi
     collect_worker_backup_inputs
@@ -2043,10 +2038,8 @@ show_status() {
         printf '公开订阅: Cloudflare Worker %s（%s）\n' \
             "${CLOUDFLARE_WORKER_NAME}" "${SUBSCRIPTION_DOMAIN}"
         printf 'Nginx 订阅源: 私有，仅允许 Worker 专用密钥访问\n'
-        printf '聚合配置: nodes=%s，externalSubUrl=%s，fallbackCdnNodes=%s\n' \
+        printf '聚合配置: nodes=%s，fallbackCdnNodes=%s\n' \
             "$(jq '.nodes | length' <<<"${WORKER_AGGREGATION_CONFIG}")" \
-            "$(jq -r 'if .externalSubUrl == "" then "未配置" else "已配置（URL 隐藏）" end' \
-                <<<"${WORKER_AGGREGATION_CONFIG}")" \
             "$(jq '.fallbackCdnNodes | length' <<<"${WORKER_AGGREGATION_CONFIG}")"
         printf 'Nginx: '
         systemctl is-active --quiet nginx 2>/dev/null \
@@ -2327,7 +2320,7 @@ update_subscription() {
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
-        WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
+        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
         choose_monthly_quota 0
     fi
     collect_worker_backup_inputs
@@ -2354,7 +2347,7 @@ update_subscription() {
         CLOUDFLARE_WORKER_DOMAIN_ID=""
         CLOUDFLARE_WORKER_NAME=""
         WORKER_SOURCE_SECRET=""
-        WORKER_AGGREGATION_CONFIG='{"nodes":[],"externalSubUrl":"","fallbackCdnNodes":[]}'
+        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
     fi
     cloudflare_validate_cdn_health
     if ((previous_subscription_enabled == 1)); then

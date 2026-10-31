@@ -681,7 +681,7 @@ configure_dynamic_port_rotation() {
             || die "写入 root crontab 失败"
         return 0
     fi
-    job="1 */${DYNAMIC_PORT_ROTATION_HOURS} * * * \"${COMMAND_PATH}\" rotate-dynamic-ports >/dev/null 2>&1 ${CRON_DYNAMIC_PORT_MARKER}"
+    job="@reboot \"${COMMAND_PATH}\" rotate-dynamic-ports >/dev/null 2>&1 ${CRON_DYNAMIC_PORT_MARKER}"
     { printf '%s\n' "${current}" | filter_dynamic_port_cron; printf '%s\n' "${job}"; } \
         | crontab - || die "写入 root crontab 失败"
 }
@@ -994,10 +994,6 @@ generate_subscription_port() {
     dynamic_port_for_current_window
 }
 
-scheduled_reboot_profile_pre_command() {
-    printf '"%s" rotate-dynamic-ports >/dev/null 2>&1' "${COMMAND_PATH}"
-}
-
 rotate_dynamic_ports() {
     require_root
     begin_quota_maintenance
@@ -1010,7 +1006,7 @@ rotate_dynamic_ports() {
     ufw reload >/dev/null || die "刷新动态端口 NAT 规则失败"
     if subscription_enabled; then
         install_static_subscriptions
-        # Persist the snapshot flag so later scheduled rotations reuse the same template.
+        # Persist the snapshot flag so later refreshes reuse the same template.
         save_state
     fi
     end_quota_maintenance

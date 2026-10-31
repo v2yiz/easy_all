@@ -38,6 +38,8 @@ Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 
 
 所有模式都需要一台没有其他代理面板占用端口和配置的专用 VPS。CDN 模式使用
 Globalping 中国大陆探针定向/精选优选 IPv4。
+Reality 动态端口模式还需在云安全组或服务商防火墙放行 TCP `10000-62703`（覆盖闰年最大端口），
+仅放行 `443` 不够；固定端口模式使用 TCP `443`。安装和 `apply` 会立即加载完整动态范围，无需等整点。
 
 ## 1. 先注册域名并交给 Provider 托管
 
@@ -219,7 +221,7 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   时返回 `502`。配额模式仍失败回滚，不生成内嵌 Token 的恢复版本。
 - 可选输入一份不含 `vpsSubUrl` 的 Worker 聚合 JSON；字段参考
   [`worker-src/config.example.json`](../worker-src/config.example.json)。安装器保留其中的
-  `nodes`、`externalSubUrl`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的
+  `nodes`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的
   用户 Token。安装器再注入本机生成的 `vpsSubUrl` 与私有源配置。交互先完成用户 Token/配额设置，
   再询问“是否需要进行订阅聚合”；
   选择需要后隐藏输入 JSON，并交给 `build-worker.mjs` 校验构建、自动部署。

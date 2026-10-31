@@ -205,6 +205,26 @@ assert_contains "Cloudflare node prompt forbids pre-created DNS" \
 assert_contains "Cloudflare command result includes Xray" \
     "${XHTTP_CONTENT}" 'Cloudflare Worker 订阅、Origin CA 与回源规则已更新'
 
+for content in "${README_CONTENT}" "${PREPARATION_CONTENT}" "${OPERATIONS_CONTENT}" "${TECHNICAL_CONTENT}"; do
+    assert_contains "Reality docs include the cloud security group range" "${content}" '10000-62703'
+done
+for content in "${OPERATIONS_CONTENT}" "${TECHNICAL_CONTENT}"; do
+    assert_contains "Reality docs explain immediate mid-hour activation" "${content}" '`11:30`'
+    assert_contains "Reality docs explain boot refresh scheduling" "${content}" '`@reboot`'
+    assert_contains "Reality docs separate port selection from cron" "${content}" '独立于 cron'
+done
+
+WORKER_README_CONTENT=$(<"${ROOT_DIR}/worker-src/README.md")
+WORKER_EXAMPLE_CONTENT=$(<"${ROOT_DIR}/worker-src/config.example.json")
+for content in "${ALL_DOCS}" "${WORKER_README_CONTENT}" "${WORKER_EXAMPLE_CONTENT}"; do
+    assert_not_contains "documentation omits the removed subscription source" "${content}" 'externalSubUrl'
+    assert_not_contains "documentation omits the removed provider" "${content}" 'xflash'
+done
+for template in mihomo.yaml mihomo-common.yaml mihomo-classic.yaml; do
+    assert_not_contains "shipped templates omit the removed provider exception" \
+        "$(<"${ROOT_DIR}/templates/${template}")" 'love.xflash.work'
+done
+
 for legacy_term in AWS Amazon CloudFront 'Route 53' 'xhttp-aws' 'aws-cdn'; do
     assert_not_contains "documentation excludes ${legacy_term}" "${ALL_DOCS}" "${legacy_term}"
     assert_not_contains "launcher excludes ${legacy_term}" "${LAUNCHER_CONTENT}" "${legacy_term}"

@@ -155,16 +155,14 @@ try {
             fetch: async () => { throw Error('offline'); }});
         const api = vm.runInContext(source.replace(/export default \{[\s\S]*$/, '({buildClashConfig, LOCAL_NODES, MIHOMO_TEMPLATE});'), context);
         assert.equal(api.MIHOMO_TEMPLATE, template);
-        for (const upstream of ['', 'proxies:\n  - {name: Remote, type: socks5, server: 127.0.0.1, port: 9}\nrules:\n  - MATCH,DIRECT\n']) {
-            const body = api.buildClashConfig(api.LOCAL_NODES, [443], upstream);
-            assert.equal(body.split('\nrule-providers:\n')[1], template.split('\nrule-providers:\n')[1].replace('# EASY_ALL_WORKER_RULE', ''));
-            assert.ok(!body.includes('# EASY_ALL_'));
-            if (binary) {
-                const file = join(temp, `${filename}-rendered.yaml`);
-                await writeFile(file, body);
-                const checked = spawnSync(binary, ['-t', '-d', process.env.MIHOMO_CHECK_HOME || temp, '-f', file], {encoding: 'utf8'});
-                assert.equal(checked.status, 0, `${filename}: ${checked.stdout} ${checked.stderr}`);
-            }
+        const body = api.buildClashConfig(api.LOCAL_NODES, [443]);
+        assert.equal(body.split('\nrule-providers:\n')[1], template.split('\nrule-providers:\n')[1].replace('# EASY_ALL_WORKER_RULE', ''));
+        assert.ok(!body.includes('# EASY_ALL_'));
+        if (binary) {
+            const file = join(temp, `${filename}-rendered.yaml`);
+            await writeFile(file, body);
+            const checked = spawnSync(binary, ['-t', '-d', process.env.MIHOMO_CHECK_HOME || temp, '-f', file], {encoding: 'utf8'});
+            assert.equal(checked.status, 0, `${filename}: ${checked.stdout} ${checked.stderr}`);
         }
         assert.ok(!template.includes('GEOSITE,'), 'COMMON must not load the DAT domain database');
         assert.ok(!template.includes('DOMAIN-KEYWORD,'), 'broad keywords must not override domestic services');
