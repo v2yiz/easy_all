@@ -42,6 +42,7 @@ readonly XRAY_SERVICE_FILE="/etc/systemd/system/easy_all-xray.service"
 readonly XRAY_SERVICE="easy_all-xray.service"
 readonly XRAY_SERVICE_DESCRIPTION="Xray Trojan direct managed by easy_all"
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
+readonly NGINX_DEFAULT_SITE="/etc/nginx/sites-enabled/default"
 readonly NGINX_SITE_LISTEN="127.0.0.1:8080"
 readonly NGINX_SITE_PORT="8080"
 readonly CERT_RENEW_SERVICE_FILE="/etc/systemd/system/easy_all-cert-renew.service"
@@ -731,7 +732,10 @@ install_static_site() {
 write_site_nginx_config() {
     [[ -f "${SITE_ROOT}/index.html" ]] \
         || die "静态站点未就绪：${SITE_ROOT}"
-    rm -f -- /etc/nginx/sites-enabled/default
+    if [[ -e "${NGINX_DEFAULT_SITE}" || -L "${NGINX_DEFAULT_SITE}" ]]; then
+        rm -f -- "${NGINX_DEFAULT_SITE}" \
+            || die "移除 Nginx 默认站点失败：${NGINX_DEFAULT_SITE}"
+    fi
     cat >"${RUNTIME_TMP}/easy_all.conf" <<EOF
 # Managed by easy_all: Trojan fallback static site.
 # Only Xray may reach this listener; it is never exposed directly.

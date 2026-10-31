@@ -85,6 +85,7 @@ prepare_profile_copy() {
         -e "s|^readonly XRAY_CONFIG=.*|readonly XRAY_CONFIG=\"${TMP_DIR}/state/xray/config.json\"|" \
         -e "s|^readonly XRAY_SERVICE_FILE=.*|readonly XRAY_SERVICE_FILE=\"${TMP_DIR}/easy_all-xray.service\"|" \
         -e "s|^readonly NGINX_CONFIG=.*|readonly NGINX_CONFIG=\"${TMP_DIR}/easy_all-nginx.conf\"|" \
+        -e "s|^readonly NGINX_DEFAULT_SITE=.*|readonly NGINX_DEFAULT_SITE=\"${TMP_DIR}/nginx/sites-enabled/default\"|" \
         -e "s|^readonly CERT_RENEW_SERVICE_FILE=.*|readonly CERT_RENEW_SERVICE_FILE=\"${TMP_DIR}/cert-renew.service\"|" \
         -e "s|^readonly CERT_RENEW_TIMER_FILE=.*|readonly CERT_RENEW_TIMER_FILE=\"${TMP_DIR}/cert-renew.timer\"|" \
         -e "s|^readonly UFW_BEFORE_RULES=.*|readonly UFW_BEFORE_RULES=\"${TMP_DIR}/before.rules\"|" \
@@ -246,7 +247,11 @@ test_static_site_rendering() {
         "$(stat -c '%a' "${SITE_ROOT}/assets/style.css" 2>/dev/null \
             || stat -f '%Lp' "${SITE_ROOT}/assets/style.css")"
 
+    install -d -m 0755 "$(dirname -- "${NGINX_DEFAULT_SITE}")"
+    printf 'default server\n' >"${NGINX_DEFAULT_SITE}"
     write_site_nginx_config
+    [[ ! -e "${NGINX_DEFAULT_SITE}" ]] \
+        || fail_test "fallback publishing must remove the distro default site"
     nginx_conf=$(<"${NGINX_CONFIG}")
     assert_contains "fallback listener is loopback only" \
         'listen 127.0.0.1:8080 default_server;' "${nginx_conf}"
