@@ -154,7 +154,7 @@ test_syntax_and_wiring() {
     assert_contains "launcher routes certificate renewal" \
         'trojan-direct) renew_trojan_certificate' "${launcher}"
     assert_contains "launcher allows dynamic port rotation for Trojan" \
-        'reality | trojan-direct) rotate_dynamic_ports' "${launcher}"
+        'reality | trojan-direct | mieru-direct) rotate_dynamic_ports' "${launcher}"
     assert_contains "runtime manifest ships the Trojan profile" \
         'profiles/trojan-direct.sh' "${manifest}"
     assert_contains "runtime manifest ships the fallback site" \
