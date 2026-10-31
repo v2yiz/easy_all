@@ -313,25 +313,35 @@ test_lego_release_urls() {
         "$(lego_asset_url "${LEGO_CHECKSUMS}")"
 }
 
-test_ssh_restore_restarts_stale_listener() {
-    (
-        local log="${TMP_DIR}/ssh-restore.log" state="${TMP_DIR}/ssh-restore.state"
-        local fakebin="${TMP_DIR}/fakebin"
-        trap 'rm -f -- "${log}" "${state}"; rm -rf -- "${fakebin}"' EXIT
-        install -d -m 0755 "${fakebin}" "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")"
-        cat >"${fakebin}/sshd" <<'EOF'
+prepare_ssh_restore_fixture() {
+    local fakebin="${TMP_DIR}/fakebin"
+    rm -rf -- "${fakebin}" "${BACKUP_DIR}"
+    install -d -m 0755 "${fakebin}" "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")"
+    install -d -m 0700 "${BACKUP_DIR}"
+    cat >"${fakebin}/sshd" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "-t" ]]; then exit 0; fi
 printf 'listenaddress 0.0.0.0:22\n'
 EOF
-        chmod 0755 "${fakebin}/sshd"
-        export PATH="${fakebin}:${PATH}"
-        rm -rf -- "${BACKUP_DIR}"
-        install -d -m 0700 "${BACKUP_DIR}"
-        printf '# Managed by easy_all\nPort 65533\n' >"${EASY_ALL_SSH_PORT_CONFIG}"
-        : >"${log}"
+    chmod 0755 "${fakebin}/sshd"
+    export PATH="${fakebin}:${PATH}"
+    printf '# Managed by easy_all\nPort 65533\n' >"${EASY_ALL_SSH_PORT_CONFIG}"
+    : >"${TMP_DIR}/ssh-restore.log"
+    sleep() { :; }
+    ufw() { return 0; }
+    fail2ban-client() { return 0; }
+}
+
+ssh_restore_log() {
+    cat "${TMP_DIR}/ssh-restore.log"
+}
+
+test_ssh_restore_restarts_stale_listener() {
+    (
+        local state="${TMP_DIR}/ssh-restore.state"
+        trap 'rm -f -- "${state}"; rm -rf -- "${TMP_DIR}/fakebin"' EXIT
+        prepare_ssh_restore_fixture
         printf 'stale\n' >"${state}"
-        sleep() { :; }
         ss() {
             if [[ "$(<"${state}")" == "restarted" ]]; then
                 printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=12,fd=3))\n'
@@ -340,18 +350,47 @@ EOF
             fi
         }
         systemctl() {
-            printf 'systemctl %s\n' "$*" >>"${log}"
+            printf 'systemctl %s\n' "$*" >>"${TMP_DIR}/ssh-restore.log"
             if [[ "$1 $2" == "restart ssh.service" ]]; then printf 'restarted\n' >"${state}"; fi
             return 0
         }
-        ufw() { return 0; }
-        fail2ban-client() { return 0; }
         restore_platform_security_state || return 1
-        grep -Fq 'systemctl reload ssh.service' "${log}" || return 1
-        grep -Fq 'systemctl restart ssh.service' "${log}" || return 1
+        grep -Fq 'systemctl reload ssh.service' "${TMP_DIR}/ssh-restore.log" || return 1
+        grep -Fq 'systemctl restart ssh.service' "${TMP_DIR}/ssh-restore.log" || return 1
         [[ ! -e "${EASY_ALL_SSH_PORT_CONFIG}" ]] || return 1
     ) || fail_test "SSH restore must restart when a reload leaves the listener stale"
     TESTS_RUN=$((TESTS_RUN + 1))
+}
+
+test_ssh_restore_accepts_ipv6_twin_listener() {
+    (
+        prepare_ssh_restore_fixture
+        # A restored pre-install sshd binds both families on its port; only the
+        # IPv4 endpoints participate in the comparison.
+        ss() {
+            printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=12,fd=3))\n'
+            printf 'LISTEN 0 128 [::]:22 [::]:* users:(("sshd",pid=12,fd=3))\n'
+        }
+        systemctl() {
+            printf 'systemctl %s\n' "$*" >>"${TMP_DIR}/ssh-restore.log"
+            return 0
+        }
+        restore_platform_security_state || return 1
+        grep -Fq 'systemctl reload ssh.service' "${TMP_DIR}/ssh-restore.log" || return 1
+        ! grep -Fq 'systemctl restart ssh.service' "${TMP_DIR}/ssh-restore.log" || return 1
+        [[ ! -e "${EASY_ALL_SSH_PORT_CONFIG}" ]] || return 1
+    ) || fail_test "SSH restore must ignore the IPv6 twin of the restored listener"
+    TESTS_RUN=$((TESTS_RUN + 1))
+}
+
+test_xray_download_defaults() {
+    assert_equal "shared core defaults the Xray release API" \
+        "https://api.github.com/repos/XTLS/Xray-core/releases/latest" \
+        "${XRAY_RELEASES_API}"
+    assert_equal "shared core defaults the Xray archive" \
+        "Xray-linux-64.zip" "${XRAY_ARCHIVE}"
+    assert_equal "shared core defaults the Xray digest" \
+        "Xray-linux-64.zip.dgst" "${XRAY_DGST}"
 }
 
 test_dynamic_port_rules() {
@@ -557,7 +596,9 @@ main() {
     test_static_site_rendering
     test_xray_config
     test_lego_release_urls
+    test_xray_download_defaults
     test_ssh_restore_restarts_stale_listener
+    test_ssh_restore_accepts_ipv6_twin_listener
     test_dynamic_port_rules
     test_state_roundtrip
     test_certificate_guard_and_hook

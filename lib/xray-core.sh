@@ -4,6 +4,12 @@
 
 export XRAY_LOCATION_ASSET="${XRAY_DIR}"
 
+# Profiles may override these before sourcing the runtime; the shared core keeps
+# its own defaults so a new profile cannot leave the download unbound.
+: "${XRAY_RELEASES_API:=https://api.github.com/repos/XTLS/Xray-core/releases/latest}"
+: "${XRAY_ARCHIVE:=Xray-linux-64.zip}"
+: "${XRAY_DGST:=Xray-linux-64.zip.dgst}"
+
 xray_installed_version() {
     [[ -s "${XRAY_DIR}/version" ]] \
         && cat "${XRAY_DIR}/version" || printf 'unknown\n'

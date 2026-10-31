@@ -1,3 +1,14 @@
+## 1.7.2 更新说明（2026-11-06）
+
+- 修复 Trojan 直连在「[5/8] 下载并安装 Xray 核心」报 `XRAY_RELEASES_API: unbound variable`：
+  `lib/xray-core.sh` 之前依赖 Profile 预先定义 Xray Release 常量，Trojan Profile 没有定义。共享核心现在
+  自带默认值（`XRAY_RELEASES_API`、`XRAY_ARCHIVE`、`XRAY_DGST`），Profile 仍可覆盖，其它模式行为不变。
+- 修复回滚/卸载恢复 SSH 时把 `[::]:22` 当作多余监听而误判失败（期望仅 IPv4、实际 IPv4+IPv6）：
+  实际监听列表改为与期望一致只比较 IPv4 端点，失败提示标注“仅 IPv4”并去掉多余分隔符。
+- 补充 Xray 下载默认常量与 IPv4/IPv6 双栈 SSH 恢复的测试（共 70 条 Trojan 断言）。
+- 兼容性：状态版本、命令与聚合订阅格式不变。1.7.1 安装失败后可直接重新运行安装命令，回滚保留的
+  `65533` 配置与备份会被复用；需要回到原 SSH 端口时安装成功后执行 `easy_all uninstall`。
+
 ## 1.7.1 更新说明（2026-11-06）
 
 - 修复 Trojan 直连模式在签发证书前下载 lego 时 404：GitHub Release 下载地址缺少版本 tag，归档资产名

@@ -137,7 +137,7 @@ restore_platform_security_state() {
         ssh_restored=0
     fi
     if ((ssh_restored == 0)); then
-        warn "SSH 监听未收敛：期望 [${expected_listeners//$'\n'/, }]，实际 [$(ssh_actual_listeners 2>/dev/null | tr '\n' ',')]"
+        warn "SSH 监听未收敛（仅 IPv4）：期望 [$(tr '\n' ' ' <<<"${expected_listeners}")]，实际 [$(ssh_actual_listeners 2>/dev/null | tr '\n' ' ')]"
         warn "SSH 配置、实际监听或 deny22 撤销检查失败；保留当前 65533 配置、防火墙、状态与备份，卸载/回滚未完成"
         restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${current_ssh_config}" "${current_ssh_had}" \
             || warn "尝试保留恢复前的 SSH 配置或重载失败，请立即通过 Console 检查"
@@ -252,7 +252,9 @@ detect_ssh_ports() {
 }
 
 # sshd -T may retain Port entries alongside explicit ListenAddress endpoints.
-# Only the effective IPv4 endpoints determine the supported listener set.
+# Only the effective IPv4 endpoints determine the supported listener set; the
+# actual socket list is filtered the same way, because a restored pre-install
+# sshd legitimately binds both 0.0.0.0 and [::] on its port.
 ssh_effective_listeners() {
     local output
     output=$("$1" -T 2>/dev/null) || return 1
@@ -262,7 +264,7 @@ ssh_effective_listeners() {
 ssh_actual_listeners() {
     local output
     output=$(ss -H -ltnp 2>/dev/null) || return 1
-    awk '/users:\(\("(sshd|systemd)"/ {print $4}' <<<"${output}" | sort -u
+    awk '/users:\(\("(sshd|systemd)"/ && $4 !~ /^\[/ {print $4}' <<<"${output}" | sort -u
 }
 
 wait_for_ssh_listeners() {
