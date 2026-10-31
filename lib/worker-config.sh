@@ -23,6 +23,10 @@ normalize_worker_aggregation_config() {
         or ((.fallbackCdnNodes // []) | type) != "array"
         or (has("allowedTokens") and (.allowedTokens | type) != "object") then
         error("allowedTokens/nodes/fallbackCdnNodes 类型无效")
+      elif ((.nodes // []) | map(select((.type // "vless") != "vless" and (.type // "vless") != "trojan")) | length) != 0 then
+        error("nodes 仅支持 vless 或 trojan 节点")
+      elif ((.fallbackCdnNodes // []) | map(select((.type // "vless") != "vless")) | length) != 0 then
+        error("fallbackCdnNodes 仅支持 vless 节点")
       else
         {
           nodes:((.nodes // []) | map(

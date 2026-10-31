@@ -32,6 +32,17 @@
       "sid": "0123456789abcdef",
       "fp": "chrome",
       "ipVersion": "ipv4"
+    },
+    {
+      "type": "trojan",
+      "name": "Trojan example",
+      "host": "trojan.example.com",
+      "port": 443,
+      "password": "replace-with-a-long-trojan-password",
+      "sni": "trojan.example.com",
+      "alpn": ["http/1.1"],
+      "fp": "chrome",
+      "ipVersion": "ipv4"
     }
   ]
 }

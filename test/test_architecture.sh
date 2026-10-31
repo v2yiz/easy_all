@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
+TROJAN_PROFILE="${ROOT_DIR}/profiles/trojan-direct.sh"
 XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 RUNTIME_CORE="${ROOT_DIR}/lib/runtime-core.sh"
@@ -78,6 +79,10 @@ shared_modules=(
     tcp-tuning.sh
 )
 
+[[ "${RUNTIME_MANIFEST_CONTENT}" == *'profiles/trojan-direct.sh'* \
+    && "${RUNTIME_MANIFEST_CONTENT}" == *'templates/site/index.html'* \
+    && "$(<"${TROJAN_PROFILE}")" == *'source "${SCRIPT_DIR}/runtime-core.sh"'* ]] \
+    || fail "Trojan Profile and its fallback site must be packaged with the runtime"
 [[ "${RUNTIME_MANIFEST_CONTENT}" == *'lib/globalping-cdn.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_LIB_DIR}/globalping-cdn.sh"'* ]] \
     || fail "Globalping CDN module is missing from the Cloudflare profile"
@@ -158,6 +163,8 @@ for module in log.sh runtime-core.sh platform.sh profile-common.sh network.sh mi
         [[ -n "${function_name}" ]] || continue
         ! grep -Eq "^${function_name}\\(\\)" "${REALITY_PROFILE}" \
             || fail "Reality redefines shared function ${function_name}"
+        ! grep -Eq "^${function_name}\\(\\)" "${TROJAN_PROFILE}" \
+            || fail "Trojan Profile redefines shared function ${function_name}"
         ! grep -Eq "^${function_name}\\(\\)" "${XHTTP_RUNTIME}" \
             || fail "XHTTP runtime redefines shared function ${function_name}"
         ! grep -Eq "^${function_name}\\(\\)" "${CLOUDFLARE_PROFILE}" \

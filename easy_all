@@ -25,6 +25,7 @@ readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_
 readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
 readonly REALITY_MIN_STATE_VERSION="6"
 readonly CLOUDFLARE_MIN_STATE_VERSION="9"
+readonly TROJAN_MIN_STATE_VERSION="1"
 readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
@@ -71,7 +72,7 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality 或 Cloudflare CDN
+  install          交互选择 Reality、Trojan 直连或 Cloudflare CDN
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -81,11 +82,13 @@ launcher_usage() {
                    选择 TCP 加速（默认 BBRv3；Skyline 仅用于极高非拥塞随机丢包）
   reality-target [域名:端口]
                    修改 Reality SNI（伪装目标）并重新应用
+  rotate-dynamic-ports
+                   立即刷新直连模式的动态端口 NAT 规则
   apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅输出与用户/配额
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   update-core      更新 Xray 核心
-  renew-cert       轮换当前 CDN 模式的源站/Provider 证书
+  renew-cert       轮换当前模式的 TLS 证书（Trojan 直连为 Let's Encrypt 续期）
   quota-status     显示用户配额与 Xray 本地统计
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
@@ -112,20 +115,27 @@ easy_all install
 │  │     可选聚合 JSON（另外两台节点）、Token/配额
 │  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
 │  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
-└─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）
-   ├─ 适用场景：直连效果不佳、VPS 公网 IP 已被封，或明确追求 Cloudflare CDN 纯 XHTTP
-   ├─ 前提条件：域名需已接入 Cloudflare 完整托管 Zone
-   ├─ 流量口径：实时回源；VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）
-   ├─ 入口 IP 族：固定 IPv4，输出 6 个三网精选节点
-   ├─ VPS、Xray 与客户端统一固定 IPv4
-   ├─ 采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up 极速流模式
-   ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4
-   ├─ 6 个 XHTTP 节点使用 AUTO 组；可选纯 Worker 节点使用 🇭🇰CF 自动测速组
-   ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
-   ├─ Worker 名称可指定（默认 easyall），订阅域名必须与节点域名不同
-   ├─ 可选输入不含 vpsSubUrl 的 Worker 聚合 JSON；本机注入源 URL 后构建 Worker
-   ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
-   └─ 零损失就地平滑安装/迁移
+├─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）
+│  ├─ 适用场景：直连效果不佳、VPS 公网 IP 已被封，或明确追求 Cloudflare CDN 纯 XHTTP
+│  ├─ 前提条件：域名需已接入 Cloudflare 完整托管 Zone
+│  ├─ 流量口径：实时回源；VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）
+│  ├─ 入口 IP 族：固定 IPv4，输出 6 个三网精选节点
+│  ├─ VPS、Xray 与客户端统一固定 IPv4
+│  ├─ 采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up 极速流模式
+│  ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4
+│  ├─ 6 个 XHTTP 节点使用 AUTO 组；可选纯 Worker 节点使用 🇭🇰CF 自动测速组
+│  ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
+│  ├─ Worker 名称可指定（默认 easyall），订阅域名必须与节点域名不同
+│  ├─ 可选输入不含 vpsSubUrl 的 Worker 聚合 JSON；本机注入源 URL 后构建 Worker
+│  ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
+│  └─ 零损失就地平滑安装/迁移
+└─ [3] 直连 - Trojan（TLS 真证书 + 回落静态站点）
+   ├─ 适用场景：需要浏览器可直接访问的伪装站点，且希望用密码登录而非 UUID
+   ├─ 前提条件：一个 Cloudflare 托管 Zone 下的节点域名 + Zone:DNS:Edit Token
+   ├─ 证书：Cloudflare DNS-01 签发 Let's Encrypt 证书，systemd 定时器自动续期
+   ├─ 回落：Xray TLS 443 终止后把非 Trojan 流量交给 Nginx 127.0.0.1:8080 静态站点
+   ├─ 端口：固定 443，或 dynamic（10000-62703 全部重定向到 443）
+   └─ 输出：trojan:// 链接与 Mihomo 节点片段；不部署在线订阅
 订阅输出：只有当前服务器时推荐本机订阅；多台直连节点需要统一下发时选择 Worker 订阅聚合
 （在其中一台部署，其余节点写入聚合 JSON）；不需要订阅时保持默认的仅节点。
 Worker 聚合会额外占用两个 Cloudflare 一级子域名：公开订阅域名绑定 Worker，私有节点源域名由
@@ -168,6 +178,11 @@ detect_installed_mode() {
                 || launcher_die "Cloudflare 状态版本无效（当前：${state_version:-缺失}，最低兼容：${CLOUDFLARE_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
             printf 'cloudflare-streamup\n'
             ;;
+        trojan)
+            state_version_supported "${state_version}" "${TROJAN_MIN_STATE_VERSION}" \
+                || launcher_die "Trojan 状态版本无效（当前：${state_version:-缺失}，最低兼容：${TROJAN_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
+            printf 'trojan-direct\n'
+            ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
         esac
         return
@@ -180,10 +195,12 @@ choose_install_mode() {
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
     printf '  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）\n' >&2
+    printf '  3. 直连 - Trojan（TLS 真证书 + 回落静态站点，需要 Cloudflare 域名）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare-streamup\n' ;;
+    3) printf 'trojan-direct\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -193,6 +210,7 @@ profile_file() {
     case "${mode}" in
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare-streamup) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare-streamup.sh" ;;
+    trojan-direct) candidate="${EASY_ALL_ROOT}/profiles/trojan-direct.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -311,6 +329,8 @@ dispatch_profile_command() {
         apply_cloud_resources
         ;;
     update-sub)
+        [[ "${mode}" != "trojan-direct" ]] \
+            || launcher_die "Trojan 直连不提供订阅；请使用 easy_all subscription 查看节点"
         if [[ "${mode}" == "reality" ]]; then
             update_subscription 1
         else
@@ -328,16 +348,22 @@ dispatch_profile_command() {
         fi
         ;;
     renew-cert)
-        if [[ "${mode}" == "reality" ]]; then
-            renew_subscription_certificate
-        else
-            renew_certificate
-        fi
+        case "${mode}" in
+        reality) renew_subscription_certificate ;;
+        trojan-direct) renew_trojan_certificate 1 ;;
+        *) renew_certificate ;;
+        esac
+        ;;
+    cert-renew)
+        [[ "${mode}" == "trojan-direct" ]] \
+            || launcher_die "cert-renew 仅适用于 Trojan 直连模式"
+        renew_trojan_certificate
         ;;
     rotate-dynamic-ports)
-        [[ "${mode}" == "reality" ]] \
-            || launcher_die "rotate-dynamic-ports 仅适用于 Reality 模式"
-        rotate_dynamic_ports
+        case "${mode}" in
+        reality | trojan-direct) rotate_dynamic_ports ;;
+        *) launcher_die "rotate-dynamic-ports 仅适用于直连模式" ;;
+        esac
         ;;
     quota-sync)
         quota_sync_usage

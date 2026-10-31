@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Product — Northlake Analytics</title>
+<meta name="description" content="Governed models, warehouse-native queries, review workflow and an API that returns the same number everywhere.">
+<link rel="canonical" href="https://__EASY_ALL_SITE_DOMAIN__/product.html">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="/" aria-label="Northlake Analytics home">
+      <img src="/assets/logo.svg" alt="" width="32" height="32">
+      <span>Northlake</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+      <span class="nav-toggle-bar"></span><span class="sr-only">Menu</span>
+    </button>
+    <nav id="primary-nav" class="site-nav" aria-label="Primary">
+      <a href="/product.html" aria-current="page">Product</a>
+      <a href="/pricing.html">Pricing</a>
+      <a href="/docs.html">Docs</a>
+      <a href="/about.html">Company</a>
+      <a href="/contact.html">Contact</a>
+    </nav>
+    <div class="header-actions">
+      <a class="link-quiet" href="/docs.html#quickstart">Sign in</a>
+      <a class="button button-small" href="/contact.html">Book a demo</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="page-head">
+    <div class="container narrow">
+      <p class="eyebrow">Product</p>
+      <h1>One governed model, from raw events to board metrics</h1>
+      <p class="lede">Northlake sits on top of the warehouse you already own and adds the parts spreadsheets never had: definitions, tests, owners and review.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container split split-wide">
+      <div>
+        <h2>Model once, read everywhere</h2>
+        <p>Sources are declared in version control, not clicked together in a browser. Every model carries an owner, a description and SQL tests that run on each change.</p>
+        <ul class="check-list">
+          <li>Automatic lineage from source table to published metric</li>
+          <li>Freshness and volume monitors with alert routing</li>
+          <li>Environment separation for staging and production models</li>
+        </ul>
+      </div>
+      <div class="code-card">
+        <div class="code-title">models/activation_daily.sql</div>
+        <pre><code>select
+  date_trunc('day', e.occurred_at) as day,
+  e.workspace_id,
+  min(e.occurred_at) filter (where e.name = 'first_report') as activated_at
+from events.raw_events e
+where e.occurred_at &gt;= current_date - interval '400 days'
+group by 1, 2</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-muted">
+    <div class="container">
+      <header class="section-head">
+        <h2>What teams use it for</h2>
+        <p>Three of the most common starting points. All of them share the same governed definitions.</p>
+      </header>
+      <div class="grid grid-3">
+        <article class="card">
+          <h3>Product analytics</h3>
+          <p>Activation, retention and feature adoption from event streams, with cohorts defined in SQL instead of a black-box builder.</p>
+        </article>
+        <article class="card">
+          <h3>Revenue operations</h3>
+          <p>MRR movement reconciled against billing, so finance and sales argue about the deal, not the number.</p>
+        </article>
+        <article class="card">
+          <h3>Support health</h3>
+          <p>Ticket volume, first response and reopen rate joined to account tier and plan.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <header class="section-head">
+        <h2>How data moves</h2>
+        <p>No second copy of your data. Queries are pushed down to the warehouse under read-only credentials.</p>
+      </header>
+      <ol class="flow">
+        <li><span class="flow-step">01</span><h3>Sources</h3><p>Event streams, billing exports and support tools land in your warehouse.</p></li>
+        <li><span class="flow-step">02</span><h3>Models</h3><p>Northlake templates generate tested SQL in your warehouse, owned by your team.</p></li>
+        <li><span class="flow-step">03</span><h3>Delivery</h3><p>Dashboards, scheduled reports and the HTTP API read the same model outputs.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section section-muted">
+    <div class="container">
+      <header class="section-head">
+        <h2>Engineering details</h2>
+        <p>For the people who will actually run it.</p>
+      </header>
+      <div class="grid grid-2">
+        <article class="card">
+          <h3>Deployment</h3>
+          <p>A single container in your VPC, or a private tenant in ours. Outbound HTTPS only, no inbound firewall changes.</p>
+        </article>
+        <article class="card">
+          <h3>Access control</h3>
+          <p>SAML SSO, SCIM provisioning and role-based access down to model and column level.</p>
+        </article>
+        <article class="card">
+          <h3>Auditability</h3>
+          <p>Every query, publish and permission change is written to an append-only audit log you can export.</p>
+        </article>
+        <article class="card">
+          <h3>Backups</h3>
+          <p>Model definitions live in git. Metadata snapshots run hourly with 35-day retention.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band">
+    <div class="container cta-inner">
+      <div>
+        <h2>See it against your own warehouse</h2>
+        <p>A 30-minute session with a solutions engineer, using a read-only replica of your data.</p>
+      </div>
+      <a class="button button-inverse" href="/contact.html">Book a demo</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div>
+      <a class="brand" href="/">
+        <img src="/assets/logo.svg" alt="" width="28" height="28">
+        <span>Northlake</span>
+      </a>
+      <p class="footer-note">Operational analytics for teams that ship.<br>Portland · Berlin · Singapore</p>
+    </div>
+    <nav aria-label="Product">
+      <h2>Product</h2>
+      <ul>
+        <li><a href="/product.html">Overview</a></li>
+        <li><a href="/pricing.html">Pricing</a></li>
+        <li><a href="/docs.html">Documentation</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Company">
+      <h2>Company</h2>
+      <ul>
+        <li><a href="/about.html">About</a></li>
+        <li><a href="/contact.html">Contact</a></li>
+        <li><a href="/.well-known/security.txt">Security</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Resources">
+      <h2>Resources</h2>
+      <ul>
+        <li><a href="/docs.html#api">API reference</a></li>
+        <li><a href="/docs.html#status">Service status</a></li>
+        <li><a href="/sitemap.xml">Sitemap</a></li>
+      </ul>
+    </nav>
+  </div>
+  <div class="container footer-bottom">
+    <p>© <span data-year>2026</span> Northlake Analytics, Inc. All rights reserved.</p>
+    <p><a href="/docs.html#terms">Terms</a> · <a href="/docs.html#privacy">Privacy</a></p>
+  </div>
+</footer>
+<script src="/assets/app.js" defer></script>
+</body>
+</html>

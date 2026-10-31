@@ -127,6 +127,18 @@ for content in "${README_CONTENT}" "${PREPARATION_CONTENT}" "${OPERATIONS_CONTEN
     assert_contains "Reality subscription output is documented" "${content}" 'Worker 订阅聚合'
     assert_contains "Reality aggregation documents the private source domain" "${content}" '私有节点源域名'
 done
+assert_contains "README documents the Trojan mode" "${README_CONTENT}" '3. 直连 Trojan'
+assert_contains "README documents the Trojan fallback site" "${README_CONTENT}" '非 Trojan 流量回落到'
+assert_contains "technical reference documents Cloudflare DNS-01" \
+    "${TECHNICAL_CONTENT}" 'Cloudflare DNS-01'
+assert_contains "technical reference documents the loopback fallback listener" \
+    "${TECHNICAL_CONTENT}" '127.0.0.1:8080'
+assert_contains "operations guide documents the certificate renewal timer" \
+    "${OPERATIONS_CONTENT}" 'easy_all-cert-renew.timer'
+assert_contains "preparation guide documents the Trojan token scope" \
+    "${PREPARATION_CONTENT}" 'Zone / DNS / Edit'
+assert_contains "client guide documents the Trojan ALPN requirement" \
+    "${CLIENT_CONTENT}" 'alpn'
 assert_contains "README documents the new Reality default" "${README_CONTENT}" '1. 仅节点（默认）'
 assert_contains "operations guide documents the Reality three-way menu" \
     "${OPERATIONS_CONTENT}" '「仅节点（默认）」「本机订阅」或'
@@ -236,6 +248,14 @@ done
 
 WORKER_README_CONTENT=$(<"${ROOT_DIR}/worker-src/README.md")
 WORKER_EXAMPLE_CONTENT=$(<"${ROOT_DIR}/worker-src/config.example.json")
+assert_contains "worker README documents the Trojan aggregation template" \
+    "${WORKER_README_CONTENT}" 'Trojan 模板'
+assert_contains "worker example config carries a Trojan node" \
+    "${WORKER_EXAMPLE_CONTENT}" '"type": "trojan"'
+assert_contains "operations guide documents Trojan aggregation nodes" \
+    "${OPERATIONS_CONTENT}" '只允许写在 `nodes`'
+assert_contains "technical reference documents Trojan aggregation rendering" \
+    "${TECHNICAL_CONTENT}" 'clashTrojanNode'
 for content in "${ALL_DOCS}" "${WORKER_README_CONTENT}" "${WORKER_EXAMPLE_CONTENT}"; do
     assert_not_contains "documentation omits the removed subscription source" "${content}" 'externalSubUrl'
     assert_not_contains "documentation omits the removed provider" "${content}" 'xflash'

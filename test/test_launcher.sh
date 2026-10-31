@@ -318,6 +318,17 @@ assert_failure_contains "stale Cloudflare state explains reinstall prerequisite"
     "如需全新安装，请先执行 easy_all uninstall" \
     detect_installed_mode
 
+printf 'STATE_VERSION=1\nPROTOCOL=trojan\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "Trojan state selects the Trojan profile" "trojan-direct" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=2\nPROTOCOL=trojan\n' >"${EASY_ALL_STATE_FILE}"
+assert_equal "newer Trojan state selects the Trojan profile" "trojan-direct" "$(detect_installed_mode)"
+
+printf 'STATE_VERSION=0\nPROTOCOL=trojan\n' >"${EASY_ALL_STATE_FILE}"
+assert_failure_contains "stale Trojan state explains reinstall prerequisite" \
+    "如需全新安装，请先执行 easy_all uninstall" \
+    detect_installed_mode
+
 printf 'STATE_VERSION=9\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_failure_contains "legacy singbox-cf state is rejected" \
     "无法识别已安装协议" \
@@ -352,7 +363,8 @@ import subprocess
 import sys
 
 # Python's PTY works on both Linux and macOS; their script(1) flags differ.
-for answer, expected in [(b'\n', 'reality'), (b'2\n', 'cloudflare-streamup')]:
+for answer, expected in [(b'\n', 'reality'), (b'2\n', 'cloudflare-streamup'),
+                             (b'3\n', 'trojan-direct')]:
     master, slave = os.openpty()
     try:
         process = subprocess.Popen(
@@ -373,7 +385,8 @@ fi
 
 [[ "${launcher_content}" == *"1) printf 'reality"* \
     && "${launcher_content}" == *"2) printf 'cloudflare-streamup"* \
-    && "${launcher_content}" != *"3) printf"* ]] \
+    && "${launcher_content}" == *"3) printf 'trojan-direct"* \
+    && "${launcher_content}" != *"4) printf"* ]] \
     || fail "installation choices must retain only the supported modes in order"
 
 printf 'ok - easy_all launcher tests passed\n'

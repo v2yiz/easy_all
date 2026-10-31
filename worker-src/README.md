@@ -27,6 +27,29 @@ npm run test:worker
 
 - `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口按北京时间每小时提供 6 个（`10000-62703`）并在每次请求时按时间挑选下发；所有节点统一输出 `ipVersion: ipv4`。
   Reality 安装器注入的 `vpsSubUrl` 指向私有节点源（`https://<源域名>:8443/subscribe`），源返回 Reality URI 订阅；Worker 解析后保留原始节点名和端口，把它们直接放进 `PROXY`，不改名成 `🇺🇸优选N`，也不放进 CDN/Worker 测速组。
+- 聚合 `nodes` 支持 VLESS/Reality 与 Trojan/TLS 两种直连节点。Trojan 模板（占位密码）见
+  `config.example.json` 的第二个节点：
+
+  ```json
+  {
+    "type": "trojan",
+    "name": "Trojan example",
+    "host": "trojan.example.com",
+    "port": 443,
+    "password": "replace-with-a-trojan-password",
+    "sni": "trojan.example.com",
+    "alpn": ["http/1.1"],
+    "fp": "chrome",
+    "ipVersion": "ipv4"
+  }
+  ```
+
+  `password` 必填且只允许 8-64 位字母、数字或 `.` `_` `~` `-`；`sni` 缺省等于 `host`；`port` 缺省 `443`；
+  `alpn` 只能是 `http/1.1` 或 `h2`（数组或逗号分隔字符串，可省略）；`network` 只能是 `tcp`。
+  Trojan 节点只能写入 `nodes`，不能写入 `fallbackCdnNodes`。Mihomo 输出 `type: trojan`、
+  `udp: true`、`skip-cert-verify: false`，base64 输出 `trojan://<密码>@<域名>:<端口>?...`；节点名保持
+  原样进入 `PROXY`，不参与 CDN 自动命名。Trojan 模式本身不部署 Worker，节点信息用
+  `easy_all show` 复制后填入任意已部署聚合的 `nodes` 即可。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。安装器会把同一模板传给 Worker 构建。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。

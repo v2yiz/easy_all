@@ -5,7 +5,7 @@
 - 只支持 IPv4。
 - 服务器为 Debian 12/13、amd64、systemd、非容器环境。
 - 同一台 VPS 只能安装一种模式，且应由 easy_all 独占 Xray、Nginx 和相关端口。
-- 两种模式默认安装 XanMod LTS 内核并使用 `fq + BBRv3`，可选 Skyline Speeder；均关闭
+- 三种模式默认安装 XanMod LTS 内核并使用 `fq + BBRv3`，可选 Skyline Speeder；均关闭
   `tcp_slow_start_after_idle`。
 - Xray 阻断私网、链路本地、回环、组播和保留地址，并拒绝境外 UDP/443，使 QUIC 回退 TCP。
 - Mihomo 节点固定使用 `ip-version: ipv4`；普通出站使用 `ForceIPv4` + `UseIPv4`。
@@ -13,7 +13,7 @@
 脚本全局禁用 IPv6。Reality 域名若发布 AAAA，安装或 `apply` 会停止；A 记录必须指向当前 VPS
 公网 IPv4。
 
-两种模式成功安装或应用后，SSH 仅监听 TCP `65533`。UFW 先添加并验证 `65533` 放行，再将
+三种模式成功安装或应用后，SSH 仅监听 TCP `65533`。UFW 先添加并验证 `65533` 放行，再将
 本工具的 TCP `22` deny 放到首位，优先于已有的 OpenSSH/22 allow；重复应用不累积 deny。
 Fail2ban 的 SSH jail 端口固定为 `65533`。旧连接中的端口仅用于诊断，不进入最终放行集合。
 订阅不按 SSH 端口或进程名强制直连；
@@ -90,6 +90,13 @@ UFW 的 `before.rules` 受管 NAT 区块以单条范围规则转发到 Xray `443
 客户端仍按每次请求的时间从当前小时的 6 个端口中选择，独立于 cron。
 云安全组必须允许原始目标 TCP `10000-62703` 到达 VPS；UFW 在重定向后按 `443` 放行，SSH `65533` 在范围之外。
 
+聚合 JSON 的 `nodes` 允许两种直连节点：VLESS/Reality 与 Trojan/TLS。Trojan 节点由
+`trojanLink()` 渲染 base64 URI、由 `clashTrojanNode()` 渲染 Mihomo YAML，端口缺省 `443`，
+`password` 限制为 8-64 位字母、数字或 `.` `_` `~` `-`，`alpn` 仅接受 `http/1.1` 或 `h2`；两者都在
+`lib/worker-config.sh` 的结构校验与 `scripts/build-worker.mjs` 的字段校验中提前拒绝非法输入。
+`fallbackCdnNodes` 仍然只接受 VLESS/CDN 兜底节点，Trojan 只能出现在 `nodes`。直连节点保持原始
+名称进入 `PROXY`，不会像动态 CDN 节点那样被改名为 `🇺🇸优选N`。
+
 自托管订阅使用独立的 Cloudflare 一级子域：
 
 ```text
@@ -98,6 +105,51 @@ UFW 的 `before.rules` 受管 NAT 区块以单条范围规则转发到 Xray `443
 
 Reality 数据链路仍然直连 VPS，不经过 Cloudflare。VPS `8443` 只允许 Cloudflare 官方 IPv4
 回源段。
+
+## 直连 Trojan
+
+模式 3 使用 Trojan over TLS，Xray 监听 TCP `443`。与 Reality 不同，Trojan 需要面向公众可验证的
+证书，因此安装器使用 Cloudflare DNS-01 签发 Let's Encrypt 证书，并用静态站点承接回落流量：
+
+```text
+客户端 --TLS--> VPS:443 Xray(trojan) --authenticated--> 代理出站
+                             └─ 其他流量 --> 127.0.0.1:8080 Nginx 静态站点
+```
+
+- TLS 只提供 `http/1.1` ALPN、最低 TLS 1.2；回落目标写死为 `dest: 8080, xver: 0`，Nginx 只监听
+  `127.0.0.1:8080`，不对外暴露端口，也不设置任何 `easy_all` 健康检查路径。
+- 静态站点由 `templates/site/` 渲染，`__EASY_ALL_SITE_DOMAIN__` 占位符在发布前替换为节点域名；
+  首页、产品、定价、文档、公司、联系、404、`robots.txt`、`sitemap.xml` 与
+  `/.well-known/security.txt` 均为自包含文件，不引用外部字体或脚本。
+- 证书客户端是固定版本 `v4.35.2` 的 lego：从 GitHub Release 下载归档与同名 `checksums` 文件，
+  校验 SHA256 后才安装到 `/etc/easy_all/acme/lego`，避免 Debian 打包版本缺少 DNS Provider。
+- `run --run-hook` 与 `renew --days 30 --renew-hook` 共用同一安装钩子：先原子替换
+  `/etc/easy_all/certs/fullchain.pem` 与 `private.key`（`0600`），再在服务已安装时重启 Xray。
+- `easy_all-cert-renew.timer` 每天 `03:23`、`15:23`（带 30 分钟随机延迟）运行
+  `easy_all cert-renew`；未到续期时间时不重启服务，续期后校验证书与私钥匹配。
+- Cloudflare Token 只在 `/etc/easy_all/acme/cloudflare-dns.env`（`0600`）中保存供自动续期使用，
+  提示输入时走共享 `prompt_secret`，不进入命令行参数或日志。
+- 非交互安装可用 `NODE_HOST`、`TROJAN_PASSWORD`、`TROJAN_PORT_MODE`、`TROJAN_ACME_EMAIL` 与
+  `CLOUDFLARE_API_TOKEN` 提供输入；`NODE_HOST` 必须属于 Token 可访问的 Active Zone。
+- 安装器创建的 A 记录固定 `proxied=false` 且带 `easy_all trojan direct node` 注释；同名 AAAA、
+  CNAME 或注释不匹配的记录会直接失败，不会覆盖他人配置。
+- 固定 443 与 dynamic 端口共用同一份 UFW NAT 实现：dynamic 以单条 `PREROUTING` 规则把
+  `10000-62703` REDIRECT 到 `443`，范围内 SSH 端口前置 `RETURN`，并由受管 `@reboot` 任务在重启后
+  恢复；`easy_all rotate-dynamic-ports` 可手工刷新。
+- 运行时不启用 Xray Stats API 与配额，`subscription` 命令只显示节点信息，`update-sub` 明确拒绝。
+
+Trojan 状态不使用订阅字段，重启与 apply 只依赖下列值：
+
+```text
+STATE_VERSION=1  # Trojan
+PROTOCOL=trojan
+NODE_HOST=节点域名
+TROJAN_PASSWORD=8-64 位 [A-Za-z0-9._~-]
+TROJAN_PORT_MODE=443|dynamic
+TROJAN_ACME_EMAIL=ACME 注册邮箱
+CLOUDFLARE_ZONE_ID/CLOUDFLARE_ZONE_NAME
+TROJAN_DNS_RECORD_ID=easy_all 托管的 A 记录 ID
+```
 
 ## Cloudflare XHTTP
 
@@ -282,6 +334,7 @@ easy_all
 ├─ runtime.manifest
 ├─ profiles/
 │  ├─ reality.sh
+│  ├─ trojan-direct.sh
 │  └─ xhttp-cloudflare-streamup.sh
 ├─ lib/
 │  ├─ log.sh
@@ -305,7 +358,8 @@ easy_all
 ├─ templates/
 │  ├─ mihomo.yaml
 │  ├─ mihomo-common.yaml
-│  └─ mihomo-classic.yaml
+│  ├─ mihomo-classic.yaml
+│  └─ site/                  # Trojan 回落静态站点模板
 ├─ worker-src/
 │  ├─ index.js
 │  └─ backup.js
@@ -339,6 +393,7 @@ Reality 本机订阅与 Worker 聚合共用同一份私有节点源：token map 
 关键状态字段：
 
 ```text
+STATE_VERSION=1  # Trojan
 STATE_VERSION=8  # Reality
 STATE_VERSION=9  # Cloudflare XHTTP
 PROTOCOL=reality|cloudflare-streamup
@@ -372,8 +427,10 @@ macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm
 这些测试使用伪请求对象，真实 Debian 12/13 包激活、alias+njs 权限、HTTP HEAD/Content-Length
 和日志隔离仍需要完整 OS 隔离环境的 Nginx 集成验证，不能把本机模拟结果当成真实 HTTP 通过。
 
-测试覆盖入口和模块完整性、Reality、Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、
-订阅渲染、Token 鉴权、证书轮换、Worker 构建和更新顺序。
+测试覆盖入口和模块完整性、Reality、Trojan（含回落站点渲染、NAT 范围与 A 记录保护）、
+Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、订阅渲染、Token 鉴权、证书轮换、
+Worker 构建和更新顺序。`test/test_trojan_direct.sh` 用隔离路径与命令替身验证配置渲染、状态
+读写与错误路径，不触碰真实系统服务；真实 Debian 上的证书签发与 systemd 定时器仍需部署验收。
 
 订阅模板的发布检查固定使用 Mihomo v1.19.32，GitHub Actions 同时校验完整 Reality 订阅及
 Worker 正常、降级、全部节点输出。可在本机用已有内核和 Geo 数据运行同样检查：

@@ -9,6 +9,29 @@ sudo easy_all subscription
 复制带 `flag=clash` 的 Mihomo 地址，在客户端的“从 URL 导入”位置添加并启用。
 订阅地址和 UUID 都是访问凭据，不要公开。
 
+Trojan 直连模式不部署在线订阅，`easy_all subscription` 直接输出节点信息：把 `trojan://` 链接粘贴到
+客户端“从剪贴板导入”，或把 Mihomo 片段手工加到代理列表。Trojan 节点示例：
+
+```yaml
+  - name: "MY_TROJAN"
+    type: trojan
+    server: "node.example.com"
+    port: 443
+    password: "你的密码"
+    network: tcp
+    udp: true
+    sni: "node.example.com"
+    alpn:
+      - http/1.1
+    skip-cert-verify: false
+    client-fingerprint: chrome
+    ip-version: ipv4
+```
+
+`port` 必须是 `443`，或 `dynamic` 模式 `10000-62703` 范围内的任意端口；`sni` 必须与证书域名一致，
+`alpn` 必须是 `http/1.1`（服务端只提供该 ALPN）。Trojan 模式不要填写 Reality 的 `pbk`/`sid`，
+也不要启用 `allowInsecure`/`skip-cert-verify`。
+
 ## 客户端选择
 
 | 平台 | 推荐客户端 |
@@ -38,6 +61,12 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 “能导入”不代表所有节点都能连接。Shadowrocket 的更新记录虽然包含 XHTTP 和
 `stream-up` 修复，但未逐项确认上述字段和 `stream-one` 的完整兼容性，因此目前不把 Shadowrocket 列为
 本项目的已验证客户端。
+
+## 回落站点说明
+
+Trojan 直连把非 Trojan 流量交给静态站点，所以浏览器访问 `https://节点域名` 会看到正常的企业官网，
+这是设计行为。如果同一域名在浏览器显示证书错误或无法打开，而客户端也连不上，优先检查 A 记录是否
+仍指向本机 IPv4、证书是否过期（`sudo easy_all status`），而不是怀疑站点被替换。
 
 ## Clash Mi 模式
 

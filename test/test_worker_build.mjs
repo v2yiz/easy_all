@@ -41,6 +41,7 @@ try {
     config.nodes.push({ ...config.nodes[0], name: 'Hidden Reality', host: 'hidden.example.com' });
     config.nodes.push({ ...config.nodes[0], name: 'Optional VMISS', host: 'vmiss.example.com', optional: true });
     config.fallbackCdnNodes = [{ type: 'vless', security: 'tls', network: 'xhttp', name: 'Fallback CF', host: 'fallback.example.com', uuid: config.nodes[0].uuid, path: '/xhttp/', mode: 'stream-up' }];
+    assert.equal(config.nodes[1].type, 'trojan', 'example config documents a Trojan direct node');
     const configPath = join(temp, 'config.json');
     const outputPath = join(temp, 'worker.mjs');
     await writeFile(configPath, JSON.stringify(config));
@@ -73,7 +74,7 @@ try {
             }));
             await assert.rejects(
                 buildWorker({ configPath: reservedNamePath, outputPath, now }),
-                /Reality node names must not use reserved CDN names/,
+                /direct node names must not use reserved CDN names/,
                 `${name} must be reserved for generated CDN nodes`,
             );
             assert.equal(await readFile(outputPath, 'utf8'), initial, 'name conflict preserves previous Worker');
@@ -110,16 +111,57 @@ try {
     await writeFile(configPath, JSON.stringify(config));
     await assert.rejects(buildWorker({ configPath, outputPath }), /ML-KEM flag/);
     delete config.nodes[0].supportX25519Mlkem768;
+    // Trojan direct nodes are validated as direct-only TLS nodes.
+    config.nodes[1].password = 'short';
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /trojan password/);
+    config.nodes[1].password = 'test-password-0123456789abcdef';
+    config.nodes[1].network = 'ws';
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /trojan network/);
+    config.nodes[1].network = 'tcp';
+    config.nodes[1].alpn = ['h3'];
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /trojan alpn/);
+    config.nodes[1].alpn = 'http/1.1';
+    config.fallbackCdnNodes.push({ ...config.nodes[1], name: 'Trojan fallback' });
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /trojan nodes must be direct nodes/);
+    config.fallbackCdnNodes.pop();
+    config.nodes[1].alpn = ['http/1.1'];
     await writeFile(configPath, JSON.stringify(config));
     await buildWorker({ configPath, outputPath, now: now + 240_000 });
     source = await readFile(outputPath, 'utf8');
+    assert.ok(source.includes('"type":"trojan"'), 'Trojan direct nodes are embedded in the Worker');
     await writeFile(configPath, '{invalid');
     await assert.rejects(buildWorker({ configPath, outputPath }));
     assert.equal(await readFile(outputPath, 'utf8'), source, 'failed build preserves artifact');
     const context = vm.createContext({ URL, URLSearchParams, Headers, Response, AbortController, TextEncoder, TextDecoder, atob, btoa, setTimeout, clearTimeout, fetch: async () => { throw Error('offline'); }, console: { error() {}, warn() {} } });
-    const api = vm.runInContext(source.replace(/export default \{[\s\S]*$/, '({createWorkerHandler, resolveNodePorts, buildClashConfig, fetchVpsSubscription, PRIVATE_CONFIG, LOCAL_NODES});'), context);
+    const api = vm.runInContext(source.replace(/export default \{[\s\S]*$/, '({createWorkerHandler, resolveNodePorts, buildClashConfig, buildBase64Subscription, fetchVpsSubscription, PRIVATE_CONFIG, LOCAL_NODES});'), context);
     assert.ok(!source.includes(config.externalSubUrl), 'build strips the removed source URL');
     assert.equal(api.PRIVATE_CONFIG.externalSubUrl, undefined);
+    const trojanLinkValue = atob(api.buildBase64Subscription([{
+        type: 'trojan',
+        name: 'Dual ALPN',
+        host: 'dual.example.com',
+        password: 'test-password-0123456789abcdef',
+        sni: 'dual.example.com',
+        alpn: ['h2', 'http/1.1'],
+    }], [443]));
+    assert.ok(
+        trojanLinkValue.includes('alpn=h2,http%2F1.1'),
+        'multi-value ALPN stays comma separated in the trojan URI'
+    );
+    const trojanYaml = api.buildClashConfig([{
+        type: 'trojan',
+        name: 'Dual ALPN',
+        host: 'dual.example.com',
+        password: 'test-password-0123456789abcdef',
+        sni: 'dual.example.com',
+        alpn: 'h2,http/1.1',
+    }], [443]);
+    assert.ok(trojanYaml.includes('    alpn:\n      - "h2"\n      - "http/1.1"\n'),
+        'comma separated ALPN renders as a YAML list');
     const sourceCalls = [];
     const make = fetchImpl => api.createWorkerHandler({
         allowedTokenValues: new Set([config.allowedTokens.owner]),
@@ -370,7 +412,7 @@ try {
     assert.match(globalGroup, /proxies:\s*\n\s*- PROXY\s*$/m);
     assert.ok(!globalGroup.includes('DIRECT') && !globalGroup.includes('REJECT'));
     const proxyMembers = groups.split('name: 🇺🇸白天首选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
-    assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Hidden Reality']);
+    assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Trojan example', 'Hidden Reality']);
     assert.ok(!groups.includes('DIRECT'));
     const template = await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8');
     const staticRules = template.split('rules:\n')[1].replace('# EASY_ALL_WORKER_RULE', '');
@@ -381,7 +423,7 @@ try {
     }
     assert.ok(liveBody.includes('192.0.2.1'));
     assert.ok(!/xflash|remote.example.com|mieru.example.com/i.test(liveBody));
-    assert.equal((liveBody.split('\nproxy-groups:')[0].match(/^  - name:/gm) || []).length, 3);
+    assert.equal((liveBody.split('\nproxy-groups:')[0].match(/^  - name:/gm) || []).length, 4);
     for (const expected of [
         'reuse-settings:',
         'max-connections: 4',
@@ -446,7 +488,9 @@ try {
     const generic = make(async () => new Response(cf));
     const genericBody = atob(await (await generic(genericRequest)).text());
     assert.ok(!/^ss:\/\//m.test(genericBody) && genericBody.includes('192.0.2.1'));
-    assert.equal(genericBody.split('\n').length, 3, 'URI output contains only Reality and own-source nodes');
+    assert.equal(genericBody.split('\n').length, 4, 'URI output contains only direct and own-source nodes');
+    assert.ok(genericBody.split('\n').some(link => link.startsWith('trojan://test-password-0123456789abcdef@trojan.example.com:443?')),
+        'Trojan direct nodes render a trojan:// URI');
     const genericCf = genericBody.split('\n').find(link => link.includes('@192.0.2.1:443'));
     assert.ok(genericCf, 'generic output preserves the XHTTP connection IP');
     assert.deepEqual(

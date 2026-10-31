@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /login
+Disallow: /admin
+
+Sitemap: https://__EASY_ALL_SITE_DOMAIN__/sitemap.xml

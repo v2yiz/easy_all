@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[1.6.13](CHANGELOG.md#1613-更新说明2026-11-05)。
+当前源码版本：[1.7.0](CHANGELOG.md#170-更新说明2026-11-06)。
 
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点交互安装器。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认 XanMod BBRv3，可选 Skyline Speeder）。
@@ -13,6 +13,7 @@
 | --- | --- | --- |
 | **1. 直连 Reality** | VPS 公网 IP 可用且直连质量良好 | VLESS TCP Reality Vision，VPS `443` |
 | **2. Cloudflare CDN** | 直连效果不佳、VPS 公网 IP 已被封，或明确需要纯 XHTTP | VLESS XHTTP `stream-up`，6 个 Cloudflare 精选 IPv4；可选独立纯 Worker 兜底 |
+| **3. 直连 Trojan** | 需要浏览器能正常访问的伪装站点，或偏好密码登录而非 UUID | Trojan over TLS，VPS `443`；非 Trojan 流量回落到静态站点；可选 `443`/`dynamic` 端口 |
 
 Cloudflare 模式完全没有域名兜底，需要额外准备：
 
@@ -32,13 +33,30 @@ Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择�
 请求体内，仍受 Cloudflare 套餐请求体大小限制（Free/Pro 通常为 100 MB），大文件上传应在
 `PROXY` 中选择 VPS 节点。
 
+Trojan 直连需要额外准备：
+
+- 同一 Cloudflare Active Zone 下、指向本机公网 IPv4 的节点域名（A 记录由安装器建立为 DNS only）；
+- 具备 Zone:Read 与 Zone:DNS:Edit 的 API Token，用于 Cloudflare DNS-01 签发与自动续期；
+- 一个 ACME 注册邮箱（默认 `admin@<Zone 名>`，仅用于证书到期提醒）。
+
+安装器用内置的 lego（发布包 SHA256 校验后安装）通过 Cloudflare DNS-01 签发 Let's Encrypt 证书，
+并用 systemd 定时器每天两次自动续期。Xray 在 TCP `443` 终止 TLS，非 Trojan 流量回落到
+`127.0.0.1:8080` 的 Nginx 静态站点，因此浏览器直接访问 `https://节点域名` 看到的是一个正常的
+企业官网。端口可选固定 `443` 或 `dynamic`：`dynamic` 把 `10000-62703` 全部 REDIRECT 到 `443`，
+范围内任意端口都能连接，并由 `@reboot` 任务在重启后恢复 NAT 规则。本模式不部署在线订阅，
+`easy_all show` 输出 `trojan://` 链接和 Mihomo 节点片段。API Token 保存在
+`/etc/easy_all/acme/cloudflare-dns.env`（`0600`）供自动续期使用，请只授予该 Zone 的最小权限；
+`uninstall --purge-cloud` 会删除安装器托管的 A 记录。如果已有 Reality/Cloudflare 部署的 Worker
+聚合订阅，可以把本机 Trojan 节点写进聚合 JSON 的 `nodes`（见[运维指南](docs/operations-guide.md#worker-聚合)）
+统一分发；Trojan 模式本身不部署 Worker 或在线订阅。
+
 直连 Reality 安装时会选择订阅输出，默认不部署订阅：
 
 | 选项 | 适用情况 | 需要准备 |
 | --- | --- | --- |
 | **1. 仅节点（默认）** | 只需要节点链接，自己维护订阅 | 无 |
 | **2. 本机订阅** | 只有当前这一台直连节点 | 一个 Cloudflare 一级订阅域名、API Token |
-| **3. Worker 订阅聚合** | 多台直连节点统一下发，仍希望走 Workers | 同 Zone 两个一级域名（公开订阅域名 + 私有节点源域名）、具备 Workers Scripts Write 的 API Token |
+| **3. Worker 订阅聚合** | 多台直连节点（Reality 或 Trojan）统一下发，仍希望走 Workers | 同 Zone 两个一级域名（公开订阅域名 + 私有节点源域名）、具备 Workers Scripts Write 的 API Token |
 
 Worker 聚合只在其中一台 VPS 部署：公开订阅域名绑定 Worker，私有节点源域名由 Cloudflare 代理回
 本机 `8443` 且仅允许 Cloudflare 回源，Nginx 继续是 Token 与配额的唯一真源；其余直连节点以
@@ -59,7 +77,7 @@ Worker 聚合只在其中一台 VPS 部署：公开订阅域名绑定 Worker，�
 
 安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务。建议先创建 VPS 快照，并保留当前
 SSH 会话，直到重启后确认新会话可以登录。服务商的安全组或云防火墙还需自行放行当前 SSH 端口
-以及业务所需的 TCP `443`。Reality 使用动态端口时，还需放行 TCP `10000-62703`；VPS 安装和
+以及业务所需的 TCP `443`。Reality 与 Trojan 使用动态端口时，还需放行 TCP `10000-62703`；VPS 安装和
 `apply` 会立即加载整段 NAT，重启后由 UFW 持久化规则和 `@reboot` 刷新任务恢复。
 
 ## 快速安装
@@ -83,7 +101,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 
 | 提示 | 建议 |
 | --- | --- |
-| 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2` |
+| 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2`；需要浏览器可访问的伪装站点选 `3`（Trojan） |
 | TCP 加速 | 选 `1` 或直接回车使用 BBRv3；只有丢包率极高且确认为非拥塞随机丢包时才选 Skyline Speeder |
 | 订阅输出 | 直接回车不部署订阅；单机自用选 `2` 部署本机订阅；多台直连节点统一走 Workers 下发选 `3` |
 | 月度用户配额 | 选 `1` 或直接回车，不启用 |
@@ -91,6 +109,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 | 定时重启 | 接受每日 `04:00` 重启选 `1`；不需要则选 `3` |
 | Reality SNI/目标 | 直接回车使用已验证默认值 |
 | Reality 动态端口 | 直接回车 |
+| Trojan 节点域名 | Cloudflare Zone 下、指向本机 IPv4 的域名（如 `node.example.com`） |
+| Trojan 密码 | 直接回车自动生成 32 位随机密码 |
+| Trojan 端口模式 | 直接回车使用 `dynamic`；只要 443 选 `1` |
 
 提示中的 `[值]` 是直接回车采用的默认值。Token 和密码输入时不会显示字符。
 
@@ -112,6 +133,8 @@ sudo easy_all subscription
 默认 BBRv3 模式下，`status` 显示 `BBRv3: active` 才表示新内核已经生效。选择 Skyline 时应显示
 `Skyline Speeder: active`。复制 `subscription` 输出中带
 `flag=clash` 的 Mihomo 地址，在客户端通过 URL 导入。订阅地址与 UUID 都是访问凭据，不要公开。
+Trojan 模式没有订阅地址：`easy_all subscription` 直接给出 `trojan://` 链接与 Mihomo 片段，
+手工导入即可。
 
 客户端选择、Clash Mi 设置和订阅 DNS 排障见[客户端使用指南](docs/client-guide.md)。
 默认订阅模板是 COMMON 精简规则（以低内存为目标，不保证 iPhone 峰值低于 50MB）；需要完整 COMMON 规则或经典
@@ -130,6 +153,7 @@ geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 | `easy_all apply` | 重新应用当前配置 |
 | `easy_all tcp` | 交互选择 TCP 加速；也可指定 `bbrv3` 或 `skyline` |
 | `easy_all reality-target [域名:端口]` | Reality 模式修改 SNI（伪装目标）并重新应用 |
+| `easy_all renew-cert` | 轮换当前模式证书；Trojan 模式主动检查并续期 Let's Encrypt 证书 |
 | `easy_all apply-cloud` | Cloudflare 模式同步本机配置和云端 Worker、DNS、证书及规则 |
 | `easy_all update-sub` | 管理订阅、用户和配额 |
 | `easy_all update-core` | 更新 Xray 核心 |
@@ -181,12 +205,14 @@ sudo easy_all apply-cloud
 
 ## 安全边界
 
-- 两种模式成功安装或应用后，SSH 仅监听 TCP `65533`，UFW 优先阻断 TCP `22`。
+- 所有模式成功安装或应用后，SSH 仅监听 TCP `65533`，UFW 优先阻断 TCP `22`。
 - 先在云安全组放行 `65533`，以后使用 `ssh -p 65533 用户@服务器`；保留当前会话直到新连接验证成功。
 - UFW 默认拒绝其他入站和转发流量；Fail2ban 仅保护 SSH `65533`。[监听冲突和恢复规则](docs/technical-reference.md)见技术参考。
 - Xray 阻断私网和云元数据地址，并让境外 QUIC 回退到 TCP。
 - Cloudflare XHTTP 实时回源，不缓存隧道业务数据，也不承诺固定免费流量。
 - 默认卸载只清理本机；`--purge-cloud` 仅删除所有权和值均匹配的 easy_all 云资源。
+- Trojan 模式的 Cloudflare Token 只保存在本机 `0600` 文件中，用于 DNS-01 自动续期；证书私钥位于
+  `/etc/easy_all/certs`，同样仅 root 可读。
 
 本项目不能承诺某条线路一定更快、更稳定或适合所有网络。请遵守所在地法律以及 VPS、
 Cloudflare 和 Globalping 的服务条款。

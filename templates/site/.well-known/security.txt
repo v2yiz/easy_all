@@ -1,0 +1,5 @@
+Contact: mailto:security@__EASY_ALL_SITE_DOMAIN__
+Expires: 2027-11-01T00:00:00.000Z
+Acknowledgments: https://__EASY_ALL_SITE_DOMAIN__/about.html
+Preferred-Languages: en
+Canonical: https://__EASY_ALL_SITE_DOMAIN__/.well-known/security.txt

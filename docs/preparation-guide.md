@@ -1,6 +1,6 @@
 # 前置准备手册
 
-本手册覆盖 Reality 与 Cloudflare 两种模式所需的域名、账号、DNS 和 Token 准备。Reality 节点数据仍然直连，
+本手册覆盖 Reality、Trojan 与 Cloudflare 三种模式所需的域名、账号、DNS 和 Token 准备。Reality 节点数据仍然直连，
 但选择“本机订阅”或“Worker 订阅聚合”时，订阅回源会使用 Cloudflare Universal SSL 与 Origin CA。
 
 Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality **只有选择订阅输出（本机订阅或 Worker 聚合）**
@@ -26,6 +26,7 @@ VPS 费用另计。
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；本机订阅还需 Cloudflare Active Zone、一个一级子域和 API Token；Worker 聚合还需同 Zone 第二个一级子域、具备 Workers Scripts Write 的 API Token | Globalping Token、gRPC 设置                        | 仅节点：直接看 README；本机订阅或 Worker 聚合：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
+| 模式 3：Trojan 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4、Cloudflare **Active** Zone 下一个节点域名（如 `node.example.com`）、具备 `Zone / Zone / Read` 与 `Zone / DNS / Edit` 的 API Token | Globalping Token、gRPC 设置、Worker 权限 | 第 1、3.3、4 节 |
 
 只支持 IPv4。
 
@@ -34,6 +35,7 @@ VPS 费用另计。
 ```text
 Reality:    node.example.com（可选）；sub.example.com（本机订阅需要）；
             sub.example.com + source.example.com（Worker 聚合需要，公开入口与私有源各一个）
+Trojan:     node.example.com（必需，同时用于 TLS 证书与客户端连接）
 Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 Worker）
 ```
 
@@ -164,6 +166,23 @@ Reality 的节点连接域名（例如 `node.example.com`）如有使用，必�
 它必须只发布指向 VPS 的 A 记录，不能发布 AAAA，也不能与橙云订阅域名相同。Reality 不需要
 gRPC，也不会把节点数据流量经过 Cloudflare。
 
+### 3.3 Trojan：必须完成
+
+Trojan 需要浏览器可直接验证的证书，因此必须使用域名（不能用裸 IP）：
+
+1. 在已经 **Active** 的 Zone 下准备一个节点域名，例如 `node.example.com`。不要提前创建 DNS
+   记录；安装器会创建 `proxied=false`（灰云/DNS only）的 A 记录并标注 easy_all 所有权注释。
+2. 该名称不能存在同名 AAAA 或 CNAME，也不能把记录设为橙云：Trojan 客户端直连 VPS，Cloudflare
+   代理会中断 TLS 握手。
+3. 准备一枚只作用于该 Zone 的 API Token，权限为 `Zone / Zone / Read` 与 `Zone / DNS / Edit`。
+   安装器用它创建 A 记录并通过 **Cloudflare DNS-01** 签发 Let's Encrypt 证书。
+4. 不需要 Globalping，不需要开启 gRPC，也不需要 Workers 权限。
+
+与 Reality 订阅不同，Trojan 的 Token 会保存到 VPS 的 `/etc/easy_all/acme/cloudflare-dns.env`
+（`0600`），因为 systemd 定时器需要在无人值守时完成 DNS-01 续期。请只授予上面两项 Zone 权限，
+不要使用账户级 Global API Key；怀疑泄露时先在 Cloudflare 撤销该 Token，再执行
+`sudo easy_all renew-cert` 前手工更新该文件（或重新安装）。
+
 ### 3.2 Cloudflare XHTTP：必须完成
 
 1. 在已经 **Active** 的 Zone 下准备客户端连接的节点域名，例如 `node.example.com`。不要预先创建这个名称的 DNS 记录。
@@ -209,7 +228,8 @@ Reality 选择 Worker 订阅聚合时还要加上 `Account / Workers Scripts / E
 ![Cloudflare API Token 的七项最小权限与 Account/Zone 资源范围](img/cloudflare/cloudflare-api-token-easy-all.svg)
 
 创建后立即复制 Token，并保存到可信的密码管理器；把它粘贴到安装器的 `Cloudflare API Token` 输入框。
-Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需要同步云端资源时仍会要求提供。XHTTP
+Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需要同步云端资源时仍会要求提供
+（Trojan 模式例外：DNS-01 自动续期需要它，Token 保存在 `/etc/easy_all/acme/cloudflare-dns.env`）。XHTTP
 使用同一枚 Token，但 `Workers Scripts Write` 必须限制到目标账号，六项 Zone 权限必须限制到目标 Zone；
 请勿选择所有账号、所有 Zone 或添加其他权限。原来的纯 Zone Token 不足以部署 Worker。
 
@@ -227,12 +247,15 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   私有订阅源；每次请求转发用户 Token，并附加独立的 `X-Easy-All-Worker-Source` 密钥，由 Nginx
   执行最终用户和配额鉴权。
 - 安装器验证 Worker 能取得动态节点、无效 Token 返回 `403`，同时确认直接请求 Nginx 节点源返回 `404`。
+- Trojan 模式创建 DNS only 的 A 记录，签发 Let's Encrypt 证书并部署回落静态站点；Nginx 只监听
+  `127.0.0.1:8080`，公网入口只有 Xray 的 TCP `443`。
 - 非配额模式若持续无法通过 Worker 动态源验收，安装器保留当前部署，并在执行用户的主目录输出
   权限为 `0600` 的 `worker.js` 供手工部署；该 Worker 仍要求每次请求成功读取 VPS 动态源，失败
   时返回 `502`。配额模式仍失败回滚，不生成内嵌 Token 的恢复版本。
 - 可选输入一份不含 `vpsSubUrl` 的 Worker 聚合 JSON；字段参考
-  [`worker-src/config.example.json`](../worker-src/config.example.json)。安装器保留其中的
-  `nodes`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖安装器先前设置的
+  [`worker-src/config.example.json`](../worker-src/config.example.json)。其中的 `nodes` 可写
+  Reality 或 Trojan 直连节点（Trojan 只需域名、端口和密码），`fallbackCdnNodes` 只接受 VLESS
+  CDN 兜底节点。安装器保留 `nodes`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖先前设置的
   用户 Token。安装器再注入本机生成的 `vpsSubUrl` 与私有源配置。交互先完成用户 Token/配额设置，
   再询问“是否需要进行订阅聚合”；
   选择需要后隐藏输入 JSON，并交给 `build-worker.mjs` 校验构建、自动部署。

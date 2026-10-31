@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pricing — Northlake Analytics</title>
+<meta name="description" content="Transparent pricing for Northlake Analytics: Starter, Growth and Enterprise plans, billed per modelled source.">
+<link rel="canonical" href="https://__EASY_ALL_SITE_DOMAIN__/pricing.html">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="/" aria-label="Northlake Analytics home">
+      <img src="/assets/logo.svg" alt="" width="32" height="32">
+      <span>Northlake</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+      <span class="nav-toggle-bar"></span><span class="sr-only">Menu</span>
+    </button>
+    <nav id="primary-nav" class="site-nav" aria-label="Primary">
+      <a href="/product.html">Product</a>
+      <a href="/pricing.html" aria-current="page">Pricing</a>
+      <a href="/docs.html">Docs</a>
+      <a href="/about.html">Company</a>
+      <a href="/contact.html">Contact</a>
+    </nav>
+    <div class="header-actions">
+      <a class="link-quiet" href="/docs.html#quickstart">Sign in</a>
+      <a class="button button-small" href="/contact.html">Book a demo</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="page-head">
+    <div class="container narrow">
+      <p class="eyebrow">Pricing</p>
+      <h1>Priced per modelled source, not per seat</h1>
+      <p class="lede">Everyone who needs a number should be able to look it up. Viewer seats are unlimited on every plan.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <div class="grid grid-3 pricing-grid">
+        <article class="price-card">
+          <h2>Starter</h2>
+          <p class="price"><span class="price-amount">$240</span><span class="price-period">/month</span></p>
+          <p class="price-note">Billed annually. Includes 3 modelled sources.</p>
+          <ul class="check-list">
+            <li>Up to 5 editors</li>
+            <li>Unlimited viewers</li>
+            <li>Daily model refresh</li>
+            <li>Email support</li>
+          </ul>
+          <a class="button button-ghost button-block" href="/contact.html">Start trial</a>
+        </article>
+        <article class="price-card price-card-featured">
+          <p class="badge">Most teams start here</p>
+          <h2>Growth</h2>
+          <p class="price"><span class="price-amount">$890</span><span class="price-period">/month</span></p>
+          <p class="price-note">Billed annually. Includes 10 modelled sources.</p>
+          <ul class="check-list">
+            <li>Up to 20 editors</li>
+            <li>Hourly model refresh</li>
+            <li>Pull-request review workflow</li>
+            <li>SSO via SAML</li>
+            <li>Shared Slack channel</li>
+          </ul>
+          <a class="button button-block" href="/contact.html">Start trial</a>
+        </article>
+        <article class="price-card">
+          <h2>Enterprise</h2>
+          <p class="price"><span class="price-amount">Custom</span></p>
+          <p class="price-note">Annual contract, invoiced.</p>
+          <ul class="check-list">
+            <li>Unlimited sources and editors</li>
+            <li>Private VPC deployment</li>
+            <li>SCIM provisioning and audit export</li>
+            <li>99.9% uptime SLA</li>
+            <li>Named solutions engineer</li>
+          </ul>
+          <a class="button button-ghost button-block" href="/contact.html">Talk to sales</a>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-muted">
+    <div class="container narrow">
+      <h2>Plan comparison</h2>
+      <div class="table-wrap">
+        <table class="compare">
+          <thead>
+            <tr><th scope="col">Feature</th><th scope="col">Starter</th><th scope="col">Growth</th><th scope="col">Enterprise</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Modelled sources</th><td>3</td><td>10</td><td>Custom</td></tr>
+            <tr><th scope="row">Editor seats</th><td>5</td><td>20</td><td>Unlimited</td></tr>
+            <tr><th scope="row">Viewer seats</th><td>Unlimited</td><td>Unlimited</td><td>Unlimited</td></tr>
+            <tr><th scope="row">Refresh interval</th><td>Daily</td><td>Hourly</td><td>15 minutes</td></tr>
+            <tr><th scope="row">Review workflow</th><td>—</td><td>Included</td><td>Included</td></tr>
+            <tr><th scope="row">SSO</th><td>—</td><td>SAML</td><td>SAML + SCIM</td></tr>
+            <tr><th scope="row">Audit log export</th><td>—</td><td>—</td><td>Included</td></tr>
+            <tr><th scope="row">Support</th><td>Email</td><td>Email + Slack</td><td>Named engineer</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container narrow">
+      <h2>Frequently asked</h2>
+      <div class="faq">
+        <details>
+          <summary>What counts as a modelled source?</summary>
+          <p>A schema, connector or event stream that feeds at least one published model. Staging copies and sandboxes are free.</p>
+        </details>
+        <details>
+          <summary>Do you store a copy of our data?</summary>
+          <p>No. Model SQL runs in your warehouse. Only metadata, model definitions and query results cached for dashboards are stored.</p>
+        </details>
+        <details>
+          <summary>Can we deploy inside our own cloud?</summary>
+          <p>Yes, on Enterprise. The deployment is one container plus a read-only warehouse role, and it can run air-gapped after install.</p>
+        </details>
+        <details>
+          <summary>How does annual billing work?</summary>
+          <p>Annual plans are invoiced up front with a 14-day trial that converts only if you keep the workspace. We do not auto-charge during trials.</p>
+        </details>
+        <details>
+          <summary>What happens if we add a source mid-term?</summary>
+          <p>Additional sources are prorated at the current plan rate and can be removed at renewal.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band">
+    <div class="container cta-inner">
+      <div>
+        <h2>Not sure which plan fits?</h2>
+        <p>Send us your warehouse, team size and the questions you want to answer. We will map it to a plan in one call.</p>
+      </div>
+      <a class="button button-inverse" href="/contact.html">Contact sales</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div>
+      <a class="brand" href="/">
+        <img src="/assets/logo.svg" alt="" width="28" height="28">
+        <span>Northlake</span>
+      </a>
+      <p class="footer-note">Operational analytics for teams that ship.<br>Portland · Berlin · Singapore</p>
+    </div>
+    <nav aria-label="Product">
+      <h2>Product</h2>
+      <ul>
+        <li><a href="/product.html">Overview</a></li>
+        <li><a href="/pricing.html">Pricing</a></li>
+        <li><a href="/docs.html">Documentation</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Company">
+      <h2>Company</h2>
+      <ul>
+        <li><a href="/about.html">About</a></li>
+        <li><a href="/contact.html">Contact</a></li>
+        <li><a href="/.well-known/security.txt">Security</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Resources">
+      <h2>Resources</h2>
+      <ul>
+        <li><a href="/docs.html#api">API reference</a></li>
+        <li><a href="/docs.html#status">Service status</a></li>
+        <li><a href="/sitemap.xml">Sitemap</a></li>
+      </ul>
+    </nav>
+  </div>
+  <div class="container footer-bottom">
+    <p>© <span data-year>2026</span> Northlake Analytics, Inc. All rights reserved.</p>
+    <p><a href="/docs.html#terms">Terms</a> · <a href="/docs.html#privacy">Privacy</a></p>
+  </div>
+</footer>
+<script src="/assets/app.js" defer></script>
+</body>
+</html>

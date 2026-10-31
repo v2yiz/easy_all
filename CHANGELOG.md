@@ -1,3 +1,32 @@
+## 1.7.0 更新说明（2026-11-06）
+
+- 新增第三种安装模式「3 直连 Trojan」：Xray 在 TCP `443` 终止 TLS，Trojan 认证通过后走代理，
+  其余流量回落到 `127.0.0.1:8080` 的 Nginx 静态站点，浏览器直接访问节点域名看到的是一个自包含的
+  企业官网（首页、产品、定价、文档、公司、联系、404、`robots.txt`、`sitemap.xml` 与
+  `/.well-known/security.txt`，无外部字体或脚本）。
+- Trojan 证书使用 Let's Encrypt + Cloudflare DNS-01，由固定版本 `v4.35.2` 的 lego 完成：归档与
+  `checksums` 同源校验 SHA256 后才安装，`easy_all-cert-renew.timer` 每天两次自动续期，续期后校验
+  私钥匹配并在服务已安装时重启 Xray。Cloudflare API Token 仅授予 `Zone / Zone / Read` 与
+  `Zone / DNS / Edit`，保存在 `/etc/easy_all/acme/cloudflare-dns.env`（`0600`）供无人值守续期。
+- 安装器通过同一 Token 自动创建/校验 DNS only 的 A 记录（带 `easy_all trojan direct node` 注释），
+  同名 AAAA/CNAME 或他人记录一律拒绝覆盖；`easy_all renew-cert` 在 Trojan 模式下强制重签，
+  `uninstall --purge-cloud` 删除受管 A 记录。
+- 端口支持固定 `443` 与 `dynamic`：`dynamic` 用单条 UFW NAT 规则把 `10000-62703` REDIRECT 到
+  `443`（范围内 SSH 端口前置 `RETURN`），安装/`apply` 立即加载，`@reboot` 任务恢复，
+  `easy_all rotate-dynamic-ports` 可手工刷新。
+- 本模式不部署在线订阅与月度配额：`easy_all show`/`subscription` 输出 `trojan://` 链接与 Mihomo
+  片段，`update-sub` 明确拒绝。状态版本为 Trojan `STATE_VERSION=1`，`apply` 重新校验证书、DNS、
+  回落站点、Nginx 与 UFW，失败时恢复旧 Xray/Nginx 配置。
+- Worker 聚合订阅的 `nodes` 新增 Trojan 直连节点支持：`type: "trojan"`（`host`/`port`/`password`/
+  `sni`/`alpn`），Mihomo 输出 `type: trojan`、base64 输出 `trojan://` URI，节点名保持原样进入 `PROXY`；
+  `fallbackCdnNodes` 仍只接受 VLESS。`config.example.json`、`worker-config.sh`、构建校验、Worker
+  测试与文档同步更新，可直接把 Trojan 节点与 Reality 节点一起聚合下发。
+- 新增 `test/test_trojan_direct.sh`，覆盖站点渲染、Xray/回落配置、NAT 范围、状态读写、证书钩子、
+  Token 读取与 A 记录保护；架构与入口测试同步覆盖第三模式。
+
+源码版本标识为 `1.7.0`。已有部署执行 `sudo easy_all self-update` 即可，不影响 Reality 与
+Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择 `3`。
+
 ## 1.6.13 更新说明（2026-11-05）
 
 - 直连 Reality 安装新增第三档订阅输出，安装菜单变为「1 仅节点（默认）」「2 本机订阅」「3 Worker 订阅聚合」。默认值与「多节点聚合或已有订阅服务器时推荐仅输出节点信息」的既有建议一致；升级不会改动已安装配置。
@@ -11,6 +40,31 @@
 源码版本标识为 `1.6.13`。已有部署执行 `sudo easy_all self-update` 即可；本次不改变现有订阅内容，未切换订阅模式时无需重新执行 `apply` 或 `update-sub`。需要 Worker 聚合的部署执行 `sudo easy_all update-sub`，选择第 3 项并按提示准备两个同 Zone 一级子域名与 Workers Scripts Write 权限。
 
 # 更新记录
+
+## 1.7.0 更新说明（2026-11-06）
+
+- 新增第三种安装模式「3 直连 Trojan」：Xray 在 TCP `443` 终止 TLS，Trojan 认证通过后走代理，
+  其余流量回落到 `127.0.0.1:8080` 的 Nginx 静态站点，浏览器直接访问节点域名看到的是一个自包含的
+  企业官网（首页、产品、定价、文档、公司、联系、404、`robots.txt`、`sitemap.xml` 与
+  `/.well-known/security.txt`，无外部字体或脚本）。
+- Trojan 证书使用 Let's Encrypt + Cloudflare DNS-01，由固定版本 `v4.35.2` 的 lego 完成：归档与
+  `checksums` 同源校验 SHA256 后才安装，`easy_all-cert-renew.timer` 每天两次自动续期，续期后校验
+  私钥匹配并在服务已安装时重启 Xray。Cloudflare API Token 仅授予 `Zone / Zone / Read` 与
+  `Zone / DNS / Edit`，保存在 `/etc/easy_all/acme/cloudflare-dns.env`（`0600`）供无人值守续期。
+- 安装器通过同一 Token 自动创建/校验 DNS only 的 A 记录（带 `easy_all trojan direct node` 注释），
+  同名 AAAA/CNAME 或他人记录一律拒绝覆盖；`easy_all renew-cert` 在 Trojan 模式下强制重签，
+  `uninstall --purge-cloud` 删除受管 A 记录。
+- 端口支持固定 `443` 与 `dynamic`：`dynamic` 用单条 UFW NAT 规则把 `10000-62703` REDIRECT 到
+  `443`（范围内 SSH 端口前置 `RETURN`），安装/`apply` 立即加载，`@reboot` 任务恢复，
+  `easy_all rotate-dynamic-ports` 可手工刷新。
+- 本模式不部署在线订阅与月度配额：`easy_all show`/`subscription` 输出 `trojan://` 链接与 Mihomo
+  片段，`update-sub` 明确拒绝。状态版本为 Trojan `STATE_VERSION=1`，`apply` 重新校验证书、DNS、
+  回落站点、Nginx 与 UFW，失败时恢复旧 Xray/Nginx 配置。
+- 新增 `test/test_trojan_direct.sh`，覆盖站点渲染、Xray/回落配置、NAT 范围、状态读写、证书钩子、
+  Token 读取与 A 记录保护；架构与入口测试同步覆盖第三模式。
+
+源码版本标识为 `1.7.0`。已有部署执行 `sudo easy_all self-update` 即可，不影响 Reality 与
+Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择 `3`。
 
 ## 1.6.12 更新说明（2026-10-30）
 

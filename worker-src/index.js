@@ -50,9 +50,12 @@ function nodePort({ now = Date.now } = {}) {
 
 function resolveNodePorts(nodes, dependencies) {
     const port = nodePort(dependencies);
-    return nodes.map((node) =>
-        node.security === 'reality' ? (node.port || port) : (node.port || TLS_PORT)
-    );
+    return nodes.map((node) => {
+        if (node.type === 'trojan') {
+            return node.port || TLS_PORT;
+        }
+        return node.security === 'reality' ? (node.port || port) : (node.port || TLS_PORT);
+    });
 }
 
 function uriEncode(value) {
@@ -214,6 +217,61 @@ function vlessLink(node, port) {
     }
 
     return `vless://${node.uuid}@${connectHost}:${connectPort}?${params.toString()}#${uriEncode(node.name)}`;
+}
+
+// Trojan aggregation nodes are ordinary direct nodes: the Worker only renders
+// them, the client always terminates TLS against the node itself.
+function trojanAlpn(node) {
+    const value = node?.alpn;
+    if (Array.isArray(value)) {
+        const list = value.map(item => String(item).trim()).filter(Boolean);
+        return list.length ? list : null;
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const list = value.split(',').map(item => item.trim()).filter(Boolean);
+        return list.length ? list : null;
+    }
+    return null;
+}
+
+function trojanLink(node, port) {
+    const connectHost = uriAuthorityHost(node.host);
+    const params = new URLSearchParams({
+        security: 'tls',
+        type: 'tcp',
+        sni: node.sni || node.host,
+    });
+    const alpn = trojanAlpn(node);
+    if (alpn) {
+        params.set('alpn', alpn.join(','));
+    }
+    if (node.fp || node.clientFingerprint) {
+        params.set('fp', node.fp || node.clientFingerprint);
+    }
+    // Keep the ALPN list comma-separated (only the slash is escaped): some clients
+    // split the decoded value on commas, so an encoded %2C would break negotiation.
+    const query = params.toString().replace(/%2C/g, ',');
+    return `trojan://${uriEncode(node.password)}@${connectHost}:${port}?${query}#${uriEncode(node.name)}`;
+}
+
+function clashTrojanNode(node, port) {
+    const alpn = trojanAlpn(node);
+    const alpnBlock = alpn
+        ? `\n    alpn:\n${alpn.map(item => `      - ${yamlString(item)}`).join('\n')}`
+        : '';
+    return `  - name: ${yamlString(node.name)}
+    type: trojan
+    server: ${yamlString(normalizeConnectHost(node.host))}
+    port: ${port}
+    password: ${yamlString(node.password)}
+    network: tcp
+    udp: ${node.udp !== false}
+    skip-cert-verify: false
+    sni: ${yamlString(node.sni || node.host)}
+    client-fingerprint: ${yamlString(node.fp || 'chrome')}${alpnBlock}
+    ip-version: ipv4
+    smux:
+      enabled: false`;
 }
 
 function clashRealityNode(node, port) {
@@ -451,6 +509,9 @@ ${node.udp === false ? '' : '    packet-encoding: xudp\n'}    ip-version: ipv4
 }
 
 function clashNode(node, port) {
+    if (node.type === 'trojan') {
+        return clashTrojanNode(node, port);
+    }
     if (node.security === 'reality') {
         return clashRealityNode(node, port);
     }
@@ -465,7 +526,9 @@ function clashNode(node, port) {
 
 function buildBase64Subscription(nodes, ports) {
     return encodeBase64Utf8(nodes.map((node, index) =>
-        vlessLink(node, ports[index])
+        node.type === 'trojan'
+            ? trojanLink(node, ports[index])
+            : vlessLink(node, ports[index])
     ).join('\n'));
 }
 

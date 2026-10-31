@@ -155,7 +155,7 @@ try {
             fetch: async () => { throw Error('offline'); }});
         const api = vm.runInContext(source.replace(/export default \{[\s\S]*$/, '({buildClashConfig, LOCAL_NODES, MIHOMO_TEMPLATE});'), context);
         assert.equal(api.MIHOMO_TEMPLATE, template);
-        const body = api.buildClashConfig(api.LOCAL_NODES, [443]);
+        const body = api.buildClashConfig(api.LOCAL_NODES, api.LOCAL_NODES.map(() => 443));
         assert.equal(body.split('\nrule-providers:\n')[1], template.split('\nrule-providers:\n')[1].replace('# EASY_ALL_WORKER_RULE', ''));
         assert.ok(!body.includes('# EASY_ALL_'));
         if (binary) {

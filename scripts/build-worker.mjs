@@ -70,22 +70,46 @@ export async function buildWorker({
             /^[A-Za-z0-9._-]{1,64}$/.test(config.subscriptionDownloadName),
         'subscriptionDownloadName'
     );
+    // Direct aggregation nodes may be VLESS/Reality or Trojan/TLS; CDN fallbacks stay VLESS.
+    const validTrojanAlpn = value => {
+        const list = Array.isArray(value)
+            ? value
+            : typeof value === 'string' ? value.split(',') : null;
+        return Boolean(list) && list.length > 0 &&
+            list.every(item => ['h2', 'http/1.1'].includes(String(item).trim()));
+    };
     for (const key of ['nodes', 'fallbackCdnNodes']) {
         requireValue(Array.isArray(config[key]), key);
         for (const node of config[key]) {
-            requireValue(node && ['name', 'host', 'uuid'].every(field => nonempty(node[field])), `${key} node fields`);
-            requireValue(/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(node.uuid), `${key} UUID`);
-            requireValue(node.type === 'vless', `${key} type`);
-            if (key === 'nodes') {
-                requireValue(node.security === 'reality' && node.network === 'tcp' && ['sni', 'pbk', 'sid', 'fp'].every(field => nonempty(node[field])), 'Reality parameters');
+            requireValue(
+                node && typeof node === 'object' && nonempty(node.name) && nonempty(node.host),
+                `${key} node fields`
+            );
+            requireValue(node.type === 'vless' || node.type === 'trojan', `${key} type`);
+            if (node.type === 'trojan') {
+                requireValue(key === 'nodes', 'trojan nodes must be direct nodes');
+                requireValue(
+                    nonempty(node.password) &&
+                        /^[A-Za-z0-9._~-]{8,64}$/.test(node.password),
+                    'trojan password'
+                );
+                requireValue((node.network ?? 'tcp') === 'tcp', 'trojan network');
+                requireValue(node.sni === undefined || nonempty(node.sni), 'trojan sni');
+                requireValue(node.fp === undefined || nonempty(node.fp), 'trojan fingerprint');
+                requireValue(node.alpn === undefined || validTrojanAlpn(node.alpn), 'trojan alpn');
             } else {
-                requireValue(node.security === 'tls' && ['xhttp', 'ws'].includes(node.network) && nonempty(node.path) && node.path.startsWith('/'), 'CDN parameters');
+                requireValue(/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(node.uuid), `${key} UUID`);
+                if (key === 'nodes') {
+                    requireValue(node.security === 'reality' && node.network === 'tcp' && ['sni', 'pbk', 'sid', 'fp'].every(field => nonempty(node[field])), 'Reality parameters');
+                } else {
+                    requireValue(node.security === 'tls' && ['xhttp', 'ws'].includes(node.network) && nonempty(node.path) && node.path.startsWith('/'), 'CDN parameters');
+                }
+                requireValue(
+                    node.supportX25519Mlkem768 === undefined || typeof node.supportX25519Mlkem768 === 'boolean',
+                    `${key} ML-KEM flag`
+                );
             }
             requireValue(node.port === undefined || Number.isInteger(node.port) && node.port > 0 && node.port <= 65535, 'port');
-            requireValue(
-                node.supportX25519Mlkem768 === undefined || typeof node.supportX25519Mlkem768 === 'boolean',
-                `${key} ML-KEM flag`
-            );
             requireValue(node.server === undefined || nonempty(node.server), `${key} server`);
             const allowedIpVersions = ['ipv4', 'ipv6', 'dual'];
             requireValue(
@@ -109,7 +133,7 @@ export async function buildWorker({
     ), 'unique, non-reserved node names');
     requireValue(
         config.nodes.every(node => !/^(?:🇺🇸优选|🇭🇰CF)[1-6]$/.test(node.name)),
-        'Reality node names must not use reserved CDN names'
+        'direct node names must not use reserved CDN names'
     );
     const [template, source] = await Promise.all([
         readFile(templatePath, 'utf8'),

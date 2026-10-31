@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation — Northlake Analytics</title>
+<meta name="description" content="Install the Northlake CLI, connect a warehouse, publish your first governed model and query it over the API.">
+<link rel="canonical" href="https://__EASY_ALL_SITE_DOMAIN__/docs.html">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="/" aria-label="Northlake Analytics home">
+      <img src="/assets/logo.svg" alt="" width="32" height="32">
+      <span>Northlake</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+      <span class="nav-toggle-bar"></span><span class="sr-only">Menu</span>
+    </button>
+    <nav id="primary-nav" class="site-nav" aria-label="Primary">
+      <a href="/product.html">Product</a>
+      <a href="/pricing.html">Pricing</a>
+      <a href="/docs.html" aria-current="page">Docs</a>
+      <a href="/about.html">Company</a>
+      <a href="/contact.html">Contact</a>
+    </nav>
+    <div class="header-actions">
+      <a class="link-quiet" href="#quickstart">Sign in</a>
+      <a class="button button-small" href="/contact.html">Book a demo</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="container docs-layout">
+    <aside class="docs-nav" aria-label="Documentation sections">
+      <h2>Documentation</h2>
+      <ul>
+        <li><a href="#quickstart">Quickstart</a></li>
+        <li><a href="#models">Models</a></li>
+        <li><a href="#api">API reference</a></li>
+        <li><a href="#status">Service status</a></li>
+        <li><a href="#terms">Terms</a></li>
+        <li><a href="#privacy">Privacy</a></li>
+      </ul>
+      <p class="docs-nav-note">Last updated 4 November 2026</p>
+    </aside>
+
+    <article class="docs-body">
+      <header>
+        <h1>Documentation</h1>
+        <p class="lede">Everything below is versioned in git alongside your models. The current CLI release is 2.7.1.</p>
+      </header>
+
+      <section id="quickstart">
+        <h2>Quickstart</h2>
+        <p>Install the CLI, authenticate with a workspace token, and connect the warehouse with a read-only role.</p>
+        <div class="code-card">
+          <div class="code-title">shell</div>
+          <pre><code>curl -fsSL https://__EASY_ALL_SITE_DOMAIN__/install.sh | sh
+northlake auth login --workspace example
+northlake warehouse connect --type snowflake --role NORTHLAKE_RO
+northlake model sync --path ./models</code></pre>
+        </div>
+        <p>The connect step prints the exact grants the read-only role needs. No data leaves the warehouse.</p>
+      </section>
+
+      <section id="models">
+        <h2>Models</h2>
+        <p>Models are plain SQL with a small header block describing owner, refresh cadence and tests.</p>
+        <div class="code-card">
+          <div class="code-title">models/mrr_movement.sql</div>
+          <pre><code>-- owner: finance
+-- refresh: hourly
+-- tests:
+--   - not_null: invoice_id
+--   - unique: invoice_id
+select
+  invoice_id,
+  customer_id,
+  date_trunc('month', period_start) as month,
+  mrr_usd,
+  movement_type
+from billing.invoices</code></pre>
+        </div>
+        <p>Run <code>northlake model test</code> locally to execute the same tests the review bot will run.</p>
+      </section>
+
+      <section id="api">
+        <h2>API reference</h2>
+        <p>All endpoints are HTTPS only and authenticated with a workspace token in the <code>Authorization</code> header.</p>
+        <div class="table-wrap">
+          <table class="compare">
+            <thead>
+              <tr><th scope="col">Method</th><th scope="col">Path</th><th scope="col">Purpose</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>GET</td><td><code>/v1/models</code></td><td>List published models and their owners</td></tr>
+              <tr><td>GET</td><td><code>/v1/models/{name}/rows</code></td><td>Query model rows with filters and pagination</td></tr>
+              <tr><td>POST</td><td><code>/v1/models/{name}/refresh</code></td><td>Trigger an on-demand refresh</td></tr>
+              <tr><td>GET</td><td><code>/v1/audit</code></td><td>Export audit events for a time range</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="code-card">
+          <div class="code-title">example request</div>
+          <pre><code>curl -sS https://__EASY_ALL_SITE_DOMAIN__/v1/models/activation_daily/rows \
+  -H "Authorization: Bearer $NORTHLAKE_TOKEN" \
+  -G --data-urlencode "since=2026-10-01"</code></pre>
+        </div>
+      </section>
+
+      <section id="status">
+        <h2>Service status</h2>
+        <p>Platform health is published from the same endpoint your monitors use.</p>
+        <ul class="status-list">
+          <li><span class="status-dot status-ok"></span> Query API — operational</li>
+          <li><span class="status-dot status-ok"></span> Scheduled refresh — operational</li>
+          <li><span class="status-dot status-ok"></span> Dashboard delivery — operational</li>
+          <li><span class="status-dot status-ok"></span> Webhooks — operational</li>
+        </ul>
+      </section>
+
+      <section id="terms">
+        <h2>Terms</h2>
+        <p>Use of the hosted service is governed by the Master Subscription Agreement signed with Northlake Analytics, Inc. Trials may be terminated at any time before conversion. The API is provided under a 99.9% monthly uptime target on Enterprise plans.</p>
+      </section>
+
+      <section id="privacy">
+        <h2>Privacy</h2>
+        <p>Northlake processes model metadata, query logs and account records to operate the service. Customer data stays in the customer warehouse. Data processing agreements are available on request from <a href="mailto:privacy@__EASY_ALL_SITE_DOMAIN__">privacy@__EASY_ALL_SITE_DOMAIN__</a>.</p>
+      </section>
+    </article>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div>
+      <a class="brand" href="/">
+        <img src="/assets/logo.svg" alt="" width="28" height="28">
+        <span>Northlake</span>
+      </a>
+      <p class="footer-note">Operational analytics for teams that ship.<br>Portland · Berlin · Singapore</p>
+    </div>
+    <nav aria-label="Product">
+      <h2>Product</h2>
+      <ul>
+        <li><a href="/product.html">Overview</a></li>
+        <li><a href="/pricing.html">Pricing</a></li>
+        <li><a href="/docs.html">Documentation</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Company">
+      <h2>Company</h2>
+      <ul>
+        <li><a href="/about.html">About</a></li>
+        <li><a href="/contact.html">Contact</a></li>
+        <li><a href="/.well-known/security.txt">Security</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Resources">
+      <h2>Resources</h2>
+      <ul>
+        <li><a href="/docs.html#api">API reference</a></li>
+        <li><a href="/docs.html#status">Service status</a></li>
+        <li><a href="/sitemap.xml">Sitemap</a></li>
+      </ul>
+    </nav>
+  </div>
+  <div class="container footer-bottom">
+    <p>© <span data-year>2026</span> Northlake Analytics, Inc. All rights reserved.</p>
+    <p><a href="/docs.html#terms">Terms</a> · <a href="/docs.html#privacy">Privacy</a></p>
+  </div>
+</footer>
+<script src="/assets/app.js" defer></script>
+</body>
+</html>
