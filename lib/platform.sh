@@ -115,14 +115,17 @@ restore_platform_security_state() {
         expected_listeners=$(ssh_effective_listeners "${sshd_bin}") || expected_listeners=""
         for unit in ssh.service sshd.service; do
             systemctl cat "${unit}" >/dev/null 2>&1 || continue
-            if [[ -n "${expected_listeners}" ]] && systemctl reload "${unit}" >/dev/null 2>&1; then
-                for attempt in {1..10}; do
-                    if ssh_listeners_match "${expected_listeners}"; then
-                        ssh_restored=1
-                        break
-                    fi
-                    sleep 0.5
-                done
+            if [[ -n "${expected_listeners}" ]]; then
+                # SIGHUP re-reads the config but does not reliably rebind listen
+                # sockets on every OpenSSH build, so verify and fall back to a
+                # restart. A restart keeps established SSH sessions alive.
+                if systemctl reload "${unit}" >/dev/null 2>&1 \
+                    && wait_for_ssh_listeners "${expected_listeners}"; then
+                    ssh_restored=1
+                elif systemctl restart "${unit}" >/dev/null 2>&1 \
+                    && wait_for_ssh_listeners "${expected_listeners}"; then
+                    ssh_restored=1
+                fi
             fi
             break
         done
@@ -134,6 +137,7 @@ restore_platform_security_state() {
         ssh_restored=0
     fi
     if ((ssh_restored == 0)); then
+        warn "SSH 监听未收敛：期望 [${expected_listeners//$'\n'/, }]，实际 [$(ssh_actual_listeners 2>/dev/null | tr '\n' ',')]"
         warn "SSH 配置、实际监听或 deny22 撤销检查失败；保留当前 65533 配置、防火墙、状态与备份，卸载/回滚未完成"
         restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${current_ssh_config}" "${current_ssh_had}" \
             || warn "尝试保留恢复前的 SSH 配置或重载失败，请立即通过 Console 检查"
@@ -259,6 +263,15 @@ ssh_actual_listeners() {
     local output
     output=$(ss -H -ltnp 2>/dev/null) || return 1
     awk '/users:\(\("(sshd|systemd)"/ {print $4}' <<<"${output}" | sort -u
+}
+
+wait_for_ssh_listeners() {
+    local expected=$1 attempt
+    for attempt in {1..10}; do
+        ssh_listeners_match "${expected}" && return 0
+        sleep 0.5
+    done
+    return 1
 }
 
 ssh_listeners_match() {

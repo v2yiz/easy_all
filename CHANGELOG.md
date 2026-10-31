@@ -1,3 +1,16 @@
+## 1.7.1 更新说明（2026-11-06）
+
+- 修复 Trojan 直连模式在签发证书前下载 lego 时 404：GitHub Release 下载地址缺少版本 tag，归档资产名
+  又错误地省掉了 `v`。现在按
+  `https://github.com/go-acme/lego/releases/download/v4.35.2/lego_v4.35.2_linux_amd64.tar.gz` 与
+  `lego_4.35.2_checksums.txt` 下载，SHA256 与 Release 内 checksums 一致后才安装。
+- 回滚或卸载恢复 SSH 时，若 `systemctl reload` 后监听未收敛到安装前端点，自动改用 `restart` 并重新
+  校验；仍失败时输出期望/实际监听（仅端口）再进入原有保护分支，继续保留 `65533` 配置、防火墙与备份，
+  不会提前删除放行规则。
+- 补充 lego 下载 URL 与 SSH 恢复 restart 回退的测试。
+- 兼容性：状态版本、命令与聚合订阅格式不变。1.7.0 安装失败后可原样重新运行安装命令（复用已有备份与
+  `65533` 配置），成功后再按需 `uninstall` 即可恢复原 SSH 端口。
+
 ## 1.7.0 更新说明（2026-11-06）
 
 - 新增第三种安装模式「3 直连 Trojan」：Xray 在 TCP `443` 终止 TLS，Trojan 认证通过后走代理，

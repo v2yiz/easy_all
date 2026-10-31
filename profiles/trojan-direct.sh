@@ -71,12 +71,16 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly CRON_DYNAMIC_PORT_MARKER="# easy_all-managed-dynamic-ports"
 readonly CLOUDFLARE_API_BASE="https://api.cloudflare.com/client/v4"
 readonly CLOUDFLARE_DNS_COMMENT="easy_all trojan direct node"
-readonly LEGO_RELEASE_BASE="https://github.com/go-acme/lego/releases/download"
 # Pinned on purpose: the release archive is verified against the checksums file
-# published in the same release, so the download stays reproducible.
+# published in the same release, so the download stays reproducible. The tag is
+# part of the download path: .../download/<tag>/<asset>.
 readonly LEGO_VERSION="v4.35.2"
-readonly LEGO_ARCHIVE="lego_${LEGO_VERSION#v}_linux_amd64.tar.gz"
-readonly LEGO_CHECKSUMS="lego_${LEGO_VERSION#v}_checksums.txt"
+readonly LEGO_RELEASE_NAME="${LEGO_VERSION#v}"
+readonly LEGO_RELEASE_BASE="https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}"
+# Release asset names are not uniform: the archive keeps the leading "v",
+# the checksums file does not.
+readonly LEGO_ARCHIVE="lego_${LEGO_VERSION}_linux_amd64.tar.gz"
+readonly LEGO_CHECKSUMS="lego_${LEGO_RELEASE_NAME}_checksums.txt"
 readonly LEGO_TIMEOUT="15m"
 readonly STATE_SCHEMA_VERSION="1"
 readonly MIN_COMPATIBLE_STATE_VERSION="1"
@@ -482,15 +486,19 @@ write_cloudflare_dns_env() {
         || die "保存 Cloudflare DNS 凭据失败"
 }
 
+lego_asset_url() {
+    printf '%s/%s\n' "${LEGO_RELEASE_BASE}" "$1"
+}
+
 download_lego() {
     local archive checksums dir expected actual
     dir=$(make_temp_dir)
     archive="${dir}/${LEGO_ARCHIVE}"
     checksums="${dir}/${LEGO_CHECKSUMS}"
     info "正在下载 lego ${LEGO_VERSION}（Let's Encrypt 客户端）"
-    download_https_file "${LEGO_RELEASE_BASE}/${LEGO_ARCHIVE}" "${archive}" \
+    download_https_file "$(lego_asset_url "${LEGO_ARCHIVE}")" "${archive}" \
         " lego ${LEGO_VERSION}"
-    download_https_file "${LEGO_RELEASE_BASE}/${LEGO_CHECKSUMS}" "${checksums}" \
+    download_https_file "$(lego_asset_url "${LEGO_CHECKSUMS}")" "${checksums}" \
         " lego 校验文件"
     expected=$(awk -v name="${LEGO_ARCHIVE}" '$2 == name {print tolower($1)}' "${checksums}")
     [[ "${expected}" =~ ^[0-9a-f]{64}$ ]] \

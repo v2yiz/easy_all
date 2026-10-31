@@ -293,6 +293,62 @@ test_xray_config() {
     rm -f -- "${CERT_FILE}" "${KEY_FILE}"
 }
 
+test_lego_release_urls() {
+    assert_equal "lego release base carries the version tag" \
+        "https://github.com/go-acme/lego/releases/download/v4.35.2" "${LEGO_RELEASE_BASE}"
+    assert_equal "lego archive asset name" \
+        "lego_v4.35.2_linux_amd64.tar.gz" "${LEGO_ARCHIVE}"
+    assert_equal "lego checksums asset name" \
+        "lego_4.35.2_checksums.txt" "${LEGO_CHECKSUMS}"
+    assert_equal "lego archive URL" \
+        "https://github.com/go-acme/lego/releases/download/v4.35.2/lego_v4.35.2_linux_amd64.tar.gz" \
+        "$(lego_asset_url "${LEGO_ARCHIVE}")"
+    assert_equal "lego checksums URL" \
+        "https://github.com/go-acme/lego/releases/download/v4.35.2/lego_4.35.2_checksums.txt" \
+        "$(lego_asset_url "${LEGO_CHECKSUMS}")"
+}
+
+test_ssh_restore_restarts_stale_listener() {
+    (
+        local log="${TMP_DIR}/ssh-restore.log" state="${TMP_DIR}/ssh-restore.state"
+        local fakebin="${TMP_DIR}/fakebin"
+        trap 'rm -f -- "${log}" "${state}"; rm -rf -- "${fakebin}"' EXIT
+        install -d -m 0755 "${fakebin}" "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")"
+        cat >"${fakebin}/sshd" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-t" ]]; then exit 0; fi
+printf 'listenaddress 0.0.0.0:22\n'
+EOF
+        chmod 0755 "${fakebin}/sshd"
+        export PATH="${fakebin}:${PATH}"
+        rm -rf -- "${BACKUP_DIR}"
+        install -d -m 0700 "${BACKUP_DIR}"
+        printf '# Managed by easy_all\nPort 65533\n' >"${EASY_ALL_SSH_PORT_CONFIG}"
+        : >"${log}"
+        printf 'stale\n' >"${state}"
+        sleep() { :; }
+        ss() {
+            if [[ "$(<"${state}")" == "restarted" ]]; then
+                printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=12,fd=3))\n'
+            else
+                printf 'LISTEN 0 128 0.0.0.0:65533 0.0.0.0:* users:(("sshd",pid=12,fd=3))\n'
+            fi
+        }
+        systemctl() {
+            printf 'systemctl %s\n' "$*" >>"${log}"
+            if [[ "$1 $2" == "restart ssh.service" ]]; then printf 'restarted\n' >"${state}"; fi
+            return 0
+        }
+        ufw() { return 0; }
+        fail2ban-client() { return 0; }
+        restore_platform_security_state || return 1
+        grep -Fq 'systemctl reload ssh.service' "${log}" || return 1
+        grep -Fq 'systemctl restart ssh.service' "${log}" || return 1
+        [[ ! -e "${EASY_ALL_SSH_PORT_CONFIG}" ]] || return 1
+    ) || fail_test "SSH restore must restart when a reload leaves the listener stale"
+    TESTS_RUN=$((TESTS_RUN + 1))
+}
+
 test_dynamic_port_rules() {
     local conf rules
     {
@@ -475,6 +531,14 @@ test_cloudflare_dns_record() {
 main() {
     prepare_profile_copy
     setup_stubs
+    EASY_ALL_SSH_PORT_CONFIG="${TMP_DIR}/ssh/00-easy-all-ports.conf"
+    EASY_ALL_FAIL2BAN_CONFIG="${TMP_DIR}/fail2ban/jail.d/99-easy-all-sshd.local"
+    EASY_ALL_FAIL2BAN_ACTION_CONFIG="${TMP_DIR}/fail2ban/action.d/easy-all-ufw-cidr.conf"
+    EASY_ALL_FAIL2BAN_CIDR_HELPER="${TMP_DIR}/cmd/fail2ban-ufw-cidr.sh"
+    EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${TMP_DIR}/fail2ban-state"
+    export EASY_ALL_SSH_PORT_CONFIG EASY_ALL_FAIL2BAN_CONFIG \
+        EASY_ALL_FAIL2BAN_ACTION_CONFIG EASY_ALL_FAIL2BAN_CIDR_HELPER \
+        EASY_ALL_FAIL2BAN_CIDR_STATE_DIR
     # shellcheck source=/dev/null
     source "${PROFILE_COPY}"
     # runtime-core installs its own EXIT trap; chain it so the sandbox is still removed.
@@ -487,6 +551,8 @@ main() {
     test_link_and_mihomo_output
     test_static_site_rendering
     test_xray_config
+    test_lego_release_urls
+    test_ssh_restore_restarts_stale_listener
     test_dynamic_port_rules
     test_state_roundtrip
     test_certificate_guard_and_hook
