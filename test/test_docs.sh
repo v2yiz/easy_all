@@ -256,6 +256,16 @@ assert_contains "operations guide documents Trojan aggregation nodes" \
     "${OPERATIONS_CONTENT}" '只允许写在 `nodes`'
 assert_contains "technical reference documents Trojan aggregation rendering" \
     "${TECHNICAL_CONTENT}" 'clashTrojanNode'
+assert_contains "worker README documents the Mieru aggregation template" \
+    "${WORKER_README_CONTENT}" 'Mieru 模板'
+assert_contains "worker example config carries a Mieru node" \
+    "${WORKER_EXAMPLE_CONTENT}" '"type": "mieru"'
+assert_contains "operations guide documents Mieru aggregation nodes" \
+    "${OPERATIONS_CONTENT}" 'Mieru 节点规则'
+assert_contains "technical reference documents Mieru aggregation rendering" \
+    "${TECHNICAL_CONTENT}" 'clashMieruNode'
+assert_contains "README documents Mieru domain support" \
+    "${README_CONTENT}" 'DNS only 域名'
 for content in "${ALL_DOCS}" "${WORKER_README_CONTENT}" "${WORKER_EXAMPLE_CONTENT}"; do
     assert_not_contains "documentation omits the removed subscription source" "${content}" 'externalSubUrl'
     assert_not_contains "documentation omits the removed provider" "${content}" 'xflash'
@@ -263,6 +273,10 @@ done
 for template in mihomo.yaml mihomo-common.yaml mihomo-classic.yaml; do
     assert_not_contains "shipped templates omit the removed provider exception" \
         "$(<"${ROOT_DIR}/templates/${template}")" 'love.xflash.work'
+done
+for template in mihomo.yaml mihomo-common.yaml mihomo-classic.yaml; do
+    assert_contains "templates document dynamic Mieru injection" \
+        "$(<"${ROOT_DIR}/templates/${template}")" 'type: mieru'
 done
 
 for legacy_term in AWS Amazon CloudFront 'Route 53' 'xhttp-aws' 'aws-cdn'; do

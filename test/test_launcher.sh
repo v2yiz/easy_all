@@ -51,6 +51,7 @@ manifest_content=$(<"${ROOT_DIR}/runtime.manifest")
 [[ "${launcher_content}" != *'cp -a "${EASY_ALL_INSTALL_DIR}/." "${stage}/"'* ]] \
     || fail "runtime registration must not retain files removed from the manifest"
 [[ "${manifest_content}" == *'profiles/reality.sh'* \
+    && "${manifest_content}" == *'profiles/mieru-direct.sh'* \
     && "${manifest_content}" == *'profiles/xhttp-cloudflare-streamup.sh'* \
     && "${manifest_content}" == *'lib/runtime-core.sh'* \
     && "${manifest_content}" == *'lib/globalping-cdn.sh'* \
@@ -82,6 +83,34 @@ assert_failure_contains "Reality target change is Reality-only" \
     assert_equal "Reality dispatches Reality target changes" 'target:www.example.com:443' \
         "$(dispatch_profile_command reality reality-target www.example.com:443)"
 )
+
+assert_failure_contains "Mieru rejects subscription updates" \
+    "Trojan/Mieru 直连不提供订阅" \
+    dispatch_profile_command mieru-direct update-sub
+assert_failure_contains "Mieru rejects quota commands" \
+    "Mieru 直连不部署 easy_all 配额" \
+    dispatch_profile_command mieru-direct quota-status
+(
+    rotate_dynamic_ports() { printf 'rotate\n'; }
+    assert_equal "Mieru dispatches port-range NAT refresh" 'rotate' \
+        "$(dispatch_profile_command mieru-direct rotate-dynamic-ports)"
+)
+assert_failure_contains "dynamic port rotation still rejects CDN mode" \
+    "rotate-dynamic-ports 仅适用于直连模式" \
+    dispatch_profile_command cloudflare-streamup rotate-dynamic-ports
+(
+    update_mieru_core() { printf 'mieru-core:%s\n' "$*"; }
+    assert_equal "Mieru dispatches its own core update" 'mieru-core:' \
+        "$(dispatch_profile_command mieru-direct update-core)"
+)
+(
+    renew_certificate() { printf 'cloudflare-cert\n'; }
+    assert_equal "Cloudflare dispatches certificate renewal" 'cloudflare-cert' \
+        "$(dispatch_profile_command cloudflare-streamup renew-cert)"
+)
+assert_failure_contains "Mieru has no certificate renewal" \
+    "Mieru 模式不使用 TLS 证书" \
+    dispatch_profile_command mieru-direct renew-cert
 
 # These tombstones bridge self-update for launchers that still validate the cloned
 # tree against their own baked-in manifest. They must exist in the source tree, but
@@ -364,7 +393,7 @@ import sys
 
 # Python's PTY works on both Linux and macOS; their script(1) flags differ.
 for answer, expected in [(b'\n', 'reality'), (b'2\n', 'cloudflare-streamup'),
-                             (b'3\n', 'trojan-direct')]:
+                             (b'3\n', 'trojan-direct'), (b'4\n', 'mieru-direct')]:
     master, slave = os.openpty()
     try:
         process = subprocess.Popen(
@@ -386,7 +415,8 @@ fi
 [[ "${launcher_content}" == *"1) printf 'reality"* \
     && "${launcher_content}" == *"2) printf 'cloudflare-streamup"* \
     && "${launcher_content}" == *"3) printf 'trojan-direct"* \
-    && "${launcher_content}" != *"4) printf"* ]] \
-    || fail "installation choices must retain only the supported modes in order"
+    && "${launcher_content}" == *"4) printf 'mieru-direct"* \
+    && "${launcher_content}" != *"5) printf"* ]] \
+    || fail "installation choices must expose the supported modes in order"
 
 printf 'ok - easy_all launcher tests passed\n'

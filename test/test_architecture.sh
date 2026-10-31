@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 REALITY_PROFILE="${ROOT_DIR}/profiles/reality.sh"
 TROJAN_PROFILE="${ROOT_DIR}/profiles/trojan-direct.sh"
+MIERU_PROFILE="${ROOT_DIR}/profiles/mieru-direct.sh"
 XHTTP_PROFILE="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
 XHTTP_RUNTIME="${ROOT_DIR}/lib/xhttp-runtime.sh"
 RUNTIME_CORE="${ROOT_DIR}/lib/runtime-core.sh"
@@ -86,6 +87,9 @@ shared_modules=(
 [[ "${RUNTIME_MANIFEST_CONTENT}" == *'lib/globalping-cdn.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_LIB_DIR}/globalping-cdn.sh"'* ]] \
     || fail "Globalping CDN module is missing from the Cloudflare profile"
+[[ "${RUNTIME_MANIFEST_CONTENT}" == *'profiles/mieru-direct.sh'* \
+    && "$(<"${MIERU_PROFILE}")" == *'source "${SCRIPT_DIR}/runtime-core.sh"'* ]] \
+    || fail "Mieru Profile must be packaged with the runtime"
 [[ "${RUNTIME_MANIFEST_CONTENT}" == *'lib/cloudflare-ip-pool.sh'* \
     && "$(<"${CLOUDFLARE_PROFILE}")" == *'source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"'* ]] \
     || fail "Cloudflare official IP pool must remain scoped to Cloudflare streamup mode"
@@ -165,6 +169,8 @@ for module in log.sh runtime-core.sh platform.sh profile-common.sh network.sh mi
             || fail "Reality redefines shared function ${function_name}"
         ! grep -Eq "^${function_name}\\(\\)" "${TROJAN_PROFILE}" \
             || fail "Trojan Profile redefines shared function ${function_name}"
+        ! grep -Eq "^${function_name}\\(\\)" "${MIERU_PROFILE}" \
+            || fail "Mieru Profile redefines shared function ${function_name}"
         ! grep -Eq "^${function_name}\\(\\)" "${XHTTP_RUNTIME}" \
             || fail "XHTTP runtime redefines shared function ${function_name}"
         ! grep -Eq "^${function_name}\\(\\)" "${CLOUDFLARE_PROFILE}" \
@@ -194,17 +200,17 @@ done < <(
 
 grep -Eq '^update_current_core\(\)' "${RUNTIME_CORE}" \
     && grep -Fq 'xray-version.missing' "${RUNTIME_CORE}" \
-    && ! grep -Eq '^update_current_core\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" \
+    && ! grep -Eq '^update_current_core\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" "${MIERU_PROFILE}" \
     || fail "Xray core update and complete rollback must be owned by runtime-core"
 grep -Eq '^cleanup\(\)' "${RUNTIME_CORE}" \
-    && ! grep -Eq '^cleanup\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" \
+    && ! grep -Eq '^cleanup\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" "${MIERU_PROFILE}" \
     || fail "runtime cleanup must have one shared implementation"
 grep -Eq '^uri_encode\(\)' "${RUNTIME_CORE}" \
-    && ! grep -Eq '^uri_encode\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" \
+    && ! grep -Eq '^uri_encode\(\)' "${REALITY_PROFILE}" "${XHTTP_RUNTIME}" "${MIERU_PROFILE}" \
     || fail "runtime URI encoding must have one shared implementation"
 [[ "$(<"${RUNTIME_CORE}")" == *'stop easy_all-quota.service easy_all-globalping-refresh.service'* ]] \
     || fail "runtime core must own stopping one-shot maintenance services"
-for uninstall_profile in "${REALITY_PROFILE}" "${CLOUDFLARE_PROFILE}"; do
+for uninstall_profile in "${REALITY_PROFILE}" "${CLOUDFLARE_PROFILE}" "${MIERU_PROFILE}"; do
     uninstall_body=$(sed -n '/^uninstall_all()/,/^}/p' "${uninstall_profile}")
     stop_maintenance_line=$(grep -n '^    stop_maintenance_services$' <<<"${uninstall_body}" | cut -d: -f1)
     write_lock_line=$(grep -n '^    acquire_runtime_write_lock ' <<<"${uninstall_body}" | cut -d: -f1)
@@ -380,11 +386,13 @@ fi
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'linux-xanmod-lts-x64v'* \
     && "$(<"${ROOT_DIR}/lib/tcp-tuning.sh")" == *'show_bbrv3_status()'* \
     && "$(<"${REALITY_PROFILE}")" == *'show_tcp_acceleration_status'* \
+    && "$(<"${MIERU_PROFILE}")" == *'show_tcp_acceleration_status'* \
     && "$(<"${REALITY_PROFILE}")" != *'BBR_ALLOW_EXISTING_XANMOD'* \
     && "$(<"${XHTTP_RUNTIME}")" != *'BBR_ALLOW_EXISTING_XANMOD'* ]] \
     || fail "shared XanMod BBRv3 kernel and TCP tuning policy drifted"
 [[ "$(<"${REALITY_PROFILE}")" == *'ca-certificates curl wget gnupg'* \
-    && "$(<"${XHTTP_RUNTIME}")" == *'ca-certificates curl wget gnupg'* ]] \
+    && "$(<"${XHTTP_RUNTIME}")" == *'ca-certificates curl wget gnupg'* \
+    && "$(<"${MIERU_PROFILE}")" == *'ca-certificates curl wget gnupg'* ]] \
     || fail "all Profiles must install gnupg before verifying the XanMod key"
 
 [[ "$(<"${ROOT_DIR}/lib/profile-common.sh")" != *'register_easy_all_command()'* \

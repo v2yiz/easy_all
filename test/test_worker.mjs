@@ -32,6 +32,17 @@ try {
             fp: 'chrome',
             optional: true,
         },
+        {
+            type: 'mieru',
+            name: 'Optional Mieru',
+            host: 'mieru.example.com',
+            port: 2090,
+            username: 'example-mieru-user',
+            password: 'test-password-0123456789abcdef',
+            multiplexing: 'MULTIPLEXING_LOW',
+            trafficPattern: 'CLlgEAA=',
+            optional: true,
+        },
     ];
     config.externalSubUrl = 'https://subscription.example.com/removed-url-sentinel';
     config.fallbackCdnNodes = [];
@@ -68,20 +79,26 @@ try {
                     assert.ok(content.includes('visible.example.com'));
                     assert.equal(content.includes('optional.example.com'), all);
                     assert.equal(content.includes('trojan.example.com'), all);
+                    assert.equal(content.includes('mieru.example.com'), all);
                     if (all) {
                         if (flag === 'clash') {
                             assert.ok(content.includes('    type: trojan'));
                             assert.ok(content.includes('    port: 9443'));
                             assert.ok(content.includes('      - "http/1.1"'));
+                            assert.ok(content.includes('    type: mieru'));
+                            assert.ok(content.includes('    port: 2090'));
+                            assert.ok(content.includes('    traffic-pattern: "CLlgEAA="'));
                         } else {
                             assert.ok(content.includes('trojan://'));
                             assert.ok(content.includes('@trojan.example.com:9443?'));
+                            assert.ok(content.includes('mierus://'));
+                            assert.ok(content.includes('@mieru.example.com?'));
                         }
                     }
                     const count = flag === 'base64'
                         ? content.split('\n').length
                         : (content.split('\nproxy-groups:')[0].match(/^  - name:/gm) || []).length;
-                    assert.equal(count, all ? 3 : 1, 'only configured direct nodes are returned');
+                    assert.equal(count, all ? 4 : 1, 'only configured direct nodes are returned');
                     assert.ok(!/xflash|#Removed/.test(content));
                 } else {
                     assert.equal(body, '');
@@ -141,13 +158,14 @@ try {
                 assert.ok(content.includes('visible.example.com'));
                 assert.equal(content.includes('optional.example.com'), all);
                 assert.equal(content.includes('trojan.example.com'), all);
+                assert.equal(content.includes('mieru.example.com'), all);
                 assert.ok(content.includes('192.0.2.1') && content.includes('192.0.2.2'));
                 assert.ok(content.includes('🇺🇸优选1') && content.includes('🇭🇰CF1'));
                 assert.ok(!/xflash|#Removed/.test(content));
                 const count = flag === 'base64'
                     ? content.split('\n').length
                     : (content.split('\nproxy-groups:')[0].match(/^  - name:/gm) || []).length;
-                assert.equal(count, all ? 5 : 3, 'only configured direct and own-source nodes are returned');
+                assert.equal(count, all ? 6 : 3, 'only configured direct and own-source nodes are returned');
             }
         }
     }
@@ -185,9 +203,11 @@ try {
             if (node === '&node=all') {
                 assert.ok(content.includes('optional.example.com'));
                 assert.ok(content.includes('trojan.example.com'));
+                assert.ok(content.includes('mieru.example.com'));
             } else {
                 assert.ok(!content.includes('optional.example.com'));
                 assert.ok(!content.includes('trojan.example.com'));
+                assert.ok(!content.includes('mieru.example.com'));
             }
             assert.ok(content.includes('visible.example.com'));
         }

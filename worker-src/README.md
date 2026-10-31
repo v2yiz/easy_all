@@ -25,9 +25,10 @@ npm run test:worker
 需要 Node.js 18 或更新版本及 Bash，无需安装 npm 依赖。自定义模板还需 Mihomo 内核校验，
 配置方法见[技术参考](../docs/technical-reference.md#测试)。
 
-- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外 Reality 节点和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口按北京时间每小时提供 6 个（`10000-62703`）并在每次请求时按时间挑选下发；所有节点统一输出 `ipVersion: ipv4`。
+- `${XDG_CONFIG_HOME:-$HOME/.config}/easy_all/worker.json`：用户 Token、额外直连节点（Reality/Trojan/Mieru）和 CDN 兜底节点。字段与安装器聚合输入一致，**不含 `vpsSubUrl`**；该字段由安装器在部署前注入。Reality 端口按北京时间每小时提供 6 个（`10000-62703`）并在每次请求时按时间挑选下发；所有节点统一输出 `ipVersion: ipv4`。
   Reality 安装器注入的 `vpsSubUrl` 指向私有节点源（`https://<源域名>:8443/subscribe`），源返回 Reality URI 订阅；Worker 解析后保留原始节点名和端口，把它们直接放进 `PROXY`，不改名成 `🇺🇸优选N`，也不放进 CDN/Worker 测速组。
-- 聚合 `nodes` 支持 VLESS/Reality 与 Trojan/TLS 两种直连节点。Trojan 模板（占位密码）见
+- 聚合 `nodes` 支持 VLESS/Reality、Trojan/TLS 与 Mieru 三种直连节点；`fallbackCdnNodes` 仍只允许 VLESS。
+  `host` 可以是公网 IPv4 或 DNS only 域名（不支持 IPv6 literal）。Trojan 模板（占位密码）见
   `config.example.json` 的第二个节点：
 
   ```json
@@ -50,6 +51,36 @@ npm run test:worker
   `udp: true`、`skip-cert-verify: false`，base64 输出 `trojan://<密码>@<域名>:<端口>?...`；节点名保持
   原样进入 `PROXY`，不参与 CDN 自动命名。Trojan 模式本身不部署 Worker，节点信息用
   `easy_all show` 复制后填入任意已部署聚合的 `nodes` 即可。
+- Mieru 模板（占位凭据）见 `config.example.json` 的第三个节点：
+
+  ```json
+  {
+    "type": "mieru",
+    "name": "Mieru example",
+    "host": "mieru.example.com",
+    "portRange": "50000-50512",
+    "username": "example-mieru-user",
+    "password": "replace-with-a-long-mieru-password",
+    "transport": "TCP",
+    "multiplexing": "MULTIPLEXING_LOW",
+    "trafficPattern": "CLlgEAA=",
+    "udp": true,
+    "ipVersion": "ipv4"
+  }
+  ```
+
+  `port` 与 `portRange` 必须且只能提供一个；`port` 为单端口（1-65535），`portRange` 形如
+  `50000-50512`（直连模式默认值）。`username` 与 `password` 必填，分别限制为 1-64 与 8-64 位
+  字母、数字或 `.` `_` `~` `-`；`transport` 只能是 `TCP`；`multiplexing` 可省略，取值为
+  `MULTIPLEXING_OFF`/`LOW`/`MIDDLE`/`HIGH`，默认 `MULTIPLEXING_LOW`；`trafficPattern` 可省略，
+  为 `mita export traffic-pattern` 导出的标准 base64；`mtu` 可省略（1280-1500，默认 1400，仅写入
+  `mierus://` 链接，Mihomo 节点不输出）；`udp` 默认 `true`。Mieru 节点只能写入 `nodes`，不能写入
+  `fallbackCdnNodes`。Mihomo 输出 `type: mieru`、`port-range`（或单端口 `port`）、`transport: TCP`、
+  `udp`、`username`、`password`、`multiplexing` 与可选 `traffic-pattern`；base64 输出
+  `mierus://<用户名>:<密码>@<域名或 IP>?mtu=...&multiplexing=...&port=50000-50512&profile=default&protocol=TCP`。
+  节点名保持原样进入 `PROXY`，不参与 CDN 自动命名。Mieru 模式本身不部署 Worker，节点信息用
+  `easy_all show` 复制后填入任意已部署聚合的 `nodes` 即可；`host` 也可直接填写 `easy_all show`
+  输出的域名或 IPv4。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。安装器会把同一模板传给 Worker 构建。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。

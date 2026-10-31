@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[1.7.2](CHANGELOG.md#172-更新说明2026-11-06)。
+当前源码版本：[1.8.0](CHANGELOG.md#180-更新说明2026-11-07)。
 
 `easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点交互安装器。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认 XanMod BBRv3，可选 Skyline Speeder）。
@@ -14,6 +14,7 @@
 | **1. 直连 Reality** | VPS 公网 IP 可用且直连质量良好 | VLESS TCP Reality Vision，VPS `443` |
 | **2. Cloudflare CDN** | 直连效果不佳、VPS 公网 IP 已被封，或明确需要纯 XHTTP | VLESS XHTTP `stream-up`，6 个 Cloudflare 精选 IPv4；可选独立纯 Worker 兜底 |
 | **3. 直连 Trojan** | 需要浏览器能正常访问的伪装站点，或偏好密码登录而非 UUID | Trojan over TLS，VPS `443`；非 Trojan 流量回落到静态站点；可选 `443`/`dynamic` 端口 |
+| **4. 直连 Mieru** | 希望使用抗主动探测的加密代理，且不需要证书或伪装站点 | 官方 mita，TCP 端口范围 `50000-50512`（UFW NAT 到内部 `2090`）；连接地址为公网 IPv4 或 DNS only 域名 |
 
 Cloudflare 模式完全没有域名兜底，需要额外准备：
 
@@ -39,6 +40,17 @@ Trojan 直连需要额外准备：
 - 具备 Zone:Read 与 Zone:DNS:Edit 的 API Token，用于 Cloudflare DNS-01 签发与自动续期；
 - 一个 ACME 注册邮箱（默认 `admin@<Zone 名>`，仅用于证书到期提醒）。
 
+Mieru 直连不需要证书或 Cloudflare 账号：安装器从 GitHub 官方 Release 下载 `mita` 的 deb
+包，校验同一 Release 内的 SHA256 后安装，再用官方 `mita apply config` 写入内部 TCP 端口、
+随机用户名/密码与 traffic-pattern，最后执行 `mita start`。对外使用 TCP 端口范围
+`50000-50512`：UFW 用单条 NAT 规则把整段转发到内部 `2090`（mita 只监听一个端口，避免创建
+五万多个 listener），客户端拿到完整范围后每条新连接随机选端口。云安全组需放行
+`50000-50512`，UFW 过滤只需放行 NAT 目标端口。本模式不部署在线订阅和 easy_all 配额，
+`easy_all show` 输出 `mierus://` 分享链接、Mieru 客户端配置 JSON 与 Mihomo 节点片段
+（含 `port-range` 与 `traffic-pattern`），可分别导入原生 mieru 客户端或 Mihomo。连接地址默认
+自动探测公网 IPv4，也可以输入指向本机的 DNS only / 灰云域名；域名会写入客户端 JSON 的
+`domainName`。
+
 安装器用内置的 lego（发布包 SHA256 校验后安装）通过 Cloudflare DNS-01 签发 Let's Encrypt 证书，
 并用 systemd 定时器每天两次自动续期。Xray 在 TCP `443` 终止 TLS，非 Trojan 流量回落到
 `127.0.0.1:8080` 的 Nginx 静态站点，因此浏览器直接访问 `https://节点域名` 看到的是一个正常的
@@ -50,13 +62,16 @@ Trojan 直连需要额外准备：
 聚合订阅，可以把本机 Trojan 节点写进聚合 JSON 的 `nodes`（见[运维指南](docs/operations-guide.md#worker-聚合)）
 统一分发；Trojan 模式本身不部署 Worker 或在线订阅。
 
+Mieru 模式同样不部署 Worker 或在线订阅；把 `easy_all show` 输出的域名或 IPv4、端口范围、用户名、
+密码和可选 traffic-pattern 写进任意已部署聚合的 `nodes`（`type: mieru`）即可统一分发。
+
 直连 Reality 安装时会选择订阅输出，默认不部署订阅：
 
 | 选项 | 适用情况 | 需要准备 |
 | --- | --- | --- |
 | **1. 仅节点（默认）** | 只需要节点链接，自己维护订阅 | 无 |
 | **2. 本机订阅** | 只有当前这一台直连节点 | 一个 Cloudflare 一级订阅域名、API Token |
-| **3. Worker 订阅聚合** | 多台直连节点（Reality 或 Trojan）统一下发，仍希望走 Workers | 同 Zone 两个一级域名（公开订阅域名 + 私有节点源域名）、具备 Workers Scripts Write 的 API Token |
+| **3. Worker 订阅聚合** | 多台直连节点（Reality、Trojan 或 Mieru）统一下发，仍希望走 Workers | 同 Zone 两个一级域名（公开订阅域名 + 私有节点源域名）、具备 Workers Scripts Write 的 API Token |
 
 Worker 聚合只在其中一台 VPS 部署：公开订阅域名绑定 Worker，私有节点源域名由 Cloudflare 代理回
 本机 `8443` 且仅允许 Cloudflare 回源，Nginx 继续是 Token 与配额的唯一真源；其余直连节点以
@@ -77,7 +92,7 @@ Worker 聚合只在其中一台 VPS 部署：公开订阅域名绑定 Worker，�
 
 安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务。建议先创建 VPS 快照，并保留当前
 SSH 会话，直到重启后确认新会话可以登录。服务商的安全组或云防火墙还需自行放行当前 SSH 端口
-以及业务所需的 TCP `443`。Reality 与 Trojan 使用动态端口时，还需放行 TCP `10000-62703`；VPS 安装和
+以及业务所需的 TCP `443`（Mieru 为 TCP `50000-50512`）。Reality 与 Trojan 使用动态端口时，还需放行 TCP `10000-62703`；VPS 安装和
 `apply` 会立即加载整段 NAT，重启后由 UFW 持久化规则和 `@reboot` 刷新任务恢复。
 
 ## 快速安装
@@ -101,7 +116,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 
 | 提示 | 建议 |
 | --- | --- |
-| 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2`；需要浏览器可访问的伪装站点选 `3`（Trojan） |
+| 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2`；需要浏览器可访问的伪装站点选 `3`（Trojan）；需要抗主动探测且不需要证书或伪装站点选 `4`（Mieru） |
 | TCP 加速 | 选 `1` 或直接回车使用 BBRv3；只有丢包率极高且确认为非拥塞随机丢包时才选 Skyline Speeder |
 | 订阅输出 | 直接回车不部署订阅；单机自用选 `2` 部署本机订阅；多台直连节点统一走 Workers 下发选 `3` |
 | 月度用户配额 | 选 `1` 或直接回车，不启用 |
@@ -112,6 +127,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 | Trojan 节点域名 | Cloudflare Zone 下、指向本机 IPv4 的域名（如 `node.example.com`） |
 | Trojan 密码 | 直接回车自动生成 32 位随机密码 |
 | Trojan 端口模式 | 直接回车使用 `dynamic`；只要 443 选 `1` |
+| Mieru 连接地址 | 默认自动探测公网 IPv4；直接回车使用，或输入 DNS only / 灰云域名 |
+| Mieru 内部监听端口 | 直接回车使用 `2090`；外部端口范围固定为 `50000-50512` |
+| Mieru 用户名/密码 | 自动生成，无需输入 |
 
 提示中的 `[值]` 是直接回车采用的默认值。Token 和密码输入时不会显示字符。
 
@@ -133,8 +151,8 @@ sudo easy_all subscription
 默认 BBRv3 模式下，`status` 显示 `BBRv3: active` 才表示新内核已经生效。选择 Skyline 时应显示
 `Skyline Speeder: active`。复制 `subscription` 输出中带
 `flag=clash` 的 Mihomo 地址，在客户端通过 URL 导入。订阅地址与 UUID 都是访问凭据，不要公开。
-Trojan 模式没有订阅地址：`easy_all subscription` 直接给出 `trojan://` 链接与 Mihomo 片段，
-手工导入即可。
+Trojan 与 Mieru 模式没有订阅地址：`easy_all subscription` 直接给出节点链接或客户端配置与
+Mihomo 片段，手工导入即可。
 
 客户端选择、Clash Mi 设置和订阅 DNS 排障见[客户端使用指南](docs/client-guide.md)。
 默认订阅模板是 COMMON 精简规则（以低内存为目标，不保证 iPhone 峰值低于 50MB）；需要完整 COMMON 规则或经典
@@ -146,17 +164,18 @@ geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 | 命令 | 作用 |
 | --- | --- |
 | `easy_all status` | 查看内核、服务、端口和订阅状态 |
-| `easy_all show` | 显示 VLESS 链接和 Mihomo 节点 |
-| `easy_all subscription` | 显示每个用户的订阅地址 |
+| `easy_all show` | 显示当前模式的节点链接或客户端配置与 Mihomo 节点 |
+| `easy_all subscription` | 显示每个用户的订阅地址或当前模式节点信息 |
 | `easy_all self-update` | 从 `main` 更新项目代码，不修改应用配置 |
 | `easy_all self-update --dev` | 从 `dev` 更新项目代码，用于验证待发布版本 |
 | `easy_all apply` | 重新应用当前配置 |
 | `easy_all tcp` | 交互选择 TCP 加速；也可指定 `bbrv3` 或 `skyline` |
 | `easy_all reality-target [域名:端口]` | Reality 模式修改 SNI（伪装目标）并重新应用 |
 | `easy_all renew-cert` | 轮换当前模式证书；Trojan 模式主动检查并续期 Let's Encrypt 证书 |
+| `easy_all update-core` | Reality/Cloudflare 更新 Xray，Mieru 更新官方 mita |
 | `easy_all apply-cloud` | Cloudflare 模式同步本机配置和云端 Worker、DNS、证书及规则 |
 | `easy_all update-sub` | 管理订阅、用户和配额 |
-| `easy_all update-core` | 更新 Xray 核心 |
+| `easy_all rotate-dynamic-ports` | 刷新直连模式的 NAT 规则（Mieru 使用 `50000-50512` → 内部端口） |
 | `easy_all refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP |
 | `easy_all uninstall` | 卸载本机资源 |
 | `easy_all help` | 查看全部命令 |

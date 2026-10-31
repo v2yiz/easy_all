@@ -129,10 +129,42 @@ try {
     await assert.rejects(buildWorker({ configPath, outputPath }), /trojan nodes must be direct nodes/);
     config.fallbackCdnNodes.pop();
     config.nodes[1].alpn = ['http/1.1'];
+    // Mieru direct nodes are validated as direct-only TCP nodes.
+    const mieruIndex = config.nodes.findIndex(node => node.type === 'mieru');
+    assert.ok(mieruIndex >= 0, 'example config documents a Mieru direct node');
+    const mieruNode = config.nodes[mieruIndex];
+    const invalidMieru = async (patch, pattern) => {
+        config.nodes[mieruIndex] = { ...mieruNode, ...patch };
+        for (const [field, unused] of Object.entries(patch)) {
+            if (unused === undefined) delete config.nodes[mieruIndex][field];
+        }
+        await writeFile(configPath, JSON.stringify(config));
+        await assert.rejects(buildWorker({ configPath, outputPath }), pattern);
+        config.nodes[mieruIndex] = mieruNode;
+    };
+    await invalidMieru({ portRange: undefined }, /mieru port or portRange/);
+    await invalidMieru({ port: 2090 }, /mieru port or portRange/);
+    await invalidMieru({ portRange: '50512-50000' }, /mieru portRange/);
+    await invalidMieru({ portRange: '10000-70000' }, /mieru portRange/);
+    await invalidMieru({ transport: 'UDP' }, /mieru transport/);
+    await invalidMieru({ username: '' }, /mieru username/);
+    await invalidMieru({ password: 'short' }, /mieru password/);
+    await invalidMieru({ multiplexing: 'MULTIPLEXING_BOGUS' }, /mieru multiplexing/);
+    await invalidMieru({ trafficPattern: 'not base64!' }, /mieru traffic pattern/);
+    await invalidMieru({ mtu: 1200 }, /mieru mtu/);
+    config.fallbackCdnNodes.push({ ...mieruNode, name: 'Mieru fallback' });
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /mieru nodes must be direct nodes/);
+    config.fallbackCdnNodes.pop();
+    config.nodes.push({ ...config.nodes[0], name: 'Port range on Reality', portRange: '10000-10010' });
+    await writeFile(configPath, JSON.stringify(config));
+    await assert.rejects(buildWorker({ configPath, outputPath }), /port range is Mieru-only/);
+    config.nodes.pop();
     await writeFile(configPath, JSON.stringify(config));
     await buildWorker({ configPath, outputPath, now: now + 240_000 });
     source = await readFile(outputPath, 'utf8');
     assert.ok(source.includes('"type":"trojan"'), 'Trojan direct nodes are embedded in the Worker');
+    assert.ok(source.includes('"type":"mieru"'), 'Mieru direct nodes are embedded in the Worker');
     await writeFile(configPath, '{invalid');
     await assert.rejects(buildWorker({ configPath, outputPath }));
     assert.equal(await readFile(outputPath, 'utf8'), source, 'failed build preserves artifact');
@@ -162,6 +194,32 @@ try {
     }], [443]);
     assert.ok(trojanYaml.includes('    alpn:\n      - "h2"\n      - "http/1.1"\n'),
         'comma separated ALPN renders as a YAML list');
+    const mieruLinkValue = atob(api.buildBase64Subscription([mieruNode], [mieruNode.portRange]));
+    const parsedMieru = new URL(mieruLinkValue);
+    assert.equal(parsedMieru.protocol, 'mierus:');
+    assert.equal(parsedMieru.username, mieruNode.username);
+    assert.equal(decodeURIComponent(parsedMieru.password), mieruNode.password);
+    assert.equal(parsedMieru.hostname, 'mieru.example.com');
+    assert.equal(parsedMieru.searchParams.get('port'), '50000-50512');
+    assert.equal(parsedMieru.searchParams.get('profile'), 'default');
+    assert.equal(parsedMieru.searchParams.get('protocol'), 'TCP');
+    assert.equal(parsedMieru.searchParams.get('mtu'), '1400');
+    assert.equal(parsedMieru.searchParams.get('multiplexing'), 'MULTIPLEXING_LOW');
+    assert.equal(parsedMieru.searchParams.get('traffic-pattern'), 'CLlgEAA=');
+    assert.equal(decodeURIComponent(parsedMieru.hash.slice(1)), mieruNode.name);
+    assert.equal(api.resolveNodePorts([mieruNode], { now: () => 0 })[0], '50000-50512',
+        'Mieru nodes keep the configured port range');
+    const mieruYaml = api.buildClashConfig([mieruNode], [mieruNode.portRange]);
+    for (const expected of [
+        '    type: mieru', '    server: \"mieru.example.com\"',
+        '    port-range: \"50000-50512\"', '    transport: TCP', '    udp: true',
+        `    username: \"${mieruNode.username}\"`,
+        '    multiplexing: MULTIPLEXING_LOW',
+        '    traffic-pattern: \"CLlgEAA=\"',
+        '    ip-version: ipv4',
+    ]) {
+        assert.ok(mieruYaml.includes(expected), `Mieru YAML preserves ${expected}`);
+    }
     const sourceCalls = [];
     const make = fetchImpl => api.createWorkerHandler({
         allowedTokenValues: new Set([config.allowedTokens.owner]),
@@ -412,7 +470,7 @@ try {
     assert.match(globalGroup, /proxies:\s*\n\s*- PROXY\s*$/m);
     assert.ok(!globalGroup.includes('DIRECT') && !globalGroup.includes('REJECT'));
     const proxyMembers = groups.split('name: 🇺🇸白天首选')[0].split('proxies:')[1].trim().split('\n').map(line => line.trim()).filter(line => line.startsWith('- "')).map(line => JSON.parse(line.slice(2)));
-    assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Trojan example', 'Hidden Reality']);
+    assert.deepEqual(proxyMembers, ['🇺🇸白天首选', 'Reality example', 'Trojan example', 'Mieru example', 'Hidden Reality']);
     assert.ok(!groups.includes('DIRECT'));
     const template = await readFile(new URL('../templates/mihomo-classic.yaml', import.meta.url), 'utf8');
     const staticRules = template.split('rules:\n')[1].replace('# EASY_ALL_WORKER_RULE', '');
@@ -422,8 +480,8 @@ try {
         assert.ok(body.includes('ipv6: false'));
     }
     assert.ok(liveBody.includes('192.0.2.1'));
-    assert.ok(!/xflash|remote.example.com|mieru.example.com/i.test(liveBody));
-    assert.equal((liveBody.split('\nproxy-groups:')[0].match(/^  - name:/gm) || []).length, 4);
+    assert.ok(!/xflash|remote.example.com|external-mieru.example.com/i.test(liveBody));
+    assert.equal((liveBody.split('\nproxy-groups:')[0].match(/^  - name:/gm) || []).length, 5);
     for (const expected of [
         'reuse-settings:',
         'max-connections: 4',
@@ -488,7 +546,7 @@ try {
     const generic = make(async () => new Response(cf));
     const genericBody = atob(await (await generic(genericRequest)).text());
     assert.ok(!/^ss:\/\//m.test(genericBody) && genericBody.includes('192.0.2.1'));
-    assert.equal(genericBody.split('\n').length, 4, 'URI output contains only direct and own-source nodes');
+    assert.equal(genericBody.split('\n').length, 5, 'URI output contains only direct and own-source nodes');
     assert.ok(genericBody.split('\n').some(link => link.startsWith('trojan://test-password-0123456789abcdef@trojan.example.com:443?')),
         'Trojan direct nodes render a trojan:// URI');
     const genericCf = genericBody.split('\n').find(link => link.includes('@192.0.2.1:443'));

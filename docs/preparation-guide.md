@@ -1,6 +1,6 @@
 # 前置准备手册
 
-本手册覆盖 Reality、Trojan 与 Cloudflare 三种模式所需的域名、账号、DNS 和 Token 准备。Reality 节点数据仍然直连，
+本手册覆盖 Reality、Trojan、Mieru 与 Cloudflare 四种模式所需的域名、账号、DNS 和 Token 准备。Mieru 不需要 Cloudflare 账号或 Token，域名可选（DNS only），可直接跳到 README 安装。Reality 节点数据仍然直连，
 但选择“本机订阅”或“Worker 订阅聚合”时，订阅回源会使用 Cloudflare Universal SSL 与 Origin CA。
 
 Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Reality **只有选择订阅输出（本机订阅或 Worker 聚合）**
@@ -27,6 +27,7 @@ VPS 费用另计。
 | 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；本机订阅还需 Cloudflare Active Zone、一个一级子域和 API Token；Worker 聚合还需同 Zone 第二个一级子域、具备 Workers Scripts Write 的 API Token | Globalping Token、gRPC 设置                        | 仅节点：直接看 README；本机订阅或 Worker 聚合：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 | 模式 3：Trojan 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4、Cloudflare **Active** Zone 下一个节点域名（如 `node.example.com`）、具备 `Zone / Zone / Read` 与 `Zone / DNS / Edit` 的 API Token | Globalping Token、gRPC 设置、Worker 权限 | 第 1、3.3、4 节 |
+| 模式 4：Mieru 直连 | Debian 12/13 amd64 专用 VPS、公网 IPv4；可选 DNS only 域名；安装器从 GitHub Release 安装官方 mita | Cloudflare、Globalping Token、API Token | 直接看 README |
 
 只支持 IPv4。
 
@@ -36,6 +37,7 @@ VPS 费用另计。
 Reality:    node.example.com（可选）；sub.example.com（本机订阅需要）；
             sub.example.com + source.example.com（Worker 聚合需要，公开入口与私有源各一个）
 Trojan:     node.example.com（必需，同时用于 TLS 证书与客户端连接）
+Mieru:      可选 node.example.com（DNS only）；也可直接使用公网 IPv4 + TCP 端口范围 50000-50512
 Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 Worker）
 ```
 
@@ -43,6 +45,7 @@ Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 
 Globalping 中国大陆探针定向/精选优选 IPv4。
 Reality 动态端口模式还需在云安全组或服务商防火墙放行 TCP `10000-62703`（覆盖闰年最大端口），
 仅放行 `443` 不够；固定端口模式使用 TCP `443`。安装和 `apply` 会立即加载完整动态范围，无需等整点。
+Mieru 需在云安全组放行 TCP `50000-50512`（UFW 内部 NAT 到单个监听端口，默认 `2090`）。
 
 ## 1. 先注册域名并交给 Provider 托管
 

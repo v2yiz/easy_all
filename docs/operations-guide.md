@@ -161,8 +161,8 @@ Worker。已成功变更的云资源不会自动回滚，只应在确实需要�
 | `apply-cloud` | Cloudflare 模式下同步本机和云端资源。 |
 | `update-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
 | `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅。 |
-| `update-core` | 更新 Xray，失败时恢复旧版本。 |
-| `rotate-dynamic-ports` | 立即刷新直连模式（Reality/Trojan）的 `10000-62703` NAT 规则。 |
+| `update-core` | 更新当前模式核心：Reality/Cloudflare 更新 Xray，Mieru 更新官方 mita。 |
+| `rotate-dynamic-ports` | 立即刷新直连模式的 NAT 规则（Mieru 使用 `50000-50512` → 内部端口）。 |
 | `renew-cert` | 轮换当前模式证书；Trojan 模式强制重新签发 Let's Encrypt 证书。 |
 | `cert-renew` | 内部命令：由 `easy_all-cert-renew.timer` 调用，仅 Trojan 模式。 |
 | `quota-status` | 查看每个用户的月度配额和流量。 |
@@ -303,10 +303,11 @@ Reality 直连模式也可以选择 Worker 聚合（安装菜单第 `3` 项）�
 
 Nginx 仍负责 Token 校验和配额，所以 Worker 只是下发入口，不缓存节点、不绕过配额。源不可达时
 Worker 返回 `502`；Token 被源拒绝时返回 `403`。本机 Reality 节点来自私有源，其余直连节点写在
-聚合 JSON 的 `nodes` 中（名称必须互不重复，且不能与本机节点同名）。直连节点（Reality 与
-Trojan）的展示名保持原样并直接列在 `PROXY`，不会被改名成 `🇺🇸优选N` 或放进隐藏测速组。
+聚合 JSON 的 `nodes` 中（名称必须互不重复，且不能与本机节点同名）。直连节点（Reality、Trojan 与
+Mieru）的展示名保持原样并直接列在 `PROXY`，不会被改名成 `🇺🇸优选N` 或放进隐藏测速组。
 
-`nodes` 支持两种直连节点，`fallbackCdnNodes` 只接受 VLESS/CDN 兜底节点：
+`nodes` 支持三种直连节点，`fallbackCdnNodes` 只接受 VLESS/CDN 兜底节点；所有 `host` 都可填
+公网 IPv4 或 DNS only 域名，但不支持 IPv6 literal：
 
 ```json
 {
@@ -332,6 +333,17 @@ Trojan）的展示名保持原样并直接列在 `PROXY`，不会被改名成 `�
       "sni": "trojan.example.com",
       "alpn": ["http/1.1"],
       "fp": "chrome"
+    },
+    {
+      "type": "mieru",
+      "name": "Mieru example",
+      "host": "mieru.example.com",
+      "portRange": "50000-50512",
+      "username": "example-mieru-user",
+      "password": "replace-with-a-long-mieru-password",
+      "transport": "TCP",
+      "multiplexing": "MULTIPLEXING_LOW",
+      "trafficPattern": "CLlgEAA="
     }
   ]
 }
@@ -347,6 +359,23 @@ Trojan 节点规则：
   base64 输出为 `trojan://<密码>@<域名>:<端口>?security=tls&type=tcp&sni=...#名称`。
 - 从 Trojan 节点服务器执行 `easy_all show` 复制密码、域名和端口，填入任意一台已部署 Worker 聚合的
   Reality/Cloudflare 节点即可统一分发；Trojan 模式本身不部署 Worker 与在线订阅。
+
+Mieru 节点规则：
+
+- 只允许写在 `nodes`；写进 `fallbackCdnNodes` 会被直接拒绝。`host` 可为 IPv4 或 DNS only 域名。
+- `port` 与 `portRange` 必须且只能提供一个：`port` 为单个端口（1-65535），`portRange` 形如
+  `50000-50512`；直连模式推荐 `portRange: "50000-50512"`。`username` 与 `password` 必填，分别限制为
+  1-64 与 8-64 位字母、数字或 `.` `_` `~` `-`；`transport` 只能是 `TCP`；`multiplexing` 可省略
+  （`MULTIPLEXING_OFF`/`LOW`/`MIDDLE`/`HIGH`，默认 `LOW`）。
+- `trafficPattern` 可省略，取 `easy_all show` 中 `traffic-pattern:` 的值（`mita export traffic-pattern`
+  导出的标准 base64）；`mtu` 可省略（1280-1500，默认 1400，只写入 `mierus://` 链接，Mihomo 节点不输出）；
+  `udp` 默认 `true`。
+- Mihomo 输出 `type: mieru`、`transport: TCP`、`udp`、`username`、`password`、`multiplexing` 与可选
+  `traffic-pattern`；base64 输出
+  `mierus://<用户名>:<密码>@<host>?mtu=1400&multiplexing=...&port=50000-50512&profile=default&protocol=TCP`。
+- 从 Mieru 节点服务器执行 `easy_all show` 复制用户名、密码、域名或 IPv4、端口范围与可选 traffic-pattern，
+  填入任意一台已部署 Worker 聚合的 `nodes` 即可统一分发；Mieru 模式本身不部署 Worker 与在线订阅，
+  也不参与 CDN 自动命名或测速组。
 
 切换订阅输出或更换域名时，`update-sub` 会先部署新模式，再清理上一模式的 Worker、Custom Domain、
 Origin CA、Strict TLS 规则和源站 DNS。Worker 名称在安装后不能就地改名，需要重新安装。
@@ -478,6 +507,43 @@ sudo easy_all reality-target www.example.com:443  # 直接指定
 查看续期计划。`dynamic` 模式还可用 `sudo iptables -t nat -L PREROUTING -n -v` 确认整段
 REDIRECT 已加载。
 
+## Mieru 直连
+
+模式 4 使用上游 [mieru](https://github.com/enfein/mieru) 的官方服务端 `mita`，不引入证书、Nginx
+或订阅（域名可选，使用 DNS only）：
+
+- 安装器从 GitHub Release 读取最新版本，下载 `mita_<版本>_amd64.deb` 与同目录
+  `.sha256.txt`，校验 SHA256 后才用 `dpkg -i` 安装；已有 mita 软件包或
+  `/etc/mita/server.conf.pb` 时拒绝安装，避免覆盖其他部署。
+- 服务器配置由官方 `mita apply config` 写入：内部 TCP 端口（默认 `2090`）、随机用户名与密码、
+  `mtu=1400`、`dns.dualStack=PREFER_IPv4`，以及随机 `seed` 的 `trafficPattern`。随后
+  `mita stop`/`mita start` 重启代理。
+- 对外端口范围为 TCP `50000-50512`：UFW 在 `before.rules` 用单条
+  `-A PREROUTING -p tcp --dport 50000:50512 -j REDIRECT --to-ports 2090` 把整段转发到内部端口，
+  mita 只监听一个端口，避免创建五万多个 listener。客户端拿到范围后每条新连接随机选端口；
+  云安全组必须放行 `50000-50512`，UFW 过滤规则只需放行内部端口与 SSH。
+  `easy_all rotate-dynamic-ports` 只重建并刷新这条 NAT 规则，不做定时换端口；`@reboot` 任务在
+  重启后自动刷新。
+- 连接地址默认自动探测公网 IPv4，也可输入 DNS only / 灰云域名；客户端 JSON 相应写入
+  `domainName`，Mihomo 与 `mierus://` 直接使用该域名，仍拒绝 IPv6 literal。
+- 运行验收要求 `mita status` 为 `RUNNING` 且端口处于监听；`easy_all apply` 会重新渲染配置并
+  重启，失败时恢复上一份 `server_config.json`。
+- 客户端材料保存在 `/etc/easy_all/mieru/client_config.json`（`0600`）；Mihomo 片段与
+  `mierus://` 链接中的 `traffic-pattern` 由 `mita export traffic-pattern` 生成，与服务端配置一致。
+- 本模式不部署在线订阅和 easy_all 配额，`update-sub` 与 `quota-*` 会明确拒绝；需要在线订阅或配额
+  请使用 Reality 模式。`rotate-dynamic-ports` 只刷新 NAT 范围，不做定时换端口；`renew-cert` 不适用。
+- `easy_all update-core` 会重新下载并校验最新官方 mita 包，升级后重新应用配置并验收；升级失败时
+  保留软件包升级结果并提示检查，不会回滚到旧 mita 版本。
+- 卸载会先恢复安装前 SSH 与防火墙状态，再 `dpkg --purge mita`，并按官方卸载步骤删除 `/etc/mita`、
+  `/var/lib/mita`、`/var/run/mita` 与 mita 用户/组，最后删除 `/etc/easy_all`。如果只想保留 mita 数据，请先备份 `/etc/mita`。
+
+日常诊断：`sudo easy_all status` 查看 mita 服务、版本、状态与端口；`sudo mita describe config`
+查看已生效的服务器配置；`sudo mita describe effective-traffic-pattern` 查看实际 traffic-pattern；
+`journalctl -u mita -n 100` 查看服务日志；`ss -ltn 'sport = :2090'` 确认内部监听；
+`sudo iptables -t nat -L PREROUTING -n -v` 确认 `50000:50512` 的 REDIRECT 已加载。
+客户端与服务端时间必须同步，偏差超过数分钟会无法解密。端口范围较大时，客户端会展开全部
+端点用于随机选择；建议在桌面客户端使用，移动端如感内存压力可改用单个 `port`。
+
 ## 卸载
 
 默认只删除本机资源：
@@ -515,6 +581,8 @@ Cloudflare 控制台复核。
 /etc/nginx/conf.d/easy_all.conf
 /etc/easy_all/acme/             # Trojan：lego、Token 与证书安装钩子
 /var/www/easy_all/site/         # Trojan：回落静态站点
+/etc/easy_all/mieru/            # Mieru：server_config.json 与 client_config.json
+/etc/mita/                      # Mieru：mita 守护进程配置
 ```
 
 Globalping Token 单独保存在 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`。

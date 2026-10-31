@@ -261,6 +261,7 @@ rule-providers:
         - '+.ugdtimg.com'
         - '+.id6.me'
 
+# 直连 Mieru 节点由订阅/Worker 以 type: mieru 注入，模板本身不放置占位凭据。
 proxies:
 # EASY_ALL_PROXY_NODE
 

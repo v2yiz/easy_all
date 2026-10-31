@@ -1,3 +1,46 @@
+## 1.8.0 更新说明（2026-11-07）
+
+- 新增第四种安装模式「4 直连 Mieru」：安装器从 GitHub 官方 Release 读取最新 mieru 版本，下载
+  `mita_<版本>_amd64.deb` 与同一 Release 的 `.sha256.txt`，SHA256 校验通过后才用 `dpkg -i`
+  安装官方 mita；随后用官方 `mita apply config` 写入内部 TCP 端口（默认 `2090`）、随机用户名与
+  密码、`mtu=1400`、`dns.dualStack=PREFER_IPv4` 与随机 `seed` 的 `trafficPattern`，再执行
+  `mita stop`/`mita start`，并要求 `mita status` 为 `RUNNING` 且内部端口正在监听。对外使用 TCP
+  端口范围 `50000-50512`：UFW 用单条 NAT 规则转发到内部端口，mita 只监听一个端口，避免创建
+  五万多个 listener；客户端拿到范围后每条新连接随机选择端口。
+- `easy_all show`/`subscription` 输出三种导入材料：`mierus://` 分享链接、`/etc/easy_all/mieru/client_config.json`
+  客户端配置（`0600`）以及带 `port-range: "50000-50512"`、`transport: TCP`、`udp: true`、
+  `multiplexing: MULTIPLEXING_LOW`、`traffic-pattern` 的 Mihomo 节点片段。traffic-pattern 的 base64 由官方
+  `mita export traffic-pattern` 导出，服务端与客户端使用同一份配置。
+- Mieru 复用共享的 IPv4-only、BBRv3/Skyline、定时重启、SSH `65533` 收敛、UFW 与 Fail2ban 流程；
+  UFW 过滤只额外放行内部端口，`before.rules` 新增 `50000:50512 → 内部端口` 的 REDIRECT，
+  `rotate-dynamic-ports` 可立即刷新，受管 `@reboot` 任务在重启后恢复。云安全组需放行
+  `50000-50512`。安装前如已存在 mita 软件包或 `/etc/mita/server.conf.pb` 会拒绝继续，避免覆盖
+  其他部署。
+- 本模式不部署在线订阅与 easy_all 配额：`update-sub`、`quota-*` 在入口层明确拒绝，`renew-cert`
+  不适用。`update-core` 在 Mieru 模式下改为下载并校验最新官方 mita 包，
+  重新应用配置后验收；失败时保留已升级的软件包并提示检查。`easy_all apply` 会备份旧配置，验收
+  失败时恢复并重启；`uninstall` 与首次安装回滚都会 `dpkg --purge mita` 并恢复 SSH、UFW、IPv6、
+  BBR 与 crontab 快照。
+- Mieru 连接地址支持公网 IPv4 或 DNS only / 灰云域名：域名会归一化并校验，客户端 JSON 写入
+  `domainName`，Mihomo 与 `mierus://` 链接直接使用该域名；仍拒绝 IPv6 literal 与不合规域名。
+- Worker 聚合的 `nodes` 新增 Mieru 节点：字段为 `type: "mieru"`、`host`（IPv4 或域名）、
+  `port` 或 `portRange`（必须且只能一个，直连模式为 `50000-50512`）、`username`、`password`、
+  可选 `transport: TCP`、`multiplexing`、`trafficPattern`、`mtu`、`udp`。Worker 用 `mieruLink()` 生成 `mierus://<用户名>:<密码>@<host>?mtu=...&...`，
+  用 `clashMieruNode()` 生成 `type: mieru`、`transport: TCP`、`udp`、`username`、`password`、
+  `multiplexing` 与可选 `traffic-pattern`；节点名保持原样进入 `PROXY`，不参与 CDN 自动命名或
+  测速组。Mieru 只能写入 `nodes`，不能写入 `fallbackCdnNodes`。
+- `scripts/build-worker.mjs` 与 `lib/worker-config.sh` 在构建/输入阶段拒绝非法的 Mieru 凭据、
+  端口/端口范围、传输协议、multiplexing、traffic-pattern 与 MTU；`worker-src/config.example.json` 新增
+  Mieru 模板，`worker-src/README.md`、运维指南与技术参考同步说明。三份 Mihomo 模板在
+  `proxies` 标记旁注明 Mieru 节点由订阅动态注入，模板本身不放置占位凭据。
+- 新增 `test/test_mieru_direct.sh`，覆盖入口菜单与分派、端口范围/NAT/cron、凭据/seed 校验、
+  域名与 IPv4 连接地址、官方包 URL 与 SHA256 校验、服务器与客户端配置渲染、traffic-pattern
+  导出、Mihomo/分享链接输出、状态读写与运行时验收失败路径；架构与入口测试同步覆盖第四模式。
+  Worker 构建/订阅测试新增 Mieru 节点校验与 base64/Mihomo 渲染。Mieru `STATE_VERSION=1`。
+
+源码版本标识为 `1.8.0`。已有部署执行 `sudo easy_all self-update` 即可，不影响 Reality、Cloudflare
+与 Trojan 的现有状态和订阅；全新安装时在交互菜单选择 `4`。
+
 ## 1.7.2 更新说明（2026-11-06）
 
 - 修复 Trojan 直连在「[5/8] 下载并安装 Xray 核心」报 `XRAY_RELEASES_API: unbound variable`：

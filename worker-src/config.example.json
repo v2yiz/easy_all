@@ -43,6 +43,19 @@
       "alpn": ["http/1.1"],
       "fp": "chrome",
       "ipVersion": "ipv4"
+    },
+    {
+      "type": "mieru",
+      "name": "Mieru example",
+      "host": "mieru.example.com",
+      "portRange": "50000-50512",
+      "username": "example-mieru-user",
+      "password": "replace-with-a-long-mieru-password",
+      "transport": "TCP",
+      "multiplexing": "MULTIPLEXING_LOW",
+      "trafficPattern": "CLlgEAA=",
+      "udp": true,
+      "ipVersion": "ipv4"
     }
   ]
 }

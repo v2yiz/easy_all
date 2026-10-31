@@ -54,6 +54,9 @@ function resolveNodePorts(nodes, dependencies) {
         if (node.type === 'trojan') {
             return node.port || TLS_PORT;
         }
+        if (node.type === 'mieru') {
+            return node.portRange || node.port;
+        }
         return node.security === 'reality' ? (node.port || port) : (node.port || TLS_PORT);
     });
 }
@@ -272,6 +275,41 @@ function clashTrojanNode(node, port) {
     ip-version: ipv4
     smux:
       enabled: false`;
+}
+
+// Mieru aggregation nodes are ordinary direct nodes too. The Worker only
+// renders them; the client talks to mita directly over TCP.
+function mieruLink(node, port) {
+    const params = new URLSearchParams({
+        mtu: String(node.mtu || 1400),
+        multiplexing: node.multiplexing || 'MULTIPLEXING_LOW',
+        port: String(node.portRange || port),
+        profile: 'default',
+        protocol: node.transport || 'TCP',
+    });
+    if (node.trafficPattern) {
+        params.set('traffic-pattern', node.trafficPattern);
+    }
+    return `mierus://${uriEncode(node.username)}:${uriEncode(node.password)}@${uriAuthorityHost(node.host)}?${params.toString()}#${uriEncode(node.name)}`;
+}
+
+function clashMieruNode(node, port) {
+    const trafficPattern = node.trafficPattern
+        ? `\n    traffic-pattern: ${yamlString(node.trafficPattern)}`
+        : '';
+    const portLine = node.portRange
+        ? `    port-range: ${yamlString(node.portRange)}`
+        : `    port: ${port}`;
+    return `  - name: ${yamlString(node.name)}
+    type: mieru
+    server: ${yamlString(normalizeConnectHost(node.host))}
+${portLine}
+    transport: ${node.transport || 'TCP'}
+    udp: ${node.udp !== false}
+    username: ${yamlString(node.username)}
+    password: ${yamlString(node.password)}
+    multiplexing: ${node.multiplexing || 'MULTIPLEXING_LOW'}${trafficPattern}
+    ip-version: ipv4`;
 }
 
 function clashRealityNode(node, port) {
@@ -512,6 +550,9 @@ function clashNode(node, port) {
     if (node.type === 'trojan') {
         return clashTrojanNode(node, port);
     }
+    if (node.type === 'mieru') {
+        return clashMieruNode(node, port);
+    }
     if (node.security === 'reality') {
         return clashRealityNode(node, port);
     }
@@ -525,11 +566,15 @@ function clashNode(node, port) {
 }
 
 function buildBase64Subscription(nodes, ports) {
-    return encodeBase64Utf8(nodes.map((node, index) =>
-        node.type === 'trojan'
-            ? trojanLink(node, ports[index])
-            : vlessLink(node, ports[index])
-    ).join('\n'));
+    return encodeBase64Utf8(nodes.map((node, index) => {
+        if (node.type === 'trojan') {
+            return trojanLink(node, ports[index]);
+        }
+        if (node.type === 'mieru') {
+            return mieruLink(node, ports[index]);
+        }
+        return vlessLink(node, ports[index]);
+    }).join('\n'));
 }
 
 function clashUrlTestGroup(name, proxyNames, url = 'https://cp.cloudflare.com/generate_204') {

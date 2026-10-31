@@ -90,12 +90,18 @@ UFW 的 `before.rules` 受管 NAT 区块以单条范围规则转发到 Xray `443
 客户端仍按每次请求的时间从当前小时的 6 个端口中选择，独立于 cron。
 云安全组必须允许原始目标 TCP `10000-62703` 到达 VPS；UFW 在重定向后按 `443` 放行，SSH `65533` 在范围之外。
 
-聚合 JSON 的 `nodes` 允许两种直连节点：VLESS/Reality 与 Trojan/TLS。Trojan 节点由
+聚合 JSON 的 `nodes` 允许三种直连节点：VLESS/Reality、Trojan/TLS 与 Mieru。Trojan 节点由
 `trojanLink()` 渲染 base64 URI、由 `clashTrojanNode()` 渲染 Mihomo YAML，端口缺省 `443`，
-`password` 限制为 8-64 位字母、数字或 `.` `_` `~` `-`，`alpn` 仅接受 `http/1.1` 或 `h2`；两者都在
+`password` 限制为 8-64 位字母、数字或 `.` `_` `~` `-`，`alpn` 仅接受 `http/1.1` 或 `h2`。
+Mieru 节点由 `mieruLink()` 渲染 `mierus://` URI、由 `clashMieruNode()` 渲染 `type: mieru`，
+`port` 与 `portRange` 必须且只能提供一个（直连模式使用 `50000-50512`），`username`/`password`
+分别为 1-64 与 8-64 位受限字符，`transport` 仅接受 `TCP`，
+`multiplexing` 允许 `OFF`/`LOW`/`MIDDLE`/`HIGH`，可选 `trafficPattern` 必须是标准 base64，
+可选 `mtu` 只进入 URI（Mihomo 的 mieru 出站没有 MTU 字段）。两种节点都在
 `lib/worker-config.sh` 的结构校验与 `scripts/build-worker.mjs` 的字段校验中提前拒绝非法输入。
-`fallbackCdnNodes` 仍然只接受 VLESS/CDN 兜底节点，Trojan 只能出现在 `nodes`。直连节点保持原始
-名称进入 `PROXY`，不会像动态 CDN 节点那样被改名为 `🇺🇸优选N`。
+`fallbackCdnNodes` 仍然只接受 VLESS/CDN 兜底节点，Trojan 与 Mieru 只能出现在 `nodes`；所有
+`host` 可以是公网 IPv4 或 DNS only 域名，IPv6 literal 仍被拒绝。直连节点保持原始名称进入
+`PROXY`，不会像动态 CDN 节点那样被改名为 `🇺🇸优选N`。
 
 自托管订阅使用独立的 Cloudflare 一级子域：
 
@@ -149,6 +155,62 @@ TROJAN_PORT_MODE=443|dynamic
 TROJAN_ACME_EMAIL=ACME 注册邮箱
 CLOUDFLARE_ZONE_ID/CLOUDFLARE_ZONE_NAME
 TROJAN_DNS_RECORD_ID=easy_all 托管的 A 记录 ID
+```
+
+## 直连 Mieru
+
+模式 4 使用上游 mieru 的官方服务端 `mita`，不做 TLS 终止、不生成订阅，也不启用 Xray：
+
+```text
+客户端 --mieru(TCP)--> VPS:端口 mita --加密会话--> 代理出站
+```
+
+- 安装来源是 GitHub Release 的 `mita_<版本>_amd64.deb` 与同目录 `.sha256.txt`；版本通过
+  `releases/latest` 解析，只接受 `https://github.com/enfein/mieru/releases/download/<tag>/` 下的
+  官方资产，SHA256 校验通过后才执行 `dpkg -i`。安装成功后用 `mita version` 与期望版本比对。
+- 客户端连接地址可以是自动探测的公网 IPv4，或用户输入的 DNS only 域名；域名会先
+  `normalize_domain` 再校验，客户端 JSON 相应输出 `domainName` 而不是 `ipAddress`，Mihomo 与
+  `mierus://` 链接直接使用该域名。仍只允许 IPv4，不发布 IPv6 literal。
+- 服务器配置由 `render_mieru_server_config` 用 `jq` 渲染，字段与官方文档一致：
+  `portBindings`（内部单端口）、`users`（一个随机用户名/密码）、`loggingLevel`、`mtu=1400`、
+  `dns.dualStack=PREFER_IPv4`、`trafficPattern`（随机 `seed`，`unlockAll=false`）。渲染结果先经
+  `validate_mieru_server_config` 校验，再交给 `mita apply config`；随后 `mita stop`/`mita start`
+  并验收 `mita status` 为 `RUNNING`、端口正在监听。
+- traffic-pattern 的 base64 由官方 `mita export traffic-pattern` 导出，写入 Mihomo 片段的
+  `traffic-pattern` 与 `mierus://` 链接；原生 Mieru 客户端配置 JSON 直接携带同一
+  `trafficPattern` 对象。导出失败会阻止安装/apply 完成，避免发布不可用的节点。
+- 对外端口范围为 TCP `50000-50512`。UFW `before.rules` 的受管 NAT 区块写入单条
+  `-A PREROUTING -p tcp --dport 50000:50512 -j REDIRECT --to-ports <内部端口>`，mita 只监听
+  单个内部端口，避免创建 513 个 listener。客户端配置写 `portRange`，Mihomo 写 `port-range`，
+  `mierus://` 写 `port=50000-50512`，由 mieru 客户端每条新连接随机选择端点。
+  云安全组需放行整段；UFW filter 只放行 SSH 与内部端口。
+- `easy_all rotate-dynamic-ports` 重建 NAT 并 `ufw reload`；受管 `@reboot` cron 在重启后刷新。
+  没有每小时换端口的定时任务，范围本身已经提供每条连接的随机选择。
+- UFW 复用共享的 `apply_ssh_ufw_policy`；仍执行共享的 IPv4-only、
+  BBRv3/Skyline、定时重启、SSH 65533 收敛与 Fail2ban 流程。
+- `easy_all apply` 备份旧的 `server_config.json`/`client_config.json`，重新渲染并应用；失败时
+  恢复旧配置并重启。`update_mieru_core` 负责下载最新官方包并重新应用，`update_current_core`
+  仍只属于 Xray 模式。`update-sub` 与 `quota-*` 在入口层拒绝，`renew-cert` 同样不适用；
+  `rotate-dynamic-ports` 仅重建 NAT，不做定时换端口。
+- 本模式不部署 Worker；需要多节点统一分发时，把 `easy_all show` 输出的域名或 IPv4、端口范围、
+  用户名、密码与可选 traffic-pattern 写入任意已部署 Worker 聚合的 `nodes`，由
+  `clashMieruNode()`/`mieruLink()` 渲染。Mieru 节点不参与 CDN 自动命名或测速组。
+- 卸载与首次安装回滚都会停止 mita、`dpkg --purge mita`、删除 `/etc/mita`，并恢复 SSH、UFW、
+  IPv6、BBR 与 crontab 快照。
+
+Mieru 状态不保存订阅或配额字段，只依赖：
+
+```text
+STATE_VERSION=1  # Mieru
+PROTOCOL=mieru
+NODE_HOST=公网 IPv4 或 DNS only 域名
+MIERU_PORT=内部监听端口（默认 2090）
+MIERU_PORT_RANGE=对外端口范围（默认 50000-50512）
+NODE_NAME=节点名称
+MIERU_USER_NAME/MIERU_USER_PASSWORD
+MIERU_VERSION=已安装的 mita 版本
+MIERU_TRAFFIC_SEED/MIERU_TRAFFIC_PATTERN
+MIERU_CLIENT_SOCKS5_PORT/MIERU_CLIENT_HTTP_PORT/MIERU_CLIENT_RPC_PORT
 ```
 
 ## Cloudflare XHTTP
@@ -335,6 +397,7 @@ easy_all
 ├─ profiles/
 │  ├─ reality.sh
 │  ├─ trojan-direct.sh
+│  ├─ mieru-direct.sh
 │  └─ xhttp-cloudflare-streamup.sh
 ├─ lib/
 │  ├─ log.sh
@@ -428,9 +491,13 @@ macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm
 和日志隔离仍需要完整 OS 隔离环境的 Nginx 集成验证，不能把本机模拟结果当成真实 HTTP 通过。
 
 测试覆盖入口和模块完整性、Reality、Trojan（含回落站点渲染、NAT 范围与 A 记录保护）、
+Mieru（IPv4/域名、官方包校验、服务器/客户端配置渲染、traffic-pattern 与状态读写）、
 Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、订阅渲染、Token 鉴权、证书轮换、
-Worker 构建和更新顺序。`test/test_trojan_direct.sh` 用隔离路径与命令替身验证配置渲染、状态
+Worker 构建（含 Mieru 聚合节点渲染）、更新顺序。`test/test_trojan_direct.sh` 用隔离路径与命令替身验证配置渲染、状态
 读写与错误路径，不触碰真实系统服务；真实 Debian 上的证书签发与 systemd 定时器仍需部署验收。
+`test/test_mieru_direct.sh` 用同样的隔离方式验证官方包 URL 与 SHA256、IPv4/域名连接地址、
+服务器/客户端配置、`mita export traffic-pattern`、分享链接与状态恢复；Worker 测试覆盖
+`mieruLink()`/`clashMieruNode()` 与字段校验。真实 Debian 上的 mita 安装与 systemd 服务仍需部署验收。
 
 订阅模板的发布检查固定使用 Mihomo v1.19.32，GitHub Actions 同时校验完整 Reality 订阅及
 Worker 正常、降级、全部节点输出。可在本机用已有内核和 Geo 数据运行同样检查：

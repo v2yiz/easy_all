@@ -70,7 +70,7 @@ export async function buildWorker({
             /^[A-Za-z0-9._-]{1,64}$/.test(config.subscriptionDownloadName),
         'subscriptionDownloadName'
     );
-    // Direct aggregation nodes may be VLESS/Reality or Trojan/TLS; CDN fallbacks stay VLESS.
+    // Direct aggregation nodes may be VLESS/Reality, Trojan/TLS or Mieru; CDN fallbacks stay VLESS.
     const validTrojanAlpn = value => {
         const list = Array.isArray(value)
             ? value
@@ -78,6 +78,9 @@ export async function buildWorker({
         return Boolean(list) && list.length > 0 &&
             list.every(item => ['h2', 'http/1.1'].includes(String(item).trim()));
     };
+    const MIERU_MULTIPLEXING_LEVELS = [
+        'MULTIPLEXING_OFF', 'MULTIPLEXING_LOW', 'MULTIPLEXING_MIDDLE', 'MULTIPLEXING_HIGH',
+    ];
     for (const key of ['nodes', 'fallbackCdnNodes']) {
         requireValue(Array.isArray(config[key]), key);
         for (const node of config[key]) {
@@ -85,8 +88,63 @@ export async function buildWorker({
                 node && typeof node === 'object' && nonempty(node.name) && nonempty(node.host),
                 `${key} node fields`
             );
-            requireValue(node.type === 'vless' || node.type === 'trojan', `${key} type`);
-            if (node.type === 'trojan') {
+            requireValue(
+                ['vless', 'trojan', 'mieru'].includes(node.type),
+                `${key} type`
+            );
+            requireValue(
+                node.portRange === undefined || node.type === 'mieru',
+                `${key} port range is Mieru-only`
+            );
+            if (node.type === 'mieru') {
+                requireValue(key === 'nodes', 'mieru nodes must be direct nodes');
+                requireValue(
+                    typeof node.username === 'string' &&
+                        /^[A-Za-z0-9._~-]{1,64}$/.test(node.username),
+                    'mieru username'
+                );
+                requireValue(
+                    typeof node.password === 'string' &&
+                        /^[A-Za-z0-9._~-]{8,64}$/.test(node.password),
+                    'mieru password'
+                );
+                const hasPort = node.port !== undefined;
+                const hasPortRange = node.portRange !== undefined;
+                requireValue(hasPort !== hasPortRange, 'mieru port or portRange');
+                if (hasPort) {
+                    requireValue(
+                        Number.isInteger(node.port) && node.port > 0 && node.port <= 65535,
+                        'mieru port'
+                    );
+                } else {
+                    const range = /^(\d+)-(\d+)$/.exec(String(node.portRange));
+                    requireValue(Boolean(range), 'mieru portRange');
+                    const begin = Number(range[1]);
+                    const end = Number(range[2]);
+                    requireValue(
+                        begin >= 1 && end <= 65535 && begin <= end,
+                        'mieru portRange'
+                    );
+                }
+                requireValue(node.transport === undefined || node.transport === 'TCP', 'mieru transport');
+                requireValue(
+                    node.multiplexing === undefined ||
+                        MIERU_MULTIPLEXING_LEVELS.includes(node.multiplexing),
+                    'mieru multiplexing'
+                );
+                requireValue(
+                    node.trafficPattern === undefined ||
+                        (typeof node.trafficPattern === 'string' &&
+                            /^[A-Za-z0-9+/]+={0,2}$/.test(node.trafficPattern)),
+                    'mieru traffic pattern'
+                );
+                requireValue(
+                    node.mtu === undefined ||
+                        (Number.isInteger(node.mtu) && node.mtu >= 1280 && node.mtu <= 1500),
+                    'mieru mtu'
+                );
+                requireValue(node.udp === undefined || typeof node.udp === 'boolean', 'mieru udp');
+            } else if (node.type === 'trojan') {
                 requireValue(key === 'nodes', 'trojan nodes must be direct nodes');
                 requireValue(
                     nonempty(node.password) &&

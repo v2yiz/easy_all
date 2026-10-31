@@ -26,6 +26,7 @@ readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
 readonly REALITY_MIN_STATE_VERSION="6"
 readonly CLOUDFLARE_MIN_STATE_VERSION="9"
 readonly TROJAN_MIN_STATE_VERSION="1"
+readonly MIERU_MIN_STATE_VERSION="1"
 readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
@@ -72,7 +73,7 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality、Trojan 直连或 Cloudflare CDN
+  install          交互选择 Reality、Trojan 直连、Cloudflare CDN 或 Mieru 直连
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -83,11 +84,11 @@ launcher_usage() {
   reality-target [域名:端口]
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
-                   立即刷新直连模式的动态端口 NAT 规则
+                   立即刷新直连模式的动态端口 NAT 规则（Mieru 为端口范围转发）
   apply-cloud      应用本机配置并同步当前 CDN 云资源
   update-sub       重新选择订阅输出与用户/配额
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
-  update-core      更新 Xray 核心
+  update-core      更新当前模式的核心（Xray 或 mita）
   renew-cert       轮换当前模式的 TLS 证书（Trojan 直连为 Let's Encrypt 续期）
   quota-status     显示用户配额与 Xray 本地统计
   quota-set        修改指定用户的月度额度
@@ -129,13 +130,19 @@ easy_all install
 │  ├─ 可选输入不含 vpsSubUrl 的 Worker 聚合 JSON；本机注入源 URL 后构建 Worker
 │  ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
 │  └─ 零损失就地平滑安装/迁移
-└─ [3] 直连 - Trojan（TLS 真证书 + 回落静态站点）
+├─ [3] 直连 - Trojan（TLS 真证书 + 回落静态站点）
    ├─ 适用场景：需要浏览器可直接访问的伪装站点，且希望用密码登录而非 UUID
    ├─ 前提条件：一个 Cloudflare 托管 Zone 下的节点域名 + Zone:DNS:Edit Token
    ├─ 证书：Cloudflare DNS-01 签发 Let's Encrypt 证书，systemd 定时器自动续期
    ├─ 回落：Xray TLS 443 终止后把非 Trojan 流量交给 Nginx 127.0.0.1:8080 静态站点
    ├─ 端口：固定 443，或 dynamic（10000-62703 全部重定向到 443）
    └─ 输出：trojan:// 链接与 Mihomo 节点片段；不部署在线订阅
+└─ [4] 直连 - Mieru（官方 mita 软件包 + TCP 单端口）
+   ├─ 适用场景：希望使用抗主动探测的加密代理，且不需要域名、证书或伪装站点
+   ├─ 前提条件：无需域名；VPS 公网 IPv4 可直连即可
+   ├─ 安装：从 GitHub 官方 Release 下载 mita 的 deb 包并校验 SHA256
+   ├─ 配置：用官方 mita apply config 写入 TCP 单端口、随机用户名与密码
+   └─ 输出：mierus:// 分享链接、客户端配置 JSON 与 Mihomo 节点片段；不部署在线订阅
 订阅输出：只有当前服务器时推荐本机订阅；多台直连节点需要统一下发时选择 Worker 订阅聚合
 （在其中一台部署，其余节点写入聚合 JSON）；不需要订阅时保持默认的仅节点。
 Worker 聚合会额外占用两个 Cloudflare 一级子域名：公开订阅域名绑定 Worker，私有节点源域名由
@@ -183,6 +190,11 @@ detect_installed_mode() {
                 || launcher_die "Trojan 状态版本无效（当前：${state_version:-缺失}，最低兼容：${TROJAN_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
             printf 'trojan-direct\n'
             ;;
+        mieru)
+            state_version_supported "${state_version}" "${MIERU_MIN_STATE_VERSION}" \
+                || launcher_die "Mieru 状态版本无效（当前：${state_version:-缺失}，最低兼容：${MIERU_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
+            printf 'mieru-direct\n'
+            ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
         esac
         return
@@ -196,11 +208,13 @@ choose_install_mode() {
     printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
     printf '  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）\n' >&2
     printf '  3. 直连 - Trojan（TLS 真证书 + 回落静态站点，需要 Cloudflare 域名）\n' >&2
+    printf '  4. 直连 - Mieru（官方 mita，无需域名或证书）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare-streamup\n' ;;
     3) printf 'trojan-direct\n' ;;
+    4) printf 'mieru-direct\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -211,6 +225,7 @@ profile_file() {
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare-streamup) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare-streamup.sh" ;;
     trojan-direct) candidate="${EASY_ALL_ROOT}/profiles/trojan-direct.sh" ;;
+    mieru-direct) candidate="${EASY_ALL_ROOT}/profiles/mieru-direct.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -329,8 +344,8 @@ dispatch_profile_command() {
         apply_cloud_resources
         ;;
     update-sub)
-        [[ "${mode}" != "trojan-direct" ]] \
-            || launcher_die "Trojan 直连不提供订阅；请使用 easy_all subscription 查看节点"
+        [[ "${mode}" != "trojan-direct" && "${mode}" != "mieru-direct" ]] \
+            || launcher_die "Trojan/Mieru 直连不提供订阅；请使用 easy_all subscription 查看节点"
         if [[ "${mode}" == "reality" ]]; then
             update_subscription 1
         else
@@ -338,7 +353,10 @@ dispatch_profile_command() {
         fi
         ;;
     update-core)
-        update_current_core
+        case "${mode}" in
+        mieru-direct) update_mieru_core "$@" ;;
+        *) update_current_core "$@" ;;
+        esac
         ;;
     refresh-cdn-ips)
         if [[ "${mode}" == "cloudflare-streamup" ]]; then
@@ -351,7 +369,8 @@ dispatch_profile_command() {
         case "${mode}" in
         reality) renew_subscription_certificate ;;
         trojan-direct) renew_trojan_certificate 1 ;;
-        *) renew_certificate ;;
+        cloudflare-streamup) renew_certificate ;;
+        *) launcher_die "Mieru 模式不使用 TLS 证书，无需续期" ;;
         esac
         ;;
     cert-renew)
@@ -361,7 +380,7 @@ dispatch_profile_command() {
         ;;
     rotate-dynamic-ports)
         case "${mode}" in
-        reality | trojan-direct) rotate_dynamic_ports ;;
+        reality | trojan-direct | mieru-direct) rotate_dynamic_ports ;;
         *) launcher_die "rotate-dynamic-ports 仅适用于直连模式" ;;
         esac
         ;;
@@ -369,12 +388,22 @@ dispatch_profile_command() {
         quota_sync_usage
         ;;
     quota-status)
+        [[ "${mode}" != "mieru-direct" ]] \
+            || launcher_die "Mieru 直连不部署 easy_all 配额；请使用 mita describe config 查看用户配置"
         require_root
         collect_installed_state
         show_quota_status
         ;;
-    quota-set) quota_set_user "$@" ;;
-    quota-reset) quota_reset_user "$@" ;;
+    quota-set)
+        [[ "${mode}" != "mieru-direct" ]] \
+            || launcher_die "Mieru 直连不部署 easy_all 配额；请使用 mita describe config 查看用户配置"
+        quota_set_user "$@"
+        ;;
+    quota-reset)
+        [[ "${mode}" != "mieru-direct" ]] \
+            || launcher_die "Mieru 直连不部署 easy_all 配额；请使用 mita describe config 查看用户配置"
+        quota_reset_user "$@"
+        ;;
     status) show_status ;;
     self-update) unified_self_update "$@" ;;
     register-command) register_easy_all_command ;;

@@ -32,6 +32,43 @@ Trojan 直连模式不部署在线订阅，`easy_all subscription` 直接输出�
 `alpn` 必须是 `http/1.1`（服务端只提供该 ALPN）。Trojan 模式不要填写 Reality 的 `pbk`/`sid`，
 也不要启用 `allowInsecure`/`skip-cert-verify`。
 
+Mieru 直连同样不部署在线订阅。`easy_all subscription` 会输出三种可互换的导入材料：
+
+- `mierus://` 分享链接：在 mieru 官方客户端（Windows/macOS/Linux/Android）中“导入配置”，
+  手机端也可直接粘贴导入；
+- 客户端配置 JSON：保存在 `/etc/easy_all/mieru/client_config.json`（`0600`），内容已包含服务器、
+  端口、用户名、密码、MTU、traffic-pattern、socks5 与 HTTP 代理端口，可直接
+  `mieru apply config <文件>`，再用 `mieru start` 启动；
+- Mihomo / Clash 节点片段：`type: mieru`，包含 `transport: TCP`、`udp: true`、
+  `multiplexing` 与 `traffic-pattern`。
+
+Mieru 节点示例（实际密码与 traffic-pattern 以 `easy_all show` 输出为准）：
+
+```yaml
+  - name: "MY_MIERU"
+    type: mieru
+    server: "203.0.113.10"
+    port-range: "50000-50512"
+    transport: TCP
+    udp: true
+    username: "你的用户名"
+    password: "你的密码"
+    multiplexing: MULTIPLEXING_LOW
+    traffic-pattern: "服务端导出的 base64 字符串"
+```
+
+Mihomo 的 mieru 出站要求 `transport` 只能是 `TCP` 或 `UDP`，且 `port` 与 `port-range` 不能同时设置；
+本模式发布 TCP `port-range: "50000-50512"`，客户端每条新连接会随机选择范围中的一个端口，
+`server` 可以是公网 IPv4 或 DNS only 域名。范围较大时客户端会展开全部端点，桌面端通常更合适；
+移动端如感内存压力，可在聚合配置中改用单个 `port`。原生 mieru 客户端不通过 Mihomo 规则分流，需要配合浏览器插件或
+单独的代理配置使用。服务端与客户端的系统时间必须同步（误差不超过数分钟），否则代理无法解密。
+
+如果其他已部署的 Worker 聚合需要统一下发本节点，把 `easy_all show` 中的域名或 IPv4、
+`port-range`（聚合 JSON 写成 `portRange`）、用户名、密码和可选 `traffic-pattern` 写入聚合 JSON 的
+`nodes`（`type: mieru`）；Mieru 模式
+本身不部署在线订阅。导入多个 Mieru 节点时，base64 订阅中的 `mierus://` 链接使用默认 profile 名，
+节点显示名以 Mihomo YAML 为准。
+
 ## 客户端选择
 
 | 平台 | 推荐客户端 |
