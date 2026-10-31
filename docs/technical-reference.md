@@ -177,8 +177,10 @@ TROJAN_DNS_RECORD_ID=easy_all 托管的 A 记录 ID
   `validate_mieru_server_config` 校验，再交给 `mita apply config`；随后 `mita stop`/`mita start`
   并验收 `mita status` 为 `RUNNING`、端口正在监听。
 - traffic-pattern 的 base64 由官方 `mita export traffic-pattern` 导出，写入 Mihomo 片段的
-  `traffic-pattern` 与 `mierus://` 链接；原生 Mieru 客户端配置 JSON 直接携带同一
-  `trafficPattern` 对象。导出失败会阻止安装/apply 完成，避免发布不可用的节点。
+  `traffic-pattern` 与 `mierus://` 链接；同一 base64 再经 `mita explain traffic-pattern` 解码为
+  JSON，原样写入原生 Mieru 客户端配置的 `trafficPattern`，因此分享链接与客户端配置不会出现
+  “一个带 `unlockAll: false`、另一个被 protobuf 省略”的漂移。导出、解码失败或 seed 与状态
+  不一致都会阻止安装/apply 完成。
 - 对外端口范围为 TCP `50000-50512`。UFW `before.rules` 的受管 NAT 区块写入单条
   `-A PREROUTING -p tcp --dport 50000:50512 -j REDIRECT --to-ports <内部端口>`，mita 只监听
   单个内部端口，避免创建 513 个 listener。客户端配置写 `portRange`，Mihomo 写 `port-range`，

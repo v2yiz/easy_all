@@ -62,6 +62,7 @@ readonly MIN_COMPATIBLE_STATE_VERSION="1"
 MIERU_DOWNLOAD_VERSION=""
 MIERU_DOWNLOAD_PACKAGE=""
 MIERU_PORT_RANGE=""
+MIERU_TRAFFIC_PATTERN_JSON=""
 
 # shellcheck source=lib/runtime-core.sh
 EASY_ALL_RUNTIME_LIB_DIR="${SCRIPT_DIR}"
@@ -455,13 +456,15 @@ validate_mieru_server_config() {
 
 render_mieru_client_config() {
     local destination=$1
+    [[ -n "${MIERU_TRAFFIC_PATTERN_JSON}" ]] \
+        || die "缺少 Mieru traffic-pattern JSON；请重新执行 easy_all apply"
     jq -n \
         --arg user "${MIERU_USER_NAME}" \
         --arg password "${MIERU_USER_PASSWORD}" \
         --arg server "${NODE_HOST}" \
         --arg port_range "${MIERU_PORT_RANGE}" \
         --argjson mtu "${MIERU_MTU}" \
-        --argjson seed "${MIERU_TRAFFIC_SEED}" \
+        --argjson pattern "${MIERU_TRAFFIC_PATTERN_JSON}" \
         --arg multiplexing "${MIERU_MULTIPLEXING}" \
         --argjson socks5 "${MIERU_CLIENT_SOCKS5_PORT}" \
         --argjson http "${MIERU_CLIENT_HTTP_PORT}" \
@@ -480,7 +483,7 @@ render_mieru_client_config() {
                 mtu: $mtu,
                 multiplexing: {level: $multiplexing},
                 handshakeMode: "HANDSHAKE_STANDARD",
-                trafficPattern: {seed: $seed, unlockAll: false}
+                trafficPattern: $pattern
             }],
             activeProfile: "default",
             rpcPort: $rpc,
@@ -518,12 +521,22 @@ apply_mieru_config() {
 # The exported pattern is the official base64 protobuf representation used by
 # Mihomo (`traffic-pattern`) and by simple mierus:// sharing links.
 refresh_mieru_traffic_pattern() {
-    local pattern
+    local pattern json seed
     pattern=$(mita export traffic-pattern 2>/dev/null | tr -d '[:space:]') \
         || die "导出 Mieru traffic-pattern 失败"
     [[ "${pattern}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] \
         || die "mita 返回了无效的 traffic-pattern"
+    # Decode the exact same base64 used by Mihomo and mierus:// links, so the
+    # native client config cannot drift from the shared traffic-pattern.
+    json=$(mita explain traffic-pattern "${pattern}" 2>/dev/null) \
+        || die "解析 Mieru traffic-pattern 失败"
+    json=$(jq -ce 'if type == "object" then . else error("not an object") end' \
+        <<<"${json}") || die "mita 返回了无效的 traffic-pattern JSON"
+    seed=$(jq -er '.seed // empty' <<<"${json}" 2>/dev/null || true)
+    [[ -z "${seed}" || "${seed}" == "${MIERU_TRAFFIC_SEED}" ]] \
+        || die "Mieru traffic-pattern seed 与状态不一致：${seed} != ${MIERU_TRAFFIC_SEED}"
     MIERU_TRAFFIC_PATTERN=${pattern}
+    MIERU_TRAFFIC_PATTERN_JSON=${json}
 }
 
 # --- UFW ------------------------------------------------------------------
@@ -810,11 +823,11 @@ apply_easy_all() {
         install -m 0600 "${MIERU_CLIENT_CONFIG}" "${old_client}"
     fi
     render_mieru_server_config "${RUNTIME_TMP}/server_config.json"
-    render_mieru_client_config "${RUNTIME_TMP}/client_config.json"
     if ! (
         install -m 0600 "${RUNTIME_TMP}/server_config.json" "${MIERU_SERVER_CONFIG}"
-        install -m 0600 "${RUNTIME_TMP}/client_config.json" "${MIERU_CLIENT_CONFIG}"
         apply_mieru_config "${MIERU_SERVER_CONFIG}"
+        render_mieru_client_config "${RUNTIME_TMP}/client_config.json"
+        install -m 0600 "${RUNTIME_TMP}/client_config.json" "${MIERU_CLIENT_CONFIG}"
     ); then
         warn "新配置验收失败，正在恢复旧配置"
         if [[ -n "${old_server}" ]]; then
@@ -834,6 +847,7 @@ apply_easy_all() {
         fi
         die "Mieru 本机配置应用失败，已恢复旧配置"
     fi
+    refresh_mieru_traffic_pattern
     configure_ufw
     configure_dynamic_port_rotation
     register_easy_all_command
@@ -856,6 +870,9 @@ update_mieru_core() {
         warn "mita 已升级到 ${MIERU_DOWNLOAD_VERSION}，但运行时验收失败；请执行 easy_all status 检查或重新运行 easy_all apply"
         die "Mieru 核心更新失败"
     fi
+    refresh_mieru_traffic_pattern
+    render_mieru_client_config "${MIERU_CLIENT_CONFIG}"
+    chmod 0600 "${MIERU_CLIENT_CONFIG}"
     save_state
     end_quota_maintenance
     success "mita 已更新到 ${MIERU_VERSION}"
@@ -1060,9 +1077,10 @@ run_mieru_install_pipeline() {
     info "[5/7] 应用官方 mita 配置并启动代理"
     install -d -m 0700 "${MIERU_DIR}"
     render_mieru_server_config "${MIERU_SERVER_CONFIG}"
-    render_mieru_client_config "${MIERU_CLIENT_CONFIG}"
-    chmod 0600 "${MIERU_SERVER_CONFIG}" "${MIERU_CLIENT_CONFIG}"
+    chmod 0600 "${MIERU_SERVER_CONFIG}"
     apply_mieru_config "${MIERU_SERVER_CONFIG}"
+    render_mieru_client_config "${MIERU_CLIENT_CONFIG}"
+    chmod 0600 "${MIERU_CLIENT_CONFIG}"
     info "[6/7] 配置 UFW 与端口范围 NAT"
     configure_ufw
     configure_dynamic_port_rotation

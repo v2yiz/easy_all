@@ -78,7 +78,7 @@ setup_stubs() {
     export MITA_LOG="${TMP_DIR}/mita.log"
     export DPKG_LOG="${TMP_DIR}/dpkg.log"
     export SYSTEMCTL_LOG="${TMP_DIR}/systemctl.log"
-    export TEST_PATTERN="CCoQARoECAEQCiIYCAMQASoIMDAwMTAyMDMqCDA0MDUwNjA3"
+    export TEST_PATTERN="CLlgEAA="
     export TEST_DIGEST_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     export TEST_ACTUAL_SHA="${TEST_DIGEST_SHA}"
 
@@ -90,6 +90,10 @@ setup_stubs() {
         export)
             [[ "${2:-}" == "traffic-pattern" ]] || return 1
             printf '%s\n' "${TEST_PATTERN}"
+            ;;
+        explain)
+            [[ "${2:-}" == "traffic-pattern" ]] || return 1
+            printf '{"seed":12345}\n'
             ;;
         apply)
             [[ -f "${3:-}" ]] || return 1
@@ -151,6 +155,7 @@ set_fixture() {
     MIERU_CLIENT_RPC_PORT="4321"
     MIERU_TRAFFIC_SEED="12345"
     MIERU_TRAFFIC_PATTERN="${TEST_PATTERN}"
+    MIERU_TRAFFIC_PATTERN_JSON='{"seed":12345}'
     VPS_IP_FAMILY="ipv4"
     VPS_PUBLIC_IPV6=""
     GOOGLE_EGRESS_MODE="ipv4"
@@ -185,6 +190,17 @@ check_invalid_host() ( NODE_HOST="not a domain"; collect_mieru_node_host )
 normalize_domain_host() { NODE_HOST="Node.Example.COM."; collect_mieru_node_host; }
 check_busy_port() ( mita_listening_on_port() { return 0; }; MIERU_PORT=2090; collect_mieru_port )
 check_reversed_range() ( MIERU_PORT_RANGE="50512-50000"; mieru_validate_port_range_state )
+check_pattern_mismatch() (
+    mita() {
+        case "${1:-}" in
+        export) printf '%s\n' "${TEST_PATTERN}" ;;
+        explain) printf '{"seed":999}\n' ;;
+        *) return 1 ;;
+        esac
+    }
+    MIERU_TRAFFIC_SEED=12345
+    refresh_mieru_traffic_pattern
+)
 check_privileged_range() ( MIERU_PORT_RANGE="80-90"; mieru_validate_port_range_state )
 
 test_input_validation() {
@@ -267,7 +283,7 @@ test_client_config() {
         and .profiles[0].servers[0].ipAddress == "203.0.113.10"
         and .profiles[0].servers[0].portBindings == [{portRange: "50000-50512", protocol: "TCP"}]
         and .profiles[0].multiplexing.level == "MULTIPLEXING_LOW"
-        and .profiles[0].trafficPattern.seed == 12345
+        and .profiles[0].trafficPattern == {seed: 12345}
         and .activeProfile == "default"
         and .rpcPort == 4321
         and .socks5Port == 1080
@@ -304,7 +320,7 @@ test_node_output() {
     assert_contains "share link pins the profile" '&profile=default' "${link}"
     assert_contains "share link declares TCP" '&protocol=TCP' "${link}"
     assert_contains "share link carries the traffic pattern" \
-        "&traffic-pattern=${TEST_PATTERN}" "${link}"
+        '&traffic-pattern=CLlgEAA%3D' "${link}"
     MIERU_TRAFFIC_PATTERN="CLlgEAA="
     link=$(build_mierus_link)
     assert_contains "share link URL-encodes base64 padding" \
@@ -406,6 +422,8 @@ test_install_and_apply() {
 
     mita_listening_on_port() { return 1; }
     assert_failure "runtime acceptance requires a listener" apply_mieru_config "${MIERU_SERVER_CONFIG}"
+
+    assert_failure "traffic-pattern seed mismatch is rejected" check_pattern_mismatch
 }
 
 test_install_pipeline() {
@@ -419,7 +437,10 @@ test_install_pipeline() {
         install_packages() { :; }
         initialize_server() { :; }
         install_latest_mieru_package() { MIERU_VERSION="3.39.0"; }
-        apply_mieru_config() { MIERU_TRAFFIC_PATTERN="${TEST_PATTERN}"; }
+        apply_mieru_config() {
+            MIERU_TRAFFIC_PATTERN="${TEST_PATTERN}"
+            MIERU_TRAFFIC_PATTERN_JSON='{"seed":12345}'
+        }
         configure_ufw() { :; }
         register_easy_all_command() { :; }
         show_node() { :; }
