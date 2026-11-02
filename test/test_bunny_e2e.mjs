@@ -39,6 +39,7 @@ async function startApi() {
         zones: [],
         records: [],
         writes: [],
+        ruleWrites: [],
         nextZoneId: 42,
         nextHostnameId: 52,
         nextRuleId: 1,
@@ -46,6 +47,7 @@ async function startApi() {
         certificateCalls: 0,
         failNextRecordLookup: false,
         failAfterDnsPost: false,
+        ruleResponseMode: null,
     };
     const rule = (
         secret,
@@ -68,12 +70,150 @@ async function startApi() {
             ...(legacy ? [{ ActionType: 34 }] : []),
         ],
     });
+    const officialRule = (secret, guid = 'rule-old', trigger = '*') => ({
+        Guid: guid,
+        ActionType: 'SetRequestHeader',
+        ActionParameter1: 'X-Easy-All-Origin-Key',
+        ActionParameter2: secret,
+        ActionParameter3: null,
+        Description: 'easy_all private origin',
+        Enabled: true,
+        OrderIndex: 0,
+        TriggerMatchingType: 0,
+        Triggers: [{
+            Type: 'Url',
+            PatternMatches: [trigger],
+            PatternMatchingType: 0,
+            Parameter1: null,
+        }],
+        ExtraActions: [
+            {
+                ActionType: 'OverrideCacheTime',
+                ActionParameter1: '0',
+                ActionParameter2: null,
+                ActionParameter3: null,
+            },
+            {
+                ActionType: 'BypassPermaCache',
+                ActionParameter1: null,
+                ActionParameter2: null,
+                ActionParameter3: null,
+            },
+        ],
+    });
+    const legacyResponseRule = (secret, guid) => ({
+        Guid: guid,
+        ActionType: 6,
+        ActionParameter1: 'X-Easy-All-Origin-Key',
+        ActionParameter2: secret,
+        ActionParameter3: null,
+        Description: 'easy_all private origin',
+        Enabled: true,
+        OrderIndex: 0,
+        TriggerMatchingType: 0,
+        Triggers: [{
+            Type: 0,
+            PatternMatches: ['*'],
+            PatternMatchingType: 0,
+            Parameter1: '',
+        }],
+        ExtraActions: [
+            {
+                ActionType: 3,
+                ActionParameter1: '0',
+                ActionParameter2: '',
+                ActionParameter3: null,
+            },
+            {
+                ActionType: 15,
+                ActionParameter1: null,
+                ActionParameter2: null,
+                ActionParameter3: null,
+            },
+            {
+                ActionType: 34,
+                ActionParameter1: null,
+                ActionParameter2: null,
+                ActionParameter3: null,
+            },
+        ],
+    });
+    const legacyApiRule = (rule) => ({
+        Guid: rule.Guid,
+        ActionType: 6,
+        ActionParameter1: rule.ActionParameter1,
+        ActionParameter2: rule.ActionParameter2,
+        ActionParameter3: null,
+        Description: rule.Description,
+        Enabled: rule.Enabled,
+        OrderIndex: rule.OrderIndex,
+        TriggerMatchingType: rule.TriggerMatchingType,
+        Triggers: rule.Triggers.map((trigger) => ({
+            Type: 0,
+            PatternMatches: trigger.PatternMatches,
+            PatternMatchingType: 0,
+            Parameter1: '',
+        })),
+        ExtraActions: rule.ExtraActions.map((action) => {
+            if (['OverrideCacheTime', 3].includes(action.ActionType)) {
+                return {
+                    ActionType: 3,
+                    ActionParameter1: action.ActionParameter1 ?? '0',
+                    ActionParameter2: '',
+                    ActionParameter3: null,
+                };
+            }
+            return {
+                ActionType: action.ActionType === 'BypassPermaCache' ? 15
+                    : action.ActionType,
+                ActionParameter1: null,
+                ActionParameter2: null,
+                ActionParameter3: null,
+            };
+        }),
+    });
+    const officialApiRule = (rule) => ({
+        Guid: rule.Guid,
+        ActionType: 'SetRequestHeader',
+        ActionParameter1: rule.ActionParameter1,
+        ActionParameter2: rule.ActionParameter2,
+        ActionParameter3: null,
+        Description: rule.Description,
+        Enabled: rule.Enabled,
+        OrderIndex: rule.OrderIndex,
+        TriggerMatchingType: rule.TriggerMatchingType,
+        Triggers: rule.Triggers.map((trigger) => ({
+            Type: 'Url',
+            PatternMatches: trigger.PatternMatches,
+            PatternMatchingType: 0,
+            Parameter1: null,
+        })),
+        ExtraActions: rule.ExtraActions.map((action) => {
+            if ([3, 'OverrideCacheTime'].includes(action.ActionType)) {
+                return {
+                    ActionType: 'OverrideCacheTime',
+                    ActionParameter1: action.ActionParameter1 ?? '0',
+                    ActionParameter2: null,
+                    ActionParameter3: null,
+                };
+            }
+            return {
+                ActionType: [15, 'BypassPermaCache'].includes(action.ActionType)
+                    ? 'BypassPermaCache' : action.ActionType,
+                ActionParameter1: null,
+                ActionParameter2: null,
+                ActionParameter3: null,
+            };
+        }),
+    });
     const reset = ({
         created = false,
         conflict = false,
         orphan = false,
         badDuplicate = false,
         sharedLegacy = false,
+        officialRuleResponse = false,
+        fourLegacyRules = false,
         failAfterDnsPost = false,
     } = {}) => {
         state.zones = [];
@@ -93,9 +233,13 @@ async function startApi() {
             ttl: 1,
         }];
         state.writes = [];
+        state.ruleWrites = [];
         state.certificateCalls = 0;
         state.failNextRecordLookup = false;
         state.failAfterDnsPost = failAfterDnsPost;
+        state.ruleResponseMode = fourLegacyRules
+            ? 'legacy'
+            : officialRuleResponse ? 'official' : null;
         if (!created) {
             state.zones = [{
                 Id: 41,
@@ -133,7 +277,12 @@ async function startApi() {
                     IsSystemHostname: false,
                     IsManagedHostname: false,
                 }] : [])],
-                EdgeRules: badDuplicate ? [
+                EdgeRules: fourLegacyRules ? [
+                    legacyResponseRule('legacy-secret-0', 'rule-legacy-0'),
+                    legacyResponseRule('legacy-secret-1', 'rule-legacy-1'),
+                    legacyResponseRule('legacy-secret-2', 'rule-legacy-2'),
+                    legacyResponseRule('legacy-secret-3', 'rule-legacy-3'),
+                ] : badDuplicate ? [
                     rule(
                         '0123456789abcdef0123456789abcdef',
                         false,
@@ -146,12 +295,14 @@ async function startApi() {
                         '/admin',
                     ),
                 ] : [
-                    rule(
-                        sharedLegacy
-                            ? '0123456789abcdef0123456789abcdef'
-                            : 'old-secret',
-                        true,
-                    ),
+                    officialRuleResponse
+                        ? officialRule('old-secret')
+                        : rule(
+                            sharedLegacy
+                                ? '0123456789abcdef0123456789abcdef'
+                                : 'old-secret',
+                            true,
+                        ),
                 ],
             }];
             if (orphan) {
@@ -304,6 +455,7 @@ async function startApi() {
             if (edgePath && req.method === 'POST') {
                 const zone = state.zones.find((item) => String(item.Id) === edgePath[1]);
                 if (!zone) return send(404);
+                state.ruleWrites.push(payload.Guid || '');
                 const index = zone.EdgeRules.findIndex((item) => item.Guid === payload.Guid);
                 const stored = {
                     ...payload,
@@ -324,7 +476,15 @@ async function startApi() {
             if (detail) {
                 const index = state.zones.findIndex((item) => String(item.Id) === detail[1]);
                 if (index < 0) return send(404);
-                if (req.method === 'GET') return send(200, state.zones[index]);
+                if (req.method === 'GET') {
+                    const response = structuredClone(state.zones[index]);
+                    if (state.ruleResponseMode === 'legacy') {
+                        response.EdgeRules = response.EdgeRules.map(legacyApiRule);
+                    } else if (state.ruleResponseMode === 'official') {
+                        response.EdgeRules = response.EdgeRules.map(officialApiRule);
+                    }
+                    return send(200, response);
+                }
                 if (req.method === 'DELETE') {
                     state.zones.splice(index, 1);
                     return send(204);
@@ -340,6 +500,7 @@ async function startApi() {
             EASY_ALL_CLOUDFLARE_API: `http://127.0.0.1:${server.address().port}/client/v4`,
         },
         close: () => new Promise((resolve) => server.close(resolve)),
+        legacyApiRule,
         state,
         reset,
     };
@@ -456,7 +617,7 @@ try {
             'CNAME must use the selected Pull Zone CnameDomain',
         );
         assert.equal(api.state.records.find((record) => record.type === 'CNAME').proxied, false);
-        assert.equal(reusedZone.EdgeRules.length, 1, 'legacy rule must be updated in place');
+        assert.equal(reusedZone.EdgeRules.length, 1, 'matching rule must be updated in place');
         assert.equal(reusedZone.EdgeRules[0].Guid, 'rule-old');
         assert.equal(
             reusedZone.EdgeRules[0].ActionParameter2,
@@ -482,7 +643,38 @@ try {
         assert.equal(reusePurgeRes.status, 0, reusePurgeRes.stderr);
         assert.deepEqual(api.state.writes, [], 'purge must preserve reused cloud resources');
 
-        // 7. 首次创建后的第二次 apply 必须无写，purge 只删除已拥有且未修改的资源。
+        // 7. 四条历史规则必须原位收敛为一条，不能先新建第五条。
+        api.reset({ fourLegacyRules: true });
+        rmSync(journal, { force: true });
+        const nextRuleId = api.state.nextRuleId;
+        const legacyRulesRes = await run(applyArgs(), api.env);
+        assert.equal(legacyRulesRes.status, 0, legacyRulesRes.stderr);
+        assert.equal(api.state.zones[0].EdgeRules.length, 1);
+        assert.equal(api.state.zones[0].EdgeRules[0].Guid, 'rule-legacy-0');
+        assert.deepEqual(api.state.ruleWrites, ['rule-legacy-0']);
+        assert.equal(api.state.nextRuleId, nextRuleId, 'must update an existing Rule Guid');
+
+        api.state.writes = [];
+        api.state.ruleWrites = [];
+        const legacyRulesRepeat = await run(applyArgs(), api.env);
+        assert.equal(legacyRulesRepeat.status, 0, legacyRulesRepeat.stderr);
+        assert.deepEqual(api.state.writes, [], 'converged legacy Rules must be idempotent');
+        assert.deepEqual(api.state.ruleWrites, []);
+
+        // 8. 官方 Edge Rule 字符串枚举与显式 null 响应必须同样可复用。
+        api.reset({ officialRuleResponse: true });
+        rmSync(journal, { force: true });
+        api.state.writes = [];
+        const officialRuleRes = await run(applyArgs(), api.env);
+        assert.equal(officialRuleRes.status, 0, officialRuleRes.stderr);
+        assert.equal(api.state.zones[0].EdgeRules.length, 1);
+        assert.equal(api.state.zones[0].EdgeRules[0].Guid, 'rule-old');
+        api.state.writes = [];
+        const officialRuleRepeat = await run(applyArgs(), api.env);
+        assert.equal(officialRuleRepeat.status, 0, officialRuleRepeat.stderr);
+        assert.deepEqual(api.state.writes, [], 'official string Rule response must be idempotent');
+
+        // 9. 首次创建后的第二次 apply 必须无写，purge 只删除已拥有且未修改的资源。
         api.reset({ created: true });
         api.state.records = [];
         rmSync(journal, { force: true });
@@ -535,7 +727,26 @@ try {
         assert.equal(api.state.records.length, 0);
         assert.equal(existsSync(journal), false);
 
-        // 8. 关键配置冲突必须在首个云写入前终止。
+        // 10. 旧 v3 journal 的 null 快照必须与当前 canonical 空值安全匹配。
+        api.reset({ created: true });
+        api.state.records = [];
+        rmSync(journal, { force: true });
+        const oldSnapshotSeed = await run(applyArgs(), api.env);
+        assert.equal(oldSnapshotSeed.status, 0, oldSnapshotSeed.stderr);
+        const oldSnapshotJournal = JSON.parse(readFileSync(journal, 'utf8'));
+        oldSnapshotJournal.rule.state = api.legacyApiRule(
+            api.state.zones[0].EdgeRules[0],
+        );
+        delete oldSnapshotJournal.rule.state.Guid;
+        writeFileSync(journal, JSON.stringify(oldSnapshotJournal));
+        api.state.writes = [];
+        const oldSnapshotPurge = await run(purgeArgs(), api.env);
+        assert.equal(oldSnapshotPurge.status, 0, oldSnapshotPurge.stderr);
+        assert.equal(api.state.zones.length, 0);
+        assert.equal(api.state.records.length, 0);
+        assert.equal(existsSync(journal), false);
+
+        // 11. 关键配置冲突必须在首个云写入前终止。
         api.reset({ conflict: true });
         const conflictRes = await run(applyArgs(), api.env);
         assert.equal(conflictRes.status, 1);
@@ -562,12 +773,18 @@ try {
         assert.match(letsEncryptConflictRes.stderr, /禁止 Let's Encrypt/);
 
         api.reset({ badDuplicate: true });
+        api.state.zones[0].EdgeRules[1].ActionParameter2 = 'user-secret';
+        api.state.zones[0].EdgeRules[1].ExtraActions[0].ActionType = 'UnknownAction';
         rmSync(journal, { force: true });
         api.state.writes = [];
         const duplicateRuleRes = await run(applyArgs(), api.env);
         assert.equal(duplicateRuleRes.status, 1);
         assert.deepEqual(api.state.writes, [], 'every duplicate Rule must pass preflight');
         assert.match(duplicateRuleRes.stderr, /Edge Rule 的结构不匹配/);
+        assert.match(duplicateRuleRes.stderr, /EdgeRule\.Triggers\[0\]\.PatternMatches\[0\]/);
+        assert.match(duplicateRuleRes.stderr, /EdgeRule\.ExtraActions\[0\]\.ActionType/);
+        assert.match(duplicateRuleRes.stderr, /ActionParameter2 \[value hidden\]/);
+        assert.equal(duplicateRuleRes.stderr.includes('user-secret'), false);
 
         api.reset({ sharedLegacy: true });
         api.state.writes = [];

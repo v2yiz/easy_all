@@ -16,6 +16,14 @@ STATE_VERSION = 3
 DEFAULT_JOURNAL = '/etc/easy_all-bunny/ownership.json'
 HEADER_KEY = 'X-Easy-All-Origin-Key'
 RULE_DESCRIPTION = 'easy_all private origin'
+ACTION_TYPE_NUMBERS = {
+    'OverrideCacheTime': 3,
+    'SetRequestHeader': 6,
+    'BypassPermaCache': 15,
+}
+TRIGGER_TYPE_NUMBERS = {
+    'Url': 0,
+}
 CF_API = os.environ.get('EASY_ALL_CLOUDFLARE_API', 'https://api.cloudflare.com/client/v4').rstrip('/')
 BUNNY_API = os.environ.get('EASY_ALL_BUNNY_API', 'https://api.bunny.net').rstrip('/')
 CONFIG_SCHEMA = {
@@ -247,38 +255,79 @@ def hostname_state(hostname):
     }
 
 
+def optional_string(item, key):
+    value = item.get(key)
+    return '' if value is None else value
+
+
 def normalize_action(action):
+    action_type = action.get('ActionType')
     return {
-        'ActionType': action.get('ActionType'),
-        'ActionParameter1': action.get('ActionParameter1', ''),
-        'ActionParameter2': action.get('ActionParameter2', ''),
-        'ActionParameter3': action.get('ActionParameter3', ''),
+        'ActionType': (
+            ACTION_TYPE_NUMBERS.get(action_type, action_type)
+            if type(action_type) is str else action_type
+        ),
+        'ActionParameter1': optional_string(action, 'ActionParameter1'),
+        'ActionParameter2': optional_string(action, 'ActionParameter2'),
+        'ActionParameter3': optional_string(action, 'ActionParameter3'),
     }
 
 
 def normalize_rule(rule):
+    triggers = rule.get('Triggers')
+    extra_actions = rule.get('ExtraActions')
     return {
-        'ActionType': rule.get('ActionType'),
-        'ActionParameter1': rule.get('ActionParameter1', ''),
-        'ActionParameter2': rule.get('ActionParameter2', ''),
-        'ActionParameter3': rule.get('ActionParameter3', ''),
+        **normalize_action(rule),
         'Description': rule.get('Description'),
         'Enabled': rule.get('Enabled'),
         'OrderIndex': rule.get('OrderIndex'),
         'TriggerMatchingType': rule.get('TriggerMatchingType'),
         'Triggers': [
             {
-                'Type': trigger.get('Type'),
-                'PatternMatches': trigger.get('PatternMatches', []),
+                'Type': (
+                    TRIGGER_TYPE_NUMBERS.get(trigger.get('Type'), trigger.get('Type'))
+                    if type(trigger.get('Type')) is str else trigger.get('Type')
+                ),
+                'PatternMatches': (
+                    [] if trigger.get('PatternMatches') is None
+                    else trigger.get('PatternMatches')
+                ),
                 'PatternMatchingType': trigger.get('PatternMatchingType'),
-                'Parameter1': trigger.get('Parameter1', ''),
+                'Parameter1': optional_string(trigger, 'Parameter1'),
             }
-            for trigger in rule.get('Triggers', [])
+            for trigger in ([] if triggers is None else triggers)
         ],
         'ExtraActions': [
-            normalize_action(action) for action in rule.get('ExtraActions', [])
+            normalize_action(action)
+            for action in ([] if extra_actions is None else extra_actions)
         ],
     }
+
+
+def difference_paths(actual, expected, path):
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        paths = []
+        for key in sorted(set(actual) | set(expected)):
+            child = f'{path}.{key}'
+            if key not in actual or key not in expected:
+                paths.append(child)
+            elif actual[key] != expected[key]:
+                hidden = ' [value hidden]' if key in (
+                    'ActionParameter2',
+                    'ActionParameter3',
+                ) else ''
+                paths.extend(difference_paths(actual[key], expected[key], child + hidden))
+        return paths
+    if isinstance(actual, list) and isinstance(expected, list):
+        paths = []
+        for index in range(max(len(actual), len(expected))):
+            child = f'{path}[{index}]'
+            if index >= len(actual) or index >= len(expected):
+                paths.append(child)
+            else:
+                paths.extend(difference_paths(actual[index], expected[index], child))
+        return paths
+    return [] if actual == expected else [path]
 
 
 def expected_rule(cfg, guid=''):
@@ -550,9 +599,29 @@ def run_apply(cfg, cf_token, bunny_key, jpath, lock_file, lock_fd):
                     or rule_matches_except_secret(rule, cfg, True)
                 )
                 if not recognized:
-                    die("已有 easy_all Edge Rule 的结构不匹配，拒绝修改")
+                    paths = ', '.join(
+                        difference_paths(
+                            normalize_rule(rule),
+                            expected_rule_state,
+                            'EdgeRule',
+                        )[:8]
+                    )
+                    die(
+                        "已有 easy_all Edge Rule 的结构不匹配，拒绝修改"
+                        + (f"；差异字段: {paths}" if paths else '')
+                    )
                 if not target_only and not exact:
-                    die("共享 Pull Zone 的 easy_all Edge Rule 不是当前格式，拒绝修改")
+                    paths = ', '.join(
+                        difference_paths(
+                            normalize_rule(rule),
+                            expected_rule_state,
+                            'EdgeRule',
+                        )[:8]
+                    )
+                    die(
+                        "共享 Pull Zone 的 easy_all Edge Rule 不是当前格式，拒绝修改"
+                        + (f"；差异字段: {paths}" if paths else '')
+                    )
             if not existing_rules and not target_only:
                 die("共享 Pull Zone 缺少 easy_all Edge Rule，拒绝创建通配规则")
 
@@ -712,33 +781,29 @@ def run_apply(cfg, cf_token, bunny_key, jpath, lock_file, lock_fd):
             ),
             None,
         )
-        if selected_rule is None and len(existing_rules) == 1:
+        if selected_rule is None and existing_rules and target_only:
             rule = existing_rules[0]
-            if (
-                rule_matches_except_secret(rule, cfg)
-                or rule_matches_except_secret(rule, cfg, True)
-            ) and target_only:
-                http_req(
-                    f"{BUNNY_API}/pullzone/{selected['Id']}/edgerules/addOrUpdate",
-                    bunny,
-                    'POST',
-                    expected_rule(cfg, rule.get('Guid', '')),
-                    ok=(200, 201, 204),
-                )
-                selected = refresh_zone(selected['Id'], bunny)
-                selected_rule = next(
-                    (
-                        item for item in rules_with_description(selected)
-                        if item.get('Guid') == rule.get('Guid')
-                    ),
-                    None,
-                )
-                if selected_rule is None:
-                    die("Edge Rule 更新后无法定位")
-                put_zone(journal, selected)
-                put_hostname(journal, find_hostname(selected, cfg['cdn']))
-                put_rule(journal, selected_rule)
-                write_json_file(jpath, journal)
+            http_req(
+                f"{BUNNY_API}/pullzone/{selected['Id']}/edgerules/addOrUpdate",
+                bunny,
+                'POST',
+                expected_rule(cfg, rule.get('Guid', '')),
+                ok=(200, 201, 204),
+            )
+            selected = refresh_zone(selected['Id'], bunny)
+            selected_rule = next(
+                (
+                    item for item in rules_with_description(selected)
+                    if item.get('Guid') == rule.get('Guid')
+                ),
+                None,
+            )
+            if selected_rule is None:
+                die("Edge Rule 更新后无法定位")
+            put_zone(journal, selected)
+            put_hostname(journal, find_hostname(selected, cfg['cdn']))
+            put_rule(journal, selected_rule)
+            write_json_file(jpath, journal)
         elif selected_rule is None and target_only:
             prior_guids = {item.get('Guid') for item in existing_rules}
             http_req(
@@ -859,7 +924,8 @@ def run_purge(cf_token, bunny_key, jpath, lock_file, lock_fd):
                 die("自建 Pull Zone 的 Edge Rule 数量已变化，保留 Zone 与 journal")
             if recorded_rule and (
                 current_rules[0].get('Guid') != recorded_rule.get('guid')
-                or normalize_rule(current_rules[0]) != recorded_rule.get('state')
+                or normalize_rule(current_rules[0])
+                != normalize_rule(recorded_rule.get('state'))
             ):
                 die("自建 Pull Zone 的 Edge Rule 已被修改，保留 Zone 与 journal")
         elif current_zone is not None:
@@ -877,7 +943,10 @@ def run_purge(cf_token, bunny_key, jpath, lock_file, lock_fd):
                     ),
                     None,
                 )
-                if current_rule and normalize_rule(current_rule) != recorded_rule.get('state'):
+                if current_rule and (
+                    normalize_rule(current_rule)
+                    != normalize_rule(recorded_rule.get('state'))
+                ):
                     die("复用 Pull Zone 的 Edge Rule 已被修改，保留 journal")
 
         pending_records = []
