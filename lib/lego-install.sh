@@ -10,19 +10,15 @@ readonly LEGO_ARCHIVE="lego_${LEGO_VERSION}_linux_amd64.tar.gz"
 readonly LEGO_CHECKSUMS="lego_${LEGO_RELEASE_NAME}_checksums.txt"
 readonly LEGO_TIMEOUT="15m"
 
-lego_asset_url() {
-    printf '%s/%s\n' "${LEGO_RELEASE_BASE}" "$1"
-}
-
 download_lego() {
     local archive checksums dir expected actual
     dir=$(make_temp_dir)
     archive="${dir}/${LEGO_ARCHIVE}"
     checksums="${dir}/${LEGO_CHECKSUMS}"
     info "正在下载 lego ${LEGO_VERSION}（Let's Encrypt 客户端）"
-    download_https_file "$(lego_asset_url "${LEGO_ARCHIVE}")" "${archive}" \
+    download_https_file "${LEGO_RELEASE_BASE}/${LEGO_ARCHIVE}" "${archive}" \
         " lego ${LEGO_VERSION}"
-    download_https_file "$(lego_asset_url "${LEGO_CHECKSUMS}")" "${checksums}" \
+    download_https_file "${LEGO_RELEASE_BASE}/${LEGO_CHECKSUMS}" "${checksums}" \
         " lego 校验文件"
     expected=$(awk -v name="${LEGO_ARCHIVE}" '$2 == name {print tolower($1)}' "${checksums}")
     [[ "${expected}" =~ ^[0-9a-f]{64}$ ]] \

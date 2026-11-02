@@ -28,6 +28,5 @@ lib/worker-backup.sh
 worker-src/backup.js
 profiles/ws-bunny.sh
 lib/bunny-api.py
-lib/bunny-probe.py
 lib/bunny-runtime.sh
 lib/lego-install.sh

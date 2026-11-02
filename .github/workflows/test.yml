@@ -5,36 +5,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    env:
-      MIHOMO_CHECK_BIN: /tmp/easy-all-mihomo
-      MIHOMO_CHECK_HOME: /tmp/easy-all-mihomo-data
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Install pinned validation core and Geo data
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq python3-jsonschema
-          curl -fL --retry 3 --max-time 120 https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-amd64-v1.19.32.gz -o "$RUNNER_TEMP/mihomo.gz"
-          echo "8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10  $RUNNER_TEMP/mihomo.gz" | sha256sum -c -
-          gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$MIHOMO_CHECK_BIN"
-          chmod 700 "$MIHOMO_CHECK_BIN"
-          mkdir -p "$MIHOMO_CHECK_HOME"
-          for asset in geoip geosite; do
-            curl -fL --retry 3 --max-time 120 "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/$asset.dat" -o "$MIHOMO_CHECK_HOME/$asset.dat"
-          done
-      - name: Run tests
-        run: |
-          if ! npm test > "$RUNNER_TEMP/easy-all-test.log" 2>&1; then
-            summary="$(sed -E $'s/\\x1b\\[[0-9;]*[[:alpha:]]//g' \
-              "$RUNNER_TEMP/easy-all-test.log" \
-              | grep -v '^time=' | tail -n 100)"
-            summary="${summary//'%'/'%25'}"
-            summary="${summary//$'\r'/'%0D'}"
-            summary="${summary//$'\n'/'%0A'}"
-            printf '::error title=Test suite failed::%s\n' "$summary"
-            exit 1
-          fi
-          cat "$RUNNER_TEMP/easy-all-test.log"
+      - name: Run end-to-end tests
+        run: npm test

@@ -230,24 +230,9 @@ EOF
 }
 
 apply_cloud_resources() {
-    local -a extra=()
-    while (($#)); do
-        case "$1" in
-        --claim-pull-zone)
-            [[ -n "${2:-}" && "$2" =~ ^[1-9][0-9]*$ ]] || die "Bunny apply-cloud 参数无效"
-            extra=(claim "$2"); shift 2 ;;
-        --retry-certificate) extra=(retry-certificate); shift ;;
-        --retry-mutation)
-            [[ -n "${2:-}" && "$2" =~ ^[0-9a-f]{32}$ ]] || die "Bunny apply-cloud 参数无效"
-            extra=(retry-mutation "$2"); shift 2 ;;
-        *) die "Bunny apply-cloud 参数无效" ;;
-        esac
-    done
     bunny_prepare_credentials
     bunny_save_config
-    local cmd=(apply)
-    ((${#extra[@]} == 0)) || cmd=("${extra[@]}")
-    python3 "${SCRIPT_DIR}/bunny-api.py" "${cmd[@]}" \
+    python3 "${SCRIPT_DIR}/bunny-api.py" apply \
         --journal "${BUNNY_JOURNAL}" --key-file "${BUNNY_KEY_FILE}" \
         --cloudflare-token-file "${BUNNY_CLOUDFLARE_TOKEN_FILE}" --config "${BUNNY_CONFIG}"
 }

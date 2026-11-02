@@ -7,23 +7,20 @@ import os
 from pathlib import Path
 import re
 import sys
-import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 
 STATE_VERSION = 2
 DEFAULT_JOURNAL = '/etc/easy_all-bunny/ownership.json'
 HEADER_KEY = 'X-Easy-All-Origin-Key'
-
-
-class BunnyError(Exception):
-    pass
+CF_API = 'https://api.cloudflare.com/client/v4'
+BUNNY_API = 'https://api.bunny.net'
 
 
 def die(msg):
-    raise BunnyError(msg)
+    sys.stderr.write(f"Error: {msg}\n")
+    sys.exit(1)
 
 
 def http_req(url, headers=None, method='GET', data=None, ok=(200,)):
@@ -64,8 +61,7 @@ def write_json_file(path, data):
 
 
 def validate_config(cfg):
-    req = ['zone', 'origin', 'cdn', 'ipv4', 'name', 'secret']
-    for k in req:
+    for k in ['zone', 'origin', 'cdn', 'ipv4', 'name', 'secret']:
         if not cfg.get(k):
             die(f"Missing config field: {k}")
     try:
@@ -87,46 +83,36 @@ def edge_ips(data):
     return sorted(ips)
 
 
-class Cloudflare:
-    def __init__(self, token):
-        self.headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json'}
-        self.base = 'https://api.cloudflare.com/client/v4'
-
-    def zone_id(self, name):
-        res = http_req(f"{self.base}/zones?name={name}", self.headers)
-        zones = res.get('result', [])
-        return zones[0]['id'] if zones else die(f"Cloudflare zone not found: {name}")
-
-    def dns_records(self, zone_id, name=None):
-        url = f"{self.base}/zones/{zone_id}/dns_records" + (f"?name={name}" if name else "")
-        return http_req(url, self.headers).get('result', [])
-
-    def ensure_record(self, zone_id, name, rtype, content):
-        existing = self.dns_records(zone_id, name)
-        match = next((r for r in existing if r['type'] == rtype and r['name'] == name), None)
-        payload = {'type': rtype, 'name': name, 'content': content, 'proxied': False, 'ttl': 1}
-        if match:
-            if match['content'] != content or match['proxied']:
-                return http_req(f"{self.base}/zones/{zone_id}/dns_records/{match['id']}", self.headers, 'PUT', payload)['result']
-            return match
-        return http_req(f"{self.base}/zones/{zone_id}/dns_records", self.headers, 'POST', payload)['result']
-
-    def delete_record(self, zone_id, record_id):
-        http_req(f"{self.base}/zones/{zone_id}/dns_records/{record_id}", self.headers, 'DELETE', ok=(200, 404))
+def cf_ensure_record(cf_headers, zone_id, name, rtype, content):
+    url = f"{CF_API}/zones/{zone_id}/dns_records?name={name}"
+    existing = http_req(url, cf_headers).get('result', [])
+    match = next((r for r in existing if r['type'] == rtype and r['name'] == name), None)
+    payload = {'type': rtype, 'name': name, 'content': content, 'proxied': False, 'ttl': 1}
+    if match:
+        if match['content'] != content or match['proxied']:
+            return http_req(f"{CF_API}/zones/{zone_id}/dns_records/{match['id']}", cf_headers, 'PUT', payload)['result']
+        return match
+    return http_req(f"{CF_API}/zones/{zone_id}/dns_records", cf_headers, 'POST', payload)['result']
 
 
-class Bunny:
-    def __init__(self, key):
-        self.headers = {'AccessKey': key, 'Accept': 'application/json'}
-        self.base = 'https://api.bunny.net'
+def run_apply(cfg, cf_token, bunny_key, jpath):
+    cf_headers = {'Authorization': f'Bearer {cf_token}', 'Accept': 'application/json'}
+    bunny_headers = {'AccessKey': bunny_key, 'Accept': 'application/json'}
 
-    def list_pull_zones(self):
-        return http_req(f"{self.base}/pullzone?page=1&perPage=1000", self.headers) or []
+    # 1. Cloudflare Zone ID & origin A 记录
+    res = http_req(f"{CF_API}/zones?name={cfg['zone']}", cf_headers)
+    zones = res.get('result', [])
+    if not zones:
+        die(f"Cloudflare zone not found: {cfg['zone']}")
+    zone_id = zones[0]['id']
+    rec_origin = cf_ensure_record(cf_headers, zone_id, cfg['origin'], 'A', cfg['ipv4'])
 
-    def get_pull_zone(self, pull_id):
-        return http_req(f"{self.base}/pullzone/{pull_id}", self.headers, ok=(200, 404))
-
-    def create_pull_zone(self, cfg):
+    # 2. Bunny Pull Zone
+    zones = http_req(f"{BUNNY_API}/pullzone?page=1&perPage=1000", bunny_headers) or []
+    match = next((z for z in zones if z['Name'] == cfg['name']), None)
+    if match:
+        pull_id = match['Id']
+    else:
         payload = {
             'Name': cfg['name'], 'Type': 1, 'OriginUrl': f"https://{cfg['origin']}",
             'OriginHostHeader': cfg['origin'], 'VerifyOriginSSL': True, 'IpFamilyPolicy': 0,
@@ -137,71 +123,56 @@ class Bunny:
             'LogForwardingEnabled': False, 'LoggingSaveToStorage': False,
             'EnableRequestCoalescing': False, 'EnableOriginShield': False,
         }
-        res = http_req(f"{self.base}/pullzone", self.headers, 'POST', payload, ok=(200, 201))
-        return res['Id']
+        res = http_req(f"{BUNNY_API}/pullzone", bunny_headers, 'POST', payload, ok=(200, 201))
+        pull_id = res['Id']
 
-    def setup_hostname_and_ssl(self, pull_id, cdn):
-        zone = self.get_pull_zone(pull_id)
-        hostnames = [h.get('Value') for h in zone.get('Hostnames', [])]
-        if cdn not in hostnames:
-            http_req(f"{self.base}/pullzone/{pull_id}/addHostname", self.headers, 'POST', {'Hostname': cdn}, ok=(200, 201, 204))
-        http_req(f"{self.base}/pullzone/loadFreeCertificate?hostname={cdn}", self.headers, ok=(200, 204, 400))
-        http_req(f"{self.base}/pullzone/{pull_id}/setForceSSL", self.headers, 'POST', {'Hostname': cdn, 'ForceSSL': True}, ok=(200, 204))
+    # 3. Cloudflare CDN CNAME 记录
+    rec_cdn = cf_ensure_record(cf_headers, zone_id, cfg['cdn'], 'CNAME', f"{cfg['name']}.b-cdn.net")
 
-    def ensure_edge_rule(self, pull_id, secret):
-        rule = {
-            'Guid': str(uuid.uuid4()), 'ActionType': 6, 'ActionParameter1': HEADER_KEY,
-            'ActionParameter2': secret, 'Description': 'easy_all private origin',
-            'Enabled': True, 'OrderIndex': 0, 'TriggerMatchingType': 0,
-            'Triggers': [{'Type': 0, 'PatternMatches': ['*'], 'PatternMatchingType': 0}],
-            'ExtraActions': [{'ActionType': 3, 'ActionParameter1': '0'}, {'ActionType': 15}, {'ActionType': 34}],
-        }
-        http_req(f"{self.base}/pullzone/{pull_id}/edgerules/addOrUpdate", self.headers, 'POST', rule, ok=(200, 201, 204))
+    # 4. Bunny Hostname, SSL, & Edge Rule
+    pull_zone = http_req(f"{BUNNY_API}/pullzone/{pull_id}", bunny_headers, ok=(200, 404))
+    hostnames = [h.get('Value') for h in pull_zone.get('Hostnames', [])]
+    if cfg['cdn'] not in hostnames:
+        http_req(f"{BUNNY_API}/pullzone/{pull_id}/addHostname", bunny_headers, 'POST', {'Hostname': cfg['cdn']}, ok=(200, 201, 204))
+    http_req(f"{BUNNY_API}/pullzone/loadFreeCertificate?hostname={cfg['cdn']}", bunny_headers, ok=(200, 204, 400))
+    http_req(f"{BUNNY_API}/pullzone/{pull_id}/setForceSSL", bunny_headers, 'POST', {'Hostname': cfg['cdn'], 'ForceSSL': True}, ok=(200, 204))
 
-    def delete_pull_zone(self, pull_id):
-        http_req(f"{self.base}/pullzone/{pull_id}", self.headers, 'DELETE', ok=(200, 204, 404))
+    rule = {
+        'Guid': str(uuid.uuid4()), 'ActionType': 6, 'ActionParameter1': HEADER_KEY,
+        'ActionParameter2': cfg['secret'], 'Description': 'easy_all private origin',
+        'Enabled': True, 'OrderIndex': 0, 'TriggerMatchingType': 0,
+        'Triggers': [{'Type': 0, 'PatternMatches': ['*'], 'PatternMatchingType': 0}],
+        'ExtraActions': [{'ActionType': 3, 'ActionParameter1': '0'}, {'ActionType': 15}, {'ActionType': 34}],
+    }
+    http_req(f"{BUNNY_API}/pullzone/{pull_id}/edgerules/addOrUpdate", bunny_headers, 'POST', rule, ok=(200, 201, 204))
 
-
-def run_apply(args, cfg, cf, bunny, jpath):
-    zone_id = cf.zone_id(cfg['zone'])
-    rec_origin = cf.ensure_record(zone_id, cfg['origin'], 'A', cfg['ipv4'])
-    zones = bunny.list_pull_zones()
-    match = next((z for z in zones if z['Name'] == cfg['name']), None)
-    pull_id = match['Id'] if match else bunny.create_pull_zone(cfg)
-    cname_target = f"{cfg['name']}.b-cdn.net"
-    rec_cdn = cf.ensure_record(zone_id, cfg['cdn'], 'CNAME', cname_target)
-    bunny.setup_hostname_and_ssl(pull_id, cfg['cdn'])
-    bunny.ensure_edge_rule(pull_id, cfg['secret'])
-    journal = {
+    # 5. 保存状态文件
+    write_json_file(jpath, {
         'version': STATE_VERSION, 'config': cfg, 'pull_id': pull_id,
         'records': [{'id': rec_origin['id'], 'name': cfg['origin']}, {'id': rec_cdn['id'], 'name': cfg['cdn']}],
         'zone_id': zone_id, 'lifecycle': 'ready', 'complete': True
-    }
-    write_json_file(jpath, journal)
+    })
     print("apply: ready (ready)")
 
 
-def run_purge(args, cf, bunny, jpath):
+def run_purge(cf_token, bunny_key, jpath):
     if Path(jpath).exists():
         j = read_json_file(jpath)
         pull_id = j.get('pull_id')
-        if pull_id and bunny:
-            bunny.delete_pull_zone(pull_id)
+        if pull_id and bunny_key:
+            http_req(f"{BUNNY_API}/pullzone/{pull_id}", {'AccessKey': bunny_key, 'Accept': 'application/json'}, 'DELETE', ok=(200, 204, 404))
         zone_id = j.get('zone_id')
-        if zone_id and cf:
+        if zone_id and cf_token:
+            cf_headers = {'Authorization': f'Bearer {cf_token}', 'Accept': 'application/json'}
             for r in j.get('records', []):
-                cf.delete_record(zone_id, r['id'])
+                http_req(f"{CF_API}/zones/{zone_id}/dns_records/{r['id']}", cf_headers, 'DELETE', ok=(200, 404))
         Path(jpath).unlink(missing_ok=True)
     print("purge: deleted (deleted)")
 
 
 def main():
-    p = argparse.ArgumentParser(prog='Bunny')
-    p.add_argument('command', choices=[
-        'apply', 'claim', 'retry-certificate', 'retry-mutation', 'mark-committed',
-        'purge', 'rollback', 'ips', 'validate-config', 'recover'
-    ])
-    p.add_argument('argument', nargs='?')
+    p = argparse.ArgumentParser(prog='bunny-api')
+    p.add_argument('command', choices=['apply', 'mark-committed', 'purge', 'ips', 'validate-config', 'recover'])
     p.add_argument('--key-file')
     p.add_argument('--cloudflare-token-file')
     p.add_argument('--config')
@@ -212,47 +183,27 @@ def main():
     if args.command == 'ips':
         for ip in edge_ips(read_json_file(args.input or die("ips requires --input"))):
             print(ip)
-        return
-    if args.command == 'validate-config':
+    elif args.command == 'validate-config':
         validate_config(read_json_file(args.config or die("validate-config requires --config")))
-        return
-    if args.command == 'recover':
+    elif args.command == 'recover':
         j = read_json_file(args.journal)
         write_json_file(args.config, j['config'])
-        return
-    if args.command == 'mark-committed':
+    elif args.command == 'mark-committed':
         if Path(args.journal).exists():
             j = read_json_file(args.journal)
             j['lifecycle'] = 'committed'
             write_json_file(args.journal, j)
         print("mark-committed: ready (committed)")
-        return
-    if args.command in ('purge', 'rollback'):
-        bunny = Bunny(Path(args.key_file).read_text().strip()) if args.key_file and Path(args.key_file).exists() else None
-        cf = Cloudflare(Path(args.cloudflare_token_file).read_text().strip()) if args.cloudflare_token_file and Path(args.cloudflare_token_file).exists() else None
-        run_purge(args, cf, bunny, args.journal)
-        return
-    if args.command == 'claim':
-        if not args.argument or not args.argument.isdigit():
-            die("claim requires numeric pull zone ID")
-        print("claim: ready (claimed)")
-        return
-    if args.command == 'retry-certificate':
-        print("retry-certificate: ready (ready)")
-        return
-    if args.command == 'retry-mutation':
-        print("retry-mutation: ready (ready)")
-        return
-    if args.command == 'apply':
+    elif args.command == 'purge':
+        bkey = Path(args.key_file).read_text().strip() if args.key_file and Path(args.key_file).exists() else None
+        cftoken = Path(args.cloudflare_token_file).read_text().strip() if args.cloudflare_token_file and Path(args.cloudflare_token_file).exists() else None
+        run_purge(cftoken, bkey, args.journal)
+    elif args.command == 'apply':
         cfg = validate_config(read_json_file(args.config or die("apply requires --config")))
-        bunny = Bunny(Path(args.key_file).read_text().strip())
-        cf = Cloudflare(Path(args.cloudflare_token_file).read_text().strip())
-        run_apply(args, cfg, cf, bunny, args.journal)
+        bkey = Path(args.key_file).read_text().strip()
+        cftoken = Path(args.cloudflare_token_file).read_text().strip()
+        run_apply(cfg, cftoken, bkey, args.journal)
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except BunnyError as e:
-        sys.stderr.write(f"Error: {e}\n")
-        sys.exit(1)
+    main()

@@ -85,12 +85,7 @@ launcher_usage() {
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
                    立即刷新直连模式的动态端口 NAT 规则（Mieru 为端口范围转发）
-  apply-cloud [Bunny 恢复参数]
-                   应用本机配置并继续已有云端事务
-                   Cloudflare 不接受这些参数；Bunny 仅接受无参数或下列一种：
-                   --claim-pull-zone <ID>
-                   --retry-certificate
-                   --retry-mutation <operation-id>
+  apply-cloud      应用本机配置并同步云端资源（适用于 CDN 模式）
   update-sub       重新选择订阅输出与用户/配额
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   refresh-origin-ips  刷新 Bunny 官方回源 IPv4 防火墙列表
@@ -350,33 +345,8 @@ dispatch_profile_command() {
     apply-cloud)
         [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "bunny-ws" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
-        if [[ "${mode}" == "cloudflare-streamup" ]]; then
-            (($# == 0)) \
-                || launcher_die "Cloudflare apply-cloud 不接受 Bunny 恢复参数"
-        else
-            case "$#" in
-            0) ;;
-            1)
-                [[ "$1" == "--retry-certificate" ]] \
-                    || launcher_die "Bunny apply-cloud 参数无效"
-                ;;
-            2)
-                case "$1" in
-                --claim-pull-zone)
-                    [[ "$2" =~ ^[1-9][0-9]*$ ]] \
-                        || launcher_die "Bunny apply-cloud 参数无效"
-                    ;;
-                --retry-mutation)
-                    [[ "$2" =~ ^[0-9a-f]{32}$ ]] \
-                        || launcher_die "Bunny apply-cloud 参数无效"
-                    ;;
-                *) launcher_die "Bunny apply-cloud 参数无效" ;;
-                esac
-                ;;
-            *) launcher_die "Bunny apply-cloud 参数无效" ;;
-            esac
-        fi
-        apply_cloud_resources "$@"
+        (($# == 0)) || launcher_die "apply-cloud 不接受额外参数"
+        apply_cloud_resources
         ;;
     update-sub)
         [[ "${mode}" != "bunny-ws" ]] || launcher_die "Bunny 仅提供一个 owner 订阅；不支持用户/配额编辑"
