@@ -85,7 +85,7 @@ assert_failure_contains "Reality target change is Reality-only" \
 )
 
 assert_failure_contains "Mieru rejects subscription updates" \
-    "Trojan/Mieru 直连不提供订阅" \
+    "Mieru 直连不提供订阅" \
     dispatch_profile_command mieru-direct update-sub
 assert_failure_contains "Mieru rejects quota commands" \
     "Mieru 直连不部署 easy_all 配额" \
@@ -261,8 +261,62 @@ unset SELF_UPDATE_INVOCATION_FILE SELF_UPDATE_REPO_PATH_FILE SELF_UPDATE_BRANCH_
 
 [[ "${launcher_content}" == *'apply-cloud)'* \
     && "${launcher_content}" == *'"${mode}" == "cloudflare-streamup"'* \
-    && "${launcher_content}" == *'apply_cloud_resources'* ]] \
-    || fail "launcher must expose the explicit CDN cloud apply"
+    && "${launcher_content}" == *'apply_cloud_resources "$@"'* ]] \
+    || fail "launcher must forward every apply-cloud argument to the selected profile"
+(
+    apply_cloud_resources() {
+        printf 'argc=%s\n' "$#"
+        (($# == 0)) || printf '<%s>\n' "$@"
+    }
+    assert_equal "Cloudflare apply-cloud accepts no recovery arguments" \
+        $'argc=0' \
+        "$(dispatch_profile_command cloudflare-streamup apply-cloud)"
+    assert_equal "Bunny apply-cloud forwards no-argument apply" \
+        $'argc=0' \
+        "$(dispatch_profile_command bunny-ws apply-cloud)"
+    assert_equal "Bunny apply-cloud forwards claim unchanged" \
+        $'argc=2\n<--claim-pull-zone>\n<42>' \
+        "$(dispatch_profile_command bunny-ws apply-cloud --claim-pull-zone 42)"
+    assert_equal "Bunny apply-cloud forwards certificate retry unchanged" \
+        $'argc=1\n<--retry-certificate>' \
+        "$(dispatch_profile_command bunny-ws apply-cloud --retry-certificate)"
+    assert_equal "Bunny apply-cloud forwards mutation retry unchanged" \
+        $'argc=2\n<--retry-mutation>\n<0123456789abcdef0123456789abcdef>' \
+        "$(dispatch_profile_command bunny-ws apply-cloud \
+            --retry-mutation 0123456789abcdef0123456789abcdef)"
+)
+assert_failure_contains "Cloudflare rejects Bunny recovery arguments" \
+    "Cloudflare apply-cloud 不接受 Bunny 恢复参数" \
+    dispatch_profile_command cloudflare-streamup apply-cloud --retry-certificate
+for invalid_arguments in \
+    "--claim-pull-zone" \
+    "--claim-pull-zone 0" \
+    "--claim-pull-zone 01" \
+    "--claim-pull-zone -1" \
+    "--claim-pull-zone candidate" \
+    "--retry-mutation" \
+    "--retry-mutation 0123456789abcdef0123456789abcdef0" \
+    "--retry-mutation 0123456789ABCDEF0123456789abcdef" \
+    "--retry-certificate extra" \
+    "--retry-certificate --retry-certificate" \
+    "--claim-pull-zone 42 --claim-pull-zone 43" \
+    "--retry-mutation 0123456789abcdef0123456789abcdef \
+        --retry-mutation fedcba9876543210fedcba9876543210" \
+    "--claim-pull-zone 42 --retry-certificate" \
+    "--retry-mutation 0123456789abcdef0123456789abcdef extra" \
+    "--unknown"; do
+    read -r -a argv <<<"${invalid_arguments}"
+    assert_failure_contains "Bunny rejects ${invalid_arguments}" \
+        "Bunny apply-cloud 参数无效" \
+        dispatch_profile_command bunny-ws apply-cloud "${argv[@]}"
+done
+usage=$(launcher_usage)
+[[ "${usage}" == *'apply-cloud'* \
+    && "${usage}" == *'--claim-pull-zone <ID>'* \
+    && "${usage}" == *'--retry-certificate'* \
+    && "${usage}" == *'--retry-mutation <operation-id>'* \
+    && "${usage}" == *'Cloudflare 不接受这些参数'* ]] \
+    || fail "launcher help must document the strict apply-cloud grammar"
 [[ "${launcher_content}" != *$'\n    update)'* \
     && "${launcher_content}" != *$'\n    update-cloud)'* ]] \
     || fail "launcher must not expose the removed update commands"
@@ -347,17 +401,6 @@ assert_failure_contains "stale Cloudflare state explains reinstall prerequisite"
     "如需全新安装，请先执行 easy_all uninstall" \
     detect_installed_mode
 
-printf 'STATE_VERSION=1\nPROTOCOL=trojan\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "Trojan state selects the Trojan profile" "trojan-direct" "$(detect_installed_mode)"
-
-printf 'STATE_VERSION=2\nPROTOCOL=trojan\n' >"${EASY_ALL_STATE_FILE}"
-assert_equal "newer Trojan state selects the Trojan profile" "trojan-direct" "$(detect_installed_mode)"
-
-printf 'STATE_VERSION=0\nPROTOCOL=trojan\n' >"${EASY_ALL_STATE_FILE}"
-assert_failure_contains "stale Trojan state explains reinstall prerequisite" \
-    "如需全新安装，请先执行 easy_all uninstall" \
-    detect_installed_mode
-
 printf 'STATE_VERSION=9\nPROTOCOL=singbox-cf\nCDN_PROVIDER=cloudflare\n' >"${EASY_ALL_STATE_FILE}"
 assert_failure_contains "legacy singbox-cf state is rejected" \
     "无法识别已安装协议" \
@@ -393,7 +436,7 @@ import sys
 
 # Python's PTY works on both Linux and macOS; their script(1) flags differ.
 for answer, expected in [(b'\n', 'reality'), (b'2\n', 'cloudflare-streamup'),
-                             (b'3\n', 'trojan-direct'), (b'4\n', 'mieru-direct')]:
+                         (b'3\n', 'mieru-direct'), (b'4\n', 'bunny-ws')]:
     master, slave = os.openpty()
     try:
         process = subprocess.Popen(
@@ -414,9 +457,8 @@ fi
 
 [[ "${launcher_content}" == *"1) printf 'reality"* \
     && "${launcher_content}" == *"2) printf 'cloudflare-streamup"* \
-    && "${launcher_content}" == *"3) printf 'trojan-direct"* \
-    && "${launcher_content}" == *"4) printf 'mieru-direct"* \
-    && "${launcher_content}" != *"5) printf"* ]] \
+    && "${launcher_content}" == *"3) printf 'mieru-direct"* \
+    && "${launcher_content}" == *"4) printf 'bunny-ws"* ]] \
     || fail "installation choices must expose the supported modes in order"
 
 printf 'ok - easy_all launcher tests passed\n'

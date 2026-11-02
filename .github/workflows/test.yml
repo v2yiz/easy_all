@@ -16,7 +16,7 @@ jobs:
       - name: Install pinned validation core and Geo data
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq python3-jsonschema
           curl -fL --retry 3 --max-time 120 https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-amd64-v1.19.32.gz -o "$RUNNER_TEMP/mihomo.gz"
           echo "8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10  $RUNNER_TEMP/mihomo.gz" | sha256sum -c -
           gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$MIHOMO_CHECK_BIN"

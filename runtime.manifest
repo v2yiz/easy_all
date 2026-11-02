@@ -1,6 +1,5 @@
 # Files installed as the easy_all runtime.
 profiles/reality.sh
-profiles/trojan-direct.sh
 profiles/mieru-direct.sh
 profiles/xhttp-cloudflare-streamup.sh
 lib/log.sh
@@ -25,19 +24,10 @@ scripts/build-worker.mjs
 templates/mihomo.yaml
 templates/mihomo-common.yaml
 templates/mihomo-classic.yaml
-templates/site/.well-known/security.txt
-templates/site/404.html
-templates/site/about.html
-templates/site/assets/app.js
-templates/site/assets/favicon.svg
-templates/site/assets/logo.svg
-templates/site/assets/style.css
-templates/site/contact.html
-templates/site/docs.html
-templates/site/index.html
-templates/site/pricing.html
-templates/site/product.html
-templates/site/robots.txt
-templates/site/sitemap.xml
 lib/worker-backup.sh
 worker-src/backup.js
+profiles/ws-bunny.sh
+lib/bunny-api.py
+lib/bunny-probe.py
+lib/bunny-runtime.sh
+lib/lego-install.sh

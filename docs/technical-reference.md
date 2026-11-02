@@ -1,11 +1,20 @@
 # 技术参考
 
+Bunny 模式（菜单 `5`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
+[Bunny 前置准备与运维](bunny-preparation-guide.md)。
+安装与 `apply` 的边缘验收除 WebSocket `101` 外，还会用临时 loopback SOCKS inbound 和真实
+Xray VLESS WS/TLS outbound 请求 `https://www.gstatic.com/generate_204`；只有 HTTP `204`
+才表示 Bunny 域名、TLS、WS、回源头和 Xray 数据面组合可用。临时客户端配置只放在私有临时
+目录，UUID、订阅 owner Token 与回源密钥不进入外部命令参数。
+
+
 ## 共同边界
 
 - 只支持 IPv4。
 - 服务器为 Debian 12/13、amd64、systemd、非容器环境。
 - 同一台 VPS 只能安装一种模式，且应由 easy_all 独占 Xray、Nginx 和相关端口。
-- 三种模式默认安装 XanMod LTS 内核并使用 `fq + BBRv3`，可选 Skyline Speeder；均关闭
+- 所有模式默认安装 XanMod LTS 内核并使用 `fq + BBRv3`，可选 Skyline Speeder；均关闭
   `tcp_slow_start_after_idle`。
 - Xray 阻断私网、链路本地、回环、组播和保留地址，并拒绝境外 UDP/443，使 QUIC 回退 TCP。
 - Mihomo 节点固定使用 `ip-version: ipv4`；普通出站使用 `ForceIPv4` + `UseIPv4`。
@@ -13,7 +22,7 @@
 脚本全局禁用 IPv6。Reality 域名若发布 AAAA，安装或 `apply` 会停止；A 记录必须指向当前 VPS
 公网 IPv4。
 
-三种模式成功安装或应用后，SSH 仅监听 TCP `65533`。UFW 先添加并验证 `65533` 放行，再将
+所有模式成功安装或应用后，SSH 仅监听 TCP `65533`。UFW 先添加并验证 `65533` 放行，再将
 本工具的 TCP `22` deny 放到首位，优先于已有的 OpenSSH/22 allow；重复应用不累积 deny。
 Fail2ban 的 SSH jail 端口固定为 `65533`。旧连接中的端口仅用于诊断，不进入最终放行集合。
 订阅不按 SSH 端口或进程名强制直连；
@@ -111,51 +120,6 @@ Mieru 节点由 `mieruLink()` 渲染 `mierus://` URI、由 `clashMieruNode()` �
 
 Reality 数据链路仍然直连 VPS，不经过 Cloudflare。VPS `8443` 只允许 Cloudflare 官方 IPv4
 回源段。
-
-## 直连 Trojan
-
-模式 3 使用 Trojan over TLS，Xray 监听 TCP `443`。与 Reality 不同，Trojan 需要面向公众可验证的
-证书，因此安装器使用 Cloudflare DNS-01 签发 Let's Encrypt 证书，并用静态站点承接回落流量：
-
-```text
-客户端 --TLS--> VPS:443 Xray(trojan) --authenticated--> 代理出站
-                             └─ 其他流量 --> 127.0.0.1:8080 Nginx 静态站点
-```
-
-- TLS 只提供 `http/1.1` ALPN、最低 TLS 1.2；回落目标写死为 `dest: 8080, xver: 0`，Nginx 只监听
-  `127.0.0.1:8080`，不对外暴露端口，也不设置任何 `easy_all` 健康检查路径。
-- 静态站点由 `templates/site/` 渲染，`__EASY_ALL_SITE_DOMAIN__` 占位符在发布前替换为节点域名；
-  首页、产品、定价、文档、公司、联系、404、`robots.txt`、`sitemap.xml` 与
-  `/.well-known/security.txt` 均为自包含文件，不引用外部字体或脚本。
-- 证书客户端是固定版本 `v4.35.2` 的 lego：从 GitHub Release 下载归档与同名 `checksums` 文件，
-  校验 SHA256 后才安装到 `/etc/easy_all/acme/lego`，避免 Debian 打包版本缺少 DNS Provider。
-- `run --run-hook` 与 `renew --days 30 --renew-hook` 共用同一安装钩子：先原子替换
-  `/etc/easy_all/certs/fullchain.pem` 与 `private.key`（`0600`），再在服务已安装时重启 Xray。
-- `easy_all-cert-renew.timer` 每天 `03:23`、`15:23`（带 30 分钟随机延迟）运行
-  `easy_all cert-renew`；未到续期时间时不重启服务，续期后校验证书与私钥匹配。
-- Cloudflare Token 只在 `/etc/easy_all/acme/cloudflare-dns.env`（`0600`）中保存供自动续期使用，
-  提示输入时走共享 `prompt_secret`，不进入命令行参数或日志。
-- 非交互安装可用 `NODE_HOST`、`TROJAN_PASSWORD`、`TROJAN_PORT_MODE`、`TROJAN_ACME_EMAIL` 与
-  `CLOUDFLARE_API_TOKEN` 提供输入；`NODE_HOST` 必须属于 Token 可访问的 Active Zone。
-- 安装器创建的 A 记录固定 `proxied=false` 且带 `easy_all trojan direct node` 注释；同名 AAAA、
-  CNAME 或注释不匹配的记录会直接失败，不会覆盖他人配置。
-- 固定 443 与 dynamic 端口共用同一份 UFW NAT 实现：dynamic 以单条 `PREROUTING` 规则把
-  `10000-62703` REDIRECT 到 `443`，范围内 SSH 端口前置 `RETURN`，并由受管 `@reboot` 任务在重启后
-  恢复；`easy_all rotate-dynamic-ports` 可手工刷新。
-- 运行时不启用 Xray Stats API 与配额，`subscription` 命令只显示节点信息，`update-sub` 明确拒绝。
-
-Trojan 状态不使用订阅字段，重启与 apply 只依赖下列值：
-
-```text
-STATE_VERSION=1  # Trojan
-PROTOCOL=trojan
-NODE_HOST=节点域名
-TROJAN_PASSWORD=8-64 位 [A-Za-z0-9._~-]
-TROJAN_PORT_MODE=443|dynamic
-TROJAN_ACME_EMAIL=ACME 注册邮箱
-CLOUDFLARE_ZONE_ID/CLOUDFLARE_ZONE_NAME
-TROJAN_DNS_RECORD_ID=easy_all 托管的 A 记录 ID
-```
 
 ## 直连 Mieru
 
@@ -398,12 +362,16 @@ easy_all
 ├─ runtime.manifest
 ├─ profiles/
 │  ├─ reality.sh
-│  ├─ trojan-direct.sh
 │  ├─ mieru-direct.sh
+│  ├─ ws-bunny.sh
 │  └─ xhttp-cloudflare-streamup.sh
 ├─ lib/
 │  ├─ log.sh
 │  ├─ runtime-core.sh
+│  ├─ bunny-api.py
+│  ├─ bunny-probe.py
+│  ├─ bunny-runtime.sh
+│  ├─ lego-install.sh
 │  ├─ xhttp-runtime.sh
 │  ├─ worker-backup.sh
 │  ├─ globalping-cdn.sh
@@ -423,8 +391,7 @@ easy_all
 ├─ templates/
 │  ├─ mihomo.yaml
 │  ├─ mihomo-common.yaml
-│  ├─ mihomo-classic.yaml
-│  └─ site/                  # Trojan 回落静态站点模板
+│  └─ mihomo-classic.yaml
 ├─ worker-src/
 │  ├─ index.js
 │  └─ backup.js
@@ -435,7 +402,8 @@ easy_all
 
 入口负责模式选择、命令分发和按 `runtime.manifest` 注册运行时。Profile 负责协议编排；
 `runtime-core.sh` 统一日志、公共模块加载、退出回滚和 Xray 核心更新事务，协议验收由 Profile hook
-实现；`xhttp-runtime.sh` 只保留 XHTTP/Nginx 数据面逻辑。`profile-common.sh` 提供公共交互和字段
+实现；Bunny 的 API/schema/持久 ownership、TLS/WS 验收与回源防火墙由独立 Bunny 模块负责。
+`lego-install.sh` 为 Bunny 模式提供固定版本下载和续期定时器。`xhttp-runtime.sh` 只保留 XHTTP/Nginx 数据面逻辑。`profile-common.sh` 提供公共交互和字段
 校验，`scheduled-maintenance.sh` 管理定时重启，`network.sh` 管理 IPv4-only 与 Xray 出站，
 `firewall.sh` 管理 UFW。
 
@@ -458,7 +426,6 @@ Reality 本机订阅与 Worker 聚合共用同一份私有节点源：token map 
 关键状态字段：
 
 ```text
-STATE_VERSION=1  # Trojan
 STATE_VERSION=8  # Reality
 STATE_VERSION=9  # Cloudflare XHTTP
 PROTOCOL=reality|cloudflare-streamup
@@ -478,13 +445,16 @@ GOOGLE_EGRESS_RESOLVED=ipv4
 
 ## 测试
 
-完整测试需要 Node.js 18+、Bash 4.1+、GNU coreutils（`stat`、`date`）及 `jq`，
+完整测试需要 Node.js 18+、Bash 4.1+、GNU coreutils（`stat`、`date`）、`jq` 和 Python 3 `jsonschema`（Debian 包 `python3-jsonschema`），
 建议在 Linux/容器中运行。`npm test` 首先检查 Bash 和 GNU 工具，环境不满足时立即给出明确提示。
 
 ```bash
 npm test
+npm run test:bunny  # 离线 Bunny API/ownership、订阅、续期回滚与防火墙行为测试
 ```
 
+Bunny 定向测试使用已安装 jsonschema 的 Python，可在 macOS Bash 3.2 运行；LibreSSL 缺少的
+`-checkhost` 仅在测试边界转换，真实 TLS/CA/WS 仍需 Debian 部署验收。
 macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm run test:worker`
 验证 Worker 构建与离线逻辑；该命令需要 Node.js 18+ 和 Bash，未配置 Mihomo 时跳过真实内核检查。
 `npm run test:subscription` 使用 Node、Bash、jq 和 OpenSSL，在隔离 fixture 中验证真实 Shell
@@ -492,11 +462,10 @@ macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm
 这些测试使用伪请求对象，真实 Debian 12/13 包激活、alias+njs 权限、HTTP HEAD/Content-Length
 和日志隔离仍需要完整 OS 隔离环境的 Nginx 集成验证，不能把本机模拟结果当成真实 HTTP 通过。
 
-测试覆盖入口和模块完整性、Reality、Trojan（含回落站点渲染、NAT 范围与 A 记录保护）、
+测试覆盖入口和模块完整性、Reality、
 Mieru（IPv4/域名、官方包校验、服务器/客户端配置渲染、traffic-pattern 与状态读写）、
 Cloudflare XHTTP、Globalping 筛选、配额、TCP 参数、订阅渲染、Token 鉴权、证书轮换、
-Worker 构建（含 Mieru 聚合节点渲染）、更新顺序。`test/test_trojan_direct.sh` 用隔离路径与命令替身验证配置渲染、状态
-读写与错误路径，不触碰真实系统服务；真实 Debian 上的证书签发与 systemd 定时器仍需部署验收。
+Worker 构建（含 Mieru 聚合节点渲染）、更新顺序。
 `test/test_mieru_direct.sh` 用同样的隔离方式验证官方包 URL 与 SHA256、IPv4/域名连接地址、
 服务器/客户端配置、`mita export traffic-pattern`、分享链接与状态恢复；Worker 测试覆盖
 `mieruLink()`/`clashMieruNode()` 与字段校验。真实 Debian 上的 mita 安装与 systemd 服务仍需部署验收。

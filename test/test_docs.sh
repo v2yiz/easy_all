@@ -10,6 +10,7 @@ CLIENT_CONTENT=$(<"${ROOT_DIR}/docs/client-guide.md")
 OPERATIONS_CONTENT=$(<"${ROOT_DIR}/docs/operations-guide.md")
 TECHNICAL_CONTENT=$(<"${ROOT_DIR}/docs/technical-reference.md")
 DEBIAN_INIT_CONTENT=$(<"${ROOT_DIR}/docs/debian-init.md")
+BUNNY_CONTENT=$(<"${ROOT_DIR}/docs/bunny-preparation-guide.md")
 ALL_DOCS="${README_CONTENT}
 ${PREPARATION_CONTENT}
 ${CLIENT_CONTENT}
@@ -17,6 +18,11 @@ ${OPERATIONS_CONTENT}
 ${TECHNICAL_CONTENT}
 ${DEBIAN_INIT_CONTENT}"
 LAUNCHER_CONTENT=$(<"${ROOT_DIR}/easy_all")
+LAUNCHER_USAGE_CONTENT=$(awk '
+    /^launcher_usage\(\)/ { inside=1 }
+    inside { print }
+    inside && /^}/ { exit }
+' "${ROOT_DIR}/easy_all")
 XHTTP_CONTENT=$(<"${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh")
 
 fail() {
@@ -49,7 +55,7 @@ for heading in '选择模式' '安装要求' '快速安装' '完成安装' '常�
     assert_contains "README onboarding section" "${README_CONTENT}" "## ${heading}"
 done
 
-for doc in preparation-guide client-guide operations-guide technical-reference debian-init; do
+for doc in preparation-guide client-guide operations-guide technical-reference debian-init bunny-preparation-guide; do
     assert_contains "README documentation index" "${README_CONTENT}" "docs/${doc}.md"
 done
 
@@ -70,6 +76,55 @@ assert_not_contains "README omits the old installation flowchart" \
     "${README_CONTENT}" '安装脑图'
 assert_not_contains "README omits implementation state schemas" \
     "${README_CONTENT}" 'STATE_VERSION='
+mode3_line=$(grep -n '^| \*\*3\. 直连 Mieru\*\* |' "${ROOT_DIR}/README.md" | cut -d: -f1)
+mode4_line=$(grep -n '^| \*\*4\. Bunny CDN\*\* |' "${ROOT_DIR}/README.md" | cut -d: -f1)
+[[ -n "${mode3_line}" && "${mode4_line}" == "$((mode3_line + 1))" ]] \
+    || fail "README keeps all four modes in one table: modes 3 and 4 are not adjacent rows"
+assert_contains "README documents Xray updates" "${README_CONTENT}" \
+    'Reality/Cloudflare/Bunny 更新 Xray'
+assert_contains "README documents Bunny's Cloudflare DNS actions" "${README_CONTENT}" \
+    'Cloudflare 管理 `origin` A 与 `cdn` CNAME'
+assert_contains "README links the optional Bunny DNS delegation" "${README_CONTENT}" \
+    'Bunny DNS Zone 的子域委派步骤'
+
+assert_contains "Bunny guide has a Bunny action section" \
+    "${BUNNY_CONTENT}" '## 在 Bunny 执行'
+assert_contains "Bunny guide has a Cloudflare action section" \
+    "${BUNNY_CONTENT}" '## 在 Cloudflare 执行'
+assert_contains "Bunny guide documents Bunny console checks" \
+    "${BUNNY_CONTENT}" '安装后在 Bunny 核对'
+assert_contains "Bunny guide documents Cloudflare post-install checks" \
+    "${BUNNY_CONTENT}" '安装后在 Cloudflare 核对'
+assert_contains "Bunny guide states current official subdomain support" \
+    "${BUNNY_CONTENT}" 'Bunny 官方 DNS 文档支持把 `bunny.example.com` 作为独立 DNS Zone'
+assert_contains "Bunny guide makes the delegation appendix optional" \
+    "${BUNNY_CONTENT}" '## 可选扩展：在 Bunny 委派子域'
+assert_contains "Bunny guide explains the Bunny panel action" \
+    "${BUNNY_CONTENT}" '打开 **DNS → Add DNS Zone**'
+assert_contains "Bunny guide explains DNS propagation" \
+    "${BUNNY_CONTENT}" '公共递归结果受 NS TTL、负缓存、上游缓存和运营商'
+assert_contains "Bunny guide documents the Cloudflare CNAME topology" \
+    "${BUNNY_CONTENT}" 'Cloudflare DNS-only CNAME'
+assert_contains "Bunny guide documents Cloudflare parent NS actions" \
+    "${BUNNY_CONTENT}" '添加 Bunny 显示的全部 NS 记录'
+assert_contains "Bunny guide documents Cloudflare parent DS actions" \
+    "${BUNNY_CONTENT}" '在 Cloudflare 父区 `bunny` 名称下添加 Bunny 当前显示的 DS 记录'
+assert_contains "Bunny guide documents Bunny key storage" \
+    "${BUNNY_CONTENT}" '`/etc/easy_all-bunny/bunny-api.key`'
+assert_contains "Bunny guide documents Cloudflare token storage" \
+    "${BUNNY_CONTENT}" '`/etc/easy_all-bunny/cloudflare-dns.token`'
+assert_not_contains "Bunny guide omits the legacy Bunny DNS-01 variable" \
+    "${BUNNY_CONTENT}" 'BUNNY_API_KEY_FILE'
+assert_not_contains "Bunny guide omits the legacy Bunny certificate backend" \
+    "${BUNNY_CONTENT}" '--dns bunny'
+assert_contains "Bunny guide documents the CAA preflight" \
+    "${BUNNY_CONTENT}" '边缘 `cdn.example.com` 使用 HTTP-01'
+assert_contains "Bunny guide documents both ACME validation methods" \
+    "${BUNNY_CONTENT}" '`validationmethods` 参数时，同时覆盖边缘 HTTP-01 和源站 DNS-01'
+assert_contains "Bunny guide documents safe retry after explicit 4xx" \
+    "${BUNNY_CONTENT}" '对应操作记录为 `failed-safe`'
+assert_not_contains "Bunny guide removes a stale redirect-only support URL" \
+    "${BUNNY_CONTENT}" '360007121731'
 
 while IFS= read -r relative_path; do
     [[ -n "${relative_path}" ]] || continue
@@ -80,11 +135,27 @@ done < <(
 )
 
 for command in show subscription self-update apply tcp reality-target apply-cloud update-sub \
-    refresh-cdn-ips update-core renew-cert quota-status quota-set quota-reset \
+    refresh-cdn-ips refresh-origin-ips update-core renew-cert cert-renew quota-status quota-set quota-reset \
     status uninstall help; do
     assert_contains "operations guide public command ${command}" \
         "${OPERATIONS_CONTENT}" "| \`${command}"
 done
+assert_contains "launcher documents Bunny certificate renewal" \
+    "${LAUNCHER_USAGE_CONTENT}" 'Bunny 模式'
+assert_contains "launcher documents the cert-renew timer command" \
+    "${LAUNCHER_USAGE_CONTENT}" 'cert-renew'
+assert_contains "operations guide distinguishes CDN apply-cloud behavior" \
+    "${OPERATIONS_CONTENT}" '`apply-cloud` 适用于 Cloudflare 与 Bunny'
+assert_contains "operations guide documents Bunny certificate renewal" \
+    "${OPERATIONS_CONTENT}" 'Bunny 强制重新签发源站证书'
+assert_contains "operations guide documents Bunny origin refresh timer" \
+    "${OPERATIONS_CONTENT}" '每六小时自动刷新'
+assert_contains "operations guide documents Bunny pending recovery" \
+    "${OPERATIONS_CONTENT}" '有 pending 时只在可证明'
+assert_contains "operations guide documents Bunny recovery parameters" \
+    "${OPERATIONS_CONTENT}" '只有运维提示给出具体参数时才使用'
+assert_contains "operations guide documents Xray updates" \
+    "${OPERATIONS_CONTENT}" 'Reality/Cloudflare/Bunny 更新 Xray'
 
 for content in "${README_CONTENT}" "${OPERATIONS_CONTENT}" "${TECHNICAL_CONTENT}"; do
     assert_contains "TCP acceleration documents the default" "${content}" 'BBRv3'
@@ -127,18 +198,8 @@ for content in "${README_CONTENT}" "${PREPARATION_CONTENT}" "${OPERATIONS_CONTEN
     assert_contains "Reality subscription output is documented" "${content}" 'Worker 订阅聚合'
     assert_contains "Reality aggregation documents the private source domain" "${content}" '私有节点源域名'
 done
-assert_contains "README documents the Trojan mode" "${README_CONTENT}" '3. 直连 Trojan'
-assert_contains "README documents the Trojan fallback site" "${README_CONTENT}" '非 Trojan 流量回落到'
-assert_contains "technical reference documents Cloudflare DNS-01" \
-    "${TECHNICAL_CONTENT}" 'Cloudflare DNS-01'
-assert_contains "technical reference documents the loopback fallback listener" \
-    "${TECHNICAL_CONTENT}" '127.0.0.1:8080'
 assert_contains "operations guide documents the certificate renewal timer" \
     "${OPERATIONS_CONTENT}" 'easy_all-cert-renew.timer'
-assert_contains "preparation guide documents the Trojan token scope" \
-    "${PREPARATION_CONTENT}" 'Zone / DNS / Edit'
-assert_contains "client guide documents the Trojan ALPN requirement" \
-    "${CLIENT_CONTENT}" 'alpn'
 assert_contains "README documents the new Reality default" "${README_CONTENT}" '1. 仅节点（默认）'
 assert_contains "operations guide documents the Reality three-way menu" \
     "${OPERATIONS_CONTENT}" '「仅节点（默认）」「本机订阅」或'
@@ -290,6 +351,7 @@ NON_SVG_ASSET=$(find "${ROOT_DIR}/docs/img" -type f ! -name '*.svg' -print -quit
 
 bash -n "${ROOT_DIR}/easy_all" "${ROOT_DIR}/bootstrap.sh" \
     "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" \
-    "${ROOT_DIR}/lib/xhttp-runtime.sh"
+    "${ROOT_DIR}/profiles/ws-bunny.sh" "${ROOT_DIR}/lib/xhttp-runtime.sh" \
+    "${ROOT_DIR}/lib/bunny-runtime.sh"
 
 printf 'ok - documentation alignment tests passed\n'

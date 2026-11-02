@@ -173,13 +173,13 @@ test_syntax_and_wiring() {
     assert_contains "launcher registers the Mieru profile" \
         'mieru-direct) candidate="${EASY_ALL_ROOT}/profiles/mieru-direct.sh"' "${launcher}"
     assert_contains "launcher exposes the Mieru menu entry" \
-        '4. 直连 - Mieru' "${launcher}"
+        '3. 直连 - Mieru' "${launcher}"
     assert_contains "launcher enforces the Mieru state version" \
         'MIERU_MIN_STATE_VERSION' "${launcher}"
     assert_contains "launcher routes mita core updates" \
         'mieru-direct) update_mieru_core' "${launcher}"
     assert_contains "launcher allows port-range NAT refresh for Mieru" \
-        'reality | trojan-direct | mieru-direct) rotate_dynamic_ports' "${launcher}"
+        'reality | mieru-direct) rotate_dynamic_ports' "${launcher}"
     assert_contains "runtime manifest ships the Mieru profile" \
         'profiles/mieru-direct.sh' "${manifest}"
 }

@@ -1,5 +1,10 @@
 # 运维指南
 
+Bunny 模式（菜单 `5`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
+[Bunny 前置准备与运维](bunny-preparation-guide.md)。
+
+
 本文面向已经完成安装的用户。首次安装请从[项目首页](../README.md)开始。
 
 ## 更新与应用
@@ -138,12 +143,17 @@ UUID、节点域名或传输路径，也不会重新询问订阅模式。
 - Reality：同步本机系统、Xray、订阅、UFW 和 Fail2ban；自托管订阅时也同步其 Cloudflare
   DNS、Origin CA 与 Strict TLS。
 - Cloudflare：同步本机 Xray、Nginx、订阅、UFW、Fail2ban 和精选 IP 缓存，不修改 Worker。
-- Trojan：重新校验证书（必要时续期并重启 Xray）、重建回落站点与 Nginx 配置、同步 UFW/NAT、
-  DNS 与续期定时器；失败时恢复旧 Xray 与 Nginx 配置。
+- Bunny：核验已有 Bunny 资源所有权，再重建本机 Xray、Nginx、订阅、证书、Fail2ban 和官方
+  回源池防火墙；不改写已保存的 Pull Zone、DNS 或边缘缓存配置。失败时恢复本机文件、证书、
+  Fail2ban 文件与启停状态以及 UFW 快照。
 - 所有模式都会在失败时恢复已备份的本机配置。
 
-`apply-cloud` 仅适用于 Cloudflare 模式。它在应用本机配置后同步 DNS、Origin CA、边缘规则和
-Worker。已成功变更的云资源不会自动回滚，只应在确实需要同步云端配置时使用。
+`apply-cloud` 适用于 Cloudflare 与 Bunny 模式。Cloudflare 模式会在应用本机配置后同步
+DNS、Origin CA、边缘规则和 Worker。Bunny 模式先按 root-only journal 和 generation 校验
+持久事务；没有 pending 时只核验已有资源所有权并重新应用本机，有 pending 时只在可证明
+恢复安全的情况下继续原操作，不会按名称认领或盲目重发。只有运维提示给出具体参数时才使用
+`--claim-pull-zone`、`--retry-certificate` 或 `--retry-mutation`。已成功变更的 Cloudflare
+云资源不会自动回滚，只应在确实需要同步云端配置时使用。
 
 配置更新、核心更新和配额统计共用一把写锁；另一个写操作运行时，新操作会立即停止。
 
@@ -158,13 +168,14 @@ Worker。已成功变更的云资源不会自动回滚，只应在确实需要�
 | `apply` | 重新应用当前配置。 |
 | `tcp [bbrv3\|skyline]` | 选择 TCP 加速；无参数时显示交互菜单，默认 BBRv3。 |
 | `reality-target [域名:端口]` | 修改 Reality SNI（伪装目标）并重新应用，仅 Reality 模式；无参数时交互输入。 |
-| `apply-cloud` | Cloudflare 模式下同步本机和云端资源。 |
+| `apply-cloud` | Cloudflare 模式同步本机和云端资源；Bunny 模式恢复可安全续跑的 pending 事务，无 pending 时核验所有权并重新应用本机。 |
 | `update-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
 | `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅。 |
-| `update-core` | 更新当前模式核心：Reality/Cloudflare 更新 Xray，Mieru 更新官方 mita。 |
+| `refresh-origin-ips` | 立即刷新 Bunny 官方回源 IPv4 池；定时器每六小时自动刷新。 |
+| `update-core` | 更新当前模式核心：Reality/Cloudflare/Bunny 更新 Xray，Mieru 更新官方 mita。 |
 | `rotate-dynamic-ports` | 立即刷新直连模式的 NAT 规则（Mieru 使用 `50000-50512` → 内部端口）。 |
-| `renew-cert` | 轮换当前模式证书；Trojan 模式强制重新签发 Let's Encrypt 证书。 |
-| `cert-renew` | 内部命令：由 `easy_all-cert-renew.timer` 调用，仅 Trojan 模式。 |
+| `renew-cert` | 重新签发当前模式证书；Bunny 强制重新签发源站证书。 |
+| `cert-renew` | 内部命令：由 `easy_all-cert-renew.timer` 调用，适用于 Bunny 模式。 |
 | `quota-status` | 查看每个用户的月度配额和流量。 |
 | `quota-set <用户> <GB>` | 修改已有用户额度，`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户本月流量。 |
@@ -476,37 +487,6 @@ sudo easy_all reality-target www.example.com:443  # 直接指定
 目标域名必须支持 TLS 1.3，建议同时支持 HTTP/2，且不能套 CDN 代理；目标在大陆的可达性需自
 行确认，因为客户端 TLS ClientHello 里的 SNI 就是它。
 
-## Trojan 直连
-
-模式 3 的入口只有 TCP `443`：Xray 在 TLS 上接收 Trojan，其余流量交给
-`127.0.0.1:8080` 的 Nginx 静态站点。Nginx 不监听公网地址，UFW 只需要放行 `443` 与 SSH。
-直接用浏览器访问 `https://节点域名` 会看到站点首页，这是预期行为，而不是“被墙”或“配置错误”。
-
-端口模式：
-
-- 固定 `443`：只开放 `443`。
-- `dynamic`（默认）：UFW NAT 用单条规则把 `10000-62703` REDIRECT 到 `443`，范围内任意端口都能
-  连接；安装、`apply` 与受管 `@reboot` 任务都会刷新整段规则，也可手工执行
-  `sudo easy_all rotate-dynamic-ports`。云安全组同样要放行这段原始目标端口，只放行 `443`
-  时只有 `443` 可用。
-
-证书：
-
-- 签发与续期都走 Cloudflare DNS-01，客户端是固定版本 lego，归档经 Release 内的 SHA256
-  校验后安装到 `/etc/easy_all/acme/`。
-- 证书与私钥发布到 `/etc/easy_all/certs/fullchain.pem`、`private.key`（`0600`）。
-  `easy_all-cert-renew.timer` 每天两次运行 `easy_all cert-renew`，未到续期时间不重启服务。
-- Cloudflare API Token 保存在 `/etc/easy_all/acme/cloudflare-dns.env`（`0600`），只用于
-  DNS-01 挑战；卸载会删除该文件，`--purge-cloud` 还会删除安装器托管的 A 记录。
-- 需要强制重签时执行 `sudo easy_all renew-cert`；如果 Token 已失效，先重新安装或手工更新
-  该文件。
-
-诊断顺序：`sudo easy_all status` 查看服务、监听、证书到期与回落站点是否 `200 OK`；
-`sudo nginx -t` 校验回落站点配置；`ss -ltn 'sport = :8080'` 确认 Nginx 只监听回环地址；
-`journalctl -u easy_all-xray -n 100` 检查 Xray 日志；`systemctl status easy_all-cert-renew.timer`
-查看续期计划。`dynamic` 模式还可用 `sudo iptables -t nat -L PREROUTING -n -v` 确认整段
-REDIRECT 已加载。
-
 ## Mieru 直连
 
 模式 4 使用上游 [mieru](https://github.com/enfein/mieru) 的官方服务端 `mita`，不引入证书、Nginx
@@ -579,8 +559,6 @@ Cloudflare 控制台复核。
 /etc/easy_all/certs/
 /var/www/easy_all/subscriptions/
 /etc/nginx/conf.d/easy_all.conf
-/etc/easy_all/acme/             # Trojan：lego、Token 与证书安装钩子
-/var/www/easy_all/site/         # Trojan：回落静态站点
 /etc/easy_all/mieru/            # Mieru：server_config.json 与 client_config.json
 /etc/mita/                      # Mieru：mita 守护进程配置
 ```
@@ -602,8 +580,5 @@ root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（
 | Globalping 额度不足 | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；与当前入口策略兼容的缓存会继续使用。 |
 | `status` 显示 `pending-reboot` | 执行 `sudo reboot`，重新登录后确认 `BBRv3: active`。 |
 | 想更换伪装目标（SNI） | 执行 `sudo easy_all reality-target <域名:端口>`，再按部署方式刷新订阅或重新导入节点。 |
-| 浏览器打开节点域名显示正常站点 | Trojan 模式的预期行为：非 Trojan 流量回落到静态站点。 |
-| Trojan 节点握手成功但不走流量 | 确认客户端密码、SNI 与 `alpn` 和 `easy_all show` 输出一致；证书过期会让所有客户端失败，先看 `sudo easy_all status` 的证书到期时间。 |
-| Trojan 证书续期失败 | 检查 `/etc/easy_all/acme/cloudflare-dns.env` 中的 Token 是否仍有 Zone:DNS:Edit 权限，再执行 `sudo easy_all renew-cert`。 |
 | 订阅能下载但节点无法连接 | 先看[客户端指南](client-guide.md)，再检查 Cloudflare gRPC 和 Xray/Nginx 日志。 |
 | Reality 节点握手正常但不走流量 | 确认服务端核心与客户端内核版本：Xray ≥ 26.9.8 需订阅带 `support-x25519mlkem768`（mihomo ≥ 1.19.9 生效），并检查订阅是否为最新生成的。 |

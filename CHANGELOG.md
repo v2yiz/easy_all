@@ -1,3 +1,20 @@
+## 1.9.0 更新说明（2026-11-02）
+
+- 新增第四种安装模式「4 Bunny CDN」：使用 Bunny 自动调度域名接入与 VLESS WS/TLS 协议，
+  由 Cloudflare 管理 `origin` A 记录与 `cdn` CNAME 记录；Bunny 终止客户端 TLS 并通过随机 Origin Header
+  回源到 VPS Nginx，Nginx 校验回源头后转发至 Xray 本地监听；提供一个自动调度域名节点及 owner 订阅。
+- 官方回源池安全加固：内置系统服务与定时器每 6 小时自动拉取并刷新 Bunny 官方 IPv4 回源列表，
+  原子更新 UFW `before.rules`，仅允许官方回源 IP 访问 TCP 443；支持手动执行 `easy_all refresh-origin-ips`。
+- 极简化与高内聚重构：彻底精简 Bunny 相关代码，移除过度设计的状态机与繁复校验，核心 API 逻辑缩减至 250 行；
+  移除深入私有实现的白盒测试与大型 mock 服务，测试套件统一重构为关注用户视角的黑盒测试（`test/test_bunny.sh`）。
+- 移除直连 Trojan 模式：彻底删除 Trojan Profile、回落伪装静态站点模板、证书钩子及专用测试代码；
+  项目安装模式收敛为 4 种（1: Reality, 2: Cloudflare CDN, 3: Mieru 直连, 4: Bunny CDN）。
+- 入口与运行时更新：更新交互菜单选择、`renew-cert`、`rotate-dynamic-ports` 与参数校验；
+  同步清理文档与架构测试断言。
+
+源码版本标识为 `1.9.0`。已有部署执行 `sudo easy_all self-update` 即可，不影响已有模式的状态和订阅；
+全新安装时可选择「4 Bunny CDN」。
+
 ## 1.8.0 更新说明（2026-11-07）
 
 - 新增第四种安装模式「4 直连 Mieru」：安装器从 GitHub 官方 Release 读取最新 mieru 版本，下载
