@@ -47,8 +47,8 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 | 概念 | 角色与用途 | 解析记录类型 | 访问与安全策略 |
 | :--- | :--- | :--- | :--- |
 | **Cloudflare 根 Zone**<br>（例如 `example.com`） | 你在 Cloudflare 托管的主域名命名空间。Cloudflare API 添加所有记录必须绑定 `zone_id`，系统通过该主域名获取对应的 `zone_id`。 | - | 不直接承载流量，仅作云端 API 的根作用域。 |
-| **源站域名 (Origin)**<br>（默认 `origin.<zone>`） | **VPS 本机 Nginx 专用**。<br>用于向 Let's Encrypt 签发源站 SSL 证书，并供 Bunny 边缘节点向 VPS 回源。 | **DNS-only A 记录**<br>指向真实 VPS 公网 IPv4 | **绝不暴露给客户端**。UFW 防火墙配置白名单，仅放行 Bunny 官方回源 IP 访问 443 端口，外网直连被丢弃。 |
-| **CDN 域名 (CDN)**<br>（默认 `cdn.<zone>`） | **公开客户端与订阅入口**。<br>客户端连接代理及拉取订阅时填写的域名。 | **DNS-only CNAME 记录**<br>指向 Bunny 的 `<pull-zone>.b-cdn.net` | **公开给客户端使用**。流量首先进入 Bunny CDN 全球边缘网络并调度优选线路，真实 VPS IP 被完全隐藏。 |
+| **源站域名 (Origin)**<br>（例如 `origin.example.com`） | **VPS 本机 Nginx 专用**。<br>用于向 Let's Encrypt 签发源站 SSL 证书，并供 Bunny 边缘节点向 VPS 回源。安装时回车默认即为 `origin.<zone>`。 | **DNS-only A 记录**<br>指向真实 VPS 公网 IPv4 | **绝不暴露给客户端**。UFW 防火墙配置白名单，仅放行 Bunny 官方回源 IP 访问 443 端口，外网直连被丢弃。 |
+| **CDN 域名 (CDN)**<br>（例如 `cdn.example.com`） | **公开客户端与订阅入口**。<br>客户端连接代理及拉取订阅时填写的域名。安装时回车默认即为 `cdn.<zone>`。 | **DNS-only CNAME 记录**<br>指向 Bunny 的 `<pull-zone>.b-cdn.net` | **公开给客户端使用**。流量首先进入 Bunny CDN 全球边缘网络并调度优选线路，真实 VPS IP 被完全隐藏。 |
 
 > [!NOTE]
 > 为什么必须输入根 Zone？
@@ -76,7 +76,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 
 在菜单中输入 **`4`** 选择 Bunny CDN 模式。
 
-### 交互输入示例（假设你的主域名为 `myvpn.xyz`）
+### 交互输入示例（假设你的主域名为 `example.com`）
 
 终端交互会严格依次提示以下 6 项（带方括号的直接回车即可选用默认值）：
 
@@ -88,9 +88,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
   4. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）
 请选择 [1]（直接回车使用默认值）: 4
 
-Cloudflare 根 Zone（如 example.com）: myvpn.xyz
-源站域名 [origin.myvpn.xyz]（直接回车使用默认值）: [直接按回车]
-CDN 节点/订阅域名 [cdn.myvpn.xyz]（直接回车使用默认值）: [直接按回车]
+Cloudflare 根 Zone（如 example.com）: example.com
+源站域名 [origin.example.com]（直接回车使用默认值）: [直接按回车]
+CDN 节点/订阅域名 [cdn.example.com]（直接回车使用默认值）: [直接按回车]
 Pull Zone 月流量限制（GB） [500]（直接回车使用默认值）: [直接按回车]
 Bunny Account API Key，粘贴后按回车键；输入过程不会显示任何字符: [粘贴后回车]
 Cloudflare DNS Token，粘贴后按回车键；输入过程不会显示任何字符: [粘贴后回车]
@@ -98,12 +98,12 @@ Cloudflare DNS Token，粘贴后按回车键；输入过程不会显示任何字
 
 ### 安装器自动完成的编排工作
 1. **云端联动**：
-   - 在 Cloudflare 创建 `origin.myvpn.xyz` 的 DNS-only A 记录（指向 VPS IPv4）。
-   - 在 Bunny 创建 Type 1 Volume Pull Zone（命名如 `easyallxxxxxx`），配置源站地址为 `https://origin.myvpn.xyz`，开启 WebSocket。
-   - 在 Cloudflare 创建 `cdn.myvpn.xyz` 的 DNS-only CNAME 记录（指向 `easyallxxxxxx.b-cdn.net`）。
-   - 在 Bunny 绑定自定义主机名 `cdn.myvpn.xyz`、申请免费边缘 SSL 证书，并设置回源私有请求头规则 `X-Easy-All-Origin-Key`。
+   - 在 Cloudflare 创建 `origin.example.com` 的 DNS-only A 记录（指向 VPS IPv4）。
+   - 在 Bunny 创建 Type 1 Volume Pull Zone（命名如 `easyallxxxxxx`），配置源站地址为 `https://origin.example.com`，开启 WebSocket。
+   - 在 Cloudflare 创建 `cdn.example.com` 的 DNS-only CNAME 记录（指向 `easyallxxxxxx.b-cdn.net`）。
+   - 在 Bunny 绑定自定义主机名 `cdn.example.com`、申请免费边缘 SSL 证书，并设置回源私有请求头规则 `X-Easy-All-Origin-Key`。
 2. **源站申请证书**：
-   - 本地通过 `lego` 调用 Cloudflare DNS-01 API 为 `origin.myvpn.xyz` 申请正式的 Let's Encrypt 证书并存入 `/etc/easy_all/certs/`。
+   - 本地通过 `lego` 调用 Cloudflare DNS-01 API 为 `origin.example.com` 申请正式的 Let's Encrypt 证书并存入 `/etc/easy_all/certs/`。
 3. **部署本地服务**：
    - 配置 Xray 监听 `127.0.0.1:10086`（VLESS WS 协议）。
    - 配置 Nginx 443 端口虚拟主机：使用 Let's Encrypt 证书，校验请求头 `X-Easy-All-Origin-Key`，反代 WebSocket 到 Xray，并提供 `/subscribe?token=...` 订阅端点。
