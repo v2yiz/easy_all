@@ -135,8 +135,15 @@ def run_apply(cfg, cf_token, bunny_key, jpath):
     hostnames = [h.get('Value') for h in pull_zone.get('Hostnames', []) if isinstance(h, dict)]
     if cfg['cdn'] not in hostnames:
         http_req(f"{BUNNY_API}/pullzone/{pull_id}/addHostname", bunny_headers, 'POST', {'Hostname': cfg['cdn']}, ok=(200, 201, 204))
-    http_req(f"{BUNNY_API}/pullzone/loadFreeCertificate?hostname={cfg['cdn']}", bunny_headers, ok=(200, 204, 400))
-    http_req(f"{BUNNY_API}/pullzone/{pull_id}/setForceSSL", bunny_headers, 'POST', {'Hostname': cfg['cdn'], 'ForceSSL': True}, ok=(200, 204))
+
+    for _ in range(5):
+        res = http_req(f"{BUNNY_API}/pullzone/loadFreeCertificate?hostname={cfg['cdn']}", bunny_headers, ok=(200, 204, 400))
+        if isinstance(res, dict) and res.get('ErrorKey'):
+            time.sleep(3)
+            continue
+        break
+
+    http_req(f"{BUNNY_API}/pullzone/{pull_id}/setForceSSL", bunny_headers, 'POST', {'Hostname': cfg['cdn'], 'ForceSSL': True}, ok=(200, 204, 400))
 
     rule = {
         'Guid': '', 'ActionType': 6, 'ActionParameter1': HEADER_KEY,
