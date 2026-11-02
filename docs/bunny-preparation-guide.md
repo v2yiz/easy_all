@@ -44,11 +44,11 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 
 安装时需要使用两个子域名，它们由安装器自动配置在 Cloudflare 中，职责严格分离：
 
-| 概念 | 角色与用途 | 解析记录类型 | 访问与安全策略 |
-| :--- | :--- | :--- | :--- |
-| **Cloudflare 根 Zone**<br>（例如 `example.com`） | 你在 Cloudflare 托管的主域名命名空间。Cloudflare API 添加所有记录必须绑定 `zone_id`，系统通过该主域名获取对应的 `zone_id`。 | - | 不直接承载流量，仅作云端 API 的根作用域。 |
-| **源站域名 (Origin)**<br>（例如 `origin.example.com`） | **VPS 本机 Nginx 专用**。<br>用于向 Let's Encrypt 签发源站 SSL 证书，并供 Bunny 边缘节点向 VPS 回源。安装时回车默认即为 `origin.<zone>`。 | **DNS-only A 记录**<br>指向真实 VPS 公网 IPv4 | **绝不暴露给客户端**。UFW 防火墙配置白名单，仅放行 Bunny 官方回源 IP 访问 443 端口，外网直连被丢弃。 |
-| **CDN 域名 (CDN)**<br>（例如 `cdn.example.com`） | **公开客户端与订阅入口**。<br>客户端连接代理及拉取订阅时填写的域名。安装时回车默认即为 `cdn.<zone>`。 | **DNS-only CNAME 记录**<br>指向 Bunny 的 `<pull-zone>.b-cdn.net` | **公开给客户端使用**。流量首先进入 Bunny CDN 全球边缘网络并调度优选线路，真实 VPS IP 被完全隐藏。 |
+| 概念 | 示例（输入/默认） | 角色与用途 | 解析记录类型 | 访问与安全策略 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Cloudflare 根 Zone** | `example.com` | Cloudflare 托管的主域名。Cloudflare API 操作 DNS 记录必须绑定该域名的 `zone_id`。 | - | 不直接承载流量，仅作为云端 API 根作用域。 |
+| **源站域名 (Origin)** | `origin.example.com`<br>（交互默认 `origin.<zone>`） | **VPS 本机 Nginx 专用**。<br>用于向 Let's Encrypt 签发源站 SSL 证书，并供 Bunny 边缘节点向 VPS 回源。 | **DNS-only A 记录**<br>指向真实 VPS 公网 IPv4 | **绝不暴露给客户端**。UFW 防火墙配置白名单，仅放行 Bunny 官方回源 IP 访问 443 端口，外网直连被丢弃。 |
+| **CDN 域名 (CDN)** | `cdn.example.com`<br>（交互默认 `cdn.<zone>`） | **公开客户端与订阅入口**。<br>客户端连接代理及拉取订阅时填写的域名。 | **DNS-only CNAME 记录**<br>指向 Bunny 的 `<pull-zone>.b-cdn.net` | **公开给客户端使用**。流量首先进入 Bunny CDN 全球边缘网络调度优选节点，真实 VPS IP 完全隐藏。 |
 
 > [!NOTE]
 > 为什么必须输入根 Zone？
