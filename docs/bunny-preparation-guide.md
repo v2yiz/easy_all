@@ -7,16 +7,16 @@
 ## 1. 链路架构
 
 ```text
-客户端 (VLESS WS/TLS)
+客户端 (VLESS WS/TLS 节点 & 订阅下载)
   │
   ▼
-cdn.example.com (Cloudflare DNS-only CNAME)
+cdn.example.com (CDN 域名：Cloudflare DNS-only CNAME -> *.b-cdn.net)
   │
   ▼
-<pull-zone>.b-cdn.net (Bunny CDN 边缘，自动调度优选节点，强制 HTTPS)
-  │  (携带私有请求头 X-Easy-All-Origin-Key)
+Bunny CDN 边缘网络 (自动就近调度优选节点，强制 HTTPS 传输)
+  │  (自动注入私有回源头 X-Easy-All-Origin-Key)
   ▼
-https://origin.example.com (Cloudflare DNS-only A -> VPS 公网 IPv4:443)
+https://origin.example.com (源站域名：Cloudflare DNS-only A -> VPS 公网 IPv4:443)
   │
   ▼
 Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
@@ -38,42 +38,78 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 ### 2.2 Bunny 账户与 API Key
 1. 登录 [Bunny Dashboard](https://dash.bunny.net/)。
 2. 确保账户内有可用余额（CDN 流量计费及 WebSocket 连接计费）。
-3. 进入 **Account Settings → API Key**，复制 **Account API Key**（非 Pull Zone 密码）。安装器会使用该 Key 自动创建 Pull Zone、配置 Edge Rule、绑定自定义域名及申请边缘证书。
+3. 进入 **Account Settings → API Key**，复制 **Account API Key**（注意是账户全局 Key，不是 Storage 或 Pull Zone 密码）。安装器会使用该 Key 自动创建 Pull Zone、配置 Edge Rule、绑定自定义域名及申请边缘证书。
 
-### 2.3 Cloudflare 域名与 API Token
-1. 准备一个在 Cloudflare 处于 **Active** 状态的根域名（如 `example.com`）。
-2. 规划两个子域名（安装器会自动创建 DNS 记录，无需提前手动添加）：
-   - **源站域名**（如 `origin.example.com`）：解析为 VPS 公网 IPv4（DNS-only A 记录）。
-   - **CDN 节点域名**（如 `cdn.example.com`）：指向 Bunny Pull Zone（DNS-only CNAME 记录），供客户端连接与订阅。
-3. 进入 Cloudflare **My Profile → API Tokens → Create Token**，创建具备以下权限的自定义 Token：
-   - 权限：`Zone - DNS - Edit`、`Zone - Zone - Read`
-   - 资源范围：限制为包含上述域名的根 Zone。
+### 2.3 域名规划与概念区分（核心）
+
+安装时需要使用两个子域名，它们由安装器自动配置在 Cloudflare 中，职责严格分离：
+
+| 概念 | 角色与用途 | 解析记录类型 | 访问与安全策略 |
+| :--- | :--- | :--- | :--- |
+| **Cloudflare 根 Zone**<br>（例如 `example.com`） | 你在 Cloudflare 托管的主域名命名空间。Cloudflare API 添加所有记录必须绑定 `zone_id`，系统通过该主域名获取对应的 `zone_id`。 | - | 不直接承载流量，仅作云端 API 的根作用域。 |
+| **源站域名 (Origin)**<br>（默认 `origin.<zone>`） | **VPS 本机 Nginx 专用**。<br>用于向 Let's Encrypt 签发源站 SSL 证书，并供 Bunny 边缘节点向 VPS 回源。 | **DNS-only A 记录**<br>指向真实 VPS 公网 IPv4 | **绝不暴露给客户端**。UFW 防火墙配置白名单，仅放行 Bunny 官方回源 IP 访问 443 端口，外网直连被丢弃。 |
+| **CDN 域名 (CDN)**<br>（默认 `cdn.<zone>`） | **公开客户端与订阅入口**。<br>客户端连接代理及拉取订阅时填写的域名。 | **DNS-only CNAME 记录**<br>指向 Bunny 的 `<pull-zone>.b-cdn.net` | **公开给客户端使用**。流量首先进入 Bunny CDN 全球边缘网络并调度优选线路，真实 VPS IP 被完全隐藏。 |
+
+> [!NOTE]
+> 为什么必须输入根 Zone？
+> 1. **Cloudflare API 规范**：Cloudflare API 操作 DNS 记录必须知道所在的 `zone_id`，而 `zone_id` 需通过账户托管的根域名反查。
+> 2. **证书联系邮箱**：ACME 客户端（`lego`）通过 Cloudflare DNS-01 签发源站证书时，将该根域名作为注册联系人邮箱后缀（`admin@<zone>`）。
+> 3. **智能默认前缀**：输入根 Zone 后，源站域名与 CDN 域名会自动派生为默认值，后续步骤直接回车即可，无需重复手打长域名。
+
+### 2.4 Cloudflare API Token
+1. 进入 Cloudflare **My Profile → API Tokens → Create Token**，使用 **Create Custom Token**。
+2. 配置以下两项权限：
+   - `Zone` - `DNS` - `Edit`
+   - `Zone` - `Zone` - `Read`
+3. 资源范围（Zone Resources）选择 **Include → Specific zone**，选中你的根 Zone。
 
 ---
 
-## 3. 安装与配置
+## 3. 安装与配置交互示例
 
-在 VPS 上执行一键安装：
+在 VPS 终端执行安装：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
 # 或源码安装：sudo ./easy_all install
 ```
 
-在菜单中选择 **`4. Bunny CDN`**，依次输入：
-1. **Cloudflare 根 Zone**（如 `example.com`）
-2. **源站域名**（回车默认 `origin.<zone>`）
-3. **CDN 节点/订阅域名**（回车默认 `cdn.<zone>`）
-4. **Pull Zone 月流量限制（GB）**（默认 `500`）
-5. **Bunny Account API Key**（隐藏输入）
-6. **Cloudflare DNS API Token**（隐藏输入）
+在菜单中输入 **`4`** 选择 Bunny CDN 模式。
 
-安装器会自动完成以下操作：
-1. **云端联动**：调用 Cloudflare API 创建 DNS 记录；调用 Bunny API 创建 Type 1 Volume Pull Zone、绑定 CDN 域名、开启强制 HTTPS 并配置回源头规则。
-2. **源站证书**：通过 `lego` 利用 Cloudflare DNS-01 验证为源站域名签发 Let's Encrypt 证书。
-3. **服务部署**：配置 Xray（监听 `127.0.0.1:10086`）与 Nginx 反向代理，生成专属 owner 订阅（包含 Base64 链接与 Mihomo YAML）。
-4. **防火墙加固**：拉取 Bunny 官方回源 IP 列表，配置 UFW 仅允许 Bunny 边缘节点访问源站 443 端口。
-5. **定时任务**：注册证书自动续期定时器及每 6 小时自动更新 Bunny 回源 IP 白名单的定时器。
+### 交互输入示例（假设你的主域名为 `myvpn.xyz`）
+
+终端交互会严格依次提示以下 6 项（带方括号的直接回车即可选用默认值）：
+
+```text
+请选择安装模式：
+  1. 直连 - Reality（直连效果良好且 IP 未被封时）
+  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）
+  3. 直连 - Mieru（官方 mita，无需域名或证书）
+  4. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）
+请选择 [1]（直接回车使用默认值）: 4
+
+Cloudflare 根 Zone（如 example.com）: myvpn.xyz
+源站域名 [origin.myvpn.xyz]（直接回车使用默认值）: [直接按回车]
+CDN 节点/订阅域名 [cdn.myvpn.xyz]（直接回车使用默认值）: [直接按回车]
+Pull Zone 月流量限制（GB） [500]（直接回车使用默认值）: [直接按回车]
+Bunny Account API Key，粘贴后按回车键；输入过程不会显示任何字符: [粘贴后回车]
+Cloudflare DNS Token，粘贴后按回车键；输入过程不会显示任何字符: [粘贴后回车]
+```
+
+### 安装器自动完成的编排工作
+1. **云端联动**：
+   - 在 Cloudflare 创建 `origin.myvpn.xyz` 的 DNS-only A 记录（指向 VPS IPv4）。
+   - 在 Bunny 创建 Type 1 Volume Pull Zone（命名如 `easyallxxxxxx`），配置源站地址为 `https://origin.myvpn.xyz`，开启 WebSocket。
+   - 在 Cloudflare 创建 `cdn.myvpn.xyz` 的 DNS-only CNAME 记录（指向 `easyallxxxxxx.b-cdn.net`）。
+   - 在 Bunny 绑定自定义主机名 `cdn.myvpn.xyz`、申请免费边缘 SSL 证书，并设置回源私有请求头规则 `X-Easy-All-Origin-Key`。
+2. **源站申请证书**：
+   - 本地通过 `lego` 调用 Cloudflare DNS-01 API 为 `origin.myvpn.xyz` 申请正式的 Let's Encrypt 证书并存入 `/etc/easy_all/certs/`。
+3. **部署本地服务**：
+   - 配置 Xray 监听 `127.0.0.1:10086`（VLESS WS 协议）。
+   - 配置 Nginx 443 端口虚拟主机：使用 Let's Encrypt 证书，校验请求头 `X-Easy-All-Origin-Key`，反代 WebSocket 到 Xray，并提供 `/subscribe?token=...` 订阅端点。
+4. **安全与自动化**：
+   - 拉取 Bunny 官方边缘回源 IP 网段，在 UFW 防火墙配置入站限制规则（仅放行 Bunny 回源节点访问 443）。
+   - 注册 systemd 证书自动续期定时器（`easy_all-cert-renew.timer`）与回源 IP 白名单自动刷新定时器（`easy_all-bunny-ips.timer`）。
 
 ---
 
@@ -85,20 +121,20 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 # 查看运行状态（Xray、Nginx、域名信息）
 sudo easy_all status
 
-# 查看节点链接与订阅地址
+# 查看节点链接与订阅地址（获取导入客户端的 URL）
 sudo easy_all subscription
 sudo easy_all show
-
-# 重新应用本机配置并同步云端资源状态
-sudo easy_all apply-cloud
 
 # 重新应用本机服务配置
 sudo easy_all apply
 
+# 重新核验/同步云端资源（DNS、Pull Zone、证书）并应用本机配置
+sudo easy_all apply-cloud
+
 # 强制重新签发 Let's Encrypt 源站证书并重载 Nginx
 sudo easy_all renew-cert
 
-# 立即刷新 Bunny 官方回源 IPv4 防火墙白名单
+# 立即从官方刷新 Bunny 回源 IPv4 防火墙白名单
 sudo easy_all refresh-origin-ips
 
 # 切换 TCP 加速算法（bbrv3 / skyline）
