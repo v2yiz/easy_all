@@ -108,8 +108,9 @@ def run_apply(cfg, cf_token, bunny_key, jpath):
     rec_origin = cf_ensure_record(cf_headers, zone_id, cfg['origin'], 'A', cfg['ipv4'])
 
     # 2. Bunny Pull Zone
-    zones = http_req(f"{BUNNY_API}/pullzone?page=1&perPage=1000", bunny_headers) or []
-    match = next((z for z in zones if z['Name'] == cfg['name']), None)
+    res = http_req(f"{BUNNY_API}/pullzone?page=1&perPage=1000", bunny_headers) or []
+    zones = res.get('Items', res) if isinstance(res, dict) else res
+    match = next((z for z in zones if isinstance(z, dict) and z.get('Name') == cfg['name']), None)
     if match:
         pull_id = match['Id']
     else:
@@ -131,14 +132,14 @@ def run_apply(cfg, cf_token, bunny_key, jpath):
 
     # 4. Bunny Hostname, SSL, & Edge Rule
     pull_zone = http_req(f"{BUNNY_API}/pullzone/{pull_id}", bunny_headers, ok=(200, 404))
-    hostnames = [h.get('Value') for h in pull_zone.get('Hostnames', [])]
+    hostnames = [h.get('Value') for h in pull_zone.get('Hostnames', []) if isinstance(h, dict)]
     if cfg['cdn'] not in hostnames:
         http_req(f"{BUNNY_API}/pullzone/{pull_id}/addHostname", bunny_headers, 'POST', {'Hostname': cfg['cdn']}, ok=(200, 201, 204))
     http_req(f"{BUNNY_API}/pullzone/loadFreeCertificate?hostname={cfg['cdn']}", bunny_headers, ok=(200, 204, 400))
     http_req(f"{BUNNY_API}/pullzone/{pull_id}/setForceSSL", bunny_headers, 'POST', {'Hostname': cfg['cdn'], 'ForceSSL': True}, ok=(200, 204))
 
     rule = {
-        'Guid': str(uuid.uuid4()), 'ActionType': 6, 'ActionParameter1': HEADER_KEY,
+        'Guid': '', 'ActionType': 6, 'ActionParameter1': HEADER_KEY,
         'ActionParameter2': cfg['secret'], 'Description': 'easy_all private origin',
         'Enabled': True, 'OrderIndex': 0, 'TriggerMatchingType': 0,
         'Triggers': [{'Type': 0, 'PatternMatches': ['*'], 'PatternMatchingType': 0}],
