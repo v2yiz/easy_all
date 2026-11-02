@@ -1,6 +1,6 @@
 # 前置准备手册
 
-Bunny 模式（菜单 `5`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Bunny 模式（菜单 `4`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
 Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 [Bunny 前置准备与运维](bunny-preparation-guide.md)。
 

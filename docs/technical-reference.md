@@ -123,7 +123,7 @@ Reality 数据链路仍然直连 VPS，不经过 Cloudflare。VPS `8443` 只允�
 
 ## 直连 Mieru
 
-模式 4 使用上游 mieru 的官方服务端 `mita`，不做 TLS 终止、不生成订阅，也不启用 Xray：
+模式 3 使用上游 mieru 的官方服务端 `mita`，不做 TLS 终止、不生成订阅，也不启用 Xray：
 
 ```text
 客户端 --mieru(TCP)--> VPS:端口 mita --加密会话--> 代理出站

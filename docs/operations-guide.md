@@ -489,7 +489,7 @@ sudo easy_all reality-target www.example.com:443  # 直接指定
 
 ## Mieru 直连
 
-模式 4 使用上游 [mieru](https://github.com/enfein/mieru) 的官方服务端 `mita`，不引入证书、Nginx
+模式 3 使用上游 [mieru](https://github.com/enfein/mieru) 的官方服务端 `mita`，不引入证书、Nginx
 或订阅（域名可选，使用 DNS only）：
 
 - 安装器从 GitHub Release 读取最新版本，下载 `mita_<版本>_amd64.deb` 与同目录
