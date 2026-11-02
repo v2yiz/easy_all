@@ -157,12 +157,12 @@ geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 | `easy_all subscription` | 显示每个用户的订阅地址或当前模式节点信息 |
 | `easy_all self-update` | 从 `main` 更新项目代码，不修改应用配置 |
 | `easy_all self-update --dev` | 从 `dev` 更新项目代码，用于验证待发布版本 |
-| `easy_all apply` | 重新应用当前配置 |
+| `easy_all apply` | 重新应用当前配置；Bunny 模式仅同步受管云资源 |
 | `easy_all tcp` | 交互选择 TCP 加速；也可指定 `bbrv3` 或 `skyline` |
 | `easy_all reality-target [域名:端口]` | Reality 模式修改 SNI（伪装目标）并重新应用 |
 | `easy_all renew-cert` | 轮换当前模式证书；Bunny 模式主动检查并续期 Let's Encrypt 证书 |
 | `easy_all update-core` | Reality/Cloudflare/Bunny 更新 Xray，Mieru 更新官方 mita |
-| `easy_all apply-cloud` | Cloudflare 同步 Worker/DNS/规则；Bunny 验证持有 ID 的云资源并应用本机 |
+| `easy_all apply-cloud` | Cloudflare 同步 Worker/DNS/规则；Bunny 幂等同步受管云资源 |
 | `easy_all refresh-origin-ips` | Bunny 模式刷新官方回源 IPv4 防火墙池 |
 | `easy_all update-sub` | 管理订阅、用户和配额 |
 | `easy_all rotate-dynamic-ports` | 刷新直连模式的 NAT 规则（Mieru 使用 `50000-50512` → 内部端口） |

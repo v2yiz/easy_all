@@ -148,17 +148,16 @@ UUID、节点域名或传输路径，也不会重新询问订阅模式。
 - Reality：同步本机系统、Xray、订阅、UFW 和 Fail2ban；自托管订阅时也同步其 Cloudflare
   DNS、Origin CA 与 Strict TLS。
 - Cloudflare：同步本机 Xray、Nginx、订阅、UFW、Fail2ban 和精选 IP 缓存，不修改 Worker。
-- Bunny：核验已有 Bunny 资源所有权，再重建本机 Xray、Nginx、订阅、证书、Fail2ban 和官方
-  回源池防火墙；不改写已保存的 Pull Zone、DNS 或边缘缓存配置。失败时恢复本机文件、证书、
-  Fail2ban 文件与启停状态以及 UFW 快照。
+- Bunny：先分页盘点账户中的 Pull Zone，并复用目标 CDN Hostname 的唯一所有者；按实际
+  `CnameDomain` 幂等同步 DNS、Hostname、证书、ForceSSL 和 Edge Rule。该命令不重建本机
+  Xray、Nginx、订阅、Fail2ban 或防火墙；关键配置不匹配、共享 Zone 所有权不明或存在 DNS
+  冲突时，在首个云端写入前停止。普通 `apply` 与 `apply-cloud` 在 Bunny 模式下行为相同。
 - 所有模式都会在失败时恢复已备份的本机配置。
 
 `apply-cloud` 适用于 Cloudflare 与 Bunny 模式。Cloudflare 模式会在应用本机配置后同步
-DNS、Origin CA、边缘规则和 Worker。Bunny 模式先按 root-only journal 和 generation 校验
-持久事务；没有 pending 时只核验已有资源所有权并重新应用本机，有 pending 时只在可证明
-恢复安全的情况下继续原操作，不会按名称认领或盲目重发。只有运维提示给出具体参数时才使用
-`--claim-pull-zone`、`--retry-certificate` 或 `--retry-mutation`。已成功变更的 Cloudflare
-云资源不会自动回滚，只应在确实需要同步云端配置时使用。
+DNS、Origin CA、边缘规则和 Worker。Bunny 模式与普通 `apply` 相同，使用 root-only v3
+journal 记录每个已创建资源的稳定 ID；后续执行只复用仍匹配的资源。未知旧 journal 不授权
+云端删除。已成功变更的 Cloudflare 云资源不会自动回滚。
 
 配置更新、核心更新和配额统计共用一把写锁；另一个写操作运行时，新操作会立即停止。
 
@@ -170,10 +169,10 @@ DNS、Origin CA、边缘规则和 Worker。Bunny 模式先按 root-only journal 
 | `subscription` | 显示订阅部署状态和每个用户的订阅地址。 |
 | `status` | 显示当前 TCP 加速、协议、服务、端口和订阅状态。 |
 | `self-update [--dev\|--branch <分支>]` | 更新项目代码；默认 `main`，`--dev` 使用 `dev`。 |
-| `apply` | 重新应用当前配置。 |
+| `apply` | 重新应用当前配置；Bunny 模式仅同步受管云资源。 |
 | `tcp [bbrv3\|skyline]` | 选择 TCP 加速；无参数时显示交互菜单，默认 BBRv3。 |
 | `reality-target [域名:端口]` | 修改 Reality SNI（伪装目标）并重新应用，仅 Reality 模式；无参数时交互输入。 |
-| `apply-cloud` | Cloudflare 模式同步本机和云端资源；Bunny 模式恢复可安全续跑的 pending 事务，无 pending 时核验所有权并重新应用本机。 |
+| `apply-cloud` | Cloudflare 模式同步本机和云端资源；Bunny 模式与 `apply` 相同。 |
 | `update-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
 | `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅。 |
 | `refresh-origin-ips` | 立即刷新 Bunny 官方回源 IPv4 池；定时器每六小时自动刷新。 |

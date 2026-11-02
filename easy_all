@@ -17,6 +17,7 @@ while [[ -L "${EASY_ALL_SOURCE}" ]]; do
 done
 readonly EASY_ALL_ROOT="$(cd -- "$(dirname -- "${EASY_ALL_SOURCE}")" >/dev/null 2>&1 && pwd)"
 readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}"
+readonly EASY_ALL_BUNNY_JOURNAL="${BUNNY_JOURNAL:-${BUNNY_RECOVERY_DIR:-/etc/easy_all-bunny}/ownership.json}"
 readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
 readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
@@ -78,14 +79,14 @@ launcher_usage() {
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
-  apply            将已安装代码应用到本机配置
+  apply            应用已安装配置；Bunny 模式仅幂等同步受管云资源
   tcp [bbrv3|skyline]
                    选择 TCP 加速（默认 BBRv3；Skyline 仅用于极高非拥塞随机丢包）
   reality-target [域名:端口]
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
                    立即刷新直连模式的动态端口 NAT 规则（Mieru 为端口范围转发）
-  apply-cloud      应用本机配置并同步云端资源（适用于 CDN 模式）
+  apply-cloud      同步云端资源（Bunny 模式与 apply 相同）
   update-sub       重新选择订阅输出与用户/配额
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   refresh-origin-ips  刷新 Bunny 官方回源 IPv4 防火墙列表
@@ -346,7 +347,11 @@ dispatch_profile_command() {
         [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "bunny-ws" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         (($# == 0)) || launcher_die "apply-cloud 不接受额外参数"
-        apply_cloud_resources
+        if [[ "${mode}" == "bunny-ws" ]]; then
+            apply_easy_all
+        else
+            apply_cloud_resources
+        fi
         ;;
     update-sub)
         [[ "${mode}" != "bunny-ws" ]] || launcher_die "Bunny 仅提供一个 owner 订阅；不支持用户/配额编辑"
@@ -454,6 +459,10 @@ main() {
     else
         if [[ "${command}" == "uninstall" ]]; then
             mode=$(detect_installed_mode allow-bunny-v1-uninstall)
+            if [[ -z "${mode}" && "$#" == 1 && "${1:-}" == "--purge-cloud" \
+                && -f "${EASY_ALL_BUNNY_JOURNAL}" ]]; then
+                mode="bunny-ws"
+            fi
         else
             mode=$(detect_installed_mode)
         fi

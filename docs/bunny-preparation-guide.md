@@ -126,10 +126,10 @@ sudo easy_all status
 sudo easy_all subscription
 sudo easy_all show
 
-# 重新应用本机服务配置
+# 幂等同步受管的 Bunny 与 DNS 资源（不重建本机服务）
 sudo easy_all apply
 
-# 重新核验/同步云端资源（DNS、Pull Zone、证书）并应用本机配置
+# Bunny 模式下与 apply 相同
 sudo easy_all apply-cloud
 
 # 强制重新签发 Let's Encrypt 源站证书并重载 Nginx
@@ -143,7 +143,10 @@ sudo easy_all tcp bbrv3
 ```
 
 开发测试使用现有 `npm run test:bunny` 和 `npm test`，外部命令与云端均使用隔离夹具。
-运行前需准备 Node.js/npm、Python 3、Bash、`jq`、`unzip`、`tar` 和 `sha256sum`（Debian 的 coreutils）。
+运行前需准备 Node.js/npm、Python 3、Python `jsonschema`、Bash、`jq`、`unzip`、`tar`
+和 `sha256sum`（Debian 的 coreutils）。
+旧部署首次执行 Bunny `apply` 或 `uninstall --purge-cloud` 时，会在缺少依赖的情况下自动
+安装 Debian 包 `python3-jsonschema`；`ips` 定时器不依赖该包。
 全新 VM 应先安装测试依赖；缺少 `jq` 等工具导致的下载夹具失败不表示架构或摘要校验失败。
 真实 UFW 回归只能在**专用、可丢弃的 Linux root 测试 VM** 中执行：
 
@@ -152,6 +155,15 @@ sudo env EASY_ALL_DEDICATED_TEST_VM=1 npm run test:bunny:ufw
 ```
 
 该脚本在独立网络、挂载与进程命名空间中运行真实 UFW，并使用配置副本；不得在生产 VPS 或宿主执行。
+
+Root 用户入口回归也在专用 Linux VM 中运行：
+
+```bash
+sudo env EASY_ALL_DEDICATED_TEST_VM=1 npm run test:bunny
+```
+
+该测试使用本地 HTTP 替身和隔离路径；成功卸载阶段只在自己的 mount namespace 中替换
+`systemctl`，不会操作 VM 的真实服务。
 
 ---
 
@@ -167,7 +179,9 @@ sudo easy_all uninstall
 ```bash
 sudo easy_all uninstall --purge-cloud
 ```
-在卸载本机服务的同时，自动调用 Bunny API 与 Cloudflare API 删除安装时创建的 Pull Zone 及相关 DNS 记录。
+在卸载本机服务的同时，按 v3 journal 删除有明确创建归属、且当前状态仍匹配的 Pull Zone、
+Hostname、Edge Rule 与 DNS 记录。复用资源、用户修改过的资源和所有权不明的旧 journal
+会保留；清理失败时本机状态与 journal 也会保留，以便使用同一命令重试。
 
 ---
 

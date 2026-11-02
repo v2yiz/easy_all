@@ -38,6 +38,7 @@ readonly UFW_RULE_COMMENT="${UFW_RULE_COMMENT:-easy_all-managed}"
 readonly UFW_BEFORE_RULES="${UFW_BEFORE_RULES:-/etc/ufw/before.rules}"
 readonly BUNNY_EDGE_IP_FILE="${BUNNY_EDGE_IP_FILE:-${STATE_DIR}/bunny-edge-ips}"
 
+export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${BUNNY_RECOVERY_DIR}/runtime-write.lock"
 EASY_ALL_RUNTIME_LIB_DIR="${SCRIPT_DIR}"
 source "${SCRIPT_DIR}/runtime-core.sh"
 source "${SCRIPT_DIR}/lego-install.sh"
@@ -49,7 +50,17 @@ CDN_PROVIDER=bunny
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y && apt-get install -y --no-install-recommends \
-        curl wget coreutils tar jq nginx openssl ca-certificates ufw python3 fail2ban iptables iproute2 unzip || die "安装系统依赖失败"
+        curl wget coreutils tar jq nginx openssl ca-certificates ufw python3 \
+        python3-jsonschema fail2ban iptables iproute2 unzip || die "安装系统依赖失败"
+}
+
+bunny_ensure_python_jsonschema() {
+    python3 -c 'import jsonschema' >/dev/null 2>&1 && return
+    info "正在安装 Bunny 云端同步所需的 Python JSON Schema 依赖"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y \
+        && apt-get install -y --no-install-recommends python3-jsonschema \
+        || die "安装 python3-jsonschema 失败"
 }
 
 collect_installed_state() {
@@ -58,12 +69,15 @@ collect_installed_state() {
 
 bunny_save_config() {
     install -d -m 0700 "${BUNNY_RECOVERY_DIR}"
-    cat >"${BUNNY_CONFIG}" <<EOF
+    local temp
+    temp=$(mktemp "${BUNNY_CONFIG}.XXXXXX") || die "创建 Bunny 配置暂存文件失败"
+    cat >"${temp}" <<EOF
 {"zone":"${CLOUDFLARE_ZONE}","origin":"${ORIGIN_DOMAIN}","cdn":"${CDN_DOMAIN}",
 "ipv4":"${VPS_PUBLIC_IPV4}","name":"${BUNNY_PULL_NAME}","secret":"${ORIGIN_HEADER_SECRET}",
 "bandwidth_gb":${BUNNY_BANDWIDTH_GB:-500}}
 EOF
-    chmod 0600 "${BUNNY_CONFIG}"
+    chmod 0600 "${temp}"
+    mv -f -- "${temp}" "${BUNNY_CONFIG}"
 }
 
 load_state() {
@@ -76,7 +90,9 @@ load_state() {
 
 save_state() {
     install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
-    cat >"${STATE_FILE}" <<EOF
+    local temp
+    temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX") || die "创建状态暂存文件失败"
+    cat >"${temp}" <<EOF
 STATE_VERSION="2"
 PROTOCOL="bunny-ws"
 CDN_PROVIDER="bunny"
@@ -95,7 +111,8 @@ SCHEDULED_REBOOT_ENABLED="${SCHEDULED_REBOOT_ENABLED:-0}"
 SCHEDULED_REBOOT_HOUR="${SCHEDULED_REBOOT_HOUR:-}"
 SUB_DOWNLOAD_NAME="${SUB_DOWNLOAD_NAME:-EASY_ALL}"
 EOF
-    chmod 0600 "${STATE_FILE}"
+    chmod 0600 "${temp}"
+    mv -f -- "${temp}" "${STATE_FILE}"
 }
 
 bunny_prepare_credentials() {
@@ -237,15 +254,26 @@ EOF
 }
 
 apply_cloud_resources() {
-    bunny_prepare_credentials
+    acquire_runtime_write_lock
+    bunny_ensure_python_jsonschema
     bunny_save_config
-    python3 "${SCRIPT_DIR}/bunny-api.py" apply \
+    if ! python3 "${SCRIPT_DIR}/bunny-api.py" apply \
         --journal "${BUNNY_JOURNAL}" --key-file "${BUNNY_KEY_FILE}" \
-        --cloudflare-token-file "${BUNNY_CLOUDFLARE_TOKEN_FILE}" --config "${BUNNY_CONFIG}"
+        --cloudflare-token-file "${BUNNY_CLOUDFLARE_TOKEN_FILE}" --config "${BUNNY_CONFIG}" \
+        --lock-file "${RUNTIME_WRITE_LOCK_FILE}" --lock-fd 9; then
+        release_runtime_write_lock
+        return 1
+    fi
+    release_runtime_write_lock
 }
 
 apply_easy_all() {
-    apply_cloud_resources "$@"
+    require_root
+    acquire_runtime_write_lock
+    load_state
+    bunny_prepare_credentials
+    apply_cloud_resources
+    release_runtime_write_lock
     info "云端资源配置完成"
 }
 
@@ -268,6 +296,7 @@ show_status() {
 
 install_all() {
     require_root
+    acquire_runtime_write_lock
     require_systemd
     check_platform arm64
     install_packages
@@ -293,18 +322,34 @@ install_all() {
         || die "启用证书续期定时器失败；修复后重新运行 sudo easy_all install"
     save_state
     python3 "${SCRIPT_DIR}/bunny-api.py" mark-committed --journal "${BUNNY_JOURNAL}" >/dev/null 2>&1 || true
+    release_runtime_write_lock
     show_status
     show_subscription
 }
 
 uninstall_all() {
-    local purge_cloud=${1:-0}
+    local purge_cloud=0
+    if [[ $# -gt 1 || ( $# -eq 1 && "${1:-}" != "--purge-cloud" ) ]]; then
+        die "用法：easy_all uninstall [--purge-cloud]"
+    fi
+    if [[ "${1:-}" == "--purge-cloud" ]]; then
+        purge_cloud=1
+    fi
     require_root
-    bunny_remove_local
+    acquire_runtime_write_lock
     if [[ "${purge_cloud}" == "1" ]]; then
-        python3 "${SCRIPT_DIR}/bunny-api.py" purge \
+        bunny_ensure_python_jsonschema
+        if ! python3 "${SCRIPT_DIR}/bunny-api.py" purge \
             --journal "${BUNNY_JOURNAL}" --key-file "${BUNNY_KEY_FILE}" \
-            --cloudflare-token-file "${BUNNY_CLOUDFLARE_TOKEN_FILE}" || warn "清理云端资源失败"
+            --cloudflare-token-file "${BUNNY_CLOUDFLARE_TOKEN_FILE}" \
+            --lock-file "${RUNTIME_WRITE_LOCK_FILE}" --lock-fd 9; then
+            release_runtime_write_lock
+            die "云端资源未清理完成；本机安装和 journal 已保留，可重试 easy_all uninstall --purge-cloud"
+        fi
+    fi
+    bunny_remove_local
+    release_runtime_write_lock
+    if [[ "${purge_cloud}" == "1" ]]; then
         info "已卸载本机服务并清理云端 Pull Zone 与 DNS 记录"
     else
         info "已卸载本机服务；云端配置及恢复凭据保留在 ${BUNNY_RECOVERY_DIR}"
