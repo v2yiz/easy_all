@@ -119,8 +119,9 @@ bunny_validate_edge() {
 bunny_remove_local() {
     systemctl disable --now "${XRAY_SERVICE}" easy_all-bunny-ips.timer easy_all-cert-renew.timer >/dev/null 2>&1 || true
     systemctl stop "${XRAY_SERVICE}" easy_all-bunny-ips.service easy_all-cert-renew.service >/dev/null 2>&1 || true
-    rm -f "${XRAY_SERVICE_FILE}" "${BUNNY_REFRESH_SERVICE_FILE}" "${BUNNY_REFRESH_TIMER_FILE}" "${CERT_RENEW_SERVICE_FILE}" "${CERT_RENEW_TIMER_FILE}"
+    rm -f "${XRAY_SERVICE_FILE}" "${BUNNY_REFRESH_SERVICE_FILE}" "${BUNNY_REFRESH_TIMER_FILE}" "${CERT_RENEW_SERVICE_FILE}" "${CERT_RENEW_TIMER_FILE}" "${NGINX_CONFIG}"
     systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reload nginx >/dev/null 2>&1 || true
     rm -rf "${STATE_DIR}" "${WEB_ROOT}"
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
         sed -i.bak '/# easy_all-bunny-start/,/# easy_all-bunny-end/d' "${UFW_BEFORE_RULES}" 2>/dev/null || true

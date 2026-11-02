@@ -225,11 +225,11 @@ EOF
 }
 EOF
     } >"${RUNTIME_TMP}/nginx.conf"
-    [[ ! -e "${NGINX_DEFAULT_SITE}" ]] || mv "${NGINX_DEFAULT_SITE}" "${BACKUP_DIR}/nginx-default"
+    rm -f -- "${NGINX_DEFAULT_SITE}"
     install -m 0600 "${RUNTIME_TMP}/nginx.conf" "${NGINX_CONFIG}"
     nginx -t >/dev/null || die "Nginx 配置校验失败"
     systemctl enable --now nginx >/dev/null 2>&1 || true
-    systemctl reload nginx >/dev/null 2>&1 || true
+    systemctl restart nginx >/dev/null 2>&1 || true
 }
 
 apply_cloud_resources() {
@@ -264,6 +264,7 @@ install_all() {
     require_systemd
     check_platform
     install_packages
+    install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
     bunny_collect_inputs
     bunny_save_config
     apply_cloud_resources
