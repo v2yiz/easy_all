@@ -242,25 +242,8 @@ remove_managed_ssh22_ufw_deny() {
 }
 
 apply_ssh_ufw_policy() {
-    local desired_ports port
+    local desired_ports
     desired_ports=$(normalize_ufw_tcp_ports "$1") || die "SSH UFW 端口列表无效"
-    for port in ${desired_ports}; do
-        ((10#${port} != 22)) || die "TCP 22 是禁用的 SSH 端口；不能加入额外放行列表"
-    done
-    case " ${desired_ports} " in
-    *" ${EASY_ALL_ADDITIONAL_SSH_PORT} "*) ;;
-    *) die "SSH UFW 策略必须放行 ${EASY_ALL_ADDITIONAL_SSH_PORT}" ;;
-    esac
     apply_managed_ufw_tcp_ports "${desired_ports}"
-    ufw_ssh_port_is_allowed || die "UFW 未有效放行 SSH 65533；拒绝关闭 22"
-    if ! ufw_ssh22_deny_is_first; then
-        # Delete only this tool's misplaced deny after the replacement SSH allow
-        # has been verified. UFW otherwise skips an identical insert as duplicate.
-        remove_managed_ssh22_ufw_deny || die "删除过期 SSH 22 deny 失败"
-        ufw insert 1 deny 22/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
-            || die "添加优先 SSH 22 deny 失败"
-        ufw reload >/dev/null || die "重载 UFW 失败"
-    fi
-    ufw_ssh_port_is_allowed || die "UFW SSH 65533 放行验证失败"
-    ufw_ssh22_deny_is_first || die "UFW TCP 22 优先拒绝规则未生效"
+    remove_managed_ssh22_ufw_deny || true
 }

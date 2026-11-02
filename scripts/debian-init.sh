@@ -154,10 +154,6 @@ validate_collected_inputs() {
   validate_port "$CURRENT_PORT"
   validate_port "$FINAL_PORT"
   EXTRA_TCP_PORTS="$(normalize_port_list "${EXTRA_TCP_PORTS:-}")"
-  local port
-  for port in ${EXTRA_TCP_PORTS}; do
-    ((10#${port} != 22)) || die "TCP 22 是禁用端口，不能加入 UFW 额外放行列表"
-  done
 }
 
 validate_linux_user() {
@@ -488,9 +484,6 @@ source "$firewall_module"
 
 if [[ -n "$extra_tcp_ports" ]]; then
   extra_tcp_ports=$(normalize_ufw_tcp_ports "$extra_tcp_ports") || die "额外 TCP 端口列表无效"
-  for port in $extra_tcp_ports; do
-    ((10#${port} != 22)) || die "TCP 22 是禁用端口，不能加入 UFW 额外放行列表"
-  done
 fi
 
 validate_normal_user() {

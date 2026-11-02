@@ -13,6 +13,7 @@ bunny_refresh_firewall() {
     for port in ${SSH_PORTS}; do
         ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null || true
     done
+    remove_managed_ssh22_ufw_deny || true
     if [[ -n "${EASY_ALL_ADDITIONAL_SSH_PORT:-}" ]]; then
         apply_ssh_ufw_policy "${EASY_ALL_ADDITIONAL_SSH_PORT}" || true
     fi
