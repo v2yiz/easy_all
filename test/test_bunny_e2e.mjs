@@ -14,6 +14,28 @@ function run(args = []) {
 }
 
 try {
+    // 已保存安装状态后，订阅输出必须能独立运行，并使用 CDN 域名。
+    const stateFile = join(tempDir, 'state.env');
+    writeFileSync(stateFile, [
+        'PROTOCOL="bunny-ws"',
+        'CDN_DOMAIN="cdn.example.com"',
+        'ORIGIN_DOMAIN="origin.example.com"',
+        'OWNER_TOKEN="test-owner-token"',
+        '',
+    ].join('\n'));
+    const subscriptionRes = spawnSync('bash', ['-c',
+        'source "$1"; show_subscription', 'bunny-subscription-test',
+        join(root, 'profiles/ws-bunny.sh'),
+    ], {
+        encoding: 'utf8',
+        timeout: 10000,
+        env: { ...process.env, STATE_DIR: tempDir, STATE_FILE: stateFile },
+    });
+    assert.equal(subscriptionRes.status, 0, subscriptionRes.stderr);
+    assert.equal(subscriptionRes.stdout,
+        '通用订阅 (Base64) (owner): https://cdn.example.com/subscribe?token=test-owner-token\n' +
+        'Mihomo / Clash   (owner): https://cdn.example.com/subscribe?token=test-owner-token&flag=clash\n');
+
     // 1. 帮助命令与入口（核心路径）
     const helpRes = run(['--help']);
     assert.equal(helpRes.status, 0);

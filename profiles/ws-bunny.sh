@@ -249,7 +249,10 @@ apply_easy_all() {
 
 show_subscription() {
     load_state
-    print_subscription_credentials "${OWNER_TOKEN}"
+    printf '通用订阅 (Base64) (owner): https://%s/subscribe?token=%s\n' \
+        "${CDN_DOMAIN}" "${OWNER_TOKEN}"
+    printf 'Mihomo / Clash   (owner): https://%s/subscribe?token=%s&flag=clash\n' \
+        "${CDN_DOMAIN}" "${OWNER_TOKEN}"
 }
 
 show_status() {
