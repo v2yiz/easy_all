@@ -1,8 +1,12 @@
 # 运维指南
 
-Bunny 模式（菜单 `5`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Bunny 模式（菜单 `4`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
 Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 [Bunny 前置准备与运维](bunny-preparation-guide.md)。
+
+Bunny 支持 Debian 12/13 amd64/arm64，不安装 XanMod/Skyline，arm64 使用原有内核并暂不支持
+`easy_all tcp` 内核加速；其他模式仅支持 amd64。Bunny 保留现有 SSH 监听，只有非 Bunny 模式
+会强制 SSH 收敛到 TCP `65533`。
 
 
 本文面向已经完成安装的用户。首次安装请从[项目首页](../README.md)开始。
@@ -24,7 +28,8 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
-安装或 `apply` 会将 SSH 收敛到仅监听 TCP `65533`，并在 UFW 优先阻断 `22`。执行前先在
+Bunny 之外的模式在安装或 `apply` 时会将 SSH 收敛到仅监听 TCP `65533`，并在 UFW 优先阻断
+`22`。执行前先在
 云安全组放行 `65533`，保留当前会话，另开终端使用 `ssh -p 65533 用户@服务器` 验证。
 监听冲突、检查命令与恢复规则见[技术参考](technical-reference.md)。
 
@@ -190,6 +195,9 @@ DNS、Origin CA、边缘规则和 Worker。Bunny 模式先按 root-only journal 
 sudo easy_all tcp skyline
 sudo easy_all tcp bbrv3
 ```
+
+Bunny 安装不自动安装 XanMod/Skyline。amd64 Bunny 需要时可按上述命令启用或切换内核加速；
+arm64 Bunny 使用原有内核，暂不支持 `easy_all tcp`。
 
 **只有在丢包率极高且确认为非拥塞随机丢包时才选择 Skyline Speeder。** 拥塞、队列溢出造成的
 丢包不适用，普通线路继续使用 BBRv3。默认首段冗余会增加出站流量；计费线路需评估成本。

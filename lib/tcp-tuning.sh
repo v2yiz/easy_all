@@ -25,6 +25,11 @@ readonly SKYLINE_SOURCE_DIR="${STATE_DIR}/skyline-speeder"
 readonly SKYLINE_BTF_FILE="${SKYLINE_BTF_FILE_OVERRIDE:-/sys/kernel/btf/vmlinux}"
 readonly SKYLINE_CGROUP_FILE="${SKYLINE_CGROUP_FILE_OVERRIDE:-/sys/fs/cgroup/cgroup.controllers}"
 
+require_amd64_tcp_acceleration() {
+    [[ "$(dpkg --print-architecture)" == amd64 ]] \
+        || die "TCP 内核加速目前仅支持 amd64；当前架构请保留原有内核"
+}
+
 normalize_tcp_acceleration() {
     case "${1:-bbrv3}" in
     1 | bbrv3) printf 'bbrv3\n' ;;
@@ -143,6 +148,7 @@ remove_skyline_boot_setup() {
 resume_skyline_after_reboot() {
     (($# == 0)) || die "tcp-resume 不接受参数"
     require_root
+    require_amd64_tcp_acceleration
     try_acquire_runtime_write_lock 60 \
         || die "Skyline 开机任务等待运行时锁 60 秒超时；已保留回退配置和开机任务，请在其他任务结束后执行 sudo easy_all tcp skyline 重试"
     collect_installed_state
@@ -157,6 +163,7 @@ resume_skyline_after_reboot() {
 }
 
 configure_tcp_acceleration() {
+    require_amd64_tcp_acceleration
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local glibc artifact="${RUNTIME_TMP}/skyline-speeder-${SKYLINE_VERSION}.tar.gz"
     local installed_commit="" installed_version
@@ -267,6 +274,7 @@ show_tcp_acceleration_status() {
 update_tcp_acceleration() {
     (($# <= 1)) || die "用法：easy_all tcp [bbrv3|skyline]"
     require_root
+    require_amd64_tcp_acceleration
     acquire_runtime_write_lock
     collect_installed_state
     if (($# == 0)); then

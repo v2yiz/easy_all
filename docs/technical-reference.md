@@ -1,28 +1,28 @@
 # 技术参考
 
-Bunny 模式（菜单 `5`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Bunny 模式（菜单 `4`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
 Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 [Bunny 前置准备与运维](bunny-preparation-guide.md)。
-安装与 `apply` 的边缘验收除 WebSocket `101` 外，还会用临时 loopback SOCKS inbound 和真实
-Xray VLESS WS/TLS outbound 请求 `https://www.gstatic.com/generate_204`；只有 HTTP `204`
-才表示 Bunny 域名、TLS、WS、回源头和 Xray 数据面组合可用。临时客户端配置只放在私有临时
-目录，UUID、订阅 owner Token 与回源密钥不进入外部命令参数。
+安装与 `apply` 对 Bunny 边缘只检查 CDN 域名 HTTP 是否可达，并不自动证明生产 WebSocket
+`101` 或 VLESS `204` 数据面可用。本地 WS `101` 与完整的 SOCKS -> VLESS/WS/TLS ->
+Nginx -> Xray -> 公网 HTTPS 链路属于独立真实数据面测试，不能由安装期边缘可达性结果替代。
 
 
 ## 共同边界
 
 - 只支持 IPv4。
-- 服务器为 Debian 12/13、amd64、systemd、非容器环境。
+- 服务器为 Debian 12/13、systemd、非容器环境；Bunny 支持 amd64/arm64，其他模式仅支持 amd64。
 - 同一台 VPS 只能安装一种模式，且应由 easy_all 独占 Xray、Nginx 和相关端口。
-- 所有模式默认安装 XanMod LTS 内核并使用 `fq + BBRv3`，可选 Skyline Speeder；均关闭
-  `tcp_slow_start_after_idle`。
+- 非 Bunny 模式默认安装 XanMod LTS 并使用 `fq + BBRv3`，可选 Skyline Speeder；Bunny 不安装
+  XanMod/Skyline，arm64 Bunny 使用原有内核且不支持 `easy_all tcp` 内核加速。
 - Xray 阻断私网、链路本地、回环、组播和保留地址，并拒绝境外 UDP/443，使 QUIC 回退 TCP。
 - Mihomo 节点固定使用 `ip-version: ipv4`；普通出站使用 `ForceIPv4` + `UseIPv4`。
 
 脚本全局禁用 IPv6。Reality 域名若发布 AAAA，安装或 `apply` 会停止；A 记录必须指向当前 VPS
 公网 IPv4。
 
-所有模式成功安装或应用后，SSH 仅监听 TCP `65533`。UFW 先添加并验证 `65533` 放行，再将
+仅非 Bunny 模式成功安装或应用后，SSH 收敛到 TCP `65533`。Bunny 保留现有 SSH 监听及检测到
+的全部端口。非 Bunny 的 UFW 先添加并验证 `65533` 放行，再将
 本工具的 TCP `22` deny 放到首位，优先于已有的 OpenSSH/22 allow；重复应用不累积 deny。
 Fail2ban 的 SSH jail 端口固定为 `65533`。旧连接中的端口仅用于诊断，不进入最终放行集合。
 订阅不按 SSH 端口或进程名强制直连；
@@ -55,7 +55,7 @@ ssh -p 65533 用户@服务器
 ```
 
 有效 `Port` 条目可能包含管理员配置的值；最终以有效 `ListenAddress` 与实际监听端点为准。
-macOS 的 `npm run test:ssh` 验证隔离行为；真实 Debian 的 sshd/systemd/socket/UFW 与外网
+macOS 的 `npm test` 验证隔离行为；真实 Debian 的 sshd/systemd/socket/UFW 与外网
 密钥登录仍需部署环境验收。
 
 订阅先在暂存目录完整渲染、校验，再通过同目录候选文件逐文件原子替换；正常回滚使用相同发布流程。
@@ -456,7 +456,7 @@ Bunny 定向测试使用已安装 jsonschema 的 Python，可在 macOS Bash 3.2 
 `-checkhost` 仅在测试边界转换，真实 TLS/CA/WS 仍需 Debian 部署验收。
 macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm run test:worker`
 验证 Worker 构建与离线逻辑；该命令需要 Node.js 18+ 和 Bash，未配置 Mihomo 时跳过真实内核检查。
-`npm run test:subscription` 使用 Node、Bash、jq 和 OpenSSL，在隔离 fixture 中验证真实 Shell
+`npm test` 使用 Node、Bash、jq 和 OpenSSL，在隔离 fixture 中验证真实 Shell
 模板生成、njs handler、Worker 算法对照、截断错误及新装/配额/更新恢复；不安装宿主依赖。
 这些测试使用伪请求对象，真实 Debian 12/13 包激活、alias+njs 权限、HTTP HEAD/Content-Length
 和日志隔离仍需要完整 OS 隔离环境的 Nginx 集成验证，不能把本机模拟结果当成真实 HTTP 通过。

@@ -6,7 +6,6 @@ readonly LEGO_RELEASE_NAME="${LEGO_VERSION#v}"
 readonly LEGO_RELEASE_BASE="https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}"
 # Release asset names are not uniform: the archive keeps the leading "v",
 # the checksums file does not.
-readonly LEGO_ARCHIVE="lego_${LEGO_VERSION}_linux_amd64.tar.gz"
 readonly LEGO_CHECKSUMS="lego_${LEGO_RELEASE_NAME}_checksums.txt"
 readonly LEGO_TIMEOUT="15m"
 : "${LEGO_DIR:=/etc/easy_all/acme}"
@@ -18,18 +17,23 @@ readonly LEGO_TIMEOUT="15m"
 : "${CERT_RENEW_TIMER_FILE:=/etc/systemd/system/${CERT_RENEW_TIMER}}"
 
 download_lego() {
-    local archive checksums dir expected actual
+    local archive checksums dir expected actual architecture asset
+    architecture=$(dpkg --print-architecture) || die "无法识别 lego 下载架构"
+    case "${architecture}" in
+    amd64|arm64) asset="lego_${LEGO_VERSION}_linux_${architecture}.tar.gz" ;;
+    *) die "lego 下载不支持系统架构 ${architecture}" ;;
+    esac
     dir=$(make_temp_dir)
-    archive="${dir}/${LEGO_ARCHIVE}"
+    archive="${dir}/${asset}"
     checksums="${dir}/${LEGO_CHECKSUMS}"
     info "正在下载 lego ${LEGO_VERSION}（Let's Encrypt 客户端）"
-    download_https_file "${LEGO_RELEASE_BASE}/${LEGO_ARCHIVE}" "${archive}" \
+    download_https_file "${LEGO_RELEASE_BASE}/${asset}" "${archive}" \
         " lego ${LEGO_VERSION}"
     download_https_file "${LEGO_RELEASE_BASE}/${LEGO_CHECKSUMS}" "${checksums}" \
         " lego 校验文件"
-    expected=$(awk -v name="${LEGO_ARCHIVE}" '$2 == name {print tolower($1)}' "${checksums}")
+    expected=$(awk -v name="${asset}" '$2 == name {print tolower($1)}' "${checksums}")
     [[ "${expected}" =~ ^[0-9a-f]{64}$ ]] \
-        || die "lego 校验文件未包含 ${LEGO_ARCHIVE} 的 SHA256"
+        || die "lego 校验文件未包含 ${asset} 的 SHA256"
     actual=$(sha256sum "${archive}" | awk '{print $1}')
     [[ "${expected}" == "${actual}" ]] \
         || die "lego SHA256 校验失败：期望 ${expected}，实际 ${actual}"

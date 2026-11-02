@@ -32,8 +32,9 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 在运行安装脚本前，需准备以下内容：
 
 ### 2.1 专用 VPS 与系统环境
-- **系统要求**：Debian 12 / 13 amd64 纯净系统，仅支持 IPv4。
+- **系统要求**：Debian 12 / 13 amd64 或 arm64 纯净系统，须由 systemd 管理且非容器，仅支持 IPv4。其他模式仍只支持 amd64。
 - **端口放行**：云厂商安全组放行 TCP `443` 及当前 SSH 端口。
+- **SSH 与内核**：Bunny 保留现有 SSH 监听；刷新回源池也保留自定义及多个 SSH 端口。不能可靠检测监听或已有第三方阻断规则时会报错，保留旧放行规则。Bunny 不安装 XanMod/Skyline，ARM64 使用原有内核，暂不支持 `easy_all tcp` 内核加速命令。
 
 ### 2.2 Bunny 账户与 API Key
 1. 登录 [Bunny Dashboard](https://dash.bunny.net/)。
@@ -109,7 +110,7 @@ Cloudflare DNS Token，粘贴后按回车键；输入过程不会显示任何字
    - 配置 Nginx 443 端口虚拟主机：使用 Let's Encrypt 证书，校验请求头 `X-Easy-All-Origin-Key`，反代 WebSocket 到 Xray，并提供 `/subscribe?token=...` 订阅端点。
 4. **安全与自动化**：
    - 拉取 Bunny 官方边缘回源 IP 网段，在 UFW 防火墙配置入站限制规则（仅放行 Bunny 回源节点访问 443）。
-   - 注册 systemd 证书自动续期定时器（`easy_all-cert-renew.timer`）与回源 IP 白名单自动刷新定时器（`easy_all-bunny-ips.timer`）。
+   - 本机与订阅验收成功后，安装会尝试检查 CDN 域名 HTTP 可达性并提示结果；不可达仍继续本地安装，随后注册 `easy_all` 命令并启用 systemd 证书自动续期定时器（`easy_all-cert-renew.timer`）与回源 IP 白名单自动刷新定时器（`easy_all-bunny-ips.timer`），最后保存安装状态。边缘 HTTP 可达不代表生产 WebSocket `101` 或 VLESS 数据面已经验收。
 
 ---
 
@@ -137,9 +138,20 @@ sudo easy_all renew-cert
 # 立即从官方刷新 Bunny 回源 IPv4 防火墙白名单
 sudo easy_all refresh-origin-ips
 
-# 切换 TCP 加速算法（bbrv3 / skyline）
+# 切换 TCP 加速算法（仅 amd64；ARM64 保留原有内核）
 sudo easy_all tcp bbrv3
 ```
+
+开发测试使用现有 `npm run test:bunny` 和 `npm test`，外部命令与云端均使用隔离夹具。
+运行前需准备 Node.js/npm、Python 3、Bash、`jq`、`unzip`、`tar` 和 `sha256sum`（Debian 的 coreutils）。
+全新 VM 应先安装测试依赖；缺少 `jq` 等工具导致的下载夹具失败不表示架构或摘要校验失败。
+真实 UFW 回归只能在**专用、可丢弃的 Linux root 测试 VM** 中执行：
+
+```bash
+sudo env EASY_ALL_DEDICATED_TEST_VM=1 npm run test:bunny:ufw
+```
+
+该脚本在独立网络、挂载与进程命名空间中运行真实 UFW，并使用配置副本；不得在生产 VPS 或宿主执行。
 
 ---
 

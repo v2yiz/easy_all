@@ -1,8 +1,11 @@
 # 客户端使用指南
 
-Bunny 模式（菜单 `5`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Bunny 模式（菜单 `4`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
 Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 [Bunny 前置准备与运维](bunny-preparation-guide.md)。
+
+Bunny 支持 Debian 12/13 amd64/arm64，不安装 XanMod/Skyline，arm64 使用原有内核；只有非
+Bunny 模式会强制 SSH 收敛到 TCP `65533`，Bunny 保留现有 SSH 监听。
 
 
 easy_all 生成标准 Mihomo（Clash Meta）订阅。安装完成后运行：

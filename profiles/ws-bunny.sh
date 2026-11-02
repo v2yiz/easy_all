@@ -49,7 +49,7 @@ CDN_PROVIDER=bunny
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y && apt-get install -y --no-install-recommends \
-        curl jq nginx openssl ca-certificates ufw python3 fail2ban iptables unzip || die "安装系统依赖失败"
+        curl wget coreutils tar jq nginx openssl ca-certificates ufw python3 fail2ban iptables iproute2 unzip || die "安装系统依赖失败"
 }
 
 collect_installed_state() {
@@ -183,10 +183,12 @@ write_xray_config() {
 "inbounds":[{"tag":"bunny-ws","listen":"127.0.0.1","port":10086,"protocol":"vless",
 "settings":{"clients":[{"id":"${VLESS_UUID}"}],"decryption":"none"},
 "streamSettings":{"network":"ws","security":"none","wsSettings":{"path":"${WEBSOCKET_PATH}"}}}],
-"outbounds":[{"protocol":"freedom","settings":{"domainStrategy":"UseIPv4"}}]}
+"outbounds":$(xray_direct_outbounds_json),
+"routing":$(xray_direct_routing_json)}
 EOF
     chmod 0600 "${XRAY_CONFIG}"
-    "${XRAY_BIN}" run -test -config "${XRAY_CONFIG}" >/dev/null 2>&1 || true
+    "${XRAY_BIN}" run -test -config "${XRAY_CONFIG}" >/dev/null 2>&1 \
+        || die "Xray 配置校验失败"
 }
 
 write_nginx_config() {
@@ -267,7 +269,7 @@ show_status() {
 install_all() {
     require_root
     require_systemd
-    check_platform
+    check_platform arm64
     install_packages
     install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
     bunny_collect_inputs
@@ -280,12 +282,16 @@ install_all() {
     write_subscriptions
     write_nginx_config
     bunny_refresh_firewall
-    bunny_install_ip_timer
-    install_certificate_renewal_timer
-    save_state
     validate_protocol_runtime
     validate_subscription_runtime
     bunny_validate_edge
+    register_easy_all_command \
+        || die "注册 easy_all 命令失败；修复后重新运行 sudo easy_all install"
+    bunny_install_ip_timer \
+        || die "启用 Bunny 回源定时器失败；修复后重新运行 sudo easy_all install"
+    install_certificate_renewal_timer \
+        || die "启用证书续期定时器失败；修复后重新运行 sudo easy_all install"
+    save_state
     python3 "${SCRIPT_DIR}/bunny-api.py" mark-committed --journal "${BUNNY_JOURNAL}" >/dev/null 2>&1 || true
     show_status
     show_subscription

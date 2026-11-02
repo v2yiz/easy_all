@@ -2,7 +2,7 @@
 
 当前源码版本：[1.9.0](CHANGELOG.md#190-更新说明2026-11-02)。
 
-`easy_all` 是面向全新 Debian 12/13 amd64 VPS 的单节点交互安装器。它统一配置 Xray、Nginx、
+`easy_all` 是面向全新 Debian 12/13 VPS 的单节点交互安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认 XanMod BBRv3，可选 Skyline Speeder）。
 
 只支持 IPv4。同一台 VPS 只能安装一种模式，并应作为不承载其他业务的专用服务器。
@@ -74,13 +74,15 @@ Reality/Cloudflare 的完整步骤见[前置准备手册](docs/preparation-guide
 ## 安装要求
 
 - Debian 12 或 13；
-- amd64/x86_64/x64；
+- amd64/x86_64/x64；Bunny 模式另支持 arm64/aarch64；
 - 公网 IPv4；
 - systemd 环境，不能是 Docker、LXC 等容器；
 - 当前 SSH 登录方式和服务商 Console/VNC 均可用；
 - 没有其他 Xray、Nginx 或代理面板占用端口。
 
-安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务。建议先创建 VPS 快照，并保留当前
+Reality/Cloudflare/Mieru 安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务。
+Bunny 保留当前 SSH 监听，不安装 XanMod/Skyline；ARM64 使用原有内核，`easy_all tcp` 暂不支持 ARM64。
+建议先创建 VPS 快照，并保留当前
 SSH 会话，直到重启后确认新会话可以登录。服务商的安全组或云防火墙还需自行放行当前 SSH 端口
 以及业务所需的 TCP `443`（Mieru 为 TCP `50000-50512`）。Reality 使用动态端口时，还需放行 TCP `10000-62703`；VPS 安装和
 `apply` 会立即加载整段 NAT，重启后由 UFW 持久化规则和 `@reboot` 刷新任务恢复。
@@ -212,9 +214,9 @@ sudo easy_all apply-cloud
 
 ## 安全边界
 
-- 所有模式成功安装或应用后，SSH 仅监听 TCP `65533`，UFW 优先阻断 TCP `22`。
-- 先在云安全组放行 `65533`，以后使用 `ssh -p 65533 用户@服务器`；保留当前会话直到新连接验证成功。
-- UFW 默认拒绝其他入站和转发流量；Fail2ban 仅保护 SSH `65533`。[监听冲突和恢复规则](docs/technical-reference.md)见技术参考。
+- Reality/Cloudflare/Mieru 成功安装或应用后，SSH 仅监听 TCP `65533`。先在云安全组放行 `65533`，以后使用 `ssh -p 65533 用户@服务器`；保留当前会话直到新连接验证成功。
+- Bunny 保留现有 SSH 监听及检测到的全部 SSH 端口；探测失败或前置第三方阻断规则使放行无效时停止刷新并保留旧放行规则，不擅自删除第三方规则。
+- UFW 默认拒绝其他入站流量；Reality/Cloudflare/Mieru 的 Fail2ban 保护 SSH `65533`。[监听冲突和恢复规则](docs/technical-reference.md)见技术参考。
 - Xray 阻断私网和云元数据地址，并让境外 QUIC 回退到 TCP。
 - Cloudflare XHTTP 实时回源，不缓存隧道业务数据，也不承诺固定免费流量。
 - 默认卸载只清理本机；`--purge-cloud` 仅删除所有权和值均匹配的 easy_all 云资源。

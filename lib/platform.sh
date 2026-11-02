@@ -16,7 +16,10 @@ check_platform() {
     [[ "${ID:-}" == "debian" ]] || die "仅支持 Debian"
     [[ "${VERSION_ID:-}" =~ ^(12|13)$ ]] || die "仅支持 Debian 12/13"
     [[ -n "${VERSION_CODENAME:-}" ]] || die "无法识别 Debian 发行版代号"
-    [[ "$(dpkg --print-architecture)" == "amd64" ]] || die "仅支持 amd64"
+    local architecture
+    architecture=$(dpkg --print-architecture) || die "无法识别系统架构"
+    [[ "${architecture}" == "amd64" || ( "${1:-}" == "arm64" && "${architecture}" == "arm64" ) ]] \
+        || die "不支持系统架构 ${architecture}（允许 amd64${1:+、$1}）"
     ! systemd-detect-virt --container >/dev/null 2>&1 \
         || die "容器不能执行内核与防火墙初始化"
 }
@@ -226,18 +229,33 @@ append_ssh_port() {
 }
 
 detect_ssh_ports() {
-    local current_port sshd_bin config
+    local strict=${1:-} current_port sshd_bin config output="" actual="" effective=""
     SSH_PORTS=""
+    sshd_bin=$(command -v sshd 2>/dev/null || true)
+    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    if [[ -n "${sshd_bin}" ]]; then
+        output=$("${sshd_bin}" -T 2>/dev/null) || {
+            [[ "${strict}" != strict ]] || die "无法读取有效 SSH 配置；保留现有防火墙"
+        }
+        effective=$(awk '$1 == "listenaddress" && $2 !~ /\[/ {print $2}' <<<"${output}")
+    fi
+    actual=$(ssh_actual_listeners sshd) || {
+        [[ "${strict}" != strict ]] || die "无法读取实际 SSH 监听；保留现有防火墙"
+    }
+    if [[ "${strict}" == strict && ( -z "${effective}" || -z "${actual}" ) ]]; then
+        die "无法确定有效 IPv4 SSH 监听集合；保留现有防火墙"
+    fi
+    for current_port in ${effective} ${actual}; do
+        append_ssh_port "${current_port##*:}"
+    done
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
         read -r _ _ _ current_port <<<"${SSH_CONNECTION}"
         append_ssh_port "${current_port}"
     fi
-    sshd_bin=$(command -v sshd 2>/dev/null || true)
-    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
-    if [[ -n "${sshd_bin}" ]]; then
+    if [[ -n "${output}" ]]; then
         while read -r current_port; do
             append_ssh_port "${current_port}"
-        done < <("${sshd_bin}" -T 2>/dev/null | awk '$1 == "port" {print $2}')
+        done < <(awk '$1 == "port" {print $2}' <<<"${output}")
     fi
     for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
         [[ -f "${config}" ]] || continue
@@ -248,7 +266,10 @@ detect_ssh_ports() {
             tolower($1) == "port" {print $2}
         ' "${config}")
     done
-    [[ -n "${SSH_PORTS}" ]] || SSH_PORTS="22"
+    if [[ -z "${SSH_PORTS}" ]]; then
+        [[ "${strict}" != strict ]] || die "未检测到有效 SSH 端口；保留现有防火墙"
+        SSH_PORTS="22"
+    fi
 }
 
 # sshd -T may retain Port entries alongside explicit ListenAddress endpoints.
@@ -264,7 +285,12 @@ ssh_effective_listeners() {
 ssh_actual_listeners() {
     local output
     output=$(ss -H -ltnp 2>/dev/null) || return 1
-    awk '/users:\(\("(sshd|systemd)"/ && $4 !~ /^\[/ {print $4}' <<<"${output}" | sort -u
+    awk -v owner="${1:-}" '
+        /users:\(\("(sshd|systemd)"/ && $4 !~ /^\[/ {
+            if (owner == "sshd" && $0 !~ /users:.*\("sshd"/) next
+            print $4
+        }
+    ' <<<"${output}" | sort -u
 }
 
 wait_for_ssh_listeners() {

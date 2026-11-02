@@ -8,6 +8,7 @@
     "test:cli": "node test/test_cli_e2e.mjs",
     "test:worker": "node test/test_worker_e2e.mjs",
     "test:bunny": "node test/test_bunny_e2e.mjs",
+    "test:bunny:ufw": "bash test/test_bunny_ufw_vm.sh",
     "build:worker": "node scripts/build-worker.mjs"
   }
 }

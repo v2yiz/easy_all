@@ -6,17 +6,13 @@ bunny_refresh_firewall() {
     curl -4fsS --proto '=https' -H 'Accept: application/json' --connect-timeout 10 --max-time 30 \
         https://api.bunny.net/system/edgeserverlist -o "${response}" || die 'Bunny 回源池获取失败'
     python3 "${SCRIPT_DIR}/bunny-api.py" ips --input "${response}" >"${addresses}" || die 'Bunny 回源池校验失败'
-    disable_ufw_ipv6 || true
-    ufw default deny incoming >/dev/null || true
-    ufw default allow outgoing >/dev/null || true
-    detect_ssh_ports
-    for port in ${SSH_PORTS}; do
-        ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null || true
-    done
-    remove_managed_ssh22_ufw_deny || true
-    if [[ -n "${EASY_ALL_ADDITIONAL_SSH_PORT:-}" ]]; then
-        apply_ssh_ufw_policy "${EASY_ALL_ADDITIONAL_SSH_PORT}" || true
-    fi
+    detect_ssh_ports strict
+    verify_ssh_ufw_no_unmanaged_block "${SSH_PORTS}"
+    disable_ufw_ipv6 || die '配置 UFW IPv4 策略失败'
+    apply_ssh_ufw_policy "${SSH_PORTS}" "${SSH_PORTS}"
+    # Tighten defaults only after all SSH listeners have effective ALLOW rules.
+    ufw default deny incoming >/dev/null || die '设置 UFW 默认入站策略失败'
+    ufw default allow outgoing >/dev/null || die '设置 UFW 默认出站策略失败'
     python3 - "${UFW_BEFORE_RULES}" "${addresses}" "${RUNTIME_TMP}/bunny-before.rules" <<'PYTHON' || die 'UFW 规则生成失败'
 import pathlib, sys
 source, addresses, target = map(pathlib.Path, sys.argv[1:])
@@ -37,9 +33,10 @@ if not inserted: raise SystemExit('Cannot insert filter')
 target.write_text('\n'.join(output) + '\n')
 PYTHON
     iptables-restore --test <"${RUNTIME_TMP}/bunny-before.rules" || die 'iptables 语法检查未通过'
-    install -m 0640 "${RUNTIME_TMP}/bunny-before.rules" "${UFW_BEFORE_RULES}"
-    ufw --force enable >/dev/null && ufw reload >/dev/null
-    install -m 0600 "${addresses}" "${BUNNY_EDGE_IP_FILE}"
+    install -m 0640 "${RUNTIME_TMP}/bunny-before.rules" "${UFW_BEFORE_RULES}" || die '安装 UFW 回源规则失败'
+    ufw --force enable >/dev/null || die '启用 UFW 回源规则失败'
+    ufw reload >/dev/null || die '重载 UFW 回源规则失败'
+    install -m 0600 "${addresses}" "${BUNNY_EDGE_IP_FILE}" || die '保存 Bunny 回源池失败'
 }
 
 refresh_bunny_origin_ips() {
@@ -71,8 +68,8 @@ Persistent=true
 WantedBy=timers.target
 EOF
     chmod 0644 "${BUNNY_REFRESH_SERVICE_FILE}" "${BUNNY_REFRESH_TIMER_FILE}"
-    systemctl daemon-reload
-    systemctl enable --now easy_all-bunny-ips.timer >/dev/null 2>&1 || true
+    systemctl daemon-reload || die '重新加载 Bunny 回源定时器失败'
+    systemctl enable --now easy_all-bunny-ips.timer >/dev/null || die '启用 Bunny 回源定时器失败'
 }
 
 bunny_certificate_current() {
@@ -100,10 +97,20 @@ renew_bunny_certificate() {
     collect_installed_state
     if [[ "${force}" != 1 ]] && bunny_certificate_current; then
         info "证书有效，无需续期"
-        release_runtime_write_lock; return 0
+        if ! systemctl reload nginx >/dev/null 2>&1 \
+            || ! systemctl is-active --quiet nginx; then
+            release_runtime_write_lock
+            die "当前证书已生效，但 Nginx 重载失败"
+        fi
+        release_runtime_write_lock
+        return 0
     fi
     bunny_issue_certificate "${ORIGIN_DOMAIN}"
-    systemctl restart nginx >/dev/null 2>&1 || true
+    if ! systemctl restart nginx >/dev/null 2>&1 \
+        || ! systemctl is-active --quiet nginx; then
+        release_runtime_write_lock
+        die "证书已续期，但 Nginx 重启失败"
+    fi
     release_runtime_write_lock
 }
 
@@ -117,10 +124,13 @@ validate_subscription_runtime() {
 }
 
 bunny_validate_edge() {
-    info "正在检验 Bunny 边缘连通性..."
+    info "正在检验 Bunny 边缘 HTTP 可达性；这不代表生产 WebSocket 101 或 VLESS 数据面已验收"
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "https://${CDN_DOMAIN}${WEBSOCKET_PATH}" || echo "000")
-    [[ "${code}" != "000" ]] || warn "边缘域名解析尚未完全就绪，请稍后重试"
+    if ! code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 \
+        "https://${CDN_DOMAIN}${WEBSOCKET_PATH}"); then
+        code=000
+    fi
+    [[ "${code}" != "000" ]] || warn "Bunny 边缘 HTTP 不可达；独立真实 VLESS 数据面尚未验收"
 }
 
 bunny_remove_local() {
