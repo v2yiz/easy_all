@@ -9,6 +9,13 @@ readonly LEGO_RELEASE_BASE="https://github.com/go-acme/lego/releases/download/${
 readonly LEGO_ARCHIVE="lego_${LEGO_VERSION}_linux_amd64.tar.gz"
 readonly LEGO_CHECKSUMS="lego_${LEGO_RELEASE_NAME}_checksums.txt"
 readonly LEGO_TIMEOUT="15m"
+: "${LEGO_DIR:=/etc/easy_all/acme}"
+: "${LEGO_BIN:=${LEGO_DIR}/lego}"
+: "${LEGO_VERSION_FILE:=${LEGO_DIR}/version}"
+: "${CERT_RENEW_SERVICE:=easy_all-cert-renew.service}"
+: "${CERT_RENEW_TIMER:=easy_all-cert-renew.timer}"
+: "${CERT_RENEW_SERVICE_FILE:=/etc/systemd/system/${CERT_RENEW_SERVICE}}"
+: "${CERT_RENEW_TIMER_FILE:=/etc/systemd/system/${CERT_RENEW_TIMER}}"
 
 download_lego() {
     local archive checksums dir expected actual

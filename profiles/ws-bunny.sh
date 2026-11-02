@@ -47,7 +47,11 @@ CDN_PROVIDER=bunny
 install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y && apt-get install -y --no-install-recommends \
-        curl jq nginx openssl ca-certificates ufw python3 fail2ban iptables || die "安装系统依赖失败"
+        curl jq nginx openssl ca-certificates ufw python3 fail2ban iptables unzip || die "安装系统依赖失败"
+}
+
+collect_installed_state() {
+    load_state
 }
 
 bunny_save_config() {
@@ -165,9 +169,8 @@ write_subscriptions() {
     build_node_links | openssl base64 -A >"${stage}/base64.txt"
     printf '\n' >>"${stage}/base64.txt"
     build_mihomo_nodes >"${RUNTIME_TMP}/nodes.yaml"
-    build_mihomo_proxy_names >"${RUNTIME_TMP}/names.yaml"
     render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${RUNTIME_TMP}/nodes.yaml" \
-        "${stage}/mihomo.yaml" BUNNY_WS '' "${RUNTIME_TMP}/names.yaml"
+        "${stage}/mihomo.yaml" "${SUB_DOWNLOAD_NAME}"
     publish_subscription_files "${stage}"
 }
 
@@ -261,12 +264,13 @@ install_all() {
     require_systemd
     check_platform
     install_packages
-    ensure_runtime_dependencies
     bunny_collect_inputs
     bunny_save_config
     apply_cloud_resources
     bunny_issue_certificate "${ORIGIN_DOMAIN}"
+    download_xray
     write_xray_config
+    install_xray_service
     write_subscriptions
     write_nginx_config
     bunny_refresh_firewall
@@ -282,7 +286,15 @@ install_all() {
 }
 
 uninstall_all() {
+    local purge_cloud=${1:-0}
     require_root
     bunny_remove_local
-    info "已卸载本机服务；云端配置及恢复凭据保留在 ${BUNNY_RECOVERY_DIR}"
+    if [[ "${purge_cloud}" == "1" ]]; then
+        python3 "${SCRIPT_DIR}/bunny-api.py" purge \
+            --journal "${BUNNY_JOURNAL}" --key-file "${BUNNY_KEY_FILE}" \
+            --cloudflare-token-file "${BUNNY_CLOUDFLARE_TOKEN_FILE}" || warn "清理云端资源失败"
+        info "已卸载本机服务并清理云端 Pull Zone 与 DNS 记录"
+    else
+        info "已卸载本机服务；云端配置及恢复凭据保留在 ${BUNNY_RECOVERY_DIR}"
+    fi
 }
