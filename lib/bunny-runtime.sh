@@ -9,7 +9,13 @@ bunny_refresh_firewall() {
     disable_ufw_ipv6 || true
     ufw default deny incoming >/dev/null || true
     ufw default allow outgoing >/dev/null || true
-    apply_ssh_ufw_policy "${EASY_ALL_ADDITIONAL_SSH_PORT:-}" || true
+    detect_ssh_ports
+    for port in ${SSH_PORTS}; do
+        ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null || true
+    done
+    if [[ -n "${EASY_ALL_ADDITIONAL_SSH_PORT:-}" ]]; then
+        apply_ssh_ufw_policy "${EASY_ALL_ADDITIONAL_SSH_PORT}" || true
+    fi
     python3 - "${UFW_BEFORE_RULES}" "${addresses}" "${RUNTIME_TMP}/bunny-before.rules" <<'PYTHON' || die 'UFW 规则生成失败'
 import pathlib, sys
 source, addresses, target = map(pathlib.Path, sys.argv[1:])

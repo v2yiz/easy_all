@@ -5,6 +5,9 @@
 # The calling profile provides UFW_RULE_COMMENT, UFW_DEFAULT_CONFIG and
 # info/warn/die. Profile modules remain responsible for snapshots and NAT rules.
 
+: "${UFW_DEFAULT_CONFIG:=/etc/default/ufw}"
+: "${UFW_RULE_COMMENT:=easy_all-managed}"
+
 set_ufw_ipv6() {
     local enabled=$1 candidate
     [[ "${enabled}" == "yes" || "${enabled}" == "no" ]] \

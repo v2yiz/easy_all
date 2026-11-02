@@ -33,6 +33,8 @@ readonly CERT_RENEW_SERVICE_FILE="${CERT_RENEW_SERVICE_FILE:-/etc/systemd/system
 readonly CERT_RENEW_TIMER_FILE="${CERT_RENEW_TIMER_FILE:-/etc/systemd/system/easy_all-cert-renew.timer}"
 readonly BUNNY_REFRESH_SERVICE_FILE="${BUNNY_REFRESH_SERVICE_FILE:-/etc/systemd/system/easy_all-bunny-ips.service}"
 readonly BUNNY_REFRESH_TIMER_FILE="${BUNNY_REFRESH_TIMER_FILE:-/etc/systemd/system/easy_all-bunny-ips.timer}"
+readonly UFW_DEFAULT_CONFIG="${UFW_DEFAULT_CONFIG:-/etc/default/ufw}"
+readonly UFW_RULE_COMMENT="${UFW_RULE_COMMENT:-easy_all-managed}"
 readonly UFW_BEFORE_RULES="${UFW_BEFORE_RULES:-/etc/ufw/before.rules}"
 readonly BUNNY_EDGE_IP_FILE="${BUNNY_EDGE_IP_FILE:-${STATE_DIR}/bunny-edge-ips}"
 
