@@ -134,7 +134,10 @@ case_secret_invalid() {
 case_permissions() {
     # shellcheck source=/dev/null
     source "${PARAMS_LIB}"
+    params_cross_reality() { :; }
     params_begin reality "${TMP_DIR}/loose.json"
+    params_declare NODE_NAME --required --default ok
+    params_finish >/dev/null
 }
 
 case_symlink() {
@@ -256,11 +259,11 @@ secret_bad_out=$(capture case_secret_invalid) && fail "invalid secret must be re
 assert_contains "secret: invalid value reported" "${secret_bad_out}" "取值无效（密钥内容不显示）"
 assert_not_contains "secret: invalid value not echoed" "${secret_bad_out}" "short-secret-value"
 
-cp "${TMP_DIR}/secret.json" "${TMP_DIR}/loose.json"
+write_params loose.json '{"schema_version": 1, "mode": "reality", "params": {"NODE_NAME": "node-a"}}'
 chmod 644 "${TMP_DIR}/loose.json"
-perm_out=$(capture case_permissions) && fail "world-readable params must be rejected"
-assert_contains "permissions: refuses loose mode" "${perm_out}" "参数文件权限过宽（644）"
-assert_contains "permissions: suggests chmod" "${perm_out}" "chmod 600"
+perm_out=$(capture case_permissions) || fail "loose permissions must not block install"
+assert_contains "permissions: warns on loose mode" "${perm_out}" "参数文件权限较宽（644）"
+assert_contains "permissions: explains cleanup" "${perm_out}" "安装成功后会删除它"
 
 ln -s "${TMP_DIR}/secret.json" "${TMP_DIR}/link.json"
 link_out=$(capture case_symlink) && fail "symlink params must be rejected"
@@ -295,6 +298,45 @@ assert_equal "template: object default kept" "{}" \
 # 派生默认值依赖为空时（这里是 CLOUDFLARE_ZONE）不能输出 "node." 这类半成品
 assert_equal "template: derived default dropped when invalid" "" \
     "$(jq -r '.params.DIRECT_DOMAIN' <<<"${template_out}")"
+
+# 11. 安装成功后删除参数文件；--check-params（KEEP=1）不删
+case_cleanup_install() {
+    # shellcheck source=/dev/null
+    source "${PARAMS_LIB}"
+    params_cross_reality() { :; }
+    local file="${TMP_DIR}/cleanup-install.json"
+    printf '{"schema_version":1,"mode":"reality","params":{}}' >"${file}"
+    chmod 600 "${file}"
+    params_begin reality "${file}"
+    params_declare NODE_NAME --required --default x
+    params_finish >/dev/null 2>&1
+    [[ "${INSTALL_PARAMS_DELETE}" == "1" ]] || fail "cleanup: success cleanup not scheduled"
+    params_cleanup_on_success 2>/dev/null
+    [[ ! -e "${file}" ]] || fail "cleanup: params file not removed after success"
+    printf 'removed'
+}
+
+case_cleanup_keep() {
+    # shellcheck source=/dev/null
+    source "${PARAMS_LIB}"
+    params_cross_reality() { :; }
+    local file="${TMP_DIR}/cleanup-keep.json"
+    printf '{"schema_version":1,"mode":"reality","params":{}}' >"${file}"
+    chmod 600 "${file}"
+    EASY_ALL_PARAMS_KEEP=1
+    params_begin reality "${file}"
+    params_declare NODE_NAME --required --default x
+    params_finish >/dev/null 2>&1
+    [[ "${INSTALL_PARAMS_DELETE}" == "0" ]] || fail "cleanup: keep flag ignored"
+    params_cleanup_on_success 2>/dev/null
+    [[ -e "${file}" ]] || fail "cleanup: check mode must not delete params file"
+    printf 'kept'
+}
+
+assert_equal "cleanup: install removes params file" "removed" \
+    "$(capture case_cleanup_install)"
+assert_equal "cleanup: check mode keeps params file" "kept" \
+    "$(capture case_cleanup_keep)"
 
 duplicate_out=$(capture case_duplicate <<'EOF'
 {"schema_version": 1, "mode": "reality", "params": {}}

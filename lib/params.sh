@@ -74,11 +74,6 @@ params_read_source() {
             || params_die "参数文件不能是符号链接：${file}；请直接提供普通文件，或改用 --params - 从标准输入读取"
         [[ -f "${file}" ]] || params_die "参数文件不存在或不是普通文件：${file}"
         [[ -r "${file}" ]] || params_die "参数文件不可读：${file}"
-        perm=$(params_file_permissions "${file}")
-        [[ -n "${perm}" ]] || params_die "无法读取参数文件权限：${file}"
-        if (( (8#${perm} & 077) != 0 )); then
-            params_die "参数文件权限过宽（${perm}）：其中包含 API Token，请执行 chmod 600 ${file}"
-        fi
         content=$(<"${file}") || params_die "读取参数文件失败：${file}"
         PARAMS_SOURCE=${file}
     fi
@@ -131,8 +126,40 @@ params_begin() {
     actual=$(params_mode_value)
     [[ "${actual}" == "${mode}" ]] \
         || params_die "参数文件 mode=${actual} 与本次安装模式 ${mode} 不一致"
+    params_warn_loose_permissions
     # 从这里开始安装期禁止任何交互：任何残留的提示函数都会立刻失败，而不是悄悄重新提问。
     PARAMS_LOADED=1
+    # 安装成功后会删掉参数文件（含 Token）；--check-params 只校验，不删。
+    params_schedule_cleanup
+}
+
+params_warn_loose_permissions() {
+    local perm
+    [[ "${PARAMS_SOURCE}" != "<stdin>" && -n "${PARAMS_SOURCE:-}" ]] || return 0
+    perm=$(params_file_permissions "${PARAMS_SOURCE}")
+    [[ -n "${perm}" ]] || return 0
+    if (( (8#${perm} & 077) != 0 )); then
+        printf '提示：参数文件权限较宽（%s），其中含 API Token；安装成功后会删除它，中断时请自行清理：%s\n' \
+            "${perm}" "${PARAMS_SOURCE}" >&2
+    fi
+}
+
+# 安装成功才删：--check-params 与 --print-params 不动文件；stdin 没有文件可删。
+params_schedule_cleanup() {
+    INSTALL_PARAMS_DELETE=0
+    [[ "${EASY_ALL_PARAMS_KEEP:-0}" != "1" ]] || return 0
+    [[ -n "${PARAMS_SOURCE:-}" && "${PARAMS_SOURCE}" != "<stdin>" ]] || return 0
+    INSTALL_PARAMS_DELETE=1
+}
+
+params_cleanup_on_success() {
+    [[ "${INSTALL_PARAMS_DELETE:-0}" == "1" ]] || return 0
+    [[ -n "${PARAMS_SOURCE:-}" && "${PARAMS_SOURCE}" != "<stdin>" ]] || return 0
+    if rm -f -- "${PARAMS_SOURCE}" 2>/dev/null; then
+        printf '已删除参数文件（含 API Token）：%s\n' "${PARAMS_SOURCE}" >&2
+    else
+        printf '参数文件删除失败，请手工删除：%s\n' "${PARAMS_SOURCE}" >&2
+    fi
 }
 
 params_has_key() {
@@ -619,5 +646,5 @@ params_template_emit() {
         [[ -n "${flags}" ]] || flags="可选"
         printf '  %-30s %s  %s\n' "${key}" "${flags}" "${label}" >&2
     done
-    printf '\n提示：填好后用 easy_all install --check-params <文件> 校验，再用 --params <文件> 安装。\n' >&2
+    printf '\n提示：填好后用 easy_all <文件> --check-params 校验，再用 easy_all <文件> 安装（成功后会删除该文件）。\n' >&2
 }

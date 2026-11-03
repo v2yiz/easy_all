@@ -476,6 +476,9 @@ install_failure_report() {
         printf '错误信息：%s\n' "${EASY_ALL_LAST_ERROR}" >&2
     fi
     [[ -z "${started}" ]] || printf '开始时间（UTC）：%s\n' "${started}" >&2
+    if [[ "${INSTALL_PARAMS_DELETE:-0}" == "1" && -n "${PARAMS_SOURCE:-}" ]]; then
+        printf '参数文件保留：%s（含 API Token，排查后请删除）\n' "${PARAMS_SOURCE}" >&2
+    fi
     printf '===============================================\n' >&2
 }
 

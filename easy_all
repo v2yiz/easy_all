@@ -81,9 +81,10 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install --params <参数文件|->
-                   按参数文件安装（唯一安装入口；交互安装已移除）
-  install --check-params <参数文件|->
+  <参数文件>       按参数文件安装（最简形式；安装成功后自动删除该文件）
+  install <参数文件>
+                   同上，也可写 install --params <参数文件>
+  <参数文件> --check-params
                    只校验参数，不修改本机
   install --print-params --mode <模式>
                    输出参数模板（JSON 到 stdout，字段说明到 stderr）
@@ -329,15 +330,15 @@ TCP 加速：所有链路默认直接安装并启用 Skyline Speeder（Linux 6.1
 
 安装方式（唯一路径，不再提供交互安装）：
   1. easy_all install --print-params --mode <模式> > params.json
-  2. 按字段说明填好后：easy_all install --check-params params.json
-  3. 校验通过后执行：sudo easy_all install --params params.json
-参数文件包含 API Token，请保持 chmod 600；用 --params - 从标准输入读取时需同时指定 --mode。
+  2. 按字段说明填好后：easy_all params.json --check-params
+  3. 校验通过后执行：sudo easy_all params.json
+参数文件包含 API Token：安装成功后会自动删除；中途失败会保留，排查后请自行删除。
 EOF
 }
 
 install_usage() {
     cat <<'EOF'
-用法: easy_all <参数文件>                     安装（最简形式，参数文件需 chmod 600）
+用法: easy_all <参数文件>                     安装（最简形式；安装成功后会自动删除该文件）
       easy_all install <参数文件>               同上
       easy_all <参数文件> --check-params        只校验参数，不修改本机
       easy_all install --print-params --mode <模式>   输出参数模板（JSON 到 stdout）
@@ -416,6 +417,9 @@ install_command() {
     }
     if ((check_only == 0)); then
         [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
+    else
+        # 只校验：安装成功后自动删除参数文件的行为不适用于这里。
+        export EASY_ALL_PARAMS_KEEP=1
     fi
     if [[ -n "${mode}" ]]; then
         mode=$(launcher_mode_alias "${mode}") \

@@ -68,18 +68,11 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 
 ## 3. 安装参数示例
 
-安装不再交互：参数由一份 JSON 字典一次提供（详见 README「安装参数」）。
-
 ```bash
-# 生成 Bunny 模式模板
 sudo easy_all install --print-params --mode bunny-ws > params.json
-chmod 600 params.json
-# 校验后安装（位置参数就是安装入口）
 sudo easy_all params.json --check-params
 sudo easy_all params.json
 ```
-
-### 参数示例（假设你的主域名为 `example.com`）
 
 ```json
 {
@@ -87,20 +80,14 @@ sudo easy_all params.json
   "mode": "bunny-ws",
   "params": {
     "CLOUDFLARE_ZONE": "example.com",
-    "ORIGIN_DOMAIN": "origin.example.com",
-    "CDN_DOMAIN": "cdn.example.com",
-    "BUNNY_BANDWIDTH_GB": "500",
     "BUNNY_API_KEY": "<Bunny Account API Key>",
     "CLOUDFLARE_DNS_TOKEN": "<Cloudflare DNS Token>"
   }
 }
 ```
 
-`ORIGIN_DOMAIN`、`CDN_DOMAIN`、`BUNNY_BANDWIDTH_GB` 可省略（分别默认
-`origin.<Zone>`、`cdn.<Zone>`、`500`）；两个 Token 为必填。
-
-Bunny 模式没有“节点名 / 下载文件名”参数：节点展示名与订阅下载名固定为 `EASY_ALL`
-（其他模式的对应字段见 README「安装参数」中的名称字段表）。
+`ORIGIN_DOMAIN`、`CDN_DOMAIN`、`BUNNY_BANDWIDTH_GB` 可省略（默认 `origin.<Zone>`、`cdn.<Zone>`、
+`500`）；两个 Token 必填。节点名与下载名固定 `EASY_ALL`。安装成功会自动删除参数文件。
 
 ### 安装器自动完成的编排工作
 1. **云端联动**：

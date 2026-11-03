@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { writeFileSync, unlinkSync, chmodSync } from 'node:fs';
+import { writeFileSync, unlinkSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -77,6 +77,7 @@ assert.ok(
     positionalCheck.stderr.includes('参数校验通过'),
     `positional params file should validate: ${positionalCheck.stderr}`,
 );
+assert.ok(existsSync(paramsFile), '--check-params must keep the params file');
 unlinkSync(paramsFile);
 
 // 2.8 参数文件位置传参的错误路径（不进入 Profile）
