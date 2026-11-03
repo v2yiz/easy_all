@@ -460,7 +460,9 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 - `443` 只对 Cloudflare 与 Gcore 官方回源网段开放；直连入口走 `8443`；SSH 端口保持安装前状态，
   安装器不修改 sshd，也不回收 SSH 端口。
 - 证书：`cf-origin` 与 `sub` 用一张 Cloudflare Origin CA（SAN 两个名字）；`gcore-origin` 用
-  Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发。
+  Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发，用 HTTP-01 通过
+  `gcore.<zone>` 的灰云 CNAME 验证，只覆盖该节点域名（订阅域名用上面的 Origin CA 证书，
+  `_acme-challenge` 不委派给 Gcore）。
 - 组合模式不改 SSH、不配置 Fail2ban；卸载时按安装前快照恢复 UFW 回源白名单与 `8443` 放行。
 - 组合模式安装时会用 `xray tls ping` 验收 Reality 伪装目标的 TLS 1.3 握手并比对 ASN（仅告警），
   `reality-target` 修改目标时先验收再落盘；Globalping Token 在应用参数阶段校验。

@@ -604,6 +604,9 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 
 需要准备：具备该 Zone DNS 编辑权限的 Cloudflare API Token、Gcore 的 CDN API Token、
 Globalping Token。云安全组放行 TCP `443`、`8443`；SSH 端口保持现状，安装器不会改动 sshd。
+
+`gcore` 子域名必须保持灰云 CNAME：Gcore 边缘证书用 HTTP-01 通过它签发，只覆盖这一个节点域名。
+安装器不会向 Gcore 委派 `_acme-challenge`，也不需要 Gcore Managed DNS。
 订阅只使用一个 owner Token，不启用用户配额。
 
 Globalping Token 会在应用参数阶段调用 `/limits` 校验；Reality 伪装目标在下载核心后会用

@@ -350,8 +350,34 @@ gcore_resolve_edge_certificate_id_for_purge() {
     fi
 }
 
+# 边缘证书一旦进入 FAILED，Gcore 不会自行重签；重新安装会读回同一个失败状态并立即终止。
+# 用官方 force-retry 入口重试一次，避免在真实配置错误上反复消耗重试额度。
+gcore_force_retry_edge_certificate() {
+    local certificate_id=$1 response http_code body
+    response=$(gcore_api_raw POST "/cdn/sslData/${certificate_id}/force-retry") || return 1
+    http_code=${response##*$'\n'}
+    body=${response%$'\n'*}
+    if [[ ! "${http_code}" =~ ^2[0-9]{2}$ ]]; then
+        printf '%s\n' "${body:-<empty>}" >&2
+        return 1
+    fi
+}
+
+gcore_edge_certificate_failure_details() {
+    jq -c '{
+        error:(.latest_status.error // null),
+        details:(.latest_status.details // null)
+    }' <<<"$1"
+}
+
+gcore_edge_certificate_hint() {
+    printf '（组合模式用 HTTP-01 签发：确认 %s 的灰云 CNAME 指向 Gcore 且已在 DNS 传播；残留的失败证书可先执行 sudo easy_all purge-gcore --domain %s,%s）' \
+        "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}"
+}
+
 gcore_wait_for_edge_certificate() {
     local certificate_id=$1 attempt state status details
+    local retried=0 failed_polls_after_retry=0
     for ((attempt = 1; attempt <= GCORE_EDGE_PROPAGATION_ATTEMPTS; attempt += 1)); do
         state=$(gcore_api_request GET "/cdn/sslData/${certificate_id}/status") \
             || die "无法读取 Gcore 边缘证书签发状态"
@@ -364,12 +390,26 @@ gcore_wait_for_edge_certificate() {
         ' <<<"${state}")
         case "${status}" in
         ACTIVE | DONE) return 0 ;;
-        FAILED | CANCELLED)
-            details=$(jq -c '{
-                error:(.latest_status.error // null),
-                details:(.latest_status.details // null)
-            }' <<<"${state}")
-            die "Gcore 边缘证书签发 ${status}：${details}"
+        FAILED)
+            details=$(gcore_edge_certificate_failure_details "${state}")
+            if ((retried == 0)); then
+                info "Gcore 边缘证书签发失败，通过官方接口强制重试一次：${details}"
+                gcore_force_retry_edge_certificate "${certificate_id}" \
+                    || warn "Gcore 未接受强制重试请求；继续等待签发状态"
+                retried=1
+                sleep "${GCORE_EDGE_PROPAGATION_INTERVAL}"
+                continue
+            fi
+            # 重试受理后旧状态还会停留几次轮询，留出重新签发的时间窗。
+            if ((failed_polls_after_retry < 3)); then
+                failed_polls_after_retry=$((failed_polls_after_retry + 1))
+            else
+                die "Gcore 边缘证书签发 FAILED：${details}$(gcore_edge_certificate_hint)"
+            fi
+            ;;
+        CANCELLED)
+            details=$(gcore_edge_certificate_failure_details "${state}")
+            die "Gcore 边缘证书签发 CANCELLED：${details}$(gcore_edge_certificate_hint)"
             ;;
         esac
         ((attempt == GCORE_EDGE_PROPAGATION_ATTEMPTS)) \
@@ -419,11 +459,9 @@ gcore_resource_matches_payload() {
 }
 
 gcore_ensure_resource() {
-    local payload bootstrap_payload response existing_resources current_resource res subscription_domain
+    local payload bootstrap_payload response existing_resources current_resource res
     local resource_id="" edge_certificate_id=""
-    local certificate_needs_binding=0
     GCORE_CDN_RESOURCE_CHANGED=0
-    subscription_domain=$(active_subscription_link_domain)
     existing_resources=$(gcore_api_request GET "/cdn/resources") || return 1
     while IFS= read -r res; do
         [[ -n "${res}" ]] || continue
@@ -435,19 +473,20 @@ gcore_ensure_resource() {
     done < <(gcore_json_items "${existing_resources}")
     if [[ ! "${edge_certificate_id}" =~ ^[1-9][0-9]*$ ]]; then
         edge_certificate_id=$(gcore_edge_certificate_id) || return 1
-        certificate_needs_binding=1
     fi
     GCORE_EDGE_CERTIFICATE_ID=${edge_certificate_id}
+    # 组合模式的 Zone 留在 Cloudflare，没有把 _acme-challenge 委派给 Gcore，DNS-01 必然失败；
+    # 订阅域名是橙云 A 指向 VPS，Gcore 也无法用 HTTP-01 验证它，因此边缘证书只覆盖节点域名。
+    # 订阅域名继续使用本机 Cloudflare Origin CA 证书。
     payload=$(jq -cn \
         --arg cname "${VLESS_CDN_DOMAIN}" \
-        --arg subscription "${subscription_domain}" \
         --argjson origin_group "${GCORE_ORIGIN_GROUP_ID}" \
         --arg origin "${GCORE_ORIGIN_DOMAIN}" \
         --argjson client_cert_id "${GCORE_ORIGIN_CLIENT_CERT_ID}" \
         --argjson origin_ca_id "${GCORE_ORIGIN_CA_ID}" \
         --argjson edge_certificate_id "${edge_certificate_id}" '{
           cname: $cname,
-          secondaryHostnames: (if $subscription == $cname then [] else [$subscription] end),
+          secondaryHostnames: [],
           originGroup: $origin_group,
           originProtocol: "HTTPS",
           active: true,
@@ -461,7 +500,7 @@ gcore_ensure_resource() {
             websockets: {enabled: true, value: true},
             hostHeader: {enabled: true, value: $origin},
             redirect_http_to_https: {enabled: true, value: true},
-            use_dns01_le_challenge: {enabled: true, value: true},
+            use_dns01_le_challenge: {enabled: false, value: false},
             sni: {enabled: true, sni_type: "custom", custom_hostname: $origin},
             proxy_connect_timeout: {enabled: true, value: "5s"},
             edge_cache_settings: {enabled: true, value: "0s", custom_values: {}},
@@ -483,15 +522,17 @@ gcore_ensure_resource() {
             info "Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 配置未变化，跳过更新"
         else
             info "更新已有 Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 的 HTTPS、mTLS 与配置"
-            if ((certificate_needs_binding == 1)); then
-                gcore_api_request PUT \
-                    "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${bootstrap_payload}" >/dev/null \
-                    || return 1
-            fi
-            gcore_wait_for_edge_certificate "${edge_certificate_id}"
+            # 先落 HTTP-01 与域名集合，Gcore 才会按新配置重新签发；否则重试仍用旧挑战方式。
+            gcore_api_request PUT \
+                "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${bootstrap_payload}" >/dev/null \
+                || return 1
+            GCORE_CDN_RESOURCE_CHANGED=1
+        fi
+        # 配置未变化时也要确认证书状态：上次失败的证书不会自行重签。
+        gcore_wait_for_edge_certificate "${edge_certificate_id}"
+        if ((GCORE_CDN_RESOURCE_CHANGED == 1)); then
             gcore_api_request PUT \
                 "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
-            GCORE_CDN_RESOURCE_CHANGED=1
         fi
     else
         response=$(gcore_api_request POST "/cdn/resources" "${bootstrap_payload}") || return 1

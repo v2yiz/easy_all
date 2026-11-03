@@ -1111,6 +1111,116 @@ assert_equal "gcore-resource: 证书查询失败返回 1 并还原变量" \
     "rc=1 sub=<unset> domain=cf.example.com certid=" "${cert_failed_gcore}"
 gcore_edge_certificate_id() { printf 'edge-cert-1'; }
 
+# 25d) 组合模式的 Gcore 边缘证书必须走 HTTP-01，且只覆盖节点域名。
+#      现场报错：`_acme-challenge.<域名> is not delegated to the Gcore nameservers`——组合模式的
+#      Zone 留在 Cloudflare，没有向 Gcore 委派 `_acme-challenge`，DNS-01 必然失败。
+#      订阅域名是橙云 A 指向 VPS，Gcore 也无法用 HTTP-01 验证它。
+gcore_policy_out=$(
+    # 上面的用例把 gcore_ensure_resource 等高层函数换成了 stub；这里恢复 lib 里的真实实现。
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_ORIGIN_DOMAIN="gcore-origin.example.com"
+    GCORE_ORIGIN_GROUP_ID=101
+    GCORE_ORIGIN_CLIENT_CERT_ID=11223
+    GCORE_ORIGIN_CA_ID=44556
+    GCORE_EDGE_CERTIFICATE_ID=""
+    GCORE_CDN_RESOURCE_ID=""
+    bootstrap_out="${TMP_DIR}/gcore-policy-bootstrap.json"
+    sleep() { :; }
+    gcore_edge_certificate_id() { printf '303'; }
+    gcore_api_request() {
+        local call="$1 $2" payload=${3:-}
+        if [[ "${call}" == "GET /cdn/resources" ]]; then
+            printf '[]'
+        elif [[ "${call}" == "POST /cdn/resources" ]]; then
+            printf '%s' "${payload}" >"${bootstrap_out}"
+            printf '{"id":202}'
+        elif [[ "${call}" == "GET /cdn/sslData/303/status" ]]; then
+            printf '{"active":true,"latest_status":{"status":"DONE"}}'
+        elif [[ "${call}" == "PUT /cdn/resources/202" ]]; then
+            :
+        else
+            return 1
+        fi
+    }
+    gcore_ensure_resource >/dev/null 2>&1 || exit 3
+    jq -c '{hosts: .secondaryHostnames, dns01: .options.use_dns01_le_challenge,
+            redirect: .options.redirect_http_to_https}' "${bootstrap_out}"
+) || fail "gcore-policy: ensure_resource failed"
+assert_equal "gcore-policy: 组合模式边缘证书走 HTTP-01 且只覆盖节点域名" \
+    '{"hosts":[],"dns01":{"enabled":false,"value":false},"redirect":{"enabled":false,"value":false}}' \
+    "${gcore_policy_out}"
+
+# 25e) 上次安装留下 FAILED 边缘证书时，重新安装必须先落新配置再强制重试一次，而不是立即终止。
+gcore_retry_out=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_ORIGIN_DOMAIN="gcore-origin.example.com"
+    GCORE_ORIGIN_GROUP_ID=101
+    GCORE_ORIGIN_CLIENT_CERT_ID=11223
+    GCORE_ORIGIN_CA_ID=44556
+    GCORE_EDGE_CERTIFICATE_ID=""
+    GCORE_CDN_RESOURCE_ID=""
+    api_calls="${TMP_DIR}/gcore-retry-calls"
+    full_out="${TMP_DIR}/gcore-retry-full.json"
+    poll_file="${TMP_DIR}/gcore-retry-polls"
+    : >"${api_calls}"
+    : >"${poll_file}"
+    sleep() { :; }
+    gcore_api_raw() {
+        local call="$1 $2"
+        printf 'RAW %s\n' "${call}" >>"${api_calls}"
+        if [[ "${call}" == "POST /cdn/sslData/303/force-retry" ]]; then
+            printf '\n201'
+        else
+            printf '\n500'
+        fi
+    }
+    gcore_api_request() {
+        local call="$1 $2" payload=${3:-}
+        printf '%s\n' "${call}" >>"${api_calls}"
+        if [[ "${call}" == "GET /cdn/resources" ]]; then
+            printf '[{"id":202,"cname":"gcore-node.example.com","sslData":303}]'
+        elif [[ "${call}" == "GET /cdn/resources/202" ]]; then
+            printf '{"id":202,"cname":"gcore-node.example.com","sslData":303}'
+        elif [[ "${call}" == "PUT /cdn/resources/202" ]]; then
+            if jq -e '.options.redirect_http_to_https.enabled' <<<"${payload}" >/dev/null; then
+                printf 'PUT full\n' >>"${api_calls}"
+                printf '%s' "${payload}" >"${full_out}"
+            else
+                printf 'PUT bootstrap\n' >>"${api_calls}"
+            fi
+            printf '{"id":202}'
+        elif [[ "${call}" == "GET /cdn/sslData/303/status" ]]; then
+            # 每次状态查询都在命令替换的子 shell 里执行，计数必须落盘。
+            printf 'x' >>"${poll_file}"
+            if (($(wc -c <"${poll_file}") <= 4)); then
+                printf '{"latest_status":{"status":"FAILED","error":"ValidationIssue","details":"boom"}}'
+            else
+                printf '{"active":true,"latest_status":{"status":"DONE"}}'
+            fi
+        else
+            return 1
+        fi
+    }
+    gcore_ensure_resource >/dev/null 2>&1 || exit 3
+    bootstrap_line=$(grep -n '^PUT bootstrap$' "${api_calls}" | cut -d: -f1)
+    retry_line=$(grep -n '^RAW POST /cdn/sslData/303/force-retry$' "${api_calls}" | cut -d: -f1)
+    full_line=$(grep -n '^PUT full$' "${api_calls}" | cut -d: -f1)
+    order=bad
+    if [[ -n "${bootstrap_line}" && -n "${retry_line}" && -n "${full_line}" ]] \
+        && ((bootstrap_line < retry_line && retry_line < full_line)); then
+        order=ok
+    fi
+    printf 'order=%s dns01=%s hosts=%s redirect=%s retries=%s' "${order}" \
+        "$(jq -r '.options.use_dns01_le_challenge.value' "${full_out}")" \
+        "$(jq -c '.secondaryHostnames' "${full_out}")" \
+        "$(jq -r '.options.redirect_http_to_https.value' "${full_out}")" \
+        "$(grep -c '^RAW POST /cdn/sslData/303/force-retry$' "${api_calls}")"
+) || fail "gcore-retry: FAILED 证书重装路径失败"
+assert_equal "gcore-retry: 先落新配置、强制重试一次、证书激活后再开 HTTPS 跳转" \
+    "order=ok dns01=false hosts=[] redirect=true retries=1" "${gcore_retry_out}"
+
 # 26) token 首字符不能是 ~（nginx map 把 ~ 开头的键当正则），中间 ~ 仍允许
 tilde_out=$(
     if combined_apply_tokens '~token-aaaa-111' >/dev/null 2>&1; then

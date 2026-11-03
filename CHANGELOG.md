@@ -1,3 +1,18 @@
+## 2.4.4 更新说明（2026-11-03）
+
+- **修复组合模式 Gcore 边缘证书签发失败**（现场：`The _acme-challenge.<域名> is not delegated to
+  the Gcore nameservers`）：组合模式的 Zone 留在 Cloudflare、没有把 `_acme-challenge` 委派给 Gcore，
+  但 CDN 资源却启用了 DNS-01 挑战，签发必然失败。现在改回 Gcore 默认的 HTTP-01，通过
+  `gcore.<zone>` 的灰云 CNAME 验证，与文档「组合模式不把域名委派给任何 CDN 的 DNS」一致。
+- **边缘证书只覆盖 Gcore 节点域名**：此前还把订阅域名放进了 `secondaryHostnames`，而订阅域名是
+  橙云 A 指向 VPS，Gcore 无法用 HTTP-01 验证它。订阅域名继续用本机 Cloudflare Origin CA 证书。
+- **失败的边缘证书不再卡住重装**：证书进入 FAILED 后 Gcore 不会自行重签，旧流程重新安装会读回
+  同一个失败状态并立即终止。现在先落新配置，再调用 `POST /cdn/sslData/{id}/force-retry` 重试一次，
+  仍失败才终止，并在错误信息里给出 `purge-gcore` 清理提示。
+- 测试：组合模式新增边缘证书策略（HTTP-01、仅节点域名）与 FAILED 证书强制重试用例。
+
+源码版本标识为 `2.4.4`。
+
 ## 2.4.3 更新说明（2026-11-03）
 
 - **参数预检不再联网**：`VPS_PUBLIC_IPV4` 与 `NODE_HOST` 留空时，预检只按“未提供”处理，不再在预检
