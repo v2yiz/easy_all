@@ -75,10 +75,15 @@ refresh_saved_daily_reboot_schedule() {
 }
 
 remove_daily_reboot_schedule() {
-    local current
+    local current filtered
+    # 没有该标记的 Profile（如 Bunny）不应走到这里：空标记会让过滤退化成“删掉所有行”。
+    [[ -n "${CRON_REBOOT_MARKER:-}" ]] || return 0
     current=$(read_root_crontab) || return 1
-    printf '%s\n' "${current}" | filter_managed_reboot_cron | crontab - \
-        || warn "移除 easy_all 定时重启任务失败，请手动检查 root crontab"
+    # 先确认过滤成功，再提交给 crontab：管道中途失败时 crontab - 会收到空输入并清空整份 crontab。
+    filtered=$(printf '%s\n' "${current}" | filter_managed_reboot_cron) \
+        || { warn "过滤 root crontab 失败，已取消写入以免清空 crontab"; return 1; }
+    printf '%s\n' "${filtered}" | crontab - \
+        || { warn "移除 easy_all 定时重启任务失败，请手动检查 root crontab"; return 1; }
 }
 
 restore_preinstall_crontab() {

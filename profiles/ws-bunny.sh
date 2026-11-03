@@ -38,7 +38,9 @@ readonly UFW_RULE_COMMENT="${UFW_RULE_COMMENT:-easy_all-managed}"
 readonly UFW_BEFORE_RULES="${UFW_BEFORE_RULES:-/etc/ufw/before.rules}"
 readonly BUNNY_EDGE_IP_FILE="${BUNNY_EDGE_IP_FILE:-${STATE_DIR}/bunny-edge-ips}"
 
-export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${BUNNY_RECOVERY_DIR}/runtime-write.lock"
+# 与其他模式共用同一把写锁：跨模式清理/重装必须在同一临界区，否则 Bunny 安装期间
+# 另一个模式的安装会把仍在运行的 Bunny 当成残留清理掉。
+
 EASY_ALL_RUNTIME_LIB_DIR="${SCRIPT_DIR}"
 source "${SCRIPT_DIR}/runtime-core.sh"
 source "${SCRIPT_DIR}/lego-install.sh"
@@ -48,10 +50,19 @@ PROTOCOL=bunny-ws
 CDN_PROVIDER=bunny
 
 install_packages() {
+    local nginx_active_before=unknown
+    command -v systemctl >/dev/null 2>&1 \
+        && nginx_active_before=$(systemctl is-active nginx 2>/dev/null || true)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y && apt-get install -y --no-install-recommends \
-        curl wget coreutils tar jq nginx openssl ca-certificates ufw python3 \
+        curl wget coreutils tar jq openssl ca-certificates ufw python3 \
         python3-jsonschema fail2ban iptables iproute2 unzip || die "安装系统依赖失败"
+    if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
+        apt-get install -y --no-install-recommends nginx || die "安装 nginx 失败"
+    else
+        install_nginx_without_start nginx || die "安装 nginx 失败"
+    fi
+    quiet_freshly_installed_nginx "${nginx_active_before}"
 }
 
 bunny_ensure_python_jsonschema() {
@@ -306,13 +317,29 @@ show_status() {
     printf 'Nginx 状态: %s\n' "$(systemctl is-active nginx 2>/dev/null || echo inactive)"
 }
 
+# 中断/失败后的本机清理：保留 Bunny journal 与云端资源，交给 uninstall --purge-cloud。
+cleanup_partial_install() {
+    # 删除失败时必须保留 marker：否则既丢了模式线索，调用方还会误以为已清理完成。
+    bunny_remove_local || { warn "Bunny 残留未完全删除；保留安装进度标记以便重试"; return 1; }
+    # bunny_remove_local 会恢复 Debian 默认站点并 reload；若不停掉，紧随其后的端口断言
+    # 会被自己刚恢复的默认站点挡住。
+    systemctl disable --now nginx >/dev/null 2>&1 || true
+    install_progress_clear
+}
+
 install_all() {
     require_root
     acquire_runtime_write_lock
     require_systemd
     check_platform arm64
+    [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
+    # bunny 的源站 nginx 固定监听 80（default_server）与 443，端口占用必须提前拦住。
+    prepare_fresh_install 80 443
+    install_progress_begin bunny-ws
+    install_progress_stage packages
     install_packages
     bunny_reject_ssh_443
+    install_progress_stage tcp
     if [[ "$(dpkg --print-architecture)" == amd64 ]]; then
         choose_tcp_acceleration
         configure_tcp_acceleration
@@ -322,10 +349,13 @@ install_all() {
         || install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
     [[ -e "${BACKUP_DIR}/pre-install-nginx-default" || ! -e "${NGINX_DEFAULT_SITE}" ]] \
         || install -m 0600 "${NGINX_DEFAULT_SITE}" "${BACKUP_DIR}/pre-install-nginx-default"
+    install_progress_stage inputs
     bunny_collect_inputs
     bunny_save_config
+    install_progress_stage cloud
     apply_cloud_resources
     bunny_issue_certificate "${ORIGIN_DOMAIN}"
+    install_progress_stage services
     download_xray
     write_xray_config
     install_xray_service
@@ -341,7 +371,9 @@ install_all() {
         || die "启用 Bunny 回源定时器失败；修复后重新运行 sudo easy_all install"
     install_certificate_renewal_timer \
         || die "启用证书续期定时器失败；修复后重新运行 sudo easy_all install"
+    install_progress_stage state
     save_state
+    install_progress_clear
     python3 "${SCRIPT_DIR}/bunny-api.py" mark-committed --journal "${BUNNY_JOURNAL}" >/dev/null 2>&1 || true
     release_runtime_write_lock
     show_status
@@ -371,7 +403,7 @@ uninstall_all() {
             die "云端资源未清理完成；本机安装和 journal 已保留，可重试 easy_all uninstall --purge-cloud"
         fi
     fi
-    bunny_remove_local
+    bunny_remove_local || warn "部分 Bunny 本机文件未删除，请手工核对后清理"
     release_runtime_write_lock
     if [[ "${purge_cloud}" == "1" ]]; then
         info "已卸载本机服务并清理云端 Pull Zone 与 DNS 记录"

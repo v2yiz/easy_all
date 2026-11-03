@@ -153,7 +153,10 @@ UUID、节点域名或传输路径，也不会重新询问订阅模式。
   DNS 冲突时，在首个云端写入前停止。普通 `apply` 与 `apply-cloud` 在 Bunny 模式下行为相同。
 - 组合：`apply` 只重建本机 Xray、Nginx 与订阅（不写 DNS、不签发证书、不碰 Gcore 资源，无需 Gcore Token）；
   `apply-cloud` 才写入 Cloudflare DNS、签发证书并同步 Gcore 资源，会重新询问 Gcore Token。
-- 所有模式都会在失败时恢复已备份的本机配置。
+  组合模式升级到本版本后必须执行一次 `sudo easy_all apply-cloud`（重签含节点域名的 Origin CA 证书）；
+  只跑 `apply` 不会重签证书，`status` 会显示证书未覆盖节点域名。
+  `edit-sub`、`apply-cloud` 与 `renew-cert` 在可捕获终止（`die`、`SIGINT`、`SIGTERM`、`SIGHUP`）时会回滚本机配置、证书与状态；`SIGKILL`/OOM 不会回滚，可能留下“运行中鉴权/证书比状态文件新”的偏差，请执行 `sudo easy_all status` 查看是否提示不一致：Token 偏差按提示执行 `sudo easy_all apply`，证书轮换后偏差执行 `sudo easy_all apply-cloud` 复核。
+- 所有模式都会在可捕获失败（`die`、`SIGINT`、`SIGTERM`、`SIGHUP`）时恢复已备份的本机配置（`SIGKILL`/OOM 无法捕获，不会自动回滚）。
 
 `apply-cloud` 适用于 Cloudflare、Bunny 与组合模式。Cloudflare 模式会在应用本机配置后同步
 DNS、Origin CA、边缘规则和 Worker。Bunny 模式与普通 `apply` 相同，使用 root-only journal
@@ -185,6 +188,7 @@ DNS、Origin CA、边缘规则和 Worker。Bunny 模式与普通 `apply` 相同�
 | `quota-status` | 查看每个用户的月度配额和流量。 |
 | `quota-set <用户> <GB>` | 修改已有用户额度，`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户本月流量。 |
+| `cleanup-partial [--assume-mode <模式>]` | 清理上次中断安装留下的本机残留（未安装状态使用；不改动云端资源）。默认按安装进度标记判断模式，旧版本无标记时用 `--assume-mode` 指定。 |
 | `uninstall` | 卸载本机资源；`--purge-cloud` 同时清理本工具创建的云资源。 |
 | `help` | 显示命令帮助。 |
 
@@ -581,6 +585,8 @@ root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（
 | --- | --- |
 | 本机运行后提示系统不支持 | 命令必须在 VPS 的 SSH 或网页终端运行。 |
 | SSH 断开或重启后无法登录 | 使用服务商 Console/VNC 检查 SSH 端口、UFW 和安全组。 |
+| 安装中 SSH 断开、重跑提示 `TCP 80 已被占用` | 上次安装已装好 nginx 默认站点：先 `sudo easy_all cleanup-partial`；命令未注册时用 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial`（`bootstrap.sh` 自己会 sudo，别写成 `sudo bash <(...)`），再在 `tmux`/`screen` 中重跑安装。 |
+| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
 | Zone 不是 Active | 等待 Cloudflare Zone 生效并检查名称服务器。 |
 | 提示未开启 gRPC | 在 Zone 的 Network → gRPC 手动开启后重试。 |
 | API Token 权限不足或 DNS 冲突 | 按[前置准备手册](preparation-guide.md)核对权限并换用未占用的一级子域。 |

@@ -139,19 +139,33 @@ bunny_validate_edge() {
     [[ "${code}" != "000" ]] || warn "Bunny 边缘 HTTP 不可达；独立真实 VLESS 数据面尚未验收"
 }
 
+# 返回非零表示有本机产物没删掉：部分安装的清理据此保留 marker 以便重试，
+# 普通 uninstall 调用方显式容忍失败（见 ws-bunny.sh:uninstall_all）。
 bunny_remove_local() {
+    local failed=0 retain_state=0
     systemctl disable --now "${XRAY_SERVICE}" easy_all-bunny-ips.timer easy_all-cert-renew.timer >/dev/null 2>&1 || true
     systemctl stop "${XRAY_SERVICE}" easy_all-bunny-ips.service easy_all-cert-renew.service >/dev/null 2>&1 || true
-    rm -f "${XRAY_SERVICE_FILE}" "${BUNNY_REFRESH_SERVICE_FILE}" "${BUNNY_REFRESH_TIMER_FILE}" "${CERT_RENEW_SERVICE_FILE}" "${CERT_RENEW_TIMER_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
+    rm -f "${XRAY_SERVICE_FILE}" "${BUNNY_REFRESH_SERVICE_FILE}" "${BUNNY_REFRESH_TIMER_FILE}" \
+        "${CERT_RENEW_SERVICE_FILE}" "${CERT_RENEW_TIMER_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" \
+        || { warn "删除 Bunny 服务/配置失败"; failed=1; }
     systemctl daemon-reload >/dev/null 2>&1 || true
+    # 恢复安装前配置失败时绝不能删状态目录：备份就在里面，删了就再也补不回来。
     [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
-        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" "${UFW_DEFAULT_CONFIG}"
+        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" "${UFW_DEFAULT_CONFIG}" \
+        || { warn "恢复 ${UFW_DEFAULT_CONFIG} 失败"; failed=1; retain_state=1; }
     [[ ! -f "${BACKUP_DIR}/pre-install-nginx-default" ]] \
-        || install -m 0644 "${BACKUP_DIR}/pre-install-nginx-default" "${NGINX_DEFAULT_SITE}"
+        || install -m 0644 "${BACKUP_DIR}/pre-install-nginx-default" "${NGINX_DEFAULT_SITE}" \
+        || { warn "恢复 ${NGINX_DEFAULT_SITE} 失败"; failed=1; retain_state=1; }
     systemctl reload nginx >/dev/null 2>&1 || true
-    rm -rf "${STATE_DIR}" "${WEB_ROOT}"
+    if ((retain_state == 1)); then
+        warn "安装前配置未能恢复；保留 ${STATE_DIR} 及其备份，修正后重试"
+    else
+        rm -rf "${STATE_DIR}" "${WEB_ROOT}" \
+            || { warn "删除 Bunny 状态目录失败"; failed=1; }
+    fi
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
         sed -i.bak '/# easy_all-bunny-start/,/# easy_all-bunny-end/d' "${UFW_BEFORE_RULES}" 2>/dev/null || true
     fi
     ufw reload >/dev/null 2>&1 || true
+    ((failed == 0))
 }

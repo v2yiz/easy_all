@@ -100,6 +100,7 @@ launcher_usage() {
   quota-set        修改指定用户的月度额度
   quota-reset      清零指定用户的本月已用量
   status           显示运行状态
+  cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
   uninstall        卸载当前模式；可追加 --purge-cloud 清理托管的远端资源
   help             显示帮助
 
@@ -135,6 +136,100 @@ legacy_local_uninstall() {
     warn "本机文件已清理。以下内容需要你自行核对：SSH 端口 drop-in 与 UFW 放行、"
     warn "/etc/fail2ban/{jail.d/99-easy-all-sshd.local,action.d/easy-all-ufw-cidr.conf}、以及云端 CDN/DNS 资源"
     success "旧版本 easy_all 本机清理完成，可以重新安装"
+}
+
+# 一次读入 marker 并同时给出「模式/阶段/身份」：模式与身份必须来自同一份快照，
+# 否则两次读取之间换了安装，就可能拿着旧模式的身份去比对新模式。
+# 输出：absent | present|PROFILE|STAGE|STARTED_AT
+launcher_marker_snapshot() {
+    local file=${1:-} content profile stage started
+    if [[ -z "${file}" || ! -f "${file}" ]]; then
+        printf 'absent'
+        return 0
+    fi
+    content=$(<"${file}") || { printf 'unreadable'; return 0; }
+    profile=$(printf '%s\n' "${content}" | sed -n 's/^PROFILE=//p' | tail -n 1)
+    stage=$(printf '%s\n' "${content}" | sed -n 's/^STAGE=//p' | tail -n 1)
+    started=$(printf '%s\n' "${content}" | sed -n 's/^STARTED_AT=//p' | tail -n 1)
+    printf 'present|%s|%s|%s' "${profile}" "${stage}" "${started}"
+}
+
+# 上次安装被 SSH 断线打断后，没有状态文件也就没有 uninstall 可用；这条命令是唯一
+# 能从本机自救的入口。它只信安装期写入的 marker 来定位模式，不猜测、不动云端资源。
+cleanup_partial_install_command() {
+    local progress_file mode stage started_at answer module assume_mode=""
+    local snapshot_before snapshot_after
+    local bootstrap='bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)'
+    while (($# > 0)); do
+        case "$1" in
+        --assume-mode)
+            (($# >= 2)) || launcher_die "用法：easy_all cleanup-partial [--assume-mode <模式>]"
+            assume_mode=$2
+            shift 2
+            ;;
+        -h | --help)
+            printf '用法：easy_all cleanup-partial [--assume-mode <reality|cloudflare-streamup|gcore|combined|bunny-ws>]\n'
+            printf '  无参数：按安装进度标记自动判断模式；旧版本没有标记时用 --assume-mode 指定。\n'
+            return 0
+            ;;
+        *) launcher_die "用法：easy_all cleanup-partial [--assume-mode <模式>]" ;;
+        esac
+    done
+    [[ -z "${assume_mode}" ]] || profile_file "${assume_mode}" >/dev/null
+    [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
+    [[ ! -f "${EASY_ALL_STATE_FILE}" ]] \
+        || launcher_die "easy_all 已安装；如需卸载请执行 easy_all uninstall"
+    progress_file="${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE:-/var/lib/easy_all/install-progress.env}"
+    # 模式、阶段、身份必须来自同一次读取。
+    snapshot_before=$(launcher_marker_snapshot "${progress_file}")
+    if [[ "${snapshot_before}" == "absent" ]]; then
+        # 旧版本没有进度标记：只有用户明确指定模式时才敢于清理，绝不猜测。
+        [[ -n "${assume_mode}" ]] || launcher_die \
+            "未检测到安装进度标记，无法判断残留属于哪个模式。先核对 /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all* 服务，再指定模式：${bootstrap} cleanup-partial --assume-mode <reality|cloudflare-streamup|gcore|combined|bunny-ws>"
+        mode=${assume_mode}
+        stage=""
+    elif [[ "${snapshot_before}" == "unreadable" ]]; then
+        launcher_die "无法读取安装进度标记 ${progress_file}；请检查权限后重试（或用 --assume-mode 指定模式）"
+    else
+        IFS='|' read -r _ mode stage started_at <<<"${snapshot_before}"
+        [[ -n "${mode}" ]] || launcher_die \
+            "安装进度标记缺少模式信息（${progress_file}）；可改用 --assume-mode 指定后清理"
+        if [[ -n "${assume_mode}" && "${assume_mode}" != "${mode}" ]]; then
+            launcher_die "进度标记显示上次是 ${mode} 模式，与 --assume-mode ${assume_mode} 不一致；请先核对后再决定"
+        fi
+    fi
+    profile_file "${mode}" >/dev/null
+    if [[ -z "${stage}" ]]; then
+        printf '没有安装进度标记；按你指定的 %s 模式清理残留\n' "${mode}" >&2
+    else
+        printf '检测到未完成的 %s 安装（中断于 %s 阶段）\n' "${mode}" "${stage}" >&2
+    fi
+    if [[ "${FORCE:-0}" != "1" ]]; then
+        [[ -t 0 ]] || launcher_die "非交互清理必须显式设置 FORCE=1"
+        launcher_read_bilingual '清理本机残留（不改动 Cloudflare/Gcore/Bunny 云端资源）？[y/N]:' answer
+        [[ "${answer}" =~ ^[Yy]$ ]] || launcher_die "已取消"
+    fi
+    module=$(profile_file "${mode}") || exit 1
+    export EASY_ALL_SELECTED_MODE="${mode}"
+    # shellcheck source=/dev/null
+    source "${module}"
+    register_easy_all_command() {
+        unified_register_easy_all_command
+    }
+    acquire_runtime_write_lock 30
+    # 等待锁期间安装可能已经成功（状态文件出现），或另一个安装重新写了 marker。
+    if [[ -f "${EASY_ALL_STATE_FILE}" ]]; then
+        launcher_die "easy_all 已在等待期间完成安装；已取消清理。如确需卸载请执行 easy_all uninstall"
+    fi
+    # 等锁期间可能出现「标记消失」「无标记 -> 出现新安装标记」「同模式但换了新一次安装」，
+    # 任一变化都不能按旧判断继续清理。
+    snapshot_after=$(launcher_marker_snapshot "${progress_file}")
+    if [[ "${snapshot_after}" != "${snapshot_before}" ]]; then
+        launcher_die "等待锁期间安装进度已变化（${snapshot_before} -> ${snapshot_after}）；已取消清理，请确认后在无安装运行时重试"
+    fi
+    cleanup_partial_install
+    # 清理会删掉 easy_all 命令本身，下一步只能用 bootstrap 入口。
+    success "本机残留已清理完成；如安装期已创建云端资源，需要时用 ${bootstrap} purge-cloudflare / purge-gcore 清理"
 }
 
 show_install_guide() {
@@ -469,6 +564,10 @@ main() {
     fi
     if [[ "${command}" == "purge-cloudflare" ]]; then
         bash "${EASY_ALL_ROOT}/lib/cloudflare-purge.sh" "$@"
+        exit
+    fi
+    if [[ "${command}" == "cleanup-partial" ]]; then
+        cleanup_partial_install_command "$@"
         exit
     fi
     if [[ "${command}" == "verify-release" ]]; then

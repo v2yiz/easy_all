@@ -198,7 +198,8 @@ cloudflare_collect_api_token() {
 }
 
 cloudflare_origin_certificate_hosts() {
-    jq -cn --arg origin "${CF_ORIGIN_DOMAIN}" --arg sub "${SUBSCRIPTION_DOMAIN}" '[$origin, $sub]'
+    jq -cn --arg node "${CF_NODE_DOMAIN}" --arg origin "${CF_ORIGIN_DOMAIN}" \
+        --arg sub "${SUBSCRIPTION_DOMAIN}" '[$node, $origin, $sub]'
 }
 
 dns_ensure_record() {
@@ -413,16 +414,17 @@ xhttp_configure_ufw() {
         || die "UFW 未处于 active 状态"
 }
 
-write_nginx_config() {
-    local http2_directive="" listen_h2="http2 "
-    if nginx_supports_http2_directive; then
-        http2_directive=$'\n    http2 on;'
-        listen_h2=""
+combined_render_nginx_config() {
+    local http2_directive=${1-} listen_h2=${2-}
+    if (($# == 0)); then
+        listen_h2="http2 "
+        if nginx_supports_http2_directive; then
+            http2_directive=$'\n    http2 on;'
+            listen_h2=""
+        fi
     fi
-    install -d -m 0755 "${WEB_ROOT}"
-    {
-        write_subscription_nginx_maps
-        cat <<EOF
+    write_subscription_nginx_maps
+    cat <<EOF
 server {
     listen 443 ssl ${listen_h2}default_server;
     server_name _;
@@ -431,7 +433,7 @@ server {
 
 server {
     listen 443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3;
-    server_name ${CF_ORIGIN_DOMAIN};
+    server_name ${CF_NODE_DOMAIN} ${CF_ORIGIN_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
     ssl_protocols TLSv1.2 TLSv1.3;${http2_directive}
@@ -493,15 +495,52 @@ server {
     add_header Cache-Control "no-store" always;
 
 EOF
-        write_subscription_nginx_locations
-        cat <<EOF
+    write_subscription_nginx_locations
+    cat <<EOF
 }
 EOF
-    } >"${RUNTIME_TMP}/easy_all.conf"
+}
+
+write_nginx_config() {
+    local http2_directive="" listen_h2="http2 "
+    if nginx_supports_http2_directive; then
+        http2_directive=$'\n    http2 on;'
+        listen_h2=""
+    fi
+    install -d -m 0755 "${WEB_ROOT}"
+    combined_render_nginx_config "${http2_directive}" "${listen_h2}" >"${RUNTIME_TMP}/easy_all.conf"
     install -m 0600 "${RUNTIME_TMP}/easy_all.conf" "${NGINX_CONFIG}"
     nginx -t >/dev/null || die "Nginx 配置校验失败"
     systemctl enable --now nginx >/dev/null
     systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
+}
+
+combined_certificate_covers_node_domain() {
+    local out=""
+    [[ -s "${CERT_FILE}" ]] || return 1
+    out=$(openssl x509 -in "${CERT_FILE}" -checkhost "${CF_NODE_DOMAIN}" -noout 2>/dev/null || true)
+    [[ "${out}" == *"does match certificate"* && "${out}" != *"does NOT match"* ]]
+}
+
+# XHTTP stream-up 路径由 grpc_pass 转发给 Xray，普通 GET 会因缺少 gRPC 帧/流式请求体被拒绝或挂起；
+# 探测同一 server 块内的 /easy_all-health 可在不触发代理流的前提下验证 CF_NODE_DOMAIN 的本机 TLS 握手、
+# Origin CA 证书 SAN 覆盖与 Nginx SNI/Host 路由（未命中该 server 块时会落入 default_server 被拒绝握手）。
+combined_validate_cf_node_sni() {
+    local mode=${1:-strict} response
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
+    xhttp_validate_local_tls_curl_args
+    response=$(curl -fsS --connect-timeout 5 --max-time 15 \
+        "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
+        --resolve "${CF_NODE_DOMAIN}:443:127.0.0.1" \
+        "https://${CF_NODE_DOMAIN}/easy_all-health" 2>/dev/null || true)
+    if [[ "${response}" == "easy_all ok" ]]; then
+        return 0
+    fi
+    if [[ "${mode}" == "lenient" ]] && ! combined_certificate_covers_node_domain; then
+        warn "当前 Origin CA 证书未覆盖 ${CF_NODE_DOMAIN}；本机配置已重建，请执行 sudo easy_all apply-cloud 重签证书"
+        return 0
+    fi
+    die "Cloudflare 节点域名 ${CF_NODE_DOMAIN} 本机 TLS/SNI 验收失败：请确认 Nginx server_name 与 Origin CA 证书 SAN 已覆盖该域名（升级后请执行 sudo easy_all apply-cloud）"
 }
 
 combined_gcore_resource() {
@@ -691,6 +730,7 @@ show_node() {
 }
 
 show_status() {
+    local cf_cert_raw cf_cert_enddate="" expected_tokens actual_tokens
     require_root
     collect_installed_state
     printf '协议: 直连 Reality + Cloudflare XHTTP + Gcore WebSocket\n'
@@ -708,9 +748,47 @@ show_status() {
     printf 'Cloudflare 优选 IP: %s 个（%s）\n' \
         "$(jq '.candidates | length' "${GLOBALPING_CACHE_FILE}" 2>/dev/null || printf 0)" \
         "$(jq -r '.measured_at // "未生成"' "${GLOBALPING_CACHE_FILE}" 2>/dev/null || printf '未生成')"
+    if [[ -s "${CERT_FILE}" ]] \
+        && cf_cert_raw=$(openssl x509 -in "${CERT_FILE}" -noout -enddate 2>/dev/null || true) \
+        && [[ "${cf_cert_raw}" == notAfter=* ]]; then
+        cf_cert_enddate=${cf_cert_raw#notAfter=}
+    fi
+    if [[ -z "${cf_cert_enddate}" ]]; then
+        printf 'Cloudflare 回源证书到期: 未知\n'
+    elif combined_certificate_covers_node_domain; then
+        printf 'Cloudflare 回源证书到期: %s（已覆盖 %s）\n' "${cf_cert_enddate}" "${CF_NODE_DOMAIN}"
+    else
+        printf 'Cloudflare 回源证书到期: %s（证书未覆盖 %s，请执行 sudo easy_all apply-cloud）\n' \
+            "${cf_cert_enddate}" "${CF_NODE_DOMAIN}"
+    fi
     if [[ -s "${GCORE_CERT_FILE}" ]]; then
         printf 'Gcore 回源证书到期: %s\n' \
-            "$(openssl x509 -in "${GCORE_CERT_FILE}" -noout -enddate | cut -d= -f2)"
+            "$(openssl x509 -in "${GCORE_CERT_FILE}" -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
+    fi
+    if [[ -f "${NGINX_CONFIG}" ]]; then
+        expected_tokens=$(write_subscription_token_map 2>/dev/null \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+            | grep -v '^$' | LC_ALL=C sort -u || true)
+        actual_tokens=$(awk '
+            /^[[:space:]]*map[[:space:]]+\$arg_token[[:space:]]+\$easy_all_subscription_allowed[[:space:]]*\{/ {
+                in_map = 1
+                next
+            }
+            in_map && /^[[:space:]]*\}/ {
+                in_map = 0
+                exit
+            }
+            in_map {
+                sub(/^[[:space:]]+/, "")
+                sub(/[[:space:]]+$/, "")
+                if ($0 != "" && $0 != "default __denied__;") {
+                    print $0
+                }
+            }
+        ' "${NGINX_CONFIG}" 2>/dev/null | LC_ALL=C sort -u || true)
+        if [[ "${expected_tokens}" != "${actual_tokens}" ]]; then
+            printf '运行中配置与状态不一致，请执行 sudo easy_all apply\n'
+        fi
     fi
     show_globalping_status
 }
@@ -747,6 +825,7 @@ apply_easy_all() {
     gcore_prepare_origin_validation_material
     write_nginx_config
     validate_protocol_runtime
+    combined_validate_cf_node_sni lenient
     if ! globalping_cache_valid; then
         persist_globalping_token
         refresh_globalping_cache || warn "Cloudflare 优选 IP 刷新失败，沿用现有缓存"
@@ -760,6 +839,7 @@ apply_cloud_resources() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    snapshot_subscription_update
     configure_tcp_acceleration
     xhttp_configure_ufw
     combined_ensure_dns
@@ -769,16 +849,43 @@ apply_cloud_resources() {
     gcore_prepare_origin_validation_material
     write_nginx_config
     validate_protocol_runtime
-    cloudflare_finalize_certificate_rotation
-    combined_gcore_resource
+    combined_validate_cf_node_sni
+    combined_gcore_resource || die "同步 Gcore CDN 资源失败"
     combined_validate_gcore
     persist_cloudflare_token
     persist_globalping_token
     refresh_globalping_cache || warn "Cloudflare 优选 IP 刷新失败，沿用现有缓存"
     combined_finish_local
+    # 吊销不可逆，必须先关闭回滚再吊销，避免后续中断时恢复已吊销的旧证书。
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    cloudflare_finalize_certificate_rotation
     gcore_clear_api_token
-    release_runtime_write_lock
+    commit_subscription_update
     success "本机配置、订阅与云端资源已同步"
+}
+
+# 组合模式跨越本机、Cloudflare 与 Gcore 三部分：失败/中断时只回滚本机，云端已创建的
+# 资源按设计保留，并用 purge 命令提示清理——擅自删除会让同域名重装撞上残留记录。
+cleanup_partial_install() {
+    cleanup_partial_install_local || return 1
+    if declare -F uninstall_acme >/dev/null 2>&1; then
+        uninstall_acme
+    elif [[ -x "${ACME_BIN}" && -f "${ACME_OWNERSHIP_MARKER}" ]]; then
+        "${ACME_BIN}" --uninstall </dev/null >/dev/null 2>&1 \
+            || warn "acme.sh 卸载失败，请手工清理 ${ACME_HOME}"
+    fi
+    remove_daily_reboot_schedule || true
+    cleanup_partial_install_files \
+        "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}" \
+        "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
+}
+
+rollback_fresh_install() {
+    warn "组合模式首次安装未完成，正在回滚本机服务、UFW、crontab 与 TCP 配置"
+    cleanup_partial_install || true
+    warn "本次已创建的 Cloudflare 记录/Origin CA 与 Gcore CDN 资源按设计保留；如不再使用请清理："
+    warn "  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --all"
+    warn "  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-gcore --all"
 }
 
 install_all() {
@@ -787,21 +894,23 @@ install_all() {
     require_systemd
     check_platform
     [[ ! -f "${STATE_FILE}" ]] || die "检测到已有 easy_all 安装；一台 VPS 只允许一种模式"
-    local port
-    for port in 80 443 "${REALITY_PORT}"; do
-        if ss -H -ltn "sport = :${port}" 2>/dev/null | awk 'NR {found=1} END {exit !found}'; then
-            die "TCP ${port} 已被占用；easy_all 仅支持专用 VPS"
-        fi
-    done
+    prepare_fresh_install 80 443 "${REALITY_PORT}"
+    install_progress_begin combined
+    # 快照必须早于任何系统修改（TCP 加速、内核、定时重启、crontab），否则回滚恢复的是
+    # “已被本次安装改过”的状态。
+    snapshot_fresh_install
+    install_progress_stage packages
     install_packages
+    install_progress_stage tcp
     choose_tcp_acceleration
     configure_tcp_acceleration
     configure_daily_reboot
+    install_progress_stage inputs
     collect_install_inputs
+    install_progress_stage core
     download_xray
     validate_reality_target_runtime
-    snapshot_fresh_install
-    INSTALL_ROLLBACK_ON_EXIT=0
+    install_progress_stage services
     xhttp_configure_ufw
     combined_ensure_dns
     combined_issue_certificates
@@ -811,27 +920,46 @@ install_all() {
     gcore_prepare_origin_validation_material
     write_nginx_config
     validate_protocol_runtime
-    cloudflare_finalize_certificate_rotation
-    combined_gcore_resource
+    combined_validate_cf_node_sni
+    install_progress_stage cloud
+    combined_gcore_resource || die "同步 Gcore CDN 资源失败"
     combined_validate_gcore
     persist_cloudflare_token
     persist_globalping_token
+    # 此刻还没有可用订阅，状态也未落盘：失败即回滚本机，云端资源保留并提示清理。
     refresh_globalping_cache \
-        || die "首次 Cloudflare 优选 IP 生成失败；本机与云端状态已保存，请稍后执行 sudo easy_all refresh-cdn-ips"
+        || die "首次 Cloudflare 优选 IP 生成失败；本机安装已回滚，云端资源保留，可稍后重试安装或先执行 sudo easy_all purge-cloudflare --all"
+    install_progress_stage subscription
     write_subscriptions
     validate_subscription_runtime
+    install_progress_stage state
     save_state
+    cloudflare_finalize_certificate_rotation
     register_easy_all_command
     install_globalping_refresh_timer
     gcore_clear_api_token
     release_runtime_write_lock
+    INSTALL_ROLLBACK_ON_EXIT=0
+    install_progress_clear
     show_subscription
     success "easy_all 组合模式安装完成（直连 + Cloudflare + Gcore）"
     show_tcp_acceleration_status
     prompt_bbrv3_reboot
 }
 
+combined_apply_owner_token() {
+    local raw=${1:-} normalized token
+    normalized=$(normalize_allowed_tokens "${raw}") || return 1
+    token=$(jq -er 'to_entries[0].value | select(type == "string" and length > 0)' <<<"${normalized}") || return 1
+    OWNER_TOKEN=${token}
+    ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
+}
+
 update_subscription() {
+    local raw_tokens="" caller_tokens=""
+    if [[ -n "${ALLOWED_TOKENS+x}" && "${ALLOWED_TOKENS}" != "$(jq -cn --arg token "${OWNER_TOKEN:-}" '{owner:$token}')" ]]; then
+        caller_tokens=${ALLOWED_TOKENS}
+    fi
     require_root
     acquire_runtime_write_lock
     collect_installed_state
@@ -840,14 +968,18 @@ update_subscription() {
             "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
         local prompt_default
         prompt_default=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
-        OWNER_TOKEN=$(jq -r 'to_entries[0].value' \
-            <<<"$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}")")
+        raw_tokens=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}")
+    else
+        raw_tokens=${caller_tokens:-${ALLOWED_TOKENS:-}}
     fi
+    combined_apply_owner_token "${raw_tokens}" \
+        || die "订阅用户 Token 无效；请使用 JSON 对象，例如 {\"owner\":\"$(generate_secret)\"}"
+    snapshot_subscription_update
     write_nginx_config
     write_subscriptions
     validate_subscription_runtime
     save_state
-    release_runtime_write_lock
+    commit_subscription_update
     show_subscription
     success "订阅已刷新"
 }
@@ -858,12 +990,15 @@ renew_certificate() {
     collect_installed_state
     cloudflare_collect_api_token
     CLOUDFLARE_ZONE_ID=$(cloudflare_lookup_parent_zone "${CF_ZONE}")
+    snapshot_subscription_update
     combined_issue_certificates 1
     nginx -t >/dev/null || die "证书更新后 Nginx 配置校验失败"
     systemctl reload nginx || die "证书更新后 Nginx 重载失败"
-    cloudflare_finalize_certificate_rotation
     save_state
-    release_runtime_write_lock
+    # 吊销不可逆，必须先关闭回滚再吊销，避免后续中断时恢复已吊销的旧证书。
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    cloudflare_finalize_certificate_rotation
+    commit_subscription_update
     success "证书已更新"
 }
 

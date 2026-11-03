@@ -25,6 +25,7 @@ for (const arg of ['help', '--help', '-h']) {
     assert.ok(res.stdout.includes('Bunny CDN'), 'Help should list Bunny CDN mode');
     assert.ok(res.stdout.includes('Gcore CDN'), 'Help should list Gcore CDN mode');
     assert.ok(res.stdout.includes('组合'), 'Help should list combined mode');
+    assert.ok(res.stdout.includes('cleanup-partial'), 'Help should list cleanup-partial');
 }
 
 // 2. Gcore 孤儿资源清理命令：帮助可用，且不依赖本机安装状态
@@ -35,6 +36,32 @@ assert.ok(purgeHelp.stdout.includes('purge-gcore'), 'purge-gcore help should sho
 const purgeCfHelp = run(easyAll, ['purge-cloudflare', '--help']);
 assert.equal(purgeCfHelp.status, 0, purgeCfHelp.stderr);
 assert.ok(purgeCfHelp.stdout.includes('purge-cloudflare'), 'purge-cloudflare help should show usage');
+
+// 2.5 中断安装自救命令：非 root 直接拒绝，不触碰任何文件
+if (process.getuid && process.getuid() !== 0) {
+    const cleanupPartial = run(easyAll, ['cleanup-partial'], {
+        EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE: join(tmpdir(), 'nonexistent-progress.env'),
+    });
+    assert.equal(cleanupPartial.status, 1, 'cleanup-partial must refuse non-root');
+    assert.ok(
+        cleanupPartial.stderr.includes('请使用 root 用户运行此脚本'),
+        'cleanup-partial should require root',
+    );
+}
+
+// 2.6 cleanup-partial 参数校验（root 之前就校验，非 root 环境也能覆盖）
+const cleanupHelp = run(easyAll, ['cleanup-partial', '--help']);
+assert.equal(cleanupHelp.status, 0, cleanupHelp.stderr);
+assert.ok(
+    cleanupHelp.stdout.includes('--assume-mode'),
+    'cleanup-partial help should document --assume-mode',
+);
+const cleanupBadMode = run(easyAll, ['cleanup-partial', '--assume-mode', 'nope']);
+assert.equal(cleanupBadMode.status, 1, 'unknown mode must be rejected');
+assert.ok(
+    cleanupBadMode.stderr.includes('不支持的安装模式'),
+    'cleanup-partial should reject unknown --assume-mode',
+);
 
 // 3. 未安装状态调用命令（关键失败场景）
 const uninstalledRes = run(easyAll, ['status'], {

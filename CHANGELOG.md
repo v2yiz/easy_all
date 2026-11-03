@@ -1,3 +1,30 @@
+## 2.2.0 更新说明（2026-11-03）
+
+- 新增 `easy_all cleanup-partial [--assume-mode <模式>]`：清理上次中断安装留下的本机残留（未安装状态使用，
+  不改动 Cloudflare/Gcore/Bunny 云端资源）。安装器现在写入安装进度标记
+  （`/var/lib/easy_all/install-progress.env`），重跑 `install` 时按标记识别残留并交互清理；旧版本没有标记的
+  残留需用 `--assume-mode` 显式指定模式。
+- 安装更抗中断：nginx 改为单独安装，并在那次 `apt` 调用内用 `policy-rc.d` 抑制包脚本自启（事务化、锁感知、
+  内容校验，失败自动重试），装完立即恢复；端口守卫区分"本次安装残留"与"第三方占用"并给出可执行指引，
+  不再把自身残留误报成"仅支持专用 VPS"。
+- 组合模式补首次安装回滚（`rollback_fresh_install`）：失败或中断时恢复本机服务、UFW、crontab 与 TCP 配置，
+  云端已创建资源按设计保留并提示 `purge-cloudflare` / `purge-gcore`。
+- 修复组合模式 Cloudflare 节点域名与回源 SNI/证书脱节：Origin CA 证书 SAN 与 Nginx `server_name` 同时覆盖
+  节点域名，`install` / `apply-cloud` 增加本机 SNI 验收；`status` 显示证书是否覆盖节点域名。
+- 修复组合模式 `edit-sub`：新 Token 立即生效（此前 Nginx 鉴权 map 仍使用旧值）；Token 输入统一走
+  `normalize_allowed_tokens`，空 Token 不再可能通过鉴权；订阅更新、`apply-cloud` 与 `renew-cert` 纳入事务，
+  可捕获失败会同时回滚证书、配置与状态，旧证书只在新状态落盘后才吊销。
+- 修复 `remove_daily_reboot_schedule` 在缺少 `CRON_REBOOT_MARKER` 的 Profile（Bunny）下可能清空 root crontab。
+- 写锁文件移至 `/var/lib/easy_all/runtime-write.lock`（不再随状态目录被清理删除），所有安装、卸载与清理入口
+  统一持锁。
+- 文档：建议在 `tmux`/`screen` 中执行安装；补充中断恢复、`TCP xx 已被占用`、旧版本无标记残留的排障步骤；
+  组合模式升级后**必须执行一次 `sudo easy_all apply-cloud`**（重签含节点域名的 Origin CA 证书）。
+
+已知限制：`SIGKILL`/OOM 不会回滚（仅 `die`/`SIGINT`/`SIGTERM`/`SIGHUP` 会），可执行 `easy_all status` 检查
+鉴权或证书是否与状态不一致，并按提示运行 `apply` 或 `apply-cloud` 恢复。
+
+源码版本标识为 `2.2.0`。
+
 ## 2.1.1 更新说明（2026-11-03）
 
 - 修复安装与清理命令的交互输入：命令行编辑改用 bash `read -e`（readline），方向键与 Ctrl-U/Ctrl-A/E

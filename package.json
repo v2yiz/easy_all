@@ -1,10 +1,12 @@
 {
   "name": "easy_all-tests",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node test/test_cli_e2e.mjs && node test/test_worker_e2e.mjs && bash test/test_xhttp_gcore.sh",
+    "test": "bash test/test_install_guard.sh && bash test/test_combined_render.sh && node test/test_cli_e2e.mjs && node test/test_worker_e2e.mjs && bash test/test_xhttp_gcore.sh",
+    "test:guard": "bash test/test_install_guard.sh",
+    "test:combined": "bash test/test_combined_render.sh",
     "test:cli": "node test/test_cli_e2e.mjs",
     "test:worker": "node test/test_worker_e2e.mjs",
     "test:gcore": "bash test/test_xhttp_gcore.sh",

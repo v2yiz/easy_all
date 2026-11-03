@@ -103,25 +103,29 @@ collect_subscription_link_domain() {
 }
 
 check_install_conflicts() {
-    local port
-    for port in 80 443; do
-        if ss -H -ltn "sport = :${port}" 2>/dev/null \
-            | awk 'NR {found=1} END {exit !found}'; then
-            die "TCP ${port} 已被占用；easy_all 仅支持专用 VPS"
-        fi
-    done
-    [[ ! -d /etc/easy_all ]] \
-        || die "检测到已有 easy_all 安装；一台 VPS 只允许一种模式"
+    prepare_fresh_install 80 443
 }
 
 install_packages() {
+    local nginx_active_before=unknown
+    command -v systemctl >/dev/null 2>&1 \
+        && nginx_active_before=$(systemctl is-active nginx 2>/dev/null || true)
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o DPkg::Lock::Timeout=300 update
     apt-get -o DPkg::Lock::Timeout=300 upgrade -y
     apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
-        ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw nginx \
+        ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw \
         fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
         systemd-timesyncd tar util-linux
+    # nginx 单独安装：包脚本会立即启动默认站点，必须在这一个 apt 调用内抑制自启，
+    # 否则 apt 期间的 SSH 断线就会把 80 端口留给下一次安装。
+    if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
+        # 已安装且未运行：apt 不会再触发 postinst 启动，直接安装即可。
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx
+    else
+        install_nginx_without_start nginx || die "安装 nginx 失败"
+    fi
+    quiet_freshly_installed_nginx "${nginx_active_before}"
     timedatectl set-timezone Asia/Shanghai
     timedatectl set-ntp true || die "无法启用网络时间同步"
 }
@@ -146,6 +150,9 @@ snapshot_fresh_install() {
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-crontab.missing"
     fi
     snapshot_tcp_runtime
+    # 完整性标记：清理只在快照全部拍完后才允许逐项恢复，否则「还没拍到」会被误当成
+    # 「安装前不存在」，把原有 fail2ban/SSH 配置删掉。
+    install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-complete"
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 

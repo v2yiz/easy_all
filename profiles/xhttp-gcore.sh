@@ -1684,6 +1684,17 @@ rollback_fresh_install() {
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
     gcore_clear_api_token
+    install_progress_clear
+}
+
+# 中断/失败后的本机清理：不触碰 Gcore/Cloudflare 云端资源，交给 purge 命令处理。
+cleanup_partial_install() {
+    cleanup_partial_install_local || return 1
+    uninstall_acme
+    remove_daily_reboot_schedule || true
+    cleanup_partial_install_files \
+        "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}" \
+        "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
 }
 
 install_all() {
@@ -1693,18 +1704,24 @@ install_all() {
     PROTOCOL="gcore"
     require_root
     require_systemd
+    acquire_runtime_write_lock
 
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
     check_install_conflicts
+    install_progress_begin gcore
+    install_progress_stage packages
     snapshot_fresh_install
     install_packages
     ensure_ssh_boot_service
+    install_progress_stage tcp
     choose_tcp_acceleration
     configure_tcp_acceleration
     configure_daily_reboot
+    install_progress_stage inputs
     collect_install_inputs
     gcore_prepare_origin
+    install_progress_stage services
     configure_ufw
     write_bootstrap_nginx_config
     issue_origin_certificate
@@ -1713,10 +1730,13 @@ install_all() {
     install_xray_service
     write_nginx_config
     validate_protocol_runtime
+    install_progress_stage cloud
     gcore_prepare_cdn_resources
+    install_progress_stage state
     save_state
     register_easy_all_command
     INSTALL_ROLLBACK_ON_EXIT=0
+    install_progress_clear
     persist_globalping_token
     install_globalping_refresh_timer
     install_quota_timer
@@ -1843,6 +1863,10 @@ uninstall_all() {
             '确认删除 easy_all Gcore CDN 本机服务、状态和证书？默认保留远端 Gcore 资源。[y/N]（直接回车取消）:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
+    stop_maintenance_services
+    acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
+    # 拿到写锁后重读状态，避免使用等待期间已被其他任务改写的旧值。
+    [[ ! -f "${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}" ]] || load_state
     if [[ "${mode}" == "--purge-cloud" ]]; then
         info "正在清理 Gcore CDN 远端资源..."
         gcore_purge_managed_resources \

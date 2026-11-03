@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.1.1](CHANGELOG.md#211-更新说明2026-11-03)。
+当前源码版本：[2.2.0](CHANGELOG.md#220-更新说明2026-11-03)。
 
 `easy_all` 是面向全新 Debian 12/13 VPS 的单节点交互安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。
@@ -107,6 +107,19 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 请原样执行，不要改成 `curl ... | sudo bash`。安装器需要持续从当前终端读取选项，并在需要时
 单独请求 `sudo` 权限。
 
+安装会连续执行 `apt` 升级、内核与 TCP 加速准备，可能持续十几分钟。期间 SSH 空闲超时会打断
+安装，因此建议在 `tmux` 或 `screen` 中执行：
+
+```bash
+sudo apt-get install -y tmux && tmux new -s easy_all
+# 掉线后重新登录：tmux attach -t easy_all
+```
+
+若安装仍被中断，重新登录后先执行 `sudo easy_all cleanup-partial` 清理本机残留（不改动
+Cloudflare/Gcore/Bunny 云端资源），再重新执行安装命令。命令尚未注册时改用
+`bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial`
+（不要写成 `sudo bash <(...)`：sudo 会关闭该文件描述符，脚本路径打不开；`bootstrap.sh` 自己会请求 sudo）。
+
 首次单用户安装可按以下方式选择：
 
 | 提示 | 建议 |
@@ -188,7 +201,9 @@ sudo easy_all apply
 ```
 
 `self-update` 不会自动修改当前部署。Cloudflare 模式只有在需要同步云端 DNS、证书、规则或
-Worker 时才使用 `sudo easy_all apply-cloud`。
+Worker 时才使用 `sudo easy_all apply-cloud`；组合模式升级到本版本后必须执行一次
+`sudo easy_all apply-cloud`（重签含节点域名的 Origin CA 证书），只跑 `apply` 不会重签证书，
+`status` 会显示证书未覆盖节点域名。组合模式的 `edit-sub`、`apply-cloud` 与 `renew-cert` 在可捕获终止（`die`、`SIGINT`、`SIGTERM`、`SIGHUP`）时会回滚本机配置、证书与状态；`SIGKILL`/OOM 不会回滚，可能留下“运行中鉴权/证书比状态文件新”的偏差。中断后请执行 `sudo easy_all status` 查看是否提示不一致：Token 偏差按提示执行 `sudo easy_all apply`，证书轮换后偏差执行 `sudo easy_all apply-cloud` 复核。
 
 已有 Cloudflare 部署要启用最新 Worker 聚合分组，执行：
 

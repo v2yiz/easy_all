@@ -52,6 +52,10 @@ cleanup() {
         INSTALL_ROLLBACK_ON_EXIT=0
         rollback_fresh_install || true
     fi
+    if declare -F recover_pending_service_policy >/dev/null 2>&1; then
+        recover_pending_service_policy \
+            || warn "恢复 policy-rc.d 事务失败：事务已保留，下次运行安装/清理会自动重试"
+    fi
     end_quota_maintenance || true
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"

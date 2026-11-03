@@ -10,7 +10,9 @@ readonly QUOTA_SERVICE="easy_all-quota.service"
 readonly QUOTA_TIMER="easy_all-quota.timer"
 readonly QUOTA_MAINTENANCE_FILE="${STATE_DIR}/quota-maintenance"
 readonly QUOTA_SYNC_PENDING_FILE="${STATE_DIR}/quota-sync-pending"
-readonly RUNTIME_WRITE_LOCK_FILE="${RUNTIME_WRITE_LOCK_FILE_OVERRIDE:-${STATE_DIR}/runtime-write.lock}"
+# 锁文件必须放在清理过程不会删除的目录：把锁放在 STATE_DIR 时，一次 cleanup/uninstall
+# 会删掉锁文件本身，持锁进程锁的是已 unlink 的 inode，第二个进程能新建同路径文件再拿到锁。
+readonly RUNTIME_WRITE_LOCK_FILE="${RUNTIME_WRITE_LOCK_FILE_OVERRIDE:-/var/lib/easy_all/runtime-write.lock}"
 
 RUNTIME_WRITE_LOCK_DEPTH=0
 QUOTA_MAINTENANCE_ACTIVE=0

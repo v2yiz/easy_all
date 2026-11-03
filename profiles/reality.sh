@@ -129,6 +129,9 @@ snapshot_fresh_install() {
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-enable-ipv6.missing"
     fi
     snapshot_tcp_runtime
+    # 完整性标记：清理只在快照全部拍完后才允许逐项恢复，否则「还没拍到」会被误当成
+    # 「安装前不存在」，把原有 fail2ban/SSH 配置删掉。
+    install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-complete"
     INSTALL_ROLLBACK_ON_EXIT=1
 }
 
@@ -565,10 +568,16 @@ collect_reality_inputs() {
 }
 
 check_install_conflicts() {
-    if ss -H -ltn "sport = :${SERVICE_PORT}" 2>/dev/null \
-        | awk 'NR {found=1} END {exit !found}'; then
-        die "TCP ${SERVICE_PORT} 已被占用；easy_all 仅支持专用 VPS"
-    fi
+    prepare_fresh_install "${SERVICE_PORT}"
+}
+
+# 中断/失败后的本机清理：不触碰 Cloudflare 订阅资源，交给 purge-cloudflare 处理。
+cleanup_partial_install() {
+    cleanup_partial_install_local || return 1
+    remove_daily_reboot_schedule || true
+    cleanup_partial_install_files \
+        "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}" \
+        "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
 }
 
 snapshot_ufw_state() {
@@ -1003,9 +1012,21 @@ rotate_dynamic_ports() {
 }
 
 install_subscription_dependencies() {
+    local nginx_active_before=unknown
+    command -v systemctl >/dev/null 2>&1 \
+        && nginx_active_before=$(systemctl is-active nginx 2>/dev/null || true)
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o DPkg::Lock::Timeout=300 update || return 1
-    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx cron libnginx-mod-http-js \
+    # nginx 单独装：包脚本会立刻启动默认站点，必须在其 apt 调用内抑制自启。
+    if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx \
+            || return 1
+    else
+        install_nginx_without_start nginx || return 1
+    fi
+    quiet_freshly_installed_nginx "${nginx_active_before}"
+    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
+        cron libnginx-mod-http-js \
         || return 1
     command -v nginx >/dev/null 2>&1 || die "Nginx 安装后不可用"
 }
@@ -2776,6 +2797,7 @@ rollback_fresh_install() {
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${COMMAND_INSTALL_DIR}" "${WEB_ROOT}"
+    install_progress_clear
     warn "首次安装产生的服务数据已清理；本次新装且未运行的 XanMod 包已尝试移除"
 }
 
@@ -2807,28 +2829,36 @@ run_reality_install_pipeline() {
     local requested=${1:-} prompt_download_name=${2:-0}
     require_root
     require_systemd
+    acquire_runtime_write_lock
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     info "[1/9] 检查系统"
     check_platform
     choose_protocol "${requested}"
     check_install_conflicts
     info "[2/9] 安装依赖并初始化服务器"
+    install_progress_begin reality
+    install_progress_stage packages
     snapshot_fresh_install
     install_packages
+    install_progress_stage tcp
     initialize_server
     info "[3/9] 收集 Reality 节点参数"
     collect_reality_inputs
+    install_progress_stage inputs
     info "[4/9] 选择并收集订阅输出参数"
     collect_subscription_inputs 1 "${prompt_download_name}"
     info "[5/9] 准备核心"
     prepare_protocol_assets
+    install_progress_stage services
     info "[6/9] 配置 UFW"
     configure_ufw
     info "[7/9] 安装并启动 ${PROTOCOL}"
     install_protocol_runtime
     validate_protocol_runtime
+    install_progress_stage subscription
     info "[8/9] 应用订阅输出配置"
     deploy_subscription_output
+    install_progress_stage state
     info "[9/9] 保存状态并注册 easy_all 命令"
     reality_cloudflare_finalize_certificate_rotation
     save_state
@@ -2836,6 +2866,7 @@ run_reality_install_pipeline() {
     configure_dynamic_port_rotation
     install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
+    install_progress_clear
     reality_cloudflare_clear_api_token
     show_subscription
     show_tcp_acceleration_status
