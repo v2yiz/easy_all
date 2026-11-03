@@ -1,3 +1,20 @@
+## 2.3.3 更新说明（2026-11-03）
+
+- 修复组合模式安装到写 Nginx 配置时崩溃：四个 `0.0.0.0:443` 的 server 块里有三个带套接字参数
+  （`backlog=4096` / `so_keepalive`），nginx 对同一 `addr:port` 上"两条 listen 都带套接字参数"直接报
+  `duplicate listen options`——与参数值是否相同无关（`src/http/ngx_http.c:1351`）。现在套接字参数只保留
+  在首块，其余三块为裸 `listen 443 ssl [http2];`，`default_server` 仍只留在首块。
+- 组合模式支持**多用户 Token 字典**：安装提示与 `easy_all edit-sub` 都接受
+  `{"user1":"token1","user2":"token2"}`；字典随状态持久化，Nginx 鉴权 map 会为每个 token 生成条目，
+  `show-sub` 也按用户逐条输出。单个 Token 的输入方式保持不变（自动包装为 `{"owner": ...}`）；
+  非交互可用 `ALLOWED_TOKENS='{"user1":"token1"}'` 直接注入。`OWNER_TOKEN` 继续表示字典中的第一个 token。
+- 多用户字典的交互输入只裁首尾空白：JSON 内部空白原样交给校验，避免 `{"user 1":…,"user1":…}`
+  被压成同名键而静默合并用户（非法用户名会按原样被拒绝，原字典不变）。
+- 测试：新增"套接字参数只能出现在一条 443 listen 上"、"多用户字典持久化 + Nginx map 覆盖每个 token"、
+  "含空格用户名被拒绝且字典不变"、"格式化 JSON 仍可接受"四组断言。
+
+源码版本标识为 `2.3.3`。
+
 ## 2.3.2 更新说明（2026-11-03）
 
 - 组合模式安装阶段统一校验订阅 Token：无论来自 `OWNER_TOKEN` 环境变量、交互确认还是自动生成，

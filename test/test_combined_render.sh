@@ -234,17 +234,18 @@ assert_equal "10b-xray: Xray xhttpSettings.host equals CF_NODE_DOMAIN" \
     nginx_supports_http2_directive() { return 1; }
     write_nginx_config
     conf_false=$(<"${NGINX_CONFIG}")
-    assert_contains "10d-false: legacy listen http2 present" "${conf_false}" "listen 443 ssl http2 default_server;"
+    assert_contains "10d-false: legacy listen http2 present" "${conf_false}" \
+        "listen 443 ssl http2 backlog=4096 so_keepalive=15s:5s:3 default_server;"
     assert_contains "10d-false: legacy listen http2 on XHTTP server" "${conf_false}" "listen 443 ssl http2 backlog=4096"
     assert_not_contains "10d-false: modern http2 directive absent" "${conf_false}" "http2 on;"
 )
 
-# 10e) combined_apply_owner_token 切换后 write_subscription_token_map 只含新值不含旧值
+# 10e) combined_apply_tokens 切换后 write_subscription_token_map 只含新值不含旧值
 # 注：normalize_allowed_tokens（lib/subscription-auth.sh:113）要求 token 长度 8-128，故用 token-A-123456 / token-B-123456
 ALLOWED_TOKENS='{"owner":"token-A-123456"}'
 OWNER_TOKEN="token-A-123456"
-combined_apply_owner_token '{"owner":"token-B-123456"}' \
-    || fail "10e: valid token should be accepted by combined_apply_owner_token"
+combined_apply_tokens '{"owner":"token-B-123456"}' \
+    || fail "10e: valid token should be accepted by combined_apply_tokens"
 assert_equal "10e: OWNER_TOKEN updated to B" "token-B-123456" "${OWNER_TOKEN}"
 assert_equal "10e: ALLOWED_TOKENS updated to B" '{"owner":"token-B-123456"}' "${ALLOWED_TOKENS}"
 token_map_output=$(write_subscription_token_map)
@@ -263,7 +264,7 @@ expected_state_before=$(<"${STATE_FILE}")
 expected_sub_before=$(<"${SUBSCRIPTION_BASE64_FILE}")
 
 for invalid_json in '{"owner":""}' '{}' '{"owner":1}' '{"": "token-valid-1234"}' '"not-an-object"'; do
-    if combined_apply_owner_token "${invalid_json}" 2>/dev/null; then
+    if combined_apply_tokens "${invalid_json}" 2>/dev/null; then
         fail "10f: invalid token input ${invalid_json} must return non-zero"
     fi
     assert_equal "10f: ALLOWED_TOKENS unchanged after ${invalid_json}" \
@@ -787,10 +788,10 @@ assert_block_line "ua-negotiation: mihomo format routes to yaml file" \
 # 15) 自定义订阅 Token 可选输入：合法值被采纳，非法值被拒绝（且不改动当前 Token）
 (
     kept=${OWNER_TOKEN}
-    combined_apply_owner_token '{"owner":"custom-token-2026"}'
+    combined_apply_tokens '{"owner":"custom-token-2026"}'
     [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
         || fail "token-input: valid custom token not applied"
-    if combined_apply_owner_token '{"owner":"short"}' 2>/dev/null; then
+    if combined_apply_tokens '{"owner":"short"}' 2>/dev/null; then
         fail "token-input: too-short token must be rejected"
     fi
     [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
@@ -811,6 +812,7 @@ assert_equal "token-input: non-interactive install never reads stdin for token" 
 
 # 17) 安装阶段 Token 校验：环境变量传入的非法值必须在改动云端资源前就被拒绝
 bad_install=$(
+    ALLOWED_TOKENS=""
     OWNER_TOKEN="short"
     combined_validate_install_owner_token 2>&1
 ) || true
@@ -823,11 +825,13 @@ install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
 assert_contains "token-validate: install inputs call the validator" \
     "${install_inputs_body}" "combined_validate_install_owner_token"
 (
+    ALLOWED_TOKENS=""
     OWNER_TOKEN="custom-token-2026"
     combined_validate_install_owner_token \
         || fail "token-validate: valid env token must pass"
 )
 bad_chars=$(
+    ALLOWED_TOKENS=""
     OWNER_TOKEN='bad;token"x'
     combined_validate_install_owner_token 2>&1
 ) || true
@@ -836,32 +840,36 @@ assert_contains "token-validate: unsafe characters rejected" "${bad_chars}" "订
 # 18) edit-sub 入口同时接受纯字符串与单用户 JSON，多用户字典必须明确拒绝
 plain_out=$(
     OWNER_TOKEN="placeholder-0000"
-    combined_apply_owner_token "my_plain_token_123"
+    combined_apply_tokens "my_plain_token_123"
     jq -r '.owner' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "token-input: plain string accepted in edit-sub" \
     "my_plain_token_123" "${plain_out}"
 
-renamed_out=$(
-    OWNER_TOKEN="placeholder-0000"
-    combined_apply_owner_token '{"alice":"alice-token-123"}' >/dev/null 2>&1
-    jq -r 'keys_unsorted | join(",")' <<<"${ALLOWED_TOKENS}"
+single_json_out=$(
+    combined_apply_tokens '{"alice":"alice-token-123"}' >/dev/null 2>&1
+    jq -r 'to_entries | map(.key + "=" + .value) | join(",")' <<<"${ALLOWED_TOKENS}"
 )
-assert_equal "token-input: single-user JSON is stored as owner" "owner" "${renamed_out}"
+assert_equal "token-input: single-user JSON keeps its user name" \
+    "alice=alice-token-123" "${single_json_out}"
 
 multi_out=$(
-    OWNER_TOKEN="keep-me-token-01"
-    combined_apply_owner_token '{"a":"token-aaaa-111","b":"token-bbbb-222"}' 2>&1
-    printf 'rc=%s owner=%s' "$?" "${OWNER_TOKEN}"
-) || true
-assert_contains "token-input: multi-user JSON is rejected explicitly" \
-    "${multi_out}" "只保存单个订阅 Token"
-assert_contains "token-input: rejected multi-user input keeps previous token" \
-    "${multi_out}" "owner=keep-me-token-01"
+    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
+    jq -r 'length' <<<"${ALLOWED_TOKENS}"
+)
+assert_equal "token-input: multi-user JSON keeps every user" "2" "${multi_out}"
+
+multi_owner=$(
+    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
+    printf '%s' "${OWNER_TOKEN}"
+)
+assert_equal "token-input: OWNER_TOKEN follows the first dictionary entry" \
+    "token-aaaa-111" "${multi_owner}"
 
 # 19) 历史状态里的非法 Token：load_state 只告警（否则 edit-sub / uninstall 都进不去），写配置前才强校验
 bad_state=$(
     OWNER_TOKEN="short"
+    ALLOWED_TOKENS=""
     save_state
     load_state 2>&1
     printf 'load_rc=%s' "$?"
@@ -872,6 +880,7 @@ assert_contains "token-validate: load_state still succeeds for recovery" \
     "${bad_state}" "load_rc=0"
 blocked_write=$(
     OWNER_TOKEN="short"
+    ALLOWED_TOKENS=""
     write_nginx_config 2>&1
 ) || true
 assert_contains "token-validate: writing nginx config rejects invalid token" \
@@ -880,9 +889,10 @@ assert_contains "token-validate: writing nginx config rejects invalid token" \
 # 20) 恢复闭环：非法旧状态能通过 edit-sub 的路径换成合法 Token 并成功落盘
 recovered=$(
     OWNER_TOKEN="short"
+    ALLOWED_TOKENS=""
     save_state
     load_state >/dev/null 2>&1
-    combined_apply_owner_token "restored-token-4821" >/dev/null 2>&1 \
+    combined_apply_tokens "restored-token-4821" >/dev/null 2>&1 \
         || fail "token-recovery: valid replacement rejected"
     write_nginx_config >/dev/null 2>&1 || fail "token-recovery: write failed after replacement"
     save_state
@@ -895,6 +905,7 @@ assert_equal "token-recovery: invalid old state fixed through edit-sub path" \
 # 21) 直接写订阅或状态的入口（定时刷新 / 续签 / 改 Reality 目标）在非法旧 Token 下也必须早退
 (
     OWNER_TOKEN="short"
+    ALLOWED_TOKENS=""
     save_state
 )
 for entry in refresh_combined_cdn_ips renew_certificate; do
@@ -917,5 +928,64 @@ assert_contains "token-validate: update_reality_target rejects invalid state tok
     combined_sync_allowed_tokens
     save_state
 )
+
+# 22) nginx 判定（src/http/ngx_http.c:1351）：同一 addr:port 上两条 listen 只要都带套接字参数
+#     （会置 lsopt.set=1 的 backlog/so_keepalive/reuseport/bind/ipv6only/deferred/fastopen/sndbuf/
+#      rcvbuf/setfib/multipath/accept_filter），即报 "duplicate listen options"，与参数值是否相同无关。
+#     因此套接字参数最多出现在一条 listen 上，且所有块的协议标记（ssl/http2）必须一致。
+write_nginx_config
+socket_opt_count=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
+    | grep -Ec 'backlog=|so_keepalive|reuseport|ipv6only|deferred|fastopen|sndbuf|rcvbuf|setfib|multipath|accept_filter|\bbind\b' || true)
+[[ "${socket_opt_count}" == "1" ]] \
+    || fail "nginx-listen: socket options must appear on exactly one 443 listen (found ${socket_opt_count})"
+protocol_variants=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
+    | sed -E -e 's/^[[:space:]]*//' -e 's/[[:space:]]*;[[:space:]]*$//' \
+    | sed -E -e 's/[[:space:]]*default_server//g' \
+    | sed -E -e 's/[[:space:]]*(backlog|so_keepalive|reuseport|ipv6only|deferred|fastopen|sndbuf|rcvbuf|setfib|multipath|accept_filter)=[^ ]*//g' \
+    | sed -E -e 's/[[:space:]]+/ /g' -e 's/[[:space:]]+$//' \
+    | LC_ALL=C sort -u)
+variant_count=$(printf '%s\n' "${protocol_variants}" | grep -c . || true)
+[[ "${variant_count}" == "1" ]] \
+    || fail "nginx-listen: 443 protocol flags differ across server blocks: ${protocol_variants//$'\n'/ | }"
+
+# 23) 多用户 Token 字典必须能持久化并在重新加载后保持
+multi_state=$(
+    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1 \
+        || fail "multi-token: dictionary rejected"
+    save_state
+    ALLOWED_TOKENS=""
+    OWNER_TOKEN=""
+    load_state >/dev/null 2>&1 || fail "multi-token: reload failed"
+    jq -r 'to_entries | map(.key + "=" + .value) | join(",")' <<<"${ALLOWED_TOKENS}"
+)
+assert_equal "multi-token: dictionary survives save/load" \
+    "user1=token-aaaa-111,user2=token-bbbb-222" "${multi_state}"
+multi_map=$(
+    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
+    write_nginx_config >/dev/null 2>&1 || fail "multi-token: nginx render failed"
+    grep -c '^    "token-bbbb-222" 1;$' "${NGINX_CONFIG}"
+)
+assert_equal "multi-token: every token is published in the nginx map" "1" "${multi_map}"
+
+# 24) JSON 内部空白必须保留：含空格的用户名要被拒绝，且原字典不被改写
+space_out=$(
+    combined_apply_tokens '{"keep1":"token-aaaa-111"}' >/dev/null 2>&1
+    before=${ALLOWED_TOKENS}
+    # 走交互入口的处理函数（只裁首尾空白），验证内部空格不会被压掉
+    if combined_apply_token_input '  {"user 1":"abcdefgh","user1":"ijklmnop"}  ' 'default' >/dev/null 2>&1; then
+        printf 'accepted'
+    else
+        printf 'rejected:%s' "$([[ "${ALLOWED_TOKENS}" == "${before}" ]] && echo unchanged || echo changed)"
+    fi
+) || true
+assert_equal "multi-token: user name with inner space is rejected" \
+    "rejected:unchanged" "${space_out}"
+
+pretty_out=$(
+    combined_apply_token_input '{ "user1" : "alice-token-123" , "user2" : "token-bbbb-222" }' 'default' >/dev/null 2>&1 \
+        || fail "multi-token: pretty-printed JSON rejected"
+    jq -r 'length' <<<"${ALLOWED_TOKENS}"
+)
+assert_equal "multi-token: pretty-printed JSON still accepted" "2" "${pretty_out}"
 
 printf 'ok - combined render\n'
