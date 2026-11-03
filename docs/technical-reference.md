@@ -456,21 +456,20 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
   └─ sub.<zone>           → 订阅文件（base64 / mihomo）
 ```
 
-- DNS 全部由同一个 Cloudflare Zone 管理，不把域名委派给任何 CDN 的 DNS。
+- DNS 仍由同一个 Cloudflare Zone 管理；只把 `_acme-challenge.<gcore 节点域名>` 以 NS 子域委派给 Gcore
+  用于 DNS-01，不整区委派。
 - `443` 只对 Cloudflare 与 Gcore 官方回源网段开放；直连入口走 `8443`；SSH 端口保持安装前状态，
   安装器不修改 sshd，也不回收 SSH 端口。
 - 证书：`cf-origin` 与 `sub` 用一张 Cloudflare Origin CA（SAN 两个名字）；`gcore-origin` 用
-  Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发，用 HTTP-01 通过
-  `gcore.<zone>` 的灰云 CNAME 验证，只覆盖该节点域名（订阅域名用上面的 Origin CA 证书，
-  `_acme-challenge` 不委派给 Gcore）。
-- 边缘就绪：Gcore CDN 资源新建后处于 `processed` 状态约 15 分钟，期间边缘不接流量、HTTP-01 必然
-  失败。安装器先轮询资源 `active` 且 `gcore.<zone>` 的 CNAME 解析到账户 CNAME（最多 30 分钟），
-  再让 Gcore 签发；证书 `FAILED` 时最多通过 `force-retry` 重试 2 次（间隔 60 秒）。证书已激活时
+  Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发，同样用 DNS-01——安装器把
+  `_acme-challenge.<gcore 节点域名>` 的 NS 委派建在 Cloudflare 里，证书只覆盖该节点域名（订阅域名用
+  上面的 Origin CA 证书）。
+- 边缘就绪：Gcore CDN 资源新建后处于 `processed` 状态约 15 分钟。安装器先轮询资源 `active` 且
+  `gcore.<zone>` 的 CNAME 解析到账户 CNAME（最多 30 分钟），再让 Gcore 签发；证书 `FAILED` 时最多
+  通过 `force-retry` 重试 2 次（间隔 120 秒，给 Gcore 准备 DNS-01 挑战区留时间）。证书已激活时
   幂等重跑直接跳过这些等待。
-- HTTP-01 规则：Gcore 不会默认在边缘应答 `/.well-known/acme-challenge/`，资源上必须有一条来自系统
-  模板「Let's Encrypt HTTP-01 challenge」的规则；安装器会幂等创建（已有同名/同路径规则则复用），
-  并用 `POST /cdn/resources/{id}/ssl/le/pre-validate` 探活后再重试签发。缺这条规则时挑战会回源，
-  源站要求 mTLS，边缘只能返回 502。
+- 挑战规则：Gcore 自己签发的证书要求资源上**不存在**匹配 `/.well-known/acme-challenge` 的规则
+  （存在会导致挑战回源、mTLS 源站返回 502）；安装器在签发前会删除这类规则。
 - 组合模式不改 SSH、不配置 Fail2ban；卸载时按安装前快照恢复 UFW 回源白名单与 `8443` 放行。
 - 组合模式安装时会用 `xray tls ping` 验收 Reality 伪装目标的 TLS 1.3 握手并比对 ASN（仅告警），
   `reality-target` 修改目标时先验收再落盘；Globalping Token 在应用参数阶段校验。

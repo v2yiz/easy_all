@@ -1,3 +1,18 @@
+## 2.4.10 更新说明（2026-11-03）
+
+- **修正组合模式 Gcore 边缘证书的挑战方式（2.4.8 方向错误）**：Gcore 支持邮件明确指出，资源上若存在
+  匹配 `/.well-known/acme-challenge` 的规则会导致证书签发报 502，必须删除该规则。现在改回 **DNS-01**：
+  安装器用 Cloudflare API 把 `_acme-challenge.<Gcore 节点域名>` 以 NS 委派给 Gcore 权威 NS（优先读
+  `/dns/v2/platform/info`，取不到用 `ns1.gcorelabs.net` / `ns2.gcdn.services`），并在签发前删除资源上
+  匹配挑战路径的遗留规则；`use_dns01_le_challenge` 重新置为 true。
+- 委派记录按目标 NS 幂等补齐，带 `easy_all combined` 注释；卸载/`purge-cloudflare` 只删注释匹配的记录，
+  不动用户自建的委派。Zone 仍由 Cloudflare 管理，只委派 `_acme-challenge` 子域。
+- `force-retry` 间隔从 60 秒放宽到 120 秒，给 Gcore 准备挑战区留时间。
+- 文档：组合模式不再宣称“不委派任何 CDN 的 DNS”；补充 DNS-01 委派与“资源上不要保留挑战规则”。
+- 测试：按用户要求不新增离线单测；规则删除、NS 委派幂等与 NS 来源回退用 /tmp 离线桩核对。
+
+源码版本标识为 `2.4.10`。
+
 ## 2.4.9 更新说明（2026-11-03）
 
 - **组合模式支持「续装」**：安装中断后再跑，同一模式检测到残留时优先询问「继续上次安装（保留已完成的

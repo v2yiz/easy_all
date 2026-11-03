@@ -385,101 +385,10 @@ gcore_edge_certificate_status() {
 }
 
 gcore_edge_certificate_hint() {
-    printf '（组合模式用 HTTP-01 签发：需要资源上存在来自系统模板的 "Let'\''s Encrypt HTTP-01 challenge" 规则，安装器会自动创建；另确认 %s 的灰云 CNAME 指向 Gcore 并已传播，CDN 资源新建后最长要约 15 分钟才会在所有边缘生效。残留的失败证书可先执行 sudo easy_all purge-gcore --domain %s,%s）' \
-        "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}"
+    printf '（组合模式用 DNS-01 签发：安装器会通过 Cloudflare 把 _acme-challenge.%s 以 NS 委派给 Gcore（ns1.gcorelabs.net / ns2.gcdn.services），并删掉资源上会阻断签发的 /.well-known/acme-challenge 规则；另确认 %s 的灰云 CNAME 指向 Gcore。Gcore 准备挑战区需要几分钟，可稍后重试。残留的失败证书可先执行 sudo easy_all purge-gcore --domain %s,%s）' \
+        "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}"
 }
 
-# Gcore 的 HTTP-01 默认不会在边缘直接应答，必须在资源上创建来自系统模板
-# "Let's Encrypt HTTP-01 challenge" 的规则（路径 /.well-known/acme-challenge/）；否则请求会被回源，
-# 而我们的源站要求 mTLS，边缘只能拿到 502（现场报错）。参考 Gcore 文档「Create and use CDN rule templates」。
-GCORE_LE_RULE_NAME="Let's Encrypt HTTP-01 challenge"
-# 可复用的规则必须：路径根就是 /.well-known/acme-challenge（带目录边界，排除 -backup 之类）、
-# ruleType 0、未被禁用。名字相同但路径/类型不符则终止，由用户删除或修正。
-
-gcore_ensure_le_http01_rule() {
-    local rules existing fixable by_name templates template payload response rule_id
-    rules=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules") || return 1
-    existing=$(gcore_json_items "${rules}" | jq -sr --arg name "${GCORE_LE_RULE_NAME}" '
-        def le_path: ((.rule // "") | sub("^\\^"; "") | test("^/\\.well-known/acme-challenge(/|$)"));
-        first(.[] | select(.deleted != true and .active != false
-            and ((.ruleType // 0) == 0) and le_path) | .id) // empty')
-    if [[ -n "${existing}" ]]; then
-        GCORE_LE_RULE_ID=${existing}
-        info "Gcore HTTP-01 验证规则已存在（ID ${existing}），跳过创建"
-        return 0
-    fi
-    # 路径对但被禁用（ruleType 0）的规则可以原地启用，不新建一个同名/同路径冲突的对象。
-    fixable=$(gcore_json_items "${rules}" | jq -sr '
-        def le_path: ((.rule // "") | sub("^\\^"; "") | test("^/\\.well-known/acme-challenge(/|$)"));
-        first(.[] | select(.deleted != true and le_path) | select((.ruleType // 0) == 0)) // empty')
-    if [[ -n "${fixable}" ]]; then
-        rule_id=$(jq -r '.id // empty' <<<"${fixable}")
-        payload=$(jq -c '{rule, ruleType: (.ruleType // 0), active: true}
-            + (if .name then {name} else {} end)' <<<"${fixable}")
-        gcore_api_request PUT "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules/${rule_id}" \
-            "${payload}" >/dev/null || return 1
-        GCORE_LE_RULE_ID=${rule_id}
-        info "已启用资源上被禁用的 HTTP-01 验证规则（ID ${rule_id}）"
-        return 0
-    fi
-    # 名字相同但路径/类型不对：不静默复用，也不硬删别人的规则。
-    by_name=$(gcore_json_items "${rules}" | jq -sr --arg name "${GCORE_LE_RULE_NAME}" '
-        first(.[] | select(.deleted != true and .name == $name) | .id) // empty')
-    if [[ -n "${by_name}" ]]; then
-        die "资源上已有同名规则「${GCORE_LE_RULE_NAME}」（ID ${by_name}），但路径不是 /.well-known/acme-challenge 或 ruleType 不是 0；请删除或修正后再试"
-    fi
-    templates=$(gcore_api_request GET "/cdn/resources/rule_templates?limit=100") || return 1
-    template=$(gcore_json_items "${templates}" | jq -sr --arg name "${GCORE_LE_RULE_NAME}" '
-        first(.[] | select(.name == $name)) // empty')
-    [[ -n "${template}" ]] || die "Gcore 账户没有系统规则模板「${GCORE_LE_RULE_NAME}」，HTTP-01 证书无法签发"
-    payload=$(jq -c --arg name "${GCORE_LE_RULE_NAME}" '{
-        name: $name,
-        rule: (.rule // "/.well-known/acme-challenge/"),
-        ruleType: 0,
-        active: true,
-        weight: 1
-    } + (if .options then {options: .options} else {} end)' <<<"${template}")
-    response=$(gcore_api_request POST "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules" "${payload}") || return 1
-    rule_id=$(jq -r '.id // empty' <<<"${response}")
-    [[ "${rule_id}" =~ ^[1-9][0-9]*$ ]] || die "创建 Gcore HTTP-01 验证规则失败"
-    GCORE_LE_RULE_ID=${rule_id}
-    info "已创建 Gcore HTTP-01 验证规则（ID ${rule_id}），证书验证由 Gcore 边缘自己应答"
-}
-
-# 规则刚创建时边缘配置可能还在下发；用 Gcore 的 pre-validate 接口探活，通过后再重试证书，
-# 避免白白消耗 force-retry。预检不可用或超时时只告警，不阻断后续签发尝试。
-gcore_wait_for_le_prevalidation() {
-    local attempts=${1:-20}
-    local interval=${2:-15}
-    local attempt response code body details="" start=${SECONDS}
-    for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-        if ! response=$(gcore_api_raw POST "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/ssl/le/pre-validate"); then
-            warn "HTTP-01 预检请求失败（网络错误）；继续尝试签发"
-            return 0
-        fi
-        code=${response##*$'\n'}
-        body=${response%$'\n'*}
-        case "${code}" in
-        200 | 201 | 204) return 0 ;;
-        400)
-            details=$(jq -c '.errors // .' <<<"${body}" 2>/dev/null || printf '%s' "${body}")
-            ;;
-        *)
-            warn "HTTP-01 预检返回 HTTP ${code:-未知}；继续尝试签发"
-            return 0
-            ;;
-        esac
-        if ((attempt == 1 || attempt % 4 == 0)); then
-            info "等待 Gcore HTTP-01 验证路径就绪（已等待 $((SECONDS - start)) 秒）：${details}"
-        fi
-        ((attempt == attempts)) || sleep "${interval}"
-    done
-    warn "HTTP-01 预检在 $((attempts * interval / 60)) 分钟内仍未通过；继续尝试签发，失败时会给出提示"
-    return 0
-}
-
-# 新建的 Gcore 资源会处于 processed 状态约 15 分钟，这期间边缘还没接流量，HTTP-01 必然失败。
-# 先等资源变成 active、且节点 CNAME 已解析到账户 CNAME，再申请或重试证书。
 gcore_wait_for_cdn_readiness() {
     local attempts=${1:-${GCORE_EDGE_READY_ATTEMPTS}}
     local interval=${2:-${GCORE_EDGE_READY_INTERVAL}}
@@ -551,16 +460,43 @@ gcore_wait_for_edge_certificate() {
     die "Gcore 边缘证书等待超时：ID=${certificate_id}，状态=${status:-unknown}，已等待 $((SECONDS - start)) 秒$(gcore_edge_certificate_hint)"
 }
 
-# 证书已经 ACTIVE 时直接返回，避免幂等重跑去等边缘就绪；否则先等资源/CNAME 就绪再申请或重试。
-# 就绪检查或状态读取失败必须向上传播，不能再拿未确认就绪的状态去 force-retry。
+# 组合模式的边缘证书改用 DNS-01：Gcore 在边缘不应答 HTTP 挑战（有 /.well-known/acme-challenge
+# 规则反而会把挑战回源，源站要求 mTLS，最终 502；Gcore 支持邮件也明确要求删除这类规则）。
+# DNS-01 依赖把 _acme-challenge.<节点域名> 以 NS 委派给 Gcore（由 Cloudflare API 自动创建）。
+gcore_remove_acme_challenge_rules() {
+    local rules ids id
+    [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[1-9][0-9]*$ ]] || return 0
+    rules=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules") || return 0
+    ids=$(gcore_json_items "${rules}" | jq -sr '
+        def le_path: ((.rule // "") | sub("^\\^"; "") | test("^/\\.well-known/acme-challenge(/|$)"));
+        .[] | select(.deleted != true and le_path) | .id')
+    while IFS= read -r id; do
+        [[ "${id}" =~ ^[1-9][0-9]*$ ]] || continue
+        if gcore_api_delete_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules/${id}"; then
+            info "已删除资源上的 /.well-known/acme-challenge 规则（ID ${id}）；Gcore 签发的证书要求不存在该规则"
+        else
+            warn "删除 /.well-known/acme-challenge 规则 ${id} 失败；若证书继续报 502，请在 Gcore 控制台删除"
+        fi
+    done <<<"${ids}"
+}
+
+# 账户的 Gcore 权威 NS：优先用官方平台信息接口，取不到就用文档中的固定值。
+gcore_challenge_nameservers() {
+    local response body ns1 ns2
+    response=$(gcore_api_raw GET "/dns/v2/platform/info" 2>/dev/null) || response=""
+    body=${response%$'\n'*}
+    ns1=$(jq -r '.settings.name_server_1 // .name_server_1 // empty' <<<"${body}" 2>/dev/null || true)
+    ns2=$(jq -r '.settings.name_server_2 // .name_server_2 // empty' <<<"${body}" 2>/dev/null || true)
+    printf '%s\n%s\n' "${ns1:-ns1.gcorelabs.net}" "${ns2:-ns2.gcdn.services}"
+}
+
 gcore_ensure_edge_certificate_ready() {
     local certificate_id=$1 status
-    # 规则必须存在：续期也靠它，所以证书已 ACTIVE 时也要核对/补齐。
-    gcore_ensure_le_http01_rule || return 1
+    # 续期也走 DNS-01；先清掉历史遗留的 HTTP-01 规则（它会让 Gcore 的挑战回源并 502）。
+    gcore_remove_acme_challenge_rules
     status=$(gcore_edge_certificate_status "${certificate_id}") || return 1
     if [[ "${status}" != "ACTIVE" && "${status}" != "DONE" ]]; then
         gcore_wait_for_cdn_readiness || return 1
-        gcore_wait_for_le_prevalidation
     fi
     gcore_wait_for_edge_certificate "${certificate_id}"
 }
@@ -647,7 +583,7 @@ gcore_ensure_resource() {
             websockets: {enabled: true, value: true},
             hostHeader: {enabled: true, value: $origin},
             redirect_http_to_https: {enabled: true, value: true},
-            use_dns01_le_challenge: {enabled: false, value: false},
+            use_dns01_le_challenge: {enabled: true, value: true},
             sni: {enabled: true, sni_type: "custom", custom_hostname: $origin},
             proxy_connect_timeout: {enabled: true, value: "5s"},
             edge_cache_settings: {enabled: true, value: "0s", custom_values: {}},

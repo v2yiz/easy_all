@@ -45,7 +45,7 @@ readonly GCORE_EDGE_READY_INTERVAL=15
 readonly GCORE_EDGE_PROPAGATION_ATTEMPTS=90
 readonly GCORE_EDGE_PROPAGATION_INTERVAL=10
 readonly GCORE_EDGE_FORCE_RETRIES=2
-readonly GCORE_EDGE_FORCE_RETRY_INTERVAL=60
+readonly GCORE_EDGE_FORCE_RETRY_INTERVAL=120
 readonly GCORE_CERT_FILE="${CERT_DIR}/gcore-origin.pem"
 readonly GCORE_KEY_FILE="${CERT_DIR}/gcore-origin.key"
 readonly GCORE_CLIENT_CA_FILE="${CERT_DIR}/gcore-client-ca.crt"
@@ -318,6 +318,26 @@ combined_ensure_dns() {
     dns_ensure_record "${SUBSCRIPTION_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
     GCORE_CDN_TARGET=$(gcore_cdn_target)
     dns_ensure_record "${GCORE_NODE_DOMAIN}" CNAME "${GCORE_CDN_TARGET}" false
+    combined_ensure_gcore_challenge_delegation
+}
+
+# DNS-01 需要把 _acme-challenge.<节点域名> 以 NS 委派给 Gcore（不需要整区委派）。
+# Cloudflare 的 NS 记录可用于子域委派，这里按目标 NS 幂等补齐，不删除已有记录。
+combined_ensure_gcore_challenge_delegation() {
+    local challenge="_acme-challenge.${GCORE_NODE_DOMAIN}" ns records existing payload
+    records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" NS "${challenge}")
+    while IFS= read -r ns; do
+        [[ -n "${ns}" ]] || continue
+        existing=$(jq -r --arg ns "${ns}" '
+            [.[] | select(((.content // "") | ascii_downcase) == ($ns | ascii_downcase))] | length' \
+            <<<"${records}")
+        ((existing > 0)) && continue
+        payload=$(jq -cn --arg name "${challenge}" --arg content "${ns}" \
+            --arg comment "${COMBINED_RECORD_COMMENT}" \
+            '{type:"NS",name:$name,content:$content,ttl:1,comment:$comment}')
+        cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" "${payload}" >/dev/null
+        info "已为 Gcore DNS-01 委派挑战子域：${challenge} NS ${ns}"
+    done < <(gcore_challenge_nameservers)
 }
 
 gcore_cdn_target() {
@@ -1264,6 +1284,15 @@ purge_combined_dns() {
                 || warn "删除 Cloudflare Gcore CNAME 失败"
         fi
     fi
+    # DNS-01 挑战子域的 NS 委派记录（只删带 easy_all 注释的，保留用户自建委派）
+    records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" NS \
+        "_acme-challenge.${GCORE_NODE_DOMAIN}")
+    while IFS=$'\t' read -r id comment; do
+        [[ -n "${id}" ]] || continue
+        [[ "${comment}" == "${COMBINED_RECORD_COMMENT}" ]] || continue
+        cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null \
+            || warn "删除 _acme-challenge 委派记录失败：${id}"
+    done < <(jq -r '.[] | [.id, (.comment // "")] | @tsv' <<<"${records}")
 }
 
 uninstall_all() {

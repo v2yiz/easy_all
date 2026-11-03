@@ -605,15 +605,14 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 需要准备：具备该 Zone DNS 编辑权限的 Cloudflare API Token、Gcore 的 CDN API Token、
 Globalping Token。云安全组放行 TCP `443`、`8443`；SSH 端口保持现状，安装器不会改动 sshd。
 
-`gcore` 子域名必须保持灰云 CNAME：Gcore 边缘证书用 HTTP-01 通过它签发，只覆盖这一个节点域名。
-安装器不会向 Gcore 委派 `_acme-challenge`，也不需要 Gcore Managed DNS。Gcore 要求资源上有一条来自
-系统模板「Let's Encrypt HTTP-01 challenge」的规则才会在边缘应答挑战；安装器会自己幂等创建，无需手动。
+`gcore` 子域名必须保持灰云 CNAME。Gcore 边缘证书用 **DNS-01** 签发：安装器会通过 Cloudflare API 自动把
+`_acme-challenge.<Gcore 节点域名>` 以 NS 委派给 Gcore 的权威 NS（优先读 `/dns/v2/platform/info`，取不到
+用 `ns1.gcorelabs.net` / `ns2.gcdn.services`），不需要整区委派，Zone 仍在 Cloudflare。Gcore 侧会自动准备
+挑战区；账户从未用过 Managed DNS 时 Free 计划一般会在首次使用自动激活。
+**资源上不要保留匹配 `/.well-known/acme-challenge` 的规则**——Gcore 自己签发的证书要求不存在该规则，
+安装器会自动清理历史规则。
 **首次创建 CDN 资源后，Gcore 最长要约 15 分钟才把配置下发到所有边缘**，安装器会在 cloud 阶段等资源
 变为 `active`（最多 30 分钟），期间日志会停在「等待 Gcore 边缘就绪」，不要中断安装。
-
-如果你仍想用 DNS-01（例如边缘网络长期无法回访 HTTP 挑战），需要自己把 `_acme-challenge.<节点域名>`
-委派给 Gcore 的权威 NS（`ns1.gcorelabs.net` / `ns2.gcdn.services`）并启用 Gcore Managed DNS；
-组合模式不执行这一步。
 订阅只使用一个 owner Token，不启用用户配额。
 
 Globalping Token 会在应用参数阶段调用 `/limits` 校验；Reality 伪装目标在下载核心后会用

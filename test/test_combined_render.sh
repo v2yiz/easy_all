@@ -1113,10 +1113,10 @@ assert_equal "gcore-resource: 证书查询失败返回 1 并还原变量" \
     "rc=1 sub=<unset> domain=cf.example.com certid=" "${cert_failed_gcore}"
 gcore_edge_certificate_id() { printf 'edge-cert-1'; }
 
-# 25d) 组合模式的 Gcore 边缘证书必须走 HTTP-01，且只覆盖节点域名。
-#      现场报错：`_acme-challenge.<域名> is not delegated to the Gcore nameservers`——组合模式的
-#      Zone 留在 Cloudflare，没有向 Gcore 委派 `_acme-challenge`，DNS-01 必然失败。
-#      订阅域名是橙云 A 指向 VPS，Gcore 也无法用 HTTP-01 验证它。
+# 25d) 组合模式的 Gcore 边缘证书走 DNS-01，且只覆盖节点域名。
+#      Gcore 自己签发的证书要求资源上不存在 /.well-known/acme-challenge 规则（存在会 502）；
+#      DNS-01 靠安装器在 Cloudflare 建 _acme-challenge 子域 NS 委派（单独用例覆盖）。
+#      订阅域名是橙云 A 指向 VPS，Gcore 无法验证它，因此边缘证书只覆盖节点域名。
 gcore_policy_out=$(
     # 上面的用例把 gcore_ensure_resource 等高层函数换成了 stub；这里恢复 lib 里的真实实现。
     source "${ROOT_DIR}/lib/gcore-cdn.sh"
@@ -1151,8 +1151,8 @@ gcore_policy_out=$(
     jq -c '{hosts: .secondaryHostnames, dns01: .options.use_dns01_le_challenge,
             redirect: .options.redirect_http_to_https}' "${bootstrap_out}"
 ) || fail "gcore-policy: ensure_resource failed"
-assert_equal "gcore-policy: 组合模式边缘证书走 HTTP-01 且只覆盖节点域名" \
-    '{"hosts":[],"dns01":{"enabled":false,"value":false},"redirect":{"enabled":false,"value":false}}' \
+assert_equal "gcore-policy: 组合模式边缘证书走 DNS-01 且只覆盖节点域名" \
+    '{"hosts":[],"dns01":{"enabled":true,"value":true},"redirect":{"enabled":false,"value":false}}' \
     "${gcore_policy_out}"
 
 # 25e) 上次安装留下 FAILED 边缘证书时，重新安装必须先落新配置再强制重试一次，而不是立即终止。
@@ -1228,7 +1228,7 @@ gcore_retry_out=$(
         "$(grep -c '^RAW POST /cdn/sslData/303/force-retry$' "${api_calls}")"
 ) || fail "gcore-retry: FAILED 证书重装路径失败"
 assert_equal "gcore-retry: 先落新配置、强制重试一次、证书激活后再开 HTTPS 跳转" \
-    "order=ok dns01=false hosts=[] redirect=true retries=1" "${gcore_retry_out}"
+    "order=ok dns01=true hosts=[] redirect=true retries=1" "${gcore_retry_out}"
 
 # 25f) 重试/重装不得强制重签 Gcore 回源证书：每次失败都重签会打满 Let's Encrypt 的
 #      “同一标识符集合 5 张/168h”限额（现场：too many certificates already issued）。
