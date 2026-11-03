@@ -300,11 +300,24 @@ gcore_ensure_origin_group() {
     GCORE_ORIGIN_GROUP_ID=$(jq -er '.id // empty' <<<"${response}")
 }
 
-gcore_edge_certificate_id() {
-    local name="easy_all-edge-${VLESS_CDN_DOMAIN}" certificates certificate_id response attempt
+gcore_edge_certificate_name_prefix() {
+    printf 'easy_all-edge-%s' "${VLESS_CDN_DOMAIN}"
+}
+
+# 列出 easy_all 托管（名称前缀匹配）的边缘证书 ID，按 ID 升序。
+gcore_list_edge_certificate_ids() {
+    local certificates
     certificates=$(gcore_api_request GET "/cdn/sslData") || return 1
-    certificate_id=$(gcore_json_items "${certificates}" | jq -sr --arg name "${name}" '
-        first(.[] | select(.name == $name and .automated == true and .deleted != true) | .id) // empty')
+    gcore_json_items "${certificates}" | jq -sr --arg prefix "$(gcore_edge_certificate_name_prefix)" '
+        [.[] | select(.automated == true and .deleted != true
+                      and ((.name // "") | startswith($prefix)))
+         | .id] | unique | sort | .[]'
+}
+
+gcore_edge_certificate_id() {
+    local name certificates certificate_id response attempt
+    name=$(gcore_edge_certificate_name_prefix)
+    certificate_id=$(gcore_list_edge_certificate_ids | tail -n 1)
     if [[ -z "${certificate_id}" ]]; then
         response=$(gcore_api_request POST "/cdn/sslData" \
             "$(jq -cn --arg name "${name}" '{name:$name,automated:true}')") || return 1
@@ -312,9 +325,7 @@ gcore_edge_certificate_id() {
         # Some API versions return an empty creation response and expose the object asynchronously.
         if [[ -z "${certificate_id}" ]]; then
             for ((attempt = 1; attempt <= 12; attempt += 1)); do
-                certificates=$(gcore_api_request GET "/cdn/sslData") || return 1
-                certificate_id=$(gcore_json_items "${certificates}" | jq -sr --arg name "${name}" '
-                    first(.[] | select(.name == $name and .automated == true and .deleted != true) | .id) // empty')
+                certificate_id=$(gcore_list_edge_certificate_ids | tail -n 1)
                 [[ -n "${certificate_id}" ]] && break
                 sleep 5
             done
@@ -324,8 +335,29 @@ gcore_edge_certificate_id() {
     printf '%s' "${certificate_id}"
 }
 
+# 证书的签发进程一旦结束（哪怕失败），Gcore 不再允许 force-retry；这时只能换一个新的
+# 证书对象重新走一轮签发。先创建新对象并附加到资源（旧证书随之脱离，不中断 HTTPS），
+# 再把旧对象删掉，避免下次安装又命中那个已完成的失败状态。
+gcore_reissue_edge_certificate() {
+    local old_id=$1 name response new_id
+    name="$(gcore_edge_certificate_name_prefix)-r$(date +%s)"
+    response=$(gcore_api_request POST "/cdn/sslData" \
+        "$(jq -cn --arg name "${name}" '{name:$name,automated:true}')") || return 1
+    new_id=$(jq -r '.id // empty' <<<"${response}")
+    if [[ -z "${new_id}" ]]; then
+        new_id=$(gcore_list_edge_certificate_ids | tail -n 1)
+    fi
+    [[ "${new_id}" =~ ^[1-9][0-9]*$ ]] || return 1
+    gcore_issue_edge_certificate "${new_id}" || return 1
+    if [[ "${old_id}" =~ ^[1-9][0-9]*$ && "${old_id}" != "${new_id}" ]]; then
+        gcore_api_delete_optional "/cdn/sslData/${old_id}" >/dev/null 2>&1 \
+            || warn "旧的失败证书对象 ${old_id} 未能删除；它已脱离资源，不影响签发"
+    fi
+    printf '%s' "${new_id}"
+}
+
 gcore_resolve_edge_certificate_id_for_purge() {
-    local resource certificates candidate status
+    local resource candidate status
     [[ "${GCORE_EDGE_CERTIFICATE_ID:-}" =~ ^[1-9][0-9]*$ ]] && return 0
     if [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
         if resource=$(gcore_api_get_optional \
@@ -340,12 +372,7 @@ gcore_resolve_edge_certificate_id_for_purge() {
             ((status == 4)) || return 1
         fi
     fi
-    certificates=$(gcore_api_request GET "/cdn/sslData") || return 1
-    candidate=$(gcore_json_items "${certificates}" | jq -sr \
-        --arg name "easy_all-edge-${VLESS_CDN_DOMAIN}" '
-        first(.[] | select(
-          .name == $name and .automated == true and .deleted != true
-        ) | .id) // empty')
+    candidate=$(gcore_list_edge_certificate_ids | tail -n 1)
     if [[ "${candidate}" =~ ^[1-9][0-9]*$ ]]; then
         GCORE_EDGE_CERTIFICATE_ID=${candidate}
     fi
@@ -435,7 +462,7 @@ gcore_wait_for_edge_certificate() {
     local certificate_id=$1
     local attempts=${2:-${GCORE_EDGE_PROPAGATION_ATTEMPTS}}
     local interval=${3:-${GCORE_EDGE_PROPAGATION_INTERVAL}}
-    local attempt state status details retries=0
+    local attempt state status details retries=0 reissued=0 new_certificate_id
     local start=${SECONDS}
     for ((attempt = 1; attempt <= attempts; attempt += 1)); do
         state=$(gcore_api_request GET "/cdn/sslData/${certificate_id}/status") \
@@ -461,10 +488,20 @@ gcore_wait_for_edge_certificate() {
             retries=$((retries + 1))
             info "Gcore 边缘证书签发失败，第 ${retries}/${GCORE_EDGE_FORCE_RETRIES} 次重试：${details}"
             if ! gcore_force_retry_edge_certificate "${certificate_id}"; then
-                # 签发进程已完成（常见报错 “already completed”）时 force-retry 不可用，
-                # 改用官方 Issue 接口重新请求一轮签发。
-                gcore_issue_edge_certificate "${certificate_id}" \
-                    || warn "Gcore 拒绝了 force-retry 与重新签发请求；继续等待签发状态"
+                # 签发进程已完成（报错 “already completed”）时 force-retry 不再可用，
+                # 原对象也不会自己重签：换一个新的证书对象重新请求一轮签发。
+                if ((reissued == 0)); then
+                    if new_certificate_id=$(gcore_reissue_edge_certificate "${certificate_id}"); then
+                        info "已重建边缘证书对象（ID ${new_certificate_id}），按 DNS-01 重新请求签发"
+                        certificate_id=${new_certificate_id}
+                        GCORE_EDGE_CERTIFICATE_ID=${new_certificate_id}
+                        reissued=1
+                    else
+                        warn "重建边缘证书对象失败；继续等待签发状态"
+                    fi
+                else
+                    warn "Gcore 未接受重试请求；继续等待签发状态"
+                fi
             fi
             sleep "${GCORE_EDGE_FORCE_RETRY_INTERVAL}"
             continue
@@ -664,7 +701,7 @@ gcore_ensure_resource() {
 }
 
 gcore_purge_managed_resources() {
-    local purge_failed=0
+    local purge_failed=0 edge_cert_id
     gcore_collect_api_token
     if ! gcore_resolve_edge_certificate_id_for_purge; then
         warn "无法识别 easy_all 托管的 Gcore 边缘证书"
@@ -679,9 +716,17 @@ gcore_purge_managed_resources() {
     [[ -z "${GCORE_ORIGIN_CLIENT_CERT_ID:-}" ]] \
         || gcore_api_delete_optional "/cdn/sslData/${GCORE_ORIGIN_CLIENT_CERT_ID}" \
             || purge_failed=1
-    [[ -z "${GCORE_EDGE_CERTIFICATE_ID:-}" ]] \
-        || gcore_api_delete_optional "/cdn/sslData/${GCORE_EDGE_CERTIFICATE_ID}" \
+    if [[ -n "${GCORE_EDGE_CERTIFICATE_ID:-}" ]]; then
+        gcore_api_delete_optional "/cdn/sslData/${GCORE_EDGE_CERTIFICATE_ID}" \
             || purge_failed=1
+    fi
+    # 重新签发会换新对象，旧对象可能已脱离资源但仍留在账号里；按名称前缀一并清掉。
+    while IFS= read -r edge_cert_id; do
+        [[ "${edge_cert_id}" =~ ^[1-9][0-9]*$ ]] || continue
+        [[ "${edge_cert_id}" == "${GCORE_EDGE_CERTIFICATE_ID:-}" ]] && continue
+        gcore_api_delete_optional "/cdn/sslData/${edge_cert_id}" \
+            || warn "删除残留的边缘证书 ${edge_cert_id} 失败；可在 Gcore 控制台手动删除"
+    done < <(gcore_list_edge_certificate_ids || true)
     [[ -z "${GCORE_ORIGIN_CA_ID:-}" ]] \
         || gcore_api_delete_optional "/cdn/sslCertificates/${GCORE_ORIGIN_CA_ID}" \
             || purge_failed=1

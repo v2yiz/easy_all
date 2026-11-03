@@ -1,3 +1,15 @@
+## 2.4.13 更新说明（2026-11-03）
+
+- **force-retry 被拒后 PATCH 同一张证书不会重签**（现场：`PATCH /cdn/resources/{id}` 返回 2xx，但状态仍是
+  `FAILED`、错误仍是历史 502）：证书对象的签发进程一旦结束，Gcore 不会再为它开新一轮。现在改为**重建证书
+  对象**：`POST /cdn/sslData`（`easy_all-edge-<域名>-r<时间戳>`）→ `PATCH /cdn/resources/{id}` 附加新证书
+  （旧证书随之脱离，不中断 HTTPS）→ 尽力删除旧对象，然后按新 ID 继续轮询。
+- 边缘证书查找改为**名称前缀** `easy_all-edge-<域名>` 并取最新 ID；`purge-gcore` 也按前缀清理残留在账号里的
+  旧对象。
+- 测试：按用户要求不新增离线单测；“FAILED → force-retry 被拒 → 重建对象 → DONE”路径用 /tmp 离线桩核对。
+
+源码版本标识为 `2.4.13`。
+
 ## 2.4.12 更新说明（2026-11-03）
 
 - **签发进程结束后 force-retry 被拒**（现场：`The certificate issuance process has already been completed.`）：
