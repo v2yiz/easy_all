@@ -9,6 +9,24 @@
 
 只支持 IPv4。同一台 VPS 只能安装一种模式，并应作为不承载其他业务的专用服务器。
 
+## 开始前：先配置 SSH 保活
+
+安装会连续跑十几分钟 `apt`、内核与 TCP 加速，SSH 空闲断开会直接中断安装，甚至把机器留在半配置状态。
+
+```bash
+# 本机 ~/.ssh/config（写一次，对所有 VPS 生效）
+Host *
+    ServerAliveInterval 30
+    ServerAliveCountMax 6
+    TCPKeepAlive yes
+```
+
+临时用法：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 <用户>@<IP> -p <端口>`。
+服务器侧也可以加 `/etc/ssh/sshd_config`：`ClientAliveInterval 60`、`ClientAliveCountMax 3`，
+再 `systemctl reload ssh`。
+
+仍然建议在 `tmux` 里执行；万一断开，重连后先 `sudo easy_all cleanup-partial`，再按原参数重跑。
+
 ## 选择模式
 
 | 模式 | 适用情况 | 协议与入口 |
