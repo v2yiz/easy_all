@@ -68,8 +68,12 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 
 ## 3. 安装参数示例
 
+复制下面示例、改域名与 Token 后粘贴成 `params.json`，再校验安装：
+
 ```bash
-sudo easy_all install --print-params --mode bunny-ws > params.json
+cat > params.json <<'JSON'
+{ ...粘贴改好的示例... }
+JSON
 sudo easy_all params.json --check-params
 sudo easy_all params.json
 ```

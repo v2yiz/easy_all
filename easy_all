@@ -87,7 +87,7 @@ launcher_usage() {
   <参数文件> --check-params
                    只校验参数，不修改本机
   install --print-params --mode <模式>
-                   输出参数模板（JSON 到 stdout，字段说明到 stderr）
+                   查看全部字段（JSON 到 stdout；安装用上面的完整示例即可）
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -329,8 +329,8 @@ Cloudflare 代理回本机 8443 且只允许 Cloudflare 回源，Token 与配额
 TCP 加速：所有链路默认直接安装并启用 Skyline Speeder（Linux 6.12+ 内核；旧内核会自动安装兼容内核，安装结束后提示重启一次，开机自动启用）。
 
 安装方式（唯一路径，不再提供交互安装）：
-  1. easy_all install --print-params --mode <模式> > params.json
-  2. 按字段说明填好后：easy_all params.json --check-params
+  1. 从 docs/params-examples.md 复制对应模式的完整示例，改域名与 Token 后存成 params.json
+  2. 先校验：easy_all params.json --check-params（也可用 install --print-params 查全部字段）
   3. 校验通过后执行：sudo easy_all params.json
 参数文件包含 API Token：安装成功后会自动删除；中途失败会保留，排查后请自行删除。
 EOF
@@ -341,7 +341,7 @@ install_usage() {
 用法: easy_all <参数文件>                     安装（最简形式；安装成功后会自动删除该文件）
       easy_all install <参数文件>               同上
       easy_all <参数文件> --check-params        只校验参数，不修改本机
-      easy_all install --print-params --mode <模式>   输出参数模板（JSON 到 stdout）
+      easy_all install --print-params --mode <模式>   查看全部字段（JSON 到 stdout）
 
   也接受 --params <参数文件> 写法；参数文件用 - 表示从标准输入读取，此时需配合 --mode。
   --mode 可用：1|reality 2|cloudflare-streamup 3|bunny-ws 4|gcore 5|combined
@@ -413,7 +413,7 @@ install_command() {
     [[ -n "${params_file}" ]] || {
         install_usage >&2
         show_install_guide
-        launcher_die "请提供参数文件：easy_all <参数文件>（参数文件用 --print-params --mode <模式> 生成）"
+        launcher_die "请提供参数文件：easy_all <参数文件>（示例见 docs/params-examples.md；全部字段可查 easy_all install --print-params --mode <模式>）"
     }
     if ((check_only == 0)); then
         [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"

@@ -96,16 +96,19 @@ SSH 会话，直到重启后确认新会话可以登录。服务商的安全组�
 
 ```bash
 ssh <登录用户>@<VPS公网IP> -p <SSH端口>
-# 在 VPS 上：生成模板 → 填好 → 校验 → 安装
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) \
-    install --print-params --mode combined > params.json
+
+# 1. 把下面「安装参数」里的完整示例复制到本机编辑器，改域名与 <...>
+# 2. 粘贴到 VPS 上（heredoc 原样写入），然后校验、安装
+cat > params.json <<'JSON'
+{ ...粘贴改好的示例... }
+JSON
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) params.json --check-params
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) params.json
 ```
 
 - bootstrap 会克隆代码并把参数原样转给 `easy_all`；请原样执行，不要写成 `curl ... | sudo bash`。
-- 只需填 `CF_ZONE` 与三个 Token，其余留空用默认值（模板的字段说明走 stderr）。**安装成功会自动删除
-  参数文件**；中途失败会保留，排查后请自行删除。
+- 组合模式只改 `CF_ZONE` 与三个 Token，其余字段留空即用默认值。**安装成功会自动删除参数文件**；
+  中途失败会保留，排查后请自行删除。
 - 安装约十几分钟（`apt`、内核、TCP 加速），建议在 `tmux` 里执行；中断后先 `sudo easy_all cleanup-partial`
   再重试（命令未注册时用 `... bootstrap.sh cleanup-partial`）。
 
@@ -116,7 +119,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 ```bash
 sudo easy_all params.json                          # 安装（最简形式，文件名任意 .json）
 sudo easy_all params.json --check-params           # 只校验，不改本机
-sudo easy_all install --print-params --mode gcore > params.json   # 生成模板
 ```
 
 `install params.json`、`install --params params.json` 与 `params.json` 等价；从标准输入读取用
