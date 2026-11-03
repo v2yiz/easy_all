@@ -1,3 +1,22 @@
+## 2.3.1 更新说明（2026-11-03）
+
+- 可选模板 `mihomo-classic.yaml` 全部改为 MRS 规则集：删除 `geodata-mode` / `geodata-loader` /
+  `geo-auto-update` / `geox-url`（不再下载并常驻 `geosite.dat`、`geoip.dat`），把 `GEOSITE` / `GEOIP`
+  规则与 `geosite:` / `geoip:` 的 DNS 引用改为 14 个 `format: mrs` 的 rule-provider。
+  客户端内存与磁盘占用随之下降；代价是该模板要求内核支持 `format: mrs`（mihomo 1.18+）。
+  转换时保留了 `no-resolve` 语义（含逻辑规则里的 `AND,...(RULE-SET,geoip-cn,no-resolve)`），避免多出 DNS 解析。
+- 核对 `nameserver-policy` 的写法并加了防误改断言：按 mihomo `config/config.go:parseNameServerPolicy`，
+  键含逗号时只识别**第一个**前缀，并把该前缀套用到逗号分隔的每一段。因此既有写法
+  `'rule-set:private-fallback,geosite-private'` 本来就正确；若给每段都加前缀，反而会得到
+  `rule-set:rule-set:geosite-private` 这类永不匹配的键。模板保持原写法，测试新增"首段须带前缀、
+  后续段须不带前缀"的断言。
+- 新增 `test/test_mihomo_template_lint.sh`（已纳入 `npm test`）：校验三个模板不再依赖 geodata/.dat、
+  所有 http 规则集必须是 mrs、不得残留 `geosite:`/`geoip:` 引用、`rule-set` 引用不得悬空、
+  `nameserver-policy` 首段须带前缀且逗号后各段不得重复前缀，且这些逗号段本身也必须是已定义的
+  rule-set；provider 属性行允许行尾注释（先剔除注释再判定 `type` / `format`）。
+
+源码版本标识为 `2.3.1`。
+
 ## 2.3.0 更新说明（2026-11-03）
 
 - 修复组合模式首次安装在订阅阶段崩溃：首次安装不经过 `load_state`，`ALLOWED_TOKENS` 从未初始化，

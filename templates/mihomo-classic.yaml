@@ -1,5 +1,6 @@
-# 经典订阅模板（可选）：geodata 模式、国内 DNS 分流、Clash Party 与 FCM 兼容。
+# 经典订阅模板（可选）：面向需要 FCM/微信真实 IP 的老客户端；规则集已全部改为 MRS 二进制格式。
 # 默认发布使用 templates/mihomo.yaml；需要本模板时用 MIHOMO_TEMPLATE_SOURCE 指定。
+# 注意：本模板要求客户端内核支持 rule-providers 的 format: mrs（mihomo 1.18+）。
 
 mixed-port: 1080
 allow-lan: false
@@ -9,13 +10,6 @@ ipv6: false
 external-controller: '127.0.0.1:9090'
 unified-delay: false
 tcp-concurrent: true
-geodata-mode: true
-geodata-loader: memconservative
-geo-auto-update: true
-geo-update-interval: 24
-geox-url:
-    geoip: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat'
-    geosite: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat'
 profile:
     store-selected: true
     store-fake-ip: true
@@ -71,9 +65,9 @@ dns:
     fake-ip-filter-mode: blacklist
     fake-ip-filter:
       # Android FCM 可能绕过 VPN，推送长连接不能使用仅在 TUN 内有效的 Fake-IP。
-      - 'geosite:googlefcm'
-      - 'geosite:cn'
-      - 'geosite:private'
+      - 'rule-set:geosite-googlefcm'
+      - 'rule-set:geosite-cn'
+      - 'rule-set:geosite-private'
       - 'rule-set:captive-portal'
       - '+.10jqka.com.cn'
       # 微信图片、头像、小程序资源在 TUN + Fake-IP 下必须返回真实 IP。
@@ -154,10 +148,10 @@ dns:
       - speedtest.cros.wr.pvp.net
     nameserver-policy:
       # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
-      'geosite:private': system
+      'rule-set:geosite-private': system
       'rule-set:captive-portal': system
       # 明确代理的服务优先于完整 cn 集合，避免重叠域名查询国内 DNS。
-      'geosite:google,github,openai,anthropic':
+      'rule-set:geosite-google,geosite-github,geosite-openai,geosite-anthropic':
         - 'https://1.1.1.1/dns-query#PROXY'
         - 'https://8.8.8.8/dns-query#PROXY'
       'rule-set:proxy-services':
@@ -167,10 +161,10 @@ dns:
       'rule-set:direct-cdn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
-      'geosite:apple-cn,microsoft@cn':
+      'rule-set:geosite-apple-cn,geosite-microsoft-cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
-      'geosite:cn,geolocation-cn':
+      'rule-set:geosite-cn,geosite-geolocation-cn':
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query
     # 未命中策略且确需真实解析的公网域名统一通过代理查询。
@@ -261,6 +255,99 @@ rule-providers:
         - '+.ugdtimg.com'
         - '+.id6.me'
 
+    # MRS 规则集：二进制格式，内存远低于 YAML/DAT；本模板不再加载 geosite.dat/geoip.dat。
+    geosite-private:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.mrs'
+        path: ./ruleset/geosite-private.mrs
+    geosite-googlefcm:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/googlefcm.mrs'
+        path: ./ruleset/geosite-googlefcm.mrs
+    geosite-google:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.mrs'
+        path: ./ruleset/geosite-google.mrs
+    geosite-github:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/github.mrs'
+        path: ./ruleset/geosite-github.mrs
+    geosite-openai:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/openai.mrs'
+        path: ./ruleset/geosite-openai.mrs
+    geosite-anthropic:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/anthropic.mrs'
+        path: ./ruleset/geosite-anthropic.mrs
+    geosite-apple-cn:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple-cn.mrs'
+        path: ./ruleset/geosite-apple-cn.mrs
+    geosite-microsoft-cn:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/microsoft@cn.mrs'
+        path: ./ruleset/geosite-microsoft-cn.mrs
+    geosite-cn:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.mrs'
+        path: ./ruleset/geosite-cn.mrs
+    geosite-geolocation-cn:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/geolocation-cn.mrs'
+        path: ./ruleset/geosite-geolocation-cn.mrs
+    geosite-ai-chat:
+        type: http
+        behavior: domain
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ai-chat-!cn.mrs'
+        path: ./ruleset/geosite-ai-chat.mrs
+    geoip-cn:
+        type: http
+        behavior: ipcidr
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs'
+        path: ./ruleset/geoip-cn.mrs
+    geoip-telegram:
+        type: http
+        behavior: ipcidr
+        format: mrs
+        interval: 86400
+        url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs'
+        path: ./ruleset/geoip-telegram.mrs
+
 # 直连 Mieru 节点由订阅/Worker 以 type: mieru 注入，模板本身不放置占位凭据。
 proxies:
 # EASY_ALL_PROXY_NODE
@@ -281,7 +368,7 @@ rules:
   # 项目服务与 Steam 下载直连；社区由 proxy-services 单独代理。
   - RULE-SET,direct-cdn,DIRECT
   # 局域网直连。
-  - GEOSITE,private,DIRECT
+  - RULE-SET,geosite-private,DIRECT
   # 零地址拒绝优先于 LAN；DNS 黑洞结果不得进入直连或代理出口。
   - IP-CIDR,0.0.0.0/8,REJECT,no-resolve
   - GEOIP,LAN,DIRECT,no-resolve
@@ -293,35 +380,35 @@ rules:
 # EASY_ALL_WORKER_RULE
   # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口。
   # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,google)),REJECT
-  - GEOSITE,google,PROXY
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT
+  - RULE-SET,geosite-google,PROXY
   # 明确代理的 AI 及服务例外优先于 CN/微软直连，且不能绕过 QUIC 拒绝。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,github)),REJECT
-  - GEOSITE,github,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,openai)),REJECT
-  - GEOSITE,openai,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,anthropic)),REJECT
-  - GEOSITE,anthropic,PROXY
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-github)),REJECT
+  - RULE-SET,geosite-github,PROXY
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-openai)),REJECT
+  - RULE-SET,geosite-openai,PROXY
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-anthropic)),REJECT
+  - RULE-SET,geosite-anthropic,PROXY
   - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,proxy-services)),REJECT
   - RULE-SET,proxy-services,PROXY
   # 国内 CDN 与上方国内 DNS 策略对齐，保留直连下载及 QUIC。
-  - GEOSITE,apple-cn,DIRECT
-  - GEOSITE,microsoft@cn,DIRECT
+  - RULE-SET,geosite-apple-cn,DIRECT
+  - RULE-SET,geosite-microsoft-cn,DIRECT
   # 完整国内域名集合；Google、AI 与 .ms 例外已在上方优先处理。
   # 国内 QUIC 例外只匹配已有目标 IP；未知域名不会仅为 GEOIP 判断额外解析。
-  - GEOSITE,cn,DIRECT
-  - GEOSITE,geolocation-cn,DIRECT
-  - AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN,no-resolve)),DIRECT
+  - RULE-SET,geosite-cn,DIRECT
+  - RULE-SET,geosite-geolocation-cn,DIRECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geoip-cn,no-resolve)),DIRECT
   # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
   # 其余 AI 分类保留在 CN 后，避免把 Kimi 等重叠服务无条件改成代理。
-  - GEOSITE,category-ai-chat-!cn,PROXY
+  - RULE-SET,geosite-ai-chat,PROXY
   # Telegram 专属 IP 段代理
-  - GEOIP,telegram,PROXY,no-resolve
+  - RULE-SET,geoip-telegram,PROXY,no-resolve
   # CN GeoIP 兜底只匹配已有目标 IP；未知域名不会仅为 GEOIP 判断额外解析，
   # 未命中域名集合时交给 MATCH,PROXY。需要覆盖未收录国内域名时应扩充域名集合。
-  - GEOIP,CN,DIRECT,no-resolve
+  - RULE-SET,geoip-cn,DIRECT,no-resolve
   # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY
