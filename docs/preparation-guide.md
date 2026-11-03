@@ -606,9 +606,10 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 Globalping Token。云安全组放行 TCP `443`、`8443`；SSH 端口保持现状，安装器不会改动 sshd。
 
 `gcore` 子域名必须保持灰云 CNAME：Gcore 边缘证书用 HTTP-01 通过它签发，只覆盖这一个节点域名。
-安装器不会向 Gcore 委派 `_acme-challenge`，也不需要 Gcore Managed DNS。**首次创建 CDN 资源后，
-Gcore 最长要约 15 分钟才把配置下发到所有边缘**，安装器会在 cloud 阶段等资源变为 `active`（最多
-30 分钟），期间日志会停在「等待 Gcore 边缘就绪」，不要中断安装。
+安装器不会向 Gcore 委派 `_acme-challenge`，也不需要 Gcore Managed DNS。Gcore 要求资源上有一条来自
+系统模板「Let's Encrypt HTTP-01 challenge」的规则才会在边缘应答挑战；安装器会自己幂等创建，无需手动。
+**首次创建 CDN 资源后，Gcore 最长要约 15 分钟才把配置下发到所有边缘**，安装器会在 cloud 阶段等资源
+变为 `active`（最多 30 分钟），期间日志会停在「等待 Gcore 边缘就绪」，不要中断安装。
 
 如果你仍想用 DNS-01（例如边缘网络长期无法回访 HTTP 挑战），需要自己把 `_acme-challenge.<节点域名>`
 委派给 Gcore 的权威 NS（`ns1.gcorelabs.net` / `ns2.gcdn.services`）并启用 Gcore Managed DNS；

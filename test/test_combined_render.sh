@@ -1130,6 +1130,8 @@ gcore_policy_out=$(
     bootstrap_out="${TMP_DIR}/gcore-policy-bootstrap.json"
     sleep() { :; }
     gcore_edge_certificate_id() { printf '303'; }
+    gcore_ensure_le_http01_rule() { :; }
+    gcore_wait_for_le_prevalidation() { :; }
     gcore_api_request() {
         local call="$1 $2" payload=${3:-}
         if [[ "${call}" == "GET /cdn/resources" ]]; then
@@ -1208,6 +1210,8 @@ gcore_retry_out=$(
     # 资源就绪门与状态查询在本用例里固定，集中验证“先落配置 → 强制重试 → 激活后再开跳转”的顺序。
     gcore_wait_for_cdn_readiness() { :; }
     gcore_edge_certificate_status() { printf 'PENDING'; }
+    gcore_ensure_le_http01_rule() { :; }
+    gcore_wait_for_le_prevalidation() { :; }
     gcore_ensure_resource >/dev/null 2>&1 || exit 3
     bootstrap_line=$(grep -n '^PUT bootstrap$' "${api_calls}" | cut -d: -f1)
     retry_line=$(grep -n '^RAW POST /cdn/sslData/303/force-retry$' "${api_calls}" | cut -d: -f1)
@@ -1420,6 +1424,8 @@ gcore_ready_gate=$(
     : >"${calls}"
     gcore_wait_for_cdn_readiness() { printf 'readiness\n' >>"${calls}"; }
     gcore_wait_for_edge_certificate() { printf 'cert:%s\n' "$1" >>"${calls}"; }
+    gcore_ensure_le_http01_rule() { :; }
+    gcore_wait_for_le_prevalidation() { :; }
     gcore_edge_certificate_status() { printf 'ACTIVE'; }
     gcore_ensure_edge_certificate_ready 303 || exit 3
     active_calls=$(tr '\n' ',' <"${calls}")
@@ -1442,6 +1448,8 @@ gcore_ready_failure=$(
     gcore_edge_certificate_status() { printf 'PENDING'; }
     gcore_wait_for_cdn_readiness() { return 1; }
     gcore_wait_for_edge_certificate() { printf 'cert-wait\n' >>"${calls}"; }
+    gcore_ensure_le_http01_rule() { :; }
+    gcore_wait_for_le_prevalidation() { :; }
     if gcore_ensure_edge_certificate_ready 303; then rc=accepted; else rc=rejected; fi
     printf 'rc=%s cert_wait=%s' "${rc}" "$(grep -c '^cert-wait$' "${calls}" || true)"
 ) || fail "gcore-readiness: 就绪失败传播用例执行失败"

@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.4.7](CHANGELOG.md#247-更新说明2026-11-03)。
+当前源码版本：[2.4.8](CHANGELOG.md#248-更新说明2026-11-03)。
 
 `easy_all` 是面向全新 Debian 12/13 VPS 的单节点安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。

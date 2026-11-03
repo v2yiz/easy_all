@@ -1,3 +1,17 @@
+## 2.4.8 更新说明（2026-11-03）
+
+- **修复 Gcore 边缘证书 HTTP-01 报 502**（现场：`A 502 error occurred when attempting to connect to the
+  validation URL`）：Gcore 不会默认在边缘应答 `/.well-known/acme-challenge/`，必须先在 CDN 资源上创建
+  来自系统模板「Let's Encrypt HTTP-01 challenge」的规则；否则挑战请求会回源，组合模式源站要求 mTLS，
+  边缘只能拿到 502。现在 `gcore_ensure_edge_certificate_ready` 会幂等创建该规则（已有同名或同路径
+  规则就复用），并用 `POST /cdn/resources/{id}/ssl/le/pre-validate` 探活挑战路径，通过后再重试签发；
+  预检接口不可用或超时只告警，不阻断。
+- 规范：只有**用户角度的端到端用例**才值得沉淀为测试；这次只在本地用离线桩核对规则创建/复用/启用、
+  预检 400→201/5xx/403 与就绪门顺序，没有新增离线单测（既有组合测试只补了必要 stub）。
+- 文档：技术参考与前置准备补充「组合模式必须先在资源上有 HTTP-01 规则，安装器自动创建」。
+
+源码版本标识为 `2.4.8`。
+
 ## 2.4.7 更新说明（2026-11-03）
 
 - **Gcore 等待阶段有进度输出**：新建资源激活 + 证书签发可能合计十几分钟，之前只有首行提示，之后长时间
