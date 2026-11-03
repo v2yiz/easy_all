@@ -444,6 +444,8 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 - 证书：`cf-origin` 与 `sub` 用一张 Cloudflare Origin CA（SAN 两个名字）；`gcore-origin` 用
   Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发。
 - 组合模式不改 SSH、不配置 Fail2ban；卸载时按安装前快照恢复 UFW 回源白名单与 `8443` 放行。
+- 组合模式安装时会用 `xray tls ping` 验收 Reality 伪装目标的 TLS 1.3 握手并比对 ASN（仅告警），
+  `reality-target` 修改目标时先验收再落盘；Globalping Token 在输入阶段校验。
 - TLS 版本：源站 Nginx 固定 `TLSv1.2 TLSv1.3`；Gcore CDN 资源同时下发
   `options.tls_versions={enabled:true,value:["TLSv1.2","TLSv1.3"]}`，拒绝客户端用 SSLv3/TLSv1.0/1.1 连接边缘。
 - 订阅只有一个 owner Token，输出三类节点（直连 1、Cloudflare 优选 6、Gcore 1）与单一 `AUTO`

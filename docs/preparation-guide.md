@@ -593,3 +593,12 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 需要准备：具备该 Zone DNS 编辑权限的 Cloudflare API Token、Gcore 的 CDN API Token、
 Globalping Token。云安全组放行 TCP `443`、`8443`；SSH 端口保持现状，安装器不会改动 sshd。
 订阅只使用一个 owner Token，不启用用户配额。
+
+Globalping Token 会在输入阶段调用 `/limits` 校验；Reality 伪装目标在下载核心后会用
+`xray tls ping` 做带 SNI 的 TLS 1.3 握手验收，并尝试比对 VPS 与目标的 ASN（不同或查询失败只告警）。
+
+安装时还会询问客户端显示名：Mihomo 下载文件名（默认 `EASYALL`）、直连节点名（默认
+`🇺🇸直连`）、Cloudflare 节点名前缀（默认 `🇺🇸CF`，实际下发 `🇺🇸CF1`～`🇺🇸CF6`）与
+Gcore 节点名（默认 `🇺🇸GCore`）。节点名（直连 / Cloudflare / Gcore）同时用于订阅 URI 片段与
+Mihomo 代理/分组名称，必须互不重复；含引号、反斜杠等字符会被正确转义。下载文件名只影响订阅
+响应头里的文件名。

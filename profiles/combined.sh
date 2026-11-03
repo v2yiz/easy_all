@@ -19,6 +19,8 @@ source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"
 source "${XHTTP_LIB_DIR}/cf-dns.sh"
 # shellcheck source=lib/gcore-cdn.sh
 source "${XHTTP_LIB_DIR}/gcore-cdn.sh"
+# shellcheck source=lib/reality-target.sh
+source "${XHTTP_LIB_DIR}/reality-target.sh"
 
 readonly REALITY_PORT=8443
 readonly XRAY_WEBSOCKET_LOOPBACK_PORT=10087
@@ -59,6 +61,7 @@ load_state() {
         VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID
         DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN GCORE_NODE_DOMAIN GCORE_ORIGIN_DOMAIN
         SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN VLESS_UUID
+        DIRECT_NODE_NAME CF_NODE_PREFIX GCORE_NODE_NAME
         XHTTP_PATH WEBSOCKET_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
         GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID
@@ -76,6 +79,8 @@ load_state() {
     [[ -n "${CLOUDFLARE_ZONE_ID:-}" ]] || die "状态缺少 Cloudflare Zone ID；请重新安装"
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
+    # 2.0.0 状态的组合模式没有这些字段，回退到当时的固定名称，避免 apply 时静默改名。
+    : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}" "${GCORE_NODE_NAME:=Gcore}"
     ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
     SUBSCRIPTION_MODE=deploy
 }
@@ -94,6 +99,7 @@ save_state() {
             PROTOCOL TCP_ACCELERATION VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID \
             DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN GCORE_NODE_DOMAIN GCORE_ORIGIN_DOMAIN \
             SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN VLESS_UUID \
+            DIRECT_NODE_NAME CF_NODE_PREFIX GCORE_NODE_NAME \
             XHTTP_PATH WEBSOCKET_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID \
             CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON \
             GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID \
@@ -103,6 +109,10 @@ save_state() {
     } >"${temp}"
     chmod 0600 "${temp}"
     mv -f -- "${temp}" "${STATE_FILE}"
+}
+
+validate_node_name() {
+    [[ -n "$1" && ${#1} -le 64 && "$1" != *[[:cntrl:]]* ]]
 }
 
 collect_install_inputs() {
@@ -132,18 +142,35 @@ collect_install_inputs() {
     [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]{20,100}$ ]] || die "Cloudflare Token 格式无效"
     GCORE_API_TOKEN=$(prompt_secret 'Gcore API Token（CDN 权限）') || die '缺少 Gcore API Token'
     collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
 
     REALITY_TARGET=$(prompt_value 'Reality 伪装目标（域名:端口）' 'swdist.apple.com:443')
-    [[ "${REALITY_TARGET}" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}$ ]] \
-        || die "Reality 目标无效：${REALITY_TARGET}"
+    validate_reality_target "${REALITY_TARGET}" \
+        || die "Reality 目标无效，需为 域名:端口：${REALITY_TARGET}"
+    REALITY_TARGET="$(normalize_domain "${REALITY_TARGET%:*}"):${REALITY_TARGET##*:}"
     XHTTP_PATH=${XHTTP_PATH:-"/xhttp-$(openssl rand -hex 12)"}
     WEBSOCKET_PATH=${WEBSOCKET_PATH:-"/ws-$(openssl rand -hex 16)"}
     validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP 路径无效"
     [[ "${WEBSOCKET_PATH}" =~ ^/[A-Za-z0-9/_-]{4,120}$ ]] || die "WebSocket 路径无效"
 
+    DIRECT_NODE_NAME=$(prompt_value '直连节点名' "${DIRECT_NODE_NAME:-🇺🇸直连}")
+    CF_NODE_PREFIX=$(prompt_value 'Cloudflare 节点名前缀（自动追加 1~6）' "${CF_NODE_PREFIX:-🇺🇸CF}")
+    GCORE_NODE_NAME=$(prompt_value 'Gcore 节点名' "${GCORE_NODE_NAME:-🇺🇸GCore}")
+    validate_node_name "${DIRECT_NODE_NAME}" || die "直连节点名无效（1-64 字符，不能含换行）"
+    validate_node_name "${CF_NODE_PREFIX}" || die "Cloudflare 节点名前缀无效"
+    validate_node_name "${GCORE_NODE_NAME}" || die "Gcore 节点名无效"
+    [[ "${DIRECT_NODE_NAME}" != "${GCORE_NODE_NAME}" ]] \
+        || die "直连节点名与 Gcore 节点名不能相同"
+    local index
+    for index in 1 2 3 4 5 6; do
+        [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" \
+            && "${CF_NODE_PREFIX}${index}" != "${GCORE_NODE_NAME}" ]] \
+            || die "Cloudflare 节点名 ${CF_NODE_PREFIX}${index} 与直连/Gcore 节点名重复"
+    done
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+        "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-EASYALL}")")
     VLESS_UUID=${VLESS_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}
     OWNER_TOKEN=${OWNER_TOKEN:-$(generate_secret)}
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     VPS_PUBLIC_IPV4=${VPS_IP:-$(detect_public_ipv4)} \
         || die '公网 IPv4 探测失败；可用 VPS_IP=<IPv4> 指定'
     validate_ipv4 "${VPS_PUBLIC_IPV4}" || die "公网 IPv4 无效：${VPS_PUBLIC_IPV4}"
@@ -552,18 +579,18 @@ build_mihomo_xhttp_node() {
 }
 
 build_reality_link() {
-    local mlkem_param="" name=${SUB_DOWNLOAD_NAME}
+    local mlkem_param=""
     reality_mlkem_required || mlkem_param="&mlkem=0"
     printf 'vless://%s@%s:%s?encryption=none&security=reality&type=tcp&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision&packetEncoding=xudp%s#%s' \
         "${VLESS_UUID}" "${DIRECT_DOMAIN}" "${REALITY_PORT}" "${REALITY_TARGET%:*}" \
         "$(uri_encode "${REALITY_PUBLIC_KEY}")" "$(uri_encode "${REALITY_SHORT_ID}")" \
-        "${mlkem_param}" "$(uri_encode "直连")"
+        "${mlkem_param}" "$(uri_encode "${DIRECT_NODE_NAME}")"
 }
 
 build_mihomo_reality_node() {
     local mlkem=""
     reality_mlkem_required && mlkem=$'      support-x25519mlkem768: true\n'
-    jq -nr --arg name "直连" --arg server "${DIRECT_DOMAIN}" --argjson port "${REALITY_PORT}" \
+    jq -nr --arg name "${DIRECT_NODE_NAME}" --arg server "${DIRECT_DOMAIN}" --argjson port "${REALITY_PORT}" \
         --arg uuid "${VLESS_UUID}" --arg sni "${REALITY_TARGET%:*}" \
         --arg pbk "${REALITY_PUBLIC_KEY}" --arg sid "${REALITY_SHORT_ID}" --arg mlkem "${mlkem}" '
         "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: \($port)\n" +
@@ -577,11 +604,11 @@ build_mihomo_reality_node() {
 build_vless_ws_link() {
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${GCORE_NODE_DOMAIN}" "${GCORE_NODE_DOMAIN}" \
-        "${GCORE_NODE_DOMAIN}" "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "Gcore")"
+        "${GCORE_NODE_DOMAIN}" "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "${GCORE_NODE_NAME}")"
 }
 
 build_mihomo_ws_node() {
-    jq -nr --arg name "Gcore" --arg server "${GCORE_NODE_DOMAIN}" --arg uuid "${VLESS_UUID}" \
+    jq -nr --arg name "${GCORE_NODE_NAME}" --arg server "${GCORE_NODE_DOMAIN}" --arg uuid "${VLESS_UUID}" \
         --arg path "${WEBSOCKET_PATH}" '
         "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
@@ -603,7 +630,7 @@ build_node_links() {
     printf '\n'
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
-        build_vless_xhttp_link "${ip}" "CF-优选${label}"
+        build_vless_xhttp_link "${ip}" "${CF_NODE_PREFIX}${label}"
         printf '\n'
     done < <(combined_cf_candidates)
 }
@@ -614,17 +641,24 @@ build_mihomo_nodes() {
     build_mihomo_ws_node
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
-        build_mihomo_xhttp_node "${ip}" "CF-优选${label}"
+        build_mihomo_xhttp_node "${ip}" "${CF_NODE_PREFIX}${label}"
     done < <(combined_cf_candidates)
 }
 
-build_mihomo_proxy_names() {
-    local ip label
-    printf '        - "AUTO"\n        - "直连"\n        - "Gcore"\n'
+collect_node_names() {
+    local ip label names
+    names=$(jq -cn --arg d "${DIRECT_NODE_NAME}" --arg g "${GCORE_NODE_NAME}" '[$d, $g]')
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
-        printf '        - "CF-优选%s"\n' "${label}"
+        names=$(jq -cn --argjson names "${names}" --arg value "${CF_NODE_PREFIX}${label}" \
+            '$names + [$value]')
     done < <(combined_cf_candidates)
+    printf '%s' "${names}"
+}
+
+build_mihomo_proxy_names() {
+    printf '        - "AUTO"\n'
+    collect_node_names | jq -r '.[] | "        - \(.|@json)"'
 }
 
 build_mihomo_worker_rules() {
@@ -632,20 +666,10 @@ build_mihomo_worker_rules() {
 }
 
 build_mihomo_proxy_groups() {
-    local ip label url="https://www.gstatic.com/generate_204"
+    printf '    - name: AUTO\n      type: url-test\n      proxies:\n'
+    collect_node_names | jq -r '.[] | "        - \(.|@json)"'
     cat <<'EOF'
-    - name: AUTO
-      type: url-test
-      proxies:
-        - "直连"
-        - "Gcore"
-EOF
-    while IFS=$'\t' read -r ip label; do
-        [[ -n "${ip}" ]] || continue
-        printf '        - "CF-优选%s"\n' "${label}"
-    done < <(combined_cf_candidates)
-    cat <<EOF
-      url: ${url}
+      url: https://www.gstatic.com/generate_204
       interval: 300
       tolerance: 50
 EOF
@@ -661,7 +685,7 @@ show_node() {
     printf '\n\nCloudflare 节点（优选 IPv4）:\n'
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
-        build_vless_xhttp_link "${ip}" "CF-优选${label}"
+        build_vless_xhttp_link "${ip}" "${CF_NODE_PREFIX}${label}"
         printf '\n'
     done < <(combined_cf_candidates)
 }
@@ -774,12 +798,13 @@ install_all() {
     configure_tcp_acceleration
     configure_daily_reboot
     collect_install_inputs
+    download_xray
+    validate_reality_target_runtime
     snapshot_fresh_install
     INSTALL_ROLLBACK_ON_EXIT=0
     xhttp_configure_ufw
     combined_ensure_dns
     combined_issue_certificates
-    download_xray
     write_xray_config
     install_xray_service
     write_bootstrap_nginx_config
@@ -843,23 +868,45 @@ renew_certificate() {
 }
 
 update_reality_target() {
-    local target=${1:-}
+    local target=${1:-} current backup_config
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    current=${REALITY_TARGET}
     if [[ -z "${target}" ]]; then
         [[ -t 0 ]] || die "非交互模式必须传入 域名:端口"
-        target=$(prompt_value 'Reality 伪装目标（域名:端口）' "${REALITY_TARGET}")
+        target=$(prompt_value 'Reality 伪装目标（域名:端口）' "${current}")
     fi
-    [[ "${target}" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}$ ]] || die "Reality 目标无效：${target}"
+    validate_reality_target "${target}" \
+        || die "Reality 目标无效，需为 域名:端口：${target}"
+    target="$(normalize_domain "${target%:*}"):${target##*:}"
+    if [[ "${target}" == "${current}" ]]; then
+        info "Reality 目标未变化：${current}"
+        release_runtime_write_lock
+        return 0
+    fi
     REALITY_TARGET=${target}
-    write_xray_config
-    systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 失败"
+    backup_config="$(make_temp_dir)/config.json"
+    install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
+    if (
+        validate_reality_target_runtime
+        write_xray_config
+        systemctl restart "${XRAY_SERVICE}"
+        validate_protocol_runtime
+    ); then
+        save_state
+        write_subscriptions
+        save_state
+        release_runtime_write_lock
+        success "Reality 目标已更新：${current} → ${REALITY_TARGET}；请刷新客户端订阅"
+        return 0
+    fi
+    warn "新运行时配置验收失败，正在恢复旧配置"
+    REALITY_TARGET=${current}
+    install -m 0600 "${backup_config}" "${XRAY_CONFIG}"
+    systemctl restart "${XRAY_SERVICE}" || die "恢复旧配置后无法重启 ${XRAY_SERVICE}"
     validate_protocol_runtime
-    write_subscriptions
-    save_state
-    release_runtime_write_lock
-    success "Reality 目标已更新为 ${REALITY_TARGET}；请刷新客户端订阅"
+    die "运行时配置更新失败，已恢复旧配置"
 }
 
 purge_combined_dns() {
