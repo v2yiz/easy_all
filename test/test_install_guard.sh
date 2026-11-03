@@ -515,4 +515,23 @@ assert_equal "pending owner is not overwritten" $'HAD_PREVIOUS=1\nOWNER_PID=1' \
     "$(cat "$(easy_all_policy_pending_file)")"
 rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
+# 25. --assume-mode 别名与无标记提示
+alias_probe=$(bash -c 'source "$1"; for v in 5 组合 combined 1 直连 2 cf 3 bunny 4 gcore; do printf "%s=%s\n" "$v" "$(launcher_mode_alias "$v")"; done' _ "${ROOT_DIR}/easy_all")
+assert_contains "alias 5 maps to combined" "${alias_probe}" "5=combined"
+assert_contains "alias 组合 maps to combined" "${alias_probe}" "组合=combined"
+assert_contains "alias 1 maps to reality" "${alias_probe}" "1=reality"
+assert_contains "alias cf maps to cloudflare-streamup" "${alias_probe}" "cf=cloudflare-streamup"
+assert_equal "unknown alias is rejected" "1" \
+    "$(bash -c 'source "$1"; launcher_mode_alias 9 >/dev/null 2>&1' _ "${ROOT_DIR}/easy_all" && echo 0 || echo 1)"
+assert_contains "usage lists menu numbers" "$(bash -c 'source "$1"; launcher_mode_usage' _ "${ROOT_DIR}/easy_all")" "5|combined"
+
+# 无标记残留 + 非交互：提示必须给出可用写法，而不是只报"不支持"
+reset_artifacts
+mkdir -p "${EASY_ALL_GUARD_STATE_DIR}/xray"
+EASY_ALL_SELECTED_MODE=combined
+output=$(capture prepare_fresh_install 80 </dev/null || true)
+assert_contains "no-marker non-interactive names the command" "${output}" "cleanup-partial --assume-mode"
+assert_contains "no-marker non-interactive lists accepted forms" "${output}" "5|combined"
+rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
+
 printf 'ok - install guard\n'

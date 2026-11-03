@@ -586,7 +586,7 @@ root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（
 | 本机运行后提示系统不支持 | 命令必须在 VPS 的 SSH 或网页终端运行。 |
 | SSH 断开或重启后无法登录 | 使用服务商 Console/VNC 检查 SSH 端口、UFW 和安全组。 |
 | 安装中 SSH 断开、重跑提示 `TCP 80 已被占用` | 上次安装已装好 nginx 默认站点：先 `sudo easy_all cleanup-partial`；命令未注册时用 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial`（`bootstrap.sh` 自己会 sudo，别写成 `sudo bash <(...)`），再在 `tmux`/`screen` 中重跑安装。 |
-| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
+| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`（模式可写菜单序号 `1`～`5`、内部名 `reality`/`cloudflare-streamup`/`bunny-ws`/`gcore`/`combined`，或 `直连`/`组合` 等中文名）；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
 | Zone 不是 Active | 等待 Cloudflare Zone 生效并检查名称服务器。 |
 | 提示未开启 gRPC | 在 Zone 的 Network → gRPC 手动开启后重试。 |
 | API Token 权限不足或 DNS 冲突 | 按[前置准备手册](preparation-guide.md)核对权限并换用未占用的一级子域。 |

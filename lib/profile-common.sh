@@ -538,13 +538,36 @@ run_recorded_profile_cleanup() {
 }
 
 # 安装前置：清理自身残留 + 断言端口空闲。调用方须保持「已安装则提前 die」的语义。
+# 供提示统一引用的模式写法（菜单序号与中文名常被用户直接输入）。
+install_mode_choices() {
+    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|gcore 5|combined（也接受 reality/直连、cloudflare、gcore、组合等写法）'
+}
+
 prepare_fresh_install() {
-    local reason_text stage answer recorded
+    local reason_text stage answer recorded current
     if reason_text=$(install_residue_reason); then
         stage=$(install_progress_field STAGE || true)
         recorded=$(install_progress_field PROFILE || true)
+        current=$(install_current_mode)
         warn "检测到上次未完成的 easy_all 安装${stage:+（中断于 ${stage} 阶段）}${recorded:+（${recorded} 模式）}，本机残留："
         printf '%s\n' "${reason_text}" | sed 's/^/  - /' >&2
+        if [[ -z "${recorded}" ]]; then
+            # 旧版本没有标记：没有任何归属证据。不再先问"要不要清理"再拒绝，而是直接
+            # 让用户确认"残留是否属于本次选择的模式"，默认取消，避免按错误模式清理。
+            warn "这些残留没有安装进度标记（旧版本遗留），无法自动判断所属模式。"
+            if [[ -t 0 ]]; then
+                read_bilingual "若残留属于本次选择的 ${current:-(未知)} 模式，输入 y 按该模式清理；否则回车退出后指定模式 [y/N]:" answer
+                [[ "${answer}" =~ ^[Yy]$ ]] \
+                    || die "$(printf '已取消。请先确认残留模式后执行：\n  sudo easy_all cleanup-partial --assume-mode <模式>\n可用写法：%s\n命令未注册时：\n  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>' "$(install_mode_choices)")"
+            else
+                die "$(printf '非交互安装检测到无标记残留，无法判断模式。请先执行：\n  sudo easy_all cleanup-partial --assume-mode <模式>\n可用写法：%s' "$(install_mode_choices)")"
+            fi
+            cleanup_partial_install \
+                || die "按 ${current:-当前} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial --assume-mode <模式>"
+            success "残留已清理，继续安装"
+            assert_install_ports_free "$@"
+            return 0
+        fi
         if [[ -t 0 ]]; then
             read_bilingual '先清理残留再继续安装？[Y/n]:' answer
             [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]] \
@@ -552,10 +575,7 @@ prepare_fresh_install() {
         else
             die "非交互安装检测到残留；请先执行 sudo easy_all cleanup-partial"
         fi
-        if [[ -z "${recorded}" ]]; then
-            # 没有 marker 就没有归属证据；按当前选择清理可能漏掉旧模式的规则/服务。
-            die "$(printf '没有安装进度标记，无法判断残留属于哪个模式，已停止安装。请先执行：\n  sudo easy_all cleanup-partial --assume-mode <reality|cloudflare-streamup|gcore|combined|bunny-ws>\n命令未注册时：\n  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>')"
-        elif [[ "${recorded}" != "$(install_current_mode)" ]]; then
+        if [[ "${recorded}" != "${current}" ]]; then
             warn "上次中断的是 ${recorded} 模式，按该模式清理（当前选择：$(install_current_mode)）"
             run_recorded_profile_cleanup "${recorded}" \
                 || die "按 ${recorded} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial"

@@ -138,6 +138,22 @@ legacy_local_uninstall() {
     success "旧版本 easy_all 本机清理完成，可以重新安装"
 }
 
+# --assume-mode 接受用户最容易输入的写法：菜单序号、中文名与常见缩写。
+launcher_mode_alias() {
+    case "${1:-}" in
+    1 | reality | Reality | 直连) printf 'reality' ;;
+    2 | cloudflare | Cloudflare | cloudflare-streamup | cf | CF | xhttp) printf 'cloudflare-streamup' ;;
+    3 | bunny | Bunny | bunny-ws) printf 'bunny-ws' ;;
+    4 | gcore | Gcore | GCore) printf 'gcore' ;;
+    5 | combined | Combined | 组合) printf 'combined' ;;
+    *) return 1 ;;
+    esac
+}
+
+launcher_mode_usage() {
+    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|gcore 5|combined（也接受 直连/组合/cf 等写法）'
+}
+
 # 一次读入 marker 并同时给出「模式/阶段/身份」：模式与身份必须来自同一份快照，
 # 否则两次读取之间换了安装，就可能拿着旧模式的身份去比对新模式。
 # 输出：absent | present|PROFILE|STAGE|STARTED_AT
@@ -168,14 +184,21 @@ cleanup_partial_install_command() {
             shift 2
             ;;
         -h | --help)
-            printf '用法：easy_all cleanup-partial [--assume-mode <reality|cloudflare-streamup|gcore|combined|bunny-ws>]\n'
+            printf '用法：easy_all cleanup-partial [--assume-mode <模式>]\n'
+            printf '  可用写法：%s\n' "$(launcher_mode_usage)"
             printf '  无参数：按安装进度标记自动判断模式；旧版本没有标记时用 --assume-mode 指定。\n'
             return 0
             ;;
         *) launcher_die "用法：easy_all cleanup-partial [--assume-mode <模式>]" ;;
         esac
     done
-    [[ -z "${assume_mode}" ]] || profile_file "${assume_mode}" >/dev/null
+    if [[ -n "${assume_mode}" ]]; then
+        local normalized_mode
+        normalized_mode=$(launcher_mode_alias "${assume_mode}") \
+            || launcher_die "不支持的安装模式：${assume_mode}；可用写法：$(launcher_mode_usage)"
+        assume_mode=${normalized_mode}
+        profile_file "${assume_mode}" >/dev/null
+    fi
     [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
     [[ ! -f "${EASY_ALL_STATE_FILE}" ]] \
         || launcher_die "easy_all 已安装；如需卸载请执行 easy_all uninstall"
@@ -185,7 +208,7 @@ cleanup_partial_install_command() {
     if [[ "${snapshot_before}" == "absent" ]]; then
         # 旧版本没有进度标记：只有用户明确指定模式时才敢于清理，绝不猜测。
         [[ -n "${assume_mode}" ]] || launcher_die \
-            "未检测到安装进度标记，无法判断残留属于哪个模式。先核对 /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all* 服务，再指定模式：${bootstrap} cleanup-partial --assume-mode <reality|cloudflare-streamup|gcore|combined|bunny-ws>"
+            "未检测到安装进度标记，无法判断残留属于哪个模式。先核对 /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all* 服务，再指定模式：${bootstrap} cleanup-partial --assume-mode <模式>；可用写法：$(launcher_mode_usage)"
         mode=${assume_mode}
         stage=""
     elif [[ "${snapshot_before}" == "unreadable" ]]; then

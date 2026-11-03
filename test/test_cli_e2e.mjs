@@ -9,10 +9,20 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const easyAll = join(root, 'easy_all');
 const bootstrap = join(root, 'bootstrap.sh');
 
+// 所有被测命令都在隔离路径下运行：加载 profile 会注册 EXIT trap，其中的
+// recover_pending_service_policy 默认要写 /usr/sbin/policy-rc.d 与 /var/lib/easy_all，
+// 在 root 下跑测试时不能让测试碰到宿主真实文件。
+const isolationRoot = join(tmpdir(), `easy-all-cli-isolation-${process.pid}`);
+const isolation = {
+    EASY_ALL_POLICY_STATE_DIR_OVERRIDE: join(isolationRoot, 'policy-state'),
+    EASY_ALL_POLICY_RC_OVERRIDE: join(isolationRoot, 'policy-rc.d'),
+    RUNTIME_WRITE_LOCK_FILE_OVERRIDE: join(isolationRoot, 'runtime-write.lock'),
+};
+
 function run(cmd, args = [], env = {}) {
     return spawnSync(cmd, args, {
         encoding: 'utf8',
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...isolation, ...env },
     });
 }
 
@@ -56,6 +66,31 @@ assert.ok(
     cleanupHelp.stdout.includes('--assume-mode'),
     'cleanup-partial help should document --assume-mode',
 );
+// 必须隔离：root + FORCE=1 下若状态与 marker 都"不存在"，这条命令会执行真实清理。
+const cleanupIsolation = {
+    FORCE: '0',
+    EASY_ALL_STATE_FILE_OVERRIDE: join(tmpdir(), `no-state-${Date.now()}.env`),
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE: join(tmpdir(), `no-progress-${Date.now()}.env`),
+};
+const cleanupNumericMode = run(easyAll, ['cleanup-partial', '--assume-mode', '5'], cleanupIsolation);
+assert.equal(cleanupNumericMode.status, 1, 'cleanup-partial must not succeed in the test environment');
+assert.ok(
+    !cleanupNumericMode.stderr.includes('不支持的安装模式'),
+    'menu number 5 must be accepted as a mode alias',
+);
+if (process.getuid && process.getuid() === 0) {
+    // root 下别名已被接受并走到非交互守卫；FORCE=0 + 管道 stdin 会在这里拒绝，
+    // 不会加载 profile、不会取写锁、不会清理任何路径。
+    assert.ok(
+        cleanupNumericMode.stderr.includes('非交互清理必须显式设置 FORCE=1'),
+        'root run should stop at the non-interactive FORCE guard',
+    );
+} else {
+    assert.ok(
+        cleanupNumericMode.stderr.includes('请使用 root 用户运行此脚本'),
+        'non-root run should stop at the root check',
+    );
+}
 const cleanupBadMode = run(easyAll, ['cleanup-partial', '--assume-mode', 'nope']);
 assert.equal(cleanupBadMode.status, 1, 'unknown mode must be rejected');
 assert.ok(
