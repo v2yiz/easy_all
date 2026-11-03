@@ -769,17 +769,42 @@ validate_subscription_runtime() {
         "${tls_args[@]}"
 }
 
+# 边缘证书刚签发时，Gcore 还需要把证书/配置下发到各边缘节点，这段时间访问会 502。
+# 等 5 分钟（每 60 秒打一次进度）；仍不通就分别检查源站 mTLS 直连和资源关键项，
+# 把“边缘还没生效”和“源站/配置真有问题”区分开。
 combined_validate_gcore() {
     local attempt code
-    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    local attempts=60
+    for ((attempt = 1; attempt <= attempts; attempt += 1)); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 15 \
             -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
             -H "Sec-WebSocket-Key: $(openssl rand -base64 16)" -H 'Sec-WebSocket-Version: 13' \
             "https://${GCORE_NODE_DOMAIN}${WEBSOCKET_PATH}" 2>/dev/null || printf '000')
         [[ "${code}" == "101" ]] && return 0
-        ((attempt == 15)) || sleep 10
+        if ((attempt == 1 || attempt % 12 == 0)); then
+            info "等待 Gcore 边缘 WebSocket 就绪（状态=${code}，已等待 $((attempt * 5)) 秒）：第 ${attempt}/${attempts} 次"
+        fi
+        ((attempt == attempts)) || sleep 5
     done
-    warn "Gcore 边缘 WebSocket 验收未返回 101（最后状态 ${code}）；上游就绪后执行 sudo easy_all apply"
+    COMBINED_EDGE_NOT_READY=1
+    combined_diagnose_gcore_edge "${code}"
+    warn "Gcore 边缘 WebSocket 验收未返回 101（最后状态 ${code}）；边缘生效后执行 sudo easy_all apply 复验"
+}
+
+combined_diagnose_gcore_edge() {
+    local code=$1 origin_code resource
+    origin_code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \
+        --resolve "${GCORE_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        --cert "${GCORE_CLIENT_CERT_FILE}" --key "${GCORE_CLIENT_CERT_KEY}" \
+        "https://${GCORE_ORIGIN_DOMAIN}${WEBSOCKET_PATH}" 2>/dev/null || printf '000')
+    info "诊断：本机源站 mTLS 直连 HTTP ${origin_code}，边缘侧 HTTP ${code}"
+    if [[ "${origin_code}" == "000" ]]; then
+        warn "源站 mTLS 直连失败：检查 nginx 是否已加载源站证书与客户端 CA（systemctl status nginx、nginx -t）"
+    fi
+    if [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[1-9][0-9]*$ ]] \
+        && resource=$(gcore_api_get_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" 2>/dev/null); then
+        info "诊断：Gcore 资源关键项 $(jq -c '{sslEnabled,sslData,proxy_ssl_enabled,proxy_ssl_data,proxy_ssl_ca,sni:.options.sni}' <<<"${resource}" 2>/dev/null || printf '{}')"
+    fi
 }
 
 build_vless_xhttp_link() {
@@ -1051,6 +1076,9 @@ apply_cloud_resources() {
     gcore_clear_api_token
     commit_subscription_update
     success "本机配置、订阅与云端资源已同步"
+    if ((${COMBINED_EDGE_NOT_READY:-0} == 1)); then
+        warn "Gcore 边缘尚未通过 WebSocket 验收：节点暂时不可用，边缘生效后执行 sudo easy_all apply 复验"
+    fi
 }
 
 # 组合模式跨越本机、Cloudflare 与 Gcore 三部分：失败/中断时只回滚本机，云端已创建的
