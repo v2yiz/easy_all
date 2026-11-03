@@ -1,3 +1,15 @@
+## 2.4.12 更新说明（2026-11-03）
+
+- **签发进程结束后 force-retry 被拒**（现场：`The certificate issuance process has already been completed.`）：
+  Gcore 的 force-retry 只适用于仍在进行的签发进程；进程结束后（失败也算“完成”）会返回 400。现在
+  force-retry 被拒时自动改用官方 Issue 接口 `PATCH /cdn/resources/{id}`（body `{sslData, sslEnabled:true}`）
+  重新请求一轮签发，再继续轮询状态。
+- 说明：2.4.11 的“删除规则前先停用”没有出现在这次运行里（日志仍是直接 `DELETE` 被 400），重跑前请确认
+  已拉到本版本。
+- 测试：按用户要求不新增离线单测；force-retry 被拒→PATCH 重新签发→转 DONE 的路径用 /tmp 离线桩核对。
+
+源码版本标识为 `2.4.12`。
+
 ## 2.4.11 更新说明（2026-11-03）
 
 - **修复 Gcore 挑战规则删不掉（HTTP 400）**：Gcore 不允许删除仍处于 `active` 的规则，官方 Delete rule

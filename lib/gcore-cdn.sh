@@ -364,6 +364,21 @@ gcore_force_retry_edge_certificate() {
     fi
 }
 
+# 官方“Issue Let's Encrypt certificate”接口：PATCH /cdn/resources/{id} 带上 sslData/sslEnabled。
+# 证书的签发进程一旦完成（active=false），force-retry 会返回 “already completed”；此时用它重新
+# 请求一次签发，会按资源当前配置（现在是 DNS-01）开一轮新的尝试。
+gcore_issue_edge_certificate() {
+    local certificate_id=$1 payload response code body
+    payload=$(jq -cn --argjson cert "${certificate_id}" '{sslData:$cert, sslEnabled:true}')
+    response=$(gcore_api_raw PATCH "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}") || return 1
+    code=${response##*$'\n'}
+    body=${response%$'\n'*}
+    if [[ ! "${code}" =~ ^2[0-9]{2}$ ]]; then
+        printf '%s\n' "${body:-<empty>}" >&2
+        return 1
+    fi
+}
+
 gcore_edge_certificate_failure_details() {
     jq -c '{
         error:(.latest_status.error // null),
@@ -444,9 +459,13 @@ gcore_wait_for_edge_certificate() {
                 die "Gcore 边缘证书签发 FAILED：${details}$(gcore_edge_certificate_hint)"
             fi
             retries=$((retries + 1))
-            info "Gcore 边缘证书签发失败，第 ${retries}/${GCORE_EDGE_FORCE_RETRIES} 次强制重试：${details}"
-            gcore_force_retry_edge_certificate "${certificate_id}" \
-                || warn "Gcore 未接受强制重试请求；继续等待签发状态"
+            info "Gcore 边缘证书签发失败，第 ${retries}/${GCORE_EDGE_FORCE_RETRIES} 次重试：${details}"
+            if ! gcore_force_retry_edge_certificate "${certificate_id}"; then
+                # 签发进程已完成（常见报错 “already completed”）时 force-retry 不可用，
+                # 改用官方 Issue 接口重新请求一轮签发。
+                gcore_issue_edge_certificate "${certificate_id}" \
+                    || warn "Gcore 拒绝了 force-retry 与重新签发请求；继续等待签发状态"
+            fi
             sleep "${GCORE_EDGE_FORCE_RETRY_INTERVAL}"
             continue
             ;;
