@@ -9,7 +9,9 @@ Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 准备；Bunny 的准备与运维使用独立的[专题手册](bunny-preparation-guide.md)。Reality 节点数据仍然直连，
 但选择“本机订阅”或“Worker 订阅聚合”时，订阅回源会使用 Cloudflare Universal SSL 与 Origin CA。
 
-Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Gcore CDN 精选 IP 模式阅读第 1.1、8 节；Reality **只有选择订阅输出（本机订阅或 Worker 聚合）**
+Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Gcore CDN 精选 IP 模式（菜单 `4`）阅读第 1.1、8 节；
+组合模式（菜单 `5`）阅读第 1.1、8.1 与 8.8 节——它的 Gcore 入口只需要 CDN Token，不需要委派
+Managed DNS，域名与订阅记录全部在 Cloudflare。Reality **只有选择订阅输出（本机订阅或 Worker 聚合）**
 时才阅读第 1、3.1、4 节。Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览器和账号侧操作；VPS 登录、安装、重启和
 客户端导入请回到 [README 的第一次安装路径](../README.md#第一次安装先看这里)。
 
@@ -33,6 +35,7 @@ VPS 费用另计。
 | 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；本机订阅还需 Cloudflare Active Zone、一个一级子域和 API Token；Worker 聚合还需同 Zone 第二个一级子域、具备 Workers Scripts Write 的 API Token | Globalping Token、gRPC 设置                        | 仅节点：直接看 README；本机订阅或 Worker 聚合：第 1、3.1、4 节及 README 的 Reality 章节 |
 | 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
 | 模式 4：Gcore CDN 精选 IP | Gcore Free CDN 账号、已完整委派的 Managed DNS Zone、源站和节点子域名、具备 CDN/DNS 权限的 Gcore API Token、Globalping Token；额度内预期 `$0/月`（1TB/月内） | Cloudflare gRPC 等 Cloudflare 专属准备 | 第 1.1、8 节 |
+| 模式 5：组合（直连 + Cloudflare + Gcore） | 一个 Cloudflare Active Zone、六个互不相同的子域名、具备 DNS 编辑权限的 Cloudflare API Token、Gcore CDN Token、Globalping Token；云安全组放行 TCP `443` 与 `8443`；SSH 保持现状 | Gcore Managed DNS 委派、Cloudflare gRPC、Worker 兜底、用户配额 | 第 1.1、8.1、8.8 节 |
 
 只支持 IPv4。
 
@@ -43,6 +46,8 @@ Reality:    node.example.com（可选）；sub.example.com（本机订阅需要�
             sub.example.com + source.example.com（Worker 聚合需要，公开入口与私有源各一个）
 Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 Worker）
 Gcore:      node.example.com；origin.example.com；可选 sub.example.com
+组合:       node.example.com（直连）；cf.example.com；cf-origin.example.com；
+            gcore.example.com；gcore-origin.example.com；sub.example.com
 ```
 
 所有模式都需要一台没有其他代理面板占用端口和配置的专用 VPS。CDN 模式使用
@@ -319,6 +324,9 @@ HTTP/2 设置和手动 gRPC 开关都会保留。
 
 ## 8. Gcore CDN 精选 IP 准备
 
+本章 8.1–8.7 面向模式 4（Gcore CDN 精选 IP）；组合模式（菜单 5）的 Gcore 部分只需 CDN Token，
+不需要委派 Managed DNS，准备要求见 8.8。
+
 模式 4 面向非优化线路 VPS，通过 Gcore CDN 边缘进行全网加速。模式 4 使用亚洲、美国西岸、中国三网
 以及多个公共解析器的 Globalping 视角解析当前账户 CDN 域名，汇总 Gcore 实际返回的入口 IPv4，再通过
 中国移动、联通、电信 Eyeball 探针定向测速。每个运营商最多下发 2 个独立有效节点，总计 1～6 个，
@@ -340,7 +348,7 @@ GLOBALPING_TOKEN  # 保存于 VPS root-only 凭据文件，用于每小时定时
 
 Gcore Free CDN 当前标明每月包含 **1 TB（十进制 1000 GB）** 出站流量；超额流量和请求可能计费，标价未含 VAT。
 
-模式 4 本机没有总流量熔断：`easy_all` 只按用户统计与限制，不汇总全机用量，也不会在
+模式 4 与组合模式（菜单 5）的本机都没有总流量熔断：`easy_all` 只按用户统计与限制，不汇总全机用量，也不会在
 达到阈值时自动下架节点。请在 Gcore 控制台开启流量提醒并定期核对报表，协议开销、请求数、
 统计延迟和 Gcore 实际计量都不在 Xray 本地统计中。
 
@@ -355,7 +363,9 @@ Gcore Free CDN 当前标明每月包含 **1 TB（十进制 1000 GB）** 出站�
 
 ### 8.2 委派域名到 Gcore Managed DNS
 
-本实现只支持整个 Zone 已委派给 Gcore Managed DNS 的自动化路径。**域名托管这一步需要先在
+本节只适用于模式 4；组合模式（菜单 5）不把域名委派给任何 CDN 的 DNS，见 8.8。
+
+模式 4 只支持整个 Zone 已委派给 Gcore Managed DNS 的自动化路径。**域名托管这一步需要先在
 Gcore 控制台完成**；安装器随后只管理节点所需记录，不会创建或删除 Zone，也不会修改注册商的
 Nameservers。
 
@@ -436,7 +446,9 @@ Gcore Free Managed DNS 当前可用于此流程；若当前账户的 Managed DNS
 
 ### 8.3 Gcore API Token 权限
 
-Token 是安装器访问 Gcore CDN 和 Managed DNS API 的唯一凭证。当前控制台路径是 **头像 → Profile →
+Token 是安装器访问 Gcore CDN 和 Managed DNS API 的唯一凭证。模式 4 需要 CDN 与 Managed DNS
+写权限；组合模式（菜单 5）只需要 CDN 权限，DNS 记录由 Cloudflare 管理，下面第 4 步的
+Managed DNS 要求对它不适用。当前控制台路径是 **头像 → Profile →
 API tokens → Create token**。Gcore 的永久 Token 只在创建完成时显示一次，关闭弹窗后不能再次查看。
 
 ![Gcore API Token 创建与角色选择](img/gcore/api-token-create.svg)
@@ -575,7 +587,8 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 `sudo easy_all uninstall --purge-cloud` 会先使用 Token 删除由本次安装创建的 CDN Resource、边缘证书、
 回源客户端证书、Trusted CA 以及 Origin Group，再清理本机内容；永不删除 Managed DNS Zone。
 默认 `uninstall` 会删除本机状态，之后无法再补做 `--purge-cloud`；需要清理 Gcore 资源时请在
-卸载时一次完成。
+卸载时一次完成。若状态文件已丢失（安装中断等），可用 `sudo easy_all purge-gcore --domain <节点域名>`
+或 `--all` 清理 easy_all 创建的 Gcore CDN 对象，详见运维指南。
 
 ### 8.8 组合模式（菜单 5）
 

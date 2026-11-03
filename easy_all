@@ -85,6 +85,8 @@ launcher_usage() {
   edit-sub         交互修改订阅设置（域名、模式、用户/配额）
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   refresh-origin-ips  刷新 Bunny 官方回源 IPv4 防火墙列表
+  purge-gcore      清理 easy_all 创建的 Gcore CDN 资源（可在未安装状态使用）
+  purge-cloudflare 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用）
   update-core      更新当前模式的核心（Xray）
   renew-cert       重新签发当前模式的 TLS 证书（Bunny 模式强制走 Let's Encrypt）
   cert-renew       内部续期命令；Bunny 模式由 easy_all-cert-renew.timer 调用
@@ -454,6 +456,14 @@ main() {
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
         launcher_usage
         return
+    fi
+    if [[ "${command}" == "purge-gcore" ]]; then
+        bash "${EASY_ALL_ROOT}/lib/gcore-purge.sh" "$@"
+        exit
+    fi
+    if [[ "${command}" == "purge-cloudflare" ]]; then
+        bash "${EASY_ALL_ROOT}/lib/cloudflare-purge.sh" "$@"
+        exit
     fi
     if [[ "${command}" == "verify-release" ]]; then
         (($# == 0)) || launcher_die "verify-release 不接受参数"

@@ -13,7 +13,9 @@ die() {
 }
 
 command -v curl >/dev/null 2>&1 || die "本机缺少 curl"
-[[ -t 0 ]] || die "安装必须在交互终端中执行；不要使用 curl | bash"
+if (($# == 0)); then
+    [[ -t 0 ]] || die "安装必须在交互终端中执行；不要使用 curl | bash"
+fi
 
 TEMP_DIR=$(mktemp -d)
 REPO_DIR="${TEMP_DIR}/easy_all"
@@ -43,4 +45,8 @@ git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
 chmod 0700 "${REPO_DIR}/easy_all"
 "${REPO_DIR}/easy_all" verify-release \
     || die "下载的 easy_all 项目不完整"
-"${SUDO[@]}" "${REPO_DIR}/easy_all" install
+if (($# == 0)); then
+    "${SUDO[@]}" "${REPO_DIR}/easy_all" install
+else
+    "${SUDO[@]}" "${REPO_DIR}/easy_all" "$@"
+fi

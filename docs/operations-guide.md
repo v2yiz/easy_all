@@ -176,6 +176,8 @@ DNS、Origin CA、边缘规则和 Worker。Bunny 模式与普通 `apply` 相同�
 | `edit-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
 | `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅；组合模式刷新 Cloudflare 优选池。 |
 | `refresh-origin-ips` | 立即刷新 Bunny 官方回源 IPv4 池；定时器每六小时自动刷新。 |
+| `purge-gcore [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Gcore CDN 资源；可在未安装状态使用，不删除 DNS。 |
+| `purge-cloudflare [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Cloudflare 资源（Worker/DNS/规则/Origin CA）；不删除 Zone。 |
 | `update-core` | 更新当前模式核心：Reality/Cloudflare/Bunny/Gcore/组合 更新 Xray。 |
 | `rotate-dynamic-ports` | 立即刷新 Reality 模式的 NAT 规则。 |
 | `renew-cert` | 重新签发当前模式证书；Bunny 强制重新签发源站证书；组合模式重签 Origin CA 与 Gcore 回源证书。 |
@@ -503,6 +505,46 @@ sudo easy_all uninstall --purge-cloud
 
 默认 `uninstall` 会删除本机状态，之后无法再补做 `--purge-cloud`；需要清理云端资源时请在
 卸载时一次完成。
+
+如果 Gcore 账户里仍残留 easy_all 创建的资源（状态文件已丢失、上次安装中断，或换了域名重新安装），
+可以单独清理：
+
+```bash
+sudo easy_all purge-gcore --domain gcore.example.com   # 按节点域名清理相关资源
+sudo easy_all purge-gcore --all                        # 清理账户内全部 easy_all-* 资源
+```
+
+命令会先列出命中的 CDN Resource、Origin Group、证书与 Trusted CA，确认后才删除；非交互执行需加
+`--yes`，Token 可用 `GCORE_API_TOKEN` 传入。它**不删除** DNS 记录与 Managed DNS Zone，DNS 请在
+Cloudflare/Gcore 控制台自行核对。`--domain` 按节点域名精确匹配 CDN Resource，不会因子串误伤
+同账户其他站点。如果 CDN Resource 已经先删除，源站组与证书是按源站域名命名的，需要同时传入
+源站域名（如 `--domain node.example.com,origin.example.com`）或直接使用 `--all`。
+
+Cloudflare 侧同理：
+
+```bash
+sudo easy_all purge-cloudflare --domain example.com       # 清理该 Zone 内 easy_all 创建的资源
+sudo easy_all purge-cloudflare --all                      # 清理 Token 可见的所有 Zone
+```
+
+按 easy_all 的所有权标记识别：DNS 记录注释以 `easy_all` 开头、Worker 名称以 `easyall` 开头
+（或绑定到待清理域名）、规则 ref 以 `easy_all_` 开头且表达式只涉及待清理域名、ruleset 名称以
+`easy_all` 开头且清空后才删除；Origin CA 证书只在其全部 hostname 都属于 easy_all 记录或输入域名时
+删除。不会删除 Zone，也不会删除 Bunny 模式创建的无注释 DNS 记录（那类记录请在
+`uninstall --purge-cloud` 时清理）。
+
+`--domain` 传 Zone 根域名（如 `example.com`）会覆盖其下全部 easy_all 记录；传完整主机名
+（如 `cf.example.com`）只清理该域名与直接关联对象。`--all` 只按 `easyall` 名称清理 Worker，
+不会按域名反查用户自己的 Worker。如果 easy_all 的 DNS 记录已经被删除，规则与 Origin CA 需要
+传完整主机名（如 `--domain cf.example.com,sub.example.com`）才能识别。
+
+两个 purge 命令都不依赖本机安装。未安装或已卸载时可以直接通过引导脚本执行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --domain example.com
+```
+
+或在克隆的仓库里执行 `sudo ./easy_all purge-gcore --domain gcore.example.com`。
 
 若提示“状态版本不匹配”，说明状态文件来自其他版本的 easy_all：本版本不会读取或迁移它，
 但 `sudo easy_all uninstall` 会改走旧版本本机清理路径——停用并删除 easy_all 的服务、Nginx 配置、

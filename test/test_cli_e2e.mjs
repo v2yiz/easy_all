@@ -27,7 +27,16 @@ for (const arg of ['help', '--help', '-h']) {
     assert.ok(res.stdout.includes('组合'), 'Help should list combined mode');
 }
 
-// 2. 未安装状态调用命令（关键失败场景）
+// 2. Gcore 孤儿资源清理命令：帮助可用，且不依赖本机安装状态
+const purgeHelp = run(easyAll, ['purge-gcore', '--help']);
+assert.equal(purgeHelp.status, 0, purgeHelp.stderr);
+assert.ok(purgeHelp.stdout.includes('purge-gcore'), 'purge-gcore help should show usage');
+
+const purgeCfHelp = run(easyAll, ['purge-cloudflare', '--help']);
+assert.equal(purgeCfHelp.status, 0, purgeCfHelp.stderr);
+assert.ok(purgeCfHelp.stdout.includes('purge-cloudflare'), 'purge-cloudflare help should show usage');
+
+// 3. 未安装状态调用命令（关键失败场景）
 const uninstalledRes = run(easyAll, ['status'], {
     EASY_ALL_STATE_FILE_OVERRIDE: join(tmpdir(), 'nonexistent-easy-all-state.env'),
 });
@@ -37,7 +46,7 @@ assert.ok(
     'Should notify user that easy_all is not installed'
 );
 
-// 3. 非交互环境调用 bootstrap.sh 守卫（关键失败场景）
+// 4. 非交互环境调用 bootstrap.sh 守卫（关键失败场景）
 const bootstrapRes = run('bash', [bootstrap], { stdio: 'pipe' });
 assert.equal(bootstrapRes.status, 1, 'bootstrap.sh in non-interactive shell must exit 1');
 assert.ok(
@@ -45,7 +54,7 @@ assert.ok(
     'bootstrap.sh should warn against curl | bash without a tty'
 );
 
-// 4. 用户视角下的模式专属命令边界路由（核心路径与关键失败校验）
+// 5. 用户视角下的模式专属命令边界路由（核心路径与关键失败校验）
 const stateFile = join(tmpdir(), `easy-all-test-state-${Date.now()}.env`);
 
 try {

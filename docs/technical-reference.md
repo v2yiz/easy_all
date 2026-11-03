@@ -426,6 +426,20 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。
 
+## Gcore CDN（模式 4）
+
+- 数据面：Xray VLESS WebSocket 监听 `127.0.0.1:10087`，Nginx 在 `443` 终止 TLS 并校验 Gcore 回源
+  客户端证书（mTLS），同时按 Gcore 官方回源网段做 UFW 白名单。
+- DNS：整区委派给 Gcore Managed DNS；安装器写源站 A、节点 CNAME 与可选订阅 CNAME，写入前读取
+  RRset，值不一致就停止，不覆盖别人的记录。
+- 入口：Globalping 三网定向测速精选 1～6 个真实入口 IPv4，节点命名 `🇺🇸优选1`～`🇺🇸优选n`，
+  订阅使用单一 `AUTO` 组。
+- 证书：Gcore 边缘用免费证书；源站证书由本机 acme.sh 签发（HTTP-01）；本机另生成自建 CA 与由其签发的
+  客户端证书，把客户端证书和 CA 上传到 Gcore，Nginx 按该 CA 校验 Gcore 回源的 mTLS 客户端证书。
+- TLS 版本：CDN 资源下发 `options.tls_versions={enabled:true,value:["TLSv1.2","TLSv1.3"]}`，边缘拒绝 SSLv3/TLS 1.0/1.1。
+- 与组合模式的差异：模式 4 必须委派 Gcore Managed DNS、输出 IP 精选节点；组合模式的 Gcore 入口是
+  单个域名节点（`gcore.<zone>` 灰云 CNAME），DNS 全部由 Cloudflare 管理。
+
 ## 组合模式（菜单 5）
 
 一台专用 VPS 同时提供三个入口，共用一套 Xray 与 Nginx：

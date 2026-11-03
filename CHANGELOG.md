@@ -1,3 +1,27 @@
+## 2.1.0 更新说明（2026-11-03）
+
+- 新增 `easy_all purge-gcore` 与 `easy_all purge-cloudflare`：按所有权清理 easy_all 创建的
+  Gcore CDN / Cloudflare 资源。两者不依赖本机安装状态，支持 `--domain <域名>`、`--all` 与
+  `--yes`，删除前列出清单并要求确认，失败会计数并以非零退出。
+- Gcore 识别：CDN Resource 按 cname 精确匹配；Origin Group、边缘证书、客户端证书、Trusted CA
+  按 `easy_all-…` 固定命名匹配，或由命中资源关联带出。`--domain` 传节点域名即可精确清理一次安装；
+  CDN Resource 已删除时需同时传源站域名或使用 `--all`，命令会给出提示。
+- Cloudflare 识别：DNS 记录按 `easy_all` 注释、Worker 按 `easyall` 名称（或绑定到输入域名）、
+  规则按 `easy_all_` ref 且表达式涉及待清理域名、ruleset 名称 `easy_all` 且清空后删除、
+  Origin CA 要求全部 hostname 属于 easy_all 记录或输入域名。`--all` 只按名称清理 Worker，
+  不会按域名反查用户自己的 Worker；仍绑定范围外域名的 Worker 会被保留并提示复核。
+- 两个命令都不删除 Zone、Gcore Managed DNS Zone 和 DNS 记录，也不删除 Bunny 模式创建的无注释
+  DNS 记录。Zone 内 easy_all DNS 记录已删除时，Cloudflare 规则与证书需要传完整主机名才能识别。
+- `bootstrap.sh` 支持透传命令参数，未安装的机器可直接执行
+  `bash <(curl ...) purge-cloudflare --domain example.com`。
+- 两个清理脚本启动时检查 `curl`/`jq`、检测本机已有 easy_all 安装并提示；`--help` 输出到 stdout。
+- 文档：新增清理章节与命令表；补齐 Gcore（模式 4）与组合模式的差异、`--domain` 语义说明。
+- 修复：`purge-cloudflare --all` 在 Worker 自定义域名没有普通 DNS 记录时会误判为范围外并中断，
+  现按 `easyall` 名称选择 Worker 并解除其域名绑定；Gcore 域名匹配改为精确/固定格式匹配，
+  避免子串误伤同账户其他站点。
+
+源码版本标识为 `2.1.0`。
+
 ## 2.0.1 更新说明（2026-11-03）
 
 - 组合模式安装时可自定义 Mihomo 下载文件名（默认 `EASYALL`）与三类节点名（默认 `🇺🇸直连`、

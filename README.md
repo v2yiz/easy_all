@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.0.1](CHANGELOG.md#201-更新说明2026-11-03)。
+当前源码版本：[2.1.0](CHANGELOG.md#210-更新说明2026-11-03)。
 
 `easy_all` 是面向全新 Debian 12/13 VPS 的单节点交互安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。
@@ -46,6 +46,8 @@ Gcore 模式面向非优化线路，采用 Xray 服务端，结合 Nginx mTLS �
 - 委派至 Gcore Managed DNS 的域名 Zone；
 - 具备 CDN 与 DNS 权限的 Gcore API Token；
 - Globalping Token。
+以上是模式 4 的要求；组合模式（菜单 5）的 Gcore 入口是一个域名节点，不需要委派 Gcore Managed DNS，
+也不需要 Cloudflare gRPC，准备要求见下方组合模式段落。
 组合模式（菜单 `5`）使用一个 Cloudflare Zone 下的六个子域名：直连域名（灰云 A）、
 Cloudflare 节点与回源域名（橙云 A）、Gcore 节点（灰云 CNAME 到账户 `*.gcdn.co`）与回源域名
 （灰云 A）、订阅域名（橙云 A）。安装时需要 Cloudflare DNS Token、Gcore CDN Token 与
@@ -158,6 +160,8 @@ geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 | `easy_all update-core` | Reality/Cloudflare/Bunny/Gcore/组合 更新 Xray |
 | `easy_all apply-cloud` | 同步云端资源：Cloudflare 的 Worker/DNS/规则；Bunny 幂等同步受管资源；组合模式写入 DNS、证书与 Gcore 资源 |
 | `easy_all refresh-origin-ips` | Bunny 模式刷新官方回源 IPv4 防火墙池 |
+| `easy_all purge-gcore [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Gcore CDN 资源；可在未安装状态使用，不删除 DNS |
+| `easy_all purge-cloudflare [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Cloudflare 资源（Worker/DNS/规则/Origin CA）；不删除 Zone 与 Bunny 无注释记录 |
 | `easy_all edit-sub` | 交互修改订阅设置（域名、模式、用户 Token 与配额） |
 | `easy_all rotate-dynamic-ports` | Reality 模式刷新动态端口 NAT 规则 |
 | `easy_all refresh-cdn-ips` | Cloudflare/Gcore/组合 模式重新筛选优选 IP |
