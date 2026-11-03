@@ -122,19 +122,15 @@ sudo easy_all install --print-params --mode gcore > params.json   # 生成模板
 `install params.json`、`install --params params.json` 与 `params.json` 等价；从标准输入读取用
 `sudo easy_all - --mode combined < params.json`。`""`、`null` 或缺省表示未提供，必填项缺省会报错。
 
-示例（组合模式，除 `CF_ZONE` 和三个 Token 外都可省略）：
+完整示例（5 个模式，可直接复制修改后粘贴）见
+**[docs/params-examples.md](docs/params-examples.md)**；组合模式最少只需：
 
 ```json
-{
-  "schema_version": 1,
-  "mode": "combined",
-  "params": {
-    "CF_ZONE": "example.com",
-    "CLOUDFLARE_API_TOKEN": "<Cloudflare API Token>",
-    "GCORE_API_TOKEN": "<Gcore API Token>",
-    "GLOBALPING_TOKEN": "<Globalping Token>"
-  }
-}
+{"schema_version": 1, "mode": "combined",
+ "params": {"CF_ZONE": "example.com",
+            "CLOUDFLARE_API_TOKEN": "<Cloudflare API Token>",
+            "GCORE_API_TOKEN": "<Gcore API Token>",
+            "GLOBALPING_TOKEN": "<Globalping Token>"}}
 ```
 
 模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `gcore` / `combined`（或 `1`~`5`）。名称类可选字段：

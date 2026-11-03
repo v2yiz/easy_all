@@ -108,6 +108,8 @@ run_preflight() { # $1=profile $2=mode $3=params 文件 $4=探针表达式
         source "${profile}"
         # shellcheck source=/dev/null
         source "${ROOT_DIR}/lib/params.sh"
+        # 这里模拟 --check-params：只校验，不删除参数文件。
+        EASY_ALL_PARAMS_KEEP=1
         params_begin "${mode}" "${file}"
         collect_install_inputs
         params_finish 2>/dev/null
@@ -379,5 +381,59 @@ out=$(run_preflight "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" cloudfla
     || fail "cloudflare(link+backup): preflight failed"
 assert_equal "cloudflare(link+backup): backup worker fields" \
     "backup.example.com|aws:ap-east-1" "${out}"
+
+# 15. 文档示例必须可用：docs/params-examples.md 的完整 JSON 块替换占位符后跑预检
+doc_examples="${ROOT_DIR}/docs/params-examples.md"
+[[ -f "${doc_examples}" ]] || fail "missing docs/params-examples.md"
+block_dir="${TMP_DIR}/docblocks"
+mkdir -p "${block_dir}"
+awk -v dir="${block_dir}" '
+    /^```json$/ { inside = 1; n++; file = sprintf("%s/block-%02d.json", dir, n); next }
+    /^```$/ { inside = 0; next }
+    inside { print > file }
+' "${doc_examples}"
+
+block_count=0
+for block in "${block_dir}"/block-*.json; do
+    [[ -e "${block}" ]] || continue
+    # 片段（例如配额字段）不是完整文档，跳过。
+    jq -e '.mode and .params' "${block}" >/dev/null 2>&1 || continue
+    mode=$(jq -r '.mode' "${block}")
+    case "${mode}" in
+    reality) profile="${ROOT_DIR}/profiles/reality.sh" ;;
+    cloudflare-streamup) profile="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" ;;
+    gcore) profile="${ROOT_DIR}/profiles/xhttp-gcore.sh" ;;
+    bunny-ws) profile="${ROOT_DIR}/profiles/ws-bunny.sh" ;;
+    combined) profile="${ROOT_DIR}/profiles/combined.sh" ;;
+    *) fail "doc example: unknown mode ${mode}" ;;
+    esac
+    normalized="${block_dir}/normalized-$(basename "${block}")"
+    jq --arg m "${mode}" '
+        .params
+        | (if .ALLOWED_TOKENS then .ALLOWED_TOKENS = {owner: "abcdefgh-1234"} else . end)
+        | (if (has("NODE_HOST") and ((.NODE_HOST // "") == "")) then .NODE_HOST = "203.0.113.10" else . end)
+        | (if (has("VPS_PUBLIC_IPV4") and ((.VPS_PUBLIC_IPV4 // "") == "")) then .VPS_PUBLIC_IPV4 = "203.0.113.10" else . end)
+        | (if ((.CLOUDFLARE_API_TOKEN // "") | startswith("<")) then
+              .CLOUDFLARE_API_TOKEN = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" else . end)
+        | (if ((.GLOBALPING_TOKEN // "") | startswith("<")) then
+              .GLOBALPING_TOKEN = "gcore-token-value" else . end)
+        | (if ((.GCORE_API_TOKEN // "") | startswith("<")) then
+              .GCORE_API_TOKEN = "gcore-token-value" else . end)
+        | (if ((.BUNNY_API_KEY // "") | startswith("<")) then
+              .BUNNY_API_KEY = "gcore-token-value" else . end)
+        | (if ((.CLOUDFLARE_DNS_TOKEN // "") | startswith("<")) then
+              .CLOUDFLARE_DNS_TOKEN = "gcore-token-value" else . end)
+        | (if ((.OWNER_TOKEN // "") | startswith("<")) then
+              .OWNER_TOKEN = "abcdefgh-1234" else . end)
+        | {schema_version: 1, mode: $m, params: .}
+    ' "${block}" >"${normalized}" || fail "doc example: jq normalize failed: ${block}"
+    chmod 600 "${normalized}"
+    if ! doc_out=$(run_preflight "${profile}" "${mode}" "${normalized}" 'ok' 2>&1); then
+        fail "doc example (${mode}) must pass preflight: ${doc_out}"
+    fi
+    block_count=$((block_count + 1))
+done
+[[ "${block_count}" -ge 5 ]] \
+    || fail "doc examples: expected at least 5 complete JSON blocks, got ${block_count}"
 
 printf 'ok - install params schema\n'

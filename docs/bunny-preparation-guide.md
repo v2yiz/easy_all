@@ -88,6 +88,7 @@ sudo easy_all params.json
 
 `ORIGIN_DOMAIN`、`CDN_DOMAIN`、`BUNNY_BANDWIDTH_GB` 可省略（默认 `origin.<Zone>`、`cdn.<Zone>`、
 `500`）；两个 Token 必填。节点名与下载名固定 `EASY_ALL`。安装成功会自动删除参数文件。
+所有模式的完整示例见 [params-examples.md](params-examples.md)。
 
 ### 安装器自动完成的编排工作
 1. **云端联动**：
