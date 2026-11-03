@@ -25,6 +25,8 @@ usage() {
   --all            清理 Token 可见的所有 Zone 中的 easy_all 资源
   --yes            跳过确认（非交互模式必须显式给出）
 
+环境变量：EASY_ALL_PURGE_MAX_PAGES  每个列表接口的分页上限（默认 100 页 × 100 条）
+
 识别规则：DNS 记录注释以 easy_all 开头；Worker 名称以 easyall 开头或绑定到待清理域名；
 规则按 ref 以 easy_all_ 开头且表达式只涉及待清理域名；ruleset 名称以 easy_all 开头且清空后才删除；
 Origin CA 证书只在其全部 hostname 都属于 easy_all 记录或输入域名时删除。
@@ -154,14 +156,27 @@ cf_api() {
 }
 
 cf_list() {
-    local path=$1 separator='?' page=1 batch all='[]' count
+    local path=$1 separator='?' page=1 batch all='[]' count prev_batch=""
+    local max_pages=${EASY_ALL_PURGE_MAX_PAGES:-100}
+    [[ "${max_pages}" =~ ^[1-9][0-9]*$ ]] \
+        || die "EASY_ALL_PURGE_MAX_PAGES 必须是正整数：${max_pages}"
     [[ "${path}" != *\?* ]] || separator='&'
     while :; do
         batch=$(cf_api GET "${path}${separator}per_page=100&page=${page}") || return 1
-        all=$(jq -c --argjson all "${all}" --argjson batch "${batch}" '$all + $batch')
+        # jq 必须显式 -n：不传输入时它会读 stdin，在交互终端上会永久阻塞（现场：purge-cloudflare 挂起）。
+        all=$(jq -nc --argjson all "${all}" --argjson batch "${batch}" '$all + $batch')
         count=$(jq 'length' <<<"${batch}")
         ((count == 100)) || break
+        # 接口忽略 page 时每页完全相同，早点报错，不靠页数硬上限来发现。
+        if [[ -n "${prev_batch}" && "${batch}" == "${prev_batch}" ]]; then
+            die "接口疑似未按 page 分页（第 ${page} 页与上一页完全相同），已停止以免无限循环：${path}"
+        fi
+        prev_batch=${batch}
         page=$((page + 1))
+        # 先多取一页作为“结束探测页”：恰好 max_pages 整页的数据也能正常结束。
+        if ((page > max_pages + 1)); then
+            die "扫描超过 ${max_pages} 页仍未结束（${path}）；如账户确实有更多数据，可用 EASY_ALL_PURGE_MAX_PAGES 调大上限"
+        fi
     done
     printf '%s' "${all}"
 }
