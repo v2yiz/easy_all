@@ -486,11 +486,6 @@ params_default_worker_backup_path() {
     printf '/vless-%s\n' "$(openssl rand -hex 12)"
 }
 
-params_default_public_ipv4() {
-    declare -F detect_public_ipv4 >/dev/null 2>&1 || return 1
-    detect_public_ipv4
-}
-
 # 订阅 Token 单值格式（与 normalize_allowed_tokens 的约束保持一致）。
 params_check_token() {
     [[ "$1" =~ ^[A-Za-z0-9._-][A-Za-z0-9._~-]{7,127}$ ]]

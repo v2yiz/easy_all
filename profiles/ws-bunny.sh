@@ -184,7 +184,7 @@ collect_install_inputs() {
         --label 'WebSocket 路径（留空自动生成）' --default-fn params_default_websocket_path \
         --check params_check_websocket_path
     params_declare VPS_PUBLIC_IPV4 \
-        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --label '本机公网 IPv4（留空则在安装阶段自动探测）' \
         --check validate_ipv4
     params_declare TCP_ACCELERATION \
         --label 'TCP 加速：skyline（默认）或 bbrv3（仅 amd64）' --default skyline \
@@ -205,6 +205,10 @@ params_cross_bunny_ws() {
 }
 
 apply_install_inputs() {
+    if [[ -z "${VPS_PUBLIC_IPV4}" ]]; then
+        VPS_PUBLIC_IPV4=$(detect_public_ipv4) \
+            || die "无法自动探测本机公网 IPv4；请在参数文件里填写 VPS_PUBLIC_IPV4"
+    fi
     bunny_prepare_credentials
     ALLOWED_TOKENS="[\"${OWNER_TOKEN}\"]"
     SUB_DOWNLOAD_NAME=EASY_ALL

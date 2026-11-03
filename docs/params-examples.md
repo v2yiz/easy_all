@@ -60,8 +60,8 @@ sudo easy_all params.json                  # 校验通过后安装
 
 ### 本机订阅（`SUBSCRIPTION_MODE: deploy`）
 
-必填：`NODE_HOST`（留空自动探测公网 IPv4）、`SUBSCRIPTION_DOMAIN`、`CLOUDFLARE_API_TOKEN`、
-`ALLOWED_TOKENS`。
+必填：`SUBSCRIPTION_DOMAIN`、`CLOUDFLARE_API_TOKEN`、`ALLOWED_TOKENS`；`NODE_HOST` 留空会在安装
+阶段自动探测公网 IPv4（`VPS_PUBLIC_IPV4` 同样留空即自动探测）。
 
 ```json
 {

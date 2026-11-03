@@ -1231,7 +1231,7 @@ collect_install_inputs() {
         --normalize params_normalize_allowed_tokens
 
     params_declare VPS_PUBLIC_IPV4 \
-        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --label '本机公网 IPv4（留空则在安装阶段自动探测）' \
         --check validate_ipv4
     params_declare TCP_ACCELERATION \
         --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \

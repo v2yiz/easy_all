@@ -526,9 +526,9 @@ params_when_reality_worker() {
 }
 
 collect_install_inputs() {
-    params_declare NODE_HOST --required \
-        --label 'Reality 客户端连接地址（公网 IPv4 或 DNS only/灰云域名）' \
-        --default-fn params_default_public_ipv4 --check params_check_reality_node_host
+    params_declare NODE_HOST \
+        --label 'Reality 客户端连接地址（公网 IPv4 或 DNS only/灰云域名；留空则在安装阶段自动探测）' \
+        --check params_check_reality_node_host
     params_declare NODE_NAME --required \
         --label '节点名（客户端展示名）' --default "${DEFAULT_REALITY_NODE_NAME}" \
         --check params_check_node_name
@@ -581,7 +581,7 @@ collect_install_inputs() {
         --normalize params_normalize_allowed_tokens
 
     params_declare VPS_PUBLIC_IPV4 \
-        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --label '本机公网 IPv4（留空则在安装阶段自动探测）' \
         --check validate_ipv4
     params_declare TCP_ACCELERATION \
         --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
@@ -623,6 +623,17 @@ params_cross_reality() {
 # 参数已赋值并通过校验；这里只做需要本机工具/网络的派生与校验。
 apply_install_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
+    # 预检不联网：留空时在这里（已装好 curl）探测，失败再给可操作提示。
+    if [[ -z "${NODE_HOST}" ]]; then
+        NODE_HOST=$(detect_public_ipv4) \
+            || die "无法自动探测公网 IPv4；请在参数文件里填写 NODE_HOST 或 VPS_PUBLIC_IPV4"
+    fi
+    validate_domain "${NODE_HOST}" || validate_ipv4 "${NODE_HOST}" \
+        || die "Reality 节点地址无效：${NODE_HOST}"
+    if [[ -z "${VPS_PUBLIC_IPV4}" ]]; then
+        VPS_PUBLIC_IPV4=$(detect_public_ipv4) \
+            || die "无法自动探测本机公网 IPv4；请在参数文件里填写 VPS_PUBLIC_IPV4"
+    fi
     choose_google_egress_mode
     case "${SUBSCRIPTION_MODE}" in
     deploy)

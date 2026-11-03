@@ -382,6 +382,28 @@ out=$(run_preflight "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" cloudfla
 assert_equal "cloudflare(link+backup): backup worker fields" \
     "backup.example.com|aws:ap-east-1" "${out}"
 
+# 14b. 预检不联网：NODE_HOST / VPS_PUBLIC_IPV4 留空也必须通过（安装阶段才探测）
+params=$(write_params reality-offline.json '{
+  "schema_version": 1, "mode": "reality",
+  "params": {"SUBSCRIPTION_MODE": "link"}
+}')
+out=$(run_preflight "${ROOT_DIR}/profiles/reality.sh" reality "${params}" \
+    '${NODE_HOST}|${VPS_PUBLIC_IPV4}') || fail "reality(link): empty NODE_HOST/VPS must pass preflight"
+assert_equal "reality(link): empty IP fields stay empty at preflight" "|" "${out}"
+
+params=$(write_params combined-offline.json '{
+  "schema_version": 1, "mode": "combined",
+  "params": {
+    "CF_ZONE": "example.com",
+    "CLOUDFLARE_API_TOKEN": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "GCORE_API_TOKEN": "gcore-token-value",
+    "GLOBALPING_TOKEN": "gcore-token-value"
+  }
+}')
+out=$(run_preflight "${ROOT_DIR}/profiles/combined.sh" combined "${params}" '${VPS_PUBLIC_IPV4}') \
+    || fail "combined: empty VPS_PUBLIC_IPV4 must pass preflight"
+assert_equal "combined: empty VPS_PUBLIC_IPV4 stays empty at preflight" "" "${out}"
+
 # 15. 文档示例必须可用：docs/params-examples.md 的完整 JSON 块替换占位符后跑预检
 doc_examples="${ROOT_DIR}/docs/params-examples.md"
 [[ -f "${doc_examples}" ]] || fail "missing docs/params-examples.md"
@@ -416,8 +438,6 @@ for block in "${block_dir}"/*.json; do
     jq --arg m "${mode}" '
         .params
         | (if .ALLOWED_TOKENS then .ALLOWED_TOKENS = {owner: "abcdefgh-1234"} else . end)
-        | (if (has("NODE_HOST") and ((.NODE_HOST // "") == "")) then .NODE_HOST = "203.0.113.10" else . end)
-        | (if (has("VPS_PUBLIC_IPV4") and ((.VPS_PUBLIC_IPV4 // "") == "")) then .VPS_PUBLIC_IPV4 = "203.0.113.10" else . end)
         | (if ((.CLOUDFLARE_API_TOKEN // "") | startswith("<")) then
               .CLOUDFLARE_API_TOKEN = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" else . end)
         | (if ((.GLOBALPING_TOKEN // "") | startswith("<")) then

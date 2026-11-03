@@ -185,7 +185,7 @@ collect_install_inputs() {
         --normalize params_normalize_allowed_tokens
 
     params_declare VPS_PUBLIC_IPV4 \
-        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --label '本机公网 IPv4（留空则在安装阶段自动探测）' \
         --check validate_ipv4
     params_declare TCP_ACCELERATION \
         --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
@@ -231,6 +231,10 @@ params_cross_combined() {
 
 # 依赖已安装工具与网络：参数校验完成后、任何云端/本机配置写入之前运行。
 apply_install_inputs() {
+    if [[ -z "${VPS_PUBLIC_IPV4}" ]]; then
+        VPS_PUBLIC_IPV4=$(detect_public_ipv4) \
+            || die "无法自动探测本机公网 IPv4；请在参数文件里填写 VPS_PUBLIC_IPV4"
+    fi
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
     if [[ -z "${ALLOWED_TOKENS}" && -z "${OWNER_TOKEN}" ]]; then
