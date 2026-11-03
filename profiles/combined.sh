@@ -338,15 +338,35 @@ combined_ensure_gcore_challenge_delegation() {
         cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" "${payload}" >/dev/null
         info "已为 Gcore DNS-01 委派挑战子域：${challenge} NS ${ns}"
     done < <(gcore_challenge_nameservers)
-    # Gcore 会在首次签发时按需创建 _acme-challenge 子区；这里探一下是否已经能权威应答，
-    # 未就绪时只提示（挑战区创建通常几分钟），不阻断安装。
-    if command -v dig >/dev/null 2>&1; then
-        local served
-        served=$(dig +short +time=3 +tries=1 @ns1.gcorelabs.net \
-            "${challenge}" NS 2>/dev/null || true)
-        if [[ -z "${served}" ]]; then
-            info "Gcore 尚未在 ${challenge} 上权威应答（挑战区可能还在创建）；若持续失败请确认账号已启用 Managed DNS"
-        fi
+    combined_ensure_gcore_challenge_zone "${challenge}"
+}
+
+# Gcore 会在首次签发时按需创建 _acme-challenge 子区，但如果账号侧没有自动创建（或区被手工删掉），
+# 它的 NS 会一直返回 REFUSED，DNS-01 永远失败。这里先用 dig 确认权威应答；没有就直接调 DNS API
+# 建区（幂等：已存在时 API 报错，按“已就绪”处理）。建区失败只提示，不阻断安装。
+combined_ensure_gcore_challenge_zone() {
+    local challenge=$1 ns served payload created=0
+    command -v dig >/dev/null 2>&1 || return 0
+    ns=$(gcore_challenge_nameservers | head -n 1)
+    served=$(dig +short +time=3 +tries=1 "@${ns}" "${challenge}" NS 2>/dev/null || true)
+    if [[ -n "${served}" ]]; then
+        info "Gcore 挑战区已就绪：${challenge}"
+        return 0
+    fi
+    payload=$(jq -cn --arg name "${challenge}" '{name:$name}')
+    if (gcore_api_request POST "/dns/v2/zones" "${payload}" >/dev/null 2>&1); then
+        info "已在 Gcore Managed DNS 创建挑战区：${challenge}"
+        created=1
+    fi
+    served=$(dig +short +time=3 +tries=1 "@${ns}" "${challenge}" NS 2>/dev/null || true)
+    if [[ -n "${served}" ]]; then
+        info "Gcore 挑战区已就绪：${challenge}"
+        return 0
+    fi
+    if ((created == 1)); then
+        info "挑战区已提交创建，Gcore 生效通常需要几分钟"
+    else
+        warn "Gcore 在 ${challenge} 上没有权威应答，自动建区也未成功；若签发报 REFUSED，请到 Gcore 控制台确认 Managed DNS 已启用并手动创建该区"
     fi
 }
 
