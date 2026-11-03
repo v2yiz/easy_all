@@ -1,6 +1,5 @@
 # Files installed as the easy_all runtime.
 profiles/reality.sh
-profiles/mieru-direct.sh
 profiles/xhttp-cloudflare-streamup.sh
 lib/log.sh
 lib/runtime-core.sh
@@ -27,6 +26,11 @@ templates/mihomo-classic.yaml
 lib/worker-backup.sh
 worker-src/backup.js
 profiles/ws-bunny.sh
+profiles/xhttp-gcore.sh
+lib/gcore-ip-pool.sh
 lib/bunny-api.py
 lib/bunny-runtime.sh
 lib/lego-install.sh
+profiles/combined.sh
+lib/cf-dns.sh
+lib/gcore-cdn.sh

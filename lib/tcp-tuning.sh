@@ -31,7 +31,7 @@ require_amd64_tcp_acceleration() {
 }
 
 normalize_tcp_acceleration() {
-    case "${1:-bbrv3}" in
+    case "${1:-skyline}" in
     1 | bbrv3) printf 'bbrv3\n' ;;
     2 | skyline) printf 'skyline\n' ;;
     *) return 1 ;;
@@ -39,13 +39,7 @@ normalize_tcp_acceleration() {
 }
 
 choose_tcp_acceleration() {
-    local requested=${1:-${TCP_ACCELERATION:-}}
-    if [[ -z "${requested}" && -t 0 ]]; then
-        printf '请选择 TCP 加速方案：\n'
-        printf '  1. BBRv3（默认，推荐）\n'
-        printf '  2. Skyline Speeder（仅在丢包率极高且确认为非拥塞随机丢包时选择；旧内核会先升级，安装结束重启一次后自动启用）\n'
-        read_bilingual '请选择 [1]（直接回车使用默认值）:' requested
-    fi
+    local requested=${1:-${TCP_ACCELERATION:-skyline}}
     TCP_ACCELERATION=$(normalize_tcp_acceleration "${requested}") \
         || die "TCP 加速选项无效：${requested}"
 }
@@ -150,7 +144,7 @@ resume_skyline_after_reboot() {
     require_root
     require_amd64_tcp_acceleration
     try_acquire_runtime_write_lock 60 \
-        || die "Skyline 开机任务等待运行时锁 60 秒超时；已保留回退配置和开机任务，请在其他任务结束后执行 sudo easy_all tcp skyline 重试"
+        || die "Skyline 开机任务等待运行时锁 60 秒超时；已保留回退配置和开机任务，请在其他任务结束后执行 sudo easy_all apply 重试"
     collect_installed_state
     if [[ "${TCP_ACCELERATION}" != "skyline" || ! -f "${BBRV3_REBOOT_MARKER}" ]]; then
         remove_skyline_boot_setup 0
@@ -201,7 +195,7 @@ configure_tcp_acceleration() {
         if dpkg --compare-versions "${glibc}" lt 2.38; then
             warn "当前 glibc ${glibc} 不支持预编译包，将从源码编译 Rust/BPF；可能耗时较长并占用较多 CPU、内存及磁盘，请勿中断安装"
             bash "${SKYLINE_SOURCE_DIR}/install.sh" --source --no-enable \
-                || die "Skyline Speeder 源码安装失败；请执行 easy_all tcp bbrv3 恢复"
+                || die "Skyline Speeder 源码安装失败；已保留 BBR 回退配置"
         else
             curl -fL --proto '=https' --tlsv1.2 --retry 3 \
                 --connect-timeout 10 --max-time 180 \
@@ -212,13 +206,13 @@ configure_tcp_acceleration() {
                 || die "Skyline Speeder 预编译包 SHA256 校验失败"
             SKYLINE_ARTIFACT_URL="${artifact}" \
                 bash "${SKYLINE_SOURCE_DIR}/install.sh" --prebuilt --no-enable \
-                || die "Skyline Speeder 安装失败；请执行 easy_all tcp bbrv3 恢复"
+                || die "Skyline Speeder 安装失败；已保留 BBR 回退配置"
         fi
         installed_version=$(skyline-speederd --version 2>/dev/null) || installed_version=""
         if [[ "${installed_version}" != "skyline-speederd ${SKYLINE_VERSION#v}" ]]; then
             stop_skyline_speeder
             sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "恢复 BBR 回退配置失败"
-            die "Skyline Speeder 版本验收失败（期望 skyline-speederd ${SKYLINE_VERSION#v}，实际 ${installed_version:-未能读取}），已回退 bbr；请核对安装日志及上游版本格式后执行 sudo easy_all tcp skyline 重试"
+            die "Skyline Speeder 版本验收失败（期望 skyline-speederd ${SKYLINE_VERSION#v}，实际 ${installed_version:-未能读取}），已回退 bbr；请核对安装日志及上游版本格式后执行 sudo easy_all apply 重试"
         fi
         printf '%s\n' "${SKYLINE_COMMIT}" >"${SKYLINE_SOURCE_DIR}/.easy-all-installed" \
             || die "保存 Skyline Speeder 安装版本失败"
@@ -228,7 +222,7 @@ configure_tcp_acceleration() {
     if ! systemctl enable --now skyline-speeder-enable.service || ! skyline_speeder_active; then
         stop_skyline_speeder
         sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "恢复 BBR 回退配置失败"
-        die "Skyline Speeder 启用后验收失败，已停用并回退 bbr；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3"
+        die "Skyline Speeder 启用后验收失败，已停用并回退 bbr；重试：sudo easy_all apply"
     fi
     remove_skyline_boot_setup 0
     rm -f -- "${BBRV3_REBOOT_MARKER}"
@@ -246,49 +240,29 @@ skyline_speeder_active() {
 show_tcp_acceleration_status() {
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local current_cc
-    if [[ "${TCP_ACCELERATION:-bbrv3}" == "skyline" ]]; then
+    if [[ "${TCP_ACCELERATION:-skyline}" == "skyline" ]]; then
         current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || current_cc="unknown"
         if skyline_speeder_active 2>/dev/null; then
             printf 'Skyline Speeder: active（fq + skyline_cc）\n'
         elif [[ -f "${BBRV3_REBOOT_MARKER}" ]]; then
             if [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] \
                 && systemctl is-failed --quiet easy_all-skyline-setup.service; then
-                printf 'Skyline Speeder: degraded（开机自动安装或启用失败，当前拥塞控制 %s；查看 journalctl -u easy_all-skyline-setup.service -b；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3）\n' "${current_cc}"
+                printf 'Skyline Speeder: degraded（开机自动安装或启用失败，当前拥塞控制 %s；查看 journalctl -u easy_all-skyline-setup.service -b；重试：sudo easy_all apply）\n' "${current_cc}"
             elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] && skyline_running_kernel_supported; then
                 printf 'Skyline Speeder: pending-activation（开机任务将自动安装并启用；进度查看 journalctl -u easy_all-skyline-setup.service -b -f）\n'
             elif skyline_running_kernel_supported; then
-                printf 'Skyline Speeder: degraded（兼容内核已运行，但无开机安装任务，当前拥塞控制 %s；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3）\n' "${current_cc}"
+                printf 'Skyline Speeder: degraded（兼容内核已运行，但无开机安装任务，当前拥塞控制 %s；重试：sudo easy_all apply）\n' "${current_cc}"
             elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]]; then
                 printf 'Skyline Speeder: pending-reboot（当前内核 %s；其余安装完成后重启一次，将自动安装并启用）\n' "$(uname -r)"
             else
-                printf 'Skyline Speeder: pending-reboot（当前内核 %s；请执行 sudo easy_all tcp skyline 准备开机自动启用任务）\n' "$(uname -r)"
+                printf 'Skyline Speeder: pending-reboot（当前内核 %s；请执行 sudo easy_all apply 准备开机自动启用任务）\n' "$(uname -r)"
             fi
         else
-            printf 'Skyline Speeder: degraded（服务、拥塞控制或 FQ 未生效，当前拥塞控制 %s；重试：sudo easy_all tcp skyline；切回 BBRv3：sudo easy_all tcp bbrv3）\n' "${current_cc}"
+            printf 'Skyline Speeder: degraded（服务、拥塞控制或 FQ 未生效，当前拥塞控制 %s；重试：sudo easy_all apply）\n' "${current_cc}"
         fi
     else
         show_bbrv3_status
     fi
-}
-
-update_tcp_acceleration() {
-    (($# <= 1)) || die "用法：easy_all tcp [bbrv3|skyline]"
-    require_root
-    require_amd64_tcp_acceleration
-    acquire_runtime_write_lock
-    collect_installed_state
-    if (($# == 0)); then
-        [[ -t 0 ]] || die "非交互模式请指定：easy_all tcp bbrv3 或 easy_all tcp skyline"
-        TCP_ACCELERATION=""
-        choose_tcp_acceleration
-    else
-        choose_tcp_acceleration "$1"
-    fi
-    configure_tcp_acceleration
-    save_state
-    release_runtime_write_lock
-    show_tcp_acceleration_status
-    prompt_bbrv3_reboot
 }
 
 tcp_runtime_keys() {
@@ -885,7 +859,7 @@ remove_physical_fq_qdisc_service() {
 
 prompt_bbrv3_reboot() {
     local choice
-    if [[ "${TCP_ACCELERATION:-bbrv3}" == "skyline" ]]; then
+    if [[ "${TCP_ACCELERATION:-skyline}" == "skyline" ]]; then
         [[ -f "${BBRV3_REBOOT_MARKER}" ]] || return 0
         if skyline_running_kernel_supported; then
             return 0
@@ -895,7 +869,7 @@ prompt_bbrv3_reboot() {
     fi
     printf '\n'
     printf '%s\n' "========================================================================"
-    if [[ "${TCP_ACCELERATION:-bbrv3}" == "skyline" ]]; then
+    if [[ "${TCP_ACCELERATION:-skyline}" == "skyline" ]]; then
         printf '%s\n' "【重要提示：请重启服务器以加载 Skyline Speeder 所需的兼容内核】"
         printf '%s\n' "其余安装已完成，只需重启一次；开机将自动安装并启用 Skyline，无需再次执行命令。"
         printf '%s\n' "开机安装期间暂用 BBR；进度查看 journalctl -u easy_all-skyline-setup.service -b -f。"

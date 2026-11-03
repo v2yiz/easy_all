@@ -88,7 +88,7 @@ export -f curl sshd
 
 mkdir -p "${sandbox}/state"
 cat >"${sandbox}/state/state.env" <<EOF
-STATE_VERSION="2"
+STATE_VERSION="0"
 PROTOCOL="bunny-ws"
 OWNER_TOKEN="test-owner-token"
 EOF

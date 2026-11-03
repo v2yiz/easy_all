@@ -24,10 +24,7 @@ readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://gi
 readonly EASY_ALL_DEFAULT_BRANCH="main"
 readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
 readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
-readonly REALITY_MIN_STATE_VERSION="6"
-readonly CLOUDFLARE_MIN_STATE_VERSION="9"
-readonly MIERU_MIN_STATE_VERSION="1"
-readonly BUNNY_MIN_STATE_VERSION="2"
+readonly CURRENT_STATE_VERSION="0"
 readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
@@ -74,23 +71,21 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality、Cloudflare CDN、Mieru 直连或 Bunny CDN
+  install          交互选择 Reality、Cloudflare CDN、Bunny CDN、Gcore CDN 或组合模式
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
-  apply            应用已安装配置；Bunny 模式仅幂等同步受管云资源
-  tcp [bbrv3|skyline]
-                   选择 TCP 加速（默认 BBRv3；Skyline 仅用于极高非拥塞随机丢包）
+  apply            应用已安装配置；Bunny 模式同时幂等同步云资源；组合模式只重建本机与订阅
   reality-target [域名:端口]
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
-                   立即刷新直连模式的动态端口 NAT 规则（Mieru 为端口范围转发）
-  apply-cloud      同步云端资源（Bunny 模式与 apply 相同）
-  update-sub       重新选择订阅输出与用户/配额
+                   立即刷新直连 Reality 模式的动态端口 NAT 规则
+  apply-cloud      同步云端资源（Cloudflare/Bunny/组合；组合含 DNS、证书与 Gcore 资源）
+  edit-sub         交互修改订阅设置（域名、模式、用户/配额）
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   refresh-origin-ips  刷新 Bunny 官方回源 IPv4 防火墙列表
-  update-core      更新当前模式的核心（Xray 或 mita）
+  update-core      更新当前模式的核心（Xray）
   renew-cert       重新签发当前模式的 TLS 证书（Bunny 模式强制走 Let's Encrypt）
   cert-renew       内部续期命令；Bunny 模式由 easy_all-cert-renew.timer 调用
   quota-status     显示用户配额与 Xray 本地统计
@@ -104,13 +99,43 @@ launcher_usage() {
 EOF
 }
 
+legacy_local_uninstall() {
+    local marker
+    for marker in "$@"; do
+        [[ "${marker}" != "--purge-cloud" ]] \
+            || launcher_die "旧状态版本无法安全识别云端资源；已停止卸载，请先在控制台核对 Cloudflare/Gcore/Bunny 资源"
+    done
+    [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
+    warn "检测到旧版本状态文件；只清理 easy_all 本机文件，SSH 配置、UFW 规则与云端资源保持不变"
+    systemctl disable --now easy_all-xray.service easy_all-quota.timer \
+        easy_all-globalping-refresh.timer easy_all-bunny-ips.timer \
+        easy_all-cert-renew.timer >/dev/null 2>&1 || true
+    systemctl stop easy_all-quota.service easy_all-globalping-refresh.service \
+        easy_all-bunny-ips.service easy_all-cert-renew.service \
+        easy_all-skyline-setup.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/easy_all*.service /etc/systemd/system/easy_all*.timer
+    if command -v nginx >/dev/null 2>&1; then
+        rm -f /etc/nginx/conf.d/easy_all.conf
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+    fi
+    if crontab -l >/dev/null 2>&1; then
+        crontab -l | grep -v 'easy_all-' | crontab - >/dev/null 2>&1 || true
+    fi
+    rm -rf /etc/easy_all /etc/easy_all-bunny /var/www/easy_all /usr/local/lib/easy_all
+    rm -f "${EASY_ALL_COMMAND_PATH}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    warn "本机文件已清理。以下内容需要你自行核对：SSH 端口 drop-in 与 UFW 放行、"
+    warn "/etc/fail2ban/{jail.d/99-easy-all-sshd.local,action.d/easy-all-ufw-cidr.conf}、以及云端 CDN/DNS 资源"
+    success "旧版本 easy_all 本机清理完成，可以重新安装"
+}
+
 show_install_guide() {
     cat >&2 <<'EOF'
 安装流程概览：
 easy_all install
 ├─ [1 默认] 直连 Reality
 │  ├─ 适用场景：直连效果良好，且 VPS 公网 IP 未被封锁
-│  ├─ 系统检查 → 依赖/TCP 加速（默认 BBRv3，可选 Skyline Speeder）/重启策略 → 全局禁用 IPv6
+│  ├─ 系统检查 → 依赖/TCP 加速（默认 Skyline Speeder）/重启策略 → 全局禁用 IPv6
 │  ├─ IPv4 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
 │  ├─ 选择订阅输出（默认不部署订阅）
 │  │  ├─ 1 仅节点：不收集订阅服务参数
@@ -133,22 +158,32 @@ easy_all install
 │  ├─ 可选输入不含 vpsSubUrl 的 Worker 聚合 JSON；本机注入源 URL 后构建 Worker
 │  ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
 │  └─ 零损失就地平滑安装/迁移
-├─ [3] 直连 - Mieru（官方 mita 软件包 + TCP 单端口）
-│  ├─ 适用场景：希望使用抗主动探测的加密代理，且不需要域名、证书或伪装站点
-│  ├─ 前提条件：无需域名；VPS 公网 IPv4 可直连即可
-│  ├─ 安装：从 GitHub 官方 Release 下载 mita 的 deb 包并校验 SHA256
-│  ├─ 配置：用官方 mita apply config 写入 TCP 单端口、随机用户名与密码
-│  └─ 输出：mierus:// 分享链接、客户端配置 JSON 与 Mihomo 节点片段；不部署在线订阅
-└─ [4] Bunny CDN（VLESS WS/TLS + Cloudflare DNS-only CNAME + 保留 Nginx）
-   ├─ 前提条件：Cloudflare 根 Zone、两个不同域名、Bunny Account API Key 与 Zone DNS Token
-   ├─ DNS：origin 为 DNS-only A、cdn 为 DNS-only CNAME；不创建 Bunny DNS Zone/NS 委派
-   ├─ 数据面：Bunny 终止客户端 TLS，Nginx 仅接受官方回源 IPv4 和随机回源头
-   └─ 输出：一个自动调度域名节点及一个 owner 订阅
+├─ [3] Bunny CDN（VLESS WS/TLS + Cloudflare DNS-only CNAME + 保留 Nginx）
+│  ├─ 前提条件：Cloudflare 根 Zone、两个不同域名、Bunny Account API Key 与 Zone DNS Token
+│  ├─ DNS：origin 为 DNS-only A、cdn 为 DNS-only CNAME；不创建 Bunny DNS Zone/NS 委派
+│  ├─ 数据面：Bunny 终止客户端 TLS，Nginx 仅接受官方回源 IPv4 和随机回源头
+│  └─ 输出：一个自动调度域名节点及一个 owner 订阅
+├─ [4] Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）
+│  ├─ 适用场景：直连效果不佳、VPS 公网 IP 已被封，或追求 Gcore CDN 边缘与三网定向
+│  ├─ 前提条件：域名需委派至 Gcore Managed DNS Zone
+│  ├─ 采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源
+│  ├─ 地址候选池：通过亚洲/美国西岸/中国三网及多公共解析器发现真实入口
+│  ├─ 定向测速：移动以香港为主、联通以日本为主、电信以洛杉矶为主
+│  ├─ 每网最多输出 2 个通过验证的节点，总计 1～6 个，通常为 2 个
+│  ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
+│  └─ 零损失就地平滑安装/迁移
+└─ [5] 组合：直连 Reality + Cloudflare + Gcore（一次部署三个入口）
+   ├─ 入口：直连 VLESS Reality（VPS 8443）、Cloudflare XHTTP（6 个优选 IPv4）、Gcore WS 域名节点
+   ├─ 前提条件：一个 Cloudflare Zone 下六个子域名（直连/CF 节点/CF 回源/Gcore 节点/Gcore 回源/订阅）
+   ├─ 需要：Cloudflare DNS Token、Gcore CDN Token、Globalping Token；云安全组放行 443 与 8443
+   ├─ 网络：443 只允许 Cloudflare 与 Gcore 官方回源网段；SSH 端口保持现状不改
+   ├─ 订阅：单个 owner Token，三类节点平铺进 AUTO 测速组；不启用用户配额
+   └─ apply 只重建本机配置与订阅；apply-cloud 才写 DNS、签发证书并同步 Gcore 资源
 订阅输出：只有当前服务器时推荐本机订阅；多台直连节点需要统一下发时选择 Worker 订阅聚合
 （在其中一台部署，其余节点写入聚合 JSON）；不需要订阅时保持默认的仅节点。
 Worker 聚合会额外占用两个 Cloudflare 一级子域名：公开订阅域名绑定 Worker，私有节点源域名由
 Cloudflare 代理回本机 8443 且只允许 Cloudflare 回源，Token 与配额仍由本机 Nginx 判定。
-TCP 加速：默认 BBRv3；仅在丢包率极高且确认为非拥塞随机丢包时选择 Skyline Speeder（Linux 6.12+，旧内核先升级，安装结束重启一次后自动启用）。
+TCP 加速：所有链路默认直接安装并启用 Skyline Speeder（Linux 6.12+ 内核；旧内核会自动安装兼容内核，安装结束后提示重启一次，开机自动启用）。
 
 提示：方括号中的值是直接回车采用的默认值；没有方括号的输入必须填写。
 EOF
@@ -166,39 +201,16 @@ state_value() {
     printf '%s\n' "${value}"
 }
 
-state_version_supported() {
-    [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 10#$2))
-}
-
 detect_installed_mode() {
-    local protocol="" state_version="" bunny_v1_uninstall=${1:-0}
+    local protocol="" state_version=""
     if [[ -f "${EASY_ALL_STATE_FILE}" ]]; then
         protocol=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
         state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
+        [[ "${state_version}" == "${CURRENT_STATE_VERSION}" ]] \
+            || launcher_die "状态版本不匹配（当前：${state_version:-缺失}，期望：${CURRENT_STATE_VERSION}）；请先执行 sudo easy_all uninstall 清理旧版本本机文件，再重新安装"
         case "${protocol}" in
-        reality)
-            state_version_supported "${state_version}" "${REALITY_MIN_STATE_VERSION}" \
-                || launcher_die "Reality 状态版本无效（当前：${state_version:-缺失}，最低兼容：${REALITY_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
-            printf 'reality\n'
-            ;;
-        cloudflare-streamup)
-            state_version_supported "${state_version}" "${CLOUDFLARE_MIN_STATE_VERSION}" \
-                || launcher_die "Cloudflare 状态版本无效（当前：${state_version:-缺失}，最低兼容：${CLOUDFLARE_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
-            printf 'cloudflare-streamup\n'
-            ;;
-        mieru)
-            state_version_supported "${state_version}" "${MIERU_MIN_STATE_VERSION}" \
-                || launcher_die "Mieru 状态版本无效（当前：${state_version:-缺失}，最低兼容：${MIERU_MIN_STATE_VERSION}）；如需全新安装，请先执行 easy_all uninstall，再重新运行安装命令"
-            printf 'mieru-direct\n'
-            ;;
-        bunny-ws)
-            if [[ "${state_version}" == 1 && "${bunny_v1_uninstall}" == allow-bunny-v1-uninstall ]]; then
-                :
-            else
-                state_version_supported "${state_version}" "${BUNNY_MIN_STATE_VERSION}" \
-                    || launcher_die "Bunny 状态版本无效（当前：${state_version:-缺失}，最低兼容：${BUNNY_MIN_STATE_VERSION}）；v1 仅允许执行 easy_all uninstall 清理本机"
-            fi
-            printf 'bunny-ws\n'
+        reality|cloudflare-streamup|bunny-ws|gcore|combined)
+            printf '%s\n' "${protocol}"
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
         esac
@@ -212,14 +224,16 @@ choose_install_mode() {
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
     printf '  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）\n' >&2
-    printf '  3. 直连 - Mieru（官方 mita，无需域名或证书）\n' >&2
-    printf '  4. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）\n' >&2
+    printf '  3. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）\n' >&2
+    printf '  4. Gcore CDN 精选 IP（多地区真实入口，三网定向 1～6 个已验证节点）\n' >&2
+    printf '  5. 组合：直连 Reality + Cloudflare + Gcore（一次部署三个入口）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare-streamup\n' ;;
-    3) printf 'mieru-direct\n' ;;
-    4) printf 'bunny-ws\n' ;;
+    3) printf 'bunny-ws\n' ;;
+    4) printf 'gcore\n' ;;
+    5) printf 'combined\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -230,7 +244,8 @@ profile_file() {
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare-streamup) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare-streamup.sh" ;;
     bunny-ws) candidate="${EASY_ALL_ROOT}/profiles/ws-bunny.sh" ;;
-    mieru-direct) candidate="${EASY_ALL_ROOT}/profiles/mieru-direct.sh" ;;
+    gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
+    combined) candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -336,15 +351,14 @@ dispatch_profile_command() {
     apply)
         apply_easy_all
         ;;
-    tcp) update_tcp_acceleration "$@" ;;
     tcp-resume) resume_skyline_after_reboot "$@" ;;
     reality-target)
-        [[ "${mode}" == "reality" ]] \
-            || launcher_die "reality-target 仅适用于 Reality 模式"
+        [[ "${mode}" == "reality" || "${mode}" == "combined" ]] \
+            || launcher_die "reality-target 仅适用于 Reality 与组合模式"
         update_reality_target "$@"
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "bunny-ws" ]] \
+        [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "bunny-ws" || "${mode}" == "gcore" || "${mode}" == "combined" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         (($# == 0)) || launcher_die "apply-cloud 不接受额外参数"
         if [[ "${mode}" == "bunny-ws" ]]; then
@@ -353,10 +367,8 @@ dispatch_profile_command() {
             apply_cloud_resources
         fi
         ;;
-    update-sub)
+    edit-sub)
         [[ "${mode}" != "bunny-ws" ]] || launcher_die "Bunny 仅提供一个 owner 订阅；不支持用户/配额编辑"
-        [[ "${mode}" != "mieru-direct" ]] \
-            || launcher_die "Mieru 直连不提供订阅；请使用 easy_all subscription 查看节点"
         if [[ "${mode}" == "reality" ]]; then
             update_subscription 1
         else
@@ -364,14 +376,15 @@ dispatch_profile_command() {
         fi
         ;;
     update-core)
-        case "${mode}" in
-        mieru-direct) update_mieru_core "$@" ;;
-        *) update_current_core "$@" ;;
-        esac
+        update_current_core "$@"
         ;;
     refresh-cdn-ips)
         if [[ "${mode}" == "cloudflare-streamup" ]]; then
             refresh_cloudflare_cdn_ips
+        elif [[ "${mode}" == "gcore" ]]; then
+            refresh_gcore_cdn_ips
+        elif [[ "${mode}" == "combined" ]]; then
+            refresh_combined_cdn_ips
         else
             launcher_die "refresh-cdn-ips 仅适用于 CDN 精选 IP 模式"
         fi
@@ -381,7 +394,9 @@ dispatch_profile_command() {
         reality) renew_subscription_certificate ;;
         bunny-ws) renew_bunny_certificate 1 ;;
         cloudflare-streamup) renew_certificate ;;
-        *) launcher_die "Mieru 模式不使用 TLS 证书，无需续期" ;;
+        gcore) xhttp_renew_origin_certificate ;;
+        combined) renew_certificate ;;
+        *) launcher_die "当前模式不使用 TLS 证书，无需续期" ;;
         esac
         ;;
     cert-renew)
@@ -396,32 +411,31 @@ dispatch_profile_command() {
         ;;
     rotate-dynamic-ports)
         case "${mode}" in
-        reality | mieru-direct) rotate_dynamic_ports ;;
-        *) launcher_die "rotate-dynamic-ports 仅适用于直连模式" ;;
+        reality) rotate_dynamic_ports ;;
+        *) launcher_die "rotate-dynamic-ports 仅适用于 Reality 模式" ;;
         esac
         ;;
     quota-sync)
-        [[ "${mode}" != "bunny-ws" ]] || return 0
+        case "${mode}" in
+        bunny-ws | combined) return 0 ;;
+        esac
         quota_sync_usage
         ;;
     quota-status)
+        [[ "${mode}" != "combined" ]] || launcher_die "组合模式不启用用户配额"
         [[ "${mode}" != "bunny-ws" ]] || launcher_die "Bunny 不支持 easy_all 用户配额"
-        [[ "${mode}" != "mieru-direct" ]] \
-            || launcher_die "Mieru 直连不部署 easy_all 配额；请使用 mita describe config 查看用户配置"
         require_root
         collect_installed_state
         show_quota_status
         ;;
     quota-set)
+        [[ "${mode}" != "combined" ]] || launcher_die "组合模式不启用用户配额"
         [[ "${mode}" != "bunny-ws" ]] || launcher_die "Bunny 不支持 easy_all 用户配额"
-        [[ "${mode}" != "mieru-direct" ]] \
-            || launcher_die "Mieru 直连不部署 easy_all 配额；请使用 mita describe config 查看用户配置"
         quota_set_user "$@"
         ;;
     quota-reset)
+        [[ "${mode}" != "combined" ]] || launcher_die "组合模式不启用用户配额"
         [[ "${mode}" != "bunny-ws" ]] || launcher_die "Bunny 不支持 easy_all 用户配额"
-        [[ "${mode}" != "mieru-direct" ]] \
-            || launcher_die "Mieru 直连不部署 easy_all 配额；请使用 mita describe config 查看用户配置"
         quota_reset_user "$@"
         ;;
     status) show_status ;;
@@ -434,7 +448,7 @@ dispatch_profile_command() {
 }
 
 main() {
-    local command=${1:-install} mode="" module
+    local command=${1:-install} mode="" module state_version=""
     shift || true
 
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
@@ -448,6 +462,13 @@ main() {
         return
     fi
 
+    if [[ "${command}" == "uninstall" && -f "${EASY_ALL_STATE_FILE}" ]]; then
+        state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
+        if [[ "${state_version}" != "${CURRENT_STATE_VERSION}" ]]; then
+            legacy_local_uninstall "$@"
+            return
+        fi
+    fi
     if [[ "${command}" == "install" ]]; then
         (($# == 0)) || launcher_die "install 不接受协议参数，请在交互菜单中选择"
         mode=$(detect_installed_mode)
@@ -458,7 +479,7 @@ main() {
         mode=$(choose_install_mode)
     else
         if [[ "${command}" == "uninstall" ]]; then
-            mode=$(detect_installed_mode allow-bunny-v1-uninstall)
+            mode=$(detect_installed_mode)
             if [[ -z "${mode}" && "$#" == 1 && "${1:-}" == "--purge-cloud" \
                 && -f "${EASY_ALL_BUNNY_JOURNAL}" ]]; then
                 mode="bunny-ws"

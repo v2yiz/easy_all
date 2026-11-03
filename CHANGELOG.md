@@ -1,3 +1,31 @@
+## 2.0.0 更新说明（2026-11-03）
+
+- 新增菜单 `5`「组合」模式：一次安装同时提供三个入口——直连 VLESS Reality（VPS `8443`）、
+  Cloudflare XHTTP `stream-up`（6 个优选 IPv4）、Gcore VLESS WS/TLS（单个域名节点）。
+- 组合模式只使用一个 Cloudflare Zone 的六个子域名，`443` 只对 Cloudflare 与 Gcore 官方回源网段
+  开放，订阅由 Nginx 直接提供（单 owner Token），不启用用户配额，SSH 端口保持安装前状态。
+- 组合模式订阅输出三类节点并平铺进单一 `AUTO` 测速组（直连、Gcore、Cloudflare 优选 1～6），
+  不再嵌套 CF 子测速组。
+- 组合模式命令分工：`apply` 只重建本机 Xray/Nginx 与订阅；`apply-cloud` 才写 DNS、签发证书并
+  同步 Gcore 资源（会重新询问 Gcore Token）。
+- 新增菜单 `4`「Gcore CDN」模式：Nginx mTLS 回源、Gcore Managed DNS、Globalping 三网定向精选。
+  安装模式调整为 5 种：`1` Reality、`2` Cloudflare、`3` Bunny（原 `4`）、`4` Gcore（新）、
+  `5` 组合（新）；移除 Mieru 直连模式。
+- Gcore CDN 资源现在显式下发 `options.tls_versions`，边缘只接受 TLS 1.2/1.3，拒绝
+  SSLv3/TLS 1.0/TLS 1.1。
+- TCP 加速统一使用 Skyline Speeder（旧内核自动安装兼容内核），移除 `easy_all tcp` 子命令。
+- 状态版本统一为 `0`。旧版本（2/6/8/9）执行 `sudo easy_all uninstall` 会走本机清理路径：只删除
+  easy_all 的服务、配置与状态文件，SSH/UFW 与云端资源保持不变（`--purge-cloud` 会被拒绝），
+  清理完成后重新安装。
+- 修复：Bunny 补充 `show`、`apply` 重建本机配置、卸载恢复 `/etc/default/ufw` 与 Nginx 默认站点、
+  Pull Zone 配置漂移改为告警、免费证书等待延长；Gcore 卸载清理 acme.sh、证书续期先保存状态、
+  DNS 发现失败回退历史候选；Cloudflare `--purge-cloud` 处理兜底 Worker 退场记录、
+  `renew-cert` 先保存状态。
+- 文档同步：README 模式表与安全边界、前置准备 8.8 组合模式、技术参考组合模式章节、
+  运维指南的命令与 SSH 收敛范围。
+
+源码版本标识为 `2.0.0`。
+
 ## 1.9.0 更新说明（2026-11-02）
 
 - 新增第四种安装模式「4 Bunny CDN」：使用 Bunny 自动调度域名接入与 VLESS WS/TLS 协议，

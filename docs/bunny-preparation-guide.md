@@ -1,6 +1,6 @@
 # Bunny CDN 前置准备与运维
 
-模式 `4` 使用 Bunny CDN 的全球边缘网络分发 VLESS WS/TLS 节点与 owner 订阅。VPS 端由 Nginx 终止 HTTPS 回源并校验私有 Header，内部反代至 Xray（监听 `127.0.0.1:10086`）。
+模式 `3` 使用 Bunny CDN 的全球边缘网络分发 VLESS WS/TLS 节点与 owner 订阅。VPS 端由 Nginx 终止 HTTPS 回源并校验私有 Header，内部反代至 Xray（监听 `127.0.0.1:10086`）。
 
 ---
 
@@ -34,7 +34,7 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 ### 2.1 专用 VPS 与系统环境
 - **系统要求**：Debian 12 / 13 amd64 或 arm64 纯净系统，须由 systemd 管理且非容器，仅支持 IPv4。其他模式仍只支持 amd64。
 - **端口放行**：云厂商安全组放行 TCP `443` 及当前 SSH 端口。
-- **SSH 与内核**：Bunny 保留现有 SSH 监听；刷新回源池也保留自定义及多个 SSH 端口。不能可靠检测监听或已有第三方阻断规则时会报错，保留旧放行规则。Bunny 不安装 XanMod/Skyline，ARM64 使用原有内核，暂不支持 `easy_all tcp` 内核加速命令。
+- **SSH 与内核**：Bunny 保留现有 SSH 监听；刷新回源池也保留自定义及多个 SSH 端口。不能可靠检测监听或已有第三方阻断规则时会报错，保留旧放行规则。ARM64 使用原有内核，暂不支持 Skyline Speeder 内核加速。
 
 ### 2.2 Bunny 账户与 API Key
 1. 登录 [Bunny Dashboard](https://dash.bunny.net/)。
@@ -75,7 +75,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 # 或源码安装：sudo ./easy_all install
 ```
 
-在菜单中输入 **`4`** 选择 Bunny CDN 模式。
+在菜单中输入 **`3`** 选择 Bunny CDN 模式。
 
 ### 交互输入示例（假设你的主域名为 `example.com`）
 
@@ -85,9 +85,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 请选择安装模式：
   1. 直连 - Reality（直连效果良好且 IP 未被封时）
   2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）
-  3. 直连 - Mieru（官方 mita，无需域名或证书）
-  4. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）
-请选择 [1]（直接回车使用默认值）: 4
+  3. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）
+  4. Gcore CDN 精选 IP（三网定向优化节点）
+请选择 [1]（直接回车使用默认值）: 3
 
 Cloudflare 根 Zone（如 example.com）: example.com
 源站域名 [origin.example.com]（直接回车使用默认值）: [直接按回车]
@@ -137,9 +137,6 @@ sudo easy_all renew-cert
 
 # 立即从官方刷新 Bunny 回源 IPv4 防火墙白名单
 sudo easy_all refresh-origin-ips
-
-# 切换 TCP 加速算法（仅 amd64；ARM64 保留原有内核）
-sudo easy_all tcp bbrv3
 ```
 
 开发测试使用现有 `npm run test:bunny` 和 `npm test`，外部命令与云端均使用隔离夹具。
@@ -173,7 +170,9 @@ sudo env EASY_ALL_DEDICATED_TEST_VM=1 npm run test:bunny
 ```bash
 sudo easy_all uninstall
 ```
-停止并删除 Xray、Nginx 站点配置及定时器，恢复 UFW 防火墙设置。云端 Pull Zone 与 DNS 记录保留，相关配置保存在 `/etc/easy_all-bunny/`。
+停止并删除 Xray、Nginx 站点配置、定时器与 `easy_all` 命令，移除 CDN 回源防火墙区块，并恢复
+`/etc/default/ufw` 与 Nginx 默认站点；UFW 保持启用并保留 SSH 放行。云端 Pull Zone 与 DNS 记录保留
+，相关配置保存在 `/etc/easy_all-bunny/`。
 
 ### 清理云端资源与彻底卸载
 ```bash

@@ -84,6 +84,7 @@ load_state() {
     [[ -s "${STATE_FILE}" ]] || die "状态文件不存在: ${STATE_FILE}"
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
+    [[ "${STATE_VERSION:-}" == "0" ]] || die "状态版本无效；当前版本为 0"
     [[ "${PROTOCOL:-}" == "bunny-ws" ]] || die "非 Bunny 协议状态"
     ALLOWED_TOKENS="[\"${OWNER_TOKEN}\"]"
 }
@@ -93,7 +94,7 @@ save_state() {
     local temp
     temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX") || die "创建状态暂存文件失败"
     cat >"${temp}" <<EOF
-STATE_VERSION="2"
+STATE_VERSION="0"
 PROTOCOL="bunny-ws"
 CDN_PROVIDER="bunny"
 CLOUDFLARE_ZONE="${CLOUDFLARE_ZONE}"
@@ -106,7 +107,7 @@ ORIGIN_HEADER_SECRET="${ORIGIN_HEADER_SECRET}"
 VLESS_UUID="${VLESS_UUID}"
 OWNER_TOKEN="${OWNER_TOKEN}"
 WEBSOCKET_PATH="${WEBSOCKET_PATH}"
-TCP_ACCELERATION="${TCP_ACCELERATION:-bbrv3}"
+TCP_ACCELERATION="${TCP_ACCELERATION:-skyline}"
 SCHEDULED_REBOOT_ENABLED="${SCHEDULED_REBOOT_ENABLED:-0}"
 SCHEDULED_REBOOT_HOUR="${SCHEDULED_REBOOT_HOUR:-}"
 SUB_DOWNLOAD_NAME="${SUB_DOWNLOAD_NAME:-EASY_ALL}"
@@ -134,7 +135,6 @@ bunny_collect_inputs() {
         CLOUDFLARE_ZONE=$(jq -r .zone "${BUNNY_CONFIG}")
         ORIGIN_DOMAIN=$(jq -r .origin "${BUNNY_CONFIG}")
         CDN_DOMAIN=$(jq -r .cdn "${BUNNY_CONFIG}")
-        VPS_PUBLIC_IPV4=$(jq -r .ipv4 "${BUNNY_CONFIG}")
         BUNNY_PULL_NAME=$(jq -r .name "${BUNNY_CONFIG}")
         BUNNY_BANDWIDTH_GB=$(jq -r .bandwidth_gb "${BUNNY_CONFIG}")
         ORIGIN_HEADER_SECRET=$(jq -r .secret "${BUNNY_CONFIG}")
@@ -142,19 +142,20 @@ bunny_collect_inputs() {
         CLOUDFLARE_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' '')")
         ORIGIN_DOMAIN=$(normalize_domain "$(prompt_value '源站域名' "origin.${CLOUDFLARE_ZONE}")")
         CDN_DOMAIN=$(normalize_domain "$(prompt_value 'CDN 节点/订阅域名' "cdn.${CLOUDFLARE_ZONE}")")
-        VPS_PUBLIC_IPV4=${VPS_IP:-${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)}}
         BUNNY_PULL_NAME=${BUNNY_PULL_NAME:-"easyall$(openssl rand -hex 6)"}
         ORIGIN_HEADER_SECRET=$(generate_secret)
         BUNNY_BANDWIDTH_GB=$(prompt_value 'Pull Zone 月流量限制（GB）' 500)
     fi
+    VPS_PUBLIC_IPV4=${VPS_IP:-$(detect_public_ipv4)} \
+        || die '公网 IPv4 探测失败；可用 VPS_IP=<IPv4> 指定'
     bunny_prepare_credentials
     VLESS_UUID=${VLESS_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}
     OWNER_TOKEN=${OWNER_TOKEN:-$(generate_secret)}
     ALLOWED_TOKENS="[\"${OWNER_TOKEN}\"]"
     WEBSOCKET_PATH=${WEBSOCKET_PATH:-"/ws-$(openssl rand -hex 16)"}
-    TCP_ACCELERATION=${TCP_ACCELERATION:-bbrv3}
+    TCP_ACCELERATION=${TCP_ACCELERATION:-skyline}
     SUB_DOWNLOAD_NAME=EASY_ALL
-    STATE_VERSION=2
+    STATE_VERSION=0
 }
 
 build_node_links() {
@@ -273,8 +274,19 @@ apply_easy_all() {
     load_state
     bunny_prepare_credentials
     apply_cloud_resources
+    write_xray_config
+    write_subscriptions
+    write_nginx_config
+    systemctl restart "${XRAY_SERVICE}" || die "Xray 服务重启失败"
+    validate_protocol_runtime
+    validate_subscription_runtime
     release_runtime_write_lock
-    info "云端资源配置完成"
+    info "本机配置、订阅与云端资源已同步"
+}
+
+show_node() {
+    load_state
+    build_node_links
 }
 
 show_subscription() {
@@ -300,7 +312,16 @@ install_all() {
     require_systemd
     check_platform arm64
     install_packages
+    bunny_reject_ssh_443
+    if [[ "$(dpkg --print-architecture)" == amd64 ]]; then
+        choose_tcp_acceleration
+        configure_tcp_acceleration
+    fi
     install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
+    [[ -e "${BACKUP_DIR}/pre-install-ufw-default" ]] \
+        || install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
+    [[ -e "${BACKUP_DIR}/pre-install-nginx-default" || ! -e "${NGINX_DEFAULT_SITE}" ]] \
+        || install -m 0600 "${NGINX_DEFAULT_SITE}" "${BACKUP_DIR}/pre-install-nginx-default"
     bunny_collect_inputs
     bunny_save_config
     apply_cloud_resources
@@ -325,6 +346,9 @@ install_all() {
     release_runtime_write_lock
     show_status
     show_subscription
+    if [[ "$(dpkg --print-architecture)" == amd64 ]]; then
+        prompt_bbrv3_reboot
+    fi
 }
 
 uninstall_all() {

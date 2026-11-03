@@ -10,8 +10,8 @@ readonly STATE_FILE="${STATE_DIR}/state.env"
 readonly CERT_DIR="${STATE_DIR}/certs"
 readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
 readonly KEY_FILE="${CERT_DIR}/private.key"
-readonly WEB_ROOT="/var/www/easy_all"
-readonly SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
+readonly WEB_ROOT="${WEB_ROOT:-/var/www/easy_all}"
+readonly SUBSCRIPTION_DIR="${SUBSCRIPTION_DIR:-${WEB_ROOT}/subscriptions}"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
@@ -38,8 +38,7 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="9"
-readonly MIN_COMPATIBLE_STATE_VERSION="9"
+readonly STATE_SCHEMA_VERSION="0"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-Cloudflare}"
@@ -72,9 +71,8 @@ source_state_file() {
     unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" =~ ^[0-9]+$ ]] \
-        && ((10#${STATE_VERSION} >= 10#${MIN_COMPATIBLE_STATE_VERSION})) \
-        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；最低兼容版本为 ${MIN_COMPATIBLE_STATE_VERSION}"
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；当前版本为 ${STATE_SCHEMA_VERSION}"
 }
 
 subscription_link_domain() {
@@ -334,7 +332,8 @@ validate_subscription_runtime() {
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
     base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
         || die "通用订阅响应不是有效的 Base64"
-    grep -Fq 'type=xhttp' <<<"${base64_decoded}" || die "通用订阅响应缺少 XHTTP 节点"
+    grep -Fq "${SUBSCRIPTION_NODE_MARKER:-type=xhttp}" <<<"${base64_decoded}" \
+        || die "通用订阅响应缺少节点：${SUBSCRIPTION_NODE_MARKER:-type=xhttp}"
     mihomo_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
         --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \

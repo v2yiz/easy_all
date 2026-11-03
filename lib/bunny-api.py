@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-STATE_VERSION = 3
+STATE_VERSION = 0
 DEFAULT_JOURNAL = '/etc/easy_all-bunny/ownership.json'
 HEADER_KEY = 'X-Easy-All-Origin-Key'
 RULE_DESCRIPTION = 'easy_all private origin'
@@ -565,7 +565,9 @@ def run_apply(cfg, cf_token, bunny_key, jpath, lock_file, lock_fd):
             )
             named = None
         selected = owner or named
-        zone_created = False
+        zone_created = bool(selected) and keep_created(
+            journal.get('pull_zone'), 'id', selected['Id']
+        )
 
         if selected:
             expected_state = expected_zone_state(cfg)
@@ -576,9 +578,20 @@ def run_apply(cfg, cf_token, bunny_key, jpath, lock_file, lock_fd):
             }
             actual_core = {key: actual_state[key] for key in expected_core}
             if actual_core != expected_core:
-                die(
-                    f"已有 Pull Zone {selected['Name']} 的关键配置不匹配，"
-                    "拒绝自动修改共享资源"
+                if not zone_created:
+                    die(
+                        f"已有 Pull Zone {selected['Name']} 的关键配置不匹配，"
+                        "拒绝自动修改共享资源"
+                    )
+                print(
+                    f"warning: Pull Zone {selected['Name']} 的配置与安装值不一致，"
+                    "保留现有设置",
+                    file=sys.stderr,
+                )
+            if selected.get('Suspended'):
+                print(
+                    f"warning: Pull Zone {selected['Name']} 已暂停（Suspended），节点当前不可用",
+                    file=sys.stderr,
                 )
             if not selected.get('CnameDomain'):
                 die(f"已有 Pull Zone {selected['Name']} 缺少 CnameDomain")
@@ -652,9 +665,6 @@ def run_apply(cfg, cf_token, bunny_key, jpath, lock_file, lock_fd):
             put_zone(journal, selected, True)
             write_json_file(jpath, journal)
         else:
-            zone_created = keep_created(
-                journal.get('pull_zone'), 'id', selected['Id']
-            )
             put_zone(journal, selected)
         target_only = zone_created or not (custom_hostnames(selected) - {cfg['cdn']})
 
@@ -739,7 +749,7 @@ def run_apply(cfg, cf_token, bunny_key, jpath, lock_file, lock_fd):
             put_hostname(journal, hostname)
 
         if not hostname.get('HasCertificate'):
-            for attempt in range(5):
+            for attempt in range(20):
                 response = http_req(
                     f"{BUNNY_API}/pullzone/loadFreeCertificate?hostname={cfg['cdn']}",
                     bunny,
@@ -752,7 +762,7 @@ def run_apply(cfg, cf_token, bunny_key, jpath, lock_file, lock_fd):
                     put_hostname(journal, hostname)
                     write_json_file(jpath, journal)
                     break
-                if attempt == 4:
+                if attempt == 19:
                     detail = response.get('ErrorKey') if isinstance(response, dict) else None
                     die(f"Bunny 免费证书未就绪{': ' + detail if detail else ''}")
                 time.sleep(3)
@@ -1027,7 +1037,10 @@ def main():
     lock_file = args.lock_file or str(Path(args.journal).parent / 'runtime-write.lock')
 
     if args.command == 'ips':
-        for ip in edge_ips(read_json_file(args.input or die("ips requires --input"))):
+        addresses = edge_ips(read_json_file(args.input or die("ips requires --input")))
+        if not addresses:
+            die("Bunny 回源池为空或无法解析")
+        for ip in addresses:
             print(ip)
     elif args.command == 'validate-config':
         validate_config(read_json_file(args.config or die("validate-config requires --config")))

@@ -69,8 +69,7 @@ readonly CRON_DYNAMIC_PORT_MARKER="# easy_all-managed-dynamic-ports"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly XRAY_ARCHIVE="Xray-linux-64.zip"
 readonly XRAY_DGST="Xray-linux-64.zip.dgst"
-readonly STATE_SCHEMA_VERSION="8"
-readonly MIN_COMPATIBLE_STATE_VERSION="6"
+readonly STATE_SCHEMA_VERSION="0"
 readonly RIPE_PREFIX_OVERVIEW_API="https://stat.ripe.net/data/prefix-overview/data.json"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
 readonly SUBSCRIPTION_AGGREGATION_DESCRIPTION="Cloudflare Worker 下发；Nginx 仅作私有节点源"
@@ -207,16 +206,8 @@ source_state_file() {
     unset STATE_VERSION
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    [[ "${STATE_VERSION:-}" =~ ^[0-9]+$ ]] \
-        && ((10#${STATE_VERSION} >= 10#${MIN_COMPATIBLE_STATE_VERSION})) \
-        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；最低兼容版本为 ${MIN_COMPATIBLE_STATE_VERSION}"
-    if ((10#${STATE_VERSION} < 10#${STATE_SCHEMA_VERSION})); then
-        GOOGLE_EGRESS_MODE="ipv4"
-        GOOGLE_EGRESS_RESOLVED="ipv4"
-        VPS_IP_FAMILY="ipv4"
-        VPS_PUBLIC_IPV6=""
-        STATE_VERSION="${STATE_SCHEMA_VERSION}"
-    fi
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 easy_all 状态版本：${STATE_VERSION:-缺失}；当前版本为 ${STATE_SCHEMA_VERSION}"
 }
 
 resolve_persisted_mihomo_template() {
@@ -302,7 +293,7 @@ load_state() {
     fi
     resolve_persisted_mihomo_template
     CDN_PROVIDER=""
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
         || die "状态文件中的 TCP_ACCELERATION 无效"
     enforce_ipv4_only_policy
     if [[ "${state_loaded}" == "1" ]]; then
@@ -377,7 +368,7 @@ load_state() {
 
 save_state() {
     enforce_ipv4_only_policy
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
         || die "无法保存无效的 TCP_ACCELERATION"
     if worker_subscription_enabled; then
         [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ \
@@ -1760,7 +1751,7 @@ collect_worker_subscription_inputs() {
     else
         WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
             "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
-            || die "Worker 聚合配置无效；请执行 sudo easy_all update-sub 重新配置"
+            || die "Worker 聚合配置无效；请执行 sudo easy_all edit-sub 重新配置"
     fi
     validate_worker_aggregation_node_names
     SUBSCRIPTION_MODE="worker"
@@ -1912,7 +1903,7 @@ reality_worker_validate_access() {
         info "复用 Worker ${CLOUDFLARE_WORKER_NAME}，将更新订阅脚本"
     fi
     if [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" && "${count}" != "1" ]]; then
-        die "状态中的 Worker ${CLOUDFLARE_WORKER_NAME} 不存在：Worker 名称不能在 update-sub 中就地修改，请改回原名称或重新安装"
+        die "状态中的 Worker ${CLOUDFLARE_WORKER_NAME} 不存在：Worker 名称不能在 edit-sub 中就地修改，请改回原名称或重新安装"
     fi
 }
 
@@ -2174,6 +2165,7 @@ renew_subscription_certificate() {
     subscription_enabled || die "当前未启用自托管订阅"
     reality_cloudflare_prepare_subscription
     reality_cloudflare_issue_origin_certificate 1
+    save_state
     reality_cloudflare_configure_strict_tls
     nginx -t >/dev/null || die "Cloudflare 新源站证书安装后 Nginx 校验失败"
     systemctl reload nginx || systemctl restart nginx \
@@ -2181,7 +2173,6 @@ renew_subscription_certificate() {
     validate_subscription_runtime
     reality_cloudflare_validate_public_subscription
     reality_cloudflare_finalize_certificate_rotation
-    save_state
     reality_cloudflare_clear_api_token
     success "Cloudflare Origin CA 订阅证书已轮换"
 }
@@ -2809,6 +2800,9 @@ uninstall_all() {
         reality_cloudflare_purge_managed_resources \
             "$(subscription_origin_domain)" "${CLOUDFLARE_ZONE_ID}" \
             "${CLOUDFLARE_STRICT_RULESET_ID:-}" "${CLOUDFLARE_ORIGIN_CERT_ID}"
+    fi
+    if [[ "${UNINSTALL_PURGE_CLOUD}" != 1 && "${SUBSCRIPTION_MODE:-}" != "link" ]]; then
+        warn "Cloudflare 资源（DNS/规则/Origin CA/Worker）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
     fi
     stop_protocol_services
     remove_quota_timer

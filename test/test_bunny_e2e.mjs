@@ -510,6 +510,7 @@ try {
     // 已保存安装状态后，订阅输出必须能独立运行，并使用 CDN 域名。
     const stateFile = join(tempDir, 'state.env');
     writeFileSync(stateFile, [
+        'STATE_VERSION="0"',
         'PROTOCOL="bunny-ws"',
         'CDN_DOMAIN="cdn.example.com"',
         'ORIGIN_DOMAIN="origin.example.com"',
@@ -542,6 +543,13 @@ try {
     assert.equal(ipsRes.status, 0);
     assert.ok(ipsRes.stdout.includes('192.0.2.1/32'));
     assert.ok(ipsRes.stdout.includes('198.51.100.0/24'));
+
+    // 空或无法解析的回源池必须失败，避免写出空白名单。
+    const emptyIpsJson = join(tempDir, 'ips-empty.json');
+    writeFileSync(emptyIpsJson, JSON.stringify([{ Ip: 'public-ip-1' }]));
+    const emptyIpsRes = await run(['ips', '--input', emptyIpsJson]);
+    assert.notEqual(emptyIpsRes.status, 0);
+    assert.match(emptyIpsRes.stderr, /回源池为空/);
 
     // 3. 配置文件校验（核心路径）
     const validConfig = join(tempDir, 'valid-config.json');
@@ -691,6 +699,14 @@ try {
         const createRepeatRes = await run(applyArgs(), api.env);
         assert.equal(createRepeatRes.status, 0, createRepeatRes.stderr);
         assert.deepEqual(api.state.writes, [], 'created resources must also be idempotent');
+
+        // 用户在自己创建的 Pull Zone 上调整流量上限或暂停后，apply 必须保留其设置并继续。
+        api.state.zones[0].MonthlyBandwidthLimit = 1000000000000;
+        api.state.zones[0].Suspended = true;
+        const driftRes = await run(applyArgs(), api.env);
+        assert.equal(driftRes.status, 0, driftRes.stderr);
+        assert.match(driftRes.stderr, /配置与安装值不一致/);
+        assert.equal(api.state.zones[0].MonthlyBandwidthLimit, 1000000000000);
 
         api.state.zones[0].EdgeRules.push({
             ...structuredClone(api.state.zones[0].EdgeRules[0]),
@@ -851,7 +867,7 @@ try {
             const cliKey = join(cliRecoveryDir, 'bunny-api.key');
             const cliToken = join(cliRecoveryDir, 'cloudflare-dns.token');
             const cliStateContent = [
-                'STATE_VERSION="2"',
+                'STATE_VERSION="0"',
                 'PROTOCOL="bunny-ws"',
                 'CLOUDFLARE_ZONE="example.com"',
                 'ORIGIN_DOMAIN="origin.example.com"',
@@ -869,8 +885,16 @@ try {
             const stub = join(cliRoot, 'systemctl');
             writeFileSync(stub, '#!/bin/sh\nexit 0\n');
             chmodSync(stub, 0o755);
+            const nginxStub = join(cliRoot, 'nginx');
+            writeFileSync(nginxStub, '#!/bin/sh\nexit 0\n');
+            chmodSync(nginxStub, 0o755);
+            const xrayStub = join(cliRoot, 'xray-stub');
+            writeFileSync(xrayStub, '#!/bin/sh\nexit 0\n');
+            chmodSync(xrayStub, 0o755);
             const cliEnv = {
                 ...api.env,
+                PATH: `${cliRoot}:${process.env.PATH}`,
+                XRAY_BIN: xrayStub,
                 EASY_ALL_STATE_FILE_OVERRIDE: cliState,
                 STATE_DIR: cliStateDir,
                 STATE_FILE: cliState,
@@ -886,6 +910,7 @@ try {
                 CERT_RENEW_SERVICE_FILE: join(cliRoot, 'cert-renew.service'),
                 CERT_RENEW_TIMER_FILE: join(cliRoot, 'cert-renew.timer'),
                 NGINX_CONFIG: join(cliRoot, 'nginx.conf'),
+                NGINX_DEFAULT_SITE: join(cliRoot, 'sites-enabled-default'),
                 UFW_BEFORE_RULES: join(cliRoot, 'missing-before.rules'),
             };
             api.reset({ orphan: true });

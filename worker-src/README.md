@@ -49,8 +49,7 @@ npm run test:worker
   `alpn` 只能是 `http/1.1` 或 `h2`（数组或逗号分隔字符串，可省略）；`network` 只能是 `tcp`。
   Trojan 节点只能写入 `nodes`，不能写入 `fallbackCdnNodes`。Mihomo 输出 `type: trojan`、
   `udp: true`、`skip-cert-verify: false`，base64 输出 `trojan://<密码>@<域名>:<端口>?...`；节点名保持
-  原样进入 `PROXY`，不参与 CDN 自动命名。Trojan 模式本身不部署 Worker，节点信息用
-  `easy_all show` 复制后填入任意已部署聚合的 `nodes` 即可。
+  原样进入 `PROXY`，不参与 CDN 自动命名。外部 Trojan 节点信息填入任意已部署聚合的 `nodes` 即可。
 - Mieru 模板（占位凭据）见 `config.example.json` 的第三个节点：
 
   ```json
@@ -78,9 +77,7 @@ npm run test:worker
   `fallbackCdnNodes`。Mihomo 输出 `type: mieru`、`port-range`（或单端口 `port`）、`transport: TCP`、
   `udp`、`username`、`password`、`multiplexing` 与可选 `traffic-pattern`；base64 输出
   `mierus://<用户名>:<密码>@<域名或 IP>?mtu=...&multiplexing=...&port=50000-50512&profile=default&protocol=TCP`。
-  节点名保持原样进入 `PROXY`，不参与 CDN 自动命名。Mieru 模式本身不部署 Worker，节点信息用
-  `easy_all show` 复制后填入任意已部署聚合的 `nodes` 即可；`host` 也可直接填写 `easy_all show`
-  输出的域名或 IPv4。
+  节点名保持原样进入 `PROXY`，不参与 CDN 自动命名。外部 Mieru 节点的凭据与参数填入任意已部署聚合的 `nodes` 即可；`host` 可以直接填写该节点的域名或 IPv4。
 - `index.js`：公共运行源码。节点在订阅请求时获取，构建时不联网。
 - `../templates/mihomo.yaml`：模式 2 与 Worker 共用的 DNS、TUN、嗅探、规则集和分流配置。安装器会把同一模板传给 Worker 构建。
 - `${XDG_STATE_HOME:-$HOME/.local/state}/easy_all/worker.js`：生成后可直接部署到 Cloudflare 的模块 Worker。不要手工编辑。

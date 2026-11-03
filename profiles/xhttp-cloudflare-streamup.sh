@@ -889,11 +889,11 @@ xhttp_renew_origin_certificate() {
     cloudflare_collect_api_token
     old_id=${CLOUDFLARE_ORIGIN_CERT_ID:-}
     cloudflare_issue_origin_certificate 1
+    save_state
     nginx -t >/dev/null || die "Cloudflare 新源站证书安装后 Nginx 配置校验失败"
     systemctl reload nginx || systemctl restart nginx \
         || die "Cloudflare 新源站证书已安装，但 Nginx 重载失败"
     validate_protocol_runtime
-    save_state
     if [[ -n "${old_id}" && "${old_id}" != "${CLOUDFLARE_ORIGIN_CERT_ID}" ]]; then
         if ! (cloudflare_api_request DELETE "/certificates/${old_id}" >/dev/null); then
             warn "新证书已生效，但撤销旧 Cloudflare Origin CA 证书失败：${old_id}"
@@ -1478,14 +1478,13 @@ load_state() {
         done
     ' _ "${state_path}" "${variables[@]}")
     ((index == ${#variables[@]})) || return 1
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
         || die "状态文件中的 TCP_ACCELERATION 无效"
     enforce_ipv4_only_policy
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
-    [[ "${STATE_VERSION:-}" =~ ^[0-9]+$ ]] \
-        && ((10#${STATE_VERSION} >= 10#${MIN_COMPATIBLE_STATE_VERSION})) \
-        || die "不支持的 Cloudflare 状态版本：${STATE_VERSION:-缺失}；最低兼容版本为 ${MIN_COMPATIBLE_STATE_VERSION}"
+    [[ "${STATE_VERSION:-}" == "${STATE_SCHEMA_VERSION}" ]] \
+        || die "不支持的 Cloudflare 状态版本：${STATE_VERSION:-缺失}；当前版本为 ${STATE_SCHEMA_VERSION}"
     validate_domain "${CLOUDFLARE_ORIGIN_DOMAIN:-}" && validate_domain "${VLESS_CDN_DOMAIN:-}" \
         && validate_uuid "${VLESS_UUID:-}" || die "Cloudflare 状态缺少有效域名或 UUID"
     XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
@@ -1544,7 +1543,7 @@ save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
     enforce_ipv4_only_policy
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
+    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
         || die "无法保存无效的 TCP_ACCELERATION"
     validate_subscription_worker_retirements || die "无法保存无效的旧订阅 Worker 待清理记录"
     validate_worker_backup_state
@@ -2283,6 +2282,9 @@ purge_cloudflare_resources_before_uninstall() {
     cloudflare_finalize_subscription_worker_retirements
     [[ "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}" == "[]" ]] \
         || die "旧订阅 Worker 或域名清理失败，已停止卸载；本机状态仍保留"
+    cloudflare_finalize_backup_worker
+    [[ "${WORKER_BACKUP_RETIREMENTS:-[]}" == "[]" ]] \
+        || die "旧兜底 Worker 清理失败，已停止卸载；本机状态仍保留"
 
     if worker_backup_enabled; then
         cloudflare_delete_subscription_worker_resources "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME}" \
@@ -2363,6 +2365,9 @@ uninstall_all() {
         load_state
     fi
     purge_cloudflare_resources_before_uninstall
+    if [[ "${UNINSTALL_PURGE_CLOUD}" != 1 ]]; then
+        warn "Cloudflare 资源（Worker/DNS/规则/Origin CA）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
+    fi
     stop_services
     remove_quota_timer
     remove_globalping_refresh_timer

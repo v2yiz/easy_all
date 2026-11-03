@@ -23,7 +23,8 @@ for (const arg of ['help', '--help', '-h']) {
     assert.ok(res.stdout.includes('用法: easy_all [命令]'), 'Help should show usage');
     assert.ok(res.stdout.includes('Reality'), 'Help should list Reality mode');
     assert.ok(res.stdout.includes('Bunny CDN'), 'Help should list Bunny CDN mode');
-    assert.ok(res.stdout.includes('Mieru'), 'Help should list Mieru mode');
+    assert.ok(res.stdout.includes('Gcore CDN'), 'Help should list Gcore CDN mode');
+    assert.ok(res.stdout.includes('组合'), 'Help should list combined mode');
 }
 
 // 2. 未安装状态调用命令（关键失败场景）
@@ -49,26 +50,39 @@ const stateFile = join(tmpdir(), `easy-all-test-state-${Date.now()}.env`);
 
 try {
     // Reality 模式：不支持 CDN 刷新
-    writeFileSync(stateFile, 'STATE_VERSION="6"\nPROTOCOL="reality"\n');
+    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="reality"\n');
     const cfRes = run(easyAll, ['refresh-cdn-ips'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
     assert.equal(cfRes.status, 1);
     assert.ok(cfRes.stderr.includes('仅适用于 CDN 精选 IP 模式'));
 
     // Bunny 模式：不支持 Reality 专属与直连专属命令
-    writeFileSync(stateFile, 'STATE_VERSION="2"\nPROTOCOL="bunny-ws"\n');
+    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="bunny-ws"\n');
     const realityTargetRes = run(easyAll, ['reality-target'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
     assert.equal(realityTargetRes.status, 1);
-    assert.ok(realityTargetRes.stderr.includes('仅适用于 Reality 模式'));
+    assert.ok(realityTargetRes.stderr.includes('仅适用于 Reality 与组合模式'));
 
     const rotateRes = run(easyAll, ['rotate-dynamic-ports'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
     assert.equal(rotateRes.status, 1);
-    assert.ok(rotateRes.stderr.includes('仅适用于直连模式'));
+    assert.ok(rotateRes.stderr.includes('仅适用于 Reality 模式'));
 
-    // Mieru 模式：不支持 TLS 证书续期
-    writeFileSync(stateFile, 'STATE_VERSION="2"\nPROTOCOL="mieru"\n');
-    const certRes = run(easyAll, ['renew-cert'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
-    assert.equal(certRes.status, 1);
-    assert.ok(certRes.stderr.includes('Mieru 模式不使用 TLS 证书'));
+    // 组合模式：只提供三入口与订阅，不提供配额、动态端口与 Bunny 专属命令
+    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="combined"\n');
+    for (const [command, message] of [
+        ['quota-status', '组合模式不启用用户配额'],
+        ['rotate-dynamic-ports', '仅适用于 Reality 模式'],
+        ['refresh-origin-ips', '仅适用于 Bunny 模式'],
+        ['cert-renew', '仅适用于 Bunny 模式'],
+    ]) {
+        const res = run(easyAll, [command], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
+        assert.equal(res.status, 1, `${command} must be rejected in combined mode`);
+        assert.ok(res.stderr.includes(message), `${command}: ${res.stderr}`);
+    }
+
+    // Gcore 模式：不支持 Reality 专属命令
+    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="gcore"\n');
+    const gcoreRotateRes = run(easyAll, ['rotate-dynamic-ports'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
+    assert.equal(gcoreRotateRes.status, 1);
+    assert.ok(gcoreRotateRes.stderr.includes('仅适用于 Reality 模式'));
 } finally {
     try { unlinkSync(stateFile); } catch {}
 }

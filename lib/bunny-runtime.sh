@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Local Bunny TLS, origin verification, firewall and recovery lifecycle.
 
+bunny_reject_ssh_443() {
+    detect_ssh_ports strict
+    [[ " ${SSH_PORTS} " != *" 443 "* ]] \
+        || die 'SSH 端口配置包含 443，无法与 Bunny 回源共用该端口'
+}
+
 bunny_refresh_firewall() {
     local response="${RUNTIME_TMP}/bunny-edges.json" addresses="${RUNTIME_TMP}/bunny-edges"
     curl -4fsS --proto '=https' -H 'Accept: application/json' --connect-timeout 10 --max-time 30 \
         https://api.bunny.net/system/edgeserverlist -o "${response}" || die 'Bunny 回源池获取失败'
     python3 "${SCRIPT_DIR}/bunny-api.py" ips --input "${response}" >"${addresses}" || die 'Bunny 回源池校验失败'
-    detect_ssh_ports strict
+    bunny_reject_ssh_443
     verify_ssh_ufw_no_unmanaged_block "${SSH_PORTS}"
     disable_ufw_ipv6 || die '配置 UFW IPv4 策略失败'
     apply_ssh_ufw_policy "${SSH_PORTS}" "${SSH_PORTS}"
@@ -136,12 +142,16 @@ bunny_validate_edge() {
 bunny_remove_local() {
     systemctl disable --now "${XRAY_SERVICE}" easy_all-bunny-ips.timer easy_all-cert-renew.timer >/dev/null 2>&1 || true
     systemctl stop "${XRAY_SERVICE}" easy_all-bunny-ips.service easy_all-cert-renew.service >/dev/null 2>&1 || true
-    rm -f "${XRAY_SERVICE_FILE}" "${BUNNY_REFRESH_SERVICE_FILE}" "${BUNNY_REFRESH_TIMER_FILE}" "${CERT_RENEW_SERVICE_FILE}" "${CERT_RENEW_TIMER_FILE}" "${NGINX_CONFIG}"
+    rm -f "${XRAY_SERVICE_FILE}" "${BUNNY_REFRESH_SERVICE_FILE}" "${BUNNY_REFRESH_TIMER_FILE}" "${CERT_RENEW_SERVICE_FILE}" "${CERT_RENEW_TIMER_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
+    [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
+        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" "${UFW_DEFAULT_CONFIG}"
+    [[ ! -f "${BACKUP_DIR}/pre-install-nginx-default" ]] \
+        || install -m 0644 "${BACKUP_DIR}/pre-install-nginx-default" "${NGINX_DEFAULT_SITE}"
     systemctl reload nginx >/dev/null 2>&1 || true
     rm -rf "${STATE_DIR}" "${WEB_ROOT}"
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
         sed -i.bak '/# easy_all-bunny-start/,/# easy_all-bunny-end/d' "${UFW_BEFORE_RULES}" 2>/dev/null || true
-        ufw reload >/dev/null 2>&1 || true
     fi
+    ufw reload >/dev/null 2>&1 || true
 }
