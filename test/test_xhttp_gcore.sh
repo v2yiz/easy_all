@@ -1095,8 +1095,10 @@ unset -f dig gcore_api_request gcore_api_get_optional
             if [[ "${resource_matches}" == true && -s "${resource_payload}" ]]; then
                 cat "${resource_payload}"
             else
-                printf '{"id":202,"active":false}'
+                printf '{"id":202,"active":false,"options":{"use_dns01_le_challenge":{"enabled":true,"value":true}}}'
             fi ;;
+        'PATCH /cdn/resources/202')
+            printf '{}' ;;
         'POST /cdn/resources')
             [[ "${reject_update}" == false ]] || return 1
             [[ "${expected_certificate}" == 404 || -f "${certificate_created}" ]] || return 1

@@ -1,3 +1,16 @@
+## 2.4.14 更新说明（2026-11-03）
+
+- **DNS-01 选项会被静默忽略**：账号未启用 Managed DNS 时，`use_dns01_le_challenge` 即使随 PUT 提交也会被
+  丢掉（HTTP 200），证书继续走 HTTP-01，于是稳定复现 502。现在附加/重签证书前会单独
+  `PATCH /cdn/resources/{id}` 保存该选项并**回读校验**；没保存成功直接报错并提示先去 Gcore 控制台启用
+  Managed DNS，不再让安装器在 HTTP-01 上反复消耗重试与证书额度。
+- 委派后若本机有 `dig`，会探一次 `_acme-challenge.<节点域名>` 是否能从 `ns1.gcorelabs.net` 权威应答；
+  未就绪只提示（挑战区按需创建，通常几分钟）。
+- 说明：Managed DNS 列表在首次签发前是空的属正常现象，挑战区由 Gcore 按需创建。
+- 测试：按用户要求不新增离线单测；已有的 combined 渲染测试覆盖资源 payload 中的选项字段。
+
+源码版本标识为 `2.4.14`。
+
 ## 2.4.13 更新说明（2026-11-03）
 
 - **force-retry 被拒后 PATCH 同一张证书不会重签**（现场：`PATCH /cdn/resources/{id}` 返回 2xx，但状态仍是

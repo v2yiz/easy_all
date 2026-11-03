@@ -338,6 +338,16 @@ combined_ensure_gcore_challenge_delegation() {
         cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" "${payload}" >/dev/null
         info "已为 Gcore DNS-01 委派挑战子域：${challenge} NS ${ns}"
     done < <(gcore_challenge_nameservers)
+    # Gcore 会在首次签发时按需创建 _acme-challenge 子区；这里探一下是否已经能权威应答，
+    # 未就绪时只提示（挑战区创建通常几分钟），不阻断安装。
+    if command -v dig >/dev/null 2>&1; then
+        local served
+        served=$(dig +short +time=3 +tries=1 @ns1.gcorelabs.net \
+            "${challenge}" NS 2>/dev/null || true)
+        if [[ -z "${served}" ]]; then
+            info "Gcore 尚未在 ${challenge} 上权威应答（挑战区可能还在创建）；若持续失败请确认账号已启用 Managed DNS"
+        fi
+    fi
 }
 
 gcore_cdn_target() {

@@ -1141,6 +1141,11 @@ gcore_policy_out=$(
             printf '{"id":202}'
         elif [[ "${call}" == "GET /cdn/sslData/303/status" ]]; then
             printf '{"active":true,"latest_status":{"status":"DONE"}}'
+        elif [[ "${call}" == "PATCH /cdn/resources/202" ]]; then
+            # DNS-01 选项保存（gcore_ensure_dns01_option）
+            printf '{}'
+        elif [[ "${call}" == "GET /cdn/resources/202" ]]; then
+            printf '{"id":202,"options":{"use_dns01_le_challenge":{"enabled":true,"value":true}}}'
         elif [[ "${call}" == "PUT /cdn/resources/202" ]]; then
             :
         else
@@ -1186,7 +1191,9 @@ gcore_retry_out=$(
         if [[ "${call}" == "GET /cdn/resources" ]]; then
             printf '[{"id":202,"cname":"gcore-node.example.com","sslData":303}]'
         elif [[ "${call}" == "GET /cdn/resources/202" ]]; then
-            printf '{"id":202,"cname":"gcore-node.example.com","sslData":303}'
+            printf '{"id":202,"cname":"gcore-node.example.com","sslData":303,"options":{"use_dns01_le_challenge":{"enabled":true,"value":true}}}'
+        elif [[ "${call}" == "PATCH /cdn/resources/202" ]]; then
+            printf '{}'
         elif [[ "${call}" == "PUT /cdn/resources/202" ]]; then
             if jq -e '.options.redirect_http_to_https.enabled' <<<"${payload}" >/dev/null; then
                 printf 'PUT full\n' >>"${api_calls}"
@@ -1471,7 +1478,9 @@ gcore_resource_ready_failure=$(
         if [[ "${call}" == "GET /cdn/resources" ]]; then
             printf '[{"id":202,"cname":"gcore-node.example.com","sslData":303}]'
         elif [[ "${call}" == "GET /cdn/resources/202" ]]; then
-            printf '{"id":202,"cname":"gcore-node.example.com","sslData":303}'
+            printf '{"id":202,"cname":"gcore-node.example.com","sslData":303,"options":{"use_dns01_le_challenge":{"enabled":true,"value":true}}}'
+        elif [[ "${call}" == "PATCH /cdn/resources/202" ]]; then
+            printf '{}'
         elif [[ "${call}" == "PUT /cdn/resources/202" ]]; then
             printf '%s\n' "${payload}" >>"${puts}"
             printf '{"id":202}'

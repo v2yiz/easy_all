@@ -556,6 +556,9 @@ gcore_challenge_nameservers() {
     body=${response%$'\n'*}
     ns1=$(jq -r '.settings.name_server_1 // .name_server_1 // empty' <<<"${body}" 2>/dev/null || true)
     ns2=$(jq -r '.settings.name_server_2 // .name_server_2 // empty' <<<"${body}" 2>/dev/null || true)
+    if [[ -z "${ns1}" || -z "${ns2}" ]]; then
+        warn "未能从 Gcore /dns/v2/platform/info 读取挑战区 NS：账号可能未启用 Managed DNS；先按默认 NS 委派"
+    fi
     printf '%s\n%s\n' "${ns1:-ns1.gcorelabs.net}" "${ns2:-ns2.gcdn.services}"
 }
 
@@ -610,6 +613,22 @@ gcore_resource_matches_payload() {
     ' >/dev/null
 }
 
+# Gcore 只有在“证书附加前”保存了 use_dns01_le_challenge 才会用 DNS-01 验证；账号没启用
+# Managed DNS 时该选项会被静默忽略（PUT 仍返回 200），证书继续走 HTTP-01 并稳定 502。
+# 所以每次附加证书前显式 PATCH 一次并回读校验，没保存成功就直接给出可执行的提示。
+gcore_ensure_dns01_option() {
+    local resource_id=$1 current enabled payload
+    payload='{"options":{"use_dns01_le_challenge":{"enabled":true,"value":true}}}'
+    gcore_api_request PATCH "/cdn/resources/${resource_id}" "${payload}" >/dev/null || return 1
+    current=$(gcore_api_request GET "/cdn/resources/${resource_id}") || return 1
+    enabled=$(jq -r 'if .options.use_dns01_le_challenge.enabled == true then "true" else "false" end' \
+        <<<"${current}" 2>/dev/null || printf 'false')
+    if [[ "${enabled}" != "true" ]]; then
+        die "Gcore 资源 ${resource_id} 未保存 use_dns01_le_challenge（DNS-01 选项），证书会退回 HTTP-01 并 502：请先在 Gcore 控制台启用 Managed DNS（CDN → DNS，Free 计划即可）后重跑；启用后挑战区 _acme-challenge.${GCORE_NODE_DOMAIN:-<节点域名>} 会自动创建，通常需要几分钟"
+    fi
+    info "Gcore 资源已确认使用 DNS-01 挑战"
+}
+
 gcore_ensure_resource() {
     local payload bootstrap_payload response existing_resources current_resource res
     local resource_id="" edge_certificate_id=""
@@ -627,8 +646,8 @@ gcore_ensure_resource() {
         edge_certificate_id=$(gcore_edge_certificate_id) || return 1
     fi
     GCORE_EDGE_CERTIFICATE_ID=${edge_certificate_id}
-    # 组合模式的 Zone 留在 Cloudflare，没有把 _acme-challenge 委派给 Gcore，DNS-01 必然失败；
-    # 订阅域名是橙云 A 指向 VPS，Gcore 也无法用 HTTP-01 验证它，因此边缘证书只覆盖节点域名。
+    # 组合模式只把 _acme-challenge.<节点域名> 委派给 Gcore（Zone 仍留在 Cloudflare），用 DNS-01 签发；
+    # 订阅域名是橙云 A 指向 VPS，Gcore 无法验证它，因此边缘证书只覆盖节点域名，
     # 订阅域名继续使用本机 Cloudflare Origin CA 证书。
     payload=$(jq -cn \
         --arg cname "${VLESS_CDN_DOMAIN}" \
@@ -674,7 +693,9 @@ gcore_ensure_resource() {
             info "Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 配置未变化，跳过更新"
         else
             info "更新已有 Gcore CDN 资源 (ID: ${GCORE_CDN_RESOURCE_ID}) 的 HTTPS、mTLS 与配置"
-            # 先落 HTTP-01 与域名集合，Gcore 才会按新配置重新签发；否则重试仍用旧挑战方式。
+            # 挑战方式必须在证书附加/重签之前保存，否则这轮仍按 HTTP-01 验证。
+            gcore_ensure_dns01_option "${GCORE_CDN_RESOURCE_ID}" || return 1
+            # 先落挑战方式与域名集合，Gcore 才会按新配置重新签发。
             gcore_api_request PUT \
                 "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${bootstrap_payload}" >/dev/null \
                 || return 1
@@ -690,6 +711,7 @@ gcore_ensure_resource() {
     else
         response=$(gcore_api_request POST "/cdn/resources" "${bootstrap_payload}") || return 1
         GCORE_CDN_RESOURCE_ID=$(jq -er '.id // empty' <<<"${response}") || return 1
+        gcore_ensure_dns01_option "${GCORE_CDN_RESOURCE_ID}" || return 1
         gcore_ensure_edge_certificate_ready "${edge_certificate_id}" || return 1
         gcore_api_request PUT \
             "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
