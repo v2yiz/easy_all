@@ -461,4 +461,15 @@ done
 [[ "${block_count}" -ge 5 ]] \
     || fail "doc examples: expected at least 5 complete JSON blocks, got ${block_count}"
 
+# 15b. README 参数表必须覆盖全部声明字段，且不写不存在的字段
+declared_keys=$(grep -ho 'params_declare [A-Z_][A-Z0-9_]*' "${ROOT_DIR}"/profiles/*.sh \
+    | awk '{print $2}' | sort -u)
+documented_keys=$(grep -oE '^\| `[A-Z_][A-Z0-9_]*`' "${ROOT_DIR}/README.md" | tr -d '|` ' | sort -u)
+missing_keys=$(comm -23 <(printf '%s\n' "${declared_keys}") <(printf '%s\n' "${documented_keys}") || true)
+[[ -z "${missing_keys}" ]] \
+    || fail "README 参数表缺少字段：$(printf '%s' "${missing_keys}" | tr '\n' ' ')"
+extra_keys=$(comm -13 <(printf '%s\n' "${declared_keys}") <(printf '%s\n' "${documented_keys}") || true)
+[[ -z "${extra_keys}" ]] \
+    || fail "README 参数表出现未声明字段：$(printf '%s' "${extra_keys}" | tr '\n' ' ')"
+
 printf 'ok - install params schema\n'

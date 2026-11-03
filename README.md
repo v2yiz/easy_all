@@ -163,14 +163,92 @@ sudo easy_all params.json --check-params           # 只校验，不改本机
 其余四个模式（Reality 的 deploy/worker、Cloudflare、Gcore、Bunny）见
 [docs/params-examples.md](docs/params-examples.md)。
 
-模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `gcore` / `combined`（或 `1`~`5`）。名称类可选字段：
+模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `gcore` / `combined`（或 `1`~`5`）。
 
-| 模式 | 节点名（默认） | 下载文件名（默认） |
-| --- | --- | --- |
-| reality | `NODE_NAME`（`MY_REALITY`） | `SUB_DOWNLOAD_NAME`（`EASY_ALL`） |
-| cloudflare-streamup / gcore | `XHTTP_NODE_NAME`（`VLESS_XHTTP_H2`） | `SUB_DOWNLOAD_NAME`（`EASY_ALL`） |
-| combined | `DIRECT_NODE_NAME` / `CF_NODE_PREFIX` / `GCORE_NODE_NAME` | `SUB_DOWNLOAD_NAME`（`EASY_ALL`） |
-| bunny-ws | 固定 `EASY_ALL` | 固定 `EASY_ALL` |
+### 参数字段
+
+表里 `R`=reality，`CF`=cloudflare-streamup，`GC`=gcore，`B`=bunny-ws，`组合`=combined。
+“必填”指缺省直接报错；“否”表示有默认值或会自动生成/探测。
+
+#### 通用
+
+| 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `VLESS_UUID` | 全部 | 否 | 自动生成 | 节点 UUID；手填会校验格式 |
+| `VPS_PUBLIC_IPV4` | 全部 | 否 | 安装阶段自动探测 | 写 DNS A 记录用的公网 IPv4；NAT 或多 IP 场景建议手填 |
+| `TCP_ACCELERATION` | 全部 | 否 | `skyline` | `skyline` 或 `bbrv3`（Bunny 仅 amd64 生效） |
+| `REBOOT_SCHEDULE_MODE` | 全部 | 否 | `1` | `1` 每天 04:00，`2` 自定义小时，`3` 不配置 |
+| `REBOOT_HOUR` | 全部 | 否 | 空 | 仅 `REBOOT_SCHEDULE_MODE: "2"` 时必填，`0`~`23` |
+| `SUB_DOWNLOAD_NAME` | R/CF/GC/组合 | 否 | `EASY_ALL` | 订阅下载文件名（不含 `.yaml`）；Bunny 固定 `EASY_ALL` |
+
+#### Token
+
+| 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | R/CF/组合 | 是 | — | DNS 与 Origin CA 权限；R 仅 `deploy`/`worker` 需要，CF 必填 |
+| `GCORE_API_TOKEN` | GC/组合 | 是 | — | Gcore CDN（GC 另需 Managed DNS）权限 |
+| `GLOBALPING_TOKEN` | CF/GC/组合 | 是 | — | 优选 IP 探测；安装后保存到 root-only 凭据文件 |
+| `BUNNY_API_KEY` | B | 是 | — | Bunny Account API Key |
+| `CLOUDFLARE_DNS_TOKEN` | B | 是 | — | Bunny 模式写 Cloudflare DNS 的 Token |
+| `ALLOWED_TOKENS` | R/CF/GC/组合 | 条件 | — | 订阅用户字典 `{"用户":"token"}`；未启用配额且非 `link` 时必填，组合模式可省略（自动生成 owner） |
+| `OWNER_TOKEN` | 组合/B | 否 | 自动生成 | 单用户 Token；与 `ALLOWED_TOKENS` 二选一，B 固定单用户 |
+
+#### 订阅
+
+| 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `SUBSCRIPTION_MODE` | R/CF/GC | 否 | `deploy` | R：`link`/`deploy`/`worker`；CF：`link`/`deploy`；GC：`link`/`deploy` |
+| `SUBSCRIPTION_DOMAIN` | R/CF/GC/组合 | R·GC 是 / CF·组合 否 | CF：`sub.<节点域名的父域>`；组合：`sub.<CF_ZONE>` | R/GC 在非 `link` 时必须手填 |
+| `SUB_SOURCE_DOMAIN` | R | 条件 | — | `worker` 时必填：Worker 回源用的私有节点源域名 |
+| `CLOUDFLARE_WORKER_NAME` | R/CF | 否 | `easyall-reality` / `easyall` | Worker 名称；下单 Worker 订阅时使用 |
+| `WORKER_SOURCE_SECRET` | R/CF | 否 | 自动生成 | Nginx 与 Worker 之间的回源密钥 |
+| `WORKER_AGGREGATION_CONFIG` | R/CF | 否 | `{}` | 其他节点的聚合 JSON（不得含 `vpsSubUrl`）；`allowedTokens` 会覆盖用户 Token |
+| `ENABLE_MONTHLY_QUOTA` | R/CF/GC | 否 | `0` | `1` 启用按用户月度配额 |
+| `MONTHLY_QUOTAS_GB` | R/CF/GC | 否 | `{"owner":0}` | 仅启用配额时：`{"用户":GB}`，`0` 不限量 |
+| `QUOTA_TOKEN_OVERRIDES` | R/CF/GC | 否 | `{}` | 仅启用配额时：覆盖指定用户的 Token |
+| `QUOTA_START_DATE` | R/CF/GC | 否 | 今天 | 仅启用配额时：账期起点 `YYYY-MM-DD` |
+
+#### 域名
+
+| 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `CF_ZONE` | 组合 | 是 | — | Cloudflare 根 Zone，其余五个域名默认由它派生 |
+| `CLOUDFLARE_ZONE` | B | 是 | — | Cloudflare 根 Zone，两个域名默认由它派生 |
+| `DIRECT_DOMAIN` | 组合 | 否 | `node.<CF_ZONE>` | 直连节点域名（灰云 A） |
+| `CF_NODE_DOMAIN` | 组合 | 否 | `cf.<CF_ZONE>` | Cloudflare 节点域名（橙云） |
+| `CF_ORIGIN_DOMAIN` | 组合 | 否 | `cf-origin.<CF_ZONE>` | Cloudflare 回源域名（橙云） |
+| `GCORE_NODE_DOMAIN` | 组合 | 否 | `gcore.<CF_ZONE>` | Gcore 节点域名（灰云 CNAME） |
+| `GCORE_ORIGIN_DOMAIN` | GC/组合 | GC 是 / 组合 否 | 组合：`gcore-origin.<CF_ZONE>` | Gcore 侧回源解析的源站域名；GC 模式必须手填 |
+| `VLESS_CDN_DOMAIN` | CF/GC | 是 | — | 客户端连接的 CDN 节点域名（Zone 下一级子域名） |
+| `ORIGIN_DOMAIN` | B | 否 | `origin.<CLOUDFLARE_ZONE>` | Bunny 源站域名（DNS only A） |
+| `CDN_DOMAIN` | B | 否 | `cdn.<CLOUDFLARE_ZONE>` | Bunny 节点/订阅域名（DNS only CNAME） |
+| `WORKER_BACKUP_DOMAIN` | CF | 否 | 空 = 不部署 | 独立 Worker 兜底节点域名，需在节点所属 Zone 下 |
+| `WORKER_BACKUP_PLACEMENT` | CF | 否 | `off` | 兜底 Worker Placement：`off` 或 `aws:ap-east-1` |
+
+#### 节点名与路径
+
+| 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `NODE_NAME` | R | 否 | `MY_REALITY` | 客户端展示名 |
+| `XHTTP_NODE_NAME` | CF/GC | 否 | `VLESS_XHTTP_H2` | 客户端展示名 |
+| `DIRECT_NODE_NAME` | 组合 | 否 | `🇺🇸直连` | 直连节点名 |
+| `CF_NODE_PREFIX` | 组合 | 否 | `🇺🇸CF` | Cloudflare 节点名前缀，实际下发 `🇺🇸CF1`~`🇺🇸CF6` |
+| `GCORE_NODE_NAME` | 组合 | 否 | `🇺🇸GCore` | Gcore 节点名 |
+| `NODE_HOST` | R | 否 | 安装阶段自动探测 | 客户端连接的 IPv4 或灰云域名 |
+| `REALITY_TARGET` | R/组合 | 否 | `swdist.apple.com:443` | Reality SNI / 伪装目标（域名:端口） |
+| `SUB_PORT_MODE` | R | 否 | `dynamic` | 订阅端口模式：`443` 或 `dynamic` |
+| `XHTTP_PATH` | CF/组合 | 否 | 自动生成 | XHTTP 路径，默认 `/xhttp-<随机>` |
+| `WEBSOCKET_PATH` | GC/B/组合 | 否 | 自动生成 | WebSocket 路径，默认 `/ws-<随机>` |
+| `XRAY_XHTTP_LOOPBACK_PORT` | CF | 否 | `10086` | 本机回环端口 |
+| `XRAY_WEBSOCKET_LOOPBACK_PORT` | GC | 否 | `10087` | 本机回环端口 |
+| `ORIGIN_HEADER_SECRET` | CF/B | 否 | 自动生成 | 回源校验密钥 |
+
+#### Bunny 专属
+
+| 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `BUNNY_PULL_NAME` | B | 否 | 自动生成 | Pull Zone 名称（小写字母、数字、短横线，5~50 位） |
+| `BUNNY_BANDWIDTH_GB` | B | 否 | `500` | Pull Zone 月流量限制（GB，`0` 不限） |
 
 ### 安装失败时
 
