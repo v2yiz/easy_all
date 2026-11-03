@@ -712,6 +712,90 @@ install_mode_choices() {
     printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|gcore 5|combined（也接受 reality/直连、cloudflare、gcore、组合等写法）'
 }
 
+# 本次安装生成的身份（UUID、路径、订阅 Token、Reality 密钥、Origin CA 元数据）。
+# 落盘到状态目录，供中断续装复用；不含任何账号 Token 或私钥以外的凭据。
+install_identity_file() {
+    printf '%s/install-identity.json' "$(install_state_dir_path)"
+}
+
+persist_install_identity() {
+    local file tmp
+    file=$(install_identity_file)
+    [[ -d "${file%/*}" ]] || return 0
+    tmp=$(mktemp "${file}.XXXXXX") || return 1
+    if jq -n \
+        --arg uuid "${VLESS_UUID:-}" \
+        --arg xhttp "${XHTTP_PATH:-}" \
+        --arg websocket "${WEBSOCKET_PATH:-}" \
+        --arg owner "${OWNER_TOKEN:-}" \
+        --arg tokens "${ALLOWED_TOKENS:-}" \
+        --arg reality_key "${REALITY_PRIVATE_KEY:-}" \
+        --arg reality_public "${REALITY_PUBLIC_KEY:-}" \
+        --arg reality_short "${REALITY_SHORT_ID:-}" \
+        --arg cf_cert "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
+        --arg cf_expires "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" \
+        '{
+            vless_uuid: $uuid,
+            xhttp_path: $xhttp,
+            websocket_path: $websocket,
+            owner_token: $owner,
+            allowed_tokens: $tokens,
+            reality_private_key: $reality_key,
+            reality_public_key: $reality_public,
+            reality_short_id: $reality_short,
+            cloudflare_origin_cert_id: $cf_cert,
+            cloudflare_origin_cert_expires_on: $cf_expires
+        }' >"${tmp}"; then
+        chmod 0600 "${tmp}"
+        if mv -f -- "${tmp}" "${file}"; then
+            return 0
+        fi
+    fi
+    rm -f -- "${tmp}"
+    return 1
+}
+
+# 续装时用上次写进配置的身份覆盖本次预检新生成的值，保证已下发的节点/订阅不失效。
+# 只接受普通 JSON 对象；文件不存在或损坏时返回 1，由调用方决定是否继续。
+load_install_identity() {
+    local file name key value
+    file=$(install_identity_file)
+    [[ -s "${file}" ]] || return 1
+    [[ "$(jq -r 'type' "${file}" 2>/dev/null)" == "object" ]] || return 1
+    for pair in \
+        VLESS_UUID:vless_uuid XHTTP_PATH:xhttp_path WEBSOCKET_PATH:websocket_path \
+        OWNER_TOKEN:owner_token ALLOWED_TOKENS:allowed_tokens \
+        REALITY_PRIVATE_KEY:reality_private_key REALITY_PUBLIC_KEY:reality_public_key \
+        REALITY_SHORT_ID:reality_short_id \
+        CLOUDFLARE_ORIGIN_CERT_ID:cloudflare_origin_cert_id \
+        CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:cloudflare_origin_cert_expires_on; do
+        name=${pair%%:*}
+        key=${pair#*:}
+        value=$(jq -r --arg k "${key}" '.[$k] // empty' "${file}") || return 1
+        [[ -n "${value}" ]] || continue
+        printf -v "${name}" '%s' "${value}"
+    done
+    return 0
+}
+
+# 续装：只停服务释放端口，不删配置/证书/状态，也不重新拍快照
+# （保留真正的安装前状态，后续再失败仍回滚到安装前，而不是回滚到半成品）。
+resume_partial_install() {
+    local backup_dir
+    backup_dir="$(install_state_dir_path)/backups"
+    [[ -f "${backup_dir}/pre-install-complete" ]] \
+        || die "上次安装前的快照不完整，无法安全续装；请执行 sudo easy_all cleanup-partial 后重装"
+    # 参数预检可能已经重新生成了 UUID/路径/Token；用落盘身份覆盖回去，保证已写进配置和
+    # 已下发订阅的节点参数不变。身份文件缺失（中断太早）时按新生成值继续。
+    load_install_identity \
+        || warn "没有可复用的安装身份（中断早于身份落盘），本次会使用新生成的值"
+    systemctl stop "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
+    systemctl stop nginx >/dev/null 2>&1 || true
+    INSTALL_RESUME=1
+    export INSTALL_RESUME
+    success "续装：保留上次安装的本机配置/证书与云端资源，只重建服务（失败仍回滚到安装前状态）"
+}
+
 prepare_fresh_install() {
     local reason_text stage answer recorded current
     if reason_text=$(install_residue_reason); then
@@ -737,21 +821,48 @@ prepare_fresh_install() {
             assert_install_ports_free "$@"
             return 0
         fi
-        if [[ -t 0 ]]; then
-            read_confirmation '现在清理残留并继续安装？[Y/n]（n=取消安装，不改动机器）:' answer
-            [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]] \
-                || die "$(printf '已取消安装（未做任何改动）。\n%s' "$(residue_recovery_hint)")"
-        else
-            die "$(printf '非交互安装检测到残留。\n%s' "$(residue_recovery_hint)")"
-        fi
         if [[ "${recorded}" != "${current}" ]]; then
-            warn "上次中断的是 ${recorded} 模式，按该模式清理（当前选择：$(install_current_mode)）"
+            # 模式不同无法续装：只能按旧模式清理后重装。
+            if [[ -t 0 ]]; then
+                read_confirmation "上次中断的是 ${recorded} 模式，当前选择 ${current:-未知}；清理旧模式残留后继续？[Y/n]:" answer
+                [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]] \
+                    || die "$(printf '已取消安装（未做任何改动）。\n%s' "$(residue_recovery_hint)")"
+            else
+                die "$(printf '非交互安装检测到残留（%s 模式）。\n%s' "${recorded}" "$(residue_recovery_hint)")"
+            fi
+            warn "按 ${recorded} 模式清理残留（当前选择：${current:-未知}）"
             run_recorded_profile_cleanup "${recorded}" \
                 || die "按 ${recorded} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial"
-        else
+            success "残留已清理，继续安装"
+        elif [[ "${current}" == "combined" ]]; then
+            # 组合模式的所有步骤幂等（DNS 按注释复用、证书缓存复用、Gcore 资源幂等），
+            # 可以保留上次已完成的本地配置/证书与云端资源，只停服务后从 packages 阶段重跑。
+            if [[ -t 0 ]]; then
+                read_confirmation '继续上次安装（保留已完成的配置、证书与云端资源）？[Y/n]:' answer
+                if [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]]; then
+                    resume_partial_install
+                    assert_install_ports_free "$@"
+                    return 0
+                fi
+                read_confirmation '改为清理残留后重新安装？[Y/n]:' answer
+                [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]] \
+                    || die "$(printf '已取消安装（未做任何改动）。\n%s' "$(residue_recovery_hint)")"
+            else
+                die "$(printf '非交互安装检测到残留。\n%s' "$(residue_recovery_hint)")"
+            fi
             cleanup_partial_install || die "清理残留失败；请按上方提示处理后重试"
+            success "残留已清理，继续安装"
+        else
+            if [[ -t 0 ]]; then
+                read_confirmation '现在清理残留并继续安装？[Y/n]（n=取消安装，不改动机器）:' answer
+                [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]] \
+                    || die "$(printf '已取消安装（未做任何改动）。\n%s' "$(residue_recovery_hint)")"
+            else
+                die "$(printf '非交互安装检测到残留。\n%s' "$(residue_recovery_hint)")"
+            fi
+            cleanup_partial_install || die "清理残留失败；请按上方提示处理后重试"
+            success "残留已清理，继续安装"
         fi
-        success "残留已清理，继续安装"
     elif legacy_nginx_residue_candidate && nginx_owns_requested_port "$@"; then
         # 无 marker 时无法证明这份 nginx 属于 easy_all：不声称是残留，默认不处理。
         warn "端口被 nginx 占用（只启用了 Debian 默认站点，且没有任何 easy_all 安装标记）。"

@@ -164,9 +164,10 @@ gcore_configure_origin_firewall() {
         : >"${current}"
     fi
 
+    # 不能拿缓存文件当作“规则还在”的证明（回滚/手工改过 UFW 后缓存仍完整）。ufw 对完全
+    # 相同的规则是幂等的（输出 Skipping），所以每次都对全部期望 CIDR 重新放行。
     while IFS= read -r cidr; do
         [[ -n "${cidr}" ]] || continue
-        grep -Fxq "${cidr}" "${current}" && continue
         ufw allow proto tcp from "${cidr}" to any port 443 \
             comment "${GCORE_UFW_COMMENT}" >/dev/null \
             || die "添加 Gcore 回源 UFW 规则失败：${cidr}"

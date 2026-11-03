@@ -189,6 +189,7 @@ DNS、Origin CA、边缘规则和 Worker。Bunny 模式与普通 `apply` 相同�
 | `quota-set <用户> <GB>` | 修改已有用户额度，`0` 表示不限量。 |
 | `quota-reset <用户>` | 清零指定用户本月流量。 |
 | `cleanup-partial [--assume-mode <模式>]` | 清理上次中断安装留下的本机残留（未安装状态使用；不改动云端资源）。默认按安装进度标记判断模式，旧版本无标记时用 `--assume-mode` 指定。 |
+| 安装中断后重跑 | 同一模式会提示「继续上次安装」：组合模式默认**续装**——只停残留服务释放端口，保留 `/etc/easy_all`、证书、Nginx 配置与云端资源，不重拍安装前快照（再失败仍回滚到安装前）；从 packages 阶段重跑并靠幂等逻辑复用，UUID/路径/订阅 Token/Reality 密钥/Origin CA 元数据来自 `/etc/easy_all/install-identity.json`，已下发的节点与订阅不变。选「n」再确认清理才会回滚快照并删除本机残留；换域名/Zone/账户时请选清理重装。 |
 | `uninstall` | 卸载本机资源；`--purge-cloud` 同时清理本工具创建的云资源。 |
 | `help` | 显示命令帮助。 |
 

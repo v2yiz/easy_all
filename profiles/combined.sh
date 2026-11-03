@@ -355,6 +355,9 @@ combined_issue_certificates() {
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
     CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CF_CA_ROOT_FILE}"
     cloudflare_issue_origin_certificate "${force}"
+    # Origin CA 一签发就落盘 ID/到期时间：后面 acme 源站证书失败时，续装可直接复用这张证书，
+    # 不会重复 POST /certificates，也不会留下无法吊销的旧证书。
+    persist_install_identity || warn "无法落盘安装身份；中断后 Cloudflare Origin CA 会重新签发"
 
     install_acme
     run_acme --set-default-ca --server letsencrypt >/dev/null || true
@@ -1046,6 +1049,8 @@ install_all() {
     configure_daily_reboot
     install_progress_stage inputs
     apply_install_inputs
+    # 身份落盘：中断续装时要用它覆盖预检新生成的值，保证已写出的节点/订阅不失效。
+    persist_install_identity || warn "无法落盘安装身份；中断后无法完全复用 UUID/路径/Token"
     install_progress_stage core
     download_xray
     validate_reality_target_runtime
@@ -1054,6 +1059,8 @@ install_all() {
     combined_ensure_dns
     combined_issue_certificates
     write_xray_config
+    # 此时已有 Reality 密钥与 Origin CA 元数据，再落一次盘供续装复用。
+    persist_install_identity || warn "无法落盘安装身份；中断后无法完全复用密钥与证书元数据"
     install_xray_service
     write_bootstrap_nginx_config
     gcore_prepare_origin_validation_material

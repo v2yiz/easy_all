@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.4.8](CHANGELOG.md#248-更新说明2026-11-03)。
+当前源码版本：[2.4.9](CHANGELOG.md#249-更新说明2026-11-03)。
 
 `easy_all` 是面向全新 Debian 12/13 VPS 的单节点安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。
@@ -25,7 +25,7 @@ Host *
 服务器侧也可以加 `/etc/ssh/sshd_config`：`ClientAliveInterval 60`、`ClientAliveCountMax 3`，
 再 `systemctl reload ssh`。
 
-仍然建议在 `tmux` 里执行；万一断开，重连后先 `sudo easy_all cleanup-partial`，再按原参数重跑。
+仍然建议在 `tmux` 里执行；万一断开，重连后按原参数重跑即可：检测到残留会提示「继续上次安装」（组合模式默认续装：保留已完成的配置、证书与云端资源，UUID/订阅 Token 等节点身份也不变）；只有想彻底重来才选清理。
 
 这组参数**不限制会话总时长**：每 30 秒的探测只要被 sshd 应答就会一直续下去，等 Gcore 激活那 30 分钟
 不会因为“空闲”被断。`ServerAliveCountMax 6` 只是“连续 6 次收不到应答（约 3 分钟）才断开”的故障容忍；
@@ -131,8 +131,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 - bootstrap 会克隆代码并把参数原样转给 `easy_all`；请原样执行，不要写成 `curl ... | sudo bash`。
 - 组合模式只改 `CF_ZONE` 与三个 Token，其余字段留空即用默认值。**安装成功会自动删除参数文件**；
   中途失败会保留，排查后请自行删除。
-- 安装约十几分钟（`apt`、内核、TCP 加速），建议在 `tmux` 里执行；中断后先 `sudo easy_all cleanup-partial`
-  再重试（命令未注册时用 `... bootstrap.sh cleanup-partial`）。
+- 安装约十几分钟（`apt`、内核、TCP 加速），建议在 `tmux` 里执行；中断后按原参数重跑即可，提示时默认
+  **续装**（组合模式保留本机配置/证书与云端资源）；要彻底重来再选清理（命令未注册时用 `... bootstrap.sh cleanup-partial`）。
 
 ## 安装参数
 

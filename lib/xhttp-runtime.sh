@@ -164,6 +164,13 @@ install_packages() {
 }
 
 snapshot_fresh_install() {
+    # 续装（INSTALL_RESUME=1）不能重新拍快照：那会把回滚目标从“安装前”换成半成品。
+    # 保留上次安装前的完整快照；快照不完整时 resume_partial_install 已拒绝续装。
+    if [[ "${INSTALL_RESUME:-0}" == "1" && -f "${BACKUP_DIR}/pre-install-complete" ]]; then
+        INSTALL_ROLLBACK_ON_EXIT=1
+        info "续装：复用上次安装前的快照，不重新拍摄"
+        return 0
+    fi
     install -d -m 0700 "${BACKUP_DIR}"
     snapshot_ufw_state
     snapshot_platform_security_state
