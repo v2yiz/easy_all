@@ -1,3 +1,30 @@
+## 2.4.5 更新说明（2026-11-03）
+
+- **重试不再重复消耗 Let's Encrypt 额度**（现场：组合模式第 6 次安装被拒，
+  `too many certificates (5) already issued for this exact set of identifiers in the last 168h`）：
+  限额按精确标识符集合计 5 张/168 小时。根因是每次安装都执行 `acme.sh --issue --force`：回滚虽然
+  会 `acme.sh --uninstall`，但它只删脚本与续期任务，`/root/.acme-combined.sh` 里的证书和账户配置
+  其实还在，`--force` 让 acme.sh 每次重签。现在首次安装与 `apply-cloud` 不再传 `--force`：缓存
+  证书未到续期时间时 acme.sh 返回 `RENEW_SKIP`（2），安装器复用缓存并重新安装证书；只有
+  `renew-cert` 仍强制重签。
+- **复用 acme.sh 时补回续期任务与所有权标记**：安装前快照在 acme.sh 安装之前拍摄，回滚会用快照
+  覆盖 root crontab，把首次安装写入的 `acme.sh --cron` 一起删掉。复用已有 acme.sh 时会执行
+  `acme.sh --install-cronjob`（幂等）补回续期任务，并补写所有权标记；`uninstall` 仍按标记执行
+  `acme.sh --uninstall`。注意该命令只删脚本与续期任务，证书与账户缓存仍保留在
+  `/root/.acme-combined.sh`，要彻底清理需另行删除该目录。
+- **续期 Token 跟随当前参数**：`--issue` 走 `RENEW_SKIP` 时 `dns_cf` 不会执行，也就不会把新的
+  Cloudflare Token 写回 acme.sh 的 `account.conf`，而定时续期只读该文件。现在每次安装/
+  `apply-cloud` 都在值与已保存不同时，把当前 Token 原子写回续期配置（权限保持 `0600`）。
+- **Gcore 边缘证书先等资源激活**（现场：HTTP-01 报 `The connection could not be established`）：
+  新建的 Gcore CDN 资源约 15 分钟才会在所有边缘生效，期间申请证书必然失败。现在申请前先等资源
+  `active` 且节点 CNAME 解析到账户 CNAME（最多 30 分钟；证书已激活的幂等重跑直接跳过），失败时
+  最多强制重试 2 次（间隔 60 秒），全部失败才中止并给出可操作提示。
+- 测试：新增“不重签/`RENEW_SKIP`/`renew` 强制”“回滚不卸载 acme.sh”“复用缓存时补写标记、补回
+  续期任务、同步 Token”“资源就绪等待与超时”“失败重试上限”“ACTIVE 时跳过就绪等待”用例。
+- 文档：常见问题补充 Let's Encrypt 限额、acme.sh 缓存生命周期、Gcore 资源激活等待与 Token 轮换说明。
+
+源码版本标识为 `2.4.5`。
+
 ## 2.4.4 更新说明（2026-11-03）
 
 - **修复组合模式 Gcore 边缘证书签发失败**（现场：`The _acme-challenge.<域名> is not delegated to

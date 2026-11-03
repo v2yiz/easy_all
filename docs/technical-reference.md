@@ -463,6 +463,10 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
   Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发，用 HTTP-01 通过
   `gcore.<zone>` 的灰云 CNAME 验证，只覆盖该节点域名（订阅域名用上面的 Origin CA 证书，
   `_acme-challenge` 不委派给 Gcore）。
+- 边缘就绪：Gcore CDN 资源新建后处于 `processed` 状态约 15 分钟，期间边缘不接流量、HTTP-01 必然
+  失败。安装器先轮询资源 `active` 且 `gcore.<zone>` 的 CNAME 解析到账户 CNAME（最多 30 分钟），
+  再让 Gcore 签发；证书 `FAILED` 时最多通过 `force-retry` 重试 2 次（间隔 60 秒）。证书已激活时
+  幂等重跑直接跳过这些等待。
 - 组合模式不改 SSH、不配置 Fail2ban；卸载时按安装前快照恢复 UFW 回源白名单与 `8443` 放行。
 - 组合模式安装时会用 `xray tls ping` 验收 Reality 伪装目标的 TLS 1.3 握手并比对 ASN（仅告警），
   `reality-target` 修改目标时先验收再落盘；Globalping Token 在应用参数阶段校验。

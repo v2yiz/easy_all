@@ -66,6 +66,8 @@ export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP_DIR}/runtime-write.lock"
 export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP_DIR}/policy-state"
 export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/progress/install-progress.env"
 export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
+# 让 cleanup/幂等用例能替换 acme.sh 可执行文件，验证回滚不会真的卸载它
+export ACME_BIN="${TMP_DIR}/acme-sh"
 
 mkdir -p "${STATE_DIR}" "${BACKUP_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" \
     "${WEB_ROOT}" "${SUBSCRIPTION_DIR}" "${COMMAND_INSTALL_DIR}" \
@@ -1194,7 +1196,7 @@ gcore_retry_out=$(
         elif [[ "${call}" == "GET /cdn/sslData/303/status" ]]; then
             # 每次状态查询都在命令替换的子 shell 里执行，计数必须落盘。
             printf 'x' >>"${poll_file}"
-            if (($(wc -c <"${poll_file}") <= 4)); then
+            if (($(wc -c <"${poll_file}") == 1)); then
                 printf '{"latest_status":{"status":"FAILED","error":"ValidationIssue","details":"boom"}}'
             else
                 printf '{"active":true,"latest_status":{"status":"DONE"}}'
@@ -1203,6 +1205,9 @@ gcore_retry_out=$(
             return 1
         fi
     }
+    # 资源就绪门与状态查询在本用例里固定，集中验证“先落配置 → 强制重试 → 激活后再开跳转”的顺序。
+    gcore_wait_for_cdn_readiness() { :; }
+    gcore_edge_certificate_status() { printf 'PENDING'; }
     gcore_ensure_resource >/dev/null 2>&1 || exit 3
     bootstrap_line=$(grep -n '^PUT bootstrap$' "${api_calls}" | cut -d: -f1)
     retry_line=$(grep -n '^RAW POST /cdn/sslData/303/force-retry$' "${api_calls}" | cut -d: -f1)
@@ -1220,6 +1225,283 @@ gcore_retry_out=$(
 ) || fail "gcore-retry: FAILED 证书重装路径失败"
 assert_equal "gcore-retry: 先落新配置、强制重试一次、证书激活后再开 HTTPS 跳转" \
     "order=ok dns01=false hosts=[] redirect=true retries=1" "${gcore_retry_out}"
+
+# 25f) 重试/重装不得强制重签 Gcore 回源证书：每次失败都重签会打满 Let's Encrypt 的
+#      “同一标识符集合 5 张/168h”限额（现场：too many certificates already issued）。
+gcore_cert_policy=$(
+    calls="${TMP_DIR}/acme-issue-calls"
+    : >"${calls}"
+    : >"${GCORE_CERT_FILE}"
+    : >"${GCORE_KEY_FILE}"
+    CLOUDFLARE_API_TOKEN="test-token"
+    # stub 变量必须与被测函数的局部变量不同名：combined_issue_certificates 里的 local issue_rc
+    # 会通过 bash 动态作用域盖住同名外部变量，让 stub 永远返回 0（RENEW_SKIP 分支测不到）。
+    stub_issue_rc=0
+    cloudflare_issue_origin_certificate() { :; }
+    install_acme() { :; }
+    write_cert_reload_hook() { :; }
+    combined_gcore_certificate_current() { return 1; }
+    run_acme() {
+        printf '%s\n' "$*" >>"${calls}"
+        [[ "$1" == "--issue" ]] && return "${stub_issue_rc}"
+        return 0
+    }
+    combined_issue_certificates >/dev/null || exit 3
+    plain_issue=$(grep '^--issue' "${calls}" | tail -n 1)
+    stub_issue_rc=2
+    combined_issue_certificates >/dev/null || exit 4
+    # 只放过 RENEW_SKIP(2)：其它非零仍必须终止，否则证书没签出来也会接着装。
+    stub_issue_rc=1
+    if (combined_issue_certificates >/dev/null 2>&1); then other_rc=accepted; else other_rc=rejected; fi
+    stub_issue_rc=0
+    combined_issue_certificates 1 >/dev/null || exit 5
+    forced_issue=$(grep '^--issue' "${calls}" | tail -n 1)
+    install_calls=$(grep -c '^--install-cert' "${calls}")
+    printf 'plain=%s install_calls=%s other=%s forced=%s' \
+        "$([[ "${plain_issue}" == *--force* ]] && printf forced || printf plain)" \
+        "${install_calls}" \
+        "${other_rc}" \
+        "$([[ "${forced_issue}" == *--force* ]] && printf forced || printf plain)"
+) || fail "gcore-cert: combined_issue_certificates 用例失败"
+assert_equal "gcore-cert: 普通安装/重试不强制重签，RENEW_SKIP 复用缓存，renew 才强制" \
+    "plain=plain install_calls=3 other=rejected forced=forced" "${gcore_cert_policy}"
+
+# 25g) 失败回滚不得卸载 acme.sh：证书缓存留在 /root/.acme-combined.sh，重试才能复用。
+gcore_cleanup_acme=$(
+    printf '#!/usr/bin/env bash\ntouch "%s"\n' "${TMP_DIR}/acme-uninstalled" >"${ACME_BIN}"
+    chmod +x "${ACME_BIN}"
+    : >"${ACME_OWNERSHIP_MARKER}"
+    cleanup_partial_install_local() { :; }
+    cleanup_partial_install_files() { :; }
+    remove_daily_reboot_schedule() { :; }
+    cleanup_partial_install >/dev/null 2>&1 || exit 3
+    if [[ -f "${TMP_DIR}/acme-uninstalled" ]]; then printf 'uninstalled'; else printf 'kept'; fi
+) || fail "gcore-cert: cleanup_partial_install 执行失败"
+assert_equal "gcore-cert: 回滚保留 acme.sh 证书缓存" "kept" "${gcore_cleanup_acme}"
+
+# 25h) acme.sh 已在（复用了上次安装的缓存）时仍要补所有权标记，保证以后 uninstall 能清掉它。
+acme_marker=$(
+    [[ -x "${ACME_BIN}" ]] || { printf '#!/usr/bin/env bash\n' >"${ACME_BIN}"; chmod +x "${ACME_BIN}"; }
+    rm -f "${ACME_OWNERSHIP_MARKER}"
+    install_acme >/dev/null 2>&1 || exit 3
+    [[ -f "${ACME_OWNERSHIP_MARKER}" ]] && printf 'marked' || printf 'missing'
+)
+assert_equal "gcore-cert: acme.sh 复用时补写所有权标记" "marked" "${acme_marker}"
+
+# 25i) 回滚后重试复用已有 acme.sh 时必须补回自动续期任务：安装前快照在 acme.sh 安装之前拍摄，
+#      回滚会用快照覆盖 root crontab（restore_preinstall_crontab），把首次安装写的 acme.sh --cron
+#      条目删掉；重试不重装 acme.sh，不补回就再也不会自动续签。
+acme_cron_restore=$(
+    cron_calls="${TMP_DIR}/acme-cronjob-calls"
+    : >"${cron_calls}"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\n' "${cron_calls}" >"${ACME_BIN}"
+    chmod +x "${ACME_BIN}"
+    rm -f "${ACME_OWNERSHIP_MARKER}"
+    conf="${TMP_DIR}/acme-install-account.conf"
+    printf "SAVED_CF_Token='stale-token'\n" >"${conf}"
+    GCORE_ACME_ACCOUNT_CONF="${conf}"
+    CLOUDFLARE_API_TOKEN="fresh-token"
+    install_acme >/dev/null 2>&1 || exit 3
+    if grep -q -- '--install-cronjob' "${cron_calls}"; then cron=restored; else cron=missing; fi
+    if [[ -f "${ACME_OWNERSHIP_MARKER}" ]]; then mark=marked; else mark=missing; fi
+    token=$(sed -n "s/^SAVED_CF_Token='\(.*\)'$/\1/p" "${conf}")
+    printf 'cron=%s marker=%s token=%s' "${cron}" "${mark}" "${token}"
+) || fail "gcore-cert: install_acme 复用分支执行失败"
+assert_equal "gcore-cert: 复用 acme.sh 时补回续期任务、所有权标记并同步当前 Token" \
+    "cron=restored marker=marked token=fresh-token" "${acme_cron_restore}"
+
+# 25j) 新建资源处于 processed 时不能申请证书，也不能把 FAILED 当永久失败：
+#      Gcore 文档明确资源要约 15 分钟激活，期间 HTTP-01 必然连接失败（现场日志即此错误）。
+gcore_readiness_ok=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_CDN_TARGET="cl-1.gcdn.co"
+    GCORE_CDN_RESOURCE_ID=202
+    counter="${TMP_DIR}/gcore-ready-count"
+    : >"${counter}"
+    sleep() { :; }
+    dig() {
+        printf 'x' >>"${counter}"
+        if (($(wc -c <"${counter}") >= 3)); then
+            printf 'cl-1.gcdn.co.\n'
+        else
+            printf 'other.gcdn.co.\n'
+        fi
+    }
+    gcore_api_request() {
+        local call="$1 $2"
+        [[ "${call}" == "GET /cdn/resources/202" ]] || return 1
+        printf 'x' >>"${counter}"
+        if (($(wc -c <"${counter}") >= 6)); then
+            printf '{"status":"active"}'
+        else
+            printf '{"status":"processed"}'
+        fi
+    }
+    if gcore_wait_for_cdn_readiness 5 0 >/dev/null; then printf 'ready'; else printf 'timeout'; fi
+) || fail "gcore-readiness: 就绪等待用例失败"
+assert_equal "gcore-readiness: 资源 active 且 CNAME 生效后才继续" "ready" "${gcore_readiness_ok}"
+
+gcore_readiness_timeout=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_CDN_TARGET="cl-1.gcdn.co"
+    GCORE_CDN_RESOURCE_ID=202
+    sleep() { :; }
+    dig() { printf 'other.gcdn.co.\n'; }
+    gcore_api_request() { printf '{"status":"processed"}'; }
+    if (gcore_wait_for_cdn_readiness 2 0 >/dev/null 2>&1); then printf 'ready'; else printf 'timeout'; fi
+) || fail "gcore-readiness: 超时用例执行失败"
+assert_equal "gcore-readiness: 资源一直 processed 时必须超时失败" "timeout" "${gcore_readiness_timeout}"
+
+# 25k) 边缘证书失败重试有上限：一直 FAILED 时最多强制重试 GCORE_EDGE_FORCE_RETRIES 次就终止。
+gcore_retry_exhausted=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_ORIGIN_DOMAIN="gcore-origin.example.com"
+    retry_count_file="${TMP_DIR}/gcore-retry-count"
+    : >"${retry_count_file}"
+    sleep() { :; }
+    gcore_api_raw() {
+        printf 'x' >>"${retry_count_file}"
+        printf '\n201'
+    }
+    gcore_api_request() {
+        printf '{"latest_status":{"status":"FAILED","error":"ValidationIssue","details":"boom"}}'
+    }
+    if (gcore_wait_for_edge_certificate 303 4 0 >/dev/null 2>&1); then
+        printf 'accepted'
+    else
+        printf 'rejected'
+    fi
+    printf ' retries=%s' "$(tr -d '[:space:]' < <(wc -c <"${retry_count_file}"))"
+) || fail "gcore-retry: 失败重试上限用例执行失败"
+assert_equal "gcore-retry: 一直 FAILED 时按上限重试后终止" "rejected retries=2" "${gcore_retry_exhausted}"
+
+# 25l) 续期配置必须跟随当前 Cloudflare Token：--issue 跳过时 dns_cf 不会写 account.conf，
+#      不主动同步的话 cron 续期会拿到已撤销的旧 Token。
+gcore_token_sync=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    conf="${TMP_DIR}/acme-account.conf"
+    printf "SAVED_CF_Token='old-token'\nSAVED_CF_Account_ID='acct'\n" >"${conf}"
+    chmod 0644 "${conf}"
+    CLOUDFLARE_API_TOKEN="new-token"
+    GCORE_ACME_ACCOUNT_CONF="${conf}"
+    gcore_sync_acme_cf_token >/dev/null 2>&1 || exit 3
+    gcore_sync_acme_cf_token >/dev/null 2>&1 || exit 4
+    printf 'token=%s lines=%s mode=%s other=%s' \
+        "$(sed -n "s/^SAVED_CF_Token='\(.*\)'$/\1/p" "${conf}")" \
+        "$(grep -c '^SAVED_CF_Token=' "${conf}")" \
+        "$(ls -l "${conf}" | cut -c1-10)" \
+        "$(sed -n "s/^SAVED_CF_Account_ID='\(.*\)'$/\1/p" "${conf}")"
+) || fail "gcore-token: 同步用例执行失败"
+assert_equal "gcore-token: 同步当前 Token（幂等、0600、保留其它配置项）" \
+    "token=new-token lines=1 mode=-rw------- other=acct" "${gcore_token_sync}"
+
+gcore_token_append=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    conf="${TMP_DIR}/acme-account-empty.conf"
+    printf "SAVED_CF_Account_ID='acct'\n" >"${conf}"
+    CLOUDFLARE_API_TOKEN="fresh-token"
+    GCORE_ACME_ACCOUNT_CONF="${conf}"
+    gcore_sync_acme_cf_token >/dev/null 2>&1 || exit 3
+    printf 'lines=%s token=%s' \
+        "$(grep -c '^SAVED_CF_Token=' "${conf}")" \
+        "$(sed -n "s/^SAVED_CF_Token='\(.*\)'$/\1/p" "${conf}")"
+) || fail "gcore-token: 追加用例执行失败"
+assert_equal "gcore-token: 没有 Token 条目时追加一条" "lines=1 token=fresh-token" "${gcore_token_append}"
+
+# 25m) 证书已 ACTIVE 时幂等重跑不得再等边缘就绪；只有未激活时才等。
+gcore_ready_gate=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_ORIGIN_DOMAIN="gcore-origin.example.com"
+    calls="${TMP_DIR}/gcore-gate-calls"
+    : >"${calls}"
+    gcore_wait_for_cdn_readiness() { printf 'readiness\n' >>"${calls}"; }
+    gcore_wait_for_edge_certificate() { printf 'cert:%s\n' "$1" >>"${calls}"; }
+    gcore_edge_certificate_status() { printf 'ACTIVE'; }
+    gcore_ensure_edge_certificate_ready 303 || exit 3
+    active_calls=$(tr '\n' ',' <"${calls}")
+    : >"${calls}"
+    gcore_edge_certificate_status() { printf 'PENDING'; }
+    gcore_ensure_edge_certificate_ready 303 || exit 4
+    pending_calls=$(tr '\n' ',' <"${calls}")
+    printf 'active=%s pending=%s' "${active_calls}" "${pending_calls}"
+) || fail "gcore-readiness: 就绪门用例执行失败"
+assert_equal "gcore-readiness: ACTIVE 时跳过就绪等待，未激活时先等就绪" \
+    "active=cert:303, pending=readiness,cert:303," "${gcore_ready_gate}"
+
+# 25n) 就绪检查失败必须向上传播：不能拿未确认就绪的状态去强制重试证书或继续 PUT。
+gcore_ready_failure=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_ORIGIN_DOMAIN="gcore-origin.example.com"
+    calls="${TMP_DIR}/gcore-ready-failure-calls"
+    : >"${calls}"
+    gcore_edge_certificate_status() { printf 'PENDING'; }
+    gcore_wait_for_cdn_readiness() { return 1; }
+    gcore_wait_for_edge_certificate() { printf 'cert-wait\n' >>"${calls}"; }
+    if gcore_ensure_edge_certificate_ready 303; then rc=accepted; else rc=rejected; fi
+    printf 'rc=%s cert_wait=%s' "${rc}" "$(grep -c '^cert-wait$' "${calls}" || true)"
+) || fail "gcore-readiness: 就绪失败传播用例执行失败"
+assert_equal "gcore-readiness: 就绪失败必须中止且不再重试证书" "rc=rejected cert_wait=0" "${gcore_ready_failure}"
+
+gcore_resource_ready_failure=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    VLESS_CDN_DOMAIN="gcore-node.example.com"
+    GCORE_ORIGIN_DOMAIN="gcore-origin.example.com"
+    GCORE_ORIGIN_GROUP_ID=101
+    GCORE_ORIGIN_CLIENT_CERT_ID=11223
+    GCORE_ORIGIN_CA_ID=44556
+    GCORE_EDGE_CERTIFICATE_ID=""
+    GCORE_CDN_RESOURCE_ID=""
+    puts="${TMP_DIR}/gcore-ready-failure-puts"
+    : >"${puts}"
+    gcore_api_request() {
+        local call="$1 $2" payload=${3:-}
+        if [[ "${call}" == "GET /cdn/resources" ]]; then
+            printf '[{"id":202,"cname":"gcore-node.example.com","sslData":303}]'
+        elif [[ "${call}" == "GET /cdn/resources/202" ]]; then
+            printf '{"id":202,"cname":"gcore-node.example.com","sslData":303}'
+        elif [[ "${call}" == "PUT /cdn/resources/202" ]]; then
+            printf '%s\n' "${payload}" >>"${puts}"
+            printf '{"id":202}'
+        else
+            return 1
+        fi
+    }
+    gcore_ensure_edge_certificate_ready() { return 1; }
+    if gcore_ensure_resource >/dev/null; then rc=accepted; else rc=rejected; fi
+    full_put=0
+    grep -q '"redirect_http_to_https": *{"enabled": *true' "${puts}" && full_put=1
+    printf 'rc=%s full_put=%s' "${rc}" "${full_put}"
+) || fail "gcore-readiness: ensure_resource 传播用例执行失败"
+assert_equal "gcore-readiness: ensure_resource 就绪失败时返回非零且不写完整配置" \
+    "rc=rejected full_put=0" "${gcore_resource_ready_failure}"
+
+# 25o) Cloudflare Token 不能进入 awk 的进程参数（ps/proc 里可见）。
+gcore_token_argv=$(
+    source "${ROOT_DIR}/lib/gcore-cdn.sh"
+    conf="${TMP_DIR}/acme-argv.conf"
+    printf "SAVED_CF_Token='stale'\n" >"${conf}"
+    argv="${TMP_DIR}/awk-argv"
+    : >"${argv}"
+    awk() { printf '%s\n' "$*" >>"${argv}"; command awk "$@"; }
+    # Token 只在这一处生成，断言不再写死另一份字面量，避免检查空转。
+    secret=$(printf 'argv-%s-%s' secret token)
+    CLOUDFLARE_API_TOKEN="${secret}"
+    GCORE_ACME_ACCOUNT_CONF="${conf}"
+    gcore_sync_acme_cf_token >/dev/null 2>&1 || exit 3
+    if [[ "$(sed -n "s/^SAVED_CF_Token='\(.*\)'$/\1/p" "${conf}")" == "${secret}" ]]; then
+        synced=y
+    else
+        synced=n
+    fi
+    if grep -Fq -- "${secret}" "${argv}"; then leaked=yes; else leaked=no; fi
+    printf 'synced=%s leaked=%s' "${synced}" "${leaked}"
+) || fail "gcore-token: argv 用例执行失败"
+assert_equal "gcore-token: Token 同步成功且不出现在 awk 参数里" "synced=y leaked=no" "${gcore_token_argv}"
 
 # 26) token 首字符不能是 ~（nginx map 把 ~ 开头的键当正则），中间 ~ 仍允许
 tilde_out=$(

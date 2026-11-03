@@ -38,8 +38,14 @@ readonly CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4.txt"
 readonly GCORE_API_BASE="https://api.gcore.com"
 readonly GCORE_UFW_COMMENT="easy_all-gcore-origin"
 readonly GCORE_ORIGIN_IPS_FILE="${STATE_DIR}/gcore-origin-ipv4.txt"
+# 新建的 Gcore 资源约 15 分钟才能在所有边缘生效（状态 processed），此期间 HTTP-01 必然失败。
+# 先等资源 active + 节点 CNAME 生效（最多 30 分钟），再申请证书；失败时最多强制重试 2 次（间隔 60 秒）。
+readonly GCORE_EDGE_READY_ATTEMPTS=120
+readonly GCORE_EDGE_READY_INTERVAL=15
 readonly GCORE_EDGE_PROPAGATION_ATTEMPTS=90
 readonly GCORE_EDGE_PROPAGATION_INTERVAL=10
+readonly GCORE_EDGE_FORCE_RETRIES=2
+readonly GCORE_EDGE_FORCE_RETRY_INTERVAL=60
 readonly GCORE_CERT_FILE="${CERT_DIR}/gcore-origin.pem"
 readonly GCORE_KEY_FILE="${CERT_DIR}/gcore-origin.key"
 readonly GCORE_CLIENT_CA_FILE="${CERT_DIR}/gcore-client-ca.crt"
@@ -344,6 +350,8 @@ combined_gcore_certificate_current() {
 
 combined_issue_certificates() {
     local force=${1:-0}
+    local -a issue_args
+    local issue_rc=0
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
     CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CF_CA_ROOT_FILE}"
     cloudflare_issue_origin_certificate "${force}"
@@ -354,8 +362,17 @@ combined_issue_certificates() {
     if [[ "${force}" != "1" ]] && combined_gcore_certificate_current; then
         return 0
     fi
-    if ! CF_Token="${CLOUDFLARE_API_TOKEN}" run_acme --issue \
-        --dns dns_cf -d "${GCORE_ORIGIN_DOMAIN}" --keylength ec-256 --force; then
+    issue_args=(--issue --dns dns_cf -d "${GCORE_ORIGIN_DOMAIN}" --keylength ec-256)
+    # 重装/重试时不要强制重签：acme.sh 缓存里已有未到续期时间的证书就复用，
+    # 否则会持续消耗 Let's Encrypt 的“同一标识符集合 5 张/168h”限额（2.4.4 现场）。
+    if ((force == 1)); then
+        issue_args+=(--force)
+    fi
+    CF_Token="${CLOUDFLARE_API_TOKEN}" run_acme "${issue_args[@]}" || issue_rc=$?
+    if ((issue_rc == 2)); then
+        # acme.sh 的 RENEW_SKIP：缓存证书仍有效，直接安装即可。
+        info "复用 acme.sh 缓存的 Gcore 回源证书（未重新签发）：${GCORE_ORIGIN_DOMAIN}"
+    elif ((issue_rc != 0)); then
         die "Gcore 回源域名 ${GCORE_ORIGIN_DOMAIN} 证书签发失败"
     fi
     CF_Token="${CLOUDFLARE_API_TOKEN}" run_acme --install-cert -d "${GCORE_ORIGIN_DOMAIN}" --ecc \
@@ -987,11 +1004,11 @@ apply_cloud_resources() {
 # 资源按设计保留，并用 purge 命令提示清理——擅自删除会让同域名重装撞上残留记录。
 cleanup_partial_install() {
     cleanup_partial_install_local || return 1
-    if declare -F uninstall_acme >/dev/null 2>&1; then
-        uninstall_acme
-    elif [[ -x "${ACME_BIN}" && -f "${ACME_OWNERSHIP_MARKER}" ]]; then
-        "${ACME_BIN}" --uninstall </dev/null >/dev/null 2>&1 \
-            || warn "acme.sh 卸载失败，请手工清理 ${ACME_HOME}"
+    # 刻意不卸载 acme.sh、不删 /root/.acme-combined.sh 的证书缓存：每次重试都重新签发会打满
+    # Let's Encrypt 的“同一标识符集合 5 张/168h”限额（2.4.4 现场）。重试时 acme.sh 会跳过未到
+    # 续期时间的证书；真正的 uninstall 才执行 acme.sh --uninstall。
+    if [[ -e "${ACME_HOME}" ]]; then
+        warn "已保留 acme.sh 证书缓存 ${ACME_HOME}，重试安装会复用已签证书；不再安装可执行 sudo ${ACME_BIN} --uninstall"
     fi
     remove_daily_reboot_schedule || true
     cleanup_partial_install_files \
@@ -1282,8 +1299,11 @@ uninstall_all() {
     restore_preinstall_firewall
     restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
-    [[ ! -x "${ACME_BIN}" ]] || "${ACME_BIN}" --uninstall </dev/null >/dev/null 2>&1 \
-        || warn "acme.sh 卸载失败，请手工清理 ${ACME_HOME}"
+    # 只清理 easy_all 安装的 acme.sh（所有权标记）；失败回滚保留的证书缓存也按此标记在真正卸载时清掉。
+    if [[ -x "${ACME_BIN}" && -f "${ACME_OWNERSHIP_MARKER}" ]]; then
+        "${ACME_BIN}" --uninstall </dev/null >/dev/null 2>&1 \
+            || warn "acme.sh 卸载失败，请手工清理 ${ACME_HOME}"
+    fi
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"

@@ -351,7 +351,7 @@ gcore_resolve_edge_certificate_id_for_purge() {
 }
 
 # 边缘证书一旦进入 FAILED，Gcore 不会自行重签；重新安装会读回同一个失败状态并立即终止。
-# 用官方 force-retry 入口重试一次，避免在真实配置错误上反复消耗重试额度。
+# 用官方 force-retry 入口重试（次数/间隔由 Profile 常量控制），避免在真实配置错误上反复消耗重试额度。
 gcore_force_retry_edge_certificate() {
     local certificate_id=$1 response http_code body
     response=$(gcore_api_raw POST "/cdn/sslData/${certificate_id}/force-retry") || return 1
@@ -370,15 +370,57 @@ gcore_edge_certificate_failure_details() {
     }' <<<"$1"
 }
 
+gcore_edge_certificate_status() {
+    local certificate_id=$1 state
+    state=$(gcore_api_request GET "/cdn/sslData/${certificate_id}/status") \
+        || die "无法读取 Gcore 边缘证书签发状态"
+    jq -r '
+        if (.latest_status.status? // "") != "" then
+            .latest_status.status | ascii_upcase
+        elif .active == true then "ACTIVE"
+        else "PENDING"
+        end
+    ' <<<"${state}"
+}
+
 gcore_edge_certificate_hint() {
-    printf '（组合模式用 HTTP-01 签发：确认 %s 的灰云 CNAME 指向 Gcore 且已在 DNS 传播；残留的失败证书可先执行 sudo easy_all purge-gcore --domain %s,%s）' \
+    printf '（组合模式用 HTTP-01 签发：先确认 %s 的灰云 CNAME 指向 Gcore 并已传播；CDN 资源新建后最长要约 15 分钟才会在所有边缘生效。残留的失败证书可先执行 sudo easy_all purge-gcore --domain %s,%s）' \
         "${VLESS_CDN_DOMAIN}" "${VLESS_CDN_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}"
 }
 
+# 新建的 Gcore 资源会处于 processed 状态约 15 分钟，这期间边缘还没接流量，HTTP-01 必然失败。
+# 先等资源变成 active、且节点 CNAME 已解析到账户 CNAME，再申请或重试证书。
+gcore_wait_for_cdn_readiness() {
+    local attempts=${1:-${GCORE_EDGE_READY_ATTEMPTS}}
+    local interval=${2:-${GCORE_EDGE_READY_INTERVAL}}
+    local attempt status cname expected observed_cname="未解析" observed_status="unknown"
+    expected=$(normalize_domain "${GCORE_CDN_TARGET:-}")
+    for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+        status=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
+            | jq -r '.status // (if .active == true then "active" else "unknown" end)') \
+            || return 1
+        cname=$(dig +short CNAME "${VLESS_CDN_DOMAIN}" @1.1.1.1 2>/dev/null \
+            | sed 's/\.$//' | tr '[:upper:]' '[:lower:]' | sort -u | head -n 1 || true)
+        [[ -z "${cname}" ]] || observed_cname=${cname}
+        [[ -z "${status}" ]] || observed_status=${status}
+        if [[ "${status}" == "active" ]] \
+            && { [[ -z "${expected}" ]] || [[ "${cname}" == "${expected}" ]]; }; then
+            return 0
+        fi
+        if ((attempt == 1 || attempt % 8 == 0)); then
+            info "等待 Gcore 边缘就绪（资源=${observed_status}；${VLESS_CDN_DOMAIN} 的 CNAME=${observed_cname}，期望 ${expected:-未知}）：第 ${attempt}/${attempts} 次"
+        fi
+        ((attempt == attempts)) || sleep "${interval}"
+    done
+    die "Gcore 边缘在 $((attempts * interval / 60)) 分钟内未就绪（资源=${observed_status}；${VLESS_CDN_DOMAIN} 的 CNAME=${observed_cname}，期望 ${expected:-未知}）。请确认灰云 CNAME 与 Gcore 账户 CNAME 一致，稍后重试安装$(gcore_edge_certificate_hint)"
+}
+
 gcore_wait_for_edge_certificate() {
-    local certificate_id=$1 attempt state status details
-    local retried=0 failed_polls_after_retry=0
-    for ((attempt = 1; attempt <= GCORE_EDGE_PROPAGATION_ATTEMPTS; attempt += 1)); do
+    local certificate_id=$1
+    local attempts=${2:-${GCORE_EDGE_PROPAGATION_ATTEMPTS}}
+    local interval=${3:-${GCORE_EDGE_PROPAGATION_INTERVAL}}
+    local attempt state status details retries=0
+    for ((attempt = 1; attempt <= attempts; attempt += 1)); do
         state=$(gcore_api_request GET "/cdn/sslData/${certificate_id}/status") \
             || die "无法读取 Gcore 边缘证书签发状态"
         status=$(jq -r '
@@ -390,32 +432,37 @@ gcore_wait_for_edge_certificate() {
         ' <<<"${state}")
         case "${status}" in
         ACTIVE | DONE) return 0 ;;
-        FAILED)
-            details=$(gcore_edge_certificate_failure_details "${state}")
-            if ((retried == 0)); then
-                info "Gcore 边缘证书签发失败，通过官方接口强制重试一次：${details}"
-                gcore_force_retry_edge_certificate "${certificate_id}" \
-                    || warn "Gcore 未接受强制重试请求；继续等待签发状态"
-                retried=1
-                sleep "${GCORE_EDGE_PROPAGATION_INTERVAL}"
-                continue
-            fi
-            # 重试受理后旧状态还会停留几次轮询，留出重新签发的时间窗。
-            if ((failed_polls_after_retry < 3)); then
-                failed_polls_after_retry=$((failed_polls_after_retry + 1))
-            else
-                die "Gcore 边缘证书签发 FAILED：${details}$(gcore_edge_certificate_hint)"
-            fi
-            ;;
         CANCELLED)
             details=$(gcore_edge_certificate_failure_details "${state}")
             die "Gcore 边缘证书签发 CANCELLED：${details}$(gcore_edge_certificate_hint)"
             ;;
+        FAILED)
+            details=$(gcore_edge_certificate_failure_details "${state}")
+            if ((retries >= GCORE_EDGE_FORCE_RETRIES)); then
+                die "Gcore 边缘证书签发 FAILED：${details}$(gcore_edge_certificate_hint)"
+            fi
+            retries=$((retries + 1))
+            info "Gcore 边缘证书签发失败，第 ${retries}/${GCORE_EDGE_FORCE_RETRIES} 次强制重试：${details}"
+            gcore_force_retry_edge_certificate "${certificate_id}" \
+                || warn "Gcore 未接受强制重试请求；继续等待签发状态"
+            sleep "${GCORE_EDGE_FORCE_RETRY_INTERVAL}"
+            continue
+            ;;
         esac
-        ((attempt == GCORE_EDGE_PROPAGATION_ATTEMPTS)) \
-            || sleep "${GCORE_EDGE_PROPAGATION_INTERVAL}"
+        ((attempt == attempts)) || sleep "${interval}"
     done
-    die "Gcore 边缘证书等待超时：ID=${certificate_id}，状态=${status:-unknown}"
+    die "Gcore 边缘证书等待超时：ID=${certificate_id}，状态=${status:-unknown}$(gcore_edge_certificate_hint)"
+}
+
+# 证书已经 ACTIVE 时直接返回，避免幂等重跑去等边缘就绪；否则先等资源/CNAME 就绪再申请或重试。
+# 就绪检查或状态读取失败必须向上传播，不能再拿未确认就绪的状态去 force-retry。
+gcore_ensure_edge_certificate_ready() {
+    local certificate_id=$1 status
+    status=$(gcore_edge_certificate_status "${certificate_id}") || return 1
+    if [[ "${status}" != "ACTIVE" && "${status}" != "DONE" ]]; then
+        gcore_wait_for_cdn_readiness || return 1
+    fi
+    gcore_wait_for_edge_certificate "${certificate_id}"
 }
 
 gcore_resource_matches_payload() {
@@ -528,8 +575,9 @@ gcore_ensure_resource() {
                 || return 1
             GCORE_CDN_RESOURCE_CHANGED=1
         fi
-        # 配置未变化时也要确认证书状态：上次失败的证书不会自行重签。
-        gcore_wait_for_edge_certificate "${edge_certificate_id}"
+        # 配置未变化时也要确认证书状态：上次失败的证书不会自行重签；资源刚创建时边缘还没生效，
+        # 先等就绪再判断/重试，避免把“还没激活”当成永久失败。
+        gcore_ensure_edge_certificate_ready "${edge_certificate_id}" || return 1
         if ((GCORE_CDN_RESOURCE_CHANGED == 1)); then
             gcore_api_request PUT \
                 "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
@@ -537,7 +585,7 @@ gcore_ensure_resource() {
     else
         response=$(gcore_api_request POST "/cdn/resources" "${bootstrap_payload}") || return 1
         GCORE_CDN_RESOURCE_ID=$(jq -er '.id // empty' <<<"${response}") || return 1
-        gcore_wait_for_edge_certificate "${edge_certificate_id}"
+        gcore_ensure_edge_certificate_ready "${edge_certificate_id}" || return 1
         gcore_api_request PUT \
             "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
         GCORE_CDN_RESOURCE_CHANGED=1
@@ -587,27 +635,68 @@ gcore_fetch_origin_ipv4_ranges() {
 }
 
 install_acme() {
-    [[ -x "${ACME_BIN}" ]] && return 0
-    local archive_file temp_dir
-    archive_file=$(make_temp_dir)/acme.sh.tar.gz
-    temp_dir=$(make_temp_dir)/acme-extract
-    download_https_file \
-        "https://github.com/acmesh-official/acme.sh/archive/refs/tags/3.1.0.tar.gz" \
-        "${archive_file}" "acme.sh"
-    mkdir -p "${temp_dir}"
-    tar -xzf "${archive_file}" -C "${temp_dir}"
-    local source_dir
-    source_dir=$(find "${temp_dir}" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-    [[ -n "${source_dir}" && -f "${source_dir}/acme.sh" ]] || die "解压 acme.sh 源码失败"
-    install -d -m 0700 "${ACME_HOME}"
-    (
-        cd "${source_dir}"
-        ./acme.sh --install --home "${ACME_HOME}" \
-            --config-home "${ACME_HOME}/data" \
-            --cert-home "${ACME_HOME}/certs" >/dev/null
-    )
-    [[ -x "${ACME_BIN}" ]] || die "安装 acme.sh 失败"
+    local archive_file temp_dir source_dir
+    # ACME_HOME 可能来自上次失败安装（回滚刻意保留证书缓存），此时补所有权标记与自动续期任务。
+    if [[ ! -x "${ACME_BIN}" ]]; then
+        archive_file=$(make_temp_dir)/acme.sh.tar.gz
+        temp_dir=$(make_temp_dir)/acme-extract
+        download_https_file \
+            "https://github.com/acmesh-official/acme.sh/archive/refs/tags/3.1.0.tar.gz" \
+            "${archive_file}" "acme.sh"
+        mkdir -p "${temp_dir}"
+        tar -xzf "${archive_file}" -C "${temp_dir}"
+        source_dir=$(find "${temp_dir}" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+        [[ -n "${source_dir}" && -f "${source_dir}/acme.sh" ]] || die "解压 acme.sh 源码失败"
+        install -d -m 0700 "${ACME_HOME}"
+        (
+            cd "${source_dir}"
+            ./acme.sh --install --home "${ACME_HOME}" \
+                --config-home "${ACME_HOME}/data" \
+                --cert-home "${ACME_HOME}/certs" >/dev/null
+        )
+        [[ -x "${ACME_BIN}" ]] || die "安装 acme.sh 失败"
+    else
+        # 续期任务必须显式补回：安装前快照在 acme.sh 安装之前拍摄，回滚会用该快照覆盖 root
+        # crontab（restore_preinstall_crontab），把首次安装写进去的 acme.sh --cron 条目一起删掉；
+        # 重试走这条复用分支不会重装 acme.sh，续期任务就会永久缺失，证书到期后 Gcore 回源 TLS 失效。
+        # 该入口幂等：crontab 里已有 --cron 条目时只读取后返回，不会追加第二条。
+        run_acme --install-cronjob >/dev/null 2>&1 \
+            || warn "恢复 acme.sh 自动续期任务失败，证书到期不会自动续签；装好 cron 后执行 sudo ${ACME_BIN} --home ${ACME_HOME} --config-home ${ACME_HOME}/data --cert-home ${ACME_HOME}/certs --install-cronjob"
+    fi
+    mkdir -p "$(dirname "${ACME_OWNERSHIP_MARKER}")"
     touch "${ACME_OWNERSHIP_MARKER}"
+    gcore_sync_acme_cf_token
+}
+
+# acme.sh 的 --issue 在缓存证书仍有效时会跳过整个 DNS 挑战（RENEW_SKIP），dns_cf 也就不会把当前
+# Cloudflare Token 写回 account.conf；而定时续期只读 account.conf。每次安装时同步一次，
+# 避免换了 Token 后续期仍用已撤销的旧 Token。acme.sh 固定 3.1.0，键名 SAVED_CF_Token 稳定。
+gcore_sync_acme_cf_token() {
+    local token=${CLOUDFLARE_API_TOKEN:-}
+    local conf=${GCORE_ACME_ACCOUNT_CONF:-${ACME_HOME}/data/account.conf}
+    local tmp saved
+    [[ -n "${token}" && -f "${conf}" ]] || return 0
+    [[ "${token}" =~ ^[A-Za-z0-9._~-]+$ ]] || return 0
+    saved=$(sed -n "s/^SAVED_CF_Token='\(.*\)'$/\1/p" "${conf}" | tail -n 1)
+    [[ "${saved}" != "${token}" ]] || return 0
+    if ! tmp=$(mktemp "${conf}.XXXXXX"); then
+        warn "无法在 ${conf} 旁创建临时文件；续期可能继续使用旧 Cloudflare Token"
+        return 0
+    fi
+    # Token 通过子进程环境传递，不能放进 awk 的 argv（ps/proc cmdline 对同机用户可见）。
+    if CF_TOKEN="${token}" awk -v q="'" '
+        /^SAVED_CF_Token=/ { print "SAVED_CF_Token=" q ENVIRON["CF_TOKEN"] q; seen = 1; next }
+        { print }
+        END { if (!seen) print "SAVED_CF_Token=" q ENVIRON["CF_TOKEN"] q }
+    ' "${conf}" >"${tmp}"; then
+        chmod 0600 "${tmp}"
+        if mv -f -- "${tmp}" "${conf}"; then
+            info "已把当前 Cloudflare Token 同步到 acme.sh 续期配置"
+            return 0
+        fi
+    fi
+    rm -f -- "${tmp}"
+    warn "更新 ${conf} 中的 Cloudflare Token 失败；续期可能继续使用旧 Token"
 }
 
 run_acme() {
