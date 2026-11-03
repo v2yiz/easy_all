@@ -410,7 +410,9 @@ write_xray_config() {
 
 xhttp_validate_local_tls_curl_args() {
     cloudflare_ensure_origin_ca_root
-    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "${CF_CA_ROOT_FILE}")
+    # --noproxy 必须有：--resolve 只改 DNS 解析，若机器上有 http_proxy/https_proxy，
+    # 回环探活会被转发到代理而失败（订阅验收早就带了 --noproxy，这里补齐）。
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --noproxy '*' --cacert "${CF_CA_ROOT_FILE}")
 }
 
 xhttp_configure_ufw() {
@@ -440,6 +442,12 @@ combined_render_nginx_config() {
             http2_directive=$'\n    http2 on;'
             listen_h2=""
         fi
+    fi
+    # 只有现代分支能按 server 关闭 HTTP/2；旧版分支沿用 socket 级标记，关不掉也不假装关了。
+    local gcore_listen_h2=${listen_h2} gcore_http2=${http2_directive}
+    if [[ -z "${listen_h2}" ]]; then
+        gcore_listen_h2=""
+        gcore_http2=""
     fi
     write_subscription_nginx_maps
     cat <<EOF
@@ -482,13 +490,17 @@ server {
 }
 
 server {
-    listen 443 ssl ${listen_h2};
+    # Gcore 回源块只承载 WebSocket：WebSocket 的 Upgrade 只能在 HTTP/1.1 上完成，所以
+    # 现代 nginx（>= 1.25.1，http2 指令按 server 生效）这里刻意不启用 HTTP/2。
+    # 旧版 nginx 的 listen ... http2 是地址级联集（ngx_http.c:1343 取或、1440 写回），
+    # 无法按 SNI 关闭，因此旧版分支保持与其它块一致，避免制造一条无效的 "protocol options redefined" 警告。
+    listen 443 ssl ${gcore_listen_h2};
     server_name ${GCORE_ORIGIN_DOMAIN};
     ssl_certificate ${GCORE_CERT_FILE};
     ssl_certificate_key ${GCORE_KEY_FILE};
     ssl_client_certificate ${GCORE_CLIENT_CA_FILE};
     ssl_verify_client on;
-    ssl_protocols TLSv1.2 TLSv1.3;${http2_directive}
+    ssl_protocols TLSv1.2 TLSv1.3;${gcore_http2}
 
     location = ${WEBSOCKET_PATH} {
         if (\$ssl_client_verify != SUCCESS) { return 403; }
@@ -570,15 +582,38 @@ combined_validate_cf_node_sni() {
 
 combined_gcore_resource() {
     gcore_collect_api_token
-    local saved_domain=${VLESS_CDN_DOMAIN} saved_sub=${SUBSCRIPTION_MODE}
+    # 只在有定义时保存：首次安装不经过 load_state，两个变量都可能还不存在，
+    # 直接 ${VAR} 会在 set -u 下崩成 "SUBSCRIPTION_MODE: unbound variable"（2.3.4 现场）。
+    local saved_domain="" saved_sub="" had_domain=0 had_sub=0 rc=0
+    if [[ -n "${VLESS_CDN_DOMAIN+x}" ]]; then
+        had_domain=1
+        saved_domain=${VLESS_CDN_DOMAIN}
+    fi
+    if [[ -n "${SUBSCRIPTION_MODE+x}" ]]; then
+        had_sub=1
+        saved_sub=${SUBSCRIPTION_MODE}
+    fi
     VLESS_CDN_DOMAIN=${GCORE_NODE_DOMAIN}
     SUBSCRIPTION_MODE=link
-    GCORE_EDGE_CERTIFICATE_ID=$(gcore_edge_certificate_id) || return 1
-    gcore_ensure_origin_validation_certificates || return 1
-    gcore_ensure_origin_group || return 1
-    gcore_ensure_resource || return 1
-    VLESS_CDN_DOMAIN=${saved_domain}
-    SUBSCRIPTION_MODE=${saved_sub}
+    if ! { GCORE_EDGE_CERTIFICATE_ID=$(gcore_edge_certificate_id) \
+        && gcore_ensure_origin_validation_certificates \
+        && gcore_ensure_origin_group \
+        && gcore_ensure_resource; }; then
+        rc=1
+    fi
+    # 失败分支同样要还原，否则 VLESS_CDN_DOMAIN 会滞留在 Gcore 节点域名上。
+    # "原本未定义"要还原成未定义，不能留成空串，否则后续裸读会拿到空值而不是报错。
+    if ((had_domain)); then
+        VLESS_CDN_DOMAIN=${saved_domain}
+    else
+        unset VLESS_CDN_DOMAIN
+    fi
+    if ((had_sub)); then
+        SUBSCRIPTION_MODE=${saved_sub}
+    else
+        unset SUBSCRIPTION_MODE
+    fi
+    return "${rc}"
 }
 
 validate_subscription_runtime() {
@@ -954,18 +989,20 @@ install_all() {
     persist_globalping_token
     # 此刻还没有可用订阅，状态也未落盘：失败即回滚本机，云端资源保留并提示清理。
     refresh_globalping_cache \
-        || die "首次 Cloudflare 优选 IP 生成失败；本机安装已回滚，云端资源保留，可稍后重试安装或先执行 sudo easy_all purge-cloudflare --all"
+        || die "首次 Cloudflare 优选 IP 生成失败；本机安装已回滚，云端资源保留，可稍后重试安装，或先执行 sudo easy_all purge-cloudflare --all 与 sudo easy_all purge-gcore 清理残留"
     install_progress_stage subscription
     write_subscriptions
     validate_subscription_runtime
     install_progress_stage state
     save_state
+    # 状态已落盘：从这一刻起失败不必再回滚本机——uninstall 已经可用，而下面的
+    # cloudflare_finalize_certificate_rotation 会吊销旧证书（不可逆），回滚反而会留下吊销后的残局。
+    INSTALL_ROLLBACK_ON_EXIT=0
     cloudflare_finalize_certificate_rotation
     register_easy_all_command
     install_globalping_refresh_timer
     gcore_clear_api_token
     release_runtime_write_lock
-    INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
     show_subscription
     success "easy_all 组合模式安装完成（直连 + Cloudflare + Gcore）"
@@ -978,7 +1015,8 @@ install_all() {
 # 与 normalize_allowed_tokens 的 token 规则保持一致：8-128 位 URL 安全字符
 combined_token_valid() {
     local token=${1:-}
-    [[ "${token}" =~ ^[A-Za-z0-9._~-]{8,128}$ ]]
+    # 首字符排除 ~：nginx map 中 "~..." 形式的键会被解析为正则，可能匹配到别的 token。
+    [[ "${token}" =~ ^[A-Za-z0-9._-][A-Za-z0-9._~-]{7,127}$ ]]
 }
 
 # Token 字典（{用户: token}）是否可用：能解析、能规范化、每个 token 都合法

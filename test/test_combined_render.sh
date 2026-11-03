@@ -932,21 +932,74 @@ assert_contains "token-validate: update_reality_target rejects invalid state tok
 # 22) nginx 判定（src/http/ngx_http.c:1351）：同一 addr:port 上两条 listen 只要都带套接字参数
 #     （会置 lsopt.set=1 的 backlog/so_keepalive/reuseport/bind/ipv6only/deferred/fastopen/sndbuf/
 #      rcvbuf/setfib/multipath/accept_filter），即报 "duplicate listen options"，与参数值是否相同无关。
-#     因此套接字参数最多出现在一条 listen 上，且所有块的协议标记（ssl/http2）必须一致。
+#     因此套接字参数最多出现在一条 listen 上；所有 443 块都必须带 ssl。
+#     Gcore 回源块只跑 WebSocket，现代 nginx 必须按 server 关掉 HTTP/2；旧版 listen http2 是
+#     地址级联集（ngx_http.c:1343 取或），关不掉，所以旧版分支不得假称已隔离。
+server_block_for() {   # $1 = server_name 里要精确匹配的域名
+    # 只读真实 server_name 指令：剔除整行注释，逐字段去分号后做字符串相等比较。
+    # 不能把域名拼进正则（`.` 会变成通配符），也不能对整块做正则匹配（注释里的域名会抢先命中）。
+    awk -v dom="$1" '
+        /^server \{/ { block=""; inblock=1; hit=0 }
+        inblock {
+            block = block $0 "\n"
+            line = $0
+            if (line ~ /^[[:space:]]*#/) next
+            if (line ~ /^[[:space:]]*server_name[[:space:]]/) {
+                n = split(line, f, /[[:space:]]+/)
+                for (i = 1; i <= n; i++) {
+                    g = f[i]; sub(/;$/, "", g)
+                    if (g == dom) hit = 1
+                }
+            }
+        }
+        /^\}/ { if (inblock && hit) { printf "%s", block; exit } inblock=0 }
+    ' "${NGINX_CONFIG}"
+}
+
 write_nginx_config
 socket_opt_count=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
     | grep -Ec 'backlog=|so_keepalive|reuseport|ipv6only|deferred|fastopen|sndbuf|rcvbuf|setfib|multipath|accept_filter|\bbind\b' || true)
 [[ "${socket_opt_count}" == "1" ]] \
     || fail "nginx-listen: socket options must appear on exactly one 443 listen (found ${socket_opt_count})"
-protocol_variants=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
-    | sed -E -e 's/^[[:space:]]*//' -e 's/[[:space:]]*;[[:space:]]*$//' \
-    | sed -E -e 's/[[:space:]]*default_server//g' \
-    | sed -E -e 's/[[:space:]]*(backlog|so_keepalive|reuseport|ipv6only|deferred|fastopen|sndbuf|rcvbuf|setfib|multipath|accept_filter)=[^ ]*//g' \
-    | sed -E -e 's/[[:space:]]+/ /g' -e 's/[[:space:]]+$//' \
-    | LC_ALL=C sort -u)
-variant_count=$(printf '%s\n' "${protocol_variants}" | grep -c . || true)
-[[ "${variant_count}" == "1" ]] \
-    || fail "nginx-listen: 443 protocol flags differ across server blocks: ${protocol_variants//$'\n'/ | }"
+missing_ssl=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
+    | grep -Evc '\bssl\b' || true)
+[[ "${missing_ssl}" == "0" ]] \
+    || fail "nginx-listen: 每个 443 listen 都必须带 ssl（缺 ${missing_ssl} 处）"
+
+# 现代分支（>= 1.25.1）：Gcore 块关 h2，Cloudflare 块必须留 h2（gRPC 依赖）
+(
+    nginx_supports_http2_directive() { return 0; }
+    write_nginx_config
+    cf_block=$(server_block_for "${CF_NODE_DOMAIN}")
+    gcore_block=$(server_block_for "${GCORE_ORIGIN_DOMAIN}")
+    [[ -n "${cf_block}" ]] || fail "nginx-listen: 未找到 Cloudflare 块"
+    [[ -n "${gcore_block}" ]] || fail "nginx-listen: 未找到 Gcore 回源块"
+    assert_contains "nginx-listen: Cloudflare 块保留 http2 指令" \
+        "${cf_block}" $'\n    http2 on;'
+    assert_not_contains "nginx-listen: Gcore 块不得启用 http2 指令" \
+        "${gcore_block}" $'\n    http2 on;'
+    gcore_listen_h2=$(printf '%s\n' "${gcore_block}" \
+        | grep -E '^[[:space:]]*listen[[:space:]]+443' | grep -c 'http2' || true)
+    [[ "${gcore_listen_h2}" == "0" ]] \
+        || fail "nginx-listen: 现代分支的 Gcore 块 listen 不得带 http2（找到 ${gcore_listen_h2} 行）"
+    assert_contains "nginx-listen: Gcore 块保持 HTTP/1.1 WebSocket 升级" \
+        "${gcore_block}" "proxy_http_version 1.1;"
+    assert_contains "nginx-listen: Gcore 块启用 mTLS 客户端校验" \
+        "${gcore_block}" "ssl_verify_client on;"
+)
+
+# 旧版分支（< 1.25.1）：listen http2 是 socket 级，所有 443 块必须一致，不能出现无效隔离
+(
+    nginx_supports_http2_directive() { return 1; }
+    write_nginx_config
+    legacy_h2_count=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
+        | grep -c 'http2 ' || true)
+    legacy_443_count=$(grep -Ec '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" || true)
+    [[ "${legacy_h2_count}" == "${legacy_443_count}" ]] \
+        || fail "nginx-listen: 旧版分支的 listen http2 必须对所有 443 块一致（${legacy_h2_count}/${legacy_443_count}）"
+)
+
+write_nginx_config   # 恢复默认渲染，供后续用例使用
 
 # 23) 多用户 Token 字典必须能持久化并在重新加载后保持
 multi_state=$(
@@ -988,4 +1041,119 @@ pretty_out=$(
 )
 assert_equal "multi-token: pretty-printed JSON still accepted" "2" "${pretty_out}"
 
+# 25) 首次安装不经过 load_state，combined_gcore_resource 不能假设 SUBSCRIPTION_MODE / VLESS_CDN_DOMAIN 已定义
+#     （2.3.4 现场：line 573 "SUBSCRIPTION_MODE: unbound variable"，set -u 下安装中断并触发回滚）
+gcore_stub_fail=0
+gcore_collect_api_token() { :; }
+gcore_edge_certificate_id() { printf 'edge-cert-1'; }
+gcore_ensure_origin_validation_certificates() { :; }
+gcore_ensure_origin_group() { :; }
+gcore_ensure_resource() { return "${gcore_stub_fail}"; }
+
+fresh_gcore=$(
+    unset SUBSCRIPTION_MODE VLESS_CDN_DOMAIN
+    GCORE_NODE_DOMAIN="gcore.example.com"
+    combined_gcore_resource || exit 3
+    printf 'rc=0 sub=%s domain=%s' \
+        "${SUBSCRIPTION_MODE-<unset>}" "${VLESS_CDN_DOMAIN-<unset>}"
+) || fail "gcore-resource: 变量未定义时不应在 set -u 下崩溃（rc=$?）"
+assert_equal "gcore-resource: 未定义的 SUBSCRIPTION_MODE 结束后仍是 unset" \
+    "rc=0 sub=<unset> domain=<unset>" "${fresh_gcore}"
+
+preserved_gcore=$(
+    SUBSCRIPTION_MODE="worker"
+    VLESS_CDN_DOMAIN="cf.example.com"
+    GCORE_NODE_DOMAIN="gcore.example.com"
+    combined_gcore_resource || exit 3
+    printf 'sub=%s domain=%s' "${SUBSCRIPTION_MODE}" "${VLESS_CDN_DOMAIN}"
+) || fail "gcore-resource: 已定义变量时应正常返回"
+assert_equal "gcore-resource: 已定义的 SUBSCRIPTION_MODE 原样恢复" \
+    "sub=worker domain=cf.example.com" "${preserved_gcore}"
+
+# 已定义但为空串：必须还原成空串（不是 unset，也不是 link）
+empty_gcore=$(
+    SUBSCRIPTION_MODE=""
+    VLESS_CDN_DOMAIN=""
+    GCORE_NODE_DOMAIN="gcore.example.com"
+    combined_gcore_resource || exit 3
+    printf 'sub=[%s] set=%s domain=[%s] set=%s' \
+        "${SUBSCRIPTION_MODE}" "$([[ -n "${SUBSCRIPTION_MODE+x}" ]] && echo y || echo n)" \
+        "${VLESS_CDN_DOMAIN}" "$([[ -n "${VLESS_CDN_DOMAIN+x}" ]] && echo y || echo n)"
+) || fail "gcore-resource: 空串值也应正常返回"
+assert_equal "gcore-resource: 空串保持为空串且仍处于已定义状态" \
+    "sub=[] set=y domain=[] set=y" "${empty_gcore}"
+
+# 失败分支：真实捕获退出码，不写死 rc=1
+gcore_stub_fail=1
+failed_gcore=$(
+    unset SUBSCRIPTION_MODE
+    VLESS_CDN_DOMAIN="cf.example.com"
+    GCORE_NODE_DOMAIN="gcore.example.com"
+    if combined_gcore_resource; then rc=0; else rc=$?; fi
+    printf 'rc=%s sub=%s domain=%s' "${rc}" \
+        "${SUBSCRIPTION_MODE-<unset>}" "${VLESS_CDN_DOMAIN-<unset>}"
+)
+assert_equal "gcore-resource: ensure_resource 失败返回 1 并还原变量" \
+    "rc=1 sub=<unset> domain=cf.example.com" "${failed_gcore}"
+
+# 首个证书查询就失败时同样要还原
+gcore_stub_fail=0
+gcore_edge_certificate_id() { return 1; }
+cert_failed_gcore=$(
+    unset SUBSCRIPTION_MODE
+    VLESS_CDN_DOMAIN="cf.example.com"
+    GCORE_NODE_DOMAIN="gcore.example.com"
+    if combined_gcore_resource; then rc=0; else rc=$?; fi
+    printf 'rc=%s sub=%s domain=%s certid=%s' "${rc}" \
+        "${SUBSCRIPTION_MODE-<unset>}" "${VLESS_CDN_DOMAIN-<unset>}" \
+        "${GCORE_EDGE_CERTIFICATE_ID-<unset>}"
+)
+assert_equal "gcore-resource: 证书查询失败返回 1 并还原变量" \
+    "rc=1 sub=<unset> domain=cf.example.com certid=" "${cert_failed_gcore}"
+gcore_edge_certificate_id() { printf 'edge-cert-1'; }
+
+# 26) token 首字符不能是 ~（nginx map 把 ~ 开头的键当正则），中间 ~ 仍允许
+tilde_out=$(
+    if combined_apply_tokens '~token-aaaa-111' >/dev/null 2>&1; then
+        printf 'accepted'
+    else
+        printf 'rejected'
+    fi
+)
+assert_equal "token: leading tilde is rejected" "rejected" "${tilde_out}"
+
+# JSON 字典分支走 lib/subscription-auth.sh 的 normalize_allowed_tokens，必须同样拒绝首 ~
+tilde_json=$(
+    if combined_apply_tokens '{"owner":"~token-aaaa-111"}' >/dev/null 2>&1; then
+        printf 'accepted'
+    else
+        printf 'rejected'
+    fi
+)
+assert_equal "token: leading tilde is rejected in JSON dictionary" "rejected" "${tilde_json}"
+tilde_ok=$(
+    combined_apply_tokens 'tok~en-inner-9931' >/dev/null 2>&1 || fail "token: inner tilde must stay valid"
+    jq -r '.[]' <<<"${ALLOWED_TOKENS}"
+)
+assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok}"
+
+# 27) 本机回环探活必须绕过 http_proxy：--resolve 只改解析，不改代理语义
+# 逐元素校验：必须存在相邻的 --noproxy 与 *，不能只靠展平后的子串匹配
+(
+    CF_CA_ROOT_FILE="/tmp/ca-root.pem"
+    cloudflare_ensure_origin_ca_root() { :; }
+    xhttp_validate_local_tls_curl_args
+    noproxy_found=0
+    for ((i = 0; i < ${#XHTTP_LOCAL_TLS_CURL_ARGS[@]}; i++)); do
+        if [[ "${XHTTP_LOCAL_TLS_CURL_ARGS[i]}" == "--noproxy" \
+            && "${XHTTP_LOCAL_TLS_CURL_ARGS[i + 1]:-}" == "*" ]]; then
+            noproxy_found=1
+        fi
+    done
+    [[ "${noproxy_found}" == "1" ]] \
+        || fail "curl-args: local TLS probe must pass --noproxy '*'"
+) || fail "curl-args: --noproxy assertion failed"
+
 printf 'ok - combined render\n'
+
+

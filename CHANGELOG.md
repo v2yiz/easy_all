@@ -1,3 +1,43 @@
+## 2.3.5 更新说明（2026-11-03）
+
+针对"组合模式一次装成功"的全链路复审（Gemini 4 Argon 对渲染/验收与安装编排两部分逐行过）：
+
+- **Gcore 回源块在现代 nginx 上不再启用 HTTP/2**。该块只承载 WebSocket，而 `Upgrade` 只能在
+  HTTP/1.1 上完成。nginx ≥ 1.25.1 的 `http2` 指令按 server 生效，所以现代分支对它不输出该指令
+  （Cloudflare 块保留，gRPC 依赖）。**旧版 nginx（1.22/1.24）的 `listen ... http2` 是地址级联集**
+  （`ngx_http.c:1343` 取或、`1440` 写回），无法按 SNI 关闭，因此旧版分支保持与其它块一致——不为一个
+  无效隔离制造 `protocol options redefined` 警告。旧版上该入口的 HTTP 版本由 Gcore 边缘的 ALPN 决定。
+- **本机回环探活补 `--noproxy '*'`**。`--resolve` 只改解析不改代理语义，机器上若有
+  `http_proxy`/`https_proxy`，`combined_validate_cf_node_sni` 与 `validate_protocol_runtime`
+  的探活会被转发给代理而失败并触发回滚（订阅验收早已带该参数，此处补齐）。
+- **订阅 Token 首字符不再允许 `~`**。nginx `map` 把 `~` 开头的键当正则，`~a.c` 这类 token 会匹配到
+  别的 token。`combined_token_valid`（单 Token 输入）与 `lib/subscription-auth.sh` 的
+  `normalize_allowed_tokens`（JSON 字典输入）同步收紧为 `^[A-Za-z0-9._-][A-Za-z0-9._~-]{7,127}$`，
+  中间仍可含 `~`。**兼容性**：老状态里若有首字符为 `~` 的 token，`status` 会告警、写配置前会被拒绝，
+  执行 `sudo easy_all edit-sub` 换一个 token 即可（卸载不受影响）。
+- **状态落盘后立即关闭本机回滚**。`save_state` 之后紧跟 `INSTALL_ROLLBACK_ON_EXIT=0`：之后是
+  吊销旧证书（不可逆）与收尾步骤，此时回滚反而会留下"证书已吊销但配置回退"的残局；状态已落盘，
+  失败也能用 `easy_all uninstall` 收拾。
+- 首装失败提示补上 `purge-gcore` 入口（此前只提 `purge-cloudflare --all`）。
+
+测试：第 22 组拆成现代/旧版两个分支（现代：Gcore 块无 http2 指令、Cloudflare 块保留、`proxy_http_version 1.1`
+与 mTLS 在位；旧版：所有 443 的 `listen http2` 必须一致），第 26 组覆盖单 Token 与 JSON 字典两条输入的
+首 `~` 拒绝、中间 `~` 放行，第 27 组逐元素断言 `--noproxy` 后紧跟 `*`。以上均做过红绿验证。
+
+源码版本标识为 `2.3.5`。
+
+## 2.3.4 更新说明（2026-11-03）
+
+- 修复组合模式**首次安装**在同步 Gcore CDN 资源时崩溃：`combined_gcore_resource` 直接读
+  `${SUBSCRIPTION_MODE}` 保存现场，而该变量只在 `load_state` 里赋值（`apply-cloud`/`edit-sub` 会先
+  读状态，所以只有首次安装会踩到），`set -u` 下报 `SUBSCRIPTION_MODE: unbound variable` 并触发回滚。
+  现在改为"存在才保存、结束后原样恢复"（原本未定义就还原成未定义），失败分支同样还原
+  `VLESS_CDN_DOMAIN`，不再让它滞留在 Gcore 节点域名上。
+- 测试：新增"未定义/已定义/失败"三种情形下 `combined_gcore_resource` 的变量保存与还原断言；
+  红测恢复旧写法即报 `unbound variable`。
+
+源码版本标识为 `2.3.4`。
+
 ## 2.3.3 更新说明（2026-11-03）
 
 - 修复组合模式安装到写 Nginx 配置时崩溃：四个 `0.0.0.0:443` 的 server 块里有三个带套接字参数

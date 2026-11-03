@@ -109,8 +109,8 @@ normalize_allowed_tokens() {
                     error("ALLOWED_TOKENS 用户名不能为 . 或 ..")
                     elif any($clean[]; (.key | test("^[A-Za-z0-9._-]{1,64}$") | not)) then
                     error("ALLOWED_TOKENS 用户名只能包含字母、数字、点、下划线、短横线，长度 1-64")
-                    elif any($clean[]; (.value | test("^[A-Za-z0-9._~-]{8,128}$") | not)) then
-                    error("ALLOWED_TOKENS token 只能包含 URL 安全字符 A-Z a-z 0-9 . _ ~ -，长度 8-128")
+                    elif any($clean[]; (.value | test("^[A-Za-z0-9._-][A-Za-z0-9._~-]{7,127}$") | not)) then
+                    error("ALLOWED_TOKENS token 只能包含 URL 安全字符 A-Z a-z 0-9 . _ ~ -，长度 8-128，且首字符不能是 ~（Nginx map 会把 ~ 开头的键当成正则）")
                     elif (($clean | map(.key | ascii_downcase) | unique | length) != ($clean | length)) then
                     error("ALLOWED_TOKENS 清洗后存在重复用户名")
                     elif (($clean | map(.value | ascii_downcase) | unique | length) != ($clean | length)) then
