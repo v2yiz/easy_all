@@ -464,20 +464,33 @@ gcore_wait_for_edge_certificate() {
 # 规则反而会把挑战回源，源站要求 mTLS，最终 502；Gcore 支持邮件也明确要求删除这类规则）。
 # DNS-01 依赖把 _acme-challenge.<节点域名> 以 NS 委派给 Gcore（由 Cloudflare API 自动创建）。
 gcore_remove_acme_challenge_rules() {
-    local rules ids id
+    local rules item id payload response code
     [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[1-9][0-9]*$ ]] || return 0
     rules=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules") || return 0
-    ids=$(gcore_json_items "${rules}" | jq -sr '
-        def le_path: ((.rule // "") | sub("^\\^"; "") | test("^/\\.well-known/acme-challenge(/|$)"));
-        .[] | select(.deleted != true and le_path) | .id')
-    while IFS= read -r id; do
+    # Gcore 不允许删除仍处于 active 的规则：先 PUT active=false，再 DELETE（官方 Delete rule 文档）。
+    while IFS= read -r item; do
+        id=$(jq -r '.id // empty' <<<"${item}")
         [[ "${id}" =~ ^[1-9][0-9]*$ ]] || continue
+        # 注意：jq 的 `//` 会把 false 当缺失，必须显式比较。
+        if [[ "$(jq -r 'if .active == false then "false" else "true" end' <<<"${item}")" != "false" ]]; then
+            payload=$(jq -c '{rule, ruleType: (.ruleType // 0), active: false}
+                + (if .name then {name} else {} end)' <<<"${item}")
+            response=$(gcore_api_raw PUT "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules/${id}" \
+                "${payload}") || { warn "停用 /.well-known/acme-challenge 规则 ${id} 失败（网络错误）"; continue; }
+            code=${response##*$'\n'}
+            if [[ ! "${code}" =~ ^2[0-9]{2}$ ]]; then
+                warn "停用 /.well-known/acme-challenge 规则 ${id} 失败（HTTP ${code}）；可在 Gcore 控制台先停用再删除"
+                continue
+            fi
+        fi
         if gcore_api_delete_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}/rules/${id}"; then
             info "已删除资源上的 /.well-known/acme-challenge 规则（ID ${id}）；Gcore 签发的证书要求不存在该规则"
         else
             warn "删除 /.well-known/acme-challenge 规则 ${id} 失败；若证书继续报 502，请在 Gcore 控制台删除"
         fi
-    done <<<"${ids}"
+    done < <(gcore_json_items "${rules}" | jq -c '
+        def le_path: ((.rule // "") | sub("^\\^"; "") | test("^/\\.well-known/acme-challenge(/|$)"));
+        select(.deleted != true and le_path)')
 }
 
 # 账户的 Gcore 权威 NS：优先用官方平台信息接口，取不到就用文档中的固定值。

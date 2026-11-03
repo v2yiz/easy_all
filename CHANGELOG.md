@@ -1,3 +1,15 @@
+## 2.4.11 更新说明（2026-11-03）
+
+- **修复 Gcore 挑战规则删不掉（HTTP 400）**：Gcore 不允许删除仍处于 `active` 的规则，官方 Delete rule
+  文档要求先把 `active` 置为 `false`。安装器现在先 `PUT /cdn/resources/{id}/rules/{rid}` 发
+  `{rule, ruleType, active:false}`，再 `DELETE`；规则已是非 active 时直接删除。删除失败只告警，
+  不影响 DNS-01 签发（证书已经完成时规则也不再阻断）。
+- 说明：`force-retry` 返回 `The certificate issuance process has already been completed` 表示上一轮
+  签发已完成（通常是 ACTIVE），安装器会继续轮询并判定成功，不需要人工处理。
+- 测试：按用户要求不新增离线单测；停用→删除的顺序与“已停用直接删”用 /tmp 离线桩核对。
+
+源码版本标识为 `2.4.11`。
+
 ## 2.4.10 更新说明（2026-11-03）
 
 - **修正组合模式 Gcore 边缘证书的挑战方式（2.4.8 方向错误）**：Gcore 支持邮件明确指出，资源上若存在
