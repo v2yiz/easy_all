@@ -1,3 +1,25 @@
+## 2.3.2 更新说明（2026-11-03）
+
+- 组合模式安装阶段统一校验订阅 Token：无论来自 `OWNER_TOKEN` 环境变量、交互确认还是自动生成，
+  都会在**写入任何云端资源之前**按 8-128 位 URL 安全字符校验，非法值立即失败；此前非交互安装和
+  "回车接受默认值"都会绕过校验，含引号/分号的 Token 会一路跑到写 Nginx 订阅映射时才炸。
+  状态文件加载（`load_state`）对历史非法值只告警（否则 `edit-sub` 与 `uninstall` 都进不去），
+  真正写 Nginx 配置/订阅前的强制拦截在 `combined_require_valid_owner_token`（`write_nginx_config`、
+  定时刷新 CDN 优选 IP、证书续签、修改 Reality 目标四个入口都会先校验），因此可用 `edit-sub`
+  换成合法 Token 后再落盘。
+- 组合模式的 Token 输入模型统一：安装提示与 `easy_all edit-sub` 都接受 8-128 位字符串；
+  单用户 JSON（如 `{"alice":"..."}`）也可接受（组合模式只存一个 Token，用户名会按 `owner` 记录并提示）；
+  多用户字典改为**明确拒绝**，不再静默截断成第一个用户。
+- 订阅响应补 `Vary: User-Agent`（Nginx 两个内部订阅 location 与 Reality 的 Worker）：同一 URL 现在按
+  客户端下发 YAML 或 Base64，缺 `Vary` 时中间缓存可能串格式。
+- 文档同步：安装引导、`README.md`、`docs/client-guide.md`、`docs/operations-guide.md`、
+  `docs/technical-reference.md` 改为"一条订阅链接按客户端自动下发，`flag=` 仅作强制覆盖"，
+  并说明经典模板自 2.3.1 起为 MRS 规则集、不再加载 geodata。
+- 测试：组合模式新增 17-19 组断言（安装入口确实调用校验、非法环境变量被拒、状态文件非法 Token 被拒、
+  纯字符串/单用户 JSON 接受、多用户字典拒绝且不改动现有 Token）。
+
+源码版本标识为 `2.3.2`。
+
 ## 2.3.1 更新说明（2026-11-03）
 
 - 可选模板 `mihomo-classic.yaml` 全部改为 MRS 规则集：删除 `geodata-mode` / `geodata-loader` /

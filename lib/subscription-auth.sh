@@ -336,6 +336,8 @@ ${error_log}
         alias ${base64_alias};
 ${base64_content}
         default_type text/plain;
+        # 同一 URL 按 User-Agent 下发 YAML 或 Base64，必须声明 Vary，避免经 CDN/中间缓存串格式
+        add_header Vary "User-Agent" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;
         add_header X-Content-Type-Options "nosniff" always;
@@ -349,6 +351,7 @@ ${error_log}
         alias ${mihomo_alias};
 ${mihomo_content}
         default_type text/yaml;
+        add_header Vary "User-Agent" always;
         add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
         add_header Pragma "no-cache" always;

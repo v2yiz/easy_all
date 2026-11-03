@@ -282,7 +282,7 @@ easy_all install
 │  ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
 │  ├─ Worker 名称可指定（默认 easyall），订阅域名必须与节点域名不同
 │  ├─ 可选输入不含 vpsSubUrl 的 Worker 聚合 JSON；本机注入源 URL 后构建 Worker
-│  ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
+│  ├─ 订阅输出：一条订阅链接，按客户端自动下发 Mihomo YAML 或 Base64（`flag=` 可强制）
 │  └─ 零损失就地平滑安装/迁移
 ├─ [3] Bunny CDN（VLESS WS/TLS + Cloudflare DNS-only CNAME + 保留 Nginx）
 │  ├─ 前提条件：Cloudflare 根 Zone、两个不同域名、Bunny Account API Key 与 Zone DNS Token
@@ -296,7 +296,7 @@ easy_all install
 │  ├─ 地址候选池：通过亚洲/美国西岸/中国三网及多公共解析器发现真实入口
 │  ├─ 定向测速：移动以香港为主、联通以日本为主、电信以洛杉矶为主
 │  ├─ 每网最多输出 2 个通过验证的节点，总计 1～6 个，通常为 2 个
-│  ├─ 订阅输出：通用 Base64 以及 Mihomo YAML (flag=clash)
+│  ├─ 订阅输出：一条订阅链接，按客户端自动下发 Mihomo YAML 或 Base64（`flag=` 可强制）
 │  └─ 零损失就地平滑安装/迁移
 └─ [5] 组合：直连 Reality + Cloudflare + Gcore（一次部署三个入口）
    ├─ 入口：直连 VLESS Reality（VPS 8443）、Cloudflare XHTTP（6 个优选 IPv4）、Gcore WS 域名节点

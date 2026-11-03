@@ -809,4 +809,113 @@ prompt_out=$(printf 'attacker-token-9999\n' | {
 assert_equal "token-input: non-interactive install never reads stdin for token" \
     "tok-generated-keep" "${prompt_out}"
 
+# 17) 安装阶段 Token 校验：环境变量传入的非法值必须在改动云端资源前就被拒绝
+bad_install=$(
+    OWNER_TOKEN="short"
+    combined_validate_install_owner_token 2>&1
+) || true
+assert_contains "token-validate: short env token rejected before install" \
+    "${bad_install}" "订阅 Token 无效"
+assert_not_contains "token-validate: rejection mentions auto-generate fallback" \
+    "${bad_install}" "unbound variable"
+# 安装入口必须真的调用该校验（否则环境变量里的非法 Token 仍会一路跑到签发/写配置阶段）
+install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
+assert_contains "token-validate: install inputs call the validator" \
+    "${install_inputs_body}" "combined_validate_install_owner_token"
+(
+    OWNER_TOKEN="custom-token-2026"
+    combined_validate_install_owner_token \
+        || fail "token-validate: valid env token must pass"
+)
+bad_chars=$(
+    OWNER_TOKEN='bad;token"x'
+    combined_validate_install_owner_token 2>&1
+) || true
+assert_contains "token-validate: unsafe characters rejected" "${bad_chars}" "订阅 Token 无效"
+
+# 18) edit-sub 入口同时接受纯字符串与单用户 JSON，多用户字典必须明确拒绝
+plain_out=$(
+    OWNER_TOKEN="placeholder-0000"
+    combined_apply_owner_token "my_plain_token_123"
+    jq -r '.owner' <<<"${ALLOWED_TOKENS}"
+)
+assert_equal "token-input: plain string accepted in edit-sub" \
+    "my_plain_token_123" "${plain_out}"
+
+renamed_out=$(
+    OWNER_TOKEN="placeholder-0000"
+    combined_apply_owner_token '{"alice":"alice-token-123"}' >/dev/null 2>&1
+    jq -r 'keys_unsorted | join(",")' <<<"${ALLOWED_TOKENS}"
+)
+assert_equal "token-input: single-user JSON is stored as owner" "owner" "${renamed_out}"
+
+multi_out=$(
+    OWNER_TOKEN="keep-me-token-01"
+    combined_apply_owner_token '{"a":"token-aaaa-111","b":"token-bbbb-222"}' 2>&1
+    printf 'rc=%s owner=%s' "$?" "${OWNER_TOKEN}"
+) || true
+assert_contains "token-input: multi-user JSON is rejected explicitly" \
+    "${multi_out}" "只保存单个订阅 Token"
+assert_contains "token-input: rejected multi-user input keeps previous token" \
+    "${multi_out}" "owner=keep-me-token-01"
+
+# 19) 历史状态里的非法 Token：load_state 只告警（否则 edit-sub / uninstall 都进不去），写配置前才强校验
+bad_state=$(
+    OWNER_TOKEN="short"
+    save_state
+    load_state 2>&1
+    printf 'load_rc=%s' "$?"
+) || true
+assert_contains "token-validate: invalid state token warns on load" \
+    "${bad_state}" "状态文件中的订阅 Token 不符合"
+assert_contains "token-validate: load_state still succeeds for recovery" \
+    "${bad_state}" "load_rc=0"
+blocked_write=$(
+    OWNER_TOKEN="short"
+    write_nginx_config 2>&1
+) || true
+assert_contains "token-validate: writing nginx config rejects invalid token" \
+    "${blocked_write}" "订阅 Token 无效"
+
+# 20) 恢复闭环：非法旧状态能通过 edit-sub 的路径换成合法 Token 并成功落盘
+recovered=$(
+    OWNER_TOKEN="short"
+    save_state
+    load_state >/dev/null 2>&1
+    combined_apply_owner_token "restored-token-4821" >/dev/null 2>&1 \
+        || fail "token-recovery: valid replacement rejected"
+    write_nginx_config >/dev/null 2>&1 || fail "token-recovery: write failed after replacement"
+    save_state
+    load_state >/dev/null 2>&1 || fail "token-recovery: reload after replacement failed"
+    printf '%s' "${OWNER_TOKEN}"
+)
+assert_equal "token-recovery: invalid old state fixed through edit-sub path" \
+    "restored-token-4821" "${recovered}"
+
+# 21) 直接写订阅或状态的入口（定时刷新 / 续签 / 改 Reality 目标）在非法旧 Token 下也必须早退
+(
+    OWNER_TOKEN="short"
+    save_state
+)
+for entry in refresh_combined_cdn_ips renew_certificate; do
+    entry_out=$(
+        load_state >/dev/null 2>&1
+        "${entry}" 2>&1
+    ) || true
+    assert_contains "token-validate: ${entry} rejects invalid state token" \
+        "${entry_out}" "订阅 Token 无效"
+done
+reality_out=$(
+    load_state >/dev/null 2>&1
+    update_reality_target "example.com:443" 2>&1
+) || true
+assert_contains "token-validate: update_reality_target rejects invalid state token" \
+    "${reality_out}" "订阅 Token 无效"
+# 恢复合法状态，避免影响后续用例
+(
+    OWNER_TOKEN="restored-token-4821"
+    combined_sync_allowed_tokens
+    save_state
+)
+
 printf 'ok - combined render\n'

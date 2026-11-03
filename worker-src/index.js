@@ -749,6 +749,8 @@ function subscriptionHeaders(format, env) {
         'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
         Pragma: 'no-cache',
         'Content-Type': contentType,
+        // 同一 URL 会按 User-Agent 返回 YAML 或 Base64，必须声明 Vary 以免中间缓存串格式
+        Vary: 'User-Agent',
         'X-Content-Type-Options': 'nosniff',
         'X-Robots-Tag': 'noindex, nofollow, noarchive',
     });

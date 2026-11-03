@@ -14,7 +14,8 @@ easy_all 生成标准 Mihomo（Clash Meta）订阅。安装完成后运行：
 sudo easy_all subscription
 ```
 
-复制带 `flag=clash` 的 Mihomo 地址，在客户端的“从 URL 导入”位置添加并启用。
+复制安装输出中的订阅地址，在客户端的“从 URL 导入”位置添加并启用；同一个地址会按客户端自动下发
+Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 订阅地址和 UUID 都是访问凭据，不要公开。
 
 ## 客户端选择
@@ -31,7 +32,7 @@ sudo easy_all subscription
 
 自托管订阅在服务端核心为 Xray 26.9.8 及以上时，Reality 节点会带 `support-x25519mlkem768: true`，
 用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；Cloudflare 聚合订阅
-（`flag=clash`）默认就带该字段。该字段需 mihomo 1.19.9 及以上内核才生效，更旧的 mihomo 内核会
+（YAML 订阅）默认就带该字段。该字段需 mihomo 1.19.9 及以上内核才生效，更旧的 mihomo 内核会
 忽略它（不会报错）；若内核过旧且节点握手正常但无流量，请升级客户端，或改用 v2rayNG 等 Xray 系
 客户端（它们会自行发送该密钥交换）。聚合配置里指向 Xray 低于 26.9.8 的 Reality 节点需设置
 `supportX25519Mlkem768: false`。
@@ -66,7 +67,7 @@ YouTube 与其他代理流量统一使用当前选择。纯 Worker 通过原生�
 私有域名默认交给客户端系统 DNS 解析并返回真实 IP，本机 hosts 生效。COMMON 的 DNS、Fake-IP
 例外和直连规则共用 `private-fallback` 与 `geosite-private`；其中 `.lan`、`.local`、`.internal`、
 `.localdomain`、`.localhost`、`home.arpa` 和 `localhost` 内联，首次规则下载失败仍可用。
-经典模板使用 `geosite:private`。若 `nas.lan` 等名称仍无法解析，在客户端 DNS 覆写中把
+经典模板使用 `rule-set:geosite-private`（MRS 规则集）。若 `nas.lan` 等名称仍无法解析，在客户端 DNS 覆写中把
 对应策略（COMMON 为 `rule-set:private-fallback,geosite-private`）指向实际局域网 DNS，如路由器地址；
 不要使用 Mihomo 自己的 DNS 监听地址，避免解析循环。
 Clash Meta for Android 可使用 `dhcp://system` 获取系统 DNS；其他客户端按其 DNS 覆写能力设置。
@@ -112,7 +113,7 @@ QUIC 子规则也带 `no-resolve`；未命中域名集合的未知域名不会�
 ## Android 打开 App 才收到消息
 
 Telegram 等 App 前台正常、后台不推送时，先检查 Google FCM 推送通道。模板让
-FCM 域名返回真实 IP（COMMON 内联 12 个 mtalk 端点，经典模板使用 `geosite:googlefcm`）；
+FCM 域名返回真实 IP（COMMON 内联 12 个 mtalk 端点，经典模板使用 `rule-set:geosite-googlefcm`）；
 进入代理内核的 TCP 5228–5230 流量走 `PROXY`
 （局域网仍直连），避免无域名的推送连接落入国内 IP 直连规则。FCM 的 443 回退和注册请求
 继续使用现有 Google 代理规则及代理 DNS。
@@ -170,7 +171,7 @@ COMMON 不启用嗅探：应用自行使用 DoH 或直接连接真实 IP 时，�
 | --- | --- | --- |
 | `templates/mihomo.yaml`（默认） | 国内域名库、国内 SDK 域名与常用域名直接分流，已有目标 IP 再按 LAN/CN GeoIP 兜底 | 七个 MRS，内存仍以 50MB 为优化目标 |
 | `templates/mihomo-common.yaml` | 默认模板再加境外域名 MRS | 覆盖更全，但常驻内存高于默认模板 |
-| `templates/mihomo-classic.yaml` | 经典 geodata 模式与完整国内 DNS 分流 | 整库 Geo 数据开销更大 |
+| `templates/mihomo-classic.yaml` | 经典分流（2.3.1 起全部改为 MRS 规则集，不再加载 geodata/.dat） | 十三个 MRS，另有 FCM 与微信真实 IP 例外 |
 
 默认模板加载约 11 万条国内域名库与约 5 千条国内 SDK/推送域名库（含个推、极光、友盟等），绝大多数国内站点
 （含 `.com`、`.org` 等非 `.cn` 域名）无需解析即可直连；不在库内的域名不会为 GeoIP 兜底额外解析，会直接走代理并在出口侧解析，可能得到境外 CDN。

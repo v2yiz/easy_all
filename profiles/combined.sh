@@ -86,6 +86,10 @@ load_state() {
     XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
     # 2.0.0 状态的组合模式没有这些字段，回退到当时的固定名称，避免 apply 时静默改名。
     : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}" "${GCORE_NODE_NAME:=Gcore}"
+    # 这里只告警不阻断：历史状态可能存着非法 Token，若在此 die，连 edit-sub 和 uninstall 都进不去。
+    # 真正写配置前的拦截点在 combined_require_valid_owner_token。
+    combined_token_valid "${OWNER_TOKEN:-}" \
+        || warn "状态文件中的订阅 Token 不符合 8-128 位 URL 安全字符要求；请执行 sudo easy_all edit-sub 重新配置"
     combined_sync_allowed_tokens
     SUBSCRIPTION_MODE=deploy
 }
@@ -177,6 +181,7 @@ collect_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}
     OWNER_TOKEN=${OWNER_TOKEN:-$(generate_secret)}
     combined_prompt_owner_token
+    combined_validate_install_owner_token
     combined_sync_allowed_tokens
     VPS_PUBLIC_IPV4=${VPS_IP:-$(detect_public_ipv4)} \
         || die '公网 IPv4 探测失败；可用 VPS_IP=<IPv4> 指定'
@@ -511,8 +516,15 @@ EOF
 EOF
 }
 
+# 任何会写 Nginx 配置/订阅文件的路径都先过这里；install 另有更早的校验点。
+combined_require_valid_owner_token() {
+    combined_token_valid "${OWNER_TOKEN:-}" && return 0
+    die "订阅 Token 无效（需 8-128 位 URL 安全字符，A-Z a-z 0-9 . _ ~ -）；请先执行 sudo easy_all edit-sub 重新配置"
+}
+
 write_nginx_config() {
     local http2_directive="" listen_h2="http2 "
+    combined_require_valid_owner_token
     if nginx_supports_http2_directive; then
         http2_directive=$'\n    http2 on;'
         listen_h2=""
@@ -807,6 +819,7 @@ refresh_combined_cdn_ips() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    combined_require_valid_owner_token
     persist_globalping_token
     refresh_globalping_cache || die "Cloudflare 优选 IP 刷新失败"
     write_subscriptions
@@ -959,23 +972,38 @@ install_all() {
 
 # 首次安装时允许自定义订阅 Token：默认值就是自动生成的那个，直接回车即接受。
 # 非交互安装（stdin 不是终端）不打扰用户，按 OWNER_TOKEN 环境变量或自动生成值处理。
+# 与 normalize_allowed_tokens 的 token 规则保持一致：8-128 位 URL 安全字符
+combined_token_valid() {
+    local token=${1:-}
+    [[ "${token}" =~ ^[A-Za-z0-9._~-]{8,128}$ ]]
+}
+
+# 安装阶段在改动任何云端资源之前就拒绝非法 Token（环境变量传入同样受检）
+combined_validate_install_owner_token() {
+    combined_token_valid "${OWNER_TOKEN}" && return 0
+    die "订阅 Token 无效：需 8-128 位 URL 安全字符（A-Z a-z 0-9 . _ ~ -），当前长度 ${#OWNER_TOKEN}；请清空 OWNER_TOKEN 以自动生成，或设置合法值后重试"
+}
+
 combined_prompt_owner_token() {
     local attempt=1 raw sanitized
     [[ -t 0 ]] || return 0
     while ((attempt <= 3)); do
-        raw=$(prompt_value '订阅 Token（8-128 位，字母数字与 . _ ~ -）' "${OWNER_TOKEN}")
+        raw=$(prompt_value '订阅 Token（可直接输入 8-128 位 Token，留空使用默认值）' "${OWNER_TOKEN}")
         sanitized=${raw//[[:space:]]/}
+        # 留空或维持默认值：沿用当前 OWNER_TOKEN，合法性统一交给 combined_validate_install_owner_token 判断，
+        # 不能在这里提前 return 而跳过校验（否则非法的环境变量会被放行）。
         if [[ -z "${sanitized}" || "${sanitized}" == "${OWNER_TOKEN}" ]]; then
             return 0
         fi
-        if combined_apply_owner_token "$(jq -cn --arg token "${sanitized}" '{owner:$token}')"; then
+        if combined_apply_owner_token "${sanitized}"; then
             success "已使用自定义订阅 Token"
             return 0
         fi
         warn "订阅 Token 无效：需 8-128 位 URL 安全字符（A-Z a-z 0-9 . _ ~ -）；第 ${attempt} 次"
         attempt=$((attempt + 1))
     done
-    warn "已跳过自定义订阅 Token，沿用自动生成值"
+    OWNER_TOKEN=$(generate_secret)
+    warn "已改用自动生成的订阅 Token"
     return 0
 }
 
@@ -989,9 +1017,25 @@ combined_sync_allowed_tokens() {
 }
 
 combined_apply_owner_token() {
-    local raw=${1:-} normalized token
-    normalized=$(normalize_allowed_tokens "${raw}") || return 1
-    token=$(jq -er 'to_entries[0].value | select(type == "string" and length > 0)' <<<"${normalized}") || return 1
+    local raw=${1:-} normalized token entries name
+    raw=${raw#"${raw%%[![:space:]]*}"}
+    raw=${raw%"${raw##*[![:space:]]}"}
+    [[ -n "${raw}" ]] || return 1
+    if [[ "${raw}" == \{* ]]; then
+        normalized=$(normalize_allowed_tokens "${raw}" 2>/dev/null) || return 1
+        entries=$(jq 'length' <<<"${normalized}") || return 1
+        if ((entries != 1)); then
+            warn "组合模式只保存单个订阅 Token；已拒绝包含 ${entries} 个用户的字典（多用户请使用模式 1/2/4）"
+            return 1
+        fi
+        token=$(jq -er 'to_entries[0].value' <<<"${normalized}") || return 1
+        name=$(jq -er 'to_entries[0].key' <<<"${normalized}") || return 1
+        [[ "${name}" == "owner" ]] \
+            || warn "组合模式只保存单个 Token；用户名 ${name} 将按 owner 记录"
+    else
+        token=${raw//[[:space:]]/}
+        combined_token_valid "${token}" || return 1
+    fi
     OWNER_TOKEN=${token}
     combined_sync_allowed_tokens
 }
@@ -1009,12 +1053,12 @@ update_subscription() {
             "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
         local prompt_default
         prompt_default=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
-        raw_tokens=$(prompt_value "订阅用户 Token 字典 JSON（用户名=>token）" "${prompt_default}")
+        raw_tokens=$(prompt_value "订阅 Token（可直接输入字符串，或单用户 JSON 字典）" "${prompt_default}")
     else
         raw_tokens=${caller_tokens:-${ALLOWED_TOKENS:-}}
     fi
     combined_apply_owner_token "${raw_tokens}" \
-        || die "订阅用户 Token 无效；请使用 JSON 对象，例如 {\"owner\":\"$(generate_secret)\"}"
+        || die "订阅 Token 无效；请输入 8-128 位 URL 安全字符，或单用户 JSON 形如 {\"owner\":\"$(generate_secret)\"}（组合模式仅支持单个 Token）"
     snapshot_subscription_update
     write_nginx_config
     write_subscriptions
@@ -1029,6 +1073,7 @@ renew_certificate() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    combined_require_valid_owner_token
     cloudflare_collect_api_token
     CLOUDFLARE_ZONE_ID=$(cloudflare_lookup_parent_zone "${CF_ZONE}")
     snapshot_subscription_update
@@ -1048,6 +1093,7 @@ update_reality_target() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    combined_require_valid_owner_token
     current=${REALITY_TARGET}
     if [[ -z "${target}" ]]; then
         [[ -t 0 ]] || die "非交互模式必须传入 域名:端口"

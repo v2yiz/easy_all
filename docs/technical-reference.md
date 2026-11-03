@@ -85,7 +85,7 @@ Stat 尝试比较 VPS 与目标 IPv4 的 ASN；ASN 不同或查询不可用只�
 Xray 26.9.8 起，REALITY 服务端会拒绝不含 `X25519MLKEM768` key share 的 ClientHello，而 mihomo
 默认会剥离该 key share。因此：自托管订阅在本机 Xray 版本不低于 26.9.8 时，于 `reality-opts`
 下输出 `support-x25519mlkem768: true`（其它版本、或版本文件无法解析时不输出）；Worker 聚合的
-`flag=clash` 输出默认携带该字段，可用节点字段 `supportX25519Mlkem768: false` 关闭（仅对 `nodes`
+YAML 订阅默认携带该字段，可用节点字段 `supportX25519Mlkem768: false` 关闭（仅对 `nodes`
 里的 Reality 节点生效）。该字段需 mihomo 1.19.9 及以上才生效，更旧的 mihomo 内核会忽略；
 `flag=base64` 的 URI 订阅不携带此参数，Xray 系客户端自行协商。
 
@@ -206,8 +206,9 @@ COMMON 不启用嗅探；没有域名或 DNS 映射的真实 IP 连接无法应�
 Apple 国内/境外分流、旧 Apple 缓存隔离、零地址拒绝、TCP/UDP 分流、重叠规则优先级、冷启动下载失败、缓存更新失败；
 没有 `MIHOMO_CHECK_BIN` 时明确报告跳过真实内核
 测试，CI 提供固定内核并生成小型 MRS 测试样本，无需在线下载规则才能运行这些回归。
-实际 iOS 峰值仍需设备验证，下载体积限制不等于 50MB 内存保证。需要 geodata 模式与更细的 DNS 分流时，用
-`MIHOMO_TEMPLATE_SOURCE` 选择经典模板 `templates/mihomo-classic.yaml`，其行为如下：
+实际 iOS 峰值仍需设备验证，下载体积限制不等于 50MB 内存保证。需要 FCM/微信真实 IP 与更细的 DNS 分流时，用
+`MIHOMO_TEMPLATE_SOURCE` 选择经典模板 `templates/mihomo-classic.yaml`（2.3.1 起规则集全部为 MRS，
+不再加载 geodata/.dat），其行为如下：
 
 - 启用 `tcp-concurrent` 和 fake-IP 持久化，Fake-IP 例外使用传统 `blacklist` 格式，兼容
   Clash Party 等会接管 DNS 列表的客户端；

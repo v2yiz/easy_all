@@ -108,7 +108,7 @@ Cloudflare 模式保留现有订阅模式、Worker 名称、订阅域名、用�
 传入 `MIHOMO_TEMPLATE_SOURCE=<模板绝对路径或 HTTPS URL>`；Cloudflare 模式会重新构建并内嵌所选
 模板。模板差异与内存实测见[客户端使用指南](client-guide.md#低内存客户端旧款-iphone)。
 
-升级迁移：旧版默认是经典 geodata 模板，新版不传参数会使用 COMMON 精简版。旧路径
+升级迁移：旧版默认是经典模板（早期为 geodata 模式，2.3.1 起改为 MRS 规则集），新版不传参数会使用 COMMON 精简版。旧路径
 `templates/mihomo-common-lite.yaml` 已并入 `templates/mihomo.yaml`；从旧脚本或任务中删除该
 `MIHOMO_TEMPLATE_SOURCE` 设置即可使用新默认，也可以把路径改为 `templates/mihomo.yaml`。
 保留或回退经典规则时执行：

@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.3.1](CHANGELOG.md#231-更新说明2026-11-03)。
+当前源码版本：[2.3.2](CHANGELOG.md#232-更新说明2026-11-03)。
 
 `easy_all` 是面向全新 Debian 12/13 VPS 的单节点交互安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。
@@ -42,7 +42,7 @@ Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择�
 请求体内，仍受 Cloudflare 套餐请求体大小限制（Free/Pro 通常为 100 MB），大文件上传应在
 `PROXY` 中选择 VPS 节点。
 
-Gcore 模式面向非优化线路，采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个，节点连续命名为 `🇺🇸优选1`～`🇺🇸优选n`；订阅支持通用模式 (Base64) 与 Clash 模式 (flag=clash)，内置单一 AUTO 自动测速组。需要准备：
+Gcore 模式面向非优化线路，采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个，节点连续命名为 `🇺🇸优选1`～`🇺🇸优选n`；订阅为一条链接，按客户端 User-Agent 自动下发 Mihomo YAML 或 Base64（`flag=` 可强制），内置单一 AUTO 自动测速组。需要准备：
 - 委派至 Gcore Managed DNS 的域名 Zone；
 - 具备 CDN 与 DNS 权限的 Gcore API Token；
 - Globalping Token。
@@ -150,12 +150,13 @@ sudo easy_all status
 sudo easy_all subscription
 ```
 
-系统状态显示 `Skyline Speeder: active` 即表示已生效（内核未达到 6.12 时安装器会自动安装 6.12+ 内核并在重启后自动激活）。复制 `subscription` 输出中带
-`flag=clash` 的 Mihomo 地址，在客户端通过 URL 导入。订阅地址与 UUID 都是访问凭据，不要公开。
+系统状态显示 `Skyline Speeder: active` 即表示已生效（内核未达到 6.12 时安装器会自动安装 6.12+ 内核并在重启后自动激活）。复制 `subscription`
+输出的订阅地址，在客户端通过 URL 导入：同一个地址会按客户端自动下发 Mihomo YAML 或 Base64，无需挑选或手工加
+`flag=clash`。订阅地址与 UUID 都是访问凭据，不要公开。
 
 客户端选择、Clash Mi 设置和订阅 DNS 排障见[客户端使用指南](docs/client-guide.md)。
 默认订阅模板是 COMMON 精简规则（以低内存为目标，不保证 iPhone 峰值低于 50MB）；需要完整 COMMON 规则或经典
-geodata 模板时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
+模板（2.3.1 起改用 MRS 规则集，不再加载 geodata）时用 `MIHOMO_TEMPLATE_SOURCE` 指定，见
 [低内存客户端](docs/client-guide.md#低内存客户端旧款-iphone)。
 
 ## 常用命令
@@ -212,7 +213,7 @@ sudo easy_all self-update
 sudo easy_all apply-cloud
 ```
 
-按提示输入 Cloudflare API Token，完成后在客户端刷新带 `flag=clash` 的 Mihomo 订阅。尚未
+按提示输入 Cloudflare API Token，完成后在客户端刷新该订阅（同一链接会按客户端自动下发 YAML）。尚未
 配置独立 Worker 兜底时，改用 `sudo easy_all edit-sub` 并在交互流程中启用。
 
 全部命令、用户管理、配额、证书、状态文件和卸载规则见[运维指南](docs/operations-guide.md)。
