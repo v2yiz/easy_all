@@ -601,45 +601,53 @@ assert_not_contains "tcp-restore: no unreachable backup path hint" "${tcp_out}" 
 assert_not_contains "tcp-restore: must not report whole-file failure" "${tcp_out}" \
     "恢复安装前 TCP 运行参数失败"
 
-# 17) 安装失败诊断：阶段、位置、命令与错误信息要能说清楚
+# 17) 安装失败诊断：在独立脚本里复现生产路径（set -e + ERR/EXIT 陷阱）
+# 不放在 $( ) 里直接 set -e：bash 默认在命令替换中清除 errexit，ERR 陷阱语义会随版本漂移。
+run_failure_scenario() { # $1=EXIT 陷阱体
+    local script="${TMP_DIR}/failure-scenario.sh"
+    {
+        printf 'set -Eeuo pipefail\n'
+        printf 'source %q\n' "${ROOT_DIR}/lib/log.sh"
+        printf 'RUNTIME_LIB_DIR=%q\n' "${ROOT_DIR}/lib"
+        printf 'source %q\n' "${ROOT_DIR}/lib/profile-common.sh"
+        printf 'install_failure_begin combined\n'
+        printf 'install_progress_begin combined\n'
+        printf 'install_progress_stage services\n'
+        printf 'EASY_ALL_LAST_ERROR=%q\n' 'Cloudflare API 请求失败：GET /zones'
+        printf 'trap %q EXIT\n' "$1"
+        printf 'false\n'
+    } >"${script}"
+    bash "${script}" 2>&1
+}
+
 reset_artifacts
-# 与生产一致：ERR 陷阱记录失败点，EXIT 陷阱打印报告（set -e 触发退出）。
-failure_report=$(
-    exec 2>&1
-    install_failure_begin combined
-    install_progress_begin combined
-    install_progress_stage services
-    EASY_ALL_LAST_ERROR='Cloudflare API 请求失败：GET /zones'
-    trap 'install_failure_report' EXIT
-    false
-) || true
+failure_report=$(run_failure_scenario 'install_failure_report') || true
 assert_contains "failure-report: mode" "${failure_report}" "模式：combined"
 assert_contains "failure-report: stage" "${failure_report}" \
     "失败阶段：services（服务、证书与防火墙）"
 assert_contains "failure-report: location" "${failure_report}" "失败位置："
+assert_contains "failure-report: source file" "${failure_report}" "failure-scenario.sh:"
 assert_contains "failure-report: command" "${failure_report}" "失败命令：false"
 assert_contains "failure-report: message" "${failure_report}" \
     "错误信息：Cloudflare API 请求失败：GET /zones"
 
 # 18) 失败报告只打印一次（退出清理与后续调用不应重复刷屏）
-once=$(
-    exec 2>&1
-    install_failure_begin combined
-    install_progress_begin combined
-    install_progress_stage packages
-    trap 'install_failure_report; install_failure_report' EXIT
-    false
-) || true
+reset_artifacts
+once=$(run_failure_scenario 'install_failure_report; install_failure_report') || true
 assert_equal "failure-report: printed once" "1" "$(grep -c '安装失败' <<<"${once}")"
 
 # 18b) 展示阶段的失败不再算“安装失败”（避免成功安装尾部命令报错时误导）
-disarmed=$(
-    exec 2>&1
+reset_artifacts
+disarmed=$(bash -c '
+    set -Eeuo pipefail
+    source "$1/lib/log.sh"
+    RUNTIME_LIB_DIR="$1/lib"
+    source "$1/lib/profile-common.sh"
     install_failure_begin combined
     INSTALL_FAILURE_ARMED=0
-    trap 'install_failure_report' EXIT
+    trap "install_failure_report" EXIT
     false
-) || true
+' _ "${ROOT_DIR}" 2>&1) || true
 assert_not_contains "failure-report: disarmed after commit" "${disarmed}" "安装失败"
 
 # 19) 参数模式下：取值提示仍被禁止，确认类交互允许

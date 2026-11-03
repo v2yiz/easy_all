@@ -427,7 +427,8 @@ install_failure_begin() {
     INSTALL_FAILURE_ARMED=1
     INSTALL_FAILURE_HANDLED=0
     INSTALL_FAILURE_REPORTED=0
-    trap 'install_failure_capture "$?" "${BASH_SOURCE[0]}" "${LINENO}" "${BASH_COMMAND}"' ERR
+    # 全部用默认值展开：set -u 下任何一项缺失都不该让陷阱本身报错（否则记录不到失败点）。
+    trap 'install_failure_capture "$?" "${BASH_SOURCE[0]:-}" "${LINENO:-0}" "${BASH_COMMAND:-}"' ERR
 }
 
 install_failure_capture() {
@@ -437,10 +438,10 @@ install_failure_capture() {
         return 0
     fi
     INSTALL_FAILURE_HANDLED=1
-    INSTALL_FAILURE_STATUS=${status}
-    INSTALL_FAILURE_FILE=${file}
-    INSTALL_FAILURE_LINE=${line}
-    INSTALL_FAILURE_COMMAND=${command}
+    INSTALL_FAILURE_STATUS=${status:-}
+    INSTALL_FAILURE_FILE=${file:-}
+    INSTALL_FAILURE_LINE=${line:-0}
+    INSTALL_FAILURE_COMMAND=${command:-}
     return 0
 }
 
@@ -462,7 +463,7 @@ install_failure_report() {
     fi
     local location="${EASY_ALL_LAST_ERROR_SOURCE:-}"
     if [[ -z "${location}" && -n "${INSTALL_FAILURE_FILE:-}" ]]; then
-        location="${INSTALL_FAILURE_FILE}:${INSTALL_FAILURE_LINE}"
+        location="${INSTALL_FAILURE_FILE}:${INSTALL_FAILURE_LINE:-0}"
     fi
     if [[ -n "${location}" ]]; then
         printf '失败位置：%s\n' "${location}" >&2
