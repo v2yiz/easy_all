@@ -74,9 +74,9 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 # 生成 Bunny 模式模板
 sudo easy_all install --print-params --mode bunny-ws > params.json
 chmod 600 params.json
-# 校验后安装
-sudo easy_all install --check-params params.json
-sudo easy_all install --params params.json
+# 校验后安装（位置参数就是安装入口）
+sudo easy_all params.json --check-params
+sudo easy_all params.json
 ```
 
 ### 参数示例（假设你的主域名为 `example.com`）

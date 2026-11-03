@@ -243,10 +243,22 @@ params_declare() {
     done
 
     if [[ "${PARAMS_TEMPLATE_MODE}" == "1" ]]; then
-        # 模板只给静态默认值：随机值/探测值在安装时生成，避免模板里落一份看似正式的密钥。
-        printf -v "${key}" '%s' "${default}"
+        # 模板只给“单独也成立”的静态默认值：随机值/探测值在安装时生成，派生默认值（如
+        # node.${CF_ZONE}）在依赖为空时会产出 "node." 这类半成品，曾让用户误以为已填好。
+        # 这里先规范化再校验，不通过就留空，等用户自己填。
+        local template_value=${default}
+        if [[ -n "${template_value}" && -n "${normalize}" ]] \
+            && declare -F "${normalize}" >/dev/null 2>&1; then
+            template_value=$("${normalize}" "${template_value}" 2>/dev/null) \
+                || template_value=""
+        fi
+        if [[ -n "${template_value}" && -n "${check}" ]] \
+            && declare -F "${check}" >/dev/null 2>&1; then
+            "${check}" "${template_value}" || template_value=""
+        fi
+        printf -v "${key}" '%s' "${template_value}"
         PARAMS_TEMPLATE_KEYS[${#PARAMS_TEMPLATE_KEYS[@]}]=${key}
-        PARAMS_TEMPLATE_VALUES[${#PARAMS_TEMPLATE_VALUES[@]}]=${default}
+        PARAMS_TEMPLATE_VALUES[${#PARAMS_TEMPLATE_VALUES[@]}]=${template_value}
         PARAMS_TEMPLATE_TYPES[${#PARAMS_TEMPLATE_TYPES[@]}]=${type}
         PARAMS_TEMPLATE_SECRETS[${#PARAMS_TEMPLATE_SECRETS[@]}]=${secret}
         PARAMS_TEMPLATE_REQUIRED[${#PARAMS_TEMPLATE_REQUIRED[@]}]=${required}
@@ -398,7 +410,9 @@ params_finish() {
     fi
     if [[ ${#PARAMS_ERRORS[@]} -gt 0 ]]; then
         params_print_errors
-        params_die "安装未开始：请修正参数后重试（示例：easy_all install --check-params ${PARAMS_SOURCE}）"
+        local retry_hint=${PARAMS_SOURCE}
+        [[ "${retry_hint}" == "<stdin>" ]] && retry_hint="- --mode ${PARAMS_MODE}"
+        params_die "安装未开始：请修正参数后重试（示例：easy_all ${retry_hint} --check-params）"
     fi
     params_print_summary
 }

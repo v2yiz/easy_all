@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.4.0](CHANGELOG.md#240-更新说明2026-11-03)。
+当前源码版本：[2.4.1](CHANGELOG.md#241-更新说明2026-11-03)。
 
 `easy_all` 是面向全新 Debian 12/13 VPS 的单节点安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。
@@ -110,13 +110,13 @@ chmod 600 params.json     # 文件里有 API Token
 ```
 
 请原样执行，不要改成 `curl ... | sudo bash`：bootstrap 需要在当前终端里请求 `sudo` 权限。
-填好参数后先校验、再安装（命令注册之后也可以直接用 `sudo easy_all install ...`）：
+填好参数后先校验、再安装（命令注册之后也可以直接 `sudo easy_all params.json`）：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) \
-    install --check-params params.json
+    params.json --check-params
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) \
-    install --params params.json
+    params.json
 ```
 
 安装会连续执行 `apt` 升级、内核与 TCP 加速准备，可能持续十几分钟。期间 SSH 空闲超时会打断
@@ -141,14 +141,18 @@ sudo easy_all install --print-params --mode combined > params.json
 chmod 600 params.json     # 文件里有 API Token
 
 # 2. 填好参数后先校验（不改动本机；一次报出全部错误）
-sudo easy_all install --check-params params.json
+sudo easy_all params.json --check-params
 
-# 3. 校验通过后安装
-sudo easy_all install --params params.json
+# 3. 校验通过后安装（位置参数就是安装入口，文件名任意，以 .json 结尾）
+sudo easy_all params.json
 
 # 不落盘：从标准输入读取（- 必须配合 --mode，因为要在读取前选中模式）
-sudo easy_all install --params - --mode combined < params.json
+sudo easy_all - --mode combined --check-params < params.json
+sudo easy_all - --mode combined < params.json
 ```
+
+`easy_all install params.json`、`easy_all install --params params.json` 与 `easy_all params.json`
+等价，用哪个都行。
 
 模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `gcore` / `combined`（也接受菜单序号 `1`~`5`）。
 参数文件里 `params` 的键就是安装流程使用的变量名，全部可以通过 `--print-params` 看到；`""`、`null`

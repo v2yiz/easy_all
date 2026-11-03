@@ -176,8 +176,12 @@ case_version() {
 case_template() {
     # shellcheck source=/dev/null
     source "${PARAMS_LIB}"
+    validate_domain() { [[ "$1" == *.* ]]; }
+    normalize_domain() { printf '%s\n' "${1%.}"; }
     params_template_begin gcore
     params_declare CLOUDFLARE_ZONE --required --label 'Zone'
+    params_declare DIRECT_DOMAIN --default "node.${CLOUDFLARE_ZONE}" \
+        --normalize normalize_domain --check validate_domain --label '派生域名'
     params_declare SUB_DOWNLOAD_NAME --default 'EASY_ALL' --label '文件名'
     params_declare ALLOWED_TOKENS --type json_object --label 'Token 字典'
     params_declare WORKER_AGGREGATION_CONFIG --type json_object --default '{}' --label '聚合'
@@ -234,7 +238,7 @@ assert_contains "aggregated: unknown field" "${bad_out}" "未知字段：TYPO_FI
 assert_contains "aggregated: inapplicable field" "${bad_out}" "NODE_ENV（环境）：当前配置下不适用"
 assert_contains "aggregated: cross-field error" "${bad_out}" "跨字段：六个域名必须互不相同"
 assert_contains "aggregated: counts all errors" "${bad_out}" "共 6 项错误"
-assert_contains "aggregated: points to --check-params" "${bad_out}" "easy_all install --check-params"
+assert_contains "aggregated: points to --check-params" "${bad_out}" "--check-params）"
 
 write_params type.json '{"schema_version": 1, "mode": "reality", "params": {"ALLOWED_TOKENS": "owner=token"}}'
 type_out=$(capture case_type) && fail "string value for json_object must be rejected"
@@ -288,6 +292,9 @@ assert_equal "template: object without default is null" "null" \
     "$(jq -r '.params.ALLOWED_TOKENS | if . == null then "null" else "value" end' <<<"${template_out}")"
 assert_equal "template: object default kept" "{}" \
     "$(jq -c '.params.WORKER_AGGREGATION_CONFIG' <<<"${template_out}")"
+# 派生默认值依赖为空时（这里是 CLOUDFLARE_ZONE）不能输出 "node." 这类半成品
+assert_equal "template: derived default dropped when invalid" "" \
+    "$(jq -r '.params.DIRECT_DOMAIN' <<<"${template_out}")"
 
 duplicate_out=$(capture case_duplicate <<'EOF'
 {"schema_version": 1, "mode": "reality", "params": {}}

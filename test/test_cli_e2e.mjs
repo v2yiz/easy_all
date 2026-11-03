@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { writeFileSync, unlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -58,6 +58,45 @@ if (process.getuid && process.getuid() !== 0) {
         'cleanup-partial should require root',
     );
 }
+
+// 2.7 位置参数：easy_all <参数文件> 就是安装入口；--check-params 只校验
+const paramsFile = join(tmpdir(), `easy-all-params-${process.pid}-${Date.now()}.json`);
+writeFileSync(paramsFile, JSON.stringify({
+    schema_version: 1,
+    mode: 'reality',
+    params: {
+        NODE_HOST: '203.0.113.10',
+        SUBSCRIPTION_MODE: 'link',
+        VPS_PUBLIC_IPV4: '203.0.113.10',
+    },
+}));
+chmodSync(paramsFile, 0o600);
+const positionalCheck = run(easyAll, [paramsFile, '--check-params']);
+assert.equal(positionalCheck.status, 0, positionalCheck.stderr);
+assert.ok(
+    positionalCheck.stderr.includes('参数校验通过'),
+    `positional params file should validate: ${positionalCheck.stderr}`,
+);
+unlinkSync(paramsFile);
+
+// 2.8 参数文件位置传参的错误路径（不进入 Profile）
+const missingParams = run(easyAll, [join(tmpdir(), `easy-all-missing-${Date.now()}.json`), '--check-params']);
+assert.equal(missingParams.status, 1, 'missing params file must fail');
+assert.ok(
+    missingParams.stderr.includes('参数文件不存在') || missingParams.stdout.includes('参数文件不存在'),
+    'missing params file should name the problem',
+);
+
+const twoParamsFile = join(tmpdir(), `easy-all-two-${Date.now()}.json`);
+writeFileSync(twoParamsFile, '{}');
+chmodSync(twoParamsFile, 0o600);
+const twoParams = run(easyAll, [twoParamsFile, twoParamsFile, '--check-params']);
+unlinkSync(twoParamsFile);
+assert.equal(twoParams.status, 1, 'two params files must be rejected');
+assert.ok(
+    twoParams.stderr.includes('只能指定一个参数文件'),
+    `two params files rejected: ${twoParams.stderr}`,
+);
 
 // 2.6 cleanup-partial 参数校验（root 之前就校验，非 root 环境也能覆盖）
 const cleanupHelp = run(easyAll, ['cleanup-partial', '--help']);
