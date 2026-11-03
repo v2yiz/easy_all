@@ -387,14 +387,19 @@ doc_examples="${ROOT_DIR}/docs/params-examples.md"
 [[ -f "${doc_examples}" ]] || fail "missing docs/params-examples.md"
 block_dir="${TMP_DIR}/docblocks"
 mkdir -p "${block_dir}"
-awk -v dir="${block_dir}" '
-    /^```json$/ { inside = 1; n++; file = sprintf("%s/block-%02d.json", dir, n); next }
-    /^```$/ { inside = 0; next }
-    inside { print > file }
-' "${doc_examples}"
+# README 里的组合模式示例也要一起校验，避免两处示例各自漂移。
+for source_doc in "${doc_examples}" "${ROOT_DIR}/README.md"; do
+    [[ -f "${source_doc}" ]] || continue
+    doc_prefix=$(basename "${source_doc}" .md)
+    awk -v dir="${block_dir}" -v prefix="${doc_prefix}" '
+        /^```json$/ { inside = 1; n++; file = sprintf("%s/%s-%02d.json", dir, prefix, n); next }
+        /^```$/ { inside = 0; next }
+        inside { print > file }
+    ' "${source_doc}"
+done
 
 block_count=0
-for block in "${block_dir}"/block-*.json; do
+for block in "${block_dir}"/*.json; do
     [[ -e "${block}" ]] || continue
     # 片段（例如配额字段）不是完整文档，跳过。
     jq -e '.mode and .params' "${block}" >/dev/null 2>&1 || continue

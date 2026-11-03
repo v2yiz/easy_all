@@ -1,6 +1,6 @@
 # 前置准备手册
 
-Bunny 模式（菜单 `3`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Bunny 模式（`mode: bunny-ws`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
 Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 [Bunny 前置准备与运维](bunny-preparation-guide.md)。
 
@@ -9,8 +9,8 @@ Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 准备；Bunny 的准备与运维使用独立的[专题手册](bunny-preparation-guide.md)。Reality 节点数据仍然直连，
 但选择“本机订阅”或“Worker 订阅聚合”时，订阅回源会使用 Cloudflare Universal SSL 与 Origin CA。
 
-Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Gcore CDN 精选 IP 模式（菜单 `4`）阅读第 1.1、8 节；
-组合模式（菜单 `5`）阅读第 1.1、8.1 与 8.8 节——它的 Gcore 入口只需要 CDN Token，不需要委派
+Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；Gcore CDN 精选 IP 模式（`mode: gcore`）阅读第 1.1、8 节；
+组合模式（`mode: combined`）阅读第 1.1、8.1 与 8.8 节——它的 Gcore 入口只需要 CDN Token，不需要委派
 Managed DNS，域名与订阅记录全部在 Cloudflare。Reality **只有选择订阅输出（本机订阅或 Worker 聚合）**
 时才阅读第 1、3.1、4 节。Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览器和账号侧操作；VPS 登录、安装、重启和
 客户端导入请回到 [README 的第一次安装路径](../README.md#第一次安装先看这里)。
@@ -145,7 +145,7 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 1. 登录后打开 [Dashboard Tokens](https://dash.globalping.io/tokens)。
 2. 选择 **Generate a new token**，填写用途名称，例如 `easy_all_cloudflare_cdn`。
 3. 创建后立即复制 Token；完整 Token 通常只在创建时显示。
-4. 安装 Cloudflare 精选 IP 模式时，把它粘贴到安装器的 `Globalping Token` 输入框。
+4. 把它填到参数文件的 `GLOBALPING_TOKEN`（Cloudflare 精选 IP、Gcore、组合模式都需要）。
 
 ### 2.3 安全保管
 
@@ -161,13 +161,13 @@ Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的
 
 ### 3.1 Reality：只在选择订阅输出时阅读
 
-Reality 安装时先选择订阅输出，默认「1. 仅节点」不需要域名和 API Token；需要订阅时准备：
+Reality 用参数 `SUBSCRIPTION_MODE` 选择订阅输出，默认 `link`（仅节点）不需要域名和 API Token；需要订阅时准备：
 
 | 选项 | 需要准备的 Cloudflare 资源 |
 | --- | --- |
-| 1. 仅节点（默认） | 无；只输出 VLESS 链接和 Mihomo 节点 |
-| 2. 本机订阅 | 一个 **Active** Zone 下的一级子域名（如 `sub.example.com`）；不要提前创建 DNS 记录 |
-| 3. Worker 订阅聚合 | 同 Zone 两个一级子域名：公开订阅域名（如 `sub.example.com`，绑定 Worker）和私有节点源域名（如 `source.example.com`，代理回本机 `8443`）；两者都不能与本机节点域名相同，也不要提前创建 DNS 记录 |
+| `link`（默认） | 无；只输出 VLESS 链接和 Mihomo 节点 |
+| `deploy` | 一个 **Active** Zone 下的一级子域名（如 `sub.example.com`）；不要提前创建 DNS 记录 |
+| `worker` | 同 Zone 两个一级子域名：公开订阅域名（如 `sub.example.com`，绑定 Worker）和私有节点源域名（如 `source.example.com`，代理回本机 `8443`）；两者都不能与本机节点域名相同，也不要提前创建 DNS 记录 |
 
 本机订阅由安装器创建橙云/Proxied 记录并签发 Origin CA。Worker 聚合只在其公开订阅域名上提供
 客户端地址；私有节点源域名仅允许 Cloudflare 回源，并额外要求 `X-Easy-All-Worker-Source` 密钥，
@@ -221,7 +221,7 @@ Reality 选择 Worker 订阅聚合时还要加上 `Account / Workers Scripts / E
 
 ![Cloudflare API Token 的七项最小权限与 Account/Zone 资源范围](img/cloudflare/cloudflare-api-token-easy-all.svg)
 
-创建后立即复制 Token，并保存到可信的密码管理器；把它粘贴到安装器的 `Cloudflare API Token` 输入框。
+创建后立即复制 Token，并保存到可信的密码管理器；把它填到参数文件的 `CLOUDFLARE_API_TOKEN`。
 Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需要同步云端资源时仍会要求提供。XHTTP
 使用同一枚 Token，但 `Workers Scripts Write` 必须限制到目标账号，六项 Zone 权限必须限制到目标 Zone；
 请勿选择所有账号、所有 Zone 或添加其他权限。原来的纯 Zone Token 不足以部署 Worker。
@@ -247,9 +247,8 @@ Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
   [`worker-src/config.example.json`](../worker-src/config.example.json)。其中的 `nodes` 可写
   Reality 直连节点，`fallbackCdnNodes` 只接受 VLESS
   CDN 兜底节点。安装器保留 `nodes`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖先前设置的
-  用户 Token。安装器再注入本机生成的 `vpsSubUrl` 与私有源配置。交互先完成用户 Token/配额设置，
-  再询问“是否需要进行订阅聚合”；
-  选择需要后隐藏输入 JSON，并交给 `build-worker.mjs` 校验构建、自动部署。
+  用户 Token。安装器再注入本机生成的 `vpsSubUrl` 与私有源配置。聚合内容直接写在参数文件的
+  `WORKER_AGGREGATION_CONFIG`（留空 `{}` 表示不聚合），交给 `build-worker.mjs` 校验构建、自动部署。
   启用配额时，`allowedTokens` 用户名必须与配额用户完全一致，只允许覆盖 Token。
 - 开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
   前缀删除同一 Zone 中其他部署的规则。
@@ -324,7 +323,7 @@ HTTP/2 设置和手动 gRPC 开关都会保留。
 
 ## 8. Gcore CDN 精选 IP 准备
 
-本章 8.1–8.7 面向模式 4（Gcore CDN 精选 IP）；组合模式（菜单 5）的 Gcore 部分只需 CDN Token，
+本章 8.1–8.7 面向模式 4（Gcore CDN 精选 IP）；组合模式（`mode: combined`）的 Gcore 部分只需 CDN Token，
 不需要委派 Managed DNS，准备要求见 8.8。
 
 模式 4 面向非优化线路 VPS，通过 Gcore CDN 边缘进行全网加速。模式 4 使用亚洲、美国西岸、中国三网
@@ -348,7 +347,7 @@ GLOBALPING_TOKEN  # 保存于 VPS root-only 凭据文件，用于每小时定时
 
 Gcore Free CDN 当前标明每月包含 **1 TB（十进制 1000 GB）** 出站流量；超额流量和请求可能计费，标价未含 VAT。
 
-模式 4 与组合模式（菜单 5）的本机都没有总流量熔断：`easy_all` 只按用户统计与限制，不汇总全机用量，也不会在
+模式 4 与组合模式（`mode: combined`）的本机都没有总流量熔断：`easy_all` 只按用户统计与限制，不汇总全机用量，也不会在
 达到阈值时自动下架节点。请在 Gcore 控制台开启流量提醒并定期核对报表，协议开销、请求数、
 统计延迟和 Gcore 实际计量都不在 Xray 本地统计中。
 
@@ -363,7 +362,7 @@ Gcore Free CDN 当前标明每月包含 **1 TB（十进制 1000 GB）** 出站�
 
 ### 8.2 委派域名到 Gcore Managed DNS
 
-本节只适用于模式 4；组合模式（菜单 5）不把域名委派给任何 CDN 的 DNS，见 8.8。
+本节只适用于模式 4；组合模式（`mode: combined`）不把域名委派给任何 CDN 的 DNS，见 8.8。
 
 模式 4 只支持整个 Zone 已委派给 Gcore Managed DNS 的自动化路径。**域名托管这一步需要先在
 Gcore 控制台完成**；安装器随后只管理节点所需记录，不会创建或删除 Zone，也不会修改注册商的
@@ -447,7 +446,7 @@ Gcore Free Managed DNS 当前可用于此流程；若当前账户的 Managed DNS
 ### 8.3 Gcore API Token 权限
 
 Token 是安装器访问 Gcore CDN 和 Managed DNS API 的唯一凭证。模式 4 需要 CDN 与 Managed DNS
-写权限；组合模式（菜单 5）只需要 CDN 权限，DNS 记录由 Cloudflare 管理，下面第 4 步的
+写权限；组合模式（`mode: combined`）只需要 CDN 权限，DNS 记录由 Cloudflare 管理，下面第 4 步的
 Managed DNS 要求对它不适用。当前控制台路径是 **头像 → Profile →
 API tokens → Create token**。Gcore 的永久 Token 只在创建完成时显示一次，关闭弹窗后不能再次查看。
 
@@ -590,7 +589,7 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 卸载时一次完成。若状态文件已丢失（安装中断等），可用 `sudo easy_all purge-gcore --domain <节点域名>`
 或 `--all` 清理 easy_all 创建的 Gcore CDN 对象，详见运维指南。
 
-### 8.8 组合模式（菜单 5）
+### 8.8 组合模式（`mode: combined`）
 
 组合模式只需一个已接入 Cloudflare 的 Zone，不需要把域名委派给任何 CDN 的 DNS。准备六个子域名：
 
@@ -607,11 +606,11 @@ IP 被扫描，也因无法通过 TLS 客户端证书验证而被直接阻断。
 Globalping Token。云安全组放行 TCP `443`、`8443`；SSH 端口保持现状，安装器不会改动 sshd。
 订阅只使用一个 owner Token，不启用用户配额。
 
-Globalping Token 会在输入阶段调用 `/limits` 校验；Reality 伪装目标在下载核心后会用
+Globalping Token 会在应用参数阶段调用 `/limits` 校验；Reality 伪装目标在下载核心后会用
 `xray tls ping` 做带 SNI 的 TLS 1.3 握手验收，并尝试比对 VPS 与目标的 ASN（不同或查询失败只告警）。
 
-安装时还会询问客户端显示名：Mihomo 下载文件名（默认 `EASYALL`）、直连节点名（默认
-`🇺🇸直连`）、Cloudflare 节点名前缀（默认 `🇺🇸CF`，实际下发 `🇺🇸CF1`～`🇺🇸CF6`）与
-Gcore 节点名（默认 `🇺🇸GCore`）。节点名（直连 / Cloudflare / Gcore）同时用于订阅 URI 片段与
+客户端显示名与下载文件名来自参数文件：`SUB_DOWNLOAD_NAME`（默认 `EASYALL`）、`NODE_NAME` /
+`DIRECT_NODE_NAME`（默认 `🇺🇸直连`）、`CF_NODE_PREFIX`（默认 `🇺🇸CF`，实际下发 `🇺🇸CF1`～`🇺🇸CF6`）与
+`GCORE_NODE_NAME`（默认 `🇺🇸GCore`）。节点名（直连 / Cloudflare / Gcore）同时用于订阅 URI 片段与
 Mihomo 代理/分组名称，必须互不重复；含引号、反斜杠等字符会被正确转义。下载文件名只影响订阅
 响应头里的文件名。

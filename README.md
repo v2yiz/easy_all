@@ -48,9 +48,9 @@ Gcore 模式面向非优化线路，采用 Xray 服务端，结合 Nginx mTLS �
 - 委派至 Gcore Managed DNS 的域名 Zone；
 - 具备 CDN 与 DNS 权限的 Gcore API Token；
 - Globalping Token。
-以上是模式 4 的要求；组合模式（菜单 5）的 Gcore 入口是一个域名节点，不需要委派 Gcore Managed DNS，
+以上是模式 4 的要求；组合模式（`mode: combined`）的 Gcore 入口是一个域名节点，不需要委派 Gcore Managed DNS，
 也不需要 Cloudflare gRPC，准备要求见下方组合模式段落。
-组合模式（菜单 `5`）使用一个 Cloudflare Zone 下的六个子域名：直连域名（灰云 A）、
+组合模式（`mode: combined`）使用一个 Cloudflare Zone 下的六个子域名：直连域名（灰云 A）、
 Cloudflare 节点与回源域名（橙云 A）、Gcore 节点（灰云 CNAME 到账户 `*.gcdn.co`）与回源域名
 （灰云 A）、订阅域名（橙云 A）。安装时需要 Cloudflare DNS Token、Gcore CDN Token 与
 Globalping Token；`443` 只对 Cloudflare 与 Gcore 官方回源网段开放，直连走 `8443`，
@@ -84,7 +84,7 @@ Reality/Cloudflare 的完整步骤见[前置准备手册](docs/preparation-guide
 - 没有其他 Xray、Nginx 或代理面板占用端口。
 
 Reality/Cloudflare/Bunny/Gcore 安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务；
-组合模式（菜单 5）不改 SSH，也不配置 Fail2ban。Bunny 保留当前 SSH 监听；ARM64 使用原有内核，
+组合模式（`mode: combined`）不改 SSH，也不配置 Fail2ban。Bunny 保留当前 SSH 监听；ARM64 使用原有内核，
 暂不支持 Skyline Speeder。
 建议先创建 VPS 快照，并保留当前
 SSH 会话，直到重启后确认新会话可以登录。服务商的安全组或云防火墙还需自行放行当前 SSH 端口
@@ -122,16 +122,44 @@ sudo easy_all install --print-params --mode gcore > params.json   # 生成模板
 `install params.json`、`install --params params.json` 与 `params.json` 等价；从标准输入读取用
 `sudo easy_all - --mode combined < params.json`。`""`、`null` 或缺省表示未提供，必填项缺省会报错。
 
-完整示例（5 个模式，可直接复制修改后粘贴）见
-**[docs/params-examples.md](docs/params-examples.md)**；组合模式最少只需：
+组合模式完整示例（复制后改域名与 `<...>` 即可粘贴；`""` 表示留空自动生成/探测）：
 
 ```json
-{"schema_version": 1, "mode": "combined",
- "params": {"CF_ZONE": "example.com",
-            "CLOUDFLARE_API_TOKEN": "<Cloudflare API Token>",
-            "GCORE_API_TOKEN": "<Gcore API Token>",
-            "GLOBALPING_TOKEN": "<Globalping Token>"}}
+{
+  "schema_version": 1,
+  "mode": "combined",
+  "params": {
+    "CF_ZONE": "example.com",
+    "DIRECT_DOMAIN": "node.example.com",
+    "CF_NODE_DOMAIN": "cf.example.com",
+    "CF_ORIGIN_DOMAIN": "cf-origin.example.com",
+    "GCORE_NODE_DOMAIN": "gcore.example.com",
+    "GCORE_ORIGIN_DOMAIN": "gcore-origin.example.com",
+    "SUBSCRIPTION_DOMAIN": "sub.example.com",
+    "CLOUDFLARE_API_TOKEN": "<Cloudflare API Token>",
+    "GCORE_API_TOKEN": "<Gcore API Token>",
+    "GLOBALPING_TOKEN": "<Globalping Token>",
+    "REALITY_TARGET": "swdist.apple.com:443",
+    "XHTTP_PATH": "",
+    "WEBSOCKET_PATH": "",
+    "DIRECT_NODE_NAME": "🇺🇸直连",
+    "CF_NODE_PREFIX": "🇺🇸CF",
+    "GCORE_NODE_NAME": "🇺🇸GCore",
+    "SUB_DOWNLOAD_NAME": "EASY_ALL",
+    "VLESS_UUID": "",
+    "ALLOWED_TOKENS": {
+      "owner": "<订阅 Token（8-128 位 URL 安全字符）>"
+    },
+    "VPS_PUBLIC_IPV4": "",
+    "TCP_ACCELERATION": "skyline",
+    "REBOOT_SCHEDULE_MODE": "1",
+    "REBOOT_HOUR": ""
+  }
+}
 ```
+
+其余四个模式（Reality 的 deploy/worker、Cloudflare、Gcore、Bunny）见
+[docs/params-examples.md](docs/params-examples.md)。
 
 模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `gcore` / `combined`（或 `1`~`5`）。名称类可选字段：
 

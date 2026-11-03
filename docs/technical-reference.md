@@ -1,6 +1,6 @@
 # 技术参考
 
-Bunny 模式（菜单 `3`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Bunny 模式（`mode: bunny-ws`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
 Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 [Bunny 前置准备与运维](bunny-preparation-guide.md)。
 安装与 `apply` 对 Bunny 边缘只检查 CDN 域名 HTTP 是否可达，并不自动证明生产 WebSocket
@@ -20,7 +20,7 @@ Nginx -> Xray -> 公网 HTTPS 链路属于独立真实数据面测试，不能�
 脚本全局禁用 IPv6。Reality 域名若发布 AAAA，安装或 `apply` 会停止；A 记录必须指向当前 VPS
 公网 IPv4。
 
-Reality/Cloudflare/Gcore 成功安装或应用后，SSH 收敛到 TCP `65533`；Bunny 与组合模式（菜单 `5`）
+Reality/Cloudflare/Gcore 成功安装或应用后，SSH 收敛到 TCP `65533`；Bunny 与组合模式（`mode: combined`）
 保留现有 SSH 监听及检测到的全部端口。收敛模式的 UFW 先添加并验证 `65533` 放行，再将
 本工具的 TCP `22` deny 放到首位，优先于已有的 OpenSSH/22 allow；重复应用不累积 deny。
 收敛模式 Fail2ban 的 SSH jail 端口固定为 `65533`；组合模式不配置 Fail2ban。旧连接中的端口仅用于诊断，
@@ -308,6 +308,7 @@ easy_all
 │  └─ xhttp-cloudflare-streamup.sh
 ├─ lib/
 │  ├─ log.sh
+│  ├─ params.sh
 │  ├─ runtime-core.sh
 │  ├─ bunny-api.py
 │  ├─ bunny-runtime.sh
@@ -344,8 +345,9 @@ easy_all
 入口负责模式选择、命令分发和按 `runtime.manifest` 注册运行时。Profile 负责协议编排；
 `runtime-core.sh` 统一日志、公共模块加载、退出回滚和 Xray 核心更新事务，协议验收由 Profile hook
 实现；Bunny 的 API/schema/持久 ownership、TLS/WS 验收与回源防火墙由独立 Bunny 模块负责。
-`lego-install.sh` 为 Bunny 模式提供固定版本下载和续期定时器。`xhttp-runtime.sh` 只保留 XHTTP/Nginx 数据面逻辑。`profile-common.sh` 提供公共交互和字段
-校验，`scheduled-maintenance.sh` 管理定时重启，`network.sh` 管理 IPv4-only 与 Xray 出站，
+`lego-install.sh` 为 Bunny 模式提供固定版本下载和续期定时器。`xhttp-runtime.sh` 只保留 XHTTP/Nginx 数据面逻辑。`params.sh` 是安装参数层（JSON 加载、逐字段
+校验与错误聚合、模板生成、成功后删除参数文件），`profile-common.sh` 提供公共字段校验、安装失败
+诊断与确认交互，`scheduled-maintenance.sh` 管理定时重启，`network.sh` 管理 IPv4-only 与 Xray 出站，
 `firewall.sh` 管理 UFW。
 
 Reality 本机订阅与 Worker 聚合共用同一份私有节点源：token map → exact internal alias →
@@ -381,7 +383,8 @@ GOOGLE_EGRESS_MODE=ipv4
 GOOGLE_EGRESS_RESOLVED=ipv4
 ```
 
-所有需要用户输入的交互提示仅显示中文，密码和 Token 隐藏输入。
+安装输入全部来自参数文件（`--params` / 位置参数），安装期只有失败后的清理确认是交互；
+`edit-sub`、`uninstall`、`reality-target` 等运维命令仍为交互，Token 输入不回显。
 
 ## 测试
 
@@ -441,7 +444,7 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 - 与组合模式的差异：模式 4 必须委派 Gcore Managed DNS、输出 IP 精选节点；组合模式的 Gcore 入口是
   单个域名节点（`gcore.<zone>` 灰云 CNAME），DNS 全部由 Cloudflare 管理。
 
-## 组合模式（菜单 5）
+## 组合模式（`mode: combined`）
 
 一台专用 VPS 同时提供三个入口，共用一套 Xray 与 Nginx：
 
@@ -460,7 +463,7 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
   Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发。
 - 组合模式不改 SSH、不配置 Fail2ban；卸载时按安装前快照恢复 UFW 回源白名单与 `8443` 放行。
 - 组合模式安装时会用 `xray tls ping` 验收 Reality 伪装目标的 TLS 1.3 握手并比对 ASN（仅告警），
-  `reality-target` 修改目标时先验收再落盘；Globalping Token 在输入阶段校验。
+  `reality-target` 修改目标时先验收再落盘；Globalping Token 在应用参数阶段校验。
 - TLS 版本：源站 Nginx 固定 `TLSv1.2 TLSv1.3`；Gcore CDN 资源同时下发
   `options.tls_versions={enabled:true,value:["TLSv1.2","TLSv1.3"]}`，拒绝客户端用 SSLv3/TLSv1.0/1.1 连接边缘。
 - 订阅只有一个 owner Token，输出三类节点（直连 1、Cloudflare 优选 6、Gcore 1）与单一 `AUTO`

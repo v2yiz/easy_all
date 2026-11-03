@@ -43,19 +43,19 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 
 ### 2.3 域名规划与概念区分（核心）
 
-安装时需要使用两个子域名，它们由安装器自动配置在 Cloudflare 中，职责严格分离：
+需要两个子域名，安装器会自动在 Cloudflare 中配置，职责严格分离：
 
-| 概念 | 示例（输入/默认） | 角色与用途 | 解析记录类型 | 访问与安全策略 |
+| 概念 | 示例（默认） | 角色与用途 | 解析记录类型 | 访问与安全策略 |
 | :--- | :--- | :--- | :--- | :--- |
 | **Cloudflare 根 Zone** | `example.com` | Cloudflare 托管的主域名。Cloudflare API 操作 DNS 记录必须绑定该域名的 `zone_id`。 | - | 不直接承载流量，仅作为云端 API 根作用域。 |
-| **源站域名 (Origin)** | `origin.example.com`<br>（交互默认 `origin.<zone>`） | **VPS 本机 Nginx 专用**。<br>用于向 Let's Encrypt 签发源站 SSL 证书，并供 Bunny 边缘节点向 VPS 回源。 | **DNS-only A 记录**<br>指向真实 VPS 公网 IPv4 | **绝不暴露给客户端**。UFW 防火墙配置白名单，仅放行 Bunny 官方回源 IP 访问 443 端口，外网直连被丢弃。 |
-| **CDN 域名 (CDN)** | `cdn.example.com`<br>（交互默认 `cdn.<zone>`） | **公开客户端与订阅入口**。<br>客户端连接代理及拉取订阅时填写的域名。 | **DNS-only CNAME 记录**<br>指向 Bunny 的 `<pull-zone>.b-cdn.net` | **公开给客户端使用**。流量首先进入 Bunny CDN 全球边缘网络调度优选节点，真实 VPS IP 完全隐藏。 |
+| **源站域名 (Origin)** | `origin.example.com`<br>（默认 `origin.<zone>`） | **VPS 本机 Nginx 专用**。<br>用于向 Let's Encrypt 签发源站 SSL 证书，并供 Bunny 边缘节点向 VPS 回源。 | **DNS-only A 记录**<br>指向真实 VPS 公网 IPv4 | **绝不暴露给客户端**。UFW 防火墙配置白名单，仅放行 Bunny 官方回源 IP 访问 443 端口，外网直连被丢弃。 |
+| **CDN 域名 (CDN)** | `cdn.example.com`<br>（默认 `cdn.<zone>`） | **公开客户端与订阅入口**。<br>客户端连接代理及拉取订阅时填写的域名。 | **DNS-only CNAME 记录**<br>指向 Bunny 的 `<pull-zone>.b-cdn.net` | **公开给客户端使用**。流量首先进入 Bunny CDN 全球边缘网络调度优选节点，真实 VPS IP 完全隐藏。 |
 
 > [!NOTE]
-> 为什么必须输入根 Zone？
+> 为什么要填根 Zone？
 > 1. **Cloudflare API 规范**：Cloudflare API 操作 DNS 记录必须知道所在的 `zone_id`，而 `zone_id` 需通过账户托管的根域名反查。
 > 2. **证书联系邮箱**：ACME 客户端（`lego`）通过 Cloudflare DNS-01 签发源站证书时，将该根域名作为注册联系人邮箱后缀（`admin@<zone>`）。
-> 3. **智能默认前缀**：输入根 Zone 后，源站域名与 CDN 域名会自动派生为默认值，后续步骤直接回车即可，无需重复手打长域名。
+> 3. **智能默认前缀**：参数文件里只填 `CLOUDFLARE_ZONE`，`ORIGIN_DOMAIN`/`CDN_DOMAIN` 省略即按 `origin.<zone>`、`cdn.<zone>` 派生。
 
 ### 2.4 Cloudflare API Token
 1. 进入 Cloudflare **My Profile → API Tokens → Create Token**，使用 **Create Custom Token**。

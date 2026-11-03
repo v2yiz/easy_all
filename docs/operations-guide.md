@@ -1,11 +1,11 @@
 # 运维指南
 
-Bunny 模式（菜单 `3`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
+Bunny 模式（`mode: bunny-ws`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
 Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 [Bunny 前置准备与运维](bunny-preparation-guide.md)。
 
 Bunny 支持 Debian 12/13 amd64/arm64，arm64 使用原有内核并暂不支持
-Skyline Speeder 内核加速；其他模式仅支持 amd64。Bunny 与组合模式（菜单 `5`）保留现有 SSH 监听，
+Skyline Speeder 内核加速；其他模式仅支持 amd64。Bunny 与组合模式（`mode: combined`）保留现有 SSH 监听，
 Reality/Cloudflare/Gcore 会强制 SSH 收敛到 TCP `65533`。组合模式在一次安装中同时提供直连
 Reality、Cloudflare XHTTP 与 Gcore WS 三个入口，细节见技术参考。
 
@@ -36,8 +36,8 @@ Reality/Cloudflare/Gcore 在安装或 `apply` 时会将 SSH 收敛到仅监听 T
 
 `apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
 
-`1.6.13` 为直连 Reality 增加第三档订阅输出：安装时可以选择「仅节点（默认）」「本机订阅」或
-「Worker 订阅聚合」。Worker 聚合把公开订阅域名绑定到 Cloudflare Worker，另用同 Zone 的私有
+`1.6.13` 为直连 Reality 增加第三档订阅输出：安装参数 `SUBSCRIPTION_MODE` 取 `link`（默认，仅节点）、
+`deploy`（本机订阅）或 `worker`（Worker 聚合）。Worker 聚合把公开订阅域名绑定到 Cloudflare Worker，另用同 Zone 的私有
 节点源域名由 Cloudflare 代理回本机 `8443`，Nginx 仍是 Token 与配额的唯一真源；其余直连节点
 写入聚合 JSON 的 `nodes`，Worker 按请求实时回源并在源不可用时返回 `502`。Reality 自托管订阅的
 默认选项改为仅节点，与「多节点聚合」场景保持一致。已有部署执行 `sudo easy_all self-update`
@@ -309,7 +309,7 @@ sudo easy_all quota-reset user1
 
 ## Worker 聚合
 
-Reality 直连模式也可以选择 Worker 聚合（安装菜单第 `3` 项）。它会占用同 Zone 两个一级域名：
+Reality 直连模式也可以选择 Worker 聚合（`SUBSCRIPTION_MODE: worker`）。它会占用同 Zone 两个一级域名：
 
 - 公开订阅域名：绑定 Worker 的 Custom Domain，客户端只访问 `https://<公开域名>/subscribe`；
 - 私有节点源域名：Cloudflare 代理到本机 `8443`，仅放行 Cloudflare 回源，
@@ -586,7 +586,7 @@ root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（
 | 本机运行后提示系统不支持 | 命令必须在 VPS 的 SSH 或网页终端运行。 |
 | SSH 断开或重启后无法登录 | 使用服务商 Console/VNC 检查 SSH 端口、UFW 和安全组。 |
 | 安装中 SSH 断开、重跑提示 `TCP 80 已被占用` | 上次安装已装好 nginx 默认站点：先 `sudo easy_all cleanup-partial`；命令未注册时用 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial`（`bootstrap.sh` 自己会 sudo，别写成 `sudo bash <(...)`），再在 `tmux`/`screen` 中重跑安装。 |
-| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`（模式可写菜单序号 `1`～`5`、内部名 `reality`/`cloudflare-streamup`/`bunny-ws`/`gcore`/`combined`，或 `直连`/`组合` 等中文名）；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
+| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`（模式可写 `1`～`5`、内部名 `reality`/`cloudflare-streamup`/`bunny-ws`/`gcore`/`combined`，或 `直连`/`组合` 等中文名）；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
 | Zone 不是 Active | 等待 Cloudflare Zone 生效并检查名称服务器。 |
 | 提示未开启 gRPC | 在 Zone 的 Network → gRPC 手动开启后重试。 |
 | API Token 权限不足或 DNS 冲突 | 按[前置准备手册](preparation-guide.md)核对权限并换用未占用的一级子域。 |
