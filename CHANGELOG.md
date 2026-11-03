@@ -1,3 +1,22 @@
+## 2.2.2 更新说明（2026-11-03）
+
+- 修复组合模式首次安装必然崩溃：`profiles/combined.sh` 从未定义 `XRAY_XHTTP_LOOPBACK_PORT`，而
+  `write_xray_config` 与 `write_nginx_config` 都直接引用它，`set -u` 下会崩在写配置阶段
+  （现场表现为签发 Gcore 回源证书后 `line 319: XRAY_XHTTP_LOOPBACK_PORT: unbound variable` 并触发回滚）。
+  该缺陷自 2.1.x 起存在；回归测试此前自行补齐该变量，掩盖了问题。
+- 该端口固定使用 `10086`（WebSocket 回环为 `10087`、Reality 为 `8443`，互不冲突），不接受环境覆盖：
+  组合模式尚未提供该端口的校验与状态持久化，静默接受覆盖会造成"安装用 A、之后 `apply` 变回默认"的不一致。
+- 安装端口守卫收紧：只有"仅存在 Debian 默认站点、且请求端口确实被 nginx 监听"时才询问是否停止 nginx。
+  端口空闲时不再误报"端口被 nginx 占用"；被其它进程占用或占用者无法辨认时，交给端口守卫报告真实情况，
+  不再栽给 nginx。
+- 回滚时的 TCP 运行参数恢复改为逐项应用：此前用 `sysctl -p` 一次应用，单个内核不支持或只读的键会让整批
+  恢复报"恢复安装前 TCP 运行参数失败，请检查 /etc/easy_all/backups/pre-install-tcp-runtime.conf"，而该文件
+  紧接着就会被回滚删除。现在逐项恢复并只为失败项告警，其余参数照常还原。
+- 测试加固：组合模式渲染测试不再替产品代码补齐端口变量，并在 source 前清除宿主同名环境变量；
+  `test_install_guard.sh` 增加空闲 / 其它进程占用 / 占用者未知 / nginx 占用四态断言。
+
+源码版本标识为 `2.2.2`。
+
 ## 2.2.1 更新说明（2026-11-03）
 
 - `easy_all cleanup-partial --assume-mode` 现在接受用户最容易输入的写法：菜单序号 `1`～`5`、

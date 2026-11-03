@@ -146,6 +146,9 @@ nginx() { :; }
 systemctl() { :; }
 require_root() { :; }
 
+# 在 source 之前清掉宿主环境里的同名变量：本测试要证明的是"端口由 profile 自己定义"，
+# 继承值会掩盖"combined 未定义回环端口"这类缺陷（2.2.1 曾因此在首次安装时崩溃）。
+unset XRAY_XHTTP_LOOPBACK_PORT
 # shellcheck source=/dev/null
 source "${PROFILE}"
 unset -f readonly
@@ -179,7 +182,6 @@ REALITY_PUBLIC_KEY="test-public-key"
 REALITY_SHORT_ID="0123456789abcdef"
 CLOUDFLARE_ORIGIN_CERT_ID="cert-old-111"
 CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2041-11-03 00:00:00 +0000 UTC"
-XRAY_XHTTP_LOOPBACK_PORT="${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}"
 SUBSCRIPTION_MODE="deploy"
 TCP_ACCELERATION="bbr"
 save_state
@@ -203,6 +205,13 @@ assert_contains "10c: rendered nginx config has ssl_reject_handshake on" \
     "${rendered_modern}" "ssl_reject_handshake on;"
 assert_contains "10c: rendered nginx config has grpc_pass with XRAY_XHTTP_LOOPBACK_PORT" \
     "${rendered_modern}" "grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};"
+# 10c-1: 回环端口必须由 profile 自己定义（不能靠测试或环境提供），且与 WS 端口不冲突
+[[ "${XRAY_XHTTP_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
+    || fail "10c-1: XRAY_XHTTP_LOOPBACK_PORT must be a numeric value defined by combined.sh"
+((10#${XRAY_XHTTP_LOOPBACK_PORT} >= 1024 && 10#${XRAY_XHTTP_LOOPBACK_PORT} <= 65535)) \
+    || fail "10c-1: XRAY_XHTTP_LOOPBACK_PORT out of range"
+[[ "${XRAY_XHTTP_LOOPBACK_PORT}" != "${XRAY_WEBSOCKET_LOOPBACK_PORT}" ]] \
+    || fail "10c-1: XHTTP and WebSocket loopback ports must differ"
 assert_contains "10c: rendered nginx config has subscription server_name" \
     "${rendered_modern}" "server_name ${SUBSCRIPTION_DOMAIN};"
 assert_contains "10c: rendered nginx config has /subscribe location" \

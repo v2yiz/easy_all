@@ -310,11 +310,26 @@ snapshot_tcp_runtime() {
 }
 
 restore_tcp_runtime() {
-    local source="${BACKUP_DIR}/pre-install-tcp-runtime.conf"
+    local source="${BACKUP_DIR}/pre-install-tcp-runtime.conf" line key value failed=0 restored=0
     remove_physical_fq_qdisc_service
     if [[ -s "${source}" ]]; then
-        sysctl -p "${source}" >/dev/null 2>&1 \
-            || warn "恢复安装前 TCP 运行参数失败，请检查 ${source}"
+        # 逐项恢复而不是 sysctl -p：单个内核不支持/只读的键不该让整批恢复报告失败，
+        # 也不该让用户去找一个随后会被回滚删掉的备份文件路径。
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            [[ "${line}" == *=* ]] || continue
+            key=${line%% = *}
+            value=${line#* = }
+            key=${key//[[:space:]]/}
+            [[ -n "${key}" ]] || continue
+            if sysctl -w "${key}=${value}" >/dev/null 2>&1; then
+                restored=$((restored + 1))
+            else
+                failed=$((failed + 1))
+                warn "安装前 TCP 参数 ${key}=${value} 未能恢复（内核不支持或只读），已跳过"
+            fi
+        done <"${source}"
+        ((failed == 0)) \
+            || warn "安装前 TCP 运行参数有 ${failed} 项未能恢复（已恢复 ${restored} 项）；其余配置已按备份还原"
     fi
     restore_physical_qdisc
 }

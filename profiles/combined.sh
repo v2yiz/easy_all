@@ -24,6 +24,11 @@ source "${XHTTP_LIB_DIR}/reality-target.sh"
 
 readonly REALITY_PORT=8443
 readonly XRAY_WEBSOCKET_LOOPBACK_PORT=10087
+# XHTTP 侧的本机回环端口必须在这里定义：write_xray_config / write_nginx_config 都直接引用它，
+# 缺了会在 set -u 下让首次安装崩在写配置阶段（该缺省来自 xhttp-runtime 的常量）。
+# 这里刻意不接受环境覆盖：combined 没有针对该端口的校验与状态持久化，静默接受覆盖会出现
+# "安装时用 A、之后 apply 又变回默认" 的隐性不一致；需要自定义端口时应先补校验、冲突检查与状态恢复。
+readonly XRAY_XHTTP_LOOPBACK_PORT="${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT:-10086}"
 readonly CLOUDFLARE_API_BASE="${CLOUDFLARE_API_BASE_OVERRIDE:-https://api.cloudflare.com/client/v4}"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475

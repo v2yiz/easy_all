@@ -474,6 +474,19 @@ residue_recovery_hint() {
     fi
 }
 
+# 只在"端口确实被监听，且占用者就是 nginx"时才把"只有 Debian 默认站点"当成需要处理的对象。
+# 否则安装器要么在残留已清理干净时凭空报"端口被 nginx 占用"，要么把 sshd 等其它进程
+# 误说成 nginx 残留（占用者归属不明时交给 assert_install_ports_free 报告真实情况）。
+nginx_owns_requested_port() {
+    local port owner
+    for port in "$@"; do
+        tcp_port_listening "${port}" || continue
+        owner=$(tcp_port_owner "${port}" || true)
+        [[ "${owner}" == *nginx* ]] && return 0
+    done
+    return 1
+}
+
 assert_install_ports_free() {
     local port owner reason_text leftover
     for port in "$@"; do
@@ -583,9 +596,9 @@ prepare_fresh_install() {
             cleanup_partial_install || die "清理残留失败；请按上方提示处理后重试"
         fi
         success "残留已清理，继续安装"
-    elif legacy_nginx_residue_candidate; then
+    elif legacy_nginx_residue_candidate && nginx_owns_requested_port "$@"; then
         # 无 marker 时无法证明这份 nginx 属于 easy_all：不声称是残留，默认不处理。
-        warn "端口被 nginx 占用，且只启用了 Debian 默认站点（没有任何 easy_all 安装标记）。"
+        warn "端口被 nginx 占用（只启用了 Debian 默认站点，且没有任何 easy_all 安装标记）。"
         warn "无法确认它属于上次 easy_all 安装，还是你改作自用的默认站点。"
         if [[ -t 0 ]]; then
             read_bilingual '确认这是上次安装残留、停止 nginx 并继续安装？[y/N]:' answer
