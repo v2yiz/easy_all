@@ -738,11 +738,11 @@ prepare_fresh_install() {
             return 0
         fi
         if [[ -t 0 ]]; then
-            read_confirmation '先清理残留再继续安装？[Y/n]:' answer
+            read_confirmation '现在清理残留并继续安装？[Y/n]（n=取消安装，不改动机器）:' answer
             [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]] \
-                || die "已取消；稍后可执行 sudo easy_all cleanup-partial 清理"
+                || die "$(printf '已取消安装（未做任何改动）。\n%s' "$(residue_recovery_hint)")"
         else
-            die "非交互安装检测到残留；请先执行 sudo easy_all cleanup-partial"
+            die "$(printf '非交互安装检测到残留。\n%s' "$(residue_recovery_hint)")"
         fi
         if [[ "${recorded}" != "${current}" ]]; then
             warn "上次中断的是 ${recorded} 模式，按该模式清理（当前选择：$(install_current_mode)）"
