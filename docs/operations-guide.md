@@ -594,7 +594,7 @@ root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（
 | Globalping 额度不足 | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；与当前入口策略兼容的缓存会继续使用。 |
 | 组合模式重装报 `too many certificates ... retry after` | Let's Encrypt 对同一域名限 5 张/168 小时。重试安装与 `apply-cloud` 不再强制重签，缓存证书未到续期时间会直接复用；也可等提示的 `retry after` 之后，或临时换一个 `GCORE_ORIGIN_DOMAIN`。注意 `acme.sh --uninstall` 只卸载脚本与续期任务，证书和账户配置仍在 `/root/.acme-combined.sh`；确认不再使用后可执行 `sudo rm -rf /root/.acme-combined.sh`。 |
 | 回滚后重试提示 `恢复 acme.sh 自动续期任务失败` | 回滚会把 root crontab 还原成安装前内容，重试时会用 `acme.sh --install-cronjob` 补回；服务器缺 cron 或写 crontab 失败时才会告警。装好 cron 后执行 `sudo /root/.acme-combined.sh/acme.sh --home /root/.acme-combined.sh --config-home /root/.acme-combined.sh/data --cert-home /root/.acme-combined.sh/certs --install-cronjob`，再用 `sudo crontab -l | grep acme` 确认只剩一条 `--cron` 条目。 |
-| 组合模式安装停在「等待 Gcore 边缘就绪」 | 新建的 Gcore CDN 资源约 15 分钟才能在所有边缘生效，安装器会等资源 `active` 且 `gcore.<zone>` 的灰云 CNAME 解析到账户 CNAME（最多 30 分钟）。不要中断安装；若超时，核对 CNAME 未指错、未被 Cloudflare 代理（必须是灰云），稍后重跑安装即可续上。 |
+| 组合模式安装停在「等待 Gcore 边缘就绪」 | 新建的 Gcore CDN 资源约 15 分钟才能在所有边缘生效，安装器会等资源 `active` 且 `gcore.<zone>` 的灰云 CNAME 解析到账户 CNAME（最多 30 分钟），期间每约 60 秒打印一行「已等待 N 秒、资源状态、CNAME」；证书签发阶段同样每约 60 秒打印「状态=PENDING，已等待 N 秒」。看到这些行说明还在正常等待，不要中断；若超时，核对 CNAME 未指错、未被 Cloudflare 代理（必须是灰云），稍后重跑安装即可续上。 |
 | 换过 Cloudflare API Token 后担心续期 | 重新执行 `sudo easy_all apply-cloud` 或重跑安装：安装器会把当前 Token 同步进 acme.sh 的续期配置；只在 `apply`（不碰云端）时不会。 |
 | `status` 显示 `pending-reboot` | 执行 `sudo reboot`，重新登录后确认 `BBRv3: active`。 |
 | 想更换伪装目标（SNI） | 执行 `sudo easy_all reality-target <域名:端口>`，再按部署方式刷新订阅或重新导入节点。 |

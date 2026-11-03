@@ -394,6 +394,7 @@ gcore_wait_for_cdn_readiness() {
     local attempts=${1:-${GCORE_EDGE_READY_ATTEMPTS}}
     local interval=${2:-${GCORE_EDGE_READY_INTERVAL}}
     local attempt status cname expected observed_cname="未解析" observed_status="unknown"
+    local start=${SECONDS}
     expected=$(normalize_domain "${GCORE_CDN_TARGET:-}")
     for ((attempt = 1; attempt <= attempts; attempt += 1)); do
         status=$(gcore_api_request GET "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" \
@@ -407,12 +408,13 @@ gcore_wait_for_cdn_readiness() {
             && { [[ -z "${expected}" ]] || [[ "${cname}" == "${expected}" ]]; }; then
             return 0
         fi
-        if ((attempt == 1 || attempt % 8 == 0)); then
-            info "等待 Gcore 边缘就绪（资源=${observed_status}；${VLESS_CDN_DOMAIN} 的 CNAME=${observed_cname}，期望 ${expected:-未知}）：第 ${attempt}/${attempts} 次"
+        # 每约 60 秒打印一次进度：长时间无输出容易被当成卡死，定时写终端也有助于保活。
+        if ((attempt == 1 || attempt % 4 == 0)); then
+            info "等待 Gcore 边缘就绪（已等待 $((SECONDS - start)) 秒；资源=${observed_status}；${VLESS_CDN_DOMAIN} 的 CNAME=${observed_cname}，期望 ${expected:-未知}）：第 ${attempt}/${attempts} 次"
         fi
         ((attempt == attempts)) || sleep "${interval}"
     done
-    die "Gcore 边缘在 $((attempts * interval / 60)) 分钟内未就绪（资源=${observed_status}；${VLESS_CDN_DOMAIN} 的 CNAME=${observed_cname}，期望 ${expected:-未知}）。请确认灰云 CNAME 与 Gcore 账户 CNAME 一致，稍后重试安装$(gcore_edge_certificate_hint)"
+    die "Gcore 边缘在 $((attempts * interval / 60)) 分钟内未就绪（已等待 $((SECONDS - start)) 秒；资源=${observed_status}；${VLESS_CDN_DOMAIN} 的 CNAME=${observed_cname}，期望 ${expected:-未知}）。请确认灰云 CNAME 与 Gcore 账户 CNAME 一致，稍后重试安装$(gcore_edge_certificate_hint)"
 }
 
 gcore_wait_for_edge_certificate() {
@@ -420,6 +422,7 @@ gcore_wait_for_edge_certificate() {
     local attempts=${2:-${GCORE_EDGE_PROPAGATION_ATTEMPTS}}
     local interval=${3:-${GCORE_EDGE_PROPAGATION_INTERVAL}}
     local attempt state status details retries=0
+    local start=${SECONDS}
     for ((attempt = 1; attempt <= attempts; attempt += 1)); do
         state=$(gcore_api_request GET "/cdn/sslData/${certificate_id}/status") \
             || die "无法读取 Gcore 边缘证书签发状态"
@@ -449,9 +452,13 @@ gcore_wait_for_edge_certificate() {
             continue
             ;;
         esac
+        # 签发阶段可能持续十几分钟，每约 60 秒打印一次进度，避免看起来像卡死。
+        if ((attempt == 1 || attempt % 6 == 0)); then
+            info "等待 Gcore 边缘证书签发（状态=${status}，已等待 $((SECONDS - start)) 秒）：第 ${attempt}/${attempts} 次"
+        fi
         ((attempt == attempts)) || sleep "${interval}"
     done
-    die "Gcore 边缘证书等待超时：ID=${certificate_id}，状态=${status:-unknown}$(gcore_edge_certificate_hint)"
+    die "Gcore 边缘证书等待超时：ID=${certificate_id}，状态=${status:-unknown}，已等待 $((SECONDS - start)) 秒$(gcore_edge_certificate_hint)"
 }
 
 # 证书已经 ACTIVE 时直接返回，避免幂等重跑去等边缘就绪；否则先等资源/CNAME 就绪再申请或重试。
