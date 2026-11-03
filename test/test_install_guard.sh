@@ -603,16 +603,16 @@ assert_not_contains "tcp-restore: must not report whole-file failure" "${tcp_out
 
 # 17) 安装失败诊断：阶段、位置、命令与错误信息要能说清楚
 reset_artifacts
+# 与生产一致：ERR 陷阱记录失败点，EXIT 陷阱打印报告（set -e 触发退出）。
 failure_report=$(
     exec 2>&1
-    set +e
     install_failure_begin combined
     install_progress_begin combined
     install_progress_stage services
     EASY_ALL_LAST_ERROR='Cloudflare API 请求失败：GET /zones'
+    trap 'install_failure_report' EXIT
     false
-    install_failure_report
-) 2>&1 || true
+) || true
 assert_contains "failure-report: mode" "${failure_report}" "模式：combined"
 assert_contains "failure-report: stage" "${failure_report}" \
     "失败阶段：services（服务、证书与防火墙）"
@@ -624,24 +624,21 @@ assert_contains "failure-report: message" "${failure_report}" \
 # 18) 失败报告只打印一次（退出清理与后续调用不应重复刷屏）
 once=$(
     exec 2>&1
-    set +e
     install_failure_begin combined
     install_progress_begin combined
     install_progress_stage packages
+    trap 'install_failure_report; install_failure_report' EXIT
     false
-    install_failure_report
-    install_failure_report
-) 2>&1 || true
+) || true
 assert_equal "failure-report: printed once" "1" "$(grep -c '安装失败' <<<"${once}")"
 
 # 18b) 展示阶段的失败不再算“安装失败”（避免成功安装尾部命令报错时误导）
 disarmed=$(
     exec 2>&1
-    set +e
     install_failure_begin combined
     INSTALL_FAILURE_ARMED=0
+    trap 'install_failure_report' EXIT
     false
-    install_failure_report
 ) || true
 assert_not_contains "failure-report: disarmed after commit" "${disarmed}" "安装失败"
 
