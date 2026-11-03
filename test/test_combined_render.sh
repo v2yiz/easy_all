@@ -800,17 +800,16 @@ assert_block_line "ua-negotiation: mihomo format routes to yaml file" \
     combined_sync_allowed_tokens
 )
 
-# 16) 非交互安装不追问 Token：stdin 不是终端时提示函数直接返回
-# stdin 给一行"诱饵"：若提示函数会去读 stdin，Token 就会被改掉
-prompt_out=$(printf 'attacker-token-9999\n' | {
-    OWNER_TOKEN="tok-generated-keep"
-    combined_prompt_owner_token
-    printf '%s' "${OWNER_TOKEN}"
-})
-assert_equal "token-input: non-interactive install never reads stdin for token" \
-    "tok-generated-keep" "${prompt_out}"
+# 16) 安装期零交互：参数声明里不得出现任何提示函数（交互安装已移除）
+install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
+assert_not_contains "token-input: install inputs never prompt" \
+    "${install_inputs_body}" "prompt_"
+assert_not_contains "token-input: install inputs never read stdin" \
+    "${install_inputs_body}" "read_bilingual"
+assert_contains "token-input: install inputs declare the token fields" \
+    "${install_inputs_body}" "params_declare OWNER_TOKEN"
 
-# 17) 安装阶段 Token 校验：环境变量传入的非法值必须在改动云端资源前就被拒绝
+# 17) 安装阶段 Token 校验：非法值必须在改动云端资源前就被拒绝
 bad_install=$(
     ALLOWED_TOKENS=""
     OWNER_TOKEN="short"
@@ -820,10 +819,10 @@ assert_contains "token-validate: short env token rejected before install" \
     "${bad_install}" "订阅 Token 无效"
 assert_not_contains "token-validate: rejection mentions auto-generate fallback" \
     "${bad_install}" "unbound variable"
-# 安装入口必须真的调用该校验（否则环境变量里的非法 Token 仍会一路跑到签发/写配置阶段）
-install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
+# 安装入口必须真的调用该校验（否则非法 Token 仍会一路跑到签发/写配置阶段）
+apply_inputs_body=$(awk '/^apply_install_inputs\(\)/,/^}/' "${PROFILE}")
 assert_contains "token-validate: install inputs call the validator" \
-    "${install_inputs_body}" "combined_validate_install_owner_token"
+    "${apply_inputs_body}" "combined_validate_install_owner_token"
 (
     ALLOWED_TOKENS=""
     OWNER_TOKEN="custom-token-2026"
@@ -1024,8 +1023,8 @@ assert_equal "multi-token: every token is published in the nginx map" "1" "${mul
 space_out=$(
     combined_apply_tokens '{"keep1":"token-aaaa-111"}' >/dev/null 2>&1
     before=${ALLOWED_TOKENS}
-    # 走交互入口的处理函数（只裁首尾空白），验证内部空格不会被压掉
-    if combined_apply_token_input '  {"user 1":"abcdefgh","user1":"ijklmnop"}  ' 'default' >/dev/null 2>&1; then
+    # 安装已无交互入口；直接验证 Token 解析本身只裁键首尾空白，不压内部空格
+    if combined_apply_tokens '  {"user 1":"abcdefgh","user1":"ijklmnop"}  ' >/dev/null 2>&1; then
         printf 'accepted'
     else
         printf 'rejected:%s' "$([[ "${ALLOWED_TOKENS}" == "${before}" ]] && echo unchanged || echo changed)"
@@ -1035,7 +1034,7 @@ assert_equal "multi-token: user name with inner space is rejected" \
     "rejected:unchanged" "${space_out}"
 
 pretty_out=$(
-    combined_apply_token_input '{ "user1" : "alice-token-123" , "user2" : "token-bbbb-222" }' 'default' >/dev/null 2>&1 \
+    combined_apply_tokens '{ "user1" : "alice-token-123" , "user2" : "token-bbbb-222" }' >/dev/null 2>&1 \
         || fail "multi-token: pretty-printed JSON rejected"
     jq -r 'length' <<<"${ALLOWED_TOKENS}"
 )
@@ -1153,6 +1152,68 @@ assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok
     [[ "${noproxy_found}" == "1" ]] \
         || fail "curl-args: local TLS probe must pass --noproxy '*'"
 ) || fail "curl-args: --noproxy assertion failed"
+
+# 28) 安装参数模板：combined 的声明必须能生成合法模板，必填字段留空
+template_json=$(
+    params_template_begin combined
+    collect_install_inputs >/dev/null 2>&1 || fail "template: declarations failed"
+    params_finish 2>/dev/null
+) || fail "template: combined template generation failed"
+assert_equal "template: mode" "combined" "$(jq -r '.mode' <<<"${template_json}")"
+assert_equal "template: required field empty" "" \
+    "$(jq -r '.params.CF_ZONE' <<<"${template_json}")"
+assert_equal "template: download name default" "EASY_ALL" \
+    "$(jq -r '.params.SUB_DOWNLOAD_NAME' <<<"${template_json}")"
+for key in CF_ZONE CLOUDFLARE_API_TOKEN GCORE_API_TOKEN GLOBALPING_TOKEN \
+    DIRECT_DOMAIN SUBSCRIPTION_DOMAIN ALLOWED_TOKENS; do
+    jq -e --arg k "${key}" '.params | has($k)' <<<"${template_json}" >/dev/null \
+        || fail "template: missing field ${key}"
+done
+
+# 29) 完整参数预检：真实声明 + 默认值 + 跨字段校验 + 赋值一次跑通
+cat >"${TMP_DIR}/params-ok.json" <<'JSON'
+{
+  "schema_version": 1,
+  "mode": "combined",
+  "params": {
+    "CF_ZONE": "example.com",
+    "CLOUDFLARE_API_TOKEN": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "GCORE_API_TOKEN": "gcore-token-value",
+    "GLOBALPING_TOKEN": "globalping-token-value",
+    "VPS_PUBLIC_IPV4": "203.0.113.10",
+    "ALLOWED_TOKENS": {"owner": "abcdefgh-1234"}
+  }
+}
+JSON
+chmod 600 "${TMP_DIR}/params-ok.json"
+preflight_out=$(
+    params_begin combined "${TMP_DIR}/params-ok.json"
+    collect_install_inputs
+    params_finish 2>/dev/null
+    printf '%s|%s|%s|%s|%s\n' \
+        "${CF_ZONE}" "${DIRECT_DOMAIN}" "${CF_ORIGIN_DOMAIN}" "${XHTTP_PATH}" "${REBOOT_SCHEDULE_MODE}"
+) || fail "preflight: valid combined params rejected"
+assert_equal "preflight: defaults derived from zone" \
+    "example.com|node.example.com|cf-origin.example.com" \
+    "$(cut -d'|' -f1-3 <<<"${preflight_out}")"
+assert_contains "preflight: xhttp path generated" "${preflight_out}" "/xhttp-"
+assert_equal "preflight: reboot default" "1" "$(cut -d'|' -f5 <<<"${preflight_out}")"
+
+# 30) 预检必须聚合错误：域名重复、域名不在 Zone 下、两个 Token 同时提供
+jq '.params.CF_NODE_DOMAIN = "node.example.com"
+    | .params.SUBSCRIPTION_DOMAIN = "elsewhere.invalid"
+    | .params.OWNER_TOKEN = "abcdefgh-1234"' \
+    "${TMP_DIR}/params-ok.json" >"${TMP_DIR}/params-bad.json"
+chmod 600 "${TMP_DIR}/params-bad.json"
+preflight_bad=$(
+    exec 2>&1
+    params_begin combined "${TMP_DIR}/params-bad.json"
+    collect_install_inputs
+    params_finish
+) && fail "preflight: invalid combined params must be rejected"
+assert_contains "preflight: duplicate domains" "${preflight_bad}" "六个域名必须互不相同"
+assert_contains "preflight: domain outside zone" "${preflight_bad}" "域名必须属于 example.com"
+assert_contains "preflight: mutually exclusive tokens" "${preflight_bad}" "不能同时提供"
 
 printf 'ok - combined render\n'
 

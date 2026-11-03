@@ -6,6 +6,8 @@ readonly RUNTIME_LIB_DIR="${EASY_ALL_RUNTIME_LIB_DIR:?EASY_ALL_RUNTIME_LIB_DIR i
 
 # shellcheck source=lib/log.sh
 source "${RUNTIME_LIB_DIR}/log.sh"
+# shellcheck source=lib/params.sh
+source "${RUNTIME_LIB_DIR}/params.sh"
 # shellcheck source=lib/quota.sh
 source "${RUNTIME_LIB_DIR}/quota.sh"
 # shellcheck source=lib/platform.sh
@@ -37,9 +39,14 @@ UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 
 cleanup() {
+    local status=$?
     local path
     if declare -F worker_backup_stop_probe >/dev/null 2>&1; then
         worker_backup_stop_probe || true
+    fi
+    # 安装中途失败：先说明失败位置与阶段，再由用户决定是否清理本机残留。
+    if [[ "${status}" != "0" ]] && declare -F install_failure_report >/dev/null 2>&1; then
+        install_failure_report || true
     fi
     if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -50,7 +57,16 @@ cleanup() {
         fi
     elif [[ "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
         INSTALL_ROLLBACK_ON_EXIT=0
-        rollback_fresh_install || true
+        if [[ "${status}" != "0" ]] && declare -F install_cleanup_after_failure >/dev/null 2>&1; then
+            install_cleanup_after_failure rollback || true
+        else
+            rollback_fresh_install || true
+        fi
+    elif [[ "${status}" != "0" && "${INSTALL_FAILURE_ARMED:-0}" == "1" ]] \
+        && declare -F install_cleanup_after_failure >/dev/null 2>&1 \
+        && [[ -n "$(install_progress_field PROFILE 2>/dev/null || true)" ]]; then
+        # 安装流程在拍快照之前就失败了：仍可只清理本机残留。
+        install_cleanup_after_failure partial || true
     fi
     if declare -F recover_pending_service_policy >/dev/null 2>&1; then
         recover_pending_service_policy \

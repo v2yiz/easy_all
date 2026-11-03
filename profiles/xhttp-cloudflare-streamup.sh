@@ -693,28 +693,6 @@ cloudflare_validate_node_domain_input() {
     CLOUDFLARE_ZONE_NAME=${zone_name}
 }
 
-collect_cloudflare_node_domain() {
-    local domain=${VLESS_CDN_DOMAIN:-}
-    while true; do
-        if [[ -z "${domain}" ]]; then
-            domain=$(prompt_value "客户端连接的 CDN 节点域名（例如 node.example.com）" "")
-        fi
-        domain=$(normalize_domain "${domain}")
-        if ! validate_domain "${domain}"; then
-            warn "CDN 节点域名格式无效，请重新输入完整的一级子域名"
-            domain=""
-            continue
-        fi
-        if ! cloudflare_validate_node_domain_input "${domain}"; then
-            warn "${CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR:-CDN 节点域名无效，请重新输入}"
-            domain=""
-            continue
-        fi
-        VLESS_CDN_DOMAIN=${domain}
-        return
-    done
-}
-
 cloudflare_record_list() { cloudflare_api_request GET "/zones/$1/dns_records?type=$2&name=$3&per_page=100"; }
 cloudflare_require_single_record() {
     local records=$1 count
@@ -1346,22 +1324,6 @@ read_state_field() {
     printf '%s\n' "${value}"
 }
 
-normalize_xhttp_path() {
-    local path=${1:-}
-    while [[ "${path}" =~ ^/(xhttp|vless)-/(xhttp|vless)- ]]; do
-        path="/${path#/*-/}"
-    done
-    if [[ "${path}" =~ ^/(xhttp|vless)- ]]; then
-        path="/xhttp-${path#/*-}"
-    elif [[ -n "${path}" ]]; then
-        path="/xhttp-${path#/}"
-    else
-        path="/xhttp-$(openssl rand -hex 12)"
-    fi
-    path="${path%/}"
-    printf '%s\n' "${path}"
-}
-
 xhttp_client_path() {
     printf '%s/' "${XHTTP_PATH%/}"
 }
@@ -1396,49 +1358,135 @@ collect_install_inputs() {
     BACKEND="xray"
     CDN_PROVIDER="cloudflare"
 
-    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
-    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
-    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
+    params_declare XHTTP_NODE_NAME --required \
+        --label '节点名（客户端展示名）' --default "${DEFAULT_XHTTP_NODE_NAME}" \
+        --check params_check_node_name
+    params_declare VLESS_UUID \
+        --label '节点 UUID（留空自动生成）' --default-fn params_default_uuid --check validate_uuid
+    params_declare CLOUDFLARE_API_TOKEN --required --secret \
+        --label 'Cloudflare API Token（DNS / Workers / Origin CA 权限）' \
+        --check params_check_cf_token
+    params_declare VLESS_CDN_DOMAIN --required \
+        --label '客户端连接的 CDN 节点域名（Zone 下一级子域名，如 node.example.com）' \
+        --normalize normalize_domain --check validate_domain
+    params_declare GLOBALPING_TOKEN --required --secret \
+        --label 'Globalping Access Token' --check validate_globalping_token
+    params_declare XHTTP_PATH \
+        --label 'XHTTP 路径（留空自动生成）' --default-fn params_default_xhttp_path \
+        --normalize normalize_xhttp_path --check validate_xhttp_path
+    params_declare XRAY_XHTTP_LOOPBACK_PORT \
+        --label '本机回环端口' --default "${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}" \
+        --check validate_loopback_port
+    params_declare ORIGIN_HEADER_SECRET --secret \
+        --label '回源校验密钥（留空自动生成）' --default-fn params_default_secret \
+        --check params_check_worker_secret
 
+    params_declare SUBSCRIPTION_MODE --required \
+        --label '订阅输出：link（不部署）/deploy（Worker 聚合订阅）' --default deploy \
+        --normalize normalize_subscription_mode
+    params_declare SUBSCRIPTION_DOMAIN --when params_when_subscription_enabled --required \
+        --label 'Worker 订阅完整域名（必须与节点域名不同）' \
+        --default "sub.${VLESS_CDN_DOMAIN#*.}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare CLOUDFLARE_WORKER_NAME --when params_when_subscription_enabled --required \
+        --label 'Cloudflare Worker 名称' --default "${DEFAULT_CLOUDFLARE_WORKER_NAME}" \
+        --check params_check_worker_name
+    params_declare SUB_DOWNLOAD_NAME --required \
+        --label '订阅文件名（不含 .yaml）' --default "${DEFAULT_SUB_DOWNLOAD_NAME}" \
+        --normalize normalize_sub_download_name --check validate_sub_download_name
+    params_declare WORKER_SOURCE_SECRET --when params_when_subscription_enabled --secret \
+        --label 'Worker 回源密钥（留空自动生成）' --default-fn params_default_secret \
+        --check params_check_worker_secret
+    params_declare WORKER_AGGREGATION_CONFIG --when params_when_subscription_enabled \
+        --type json_object --label 'Worker 聚合 JSON（不得包含 vpsSubUrl）' --default '{}' \
+        --normalize normalize_worker_aggregation_config
+
+    params_declare ENABLE_MONTHLY_QUOTA \
+        --label '按用户月度配额：0=不启用（默认），1=启用' --default 0 \
+        --check params_check_quota_toggle
+    params_declare MONTHLY_QUOTAS_GB --when params_when_quota_enabled --type json_object \
+        --label '用户与月度配额 JSON（GB，0 表示不限量）' \
+        --normalize normalize_monthly_quotas
+    params_declare QUOTA_TOKEN_OVERRIDES --when params_when_quota_enabled --type json_object \
+        --label '可选 Token 覆盖 JSON（仅写要覆盖的用户）' --default '{}'
+    params_declare QUOTA_START_DATE --when params_when_quota_enabled \
+        --label 'VPS 开通日期 YYYY-MM-DD（配额周期起点，留空用今天）' \
+        --check validate_quota_start_date
+    params_declare ALLOWED_TOKENS --when params_when_subscription_enabled --type json_object \
+        --label '订阅用户 Token 字典 {"用户":"token"}（启用配额时作为种子 Token）' \
+        --normalize params_normalize_allowed_tokens
+
+    params_declare WORKER_BACKUP_DOMAIN \
+        --label '独立 Worker 兜底节点域名（留空不部署；需在节点所属 Zone 下）' \
+        --normalize normalize_domain --check validate_domain
+    params_declare WORKER_BACKUP_PLACEMENT \
+        --label '兜底 Worker Placement：off（默认）或 aws:ap-east-1' --default off \
+        --check params_check_backup_placement
+
+    params_declare VPS_PUBLIC_IPV4 \
+        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --check validate_ipv4
+    params_declare TCP_ACCELERATION \
+        --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
+        --normalize normalize_tcp_acceleration
+    params_declare REBOOT_SCHEDULE_MODE \
+        --label '定时重启：1=每天 04:00，2=自定义小时，3=不配置' --default 1 \
+        --check params_check_reboot_mode
+    params_declare REBOOT_HOUR \
+        --label '自定义重启小时（0-23，仅模式 2 需要）' --check params_check_hour
+}
+
+params_cross_cloudflare_streamup() {
+    if [[ "${SUBSCRIPTION_MODE}" != "link" ]]; then
+        [[ "${SUBSCRIPTION_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
+            || params_error 'Worker 订阅域名必须与节点域名不同，避免 Worker 子请求递归'
+        if [[ "${ENABLE_MONTHLY_QUOTA}" != "1" && -z "${ALLOWED_TOKENS}" ]]; then
+            params_error '未启用月度配额时必须提供 ALLOWED_TOKENS（{"用户":"token"}）'
+        fi
+    fi
+    if [[ -n "${WORKER_BACKUP_DOMAIN}" ]]; then
+        [[ "${WORKER_BACKUP_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
+            || params_error '兜底 Worker 必须使用独立域名'
+        [[ "${WORKER_BACKUP_DOMAIN}" != "${SUBSCRIPTION_DOMAIN}" ]] \
+            || params_error '兜底 Worker 域名不能与订阅域名相同'
+    fi
+    if [[ "${REBOOT_SCHEDULE_MODE}" == "2" && -z "${REBOOT_HOUR}" ]]; then
+        params_error 'REBOOT_SCHEDULE_MODE=2 时必须提供 REBOOT_HOUR（0-23）'
+    fi
+}
+
+apply_install_inputs() {
     choose_google_egress_mode
-
-    info "Cloudflare 数据面采用单域名架构；部署订阅时另用独立域名绑定 Worker。"
-    info "流量说明：代理数据实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是可用代理载荷的主要上限，但协议开销及 Cloudflare 服务规则会进一步约束；双向计费请按服务商口径折算。"
-    info "节点域名提示：使用 Cloudflare Active Zone 下未占用的一级子域名，例如 node.example.com；不要提前创建 DNS 记录。"
-    cloudflare_collect_api_token
-    collect_cloudflare_node_domain
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
-
-    info "Cloudflare 模式从官方 IPv4 CIDR 轮换抽样，并使用三网 Globalping eyeball 探针预筛。"
+    # 节点域名必须在 Cloudflare Active Zone 下且为一级子域名（需要 API，校验失败即中止）。
+    cloudflare_validate_node_domain_input "${VLESS_CDN_DOMAIN}" \
+        || die "${CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR:-CDN 节点域名无效}"
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
-
-    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
-    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
-
-    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
-    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"
-
-    ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
-    [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "Origin header 密钥无效"
-
-    choose_subscription_mode
-    if subscription_enabled; then
-        collect_cloudflare_worker_inputs
-        choose_subscription_download_name
-        choose_monthly_quota 1
-        quota_enabled || ensure_allowed_tokens 1
-        choose_worker_aggregation_config
-        cloudflare_build_subscription_worker
-    else
+    if [[ "${SUBSCRIPTION_MODE}" == "link" ]]; then
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
-        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
-        choose_monthly_quota 0
+        quota_apply_settings 0
+    else
+        quota_apply_settings "${ENABLE_MONTHLY_QUOTA}"
+        quota_enabled || apply_allowed_tokens_params
+        WORKER_SOURCE_SECRET=${WORKER_SOURCE_SECRET:-$(generate_secret)}
+        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
+            "${WORKER_AGGREGATION_CONFIG:-}") \
+            || die 'Worker 聚合配置无效；请参考 worker-src/config.example.json'
+        apply_worker_allowed_tokens_override "${WORKER_AGGREGATION_CONFIG}"
+        WORKER_AGGREGATION_CONFIG=$(jq -c 'del(.allowedTokens)' <<<"${WORKER_AGGREGATION_CONFIG}")
+        cloudflare_build_subscription_worker
     fi
-    collect_worker_backup_inputs
+    if [[ -n "${WORKER_BACKUP_DOMAIN}" ]]; then
+        WORKER_BACKUP_NAME=${WORKER_BACKUP_NAME:-"easyall-backup-$(printf '%s' "${WORKER_BACKUP_DOMAIN}" | sha256sum | cut -c1-10)"}
+        WORKER_BACKUP_UUID=${WORKER_BACKUP_UUID:-$(generate_user_uuid)}
+        WORKER_BACKUP_PATH=${WORKER_BACKUP_PATH:-"/vless-$(openssl rand -hex 12)"}
+        WORKER_BACKUP_PLACEMENT=${WORKER_BACKUP_PLACEMENT:-off}
+    fi
+    WORKER_BACKUP_IPS=${WORKER_BACKUP_IPS:-[]}
 }
 
 load_state() {
@@ -2066,7 +2114,6 @@ cleanup_partial_install() {
 }
 
 install_all() {
-    [[ -t 0 || "${FORCE_INTERACTIVE:-0}" == "1" ]] || die "安装必须在交互终端中执行"
     CDN_PROVIDER="cloudflare"
     BACKEND="xray"
     PROTOCOL="cloudflare-streamup"
@@ -2076,6 +2123,9 @@ install_all() {
 
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
+    install_failure_begin cloudflare-streamup
+    # 参数预检先于任何系统修改（只会安装 jq/ca-certificates）。
+    install_params_preflight cloudflare-streamup
     check_install_conflicts
     install_progress_begin cloudflare-streamup
     install_progress_stage packages
@@ -2087,7 +2137,7 @@ install_all() {
     configure_tcp_acceleration
     configure_daily_reboot
     install_progress_stage inputs
-    collect_install_inputs
+    apply_install_inputs
     cloudflare_prepare_origin
     install_progress_stage services
     configure_ufw
@@ -2123,6 +2173,8 @@ install_all() {
     cloudflare_finalize_backup_worker
     cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
+    # 从这里开始只剩展示类命令：失败不再算“安装失败”。
+    INSTALL_FAILURE_ARMED=0
     show_subscription
     if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
         warn "本机与 Cloudflare 资源已保留；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"

@@ -601,4 +601,68 @@ assert_not_contains "tcp-restore: no unreachable backup path hint" "${tcp_out}" 
 assert_not_contains "tcp-restore: must not report whole-file failure" "${tcp_out}" \
     "恢复安装前 TCP 运行参数失败"
 
+# 17) 安装失败诊断：阶段、位置、命令与错误信息要能说清楚
+reset_artifacts
+failure_report=$(
+    exec 2>&1
+    set +e
+    install_failure_begin combined
+    install_progress_begin combined
+    install_progress_stage services
+    EASY_ALL_LAST_ERROR='Cloudflare API 请求失败：GET /zones'
+    false
+    install_failure_report
+) 2>&1 || true
+assert_contains "failure-report: mode" "${failure_report}" "模式：combined"
+assert_contains "failure-report: stage" "${failure_report}" \
+    "失败阶段：services（服务、证书与防火墙）"
+assert_contains "failure-report: location" "${failure_report}" "失败位置："
+assert_contains "failure-report: command" "${failure_report}" "失败命令：false"
+assert_contains "failure-report: message" "${failure_report}" \
+    "错误信息：Cloudflare API 请求失败：GET /zones"
+
+# 18) 失败报告只打印一次（退出清理与后续调用不应重复刷屏）
+once=$(
+    exec 2>&1
+    set +e
+    install_failure_begin combined
+    install_progress_begin combined
+    install_progress_stage packages
+    false
+    install_failure_report
+    install_failure_report
+) 2>&1 || true
+assert_equal "failure-report: printed once" "1" "$(grep -c '安装失败' <<<"${once}")"
+
+# 18b) 展示阶段的失败不再算“安装失败”（避免成功安装尾部命令报错时误导）
+disarmed=$(
+    exec 2>&1
+    set +e
+    install_failure_begin combined
+    INSTALL_FAILURE_ARMED=0
+    false
+    install_failure_report
+) || true
+assert_not_contains "failure-report: disarmed after commit" "${disarmed}" "安装失败"
+
+# 19) 参数模式下：取值提示仍被禁止，确认类交互允许
+params_guard=$(
+    PARAMS_LOADED=1
+    prompt_value '取值' '' 2>&1
+) 2>&1 || true
+assert_contains "params: value prompt still forbidden" "${params_guard}" "不应再提问取值"
+
+confirm_out=$(printf 'n\n' | (
+    read_confirmation '确认？' answer 2>/dev/null
+    printf '%s' "${answer}"
+))
+assert_equal "confirmation: reads answer" "n" "${confirm_out}"
+
+confirm_params=$(printf 'y\n' | (
+    PARAMS_LOADED=1
+    read_confirmation '清理？' answer 2>/dev/null
+    printf '%s' "${answer}"
+))
+assert_equal "confirmation: allowed in params mode" "y" "${confirm_params}"
+
 printf 'ok - install guard\n'

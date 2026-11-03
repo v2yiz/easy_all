@@ -124,8 +124,18 @@ normalize_allowed_tokens() {
     ' <<<"${raw}"
 }
 
+# 把 ALLOWED_TOKENS 规范化为字典；安装参数层与 edit-sub 共用。
+apply_allowed_tokens_params() {
+    local raw=${ALLOWED_TOKENS:-} normalized
+    [[ -n "${raw}" ]] \
+        || die "缺少 ALLOWED_TOKENS：需要 {\"用户\":\"token\"} JSON（可用 --print-params 查看模板）"
+    normalized=$(normalize_allowed_tokens "${raw}") \
+        || die "ALLOWED_TOKENS 无效；请使用 JSON 对象，例如 {\"owner\":\"$(generate_secret)\"}"
+    ALLOWED_TOKENS=${normalized}
+}
+
 ensure_allowed_tokens() {
-    local prompt_existing=${1:-0} raw prompt_default normalized
+    local prompt_existing=${1:-0} raw prompt_default
     if [[ "${prompt_existing}" == "1" && -t 0 ]]; then
         prompt_default=${ALLOWED_TOKENS:-$(jq -cn --arg token "$(generate_secret)" '{owner: $token}')}
         raw=$(prompt_value "订阅用户 Token 完整字典 JSON（用户名=>token）" "${prompt_default}")
@@ -137,10 +147,8 @@ ensure_allowed_tokens() {
     else
         die "非交互模式必须设置 ALLOWED_TOKENS，例如 ALLOWED_TOKENS='{\"owner\":\"$(generate_secret)\"}'"
     fi
-
-    normalized=$(normalize_allowed_tokens "${raw}") \
-        || die "ALLOWED_TOKENS 无效；请使用 JSON 对象，例如 {\"owner\":\"$(generate_secret)\"}"
-    ALLOWED_TOKENS=${normalized}
+    ALLOWED_TOKENS=${raw}
+    apply_allowed_tokens_params
 }
 
 write_subscription_token_map() {

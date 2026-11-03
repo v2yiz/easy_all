@@ -898,6 +898,10 @@ prompt_bbrv3_reboot() {
     if [[ "${EASY_ALL_NO_REBOOT:-0}" == "1" ]]; then
         return 0
     fi
+    if [[ "${PARAMS_LOADED:-0}" == "1" ]]; then
+        warn "安装已完成；请按上方提示重启服务器以载入新内核：sudo reboot"
+        return 0
+    fi
     if [[ -t 0 ]]; then
         printf '是否现在立即重启服务器以载入新内核？[y/N]: '
         read -r choice || choice="n"

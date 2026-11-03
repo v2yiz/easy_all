@@ -66,36 +66,41 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 
 ---
 
-## 3. 安装与配置交互示例
+## 3. 安装参数示例
 
-在 VPS 终端执行安装：
+安装不再交互：参数由一份 JSON 字典一次提供（详见 README「安装参数」）。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
-# 或源码安装：sudo ./easy_all install
+# 生成 Bunny 模式模板
+sudo easy_all install --print-params --mode bunny-ws > params.json
+chmod 600 params.json
+# 校验后安装
+sudo easy_all install --check-params params.json
+sudo easy_all install --params params.json
 ```
 
-在菜单中输入 **`3`** 选择 Bunny CDN 模式。
+### 参数示例（假设你的主域名为 `example.com`）
 
-### 交互输入示例（假设你的主域名为 `example.com`）
-
-终端交互会严格依次提示以下 6 项（带方括号的直接回车即可选用默认值）：
-
-```text
-请选择安装模式：
-  1. 直连 - Reality（直连效果良好且 IP 未被封时）
-  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）
-  3. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）
-  4. Gcore CDN 精选 IP（三网定向优化节点）
-请选择 [1]（直接回车使用默认值）: 3
-
-Cloudflare 根 Zone（如 example.com）: example.com
-源站域名 [origin.example.com]（直接回车使用默认值）: [直接按回车]
-CDN 节点/订阅域名 [cdn.example.com]（直接回车使用默认值）: [直接按回车]
-Pull Zone 月流量限制（GB） [500]（直接回车使用默认值）: [直接按回车]
-Bunny Account API Key，粘贴后按回车键；输入过程不会显示任何字符: [粘贴后回车]
-Cloudflare DNS Token，粘贴后按回车键；输入过程不会显示任何字符: [粘贴后回车]
+```json
+{
+  "schema_version": 1,
+  "mode": "bunny-ws",
+  "params": {
+    "CLOUDFLARE_ZONE": "example.com",
+    "ORIGIN_DOMAIN": "origin.example.com",
+    "CDN_DOMAIN": "cdn.example.com",
+    "BUNNY_BANDWIDTH_GB": "500",
+    "BUNNY_API_KEY": "<Bunny Account API Key>",
+    "CLOUDFLARE_DNS_TOKEN": "<Cloudflare DNS Token>"
+  }
+}
 ```
+
+`ORIGIN_DOMAIN`、`CDN_DOMAIN`、`BUNNY_BANDWIDTH_GB` 可省略（分别默认
+`origin.<Zone>`、`cdn.<Zone>`、`500`）；两个 Token 为必填。
+
+Bunny 模式没有“节点名 / 下载文件名”参数：节点展示名与订阅下载名固定为 `EASY_ALL`
+（其他模式的对应字段见 README「安装参数」中的名称字段表）。
 
 ### 安装器自动完成的编排工作
 1. **云端联动**：

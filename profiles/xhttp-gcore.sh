@@ -1179,68 +1179,98 @@ gcore_apply_cdn() {
     gcore_validate_cdn_resources
 }
 
-normalize_websocket_path() {
-    local path=${1:-}
-    while [[ "${path}" =~ ^/(ws|websocket)-/(ws|websocket)- ]]; do
-        path="/${path#/*-/}"
-    done
-    if [[ "${path}" =~ ^/(ws|websocket)- ]]; then
-        path="/ws-${path#/*-}"
-    elif [[ -n "${path}" ]]; then
-        path="/ws-${path#/}"
-    else
-        path="/ws-$(openssl rand -hex 12)"
-    fi
-    path="${path%/}"
-    printf '%s\n' "${path}"
-}
-
 collect_install_inputs() {
     PROTOCOL="gcore"
     BACKEND="xray"
     CDN_PROVIDER="gcore"
 
-    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
-    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
-    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
-    choose_google_egress_mode
+    params_declare XHTTP_NODE_NAME --required \
+        --label '节点名（客户端展示名）' --default "${DEFAULT_XHTTP_NODE_NAME}" \
+        --check params_check_node_name
+    params_declare VLESS_UUID \
+        --label '节点 UUID（留空自动生成）' --default-fn params_default_uuid --check validate_uuid
+    params_declare VLESS_CDN_DOMAIN --required \
+        --label '客户端连接的 CDN 节点域名' \
+        --normalize normalize_domain --check validate_domain
+    params_declare GCORE_ORIGIN_DOMAIN --required \
+        --label 'VPS 回源解析的源站域名' \
+        --normalize normalize_domain --check validate_domain
+    params_declare GCORE_API_TOKEN --required --secret \
+        --label 'Gcore API Token（CDN 与 Managed DNS 权限）' --check params_check_gcore_token
+    params_declare GLOBALPING_TOKEN --required --secret \
+        --label 'Globalping Access Token' --check validate_globalping_token
+    params_declare WEBSOCKET_PATH \
+        --label 'WebSocket 路径（留空自动生成）' --default-fn params_default_websocket_path \
+        --normalize normalize_websocket_path --check validate_xhttp_path
+    params_declare XRAY_WEBSOCKET_LOOPBACK_PORT \
+        --label '本机回环端口' --default "${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}" \
+        --check validate_loopback_port
 
-    info "Gcore 模式需要两个不同子域名：CDN 节点域名用于客户端连接，源站域名用于 VPS 真实回源与证书。"
-    VLESS_CDN_DOMAIN=$(normalize_domain "${VLESS_CDN_DOMAIN:-$(prompt_value "客户端连接的 CDN 节点域名" "")}")
-    validate_domain "${VLESS_CDN_DOMAIN}" || die "VLESS_CDN_DOMAIN 无效"
+    params_declare SUBSCRIPTION_MODE --required \
+        --label '订阅输出：link（不部署）/deploy（本机订阅）' --default deploy \
+        --normalize normalize_subscription_mode
+    params_declare SUBSCRIPTION_DOMAIN --when params_when_subscription_enabled --required \
+        --label '订阅链接完整域名（可复用 CDN 节点域名）' \
+        --normalize normalize_domain --check validate_domain
+    params_declare SUB_DOWNLOAD_NAME --required \
+        --label '订阅文件名（不含 .yaml）' --default "${DEFAULT_SUB_DOWNLOAD_NAME}" \
+        --normalize normalize_sub_download_name --check validate_sub_download_name
+    params_declare ENABLE_MONTHLY_QUOTA \
+        --label '按用户月度配额：0=不启用（默认），1=启用' --default 0 \
+        --check params_check_quota_toggle
+    params_declare MONTHLY_QUOTAS_GB --when params_when_quota_enabled --type json_object \
+        --label '用户与月度配额 JSON（GB，0 表示不限量）' \
+        --normalize normalize_monthly_quotas
+    params_declare QUOTA_TOKEN_OVERRIDES --when params_when_quota_enabled --type json_object \
+        --label '可选 Token 覆盖 JSON（仅写要覆盖的用户）' --default '{}'
+    params_declare QUOTA_START_DATE --when params_when_quota_enabled \
+        --label 'VPS 开通日期 YYYY-MM-DD（配额周期起点，留空用今天）' \
+        --check validate_quota_start_date
+    params_declare ALLOWED_TOKENS --when params_when_subscription_enabled --type json_object \
+        --label '订阅用户 Token 字典 {"用户":"token"}（启用配额时作为种子 Token）' \
+        --normalize params_normalize_allowed_tokens
 
-    GCORE_ORIGIN_DOMAIN=$(normalize_domain "${GCORE_ORIGIN_DOMAIN:-$(prompt_value "VPS 回源解析的源站域名" "")}")
-    validate_domain "${GCORE_ORIGIN_DOMAIN}" || die "GCORE_ORIGIN_DOMAIN 无效"
+    params_declare VPS_PUBLIC_IPV4 \
+        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --check validate_ipv4
+    params_declare TCP_ACCELERATION \
+        --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
+        --normalize normalize_tcp_acceleration
+    params_declare REBOOT_SCHEDULE_MODE \
+        --label '定时重启：1=每天 04:00，2=自定义小时，3=不配置' --default 1 \
+        --check params_check_reboot_mode
+    params_declare REBOOT_HOUR \
+        --label '自定义重启小时（0-23，仅模式 2 需要）' --check params_check_hour
+}
 
+params_cross_gcore() {
     [[ "${VLESS_CDN_DOMAIN}" != "${GCORE_ORIGIN_DOMAIN}" ]] \
-        || die "CDN 节点域名与源站域名不能相同"
+        || params_error 'CDN 节点域名与源站域名不能相同'
+    if [[ "${SUBSCRIPTION_MODE}" != "link" ]]; then
+        [[ "${SUBSCRIPTION_DOMAIN}" != "${GCORE_ORIGIN_DOMAIN}" ]] \
+            || params_error '订阅链接域名不能与源站域名相同'
+        if [[ "${ENABLE_MONTHLY_QUOTA}" != "1" && -z "${ALLOWED_TOKENS}" ]]; then
+            params_error '未启用月度配额时必须提供 ALLOWED_TOKENS（{"用户":"token"}）'
+        fi
+    fi
+    if [[ "${REBOOT_SCHEDULE_MODE}" == "2" && -z "${REBOOT_HOUR}" ]]; then
+        params_error 'REBOOT_SCHEDULE_MODE=2 时必须提供 REBOOT_HOUR（0-23）'
+    fi
+}
+
+apply_install_inputs() {
+    choose_google_egress_mode
     XHTTP_ORIGIN_DOMAIN=${GCORE_ORIGIN_DOMAIN}
-
-    info "Gcore 模式需要具有 CDN 与 Managed DNS 权限的 API Token。"
-    gcore_collect_api_token
-
-    info "Gcore 模式通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器发现真实 DNS 入口，并使用三网 eyeball 探针定向测速。"
+    if [[ "${SUBSCRIPTION_MODE}" == "link" ]]; then
+        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
+        ALLOWED_TOKENS=""
+        quota_apply_settings 0
+    else
+        quota_apply_settings "${ENABLE_MONTHLY_QUOTA}"
+        quota_enabled || apply_allowed_tokens_params
+    fi
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
-
-    WEBSOCKET_PATH=$(normalize_websocket_path "${WEBSOCKET_PATH:-}")
-    validate_xhttp_path "${WEBSOCKET_PATH}" || die "WEBSOCKET_PATH 无效"
-
-    XRAY_WEBSOCKET_LOOPBACK_PORT=${XRAY_WEBSOCKET_LOOPBACK_PORT:-${DEFAULT_XRAY_WEBSOCKET_LOOPBACK_PORT}}
-    validate_loopback_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" || die "WebSocket 本机端口无效"
-
-    choose_subscription_mode
-    if subscription_enabled; then
-        collect_subscription_link_domain
-        choose_subscription_download_name
-        choose_monthly_quota 1
-        quota_enabled || ensure_allowed_tokens 1
-    else
-        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
-        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-        ALLOWED_TOKENS=""
-        choose_monthly_quota 0
-    fi
 }
 
 load_state() {
@@ -1698,7 +1728,6 @@ cleanup_partial_install() {
 }
 
 install_all() {
-    [[ -t 0 || "${FORCE_INTERACTIVE:-0}" == "1" ]] || die "安装必须在交互终端中执行"
     CDN_PROVIDER="gcore"
     BACKEND="xray"
     PROTOCOL="gcore"
@@ -1708,6 +1737,9 @@ install_all() {
 
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
+    install_failure_begin gcore
+    # 参数预检先于任何系统修改（只会安装 jq/ca-certificates）。
+    install_params_preflight gcore
     check_install_conflicts
     install_progress_begin gcore
     install_progress_stage packages
@@ -1719,7 +1751,7 @@ install_all() {
     configure_tcp_acceleration
     configure_daily_reboot
     install_progress_stage inputs
-    collect_install_inputs
+    apply_install_inputs
     gcore_prepare_origin
     install_progress_stage services
     configure_ufw
@@ -1746,6 +1778,8 @@ install_all() {
     subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
     save_state
     gcore_clear_api_token
+    # 从这里开始只剩展示类命令：失败不再算“安装失败”。
+    INSTALL_FAILURE_ARMED=0
     show_subscription
     success "easy_all Gcore CDN 精选节点安装完成"
     show_tcp_acceleration_status

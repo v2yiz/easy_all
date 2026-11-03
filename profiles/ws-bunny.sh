@@ -127,44 +127,86 @@ EOF
     mv -f -- "${temp}" "${STATE_FILE}"
 }
 
+bunny_write_secret_file() {
+    local value=$1 path=$2 label=$3 temp
+    [[ -n "${value}" ]] \
+        || die "缺少 ${label}：本次安装由 --params 提供参数，请在参数文件中填写"
+    temp=$(mktemp "${path}.XXXXXX") || die "创建 ${label} 暂存文件失败"
+    printf '%s\n' "${value}" >"${temp}" || die "写入 ${label} 失败"
+    chmod 0600 "${temp}"
+    mv -f -- "${temp}" "${path}"
+}
+
 bunny_prepare_credentials() {
     install -d -m 0700 "${BUNNY_RECOVERY_DIR}"
+    local key=${BUNNY_API_KEY:-} token=${CLOUDFLARE_DNS_TOKEN:-}
     if [[ ! -s "${BUNNY_KEY_FILE}" ]]; then
-        local key; key=$(prompt_secret 'Bunny Account API Key') || die '缺少 Bunny API Key'
-        printf '%s\n' "${key}" >"${BUNNY_KEY_FILE}"
+        [[ -n "${key}" ]] || key=$(prompt_secret 'Bunny Account API Key') || die '缺少 Bunny API Key'
+        bunny_write_secret_file "${key}" "${BUNNY_KEY_FILE}" 'Bunny Account API Key'
     fi
     if [[ ! -s "${BUNNY_CLOUDFLARE_TOKEN_FILE}" ]]; then
-        local token; token=$(prompt_secret 'Cloudflare DNS Token') || die '缺少 Cloudflare Token'
-        printf '%s\n' "${token}" >"${BUNNY_CLOUDFLARE_TOKEN_FILE}"
+        [[ -n "${token}" ]] \
+            || token=$(prompt_secret 'Cloudflare DNS Token') || die '缺少 Cloudflare Token'
+        bunny_write_secret_file "${token}" "${BUNNY_CLOUDFLARE_TOKEN_FILE}" 'Cloudflare DNS Token'
     fi
     chmod 0600 "${BUNNY_KEY_FILE}" "${BUNNY_CLOUDFLARE_TOKEN_FILE}"
 }
 
-bunny_collect_inputs() {
-    install -d -m 0700 "${BUNNY_RECOVERY_DIR}"
-    if [[ -f "${BUNNY_CONFIG}" ]]; then
-        CLOUDFLARE_ZONE=$(jq -r .zone "${BUNNY_CONFIG}")
-        ORIGIN_DOMAIN=$(jq -r .origin "${BUNNY_CONFIG}")
-        CDN_DOMAIN=$(jq -r .cdn "${BUNNY_CONFIG}")
-        BUNNY_PULL_NAME=$(jq -r .name "${BUNNY_CONFIG}")
-        BUNNY_BANDWIDTH_GB=$(jq -r .bandwidth_gb "${BUNNY_CONFIG}")
-        ORIGIN_HEADER_SECRET=$(jq -r .secret "${BUNNY_CONFIG}")
-    else
-        CLOUDFLARE_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' '')")
-        ORIGIN_DOMAIN=$(normalize_domain "$(prompt_value '源站域名' "origin.${CLOUDFLARE_ZONE}")")
-        CDN_DOMAIN=$(normalize_domain "$(prompt_value 'CDN 节点/订阅域名' "cdn.${CLOUDFLARE_ZONE}")")
-        BUNNY_PULL_NAME=${BUNNY_PULL_NAME:-"easyall$(openssl rand -hex 6)"}
-        ORIGIN_HEADER_SECRET=$(generate_secret)
-        BUNNY_BANDWIDTH_GB=$(prompt_value 'Pull Zone 月流量限制（GB）' 500)
-    fi
-    VPS_PUBLIC_IPV4=${VPS_IP:-$(detect_public_ipv4)} \
-        || die '公网 IPv4 探测失败；可用 VPS_IP=<IPv4> 指定'
+collect_install_inputs() {
+    params_declare CLOUDFLARE_ZONE --required \
+        --label 'Cloudflare 根 Zone（如 example.com）' \
+        --normalize normalize_domain --check validate_domain
+    params_declare ORIGIN_DOMAIN --required \
+        --label '源站域名（DNS only A 记录）' --default "origin.${CLOUDFLARE_ZONE}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare CDN_DOMAIN --required \
+        --label 'CDN 节点/订阅域名（DNS only CNAME）' --default "cdn.${CLOUDFLARE_ZONE}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare BUNNY_API_KEY --required --secret \
+        --label 'Bunny Account API Key' --check params_check_no_space
+    params_declare CLOUDFLARE_DNS_TOKEN --required --secret \
+        --label 'Cloudflare DNS Token' --check params_check_no_space
+    params_declare BUNNY_PULL_NAME \
+        --label 'Bunny Pull Zone 名称（留空自动生成）' --default-fn params_default_bunny_pull_name \
+        --check params_check_bunny_pull_name
+    params_declare BUNNY_BANDWIDTH_GB \
+        --label 'Pull Zone 月流量限制 GB（0 表示不限）' --default 500 \
+        --check params_check_nonnegative_int
+    params_declare ORIGIN_HEADER_SECRET --secret \
+        --label '回源校验密钥（留空自动生成）' --default-fn params_default_secret \
+        --check params_check_worker_secret
+    params_declare VLESS_UUID \
+        --label '节点 UUID（留空自动生成）' --default-fn params_default_uuid --check validate_uuid
+    params_declare OWNER_TOKEN \
+        --label '订阅 Token（留空自动生成）' --default-fn params_default_secret \
+        --check params_check_token
+    params_declare WEBSOCKET_PATH \
+        --label 'WebSocket 路径（留空自动生成）' --default-fn params_default_websocket_path \
+        --check params_check_websocket_path
+    params_declare VPS_PUBLIC_IPV4 \
+        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --check validate_ipv4
+    params_declare TCP_ACCELERATION \
+        --label 'TCP 加速：skyline（默认）或 bbrv3（仅 amd64）' --default skyline \
+        --normalize normalize_tcp_acceleration
+}
+
+params_cross_bunny_ws() {
+    [[ "${ORIGIN_DOMAIN}" != "${CDN_DOMAIN}" ]] \
+        || params_error '源站域名与 CDN 节点域名必须不同'
+    case "${ORIGIN_DOMAIN}" in
+    *".${CLOUDFLARE_ZONE}") ;;
+    *) params_error "源站域名必须属于 ${CLOUDFLARE_ZONE}：${ORIGIN_DOMAIN}" ;;
+    esac
+    case "${CDN_DOMAIN}" in
+    *".${CLOUDFLARE_ZONE}") ;;
+    *) params_error "CDN 节点域名必须属于 ${CLOUDFLARE_ZONE}：${CDN_DOMAIN}" ;;
+    esac
+}
+
+apply_install_inputs() {
     bunny_prepare_credentials
-    VLESS_UUID=${VLESS_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}
-    OWNER_TOKEN=${OWNER_TOKEN:-$(generate_secret)}
     ALLOWED_TOKENS="[\"${OWNER_TOKEN}\"]"
-    WEBSOCKET_PATH=${WEBSOCKET_PATH:-"/ws-$(openssl rand -hex 16)"}
-    TCP_ACCELERATION=${TCP_ACCELERATION:-skyline}
     SUB_DOWNLOAD_NAME=EASY_ALL
     STATE_VERSION=0
 }
@@ -332,6 +374,9 @@ install_all() {
     require_systemd
     check_platform arm64
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
+    install_failure_begin bunny-ws
+    # 参数预检先于任何系统修改（只会安装 jq/ca-certificates）。
+    install_params_preflight bunny-ws
     # bunny 的源站 nginx 固定监听 80（default_server）与 443，端口占用必须提前拦住。
     prepare_fresh_install 80 443
     install_progress_begin bunny-ws
@@ -349,7 +394,7 @@ install_all() {
     [[ -e "${BACKUP_DIR}/pre-install-nginx-default" || ! -e "${NGINX_DEFAULT_SITE}" ]] \
         || install -m 0600 "${NGINX_DEFAULT_SITE}" "${BACKUP_DIR}/pre-install-nginx-default"
     install_progress_stage inputs
-    bunny_collect_inputs
+    apply_install_inputs
     bunny_save_config
     install_progress_stage cloud
     apply_cloud_resources
@@ -375,6 +420,8 @@ install_all() {
     install_progress_clear
     python3 "${SCRIPT_DIR}/bunny-api.py" mark-committed --journal "${BUNNY_JOURNAL}" >/dev/null 2>&1 || true
     release_runtime_write_lock
+    # 从这里开始只剩展示类命令：失败不再算“安装失败”。
+    INSTALL_FAILURE_ARMED=0
     show_status
     show_subscription
     if [[ "$(dpkg --print-architecture)" == amd64 ]]; then

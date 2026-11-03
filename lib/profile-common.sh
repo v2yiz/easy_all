@@ -41,6 +41,7 @@ download_https_file() {
 
 read_bilingual() {
     local label=$1 variable=$2 silent=${3:-0} input
+    params_assert_prompt_allowed "${label}"
     printf '%s\n' "${label}" >&2
     if [[ "${silent}" == "1" ]]; then
         read_prompt '> ' input 1
@@ -64,9 +65,45 @@ prompt_value() {
 
 prompt_secret() {
     local label=$1 value
+    params_assert_prompt_allowed "${label}"
     [[ -t 0 ]] || return 1
     read_bilingual "${label}，粘贴后按回车键；输入过程不会显示任何字符:" value 1
     printf '%s' "${value}"
+}
+
+# 安装参数全部来自 --params；安装期的“参数输入”交互直接失败。
+# 例外：确认类交互（例如失败后要不要清理）走 read_confirmation，不受此限制。
+params_assert_prompt_allowed() {
+    [[ "${PARAMS_LOADED:-0}" != "1" ]] || die \
+        "内部错误：本次安装由 --params 提供全部参数，安装流程不应再提问取值（${1:-未知提示}）；请把该字段补进参数文件"
+}
+
+# 只用于“是否清理 / 是否继续”这类确认，不会读进参数值。
+read_confirmation() {
+    local label=$1 variable=$2 input
+    printf '%s\n' "${label}" >&2
+    read_prompt '> ' input
+    printf -v "${variable}" '%s' "${input}"
+}
+
+# 安装参数预检：读取参数文件 → 逐字段赋值与校验 → 聚合报告。
+# 调用方须在第一次改动系统之前调用；--print-params 则只输出模板。
+install_params_preflight() {
+    local mode=${1:-$(install_current_mode)} file=${EASY_ALL_PARAMS_FILE:-}
+    if [[ "${EASY_ALL_PARAMS_PRINT:-0}" == "1" ]]; then
+        command -v jq >/dev/null 2>&1 \
+            || die "--print-params 需要 jq：sudo apt-get install -y jq"
+        params_template_begin "${mode}"
+        collect_install_inputs
+        params_finish
+        return 0
+    fi
+    [[ -n "${file}" ]] || die \
+        "安装参数必须通过 --params 提供：easy_all install --params <参数文件|->（用 --print-params --mode <模式> 生成模板）"
+    params_install_dependencies
+    params_begin "${mode}" "${file}"
+    collect_install_inputs
+    params_finish
 }
 
 restore_state_file() {
@@ -356,6 +393,121 @@ install_progress_clear() {
     rmdir -- "$(dirname -- "${file}")" 2>/dev/null || true
 }
 
+# --- 安装失败诊断与清理确认 ------------------------------------------------
+# 中途失败时要说清楚“哪个阶段、哪一行、什么命令”，并由用户决定是否清理。
+
+INSTALL_FAILURE_ARMED=0
+INSTALL_FAILURE_HANDLED=0
+INSTALL_FAILURE_REPORTED=0
+INSTALL_FAILURE_MODE=""
+INSTALL_FAILURE_STATUS=""
+INSTALL_FAILURE_FILE=""
+INSTALL_FAILURE_LINE=""
+INSTALL_FAILURE_COMMAND=""
+
+install_stage_label() {
+    case "$1" in
+    start) printf '启动与系统检查' ;;
+    packages) printf '安装系统依赖' ;;
+    tcp) printf 'TCP 加速与内核' ;;
+    inputs) printf '应用安装参数' ;;
+    core) printf '准备协议核心' ;;
+    services) printf '服务、证书与防火墙' ;;
+    cloud) printf '云端资源' ;;
+    subscription) printf '生成订阅' ;;
+    state) printf '保存状态' ;;
+    "") printf '尚未开始' ;;
+    *) printf '%s' "$1" ;;
+    esac
+}
+
+# 在 install_all 开头调用：未被 if/|| 捕获的错误会记下首个失败点。
+install_failure_begin() {
+    INSTALL_FAILURE_MODE=${1:-${PROTOCOL:-}}
+    INSTALL_FAILURE_ARMED=1
+    INSTALL_FAILURE_HANDLED=0
+    INSTALL_FAILURE_REPORTED=0
+    trap 'install_failure_capture "$?" "${BASH_SOURCE[0]}" "${LINENO}" "${BASH_COMMAND}"' ERR
+}
+
+install_failure_capture() {
+    local status=$1 file=$2 line=$3 command=$4
+    [[ "${INSTALL_FAILURE_ARMED:-0}" == "1" ]] || return 0
+    if (( INSTALL_FAILURE_HANDLED != 0 )); then
+        return 0
+    fi
+    INSTALL_FAILURE_HANDLED=1
+    INSTALL_FAILURE_STATUS=${status}
+    INSTALL_FAILURE_FILE=${file}
+    INSTALL_FAILURE_LINE=${line}
+    INSTALL_FAILURE_COMMAND=${command}
+    return 0
+}
+
+install_failure_report() {
+    local stage stage_label started
+    [[ "${INSTALL_FAILURE_ARMED:-0}" == "1" ]] || return 0
+    [[ "${INSTALL_FAILURE_REPORTED:-0}" != "1" ]] || return 0
+    INSTALL_FAILURE_REPORTED=1
+    stage=$(install_progress_field STAGE 2>/dev/null || true)
+    started=$(install_progress_field STARTED_AT 2>/dev/null || true)
+    stage_label=$(install_stage_label "${stage}")
+    printf '\n' >&2
+    printf '=================== 安装失败 ===================\n' >&2
+    printf '模式：%s\n' "${INSTALL_FAILURE_MODE:-$(install_current_mode)}" >&2
+    if [[ -n "${stage}" ]]; then
+        printf '失败阶段：%s（%s）\n' "${stage}" "${stage_label}" >&2
+    else
+        printf '失败阶段：尚未开始（环境检查或参数预检）\n' >&2
+    fi
+    local location="${EASY_ALL_LAST_ERROR_SOURCE:-}"
+    if [[ -z "${location}" && -n "${INSTALL_FAILURE_FILE:-}" ]]; then
+        location="${INSTALL_FAILURE_FILE}:${INSTALL_FAILURE_LINE}"
+    fi
+    if [[ -n "${location}" ]]; then
+        printf '失败位置：%s\n' "${location}" >&2
+    fi
+    if [[ -n "${INSTALL_FAILURE_COMMAND:-}" ]]; then
+        printf '失败命令：%s\n' "${INSTALL_FAILURE_COMMAND}" >&2
+    fi
+    [[ -z "${INSTALL_FAILURE_STATUS:-}" ]] || printf '退出码：%s\n' "${INSTALL_FAILURE_STATUS}" >&2
+    if [[ -n "${EASY_ALL_LAST_ERROR:-}" ]]; then
+        printf '错误信息：%s\n' "${EASY_ALL_LAST_ERROR}" >&2
+    fi
+    [[ -z "${started}" ]] || printf '开始时间（UTC）：%s\n' "${started}" >&2
+    printf '===============================================\n' >&2
+}
+
+install_cleanup_perform() {
+    case "$1" in
+    # 已拍安装前快照：按快照回滚（同时移除本次新增文件）。
+    rollback) rollback_fresh_install || true ;;
+    # 快照未完成（或尚未拍）：只清理本次安装留下的本机残留。
+    partial) cleanup_partial_install || true ;;
+    esac
+}
+
+# 由用户决定是否清理；没有终端时保持原有自动清理（避免留下半配置机器）。
+install_cleanup_after_failure() {
+    local action=${1:-rollback} answer=""
+    if [[ -t 0 ]]; then
+        read_confirmation \
+            '是否清理本次安装的本机残留（已拍快照时回滚到安装前状态）？[Y/n]' answer \
+            || answer=""
+        if [[ -z "${answer}" || "${answer}" =~ ^[Yy] ]]; then
+            install_cleanup_perform "${action}"
+            # 失败路径一律写 stderr：退出时可能仍带着上层命令的输出重定向。
+            printf '%s\n' '已清理本次安装的本机残留；修正问题后可用同一份参数文件重试' >&2
+            return 0
+        fi
+        printf '%s\n' '已保留本次安装的本机改动（未清理）' >&2
+        residue_recovery_hint >&2 || true
+        return 0
+    fi
+    install_cleanup_perform "${action}"
+    printf '%s\n' '非交互环境（没有终端）：已自动清理本次安装的本机残留' >&2
+}
+
 install_state_dir_path() {
     printf '%s' "${EASY_ALL_GUARD_STATE_DIR:-${STATE_DIR:-/etc/easy_all}}"
 }
@@ -569,7 +721,7 @@ prepare_fresh_install() {
             # 让用户确认"残留是否属于本次选择的模式"，默认取消，避免按错误模式清理。
             warn "这些残留没有安装进度标记（旧版本遗留），无法自动判断所属模式。"
             if [[ -t 0 ]]; then
-                read_bilingual "若残留属于本次选择的 ${current:-(未知)} 模式，输入 y 按该模式清理；否则回车退出后指定模式 [y/N]:" answer
+                read_confirmation "若残留属于本次选择的 ${current:-(未知)} 模式，输入 y 按该模式清理；否则回车退出后指定模式 [y/N]:" answer
                 [[ "${answer}" =~ ^[Yy]$ ]] \
                     || die "$(printf '已取消。请先确认残留模式后执行：\n  sudo easy_all cleanup-partial --assume-mode <模式>\n可用写法：%s\n命令未注册时：\n  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>' "$(install_mode_choices)")"
             else
@@ -582,7 +734,7 @@ prepare_fresh_install() {
             return 0
         fi
         if [[ -t 0 ]]; then
-            read_bilingual '先清理残留再继续安装？[Y/n]:' answer
+            read_confirmation '先清理残留再继续安装？[Y/n]:' answer
             [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]] \
                 || die "已取消；稍后可执行 sudo easy_all cleanup-partial 清理"
         else
@@ -601,7 +753,7 @@ prepare_fresh_install() {
         warn "端口被 nginx 占用（只启用了 Debian 默认站点，且没有任何 easy_all 安装标记）。"
         warn "无法确认它属于上次 easy_all 安装，还是你改作自用的默认站点。"
         if [[ -t 0 ]]; then
-            read_bilingual '确认这是上次安装残留、停止 nginx 并继续安装？[y/N]:' answer
+            read_confirmation '确认这是上次安装残留、停止 nginx 并继续安装？[y/N]:' answer
             [[ "${answer}" =~ ^[Yy]$ ]] \
                 || die "已取消；若确认是残留可执行 sudo systemctl disable --now nginx 后重试"
         else

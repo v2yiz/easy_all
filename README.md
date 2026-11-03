@@ -2,8 +2,10 @@
 
 当前源码版本：[2.3.5](CHANGELOG.md#235-更新说明2026-11-03)。
 
-`easy_all` 是面向全新 Debian 12/13 VPS 的单节点交互安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
+`easy_all` 是面向全新 Debian 12/13 VPS 的单节点安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。
+
+安装参数由一份 JSON 字典一次性提供（见 [安装参数](#安装参数)），安装过程中不再提问。
 
 只支持 IPv4。同一台 VPS 只能安装一种模式，并应作为不承载其他业务的专用服务器。
 
@@ -56,13 +58,13 @@ SSH 保持现状不改。不启用用户配额，订阅只有一个 owner Token�
 
 前置准备详见 [前置准备手册](docs/preparation-guide.md)。
 
-直连 Reality 安装时会选择订阅输出，默认不部署订阅：
+直连 Reality 用 `SUBSCRIPTION_MODE` 选择订阅输出，默认 `link`（不部署订阅）：
 
-| 选项 | 适用情况 | 需要准备 |
+| `SUBSCRIPTION_MODE` | 适用情况 | 需要准备 |
 | --- | --- | --- |
-| **1. 仅节点（默认）** | 只需要节点链接，自己维护订阅 | 无 |
-| **2. 本机订阅** | 只有当前这一台直连节点 | 一个 Cloudflare 一级订阅域名、API Token |
-| **3. Worker 订阅聚合** | 多台直连 Reality 节点统一下发，仍希望走 Workers | 同 Zone 两个一级域名（公开订阅域名 + 私有节点源域名）、具备 Workers Scripts Write 的 API Token |
+| **`link`（默认）** | 只需要节点链接，自己维护订阅 | 无 |
+| **`deploy`** | 只有当前这一台直连节点 | `SUBSCRIPTION_DOMAIN`、`CLOUDFLARE_API_TOKEN` |
+| **`worker`** | 多台直连 Reality 节点统一下发，仍希望走 Workers | 同 Zone 两个一级域名（`SUBSCRIPTION_DOMAIN` + `SUB_SOURCE_DOMAIN`）、具备 Workers Scripts Write 的 API Token |
 
 Worker 聚合只在其中一台 VPS 部署：公开订阅域名绑定 Worker，私有节点源域名由 Cloudflare 代理回
 本机 `8443` 且仅允许 Cloudflare 回源，Nginx 继续是 Token 与配额的唯一真源；其余直连节点以
@@ -98,21 +100,30 @@ SSH 会话，直到重启后确认新会话可以登录。服务商的安全组�
 ssh <登录用户>@<VPS公网IP> -p <SSH端口>
 ```
 
-看到 VPS 的 shell 提示符后运行：
+看到 VPS 的 shell 提示符后，先用 bootstrap 生成参数模板（它会克隆代码并把参数原样转给
+`easy_all`；`--print-params` 的 JSON 走 stdout，字段说明走 stderr）：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) \
+    install --print-params --mode combined > params.json
+chmod 600 params.json     # 文件里有 API Token
 ```
 
-请原样执行，不要改成 `curl ... | sudo bash`。安装器需要持续从当前终端读取选项，并在需要时
-单独请求 `sudo` 权限。
+请原样执行，不要改成 `curl ... | sudo bash`：bootstrap 需要在当前终端里请求 `sudo` 权限。
+填好参数后先校验、再安装（命令注册之后也可以直接用 `sudo easy_all install ...`）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) \
+    install --check-params params.json
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) \
+    install --params params.json
+```
 
 安装会连续执行 `apt` 升级、内核与 TCP 加速准备，可能持续十几分钟。期间 SSH 空闲超时会打断
 安装，因此建议在 `tmux` 或 `screen` 中执行：
 
 ```bash
-sudo apt-get install -y tmux && tmux new -s easy_all
-# 掉线后重新登录：tmux attach -t easy_all
+tmux new -s easy_all    # 掉线后重新登录：tmux attach -t easy_all
 ```
 
 若安装仍被中断，重新登录后先执行 `sudo easy_all cleanup-partial` 清理本机残留（不改动
@@ -120,24 +131,112 @@ Cloudflare/Gcore/Bunny 云端资源），再重新执行安装命令。命令尚
 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial`
 （不要写成 `sudo bash <(...)`：sudo 会关闭该文件描述符，脚本路径打不开；`bootstrap.sh` 自己会请求 sudo）。
 
-首次单用户安装可按以下方式选择：
+## 安装参数
 
-| 提示 | 建议 |
+安装只有一条路径：全部参数来自一个 JSON 字典，安装前一次性校验，安装期零交互。
+
+```bash
+# 1. 生成模板（JSON 写 stdout，字段说明写 stderr）
+sudo easy_all install --print-params --mode combined > params.json
+chmod 600 params.json     # 文件里有 API Token
+
+# 2. 填好参数后先校验（不改动本机；一次报出全部错误）
+sudo easy_all install --check-params params.json
+
+# 3. 校验通过后安装
+sudo easy_all install --params params.json
+
+# 不落盘：从标准输入读取（- 必须配合 --mode，因为要在读取前选中模式）
+sudo easy_all install --params - --mode combined < params.json
+```
+
+模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `gcore` / `combined`（也接受菜单序号 `1`~`5`）。
+参数文件里 `params` 的键就是安装流程使用的变量名，全部可以通过 `--print-params` 看到；`""`、`null`
+或缺省表示未提供，必填项缺省会直接报错。示例（组合模式）：
+
+```json
+{
+  "schema_version": 1,
+  "mode": "combined",
+  "params": {
+    "CF_ZONE": "example.com",
+    "DIRECT_DOMAIN": "node.example.com",
+    "CF_NODE_DOMAIN": "cf.example.com",
+    "CF_ORIGIN_DOMAIN": "cf-origin.example.com",
+    "GCORE_NODE_DOMAIN": "gcore.example.com",
+    "GCORE_ORIGIN_DOMAIN": "gcore-origin.example.com",
+    "SUBSCRIPTION_DOMAIN": "sub.example.com",
+    "CLOUDFLARE_API_TOKEN": "<Cloudflare API Token>",
+    "GCORE_API_TOKEN": "<Gcore API Token>",
+    "GLOBALPING_TOKEN": "<Globalping Token>",
+    "ALLOWED_TOKENS": {"owner": "<8-128 位 URL 安全 Token>"},
+    "DIRECT_NODE_NAME": "🇺🇸直连",
+    "CF_NODE_PREFIX": "🇺🇸CF",
+    "GCORE_NODE_NAME": "🇺🇸GCore",
+    "SUB_DOWNLOAD_NAME": "EASY_ALL"
+  }
+}
+```
+
+上面 4 个名称字段可以省略（默认值就是示例里的值）；`CF_NODE_PREFIX` 会自动追加 `1`~`6`
+生成 6 个 Cloudflare 节点名，因此它不能与直连/Gcore 节点名重复。各模式的名称字段：
+
+| 模式 | 节点名字段 | 下载文件名字段 |
+| --- | --- | --- |
+| reality | `NODE_NAME`（默认 `MY_REALITY`） | `SUB_DOWNLOAD_NAME`（默认 `EASY_ALL`） |
+| cloudflare-streamup | `XHTTP_NODE_NAME`（默认 `VLESS_XHTTP_H2`） | `SUB_DOWNLOAD_NAME`（默认 `EASY_ALL`） |
+| gcore | `XHTTP_NODE_NAME`（默认 `VLESS_XHTTP_H2`） | `SUB_DOWNLOAD_NAME`（默认 `EASY_ALL`） |
+| combined | `DIRECT_NODE_NAME` / `CF_NODE_PREFIX` / `GCORE_NODE_NAME` | `SUB_DOWNLOAD_NAME`（默认 `EASY_ALL`） |
+| bunny-ws | 无（节点名固定 `EASY_ALL`） | 无（固定 `EASY_ALL`） |
+
+- Token 直接写在字典里（不要引用外部文件或环境变量）；文件必须是 root 所有、权限 `600` 的普通
+  文件，不接受符号链接；用 `--params -` 时可以完全不落盘。
+- 校验前唯一的系统改动是补装 `jq` 与 `ca-certificates`（参数层需要 jq）；校验失败不会改动其他任何东西。
+- 返回码非零时按报错列表修正后重跑 `--check-params`，直到零错误；安装中途不会再出现新的提问。
+- 安装期不再提问取值；唯一的交互是**失败后的清理确认**（见下）。
+
+### 安装失败时
+
+退出前会打印失败诊断，说明失败位置：
+
+```text
+=================== 安装失败 ===================
+模式：combined
+失败阶段：services（服务、证书与防火墙）
+失败位置：profiles/combined.sh:1051
+失败命令：curl -sS --retry 2 ... /zones
+退出码：1
+错误信息：Cloudflare API 请求失败：GET /zones
+开始时间（UTC）：2026-11-03T09:20:00Z
+===============================================
+```
+
+如果本次安装已经在本机留下改动（写入安装进度标记之后），会询问：
+
+```text
+是否清理本次安装的本机残留（已拍快照时回滚到安装前状态）？[Y/n]
+```
+
+- 直接回车或 `y`：清理本机残留；已拍安装前快照时按快照回滚（默认，最安全）。
+- 输入 `n`：保留现场便于排查，之后按提示执行 `sudo easy_all cleanup-partial` 清理。
+- 没有终端（例如自动化调用 `--params -`）时不等待输入，直接清理，避免留下半配置机器。
+
+失败阶段同样记录在 `/var/lib/easy_all/install-progress.env` 的 `STAGE` 字段。
+
+常用字段（完整列表以 `--print-params` 输出为准）：
+
+| 字段 | 说明 |
 | --- | --- |
-| 安装模式 | 直连良好选 `1`；IP 被封、直连不佳或需要纯 XHTTP 选 `2`；Bunny WS 自动调度域名选 `3`；Gcore CDN 边缘入口选 `4`；一台机器要直连与两个 CDN 入口选 `5` |
-| TCP 加速 | 默认自动配置 Skyline Speeder（安装过程不再提示，amd64 自动完成） |
-| 订阅输出 | 直接回车不部署订阅；单机自用选 `2` 部署本机订阅；多台直连节点统一走 Workers 下发选 `3` |
-| 月度用户配额 | 选 `1` 或直接回车，不启用 |
-| 独立 Worker 兜底 | 按需启用；必须使用区别于节点域名和订阅域名的同 Zone 一级域名 |
-| 定时重启 | 接受每日 `04:00` 重启选 `1`；不需要则选 `3` |
-| Reality SNI/目标 | 直接回车使用已验证默认值 |
-| Reality 动态端口 | 直接回车 |
-
-提示中的 `[值]` 是直接回车采用的默认值。Token 和密码输入时不会显示字符。
+| `SUBSCRIPTION_MODE` | `link` 仅节点（默认）/ `deploy` 本机订阅 / `worker` Worker 聚合（Reality）；Cloudflare 只用 `link`/`deploy` |
+| `ENABLE_MONTHLY_QUOTA` | `0` 不启用（默认）/ `1` 按用户月度配额，配合 `MONTHLY_QUOTAS_GB`、`QUOTA_TOKEN_OVERRIDES`、`QUOTA_START_DATE` |
+| `ALLOWED_TOKENS` | 订阅用户字典 `{"用户":"token"}`；启用配额时作为种子 Token |
+| `TCP_ACCELERATION` | `skyline`（默认）/ `bbrv3` |
+| `REBOOT_SCHEDULE_MODE` | `1` 每天 04:00 重启（默认）/ `2` 自定义 `REBOOT_HOUR` / `3` 不配置 |
+| `NODE_HOST` | Reality 客户端连接地址（IPv4 或灰云域名）；留空自动探测公网 IPv4 |
 
 ## 完成安装
 
-安装末尾按提示选择是否立即重启。若选择跳过，再手动执行：
+安装末尾会打印重启提示（不再询问是否立即重启）。需要重启时手动执行：
 
 ```bash
 sudo reboot
@@ -213,8 +312,8 @@ sudo easy_all self-update
 sudo easy_all apply-cloud
 ```
 
-按提示输入 Cloudflare API Token，完成后在客户端刷新该订阅（同一链接会按客户端自动下发 YAML）。尚未
-配置独立 Worker 兜底时，改用 `sudo easy_all edit-sub` 并在交互流程中启用。
+该命令会按提示输入 Cloudflare API Token，完成后在客户端刷新该订阅（同一链接会按客户端自动下发 YAML）。
+独立 Worker 兜底可在安装参数里用 `WORKER_BACKUP_DOMAIN` 指定，或之后用 `sudo easy_all edit-sub` 启用。
 
 全部命令、用户管理、配额、证书、状态文件和卸载规则见[运维指南](docs/operations-guide.md)。
 

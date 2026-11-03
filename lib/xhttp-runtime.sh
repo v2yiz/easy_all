@@ -64,6 +64,39 @@ generate_xhttp_path() {
     printf '/vless-%s' "$(openssl rand -hex 12)"
 }
 
+# 路径规范化由安装参数层与交互更新共用：各 Profile 不得再各自定义一份。
+normalize_xhttp_path() {
+    local path=${1:-}
+    while [[ "${path}" =~ ^/(xhttp|vless)-/(xhttp|vless)- ]]; do
+        path="/${path#/*-/}"
+    done
+    if [[ "${path}" =~ ^/(xhttp|vless)- ]]; then
+        path="/xhttp-${path#/*-}"
+    elif [[ -n "${path}" ]]; then
+        path="/xhttp-${path#/}"
+    else
+        path="/xhttp-$(openssl rand -hex 12)"
+    fi
+    path="${path%/}"
+    printf '%s\n' "${path}"
+}
+
+normalize_websocket_path() {
+    local path=${1:-}
+    while [[ "${path}" =~ ^/(ws|websocket)-/(ws|websocket)- ]]; do
+        path="/${path#/*-/}"
+    done
+    if [[ "${path}" =~ ^/(ws|websocket)- ]]; then
+        path="/ws-${path#/*-}"
+    elif [[ -n "${path}" ]]; then
+        path="/ws-${path#/}"
+    else
+        path="/ws-$(openssl rand -hex 12)"
+    fi
+    path="${path%/}"
+    printf '%s\n' "${path}"
+}
+
 source_state_file() {
     [[ -f "${STATE_FILE}" ]] || die "easy_all XHTTP 状态文件不存在：${STATE_FILE}"
     # The state file must declare its own version; clear any value left behind by

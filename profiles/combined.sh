@@ -125,70 +125,124 @@ validate_node_name() {
 }
 
 collect_install_inputs() {
-    local domain
-    CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' '')")
-    validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
+    params_declare CF_ZONE --required \
+        --label 'Cloudflare 根 Zone（如 example.com）' \
+        --normalize normalize_domain --check validate_domain
+    params_declare DIRECT_DOMAIN --required \
+        --label '直连节点域名' --default "node.${CF_ZONE}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare CF_NODE_DOMAIN --required \
+        --label 'Cloudflare 节点域名（橙云）' --default "cf.${CF_ZONE}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare CF_ORIGIN_DOMAIN --required \
+        --label 'Cloudflare 回源域名（橙云）' --default "cf-origin.${CF_ZONE}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare GCORE_NODE_DOMAIN --required \
+        --label 'Gcore 节点域名（灰云 CNAME）' --default "gcore.${CF_ZONE}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare GCORE_ORIGIN_DOMAIN --required \
+        --label 'Gcore 回源域名（灰云 A）' --default "gcore-origin.${CF_ZONE}" \
+        --normalize normalize_domain --check validate_domain
+    params_declare SUBSCRIPTION_DOMAIN --required \
+        --label '订阅域名（橙云）' --default "sub.${CF_ZONE}" \
+        --normalize normalize_domain --check validate_domain
 
-    DIRECT_DOMAIN=$(normalize_domain "$(prompt_value '直连节点域名' "node.${CF_ZONE}")")
-    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'Cloudflare 节点域名（橙云）' "cf.${CF_ZONE}")")
-    CF_ORIGIN_DOMAIN=$(normalize_domain "$(prompt_value 'Cloudflare 回源域名（橙云）' "cf-origin.${CF_ZONE}")")
-    GCORE_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'Gcore 节点域名（灰云 CNAME）' "gcore.${CF_ZONE}")")
-    GCORE_ORIGIN_DOMAIN=$(normalize_domain "$(prompt_value 'Gcore 回源域名（灰云 A）' "gcore-origin.${CF_ZONE}")")
-    SUBSCRIPTION_DOMAIN=$(normalize_domain "$(prompt_value '订阅域名（橙云）' "sub.${CF_ZONE}")")
-    for domain in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
-        "${GCORE_NODE_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${SUBSCRIPTION_DOMAIN}"; do
-        validate_domain "${domain}" || die "域名无效：${domain}"
-        [[ "${domain}" == *".${CF_ZONE}" ]] || die "域名必须属于 ${CF_ZONE}：${domain}"
-    done
-    [[ "$(printf '%s\n' "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
-        "${GCORE_NODE_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" | sort -u | wc -l | tr -d ' ')" == "6" ]] \
-        || die "六个域名必须互不相同"
+    params_declare CLOUDFLARE_API_TOKEN --required --secret \
+        --label 'Cloudflare API Token（DNS 编辑权限）' --check params_check_cf_token
+    params_declare GCORE_API_TOKEN --required --secret \
+        --label 'Gcore API Token（CDN 权限）' --check params_check_gcore_token
+    params_declare GLOBALPING_TOKEN --required --secret \
+        --label 'Globalping Access Token' --check validate_globalping_token
+
+    params_declare REALITY_TARGET --required \
+        --label 'Reality 伪装目标（域名:端口）' --default 'swdist.apple.com:443' \
+        --normalize params_normalize_reality_target --check validate_reality_target
+    params_declare XHTTP_PATH \
+        --label 'XHTTP 路径（留空自动生成）' --default-fn params_default_xhttp_path \
+        --normalize normalize_xhttp_path --check validate_xhttp_path
+    params_declare WEBSOCKET_PATH \
+        --label 'WebSocket 路径（留空自动生成）' --default-fn params_default_websocket_path \
+        --check params_check_websocket_path
+
+    params_declare DIRECT_NODE_NAME --required \
+        --label '直连节点名' --default '🇺🇸直连' --check validate_node_name
+    params_declare CF_NODE_PREFIX --required \
+        --label 'Cloudflare 节点名前缀（自动追加 1~6）' --default '🇺🇸CF' \
+        --check validate_node_name
+    params_declare GCORE_NODE_NAME --required \
+        --label 'Gcore 节点名' --default '🇺🇸GCore' --check validate_node_name
+    params_declare SUB_DOWNLOAD_NAME --required \
+        --label 'Mihomo 下载文件名（不含 .yaml）' --default "${DEFAULT_SUB_DOWNLOAD_NAME}" \
+        --normalize normalize_sub_download_name --check validate_sub_download_name
+
+    params_declare VLESS_UUID \
+        --label '节点 UUID（留空自动生成）' --default-fn params_default_uuid --check validate_uuid
+    params_declare OWNER_TOKEN \
+        --label '订阅 Token（单个用户，留空自动生成；与 ALLOWED_TOKENS 二选一）' \
+        --check params_check_token
+    params_declare ALLOWED_TOKENS --type json_object \
+        --label '订阅用户 Token 字典 {"用户":"token"}（与 OWNER_TOKEN 二选一）' \
+        --normalize params_normalize_allowed_tokens
+
+    params_declare VPS_PUBLIC_IPV4 \
+        --label '本机公网 IPv4（留空自动探测）' --default-fn params_default_public_ipv4 \
+        --check validate_ipv4
+    params_declare TCP_ACCELERATION \
+        --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
+        --normalize normalize_tcp_acceleration
+    params_declare REBOOT_SCHEDULE_MODE \
+        --label '定时重启：1=每天 04:00，2=自定义小时，3=不配置' --default 1 \
+        --check params_check_reboot_mode
+    params_declare REBOOT_HOUR \
+        --label '自定义重启小时（0-23，仅模式 2 需要）' --check params_check_hour
+}
+
+params_cross_combined() {
+    local domain index
+    if validate_domain "${CF_ZONE}"; then
+        for domain in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
+            "${GCORE_NODE_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${SUBSCRIPTION_DOMAIN}"; do
+            case "${domain}" in
+            *".${CF_ZONE}") ;;
+            *) params_error "域名必须属于 ${CF_ZONE}：${domain}" ;;
+            esac
+        done
+        [[ "$(printf '%s\n' "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
+            "${GCORE_NODE_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" \
+            | sort -u | wc -l | tr -d ' ')" == "6" ]] \
+            || params_error '六个域名必须互不相同'
+    fi
+    if [[ -n "${DIRECT_NODE_NAME}" && -n "${GCORE_NODE_NAME}" && -n "${CF_NODE_PREFIX}" ]]; then
+        [[ "${DIRECT_NODE_NAME}" != "${GCORE_NODE_NAME}" ]] \
+            || params_error '直连节点名与 Gcore 节点名不能相同'
+        for index in 1 2 3 4 5 6; do
+            [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" \
+                && "${CF_NODE_PREFIX}${index}" != "${GCORE_NODE_NAME}" ]] \
+                || params_error "Cloudflare 节点名 ${CF_NODE_PREFIX}${index} 与直连/Gcore 节点名重复"
+        done
+    fi
+    if [[ -n "${OWNER_TOKEN}" && -n "${ALLOWED_TOKENS}" ]]; then
+        params_error 'OWNER_TOKEN 与 ALLOWED_TOKENS 不能同时提供：单用户用 OWNER_TOKEN，多用户用 ALLOWED_TOKENS'
+    fi
+    if [[ "${REBOOT_SCHEDULE_MODE}" == "2" && -z "${REBOOT_HOUR}" ]]; then
+        params_error 'REBOOT_SCHEDULE_MODE=2 时必须提供 REBOOT_HOUR（0-23）'
+    fi
+}
+
+# 依赖已安装工具与网络：参数校验完成后、任何云端/本机配置写入之前运行。
+apply_install_inputs() {
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
-
-    CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（DNS 编辑权限）') \
-        || die '缺少 Cloudflare API Token'
-    [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]{20,100}$ ]] || die "Cloudflare Token 格式无效"
-    GCORE_API_TOKEN=$(prompt_secret 'Gcore API Token（CDN 权限）') || die '缺少 Gcore API Token'
+    if [[ -z "${ALLOWED_TOKENS}" && -z "${OWNER_TOKEN}" ]]; then
+        OWNER_TOKEN=$(generate_secret)
+    fi
+    if [[ -z "${ALLOWED_TOKENS}" ]]; then
+        ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
+    fi
+    combined_sync_allowed_tokens
+    combined_validate_install_owner_token
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
-
-    REALITY_TARGET=$(prompt_value 'Reality 伪装目标（域名:端口）' 'swdist.apple.com:443')
-    validate_reality_target "${REALITY_TARGET}" \
-        || die "Reality 目标无效，需为 域名:端口：${REALITY_TARGET}"
-    REALITY_TARGET="$(normalize_domain "${REALITY_TARGET%:*}"):${REALITY_TARGET##*:}"
-    XHTTP_PATH=${XHTTP_PATH:-"/xhttp-$(openssl rand -hex 12)"}
-    WEBSOCKET_PATH=${WEBSOCKET_PATH:-"/ws-$(openssl rand -hex 16)"}
-    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP 路径无效"
-    [[ "${WEBSOCKET_PATH}" =~ ^/[A-Za-z0-9/_-]{4,120}$ ]] || die "WebSocket 路径无效"
-
-    DIRECT_NODE_NAME=$(prompt_value '直连节点名' "${DIRECT_NODE_NAME:-🇺🇸直连}")
-    CF_NODE_PREFIX=$(prompt_value 'Cloudflare 节点名前缀（自动追加 1~6）' "${CF_NODE_PREFIX:-🇺🇸CF}")
-    GCORE_NODE_NAME=$(prompt_value 'Gcore 节点名' "${GCORE_NODE_NAME:-🇺🇸GCore}")
-    validate_node_name "${DIRECT_NODE_NAME}" || die "直连节点名无效（1-64 字符，不能含换行）"
-    validate_node_name "${CF_NODE_PREFIX}" || die "Cloudflare 节点名前缀无效"
-    validate_node_name "${GCORE_NODE_NAME}" || die "Gcore 节点名无效"
-    [[ "${DIRECT_NODE_NAME}" != "${GCORE_NODE_NAME}" ]] \
-        || die "直连节点名与 Gcore 节点名不能相同"
-    local index
-    for index in 1 2 3 4 5 6; do
-        [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" \
-            && "${CF_NODE_PREFIX}${index}" != "${GCORE_NODE_NAME}" ]] \
-            || die "Cloudflare 节点名 ${CF_NODE_PREFIX}${index} 与直连/Gcore 节点名重复"
-    done
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
-        "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-EASYALL}")")
-    VLESS_UUID=${VLESS_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}
-    # 没有显式字典时才生成单 Token；环境变量 ALLOWED_TOKENS 可直接给出多用户字典
-    if [[ -z "${ALLOWED_TOKENS:-}" ]]; then
-        OWNER_TOKEN=${OWNER_TOKEN:-$(generate_secret)}
-    fi
-    combined_prompt_owner_token
-    combined_validate_install_owner_token
-    combined_sync_allowed_tokens
-    VPS_PUBLIC_IPV4=${VPS_IP:-$(detect_public_ipv4)} \
-        || die '公网 IPv4 探测失败；可用 VPS_IP=<IPv4> 指定'
-    validate_ipv4 "${VPS_PUBLIC_IPV4}" || die "公网 IPv4 无效：${VPS_PUBLIC_IPV4}"
 }
 
 persist_cloudflare_token() {
@@ -955,6 +1009,9 @@ install_all() {
     require_systemd
     check_platform
     [[ ! -f "${STATE_FILE}" ]] || die "检测到已有 easy_all 安装；一台 VPS 只允许一种模式"
+    install_failure_begin combined
+    # 参数预检先于任何系统修改：失败时只可能装过 jq/ca-certificates。
+    install_params_preflight combined
     prepare_fresh_install 80 443 "${REALITY_PORT}"
     install_progress_begin combined
     # 快照必须早于任何系统修改（TCP 加速、内核、定时重启、crontab），否则回滚恢复的是
@@ -967,7 +1024,7 @@ install_all() {
     configure_tcp_acceleration
     configure_daily_reboot
     install_progress_stage inputs
-    collect_install_inputs
+    apply_install_inputs
     install_progress_stage core
     download_xray
     validate_reality_target_runtime
@@ -1004,15 +1061,15 @@ install_all() {
     gcore_clear_api_token
     release_runtime_write_lock
     install_progress_clear
+    # 从这里开始只剩展示类命令：失败不再算“安装失败”。
+    INSTALL_FAILURE_ARMED=0
     show_subscription
     success "easy_all 组合模式安装完成（直连 + Cloudflare + Gcore）"
     show_tcp_acceleration_status
     prompt_bbrv3_reboot
 }
 
-# 首次安装时允许自定义订阅 Token：默认值就是自动生成的那个，直接回车即接受。
-# 非交互安装（stdin 不是终端）不打扰用户，按 OWNER_TOKEN 环境变量或自动生成值处理。
-# 与 normalize_allowed_tokens 的 token 规则保持一致：8-128 位 URL 安全字符
+# 当前 Cloudflare 环境变量 Token 与 ALLOWED_TOKENS 的格式约束（与 normalize_allowed_tokens 一致）。
 combined_token_valid() {
     local token=${1:-}
     # 首字符排除 ~：nginx map 中 "~..." 形式的键会被解析为正则，可能匹配到别的 token。
@@ -1039,35 +1096,6 @@ combined_validate_install_owner_token() {
     die "订阅 Token 无效：需 8-128 位 URL 安全字符（A-Z a-z 0-9 . _ ~ -），或形如 {\"user1\":\"token1\"} 的 JSON 字典；请修正后重试（清空 OWNER_TOKEN 可自动生成）"
 }
 
-# 交互输入：接受单个 Token 或 {"用户":"token",...} 字典；留空沿用默认值
-combined_prompt_owner_token() {
-    local attempt=1 raw trimmed default
-    [[ -t 0 ]] || return 0
-    default=${ALLOWED_TOKENS:-${OWNER_TOKEN}}
-    while ((attempt <= 3)); do
-        raw=$(prompt_value '订阅 Token（单个 Token，或 JSON 字典 {"用户":"token",...}，留空使用默认值）' "${default}")
-        # 只去掉首尾空白用于"是否为空 / 是否等于默认值"的判断。JSON 内部的空白必须原样交给
-        # normalize_allowed_tokens：否则 {"user 1":..,"user1":..} 会被压成同名键而静默合并用户。
-        trimmed=${raw#"${raw%%[![:space:]]*}"}
-        trimmed=${trimmed%"${trimmed##*[![:space:]]}"}
-        # 留空或维持默认值：沿用当前 Token，合法性统一交给 combined_validate_install_owner_token 判断，
-        # 不能在这里提前 return 而跳过校验（否则非法的环境变量会被放行）。
-        if [[ -z "${trimmed}" || "${trimmed}" == "${default}" ]]; then
-            return 0
-        fi
-        if combined_apply_token_input "${raw}" "${default}"; then
-            success "已使用自定义订阅 Token"
-            return 0
-        fi
-        warn "订阅 Token 无效：需 8-128 位 URL 安全字符，或 JSON 字典 {\"user1\":\"token1\"}；第 ${attempt} 次"
-        attempt=$((attempt + 1))
-    done
-    OWNER_TOKEN=$(generate_secret)
-    ALLOWED_TOKENS=""
-    combined_tokens_ready
-    warn "已改用自动生成的订阅 Token"
-    return 0
-}
 
 # Token 字典的唯一入口：已有字典则保留（多用户），否则由 OWNER_TOKEN 派生 {owner: OWNER_TOKEN}。
 # 首次安装路径不经过 load_state，必须显式同步，否则 write_subscription_token_map 会在 set -u 下崩掉（2.2.2 现场）。
@@ -1078,18 +1106,6 @@ combined_sync_allowed_tokens() {
             || die '生成订阅 Token 字典失败'
     fi
     export ALLOWED_TOKENS
-}
-
-# 交互输入的统一处理：留空或等于默认值时视为"沿用"，否则交给 combined_apply_tokens。
-# 只裁首尾空白——JSON 内部空白必须保留，否则 {"user 1":..,"user1":..} 会被压成同名键而静默合并用户。
-combined_apply_token_input() {
-    local raw=${1:-} default=${2:-} trimmed
-    trimmed=${raw#"${raw%%[![:space:]]*}"}
-    trimmed=${trimmed%"${trimmed##*[![:space:]]}"}
-    if [[ -z "${trimmed}" || "${trimmed}" == "${default}" ]]; then
-        return 0
-    fi
-    combined_apply_tokens "${trimmed}"
 }
 
 # 输入可以是单个 Token，或 {"用户":"token",...} 字典（多用户共享同一节点与订阅内容）

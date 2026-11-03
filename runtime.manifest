@@ -3,6 +3,7 @@ profiles/reality.sh
 profiles/xhttp-cloudflare-streamup.sh
 lib/log.sh
 lib/runtime-core.sh
+lib/params.sh
 lib/xhttp-runtime.sh
 lib/globalping-cdn.sh
 lib/cloudflare-ip-pool.sh

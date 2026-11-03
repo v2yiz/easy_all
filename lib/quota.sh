@@ -251,13 +251,44 @@ quota_current_period() {
     printf '%s/%s\n' "${start}" "${end}"
 }
 
-choose_monthly_quota() {
-    local enabled=${1:-1} choice current default_quotas raw quotas
-    local generated_tokens token_overrides default_start_date
-    if [[ "${enabled}" != "1" ]]; then
+# 把已确定的配额输入（ENABLE_MONTHLY_QUOTA / MONTHLY_QUOTAS_GB / QUOTA_TOKEN_OVERRIDES /
+# QUOTA_START_DATE）转换成运行状态。安装参数层与 edit-sub 交互共用这一段，避免两套规则。
+quota_apply_settings() {
+    local enabled=${1:-${ENABLE_MONTHLY_QUOTA:-1}} quotas token_overrides generated
+    case "${enabled}" in
+    1 | yes | on | enabled) ;;
+    0 | no | off | disabled)
         QUOTA_ENABLED=0
         USER_ACCOUNTS=""
         QUOTA_START_DATE=""
+        return 0
+        ;;
+    *) die "月度流量配额选项无效：${enabled}" ;;
+    esac
+    QUOTA_ENABLED=1
+    quotas=${MONTHLY_QUOTAS_GB:-}
+    if [[ -z "${quotas}" ]]; then
+        quotas=$(quota_default_map "${USER_ACCOUNTS:-}" "${ALLOWED_TOKENS:-}")
+    fi
+    MONTHLY_QUOTAS_GB=$(normalize_monthly_quotas "${quotas}") \
+        || die "MONTHLY_QUOTAS_GB 无效：需要 {\"用户\":GB} 的 JSON object"
+    generated=$(build_quota_tokens "${MONTHLY_QUOTAS_GB}" "${ALLOWED_TOKENS:-}")
+    info "已生成或复用 $(jq 'length' <<<"${generated}") 个用户的 Token"
+    token_overrides=${QUOTA_TOKEN_OVERRIDES:-'{}'}
+    [[ -n "${token_overrides}" ]] || token_overrides='{}'
+    ALLOWED_TOKENS=$(apply_quota_token_overrides "${generated}" "${MONTHLY_QUOTAS_GB}" \
+        "${token_overrides}")
+    USER_ACCOUNTS=$(build_user_accounts "${ALLOWED_TOKENS}" "${MONTHLY_QUOTAS_GB}" \
+        "${USER_ACCOUNTS:-}")
+    QUOTA_START_DATE=${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}
+    validate_quota_start_date "${QUOTA_START_DATE}" \
+        || die "VPS 开通日期无效、晚于今天或不是 YYYY-MM-DD：${QUOTA_START_DATE}"
+}
+
+choose_monthly_quota() {
+    local enabled=${1:-1} choice current default_quotas raw
+    if [[ "${enabled}" != "1" ]]; then
+        quota_apply_settings 0
         return 0
     fi
     current=${QUOTA_ENABLED:-0}
@@ -274,48 +305,24 @@ choose_monthly_quota() {
         [[ "${current}" == "1" ]] && choice=2 || choice=1
     fi
     case "${choice}" in
-    1 | no | off | disabled)
-        QUOTA_ENABLED=0
-        USER_ACCOUNTS=""
-        QUOTA_START_DATE=""
-        ;;
-    2 | yes | on | enabled)
-        QUOTA_ENABLED=1
-        default_quotas=$(quota_default_map "${USER_ACCOUNTS:-}" "${ALLOWED_TOKENS:-}")
-        quotas=${MONTHLY_QUOTAS_GB:-}
-        if [[ -z "${quotas}" && -t 0 ]]; then
-            quotas=$(prompt_value \
-                "用户与月度配额 JSON（GB，0 表示不限量；Token、UUID、email 自动生成）" \
-                "${default_quotas}")
-        fi
-        quotas=${quotas:-${default_quotas}}
-        quotas=$(normalize_monthly_quotas "${quotas}") \
-            || die "MONTHLY_QUOTAS_GB 无效"
-        generated_tokens=$(build_quota_tokens "${quotas}" "${ALLOWED_TOKENS:-}")
-        info "已生成或复用 $(jq 'length' <<<"${generated_tokens}") 个用户的 Token"
-        token_overrides=${QUOTA_TOKEN_OVERRIDES:-}
-        if [[ -z "${token_overrides}" && -t 0 ]]; then
-            token_overrides=$(prompt_value \
-                "可选 Token 覆盖 JSON（仅填写要覆盖的用户，直接回车不覆盖）" "{}")
-        fi
-        token_overrides=${token_overrides:-'{}'}
-        ALLOWED_TOKENS=$(apply_quota_token_overrides "${generated_tokens}" "${quotas}" \
-            "${token_overrides}")
-        USER_ACCOUNTS=$(build_user_accounts "${ALLOWED_TOKENS}" "${quotas}" \
-            "${USER_ACCOUNTS:-}")
-        default_start_date=${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}
-        if [[ -z "${QUOTA_START_DATE:-}" && -t 0 ]]; then
-            QUOTA_START_DATE=$(prompt_value \
-                "VPS 开通日期（YYYY-MM-DD，作为每月配额周期起点）" \
-                "${default_start_date}")
-        else
-            QUOTA_START_DATE=${QUOTA_START_DATE:-${default_start_date}}
-        fi
-        validate_quota_start_date "${QUOTA_START_DATE}" \
-            || die "VPS 开通日期无效、晚于今天或不是 YYYY-MM-DD：${QUOTA_START_DATE}"
-        ;;
+    1 | no | off | disabled) enabled=0 ;;
+    2 | yes | on | enabled) enabled=1 ;;
     *) die "月度流量配额选项无效：${choice}" ;;
     esac
+    if [[ "${enabled}" == "1" && -t 0 ]]; then
+        default_quotas=$(quota_default_map "${USER_ACCOUNTS:-}" "${ALLOWED_TOKENS:-}")
+        MONTHLY_QUOTAS_GB=$(prompt_value \
+            "用户与月度配额 JSON（GB，0 表示不限量；Token、UUID、email 自动生成）" \
+            "${MONTHLY_QUOTAS_GB:-${default_quotas}}")
+        QUOTA_TOKEN_OVERRIDES=$(prompt_value \
+            "可选 Token 覆盖 JSON（仅填写要覆盖的用户，直接回车不覆盖）" \
+            "${QUOTA_TOKEN_OVERRIDES:-'{}'}")
+        QUOTA_START_DATE=$(prompt_value \
+            "VPS 开通日期（YYYY-MM-DD，作为每月配额周期起点）" \
+            "${QUOTA_START_DATE:-$(date -u +%Y-%m-%d)}")
+    fi
+    quota_apply_settings "${enabled}"
+    ENABLE_MONTHLY_QUOTA=${enabled}
 }
 
 quota_active_clients_json() {

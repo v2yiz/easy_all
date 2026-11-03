@@ -14,7 +14,17 @@ if [[ "${EASY_ALL_LOG_LOADED:-0}" != "1" ]]; then
     success() { printf '%b%s%b\n' "${GREEN}" "$*" "${RESET}"; }
     warn() { printf '%b%s%b\n' "${YELLOW}" "$*" "${RESET}"; }
     fail() { printf '%b%s%b\n' "${RED}" "$*" "${RESET}" >&2; return 1; }
-    die() { fail "$*"; exit 1; }
+    # 最后一次错误文案：安装失败报告会用它说明“哪里出错”（die 的消息已经打印过，
+    # 这里只是留存一份给退出时的统一诊断）。
+    EASY_ALL_LAST_ERROR=""
+    EASY_ALL_LAST_ERROR_SOURCE=""
+    die() {
+        EASY_ALL_LAST_ERROR="$*"
+        # 记录 die 的调用点（文件:行），安装失败报告用它回答“哪里出错”。
+        EASY_ALL_LAST_ERROR_SOURCE="${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}:${BASH_LINENO[0]:-0}"
+        fail "$*"
+        exit 1
+    }
 fi
 
 # Interactive prompts: readline 编辑（方向键/Ctrl-U）+ 清理被当成普通字符的转义序列。
