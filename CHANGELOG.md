@@ -1,3 +1,14 @@
+## 2.1.1 更新说明（2026-11-03）
+
+- 修复安装与清理命令的交互输入：命令行编辑改用 bash `read -e`（readline），方向键与 Ctrl-U/Ctrl-A/E
+  不再以 `^[[D`、`^U` 之类的字面文本进入输入；隐藏输入的 Token 提示额外剥离 ANSI 转义与控制字符，
+  误按方向键不会污染凭据。
+- 覆盖入口模式选择、所有 `prompt_value`/`prompt_secret`（订阅、配额、Worker、Bunny、Gcore、证书与
+  重启提示）、`purge-gcore` / `purge-cloudflare` 的范围与确认提示，以及独立的 `scripts/debian-init.sh`。
+- 非交互（管道）输入行为不变；`read -e` 只在 stdin 为终端时启用 readline。
+
+源码版本标识为 `2.1.1`。
+
 ## 2.1.0 更新说明（2026-11-03）
 
 - 新增 `easy_all purge-gcore` 与 `easy_all purge-cloudflare`：按所有权清理 easy_all 创建的

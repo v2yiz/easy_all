@@ -34,11 +34,17 @@ launcher_die() {
     exit 1
 }
 
+strip_launcher_input() {
+    local esc=$'\033'
+    printf '%s' "$1" | sed -e "s/${esc}\[[0-9;?]*[A-Za-z]//g" -e "s/${esc}O[A-Za-z]//g" \
+        | tr -d '\000-\010\013\014\016-\037\177'
+}
+
 launcher_read_bilingual() {
     local label=$1 variable=$2 input
     printf '%s\n' "${label}" >&2
-    IFS= read -r -p '> ' input
-    printf -v "${variable}" '%s' "${input}"
+    IFS= read -r -e -p '> ' input
+    printf -v "${variable}" '%s' "$(strip_launcher_input "${input}")"
 }
 
 runtime_manifest_paths() {

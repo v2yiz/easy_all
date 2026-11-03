@@ -72,10 +72,10 @@ done
 if ((PURGE_ALL == 0)) && ((DOMAIN_COUNT == 0)); then
     [[ -t 0 ]] || usage
     printf '清理范围：\n  1. 指定域名所在 Zone 的 easy_all 资源\n  2. Token 可见的所有 Zone\n' >&2
-    read -r -p '请选择 [1]: ' _scope
+    read_prompt '请选择 [1]: ' _scope
     case "${_scope:-1}" in
     1)
-        read -r -p '域名（Zone 根域名清理其下全部；完整主机名只清理该域名）: ' _input
+        read_prompt '域名（Zone 根域名清理其下全部；完整主机名只清理该域名）: ' _input
         add_domains "${_input}"
         ;;
     2) PURGE_ALL=1 ;;
@@ -88,7 +88,7 @@ fi
 
 if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
     [[ -t 0 ]] || die "非交互模式必须设置 CLOUDFLARE_API_TOKEN"
-    read -r -s -p 'Cloudflare API Token（不落盘）: ' CLOUDFLARE_API_TOKEN
+    read_prompt 'Cloudflare API Token（不落盘）: ' CLOUDFLARE_API_TOKEN 1
     printf '\n' >&2
 fi
 [[ ${#CLOUDFLARE_API_TOKEN} -ge 20 ]] || die "CLOUDFLARE_API_TOKEN 格式无效"
@@ -344,7 +344,7 @@ fi
 info "以上 ${total} 个 Cloudflare 对象将被删除（不删除 Zone，也不删除 Bunny 模式的无注释 DNS 记录）"
 if ((ASSUME_YES == 0)); then
     [[ -t 0 ]] || die "非交互模式必须加 --yes 才能删除"
-    read -r -p '确认删除？[y/N]: ' _answer
+    read_prompt '确认删除？[y/N]: ' _answer
     [[ "${_answer}" =~ ^[Yy]$ ]] || die "已取消"
 fi
 

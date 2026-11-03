@@ -43,6 +43,12 @@ print_step() {
   echo "==> [${step}] ${title}"
 }
 
+strip_terminal_input() {
+  local esc=$'\033'
+  printf '%s' "$1" | sed -e "s/${esc}\[[0-9;?]*[A-Za-z]//g" -e "s/${esc}O[A-Za-z]//g" \
+    | tr -d '\000-\010\013\014\016-\037\177'
+}
+
 read_bilingual() {
   local label="$1"
   local variable="$2"
@@ -53,9 +59,9 @@ read_bilingual() {
     IFS= read -r -s -p '> ' input
     echo >&2
   else
-    IFS= read -r -p '> ' input
+    IFS= read -r -e -p '> ' input
   fi
-  printf -v "$variable" '%s' "$input"
+  printf -v "$variable" '%s' "$(strip_terminal_input "$input")"
 }
 
 prompt() {

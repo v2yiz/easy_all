@@ -43,10 +43,10 @@ read_bilingual() {
     local label=$1 variable=$2 silent=${3:-0} input
     printf '%s\n' "${label}" >&2
     if [[ "${silent}" == "1" ]]; then
-        IFS= read -r -s -p '> ' input
+        read_prompt '> ' input 1
         printf '\n' >&2
     else
-        IFS= read -r -p '> ' input
+        read_prompt '> ' input
     fi
     printf -v "${variable}" '%s' "${input}"
 }
