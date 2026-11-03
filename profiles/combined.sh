@@ -86,7 +86,7 @@ load_state() {
     XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
     # 2.0.0 状态的组合模式没有这些字段，回退到当时的固定名称，避免 apply 时静默改名。
     : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}" "${GCORE_NODE_NAME:=Gcore}"
-    ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
+    combined_sync_allowed_tokens
     SUBSCRIPTION_MODE=deploy
 }
 
@@ -176,6 +176,8 @@ collect_install_inputs() {
         "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-EASYALL}")")
     VLESS_UUID=${VLESS_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}
     OWNER_TOKEN=${OWNER_TOKEN:-$(generate_secret)}
+    combined_prompt_owner_token
+    combined_sync_allowed_tokens
     VPS_PUBLIC_IPV4=${VPS_IP:-$(detect_public_ipv4)} \
         || die '公网 IPv4 探测失败；可用 VPS_IP=<IPv4> 指定'
     validate_ipv4 "${VPS_PUBLIC_IPV4}" || die "公网 IPv4 无效：${VPS_PUBLIC_IPV4}"
@@ -259,6 +261,9 @@ write_cert_reload_hook() {
     cat >"${CERT_RELOAD_HOOK}" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+# nginx 尚未启动（首次安装期间就属于这种情况）时无需 reload：安装流程稍后会自行启动。
+# 这里也不能退化成 restart，否则会让还没写完整配置的 nginx 提前带着默认站点上线。
+systemctl is-active --quiet nginx || exit 0
 nginx -t >/dev/null || exit 1
 systemctl reload nginx || systemctl restart nginx
 EOF
@@ -952,12 +957,43 @@ install_all() {
     prompt_bbrv3_reboot
 }
 
+# 首次安装时允许自定义订阅 Token：默认值就是自动生成的那个，直接回车即接受。
+# 非交互安装（stdin 不是终端）不打扰用户，按 OWNER_TOKEN 环境变量或自动生成值处理。
+combined_prompt_owner_token() {
+    local attempt=1 raw sanitized
+    [[ -t 0 ]] || return 0
+    while ((attempt <= 3)); do
+        raw=$(prompt_value '订阅 Token（8-128 位，字母数字与 . _ ~ -）' "${OWNER_TOKEN}")
+        sanitized=${raw//[[:space:]]/}
+        if [[ -z "${sanitized}" || "${sanitized}" == "${OWNER_TOKEN}" ]]; then
+            return 0
+        fi
+        if combined_apply_owner_token "$(jq -cn --arg token "${sanitized}" '{owner:$token}')"; then
+            success "已使用自定义订阅 Token"
+            return 0
+        fi
+        warn "订阅 Token 无效：需 8-128 位 URL 安全字符（A-Z a-z 0-9 . _ ~ -）；第 ${attempt} 次"
+        attempt=$((attempt + 1))
+    done
+    warn "已跳过自定义订阅 Token，沿用自动生成值"
+    return 0
+}
+
+# 组合模式的订阅 Token 字典恒等于 {owner: OWNER_TOKEN}。首次安装路径不经过 load_state，
+# 必须在这里显式派生，否则 write_subscription_token_map 会在 set -u 下崩掉（2.2.2 现场）。
+combined_sync_allowed_tokens() {
+    [[ -n "${OWNER_TOKEN:-}" ]] || return 0
+    ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}') \
+        || die '生成订阅 Token 字典失败'
+    export ALLOWED_TOKENS
+}
+
 combined_apply_owner_token() {
     local raw=${1:-} normalized token
     normalized=$(normalize_allowed_tokens "${raw}") || return 1
     token=$(jq -er 'to_entries[0].value | select(type == "string" and length > 0)' <<<"${normalized}") || return 1
     OWNER_TOKEN=${token}
-    ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
+    combined_sync_allowed_tokens
 }
 
 update_subscription() {

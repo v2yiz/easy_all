@@ -2528,11 +2528,10 @@ show_subscription() {
         printf '聚合配置额外节点: %s\n' "${aggregation_count}"
         printf '\n订阅地址:\n'
         while IFS=$'\t' read -r user token; do
-            printf '通用订阅 (%s): https://%s/subscribe?token=%s\n' \
-                "${user}" "${SUBSCRIPTION_DOMAIN}" "${token}"
-            printf 'Mihomo (%s): https://%s/subscribe?token=%s&flag=clash\n' \
+            printf '订阅 (%s): https://%s/subscribe?token=%s\n' \
                 "${user}" "${SUBSCRIPTION_DOMAIN}" "${token}"
         done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"${ALLOWED_TOKENS}")
+        printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
         printf '\n'
         return 0
     fi
@@ -2542,11 +2541,10 @@ show_subscription() {
             "${SUBSCRIPTION_HTTPS_PORT}"
         printf '\n订阅地址:\n'
         while IFS=$'\t' read -r user token; do
-            printf '通用订阅 (%s): https://%s:%s/subscribe?token=%s\n' \
-                "${user}" "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}" "${token}"
-            printf 'Mihomo (%s): https://%s:%s/subscribe?token=%s&flag=clash\n' \
+            printf '订阅 (%s): https://%s:%s/subscribe?token=%s\n' \
                 "${user}" "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}" "${token}"
         done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"${ALLOWED_TOKENS}")
+        printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
         printf '\n'
         return 0
     fi

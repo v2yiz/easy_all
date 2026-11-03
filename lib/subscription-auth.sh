@@ -151,6 +151,8 @@ write_subscription_token_map() {
             <<<"${accounts}"
         return 0
     fi
+    [[ -n "${ALLOWED_TOKENS:-}" ]] \
+        || die "订阅 Token 字典 ALLOWED_TOKENS 未初始化；请执行 sudo easy_all edit-sub 重新配置订阅 Token，或重新安装"
     jq -r '.[] | "    \"" + . + "\" 1;"' <<<"${ALLOWED_TOKENS}"
 }
 
@@ -205,9 +207,36 @@ EOF
     cat <<'EOF'
 }
 
-map $arg_flag $easy_all_subscription_uri {
-    default /_easy_all_subscription/base64;
-    clash /_easy_all_subscription/mihomo;
+# 订阅格式协商：默认按客户端 User-Agent 自动判断；&flag= 只用于强制覆盖。
+#  - clash / mihomo / meta / stash / flclash / verge 等内核类客户端 → Mihomo YAML
+#  - Shadowrocket / v2rayN / v2rayNG / NekoBox / sing-box 等 URL 类客户端 → Base64(v2ray 链接)
+map $arg_flag $easy_all_subscription_forced_format {
+    default      "";
+    clash        "mihomo";
+    mihomo       "mihomo";
+    meta         "mihomo";
+    stash        "mihomo";
+    yaml         "mihomo";
+    base64       "base64";
+    uri          "base64";
+    v2ray        "base64";
+    shadowrocket "base64";
+}
+
+map $http_user_agent $easy_all_subscription_ua_format {
+    default "base64";
+    ~*(clash|mihomo|stash|flclash|verge|bettbox) "mihomo";
+}
+
+map $easy_all_subscription_forced_format $easy_all_subscription_format {
+    default  $easy_all_subscription_ua_format;
+    "mihomo" "mihomo";
+    "base64" "base64";
+}
+
+map $easy_all_subscription_format $easy_all_subscription_uri {
+    default  /_easy_all_subscription/base64;
+    "mihomo" /_easy_all_subscription/mihomo;
 }
 
 EOF

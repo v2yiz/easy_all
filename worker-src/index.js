@@ -718,13 +718,13 @@ async function fetchVpsSubscription(
 
 function subscriptionFormat(request, flag) {
     const explicit = String(flag || '').trim().toLowerCase();
-    if (['clash', 'mihomo', 'meta', 'stash'].includes(explicit)) {
+    if (['clash', 'mihomo', 'meta', 'stash', 'yaml'].includes(explicit)) {
         return 'clash';
     }
     if (['shadowrocket', 'base64', 'uri', 'v2ray'].includes(explicit)) {
         return 'base64';
     }
-    return /(?:clash|mihomo|stash)/i.test(
+    return /(?:clash|mihomo|stash|flclash|verge|bettbox)/i.test(
         request.headers.get('User-Agent') || ''
     )
         ? 'clash'

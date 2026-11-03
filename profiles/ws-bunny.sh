@@ -302,10 +302,9 @@ show_node() {
 
 show_subscription() {
     load_state
-    printf '通用订阅 (Base64) (owner): https://%s/subscribe?token=%s\n' \
+    printf '订阅 (owner): https://%s/subscribe?token=%s\n' \
         "${CDN_DOMAIN}" "${OWNER_TOKEN}"
-    printf 'Mihomo / Clash   (owner): https://%s/subscribe?token=%s&flag=clash\n' \
-        "${CDN_DOMAIN}" "${OWNER_TOKEN}"
+    printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
 }
 
 show_status() {

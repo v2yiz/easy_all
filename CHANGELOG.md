@@ -1,3 +1,30 @@
+## 2.3.0 更新说明（2026-11-03）
+
+- 修复组合模式首次安装在订阅阶段崩溃：首次安装不经过 `load_state`，`ALLOWED_TOKENS` 从未初始化，
+  `write_subscription_token_map` 在 `set -u` 下报
+  `lib/subscription-auth.sh: line 154: ALLOWED_TOKENS: unbound variable` 并触发回滚。
+  现由 `combined_sync_allowed_tokens` 从 `OWNER_TOKEN` 统一派生 `{owner: <token>}`，首次安装、
+  `load_state`、`easy_all edit-sub` 三处共用同一入口。
+- 订阅 Token 字典缺失时改为可操作提示（"请执行 sudo easy_all edit-sub 重新配置订阅 Token，或重新安装"），
+  不再抛出裸的 `unbound variable`。
+- 证书 reload 钩子在 nginx 未启动时直接返回：首次安装期间 nginx 尚未启动，此前会先打印
+  `nginx.service is not active, cannot reload.` 再走 `restart`，既制造"reload 失败"的误解，
+  又可能让配置尚未写全的 nginx 提前带着默认站点上线。现在只做停机检查，启动仍由安装流程负责。
+- 测试加固：组合模式新增 reload 钩子、Token 派生、Token 缺失提示三组回归断言；缺少对应修复时
+  分别转红（Token 缺失用例直接复现现场报文）。
+- 订阅按客户端自动下发格式：收到订阅请求时按 `User-Agent` 判断——Clash/mihomo/Stash/FlClash/Verge
+  等内核类客户端返回 Mihomo YAML，Shadowrocket/v2rayN/v2rayNG/NekoBox 等 URL 类客户端返回 Base64（v2ray 链接）。
+  客户端只需配置一条订阅链接，不必再手工加 `&flag=clash`；需要强制时可加 `&flag=`，YAML 侧接受
+  `clash` / `mihomo` / `meta` / `stash` / `yaml`，Base64 侧接受 `base64` / `v2ray` / `uri` / `shadowrocket`，
+  Nginx 与 Reality 的 Cloudflare Worker 入口对这套别名完全一致。
+- 识别范围覆盖 Bettbox（默认 UA 为 `FlClash/ClashMetaForAndroid/<版本>.Bettbox`，归入 YAML 分支）；Reality 的
+  Cloudflare Worker 入口同步对齐：新增 `yaml` 别名，UA 判定补上 flclash / verge / bettbox。
+- 组合模式首次安装支持自定义订阅 Token：默认值仍是自动生成的那个，直接回车即接受；输入不合法会提示并重试，
+  三次失败后沿用自动生成值。非交互安装（stdin 不是终端）不追问，按 `OWNER_TOKEN` 环境变量或自动生成值处理。
+- `show-sub` / 安装完成后的订阅输出改为只给一条链接，并附客户端识别说明与强制格式用法。
+
+源码版本标识为 `2.3.0`。
+
 ## 2.2.2 更新说明（2026-11-03）
 
 - 修复组合模式首次安装必然崩溃：`profiles/combined.sh` 从未定义 `XRAY_XHTTP_LOOPBACK_PORT`，而

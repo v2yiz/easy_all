@@ -712,4 +712,101 @@ load_state
         "${status_drift}" "运行中配置与状态不一致，请执行 sudo easy_all apply"
 )
 
+# 11) 证书 reload 钩子：nginx 未启动时直接返回，不 reload、也不提前 restart
+write_cert_reload_hook
+hook_text=$(<"${COMMAND_INSTALL_DIR}/reload-tls-service.sh")
+assert_contains "reload-hook: exits early when nginx is inactive" \
+    "${hook_text}" "systemctl is-active --quiet nginx || exit 0"
+legacy_hook=$'set -Eeuo pipefail\nnginx -t >/dev/null || exit 1'
+assert_not_contains "reload-hook: no unguarded reload before nginx is started" \
+    "${hook_text}" "${legacy_hook}"
+
+# 12) 首次安装路径（不经过 load_state）必须能从 OWNER_TOKEN 派生出 Token 字典
+token_map=$(
+    unset ALLOWED_TOKENS
+    OWNER_TOKEN="tok-first-install-123"
+    combined_sync_allowed_tokens
+    write_subscription_token_map
+)
+assert_contains "token-sync: fresh install derives ALLOWED_TOKENS from OWNER_TOKEN" \
+    "${token_map}" '"tok-first-install-123" 1;'
+
+# 13) Token 字典缺失时必须给出可操作提示，而不是 set -u 的 unbound variable
+guard_out=$(
+    unset ALLOWED_TOKENS OWNER_TOKEN
+    QUOTA_ENABLED=0
+    write_subscription_token_map 2>&1
+) || true
+assert_contains "token-sync: missing token map fails with actionable message" \
+    "${guard_out}" "ALLOWED_TOKENS 未初始化"
+assert_not_contains "token-sync: missing token map must not surface unbound variable" \
+    "${guard_out}" "unbound variable"
+
+# 14) 订阅格式协商：渲染结果必须含 UA 判断与 flag 覆盖，且默认回落到 Base64
+write_nginx_config
+nginx_text=$(<"${NGINX_CONFIG}")
+# 按 map 块逐条断言：只看"某行存在"会被同文件其它 map 的相同行掩盖
+map_block() {
+    local head=$1
+    awk -v head="${head}" '
+        $0 == head { inside = 1; next }
+        inside && /^}/ { exit }
+        inside && /^[[:space:]]*#/ { next }
+        inside { print }
+    ' <<<"${nginx_text}"
+}
+
+ua_block=$(map_block 'map $http_user_agent $easy_all_subscription_ua_format {')
+forced_block=$(map_block 'map $arg_flag $easy_all_subscription_forced_format {')
+merged_block=$(map_block 'map $easy_all_subscription_forced_format $easy_all_subscription_format {')
+format_block=$(map_block 'map $easy_all_subscription_format $easy_all_subscription_uri {')
+
+assert_block_line() {
+    local label=$1 block=$2 expected=$3
+    grep -Fxq -- "${expected}" <<<"${block}" \
+        || fail "${label}: missing effective line <${expected}> in <${block}>"
+}
+
+assert_contains "ua-negotiation: clash-family UA gets yaml" \
+    "${ua_block}" '~*(clash|mihomo|stash|flclash|verge|bettbox) "mihomo"'
+assert_block_line "ua-negotiation: unknown UA defaults to base64" \
+    "${ua_block}" '    default "base64";'
+assert_block_line "ua-negotiation: clash flag forces yaml" \
+    "${forced_block}" '    clash        "mihomo";'
+assert_block_line "ua-negotiation: base64 flag forces base64" \
+    "${forced_block}" '    base64       "base64";'
+assert_block_line "ua-negotiation: no flag adds no forced value" \
+    "${forced_block}" '    default      "";'
+assert_block_line "ua-negotiation: merged map defaults to UA result" \
+    "${merged_block}" '    default  $easy_all_subscription_ua_format;'
+assert_block_line "ua-negotiation: format map default routes to base64 file" \
+    "${format_block}" '    default  /_easy_all_subscription/base64;'
+assert_block_line "ua-negotiation: mihomo format routes to yaml file" \
+    "${format_block}" '    "mihomo" /_easy_all_subscription/mihomo;'
+
+# 15) 自定义订阅 Token 可选输入：合法值被采纳，非法值被拒绝（且不改动当前 Token）
+(
+    kept=${OWNER_TOKEN}
+    combined_apply_owner_token '{"owner":"custom-token-2026"}'
+    [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
+        || fail "token-input: valid custom token not applied"
+    if combined_apply_owner_token '{"owner":"short"}' 2>/dev/null; then
+        fail "token-input: too-short token must be rejected"
+    fi
+    [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
+        || fail "token-input: rejected input must not change current token"
+    OWNER_TOKEN=${kept}
+    combined_sync_allowed_tokens
+)
+
+# 16) 非交互安装不追问 Token：stdin 不是终端时提示函数直接返回
+# stdin 给一行"诱饵"：若提示函数会去读 stdin，Token 就会被改掉
+prompt_out=$(printf 'attacker-token-9999\n' | {
+    OWNER_TOKEN="tok-generated-keep"
+    combined_prompt_owner_token
+    printf '%s' "${OWNER_TOKEN}"
+})
+assert_equal "token-input: non-interactive install never reads stdin for token" \
+    "tok-generated-keep" "${prompt_out}"
+
 printf 'ok - combined render\n'

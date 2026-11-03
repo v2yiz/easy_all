@@ -445,11 +445,11 @@ show_subscription() {
     subscription_domain=$(subscription_link_domain)
     printf '订阅链接域名: %s\n' "${subscription_domain}"
     while IFS=$'\t' read -r user token; do
-        printf '通用订阅 (%s): https://%s/subscribe?token=%s\n' \
-            "${user}" "${subscription_domain}" "${token}"
-        printf 'Mihomo (%s):  https://%s/subscribe?token=%s&flag=clash\n' \
+        printf '订阅 (%s): https://%s/subscribe?token=%s\n' \
             "${user}" "${subscription_domain}" "${token}"
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
+    printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
+    printf '%s\n' '  如需强制格式：在链接后加 &flag=clash 或 &flag=base64'
     printf '\n'
 }
 
