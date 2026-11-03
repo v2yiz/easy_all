@@ -1190,6 +1190,8 @@ gcore_retry_out=$(
         printf '%s\n' "${call}" >>"${api_calls}"
         if [[ "${call}" == "GET /cdn/resources" ]]; then
             printf '[{"id":202,"cname":"gcore-node.example.com","sslData":303}]'
+        elif [[ "${call}" == "GET /cdn/sslData" ]]; then
+            printf '[{"id":303,"name":"easy_all-edge-gcore-node.example.com","automated":true}]'
         elif [[ "${call}" == "GET /cdn/resources/202" ]]; then
             printf '{"id":202,"cname":"gcore-node.example.com","sslData":303,"options":{"use_dns01_le_challenge":{"enabled":true,"value":true}}}'
         elif [[ "${call}" == "PATCH /cdn/resources/202" ]]; then
@@ -1477,6 +1479,8 @@ gcore_resource_ready_failure=$(
         local call="$1 $2" payload=${3:-}
         if [[ "${call}" == "GET /cdn/resources" ]]; then
             printf '[{"id":202,"cname":"gcore-node.example.com","sslData":303}]'
+        elif [[ "${call}" == "GET /cdn/sslData" ]]; then
+            printf '[{"id":303,"name":"easy_all-edge-gcore-node.example.com","automated":true}]'
         elif [[ "${call}" == "GET /cdn/resources/202" ]]; then
             printf '{"id":202,"cname":"gcore-node.example.com","sslData":303,"options":{"use_dns01_le_challenge":{"enabled":true,"value":true}}}'
         elif [[ "${call}" == "PATCH /cdn/resources/202" ]]; then

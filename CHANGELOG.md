@@ -1,3 +1,15 @@
+## 2.4.16 更新说明（2026-11-03）
+
+- **重建证书后最终 PUT 带着已删除的证书 ID**（现场：`Invalid pk "320598" - object does not exist.`）：
+  等待签发期间证书对象被重建（旧对象删除、新对象 320672 附加），但 `payload` 在函数开头就固化了旧
+  `sslData`。现在等待结束后会把 payload 的 `sslData` 换成当前证书 ID（`gcore_refresh_edge_certificate_in_payload`），
+  再执行最终 PUT。
+- **新证书刚附加时状态接口 400 不再终止安装**：`issuing is not started yet` / `not attached` 按 `PENDING`
+  继续轮询；其它状态查询失败仍终止并打印原始信息。
+- 测试：按用户要求不新增离线单测；重建→最终 PUT 使用新 ID 的路径用 /tmp 离线桩核对，仓库现有测试全绿。
+
+源码版本标识为 `2.4.16`。
+
 ## 2.4.15 更新说明（2026-11-03）
 
 - **Gcore 侧挑战区不存在时自动创建**：Managed DNS 已启用但 Zones 为空时，`ns1.gcorelabs.net` 会对

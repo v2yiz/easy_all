@@ -465,15 +465,24 @@ gcore_wait_for_edge_certificate() {
     local attempt state status details retries=0 reissued=0 new_certificate_id
     local start=${SECONDS}
     for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-        state=$(gcore_api_request GET "/cdn/sslData/${certificate_id}/status") \
-            || die "无法读取 Gcore 边缘证书签发状态"
-        status=$(jq -r '
-            if (.latest_status.status? // "") != "" then
-                .latest_status.status | ascii_upcase
-            elif .active == true then "ACTIVE"
-            else "PENDING"
-            end
-        ' <<<"${state}")
+        # 刚附加的新证书可能还没开始签发（400 “issuing is not started yet” / “not attached”），
+        # 这不是错误，按 PENDING 继续等；其它失败仍然终止并给出原始信息。
+        state=$( (gcore_api_request GET "/cdn/sslData/${certificate_id}/status") 2>&1 ) || true
+        case "${state}" in
+        \{*)
+            status=$(jq -r '
+                if (.latest_status.status? // "") != "" then
+                    .latest_status.status | ascii_upcase
+                elif .active == true then "ACTIVE"
+                else "PENDING"
+                end
+            ' <<<"${state}") ;;
+        *"not started yet"*|*"not attached"*)
+            status=PENDING
+            state='{}' ;;
+        *)
+            die "无法读取 Gcore 边缘证书签发状态：${state}" ;;
+        esac
         case "${status}" in
         ACTIVE | DONE) return 0 ;;
         CANCELLED)
@@ -613,6 +622,18 @@ gcore_resource_matches_payload() {
     ' >/dev/null
 }
 
+# 等待签发期间证书对象可能被重建（旧对象已删除）。最终写回资源前把 payload 里的 sslData
+# 换成当前证书 ID，否则会提交一个已不存在的 sslData，Gcore 返回 Invalid pk。
+gcore_refresh_edge_certificate_in_payload() {
+    local payload=$1 previous_id=$2 current_id=${GCORE_EDGE_CERTIFICATE_ID:-}
+    if [[ ! "${current_id}" =~ ^[1-9][0-9]*$ || "${current_id}" == "${previous_id}" ]]; then
+        printf '%s' "${payload}"
+        return 0
+    fi
+    GCORE_CDN_RESOURCE_CHANGED=1
+    jq -c --argjson cert "${current_id}" '.sslData = $cert' <<<"${payload}"
+}
+
 # Gcore 只有在“证书附加前”保存了 use_dns01_le_challenge 才会用 DNS-01 验证；账号没启用
 # Managed DNS 时该选项会被静默忽略（PUT 仍返回 200），证书继续走 HTTP-01 并稳定 502。
 # 所以每次附加证书前显式 PATCH 一次并回读校验，没保存成功就直接给出可执行的提示。
@@ -704,6 +725,7 @@ gcore_ensure_resource() {
         # 配置未变化时也要确认证书状态：上次失败的证书不会自行重签；资源刚创建时边缘还没生效，
         # 先等就绪再判断/重试，避免把“还没激活”当成永久失败。
         gcore_ensure_edge_certificate_ready "${edge_certificate_id}" || return 1
+        payload=$(gcore_refresh_edge_certificate_in_payload "${payload}" "${edge_certificate_id}")
         if ((GCORE_CDN_RESOURCE_CHANGED == 1)); then
             gcore_api_request PUT \
                 "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
@@ -713,6 +735,7 @@ gcore_ensure_resource() {
         GCORE_CDN_RESOURCE_ID=$(jq -er '.id // empty' <<<"${response}") || return 1
         gcore_ensure_dns01_option "${GCORE_CDN_RESOURCE_ID}" || return 1
         gcore_ensure_edge_certificate_ready "${edge_certificate_id}" || return 1
+        payload=$(gcore_refresh_edge_certificate_in_payload "${payload}" "${edge_certificate_id}")
         gcore_api_request PUT \
             "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" "${payload}" >/dev/null || return 1
         GCORE_CDN_RESOURCE_CHANGED=1
