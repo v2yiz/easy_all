@@ -19,7 +19,7 @@ sudo easy_all params.json                  # 校验通过后安装
 
 ## 组合模式（combined）
 
-`CF_ZONE`、两个 Token、订阅 Token 必填，其余域名按 `example.com` 派生。单用户可把
+`CF_ZONE`、`CLOUDFLARE_API_TOKEN`、`GLOBALPING_TOKEN` 与订阅 Token 必填，其余域名按 `example.com` 自动派生。单用户可把
 `ALLOWED_TOKENS` 换成 `"OWNER_TOKEN": "<订阅 Token>"`（两者二选一）。
 
 ```json

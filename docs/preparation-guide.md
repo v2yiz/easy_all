@@ -1,340 +1,82 @@
 # 前置准备手册
 
-Bunny 模式（`mode: bunny-ws`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
-Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
-[Bunny 前置准备与运维](bunny-preparation-guide.md)。
+本手册介绍使用 `easy_all` 部署各个模式前，需要在域名注册商、Cloudflare 和 Globalping 准备的资源与凭证。
 
+> Bunny 模式的前置准备、Pull Zone 绑定与运维详见独立的 [Bunny 前置准备手册](bunny-preparation-guide.md)。
 
-本手册覆盖 Reality、Cloudflare 与组合模式所需的域名、账号、DNS 和 Token
-准备；Bunny 的准备与运维使用独立的[专题手册](bunny-preparation-guide.md)。Reality 节点数据仍然直连，
-但选择“本机订阅”或“Worker 订阅聚合”时，订阅回源会使用 Cloudflare Universal SSL 与 Origin CA。
+---
 
-Cloudflare CDN 精选 IP XHTTP 模式阅读第 1–7 节；组合模式（`mode: combined`）阅读第 1.1、8 节。Reality **只有选择订阅输出（本机订阅或 Worker 聚合）**
-时才阅读第 1、3.1、4 节。Reality 不需要 Globalping，也不需要开启 gRPC。本手册只在浏览器和账号侧操作；VPS 登录、安装、重启和
-客户端导入请回到 [README 的第一次安装路径](../README.md#第一次安装先看这里)。
+## 0. 各模式资源准备一览表
 
-先区分三个容易混淆的概念：域名注册商是你购买/续费域名的地方；Cloudflare 是管理该域名 DNS 和代理的
-地方；VPS 是实际运行 easy_all 的远程服务器。把名称服务器改为 Cloudflare 并不等于把域名转移到
-Cloudflare，注册商仍负责续费。
+| 模式 | 必须准备的资源 | 核心凭据 / Token |
+| :--- | :--- | :--- |
+| **模式 1：直连 Reality** | - 纯节点（`link`）：仅需公网 IPv4 VPS，无其他要求<br>- 本机订阅（`deploy`）：需 1 个二级子域名（如 `sub.example.com`）<br>- Worker 聚合（`worker`）：需 2 个二级子域名（公开订阅域名 + 私有源域名） | - 纯节点：无<br>- 订阅模式：具备 DNS/证书权限的 Cloudflare API Token |
+| **模式 2：Cloudflare CDN** | - 已托管至 Cloudflare 的域名 Zone（Free 方案即可）<br>- 2 个二级子域名（节点域名如 `node.example.com` + 订阅域名如 `sub.example.com`）<br>- 控制台手动开启 **Network → gRPC** | - Cloudflare API Token（含 Workers 编辑权限）<br>- Globalping Access Token |
+| **模式 5：组合模式** | - 已托管至 Cloudflare 的域名 Zone<br>- 4 个二级子域名（直连、CF 节点、CF 回源、订阅） | - Cloudflare API Token（DNS/证书编辑权限）<br>- Globalping Access Token |
 
-线路与费用提示：直连效果不佳、VPS 公网 IP 已被封，或追求 CDN 加速时选择 CDN
-模式。该模式需要维护域名和第三方账号，并不保证一定更快。
-Cloudflare XHTTP 的代理数据会实时经过 VPS：VPS 仅计出站时，其月度出站额度通常是可用代理载荷的
-主要上限，但协议开销和 Cloudflare 服务规则会使两者并非严格等值；VPS 双向计费时还需同时计算入站与
-出站。Cloudflare Free Zone 的使用边界按 Cloudflare 当前规则执行；域名注册费和
-VPS 费用另计。
+---
 
-## 0. 按链路选择准备内容
+## 1. 域名注册与 Cloudflare 托管
 
-先确定只安装其中一种链路，再准备对应资源。同一台 VPS 只能安装一种模式。
+### 1.1 域名注册
+购买一个可长期使用的顶级域名（如在 Spaceship、Namesilo、Namecheap 等注册商购买 `.xyz`、`.com`、`.net` 等）。
 
-| 链路                     | 必须准备                                                                                                                                                                       | 不需要准备                                         | 继续阅读                                                                      |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------- |
-| 模式 1：Reality 直连     | Debian 12/13 amd64 专用 VPS、公网 IPv4；节点可直接使用 IP，也可准备 DNS only/灰云域名；本机订阅还需 Cloudflare Active Zone、一个一级子域和 API Token；Worker 聚合还需同 Zone 第二个一级子域、具备 Workers Scripts Write 的 API Token | Globalping Token、gRPC 设置                        | 仅节点：直接看 README；本机订阅或 Worker 聚合：第 1、3.1、4 节及 README 的 Reality 章节 |
-| 模式 2：Cloudflare 纯 XHTTP | 根域名、Cloudflare Free 账号、已变为**Active** 的 Zone、互不相同的节点与 Worker 订阅子域名、具备 Zone 权限和账户级 Workers Scripts Write 的 Cloudflare API Token、Globalping Token；控制台手动开启 **Network → gRPC**；预期 `$0/月` | 付费 Cloudflare 增值产品 | 第 1–7 节 |
-| 模式 5：组合（直连 + Cloudflare） | 一个 Cloudflare Active Zone、四个互不相同的子域名、具备 DNS 编辑权限的 Cloudflare API Token、Globalping Token；云安全组放行 TCP `443` 与 `8443`；SSH 保持现状 | Cloudflare gRPC、Worker 兜底、用户配额 | 第 1.1、8 节 |
+### 1.2 托管至 Cloudflare
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，点击 **Add a domain**，输入你购买的根域名（如 `example.com`）。
+2. 选择 **Free** 免费计划。
+3. Cloudflare 会给出两条专属 Nameservers（例如 `ns1.cloudflare.com` 和 `ns2.cloudflare.com`）。
+4. 登录你的域名注册商控制面板，将域名的权威 DNS 服务器替换为 Cloudflare 给出的这两条。
+5. 等待 DNS 传播生效，直到 Cloudflare 控制台显示域名状态为 **Active**（已保护）。
 
-只支持 IPv4。
+> **注意**：子域名（如 `node.example.com`、`sub.example.com`）由 `easy_all` 安装时自动通过 API 创建，**请勿提前手动添加 A 记录或 CNAME**。
 
-各链路建议使用的域名如下：
+---
 
-```text
-Reality:    node.example.com（可选）；sub.example.com（本机订阅需要）；
-            sub.example.com + source.example.com（Worker 聚合需要，公开入口与私有源各一个）
-Cloudflare: node.example.com；sub.example.com（部署订阅时必需，绑定 Worker）
-组合:       node.example.com（直连）；cf.example.com；cf-origin.example.com；sub.example.com
-```
+## 2. 获取 Globalping Access Token
 
-所有模式都需要一台没有其他代理面板占用端口和配置的专用 VPS。CDN 模式使用
-Globalping 中国大陆探针定向/精选优选 IPv4。
-Reality 动态端口模式还需在云安全组或服务商防火墙放行 TCP `10000-62703`（覆盖闰年最大端口），
-仅放行 `443` 不够；固定端口模式使用 TCP `443`。安装和 `apply` 会立即加载完整动态范围，无需等整点。
+Cloudflare 模式与组合模式依赖 [Globalping](https://dash.globalping.io/) 从中国大陆三网测速探针筛选最佳 CDN 优选 IP。
 
-## 1. 先注册域名并交给 Provider 托管
+1. 打开 [Globalping Dashboard](https://dash.globalping.io/)，点击 **Sign in with GitHub** 登录。
+2. 进入 [Tokens 页面](https://dash.globalping.io/tokens)，点击 **Generate a new token**。
+3. 填写备注名称（如 `easy_all_cdn`），创建后复制生成的 Token。
+4. 将该 Token 填入安装参数的 `GLOBALPING_TOKEN` 字段。
 
-### 1.1 注册域名
+---
 
-域名注册商可以自行选择。参考文章使用 [Spaceship](https://www.spaceship.com/) 演示购买
-`.xyz` 域名；本项目并不要求使用 Spaceship 或 `.xyz`，也不保证文章中的活动价格。注册前请同时
-确认首年价格、续费价格、隐私保护、付款方式以及是否满足你所在地区的合规要求。
+## 3. 创建 Cloudflare API Token
 
-按参考文章第 1 节整理后的通用流程如下：
+进入 Cloudflare 控制台：**My Profile → API Tokens → Create Token → Custom Token**。
 
-1. 打开 [Spaceship](https://www.spaceship.com/) 或你选定的注册商，注册账号并完成邮箱验证。
-   如果注册商当前要求手机号、实名或其他验证，以注册商页面为准。
-2. 搜索一个自己能长期使用的根域名，例如 `example.com`。本项目需要根域名控制权，后续会在
-   它下面使用 `node.example.com` 这样的一级子域名。
-3. 在 Spaceship 的优惠场景下，建议先注册 **1 年**，再续费 **9 年**；按 10 年总价计算，平均每年
-   价格通常更便宜。下单前必须在当前结算页核对首年价、9 年续费价和 10 年总价，活动和价格可能变化。
-4. 保存注册商账号、域名到期日和恢复邮箱。不要把注册商密码、付款信息或后续 API Token 写入
-   仓库。
+### 3.1 权限配置
+按模式添加对应权限：
 
-下面的截图是参考文章中的界面示例；Spaceship 的页面、价格和中文文案可能已经变化。
+| 权限项 | 适用模式 | 作用 |
+| :--- | :--- | :--- |
+| `Zone / Zone / Read` | 全部需要 CF 的模式 | 读取并确认目标 Zone 状态 |
+| `Zone / DNS / Edit` | 全部需要 CF 的模式 | 自动添加/管理节点与回源解析记录 |
+| `Zone / SSL and Certificates / Edit` | 全部需要 CF 的模式 | 自动申请与签发 Origin CA 证书 |
+| `Zone / Config Rules / Edit` | 模式 2、模式 5 | 自动设置 SSL 为 Full (strict) |
+| `Zone / Transform Rules / Edit` | 模式 2 | 管理 XHTTP 回源防探测密钥规则 |
+| `Zone / Zone Settings / Edit` | 模式 2 | 自动开启 origin HTTP/2 |
+| `Account / Workers Scripts / Edit` | 模式 2、模式 1 (worker 聚合) | 自动部署与管理订阅 Worker |
 
-![Spaceship 注册账号示例](img/spaceship/spaceship-signup.svg)
+### 3.2 作用范围（Zone Resources）
+- **Account Resources**：`Include → Specific account → 你的账号`
+- **Zone Resources**：`Include → Specific zone → 你的域名 (example.com)`
 
-![Spaceship 搜索可注册域名示例](img/spaceship/spaceship-domain-search.svg)
+创建后妥善保存 Token，填入参数文件的 `CLOUDFLARE_API_TOKEN`。
 
-### 1.2 在 Cloudflare 注册账号并添加域名
+---
 
-1. 打开 [Cloudflare 注册页](https://dash.cloudflare.com/sign-up)，使用邮箱和密码创建账号，并按提示
-   完成邮箱验证。
-2. 进入 [Cloudflare Dashboard](https://dash.cloudflare.com/)，选择 **Add a domain**，输入刚注册的
-   根域名，例如 `example.com`。
-3. 选择 **Free** 计划即可。本项目的 Cloudflare 配置不要求购买付费计划。
+## 4. 组合模式（`mode: combined`）域名规划
 
-![Cloudflare 添加域名示例](img/cloudflare/cloudflare-add-domain.svg)
+组合模式将「直连 Reality」与「Cloudflare CDN 优选」部署在同一台 VPS 上，共需准备同一个 Cloudflare Zone 下的 4 个二级子域：
 
-Cloudflare 会为这个 Zone 分配两条名称服务器（Nameservers）。先完整复制并保存这两条值；不要把
-`node.example.com` 的 DNS 记录提前建好，安装器需要检查并创建唯一的 proxied `A` 记录。
+| 子域名示例 | 代理状态（云朵） | 用途说明 |
+| :--- | :--- | :--- |
+| `node.example.com` | 灰云（DNS only） | 直连 Reality 节点入口（客户端直连 VPS `8443` 端口） |
+| `cf.example.com` | 橙云（Proxied） | Cloudflare CDN 优选入口（客户端连接优选 IP 并带此 SNI/Host） |
+| `cf-origin.example.com` | 橙云（Proxied） | Cloudflare 专属回源域名（CDN 连接源站 VPS `443` 端口） |
+| `sub.example.com` | 橙云（Proxied） | 统一订阅下载域名（提供自适应 Mihomo / Base64 配置） |
 
-### 1.3 在注册商修改名称服务器
-
-回到域名注册商的 DNS/Nameservers 页面，把根域名现有的权威名称服务器完整替换为 Cloudflare 显示的
-两条名称服务器，然后保存。
-
-![Cloudflare 名称服务器示例](img/cloudflare/cloudflare-nameservers.svg)
-
-下面是注册商侧 Nameservers 页面的脱敏示意图；域名和名称服务器均为示例值。
-
-![Spaceship 域名管理器中修改名称服务器的脱敏示例](img/spaceship/spaceship-nameservers.svg)
-
-等待注册商和公共 DNS 更新，直到 Cloudflare 中该 Zone 的状态变为 **Active**。名称服务器切换期间，
-如果域名还承载网站或邮件，请先记录原有的 `A`、`AAAA`、`CNAME`、`MX`、`TXT`、SPF、DKIM、DMARC
-和 CAA 记录；遗漏邮件记录可能导致收发信中断。
-
-托管成功后，打开该 Zone 的 **Overview** 页面，确认出现绿色勾选和提示
-**Your domain is now protected by Cloudflare**。同时应看到 **Your web traffic is proxying through
-Cloudflare**，这表示该域名的流量已经通过 Cloudflare 代理。只有看到这个成功标记，才算完成域名托管；
-仅能进入 Cloudflare 控制台、看到 **Free** 计划或拿到 Nameservers 并不代表托管已经生效。
-
-![Cloudflare 域名托管成功标记](img/cloudflare/cloudflare-domain-protected.svg)
-
-参考文章：[48元撸10年xyz域名，搭配Cloudflare有N王炸玩法](https://post.smzdm.com/p/ae5rg7nk/)
-（第 1、2 节）。文中截图仅用于说明操作位置，最终以注册商和 Cloudflare 当前页面为准。
-
-### 1.4 本项目对域名的要求
-
-- Cloudflare 模式使用一个 Zone 和一个一级子域名，例如 `node.example.com`；根域名本身只用于
-  托管 Zone，不作为客户端节点名。
-- `node.example.com` 不要预先创建 DNS 记录；独立订阅域名（如使用）也必须位于同一个 Zone 下。
-- 注册商可以留在原处；Cloudflare 需要的是整个根域名的权威 DNS 委派，而不是把域名所有权转入
-  Cloudflare。
-- 如果 Cloudflare Zone 尚未 **Active**，先完成名称服务器切换，不要继续创建 Token 或运行安装器。
-
-## 2. 注册 Globalping 并创建 Access Token
-
-Globalping 用于从中国大陆的电信、联通和移动探针筛选可用的 CDN IPv4。注册 Globalping 不需要
-单独填写一套账号密码：打开 [Globalping Dashboard](https://dash.globalping.io/)，点击
-**Sign in with GitHub**；如果还没有 GitHub 账号，可先在 [GitHub 注册页](https://github.com/signup)
-创建账号。
-
-### 2.1 注册/登录
-
-1. 打开 [Globalping Dashboard](https://dash.globalping.io/)。
-2. 选择 **Sign in with GitHub**，在 GitHub 页面完成登录和授权。
-3. 返回 Dashboard，确认能够看到自己的账号和用量信息。
-
-### 2.2 创建 Access Token
-
-1. 登录后打开 [Dashboard Tokens](https://dash.globalping.io/tokens)。
-2. 选择 **Generate a new token**，填写用途名称，例如 `easy_all_cloudflare_cdn`。
-3. 创建后立即复制 Token；完整 Token 通常只在创建时显示。
-4. 把它填到参数文件的 `GLOBALPING_TOKEN`（Cloudflare 精选 IP、组合模式都需要）。
-
-### 2.3 安全保管
-
-- 不要把 Token 提交到 Git、写进 README、截图或公开日志。
-- 不要在聊天、Issue 或其他公开渠道发送 Token。
-- 怀疑泄露时，立即在 [Globalping Tokens](https://dash.globalping.io/tokens) 撤销并重新创建。
-
-安装器会把 Globalping Token 仅保存到 VPS 上 root 可读的凭据文件，用于每小时刷新候选 IP。若控制台提示
-本小时额度不足，不要反复执行刷新；等待额度恢复后再运行 `sudo easy_all refresh-cdn-ips`。刷新失败时，
-格式兼容的上一版已验证缓存仍会保留；没有兼容缓存时停止生成订阅，不会回退到域名节点。
-
-## 3. 域名准备：Reality 订阅与 Cloudflare XHTTP
-
-### 3.1 Reality：只在选择订阅输出时阅读
-
-Reality 用参数 `SUBSCRIPTION_MODE` 选择订阅输出，默认 `link`（仅节点）不需要域名和 API Token；需要订阅时准备：
-
-| 选项 | 需要准备的 Cloudflare 资源 |
-| --- | --- |
-| `link`（默认） | 无；只输出 VLESS 链接和 Mihomo 节点 |
-| `deploy` | 一个 **Active** Zone 下的一级子域名（如 `sub.example.com`）；不要提前创建 DNS 记录 |
-| `worker` | 同 Zone 两个一级子域名：公开订阅域名（如 `sub.example.com`，绑定 Worker）和私有节点源域名（如 `source.example.com`，代理回本机 `8443`）；两者都不能与本机节点域名相同，也不要提前创建 DNS 记录 |
-
-本机订阅由安装器创建橙云/Proxied 记录并签发 Origin CA。Worker 聚合只在其公开订阅域名上提供
-客户端地址；私有节点源域名仅允许 Cloudflare 回源，并额外要求 `X-Easy-All-Worker-Source` 密钥，
-不能公开分发。
-
-Reality 的节点连接域名（例如 `node.example.com`）如有使用，必须保持灰云/DNS only 以便客户端直连 VPS；
-它必须只发布指向 VPS 的 A 记录，不能发布 AAAA，也不能与橙云订阅域名相同。Reality 不需要
-gRPC，也不会把节点数据流量经过 Cloudflare。
-
-### 3.2 Cloudflare XHTTP：必须完成
-
-1. 在已经 **Active** 的 Zone 下准备客户端连接的节点域名，例如 `node.example.com`。不要预先创建这个名称的 DNS 记录。
-2. 进入目标 Zone 的 **Network → gRPC**，将 **gRPC** 手动切换为 **On**。这是 XHTTP
-   `stream-up` 的必需条件，Cloudflare 当前没有可用于该开关的 Zone Settings API，安装器无法代办。
-3. 如果部署订阅，准备另一个同 Zone 一级子域名，例如 `sub.example.com`。它必须与节点域名不同，
-   且不要提前创建 DNS 记录；安装器会把它直接绑定为 Worker Custom Domain。
-
-安装器始终为节点域名创建指向 VPS IPv4 的 proxied `A`，并只筛选和下发 Cloudflare IPv4 边缘节点。
-不得为 Cloudflare XHTTP 节点域名准备 AAAA；项目全链路固定 IPv4。
-
-![Cloudflare Network → gRPC 设置路径脱敏示意图](img/cloudflare/cloudflare-grpc.svg)
-
-XHTTP 的安装和 `apply-cloud` 会启动临时 Xray 客户端，通过本机 SOCKS 出口访问前面已验证可用的
-Google `204` 地址。该请求必须实际经过 Cloudflare、XHTTP 路径、Nginx 和服务端 Xray；普通
-`/easy_all-health` 返回 HTTP 200 不再作为传输成功依据。真实 XHTTP 探针会重试 6 次以容忍设置
-传播延迟。只有全部失败后，安装器才发送 `application/grpc` 请求辅助区分未开启开关的 `403` 和
-源站 TLS 握手失败的 `525`；该模拟请求本身不是 XHTTP 验收门槛。
-
-## 4. 只创建一个 Cloudflare API Token
-
-进入 **My Profile → API Tokens → Create Token → Custom Token**。Cloudflare XHTTP 模式同时选择：
-
-```text
-Account Resources → Include → Specific account → 你的 Cloudflare 账号
-Include → Specific zone → example.com
-```
-
-XHTTP 模式添加以下七项权限；Reality 本机订阅只需其中 `Zone / Zone / Read`、
-`Zone / DNS / Edit`、`Zone / Config Rules / Edit` 和 `Zone / SSL and Certificates / Edit`；
-Reality 选择 Worker 订阅聚合时还要加上 `Account / Workers Scripts / Edit`：
-
-| 权限                                   | 用途                            |
-| -------------------------------------- | ------------------------------- |
-| `Zone / Zone / Read`                 | 识别并验证目标 Zone             |
-| `Zone / DNS / Edit`                  | 管理节点域名的 proxied A 记录   |
-| `Zone / Transform Rules / Edit`      | 管理回源密钥规则                |
-| `Zone / Config Rules / Edit`         | 设置 Full (strict)              |
-| `Zone / Zone Settings / Edit`        | 启用 origin HTTP/2              |
-| `Zone / SSL and Certificates / Edit` | 签发、轮换和吊销 Origin CA 证书 |
-| `Account / Workers Scripts / Edit`（API 名称：`Workers Scripts Write`） | 新建/更新 Worker、关闭 workers.dev 并绑定 Custom Domain |
-
-![Cloudflare API Token 的七项最小权限与 Account/Zone 资源范围](img/cloudflare/cloudflare-api-token-easy-all.svg)
-
-创建后立即复制 Token，并保存到可信的密码管理器；把它填到参数文件的 `CLOUDFLARE_API_TOKEN`。
-Token 只在当前进程使用，不会写入 VPS 状态文件，因此后续需要同步云端资源时仍会要求提供。XHTTP
-使用同一枚 Token，但 `Workers Scripts Write` 必须限制到目标账号，六项 Zone 权限必须限制到目标 Zone；
-请勿选择所有账号、所有 Zone 或添加其他权限。原来的纯 Zone Token 不足以部署 Worker。
-
-通常 `easy_all apply` 不需要 Cloudflare Token；`apply-cloud`、证书轮换、Reality 订阅（含 Worker 聚合）
-的云端同步，以及 `uninstall --purge-cloud` 等操作可能会要求它。Token 遗失时可在 Cloudflare 新建一枚相同最小权限的
-Token，再撤销旧 Token；不要尝试从 VPS 状态文件中找回它。
-
-## 5. 安装器会自动完成的事项
-
-- 创建节点域名唯一的 proxied `A` 记录，指向 VPS 公网 IPv4。
-- 签发 15 年 Origin CA 证书并配置 Full (strict)。
-- 部署用户指定名称的模块 Worker（默认 `easyall`），关闭它的 `workers.dev` 和 Preview URL，
-  再将独立订阅域名绑定为唯一公开入口。
-- Worker 显式启用 `global_fetch_strictly_public`，通过节点域名的公共 Cloudflare 路径读取 Nginx
-  私有订阅源；每次请求转发用户 Token，并附加独立的 `X-Easy-All-Worker-Source` 密钥，由 Nginx
-  执行最终用户和配额鉴权。
-- 安装器验证 Worker 能取得动态节点、无效 Token 返回 `403`，同时确认直接请求 Nginx 节点源返回 `404`。
-- 非配额模式若持续无法通过 Worker 动态源验收，安装器保留当前部署，并在执行用户的主目录输出
-  权限为 `0600` 的 `worker.js` 供手工部署；该 Worker 仍要求每次请求成功读取 VPS 动态源，失败
-  时返回 `502`。配额模式仍失败回滚，不生成内嵌 Token 的恢复版本。
-- 可选输入一份不含 `vpsSubUrl` 的 Worker 聚合 JSON；字段参考
-  [`worker-src/config.example.json`](../worker-src/config.example.json)。其中的 `nodes` 可写
-  Reality 直连节点，`fallbackCdnNodes` 只接受 VLESS
-  CDN 兜底节点。安装器保留 `nodes`、`fallbackCdnNodes`；若包含 `allowedTokens`，则覆盖先前设置的
-  用户 Token。安装器再注入本机生成的 `vpsSubUrl` 与私有源配置。聚合内容直接写在参数文件的
-  `WORKER_AGGREGATION_CONFIG`（留空 `{}` 表示不聚合），交给 `build-worker.mjs` 校验构建、自动部署。
-  启用配额时，`allowedTokens` 用户名必须与配额用户完全一致，只允许覆盖 Token。
-- 开启 origin HTTP/2，并只写入当前部署域名和路径对应的 XHTTP 回源密钥规则；不会按 `easy_all`
-  前缀删除同一 Zone 中其他部署的规则。
-- 使用临时 Xray 客户端完成可重试的 XHTTP 端到端验收，仅在失败后辅助诊断 gRPC `403` 或源站 TLS `525`。
-- 仅允许 Cloudflare 官方 IPv4 段访问 VPS 的 TCP 443。
-- 每小时读取 Cloudflare 官方 IPv4 CIDR，以 70% 高质量高优网段权重抽样 120 个地址。
-- VPS 先并发验证候选的 SNI、HTTPS、HTTP/2 和 `/easy_all-health`，排除官方地址范围中未提供
-  CDN 入口的地址；再按 Globalping 当前剩余免费额度限制本轮测量规模，避免耗尽额度。
-- 两阶段预筛：第一阶段使用中国电信 `AS4134`、中国联通 `AS4837`、中国移动 `AS9808` 的 Globalping
-  `eyeball-network` 探针分别发送 10 包 TCP/443，最多允许丢 2 包（20%）；第二阶段对低延迟候选进行
-  最多 3 轮真实 HTTP/TLS HEAD `/easy_all-health` 验证，仅重测尚未通过的候选，彻底剔除 SNI 假通。
-- 按电信、联通、移动三大运营商独立优选，每网输出 2 个通过本机 HTTP/2 和 Globalping HTTP/TLS
-  验证的地址，统一生成 6 个纯 XHTTP 节点（`🇺🇸优选1` 到 `🇺🇸优选6`）。
-- 不使用内置 Anycast IP 或域名兜底凑数。刷新失败时继续使用格式兼容的上一版已验证缓存；从未生成
-  完整 6 个 IPv4 的缓存时停止生成订阅。客户端 Mihomo 每 300 秒测速。
-
-### 5.1 精选 IP 的客户端要求
-
-精选 IP 订阅需要使用 Mihomo，或明确兼容同等 Mihomo XHTTP 字段的客户端。本项目按 Mihomo
-配置格式生成节点：`server` 是筛选出的 Cloudflare IPv4，而 TLS SNI、XHTTP Host、路径、
-`stream-up` 和复用参数仍需保持正确。客户端若不能分别保存 IP、TLS SNI 和 HTTP Host，精选
-IP 节点会连接失败；请以实际生成订阅的导入测试确认兼容性。
-
-### 5.2 VPS 出站 IP 族
-
-只支持 IPv4。
-
-“小火箭”通常指 Shadowrocket。它的官方版本记录已说明支持 XHTTP 和 XHTTP transport options，
-但没有逐项确认本项目所需的 IP/SNI/Host 分离及完整 Mihomo XHTTP 复用参数。因此本项目暂不把
-Shadowrocket 列为已验证客户端。若使用小火箭，请升级到最新版后导入实际订阅逐个测试；不能
-确认时使用 Mihomo。
-
-安装器会复用同名 Worker 并更新订阅脚本；失败回滚保留该 Worker，脚本不恢复旧版本。
-安装器不会覆盖其他 DNS 记录或规则。发现同名记录、自定义域名被其他 Worker 占用、
-规则歧义或权限不足时会停止；请更换名称，不能让安装器猜测所有权。
-
-## 6. 费用与使用边界
-
-上述能力可在 Cloudflare Free Zone 使用；域名注册费和 VPS 费用另计。本项目不会自动启用任何
-按量计费的增值产品，也不承诺固定的月度 CDN 流量额度。
-
-| 项目          | 说明                                                                                                    |
-| ------------- | ------------------------------------------------------------------------------------------------------- |
-| 基础 CDN 费用 | Free Zone 本身无月费；Token、proxied DNS、Universal SSL、Origin CA、HTTP/2、gRPC 和规则配置不单独收费。 |
-| 可用流量      | Cloudflare Free 没有本项目可据此承诺的固定 GB 额度。VPS 仅计出站时，其月度出站额度通常是主要容量上限，但不是可用载荷的一比一保证；实际还受协议开销、Cloudflare 服务条款、账户风控、VPS 带宽和连接质量限制。 |
-| 单次请求      | Free/Pro 的请求体上限为**100 MB**；长连接或大流量不等于获得无限制隧道能力。                       |
-| 额外费用      | 只有自行启用 Argo、WAF、Bot Management 等增值产品时，相关流量才可能产生额外费用；本项目不启用它们。     |
-
-本链路是实时 XHTTP 转发，数据不会因为 CDN 缓存而减少 VPS 流量。用户上行由 VPS 发往目标站，
-用户下行由 VPS 发往 Cloudflare 边缘；仅计出站的 VPS 会把两者计入出站额度，另有协议、TLS 和重传
-开销。若 VPS 服务商统计入站与出站总量，同一载荷进入并离开 VPS 都可能计费，实际可承载的用户载荷
-可能显著低于套餐标称流量。建议按服务商计费口径、目标用户数、峰值并发、VPS 出口带宽和每用户配额
-估算容量，再进行低速、长连接和持续传输测试。Cloudflare 的条款、流量限制和风控优先于本说明。
-
-## 7. 卸载
-
-`sudo easy_all uninstall` 只清理本机。`sudo easy_all uninstall --purge-cloud` 会先使用同一枚
-Token 删除 easy_all 状态记录的 Worker Custom Domain 与 Worker、带所有权标记的节点 DNS、按稳定
-`ref` 定位的 Transform/Config Rules、删除规则后为空且名称匹配的 easy_all ruleset，并吊销 Origin CA
-证书；全部完成后才清理本机。未带 easy_all 标记的 DNS、包含其他规则的 ruleset、Zone 级 origin
-HTTP/2 设置和手动 gRPC 开关都会保留。
-
-官方参考：[Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)、
-[Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)、
-[gRPC](https://developers.cloudflare.com/network/grpc-connections/)、
-[Transform Rules](https://developers.cloudflare.com/rules/transform/)、
-[Workers Script Upload](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/)、
-[Workers Custom Domains](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)、
-[Workers Fetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/)、
-[Cloudflare IP 地址](https://www.cloudflare.com/ips/)。
-
-
-## 8. 组合模式（`mode: combined`）准备
-
-组合模式只需一个已接入 Cloudflare 的 Zone，不需要把域名委派给任何第三方 DNS。准备四个子域名：
-
-| 域名 | 类型 | 代理 | 用途 |
-| --- | --- | --- | --- |
-| `node` | A → VPS IPv4 | 灰云 | 直连 Reality 入口（VPS `8443`） |
-| `cf` | A → VPS IPv4 | 橙云 | Cloudflare 节点入口 |
-| `cf-origin` | A → VPS IPv4 | 橙云 | Cloudflare 回源（CF 连接源站 `443`） |
-| `sub` | A → VPS IPv4 | 橙云 | 订阅入口 |
-
-需要准备：具备该 Zone DNS 编辑权限的 Cloudflare API Token、Globalping Token。云安全组放行 TCP `443`、`8443`；SSH 端口保持现状，安装器不会改动 sshd。
-
-订阅只使用一个 owner Token，不启用用户配额。
-
-Globalping Token 会在应用参数阶段调用 `/limits` 校验；Reality 伪装目标在下载核心后会用
-`xray tls ping` 做带 SNI 的 TLS 1.3 握手验收，并尝试比对 VPS 与目标的 ASN（不同或查询失败只告警）。
-
-客户端显示名与下载文件名来自参数文件：`SUB_DOWNLOAD_NAME`（默认 `EASYALL`）、`NODE_NAME` /
-`DIRECT_NODE_NAME`（默认 `🇺🇸直连`）与 `CF_NODE_PREFIX`（默认 `🇺🇸CF`，实际下发 `🇺🇸CF1`～`🇺🇸CF6`）。节点名（直连 / Cloudflare）同时用于订阅 URI 片段与
-Mihomo 代理/分组名称，必须互不重复；含引号、反斜杠等字符会被正确转义。下载文件名只影响订阅
-响应头里的文件名。
+安装时只需在参数文件中填写根域名 `CF_ZONE`，上述 4 个二级子域若不特殊指定，会自动按默认前缀派生创建。

@@ -1,583 +1,129 @@
-# 运维指南
+# 运维与排障指南
 
-Bunny 模式（`mode: bunny-ws`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
-Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
-[Bunny 前置准备与运维](bunny-preparation-guide.md)。
+本文档介绍 `easy_all` 安装完成后的日常维护、配置更新、用户与配额管理、证书轮换及常见故障排查。
 
-Bunny 支持 Debian 12/13 amd64/arm64，arm64 使用原有内核并暂不支持
-Skyline Speeder 内核加速；其他模式仅支持 amd64。Bunny 与组合模式（`mode: combined`）保留现有 SSH 监听，
-Reality/Cloudflare 会强制 SSH 收敛到 TCP `65533`。组合模式在一次安装中同时提供直连
-Reality 与 Cloudflare XHTTP 两个入口，细节见技术参考。
+---
 
+## 1. 软件更新与配置应用
 
-本文面向已经完成安装的用户。首次安装请从[项目首页](../README.md)开始。
-
-## 更新与应用
-
-更新 easy_all 项目代码：
-
+### 1.1 更新 easy_all 脚本
 ```bash
 sudo easy_all self-update
 ```
+- `self-update` 仅从 GitHub 拉取并替换安装器自身的代码，不会擅自重启服务或修改现有配置。
+- 默认跟随 `main` 分支；若需测试开发版可加 `--dev` 参数。
 
-`self-update` 只替换已安装的项目代码，不修改 Xray、Nginx、订阅、系统参数或云端资源。
-默认从 `main` 更新；验证待发布版本使用 `sudo easy_all self-update --dev`，其他分支使用
-`sudo easy_all self-update --branch <分支>`。
-代码包含配置生成变化时，再执行：
-
+### 1.2 重新应用本地配置
+当脚本更新后包含本地配置调整，或需要刷新 Xray / Nginx 运行时：
 ```bash
 sudo easy_all apply
 ```
+- 重新渲染并应用本机 Xray 配置、Nginx 站点、本地订阅与 UFW 规则。
+- 不会重复向 Cloudflare 请求签发证书或修改 DNS。
 
-Reality/Cloudflare 在安装或 `apply` 时会将 SSH 收敛到仅监听 TCP `65533`，并在 UFW 优先
-阻断 `22`；Bunny 与组合模式保持现有 SSH 监听不变。收敛 SSH 前先在云安全组放行 `65533`，保留
-当前会话，另开终端使用 `ssh -p 65533 用户@服务器` 验证。
-监听冲突、检查命令与恢复规则见[技术参考](technical-reference.md)。
-
-`apply` 遇到配额统计或其他配置任务占用运行时锁时会立即报错；等待该任务结束后重新执行原命令即可。
-
-`1.6.13` 为直连 Reality 增加第三档订阅输出：安装参数 `SUBSCRIPTION_MODE` 取 `link`（默认，仅节点）、
-`deploy`（本机订阅）或 `worker`（Worker 聚合）。Worker 聚合把公开订阅域名绑定到 Cloudflare Worker，另用同 Zone 的私有
-节点源域名由 Cloudflare 代理回本机 `8443`，Nginx 仍是 Token 与配额的唯一真源；其余直连节点
-写入聚合 JSON 的 `nodes`，Worker 按请求实时回源并在源不可用时返回 `502`。Reality 自托管订阅的
-默认选项改为仅节点，与「多节点聚合」场景保持一致。已有部署执行 `sudo easy_all self-update`
-即可，未主动执行 `edit-sub` 的部署保持原模式与订阅 URL。
-
-`1.6.12` 修复 Reality 部署订阅时验收偶发的 404：Nginx reload 未覆盖全部 worker 时，无效 Token 探测可能落到仍服务引导配置的旧 worker，现已对 404 短暂重试并在命中 403 后立即通过；源站证书复用同时要求状态中存在 Cloudflare 证书 ID 与到期时间，Reality 与 XHTTP 两个 Profile 一致。已有部署执行 `sudo easy_all self-update` 即可，无需重新执行 `apply` 或 `edit-sub`。状态版本与订阅 URL 不变。
-
-`1.6.11` 让 `update-core` 在核心验收通过后自动重新生成 Reality 自托管订阅，不再需要额外执行 `apply`；核心更新失败仍按原逻辑回滚，订阅重发失败时核心保持新版本并提示执行 `sudo easy_all apply`。已有部署执行 `sudo easy_all self-update`；状态版本与订阅 URL 不变。
-
-`1.6.10` 修复 Xray 26.9.8 起 REALITY 服务端要求 `X25519MLKEM768` key share、而 mihomo 默认剥离导致的“握手成功但不走流量”：自托管订阅在本机 Xray ≥ 26.9.8 时写入 `support-x25519mlkem768: true`，Worker 聚合默认写入并可用 `supportX25519Mlkem768: false` 关闭。该字段需 mihomo 1.19.9+，旧 mihomo 内核会忽略。已有部署执行 `sudo easy_all self-update` 后 Reality 自托管订阅执行 `sudo easy_all apply`（核心低于 26.9.8 请先 `update-core`），Cloudflare 聚合订阅执行 `sudo easy_all edit-sub` 重建 Worker。状态版本与订阅 URL 不变。
-
-`1.6.9` 新增 `sudo easy_all reality-target <域名:端口>`，安装后可修改 Reality SNI 与回源目标；新目标沿用带 SNI 的 TLS 1.3 验收，失败自动恢复旧配置。存量部署无需重新执行 `apply`，需要更换伪装目标时再执行该命令并刷新客户端订阅；状态版本与订阅 URL 不变。
-
-`1.6.8` 修复配额统计与 Xray `ExecStop` 写锁竞争导致的 15 秒死锁停顿，并兼容 systemd `deactivating` 状态避免服务关机/重启时流量统计丢失。已有部署执行 `sudo easy_all self-update` 并执行 `sudo easy_all apply`。状态版本与订阅 URL 不变。
-
-`1.6.7` 补充中国电信天翼账号 `id6.me` 直连，本机号码一键登录不再因代理出口无法取号。
-已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
-`sudo easy_all edit-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
-
-`1.6.6` 补充腾讯广点通图片域名 `ugdtimg.com` 直连，`pgdt.ugdtimg.com` 不再落入代理。
-已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
-`sudo easy_all edit-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
-
-`1.6.5` 补充中国移动认证、HTTPDNS 与字节 SDK 域名的直连，避免这些国内服务在 fake-IP 下落入代理。
-已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
-`sudo easy_all edit-sub` 重建内嵌模板。状态版本与订阅 URL 不变。
-
-`1.6.4` 让单标签主机名与认证门户/连接性检测域名直连，并使用系统 DNS；单标签主机名不再落入代理。
-已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
-`sudo easy_all edit-sub` 重建内嵌模板。认证门户检测域名（含 `connectivitycheck.gstatic.*`）改为直连后，
-受限网络下 Android 可能显示“无网络”，这是本地探测的真实结果。
-
-`1.6.3` 让默认与完整模板、经典模板补上国内 SDK 域名库，`cm-10-134.getui.com` 这类推送/统计域名不再落入代理。
-已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
-`sudo easy_all edit-sub` 重建内嵌模板。首次启动会额外下载约 34 KB 的 `geosite-geolocation-cn.mrs`，失败时仍使用内联集合。
-
-`1.6.2` 让默认模板加载国内域名库（约 11 万条），未收录的国内站点不再直接落入代理。已有部署执行
-`sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行
-`sudo easy_all edit-sub` 重建内嵌模板。状态版本与订阅 URL 不变；首次启动会下载约 535 KB 的
-`geosite-cn.mrs`，失败时仍使用内联集合。
-
-`1.6.1` 把 CN/LAN GeoIP 兜底改为只匹配已有真实 IP，未收录域名不再为 GeoIP 判断额外解析。
-已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，
-Cloudflare 聚合订阅再执行 `sudo easy_all edit-sub` 重新构建内嵌模板。状态版本（Reality v7、
-Cloudflare v9）与订阅 URL 不变，无需迁移。
-
-`2026-10-14` 引入 Skyline Speeder。已有部署更新代码后执行 `sudo easy_all apply`，会核对并更新到项目固定的 Skyline 版本。本次无需重建 Worker，现有订阅 URL、用户配置和状态（Reality v7、Cloudflare v9）均无需迁移。
-
-此前的 `2026-10-13-v1` 修复聚合 Worker 的三处编辑器类型诊断，保持现有 IPv4 策略、上游错误提示和鉴权行为。若尚未应用该历史版本的 Worker 修复，执行 `sudo easy_all self-update` 后，Cloudflare 聚合订阅再执行 `sudo easy_all edit-sub`，聚合配置选择“保留”，重新构建并部署 Worker；独立手工部署的 Worker 在其构建环境重新构建并部署。
-源码版本使用 Git 标签标识；Worker 的 `X-Easy-All-Version` 是独立的构建版本，`apply` 不改变此响应头。
-该历史版本修改了 Worker 运行源码，单独执行 `self-update` 不会更新线上 Worker；安装器与独立聚合构建均使用修复后的同一份公共源码。
-
-从 `2026-10-11` 起，关闭或更换订阅后未能清理的旧 Worker 身份会保存在状态文件中。若提示旧资源尚未清理，恢复 API 权限或网络后运行 `sudo easy_all apply-cloud` 重试；`uninstall --purge-cloud` 也会重试，清理失败会停止卸载并保留本机状态。普通 `apply` 不执行该云端清理。旧版本已经丢失身份的孤立资源无法由该升级自动追溯，仍需在 Cloudflare 控制台核对并手工清理。
-
-只更新订阅规则时：
-
+### 1.3 同步云端资源（Cloudflare / 组合模式）
+如果更改了域名、需要同步 Cloudflare 解析、更新边缘规则或重新签发 Origin CA 证书：
 ```bash
-sudo easy_all self-update
-sudo easy_all edit-sub
+sudo easy_all apply-cloud
 ```
+- 会重新校验并同步 Cloudflare DNS 记录、Strict SSL 规则及证书配置。
 
-Cloudflare 模式保留现有订阅模式、Worker 名称、订阅域名、用户 Token 和配额；出现 Worker
-聚合配置选项时选择 `1. 保留`。此命令会重新构建并部署 Worker，并更新本机订阅，
-不需要再执行 `apply-cloud`。最后在客户端刷新订阅并重启代理内核。
+---
 
-默认发布的模板是 `templates/mihomo.yaml`（COMMON 精简规则），不需要额外参数。改用仓库内置的其他
-模板（`templates/mihomo-common.yaml`、`templates/mihomo-classic.yaml`）或自定义模板时，在命令前
-传入 `MIHOMO_TEMPLATE_SOURCE=<模板绝对路径或 HTTPS URL>`；Cloudflare 模式会重新构建并内嵌所选
-模板。模板差异与内存实测见[客户端使用指南](client-guide.md#低内存客户端旧款-iphone)。
+## 2. 常用管理命令速查表
 
-升级迁移：旧版默认是经典模板（早期为 geodata 模式，2.3.1 起改为 MRS 规则集），新版不传参数会使用 COMMON 精简版。旧路径
-`templates/mihomo-common-lite.yaml` 已并入 `templates/mihomo.yaml`；从旧脚本或任务中删除该
-`MIHOMO_TEMPLATE_SOURCE` 设置即可使用新默认，也可以把路径改为 `templates/mihomo.yaml`。
-保留或回退经典规则时执行：
+| 命令 | 说明 |
+| :--- | :--- |
+| `sudo easy_all status` | 查看系统运行状况、TCP 加速激活状态、Xray/Nginx 服务及端口 |
+| `sudo easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
+| `sudo easy_all show` | 打印当前节点链接（VLESS URI）与 Mihomo YAML 配置片段 |
+| `sudo easy_all reality-target [域名:端口]` | （Reality / 组合模式）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
+| `sudo easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 重定向规则 |
+| `sudo easy_all refresh-cdn-ips` | （Cloudflare / 组合模式）重新调用 Globalping 探针优选最新 CDN IP |
+| `sudo easy_all edit-sub` | 交互式管理订阅用户、配额、订阅模板或 Worker 聚合 |
+| `sudo easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
+| `sudo easy_all update-core` | 在线升级 Xray 核心至官方最新版本，并自动重载服务 |
+| `sudo easy_all quota-status` | 查看各用户的月度已用流量与配额状态 |
+| `sudo easy_all quota-set <用户> <GB>` | 调整指定用户的月度配额（`0` 表示不限流量） |
+| `sudo easy_all quota-reset <用户>` | 重置指定用户本月的已用流量计数 |
+| `sudo easy_all cleanup-partial` | 清理安装中断留下的临时残留（不影响云端资源） |
+| `sudo easy_all uninstall` | 卸载本机服务与配置；加 `--purge-cloud` 会同步清理 Cloudflare 远端资源 |
 
+---
+
+## 3. TCP 加速（Skyline Speeder / BBR）
+
+- amd64 平台安装时默认配置并启用 [Skyline Speeder](https://github.com/CYBERVERSE-Research/skyline-speeder)。
+- **内核要求**：Skyline 要求 Linux 6.12+。若系统内核较低，安装器会自动升级 XanMod LTS 内核。
+- **状态确认**：
+  - 安装后若提示重启，执行 `sudo reboot`；
+  - 重启后运行 `sudo easy_all status`，显示 `Skyline Speeder: active` 即表示已成功加速。
+  - 若显示 `degraded`，说明正在回退使用标准 BBR，网络连接不受影响。
+
+---
+
+## 4. 节点与伪装目标管理
+
+### 4.1 更换 Reality 伪装目标（SNI）
 ```bash
-sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-classic.yaml easy_all edit-sub
+sudo easy_all reality-target swdist.apple.com:443
 ```
+- 命令会自动通过 `xray tls ping` 验收新目标的 TLS 1.3 握手连通性与 ASN 归属，验证通过后原子替换配置并重载 Xray。
+- 随后客户端刷新订阅即可获取新 SNI。
 
-Reality 自托管订阅会把选中的模板持久化到 `/etc/easy_all/mihomo-template.yaml`，之后的
-`apply`、`edit-sub` 和重启后的端口刷新都沿用该模板；更换模板时在命令前传入新的
-`MIHOMO_TEMPLATE_SOURCE`，安装器会用新模板覆盖上述文件。该快照随发布原子替换，但不在
-`edit-sub` 失败回滚的恢复范围内：回滚只恢复 `state.env`、运行配置、订阅、证书、UFW 与
-crontab，快照可能比回滚后的状态新（后续 `apply` 或重启刷新会使用新模板）。Cloudflare 聚合订阅仍需在
-`edit-sub` 时传入模板，以重建并内嵌所选规则的 Worker。客户端使用同一聚合订阅时，只需在管理该
-Worker 的服务器更新一次，再让各客户端刷新订阅并重启内核；其他独立订阅需要分别更新。
-
-若代码推送在 `dev`，第一条命令改为 `sudo easy_all self-update --dev`。`self-update` 或
-`apply` 单独执行都不会更新 Cloudflare Worker 内嵌的规则。独立手工部署的 Worker 则需要
-在其构建环境重新构建并部署；VPS 无法自动更新未由安装器管理的 Worker。
-
-更新 Xray 核心：
-
-```bash
-sudo easy_all update-core
-```
-
-Reality 自托管订阅的内容取决于本机核心版本（26.9.8 起才写入 `support-x25519mlkem768`），
-因此 `update-core` 在验收通过后会自动重新生成订阅。仅当重发失败时才会提示再执行
-`sudo easy_all apply`；核心更新本身失败时会回滚二进制、版本文件与运行时配置，不重发订阅。
-
-### `apply` 与 `apply-cloud`
-
-`apply` 读取 `/etc/easy_all/state.env`，按现有模式和参数重新生成本机配置。它不会改变模式、
-UUID、节点域名或传输路径，也不会重新询问订阅模式。
-
-- Reality：同步本机系统、Xray、订阅、UFW 和 Fail2ban；自托管订阅时也同步其 Cloudflare
-  DNS、Origin CA 与 Strict TLS。
-- Cloudflare：同步本机 Xray、Nginx、订阅、UFW、Fail2ban 和精选 IP 缓存，不修改 Worker。
-- Bunny：先分页盘点账户中的 Pull Zone，并复用目标 CDN Hostname 的唯一所有者；按实际
-  `CnameDomain` 幂等同步 DNS、Hostname、证书、ForceSSL 和 Edge Rule，并重建本机 Xray、
-  Nginx 与订阅（不涉及 Fail2ban 与防火墙）；关键配置不匹配、共享 Zone 所有权不明或存在
-  DNS 冲突时，在首个云端写入前停止。普通 `apply` 与 `apply-cloud` 在 Bunny 模式下行为相同。
-- 组合：`apply` 只重建本机 Xray、Nginx 与订阅（不写 DNS、不签发证书）；
-  `apply-cloud` 才写入 Cloudflare DNS 并签发证书。
-  组合模式升级到本版本后必须执行一次 `sudo easy_all apply-cloud`（重签含节点域名的 Origin CA 证书）；
-  只跑 `apply` 不会重签证书，`status` 会显示证书未覆盖节点域名。
-  `edit-sub`、`apply-cloud` 与 `renew-cert` 在可捕获终止（`die`、`SIGINT`、`SIGTERM`、`SIGHUP`）时会回滚本机配置、证书与状态；`SIGKILL`/OOM 不会回滚，可能留下“运行中鉴权/证书比状态文件新”的偏差，请执行 `sudo easy_all status` 查看是否提示不一致：Token 偏差按提示执行 `sudo easy_all apply`，证书轮换后偏差执行 `sudo easy_all apply-cloud` 复核。
-- 所有模式都会在可捕获失败（`die`、`SIGINT`、`SIGTERM`、`SIGHUP`）时恢复已备份的本机配置（`SIGKILL`/OOM 无法捕获，不会自动回滚）。
-
-`apply-cloud` 适用于 Cloudflare、Bunny 与组合模式。Cloudflare 模式会在应用本机配置后同步
-DNS、Origin CA、边缘规则和 Worker。Bunny 模式与普通 `apply` 相同，使用 root-only journal
-记录每个已创建资源的稳定 ID；后续执行只复用仍匹配的资源。未知旧 journal 不授权
-云端删除。已成功变更的 Cloudflare 云资源不会自动回滚。
-
-配置更新、核心更新和配额统计共用一把写锁；另一个写操作运行时，新操作会立即停止。
-
-## 命令
-
-| 命令 | 作用 |
-| --- | --- |
-| `show` | 显示当前 VLESS 链接和 Mihomo 节点片段。 |
-| `subscription` | 显示订阅部署状态和每个用户的订阅地址。 |
-| `status` | 显示当前 TCP 加速、协议、服务、端口和订阅状态。 |
-| `self-update [--dev\|--branch <分支>]` | 更新项目代码；默认 `main`，`--dev` 使用 `dev`。 |
-| `apply` | 重新应用当前配置；Bunny 模式同时同步受管云资源；组合模式只重建本机与订阅。 |
-| `reality-target [域名:端口]` | 修改 Reality SNI（伪装目标）并重新应用，仅 Reality 模式；无参数时交互输入。 |
-| `apply-cloud` | Cloudflare 模式同步本机和云端资源；Bunny 模式与 `apply` 相同；组合模式同步 DNS 与证书。 |
-| `edit-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
-| `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅；组合模式刷新 Cloudflare 优选池。 |
-| `refresh-origin-ips` | 立即刷新 Bunny 官方回源 IPv4 池；定时器每六小时自动刷新。 |
-| `purge-cloudflare` | 清理 easy_all 创建的 Cloudflare 资源（Worker/DNS/规则/Origin CA）；不删除 Zone。 |
-| `update-core` | 更新当前模式核心：Reality/Cloudflare/Bunny/组合 更新 Xray。 |
-| `rotate-dynamic-ports` | 立即刷新 Reality 模式的 NAT 规则。 |
-| `renew-cert` | 重新签发当前模式证书；Bunny 强制重新签发源站证书；组合模式重签 Origin CA 证书。 |
-| `cert-renew` | 内部命令：由 `easy_all-cert-renew.timer` 调用，适用于 Bunny 模式。 |
-| `quota-status` | 查看每个用户的月度配额和流量。 |
-| `quota-set <用户> <GB>` | 修改已有用户额度，`0` 表示不限量。 |
-| `quota-reset <用户>` | 清零指定用户本月流量。 |
-| `cleanup-partial [--assume-mode <模式>]` | 清理上次中断安装留下的本机残留（未安装状态使用；不改动云端资源）。默认按安装进度标记判断模式，旧版本无标记时用 `--assume-mode` 指定。 |
-| 安装中断后重跑 | 同一模式会提示「继续上次安装」：组合模式默认**续装**——只停残留服务释放端口，保留 `/etc/easy_all`、证书、Nginx 配置与云端资源，不重拍安装前快照（再失败仍回滚到安装前）；从 packages 阶段重跑并靠幂等逻辑复用，UUID/路径/订阅 Token/Reality 密钥/Origin CA 元数据来自 `/etc/easy_all/install-identity.json`，已下发的节点与订阅不变。选「n」再确认清理才会回滚快照并删除本机残留；换域名/Zone/账户时请选清理重装。 |
-| `uninstall` | 卸载本机资源；`--purge-cloud` 同时清理本工具创建的云资源。 |
-| `help` | 显示命令帮助。 |
-
-## TCP 加速（Skyline Speeder）
-
-首次安装默认自动配置并启用 Skyline Speeder（安装过程不再提示，amd64 自动完成）。
-arm64 Bunny 使用原有内核，暂不支持 Skyline Speeder。
-
-Skyline 是服务器发送端加速，客户端不需要额外安装，独立 Worker 节点不会受益。
-启用时要求当前运行 Linux 6.12+、可读的 `/sys/kernel/btf/vmlinux` 和统一 cgroup v2。
-当前内核低于 6.12 时，会先安装或升级兼容的 XanMod LTS；即使已有旧版元包也会尝试升级，
-并验收实际安装的内核版本。此时暂不重启，继续完成节点、订阅等安装，期间暂用 BBR，状态显示
-`Skyline Speeder: pending-reboot`。保存链接后重启一次，开机任务会自动安装并启用 Skyline，
-不必重新输入命令，也不会再次自动升级内核或重启。自动安装期间显示 `pending-activation`，
-完成后应显示 `Skyline Speeder: active`。开机安装需要联网；Debian 12 会从源码编译 Rust/BPF，
-可能耗时较长并占用 CPU、内存和磁盘，期间继续使用 BBR。可查看进度：
-
-```bash
-sudo journalctl -u easy_all-skyline-setup.service -b -f
-```
-
-开机任务遇到配额统计等任务占用运行时锁时，最多等待 60 秒。等待超时、缺少 BTF、cgroup v2，
-或其他安装/启用失败时，任务会停止，保留 BBR 回退；`status` 显示 `degraded` 和
-当前实际拥塞控制。根据日志修复后执行 `sudo easy_all apply` 重试。
-
-Skyline 版本跟随 easy_all 的固定版本。更新项目代码后执行 `sudo easy_all apply` 即可就地升级，
-无需先卸载；手工安装的其他版本也会被替换，更新版本可能被降级到项目固定版本。
-版本及安装记录匹配时复用已有二进制。旧安装缺少版本记录时，首次应用会重新校验
-并安装一次；Debian 12 可能再次编译源码。升级失败保留已验证的安装器供重试和卸载。
-卸载 easy_all 时会调用官方卸载器清理托管的 Skyline 安装。
-版本及安装记录匹配时复用已有二进制。旧安装缺少版本记录时，首次应用会重新校验
-并安装一次；Debian 12 可能再次编译源码。升级失败保留已验证的安装器供重试和卸载。
-卸载 easy_all 时会调用官方卸载器清理托管的 Skyline 安装。
-
-## 轮换 UUID
-
-`apply` 默认保留 UUID。需要轮换时：
-
+### 4.2 轮换 VLESS UUID
+如需更换节点 UUID：
 ```bash
 sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 ```
+执行后旧 UUID 立即失效，请在客户端更新订阅。
 
-旧 UUID 会立即失效。随后运行 `easy_all show`，或让客户端重新拉取订阅。
+---
 
-## 管理订阅用户
+## 5. 订阅与多用户配额管理
 
-统一使用：
-
+执行交互式管理：
 ```bash
 sudo easy_all edit-sub
 ```
 
-Reality 模式会先让你选择订阅输出（`1` 仅节点、`2` 本机订阅、`3` Worker 聚合，默认保持当前值）；
-Cloudflare 模式仍是 `1` 部署 Worker / `2` 不部署。
+- **添加/修改用户**：按提示输入完整用户字典（例如 `{"owner":"token1", "user2":"token2"}`）。省略的用户会被删除。
+- **按用户月度配额**：
+  - 开启配额后，系统会每 15 分钟聚合统计入站与出站流量。
+  - 用户流量超标后，其中断的连接将返回鉴权失败，直到次月账期起点或管理员执行 `quota-reset`。
 
-该命令接收的是完整用户清单：保留的用户必须继续填写，新增用户名会创建用户，省略已有用户名
-会删除用户。完成后运行 `sudo easy_all subscription` 查看最终地址。
+---
 
-用户名只能包含字母、数字、点、下划线和短横线，长度为 `1-64`。Token 只能使用 URL 安全字符，
-长度为 `8-128`，且必须唯一。
+## 6. 卸载与清理
 
-### 未启用月度配额
-
-`ALLOWED_TOKENS` 只维护订阅访问 Token；用户名是管理标签，不是 Xray 用户身份。先运行
-`sudo easy_all subscription` 找到要保留的 Token，再提交完整字典。例如保留 `owner` 并新增
-`user1`：
-
-```bash
-sudo env ALLOWED_TOKENS='{"owner":"existing-owner-token","user1":"new-user1-token"}' \
-  easy_all edit-sub
-```
-
-所有 Token 映射到同一份订阅和同一个 `VLESS_UUID`，不区分 Xray 用户、流量统计或超额停用。
-删除 Token 只阻止继续下载订阅，不会使已经下发的 UUID 失效。需要逐用户独立 UUID 和流量统计时，
-应启用月度配额。
-
-### 已启用月度配额
-
-配额 JSON 同时定义完整用户清单。`0` 表示不限量：
-
-```bash
-sudo env ENABLE_MONTHLY_QUOTA=2 \
-  MONTHLY_QUOTAS_GB='{"owner":0,"user1":100,"user2":50}' \
-  easy_all edit-sub
-```
-
-脚本会为新增用户生成独立 Token、UUID 和 `easy_all.<用户名>` 格式的 Xray `email`；同名用户
-复用现有凭据。覆盖某个 Token 时：
-
-```bash
-sudo env ENABLE_MONTHLY_QUOTA=2 \
-  MONTHLY_QUOTAS_GB='{"owner":0,"user1":100}' \
-  QUOTA_TOKEN_OVERRIDES='{"user1":"my-user1-token"}' \
-  easy_all edit-sub
-```
-
-Token 用于下载对应订阅，UUID 用于 VLESS 鉴权，`email` 用于 Xray 流量计数。托管 Nginx 对
-`/subscribe` 关闭访问日志，避免查询参数中的 Token 写入日志。
-
-启用配额时还需设置 VPS 开通日期，完整日期保存在状态中，其中“日”作为以后每个月的 UTC
-账期边界。开通日为 29、30 或 31 而某个月没有该日期时，使用该月最后一天。
-
-查看和调整已有用户：
-
-```bash
-sudo easy_all quota-status
-sudo easy_all quota-set user1 200
-sudo easy_all quota-reset user1
-```
-
-`quota-set` 不清零已用量；新额度不高于已用量时用户立即停用，调高后可立即恢复。
-`quota-reset` 只清零指定用户当前账期的用量，不修改额度和凭据。
-
-配额任务每分钟累计 Xray 看到的上下行载荷，属于近实时控制，不是精确计费系统。写锁被其他任务
-占用时本轮统计最多等待 15 秒后跳过，并在锁释放后由定时任务补算（未重启 Xray 时）；
-`quota-status` 会提示统计暂停。若持锁的长任务结束后 Xray 已重启，自上次成功统计以来的整个
-未同步窗口可能丢失。用户分享自己的 UUID 或订阅地址后，相关流量仍计入该用户。
-
-## Worker 聚合
-
-Reality 直连模式也可以选择 Worker 聚合（`SUBSCRIPTION_MODE: worker`）。它会占用同 Zone 两个一级域名：
-
-- 公开订阅域名：绑定 Worker 的 Custom Domain，客户端只访问 `https://<公开域名>/subscribe`；
-- 私有节点源域名：Cloudflare 代理到本机 `8443`，仅放行 Cloudflare 回源，
-  路径 `/subscribe` 还要求独立的 `X-Easy-All-Worker-Source` 密钥，因此不能当公开订阅地址分发。
-
-Nginx 仍负责 Token 校验和配额，所以 Worker 只是下发入口，不缓存节点、不绕过配额。源不可达时
-Worker 返回 `502`；Token 被源拒绝时返回 `403`。本机 Reality 节点来自私有源，其余直连节点写在
-聚合 JSON 的 `nodes` 中（名称必须互不重复，且不能与本机节点同名）。直连节点（Reality、Trojan 与
-Mieru）的展示名保持原样并直接列在 `PROXY`，不会被改名成 `🇺🇸优选N` 或放进隐藏测速组。
-
-`nodes` 支持三种直连节点，`fallbackCdnNodes` 只接受 VLESS/CDN 兜底节点；所有 `host` 都可填
-公网 IPv4 或 DNS only 域名，但不支持 IPv6 literal：
-
-```json
-{
-  "nodes": [
-    {
-      "type": "vless",
-      "security": "reality",
-      "network": "tcp",
-      "name": "Reality example",
-      "host": "reality.example.com",
-      "uuid": "00000000-0000-4000-8000-000000000001",
-      "sni": "www.example.com",
-      "pbk": "Reality 公钥",
-      "sid": "0123456789abcdef",
-      "fp": "chrome"
-    },
-    {
-      "type": "trojan",
-      "name": "Trojan example",
-      "host": "trojan.example.com",
-      "port": 443,
-      "password": "replace-with-a-trojan-password",
-      "sni": "trojan.example.com",
-      "alpn": ["http/1.1"],
-      "fp": "chrome"
-    },
-    {
-      "type": "mieru",
-      "name": "Mieru example",
-      "host": "mieru.example.com",
-      "portRange": "50000-50512",
-      "username": "example-mieru-user",
-      "password": "replace-with-a-long-mieru-password",
-      "transport": "TCP",
-      "multiplexing": "MULTIPLEXING_LOW",
-      "trafficPattern": "CLlgEAA="
-    }
-  ]
-}
-```
-
-Trojan 节点规则：
-
-- 只允许写在 `nodes`；写进 `fallbackCdnNodes` 会被直接拒绝，避免被改名成 `🇺🇸优选N` 并塞进隐藏测速组。
-- `password` 必须是 8-64 位字母、数字或 `.` `_` `~` `-`；`sni` 缺省等于 `host`；端口缺省 `443`；
-  均不支持 IPv6 literal，`ipVersion` 强制 `ipv4`。
-- `alpn` 只能是 `http/1.1` 或 `h2`，可写成数组或逗号分隔字符串，省略时不输出（由客户端和服务端协商）。
-- Mihomo 输出固定 `type: trojan`、`network: tcp`、`udp: true`、`skip-cert-verify: false`；
-  base64 输出为 `trojan://<密码>@<域名>:<端口>?security=tls&type=tcp&sni=...#名称`。
-- 从 Trojan 节点服务器执行 `easy_all show` 复制密码、域名和端口，填入任意一台已部署 Worker 聚合的
-  Reality/Cloudflare 节点即可统一分发；Trojan 模式本身不部署 Worker 与在线订阅。
-
-Mieru 节点规则：
-
-- 只允许写在 `nodes`；写进 `fallbackCdnNodes` 会被直接拒绝。`host` 可为 IPv4 或 DNS only 域名。
-- `port` 与 `portRange` 必须且只能提供一个：`port` 为单个端口（1-65535），`portRange` 形如
-  `50000-50512`；直连模式推荐 `portRange: "50000-50512"`。`username` 与 `password` 必填，分别限制为
-  1-64 与 8-64 位字母、数字或 `.` `_` `~` `-`；`transport` 只能是 `TCP`；`multiplexing` 可省略
-  （`MULTIPLEXING_OFF`/`LOW`/`MIDDLE`/`HIGH`，默认 `LOW`）。
-- `trafficPattern` 可省略，取 `easy_all show` 中 `traffic-pattern:` 的值（`mita export traffic-pattern`
-  导出的标准 base64）；`mtu` 可省略（1280-1500，默认 1400，只写入 `mierus://` 链接，Mihomo 节点不输出）；
-  `udp` 默认 `true`。
-- Mihomo 输出 `type: mieru`、`transport: TCP`、`udp`、`username`、`password`、`multiplexing` 与可选
-  `traffic-pattern`；base64 输出
-  `mierus://<用户名>:<密码>@<host>?mtu=1400&multiplexing=...&port=50000-50512&profile=default&protocol=TCP`。
-- 外部 Mieru 节点的用户名、密码、域名或 IPv4、端口范围与可选 traffic-pattern 可填入任意一台已部署 Worker 聚合的 `nodes` 统一分发；Mieru 节点不参与 CDN 自动命名或测速组。
-
-切换订阅输出或更换域名时，`edit-sub` 会先部署新模式，再清理上一模式的 Worker、Custom Domain、
-Origin CA、Strict TLS 规则和源站 DNS。Worker 名称在安装后不能就地改名，需要重新安装。
-本机订阅的橙云记录与 Worker Custom Domain 不能共用同一个主机名，因此在本机订阅与 Worker 聚合
-之间切换时，`edit-sub` 会要求重新输入未被占用的公开订阅域名和私有节点源域名。
-
-Cloudflare 模式部署订阅时，Worker 使用与节点域名不同的同 Zone 一级子域。选择聚合后输入一份
-不含 `vpsSubUrl` 的 Worker 聚合 JSON；结构参考
-[`worker-src/config.example.json`](../worker-src/config.example.json)。
-
-安装器保留其中的 `nodes` 和 `fallbackCdnNodes`，并自动注入本机私有源。
-若配置包含 `allowedTokens`，它会覆盖前一步设置的 Token。启用配额时，其用户名必须与配额用户
-完全一致。
-
-Cloudflare 模式还可部署独立的纯 Worker TCP 兜底节点。Mihomo 订阅将 6 个 XHTTP 节点放入
-`🇺🇸白天首选`，将最多 6 个经独立探测成功的纯 Worker 优选 IPv4 放入 `🇭🇰CF`；两个组都使用
-URL-Test 自动测速并设置 `hidden: true`，作为 PROXY 内的选项，不单独展示。
-所有代理流量（包括 YouTube）统一使用 PROXY 当前选择。纯 Worker 不发布域名入口，
-其流量不经过 VPS，也不计入 VPS 用户配额。
-测速超时统一为 5 秒。规则模式下，代理流量的 QUIC 拒绝不受手动节点选择影响。
-纯 Worker 节点全面使用 XHTTP stream-one 原生流传输，TCP 两端通过原生 Stream `pipeTo()`
-传递背压，支持超过 8 MiB 的持续大文件下载，不保留旧 WebSocket 模式。stream-one 的全部上行
-位于单个 HTTP POST 请求体内，因此仍受 Cloudflare 套餐的请求体大小限制（Free/Pro 通常为
-100 MB）；大文件上传应改用 VPS 节点。客户端 XMUX 最多建立 4 条底层 HTTP/2 连接，
-避免多个并发代理请求全部挤在同一条 TCP 连接上。
-新配置的纯 Worker 默认就近运行（`WORKER_BACKUP_PLACEMENT=off`）。已有香港定向配置不会自动覆盖；
-如需比较就近执行与香港定向的速度，在 `/etc/easy_all/state.env` 将该项改为 `off`，然后运行
-`sudo easy_all apply-cloud` 重新部署。保留原值 `aws:ap-east-1` 可恢复香港定向；两者均不保证固定出口 IP。
-仅刷新客户端订阅不会更新 Worker 转发代码；更新 VPS 上的项目代码后，需重新部署纯 Worker。
-
-停用或更换兜底 Worker 时，旧资源先记入 `state.env` 的 `WORKER_BACKUP_RETIREMENTS`，
-等新订阅和状态提交后才删除。部分删除失败不会回滚到已失效的旧节点，
-下次 `apply-cloud` 会按账户、名称和域名 ID 重试清理。
-若更新失败且旧 Worker 部署也无法恢复，部署版本快照保存在
-`/etc/easy_all/recovery/backup-worker-deployment.*`（权限 `0600`），退出清理不会删除。
-
-已有部署只需同步这一订阅逻辑时执行：
-
-```bash
-sudo easy_all self-update
-sudo easy_all apply-cloud
-```
-
-尚未启用独立 Worker 时，运行 `sudo easy_all edit-sub`，在交互流程中启用并提供一个区别于
-节点域名和订阅域名的同 Zone 一级域名。
-
-## 证书与 Reality 动态端口
-
-Reality 数据流量直连 VPS `443`，只有订阅回源 HTTPS 使用 Cloudflare Origin CA 和 VPS
-`8443`：本机订阅模式的回源域名就是公开订阅域名，Worker 聚合模式则是私有节点源域名。
-证书仍匹配回源域名且剩余至少 30 天时，`apply` 不重复签发；需要强制轮换时执行
-`sudo easy_all renew-cert`。
-
-Reality 动态端口范围为 `10000-62703`（覆盖整年 366 天），每小时提供 6 个端口并在每次订阅请求时按时间挑选下发。
-UFW NAT 通过单条端口范围规则整段转发到 `443`（并对落在该范围内的 SSH 端口前置 `RETURN` 豁免），不会生成数万条单端口 allow 规则。
-安装和正常 `apply` 会立即生成并加载整段规则；即使在 `11:30` 安装，也无需等待整点。
-UFW 持久化这些规则并在开机时加载，受管 cron 使用单个 `@reboot` 任务再次刷新整段范围，替换旧的每小时任务。
-每日定时重启前不再刷新 NAT 或订阅，避免刷新失败阻止重启。固定 `443` 模式会移除受管动态端口任务。
-云安全组或服务商防火墙必须额外放行原始目标 TCP `10000-62703`；只放行 `443` 无法让动态端口到达 VPS。
-VPS 上的 UFW 在 NAT 重定向后按 `443` 规则放行，SSH `65533` 不在动态范围内。
-
-Reality 自托管订阅通过 Nginx njs 在每次 GET/HEAD 中读取当前用户模板，并按与 Worker 相同的
-上海时间算法选择端口；这是时间决定的六槽位选择，重复时间可以选中同一端口。固定 `443` 模式
-始终下发 `443`。DNS 监听、其他节点等模板端口保持原值。开机刷新仍会重新生成已部署的订阅模板，
-每次请求的六槽位端口选择独立于 cron，不依赖模板重发。
-
-全新安装的 Debian 12/13 Reality 自托管订阅使用系统仓库 `libnginx-mod-http-js`。
-安装与正常 `apply` 原子安装本服务脚本和两个端口模板，再运行 `nginx -t` 和本机
-Base64、YAML、HEAD 验收；模块缺失或未加载会使操作失败。配额重建使用同一 njs 配置及
-已安装依赖。
-
-模板读取或结构校验失败时，订阅返回纯文本 `503 Subscription unavailable`。
-订阅三个 locations 同时关闭访问及错误日志，避免 query 中的凭据进入日志；诊断时检查无凭据的
-`/easy_all-health`、`sudo nginx -t` 和文件权限，再运行 apply 重新生成。不要使用带 token 的 verbose
-请求或把订阅正文贴到日志中。
-
-apply 失败会恢复原完整 Nginx 配置、订阅文件、证书及 njs 脚本（原先缺失则删除），然后校验并
-重载；系统共享的 njs 包保留。link 模式、新装失败和卸载会先撤销引用配置，再清理本服务脚本，
-保留共享包。恢复时使用完整事务备份；不能只删除脚本而保留 Nginx import。
-
-
-### 修改 Reality SNI
-
-Reality 的 SNI 与回源目标由同一个值决定，安装后可用 `reality-target` 修改：
-
-```bash
-sudo easy_all reality-target                      # 交互输入，默认显示当前值
-sudo easy_all reality-target www.example.com:443  # 直接指定
-```
-
-新目标先接受带 SNI 的 TLS 1.3 握手和 ASN 比对，再重写 Xray 配置、重启服务；部署自托管
-订阅时再重新生成订阅。握手验收失败时自动恢复旧配置，状态文件保持旧值。订阅重发失败或中断
-时服务端已是新目标，重跑同一条命令不会重复切换，并会提示执行 `sudo easy_all apply` 补齐订阅。
-修改后必须让客户端刷新订阅或重新导入节点：旧配置仍带旧 SNI，服务端 `serverNames` 不认，
-表现是 TCP 与 TLS 都正常但不走流量。使用聚合配置下发节点的部署，还需同步该配置里的 `sni`
-并重新构建 Worker。
-
-目标域名必须支持 TLS 1.3，建议同时支持 HTTP/2，且不能套 CDN 代理；目标在大陆的可达性需自
-行确认，因为客户端 TLS ClientHello 里的 SNI 就是它。
-
-## 卸载
-
-默认只删除本机资源：
-
+### 6.1 仅卸载本机服务
 ```bash
 sudo easy_all uninstall
 ```
+停止并删除 Xray、Nginx、定时任务和系统配置，恢复安装前的防火墙与 SSH 策略，保留 Cloudflare 上的云端解析与证书。
 
-卸载须先恢复并验证安装前 SSH 监听，再撤销并验证受管 deny22，之后才移除65533放行和本地
-状态；原配置使用 `22` 时，成功恢复会重新允许 `22`。SSH 恢复或 deny22 撤销失败会中止清理，
-恢复 `65533` 配置并保留其放行及备份，请通过 Console 检查后重试，不能视为卸载成功。
-Bunny 与组合模式不改 SSH，卸载不涉及这一步；组合模式的回源白名单与 `8443` 放行按安装前快照恢复。
-
-同时清理本工具创建的远端资源：
-
+### 6.2 完整卸载（含云端资源清理）
 ```bash
 sudo easy_all uninstall --purge-cloud
 ```
+自动调用 API 清理本次安装在 Cloudflare 上创建的节点 DNS 解析、Origin CA 证书及专属规则。
 
-默认 `uninstall` 会删除本机状态，之后无法再补做 `--purge-cloud`；需要清理云端资源时请在
-卸载时一次完成。
-
-Cloudflare 侧清理：
-
+### 6.3 独立清理 Cloudflare 残留
+若 VPS 已销毁或状态丢失，可使用独立命令清理账户内 easy_all 标记的资源：
 ```bash
-sudo easy_all purge-cloudflare --domain example.com       # 清理该 Zone 内 easy_all 创建的资源
-sudo easy_all purge-cloudflare --all                      # 清理 Token 可见的所有 Zone
+sudo easy_all purge-cloudflare --domain example.com
 ```
 
-按 easy_all 的所有权标记识别：DNS 记录注释以 `easy_all` 开头、Worker 名称以 `easyall` 开头
-（或绑定到待清理域名）、规则 ref 以 `easy_all_` 开头且表达式只涉及待清理域名、ruleset 名称以
-`easy_all` 开头且清空后才删除；Origin CA 证书只在其全部 hostname 都属于 easy_all 记录或输入域名时
-删除。不会删除 Zone，也不会删除 Bunny 模式创建的无注释 DNS 记录（那类记录请在
-`uninstall --purge-cloud` 时清理）。
+---
 
-`--domain` 传 Zone 根域名（如 `example.com`）会覆盖其下全部 easy_all 记录；传完整主机名
-（如 `cf.example.com`）只清理该域名与直接关联对象。`--all` 只按 `easyall` 名称清理 Worker，
-不会按域名反查用户自己的 Worker。如果 easy_all 的 DNS 记录已经被删除，规则与 Origin CA 需要
-传完整主机名（如 `--domain cf.example.com,sub.example.com`）才能识别。
+## 7. 常见问题排查
 
-purge 命令不依赖本机安装。未安装或已卸载时可以直接通过引导脚本执行：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --domain example.com
-```
-
-若提示“状态版本不匹配”，说明状态文件来自其他版本的 easy_all：本版本不会读取或迁移它，
-但 `sudo easy_all uninstall` 会改走旧版本本机清理路径——停用并删除 easy_all 的服务、Nginx 配置、
-cron 标记、状态与安装目录，并删除 `easy_all` 命令本身；SSH 配置、UFW 规则与云端资源不会改动
-（`--purge-cloud` 会被拒绝，请到 Cloudflare/Bunny 控制台自行核对）。清理完成后重新运行安装
-命令即可。
-远端清理会校验资源所有权与当前值，永不删除 DNS Zone，也不触碰没有 easy_all 标记的 DNS
-或包含其他规则的 ruleset。Zone 级 HTTP/2 和 gRPC 开关不会自动还原，操作完成后仍应到
-Cloudflare 控制台复核。
-
-## 状态文件
-
-主要路径：
-
-```text
-/etc/easy_all/state.env
-/etc/easy_all/quota-usage.json
-/etc/easy_all/globalping.token
-/etc/easy_all/cloudflare-cdn-ips.json
-/etc/easy_all/xray/config.json
-/etc/easy_all/certs/
-/var/www/easy_all/subscriptions/
-/etc/nginx/conf.d/easy_all.conf
-```
-
-Globalping Token 单独保存在 `/etc/easy_all/globalping.token`，权限为 `root:root 0600`。
-`WORKER_AGGREGATION_CONFIG={...}`、`SUB_SOURCE_DOMAIN`、Worker 名称与 Custom Domain ID 保存在
-root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（同样 `0600`），不要提交或公开。
-状态文件由安装器维护，不应手工修改。
-
-## 常见问题
-
-| 现象 | 处理 |
-| --- | --- |
-| 本机运行后提示系统不支持 | 命令必须在 VPS 的 SSH 或网页终端运行。 |
-| SSH 断开或重启后无法登录 | 使用服务商 Console/VNC 检查 SSH 端口、UFW 和安全组。 |
-| 安装中 SSH 断开、重跑提示 `TCP 80 已被占用` | 上次安装已装好 nginx 默认站点：先 `sudo easy_all cleanup-partial`；命令未注册时用 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial`（`bootstrap.sh` 自己会 sudo，别写成 `sudo bash <(...)`），再在 `tmux`/`screen` 中重跑安装。 |
-| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`（模式可写 `1`、`2`、`3`、`5`、内部名 `reality`/`cloudflare-streamup`/`bunny-ws`/`combined`，或 `直连`/`组合` 等中文名）；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
-| Zone 不是 Active | 等待 Cloudflare Zone 生效并检查名称服务器。 |
-| `purge-cloudflare` 输入 Token 后没反应 | 命令会先要求输入 Cloudflare API Token（不回显，粘贴后回车）。v2.4.6 之前扫描阶段可能卡死（`jq` 读 stdin 的分页聚合缺陷），升级到该版本后重跑；接口每页都相同会立即报错，单个列表接口默认最多扫 100 页（可用 `EASY_ALL_PURGE_MAX_PAGES` 调大）。 |
-| 提示未开启 gRPC | 在 Zone 的 Network → gRPC 手动开启后重试。 |
-| API Token 权限不足或 DNS 冲突 | 按[前置准备手册](preparation-guide.md)核对权限并换用未占用的一级子域。 |
-| Globalping 额度不足 | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；与当前入口策略兼容的缓存会继续使用。 |
-| 换过 Cloudflare API Token 后担心续期 | 重新执行 `sudo easy_all apply-cloud` 或重跑安装：安装器会把当前 Token 同步进证书续期配置；只在 `apply`（不碰云端）时不会。 |
-| `status` 显示 `pending-reboot` | 执行 `sudo reboot`，重新登录后确认 `BBRv3: active`。 |
-| 想更换伪装目标（SNI） | 执行 `sudo easy_all reality-target <域名:端口>`，再按部署方式刷新订阅或重新导入节点。 |
-| 订阅能下载但节点无法连接 | 先看[客户端指南](client-guide.md)，再检查 Cloudflare gRPC 和 Xray/Nginx 日志。 |
-| Reality 节点握手正常但不走流量 | 确认服务端核心与客户端内核版本：Xray ≥ 26.9.8 需订阅带 `support-x25519mlkem768`（mihomo ≥ 1.19.9 生效），并检查订阅是否为最新生成的。 |
+| 现象 / 报错 | 常见根因与解决办法 |
+| :--- | :--- |
+| **SSH 断开后重连失败** | - 模式 1 与模式 2 会将 SSH 端口迁移至 `65533`。请使用 `ssh -p 65533 用户@IP` 连接。<br>- 检查服务商后台云防火墙/安全组是否已放行 `65533`。 |
+| **重跑提示 TCP 80/443 被占用** | 上次安装中断残留了 Nginx 默认站点。执行 `sudo easy_all cleanup-partial` 清理残留后重试。 |
+| **安装中断提示「继续上次安装」** | 组合模式支持断点续装，回车选择 `Y` 即可复用已生成的证书和密钥快速继续安装；选 `n` 则清理重装。 |
+| **Cloudflare Zone 校验失败** | 域名在 Cloudflare 控制台必须处于 **Active**（已保护）状态，不能仅停留在待更名或待验证阶段。 |
+| **提示未开启 gRPC** | Cloudflare XHTTP 模式必须在 Cloudflare 控制台手动开启：进入域名 Zone → **Network** → 将 **gRPC** 切换为 **On**。 |
+| **Globalping 额度不足报错** | 免费额度耗尽时，脚本会自动保留上一版已验证的优选 IP 缓存继续工作；等下小时额度恢复后执行 `sudo easy_all refresh-cdn-ips` 即可。 |
+| **订阅可下载但节点无法连接** | 1. 确认客户端内核版本是否过旧（Mihomo 建议 ≥ 1.19.9）；<br>2. 检查云服务商安全组是否放行了业务端口（443 / 8443）。 |
