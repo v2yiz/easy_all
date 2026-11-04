@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.5.0](CHANGELOG.md#250-更新说明2026-11-04)。
+当前源码版本：[2.5.1](CHANGELOG.md#251-更新说明2026-11-04)。
 
 `easy_all` 是专为全新 Debian 12/13 VPS 设计的单节点代理一键安装工具。通过控制台交互菜单直观配置，统一打通 Xray、Nginx、订阅分发、UFW 防火墙、Fail2ban 以及 TCP 加速（默认自动启用 Skyline Speeder / BBR）。
 

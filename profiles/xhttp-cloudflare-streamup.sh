@@ -1081,18 +1081,6 @@ BACKEND="xray"
 PROTOCOL="cloudflare-streamup"
 CDN_PROVIDER="cloudflare"
 
-read_state_field() {
-    local file=$1 key=$2 line value
-    [[ -f "${file}" ]] || return 1
-    line=$(grep -E "^${key}=" "${file}" | tail -n 1) || return 1
-    value=${line#*=}
-    value=${value#\'}
-    value=${value%\'}
-    value=${value#\"}
-    value=${value%\"}
-    printf '%s\n' "${value}"
-}
-
 xhttp_client_path() {
     printf '%s/' "${XHTTP_PATH%/}"
 }

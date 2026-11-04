@@ -2,6 +2,8 @@
 
 # Cloudflare DNS and Origin CA helpers shared by combined profiles.
 
+: "${CLOUDFLARE_API_BASE:=https://api.cloudflare.com/client/v4}"
+
 cloudflare_collect_api_token() {
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
         CLOUDFLARE_API_TOKEN=$(prompt_secret "Cloudflare API Token（仅当前进程使用，不落盘）") \

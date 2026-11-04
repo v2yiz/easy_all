@@ -335,22 +335,6 @@ ufw_ssh_port_is_allowed() {
     '
 }
 
-ufw_ssh22_deny_is_first() {
-    LC_ALL=C ufw status numbered 2>/dev/null | awk -v comment="${UFW_RULE_COMMENT}" '
-        # Consume the whole stream: stopping early would SIGPIPE `ufw status`
-        # and `pipefail` would turn a correct rule order into a failure.
-        /^[[:space:]]*\[/ {
-            if (checked) next
-            checked=1
-            marker=$0
-            sub(/^.*#[[:space:]]*/, "", marker)
-            if ($0 ~ /^[[:space:]]*\[[[:space:]]*1\][[:space:]]+22\/tcp[[:space:]]+DENY[[:space:]]+IN[[:space:]]+Anywhere[[:space:]]/ &&
-                marker == comment) found=1
-        }
-        END {exit !found}
-    '
-}
-
 managed_ssh22_ufw_rule_numbers() {
     local status
     command -v ufw >/dev/null 2>&1 || return 0

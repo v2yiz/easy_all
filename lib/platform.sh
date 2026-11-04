@@ -2,7 +2,6 @@
 
 # Shared host preflight and SSH boot-safety checks.
 
-readonly EASY_ALL_ADDITIONAL_SSH_PORT="65533"
 EASY_ALL_SSH_PORT_CONFIG="${EASY_ALL_SSH_PORT_CONFIG:-/etc/ssh/sshd_config.d/00-easy-all-ports.conf}"
 EASY_ALL_FAIL2BAN_CONFIG="${EASY_ALL_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-easy-all-sshd.local}"
 EASY_ALL_FAIL2BAN_ACTION_CONFIG="${EASY_ALL_FAIL2BAN_ACTION_CONFIG:-/etc/fail2ban/action.d/easy-all-ufw-cidr.conf}"
@@ -133,8 +132,9 @@ restore_platform_security_state() {
             break
         done
     fi
-    # Revoke and verify our deny22 before callers can delete allow65533. A
-    # failed UFW deletion must take the same guarded recovery path as SSH failure.
+    # Revoke and verify our managed deny22 (legacy 65533-era rule) before the
+    # caller deletes managed allow rules. A failed UFW deletion must take the
+    # same guarded recovery path as an SSH failure.
     if ((ssh_restored == 1)) && ! remove_managed_ssh22_ufw_deny; then
         warn "撤销受管 UFW deny22 未通过验证"
         ssh_restored=0
@@ -313,28 +313,6 @@ ssh_listeners_match() {
     done <<<"${expected}"
 }
 
-ssh_effective_listeners_are_exclusive() {
-    local output
-    output=$("$1" -T 2>/dev/null) || return 1
-    awk -v port="${EASY_ALL_ADDITIONAL_SSH_PORT}" '
-        $1 == "listenaddress" {
-            endpoint=$2
-            if (endpoint !~ /^[0-9.]+:[0-9]+$/) invalid=1
-            sub(/^.*:/, "", endpoint)
-            if (endpoint != port) invalid=1
-            found=1
-        }
-        END {exit (!found || invalid)}
-    ' <<<"${output}"
-}
-
-ssh_only_managed_port_is_listening() {
-    local expected
-    ssh_effective_listeners_are_exclusive "$1" || return 1
-    expected=$(ssh_effective_listeners "$1") || return 1
-    ssh_listeners_match "${expected}"
-}
-
 ssh_managed_port_is_listening() {
     local port=$1 output
     output=$(ss -H -ltnp "sport = :${port}" 2>/dev/null || true)
@@ -342,12 +320,6 @@ ssh_managed_port_is_listening() {
     # A systemd-owned socket alone does not identify its protocol. Require an
     # sshd owner, including sockets whose users list starts with systemd.
     ! grep -Ev 'users:.*\("sshd"' <<<"${output}" >/dev/null
-}
-
-ssh_port_is_listening() {
-    local port=$1 output
-    output=$(ss -H -ltn "sport = :${port}" 2>/dev/null || true)
-    [[ -n "${output}" ]]
 }
 
 restore_managed_ssh_port_config() {
@@ -358,77 +330,6 @@ restore_managed_ssh_port_config() {
         rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}" || return 1
     fi
     "${sshd_bin}" -t >/dev/null 2>&1 && systemctl reload "${unit}" >/dev/null 2>&1
-}
-
-ensure_additional_ssh_port() {
-    local sshd_bin=$1 unit=$2 candidate backup had_config=0 address_family attempt
-
-    [[ "${EASY_ALL_ADDITIONAL_SSH_PORT}" =~ ^[0-9]+$ ]] \
-        && ((10#${EASY_ALL_ADDITIONAL_SSH_PORT} >= 1 \
-            && 10#${EASY_ALL_ADDITIONAL_SSH_PORT} <= 65535)) \
-        || die "新增 SSH 端口无效：${EASY_ALL_ADDITIONAL_SSH_PORT}"
-
-    "${sshd_bin}" -t || die "sshd 配置校验失败；拒绝切换 SSH 端口"
-    info "SSH 将仅监听 ${EASY_ALL_ADDITIONAL_SSH_PORT}；请先在云安全组放行该端口，今后使用 ssh -p ${EASY_ALL_ADDITIONAL_SSH_PORT}"
-    if ssh_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}" \
-        && ! ssh_managed_port_is_listening "${EASY_ALL_ADDITIONAL_SSH_PORT}"; then
-        die "TCP ${EASY_ALL_ADDITIONAL_SSH_PORT} 已被非 SSH 进程占用；拒绝修改 sshd"
-    fi
-
-    install -d -m 0755 "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")"
-    candidate=$(mktemp "${RUNTIME_TMP:-/tmp}/easy-all-ssh-ports.XXXXXX")
-    backup=$(mktemp "${RUNTIME_TMP:-/tmp}/easy-all-ssh-ports-backup.XXXXXX")
-    if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]]; then
-        install -m 0600 "${EASY_ALL_SSH_PORT_CONFIG}" "${backup}"
-        had_config=1
-    fi
-
-    address_family=$("${sshd_bin}" -T 2>/dev/null \
-        | awk '$1 == "addressfamily" && !found {value=$2; found=1} END {if (found) print value}')
-    [[ "${address_family:-any}" != "inet6" ]] \
-        || die "sshd 仅允许 IPv6，但 easy_all 已全局禁用 IPv6"
-
-    {
-        printf '%s\n' '# Managed by easy_all. SSH listens only on TCP 65533.'
-        printf 'Port %s\n' "${EASY_ALL_ADDITIONAL_SSH_PORT}"
-        printf 'ListenAddress 0.0.0.0:%s\n' "${EASY_ALL_ADDITIONAL_SSH_PORT}"
-    } >"${candidate}"
-
-    if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] \
-        && cmp -s "${candidate}" "${EASY_ALL_SSH_PORT_CONFIG}" \
-        && "${sshd_bin}" -t \
-        && ssh_only_managed_port_is_listening "${sshd_bin}"; then
-        rm -f -- "${candidate}" "${backup}"
-        info "SSH 仅监听端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}"
-        return 0
-    fi
-
-    install -m 0644 "${candidate}" "${EASY_ALL_SSH_PORT_CONFIG}"
-    if ! "${sshd_bin}" -t \
-        || ! ssh_effective_listeners_are_exclusive "${sshd_bin}"; then
-        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}" \
-            || warn "尝试恢复原 SSH 服务失败，请立即通过 Console 检查"
-        rm -f -- "${candidate}" "${backup}"
-        die "sshd 有效监听未收敛到唯一端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}，已恢复原 SSH 配置"
-    fi
-    if ! systemctl reload "${unit}" >/dev/null 2>&1; then
-        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}" \
-            || warn "尝试恢复原 SSH 服务失败，请立即通过 Console 检查"
-        rm -f -- "${candidate}" "${backup}"
-        die "重载 ${unit} 失败，已恢复原 SSH 配置"
-    fi
-    for attempt in {1..10}; do
-        ssh_only_managed_port_is_listening "${sshd_bin}" && break
-        sleep 0.5
-    done
-    if ! ssh_only_managed_port_is_listening "${sshd_bin}"; then
-        restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${backup}" "${had_config}" \
-            || warn "尝试恢复原 SSH 服务失败，请立即通过 Console 检查"
-        rm -f -- "${candidate}" "${backup}"
-        die "sshd 重载后未能仅监听 ${EASY_ALL_ADDITIONAL_SSH_PORT}，已恢复原 SSH 配置"
-    fi
-    rm -f -- "${candidate}" "${backup}"
-    info "SSH 仅监听端口 ${EASY_ALL_ADDITIONAL_SSH_PORT}"
 }
 
 install_fail2ban_dependencies() {

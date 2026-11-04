@@ -76,6 +76,7 @@
 
 ```text
 easy_all
+├── bootstrap.sh                 # 远程一键安装拉取器
 ├── easy_all                     # CLI 统一管理入口与命令调度
 ├── runtime.manifest             # 运行时受管文件清单
 ├── profiles/
@@ -85,19 +86,37 @@ easy_all
 │   └── combined.sh              # 模式 4：组合模式业务编排
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
+│   ├── platform.sh              # 系统环境、Debian 探测与基础依赖
 │   ├── runtime-core.sh          # 跨模式通用运行时
+│   ├── profile-common.sh        # Profile 通用流程、状态持久化与回滚
+│   ├── network.sh               # 网络与 IPv4/域名基础校验
 │   ├── reality-target.sh        # Reality 伪装目标校验与 ASN 探测
+│   ├── reality-subscription.js  # 本地自托管订阅生成器
 │   ├── cloudflare-ip-pool.sh    # Cloudflare 候选 IP 池与抽样验证
 │   ├── globalping-cdn.sh        # Globalping 探针调用与三网优选
 │   ├── cf-dns.sh                # Cloudflare API 封装（DNS/Origin CA/Rules）
 │   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
+│   ├── bunny-api.py             # Bunny API 与 Cloudflare DNS-01/Pull Zone 调度
+│   ├── bunny-runtime.sh         # Bunny 模式专属运行时与回源白名单
+│   ├── lego-install.sh          # Lego Let's Encrypt 证书签发与安装
+│   ├── xhttp-runtime.sh         # XHTTP 运行时公共逻辑与证书挂载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
 │   ├── quota.sh                 # 多用户月度配额与流量统计引擎
+│   ├── subscription-auth.sh     # 订阅凭据生成与校验
+│   ├── scheduled-maintenance.sh # 定时重启与维护任务
 │   ├── tcp-tuning.sh            # Skyline Speeder / BBRv3 / XanMod 内核管理
 │   ├── xray-core.sh             # Xray 官方二进制下载与校验
+│   ├── worker-config.sh         # Cloudflare Worker 订阅聚合配置与发布
+│   ├── worker-backup.sh         # 独立 Worker 兜底节点配置与部署
 │   └── mihomo-template.sh       # Mihomo 订阅模板结构校验与渲染
-└── templates/                   # 内置 Mihomo 订阅配置模板
-    ├── mihomo.yaml              # 默认 COMMON 精简规则模板
-    ├── mihomo-common.yaml       # 完整 COMMON 规则模板
-    └── mihomo-classic.yaml      # 经典 MRS 规则集模板
+├── worker-src/                  # Cloudflare Worker 订阅聚合与兜底源码
+│   ├── index.js                 # 订阅聚合 Worker 源码
+│   └── backup.js                # 独立节点 Worker 源码
+├── templates/                   # 内置 Mihomo 订阅配置模板
+│   ├── mihomo.yaml              # 默认 COMMON 精简规则模板
+│   ├── mihomo-common.yaml       # 完整 COMMON 规则模板
+│   └── mihomo-classic.yaml      # 经典 MRS 规则集模板
+└── scripts/                     # 辅助构建与系统初始化脚本
+    ├── build-worker.mjs         # Worker 打包编译脚本
+    └── debian-init.sh           # 独立 Debian 系统初始化加固工具
 ```

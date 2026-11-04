@@ -1,3 +1,11 @@
+## 2.5.1 更新说明（2026-11-04）
+
+- **清理 65533 收敛后遗留的死代码**：删除 `ensure_additional_ssh_port` 及其独占的 `ssh_effective_listeners_are_exclusive`、`ssh_only_managed_port_is_listening`、`ssh_port_is_listening` 与 `EASY_ALL_ADDITIONAL_SSH_PORT`；同步移除从未被调用的 `cloudflare_uint32_to_ipv4`、`ufw_ssh22_deny_is_first`、`remove_certificate_renewal_timer`、`generate_xhttp_path`、`normalize_websocket_path`、`collect_subscription_link_domain`，以及模式 2 私有的 `read_state_field`，共约 180 行；行为不变——历史 deny22 规则仍由 `remove_managed_ssh22_ufw_deny` 清理，证书定时器仍由 Bunny 卸载流程 disable/stop 并删除。
+- **修正 Bunny 订阅输出测试断言**：对齐 2.3.0 起的「同一链接按客户端自动下发」单链接输出（该断言自 2.3.0 起一直失败，因为 `test:bunny` 不在 `npm test` 与 CI 主链路内）；本地缺少 `python3-jsonschema` 时跳过 schema 与云端同步阶段并提示安装方式，避免整轮测试报 ImportError。
+- **补全与更正说明**：目录结构补上 `bootstrap.sh`、缺失的 `lib/` 模块、`worker-src/` 与 `scripts/`；更正 `tcp-tuning` 里针对 65533 的端口注释，并清理 `platform.sh` 中指向 `allow65533` 的过时注释；`lib/cf-dns.sh` 补上 `CLOUDFLARE_API_BASE` 默认值（两个调用方均已自行定义，仅作为库默认）。
+
+源码版本标识为 `2.5.1`。
+
 ## 2.5.0 更新说明（2026-11-04）
 
 - **安装全面恢复交互式终端模式**：废弃 `params.json` 单文件安装机制，恢复用户在控制台终端的交互式问答菜单安装方式（带默认值回车确认），彻底删除 `lib/params.sh` 与参数相关测试。

@@ -60,10 +60,6 @@ validate_loopback_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 1024 && 10#$1 <= 65535))
 }
 
-generate_xhttp_path() {
-    printf '/vless-%s' "$(openssl rand -hex 12)"
-}
-
 # 路径规范化由安装参数层与交互更新共用：各 Profile 不得再各自定义一份。
 normalize_xhttp_path() {
     local path=${1:-}
@@ -76,22 +72,6 @@ normalize_xhttp_path() {
         path="/xhttp-${path#/}"
     else
         path="/xhttp-$(openssl rand -hex 12)"
-    fi
-    path="${path%/}"
-    printf '%s\n' "${path}"
-}
-
-normalize_websocket_path() {
-    local path=${1:-}
-    while [[ "${path}" =~ ^/(ws|websocket)-/(ws|websocket)- ]]; do
-        path="/${path#/*-/}"
-    done
-    if [[ "${path}" =~ ^/(ws|websocket)- ]]; then
-        path="/ws-${path#/*-}"
-    elif [[ -n "${path}" ]]; then
-        path="/ws-${path#/}"
-    else
-        path="/ws-$(openssl rand -hex 12)"
     fi
     path="${path%/}"
     printf '%s\n' "${path}"
@@ -118,21 +98,6 @@ active_subscription_link_domain() {
     else
         printf '%s' "${VLESS_CDN_DOMAIN}"
     fi
-}
-
-collect_subscription_link_domain() {
-    local current domain
-    current=$(subscription_link_domain)
-    domain=${SUBSCRIPTION_DOMAIN:-}
-    if [[ -t 0 ]]; then
-        info "可直接复用 CDN 节点域名；自定义域名必须已由 Cloudflare DNS Zone 托管。"
-        domain=$(prompt_value "订阅链接完整域名（含完整主机名）" "${current}")
-    else
-        domain=${domain:-${current}}
-    fi
-    domain=$(normalize_domain "${domain}")
-    validate_domain "${domain}" || die "SUBSCRIPTION_DOMAIN 无效：${domain}"
-    SUBSCRIPTION_DOMAIN=${domain}
 }
 
 check_install_conflicts() {

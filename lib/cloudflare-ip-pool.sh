@@ -32,14 +32,6 @@ cloudflare_ipv4_to_uint32() {
     printf '%u' "$(((10#${a} << 24) | (10#${b} << 16) | (10#${c} << 8) | 10#${d}))"
 }
 
-cloudflare_uint32_to_ipv4() {
-    local value=$1
-    ((value >= 0 && value <= 4294967295)) || return 1
-    printf '%d.%d.%d.%d' \
-        "$(((value >> 24) & 255))" "$(((value >> 16) & 255))" \
-        "$(((value >> 8) & 255))" "$((value & 255))"
-}
-
 cloudflare_ipv4_in_cidr() {
     local ip=$1 cidr=$2 network prefix ip_value network_value mask
     network=${cidr%/*}

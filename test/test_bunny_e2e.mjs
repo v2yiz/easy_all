@@ -527,8 +527,8 @@ try {
     });
     assert.equal(subscriptionRes.status, 0, subscriptionRes.stderr);
     assert.equal(subscriptionRes.stdout,
-        '通用订阅 (Base64) (owner): https://cdn.example.com/subscribe?token=test-owner-token\n' +
-        'Mihomo / Clash   (owner): https://cdn.example.com/subscribe?token=test-owner-token&flag=clash\n');
+        '订阅 (owner): https://cdn.example.com/subscribe?token=test-owner-token\n' +
+        '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64\n');
 
     // 1. 帮助命令与入口（核心路径）
     const helpRes = await run(['--help']);
@@ -552,6 +552,15 @@ try {
     assert.match(emptyIpsRes.stderr, /回源池为空/);
 
     // 3. 配置文件校验（核心路径）
+    const hasJsonschema = spawnSync('python3', ['-c', 'import jsonschema']).status === 0;
+    if (!hasJsonschema) {
+        // process.exit 会跳过末尾的 finally，这里先自行清理临时目录。
+        rmSync(tempDir, { recursive: true, force: true });
+        console.warn('⚠️  跳过 Bunny API schema 与云端同步测试：当前 Python 环境缺少 jsonschema（Debian 环境可由 apt-get install -y python3-jsonschema 提供）');
+        console.log('ok - Bunny E2E tests (skipped schema-dependent stages)');
+        process.exit(0);
+    }
+
     const validConfig = join(tempDir, 'valid-config.json');
     writeFileSync(validConfig, JSON.stringify({
         zone: 'example.com',

@@ -82,10 +82,3 @@ EOF
         || die "启用证书续期定时器失败"
 }
 
-remove_certificate_renewal_timer() {
-    systemctl disable --now "${CERT_RENEW_TIMER}" >/dev/null 2>&1 || true
-    systemctl stop "${CERT_RENEW_SERVICE}" >/dev/null 2>&1 || true
-    rm -f -- "${CERT_RENEW_SERVICE_FILE}" "${CERT_RENEW_TIMER_FILE}"
-    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1 || true
-}
-
