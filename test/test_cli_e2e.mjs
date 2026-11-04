@@ -58,44 +58,12 @@ if (process.getuid && process.getuid() !== 0) {
     );
 }
 
-// 2.7 位置参数：easy_all <参数文件> 就是安装入口；--check-params 只校验
-const paramsFile = join(tmpdir(), `easy-all-params-${process.pid}-${Date.now()}.json`);
-writeFileSync(paramsFile, JSON.stringify({
-    schema_version: 1,
-    mode: 'reality',
-    params: {
-        NODE_HOST: '203.0.113.10',
-        SUBSCRIPTION_MODE: 'link',
-        VPS_PUBLIC_IPV4: '203.0.113.10',
-    },
-}));
-chmodSync(paramsFile, 0o600);
-const positionalCheck = run(easyAll, [paramsFile, '--check-params']);
-assert.equal(positionalCheck.status, 0, positionalCheck.stderr);
+// 2.7 安装入口：install 不接受参数
+const installWithArgs = run(easyAll, ['install', 'unexpected-arg']);
+assert.equal(installWithArgs.status, 1, 'install with args must fail');
 assert.ok(
-    positionalCheck.stderr.includes('参数校验通过'),
-    `positional params file should validate: ${positionalCheck.stderr}`,
-);
-assert.ok(existsSync(paramsFile), '--check-params must keep the params file');
-unlinkSync(paramsFile);
-
-// 2.8 参数文件位置传参的错误路径（不进入 Profile）
-const missingParams = run(easyAll, [join(tmpdir(), `easy-all-missing-${Date.now()}.json`), '--check-params']);
-assert.equal(missingParams.status, 1, 'missing params file must fail');
-assert.ok(
-    missingParams.stderr.includes('参数文件不存在') || missingParams.stdout.includes('参数文件不存在'),
-    'missing params file should name the problem',
-);
-
-const twoParamsFile = join(tmpdir(), `easy-all-two-${Date.now()}.json`);
-writeFileSync(twoParamsFile, '{}');
-chmodSync(twoParamsFile, 0o600);
-const twoParams = run(easyAll, [twoParamsFile, twoParamsFile, '--check-params']);
-unlinkSync(twoParamsFile);
-assert.equal(twoParams.status, 1, 'two params files must be rejected');
-assert.ok(
-    twoParams.stderr.includes('只能指定一个参数文件'),
-    `two params files rejected: ${twoParams.stderr}`,
+    installWithArgs.stderr.includes('install 不接受参数'),
+    `install with args rejected: ${installWithArgs.stderr}`,
 );
 
 // 2.6 cleanup-partial 参数校验（root 之前就校验，非 root 环境也能覆盖）

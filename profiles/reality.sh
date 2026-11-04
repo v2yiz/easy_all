@@ -472,6 +472,43 @@ subscription_origin_domain() {
     fi
 }
 
+collect_reality_node_host() {
+    local detected_ip=""
+    [[ -z "${NODE_HOST:-}" ]] || return 0
+
+    if detected_ip=$(detect_public_ipv4); then
+        VPS_PUBLIC_IPV4=${detected_ip}
+        if [[ -t 0 ]]; then
+            info "已自动检测本机公网 IPv4：${detected_ip}；直接回车使用，或输入其他入站 IPv4/灰云域名"
+            NODE_HOST=$(prompt_value \
+                "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" \
+                "${detected_ip}")
+        else
+            NODE_HOST=${detected_ip}
+        fi
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        warn "无法自动检测本机公网 IPv4，请手动填写客户端可连接的入站地址"
+        NODE_HOST=$(prompt_value \
+            "Reality 客户端连接地址（公网 IPv4 或 DNS only / 灰云域名）" "")
+        return 0
+    fi
+    die "无法自动检测 Reality 节点公网 IPv4；非交互模式请设置 NODE_HOST"
+}
+
+collect_reality_target() {
+    [[ -z "${REALITY_TARGET:-}" ]] || return 0
+    if [[ -t 0 ]]; then
+        REALITY_TARGET=$(prompt_value \
+            "Reality SNI / 伪装目标（域名:端口）" \
+            "${DEFAULT_REALITY_TARGET}")
+    else
+        REALITY_TARGET=${DEFAULT_REALITY_TARGET}
+    fi
+}
+
 collect_sub_port_mode() {
     local default_mode=${1:-$(protocol_default_port_mode)}
     local requested=${SUB_PORT_MODE:-} default_choice
@@ -514,155 +551,20 @@ collect_subscription_domain() {
     SUBSCRIPTION_DOMAIN=${domain}
 }
 
-# --- 安装参数：唯一事实来源 -------------------------------------------------
-# 字段名就是安装流程使用的变量名；安装期没有交互，全部值必须来自 --params。
-
-params_when_reality_subscription() {
-    [[ "${SUBSCRIPTION_MODE}" != "link" ]]
-}
-
-params_when_reality_worker() {
-    [[ "${SUBSCRIPTION_MODE}" == "worker" ]]
-}
-
-collect_install_inputs() {
-    params_declare NODE_HOST \
-        --label 'Reality 客户端连接地址（公网 IPv4 或 DNS only/灰云域名；留空则在安装阶段自动探测）' \
-        --check params_check_reality_node_host
-    params_declare NODE_NAME --required \
-        --label '节点名（客户端展示名）' --default "${DEFAULT_REALITY_NODE_NAME}" \
-        --check params_check_node_name
-    params_declare VLESS_UUID \
-        --label '节点 UUID（留空自动生成）' --default-fn params_default_uuid --check validate_uuid
-    params_declare REALITY_TARGET --required \
-        --label 'Reality SNI/伪装目标（域名:端口）' --default "${DEFAULT_REALITY_TARGET}" \
-        --normalize params_normalize_reality_target --check validate_reality_target
-    params_declare SUB_PORT_MODE --required \
-        --label '订阅端口模式：443 或 dynamic' --default "${DEFAULT_REALITY_PORT_MODE}" \
-        --normalize params_normalize_sub_port_mode
-    params_declare SUBSCRIPTION_MODE --required \
-        --label '订阅输出：link（仅节点）/deploy（本机订阅）/worker（Worker 聚合）' \
-        --default deploy --normalize normalize_subscription_mode
-    params_declare SUB_DOWNLOAD_NAME --required \
-        --label 'Mihomo 下载文件名（不含 .yaml）' --default "${DEFAULT_SUB_DOWNLOAD_NAME}" \
-        --normalize normalize_sub_download_name --check validate_sub_download_name
-
-    params_declare SUBSCRIPTION_DOMAIN --when params_when_reality_subscription --required \
-        --label '订阅域名（Cloudflare Zone 下一级子域名）' \
-        --normalize normalize_domain --check validate_domain
-    params_declare CLOUDFLARE_API_TOKEN --when params_when_reality_subscription --required --secret \
-        --label 'Cloudflare API Token（订阅 DNS/Origin CA 权限）' --check params_check_cf_token
-    params_declare CLOUDFLARE_WORKER_NAME --when params_when_reality_worker --required \
-        --label 'Cloudflare Worker 名称' --default "${DEFAULT_CLOUDFLARE_WORKER_NAME}" \
-        --check params_check_worker_name
-    params_declare SUB_SOURCE_DOMAIN --when params_when_reality_worker --required \
-        --label '私有节点源域名（Cloudflare 代理到本机，仅 Worker 回源）' \
-        --normalize normalize_domain --check validate_domain
-    params_declare WORKER_SOURCE_SECRET --when params_when_reality_worker --secret \
-        --label 'Worker 回源密钥（留空自动生成）' --default-fn params_default_secret \
-        --check params_check_worker_secret
-    params_declare WORKER_AGGREGATION_CONFIG --when params_when_reality_worker \
-        --type json_object --label 'Worker 聚合 JSON（不得包含 vpsSubUrl）' --default '{}' \
-        --normalize normalize_worker_aggregation_config
-
-    params_declare ENABLE_MONTHLY_QUOTA \
-        --label '按用户月度配额：0=不启用（默认），1=启用' --default 0 \
-        --check params_check_quota_toggle
-    params_declare MONTHLY_QUOTAS_GB --when params_when_quota_enabled --type json_object \
-        --label '用户与月度配额 JSON（GB，0 表示不限量；留空按 owner=0 生成）' \
-        --normalize normalize_monthly_quotas
-    params_declare QUOTA_TOKEN_OVERRIDES --when params_when_quota_enabled --type json_object \
-        --label '可选 Token 覆盖 JSON（仅写要覆盖的用户）' --default '{}'
-    params_declare QUOTA_START_DATE --when params_when_quota_enabled \
-        --label 'VPS 开通日期 YYYY-MM-DD（配额周期起点，留空用今天）' \
-        --check validate_quota_start_date
-    params_declare ALLOWED_TOKENS --when params_when_reality_subscription --type json_object \
-        --label '订阅用户 Token 字典 {"用户":"token"}（启用配额时作为种子 Token）' \
-        --normalize params_normalize_allowed_tokens
-
-    params_declare VPS_PUBLIC_IPV4 \
-        --label '本机公网 IPv4（留空则在安装阶段自动探测）' \
-        --check validate_ipv4
-    params_declare TCP_ACCELERATION \
-        --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
-        --normalize normalize_tcp_acceleration
-    params_declare REBOOT_SCHEDULE_MODE \
-        --label '定时重启：1=每天 04:00，2=自定义小时，3=不配置' --default 1 \
-        --check params_check_reboot_mode
-    params_declare REBOOT_HOUR \
-        --label '自定义重启小时（0-23，仅模式 2 需要）' --check params_check_hour
-}
-
-params_cross_reality() {
-    local name
-    if [[ "${SUBSCRIPTION_MODE}" != "link" ]]; then
-        if [[ -n "${SUBSCRIPTION_DOMAIN}" && "${SUBSCRIPTION_DOMAIN}" == "${NODE_HOST}" ]]; then
-            params_error '订阅域名不能与 Reality 直连节点域名相同；请使用独立的 Cloudflare 一级子域名'
-        fi
-        if [[ "${ENABLE_MONTHLY_QUOTA}" != "1" && -z "${ALLOWED_TOKENS}" ]]; then
-            params_error '未启用月度配额时必须提供 ALLOWED_TOKENS（{"用户":"token"}）'
-        fi
-    fi
-    if [[ "${SUBSCRIPTION_MODE}" == "worker" ]]; then
-        [[ "${SUB_SOURCE_DOMAIN}" != "${SUBSCRIPTION_DOMAIN}" ]] \
-            || params_error '私有节点源域名不能与 Worker 公开订阅域名相同'
-        [[ "${SUB_SOURCE_DOMAIN}" != "${NODE_HOST}" ]] \
-            || params_error '私有节点源域名不能与 Reality 直连节点域名相同'
-        if [[ -n "${WORKER_AGGREGATION_CONFIG}" ]]; then
-            while IFS= read -r name; do
-                [[ -z "${name}" || "${name}" != "${NODE_NAME}" ]] \
-                    || params_error "Worker 聚合配置中的节点名与本地节点名重复：${name}；请改用不重复的名称"
-            done < <(jq -r '.nodes[]?.name // empty' <<<"${WORKER_AGGREGATION_CONFIG}")
-        fi
-    fi
-    if [[ "${REBOOT_SCHEDULE_MODE}" == "2" && -z "${REBOOT_HOUR}" ]]; then
-        params_error 'REBOOT_SCHEDULE_MODE=2 时必须提供 REBOOT_HOUR（0-23）'
-    fi
-}
-
-# 参数已赋值并通过校验；这里只做需要本机工具/网络的派生与校验。
-apply_install_inputs() {
+collect_reality_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
-    # 预检不联网：留空时在这里（已装好 curl）探测，失败再给可操作提示。
-    if [[ -z "${NODE_HOST}" ]]; then
-        NODE_HOST=$(detect_public_ipv4) \
-            || die "无法自动探测公网 IPv4；请在参数文件里填写 NODE_HOST 或 VPS_PUBLIC_IPV4"
-    fi
+    NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
+    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
+    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
+    collect_reality_node_host
     validate_domain "${NODE_HOST}" || validate_ipv4 "${NODE_HOST}" \
         || die "Reality 节点地址无效：${NODE_HOST}"
-    if [[ -z "${VPS_PUBLIC_IPV4}" ]]; then
-        VPS_PUBLIC_IPV4=$(detect_public_ipv4) \
-            || die "无法自动探测本机公网 IPv4；请在参数文件里填写 VPS_PUBLIC_IPV4"
-    fi
-    choose_google_egress_mode
-    case "${SUBSCRIPTION_MODE}" in
-    deploy)
-        reset_worker_subscription_inputs
-        quota_apply_settings "${ENABLE_MONTHLY_QUOTA}"
-        quota_enabled || apply_allowed_tokens_params
-        ;;
-    worker)
-        WORKER_SOURCE_SECRET=${WORKER_SOURCE_SECRET:-$(generate_secret)}
-        quota_apply_settings "${ENABLE_MONTHLY_QUOTA}"
-        quota_enabled || apply_allowed_tokens_params
-        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
-            "${WORKER_AGGREGATION_CONFIG:-}") \
-            || die 'Worker 聚合配置无效；请参考 worker-src/config.example.json'
-        apply_worker_allowed_tokens_override "${WORKER_AGGREGATION_CONFIG}"
-        WORKER_AGGREGATION_CONFIG=$(jq -c 'del(.allowedTokens)' <<<"${WORKER_AGGREGATION_CONFIG}")
-        validate_worker_aggregation_node_names
-        ;;
-    link)
-        ALLOWED_TOKENS=""
-        reset_worker_subscription_inputs
-        quota_apply_settings 0
-        ;;
-    *)
-        die "无法识别订阅输出方式：${SUBSCRIPTION_MODE:-空}"
-        ;;
-    esac
     validate_reality_node_dns
     validate_reality_client_ip_family_runtime
+    collect_reality_target
+    validate_reality_target "${REALITY_TARGET}" || die "REALITY_TARGET 无效：${REALITY_TARGET}"
+    collect_sub_port_mode
+    choose_google_egress_mode
 }
 
 check_install_conflicts() {
@@ -2922,40 +2824,41 @@ validate_protocol_runtime() {
 }
 
 run_reality_install_pipeline() {
+    local requested=${1:-} prompt_download_name=${2:-0}
     require_root
     require_systemd
     acquire_runtime_write_lock
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     install_failure_begin reality
-    info "[1/8] 检查系统"
+    info "[1/9] 检查系统"
     check_platform
-    choose_protocol reality
-    # 参数预检先于任何系统修改（只会安装 jq/ca-certificates）。
-    install_params_preflight reality
+    choose_protocol "${requested:-reality}"
     check_install_conflicts
-    info "[2/8] 安装依赖并初始化服务器"
+    info "[2/9] 安装依赖并初始化服务器"
     install_progress_begin reality
     install_progress_stage packages
     snapshot_fresh_install
     install_packages
     install_progress_stage tcp
     initialize_server
+    info "[3/9] 收集 Reality 节点参数"
+    collect_reality_inputs
     install_progress_stage inputs
-    info "[3/8] 应用 Reality 节点与订阅参数"
-    apply_install_inputs
-    info "[4/8] 准备核心"
+    info "[4/9] 选择并收集订阅输出参数"
+    collect_subscription_inputs 1 "${prompt_download_name}"
+    info "[5/9] 准备核心"
     prepare_protocol_assets
     install_progress_stage services
-    info "[5/8] 配置 UFW"
+    info "[6/9] 配置 UFW"
     configure_ufw
-    info "[6/8] 安装并启动 ${PROTOCOL}"
+    info "[7/9] 安装并启动 ${PROTOCOL}"
     install_protocol_runtime
     validate_protocol_runtime
     install_progress_stage subscription
-    info "[7/8] 应用订阅输出配置"
+    info "[8/9] 应用订阅输出配置"
     deploy_subscription_output
     install_progress_stage state
-    info "[8/8] 保存状态并注册 easy_all 命令"
+    info "[9/9] 保存状态并注册 easy_all 命令"
     reality_cloudflare_finalize_certificate_rotation
     save_state
     register_easy_all_command
@@ -2973,5 +2876,8 @@ run_reality_install_pipeline() {
 }
 
 install_all() {
-    run_reality_install_pipeline
+    local requested=${1:-} prompt_download_name=0
+    [[ -t 0 ]] || die "安装必须在交互终端中执行"
+    [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || prompt_download_name=1
+    run_reality_install_pipeline "${requested}" "${prompt_download_name}"
 }

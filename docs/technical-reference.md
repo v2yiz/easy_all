@@ -28,16 +28,16 @@
   ```
 - **调度特点**：通过 Bunny Pull Zone 自带的 Anycast 边缘网络调度，无需本地筛选 IP。
 
-### 1.4 模式 5：组合模式（Reality + Cloudflare XHTTP）
+### 1.4 组合模式（Reality + Cloudflare XHTTP）
 一台 VPS 独占承载直连与 CDN 两个入口：
 ```text
 公网 8443  Xray VLESS Reality（直连入口，伪装目标另配 SNI）
 公网 443   Nginx
-  ├─ cf-origin.<zone>     → 127.0.0.1:10086 Xray VLESS XHTTP stream-up（Cloudflare 官方回源）
+  ├─ cf.<zone>            → 127.0.0.1:10086 Xray VLESS XHTTP stream-up（Cloudflare 官方回源）
   └─ sub.<zone>           → 本地订阅分发（Mihomo YAML / Base64）
 ```
 - **端口划分**：直连入站固定在 `8443`，CDN 回源与订阅共用 `443`。
-- **证书管理**：`cf-origin` 与 `sub` 共用一张 15 年有效期的 Cloudflare Origin CA ECC 证书。
+- **证书管理**：`cf` 与 `sub` 共用一张 15 年有效期的 Cloudflare Origin CA ECC 证书。
 - **单一订阅**：订阅下发「直连 1 个」+「Cloudflare 优选 6 个」，并在 Mihomo 中平铺进单一 `AUTO` 自动测速选优组。
 
 ---
@@ -87,7 +87,6 @@ easy_all
 │   └── combined.sh              # 模式 5：组合模式业务编排
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
-│   ├── params.sh                # 单文件参数解析、类型检查与预检引擎
 │   ├── runtime-core.sh          # 跨模式通用运行时
 │   ├── reality-target.sh        # Reality 伪装目标校验与 ASN 探测
 │   ├── cloudflare-ip-pool.sh    # Cloudflare 候选 IP 池与抽样验证

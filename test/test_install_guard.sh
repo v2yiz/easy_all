@@ -650,24 +650,10 @@ disarmed=$(bash -c '
 ' _ "${ROOT_DIR}" 2>&1) || true
 assert_not_contains "failure-report: disarmed after commit" "${disarmed}" "安装失败"
 
-# 19) 参数模式下：取值提示仍被禁止，确认类交互允许
-params_guard=$(
-    PARAMS_LOADED=1
-    prompt_value '取值' '' 2>&1
-) 2>&1 || true
-assert_contains "params: value prompt still forbidden" "${params_guard}" "不应再提问取值"
-
 confirm_out=$(printf 'n\n' | (
     read_confirmation '确认？' answer 2>/dev/null
     printf '%s' "${answer}"
 ))
 assert_equal "confirmation: reads answer" "n" "${confirm_out}"
-
-confirm_params=$(printf 'y\n' | (
-    PARAMS_LOADED=1
-    read_confirmation '清理？' answer 2>/dev/null
-    printf '%s' "${answer}"
-))
-assert_equal "confirmation: allowed in params mode" "y" "${confirm_params}"
 
 printf 'ok - install guard\n'

@@ -1,9 +1,11 @@
 ## 2.5.0 更新说明（2026-11-04）
 
+- **安装全面恢复交互式终端模式**：废弃 `params.json` 单文件安装机制，恢复用户在控制台终端的交互式问答菜单安装方式（带默认值回车确认），彻底删除 `lib/params.sh` 与参数相关测试。
 - **完全移除模式 4（Gcore CDN）**：移除 `profiles/xhttp-gcore.sh`、`lib/gcore-*.sh` 及相关测试与文档，CLI 不再提供模式 4 安装与 `purge-gcore` 命令。
-- **完全移除模式 5（组合模式）中的 Gcore 节点**：组合模式收敛为「直连 Reality + Cloudflare XHTTP」双入口；移除 Gcore 回源证书、mTLS、Cloudflare NS 委派及相关清理逻辑；所需子域名从 6 个精简为 4 个。
-- **模式 1（Reality 直连）链路完整性与通畅性验证**：核验并测试了伪装目标校验、Xray 服务端 JSON 配置生成、VLESS URI、Mihomo YAML 节点片段、动态端口 NAT 规则与订阅渲染全流程。
-- **测试与文档**：更新全套文档（技术参考、准备指南、运维指南、参数示例），全量回归测试套件全绿通过。
+- **简化与精简组合模式**：组合模式收敛为「直连 Reality + Cloudflare XHTTP」双入口；彻底移除冗余的 `CF_ORIGIN_DOMAIN`（回源域名），收敛为 3 域名架构（`DIRECT_DOMAIN`, `CF_NODE_DOMAIN`, `SUBSCRIPTION_DOMAIN`）。
+- **模块解耦与代码复用**：模式 2（Cloudflare CDN）接入并复用 `lib/cf-dns.sh`，清理 230 多行重复代码；清除无用变量与死代码。
+- **模式 1（Reality 直连）链路审计**：核验并测试了伪装目标校验、Xray 服务端 JSON 配置生成、VLESS URI、Mihomo YAML 节点片段、动态端口 NAT 规则与订阅渲染全流程。
+- **测试与文档**：对齐并精简全套文档指南，保留纯用户视角的端到端测试套件，测试全绿通过。
 
 源码版本标识为 `2.5.0`。
 

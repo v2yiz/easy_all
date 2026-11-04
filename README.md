@@ -42,99 +42,22 @@
 
 ---
 
-## 快速安装流程
+## 一键安装
 
-### 步骤 1：准备参数文件 `params.json`
-在本地编辑器中根据需求配置参数。以最常用的**组合模式**为例（直连 + Cloudflare 双入口）：
+登录 VPS 终端（需 root 权限），运行一键安装命令：
 
-```json
-{
-  "schema_version": 1,
-  "mode": "combined",
-  "params": {
-    "CF_ZONE": "example.com",
-    "DIRECT_DOMAIN": "node.example.com",
-    "CF_NODE_DOMAIN": "cf.example.com",
-    "CF_ORIGIN_DOMAIN": "cf-origin.example.com",
-    "SUBSCRIPTION_DOMAIN": "sub.example.com",
-    "CLOUDFLARE_API_TOKEN": "<填入 Cloudflare API Token>",
-    "GLOBALPING_TOKEN": "<填入 Globalping Access Token>",
-    "REALITY_TARGET": "swdist.apple.com:443",
-    "DIRECT_NODE_NAME": "🇺🇸直连",
-    "CF_NODE_PREFIX": "🇺🇸CF",
-    "SUB_DOWNLOAD_NAME": "EASY_ALL",
-    "ALLOWED_TOKENS": {
-      "owner": "<自定义 8-128 位订阅 Token>"
-    }
-  }
-}
-```
-> 其他模式（直连 Reality、Cloudflare XHTTP、Bunny）完整参数模版详见 [参数示例手册](docs/params-examples.md)。
-
-#### 核心参数字段速查
-
-| 字段 | 适用模式 | 必填 | 默认 / 留空 | 说明 |
-| :--- | :--- | :--- | :--- | :--- |
-| `VLESS_UUID` | 全部 | 否 | 自动生成 | 节点 UUID，留空自动生成符合规范的 UUIDv4 |
-| `VPS_PUBLIC_IPV4` | 全部 | 否 | 自动探测 | VPS 真实公网 IPv4，NAT 或多 IP 环境建议手动指定 |
-| `TCP_ACCELERATION` | 全部 | 否 | `skyline` | TCP 拥塞控制算法：`skyline` 或 `bbrv3` |
-| `REBOOT_SCHEDULE_MODE` | 全部 | 否 | `1` | 定时重启计划：`1` 每天 04:00，`2` 自定义小时，`3` 不配置 |
-| `REBOOT_HOUR` | 全部 | 否 | 空 | 自定义重启小时（0~23），仅在 `REBOOT_SCHEDULE_MODE: "2"` 时必填 |
-| `SUB_DOWNLOAD_NAME` | 直连/CF/组合 | 否 | `EASY_ALL` | 客户端订阅文件下载名（不含扩展名） |
-| `CLOUDFLARE_API_TOKEN` | 直连/CF/组合 | 条件 | — | Cloudflare API Token（需 Zone.DNS 与 SSL/TLS 权限）；直连 deploy/worker、CF、组合模式必填 |
-| `GLOBALPING_TOKEN` | CF/组合 | 是 | — | Globalping API Token，用于探测筛选当下最佳优选 IP |
-| `BUNNY_API_KEY` | Bunny | 是 | — | Bunny 账户 API Key |
-| `CLOUDFLARE_DNS_TOKEN` | Bunny | 是 | — | 用于配置 Bunny 节点 DNS 解析的 Cloudflare Token |
-| `ALLOWED_TOKENS` | 直连/CF/组合 | 条件 | — | 订阅用户字典 `{"用户":"token"}`；组合模式若不填会自动生成 owner |
-| `OWNER_TOKEN` | 组合/Bunny | 否 | 自动生成 | 单用户订阅 Token；与 `ALLOWED_TOKENS` 二选一，Bunny 固定单用户 |
-| `SUBSCRIPTION_MODE` | 直连/CF | 否 | `deploy` | 订阅部署方式：直连支持 `link`/`deploy`/`worker`；CF 支持 `link`/`deploy` |
-| `SUBSCRIPTION_DOMAIN` | 直连/CF/组合 | 条件 | 自动派生 | 订阅服务域名；CF 与组合模式默认派生 `sub.<域名>`，直连 deploy 模式需手填 |
-| `SUB_SOURCE_DOMAIN` | 直连 | 条件 | — | 直连 worker 订阅模式下，Worker 回源 VPS 所用的私有域名 |
-| `CLOUDFLARE_WORKER_NAME` | 直连/CF | 否 | 自动命名 | 部署订阅 Worker 的自定义名称 |
-| `WORKER_SOURCE_SECRET` | 直连/CF | 否 | 自动生成 | Worker 与 VPS Nginx 回源鉴权密钥 |
-| `WORKER_AGGREGATION_CONFIG` | 直连/CF | 否 | `{}` | 聚合其他节点订阅的配置 JSON |
-| `ENABLE_MONTHLY_QUOTA` | 直连/CF | 否 | `0` | 是否开启月度流量配额：`1` 启用，`0` 关闭 |
-| `MONTHLY_QUOTAS_GB` | 直连/CF | 否 | `{"owner":0}` | 各用户配额限额（GB），`0` 表示不限流量 |
-| `QUOTA_TOKEN_OVERRIDES` | 直连/CF | 否 | `{}` | 开启配额时各用户的独立 Token 映射 |
-| `QUOTA_START_DATE` | 直连/CF | 否 | 当天日期 | 月度流量计费起始日期（`YYYY-MM-DD`） |
-| `CF_ZONE` | 组合 | 是 | — | Cloudflare 托管的主域名（如 `example.com`） |
-| `CLOUDFLARE_ZONE` | Bunny | 是 | — | Cloudflare 托管的主域名 |
-| `DIRECT_DOMAIN` | 组合 | 否 | `node.<CF_ZONE>` | 组合模式直连节点域名（DNS 灰云 A 记录） |
-| `CF_NODE_DOMAIN` | 组合 | 否 | `cf.<CF_ZONE>` | 组合模式 Cloudflare 节点外部域名（DNS 橙云） |
-| `CF_ORIGIN_DOMAIN` | 组合 | 否 | `cf-origin.<CF_ZONE>` | 组合模式源站真实域名（DNS 橙云） |
-| `VLESS_CDN_DOMAIN` | CF | 是 | — | Cloudflare 模式客户端连接域名（DNS 橙云） |
-| `ORIGIN_DOMAIN` | Bunny | 否 | `origin.<CLOUDFLARE_ZONE>` | Bunny 源站域名（DNS 灰云 A 记录） |
-| `CDN_DOMAIN` | Bunny | 否 | `cdn.<CLOUDFLARE_ZONE>` | Bunny 节点对外域名（DNS CNAME 到 Bunny Pull Zone） |
-| `WORKER_BACKUP_DOMAIN` | CF | 否 | 空 | Cloudflare 独立 Worker 兜底节点域名（留空不部署） |
-| `WORKER_BACKUP_PLACEMENT` | CF | 否 | `off` | 兜底 Worker 智能调度：`off` 或 `aws:ap-east-1` |
-| `NODE_NAME` | 直连 | 否 | `MY_REALITY` | 客户端展示的直连节点名称 |
-| `XHTTP_NODE_NAME` | CF | 否 | `VLESS_XHTTP_H2` | 客户端展示的 CF 节点名称 |
-| `DIRECT_NODE_NAME` | 组合 | 否 | `🇺🇸直连` | 组合模式中直连节点的客户端展示名称 |
-| `CF_NODE_PREFIX` | 组合 | 否 | `🇺🇸CF` | 组合模式中 CF 优选节点前缀（自动生成 6 个优选节点） |
-| `NODE_HOST` | 直连 | 否 | 自动探测 | 直连节点连接地址（VPS IPv4 或解析到该 IP 的灰云域名） |
-| `REALITY_TARGET` | 直连/组合 | 否 | `swdist.apple.com:443` | Reality 伪装目标（`域名:端口`），需支持 TLS 1.3 |
-| `SUB_PORT_MODE` | 直连 | 否 | `dynamic` | 直连端口工作模式：`443` 单端口或 `dynamic` 动态端口轮换 |
-| `XHTTP_PATH` | CF/组合 | 否 | 自动生成 | VLESS XHTTP 传输路径 |
-| `WEBSOCKET_PATH` | Bunny | 否 | 自动生成 | VLESS WebSocket 传输路径 |
-| `XRAY_XHTTP_LOOPBACK_PORT` | CF | 否 | `10086` | 本机 Xray XHTTP 回环监听端口 |
-| `ORIGIN_HEADER_SECRET` | CF/Bunny | 否 | 自动生成 | CDN 回源私有鉴权密钥 |
-| `BUNNY_PULL_NAME` | Bunny | 否 | 自动生成 | Bunny Pull Zone 名称 |
-| `BUNNY_BANDWIDTH_GB` | Bunny | 否 | `500` | Bunny Pull Zone 月度流量限制（GB，`0` 不限） |
-
-### 步骤 2：登录 VPS 校验并执行安装
 ```bash
-# 1. 登录 VPS 并在终端写入参数文件
-cat > params.json <<'EOF'
-{ ... 粘贴上面的完整 JSON ... }
-EOF
-
-# 2. 预检参数（只校验合法性与网络要求，不改动系统）
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) params.json --check-params
-
-# 3. 开始一键安装
-bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) params.json
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) install
 ```
-安装成功后，系统会自动清理包含敏感 Token 的 `params.json` 文件。
+
+脚本将在终端显示交互式菜单：
+1. **选择安装模式**：
+   - `1` 直连 - Reality（适合直连效果良好、VPS IP 未被封）
+   - `2` Cloudflare CDN 精选 IP（纯 VLESS XHTTP stream-up，6 个优选 IPv4）
+   - `3` Bunny CDN（VLESS WS/TLS）
+   - `4` 组合：直连 Reality + Cloudflare（一次部署两个入口，共享订阅）
+2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值。
+3. **自动安装与部署**：依赖安装、TCP 加速（默认 Skyline Speeder）、服务启动与验收全自动完成。
 
 ---
 
@@ -182,7 +105,7 @@ sudo easy_all subscription
 
 1. **SSH 自动防护**：
    - 模式 1（Reality）与模式 2（Cloudflare）：安装完成后 SSH 端口自动收敛迁移至 TCP `65533`，UFW 首位阻断 22 端口，并由 Fail2ban 实时监控保护 `65533`。
-   - 模式 3（Bunny）与模式 5（组合模式）：保持现有 SSH 监听端口不变。
+   - 模式 3（Bunny）与组合模式：保持现有 SSH 监听端口不变。
 2. **回源白名单与防扫网**：
    - CDN 模式与组合模式的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。
 3. **恶意流量阻断**：
@@ -193,7 +116,6 @@ sudo easy_all subscription
 ## 文档索引
 
 - [前置准备手册](docs/preparation-guide.md)：域名购买、Cloudflare Zone 解析、API Token 与 Globalping 获取教程
-- [安装参数示例](docs/params-examples.md)：各模式的完整 JSON 模板及字段对照表
 - [客户端使用指南](docs/client-guide.md)：主流 Mihomo 客户端导入、配置与分流排障
 - [运维与排障指南](docs/operations-guide.md)：节点管理、配额控制、证书轮换及疑难解答
 - [系统技术参考](docs/technical-reference.md)：架构设计、流控机制与网络实现原理

@@ -32,10 +32,6 @@ readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
 readonly CF_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cf-origin"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4.txt"
-readonly ACME_HOME="/root/.acme-combined.sh"
-readonly ACME_BIN="${ACME_HOME}/acme.sh"
-readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy_all"
-readonly CERT_RELOAD_HOOK="${COMMAND_INSTALL_DIR}/reload-tls-service.sh"
 readonly CLOUDFLARE_TOKEN_FILE="${STATE_DIR}/cloudflare.token"
 readonly COMBINED_RECORD_COMMENT="easy_all combined"
 
@@ -50,7 +46,7 @@ load_state() {
     local -a variables=(
         STATE_VERSION PROTOCOL TCP_ACCELERATION
         VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID
-        DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN
+        DIRECT_DOMAIN CF_NODE_DOMAIN
         SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS VLESS_UUID
         DIRECT_NODE_NAME CF_NODE_PREFIX
         XHTTP_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
@@ -68,7 +64,7 @@ load_state() {
     [[ "${PROTOCOL:-}" == "combined" ]] || die "状态协议不是 combined；请重新安装"
     [[ -n "${CLOUDFLARE_ZONE_ID:-}" ]] || die "状态缺少 Cloudflare Zone ID；请重新安装"
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
-    XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
+    CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
     # 2.0.0 状态的组合模式没有这些字段，回退到当时的固定名称，避免 apply 时静默改名。
     : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}"
     # 这里只告警不阻断：历史状态可能存着非法 Token，若在此 die，连 edit-sub 和 uninstall 都进不去。
@@ -91,7 +87,7 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         for variable in \
             PROTOCOL TCP_ACCELERATION VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID \
-            DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN \
+            DIRECT_DOMAIN CF_NODE_DOMAIN \
             SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS VLESS_UUID \
             DIRECT_NODE_NAME CF_NODE_PREFIX \
             XHTTP_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID \
@@ -109,112 +105,61 @@ validate_node_name() {
 }
 
 collect_install_inputs() {
-    params_declare CF_ZONE --required \
-        --label 'Cloudflare 根 Zone（如 example.com）' \
-        --normalize normalize_domain --check validate_domain
-    params_declare DIRECT_DOMAIN --required \
-        --label '直连节点域名' --default "node.${CF_ZONE}" \
-        --normalize normalize_domain --check validate_domain
-    params_declare CF_NODE_DOMAIN --required \
-        --label 'Cloudflare 节点域名（橙云）' --default "cf.${CF_ZONE}" \
-        --normalize normalize_domain --check validate_domain
-    params_declare CF_ORIGIN_DOMAIN --required \
-        --label 'Cloudflare 回源域名（橙云）' --default "cf-origin.${CF_ZONE}" \
-        --normalize normalize_domain --check validate_domain
-    params_declare SUBSCRIPTION_DOMAIN --required \
-        --label '订阅域名（橙云）' --default "sub.${CF_ZONE}" \
-        --normalize normalize_domain --check validate_domain
-
-    params_declare CLOUDFLARE_API_TOKEN --required --secret \
-        --label 'Cloudflare API Token（DNS 编辑权限）' --check params_check_cf_token
-    params_declare GLOBALPING_TOKEN --required --secret \
-        --label 'Globalping Access Token' --check validate_globalping_token
-
-    params_declare REALITY_TARGET --required \
-        --label 'Reality 伪装目标（域名:端口）' --default 'swdist.apple.com:443' \
-        --normalize params_normalize_reality_target --check validate_reality_target
-    params_declare XHTTP_PATH \
-        --label 'XHTTP 路径（留空自动生成）' --default-fn params_default_xhttp_path \
-        --normalize normalize_xhttp_path --check validate_xhttp_path
-
-    params_declare DIRECT_NODE_NAME --required \
-        --label '直连节点名' --default '🇺🇸直连' --check validate_node_name
-    params_declare CF_NODE_PREFIX --required \
-        --label 'Cloudflare 节点名前缀（自动追加 1~6）' --default '🇺🇸CF' \
-        --check validate_node_name
-    params_declare SUB_DOWNLOAD_NAME --required \
-        --label 'Mihomo 下载文件名（不含 .yaml）' --default "${DEFAULT_SUB_DOWNLOAD_NAME}" \
-        --normalize normalize_sub_download_name --check validate_sub_download_name
-
-    params_declare VLESS_UUID \
-        --label '节点 UUID（留空自动生成）' --default-fn params_default_uuid --check validate_uuid
-    params_declare OWNER_TOKEN \
-        --label '订阅 Token（单个用户，留空自动生成；与 ALLOWED_TOKENS 二选一）' \
-        --check params_check_token
-    params_declare ALLOWED_TOKENS --type json_object \
-        --label '订阅用户 Token 字典 {"用户":"token"}（与 OWNER_TOKEN 二选一）' \
-        --normalize params_normalize_allowed_tokens
-
-    params_declare VPS_PUBLIC_IPV4 \
-        --label '本机公网 IPv4（留空则在安装阶段自动探测）' \
-        --check validate_ipv4
-    params_declare TCP_ACCELERATION \
-        --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
-        --normalize normalize_tcp_acceleration
-    params_declare REBOOT_SCHEDULE_MODE \
-        --label '定时重启：1=每天 04:00，2=自定义小时，3=不配置' --default 1 \
-        --check params_check_reboot_mode
-    params_declare REBOOT_HOUR \
-        --label '自定义重启小时（0-23，仅模式 2 需要）' --check params_check_hour
-}
-
-params_cross_combined() {
     local domain index
-    if validate_domain "${CF_ZONE}"; then
-        for domain in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
-            "${SUBSCRIPTION_DOMAIN}"; do
-            case "${domain}" in
-            *".${CF_ZONE}") ;;
-            *) params_error "域名必须属于 ${CF_ZONE}：${domain}" ;;
-            esac
-        done
-        [[ "$(printf '%s\n' "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
-            "${SUBSCRIPTION_DOMAIN}" \
-            | sort -u | wc -l | tr -d ' ')" == "4" ]] \
-            || params_error '四个域名必须互不相同'
-    fi
-    if [[ -n "${DIRECT_NODE_NAME}" && -n "${CF_NODE_PREFIX}" ]]; then
-        for index in 1 2 3 4 5 6; do
-            [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" ]] \
-                || params_error "Cloudflare 节点名 ${CF_NODE_PREFIX}${index} 与直连节点名重复"
-        done
-    fi
-    if [[ -n "${OWNER_TOKEN}" && -n "${ALLOWED_TOKENS}" ]]; then
-        params_error 'OWNER_TOKEN 与 ALLOWED_TOKENS 不能同时提供：单用户用 OWNER_TOKEN，多用户用 ALLOWED_TOKENS'
-    fi
-    if [[ "${REBOOT_SCHEDULE_MODE}" == "2" && -z "${REBOOT_HOUR}" ]]; then
-        params_error 'REBOOT_SCHEDULE_MODE=2 时必须提供 REBOOT_HOUR（0-23）'
-    fi
-}
+    CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' '')")
+    validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
 
-# 依赖已安装工具与网络：参数校验完成后、任何云端/本机配置写入之前运行。
-apply_install_inputs() {
-    if [[ -z "${VPS_PUBLIC_IPV4}" ]]; then
-        VPS_PUBLIC_IPV4=$(detect_public_ipv4) \
-            || die "无法自动探测本机公网 IPv4；请在参数文件里填写 VPS_PUBLIC_IPV4"
-    fi
+    DIRECT_DOMAIN=$(normalize_domain "$(prompt_value '直连节点域名' "node.${CF_ZONE}")")
+    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'Cloudflare 节点域名（橙云）' "cf.${CF_ZONE}")")
+    SUBSCRIPTION_DOMAIN=$(normalize_domain "$(prompt_value '订阅域名（橙云）' "sub.${CF_ZONE}")")
+    for domain in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}"; do
+        validate_domain "${domain}" || die "域名无效：${domain}"
+        [[ "${domain}" == *".${CF_ZONE}" ]] || die "域名必须属于 ${CF_ZONE}：${domain}"
+    done
+    [[ "$(printf '%s\n' "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" | sort -u | wc -l | tr -d ' ')" == "3" ]] \
+        || die "三个域名必须互不相同"
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
-    XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
-    if [[ -z "${ALLOWED_TOKENS}" && -z "${OWNER_TOKEN}" ]]; then
+    CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
+
+    CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（DNS 编辑权限）') \
+        || die '缺少 Cloudflare API Token'
+    [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]{20,100}$ ]] || die "Cloudflare Token 格式无效"
+    collect_globalping_token
+    validate_globalping_access || die "Globalping Token 验证失败"
+
+    REALITY_TARGET=$(prompt_value 'Reality 伪装目标（域名:端口）' 'swdist.apple.com:443')
+    validate_reality_target "${REALITY_TARGET}" \
+        || die "Reality 目标无效，需为 域名:端口：${REALITY_TARGET}"
+    REALITY_TARGET="$(normalize_domain "${REALITY_TARGET%:*}"):${REALITY_TARGET##*:}"
+    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
+    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP 路径无效"
+
+    DIRECT_NODE_NAME=$(prompt_value '直连节点名' "${DIRECT_NODE_NAME:-🇺🇸直连}")
+    CF_NODE_PREFIX=$(prompt_value 'Cloudflare 节点名前缀（自动追加 1~6）' "${CF_NODE_PREFIX:-🇺🇸CF}")
+    validate_node_name "${DIRECT_NODE_NAME}" || die "直连节点名无效（1-64 字符，不能含换行）"
+    validate_node_name "${CF_NODE_PREFIX}" || die "Cloudflare 节点名前缀无效"
+    for index in 1 2 3 4 5 6; do
+        [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" ]] \
+            || die "Cloudflare 节点名 ${CF_NODE_PREFIX}${index} 与直连节点名重复"
+    done
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+        "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
+
+    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
+    if [[ -z "${ALLOWED_TOKENS:-}" && -z "${OWNER_TOKEN:-}" ]]; then
         OWNER_TOKEN=$(generate_secret)
     fi
-    if [[ -z "${ALLOWED_TOKENS}" ]]; then
+    if [[ -z "${ALLOWED_TOKENS:-}" ]]; then
         ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
     fi
     combined_sync_allowed_tokens
     combined_validate_install_owner_token
-    collect_globalping_token
-    validate_globalping_access || die "Globalping Token 验证失败"
+
+    if [[ -z "${VPS_PUBLIC_IPV4:-}" ]]; then
+        VPS_PUBLIC_IPV4=$(detect_public_ipv4) \
+            || die "无法自动探测本机公网 IPv4"
+    fi
 }
 
 persist_cloudflare_token() {
@@ -239,8 +184,8 @@ cloudflare_collect_api_token() {
 }
 
 cloudflare_origin_certificate_hosts() {
-    jq -cn --arg node "${CF_NODE_DOMAIN}" --arg origin "${CF_ORIGIN_DOMAIN}" \
-        --arg sub "${SUBSCRIPTION_DOMAIN}" '[$node, $origin, $sub]'
+    jq -cn --arg node "${CF_NODE_DOMAIN}" \
+        --arg sub "${SUBSCRIPTION_DOMAIN}" '[$node, $sub]'
 }
 
 dns_ensure_record() {
@@ -275,13 +220,12 @@ combined_ensure_dns() {
         || die "Cloudflare 中没有 active Zone：${CF_ZONE}"
     dns_ensure_record "${DIRECT_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false
     dns_ensure_record "${CF_NODE_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
-    dns_ensure_record "${CF_ORIGIN_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
     dns_ensure_record "${SUBSCRIPTION_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
 }
 
 combined_issue_certificates() {
     local force=${1:-0}
-    CLOUDFLARE_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
+    CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
     CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CF_CA_ROOT_FILE}"
     cloudflare_issue_origin_certificate "${force}"
     # Origin CA 一签发就落盘 ID/到期时间：续装可直接复用这张证书，
@@ -421,7 +365,7 @@ server {
 
 server {
     listen 443 ssl ${listen_h2};
-    server_name ${CF_NODE_DOMAIN} ${CF_ORIGIN_DOMAIN};
+    server_name ${CF_NODE_DOMAIN};
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
     ssl_protocols TLSv1.2 TLSv1.3;${http2_directive}
@@ -662,7 +606,7 @@ show_status() {
     printf '协议: 直连 Reality + Cloudflare XHTTP\n'
     show_tcp_acceleration_status
     printf '直连入口: %s:%s\n' "${DIRECT_DOMAIN}" "${REALITY_PORT}"
-    printf 'Cloudflare: %s（回源 %s）\n' "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}"
+    printf 'Cloudflare: %s\n' "${CF_NODE_DOMAIN}"
     printf '订阅: https://%s/subscribe\n' "${SUBSCRIPTION_DOMAIN}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
@@ -799,14 +743,13 @@ rollback_fresh_install() {
 }
 
 install_all() {
+    [[ -t 0 ]] || die "安装必须在交互终端中执行"
     require_root
     acquire_runtime_write_lock
     require_systemd
     check_platform
     [[ ! -f "${STATE_FILE}" ]] || die "检测到已有 easy_all 安装；一台 VPS 只允许一种模式"
     install_failure_begin combined
-    # 参数预检先于任何系统修改：失败时只可能装过 jq/ca-certificates。
-    install_params_preflight combined
     prepare_fresh_install 80 443 "${REALITY_PORT}"
     install_progress_begin combined
     # 快照必须早于任何系统修改（TCP 加速、内核、定时重启、crontab），否则回滚恢复的是
@@ -819,8 +762,8 @@ install_all() {
     configure_tcp_acceleration
     configure_daily_reboot
     install_progress_stage inputs
-    apply_install_inputs
-    # 身份落盘：中断续装时要用它覆盖预检新生成的值，保证已写出的节点/订阅不失效。
+    collect_install_inputs
+    # 身份落盘：中断续装时要用它覆盖新生成的值，保证已写出的节点/订阅不失效。
     persist_install_identity || warn "无法落盘安装身份；中断后无法完全复用 UUID/路径/Token"
     install_progress_stage core
     download_xray
@@ -1010,7 +953,7 @@ update_reality_target() {
 
 purge_combined_dns() {
     local host type records count id comment
-    for host in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
+    for host in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" \
         "${SUBSCRIPTION_DOMAIN}"; do
         records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" A "${host}")
         count=$(jq 'length' <<<"${records}")
@@ -1060,12 +1003,7 @@ uninstall_all() {
     restore_preinstall_firewall
     restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
-    # 只清理 easy_all 安装的 acme.sh（所有权标记）；失败回滚保留的证书缓存也按此标记在真正卸载时清掉。
-    if [[ -x "${ACME_BIN}" && -f "${ACME_OWNERSHIP_MARKER}" ]]; then
-        "${ACME_BIN}" --uninstall </dev/null >/dev/null 2>&1 \
-            || warn "acme.sh 卸载失败，请手工清理 ${ACME_HOME}"
-    fi
-    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}"
+    rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
     success "easy_all 组合模式本机内容已卸载"

@@ -6,8 +6,6 @@ readonly RUNTIME_LIB_DIR="${EASY_ALL_RUNTIME_LIB_DIR:?EASY_ALL_RUNTIME_LIB_DIR i
 
 # shellcheck source=lib/log.sh
 source "${RUNTIME_LIB_DIR}/log.sh"
-# shellcheck source=lib/params.sh
-source "${RUNTIME_LIB_DIR}/params.sh"
 # shellcheck source=lib/quota.sh
 source "${RUNTIME_LIB_DIR}/quota.sh"
 # shellcheck source=lib/platform.sh
@@ -73,10 +71,6 @@ cleanup() {
             || warn "恢复 policy-rc.d 事务失败：事务已保留，下次运行安装/清理会自动重试"
     fi
     end_quota_maintenance || true
-    # 安装成功：删掉含 Token 的参数文件（--check-params 等只读调用不会设置该标记）。
-    if [[ "${status}" == "0" ]] && declare -F params_cleanup_on_success >/dev/null 2>&1; then
-        params_cleanup_on_success || true
-    fi
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"
     done

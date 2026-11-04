@@ -41,7 +41,6 @@ download_https_file() {
 
 read_bilingual() {
     local label=$1 variable=$2 silent=${3:-0} input
-    params_assert_prompt_allowed "${label}"
     printf '%s\n' "${label}" >&2
     if [[ "${silent}" == "1" ]]; then
         read_prompt '> ' input 1
@@ -65,17 +64,9 @@ prompt_value() {
 
 prompt_secret() {
     local label=$1 value
-    params_assert_prompt_allowed "${label}"
     [[ -t 0 ]] || return 1
     read_bilingual "${label}，粘贴后按回车键；输入过程不会显示任何字符:" value 1
     printf '%s' "${value}"
-}
-
-# 安装参数全部来自 --params；安装期的“参数输入”交互直接失败。
-# 例外：确认类交互（例如失败后要不要清理）走 read_confirmation，不受此限制。
-params_assert_prompt_allowed() {
-    [[ "${PARAMS_LOADED:-0}" != "1" ]] || die \
-        "内部错误：本次安装由 --params 提供全部参数，安装流程不应再提问取值（${1:-未知提示}）；请把该字段补进参数文件"
 }
 
 # 只用于“是否清理 / 是否继续”这类确认，不会读进参数值。
@@ -84,26 +75,6 @@ read_confirmation() {
     printf '%s\n' "${label}" >&2
     read_prompt '> ' input
     printf -v "${variable}" '%s' "${input}"
-}
-
-# 安装参数预检：读取参数文件 → 逐字段赋值与校验 → 聚合报告。
-# 调用方须在第一次改动系统之前调用；--print-params 则只输出模板。
-install_params_preflight() {
-    local mode=${1:-$(install_current_mode)} file=${EASY_ALL_PARAMS_FILE:-}
-    if [[ "${EASY_ALL_PARAMS_PRINT:-0}" == "1" ]]; then
-        command -v jq >/dev/null 2>&1 \
-            || die "--print-params 需要 jq：sudo apt-get install -y jq"
-        params_template_begin "${mode}"
-        collect_install_inputs
-        params_finish
-        return 0
-    fi
-    [[ -n "${file}" ]] || die \
-        "安装参数必须通过 --params 提供：easy_all install --params <参数文件|->（用 --print-params --mode <模式> 生成模板）"
-    params_install_dependencies
-    params_begin "${mode}" "${file}"
-    collect_install_inputs
-    params_finish
 }
 
 restore_state_file() {
@@ -501,7 +472,7 @@ install_cleanup_after_failure() {
         if [[ -z "${answer}" || "${answer}" =~ ^[Yy] ]]; then
             install_cleanup_perform "${action}"
             # 失败路径一律写 stderr：退出时可能仍带着上层命令的输出重定向。
-            printf '%s\n' '已清理本次安装的本机残留；修正问题后可用同一份参数文件重试' >&2
+            printf '%s\n' '已清理本次安装的本机残留；修正问题后可重新运行安装' >&2
             return 0
         fi
         printf '%s\n' '已保留本次安装的本机改动（未清理）' >&2

@@ -47,58 +47,8 @@ source "${XHTTP_LIB_DIR}/globalping-cdn.sh"
 source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"
 # shellcheck source=lib/worker-backup.sh
 source "${XHTTP_LIB_DIR}/worker-backup.sh"
-
-cloudflare_collect_api_token() {
-    if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-        CLOUDFLARE_API_TOKEN=$(prompt_secret "Cloudflare API Token（仅当前进程使用，不落盘）") \
-            || die "非交互模式必须设置 CLOUDFLARE_API_TOKEN"
-    fi
-    [[ ${#CLOUDFLARE_API_TOKEN} -ge 20 && ${#CLOUDFLARE_API_TOKEN} -le 512 \
-        && "${CLOUDFLARE_API_TOKEN}" != *[[:space:]]* ]] || die "CLOUDFLARE_API_TOKEN 格式无效"
-}
-cloudflare_clear_api_token() {
-    unset CLOUDFLARE_API_TOKEN
-    rm -f -- "${RUNTIME_TMP}/cloudflare-api-headers" \
-        "${RUNTIME_TMP}/cloudflare-worker-api-headers"
-}
-
-cloudflare_api_request() {
-    local method=$1 path=$2 payload=${3:-} response headers payload_file status
-    local -a retry_args=(--retry 0)
-    [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "缺少 CLOUDFLARE_API_TOKEN"
-    headers="${RUNTIME_TMP}/cloudflare-api-headers"
-    printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
-        "${CLOUDFLARE_API_TOKEN}" >"${headers}"
-    chmod 0600 "${headers}"
-    case "${method}" in
-    GET | HEAD | PUT) retry_args=(--retry 2) ;;
-    esac
-    if [[ -n "${payload}" ]]; then
-        payload_file="${RUNTIME_TMP}/cloudflare-api-payload"
-        printf '%s' "${payload}" >"${payload_file}"
-        chmod 0600 "${payload_file}"
-        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
-            -H "@${headers}" \
-            --data-binary "@${payload_file}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
-    else
-        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 -X "${method}" -w $'\n%{http_code}' \
-            -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") || die "Cloudflare API 请求失败：${method} ${path}"
-    fi
-    status=${response##*$'\n'}
-    response=${response%$'\n'*}
-    if [[ "${method}" == "DELETE" && ( "${status}" == "200" || "${status}" == "204" ) && -z "${response//[[:space:]]/}" ]]; then
-        printf 'null\n'
-        return 0
-    fi
-    [[ "${status}" == 2[0-9][0-9] ]] || {
-        printf '%s\n' "${response:-<empty>}" >&2
-        die "Cloudflare API HTTP ${status:-000}：${method} ${path}"
-    }
-    jq -se 'length == 1 and (.[0] | type == "object" and .success == true)' \
-        <<<"${response}" >/dev/null \
-        || { printf '%s\n' "${response:-<empty>}" >&2; die "Cloudflare API 返回错误（HTTP ${status}）：${method} ${path}"; }
-    jq -sc '.[0].result' <<<"${response}"
-}
+# shellcheck source=lib/cf-dns.sh
+source "${XHTTP_LIB_DIR}/cf-dns.sh"
 
 cloudflare_validate_worker_access() {
     local scripts domains count
@@ -546,79 +496,6 @@ cloudflare_validate_subscription_worker() {
     success "Cloudflare Worker 聚合订阅与私有 Nginx 节点源验收通过"
 }
 
-cloudflare_fetch_origin_ipv4_ranges() {
-    local response
-    response=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
-        "${CLOUDFLARE_API_BASE}/ips") \
-        || return 1
-    jq -er '
-        select(.success == true)
-        | .result.ipv4_cidrs
-        | select(type == "array" and length > 0)
-        | unique[]
-        | select(test("^([0-9]{1,3}\\.){3}[0-9]{1,3}/([89]|[12][0-9]|3[0-2])$"))
-    ' <<<"${response}" | sort -u
-}
-
-cloudflare_origin_ufw_rule_numbers() {
-    command -v ufw >/dev/null 2>&1 || return 0
-    LC_ALL=C ufw status numbered 2>/dev/null \
-        | sed -n "/${CLOUDFLARE_UFW_COMMENT}/s/^[[:space:]]*\\[[[:space:]]*\\([0-9][0-9]*\\)\\].*/\\1/p" \
-        | sort -rn
-}
-
-cloudflare_remove_origin_firewall_rules() {
-    local number
-    while IFS= read -r number; do
-        [[ -n "${number}" ]] || continue
-        ufw --force delete "${number}" >/dev/null 2>&1 \
-            || warn "删除 Cloudflare 回源 UFW 规则 ${number} 失败"
-    done < <(cloudflare_origin_ufw_rule_numbers)
-}
-
-cloudflare_configure_origin_firewall() {
-    local next current cidr
-    next="${RUNTIME_TMP}/cloudflare-origin-ipv4.txt"
-    if ! cloudflare_fetch_origin_ipv4_ranges >"${next}" || [[ ! -s "${next}" ]]; then
-        if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
-            warn "获取 Cloudflare 官方 IP 段失败，继续使用上一版回源白名单"
-            install -m 0600 "${CLOUDFLARE_ORIGIN_IPS_FILE}" "${next}"
-        else
-            die "无法获取 Cloudflare 官方 IPv4 段，且本机没有可回退的白名单"
-        fi
-    fi
-    current="${RUNTIME_TMP}/cloudflare-origin-ipv4.current"
-    if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
-        install -m 0600 "${CLOUDFLARE_ORIGIN_IPS_FILE}" "${current}"
-    else
-        : >"${current}"
-    fi
-
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
-        ufw allow proto tcp from "${cidr}" to any port 443 \
-            comment "${CLOUDFLARE_UFW_COMMENT}" >/dev/null \
-            || die "添加 Cloudflare 回源 UFW 规则失败：${cidr}"
-    done <"${next}"
-    ufw --force enable >/dev/null || die "启用 UFW 失败"
-    ufw reload >/dev/null || die "重载 UFW 失败"
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
-        ufw_tcp_port_is_allowed 443 "${cidr}" \
-            || die "UFW 未有效放行 Cloudflare 回源：${cidr}"
-    done <"${next}"
-
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
-        grep -Fxq "${cidr}" "${next}" && continue
-        ufw --force delete allow proto tcp from "${cidr}" to any port 443 >/dev/null \
-            || warn "删除过期 Cloudflare 回源 UFW 规则失败：${cidr}"
-    done <"${current}"
-    install -d -m 0700 "$(dirname "${CLOUDFLARE_ORIGIN_IPS_FILE}")"
-    install -m 0600 "${next}" "${CLOUDFLARE_ORIGIN_IPS_FILE}"
-    ufw reload >/dev/null || die "重载 UFW 失败"
-}
-
 xhttp_configure_ufw() {
     local desired_ports
     snapshot_ufw_state
@@ -643,23 +520,6 @@ xhttp_configure_ufw() {
     LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' \
         || die "UFW 未处于 active 状态"
     ensure_ssh_fail2ban
-}
-
-cloudflare_lookup_parent_zone() {
-    local domain=$1 candidate zone
-    candidate=${domain}
-    while [[ "${candidate}" == *.* ]]; do
-        zone=$(cloudflare_api_request GET "/zones?name=${candidate}&status=active&per_page=50" | jq -r --arg name "${candidate}" '[.[] | select((.name|ascii_downcase)==$name) | .id] | if length == 1 then .[0] else empty end')
-        if [[ -n "${zone}" ]]; then printf '%s' "${zone}"; return; fi
-        candidate=${candidate#*.}
-    done
-    return 1
-}
-
-cloudflare_find_parent_zone() {
-    local domain=$1
-    cloudflare_lookup_parent_zone "${domain}" \
-        || die "Cloudflare active Zone 未覆盖域名：${domain}"
 }
 
 cloudflare_validate_node_domain_input() {
@@ -691,42 +551,6 @@ cloudflare_validate_node_domain_input() {
     CLOUDFLARE_ZONE_ID=${zone_id}
     CLOUDFLARE_CDN_ZONE_ID=${zone_id}
     CLOUDFLARE_ZONE_NAME=${zone_name}
-}
-
-cloudflare_record_list() { cloudflare_api_request GET "/zones/$1/dns_records?type=$2&name=$3&per_page=100"; }
-cloudflare_require_single_record() {
-    local records=$1 count
-    count=$(jq 'length' <<<"${records}")
-    ((count <= 1)) || die "Cloudflare 中发现多个同名同类型 DNS 记录，拒绝猜测或覆盖"
-}
-
-cloudflare_ensure_proxied_a() {
-    local zone=$1 host=$2 ip=$3 records record id content proxied comment type payload result
-    for type in A AAAA CNAME; do
-        records=$(cloudflare_record_list "${zone}" "${type}" "${host}")
-        cloudflare_require_single_record "${records}"
-        [[ "${type}" == A ]] || [[ $(jq 'length' <<<"${records}") == 0 ]] || die "${host} 已有 ${type} 记录；拒绝覆盖"
-        if [[ "${type}" == A && $(jq 'length' <<<"${records}") == 1 ]]; then
-            record=$(jq -c '.[0]' <<<"${records}"); id=$(jq -r '.id' <<<"${record}")
-            content=$(jq -r '.content' <<<"${record}"); proxied=$(jq -r '.proxied' <<<"${record}")
-            comment=$(jq -r '.comment // empty' <<<"${record}")
-            if [[ "${content}" == "${ip}" && "${proxied}" == true ]]; then
-                return 0
-            fi
-            [[ "${comment}" == "easy_all xhttp origin" ]] \
-                || die "${host} 的 A 记录与 easy_all 目标不一致或未代理；拒绝覆盖"
-            payload=$(jq -cn --arg name "${host}" --arg content "${ip}" \
-                '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')
-            cloudflare_api_request PATCH "/zones/${zone}/dns_records/${id}" \
-                "${payload}" >/dev/null
-            return 0
-        fi
-    done
-    result=$(cloudflare_api_request POST "/zones/${zone}/dns_records" \
-        "$(jq -cn --arg name "${host}" --arg content "${ip}" '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')")
-    CLOUDFLARE_CREATED_DNS_RECORD_ID=$(jq -r '.id // empty' <<<"${result}")
-    [[ -n "${CLOUDFLARE_CREATED_DNS_RECORD_ID}" ]] \
-        || die "Cloudflare 未返回新建 DNS 记录 ID"
 }
 
 cloudflare_validate_zones() {
@@ -805,50 +629,6 @@ cloudflare_origin_certificate_is_current() {
         | sha256sum | cut -d' ' -f1)" ]] || return 1
 }
 
-cloudflare_origin_certificate_hosts() {
-    jq -cn --arg cdn "${VLESS_CDN_DOMAIN}" '[$cdn]'
-}
-
-cloudflare_origin_certificate_is_reusable() {
-    # A current certificate on disk is only reusable with the Cloudflare side
-    # metadata that save_state persists and load_state requires; reusing one
-    # without the ID/expiry would persist an incomplete state that renew and
-    # uninstall cannot resolve afterwards.
-    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" && -n "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" ]] \
-        && cloudflare_origin_certificate_is_current
-}
-
-cloudflare_issue_origin_certificate() {
-    local force=${1:-0} key csr result cert expires hosts san old_id
-    cloudflare_ensure_origin_ca_root
-    if [[ "${force}" != "1" ]] && cloudflare_origin_certificate_is_reusable; then
-        return 0
-    fi
-    cloudflare_collect_api_token
-    old_id=${CLOUDFLARE_ORIGIN_CERT_ID:-}
-    install -d -m 0700 "${CERT_DIR}"
-    key="${RUNTIME_TMP}/cloudflare-origin-ecc.key"
-    csr="${RUNTIME_TMP}/cloudflare-origin.csr"
-    openssl ecparam -name prime256v1 -genkey -noout -out "${key}"
-    chmod 0600 "${key}"
-    hosts=$(cloudflare_origin_certificate_hosts)
-    san=$(jq -r 'map("DNS:" + .) | join(",")' <<<"${hosts}")
-    openssl req -new -sha256 -key "${key}" -subj "/CN=${CLOUDFLARE_ORIGIN_DOMAIN}" \
-        -addext "subjectAltName=${san}" -out "${csr}"
-    result=$(cloudflare_api_request POST '/certificates' "$(jq -cn --arg csr "$(<"${csr}")" --argjson hosts "${hosts}" --argjson validity "${CLOUDFLARE_ORIGIN_VALIDITY_DAYS}" '{hostnames:$hosts,requested_validity:$validity,request_type:"origin-ecc",csr:$csr}')")
-    cert=$(jq -r '.certificate // empty' <<<"${result}"); CLOUDFLARE_ORIGIN_CERT_ID=$(jq -r '.id // empty' <<<"${result}"); expires=$(jq -r '.expires_on // empty' <<<"${result}")
-    [[ -n "${cert}" && -n "${CLOUDFLARE_ORIGIN_CERT_ID}" && -n "${expires}" ]] || die "Cloudflare 未返回 Origin CA 证书、ID 或到期时间"
-    CLOUDFLARE_CREATED_ORIGIN_CERT_ID=${CLOUDFLARE_ORIGIN_CERT_ID}
-    printf '%s\n' "${cert}" >"${RUNTIME_TMP}/origin.pem"
-    openssl verify -CAfile "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" \
-        "${RUNTIME_TMP}/origin.pem" >/dev/null \
-        || die "Cloudflare Origin CA 证书链验证失败"
-    install -m 0600 "${RUNTIME_TMP}/origin.pem" "${CERT_FILE}"
-    install -m 0600 "${key}" "${KEY_FILE}"
-    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=${expires}
-    CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=${old_id}
-}
-
 xhttp_validate_local_tls_curl_args() {
     local headers="${RUNTIME_TMP}/cloudflare-origin-headers"
     cloudflare_ensure_origin_ca_root
@@ -879,17 +659,6 @@ xhttp_renew_origin_certificate() {
     fi
     cloudflare_clear_api_token
     success "Cloudflare Origin CA 源站证书已轮换"
-}
-
-cloudflare_finalize_certificate_rotation() {
-    local old_id=${CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID:-}
-    [[ -n "${old_id}" && "${old_id}" != "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] \
-        || return 0
-    if ! (cloudflare_api_request DELETE "/certificates/${old_id}" >/dev/null); then
-        warn "新证书已通过公网验收，但撤销旧 Cloudflare Origin CA 证书失败：${old_id}"
-        return 0
-    fi
-    CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=""
 }
 
 cloudflare_ref() { printf 'easy_all_%s' "$(printf '%s' "$1" | sha256sum | cut -c1-24)"; }
@@ -1353,140 +1122,76 @@ collect_cloudflare_worker_inputs() {
         || die "WORKER_SOURCE_SECRET 格式无效"
 }
 
+collect_cloudflare_node_domain() {
+    local domain=${VLESS_CDN_DOMAIN:-}
+    while true; do
+        if [[ -z "${domain}" ]]; then
+            domain=$(prompt_value "客户端连接的 CDN 节点域名（例如 node.example.com）" "")
+        fi
+        domain=$(normalize_domain "${domain}")
+        if ! validate_domain "${domain}"; then
+            warn "CDN 节点域名格式无效，请重新输入完整的一级子域名"
+            domain=""
+            continue
+        fi
+        if ! cloudflare_validate_node_domain_input "${domain}"; then
+            warn "${CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR:-CDN 节点域名无效，请重新输入}"
+            domain=""
+            continue
+        fi
+        VLESS_CDN_DOMAIN=${domain}
+        return
+    done
+}
+
 collect_install_inputs() {
     PROTOCOL="cloudflare-streamup"
     BACKEND="xray"
     CDN_PROVIDER="cloudflare"
 
-    params_declare XHTTP_NODE_NAME --required \
-        --label '节点名（客户端展示名）' --default "${DEFAULT_XHTTP_NODE_NAME}" \
-        --check params_check_node_name
-    params_declare VLESS_UUID \
-        --label '节点 UUID（留空自动生成）' --default-fn params_default_uuid --check validate_uuid
-    params_declare CLOUDFLARE_API_TOKEN --required --secret \
-        --label 'Cloudflare API Token（DNS / Workers / Origin CA 权限）' \
-        --check params_check_cf_token
-    params_declare VLESS_CDN_DOMAIN --required \
-        --label '客户端连接的 CDN 节点域名（Zone 下一级子域名，如 node.example.com）' \
-        --normalize normalize_domain --check validate_domain
-    params_declare GLOBALPING_TOKEN --required --secret \
-        --label 'Globalping Access Token' --check validate_globalping_token
-    params_declare XHTTP_PATH \
-        --label 'XHTTP 路径（留空自动生成）' --default-fn params_default_xhttp_path \
-        --normalize normalize_xhttp_path --check validate_xhttp_path
-    params_declare XRAY_XHTTP_LOOPBACK_PORT \
-        --label '本机回环端口' --default "${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}" \
-        --check validate_loopback_port
-    params_declare ORIGIN_HEADER_SECRET --secret \
-        --label '回源校验密钥（留空自动生成）' --default-fn params_default_secret \
-        --check params_check_worker_secret
+    XHTTP_NODE_NAME=${XHTTP_NODE_NAME:-${DEFAULT_XHTTP_NODE_NAME}}
+    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
 
-    params_declare SUBSCRIPTION_MODE --required \
-        --label '订阅输出：link（不部署）/deploy（Worker 聚合订阅）' --default deploy \
-        --normalize normalize_subscription_mode
-    params_declare SUBSCRIPTION_DOMAIN --when params_when_subscription_enabled --required \
-        --label 'Worker 订阅完整域名（必须与节点域名不同）' \
-        --default "sub.${VLESS_CDN_DOMAIN#*.}" \
-        --normalize normalize_domain --check validate_domain
-    params_declare CLOUDFLARE_WORKER_NAME --when params_when_subscription_enabled --required \
-        --label 'Cloudflare Worker 名称' --default "${DEFAULT_CLOUDFLARE_WORKER_NAME}" \
-        --check params_check_worker_name
-    params_declare SUB_DOWNLOAD_NAME --required \
-        --label '订阅文件名（不含 .yaml）' --default "${DEFAULT_SUB_DOWNLOAD_NAME}" \
-        --normalize normalize_sub_download_name --check validate_sub_download_name
-    params_declare WORKER_SOURCE_SECRET --when params_when_subscription_enabled --secret \
-        --label 'Worker 回源密钥（留空自动生成）' --default-fn params_default_secret \
-        --check params_check_worker_secret
-    params_declare WORKER_AGGREGATION_CONFIG --when params_when_subscription_enabled \
-        --type json_object --label 'Worker 聚合 JSON（不得包含 vpsSubUrl）' --default '{}' \
-        --normalize normalize_worker_aggregation_config
-
-    params_declare ENABLE_MONTHLY_QUOTA \
-        --label '按用户月度配额：0=不启用（默认），1=启用' --default 0 \
-        --check params_check_quota_toggle
-    params_declare MONTHLY_QUOTAS_GB --when params_when_quota_enabled --type json_object \
-        --label '用户与月度配额 JSON（GB，0 表示不限量）' \
-        --normalize normalize_monthly_quotas
-    params_declare QUOTA_TOKEN_OVERRIDES --when params_when_quota_enabled --type json_object \
-        --label '可选 Token 覆盖 JSON（仅写要覆盖的用户）' --default '{}'
-    params_declare QUOTA_START_DATE --when params_when_quota_enabled \
-        --label 'VPS 开通日期 YYYY-MM-DD（配额周期起点，留空用今天）' \
-        --check validate_quota_start_date
-    params_declare ALLOWED_TOKENS --when params_when_subscription_enabled --type json_object \
-        --label '订阅用户 Token 字典 {"用户":"token"}（启用配额时作为种子 Token）' \
-        --normalize params_normalize_allowed_tokens
-
-    params_declare WORKER_BACKUP_DOMAIN \
-        --label '独立 Worker 兜底节点域名（留空不部署；需在节点所属 Zone 下）' \
-        --normalize normalize_domain --check validate_domain
-    params_declare WORKER_BACKUP_PLACEMENT \
-        --label '兜底 Worker Placement：off（默认）或 aws:ap-east-1' --default off \
-        --check params_check_backup_placement
-
-    params_declare VPS_PUBLIC_IPV4 \
-        --label '本机公网 IPv4（留空则在安装阶段自动探测）' \
-        --check validate_ipv4
-    params_declare TCP_ACCELERATION \
-        --label 'TCP 加速：skyline（默认）或 bbrv3' --default skyline \
-        --normalize normalize_tcp_acceleration
-    params_declare REBOOT_SCHEDULE_MODE \
-        --label '定时重启：1=每天 04:00，2=自定义小时，3=不配置' --default 1 \
-        --check params_check_reboot_mode
-    params_declare REBOOT_HOUR \
-        --label '自定义重启小时（0-23，仅模式 2 需要）' --check params_check_hour
-}
-
-params_cross_cloudflare_streamup() {
-    if [[ "${SUBSCRIPTION_MODE}" != "link" ]]; then
-        [[ "${SUBSCRIPTION_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
-            || params_error 'Worker 订阅域名必须与节点域名不同，避免 Worker 子请求递归'
-        if [[ "${ENABLE_MONTHLY_QUOTA}" != "1" && -z "${ALLOWED_TOKENS}" ]]; then
-            params_error '未启用月度配额时必须提供 ALLOWED_TOKENS（{"用户":"token"}）'
-        fi
-    fi
-    if [[ -n "${WORKER_BACKUP_DOMAIN}" ]]; then
-        [[ "${WORKER_BACKUP_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
-            || params_error '兜底 Worker 必须使用独立域名'
-        [[ "${WORKER_BACKUP_DOMAIN}" != "${SUBSCRIPTION_DOMAIN}" ]] \
-            || params_error '兜底 Worker 域名不能与订阅域名相同'
-    fi
-    if [[ "${REBOOT_SCHEDULE_MODE}" == "2" && -z "${REBOOT_HOUR}" ]]; then
-        params_error 'REBOOT_SCHEDULE_MODE=2 时必须提供 REBOOT_HOUR（0-23）'
-    fi
-}
-
-apply_install_inputs() {
     choose_google_egress_mode
+
+    info "Cloudflare 数据面采用单域名架构；部署订阅时另用独立域名绑定 Worker。"
+    info "流量说明：代理数据实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是可用代理载荷的主要上限，但协议开销及 Cloudflare 服务规则会进一步约束；双向计费请按服务商口径折算。"
+    info "节点域名提示：使用 Cloudflare Active Zone 下未占用的一级子域名，例如 node.example.com；不要提前创建 DNS 记录。"
+    cloudflare_collect_api_token
+    collect_cloudflare_node_domain
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
-    # 节点域名必须在 Cloudflare Active Zone 下且为一级子域名（需要 API，校验失败即中止）。
-    cloudflare_validate_node_domain_input "${VLESS_CDN_DOMAIN}" \
-        || die "${CLOUDFLARE_NODE_DOMAIN_INPUT_ERROR:-CDN 节点域名无效}"
+
+    info "Cloudflare 模式从官方 IPv4 CIDR 轮换抽样，并使用三网 Globalping eyeball 探针预筛。"
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
-    if [[ "${SUBSCRIPTION_MODE}" == "link" ]]; then
+
+    XHTTP_PATH=$(normalize_xhttp_path "${XHTTP_PATH:-}")
+    validate_xhttp_path "${XHTTP_PATH}" || die "XHTTP_PATH 无效"
+
+    XRAY_XHTTP_LOOPBACK_PORT=${XRAY_XHTTP_LOOPBACK_PORT:-${DEFAULT_XRAY_XHTTP_LOOPBACK_PORT}}
+    validate_loopback_port "${XRAY_XHTTP_LOOPBACK_PORT}" || die "XHTTP 本机端口无效"
+
+    ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
+    [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "Origin header 密钥无效"
+
+    choose_subscription_mode
+    if subscription_enabled; then
+        collect_cloudflare_worker_inputs
+        choose_subscription_download_name
+        choose_monthly_quota 1
+        quota_enabled || ensure_allowed_tokens 1
+        choose_worker_aggregation_config
+        cloudflare_build_subscription_worker
+    else
         SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
+        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
-        quota_apply_settings 0
-    else
-        quota_apply_settings "${ENABLE_MONTHLY_QUOTA}"
-        quota_enabled || apply_allowed_tokens_params
-        WORKER_SOURCE_SECRET=${WORKER_SOURCE_SECRET:-$(generate_secret)}
-        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
-            "${WORKER_AGGREGATION_CONFIG:-}") \
-            || die 'Worker 聚合配置无效；请参考 worker-src/config.example.json'
-        apply_worker_allowed_tokens_override "${WORKER_AGGREGATION_CONFIG}"
-        WORKER_AGGREGATION_CONFIG=$(jq -c 'del(.allowedTokens)' <<<"${WORKER_AGGREGATION_CONFIG}")
-        cloudflare_build_subscription_worker
+        choose_monthly_quota 0
     fi
-    if [[ -n "${WORKER_BACKUP_DOMAIN}" ]]; then
-        WORKER_BACKUP_NAME=${WORKER_BACKUP_NAME:-"easyall-backup-$(printf '%s' "${WORKER_BACKUP_DOMAIN}" | sha256sum | cut -c1-10)"}
-        WORKER_BACKUP_UUID=${WORKER_BACKUP_UUID:-$(generate_user_uuid)}
-        WORKER_BACKUP_PATH=${WORKER_BACKUP_PATH:-"/vless-$(openssl rand -hex 12)"}
-        WORKER_BACKUP_PLACEMENT=${WORKER_BACKUP_PLACEMENT:-off}
-    fi
-    WORKER_BACKUP_IPS=${WORKER_BACKUP_IPS:-[]}
+    collect_worker_backup_inputs
 }
 
 load_state() {
@@ -2114,6 +1819,7 @@ cleanup_partial_install() {
 }
 
 install_all() {
+    [[ -t 0 ]] || die "安装必须在交互终端中执行"
     CDN_PROVIDER="cloudflare"
     BACKEND="xray"
     PROTOCOL="cloudflare-streamup"
@@ -2124,8 +1830,6 @@ install_all() {
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
     install_failure_begin cloudflare-streamup
-    # 参数预检先于任何系统修改（只会安装 jq/ca-certificates）。
-    install_params_preflight cloudflare-streamup
     check_install_conflicts
     install_progress_begin cloudflare-streamup
     install_progress_stage packages
@@ -2137,7 +1841,7 @@ install_all() {
     configure_tcp_acceleration
     configure_daily_reboot
     install_progress_stage inputs
-    apply_install_inputs
+    collect_install_inputs
     cloudflare_prepare_origin
     install_progress_stage services
     configure_ufw

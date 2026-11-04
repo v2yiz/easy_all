@@ -128,7 +128,7 @@ normalize_allowed_tokens() {
 apply_allowed_tokens_params() {
     local raw=${ALLOWED_TOKENS:-} normalized
     [[ -n "${raw}" ]] \
-        || die "缺少 ALLOWED_TOKENS：需要 {\"用户\":\"token\"} JSON（可用 --print-params 查看模板）"
+        || die "缺少 ALLOWED_TOKENS：需要 {\"用户\":\"token\"} JSON"
     normalized=$(normalize_allowed_tokens "${raw}") \
         || die "ALLOWED_TOKENS 无效；请使用 JSON 对象，例如 {\"owner\":\"$(generate_secret)\"}"
     ALLOWED_TOKENS=${normalized}

@@ -68,31 +68,15 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 
 ## 3. 安装参数示例
 
-复制下面示例、改域名与 Token 后粘贴成 `params.json`，再校验安装：
+运行安装命令后选择模式 `3`（Bunny CDN），按提示输入：
+1. `Cloudflare 根 Zone`（如 `example.com`）
+2. `源站域名`（默认 `origin.<Zone>`）与 `CDN 节点/订阅域名`（默认 `cdn.<Zone>`）
+3. `Bunny Account API Key` 与 `Cloudflare DNS Token`
+4. Pull Zone 月流量限制（GB，默认 `500`）
 
 ```bash
-cat > params.json <<'JSON'
-{ ...粘贴改好的示例... }
-JSON
-sudo easy_all params.json --check-params
-sudo easy_all params.json
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) install
 ```
-
-```json
-{
-  "schema_version": 1,
-  "mode": "bunny-ws",
-  "params": {
-    "CLOUDFLARE_ZONE": "example.com",
-    "BUNNY_API_KEY": "<Bunny Account API Key>",
-    "CLOUDFLARE_DNS_TOKEN": "<Cloudflare DNS Token>"
-  }
-}
-```
-
-`ORIGIN_DOMAIN`、`CDN_DOMAIN`、`BUNNY_BANDWIDTH_GB` 可省略（默认 `origin.<Zone>`、`cdn.<Zone>`、
-`500`）；两个 Token 必填。节点名与下载名固定 `EASY_ALL`。安装成功会自动删除参数文件。
-所有模式的完整示例见 [params-examples.md](params-examples.md)。
 
 ### 安装器自动完成的编排工作
 1. **云端联动**：

@@ -18,14 +18,13 @@ if [[ "${EASY_ALL_LOG_LOADED:-0}" != "1" ]]; then
     # 这里只是留存一份给退出时的统一诊断）。
     EASY_ALL_LAST_ERROR=""
     EASY_ALL_LAST_ERROR_SOURCE=""
-    # die 的调用点（文件:行）：跳过 die 的实现文件与参数层包装，指向真正出错的业务代码。
-    # 直接用 BASH_SOURCE[1] 会把 params_die 内部的 die 调用当成失败位置。
+    # die 的调用点（文件:行）：跳过 die 的实现文件，指向真正出错的业务代码。
     easy_all_error_source() {
         local index=1 source
         while (( index < ${#BASH_SOURCE[@]} )); do
             source=${BASH_SOURCE[index]}
             case "${source}" in
-            *lib/log.sh | *lib/params.sh)
+            *lib/log.sh)
                 index=$((index + 1))
                 continue
                 ;;

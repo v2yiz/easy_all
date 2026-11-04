@@ -163,10 +163,8 @@ CLOUDFLARE_ZONE_ID="zone-123456"
 VPS_PUBLIC_IPV4="198.51.100.10"
 DIRECT_DOMAIN="direct.example.com"
 CF_NODE_DOMAIN="cf-node.example.com"
-CF_ORIGIN_DOMAIN="cf-origin.example.com"
 SUBSCRIPTION_DOMAIN="sub.example.com"
 VLESS_CDN_DOMAIN="${CF_NODE_DOMAIN}"
-XHTTP_ORIGIN_DOMAIN="${CF_ORIGIN_DOMAIN}"
 SUB_DOWNLOAD_NAME="EASYALL"
 OWNER_TOKEN="token-init-12345"
 ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
@@ -184,21 +182,21 @@ SUBSCRIPTION_MODE="deploy"
 TCP_ACCELERATION="bbr"
 save_state
 
-# 10a) cloudflare_origin_certificate_hosts 输出恰含 3 个名字且包含 CF_NODE_DOMAIN（节点名在前）
+# 10a) cloudflare_origin_certificate_hosts 输出恰含 2 个名字且包含 CF_NODE_DOMAIN（节点名在前）
 hosts_json=$(cloudflare_origin_certificate_hosts)
-assert_equal "10a: cloudflare_origin_certificate_hosts count is 3" \
-    "3" "$(jq 'length' <<<"${hosts_json}")"
-assert_equal "10a: cloudflare_origin_certificate_hosts order is [CF_NODE_DOMAIN, CF_ORIGIN_DOMAIN, SUBSCRIPTION_DOMAIN]" \
-    "$(jq -cn --arg n "${CF_NODE_DOMAIN}" --arg o "${CF_ORIGIN_DOMAIN}" --arg s "${SUBSCRIPTION_DOMAIN}" '[$n,$o,$s]')" \
+assert_equal "10a: cloudflare_origin_certificate_hosts count is 2" \
+    "2" "$(jq 'length' <<<"${hosts_json}")"
+assert_equal "10a: cloudflare_origin_certificate_hosts order is [CF_NODE_DOMAIN, SUBSCRIPTION_DOMAIN]" \
+    "$(jq -cn --arg n "${CF_NODE_DOMAIN}" --arg s "${SUBSCRIPTION_DOMAIN}" '[$n,$s]')" \
     "$(jq -c '.' <<<"${hosts_json}")"
 assert_contains "10a: cloudflare_origin_certificate_hosts includes CF_NODE_DOMAIN" \
     "${hosts_json}" "\"${CF_NODE_DOMAIN}\""
 
-# 10b & 10c) combined_render_nginx_config 输出中 XHTTP 块 server_name 同时含 CF_NODE_DOMAIN 与 CF_ORIGIN_DOMAIN，
+# 10b & 10c) combined_render_nginx_config 输出中 XHTTP 块 server_name 含 CF_NODE_DOMAIN，
 # 且包含 ssl_reject_handshake on、grpc_pass、订阅 server 块；Xray 配置 xhttpSettings.host 等于 CF_NODE_DOMAIN
 rendered_modern=$(combined_render_nginx_config $'\n    http2 on;' "")
-assert_contains "10b: XHTTP block server_name has both CF_NODE_DOMAIN and CF_ORIGIN_DOMAIN" \
-    "${rendered_modern}" "server_name ${CF_NODE_DOMAIN} ${CF_ORIGIN_DOMAIN};"
+assert_contains "10b: XHTTP block server_name has CF_NODE_DOMAIN" \
+    "${rendered_modern}" "server_name ${CF_NODE_DOMAIN};"
 assert_contains "10c: rendered nginx config has ssl_reject_handshake on" \
     "${rendered_modern}" "ssl_reject_handshake on;"
 assert_contains "10c: rendered nginx config has grpc_pass with XRAY_XHTTP_LOOPBACK_PORT" \
@@ -812,14 +810,10 @@ assert_block_line "ua-negotiation: mihomo format routes to yaml file" \
     combined_sync_allowed_tokens
 )
 
-# 16) 安装期零交互：参数声明里不得出现任何提示函数（交互安装已移除）
+# 16) 安装入口交互收集参数
 install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
-assert_not_contains "token-input: install inputs never prompt" \
-    "${install_inputs_body}" "prompt_"
-assert_not_contains "token-input: install inputs never read stdin" \
-    "${install_inputs_body}" "read_bilingual"
-assert_contains "token-input: install inputs declare the token fields" \
-    "${install_inputs_body}" "params_declare OWNER_TOKEN"
+assert_contains "domain-input: prompts for zone" "${install_inputs_body}" "Cloudflare 根 Zone"
+assert_contains "domain-input: prompts for direct domain" "${install_inputs_body}" "直连节点域名"
 
 # 17) 安装阶段 Token 校验：非法值必须在改动云端资源前就被拒绝
 bad_install=$(
@@ -831,10 +825,9 @@ assert_contains "token-validate: short env token rejected before install" \
     "${bad_install}" "订阅 Token 无效"
 assert_not_contains "token-validate: rejection mentions auto-generate fallback" \
     "${bad_install}" "unbound variable"
-# 安装入口必须真的调用该校验（否则非法 Token 仍会一路跑到签发/写配置阶段）
-apply_inputs_body=$(awk '/^apply_install_inputs\(\)/,/^}/' "${PROFILE}")
+# 安装入口必须真的调用该校验
 assert_contains "token-validate: install inputs call the validator" \
-    "${apply_inputs_body}" "combined_validate_install_owner_token"
+    "${install_inputs_body}" "combined_validate_install_owner_token"
 (
     ALLOWED_TOKENS=""
     OWNER_TOKEN="custom-token-2026"
@@ -1079,67 +1072,6 @@ assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok
     [[ "${noproxy_found}" == "1" ]] \
         || fail "curl-args: local TLS probe must pass --noproxy '*'"
 ) || fail "curl-args: --noproxy assertion failed"
-
-# 28) 安装参数模板：combined 的声明必须能生成合法模板，必填字段留空
-template_json=$(
-    params_template_begin combined
-    collect_install_inputs >/dev/null 2>&1 || fail "template: declarations failed"
-    params_finish 2>/dev/null
-) || fail "template: combined template generation failed"
-assert_equal "template: mode" "combined" "$(jq -r '.mode' <<<"${template_json}")"
-assert_equal "template: required field empty" "" \
-    "$(jq -r '.params.CF_ZONE' <<<"${template_json}")"
-assert_equal "template: download name default" "EASY_ALL" \
-    "$(jq -r '.params.SUB_DOWNLOAD_NAME' <<<"${template_json}")"
-for key in CF_ZONE CLOUDFLARE_API_TOKEN GLOBALPING_TOKEN \
-    DIRECT_DOMAIN SUBSCRIPTION_DOMAIN ALLOWED_TOKENS; do
-    jq -e --arg k "${key}" '.params | has($k)' <<<"${template_json}" >/dev/null \
-        || fail "template: missing field ${key}"
-done
-
-# 29) 完整参数预检：真实声明 + 默认值 + 跨字段校验 + 赋值一次跑通
-cat >"${TMP_DIR}/params-ok.json" <<'JSON'
-{
-  "schema_version": 1,
-  "mode": "combined",
-  "params": {
-    "CF_ZONE": "example.com",
-    "CLOUDFLARE_API_TOKEN": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "GLOBALPING_TOKEN": "globalping-token-value",
-    "VPS_PUBLIC_IPV4": "203.0.113.10",
-    "ALLOWED_TOKENS": {"owner": "abcdefgh-1234"}
-  }
-}
-JSON
-chmod 600 "${TMP_DIR}/params-ok.json"
-preflight_out=$(
-    params_begin combined "${TMP_DIR}/params-ok.json"
-    collect_install_inputs
-    params_finish 2>/dev/null
-    printf '%s|%s|%s|%s|%s\n' \
-        "${CF_ZONE}" "${DIRECT_DOMAIN}" "${CF_ORIGIN_DOMAIN}" "${XHTTP_PATH}" "${REBOOT_SCHEDULE_MODE}"
-) || fail "preflight: valid combined params rejected"
-assert_equal "preflight: defaults derived from zone" \
-    "example.com|node.example.com|cf-origin.example.com" \
-    "$(cut -d'|' -f1-3 <<<"${preflight_out}")"
-assert_contains "preflight: xhttp path generated" "${preflight_out}" "/xhttp-"
-assert_equal "preflight: reboot default" "1" "$(cut -d'|' -f5 <<<"${preflight_out}")"
-
-# 30) 预检必须聚合错误：域名重复、域名不在 Zone 下、两个 Token 同时提供
-jq '.params.CF_NODE_DOMAIN = "node.example.com"
-    | .params.SUBSCRIPTION_DOMAIN = "elsewhere.invalid"
-    | .params.OWNER_TOKEN = "abcdefgh-1234"' \
-    "${TMP_DIR}/params-ok.json" >"${TMP_DIR}/params-bad.json"
-chmod 600 "${TMP_DIR}/params-bad.json"
-preflight_bad=$(
-    exec 2>&1
-    params_begin combined "${TMP_DIR}/params-bad.json"
-    collect_install_inputs
-    params_finish
-) && fail "preflight: invalid combined params must be rejected"
-assert_contains "preflight: duplicate domains" "${preflight_bad}" "四个域名必须互不相同"
-assert_contains "preflight: domain outside zone" "${preflight_bad}" "域名必须属于 example.com"
-assert_contains "preflight: mutually exclusive tokens" "${preflight_bad}" "不能同时提供"
 
 printf 'ok - combined render\n'
 

@@ -29,9 +29,6 @@ readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
 
-# 安装参数层：launcher 需要先读参数文件里的 mode 才能选中 Profile。
-# shellcheck source=lib/params.sh
-source "${EASY_ALL_ROOT}/lib/params.sh"
 
 launcher_die() {
     printf '\033[31m%s\033[0m\n' "$*" >&2
@@ -81,13 +78,7 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  <参数文件>       按参数文件安装（最简形式；安装成功后自动删除该文件）
-  install <参数文件>
-                   同上，也可写 install --params <参数文件>
-  <参数文件> --check-params
-                   只校验参数，不修改本机
-  install --print-params --mode <模式>
-                   查看全部字段（JSON 到 stdout；安装用上面的完整示例即可）
+  install          交互选择 Reality、Cloudflare CDN、Bunny CDN 或组合模式
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -112,12 +103,6 @@ launcher_usage() {
   cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
   uninstall        卸载当前模式；可追加 --purge-cloud 清理托管的远端资源
   help             显示帮助
-
-安装模式（--mode）：
-  1 | reality              直连 Reality
-  2 | cloudflare-streamup  Cloudflare CDN 精选 IP（纯 XHTTP）
-  3 | bunny-ws             Bunny CDN（VLESS WS/TLS）
-  5 | combined             组合：直连 Reality + Cloudflare
 
 一台 VPS 只能安装一种模式。
 EOF
@@ -159,13 +144,13 @@ launcher_mode_alias() {
     1 | reality | Reality | 直连) printf 'reality' ;;
     2 | cloudflare | Cloudflare | cloudflare-streamup | cf | CF | xhttp) printf 'cloudflare-streamup' ;;
     3 | bunny | Bunny | bunny-ws) printf 'bunny-ws' ;;
-    5 | combined | Combined | 组合) printf 'combined' ;;
+    4 | 5 | combined | Combined | 组合) printf 'combined' ;;
     *) return 1 ;;
     esac
 }
 
 launcher_mode_usage() {
-    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined（也接受 直连/组合/cf 等写法）'
+    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined（也接受 4|combined/直连/组合/cf 等写法）'
 }
 
 # 一次读入 marker 并同时给出「模式/阶段/身份」：模式与身份必须来自同一份快照，
@@ -269,178 +254,22 @@ cleanup_partial_install_command() {
     success "本机残留已清理完成；如安装期已创建云端资源，需要时用 ${bootstrap} purge-cloudflare 清理"
 }
 
-show_install_guide() {
-    cat >&2 <<'EOF'
-安装流程概览：
-easy_all install
-├─ [1 默认] 直连 Reality
-│  ├─ 适用场景：直连效果良好，且 VPS 公网 IP 未被封锁
-│  ├─ 系统检查 → 依赖/TCP 加速（默认 Skyline Speeder）/重启策略 → 全局禁用 IPv6
-│  ├─ IPv4 连接地址（默认自动探测公网 IPv4）→ SNI → 订阅端口
-│  ├─ 选择订阅输出（默认不部署订阅）
-│  │  ├─ 1 仅节点：不收集订阅服务参数
-│  │  ├─ 2 本机订阅：Cloudflare 一级子域名、Origin CA、文件名、Token/配额
-│  │  └─ 3 Worker 聚合：公开订阅域名、私有节点源域名、Worker 名称、
-│  │     可选聚合 JSON（另外两台节点）、Token/配额
-│  ├─ 下载 Xray → UFW（8443 仅允许 Cloudflare 回源）→ 安装并验收 Xray
-│  └─ 应用已选订阅输出 → 保存最终状态 → 注册命令/配额任务
-├─ [2] Cloudflare CDN 精选 IP - 纯 XHTTP stream-up（6 个 IPv4）
-│  ├─ 适用场景：直连效果不佳、VPS 公网 IP 已被封，或明确追求 Cloudflare CDN 纯 XHTTP
-│  ├─ 前提条件：域名需已接入 Cloudflare 完整托管 Zone
-│  ├─ 流量口径：实时回源；VPS 仅计出站时，月度出站额度通常是代理载荷的主要上限（并非严格等值）
-│  ├─ 入口 IP 族：固定 IPv4，输出 6 个三网精选节点
-│  ├─ VPS、Xray 与客户端统一固定 IPv4
-│  ├─ 采用 Xray 服务端后端，运行纯 VLESS XHTTP stream-up 极速流模式
-│  ├─ 全网综合优选：Globalping 三网验证 6 个 IPv4
-│  ├─ 6 个 XHTTP 节点使用 AUTO 组；可选纯 Worker 节点使用 🇭🇰CF 自动测速组
-│  ├─ 订阅服务：Worker 为唯一公开聚合入口，Nginx 只提供私有动态节点源
-│  ├─ Worker 名称可指定（默认 easyall），订阅域名必须与节点域名不同
-│  ├─ 可选输入不含 vpsSubUrl 的 Worker 聚合 JSON；本机注入源 URL 后构建 Worker
-│  ├─ 订阅输出：一条订阅链接，按客户端自动下发 Mihomo YAML 或 Base64（`flag=` 可强制）
-│  └─ 零损失就地平滑安装/迁移
-├─ [3] Bunny CDN（VLESS WS/TLS + Cloudflare DNS-only CNAME + 保留 Nginx）
-│  ├─ 前提条件：Cloudflare 根 Zone、两个不同域名、Bunny Account API Key 与 Zone DNS Token
-│  ├─ DNS：origin 为 DNS-only A、cdn 为 DNS-only CNAME；不创建 Bunny DNS Zone/NS 委派
-│  ├─ 数据面：Bunny 终止客户端 TLS，Nginx 仅接受官方回源 IPv4 和随机回源头
-│  └─ 输出：一个自动调度域名节点及一个 owner 订阅
-└─ [5] 组合：直连 Reality + Cloudflare（一次部署两个入口）
-   ├─ 入口：直连 VLESS Reality（VPS 8443）、Cloudflare XHTTP（6 个优选 IPv4）
-   ├─ 前提条件：一个 Cloudflare Zone 下四个子域名（直连/CF 节点/CF 回源/订阅）
-   ├─ 需要：Cloudflare DNS Token、Globalping Token；云安全组放行 443 与 8443
-   ├─ 网络：443 只允许 Cloudflare 官方回源网段；SSH 端口保持现状不改
-   ├─ 订阅：单个 owner Token，两类节点平铺进 AUTO 测速组；不启用用户配额
-   └─ apply 只重建本机配置与订阅；apply-cloud 才写 DNS 并签发证书
-订阅输出：只有当前服务器时推荐本机订阅；多台直连节点需要统一下发时选择 Worker 订阅聚合
-（在其中一台部署，其余节点写入聚合 JSON）；不需要订阅时保持默认的仅节点。
-Worker 聚合会额外占用两个 Cloudflare 一级子域名：公开订阅域名绑定 Worker，私有节点源域名由
-Cloudflare 代理回本机 8443 且只允许 Cloudflare 回源，Token 与配额仍由本机 Nginx 判定。
-TCP 加速：所有链路默认直接安装并启用 Skyline Speeder（Linux 6.12+ 内核；旧内核会自动安装兼容内核，安装结束后提示重启一次，开机自动启用）。
-
-安装方式（唯一路径，不再提供交互安装）：
-  1. 从 docs/params-examples.md 复制对应模式的完整示例，改域名与 Token 后存成 params.json
-  2. 先校验：easy_all params.json --check-params（也可用 install --print-params 查全部字段）
-  3. 校验通过后执行：sudo easy_all params.json
-参数文件包含 API Token：安装成功后会自动删除；中途失败会保留，排查后请自行删除。
-EOF
-}
-
-install_usage() {
-    cat <<'EOF'
-用法: easy_all <参数文件>                     安装（最简形式；安装成功后会自动删除该文件）
-      easy_all install <参数文件>               同上
-      easy_all <参数文件> --check-params        只校验参数，不修改本机
-      easy_all install --print-params --mode <模式>   查看全部字段（JSON 到 stdout）
-
-  也接受 --params <参数文件> 写法；参数文件用 - 表示从标准输入读取，此时需配合 --mode。
-  --mode 可用：1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined
-安装参数必须一次提供完整；安装过程中不会再提问。
-EOF
-}
-
-# 安装入口：参数文件 → 模式 → Profile。安装期不再提供交互选项。
-install_command() {
-    local params_file="" mode="" print_params=0 check_only=0 module=""
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-        --params)
-            (($# >= 2)) || launcher_die "用法：easy_all install --params <参数文件|->"
-            params_file=$2
-            shift 2
-            ;;
-        --check-params)
-            # 既支持 "参数文件 --check-params"，也支持 "--check-params 参数文件"。
-            check_only=1
-            if [[ $# -ge 2 && "${2}" != -* ]]; then
-                params_file=$2
-                shift 2
-            else
-                shift
-            fi
-            ;;
-        --print-params)
-            print_params=1
-            shift
-            ;;
-        --mode)
-            (($# >= 2)) || launcher_die "用法：easy_all install --print-params --mode <模式>"
-            mode=$2
-            shift 2
-            ;;
-        -h | --help)
-            install_usage
-            return 0
-            ;;
-        -*)
-            install_usage >&2
-            launcher_die "install 不支持的选项：$1"
-            ;;
-        *)
-            [[ -z "${params_file}" ]] \
-                || launcher_die "只能指定一个参数文件（已给出 ${params_file}，又出现 $1）"
-            params_file=$1
-            shift
-            ;;
-        esac
-    done
-
-    if ((print_params == 1)); then
-        [[ -n "${mode}" ]] \
-            || launcher_die "--print-params 需要配合 --mode <模式>；可用写法：$(launcher_mode_usage)"
-        mode=$(launcher_mode_alias "${mode}") \
-            || launcher_die "不支持的安装模式：${mode}；可用写法：$(launcher_mode_usage)"
-        EASY_ALL_PARAMS_PRINT=1
-        export EASY_ALL_SELECTED_MODE="${mode}"
-        module=$(profile_file "${mode}")
-        # shellcheck source=/dev/null
-        source "${module}"
-        register_easy_all_command() { unified_register_easy_all_command; }
-        install_params_preflight "${mode}"
-        return 0
-    fi
-
-    [[ -n "${params_file}" ]] || {
-        install_usage >&2
-        show_install_guide
-        launcher_die "请提供参数文件：easy_all <参数文件>（示例见 docs/params-examples.md；全部字段可查 easy_all install --print-params --mode <模式>）"
-    }
-    if ((check_only == 0)); then
-        [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
-    else
-        # 只校验：安装成功后自动删除参数文件的行为不适用于这里。
-        export EASY_ALL_PARAMS_KEEP=1
-    fi
-    if [[ -n "${mode}" ]]; then
-        mode=$(launcher_mode_alias "${mode}") \
-            || launcher_die "不支持的安装模式：${mode}；可用写法：$(launcher_mode_usage)"
-    fi
-    if [[ "${params_file}" == "-" ]]; then
-        # 标准输入只能读一次：模式必须显式给出，否则无法在读取之前选中 Profile。
-        [[ -n "${mode}" ]] \
-            || launcher_die "使用 --params - / --check-params - 时必须同时用 --mode <模式>；可用写法：$(launcher_mode_usage)"
-    else
-        # 参数层需要 jq（方案 A：校验前只补装 jq 与 ca-certificates）。
-        params_install_dependencies
-        local file_mode
-        file_mode=$(params_peek_mode "${params_file}") \
-            || launcher_die "参数文件无效：${params_file}"
-        if [[ -n "${mode}" && "${mode}" != "${file_mode}" ]]; then
-            launcher_die "参数文件 mode=${file_mode} 与 --mode ${mode} 不一致"
-        fi
-        mode=${mode:-${file_mode}}
-    fi
-    detect_installed_mode >/dev/null
-    module=$(profile_file "${mode}")
-    export EASY_ALL_SELECTED_MODE="${mode}"
-    export EASY_ALL_PARAMS_FILE="${params_file}"
-    # shellcheck source=/dev/null
-    source "${module}"
-    register_easy_all_command() { unified_register_easy_all_command; }
-    if ((check_only == 1)); then
-        install_params_preflight "${mode}"
-        printf '参数校验通过：%s（mode=%s）；未修改本机\n' "${params_file}" "${mode}" >&2
-        return 0
-    fi
-    dispatch_profile_command "${mode}" install
+choose_install_mode() {
+    local choice
+    [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
+    printf '请选择安装模式：\n' >&2
+    printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
+    printf '  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）\n' >&2
+    printf '  3. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）\n' >&2
+    printf '  4. 组合：直连 Reality + Cloudflare（一次部署两个入口）\n' >&2
+    launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
+    case "${choice:-1}" in
+    1) printf 'reality\n' ;;
+    2) printf 'cloudflare-streamup\n' ;;
+    3) printf 'bunny-ws\n' ;;
+    4 | 5) printf 'combined\n' ;;
+    *) launcher_die "无效选择：${choice}" ;;
+    esac
 }
 
 state_value() {
@@ -681,17 +510,6 @@ main() {
     local command=${1:-install} mode="" module state_version=""
     shift || true
 
-    # easy_all <参数文件>：最简安装形式（bootstrap.sh 会把参数原样透传过来）。
-    case "${command}" in
-    - | *.json)
-        install_command "${command}" "$@"
-        return
-        ;;
-    esac
-    if [[ -f "${command}" && "${command}" != -* ]]; then
-        launcher_die "参数文件需要 .json 扩展名：easy_all ${command}.json（或 easy_all install --params ${command}）"
-    fi
-
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
         launcher_usage
         return
@@ -719,19 +537,25 @@ main() {
         fi
     fi
     if [[ "${command}" == "install" ]]; then
-        install_command "$@"
-        return
-    fi
-    if [[ "${command}" == "uninstall" ]]; then
+        (($# == 0)) || launcher_die "install 不接受参数，请在交互菜单中选择"
+        [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
         mode=$(detect_installed_mode)
-        if [[ -z "${mode}" && "$#" == 1 && "${1:-}" == "--purge-cloud" \
-            && -f "${EASY_ALL_BUNNY_JOURNAL}" ]]; then
-            mode="bunny-ws"
+        if [[ -n "${mode}" ]]; then
+            launcher_die "已安装 ${mode}；一台 VPS 只允许一种模式。如需重新安装请先执行 easy_all uninstall"
         fi
+        mode=$(choose_install_mode)
     else
-        mode=$(detect_installed_mode)
+        if [[ "${command}" == "uninstall" ]]; then
+            mode=$(detect_installed_mode)
+            if [[ -z "${mode}" && "$#" == 1 && "${1:-}" == "--purge-cloud" \
+                && -f "${EASY_ALL_BUNNY_JOURNAL}" ]]; then
+                mode="bunny-ws"
+            fi
+        else
+            mode=$(detect_installed_mode)
+        fi
+        [[ -n "${mode}" ]] || launcher_die "easy_all 尚未安装"
     fi
-    [[ -n "${mode}" ]] || launcher_die "easy_all 尚未安装"
 
     module=$(profile_file "${mode}")
     export EASY_ALL_SELECTED_MODE="${mode}"
