@@ -306,7 +306,7 @@ apply_managed_ufw_tcp_ports() {
 
 # UFW is ordered. An earlier deny can make an existing allow ineffective.
 ufw_ssh_port_is_allowed() {
-    LC_ALL=C ufw status numbered 2>/dev/null | awk -v port="${1:-${EASY_ALL_ADDITIONAL_SSH_PORT}}" '
+    LC_ALL=C ufw status numbered 2>/dev/null | awk -v port="${1:-${SSH_PORTS:-22}}" '
         /\(v6\)/ {next}
         {
             if (decided) next
@@ -398,7 +398,7 @@ apply_ssh_ufw_policy() {
     desired_ports=$(normalize_ufw_tcp_ports "$1") || die "SSH UFW 端口列表无效"
     # Existing profiles pass business ports too; only the SSH subset needs the
     # ordered, globally reachable ALLOW check. Bunny passes its detected set.
-    ssh_ports=$(normalize_ufw_tcp_ports "${2:-${EASY_ALL_ADDITIONAL_SSH_PORT}}") || die "SSH UFW 校验端口列表无效"
+    ssh_ports=$(normalize_ufw_tcp_ports "${2:-${SSH_PORTS:-22}}") || die "SSH UFW 校验端口列表无效"
     verify_ssh_ufw_no_unmanaged_block "${ssh_ports}"
     apply_managed_ufw_tcp_ports "${desired_ports}" "${ssh_ports}"
 }

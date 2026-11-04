@@ -505,7 +505,7 @@ xhttp_configure_ufw() {
         apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends ufw
     fi
     ensure_ssh_boot_service
-    SSH_PORTS="${EASY_ALL_ADDITIONAL_SSH_PORT}"
+    detect_ssh_ports strict
     configure_ufw_ip_family
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null

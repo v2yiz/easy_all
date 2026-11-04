@@ -141,7 +141,7 @@ restore_platform_security_state() {
     fi
     if ((ssh_restored == 0)); then
         warn "SSH 监听未收敛（仅 IPv4）：期望 [$(tr '\n' ' ' <<<"${expected_listeners}")]，实际 [$(ssh_actual_listeners 2>/dev/null | tr '\n' ' ')]"
-        warn "SSH 配置、实际监听或 deny22 撤销检查失败；保留当前 65533 配置、防火墙、状态与备份，卸载/回滚未完成"
+        warn "SSH 配置、实际监听或 deny22 撤销检查失败；保留当前 SSH 配置、防火墙、状态与备份，卸载/回滚未完成"
         restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${current_ssh_config}" "${current_ssh_had}" \
             || warn "尝试保留恢复前的 SSH 配置或重载失败，请立即通过 Console 检查"
         return 1
@@ -626,8 +626,12 @@ ensure_ssh_fail2ban() {
 
     install_fail2ban_dependencies
     command -v ufw >/dev/null 2>&1 || die "未找到 UFW；无法启用 Fail2ban SSH 防护"
-    SSH_PORTS="${EASY_ALL_ADDITIONAL_SSH_PORT}"
-    ports_csv="${EASY_ALL_ADDITIONAL_SSH_PORT}"
+    if [[ -z "${SSH_PORTS:-}" ]]; then
+        detect_ssh_ports strict
+    fi
+    ports_csv=$(tr -s ' ' ',' <<<"${SSH_PORTS}")
+    ports_csv=${ports_csv#,}
+    ports_csv=${ports_csv%,}
     [[ -n "${ports_csv}" ]] || die "无法确定 Fail2ban 需要保护的 SSH 端口"
 
     install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CONFIG}")" \
@@ -736,7 +740,13 @@ ensure_ssh_boot_service() {
             || die "SSH 服务未设置为开机启动：${unit}"
         systemctl is-active --quiet "${unit}" \
             || die "SSH 服务未运行：${unit}"
-        ensure_additional_ssh_port "${sshd_bin}" "${unit}"
+        if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] \
+            && grep -Fq "Managed by easy_all" "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null; then
+            rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}"
+            if "${sshd_bin}" -t >/dev/null 2>&1; then
+                systemctl reload "${unit}" >/dev/null 2>&1 || true
+            fi
+        fi
         info "SSH 已设置开机启动并处于运行状态：${unit}"
         return 0
     done

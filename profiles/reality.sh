@@ -820,7 +820,7 @@ reality_cloudflare_configure_subscription_firewall() {
 configure_ufw() {
     local desired_ports
     ensure_ssh_boot_service
-    SSH_PORTS="${EASY_ALL_ADDITIONAL_SSH_PORT}"
+    detect_ssh_ports strict
     info "UFW 将放行 SSH 端口：${SSH_PORTS}"
     snapshot_ufw_state
     if ! command -v ufw >/dev/null 2>&1; then
