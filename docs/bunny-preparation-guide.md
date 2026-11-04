@@ -55,7 +55,7 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 > 为什么要填根 Zone？
 > 1. **Cloudflare API 规范**：Cloudflare API 操作 DNS 记录必须知道所在的 `zone_id`，而 `zone_id` 需通过账户托管的根域名反查。
 > 2. **证书联系邮箱**：ACME 客户端（`lego`）通过 Cloudflare DNS-01 签发源站证书时，将该根域名作为注册联系人邮箱后缀（`admin@<zone>`）。
-> 3. **智能默认前缀**：参数文件里只填 `CLOUDFLARE_ZONE`，`ORIGIN_DOMAIN`/`CDN_DOMAIN` 省略即按 `origin.<zone>`、`cdn.<zone>` 派生。
+> 3. **智能默认前缀**：输入 `CLOUDFLARE_ZONE` 后，源站与节点域名直接回车即可按 `origin.<zone>`、`cdn.<zone>` 派生。
 
 ### 2.4 Cloudflare API Token
 1. 进入 Cloudflare **My Profile → API Tokens → Create Token**，使用 **Create Custom Token**。

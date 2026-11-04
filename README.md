@@ -2,7 +2,7 @@
 
 当前源码版本：[2.5.0](CHANGELOG.md#250-更新说明2026-11-04)。
 
-`easy_all` 是专为全新 Debian 12/13 VPS 设计的单节点代理一键安装工具。通过一份 JSON 参数文件一次性完成配置，安装过程全自动免交互，统一打通 Xray、Nginx、订阅分发、UFW 防火墙、Fail2ban 以及 TCP 加速（默认自动启用 Skyline Speeder / BBR）。
+`easy_all` 是专为全新 Debian 12/13 VPS 设计的单节点代理一键安装工具。通过控制台交互菜单直观配置，统一打通 Xray、Nginx、订阅分发、UFW 防火墙、Fail2ban 以及 TCP 加速（默认自动启用 Skyline Speeder / BBR）。
 
 仅支持 IPv4。一台 VPS 只能选择安装一种模式，建议在无其他业务占用的纯净 VPS 上部署。
 
@@ -15,9 +15,7 @@
 | **1. 直连 Reality** | VPS IP 纯净、直连网络良好 | VLESS TCP Reality Vision（VPS `443` 或动态端口轮换） |
 | **2. Cloudflare CDN** | VPS 直连受阻、IP 被墙或需要防封 | VLESS XHTTP `stream-up` + 6 个 Cloudflare 优选 IPv4；可选独立 Worker 兜底 |
 | **3. Bunny CDN** | 追求多地区边缘与自动调度 | VLESS WS/TLS（Pull Zone 自动调度域名 + Nginx HTTPS 回源） |
-| **5. 组合模式** | 一台机器同时拥有直连与 CDN 节点 | **直连 Reality（VPS `8443`） + Cloudflare XHTTP（443 回源）**，统一订阅自动测速优选 |
-
-> **注**：原模式 4（Gcore CDN）已彻底移除；原模式 5 中的 Gcore 节点也已完全剥离，组合模式现专注于**直连 + Cloudflare**。
+| **4. 组合模式** | 一台机器同时拥有直连与 CDN 节点 | **直连 Reality（VPS `8443`） + Cloudflare XHTTP（443 回源）**，统一订阅自动测速优选 |
 
 ---
 
@@ -73,7 +71,7 @@ sudo easy_all status
 sudo easy_all subscription
 ```
 
-- 将 `easy_all subscription` 输出的订阅链接填入客户端（如 **Mihomo / Clash Verge Rev / Clash Nyanpasu / Box4 / 影** 等）。
+- 将 `easy_all subscription` 输出的订阅链接填入客户端（如 **Clash Verge Rev / Clash Mi / Bettbox / FlClash** 等）。
 - 订阅支持客户端自适应：同一条链接自动识别 UA 下发 Mihomo 规则集配置或通用 Base64。
 - 更多客户端配置、规则分流与导入故障排查详见 [客户端使用指南](docs/client-guide.md)。
 

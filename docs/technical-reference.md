@@ -49,7 +49,7 @@
   - 安装时自动配置 OpenSSH drop-in 配置将监听端口迁移至 TCP `65533`。
   - UFW 首位插入 `deny 22` 规则，优先于默认的 OpenSSH 放行规则。
   - Fail2ban 自动建立 `easy_all-ssh` jail 保护 `65533`。
-- **保持模式（模式 3 / 模式 5）**：
+- **保持模式（模式 3 / 模式 4 组合模式）**：
   - 保留原有 SSH 监听端口与配置不变，不配置 Fail2ban，仅按需放行业务端口。
 
 ### 2.2 回源白名单与防扫描
@@ -78,13 +78,13 @@
 
 ```text
 easy_all
-├── easy_all                     # CLI 统一管理入口与参数调度
+├── easy_all                     # CLI 统一管理入口与命令调度
 ├── runtime.manifest             # 运行时受管文件清单
 ├── profiles/
 │   ├── reality.sh               # 模式 1：直连 Reality 业务编排
 │   ├── xhttp-cloudflare-streamup.sh # 模式 2：Cloudflare CDN 业务编排
 │   ├── ws-bunny.sh              # 模式 3：Bunny CDN 业务编排
-│   └── combined.sh              # 模式 5：组合模式业务编排
+│   └── combined.sh              # 模式 4：组合模式业务编排
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
 │   ├── runtime-core.sh          # 跨模式通用运行时
