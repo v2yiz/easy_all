@@ -309,6 +309,7 @@ dns_ensure_record() {
 
 combined_ensure_dns() {
     cloudflare_collect_api_token
+    gcore_collect_api_token
     CLOUDFLARE_ZONE_ID=$(cloudflare_lookup_parent_zone "${CF_ZONE}") \
         || die "Cloudflare 中没有 active Zone：${CF_ZONE}"
     dns_ensure_record "${DIRECT_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false
@@ -324,10 +325,17 @@ combined_ensure_dns() {
 # DNS-01 需要把 _acme-challenge.<节点域名> 以 NS 委派给 Gcore（不需要整区委派）。
 # Cloudflare 的 NS 记录可用于子域委派，这里按目标 NS 幂等补齐，不删除已有记录。
 combined_ensure_gcore_challenge_delegation() {
-    local challenge="_acme-challenge.${GCORE_NODE_DOMAIN}" ns records existing payload
+    local challenge="_acme-challenge.${GCORE_NODE_DOMAIN}" ns quoted_ns records existing payload
     records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" NS "${challenge}")
     while IFS= read -r ns; do
         [[ -n "${ns}" ]] || continue
+        # 纵深防御：NS 值只接受合法主机名。上游一旦把告警/噪声混进 stdout（历史上 warn 写 stdout，
+        # 整段告警被当成 content 提交，Cloudflare 返回 400 / 9007），绝不能再拼进 NS 记录提交。
+        if ! validate_domain "${ns}"; then
+            printf -v quoted_ns '%q' "${ns}"
+            warn "跳过非法的 Gcore 挑战区 NS（不是合法主机名，不会提交给 Cloudflare）：${quoted_ns}" >&2
+            continue
+        fi
         existing=$(jq -r --arg ns "${ns}" '
             [.[] | select(((.content // "") | ascii_downcase) == ($ns | ascii_downcase))] | length' \
             <<<"${records}")
@@ -476,7 +484,7 @@ write_xray_config() {
         --arg path "${XHTTP_PATH}" \
         --arg ws_path "${WEBSOCKET_PATH}" \
         --arg secs "${CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS:-600}" \
-        --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES:-100}" \
+        --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES:-100-1000}" \
         --arg xray_asset_dir "${XRAY_DIR}" \
         --argjson sockopt "${inbound_sockopt}" \
         --argjson outbounds "${managed_outbounds}" \
@@ -769,37 +777,51 @@ validate_subscription_runtime() {
         "${tls_args[@]}"
 }
 
-# 边缘证书刚签发时，Gcore 还需要把证书/配置下发到各边缘节点，这段时间访问会 502。
-# 等 5 分钟（每 60 秒打一次进度）；仍不通就分别检查源站 mTLS 直连和资源关键项，
+# Gcore 官方说明配置/证书传播到全部边缘约需 15 分钟，传播期间访问会 502。
+# 按 GCORE_EDGE_PROPAGATION_ATTEMPTS × INTERVAL（90 × 10 秒 = 15 分钟，与模式 4 一致）等待，
+# 一旦返回 101 立即结束；超时后分别检查源站 mTLS 直连和资源关键项，
 # 把“边缘还没生效”和“源站/配置真有问题”区分开。
+combined_gcore_websocket_status() {
+    local url=$1 resolve=${2-} cert=${3-} key=${4-}
+    local -a args=(-sS -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 15
+        -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13'
+        -H "Sec-WebSocket-Key: $(openssl rand -base64 16)")
+    [[ -z "${resolve}" ]] || args+=(--noproxy '*' --resolve "${resolve}")
+    [[ -z "${cert}" ]] || args+=(--cert "${cert}" --key "${key}")
+    curl "${args[@]}" "${url}" 2>/dev/null || printf '000'
+}
+
 combined_validate_gcore() {
-    local attempt code
-    local attempts=60
+    local attempt code elapsed
+    local attempts=${GCORE_EDGE_PROPAGATION_ATTEMPTS}
+    local interval=${GCORE_EDGE_PROPAGATION_INTERVAL}
+    local progress_every=$((60 / interval))
+    ((progress_every >= 1)) || progress_every=1
     for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-        code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 15 \
-            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-            -H "Sec-WebSocket-Key: $(openssl rand -base64 16)" -H 'Sec-WebSocket-Version: 13' \
-            "https://${GCORE_NODE_DOMAIN}${WEBSOCKET_PATH}" 2>/dev/null || printf '000')
+        code=$(combined_gcore_websocket_status "https://${GCORE_NODE_DOMAIN}${WEBSOCKET_PATH}")
         [[ "${code}" == "101" ]] && return 0
-        if ((attempt == 1 || attempt % 12 == 0)); then
-            info "等待 Gcore 边缘 WebSocket 就绪（状态=${code}，已等待 $((attempt * 5)) 秒）：第 ${attempt}/${attempts} 次"
+        if ((attempt == 1 || attempt % progress_every == 0)); then
+            elapsed=$((attempt * interval))
+            info "等待 Gcore 边缘 WebSocket 就绪（状态=${code}，已等待 ${elapsed} 秒，最长 $((attempts * interval)) 秒）：第 ${attempt}/${attempts} 次；Gcore 配置传播通常需约 15 分钟，请勿中断"
         fi
-        ((attempt == attempts)) || sleep 5
+        ((attempt == attempts)) || sleep "${interval}"
     done
     COMBINED_EDGE_NOT_READY=1
     combined_diagnose_gcore_edge "${code}"
-    warn "Gcore 边缘 WebSocket 验收未返回 101（最后状态 ${code}）；边缘生效后执行 sudo easy_all apply 复验"
+    warn "Gcore 边缘 WebSocket 在 $((attempts * interval)) 秒内未返回 101（最后状态 ${code}）；Gcore 传播通常需约 15 分钟，稍后执行 sudo easy_all apply 复验"
 }
 
 combined_diagnose_gcore_edge() {
     local code=$1 origin_code resource
-    origin_code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \
-        --resolve "${GCORE_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        --cert "${GCORE_CLIENT_CERT_FILE}" --key "${GCORE_CLIENT_CERT_KEY}" \
-        "https://${GCORE_ORIGIN_DOMAIN}${WEBSOCKET_PATH}" 2>/dev/null || printf '000')
-    info "诊断：本机源站 mTLS 直连 HTTP ${origin_code}，边缘侧 HTTP ${code}"
+    origin_code=$(combined_gcore_websocket_status \
+        "https://${GCORE_ORIGIN_DOMAIN}${WEBSOCKET_PATH}" \
+        "${GCORE_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        "${GCORE_CLIENT_CERT_FILE}" "${GCORE_CLIENT_CERT_KEY}")
+    info "诊断：本机源站 mTLS 完整 WebSocket 握手 HTTP ${origin_code}（101 为正常），边缘侧 HTTP ${code}"
     if [[ "${origin_code}" == "000" ]]; then
         warn "源站 mTLS 直连失败：检查 nginx 是否已加载源站证书与客户端 CA（systemctl status nginx、nginx -t）"
+    elif [[ "${origin_code}" != "101" ]]; then
+        warn "源站本机握手未返回 101（HTTP ${origin_code}）：检查 WEBSOCKET_PATH、nginx 与 Xray WebSocket 入口"
     fi
     if [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[1-9][0-9]*$ ]] \
         && resource=$(gcore_api_get_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" 2>/dev/null); then
@@ -1036,7 +1058,7 @@ apply_easy_all() {
     xhttp_configure_ufw
     write_xray_config
     install_xray_service
-    gcore_prepare_origin_validation_material
+    gcore_prepare_origin_validation_material || return 1
     write_nginx_config
     validate_protocol_runtime
     combined_validate_cf_node_sni lenient
@@ -1060,7 +1082,7 @@ apply_cloud_resources() {
     combined_issue_certificates
     write_xray_config
     install_xray_service
-    gcore_prepare_origin_validation_material
+    gcore_prepare_origin_validation_material || return 1
     write_nginx_config
     validate_protocol_runtime
     combined_validate_cf_node_sni
@@ -1141,7 +1163,7 @@ install_all() {
     persist_install_identity || warn "无法落盘安装身份；中断后无法完全复用密钥与证书元数据"
     install_xray_service
     write_bootstrap_nginx_config
-    gcore_prepare_origin_validation_material
+    gcore_prepare_origin_validation_material || return 1
     write_nginx_config
     validate_protocol_runtime
     combined_validate_cf_node_sni

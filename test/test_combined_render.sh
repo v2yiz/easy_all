@@ -224,6 +224,37 @@ assert_equal "10b-xray: Xray xhttpSettings.host equals CF_NODE_DOMAIN" \
     "${CF_NODE_DOMAIN}" \
     "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in") | .streamSettings.xhttpSettings.host' "${XRAY_CONFIG}")"
 
+# 10b-1) XHTTP padding 默认使用范围，空值仍走默认，显式值保持字符串原样。
+assert_xhttp_settings() {
+    local label=$1 expected_padding=$2 expected_secs=$3
+    write_xray_config
+    assert_equal "${label}: padding" "string=${expected_padding}" \
+        "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in")
+            | .streamSettings.xhttpSettings.xPaddingBytes | "\(type)=\(.)"' "${XRAY_CONFIG}")"
+    assert_equal "${label}: stream-up seconds" "string=${expected_secs}" \
+        "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in")
+            | .streamSettings.xhttpSettings.scStreamUpServerSecs | "\(type)=\(.)"' "${XRAY_CONFIG}")"
+}
+(
+    unset CLOUDFLARE_XHTTP_PADDING_BYTES CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS
+    assert_xhttp_settings "10b-xray-padding-default" "100-1000" "600"
+)
+(
+    CLOUDFLARE_XHTTP_PADDING_BYTES=""
+    unset CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS
+    assert_xhttp_settings "10b-xray-padding-empty" "100-1000" "600"
+)
+(
+    CLOUDFLARE_XHTTP_PADDING_BYTES="100"
+    CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS="900"
+    assert_xhttp_settings "10b-xray-padding-explicit-100" "100" "900"
+)
+(
+    CLOUDFLARE_XHTTP_PADDING_BYTES="200-300"
+    unset CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS
+    assert_xhttp_settings "10b-xray-padding-explicit-range" "200-300" "600"
+)
+
 # 10d) HTTP/2 两种分支都能渲染（分别强制 nginx_supports_http2_directive 返回真/假）
 (
     nginx_supports_http2_directive() { return 0; }

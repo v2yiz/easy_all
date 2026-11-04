@@ -35,6 +35,7 @@ lib/lego-install.sh
 profiles/combined.sh
 lib/cf-dns.sh
 lib/gcore-cdn.sh
+lib/gcore-origin-validation.sh
 lib/reality-target.sh
 lib/gcore-purge.sh
 lib/cloudflare-purge.sh

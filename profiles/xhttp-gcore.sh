@@ -52,6 +52,8 @@ source "${XHTTP_PROFILE_ROOT}/globalping-cdn.sh"
 source "${XHTTP_PROFILE_ROOT}/gcore-ip-pool.sh"
 # shellcheck source=lib/xray-core.sh
 source "${XHTTP_PROFILE_ROOT}/xray-core.sh"
+# shellcheck source=lib/gcore-origin-validation.sh
+source "${XHTTP_PROFILE_ROOT}/gcore-origin-validation.sh"
 
 readonly ACME_HOME="/root/.acme-gcore.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
@@ -624,32 +626,64 @@ gcore_origin_ca_name() {
 }
 
 gcore_prepare_origin_validation_material() {
-    install -d -m 0700 "${CERT_DIR}"
+    local tmp_ca_key tmp_ca_file tmp_cert_key tmp_cert_file tmp_csr cleanup_rc
+    install -d -m 0700 "${CERT_DIR}" || {
+        fail "无法创建 Gcore origin validation 证书目录"
+        return 1
+    }
 
     if [[ ! -s "${GCORE_CLIENT_CA_FILE}" || ! -s "${GCORE_CLIENT_CERT_FILE}" ]]; then
         info "生成源站 mTLS 专用客户端证书与 CA"
-        local tmp_ca_key="${RUNTIME_TMP}/gcore-client-ca.key"
-        local tmp_ca_file="${RUNTIME_TMP}/gcore-client-ca.crt"
-        local tmp_cert_key="${RUNTIME_TMP}/gcore-client.key"
-        local tmp_cert_file="${RUNTIME_TMP}/gcore-client.crt"
-        local tmp_csr="${RUNTIME_TMP}/client.csr"
+        tmp_ca_key="${RUNTIME_TMP}/gcore-client-ca.key"
+        tmp_ca_file="${RUNTIME_TMP}/gcore-client-ca.crt"
+        tmp_cert_key="${RUNTIME_TMP}/gcore-client.key"
+        tmp_cert_file="${RUNTIME_TMP}/gcore-client.crt"
+        tmp_csr="${RUNTIME_TMP}/client.csr"
 
-        openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_ca_key}"
-        openssl req -x509 -new -nodes -key "${tmp_ca_key}" -sha256 -days 3650 \
-            -subj "/CN=easy_all Gcore Origin Client CA" -out "${tmp_ca_file}"
-        openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_cert_key}"
-        openssl req -new -key "${tmp_cert_key}" \
+        if ! openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_ca_key}"; then
+            fail "无法生成 Gcore origin validation 客户端 CA 私钥"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl req -x509 -new -nodes -key "${tmp_ca_key}" -sha256 -days 3650 \
+            -subj "/CN=easy_all Gcore Origin Client CA" -out "${tmp_ca_file}"; then
+            fail "无法生成 Gcore origin validation 客户端 CA 证书"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_cert_key}"; then
+            fail "无法生成 Gcore origin validation 客户端私钥"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl req -new -key "${tmp_cert_key}" \
             -subj "/CN=easy_all Gcore Edge Client" \
-            -out "${tmp_csr}"
-        openssl x509 -req -in "${tmp_csr}" \
+            -out "${tmp_csr}"; then
+            fail "无法生成 Gcore origin validation 客户端 CSR"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl x509 -req -in "${tmp_csr}" \
             -CA "${tmp_ca_file}" -CAkey "${tmp_ca_key}" -CAcreateserial \
-            -out "${tmp_cert_file}" -days 3650 -sha256
-
-        install -m 0600 "${tmp_ca_key}" "${GCORE_CLIENT_CA_KEY}"
-        install -m 0644 "${tmp_ca_file}" "${GCORE_CLIENT_CA_FILE}"
-        install -m 0600 "${tmp_cert_key}" "${GCORE_CLIENT_CERT_KEY}"
-        install -m 0644 "${tmp_cert_file}" "${GCORE_CLIENT_CERT_FILE}"
+            -out "${tmp_cert_file}" -days 3650 -sha256; then
+            fail "无法签发 Gcore origin validation 客户端证书"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! install -m 0600 "${tmp_ca_key}" "${GCORE_CLIENT_CA_KEY}" \
+            || ! install -m 0644 "${tmp_ca_file}" "${GCORE_CLIENT_CA_FILE}" \
+            || ! install -m 0600 "${tmp_cert_key}" "${GCORE_CLIENT_CERT_KEY}" \
+            || ! install -m 0644 "${tmp_cert_file}" "${GCORE_CLIENT_CERT_FILE}"; then
+            fail "无法安装 Gcore origin validation 客户端证书材料"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
         rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}"
+        cleanup_rc=$?
+        if ((cleanup_rc != 0)); then
+            fail "无法清理 Gcore origin validation 客户端临时材料"
+            return "${cleanup_rc}"
+        fi
     fi
 }
 
@@ -679,38 +713,50 @@ gcore_uploaded_certificate_id() {
 }
 
 gcore_ensure_origin_validation_certificates() {
-    gcore_prepare_origin_validation_material
-    local cert_name ca_name cert_payload ca_payload
+    local cert_name ca_name cert_payload ca_payload client_id ca_id
+    local issuer_ca_file="${RUNTIME_TMP}/issuer_ca.crt" ca_hash_output ca_hash
+    gcore_build_origin_trusted_ca \
+        "${CERT_FILE}" "${GCORE_ORIGIN_DOMAIN}" "${issuer_ca_file}" || return 1
+    gcore_prepare_origin_validation_material || return 1
     cert_name="easy_all-edge-client-${GCORE_ORIGIN_DOMAIN}"
     ca_name=$(gcore_origin_ca_name)
+    [[ -s "${GCORE_CLIENT_CERT_FILE}" && -s "${GCORE_CLIENT_CERT_KEY}" ]] || {
+        fail "Gcore origin validation 客户端证书或私钥为空"
+        return 1
+    }
+    [[ -s "${issuer_ca_file}" ]] || {
+        fail "Gcore origin validation CA 材料为空"
+        return 1
+    }
 
-    # 1. Upload VPS client certificate to Gcore (/cdn/sslData)
     cert_payload=$(jq -cn \
         --arg name "${cert_name}" \
-        --arg cert "$(<"${GCORE_CLIENT_CERT_FILE}")" \
-        --arg key "$(<"${GCORE_CLIENT_CERT_KEY}")" \
-        '{name:$name,sslCertificate:$cert,sslPrivateKey:$key,validate_root_ca:false}')
-    GCORE_ORIGIN_CLIENT_CERT_ID=$(gcore_uploaded_certificate_id "/cdn/sslData" "${cert_payload}") || return 1
-
-    # 2. Upload Let'\''s Encrypt intermediate/root CA to Gcore (/cdn/sslCertificates)
-    local issuer_ca_file="${RUNTIME_TMP}/issuer_ca.crt"
-    # Extract CA certificate chain (all except the first server leaf cert)
-    awk 'BEGIN {c=0} /BEGIN CERTIFICATE/ {c++} c>1 {print}' "${CERT_FILE}" >"${issuer_ca_file}"
-    [[ -s "${issuer_ca_file}" ]] || install -m 0644 "${CERT_FILE}" "${issuer_ca_file}"
-
-    # Trusted CA contents cannot be replaced through the API; version the name by chain.
-    ca_name="${ca_name}-$(openssl dgst -sha256 "${issuer_ca_file}" | awk '{print $NF}')"
+        --rawfile cert "${GCORE_CLIENT_CERT_FILE}" \
+        --rawfile key "${GCORE_CLIENT_CERT_KEY}" \
+        '{name:$name,sslCertificate:$cert,sslPrivateKey:$key,validate_root_ca:false}') \
+        || return 1
+    ca_hash_output=$(openssl dgst -sha256 "${issuer_ca_file}") || return 1
+    ca_hash=${ca_hash_output##* }
+    [[ "${ca_hash}" =~ ^[0-9a-fA-F]{64}$ ]] || {
+        fail "无法计算 Gcore origin validation CA 摘要"
+        return 1
+    }
+    ca_name="${ca_name}-${ca_hash}"
     ca_payload=$(jq -cn \
         --arg name "${ca_name}" \
-        --arg cert "$(<"${issuer_ca_file}")" \
-        '{name:$name,sslCertificate:$cert}')
-    GCORE_ORIGIN_CA_ID=$(gcore_uploaded_certificate_id "/cdn/sslCertificates" "${ca_payload}") || return 1
+        --rawfile cert "${issuer_ca_file}" \
+        '{name:$name,sslCertificate:$cert}') || return 1
+
+    client_id=$(gcore_uploaded_certificate_id "/cdn/sslData" "${cert_payload}") || return 1
+    ca_id=$(gcore_uploaded_certificate_id "/cdn/sslCertificates" "${ca_payload}") || return 1
+    GCORE_ORIGIN_CLIENT_CERT_ID=${client_id}
+    GCORE_ORIGIN_CA_ID=${ca_id}
 }
 
 gcore_ensure_origin_group() {
-    local group_name payload response existing_groups group
+    local group_name payload response existing_groups group origin_group_id
     group_name=$(gcore_origin_group_name)
-    existing_groups=$(gcore_api_request GET "/cdn/origin_groups")
+    existing_groups=$(gcore_api_request GET "/cdn/origin_groups") || return 1
     while IFS= read -r group; do
         [[ -n "${group}" ]] || continue
         if [[ "$(jq -r '.name // empty' <<<"${group}")" == "${group_name}" ]]; then
@@ -723,9 +769,10 @@ gcore_ensure_origin_group() {
       name: $name,
       use_next: false,
       sources: [{source: $source, enabled: true, backup: false}]
-    }')
-    response=$(gcore_api_request POST "/cdn/origin_groups" "${payload}")
-    GCORE_ORIGIN_GROUP_ID=$(jq -er '.id // empty' <<<"${response}")
+    }') || return 1
+    response=$(gcore_api_request POST "/cdn/origin_groups" "${payload}") || return 1
+    origin_group_id=$(jq -er '.id // empty' <<<"${response}") || return 1
+    GCORE_ORIGIN_GROUP_ID=${origin_group_id}
 }
 
 gcore_edge_certificate_id() {
@@ -1160,9 +1207,9 @@ gcore_prepare_origin() {
 
 gcore_prepare_cdn_resources() {
     info "配置 Gcore 源组、证书与 CDN 资源"
-    gcore_ensure_origin_group
-    gcore_ensure_origin_validation_certificates
-    gcore_ensure_resource
+    gcore_ensure_origin_group || return 1
+    gcore_ensure_origin_validation_certificates || return 1
+    gcore_ensure_resource || return 1
 }
 
 gcore_validate_cdn_resources() {
@@ -1175,8 +1222,8 @@ gcore_validate_cdn_resources() {
 }
 
 gcore_apply_cdn() {
-    gcore_prepare_cdn_resources
-    gcore_validate_cdn_resources
+    gcore_prepare_cdn_resources || return 1
+    gcore_validate_cdn_resources || return 1
 }
 
 collect_install_inputs() {
@@ -1437,7 +1484,7 @@ write_nginx_config() {
         http2_directive=$'\n    http2 on;'
         listen_h2=""
     fi
-    gcore_prepare_origin_validation_material
+    gcore_prepare_origin_validation_material || return 1
     write_web_root
     {
         write_subscription_nginx_maps
@@ -1763,7 +1810,7 @@ install_all() {
     write_nginx_config
     validate_protocol_runtime
     install_progress_stage cloud
-    gcore_prepare_cdn_resources
+    gcore_prepare_cdn_resources || return 1
     install_progress_stage state
     save_state
     register_easy_all_command
@@ -1812,7 +1859,7 @@ apply_cloud_resources() {
     configure_ufw
     gcore_prepare_origin
     XHTTP_RUNTIME_STATE_CURRENT=1 refresh_runtime
-    gcore_apply_cdn
+    gcore_apply_cdn || return 1
     collect_globalping_token
     validate_globalping_access || die "Globalping Token 验证失败"
     persist_globalping_token
@@ -1833,10 +1880,10 @@ xhttp_renew_origin_certificate() {
         || die "源站证书续期失败"
     "${CERT_RELOAD_HOOK}" || die "证书已续期，但 Nginx 重载失败"
     gcore_collect_api_token
-    gcore_ensure_origin_validation_certificates
-    gcore_ensure_resource
-    save_state
-    gcore_wait_for_cdn_health
+    gcore_ensure_origin_validation_certificates || return 1
+    gcore_ensure_resource || return 1
+    save_state || return 1
+    gcore_wait_for_cdn_health || return 1
     gcore_clear_api_token
     success "源站证书与 Gcore Trusted CA 已同步续期"
 }
@@ -1869,8 +1916,8 @@ update_subscription() {
     subscription_enabled && validate_subscription_runtime
     if ((cloud_update == 1)); then
         info "订阅域名发生变化，正在同步 Gcore CDN、边缘证书与 Managed DNS"
-        gcore_prepare_origin
-        gcore_apply_cdn
+        gcore_prepare_origin || return 1
+        gcore_apply_cdn || return 1
         gcore_clear_api_token
     fi
     save_state

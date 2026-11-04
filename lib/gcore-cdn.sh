@@ -2,6 +2,9 @@
 
 # Gcore CDN resource, certificate and origin helpers shared by combined profiles.
 
+# shellcheck source=lib/gcore-origin-validation.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/gcore-origin-validation.sh"
+
 gcore_api_raw() {
     local method=$1 path=$2 payload=${3:-} response headers payload_file
     [[ -n "${GCORE_API_TOKEN:-}" ]] || die "缺少 GCORE_API_TOKEN"
@@ -196,32 +199,64 @@ gcore_origin_ca_name() {
 }
 
 gcore_prepare_origin_validation_material() {
-    install -d -m 0700 "${CERT_DIR}"
+    local tmp_ca_key tmp_ca_file tmp_cert_key tmp_cert_file tmp_csr cleanup_rc
+    install -d -m 0700 "${CERT_DIR}" || {
+        fail "无法创建 Gcore origin validation 证书目录"
+        return 1
+    }
 
     if [[ ! -s "${GCORE_CLIENT_CA_FILE}" || ! -s "${GCORE_CLIENT_CERT_FILE}" ]]; then
         info "生成源站 mTLS 专用客户端证书与 CA"
-        local tmp_ca_key="${RUNTIME_TMP}/gcore-client-ca.key"
-        local tmp_ca_file="${RUNTIME_TMP}/gcore-client-ca.crt"
-        local tmp_cert_key="${RUNTIME_TMP}/gcore-client.key"
-        local tmp_cert_file="${RUNTIME_TMP}/gcore-client.crt"
-        local tmp_csr="${RUNTIME_TMP}/client.csr"
+        tmp_ca_key="${RUNTIME_TMP}/gcore-client-ca.key"
+        tmp_ca_file="${RUNTIME_TMP}/gcore-client-ca.crt"
+        tmp_cert_key="${RUNTIME_TMP}/gcore-client.key"
+        tmp_cert_file="${RUNTIME_TMP}/gcore-client.crt"
+        tmp_csr="${RUNTIME_TMP}/client.csr"
 
-        openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_ca_key}"
-        openssl req -x509 -new -nodes -key "${tmp_ca_key}" -sha256 -days 3650 \
-            -subj "/CN=easy_all Gcore Origin Client CA" -out "${tmp_ca_file}"
-        openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_cert_key}"
-        openssl req -new -key "${tmp_cert_key}" \
+        if ! openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_ca_key}"; then
+            fail "无法生成 Gcore origin validation 客户端 CA 私钥"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl req -x509 -new -nodes -key "${tmp_ca_key}" -sha256 -days 3650 \
+            -subj "/CN=easy_all Gcore Origin Client CA" -out "${tmp_ca_file}"; then
+            fail "无法生成 Gcore origin validation 客户端 CA 证书"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl ecparam -name prime256v1 -genkey -noout -out "${tmp_cert_key}"; then
+            fail "无法生成 Gcore origin validation 客户端私钥"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl req -new -key "${tmp_cert_key}" \
             -subj "/CN=easy_all Gcore Edge Client" \
-            -out "${tmp_csr}"
-        openssl x509 -req -in "${tmp_csr}" \
+            -out "${tmp_csr}"; then
+            fail "无法生成 Gcore origin validation 客户端 CSR"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! openssl x509 -req -in "${tmp_csr}" \
             -CA "${tmp_ca_file}" -CAkey "${tmp_ca_key}" -CAcreateserial \
-            -out "${tmp_cert_file}" -days 3650 -sha256
-
-        install -m 0600 "${tmp_ca_key}" "${GCORE_CLIENT_CA_KEY}"
-        install -m 0644 "${tmp_ca_file}" "${GCORE_CLIENT_CA_FILE}"
-        install -m 0600 "${tmp_cert_key}" "${GCORE_CLIENT_CERT_KEY}"
-        install -m 0644 "${tmp_cert_file}" "${GCORE_CLIENT_CERT_FILE}"
+            -out "${tmp_cert_file}" -days 3650 -sha256; then
+            fail "无法签发 Gcore origin validation 客户端证书"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
+        if ! install -m 0600 "${tmp_ca_key}" "${GCORE_CLIENT_CA_KEY}" \
+            || ! install -m 0644 "${tmp_ca_file}" "${GCORE_CLIENT_CA_FILE}" \
+            || ! install -m 0600 "${tmp_cert_key}" "${GCORE_CLIENT_CERT_KEY}" \
+            || ! install -m 0644 "${tmp_cert_file}" "${GCORE_CLIENT_CERT_FILE}"; then
+            fail "无法安装 Gcore origin validation 客户端证书材料"
+            rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}" || true
+            return 1
+        fi
         rm -f -- "${tmp_ca_key}" "${tmp_ca_file}" "${tmp_cert_key}" "${tmp_cert_file}" "${tmp_csr}"
+        cleanup_rc=$?
+        if ((cleanup_rc != 0)); then
+            fail "无法清理 Gcore origin validation 客户端临时材料"
+            return "${cleanup_rc}"
+        fi
     fi
 }
 
@@ -251,32 +286,44 @@ gcore_uploaded_certificate_id() {
 }
 
 gcore_ensure_origin_validation_certificates() {
-    gcore_prepare_origin_validation_material
-    local cert_name ca_name cert_payload ca_payload
+    local cert_name ca_name cert_payload ca_payload client_id ca_id
+    local issuer_ca_file="${RUNTIME_TMP}/issuer_ca.crt" ca_hash_output ca_hash
+    gcore_build_origin_trusted_ca \
+        "${GCORE_CERT_FILE}" "${GCORE_ORIGIN_DOMAIN}" "${issuer_ca_file}" || return 1
+    gcore_prepare_origin_validation_material || return 1
     cert_name="easy_all-edge-client-${GCORE_ORIGIN_DOMAIN}"
     ca_name=$(gcore_origin_ca_name)
+    [[ -s "${GCORE_CLIENT_CERT_FILE}" && -s "${GCORE_CLIENT_CERT_KEY}" ]] || {
+        fail "Gcore origin validation 客户端证书或私钥为空"
+        return 1
+    }
+    [[ -s "${issuer_ca_file}" ]] || {
+        fail "Gcore origin validation CA 材料为空"
+        return 1
+    }
 
-    # 1. Upload VPS client certificate to Gcore (/cdn/sslData)
     cert_payload=$(jq -cn \
         --arg name "${cert_name}" \
-        --arg cert "$(<"${GCORE_CLIENT_CERT_FILE}")" \
-        --arg key "$(<"${GCORE_CLIENT_CERT_KEY}")" \
-        '{name:$name,sslCertificate:$cert,sslPrivateKey:$key,validate_root_ca:false}')
-    GCORE_ORIGIN_CLIENT_CERT_ID=$(gcore_uploaded_certificate_id "/cdn/sslData" "${cert_payload}") || return 1
-
-    # 2. Upload Let'\''s Encrypt intermediate/root CA to Gcore (/cdn/sslCertificates)
-    local issuer_ca_file="${RUNTIME_TMP}/issuer_ca.crt"
-    # Extract CA certificate chain (all except the first server leaf cert)
-    awk 'BEGIN {c=0} /BEGIN CERTIFICATE/ {c++} c>1 {print}' "${GCORE_CERT_FILE}" >"${issuer_ca_file}"
-    [[ -s "${issuer_ca_file}" ]] || install -m 0644 "${GCORE_CERT_FILE}" "${issuer_ca_file}"
-
-    # Trusted CA contents cannot be replaced through the API; version the name by chain.
-    ca_name="${ca_name}-$(openssl dgst -sha256 "${issuer_ca_file}" | awk '{print $NF}')"
+        --rawfile cert "${GCORE_CLIENT_CERT_FILE}" \
+        --rawfile key "${GCORE_CLIENT_CERT_KEY}" \
+        '{name:$name,sslCertificate:$cert,sslPrivateKey:$key,validate_root_ca:false}') \
+        || return 1
+    ca_hash_output=$(openssl dgst -sha256 "${issuer_ca_file}") || return 1
+    ca_hash=${ca_hash_output##* }
+    [[ "${ca_hash}" =~ ^[0-9a-fA-F]{64}$ ]] || {
+        fail "无法计算 Gcore origin validation CA 摘要"
+        return 1
+    }
+    ca_name="${ca_name}-${ca_hash}"
     ca_payload=$(jq -cn \
         --arg name "${ca_name}" \
-        --arg cert "$(<"${issuer_ca_file}")" \
-        '{name:$name,sslCertificate:$cert}')
-    GCORE_ORIGIN_CA_ID=$(gcore_uploaded_certificate_id "/cdn/sslCertificates" "${ca_payload}") || return 1
+        --rawfile cert "${issuer_ca_file}" \
+        '{name:$name,sslCertificate:$cert}') || return 1
+
+    client_id=$(gcore_uploaded_certificate_id "/cdn/sslData" "${cert_payload}") || return 1
+    ca_id=$(gcore_uploaded_certificate_id "/cdn/sslCertificates" "${ca_payload}") || return 1
+    GCORE_ORIGIN_CLIENT_CERT_ID=${client_id}
+    GCORE_ORIGIN_CA_ID=${ca_id}
 }
 
 gcore_ensure_origin_group() {
@@ -351,7 +398,7 @@ gcore_reissue_edge_certificate() {
     gcore_issue_edge_certificate "${new_id}" || return 1
     if [[ "${old_id}" =~ ^[1-9][0-9]*$ && "${old_id}" != "${new_id}" ]]; then
         gcore_api_delete_optional "/cdn/sslData/${old_id}" >/dev/null 2>&1 \
-            || warn "旧的失败证书对象 ${old_id} 未能删除；它已脱离资源，不影响签发"
+            || warn "旧的失败证书对象 ${old_id} 未能删除；它已脱离资源，不影响签发" >&2
     fi
     printf '%s' "${new_id}"
 }
@@ -559,16 +606,41 @@ gcore_remove_acme_challenge_rules() {
 }
 
 # 账户的 Gcore 权威 NS：优先用官方平台信息接口，取不到就用文档中的固定值。
+# stdout 只允许出现 NS 值（≤2 行）：combined_ensure_gcore_challenge_delegation 用进程替换逐行读取
+# 本函数的 stdout，并把每一行直接当成 Cloudflare NS 记录的 content 提交。任何告警都必须走 stderr，
+# 否则告警文本会被当作 NS 内容（Cloudflare 400 / 错误码 9007，apply-cloud 随之回滚）。
 gcore_challenge_nameservers() {
-    local response body ns1 ns2
+    local response body value index fallback=0
+    local -a names defaults
+    defaults=(ns1.gcorelabs.net ns2.gcdn.services)
     response=$(gcore_api_raw GET "/dns/v2/platform/info" 2>/dev/null) || response=""
     body=${response%$'\n'*}
-    ns1=$(jq -r '.settings.name_server_1 // .name_server_1 // empty' <<<"${body}" 2>/dev/null || true)
-    ns2=$(jq -r '.settings.name_server_2 // .name_server_2 // empty' <<<"${body}" 2>/dev/null || true)
-    if [[ -z "${ns1}" || -z "${ns2}" ]]; then
-        warn "未能从 Gcore /dns/v2/platform/info 读取挑战区 NS：账号可能未启用 Managed DNS；先按默认 NS 委派"
+    names=(
+        "$(jq -r '.settings.name_server_1 // .name_server_1 // empty' <<<"${body}" 2>/dev/null || true)"
+        "$(jq -r '.settings.name_server_2 // .name_server_2 // empty' <<<"${body}" 2>/dev/null || true)"
+    )
+    if [[ -z "${names[0]}" || -z "${names[1]}" ]]; then
+        warn "未能从 Gcore /dns/v2/platform/info 读取挑战区 NS：账号可能未启用 Managed DNS；先按默认 NS 委派" >&2
     fi
-    printf '%s\n%s\n' "${ns1:-ns1.gcorelabs.net}" "${ns2:-ns2.gcdn.services}"
+    for index in 0 1; do
+        value=${names[index]}
+        # FQDN 常带结尾点（ns1.gcorelabs.net.），Cloudflare 会判成无效 NS 内容；首尾空白同理。
+        value=${value#"${value%%[![:space:]]*}"}
+        value=${value%"${value##*[![:space:]]}"}
+        if [[ "${value}" == *. ]]; then
+            value=${value%.}
+        fi
+        if validate_domain "${value}"; then
+            names[index]=${value}
+        else
+            names[index]=${defaults[index]}
+            fallback=1
+        fi
+    done
+    if ((fallback == 1)); then
+        warn "Gcore 返回的挑战区 NS 不是合法主机名，已回退默认值：${defaults[0]} / ${defaults[1]}" >&2
+    fi
+    printf '%s\n%s\n' "${names[0]}" "${names[1]}"
 }
 
 gcore_ensure_edge_certificate_ready() {

@@ -1304,6 +1304,11 @@ printf 'first-key' >"${GCORE_CLIENT_CERT_KEY}"
 printf '%s\n' '-----BEGIN CERTIFICATE-----' leaf '-----END CERTIFICATE-----' \
     '-----BEGIN CERTIFICATE-----' issuer '-----END CERTIFICATE-----' >"${CERT_FILE}"
 gcore_prepare_origin_validation_material() { :; }
+gcore_build_origin_trusted_ca() {
+    local fullchain=$1 origin_host=$2 output=$3
+    awk 'BEGIN {c=0} /BEGIN CERTIFICATE/ {c++} c>1 {print}' "${fullchain}" >"${output}"
+    [[ -s "${output}" ]]
+}
 reject_update=false
 gcore_api_request() {
     local method=$1 endpoint=$2 payload=${3:-} next id

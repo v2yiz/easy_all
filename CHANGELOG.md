@@ -1,3 +1,18 @@
+## 2.4.18 更新说明（2026-11-04）
+
+- **模式 5 Gcore 边缘 WebSocket 验收等待由 5 分钟延长到 15 分钟**：Gcore 官方说明配置/证书传播约需 15 分钟，
+  现场 5 分钟时仍 502、之后自行恢复。现复用 `GCORE_EDGE_PROPAGATION_ATTEMPTS × INTERVAL`（90 × 10 秒，与模式 4 一致），
+  返回 101 即结束；每 60 秒打印真实已等待秒数与上限。超时仅告警，不使安装失败。
+- **诊断探针改为完整 WebSocket 握手**：此前本机源站直连不带 `Upgrade` 头，Xray 必回 400，会误导排障；
+  现带 `Upgrade` 头与合法 16 字节随机 `Sec-WebSocket-Key`，正常应为 101。
+- **Gcore 源站 Trusted CA 补齐自签信任根**（模式 4/5 同步）：旧逻辑去掉叶子证书后缺最后一张自签根，
+  现用系统根库做真实 OpenSSL 校验后再上传（`lib/gcore-origin-validation.sh`），失败向上传播；需 `apply-cloud` 重新上传。
+- **CF xhttp padding 默认改为 `100-1000`**：Bettbox/Mihomo 随机发送 100–1000 字节，服务端固定 100 会拒绝请求；
+  仍可用 `CLOUDFLARE_XHTTP_PADDING_BYTES` 覆盖。
+- 验证：`test:combined` 等快速检查见交付说明；Gcore 边缘 101 已在现场确认。
+
+源码版本标识为 `2.4.18`。
+
 ## 2.4.17 更新说明（2026-11-03）
 
 - **边缘 WebSocket 验收等待加长并带进度**：证书签发后 Gcore 还要把证书/配置下发到各边缘节点，这期间
