@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/
 
 - 升级 APT 软件包并安装基础工具和 Fail2ban。
 - 使用 Debian 官方内核的 BBR，不安装 XanMod。
-- SSH 仅监听 `65533`，UFW 先验证该端口放行，再优先阻断 `22`，Fail2ban 仅保护 `65533`。
+- SSH 仅监听 `65533`，UFW 仅放行该端口并由默认入站策略阻断其余端口（含 `22`），Fail2ban 仅保护 `65533`。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
 - 创建或更新普通用户、sudo 密码和 SSH 公钥。
 - 为普通用户安装 `uv` 和 Python 3.12。
@@ -36,7 +36,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/
 | SSH key | 默认生成新的 ed25519 key |
 
 当前端口仅用于初始连接、上传和执行，可以是 `22` 或已经为 `65533`。请先在云安全组放行
-`65533`，之后使用 `ssh -p 65533 用户@服务器`；额外放行端口禁止包含 `22`。
+`65533`，之后使用 `ssh -p 65533 用户@服务器`。
 
 只有远端策略命令明确成功且普通用户通过 `65533` 密钥登录验收后，才写入本地 SSH 配置并
 报告完成。远端非零或连接中断即失败；即使已经能用新端口登录，也需从 `65533` 重新运行并

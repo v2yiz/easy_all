@@ -102,7 +102,7 @@ sudo easy_all subscription
 ## 安全机制与防护边界
 
 1. **SSH 自动防护**：
-   - 模式 1（Reality）与模式 2（Cloudflare）：安装完成后 SSH 端口自动收敛迁移至 TCP `65533`，UFW 首位阻断 22 端口，并由 Fail2ban 实时监控保护 `65533`。
+   - 模式 1（Reality）与模式 2（Cloudflare）：安装完成后 SSH 端口自动收敛迁移至 TCP `65533`，未放行端口（含 22）由 UFW 默认入站策略阻断，并由 Fail2ban 实时监控保护 `65533`。
    - 模式 3（Bunny）与组合模式：保持现有 SSH 监听端口不变。
 2. **回源白名单与防扫网**：
    - CDN 模式与组合模式的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。

@@ -887,7 +887,7 @@ collect_inputs() {
     CHANGE_PORT="no"
     echo "当前 SSH 端口已经是 ${EASY_ALL_ADDITIONAL_SSH_PORT}，将检查独占监听。"
   else
-    echo "将从当前 SSH 端口 ${CURRENT_PORT} 切换为仅监听 ${FINAL_PORT}，并阻断 22。"
+    echo "将从当前 SSH 端口 ${CURRENT_PORT} 切换为仅监听 ${FINAL_PORT}。"
   fi
 
   local extra_tcp_ports_raw
