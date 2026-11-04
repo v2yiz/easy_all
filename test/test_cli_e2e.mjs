@@ -33,15 +33,14 @@ for (const arg of ['help', '--help', '-h']) {
     assert.ok(res.stdout.includes('用法: easy_all [命令]'), 'Help should show usage');
     assert.ok(res.stdout.includes('Reality'), 'Help should list Reality mode');
     assert.ok(res.stdout.includes('Bunny CDN'), 'Help should list Bunny CDN mode');
-    assert.ok(res.stdout.includes('Gcore CDN'), 'Help should list Gcore CDN mode');
+    assert.ok(!res.stdout.includes('Gcore'), 'Help must not mention removed Gcore mode');
     assert.ok(res.stdout.includes('组合'), 'Help should list combined mode');
     assert.ok(res.stdout.includes('cleanup-partial'), 'Help should list cleanup-partial');
 }
 
-// 2. Gcore 孤儿资源清理命令：帮助可用，且不依赖本机安装状态
-const purgeHelp = run(easyAll, ['purge-gcore', '--help']);
-assert.equal(purgeHelp.status, 0, purgeHelp.stderr);
-assert.ok(purgeHelp.stdout.includes('purge-gcore'), 'purge-gcore help should show usage');
+// 2. purge-gcore 已移除
+const purgeGone = run(easyAll, ['purge-gcore', '--help']);
+assert.notEqual(purgeGone.status, 0, 'purge-gcore must no longer exist');
 
 const purgeCfHelp = run(easyAll, ['purge-cloudflare', '--help']);
 assert.equal(purgeCfHelp.status, 0, purgeCfHelp.stderr);
@@ -189,11 +188,11 @@ try {
         assert.ok(res.stderr.includes(message), `${command}: ${res.stderr}`);
     }
 
-    // Gcore 模式：不支持 Reality 专属命令
+    // 已移除的 gcore 状态：无法识别
     writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="gcore"\n');
     const gcoreRotateRes = run(easyAll, ['rotate-dynamic-ports'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
     assert.equal(gcoreRotateRes.status, 1);
-    assert.ok(gcoreRotateRes.stderr.includes('仅适用于 Reality 模式'));
+    assert.ok(gcoreRotateRes.stderr.includes('无法识别已安装协议'), gcoreRotateRes.stderr);
 } finally {
     try { unlinkSync(stateFile); } catch {}
 }

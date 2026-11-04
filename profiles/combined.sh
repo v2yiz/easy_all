@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Combined profile: direct Reality + Cloudflare XHTTP + Gcore WebSocket.
+# Combined profile: direct Reality + Cloudflare XHTTP.
 set -Eeuo pipefail
 umask 077
 
 readonly COMBINED_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 XHTTP_LIB_DIR="${COMBINED_PROFILE_ROOT}/../lib"
-XHTTP_CDN_NAME_OVERRIDE="Cloudflare + Gcore"
-XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray direct/Cloudflare/Gcore managed by easy_all"
+XHTTP_CDN_NAME_OVERRIDE="Cloudflare"
+XHTTP_SERVICE_DESCRIPTION_OVERRIDE="Xray direct/Cloudflare managed by easy_all"
 GLOBALPING_CACHE_BASENAME_OVERRIDE="cloudflare-cdn-ips.json"
 
 # shellcheck source=lib/xhttp-runtime.sh
@@ -17,13 +17,10 @@ source "${XHTTP_LIB_DIR}/globalping-cdn.sh"
 source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"
 # shellcheck source=lib/cf-dns.sh
 source "${XHTTP_LIB_DIR}/cf-dns.sh"
-# shellcheck source=lib/gcore-cdn.sh
-source "${XHTTP_LIB_DIR}/gcore-cdn.sh"
 # shellcheck source=lib/reality-target.sh
 source "${XHTTP_LIB_DIR}/reality-target.sh"
 
 readonly REALITY_PORT=8443
-readonly XRAY_WEBSOCKET_LOOPBACK_PORT=10087
 # XHTTP 侧的本机回环端口必须在这里定义：write_xray_config / write_nginx_config 都直接引用它，
 # 缺了会在 set -u 下让首次安装崩在写配置阶段（该缺省来自 xhttp-runtime 的常量）。
 # 这里刻意不接受环境覆盖：combined 没有针对该端口的校验与状态持久化，静默接受覆盖会出现
@@ -35,23 +32,6 @@ readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
 readonly CF_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cf-origin"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4.txt"
-readonly GCORE_API_BASE="https://api.gcore.com"
-readonly GCORE_UFW_COMMENT="easy_all-gcore-origin"
-readonly GCORE_ORIGIN_IPS_FILE="${STATE_DIR}/gcore-origin-ipv4.txt"
-# 新建的 Gcore 资源约 15 分钟才能在所有边缘生效（状态 processed），此期间 HTTP-01 必然失败。
-# 先等资源 active + 节点 CNAME 生效（最多 30 分钟），再申请证书；失败时最多强制重试 2 次（间隔 60 秒）。
-readonly GCORE_EDGE_READY_ATTEMPTS=120
-readonly GCORE_EDGE_READY_INTERVAL=15
-readonly GCORE_EDGE_PROPAGATION_ATTEMPTS=90
-readonly GCORE_EDGE_PROPAGATION_INTERVAL=10
-readonly GCORE_EDGE_FORCE_RETRIES=2
-readonly GCORE_EDGE_FORCE_RETRY_INTERVAL=120
-readonly GCORE_CERT_FILE="${CERT_DIR}/gcore-origin.pem"
-readonly GCORE_KEY_FILE="${CERT_DIR}/gcore-origin.key"
-readonly GCORE_CLIENT_CA_FILE="${CERT_DIR}/gcore-client-ca.crt"
-readonly GCORE_CLIENT_CA_KEY="${CERT_DIR}/gcore-client-ca.key"
-readonly GCORE_CLIENT_CERT_FILE="${CERT_DIR}/gcore-client.crt"
-readonly GCORE_CLIENT_CERT_KEY="${CERT_DIR}/gcore-client.key"
 readonly ACME_HOME="/root/.acme-combined.sh"
 readonly ACME_BIN="${ACME_HOME}/acme.sh"
 readonly ACME_OWNERSHIP_MARKER="${STATE_DIR}/acme-installed-by-easy_all"
@@ -70,13 +50,12 @@ load_state() {
     local -a variables=(
         STATE_VERSION PROTOCOL TCP_ACCELERATION
         VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID
-        DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN GCORE_NODE_DOMAIN GCORE_ORIGIN_DOMAIN
+        DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN
         SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS VLESS_UUID
-        DIRECT_NODE_NAME CF_NODE_PREFIX GCORE_NODE_NAME
-        XHTTP_PATH WEBSOCKET_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
+        DIRECT_NODE_NAME CF_NODE_PREFIX
+        XHTTP_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
-        GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID
-        GCORE_EDGE_CERTIFICATE_ID SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
+        SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
     )
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     for variable in "${variables[@]}"; do
@@ -91,7 +70,7 @@ load_state() {
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
     # 2.0.0 状态的组合模式没有这些字段，回退到当时的固定名称，避免 apply 时静默改名。
-    : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}" "${GCORE_NODE_NAME:=Gcore}"
+    : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}"
     # 这里只告警不阻断：历史状态可能存着非法 Token，若在此 die，连 edit-sub 和 uninstall 都进不去。
     # 真正写配置前的拦截点在 combined_require_valid_owner_token。
     combined_tokens_ready \
@@ -112,13 +91,12 @@ save_state() {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         for variable in \
             PROTOCOL TCP_ACCELERATION VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID \
-            DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN GCORE_NODE_DOMAIN GCORE_ORIGIN_DOMAIN \
+            DIRECT_DOMAIN CF_NODE_DOMAIN CF_ORIGIN_DOMAIN \
             SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS VLESS_UUID \
-            DIRECT_NODE_NAME CF_NODE_PREFIX GCORE_NODE_NAME \
-            XHTTP_PATH WEBSOCKET_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID \
+            DIRECT_NODE_NAME CF_NODE_PREFIX \
+            XHTTP_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID \
             CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON \
-            GCORE_CDN_RESOURCE_ID GCORE_ORIGIN_GROUP_ID GCORE_ORIGIN_CLIENT_CERT_ID GCORE_ORIGIN_CA_ID \
-            GCORE_EDGE_CERTIFICATE_ID SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do
+            SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do
             printf '%s=%q\n' "${variable}" "${!variable:-}"
         done
     } >"${temp}"
@@ -143,20 +121,12 @@ collect_install_inputs() {
     params_declare CF_ORIGIN_DOMAIN --required \
         --label 'Cloudflare 回源域名（橙云）' --default "cf-origin.${CF_ZONE}" \
         --normalize normalize_domain --check validate_domain
-    params_declare GCORE_NODE_DOMAIN --required \
-        --label 'Gcore 节点域名（灰云 CNAME）' --default "gcore.${CF_ZONE}" \
-        --normalize normalize_domain --check validate_domain
-    params_declare GCORE_ORIGIN_DOMAIN --required \
-        --label 'Gcore 回源域名（灰云 A）' --default "gcore-origin.${CF_ZONE}" \
-        --normalize normalize_domain --check validate_domain
     params_declare SUBSCRIPTION_DOMAIN --required \
         --label '订阅域名（橙云）' --default "sub.${CF_ZONE}" \
         --normalize normalize_domain --check validate_domain
 
     params_declare CLOUDFLARE_API_TOKEN --required --secret \
         --label 'Cloudflare API Token（DNS 编辑权限）' --check params_check_cf_token
-    params_declare GCORE_API_TOKEN --required --secret \
-        --label 'Gcore API Token（CDN 权限）' --check params_check_gcore_token
     params_declare GLOBALPING_TOKEN --required --secret \
         --label 'Globalping Access Token' --check validate_globalping_token
 
@@ -166,17 +136,12 @@ collect_install_inputs() {
     params_declare XHTTP_PATH \
         --label 'XHTTP 路径（留空自动生成）' --default-fn params_default_xhttp_path \
         --normalize normalize_xhttp_path --check validate_xhttp_path
-    params_declare WEBSOCKET_PATH \
-        --label 'WebSocket 路径（留空自动生成）' --default-fn params_default_websocket_path \
-        --check params_check_websocket_path
 
     params_declare DIRECT_NODE_NAME --required \
         --label '直连节点名' --default '🇺🇸直连' --check validate_node_name
     params_declare CF_NODE_PREFIX --required \
         --label 'Cloudflare 节点名前缀（自动追加 1~6）' --default '🇺🇸CF' \
         --check validate_node_name
-    params_declare GCORE_NODE_NAME --required \
-        --label 'Gcore 节点名' --default '🇺🇸GCore' --check validate_node_name
     params_declare SUB_DOWNLOAD_NAME --required \
         --label 'Mihomo 下载文件名（不含 .yaml）' --default "${DEFAULT_SUB_DOWNLOAD_NAME}" \
         --normalize normalize_sub_download_name --check validate_sub_download_name
@@ -207,24 +172,21 @@ params_cross_combined() {
     local domain index
     if validate_domain "${CF_ZONE}"; then
         for domain in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
-            "${GCORE_NODE_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${SUBSCRIPTION_DOMAIN}"; do
+            "${SUBSCRIPTION_DOMAIN}"; do
             case "${domain}" in
             *".${CF_ZONE}") ;;
             *) params_error "域名必须属于 ${CF_ZONE}：${domain}" ;;
             esac
         done
         [[ "$(printf '%s\n' "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
-            "${GCORE_NODE_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" \
-            | sort -u | wc -l | tr -d ' ')" == "6" ]] \
-            || params_error '六个域名必须互不相同'
+            "${SUBSCRIPTION_DOMAIN}" \
+            | sort -u | wc -l | tr -d ' ')" == "4" ]] \
+            || params_error '四个域名必须互不相同'
     fi
-    if [[ -n "${DIRECT_NODE_NAME}" && -n "${GCORE_NODE_NAME}" && -n "${CF_NODE_PREFIX}" ]]; then
-        [[ "${DIRECT_NODE_NAME}" != "${GCORE_NODE_NAME}" ]] \
-            || params_error '直连节点名与 Gcore 节点名不能相同'
+    if [[ -n "${DIRECT_NODE_NAME}" && -n "${CF_NODE_PREFIX}" ]]; then
         for index in 1 2 3 4 5 6; do
-            [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" \
-                && "${CF_NODE_PREFIX}${index}" != "${GCORE_NODE_NAME}" ]] \
-                || params_error "Cloudflare 节点名 ${CF_NODE_PREFIX}${index} 与直连/Gcore 节点名重复"
+            [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" ]] \
+                || params_error "Cloudflare 节点名 ${CF_NODE_PREFIX}${index} 与直连节点名重复"
         done
     fi
     if [[ -n "${OWNER_TOKEN}" && -n "${ALLOWED_TOKENS}" ]]; then
@@ -309,140 +271,22 @@ dns_ensure_record() {
 
 combined_ensure_dns() {
     cloudflare_collect_api_token
-    gcore_collect_api_token
     CLOUDFLARE_ZONE_ID=$(cloudflare_lookup_parent_zone "${CF_ZONE}") \
         || die "Cloudflare 中没有 active Zone：${CF_ZONE}"
     dns_ensure_record "${DIRECT_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false
     dns_ensure_record "${CF_NODE_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
     dns_ensure_record "${CF_ORIGIN_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
-    dns_ensure_record "${GCORE_ORIGIN_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false
     dns_ensure_record "${SUBSCRIPTION_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
-    GCORE_CDN_TARGET=$(gcore_cdn_target)
-    dns_ensure_record "${GCORE_NODE_DOMAIN}" CNAME "${GCORE_CDN_TARGET}" false
-    combined_ensure_gcore_challenge_delegation
-}
-
-# DNS-01 需要把 _acme-challenge.<节点域名> 以 NS 委派给 Gcore（不需要整区委派）。
-# Cloudflare 的 NS 记录可用于子域委派，这里按目标 NS 幂等补齐，不删除已有记录。
-combined_ensure_gcore_challenge_delegation() {
-    local challenge="_acme-challenge.${GCORE_NODE_DOMAIN}" ns quoted_ns records existing payload
-    records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" NS "${challenge}")
-    while IFS= read -r ns; do
-        [[ -n "${ns}" ]] || continue
-        # 纵深防御：NS 值只接受合法主机名。上游一旦把告警/噪声混进 stdout（历史上 warn 写 stdout，
-        # 整段告警被当成 content 提交，Cloudflare 返回 400 / 9007），绝不能再拼进 NS 记录提交。
-        if ! validate_domain "${ns}"; then
-            printf -v quoted_ns '%q' "${ns}"
-            warn "跳过非法的 Gcore 挑战区 NS（不是合法主机名，不会提交给 Cloudflare）：${quoted_ns}" >&2
-            continue
-        fi
-        existing=$(jq -r --arg ns "${ns}" '
-            [.[] | select(((.content // "") | ascii_downcase) == ($ns | ascii_downcase))] | length' \
-            <<<"${records}")
-        ((existing > 0)) && continue
-        payload=$(jq -cn --arg name "${challenge}" --arg content "${ns}" \
-            --arg comment "${COMBINED_RECORD_COMMENT}" \
-            '{type:"NS",name:$name,content:$content,ttl:1,comment:$comment}')
-        cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" "${payload}" >/dev/null
-        info "已为 Gcore DNS-01 委派挑战子域：${challenge} NS ${ns}"
-    done < <(gcore_challenge_nameservers)
-    combined_ensure_gcore_challenge_zone "${challenge}"
-}
-
-# Gcore 会在首次签发时按需创建 _acme-challenge 子区，但如果账号侧没有自动创建（或区被手工删掉），
-# 它的 NS 会一直返回 REFUSED，DNS-01 永远失败。这里先用 dig 确认权威应答；没有就直接调 DNS API
-# 建区（幂等：已存在时 API 报错，按“已就绪”处理）。建区失败只提示，不阻断安装。
-combined_ensure_gcore_challenge_zone() {
-    local challenge=$1 ns served payload created=0
-    command -v dig >/dev/null 2>&1 || return 0
-    ns=$(gcore_challenge_nameservers | head -n 1)
-    served=$(dig +short +time=3 +tries=1 "@${ns}" "${challenge}" NS 2>/dev/null || true)
-    if [[ -n "${served}" ]]; then
-        info "Gcore 挑战区已就绪：${challenge}"
-        return 0
-    fi
-    payload=$(jq -cn --arg name "${challenge}" '{name:$name}')
-    if (gcore_api_request POST "/dns/v2/zones" "${payload}" >/dev/null 2>&1); then
-        info "已在 Gcore Managed DNS 创建挑战区：${challenge}"
-        created=1
-    fi
-    served=$(dig +short +time=3 +tries=1 "@${ns}" "${challenge}" NS 2>/dev/null || true)
-    if [[ -n "${served}" ]]; then
-        info "Gcore 挑战区已就绪：${challenge}"
-        return 0
-    fi
-    if ((created == 1)); then
-        info "挑战区已提交创建，Gcore 生效通常需要几分钟"
-    else
-        warn "Gcore 在 ${challenge} 上没有权威应答，自动建区也未成功；若签发报 REFUSED，请到 Gcore 控制台确认 Managed DNS 已启用并手动创建该区"
-    fi
-}
-
-gcore_cdn_target() {
-    gcore_collect_api_token
-    local target
-    target=$(gcore_api_request GET "/cdn/clients/me" | jq -er '.cname // empty') \
-        || die "无法从 Gcore 账户获取 CNAME 调度目标"
-    normalize_domain "${target}"
-}
-
-write_cert_reload_hook() {
-    install -d -m 0755 "${COMMAND_INSTALL_DIR}"
-    cat >"${CERT_RELOAD_HOOK}" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-# nginx 尚未启动（首次安装期间就属于这种情况）时无需 reload：安装流程稍后会自行启动。
-# 这里也不能退化成 restart，否则会让还没写完整配置的 nginx 提前带着默认站点上线。
-systemctl is-active --quiet nginx || exit 0
-nginx -t >/dev/null || exit 1
-systemctl reload nginx || systemctl restart nginx
-EOF
-    chmod 0755 "${CERT_RELOAD_HOOK}"
-}
-
-combined_gcore_certificate_current() {
-    [[ -s "${GCORE_CERT_FILE}" && -s "${GCORE_KEY_FILE}" ]] \
-        && openssl x509 -in "${GCORE_CERT_FILE}" -checkend 2592000 -noout >/dev/null 2>&1 \
-        && openssl x509 -in "${GCORE_CERT_FILE}" -checkhost "${GCORE_ORIGIN_DOMAIN}" -noout >/dev/null 2>&1
 }
 
 combined_issue_certificates() {
     local force=${1:-0}
-    local -a issue_args
-    local issue_rc=0
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_ORIGIN_DOMAIN}
     CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CF_CA_ROOT_FILE}"
     cloudflare_issue_origin_certificate "${force}"
-    # Origin CA 一签发就落盘 ID/到期时间：后面 acme 源站证书失败时，续装可直接复用这张证书，
+    # Origin CA 一签发就落盘 ID/到期时间：续装可直接复用这张证书，
     # 不会重复 POST /certificates，也不会留下无法吊销的旧证书。
     persist_install_identity || warn "无法落盘安装身份；中断后 Cloudflare Origin CA 会重新签发"
-
-    install_acme
-    run_acme --set-default-ca --server letsencrypt >/dev/null || true
-    write_cert_reload_hook
-    if [[ "${force}" != "1" ]] && combined_gcore_certificate_current; then
-        return 0
-    fi
-    issue_args=(--issue --dns dns_cf -d "${GCORE_ORIGIN_DOMAIN}" --keylength ec-256)
-    # 重装/重试时不要强制重签：acme.sh 缓存里已有未到续期时间的证书就复用，
-    # 否则会持续消耗 Let's Encrypt 的“同一标识符集合 5 张/168h”限额（2.4.4 现场）。
-    if ((force == 1)); then
-        issue_args+=(--force)
-    fi
-    CF_Token="${CLOUDFLARE_API_TOKEN}" run_acme "${issue_args[@]}" || issue_rc=$?
-    if ((issue_rc == 2)); then
-        # acme.sh 的 RENEW_SKIP：缓存证书仍有效，直接安装即可。
-        info "复用 acme.sh 缓存的 Gcore 回源证书（未重新签发）：${GCORE_ORIGIN_DOMAIN}"
-    elif ((issue_rc != 0)); then
-        die "Gcore 回源域名 ${GCORE_ORIGIN_DOMAIN} 证书签发失败"
-    fi
-    CF_Token="${CLOUDFLARE_API_TOKEN}" run_acme --install-cert -d "${GCORE_ORIGIN_DOMAIN}" --ecc \
-        --key-file "${GCORE_KEY_FILE}" \
-        --fullchain-file "${GCORE_CERT_FILE}" \
-        --reloadcmd "${CERT_RELOAD_HOOK}" || die "安装 Gcore 回源证书失败"
-    chmod 0600 "${GCORE_KEY_FILE}"
-    chmod 0644 "${GCORE_CERT_FILE}"
-    CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
 }
 
 reality_mlkem_required() {
@@ -479,10 +323,8 @@ write_xray_config() {
         --arg sni "${REALITY_TARGET%:*}" \
         --argjson reality_port "${REALITY_PORT}" \
         --argjson xhttp_port "${XRAY_XHTTP_LOOPBACK_PORT}" \
-        --argjson ws_port "${XRAY_WEBSOCKET_LOOPBACK_PORT}" \
         --arg host "${CF_NODE_DOMAIN}" \
         --arg path "${XHTTP_PATH}" \
-        --arg ws_path "${WEBSOCKET_PATH}" \
         --arg secs "${CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS:-600}" \
         --arg padding "${CLOUDFLARE_XHTTP_PADDING_BYTES:-100-1000}" \
         --arg xray_asset_dir "${XRAY_DIR}" \
@@ -525,15 +367,6 @@ write_xray_config() {
                 }
               },
               sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: false}
-            },
-            {
-              tag: "vless-ws-in",
-              listen: "127.0.0.1",
-              port: $ws_port,
-              protocol: "vless",
-              settings: {clients: $ws_clients, decryption: "none"},
-              streamSettings: {network: "ws", sockopt: $sockopt, wsSettings: {path: $ws_path}},
-              sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: false}
             }
           ],
           outbounds: $outbounds,
@@ -563,7 +396,6 @@ xhttp_configure_ufw() {
     ufw allow "${REALITY_PORT}"/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
         || die "放行 Reality 端口失败"
     cloudflare_configure_origin_firewall
-    gcore_configure_origin_firewall
     ufw --force enable >/dev/null || die "启用 UFW 失败"
     ufw reload >/dev/null || die "重载 UFW 失败"
     LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' \
@@ -578,12 +410,6 @@ combined_render_nginx_config() {
             http2_directive=$'\n    http2 on;'
             listen_h2=""
         fi
-    fi
-    # 只有现代分支能按 server 关闭 HTTP/2；旧版分支沿用 socket 级标记，关不掉也不假装关了。
-    local gcore_listen_h2=${listen_h2} gcore_http2=${http2_directive}
-    if [[ -z "${listen_h2}" ]]; then
-        gcore_listen_h2=""
-        gcore_http2=""
     fi
     write_subscription_nginx_maps
     cat <<EOF
@@ -620,33 +446,6 @@ server {
         grpc_send_timeout ${XHTTP_NGINX_STREAM_TIMEOUT};
         grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
         access_log off;
-    }
-
-    location / { return 404; }
-}
-
-server {
-    # Gcore 回源块只承载 WebSocket：WebSocket 的 Upgrade 只能在 HTTP/1.1 上完成，所以
-    # 现代 nginx（>= 1.25.1，http2 指令按 server 生效）这里刻意不启用 HTTP/2。
-    # 旧版 nginx 的 listen ... http2 是地址级联集（ngx_http.c:1343 取或、1440 写回），
-    # 无法按 SNI 关闭，因此旧版分支保持与其它块一致，避免制造一条无效的 "protocol options redefined" 警告。
-    listen 443 ssl ${gcore_listen_h2};
-    server_name ${GCORE_ORIGIN_DOMAIN};
-    ssl_certificate ${GCORE_CERT_FILE};
-    ssl_certificate_key ${GCORE_KEY_FILE};
-    ssl_client_certificate ${GCORE_CLIENT_CA_FILE};
-    ssl_verify_client on;
-    ssl_protocols TLSv1.2 TLSv1.3;${gcore_http2}
-
-    location = ${WEBSOCKET_PATH} {
-        if (\$ssl_client_verify != SUCCESS) { return 403; }
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host ${GCORE_NODE_DOMAIN};
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        proxy_pass http://127.0.0.1:${XRAY_WEBSOCKET_LOOPBACK_PORT};
     }
 
     location / { return 404; }
@@ -716,42 +515,6 @@ combined_validate_cf_node_sni() {
     die "Cloudflare 节点域名 ${CF_NODE_DOMAIN} 本机 TLS/SNI 验收失败：请确认 Nginx server_name 与 Origin CA 证书 SAN 已覆盖该域名（升级后请执行 sudo easy_all apply-cloud）"
 }
 
-combined_gcore_resource() {
-    gcore_collect_api_token
-    # 只在有定义时保存：首次安装不经过 load_state，两个变量都可能还不存在，
-    # 直接 ${VAR} 会在 set -u 下崩成 "SUBSCRIPTION_MODE: unbound variable"（2.3.4 现场）。
-    local saved_domain="" saved_sub="" had_domain=0 had_sub=0 rc=0
-    if [[ -n "${VLESS_CDN_DOMAIN+x}" ]]; then
-        had_domain=1
-        saved_domain=${VLESS_CDN_DOMAIN}
-    fi
-    if [[ -n "${SUBSCRIPTION_MODE+x}" ]]; then
-        had_sub=1
-        saved_sub=${SUBSCRIPTION_MODE}
-    fi
-    VLESS_CDN_DOMAIN=${GCORE_NODE_DOMAIN}
-    SUBSCRIPTION_MODE=link
-    if ! { GCORE_EDGE_CERTIFICATE_ID=$(gcore_edge_certificate_id) \
-        && gcore_ensure_origin_validation_certificates \
-        && gcore_ensure_origin_group \
-        && gcore_ensure_resource; }; then
-        rc=1
-    fi
-    # 失败分支同样要还原，否则 VLESS_CDN_DOMAIN 会滞留在 Gcore 节点域名上。
-    # "原本未定义"要还原成未定义，不能留成空串，否则后续裸读会拿到空值而不是报错。
-    if ((had_domain)); then
-        VLESS_CDN_DOMAIN=${saved_domain}
-    else
-        unset VLESS_CDN_DOMAIN
-    fi
-    if ((had_sub)); then
-        SUBSCRIPTION_MODE=${saved_sub}
-    else
-        unset SUBSCRIPTION_MODE
-    fi
-    return "${rc}"
-}
-
 validate_subscription_runtime() {
     local token base64_response base64_decoded mihomo_response
     local -a tls_args=(--proto '=https' --cacert "${CF_CA_ROOT_FILE}")
@@ -775,58 +538,6 @@ validate_subscription_runtime() {
     validate_subscription_token_rejection \
         "${SUBSCRIPTION_DOMAIN}:443:127.0.0.1" "https://${SUBSCRIPTION_DOMAIN}/subscribe" \
         "${tls_args[@]}"
-}
-
-# Gcore 官方说明配置/证书传播到全部边缘约需 15 分钟，传播期间访问会 502。
-# 按 GCORE_EDGE_PROPAGATION_ATTEMPTS × INTERVAL（90 × 10 秒 = 15 分钟，与模式 4 一致）等待，
-# 一旦返回 101 立即结束；超时后分别检查源站 mTLS 直连和资源关键项，
-# 把“边缘还没生效”和“源站/配置真有问题”区分开。
-combined_gcore_websocket_status() {
-    local url=$1 resolve=${2-} cert=${3-} key=${4-}
-    local -a args=(-sS -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 15
-        -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13'
-        -H "Sec-WebSocket-Key: $(openssl rand -base64 16)")
-    [[ -z "${resolve}" ]] || args+=(--noproxy '*' --resolve "${resolve}")
-    [[ -z "${cert}" ]] || args+=(--cert "${cert}" --key "${key}")
-    curl "${args[@]}" "${url}" 2>/dev/null || printf '000'
-}
-
-combined_validate_gcore() {
-    local attempt code elapsed
-    local attempts=${GCORE_EDGE_PROPAGATION_ATTEMPTS}
-    local interval=${GCORE_EDGE_PROPAGATION_INTERVAL}
-    local progress_every=$((60 / interval))
-    ((progress_every >= 1)) || progress_every=1
-    for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-        code=$(combined_gcore_websocket_status "https://${GCORE_NODE_DOMAIN}${WEBSOCKET_PATH}")
-        [[ "${code}" == "101" ]] && return 0
-        if ((attempt == 1 || attempt % progress_every == 0)); then
-            elapsed=$((attempt * interval))
-            info "等待 Gcore 边缘 WebSocket 就绪（状态=${code}，已等待 ${elapsed} 秒，最长 $((attempts * interval)) 秒）：第 ${attempt}/${attempts} 次；Gcore 配置传播通常需约 15 分钟，请勿中断"
-        fi
-        ((attempt == attempts)) || sleep "${interval}"
-    done
-    COMBINED_EDGE_NOT_READY=1
-    combined_diagnose_gcore_edge "${code}"
-    warn "Gcore 边缘 WebSocket 在 $((attempts * interval)) 秒内未返回 101（最后状态 ${code}）；Gcore 传播通常需约 15 分钟，稍后执行 sudo easy_all apply 复验"
-}
-
-combined_diagnose_gcore_edge() {
-    local code=$1 origin_code resource
-    origin_code=$(combined_gcore_websocket_status \
-        "https://${GCORE_ORIGIN_DOMAIN}${WEBSOCKET_PATH}" \
-        "${GCORE_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        "${GCORE_CLIENT_CERT_FILE}" "${GCORE_CLIENT_CERT_KEY}")
-    info "诊断：本机源站 mTLS 完整 WebSocket 握手 HTTP ${origin_code}（101 为正常），边缘侧 HTTP ${code}"
-    if [[ "${origin_code}" == "000" ]]; then
-        warn "源站 mTLS 直连失败：检查 nginx 是否已加载源站证书与客户端 CA（systemctl status nginx、nginx -t）"
-    elif [[ "${origin_code}" != "101" ]]; then
-        warn "源站本机握手未返回 101（HTTP ${origin_code}）：检查 WEBSOCKET_PATH、nginx 与 Xray WebSocket 入口"
-    fi
-    if [[ "${GCORE_CDN_RESOURCE_ID:-}" =~ ^[1-9][0-9]*$ ]] \
-        && resource=$(gcore_api_get_optional "/cdn/resources/${GCORE_CDN_RESOURCE_ID}" 2>/dev/null); then
-        info "诊断：Gcore 资源关键项 $(jq -c '{sslEnabled,sslData,proxy_ssl_enabled,proxy_ssl_data,proxy_ssl_ca,sni:.options.sni}' <<<"${resource}" 2>/dev/null || printf '{}')"
-    fi
 }
 
 build_vless_xhttp_link() {
@@ -875,21 +586,6 @@ build_mihomo_reality_node() {
         "    client-fingerprint: chrome\n    packet-encoding: xudp\n    ip-version: ipv4\n"'
 }
 
-build_vless_ws_link() {
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${GCORE_NODE_DOMAIN}" "${GCORE_NODE_DOMAIN}" \
-        "${GCORE_NODE_DOMAIN}" "$(uri_encode "${WEBSOCKET_PATH}")" "$(uri_encode "${GCORE_NODE_NAME}")"
-}
-
-build_mihomo_ws_node() {
-    jq -nr --arg name "${GCORE_NODE_NAME}" --arg server "${GCORE_NODE_DOMAIN}" --arg uuid "${VLESS_UUID}" \
-        --arg path "${WEBSOCKET_PATH}" '
-        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
-        "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($server|@json)\n" +
-        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n"'
-}
-
 combined_cf_candidates() {
     cloudflare_globalping_cache_compatible || return 1
     jq -r '.candidates | to_entries[] | [.value.ip, ((.key + 1) | tostring)] | @tsv' \
@@ -899,8 +595,6 @@ combined_cf_candidates() {
 build_node_links() {
     local ip label
     build_reality_link
-    printf '\n'
-    build_vless_ws_link
     printf '\n'
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
@@ -912,7 +606,6 @@ build_node_links() {
 build_mihomo_nodes() {
     local ip label
     build_mihomo_reality_node
-    build_mihomo_ws_node
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
         build_mihomo_xhttp_node "${ip}" "${CF_NODE_PREFIX}${label}"
@@ -921,7 +614,7 @@ build_mihomo_nodes() {
 
 collect_node_names() {
     local ip label names
-    names=$(jq -cn --arg d "${DIRECT_NODE_NAME}" --arg g "${GCORE_NODE_NAME}" '[$d, $g]')
+    names=$(jq -cn --arg d "${DIRECT_NODE_NAME}" '[$d]')
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
         names=$(jq -cn --argjson names "${names}" --arg value "${CF_NODE_PREFIX}${label}" \
@@ -954,8 +647,6 @@ show_node() {
     local ip label
     printf '\n直连节点:\n'
     build_reality_link
-    printf '\n\nGcore 节点:\n'
-    build_vless_ws_link
     printf '\n\nCloudflare 节点（优选 IPv4）:\n'
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
@@ -968,11 +659,10 @@ show_status() {
     local cf_cert_raw cf_cert_enddate="" expected_tokens actual_tokens
     require_root
     collect_installed_state
-    printf '协议: 直连 Reality + Cloudflare XHTTP + Gcore WebSocket\n'
+    printf '协议: 直连 Reality + Cloudflare XHTTP\n'
     show_tcp_acceleration_status
     printf '直连入口: %s:%s\n' "${DIRECT_DOMAIN}" "${REALITY_PORT}"
     printf 'Cloudflare: %s（回源 %s）\n' "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}"
-    printf 'Gcore: %s（回源 %s）\n' "${GCORE_NODE_DOMAIN}" "${GCORE_ORIGIN_DOMAIN}"
     printf '订阅: https://%s/subscribe\n' "${SUBSCRIPTION_DOMAIN}"
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
@@ -995,10 +685,6 @@ show_status() {
     else
         printf 'Cloudflare 回源证书到期: %s（证书未覆盖 %s，请执行 sudo easy_all apply-cloud）\n' \
             "${cf_cert_enddate}" "${CF_NODE_DOMAIN}"
-    fi
-    if [[ -s "${GCORE_CERT_FILE}" ]]; then
-        printf 'Gcore 回源证书到期: %s\n' \
-            "$(openssl x509 -in "${GCORE_CERT_FILE}" -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
     fi
     if [[ -f "${NGINX_CONFIG}" ]]; then
         expected_tokens=$(write_subscription_token_map 2>/dev/null \
@@ -1058,7 +744,6 @@ apply_easy_all() {
     xhttp_configure_ufw
     write_xray_config
     install_xray_service
-    gcore_prepare_origin_validation_material || return 1
     write_nginx_config
     validate_protocol_runtime
     combined_validate_cf_node_sni lenient
@@ -1068,7 +753,7 @@ apply_easy_all() {
     fi
     combined_finish_local
     release_runtime_write_lock
-    success "本机配置与订阅已应用；未修改 DNS 与 Gcore 资源"
+    success "本机配置与订阅已应用；未修改 DNS 与云端资源"
 }
 
 apply_cloud_resources() {
@@ -1082,12 +767,9 @@ apply_cloud_resources() {
     combined_issue_certificates
     write_xray_config
     install_xray_service
-    gcore_prepare_origin_validation_material || return 1
     write_nginx_config
     validate_protocol_runtime
     combined_validate_cf_node_sni
-    combined_gcore_resource || die "同步 Gcore CDN 资源失败"
-    combined_validate_gcore
     persist_cloudflare_token
     persist_globalping_token
     refresh_globalping_cache || warn "Cloudflare 优选 IP 刷新失败，沿用现有缓存"
@@ -1095,24 +777,14 @@ apply_cloud_resources() {
     # 吊销不可逆，必须先关闭回滚再吊销，避免后续中断时恢复已吊销的旧证书。
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
     cloudflare_finalize_certificate_rotation
-    gcore_clear_api_token
     commit_subscription_update
     success "本机配置、订阅与云端资源已同步"
-    if ((${COMBINED_EDGE_NOT_READY:-0} == 1)); then
-        warn "Gcore 边缘尚未通过 WebSocket 验收：节点暂时不可用，边缘生效后执行 sudo easy_all apply 复验"
-    fi
 }
 
-# 组合模式跨越本机、Cloudflare 与 Gcore 三部分：失败/中断时只回滚本机，云端已创建的
+# 组合模式跨越本机与 Cloudflare 两部分：失败/中断时只回滚本机，云端已创建的
 # 资源按设计保留，并用 purge 命令提示清理——擅自删除会让同域名重装撞上残留记录。
 cleanup_partial_install() {
     cleanup_partial_install_local || return 1
-    # 刻意不卸载 acme.sh、不删 /root/.acme-combined.sh 的证书缓存：每次重试都重新签发会打满
-    # Let's Encrypt 的“同一标识符集合 5 张/168h”限额（2.4.4 现场）。重试时 acme.sh 会跳过未到
-    # 续期时间的证书；真正的 uninstall 才执行 acme.sh --uninstall。
-    if [[ -e "${ACME_HOME}" ]]; then
-        warn "已保留 acme.sh 证书缓存 ${ACME_HOME}，重试安装会复用已签证书；不再安装可执行 sudo ${ACME_BIN} --uninstall"
-    fi
     remove_daily_reboot_schedule || true
     cleanup_partial_install_files \
         "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}" \
@@ -1122,9 +794,8 @@ cleanup_partial_install() {
 rollback_fresh_install() {
     warn "组合模式首次安装未完成，正在回滚本机服务、UFW、crontab 与 TCP 配置"
     cleanup_partial_install || true
-    warn "本次已创建的 Cloudflare 记录/Origin CA 与 Gcore CDN 资源按设计保留；如不再使用请清理："
+    warn "本次已创建的 Cloudflare 记录/Origin CA 按设计保留；如不再使用请清理："
     warn "  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --all"
-    warn "  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-gcore --all"
 }
 
 install_all() {
@@ -1163,18 +834,15 @@ install_all() {
     persist_install_identity || warn "无法落盘安装身份；中断后无法完全复用密钥与证书元数据"
     install_xray_service
     write_bootstrap_nginx_config
-    gcore_prepare_origin_validation_material || return 1
     write_nginx_config
     validate_protocol_runtime
     combined_validate_cf_node_sni
     install_progress_stage cloud
-    combined_gcore_resource || die "同步 Gcore CDN 资源失败"
-    combined_validate_gcore
     persist_cloudflare_token
     persist_globalping_token
     # 此刻还没有可用订阅，状态也未落盘：失败即回滚本机，云端资源保留并提示清理。
     refresh_globalping_cache \
-        || die "首次 Cloudflare 优选 IP 生成失败；本机安装已回滚，云端资源保留，可稍后重试安装，或先执行 sudo easy_all purge-cloudflare --all 与 sudo easy_all purge-gcore 清理残留"
+        || die "首次 Cloudflare 优选 IP 生成失败；本机安装已回滚，云端资源保留，可稍后重试安装，或先执行 sudo easy_all purge-cloudflare --all 清理残留"
     install_progress_stage subscription
     write_subscriptions
     validate_subscription_runtime
@@ -1186,13 +854,12 @@ install_all() {
     cloudflare_finalize_certificate_rotation
     register_easy_all_command
     install_globalping_refresh_timer
-    gcore_clear_api_token
     release_runtime_write_lock
     install_progress_clear
     # 从这里开始只剩展示类命令：失败不再算“安装失败”。
     INSTALL_FAILURE_ARMED=0
     show_subscription
-    success "easy_all 组合模式安装完成（直连 + Cloudflare + Gcore）"
+    success "easy_all 组合模式安装完成（直连 + Cloudflare）"
     show_tcp_acceleration_status
     prompt_bbrv3_reboot
 }
@@ -1344,7 +1011,7 @@ update_reality_target() {
 purge_combined_dns() {
     local host type records count id comment
     for host in "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${CF_ORIGIN_DOMAIN}" \
-        "${GCORE_ORIGIN_DOMAIN}" "${SUBSCRIPTION_DOMAIN}"; do
+        "${SUBSCRIPTION_DOMAIN}"; do
         records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" A "${host}")
         count=$(jq 'length' <<<"${records}")
         ((count == 1)) || continue
@@ -1354,25 +1021,6 @@ purge_combined_dns() {
         cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null \
             || warn "删除 Cloudflare 记录失败：${host}"
     done
-    records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" CNAME "${GCORE_NODE_DOMAIN}")
-    count=$(jq 'length' <<<"${records}")
-    if ((count == 1)); then
-        id=$(jq -r '.[0].id' <<<"${records}")
-        comment=$(jq -r '.[0].comment // empty' <<<"${records}")
-        if [[ "${comment}" == "${COMBINED_RECORD_COMMENT}" ]]; then
-            cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null \
-                || warn "删除 Cloudflare Gcore CNAME 失败"
-        fi
-    fi
-    # DNS-01 挑战子域的 NS 委派记录（只删带 easy_all 注释的，保留用户自建委派）
-    records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" NS \
-        "_acme-challenge.${GCORE_NODE_DOMAIN}")
-    while IFS=$'\t' read -r id comment; do
-        [[ -n "${id}" ]] || continue
-        [[ "${comment}" == "${COMBINED_RECORD_COMMENT}" ]] || continue
-        cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null \
-            || warn "删除 _acme-challenge 委派记录失败：${id}"
-    done < <(jq -r '.[] | [.id, (.comment // "")] | @tsv' <<<"${records}")
 }
 
 uninstall_all() {
@@ -1388,7 +1036,7 @@ uninstall_all() {
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "非交互卸载必须显式设置 FORCE=1"
         if [[ "${mode}" == "--purge-cloud" ]]; then
-            read_bilingual '删除本机内容以及 easy_all 创建的 Cloudflare 记录与 Gcore CDN 资源？[y/N]:' answer
+            read_bilingual '删除本机内容以及 easy_all 创建的 Cloudflare 记录？[y/N]:' answer
         else
             read_bilingual '删除 easy_all 本机服务、状态和证书（保留远端资源）？[y/N]:' answer
         fi
@@ -1401,16 +1049,13 @@ uninstall_all() {
         cloudflare_collect_api_token
         CLOUDFLARE_ZONE_ID=$(cloudflare_lookup_parent_zone "${CF_ZONE}")
         purge_combined_dns
-        gcore_purge_managed_resources \
-            || die "Gcore 远端资源未完全清理；本机状态仍保留，可直接重试 uninstall --purge-cloud"
         cloudflare_clear_api_token
     else
-        warn "远端资源（Cloudflare 记录与 Gcore CDN）已保留；本机状态删除后无法再用 easy_all 清理"
+        warn "远端资源（Cloudflare 记录）已保留；本机状态删除后无法再用 easy_all 清理"
     fi
     stop_services
     remove_quota_timer
     remove_globalping_refresh_timer
-    gcore_remove_origin_firewall_rules
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall
     restore_bbr_tcp_install_state
@@ -1424,8 +1069,4 @@ uninstall_all() {
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
     success "easy_all 组合模式本机内容已卸载"
-}
-
-gcore_purge_managed_dns_records() {
-    return 0
 }

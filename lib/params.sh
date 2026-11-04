@@ -51,7 +51,7 @@ params_warn() {
 }
 
 params_supported_modes() {
-    printf 'reality cloudflare-streamup bunny-ws gcore combined'
+    printf 'reality cloudflare-streamup bunny-ws combined'
 }
 
 params_file_permissions() {
@@ -574,10 +574,6 @@ params_check_hour() {
 
 params_check_cf_token() {
     [[ "$1" =~ ^[A-Za-z0-9_-]{20,100}$ ]]
-}
-
-params_check_gcore_token() {
-    params_check_no_space "$1"
 }
 
 params_normalize_reality_target() {

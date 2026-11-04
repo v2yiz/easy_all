@@ -626,7 +626,7 @@ residue_recovery_hint() {
             '这些残留没有安装进度标记（旧版本遗留），无法自动判断模式：' \
             '  1) 先人工核对 /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all* 服务；' \
             '  2) 确认模式后指定清理：' \
-            "     ${bootstrap} cleanup-partial --assume-mode <reality|cloudflare-streamup|gcore|combined|bunny-ws>"
+            "     ${bootstrap} cleanup-partial --assume-mode <reality|cloudflare-streamup|combined|bunny-ws>"
     fi
 }
 
@@ -668,7 +668,6 @@ profile_script_for() {
     case "${1:-}" in
     reality) printf 'reality.sh' ;;
     cloudflare-streamup) printf 'xhttp-cloudflare-streamup.sh' ;;
-    gcore) printf 'xhttp-gcore.sh' ;;
     combined) printf 'combined.sh' ;;
     bunny-ws) printf 'ws-bunny.sh' ;;
     *) return 1 ;;
@@ -709,7 +708,7 @@ run_recorded_profile_cleanup() {
 # 安装前置：清理自身残留 + 断言端口空闲。调用方须保持「已安装则提前 die」的语义。
 # 供提示统一引用的模式写法（菜单序号与中文名常被用户直接输入）。
 install_mode_choices() {
-    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|gcore 5|combined（也接受 reality/直连、cloudflare、gcore、组合等写法）'
+    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined（也接受 reality/直连、cloudflare、组合等写法）'
 }
 
 # 本次安装生成的身份（UUID、路径、订阅 Token、Reality 密钥、Origin CA 元数据）。
@@ -835,7 +834,7 @@ prepare_fresh_install() {
                 || die "按 ${recorded} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial"
             success "残留已清理，继续安装"
         elif [[ "${current}" == "combined" ]]; then
-            # 组合模式的所有步骤幂等（DNS 按注释复用、证书缓存复用、Gcore 资源幂等），
+            # 组合模式的所有步骤幂等（DNS 按注释复用、证书缓存复用），
             # 可以保留上次已完成的本地配置/证书与云端资源，只停服务后从 packages 阶段重跑。
             if [[ -t 0 ]]; then
                 read_confirmation '继续上次安装（保留已完成的配置、证书与云端资源）？[Y/n]:' answer
@@ -930,9 +929,6 @@ cleanup_partial_install_files() {
 restore_install_snapshot() {
     if declare -F cloudflare_remove_origin_firewall_rules >/dev/null 2>&1; then
         cloudflare_remove_origin_firewall_rules || true
-    fi
-    if declare -F gcore_remove_origin_firewall_rules >/dev/null 2>&1; then
-        gcore_remove_origin_firewall_rules || true
     fi
     if declare -F reality_cloudflare_remove_subscription_firewall_rules >/dev/null 2>&1; then
         reality_cloudflare_remove_subscription_firewall_rules || true

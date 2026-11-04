@@ -97,11 +97,10 @@ launcher_usage() {
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
                    立即刷新直连 Reality 模式的动态端口 NAT 规则
-  apply-cloud      同步云端资源（Cloudflare/Bunny/组合；组合含 DNS、证书与 Gcore 资源）
+  apply-cloud      同步云端资源（Cloudflare/Bunny/组合；组合含 DNS 与证书）
   edit-sub         交互修改订阅设置（域名、模式、用户/配额）
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
   refresh-origin-ips  刷新 Bunny 官方回源 IPv4 防火墙列表
-  purge-gcore      清理 easy_all 创建的 Gcore CDN 资源（可在未安装状态使用）
   purge-cloudflare 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用）
   update-core      更新当前模式的核心（Xray）
   renew-cert       重新签发当前模式的 TLS 证书（Bunny 模式强制走 Let's Encrypt）
@@ -118,8 +117,7 @@ launcher_usage() {
   1 | reality              直连 Reality
   2 | cloudflare-streamup  Cloudflare CDN 精选 IP（纯 XHTTP）
   3 | bunny-ws             Bunny CDN（VLESS WS/TLS）
-  4 | gcore                Gcore CDN 精选 IP
-  5 | combined             组合：直连 Reality + Cloudflare + Gcore
+  5 | combined             组合：直连 Reality + Cloudflare
 
 一台 VPS 只能安装一种模式。
 EOF
@@ -129,7 +127,7 @@ legacy_local_uninstall() {
     local marker
     for marker in "$@"; do
         [[ "${marker}" != "--purge-cloud" ]] \
-            || launcher_die "旧状态版本无法安全识别云端资源；已停止卸载，请先在控制台核对 Cloudflare/Gcore/Bunny 资源"
+            || launcher_die "旧状态版本无法安全识别云端资源；已停止卸载，请先在控制台核对 Cloudflare/Bunny 资源"
     done
     [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
     warn "检测到旧版本状态文件；只清理 easy_all 本机文件，SSH 配置、UFW 规则与云端资源保持不变"
@@ -161,14 +159,13 @@ launcher_mode_alias() {
     1 | reality | Reality | 直连) printf 'reality' ;;
     2 | cloudflare | Cloudflare | cloudflare-streamup | cf | CF | xhttp) printf 'cloudflare-streamup' ;;
     3 | bunny | Bunny | bunny-ws) printf 'bunny-ws' ;;
-    4 | gcore | Gcore | GCore) printf 'gcore' ;;
     5 | combined | Combined | 组合) printf 'combined' ;;
     *) return 1 ;;
     esac
 }
 
 launcher_mode_usage() {
-    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|gcore 5|combined（也接受 直连/组合/cf 等写法）'
+    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined（也接受 直连/组合/cf 等写法）'
 }
 
 # 一次读入 marker 并同时给出「模式/阶段/身份」：模式与身份必须来自同一份快照，
@@ -246,7 +243,7 @@ cleanup_partial_install_command() {
     fi
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || launcher_die "非交互清理必须显式设置 FORCE=1"
-        launcher_read_bilingual '清理本机残留（不改动 Cloudflare/Gcore/Bunny 云端资源）？[y/N]:' answer
+        launcher_read_bilingual '清理本机残留（不改动 Cloudflare/Bunny 云端资源）？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || launcher_die "已取消"
     fi
     module=$(profile_file "${mode}") || exit 1
@@ -269,7 +266,7 @@ cleanup_partial_install_command() {
     fi
     cleanup_partial_install
     # 清理会删掉 easy_all 命令本身，下一步只能用 bootstrap 入口。
-    success "本机残留已清理完成；如安装期已创建云端资源，需要时用 ${bootstrap} purge-cloudflare / purge-gcore 清理"
+    success "本机残留已清理完成；如安装期已创建云端资源，需要时用 ${bootstrap} purge-cloudflare 清理"
 }
 
 show_install_guide() {
@@ -306,22 +303,13 @@ easy_all install
 │  ├─ DNS：origin 为 DNS-only A、cdn 为 DNS-only CNAME；不创建 Bunny DNS Zone/NS 委派
 │  ├─ 数据面：Bunny 终止客户端 TLS，Nginx 仅接受官方回源 IPv4 和随机回源头
 │  └─ 输出：一个自动调度域名节点及一个 owner 订阅
-├─ [4] Gcore CDN 精选 IP - 多地区真实入口（三网定向 1～6 个已验证节点，通常为 2 个）
-│  ├─ 适用场景：直连效果不佳、VPS 公网 IP 已被封，或追求 Gcore CDN 边缘与三网定向
-│  ├─ 前提条件：域名需委派至 Gcore Managed DNS Zone
-│  ├─ 采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源
-│  ├─ 地址候选池：通过亚洲/美国西岸/中国三网及多公共解析器发现真实入口
-│  ├─ 定向测速：移动以香港为主、联通以日本为主、电信以洛杉矶为主
-│  ├─ 每网最多输出 2 个通过验证的节点，总计 1～6 个，通常为 2 个
-│  ├─ 订阅输出：一条订阅链接，按客户端自动下发 Mihomo YAML 或 Base64（`flag=` 可强制）
-│  └─ 零损失就地平滑安装/迁移
-└─ [5] 组合：直连 Reality + Cloudflare + Gcore（一次部署三个入口）
-   ├─ 入口：直连 VLESS Reality（VPS 8443）、Cloudflare XHTTP（6 个优选 IPv4）、Gcore WS 域名节点
-   ├─ 前提条件：一个 Cloudflare Zone 下六个子域名（直连/CF 节点/CF 回源/Gcore 节点/Gcore 回源/订阅）
-   ├─ 需要：Cloudflare DNS Token、Gcore CDN Token、Globalping Token；云安全组放行 443 与 8443
-   ├─ 网络：443 只允许 Cloudflare 与 Gcore 官方回源网段；SSH 端口保持现状不改
-   ├─ 订阅：单个 owner Token，三类节点平铺进 AUTO 测速组；不启用用户配额
-   └─ apply 只重建本机配置与订阅；apply-cloud 才写 DNS、签发证书并同步 Gcore 资源
+└─ [5] 组合：直连 Reality + Cloudflare（一次部署两个入口）
+   ├─ 入口：直连 VLESS Reality（VPS 8443）、Cloudflare XHTTP（6 个优选 IPv4）
+   ├─ 前提条件：一个 Cloudflare Zone 下四个子域名（直连/CF 节点/CF 回源/订阅）
+   ├─ 需要：Cloudflare DNS Token、Globalping Token；云安全组放行 443 与 8443
+   ├─ 网络：443 只允许 Cloudflare 官方回源网段；SSH 端口保持现状不改
+   ├─ 订阅：单个 owner Token，两类节点平铺进 AUTO 测速组；不启用用户配额
+   └─ apply 只重建本机配置与订阅；apply-cloud 才写 DNS 并签发证书
 订阅输出：只有当前服务器时推荐本机订阅；多台直连节点需要统一下发时选择 Worker 订阅聚合
 （在其中一台部署，其余节点写入聚合 JSON）；不需要订阅时保持默认的仅节点。
 Worker 聚合会额外占用两个 Cloudflare 一级子域名：公开订阅域名绑定 Worker，私有节点源域名由
@@ -344,7 +332,7 @@ install_usage() {
       easy_all install --print-params --mode <模式>   查看全部字段（JSON 到 stdout）
 
   也接受 --params <参数文件> 写法；参数文件用 - 表示从标准输入读取，此时需配合 --mode。
-  --mode 可用：1|reality 2|cloudflare-streamup 3|bunny-ws 4|gcore 5|combined
+  --mode 可用：1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined
 安装参数必须一次提供完整；安装过程中不会再提问。
 EOF
 }
@@ -475,7 +463,7 @@ detect_installed_mode() {
         [[ "${state_version}" == "${CURRENT_STATE_VERSION}" ]] \
             || launcher_die "状态版本不匹配（当前：${state_version:-缺失}，期望：${CURRENT_STATE_VERSION}）；请先执行 sudo easy_all uninstall 清理旧版本本机文件，再重新安装"
         case "${protocol}" in
-        reality|cloudflare-streamup|bunny-ws|gcore|combined)
+        reality|cloudflare-streamup|bunny-ws|combined)
             printf '%s\n' "${protocol}"
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
@@ -490,7 +478,6 @@ profile_file() {
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare-streamup) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare-streamup.sh" ;;
     bunny-ws) candidate="${EASY_ALL_ROOT}/profiles/ws-bunny.sh" ;;
-    gcore) candidate="${EASY_ALL_ROOT}/profiles/xhttp-gcore.sh" ;;
     combined) candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
@@ -604,7 +591,7 @@ dispatch_profile_command() {
         update_reality_target "$@"
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "bunny-ws" || "${mode}" == "gcore" || "${mode}" == "combined" ]] \
+        [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "bunny-ws" || "${mode}" == "combined" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         (($# == 0)) || launcher_die "apply-cloud 不接受额外参数"
         if [[ "${mode}" == "bunny-ws" ]]; then
@@ -627,8 +614,6 @@ dispatch_profile_command() {
     refresh-cdn-ips)
         if [[ "${mode}" == "cloudflare-streamup" ]]; then
             refresh_cloudflare_cdn_ips
-        elif [[ "${mode}" == "gcore" ]]; then
-            refresh_gcore_cdn_ips
         elif [[ "${mode}" == "combined" ]]; then
             refresh_combined_cdn_ips
         else
@@ -640,7 +625,6 @@ dispatch_profile_command() {
         reality) renew_subscription_certificate ;;
         bunny-ws) renew_bunny_certificate 1 ;;
         cloudflare-streamup) renew_certificate ;;
-        gcore) xhttp_renew_origin_certificate ;;
         combined) renew_certificate ;;
         *) launcher_die "当前模式不使用 TLS 证书，无需续期" ;;
         esac
@@ -711,10 +695,6 @@ main() {
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
         launcher_usage
         return
-    fi
-    if [[ "${command}" == "purge-gcore" ]]; then
-        bash "${EASY_ALL_ROOT}/lib/gcore-purge.sh" "$@"
-        exit
     fi
     if [[ "${command}" == "purge-cloudflare" ]]; then
         bash "${EASY_ALL_ROOT}/lib/cloudflare-purge.sh" "$@"

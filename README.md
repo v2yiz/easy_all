@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.4.18](CHANGELOG.md#2418-更新说明2026-11-04)。
+当前源码版本：[2.5.0](CHANGELOG.md#250-更新说明2026-11-04)。
 
 `easy_all` 是面向全新 Debian 12/13 VPS 的单节点安装器（所有模式支持 amd64，Bunny 另支持 arm64）。它统一配置 Xray、Nginx、
 订阅、UFW、Fail2ban 和 TCP 加速（默认安装并启用 Skyline Speeder）。
@@ -27,7 +27,7 @@ Host *
 
 仍然建议在 `tmux` 里执行；万一断开，重连后按原参数重跑即可：检测到残留会提示「继续上次安装」（组合模式默认续装：保留已完成的配置、证书与云端资源，UUID/订阅 Token 等节点身份也不变）；只有想彻底重来才选清理。
 
-这组参数**不限制会话总时长**：每 30 秒的探测只要被 sshd 应答就会一直续下去，等 Gcore 激活那 30 分钟
+这组参数**不限制会话总时长**：每 30 秒的探测只要被 sshd 应答就会一直续下去，等较长的云端步骤时
 不会因为“空闲”被断。`ServerAliveCountMax 6` 只是“连续 6 次收不到应答（约 3 分钟）才断开”的故障容忍；
 路径真断（切网、VPN 掉线、休眠）超过这个窗口仍会断，所以还是建议 `tmux`。
 
@@ -38,8 +38,7 @@ Host *
 | **1. 直连 Reality** | VPS 公网 IP 可用且直连质量良好 | VLESS TCP Reality Vision，VPS `443` |
 | **2. Cloudflare CDN** | 直连效果不佳、VPS 公网 IP 已被封，或明确需要纯 XHTTP | VLESS XHTTP `stream-up`，6 个 Cloudflare 精选 IPv4；可选独立纯 Worker 兜底 |
 | **3. Bunny CDN** | 使用 Bunny 自动调度的 WS 域名入口 | 一个 VLESS WS/TLS 节点；同域 owner Token 通用/Mihomo 订阅；Nginx HTTPS 回源 |
-| **4. Gcore CDN** | 追求多地区边缘入口与三网定向直连 | VLESS WebSocket / TLS，Gcore + Globalping IPv4（三网定向 1～6 个已验证节点，通常为 2 个） |
-| **5. 组合** | 一台 VPS 同时要直连与两个 CDN 入口 | VLESS Reality（VPS `8443`）+ Cloudflare XHTTP（6 个优选 IPv4）+ Gcore WS 域名节点；单一订阅，含 AUTO 测速组 |
+| **5. 组合** | 一台 VPS 同时要直连与 Cloudflare 入口 | VLESS Reality（VPS `8443`）+ Cloudflare XHTTP（6 个优选 IPv4）；单一订阅，含 AUTO 测速组 |
 
 Bunny 模式使用 Cloudflare 根 Zone 内两个不同域名、Bunny Account API Key 与 Cloudflare
 DNS API Token。`origin` 使用 DNS-only A，`cdn` 使用 DNS-only CNAME 指向 Pull Zone 的
@@ -66,16 +65,9 @@ Mihomo 全局模式通过显式 `GLOBAL → PROXY` 复用 `PROXY` 当前选择�
 请求体内，仍受 Cloudflare 套餐请求体大小限制（Free/Pro 通常为 100 MB），大文件上传应在
 `PROXY` 中选择 VPS 节点。
 
-Gcore 模式面向非优化线路，采用 Xray 服务端，结合 Nginx mTLS 客户端证书鉴权回源；通过中国大陆三网、中国香港、中国台北、日本、新加坡、美国西海岸及多公共解析器的 Globalping 视角解析账户 CDN 域名，跨小时保留 7 天内发现的真实入口，再经本机 SNI/WebSocket 和三网定向测速筛选，下发 1～6 个实际有效节点，通常为 2 个，节点连续命名为 `🇺🇸优选1`～`🇺🇸优选n`；订阅为一条链接，按客户端 User-Agent 自动下发 Mihomo YAML 或 Base64（`flag=` 可强制），内置单一 AUTO 自动测速组。需要准备：
-- 委派至 Gcore Managed DNS 的域名 Zone；
-- 具备 CDN 与 DNS 权限的 Gcore API Token；
-- Globalping Token。
-以上是模式 4 的要求；组合模式（`mode: combined`）的 Gcore 入口是一个域名节点，不需要委派 Gcore Managed DNS，
-也不需要 Cloudflare gRPC，准备要求见下方组合模式段落。
-组合模式（`mode: combined`）使用一个 Cloudflare Zone 下的六个子域名：直连域名（灰云 A）、
-Cloudflare 节点与回源域名（橙云 A）、Gcore 节点（灰云 CNAME 到账户 `*.gcdn.co`）与回源域名
-（灰云 A）、订阅域名（橙云 A）。安装时需要 Cloudflare DNS Token、Gcore CDN Token 与
-Globalping Token；`443` 只对 Cloudflare 与 Gcore 官方回源网段开放，直连走 `8443`，
+组合模式（`mode: combined`）使用一个 Cloudflare Zone 下的四个子域名：直连域名（灰云 A）、
+Cloudflare 节点与回源域名（橙云 A）、订阅域名（橙云 A）。安装时需要 Cloudflare DNS Token 与
+Globalping Token；`443` 只对 Cloudflare 官方回源网段开放，直连走 `8443`，
 SSH 保持现状不改。不启用用户配额，订阅只有一个 owner Token。
 
 前置准备详见 [前置准备手册](docs/preparation-guide.md)。
@@ -105,7 +97,7 @@ Reality/Cloudflare 的完整步骤见[前置准备手册](docs/preparation-guide
 - 当前 SSH 登录方式和服务商 Console/VNC 均可用；
 - 没有其他 Xray、Nginx 或代理面板占用端口。
 
-Reality/Cloudflare/Bunny/Gcore 安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务；
+Reality/Cloudflare/Bunny 安装会修改内核、SSH、UFW、Fail2ban、时区和 systemd 任务；
 组合模式（`mode: combined`）不改 SSH，也不配置 Fail2ban。Bunny 保留当前 SSH 监听；ARM64 使用原有内核，
 暂不支持 Skyline Speeder。
 建议先创建 VPS 快照，并保留当前
@@ -157,18 +149,13 @@ sudo easy_all params.json --check-params           # 只校验，不改本机
     "DIRECT_DOMAIN": "node.example.com",
     "CF_NODE_DOMAIN": "cf.example.com",
     "CF_ORIGIN_DOMAIN": "cf-origin.example.com",
-    "GCORE_NODE_DOMAIN": "gcore.example.com",
-    "GCORE_ORIGIN_DOMAIN": "gcore-origin.example.com",
     "SUBSCRIPTION_DOMAIN": "sub.example.com",
     "CLOUDFLARE_API_TOKEN": "<Cloudflare API Token>",
-    "GCORE_API_TOKEN": "<Gcore API Token>",
     "GLOBALPING_TOKEN": "<Globalping Token>",
     "REALITY_TARGET": "swdist.apple.com:443",
     "XHTTP_PATH": "",
-    "WEBSOCKET_PATH": "",
     "DIRECT_NODE_NAME": "🇺🇸直连",
     "CF_NODE_PREFIX": "🇺🇸CF",
-    "GCORE_NODE_NAME": "🇺🇸GCore",
     "SUB_DOWNLOAD_NAME": "EASY_ALL",
     "VLESS_UUID": "",
     "ALLOWED_TOKENS": {
@@ -182,14 +169,14 @@ sudo easy_all params.json --check-params           # 只校验，不改本机
 }
 ```
 
-其余四个模式（Reality 的 deploy/worker、Cloudflare、Gcore、Bunny）见
+其余四个模式（Reality 的 deploy/worker、Cloudflare、Bunny）见
 [docs/params-examples.md](docs/params-examples.md)。
 
-模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `gcore` / `combined`（或 `1`~`5`）。
+模式写成 `reality` / `cloudflare-streamup` / `bunny-ws` / `combined`（或 `1`、`2`、`3`、`5`；模式 4 已移除）。
 
 ### 参数字段
 
-表里 `R`=reality，`CF`=cloudflare-streamup，`GC`=gcore，`B`=bunny-ws，`组合`=combined。
+表里 `R`=reality，`CF`=cloudflare-streamup，`B`=bunny-ws，`组合`=combined。
 “必填”指缺省直接报错；“否”表示有默认值或会自动生成/探测。
 
 #### 通用
@@ -201,34 +188,33 @@ sudo easy_all params.json --check-params           # 只校验，不改本机
 | `TCP_ACCELERATION` | 全部 | 否 | `skyline` | `skyline` 或 `bbrv3`（Bunny 仅 amd64 生效） |
 | `REBOOT_SCHEDULE_MODE` | 全部 | 否 | `1` | `1` 每天 04:00，`2` 自定义小时，`3` 不配置 |
 | `REBOOT_HOUR` | 全部 | 否 | 空 | 仅 `REBOOT_SCHEDULE_MODE: "2"` 时必填，`0`~`23` |
-| `SUB_DOWNLOAD_NAME` | R/CF/GC/组合 | 否 | `EASY_ALL` | 订阅下载文件名（不含 `.yaml`）；Bunny 固定 `EASY_ALL` |
+| `SUB_DOWNLOAD_NAME` | R/CF/组合 | 否 | `EASY_ALL` | 订阅下载文件名（不含 `.yaml`）；Bunny 固定 `EASY_ALL` |
 
 #### Token
 
 | 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
 | --- | --- | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | R/CF/组合 | 是 | — | DNS 与 Origin CA 权限；R 仅 `deploy`/`worker` 需要，CF 必填 |
-| `GCORE_API_TOKEN` | GC/组合 | 是 | — | Gcore CDN（GC 另需 Managed DNS）权限 |
-| `GLOBALPING_TOKEN` | CF/GC/组合 | 是 | — | 优选 IP 探测；安装后保存到 root-only 凭据文件 |
+| `GLOBALPING_TOKEN` | CF/组合 | 是 | — | 优选 IP 探测；安装后保存到 root-only 凭据文件 |
 | `BUNNY_API_KEY` | B | 是 | — | Bunny Account API Key |
 | `CLOUDFLARE_DNS_TOKEN` | B | 是 | — | Bunny 模式写 Cloudflare DNS 的 Token |
-| `ALLOWED_TOKENS` | R/CF/GC/组合 | 条件 | — | 订阅用户字典 `{"用户":"token"}`；未启用配额且非 `link` 时必填，组合模式可省略（自动生成 owner） |
+| `ALLOWED_TOKENS` | R/CF/组合 | 条件 | — | 订阅用户字典 `{"用户":"token"}`；未启用配额且非 `link` 时必填，组合模式可省略（自动生成 owner） |
 | `OWNER_TOKEN` | 组合/B | 否 | 自动生成 | 单用户 Token；与 `ALLOWED_TOKENS` 二选一，B 固定单用户 |
 
 #### 订阅
 
 | 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
 | --- | --- | --- | --- | --- |
-| `SUBSCRIPTION_MODE` | R/CF/GC | 否 | `deploy` | R：`link`/`deploy`/`worker`；CF：`link`/`deploy`；GC：`link`/`deploy` |
-| `SUBSCRIPTION_DOMAIN` | R/CF/GC/组合 | R·GC 是 / CF·组合 否 | CF：`sub.<节点域名的父域>`；组合：`sub.<CF_ZONE>` | R/GC 在非 `link` 时必须手填 |
+| `SUBSCRIPTION_MODE` | R/CF | 否 | `deploy` | R：`link`/`deploy`/`worker`；CF：`link`/`deploy` |
+| `SUBSCRIPTION_DOMAIN` | R/CF/组合 | R 是 / CF·组合 否 | CF：`sub.<节点域名的父域>`；组合：`sub.<CF_ZONE>` | R 在非 `link` 时必须手填 |
 | `SUB_SOURCE_DOMAIN` | R | 条件 | — | `worker` 时必填：Worker 回源用的私有节点源域名 |
 | `CLOUDFLARE_WORKER_NAME` | R/CF | 否 | `easyall-reality` / `easyall` | Worker 名称；下单 Worker 订阅时使用 |
 | `WORKER_SOURCE_SECRET` | R/CF | 否 | 自动生成 | Nginx 与 Worker 之间的回源密钥 |
 | `WORKER_AGGREGATION_CONFIG` | R/CF | 否 | `{}` | 其他节点的聚合 JSON（不得含 `vpsSubUrl`）；`allowedTokens` 会覆盖用户 Token |
-| `ENABLE_MONTHLY_QUOTA` | R/CF/GC | 否 | `0` | `1` 启用按用户月度配额 |
-| `MONTHLY_QUOTAS_GB` | R/CF/GC | 否 | `{"owner":0}` | 仅启用配额时：`{"用户":GB}`，`0` 不限量 |
-| `QUOTA_TOKEN_OVERRIDES` | R/CF/GC | 否 | `{}` | 仅启用配额时：覆盖指定用户的 Token |
-| `QUOTA_START_DATE` | R/CF/GC | 否 | 今天 | 仅启用配额时：账期起点 `YYYY-MM-DD` |
+| `ENABLE_MONTHLY_QUOTA` | R/CF | 否 | `0` | `1` 启用按用户月度配额 |
+| `MONTHLY_QUOTAS_GB` | R/CF | 否 | `{"owner":0}` | 仅启用配额时：`{"用户":GB}`，`0` 不限量 |
+| `QUOTA_TOKEN_OVERRIDES` | R/CF | 否 | `{}` | 仅启用配额时：覆盖指定用户的 Token |
+| `QUOTA_START_DATE` | R/CF | 否 | 今天 | 仅启用配额时：账期起点 `YYYY-MM-DD` |
 
 #### 域名
 
@@ -239,9 +225,7 @@ sudo easy_all params.json --check-params           # 只校验，不改本机
 | `DIRECT_DOMAIN` | 组合 | 否 | `node.<CF_ZONE>` | 直连节点域名（灰云 A） |
 | `CF_NODE_DOMAIN` | 组合 | 否 | `cf.<CF_ZONE>` | Cloudflare 节点域名（橙云） |
 | `CF_ORIGIN_DOMAIN` | 组合 | 否 | `cf-origin.<CF_ZONE>` | Cloudflare 回源域名（橙云） |
-| `GCORE_NODE_DOMAIN` | 组合 | 否 | `gcore.<CF_ZONE>` | Gcore 节点域名（灰云 CNAME） |
-| `GCORE_ORIGIN_DOMAIN` | GC/组合 | GC 是 / 组合 否 | 组合：`gcore-origin.<CF_ZONE>` | Gcore 侧回源解析的源站域名；GC 模式必须手填 |
-| `VLESS_CDN_DOMAIN` | CF/GC | 是 | — | 客户端连接的 CDN 节点域名（Zone 下一级子域名） |
+| `VLESS_CDN_DOMAIN` | CF | 是 | — | 客户端连接的 CDN 节点域名（Zone 下一级子域名） |
 | `ORIGIN_DOMAIN` | B | 否 | `origin.<CLOUDFLARE_ZONE>` | Bunny 源站域名（DNS only A） |
 | `CDN_DOMAIN` | B | 否 | `cdn.<CLOUDFLARE_ZONE>` | Bunny 节点/订阅域名（DNS only CNAME） |
 | `WORKER_BACKUP_DOMAIN` | CF | 否 | 空 = 不部署 | 独立 Worker 兜底节点域名，需在节点所属 Zone 下 |
@@ -252,17 +236,15 @@ sudo easy_all params.json --check-params           # 只校验，不改本机
 | 字段 | 模式 | 必填 | 默认 / 留空 | 说明 |
 | --- | --- | --- | --- | --- |
 | `NODE_NAME` | R | 否 | `MY_REALITY` | 客户端展示名 |
-| `XHTTP_NODE_NAME` | CF/GC | 否 | `VLESS_XHTTP_H2` | 客户端展示名 |
+| `XHTTP_NODE_NAME` | CF | 否 | `VLESS_XHTTP_H2` | 客户端展示名 |
 | `DIRECT_NODE_NAME` | 组合 | 否 | `🇺🇸直连` | 直连节点名 |
 | `CF_NODE_PREFIX` | 组合 | 否 | `🇺🇸CF` | Cloudflare 节点名前缀，实际下发 `🇺🇸CF1`~`🇺🇸CF6` |
-| `GCORE_NODE_NAME` | 组合 | 否 | `🇺🇸GCore` | Gcore 节点名 |
 | `NODE_HOST` | R | 否 | 安装阶段自动探测 | 客户端连接的 IPv4 或灰云域名 |
 | `REALITY_TARGET` | R/组合 | 否 | `swdist.apple.com:443` | Reality SNI / 伪装目标（域名:端口） |
 | `SUB_PORT_MODE` | R | 否 | `dynamic` | 订阅端口模式：`443` 或 `dynamic` |
 | `XHTTP_PATH` | CF/组合 | 否 | 自动生成 | XHTTP 路径，默认 `/xhttp-<随机>` |
-| `WEBSOCKET_PATH` | GC/B/组合 | 否 | 自动生成 | WebSocket 路径，默认 `/ws-<随机>` |
+| `WEBSOCKET_PATH` | B | 否 | 自动生成 | WebSocket 路径，默认 `/ws-<随机>` |
 | `XRAY_XHTTP_LOOPBACK_PORT` | CF | 否 | `10086` | 本机回环端口 |
-| `XRAY_WEBSOCKET_LOOPBACK_PORT` | GC | 否 | `10087` | 本机回环端口 |
 | `ORIGIN_HEADER_SECRET` | CF/B | 否 | 自动生成 | 回源校验密钥 |
 
 #### Bunny 专属
@@ -313,17 +295,16 @@ sudo easy_all subscription
 | `easy_all subscription` | 显示每个用户的订阅地址或当前模式节点信息 |
 | `easy_all self-update` | 从 `main` 更新项目代码，不修改应用配置 |
 | `easy_all self-update --dev` | 从 `dev` 更新项目代码，用于验证待发布版本 |
-| `easy_all apply` | 重新应用本机配置与订阅；Bunny 模式同时幂等同步云资源，组合模式不修改 DNS 与 Gcore 资源 |
+| `easy_all apply` | 重新应用本机配置与订阅；Bunny 模式同时幂等同步云资源，组合模式不修改 DNS |
 | `easy_all reality-target [域名:端口]` | Reality 模式修改 SNI（伪装目标）并重新应用 |
-| `easy_all renew-cert` | 轮换当前模式证书；Bunny 模式主动检查并续期 Let's Encrypt 证书；组合模式重签 Origin CA 与 Gcore 回源证书 |
-| `easy_all update-core` | Reality/Cloudflare/Bunny/Gcore/组合 更新 Xray |
-| `easy_all apply-cloud` | 同步云端资源：Cloudflare 的 Worker/DNS/规则；Bunny 幂等同步受管资源；组合模式写入 DNS、证书与 Gcore 资源 |
+| `easy_all renew-cert` | 轮换当前模式证书；Bunny 模式主动检查并续期 Let's Encrypt 证书；组合模式重签 Origin CA |
+| `easy_all update-core` | Reality/Cloudflare/Bunny/组合 更新 Xray |
+| `easy_all apply-cloud` | 同步云端资源：Cloudflare 的 Worker/DNS/规则；Bunny 幂等同步受管资源；组合模式写入 DNS 与证书 |
 | `easy_all refresh-origin-ips` | Bunny 模式刷新官方回源 IPv4 防火墙池 |
-| `easy_all purge-gcore [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Gcore CDN 资源；可在未安装状态使用，不删除 DNS |
 | `easy_all purge-cloudflare [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Cloudflare 资源（Worker/DNS/规则/Origin CA）；不删除 Zone 与 Bunny 无注释记录 |
 | `easy_all edit-sub` | 交互修改订阅设置（域名、模式、用户 Token 与配额） |
 | `easy_all rotate-dynamic-ports` | Reality 模式刷新动态端口 NAT 规则 |
-| `easy_all refresh-cdn-ips` | Cloudflare/Gcore/组合 模式重新筛选优选 IP |
+| `easy_all refresh-cdn-ips` | Cloudflare/组合 模式重新筛选优选 IP |
 | `easy_all uninstall` | 卸载本机资源 |
 | `easy_all help` | 查看全部命令 |
 
@@ -365,9 +346,9 @@ sudo easy_all apply-cloud
 
 ## 安全边界
 
-- Reality/Cloudflare/Gcore 成功安装或应用后，SSH 仅监听 TCP `65533`。先在云安全组放行 `65533`，以后使用 `ssh -p 65533 用户@服务器`；保留当前会话直到新连接验证成功。组合模式不改 SSH，保持安装前的监听端口。
+- Reality/Cloudflare 成功安装或应用后，SSH 仅监听 TCP `65533`。先在云安全组放行 `65533`，以后使用 `ssh -p 65533 用户@服务器`；保留当前会话直到新连接验证成功。组合模式不改 SSH，保持安装前的监听端口。
 - Bunny 保留现有 SSH 监听及检测到的全部 SSH 端口；探测失败或前置第三方阻断规则使放行无效时停止刷新并保留旧放行规则，不擅自删除第三方规则。
-- UFW 默认拒绝其他入站流量；Reality/Cloudflare/Gcore 的 Fail2ban 保护 SSH `65533`；组合模式不配置 Fail2ban。[监听冲突和恢复规则](docs/technical-reference.md)见技术参考。
+- UFW 默认拒绝其他入站流量；Reality/Cloudflare 的 Fail2ban 保护 SSH `65533`；组合模式不配置 Fail2ban。[监听冲突和恢复规则](docs/technical-reference.md)见技术参考。
 - Xray 阻断私网和云元数据地址，并让境外 QUIC 回退到 TCP。
 - Cloudflare XHTTP 实时回源，不缓存隧道业务数据，也不承诺固定免费流量。
 - 默认卸载只清理本机；`--purge-cloud` 仅删除所有权和值均匹配的 easy_all 云资源。

@@ -19,7 +19,7 @@ sudo easy_all params.json                  # 校验通过后安装
 
 ## 组合模式（combined）
 
-`CF_ZONE`、三个 Token、订阅 Token 必填，其余域名按 `example.com` 派生。单用户可把
+`CF_ZONE`、两个 Token、订阅 Token 必填，其余域名按 `example.com` 派生。单用户可把
 `ALLOWED_TOKENS` 换成 `"OWNER_TOKEN": "<订阅 Token>"`（两者二选一）。
 
 ```json
@@ -31,18 +31,13 @@ sudo easy_all params.json                  # 校验通过后安装
     "DIRECT_DOMAIN": "node.example.com",
     "CF_NODE_DOMAIN": "cf.example.com",
     "CF_ORIGIN_DOMAIN": "cf-origin.example.com",
-    "GCORE_NODE_DOMAIN": "gcore.example.com",
-    "GCORE_ORIGIN_DOMAIN": "gcore-origin.example.com",
     "SUBSCRIPTION_DOMAIN": "sub.example.com",
     "CLOUDFLARE_API_TOKEN": "<Cloudflare API Token>",
-    "GCORE_API_TOKEN": "<Gcore API Token>",
     "GLOBALPING_TOKEN": "<Globalping Token>",
     "REALITY_TARGET": "swdist.apple.com:443",
     "XHTTP_PATH": "",
-    "WEBSOCKET_PATH": "",
     "DIRECT_NODE_NAME": "🇺🇸直连",
     "CF_NODE_PREFIX": "🇺🇸CF",
-    "GCORE_NODE_NAME": "🇺🇸GCore",
     "SUB_DOWNLOAD_NAME": "EASY_ALL",
     "VLESS_UUID": "",
     "ALLOWED_TOKENS": {
@@ -175,41 +170,6 @@ sudo easy_all params.json                  # 校验通过后安装
 
 仅节点（`link`）：`SUBSCRIPTION_MODE` 改成 `"link"`，删除 `SUBSCRIPTION_DOMAIN`、
 `CLOUDFLARE_WORKER_NAME`、`WORKER_SOURCE_SECRET`、`WORKER_AGGREGATION_CONFIG`、`ALLOWED_TOKENS`。
-
-## Gcore CDN（gcore）
-
-必填：`VLESS_CDN_DOMAIN`、`GCORE_ORIGIN_DOMAIN`（两者不同）、`GCORE_API_TOKEN`、
-`GLOBALPING_TOKEN`、`SUBSCRIPTION_DOMAIN`、`ALLOWED_TOKENS`。
-
-```json
-{
-  "schema_version": 1,
-  "mode": "gcore",
-  "params": {
-    "XHTTP_NODE_NAME": "VLESS_XHTTP_H2",
-    "VLESS_UUID": "",
-    "VLESS_CDN_DOMAIN": "node.example.com",
-    "GCORE_ORIGIN_DOMAIN": "gcore-origin.example.com",
-    "GCORE_API_TOKEN": "<Gcore API Token>",
-    "GLOBALPING_TOKEN": "<Globalping Token>",
-    "WEBSOCKET_PATH": "",
-    "XRAY_WEBSOCKET_LOOPBACK_PORT": "10087",
-    "SUBSCRIPTION_MODE": "deploy",
-    "SUBSCRIPTION_DOMAIN": "sub.example.com",
-    "SUB_DOWNLOAD_NAME": "EASY_ALL",
-    "ENABLE_MONTHLY_QUOTA": "0",
-    "ALLOWED_TOKENS": {
-      "owner": "<订阅 Token（8-128 位 URL 安全字符）>"
-    },
-    "VPS_PUBLIC_IPV4": "",
-    "TCP_ACCELERATION": "skyline",
-    "REBOOT_SCHEDULE_MODE": "1",
-    "REBOOT_HOUR": ""
-  }
-}
-```
-
-仅节点（`link`）：`SUBSCRIPTION_MODE` 改成 `"link"`，删除 `SUBSCRIPTION_DOMAIN` 与 `ALLOWED_TOKENS`。
 
 ## Bunny CDN（bunny-ws）
 

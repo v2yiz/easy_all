@@ -6,8 +6,8 @@ Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
 
 Bunny 支持 Debian 12/13 amd64/arm64，arm64 使用原有内核并暂不支持
 Skyline Speeder 内核加速；其他模式仅支持 amd64。Bunny 与组合模式（`mode: combined`）保留现有 SSH 监听，
-Reality/Cloudflare/Gcore 会强制 SSH 收敛到 TCP `65533`。组合模式在一次安装中同时提供直连
-Reality、Cloudflare XHTTP 与 Gcore WS 三个入口，细节见技术参考。
+Reality/Cloudflare 会强制 SSH 收敛到 TCP `65533`。组合模式在一次安装中同时提供直连
+Reality 与 Cloudflare XHTTP 两个入口，细节见技术参考。
 
 
 本文面向已经完成安装的用户。首次安装请从[项目首页](../README.md)开始。
@@ -29,7 +29,7 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 
-Reality/Cloudflare/Gcore 在安装或 `apply` 时会将 SSH 收敛到仅监听 TCP `65533`，并在 UFW 优先
+Reality/Cloudflare 在安装或 `apply` 时会将 SSH 收敛到仅监听 TCP `65533`，并在 UFW 优先
 阻断 `22`；Bunny 与组合模式保持现有 SSH 监听不变。收敛 SSH 前先在云安全组放行 `65533`，保留
 当前会话，另开终端使用 `ssh -p 65533 用户@服务器` 验证。
 监听冲突、检查命令与恢复规则见[技术参考](technical-reference.md)。
@@ -151,8 +151,8 @@ UUID、节点域名或传输路径，也不会重新询问订阅模式。
   `CnameDomain` 幂等同步 DNS、Hostname、证书、ForceSSL 和 Edge Rule，并重建本机 Xray、
   Nginx 与订阅（不涉及 Fail2ban 与防火墙）；关键配置不匹配、共享 Zone 所有权不明或存在
   DNS 冲突时，在首个云端写入前停止。普通 `apply` 与 `apply-cloud` 在 Bunny 模式下行为相同。
-- 组合：`apply` 只重建本机 Xray、Nginx 与订阅（不写 DNS、不签发证书、不碰 Gcore 资源，无需 Gcore Token）；
-  `apply-cloud` 才写入 Cloudflare DNS、签发证书并同步 Gcore 资源，会重新询问 Gcore Token。
+- 组合：`apply` 只重建本机 Xray、Nginx 与订阅（不写 DNS、不签发证书）；
+  `apply-cloud` 才写入 Cloudflare DNS 并签发证书。
   组合模式升级到本版本后必须执行一次 `sudo easy_all apply-cloud`（重签含节点域名的 Origin CA 证书）；
   只跑 `apply` 不会重签证书，`status` 会显示证书未覆盖节点域名。
   `edit-sub`、`apply-cloud` 与 `renew-cert` 在可捕获终止（`die`、`SIGINT`、`SIGTERM`、`SIGHUP`）时会回滚本机配置、证书与状态；`SIGKILL`/OOM 不会回滚，可能留下“运行中鉴权/证书比状态文件新”的偏差，请执行 `sudo easy_all status` 查看是否提示不一致：Token 偏差按提示执行 `sudo easy_all apply`，证书轮换后偏差执行 `sudo easy_all apply-cloud` 复核。
@@ -175,15 +175,14 @@ DNS、Origin CA、边缘规则和 Worker。Bunny 模式与普通 `apply` 相同�
 | `self-update [--dev\|--branch <分支>]` | 更新项目代码；默认 `main`，`--dev` 使用 `dev`。 |
 | `apply` | 重新应用当前配置；Bunny 模式同时同步受管云资源；组合模式只重建本机与订阅。 |
 | `reality-target [域名:端口]` | 修改 Reality SNI（伪装目标）并重新应用，仅 Reality 模式；无参数时交互输入。 |
-| `apply-cloud` | Cloudflare 模式同步本机和云端资源；Bunny 模式与 `apply` 相同；组合模式同步 DNS、证书与 Gcore 资源。 |
+| `apply-cloud` | Cloudflare 模式同步本机和云端资源；Bunny 模式与 `apply` 相同；组合模式同步 DNS 与证书。 |
 | `edit-sub` | 管理订阅、用户、配额和 Worker 聚合配置。 |
 | `refresh-cdn-ips` | Cloudflare 模式重新筛选优选 IP 并更新订阅；组合模式刷新 Cloudflare 优选池。 |
 | `refresh-origin-ips` | 立即刷新 Bunny 官方回源 IPv4 池；定时器每六小时自动刷新。 |
-| `purge-gcore [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Gcore CDN 资源；可在未安装状态使用，不删除 DNS。 |
-| `purge-cloudflare [--domain <域名>…] [--all]` | 清理 easy_all 创建的 Cloudflare 资源（Worker/DNS/规则/Origin CA）；不删除 Zone。 |
-| `update-core` | 更新当前模式核心：Reality/Cloudflare/Bunny/Gcore/组合 更新 Xray。 |
+| `purge-cloudflare` | 清理 easy_all 创建的 Cloudflare 资源（Worker/DNS/规则/Origin CA）；不删除 Zone。 |
+| `update-core` | 更新当前模式核心：Reality/Cloudflare/Bunny/组合 更新 Xray。 |
 | `rotate-dynamic-ports` | 立即刷新 Reality 模式的 NAT 规则。 |
-| `renew-cert` | 重新签发当前模式证书；Bunny 强制重新签发源站证书；组合模式重签 Origin CA 与 Gcore 回源证书。 |
+| `renew-cert` | 重新签发当前模式证书；Bunny 强制重新签发源站证书；组合模式重签 Origin CA 证书。 |
 | `cert-renew` | 内部命令：由 `easy_all-cert-renew.timer` 调用，适用于 Bunny 模式。 |
 | `quota-status` | 查看每个用户的月度配额和流量。 |
 | `quota-set <用户> <GB>` | 修改已有用户额度，`0` 表示不限量。 |
@@ -511,21 +510,7 @@ sudo easy_all uninstall --purge-cloud
 默认 `uninstall` 会删除本机状态，之后无法再补做 `--purge-cloud`；需要清理云端资源时请在
 卸载时一次完成。
 
-如果 Gcore 账户里仍残留 easy_all 创建的资源（状态文件已丢失、上次安装中断，或换了域名重新安装），
-可以单独清理：
-
-```bash
-sudo easy_all purge-gcore --domain gcore.example.com   # 按节点域名清理相关资源
-sudo easy_all purge-gcore --all                        # 清理账户内全部 easy_all-* 资源
-```
-
-命令会先列出命中的 CDN Resource、Origin Group、证书与 Trusted CA，确认后才删除；非交互执行需加
-`--yes`，Token 可用 `GCORE_API_TOKEN` 传入。它**不删除** DNS 记录与 Managed DNS Zone，DNS 请在
-Cloudflare/Gcore 控制台自行核对。`--domain` 按节点域名精确匹配 CDN Resource，不会因子串误伤
-同账户其他站点。如果 CDN Resource 已经先删除，源站组与证书是按源站域名命名的，需要同时传入
-源站域名（如 `--domain node.example.com,origin.example.com`）或直接使用 `--all`。
-
-Cloudflare 侧同理：
+Cloudflare 侧清理：
 
 ```bash
 sudo easy_all purge-cloudflare --domain example.com       # 清理该 Zone 内 easy_all 创建的资源
@@ -543,18 +528,16 @@ sudo easy_all purge-cloudflare --all                      # 清理 Token 可见�
 不会按域名反查用户自己的 Worker。如果 easy_all 的 DNS 记录已经被删除，规则与 Origin CA 需要
 传完整主机名（如 `--domain cf.example.com,sub.example.com`）才能识别。
 
-两个 purge 命令都不依赖本机安装。未安装或已卸载时可以直接通过引导脚本执行：
+purge 命令不依赖本机安装。未安装或已卸载时可以直接通过引导脚本执行：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --domain example.com
 ```
 
-或在克隆的仓库里执行 `sudo ./easy_all purge-gcore --domain gcore.example.com`。
-
 若提示“状态版本不匹配”，说明状态文件来自其他版本的 easy_all：本版本不会读取或迁移它，
 但 `sudo easy_all uninstall` 会改走旧版本本机清理路径——停用并删除 easy_all 的服务、Nginx 配置、
 cron 标记、状态与安装目录，并删除 `easy_all` 命令本身；SSH 配置、UFW 规则与云端资源不会改动
-（`--purge-cloud` 会被拒绝，请到 Cloudflare/Gcore/Bunny 控制台自行核对）。清理完成后重新运行安装
+（`--purge-cloud` 会被拒绝，请到 Cloudflare/Bunny 控制台自行核对）。清理完成后重新运行安装
 命令即可。
 远端清理会校验资源所有权与当前值，永不删除 DNS Zone，也不触碰没有 easy_all 标记的 DNS
 或包含其他规则的 ruleset。Zone 级 HTTP/2 和 gRPC 开关不会自动还原，操作完成后仍应到
@@ -587,16 +570,13 @@ root-only 状态中，`/etc/easy_all/worker.js` 是已构建的 Worker 产物（
 | 本机运行后提示系统不支持 | 命令必须在 VPS 的 SSH 或网页终端运行。 |
 | SSH 断开或重启后无法登录 | 使用服务商 Console/VNC 检查 SSH 端口、UFW 和安全组。 |
 | 安装中 SSH 断开、重跑提示 `TCP 80 已被占用` | 上次安装已装好 nginx 默认站点：先 `sudo easy_all cleanup-partial`；命令未注册时用 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial`（`bootstrap.sh` 自己会 sudo，别写成 `sudo bash <(...)`），再在 `tmux`/`screen` 中重跑安装。 |
-| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`（模式可写 `1`～`5`、内部名 `reality`/`cloudflare-streamup`/`bunny-ws`/`gcore`/`combined`，或 `直连`/`组合` 等中文名）；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
+| 旧版本安装中断、`cleanup-partial` 提示缺少进度标记 | 旧版本没有进度标记，命令拒绝猜测模式。先核对 `/etc/easy_all`、`/etc/nginx/conf.d/easy_all.conf` 与 `easy_all*` 服务，确认原模式后执行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>`（模式可写 `1`、`2`、`3`、`5`、内部名 `reality`/`cloudflare-streamup`/`bunny-ws`/`combined`，或 `直连`/`组合` 等中文名）；若只是 Debian 默认站点占着 80/443，直接 `sudo systemctl disable --now nginx` 后重新安装。 |
 | Zone 不是 Active | 等待 Cloudflare Zone 生效并检查名称服务器。 |
 | `purge-cloudflare` 输入 Token 后没反应 | 命令会先要求输入 Cloudflare API Token（不回显，粘贴后回车）。v2.4.6 之前扫描阶段可能卡死（`jq` 读 stdin 的分页聚合缺陷），升级到该版本后重跑；接口每页都相同会立即报错，单个列表接口默认最多扫 100 页（可用 `EASY_ALL_PURGE_MAX_PAGES` 调大）。 |
 | 提示未开启 gRPC | 在 Zone 的 Network → gRPC 手动开启后重试。 |
 | API Token 权限不足或 DNS 冲突 | 按[前置准备手册](preparation-guide.md)核对权限并换用未占用的一级子域。 |
 | Globalping 额度不足 | 等额度恢复后执行 `sudo easy_all refresh-cdn-ips`；与当前入口策略兼容的缓存会继续使用。 |
-| 组合模式重装报 `too many certificates ... retry after` | Let's Encrypt 对同一域名限 5 张/168 小时。重试安装与 `apply-cloud` 不再强制重签，缓存证书未到续期时间会直接复用；也可等提示的 `retry after` 之后，或临时换一个 `GCORE_ORIGIN_DOMAIN`。注意 `acme.sh --uninstall` 只卸载脚本与续期任务，证书和账户配置仍在 `/root/.acme-combined.sh`；确认不再使用后可执行 `sudo rm -rf /root/.acme-combined.sh`。 |
-| 回滚后重试提示 `恢复 acme.sh 自动续期任务失败` | 回滚会把 root crontab 还原成安装前内容，重试时会用 `acme.sh --install-cronjob` 补回；服务器缺 cron 或写 crontab 失败时才会告警。装好 cron 后执行 `sudo /root/.acme-combined.sh/acme.sh --home /root/.acme-combined.sh --config-home /root/.acme-combined.sh/data --cert-home /root/.acme-combined.sh/certs --install-cronjob`，再用 `sudo crontab -l | grep acme` 确认只剩一条 `--cron` 条目。 |
-| 组合模式安装停在「等待 Gcore 边缘就绪」 | 新建的 Gcore CDN 资源约 15 分钟才能在所有边缘生效，安装器会等资源 `active` 且 `gcore.<zone>` 的灰云 CNAME 解析到账户 CNAME（最多 30 分钟），期间每约 60 秒打印一行「已等待 N 秒、资源状态、CNAME」；证书签发阶段同样每约 60 秒打印「状态=PENDING，已等待 N 秒」。看到这些行说明还在正常等待，不要中断；若超时，核对 CNAME 未指错、未被 Cloudflare 代理（必须是灰云），稍后重跑安装即可续上。 |
-| 换过 Cloudflare API Token 后担心续期 | 重新执行 `sudo easy_all apply-cloud` 或重跑安装：安装器会把当前 Token 同步进 acme.sh 的续期配置；只在 `apply`（不碰云端）时不会。 |
+| 换过 Cloudflare API Token 后担心续期 | 重新执行 `sudo easy_all apply-cloud` 或重跑安装：安装器会把当前 Token 同步进证书续期配置；只在 `apply`（不碰云端）时不会。 |
 | `status` 显示 `pending-reboot` | 执行 `sudo reboot`，重新登录后确认 `BBRv3: active`。 |
 | 想更换伪装目标（SNI） | 执行 `sudo easy_all reality-target <域名:端口>`，再按部署方式刷新订阅或重新导入节点。 |
 | 订阅能下载但节点无法连接 | 先看[客户端指南](client-guide.md)，再检查 Cloudflare gRPC 和 Xray/Nginx 日志。 |

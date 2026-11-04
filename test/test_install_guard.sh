@@ -155,12 +155,12 @@ assert_equal "clean host has no residue" "1" \
     "$(install_residue_reason >/dev/null 2>&1 && echo 0 || echo 1)"
 
 # 6. 进度标记生命周期：写入、更新保留其他字段、清理删除目录
-install_progress_begin gcore
-assert_equal "marker records profile" "gcore" "$(install_progress_field PROFILE)"
+install_progress_begin combined
+assert_equal "marker records profile" "combined" "$(install_progress_field PROFILE)"
 assert_equal "marker starts at start" "start" "$(install_progress_field STAGE)"
 install_progress_stage services
 assert_equal "marker stage advances" "services" "$(install_progress_field STAGE)"
-assert_equal "marker keeps profile on stage update" "gcore" \
+assert_equal "marker keeps profile on stage update" "combined" \
     "$(install_progress_field PROFILE)"
 [[ -n "$(install_progress_field STARTED_AT)" ]] || fail "marker keeps started time"
 # 覆盖 begin：上一次中断留下的标记不应保留旧阶段
@@ -340,7 +340,7 @@ mkdir -p "${TMP_DIR}/cleanup/conf.d" "${TMP_DIR}/cleanup/state/xray" \
 : >"${TMP_DIR}/cleanup/conf.d/easy_all.conf"
 : >"${TMP_DIR}/cleanup/state/xray/config.json"
 : >"${TMP_DIR}/cleanup/bin/easy_all"
-install_progress_begin gcore
+install_progress_begin combined
 cleanup_partial_install_files \
     "${TMP_DIR}/cleanup/conf.d/easy_all.conf" \
     "${TMP_DIR}/cleanup/state" \
@@ -351,8 +351,8 @@ cleanup_partial_install_files \
 [[ -d "${TMP_DIR}/cleanup/web" ]] || fail "unlisted paths must be kept"
 [[ ! -f "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE}" ]] || fail "marker should be cleared"
 
-# 15. 静态回归网：三个 profile 的首次安装回滚必须清掉进度标记
-for profile in reality xhttp-cloudflare-streamup xhttp-gcore; do
+# 15. 静态回归网：两个 profile 的首次安装回滚必须清掉进度标记
+for profile in reality xhttp-cloudflare-streamup; do
     body=$(awk '/^rollback_fresh_install\(\) \{/,/^\}/' "${ROOT_DIR}/profiles/${profile}.sh")
     [[ "${body}" == *install_progress_clear* ]] \
         || fail "rollback_fresh_install in ${profile}.sh must clear the install marker"
@@ -376,9 +376,9 @@ mk_marker() {
 marker_file="${TMP_DIR}/identity/install-progress.env"
 absent=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
 assert_equal "identity is absent without marker" "absent" "${absent}"
-mk_marker "${marker_file}" gcore "T1"
+mk_marker "${marker_file}" combined "T1"
 present=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
-assert_equal "snapshot encodes mode, stage and start time" "present|gcore|packages|T1" "${present}"
+assert_equal "snapshot encodes mode, stage and start time" "present|combined|packages|T1" "${present}"
 mk_marker "${marker_file}" reality "T2"
 replaced=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
 [[ "${replaced}" != "${present}" ]] || fail "replaced marker must change identity"
@@ -516,7 +516,7 @@ assert_equal "pending owner is not overwritten" $'HAD_PREVIOUS=1\nOWNER_PID=1' \
 rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
 # 25. --assume-mode 别名与无标记提示
-alias_probe=$(bash -c 'source "$1"; for v in 5 组合 combined 1 直连 2 cf 3 bunny 4 gcore; do printf "%s=%s\n" "$v" "$(launcher_mode_alias "$v")"; done' _ "${ROOT_DIR}/easy_all")
+alias_probe=$(bash -c 'source "$1"; for v in 5 组合 combined 1 直连 2 cf 3 bunny 4; do printf "%s=%s\n" "$v" "$(launcher_mode_alias "$v")"; done' _ "${ROOT_DIR}/easy_all")
 assert_contains "alias 5 maps to combined" "${alias_probe}" "5=combined"
 assert_contains "alias 组合 maps to combined" "${alias_probe}" "组合=combined"
 assert_contains "alias 1 maps to reality" "${alias_probe}" "1=reality"

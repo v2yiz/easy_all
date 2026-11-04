@@ -27,15 +27,10 @@ templates/mihomo-classic.yaml
 lib/worker-backup.sh
 worker-src/backup.js
 profiles/ws-bunny.sh
-profiles/xhttp-gcore.sh
-lib/gcore-ip-pool.sh
 lib/bunny-api.py
 lib/bunny-runtime.sh
 lib/lego-install.sh
 profiles/combined.sh
 lib/cf-dns.sh
-lib/gcore-cdn.sh
-lib/gcore-origin-validation.sh
 lib/reality-target.sh
-lib/gcore-purge.sh
 lib/cloudflare-purge.sh

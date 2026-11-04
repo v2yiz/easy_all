@@ -268,42 +268,6 @@ bad=$(
 ) && fail "cloudflare(deploy): subscription==node domain must be rejected"
 assert_contains "cloudflare(deploy): name collision" "${bad}" "Worker 订阅域名必须与节点域名不同"
 
-# 9. gcore：link 模式
-params=$(write_params gcore-link.json "{
-  \"schema_version\": 1, \"mode\": \"gcore\",
-  \"params\": {
-    \"VLESS_CDN_DOMAIN\": \"cdn.example.com\", \"GCORE_ORIGIN_DOMAIN\": \"origin.example.com\",
-    \"GCORE_API_TOKEN\": \"gcore-token-value\", \"GLOBALPING_TOKEN\": \"${GP_TOKEN}\",
-    \"SUBSCRIPTION_MODE\": \"link\", \"VPS_PUBLIC_IPV4\": \"203.0.113.10\"
-  }
-}")
-out=$(run_preflight "${ROOT_DIR}/profiles/xhttp-gcore.sh" gcore "${params}" \
-    '${VLESS_CDN_DOMAIN}|${GCORE_ORIGIN_DOMAIN}|${XRAY_WEBSOCKET_LOOPBACK_PORT}|${SUBSCRIPTION_MODE}') \
-    || fail "gcore(link): preflight failed"
-assert_equal "gcore(link): fields" "cdn.example.com|origin.example.com|10087|link" "${out}"
-
-# 10. gcore：两个域名相同必须拒绝
-params=$(write_params gcore-bad.json "{
-  \"schema_version\": 1, \"mode\": \"gcore\",
-  \"params\": {
-    \"VLESS_CDN_DOMAIN\": \"same.example.com\", \"GCORE_ORIGIN_DOMAIN\": \"same.example.com\",
-    \"GCORE_API_TOKEN\": \"gcore-token-value\", \"GLOBALPING_TOKEN\": \"${GP_TOKEN}\",
-    \"SUBSCRIPTION_MODE\": \"link\", \"VPS_PUBLIC_IPV4\": \"203.0.113.10\"
-  }
-}")
-bad=$(
-    (
-        # shellcheck source=/dev/null
-        source "${ROOT_DIR}/profiles/xhttp-gcore.sh"
-        # shellcheck source=/dev/null
-        source "${ROOT_DIR}/lib/params.sh"
-        params_begin gcore "${params}"
-        collect_install_inputs
-        params_finish
-    ) 2>&1
-) && fail "gcore(link): identical domains must be rejected"
-assert_contains "gcore(link): identical domains" "${bad}" "CDN 节点域名与源站域名不能相同"
-
 # 11. bunny：默认域名、默认带宽与 Token 文件落位
 params=$(write_params bunny.json "{
   \"schema_version\": 1, \"mode\": \"bunny-ws\",
@@ -323,15 +287,15 @@ params=$(write_params combined.json "{
   \"schema_version\": 1, \"mode\": \"combined\",
   \"params\": {
     \"CF_ZONE\": \"example.com\", \"CLOUDFLARE_API_TOKEN\": \"${CF_TOKEN}\",
-    \"GCORE_API_TOKEN\": \"gcore-token-value\", \"GLOBALPING_TOKEN\": \"${GP_TOKEN}\",
+    \"GLOBALPING_TOKEN\": \"${GP_TOKEN}\",
     \"ALLOWED_TOKENS\": ${TOKEN_MAP}, \"VPS_PUBLIC_IPV4\": \"203.0.113.10\"
   }
 }")
 out=$(run_preflight "${ROOT_DIR}/profiles/combined.sh" combined "${params}" \
-    '${CF_ZONE}|${DIRECT_DOMAIN}|${GCORE_NODE_DOMAIN}|${SUBSCRIPTION_DOMAIN}') \
+    '${CF_ZONE}|${DIRECT_DOMAIN}|${CF_NODE_DOMAIN}|${SUBSCRIPTION_DOMAIN}') \
     || fail "combined: preflight failed"
 assert_equal "combined: derived domains" \
-    "example.com|node.example.com|gcore.example.com|sub.example.com" "${out}"
+    "example.com|node.example.com|cf.example.com|sub.example.com" "${out}"
 
 # 13. --print-params：每个模式都必须能生成合法模板
 template_case() { # $1=profile $2=mode
@@ -349,7 +313,6 @@ template_case() { # $1=profile $2=mode
 for pair in \
     "${ROOT_DIR}/profiles/reality.sh reality" \
     "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh cloudflare-streamup" \
-    "${ROOT_DIR}/profiles/xhttp-gcore.sh gcore" \
     "${ROOT_DIR}/profiles/ws-bunny.sh bunny-ws" \
     "${ROOT_DIR}/profiles/combined.sh combined"; do
     set -- ${pair}
@@ -396,8 +359,7 @@ params=$(write_params combined-offline.json '{
   "params": {
     "CF_ZONE": "example.com",
     "CLOUDFLARE_API_TOKEN": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "GCORE_API_TOKEN": "gcore-token-value",
-    "GLOBALPING_TOKEN": "gcore-token-value"
+    "GLOBALPING_TOKEN": "globalping-token-value"
   }
 }')
 out=$(run_preflight "${ROOT_DIR}/profiles/combined.sh" combined "${params}" '${VPS_PUBLIC_IPV4}') \
@@ -429,7 +391,6 @@ for block in "${block_dir}"/*.json; do
     case "${mode}" in
     reality) profile="${ROOT_DIR}/profiles/reality.sh" ;;
     cloudflare-streamup) profile="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" ;;
-    gcore) profile="${ROOT_DIR}/profiles/xhttp-gcore.sh" ;;
     bunny-ws) profile="${ROOT_DIR}/profiles/ws-bunny.sh" ;;
     combined) profile="${ROOT_DIR}/profiles/combined.sh" ;;
     *) fail "doc example: unknown mode ${mode}" ;;
@@ -441,13 +402,11 @@ for block in "${block_dir}"/*.json; do
         | (if ((.CLOUDFLARE_API_TOKEN // "") | startswith("<")) then
               .CLOUDFLARE_API_TOKEN = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" else . end)
         | (if ((.GLOBALPING_TOKEN // "") | startswith("<")) then
-              .GLOBALPING_TOKEN = "gcore-token-value" else . end)
-        | (if ((.GCORE_API_TOKEN // "") | startswith("<")) then
-              .GCORE_API_TOKEN = "gcore-token-value" else . end)
+              .GLOBALPING_TOKEN = "globalping-token-value" else . end)
         | (if ((.BUNNY_API_KEY // "") | startswith("<")) then
-              .BUNNY_API_KEY = "gcore-token-value" else . end)
+              .BUNNY_API_KEY = "bunny-api-key-value" else . end)
         | (if ((.CLOUDFLARE_DNS_TOKEN // "") | startswith("<")) then
-              .CLOUDFLARE_DNS_TOKEN = "gcore-token-value" else . end)
+              .CLOUDFLARE_DNS_TOKEN = "cloudflare-dns-token-value" else . end)
         | (if ((.OWNER_TOKEN // "") | startswith("<")) then
               .OWNER_TOKEN = "abcdefgh-1234" else . end)
         | {schema_version: 1, mode: $m, params: .}

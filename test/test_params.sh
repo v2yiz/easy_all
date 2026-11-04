@@ -181,7 +181,7 @@ case_template() {
     source "${PARAMS_LIB}"
     validate_domain() { [[ "$1" == *.* ]]; }
     normalize_domain() { printf '%s\n' "${1%.}"; }
-    params_template_begin gcore
+    params_template_begin reality
     params_declare CLOUDFLARE_ZONE --required --label 'Zone'
     params_declare DIRECT_DOMAIN --default "node.${CLOUDFLARE_ZONE}" \
         --normalize normalize_domain --check validate_domain --label '派生域名'
@@ -288,7 +288,7 @@ version_out=$(capture case_version) && fail "bad schema_version must be rejected
 assert_contains "envelope: schema_version pinned" "${version_out}" "schema_version 必须为 1"
 
 template_out=$(capture case_template) || fail "template mode failed"
-assert_equal "template: valid JSON" "gcore" "$(jq -r '.mode' <<<"${template_out}")"
+assert_equal "template: valid JSON" "reality" "$(jq -r '.mode' <<<"${template_out}")"
 assert_equal "template: required empty" "" "$(jq -r '.params.CLOUDFLARE_ZONE' <<<"${template_out}")"
 assert_equal "template: default kept" "EASY_ALL" "$(jq -r '.params.SUB_DOWNLOAD_NAME' <<<"${template_out}")"
 assert_equal "template: object without default is null" "null" \

@@ -1,10 +1,10 @@
 {
   "name": "easy_all-tests",
-  "version": "2.4.18",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bash test/test_params.sh && bash test/test_install_params_schema.sh && bash test/test_install_guard.sh && bash test/test_purge_cloudflare.sh && bash test/test_combined_render.sh && bash test/test_mihomo_template_lint.sh && node test/test_cli_e2e.mjs && node test/test_worker_e2e.mjs && bash test/test_xhttp_gcore.sh",
+    "test": "bash test/test_params.sh && bash test/test_install_params_schema.sh && bash test/test_install_guard.sh && bash test/test_purge_cloudflare.sh && bash test/test_combined_render.sh && bash test/test_mihomo_template_lint.sh && node test/test_cli_e2e.mjs && node test/test_worker_e2e.mjs",
     "test:params": "bash test/test_params.sh",
     "test:params:schema": "bash test/test_install_params_schema.sh",
     "test:guard": "bash test/test_install_guard.sh",
@@ -12,7 +12,6 @@
     "test:combined": "bash test/test_combined_render.sh",
     "test:cli": "node test/test_cli_e2e.mjs",
     "test:worker": "node test/test_worker_e2e.mjs",
-    "test:gcore": "bash test/test_xhttp_gcore.sh",
     "test:bunny": "node test/test_bunny_e2e.mjs",
     "test:bunny:ufw": "bash test/test_bunny_ufw_vm.sh",
     "build:worker": "node scripts/build-worker.mjs",

@@ -20,7 +20,7 @@ Nginx -> Xray -> 公网 HTTPS 链路属于独立真实数据面测试，不能�
 脚本全局禁用 IPv6。Reality 域名若发布 AAAA，安装或 `apply` 会停止；A 记录必须指向当前 VPS
 公网 IPv4。
 
-Reality/Cloudflare/Gcore 成功安装或应用后，SSH 收敛到 TCP `65533`；Bunny 与组合模式（`mode: combined`）
+Reality/Cloudflare 成功安装或应用后，SSH 收敛到 TCP `65533`；Bunny 与组合模式（`mode: combined`）
 保留现有 SSH 监听及检测到的全部端口。收敛模式的 UFW 先添加并验证 `65533` 放行，再将
 本工具的 TCP `22` deny 放到首位，优先于已有的 OpenSSH/22 allow；重复应用不累积 deny。
 收敛模式 Fail2ban 的 SSH jail 端口固定为 `65533`；组合模式不配置 Fail2ban。旧连接中的端口仅用于诊断，
@@ -28,7 +28,7 @@ Reality/Cloudflare/Gcore 成功安装或应用后，SSH 收敛到 TCP `65533`；
 订阅不按 SSH 端口或进程名强制直连；
 如需绕过代理管理 VPS，请在客户端添加该 VPS 地址的精确直连规则。
 
-Reality/Cloudflare/Gcore 执行安装或 `apply` 前，先在云安全组放行 TCP `65533`，保留当前 SSH 会话。
+Reality/Cloudflare 执行安装或 `apply` 前，先在云安全组放行 TCP `65533`，保留当前 SSH 会话。
 今后使用 `ssh -p 65533 用户@服务器`，另开终端验证成功后再关闭旧会话。组合模式不改 SSH，
 只需放行 TCP `443` 与 `8443`。本工具不自动修改云防火墙。
 
@@ -304,8 +304,8 @@ easy_all
 ├─ profiles/
 │  ├─ reality.sh
 │  ├─ ws-bunny.sh
-│  ├─ xhttp-gcore.sh
-│  └─ xhttp-cloudflare-streamup.sh
+│  ├─ xhttp-cloudflare-streamup.sh
+│  └─ combined.sh
 ├─ lib/
 │  ├─ log.sh
 │  ├─ params.sh
@@ -317,7 +317,9 @@ easy_all
 │  ├─ worker-backup.sh
 │  ├─ globalping-cdn.sh
 │  ├─ cloudflare-ip-pool.sh
-│  ├─ gcore-ip-pool.sh
+│  ├─ cf-dns.sh
+│  ├─ cloudflare-purge.sh
+│  ├─ reality-target.sh
 │  ├─ quota.sh
 │  ├─ platform.sh
 │  ├─ profile-common.sh
@@ -370,7 +372,7 @@ Reality 本机订阅与 Worker 聚合共用同一份私有节点源：token map 
 
 ```text
 STATE_VERSION=0
-PROTOCOL=reality|cloudflare-streamup|bunny-ws|gcore
+PROTOCOL=reality|cloudflare-streamup|bunny-ws|combined
 CDN_PROVIDER=cloudflare
 VPS_IP_FAMILY=ipv4
 VPS_PUBLIC_IPV6=
@@ -406,7 +408,7 @@ macOS 默认 Bash 3.2 和 BSD 工具不满足完整测试要求，可运行 `npm
 和日志隔离仍需要完整 OS 隔离环境的 Nginx 集成验证，不能把本机模拟结果当成真实 HTTP 通过。
 
 测试覆盖入口和模块完整性、Reality、
-Cloudflare XHTTP、Gcore CDN、Globalping 筛选、配额、TCP 参数、订阅渲染、Token 鉴权、证书轮换、
+Cloudflare XHTTP、Bunny CDN、Globalping 筛选、配额、TCP 参数、订阅渲染、Token 鉴权、证书轮换、
 Worker 构建、更新顺序。Worker 测试覆盖
 `mieruLink()`/`clashMieruNode()` 与聚合字段校验。真实 Debian 上的安装与 systemd 服务仍需部署验收。
 
@@ -430,52 +432,25 @@ MIHOMO_CHECK_BIN=/path/to/mihomo MIHOMO_CHECK_HOME=/path/to/geodata npm test
 `MIHOMO_CHECK_HOME` 指定包含 `geoip.dat`、`geosite.dat` 的缓存目录；没有内核或校验失败时停止发布。
 模板结构校验由本机订阅与 Worker 构建共用，错误内容不会打印，以免泄露自定义模板中的凭据。
 
-## Gcore CDN（模式 4）
-
-- 数据面：Xray VLESS WebSocket 监听 `127.0.0.1:10087`，Nginx 在 `443` 终止 TLS 并校验 Gcore 回源
-  客户端证书（mTLS），同时按 Gcore 官方回源网段做 UFW 白名单。
-- DNS：整区委派给 Gcore Managed DNS；安装器写源站 A、节点 CNAME 与可选订阅 CNAME，写入前读取
-  RRset，值不一致就停止，不覆盖别人的记录。
-- 入口：Globalping 三网定向测速精选 1～6 个真实入口 IPv4，节点命名 `🇺🇸优选1`～`🇺🇸优选n`，
-  订阅使用单一 `AUTO` 组。
-- 证书：Gcore 边缘用免费证书；源站证书由本机 acme.sh 签发（HTTP-01）；本机另生成自建 CA 与由其签发的
-  客户端证书，把客户端证书和 CA 上传到 Gcore，Nginx 按该 CA 校验 Gcore 回源的 mTLS 客户端证书。
-- TLS 版本：CDN 资源下发 `options.tls_versions={enabled:true,value:["TLSv1.2","TLSv1.3"]}`，边缘拒绝 SSLv3/TLS 1.0/1.1。
-- 与组合模式的差异：模式 4 必须委派 Gcore Managed DNS、输出 IP 精选节点；组合模式的 Gcore 入口是
-  单个域名节点（`gcore.<zone>` 灰云 CNAME），DNS 全部由 Cloudflare 管理。
-
 ## 组合模式（`mode: combined`）
 
-一台专用 VPS 同时提供三个入口，共用一套 Xray 与 Nginx：
+一台专用 VPS 同时提供两个入口，共用一套 Xray 与 Nginx：
 
 ```text
 公网 8443  Xray VLESS Reality（直连，伪装目标另配 SNI）
 公网 443   Nginx
   ├─ cf-origin.<zone>     → 127.0.0.1:10086 Xray VLESS XHTTP stream-up（Cloudflare 回源）
-  ├─ gcore-origin.<zone>  → 127.0.0.1:10087 Xray VLESS WS（Gcore 回源，Nginx 校验 Gcore 客户端证书）
   └─ sub.<zone>           → 订阅文件（base64 / mihomo）
 ```
 
-- DNS 仍由同一个 Cloudflare Zone 管理；只把 `_acme-challenge.<gcore 节点域名>` 以 NS 子域委派给 Gcore
-  用于 DNS-01，不整区委派。
-- `443` 只对 Cloudflare 与 Gcore 官方回源网段开放；直连入口走 `8443`；SSH 端口保持安装前状态，
+- DNS 由同一个 Cloudflare Zone 管理。
+- `443` 只对 Cloudflare 官方回源网段开放；直连入口走 `8443`；SSH 端口保持安装前状态，
   安装器不修改 sshd，也不回收 SSH 端口。
-- 证书：`cf-origin` 与 `sub` 用一张 Cloudflare Origin CA（SAN 两个名字）；`gcore-origin` 用
-  Let's Encrypt（Cloudflare DNS-01）；Gcore 边缘证书由 Gcore 免费签发，同样用 DNS-01——安装器把
-  `_acme-challenge.<gcore 节点域名>` 的 NS 委派建在 Cloudflare 里，证书只覆盖该节点域名（订阅域名用
-  上面的 Origin CA 证书）。
-- 边缘就绪：Gcore CDN 资源新建后处于 `processed` 状态约 15 分钟。安装器先轮询资源 `active` 且
-  `gcore.<zone>` 的 CNAME 解析到账户 CNAME（最多 30 分钟），再让 Gcore 签发；证书 `FAILED` 时最多
-  通过 `force-retry` 重试 2 次（间隔 120 秒，给 Gcore 准备 DNS-01 挑战区留时间）。证书已激活时
-  幂等重跑直接跳过这些等待。
-- 挑战规则：Gcore 自己签发的证书要求资源上**不存在**匹配 `/.well-known/acme-challenge` 的规则
-  （存在会导致挑战回源、mTLS 源站返回 502）；安装器在签发前会删除这类规则。
+- 证书：`cf-origin` 与 `sub` 用一张 Cloudflare Origin CA（SAN 两个名字）。
 - 组合模式不改 SSH、不配置 Fail2ban；卸载时按安装前快照恢复 UFW 回源白名单与 `8443` 放行。
 - 组合模式安装时会用 `xray tls ping` 验收 Reality 伪装目标的 TLS 1.3 握手并比对 ASN（仅告警），
   `reality-target` 修改目标时先验收再落盘；Globalping Token 在应用参数阶段校验。
-- TLS 版本：源站 Nginx 固定 `TLSv1.2 TLSv1.3`；Gcore CDN 资源同时下发
-  `options.tls_versions={enabled:true,value:["TLSv1.2","TLSv1.3"]}`，拒绝客户端用 SSLv3/TLSv1.0/1.1 连接边缘。
-- 订阅只有一个 owner Token，输出三类节点（直连 1、Cloudflare 优选 6、Gcore 1）与单一 `AUTO`
-  测速组（8 个节点平铺，不再嵌套 CF 子测速组）；不启用用户配额。
-- `apply` 只重建本机 Xray/Nginx/订阅（不需要 Gcore Token）；`apply-cloud` 才写 DNS、签发证书并
-  同步 Gcore 资源，会重新询问 Gcore Token。
+- 源站 Nginx 固定 `TLSv1.2 TLSv1.3`。
+- 订阅只有一个 owner Token，输出两类节点（直连 1、Cloudflare 优选 6）与单一 `AUTO`
+  测速组（7 个节点平铺，不再嵌套 CF 子测速组）；不启用用户配额。
+- `apply` 只重建本机 Xray/Nginx/订阅；`apply-cloud` 才写 DNS 与证书。
