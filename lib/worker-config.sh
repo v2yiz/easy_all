@@ -49,20 +49,10 @@ normalize_worker_aggregation_config() {
 }
 
 apply_worker_allowed_tokens_override() {
-    local config=$1 tokens token_users quota_users
+    local config=$1 tokens
     jq -e 'has("allowedTokens")' <<<"${config}" >/dev/null || return 0
     tokens=$(normalize_allowed_tokens "$(jq -c '.allowedTokens' <<<"${config}")") \
         || die "Worker 聚合配置中的 allowedTokens 无效"
-    if quota_enabled; then
-        token_users=$(jq -c 'keys | sort' <<<"${tokens}")
-        quota_users=$(jq -c 'keys | sort' <<<"${USER_ACCOUNTS}")
-        [[ "${token_users}" == "${quota_users}" ]] \
-            || die "启用配额时，Worker 聚合配置 allowedTokens 的用户名必须与配额用户完全一致"
-        USER_ACCOUNTS=$(jq -c --argjson tokens "${tokens}" \
-            'with_entries(.value.token = $tokens[.key])' <<<"${USER_ACCOUNTS}")
-        validate_user_accounts "${USER_ACCOUNTS}" \
-            || die "Worker 聚合配置 allowedTokens 覆盖后配额用户状态无效"
-    fi
     ALLOWED_TOKENS=${tokens}
     info "Worker 聚合配置的 allowedTokens 已覆盖安装器先前设置的用户 Token"
 }

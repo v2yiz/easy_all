@@ -272,7 +272,6 @@ load_state() {
         CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
         WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
         SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
-        QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
         MIHOMO_TEMPLATE_SNAPSHOT
     )
     for variable in "${variables[@]}"; do
@@ -304,8 +303,6 @@ load_state() {
         [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
         [[ -n "${SUBSCRIPTION_MODE:-}" ]] || die "状态缺少 SUBSCRIPTION_MODE；请重新安装"
         [[ -n "${SUB_DOWNLOAD_NAME:-}" ]] || die "状态缺少 SUB_DOWNLOAD_NAME；请重新安装"
-        [[ "${QUOTA_ENABLED:-}" == "0" || "${QUOTA_ENABLED:-}" == "1" ]] \
-            || die "状态缺少有效的 QUOTA_ENABLED；请重新安装"
         validate_google_egress_policy_state \
             || die "状态缺少有效的 Google 出站策略；请重新安装"
     fi
@@ -355,19 +352,6 @@ load_state() {
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
         || die "状态文件中的 ALLOWED_TOKENS 无效"
-    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
-    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
-        || die "状态文件中的 QUOTA_ENABLED 无效"
-    if quota_enabled; then
-        validate_user_accounts "${USER_ACCOUNTS:-}" \
-            || die "状态文件中的 USER_ACCOUNTS 无效"
-        [[ -n "${QUOTA_START_DATE:-}" ]] || die "状态缺少 QUOTA_START_DATE；请重新安装"
-        validate_quota_start_date "${QUOTA_START_DATE}" \
-            || die "状态文件中的 QUOTA_START_DATE 无效：${QUOTA_START_DATE}"
-    else
-        USER_ACCOUNTS=""
-        QUOTA_START_DATE=""
-    fi
 }
 
 save_state() {
@@ -411,9 +395,6 @@ save_state() {
         printf 'GOOGLE_EGRESS_RESOLVED=%q\n' "${GOOGLE_EGRESS_RESOLVED}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
-        printf 'QUOTA_ENABLED=%q\n' "${QUOTA_ENABLED:-0}"
-        printf 'USER_ACCOUNTS=%q\n' "${USER_ACCOUNTS:-}"
-        printf 'QUOTA_START_DATE=%q\n' "${QUOTA_START_DATE:-}"
         printf 'MIHOMO_TEMPLATE_SNAPSHOT=%q\n' "${MIHOMO_TEMPLATE_SNAPSHOT:-0}"
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-link}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
@@ -867,15 +848,10 @@ write_xray_config() {
         || die "生成 Reality X25519 密钥失败"
     [[ "${REALITY_SHORT_ID}" =~ ^[0-9a-fA-F]{2,16}$ ]] \
         || die "Reality Short ID 无效"
-    if quota_enabled; then
-        clients=$(quota_active_clients_json "xtls-rprx-vision")
-    else
-        clients=$(jq -cn --arg id "${VLESS_UUID}" \
-            '[{id:$id,email:"easy_all.owner",flow:"xtls-rprx-vision"}]')
-    fi
+    clients=$(jq -cn --arg id "${VLESS_UUID}" \
+        '[{id:$id,email:"easy_all.owner",flow:"xtls-rprx-vision"}]')
     jq -n \
             --argjson clients "${clients}" \
-            --argjson quota_enabled "$([[ "${QUOTA_ENABLED:-0}" == "1" ]] && printf true || printf false)" \
             --arg target "${REALITY_TARGET}" \
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
@@ -918,12 +894,7 @@ write_xray_config() {
               }],
               outbounds: $managed_outbounds,
               routing: $managed_routing
-            }
-            + (if $quota_enabled then {
-                api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
-                stats:{},
-                policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}
-              } else {} end)' >"${RUNTIME_TMP}/xray-config.json"
+            }' >"${RUNTIME_TMP}/xray-config.json"
     "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null \
         || die "Xray ${PROTOCOL} 配置校验失败"
     install -m 0600 "${RUNTIME_TMP}/xray-config.json" "${XRAY_CONFIG}"
@@ -994,10 +965,10 @@ generate_subscription_port() {
 
 rotate_dynamic_ports() {
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     collect_installed_state
     if [[ "${SUB_PORT_MODE}" != "dynamic" ]]; then
-        end_quota_maintenance
+        release_runtime_write_lock
         return 0
     fi
     write_ufw_nat_rules
@@ -1007,7 +978,7 @@ rotate_dynamic_ports() {
         # Persist the snapshot flag so later refreshes reuse the same template.
         save_state
     fi
-    end_quota_maintenance
+    release_runtime_write_lock
     success "动态端口 NAT 与订阅快照已刷新：开放 ${PORT_BASE}-${DYNAMIC_PORT_MAX} 转发至 ${SERVICE_PORT}（每小时 ${DYNAMIC_PORTS_PER_HOUR} 个端口）"
 }
 
@@ -1369,26 +1340,11 @@ install_static_subscriptions() {
         || die "创建订阅暂存目录失败"
     cleanup_files+=("${stage_dir}")
     install -d -o root -g www-data -m 0750 "${stage_dir}" || return 1
-    if quota_enabled; then
-        while IFS=$'\t' read -r user uuid; do
-            user_dir="${stage_dir}/${user}"
-            (
-                VLESS_UUID=${uuid}
-                generate_subscription_files "${base64_file}.${user}" "${mihomo_file}.${user}"
-            ) || return 1
-            install -d -o root -g www-data -m 0750 "${user_dir}" || return 1
-            install -o root -g www-data -m 0640 \
-                "${base64_file}.${user}" "${user_dir}/base64.port-template" || return 1
-            install -o root -g www-data -m 0640 \
-                "${mihomo_file}.${user}" "${user_dir}/mihomo.port-template" || return 1
-        done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
-    else
-        generate_subscription_files "${base64_file}" "${mihomo_file}" || return 1
-        install -o root -g www-data -m 0640 "${base64_file}" \
-            "${stage_dir}/base64.port-template" || return 1
-        install -o root -g www-data -m 0640 "${mihomo_file}" \
-            "${stage_dir}/mihomo.port-template" || return 1
-    fi
+    generate_subscription_files "${base64_file}" "${mihomo_file}" || return 1
+    install -o root -g www-data -m 0640 "${base64_file}" \
+        "${stage_dir}/base64.port-template" || return 1
+    install -o root -g www-data -m 0640 "${mihomo_file}" \
+        "${stage_dir}/mihomo.port-template" || return 1
     publish_subscription_files "${stage_dir}" || return 1
     rm -rf -- "${stage_dir}"
 }
@@ -1509,15 +1465,8 @@ validate_subscription_runtime() {
         "https://${origin_domain}:${SUBSCRIPTION_HTTPS_PORT}/subscribe") \
         || die "订阅方法限制本机验收失败"
     [[ "${method_status}" == 405 ]] || die "订阅方法限制未生效"
-    if quota_enabled; then
-        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
-        token=$(jq -r 'first(.[].token) // empty' <<<"${accounts}")
-        uuid=$(jq -r 'first(.[].uuid) // empty' <<<"${accounts}")
-        [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
-    else
-        token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
-        uuid=${VLESS_UUID}
-    fi
+    token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+    uuid=${VLESS_UUID}
     start=$(date +%s)
     base64_response=$(printf '%s' "${token}" | reality_subscription_curl -fsS --proto '=https' \
         --connect-timeout 5 --max-time 20 \
@@ -1612,10 +1561,7 @@ collect_deployed_subscription_inputs() {
     local prompt_options=${1:-1} prompt_download_name=${2:-0}
     collect_subscription_domain
     choose_subscription_download_name "${prompt_download_name}"
-    if [[ "${prompt_options}" == "1" ]]; then
-        choose_monthly_quota 1
-    fi
-    quota_enabled || ensure_allowed_tokens "${prompt_options}"
+    ensure_allowed_tokens "${prompt_options}"
     reset_worker_subscription_inputs
     SUBSCRIPTION_MODE="deploy"
 }
@@ -1681,10 +1627,7 @@ collect_worker_subscription_inputs() {
             || die "Worker 名称无效：${CLOUDFLARE_WORKER_NAME:-空}"
     fi
     choose_subscription_download_name "${prompt_download_name}"
-    if [[ "${prompt_options}" == "1" ]]; then
-        choose_monthly_quota 1
-    fi
-    quota_enabled || ensure_allowed_tokens "${prompt_options}"
+    ensure_allowed_tokens "${prompt_options}"
     WORKER_SOURCE_SECRET=${WORKER_SOURCE_SECRET:-$(generate_secret)}
     [[ "${WORKER_SOURCE_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
         || die "WORKER_SOURCE_SECRET 格式无效"
@@ -1705,7 +1648,6 @@ collect_link_subscription_inputs() {
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     ALLOWED_TOKENS=""
     reset_worker_subscription_inputs
-    choose_monthly_quota 0
 }
 
 collect_subscription_inputs() {
@@ -2023,15 +1965,8 @@ reality_worker_validate_public() {
     done
     [[ "${status}" == "403" ]] \
         || die "Worker 未按预期拒绝无效 Token（HTTP ${status}）；请检查 Cloudflare Worker、Custom Domain 与 TLS 状态"
-    if quota_enabled; then
-        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
-        token=$(jq -r 'first(.[].token) // empty' <<<"${accounts}")
-        uuid=$(jq -r 'first(.[].uuid) // empty' <<<"${accounts}")
-        [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过 Worker 订阅内容验收"; return 0; }
-    else
-        token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
-        uuid=${VLESS_UUID}
-    fi
+    token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
+    uuid=${VLESS_UUID}
     decoded=""
     for attempt in $(seq 1 "${CLOUDFLARE_WORKER_READY_ATTEMPTS}"); do
         decoded=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
@@ -2047,7 +1982,7 @@ reality_worker_validate_public() {
     [[ "${decoded}" == *"security=reality"* ]] \
         || die "Worker 聚合订阅未返回 Reality 节点；请检查私有节点源与 Worker 日志"
     [[ "${decoded}" == *"vless://${uuid}@"* ]] \
-        || die "Worker 聚合订阅缺少本机 Reality 节点；请检查私有节点源与配额用户"
+        || die "Worker 聚合订阅缺少本机 Reality 节点；请检查私有节点源与用户 Token"
     clash_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
         --connect-timeout 5 --max-time 20 --get --data-urlencode 'token@-' \
         --data-urlencode 'flag=clash' \
@@ -2271,7 +2206,7 @@ update_subscription() {
     local previous_worker_name previous_worker_domain_id previous_account_id
     local current_origin_domain PREVIOUS_SUBSCRIPTION_MODE
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     stored_port_mode=$(
         unset SUB_PORT_MODE
@@ -2314,20 +2249,19 @@ update_subscription() {
     if ! configure_ufw || ! deploy_subscription_output; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
-        end_quota_maintenance
+        release_runtime_write_lock
         return 1
     fi
     save_state
     if ! refresh_protocol_runtime_config; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
         rollback_subscription_update
-        end_quota_maintenance
+        release_runtime_write_lock
         return 1
     fi
     reality_cloudflare_finalize_certificate_rotation
     save_state
     configure_dynamic_port_rotation
-    install_quota_timer
     # The new deployment is live and persisted: cleanup failures below must not
     # roll the machine back to a state whose cloud resources are already gone.
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
@@ -2371,27 +2305,27 @@ update_subscription() {
         save_state
     fi
     reality_cloudflare_clear_api_token
-    end_quota_maintenance
+    release_runtime_write_lock
     show_subscription
 }
 
 apply_easy_all() {
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     collect_installed_state
     info "应用 TCP 加速并刷新 TCP 参数"
     configure_tcp_acceleration
     configure_ipv4_only
     register_easy_all_command
     update_subscription
-    end_quota_maintenance
+    release_runtime_write_lock
 }
 
 update_reality_target() {
     (($# <= 1)) || die "用法：easy_all reality-target [域名:端口]"
     local current requested
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     collect_installed_state
     current=${REALITY_TARGET}
     requested=${1:-}
@@ -2411,7 +2345,7 @@ update_reality_target() {
         if subscription_enabled; then
             info "如需重新下发订阅（例如上次重发中断），执行 sudo easy_all apply"
         fi
-        end_quota_maintenance
+        release_runtime_write_lock
         return 0
     fi
     REALITY_TARGET=${requested}
@@ -2426,7 +2360,7 @@ update_reality_target() {
         install_static_subscriptions
         save_state
     fi
-    end_quota_maintenance
+    release_runtime_write_lock
     success "Reality 目标已更新：${current} → ${REALITY_TARGET}"
     show_node
     info "客户端需刷新订阅或重新导入节点；使用聚合配置下发的还需同步聚合配置里的 sni"
@@ -2499,10 +2433,6 @@ rebuild_traffic_runtime() {
 show_node() {
     local port
     collect_installed_state
-    if quota_enabled; then
-        printf '\n配额已启用：owner 凭据为不限量账号，请使用 show_subscription 输出的各用户订阅地址，避免分发 owner 节点绕过配额。\n\n'
-        return 0
-    fi
     port=$(generate_subscription_port)
     printf '\n协议: %s\n节点链接:\n%s\n\n' \
         "${PROTOCOL}" "$(build_node_link "${port}")"
@@ -2587,7 +2517,6 @@ show_status() {
     else
         printf '订阅服务: disabled（仅节点）\n'
     fi
-    show_quota_status
 }
 
 stop_protocol_services() {
@@ -2745,7 +2674,6 @@ uninstall_all() {
         warn "Cloudflare 资源（DNS/规则/Origin CA/Worker）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
     fi
     stop_protocol_services
-    remove_quota_timer
     reality_cloudflare_remove_subscription_firewall_rules
     restore_platform_security_state || {
         warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
@@ -2769,7 +2697,6 @@ uninstall_all() {
 rollback_fresh_install() {
     warn "首次安装失败，正在恢复本机服务、UFW、crontab 与 BBR 配置"
     stop_protocol_services
-    remove_quota_timer
     reality_cloudflare_remove_subscription_firewall_rules
     restore_platform_security_state || {
         warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
@@ -2815,7 +2742,6 @@ validate_protocol_runtime() {
         if ss -H -ltn "sport = :443" 2>/dev/null \
             | awk 'NR {found=1} END {exit !found}' \
             && systemctl is-active --quiet "${XRAY_SERVICE}"; then
-            validate_quota_api
             return 0
         fi
         sleep 2
@@ -2863,7 +2789,6 @@ run_reality_install_pipeline() {
     save_state
     register_easy_all_command
     configure_dynamic_port_rotation
-    install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
     reality_cloudflare_clear_api_token

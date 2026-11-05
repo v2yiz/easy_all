@@ -143,10 +143,9 @@ try {
     assert.equal(rotateRes.status, 1);
     assert.ok(rotateRes.stderr.includes('仅适用于 Reality 模式'));
 
-    // 组合模式：只提供三入口与订阅，不提供配额、动态端口与 Bunny 专属命令
+    // 组合模式：只提供三入口与订阅，不提供动态端口与 Bunny 专属命令
     writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="combined"\n');
     for (const [command, message] of [
-        ['quota-status', '组合模式不启用用户配额'],
         ['rotate-dynamic-ports', '仅适用于 Reality 模式'],
         ['refresh-origin-ips', '仅适用于 Bunny 模式'],
         ['cert-renew', '仅适用于 Bunny 模式'],

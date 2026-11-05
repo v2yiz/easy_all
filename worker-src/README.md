@@ -99,16 +99,16 @@ Xray 系客户端自行协商。需要退回上一种 ClientHello 的节点，�
 安装器自动部署的 Worker 将公开请求的 Token 转发到节点域名上的
 Nginx 私有源（Reality 聚合为私有源域名的 `8443`），并附加独立的 `X-Easy-All-Worker-Source` 密钥。Worker 显式启用
 `global_fetch_strictly_public`、关闭 `workers.dev` 和 Preview URL，并只绑定独立订阅 Custom Domain。
-自动部署脚本不内嵌公开用户 Token；Nginx 是用户与配额鉴权的唯一真源。订阅域名不得与节点域名相同；
-动态源失败时返回 `502`，源明确拒绝 Token 时返回 `403`，不会使用静态节点绕过用户配额。
+自动部署脚本不内嵌公开用户 Token；Nginx 是用户鉴权的唯一真源。订阅域名不得与节点域名相同；
+动态源失败时返回 `502`，源明确拒绝 Token 时返回 `403`，不会使用静态节点绕过鉴权。
 选择聚合时，安装器读取一份不含 `vpsSubUrl` 的 Worker 聚合 JSON，保留其中的 `nodes`、
 `fallbackCdnNodes`；其中的 `allowedTokens` 会覆盖安装器先前设置的 Token。
-启用配额时用户名必须与配额用户一致。安装器再注入本机私有源 URL 与鉴权字段。
+安装器再注入本机私有源 URL 与鉴权字段。
 最终配置由 `../scripts/build-worker.mjs` 正式校验构建，不由 shell 直接拼接。
 
-非配额模式若持续无法通过 Worker 动态源验收，安装器会继续保留部署，并在执行用户的主目录生成
+若持续无法通过 Worker 动态源验收，安装器会继续保留部署，并在执行用户的主目录生成
 `worker.js`。这个手工恢复版本内嵌当前 Token，动态源仍携带私有源密钥，并继续要求每次请求
-成功读取 VPS 节点；源不可用时返回 `502`。配额模式不会生成内嵌 Token 的恢复版本。
+成功读取 VPS 节点；源不可用时返回 `502`。
 
 动态 CDN 源失败时，正式及手工恢复 Worker 均返回 `502`，不会下发 `fallbackCdnNodes`。Worker 按源顺序保留最多 6 个动态 CDN 节点并统一命名为 `🇺🇸优选1`～`🇺🇸优选6`；PROXY 依次列出已配置的 US_VMISS、`🇺🇸白天首选`、`🇺🇸晚上首选`、`🇭🇰CF` 和其他已配置的节点。白天首选和 🇭🇰CF 是隐藏的自动测速组，所有代理流量统一使用 PROXY 当前选择。显式隐藏 `GLOBAL` 组仅包含 `PROXY`，没有 CDN 节点时白天首选使用 REJECT。
 

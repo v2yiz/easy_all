@@ -565,7 +565,7 @@ renew_seq=""
     cloudflare_finalize_certificate_rotation() { renew_seq+="finalize "; }
     commit_subscription_update() {
         renew_seq+="commit "
-        end_quota_maintenance
+        release_runtime_write_lock
         UPDATE_SUB_ROLLBACK_ON_EXIT=0
     }
     success() { renew_seq+="success"; }
@@ -745,7 +745,6 @@ assert_contains "token-sync: fresh install derives ALLOWED_TOKENS from OWNER_TOK
 # 13) Token 字典缺失时必须给出可操作提示，而不是 set -u 的 unbound variable
 guard_out=$(
     unset ALLOWED_TOKENS OWNER_TOKEN
-    QUOTA_ENABLED=0
     write_subscription_token_map 2>&1
 ) || true
 assert_contains "token-sync: missing token map fails with actionable message" \

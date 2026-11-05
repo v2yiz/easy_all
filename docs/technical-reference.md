@@ -19,7 +19,7 @@
   ```text
   客户端 -> Cloudflare 优选 IPv4 -> Cloudflare 边缘 -> Nginx (TCP 443) -> Xray (127.0.0.1:10086 XHTTP stream-up)
   ```
-- **优选机制**：利用 Globalping 从三网探针每小时动态筛选 6 个经过 HTTP/TLS 握手校验的优选节点。
+- **优选机制**：利用 Globalping 从三网探针每 3 小时动态筛选 6 个经过 HTTP/TLS 握手校验的优选节点。
 
 ### 1.3 模式 3：Bunny CDN
 - **数据面拓扑**：
@@ -101,7 +101,6 @@ easy_all
 │   ├── lego-install.sh          # Lego Let's Encrypt 证书签发与安装
 │   ├── xhttp-runtime.sh         # XHTTP 运行时公共逻辑与证书挂载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
-│   ├── quota.sh                 # 多用户月度配额与流量统计引擎
 │   ├── subscription-auth.sh     # 订阅凭据生成与校验
 │   ├── scheduled-maintenance.sh # 定时重启与维护任务
 │   ├── tcp-tuning.sh            # Skyline Speeder / BBRv3 / XanMod 内核管理

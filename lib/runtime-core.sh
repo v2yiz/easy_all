@@ -6,8 +6,6 @@ readonly RUNTIME_LIB_DIR="${EASY_ALL_RUNTIME_LIB_DIR:?EASY_ALL_RUNTIME_LIB_DIR i
 
 # shellcheck source=lib/log.sh
 source "${RUNTIME_LIB_DIR}/log.sh"
-# shellcheck source=lib/quota.sh
-source "${RUNTIME_LIB_DIR}/quota.sh"
 # shellcheck source=lib/platform.sh
 source "${RUNTIME_LIB_DIR}/platform.sh"
 # shellcheck source=lib/profile-common.sh
@@ -28,6 +26,41 @@ source "${RUNTIME_LIB_DIR}/subscription-auth.sh"
 source "${RUNTIME_LIB_DIR}/worker-config.sh"
 # shellcheck source=lib/tcp-tuning.sh
 source "${RUNTIME_LIB_DIR}/tcp-tuning.sh"
+
+readonly RUNTIME_WRITE_LOCK_FILE="${RUNTIME_WRITE_LOCK_FILE_OVERRIDE:-/var/lib/easy_all/runtime-write.lock}"
+
+RUNTIME_WRITE_LOCK_DEPTH=0
+
+try_acquire_runtime_write_lock() {
+    if ((RUNTIME_WRITE_LOCK_DEPTH > 0)); then
+        RUNTIME_WRITE_LOCK_DEPTH=$((RUNTIME_WRITE_LOCK_DEPTH + 1))
+        return 0
+    fi
+    command -v flock >/dev/null 2>&1 \
+        || die "缺少 flock；无法保护 easy_all 运行时更新"
+    install -d -m 0700 "$(dirname "${RUNTIME_WRITE_LOCK_FILE}")" \
+        || die "无法创建 easy_all 运行时锁目录"
+    exec 9>"${RUNTIME_WRITE_LOCK_FILE}" \
+        || die "无法打开 easy_all 运行时锁：${RUNTIME_WRITE_LOCK_FILE}"
+    if ! flock -w "${1:-0}" 9; then
+        exec 9>&-
+        return 1
+    fi
+    RUNTIME_WRITE_LOCK_DEPTH=1
+}
+
+acquire_runtime_write_lock() {
+    try_acquire_runtime_write_lock "${1:-0}" \
+        || die "另一个 easy_all 配置或运行时任务正在运行，请稍后重试"
+}
+
+release_runtime_write_lock() {
+    ((RUNTIME_WRITE_LOCK_DEPTH > 0)) || return 0
+    RUNTIME_WRITE_LOCK_DEPTH=$((RUNTIME_WRITE_LOCK_DEPTH - 1))
+    ((RUNTIME_WRITE_LOCK_DEPTH == 0)) || return 0
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+}
 
 RUNTIME_TMP=$(mktemp -d)
 cleanup_files=("${RUNTIME_TMP}")
@@ -70,7 +103,9 @@ cleanup() {
         recover_pending_service_policy \
             || warn "恢复 policy-rc.d 事务失败：事务已保留，下次运行安装/清理会自动重试"
     fi
-    end_quota_maintenance || true
+    while ((RUNTIME_WRITE_LOCK_DEPTH > 0)); do
+        release_runtime_write_lock || break
+    done
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"
     done
@@ -81,7 +116,7 @@ trap cleanup EXIT
 # any running job to finish (including its own rollback) before deleting files.
 stop_maintenance_services() {
     command -v systemctl >/dev/null 2>&1 || return 0
-    systemctl stop easy_all-quota.service easy_all-globalping-refresh.service \
+    systemctl stop easy_all-globalping-refresh.service \
         2>/dev/null || true
 }
 
@@ -104,7 +139,7 @@ update_current_core() {
     local backup_version="${RUNTIME_TMP}/xray-version-backup"
     local version_missing="${RUNTIME_TMP}/xray-version.missing"
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     collect_installed_state
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
     install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
@@ -119,7 +154,7 @@ update_current_core() {
         validate_protocol_runtime || exit 1
     ); then
         refresh_runtime_subscription_after_core_update
-        end_quota_maintenance
+        release_runtime_write_lock
         success "Xray 已更新"
         return 0
     fi

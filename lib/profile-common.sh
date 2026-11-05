@@ -447,9 +447,6 @@ install_failure_report() {
         printf '错误信息：%s\n' "${EASY_ALL_LAST_ERROR}" >&2
     fi
     [[ -z "${started}" ]] || printf '开始时间（UTC）：%s\n' "${started}" >&2
-    if [[ "${INSTALL_PARAMS_DELETE:-0}" == "1" && -n "${PARAMS_SOURCE:-}" ]]; then
-        printf '参数文件保留：%s（含 API Token，排查后请删除）\n' "${PARAMS_SOURCE}" >&2
-    fi
     printf '===============================================\n' >&2
 }
 
@@ -863,9 +860,6 @@ cleanup_partial_install_local() {
     else
         systemctl disable --now "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
         systemctl disable --now nginx >/dev/null 2>&1 || true
-    fi
-    if declare -F remove_quota_timer >/dev/null 2>&1; then
-        remove_quota_timer || true
     fi
     if declare -F remove_globalping_refresh_timer >/dev/null 2>&1; then
         remove_globalping_refresh_timer || true

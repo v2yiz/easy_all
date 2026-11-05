@@ -92,7 +92,6 @@ Type=simple
 User=root
 Environment=XRAY_LOCATION_ASSET=${XRAY_DIR}
 ExecStart=${XRAY_BIN} run -config ${XRAY_CONFIG}
-ExecStop=/bin/sh -c '${COMMAND_PATH} quota-sync || true'
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576

@@ -220,10 +220,6 @@ cloudflare_manual_worker_recovery_path() {
 
 cloudflare_build_manual_worker_recovery() {
     local reason=$1 target config_file config aggregation build_output
-    quota_enabled && {
-        warn "配额模式不能生成绕过 Nginx 配额校验的手工 Worker"
-        return 1
-    }
     [[ -n "${ALLOWED_TOKENS:-}" ]] || {
         warn "缺少可内嵌的订阅 Token，无法生成手工 Worker"
         return 1
@@ -394,14 +390,7 @@ cloudflare_validate_subscription_worker() {
     local invalid_ready=0 invalid_curl_status=0 public_ip=""
     local worker_curl_args=(--noproxy '*')
     subscription_enabled || return 0
-    if quota_enabled; then
-        token=$(quota_active_accounts_json | jq -r 'first(.[].token) // empty')
-        if [[ -z "${token}" ]]; then
-            info "所有配额用户均已停用，仅验收 Worker Token 拒绝行为"
-        fi
-    else
-        token=$(jq -r 'first(.[]) // empty' <<<"${ALLOWED_TOKENS}")
-    fi
+    token=$(jq -r 'first(.[]) // empty' <<<"${ALLOWED_TOKENS}")
     body="${RUNTIME_TMP}/worker-subscription-body"
     headers="${RUNTIME_TMP}/worker-subscription-headers"
     for ((attempt = 1; attempt <= CLOUDFLARE_WORKER_READY_ATTEMPTS; attempt += 1)); do
@@ -865,17 +854,8 @@ cloudflare_configure_cdn() {
 }
 
 cloudflare_validate_cdn_health() {
-    local probe_uuid=""
+    local probe_uuid="${VLESS_UUID}"
     cloudflare_wait_for_health "${VLESS_CDN_DOMAIN}" "CDN"
-    if quota_enabled; then
-        probe_uuid=$(quota_active_accounts_json | jq -er 'first(to_entries[]).value.uuid') \
-            || {
-                info "所有配额用户均已停用，跳过 XHTTP 业务探针，仅验收 CDN 公网健康接口"
-                probe_uuid=""
-            }
-    else
-        probe_uuid=${VLESS_UUID}
-    fi
     if [[ -n "${probe_uuid}" ]]; then
         cloudflare_wait_for_xhttp "${probe_uuid}"
     fi
@@ -1168,8 +1148,7 @@ collect_install_inputs() {
     if subscription_enabled; then
         collect_cloudflare_worker_inputs
         choose_subscription_download_name
-        choose_monthly_quota 1
-        quota_enabled || ensure_allowed_tokens 1
+        ensure_allowed_tokens 1
         choose_worker_aggregation_config
         cloudflare_build_subscription_worker
     else
@@ -1177,7 +1156,6 @@ collect_install_inputs() {
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
-        choose_monthly_quota 0
     fi
     collect_worker_backup_inputs
 }
@@ -1203,7 +1181,6 @@ load_state() {
         XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH
         ORIGIN_HEADER_SECRET ALLOWED_TOKENS SUB_DOWNLOAD_NAME
         SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR
-        QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE
     )
     [[ -f "${state_path}" ]] || return 1
     while IFS= read -r -d '' env_name; do
@@ -1260,16 +1237,6 @@ load_state() {
             "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
             || die "状态中的 Worker 聚合配置无效；请重新安装"
     fi
-    QUOTA_ENABLED=${QUOTA_ENABLED:-0}
-    [[ "${QUOTA_ENABLED}" == "0" || "${QUOTA_ENABLED}" == "1" ]] \
-        || die "状态文件中的 QUOTA_ENABLED 无效"
-    if quota_enabled; then
-        validate_user_accounts "${USER_ACCOUNTS:-}" || die "状态文件中的 USER_ACCOUNTS 无效"
-        validate_quota_start_date "${QUOTA_START_DATE:-}" || die "状态文件中的 QUOTA_START_DATE 无效"
-    else
-        USER_ACCOUNTS=""
-        QUOTA_START_DATE=""
-    fi
     CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}
     validate_subscription_worker_retirements || die "状态中的旧订阅 Worker 待清理记录无效"
     validate_worker_backup_state
@@ -1322,8 +1289,7 @@ save_state() {
             CLOUDFLARE_HEADER_RULESET_ID CLOUDFLARE_STRICT_RULESET_ID \
             VPS_IP_FAMILY VPS_PUBLIC_IPV4 VPS_PUBLIC_IPV6 \
             XRAY_XHTTP_LOOPBACK_PORT XHTTP_PATH ORIGIN_HEADER_SECRET ALLOWED_TOKENS \
-            SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR \
-            QUOTA_ENABLED USER_ACCOUNTS QUOTA_START_DATE; do
+            SUB_DOWNLOAD_NAME SUBSCRIPTION_MODE SCHEDULED_REBOOT_ENABLED SCHEDULED_REBOOT_HOUR; do
             case "${v}" in
             STATE_VERSION) value=${STATE_SCHEMA_VERSION} ;;
             PROTOCOL) value=cloudflare-streamup ;;
@@ -1364,11 +1330,7 @@ collect_installed_state() {
 xhttp_render_xray_config() {
     install -d -m 0755 "${XRAY_DIR}"
     local clients
-    if quota_enabled; then
-        clients=$(quota_active_clients_json)
-    else
-        clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]')
-    fi
+    clients=$(jq -cn --arg id "${VLESS_UUID}" --arg email "${XHTTP_NODE_NAME}" '[{id:$id,email:$email}]')
     local outbounds routing sockopt
     outbounds=$(xray_xhttp_outbounds_json)
     routing=$(xray_xhttp_routing_json)
@@ -1383,8 +1345,7 @@ xhttp_render_xray_config() {
         --arg xray_asset_dir "${XRAY_DIR}" \
         --argjson sockopt "${sockopt}" \
         --argjson outbounds "${outbounds}" \
-        --argjson routing "${routing}" \
-        --argjson quota_enabled "$([[ "${QUOTA_ENABLED:-0}" == "1" ]] && printf true || printf false)" '
+        --argjson routing "${routing}" '
         {
           log: { loglevel: "warning" },
           env: {XRAY_LOCATION_ASSET:$xray_asset_dir},
@@ -1418,12 +1379,7 @@ xhttp_render_xray_config() {
           ],
           outbounds: $outbounds,
           routing: $routing
-        }
-        + (if $quota_enabled then {
-            api:{tag:"api",listen:"127.0.0.1:10085",services:["StatsService"]},
-            stats:{},
-            policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}}
-          } else {} end)' >"${RUNTIME_TMP}/xray-config.json"
+        }' >"${RUNTIME_TMP}/xray-config.json"
     if [[ -x "${XRAY_BIN}" ]]; then
         "${XRAY_BIN}" run -test -config "${RUNTIME_TMP}/xray-config.json" >/dev/null 2>&1 || die "Xray 配置校验失败"
     fi
@@ -1684,7 +1640,6 @@ show_status() {
             "${WORKER_BACKUP_DOMAIN}" "$(jq length <<<"${WORKER_BACKUP_IPS:-[]}")" "${WORKER_BACKUP_PLACEMENT:-off}"
     fi
     show_globalping_status
-    show_quota_status
 }
 
 show_subscription() {
@@ -1741,7 +1696,6 @@ rollback_fresh_install() {
             || warn "首次安装创建的 Cloudflare 资源未能全部自动清理"
     fi
     stop_services
-    remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
     restore_platform_security_state || {
@@ -1858,7 +1812,6 @@ install_all() {
     register_easy_all_command
     persist_globalping_token
     install_globalping_refresh_timer
-    install_quota_timer
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
     cloudflare_finalize_certificate_rotation
@@ -1879,7 +1832,7 @@ install_all() {
 
 apply_easy_all() {
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     collect_installed_state
     snapshot_subscription_update
     configure_tcp_acceleration
@@ -1900,7 +1853,7 @@ apply_easy_all() {
 
 apply_cloud_resources() {
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     collect_installed_state
     snapshot_subscription_update
     configure_tcp_acceleration
@@ -1948,7 +1901,7 @@ update_subscription() {
     local previous_account_id=""
     local previous_subscription_enabled=0
     require_root
-    begin_quota_maintenance
+    acquire_runtime_write_lock
     collect_installed_state
     if subscription_enabled; then
         previous_subscription_enabled=1
@@ -1965,8 +1918,7 @@ update_subscription() {
     if subscription_enabled; then
         collect_cloudflare_worker_inputs
         choose_subscription_download_name
-        choose_monthly_quota 1
-        quota_enabled || ensure_allowed_tokens 1
+        ensure_allowed_tokens 1
         choose_worker_aggregation_config
         cloudflare_build_subscription_worker
     else
@@ -1975,7 +1927,6 @@ update_subscription() {
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
         WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
-        choose_monthly_quota 0
     fi
     collect_worker_backup_inputs
     xhttp_render_xray_config
@@ -2133,7 +2084,6 @@ uninstall_all() {
         warn "Cloudflare 资源（Worker/DNS/规则/Origin CA）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
     fi
     stop_services
-    remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
     restore_platform_security_state || {

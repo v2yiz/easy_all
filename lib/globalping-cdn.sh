@@ -127,11 +127,11 @@ ExecStart=${COMMAND_PATH} refresh-cdn-ips
 EOF
     cat >"${RUNTIME_TMP}/easy_all-globalping-refresh.timer" <<EOF
 [Unit]
-Description=Refresh easy_all CDN endpoints every hour
+Description=Refresh easy_all CDN endpoints every three hours
 
 [Timer]
-OnActiveSec=1h
-OnUnitActiveSec=1h
+OnActiveSec=3h
+OnUnitActiveSec=3h
 Unit=${GLOBALPING_REFRESH_SERVICE}
 
 [Install]

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bash test/test_install_guard.sh && bash test/test_purge_cloudflare.sh && bash test/test_combined_render.sh && bash test/test_mihomo_template_lint.sh && node test/test_cli_e2e.mjs && node test/test_worker_e2e.mjs",
+    "test": "bash test/test_install_guard.sh && bash test/test_purge_cloudflare.sh && bash test/test_combined_render.sh && bash test/test_mihomo_template_lint.sh && bash test/test_audit_fixes.sh && node test/test_cli_e2e.mjs && node test/test_worker_e2e.mjs",
     "test:guard": "bash test/test_install_guard.sh",
     "test:purge": "bash test/test_purge_cloudflare.sh",
     "test:combined": "bash test/test_combined_render.sh",

@@ -6,7 +6,6 @@ lib/runtime-core.sh
 lib/xhttp-runtime.sh
 lib/globalping-cdn.sh
 lib/cloudflare-ip-pool.sh
-lib/quota.sh
 lib/platform.sh
 lib/profile-common.sh
 lib/network.sh

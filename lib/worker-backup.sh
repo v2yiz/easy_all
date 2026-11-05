@@ -26,7 +26,7 @@ validate_worker_backup_state() {
     [[ "${WORKER_BACKUP_PLACEMENT:-off}" == "aws:ap-east-1" \
         || "${WORKER_BACKUP_PLACEMENT:-off}" == "off" ]] \
         || die "Worker 兜底 Placement 仅支持 aws:ap-east-1 或 off"
-    # Worker traffic is independent and intentionally excluded from VPS quotas.
+    # Worker traffic is independent of the VPS.
     local ips=${WORKER_BACKUP_IPS:-[]}
     jq -e --argjson limit "${WORKER_BACKUP_NODE_LIMIT}" \
         'type == "array" and length <= $limit and all(.[]; type == "string")' <<<"${ips}" >/dev/null \

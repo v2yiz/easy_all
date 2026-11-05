@@ -12,7 +12,7 @@
 | :--- | :--- | :--- |
 | **模式 1：直连 Reality** | - 纯节点（`link`）：仅需公网 IPv4 VPS，无其他要求<br>- 本机订阅（`deploy`）：需 1 个二级子域名（如 `sub.example.com`）<br>- Worker 聚合（`worker`）：需 2 个二级子域名（公开订阅域名 + 私有源域名） | - 纯节点：无<br>- 订阅模式：具备 DNS/证书权限的 Cloudflare API Token |
 | **模式 2：Cloudflare CDN** | - 已托管至 Cloudflare 的域名 Zone（Free 方案即可）<br>- 2 个二级子域名（节点域名如 `node.example.com` + 订阅域名如 `sub.example.com`）<br>- 控制台手动开启 **Network → gRPC** | - Cloudflare API Token（含 Workers 编辑权限）<br>- Globalping Access Token |
-| **组合模式** | - 已托管至 Cloudflare 的域名 Zone<br>- 3 个二级子域名（直连、CF 节点、订阅） | - Cloudflare API Token（DNS/证书编辑权限）<br>- Globalping Access Token |
+| **组合模式** | - 已托管至 Cloudflare 的域名 Zone<br>- 3 个二级子域名（直连、CF 节点、订阅） | - Cloudflare API Token（仅限 DNS/证书编辑最小权限；将保存至 root 受控文件）<br>- Globalping Access Token |
 
 ---
 
@@ -65,6 +65,9 @@ Cloudflare 模式与组合模式依赖 [Globalping](https://dash.globalping.io/)
 - **Zone Resources**：`Include → Specific zone → 你的域名 (example.com)`
 
 创建后妥善保存 Token，在安装交互提示 `Cloudflare API Token` 时粘贴。
+
+> [!IMPORTANT]
+> **组合模式 Token 最小权限与持久化说明**：组合模式为了支持后续证书到期轮换与免交互运维，输入的 Token 会以 root 受控权限（`0600`）保存于 `/etc/easy_all/cloudflare.token`。请务必遵循最小权限原则，仅授予目标 Zone 的 `DNS / Edit` 与证书编辑权限，严禁使用全局 Global API Key 或授予未使用的额外权限。
 
 ---
 

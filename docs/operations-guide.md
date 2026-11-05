@@ -1,6 +1,6 @@
 # 运维与排障指南
 
-本文档介绍 `easy_all` 安装完成后的日常维护、配置更新、用户与配额管理、证书轮换及常见故障排查。
+本文档介绍 `easy_all` 安装完成后的日常维护、配置更新、用户管理、证书轮换及常见故障排查。
 
 ---
 
@@ -40,12 +40,9 @@ sudo easy_all apply-cloud
 | `sudo easy_all reality-target [域名:端口]` | （Reality / 组合模式）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
 | `sudo easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 重定向规则 |
 | `sudo easy_all refresh-cdn-ips` | （Cloudflare / 组合模式）重新调用 Globalping 探针优选最新 CDN IP |
-| `sudo easy_all edit-sub` | 交互式管理订阅用户、配额、订阅模板或 Worker 聚合 |
+| `sudo easy_all edit-sub` | 交互式管理订阅用户、订阅模板或 Worker 聚合 |
 | `sudo easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `sudo easy_all update-core` | 在线升级 Xray 核心至官方最新版本，并自动重载服务 |
-| `sudo easy_all quota-status` | 查看各用户的月度已用流量与配额状态 |
-| `sudo easy_all quota-set <用户> <GB>` | 调整指定用户的月度配额（`0` 表示不限流量） |
-| `sudo easy_all quota-reset <用户>` | 重置指定用户本月的已用流量计数 |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的临时残留（不影响云端资源） |
 | `sudo easy_all uninstall` | 卸载本机服务与配置；加 `--purge-cloud` 会同步清理 Cloudflare 远端资源 |
 
@@ -80,17 +77,15 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 
 ---
 
-## 5. 订阅与多用户配额管理
+## 5. 订阅与多用户管理
 
 执行交互式管理：
 ```bash
 sudo easy_all edit-sub
 ```
 
-- **添加/修改用户**：按提示输入完整用户字典（例如 `{"owner":"token1", "user2":"token2"}`）。省略的用户会被删除。
-- **按用户月度配额**：
-  - 开启配额后，系统会每 15 分钟聚合统计入站与出站流量。
-  - 用户流量超标后，其中断的连接将返回鉴权失败，直到次月账期起点或管理员执行 `quota-reset`。
+- **添加/修改用户**：按提示输入完整用户字典 JSON（例如 `{"owner":"token1", "user2":"token2"}`）。省略的用户将被删除；完成后各用户的专属订阅链接可通过 `sudo easy_all subscription` 查看。
+- **自定义模板与聚合**：支持交互式切换或重载 Mihomo 订阅模板，或配置 Cloudflare Worker 订阅聚合。
 
 ---
 

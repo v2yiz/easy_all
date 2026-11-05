@@ -38,7 +38,6 @@ readonly COMBINED_RECORD_COMMENT="easy_all combined"
 PROTOCOL=combined
 BACKEND=xray
 CDN_PROVIDER=cloudflare
-QUOTA_ENABLED=0
 XHTTP_NODE_NAME=easy_all
 
 load_state() {
@@ -176,7 +175,7 @@ cloudflare_collect_api_token() {
         CLOUDFLARE_API_TOKEN=$(<"${CLOUDFLARE_TOKEN_FILE}")
     fi
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-        CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（DNS 编辑权限）') \
+        CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（仅限 DNS 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）') \
             || die '缺少 Cloudflare API Token'
     fi
     [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]{20,100}$ ]] \
@@ -997,7 +996,6 @@ uninstall_all() {
         warn "远端资源（Cloudflare 记录）已保留；本机状态删除后无法再用 easy_all 清理"
     fi
     stop_services
-    remove_quota_timer
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall

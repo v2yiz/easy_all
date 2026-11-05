@@ -277,7 +277,6 @@ source "${ROOT_DIR}/lib/scheduled-maintenance.sh"
 systemctl() { :; }
 stop_maintenance_services() { :; }
 stop_services() { :; }
-remove_quota_timer() { :; }
 remove_globalping_refresh_timer() { :; }
 remove_daily_reboot_schedule() { :; }
 restore_install_snapshot() { printf 'RESTORED\n'; }

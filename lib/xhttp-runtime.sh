@@ -309,7 +309,6 @@ validate_protocol_runtime() {
                 --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
                 "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
-                validate_quota_api
                 return 0
             fi
         fi
@@ -329,13 +328,7 @@ validate_subscription_runtime() {
         "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
         "https://${XHTTP_ORIGIN_DOMAIN}/subscribe" \
         "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}"
-    if quota_enabled; then
-        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
-        token=$(jq -r 'first(.[].token) // empty' <<<"${accounts}")
-        [[ -n "${token}" ]] || { info "所有配额用户均已停用，跳过订阅内容验收"; return 0; }
-    else
-        token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
-    fi
+    token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     base64_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
         --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
         --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
@@ -389,35 +382,6 @@ write_subscriptions() {
     stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
         || die "创建订阅暂存目录失败"
     cleanup_files+=("${stage_dir}")
-    if quota_enabled; then
-        while IFS=$'\t' read -r user uuid; do
-            user_dir="${stage_dir}/${user}"
-            (
-                VLESS_UUID=${uuid}
-                build_mihomo_nodes >"${node_file}.${user}" || exit 1
-                build_mihomo_proxy_groups >"${group_file}.${user}" || exit 1
-                build_mihomo_proxy_names >"${name_file}.${user}" || exit 1
-                build_node_links | openssl base64 -A >"${base64_file}.${user}" || exit 1
-                printf '\n' >>"${base64_file}.${user}"
-                render_mihomo_subscription "${template}" "${node_file}.${user}" \
-                    "${mihomo_file}.${user}" "${XHTTP_NODE_NAME}" \
-                    "${group_file}.${user}" "${name_file}.${user}" "${worker_rule_file}"
-            ) || die "生成用户订阅失败：${user}"
-            grep -Fq "${marker}" "${mihomo_file}.${user}" \
-                || die "Mihomo 订阅缺少有效节点：${user}"
-            install -d -o root -g www-data -m 0750 "${user_dir}" \
-                || die "创建用户订阅暂存目录失败：${user}"
-            install -o root -g www-data -m 0640 \
-                "${base64_file}.${user}" "${user_dir}/base64.txt" \
-                || die "暂存用户 Base64 订阅失败：${user}"
-            install -o root -g www-data -m 0640 \
-                "${mihomo_file}.${user}" "${user_dir}/mihomo.yaml" \
-                || die "暂存用户 Mihomo 订阅失败：${user}"
-        done < <(jq -r 'to_entries[] | [.key,.value.uuid] | @tsv' <<<"${USER_ACCOUNTS}")
-        publish_subscription_files "${stage_dir}"
-        rm -rf -- "${stage_dir}"
-        return 0
-    fi
     build_mihomo_nodes >"${node_file}"
     build_mihomo_proxy_groups >"${group_file}"
     build_mihomo_proxy_names >"${name_file}"
@@ -559,7 +523,7 @@ rollback_subscription_update() {
 }
 
 commit_subscription_update() {
-    end_quota_maintenance
+    release_runtime_write_lock
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
 }
 
@@ -583,7 +547,6 @@ finish_xhttp_apply() {
     [[ "${defer_state_save}" == "1" ]] || save_state
     register_easy_all_command
     refresh_saved_daily_reboot_schedule
-    install_quota_timer
     [[ "${defer_state_save}" == "1" ]] || show_subscription
 }
 

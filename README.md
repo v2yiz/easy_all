@@ -91,7 +91,7 @@ sudo easy_all subscription
 | `easy_all reality-target [域名:端口]` | 修改 Reality 伪装目标（自动带 SNI 验证 TLS 1.3 连通性并热更新） |
 | `easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 规则 |
 | `easy_all refresh-cdn-ips` | 重新调用 Globalping 测试并筛选当期最佳优选 IP |
-| `easy_all edit-sub` | 交互式管理用户 Token、配额以及 Worker 聚合订阅设置 |
+| `easy_all edit-sub` | 交互式管理用户 Token、订阅模板以及 Worker 聚合订阅设置 |
 | `easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `easy_all update-core` | 在线升级 Xray 核心至官方最新稳定版 |
 | `easy_all self-update` | 从 GitHub 更新 easy_all 脚本自身至最新主线版本 |
@@ -103,7 +103,7 @@ sudo easy_all subscription
 
 1. **SSH 自动防护**：
    - 所有模式均保留系统现有 SSH 监听端口（默认 22），UFW 默认放行该端口并阻断其余未放行入站流量。
-   - 由 Fail2ban 实时监控保护实际 SSH 端口，防范自动化暴力破解。
+   - 由 Fail2ban 实时监控保护实际 SSH 端口（采用专用 CIDR 防重脚本），防范自动化暴力破解。
 2. **回源白名单与防扫网**：
    - CDN 模式与组合模式的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。
 3. **恶意流量阻断**：
@@ -115,5 +115,5 @@ sudo easy_all subscription
 
 - [前置准备手册](docs/preparation-guide.md)：域名购买、Cloudflare Zone 解析、API Token 与 Globalping 获取教程
 - [客户端使用指南](docs/client-guide.md)：主流 Mihomo 客户端导入、配置与分流排障
-- [运维与排障指南](docs/operations-guide.md)：节点管理、配额控制、证书轮换及疑难解答
+- [运维与排障指南](docs/operations-guide.md)：节点管理、用户管理、证书轮换及疑难解答
 - [系统技术参考](docs/technical-reference.md)：架构设计、流控机制与网络实现原理

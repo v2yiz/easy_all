@@ -423,9 +423,19 @@ fail2ban_cidr_acquire_lock() {
 }
 
 fail2ban_cidr_rule_exists() {
+    local target="${NETWORK%/32}"
     LC_ALL=C "${UFW_BIN}" status 2>/dev/null \
-        | awk -v network="${NETWORK}" '
-            index($0, network) && $0 ~ /DENY[[:space:]]+IN/ {found=1}
+        | awk -v network="${target}" '
+            $0 ~ /DENY[[:space:]]+IN/ {
+                for (i = 1; i <= NF; i++) {
+                    val = $i
+                    sub(/\/32$/, "", val)
+                    if (val == network) {
+                        found = 1
+                        break
+                    }
+                }
+            }
             END {exit(found ? 0 : 1)}
         '
 }

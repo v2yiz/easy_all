@@ -152,13 +152,6 @@ ensure_allowed_tokens() {
 }
 
 write_subscription_token_map() {
-    local accounts
-    if quota_enabled; then
-        accounts=$(quota_active_accounts_json) || die "读取配额用户失败"
-        jq -r 'to_entries[] | "    \"" + .value.token + "\" \"" + .key + "\";"' \
-            <<<"${accounts}"
-        return 0
-    fi
     [[ -n "${ALLOWED_TOKENS:-}" ]] \
         || die "订阅 Token 字典 ALLOWED_TOKENS 未初始化；请执行 sudo easy_all edit-sub 重新配置订阅 Token，或重新安装"
     jq -r '.[] | "    \"" + . + "\" 1;"' <<<"${ALLOWED_TOKENS}"
@@ -264,7 +257,7 @@ publish_subscription_files() {
         relative=${file#"${source_dir}/"}
         target="${SUBSCRIPTION_DIR}/${relative}"
         target_dir=$(dirname -- "${target}")
-        # A quota username may equal a non-quota filename when changing modes.
+        # A directory may equal a filename when changing modes.
         [[ -d "${target_dir}" || ! -e "${target_dir}" ]] || rm -f -- "${target_dir}"
         install -d -o root -g www-data -m 0750 "${target_dir}"
         candidate=$(mktemp "${target_dir}/.subscription.XXXXXX") \
@@ -307,17 +300,9 @@ write_subscription_nginx_locations() {
             || die "Worker 订阅源密钥格式无效"
         worker_guard="        if (\$http_x_easy_all_worker_source != \"${worker_source_secret}\") { return 404; }"
     fi
-    if quota_enabled; then
-        base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.txt"
-        mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.yaml"
-    fi
     if [[ "${renderer}" == "reality" ]]; then
         [[ "${SUB_PORT_MODE:-}" == "dynamic" || "${SUB_PORT_MODE:-}" == "443" ]] \
             || die "Reality 订阅端口模式无效"
-        if quota_enabled; then
-            base64_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/base64.port-template"
-            mihomo_alias="${SUBSCRIPTION_DIR}/\$easy_all_subscription_allowed/mihomo.port-template"
-        fi
         error_log="        error_log /dev/null;"
         base64_content="        set \$easy_all_reality_port_mode ${SUB_PORT_MODE};
         js_content easy_all_reality_subscription.base64;"
