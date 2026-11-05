@@ -544,34 +544,14 @@ cleanup_partial_install() {
 }
 
 snapshot_ufw_state() {
-    local status
-    [[ ! -e "${BACKUP_DIR}/pre-install-ufw.active" \
-        && ! -e "${BACKUP_DIR}/pre-install-ufw.inactive" \
-        && ! -e "${BACKUP_DIR}/pre-install-ufw.missing" ]] || return 0
+    # 卸载与回滚都不会关闭 UFW，只回写 /etc/default/ufw 的 IPv6 开关。
+    [[ ! -e "${BACKUP_DIR}/pre-install-ufw-default" \
+        && ! -e "${BACKUP_DIR}/pre-install-ufw-default.missing" ]] || return 0
     install -d -m 0700 "${BACKUP_DIR}"
-    if ! command -v ufw >/dev/null 2>&1; then
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.missing"
-    else
-        status=$(LC_ALL=C ufw status 2>&1) \
-            || die "读取安装前 UFW 状态失败：${status:-未知错误}"
-        case "${status}" in
-        *'Status: active'*) install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.active" ;;
-        *'Status: inactive'*) install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw.inactive" ;;
-        *) die "无法识别安装前 UFW 状态" ;;
-        esac
-    fi
-    if [[ -f "${UFW_BEFORE_RULES}" ]]; then
-        install -m 0600 "${UFW_BEFORE_RULES}" "${BACKUP_DIR}/pre-install-ufw-before.rules"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw-before.missing"
-    fi
-    if [[ -f "${UFW_BEFORE6_RULES}" ]]; then
-        install -m 0600 "${UFW_BEFORE6_RULES}" "${BACKUP_DIR}/pre-install-ufw-before6.rules"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw-before6.missing"
-    fi
     if [[ -f "${UFW_DEFAULT_CONFIG}" ]]; then
         install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
+    else
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ufw-default.missing"
     fi
 }
 
@@ -2552,50 +2532,17 @@ reality_cloudflare_purge_managed_resources() {
     fi
 }
 
+# 卸载与安装失败回滚都只回收业务端口：保留 UFW 启用状态、默认策略与 SSH 放行。
 restore_preinstall_firewall() {
-    remove_managed_ufw_rules
     [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
-        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" \
-            "${UFW_DEFAULT_CONFIG}"
-    if [[ -f "${BACKUP_DIR}/pre-install-ufw-before.rules" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-ufw-before.rules" \
-            "${UFW_BEFORE_RULES}"
-    elif [[ -f "${UFW_BEFORE_RULES}" ]]; then
-        awk -v start="${UFW_NAT_START}" -v end="${UFW_NAT_END}" '
-            $0 == start {skip=1; next}
-            $0 == end {skip=0; next}
-            !skip {print}
-        ' "${UFW_BEFORE_RULES}" >"${RUNTIME_TMP}/ufw-before-restored.rules"
-        install -m 0644 "${RUNTIME_TMP}/ufw-before-restored.rules" \
-            "${UFW_BEFORE_RULES}"
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-ufw-before6.rules" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-ufw-before6.rules" \
-            "${UFW_BEFORE6_RULES}"
-    elif [[ -f "${UFW_BEFORE6_RULES}" ]]; then
-        awk -v start="${UFW_NAT6_START}" -v end="${UFW_NAT6_END}" '
-            $0 == start {skip=1; next}
-            $0 == end {skip=0; next}
-            !skip {print}
-        ' "${UFW_BEFORE6_RULES}" >"${RUNTIME_TMP}/ufw-before6-restored.rules"
-        install -m 0644 "${RUNTIME_TMP}/ufw-before6-restored.rules" \
-            "${UFW_BEFORE6_RULES}"
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-ufw.active" ]]; then
-        ufw --force enable >/dev/null 2>&1 || true
-        ufw reload >/dev/null 2>&1 || true
-    elif [[ -f "${BACKUP_DIR}/pre-install-ufw.inactive" \
-        || -f "${BACKUP_DIR}/pre-install-ufw.missing" ]]; then
-        command -v ufw >/dev/null 2>&1 \
-            && ufw --force disable >/dev/null 2>&1 || true
-    elif command -v ufw >/dev/null 2>&1 \
-        && LC_ALL=C ufw status numbered 2>/dev/null \
-            | awk '/^[[:space:]]*\[/ {found=1} END {exit !found}'; then
-        ufw --force enable >/dev/null 2>&1 || true
-        ufw reload >/dev/null 2>&1 || true
-    elif command -v ufw >/dev/null 2>&1; then
-        ufw --force disable >/dev/null 2>&1 || true
-    fi
+        || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" "${UFW_DEFAULT_CONFIG}" \
+            || warn "恢复 ${UFW_DEFAULT_CONFIG} 失败"
+    reclaim_ufw_business_rules || warn "回收业务 UFW 放行未完成；请人工核对 ufw status"
+    remove_ufw_managed_block "${UFW_BEFORE_RULES}" "${UFW_NAT_START}" "${UFW_NAT_END}" \
+        || warn "移除 UFW IPv4 NAT 区块失败：${UFW_BEFORE_RULES}"
+    remove_ufw_managed_block "${UFW_BEFORE6_RULES}" "${UFW_NAT6_START}" "${UFW_NAT6_END}" \
+        || warn "移除 UFW IPv6 NAT 区块失败：${UFW_BEFORE6_RULES}"
+    ufw reload >/dev/null 2>&1 || true
 }
 
 uninstall_all() {
@@ -2736,6 +2683,7 @@ run_reality_install_pipeline() {
     install_failure_begin reality
     info "[1/9] 检查系统"
     check_platform
+    report_host_init_state
     ensure_swap
     choose_protocol "${requested:-reality}"
     check_install_conflicts

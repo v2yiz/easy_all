@@ -881,4 +881,286 @@ for reality_port in 443 8443; do
         "${port_probe_out}" "nat=${reality_port}"
 done
 
+echo "=== 11. 卸载只回收业务端口：保留 UFW 启用状态、SSH 放行与 Fail2ban 基线 ==="
+
+# 11.1 外部注入的 RUNTIME_TMP 必须被尊重，且不登记进 cleanup_files（退出时不删外部目录）
+runtime_probe="${TMP_DIR}/runtime-inject"
+install -d -m 0700 "${runtime_probe}/injected" "${runtime_probe}/policy"
+runtime_probe_out=$(EASY_ALL_RUNTIME_LIB_DIR="${ROOT_DIR}/lib" \
+    RUNTIME_TMP="${runtime_probe}/injected" \
+    EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${runtime_probe}/policy" \
+    RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${runtime_probe}/lock" \
+    bash -c 'source "$1/runtime-core.sh"; trap - EXIT; printf "%s|%s|%s" "${RUNTIME_TMP}" "${cleanup_files[*]:-}" "${RUNTIME_TMP_CREATED}"' \
+    _ "${ROOT_DIR}/lib") || fail "runtime-core 必须接受外部注入的 RUNTIME_TMP"
+assert_equal "注入的 RUNTIME_TMP 保持不变且不登记清理" \
+    "${runtime_probe}/injected||0" "${runtime_probe_out}"
+[[ -d "${runtime_probe}/injected" ]] || fail "注入的 RUNTIME_TMP 不应被删除"
+
+# 11.2 UFW 业务端口回收：保留 SSH 放行与 Fail2ban 封禁，删除 443/8443，绝不 disable
+ufw_dir="${TMP_DIR}/ufw-reclaim"
+install -d -m 0700 "${ufw_dir}"
+cat >"${ufw_dir}/ufw" <<'FAKE_UFW'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${FAKE_UFW_LOG}"
+case "${1:-}" in
+status) cat "${FAKE_UFW_STATUS}" ;;
+reload) exit 0 ;;
+--force)
+    [[ "${2:-}" == "delete" ]] || exit 0
+    awk -v n="${3:-}" '
+        /^\[/ {
+            line=$0; sub(/^\[[[:space:]]*/, "", line); num=line; sub(/\].*$/, "", num)
+            if (num == n) next
+        }
+        {print}
+    ' "${FAKE_UFW_STATUS}" >"${FAKE_UFW_STATUS}.new"
+    mv -f -- "${FAKE_UFW_STATUS}.new" "${FAKE_UFW_STATUS}"
+    ;;
+*) exit 0 ;;
+esac
+FAKE_UFW
+chmod +x "${ufw_dir}/ufw"
+cat >"${ufw_dir}/status" <<'FAKE_STATUS'
+Status: active
+
+To                         Action      From
+--                         ------      ----
+[ 1] Anywhere                   DENY IN     203.0.113.7                # easy_all-fail2ban-cidr
+[ 2] 2222/tcp                   ALLOW IN    Anywhere                   # easy_all-managed
+[ 3] 443/tcp                    ALLOW IN    Anywhere                   # easy_all-managed
+[ 4] 8443/tcp                   ALLOW IN    Anywhere                   # easy_all-managed
+[ 5] 8080/tcp                   ALLOW IN    Anywhere                   # debian-init-managed
+FAKE_STATUS
+export FAKE_UFW_STATUS="${ufw_dir}/status" FAKE_UFW_LOG="${ufw_dir}/log"
+: >"${FAKE_UFW_LOG}"
+# shellcheck source=lib/firewall.sh
+source "${ROOT_DIR}/lib/firewall.sh"
+detect_ssh_ports() { SSH_PORTS="2222"; }
+( export PATH="${ufw_dir}:${PATH}"; reclaim_ufw_business_rules ) \
+    || fail "reclaim_ufw_business_rules 必须保留 SSH 放行"
+ufw_status_after=$(<"${FAKE_UFW_STATUS}")
+assert_contains "回收后保留 SSH 2222 放行" "${ufw_status_after}" "2222/tcp"
+assert_not_contains "回收后删除业务端口 443" "${ufw_status_after}" "443/tcp"
+assert_not_contains "回收后删除业务端口 8443" "${ufw_status_after}" "8443/tcp"
+assert_contains "回收后保留 Fail2ban 封禁规则" "${ufw_status_after}" "easy_all-fail2ban-cidr"
+assert_contains "回收不碰初始化基线的额外端口" "${ufw_status_after}" "8080/tcp"
+assert_not_contains "回收过程绝不 disable UFW" "$(<"${FAKE_UFW_LOG}")" "disable"
+
+# 11.2b 仅按来源放行 SSH 时，回收不得擅自扩大为全网放行
+cat >"${FAKE_UFW_STATUS}" <<'FAKE_STATUS2'
+Status: active
+
+To                         Action      From
+--                         ------      ----
+[ 1] 2222/tcp                   ALLOW IN    203.0.113.0/24             # user-ssh
+[ 2] 443/tcp                    ALLOW IN    Anywhere                   # easy_all-managed
+FAKE_STATUS2
+: >"${FAKE_UFW_LOG}"
+( export PATH="${ufw_dir}:${PATH}"; reclaim_ufw_business_rules ) \
+    || fail "按来源放行 SSH 时回收不应失败"
+scoped_status=$(<"${FAKE_UFW_STATUS}")
+assert_equal "按来源的 SSH 放行保持原样" "1" "$(grep -c '2222/tcp' <<<"${scoped_status}")"
+assert_not_contains "回收不得把按来源的 SSH 放行扩大为全网放行" \
+    "$(<"${FAKE_UFW_LOG}")" "allow 2222/tcp"
+assert_not_contains "按来源场景仍回收业务端口 443" "${scoped_status}" "443/tcp"
+# Fail2ban 封禁规则位于 [ 1]（真实 insert 1 顺序）时，按来源的 DENY 不能算作 SSH 全局阻断
+if ( export PATH="${ufw_dir}:${PATH}"; ufw_ssh_port_has_unmanaged_block 2222 ); then
+    fail "按来源的 DENY 不得被当作 SSH 全局阻断"
+fi
+
+# 11.3 卸载保留 Fail2ban 配置，并把旧版运行时目录里的 helper 迁移到系统路径
+f2b_dir="${TMP_DIR}/f2b"
+install -d -m 0700 "${f2b_dir}/jail.d" "${f2b_dir}/action.d" "${f2b_dir}/sbin" \
+    "${f2b_dir}/runtime" "${f2b_dir}/backups" "${f2b_dir}/bin" "${f2b_dir}/ssh"
+export EASY_ALL_FAIL2BAN_CONFIG="${f2b_dir}/jail.d/99-easy-all-sshd.local"
+export EASY_ALL_FAIL2BAN_ACTION_CONFIG="${f2b_dir}/action.d/easy-all-ufw-cidr.conf"
+export EASY_ALL_FAIL2BAN_CIDR_HELPER="${f2b_dir}/sbin/fail2ban-ufw-cidr.sh"
+export EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${f2b_dir}/runtime/fail2ban-ufw-cidr.sh"
+export EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${f2b_dir}/state"
+export EASY_ALL_SSH_PORT_CONFIG="${f2b_dir}/ssh/00-easy-all-ports.conf"
+export BACKUP_DIR="${f2b_dir}/backups"
+printf 'MANAGED-JAIL\n' >"${EASY_ALL_FAIL2BAN_CONFIG}"
+printf 'PREINSTALL-JAIL\n' >"${BACKUP_DIR}/pre-install-fail2ban-jail.conf"
+printf 'legacy-helper\n' >"${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
+chmod 0755 "${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
+printf '[Definition]\nactionban = %s ban <ip> %s\n' \
+    "${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}" "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}" \
+    >"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
+cat >"${f2b_dir}/bin/sshd" <<'FAKE_SSHD'
+#!/usr/bin/env bash
+exit 0
+FAKE_SSHD
+chmod +x "${f2b_dir}/bin/sshd"
+systemctl() { printf 'systemctl %s\n' "$*" >>"${f2b_dir}/systemctl.log"; return 0; }
+fail2ban-client() { return 0; }
+ssh_effective_listeners() { printf '0.0.0.0:2222\n'; }
+ssh_actual_listeners() { printf '0.0.0.0:2222\n'; }
+wait_for_ssh_listeners() { return 0; }
+ufw() { :; }
+( export PATH="${f2b_dir}/bin:${PATH}"; restore_platform_security_state ) \
+    || fail "保留基线的 restore_platform_security_state 必须成功"
+assert_equal "卸载保留受管 Fail2ban jail" "MANAGED-JAIL" "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")"
+assert_equal "旧版 helper 迁移到系统路径" "legacy-helper" \
+    "$(<"${EASY_ALL_FAIL2BAN_CIDR_HELPER}")"
+assert_not_contains "action 配置不再引用运行时目录" \
+    "$(<"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")" "${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
+assert_contains "action 配置指向系统 helper" \
+    "$(<"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")" "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
+assert_not_contains "卸载不禁用 Fail2ban" \
+    "$(<"${f2b_dir}/systemctl.log")" "disable fail2ban"
+# action 配置改路径后必须让运行中的 Fail2ban 重读，否则内存里仍持有旧路径
+assert_contains "迁移后重启 Fail2ban 以加载新 helper" \
+    "$(<"${f2b_dir}/systemctl.log")" "restart fail2ban.service"
+
+# 11.3b 迁移失败必须中止（保留旧副本供重试），不能删掉唯一一份 helper
+f2b_fail="${TMP_DIR}/f2b-migrate-fail"
+install -d -m 0700 "${f2b_fail}/jail.d" "${f2b_fail}/action.d" "${f2b_fail}/runtime" \
+    "${f2b_fail}/backups" "${f2b_fail}/bin"
+printf 'blocker\n' >"${f2b_fail}/blocker"
+printf 'legacy-helper\n' >"${f2b_fail}/runtime/fail2ban-ufw-cidr.sh"
+chmod 0755 "${f2b_fail}/runtime/fail2ban-ufw-cidr.sh"
+printf 'MANAGED-JAIL\n' >"${f2b_fail}/jail.d/99-easy-all-sshd.local"
+printf '[Definition]\nactionban = %s ban <ip> %s\n' \
+    "${f2b_fail}/runtime/fail2ban-ufw-cidr.sh" "${f2b_fail}/state" \
+    >"${f2b_fail}/action.d/easy-all-ufw-cidr.conf"
+cp "${f2b_dir}/bin/sshd" "${f2b_fail}/bin/sshd"
+(
+    export EASY_ALL_FAIL2BAN_CONFIG="${f2b_fail}/jail.d/99-easy-all-sshd.local"
+    export EASY_ALL_FAIL2BAN_ACTION_CONFIG="${f2b_fail}/action.d/easy-all-ufw-cidr.conf"
+    export EASY_ALL_FAIL2BAN_CIDR_HELPER="${f2b_fail}/blocker/fail2ban-ufw-cidr.sh"
+    export EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${f2b_fail}/runtime/fail2ban-ufw-cidr.sh"
+    export EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${f2b_fail}/state"
+    export EASY_ALL_SSH_PORT_CONFIG="${f2b_fail}/ssh/00-easy-all-ports.conf"
+    export BACKUP_DIR="${f2b_fail}/backups"
+    export PATH="${f2b_fail}/bin:${PATH}"
+    restore_platform_security_state
+) && fail "迁移失败时必须中止卸载以保留旧 helper"
+[[ -f "${f2b_fail}/runtime/fail2ban-ufw-cidr.sh" ]] \
+    || fail "迁移失败后旧 helper 必须保留"
+
+# 11.4 移除 UFW 规则区块不得留下 .bak 垃圾文件
+block_file="${TMP_DIR}/before.rules"
+printf '%s\n' 'keep-1' '# easy_all-bunny-start' 'drop-me' '# easy_all-bunny-end' 'keep-2' \
+    >"${block_file}"
+chmod 0600 "${block_file}"
+remove_ufw_managed_block "${block_file}" '# easy_all-bunny-start' '# easy_all-bunny-end' \
+    || fail "remove_ufw_managed_block 必须成功"
+assert_equal "受管规则区块被移除" $'keep-1\nkeep-2' "$(<"${block_file}")"
+[[ ! -e "${block_file}.bak" ]] || fail "不得留下 .bak 备份文件"
+assert_equal "区块移除保留原文件权限" "600" \
+    "$(stat -c '%a' "${block_file}" 2>/dev/null || stat -f '%Lp' "${block_file}")"
+
+# 11.7 UFW inactive 时 ufw show added 中按来源的 DENY 不能算 SSH 全局阻断
+ufw_inactive="${TMP_DIR}/ufw-inactive"
+install -d -m 0700 "${ufw_inactive}"
+cat >"${ufw_inactive}/ufw" <<'FAKE_UFW_INACTIVE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+status) printf 'Status: inactive\n' ;;
+show) cat "${FAKE_UFW_ADDED}" ;;
+*) exit 0 ;;
+esac
+FAKE_UFW_INACTIVE
+chmod +x "${ufw_inactive}/ufw"
+export FAKE_UFW_ADDED="${ufw_inactive}/added"
+printf '%s\n' "ufw deny from 203.0.113.7 to any port 2222 proto tcp" >"${FAKE_UFW_ADDED}"
+if ( unset -f ufw; export PATH="${ufw_inactive}:${PATH}"; ufw_ssh_port_has_unmanaged_block 2222 ); then
+    fail "按来源的 DENY 不得被判为 SSH 全局阻断"
+fi
+printf '%s\n' "ufw deny 2222/tcp" >"${FAKE_UFW_ADDED}"
+( unset -f ufw; export PATH="${ufw_inactive}:${PATH}"; ufw_ssh_port_has_unmanaged_block 2222 ) \
+    || fail "全局 DENY 2222/tcp 必须被判为阻断"
+
+# 11.5 卸载与安装失败回滚都不得关闭 UFW 或删除 Fail2ban 基线
+assert_not_contains "仓库内不得再有 ufw --force disable" \
+    "$(grep -Rh -- 'ufw --force disable' "${ROOT_DIR}/lib" "${ROOT_DIR}/profiles" 2>/dev/null || true)" \
+    "ufw --force disable"
+for profile in profiles/reality.sh profiles/xhttp-cloudflare-streamup.sh profiles/combined.sh; do
+    uninstall_body=$(awk '/^uninstall_all\(\)/,/^}/' "${ROOT_DIR}/${profile}")
+    assert_contains "${profile} 卸载回收业务端口" "${uninstall_body}" "restore_preinstall_firewall"
+    assert_not_contains "${profile} 卸载不带旧的回滚参数" "${uninstall_body}" "restore_preinstall_firewall 1"
+done
+rollback_body=$(awk '/^rollback_fresh_install\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
+assert_not_contains "reality 回滚不关闭 UFW" "${rollback_body}" "ufw --force disable"
+
+# 11.6 Bunny 依赖安装必须等待 dpkg 锁；debian-init 模块 URL 必须跟随分支
+assert_contains "ws-bunny apt 等待 dpkg 锁" \
+    "$(awk '/^install_packages\(\)/,/^}/' "${ROOT_DIR}/profiles/ws-bunny.sh")" \
+    "-o DPkg::Lock::Timeout=300"
+assert_contains "debian-init 模块 URL 跟随 EASY_ALL_BRANCH" \
+    "$(<"${ROOT_DIR}/scripts/debian-init.sh")" \
+    'easy_all/${EASY_ALL_BRANCH}/lib/platform.sh'
+
+
+echo "=== 12. 已初始化主机重装时明确跳过日志（B1） ==="
+# shellcheck source=lib/profile-common.sh
+source "${ROOT_DIR}/lib/profile-common.sh"
+meminfo="${TMP_DIR}/meminfo"
+printf 'SwapTotal:       1048572 kB\n' >"${meminfo}"
+init_state=$( (
+    systemctl() { return 0; }
+    fail2ban-client() { return 0; }
+    ufw() { printf '%s\n' 'Status: active'; }
+    EASY_ALL_MEMINFO_FILE="${meminfo}" report_host_init_state
+) 2>&1 ) || fail "已初始化主机必须能输出状态"
+assert_contains "已初始化主机提示跳过重复安装" "${init_state}" \
+    "已就绪的依赖、内核与 TCP 加速将跳过重复安装"
+printf 'SwapTotal:             0 kB\n' >"${meminfo}"
+first_state=$( (
+    systemctl() { return 1; }
+    fail2ban-client() { return 1; }
+    ufw() { printf '%s\n' 'Status: inactive'; }
+    EASY_ALL_MEMINFO_FILE="${meminfo}" report_host_init_state
+) 2>&1 ) || fail "未初始化主机必须能输出状态"
+assert_contains "未初始化主机提示首次安装" "${first_state}" "首次安装"
+for profile in profiles/reality.sh profiles/xhttp-cloudflare-streamup.sh profiles/ws-bunny.sh profiles/combined.sh; do
+    body=$(awk '/^(install_all|run_reality_install_pipeline)\(\)/,/^}/' "${ROOT_DIR}/${profile}")
+    assert_contains "${profile} 初始化阶段输出状态" "${body}" "report_host_init_state"
+done
+
+
+echo "=== 13. 旧状态版本卸载不再崩溃，并迁移旧版 Fail2ban helper ==="
+legacy_dir="${TMP_DIR}/legacy"
+install -d -m 0700 "${legacy_dir}/runtime" "${legacy_dir}/sbin" "${legacy_dir}/action.d"
+printf 'legacy-helper\n' >"${legacy_dir}/runtime/fail2ban-ufw-cidr.sh"
+chmod 0755 "${legacy_dir}/runtime/fail2ban-ufw-cidr.sh"
+printf '[Definition]\nactionban = %s ban <ip> %s\n' \
+    "${legacy_dir}/runtime/fail2ban-ufw-cidr.sh" "${legacy_dir}/state" \
+    >"${legacy_dir}/action.d/easy-all-ufw-cidr.conf"
+legacy_calls="${legacy_dir}/calls.log"
+: >"${legacy_calls}"
+# 独立脚本执行：真实调用时 legacy_local_uninstall 不在 || 条件里，set -e 会生效。
+cat >"${legacy_dir}/run-legacy-uninstall.sh" <<'LEGACY_UNINSTALL'
+set -Eeuo pipefail
+root_dir=$1
+legacy_dir=$2
+calls=$3
+# shellcheck source=/dev/null
+source "${root_dir}/easy_all"
+# 模拟真实场景：launcher 在加载 profile 前没有 log.sh 提供的日志函数。
+unset -f warn success info die
+unset EASY_ALL_LOG_LOADED
+id() { printf '0\n'; }
+rm() { printf 'rm %s\n' "$*" >>"${calls}"; }
+systemctl() { return 0; }
+fail2ban-client() { return 0; }
+crontab() { return 1; }
+export EASY_ALL_FAIL2BAN_CONFIG="${legacy_dir}/jail.d/99-easy-all-sshd.local"
+export EASY_ALL_FAIL2BAN_ACTION_CONFIG="${legacy_dir}/action.d/easy-all-ufw-cidr.conf"
+export EASY_ALL_FAIL2BAN_CIDR_HELPER="${legacy_dir}/sbin/fail2ban-ufw-cidr.sh"
+export EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${legacy_dir}/runtime/fail2ban-ufw-cidr.sh"
+export EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${legacy_dir}/state"
+legacy_local_uninstall
+LEGACY_UNINSTALL
+legacy_rc=0
+bash "${legacy_dir}/run-legacy-uninstall.sh" "${ROOT_DIR}" "${legacy_dir}" "${legacy_calls}" \
+    || legacy_rc=$?
+assert_equal "旧状态版本卸载退出码" "0" "${legacy_rc}"
+[[ -f "${legacy_dir}/sbin/fail2ban-ufw-cidr.sh" ]] || fail "旧 helper 必须迁移到系统路径"
+assert_contains "action 配置指向新 helper" \
+    "$(<"${legacy_dir}/action.d/easy-all-ufw-cidr.conf")" "${legacy_dir}/sbin/fail2ban-ufw-cidr.sh"
+assert_contains "旧状态版本卸载执行了本机清理" "$(<"${legacy_calls}")" "rm -rf /etc/easy_all"
+
 echo "ok - all audit fixes verified successfully"

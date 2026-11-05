@@ -25,6 +25,8 @@ readonly EASY_ALL_DEFAULT_BRANCH="main"
 readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
 readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
 readonly CURRENT_STATE_VERSION="0"
+# 旧版把 Fail2ban CIDR 助手脚本放在运行时目录；保留这份副本，避免 self-update
+# 到新路径前让仍在运行的 fail2ban action 引用到刚被删除的脚本。
 readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
     "fail2ban-ufw-cidr.sh"
 )
@@ -107,11 +109,32 @@ EOF
 
 legacy_local_uninstall() {
     local marker
+    # 这条路径在 profile 模块加载前执行：先保证日志函数可用，
+    # 否则旧版会在第一条 warn 处 command not found 直接退出，什么都清不掉。
+    if [[ -r "${EASY_ALL_ROOT}/lib/log.sh" ]]; then
+        # shellcheck source=lib/log.sh
+        source "${EASY_ALL_ROOT}/lib/log.sh"
+    fi
+    if ! declare -F warn >/dev/null 2>&1; then
+        warn() { printf '%s\n' "$*" >&2; }
+    fi
+    if ! declare -F success >/dev/null 2>&1; then
+        success() { printf '%s\n' "$*"; }
+    fi
     for marker in "$@"; do
         [[ "${marker}" != "--purge-cloud" ]] \
             || launcher_die "旧状态版本无法安全识别云端资源；已停止卸载，请先在控制台核对 Cloudflare/Bunny 资源"
     done
     [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
+    # 先迁移旧版 Fail2ban helper：失败就中止，避免随后删掉唯一副本。
+    if [[ -r "${EASY_ALL_ROOT}/lib/platform.sh" ]]; then
+        # shellcheck source=lib/platform.sh
+        source "${EASY_ALL_ROOT}/lib/platform.sh"
+    fi
+    if declare -F migrate_legacy_fail2ban_cidr_helper >/dev/null 2>&1; then
+        migrate_legacy_fail2ban_cidr_helper \
+            || launcher_die "旧版 Fail2ban helper 迁移失败；未做任何清理，请修正后重试"
+    fi
     warn "检测到旧版本状态文件；只清理 easy_all 本机文件，SSH 配置、UFW 规则与云端资源保持不变"
     systemctl disable --now easy_all-xray.service \
         easy_all-globalping-refresh.timer easy_all-bunny-ips.timer \
@@ -130,8 +153,8 @@ legacy_local_uninstall() {
     rm -rf /etc/easy_all /etc/easy_all-bunny /var/www/easy_all /usr/local/lib/easy_all
     rm -f "${EASY_ALL_COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    warn "本机文件已清理。以下内容需要你自行核对：SSH 端口 drop-in 与 UFW 放行、"
-    warn "/etc/fail2ban/{jail.d/99-easy-all-sshd.local,action.d/easy-all-ufw-cidr.conf}、以及云端 CDN/DNS 资源"
+    warn "本机文件已清理。Fail2ban 配置与 CIDR helper 已保留；以下内容需要你自行核对："
+    warn "SSH 端口 drop-in 与 UFW 放行、以及云端 CDN/DNS 资源"
     success "旧版本 easy_all 本机清理完成，可以重新安装"
 }
 

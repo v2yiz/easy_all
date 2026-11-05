@@ -1770,6 +1770,7 @@ install_all() {
 
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
+    report_host_init_state
     ensure_swap
     install_failure_begin cloudflare-streamup
     check_install_conflicts

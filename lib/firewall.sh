@@ -38,23 +38,6 @@ disable_ufw_ipv6() {
     set_ufw_ipv6 no
 }
 
-managed_ufw_rule_numbers() {
-    command -v ufw >/dev/null 2>&1 || return 0
-    LC_ALL=C ufw status numbered 2>/dev/null \
-        | sed -n "/${UFW_RULE_COMMENT}/s/^[[:space:]]*\\[[[:space:]]*\\([0-9][0-9]*\\)\\].*/\\1/p" \
-        | sort -rn
-}
-
-remove_managed_ufw_rules() {
-    local rule_number
-    command -v ufw >/dev/null 2>&1 || return 0
-    while read -r rule_number; do
-        [[ -n "${rule_number}" ]] || continue
-        ufw --force delete "${rule_number}" >/dev/null \
-            || warn "删除 UFW 规则 ${rule_number} 失败"
-    done < <(managed_ufw_rule_numbers)
-}
-
 normalize_ufw_tcp_ports() {
     local raw=$1 normalized="" port
     for port in ${raw//,/ }; do
@@ -172,9 +155,9 @@ ufw_endpoint_matches_tcp_port() {
 }
 
 ufw_ssh_port_has_unmanaged_block() {
-    local port=$1 status added line endpoint action direction comment
+    local port=$1 status added line endpoint action direction comment source
     local -a fields
-    local index protocol
+    local index protocol source_scoped
     command -v ufw >/dev/null 2>&1 || die "读取 UFW SSH 阻断规则失败"
     status=$(LC_ALL=C ufw status numbered 2>/dev/null) \
         || die "读取 UFW SSH 阻断规则失败"
@@ -192,14 +175,18 @@ ufw_ssh_port_has_unmanaged_block() {
             endpoint=${fields[0]:-}
             action=${fields[1]:-}
             direction=${fields[2]:-}
+            source=${fields[3]:-}
             if [[ "${action}" == "on" ]]; then
                 action=${fields[3]:-}
                 direction=${fields[4]:-}
+                source=${fields[5]:-}
             fi
             [[ "${direction}" == "IN" ]] || continue
             ufw_endpoint_matches_tcp_port "${endpoint}" "${port}" || continue
             case "${action}" in
             DENY|REJECT)
+                # 按来源封禁（如 Fail2ban 封单 IP）不阻断其他客户端的 SSH。
+                [[ "${source}" == "Anywhere" || "${source}" == "Any" ]] || continue
                 if [[ "${port}" == "22" && "${endpoint}" == "22/tcp" \
                     && "${comment}" == "${UFW_RULE_COMMENT}" ]]; then
                     continue
@@ -225,18 +212,27 @@ ufw_ssh_port_has_unmanaged_block() {
         [[ "${action}" == "allow" || "${action}" == "deny" || "${action}" == "reject" ]] || continue
         endpoint="Anywhere"
         protocol=""
+        source_scoped=0
         index=2
         while ((index < ${#fields[@]})); do
             case "${fields[index]}" in
             in|IN) ;;
             out|OUT) index=${#fields[@]}; continue ;;
             proto|PROTO) protocol=${fields[index+1]:-}; index=$((index + 2)); continue ;;
-            from|FROM) index=$((index + 2)); continue ;;
+            from|FROM)
+                # from 后不是 any/Anywhere 时是按来源限定的规则，不会阻断全部客户端。
+                case "${fields[index+1]:-}" in
+                any|ANY|Any|anywhere|Anywhere) ;;
+                *) source_scoped=1 ;;
+                esac
+                index=$((index + 2)); continue
+                ;;
             to|TO) index=$((index + 2)); continue ;;
             [0-9]*|[0-9]*:[0-9]*|[0-9]*,*|Any|Anywhere) endpoint=${fields[index]} ;;
             esac
             index=$((index + 1))
         done
+        [[ "${source_scoped}" == "0" ]] || continue
         [[ -z "${protocol}" || "${protocol}" == "tcp" ]] || continue
         ufw_endpoint_matches_tcp_port "${endpoint}" "${port}" || continue
         case "${action}" in
@@ -327,7 +323,12 @@ ufw_ssh_port_is_allowed() {
             if (fields[action+1] != "IN") next
             # Keep reading after a decision: an early `exit` closes the pipe and
             # `pipefail` then reports SIGPIPE from `ufw status` as a real failure.
-            if (fields[action] == "DENY" || fields[action] == "REJECT") {decided=1; next}
+            if (fields[action] == "DENY" || fields[action] == "REJECT") {
+                # 只有来源为 Anywhere 的 DENY/REJECT 才阻断所有客户端；Fail2ban 按 IP
+                # 封禁时来源是具体地址，不能据此判定 SSH 不可达。
+                if (fields[action+2] == "Anywhere" || fields[action+2] == "Any") decided=1
+                next
+            }
             # An interface-only allow cannot establish global SSH reachability.
             if (action == 2 && fields[action] == "ALLOW" && fields[action+2] == "Anywhere") {allowed=1; decided=1}
         }
@@ -385,4 +386,70 @@ apply_ssh_ufw_policy() {
     ssh_ports=$(normalize_ufw_tcp_ports "${2:-${SSH_PORTS:-22}}") || die "SSH UFW 校验端口列表无效"
     verify_ssh_ufw_no_unmanaged_block "${ssh_ports}"
     apply_managed_ufw_tcp_ports "${desired_ports}" "${ssh_ports}"
+}
+
+# 原子移除 easy_all 注入的规则区块；不用 sed -i，避免在系统目录留下 .bak。
+remove_ufw_managed_block() {
+    local file=$1 start=$2 end=$3 candidate mode
+    [[ -f "${file}" ]] || return 0
+    grep -Fxq -- "${start}" "${file}" || return 0
+    # 缺少结束标记时不能按区块删除，否则会连带删掉文件其余内容。
+    if ! grep -Fxq -- "${end}" "${file}"; then
+        warn "UFW 规则区块缺少结束标记 ${end}：${file}"
+        return 1
+    fi
+    mode=$(stat -c '%a' "${file}" 2>/dev/null || stat -f '%Lp' "${file}" 2>/dev/null || true)
+    [[ -n "${mode}" ]] || mode=0644
+    candidate=$(mktemp "$(dirname -- "${file}")/.easy-all-ufw-block.XXXXXX") || return 1
+    if ! awk -v start="${start}" -v end="${end}" '
+        $0 == start {skip=1; next}
+        $0 == end {skip=0; next}
+        !skip {print}
+    ' "${file}" >"${candidate}"; then
+        rm -f -- "${candidate}"
+        return 1
+    fi
+    install -m "${mode}" "${candidate}" "${file}" || { rm -f -- "${candidate}"; return 1; }
+    rm -f -- "${candidate}"
+}
+
+# 卸载只回收业务端口：保留 UFW 启用状态、默认策略与 SSH 放行，绝不执行 ufw disable。
+reclaim_ufw_business_rules() {
+    local ssh_ports status number port allowed_before=""
+    command -v ufw >/dev/null 2>&1 || return 0
+    # 用命令替换读完整输出：`ufw status | grep -q` 在封禁条目很多时会因 SIGPIPE + pipefail 误判。
+    status=$(LC_ALL=C ufw status 2>/dev/null) || return 0
+    [[ "${status}" == *'Status: active'* ]] || return 0
+    # 无法确认 SSH 端口时宁可保留全部规则，也不能删掉 SSH 放行造成失联。
+    if ! ssh_ports=$(detect_ssh_ports strict && printf '%s' "${SSH_PORTS}"); then
+        warn "无法确认当前 SSH 端口；保留现有 UFW 规则，请人工核对 ufw status"
+        return 1
+    fi
+    ssh_ports=$(normalize_ufw_tcp_ports "${ssh_ports}") \
+        || { warn "SSH 端口列表无效；保留现有 UFW 规则"; return 1; }
+    for port in ${ssh_ports}; do
+        ufw_ssh_port_is_allowed "${port}" && allowed_before+=" ${port}"
+    done
+    # 每次删除前重新读取编号：Fail2ban 的 `ufw insert 1` 会让所有编号后移。
+    for _ in {1..16}; do
+        read -r number < <(stale_managed_ufw_rule_numbers "${ssh_ports}" | head -n 1) || break
+        [[ -n "${number}" ]] || break
+        ufw --force delete "${number}" >/dev/null 2>&1 \
+            || { warn "删除业务 UFW 规则 ${number} 失败"; return 1; }
+    done
+    ufw reload >/dev/null 2>&1 || true
+    for port in ${ssh_ports}; do
+        ufw_ssh_port_is_allowed "${port}" && continue
+        if [[ " ${allowed_before} " != *" ${port} "* ]]; then
+            # 原本就只允许指定来源（或未放行）：不能擅自扩大为全网放行。
+            warn "UFW 未全局放行 SSH ${port}；保留现有规则，请人工核对 ufw status"
+            continue
+        fi
+        # 删除按编号执行，若 Fail2ban 插入封禁规则导致编号漂移，必须补回 SSH 放行。
+        warn "UFW 未保留 SSH ${port} 放行，正在补回受管放行规则"
+        ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null 2>&1 \
+            && ufw reload >/dev/null 2>&1 || true
+        ufw_ssh_port_is_allowed "${port}" \
+            || { warn "UFW 无法恢复 SSH ${port} 放行；请立即通过 Console 核对"; return 1; }
+    done
 }

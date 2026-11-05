@@ -98,7 +98,7 @@ fi
 RUNTIME_TMP=$(mktemp -d "${TMPDIR:-/tmp}/easy_all-cf-purge.XXXXXX") \
     || die "无法创建临时目录"
 trap 'rm -rf -- "${RUNTIME_TMP}"' EXIT
-if [[ -f "/etc/easy_all/state.env" ]]; then
+if [[ -f "${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE:-/etc/easy_all/state.env}}" ]]; then
     warn "检测到本机已有 easy_all 安装；清理 Cloudflare 资源后需要重新安装或 apply-cloud"
 fi
 

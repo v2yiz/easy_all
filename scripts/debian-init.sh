@@ -17,8 +17,15 @@ SSH_PUBLIC_KEY_ONLY_OPTS=(
   -o KbdInteractiveAuthentication=no
 )
 LOCAL_TEMP_FILES=()
-readonly DEFAULT_PLATFORM_MODULE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/lib/platform.sh"
-readonly DEFAULT_FIREWALL_MODULE_URL="https://raw.githubusercontent.com/v2yiz/easy_all/main/lib/firewall.sh"
+# 与 bootstrap.sh / easy_all 一致：允许用 EASY_ALL_BRANCH 指定拉取分支（开发分支测试用），
+# 也可用 EASY_ALL_PLATFORM_MODULE_URL / EASY_ALL_FIREWALL_MODULE_URL 指定镜像或完整 URL。
+readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH:-main}"
+if [[ ! "${EASY_ALL_BRANCH}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  printf '错误: EASY_ALL_BRANCH 含非法字符: %s\n' "${EASY_ALL_BRANCH}" >&2
+  exit 1
+fi
+readonly DEFAULT_PLATFORM_MODULE_URL="${EASY_ALL_PLATFORM_MODULE_URL:-https://raw.githubusercontent.com/v2yiz/easy_all/${EASY_ALL_BRANCH}/lib/platform.sh}"
+readonly DEFAULT_FIREWALL_MODULE_URL="${EASY_ALL_FIREWALL_MODULE_URL:-https://raw.githubusercontent.com/v2yiz/easy_all/${EASY_ALL_BRANCH}/lib/firewall.sh}"
 PLATFORM_MODULE_FILE=""
 FIREWALL_MODULE_FILE=""
 

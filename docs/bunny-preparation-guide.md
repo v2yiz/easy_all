@@ -152,7 +152,7 @@ sudo env EASY_ALL_DEDICATED_TEST_VM=1 npm run test:bunny
 sudo easy_all uninstall
 ```
 停止并删除 Xray、Nginx 站点配置、定时器与 `easy_all` 命令，移除 CDN 回源防火墙区块，并恢复
-`/etc/default/ufw` 与 Nginx 默认站点；UFW 保持启用并保留 SSH 放行。云端 Pull Zone 与 DNS 记录保留
+`/etc/default/ufw` 与 Nginx 默认站点；UFW 保持启用并保留 SSH 放行与 Fail2ban 配置。云端 Pull Zone 与 DNS 记录保留
 ，相关配置保存在 `/etc/easy_all-bunny/`。
 
 ### 清理云端资源与彻底卸载

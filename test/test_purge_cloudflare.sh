@@ -181,4 +181,17 @@ assert_contains "purge-cloudflare: 超过页数上限时报错" \
 assert_equal "purge-cloudflare: 到上限后不再继续请求" "0" \
     "$(grep -c 'dns_records?&per_page=100&page=5' "${CALLS}")"
 
+# 5) 状态文件路径遵循 EASY_ALL_STATE_FILE_OVERRIDE（测试隔离与自定义部署）
+CALLS="${TMP_DIR}/state-calls.log"
+OUT="${TMP_DIR}/state.out"
+ERR="${TMP_DIR}/state.err"
+STATE_OVERRIDE="${TMP_DIR}/custom-state/state.env"
+mkdir -p "$(dirname "${STATE_OVERRIDE}")"
+printf 'PROTOCOL="cloudflare-streamup"\n' >"${STATE_OVERRIDE}"
+run_purge "${CALLS}" "${OUT}" "${ERR}" \
+    env EASY_ALL_STATE_FILE_OVERRIDE="${STATE_OVERRIDE}" \
+    || fail "purge-cloudflare: 自定义状态文件路径应成功"
+assert_contains "purge-cloudflare: 识别自定义状态文件并告警" \
+    "$(<"${OUT}")$(<"${ERR}")" "检测到本机已有 easy_all 安装"
+
 printf 'ok - purge-cloudflare\n'

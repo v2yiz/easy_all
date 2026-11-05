@@ -14,11 +14,20 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/
 不要改成 `curl ... | bash`，脚本需要持续读取交互输入。本地需要 `ssh`、`scp` 和
 `ssh-keygen`；安装 `sshpass` 后可自动提交首次 SSH 密码，否则按 SSH 提示输入。
 
+脚本会从仓库拉取 `lib/platform.sh` 与 `lib/firewall.sh` 复用 easy_all 的平台与防火墙实现。
+默认跟随 `main` 分支；开发分支测试可用 `EASY_ALL_BRANCH` 指定分支，受限网络可用
+`EASY_ALL_PLATFORM_MODULE_URL` / `EASY_ALL_FIREWALL_MODULE_URL` 指向镜像或完整 URL：
+
+```bash
+EASY_ALL_BRANCH=dev bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/dev/scripts/debian-init.sh)
+```
+
 ## 执行内容
 
 - 升级 APT 软件包并安装基础工具和 Fail2ban。
 - 写入与 easy_all 一致的 TCP 调优参数（fq、缓冲区、keepalive 等），不设置拥塞控制算法、不安装或加载 BBR，也不依赖特定内核。
 - 保持 SSH 现有监听端口，UFW 放行该端口并由默认入站策略阻断其余端口，Fail2ban 实时监控保护。
+  这套 UFW/Fail2ban 基线是常驻安全底座：后续 `easy_all uninstall` 只回收业务端口，不会关闭 UFW 或删除 Fail2ban 配置。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
 - 创建或更新普通用户、sudo 密码和 SSH 公钥。
 - 为普通用户安装 `uv` 和 Python 3.12。

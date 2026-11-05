@@ -12,7 +12,7 @@
 - **协议栈**：VLESS TCP Reality Vision (`flow: xtls-rprx-vision`)
 - **服务端端口**：Xray 监听 `0.0.0.0:443`。
 - **伪装目标**：默认 `swdist.apple.com:443`，安装和修改时通过 `xray tls ping` 自动完成带 SNI 的 TLS 1.3 握手验收。
-- **动态端口（可选）**：通过 UFW `before.rules` 在 `PREROUTING` 链将 `10000-62703` 范围端口通过单条范围规则 NAT 重定向到 `443`，客户端按时间槽位动态轮换。
+- **动态端口（可选）**：通过 UFW `before.rules` 在 `PREROUTING` 链将 `10000-62703` 范围端口通过单条范围规则 NAT 重定向到实际入站端口（默认 `443`），客户端按时间槽位动态轮换。
 
 ### 1.2 模式 2：Cloudflare CDN（纯 XHTTP）
 - **数据面拓扑**：
@@ -49,6 +49,20 @@
   - 各模式均保留系统原有 SSH 监听端口（默认 22），不强行迁移端口，避免因云安全组限制导致失联。
   - UFW 设置默认入站拒绝，仅放行必要端口，未放行端口由默认策略阻断。
   - Fail2ban 自动配置 sshd jail 实时监控保护实际 SSH 端口。
+- **常驻安全基线归初始化**：`scripts/debian-init.sh` 负责激活 UFW（SSH 端口、ICMP 回显与出站放行）并配置 Fail2ban；easy_all 安装只在此基础上追加业务端口。
+- **卸载与回滚只回收业务端口**：各模式 `uninstall` 与安装失败回滚一律只删除自己注入的 443/8443 放行、动态端口 NAT 重定向与 CDN 回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置，不再执行 `ufw disable`。
+- **Fail2ban 助手脚本解耦**：CIDR 封禁助手安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`（不再位于 `/usr/local/lib/easy_all`），卸载 easy_all 时保留，避免常驻 SSH 封禁动作因脚本缺失而失效。
+- **重装跳过已就绪的初始化**：卸载后重装时，依赖包、Swap、内核与 TCP 加速已就绪就跳过重复安装；IPv4-only、定时重启与 UFW/Fail2ban 仍会幂等校验。
+
+### 2.1.1 各模式开放端口
+
+| 模式 | 全局放行 | 仅回源白名单放行 | 其他 |
+| --- | --- | --- | --- |
+| 初始化（debian-init） | SSH 实际监听端口 | — | ICMP 回显（UFW 默认）与全部出站；UFW 默认入站拒绝 |
+| 1 直连 Reality | TCP 443 | TCP 8443（仅订阅模式非 `link` 时，Cloudflare 订阅回源） | 动态端口模式在 `PREROUTING` 注入 `10000:62703` → 实际入站端口（默认 443）NAT |
+| 2 Cloudflare CDN | — | TCP 443（Cloudflare 官方 IPv4 回源段） | 外网直连 443 被丢弃 |
+| 3 Bunny CDN | — | TCP 443（Bunny 官方回源 IPv4 池） | 白名单由 `easy_all-bunny-ips.timer` 持续刷新 |
+| 4 组合模式 | TCP 8443（Reality 直连） | TCP 443（Cloudflare 官方 IPv4 回源段） | 两入口共用同一套 UFW/Fail2ban 基线 |
 
 ### 2.2 回源白名单与防扫描
 - 在涉及 Cloudflare 的模式中，本地 Nginx 与防火墙严格限制：

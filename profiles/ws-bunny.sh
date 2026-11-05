@@ -62,10 +62,12 @@ install_packages() {
         info "系统基础依赖包与 Nginx 已全部安装，跳过 APT 索引更新与包安装"
     else
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y && apt-get install -y --no-install-recommends "${pkgs[@]}" \
+        apt-get -o DPkg::Lock::Timeout=300 update -y \
+            && apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${pkgs[@]}" \
             || die "安装系统依赖失败"
         if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
-            apt-get install -y --no-install-recommends nginx || die "安装 nginx 失败"
+            apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx \
+                || die "安装 nginx 失败"
         else
             install_nginx_without_start nginx || die "安装 nginx 失败"
         fi
@@ -77,8 +79,8 @@ bunny_ensure_python_jsonschema() {
     python3 -c 'import jsonschema' >/dev/null 2>&1 && return
     info "正在安装 Bunny 云端同步所需的 Python JSON Schema 依赖"
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y \
-        && apt-get install -y --no-install-recommends python3-jsonschema \
+    apt-get -o DPkg::Lock::Timeout=300 update -y \
+        && apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends python3-jsonschema \
         || die "安装 python3-jsonschema 失败"
 }
 
@@ -357,6 +359,7 @@ install_all() {
     require_systemd
     check_platform
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
+    report_host_init_state
     ensure_swap
     install_failure_begin bunny-ws
     # bunny 的源站 nginx 固定监听 80（default_server）与 443，端口占用必须提前拦住。

@@ -169,7 +169,9 @@ bunny_remove_local() {
             || { warn "删除 Bunny 状态目录失败"; failed=1; }
     fi
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
-        sed -i.bak '/# easy_all-bunny-start/,/# easy_all-bunny-end/d' "${UFW_BEFORE_RULES}" 2>/dev/null || true
+        remove_ufw_managed_block "${UFW_BEFORE_RULES}" \
+            '# easy_all-bunny-start' '# easy_all-bunny-end' \
+            || warn "移除 Bunny 回源 UFW 区块失败：${UFW_BEFORE_RULES}"
     fi
     ufw reload >/dev/null 2>&1 || true
     ((failed == 0))

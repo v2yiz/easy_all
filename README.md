@@ -99,15 +99,16 @@ sudo easy_all subscription
 | `easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
 | `easy_all show` | 输出各节点详细参数、VLESS 链接及 Mihomo 代理配置块 |
 | `easy_all apply` | 刷新并重新应用本机配置与订阅（不重复修改云端 DNS 与证书） |
-| `easy_all apply-cloud` | 同步云端资源（更新 Cloudflare DNS、重新签发 Origin CA 证书或同步 Worker） |
+| `easy_all apply-cloud` | 同步云端资源（更新 Cloudflare / Bunny 云端解析、规则与证书，或同步 Worker） |
 | `easy_all reality-target [域名:端口]` | 修改 Reality 伪装目标（自动带 SNI 验证 TLS 1.3 连通性并热更新） |
 | `easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 规则 |
 | `easy_all refresh-cdn-ips` | 重新调用 Globalping 测试并筛选当期最佳优选 IP |
+| `easy_all refresh-origin-ips` | （Bunny 模式）立即刷新 Bunny 官方回源 IPv4 防火墙白名单 |
 | `easy_all edit-sub` | 交互式管理用户 Token、订阅模板以及 Worker 聚合订阅设置 |
 | `easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `easy_all update-core` | 在线升级 Xray 核心至官方最新稳定版 |
 | `easy_all self-update` | 从 GitHub 更新 easy_all 脚本自身至最新主线版本 |
-| `easy_all uninstall` | 卸载本机服务与配置（可选 `--purge-cloud` 同步清理 Cloudflare 远端解析与证书） |
+| `easy_all uninstall` | 卸载本机服务与配置（可选 `--purge-cloud` 同步清理 Cloudflare / Bunny 远端资源）；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
 
 ---
 
@@ -118,6 +119,7 @@ sudo easy_all subscription
    - 由 Fail2ban 实时监控保护实际 SSH 端口（采用专用 CIDR 防重脚本），防范自动化暴力破解。
 2. **回源白名单与防扫网**：
    - CDN 模式与组合模式的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。
+   - Fail2ban 的 CIDR 封禁助手脚本安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`，与 easy_all 运行时目录解耦；卸载与安装失败回滚只回收业务端口，不会让常驻封禁动作失效。
 3. **恶意流量阻断**：
    - Xray 内部路由自动丢弃局域网私有地址、云厂商元数据网段（如 169.254.169.254）以及异常回环访问。
 

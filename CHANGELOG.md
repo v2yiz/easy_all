@@ -8,6 +8,11 @@
 - **常驻与安装内存优化**：全模式 Xray 服务单元注入 `GOMEMLIMIT=128MiB` 与 `GODEBUG=madvdontneed=1`，促使 Go 运行时更平滑 GC 并尽快向操作系统归还物理内存页（实际降幅随负载变化，未做基准测试）；Nginx 主配置自动收敛为单 Worker (`worker_processes 1;`)，消除多核 VPS 进程内存冗余；针对 arm64 架构 Skyline 源码编译，依据物理内存自动限制 `CARGO_BUILD_JOBS` 并发度（物理内存 < 2GB 时限制单线程），降低安装期峰值内存与小内存机器的 OOM 风险。
 - **配置与安装容错增强**：`timedatectl` 设置时区与网络时间同步失败由中断降为告警，防止受限 VPS 环境因 timesyncd 瞬态状态中断安装；清理开机 helper 脚本的迁移残留路径与重复定义；上游 Skyline 卸载脚本异常时输出友好警告。
 - **文档与平台说明精确化**：精确规范支持的发行版代号（Debian 12/13 [bookworm / trixie]、Ubuntu 22.04/24.04 LTS [jammy / noble]）；`scripts/debian-init.sh` 改为复用 `check_platform`，支持范围与 easy_all 一致（Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64），平台校验提前到任何系统改动之前，不再在 TCP 调优步骤才以 amd64 限制退出；补充未配置 Swap 时自动创建 1GB 交换文件（`/swapfile`）的说明；修复 Bunny 准备指南中对 BBR 的过时描述。
+- **卸载与回滚只精确回收业务端口与回源白名单**：全模式卸载与安装失败回滚一律只移除业务端口（443/8443）、动态端口 NAT 重定向与 CDN 回源白名单，保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置，不再执行 `ufw disable`；修复 Fail2ban 存在单 IP 封禁时 UFW 放行探测函数误判 SSH 不可达的问题。
+- **Fail2ban CIDR 助手脚本与运行时目录解耦**：CIDR 封禁助手从 `/usr/local/lib/easy_all` 迁移至系统路径 `/usr/local/sbin/fail2ban-ufw-cidr.sh` 并保持常驻，卸载与安装失败回滚不删除 Fail2ban 配置与 helper，避免常驻 SSH 封禁动作失效；升级与旧版本卸载时自动平滑迁移 action 配置与运行中服务。
+- **主机前置初始化跳过提示与幂等增强**：检测到系统已具备激活的 UFW、Fail2ban 与 Swap 等初始化状态时，安装各 Profile 时明确提示「已完成初始化：已就绪的依赖、内核与 TCP 加速将跳过重复安装；IPv4-only、定时重启与 UFW/Fail2ban 仍会幂等校验」；旧版本状态卸载（`legacy_local_uninstall`）修复 `warn`/`success` 未定义崩溃问题并安全迁移旧 helper。
+- **Reality 动态端口 NAT 目标自适应**：NAT 重定向规则目标端口自适应 inbound 实际监听端口，不再硬编码 443。
+- **系统初始化脚本（`debian-init.sh`）支持分支与镜像参数**：支持通过 `EASY_ALL_BRANCH` 指定拉取分支，及 `EASY_ALL_PLATFORM_MODULE_URL` / `EASY_ALL_FIREWALL_MODULE_URL` 指定镜像源。
 
 源码版本标识为 `2.5.2`。
 

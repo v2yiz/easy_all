@@ -448,6 +448,8 @@ bunny_cleanup_body=$(awk '/^cleanup_partial_install\(\) \{/,/^\}/' "${ROOT_DIR}/
     || fail "bunny cleanup must check bunny_remove_local result before clearing marker"
 
 # 23. Bunny 本机清理：安装前配置恢复失败时必须保留状态目录与备份
+# shellcheck source=lib/firewall.sh
+source "${ROOT_DIR}/lib/firewall.sh"
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/lib/bunny-runtime.sh"
 export STATE_DIR="${TMP_DIR}/bunny/state"

@@ -21,12 +21,12 @@ sudo easy_all apply
 - 重新渲染并应用本机 Xray 配置、Nginx 站点、本地订阅与 UFW 规则。
 - 不会重复向 Cloudflare 请求签发证书或修改 DNS。
 
-### 1.3 同步云端资源（Cloudflare / 组合模式）
-如果更改了域名、需要同步 Cloudflare 解析、更新边缘规则或重新签发 Origin CA 证书：
+### 1.3 同步云端资源（Cloudflare / Bunny / 组合模式）
+如果更改了域名、需要同步云端解析、更新边缘规则或重新签发证书：
 ```bash
 sudo easy_all apply-cloud
 ```
-- 会重新校验并同步 Cloudflare DNS 记录、Strict SSL 规则及证书配置。
+- 会重新校验并同步 Cloudflare 或 Bunny 的云端 DNS 记录、边缘规则及证书配置。
 
 ---
 
@@ -40,11 +40,12 @@ sudo easy_all apply-cloud
 | `sudo easy_all reality-target [域名:端口]` | （Reality / 组合模式）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
 | `sudo easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 重定向规则 |
 | `sudo easy_all refresh-cdn-ips` | （Cloudflare / 组合模式）重新调用 Globalping 探针优选最新 CDN IP |
+| `sudo easy_all refresh-origin-ips` | （Bunny 模式）立即刷新 Bunny 官方回源 IPv4 防火墙白名单 |
 | `sudo easy_all edit-sub` | 交互式管理订阅用户、订阅模板或 Worker 聚合 |
 | `sudo easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `sudo easy_all update-core` | 在线升级 Xray 核心至官方最新版本，并自动重载服务 |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的临时残留（不影响云端资源） |
-| `sudo easy_all uninstall` | 卸载本机服务与配置；加 `--purge-cloud` 会同步清理 Cloudflare 远端资源 |
+| `sudo easy_all uninstall` | 卸载本机服务与配置；加 `--purge-cloud` 会同步清理云端资源（Cloudflare 与 Bunny 均支持）。卸载只回收业务端口与回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置 |
 
 ---
 
@@ -95,13 +96,13 @@ sudo easy_all edit-sub
 ```bash
 sudo easy_all uninstall
 ```
-停止 Xray 与 Nginx，删除 easy_all 自有配置、证书与定时任务，恢复安装前的防火墙、IPv6 与 SSH 策略，保留 Cloudflare 上的云端解析与证书。前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap、系统依赖与 Nginx `worker_processes 1;` 收敛均保留。
+停止 Xray 与 Nginx，删除 easy_all 自有配置、证书与定时任务，回收 easy_all 注入的业务端口（443/8443）与回源白名单，保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置（`/usr/local/sbin/fail2ban-ufw-cidr.sh` 脚本保留），恢复安装前的 IPv6 配置，保留云端资源（若未加 `--purge-cloud`）。前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap、系统依赖与 Nginx `worker_processes 1;` 收敛均保留。
 
 ### 6.2 完整卸载（含云端资源清理）
 ```bash
 sudo easy_all uninstall --purge-cloud
 ```
-自动调用 API 清理本次安装在 Cloudflare 上创建的节点 DNS 解析、Origin CA 证书及专属规则。
+自动调用 API 清理本次安装在云端创建的托管资源（Cloudflare 模式清理节点 DNS 解析、Origin CA 证书及专属规则；Bunny 模式清理 Pull Zone、DNS 解析、边缘规则与证书）。
 
 ### 6.3 独立清理 Cloudflare 残留
 若 VPS 已销毁或状态丢失，可使用独立命令清理账户内 easy_all 标记的资源：

@@ -967,3 +967,23 @@ restore_install_snapshot() {
     restore_preinstall_crontab || true
     remove_daily_reboot_schedule || true
 }
+
+# B1：初始化步骤本身已幂等；这里只把「已初始化、本次跳过重复安装」说清楚，便于排障。
+host_already_initialized() {
+    local swap_kb=0 meminfo="${EASY_ALL_MEMINFO_FILE:-/proc/meminfo}" status
+    command -v ufw >/dev/null 2>&1 || return 1
+    command -v fail2ban-client >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet fail2ban.service 2>/dev/null || return 1
+    status=$(LC_ALL=C ufw status 2>/dev/null) || return 1
+    [[ "${status}" == *'Status: active'* ]] || return 1
+    swap_kb=$(awk '/SwapTotal:/ {print $2}' "${meminfo}" 2>/dev/null || echo 0)
+    (( swap_kb > 0 ))
+}
+
+report_host_init_state() {
+    if host_already_initialized; then
+        info "检测到主机已完成初始化：已就绪的依赖、内核与 TCP 加速将跳过重复安装；IPv4-only、定时重启与 UFW/Fail2ban 仍会幂等校验"
+    else
+        info "首次安装：安装系统依赖并初始化服务器"
+    fi
+}

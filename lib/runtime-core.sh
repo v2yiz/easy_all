@@ -62,8 +62,15 @@ release_runtime_write_lock() {
     exec 9>&-
 }
 
-RUNTIME_TMP=$(mktemp -d)
-cleanup_files=("${RUNTIME_TMP}")
+# 允许调用方（测试或外部编排）注入隔离临时目录；只有自己创建时才登记清理，
+# 否则退出时会删掉不属于 easy_all 的目录。
+RUNTIME_TMP_CREATED=0
+if [[ -z "${RUNTIME_TMP:-}" ]]; then
+    RUNTIME_TMP=$(mktemp -d)
+    RUNTIME_TMP_CREATED=1
+fi
+cleanup_files=()
+((RUNTIME_TMP_CREATED == 0)) || cleanup_files=("${RUNTIME_TMP}")
 INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_BACKUP_DIR=""
@@ -109,6 +116,7 @@ cleanup() {
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"
     done
+    return 0
 }
 trap cleanup EXIT
 

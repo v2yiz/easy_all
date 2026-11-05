@@ -329,6 +329,7 @@ xhttp_validate_local_tls_curl_args() {
 
 xhttp_configure_ufw() {
     snapshot_ufw_state
+    snapshot_platform_security_state
     # SSH 开机自启与 Fail2ban 与其他模式保持一致：只做 UFW 放行、不配 jail 会让文档承诺的暴力破解防护静默缺失。
     ensure_ssh_boot_service
     detect_ssh_ports strict
@@ -754,6 +755,7 @@ install_all() {
     require_systemd
     check_platform
     [[ ! -f "${STATE_FILE}" ]] || die "检测到已有 easy_all 安装；一台 VPS 只允许一种模式"
+    report_host_init_state
     ensure_swap
     install_failure_begin combined
     prepare_fresh_install 80 443 "${REALITY_PORT}"
@@ -1006,6 +1008,10 @@ uninstall_all() {
     stop_services
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
+    restore_platform_security_state || {
+        warn "SSH 配置恢复失败；请通过服务商 Console 检查"
+        return 1
+    }
     restore_preinstall_firewall
     restore_preinstall_ipv6
     restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"

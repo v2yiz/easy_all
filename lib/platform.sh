@@ -5,7 +5,9 @@
 EASY_ALL_SSH_PORT_CONFIG="${EASY_ALL_SSH_PORT_CONFIG:-/etc/ssh/sshd_config.d/00-easy-all-ports.conf}"
 EASY_ALL_FAIL2BAN_CONFIG="${EASY_ALL_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-easy-all-sshd.local}"
 EASY_ALL_FAIL2BAN_ACTION_CONFIG="${EASY_ALL_FAIL2BAN_ACTION_CONFIG:-/etc/fail2ban/action.d/easy-all-ufw-cidr.conf}"
-EASY_ALL_FAIL2BAN_CIDR_HELPER="${EASY_ALL_FAIL2BAN_CIDR_HELPER:-/usr/local/lib/easy_all/fail2ban-ufw-cidr.sh}"
+# Fail2ban 是常驻安全基线：helper 放在独立系统路径，卸载 easy_all 时保留。
+EASY_ALL_FAIL2BAN_CIDR_HELPER="${EASY_ALL_FAIL2BAN_CIDR_HELPER:-/usr/local/sbin/fail2ban-ufw-cidr.sh}"
+EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER:-/usr/local/lib/easy_all/fail2ban-ufw-cidr.sh}"
 EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR:-/var/lib/easy_all/fail2ban-ufw-cidr}"
 if [[ -z "${IPV6_SYSCTL_CONF:-}" ]]; then
     IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
@@ -200,66 +202,21 @@ restore_preinstall_ipv6() {
 }
 
 snapshot_platform_security_state() {
-    local source name
     local sentinel="${BACKUP_DIR}/pre-install-platform-security.snapshotted"
     [[ ! -e "${sentinel}" ]] || return 0
     install -d -m 0700 "${BACKUP_DIR}"
-    for source in \
-        "${EASY_ALL_SSH_PORT_CONFIG}" \
-        "${EASY_ALL_FAIL2BAN_CONFIG}" \
-        "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" \
-        "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"; do
-        case "${source}" in
-        "${EASY_ALL_SSH_PORT_CONFIG}") name="ssh-port.conf" ;;
-        "${EASY_ALL_FAIL2BAN_CONFIG}") name="fail2ban-jail.conf" ;;
-        "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}") name="fail2ban-action.conf" ;;
-        *) name="fail2ban-helper" ;;
-        esac
-        if [[ -f "${source}" ]]; then
-            install -m 0600 "${source}" "${BACKUP_DIR}/pre-install-${name}"
-        else
-            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-${name}.missing"
-        fi
-    done
-    if systemctl cat fail2ban.service >/dev/null 2>&1; then
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.present"
-        if systemctl is-enabled --quiet fail2ban.service; then
-            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.enabled"
-        else
-            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.disabled"
-        fi
-        if systemctl is-active --quiet fail2ban.service; then
-            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.active"
-        else
-            install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.inactive"
-        fi
+    if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]]; then
+        install -m 0600 "${EASY_ALL_SSH_PORT_CONFIG}" "${BACKUP_DIR}/pre-install-ssh-port.conf"
     else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-fail2ban.missing"
+        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-ssh-port.conf.missing"
     fi
     install -m 0600 /dev/null "${sentinel}"
-}
-
-managed_fail2ban_ufw_rule_numbers() {
-    command -v ufw >/dev/null 2>&1 || return 0
-    LC_ALL=C ufw status numbered 2>/dev/null \
-        | sed -n '/easy_all-fail2ban-cidr/s/^[[:space:]]*\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' \
-        | sort -rn
-}
-
-remove_managed_fail2ban_ufw_rules() {
-    local number failed=0
-    while IFS= read -r number; do
-        [[ -n "${number}" ]] || continue
-        ufw --force delete "${number}" >/dev/null 2>&1 \
-            || { warn "删除 easy_all Fail2ban UFW 规则 ${number} 失败"; failed=1; }
-    done < <(managed_fail2ban_ufw_rule_numbers)
-    ((failed == 0))
 }
 
 restore_platform_security_state() {
     local sshd_bin="" unit="" sentinel="${BACKUP_DIR}/pre-install-platform-security.snapshotted"
     local current_ssh_config="${RUNTIME_TMP}/current-easy-all-ssh-port.conf" current_ssh_had=0
-    local remove_helper_after_restart=0 helper_safe_to_remove=0 ssh_config_restored=1
+    local ssh_config_restored=1
     if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]]; then
         install -m 0600 "${EASY_ALL_SSH_PORT_CONFIG}" "${current_ssh_config}" || return 1
         current_ssh_had=1
@@ -314,72 +271,13 @@ restore_platform_security_state() {
         return 1
     fi
 
-    if remove_managed_fail2ban_ufw_rules; then
-        rm -rf -- "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}"
-    else
-        warn "Fail2ban UFW 规则未全部删除，保留 CIDR 计数状态以便后续重试"
-    fi
-
-    if [[ -f "${BACKUP_DIR}/pre-install-fail2ban-jail.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-fail2ban-jail.conf" \
-            "${EASY_ALL_FAIL2BAN_CONFIG}"
-    else
-        rm -f -- "${EASY_ALL_FAIL2BAN_CONFIG}"
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-fail2ban-action.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-fail2ban-action.conf" \
-            "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
-    else
-        rm -f -- "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-fail2ban-helper" ]]; then
-        install -m 0755 "${BACKUP_DIR}/pre-install-fail2ban-helper" \
-            "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
-    else
-        remove_helper_after_restart=1
-    fi
-
-    if [[ -e "${sentinel}" ]]; then
-        if [[ -f "${BACKUP_DIR}/pre-install-fail2ban.missing" ]]; then
-            if systemctl disable --now fail2ban.service >/dev/null 2>&1; then
-                helper_safe_to_remove=1
-            else
-                warn "停止本次安装的 Fail2ban 服务失败，暂留 CIDR 助手脚本"
-            fi
-        elif [[ -f "${BACKUP_DIR}/pre-install-fail2ban.present" ]]; then
-            if [[ -f "${BACKUP_DIR}/pre-install-fail2ban.enabled" ]]; then
-                systemctl enable fail2ban.service >/dev/null 2>&1 || true
-            else
-                systemctl disable fail2ban.service >/dev/null 2>&1 || true
-            fi
-            if ! fail2ban-client -t >/dev/null 2>&1; then
-                warn "恢复 Fail2ban 配置后校验失败，暂留 CIDR 助手脚本"
-            elif [[ -f "${BACKUP_DIR}/pre-install-fail2ban.active" ]]; then
-                if systemctl restart fail2ban.service >/dev/null 2>&1; then
-                    helper_safe_to_remove=1
-                else
-                    warn "恢复 Fail2ban 服务失败，暂留 CIDR 助手脚本"
-                fi
-            else
-                if systemctl stop fail2ban.service >/dev/null 2>&1; then
-                    helper_safe_to_remove=1
-                else
-                    warn "停止 Fail2ban 服务失败，暂留 CIDR 助手脚本"
-                fi
-            fi
-        fi
-    elif systemctl cat fail2ban.service >/dev/null 2>&1; then
-        if fail2ban-client -t >/dev/null 2>&1 \
-            && systemctl restart fail2ban.service >/dev/null 2>&1; then
-            helper_safe_to_remove=1
-        else
-            warn "移除旧版 easy_all Fail2ban 配置后重载失败，暂留 CIDR 助手脚本"
-        fi
-    else
-        helper_safe_to_remove=1
-    fi
-    ((remove_helper_after_restart == 0 || helper_safe_to_remove == 0)) \
-        || rm -f -- "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
+    # 卸载与安装失败回滚都不回收常驻安全基线：保留 Fail2ban jail/action/helper、
+    # 封禁规则与运行状态，只把旧版 helper 路径迁移到当前系统路径。
+    # 迁移失败必须中止：运行时目录随后会被删除，旧 helper 不能丢。
+    migrate_legacy_fail2ban_cidr_helper || {
+        warn "迁移旧版 Fail2ban CIDR 助手脚本失败；保留本机内容以便重试"
+        return 1
+    }
 }
 
 append_ssh_port() {
@@ -685,6 +583,50 @@ actionunban = ${EASY_ALL_FAIL2BAN_CIDR_HELPER} unban <ip> ${EASY_ALL_FAIL2BAN_CI
 EOF
 }
 
+# 旧安装的 action 配置可能仍指向运行时目录里的 helper；迁移到系统路径后卸载才不会
+# 把仍在生效的 SSH 封禁动作打断。
+migrate_legacy_fail2ban_cidr_helper() {
+    local legacy="${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}" candidate
+    [[ "${legacy}" != "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] || return 0
+    [[ -f "${legacy}" ]] || return 0
+    if [[ ! -f "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]]; then
+        install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CIDR_HELPER}")" \
+            && install -m 0755 "${legacy}" "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" \
+            || return 1
+    fi
+    [[ -f "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" ]] || return 0
+    grep -Fq -- "${legacy}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" || return 0
+    candidate=$(mktemp "$(dirname -- "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")/.easy-all-fail2ban-action.XXXXXX") \
+        || return 1
+    if ! write_fail2ban_cidr_action_config "${candidate}" \
+        || ! install -m 0644 "${candidate}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"; then
+        rm -f -- "${candidate}"
+        return 1
+    fi
+    rm -f -- "${candidate}"
+    # 运行中的 Fail2ban 在内存里持有旧的 actionban 路径，必须重读配置后新路径才生效。
+    if systemctl cat fail2ban.service >/dev/null 2>&1 \
+        && systemctl is-active --quiet fail2ban.service; then
+        fail2ban-client -t >/dev/null 2>&1 \
+            && systemctl restart fail2ban.service >/dev/null 2>&1 \
+            && fail2ban-client status sshd >/dev/null 2>&1 \
+            || return 1
+    fi
+}
+
+# 新 helper 生效后清掉运行时目录里的旧副本，避免两份脚本各自漂移。
+remove_legacy_fail2ban_cidr_helper() {
+    local legacy="${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
+    [[ "${legacy}" != "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] || return 0
+    [[ -f "${legacy}" ]] || return 0
+    [[ -x "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] || return 0
+    if [[ -f "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" ]] \
+        && grep -Fq -- "${legacy}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"; then
+        return 0
+    fi
+    rm -f -- "${legacy}" 2>/dev/null || true
+}
+
 wait_for_ssh_fail2ban() {
     local attempt
     for attempt in {1..20}; do
@@ -768,6 +710,7 @@ EOF
         && fail2ban-client status sshd >/dev/null 2>&1; then
         rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
             "${jail_backup}" "${action_backup}" "${helper_backup}"
+        remove_legacy_fail2ban_cidr_helper
         info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按单 IP 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
         return 0
     fi
@@ -799,6 +742,7 @@ EOF
     fi
     rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
         "${jail_backup}" "${action_backup}" "${helper_backup}"
+    remove_legacy_fail2ban_cidr_helper
     info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按单 IP 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
 }
 
