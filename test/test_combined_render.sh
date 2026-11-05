@@ -68,10 +68,20 @@ export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/progress/install-prog
 export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
 # 让 cleanup/幂等用例能替换 acme.sh 可执行文件，验证回滚不会真的卸载它
 export ACME_BIN="${TMP_DIR}/acme-sh"
+# configure_ipv4_only / optimize_nginx_system_config 会写 /etc 下的系统文件：非 root 的 CI runner
+# 上真实写入必失败（2026-11-05 main 构建块断于此），因此把它们的目标路径全部指到隔离目录。
+export IPV6_SYSCTL_CONF="${TMP_DIR}/sysctl/99-enable-ipv6.conf"
+export EASY_ALL_PROC_IPV6_DIR="${TMP_DIR}/proc-ipv6"
+export EASY_ALL_NGINX_MAIN_CONF="${TMP_DIR}/nginx-main/nginx.conf"
+# 非 root 无法 sysctl -p，但被测的是 apply 的控制流，不是内核参数。
+sysctl() { :; }
 
 mkdir -p "${STATE_DIR}" "${BACKUP_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" \
     "${WEB_ROOT}" "${SUBSCRIPTION_DIR}" "${COMMAND_INSTALL_DIR}" \
-    "${TMP_DIR}/bin" "${XRAY_DIR}" "${TMP_DIR}/systemd"
+    "${TMP_DIR}/bin" "${XRAY_DIR}" "${TMP_DIR}/systemd" \
+    "$(dirname "${IPV6_SYSCTL_CONF}")" "${EASY_ALL_PROC_IPV6_DIR}" \
+    "$(dirname "${EASY_ALL_NGINX_MAIN_CONF}")"
+printf 'worker_processes auto;\n' >"${EASY_ALL_NGINX_MAIN_CONF}"
 : >"${CERT_FILE}"
 : >"${KEY_FILE}"
 
@@ -109,6 +119,12 @@ install() {
         target="${TMP_DIR}/web${target#/var/www/easy_all}"
         args[${#args[@]}-1]="${target}"
     fi
+    # 隔离护栏：除上面已重定向的受管路径外，任何对系统目录的写入都是测试隔离漏洞。
+    case "${target}" in
+    /etc/* | /usr/* | /var/* | /opt/* | /srv/*)
+        fail "test isolation: refusing to install into ${target}"
+        ;;
+    esac
     if [[ " ${args[*]} " == *" -d "* ]]; then
         mkdir -p "${target}"
     elif [[ -n "${target}" ]]; then
@@ -1071,6 +1087,25 @@ assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok
     [[ "${noproxy_found}" == "1" ]] \
         || fail "curl-args: local TLS probe must pass --noproxy '*'"
 ) || fail "curl-args: --noproxy assertion failed"
+
+# 28) 组合模式的 UFW 配置必须同时建立 SSH 开机自启与 Fail2ban（与其他模式一致）
+#     只做 UFW 放行而不配 jail，会让文档承诺的 SSH 狂暴破解防护静默缺失。
+UFW_WIRING_LOG="${TMP_DIR}/ufw-wiring.log"
+(
+    : >"${UFW_WIRING_LOG}"
+    snapshot_ufw_state() { :; }
+    detect_ssh_ports() { SSH_PORTS="2222"; }
+    verify_ssh_ufw_no_unmanaged_block() { :; }
+    configure_ufw_ip_family() { :; }
+    apply_ssh_ufw_policy() { :; }
+    cloudflare_configure_origin_firewall() { :; }
+    ufw() { [[ "${1:-}" == "status" ]] && printf '%s\n' 'Status: active'; return 0; }
+    ensure_ssh_boot_service() { printf '%s\n' 'ssh-boot' >>"${UFW_WIRING_LOG}"; }
+    ensure_ssh_fail2ban() { printf '%s\n' 'fail2ban' >>"${UFW_WIRING_LOG}"; }
+    xhttp_configure_ufw
+) || fail "28: xhttp_configure_ufw must succeed with a stubbed firewall"
+assert_equal "28: combined configures SSH boot safety and fail2ban" \
+    $'ssh-boot\nfail2ban' "$(<"${UFW_WIRING_LOG}")"
 
 printf 'ok - combined render\n'
 

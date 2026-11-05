@@ -34,8 +34,9 @@ function getHourCount(now = Date.now()) {
 }
 
 function dynamicPortSlot(now = Date.now()) {
+    // 与 profiles/reality.sh 的 dynamic_port_slot_for_now 保持一致：整秒 % 6。
     const whole = Math.max(0, Math.trunc(now));
-    return (Math.floor(whole / 1000) + (whole % 1000)) % PORTS_PER_HOUR;
+    return Math.floor(whole / 1000) % PORTS_PER_HOUR;
 }
 
 function dynamicPort(hourCount, slot = 0) {

@@ -494,6 +494,72 @@ bunny_remove_local || fail "successful cleanup must return 0"
 assert_equal "restored ufw default" "ORIGINAL-UFW" "$(cat "${UFW_DEFAULT_CONFIG}")"
 assert_equal "restored nginx default site" "ORIGINAL-NGINX" "$(cat "${NGINX_DEFAULT_SITE}")"
 
+# 23b. Bunny 回源防火墙必须同时建立 SSH 开机自启与 Fail2ban，且重复执行不堆叠规则
+bunny_fw_dir="${TMP_DIR}/bunny-fw"
+rm -rf -- "${bunny_fw_dir}"
+install -d -m 0700 "${bunny_fw_dir}" "${TMP_DIR}/runtime"
+printf '%s\n' '*filter' ':ufw-before-input - [0:0]' \
+    '-A ufw-before-input -i lo -j ACCEPT' 'COMMIT' >"${bunny_fw_dir}/before.rules"
+export SCRIPT_DIR="${ROOT_DIR}/lib"
+export RUNTIME_TMP="${TMP_DIR}/runtime"
+export UFW_BEFORE_RULES="${bunny_fw_dir}/before.rules"
+export BUNNY_EDGE_IP_FILE="${bunny_fw_dir}/edge-ips"
+bunny_wiring_log="${bunny_fw_dir}/wiring.log"
+
+run_bunny_firewall_with_stubs() (
+    curl() { printf '%s\n' '["198.51.100.0/24"]' >"${RUNTIME_TMP}/bunny-edges.json"; }
+    iptables-restore() { :; }
+    bunny_reject_ssh_443() { SSH_PORTS="2222"; }
+    verify_ssh_ufw_no_unmanaged_block() { :; }
+    disable_ufw_ipv6() { :; }
+    apply_ssh_ufw_policy() { :; }
+    ufw() { :; }
+    ensure_ssh_boot_service() { printf '%s\n' 'ssh-boot' >>"${bunny_wiring_log}"; }
+    ensure_ssh_fail2ban() { printf '%s\n' 'fail2ban' >>"${bunny_wiring_log}"; }
+    bunny_refresh_firewall
+)
+
+: >"${bunny_wiring_log}"
+run_bunny_firewall_with_stubs || fail "bunny_refresh_firewall must succeed with a stubbed firewall"
+assert_equal "bunny firewall configures SSH boot safety and fail2ban" \
+    $'ssh-boot\nfail2ban' "$(<"${bunny_wiring_log}")"
+grep -qx -- '-A easy_all_bunny -s 198.51.100.0/24 -j ACCEPT' "${UFW_BEFORE_RULES}" \
+    || fail "bunny firewall must allow the official edge pool"
+grep -qx -- '-A easy_all_bunny -j DROP' "${UFW_BEFORE_RULES}" \
+    || fail "bunny firewall must drop non-edge traffic to 443"
+assert_equal "bunny edge pool persisted" "198.51.100.0/24" "$(<"${BUNNY_EDGE_IP_FILE}")"
+
+run_bunny_firewall_with_stubs || fail "bunny firewall refresh must be idempotent"
+assert_equal "bunny firewall block is not duplicated" "1" \
+    "$(grep -c -- '-A easy_all_bunny -s 198.51.100.0/24 -j ACCEPT' "${UFW_BEFORE_RULES}")"
+assert_equal "bunny firewall block has a single jump rule" "1" \
+    "$(grep -c -- '-j easy_all_bunny' "${UFW_BEFORE_RULES}")"
+
+# 23c. 安装前的 nginx 默认站点必须按快照恢复（Reality/XHTTP/组合的卸载与回滚路径）
+(
+    export BACKUP_DIR="${TMP_DIR}/site/state/backups"
+    export EASY_ALL_GUARD_NGINX_DEFAULT_SITE="${TMP_DIR}/site/sites-enabled/default"
+    install -d -m 0700 "${BACKUP_DIR}" "$(dirname "${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}")"
+    printf 'ORIGINAL-SITE\n' >"${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}"
+    snapshot_preinstall_nginx_default_site
+    printf 'EASY-ALL-SERVED\n' >"${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}"
+    restore_preinstall_nginx_default_site || fail "site-restore: restore must succeed"
+    assert_equal "site-restore: original default site is back" "ORIGINAL-SITE" \
+        "$(<"${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}")"
+
+    # 安装前没有该文件：快照只写 .missing 标记，恢复=删除（保留“安装前不存在”的语义）
+    rm -rf -- "${BACKUP_DIR}/pre-install-nginx-default"
+    export EASY_ALL_GUARD_NGINX_DEFAULT_SITE="${TMP_DIR}/site2/sites-enabled/default"
+    install -d -m 0700 "$(dirname "${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}")"
+    snapshot_preinstall_nginx_default_site
+    [[ -f "${BACKUP_DIR}/pre-install-nginx-default.missing" ]] \
+        || fail "site-restore: absent default site must be recorded"
+    printf 'LATER-INSTALL\n' >"${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}"
+    restore_preinstall_nginx_default_site || fail "site-restore: restore must succeed"
+    [[ ! -e "${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}" ]] \
+        || fail "site-restore: a site missing before install must stay removed"
+) || fail "nginx default site snapshot/restore checks failed"
+
 # 24. PID 复用导致遗留事务未能恢复时，suspend_service_start 绝不能覆盖原备份或重开事务
 export EASY_ALL_POLICY_RC_OVERRIDE="${TMP_DIR}/policy-rc.d"
 rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"

@@ -13,6 +13,9 @@ bunny_refresh_firewall() {
         https://api.bunny.net/system/edgeserverlist -o "${response}" || die 'Bunny 回源池获取失败'
     python3 "${SCRIPT_DIR}/bunny-api.py" ips --input "${response}" >"${addresses}" || die 'Bunny 回源池校验失败'
     bunny_reject_ssh_443
+    # SSH 开机自启与 Fail2ban 与其他模式保持一致：只放行端口而不配 jail，
+    # 会让文档承诺的 SSH 暴力破解防护在这一个模式里静默缺失。
+    ensure_ssh_boot_service
     verify_ssh_ufw_no_unmanaged_block "${SSH_PORTS}"
     disable_ufw_ipv6 || die '配置 UFW IPv4 策略失败'
     apply_ssh_ufw_policy "${SSH_PORTS}" "${SSH_PORTS}"
@@ -43,6 +46,7 @@ PYTHON
     ufw --force enable >/dev/null || die '启用 UFW 回源规则失败'
     ufw reload >/dev/null || die '重载 UFW 回源规则失败'
     install -m 0600 "${addresses}" "${BUNNY_EDGE_IP_FILE}" || die '保存 Bunny 回源池失败'
+    ensure_ssh_fail2ban
 }
 
 refresh_bunny_origin_ips() {

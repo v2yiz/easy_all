@@ -222,14 +222,67 @@ assert_equal "Zabbly kernel package name" "linux-zabbly" "${ZABBLY_KERNEL_PACKAG
 assert_equal "Zabbly key fingerprint" "4EFC590696CB15B87C73A3AD82CC8797C838DCFD" "${ZABBLY_KEY_FINGERPRINT}"
 assert_equal "TCP sysctl 文件不再使用 BBR 命名" "99-easy_all-tcp.conf" "${TCP_SYSCTL_CONF##*/}"
 
-# 6.4 验证 scripts/debian-init.sh 复用同一份平台校验，不再自带 Debian/amd64 限制
-debian_init_script=$(<"${ROOT_DIR}/scripts/debian-init.sh")
-assert_contains "debian-init reuses check_platform" \
-    "${debian_init_script}" $'source "$firewall_module"\n# 与 easy_all 共用同一份平台校验'
-assert_not_contains "debian-init drops the Debian-only gate" \
-    "${debian_init_script}" "仅支持 Debian"
-assert_not_contains "debian-init drops the amd64-only gate" \
-    "${debian_init_script}" "dpkg --print-architecture"
+# 6.4 UFW SSH 端口策略：必须校验真实端口，而不是回落的 22（回归：非 22 端口时初始化中断）
+UFW_FAKE_BIN="${TMP_DIR}/ufw-fake"
+mkdir -p "${UFW_FAKE_BIN}"
+cat >"${UFW_FAKE_BIN}/ufw" <<'FAKE_UFW'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+rules="${FAKE_UFW_RULES:?}"
+touch "${rules}"
+render_numbered() {
+    local index=0 port source
+    printf '%s\n\n%s\n%s\n' 'Status: active' 'To                         Action      From' \
+        '--                         ------      ----'
+    while IFS=$'\t' read -r port source; do
+        [[ -n "${port}" ]] || continue
+        index=$((index + 1))
+        printf '[%2d] %s/tcp                   ALLOW IN    %s                   # easy_all-managed\n' \
+            "${index}" "${port}" "${source}"
+    done <"${rules}"
+}
+case "${1:-}" in
+status)
+    if [[ "${2:-}" == "numbered" ]]; then render_numbered; else printf '%s\n' 'Status: active'; fi
+    ;;
+show) printf '%s\n' '# persisted rules' ;;
+allow)
+    port=${2:-}
+    printf '%s\t%s\n' "${port%/tcp}" 'Anywhere' >>"${rules}"
+    ;;
+--force)
+    if [[ "${2:-}" == "delete" && "${3:-}" =~ ^[0-9]+$ ]]; then
+        awk -v drop="${3}" 'NR != drop' "${rules}" >"${rules}.tmp"
+        mv -f "${rules}.tmp" "${rules}"
+    fi
+    ;;
+esac
+exit 0
+FAKE_UFW
+chmod +x "${UFW_FAKE_BIN}/ufw"
+
+# 非 22 端口：两参数（真实 SSH 端口）必须成功且放行该端口
+UFW_RULES_TWO_ARGS="${TMP_DIR}/ufw_rules_two_args.tsv"
+: >"${UFW_RULES_TWO_ARGS}"
+PATH="${UFW_FAKE_BIN}:${PATH}" FAKE_UFW_RULES="${UFW_RULES_TWO_ARGS}" SSH_PORTS="2222" \
+    bash -c 'source "$1"; source "$2"; apply_ssh_ufw_policy "2222" "2222"' \
+    _ "${ROOT_DIR}/lib/log.sh" "${ROOT_DIR}/lib/firewall.sh" \
+    || fail "apply_ssh_ufw_policy must accept a non-22 SSH port"
+grep -qx $'2222\tAnywhere' "${UFW_RULES_TWO_ARGS}" \
+    || fail "UFW must allow the real SSH port 2222"
+
+# 一参数在未检测到 SSH 端口时回落到 22；用它放行 2222 必须失败（旧 debian-init 写法）
+UFW_RULES_ONE_ARG="${TMP_DIR}/ufw_rules_one_arg.tsv"
+: >"${UFW_RULES_ONE_ARG}"
+if PATH="${UFW_FAKE_BIN}:${PATH}" FAKE_UFW_RULES="${UFW_RULES_ONE_ARG}" SSH_PORTS="" \
+    bash -c 'source "$1"; source "$2"; apply_ssh_ufw_policy "2222"' \
+    _ "${ROOT_DIR}/lib/log.sh" "${ROOT_DIR}/lib/firewall.sh" >/dev/null 2>&1; then
+    fail "single-argument apply_ssh_ufw_policy must fail when SSH ports are undetected"
+fi
+
+# 远端脚本跑在 root + 真实 apt/sshd 环境，无法在用例内执行；只钉住调用形态（两个参数）。
+assert_contains "debian-init passes the real SSH port to UFW policy" \
+    "$(<"${ROOT_DIR}/scripts/debian-init.sh")" 'apply_ssh_ufw_policy "$ports" "$final_port"'
 
 echo "=== 7. 验证 Swap 自动创建与 sudo vim 依赖安装 ==="
 # 7.1 验证各模式的 apt 依赖清单包含 sudo 和 vim（只看 pkgs 数组，避免注释误命中）
@@ -679,5 +732,153 @@ assert_not_contains "TCP tuning no longer sets a congestion control" "${tuning_c
     assert_contains "reattach failure is reported" "${reattach_out}" "重新启用失败"
 )
 
+
+echo "=== 9. Bunny 模式输入边界校验（Token / 路径 / UUID 直写 state.env 与 Nginx） ==="
+BUNNY_PROBE="${TMP_DIR}/bunny-input-probe.sh"
+cat >"${BUNNY_PROBE}" <<'PROBE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT=$1
+TMP=$2
+# ws-bunny 会对所有常量做 readonly：同名函数只填充尚未预设的变量，保留测试的隔离路径。
+readonly() {
+    local arg name val
+    for arg in "$@"; do
+        [[ "${arg}" == -* ]] && continue
+        if [[ "${arg}" == *=* ]]; then
+            name=${arg%%=*}
+            val=${arg#*=}
+            if [[ -z "${!name+x}" ]]; then
+                printf -v "${name}" '%s' "${val}"
+            fi
+        fi
+    done
+}
+# macOS 的 mktemp 忽略 TMPDIR；限制环境可能不可写默认临时目录。
+mktemp() {
+    if [[ $# -eq 1 && "$1" == "-d" ]]; then
+        command mktemp -d "${TMP}/runtime.XXXXXX"
+        return
+    fi
+    command mktemp "$@"
+}
+export EASY_ALL_RUNTIME_LIB_DIR="${ROOT}/lib"
+export STATE_DIR="${TMP}/state" BACKUP_DIR="${TMP}/state/backups" STATE_FILE="${TMP}/state/state.env"
+export BUNNY_RECOVERY_DIR="${TMP}/bunny" BUNNY_KEY_FILE="${TMP}/bunny/key" \
+    BUNNY_CLOUDFLARE_TOKEN_FILE="${TMP}/bunny/cf.token" BUNNY_CONFIG="${TMP}/bunny/config.json"
+export CERT_DIR="${TMP}/certs" WEB_ROOT="${TMP}/web" SUBSCRIPTION_DIR="${TMP}/web/subscriptions" \
+    COMMAND_PATH="${TMP}/bin/easy_all" XRAY_DIR="${TMP}/xray" \
+    NGINX_CONFIG="${TMP}/nginx/easy_all.conf" UFW_BEFORE_RULES="${TMP}/ufw/before.rules" \
+    LEGO_DIR="${TMP}/acme" LEGO_BIN="${TMP}/acme/lego" BUNNY_EDGE_IP_FILE="${TMP}/bunny-edge-ips"
+export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP}/policy"
+export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP}/lock"
+install -d -m 0700 "${TMP}/bunny"
+printf '%s\n' '{"zone":"example.com","origin":"origin.example.com","cdn":"cdn.example.com","ipv4":"198.51.100.10","name":"easyallabc123","secret":"0123456789abcdef","bandwidth_gb":500}' \
+    >"${TMP}/bunny/config.json"
+printf 'key\n' >"${TMP}/bunny/key"
+printf 'token\n' >"${TMP}/bunny/cf.token"
+# shellcheck source=/dev/null
+source "${ROOT}/profiles/ws-bunny.sh"
+bunny_collect_inputs
+printf 'collected uuid=%s owner=%s path=%s\n' "${VLESS_UUID}" "${OWNER_TOKEN}" "${WEBSOCKET_PATH}"
+PROBE
+chmod +x "${BUNNY_PROBE}"
+
+BUNNY_UUID="11111111-2222-4111-8111-111111111111"
+probe_bunny() {
+    local owner=$1 path=$2 uuid=$3 output probe_status=0
+    rm -rf -- "${TMP_DIR}/bunny-probe"
+    output=$(VPS_IP=198.51.100.10 OWNER_TOKEN="${owner}" WEBSOCKET_PATH="${path}" \
+        VLESS_UUID="${uuid}" bash "${BUNNY_PROBE}" "${ROOT_DIR}" "${TMP_DIR}/bunny-probe" 2>&1) \
+        || probe_status=$?
+    printf '%s' "${output}"
+    return "${probe_status}"
+}
+
+bunny_ok_out=$(probe_bunny 'abcdefgh12345678' '/ws-abc123' "${BUNNY_UUID}") \
+    || fail "bunny install must accept valid token/path/UUID"
+assert_contains "bunny probe collects identity" "${bunny_ok_out}" "collected uuid=${BUNNY_UUID}"
+
+bad_token_rc=0
+bad_token_out=$(probe_bunny 'bad"tokenvalue' '/ws-abc123' "${BUNNY_UUID}") || bad_token_rc=$?
+((bad_token_rc != 0)) || fail "bunny install must reject a token that would break state.env or the Nginx map"
+assert_contains "short token is rejected" "$(probe_bunny 'short' '/ws-abc123' "${BUNNY_UUID}" || true)" \
+    "订阅 Token 无效"
+
+bad_path_rc=0
+bad_path_out=$(probe_bunny 'abcdefgh12345678' '/ws bad' "${BUNNY_UUID}") || bad_path_rc=$?
+((bad_path_rc != 0)) || fail "bunny install must reject a websocket path with blanks"
+assert_contains "blank websocket path is rejected" "${bad_path_out}" "WEBSOCKET_PATH 无效"
+assert_contains "non-absolute websocket path is rejected" \
+    "$(probe_bunny 'abcdefgh12345678' 'no-slash' "${BUNNY_UUID}" || true)" "WEBSOCKET_PATH 无效"
+
+bad_uuid_rc=0
+bad_uuid_out=$(probe_bunny 'abcdefgh12345678' '/ws-abc123' 'not-a-uuid') || bad_uuid_rc=$?
+((bad_uuid_rc != 0)) || fail "bunny install must reject an invalid VLESS UUID"
+assert_contains "invalid UUID is rejected" "${bad_uuid_out}" "VLESS_UUID 无效"
+
+
+echo "=== 10. Reality 动态端口 NAT 目标必须等于 inbound 实监端口（不写死 443） ==="
+REALITY_PORT_PROBE="${TMP_DIR}/reality-port-probe.sh"
+cat >"${REALITY_PORT_PROBE}" <<'PROBE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT=$1
+TMP=$2
+PORT=$3
+readonly() {
+    local arg name val
+    for arg in "$@"; do
+        [[ "${arg}" == -* ]] && continue
+        if [[ "${arg}" == *=* ]]; then
+            name=${arg%%=*}
+            val=${arg#*=}
+            if [[ -z "${!name+x}" ]]; then printf -v "${name}" '%s' "${val}"; fi
+        fi
+    done
+}
+mktemp() {
+    if [[ $# -eq 1 && "$1" == "-d" ]]; then command mktemp -d "${TMP}/runtime.XXXXXX"; return; fi
+    command mktemp "$@"
+}
+export EASY_ALL_RUNTIME_LIB_DIR="${ROOT}/lib"
+# 端口从外部注入：若代码里写死 443，注入 8443 时渲染结果就会暴露失配。
+export SERVICE_PORT="${PORT}"
+export STATE_DIR="${TMP}/state" BACKUP_DIR="${TMP}/state/backups" STATE_FILE="${TMP}/state/state.env" \
+    XRAY_DIR="${TMP}/xray" XRAY_CONFIG="${TMP}/xray/config.json" XRAY_BIN="${TMP}/bin/xray" \
+    WEB_ROOT="${TMP}/web" CERT_DIR="${TMP}/certs" \
+    EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP}/policy" \
+    RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP}/lock"
+install -d -m 0700 "${TMP}/bin" "${XRAY_DIR}"
+cat >"${XRAY_BIN}" <<'XRAY'
+#!/usr/bin/env bash
+case "${1:-}" in
+x25519) printf '%s\n' 'PrivateKey: test-private-key' 'Password: test-public-key' ;;
+run) exit 0 ;;
+esac
+exit 0
+XRAY
+chmod +x "${XRAY_BIN}"
+# shellcheck source=/dev/null
+source "${ROOT}/profiles/reality.sh"
+VLESS_UUID=11111111-2222-4111-8111-111111111111
+REALITY_TARGET=swdist.apple.com:443
+REALITY_PRIVATE_KEY=""
+REALITY_SHORT_ID=""
+detect_ssh_ports() { SSH_PORTS=22; }
+write_xray_config
+printf 'inbound=%s\n' "$(jq -r '.inbounds[0].port' "${XRAY_CONFIG}")"
+printf 'nat=%s\n' "$(write_dynamic_nat_rules | awk '{print $NF}')"
+PROBE
+
+for reality_port in 443 8443; do
+    port_probe_out=$(bash "${REALITY_PORT_PROBE}" "${ROOT_DIR}" \
+        "${TMP_DIR}/reality-port-${reality_port}" "${reality_port}") \
+        || fail "reality port probe failed for ${reality_port}"
+    assert_contains "reality inbound follows SERVICE_PORT=${reality_port}" \
+        "${port_probe_out}" "inbound=${reality_port}"
+    assert_contains "reality NAT target follows SERVICE_PORT=${reality_port}" \
+        "${port_probe_out}" "nat=${reality_port}"
+done
 
 echo "ok - all audit fixes verified successfully"

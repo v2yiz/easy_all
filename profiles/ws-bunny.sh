@@ -173,11 +173,19 @@ bunny_collect_inputs() {
     fi
     VPS_PUBLIC_IPV4=${VPS_IP:-$(detect_public_ipv4)} \
         || die '公网 IPv4 探测失败；可用 VPS_IP=<IPv4> 指定'
+    validate_ipv4 "${VPS_PUBLIC_IPV4}" || die "公网 IPv4 无效：${VPS_PUBLIC_IPV4}"
     bunny_prepare_credentials
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
     OWNER_TOKEN=${OWNER_TOKEN:-$(generate_secret)}
+    # 与其他模式同一约束：Token 会写进 state.env（后续由 root source）与 Nginx map 键。
+    [[ "${OWNER_TOKEN}" =~ ^[A-Za-z0-9._-][A-Za-z0-9._~-]{7,127}$ ]] \
+        || die '订阅 Token 无效：需 8-128 位 URL 安全字符（A-Z a-z 0-9 . _ ~ -），首字符不能是 ~'
     ALLOWED_TOKENS="[\"${OWNER_TOKEN}\"]"
     WEBSOCKET_PATH=${WEBSOCKET_PATH:-"/ws-$(openssl rand -hex 16)"}
+    # 路径会写进 state.env 与 Nginx 的 location = ，只允许路径安全字符。
+    [[ "${WEBSOCKET_PATH}" =~ ^/[A-Za-z0-9._/-]{1,95}$ && "${WEBSOCKET_PATH}" != *//* ]] \
+        || die "WEBSOCKET_PATH 无效：需以 / 开头、仅含 A-Z a-z 0-9 . _ - /，长度 2-96：${WEBSOCKET_PATH}"
     TCP_ACCELERATION=${TCP_ACCELERATION:-skyline}
     SUB_DOWNLOAD_NAME=EASY_ALL
     STATE_VERSION=0

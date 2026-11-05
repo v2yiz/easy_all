@@ -151,6 +151,7 @@ snapshot_fresh_install() {
     snapshot_ufw_state
     snapshot_platform_security_state
     snapshot_ipv6_state
+    snapshot_preinstall_nginx_default_site
     if crontab -l >"${BACKUP_DIR}/pre-install-crontab" 2>/dev/null; then
         chmod 0600 "${BACKUP_DIR}/pre-install-crontab"
     else

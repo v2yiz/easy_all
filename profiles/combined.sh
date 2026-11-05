@@ -329,6 +329,8 @@ xhttp_validate_local_tls_curl_args() {
 
 xhttp_configure_ufw() {
     snapshot_ufw_state
+    # SSH 开机自启与 Fail2ban 与其他模式保持一致：只做 UFW 放行、不配 jail 会让文档承诺的暴力破解防护静默缺失。
+    ensure_ssh_boot_service
     detect_ssh_ports strict
     verify_ssh_ufw_no_unmanaged_block "${SSH_PORTS}"
     configure_ufw_ip_family
@@ -343,6 +345,7 @@ xhttp_configure_ufw() {
     ufw reload >/dev/null || die "重载 UFW 失败"
     LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' \
         || die "UFW 未处于 active 状态"
+    ensure_ssh_fail2ban
 }
 
 combined_render_nginx_config() {
@@ -1005,6 +1008,7 @@ uninstall_all() {
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     remove_daily_reboot_schedule
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true

@@ -1701,6 +1701,7 @@ rollback_fresh_install() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
@@ -2094,6 +2095,7 @@ uninstall_all() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     remove_daily_reboot_schedule
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true

@@ -666,7 +666,9 @@ configure_ufw() {
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
   ufw default deny routed >/dev/null
-  apply_ssh_ufw_policy "$ports"
+  # 真实 SSH 端口也必须被校验：一参数形式会回落到 SSH_PORTS（此处未检测，默认 22），
+  # 非 22 端口的主机会在校验 22 时 die。
+  apply_ssh_ufw_policy "$ports" "$final_port"
   systemctl enable ufw >/dev/null 2>&1
   LC_ALL=C ufw status | awk '/^Status: active$/ {found=1} END {exit !found}' || {
     printf '%s\n' "错误: UFW 未处于 active 状态" >&2

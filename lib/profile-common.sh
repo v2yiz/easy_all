@@ -380,6 +380,44 @@ install_progress_clear() {
     rmdir -- "$(dirname -- "${file}")" 2>/dev/null || true
 }
 
+# 发行版自带的 nginx 默认站点占用 80/443，安装时会停掉并删除 sites-enabled/default。
+# 卸载/回滚需要恢复成安装前的样子（Bunny 模式已有同名的 pre-install-nginx-default 备份）。
+nginx_default_site_path() {
+    printf '%s' "${EASY_ALL_GUARD_NGINX_DEFAULT_SITE:-/etc/nginx/sites-enabled/default}"
+}
+
+snapshot_preinstall_nginx_default_site() {
+    local site backup
+    site=$(nginx_default_site_path)
+    backup="${BACKUP_DIR}/pre-install-nginx-default"
+    [[ ! -e "${backup}" && ! -e "${backup}.missing" ]] || return 0
+    install -d -m 0700 "${BACKUP_DIR}" || return 0
+    if [[ -f "${site}" ]]; then
+        install -m 0600 "${site}" "${backup}" || return 0
+    else
+        install -m 0600 /dev/null "${backup}.missing" || return 0
+    fi
+}
+
+restore_preinstall_nginx_default_site() {
+    local site backup
+    site=$(nginx_default_site_path)
+    backup="${BACKUP_DIR}/pre-install-nginx-default"
+    if [[ -f "${backup}" ]]; then
+        install -d -m 0755 "$(dirname -- "${site}")" \
+            && install -m 0644 "${backup}" "${site}" || return 1
+    elif [[ -f "${backup}.missing" ]]; then
+        rm -f -- "${site}" || return 1
+    else
+        return 0
+    fi
+    # 安装期间 nginx 已停止或已重载过；恢复静态站点后让它重新加载，失败不影响卸载结果。
+    if command -v nginx >/dev/null 2>&1; then
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
 # --- 安装失败诊断与清理确认 ------------------------------------------------
 # 中途失败时要说清楚“哪个阶段、哪一行、什么命令”，并由用户决定是否清理。
 
@@ -924,6 +962,7 @@ restore_install_snapshot() {
     if declare -F restore_preinstall_ipv6 >/dev/null 2>&1; then
         restore_preinstall_ipv6 || warn "恢复安装前 IPv6 配置失败"
     fi
+    restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab || true
     remove_daily_reboot_schedule || true

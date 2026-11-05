@@ -127,6 +127,7 @@ snapshot_fresh_install() {
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-crontab.missing"
     fi
     snapshot_ipv6_state
+    snapshot_preinstall_nginx_default_site
     install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-complete"
     INSTALL_ROLLBACK_ON_EXIT=1
 }
@@ -697,6 +698,8 @@ dynamic_port_for_current_window() {
 
 write_dynamic_nat_rules() {
     local ssh_port
+    # REDIRECT 目标必须是 Reality inbound 实际监听的端口：两者都用 SERVICE_PORT，
+    # 不写死 443，避免改动一处后 NAT 指向无人监听的端口（连接直接被拒）。
     if declare -F detect_ssh_ports >/dev/null 2>&1; then
         detect_ssh_ports
     else
@@ -833,6 +836,7 @@ write_xray_config() {
         '[{id:$id,email:"easy_all.owner",flow:"xtls-rprx-vision"}]')
     jq -n \
             --argjson clients "${clients}" \
+            --argjson service_port "${SERVICE_PORT}" \
             --arg target "${REALITY_TARGET}" \
             --arg private_key "${REALITY_PRIVATE_KEY}" \
             --arg short_id "${REALITY_SHORT_ID}" \
@@ -848,7 +852,7 @@ write_xray_config() {
               inbounds: [{
                 tag: "vless-reality-in",
                 listen: $listen_address,
-                port: 443,
+                port: $service_port,
                 protocol: "vless",
                 settings: {
                   clients: $clients,
@@ -882,7 +886,7 @@ write_xray_config() {
 }
 
 build_reality_link() {
-    local port=${1:-443} mlkem_param=""
+    local port=${1:-${SERVICE_PORT}} mlkem_param=""
     # Xray clients negotiate ML-KEM themselves; the hint only lets the Worker
     # mirror this server's capability in its Mihomo output.
     if ! reality_mlkem_required; then
@@ -895,7 +899,7 @@ build_reality_link() {
 }
 
 build_node_link() {
-    build_reality_link "${1:-443}"
+    build_reality_link "${1:-${SERVICE_PORT}}"
 }
 
 # Xray 26.9.8+ rejects a REALITY ClientHello without an X25519MLKEM768 key share, and mihomo
@@ -916,7 +920,7 @@ reality_mlkem_required() {
 }
 
 build_mihomo_node() {
-    local port=${1:-443} mlkem=0
+    local port=${1:-${SERVICE_PORT}} mlkem=0
     resolve_reality_client_ip_family
     if reality_mlkem_required; then
         mlkem=1
@@ -938,7 +942,7 @@ build_mihomo_node() {
 
 generate_subscription_port() {
     if [[ "${SUB_PORT_MODE}" == "443" ]]; then
-        printf '443\n'
+        printf '%s\n' "${SERVICE_PORT}"
         return 0
     fi
     dynamic_port_for_current_window
@@ -1387,7 +1391,7 @@ validate_subscription_response_port() {
     local port=$1 start=$2 finish=$3 instant hour base
     [[ "${port}" =~ ^[0-9]+$ ]] || die "订阅响应端口无效"
     if [[ "${SUB_PORT_MODE}" == "443" ]]; then
-        [[ "${port}" == 443 ]] || die "订阅响应端口不符合固定模式"
+        [[ "${port}" == "${SERVICE_PORT}" ]] || die "订阅响应端口不符合固定模式"
         return 0
     fi
     for instant in "${start}" "${finish}"; do
@@ -2477,8 +2481,8 @@ show_status() {
     printf '核心服务: '
     systemctl is-active --quiet "${XRAY_SERVICE}" 2>/dev/null \
         && printf 'active\n' || printf 'inactive\n'
-    printf 'TCP 443: '
-    ss -H -ltn "sport = :443" 2>/dev/null \
+    printf 'TCP %s: ' "${SERVICE_PORT}"
+    ss -H -ltn "sport = :${SERVICE_PORT}" 2>/dev/null \
         | awk 'NR {found=1} END {exit !found}' \
         && printf 'listening\n' || printf 'not listening\n'
     if subscription_enabled; then
@@ -2653,6 +2657,7 @@ uninstall_all() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     remove_daily_reboot_schedule
     remove_dynamic_port_rotation
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}"
@@ -2675,6 +2680,7 @@ rollback_fresh_install() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab
     if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" \
@@ -2710,7 +2716,8 @@ install_protocol_runtime() {
 validate_protocol_runtime() {
     local attempt
     for attempt in 1 2 3 4 5; do
-        if ss -H -ltn "sport = :443" 2>/dev/null \
+        # 验收端口必须与 inbound 和 NAT 目标同一个常量，避免只改一处后静默失配。
+        if ss -H -ltn "sport = :${SERVICE_PORT}" 2>/dev/null \
             | awk 'NR {found=1} END {exit !found}' \
             && systemctl is-active --quiet "${XRAY_SERVICE}"; then
             return 0
