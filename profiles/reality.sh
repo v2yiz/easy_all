@@ -49,9 +49,6 @@ readonly UFW_NAT_START="# easy_all-nat-start"
 readonly UFW_NAT_END="# easy_all-nat-end"
 readonly UFW_NAT6_START="# easy_all-nat6-start"
 readonly UFW_NAT6_END="# easy_all-nat6-end"
-readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
-readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
-readonly IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
 readonly SERVICE_PORT="443"
 readonly SUBSCRIPTION_HTTPS_PORT="8443"
 readonly PORT_BASE="10000"
@@ -67,8 +64,6 @@ readonly DEFAULT_REBOOT_HOUR="4"
 readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly CRON_DYNAMIC_PORT_MARKER="# easy_all-managed-dynamic-ports"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-readonly XRAY_ARCHIVE="Xray-linux-64.zip"
-readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="0"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Nginx HTTPS :${SUBSCRIPTION_HTTPS_PORT}"
 readonly SUBSCRIPTION_AGGREGATION_DESCRIPTION="Cloudflare Worker 下发；Nginx 仅作私有节点源"
@@ -90,61 +85,50 @@ source "${SCRIPT_DIR}/runtime-core.sh"
 source "${SCRIPT_DIR}/reality-target.sh"
 
 install_packages() {
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get -o DPkg::Lock::Timeout=300 update
-    apt-get -o DPkg::Lock::Timeout=300 upgrade -y
-    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
-        ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw \
-        fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
-        systemd-timesyncd tar util-linux
-    timedatectl set-timezone Asia/Shanghai
-    timedatectl set-ntp true || die "无法启用网络时间同步"
+    local pkgs=(
+        ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw
+        fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata
+        systemd-timesyncd tar util-linux sudo vim
+    )
+    if packages_already_installed "${pkgs[@]}"; then
+        info "系统基础依赖包已全部安装，跳过 APT 索引更新与包安装"
+    else
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 upgrade -y
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${pkgs[@]}"
+    fi
+    local current_tz current_ntp
+    current_tz=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)
+    if [[ "${current_tz}" != "Asia/Shanghai" ]]; then
+        timedatectl set-timezone Asia/Shanghai || warn "设置时区为 Asia/Shanghai 失败"
+    fi
+    current_ntp=$(timedatectl show --property=NTP --value 2>/dev/null || true)
+    if [[ "${current_ntp}" != "yes" ]]; then
+        timedatectl set-ntp true || warn "无法启用网络时间同步"
+    fi
 }
 
 snapshot_fresh_install() {
+    # 续装（INSTALL_RESUME=1）不能重新拍快照：那会把回滚目标从“安装前”换成半成品。
+    # 保留上次安装前的完整快照；快照不完整时 resume_partial_install 已拒绝续装。
+    if [[ "${INSTALL_RESUME:-0}" == "1" && -f "${BACKUP_DIR}/pre-install-complete" ]]; then
+        INSTALL_ROLLBACK_ON_EXIT=1
+        info "续装：复用上次安装前的快照，不重新拍摄"
+        return 0
+    fi
     install -d -m 0700 "${BACKUP_DIR}"
     snapshot_ufw_state
     snapshot_platform_security_state
-    if [[ -f "${SYSCTL_CONFIG}" ]]; then
-        install -m 0644 "${SYSCTL_CONFIG}" "${BACKUP_DIR}/pre-install-bbr.conf"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-bbr.missing"
-    fi
-    if [[ -f "${BBR_MODULES_CONFIG}" ]]; then
-        install -m 0644 "${BBR_MODULES_CONFIG}" \
-            "${BACKUP_DIR}/pre-install-bbr-module.conf"
-    else
-        install -m 0600 /dev/null \
-            "${BACKUP_DIR}/pre-install-bbr-module.missing"
-    fi
     if command -v crontab >/dev/null 2>&1 \
         && crontab -l >"${BACKUP_DIR}/pre-install-crontab" 2>/dev/null; then
         chmod 0600 "${BACKUP_DIR}/pre-install-crontab"
     else
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-crontab.missing"
     fi
-    if [[ -f "${IPV6_SYSCTL_CONF}" ]]; then
-        install -m 0644 "${IPV6_SYSCTL_CONF}" "${BACKUP_DIR}/pre-install-enable-ipv6.conf"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-enable-ipv6.missing"
-    fi
-    snapshot_tcp_runtime
-    # 完整性标记：清理只在快照全部拍完后才允许逐项恢复，否则「还没拍到」会被误当成
-    # 「安装前不存在」，把原有 fail2ban/SSH 配置删掉。
+    snapshot_ipv6_state
     install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-complete"
     INSTALL_ROLLBACK_ON_EXIT=1
-}
-
-configure_ipv4_only() {
-    [[ -d /proc/sys/net/ipv6 ]] || return 0
-    cat >"${RUNTIME_TMP}/enable-ipv6.conf" <<'EOF'
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
-EOF
-    install -m 0644 "${RUNTIME_TMP}/enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
-    sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null \
-        || die "应用全局 IPv4-only 策略失败"
 }
 
 initialize_server() {
@@ -296,8 +280,6 @@ load_state() {
     fi
     resolve_persisted_mihomo_template
     CDN_PROVIDER=""
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
-        || die "状态文件中的 TCP_ACCELERATION 无效"
     enforce_ipv4_only_policy
     if [[ "${state_loaded}" == "1" ]]; then
         [[ "${PROTOCOL:-}" == "reality" ]] || die "状态协议不是 reality；请重新安装"
@@ -356,8 +338,7 @@ load_state() {
 
 save_state() {
     enforce_ipv4_only_policy
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
-        || die "无法保存无效的 TCP_ACCELERATION"
+    TCP_ACCELERATION="${TCP_ACCELERATION:-skyline}"
     if worker_subscription_enabled; then
         [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ \
             && -n "${SUB_SOURCE_DOMAIN:-}" \
@@ -1359,6 +1340,7 @@ install_reality_subscription_renderer() {
 }
 
 write_subscription_nginx_config() {
+    optimize_nginx_system_config
     local http2_directive="" listen_h2=" http2" candidate
     if nginx_supports_http2_directive; then
         http2_directive=$'\n    http2 on;'
@@ -2612,16 +2594,6 @@ restore_preinstall_firewall() {
     fi
 }
 
-restore_preinstall_ipv6() {
-    [[ -e "${BACKUP_DIR}/pre-install-enable-ipv6.conf" \
-        || -e "${BACKUP_DIR}/pre-install-enable-ipv6.missing" ]] || return 0
-    if [[ -f "${BACKUP_DIR}/pre-install-enable-ipv6.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
-    else
-        rm -f -- "${IPV6_SYSCTL_CONF}"
-    fi
-}
-
 uninstall_all() {
     local mode=${1:-}
     require_root
@@ -2681,7 +2653,6 @@ uninstall_all() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
-    restore_bbr_tcp_install_state
     remove_daily_reboot_schedule
     remove_dynamic_port_rotation
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}"
@@ -2695,7 +2666,7 @@ uninstall_all() {
 }
 
 rollback_fresh_install() {
-    warn "首次安装失败，正在恢复本机服务、UFW、crontab 与 BBR 配置"
+    warn "首次安装失败，正在恢复本机服务、UFW 与 crontab 配置（保留前置初始化：SWAP、系统依赖与 TCP/Skyline 加速）"
     stop_protocol_services
     reality_cloudflare_remove_subscription_firewall_rules
     restore_platform_security_state || {
@@ -2704,7 +2675,7 @@ rollback_fresh_install() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
-    restore_bbr_tcp_install_state 1
+    # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab
     if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" \
         && -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
@@ -2723,7 +2694,7 @@ rollback_fresh_install() {
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${COMMAND_INSTALL_DIR}" "${WEB_ROOT}"
     install_progress_clear
-    warn "首次安装产生的服务数据已清理；本次新装且未运行的 XanMod 包已尝试移除"
+    warn "首次安装产生的代理服务数据已清理；前置初始化的 Swap、系统工具及内核包予以保留"
 }
 
 prepare_protocol_assets() {
@@ -2758,6 +2729,7 @@ run_reality_install_pipeline() {
     install_failure_begin reality
     info "[1/9] 检查系统"
     check_platform
+    ensure_swap
     choose_protocol "${requested:-reality}"
     check_install_conflicts
     info "[2/9] 安装依赖并初始化服务器"
@@ -2797,7 +2769,7 @@ run_reality_install_pipeline() {
     show_subscription
     show_tcp_acceleration_status
     success "easy_all ${PROTOCOL} 安装完成"
-    prompt_bbrv3_reboot
+    prompt_kernel_reboot
 }
 
 install_all() {

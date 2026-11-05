@@ -350,11 +350,14 @@ cleanup_partial_install_files \
 [[ -d "${TMP_DIR}/cleanup/web" ]] || fail "unlisted paths must be kept"
 [[ ! -f "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE}" ]] || fail "marker should be cleared"
 
-# 15. 静态回归网：两个 profile 的首次安装回滚必须清掉进度标记
+# 15. 静态回归网：首次安装回滚必须清掉进度标记，并还原安装前 IPv6 配置
 for profile in reality xhttp-cloudflare-streamup; do
     body=$(awk '/^rollback_fresh_install\(\) \{/,/^\}/' "${ROOT_DIR}/profiles/${profile}.sh")
     [[ "${body}" == *install_progress_clear* ]] \
         || fail "rollback_fresh_install in ${profile}.sh must clear the install marker"
+    # 回滚随后会删掉 STATE_DIR（含 IPv6 快照）：还原必须发生在此之前。
+    [[ "${body}" == *restore_preinstall_ipv6* ]] \
+        || fail "rollback_fresh_install in ${profile}.sh must restore pre-install IPv6"
 done
 
 # 16. 提示文案必须与实际行为一致：无 marker 时引导 --assume-mode，而不是直接 cleanup-partial
@@ -568,37 +571,6 @@ output=$(capture prepare_fresh_install 80 </dev/null || true)
 assert_contains "busy candidate refuses non-interactively" "${output}" "非交互安装无法确认 nginx 归属"
 reset_artifacts
 idle
-
-# 27. TCP 运行参数恢复：单项失败不得让整批报告失败，也不得指向随后会被删掉的备份路径
-export STATE_DIR="${TMP_DIR}/tcp-state"
-export RUNTIME_TMP="${TMP_DIR}/tcp-runtime"
-export BACKUP_DIR="${STATE_DIR}/backups"
-install -d -m 0700 "${STATE_DIR}" "${RUNTIME_TMP}" "${BACKUP_DIR}"
-# shellcheck source=/dev/null
-source "${ROOT_DIR}/lib/tcp-tuning.sh"
-remove_physical_fq_qdisc_service() { :; }
-restore_physical_qdisc() { :; }
-# 失败键放在最前：既证明循环不会因第一项失败而中止，也证明后续键仍被恢复
-printf 'net.ipv4.tcp_tw_reuse = 2\nnet.core.somaxconn = 4096\n' \
-    >"${BACKUP_DIR}/pre-install-tcp-runtime.conf"
-install -d -m 0755 "${TMP_DIR}/sysctlbin"
-cat >"${TMP_DIR}/sysctlbin/sysctl" <<'FAKE_SYSCTL'
-#!/usr/bin/env bash
-case "$*" in
-*tcp_tw_reuse*) printf 'sysctl: cannot stat: Permission denied\n' >&2; exit 255 ;;
-*) exit 0 ;;
-esac
-FAKE_SYSCTL
-chmod +x "${TMP_DIR}/sysctlbin/sysctl"
-tcp_out=$(PATH="${TMP_DIR}/sysctlbin:${PATH}" capture restore_tcp_runtime) \
-    || fail "tcp-restore: single key failure must not fail the whole restore"
-assert_contains "tcp-restore: single failure is reported per key" "${tcp_out}" \
-    "安装前 TCP 参数 net.ipv4.tcp_tw_reuse=2 未能恢复"
-assert_contains "tcp-restore: restorable keys are still applied" "${tcp_out}" "已恢复 1 项"
-assert_not_contains "tcp-restore: no unreachable backup path hint" "${tcp_out}" \
-    "请检查 ${BACKUP_DIR}"
-assert_not_contains "tcp-restore: must not report whole-file failure" "${tcp_out}" \
-    "恢复安装前 TCP 运行参数失败"
 
 # 17) 安装失败诊断：在独立脚本里复现生产路径（set -e + ERR/EXIT 陷阱）
 # 不放在 $( ) 里直接 set -e：bash 默认在命令替换中清除 errexit，ERR 陷阱语义会随版本漂移。

@@ -1,9 +1,11 @@
-# Debian 初始化工具
+# 系统初始化工具
 
 `scripts/debian-init.sh` 是独立的个人服务器初始化工具，不是 easy_all 的安装前置步骤，也不会
 安装、更新或卸载代理节点。
 
-它应在本地管理机交互运行，用于初始化全新的 Debian 12/13 amd64、systemd、非容器服务器：
+它应在本地管理机交互运行，用于初始化全新的 Debian 12/13 或 Ubuntu 22.04/24.04 LTS、
+amd64/arm64、systemd、非容器服务器（平台校验与 easy_all 共用 `lib/platform.sh` 的 `check_platform`，
+在任何系统改动之前执行）：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/debian-init.sh)
@@ -15,7 +17,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/
 ## 执行内容
 
 - 升级 APT 软件包并安装基础工具和 Fail2ban。
-- 使用 Debian 官方内核的 BBR，不安装 XanMod。
+- 写入与 easy_all 一致的 TCP 调优参数（fq、缓冲区、keepalive 等），不设置拥塞控制算法、不安装或加载 BBR，也不依赖特定内核。
 - 保持 SSH 现有监听端口，UFW 放行该端口并由默认入站策略阻断其余端口，Fail2ban 实时监控保护。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
 - 创建或更新普通用户、sudo 密码和 SSH 公钥。

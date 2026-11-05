@@ -48,14 +48,14 @@ sudo easy_all apply-cloud
 
 ---
 
-## 3. TCP 加速（Skyline Speeder / BBR）
+## 3. TCP 加速（Skyline Speeder）
 
-- amd64 平台安装时默认配置并启用 [Skyline Speeder](https://github.com/CYBERVERSE-Research/skyline-speeder)。
-- **内核要求**：Skyline 要求 Linux 6.12+。若系统内核较低，安装器会自动升级 XanMod LTS 内核。
+- amd64 与 arm64 平台安装时前置配置并启用 [Skyline Speeder](https://github.com/CYBERVERSE-Research/skyline-speeder)；不再提供 BBR/XanMod 方案。
+- **内核要求**：Skyline 要求 Linux 6.12+。若系统内核较低，安装器会自动升级 Zabbly 6.12+ LTS 内核。
 - **状态确认**：
   - 安装后若提示重启，执行 `sudo reboot`；
   - 重启后运行 `sudo easy_all status`，显示 `Skyline Speeder: active` 即表示已成功加速。
-  - 若显示 `degraded`，说明正在回退使用标准 BBR，网络连接不受影响。
+  - 若显示 `degraded`，说明 Skyline 未生效（拥塞控制回落到内核默认值），网络连接不受影响。执行 `sudo easy_all apply` 可尝试修复；修复后仍会校验 `skyline_cc` 是否真的生效。
 
 ---
 
@@ -95,7 +95,7 @@ sudo easy_all edit-sub
 ```bash
 sudo easy_all uninstall
 ```
-停止并删除 Xray、Nginx、定时任务和系统配置，恢复安装前的防火墙与 SSH 策略，保留 Cloudflare 上的云端解析与证书。
+停止 Xray 与 Nginx，删除 easy_all 自有配置、证书与定时任务，恢复安装前的防火墙、IPv6 与 SSH 策略，保留 Cloudflare 上的云端解析与证书。前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap、系统依赖与 Nginx `worker_processes 1;` 收敛均保留。
 
 ### 6.2 完整卸载（含云端资源清理）
 ```bash

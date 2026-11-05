@@ -6,7 +6,7 @@
 
 ## 1. 架构总览与网络拓扑
 
-`easy_all` 支持在 Debian 12/13 环境下以单机独占形式部署以下模式：
+`easy_all` 支持在 Debian 12/13 与 Ubuntu 22.04/24.04 LTS 环境下以单机独占形式部署以下模式：
 
 ### 1.1 模式 1：直连 Reality
 - **协议栈**：VLESS TCP Reality Vision (`flow: xtls-rprx-vision`)
@@ -103,7 +103,7 @@ easy_all
 │   ├── firewall.sh              # UFW 规则配置与状态快照
 │   ├── subscription-auth.sh     # 订阅凭据生成与校验
 │   ├── scheduled-maintenance.sh # 定时重启与维护任务
-│   ├── tcp-tuning.sh            # Skyline Speeder / BBRv3 / XanMod 内核管理
+│   ├── tcp-tuning.sh            # Skyline Speeder 与 Zabbly 6.12+ LTS 内核管理
 │   ├── xray-core.sh             # Xray 官方二进制下载与校验
 │   ├── worker-config.sh         # Cloudflare Worker 订阅聚合配置与发布
 │   ├── worker-backup.sh         # 独立 Worker 兜底节点配置与部署
@@ -117,5 +117,5 @@ easy_all
 │   └── mihomo-classic.yaml      # 经典 MRS 规则集模板
 └── scripts/                     # 辅助构建与系统初始化脚本
     ├── build-worker.mjs         # Worker 打包编译脚本
-    └── debian-init.sh           # 独立 Debian 系统初始化加固工具
+    └── debian-init.sh           # 独立系统初始化加固工具（Debian 12/13、Ubuntu 22.04/24.04）
 ```

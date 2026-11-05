@@ -157,6 +157,7 @@ bunny_remove_local() {
         || install -m 0644 "${BACKUP_DIR}/pre-install-nginx-default" "${NGINX_DEFAULT_SITE}" \
         || { warn "恢复 ${NGINX_DEFAULT_SITE} 失败"; failed=1; retain_state=1; }
     systemctl reload nginx >/dev/null 2>&1 || true
+    ! declare -f restore_preinstall_ipv6 >/dev/null 2>&1 || restore_preinstall_ipv6
     if ((retain_state == 1)); then
         warn "安装前配置未能恢复；保留 ${STATE_DIR} 及其备份，修正后重试"
     else

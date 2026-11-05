@@ -7,18 +7,59 @@ EASY_ALL_FAIL2BAN_CONFIG="${EASY_ALL_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-ea
 EASY_ALL_FAIL2BAN_ACTION_CONFIG="${EASY_ALL_FAIL2BAN_ACTION_CONFIG:-/etc/fail2ban/action.d/easy-all-ufw-cidr.conf}"
 EASY_ALL_FAIL2BAN_CIDR_HELPER="${EASY_ALL_FAIL2BAN_CIDR_HELPER:-/usr/local/lib/easy_all/fail2ban-ufw-cidr.sh}"
 EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR:-/var/lib/easy_all/fail2ban-ufw-cidr}"
+if [[ -z "${IPV6_SYSCTL_CONF:-}" ]]; then
+    IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
+fi
+
+platform_is_supported_codename() {
+    case "${1:-}" in
+    bookworm|trixie|jammy|noble) return 0 ;;
+    *) return 1 ;;
+    esac
+}
 
 check_platform() {
-    [[ -r /etc/os-release ]] || die "无法识别系统版本"
+    local os_release="${EASY_ALL_OS_RELEASE_FILE:-/etc/os-release}"
+    [[ -r "${os_release}" ]] || die "无法识别系统版本"
     # shellcheck source=/dev/null
-    source /etc/os-release
-    [[ "${ID:-}" == "debian" ]] || die "仅支持 Debian"
-    [[ "${VERSION_ID:-}" =~ ^(12|13)$ ]] || die "仅支持 Debian 12/13"
-    [[ -n "${VERSION_CODENAME:-}" ]] || die "无法识别 Debian 发行版代号"
+    source "${os_release}"
+    local id="${ID:-}" version_id="${VERSION_ID:-}" codename="${VERSION_CODENAME:-}"
+    case "${id}" in
+    debian)
+        case "${codename}" in
+        bookworm)
+            if [[ "${version_id}" =~ ^[0-9]+$ ]] && ((version_id < 12)); then
+                die "仅支持 Debian 12 及以上版本（当前：${version_id}）"
+            fi
+            ;;
+        trixie) ;;
+        *)
+            die "不支持当前 Debian 版本/代号 ${codename:-${version_id:-未知}}（仅支持 Debian 12 bookworm 与 13 trixie）"
+            ;;
+        esac
+        ;;
+    ubuntu)
+        case "${codename}" in
+        jammy|noble) ;;
+        *)
+            die "不支持当前 Ubuntu 版本/代号 ${codename:-${version_id:-未知}}（仅支持 Ubuntu 22.04 jammy 与 24.04 noble）"
+            ;;
+        esac
+        ;;
+    *)
+        die "仅支持 Debian 12+ 或 Ubuntu 22.04+（当前发行版：${id:-未知}）"
+        ;;
+    esac
+    platform_is_supported_codename "${codename}" \
+        || die "不支持当前发行版代号 ${codename:-未知}（仅支持 Debian 12/13 与 Ubuntu 22.04/24.04 LTS）"
+
     local architecture
     architecture=$(dpkg --print-architecture) || die "无法识别系统架构"
-    [[ "${architecture}" == "amd64" || ( "${1:-}" == "arm64" && "${architecture}" == "arm64" ) ]] \
-        || die "不支持系统架构 ${architecture}（允许 amd64${1:+、$1}）"
+    case "${architecture}" in
+    amd64|arm64) ;;
+    *) die "不支持系统架构 ${architecture}（仅支持 amd64 与 arm64）" ;;
+    esac
+
     ! systemd-detect-virt --container >/dev/null 2>&1 \
         || die "容器不能执行内核与防火墙初始化"
 }
@@ -30,6 +71,132 @@ require_root() {
 require_systemd() {
     command -v systemctl >/dev/null 2>&1 || die "仅支持使用 systemd 的 Linux 系统"
     [[ -d /run/systemd/system ]] || die "当前系统未由 systemd 管理"
+}
+
+ensure_swap() {
+    local swap_file="${EASY_ALL_SWAP_FILE:-/swapfile}"
+    local meminfo="${EASY_ALL_MEMINFO_FILE:-/proc/meminfo}"
+    local fstab_file="${EASY_ALL_FSTAB_FILE:-/etc/fstab}"
+    local swap_total
+    swap_total=$(awk '/SwapTotal:/ {print $2}' "${meminfo}" 2>/dev/null || echo 0)
+    if (( swap_total > 0 )); then
+        return 0
+    fi
+
+    local target_dir avail_kb
+    target_dir=$(dirname "${swap_file}")
+    avail_kb=$(df -k "${target_dir}" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=0
+    if (( avail_kb > 0 && avail_kb < 1572864 )); then
+        warn "磁盘剩余空间不足 1.5GB（当前剩余 $((avail_kb / 1024))MB）；跳过创建 Swap，请注意内存占用"
+        return 0
+    fi
+
+    info "检测到系统未配置 Swap，正在创建 1GB 交换文件..."
+    local created_new=0
+    if [[ ! -f "${swap_file}" ]]; then
+        created_new=1
+        if ! fallocate -l 1G "${swap_file}" 2>/dev/null; then
+            dd if=/dev/zero of="${swap_file}" bs=1M count=1024 status=none \
+                || { warn "创建 1GB Swap 文件失败；跳过配置 Swap"; return 0; }
+        fi
+        chmod 0600 "${swap_file}"
+        mkswap "${swap_file}" >/dev/null 2>&1 || {
+            warn "格式化 Swap 文件失败；清理并跳过"
+            rm -f -- "${swap_file}"
+            return 0
+        }
+    else
+        chmod 0600 "${swap_file}"
+        mkswap "${swap_file}" >/dev/null 2>&1 || true
+    fi
+    if ! swapon "${swap_file}" 2>/dev/null; then
+        warn "启用 Swap 文件失败（可能是容器环境或只读文件系统）；清理并跳过"
+        if (( created_new == 1 )); then
+            rm -f -- "${swap_file}"
+        fi
+        return 0
+    fi
+    if [[ -f "${fstab_file}" ]] && ! grep -q "^${swap_file}[[:space:]]" "${fstab_file}" 2>/dev/null; then
+        if [[ -s "${fstab_file}" && -n "$(tail -c 1 "${fstab_file}" 2>/dev/null)" ]]; then
+            printf '\n' >>"${fstab_file}"
+        fi
+        printf '%s none swap sw 0 0\n' "${swap_file}" >>"${fstab_file}"
+    fi
+    success "已成功配置并启用 1GB Swap（${swap_file}）"
+}
+
+packages_already_installed() {
+    local pkg
+    for pkg in "$@"; do
+        if ! dpkg -s "${pkg}" 2>/dev/null | grep -q "^Status: install ok installed"; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+snapshot_ipv6_state() {
+    local backup_dir="${BACKUP_DIR:-${STATE_DIR:-/etc/easy_all}/backups}"
+    local destination="${backup_dir}/pre-install-ipv6-runtime.conf"
+    local key value
+    install -d -m 0700 "${backup_dir}"
+    if [[ ! -e "${backup_dir}/pre-install-enable-ipv6.conf" \
+        && ! -e "${backup_dir}/pre-install-enable-ipv6.missing" ]]; then
+        if [[ -f "${IPV6_SYSCTL_CONF}" ]]; then
+            install -m 0644 "${IPV6_SYSCTL_CONF}" "${backup_dir}/pre-install-enable-ipv6.conf"
+        else
+            install -m 0600 /dev/null "${backup_dir}/pre-install-enable-ipv6.missing"
+        fi
+    fi
+    if [[ ! -e "${destination}" ]]; then
+        install -m 0600 /dev/null "${destination}"
+        for key in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
+            value=$(sysctl -n "${key}" 2>/dev/null) || continue
+            printf '%s = %s\n' "${key}" "${value}" >>"${destination}"
+        done
+    fi
+}
+
+configure_ipv4_only() {
+    [[ -d "${EASY_ALL_PROC_IPV6_DIR:-/proc/sys/net/ipv6}" ]] || return 0
+    local tmp_dir="${RUNTIME_TMP:-/tmp}"
+    cat >"${tmp_dir}/enable-ipv6.conf" <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+    install -m 0644 "${tmp_dir}/enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
+    sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null \
+        || die "应用全局 IPv4-only 策略失败"
+}
+
+restore_preinstall_ipv6() {
+    local backup_dir="${BACKUP_DIR:-${STATE_DIR:-/etc/easy_all}/backups}"
+    local runtime_conf="${backup_dir}/pre-install-ipv6-runtime.conf"
+    local line key value
+    [[ -e "${backup_dir}/pre-install-enable-ipv6.conf" \
+        || -e "${backup_dir}/pre-install-enable-ipv6.missing" ]] || return 0
+    if [[ -f "${backup_dir}/pre-install-enable-ipv6.conf" ]]; then
+        install -m 0644 "${backup_dir}/pre-install-enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
+        sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null 2>&1 || true
+    else
+        rm -f -- "${IPV6_SYSCTL_CONF}"
+        if [[ -s "${runtime_conf}" ]]; then
+            while IFS= read -r line || [[ -n "${line}" ]]; do
+                [[ "${line}" == *=* ]] || continue
+                key=${line%% = *}
+                value=${line#* = }
+                key=${key//[[:space:]]/}
+                value=${value//[[:space:]]/}
+                [[ -n "${key}" ]] || continue
+                sysctl -w "${key}=${value}" >/dev/null 2>&1 || true
+            done <"${runtime_conf}"
+        else
+            sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+            sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
+            sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 snapshot_platform_security_state() {

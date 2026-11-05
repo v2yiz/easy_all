@@ -299,7 +299,23 @@ install_nginx_without_start() {
     restore_service_start_policy \
         || warn "恢复 $(easy_all_policy_rc_file) 失败；事务已保留，请修正后重试（否则服务无法自启）"
     ((status == 0)) || return "${status}"
+    optimize_nginx_system_config
     systemctl disable --now nginx >/dev/null 2>&1 || true
+}
+
+optimize_nginx_system_config() {
+    local main_conf="${EASY_ALL_NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
+    [[ -f "${main_conf}" ]] || return 0
+    if grep -qE '^[[:space:]]*worker_processes[[:space:]]+auto;' "${main_conf}" 2>/dev/null; then
+        local tmp="${main_conf}.tmp.$$"
+        # easy_all 全局 umask 为 077；重定向必须写在子 shell 内，否则主配置会变成 0600。
+        if (umask 022; sed -E 's/^[[:space:]]*worker_processes[[:space:]]+auto;/worker_processes 1;/' \
+            "${main_conf}" >"${tmp}" 2>/dev/null); then
+            mv -f -- "${tmp}" "${main_conf}" 2>/dev/null || rm -f -- "${tmp}"
+        else
+            rm -f -- "${tmp}"
+        fi
+    fi
 }
 
 # --- 中断安装的自愈：进度标记、残留识别与端口守卫 ------------------------------
@@ -870,7 +886,7 @@ cleanup_partial_install_local() {
             return 1
         fi
     else
-        warn "未找到完整安装前快照（快照未完成或早于快照步骤）；只移除本机残留，不修改 UFW/SSH/BBR 配置"
+        warn "未找到完整安装前快照（快照未完成或早于快照步骤）；只移除本机残留，不修改 UFW/SSH/IPv6 配置"
         remove_daily_reboot_schedule || true
     fi
 }
@@ -908,7 +924,7 @@ restore_install_snapshot() {
     if declare -F restore_preinstall_ipv6 >/dev/null 2>&1; then
         restore_preinstall_ipv6 || warn "恢复安装前 IPv6 配置失败"
     fi
-    restore_bbr_tcp_install_state 1 || warn "恢复安装前 TCP/内核状态失败"
+    # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab || true
     remove_daily_reboot_schedule || true
 }

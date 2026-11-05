@@ -32,9 +32,9 @@ Nginx (终止 TLS，校验回源 Key，仅允许 Bunny 官方边缘 IP 入站)
 在运行安装脚本前，需准备以下内容：
 
 ### 2.1 专用 VPS 与系统环境
-- **系统要求**：Debian 12 / 13 amd64 或 arm64 纯净系统，须由 systemd 管理且非容器，仅支持 IPv4。其他模式仍只支持 amd64。
+- **系统要求**：Debian 12/13 或 Ubuntu 22.04/24.04 LTS（代号 bookworm / trixie / jammy / noble，支持 amd64 与 arm64 架构）纯净系统，须由 systemd 管理且非容器，仅支持 IPv4。
 - **端口放行**：云厂商安全组放行 TCP `443` 及当前 SSH 端口。
-- **SSH 与内核**：Bunny 保留现有 SSH 监听；刷新回源池也保留自定义及多个 SSH 端口。不能可靠检测监听或已有第三方阻断规则时会报错，保留旧放行规则。ARM64 使用原有内核，暂不支持 Skyline Speeder 内核加速。
+- **SSH 与内核**：保留现有 SSH 监听；刷新回源池也保留自定义及多个 SSH 端口。不能可靠检测监听或已有第三方阻断规则时会报错，保留旧放行规则。系统支持通过 Zabbly 6.12+ LTS 内核启用 TCP 加速（Skyline Speeder）。
 
 ### 2.2 Bunny 账户与 API Key
 1. 登录 [Bunny Dashboard](https://dash.bunny.net/)。

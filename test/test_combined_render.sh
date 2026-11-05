@@ -179,7 +179,7 @@ REALITY_SHORT_ID="0123456789abcdef"
 CLOUDFLARE_ORIGIN_CERT_ID="cert-old-111"
 CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2041-11-03 00:00:00 +0000 UTC"
 SUBSCRIPTION_MODE="deploy"
-TCP_ACCELERATION="bbr"
+TCP_ACCELERATION="skyline"
 save_state
 
 # 10a) cloudflare_origin_certificate_hosts 输出恰含 2 个名字且包含 CF_NODE_DOMAIN（节点名在前）

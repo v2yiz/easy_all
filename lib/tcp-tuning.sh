@@ -2,19 +2,17 @@
 
 # Shared TCP acceleration and conservative TCP tuning.
 
-readonly BBRV3_XANMOD_KEY_URL="https://dl.xanmod.org/archive.key"
-readonly BBRV3_XANMOD_KEY_FINGERPRINT="D38D7D1DA1349567ADED882D86F7D09EE734E623"
-readonly BBRV3_XANMOD_REPOSITORY_URL="https://deb.xanmod.org"
-readonly BBRV3_XANMOD_KEYRING="${BBRV3_XANMOD_KEYRING_OVERRIDE:-/etc/apt/keyrings/xanmod-archive-keyring.gpg}"
-readonly BBRV3_XANMOD_SOURCE="${BBRV3_XANMOD_SOURCE_OVERRIDE:-/etc/apt/sources.list.d/xanmod-release.list}"
-readonly BBRV3_CPUINFO_FILE="${BBRV3_CPUINFO_FILE_OVERRIDE:-/proc/cpuinfo}"
-readonly BBRV3_AVAILABLE_CC_FILE="${BBRV3_AVAILABLE_CC_FILE_OVERRIDE:-/proc/sys/net/ipv4/tcp_available_congestion_control}"
-readonly BBRV3_EFI_DIR="${BBRV3_EFI_DIR_OVERRIDE:-/sys/firmware/efi}"
-readonly BBRV3_EFIVARS_DIR="${BBRV3_EFIVARS_DIR_OVERRIDE:-${BBRV3_EFI_DIR}/efivars}"
-readonly BBRV3_MINIMUM_XANMOD_VERSION="6.4.11"
-readonly BBRV3_REBOOT_MARKER="${STATE_DIR}/bbrv3-reboot-required"
-
-BBRV3_KERNEL_PACKAGE=""
+readonly ZABBLY_KEY_URL="https://pkgs.zabbly.com/key.asc"
+readonly ZABBLY_KEY_FINGERPRINT="4EFC590696CB15B87C73A3AD82CC8797C838DCFD"
+readonly ZABBLY_REPOSITORY_URL="https://pkgs.zabbly.com/kernel/stable"
+readonly ZABBLY_KEYRING="${ZABBLY_KEYRING_OVERRIDE:-/etc/apt/keyrings/zabbly.asc}"
+readonly ZABBLY_SOURCE="${ZABBLY_SOURCE_OVERRIDE:-/etc/apt/sources.list.d/zabbly-kernel.sources}"
+readonly ZABBLY_KERNEL_PACKAGE="linux-zabbly"
+readonly SECUREBOOT_EFI_DIR="${SECUREBOOT_EFI_DIR_OVERRIDE:-/sys/firmware/efi}"
+readonly SECUREBOOT_EFIVARS_DIR="${SECUREBOOT_EFIVARS_DIR_OVERRIDE:-${SECUREBOOT_EFI_DIR}/efivars}"
+readonly KERNEL_BOOT_DIR="${KERNEL_BOOT_DIR_OVERRIDE:-/boot}"
+readonly KERNEL_REBOOT_MARKER="${STATE_DIR}/kernel-reboot-required"
+TCP_SYSCTL_CONF="${TCP_SYSCTL_CONF_OVERRIDE:-/etc/sysctl.d/99-easy_all-tcp.conf}"
 
 readonly SKYLINE_VERSION="v0.5.1"
 readonly SKYLINE_COMMIT="3b371629831da9823503ef303ba2028b40ba208a"
@@ -24,34 +22,23 @@ readonly SKYLINE_MINIMUM_KERNEL_VERSION="6.12"
 readonly SKYLINE_SOURCE_DIR="${STATE_DIR}/skyline-speeder"
 readonly SKYLINE_BTF_FILE="${SKYLINE_BTF_FILE_OVERRIDE:-/sys/kernel/btf/vmlinux}"
 readonly SKYLINE_CGROUP_FILE="${SKYLINE_CGROUP_FILE_OVERRIDE:-/sys/fs/cgroup/cgroup.controllers}"
+EASY_ALL_TCP_DIR="${EASY_ALL_TCP_DIR_OVERRIDE:-/usr/local/lib/easy_all-tcp}"
 
-require_amd64_tcp_acceleration() {
-    [[ "$(dpkg --print-architecture)" == amd64 ]] \
-        || die "TCP 内核加速目前仅支持 amd64；当前架构请保留原有内核"
-}
-
-normalize_tcp_acceleration() {
-    case "${1:-skyline}" in
-    1 | bbrv3) printf 'bbrv3\n' ;;
-    2 | skyline) printf 'skyline\n' ;;
-    *) return 1 ;;
+require_supported_tcp_architecture() {
+    local architecture
+    architecture=$(dpkg --print-architecture) || die "无法识别系统架构"
+    case "${architecture}" in
+    amd64|arm64) ;;
+    *) die "TCP 内核加速目前仅支持 amd64 与 arm64；当前架构 ${architecture} 请保留原有内核" ;;
     esac
 }
 
 choose_tcp_acceleration() {
-    local requested=${1:-${TCP_ACCELERATION:-skyline}}
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${requested}") \
-        || die "TCP 加速选项无效：${requested}"
-}
-
-skyline_running_kernel_supported() {
-    local release
-    release=$(uname -r)
-    dpkg --compare-versions "${release%%-*}" ge "${SKYLINE_MINIMUM_KERNEL_VERSION}"
+    TCP_ACCELERATION="skyline"
 }
 
 check_skyline_requirements() {
-    skyline_running_kernel_supported \
+    running_kernel_supported \
         || die "Skyline Speeder 需要 Linux 6.12+；请重启进入已安装的兼容内核后重试"
     [[ -r "${SKYLINE_BTF_FILE}" ]] \
         || die "Skyline Speeder 需要内核 BTF：${SKYLINE_BTF_FILE}"
@@ -113,7 +100,7 @@ Description=Install and activate Skyline Speeder after the kernel upgrade
 After=network-online.target systemd-sysctl.service easy_all-fq.service
 Wants=network-online.target
 ConditionPathExists=${STATE_FILE}
-ConditionPathExists=${BBRV3_REBOOT_MARKER}
+ConditionPathExists=${KERNEL_REBOOT_MARKER}
 
 [Service]
 Type=oneshot
@@ -142,11 +129,11 @@ remove_skyline_boot_setup() {
 resume_skyline_after_reboot() {
     (($# == 0)) || die "tcp-resume 不接受参数"
     require_root
-    require_amd64_tcp_acceleration
+    require_supported_tcp_architecture
     try_acquire_runtime_write_lock 60 \
         || die "Skyline 开机任务等待运行时锁 60 秒超时；已保留回退配置和开机任务，请在其他任务结束后执行 sudo easy_all apply 重试"
     collect_installed_state
-    if [[ "${TCP_ACCELERATION}" != "skyline" || ! -f "${BBRV3_REBOOT_MARKER}" ]]; then
+    if [[ "${TCP_ACCELERATION}" != "skyline" || ! -f "${KERNEL_REBOOT_MARKER}" ]]; then
         remove_skyline_boot_setup 0
     else
         # A boot into the old kernel must fail, not schedule another upgrade/reboot.
@@ -156,27 +143,63 @@ resume_skyline_after_reboot() {
     release_runtime_write_lock
 }
 
+check_skyline_build_memory() {
+    local mem_total_kb swap_total_kb total_mb
+    mem_total_kb=$(awk '/MemTotal:/ {print $2}' "${EASY_ALL_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null || echo 0)
+    swap_total_kb=$(awk '/SwapTotal:/ {print $2}' "${EASY_ALL_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null || echo 0)
+    total_mb=$(( (mem_total_kb + swap_total_kb) / 1024 ))
+    if (( total_mb > 0 && total_mb < 1536 )); then
+        warn "当前系统总内存+交换空间仅 ${total_mb}MB（低于 1.5GB）；编译 Rust/BPF 可能耗尽内存，若遇编译失败建议配置 Swap"
+    fi
+}
+
+skyline_build_jobs() {
+    if [[ -n "${EASY_ALL_CARGO_BUILD_JOBS:-}" ]]; then
+        printf '%s\n' "${EASY_ALL_CARGO_BUILD_JOBS}"
+        return 0
+    fi
+    local mem_total_kb
+    mem_total_kb=$(awk '/MemTotal:/ {print $2}' "${EASY_ALL_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null || echo 0)
+    if (( mem_total_kb > 0 && mem_total_kb < 2097152 )); then
+        printf '1\n'
+    else
+        printf '2\n'
+    fi
+}
+
 configure_tcp_acceleration() {
-    require_amd64_tcp_acceleration
+    require_supported_tcp_architecture
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local glibc artifact="${RUNTIME_TMP}/skyline-speeder-${SKYLINE_VERSION}.tar.gz"
-    local installed_commit="" installed_version
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-bbrv3}") \
-        || die "TCP 加速选项无效：${TCP_ACCELERATION}"
-    if [[ "${TCP_ACCELERATION}" == "bbrv3" ]]; then
-        configure_bbr_tcp
-        return
+    local installed_commit="" installed_version architecture
+    architecture=$(dpkg --print-architecture)
+    TCP_ACCELERATION="skyline"
+    if skyline_speeder_active; then
+        configure_tcp_parameters
+        systemctl restart skyline-speeder-enable.service >/dev/null 2>&1 \
+            || systemctl enable --now skyline-speeder-enable.service >/dev/null 2>&1 || true
+        skyline_speeder_active \
+            || die "Skyline Speeder 重新启用失败（当前拥塞控制 $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)）；重试：sudo easy_all apply"
+        info "Skyline Speeder 已在运行（fq + skyline_cc），TCP 参数已刷新"
+        return 0
     fi
-    warn "仅在丢包率极高且确认为非拥塞随机丢包时选择 Skyline Speeder；拥塞丢包可能恶化，默认冗余会增加出站流量"
-    if ! skyline_running_kernel_supported; then
-        info "当前内核 $(uname -r) 低于 Linux 6.12，正在安装或升级兼容的 XanMod LTS 内核"
-        ensure_bbrv3_kernel "${SKYLINE_MINIMUM_KERNEL_VERSION}"
+    if ! running_kernel_supported; then
+        local on_disk
+        on_disk=$(zabbly_kernel_release_on_disk)
+        if [[ -f "${systemd_dir}/easy_all-skyline-setup.service" && -f "${KERNEL_REBOOT_MARKER}" ]] \
+            && [[ -n "${on_disk}" ]] \
+            && dpkg --compare-versions "${on_disk%%-*}" ge "${SKYLINE_MINIMUM_KERNEL_VERSION}"; then
+            info "Zabbly 6.12+ LTS 兼容内核与 Skyline 开机自动安装任务已就绪（等待重启生效），跳过重复配置"
+            return 0
+        fi
+        info "当前内核 $(uname -r) 低于 Linux 6.12，正在安装或升级兼容的 Zabbly 6.12+ LTS 内核"
+        ensure_zabbly_kernel "${SKYLINE_MINIMUM_KERNEL_VERSION}"
         stop_skyline_speeder
         configure_tcp_parameters
         install -d -m 0700 "${STATE_DIR}"
-        install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
+        install -m 0600 /dev/null "${KERNEL_REBOOT_MARKER}"
         install_skyline_boot_setup
-        warn "兼容内核已准备；当前暂用 BBR。其余安装完成后只需重启一次，开机将自动安装并启用 Skyline，无需再次执行命令"
+        warn "兼容内核已准备；Skyline 将在重启后自动安装启用，其余安装完成后只需重启一次"
         return 0
     fi
     check_skyline_requirements
@@ -192,10 +215,14 @@ configure_tcp_acceleration() {
         || ! -f "${systemd_dir}/skyline-speeder-enable.service" ]]; then
         glibc=$(getconf GNU_LIBC_VERSION) || die "无法检测 Skyline Speeder 的 glibc 兼容性"
         glibc=${glibc##* }
-        if dpkg --compare-versions "${glibc}" lt 2.38; then
-            warn "当前 glibc ${glibc} 不支持预编译包，将从源码编译 Rust/BPF；可能耗时较长并占用较多 CPU、内存及磁盘，请勿中断安装"
-            bash "${SKYLINE_SOURCE_DIR}/install.sh" --source --no-enable \
-                || die "Skyline Speeder 源码安装失败；已保留 BBR 回退配置"
+        if [[ "${architecture}" != "amd64" ]] || dpkg --compare-versions "${glibc}" lt 2.38; then
+            warn "当前架构 ${architecture}（或 glibc ${glibc}）不支持预编译包，将从源码编译 Rust/BPF；可能耗时较长并占用较多 CPU、内存及磁盘，请勿中断安装"
+            check_skyline_build_memory
+            local cargo_jobs
+            cargo_jobs=$(skyline_build_jobs)
+            CARGO_BUILD_JOBS="${cargo_jobs}" \
+                bash "${SKYLINE_SOURCE_DIR}/install.sh" --source --no-enable \
+                || die "Skyline Speeder 源码安装失败；TCP 调优配置已保留，可重试 sudo easy_all apply"
         else
             curl -fL --proto '=https' --tlsv1.2 --retry 3 \
                 --connect-timeout 10 --max-time 180 \
@@ -206,13 +233,13 @@ configure_tcp_acceleration() {
                 || die "Skyline Speeder 预编译包 SHA256 校验失败"
             SKYLINE_ARTIFACT_URL="${artifact}" \
                 bash "${SKYLINE_SOURCE_DIR}/install.sh" --prebuilt --no-enable \
-                || die "Skyline Speeder 安装失败；已保留 BBR 回退配置"
+                || die "Skyline Speeder 安装失败；TCP 调优配置已保留，可重试 sudo easy_all apply"
         fi
         installed_version=$(skyline-speederd --version 2>/dev/null) || installed_version=""
         if [[ "${installed_version}" != "skyline-speederd ${SKYLINE_VERSION#v}" ]]; then
             stop_skyline_speeder
-            sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "恢复 BBR 回退配置失败"
-            die "Skyline Speeder 版本验收失败（期望 skyline-speederd ${SKYLINE_VERSION#v}，实际 ${installed_version:-未能读取}），已回退 bbr；请核对安装日志及上游版本格式后执行 sudo easy_all apply 重试"
+            sysctl -p "${TCP_SYSCTL_CONF}" >/dev/null || die "回退 TCP 调优配置失败"
+            die "Skyline Speeder 版本验收失败（期望 skyline-speederd ${SKYLINE_VERSION#v}，实际 ${installed_version:-未能读取}）；请核对安装日志及上游版本格式后执行 sudo easy_all apply 重试"
         fi
         printf '%s\n' "${SKYLINE_COMMIT}" >"${SKYLINE_SOURCE_DIR}/.easy-all-installed" \
             || die "保存 Skyline Speeder 安装版本失败"
@@ -221,11 +248,11 @@ configure_tcp_acceleration() {
         || die "启动 Skyline Speeder 守护进程失败"
     if ! systemctl enable --now skyline-speeder-enable.service || ! skyline_speeder_active; then
         stop_skyline_speeder
-        sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "恢复 BBR 回退配置失败"
-        die "Skyline Speeder 启用后验收失败，已停用并回退 bbr；重试：sudo easy_all apply"
+        sysctl -p "${TCP_SYSCTL_CONF}" >/dev/null || die "回退 TCP 调优配置失败"
+        die "Skyline Speeder 启用后验收失败，已停用；重试：sudo easy_all apply"
     fi
     remove_skyline_boot_setup 0
-    rm -f -- "${BBRV3_REBOOT_MARKER}"
+    rm -f -- "${KERNEL_REBOOT_MARKER}"
     success "Skyline Speeder 已启用（fq + skyline_cc）"
 }
 
@@ -240,188 +267,44 @@ skyline_speeder_active() {
 show_tcp_acceleration_status() {
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local current_cc
-    if [[ "${TCP_ACCELERATION:-skyline}" == "skyline" ]]; then
-        current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || current_cc="unknown"
-        if skyline_speeder_active 2>/dev/null; then
-            printf 'Skyline Speeder: active（fq + skyline_cc）\n'
-        elif [[ -f "${BBRV3_REBOOT_MARKER}" ]]; then
-            if [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] \
-                && systemctl is-failed --quiet easy_all-skyline-setup.service; then
-                printf 'Skyline Speeder: degraded（开机自动安装或启用失败，当前拥塞控制 %s；查看 journalctl -u easy_all-skyline-setup.service -b；重试：sudo easy_all apply）\n' "${current_cc}"
-            elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] && skyline_running_kernel_supported; then
-                printf 'Skyline Speeder: pending-activation（开机任务将自动安装并启用；进度查看 journalctl -u easy_all-skyline-setup.service -b -f）\n'
-            elif skyline_running_kernel_supported; then
-                printf 'Skyline Speeder: degraded（兼容内核已运行，但无开机安装任务，当前拥塞控制 %s；重试：sudo easy_all apply）\n' "${current_cc}"
-            elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]]; then
-                printf 'Skyline Speeder: pending-reboot（当前内核 %s；其余安装完成后重启一次，将自动安装并启用）\n' "$(uname -r)"
-            else
-                printf 'Skyline Speeder: pending-reboot（当前内核 %s；请执行 sudo easy_all apply 准备开机自动启用任务）\n' "$(uname -r)"
-            fi
+    current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || current_cc="unknown"
+    if skyline_speeder_active 2>/dev/null; then
+        printf 'Skyline Speeder: active（fq + skyline_cc）\n'
+    elif [[ -f "${KERNEL_REBOOT_MARKER}" ]]; then
+        if [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] \
+            && systemctl is-failed --quiet easy_all-skyline-setup.service; then
+            printf 'Skyline Speeder: degraded（开机自动安装或启用失败，当前拥塞控制 %s；查看 journalctl -u easy_all-skyline-setup.service -b；重试：sudo easy_all apply）\n' "${current_cc}"
+        elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]] && running_kernel_supported; then
+            printf 'Skyline Speeder: pending-activation（开机任务将自动安装并启用；进度查看 journalctl -u easy_all-skyline-setup.service -b -f）\n'
+        elif running_kernel_supported; then
+            printf 'Skyline Speeder: degraded（兼容内核已运行，但无开机安装任务，当前拥塞控制 %s；重试：sudo easy_all apply）\n' "${current_cc}"
+        elif [[ -f "${systemd_dir}/easy_all-skyline-setup.service" ]]; then
+            printf 'Skyline Speeder: pending-reboot（当前内核 %s；其余安装完成后重启一次，将自动安装并启用）\n' "$(uname -r)"
         else
-            printf 'Skyline Speeder: degraded（服务、拥塞控制或 FQ 未生效，当前拥塞控制 %s；重试：sudo easy_all apply）\n' "${current_cc}"
+            printf 'Skyline Speeder: pending-reboot（当前内核 %s；请执行 sudo easy_all apply 准备开机自动启用任务）\n' "$(uname -r)"
         fi
     else
-        show_bbrv3_status
+        printf 'Skyline Speeder: degraded（服务、拥塞控制或 FQ 未生效，当前拥塞控制 %s；重试：sudo easy_all apply）\n' "${current_cc}"
     fi
 }
 
-tcp_runtime_keys() {
-    cat <<'EOF'
-net.core.default_qdisc
-net.ipv4.tcp_congestion_control
-net.core.rmem_max
-net.core.wmem_max
-net.ipv4.tcp_rmem
-net.ipv4.tcp_wmem
-net.ipv4.tcp_moderate_rcvbuf
-net.ipv4.tcp_mtu_probing
-net.ipv4.tcp_slow_start_after_idle
-net.ipv4.tcp_notsent_lowat
-net.ipv4.tcp_tw_reuse
-net.ipv4.tcp_fin_timeout
-net.ipv4.tcp_no_metrics_save
-net.ipv4.tcp_keepalive_time
-net.ipv4.tcp_keepalive_intvl
-net.ipv4.tcp_keepalive_probes
-net.ipv4.ip_local_port_range
-net.core.somaxconn
-net.core.netdev_max_backlog
-net.ipv6.conf.all.disable_ipv6
-net.ipv6.conf.default.disable_ipv6
-net.ipv6.conf.lo.disable_ipv6
-EOF
-}
-
-snapshot_tcp_runtime() {
-    local destination="${BACKUP_DIR}/pre-install-tcp-runtime.conf"
-    local packages="${BACKUP_DIR}/pre-install-xanmod-packages"
-    local key value
-    install -d -m 0700 "${BACKUP_DIR}"
-    if [[ ! -e "${packages}" ]]; then
-        xanmod_installed_packages >"${packages}"
-        chmod 0600 "${packages}"
-    fi
-    [[ ! -e "${destination}" ]] || return 0
-    install -m 0600 /dev/null "${destination}"
-    while IFS= read -r key; do
-        value=$(sysctl -n "${key}" 2>/dev/null) || continue
-        printf '%s = %s\n' "${key}" "${value}" >>"${destination}"
-    done < <(tcp_runtime_keys)
-}
-
-restore_tcp_runtime() {
-    local source="${BACKUP_DIR}/pre-install-tcp-runtime.conf" line key value failed=0 restored=0
-    remove_physical_fq_qdisc_service
-    if [[ -s "${source}" ]]; then
-        # 逐项恢复而不是 sysctl -p：单个内核不支持/只读的键不该让整批恢复报告失败，
-        # 也不该让用户去找一个随后会被回滚删掉的备份文件路径。
-        while IFS= read -r line || [[ -n "${line}" ]]; do
-            [[ "${line}" == *=* ]] || continue
-            key=${line%% = *}
-            value=${line#* = }
-            key=${key//[[:space:]]/}
-            [[ -n "${key}" ]] || continue
-            if sysctl -w "${key}=${value}" >/dev/null 2>&1; then
-                restored=$((restored + 1))
-            else
-                failed=$((failed + 1))
-                warn "安装前 TCP 参数 ${key}=${value} 未能恢复（内核不支持或只读），已跳过"
-            fi
-        done <"${source}"
-        ((failed == 0)) \
-            || warn "安装前 TCP 运行参数有 ${failed} 项未能恢复（已恢复 ${restored} 项）；其余配置已按备份还原"
-    fi
-    restore_physical_qdisc
-}
-
-restore_bbr_tcp_install_state() {
-    local restore_packages=${1:-0}
-    remove_skyline_boot_setup
-    if [[ -x "${SKYLINE_SOURCE_DIR}/install.sh" ]]; then
-        bash "${SKYLINE_SOURCE_DIR}/install.sh" --uninstall \
-            || die "卸载 Skyline Speeder 失败；请保留安装状态后重试"
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-bbr.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-bbr.conf" "${SYSCTL_CONFIG}"
-    elif [[ -f "${BACKUP_DIR}/pre-install-bbr.missing" ]]; then
-        rm -f -- "${SYSCTL_CONFIG}"
-    fi
-    if [[ -f "${BACKUP_DIR}/pre-install-bbr-module.conf" ]]; then
-        install -m 0644 "${BACKUP_DIR}/pre-install-bbr-module.conf" \
-            "${BBR_MODULES_CONFIG}"
-    elif [[ -f "${BACKUP_DIR}/pre-install-bbr-module.missing" ]]; then
-        rm -f -- "${BBR_MODULES_CONFIG}"
-    fi
-    restore_tcp_runtime
-    [[ "${restore_packages}" != "1" ]] || restore_preinstall_xanmod_packages
-}
-
-xanmod_installed_packages() {
-    command -v dpkg-query >/dev/null 2>&1 || return 0
-    { dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' \
-        '*xanmod*' 2>/dev/null || true; } \
-        | awk -F '\t' '$2 == "ii " {print $1}' | sort -u
-}
-
-restore_preinstall_xanmod_packages() {
-    local snapshot="${BACKUP_DIR}/pre-install-xanmod-packages"
-    local current package running="linux-image-$(uname -r)"
-    local -a added=()
-    [[ -f "${snapshot}" ]] || return 0
-    current=$(mktemp "${RUNTIME_TMP}/xanmod-packages.XXXXXX")
-    xanmod_installed_packages >"${current}"
-    while IFS= read -r package; do
-        [[ -n "${package}" && "${package}" != "${running}" ]] || continue
-        added+=("${package}")
-    done < <(comm -13 "${snapshot}" "${current}")
-    ((${#added[@]} > 0)) || return 0
-    apt-get -o DPkg::Lock::Timeout=300 purge -y "${added[@]}" >/dev/null \
-        || warn "移除本次失败流程新装的 XanMod 包失败：${added[*]}"
-    command -v update-grub >/dev/null 2>&1 && update-grub >/dev/null 2>&1 \
-        || true
-}
-
-bbrv3_cpu_level() {
-    local flags required flag level=0
-    flags=$(awk -F: '$1 ~ /^[[:space:]]*flags[[:space:]]*$/ {print " " $2 " "; exit}' \
-        "${BBRV3_CPUINFO_FILE}")
-    [[ -n "${flags}" ]] || die "无法读取 CPU x86-64 指令集能力"
-    for required in \
-        "lm cmov cx8 fpu fxsr mmx syscall sse2" \
-        "cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3" \
-        "avx avx2 bmi1 bmi2 f16c fma abm movbe xsave"; do
-        for flag in ${required}; do
-            [[ "${flags}" == *" ${flag} "* ]] || {
-                ((level >= 1)) || die "CPU 不满足 XanMod x86-64-v1 最低要求"
-                printf '%s\n' "${level}"
-                return 0
-            }
-        done
-        level=$((level + 1))
-    done
-    printf '%s\n' "${level}"
-}
-
-bbrv3_kernel_package() {
-    printf 'linux-xanmod-lts-x64v%s\n' "$(bbrv3_cpu_level)"
-}
-
-bbrv3_debian_codename() {
+platform_codename() {
+    local os_release="${EASY_ALL_OS_RELEASE_FILE:-/etc/os-release}"
     local codename
     # shellcheck source=/dev/null
-    source /etc/os-release
+    source "${os_release}"
     codename=${VERSION_CODENAME:-}
-    case "${codename}" in
-    bookworm | trixie) printf '%s\n' "${codename}" ;;
-    *) die "XanMod BBRv3 仅支持当前项目的 Debian 12/13：${codename:-未知}" ;;
-    esac
+    if ! platform_is_supported_codename "${codename}"; then
+        die "当前发行版代号 ${codename:-未知} 暂无经过验证的 Zabbly 内核仓库（仅支持 Debian bookworm/trixie 与 Ubuntu jammy/noble）"
+    fi
+    printf '%s\n' "${codename}"
 }
 
-bbrv3_secure_boot_enabled() {
+secure_boot_enabled() {
     local variable value disabled=0
-    [[ -d "${BBRV3_EFI_DIR}" ]] || return 1
-    [[ -d "${BBRV3_EFIVARS_DIR}" ]] || return 0
-    for variable in "${BBRV3_EFIVARS_DIR}"/SecureBoot-*; do
+    [[ -d "${SECUREBOOT_EFI_DIR}" ]] || return 1
+    [[ -d "${SECUREBOOT_EFIVARS_DIR}" ]] || return 0
+    for variable in "${SECUREBOOT_EFIVARS_DIR}"/SecureBoot-*; do
         [[ -r "${variable}" ]] || continue
         value=$(od -An -j4 -N1 -tu1 "${variable}" 2>/dev/null | tr -d '[:space:]') \
             || return 0
@@ -435,7 +318,7 @@ bbrv3_secure_boot_enabled() {
     return 0
 }
 
-xanmod_key_fingerprint() {
+zabbly_key_fingerprint() {
     gpg --batch --show-keys --with-colons "$1" 2>/dev/null \
         | awk -F: '
             $1 == "pub" {pubs += 1; want_fingerprint = 1; next}
@@ -450,148 +333,117 @@ xanmod_key_fingerprint() {
         '
 }
 
-xanmod_repository_line() {
-    printf 'deb [signed-by=%s] %s %s main\n' \
-        "${BBRV3_XANMOD_KEYRING}" "${BBRV3_XANMOD_REPOSITORY_URL}" \
-        "$(bbrv3_debian_codename)"
+zabbly_repository_content() {
+    local codename
+    codename=$(platform_codename)
+    cat <<EOF
+Types: deb
+URIs: ${ZABBLY_REPOSITORY_URL}
+Suites: ${codename}
+Components: main
+Signed-By: ${ZABBLY_KEYRING}
+EOF
 }
 
-xanmod_repository_ready() {
+zabbly_repository_ready() {
     local expected
-    [[ -s "${BBRV3_XANMOD_KEYRING}" && -s "${BBRV3_XANMOD_SOURCE}" ]] || return 1
-    [[ "$(xanmod_key_fingerprint "${BBRV3_XANMOD_KEYRING}")" \
-        == "${BBRV3_XANMOD_KEY_FINGERPRINT}" ]] || return 1
-    expected=$(xanmod_repository_line)
-    [[ "$(<"${BBRV3_XANMOD_SOURCE}")" == "${expected}" ]]
+    [[ -s "${ZABBLY_KEYRING}" && -s "${ZABBLY_SOURCE}" ]] || return 1
+    [[ "$(zabbly_key_fingerprint "${ZABBLY_KEYRING}")" \
+        == "${ZABBLY_KEY_FINGERPRINT}" ]] || return 1
+    expected=$(zabbly_repository_content)
+    [[ "$(<"${ZABBLY_SOURCE}")" == "${expected}" ]]
 }
 
-ensure_xanmod_repository() {
-    local key keyring source fingerprint
-    xanmod_repository_ready && return 0
+ensure_zabbly_repository() {
+    local key source fingerprint
+    zabbly_repository_ready && return 0
     if ! command -v gpg >/dev/null 2>&1; then
-        info "安装 XanMod APT 公钥校验依赖：gnupg"
-        apt-get -o DPkg::Lock::Timeout=300 update || die "刷新 Debian APT 索引失败"
+        info "安装 Zabbly APT 公钥校验依赖：gnupg"
+        apt-get -o DPkg::Lock::Timeout=300 update || die "刷新 APT 索引失败"
         apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends gnupg \
-            || die "安装 XanMod BBRv3 所需的 gnupg 失败"
+            || die "安装 Zabbly 内核所需的 gnupg 失败"
     fi
-    command -v gpg >/dev/null 2>&1 || die "安装 XanMod BBRv3 需要 gnupg"
-    key="${RUNTIME_TMP}/xanmod-archive.key"
-    keyring="${RUNTIME_TMP}/xanmod-archive-keyring.gpg"
-    source="${RUNTIME_TMP}/xanmod-release.list"
+    command -v gpg >/dev/null 2>&1 || die "安装 Zabbly 内核需要 gnupg"
+    key="${RUNTIME_TMP}/zabbly.asc"
+    source="${RUNTIME_TMP}/zabbly-kernel.sources"
     curl -fL --proto '=https' --tlsv1.2 --retry 3 \
         --connect-timeout 10 --max-time 60 \
-        "${BBRV3_XANMOD_KEY_URL}" -o "${key}" \
-        || die "下载 XanMod 官方 APT 公钥失败"
-    fingerprint=$(xanmod_key_fingerprint "${key}")
-    [[ "${fingerprint}" == "${BBRV3_XANMOD_KEY_FINGERPRINT}" ]] \
-        || die "XanMod APT 公钥指纹不匹配：${fingerprint:-缺失}"
-    gpg --batch --yes --dearmor --output "${keyring}" "${key}" \
-        || die "转换 XanMod APT 公钥失败"
-    xanmod_repository_line >"${source}"
-    install -d -m 0755 "$(dirname -- "${BBRV3_XANMOD_KEYRING}")" \
-        "$(dirname -- "${BBRV3_XANMOD_SOURCE}")"
-    install -m 0644 "${keyring}" "${BBRV3_XANMOD_KEYRING}"
-    install -m 0644 "${source}" "${BBRV3_XANMOD_SOURCE}"
-    xanmod_repository_ready || die "XanMod APT 仓库写入后验收失败"
+        "${ZABBLY_KEY_URL}" -o "${key}" \
+        || die "下载 Zabbly 官方 APT 公钥失败"
+    fingerprint=$(zabbly_key_fingerprint "${key}")
+    [[ "${fingerprint}" == "${ZABBLY_KEY_FINGERPRINT}" ]] \
+        || die "Zabbly APT 公钥指纹不匹配：${fingerprint:-缺失}"
+    zabbly_repository_content >"${source}"
+    install -d -m 0755 "$(dirname -- "${ZABBLY_KEYRING}")" \
+        "$(dirname -- "${ZABBLY_SOURCE}")"
+    install -m 0644 "${key}" "${ZABBLY_KEYRING}"
+    install -m 0644 "${source}" "${ZABBLY_SOURCE}"
+    zabbly_repository_ready || die "Zabbly APT 仓库写入后验收失败"
 }
 
-bbrv3_meta_package_installed() {
-    local package=${1:-${BBRV3_KERNEL_PACKAGE:-$(bbrv3_kernel_package)}}
+zabbly_kernel_installed() {
+    local package=${1:-${ZABBLY_KERNEL_PACKAGE}}
     dpkg-query -W -f='${db:Status-Abbrev}' "${package}" 2>/dev/null \
         | grep -qx 'ii '
 }
 
-bbrv3_latest_kernel_release() {
+zabbly_kernel_release_on_disk() {
     local image release
-    for image in /boot/vmlinuz-*xanmod*; do
+    for image in "${KERNEL_BOOT_DIR}"/vmlinuz-*zabbly*; do
         [[ -s "${image}" ]] || continue
         release=${image##*/vmlinuz-}
+        [[ -s "${KERNEL_BOOT_DIR}/initrd.img-${release}" \
+            || -s "${KERNEL_BOOT_DIR}/initramfs-${release}.img" ]] || continue
         printf '%s\n' "${release}"
     done | sort -V | tail -n 1
 }
 
-bbrv3_kernel_image_installed() {
-    local release
-    release=$(bbrv3_latest_kernel_release)
-    [[ -n "${release}" && -s "/boot/vmlinuz-${release}" \
-        && -s "/boot/initrd.img-${release}" ]]
+zabbly_kernel_image_installed() {
+    [[ -n "$(zabbly_kernel_release_on_disk)" ]]
 }
 
-bbrv3_running_kernel_supported() {
+running_kernel_supported() {
     local release version
     release=$(uname -r)
-    [[ "${release}" == *xanmod* ]] || return 1
     version=${release%%-*}
-    dpkg --compare-versions "${version}" ge "${BBRV3_MINIMUM_XANMOD_VERSION}"
+    dpkg --compare-versions "${version}" ge "${SKYLINE_MINIMUM_KERNEL_VERSION}"
 }
 
-ensure_bbrv3_kernel() {
-    local minimum_version=${1:-${BBRV3_MINIMUM_XANMOD_VERSION}} release
-    BBRV3_KERNEL_PACKAGE=$(bbrv3_kernel_package)
-    if ! bbrv3_running_kernel_supported && bbrv3_secure_boot_enabled; then
-        die "检测到 UEFI Secure Boot；拒绝安装或切换到无法确认可启动的 XanMod BBRv3 内核"
+ensure_zabbly_kernel() {
+    local minimum_version=${1:-${SKYLINE_MINIMUM_KERNEL_VERSION}} release
+    if running_kernel_supported; then
+        return 0
     fi
-    ensure_xanmod_repository
-    release=$(bbrv3_latest_kernel_release)
-    if ! bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}" \
+    if secure_boot_enabled; then
+        die "检测到 UEFI Secure Boot；拒绝安装或切换到无法确认可启动的内核"
+    fi
+    ensure_zabbly_repository
+    release=$(zabbly_kernel_release_on_disk)
+    if ! zabbly_kernel_installed "${ZABBLY_KERNEL_PACKAGE}" \
         || [[ -z "${release}" ]] \
         || ! dpkg --compare-versions "${release%%-*}" ge "${minimum_version}"; then
-        info "安装或升级 XanMod LTS 内核：${BBRV3_KERNEL_PACKAGE}"
-        apt-get -o DPkg::Lock::Timeout=300 update || die "刷新 XanMod APT 索引失败"
-        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${BBRV3_KERNEL_PACKAGE}" \
-            || die "安装 XanMod LTS BBRv3 内核失败"
+        info "安装或升级 Zabbly 6.12+ LTS 内核：${ZABBLY_KERNEL_PACKAGE}"
+        apt-get -o DPkg::Lock::Timeout=300 update || die "刷新 Zabbly APT 索引失败"
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${ZABBLY_KERNEL_PACKAGE}" \
+            || die "安装 Zabbly 6.12+ LTS 内核失败"
     fi
-    bbrv3_meta_package_installed "${BBRV3_KERNEL_PACKAGE}" \
-        || die "XanMod BBRv3 元包安装后验收失败：${BBRV3_KERNEL_PACKAGE}"
-    bbrv3_kernel_image_installed \
-        || die "最新 XanMod BBRv3 内核缺少可用的 vmlinuz 或 initrd"
-    release=$(bbrv3_latest_kernel_release)
+    zabbly_kernel_installed "${ZABBLY_KERNEL_PACKAGE}" \
+        || die "Zabbly 内核元包安装后验收失败：${ZABBLY_KERNEL_PACKAGE}"
+    zabbly_kernel_image_installed \
+        || die "最新 Zabbly 内核缺少可用的 vmlinuz 或 initrd"
+    release=$(zabbly_kernel_release_on_disk)
     dpkg --compare-versions "${release%%-*}" ge "${minimum_version}" \
-        || die "已安装的 XanMod 内核 ${release} 低于所需版本 ${minimum_version}；请检查 APT 仓库或软件包锁定状态"
+        || die "已安装的 Zabbly 内核 ${release} 低于所需版本 ${minimum_version}；请检查 APT 仓库或软件包锁定状态"
     if command -v update-grub >/dev/null 2>&1; then
-        update-grub >/dev/null || die "更新 GRUB 的 XanMod BBRv3 启动项失败"
-    fi
-}
-
-show_bbrv3_status() {
-    local release
-    release=$(uname -r)
-    if bbrv3_running_kernel_supported \
-        && [[ "$(sysctl -n net.core.default_qdisc 2>/dev/null || true)" == "fq" ]] \
-        && [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)" == "bbr" ]]; then
-        if ! physical_fq_active 2>/dev/null; then
-            printf 'BBRv3: degraded（实际出口 FQ 未生效；请执行 easy_all apply）\n'
-            return 0
-        fi
-        printf 'BBRv3: active（XanMod %s，fq + bbr）\n' "${release}"
-    elif bbrv3_kernel_image_installed; then
-        printf 'BBRv3: pending-reboot（当前内核 %s；请重启进入 XanMod）\n' "${release}"
-    else
-        printf 'BBRv3: unavailable（未找到 XanMod 内核；请执行 easy_all apply）\n'
-    fi
-}
-
-configure_bbr_tcp() {
-    ensure_bbrv3_kernel
-    remove_skyline_boot_setup
-    stop_skyline_speeder
-    configure_tcp_parameters
-    if bbrv3_running_kernel_supported; then
-        rm -f -- "${BBRV3_REBOOT_MARKER}"
-        success "XanMod BBRv3 已启用（$(uname -r)，fq + bbr）"
-    else
-        install -d -m 0700 "${STATE_DIR}"
-        install -m 0600 /dev/null "${BBRV3_REBOOT_MARKER}"
-        warn "XanMod BBRv3 内核已安装；当前仍为 $(uname -r)，请在安装结束后执行 sudo reboot"
+        update-grub >/dev/null || die "更新 GRUB 启动项失败"
     fi
 }
 
 configure_tcp_parameters() {
     ensure_vps_ip_family
-    cat >"${RUNTIME_TMP}/bbr.conf" <<'EOF'
-# BBR fallback; Skyline Speeder attaches skyline_cc after sysctl at boot.
+    cat >"${RUNTIME_TMP}/tcp-tuning.conf" <<'EOF'
+# TCP tuning only; Skyline Speeder attaches skyline_cc at boot.
 net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
 
 # TCP buffer (32 MB ceiling for high-BDP cross-border links)
 net.core.rmem_max = 33554432
@@ -625,32 +477,16 @@ net.ipv4.tcp_keepalive_probes = 5
 # easy_all's 10000-62703 Reality ingress range uses PREROUTING NAT only.
 net.ipv4.ip_local_port_range = 13000 60999
 EOF
-    cat >>"${RUNTIME_TMP}/bbr.conf" <<EOF
-
-# easy_all is globally IPv4-only.
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
-EOF
     if [[ "${PROTOCOL:-}" == "reality" && -z "${CDN_PROVIDER:-}" ]]; then
-        cat >>"${RUNTIME_TMP}/bbr.conf" <<'EOF'
+        cat >>"${RUNTIME_TMP}/tcp-tuning.conf" <<'EOF'
 
 # Direct-link routing changes should not reuse stale destination metrics.
 net.ipv4.tcp_no_metrics_save = 1
 EOF
     fi
-    modprobe tcp_bbr >/dev/null 2>&1 \
-        || die "当前内核不支持 tcp_bbr"
-    grep -qw bbr "${BBRV3_AVAILABLE_CC_FILE}" \
-        || die "tcp_bbr 已加载，但内核未将 bbr 注册为可用拥塞控制算法"
-    printf '%s\n' tcp_bbr >"${RUNTIME_TMP}/easy_all-bbr.conf"
-    install -m 0644 "${RUNTIME_TMP}/easy_all-bbr.conf" "${BBR_MODULES_CONFIG}"
-    install -m 0644 "${RUNTIME_TMP}/bbr.conf" "${SYSCTL_CONFIG}"
-    sysctl -p "${SYSCTL_CONFIG}" >/dev/null || die "应用 TCP sysctl 配置失败"
-    [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] \
-        || die "拥塞控制算法未成功设置为 bbr"
-    [[ -f "${BBR_MODULES_CONFIG}" && -f "${SYSCTL_CONFIG}" ]] \
-        || die "TCP 开机配置写入失败"
+    install -m 0644 "${RUNTIME_TMP}/tcp-tuning.conf" "${TCP_SYSCTL_CONF}"
+    sysctl -p "${TCP_SYSCTL_CONF}" >/dev/null || die "应用 TCP sysctl 配置失败"
+    [[ -f "${TCP_SYSCTL_CONF}" ]] || die "TCP 开机配置写入失败"
     apply_physical_fq_qdisc
 }
 
@@ -722,16 +558,18 @@ map_qdisc_parents() {
 }
 
 configure_physical_fq() {
-    local iface current snapshot entry target filters attempt handle failed=0
+    local iface current entry target filters attempt handle failed=0
     local -a args
     command -v tc >/dev/null && command -v jq >/dev/null || die "FQ 配置需要 tc 和 jq"
     iface=$(default_route_iface) || die "无法读取 IPv4 默认出口"
     [[ "${iface}" =~ ^[a-zA-Z0-9_.:-]+$ && "${iface}" != .* ]] || die "无法确定安全的默认出口接口名"
     current=$(tc -j qdisc show dev "${iface}") || die "读取 ${iface} qdisc 失败"
     install -d -m 0700 "${BACKUP_DIR}/qdisc"
-    snapshot="${BACKUP_DIR}/qdisc/${iface}.json"
-    printf '%s\n' "${current}" >"${snapshot}.tmp"
-    validate_qdisc_snapshot "${snapshot}.tmp" || die "${iface} 存在不支持自动恢复的 qdisc；未修改队列"
+    # 本次应用前的队列快照：仅用于本次替换失败时立即回滚。
+    attempt="${BACKUP_DIR}/qdisc/${iface}.json.apply"
+    printf '%s\n' "${current}" >"${attempt}"
+    chmod 0600 "${attempt}"
+    validate_qdisc_snapshot "${attempt}" || die "${iface} 存在不支持自动恢复的 qdisc；未修改队列"
     filters=$(tc -j filter show dev "${iface}" root) || die "读取 ${iface} 根过滤器失败"
     [[ "$(jq 'length' <<<"${filters}")" == 0 ]] || die "${iface} 存在根过滤器；拒绝替换队列"
     while IFS= read -r target; do
@@ -739,17 +577,6 @@ configure_physical_fq() {
         filters=$(tc -j filter show dev "${iface}" parent "${target}") || die "读取 ${iface} 子队列过滤器失败"
         [[ "$(jq 'length' <<<"${filters}")" == 0 ]] || die "${iface} 存在子队列过滤器；拒绝替换队列"
     done < <(jq -r '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast") | .handle' <<<"${current}")
-    if [[ ! -e "${snapshot}" ]]; then
-        mv -- "${snapshot}.tmp" "${snapshot}"
-        chmod 0600 "${snapshot}"
-    else
-        validate_qdisc_snapshot "${snapshot}" || die "原 qdisc 备份无效；停止修改：${snapshot}"
-        rm -f -- "${snapshot}.tmp"
-    fi
-    # Per-attempt snapshot also protects repeat applications after reboot.
-    attempt="${snapshot}.apply"
-    printf '%s\n' "${current}" >"${attempt}"
-    chmod 0600 "${attempt}"
     if ! physical_fq_active; then
         normalize_mq_handle "${iface}" "${current}" \
             || die "${iface} mq 重建失败或存在无法恢复的 FQ 参数；备份：${attempt}"
@@ -816,31 +643,24 @@ restore_qdisc_snapshot() {
     done < <(jq -c '.[] | select(.kind == "fq_codel" or .kind == "pfifo_fast")' <<<"${entries}")
 }
 
-restore_physical_qdisc() {
-    local snapshot iface
-    for snapshot in "${BACKUP_DIR}/qdisc/"*.json; do
-        [[ -f "${snapshot}" ]] || continue
-        validate_qdisc_snapshot "${snapshot}" || die "qdisc 备份无效；保留备份 ${snapshot}"
-        iface=${snapshot##*/}
-        iface=${iface%.json}
-        restore_qdisc_snapshot "${iface}" "${snapshot}" || die "恢复 ${iface} 失败；备份：${snapshot}"
-    done
-}
-
 apply_physical_fq_qdisc() {
     configure_physical_fq
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local fq_service_file="${systemd_dir}/easy_all-fq.service"
-    local helper="${STATE_DIR}/apply-fq.sh"
+    local helper_dir="${EASY_ALL_TCP_DIR_OVERRIDE:-${EASY_ALL_TCP_DIR:-/usr/local/lib/easy_all-tcp}}"
+    local helper="${helper_dir}/apply-fq.sh"
+    install -d -m 0755 "${helper_dir}"
     {
         printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
-        printf 'BACKUP_DIR=%q\n' "${BACKUP_DIR}"
+        # 开机由 systemd 拉起：PATH 与备份目录都不能依赖当时的交互环境。
+        printf '%s\n' 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
+        printf 'BACKUP_DIR=%q\n' "${BACKUP_DIR:-${STATE_DIR:-/etc/easy_all}/backups}"
         printf 'die() { printf "%%s\\n" "$*" >&2; exit 1; }\n'
         declare -f default_route_iface physical_fq_active validate_qdisc_snapshot \
             normalize_mq_handle map_qdisc_parents qdisc_restore_args restore_qdisc_snapshot configure_physical_fq
         printf 'configure_physical_fq\n'
     } >"${helper}"
-    chmod 0700 "${helper}"
+    chmod 0755 "${helper}"
     cat >"${fq_service_file}" <<EOF_SERVICE
 [Unit]
 Description=Ensure and verify FQ on the default network interface
@@ -861,37 +681,17 @@ EOF_SERVICE
     physical_fq_active || die "FQ 服务启动后实际队列验收失败"
 }
 
-remove_physical_fq_qdisc_service() {
-    local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
-    local fq_service_file="${systemd_dir}/easy_all-fq.service"
-    if [[ -f "${fq_service_file}" ]]; then
-        systemctl disable --now easy_all-fq.service || die "停止 FQ 服务失败；请保留队列备份"
-        rm -f -- "${fq_service_file}"
-        systemctl daemon-reload || die "重新加载 systemd 失败"
-    fi
-    rm -f -- "${STATE_DIR}/apply-fq.sh"
-}
-
-prompt_bbrv3_reboot() {
+prompt_kernel_reboot() {
     local choice
-    if [[ "${TCP_ACCELERATION:-skyline}" == "skyline" ]]; then
-        [[ -f "${BBRV3_REBOOT_MARKER}" ]] || return 0
-        if skyline_running_kernel_supported; then
-            return 0
-        fi
-    elif bbrv3_running_kernel_supported; then
+    [[ -f "${KERNEL_REBOOT_MARKER}" ]] || return 0
+    if running_kernel_supported; then
         return 0
     fi
     printf '\n'
     printf '%s\n' "========================================================================"
-    if [[ "${TCP_ACCELERATION:-skyline}" == "skyline" ]]; then
-        printf '%s\n' "【重要提示：请重启服务器以加载 Skyline Speeder 所需的兼容内核】"
-        printf '%s\n' "其余安装已完成，只需重启一次；开机将自动安装并启用 Skyline，无需再次执行命令。"
-        printf '%s\n' "开机安装期间暂用 BBR；进度查看 journalctl -u easy_all-skyline-setup.service -b -f。"
-    else
-        printf '%s\n' "⚠️  【重要提示：请立即重启服务器以激活 BBRv3】"
-    fi
-    printf '%s\n' "XanMod LTS 内核已安装完成，当前运行仍为 $(uname -r)。"
+    printf '%s\n' "【重要提示：请重启服务器以加载 Skyline Speeder 所需的兼容内核】"
+    printf '%s\n' "其余安装已完成，只需重启一次；开机将自动安装并启用 Skyline，无需再次执行命令。"
+    printf '%s\n' "Zabbly 6.12+ LTS 内核已安装完成，当前运行仍为 $(uname -r)。"
     printf '%s\n' "系统必须重启后才会真正载入新内核！"
     printf '%s\n' "请保存好上方的节点与订阅链接后，立即重启服务器。"
     printf '%s\n' "========================================================================"

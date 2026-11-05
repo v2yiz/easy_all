@@ -1196,8 +1196,6 @@ load_state() {
         done
     ' _ "${state_path}" "${variables[@]}")
     ((index == ${#variables[@]})) || return 1
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
-        || die "状态文件中的 TCP_ACCELERATION 无效"
     enforce_ipv4_only_policy
     [[ "${PROTOCOL}" == "cloudflare-streamup" && "${CDN_PROVIDER:-}" == "cloudflare" && "${BACKEND:-}" == "xray" ]] \
         || die "状态不是 Cloudflare XHTTP Stream-up"
@@ -1251,8 +1249,7 @@ save_state() {
     local target="${EASY_ALL_STATE_FILE_OVERRIDE:-${STATE_FILE}}"
     local state_dir
     enforce_ipv4_only_policy
-    TCP_ACCELERATION=$(normalize_tcp_acceleration "${TCP_ACCELERATION:-skyline}") \
-        || die "无法保存无效的 TCP_ACCELERATION"
+    TCP_ACCELERATION="${TCP_ACCELERATION:-skyline}"
     validate_subscription_worker_retirements || die "无法保存无效的旧订阅 Worker 待清理记录"
     validate_worker_backup_state
     validate_google_egress_policy_state \
@@ -1703,7 +1700,8 @@ rollback_fresh_install() {
         return 1
     }
     restore_preinstall_firewall
-    restore_bbr_tcp_install_state 1
+    restore_preinstall_ipv6
+    # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -1771,6 +1769,7 @@ install_all() {
 
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
     check_platform
+    ensure_swap
     install_failure_begin cloudflare-streamup
     check_install_conflicts
     install_progress_begin cloudflare-streamup
@@ -1782,6 +1781,7 @@ install_all() {
     choose_tcp_acceleration
     configure_tcp_acceleration
     configure_daily_reboot
+    configure_ipv4_only
     install_progress_stage inputs
     collect_install_inputs
     cloudflare_prepare_origin
@@ -1827,7 +1827,7 @@ install_all() {
         success "easy_all Cloudflare CDN XHTTP 与 Worker 聚合订阅安装完成"
     fi
     show_tcp_acceleration_status
-    prompt_bbrv3_reboot
+    prompt_kernel_reboot
 }
 
 apply_easy_all() {
@@ -1836,6 +1836,7 @@ apply_easy_all() {
     collect_installed_state
     snapshot_subscription_update
     configure_tcp_acceleration
+    configure_ipv4_only
     refresh_google_egress_selection
     configure_ufw
     if ! globalping_cache_valid; then
@@ -1857,6 +1858,7 @@ apply_cloud_resources() {
     collect_installed_state
     snapshot_subscription_update
     configure_tcp_acceleration
+    configure_ipv4_only
     refresh_google_egress_selection
     configure_ufw
     xhttp_render_xray_config
@@ -2091,7 +2093,7 @@ uninstall_all() {
         return 1
     }
     restore_preinstall_firewall
-    restore_bbr_tcp_install_state
+    restore_preinstall_ipv6
     remove_daily_reboot_schedule
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true

@@ -132,4 +132,552 @@ common_content=$(<"${ROOT_DIR}/lib/profile-common.sh")
 assert_not_contains "PARAMS_SOURCE removed" "${common_content}" "PARAMS_SOURCE"
 assert_not_contains "INSTALL_PARAMS_DELETE removed" "${common_content}" "INSTALL_PARAMS_DELETE"
 
-echo "ok - all 5 audit fixes verified successfully"
+echo "=== 6. 验证 Debian 12+ / Ubuntu 22.04+ 及 amd64 / arm64 平台支持 ==="
+TEST_OS_RELEASE="${TMP_DIR}/os-release"
+TEST_BIN_DIR="${TMP_DIR}/platform_bin"
+mkdir -p "${TEST_BIN_DIR}"
+
+run_check_platform_test() {
+    local id=$1 version_id=$2 codename=$3 arch=$4
+    cat >"${TEST_OS_RELEASE}" <<EOF
+ID=${id}
+VERSION_ID="${version_id}"
+VERSION_CODENAME=${codename}
+EOF
+    cat >"${TEST_BIN_DIR}/dpkg" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--print-architecture" ]]; then
+    printf '%s\n' "${MOCK_ARCH:-amd64}"
+    exit 0
+fi
+if [[ "$1" == "--compare-versions" ]]; then
+    python3 -c '
+import sys
+v1 = [int(x) for x in sys.argv[1].split(".") if x.isdigit()]
+v2 = [int(x) for x in sys.argv[3].split(".") if x.isdigit()]
+op = sys.argv[2]
+if op == "ge":
+    sys.exit(0 if v1 >= v2 else 1)
+elif op == "lt":
+    sys.exit(0 if v1 < v2 else 1)
+elif op == "gt":
+    sys.exit(0 if v1 > v2 else 1)
+elif op == "le":
+    sys.exit(0 if v1 <= v2 else 1)
+sys.exit(0)
+' "$2" "$3" "$4"
+    exit $?
+fi
+exit 0
+EOF
+    chmod +x "${TEST_BIN_DIR}/dpkg"
+    cat >"${TEST_BIN_DIR}/systemd-detect-virt" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "${TEST_BIN_DIR}/systemd-detect-virt"
+
+    PATH="${TEST_BIN_DIR}:${PATH}" MOCK_ARCH="${arch}" EASY_ALL_OS_RELEASE_FILE="${TEST_OS_RELEASE}" bash -c "
+        source '${ROOT_DIR}/lib/log.sh'
+        source '${ROOT_DIR}/lib/platform.sh'
+        check_platform
+    " 2>&1
+}
+
+# 6.1 验证合法组合均通过
+res_deb12_amd64=$(run_check_platform_test "debian" "12" "bookworm" "amd64" || true)
+assert_equal "Debian 12 amd64 must pass" "" "${res_deb12_amd64}"
+
+res_deb13_arm64=$(run_check_platform_test "debian" "13" "trixie" "arm64" || true)
+assert_equal "Debian 13 arm64 must pass" "" "${res_deb13_arm64}"
+
+res_u22_amd64=$(run_check_platform_test "ubuntu" "22.04" "jammy" "amd64" || true)
+assert_equal "Ubuntu 22.04 amd64 must pass" "" "${res_u22_amd64}"
+
+res_u24_arm64=$(run_check_platform_test "ubuntu" "24.04" "noble" "arm64" || true)
+assert_equal "Ubuntu 24.04 arm64 must pass" "" "${res_u24_arm64}"
+
+# 6.2 验证非法系统或架构被拦截
+res_u20=$(run_check_platform_test "ubuntu" "20.04" "focal" "amd64" || true)
+assert_contains "Ubuntu 20.04 rejected" "${res_u20}" "不支持当前 Ubuntu 版本/代号"
+
+res_u2410=$(run_check_platform_test "ubuntu" "24.10" "oracular" "amd64" || true)
+assert_contains "Ubuntu 24.10 non-LTS rejected" "${res_u2410}" "不支持当前 Ubuntu 版本/代号"
+
+res_deb11=$(run_check_platform_test "debian" "11" "bullseye" "amd64" || true)
+assert_contains "Debian 11 rejected" "${res_deb11}" "不支持当前 Debian 版本/代号"
+
+res_debsid=$(run_check_platform_test "debian" "14" "forky" "amd64" || true)
+assert_contains "Debian testing/sid rejected" "${res_debsid}" "不支持当前 Debian 版本/代号"
+
+res_centos=$(run_check_platform_test "centos" "9" "stream" "amd64" || true)
+assert_contains "CentOS rejected" "${res_centos}" "仅支持 Debian 12+ 或 Ubuntu 22.04+"
+
+res_arch_mips=$(run_check_platform_test "debian" "12" "bookworm" "mips64el" || true)
+assert_contains "Unsupported arch rejected" "${res_arch_mips}" "仅支持 amd64 与 arm64"
+
+# 6.3 验证 Zabbly 仓库配置与 Skyline 逻辑
+source "${ROOT_DIR}/lib/tcp-tuning.sh"
+assert_equal "Zabbly kernel package name" "linux-zabbly" "${ZABBLY_KERNEL_PACKAGE}"
+assert_equal "Zabbly key fingerprint" "4EFC590696CB15B87C73A3AD82CC8797C838DCFD" "${ZABBLY_KEY_FINGERPRINT}"
+assert_equal "TCP sysctl 文件不再使用 BBR 命名" "99-easy_all-tcp.conf" "${TCP_SYSCTL_CONF##*/}"
+
+# 6.4 验证 scripts/debian-init.sh 复用同一份平台校验，不再自带 Debian/amd64 限制
+debian_init_script=$(<"${ROOT_DIR}/scripts/debian-init.sh")
+assert_contains "debian-init reuses check_platform" \
+    "${debian_init_script}" $'source "$firewall_module"\n# 与 easy_all 共用同一份平台校验'
+assert_not_contains "debian-init drops the Debian-only gate" \
+    "${debian_init_script}" "仅支持 Debian"
+assert_not_contains "debian-init drops the amd64-only gate" \
+    "${debian_init_script}" "dpkg --print-architecture"
+
+echo "=== 7. 验证 Swap 自动创建与 sudo vim 依赖安装 ==="
+# 7.1 验证各模式的 apt 依赖清单包含 sudo 和 vim（只看 pkgs 数组，避免注释误命中）
+package_list_of() {
+    awk '/local pkgs=\(/{flag=1; next} flag && /^[[:space:]]*\)/{exit} flag' "$1"
+}
+for script in lib/xhttp-runtime.sh profiles/reality.sh profiles/ws-bunny.sh; do
+    pkg_text=$(package_list_of "${ROOT_DIR}/${script}")
+    assert_contains "${script} pkgs contain sudo" "${pkg_text}" "sudo"
+    assert_contains "${script} pkgs contain vim" "${pkg_text}" "vim"
+done
+
+# 7.2 验证 ensure_swap：已有 Swap 时不操作
+TEST_MEMINFO_EXISTING="${TMP_DIR}/meminfo_existing"
+cat >"${TEST_MEMINFO_EXISTING}" <<'EOF'
+MemTotal:        2048000 kB
+SwapTotal:       1048576 kB
+EOF
+export EASY_ALL_MEMINFO_FILE="${TEST_MEMINFO_EXISTING}"
+export EASY_ALL_SWAP_FILE="${TMP_DIR}/test_swap_file"
+export EASY_ALL_FSTAB_FILE="${TMP_DIR}/test_fstab"
+: >"${EASY_ALL_FSTAB_FILE}"
+rm -f -- "${EASY_ALL_SWAP_FILE}"
+
+source "${ROOT_DIR}/lib/platform.sh"
+ensure_swap
+[[ ! -f "${EASY_ALL_SWAP_FILE}" ]] || fail "已有 Swap 时不应创建 swapfile"
+assert_equal "fstab remains empty when swap exists" "" "$(<"${EASY_ALL_FSTAB_FILE}")"
+
+# 7.3 验证 ensure_swap：无 Swap 时自动创建并写入 fstab
+TEST_MEMINFO_NONE="${TMP_DIR}/meminfo_none"
+cat >"${TEST_MEMINFO_NONE}" <<'EOF'
+MemTotal:        2048000 kB
+SwapTotal:             0 kB
+EOF
+export EASY_ALL_MEMINFO_FILE="${TEST_MEMINFO_NONE}"
+# 创建假 mkswap / swapon
+MOCK_SWAP_BIN="${TMP_DIR}/swap_bin"
+mkdir -p "${MOCK_SWAP_BIN}"
+cat >"${MOCK_SWAP_BIN}/mkswap" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"${MOCK_SWAP_BIN}/swapon" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"${MOCK_SWAP_BIN}/fallocate" <<'EOF'
+#!/usr/bin/env bash
+# 模拟 fallocate 快速创建 1GB 稀疏测试文件
+truncate -s 10M "$3" 2>/dev/null || dd if=/dev/zero of="$3" bs=1M count=1 status=none
+exit 0
+EOF
+chmod +x "${MOCK_SWAP_BIN}/mkswap" "${MOCK_SWAP_BIN}/swapon" "${MOCK_SWAP_BIN}/fallocate"
+
+PATH="${MOCK_SWAP_BIN}:${PATH}" ensure_swap
+[[ -f "${EASY_ALL_SWAP_FILE}" ]] || fail "无 Swap 时应创建 swapfile"
+assert_contains "fstab written with swapfile" "$(<"${EASY_ALL_FSTAB_FILE}")" "${EASY_ALL_SWAP_FILE} none swap sw 0 0"
+
+echo "=== 8. 验证前置初始化幂等跳过与回滚保护 ==="
+# 8.1 验证 packages_already_installed
+MOCK_DPKG_DIR="${TMP_DIR}/mock_dpkg_bin"
+mkdir -p "${MOCK_DPKG_DIR}"
+cat >"${MOCK_DPKG_DIR}/dpkg" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--print-architecture" ]]; then
+    echo "amd64"
+    exit 0
+fi
+if [[ "$1" == "-s" ]]; then
+    if [[ "$2" == "missing_pkg" ]]; then
+        echo "dpkg-query: package 'missing_pkg' is not installed" >&2
+        exit 1
+    fi
+    echo "Package: $2"
+    echo "Status: install ok installed"
+    exit 0
+fi
+exit 0
+EOF
+chmod +x "${MOCK_DPKG_DIR}/dpkg"
+export PATH="${MOCK_DPKG_DIR}:${PATH}"
+
+packages_already_installed "sudo" "vim" "curl" || fail "已安装包列表应返回 0"
+if packages_already_installed "sudo" "missing_pkg"; then
+    fail "含未安装包列表应返回 1"
+fi
+
+# 8.2 验证 Skyline 已激活时 configure_tcp_acceleration 刷新 TCP 参数并维持运行
+(
+    rm -f -- "${TMP_DIR}/tcp_param_called"
+    configure_tcp_parameters() { touch "${TMP_DIR}/tcp_param_called"; }
+    skyline_speeder_active() { return 0; }
+    SYSTEMD_SYSTEM_DIR="${TMP_DIR}/mock_systemd"
+    EASY_ALL_TCP_DIR_OVERRIDE="${TMP_DIR}/mock_tcp_dir"
+    mkdir -p "${SYSTEMD_SYSTEM_DIR}" "${EASY_ALL_TCP_DIR_OVERRIDE}"
+    touch "${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service"
+    touch "${EASY_ALL_TCP_DIR_OVERRIDE}/apply-fq.sh"
+    skip_out=$(configure_tcp_acceleration 2>&1 || true)
+    [[ -f "${TMP_DIR}/tcp_param_called" ]] || fail "Skyline 运行时应刷新 TCP 参数"
+    assert_contains "Skyline active logged" "${skip_out}" "Skyline Speeder 已在运行"
+)
+
+# 8.4 验证 show_tcp_acceleration_status 纯净输出 Skyline Speeder 状态
+(
+    skyline_speeder_active() { return 0; }
+    status_out=$(show_tcp_acceleration_status 2>&1 || true)
+    assert_contains "status reports Skyline" "${status_out}" "Skyline Speeder: active"
+    assert_not_contains "status does not mention BBR" "${status_out}" "BBR"
+)
+
+# 8.5 前置初始化（TCP 加速/Skyline）不再由卸载处理，相关函数一并移除
+(
+    assert_not_contains "no uninstall_tcp_acceleration symbol" \
+        "$(declare -f)" "uninstall_tcp_acceleration"
+    assert_not_contains "no restore_tcp_runtime symbol" \
+        "$(declare -f)" "restore_tcp_runtime"
+    for script in lib/bunny-runtime.sh lib/xhttp-runtime.sh profiles/reality.sh \
+        profiles/combined.sh profiles/xhttp-cloudflare-streamup.sh; do
+        assert_not_contains "${script} does not tear down TCP acceleration" \
+            "$(<"${ROOT_DIR}/${script}")" "uninstall_tcp_acceleration"
+    done
+)
+
+# 8.6 验证 ensure_swap 边界：fstab 无结尾换行时自动补换行
+TEST_FSTAB_NONL="${TMP_DIR}/fstab_nonl"
+printf 'UUID=123 / ext4 defaults 0 0' >"${TEST_FSTAB_NONL}"
+export EASY_ALL_FSTAB_FILE="${TEST_FSTAB_NONL}"
+export EASY_ALL_SWAP_FILE="${TMP_DIR}/test_swap_nonl"
+rm -f -- "${EASY_ALL_SWAP_FILE}"
+PATH="${MOCK_SWAP_BIN}:${PATH}" ensure_swap
+assert_contains "fstab appends newline properly" "$(<"${TEST_FSTAB_NONL}")" $'\n'"${EASY_ALL_SWAP_FILE} none swap sw 0 0"
+
+# 8.7 验证 ensure_swap 边界：swapon 失败时清理刚创建的 swapfile
+TEST_SWAP_FAIL="${TMP_DIR}/test_swap_fail"
+rm -f -- "${TEST_SWAP_FAIL}"
+export EASY_ALL_SWAP_FILE="${TEST_SWAP_FAIL}"
+MOCK_FAIL_BIN="${TMP_DIR}/mock_fail_bin"
+mkdir -p "${MOCK_FAIL_BIN}"
+cat >"${MOCK_FAIL_BIN}/fallocate" <<'EOF'
+#!/bin/sh
+touch "$3"
+exit 0
+EOF
+cat >"${MOCK_FAIL_BIN}/swapon" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "${MOCK_FAIL_BIN}/fallocate" "${MOCK_FAIL_BIN}/swapon"
+PATH="${MOCK_FAIL_BIN}:${PATH}" ensure_swap || true
+[[ ! -f "${TEST_SWAP_FAIL}" ]] || fail "swapon 失败时应清理刚创建的 swapfile"
+
+# 8.8 验证 FQ helper 独立目录与开机任务持久化（P1）
+TEST_TCP_DIR="${TMP_DIR}/test_tcp_dir"
+export EASY_ALL_TCP_DIR_OVERRIDE="${TEST_TCP_DIR}"
+export SYSTEMD_SYSTEM_DIR="${TMP_DIR}/systemd"
+mkdir -p "${SYSTEMD_SYSTEM_DIR}"
+systemctl() { return 0; }
+physical_fq_active() { return 0; }
+default_route_iface() { echo "eth0"; }
+configure_physical_fq() { return 0; }
+BACKUP_DIR="${TMP_DIR}/backups"
+mkdir -p "${BACKUP_DIR}"
+
+apply_physical_fq_qdisc
+[[ -f "${TEST_TCP_DIR}/apply-fq.sh" ]] || fail "apply-fq.sh 应写入 EASY_ALL_TCP_DIR"
+assert_contains "fq service references tcp dir helper" \
+    "$(<"${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service")" "${TEST_TCP_DIR}/apply-fq.sh"
+
+# 8.9 验证 IPv6 snapshot / configure / restore
+TEST_IPV6_CONF="${TMP_DIR}/99-enable-ipv6.conf"
+TEST_PROC_IPV6="${TMP_DIR}/proc_ipv6"
+mkdir -p "${TEST_PROC_IPV6}"
+export EASY_ALL_PROC_IPV6_DIR="${TEST_PROC_IPV6}"
+export IPV6_SYSCTL_CONF="${TEST_IPV6_CONF}"
+export BACKUP_DIR="${TMP_DIR}/ipv6_backups"
+rm -rf "${BACKUP_DIR}"
+mkdir -p "${BACKUP_DIR}"
+
+# 场景 A: 原系统无 IPv6 配置，安装后生成，卸载时恢复为删除
+sysctl() { return 0; }
+snapshot_ipv6_state
+[[ -f "${BACKUP_DIR}/pre-install-enable-ipv6.missing" ]] || fail "应生成 missing 标记"
+configure_ipv4_only
+[[ -f "${TEST_IPV6_CONF}" ]] || fail "configure_ipv4_only 应创建配置文件"
+assert_contains "disable_ipv6 set in conf" "$(<"${TEST_IPV6_CONF}")" "net.ipv6.conf.all.disable_ipv6 = 1"
+
+restore_preinstall_ipv6
+[[ ! -f "${TEST_IPV6_CONF}" ]] || fail "restore_preinstall_ipv6 应删除新创建的配置文件"
+
+# 场景 B: 原系统手动禁用 IPv6 (disable_ipv6=1)，snapshot 记录运行值，restore 回写原值而非设为 0
+rm -rf "${BACKUP_DIR}"
+mkdir -p "${BACKUP_DIR}"
+sysctl() {
+    if [[ "$1" == "-n" ]]; then
+        echo "1"
+        return 0
+    fi
+    return 0
+}
+snapshot_ipv6_state
+assert_contains "runtime ipv6 snapshot records 1" \
+    "$(<"${BACKUP_DIR}/pre-install-ipv6-runtime.conf")" "net.ipv6.conf.all.disable_ipv6 = 1"
+
+# 场景 C: 验证 restore_preinstall_ipv6 回写运行参数时剥离 key 与 value 空白
+RESTORE_SYSCTL_LOG="${TMP_DIR}/restore_sysctl.log"
+: >"${RESTORE_SYSCTL_LOG}"
+printf 'net.ipv6.conf.all.disable_ipv6 = 1 \r\n' >"${BACKUP_DIR}/pre-install-ipv6-runtime.conf"
+touch "${BACKUP_DIR}/pre-install-enable-ipv6.missing"
+sysctl() {
+    printf '%s\n' "$*" >>"${RESTORE_SYSCTL_LOG}"
+    return 0
+}
+restore_preinstall_ipv6
+assert_contains "sysctl called with stripped key and value" \
+    "$(<"${RESTORE_SYSCTL_LOG}")" "-w net.ipv6.conf.all.disable_ipv6=1"
+
+# 8.10 验证 Bunny 卸载恢复 IPv6，且不再拆除 TCP 前置初始化（P2/P3）
+assert_contains "bunny_remove_local calls restore_preinstall_ipv6" \
+    "$(<"${ROOT_DIR}/lib/bunny-runtime.sh")" "restore_preinstall_ipv6"
+assert_not_contains "bunny_remove_local keeps TCP acceleration" \
+    "$(<"${ROOT_DIR}/lib/bunny-runtime.sh")" "uninstall_tcp_acceleration"
+
+# 8.11 验证 arm64 Xray 架构适配与 Profile 写死常量清理（P1）
+assert_not_contains "reality has no hardcoded XRAY_ARCHIVE" \
+    "$(<"${ROOT_DIR}/profiles/reality.sh")" "readonly XRAY_ARCHIVE"
+assert_not_contains "xhttp has no hardcoded XRAY_ARCHIVE" \
+    "$(<"${ROOT_DIR}/lib/xhttp-runtime.sh")" "readonly XRAY_ARCHIVE"
+
+(
+    # 真实调用 download_xray：arm64 架构必须选到 arm64 asset 并通过 dgst 校验
+    MOCK_ARM64_DPKG="${TMP_DIR}/mock_arm64_dpkg"
+    mkdir -p "${MOCK_ARM64_DPKG}"
+    cat >"${MOCK_ARM64_DPKG}/dpkg" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--print-architecture" ]; then
+    echo "arm64"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "${MOCK_ARM64_DPKG}/dpkg"
+    XRAY_JSON="${TMP_DIR}/xray-release.json"
+    cat >"${XRAY_JSON}" <<'EOF_JSON'
+{
+  "tag_name": "v26.1.1",
+  "assets": [
+    {"name": "Xray-linux-64.zip", "browser_download_url": "https://github.com/XTLS/Xray-core/releases/download/v26.1.1/Xray-linux-64.zip"},
+    {"name": "Xray-linux-64.zip.dgst", "browser_download_url": "https://github.com/XTLS/Xray-core/releases/download/v26.1.1/Xray-linux-64.zip.dgst"},
+    {"name": "Xray-linux-arm64-v8a.zip", "browser_download_url": "https://github.com/XTLS/Xray-core/releases/download/v26.1.1/Xray-linux-arm64-v8a.zip"},
+    {"name": "Xray-linux-arm64-v8a.zip.dgst", "browser_download_url": "https://github.com/XTLS/Xray-core/releases/download/v26.1.1/Xray-linux-arm64-v8a.zip.dgst"}
+  ]
+}
+EOF_JSON
+    FAKE_SHA=$(printf 'fake-xray-zip' | openssl dgst -sha256 | awk '{print $NF}')
+    XRAY_ZIP="${TMP_DIR}/fake-xray.zip"
+    printf 'fake-xray-zip' >"${XRAY_ZIP}"
+    XRAY_DGST_FILE="${TMP_DIR}/fake-xray.zip.dgst"
+    printf 'SHA2-256: %s\n' "${FAKE_SHA}" >"${XRAY_DGST_FILE}"
+    XRAY_URLS="${TMP_DIR}/xray-urls"
+    : >"${XRAY_URLS}"
+    xray_run=$(PATH="${MOCK_ARM64_DPKG}:${PATH}" \
+        PROBE_ROOT="${ROOT_DIR}" XRAY_JSON="${XRAY_JSON}" XRAY_ZIP="${XRAY_ZIP}" \
+        XRAY_DGST_FILE="${XRAY_DGST_FILE}" XRAY_URLS="${XRAY_URLS}" FAKE_SHA="${FAKE_SHA}" \
+        XRAY_DIR="${TMP_DIR}/mock_xray" XRAY_BIN="${TMP_DIR}/mock_xray/xray" \
+        XRAY_CONFIG="${TMP_DIR}/mock_xray/config.json" RUNTIME_TMP="${TMP_DIR}/xray_runtime" \
+        bash -c '
+            source "${PROBE_ROOT}/lib/log.sh"
+            source "${PROBE_ROOT}/lib/xray-core.sh"
+            make_temp_dir() { mktemp -d "${RUNTIME_TMP}/part.XXXXXX"; }
+            download_https_file() {
+                case "$1" in
+                    */releases/latest) cp "${XRAY_JSON}" "$2" ;;
+                    *.zip.dgst) cp "${XRAY_DGST_FILE}" "$2" ;;
+                    *.zip) printf "%s\n" "$1" >>"${XRAY_URLS}"; cp "${XRAY_ZIP}" "$2" ;;
+                esac
+            }
+            sha256sum() { printf "%s  %s\n" "${FAKE_SHA}" "${2:-}"; }
+            unzip() { mkdir -p "$4" && printf "fake-xray-bin" >"$4/xray"; }
+            mkdir -p "${RUNTIME_TMP}" "${XRAY_DIR}"
+            download_xray
+        ' 2>&1) || fail "arm64 download_xray 失败：${xray_run}"
+    assert_equal "download_xray installs reported version" "v26.1.1" \
+        "$(<"${TMP_DIR}/mock_xray/version")"
+    assert_contains "arm64 requests arm64 asset" "$(<"${XRAY_URLS}")" "Xray-linux-arm64-v8a.zip"
+    [[ -x "${TMP_DIR}/mock_xray/xray" ]] || fail "download_xray 应安装 Xray 可执行文件"
+)
+
+# 8.12 验证 snapshot_ipv6_state 防重入保护（P3）
+(
+    TEST_REENTER_BACKUP="${TMP_DIR}/reenter_backup"
+    mkdir -p "${TEST_REENTER_BACKUP}"
+    TEST_REENTER_SYSCTL="${TMP_DIR}/reenter_ipv6.conf"
+    export IPV6_SYSCTL_CONF="${TEST_REENTER_SYSCTL}"
+    export BACKUP_DIR="${TEST_REENTER_BACKUP}"
+    # 首次快照：原系统无配置文件
+    rm -f -- "${TEST_REENTER_SYSCTL}"
+    snapshot_ipv6_state
+    [[ -f "${TEST_REENTER_BACKUP}/pre-install-enable-ipv6.missing" ]] || fail "首次快照应生成 missing 标记"
+    # 后续安装生成了新配置文件
+    echo "net.ipv6.conf.all.disable_ipv6 = 1" >"${TEST_REENTER_SYSCTL}"
+    # 模拟续装或重复拍快照：不应覆盖 missing 标记，也不应创建 pre-install-enable-ipv6.conf
+    snapshot_ipv6_state
+    [[ ! -f "${TEST_REENTER_BACKUP}/pre-install-enable-ipv6.conf" ]] || fail "重复快照不应覆盖已存在的安装前状态"
+    [[ -f "${TEST_REENTER_BACKUP}/pre-install-enable-ipv6.missing" ]] || fail "原始 missing 标记应保留"
+)
+
+# 8.13 验证各 Profile 的 apply 入口均包含 configure_ipv4_only（P2）
+combined_script=$(<"${ROOT_DIR}/profiles/combined.sh")
+assert_contains "combined apply_easy_all has configure_ipv4_only" \
+    "${combined_script}" $'configure_tcp_acceleration\n    configure_ipv4_only'
+
+xhttp_script=$(<"${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh")
+assert_contains "xhttp apply_easy_all has configure_ipv4_only" \
+    "${xhttp_script}" $'configure_tcp_acceleration\n    configure_ipv4_only'
+
+reality_script=$(<"${ROOT_DIR}/profiles/reality.sh")
+assert_contains "reality apply_easy_all has configure_ipv4_only" \
+    "${reality_script}" $'configure_tcp_acceleration\n    configure_ipv4_only'
+
+bunny_script=$(<"${ROOT_DIR}/profiles/ws-bunny.sh")
+assert_contains "bunny apply_easy_all has configure_ipv4_only" \
+    "${bunny_script}" $'apply_cloud_resources\n    configure_ipv4_only'
+
+# 8.14 验证 Xray 服务单元注入内存积极归还环境变量 (GOMEMLIMIT / madvdontneed)
+(
+    TEST_XRAY_SERVICE_FILE="${TMP_DIR}/test-xray.service"
+    export XRAY_SERVICE_FILE="${TEST_XRAY_SERVICE_FILE}"
+    export XRAY_SERVICE="easy_all-xray.service"
+    export RUNTIME_TMP="${TMP_DIR}"
+    export XRAY_DIR="${TMP_DIR}/xray"
+    export XRAY_BIN="${TMP_DIR}/xray/xray"
+    export XRAY_CONFIG="${TMP_DIR}/xray/config.json"
+    systemctl() { return 0; }
+    source "${ROOT_DIR}/lib/xray-core.sh"
+    install_xray_service
+    unit_content=$(<"${TEST_XRAY_SERVICE_FILE}")
+    assert_contains "xray service has GOMEMLIMIT" "${unit_content}" "Environment=GOMEMLIMIT=128MiB"
+    assert_contains "xray service has madvdontneed" "${unit_content}" "Environment=GODEBUG=madvdontneed=1"
+)
+
+# 8.15 验证 optimize_nginx_system_config 将 worker_processes auto 收敛为 1，且不改主配置权限
+(
+    TEST_NGINX_CONF="${TMP_DIR}/test_nginx.conf"
+    cat >"${TEST_NGINX_CONF}" <<'EOF'
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+EOF
+    chmod 0644 "${TEST_NGINX_CONF}"
+    export EASY_ALL_NGINX_MAIN_CONF="${TEST_NGINX_CONF}"
+    source "${ROOT_DIR}/lib/profile-common.sh"
+    umask 077
+    optimize_nginx_system_config
+    assert_contains "nginx worker_processes tuned to 1" "$(<"${TEST_NGINX_CONF}")" "worker_processes 1;"
+    assert_equal "nginx main conf keeps its mode" "-rw-r--r--" \
+        "$(ls -l "${TEST_NGINX_CONF}" | cut -c1-10)"
+)
+
+# 8.16 验证 skyline_build_jobs 限制 arm64 源码编译并发数
+(
+    # 模拟物理内存 1GB
+    TEST_MEM_1G="${TMP_DIR}/meminfo_1g"
+    cat >"${TEST_MEM_1G}" <<'EOF'
+MemTotal:        1048576 kB
+SwapTotal:       1048576 kB
+EOF
+    export EASY_ALL_MEMINFO_FILE="${TEST_MEM_1G}"
+    unset EASY_ALL_CARGO_BUILD_JOBS
+    assert_equal "1G RAM sets CARGO_BUILD_JOBS=1" "1" "$(skyline_build_jobs)"
+
+    # 模拟物理内存 4GB
+    TEST_MEM_4G="${TMP_DIR}/meminfo_4g"
+    cat >"${TEST_MEM_4G}" <<'EOF'
+MemTotal:        4194304 kB
+SwapTotal:       1048576 kB
+EOF
+    export EASY_ALL_MEMINFO_FILE="${TEST_MEM_4G}"
+    assert_equal "4G RAM sets CARGO_BUILD_JOBS=2" "2" "$(skyline_build_jobs)"
+
+    # 环境变量覆盖优先
+    export EASY_ALL_CARGO_BUILD_JOBS="4"
+    assert_equal "env override CARGO_BUILD_JOBS" "4" "$(skyline_build_jobs)"
+)
+
+# 8.17 验证内核版本选择：只取最高的 Zabbly 内核，残留的 XanMod 内核不得参与
+export KERNEL_BOOT_DIR_OVERRIDE="${TMP_DIR}/bootdir"
+mkdir -p "${KERNEL_BOOT_DIR_OVERRIDE}"
+for kernel in 6.12.9-zabbly+ 7.2.15-zabbly+ 9.9.9-xanmod1; do
+    printf x >"${KERNEL_BOOT_DIR_OVERRIDE}/vmlinuz-${kernel}"
+done
+printf x >"${KERNEL_BOOT_DIR_OVERRIDE}/initrd.img-7.2.15-zabbly+"
+printf x >"${KERNEL_BOOT_DIR_OVERRIDE}/initrd.img-6.12.9-zabbly+"
+assert_equal "kernel release picks highest Zabbly kernel" "7.2.15-zabbly+" \
+    "$(bash -c "source '${ROOT_DIR}/lib/log.sh'; source '${ROOT_DIR}/lib/tcp-tuning.sh'; zabbly_kernel_release_on_disk")"
+bash -c "source '${ROOT_DIR}/lib/log.sh'; source '${ROOT_DIR}/lib/tcp-tuning.sh'; zabbly_kernel_image_installed" \
+    || fail "存在 zabbly vmlinuz + initrd 时应判定内核已安装"
+rm -f -- "${KERNEL_BOOT_DIR_OVERRIDE}/initrd.img-7.2.15-zabbly+"
+assert_equal "kernel release falls back to newest complete kernel" "6.12.9-zabbly+" \
+    "$(bash -c "source '${ROOT_DIR}/lib/log.sh'; source '${ROOT_DIR}/lib/tcp-tuning.sh'; zabbly_kernel_release_on_disk")"
+rm -f -- "${KERNEL_BOOT_DIR_OVERRIDE}/initrd.img-6.12.9-zabbly+"
+if bash -c "source '${ROOT_DIR}/lib/log.sh'; source '${ROOT_DIR}/lib/tcp-tuning.sh'; zabbly_kernel_image_installed"; then
+    fail "缺少 initrd 时不应判定内核已安装"
+fi
+
+# 8.18 验证 TCP 调优配置不再写入拥塞控制算法与 modules-load 文件
+TUNING_CONF="${TMP_DIR}/99-easy_all-tcp.conf"
+TUNING_BIN="${TMP_DIR}/tuning_bin"
+mkdir -p "${TUNING_BIN}"
+printf '#!/bin/sh\nexit 0\n' >"${TUNING_BIN}/sysctl"
+chmod +x "${TUNING_BIN}/sysctl"
+tuning_conf_text=$(TCP_SYSCTL_CONF_OVERRIDE="${TUNING_CONF}" RUNTIME_TMP="${TMP_DIR}" \
+    PATH="${TUNING_BIN}:${PATH}" bash -c "
+        source '${ROOT_DIR}/lib/log.sh'
+        source '${ROOT_DIR}/lib/tcp-tuning.sh'
+        ensure_vps_ip_family() { :; }
+        apply_physical_fq_qdisc() { :; }
+        PROTOCOL=reality
+        CDN_PROVIDER=
+        configure_tcp_parameters
+        cat '${TUNING_CONF}'
+    ")
+assert_contains "TCP tuning keeps fq qdisc" "${tuning_conf_text}" "net.core.default_qdisc = fq"
+assert_not_contains "TCP tuning no longer sets a congestion control" "${tuning_conf_text}" \
+    "tcp_congestion_control"
+[[ ! -e "${TMP_DIR}/easy_all-bbr.conf" ]] || fail "不应再生成 modules-load 文件"
+
+# 8.19 验证 Skyline 重新挂载失败时 apply 不得报成功
+(
+    apply_physical_fq_qdisc() { :; }
+    configure_tcp_parameters() { :; }
+    SKYLINE_PROBE=0
+    skyline_speeder_active() {
+        SKYLINE_PROBE=$((SKYLINE_PROBE + 1))
+        ((SKYLINE_PROBE == 1))
+    }
+    systemctl() { return 1; }
+    SYSTEMD_SYSTEM_DIR="${TMP_DIR}/mock_systemd"
+    EASY_ALL_TCP_DIR_OVERRIDE="${TMP_DIR}/mock_tcp_dir"
+    mkdir -p "${SYSTEMD_SYSTEM_DIR}" "${EASY_ALL_TCP_DIR_OVERRIDE}"
+    touch "${SYSTEMD_SYSTEM_DIR}/easy_all-fq.service" "${EASY_ALL_TCP_DIR_OVERRIDE}/apply-fq.sh"
+    set +e
+    reattach_out=$(configure_tcp_acceleration 2>&1)
+    reattach_rc=$?
+    set -e
+    ((reattach_rc != 0)) || fail "Skyline 重新启用失败时 configure_tcp_acceleration 必须返回非零"
+    assert_contains "reattach failure is reported" "${reattach_out}" "重新启用失败"
+)
+
+
+echo "ok - all audit fixes verified successfully"

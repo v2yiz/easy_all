@@ -26,8 +26,6 @@ readonly XRAY_SERVICE_DESCRIPTION="${XHTTP_SERVICE_DESCRIPTION_OVERRIDE:-Xray VL
 readonly NGINX_CONFIG="/etc/nginx/conf.d/easy_all.conf"
 readonly UFW_RULE_COMMENT="easy_all-managed"
 readonly UFW_DEFAULT_CONFIG="/etc/default/ufw"
-readonly SYSCTL_CONFIG="/etc/sysctl.d/99-easy_all-bbr.conf"
-readonly BBR_MODULES_CONFIG="/etc/modules-load.d/easy_all-bbr.conf"
 readonly DEFAULT_XRAY_XHTTP_LOOPBACK_PORT="10086"
 readonly SERVICE_PORT="443"
 readonly DEFAULT_XHTTP_NODE_NAME="VLESS_XHTTP_H2"
@@ -36,8 +34,6 @@ readonly DEFAULT_MIHOMO_TEMPLATE_URL="https://raw.githubusercontent.com/v2yiz/ea
 readonly DEFAULT_REBOOT_HOUR="4"
 readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-readonly XRAY_ARCHIVE="Xray-linux-64.zip"
-readonly XRAY_DGST="Xray-linux-64.zip.dgst"
 readonly STATE_SCHEMA_VERSION="0"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
 readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
@@ -105,27 +101,42 @@ check_install_conflicts() {
 }
 
 install_packages() {
+    local pkgs=(
+        ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw
+        fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata
+        systemd-timesyncd tar util-linux sudo vim
+    )
     local nginx_active_before=unknown
     command -v systemctl >/dev/null 2>&1 \
         && nginx_active_before=$(systemctl is-active nginx 2>/dev/null || true)
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get -o DPkg::Lock::Timeout=300 update
-    apt-get -o DPkg::Lock::Timeout=300 upgrade -y
-    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
-        ca-certificates curl wget gnupg jq unzip openssl dnsutils ufw \
-        fail2ban python3-systemd socat cron iproute2 iputils-ping tzdata \
-        systemd-timesyncd tar util-linux
-    # nginx 单独安装：包脚本会立即启动默认站点，必须在这一个 apt 调用内抑制自启，
-    # 否则 apt 期间的 SSH 断线就会把 80 端口留给下一次安装。
-    if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
-        # 已安装且未运行：apt 不会再触发 postinst 启动，直接安装即可。
-        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx
+
+    if packages_already_installed "${pkgs[@]}" && nginx_package_installed; then
+        info "系统基础依赖包与 Nginx 已全部安装，跳过 APT 索引更新与包安装"
     else
-        install_nginx_without_start nginx || die "安装 nginx 失败"
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 upgrade -y
+        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${pkgs[@]}"
+        # nginx 单独安装：包脚本会立即启动默认站点，必须在这一个 apt 调用内抑制自启，
+        # 否则 apt 期间的 SSH 断线就会把 80 端口留给下一次安装。
+        if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
+            # 已安装且未运行：apt 不会再触发 postinst 启动，直接安装即可。
+            apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nginx
+        else
+            install_nginx_without_start nginx || die "安装 nginx 失败"
+        fi
+        quiet_freshly_installed_nginx "${nginx_active_before}"
     fi
-    quiet_freshly_installed_nginx "${nginx_active_before}"
-    timedatectl set-timezone Asia/Shanghai
-    timedatectl set-ntp true || die "无法启用网络时间同步"
+
+    local current_tz current_ntp
+    current_tz=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)
+    if [[ "${current_tz}" != "Asia/Shanghai" ]]; then
+        timedatectl set-timezone Asia/Shanghai || warn "设置时区为 Asia/Shanghai 失败"
+    fi
+    current_ntp=$(timedatectl show --property=NTP --value 2>/dev/null || true)
+    if [[ "${current_ntp}" != "yes" ]]; then
+        timedatectl set-ntp true || warn "无法启用网络时间同步"
+    fi
 }
 
 snapshot_fresh_install() {
@@ -139,22 +150,12 @@ snapshot_fresh_install() {
     install -d -m 0700 "${BACKUP_DIR}"
     snapshot_ufw_state
     snapshot_platform_security_state
-    if [[ -f "${SYSCTL_CONFIG}" ]]; then
-        install -m 0644 "${SYSCTL_CONFIG}" "${BACKUP_DIR}/pre-install-bbr.conf"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-bbr.missing"
-    fi
-    if [[ -f "${BBR_MODULES_CONFIG}" ]]; then
-        install -m 0644 "${BBR_MODULES_CONFIG}" "${BACKUP_DIR}/pre-install-bbr-module.conf"
-    else
-        install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-bbr-module.missing"
-    fi
+    snapshot_ipv6_state
     if crontab -l >"${BACKUP_DIR}/pre-install-crontab" 2>/dev/null; then
         chmod 0600 "${BACKUP_DIR}/pre-install-crontab"
     else
         install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-crontab.missing"
     fi
-    snapshot_tcp_runtime
     # 完整性标记：清理只在快照全部拍完后才允许逐项恢复，否则「还没拍到」会被误当成
     # 「安装前不存在」，把原有 fail2ban/SSH 配置删掉。
     install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-complete"
@@ -231,6 +232,7 @@ xhttp_client_path() {
 }
 
 write_nginx_config() {
+    optimize_nginx_system_config
     local keepalive_referer http2_directive="" listen_h2="http2 "
     if nginx_supports_http2_directive; then
         http2_directive=$'\n    http2 on;'

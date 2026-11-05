@@ -91,6 +91,8 @@ Wants=network-online.target
 Type=simple
 User=root
 Environment=XRAY_LOCATION_ASSET=${XRAY_DIR}
+Environment=GOMEMLIMIT=128MiB
+Environment=GODEBUG=madvdontneed=1
 ExecStart=${XRAY_BIN} run -config ${XRAY_CONFIG}
 Restart=on-failure
 RestartSec=5s

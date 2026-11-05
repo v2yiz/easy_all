@@ -50,19 +50,27 @@ PROTOCOL=bunny-ws
 CDN_PROVIDER=bunny
 
 install_packages() {
+    local pkgs=(
+        curl wget coreutils tar jq openssl ca-certificates ufw python3
+        python3-jsonschema fail2ban iptables iproute2 unzip sudo vim
+    )
     local nginx_active_before=unknown
     command -v systemctl >/dev/null 2>&1 \
         && nginx_active_before=$(systemctl is-active nginx 2>/dev/null || true)
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y && apt-get install -y --no-install-recommends \
-        curl wget coreutils tar jq openssl ca-certificates ufw python3 \
-        python3-jsonschema fail2ban iptables iproute2 unzip || die "安装系统依赖失败"
-    if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
-        apt-get install -y --no-install-recommends nginx || die "安装 nginx 失败"
+
+    if packages_already_installed "${pkgs[@]}" && nginx_package_installed; then
+        info "系统基础依赖包与 Nginx 已全部安装，跳过 APT 索引更新与包安装"
     else
-        install_nginx_without_start nginx || die "安装 nginx 失败"
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y && apt-get install -y --no-install-recommends "${pkgs[@]}" \
+            || die "安装系统依赖失败"
+        if [[ "${nginx_active_before}" == "active" ]] || nginx_package_installed; then
+            apt-get install -y --no-install-recommends nginx || die "安装 nginx 失败"
+        else
+            install_nginx_without_start nginx || die "安装 nginx 失败"
+        fi
+        quiet_freshly_installed_nginx "${nginx_active_before}"
     fi
-    quiet_freshly_installed_nginx "${nginx_active_before}"
 }
 
 bunny_ensure_python_jsonschema() {
@@ -227,6 +235,7 @@ EOF
 }
 
 write_nginx_config() {
+    optimize_nginx_system_config
     {
         write_subscription_nginx_maps
         cat <<EOF
@@ -291,6 +300,7 @@ apply_easy_all() {
     load_state
     bunny_prepare_credentials
     apply_cloud_resources
+    configure_ipv4_only
     write_xray_config
     write_subscriptions
     write_nginx_config
@@ -337,8 +347,9 @@ install_all() {
     require_root
     acquire_runtime_write_lock
     require_systemd
-    check_platform arm64
+    check_platform
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"
+    ensure_swap
     install_failure_begin bunny-ws
     # bunny 的源站 nginx 固定监听 80（default_server）与 443，端口占用必须提前拦住。
     prepare_fresh_install 80 443
@@ -347,10 +358,10 @@ install_all() {
     install_packages
     bunny_reject_ssh_443
     install_progress_stage tcp
-    if [[ "$(dpkg --print-architecture)" == amd64 ]]; then
-        choose_tcp_acceleration
-        configure_tcp_acceleration
-    fi
+    snapshot_ipv6_state
+    choose_tcp_acceleration
+    configure_tcp_acceleration
+    configure_ipv4_only
     install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
     [[ -e "${BACKUP_DIR}/pre-install-ufw-default" ]] \
         || install -m 0600 "${UFW_DEFAULT_CONFIG}" "${BACKUP_DIR}/pre-install-ufw-default"
@@ -387,9 +398,7 @@ install_all() {
     INSTALL_FAILURE_ARMED=0
     show_status
     show_subscription
-    if [[ "$(dpkg --print-architecture)" == amd64 ]]; then
-        prompt_bbrv3_reboot
-    fi
+    prompt_kernel_reboot
 }
 
 uninstall_all() {

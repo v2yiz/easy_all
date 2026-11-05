@@ -1,3 +1,16 @@
+## 2.5.2 更新说明（2026-11-05）
+
+- **TCP 加速只保留 Skyline Speeder 并原生支持 arm64**：删除 BBR/BBRv3/XanMod 路径与状态迁移逻辑，全模式只由 Skyline Speeder（fq + skyline_cc）提供拥塞控制；TCP 调优只写入缓冲区/队列等参数，不再写入 `tcp_congestion_control`，也不再生成 `/etc/modules-load.d` 配置（调优文件改为 `/etc/sysctl.d/99-easy_all-tcp.conf`）；全模式 Xray 安装依据系统架构自适应选择 amd64 与 arm64 官方二进制包，清理 Profile 写死的 amd64 常量。
+- **Bunny 模式卸载与 IPv4/IPv6 行为对齐**：补齐 Bunny 安装时的 `snapshot_ipv6_state` 与 `configure_ipv4_only`，并在卸载时执行 `restore_preinstall_ipv6`；Cloudflare Stream-up 首次安装失败回滚同样补上 `restore_preinstall_ipv6`，不再在删除状态目录前漏掉 IPv6 还原。
+- **卸载与回滚不再回收前置初始化**：内核、Swap、系统依赖、时区/NTP、SSH 开机与 TCP/Skyline 调优属于前置初始化，`uninstall` 与 `cleanup-partial` 一律不拆卸（`uninstall_tcp_acceleration`、`restore_tcp_runtime` 等回退代码已删除），避免卸载时把仍在使用的内核与加速配置一并拆掉。
+- **增强 `easy_all apply` TCP 参数刷新与开机产物自愈能力**：当 Skyline Speeder 运行时，`apply` 持续刷新 TCP 调优参数，并在重启启用单元后校验 `skyline_cc` 是否真的生效（失效则报错而非静默降级）；若 `easy_all-fq.service` 或 helper 脚本被误删，`apply` 自动检测并自愈重建；在所有 Profile 的 `apply` 流程中统一保证全局 IPv4-only 策略生效。
+- **防止卸载时误开启原本已禁用的 IPv6 与快照防覆盖保护**：`snapshot_ipv6_state` 增加重入保护，避免续装或重复初始化时将已生成的 IPv4-only 配置误当作初始快照；记录运行态 `net.ipv6.conf.*.disable_ipv6` 键值，`restore_preinstall_ipv6` 在原系统无特定配置文件时优先回写原始运行值，避免将管理员原本通过系统配置禁用的 IPv6 强制置为 0。
+- **常驻与安装内存优化**：全模式 Xray 服务单元注入 `GOMEMLIMIT=128MiB` 与 `GODEBUG=madvdontneed=1`，促使 Go 运行时更平滑 GC 并尽快向操作系统归还物理内存页（实际降幅随负载变化，未做基准测试）；Nginx 主配置自动收敛为单 Worker (`worker_processes 1;`)，消除多核 VPS 进程内存冗余；针对 arm64 架构 Skyline 源码编译，依据物理内存自动限制 `CARGO_BUILD_JOBS` 并发度（物理内存 < 2GB 时限制单线程），降低安装期峰值内存与小内存机器的 OOM 风险。
+- **配置与安装容错增强**：`timedatectl` 设置时区与网络时间同步失败由中断降为告警，防止受限 VPS 环境因 timesyncd 瞬态状态中断安装；清理开机 helper 脚本的迁移残留路径与重复定义；上游 Skyline 卸载脚本异常时输出友好警告。
+- **文档与平台说明精确化**：精确规范支持的发行版代号（Debian 12/13 [bookworm / trixie]、Ubuntu 22.04/24.04 LTS [jammy / noble]）；`scripts/debian-init.sh` 改为复用 `check_platform`，支持范围与 easy_all 一致（Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64），平台校验提前到任何系统改动之前，不再在 TCP 调优步骤才以 amd64 限制退出；补充未配置 Swap 时自动创建 1GB 交换文件（`/swapfile`）的说明；修复 Bunny 准备指南中对 BBR 的过时描述。
+
+源码版本标识为 `2.5.2`。
+
 ## 2.5.1 更新说明（2026-11-04）
 
 - **清理 65533 收敛后遗留的死代码**：删除 `ensure_additional_ssh_port` 及其独占的 `ssh_effective_listeners_are_exclusive`、`ssh_only_managed_port_is_listening`、`ssh_port_is_listening` 与 `EASY_ALL_ADDITIONAL_SSH_PORT`；同步移除从未被调用的 `cloudflare_uint32_to_ipv4`、`ufw_ssh22_deny_is_first`、`remove_certificate_renewal_timer`、`generate_xhttp_path`、`normalize_websocket_path`、`collect_subscription_link_domain`，以及模式 2 私有的 `read_state_field`，共约 180 行；行为不变——历史 deny22 规则仍由 `remove_managed_ssh22_ufw_deny` 清理，证书定时器仍由 Bunny 卸载流程 disable/stop 并删除。

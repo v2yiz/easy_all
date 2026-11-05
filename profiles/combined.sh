@@ -416,6 +416,7 @@ combined_require_valid_owner_token() {
 }
 
 write_nginx_config() {
+    optimize_nginx_system_config
     local http2_directive="" listen_h2="http2 "
     combined_require_valid_owner_token
     if nginx_supports_http2_directive; then
@@ -684,6 +685,7 @@ apply_easy_all() {
     acquire_runtime_write_lock
     collect_installed_state
     configure_tcp_acceleration
+    configure_ipv4_only
     xhttp_configure_ufw
     write_xray_config
     install_xray_service
@@ -705,6 +707,7 @@ apply_cloud_resources() {
     collect_installed_state
     snapshot_subscription_update
     configure_tcp_acceleration
+    configure_ipv4_only
     xhttp_configure_ufw
     combined_ensure_dns
     combined_issue_certificates
@@ -735,7 +738,7 @@ cleanup_partial_install() {
 }
 
 rollback_fresh_install() {
-    warn "组合模式首次安装未完成，正在回滚本机服务、UFW、crontab 与 TCP 配置"
+    warn "组合模式首次安装未完成，正在回滚本机服务、UFW 与 crontab 配置（保留前置初始化：SWAP、系统依赖与 TCP/Skyline 加速）"
     cleanup_partial_install || true
     warn "本次已创建的 Cloudflare 记录/Origin CA 按设计保留；如不再使用请清理："
     warn "  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --all"
@@ -748,6 +751,7 @@ install_all() {
     require_systemd
     check_platform
     [[ ! -f "${STATE_FILE}" ]] || die "检测到已有 easy_all 安装；一台 VPS 只允许一种模式"
+    ensure_swap
     install_failure_begin combined
     prepare_fresh_install 80 443 "${REALITY_PORT}"
     install_progress_begin combined
@@ -760,6 +764,7 @@ install_all() {
     choose_tcp_acceleration
     configure_tcp_acceleration
     configure_daily_reboot
+    configure_ipv4_only
     install_progress_stage inputs
     collect_install_inputs
     # 身份落盘：中断续装时要用它覆盖新生成的值，保证已写出的节点/订阅不失效。
@@ -803,7 +808,7 @@ install_all() {
     show_subscription
     success "easy_all 组合模式安装完成（直连 + Cloudflare）"
     show_tcp_acceleration_status
-    prompt_bbrv3_reboot
+    prompt_kernel_reboot
 }
 
 # 当前 Cloudflare 环境变量 Token 与 ALLOWED_TOKENS 的格式约束（与 normalize_allowed_tokens 一致）。
@@ -999,7 +1004,7 @@ uninstall_all() {
     remove_globalping_refresh_timer
     cloudflare_remove_origin_firewall_rules
     restore_preinstall_firewall
-    restore_bbr_tcp_install_state
+    restore_preinstall_ipv6
     remove_daily_reboot_schedule
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true

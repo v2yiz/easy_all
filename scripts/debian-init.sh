@@ -456,8 +456,7 @@ firewall_module="$8"
 
 config_dir="/etc/ssh/sshd_config.d"
 config_file="${config_dir}/00-debian-init-hardening.conf"
-sysctl_config="/etc/sysctl.d/99-debian-init-bbr.conf"
-bbr_modules_config="/etc/modules-load.d/debian-init-bbr.conf"
+sysctl_config="/etc/sysctl.d/99-debian-init-tcp.conf"
 
 cleanup_sensitive_files() {
   rm -f "$normal_user_password_file" "$normal_user_public_key_file" \
@@ -484,6 +483,8 @@ UFW_RULE_COMMENT="debian-init-managed"
 UFW_DEFAULT_CONFIG="/etc/default/ufw"
 # shellcheck source=lib/firewall.sh
 source "$firewall_module"
+# 与 easy_all 共用同一份平台校验：发行版/代号/架构/容器限制只在这里定义。
+check_platform
 [[ "$final_port" =~ ^[0-9]+$ ]] && ((10#$final_port >= 1 && 10#$final_port <= 65535)) \
   || die "远端最终 SSH 端口无效: $final_port"
 
@@ -516,47 +517,15 @@ install_base_packages() {
     openssh-server ufw fail2ban python3-systemd systemd-timesyncd kmod procps
 }
 
-configure_google_bbr_and_tcp() {
-  if [ ! -r /etc/os-release ]; then
-    printf '%s\n' "错误: 无法识别操作系统" >&2
-    exit 1
-  fi
-  . /etc/os-release
-  if [ "${ID:-}" != "debian" ]; then
-    printf '%s\n' "错误: Google BBR 初始化仅支持 Debian" >&2
-    exit 1
-  fi
-  case "${VERSION_ID:-}" in
-    12|13) ;;
-    *)
-      printf '%s\n' "错误: Google BBR 初始化仅支持 Debian 12/13" >&2
-      exit 1
-      ;;
-  esac
-  case "$(uname -r)" in
-  *xanmod*)
-    printf '%s\n' "错误: 当前运行 XanMod 内核；请先切换到 Debian 官方内核并重启" >&2
-    exit 1
-    ;;
-  esac
-  if [ "$(dpkg --print-architecture)" != "amd64" ]; then
-    printf '%s\n' "错误: Google BBR 初始化仅支持 amd64" >&2
-    exit 1
-  fi
-  if command -v systemd-detect-virt >/dev/null 2>&1 \
-    && systemd-detect-virt --container >/dev/null 2>&1; then
-    printf '%s\n' "错误: 容器不能执行内核与网络初始化" >&2
-    exit 1
-  fi
-  log "[remote 3/7] 配置 Debian 官方内核 Google BBR / TCP 参数"
+configure_tcp_tuning() {
+  log "[remote 3/7] 配置 TCP 调优参数"
   if [ -f "$sysctl_config" ] && [ ! -f "${sysctl_config}.debian_init.bak" ]; then
     cp -a "$sysctl_config" "${sysctl_config}.debian_init.bak"
   fi
 
   cat >"$sysctl_config" <<'SYSCTL'
-# BBR
+# TCP tuning only; easy_all attaches skyline_cc when it is installed.
 net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
 
 # TCP buffer
 net.core.rmem_max = 33554432
@@ -594,23 +563,9 @@ net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
 SYSCTL
 
-  modprobe tcp_bbr 2>/dev/null || {
-    printf '%s\n' "错误: 当前 Debian 内核不支持 Google BBR (tcp_bbr)" >&2
-    exit 1
-  }
-  grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control || {
-    printf '%s\n' "错误: Google BBR 模块未注册为可用拥塞控制算法" >&2
-    exit 1
-  }
-  printf '%s\n' tcp_bbr >"$bbr_modules_config"
-  chmod 0644 "$bbr_modules_config"
   sysctl -p "$sysctl_config" >/dev/null
-  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf unknown)" != "bbr" ]; then
-    printf '%s\n' "错误: 拥塞控制算法未成功设置为 bbr" >&2
-    exit 1
-  fi
 
-  log "[remote 3/7] Google BBR / TCP 参数配置完成"
+  log "[remote 3/7] TCP 调优参数配置完成"
 }
 
 configure_timezone_and_time_sync() {
@@ -727,7 +682,7 @@ if [ -x /usr/sbin/sshd ]; then
 else
   sshd_bin="$(command -v sshd)"
 fi
-configure_google_bbr_and_tcp
+configure_tcp_tuning
 configure_timezone_and_time_sync
 configure_sudo_user
 install_uv_for_normal_user
@@ -837,11 +792,12 @@ verify_final_host_login() {
 }
 
 print_intro() {
-  echo "Debian 服务器初始化与 SSH 密钥登录配置脚本"
+  echo "服务器初始化与 SSH 密钥登录配置脚本"
+  echo "适用：Debian 12/13、Ubuntu 22.04/24.04 LTS（amd64/arm64，systemd，非容器）"
   echo
   echo "将执行以下操作："
   echo "  1. 使用初始 SSH 用户连接服务器，默认 root。"
-  echo "  2. 安装基础包、配置 Debian 官方内核 Google BBR/TCP、UFW、uv 和 Python 3.12。"
+  echo "  2. 安装基础包、配置 TCP 调优参数、UFW、uv 和 Python 3.12。"
   echo "  3. 创建或更新普通用户，并把同一把 SSH 公钥写入该用户。"
   echo "  4. 验证密钥后关闭 SSH 密码登录，仅允许密钥认证，UFW 放行 SSH 端口。"
   echo
