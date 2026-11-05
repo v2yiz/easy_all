@@ -2,6 +2,15 @@
 
 当前源码版本：[2.5.1](CHANGELOG.md#251-更新说明2026-11-04)。
 
+## 文档索引
+
+- [前置准备手册](docs/preparation-guide.md)：域名购买、Cloudflare Zone 解析、API Token 与 Globalping 获取教程
+- [客户端使用指南](docs/client-guide.md)：主流 Mihomo 客户端导入、配置与分流排障
+- [运维与排障指南](docs/operations-guide.md)：节点管理、用户管理、证书轮换及疑难解答
+- [系统技术参考](docs/technical-reference.md)：架构设计、流控机制与网络实现原理
+
+---
+
 `easy_all` 是专为全新 Debian 12/13 VPS 设计的单节点代理一键安装工具。通过控制台交互菜单直观配置，统一打通 Xray、Nginx、订阅分发、UFW 防火墙、Fail2ban 以及 TCP 加速（默认自动启用 Skyline Speeder / BBR）。
 
 仅支持 IPv4。一台 VPS 只能选择安装一种模式，建议在无其他业务占用的纯净 VPS 上部署。
@@ -109,11 +118,4 @@ sudo easy_all subscription
 3. **恶意流量阻断**：
    - Xray 内部路由自动丢弃局域网私有地址、云厂商元数据网段（如 169.254.169.254）以及异常回环访问。
 
----
 
-## 文档索引
-
-- [前置准备手册](docs/preparation-guide.md)：域名购买、Cloudflare Zone 解析、API Token 与 Globalping 获取教程
-- [客户端使用指南](docs/client-guide.md)：主流 Mihomo 客户端导入、配置与分流排障
-- [运维与排障指南](docs/operations-guide.md)：节点管理、用户管理、证书轮换及疑难解答
-- [系统技术参考](docs/technical-reference.md)：架构设计、流控机制与网络实现原理
