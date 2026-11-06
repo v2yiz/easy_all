@@ -26,8 +26,8 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。
 
 自托管订阅在服务端核心为 Xray 26.9.8 及以上时，Reality 节点会带 `support-x25519mlkem768: true`，
-用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；Cloudflare 聚合订阅
-（YAML 订阅）默认就带该字段。该字段需 mihomo 1.19.9 及以上内核才生效，更旧的 mihomo 内核会
+用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；直连+CDN兜底订阅
+（YAML 订阅）同样在满足该版本要求时带该字段。该字段需 mihomo 1.19.9 及以上内核才生效，更旧的 mihomo 内核会
 忽略它（不会报错）；若内核过旧且节点握手正常但无流量，请升级客户端，或改用 v2rayNG 等 Xray 系
 客户端（它们会自行发送该密钥交换）。聚合配置里指向 Xray 低于 26.9.8 的 Reality 节点需设置
 `supportX25519Mlkem768: false`。
@@ -43,11 +43,10 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 `stream-up` 修复，但未逐项确认上述字段的完整兼容性，因此目前不把 Shadowrocket 列为
 本项目的已验证客户端。
 
-## Clash Mi 模式
+## 客户端分流与节点分组
 
-日常使用“规则”模式即可。订阅会让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
-在 `PROXY` 中直接选择 US_VMISS、白天首选、晚上首选、🇭🇰CF 或其他已配置的节点。
-白天首选和 🇭🇰CF 是隐藏的自动测速组，仍可作为 PROXY 选项；内部节点不平铺。
+日常使用“规则”模式即可。订阅会自动让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
+- **直连+CDN兜底**：`PROXY` 分组按固定顺序包含「本机直连节点（如 `🇺🇸直连`）→ 聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-AUTO` 测速选优组」。`CDN-AUTO` 是内置的 `url-test` 测速组，只放 6 个 Cloudflare 优选 IP 节点（内部优选节点不平铺进 `PROXY`）；日常可直接选择直连节点、聚合节点，或选择 `CDN-AUTO` 交由客户端自动测速优选。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
@@ -219,5 +218,5 @@ https://1.1.1.1/dns-query
 | FlClash | 设置 → 网络 / DNS → 覆写 DNS |
 | Clash Meta for Android | 设置 → 覆写 → DNS 覆写 |
 
-Cloudflare 模式固定提供 6 个 IPv4 节点且没有域名兜底。订阅能够更新但节点无法连接时，先确认
+直连+CDN兜底固定提供 6 个 Cloudflare 优选 IPv4 节点且没有域名兜底。订阅能够更新但节点无法连接时，先确认
 客户端确实支持 Mihomo XHTTP，再检查 Cloudflare Zone 的 gRPC 开关。

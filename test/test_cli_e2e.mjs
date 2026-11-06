@@ -32,7 +32,7 @@ for (const arg of ['help', '--help', '-h']) {
     assert.equal(res.status, 0, `easy_all ${arg} should exit with 0`);
     assert.ok(res.stdout.includes('用法: easy_all [命令]'), 'Help should show usage');
     assert.ok(res.stdout.includes('Reality'), 'Help should list Reality mode');
-    assert.ok(res.stdout.includes('组合'), 'Help should list combined mode');
+    assert.ok(res.stdout.includes('直连+CDN兜底'), 'Help should list combined mode');
     assert.ok(res.stdout.includes('cleanup-partial'), 'Help should list cleanup-partial');
 }
 
@@ -117,9 +117,9 @@ try {
     writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="reality"\n');
     const cfRes = run(easyAll, ['refresh-cdn-ips'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
     assert.equal(cfRes.status, 1);
-    assert.ok(cfRes.stderr.includes('仅适用于 CDN 精选 IP 模式'));
+    assert.ok(cfRes.stderr.includes('仅适用于直连+CDN兜底模式'), cfRes.stderr);
 
-    // 组合模式：只提供三入口与订阅，不提供 Reality 专属命令
+    // 直连+CDN兜底：只提供三入口与订阅，不提供 Reality 专属命令
     writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="combined"\n');
     for (const [command, message] of [
         ['rotate-dynamic-ports', '仅适用于 Reality 模式'],

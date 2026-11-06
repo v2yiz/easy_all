@@ -633,7 +633,6 @@ assert_install_ports_free() {
 profile_script_for() {
     case "${1:-}" in
     reality) printf 'reality.sh' ;;
-    cloudflare-streamup) printf 'xhttp-cloudflare-streamup.sh' ;;
     combined) printf 'combined.sh' ;;
     *) return 1 ;;
     esac
@@ -783,7 +782,7 @@ prepare_fresh_install() {
                 || die "按 ${recorded} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial"
             success "残留已清理，继续安装"
         elif [[ "${current}" == "combined" ]]; then
-            # 组合模式的所有步骤幂等（DNS 按注释复用、证书缓存复用），
+            # 直连+CDN兜底的所有步骤幂等（DNS 按注释复用、证书缓存复用），
             # 可以保留上次已完成的本地配置/证书与云端资源，只停服务后从 packages 阶段重跑。
             if [[ -t 0 ]]; then
                 read_confirmation '继续上次安装（保留已完成的配置、证书与云端资源）？[Y/n]:' answer

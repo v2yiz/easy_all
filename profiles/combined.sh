@@ -141,7 +141,12 @@ collect_install_inputs() {
 
     DIRECT_NODE_NAME=$(prompt_value '直连节点名' "${DIRECT_NODE_NAME:-🇺🇸直连}")
     CF_NODE_PREFIX=$(prompt_value 'Cloudflare 节点名前缀（自动追加 1~6）' "${CF_NODE_PREFIX:-🇺🇸CF}")
-    validate_node_name "${DIRECT_NODE_NAME}" || die "直连节点名无效（1-64 字符，不能含换行）"
+    validate_node_name "${DIRECT_NODE_NAME}" \
+        || die "直连节点名无效（1-64 字符，不能含换行）"
+    # 订阅里本机节点与分组同名会让整个 Mihomo 配置解析失败。
+    case "${DIRECT_NODE_NAME}" in
+    AUTO | PROXY | GLOBAL | CDN-AUTO | DIRECT | REJECT | PASS) die "直连节点名不能使用保留组名：${DIRECT_NODE_NAME}" ;;
+    esac
     validate_node_name "${CF_NODE_PREFIX}" || die "Cloudflare 节点名前缀无效"
     for index in 1 2 3 4 5 6; do
         [[ "${CF_NODE_PREFIX}${index}" != "${DIRECT_NODE_NAME}" ]] \
@@ -571,26 +576,31 @@ build_mihomo_nodes() {
     [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
 }
 
-collect_node_names() {
-    local ip label names extra
-    names=$(jq -cn --arg d "${DIRECT_NODE_NAME}" '[$d]')
+collect_cf_node_names() {
+    local ip label names
+    names='[]'
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
         names=$(jq -cn --argjson names "${names}" --arg value "${CF_NODE_PREFIX}${label}" \
             '$names + [$value]')
     done < <(combined_cf_candidates)
-    extra=$(aggregation_node_names)
-    jq -cn --argjson names "${names}" --argjson extra "${extra}" '$names + $extra'
+    printf '%s\n' "${names}"
 }
 
 build_mihomo_proxy_names() {
-    printf '        - "AUTO"\n'
-    collect_node_names | jq -r '.[] | "        - \(.|@json)"'
+    local extra
+    extra=$(aggregation_node_names)
+    jq -nr --arg direct "${DIRECT_NODE_NAME}" --argjson extra "${extra}" \
+        '([$direct] + $extra + ["CDN-AUTO"])[] | "        - \(.|@json)"'
 }
 
 build_mihomo_proxy_groups() {
-    printf '    - name: AUTO\n      type: url-test\n      proxies:\n'
-    collect_node_names | jq -r '.[] | "        - \(.|@json)"'
+    local names
+    names=$(collect_cf_node_names)
+    [[ -n "${names}" && "${names}" != "[]" ]] \
+        || die "Cloudflare 优选 IP 缓存不可用，无法生成 CDN-AUTO；请执行 sudo easy_all refresh-cdn-ips"
+    printf '    - name: CDN-AUTO\n      type: url-test\n      proxies:\n'
+    jq -r '.[] | "        - \(.|@json)"' <<<"${names}"
     cat <<'EOF'
       url: https://www.gstatic.com/generate_204
       interval: 300
@@ -751,7 +761,7 @@ apply_cloud_resources() {
     success "本机配置、订阅与云端资源已同步"
 }
 
-# 组合模式跨越本机与 Cloudflare 两部分：失败/中断时只回滚本机，云端已创建的
+# 直连+CDN兜底跨越本机与 Cloudflare 两部分：失败/中断时只回滚本机，云端已创建的
 # 资源按设计保留，并用 purge 命令提示清理——擅自删除会让同域名重装撞上残留记录。
 cleanup_partial_install() {
     cleanup_partial_install_local || return 1
@@ -762,7 +772,7 @@ cleanup_partial_install() {
 }
 
 rollback_fresh_install() {
-    warn "组合模式首次安装未完成，正在回滚本机服务、UFW 与 crontab 配置（保留前置初始化：SWAP、系统依赖与 TCP/Skyline 加速）"
+    warn "直连+CDN兜底模式首次安装未完成，正在回滚本机服务、UFW 与 crontab 配置（保留前置初始化：SWAP、系统依赖与 TCP/Skyline 加速）"
     cleanup_partial_install || true
     warn "本次已创建的 Cloudflare 记录/Origin CA 按设计保留；如不再使用请清理："
     warn "  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --all"
@@ -831,7 +841,7 @@ install_all() {
     # 从这里开始只剩展示类命令：失败不再算“安装失败”。
     INSTALL_FAILURE_ARMED=0
     show_subscription
-    success "easy_all 组合模式安装完成（直连 + Cloudflare）"
+    success "easy_all 直连+CDN兜底安装完成（直连 + Cloudflare）"
     show_tcp_acceleration_status
     prompt_kernel_reboot
 }
@@ -1084,5 +1094,5 @@ uninstall_all() {
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
-    success "easy_all 组合模式本机内容已卸载"
+    success "easy_all 直连+CDN兜底本机内容已卸载"
 }

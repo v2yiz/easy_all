@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 组合模式（profiles/combined.sh）单元与回归测试。
+# 直连+CDN兜底（profiles/combined.sh）单元与回归测试。
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
@@ -179,7 +179,7 @@ unset -f readonly
 require_root() { :; }
 trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
 
-# 初始化组合模式 fixture
+# 初始化直连+CDN兜底 fixture
 CF_ZONE="example.com"
 CLOUDFLARE_ZONE_ID="zone-123456"
 VPS_PUBLIC_IPV4="198.51.100.10"
@@ -869,6 +869,19 @@ assert_contains "nginx-conf: has mihomo_all location" "${nginx_text}" "location 
 install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
 assert_contains "domain-input: prompts for zone" "${install_inputs_body}" "Cloudflare 根 Zone"
 assert_contains "domain-input: prompts for direct domain" "${install_inputs_body}" "直连节点域名"
+assert_contains "node-name: direct node name rejects reserved group names" \
+    "${install_inputs_body}" "AUTO | PROXY | GLOBAL | CDN-AUTO | DIRECT | REJECT | PASS"
+for reserved_name in AUTO CDN-AUTO PROXY GLOBAL DIRECT REJECT PASS; do
+    if (
+        DIRECT_NODE_NAME="${reserved_name}"
+        case "${DIRECT_NODE_NAME}" in
+        AUTO | PROXY | GLOBAL | CDN-AUTO | DIRECT | REJECT | PASS) exit 1 ;;
+        esac
+        exit 0
+    ) >/dev/null 2>&1; then
+        fail_test "node-name: reserved name ${reserved_name} must be rejected"
+    fi
+done
 assert_contains "subscription-input: install asks for the unified JSON" \
     "${install_inputs_body}" "choose_subscription_config"
 
@@ -1137,7 +1150,7 @@ assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok
         || fail_test "curl-args: local TLS probe must pass --noproxy '*'"
 ) || fail_test "curl-args: --noproxy assertion failed"
 
-# 28) 组合模式的 UFW 配置必须同时建立 SSH 开机自启与 Fail2ban（与其他模式一致）
+# 28) 直连+CDN兜底的 UFW 配置必须同时建立 SSH 开机自启与 Fail2ban（与其他模式一致）
 #     只做 UFW 放行而不配 jail，会让文档承诺的 SSH 狂暴破解防护静默缺失。
 UFW_WIRING_LOG="${TMP_DIR}/ufw-wiring.log"
 (
@@ -1392,7 +1405,7 @@ EOF
 
 # 33) services 阶段的 validate_protocol_runtime（lib/xhttp-runtime.sh）用各模式都必须提供的
 #     VLESS_CDN_DOMAIN 做本机探活，不再依赖 XHTTP_ORIGIN_DOMAIN 别名（2.5.0 后两次崩溃的同源隐患）。
-#     组合模式下 VLESS_CDN_DOMAIN=CF_NODE_DOMAIN，探活仍须命中 CF_NODE_DOMAIN。
+#     直连+CDN兜底下 VLESS_CDN_DOMAIN=CF_NODE_DOMAIN，探活仍须命中 CF_NODE_DOMAIN。
 assert_not_contains "runtime-probe: shared runtime no longer reads XHTTP_ORIGIN_DOMAIN" \
     "$(<"${ROOT_DIR}/lib/xhttp-runtime.sh")" "XHTTP_ORIGIN_DOMAIN"
 assert_not_contains "runtime-probe: combined no longer derives the alias" \
@@ -1455,9 +1468,9 @@ done
 
 # 35) 统一订阅配置：allowedTokens + nodes（vless reality / vless xhttp / mieru）
 agg_config='{"allowedTokens":{"owner":"agg-owner-token-1","user2":"agg-user-token-2"},"nodes":[
-  {"type":"vless","security":"reality","network":"tcp","name":"聚合-Reality","host":"r.example.com","port":8443,"uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","fp":"chrome"},
-  {"type":"vless","security":"tls","network":"xhttp","name":"聚合-XHTTP","host":"x.example.com","port":443,"uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/agg-path/","mode":"stream-up"},
-  {"type":"mieru","name":"聚合-Mieru","host":"m.example.com","portRange":"50000-50512","username":"agguser","password":"agg-password-12345","transport":"TCP","multiplexing":"MULTIPLEXING_LOW","optional":true}
+  {"type":"vless","security":"reality","network":"tcp","name":"另一台Reality","host":"r.example.com","port":8443,"uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","fp":"chrome"},
+  {"type":"vless","security":"tls","network":"xhttp","name":"另一台XHTTP","host":"x.example.com","port":443,"uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/agg-path/","mode":"stream-up"},
+  {"type":"mieru","name":"备用Mieru","host":"m.example.com","portRange":"50000-50512","username":"agguser","password":"agg-password-12345","transport":"TCP","multiplexing":"MULTIPLEXING_LOW","optional":true}
 ]}'
 combined_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: valid config rejected"
@@ -1471,7 +1484,7 @@ combined_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: restore test config"
 
 # 聚合节点的 udp 开关必须贯穿到产物：udp:false 时不得再注入 xudp 封装参数
-combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"聚合-无UDP","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","udp":false}]}' \
+combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"无UDP节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","udp":false}]}' \
     || fail_test "aggregation: udp:false reality node rejected"
 udp_off_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
 assert_not_contains "aggregation: udp:false link drops packetEncoding" \
@@ -1487,7 +1500,7 @@ assert_contains "aggregation: default reality link keeps packetEncoding" \
     "${udp_on_links}" "packetEncoding=xudp"
 
 # 显式 false 的布尔字段不得被 jq 的 // 当成"缺失"而回退成 true
-combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"聚合-旧核心","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","supportX25519Mlkem768":false}]}' \
+combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"旧核心节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","supportX25519Mlkem768":false}]}' \
     || fail_test "aggregation: supportX25519Mlkem768:false rejected"
 assert_contains "aggregation: explicit false disables mlkem in the link" \
     "$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)" "mlkem=0"
@@ -1496,12 +1509,12 @@ combined_apply_subscription_config "${agg_config}" \
 
 # 校验报错必须点名白名单里的真实字段名，否则用户按提示改反而触发「包含不支持的字段」
 bad_method_out=$(
-    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"聚合-坏方法","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpUplinkHttpMethod":"PUT"}]}' 2>&1
+    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏方法节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpUplinkHttpMethod":"PUT"}]}' 2>&1
 ) || true
 assert_contains "aggregation: bad uplink method names the real field" \
     "${bad_method_out}" "xhttpUplinkHttpMethod"
 bad_grpc_out=$(
-    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"聚合-坏头","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpNoGrpcHeader":"yes"}]}' 2>&1
+    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏头节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpNoGrpcHeader":"yes"}]}' 2>&1
 ) || true
 assert_contains "aggregation: bad noGRPCHeader names the real field" \
     "${bad_grpc_out}" "xhttpNoGrpcHeader"
@@ -1515,6 +1528,7 @@ for invalid in \
     '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"trojan","name":"t","host":"t.example.com","password":"abcdefgh"}]}' \
     '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"bad-sid","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"abc"}]}' \
     '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"AUTO","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}' \
+    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"CDN-AUTO","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}' \
     '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"},{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}'; do
     if combined_apply_subscription_config "${invalid}" >/dev/null 2>&1; then
         fail_test "aggregation: invalid config accepted: ${invalid}"
@@ -1549,7 +1563,7 @@ assert_contains "aggregation: mihomo node=all includes mieru" "${mihomo_all}" "t
 
 # xhttp 聚合节点的 host 可以是 CDN 优选 IP（连接地址），HTTP Host 头必须跟 sni（回源域名）一致，
 # 否则请求到边缘会被当成直连 IP 访问拒掉（403 Direct IP Access Denied）。
-combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"聚合-优选IP","host":"198.51.100.7","uuid":"33333333-3333-4333-8333-333333333333","sni":"cf.example.com","path":"/agg-ip/","mode":"stream-up"}]}' \
+combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"优选IP节点","host":"198.51.100.7","uuid":"33333333-3333-4333-8333-333333333333","sni":"cf.example.com","path":"/agg-ip/","mode":"stream-up"}]}' \
     || fail_test "aggregation: xhttp node with preferred-IP host must validate"
 ip_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
 assert_contains "aggregation: xhttp link keeps the IP as server address" \
@@ -1566,21 +1580,60 @@ assert_contains "aggregation: mihomo xhttp host stays the sni" \
 combined_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: restore test config"
 
-names_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 collect_node_names)
-names_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 collect_node_names)
-assert_contains "aggregation: AUTO gets non-optional nodes" "${names_default}" "聚合-XHTTP"
-assert_not_contains "aggregation: AUTO hides optional nodes by default" \
-    "${names_default}" "聚合-Mieru"
-assert_contains "aggregation: node=all AUTO includes optional nodes" \
-    "${names_all}" "聚合-Mieru"
+proxy_names_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_names)
+proxy_names_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_proxy_names)
+assert_contains "aggregation: PROXY group gets non-optional nodes" "${proxy_names_default}" "另一台XHTTP"
+assert_not_contains "aggregation: PROXY group hides optional nodes by default" \
+    "${proxy_names_default}" "备用Mieru"
+assert_contains "aggregation: node=all PROXY group includes optional nodes" \
+    "${proxy_names_all}" "备用Mieru"
+# PROXY 的固定顺序：本机直连 → 聚合节点（字典里的名字）→ CDN-AUTO
+assert_equal "aggregation: PROXY order is direct, aggregated, CDN-AUTO" \
+    "$(printf '%s\n' "${DIRECT_NODE_NAME}" "另一台Reality" "另一台XHTTP" "CDN-AUTO")" \
+    "$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_names | sed -n 's/^        - "\(.*\)"$/\1/p')"
 groups_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_groups)
 groups_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_proxy_groups)
-assert_contains "aggregation: AUTO group lists non-optional nodes" \
-    "${groups_default}" "聚合-XHTTP"
-assert_not_contains "aggregation: AUTO group hides optional nodes by default" \
-    "${groups_default}" "聚合-Mieru"
-assert_contains "aggregation: node=all AUTO group lists optional nodes" \
-    "${groups_all}" "聚合-Mieru"
+assert_contains "aggregation: CDN-AUTO group has group definition" \
+    "${groups_default}" "name: CDN-AUTO"
+assert_not_contains "aggregation: CDN-AUTO group never includes direct node" \
+    "${groups_default}" "${DIRECT_NODE_NAME}"
+assert_not_contains "aggregation: CDN-AUTO group never includes aggregated nodes" \
+    "${groups_default}" "另一台XHTTP"
+assert_not_contains "aggregation: node=all keeps optional nodes out of CDN-AUTO" \
+    "${groups_all}" "备用Mieru"
+if (
+    combined_cf_candidates() { :; }
+    build_mihomo_proxy_groups
+) >/dev/null 2>&1; then
+    fail_test "aggregation: CDN-AUTO must refuse to render without preferred IPs"
+fi
+if (
+    collect_cf_node_names() { printf ''; }
+    build_mihomo_proxy_groups
+) >/dev/null 2>&1; then
+    fail_test "aggregation: CDN-AUTO must refuse to render with empty names"
+fi
+(
+    AGGREGATION_NODES='[]'
+    pure_proxy_names=$(build_mihomo_proxy_names)
+    pure_groups=$(build_mihomo_proxy_groups)
+    assert_contains "pure: PROXY lists direct first" \
+        "${pure_proxy_names}" "        - \"${DIRECT_NODE_NAME}\""
+    assert_contains "pure: PROXY lists CDN-AUTO" \
+        "${pure_proxy_names}" "        - \"CDN-AUTO\""
+    assert_not_contains "pure: PROXY never contains individual CDN nodes" \
+        "${pure_proxy_names}" "CF"
+    assert_contains "pure: CDN-AUTO group name" \
+        "${pure_groups}" "name: CDN-AUTO"
+    assert_not_contains "pure: CDN-AUTO never contains direct node" \
+        "${pure_groups}" "${DIRECT_NODE_NAME}"
+    line_count=$(grep -c '^[[:space:]]*- ' <<<"${pure_proxy_names}")
+    assert_equal "pure: PROXY has exactly 2 entries (direct and CDN-AUTO)" "2" "${line_count}"
+    first_line=$(grep '^[[:space:]]*- ' <<<"${pure_proxy_names}" | sed -n '1p')
+    second_line=$(grep '^[[:space:]]*- ' <<<"${pure_proxy_names}" | sed -n '2p')
+    assert_contains "pure: first entry is direct node" "${first_line}" "${DIRECT_NODE_NAME}"
+    assert_contains "pure: second entry is CDN-AUTO" "${second_line}" "CDN-AUTO"
+) || fail_test "pure combined mihomo groups validation failed"
 aggregation_roundtrip=$(
     combined_apply_subscription_config "${agg_config}" >/dev/null 2>&1
     save_state
@@ -1604,8 +1657,16 @@ assert_not_contains "aggregation: default base64 hides optional node" \
     "${default_b64}" "m.example.com"
 assert_contains "aggregation: node=all base64 includes optional node" \
     "${all_b64}" "m.example.com"
-assert_contains "aggregation: mihomo-all carries AUTO with optional node" \
-    "$(<"${SUBSCRIPTION_DIR}/mihomo-all.yaml")" "聚合-Mieru"
+assert_contains "aggregation: mihomo-all carries optional node" \
+    "$(<"${SUBSCRIPTION_DIR}/mihomo-all.yaml")" "备用Mieru"
+mihomo_rendered=$(<"${SUBSCRIPTION_DIR}/mihomo.yaml")
+assert_contains "render: mihomo has CDN-AUTO group" "${mihomo_rendered}" "name: CDN-AUTO"
+proxy_block=$(awk '/^[[:space:]]*- name: PROXY/{p=1;next}/^[[:space:]]*- name:/{p=0}p' <<<"${mihomo_rendered}")
+assert_not_contains "render: PROXY does not include individual CF nodes directly" \
+    "${proxy_block}" "CF"
+cdn_auto_block=$(awk '/^[[:space:]]*- name: CDN-AUTO/{p=1;next}/^[[:space:]]*- name:/{p=0}p' <<<"${mihomo_rendered}")
+assert_not_contains "render: CDN-AUTO group never contains direct node" \
+    "${cdn_auto_block}" "${DIRECT_NODE_NAME}"
 
 
 printf 'ok - combined render\n'

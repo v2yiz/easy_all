@@ -128,8 +128,7 @@ uri_encode() {
 }
 
 # Profiles whose local subscription content depends on the installed core version define this
-# hook (the ML-KEM gate of Reality and combined modes); the Cloudflare-streamup
-# subscriptions are core-independent and omit it.
+# hook (the ML-KEM gate of Reality and combined modes).
 refresh_runtime_subscription_after_core_update() {
     declare -F refresh_runtime_subscription >/dev/null 2>&1 || return 0
     # Run in a subshell so a republication failure cannot abort the completed core swap.

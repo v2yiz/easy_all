@@ -9,8 +9,7 @@
 | 模式 | 必须准备的资源 | 核心凭据 / Token |
 | :--- | :--- | :--- |
 | **模式 1：直连 Reality** | - 纯节点（`link`）：仅需公网 IPv4 VPS，无其他要求<br>- 本机订阅（`deploy`）：需 1 个二级子域名（如 `sub.example.com`） | - 纯节点：无<br>- 订阅模式：具备 DNS/证书权限的 Cloudflare API Token |
-| **模式 2：Cloudflare CDN** | - 已托管至 Cloudflare 的域名 Zone（Free 方案即可）<br>- 1 个二级子域名（节点域名如 `node.example.com`，订阅由本机 Nginx 在同一域名下发）<br>- 控制台手动开启 **Network → gRPC** | - Cloudflare API Token（DNS/证书/规则权限）<br>- Globalping Access Token |
-| **模式 3：组合模式** | - 已托管至 Cloudflare 的域名 Zone<br>- 3 个二级子域名（直连、CF 节点、订阅） | - Cloudflare API Token（仅限 DNS/证书编辑最小权限；将保存至 root 受控文件）<br>- Globalping Access Token |
+| **模式 2：直连+CDN兜底** | - 已托管至 Cloudflare 的域名 Zone（Free 方案即可）<br>- 3 个二级子域名（直连、CF 节点、订阅）<br>- 控制台手动开启 **Network → gRPC** | - Cloudflare API Token（仅限 DNS/证书编辑最小权限；将保存至 root 受控文件）<br>- Globalping Access Token |
 
 ---
 
@@ -32,7 +31,7 @@
 
 ## 2. 获取 Globalping Access Token
 
-Cloudflare 模式与组合模式依赖 [Globalping](https://dash.globalping.io/) 从中国大陆三网测速探针筛选最佳 CDN 优选 IP。
+直连+CDN兜底依赖 [Globalping](https://dash.globalping.io/) 从中国大陆三网测速探针筛选最佳 CDN 优选 IP。
 
 1. 打开 [Globalping Dashboard](https://dash.globalping.io/)，点击 **Sign in with GitHub** 登录。
 2. 进入 [Tokens 页面](https://dash.globalping.io/tokens)，点击 **Generate a new token**。
@@ -53,9 +52,6 @@ Cloudflare 模式与组合模式依赖 [Globalping](https://dash.globalping.io/)
 | `Zone / Zone / Read` | 全部需要 CF 的模式 | 读取并确认目标 Zone 状态 |
 | `Zone / DNS / Edit` | 全部需要 CF 的模式 | 自动添加/管理节点与回源解析记录 |
 | `Zone / SSL and Certificates / Edit` | 全部需要 CF 的模式 | 自动申请与签发 Origin CA 证书 |
-| `Zone / Config Rules / Edit` | 模式 2、组合模式 | 自动设置 SSL 为 Full (strict) |
-| `Zone / Transform Rules / Edit` | 模式 2 | 管理 XHTTP 回源防探测密钥规则 |
-| `Zone / Zone Settings / Edit` | 模式 2 | 自动开启 origin HTTP/2 |
 
 ### 3.2 作用范围（Zone Resources）
 - **Zone Resources**：`Include → Specific zone → 你的域名 (example.com)`
@@ -63,13 +59,13 @@ Cloudflare 模式与组合模式依赖 [Globalping](https://dash.globalping.io/)
 创建后妥善保存 Token，在安装交互提示 `Cloudflare API Token` 时粘贴。
 
 > [!IMPORTANT]
-> **组合模式 Token 最小权限与持久化说明**：组合模式为了支持后续证书到期轮换与免交互运维，输入的 Token 会以 root 受控权限（`0600`）保存于 `/etc/easy_all/cloudflare.token`。请务必遵循最小权限原则，仅授予目标 Zone 的 `DNS / Edit` 与证书编辑权限，严禁使用全局 Global API Key 或授予未使用的额外权限。
+> **直连+CDN兜底 Token 最小权限与持久化说明**：直连+CDN兜底为了支持后续证书到期轮换与免交互运维，输入的 Token 会以 root 受控权限（`0600`）保存于 `/etc/easy_all/cloudflare.token`。请务必遵循最小权限原则，仅授予目标 Zone 的 `DNS / Edit` 与证书编辑权限，严禁使用全局 Global API Key 或授予未使用的额外权限。
 
 ---
 
-## 4. 模式 3：组合模式（直连 Reality + Cloudflare）域名规划
+## 4. 模式 2：直连+CDN兜底（Reality + Cloudflare）域名规划
 
-组合模式将「直连 Reality」与「Cloudflare CDN 优选」部署在同一台 VPS 上，共需同一个 Cloudflare Zone 下的 3 个二级子域：
+直连+CDN兜底将「直连 Reality」与「Cloudflare CDN 优选」部署在同一台 VPS 上，共需同一个 Cloudflare Zone 下的 3 个二级子域：
 
 | 子域名示例 | 代理状态（云朵） | 用途说明 |
 | :--- | :--- | :--- |

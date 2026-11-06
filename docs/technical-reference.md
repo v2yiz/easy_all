@@ -14,16 +14,7 @@
 - **伪装目标**：默认 `swdist.apple.com:443`，安装和修改时通过 `xray tls ping` 自动完成带 SNI 的 TLS 1.3 握手验收。
 - **动态端口（可选）**：通过 UFW `before.rules` 在 `PREROUTING` 链将 `10000-62703` 范围端口通过单条范围规则 NAT 重定向到实际入站端口（默认 `443`），客户端按时间槽位动态轮换。
 
-### 1.2 模式 2：Cloudflare CDN（纯 XHTTP）
-- **数据面拓扑**：
-  ```text
-  客户端 -> Cloudflare 优选 IPv4 -> Cloudflare 边缘 -> Nginx (TCP 443) -> Xray (127.0.0.1:10086 XHTTP stream-up)
-  客户端 -> https://node.<zone>/subscribe -> 同一 Nginx（token 鉴权 + UA 协商）
-  ```
-- **优选机制**：利用 Globalping 从三网探针每 3 小时动态筛选 6 个经过 HTTP/TLS 握手校验的优选节点。
-- **订阅**：由本机 Nginx 在节点域名下发，不再依赖额外订阅域名或边缘脚本。
-
-### 1.3 模式 3：组合模式（Reality + Cloudflare XHTTP）
+### 1.2 模式 2：直连+CDN兜底（Reality + Cloudflare XHTTP）
 一台 VPS 独占承载直连与 CDN 两个入口：
 ```text
 公网 8443  Xray VLESS Reality（直连入口，伪装目标另配 SNI）
@@ -33,7 +24,7 @@
 ```
 - **端口划分**：直连入站固定在 `8443`，CDN 回源与订阅共用 `443`。
 - **证书管理**：`cf` 与 `sub` 共用一张 15 年有效期的 Cloudflare Origin CA ECC 证书。
-- **单一订阅**：订阅下发「直连 1 个」+「Cloudflare 优选 6 个」，并在 Mihomo 中平铺进单一 `AUTO` 自动测速选优组；聚合 JSON 的 `nodes` 会追加到同一订阅与 `AUTO`，标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。
+- **单一订阅**：订阅下发「直连 1 个」+「Cloudflare 优选 6 个」。Mihomo 侧固定两个分组：`PROXY`（`select`）依次是本机直连、聚合 JSON 的 `nodes`、`CDN-AUTO`；`CDN-AUTO`（`url-test`）只放 Cloudflare 优选 1～6，聚合节点不参与测速。标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。
 
 ---
 
@@ -55,8 +46,7 @@
 | --- | --- | --- | --- |
 | 初始化（debian-init） | SSH 实际监听端口 | — | ICMP 回显（UFW 默认）与全部出站；UFW 默认入站拒绝 |
 | 1 直连 Reality | TCP 443 | TCP 8443（仅订阅模式非 `link` 时，Cloudflare 订阅回源） | 动态端口模式在 `PREROUTING` 注入 `10000:62703` → 实际入站端口（默认 443）NAT |
-| 2 Cloudflare CDN | — | TCP 443（Cloudflare 官方 IPv4 回源段） | 外网直连 443 被丢弃 |
-| 3 组合模式 | TCP 8443（Reality 直连） | TCP 443（Cloudflare 官方 IPv4 回源段） | 两入口共用同一套 UFW/Fail2ban 基线 |
+| 2 直连+CDN兜底 | TCP 8443（Reality 直连） | TCP 443（Cloudflare 官方 IPv4 回源段） | 两入口共用同一套 UFW/Fail2ban 基线 |
 
 ### 2.2 回源白名单与防扫描
 - 在涉及 Cloudflare 的模式中，本地 Nginx 与防火墙严格限制：
@@ -143,8 +133,7 @@ easy_all
 ├── runtime.manifest             # 运行时受管文件清单
 ├── profiles/
 │   ├── reality.sh               # 模式 1：直连 Reality 业务编排
-│   ├── xhttp-cloudflare-streamup.sh # 模式 2：Cloudflare CDN 业务编排
-│   └── combined.sh              # 模式 3：组合模式业务编排
+│   └── combined.sh              # 模式 2：直连+CDN兜底业务编排
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
 │   ├── platform.sh              # 系统环境、Debian 探测与基础依赖
@@ -155,12 +144,12 @@ easy_all
 │   ├── reality-subscription.js  # 本地自托管订阅生成器
 │   ├── cloudflare-ip-pool.sh    # Cloudflare 候选 IP 池与抽样验证
 │   ├── globalping-cdn.sh        # Globalping 探针调用与三网优选
-│   ├── cf-dns.sh                # Cloudflare API 封装（DNS/Origin CA/Rules）
+│   ├── cf-dns.sh                # Cloudflare API 封装（DNS 与 Origin CA 证书）
 │   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
 │   ├── xhttp-runtime.sh         # XHTTP 运行时公共逻辑与证书挂载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
 │   ├── subscription-auth.sh     # 订阅凭据生成与校验
-│   ├── local-aggregation.sh     # 组合模式本地聚合节点校验与渲染
+│   ├── local-aggregation.sh     # 直连+CDN兜底本地聚合节点校验与渲染
 │   ├── scheduled-maintenance.sh # 定时重启与维护任务
 │   ├── tcp-tuning.sh            # Skyline Speeder 与 Zabbly 6.12+ LTS 内核管理
 │   ├── xray-core.sh             # Xray 官方二进制下载与校验

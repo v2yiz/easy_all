@@ -1,6 +1,5 @@
 # Files installed as the easy_all runtime.
 profiles/reality.sh
-profiles/xhttp-cloudflare-streamup.sh
 lib/log.sh
 lib/runtime-core.sh
 lib/xhttp-runtime.sh

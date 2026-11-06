@@ -331,14 +331,12 @@ cleanup_partial_install_files \
 [[ ! -f "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE}" ]] || fail "marker should be cleared"
 
 # 15. 静态回归网：首次安装回滚必须清掉进度标记，并还原安装前 IPv6 配置
-for profile in reality xhttp-cloudflare-streamup; do
-    body=$(awk '/^rollback_fresh_install\(\) \{/,/^\}/' "${ROOT_DIR}/profiles/${profile}.sh")
-    [[ "${body}" == *install_progress_clear* ]] \
-        || fail "rollback_fresh_install in ${profile}.sh must clear the install marker"
-    # 回滚随后会删掉 STATE_DIR（含 IPv6 快照）：还原必须发生在此之前。
-    [[ "${body}" == *restore_preinstall_ipv6* ]] \
-        || fail "rollback_fresh_install in ${profile}.sh must restore pre-install IPv6"
-done
+body=$(awk '/^rollback_fresh_install\(\) \{/,/^\}/' "${ROOT_DIR}/profiles/reality.sh")
+[[ "${body}" == *install_progress_clear* ]] \
+    || fail "rollback_fresh_install in reality.sh must clear the install marker"
+# 回滚随后会删掉 STATE_DIR（含 IPv6 快照）：还原必须发生在此之前。
+[[ "${body}" == *restore_preinstall_ipv6* ]] \
+    || fail "rollback_fresh_install in reality.sh must restore pre-install IPv6"
 
 # 16. 残留提示文案：有标记时给 cleanup-partial，无标记时只能人工核对
 install_progress_begin reality
@@ -419,7 +417,7 @@ for case_spec in "install ok installed:0" "hold ok installed:0" "install ok unpa
 done
 rm -rf -- "${TMP_DIR}/dpkgbin"
 
-# 23c. 安装前的 nginx 默认站点必须按快照恢复（Reality/XHTTP/组合的卸载与回滚路径）
+# 23c. 安装前的 nginx 默认站点必须按快照恢复（Reality / 直连+CDN兜底的卸载与回滚路径）
 (
     export BACKUP_DIR="${TMP_DIR}/site/state/backups"
     export EASY_ALL_GUARD_NGINX_DEFAULT_SITE="${TMP_DIR}/site/sites-enabled/default"

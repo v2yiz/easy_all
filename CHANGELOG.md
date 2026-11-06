@@ -1,3 +1,23 @@
+## 4.0.0 更新说明（2026-11-06）
+
+- **移除纯 Cloudflare CDN 模式（原模式 2），只保留直连与直连+CDN兜底**：删除 `profiles/xhttp-cloudflare-streamup.sh` 及其在 `runtime.manifest`、`lib/profile-common.sh` 模式映射中的登记；安装菜单改为「1 直连 Reality / 2 直连+CDN兜底」，`profile_file`、`detect_installed_mode` 与命令路由同步收敛。不存在需要迁移的旧纯 CDN 部署，因此不保留兼容分支。
+- **组合模式更名为「直连+CDN兜底」**：菜单、帮助、安装/卸载提示与全部文档改用新名称；内部标识（`PROTOCOL=combined`、`profiles/combined.sh`、状态版本）保持不变，已安装的机器不需要任何迁移。
+- **清理共享运行时里只服务该模式的代码**：`lib/xhttp-runtime.sh` 删除 `write_xray_config`、`renew_certificate`、`refresh_runtime`、`rebuild_traffic_runtime`、`finish_xhttp_apply`、`remove_subscriptions`、`validate_loopback_port`、`active_subscription_link_domain`（直连+CDN兜底各自覆盖或不再需要）。
+- **模式专属命令收敛**：`apply-cloud` 与 `refresh-cdn-ips` 现在只接受直连+CDN兜底模式（提示改为「仅适用于直连+CDN兜底模式」），`renew-cert` 只剩 Reality 与该模式两条路径。
+- **文档同步为两模式口径**：README、前置准备手册、系统技术参考、运维指南、客户端指南去掉纯 CDN 模式的拓扑与准备项，直连+CDN兜底序号改为模式 2；仅纯 CDN 需要的 Cloudflare 权限行（Config Rules / Transform Rules / Zone Settings）随之删除，gRPC 开关要求归到该模式。
+- **回归测试**：`test_audit_fixes.sh` 第 13/14 节改为两模式断言（菜单 2 → 直连+CDN兜底、3 不再可用、`renew-cert` 事务顺序改查该模式实现）；`test_install_guard.sh` 回滚静态网只看 Reality；`test_purge_cloudflare.sh` 状态改用 `combined`；`test_cli_e2e.mjs` 更新命令边界与帮助文案断言。
+
+验证：`test_combined_render` / `test_mihomo_template_lint` / `test_install_guard` / `test_purge_cloudflare` / `test_audit_fixes` / `test_subscription_port.mjs` / `test_cli_e2e.mjs` 全套通过，`easy_all verify-release` 通过，全仓 `bash -n` 与 `node --check` 通过。
+
+## 3.1.0 更新说明（2026-11-06）
+
+- **直连+CDN兜底订阅拆成 `PROXY` / `CDN-AUTO` 两个分组**：`PROXY` 不再是「所有节点平铺 + 单一 `AUTO` 测速组」，而是一个 `select` 组，顺序固定为「本机直连 → 聚合 JSON 的 `nodes` → `CDN-AUTO`」——聚合节点的名字原样取自字典里的 `name`，不额外加前缀或后缀；`CDN-AUTO` 是 `url-test` 组，只放 Cloudflare 优选 1～6。聚合节点不再参与测速，由用户在 `PROXY` 里手动切换；`optional` 节点仍只在 `node=all` 时下发。
+- **直连节点名可自定义，但拒绝保留组名**：安装时 `直连节点名` 仍可任意填写，只是 `AUTO` / `PROXY` / `GLOBAL` / `CDN-AUTO` / `DIRECT` / `REJECT` / `PASS` 会被拒绝——本机节点与分组同名会让整份 Mihomo 配置解析失败。聚合配置的保留字列表同步加入 `CDN-AUTO`。
+- **缺少优选 IP 时直接报错而不是发出坏订阅**：优选 IP 缓存缺失或版本不兼容时，`CDN-AUTO` 会变成空测速组，客户端加载整份订阅失败；现在 `write_subscriptions` 在渲染分组阶段就以明确提示中断（`sudo easy_all refresh-cdn-ips`）。
+- **文档与回归测试**：`technical-reference` 与 `client-guide` 的订阅说明改为新分组结构并清理历史残留；`test_combined_render.sh` 新增 `PROXY` 顺序断言、`CDN-AUTO` 不含直连/聚合节点、空优选池/空名称拒绝渲染、直连节点名保留字校验。
+
+验证：`test_combined_render` / `test_mihomo_template_lint` / `test_install_guard` / `test_purge_cloudflare` / `test_audit_fixes` / `test_subscription_port.mjs` / `test_cli_e2e.mjs` 全套通过，新增断言均做「破坏实现即变红」的反向验证；`bash -n` 通过。
+
 ## 3.0.1 更新说明（2026-11-06）
 
 - **修复模式 2 `easy_all renew-cert` 崩溃（3.0.0 回归）**：3.0.0 在 `profiles/xhttp-cloudflare-streamup.sh` 新增的 `renew_certificate()` 覆盖丢掉了 `require_root` 与 `collect_installed_state`，续签在 `set -u` 下以 `VLESS_CDN_DOMAIN: unbound variable` 立即中断；若环境里恰好带该变量，随后无锁的 `save_state` 会把空 UUID、路径、Token 与 Zone ID 写回 `state.env`。现删除该覆盖，恢复 `lib/xhttp-runtime.sh` 的实现。

@@ -55,10 +55,6 @@ validate_xhttp_path() {
     [[ ${#1} -ge 9 && ${#1} -le 96 && "$1" =~ ^/[A-Za-z0-9._~-]+$ ]]
 }
 
-validate_loopback_port() {
-    [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 1024 && 10#$1 <= 65535))
-}
-
 # 路径规范化由安装参数层与交互更新共用：各 Profile 不得再各自定义一份。
 normalize_xhttp_path() {
     local path=${1:-}
@@ -89,14 +85,6 @@ source_state_file() {
 
 subscription_link_domain() {
     printf '%s' "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}"
-}
-
-active_subscription_link_domain() {
-    if subscription_enabled; then
-        subscription_link_domain
-    else
-        printf '%s' "${VLESS_CDN_DOMAIN}"
-    fi
 }
 
 check_install_conflicts() {
@@ -206,12 +194,6 @@ configure_ufw() {
 
 write_bootstrap_nginx_config() {
     rm -f -- /etc/nginx/sites-enabled/default
-}
-
-write_xray_config() {
-    declare -F xhttp_render_xray_config >/dev/null \
-        || die "XHTTP Profile 缺少 xhttp_render_xray_config 实现"
-    xhttp_render_xray_config
 }
 
 xhttp_client_path() {
@@ -327,10 +309,6 @@ write_subscriptions() {
     rm -rf -- "${stage_dir}"
 }
 
-remove_subscriptions() {
-    rm -rf -- "${SUBSCRIPTION_DIR}"
-}
-
 show_subscription() {
     collect_installed_state
     show_node
@@ -353,35 +331,6 @@ show_subscription() {
     fi
     printf '%s\n' '  iOS 客户端（UA 命中 iphone/ipad/ipod/ios，或链接加 &os=ios）下发的 YAML 不带嗅探段'
     printf '\n'
-}
-
-refresh_runtime() {
-    local backup
-    [[ "${XHTTP_RUNTIME_STATE_CURRENT:-0}" == "1" ]] || collect_installed_state
-    backup=$(make_temp_dir)
-    install -m 0600 "${XRAY_CONFIG}" "${backup}/config.json"
-    if [[ -f "${NGINX_CONFIG}" ]]; then
-        install -m 0600 "${NGINX_CONFIG}" "${backup}/nginx.conf"
-    fi
-    if write_xray_config && write_nginx_config \
-        && systemctl restart "${XRAY_SERVICE}" && validate_protocol_runtime; then
-        success "运行时配置已刷新"
-        return 0
-    fi
-    warn "刷新失败，恢复旧配置"
-    install -m 0600 "${backup}/config.json" "${XRAY_CONFIG}"
-    if [[ -f "${backup}/nginx.conf" ]]; then
-        install -m 0600 "${backup}/nginx.conf" "${NGINX_CONFIG}"
-    else
-        rm -f -- "${NGINX_CONFIG}"
-    fi
-    systemctl restart "${XRAY_SERVICE}" >/dev/null 2>&1 || true
-    systemctl reload nginx >/dev/null 2>&1 || true
-    die "运行时刷新失败"
-}
-
-rebuild_traffic_runtime() {
-    refresh_runtime
 }
 
 snapshot_subscription_update() {
@@ -456,38 +405,6 @@ rollback_subscription_update() {
 commit_subscription_update() {
     release_runtime_write_lock
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-}
-
-finish_xhttp_apply() {
-    local state_current=${1:-0} runtime_already_refreshed=${2:-0}
-    local defer_state_save=${3:-0}
-    if [[ "${runtime_already_refreshed}" != "1" ]]; then
-        if [[ "${state_current}" == "1" ]]; then
-            XHTTP_RUNTIME_STATE_CURRENT=1 refresh_runtime
-        else
-            refresh_runtime
-        fi
-    fi
-    if subscription_enabled; then
-        ensure_allowed_tokens
-        write_subscriptions
-        validate_subscription_runtime
-    else
-        remove_subscriptions
-    fi
-    [[ "${defer_state_save}" == "1" ]] || save_state
-    register_easy_all_command
-    refresh_saved_daily_reboot_schedule
-    [[ "${defer_state_save}" == "1" ]] || show_subscription
-}
-
-renew_certificate() {
-    require_root
-    acquire_runtime_write_lock
-    collect_installed_state
-    snapshot_subscription_update
-    xhttp_renew_origin_certificate
-    commit_subscription_update
 }
 
 # 卸载与安装失败回滚都只回收业务端口：保留 UFW 启用状态、默认策略与 SSH 放行。

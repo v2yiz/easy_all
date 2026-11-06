@@ -187,7 +187,7 @@ OUT="${TMP_DIR}/state.out"
 ERR="${TMP_DIR}/state.err"
 STATE_OVERRIDE="${TMP_DIR}/custom-state/state.env"
 mkdir -p "$(dirname "${STATE_OVERRIDE}")"
-printf 'PROTOCOL="cloudflare-streamup"\n' >"${STATE_OVERRIDE}"
+printf 'PROTOCOL="combined"\n' >"${STATE_OVERRIDE}"
 run_purge "${CALLS}" "${OUT}" "${ERR}" \
     env EASY_ALL_STATE_FILE_OVERRIDE="${STATE_OVERRIDE}" \
     || fail "purge-cloudflare: 自定义状态文件路径应成功"
