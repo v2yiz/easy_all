@@ -83,6 +83,9 @@
   - Clash / Mihomo 客户端自动返回格式合法的 YAML 订阅（采用最新 MRS 规则集）；
   - 通用客户端返回经过 Base64 编码的节点 URI 列表；
   - 亦支持在 URL 参数中追加 `flag=clash` 或 `flag=base64` 强制指定下发格式。
+- **平台自适应（嗅探段）**：默认模板开启 `sniffer`。UA 命中 `iphone|ipad|ipod|ios`（`ios` 需独立单词，避免 `Studios`/`Radios` 之类 UA 被误判）或在 URL 追加 `os=ios` 时，
+  下发单独渲染的 YAML（`mihomo-ios.yaml` / `mihomo-ios.port-template`），剔除以 `sniffer:` 开头的整段配置；
+  模板若把 `sniffer` 写成内联映射，安装与 Worker 构建会直接报错，不会静默下发未剔除的嗅探段。
 
 ---
 

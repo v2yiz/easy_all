@@ -21,6 +21,7 @@ readonly WEB_ROOT="${WEB_ROOT:-/var/www/easy_all}"
 readonly SUBSCRIPTION_DIR="${SUBSCRIPTION_DIR:-${WEB_ROOT}/subscriptions}"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_BASE64_FILE:-${SUBSCRIPTION_DIR}/base64.txt}"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_MIHOMO_FILE:-${SUBSCRIPTION_DIR}/mihomo.yaml}"
+readonly SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_MIHOMO_IOS_FILE:-${SUBSCRIPTION_DIR}/mihomo-ios.yaml}"
 readonly COMMAND_PATH="${COMMAND_PATH:-/usr/local/bin/easy_all}"
 readonly XRAY_DIR="${XRAY_DIR:-${STATE_DIR}/xray}"
 readonly XRAY_BIN="${XRAY_BIN:-${XRAY_DIR}/xray}"
@@ -226,6 +227,7 @@ write_subscriptions() {
     build_mihomo_nodes >"${RUNTIME_TMP}/nodes.yaml"
     render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${RUNTIME_TMP}/nodes.yaml" \
         "${stage}/mihomo.yaml" "${SUB_DOWNLOAD_NAME}"
+    strip_mihomo_sniffer "${stage}/mihomo.yaml" >"${stage}/mihomo-ios.yaml"
     publish_subscription_files "${stage}"
 }
 

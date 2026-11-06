@@ -2,9 +2,10 @@
 
 # Cloudflare-only endpoint discovery.
 
-readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-120}"
+readonly CLOUDFLARE_POOL_SAMPLE_LIMIT="${CLOUDFLARE_POOL_SAMPLE_LIMIT_OVERRIDE:-72}"
 readonly CLOUDFLARE_GLOBALPING_PACKET_COUNT="${CLOUDFLARE_GLOBALPING_PACKET_COUNT_OVERRIDE:-10}"
 readonly CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT="${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT_OVERRIDE:-20}"
+readonly CLOUDFLARE_GLOBALPING_MAX_RTT_MS="${CLOUDFLARE_GLOBALPING_MAX_RTT_MS_OVERRIDE:-220}"
 readonly CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS="${CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS_OVERRIDE:-3}"
 readonly CLOUDFLARE_CANDIDATES_PER_CARRIER="${CLOUDFLARE_CANDIDATES_PER_CARRIER_OVERRIDE:-2}"
 readonly CLOUDFLARE_CANDIDATE_LIMIT=6
@@ -14,6 +15,38 @@ readonly CLOUDFLARE_TLS_CANDIDATES_PER_CARRIER=5
 readonly CLOUDFLARE_LOCAL_VALIDATION_CONCURRENCY=12
 readonly GLOBALPING_POLL_ATTEMPTS="${GLOBALPING_POLL_ATTEMPTS_OVERRIDE:-60}"
 readonly GLOBALPING_POLL_TIMEOUT_SECONDS="${GLOBALPING_POLL_TIMEOUT_SECONDS_OVERRIDE:-120}"
+
+if [[ -n "${CLOUDFLARE_ENTERPRISE_DOMAINS_OVERRIDE+set}" ]]; then
+    # 逗号分隔；显式设为空串即关闭企业域名解析（离线或需要确定性候选时使用）。
+    CLOUDFLARE_ENTERPRISE_DOMAINS=()
+    if [[ -n "${CLOUDFLARE_ENTERPRISE_DOMAINS_OVERRIDE}" ]]; then
+        IFS=',' read -r -a _enterprise_domain_entries <<<"${CLOUDFLARE_ENTERPRISE_DOMAINS_OVERRIDE}"
+        for _enterprise_domain in "${_enterprise_domain_entries[@]}"; do
+            _enterprise_domain=${_enterprise_domain//[[:space:]]/}
+            [[ -z "${_enterprise_domain}" ]] || CLOUDFLARE_ENTERPRISE_DOMAINS+=("${_enterprise_domain}")
+        done
+        unset _enterprise_domain_entries _enterprise_domain
+    fi
+else
+    CLOUDFLARE_ENTERPRISE_DOMAINS=(
+        "speed.cloudflare.com"
+        "time.cloudflare.com"
+        "cloudflare.com"
+        "cdnjs.com"
+        "openai.com"
+        "fbi.gov"
+        "mfa.gov.ua"
+        "store.ubi.com"
+        "www.udemy.com"
+        "macrumors.com"
+        "flightradar24.com"
+        "selfridges.com"
+        "www.starbucks.co.uk"
+        "garmin.com"
+        "skk.moe"
+    )
+fi
+readonly CLOUDFLARE_ENTERPRISE_DOMAINS
 
 readonly CLOUDFLARE_PRIORITY_IPV4_CIDRS=(
     "104.16.0.0/13"
@@ -51,15 +84,27 @@ cloudflare_generate_candidate_pool() {
 
     [[ -s "${ranges_file}" && "${sample_limit}" =~ ^[1-9][0-9]*$ ]] || return 1
 
-    python3 - "${ranges_file}" "${sample_limit}" "${epoch}" "${CLOUDFLARE_PRIORITY_IPV4_CIDRS[@]}" <<'EOF'
-import sys, ipaddress
+    # 空数组在 set -u 下不能用 "${arr[@]}" 展开（bash ≤ 4.3 会报 unbound variable）。
+    python3 - "${ranges_file}" "${sample_limit}" "${epoch}" \
+        "${#CLOUDFLARE_ENTERPRISE_DOMAINS[@]}" \
+        ${CLOUDFLARE_ENTERPRISE_DOMAINS[@]+"${CLOUDFLARE_ENTERPRISE_DOMAINS[@]}"} \
+        "${CLOUDFLARE_PRIORITY_IPV4_CIDRS[@]}" <<'EOF'
+import concurrent.futures
+import ipaddress
+import json
+import socket
+import sys
+import urllib.request
 
 ranges_file = sys.argv[1]
 sample_limit = int(sys.argv[2])
 epoch = int(sys.argv[3])
-priority_cidrs = [ipaddress.ip_network(c) for c in sys.argv[4:]]
+num_domains = int(sys.argv[4])
+domains = sys.argv[5:5 + num_domains]
+priority_cidrs = [ipaddress.ip_network(c) for c in sys.argv[5 + num_domains:]]
 pri_ranges = [(int(net.network_address), int(net.broadcast_address)) for net in priority_cidrs]
 
+cf_networks = []
 pri_blocks = []
 oth_blocks = []
 
@@ -70,6 +115,7 @@ with open(ranges_file, "r", encoding="utf-8") as f:
             continue
         try:
             net = ipaddress.ip_network(cidr)
+            cf_networks.append(net)
             for sub in net.subnets(new_prefix=24):
                 sub_start = int(sub.network_address)
                 if any(r[0] <= sub_start <= r[1] for r in pri_ranges):
@@ -79,37 +125,109 @@ with open(ranges_file, "r", encoding="utf-8") as f:
         except Exception:
             continue
 
-if not pri_blocks and not oth_blocks:
+if not cf_networks:
     sys.exit(1)
 
-if pri_blocks and oth_blocks:
-    pri_limit = max(1, min(len(pri_blocks), sample_limit * 7 // 10))
-    oth_limit = min(len(oth_blocks), sample_limit - pri_limit)
-elif pri_blocks:
-    pri_limit = min(len(pri_blocks), sample_limit)
-    oth_limit = 0
-else:
-    pri_limit = 0
-    oth_limit = min(len(oth_blocks), sample_limit)
+def cf_cidr_of(ip):
+    """返回该 IP 所属的 Cloudflare 网段，非公网或非 Cloudflare 地址返回 None。"""
+    try:
+        addr = ipaddress.IPv4Address(ip)
+    except Exception:
+        return None
+    if addr.is_private:
+        return None
+    return next((str(net) for net in cf_networks if addr in net), None)
 
-hour = epoch // 3600
-responsive_hosts = [1, 2, 3, 4, 8, 16, 24, 32, 64, 100, 128, 150, 172, 198, 200]
 
-if pri_limit > 0:
-    for i in range(pri_limit):
-        idx = (hour + (i * len(pri_blocks) // pri_limit)) % len(pri_blocks)
-        block_val, src_cidr = pri_blocks[idx]
-        host = responsive_hosts[(hour * 7 + i * 11 + (block_val >> 8)) % len(responsive_hosts)]
-        cand_ip = str(ipaddress.IPv4Address(block_val + host))
-        print(f"{cand_ip}\t{src_cidr}")
+def resolve_domain(d):
+    # 境内系统解析可能被污染成任意公网 IP，因此“拿到地址”不等于解析成功：
+    # 只有落在 Cloudflare 网段内的才算命中，否则必须继续走 DoH，不能短路备用路径。
+    ips = set()
+    try:
+        infos = socket.getaddrinfo(d, 443, socket.AF_INET, socket.SOCK_STREAM)
+        for it in infos:
+            ip = it[4][0]
+            if cf_cidr_of(ip):
+                ips.add(ip)
+    except Exception:
+        pass
+    if not ips:
+        try:
+            req = urllib.request.Request(
+                f"https://1.1.1.1/dns-query?name={d}&type=A",
+                headers={"accept": "application/dns-json", "User-Agent": "easy_all/ip-screener"}
+            )
+            with urllib.request.urlopen(req, timeout=2.0) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                for a in data.get("Answer", []):
+                    if a.get("type") == 1:
+                        ip = a.get("data")
+                        if ip and cf_cidr_of(ip):
+                            ips.add(ip)
+        except Exception:
+            pass
+    return ips
 
-if oth_limit > 0:
-    for i in range(oth_limit):
-        idx = (hour + (i * len(oth_blocks) // oth_limit)) % len(oth_blocks)
-        block_val, src_cidr = oth_blocks[idx]
-        host = responsive_hosts[(hour * 7 + i * 11 + (block_val >> 8)) % len(responsive_hosts)]
-        cand_ip = str(ipaddress.IPv4Address(block_val + host))
-        print(f"{cand_ip}\t{src_cidr}")
+domain_cands = []
+if domains:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(domains))) as executor:
+        futures = {executor.submit(resolve_domain, d): d for d in domains}
+        for f in concurrent.futures.as_completed(futures):
+            for ip in f.result():
+                cidr = cf_cidr_of(ip)
+                if cidr:
+                    domain_cands.append((ip, cidr))
+
+# 配额：企业域名 2/3、优先网段 1/6、其他网段 1/6（样本 72 时为 48/12/12）。
+# 官方网段的两个名额强制预留；域名解析不足时，剩余名额回流给网段抽样，避免池子缩水。
+q_domain = sample_limit * 2 // 3
+q_pri = sample_limit // 6
+q_oth = sample_limit // 6
+
+seen = set()
+selected = []
+
+for ip, cidr in domain_cands:
+    if ip not in seen:
+        seen.add(ip)
+        selected.append((ip, cidr))
+        if len(selected) >= q_domain:
+            break
+
+slack = sample_limit - len(selected) - q_pri - q_oth
+pri_limit = min(q_pri + slack // 2, len(pri_blocks))
+oth_limit = min(q_oth + (slack - slack // 2), len(oth_blocks))
+
+if pri_limit > 0 or oth_limit > 0:
+    hour = epoch // 3600
+    responsive_hosts = [1, 2, 3, 4, 8, 16, 24, 32, 64, 100, 128, 150, 172, 198, 200]
+
+    if pri_limit > 0:
+        for i in range(pri_limit):
+            idx = (hour + (i * len(pri_blocks) // pri_limit)) % len(pri_blocks)
+            block_val, src_cidr = pri_blocks[idx]
+            host = responsive_hosts[(hour * 7 + i * 11 + (block_val >> 8)) % len(responsive_hosts)]
+            cand_ip = str(ipaddress.IPv4Address(block_val + host))
+            if cand_ip not in seen:
+                seen.add(cand_ip)
+                selected.append((cand_ip, src_cidr))
+                if len(selected) >= sample_limit:
+                    break
+
+    if oth_limit > 0 and len(selected) < sample_limit:
+        for i in range(oth_limit):
+            idx = (hour + (i * len(oth_blocks) // oth_limit)) % len(oth_blocks)
+            block_val, src_cidr = oth_blocks[idx]
+            host = responsive_hosts[(hour * 7 + i * 11 + (block_val >> 8)) % len(responsive_hosts)]
+            cand_ip = str(ipaddress.IPv4Address(block_val + host))
+            if cand_ip not in seen:
+                seen.add(cand_ip)
+                selected.append((cand_ip, src_cidr))
+                if len(selected) >= sample_limit:
+                    break
+
+for ip, cidr in selected:
+    print(f"{ip}\t{cidr}")
 EOF
 }
 
@@ -226,7 +344,8 @@ cloudflare_collect_globalping_measurements() {
 cloudflare_acceptable_loss_observations() {
     local measurements_file=$1
     jq -c --argjson packets "${CLOUDFLARE_GLOBALPING_PACKET_COUNT}" \
-        --argjson max_loss "${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT}" '
+        --argjson max_loss "${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT}" \
+        --argjson max_rtt "${CLOUDFLARE_GLOBALPING_MAX_RTT_MS}" '
       . as $entry
       | .measurement.results[]?
       | select(.probe.country == "CN")
@@ -248,16 +367,31 @@ cloudflare_acceptable_loss_observations() {
           carrier_asn:.probe.asn,
           loss:(.result.stats.loss // 0),
           avg_rtt_ms:.result.stats.avg,
+          rtt_ok:(.result.stats.avg <= $max_rtt),
           city:(.probe.city // ""),
           network:(.probe.network // "")
         }
     ' "${measurements_file}"
 }
 
-cloudflare_select_carrier_candidates() {
-    local observations_file=$1 per_carrier=$2 limit=$3 history_file=${4:-}
+cloudflare_top_tcp_candidates() {
+    local observations_file=$1 per_carrier=$2
+    # Stage-1 只取每网前 N 个进深度验证：先保留 ≤max_rtt 的快节点，再按丢包率与 RTT 排；
+    # 否则“丢包率更低但很慢”的候选会把唯一个快节点挤出验证名额。
+    jq -s -r --argjson per_carrier "${per_carrier}" '
+        group_by(.carrier_asn)
+        | map(sort_by([(if .rtt_ok then 0 else 1 end), .loss, .avg_rtt_ms]) | .[0:$per_carrier])
+        | add
+        | .[]?
+        | [.ip, .source_cidr, .carrier_asn, .avg_rtt_ms]
+        | @tsv
+    ' "${observations_file}"
+}
 
-    python3 - "${observations_file}" "${per_carrier}" "${limit}" "${history_file}" <<'EOF'
+cloudflare_select_carrier_candidates() {
+    local observations_file=$1 per_carrier=$2 limit=$3 history_file=${4:-} max_rtt=${5:-0}
+
+    python3 - "${observations_file}" "${per_carrier}" "${limit}" "${history_file}" "${max_rtt}" <<'EOF'
 import sys, json, os
 from itertools import combinations
 
@@ -265,6 +399,7 @@ obs_file = sys.argv[1]
 per_carrier = int(sys.argv[2])
 limit = int(sys.argv[3])
 hist_file = sys.argv[4] if len(sys.argv) > 4 else ""
+max_rtt = float(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else 0.0
 
 hist_ips = set()
 if hist_file and os.path.isfile(hist_file):
@@ -307,6 +442,12 @@ for c in carriers:
             ):
                 unique_items[ip] = it
     c_items = list(unique_items.values())
+    # 该运营商凑不够 per_carrier 个 ≤max_rtt 候选时，回退到丢包率筛过的全部候选（按 RTT 升序取最低）。
+    if max_rtt > 0:
+        fast_items = [it for it in c_items if float(it.get("avg_rtt_ms", 999)) <= max_rtt]
+        if len(fast_items) >= per_carrier:
+            c_items = fast_items
+    # 按平均 RTT 升序（历史候选给 5ms 优待）选出该网最低延迟候选。
     c_items.sort(key=lambda x: (
         (float(x.get("avg_rtt_ms", 999)) - 5.0) if x.get("ip") in hist_ips else float(x.get("avg_rtt_ms", 999)),
         float(x.get("avg_rtt_ms", 999)),
@@ -506,7 +647,8 @@ cloudflare_collect_verified_tls_observations() {
             "${measurements_file}" >"${observations_file}" || true
         cloudflare_select_carrier_candidates "${observations_file}" \
             "${CLOUDFLARE_CANDIDATES_PER_CARRIER}" \
-            "${CLOUDFLARE_CANDIDATE_LIMIT}" >"${selected_file}"
+            "${CLOUDFLARE_CANDIDATE_LIMIT}" "" \
+            "${CLOUDFLARE_GLOBALPING_MAX_RTT_MS}" >"${selected_file}"
         selected_count=$(jq 'length' "${selected_file}")
         ((selected_count >= CLOUDFLARE_CANDIDATE_LIMIT)) && break
         cloudflare_filter_unverified_tls_candidates \
@@ -650,7 +792,7 @@ EOF
 }
 
 cloudflare_build_official_pool_cache() {
-    local destination=$1 ranges_file raw_pool_file pool_file budgeted_pool_file
+    local destination=$1 ranges_file raw_pool_file pool_file budgeted_pool_file domain_note
     local measurements_file observations_file tcp_top_candidates_tsv
     local tls_measurements_file tls_observations_file preliminary_file
     local history_candidates_tsv hist_count new_sample_limit
@@ -696,7 +838,9 @@ cloudflare_build_official_pool_cache() {
     } | awk -F'\t' '!seen[$1]++' >"${raw_pool_file}"
 
     pool_size=$(wc -l <"${raw_pool_file}" | tr -d ' ')
-    info "Cloudflare 官方 IP 池本轮抽样 ${pool_size} 个 /24 候选（含 ${hist_count} 个历史候选），正在执行本机 CDN 入口预检"
+    domain_note=""
+    [[ ${#CLOUDFLARE_ENTERPRISE_DOMAINS[@]} -eq 0 ]] || domain_note="企业大厂域名解析与"
+    info "Cloudflare 优选 IP 池本轮整合 ${pool_size} 个候选（含${domain_note} ${hist_count} 个历史候选），正在执行本机 CDN 入口预检"
     cloudflare_prevalidate_candidate_pool "${raw_pool_file}" "${pool_file}" \
         || return 1
     prevalidated_pool_size=$(wc -l <"${pool_file}" | tr -d ' ')
@@ -710,7 +854,7 @@ cloudflare_build_official_pool_cache() {
     cloudflare_acceptable_loss_observations \
         "${measurements_file}" >"${observations_file}"
     [[ -s "${observations_file}" ]] || {
-        warn "Cloudflare 官方 IP 池没有丢包率不超过 ${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT}% 的候选"
+        warn "Cloudflare 官方 IP 池没有丢包率 ≤ ${CLOUDFLARE_GLOBALPING_MAX_LOSS_PERCENT}% 的候选"
         return 1
     }
     info "Globalping TCP 预筛有效候选：$(jq -sr '
@@ -719,14 +863,8 @@ cloudflare_build_official_pool_cache() {
     ' "${observations_file}" | tr '\n' ' ')"
 
     # Extract top 5 candidates per carrier for Stage 2 HTTP/TLS verification
-    jq -s -r --argjson per_carrier "${CLOUDFLARE_TLS_CANDIDATES_PER_CARRIER}" '
-        group_by(.carrier_asn)
-        | map(sort_by([.loss, .avg_rtt_ms]) | .[0:$per_carrier])
-        | add
-        | .[]?
-        | [.ip, .source_cidr, .carrier_asn, .avg_rtt_ms]
-        | @tsv
-    ' "${observations_file}" >"${tcp_top_candidates_tsv}"
+    cloudflare_top_tcp_candidates "${observations_file}" \
+        "${CLOUDFLARE_TLS_CANDIDATES_PER_CARRIER}" >"${tcp_top_candidates_tsv}"
 
     if [[ -s "${tcp_top_candidates_tsv}" ]]; then
         info "正在对候选执行 Globalping HTTP/TLS 深度验证（防 SNI 假通，最多 ${CLOUDFLARE_GLOBALPING_TLS_ATTEMPTS} 轮）"
@@ -738,7 +876,8 @@ cloudflare_build_official_pool_cache() {
     cloudflare_select_carrier_candidates "${tls_observations_file}" \
         "${CLOUDFLARE_CANDIDATES_PER_CARRIER}" \
         "${CLOUDFLARE_CANDIDATE_LIMIT}" \
-        "${history_candidates_tsv}" >"${preliminary_file}"
+        "${history_candidates_tsv}" \
+        "${CLOUDFLARE_GLOBALPING_MAX_RTT_MS}" >"${preliminary_file}"
 
     count=$(jq -er 'length' "${preliminary_file}") \
         || { warn "Globalping 候选结果不是有效 JSON"; return 1; }

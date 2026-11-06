@@ -732,6 +732,40 @@ function subscriptionFormat(request, flag) {
         : 'base64';
 }
 
+function isIOSSubscription(request, url) {
+    const paramMatch = /^(?:ios|iphone|ipad)$/i.test(
+        (url?.searchParams?.get('os') || '').trim()
+    );
+    const uaMatch = /(?:iphone|ipad|ipod|\bios\b)/i.test(
+        request.headers.get('User-Agent') || ''
+    );
+    return paramMatch || uaMatch;
+}
+
+function stripMihomoSniffer(yaml) {
+    const lines = yaml.split('\n');
+    const result = [];
+    let skipping = false;
+    for (const line of lines) {
+        if (/^sniffer:\s*(?:#.*)?$/.test(line)) {
+            skipping = true;
+            continue;
+        }
+        // 顶格注释可能属于下一个顶层段或末尾标记，跟 shell 端一样原样保留。
+        if (skipping && /^#/.test(line)) {
+            result.push(line);
+            continue;
+        }
+        if (skipping && /^[^ \t#]/.test(line)) {
+            skipping = false;
+        }
+        if (!skipping) {
+            result.push(line);
+        }
+    }
+    return result.join('\n');
+}
+
 function downloadName(env) {
     const value = String(env.SUB_DOWNLOAD_NAME || DEFAULT_SUB_DOWNLOAD_NAME)
         .trim()
@@ -851,9 +885,13 @@ function createWorkerHandler({
         const selectedLocalNodes = selectLocalNodes(localNodes, url);
         const nodes = [...selectedLocalNodes, ...dynamicCdnNodes];
         const ports = resolveNodePorts(nodes, { now });
-        const content = format === 'clash'
+        const isIOS = isIOSSubscription(request, url);
+        let content = format === 'clash'
             ? buildClashConfig(nodes, ports, dynamicCdnNodes)
             : buildBase64Subscription(nodes, ports);
+        if (format === 'clash' && isIOS) {
+            content = stripMihomoSniffer(content);
+        }
 
         const headers = subscriptionHeaders(format, {
             SUB_DOWNLOAD_NAME:

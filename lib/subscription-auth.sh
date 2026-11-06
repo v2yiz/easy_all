@@ -198,6 +198,23 @@ render_mihomo_subscription() {
     ' "${template}" >"${destination}" || die "生成 Mihomo 订阅失败"
 }
 
+strip_mihomo_sniffer() {
+    local source=$1 content
+    [[ -s "${source}" ]] || die "待处理 Mihomo 配置为空：${source}"
+    # 行尾注释允许出现（`sniffer:  # 嗅探`），内联映射无法按段剔除。
+    # 顶格注释行原样保留：它们可能属于下一个顶层段，也可能是 Reality 的终止标记，不能跟着 sniffer 段一起吐掉。
+    content=$(awk '
+        /^sniffer:[[:space:]]*(#.*)?$/ { skip = 1; next }
+        skip && /^#/ { print; next }
+        skip && /^[^[:space:]#]/ { skip = 0 }
+        !skip { print }
+    ' "${source}") || die "剥离 Mihomo 嗅探配置失败：${source}"
+    if grep -q '^sniffer:' <<<"${content}"; then
+        die "Mihomo 模板的 sniffer 段必须写成块映射（sniffer: 后不能接内联内容）：${source}"
+    fi
+    printf '%s\n' "${content}"
+}
+
 write_subscription_nginx_maps() {
     subscription_enabled || return 0
     cat <<'EOF'
@@ -235,9 +252,28 @@ map $easy_all_subscription_forced_format $easy_all_subscription_format {
     "base64" "base64";
 }
 
-map $easy_all_subscription_format $easy_all_subscription_uri {
-    default  /_easy_all_subscription/base64;
-    "mihomo" /_easy_all_subscription/mihomo;
+# 客户端系统识别：显式参数 os=ios（或 iphone/ipad）或 User-Agent 命中 iOS 任一即判定为 iOS
+map $arg_os $easy_all_subscription_param_ios {
+    default 0;
+    ~*^(ios|iphone|ipad)$ 1;
+}
+
+map $http_user_agent $easy_all_subscription_ua_ios {
+    default 0;
+    # 这里的单个 \b 是有意写法：nginx 的 token 解析只解释 \" \' \\ \t \r \n 六种转义
+    # （ngx_conf_read_token），其余 \X（含 \b）均原样透传给 PCRE，加不加双引号结果相同。
+    ~*(iphone|ipad|ipod|\bios\b) 1;
+}
+
+map "$easy_all_subscription_param_ios:$easy_all_subscription_ua_ios" $easy_all_subscription_is_ios {
+    default 0;
+    ~*1     1;
+}
+
+map "$easy_all_subscription_format:$easy_all_subscription_is_ios" $easy_all_subscription_uri {
+    "mihomo:1" /_easy_all_subscription/mihomo_ios;
+    "mihomo:0" /_easy_all_subscription/mihomo;
+    default    /_easy_all_subscription/base64;
 }
 
 EOF
@@ -283,6 +319,7 @@ write_subscription_nginx_locations() {
     case "${renderer}" in static | reality) ;; *) die "订阅渲染类型无效" ;; esac
     local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
     local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
+    local mihomo_ios_alias="${SUBSCRIPTION_MIHOMO_IOS_FILE:-${SUBSCRIPTION_DIR}/mihomo-ios.yaml}"
     local origin_guard=""
     local worker_guard=""
     subscription_enabled || return 0
@@ -342,6 +379,21 @@ ${base64_content}
         access_log off;
 ${error_log}
         alias ${mihomo_alias};
+${mihomo_content}
+        default_type text/yaml;
+        add_header Vary "User-Agent" always;
+        add_header Content-Disposition "attachment; filename=${SUB_DOWNLOAD_NAME}" always;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+        add_header Pragma "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+    }
+
+    location = /_easy_all_subscription/mihomo_ios {
+        internal;
+        access_log off;
+${error_log}
+        alias ${mihomo_ios_alias};
 ${mihomo_content}
         default_type text/yaml;
         add_header Vary "User-Agent" always;

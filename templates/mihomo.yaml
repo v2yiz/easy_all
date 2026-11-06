@@ -1,4 +1,4 @@
-# COMMON 默认精简版：面向低内存客户端，目标 50MB，非 iOS 峰值保证。
+# COMMON 默认精简版：面向低内存客户端，目标 50MB（未计嗅探开销，开启后需复测），非 iOS 峰值保证。
 # 采用 Mihomo 常用的 Fake-IP、分流 DNS、MRS 与域名优先/IP 兜底组合。
 # 小型内联集合同时用于 DNS、QUIC 和路由，核心服务不依赖首次下载成功。
 # 不加载整库 DAT；默认加载 cn 与 geolocation-cn 域名库（约 11 万 + 5 千条），不加载 geolocation-!cn 域名库。
@@ -17,6 +17,21 @@ tcp-concurrent: false
 profile:
     store-selected: true
     store-fake-ip: true
+
+sniffer:
+    enable: true
+    force-dns-mapping: true
+    parse-pure-ip: true
+    # 把浏览器自行解析的数字 IP 恢复为嗅探域名，确保分流仍按域名生效；iOS 下发时会自动剔除本段。
+    override-destination: true
+    sniff:
+      HTTP:
+        ports: [80, 8080-8880]
+        override-destination: true
+      TLS:
+        ports: [443, 8443]
+      QUIC:
+        ports: [443, 8443]
 
 tun:
     enable: true

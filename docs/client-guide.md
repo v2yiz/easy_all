@@ -152,9 +152,12 @@ Apple 仅国内调度集合与少量精确兜底域名使用国内 DNS 并直连
 COMMON 关闭 `tcp-concurrent` 以降低并发握手开销，并将 UDP NAT 空闲超时设为 60 秒以更早回收空闲映射；
 空闲映射过期后，后续通信可能需要重建映射，不代表活跃 UDP 会话每分钟被强制中断。
 保留 `store-fake-ip: true` 用于跨重启复用 Fake-IP 映射，不把持久化本身作为降低内存的手段。
-COMMON 不启用嗅探：应用自行使用 DoH 或直接连接真实 IP 时，如果内核没有域名或 DNS 映射，
-即使该域名已收录也无法按域名分流；此时按 IP、端口及最终兜底规则处理，境外服务使用中国 IP 时可能直连。
-应结合客户端连接记录验证这类应用，是否启用嗅探需同时评估设备内存。
+三套模板默认都开启嗅探（`sniffer`，含 `override-destination`）：应用自行使用 DoH 或直接连接真实 IP 时，
+内核可从 TLS/HTTP/QUIC 握手恢复域名，分流仍按域名生效；不开启时这类连接只能按 IP、端口及最终兜底规则处理，
+境外服务使用中国 IP 时可能直连。iOS 客户端（UA 命中 `iphone/ipad/ipod/ios`，或链接加 `&os=ios`）下发的 YAML
+会自动剔除该段；剔除依据（客户端内核不识别该键，还是 iOS 侧内存限制）尚未验证，需按实际客户端确认。
+嗅探会额外占用连接级内存与解析开销：下面的 50MB 目标与 RSS 基线都是在**未开启嗅探**时测得的，
+开启后需按自己的设备复测。
 
 50MB 是优化目标，不是 iOS 峰值保证。macOS RSS 与 iOS 网络扩展占用不能直接等同；节点数量、
 客户端内核、TUN、DNS 缓存和并发连接都会影响实际峰值。旧款 iPhone 必须用实际客户端测试
@@ -168,7 +171,7 @@ COMMON 不启用嗅探：应用自行使用 DoH 或直接连接真实 IP 时，�
 
 | 模板 | 规则覆盖 | 内存取舍 |
 | --- | --- | --- |
-| `templates/mihomo.yaml`（默认） | 国内域名库、国内 SDK 域名与常用域名直接分流，已有目标 IP 再按 LAN/CN GeoIP 兜底 | 七个 MRS，内存仍以 50MB 为优化目标 |
+| `templates/mihomo.yaml`（默认） | 国内域名库、国内 SDK 域名与常用域名直接分流，已有目标 IP 再按 LAN/CN GeoIP 兜底 | 七个 MRS，内存仍以 50MB 为优化目标（不含嗅探开销） |
 | `templates/mihomo-common.yaml` | 默认模板再加境外域名 MRS | 覆盖更全，但常驻内存高于默认模板 |
 | `templates/mihomo-classic.yaml` | 经典分流（2.3.1 起全部改为 MRS 规则集，不再加载 geodata/.dat） | 十三个 MRS，另有 FCM 与微信真实 IP 例外 |
 
@@ -191,8 +194,10 @@ sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common.yaml
 Cloudflare 聚合 Worker 会重新构建并内嵌所选模板，改用
 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply-cloud` 即可让所有客户端生效。自定义模板路径
 同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板已在 CI 用固定
-内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。Reality 自托管订阅
-会把选中的模板保存在服务器上，后续 `apply`、`edit-sub` 与重启后的端口刷新沿用同一模板。
+内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。`sniffer` 段必须写成块映射
+（`sniffer:` 独占一行），写成内联映射时安装与 Worker 构建会直接报错——iOS 下发需要按段剔除它。
+`sniffer` 段可以放在任意顶层位置：剥离只删本段内容，顶格注释与 Reality 终止标记都会保留。
+选中的模板会保存在服务器上，后续 `apply`、`edit-sub` 与重启后的端口刷新沿用同一模板。
 
 ## 订阅更新失败
 

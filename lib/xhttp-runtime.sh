@@ -14,6 +14,7 @@ readonly WEB_ROOT="${WEB_ROOT:-/var/www/easy_all}"
 readonly SUBSCRIPTION_DIR="${SUBSCRIPTION_DIR:-${WEB_ROOT}/subscriptions}"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
+readonly SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_DIR}/mihomo-ios.yaml"
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly ENTRY_COMMAND_NAME="easy_all"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
@@ -387,6 +388,8 @@ write_subscriptions() {
     grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
     install -m 0640 "${base64_file}" "${stage_dir}/base64.txt" || die "暂存 Base64 订阅失败"
     install -m 0640 "${mihomo_file}" "${stage_dir}/mihomo.yaml" || die "暂存 Mihomo 订阅失败"
+    strip_mihomo_sniffer "${mihomo_file}" >"${stage_dir}/mihomo-ios.yaml" || die "暂存 iOS Mihomo 订阅失败"
+    chmod 0640 "${stage_dir}/mihomo-ios.yaml"
     publish_subscription_files "${stage_dir}"
     rm -rf -- "${stage_dir}"
 }
@@ -412,6 +415,7 @@ show_subscription() {
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
     printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
     printf '%s\n' '  如需强制格式：在链接后加 &flag=clash 或 &flag=base64'
+    printf '%s\n' '  iOS 客户端（UA 命中 iphone/ipad/ipod/ios，或链接加 &os=ios）下发的 YAML 不带嗅探段'
     printf '\n'
 }
 

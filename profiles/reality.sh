@@ -24,6 +24,7 @@ readonly WEB_ROOT="/var/www/easy_all"
 readonly SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.port-template"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.port-template"
+readonly SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_DIR}/mihomo-ios.port-template"
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly ENTRY_COMMAND_NAME="${EASY_ALL_ENTRY_COMMAND:-easy_all}"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
@@ -1310,6 +1311,14 @@ install_static_subscriptions() {
         "${stage_dir}/base64.port-template" || return 1
     install -o root -g www-data -m 0640 "${mihomo_file}" \
         "${stage_dir}/mihomo.port-template" || return 1
+    strip_mihomo_sniffer "${mihomo_file}" >"${stage_dir}/mihomo-ios.port-template" || return 1
+    # reality-subscription.js 要求模板以终止标记结尾，否则每次 iOS 请求都返回 503；
+    # 剥离只能删嗅探段，不得改动末行。
+    [[ "$(tail -n 1 "${stage_dir}/mihomo-ios.port-template")" \
+        == "$(tail -n 1 "${stage_dir}/mihomo.port-template")" ]] \
+        || die "iOS 订阅模板丢失 Reality 终止标记"
+    chmod 0640 "${stage_dir}/mihomo-ios.port-template" || return 1
+    chown root:www-data "${stage_dir}/mihomo-ios.port-template" || return 1
     publish_subscription_files "${stage_dir}" || return 1
     rm -rf -- "${stage_dir}"
 }

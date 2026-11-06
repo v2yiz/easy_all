@@ -15,7 +15,7 @@ mihomo_template_matches_bundled() {
 }
 
 validate_mihomo_template() {
-    local source=$1 trusted_without_core=${2:-0} marker count
+    local source=$1 trusted_without_core=${2:-0} marker count bad_sniffer
     [[ -s "${source}" ]] || die "Mihomo 模板为空：${source}"
     for marker in \
         "# EASY_ALL_PROXY_NODE" \
@@ -27,6 +27,11 @@ validate_mihomo_template() {
             || die "Mihomo 模板标记无效：${marker} 应且只能出现一次"
     done
     grep -q '^rules:' "${source}" || die "Mihomo 模板缺少规则"
+    # 订阅发布时会按段剔除非 iOS 客户端的嗅探配置；内联写法无法按段剔除，宁可在入口报错。
+    bad_sniffer=$(grep -E '^sniffer:' "${source}" \
+        | grep -Ev '^sniffer:[[:space:]]*(#.*)?$' || true)
+    [[ -z "${bad_sniffer}" ]] \
+        || die "Mihomo 模板的 sniffer 段必须写成块映射（sniffer: 后不能接内联内容）：${source}"
     grep -Fxq 'ipv6: false' "${source}" \
         && grep -Fq '    ipv6: false' "${source}" \
         && ! grep -Eq '^[[:space:]]+(inet6-address|fake-ip-range6):' "${source}" \

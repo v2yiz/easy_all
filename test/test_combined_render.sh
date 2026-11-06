@@ -6,18 +6,21 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/profiles/combined.sh"
 SUB_AUTH_LIB="${ROOT_DIR}/lib/subscription-auth.sh"
 
-# 沙箱环境可能禁止写用户默认 TMPDIR，显式使用 /tmp 模板并为无参 mktemp -d 提供兜底。
+# 沙箱环境可能禁止写用户默认 TMPDIR：无参 mktemp 一律落到本测试的 /tmp 目录。
 TMP_DIR=$(mktemp -d "${TMP_ROOT_FALLBACK:-/tmp}/easy_all_combined_test.XXXXXX")
 mktemp() {
-    if [[ $# -eq 1 && "$1" == "-d" ]]; then
-        command mktemp -d 2>/dev/null || command mktemp -d "${TMP_DIR}/runtime.XXXXXX"
+    if [[ $# -eq 0 ]]; then
+        command mktemp "${TMP_DIR}/file.XXXXXX"
+    elif [[ $# -eq 1 && "$1" == "-d" ]]; then
+        command mktemp -d "${TMP_DIR}/dir.XXXXXX"
     else
         command mktemp "$@"
     fi
 }
 trap 'command rm -rf -- "${TMP_DIR}"' EXIT
 
-fail() {
+# log.sh 在被 source 后定义了同名 fail（只打印、return 1），断言必须用本测试自己的致命 helper。
+fail_test() {
     printf 'not ok - %s\n' "$*" >&2
     exit 1
 }
@@ -25,19 +28,19 @@ fail() {
 assert_equal() {
     local label=$1 expected=$2 actual=$3
     [[ "${expected}" == "${actual}" ]] \
-        || fail "${label}: expected <${expected}> but got <${actual}>"
+        || fail_test "${label}: expected <${expected}> but got <${actual}>"
 }
 
 assert_contains() {
     local label=$1 text=$2 expected=$3
     [[ "${text}" == *"${expected}"* ]] \
-        || fail "${label}: missing <${expected}> in <${text}>"
+        || fail_test "${label}: missing <${expected}> in <${text}>"
 }
 
 assert_not_contains() {
     local label=$1 text=$2 unexpected=$3
     [[ "${text}" != *"${unexpected}"* ]] \
-        || fail "${label}: unexpected <${unexpected}> in <${text}>"
+        || fail_test "${label}: unexpected <${unexpected}> in <${text}>"
 }
 
 # 1. 语法检查
@@ -55,6 +58,7 @@ export WEB_ROOT="${TMP_DIR}/web"
 export SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 export SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 export SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
+export SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_DIR}/mihomo-ios.yaml"
 export COMMAND_INSTALL_DIR="${TMP_DIR}/lib"
 export COMMAND_PATH="${TMP_DIR}/bin/easy_all"
 export XRAY_DIR="${STATE_DIR}/xray"
@@ -122,7 +126,7 @@ install() {
     # 隔离护栏：除上面已重定向的受管路径外，任何对系统目录的写入都是测试隔离漏洞。
     case "${target}" in
     /etc/* | /usr/* | /var/* | /opt/* | /srv/*)
-        fail "test isolation: refusing to install into ${target}"
+        fail_test "test isolation: refusing to install into ${target}"
         ;;
     esac
     if [[ " ${args[*]} " == *" -d "* ]]; then
@@ -167,6 +171,8 @@ require_root() { :; }
 # 在 source 之前清掉宿主环境里的同名变量：本测试要证明的是"端口由 profile 自己定义"，
 # 继承值会掩盖"combined 未定义回环端口"这类缺陷（2.2.1 曾因此在首次安装时崩溃）。
 unset XRAY_XHTTP_LOOPBACK_PORT
+# 候选池测试要求确定性且不依赖外网 DNS：显式关闭企业域名解析，只验证 /24 抽样分支。
+export CLOUDFLARE_ENTERPRISE_DOMAINS_OVERRIDE=""
 # shellcheck source=/dev/null
 source "${PROFILE}"
 unset -f readonly
@@ -219,9 +225,9 @@ assert_contains "10c: rendered nginx config has grpc_pass with XRAY_XHTTP_LOOPBA
     "${rendered_modern}" "grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};"
 # 10c-1: 回环端口必须由 profile 自己定义（不能靠测试或环境提供）
 [[ "${XRAY_XHTTP_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
-    || fail "10c-1: XRAY_XHTTP_LOOPBACK_PORT must be a numeric value defined by combined.sh"
+    || fail_test "10c-1: XRAY_XHTTP_LOOPBACK_PORT must be a numeric value defined by combined.sh"
 ((10#${XRAY_XHTTP_LOOPBACK_PORT} >= 1024 && 10#${XRAY_XHTTP_LOOPBACK_PORT} <= 65535)) \
-    || fail "10c-1: XRAY_XHTTP_LOOPBACK_PORT out of range"
+    || fail_test "10c-1: XRAY_XHTTP_LOOPBACK_PORT out of range"
 assert_contains "10c: rendered nginx config has subscription server_name" \
     "${rendered_modern}" "server_name ${SUBSCRIPTION_DOMAIN};"
 assert_contains "10c: rendered nginx config has /subscribe location" \
@@ -286,7 +292,7 @@ assert_xhttp_settings() {
 ALLOWED_TOKENS='{"owner":"token-A-123456"}'
 OWNER_TOKEN="token-A-123456"
 combined_apply_tokens '{"owner":"token-B-123456"}' \
-    || fail "10e: valid token should be accepted by combined_apply_tokens"
+    || fail_test "10e: valid token should be accepted by combined_apply_tokens"
 assert_equal "10e: OWNER_TOKEN updated to B" "token-B-123456" "${OWNER_TOKEN}"
 assert_equal "10e: ALLOWED_TOKENS updated to B" '{"owner":"token-B-123456"}' "${ALLOWED_TOKENS}"
 token_map_output=$(write_subscription_token_map)
@@ -306,7 +312,7 @@ expected_sub_before=$(<"${SUBSCRIPTION_BASE64_FILE}")
 
 for invalid_json in '{"owner":""}' '{}' '{"owner":1}' '{"": "token-valid-1234"}' '"not-an-object"'; do
     if combined_apply_tokens "${invalid_json}" 2>/dev/null; then
-        fail "10f: invalid token input ${invalid_json} must return non-zero"
+        fail_test "10f: invalid token input ${invalid_json} must return non-zero"
     fi
     assert_equal "10f: ALLOWED_TOKENS unchanged after ${invalid_json}" \
         "${expected_allowed_before}" "${ALLOWED_TOKENS}"
@@ -344,7 +350,7 @@ if (
     curl() { return 35; }
     combined_validate_cf_node_sni
 ) >/dev/null 2>&1; then
-    fail "sni-check: TLS handshake failure must fail combined_validate_cf_node_sni"
+    fail_test "sni-check: TLS handshake failure must fail combined_validate_cf_node_sni"
 fi
 
 # 故障注入 B：构造"证书不覆盖节点域名 + 探测失败"场景（模拟 OpenSSL 3 真实行为：不匹配时仍 exit 0）
@@ -361,7 +367,7 @@ helper_not_match_rc=0
     combined_certificate_covers_node_domain
 ) || helper_not_match_rc=$?
 [[ "${helper_not_match_rc}" -ne 0 ]] \
-    || fail "checkhost-not-match: combined_certificate_covers_node_domain must return non-zero on 'does NOT match certificate' (exit 0)"
+    || fail_test "checkhost-not-match: combined_certificate_covers_node_domain must return non-zero on 'does NOT match certificate' (exit 0)"
 
 lenient_rc=0
 lenient_out=$(
@@ -393,7 +399,7 @@ strict_out=$(
     }
     combined_validate_cf_node_sni strict 2>&1
 ) || strict_rc=$?
-[[ "${strict_rc}" -ne 0 ]] || fail "fault-B-strict: strict mode must return non-zero on same uncovered scenario"
+[[ "${strict_rc}" -ne 0 ]] || fail_test "fault-B-strict: strict mode must return non-zero on same uncovered scenario"
 assert_contains "fault-B-strict: error message includes apply-cloud" "${strict_out}" "apply-cloud"
 
 # 桩输出 does match certificate + exit 0：helper 返回 0；探测成功时 lenient / strict 均返回 0
@@ -456,7 +462,7 @@ helper_libressl_rc=0
     combined_certificate_covers_node_domain
 ) || helper_libressl_rc=$?
 [[ "${helper_libressl_rc}" -ne 0 ]] \
-    || fail "checkhost-libressl: combined_certificate_covers_node_domain must return non-zero on unknown option -checkhost"
+    || fail_test "checkhost-libressl: combined_certificate_covers_node_domain must return non-zero on unknown option -checkhost"
 
 covered_lenient_rc=0
 covered_lenient_out=$(
@@ -472,7 +478,7 @@ covered_lenient_out=$(
     combined_validate_cf_node_sni lenient 2>&1
 ) || covered_lenient_rc=$?
 [[ "${covered_lenient_rc}" -ne 0 ]] \
-    || fail "fault-B-covered: lenient mode must still die when cert covers CF_NODE_DOMAIN but probe fails"
+    || fail_test "fault-B-covered: lenient mode must still die when cert covers CF_NODE_DOMAIN but probe fails"
 assert_contains "fault-B-covered: error message mentions TLS/SNI failure" \
     "${covered_lenient_out}" "本机 TLS/SNI 验收失败"
 
@@ -521,7 +527,7 @@ if (
     write_subscriptions() { die "注入写订阅失败"; }
     update_subscription </dev/null
 ) >/dev/null 2>&1; then
-    fail "tx-rollback: update_subscription must fail when write_subscriptions fails"
+    fail_test "tx-rollback: update_subscription must fail when write_subscriptions fails"
 fi
 assert_equal "tx-rollback: NGINX_CONFIG restored after failed update_subscription" \
     "${nginx_before_tx}" "$(<"${NGINX_CONFIG}")"
@@ -561,10 +567,10 @@ if (
     }
     apply_cloud_resources
 ) >/dev/null 2>&1; then
-    fail "cloud-rollback: apply_cloud_resources must fail when validation step fails"
+    fail_test "cloud-rollback: apply_cloud_resources must fail when validation step fails"
 fi
 [[ ! -f "${TMP_DIR}/finalized-flag" ]] \
-    || fail "cloud-rollback: finalize must not be called before save_state"
+    || fail_test "cloud-rollback: finalize must not be called before save_state"
 assert_equal "cloud-rollback: CERT_FILE restored" "cert-old" "$(<"${CERT_FILE}")"
 assert_equal "cloud-rollback: KEY_FILE restored" "key-old" "$(<"${KEY_FILE}")"
 assert_equal "cloud-rollback: STATE_FILE restored" "${state_before_cloud}" "$(<"${STATE_FILE}")"
@@ -633,7 +639,7 @@ fault_a_cloud_out=$(
     apply_cloud_resources 2>&1
 ) || fault_a_cloud_rc=$?
 [[ "${fault_a_cloud_rc}" -ne 0 ]] \
-    || fail "fault-A-cloud: apply_cloud_resources must return non-zero when post-finalize step fails"
+    || fail_test "fault-A-cloud: apply_cloud_resources must return non-zero when post-finalize step fails"
 assert_contains "fault-A-cloud: error output contains injected failure" \
     "${fault_a_cloud_out}" "注入云端吊销后步骤失败"
 assert_equal "fault-A-cloud: finalize recorded revoked" \
@@ -671,7 +677,7 @@ fault_a_renew_out=$(
     renew_certificate 2>&1
 ) || fault_a_renew_rc=$?
 [[ "${fault_a_renew_rc}" -ne 0 ]] \
-    || fail "fault-A-renew: renew_certificate must return non-zero when post-finalize step fails"
+    || fail_test "fault-A-renew: renew_certificate must return non-zero when post-finalize step fails"
 assert_contains "fault-A-renew: error output contains injected failure" \
     "${fault_a_renew_out}" "注入续期吊销后步骤失败"
 assert_equal "fault-A-renew: finalize recorded revoked" \
@@ -785,12 +791,15 @@ map_block() {
 ua_block=$(map_block 'map $http_user_agent $easy_all_subscription_ua_format {')
 forced_block=$(map_block 'map $arg_flag $easy_all_subscription_forced_format {')
 merged_block=$(map_block 'map $easy_all_subscription_forced_format $easy_all_subscription_format {')
-format_block=$(map_block 'map $easy_all_subscription_format $easy_all_subscription_uri {')
+param_ios_block=$(map_block 'map $arg_os $easy_all_subscription_param_ios {')
+ua_ios_block=$(map_block 'map $http_user_agent $easy_all_subscription_ua_ios {')
+is_ios_block=$(map_block 'map "$easy_all_subscription_param_ios:$easy_all_subscription_ua_ios" $easy_all_subscription_is_ios {')
+format_block=$(map_block 'map "$easy_all_subscription_format:$easy_all_subscription_is_ios" $easy_all_subscription_uri {')
 
 assert_block_line() {
     local label=$1 block=$2 expected=$3
     grep -Fxq -- "${expected}" <<<"${block}" \
-        || fail "${label}: missing effective line <${expected}> in <${block}>"
+        || fail_test "${label}: missing effective line <${expected}> in <${block}>"
 }
 
 assert_contains "ua-negotiation: clash-family UA gets yaml" \
@@ -805,22 +814,38 @@ assert_block_line "ua-negotiation: no flag adds no forced value" \
     "${forced_block}" '    default      "";'
 assert_block_line "ua-negotiation: merged map defaults to UA result" \
     "${merged_block}" '    default  $easy_all_subscription_ua_format;'
+assert_block_line "os-negotiation: param_ios default 0" \
+    "${param_ios_block}" '    default 0;'
+assert_contains "os-negotiation: param_ios matches ios" \
+    "${param_ios_block}" '~*^(ios|iphone|ipad)$ 1;'
+assert_block_line "os-negotiation: ua_ios default 0" \
+    "${ua_ios_block}" '    default 0;'
+assert_contains "os-negotiation: ua_ios matches ios keywords" \
+    "${ua_ios_block}" '~*(iphone|ipad|ipod|\bios\b) 1;'
+assert_block_line "os-negotiation: is_ios default 0" \
+    "${is_ios_block}" '    default 0;'
+assert_contains "os-negotiation: is_ios matches when either hits 1" \
+    "${is_ios_block}" '~*1     1;'
 assert_block_line "ua-negotiation: format map default routes to base64 file" \
-    "${format_block}" '    default  /_easy_all_subscription/base64;'
-assert_block_line "ua-negotiation: mihomo format routes to yaml file" \
-    "${format_block}" '    "mihomo" /_easy_all_subscription/mihomo;'
+    "${format_block}" '    default    /_easy_all_subscription/base64;'
+assert_block_line "ua-negotiation: mihomo format routes non-ios to standard yaml file" \
+    "${format_block}" '    "mihomo:0" /_easy_all_subscription/mihomo;'
+assert_block_line "ua-negotiation: mihomo format routes ios to ios yaml file" \
+    "${format_block}" '    "mihomo:1" /_easy_all_subscription/mihomo_ios;'
+assert_contains "nginx-conf: has mihomo location" "${nginx_text}" "location = /_easy_all_subscription/mihomo {"
+assert_contains "nginx-conf: has mihomo_ios location" "${nginx_text}" "location = /_easy_all_subscription/mihomo_ios {"
 
 # 15) 自定义订阅 Token 可选输入：合法值被采纳，非法值被拒绝（且不改动当前 Token）
 (
     kept=${OWNER_TOKEN}
     combined_apply_tokens '{"owner":"custom-token-2026"}'
     [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
-        || fail "token-input: valid custom token not applied"
+        || fail_test "token-input: valid custom token not applied"
     if combined_apply_tokens '{"owner":"short"}' 2>/dev/null; then
-        fail "token-input: too-short token must be rejected"
+        fail_test "token-input: too-short token must be rejected"
     fi
     [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
-        || fail "token-input: rejected input must not change current token"
+        || fail_test "token-input: rejected input must not change current token"
     OWNER_TOKEN=${kept}
     combined_sync_allowed_tokens
 )
@@ -847,7 +872,7 @@ assert_contains "token-validate: install inputs call the validator" \
     ALLOWED_TOKENS=""
     OWNER_TOKEN="custom-token-2026"
     combined_validate_install_owner_token \
-        || fail "token-validate: valid env token must pass"
+        || fail_test "token-validate: valid env token must pass"
 )
 bad_chars=$(
     ALLOWED_TOKENS=""
@@ -912,10 +937,10 @@ recovered=$(
     save_state
     load_state >/dev/null 2>&1
     combined_apply_tokens "restored-token-4821" >/dev/null 2>&1 \
-        || fail "token-recovery: valid replacement rejected"
-    write_nginx_config >/dev/null 2>&1 || fail "token-recovery: write failed after replacement"
+        || fail_test "token-recovery: valid replacement rejected"
+    write_nginx_config >/dev/null 2>&1 || fail_test "token-recovery: write failed after replacement"
     save_state
-    load_state >/dev/null 2>&1 || fail "token-recovery: reload after replacement failed"
+    load_state >/dev/null 2>&1 || fail_test "token-recovery: reload after replacement failed"
     printf '%s' "${OWNER_TOKEN}"
 )
 assert_equal "token-recovery: invalid old state fixed through edit-sub path" \
@@ -977,18 +1002,18 @@ write_nginx_config
 socket_opt_count=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
     | grep -Ec 'backlog=|so_keepalive|reuseport|ipv6only|deferred|fastopen|sndbuf|rcvbuf|setfib|multipath|accept_filter|\bbind\b' || true)
 [[ "${socket_opt_count}" == "1" ]] \
-    || fail "nginx-listen: socket options must appear on exactly one 443 listen (found ${socket_opt_count})"
+    || fail_test "nginx-listen: socket options must appear on exactly one 443 listen (found ${socket_opt_count})"
 missing_ssl=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
     | grep -Evc '\bssl\b' || true)
 [[ "${missing_ssl}" == "0" ]] \
-    || fail "nginx-listen: 每个 443 listen 都必须带 ssl（缺 ${missing_ssl} 处）"
+    || fail_test "nginx-listen: 每个 443 listen 都必须带 ssl（缺 ${missing_ssl} 处）"
 
 # 现代分支（>= 1.25.1）：Cloudflare 块必须留 h2（gRPC 依赖）
 (
     nginx_supports_http2_directive() { return 0; }
     write_nginx_config
     cf_block=$(server_block_for "${CF_NODE_DOMAIN}")
-    [[ -n "${cf_block}" ]] || fail "nginx-listen: 未找到 Cloudflare 块"
+    [[ -n "${cf_block}" ]] || fail_test "nginx-listen: 未找到 Cloudflare 块"
     assert_contains "nginx-listen: Cloudflare 块保留 http2 指令" \
         "${cf_block}" $'\n    http2 on;'
 )
@@ -1001,7 +1026,7 @@ missing_ssl=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
         | grep -c 'http2 ' || true)
     legacy_443_count=$(grep -Ec '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" || true)
     [[ "${legacy_h2_count}" == "${legacy_443_count}" ]] \
-        || fail "nginx-listen: 旧版分支的 listen http2 必须对所有 443 块一致（${legacy_h2_count}/${legacy_443_count}）"
+        || fail_test "nginx-listen: 旧版分支的 listen http2 必须对所有 443 块一致（${legacy_h2_count}/${legacy_443_count}）"
 )
 
 write_nginx_config   # 恢复默认渲染，供后续用例使用
@@ -1009,18 +1034,18 @@ write_nginx_config   # 恢复默认渲染，供后续用例使用
 # 23) 多用户 Token 字典必须能持久化并在重新加载后保持
 multi_state=$(
     combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1 \
-        || fail "multi-token: dictionary rejected"
+        || fail_test "multi-token: dictionary rejected"
     save_state
     ALLOWED_TOKENS=""
     OWNER_TOKEN=""
-    load_state >/dev/null 2>&1 || fail "multi-token: reload failed"
+    load_state >/dev/null 2>&1 || fail_test "multi-token: reload failed"
     jq -r 'to_entries | map(.key + "=" + .value) | join(",")' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "multi-token: dictionary survives save/load" \
     "user1=token-aaaa-111,user2=token-bbbb-222" "${multi_state}"
 multi_map=$(
     combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
-    write_nginx_config >/dev/null 2>&1 || fail "multi-token: nginx render failed"
+    write_nginx_config >/dev/null 2>&1 || fail_test "multi-token: nginx render failed"
     grep -c '^    "token-bbbb-222" 1;$' "${NGINX_CONFIG}"
 )
 assert_equal "multi-token: every token is published in the nginx map" "1" "${multi_map}"
@@ -1041,7 +1066,7 @@ assert_equal "multi-token: user name with inner space is rejected" \
 
 pretty_out=$(
     combined_apply_tokens '{ "user1" : "alice-token-123" , "user2" : "token-bbbb-222" }' >/dev/null 2>&1 \
-        || fail "multi-token: pretty-printed JSON rejected"
+        || fail_test "multi-token: pretty-printed JSON rejected"
     jq -r 'length' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "multi-token: pretty-printed JSON still accepted" "2" "${pretty_out}"
@@ -1066,7 +1091,7 @@ tilde_json=$(
 )
 assert_equal "token: leading tilde is rejected in JSON dictionary" "rejected" "${tilde_json}"
 tilde_ok=$(
-    combined_apply_tokens 'tok~en-inner-9931' >/dev/null 2>&1 || fail "token: inner tilde must stay valid"
+    combined_apply_tokens 'tok~en-inner-9931' >/dev/null 2>&1 || fail_test "token: inner tilde must stay valid"
     jq -r '.[]' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok}"
@@ -1085,8 +1110,8 @@ assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok
         fi
     done
     [[ "${noproxy_found}" == "1" ]] \
-        || fail "curl-args: local TLS probe must pass --noproxy '*'"
-) || fail "curl-args: --noproxy assertion failed"
+        || fail_test "curl-args: local TLS probe must pass --noproxy '*'"
+) || fail_test "curl-args: --noproxy assertion failed"
 
 # 28) 组合模式的 UFW 配置必须同时建立 SSH 开机自启与 Fail2ban（与其他模式一致）
 #     只做 UFW 放行而不配 jail，会让文档承诺的 SSH 狂暴破解防护静默缺失。
@@ -1103,7 +1128,7 @@ UFW_WIRING_LOG="${TMP_DIR}/ufw-wiring.log"
     ensure_ssh_boot_service() { printf '%s\n' 'ssh-boot' >>"${UFW_WIRING_LOG}"; }
     ensure_ssh_fail2ban() { printf '%s\n' 'fail2ban' >>"${UFW_WIRING_LOG}"; }
     xhttp_configure_ufw
-) || fail "28: xhttp_configure_ufw must succeed with a stubbed firewall"
+) || fail_test "28: xhttp_configure_ufw must succeed with a stubbed firewall"
 assert_equal "28: combined configures SSH boot safety and fail2ban" \
     $'ssh-boot\nfail2ban' "$(<"${UFW_WIRING_LOG}")"
 
@@ -1116,7 +1141,7 @@ PURGE_CALLS="${TMP_DIR}/purge-calls.log"
     purge_combined_origin_certificate
     assert_equal "29a: purge revokes Origin CA certificate" \
         "DELETE /certificates/cert-purge-777" "$(<"${PURGE_CALLS}")"
-) || fail "29a: purge_combined_origin_certificate failed"
+) || fail_test "29a: purge_combined_origin_certificate failed"
 
 (
     : >"${PURGE_CALLS}"
@@ -1124,16 +1149,16 @@ PURGE_CALLS="${TMP_DIR}/purge-calls.log"
     CLOUDFLARE_ORIGIN_CERT_ID=""
     purge_combined_origin_certificate
     assert_equal "29b: no certificate DELETE without recorded ID" "" "$(<"${PURGE_CALLS}")"
-) || fail "29b: purge without certificate id failed"
+) || fail_test "29b: purge without certificate id failed"
 
 (
     cloudflare_api_request() { die "注入 API 失败"; }
     CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-888"
     purge_out=$(purge_combined_origin_certificate 2>&1) \
-        || fail "29c: certificate revocation failure must not abort uninstall"
+        || fail_test "29c: certificate revocation failure must not abort uninstall"
     assert_contains "29c: revocation failure warns with certificate id" \
         "${purge_out}" "cert-purge-888"
-) || fail "29c: certificate revocation failure handling failed"
+) || fail_test "29c: certificate revocation failure handling failed"
 
 # 29d) 真实调用点：uninstall --purge-cloud 分支必须调用证书吊销（防止主修复被静默回退）
 uninstall_body=$(awk '/^uninstall_all\(\) \{/,/^\}/' "${PROFILE}")
@@ -1144,13 +1169,202 @@ assert_contains "29d: purge branch keeps DNS cleanup" "${purge_branch}" "purge_c
 
 # 30) update-core 换核心后必须重写订阅（Reality 的 ML-KEM 开关依赖核心版本）
 declare -F refresh_runtime_subscription >/dev/null \
-    || fail "30: combined must define the update-core subscription hook"
+    || fail_test "30: combined must define the update-core subscription hook"
 (
     write_subscriptions() { printf 'refreshed\n' >"${TMP_DIR}/core-refresh-flag"; }
     refresh_runtime_subscription_after_core_update
 )
 assert_equal "30: update-core refreshes subscription via hook" \
     "refreshed" "$(<"${TMP_DIR}/core-refresh-flag")"
+
+# 31) Cloudflare 优选 IP 候选池与物理延迟门槛回归测试
+(
+    tmp_ranges=$(mktemp)
+    cat <<EOF >"${tmp_ranges}"
+104.16.0.0/13
+104.24.0.0/14
+172.64.0.0/13
+240.0.0.0/20
+EOF
+    cands=$(cloudflare_generate_candidate_pool "${tmp_ranges}" 10)
+    count=$(echo "${cands}" | wc -l | tr -d ' ')
+    assert_equal "31a: candidate pool count equals requested sample limit" "10" "${count}"
+    # 加入一个非优先网段，否则 oth_blocks 恒为空，7:3 分层的后半段永远不会执行。
+    oth_count=$(printf '%s\n' "${cands}" | awk -F'\t' '$2 == "240.0.0.0/20"' | grep -c . || true)
+    (( oth_count >= 1 )) \
+        || fail_test "31a: candidate pool must also sample non-priority /24 blocks (got ${oth_count})"
+    pri_count=$(printf '%s\n' "${cands}" | awk -F'\t' '$2 != "240.0.0.0/20"' | grep -c . || true)
+    (( pri_count >= 1 )) \
+        || fail_test "31a: candidate pool must sample priority /24 blocks (got ${pri_count})"
+
+    tmp_measurements=$(mktemp)
+    cat <<EOF >"${tmp_measurements}"
+{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","address_family":"ipv4","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.18.1.1","stats":{"total":10,"rcv":10,"loss":0,"avg":210.0}}}]}}
+{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","address_family":"ipv4","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.18.1.2","stats":{"total":10,"rcv":10,"loss":0,"avg":250.0}}}]}}
+EOF
+    obs=$(cloudflare_acceptable_loss_observations "${tmp_measurements}")
+    # RTT 不再在观测阶段硬丢，改为打 rtt_ok 标记，由选择阶段决定是否回退。
+    obs_fast=$(printf '%s\n' "${obs}" | jq -r 'select(.avg_rtt_ms == 210) | .rtt_ok')
+    obs_slow=$(printf '%s\n' "${obs}" | jq -r 'select(.avg_rtt_ms == 250) | .rtt_ok')
+    assert_equal "31b: 210ms observation kept and flagged rtt_ok" "true" "${obs_fast}"
+    assert_equal "31b: 250ms observation kept but flagged not rtt_ok" "false" "${obs_slow}"
+
+    tmp_obs=$(mktemp)
+    cat <<EOF >"${tmp_obs}"
+{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":150.0,"tls_verified":true}
+{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":155.0,"tls_verified":true}
+{"ip":"104.18.1.3","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":140.0,"tls_verified":true}
+{"ip":"104.18.1.4","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":145.0,"tls_verified":true}
+{"ip":"104.18.1.5","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":45.0,"tls_verified":true}
+{"ip":"104.18.1.6","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":55.0,"tls_verified":true}
+{"ip":"104.18.1.7","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":160.0,"tls_verified":true}
+EOF
+    res=$(cloudflare_select_carrier_candidates "${tmp_obs}" 2 6 "" 220)
+    mobile_res=$(echo "${res}" | jq -r '.[] | select(.carrier=="mobile") | .ip')
+    assert_contains "31c: mobile picks lowest-RTT node 104.18.1.5" "${mobile_res}" "104.18.1.5"
+    assert_contains "31c: mobile picks second lowest-RTT node 104.18.1.6" "${mobile_res}" "104.18.1.6"
+    assert_not_contains "31c: mobile skips higher-RTT node 104.18.1.7" "${mobile_res}" "104.18.1.7"
+
+    # 31d 回退：某网没有 ≤220ms 候选时要按丢包率筛出的最低 RTT 选中，而不是让整轮凑不齐
+    tmp_slow_obs=$(mktemp)
+    cat <<EOF >"${tmp_slow_obs}"
+{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":150.0,"tls_verified":true}
+{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":151.0,"tls_verified":true}
+{"ip":"104.18.1.3","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":140.0,"tls_verified":true}
+{"ip":"104.18.1.4","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":141.0,"tls_verified":true}
+{"ip":"104.18.1.5","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":300.0,"tls_verified":true}
+{"ip":"104.18.1.6","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":320.0,"tls_verified":true}
+EOF
+    slow_res=$(cloudflare_select_carrier_candidates "${tmp_slow_obs}" 2 6 "" 220)
+    slow_mobile=$(printf '%s\n' "${slow_res}" | jq -r '[.[] | select(.carrier=="mobile")] | length')
+    slow_total=$(printf '%s\n' "${slow_res}" | jq -r 'length')
+    assert_equal "31d: carrier with only >220ms candidates falls back instead of failing" "2" "${slow_mobile}"
+    assert_equal "31d: fallback still fills three carriers" "6" "${slow_total}"
+
+    # 31e 域名解析不可用时，回流名额必须仍把池子填满（否则池子会缩到 24 个）
+    tmp_wide=$(mktemp)
+    cat <<EOF >"${tmp_wide}"
+${CLOUDFLARE_PRIORITY_IPV4_CIDRS[0]}
+240.0.0.0/16
+EOF
+    wide_count=$(cloudflare_generate_candidate_pool "${tmp_wide}" 72 | wc -l | tr -d ' ')
+    assert_equal "31e: pool still fills to 72 without domain candidates" "72" "${wide_count}"
+
+    # 31f/31g 生产默认值必须被钉住：样本上限 72；企业域名列表不得重新混入个人域名
+    assert_equal "31f: default pool sample limit" "72" "${CLOUDFLARE_POOL_SAMPLE_LIMIT}"
+    if grep -Fq 'cf.877771.xyz' "${ROOT_DIR}/lib/cloudflare-ip-pool.sh"; then
+        fail_test "31g: personal domain cf.877771.xyz must not be in the enterprise list"
+    fi
+
+    # 31h Stage-1 取名必须优先保留 ≤max_rtt 的节点，不能被“丢包更低但很慢”的候选挤出验证名额
+    tmp_stage1=$(mktemp)
+    cat <<EOF >"${tmp_stage1}"
+{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":5,"avg_rtt_ms":60.0,"rtt_ok":true}
+{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":300.0,"rtt_ok":false}
+{"ip":"104.18.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":301.0,"rtt_ok":false}
+{"ip":"104.18.1.4","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":302.0,"rtt_ok":false}
+{"ip":"104.18.1.5","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":303.0,"rtt_ok":false}
+{"ip":"104.18.1.6","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":304.0,"rtt_ok":false}
+EOF
+    stage1=$(cloudflare_top_tcp_candidates "${tmp_stage1}" 5)
+    assert_contains "31h: stage-1 keeps the fast candidate ahead of slower low-loss ones" \
+        "${stage1}" "104.18.1.1"
+    assert_equal "31h: stage-1 keeps the per-carrier cap" "5" \
+        "$(printf '%s\n' "${stage1}" | wc -l | tr -d ' ')"
+
+    rm -f "${tmp_ranges}" "${tmp_measurements}" "${tmp_obs}" "${tmp_slow_obs}" "${tmp_wide}" "${tmp_stage1}"
+) || fail_test "31: cloudflare pool candidate generation and latency filtering regression"
+
+# 32) 双保险平台自适应：strip_mihomo_sniffer 剥离嗅探配置且保留其他段
+(
+    sniffer_test_src="${TMP_DIR}/sniffer-test-src.yaml"
+    cat >"${sniffer_test_src}" <<'EOF'
+profile:
+    store-selected: true
+
+sniffer:
+    enable: true
+    force-dns-mapping: true
+    sniff:
+      TLS:
+        ports: [443]
+
+tun:
+    enable: true
+EOF
+    sniffer_test_out="${TMP_DIR}/sniffer-test-out.yaml"
+    strip_mihomo_sniffer "${sniffer_test_src}" >"${sniffer_test_out}"
+    stripped_content=$(<"${sniffer_test_out}")
+    assert_not_contains "32a: strip_mihomo_sniffer removes sniffer" "${stripped_content}" "sniffer:"
+    assert_contains "32b: strip_mihomo_sniffer preserves profile" "${stripped_content}" "profile:"
+    assert_contains "32c: strip_mihomo_sniffer preserves tun" "${stripped_content}" "tun:"
+
+    # 行尾注释（自定义模板常见写法）也必须能按段剥离
+    sniffer_comment_src="${TMP_DIR}/sniffer-comment-src.yaml"
+    cat >"${sniffer_comment_src}" <<'EOF'
+profile:
+    store-selected: true
+sniffer:  # 嗅探
+    enable: true
+
+tun:
+    enable: true
+EOF
+    sniffer_comment_out=$(strip_mihomo_sniffer "${sniffer_comment_src}")
+    assert_not_contains "32d: strip_mihomo_sniffer removes commented sniffer header" \
+        "${sniffer_comment_out}" "sniffer:"
+    assert_contains "32e: strip_mihomo_sniffer keeps content after commented header" \
+        "${sniffer_comment_out}" "tun:"
+
+    # 内联映射无法按段剥离，必须在生成订阅时直接失败，而不是静默下发 iOS 不支持的键
+    sniffer_inline_src="${TMP_DIR}/sniffer-inline-src.yaml"
+    printf 'profile:\n    store-selected: true\nsniffer: {enable: true}\ntun:\n    enable: true\n' \
+        >"${sniffer_inline_src}"
+    if ( strip_mihomo_sniffer "${sniffer_inline_src}" >/dev/null 2>&1 ); then
+        fail_test "32f: inline sniffer mapping must be rejected"
+    fi
+
+    # 32g/32h 顶格注释不能跟着嗅探段一起被吞：下一个顶层段的说明与末尾标记都属于此类
+    sniffer_next_src="${TMP_DIR}/sniffer-next-src.yaml"
+    cat >"${sniffer_next_src}" <<'EOF'
+profile:
+    store-selected: true
+sniffer:
+    enable: true
+    sniff:
+      TLS:
+        ports: [443]
+# 规则配置
+tun:
+    enable: true
+EOF
+    sniffer_next_out=$(strip_mihomo_sniffer "${sniffer_next_src}")
+    assert_contains "32g: next top-level section comment is preserved" \
+        "${sniffer_next_out}" "# 规则配置"
+    assert_not_contains "32g: sniffer block itself is still removed" \
+        "${sniffer_next_out}" "sniffer:"
+
+    sniffer_tail_src="${TMP_DIR}/sniffer-tail-src.yaml"
+    cat >"${sniffer_tail_src}" <<'EOF'
+profile:
+    store-selected: true
+tun:
+    enable: true
+sniffer:
+    enable: true
+# EASY_ALL_REALITY_TEMPLATE_END_V1
+EOF
+    sniffer_tail_out=$(strip_mihomo_sniffer "${sniffer_tail_src}")
+    assert_contains "32h: trailing marker comment survives a sniffer block at EOF" \
+        "${sniffer_tail_out}" "# EASY_ALL_REALITY_TEMPLATE_END_V1"
+    assert_equal "32h: stripped template still ends with the Reality marker" \
+        "# EASY_ALL_REALITY_TEMPLATE_END_V1" "$(printf '%s\n' "${sniffer_tail_out}" | tail -n 1)"
+    assert_equal "32h: Reality marker appears exactly once" "1" \
+        "$(printf '%s\n' "${sniffer_tail_out}" | grep -Fc 'EASY_ALL_REALITY_TEMPLATE_END_V1' || true)"
+
+    rm -f "${sniffer_test_src}" "${sniffer_test_out}" "${sniffer_comment_src}" \
+        "${sniffer_inline_src}" "${sniffer_next_src}" "${sniffer_tail_src}"
+) || fail_test "32: strip_mihomo_sniffer regression"
 
 printf 'ok - combined render\n'
 
