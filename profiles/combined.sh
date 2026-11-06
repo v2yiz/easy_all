@@ -746,7 +746,7 @@ cleanup_partial_install() {
     cleanup_partial_install_local || return 1
     remove_daily_reboot_schedule || true
     cleanup_partial_install_files \
-        "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${CERT_RELOAD_HOOK}" \
+        "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" \
         "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"
 }
 

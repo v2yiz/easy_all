@@ -19,6 +19,7 @@
 - **Bunny 回源池过滤 IPv6 网段**：`lib/bunny-api.py` 的 `edge_ips` 只保留 IPv4 网段，避免混入的 IPv6 CIDR 写入 `/etc/ufw/before.rules` 后让 `iptables-restore --test` 失败、中断安装与动态刷新。
 - **细节对齐**：帮助与提示中的组合模式编号统一为 `4`（仍接受 `5`）；Globalping 定时器失败提示改为「每 3 小时」；删除 `write_xray_config` 中声明后未使用的 `mlkem` 局部变量。
 - **修复组合模式安装与 `apply` 在 services 阶段崩溃**：`profiles/combined.sh` 在状态装载与首次安装输入两条路径上重新派生 `XHTTP_ORIGIN_DOMAIN`（= `CF_NODE_DOMAIN`）；共享的 `validate_protocol_runtime` 按该变量做本机 TLS/健康探活，2.5.0 移除 `CF_ORIGIN_DOMAIN` 时漏掉这条别名，`set -u` 下的 `unbound variable` 会在探活前直接中断安装。新增组合模式回归用例：断言两条路径都从 `CF_NODE_DOMAIN` 派生该变量，并校验探活实际请求 `https://${CF_NODE_DOMAIN}/easy_all-health`。
+- **修复组合模式安装失败后的回滚中断**：`cleanup_partial_install` 仍在展开 2.5.0 已删除的 `CERT_RELOAD_HOOK`（对应 reload helper 已不存在），`set -u` 下回滚在删除残留之前抛 `unbound variable`，服务文件、配置、状态目录与安装进度标记全部残留；现移除组合模式与 Cloudflare 模式对该死变量的引用，回滚可跑完并清掉本机残留。新增回归用例：断言回滚在 `set -u` 下退出码为 0、输出不含 unbound、受管残留全部删除。
 
 源码版本标识为 `2.5.2`。
 

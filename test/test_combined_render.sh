@@ -1414,6 +1414,39 @@ assert_contains "runtime-probe: probes CF_NODE_DOMAIN over loopback" \
 assert_contains "runtime-probe: probes the health endpoint" \
     "${probe_calls}" "https://${CF_NODE_DOMAIN}/easy_all-health"
 
+# 34) 安装失败回滚必须能在 set -u 下跑完：2.5.0 删除了 CERT_RELOAD_HOOK 常量与 reload helper，
+#     清理函数却仍在展开该变量，回滚在删除残留文件前就 unbound 中断，本机残留与进度标记全部留下
+#     （2026-11-06 现场）。
+rollback_root="${TMP_DIR}/rollback"
+mkdir -p "${rollback_root}/state" "${rollback_root}/web" "${rollback_root}/lib" \
+    "${rollback_root}/xray" "${rollback_root}/bin"
+printf 'x' >"${rollback_root}/xray.service"
+printf 'x' >"${rollback_root}/nginx.conf"
+printf 'x' >"${rollback_root}/bin/easy_all"
+printf 'x' >"${rollback_root}/state/state.env"
+rollback_rc=0
+rollback_out=$(
+    XRAY_SERVICE_FILE="${rollback_root}/xray.service"
+    NGINX_CONFIG="${rollback_root}/nginx.conf"
+    COMMAND_PATH="${rollback_root}/bin/easy_all"
+    STATE_DIR="${rollback_root}/state"
+    WEB_ROOT="${rollback_root}/web"
+    COMMAND_INSTALL_DIR="${rollback_root}/lib"
+    XRAY_DIR="${rollback_root}/xray"
+    cleanup_partial_install_local() { :; }
+    remove_daily_reboot_schedule() { :; }
+    install_progress_clear() { :; }
+    systemctl() { :; }
+    cleanup_partial_install 2>&1
+) || rollback_rc=$?
+assert_equal "rollback: cleanup_partial_install succeeds under set -u" '0' "${rollback_rc}"
+assert_not_contains "rollback: cleanup must not surface an unbound variable" \
+    "${rollback_out}" 'unbound variable'
+for leftover in xray.service nginx.conf bin/easy_all state web lib xray; do
+    [[ ! -e "${rollback_root}/${leftover}" ]] \
+        || fail_test "rollback: cleanup_partial_install must remove ${leftover}"
+done
+
 printf 'ok - combined render\n'
 
 
