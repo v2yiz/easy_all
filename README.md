@@ -89,6 +89,42 @@ sudo easy_all subscription
 
 ---
 
+## 常用运维命令
+
+安装完成后，全局注册了 `easy_all` 管理命令：
+
+| 命令 | 用途说明 |
+| :--- | :--- |
+| `easy_all status` | 查看系统负载、TCP 加速状态、Xray/Nginx 运行状况及订阅地址 |
+| `easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
+| `easy_all show` | 输出各节点详细参数、VLESS 链接及 Mihomo 代理配置块 |
+| `easy_all apply` | 刷新并重新应用本机配置与订阅（不重复修改云端 DNS 与证书） |
+| `easy_all apply-cloud` | 同步云端资源（更新 Cloudflare / Bunny 云端解析、规则与证书，或同步 Worker） |
+| `easy_all reality-target [域名:端口]` | 修改 Reality 伪装目标（自动带 SNI 验证 TLS 1.3 连通性并热更新） |
+| `easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 规则 |
+| `easy_all refresh-cdn-ips` | 重新调用 Globalping 测试并筛选当期最佳优选 IP |
+| `easy_all refresh-origin-ips` | （Bunny 模式）立即刷新 Bunny 官方回源 IPv4 防火墙白名单 |
+| `easy_all edit-sub` | 交互式管理用户 Token、订阅模板以及 Worker 聚合订阅设置 |
+| `easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
+| `easy_all update-core` | 在线升级 Xray 核心至官方最新稳定版 |
+| `easy_all self-update` | 从 GitHub 更新 easy_all 脚本自身至最新主线版本 |
+| `easy_all uninstall` | 卸载本机服务与配置（可选 `--purge-cloud` 同步清理 Cloudflare / Bunny 远端资源）；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
+
+---
+
+## 安全机制与防护边界
+
+1. **SSH 自动防护**：
+   - 所有模式均保留系统现有 SSH 监听端口（默认 22），UFW 默认放行该端口并阻断其余未放行入站流量。
+   - 由 Fail2ban 实时监控保护实际 SSH 端口（采用专用 CIDR 防重脚本），防范自动化暴力破解。
+2. **回源白名单与防扫网**：
+   - CDN 模式与组合模式的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。
+   - Fail2ban 的 CIDR 封禁助手脚本安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`，与 easy_all 运行时目录解耦；卸载与安装失败回滚只回收业务端口，不会让常驻封禁动作失效。
+3. **恶意流量阻断**：
+   - Xray 内部路由自动丢弃局域网私有地址、云厂商元数据网段（如 169.254.169.254）以及异常回环访问。
+
+---
+
 ## Cloudflare CDN 优选 IP 原理与实现
 
 对于模式 2（Cloudflare CDN）与模式 4（组合模式），`easy_all` 采用**服务端中心化主动探测**机制：不耗费手机客户端电量与流量，由 VPS 定时（每 3 小时通过 systemd timer）调用 Globalping 分布式探针，直接从大陆三大运营商（中国电信 AS4134、中国联通 AS4837、中国移动 AS9808）的真实终端（eyeball-network）角度，经过两阶段过滤筛选出 6 个（三网各 2 个）最低延迟、低丢包且 TLS 真正通畅的优选 IP 注入订阅。
@@ -140,41 +176,3 @@ flowchart TD
 2. **防境内 DNS 污染**：企业域名解析结果必须匹配 Cloudflare 官方 CIDR，遇虚假公网 IP 污染时自动无缝回退至 `1.1.1.1` DoH 解析。
 3. **两阶段防 SNI 假通**：Stage-1 先用 TCP ping 初筛三网前 15 个快节点；Stage-2 针对真实业务节点域名发起真实 HTTPS GET 握手，杜绝“TCP 端口通但 SNI 握手被 RST 阻断”的假通节点。
 4. **晚高峰软降级兜底**：若某运营商在晚高峰拥堵时无可满足 $\le 220\text{ms}$ 的候选，算法自动回退取该网丢包合格中延迟最低的候选，避免一票否决导致整批崩溃。
-
----
-
-## 常用运维命令
-
-安装完成后，全局注册了 `easy_all` 管理命令：
-
-| 命令 | 用途说明 |
-| :--- | :--- |
-| `easy_all status` | 查看系统负载、TCP 加速状态、Xray/Nginx 运行状况及订阅地址 |
-| `easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
-| `easy_all show` | 输出各节点详细参数、VLESS 链接及 Mihomo 代理配置块 |
-| `easy_all apply` | 刷新并重新应用本机配置与订阅（不重复修改云端 DNS 与证书） |
-| `easy_all apply-cloud` | 同步云端资源（更新 Cloudflare / Bunny 云端解析、规则与证书，或同步 Worker） |
-| `easy_all reality-target [域名:端口]` | 修改 Reality 伪装目标（自动带 SNI 验证 TLS 1.3 连通性并热更新） |
-| `easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 规则 |
-| `easy_all refresh-cdn-ips` | 重新调用 Globalping 测试并筛选当期最佳优选 IP |
-| `easy_all refresh-origin-ips` | （Bunny 模式）立即刷新 Bunny 官方回源 IPv4 防火墙白名单 |
-| `easy_all edit-sub` | 交互式管理用户 Token、订阅模板以及 Worker 聚合订阅设置 |
-| `easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
-| `easy_all update-core` | 在线升级 Xray 核心至官方最新稳定版 |
-| `easy_all self-update` | 从 GitHub 更新 easy_all 脚本自身至最新主线版本 |
-| `easy_all uninstall` | 卸载本机服务与配置（可选 `--purge-cloud` 同步清理 Cloudflare / Bunny 远端资源）；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
-
----
-
-## 安全机制与防护边界
-
-1. **SSH 自动防护**：
-   - 所有模式均保留系统现有 SSH 监听端口（默认 22），UFW 默认放行该端口并阻断其余未放行入站流量。
-   - 由 Fail2ban 实时监控保护实际 SSH 端口（采用专用 CIDR 防重脚本），防范自动化暴力破解。
-2. **回源白名单与防扫网**：
-   - CDN 模式与组合模式的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。
-   - Fail2ban 的 CIDR 封禁助手脚本安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`，与 easy_all 运行时目录解耦；卸载与安装失败回滚只回收业务端口，不会让常驻封禁动作失效。
-3. **恶意流量阻断**：
-   - Xray 内部路由自动丢弃局域网私有地址、云厂商元数据网段（如 169.254.169.254）以及异常回环访问。
-
-
