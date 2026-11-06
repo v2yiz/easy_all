@@ -65,6 +65,83 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；直连+CDN兜底会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
 3. **自动安装与部署**：依赖安装、TCP 加速（默认 Skyline Speeder）、服务启动与验收全自动完成。
 
+### 用户交互全景导图
+
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 600, "nodeSpacing": 25, "rankSpacing": 25}}}%%
+flowchart TD
+    Start(["执行安装: sudo easy_all install"]) --> CheckResume{"检测到未完成残留?"}
+
+    CheckResume -- 是 --> PromptResume["断点续装确认<br/>继续上次安装？[Y/n]<br/>(默认: Y 直接回车)"]
+    CheckResume -- 否 --> ChooseMode
+
+    PromptResume -- "直接回车 (Y)" --> ResumeRun["复用上次配置与云端资源，直接进入安装"]
+    PromptResume -- "输入 n" --> CleanRedo["清理残留并重新开始"] --> ChooseMode
+
+    ChooseMode["<b>【选择安装模式】</b><br/>1. 直连 - Reality<br/>2. 直连+CDN兜底: 直连 Reality + Cloudflare<br/>请选择 [1]:"]
+
+    %% ---------------- 模式 1: Reality ----------------
+    ChooseMode -- "直接回车 或 1" --> M1_NodeHost["1.1 Reality 客户端连接地址<br/>默认: 自动探测的公网 IPv4 (直接回车)"]
+    M1_NodeHost --> M1_Target["1.2 Reality 伪装目标 SNI<br/>默认: swdist.apple.com:443 (直接回车)"]
+    M1_Target --> M1_PortMode["1.3 订阅端口模式<br/>1. 固定 443<br/>2. dynamic 动态端口 10000-62703 (默认)"]
+    M1_PortMode --> M1_SubDeploy["1.4 是否部署订阅服务？<br/>1. 部署订阅服务 (CF 代理 + Nginx，默认推荐)<br/>2. 不部署，仅输出节点信息 (link)"]
+
+    M1_SubDeploy -- "选择 2 (仅节点)" --> InstallPhase
+    M1_SubDeploy -- "直接回车 或 1" --> M1_SubDomain["1.4.1 订阅域名<br/>默认: 无 (必填，如 sub.example.com)"]
+    M1_SubDomain --> M1_SubFile["1.4.2 Mihomo 下载文件名<br/>默认: EASY_ALL (直接回车)"]
+    M1_SubFile --> M1_Tokens["1.4.3 订阅用户 Token 字典<br/>默认: 自动生成单用户 JSON {'owner':'随机Secret'}"]
+    M1_Tokens --> M1_CFToken["1.4.4 Cloudflare API Token<br/>默认: 无 (必填，仅当前进程签发证书，不落盘)"]
+    M1_CFToken --> InstallPhase
+
+    %% ---------------- 模式 2: 直连+CDN兜底 ----------------
+    ChooseMode -- "输入 2" --> M2_Zone["2.1 Cloudflare 根 Zone<br/>默认: 无 (必填，如 example.com)"]
+    M2_Zone --> M2_DirectDom["2.2 直连节点域名<br/>默认: node.根Zone (直接回车)"]
+    M2_DirectDom --> M2_CFDom["2.3 Cloudflare 节点域名 (橙云)<br/>默认: cf.根Zone (直接回车)"]
+    M2_CFDom --> M2_SubDom["2.4 订阅域名 (橙云)<br/>默认: sub.根Zone (直接回车)"]
+    M2_SubDom --> M2_CFToken["2.5 Cloudflare API Token<br/>默认: 无 (必填，保存至 root 受控文件支持自动运维)"]
+    M2_CFToken --> M2_GPToken["2.6 Globalping Access Token<br/>默认: 无 (必填，用于探针自动筛选优选 IP)"]
+    M2_GPToken --> M2_Target["2.7 Reality 伪装目标 SNI<br/>默认: swdist.apple.com:443 (直接回车)"]
+    M2_Target --> M2_DirectName["2.8 直连节点名<br/>默认: 🇺🇸直连 (禁止使用保留组名 AUTO/CDN-AUTO/PROXY 等)"]
+    M2_DirectName --> M2_CFPrefix["2.9 Cloudflare 节点名前缀<br/>默认: 🇺🇸CF (系统自动追加 1~6 优选序号)"]
+    M2_CFPrefix --> M2_SubFile["2.10 Mihomo 下载文件名<br/>默认: EASY_ALL (直接回车)"]
+    M2_SubFile --> M2_SubJSON["2.11 订阅配置 JSON<br/>默认: {'allowedTokens':{'owner':'随机Secret'},'nodes':[]}<br/>(直接回车保留默认值；或粘贴含外部节点的 JSON)"]
+    M2_SubJSON --> InstallPhase
+
+    %% ---------------- 通用安装执行与收尾 ----------------
+    InstallPhase["<b>【全自动安装与验证阶段】</b><br/>• 系统依赖、Swap 建立与 TCP 加速 (Skyline Speeder)<br/>• 证书申请、Xray/Nginx 渲染与 UFW 规则配置<br/>• 本机服务探活与订阅完整性验收"] --> RebootCheck{"是否需要重启加载新内核？"}
+
+    RebootCheck -- 是 --> PromptReboot["内核重启确认: 是否立即重启服务器？[Y/n]<br/>(默认: Y 直接回车立即重启生效)"]
+    RebootCheck -- 否 --> Done(["安装完成，输出节点信息与订阅链接"])
+    PromptReboot --> Done
+```
+
+### 交互参数与默认值一览表
+
+| 模式 | 交互步骤 | 提示说明 | 推荐默认值（直接回车） | 输入方式与规则 |
+| :--- | :--- | :--- | :--- | :--- |
+| **通用** | **断点续装** | `继续上次安装？[Y/n]:` | **`Y`**（继续） | 仅在有安装残留时提示；输入 `n` 清理并重新安装 |
+| **通用** | **模式选择** | `请选择 [1]:` | **`1`**（Reality） | 输入 `1` 选择直连 Reality，输入 `2` 选择直连+CDN兜底 |
+| **1. Reality** | 1.1 连接地址 | `Reality 客户端连接地址` | **自动检测的公网 IPv4** | 直接回车使用探测到的 IP；或填入入站 IPv4 / 灰云域名 |
+| | 1.2 伪装目标 | `Reality SNI / 伪装目标（域名:端口）` | `swdist.apple.com:443` | 直接回车使用 Apple CDN；或输入自定义 TLS 1.3 目标 |
+| | 1.3 端口模式 | `请选择 [2]:` | **`2`**（dynamic） | 直接回车使用动态端口（`10000-62703`）；输入 `1` 固定 443 |
+| | 1.4 订阅部署 | `请选择 [1]:` | **`1`**（部署订阅） | 直接回车部署带自适应分发的订阅；输入 `2` 为纯节点 |
+| | 1.4.1 订阅域名 | `Cloudflare 代理的订阅域名` | **无**（必填） | 输入 Cloudflare 代理的子域名（如 `sub.example.com`） |
+| | 1.4.2 下载名 | `Mihomo 下载文件名` | `EASY_ALL` | 直接回车使用推荐值；或自定义下载文件名 |
+| | 1.4.3 用户 Token | `订阅用户 Token 字典 JSON` | `{"owner":"<随机Secret>"}` | 直接回车自动生成专属 Token；亦可输入多用户 JSON |
+| | 1.4.4 CF Token | `Cloudflare API Token` | **无**（必填） | 隐藏输入，仅当前进程签发证书使用，不落盘 |
+| **2. 直连+CDN兜底** | 2.1 根 Zone | `Cloudflare 根 Zone` | **无**（必填） | 输入已在 Cloudflare 托管的主域名（如 `example.com`） |
+| | 2.2 直连域名 | `直连节点域名` | `node.<根Zone>` | 直接回车使用默认值（自动配置为灰云 DNS-only） |
+| | 2.3 CDN 节点域名 | `Cloudflare 节点域名（橙云）` | `cf.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 回源） |
+| | 2.4 订阅域名 | `订阅域名（橙云）` | `sub.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 分发） |
+| | 2.5 CF Token | `Cloudflare API Token` | **无**（必填） | 隐藏输入；需目标 Zone 的 DNS 与证书编辑权限（持久化保存） |
+| | 2.6 GP Token | `Globalping Access Token` | **无**（必填） | 隐藏输入；用于定期三网探针筛选 6 个优选 IP（持久化保存） |
+| | 2.7 伪装目标 | `Reality 伪装目标（域名:端口）` | `swdist.apple.com:443` | 直接回车使用 Apple CDN；或输入自定义 TLS 1.3 目标 |
+| | 2.8 直连节点名 | `直连节点名` | `🇺🇸直连` | 直接回车；**禁止使用保留组名**（`AUTO`、`CDN-AUTO`、`PROXY` 等） |
+| | 2.9 CF 前缀 | `Cloudflare 节点名前缀` | `🇺🇸CF` | 直接回车；自动追加 1~6（不可与直连节点名同名） |
+| | 2.10 下载名 | `Mihomo 下载文件名` | `EASY_ALL` | 直接回车使用推荐值；或自定义下载文件名 |
+| | 2.11 订阅配置 | `订阅配置 JSON` | `{"allowedTokens":...,"nodes":[]}` | **直接回车保留默认值**（自动生成 owner Token，节点数组为空）；或粘贴自定义多用户与外部聚合节点 JSON |
+| **通用** | **内核重启确认** | `是否立即重启服务器？[Y/n]:` | **`Y`**（立即重启） | 仅在升级内核时提示；直接回车立即执行 `sudo reboot` |
+
 ---
 
 ## 完成与客户端导入
