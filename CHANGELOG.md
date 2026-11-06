@@ -18,8 +18,9 @@
 - **加固：`CRON_REBOOT_MARKER` 为空时拒绝改写 root crontab，且先过滤成功再提交**：`configure_daily_reboot` 与 `remove_daily_reboot_schedule` 都先校验标记非空再动 crontab（`awk index($0, "")` 会把所有行过滤掉），`configure_daily_reboot` 也不再直接把过滤结果喂给 `crontab -`，避免过滤中途失败时写入截断内容；当前会调用该函数的 Profile 均定义了该常量，因此属防御性加固而非线上故障。
 - **Bunny 回源池过滤 IPv6 网段**：`lib/bunny-api.py` 的 `edge_ips` 只保留 IPv4 网段，避免混入的 IPv6 CIDR 写入 `/etc/ufw/before.rules` 后让 `iptables-restore --test` 失败、中断安装与动态刷新。
 - **细节对齐**：帮助与提示中的组合模式编号统一为 `4`（仍接受 `5`）；Globalping 定时器失败提示改为「每 3 小时」；删除 `write_xray_config` 中声明后未使用的 `mlkem` 局部变量。
-- **修复组合模式安装与 `apply` 在 services 阶段崩溃**：`profiles/combined.sh` 在状态装载与首次安装输入两条路径上重新派生 `XHTTP_ORIGIN_DOMAIN`（= `CF_NODE_DOMAIN`）；共享的 `validate_protocol_runtime` 按该变量做本机 TLS/健康探活，2.5.0 移除 `CF_ORIGIN_DOMAIN` 时漏掉这条别名，`set -u` 下的 `unbound variable` 会在探活前直接中断安装。新增组合模式回归用例：断言两条路径都从 `CF_NODE_DOMAIN` 派生该变量，并校验探活实际请求 `https://${CF_NODE_DOMAIN}/easy_all-health`。
+- **修复组合模式安装与 `apply` 在 services 阶段崩溃**：根因是 `profiles/combined.sh` 在 2.5.0 移除 `CF_ORIGIN_DOMAIN` 时漏掉 `XHTTP_ORIGIN_DOMAIN` 别名，而共享的 `validate_protocol_runtime` 按该变量做本机 TLS/健康探活，`set -u` 下的 `unbound variable` 会在探活前直接中断安装。当时以「状态装载与首次安装输入两条路径都从 `CF_NODE_DOMAIN` 派生该别名」作为过渡方案（并加了对应回归用例）；该过渡现已由本段最后一条 bullet 统一到各模式都必须提供的 `VLESS_CDN_DOMAIN`，组合模式不再派生该别名。
 - **修复组合模式安装失败后的回滚中断**：`cleanup_partial_install` 仍在展开 2.5.0 已删除的 `CERT_RELOAD_HOOK`（对应 reload helper 已不存在），`set -u` 下回滚在删除残留之前抛 `unbound variable`，服务文件、配置、状态目录与安装进度标记全部残留；现移除组合模式与 Cloudflare 模式对该死变量的引用，回滚可跑完并清掉本机残留。新增回归用例：断言回滚在 `set -u` 下退出码为 0、输出不含 unbound、受管残留全部删除。
+- **收敛隐式 Profile 契约与死代码**：删除 `lib/xhttp-runtime.sh` 中从未被选中的 `write_nginx_config`、`xhttp_server_keepalive_referer` 与 `XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH`（三者都引用 Profile 专属变量，是 2.5.0 后两次线上崩溃的同源隐患），并把 `validate_protocol_runtime` / `validate_subscription_runtime` 的本机探活域名统一到各 Profile 都必须提供的 `VLESS_CDN_DOMAIN`（Cloudflare 模式本就断言两者相等），组合模式因此不再派生 `XHTTP_ORIGIN_DOMAIN`；删除 `lib/cf-dns.sh` 中从未被调用的 `cloudflare_validate_zones`（它调用的 `cloudflare_validate_universal_hostname` 只有 Cloudflare Profile 才有）；`lib/worker-config.sh` 对缺失的 `DEFAULT_CLOUDFLARE_WORKER_NAME` 改为可操作报错。行为不变，只消除「共享库静默依赖 Profile 变量」这一类隐患。
 
 源码版本标识为 `2.5.2`。
 

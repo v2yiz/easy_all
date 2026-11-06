@@ -170,22 +170,6 @@ cloudflare_ensure_proxied_a() {
         || die "Cloudflare 未返回新建 DNS 记录 ID"
 }
 
-cloudflare_validate_zones() {
-    local zone
-    CLOUDFLARE_ZONE_ID=$(cloudflare_find_parent_zone "${VLESS_CDN_DOMAIN}")
-    CLOUDFLARE_CDN_ZONE_ID=${CLOUDFLARE_ZONE_ID}
-    CLOUDFLARE_SUBSCRIPTION_ZONE_ID=$(cloudflare_find_parent_zone "$(active_subscription_link_domain)")
-    [[ "${CLOUDFLARE_ZONE_ID}" == "${CLOUDFLARE_SUBSCRIPTION_ZONE_ID}" ]] || die "订阅域名必须在同一个 Cloudflare Zone"
-    zone=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}")
-    CLOUDFLARE_ZONE_NAME=$(jq -r '.name // empty | ascii_downcase' <<<"${zone}")
-    CLOUDFLARE_ACCOUNT_ID=$(jq -r '.account.id // empty' <<<"${zone}")
-    [[ -n "${CLOUDFLARE_ZONE_NAME}" ]] || die "Cloudflare Zone 未返回有效名称"
-    [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9A-Fa-f]{32}$ ]] \
-        || die "Cloudflare Zone 未返回有效 Account ID"
-    cloudflare_validate_universal_hostname "${VLESS_CDN_DOMAIN}"
-    cloudflare_validate_universal_hostname "$(active_subscription_link_domain)"
-}
-
 cloudflare_ensure_origin_ca_root() {
     CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
     if [[ -s "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" ]] \

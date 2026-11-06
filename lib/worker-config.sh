@@ -101,7 +101,7 @@ choose_worker_aggregation_config() {
 }
 
 choose_cloudflare_worker_name() {
-    local name=${CLOUDFLARE_WORKER_NAME:-${DEFAULT_CLOUDFLARE_WORKER_NAME}}
+    local name=${CLOUDFLARE_WORKER_NAME:-${DEFAULT_CLOUDFLARE_WORKER_NAME:?CDN Profile 必须提供 DEFAULT_CLOUDFLARE_WORKER_NAME}}
     if [[ -t 0 ]]; then
         name=$(prompt_value "Cloudflare Worker 名称（仅限小写字母、数字和短横线，长度 1-63，不能以短横线开头或结尾）" "${name}")
     fi

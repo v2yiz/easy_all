@@ -37,7 +37,6 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly STATE_SCHEMA_VERSION="0"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
-readonly XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH="100"
 readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-Cloudflare}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${SUBSCRIPTION_DEPLOY_DESCRIPTION_OVERRIDE:-${XHTTP_CDN_NAME} + Nginx}"
 
@@ -212,79 +211,8 @@ write_xray_config() {
     xhttp_render_xray_config
 }
 
-xhttp_server_keepalive_referer() {
-    local padding
-    printf -v padding '%*s' "${XHTTP_SERVER_KEEPALIVE_PADDING_LENGTH}" ''
-    padding=${padding// /X}
-    printf 'https://%s%s/?x_padding=%s' "${VLESS_CDN_DOMAIN}" "${XHTTP_PATH}" "${padding}"
-}
-
 xhttp_client_path() {
     printf '%s/' "${XHTTP_PATH%/}"
-}
-
-write_nginx_config() {
-    optimize_nginx_system_config
-    local keepalive_referer http2_directive="" listen_h2="http2 "
-    if nginx_supports_http2_directive; then
-        http2_directive=$'\n    http2 on;'
-        listen_h2=""
-    fi
-    keepalive_referer=$(xhttp_server_keepalive_referer)
-    install -d -m 0755 "${WEB_ROOT}"
-    {
-        write_subscription_nginx_maps
-        cat <<EOF
-server {
-    listen 80;
-    server_name ${XHTTP_ORIGIN_DOMAIN};
-    location / { return 301 https://${XHTTP_ORIGIN_DOMAIN}\$request_uri; }
-}
-
-server {
-    listen 443 ssl ${listen_h2}backlog=4096;
-    server_name ${XHTTP_ORIGIN_DOMAIN};
-    ssl_certificate ${CERT_FILE};
-    ssl_certificate_key ${KEY_FILE};
-    ssl_protocols TLSv1.2 TLSv1.3;${http2_directive}
-    tcp_nodelay on;
-    keepalive_timeout 5m;
-
-    location = /easy_all-health {
-        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
-        default_type text/plain;
-        add_header Cache-Control "no-store" always;
-        return 200 "easy_all ok\n";
-    }
-
-EOF
-        write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
-        cat <<EOF
-    location ^~ ${XHTTP_PATH}/ {
-        if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
-        client_max_body_size 0;
-        client_body_timeout ${XHTTP_NGINX_STREAM_TIMEOUT};
-        grpc_set_header Host ${VLESS_CDN_DOMAIN};
-        grpc_set_header X-Real-IP \$remote_addr;
-        grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        grpc_set_header X-Forwarded-Proto https;
-        grpc_set_header X-Easy-All-Origin-Key \$http_x_easy_all_origin_key;
-        grpc_set_header Referer "${keepalive_referer}";
-        grpc_socket_keepalive on;
-        grpc_read_timeout ${XHTTP_NGINX_STREAM_TIMEOUT};
-        grpc_send_timeout ${XHTTP_NGINX_STREAM_TIMEOUT};
-        grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};
-        access_log off;
-    }
-
-    location / { return 404; }
-}
-EOF
-    } >"${RUNTIME_TMP}/easy_all.conf"
-    install -m 0600 "${RUNTIME_TMP}/easy_all.conf" "${NGINX_CONFIG}"
-    nginx -t >/dev/null || die "Nginx 配置校验失败"
-    systemctl enable --now nginx >/dev/null
-    systemctl reload nginx || systemctl restart nginx || die "重载 Nginx 失败"
 }
 
 validate_protocol_runtime() {
@@ -300,8 +228,8 @@ validate_protocol_runtime() {
                 | awk 'NR {found=1} END {exit !found}'; then
             response=$(curl -fsS --connect-timeout 5 --max-time 20 \
                 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-                --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-                "https://${XHTTP_ORIGIN_DOMAIN}/easy_all-health" || true)
+                --resolve "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
+                "https://${VLESS_CDN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
                 return 0
             fi
@@ -313,21 +241,20 @@ validate_protocol_runtime() {
 
 validate_subscription_runtime() {
     local token base64_response base64_decoded mihomo_response marker accounts
-    XHTTP_ORIGIN_DOMAIN="${XHTTP_ORIGIN_DOMAIN:-}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
         xhttp_validate_local_tls_curl_args
     fi
     validate_subscription_token_rejection \
-        "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
-        "https://${XHTTP_ORIGIN_DOMAIN}/subscribe" \
+        "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
+        "https://${VLESS_CDN_DOMAIN}/subscribe" \
         "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}"
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     base64_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
         --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-        --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        --resolve "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
         --get --data-urlencode 'token@-' \
-        "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
+        "https://${VLESS_CDN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
     base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
         || die "通用订阅响应不是有效的 Base64"
@@ -335,9 +262,9 @@ validate_subscription_runtime() {
         || die "通用订阅响应缺少节点：${SUBSCRIPTION_NODE_MARKER:-type=xhttp}"
     mihomo_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
         --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-        --resolve "${XHTTP_ORIGIN_DOMAIN}:443:127.0.0.1" \
+        --resolve "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
         --get --data-urlencode 'token@-' --data-urlencode "flag=clash" \
-        "https://${XHTTP_ORIGIN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
+        "https://${VLESS_CDN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
         && marker=$(mihomo_transport_marker)
