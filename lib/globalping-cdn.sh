@@ -144,13 +144,13 @@ EOF
     systemctl daemon-reload \
         || die "重新加载 Globalping 定时器失败"
     systemctl enable "${GLOBALPING_REFRESH_TIMER}" >/dev/null \
-        || die "启用 Globalping 每小时刷新定时器失败"
+        || die "启用 Globalping 每 3 小时刷新定时器失败"
     systemctl restart "${GLOBALPING_REFRESH_TIMER}" >/dev/null \
-        || die "启动 Globalping 每小时刷新定时器失败"
+        || die "启动 Globalping 每 3 小时刷新定时器失败"
     systemctl is-enabled --quiet "${GLOBALPING_REFRESH_TIMER}" \
-        || die "Globalping 每小时刷新定时器未设置为开机启动"
+        || die "Globalping 每 3 小时刷新定时器未设置为开机启动"
     systemctl is-active --quiet "${GLOBALPING_REFRESH_TIMER}" \
-        || die "Globalping 每小时刷新定时器未运行"
+        || die "Globalping 每 3 小时刷新定时器未运行"
 }
 
 remove_globalping_refresh_timer() {

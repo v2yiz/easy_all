@@ -242,12 +242,11 @@ reality_mlkem_required() {
 }
 
 write_xray_config() {
-    local clients managed_outbounds managed_routing inbound_sockopt mlkem=0
+    local clients managed_outbounds managed_routing inbound_sockopt
     managed_outbounds=$(xray_xhttp_outbounds_json)
     managed_routing=$(xray_xhttp_routing_json)
     inbound_sockopt=$(xray_inbound_sockopt_json)
     clients=$(jq -cn --arg id "${VLESS_UUID}" '[{id:$id,email:"easy_all.owner"}]')
-    reality_mlkem_required && mlkem=1
     install -d -m 0755 "${XRAY_DIR}"
     if [[ -z "${REALITY_PRIVATE_KEY:-}" ]]; then
         REALITY_PRIVATE_KEY=$("${XRAY_BIN}" x25519 | awk '/PrivateKey/ {print $NF}')
@@ -676,6 +675,11 @@ refresh_combined_cdn_ips() {
     success "Cloudflare 优选 IP 与订阅已刷新"
 }
 
+# update-core 换核心后按新核心版本重写订阅：Reality 节点的 ML-KEM 开关依赖核心版本。
+refresh_runtime_subscription() {
+    write_subscriptions
+}
+
 combined_finish_local() {
     write_subscriptions
     validate_subscription_runtime
@@ -975,6 +979,13 @@ purge_combined_dns() {
     done
 }
 
+purge_combined_origin_certificate() {
+    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] || return 0
+    # cloudflare_api_request 失败会直接退出所在进程，用子 shell 兜住以免中断卸载。
+    (cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null) \
+        || warn "吊销 Cloudflare Origin CA 证书失败：${CLOUDFLARE_ORIGIN_CERT_ID}；请到控制台手动删除"
+}
+
 uninstall_all() {
     local mode=${1:-} answer
     require_root
@@ -1001,6 +1012,7 @@ uninstall_all() {
         cloudflare_collect_api_token
         CLOUDFLARE_ZONE_ID=$(cloudflare_lookup_parent_zone "${CF_ZONE}")
         purge_combined_dns
+        purge_combined_origin_certificate
         cloudflare_clear_api_token
     else
         warn "远端资源（Cloudflare 记录）已保留；本机状态删除后无法再用 easy_all 清理"

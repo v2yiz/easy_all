@@ -730,7 +730,7 @@ run_recorded_profile_cleanup() {
 # 安装前置：清理自身残留 + 断言端口空闲。调用方须保持「已安装则提前 die」的语义。
 # 供提示统一引用的模式写法（菜单序号与中文名常被用户直接输入）。
 install_mode_choices() {
-    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined（也接受 reality/直连、cloudflare、组合等写法）'
+    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|combined（也接受 reality/直连、cloudflare、组合等写法）'
 }
 
 # 本次安装生成的身份（UUID、路径、订阅 Token、Reality 密钥、Origin CA 元数据）。

@@ -273,6 +273,29 @@ assert_equal "filter failure keeps crontab" "${before}" "$(cat "${FAKE_CRONTAB_F
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/lib/scheduled-maintenance.sh"
 
+# configure_daily_reboot 遇到空 marker 时必须失败退出：空标记会让 awk 过滤输出全空，抹除管理员全部定时任务
+( CRON_REBOOT_MARKER=""
+  REBOOT_SCHEDULE_MODE=custom REBOOT_HOUR=5 \
+      PATH="${TMP_DIR}/bin:${PATH}" configure_daily_reboot ) >/dev/null 2>&1 \
+    && fail "configure_daily_reboot must refuse to run with an empty CRON_REBOOT_MARKER"
+assert_equal "empty marker keeps crontab on configure_daily_reboot" "${before}" \
+    "$(cat "${FAKE_CRONTAB_FILE}")"
+
+# 有 marker 时写入受管任务并保留管理员条目
+REBOOT_SCHEDULE_MODE=custom REBOOT_HOUR=5 CRON_REBOOT_MARKER="${CRON_REBOOT_MARKER}" \
+    PATH="${TMP_DIR}/bin:${PATH}" configure_daily_reboot
+assert_contains "managed reboot job written" "$(cat "${FAKE_CRONTAB_FILE}")" "0 5 * * *"
+assert_contains "user cron survives reboot schedule" "$(cat "${FAKE_CRONTAB_FILE}")" "user-backup"
+
+# 过滤失败时 configure_daily_reboot 也不得提交截断的 crontab
+before_configure=$(cat "${FAKE_CRONTAB_FILE}")
+filter_managed_reboot_cron() { return 1; }
+( REBOOT_SCHEDULE_MODE=custom REBOOT_HOUR=6 CRON_REBOOT_MARKER="${CRON_REBOOT_MARKER}" \
+      PATH="${TMP_DIR}/bin:${PATH}" configure_daily_reboot ) >/dev/null 2>&1 \
+    && fail "configure_daily_reboot must report filter failure"
+assert_equal "filter failure keeps crontab on configure_daily_reboot" "${before_configure}" \
+    "$(cat "${FAKE_CRONTAB_FILE}")"
+
 # 11. 只有完整快照才允许逐项恢复（部分快照不得推断“安装前不存在”）
 systemctl() { :; }
 stop_maintenance_services() { :; }
@@ -593,7 +616,7 @@ assert_contains "alias 1 maps to reality" "${alias_probe}" "1=reality"
 assert_contains "alias cf maps to cloudflare-streamup" "${alias_probe}" "cf=cloudflare-streamup"
 assert_equal "unknown alias is rejected" "1" \
     "$(bash -c 'source "$1"; launcher_mode_alias 9 >/dev/null 2>&1' _ "${ROOT_DIR}/easy_all" && echo 0 || echo 1)"
-assert_contains "usage lists menu numbers" "$(bash -c 'source "$1"; launcher_mode_usage' _ "${ROOT_DIR}/easy_all")" "5|combined"
+assert_contains "usage lists menu numbers" "$(bash -c 'source "$1"; launcher_mode_usage' _ "${ROOT_DIR}/easy_all")" "3|bunny-ws 4|combined"
 
 # 无标记残留 + 非交互：提示必须给出可用写法，而不是只报"不支持"
 reset_artifacts
@@ -601,7 +624,7 @@ mkdir -p "${EASY_ALL_GUARD_STATE_DIR}/xray"
 EASY_ALL_SELECTED_MODE=combined
 output=$(capture prepare_fresh_install 80 </dev/null || true)
 assert_contains "no-marker non-interactive names the command" "${output}" "cleanup-partial --assume-mode"
-assert_contains "no-marker non-interactive lists accepted forms" "${output}" "5|combined"
+assert_contains "no-marker non-interactive lists accepted forms" "${output}" "4|combined"
 rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
 
 # 26. 只有 Debian 默认站点但端口没被监听时，不得再报"端口被 nginx 占用"

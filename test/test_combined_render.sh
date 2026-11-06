@@ -1107,6 +1107,51 @@ UFW_WIRING_LOG="${TMP_DIR}/ufw-wiring.log"
 assert_equal "28: combined configures SSH boot safety and fail2ban" \
     $'ssh-boot\nfail2ban' "$(<"${UFW_WIRING_LOG}")"
 
+# 29) 卸载 --purge-cloud 必须吊销 Origin CA 证书（文档承诺清理云端证书），失败不得中断卸载
+PURGE_CALLS="${TMP_DIR}/purge-calls.log"
+(
+    : >"${PURGE_CALLS}"
+    cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${PURGE_CALLS}"; }
+    CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-777"
+    purge_combined_origin_certificate
+    assert_equal "29a: purge revokes Origin CA certificate" \
+        "DELETE /certificates/cert-purge-777" "$(<"${PURGE_CALLS}")"
+) || fail "29a: purge_combined_origin_certificate failed"
+
+(
+    : >"${PURGE_CALLS}"
+    cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${PURGE_CALLS}"; }
+    CLOUDFLARE_ORIGIN_CERT_ID=""
+    purge_combined_origin_certificate
+    assert_equal "29b: no certificate DELETE without recorded ID" "" "$(<"${PURGE_CALLS}")"
+) || fail "29b: purge without certificate id failed"
+
+(
+    cloudflare_api_request() { die "注入 API 失败"; }
+    CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-888"
+    purge_out=$(purge_combined_origin_certificate 2>&1) \
+        || fail "29c: certificate revocation failure must not abort uninstall"
+    assert_contains "29c: revocation failure warns with certificate id" \
+        "${purge_out}" "cert-purge-888"
+) || fail "29c: certificate revocation failure handling failed"
+
+# 29d) 真实调用点：uninstall --purge-cloud 分支必须调用证书吊销（防止主修复被静默回退）
+uninstall_body=$(awk '/^uninstall_all\(\) \{/,/^\}/' "${PROFILE}")
+purge_branch=$(awk '/--purge-cloud/,/^    else$/' <<<"${uninstall_body}")
+assert_contains "29d: purge branch calls certificate revocation" \
+    "${purge_branch}" "purge_combined_origin_certificate"
+assert_contains "29d: purge branch keeps DNS cleanup" "${purge_branch}" "purge_combined_dns"
+
+# 30) update-core 换核心后必须重写订阅（Reality 的 ML-KEM 开关依赖核心版本）
+declare -F refresh_runtime_subscription >/dev/null \
+    || fail "30: combined must define the update-core subscription hook"
+(
+    write_subscriptions() { printf 'refreshed\n' >"${TMP_DIR}/core-refresh-flag"; }
+    refresh_runtime_subscription_after_core_update
+)
+assert_equal "30: update-core refreshes subscription via hook" \
+    "refreshed" "$(<"${TMP_DIR}/core-refresh-flag")"
+
 printf 'ok - combined render\n'
 
 

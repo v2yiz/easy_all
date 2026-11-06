@@ -13,6 +13,11 @@
 - **主机前置初始化跳过提示与幂等增强**：检测到系统已具备激活的 UFW、Fail2ban 与 Swap 等初始化状态时，安装各 Profile 时明确提示「已完成初始化：已就绪的依赖、内核与 TCP 加速将跳过重复安装；IPv4-only、定时重启与 UFW/Fail2ban 仍会幂等校验」；旧版本状态卸载（`legacy_local_uninstall`）修复 `warn`/`success` 未定义崩溃问题并安全迁移旧 helper。
 - **Reality 动态端口 NAT 目标自适应**：NAT 重定向规则目标端口自适应 inbound 实际监听端口，不再硬编码 443。
 - **系统初始化脚本（`debian-init.sh`）支持分支与镜像参数**：支持通过 `EASY_ALL_BRANCH` 指定拉取分支，及 `EASY_ALL_PLATFORM_MODULE_URL` / `EASY_ALL_FIREWALL_MODULE_URL` 指定镜像源。
+- **组合模式 `uninstall --purge-cloud` 补上 Origin CA 证书吊销**：按状态文件中的 `CLOUDFLARE_ORIGIN_CERT_ID` 调用 `DELETE /certificates/{id}`，与「清理节点 DNS 解析、Origin CA 证书」的文档承诺一致，不再遗留 15 年长效的孤儿回源证书；缺少 ID 时不发请求，吊销失败只告警并给出证书 ID，不中断本机清理。
+- **核心升级后自动重写组合模式订阅**：组合模式补上 `refresh_runtime_subscription` 钩子，`easy_all update-core` 升级 Xray 后按新核心版本重写 Reality 的 `support-x25519mlkem768` 开关，无需再手动 `easy_all apply`。
+- **加固：`CRON_REBOOT_MARKER` 为空时拒绝改写 root crontab，且先过滤成功再提交**：`configure_daily_reboot` 与 `remove_daily_reboot_schedule` 都先校验标记非空再动 crontab（`awk index($0, "")` 会把所有行过滤掉），`configure_daily_reboot` 也不再直接把过滤结果喂给 `crontab -`，避免过滤中途失败时写入截断内容；当前会调用该函数的 Profile 均定义了该常量，因此属防御性加固而非线上故障。
+- **Bunny 回源池过滤 IPv6 网段**：`lib/bunny-api.py` 的 `edge_ips` 只保留 IPv4 网段，避免混入的 IPv6 CIDR 写入 `/etc/ufw/before.rules` 后让 `iptables-restore --test` 失败、中断安装与动态刷新。
+- **细节对齐**：帮助与提示中的组合模式编号统一为 `4`（仍接受 `5`）；Globalping 定时器失败提示改为「每 3 小时」；删除 `write_xray_config` 中声明后未使用的 `mlkem` 局部变量。
 
 源码版本标识为 `2.5.2`。
 

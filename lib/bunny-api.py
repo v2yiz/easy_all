@@ -195,9 +195,12 @@ def edge_ips(data):
     ips = set()
     for item in data if isinstance(data, list) else []:
         try:
-            ips.add(str(ipaddress.ip_network(item, strict=False)))
+            net = ipaddress.ip_network(item, strict=False)
         except ValueError:
-            pass
+            continue
+        # 回源白名单最终写进 iptables（IPv4）规则，IPv6 网段会让 iptables-restore --test 直接失败。
+        if net.version == 4:
+            ips.add(str(net))
     return sorted(ips)
 
 

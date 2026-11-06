@@ -19,8 +19,11 @@ read_root_crontab() {
 }
 
 configure_daily_reboot() {
-    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job current
+    local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job current filtered
     local pre_command="" profile_pre_command=""
+    # 空标记会让 awk 过滤退化成“删掉所有行”，从而抹除管理员全部定时任务。
+    [[ -n "${CRON_REBOOT_MARKER:-}" ]] \
+        || die "CRON_REBOOT_MARKER 为空，已拒绝改写 root crontab"
     if [[ -z "${mode}" && -t 0 ]]; then
         printf '请选择定时重启策略：\n'
         printf '  1. 每天凌晨 4 点重启（默认）\n'
@@ -58,7 +61,11 @@ configure_daily_reboot() {
         pre_command=${pre_command//%/\\%}
         job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command:-true} ) && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
     fi
-    { printf '%s\n' "${current}" | filter_managed_reboot_cron; \
+    # 与 remove_daily_reboot_schedule 一致：先确认过滤成功再提交，管道中途失败时
+    # crontab - 会收到截断输入并覆写整份 crontab。
+    filtered=$(printf '%s\n' "${current}" | filter_managed_reboot_cron) \
+        || die "过滤 root crontab 失败，已取消写入以免清空 crontab"
+    { printf '%s\n' "${filtered}"; \
         [[ -z "${job:-}" ]] || printf '%s\n' "${job}"; } | crontab - \
         || die "写入 root crontab 失败"
 }

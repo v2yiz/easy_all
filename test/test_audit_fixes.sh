@@ -122,6 +122,8 @@ timer_content=$(<"${GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE}")
 assert_contains "timer OnActiveSec=3h" "${timer_content}" "OnActiveSec=3h"
 assert_contains "timer OnUnitActiveSec=3h" "${timer_content}" "OnUnitActiveSec=3h"
 assert_contains "timer Description 3 hours" "${timer_content}" "Description=Refresh easy_all CDN endpoints every three hours"
+assert_not_contains "globalping failure messages no longer say hourly" \
+    "$(<"${ROOT_DIR}/lib/globalping-cdn.sh")" "每小时"
 
 echo "=== 4. 组合模式 Cloudflare API Token 提示文案与权限要求 ==="
 combined_content=$(<"${ROOT_DIR}/profiles/combined.sh")
@@ -1162,5 +1164,12 @@ assert_equal "旧状态版本卸载退出码" "0" "${legacy_rc}"
 assert_contains "action 配置指向新 helper" \
     "$(<"${legacy_dir}/action.d/easy-all-ufw-cidr.conf")" "${legacy_dir}/sbin/fail2ban-ufw-cidr.sh"
 assert_contains "旧状态版本卸载执行了本机清理" "$(<"${legacy_calls}")" "rm -rf /etc/easy_all"
+
+echo "=== 14. Bunny 回源池只接受 IPv4（IPv6 网段会让 iptables-restore 失败） ==="
+IPS_INPUT="${TMP_DIR}/bunny-edges.json"
+printf '%s\n' '["203.0.113.1/24","2001:db8::/32","198.51.100.7/32","not-a-cidr"]' >"${IPS_INPUT}"
+ips_output=$(python3 "${ROOT_DIR}/lib/bunny-api.py" ips --input "${IPS_INPUT}") \
+    || fail "Bunny 回源池解析应成功"
+assert_equal "只保留 IPv4 网段" $'198.51.100.7/32\n203.0.113.0/24' "${ips_output}"
 
 echo "ok - all audit fixes verified successfully"

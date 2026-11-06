@@ -170,7 +170,7 @@ launcher_mode_alias() {
 }
 
 launcher_mode_usage() {
-    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 5|combined（也接受 4|combined/直连/组合/cf 等写法）'
+    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|combined（也接受 5|combined/直连/组合/cf 等写法）'
 }
 
 # 一次读入 marker 并同时给出「模式/阶段/身份」：模式与身份必须来自同一份快照，
