@@ -34,10 +34,6 @@ configure_ufw_ip_family() {
     set_ufw_ipv6 no
 }
 
-disable_ufw_ipv6() {
-    set_ufw_ipv6 no
-}
-
 normalize_ufw_tcp_ports() {
     local raw=$1 normalized="" port
     for port in ${raw//,/ }; do

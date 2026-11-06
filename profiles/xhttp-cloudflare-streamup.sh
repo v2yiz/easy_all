@@ -182,11 +182,13 @@ xhttp_renew_origin_certificate() {
     cloudflare_collect_api_token
     old_id=${CLOUDFLARE_ORIGIN_CERT_ID:-}
     cloudflare_issue_origin_certificate 1
-    save_state
     nginx -t >/dev/null || die "Cloudflare 新源站证书安装后 Nginx 配置校验失败"
     systemctl reload nginx || systemctl restart nginx \
         || die "Cloudflare 新源站证书已安装，但 Nginx 重载失败"
     validate_protocol_runtime
+    save_state
+    # 吊销不可逆：先关闭回滚再吊销，避免失败路径把已吊销的旧证书恢复回来。
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     if [[ -n "${old_id}" && "${old_id}" != "${CLOUDFLARE_ORIGIN_CERT_ID}" ]]; then
         if ! (cloudflare_api_request DELETE "/certificates/${old_id}" >/dev/null); then
             warn "新证书已生效，但撤销旧 Cloudflare Origin CA 证书失败：${old_id}"
@@ -194,10 +196,6 @@ xhttp_renew_origin_certificate() {
     fi
     cloudflare_clear_api_token
     success "Cloudflare Origin CA 源站证书已轮换"
-}
-
-renew_certificate() {
-    xhttp_renew_origin_certificate "$@"
 }
 
 cloudflare_ref() { printf 'easy_all_%s' "$(printf '%s' "$1" | sha256sum | cut -c1-24)"; }

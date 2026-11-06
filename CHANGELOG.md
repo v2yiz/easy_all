@@ -1,3 +1,16 @@
+## 3.0.1 更新说明（2026-11-06）
+
+- **修复模式 2 `easy_all renew-cert` 崩溃（3.0.0 回归）**：3.0.0 在 `profiles/xhttp-cloudflare-streamup.sh` 新增的 `renew_certificate()` 覆盖丢掉了 `require_root` 与 `collect_installed_state`，续签在 `set -u` 下以 `VLESS_CDN_DOMAIN: unbound variable` 立即中断；若环境里恰好带该变量，随后无锁的 `save_state` 会把空 UUID、路径、Token 与 Zone ID 写回 `state.env`。现删除该覆盖，恢复 `lib/xhttp-runtime.sh` 的实现。
+- **`renew-cert` 事务化（模式 2 与模式 1）**：两条路径统一为「写锁 → 读状态 → 拍快照 → 签发 → `nginx -t` → 重载 → 校验 → 写状态 → 关闭回滚 → 吊销旧证书」，失败时回滚状态、证书文件与 Nginx 配置；模式 2 的回滚还会删除本次新建的 Origin CA 证书，避免账户里留下无引用的长期证书。
+- **订阅更新回滚清理本次新建证书**：`rollback_subscription_update` 删除 `CLOUDFLARE_CREATED_ORIGIN_CERT_ID`（原实现只有一个恒为空的 `declare -F` 守卫，实现体随 Worker 一起删除），删除失败只告警并提示 `easy_all purge-cloudflare`。
+- **`self-update` 与运行时任务共用写锁**：`register-command` 整体替换运行时目录前先取写锁，避免正在运行的安装或定时任务在新旧版本文件之间交错。
+- **安装菜单不再接受已删除的模式编号**：`4` / `5` 现在直接提示「不支持的安装模式」，不再静默安装组合模式。
+- **清理删除模式留下的死代码**：删除 `disable_ufw_ipv6`（Bunny 独占）、`cloudflare_client_candidates`（Worker 独占）、模式映射的悬挂注释与空 Provider 回滚钩子。
+- **Zone 名匹配双向忽略大小写**：`cloudflare_lookup_parent_zone` 的 jq 比较对入参也应用 `ascii_downcase`。
+- **回归测试**：`test/test_audit_fixes.sh` 新增第 13、14 节，覆盖模式编号拒绝与死代码不再存在、回滚证书清理、`renew-cert` 入口加载状态与事务顺序。
+
+验证：`test_install_guard` / `test_purge_cloudflare` / `test_combined_render` / `test_mihomo_template_lint` / `test_audit_fixes` / `test_subscription_port` 六套全绿，关键修复均做「回退即变红」反向验证；`bash -n` 与 `node --check` 通过。
+
 ## 3.0.0 更新说明（2026-11-06）
 
 - **删除 Bunny 模式，模式 4 改为模式 3**：移除 `profiles/ws-bunny.sh`、`lib/bunny-api.py`、`lib/bunny-runtime.sh`、`lib/lego-install.sh`、Bunny 文档与测试；菜单、`--assume-mode`、命令路由、卸载清理与文档统一为「1 Reality / 2 Cloudflare / 3 组合」。数字只用于菜单与清理参数，状态文件与 Profile 标识不变。

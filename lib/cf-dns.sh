@@ -119,7 +119,7 @@ cloudflare_lookup_parent_zone() {
     local domain=$1 candidate zone
     candidate=${domain}
     while [[ "${candidate}" == *.* ]]; do
-        zone=$(cloudflare_api_request GET "/zones?name=${candidate}&status=active&per_page=50" | jq -r --arg name "${candidate}" '[.[] | select((.name|ascii_downcase)==$name) | .id] | if length == 1 then .[0] else empty end')
+        zone=$(cloudflare_api_request GET "/zones?name=${candidate}&status=active&per_page=50" | jq -r --arg name "${candidate}" '[.[] | select((.name|ascii_downcase)==($name|ascii_downcase)) | .id] | if length == 1 then .[0] else empty end')
         if [[ -n "${zone}" ]]; then printf '%s' "${zone}"; return; fi
         candidate=${candidate#*.}
     done

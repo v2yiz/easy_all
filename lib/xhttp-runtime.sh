@@ -414,10 +414,11 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
-    if declare -F rollback_provider_subscription_update >/dev/null 2>&1; then
-        if ! (rollback_provider_subscription_update); then
-            warn "恢复订阅更新前的云端 CDN/DNS 状态失败，请立即执行 easy_all apply-cloud 复核"
-        fi
+    # 本次更新新签发的 Origin CA 证书只记录在被回滚的 state.env 里；不在这里删掉就会在
+    # 账户里留下无引用的长期证书（uninstall --purge-cloud 只删状态中的证书 ID）。
+    if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
+        (cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null) \
+            || warn "回滚时删除本次新建的 Cloudflare Origin CA 证书失败：${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}；可用 easy_all purge-cloudflare 清理"
     fi
     warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]]; then
@@ -482,8 +483,11 @@ finish_xhttp_apply() {
 
 renew_certificate() {
     require_root
+    acquire_runtime_write_lock
     collect_installed_state
+    snapshot_subscription_update
     xhttp_renew_origin_certificate
+    commit_subscription_update
 }
 
 # 卸载与安装失败回滚都只回收业务端口：保留 UFW 启用状态、默认策略与 SSH 放行。

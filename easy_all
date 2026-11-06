@@ -188,8 +188,8 @@ choose_install_mode() {
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare-streamup\n' ;;
-    3 | 4 | 5) printf 'combined\n' ;;
-    *) launcher_die "无效选择：${choice}" ;;
+    3) printf 'combined\n' ;;
+    *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
 
@@ -308,6 +308,9 @@ unified_self_update() {
     chmod 0700 "${repo_dir}/easy_all"
     "${repo_dir}/easy_all" verify-release \
         || die "下载的 easy_all 项目未通过目标版本完整性校验"
+    # 注册命令会整体替换运行时目录；与安装、定时任务共用同一把写锁，
+    # 避免与正在运行的后台任务交错（它们随后打开的是新版本文件）。
+    acquire_runtime_write_lock 30
     "${repo_dir}/easy_all" register-command
     rm -rf -- "${temp_dir}"
     success "easy_all 项目代码已更新；未修改 Xray、Nginx、订阅或云端 CDN 资源"

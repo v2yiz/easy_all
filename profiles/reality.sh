@@ -1481,19 +1481,24 @@ deploy_subscription_output() {
 
 renew_subscription_certificate() {
     require_root
+    acquire_runtime_write_lock
     collect_installed_state
     subscription_enabled || die "当前未启用自托管订阅"
+    snapshot_subscription_update
     reality_cloudflare_prepare_subscription
     reality_cloudflare_issue_origin_certificate 1
-    save_state
     reality_cloudflare_configure_strict_tls
     nginx -t >/dev/null || die "Cloudflare 新源站证书安装后 Nginx 校验失败"
     systemctl reload nginx || systemctl restart nginx \
         || die "Cloudflare 新源站证书安装后 Nginx 重载失败"
+    save_state
     validate_subscription_runtime
     reality_cloudflare_validate_public_subscription
+    # 吊销不可逆：先关闭回滚再吊销，避免失败路径把已吊销的旧证书恢复回来。
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     reality_cloudflare_finalize_certificate_rotation
     reality_cloudflare_clear_api_token
+    release_runtime_write_lock
     success "Cloudflare Origin CA 订阅证书已轮换"
 }
 

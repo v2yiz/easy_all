@@ -981,9 +981,3 @@ refresh_globalping_cache() {
     success "Cloudflare IPv4 入口池已更新：$(jq '.candidates | length' \
         "${GLOBALPING_CACHE_FILE}") 个节点"
 }
-
-cloudflare_client_candidates() {
-    if cdn_optimization_enabled && cloudflare_globalping_cache_compatible; then
-        jq -r '.candidates[] | [.ip, .label, .carrier, .address_family] | @tsv' "${GLOBALPING_CACHE_FILE}"
-    fi
-}

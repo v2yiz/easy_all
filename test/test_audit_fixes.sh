@@ -28,6 +28,16 @@ assert_not_contains() {
         || fail "${label}: unexpectedly contained <${unexpected}>"
 }
 
+# 断言 first 出现在 second 之前（两者都必须存在）
+assert_before() {
+    local label=$1 text=$2 first=$3 second=$4 prefix
+    [[ "${text}" == *"${first}"* ]] || fail "${label}: missing <${first}>"
+    [[ "${text}" == *"${second}"* ]] || fail "${label}: missing <${second}>"
+    prefix=${text%%"${first}"*}
+    [[ "${prefix}" != *"${second}"* ]] \
+        || fail "${label}: <${second}> 必须出现在 <${first}> 之后"
+}
+
 echo "=== 1. 完全删除所有配额相关内容 ==="
 [[ ! -f "${ROOT_DIR}/lib/quota.sh" ]] || fail "lib/quota.sh 仍然存在"
 assert_not_contains "manifest" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/quota.sh"
@@ -989,6 +999,98 @@ for profile in profiles/reality.sh profiles/xhttp-cloudflare-streamup.sh profile
     body=$(awk '/^(install_all|run_reality_install_pipeline)\(\)/,/^}/' "${ROOT_DIR}/${profile}")
     assert_contains "${profile} 初始化阶段输出状态" "${body}" "report_host_init_state"
 done
+
+
+echo "=== 13. 已删模式的输入与回滚残留 ==="
+mode_body=$(awk '/^choose_install_mode\(\)/,/^}/' "${ROOT_DIR}/easy_all")
+assert_contains "菜单序号 3 映射到组合模式" "${mode_body}" "3) printf 'combined\\n' ;;"
+assert_not_contains "不再接受已删模式编号 4" "${mode_body}" "4)"
+assert_not_contains "不再接受已删模式编号 5" "${mode_body}" "5)"
+assert_contains "无效序号提示模式不支持" "${mode_body}" "不支持的安装模式"
+
+rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/lib/xhttp-runtime.sh")
+assert_contains "订阅更新回滚删除本次新建的 Origin CA 证书" "${rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
+assert_not_contains "已删除的 Provider 回滚钩子不再被引用" "${rollback_body}" "rollback_provider_subscription_update"
+assert_not_contains "Bunny 时代的 disable_ufw_ipv6 已删除" "$(<"${ROOT_DIR}/lib/firewall.sh")" "disable_ufw_ipv6"
+assert_not_contains "Worker 时代的 cloudflare_client_candidates 已删除" \
+    "$(<"${ROOT_DIR}/lib/cloudflare-ip-pool.sh")" "cloudflare_client_candidates"
+
+
+echo "=== 14. renew-cert 入口与事务顺序 ==="
+mode2_profile="${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh"
+assert_not_contains "模式 2 不再覆盖 renew_certificate" \
+    "$(<"${mode2_profile}")" "renew_certificate() {"
+
+xhttp_renew_body=$(awk '/^xhttp_renew_origin_certificate\(\)/,/^}/' "${mode2_profile}")
+assert_before "模式 2 先 reload 再 save_state" \
+    "${xhttp_renew_body}" "systemctl reload nginx" "save_state"
+assert_before "模式 2 先关闭回滚再吊销旧证书" \
+    "${xhttp_renew_body}" "UPDATE_SUB_ROLLBACK_ON_EXIT=0" "cloudflare_api_request DELETE"
+
+renew_body=$(awk '/^renew_certificate\(\)/,/^}/' "${ROOT_DIR}/lib/xhttp-runtime.sh")
+for token in require_root acquire_runtime_write_lock collect_installed_state \
+    snapshot_subscription_update commit_subscription_update; do
+    assert_contains "共享 renew_certificate 含 ${token}" "${renew_body}" "${token}"
+done
+
+reality_renew_body=$(awk '/^renew_subscription_certificate\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
+for token in acquire_runtime_write_lock snapshot_subscription_update release_runtime_write_lock; do
+    assert_contains "Reality renew-cert 含 ${token}" "${reality_renew_body}" "${token}"
+done
+assert_before "Reality renew-cert 先 reload 再 save_state" \
+    "${reality_renew_body}" "systemctl reload nginx" "save_state"
+assert_before "Reality renew-cert 先关闭回滚再吊销旧证书" \
+    "${reality_renew_body}" "UPDATE_SUB_ROLLBACK_ON_EXIT=0" "reality_cloudflare_finalize_certificate_rotation"
+
+self_update_body=$(awk '/^unified_self_update\(\)/,/^}/' "${ROOT_DIR}/easy_all")
+assert_before "self-update 先取写锁再注册命令" \
+    "${self_update_body}" "acquire_runtime_write_lock" "register-command"
+
+zone_body=$(awk '/^cloudflare_lookup_parent_zone\(\)/,/^}/' "${ROOT_DIR}/lib/cf-dns.sh")
+assert_contains "Zone 匹配双向忽略大小写" "${zone_body}" '($name|ascii_downcase)'
+
+# 行为：renew-cert 入口必须加载已安装状态（曾经的回归：未加载状态在 set -u 下直接崩溃）
+if [[ -e /etc/easy_all/state.env ]]; then
+    echo "skip - 本机已安装 easy_all，跳过 renew-cert 未安装路径校验"
+else
+    # 用独立 bash 进程跑：测试前面已经 source 过部分 lib，重复 source 会撞 readonly 变量。
+    renew_probe=$(bash -c '
+        set -Eeuo pipefail
+        ROOT_DIR=$1
+        TMP_DIR=$2
+        export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP_DIR}/policy-state"
+        export EASY_ALL_POLICY_RC_OVERRIDE="${TMP_DIR}/policy-rc.d"
+        mktemp() {
+            case "$#" in
+            0) command mktemp "${TMP_DIR}/file.XXXXXX" ;;
+            1)
+                if [[ "$1" == "-d" ]]; then
+                    command mktemp -d "${TMP_DIR}/dir.XXXXXX"
+                else
+                    command mktemp "$@"
+                fi
+                ;;
+            *) command mktemp "$@" ;;
+            esac
+        }
+        # shellcheck source=/dev/null
+        source "${ROOT_DIR}/profiles/xhttp-cloudflare-streamup.sh" >/dev/null \
+            || { printf "PROFILE_SOURCE_FAILED\\n"; exit 3; }
+        require_root() { :; }
+        acquire_runtime_write_lock() { :; }
+        snapshot_subscription_update() { :; }
+        commit_subscription_update() { :; }
+        xhttp_renew_origin_certificate() { printf "RENEW\\n"; }
+        set +e
+        out=$( (EASY_ALL_STATE_FILE_OVERRIDE="${TMP_DIR}/absent-state.env" renew_certificate) 2>&1 )
+        rc=$?
+        printf "RC=%s\\n%s\\n" "${rc}" "${out}"
+    ' _ "${ROOT_DIR}" "${TMP_DIR}" 2>&1) || true
+    assert_not_contains "renew-cert 入口能够加载 profile" "${renew_probe}" "PROFILE_SOURCE_FAILED"
+    assert_not_contains "renew-cert 不得因未加载状态崩溃" "${renew_probe}" "unbound variable"
+    assert_contains "renew-cert 先加载安装状态" "${renew_probe}" "尚未安装"
+    assert_contains "renew-cert 在未安装时报错退出" "${renew_probe}" "RC=1"
+fi
 
 
 echo "ok - all audit fixes verified successfully"
