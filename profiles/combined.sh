@@ -63,6 +63,10 @@ load_state() {
     [[ "${PROTOCOL:-}" == "combined" ]] || die "状态协议不是 combined；请重新安装"
     [[ -n "${CLOUDFLARE_ZONE_ID:-}" ]] || die "状态缺少 Cloudflare Zone ID；请重新安装"
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
+    # 共享的 validate_protocol_runtime（lib/xhttp-runtime.sh）按 XHTTP_ORIGIN_DOMAIN 做本机探活；
+    # 组合模式没有独立回源域名，该变量必须由 CF_NODE_DOMAIN 派生，否则 set -u 下抛 unbound variable，
+    # 安装/apply 崩在 services 阶段（2026-11-06 现场）。
+    XHTTP_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
     # 2.0.0 状态的组合模式没有这些字段，回退到当时的固定名称，避免 apply 时静默改名。
     : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}"
@@ -118,6 +122,7 @@ collect_install_inputs() {
     [[ "$(printf '%s\n' "${DIRECT_DOMAIN}" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" | sort -u | wc -l | tr -d ' ')" == "3" ]] \
         || die "三个域名必须互不相同"
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
+    XHTTP_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
 
     CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（DNS 编辑权限）') \

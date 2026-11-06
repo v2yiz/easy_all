@@ -1366,6 +1366,54 @@ EOF
         "${sniffer_inline_src}" "${sniffer_next_src}" "${sniffer_tail_src}"
 ) || fail_test "32: strip_mihomo_sniffer regression"
 
+# 33) services 阶段继承的 validate_protocol_runtime（lib/xhttp-runtime.sh）按 XHTTP_ORIGIN_DOMAIN 探活。
+#     组合模式没有独立回源域名：首次安装（collect_install_inputs）与状态装载（load_state）两条路径
+#     都必须由 CF_NODE_DOMAIN 派生该变量，否则 set -u 下抛 unbound variable，安装/apply 在
+#     services 阶段失败（2026-11-06 现场）。
+fresh_origin_domain=$(
+    unset XHTTP_ORIGIN_DOMAIN CF_ZONE DIRECT_DOMAIN CF_NODE_DOMAIN SUBSCRIPTION_DOMAIN
+    prompt_value() { if [[ -n "${2:-}" ]]; then printf '%s' "$2"; else printf 'example.com'; fi; }
+    prompt_secret() { printf 'cf-token-abcdefghijklmnop'; }
+    collect_globalping_token() { :; }
+    validate_globalping_access() { :; }
+    detect_public_ipv4() { printf '198.51.100.10'; }
+    collect_install_inputs >/dev/null 2>&1
+    printf '%s' "${XHTTP_ORIGIN_DOMAIN:-<unset>}"
+)
+assert_equal "runtime-probe: fresh install derives XHTTP_ORIGIN_DOMAIN from CF_NODE_DOMAIN" \
+    'cf.example.com' "${fresh_origin_domain}"
+
+state_origin_domain=$(
+    unset XHTTP_ORIGIN_DOMAIN
+    load_state >/dev/null 2>&1
+    printf '%s' "${XHTTP_ORIGIN_DOMAIN:-<unset>}"
+)
+assert_equal "runtime-probe: state load derives XHTTP_ORIGIN_DOMAIN from CF_NODE_DOMAIN" \
+    "${CF_NODE_DOMAIN}" "${state_origin_domain}"
+
+probe_log="${TMP_DIR}/runtime-probe.log"
+: >"${probe_log}"
+probe_rc=0
+(
+    unset XHTTP_ORIGIN_DOMAIN
+    load_state >/dev/null 2>&1
+    cloudflare_ensure_origin_ca_root() { :; }
+    systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
+    ss() { printf 'LISTEN 0 511 *:443 *:*\n'; }
+    curl() {
+        printf '%s\n' "$*" >>"${probe_log}"
+        printf 'easy_all ok'
+    }
+    validate_protocol_runtime
+) || probe_rc=$?
+assert_equal "runtime-probe: validate_protocol_runtime succeeds on the combined runtime" \
+    '0' "${probe_rc}"
+probe_calls=$(<"${probe_log}")
+assert_contains "runtime-probe: probes CF_NODE_DOMAIN over loopback" \
+    "${probe_calls}" "--resolve ${CF_NODE_DOMAIN}:443:127.0.0.1"
+assert_contains "runtime-probe: probes the health endpoint" \
+    "${probe_calls}" "https://${CF_NODE_DOMAIN}/easy_all-health"
+
 printf 'ok - combined render\n'
 
 
