@@ -89,6 +89,60 @@ sudo easy_all subscription
 
 ---
 
+## Cloudflare CDN 优选 IP 原理与实现
+
+对于模式 2（Cloudflare CDN）与模式 4（组合模式），`easy_all` 采用**服务端中心化主动探测**机制：不耗费手机客户端电量与流量，由 VPS 定时（每 3 小时通过 systemd timer）调用 Globalping 分布式探针，直接从大陆三大运营商（中国电信 AS4134、中国联通 AS4837、中国移动 AS9808）的真实终端（eyeball-network）角度，经过两阶段过滤筛选出 6 个（三网各 2 个）最低延迟、低丢包且 TLS 真正通畅的优选 IP 注入订阅。
+
+```mermaid
+flowchart TD
+    subgraph Stage1["1. 候选池抽样 (72 个候选)"]
+        direction TB
+        A1["企业大厂域名 (≤48)<br/>• 16个知名服务解析<br/>• 防污染校验与 DoH 兜底"]
+        A2["优先官方网段 (12)<br/>• 7个核心 CIDR<br/>• epoch 散列离散抽样"]
+        A3["全量官方网段 (12)<br/>• 全网段保底抽样"]
+        A1 -.->|"解析不足/离线<br/>名额动态回流"| A2 & A3
+    end
+
+    subgraph Stage2["2. 本地预检"]
+        B["本机 12 并发 TCP 443 + HTTP 握手<br/>• 提前剔除死节点与硬阻断"]
+    end
+
+    subgraph Stage3["3. Stage-1 TCP 初筛"]
+        direction TB
+        C1["Globalping 大陆三网探针 (电信 4134 / 联通 4837 / 移动 9808)"]
+        C2["• 丢包率 ≤ 20% 过滤<br/>• 延迟 ≤ 220ms 标记 rtt_ok<br/>• 三网各取 Top 5 快节点 (共 15 个)"]
+        C1 --> C2
+    end
+
+    subgraph Stage4["4. Stage-2 TLS 深度验证"]
+        direction TB
+        D1["真实 HTTPS GET 探测 (携带业务 CDN 域名)"]
+        D2["• 严格校验 TLS 证书链完整性与 HTTP 响应状态<br/>• 彻底杜绝 SNI 假通"]
+        D1 --> D2
+    end
+
+    subgraph Stage5["5. 选优配对与回退"]
+        direction TB
+        E1["历史候选 5ms 排序优待 (防节点频繁颠簸)"]
+        E2["晚高峰软降级回退 (单网超限取该网合格最低 RTT)"]
+        OUT["输出 6 个优选节点注入订阅<br/>(电信×2 / 联通×2 / 移动×2)"]
+        E1 --> E2 --> OUT
+    end
+
+    Stage1 -->|"72 个全量候选"| Stage2
+    Stage2 -->|"可用入口"| Stage3
+    Stage3 -->|"15 个前置快节点"| Stage4
+    Stage4 -->|"TLS 通畅候选"| Stage5
+```
+
+### 核心实现要点
+1. **配额抽样与名额回流**：初筛池恒定为 72 个候选。企业大厂域名（上限 48 个）+ 优先核心 CIDR（12 个）+ 全量 CIDR（12 个）；遇域名解析不足或离线，名额自动回流给官方网段抽样，避免抽样池萎缩或单一化。
+2. **防境内 DNS 污染**：企业域名解析结果必须匹配 Cloudflare 官方 CIDR，遇虚假公网 IP 污染时自动无缝回退至 `1.1.1.1` DoH 解析。
+3. **两阶段防 SNI 假通**：Stage-1 先用 TCP ping 初筛三网前 15 个快节点；Stage-2 针对真实业务节点域名发起真实 HTTPS GET 握手，杜绝“TCP 端口通但 SNI 握手被 RST 阻断”的假通节点。
+4. **晚高峰软降级兜底**：若某运营商在晚高峰拥堵时无可满足 $\le 220\text{ms}$ 的候选，算法自动回退取该网丢包合格中延迟最低的候选，避免一票否决导致整批崩溃。
+
+---
+
 ## 常用运维命令
 
 安装完成后，全局注册了 `easy_all` 管理命令：
