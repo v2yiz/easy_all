@@ -1,9 +1,5 @@
 # 客户端使用指南
 
-Bunny 模式（`mode: bunny-ws`）使用独立 VLESS WS/TLS Profile、一个自动调度域名节点和 owner 订阅；
-Cloudflare DNS-only CNAME、凭据、费用、命令及恢复边界见
-[Bunny 前置准备与运维](bunny-preparation-guide.md)。
-
 easy_all 全模式支持 Debian 12/13 及 Ubuntu 22.04/24.04 LTS（bookworm / trixie / jammy / noble，支持 amd64 与 arm64 架构）；所有模式均保留现有 SSH 监听。
 
 
@@ -41,10 +37,10 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 - Cloudflare IPv4 节点地址；
 - TLS SNI；
 - HTTP Host；
-- VPS 节点的 XHTTP `stream-up` 参数，以及可选纯 Worker 兜底节点的 `stream-one` 参数。
+- VPS 节点的 XHTTP `stream-up` 参数。
 
 “能导入”不代表所有节点都能连接。Shadowrocket 的更新记录虽然包含 XHTTP 和
-`stream-up` 修复，但未逐项确认上述字段和 `stream-one` 的完整兼容性，因此目前不把 Shadowrocket 列为
+`stream-up` 修复，但未逐项确认上述字段的完整兼容性，因此目前不把 Shadowrocket 列为
 本项目的已验证客户端。
 
 ## Clash Mi 模式
@@ -52,9 +48,7 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 日常使用“规则”模式即可。订阅会让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
 在 `PROXY` 中直接选择 US_VMISS、白天首选、晚上首选、🇭🇰CF 或其他已配置的节点。
 白天首选和 🇭🇰CF 是隐藏的自动测速组，仍可作为 PROXY 选项；内部节点不平铺。
-YouTube 与其他代理流量统一使用当前选择。纯 Worker 通过原生流背压支持持续下载，但
-`stream-one` 的全部上行位于单个 HTTP 请求体内，仍受 Cloudflare 套餐请求体大小限制；
-大文件上传应在 `PROXY` 中选择 VPS 节点。
+YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
 订阅显式定义 `GLOBAL → PROXY`。切换到“全局”模式后，Mihomo 忽略域名和 GeoIP 分流规则，
@@ -117,9 +111,8 @@ FCM 域名返回真实 IP（COMMON 内联 12 个 mtalk 端点，经典模板使�
 （局域网仍直连），避免无域名的推送连接落入国内 IP 直连规则。FCM 的 443 回退和注册请求
 继续使用现有 Google 代理规则及代理 DNS。
 
-更新服务器订阅规则后，在客户端刷新订阅并重启代理内核。Worker 的模板在构建时内嵌，
-仅修改仓库文件或刷新客户端不会更新云端；安装器部署的订阅按[运维指南](operations-guide.md#更新与应用)
-运行 `self-update` 和 `edit-sub`，独立 Worker 则重新构建并部署。
+更新服务器订阅规则后，在客户端刷新订阅并重启代理内核。安装器部署的订阅按[运维指南](operations-guide.md#更新与应用)
+运行 `self-update` 和 `edit-sub` 即可重新渲染。
 
 Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）：
 
@@ -138,7 +131,7 @@ Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）
 ## 低内存客户端（旧款 iPhone）
 
 默认订阅模板 `templates/mihomo.yaml` 就是 COMMON 精简规则：小型内联集合加 国内域名库（约 11 万条）、
-国内 SDK 域名库（约 5 千条）、Apple 国内调度、Google、私有域名、Telegram 和中国 IP 的七个 MRS 规则集。安装器、Worker 构建和本机订阅都会直接使用它，
+国内 SDK 域名库（约 5 千条）、Apple 国内调度、Google、私有域名、Telegram 和中国 IP 的七个 MRS 规则集。安装器与本机订阅都会直接使用它，
 不需要任何额外参数。不加载整库 DAT，也不加载境外域名库。
 
 代理服务、国内常用服务、Apple 国内调度、局域网和 Telegram IP 的基础规则内联，首次下载失败仍可用；
@@ -195,11 +188,10 @@ Auth0、Stripe、Intercom 等服务仍整体代理，可按实际日志收窄 `p
 sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common.yaml easy_all edit-sub
 ```
 
-Cloudflare 聚合 Worker 会重新构建并内嵌所选模板，改用
-`sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply-cloud` 即可让所有客户端生效。自定义模板路径
+改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。自定义模板路径
 同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板已在 CI 用固定
 内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。`sniffer` 段必须写成块映射
-（`sniffer:` 独占一行），写成内联映射时安装与 Worker 构建会直接报错——iOS 下发需要按段剔除它。
+（`sniffer:` 独占一行），写成内联映射时安装会直接报错——iOS 下发需要按段剔除它。
 `sniffer` 段可以放在任意顶层位置：剥离只删本段内容，顶格注释与 Reality 终止标记都会保留。
 选中的模板会保存在服务器上，后续 `apply`、`edit-sub` 与重启后的端口刷新沿用同一模板。
 

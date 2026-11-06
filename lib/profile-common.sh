@@ -381,7 +381,7 @@ install_progress_clear() {
 }
 
 # 发行版自带的 nginx 默认站点占用 80/443，安装时会停掉并删除 sites-enabled/default。
-# 卸载/回滚需要恢复成安装前的样子（Bunny 模式已有同名的 pre-install-nginx-default 备份）。
+# 卸载/回滚需要恢复成安装前的样子（历史版本也使用同名的 pre-install-nginx-default 备份）。
 nginx_default_site_path() {
     printf '%s' "${EASY_ALL_GUARD_NGINX_DEFAULT_SITE:-/etc/nginx/sites-enabled/default}"
 }
@@ -596,43 +596,6 @@ tcp_port_owner() {
         | sort -u | paste -sd ',' -
 }
 
-# 旧版本安装器没有进度标记：中断后留下的 nginx 只会表现为「端口被 nginx 占用」。
-# 这种情况下我们自己都没写 conf.d 配置，而 Debian 默认站点还在，基本可以确定是残留，
-# 于是保留「仅支持专用 VPS」的判定，但附上可执行的恢复动作。
-nginx_leftover_hint() {
-    local nginx_config default_site
-    nginx_config=$(install_nginx_config_path)
-    default_site=${EASY_ALL_GUARD_NGINX_DEFAULT_SITE:-/etc/nginx/sites-enabled/default}
-    [[ ! -f "${nginx_config}" ]] || return 1
-    [[ -f "${default_site}" ]] || return 1
-    # 这里没有进度标记，cleanup-partial 无从判断模式，只能给人工动作。
-    printf '%s\n' \
-        '检测到 Debian 默认站点仍占用该端口；若这是上次 easy_all 安装中断留下的 nginx，执行：' \
-        '  sudo systemctl disable --now nginx' \
-        '然后重新运行安装（新版安装器会自行识别并继续）。'
-}
-
-# 旧版本安装器（无 marker）中断后只剩 Debian 默认站点在监听。只有在「没有任何其他
-# 站点配置」时才把它当作可自动清理的候选，避免误停用户自己的 nginx 站点。
-legacy_nginx_residue_candidate() {
-    local default_site sites_dir conf_dir
-    default_site=${EASY_ALL_GUARD_NGINX_DEFAULT_SITE:-/etc/nginx/sites-enabled/default}
-    sites_dir=${EASY_ALL_GUARD_NGINX_SITES_DIR:-$(dirname -- "${default_site}")}
-    conf_dir=${EASY_ALL_GUARD_NGINX_CONF_DIR:-/etc/nginx/conf.d}
-    [[ -f "${default_site}" ]] || return 1
-    [[ ! -f "$(install_nginx_config_path)" ]] || return 1
-    [[ ! -f "$(install_state_file_path)" ]] || return 1
-    if [[ -d "${sites_dir}" ]]; then
-        [[ -z "$(ls -A "${sites_dir}" 2>/dev/null | grep -vx 'default' || true)" ]] \
-            || return 1
-    fi
-    if [[ -d "${conf_dir}" ]]; then
-        [[ -z "$(ls -A "${conf_dir}" 2>/dev/null | grep -vx 'easy_all.conf' || true)" ]] \
-            || return 1
-    fi
-    return 0
-}
-
 residue_recovery_hint() {
     # 不要在 sudo 后接 <(...)：sudo 会关闭额外 fd，提权后的 bash 打不开 /dev/fd/NN。
     # bootstrap.sh 自己会按需 sudo，所以直接 bash <(...) 即可。
@@ -645,28 +608,13 @@ residue_recovery_hint() {
             "  ${bootstrap} cleanup-partial"
     else
         printf '%s\n' \
-            '这些残留没有安装进度标记（旧版本遗留），无法自动判断模式：' \
-            '  1) 先人工核对 /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all* 服务；' \
-            '  2) 确认模式后指定清理：' \
-            "     ${bootstrap} cleanup-partial --assume-mode <reality|cloudflare-streamup|combined|bunny-ws>"
+            '这些残留没有安装进度标记，无法自动判断模式，请人工核对后清理：' \
+            '  /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all*.service/.timer'
     fi
 }
 
-# 只在"端口确实被监听，且占用者就是 nginx"时才把"只有 Debian 默认站点"当成需要处理的对象。
-# 否则安装器要么在残留已清理干净时凭空报"端口被 nginx 占用"，要么把 sshd 等其它进程
-# 误说成 nginx 残留（占用者归属不明时交给 assert_install_ports_free 报告真实情况）。
-nginx_owns_requested_port() {
-    local port owner
-    for port in "$@"; do
-        tcp_port_listening "${port}" || continue
-        owner=$(tcp_port_owner "${port}" || true)
-        [[ "${owner}" == *nginx* ]] && return 0
-    done
-    return 1
-}
-
 assert_install_ports_free() {
-    local port owner reason_text leftover
+    local port owner reason_text
     for port in "$@"; do
         tcp_port_listening "${port}" || continue
         if reason_text=$(install_residue_reason); then
@@ -677,10 +625,6 @@ assert_install_ports_free() {
                 "$(residue_recovery_hint)")"
         fi
         owner=$(tcp_port_owner "${port}" || true)
-        if [[ "${owner}" == *nginx* ]] && leftover=$(nginx_leftover_hint); then
-            die "$(printf 'TCP %s 已被占用%s；easy_all 仅支持专用 VPS\n%s' \
-                "${port}" "（${owner}）" "${leftover}")"
-        fi
         die "TCP ${port} 已被占用${owner:+（${owner}）}；easy_all 仅支持专用 VPS"
     done
 }
@@ -691,7 +635,6 @@ profile_script_for() {
     reality) printf 'reality.sh' ;;
     cloudflare-streamup) printf 'xhttp-cloudflare-streamup.sh' ;;
     combined) printf 'combined.sh' ;;
-    bunny-ws) printf 'ws-bunny.sh' ;;
     *) return 1 ;;
     esac
 }
@@ -729,9 +672,6 @@ run_recorded_profile_cleanup() {
 
 # 安装前置：清理自身残留 + 断言端口空闲。调用方须保持「已安装则提前 die」的语义。
 # 供提示统一引用的模式写法（菜单序号与中文名常被用户直接输入）。
-install_mode_choices() {
-    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|combined（也接受 reality/直连、cloudflare、组合等写法）'
-}
 
 # 本次安装生成的身份（UUID、路径、订阅 Token、Reality 密钥、Origin CA 元数据）。
 # 落盘到状态目录，供中断续装复用；不含任何账号 Token 或私钥以外的凭据。
@@ -750,6 +690,7 @@ persist_install_identity() {
         --arg websocket "${WEBSOCKET_PATH:-}" \
         --arg owner "${OWNER_TOKEN:-}" \
         --arg tokens "${ALLOWED_TOKENS:-}" \
+        --arg subscription_config "${SUBSCRIPTION_CONFIG:-}" \
         --arg reality_key "${REALITY_PRIVATE_KEY:-}" \
         --arg reality_public "${REALITY_PUBLIC_KEY:-}" \
         --arg reality_short "${REALITY_SHORT_ID:-}" \
@@ -761,6 +702,7 @@ persist_install_identity() {
             websocket_path: $websocket,
             owner_token: $owner,
             allowed_tokens: $tokens,
+            subscription_config: $subscription_config,
             reality_private_key: $reality_key,
             reality_public_key: $reality_public,
             reality_short_id: $reality_short,
@@ -786,6 +728,7 @@ load_install_identity() {
     for pair in \
         VLESS_UUID:vless_uuid XHTTP_PATH:xhttp_path WEBSOCKET_PATH:websocket_path \
         OWNER_TOKEN:owner_token ALLOWED_TOKENS:allowed_tokens \
+        SUBSCRIPTION_CONFIG:subscription_config \
         REALITY_PRIVATE_KEY:reality_private_key REALITY_PUBLIC_KEY:reality_public_key \
         REALITY_SHORT_ID:reality_short_id \
         CLOUDFLARE_ORIGIN_CERT_ID:cloudflare_origin_cert_id \
@@ -825,23 +768,8 @@ prepare_fresh_install() {
         current=$(install_current_mode)
         warn "检测到上次未完成的 easy_all 安装${stage:+（中断于 ${stage} 阶段）}${recorded:+（${recorded} 模式）}，本机残留："
         printf '%s\n' "${reason_text}" | sed 's/^/  - /' >&2
-        if [[ -z "${recorded}" ]]; then
-            # 旧版本没有标记：没有任何归属证据。不再先问"要不要清理"再拒绝，而是直接
-            # 让用户确认"残留是否属于本次选择的模式"，默认取消，避免按错误模式清理。
-            warn "这些残留没有安装进度标记（旧版本遗留），无法自动判断所属模式。"
-            if [[ -t 0 ]]; then
-                read_confirmation "若残留属于本次选择的 ${current:-(未知)} 模式，输入 y 按该模式清理；否则回车退出后指定模式 [y/N]:" answer
-                [[ "${answer}" =~ ^[Yy]$ ]] \
-                    || die "$(printf '已取消。请先确认残留模式后执行：\n  sudo easy_all cleanup-partial --assume-mode <模式>\n可用写法：%s\n命令未注册时：\n  bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) cleanup-partial --assume-mode <模式>' "$(install_mode_choices)")"
-            else
-                die "$(printf '非交互安装检测到无标记残留，无法判断模式。请先执行：\n  sudo easy_all cleanup-partial --assume-mode <模式>\n可用写法：%s' "$(install_mode_choices)")"
-            fi
-            cleanup_partial_install \
-                || die "按 ${current:-当前} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial --assume-mode <模式>"
-            success "残留已清理，继续安装"
-            assert_install_ports_free "$@"
-            return 0
-        fi
+        [[ -n "${recorded}" ]] \
+            || die "安装进度标记缺少模式信息（$(install_progress_file)）；该标记无法判断模式，cleanup-partial 也无法接管，请核对标记内容或按上方残留清单人工清理后重装"
         if [[ "${recorded}" != "${current}" ]]; then
             # 模式不同无法续装：只能按旧模式清理后重装。
             if [[ -t 0 ]]; then
@@ -884,19 +812,6 @@ prepare_fresh_install() {
             cleanup_partial_install || die "清理残留失败；请按上方提示处理后重试"
             success "残留已清理，继续安装"
         fi
-    elif legacy_nginx_residue_candidate && nginx_owns_requested_port "$@"; then
-        # 无 marker 时无法证明这份 nginx 属于 easy_all：不声称是残留，默认不处理。
-        warn "端口被 nginx 占用（只启用了 Debian 默认站点，且没有任何 easy_all 安装标记）。"
-        warn "无法确认它属于上次 easy_all 安装，还是你改作自用的默认站点。"
-        if [[ -t 0 ]]; then
-            read_confirmation '确认这是上次安装残留、停止 nginx 并继续安装？[y/N]:' answer
-            [[ "${answer}" =~ ^[Yy]$ ]] \
-                || die "已取消；若确认是残留可执行 sudo systemctl disable --now nginx 后重试"
-        else
-            die "非交互安装无法确认 nginx 归属；请先人工确认后执行 sudo systemctl disable --now nginx"
-        fi
-        systemctl disable --now nginx >/dev/null 2>&1 \
-            || warn "停止 nginx 失败；若端口仍被占用请手工处理"
     fi
     assert_install_ports_free "$@"
 }

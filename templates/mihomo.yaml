@@ -165,7 +165,7 @@ dns:
       'rule-set:apple-cn-fallback,geosite-apple-cn': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
       'rule-set:direct-services,geosite-cn,geosite-geolocation-cn': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
 
-# 直连 Mieru 节点由订阅/Worker 以 type: mieru 注入，模板本身不放置占位凭据。
+# 直连 Mieru 节点由订阅以 type: mieru 注入，模板本身不放置占位凭据。
 proxies:
 # EASY_ALL_PROXY_NODE
 
@@ -554,7 +554,6 @@ rules:
     - 'RULE-SET,captive-portal,DIRECT'
     - 'DOMAIN,clash.razord.top,DIRECT'
     - 'DOMAIN,yacd.haishan.me,DIRECT'
-# EASY_ALL_WORKER_RULE
     # 保留 FCM 无域名连接的端口兜底，仅 TCP；局域网例外已经优先处理。
     - 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY'
     # 必须先拒绝 QUIC，再匹配代理域名，避免手写 AI 规则绕过拒绝。

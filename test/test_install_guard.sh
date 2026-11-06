@@ -39,8 +39,6 @@ export EASY_ALL_GUARD_STATE_FILE="${TMP_DIR}/state/state.env"
 export EASY_ALL_GUARD_SERVICE_FILE="${TMP_DIR}/systemd/easy_all-xray.service"
 export EASY_ALL_GUARD_NGINX_CONFIG="${TMP_DIR}/nginx/easy_all.conf"
 export EASY_ALL_GUARD_NGINX_DEFAULT_SITE="${TMP_DIR}/nginx/sites-enabled/default"
-export EASY_ALL_GUARD_NGINX_SITES_DIR="${TMP_DIR}/nginx/sites-enabled"
-export EASY_ALL_GUARD_NGINX_CONF_DIR="${TMP_DIR}/nginx/conf.d"
 export EASY_ALL_SS_CMD_OVERRIDE="${TMP_DIR}/fake-ss"
 export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP_DIR}/policy-state"
 export FAKE_SS_BUSY_PORTS="${TMP_DIR}/fake-ss-busy"
@@ -180,54 +178,14 @@ export FAKE_SS_OWNER
 output=$(capture assert_install_ports_free 443 || true)
 assert_contains "unowned busy port still errors" "${output}" "TCP 443 已被占用"
 
-# 8. 旧版本遗留：nginx 默认站点占端口、没有 marker 与 conf.d，也要给恢复动作
+# 8. nginx 占用端口时只报专用 VPS 结论，不再给出旧版本残留的猜测
 reset_artifacts
 busy 80
 FAKE_SS_OWNER=nginx
 export FAKE_SS_OWNER
-# 没有 Debian 默认站点时只报占用，不臆测成残留
 output=$(capture assert_install_ports_free 80 || true)
-assert_contains "nginx without default site keeps plain verdict" "${output}" "仅支持专用 VPS"
-assert_not_contains "no default site means no leftover hint" "${output}" "systemctl disable --now nginx"
-
-mkdir -p "$(dirname "${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}")"
-: >"${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}"
-output=$(capture assert_install_ports_free 80 || true)
-assert_contains "debian default site keeps dedicated-vps verdict" "${output}" "仅支持专用 VPS"
-assert_contains "debian default site names the fix" "${output}" "systemctl disable --now nginx"
-
-# 我方已写好 conf.d 时不再当作默认站点残留
-mkdir -p "$(dirname "${EASY_ALL_GUARD_NGINX_CONFIG}")"
-: >"${EASY_ALL_GUARD_NGINX_CONFIG}"
-output=$(capture assert_install_ports_free 80 || true)
-assert_not_contains "managed nginx config suppresses leftover hint" "${output}" "systemctl disable --now nginx"
-
-# 9. 旧版本残留候选：只有 Debian 默认站点时认定为可清理，多一个站点即放弃
-reset_artifacts
-mkdir -p "${EASY_ALL_GUARD_NGINX_SITES_DIR}" "${EASY_ALL_GUARD_NGINX_CONF_DIR}"
-: >"${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}"
-assert_equal "only default site is a cleanup candidate" "0" \
-    "$(legacy_nginx_residue_candidate && echo 0 || echo 1)"
-assert_equal "installed state blocks the candidate" "1" \
-    "$(mkdir -p "${EASY_ALL_GUARD_STATE_DIR}" && : >"${EASY_ALL_GUARD_STATE_FILE}" \
-        && (legacy_nginx_residue_candidate && echo 0 || echo 1))"
-rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
-
-: >"${EASY_ALL_GUARD_NGINX_SITES_DIR}/my-site.conf"
-assert_equal "extra site file blocks the candidate" "1" \
-    "$(legacy_nginx_residue_candidate && echo 0 || echo 1)"
-rm -f -- "${EASY_ALL_GUARD_NGINX_SITES_DIR}/my-site.conf"
-
-: >"${EASY_ALL_GUARD_NGINX_CONF_DIR}/other.conf"
-assert_equal "extra conf.d file blocks the candidate" "1" \
-    "$(legacy_nginx_residue_candidate && echo 0 || echo 1)"
-rm -f -- "${EASY_ALL_GUARD_NGINX_CONF_DIR}/other.conf"
-
-# 非交互安装遇到候选时必须拒绝，而不是偷偷停掉 nginx
-output=$(capture prepare_fresh_install 80 </dev/null || true)
-assert_contains "non-interactive candidate is refused" "${output}" \
-    "非交互安装无法确认 nginx 归属"
-assert_contains "refusal repeats the manual fix" "${output}" "systemctl disable --now nginx"
+assert_contains "nginx-owned port keeps dedicated-vps verdict" "${output}" "仅支持专用 VPS"
+assert_not_contains "nginx-owned port does not guess a leftover" "${output}" "systemctl disable --now nginx"
 
 # 10. root crontab 清理：只删 easy_all 的定时重启行，过滤失败时绝不提交空内容
 # shellcheck source=/dev/null
@@ -256,7 +214,7 @@ assert_contains "user cron entry survives" "$(cat "${FAKE_CRONTAB_FILE}")" "user
 assert_not_contains "managed reboot entry removed" "$(cat "${FAKE_CRONTAB_FILE}")" \
     "easy_all-managed-reboot"
 
-# 没有 marker 的 Profile（Bunny）调用时必须是纯 no-op
+# 没有 marker 的 Profile 调用时必须是纯 no-op
 printf '0 3 * * * /usr/local/bin/user-backup\n' >"${FAKE_CRONTAB_FILE}"
 before=$(cat "${FAKE_CRONTAB_FILE}")
 ( unset CRON_REBOOT_MARKER
@@ -350,7 +308,6 @@ rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
 # 13. 跨模式清理：profile 映射齐全，未知模式拒绝猜测
 assert_equal "reality maps to its profile" "reality.sh" "$(profile_script_for reality)"
-assert_equal "bunny maps to its profile" "ws-bunny.sh" "$(profile_script_for bunny-ws)"
 assert_equal "unknown mode is rejected" "1" \
     "$(profile_script_for nope >/dev/null 2>&1 && echo 0 || echo 1)"
 output=$(capture run_recorded_profile_cleanup nope || true)
@@ -383,15 +340,15 @@ for profile in reality xhttp-cloudflare-streamup; do
         || fail "rollback_fresh_install in ${profile}.sh must restore pre-install IPv6"
 done
 
-# 16. 提示文案必须与实际行为一致：无 marker 时引导 --assume-mode，而不是直接 cleanup-partial
-hint=$(residue_recovery_hint)
-assert_not_contains "hint without marker does not promise plain cleanup-partial" \
-    "${hint}" "sudo easy_all cleanup-partial"
-assert_contains "hint without marker offers --assume-mode" "${hint}" "--assume-mode"
+# 16. 残留提示文案：有标记时给 cleanup-partial，无标记时只能人工核对
 install_progress_begin reality
 hint=$(residue_recovery_hint)
-assert_contains "hint with marker offers plain cleanup-partial" "${hint}" "sudo easy_all cleanup-partial"
+assert_contains "hint with marker offers cleanup-partial" "${hint}" "sudo easy_all cleanup-partial"
 install_progress_clear
+hint=$(residue_recovery_hint)
+assert_contains "hint without marker asks for manual review" "${hint}" "请人工核对后清理"
+assert_not_contains "hint without marker does not promise cleanup-partial" \
+    "${hint}" "sudo easy_all cleanup-partial"
 
 # 17. launcher 标记快照：模式与身份必须来自同一次读取
 mk_marker() {
@@ -420,12 +377,9 @@ cleanup_partial_install_files "${TMP_DIR}/whatever" \
 unset -f rm
 install_progress_clear
 
-# 19. 跨模式清理必须用独立进程，Bunny 部分清理必须停掉 nginx
+# 19. 跨模式清理必须用独立进程
 body=$(awk '/^run_recorded_profile_cleanup\(\) \{/,/^\}/' "${ROOT_DIR}/lib/profile-common.sh")
 [[ "${body}" == *"bash -c"* ]] || fail "cross-mode cleanup must run in a separate process"
-bunny_body=$(awk '/^cleanup_partial_install\(\) \{/,/^\}/' "${ROOT_DIR}/profiles/ws-bunny.sh")
-[[ "${bunny_body}" == *"systemctl disable --now nginx"* ]] \
-    || fail "bunny partial cleanup must stop the restored default site"
 
 # 20. policy 事务内容损坏时必须保留事务与原策略，不得把“读不出来”当成“原来没有”
 export EASY_ALL_POLICY_RC_OVERRIDE="${TMP_DIR}/policy-rc.d"
@@ -464,101 +418,6 @@ for case_spec in "install ok installed:0" "hold ok installed:0" "install ok unpa
     assert_equal "dpkg state ${state}" "${expected}" "${actual}"
 done
 rm -rf -- "${TMP_DIR}/dpkgbin"
-
-# 22. Bunny 部分清理必须在删除失败时保留 marker（静态：调用方检查返回值）
-bunny_cleanup_body=$(awk '/^cleanup_partial_install\(\) \{/,/^\}/' "${ROOT_DIR}/profiles/ws-bunny.sh")
-[[ "${bunny_cleanup_body}" == *"bunny_remove_local ||"* ]] \
-    || fail "bunny cleanup must check bunny_remove_local result before clearing marker"
-
-# 23. Bunny 本机清理：安装前配置恢复失败时必须保留状态目录与备份
-# shellcheck source=lib/firewall.sh
-source "${ROOT_DIR}/lib/firewall.sh"
-# shellcheck source=/dev/null
-source "${ROOT_DIR}/lib/bunny-runtime.sh"
-export STATE_DIR="${TMP_DIR}/bunny/state"
-export BACKUP_DIR="${STATE_DIR}/backups"
-export WEB_ROOT="${TMP_DIR}/bunny/web"
-export XRAY_SERVICE="easy_all-xray.service"
-export XRAY_SERVICE_FILE="${TMP_DIR}/bunny/units/easy_all-xray.service"
-export BUNNY_REFRESH_SERVICE_FILE="${TMP_DIR}/bunny/units/bunny-ips.service"
-export BUNNY_REFRESH_TIMER_FILE="${TMP_DIR}/bunny/units/bunny-ips.timer"
-export CERT_RENEW_SERVICE_FILE="${TMP_DIR}/bunny/units/cert-renew.service"
-export CERT_RENEW_TIMER_FILE="${TMP_DIR}/bunny/units/cert-renew.timer"
-export NGINX_CONFIG="${TMP_DIR}/bunny/nginx/easy_all.conf"
-export COMMAND_PATH="${TMP_DIR}/bunny/bin/easy_all"
-export UFW_BEFORE_RULES="${TMP_DIR}/bunny/ufw-before.rules"
-ufw() { :; }
-systemctl() { :; }
-
-prepare_bunny_fixture() {
-    rm -rf -- "${TMP_DIR}/bunny"
-    install -d -m 0700 "${STATE_DIR}" "${BACKUP_DIR}" "${WEB_ROOT}" \
-        "$(dirname "${XRAY_SERVICE_FILE}")" "${TMP_DIR}/bunny/linger" \
-        "${TMP_DIR}/bunny/nginx"
-    printf 'ORIGINAL-UFW\n' >"${BACKUP_DIR}/pre-install-ufw-default"
-    printf 'ORIGINAL-NGINX\n' >"${BACKUP_DIR}/pre-install-nginx-default"
-    printf 'x\n' >"${STATE_DIR}/state.env"
-}
-
-# 恢复目标不可写 -> 必须失败、保留 backup 与状态目录
-prepare_bunny_fixture
-install -d -m 0500 "${TMP_DIR}/bunny/ro"
-export UFW_DEFAULT_CONFIG="${TMP_DIR}/bunny/ro/ufw-default"
-export NGINX_DEFAULT_SITE="${TMP_DIR}/bunny/sites-enabled/default"
-bunny_remove_local && fail "restore failure must be reported"
-[[ -f "${BACKUP_DIR}/pre-install-ufw-default" ]] || fail "failed restore must keep the backup"
-[[ -f "${STATE_DIR}/state.env" ]] || fail "failed restore must keep the state dir"
-chmod 0700 "${TMP_DIR}/bunny/ro"
-
-# 恢复目标可写 -> 成功并删除状态目录
-prepare_bunny_fixture
-export UFW_DEFAULT_CONFIG="${TMP_DIR}/bunny/ufw-default"
-install -d -m 0755 "$(dirname "${NGINX_DEFAULT_SITE}")"
-bunny_remove_local || fail "successful cleanup must return 0"
-[[ ! -d "${STATE_DIR}" ]] || fail "successful cleanup removes the state dir"
-assert_equal "restored ufw default" "ORIGINAL-UFW" "$(cat "${UFW_DEFAULT_CONFIG}")"
-assert_equal "restored nginx default site" "ORIGINAL-NGINX" "$(cat "${NGINX_DEFAULT_SITE}")"
-
-# 23b. Bunny 回源防火墙必须同时建立 SSH 开机自启与 Fail2ban，且重复执行不堆叠规则
-bunny_fw_dir="${TMP_DIR}/bunny-fw"
-rm -rf -- "${bunny_fw_dir}"
-install -d -m 0700 "${bunny_fw_dir}" "${TMP_DIR}/runtime"
-printf '%s\n' '*filter' ':ufw-before-input - [0:0]' \
-    '-A ufw-before-input -i lo -j ACCEPT' 'COMMIT' >"${bunny_fw_dir}/before.rules"
-export SCRIPT_DIR="${ROOT_DIR}/lib"
-export RUNTIME_TMP="${TMP_DIR}/runtime"
-export UFW_BEFORE_RULES="${bunny_fw_dir}/before.rules"
-export BUNNY_EDGE_IP_FILE="${bunny_fw_dir}/edge-ips"
-bunny_wiring_log="${bunny_fw_dir}/wiring.log"
-
-run_bunny_firewall_with_stubs() (
-    curl() { printf '%s\n' '["198.51.100.0/24"]' >"${RUNTIME_TMP}/bunny-edges.json"; }
-    iptables-restore() { :; }
-    bunny_reject_ssh_443() { SSH_PORTS="2222"; }
-    verify_ssh_ufw_no_unmanaged_block() { :; }
-    disable_ufw_ipv6() { :; }
-    apply_ssh_ufw_policy() { :; }
-    ufw() { :; }
-    ensure_ssh_boot_service() { printf '%s\n' 'ssh-boot' >>"${bunny_wiring_log}"; }
-    ensure_ssh_fail2ban() { printf '%s\n' 'fail2ban' >>"${bunny_wiring_log}"; }
-    bunny_refresh_firewall
-)
-
-: >"${bunny_wiring_log}"
-run_bunny_firewall_with_stubs || fail "bunny_refresh_firewall must succeed with a stubbed firewall"
-assert_equal "bunny firewall configures SSH boot safety and fail2ban" \
-    $'ssh-boot\nfail2ban' "$(<"${bunny_wiring_log}")"
-grep -qx -- '-A easy_all_bunny -s 198.51.100.0/24 -j ACCEPT' "${UFW_BEFORE_RULES}" \
-    || fail "bunny firewall must allow the official edge pool"
-grep -qx -- '-A easy_all_bunny -j DROP' "${UFW_BEFORE_RULES}" \
-    || fail "bunny firewall must drop non-edge traffic to 443"
-assert_equal "bunny edge pool persisted" "198.51.100.0/24" "$(<"${BUNNY_EDGE_IP_FILE}")"
-
-run_bunny_firewall_with_stubs || fail "bunny firewall refresh must be idempotent"
-assert_equal "bunny firewall block is not duplicated" "1" \
-    "$(grep -c -- '-A easy_all_bunny -s 198.51.100.0/24 -j ACCEPT' "${UFW_BEFORE_RULES}")"
-assert_equal "bunny firewall block has a single jump rule" "1" \
-    "$(grep -c -- '-j easy_all_bunny' "${UFW_BEFORE_RULES}")"
 
 # 23c. 安装前的 nginx 默认站点必须按快照恢复（Reality/XHTTP/组合的卸载与回滚路径）
 (
@@ -608,58 +467,42 @@ assert_equal "pending owner is not overwritten" $'HAD_PREVIOUS=1\nOWNER_PID=1' \
     "$(cat "$(easy_all_policy_pending_file)")"
 rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
-# 25. --assume-mode 别名与无标记提示
-alias_probe=$(bash -c 'source "$1"; for v in 5 组合 combined 1 直连 2 cf 3 bunny 4; do printf "%s=%s\n" "$v" "$(launcher_mode_alias "$v")"; done' _ "${ROOT_DIR}/easy_all")
-assert_contains "alias 5 maps to combined" "${alias_probe}" "5=combined"
-assert_contains "alias 组合 maps to combined" "${alias_probe}" "组合=combined"
-assert_contains "alias 1 maps to reality" "${alias_probe}" "1=reality"
-assert_contains "alias cf maps to cloudflare-streamup" "${alias_probe}" "cf=cloudflare-streamup"
-assert_equal "unknown alias is rejected" "1" \
-    "$(bash -c 'source "$1"; launcher_mode_alias 9 >/dev/null 2>&1' _ "${ROOT_DIR}/easy_all" && echo 0 || echo 1)"
-assert_contains "usage lists menu numbers" "$(bash -c 'source "$1"; launcher_mode_usage' _ "${ROOT_DIR}/easy_all")" "3|bunny-ws 4|combined"
-
-# 无标记残留 + 非交互：提示必须给出可用写法，而不是只报"不支持"
+# 25. 无 progress marker 的残留：不再猜测模式，直接要求人工核对
 reset_artifacts
 mkdir -p "${EASY_ALL_GUARD_STATE_DIR}/xray"
 EASY_ALL_SELECTED_MODE=combined
 output=$(capture prepare_fresh_install 80 </dev/null || true)
-assert_contains "no-marker non-interactive names the command" "${output}" "cleanup-partial --assume-mode"
-assert_contains "no-marker non-interactive lists accepted forms" "${output}" "4|combined"
+assert_contains "markerless residue points at the marker file" "${output}" \
+    "安装进度标记缺少模式信息"
+# 该状态的标记没有模式信息，cleanup-partial 同样无法接管，提示不得把它当成出路
+assert_not_contains "markerless residue does not loop back to cleanup-partial" \
+    "${output}" "请先执行 sudo easy_all cleanup-partial"
 rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
 
-# 26. 只有 Debian 默认站点但端口没被监听时，不得再报"端口被 nginx 占用"
-reset_artifacts
-mkdir -p "${EASY_ALL_GUARD_NGINX_SITES_DIR}" "${EASY_ALL_GUARD_NGINX_CONF_DIR}"
-: >"${EASY_ALL_GUARD_NGINX_DEFAULT_SITE}"
-idle
-idle_rc=0
+# 标记存在但缺 PROFILE 时：同样给出可执行的人工核对指引，不推给 cleanup-partial
+mkdir -p "${EASY_ALL_GUARD_STATE_DIR}/xray" "$(dirname -- "$(install_progress_file)")"
+printf 'STAGE=services\nSTARTED_AT=1\n' >"$(install_progress_file)"
 output=$(capture prepare_fresh_install 80 </dev/null || true)
-assert_not_contains "idle candidate must not claim the port is busy" "${output}" "端口被 nginx 占用"
-assert_not_contains "idle candidate must not prompt" "${output}" "确认这是上次安装残留"
-capture prepare_fresh_install 80 </dev/null >/dev/null 2>&1 || idle_rc=$?
-assert_equal "idle candidate lets the install continue" "0" "${idle_rc}"
+assert_contains "marker without profile reports the missing mode" "${output}" \
+    "安装进度标记缺少模式信息"
+assert_not_contains "marker without profile does not loop back to cleanup-partial" \
+    "${output}" "请先执行 sudo easy_all cleanup-partial"
+rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
+rm -f -- "$(install_progress_file)"
 
-# 端口被监听但占用者不是 nginx：不得说成 nginx 残留，应交给端口守卫报真实占用者
+# 26. 端口守卫不把 nginx 占用说成 easy_all 残留
+reset_artifacts
 busy 80
 FAKE_SS_OWNER=sshd
 export FAKE_SS_OWNER
 output=$(capture prepare_fresh_install 80 </dev/null || true)
-assert_not_contains "non-nginx owner must not be called nginx residue" "${output}" "端口被 nginx 占用"
 assert_contains "non-nginx owner falls through to the port guard" "${output}" "sshd"
 
-# 占用者无法辨认（ss 无 users 信息）：同样不得栽给 nginx，交给端口守卫
 FAKE_SS_OWNER="@none"
 export FAKE_SS_OWNER
 output=$(capture prepare_fresh_install 80 </dev/null || true)
-assert_not_contains "unknown owner must not be called nginx residue" "${output}" "端口被 nginx 占用"
 assert_contains "unknown owner falls through to the port guard" "${output}" "TCP 80 已被占用"
 assert_contains "unknown owner keeps the dedicated-vps verdict" "${output}" "仅支持专用 VPS"
-
-# 端口确实被 nginx 监听时才进入"归属不明"的确认分支
-FAKE_SS_OWNER=nginx
-export FAKE_SS_OWNER
-output=$(capture prepare_fresh_install 80 </dev/null || true)
-assert_contains "busy candidate refuses non-interactively" "${output}" "非交互安装无法确认 nginx 归属"
 reset_artifacts
 idle
 

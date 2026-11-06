@@ -24,466 +24,20 @@ readonly CLOUDFLARE_XHTTP_PADDING_BYTES="100-1000"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="/etc/easy_all/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cloudflare-origin"
-readonly DEFAULT_CLOUDFLARE_WORKER_NAME="easyall"
-readonly CLOUDFLARE_WORKER_COMPATIBILITY_DATE="2026-09-09"
-readonly CLOUDFLARE_WORKER_SOURCE_HEADER="X-Easy-All-Worker-Source"
-readonly CLOUDFLARE_WORKER_SOURCE_FILE="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../worker-src/index.js"
-readonly CLOUDFLARE_WORKER_BUILD_SCRIPT="${XHTTP_CLOUDFLARE_PROFILE_ROOT}/../scripts/build-worker.mjs"
-readonly CLOUDFLARE_WORKER_READY_ATTEMPTS="${CLOUDFLARE_WORKER_READY_ATTEMPTS_OVERRIDE:-60}"
-readonly CLOUDFLARE_WORKER_READY_INTERVAL="${CLOUDFLARE_WORKER_READY_INTERVAL_OVERRIDE:-5}"
-readonly CLOUDFLARE_WORKER_AUTH_ATTEMPTS="${CLOUDFLARE_WORKER_AUTH_ATTEMPTS_OVERRIDE:-6}"
 readonly CLOUDFLARE_XHTTP_PROBE_ATTEMPTS="${CLOUDFLARE_XHTTP_PROBE_ATTEMPTS_OVERRIDE:-6}"
 readonly CLOUDFLARE_XHTTP_PROBE_INTERVAL="${CLOUDFLARE_XHTTP_PROBE_INTERVAL_OVERRIDE:-5}"
 readonly CLOUDFLARE_XHTTP_PROBE_URL="${CLOUDFLARE_XHTTP_PROBE_URL_OVERRIDE:-https://www.gstatic.com/generate_204}"
 
 # shellcheck source=lib/xhttp-runtime.sh
-SUBSCRIPTION_DEPLOY_DESCRIPTION_OVERRIDE="Cloudflare Worker 聚合；Nginx 仅作私有节点源"
+SUBSCRIPTION_DEPLOY_DESCRIPTION_OVERRIDE="Nginx HTTPS（Cloudflare 代理域名）"
 source "${XHTTP_LIB_DIR}/xhttp-runtime.sh"
-readonly CLOUDFLARE_WORKER_BUILD_FILE="${CLOUDFLARE_WORKER_BUILD_FILE_OVERRIDE:-${STATE_DIR}/worker.js}"
 # shellcheck source=lib/globalping-cdn.sh
 GLOBALPING_CACHE_BASENAME_OVERRIDE="cloudflare-cdn-ips.json"
 source "${XHTTP_LIB_DIR}/globalping-cdn.sh"
 # shellcheck source=lib/cloudflare-ip-pool.sh
 source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"
-# shellcheck source=lib/worker-backup.sh
-source "${XHTTP_LIB_DIR}/worker-backup.sh"
 # shellcheck source=lib/cf-dns.sh
 source "${XHTTP_LIB_DIR}/cf-dns.sh"
-
-cloudflare_validate_worker_access() {
-    local scripts domains count
-    subscription_enabled || return 0
-    [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ ]] \
-        || die "Cloudflare Zone 未返回有效 Account ID"
-    cloudflare_reconcile_pending_subscription_worker
-    scripts=$(cloudflare_api_request GET \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts") \
-        || die "当前 Cloudflare Token 缺少 Account / Workers Scripts / Write 权限"
-    count=$(jq --arg name "${CLOUDFLARE_WORKER_NAME}" \
-        '[.[] | select(.id == $name)] | length' <<<"${scripts}")
-    ((count <= 1)) || die "Cloudflare 返回多个同名 Worker：${CLOUDFLARE_WORKER_NAME}"
-    CLOUDFLARE_WORKER_EXISTS=${count}
-    if ((count == 1)); then
-        [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
-            || die "Worker ${CLOUDFLARE_WORKER_NAME} 已存在且无本机所有权记录，拒绝覆盖"
-        domains=$(cloudflare_api_request GET \
-            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") \
-            || die "无法验证 Worker ${CLOUDFLARE_WORKER_NAME} 的自定义域名所有权"
-        jq -e --arg id "${CLOUDFLARE_WORKER_DOMAIN_ID}" \
-            --arg service "${CLOUDFLARE_WORKER_NAME}" \
-            'any(.[]; .id == $id and .service == $service)' \
-            <<<"${domains}" >/dev/null \
-            || die "Worker ${CLOUDFLARE_WORKER_NAME} 所有权记录与 Cloudflare 不一致，拒绝覆盖"
-        cloudflare_snapshot_worker_deployment \
-            "${CLOUDFLARE_WORKER_NAME}" \
-            "${RUNTIME_TMP}/subscription-worker-deployment-prev.json"
-        info "复用 Worker ${CLOUDFLARE_WORKER_NAME}，将更新订阅脚本"
-    fi
-    if [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" && "${count}" != "1" ]]; then
-        die "状态中的 Worker ${CLOUDFLARE_WORKER_NAME} 不存在；拒绝创建来源不明的新 Worker"
-    fi
-}
-
-cloudflare_snapshot_worker_deployment() {
-    local name=$1 destination=$2 deployments
-    [[ ! -s "${destination}" ]] || return 0
-    deployments=$(cloudflare_api_request GET \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${name}")/deployments") \
-        || die "无法读取 Worker ${name} 当前部署，中止更新"
-    jq -ce '
-      .deployments[0].versions
-      | select(type == "array" and length >= 1 and length <= 2)
-      | select(all(.[];
-          (.version_id | type) == "string"
-          and (.version_id | test("^[0-9A-Fa-f-]{36}$"))
-          and (.percentage | type) == "number"
-          and .percentage > 0))
-      | select((map(.percentage) | add) == 100)
-      | {
-          strategy:"percentage",
-          versions:map({version_id,percentage}),
-          annotations:{"workers/message":"easy_all automatic rollback"}
-        }
-    ' <<<"${deployments}" >"${destination}" \
-        || die "Worker ${name} 当前部署信息无效，中止更新以避免无法回滚"
-    chmod 0600 "${destination}"
-}
-
-cloudflare_restore_worker_deployment() {
-    local name=$1 source=$2
-    [[ -s "${source}" ]] || return 0
-    cloudflare_api_request POST \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${name}")/deployments?force=true" \
-        "$(<"${source}")" >/dev/null
-}
-
-rollback_provider_subscription_update() {
-    local worker_name=${CLOUDFLARE_WORKER_NAME:-} failed=0
-    local deployment="${RUNTIME_TMP}/subscription-worker-deployment-prev.json"
-    if [[ "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ]]; then
-        cloudflare_delete_subscription_worker_resources \
-            "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${worker_name}" || failed=1
-    else
-        if [[ -n "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}" ]]; then
-            cloudflare_api_request DELETE \
-                "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}" \
-                >/dev/null || failed=1
-        fi
-        [[ -z "${worker_name}" ]] \
-            || cloudflare_restore_worker_deployment "${worker_name}" "${deployment}" \
-            || failed=1
-    fi
-    if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
-        cloudflare_api_request DELETE \
-            "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null \
-            || failed=1
-    fi
-    ((failed == 0))
-}
-
-cloudflare_commit_provider_subscription_update() {
-    rm -f -- "${RUNTIME_TMP}/subscription-worker-deployment-prev.json"
-    CLOUDFLARE_WORKER_CREATED=0
-    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=""
-    CLOUDFLARE_CREATED_ORIGIN_CERT_ID=""
-}
-
-ensure_cloudflare_worker_builder() {
-    local major
-    if ! command -v node >/dev/null 2>&1; then
-        apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends nodejs \
-            || die "安装 Worker 构建依赖 nodejs 失败"
-    fi
-    major=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)
-    [[ "${major}" =~ ^[0-9]+$ && "${major}" -ge 18 ]] \
-        || die "Worker 构建需要 Node.js 18 或更高版本"
-}
-
-cloudflare_build_subscription_worker() {
-    local config aggregation build_output
-    [[ -s "${CLOUDFLARE_WORKER_SOURCE_FILE}" ]] \
-        || die "缺少 Worker 运行源码：${CLOUDFLARE_WORKER_SOURCE_FILE}"
-    [[ -s "${CLOUDFLARE_WORKER_BUILD_SCRIPT}" ]] \
-        || die "缺少 Worker 构建脚本：${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
-    ensure_cloudflare_worker_builder
-    prepare_mihomo_template
-    aggregation=$(normalize_worker_aggregation_config \
-        "${WORKER_AGGREGATION_CONFIG:-}") \
-        || die "Worker 聚合配置无效"
-    config=$(jq -cn \
-        --argjson aggregation "${aggregation}" \
-        --arg source_url "https://${VLESS_CDN_DOMAIN}/subscribe" \
-        --arg source_secret "${WORKER_SOURCE_SECRET}" \
-        --arg download_name "${SUB_DOWNLOAD_NAME}" '{
-          allowedTokens:{},
-          nodes:$aggregation.nodes,
-          vpsSubUrl:$source_url,
-          vpsCdnUseRequestToken:true,
-          delegateTokenValidation:true,
-          requireDynamicCdn:true,
-          sourceSecret:$source_secret,
-          fallbackCdnNodes:$aggregation.fallbackCdnNodes,
-          subscriptionDownloadName:$download_name
-        }')
-    printf '%s\n' "${config}" >"${RUNTIME_TMP}/worker-config.json"
-    chmod 0600 "${RUNTIME_TMP}/worker-config.json"
-    install -d -m 0700 "$(dirname "${CLOUDFLARE_WORKER_BUILD_FILE}")"
-    build_output=$(
-        EASY_ALL_WORKER_CONFIG_PATH="${RUNTIME_TMP}/worker-config.json" \
-        EASY_ALL_WORKER_OUTPUT_PATH="${CLOUDFLARE_WORKER_BUILD_FILE}" \
-        EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
-        MIHOMO_TEMPLATE_TRUSTED="${MIHOMO_TEMPLATE_TRUSTED:-0}" \
-        EASY_ALL_WORKER_SOURCE_PATH="${CLOUDFLARE_WORKER_SOURCE_FILE}" \
-            node "${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
-    ) || die "Worker 构建失败"
-    [[ -s "${CLOUDFLARE_WORKER_BUILD_FILE}" ]] \
-        || die "Worker 构建未生成输出文件"
-    chmod 0600 "${CLOUDFLARE_WORKER_BUILD_FILE}"
-    CLOUDFLARE_WORKER_BUILD_CURRENT=1
-    info "${build_output}"
-}
-
-cloudflare_manual_worker_recovery_path() {
-    local home=${HOME:-/root} passwd_entry
-    if [[ -n "${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE:-}" ]]; then
-        printf '%s\n' "${CLOUDFLARE_WORKER_RECOVERY_FILE_OVERRIDE}"
-        return 0
-    fi
-    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]] \
-        && command -v getent >/dev/null 2>&1; then
-        passwd_entry=$(getent passwd "${SUDO_USER}" || true)
-        [[ -z "${passwd_entry}" ]] || home=$(cut -d: -f6 <<<"${passwd_entry}")
-    fi
-    [[ "${home}" == /* && -d "${home}" ]] || home=/root
-    printf '%s/worker.js\n' "${home%/}"
-}
-
-cloudflare_build_manual_worker_recovery() {
-    local reason=$1 target config_file config aggregation build_output
-    [[ -n "${ALLOWED_TOKENS:-}" ]] || {
-        warn "缺少可内嵌的订阅 Token，无法生成手工 Worker"
-        return 1
-    }
-    target=$(cloudflare_manual_worker_recovery_path)
-    [[ "${target}" == /* && -d "$(dirname "${target}")" ]] || {
-        warn "Worker 手工恢复路径无效：${target}"
-        return 1
-    }
-    aggregation=$(normalize_worker_aggregation_config \
-        "${WORKER_AGGREGATION_CONFIG:-}") || return 1
-    config=$(jq -cn \
-        --argjson aggregation "${aggregation}" \
-        --argjson allowed_tokens "${ALLOWED_TOKENS}" \
-        --arg source_url "https://${VLESS_CDN_DOMAIN}/subscribe" \
-        --arg source_secret "${WORKER_SOURCE_SECRET}" \
-        --arg download_name "${SUB_DOWNLOAD_NAME}" '{
-          allowedTokens:$allowed_tokens,
-          nodes:$aggregation.nodes,
-          vpsSubUrl:$source_url,
-          vpsCdnUseRequestToken:true,
-          delegateTokenValidation:false,
-          requireDynamicCdn:true,
-          sourceSecret:$source_secret,
-          fallbackCdnNodes:$aggregation.fallbackCdnNodes,
-          subscriptionDownloadName:$download_name
-        }') || return 1
-    config_file="${RUNTIME_TMP}/worker-recovery-config.json"
-    printf '%s\n' "${config}" >"${config_file}"
-    chmod 0600 "${config_file}"
-    build_output=$(
-        EASY_ALL_WORKER_CONFIG_PATH="${config_file}" \
-        EASY_ALL_WORKER_OUTPUT_PATH="${target}" \
-        EASY_ALL_WORKER_TEMPLATE_PATH="${MIHOMO_TEMPLATE_FILE}" \
-        MIHOMO_TEMPLATE_TRUSTED="${MIHOMO_TEMPLATE_TRUSTED:-0}" \
-        EASY_ALL_WORKER_SOURCE_PATH="${CLOUDFLARE_WORKER_SOURCE_FILE}" \
-            node "${CLOUDFLARE_WORKER_BUILD_SCRIPT}"
-    ) || {
-        warn "生成手工部署 Worker 失败"
-        return 1
-    }
-    chmod 0600 "${target}"
-    if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" \
-        && "${target}" == "$(dirname "${target}")/worker.js" ]]; then
-        chown "${SUDO_UID}:${SUDO_GID}" "${target}" 2>/dev/null || true
-    fi
-    CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED=1
-    CLOUDFLARE_WORKER_RECOVERY_FILE=${target}
-    warn "Cloudflare Worker 自动验收未通过：${reason:0:500}"
-    warn "已生成手工部署文件 ${target}（${build_output}）；本次配置将保留，不执行验收失败回滚"
-}
-
-cloudflare_upload_subscription_worker() {
-    local script metadata headers response path
-    script="${CLOUDFLARE_WORKER_BUILD_FILE}"
-    metadata="${RUNTIME_TMP}/easy-all-subscription-worker-metadata.json"
-    headers="${RUNTIME_TMP}/cloudflare-worker-api-headers"
-    [[ "${CLOUDFLARE_WORKER_BUILD_CURRENT:-0}" == "1" ]] \
-        || cloudflare_build_subscription_worker
-    jq -n \
-        --arg date "${CLOUDFLARE_WORKER_COMPATIBILITY_DATE}" '{
-          main_module:"worker.js",
-          compatibility_date:$date,
-          compatibility_flags:["global_fetch_strictly_public"]
-        }' >"${metadata}"
-    printf 'Authorization: Bearer %s\n' "${CLOUDFLARE_API_TOKEN}" >"${headers}"
-    chmod 0600 "${headers}" "${metadata}"
-    path="/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${CLOUDFLARE_WORKER_NAME}")"
-    response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 60 \
-        -X PUT -H "@${headers}" \
-        -F "metadata=@${metadata};type=application/json" \
-        -F "worker.js=@${script};type=application/javascript+module" \
-        "${CLOUDFLARE_API_BASE}${path}") \
-        || die "Cloudflare API 请求失败：PUT ${path}"
-    jq -e '.success == true' <<<"${response}" >/dev/null \
-        || {
-            printf '%s\n' "${response:-<empty>}" >&2
-            die "Cloudflare Worker 上传失败：PUT ${path}；请根据上方 Cloudflare API 错误码和消息排查"
-        }
-    if [[ "${CLOUDFLARE_WORKER_EXISTS:-1}" == "0" ]]; then
-        CLOUDFLARE_WORKER_CREATED=1
-    fi
-}
-
-cloudflare_attach_subscription_worker_domain() {
-    local domains matches count existing_service result records type
-    domains=$(cloudflare_api_request GET \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains")
-    matches=$(jq -c --arg host "${SUBSCRIPTION_DOMAIN}" \
-        '[.[] | select((.hostname | ascii_downcase) == $host)]' <<<"${domains}")
-    count=$(jq 'length' <<<"${matches}")
-    ((count <= 1)) || die "Cloudflare 中存在多个订阅 Worker 自定义域名：${SUBSCRIPTION_DOMAIN}"
-    if ((count == 1)); then
-        existing_service=$(jq -r '.[0].service // empty' <<<"${matches}")
-        [[ "${existing_service}" == "${CLOUDFLARE_WORKER_NAME}" ]] \
-            || die "订阅域名 ${SUBSCRIPTION_DOMAIN} 已绑定到其他 Worker：${existing_service}"
-        CLOUDFLARE_WORKER_DOMAIN_ID=$(jq -r '.[0].id // empty' <<<"${matches}")
-        [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID}" ]] \
-            || die "Cloudflare Worker 自定义域名缺少 ID"
-        return 0
-    fi
-    for type in A AAAA CNAME; do
-        records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" \
-            "${type}" "${SUBSCRIPTION_DOMAIN}")
-        [[ "$(jq 'length' <<<"${records}")" == "0" ]] \
-            || die "订阅域名 ${SUBSCRIPTION_DOMAIN} 已有 ${type} 记录；拒绝由 Worker Custom Domain 接管"
-    done
-    result=$(cloudflare_api_request PUT \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
-        "$(jq -cn --arg host "${SUBSCRIPTION_DOMAIN}" \
-            --arg service "${CLOUDFLARE_WORKER_NAME}" \
-            --arg zone_id "${CLOUDFLARE_ZONE_ID}" \
-            --arg zone_name "${CLOUDFLARE_ZONE_NAME}" \
-            '{hostname:$host,service:$service,zone_id:$zone_id,zone_name:$zone_name}')")
-    CLOUDFLARE_WORKER_DOMAIN_ID=$(jq -r '.id // empty' <<<"${result}")
-    [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID}" ]] \
-        || die "Cloudflare 未返回 Worker 自定义域名 ID"
-    CLOUDFLARE_CREATED_WORKER_DOMAIN_ID=${CLOUDFLARE_WORKER_DOMAIN_ID}
-}
-
-cloudflare_deploy_subscription_worker() {
-    subscription_enabled || return 0
-    cloudflare_validate_worker_access
-    cloudflare_upload_subscription_worker
-    cloudflare_api_request POST \
-        "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${CLOUDFLARE_WORKER_NAME}")/subdomain" \
-        "$(jq -cn '{enabled:false,previews_enabled:false}')" >/dev/null
-    cloudflare_attach_subscription_worker_domain
-}
-
-cloudflare_delete_subscription_worker_resources() {
-    local domain_id=${1-${CLOUDFLARE_WORKER_DOMAIN_ID:-}}
-    local worker_name=${2-${CLOUDFLARE_WORKER_NAME:-}}
-    local domains scripts extra_domains
-    if [[ -n "${worker_name}" ]]; then
-        domains=$(cloudflare_api_request GET \
-            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") || return 1
-        extra_domains=$(jq --arg name "${worker_name}" --arg id "${domain_id}" \
-            '[.[] | select(.service == $name and .id != $id)] | length' <<<"${domains}")
-        ((extra_domains == 0)) \
-            || die "Worker ${worker_name} 还绑定了非本安装管理的 Custom Domain，拒绝删除"
-    fi
-    if [[ -n "${domain_id}" ]]; then
-        if jq -e --arg id "${domain_id}" \
-            'any(.[]; .id == $id)' <<<"${domains}" >/dev/null; then
-            jq -e --arg id "${domain_id}" --arg name "${worker_name}" \
-                'any(.[]; .id == $id and .service == $name)' <<<"${domains}" >/dev/null \
-                || die "Worker Custom Domain 所有权与状态不一致，拒绝删除"
-            cloudflare_api_request DELETE \
-                "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${domain_id}" >/dev/null \
-                || return 1
-        fi
-    fi
-    if [[ -n "${worker_name}" ]]; then
-        scripts=$(cloudflare_api_request GET \
-            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts") || return 1
-        if jq -e --arg name "${worker_name}" \
-            'any(.[]; .id == $name)' <<<"${scripts}" >/dev/null; then
-            cloudflare_api_request DELETE \
-                "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$(uri_encode "${worker_name}")" >/dev/null \
-                || return 1
-        fi
-    fi
-}
-
-cloudflare_validate_subscription_worker() {
-    local token="" body headers status attempt decoded ready=0 curl_status=0 warning="" ip
-    local invalid_ready=0 invalid_curl_status=0 public_ip=""
-    local worker_curl_args=(--noproxy '*')
-    subscription_enabled || return 0
-    token=$(jq -r 'first(.[]) // empty' <<<"${ALLOWED_TOKENS}")
-    body="${RUNTIME_TMP}/worker-subscription-body"
-    headers="${RUNTIME_TMP}/worker-subscription-headers"
-    for ((attempt = 1; attempt <= CLOUDFLARE_WORKER_READY_ATTEMPTS; attempt += 1)); do
-        : >"${headers}"
-        : >"${body}"
-        curl_status=0
-        status=$(printf '%s' "${token:-invalid}" | curl -sS "${worker_curl_args[@]}" \
-            --connect-timeout 5 --max-time 30 \
-            -D "${headers}" -o "${body}" -w '%{http_code}' \
-            --get --data-urlencode 'token@-' \
-            --data-urlencode "flag=base64" \
-            "https://${SUBSCRIPTION_DOMAIN}/subscribe" 2>/dev/null) || curl_status=$?
-        if [[ "${curl_status}" == "0" && -n "${token}" && "${status}" == "200" ]] \
-            && ! grep -qi '^X-Easy-All-CDN-Warning:' "${headers}"; then
-            decoded=$(openssl base64 -d -A <"${body}" 2>/dev/null || true)
-            if grep -q '^vless://' <<<"${decoded}"; then
-                ready=1
-                break
-            fi
-        elif [[ "${curl_status}" == "0" && -z "${token}" && "${status}" == "403" ]]; then
-            ready=1
-            break
-        fi
-        if ((curl_status == 6)); then
-            while IFS= read -r ip; do
-                validate_public_ipv4 "${ip}" || continue
-                worker_curl_args=(--noproxy '*' --resolve "${SUBSCRIPTION_DOMAIN}:443:${ip}")
-                public_ip=${ip}
-                info "订阅域名 ${SUBSCRIPTION_DOMAIN} 的本机 DNS 尚未更新，使用 1.1.1.1 的公共解析结果验收"
-                break
-            done < <(dig +time=3 +tries=1 +short A "${SUBSCRIPTION_DOMAIN}" @1.1.1.1 2>/dev/null)
-        fi
-        ((attempt == CLOUDFLARE_WORKER_READY_ATTEMPTS)) || sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
-    done
-    if ((ready != 1)); then
-        warning=$(awk 'tolower($0) ~ /^x-easy-all-cdn-warning:/ {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "${headers}")
-        if [[ -n "${token}" ]]; then
-            warning=${warning//"${token}"/[redacted]}
-            warning=${warning//"$(uri_encode "${token}")"/[redacted]}
-        fi
-        if [[ "${curl_status}" == "0" && -n "${warning}" \
-            && ( "${INSTALL_ROLLBACK_ON_EXIT:-0}" == "1" \
-                || "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ) ]] \
-            && cloudflare_build_manual_worker_recovery \
-                "curl=${curl_status},HTTP=${status:-000}${warning:+，回源诊断：${warning:0:500}}"; then
-            return 0
-        fi
-        if ((curl_status == 6)); then
-            die "订阅域名 ${SUBSCRIPTION_DOMAIN} DNS 解析失败（curl=6）；已等待公共 DNS 发布，请检查 Worker Custom Domain 的 DNS 状态"
-        fi
-        die "Cloudflare Worker 订阅验收失败：curl=${curl_status},HTTP=${status:-000}${warning:+，回源诊断：${warning:0:500}}；请检查自定义域名证书及 Worker 到 ${VLESS_CDN_DOMAIN} 的公共 fetch"
-    fi
-
-    for ((attempt = 1; attempt <= CLOUDFLARE_WORKER_AUTH_ATTEMPTS; attempt += 1)); do
-        invalid_curl_status=0
-        status=$(curl -sS "${worker_curl_args[@]}" --connect-timeout 5 --max-time 20 \
-            -o /dev/null -w '%{http_code}' --get \
-            --data-urlencode "token=invalid" \
-            "https://${SUBSCRIPTION_DOMAIN}/subscribe" 2>/dev/null) \
-            || invalid_curl_status=$?
-        if [[ "${invalid_curl_status}" == "0" && "${status}" == "403" ]]; then
-            invalid_ready=1
-            break
-        fi
-        if ((invalid_curl_status != 0)) && [[ -z "${public_ip}" ]]; then
-            while IFS= read -r ip; do
-                validate_public_ipv4 "${ip}" || continue
-                public_ip=${ip}
-                worker_curl_args=(--noproxy '*' --resolve "${SUBSCRIPTION_DOMAIN}:443:${ip}")
-                info "无效 Token 验收连接失败，使用 1.1.1.1 的公共解析结果重试"
-                break
-            done < <(dig +time=3 +tries=1 +short A "${SUBSCRIPTION_DOMAIN}" @1.1.1.1 2>/dev/null)
-        fi
-        ((attempt == CLOUDFLARE_WORKER_AUTH_ATTEMPTS)) \
-            || sleep "${CLOUDFLARE_WORKER_READY_INTERVAL}"
-    done
-    if ((invalid_ready != 1)); then
-        if ((invalid_curl_status != 0)); then
-            die "Cloudflare Worker 无效 Token 验收请求失败：curl=${invalid_curl_status},HTTP=${status:-000}；请检查自定义域名 DNS、证书及边缘传播状态"
-        fi
-        die "Cloudflare Worker 未拒绝无效订阅 Token（HTTP ${status:-000}）"
-    fi
-
-    if [[ -n "${token}" ]]; then
-        status=$(printf '%s' "${token}" | curl -sS --connect-timeout 5 --max-time 20 \
-            -o /dev/null -w '%{http_code}' --get \
-            --data-urlencode 'token@-' \
-            "https://${VLESS_CDN_DOMAIN}/subscribe" 2>/dev/null || true)
-        [[ "${status}" == "404" ]] \
-            || die "Nginx 节点源可被绕过 Worker 直接访问（HTTP ${status:-000}）"
-    fi
-    success "Cloudflare Worker 聚合订阅与私有 Nginx 节点源验收通过"
-}
 
 xhttp_configure_ufw() {
     local desired_ports
@@ -550,10 +104,7 @@ cloudflare_validate_zones() {
     [[ "${CLOUDFLARE_ZONE_ID}" == "${CLOUDFLARE_SUBSCRIPTION_ZONE_ID}" ]] || die "订阅域名必须在同一个 Cloudflare Zone"
     zone=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}")
     CLOUDFLARE_ZONE_NAME=$(jq -r '.name // empty | ascii_downcase' <<<"${zone}")
-    CLOUDFLARE_ACCOUNT_ID=$(jq -r '.account.id // empty' <<<"${zone}")
     [[ -n "${CLOUDFLARE_ZONE_NAME}" ]] || die "Cloudflare Zone 未返回有效名称"
-    [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9A-Fa-f]{32}$ ]] \
-        || die "Cloudflare Zone 未返回有效 Account ID"
     cloudflare_validate_universal_hostname "${VLESS_CDN_DOMAIN}"
     cloudflare_validate_universal_hostname "$(active_subscription_link_domain)"
 }
@@ -574,7 +125,6 @@ cloudflare_prepare_origin() {
     ip=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} || die "无法探测 VPS 公网 IPv4"
     validate_ipv4 "${ip}" || die "VPS 公网 IPv4 无效：${ip}"
     VPS_PUBLIC_IPV4=${ip}
-    cloudflare_validate_worker_access
     cloudflare_ensure_proxied_a "${CLOUDFLARE_ZONE_ID}" "${VLESS_CDN_DOMAIN}" "${ip}"
     CLOUDFLARE_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
     XHTTP_ORIGIN_DOMAIN=${VLESS_CDN_DOMAIN}
@@ -622,10 +172,6 @@ xhttp_validate_local_tls_curl_args() {
     local headers="${RUNTIME_TMP}/cloudflare-origin-headers"
     cloudflare_ensure_origin_ca_root
     printf 'X-Easy-All-Origin-Key: %s\n' "${ORIGIN_HEADER_SECRET}" >"${headers}"
-    if subscription_enabled; then
-        printf '%s: %s\n' "${CLOUDFLARE_WORKER_SOURCE_HEADER}" \
-            "${WORKER_SOURCE_SECRET}" >>"${headers}"
-    fi
     chmod 0600 "${headers}"
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https' --cacert "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
         -H "@${headers}")
@@ -648,6 +194,10 @@ xhttp_renew_origin_certificate() {
     fi
     cloudflare_clear_api_token
     success "Cloudflare Origin CA 源站证书已轮换"
+}
+
+renew_certificate() {
+    xhttp_renew_origin_certificate "$@"
 }
 
 cloudflare_ref() { printf 'easy_all_%s' "$(printf '%s' "$1" | sha256sum | cut -c1-24)"; }
@@ -708,144 +258,11 @@ cloudflare_delete_managed_rule() {
     fi
 }
 
-validate_subscription_worker_retirements() {
-    jq -se 'length == 1 and (.[0] | type == "array" and all(.[];
-        (.account | type == "string" and test("^[0-9A-Fa-f]{32}$")) and
-        (.name | type == "string" and test("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")) and
-        (.id | type == "string" and test("^[A-Za-z0-9_-]+$")) and
-        (.host | type == "string" and test("^[a-z0-9.-]+$")) and
-        (.delete_script | type == "boolean")))' \
-        <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}" >/dev/null
-}
-
 # Persist old ownership with the replacement state, before any remote deletion.
-cloudflare_prepare_subscription_worker_retirement() {
-    local account=$1 host=$2 id=$3 name=$4 delete_script=true
-    [[ -n "${name}" ]] || return 0
-    if subscription_enabled && [[ "${account}" == "${CLOUDFLARE_ACCOUNT_ID}" \
-        && "${name}" == "${CLOUDFLARE_WORKER_NAME}" ]]; then
-        [[ "${id}" != "${CLOUDFLARE_WORKER_DOMAIN_ID}" ]] || return 0
-        delete_script=false
-    fi
-    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c \
-        --arg account "${account}" --arg host "${host}" --arg id "${id}" \
-        --arg name "${name}" --argjson delete_script "${delete_script}" \
-        '. + [{account:$account,host:$host,id:$id,name:$name,delete_script:$delete_script}]
-         | unique_by([.account,.name,.id,.delete_script])' \
-        <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}") \
-        || die "无法保存旧订阅 Worker 待清理记录"
-    validate_subscription_worker_retirements || die "旧订阅 Worker 待清理记录无效；停止提交"
-}
-
 # A disabled subscription has no active identity. Drain its matching pending
 # ownership before access checks, without saving uncommitted replacement state.
-cloudflare_reconcile_pending_subscription_worker() {
-    [[ -z "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] || return 0
-    validate_subscription_worker_retirements || die "旧订阅 Worker 待清理记录无效"
-    local entry pending
-    pending=$(jq -c --arg account "${CLOUDFLARE_ACCOUNT_ID}" \
-        --arg name "${CLOUDFLARE_WORKER_NAME}" \
-        '[.[] | select(.account == $account and .name == $name)] | sort_by(.delete_script)' \
-        <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}") \
-        || die "无法读取旧订阅 Worker 待清理记录"
-    while IFS= read -r entry; do
-        # Only the recorded old identity may be retired; backup guards still apply.
-        if ! (SUBSCRIPTION_MODE=link cloudflare_delete_retired_subscription_worker \
-            "$(jq -r '.account' <<<"${entry}")" "$(jq -r '.host' <<<"${entry}")" \
-            "$(jq -r '.id' <<<"${entry}")" "$(jq -r '.name' <<<"${entry}")" \
-            "$(jq -r '.delete_script' <<<"${entry}")"); then
-            die "旧订阅 Worker 清理失败；保留待清理记录，停止重新启用"
-        fi
-    done < <(jq -c '.[]' <<<"${pending}")
-    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c --argjson pending "${pending}" \
-        '. - $pending' <<<"${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}") \
-        || die "无法更新旧订阅 Worker 待清理记录"
-}
-
 # Reusing a formerly retired binding makes it active again. Verify its complete
 # cloud identity before canceling retirement or retaining only an old domain.
-cloudflare_reconcile_active_subscription_retirements() {
-    subscription_enabled || return 0
-    local pending=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]} domains
-    jq -e --arg account "${CLOUDFLARE_ACCOUNT_ID}" --arg name "${CLOUDFLARE_WORKER_NAME}" \
-        'any(.[]; .account == $account and .name == $name)' <<<"${pending}" >/dev/null \
-        || return 0
-    domains=$(cloudflare_api_request GET "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains") \
-        || die "无法核对重新接管的订阅 Worker 域名"
-    jq -e --arg id "${CLOUDFLARE_WORKER_DOMAIN_ID}" --arg host "${SUBSCRIPTION_DOMAIN}" \
-        --arg name "${CLOUDFLARE_WORKER_NAME}" '
-        type == "array" and
-        ([.[] | select(.id == $id or (.hostname | ascii_downcase) == $host)]
-         | length == 1 and all(.[];
-             .id == $id and (.hostname | ascii_downcase) == $host and .service == $name))' \
-        <<<"${domains}" >/dev/null || die "重新接管的订阅 Worker 域名所有权不一致；停止提交"
-    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=$(jq -c \
-        --arg account "${CLOUDFLARE_ACCOUNT_ID}" --arg name "${CLOUDFLARE_WORKER_NAME}" \
-        --arg id "${CLOUDFLARE_WORKER_DOMAIN_ID}" --arg host "${SUBSCRIPTION_DOMAIN}" '
-        map(if .account == $account and .name == $name then
-            if .id == $id and .host == $host then empty
-            elif .id != $id and .host != $host then .delete_script = false
-            else . end
-            else . end)' <<<"${pending}") \
-        || die "无法更新重新接管的订阅 Worker 待清理记录"
-}
-
-cloudflare_delete_retired_subscription_worker() {
-    local account=$1 host=$2 id=$3 name=$4 delete_script=$5 domains
-    [[ "${account}" == "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || return 1
-    # Domain-only retirement can share the active script, never its binding.
-    if subscription_enabled; then
-        [[ "${id}" != "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" \
-            && "${host}" != "${SUBSCRIPTION_DOMAIN:-}" ]] || return 1
-        [[ "${delete_script}" != true || "${name}" != "${CLOUDFLARE_WORKER_NAME:-}" ]] || return 1
-    fi
-    if worker_backup_enabled; then
-        [[ "${id}" != "${WORKER_BACKUP_DOMAIN_ID:-}" \
-            && "${host}" != "${WORKER_BACKUP_DOMAIN}" ]] || return 1
-        [[ "${delete_script}" != true || "${name}" != "${WORKER_BACKUP_NAME:-}" ]] || return 1
-    fi
-    domains=$(cloudflare_api_request GET \
-        "/accounts/${account}/workers/domains") || return 1
-    # A missing old binding is idempotent; a rebound hostname/ID is not ours.
-    jq -e --arg id "${id}" --arg host "${host}" --arg name "${name}" '
-        type == "array" and
-        ([.[] | select(.id == $id)] | length <= 1) and
-        all(.[]; if .id == $id or (.hostname | ascii_downcase) == $host then
-            .id == $id and (.hostname | ascii_downcase) == $host and .service == $name
-            else true end)' <<<"${domains}" >/dev/null || return 1
-    if [[ "${delete_script}" == true ]]; then
-        cloudflare_delete_subscription_worker_resources "${id}" "${name}"
-    elif jq -e --arg id "${id}" 'any(.[]; .id == $id)' <<<"${domains}" >/dev/null; then
-        cloudflare_api_request DELETE \
-            "/accounts/${account}/workers/domains/${id}" >/dev/null
-    fi
-}
-
-cloudflare_finalize_subscription_worker_retirements() {
-    validate_subscription_worker_retirements || {
-        warn "旧订阅 Worker 待清理记录无效；保留记录，请检查 state.env"
-        return 0
-    }
-    local entry remaining='[]' retirements=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}
-    while IFS= read -r entry; do
-        # API/ownership checks may call die (exit); isolate each attempt.
-        if ! (cloudflare_delete_retired_subscription_worker \
-            "$(jq -r '.account' <<<"${entry}")" "$(jq -r '.host' <<<"${entry}")" \
-            "$(jq -r '.id' <<<"${entry}")" "$(jq -r '.name' <<<"${entry}")" \
-            "$(jq -r '.delete_script' <<<"${entry}")"); then
-            warn "旧订阅 Worker/域名尚未清理；已保留记录，下次 apply-cloud 或 uninstall --purge-cloud 重试"
-            remaining=$(jq -c --argjson entry "${entry}" '. + [$entry]' <<<"${remaining}")
-        fi
-    done < <(jq -c 'sort_by(.delete_script) | .[]' <<<"${retirements}")
-    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=${remaining}
-    if [[ "${remaining}" != "${retirements}" ]]; then
-        if ! (save_state); then
-            CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=${retirements}
-            warn "清理结果保存失败；保留记录，下次将重新核对云端资源"
-        fi
-    fi
-}
-
 cloudflare_configure_cdn() {
     cloudflare_configure_rules
     cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/settings/origin_max_http_version" \
@@ -1065,31 +482,6 @@ xhttp_client_path() {
     printf '%s/' "${XHTTP_PATH%/}"
 }
 
-collect_cloudflare_worker_inputs() {
-    local domain default_domain
-    default_domain="sub.${VLESS_CDN_DOMAIN#*.}"
-    domain=${SUBSCRIPTION_DOMAIN:-${default_domain}}
-    [[ "${domain}" != "${VLESS_CDN_DOMAIN}" ]] || domain=${default_domain}
-    if [[ -t 0 ]]; then
-        info "订阅域名将绑定到 Cloudflare Worker，必须与节点域名不同。"
-        domain=$(prompt_value "Worker 订阅完整域名" "${domain}")
-    fi
-    domain=$(normalize_domain "${domain}")
-    validate_domain "${domain}" || die "SUBSCRIPTION_DOMAIN 无效：${domain}"
-    [[ "${domain}" != "${VLESS_CDN_DOMAIN}" ]] \
-        || die "Worker 订阅域名必须与节点域名不同，避免 Worker 子请求递归"
-    SUBSCRIPTION_DOMAIN=${domain}
-    if [[ -z "${CLOUDFLARE_WORKER_NAME:-}" ]]; then
-        choose_cloudflare_worker_name
-    else
-        validate_cloudflare_worker_name "${CLOUDFLARE_WORKER_NAME}" \
-            || die "Cloudflare Worker 名称无效"
-    fi
-    WORKER_SOURCE_SECRET=${WORKER_SOURCE_SECRET:-$(generate_secret)}
-    [[ "${WORKER_SOURCE_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
-        || die "WORKER_SOURCE_SECRET 格式无效"
-}
-
 collect_cloudflare_node_domain() {
     local domain=${VLESS_CDN_DOMAIN:-}
     while true; do
@@ -1123,7 +515,7 @@ collect_install_inputs() {
 
     choose_google_egress_mode
 
-    info "Cloudflare 数据面采用单域名架构；部署订阅时另用独立域名绑定 Worker。"
+    info "Cloudflare 数据面与订阅共用同一代理域名。"
     info "流量说明：代理数据实时经过 VPS；若 VPS 仅计出站，月度出站额度通常是可用代理载荷的主要上限，但协议开销及 Cloudflare 服务规则会进一步约束；双向计费请按服务商口径折算。"
     info "节点域名提示：使用 Cloudflare Active Zone 下未占用的一级子域名，例如 node.example.com；不要提前创建 DNS 记录。"
     cloudflare_collect_api_token
@@ -1145,19 +537,14 @@ collect_install_inputs() {
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "Origin header 密钥无效"
 
     choose_subscription_mode
+    SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
     if subscription_enabled; then
-        collect_cloudflare_worker_inputs
         choose_subscription_download_name
         ensure_allowed_tokens 1
-        choose_worker_aggregation_config
-        cloudflare_build_subscription_worker
     else
-        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
-        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
     fi
-    collect_worker_backup_inputs
 }
 
 load_state() {
@@ -1165,12 +552,6 @@ load_state() {
     local -a variables=(
         STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER TCP_ACCELERATION
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
-        CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID
-        WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG
-        CLOUDFLARE_SUBSCRIPTION_RETIREMENTS
-        WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID
-        WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT
-        WORKER_BACKUP_RETIREMENTS
         XHTTP_NODE_NAME VLESS_UUID
         VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN
         CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME
@@ -1216,28 +597,10 @@ load_state() {
         || die "状态缺少 Cloudflare Zone 或 Origin CA 资源"
     [[ "${ORIGIN_HEADER_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "源站密钥无效"
     XHTTP_ORIGIN_DOMAIN=${CLOUDFLARE_ORIGIN_DOMAIN}
-    SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN:-${VLESS_CDN_DOMAIN}}")
+    SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-none}") || die "订阅模式无效"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}") || die "订阅文件名无效"
     [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") || die "Token 无效"
-    if subscription_enabled; then
-        [[ "${SUBSCRIPTION_DOMAIN}" != "${VLESS_CDN_DOMAIN}" ]] \
-            || die "Worker 订阅域名不能与节点域名相同；请重新安装"
-        [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ ]] \
-            || die "状态缺少有效的 Cloudflare Account ID；请重新安装"
-        validate_cloudflare_worker_name "${CLOUDFLARE_WORKER_NAME:-}" \
-            || die "状态缺少有效的 Cloudflare Worker 名称；请重新安装"
-        [[ -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
-            || die "状态缺少 Worker 自定义域名 ID；请重新安装"
-        [[ "${WORKER_SOURCE_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
-            || die "状态缺少有效的 Worker 订阅源密钥；请重新安装"
-        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
-            "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
-            || die "状态中的 Worker 聚合配置无效；请重新安装"
-    fi
-    CLOUDFLARE_SUBSCRIPTION_RETIREMENTS=${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}
-    validate_subscription_worker_retirements || die "状态中的旧订阅 Worker 待清理记录无效"
-    validate_worker_backup_state
     validate_google_egress_policy_state \
         || die "状态缺少有效的 Google 出站策略；请重新安装"
     BACKEND="xray"
@@ -1250,20 +613,8 @@ save_state() {
     local state_dir
     enforce_ipv4_only_policy
     TCP_ACCELERATION="${TCP_ACCELERATION:-skyline}"
-    validate_subscription_worker_retirements || die "无法保存无效的旧订阅 Worker 待清理记录"
-    validate_worker_backup_state
     validate_google_egress_policy_state \
         || die "无法保存无效的 Google 出站策略"
-    if subscription_enabled; then
-        [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9A-Fa-f]{32}$ \
-            && -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" \
-            && "${WORKER_SOURCE_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
-            && validate_cloudflare_worker_name "${CLOUDFLARE_WORKER_NAME:-}" \
-            || die "无法保存不完整的 Cloudflare Worker 状态"
-        WORKER_AGGREGATION_CONFIG=$(normalize_worker_aggregation_config \
-            "${WORKER_AGGREGATION_CONFIG:-}" | jq -c 'del(.allowedTokens)') \
-            || die "无法保存无效的 Worker 聚合配置"
-    fi
     state_dir="$(dirname "${target}")" || die "无法确定状态文件目录"
     install -d -m 0700 "${state_dir}" || die "无法创建状态文件目录"
     local t v value
@@ -1273,12 +624,6 @@ save_state() {
     {
         for v in STATE_VERSION PROTOCOL BACKEND CDN_PROVIDER TCP_ACCELERATION \
             GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED \
-            CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_WORKER_NAME CLOUDFLARE_WORKER_DOMAIN_ID \
-            WORKER_SOURCE_SECRET WORKER_AGGREGATION_CONFIG \
-            CLOUDFLARE_SUBSCRIPTION_RETIREMENTS \
-            WORKER_BACKUP_DOMAIN WORKER_BACKUP_NAME WORKER_BACKUP_DOMAIN_ID \
-            WORKER_BACKUP_UUID WORKER_BACKUP_PATH WORKER_BACKUP_IPS WORKER_BACKUP_PLACEMENT \
-            WORKER_BACKUP_RETIREMENTS \
             XHTTP_NODE_NAME VLESS_UUID VLESS_CDN_DOMAIN SUBSCRIPTION_DOMAIN \
             CLOUDFLARE_ORIGIN_DOMAIN CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME \
             CLOUDFLARE_CDN_ZONE_ID CLOUDFLARE_SUBSCRIPTION_ZONE_ID \
@@ -1292,24 +637,7 @@ save_state() {
             PROTOCOL) value=cloudflare-streamup ;;
             BACKEND) value=xray ;;
             CDN_PROVIDER) value=cloudflare ;;
-            SUBSCRIPTION_DOMAIN)
-                value=$(subscription_link_domain) || die "无法读取订阅域名"
-                ;;
-            WORKER_BACKUP_IPS)
-                if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
-                    value='[]'
-                else
-                    value=${!v:-}
-                fi
-                ;;
-            WORKER_BACKUP_DOMAIN | WORKER_BACKUP_NAME | WORKER_BACKUP_DOMAIN_ID | \
-            WORKER_BACKUP_UUID | WORKER_BACKUP_PATH | WORKER_BACKUP_PLACEMENT)
-                if [[ "${WORKER_BACKUP_DECOMMISSION:-0}" == "1" ]]; then
-                    value=''
-                else
-                    value=${!v:-}
-                fi
-                ;;
+            SUBSCRIPTION_DOMAIN) value=${VLESS_CDN_DOMAIN} ;;
             *) value=${!v:-} ;;
             esac
             printf '%s=%q\n' "${v}" "${value}" || die "写入临时状态文件失败：${v}"
@@ -1416,8 +744,7 @@ server {
     }
 
 EOF
-        write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}" \
-            "${WORKER_SOURCE_SECRET:-}"
+        write_subscription_nginx_locations "${ORIGIN_HEADER_SECRET}"
         cat <<EOF
     location ^~ ${XHTTP_PATH}/ {
         if (\$http_x_easy_all_origin_key != "${ORIGIN_HEADER_SECRET}") { return 404; }
@@ -1536,7 +863,6 @@ build_node_links() {
         build_vless_xhttp_link "${ip}" "🇺🇸优选${label}"
         printf '\n'
     done <<<"${candidates}"
-    build_worker_backup_links
 }
 
 build_mihomo_nodes() {
@@ -1547,14 +873,10 @@ build_mihomo_nodes() {
         [[ -n "${ip}" ]] || continue
         build_mihomo_xhttp_node "${ip}" "🇺🇸优选${label}"
     done <<<"${candidates}"
-    build_worker_backup_mihomo
 }
 
 build_mihomo_proxy_names() {
     printf '        - "AUTO"\n'
-    if [[ -n "$(worker_backup_nodes | jq -r '.name')" ]]; then
-        printf '        - "%s"\n' "${WORKER_BACKUP_GROUP_NAME}"
-    fi
 }
 
 write_mihomo_url_test_group() {
@@ -1579,22 +901,14 @@ EOF
 
 build_mihomo_proxy_groups() {
     local -a all_nodes=()
-    local ip label carrier candidates worker_nodes
+    local ip label carrier candidates
     candidates=$(cloudflare_xhttp_streamup_client_candidates)
     cloudflare_validate_client_candidate_counts "${candidates}"
     while IFS=$'\t' read -r ip label carrier; do
         [[ -n "${ip}" ]] || continue
         all_nodes+=("🇺🇸优选${label}")
     done <<<"${candidates}"
-
     write_mihomo_url_test_group "AUTO" "$(printf '%s\n' "${all_nodes[@]}")"
-    worker_nodes=$(worker_backup_nodes | jq -r '.name')
-    write_mihomo_url_test_group "${WORKER_BACKUP_GROUP_NAME}" "${worker_nodes}" \
-        "https://www.gstatic.com/generate_204"
-}
-
-build_mihomo_worker_rules() {
-    :
 }
 
 show_node() {
@@ -1619,44 +933,12 @@ show_status() {
     [[ -n "$(ss -H -ltn "sport = :${XRAY_XHTTP_LOOPBACK_PORT}" 2>/dev/null || true)" ]] \
         && printf 'listening\n' || printf 'not listening\n'
     if subscription_enabled; then
-        printf '公开订阅: Cloudflare Worker %s（%s）\n' \
-            "${CLOUDFLARE_WORKER_NAME}" "${SUBSCRIPTION_DOMAIN}"
-        printf 'Nginx 订阅源: 私有，仅允许 Worker 专用密钥访问\n'
-        printf '聚合配置: nodes=%s，fallbackCdnNodes=%s\n' \
-            "$(jq '.nodes | length' <<<"${WORKER_AGGREGATION_CONFIG}")" \
-            "$(jq '.fallbackCdnNodes | length' <<<"${WORKER_AGGREGATION_CONFIG}")"
-        printf 'Nginx: '
-        systemctl is-active --quiet nginx 2>/dev/null \
-            && printf 'active\n' || printf 'inactive\n'
+        printf '公开订阅: https://%s/subscribe\n' "${VLESS_CDN_DOMAIN}"
     else
         printf '公开订阅: 未部署\n'
     fi
     printf 'VPS 出站: IPv4-only（IPv6 全局禁用）\n'
-    if worker_backup_enabled; then
-        printf 'Worker 兜底: %s，发布 %s 个优选 IP（无域名入口），Placement=%s（不保证香港出口）\n' \
-            "${WORKER_BACKUP_DOMAIN}" "$(jq length <<<"${WORKER_BACKUP_IPS:-[]}")" "${WORKER_BACKUP_PLACEMENT:-off}"
-    fi
     show_globalping_status
-}
-
-show_subscription() {
-    collect_installed_state
-    show_node
-    if ! subscription_enabled; then
-        printf '订阅服务: 未部署，仅输出节点信息\n\n'
-        return 0
-    fi
-    printf 'Mihomo 下载文件名: %s\n' "${SUB_DOWNLOAD_NAME}"
-    local user token subscription_domain
-    subscription_domain=$(subscription_link_domain)
-    printf '订阅链接域名: %s\n' "${subscription_domain}"
-    while IFS=$'\t' read -r user token; do
-        printf '订阅 (%s): https://%s/subscribe?token=%s\n' \
-            "${user}" "${subscription_domain}" "${token}"
-    done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
-    printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
-    printf '%s\n' '  如需强制格式：在链接后加 &flag=clash 或 &flag=base64'
-    printf '\n'
 }
 
 refresh_cloudflare_cdn_ips() {
@@ -1677,8 +959,6 @@ refresh_cloudflare_cdn_ips() {
     if subscription_enabled; then
         write_subscriptions
         validate_subscription_runtime
-    elif worker_backup_enabled; then
-        cloudflare_refresh_backup_nodes
     fi
     save_state
     commit_subscription_update
@@ -1713,16 +993,6 @@ rollback_fresh_install() {
 
 cloudflare_rollback_fresh_install_resources() {
     local ruleset ref id failed=0
-    (cloudflare_rollback_backup_worker) || failed=1
-    if [[ "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ]]; then
-        (cloudflare_delete_subscription_worker_resources \
-            "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${CLOUDFLARE_WORKER_NAME:-}") \
-            || { warn "回滚本次新建的 Cloudflare Worker 失败"; failed=1; }
-    elif [[ -n "${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID:-}" ]]; then
-        (cloudflare_api_request DELETE \
-            "/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains/${CLOUDFLARE_CREATED_WORKER_DOMAIN_ID}" >/dev/null) \
-            || { warn "回滚本次新建的 Worker 自定义域名失败"; failed=1; }
-    fi
     while IFS=$'\t' read -r ruleset ref; do
         [[ -n "${ruleset}" && -n "${ref}" ]] || continue
         (cloudflare_delete_managed_rule "${ruleset}" "${ref}") || failed=1
@@ -1800,14 +1070,7 @@ install_all() {
     cloudflare_validate_cdn_health
     refresh_globalping_cache \
         || die "首次 Globalping 测量失败"
-    cloudflare_deploy_backup_worker
     subscription_enabled && { write_subscriptions; validate_subscription_runtime; }
-    if ! subscription_enabled && worker_backup_enabled; then
-        cloudflare_refresh_backup_nodes
-    fi
-    cloudflare_deploy_subscription_worker
-    cloudflare_validate_subscription_worker
-    cloudflare_prepare_backup_retirement
     install_progress_stage state
     save_state
     register_easy_all_command
@@ -1816,17 +1079,11 @@ install_all() {
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
     cloudflare_finalize_certificate_rotation
-    cloudflare_finalize_backup_worker
-    cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     # 从这里开始只剩展示类命令：失败不再算“安装失败”。
     INSTALL_FAILURE_ARMED=0
     show_subscription
-    if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
-        warn "本机与 Cloudflare 资源已保留；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
-    else
-        success "easy_all Cloudflare CDN XHTTP 与 Worker 聚合订阅安装完成"
-    fi
+    success "easy_all Cloudflare CDN XHTTP 与本地订阅安装完成"
     show_tcp_acceleration_status
     prompt_kernel_reboot
 }
@@ -1873,65 +1130,35 @@ apply_cloud_resources() {
         refresh_globalping_cache \
             || die "Cloudflare 入口策略变化后无法生成兼容缓存"
     fi
-    cloudflare_deploy_backup_worker
     finish_xhttp_apply 1 0 1
-    if ! subscription_enabled && worker_backup_enabled; then
-        cloudflare_refresh_backup_nodes
-    fi
-    cloudflare_deploy_subscription_worker
-    cloudflare_validate_subscription_worker
     cloudflare_validate_cdn_health
-    cloudflare_prepare_backup_retirement
-    cloudflare_reconcile_active_subscription_retirements
     save_state
     install_globalping_refresh_timer
     commit_subscription_update
     cloudflare_finalize_certificate_rotation
-    cloudflare_finalize_backup_worker
-    cloudflare_finalize_subscription_worker_retirements
-    cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     show_subscription
-    if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
-        warn "Cloudflare 资源和本机配置已应用；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
-    else
-        success "Cloudflare Worker、DNS、Origin CA、规则和本机配置已应用"
-    fi
+    success "Cloudflare DNS、Origin CA、规则和本机配置已应用"
 }
 
 update_subscription() {
-    local previous_subscription_host="" previous_worker_domain_id="" previous_worker_name=""
-    local previous_account_id=""
-    local previous_subscription_enabled=0
     require_root
     acquire_runtime_write_lock
     collect_installed_state
-    if subscription_enabled; then
-        previous_subscription_enabled=1
-        previous_subscription_host=$(active_subscription_link_domain)
-        previous_worker_domain_id=${CLOUDFLARE_WORKER_DOMAIN_ID}
-        previous_worker_name=${CLOUDFLARE_WORKER_NAME}
-        previous_account_id=${CLOUDFLARE_ACCOUNT_ID}
-    fi
     snapshot_subscription_update
     choose_google_egress_mode
     PROMPT_SUBSCRIPTION_MODE=1
     choose_subscription_mode
     PROMPT_SUBSCRIPTION_MODE=0
+    SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
     if subscription_enabled; then
-        collect_cloudflare_worker_inputs
         choose_subscription_download_name
         ensure_allowed_tokens 1
-        choose_worker_aggregation_config
-        cloudflare_build_subscription_worker
     else
-        SUBSCRIPTION_DOMAIN=${VLESS_CDN_DOMAIN}
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
         ALLOWED_TOKENS=""
-        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
     fi
-    collect_worker_backup_inputs
     xhttp_render_xray_config
     cloudflare_prepare_origin
     cloudflare_issue_origin_certificate 0
@@ -1943,42 +1170,15 @@ update_subscription() {
         refresh_globalping_cache \
             || die "Cloudflare IPv4 入口池更新失败，已保留旧缓存"
     fi
-    cloudflare_deploy_backup_worker
     finish_xhttp_apply 1 0 1
-    if ! subscription_enabled && worker_backup_enabled; then
-        cloudflare_refresh_backup_nodes
-    fi
-    if subscription_enabled; then
-        cloudflare_deploy_subscription_worker
-        cloudflare_validate_subscription_worker
-    elif ((previous_subscription_enabled == 1)); then
-        CLOUDFLARE_WORKER_DOMAIN_ID=""
-        CLOUDFLARE_WORKER_NAME=""
-        WORKER_SOURCE_SECRET=""
-        WORKER_AGGREGATION_CONFIG='{"nodes":[],"fallbackCdnNodes":[]}'
-    fi
     cloudflare_validate_cdn_health
-    if ((previous_subscription_enabled == 1)); then
-        cloudflare_prepare_subscription_worker_retirement \
-            "${previous_account_id}" "${previous_subscription_host}" \
-            "${previous_worker_domain_id}" "${previous_worker_name}"
-    fi
-    cloudflare_prepare_backup_retirement
-    cloudflare_reconcile_active_subscription_retirements
     save_state
     install_globalping_refresh_timer
     commit_subscription_update
     cloudflare_finalize_certificate_rotation
-    cloudflare_finalize_backup_worker
-    cloudflare_finalize_subscription_worker_retirements
-    cloudflare_commit_provider_subscription_update
     cloudflare_clear_api_token
     show_subscription
-    if [[ "${CLOUDFLARE_WORKER_MANUAL_DEPLOY_REQUIRED:-0}" == "1" ]]; then
-        warn "订阅配置已保留；请将 ${CLOUDFLARE_WORKER_RECOVERY_FILE} 手工部署到 Worker ${CLOUDFLARE_WORKER_NAME}"
-    else
-        success "Cloudflare Worker 订阅、Origin CA 与回源规则已更新"
-    fi
+    success "Cloudflare 订阅、Origin CA 与回源规则已更新"
 }
 
 purge_cloudflare_resources_before_uninstall() {
@@ -1989,35 +1189,8 @@ purge_cloudflare_resources_before_uninstall() {
             && -n "${CLOUDFLARE_HEADER_RULESET_ID:-}" \
             && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
             || die "状态缺少 Cloudflare 证书或 ruleset ID，已停止卸载；本机状态仍保留"
-        if subscription_enabled; then
-            [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" \
-                && -n "${CLOUDFLARE_WORKER_NAME:-}" \
-                && -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" ]] \
-                || die "状态缺少 Cloudflare Worker 资源 ID，已停止卸载；本机状态仍保留"
-        fi
     fi
     cloudflare_collect_api_token
-    cloudflare_finalize_subscription_worker_retirements
-    [[ "${CLOUDFLARE_SUBSCRIPTION_RETIREMENTS:-[]}" == "[]" ]] \
-        || die "旧订阅 Worker 或域名清理失败，已停止卸载；本机状态仍保留"
-    cloudflare_finalize_backup_worker
-    [[ "${WORKER_BACKUP_RETIREMENTS:-[]}" == "[]" ]] \
-        || die "旧兜底 Worker 清理失败，已停止卸载；本机状态仍保留"
-
-    if worker_backup_enabled; then
-        cloudflare_delete_subscription_worker_resources "${WORKER_BACKUP_DOMAIN_ID:-}" "${WORKER_BACKUP_NAME}" \
-            || die "兜底 Worker 清理失败，保留本机状态"
-    fi
-
-    if subscription_enabled \
-        && [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" \
-            && -n "${CLOUDFLARE_WORKER_NAME:-}" \
-            && ( -n "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" \
-                || "${CLOUDFLARE_WORKER_CREATED:-0}" == "1" ) ]]; then
-        cloudflare_delete_subscription_worker_resources \
-            "${CLOUDFLARE_WORKER_DOMAIN_ID:-}" "${CLOUDFLARE_WORKER_NAME}" \
-            || die "Cloudflare Worker 或自定义域名删除失败，已停止卸载；本机状态仍保留"
-    fi
 
     if [[ -n "${CLOUDFLARE_HEADER_RULESET_ID:-}" ]]; then
         cloudflare_purge_managed_rule "${CLOUDFLARE_HEADER_RULESET_ID}" \
@@ -2048,7 +1221,7 @@ purge_cloudflare_resources_before_uninstall() {
             || die "Cloudflare Origin CA 吊销失败，已停止卸载；本机状态仍保留"
     fi
     cloudflare_clear_api_token
-    success "easy_all 托管的 Cloudflare Worker、DNS、规则、ruleset 与 Origin CA 证书已清理"
+    success "easy_all 托管的 Cloudflare DNS、规则、ruleset 与 Origin CA 证书已清理"
 }
 
 uninstall_all() {
@@ -2068,7 +1241,7 @@ uninstall_all() {
     if [[ "${FORCE:-0}" != 1 ]]; then
         if [[ "${UNINSTALL_PURGE_CLOUD}" == 1 ]]; then
             read_bilingual \
-                '删除本机内容以及 easy_all 托管的 Cloudflare Worker、DNS、规则和 Origin CA 证书？[y/N]:' answer
+                '删除本机内容以及 easy_all 托管的 Cloudflare DNS、规则和 Origin CA 证书？[y/N]:' answer
         else
             read_bilingual \
                 '删除本机内容（Cloudflare 资源保留）？[y/N]:' answer
@@ -2084,7 +1257,7 @@ uninstall_all() {
     fi
     purge_cloudflare_resources_before_uninstall
     if [[ "${UNINSTALL_PURGE_CLOUD}" != 1 ]]; then
-        warn "Cloudflare 资源（Worker/DNS/规则/Origin CA）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
+        warn "Cloudflare 资源（DNS/规则/Origin CA）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
     fi
     stop_services
     remove_globalping_refresh_timer

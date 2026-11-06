@@ -1,0 +1,44 @@
+{
+  "allowedTokens": {
+    "owner": "replace-with-a-long-random-token"
+  },
+  "nodes": [
+    {
+      "type": "vless",
+      "security": "reality",
+      "network": "tcp",
+      "name": "另一台 Reality 节点",
+      "host": "reality.example.com",
+      "port": 8443,
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "sni": "www.example.com",
+      "pbk": "replace-with-reality-public-key",
+      "sid": "0123456789abcdef",
+      "fp": "chrome"
+    },
+    {
+      "type": "vless",
+      "security": "tls",
+      "network": "xhttp",
+      "name": "另一台 XHTTP 节点",
+      "host": "cf.example.com",
+      "port": 443,
+      "uuid": "00000000-0000-4000-8000-000000000002",
+      "sni": "cf.example.com",
+      "path": "/xhttp-0123456789abcdef/",
+      "mode": "stream-up",
+      "fp": "chrome"
+    },
+    {
+      "type": "mieru",
+      "name": "备用 Mieru 节点",
+      "host": "mieru.example.com",
+      "portRange": "50000-50512",
+      "username": "replace-user",
+      "password": "replace-with-a-long-password",
+      "transport": "TCP",
+      "multiplexing": "MULTIPLEXING_LOW",
+      "optional": true
+    }
+  ]
+}

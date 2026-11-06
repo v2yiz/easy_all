@@ -22,8 +22,6 @@ source "${RUNTIME_LIB_DIR}/xray-core.sh"
 source "${RUNTIME_LIB_DIR}/scheduled-maintenance.sh"
 # shellcheck source=lib/subscription-auth.sh
 source "${RUNTIME_LIB_DIR}/subscription-auth.sh"
-# shellcheck source=lib/worker-config.sh
-source "${RUNTIME_LIB_DIR}/worker-config.sh"
 # shellcheck source=lib/tcp-tuning.sh
 source "${RUNTIME_LIB_DIR}/tcp-tuning.sh"
 
@@ -79,9 +77,6 @@ MIHOMO_TEMPLATE_FILE=""
 cleanup() {
     local status=$?
     local path
-    if declare -F worker_backup_stop_probe >/dev/null 2>&1; then
-        worker_backup_stop_probe || true
-    fi
     # 安装中途失败：先说明失败位置与阶段，再由用户决定是否清理本机残留。
     if [[ "${status}" != "0" ]] && declare -F install_failure_report >/dev/null 2>&1; then
         install_failure_report || true
@@ -133,7 +128,7 @@ uri_encode() {
 }
 
 # Profiles whose local subscription content depends on the installed core version define this
-# hook (the ML-KEM gate of Reality and combined modes); the Cloudflare-streamup and Bunny
+# hook (the ML-KEM gate of Reality and combined modes); the Cloudflare-streamup
 # subscriptions are core-independent and omit it.
 refresh_runtime_subscription_after_core_update() {
     declare -F refresh_runtime_subscription >/dev/null 2>&1 || return 0

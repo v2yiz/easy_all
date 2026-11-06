@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title desc">
   <title id="title">easy_all 所需的 Cloudflare API Token 配置图例</title>
-  <desc id="desc">从 My Profile 的 API Tokens 创建 Custom Token，加入六项 Zone 权限和一项 Account Workers 权限，并将资源限制为一个特定账号与 Zone。</desc>
+  <desc id="desc">从 My Profile 的 API Tokens 创建 Custom Token，加入六项 Zone 权限，并将资源限制为一个特定账号与 Zone。</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".13"/></filter>
     <style>
@@ -19,8 +19,8 @@
 
   <rect x="70" y="335" width="1460" height="530" rx="22" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="390" r="25" fill="#f48120"/><text x="107" y="400" class="step white">2</text>
-  <text x="165" y="385" class="step">填写名称并添加 7 项 Permissions</text>
-  <text x="165" y="426" class="body">Token name：<tspan class="mono">easy_all-cloudflare-worker</tspan></text>
+  <text x="165" y="385" class="step">填写名称并添加 6 项 Permissions</text>
+  <text x="165" y="426" class="body">Token name：<tspan class="mono">easy_all-cloudflare</tspan></text>
   <rect x="135" y="460" width="1330" height="375" rx="14" fill="#fafbfc" stroke="#d8dee8" stroke-width="2"/>
   <text x="180" y="505" class="small muted">Permission group</text><text x="740" y="505" class="small muted">Permission</text><text x="1050" y="505" class="small muted">为什么需要</text>
   <line x1="165" y1="522" x2="1435" y2="522" stroke="#d8dee8"/>
@@ -32,7 +32,6 @@
     <text x="180" y="745">Zone / Zone Settings</text><text x="740" y="745" class="orange">Edit</text><text x="1050" y="745" class="green">启用 HTTP/2 to Origin 与 gRPC</text>
   </g>
   <text x="180" y="790" class="body">Zone / SSL and Certificates</text><text x="740" y="790" class="body orange">Edit</text><text x="1050" y="790" class="body green">签发及轮换 Origin CA</text>
-  <text x="180" y="830" class="body">Account / Workers Scripts</text><text x="740" y="830" class="small orange">Edit（API: Write）</text><text x="1050" y="830" class="body green">部署 Worker 与 Custom Domain</text>
 
   <rect x="70" y="880" width="1460" height="235" rx="22" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="935" r="25" fill="#f48120"/><text x="107" y="945" class="step white">3</text>
@@ -43,5 +42,5 @@
   <text x="190" y="1074" class="small orange">不要选择 All accounts 或 All zones</text>
   <text x="890" y="1048" class="small">Continue to summary → 核对 → Create Token</text>
   <text x="890" y="1083" class="small muted">secret 仅显示一次：复制到密码管理器，然后粘贴到安装器隐藏输入。</text>
-  <text x="70" y="1165" class="tiny muted">Dashboard 显示 Edit，API 文档称 Workers Scripts Write；两者是同一权限。</text>
+  <text x="70" y="1165" class="tiny muted">模式 2 不再需要 Workers 权限；Zone Settings 用于开启 HTTP/2 到源站。</text>
 </svg>

@@ -20,8 +20,7 @@ validate_mihomo_template() {
     for marker in \
         "# EASY_ALL_PROXY_NODE" \
         "# EASY_ALL_PROXY_GROUP" \
-        "# EASY_ALL_PROXY_NAME" \
-        "# EASY_ALL_WORKER_RULE"; do
+        "# EASY_ALL_PROXY_NAME"; do
         count=$(grep -Fxc "${marker}" "${source}" || true)
         [[ "${count}" == "1" ]] \
             || die "Mihomo 模板标记无效：${marker} 应且只能出现一次"
@@ -58,7 +57,6 @@ validate_mihomo_template() {
         }
         $0 == "# EASY_ALL_PROXY_NAME" { print "        - easy-all-check"; next }
         $0 == "# EASY_ALL_PROXY_GROUP" { next }
-        $0 == "# EASY_ALL_WORKER_RULE" { next }
         { print }
     ' "${source}" >"${check_dir}/config.yaml"
     "${binary}" -t -d "${MIHOMO_CHECK_HOME:-${check_dir}}" \
@@ -118,7 +116,7 @@ prepare_mihomo_template() {
     MIHOMO_TEMPLATE_FILE=${template}
 }
 
-# The Worker builder uses this same gate; never print template contents/secrets.
+# Never print template contents/secrets.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -euo pipefail
     die() { printf '%s\n' "$*" >&2; exit 1; }

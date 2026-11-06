@@ -18,17 +18,12 @@
 - **数据面拓扑**：
   ```text
   客户端 -> Cloudflare 优选 IPv4 -> Cloudflare 边缘 -> Nginx (TCP 443) -> Xray (127.0.0.1:10086 XHTTP stream-up)
+  客户端 -> https://node.<zone>/subscribe -> 同一 Nginx（token 鉴权 + UA 协商）
   ```
 - **优选机制**：利用 Globalping 从三网探针每 3 小时动态筛选 6 个经过 HTTP/TLS 握手校验的优选节点。
+- **订阅**：由本机 Nginx 在节点域名下发，不再依赖额外订阅域名或边缘脚本。
 
-### 1.3 模式 3：Bunny CDN
-- **数据面拓扑**：
-  ```text
-  客户端 -> Bunny CDN 自动调度边缘 -> Nginx (TCP 443 HTTPS) -> Xray (127.0.0.1 WS)
-  ```
-- **调度特点**：通过 Bunny Pull Zone 自带的 Anycast 边缘网络调度，无需本地筛选 IP。
-
-### 1.4 组合模式（Reality + Cloudflare XHTTP）
+### 1.3 模式 3：组合模式（Reality + Cloudflare XHTTP）
 一台 VPS 独占承载直连与 CDN 两个入口：
 ```text
 公网 8443  Xray VLESS Reality（直连入口，伪装目标另配 SNI）
@@ -38,7 +33,7 @@
 ```
 - **端口划分**：直连入站固定在 `8443`，CDN 回源与订阅共用 `443`。
 - **证书管理**：`cf` 与 `sub` 共用一张 15 年有效期的 Cloudflare Origin CA ECC 证书。
-- **单一订阅**：订阅下发「直连 1 个」+「Cloudflare 优选 6 个」，并在 Mihomo 中平铺进单一 `AUTO` 自动测速选优组。
+- **单一订阅**：订阅下发「直连 1 个」+「Cloudflare 优选 6 个」，并在 Mihomo 中平铺进单一 `AUTO` 自动测速选优组；聚合 JSON 的 `nodes` 会追加到同一订阅与 `AUTO`，标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。
 
 ---
 
@@ -61,8 +56,7 @@
 | 初始化（debian-init） | SSH 实际监听端口 | — | ICMP 回显（UFW 默认）与全部出站；UFW 默认入站拒绝 |
 | 1 直连 Reality | TCP 443 | TCP 8443（仅订阅模式非 `link` 时，Cloudflare 订阅回源） | 动态端口模式在 `PREROUTING` 注入 `10000:62703` → 实际入站端口（默认 443）NAT |
 | 2 Cloudflare CDN | — | TCP 443（Cloudflare 官方 IPv4 回源段） | 外网直连 443 被丢弃 |
-| 3 Bunny CDN | — | TCP 443（Bunny 官方回源 IPv4 池） | 白名单由 `easy_all-bunny-ips.timer` 持续刷新 |
-| 4 组合模式 | TCP 8443（Reality 直连） | TCP 443（Cloudflare 官方 IPv4 回源段） | 两入口共用同一套 UFW/Fail2ban 基线 |
+| 3 组合模式 | TCP 8443（Reality 直连） | TCP 443（Cloudflare 官方 IPv4 回源段） | 两入口共用同一套 UFW/Fail2ban 基线 |
 
 ### 2.2 回源白名单与防扫描
 - 在涉及 Cloudflare 的模式中，本地 Nginx 与防火墙严格限制：
@@ -85,7 +79,7 @@
   - 亦支持在 URL 参数中追加 `flag=clash` 或 `flag=base64` 强制指定下发格式。
 - **平台自适应（嗅探段）**：默认模板开启 `sniffer`。UA 命中 `iphone|ipad|ipod|ios`（`ios` 需独立单词，避免 `Studios`/`Radios` 之类 UA 被误判）或在 URL 追加 `os=ios` 时，
   下发单独渲染的 YAML（`mihomo-ios.yaml` / `mihomo-ios.port-template`），剔除以 `sniffer:` 开头的整段配置（兼顾 iOS 内存预算、防 APNs 推送干扰、私有协议首包延迟与 CDN 调度劣化）；
-  模板若把 `sniffer` 写成内联映射，安装与 Worker 构建会直接报错，不会静默下发未剔除的嗅探段。
+  模板若把 `sniffer` 写成内联映射，安装会直接报错，不会静默下发未剔除的嗅探段。
 
 ---
 
@@ -150,8 +144,7 @@ easy_all
 ├── profiles/
 │   ├── reality.sh               # 模式 1：直连 Reality 业务编排
 │   ├── xhttp-cloudflare-streamup.sh # 模式 2：Cloudflare CDN 业务编排
-│   ├── ws-bunny.sh              # 模式 3：Bunny CDN 业务编排
-│   └── combined.sh              # 模式 4：组合模式业务编排
+│   └── combined.sh              # 模式 3：组合模式业务编排
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
 │   ├── platform.sh              # 系统环境、Debian 探测与基础依赖
@@ -164,26 +157,18 @@ easy_all
 │   ├── globalping-cdn.sh        # Globalping 探针调用与三网优选
 │   ├── cf-dns.sh                # Cloudflare API 封装（DNS/Origin CA/Rules）
 │   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
-│   ├── bunny-api.py             # Bunny API 与 Cloudflare DNS-01/Pull Zone 调度
-│   ├── bunny-runtime.sh         # Bunny 模式专属运行时与回源白名单
-│   ├── lego-install.sh          # Lego Let's Encrypt 证书签发与安装
 │   ├── xhttp-runtime.sh         # XHTTP 运行时公共逻辑与证书挂载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
 │   ├── subscription-auth.sh     # 订阅凭据生成与校验
+│   ├── local-aggregation.sh     # 组合模式本地聚合节点校验与渲染
 │   ├── scheduled-maintenance.sh # 定时重启与维护任务
 │   ├── tcp-tuning.sh            # Skyline Speeder 与 Zabbly 6.12+ LTS 内核管理
 │   ├── xray-core.sh             # Xray 官方二进制下载与校验
-│   ├── worker-config.sh         # Cloudflare Worker 订阅聚合配置与发布
-│   ├── worker-backup.sh         # 独立 Worker 兜底节点配置与部署
 │   └── mihomo-template.sh       # Mihomo 订阅模板结构校验与渲染
-├── worker-src/                  # Cloudflare Worker 订阅聚合与兜底源码
-│   ├── index.js                 # 订阅聚合 Worker 源码
-│   └── backup.js                # 独立节点 Worker 源码
 ├── templates/                   # 内置 Mihomo 订阅配置模板
 │   ├── mihomo.yaml              # 默认 COMMON 精简规则模板
 │   ├── mihomo-common.yaml       # 完整 COMMON 规则模板
 │   └── mihomo-classic.yaml      # 经典 MRS 规则集模板
 └── scripts/                     # 辅助构建与系统初始化脚本
-    ├── build-worker.mjs         # Worker 打包编译脚本
     └── debian-init.sh           # 独立系统初始化加固工具（Debian 12/13、Ubuntu 22.04/24.04）
 ```

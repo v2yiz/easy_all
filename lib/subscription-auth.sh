@@ -6,7 +6,6 @@ normalize_subscription_mode() {
     case "$1" in
     deploy | local) printf 'deploy\n' ;;
     link | none) printf 'link\n' ;;
-    worker | aggregate | aggregation) printf 'worker\n' ;;
     *) return 1 ;;
     esac
 }
@@ -19,46 +18,21 @@ choose_subscription_mode() {
         if [[ -t 0 ]]; then
             current_mode=$(normalize_subscription_mode "${mode:-${default_mode}}") \
                 || die "当前订阅服务模式无效：${mode}"
-            if [[ "${SUBSCRIPTION_AGGREGATION_ENABLED:-0}" == "1" ]]; then
-                case "${current_mode}" in
-                link) default_choice=1 ;;
-                deploy) default_choice=2 ;;
-                worker) default_choice=3 ;;
-                esac
-                printf '请选择订阅输出方式：\n'
-                printf '  1. 不部署订阅，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-                printf '  2. 部署本机订阅服务（%s；只有当前服务器时推荐）\n' \
-                    "${deploy_description}"
-                printf '  3. 部署订阅聚合（%s）\n' \
-                    "${SUBSCRIPTION_AGGREGATION_DESCRIPTION:-Cloudflare Worker}"
-                read_bilingual \
-                    "请选择 [${default_choice}]（直接回车使用默认值）:" choice
-                case "${choice:-${default_choice}}" in
-                1) mode=link ;;
-                2) mode=deploy ;;
-                3) mode=worker ;;
-                *) die "订阅输出选项无效：${choice}" ;;
-                esac
-            else
-                [[ "${current_mode}" == "link" ]] && default_choice=2 || default_choice=1
-                printf '请选择是否部署订阅服务：\n'
-                printf '  1. 部署订阅服务（%s；只有当前服务器时推荐）\n' \
-                    "${deploy_description}"
-                printf '  2. 不部署，仅输出节点信息（多节点聚合或已有订阅服务器时推荐）\n'
-                read_bilingual \
-                    "请选择 [${default_choice}]（直接回车使用默认值）:" choice
-                case "${choice:-}" in
-                "") mode=${current_mode} ;;
-                1) mode=deploy ;;
-                2) mode=link ;;
-                deploy | link) mode=${choice} ;;
-                *) die "订阅输出选项无效：${choice}" ;;
-                esac
-            fi
+            [[ "${current_mode}" == "link" ]] && default_choice=2 || default_choice=1
+            printf '请选择是否部署订阅服务：\n'
+            printf '  1. 部署订阅服务（%s；只有当前服务器时推荐）\n' \
+                "${deploy_description}"
+            printf '  2. 不部署，仅输出节点信息（已有订阅服务器时推荐）\n'
+            read_bilingual \
+                "请选择 [${default_choice}]（直接回车使用默认值）:" choice
+            case "${choice:-}" in
+            "") mode=${current_mode} ;;
+            1) mode=deploy ;;
+            2) mode=link ;;
+            deploy | link) mode=${choice} ;;
+            *) die "订阅输出选项无效：${choice}" ;;
+            esac
         elif [[ -z "${mode}" ]]; then
-            if [[ "${SUBSCRIPTION_AGGREGATION_ENABLED:-0}" == "1" ]]; then
-                die "非交互模式必须设置 SUBSCRIPTION_MODE=link、SUBSCRIPTION_MODE=deploy 或 SUBSCRIPTION_MODE=worker"
-            fi
             die "非交互模式必须设置 SUBSCRIPTION_MODE=deploy 或 SUBSCRIPTION_MODE=link"
         fi
     fi
@@ -68,10 +42,6 @@ choose_subscription_mode() {
 
 subscription_enabled() {
     [[ "${SUBSCRIPTION_MODE:-deploy}" != "link" ]]
-}
-
-worker_subscription_enabled() {
-    [[ "${SUBSCRIPTION_MODE:-}" == "worker" ]]
 }
 
 choose_subscription_download_name() {
@@ -159,13 +129,12 @@ write_subscription_token_map() {
 
 render_mihomo_subscription() {
     local template=$1 node_file=$2 destination=$3 node_name=$4
-    local group_file=${5:-} name_file=${6:-} worker_rule_file=${7:-}
+    local group_file=${5:-} name_file=${6:-}
     local encoded_node_name
     encoded_node_name=$(jq -Rn --arg value "${node_name}" '$value')
     EASY_ALL_NODE_NAME="${encoded_node_name}" \
     awk -v node_file="${node_file}" \
-        -v group_file="${group_file}" -v name_file="${name_file}" \
-        -v worker_rule_file="${worker_rule_file}" '
+        -v group_file="${group_file}" -v name_file="${name_file}" '
         $0 == "# EASY_ALL_PROXY_NODE" {
             while ((getline line < node_file) > 0) print line
             close(node_file)
@@ -184,13 +153,6 @@ render_mihomo_subscription() {
                 close(name_file)
             } else {
                 print "        - " ENVIRON["EASY_ALL_NODE_NAME"]
-            }
-            next
-        }
-        $0 == "# EASY_ALL_WORKER_RULE" {
-            if (worker_rule_file != "") {
-                while ((getline line < worker_rule_file) > 0) print line
-                close(worker_rule_file)
             }
             next
         }
@@ -216,6 +178,7 @@ strip_mihomo_sniffer() {
 }
 
 write_subscription_nginx_maps() {
+    local optional_variants=${1:-0}
     subscription_enabled || return 0
     cat <<'EOF'
 map $arg_token $easy_all_subscription_allowed {
@@ -270,13 +233,37 @@ map "$easy_all_subscription_param_ios:$easy_all_subscription_ua_ios" $easy_all_s
     ~*1     1;
 }
 
+EOF
+    if [[ "${optional_variants}" == "1" ]]; then
+        cat <<'EOF'
+
+# node=all 时才下发带 optional 标记的聚合节点。
+map $arg_node $easy_all_subscription_show_all {
+    default 0;
+    all     1;
+}
+
+map "$easy_all_subscription_format:$easy_all_subscription_is_ios:$easy_all_subscription_show_all" $easy_all_subscription_uri {
+    "mihomo:1:1" /_easy_all_subscription/mihomo_ios_all;
+    "mihomo:1:0" /_easy_all_subscription/mihomo_ios;
+    "mihomo:0:1" /_easy_all_subscription/mihomo_all;
+    "mihomo:0:0" /_easy_all_subscription/mihomo;
+    # base64 没有 iOS 变体，iOS 与否都落到同一份文件；漏掉 base64:1:1 会让 iOS 客户端
+    # （Shadowrocket 等）即使带 &node=all 也被 default 降级到不含 optional 节点的文件。
+    "base64:0:1" /_easy_all_subscription/base64_all;
+    "base64:1:1" /_easy_all_subscription/base64_all;
+    default      /_easy_all_subscription/base64;
+}
+EOF
+    else
+        cat <<'EOF'
 map "$easy_all_subscription_format:$easy_all_subscription_is_ios" $easy_all_subscription_uri {
     "mihomo:1" /_easy_all_subscription/mihomo_ios;
     "mihomo:0" /_easy_all_subscription/mihomo;
     default    /_easy_all_subscription/base64;
 }
-
 EOF
+    fi
 }
 
 publish_subscription_files() {
@@ -314,28 +301,19 @@ publish_subscription_files() {
 
 write_subscription_nginx_locations() {
     local origin_header_secret=${1:-}
-    local worker_source_secret=${2:-}
-    local renderer=${3:-static} error_log="" base64_content="" mihomo_content=""
+    local renderer=${2:-static}
+    local optional_variants=${3:-0}
+    local error_log="" base64_content="" mihomo_content=""
+    local suffix suffix_alias base64_alias mihomo_alias mihomo_ios_alias
+    local origin_guard
     case "${renderer}" in static | reality) ;; *) die "订阅渲染类型无效" ;; esac
-    local base64_alias="${SUBSCRIPTION_BASE64_FILE}"
-    local mihomo_alias="${SUBSCRIPTION_MIHOMO_FILE}"
-    local mihomo_ios_alias="${SUBSCRIPTION_MIHOMO_IOS_FILE:-${SUBSCRIPTION_DIR}/mihomo-ios.yaml}"
-    local origin_guard=""
-    local worker_guard=""
     subscription_enabled || return 0
     if [[ -n "${origin_header_secret}" ]]; then
         [[ "${origin_header_secret}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
             || die "订阅源站保护密钥格式无效"
         origin_guard="        if (\$http_x_easy_all_origin_key != \"${origin_header_secret}\") { return 404; }"
-    fi
-    if worker_subscription_enabled && [[ -z "${worker_source_secret}" ]]; then
-        # The private source must never be reachable with only a public Token.
-        die "Worker 聚合模式必须为私有节点源设置 X-Easy-All-Worker-Source 密钥"
-    fi
-    if [[ -n "${worker_source_secret}" ]]; then
-        [[ "${worker_source_secret}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
-            || die "Worker 订阅源密钥格式无效"
-        worker_guard="        if (\$http_x_easy_all_worker_source != \"${worker_source_secret}\") { return 404; }"
+    else
+        origin_guard=""
     fi
     if [[ "${renderer}" == "reality" ]]; then
         [[ "${SUB_PORT_MODE:-}" == "dynamic" || "${SUB_PORT_MODE:-}" == "443" ]] \
@@ -346,11 +324,10 @@ write_subscription_nginx_locations() {
         mihomo_content="        set \$easy_all_reality_port_mode ${SUB_PORT_MODE};
         js_content easy_all_reality_subscription.mihomo;"
     fi
-    cat <<'EOF'
+    cat <<EOF
     location = /subscribe {
 EOF
     [[ -z "${origin_guard}" ]] || printf '%s\n' "${origin_guard}"
-    [[ -z "${worker_guard}" ]] || printf '%s\n' "${worker_guard}"
     cat <<EOF
         access_log off;
 ${error_log}
@@ -359,7 +336,22 @@ ${error_log}
         rewrite ^ \$easy_all_subscription_uri last;
     }
 
-    location = /_easy_all_subscription/base64 {
+EOF
+    for suffix in "" "-all"; do
+        if [[ "${suffix}" == "-all" ]]; then
+            [[ "${optional_variants}" == "1" ]] || continue
+            suffix_alias="_all"
+            base64_alias=${SUBSCRIPTION_BASE64_ALL_FILE}
+            mihomo_alias=${SUBSCRIPTION_MIHOMO_ALL_FILE}
+            mihomo_ios_alias=${SUBSCRIPTION_MIHOMO_IOS_ALL_FILE}
+        else
+            suffix_alias=""
+            base64_alias=${SUBSCRIPTION_BASE64_FILE}
+            mihomo_alias=${SUBSCRIPTION_MIHOMO_FILE}
+            mihomo_ios_alias=${SUBSCRIPTION_MIHOMO_IOS_FILE:-${SUBSCRIPTION_DIR}/mihomo-ios.yaml}
+        fi
+        cat <<EOF
+    location = /_easy_all_subscription/base64${suffix_alias} {
         internal;
         access_log off;
 ${error_log}
@@ -374,7 +366,7 @@ ${base64_content}
         add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
     }
 
-    location = /_easy_all_subscription/mihomo {
+    location = /_easy_all_subscription/mihomo${suffix_alias} {
         internal;
         access_log off;
 ${error_log}
@@ -389,7 +381,7 @@ ${mihomo_content}
         add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
     }
 
-    location = /_easy_all_subscription/mihomo_ios {
+    location = /_easy_all_subscription/mihomo_ios${suffix_alias} {
         internal;
         access_log off;
 ${error_log}
@@ -405,6 +397,7 @@ ${mihomo_content}
     }
 
 EOF
+    done
 }
 
 validate_subscription_token_rejection() {

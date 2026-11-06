@@ -759,7 +759,7 @@ load_state
 
 # 12) 首次安装路径（不经过 load_state）必须能从 OWNER_TOKEN 派生出 Token 字典
 token_map=$(
-    unset ALLOWED_TOKENS
+    unset ALLOWED_TOKENS SUBSCRIPTION_CONFIG
     OWNER_TOKEN="tok-first-install-123"
     combined_sync_allowed_tokens
     write_subscription_token_map
@@ -797,7 +797,8 @@ merged_block=$(map_block 'map $easy_all_subscription_forced_format $easy_all_sub
 param_ios_block=$(map_block 'map $arg_os $easy_all_subscription_param_ios {')
 ua_ios_block=$(map_block 'map $http_user_agent $easy_all_subscription_ua_ios {')
 is_ios_block=$(map_block 'map "$easy_all_subscription_param_ios:$easy_all_subscription_ua_ios" $easy_all_subscription_is_ios {')
-format_block=$(map_block 'map "$easy_all_subscription_format:$easy_all_subscription_is_ios" $easy_all_subscription_uri {')
+show_all_block=$(map_block 'map $arg_node $easy_all_subscription_show_all {')
+format_block=$(map_block 'map "$easy_all_subscription_format:$easy_all_subscription_is_ios:$easy_all_subscription_show_all" $easy_all_subscription_uri {')
 
 assert_block_line() {
     local label=$1 block=$2 expected=$3
@@ -829,14 +830,25 @@ assert_block_line "os-negotiation: is_ios default 0" \
     "${is_ios_block}" '    default 0;'
 assert_contains "os-negotiation: is_ios matches when either hits 1" \
     "${is_ios_block}" '~*1     1;'
+assert_block_line "ua-negotiation: node=all defaults to 0" \
+    "${show_all_block}" '    default 0;'
+assert_block_line "ua-negotiation: node=all enables optional nodes" \
+    "${show_all_block}" '    all     1;'
 assert_block_line "ua-negotiation: format map default routes to base64 file" \
-    "${format_block}" '    default    /_easy_all_subscription/base64;'
+    "${format_block}" '    default      /_easy_all_subscription/base64;'
 assert_block_line "ua-negotiation: mihomo format routes non-ios to standard yaml file" \
-    "${format_block}" '    "mihomo:0" /_easy_all_subscription/mihomo;'
+    "${format_block}" '    "mihomo:0:0" /_easy_all_subscription/mihomo;'
 assert_block_line "ua-negotiation: mihomo format routes ios to ios yaml file" \
-    "${format_block}" '    "mihomo:1" /_easy_all_subscription/mihomo_ios;'
+    "${format_block}" '    "mihomo:1:0" /_easy_all_subscription/mihomo_ios;'
+assert_block_line "ua-negotiation: node=all routes base64 to the all file" \
+    "${format_block}" '    "base64:0:1" /_easy_all_subscription/base64_all;'
+# base64 没有 iOS 变体，iOS 客户端（Shadowrocket 或 &os=ios）同样要拿到 optional 节点
+assert_block_line "ua-negotiation: node=all routes base64 iOS to the all file" \
+    "${format_block}" '    "base64:1:1" /_easy_all_subscription/base64_all;'
 assert_contains "nginx-conf: has mihomo location" "${nginx_text}" "location = /_easy_all_subscription/mihomo {"
 assert_contains "nginx-conf: has mihomo_ios location" "${nginx_text}" "location = /_easy_all_subscription/mihomo_ios {"
+assert_contains "nginx-conf: has base64_all location" "${nginx_text}" "location = /_easy_all_subscription/base64_all {"
+assert_contains "nginx-conf: has mihomo_all location" "${nginx_text}" "location = /_easy_all_subscription/mihomo_all {"
 
 # 15) 自定义订阅 Token 可选输入：合法值被采纳，非法值被拒绝（且不改动当前 Token）
 (
@@ -857,32 +869,37 @@ assert_contains "nginx-conf: has mihomo_ios location" "${nginx_text}" "location 
 install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
 assert_contains "domain-input: prompts for zone" "${install_inputs_body}" "Cloudflare 根 Zone"
 assert_contains "domain-input: prompts for direct domain" "${install_inputs_body}" "直连节点域名"
+assert_contains "subscription-input: install asks for the unified JSON" \
+    "${install_inputs_body}" "choose_subscription_config"
 
 # 17) 安装阶段 Token 校验：非法值必须在改动云端资源前就被拒绝
 bad_install=$(
+    unset SUBSCRIPTION_CONFIG
     ALLOWED_TOKENS=""
     OWNER_TOKEN="short"
     combined_validate_install_owner_token 2>&1
 ) || true
 assert_contains "token-validate: short env token rejected before install" \
-    "${bad_install}" "订阅 Token 无效"
+    "${bad_install}" "订阅配置无效"
 assert_not_contains "token-validate: rejection mentions auto-generate fallback" \
     "${bad_install}" "unbound variable"
 # 安装入口必须真的调用该校验
 assert_contains "token-validate: install inputs call the validator" \
     "${install_inputs_body}" "combined_validate_install_owner_token"
 (
+    unset SUBSCRIPTION_CONFIG
     ALLOWED_TOKENS=""
     OWNER_TOKEN="custom-token-2026"
     combined_validate_install_owner_token \
         || fail_test "token-validate: valid env token must pass"
 )
 bad_chars=$(
+    unset SUBSCRIPTION_CONFIG
     ALLOWED_TOKENS=""
     OWNER_TOKEN='bad;token"x'
     combined_validate_install_owner_token 2>&1
 ) || true
-assert_contains "token-validate: unsafe characters rejected" "${bad_chars}" "订阅 Token 无效"
+assert_contains "token-validate: unsafe characters rejected" "${bad_chars}" "订阅配置无效"
 
 # 18) edit-sub 入口同时接受纯字符串与单用户 JSON，多用户字典必须明确拒绝
 plain_out=$(
@@ -915,6 +932,7 @@ assert_equal "token-input: OWNER_TOKEN follows the first dictionary entry" \
 
 # 19) 历史状态里的非法 Token：load_state 只告警（否则 edit-sub / uninstall 都进不去），写配置前才强校验
 bad_state=$(
+    unset SUBSCRIPTION_CONFIG
     OWNER_TOKEN="short"
     ALLOWED_TOKENS=""
     save_state
@@ -922,19 +940,21 @@ bad_state=$(
     printf 'load_rc=%s' "$?"
 ) || true
 assert_contains "token-validate: invalid state token warns on load" \
-    "${bad_state}" "状态文件中的订阅 Token 不符合"
+    "${bad_state}" "状态文件中的订阅配置无效"
 assert_contains "token-validate: load_state still succeeds for recovery" \
     "${bad_state}" "load_rc=0"
 blocked_write=$(
+    unset SUBSCRIPTION_CONFIG
     OWNER_TOKEN="short"
     ALLOWED_TOKENS=""
     write_nginx_config 2>&1
 ) || true
 assert_contains "token-validate: writing nginx config rejects invalid token" \
-    "${blocked_write}" "订阅 Token 无效"
+    "${blocked_write}" "订阅配置无效"
 
 # 20) 恢复闭环：非法旧状态能通过 edit-sub 的路径换成合法 Token 并成功落盘
 recovered=$(
+    unset SUBSCRIPTION_CONFIG
     OWNER_TOKEN="short"
     ALLOWED_TOKENS=""
     save_state
@@ -951,6 +971,7 @@ assert_equal "token-recovery: invalid old state fixed through edit-sub path" \
 
 # 21) 直接写订阅或状态的入口（定时刷新 / 续签 / 改 Reality 目标）在非法旧 Token 下也必须早退
 (
+    unset SUBSCRIPTION_CONFIG
     OWNER_TOKEN="short"
     ALLOWED_TOKENS=""
     save_state
@@ -961,14 +982,14 @@ for entry in refresh_combined_cdn_ips renew_certificate; do
         "${entry}" 2>&1
     ) || true
     assert_contains "token-validate: ${entry} rejects invalid state token" \
-        "${entry_out}" "订阅 Token 无效"
+        "${entry_out}" "订阅配置无效"
 done
 reality_out=$(
     load_state >/dev/null 2>&1
     update_reality_target "example.com:443" 2>&1
 ) || true
 assert_contains "token-validate: update_reality_target rejects invalid state token" \
-    "${reality_out}" "订阅 Token 无效"
+    "${reality_out}" "订阅配置无效"
 # 恢复合法状态，避免影响后续用例
 (
     OWNER_TOKEN="restored-token-4821"
@@ -1431,6 +1452,161 @@ for leftover in xray.service nginx.conf bin/easy_all state web lib xray; do
     [[ ! -e "${rollback_root}/${leftover}" ]] \
         || fail_test "rollback: cleanup_partial_install must remove ${leftover}"
 done
+
+# 35) 统一订阅配置：allowedTokens + nodes（vless reality / vless xhttp / mieru）
+agg_config='{"allowedTokens":{"owner":"agg-owner-token-1","user2":"agg-user-token-2"},"nodes":[
+  {"type":"vless","security":"reality","network":"tcp","name":"聚合-Reality","host":"r.example.com","port":8443,"uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","fp":"chrome"},
+  {"type":"vless","security":"tls","network":"xhttp","name":"聚合-XHTTP","host":"x.example.com","port":443,"uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/agg-path/","mode":"stream-up"},
+  {"type":"mieru","name":"聚合-Mieru","host":"m.example.com","portRange":"50000-50512","username":"agguser","password":"agg-password-12345","transport":"TCP","multiplexing":"MULTIPLEXING_LOW","optional":true}
+]}'
+combined_apply_subscription_config "${agg_config}" \
+    || fail_test "aggregation: valid config rejected"
+assert_equal "aggregation: token dictionary applied" "2" "$(jq 'length' <<<"${ALLOWED_TOKENS}")"
+assert_equal "aggregation: nodes parsed" "3" "$(jq 'length' <<<"${AGGREGATION_NODES}")"
+assert_equal "aggregation: owner follows first token" 'agg-owner-token-1' "${OWNER_TOKEN}"
+# 仓库内示例模板必须能直接通过校验
+combined_apply_subscription_config "$(jq -c . "${ROOT_DIR}/templates/aggregation.example.json")" \
+    || fail_test "aggregation: bundled example template must validate"
+combined_apply_subscription_config "${agg_config}" \
+    || fail_test "aggregation: restore test config"
+
+# 聚合节点的 udp 开关必须贯穿到产物：udp:false 时不得再注入 xudp 封装参数
+combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"聚合-无UDP","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","udp":false}]}' \
+    || fail_test "aggregation: udp:false reality node rejected"
+udp_off_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
+assert_not_contains "aggregation: udp:false link drops packetEncoding" \
+    "${udp_off_links}" "packetEncoding=xudp"
+udp_off_mihomo=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_mihomo_nodes)
+assert_contains "aggregation: udp:false mihomo keeps udp: false" "${udp_off_mihomo}" "udp: false"
+assert_not_contains "aggregation: udp:false mihomo drops packet-encoding" \
+    "${udp_off_mihomo}" "packet-encoding: xudp"
+combined_apply_subscription_config "${agg_config}" \
+    || fail_test "aggregation: restore test config"
+udp_on_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
+assert_contains "aggregation: default reality link keeps packetEncoding" \
+    "${udp_on_links}" "packetEncoding=xudp"
+
+# 显式 false 的布尔字段不得被 jq 的 // 当成"缺失"而回退成 true
+combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"聚合-旧核心","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","supportX25519Mlkem768":false}]}' \
+    || fail_test "aggregation: supportX25519Mlkem768:false rejected"
+assert_contains "aggregation: explicit false disables mlkem in the link" \
+    "$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)" "mlkem=0"
+combined_apply_subscription_config "${agg_config}" \
+    || fail_test "aggregation: restore test config"
+
+# 校验报错必须点名白名单里的真实字段名，否则用户按提示改反而触发「包含不支持的字段」
+bad_method_out=$(
+    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"聚合-坏方法","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpUplinkHttpMethod":"PUT"}]}' 2>&1
+) || true
+assert_contains "aggregation: bad uplink method names the real field" \
+    "${bad_method_out}" "xhttpUplinkHttpMethod"
+bad_grpc_out=$(
+    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"聚合-坏头","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpNoGrpcHeader":"yes"}]}' 2>&1
+) || true
+assert_contains "aggregation: bad noGRPCHeader names the real field" \
+    "${bad_grpc_out}" "xhttpNoGrpcHeader"
+# 规范化结果必须可再次通过校验（状态回读 / edit-sub 默认值都会再次走一遍）
+combined_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
+    || fail_test "aggregation: normalized config must be re-valid"
+
+for invalid in \
+    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[],"fallbackCdnNodes":[]}' \
+    '{"allowedTokens":{"owner":"agg-owner-token-1"},"vpsSubUrl":"https://x"}' \
+    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"trojan","name":"t","host":"t.example.com","password":"abcdefgh"}]}' \
+    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"bad-sid","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"abc"}]}' \
+    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"AUTO","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}' \
+    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"},{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}'; do
+    if combined_apply_subscription_config "${invalid}" >/dev/null 2>&1; then
+        fail_test "aggregation: invalid config accepted: ${invalid}"
+    fi
+done
+# 失败不得破坏上一份有效配置
+assert_equal "aggregation: rejected config keeps previous nodes" "3" \
+    "$(jq 'length' <<<"${AGGREGATION_NODES}")"
+
+combined_cf_candidates() { printf '198.51.100.1\t1\n'; }
+links_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_node_links)
+links_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_node_links)
+assert_contains "aggregation: default links include reality node" \
+    "${links_default}" "r.example.com"
+assert_contains "aggregation: default links include xhttp node" \
+    "${links_default}" "x.example.com"
+assert_not_contains "aggregation: default links hide optional mieru node" \
+    "${links_default}" "m.example.com"
+assert_contains "aggregation: node=all links include optional mieru node" \
+    "${links_all}" "m.example.com"
+assert_contains "aggregation: mieru link uses mierus scheme" "${links_all}" "mierus://"
+
+mihomo_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_nodes)
+mihomo_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_nodes)
+assert_contains "aggregation: mihomo default includes reality block" \
+    "${mihomo_default}" "servername: \"www.example.com\""
+assert_contains "aggregation: mihomo default includes xhttp block" \
+    "${mihomo_default}" "path: \"/agg-path/\""
+assert_not_contains "aggregation: mihomo default hides optional mieru" \
+    "${mihomo_default}" "type: mieru"
+assert_contains "aggregation: mihomo node=all includes mieru" "${mihomo_all}" "type: mieru"
+
+# xhttp 聚合节点的 host 可以是 CDN 优选 IP（连接地址），HTTP Host 头必须跟 sni（回源域名）一致，
+# 否则请求到边缘会被当成直连 IP 访问拒掉（403 Direct IP Access Denied）。
+combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"聚合-优选IP","host":"198.51.100.7","uuid":"33333333-3333-4333-8333-333333333333","sni":"cf.example.com","path":"/agg-ip/","mode":"stream-up"}]}' \
+    || fail_test "aggregation: xhttp node with preferred-IP host must validate"
+ip_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
+assert_contains "aggregation: xhttp link keeps the IP as server address" \
+    "${ip_links}" "@198.51.100.7:443?"
+assert_contains "aggregation: xhttp Host header follows sni" \
+    "${ip_links}" "host=cf.example.com"
+assert_not_contains "aggregation: xhttp Host header is never the IP" \
+    "${ip_links}" "host=198.51.100.7"
+ip_mihomo=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_mihomo_nodes)
+assert_contains "aggregation: mihomo xhttp server stays the IP" \
+    "${ip_mihomo}" 'server: "198.51.100.7"'
+assert_contains "aggregation: mihomo xhttp host stays the sni" \
+    "${ip_mihomo}" 'host: "cf.example.com"'
+combined_apply_subscription_config "${agg_config}" \
+    || fail_test "aggregation: restore test config"
+
+names_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 collect_node_names)
+names_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 collect_node_names)
+assert_contains "aggregation: AUTO gets non-optional nodes" "${names_default}" "聚合-XHTTP"
+assert_not_contains "aggregation: AUTO hides optional nodes by default" \
+    "${names_default}" "聚合-Mieru"
+assert_contains "aggregation: node=all AUTO includes optional nodes" \
+    "${names_all}" "聚合-Mieru"
+groups_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_groups)
+groups_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_proxy_groups)
+assert_contains "aggregation: AUTO group lists non-optional nodes" \
+    "${groups_default}" "聚合-XHTTP"
+assert_not_contains "aggregation: AUTO group hides optional nodes by default" \
+    "${groups_default}" "聚合-Mieru"
+assert_contains "aggregation: node=all AUTO group lists optional nodes" \
+    "${groups_all}" "聚合-Mieru"
+aggregation_roundtrip=$(
+    combined_apply_subscription_config "${agg_config}" >/dev/null 2>&1
+    save_state
+    load_state >/dev/null 2>&1
+    jq -r 'length' <<<"${AGGREGATION_NODES}"
+)
+assert_equal "aggregation: config survives state roundtrip" "3" "${aggregation_roundtrip}"
+
+# 双份订阅产物：默认版与 node=all 版
+(
+    export SUBSCRIPTION_OPTIONAL_VARIANTS=1
+    write_subscriptions
+) || fail_test "aggregation: write_subscriptions must produce both variants"
+for artifact in base64.txt base64-all.txt mihomo.yaml mihomo-all.yaml mihomo-ios.yaml mihomo-ios-all.yaml; do
+    [[ -s "${SUBSCRIPTION_DIR}/${artifact}" ]] \
+        || fail_test "aggregation: missing subscription artifact ${artifact}"
+done
+default_b64=$(openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64.txt" || true)
+all_b64=$(openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64-all.txt" || true)
+assert_not_contains "aggregation: default base64 hides optional node" \
+    "${default_b64}" "m.example.com"
+assert_contains "aggregation: node=all base64 includes optional node" \
+    "${all_b64}" "m.example.com"
+assert_contains "aggregation: mihomo-all carries AUTO with optional node" \
+    "$(<"${SUBSCRIPTION_DIR}/mihomo-all.yaml")" "聚合-Mieru"
+
 
 printf 'ok - combined render\n'
 

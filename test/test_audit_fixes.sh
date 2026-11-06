@@ -291,7 +291,7 @@ echo "=== 7. 验证 Swap 自动创建与 sudo vim 依赖安装 ==="
 package_list_of() {
     awk '/local pkgs=\(/{flag=1; next} flag && /^[[:space:]]*\)/{exit} flag' "$1"
 }
-for script in lib/xhttp-runtime.sh profiles/reality.sh profiles/ws-bunny.sh; do
+for script in lib/xhttp-runtime.sh profiles/reality.sh; do
     pkg_text=$(package_list_of "${ROOT_DIR}/${script}")
     assert_contains "${script} pkgs contain sudo" "${pkg_text}" "sudo"
     assert_contains "${script} pkgs contain vim" "${pkg_text}" "vim"
@@ -402,7 +402,7 @@ fi
         "$(declare -f)" "uninstall_tcp_acceleration"
     assert_not_contains "no restore_tcp_runtime symbol" \
         "$(declare -f)" "restore_tcp_runtime"
-    for script in lib/bunny-runtime.sh lib/xhttp-runtime.sh profiles/reality.sh \
+    for script in lib/xhttp-runtime.sh profiles/reality.sh \
         profiles/combined.sh profiles/xhttp-cloudflare-streamup.sh; do
         assert_not_contains "${script} does not tear down TCP acceleration" \
             "$(<"${ROOT_DIR}/${script}")" "uninstall_tcp_acceleration"
@@ -502,12 +502,6 @@ restore_preinstall_ipv6
 assert_contains "sysctl called with stripped key and value" \
     "$(<"${RESTORE_SYSCTL_LOG}")" "-w net.ipv6.conf.all.disable_ipv6=1"
 
-# 8.10 验证 Bunny 卸载恢复 IPv6，且不再拆除 TCP 前置初始化（P2/P3）
-assert_contains "bunny_remove_local calls restore_preinstall_ipv6" \
-    "$(<"${ROOT_DIR}/lib/bunny-runtime.sh")" "restore_preinstall_ipv6"
-assert_not_contains "bunny_remove_local keeps TCP acceleration" \
-    "$(<"${ROOT_DIR}/lib/bunny-runtime.sh")" "uninstall_tcp_acceleration"
-
 # 8.11 验证 arm64 Xray 架构适配与 Profile 写死常量清理（P1）
 assert_not_contains "reality has no hardcoded XRAY_ARCHIVE" \
     "$(<"${ROOT_DIR}/profiles/reality.sh")" "readonly XRAY_ARCHIVE"
@@ -604,10 +598,6 @@ assert_contains "xhttp apply_easy_all has configure_ipv4_only" \
 reality_script=$(<"${ROOT_DIR}/profiles/reality.sh")
 assert_contains "reality apply_easy_all has configure_ipv4_only" \
     "${reality_script}" $'configure_tcp_acceleration\n    configure_ipv4_only'
-
-bunny_script=$(<"${ROOT_DIR}/profiles/ws-bunny.sh")
-assert_contains "bunny apply_easy_all has configure_ipv4_only" \
-    "${bunny_script}" $'apply_cloud_resources\n    configure_ipv4_only'
 
 # 8.14 验证 Xray 服务单元注入内存积极归还环境变量 (GOMEMLIMIT / madvdontneed)
 (
@@ -733,91 +723,6 @@ assert_not_contains "TCP tuning no longer sets a congestion control" "${tuning_c
     ((reattach_rc != 0)) || fail "Skyline 重新启用失败时 configure_tcp_acceleration 必须返回非零"
     assert_contains "reattach failure is reported" "${reattach_out}" "重新启用失败"
 )
-
-
-echo "=== 9. Bunny 模式输入边界校验（Token / 路径 / UUID 直写 state.env 与 Nginx） ==="
-BUNNY_PROBE="${TMP_DIR}/bunny-input-probe.sh"
-cat >"${BUNNY_PROBE}" <<'PROBE'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-ROOT=$1
-TMP=$2
-# ws-bunny 会对所有常量做 readonly：同名函数只填充尚未预设的变量，保留测试的隔离路径。
-readonly() {
-    local arg name val
-    for arg in "$@"; do
-        [[ "${arg}" == -* ]] && continue
-        if [[ "${arg}" == *=* ]]; then
-            name=${arg%%=*}
-            val=${arg#*=}
-            if [[ -z "${!name+x}" ]]; then
-                printf -v "${name}" '%s' "${val}"
-            fi
-        fi
-    done
-}
-# macOS 的 mktemp 忽略 TMPDIR；限制环境可能不可写默认临时目录。
-mktemp() {
-    if [[ $# -eq 1 && "$1" == "-d" ]]; then
-        command mktemp -d "${TMP}/runtime.XXXXXX"
-        return
-    fi
-    command mktemp "$@"
-}
-export EASY_ALL_RUNTIME_LIB_DIR="${ROOT}/lib"
-export STATE_DIR="${TMP}/state" BACKUP_DIR="${TMP}/state/backups" STATE_FILE="${TMP}/state/state.env"
-export BUNNY_RECOVERY_DIR="${TMP}/bunny" BUNNY_KEY_FILE="${TMP}/bunny/key" \
-    BUNNY_CLOUDFLARE_TOKEN_FILE="${TMP}/bunny/cf.token" BUNNY_CONFIG="${TMP}/bunny/config.json"
-export CERT_DIR="${TMP}/certs" WEB_ROOT="${TMP}/web" SUBSCRIPTION_DIR="${TMP}/web/subscriptions" \
-    COMMAND_PATH="${TMP}/bin/easy_all" XRAY_DIR="${TMP}/xray" \
-    NGINX_CONFIG="${TMP}/nginx/easy_all.conf" UFW_BEFORE_RULES="${TMP}/ufw/before.rules" \
-    LEGO_DIR="${TMP}/acme" LEGO_BIN="${TMP}/acme/lego" BUNNY_EDGE_IP_FILE="${TMP}/bunny-edge-ips"
-export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP}/policy"
-export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP}/lock"
-install -d -m 0700 "${TMP}/bunny"
-printf '%s\n' '{"zone":"example.com","origin":"origin.example.com","cdn":"cdn.example.com","ipv4":"198.51.100.10","name":"easyallabc123","secret":"0123456789abcdef","bandwidth_gb":500}' \
-    >"${TMP}/bunny/config.json"
-printf 'key\n' >"${TMP}/bunny/key"
-printf 'token\n' >"${TMP}/bunny/cf.token"
-# shellcheck source=/dev/null
-source "${ROOT}/profiles/ws-bunny.sh"
-bunny_collect_inputs
-printf 'collected uuid=%s owner=%s path=%s\n' "${VLESS_UUID}" "${OWNER_TOKEN}" "${WEBSOCKET_PATH}"
-PROBE
-chmod +x "${BUNNY_PROBE}"
-
-BUNNY_UUID="11111111-2222-4111-8111-111111111111"
-probe_bunny() {
-    local owner=$1 path=$2 uuid=$3 output probe_status=0
-    rm -rf -- "${TMP_DIR}/bunny-probe"
-    output=$(VPS_IP=198.51.100.10 OWNER_TOKEN="${owner}" WEBSOCKET_PATH="${path}" \
-        VLESS_UUID="${uuid}" bash "${BUNNY_PROBE}" "${ROOT_DIR}" "${TMP_DIR}/bunny-probe" 2>&1) \
-        || probe_status=$?
-    printf '%s' "${output}"
-    return "${probe_status}"
-}
-
-bunny_ok_out=$(probe_bunny 'abcdefgh12345678' '/ws-abc123' "${BUNNY_UUID}") \
-    || fail "bunny install must accept valid token/path/UUID"
-assert_contains "bunny probe collects identity" "${bunny_ok_out}" "collected uuid=${BUNNY_UUID}"
-
-bad_token_rc=0
-bad_token_out=$(probe_bunny 'bad"tokenvalue' '/ws-abc123' "${BUNNY_UUID}") || bad_token_rc=$?
-((bad_token_rc != 0)) || fail "bunny install must reject a token that would break state.env or the Nginx map"
-assert_contains "short token is rejected" "$(probe_bunny 'short' '/ws-abc123' "${BUNNY_UUID}" || true)" \
-    "订阅 Token 无效"
-
-bad_path_rc=0
-bad_path_out=$(probe_bunny 'abcdefgh12345678' '/ws bad' "${BUNNY_UUID}") || bad_path_rc=$?
-((bad_path_rc != 0)) || fail "bunny install must reject a websocket path with blanks"
-assert_contains "blank websocket path is rejected" "${bad_path_out}" "WEBSOCKET_PATH 无效"
-assert_contains "non-absolute websocket path is rejected" \
-    "$(probe_bunny 'abcdefgh12345678' 'no-slash' "${BUNNY_UUID}" || true)" "WEBSOCKET_PATH 无效"
-
-bad_uuid_rc=0
-bad_uuid_out=$(probe_bunny 'abcdefgh12345678' '/ws-abc123' 'not-a-uuid') || bad_uuid_rc=$?
-((bad_uuid_rc != 0)) || fail "bunny install must reject an invalid VLESS UUID"
-assert_contains "invalid UUID is rejected" "${bad_uuid_out}" "VLESS_UUID 无效"
 
 
 echo "=== 10. Reality 动态端口 NAT 目标必须等于 inbound 实监端口（不写死 443） ==="
@@ -971,24 +876,21 @@ if ( export PATH="${ufw_dir}:${PATH}"; ufw_ssh_port_has_unmanaged_block 2222 ); 
     fail "按来源的 DENY 不得被当作 SSH 全局阻断"
 fi
 
-# 11.3 卸载保留 Fail2ban 配置，并把旧版运行时目录里的 helper 迁移到系统路径
+# 11.3 卸载保留 Fail2ban 配置与运行状态，不回收常驻安全基线
 f2b_dir="${TMP_DIR}/f2b"
 install -d -m 0700 "${f2b_dir}/jail.d" "${f2b_dir}/action.d" "${f2b_dir}/sbin" \
-    "${f2b_dir}/runtime" "${f2b_dir}/backups" "${f2b_dir}/bin" "${f2b_dir}/ssh"
+    "${f2b_dir}/backups" "${f2b_dir}/bin" "${f2b_dir}/ssh"
 export EASY_ALL_FAIL2BAN_CONFIG="${f2b_dir}/jail.d/99-easy-all-sshd.local"
 export EASY_ALL_FAIL2BAN_ACTION_CONFIG="${f2b_dir}/action.d/easy-all-ufw-cidr.conf"
 export EASY_ALL_FAIL2BAN_CIDR_HELPER="${f2b_dir}/sbin/fail2ban-ufw-cidr.sh"
-export EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${f2b_dir}/runtime/fail2ban-ufw-cidr.sh"
 export EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${f2b_dir}/state"
 export EASY_ALL_SSH_PORT_CONFIG="${f2b_dir}/ssh/00-easy-all-ports.conf"
 export BACKUP_DIR="${f2b_dir}/backups"
 printf 'MANAGED-JAIL\n' >"${EASY_ALL_FAIL2BAN_CONFIG}"
 printf 'PREINSTALL-JAIL\n' >"${BACKUP_DIR}/pre-install-fail2ban-jail.conf"
-printf 'legacy-helper\n' >"${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
-chmod 0755 "${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
-printf '[Definition]\nactionban = %s ban <ip> %s\n' \
-    "${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}" "${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR}" \
-    >"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
+printf 'managed-helper\n' >"${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
+chmod 0755 "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
+write_fail2ban_cidr_action_config "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"
 cat >"${f2b_dir}/bin/sshd" <<'FAKE_SSHD'
 #!/usr/bin/env bash
 exit 0
@@ -1003,50 +905,19 @@ ufw() { :; }
 ( export PATH="${f2b_dir}/bin:${PATH}"; restore_platform_security_state ) \
     || fail "保留基线的 restore_platform_security_state 必须成功"
 assert_equal "卸载保留受管 Fail2ban jail" "MANAGED-JAIL" "$(<"${EASY_ALL_FAIL2BAN_CONFIG}")"
-assert_equal "旧版 helper 迁移到系统路径" "legacy-helper" \
+assert_equal "卸载保留 Fail2ban helper" "managed-helper" \
     "$(<"${EASY_ALL_FAIL2BAN_CIDR_HELPER}")"
-assert_not_contains "action 配置不再引用运行时目录" \
-    "$(<"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")" "${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
 assert_contains "action 配置指向系统 helper" \
     "$(<"${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")" "${EASY_ALL_FAIL2BAN_CIDR_HELPER}"
 assert_not_contains "卸载不禁用 Fail2ban" \
     "$(<"${f2b_dir}/systemctl.log")" "disable fail2ban"
-# action 配置改路径后必须让运行中的 Fail2ban 重读，否则内存里仍持有旧路径
-assert_contains "迁移后重启 Fail2ban 以加载新 helper" \
-    "$(<"${f2b_dir}/systemctl.log")" "restart fail2ban.service"
-
-# 11.3b 迁移失败必须中止（保留旧副本供重试），不能删掉唯一一份 helper
-f2b_fail="${TMP_DIR}/f2b-migrate-fail"
-install -d -m 0700 "${f2b_fail}/jail.d" "${f2b_fail}/action.d" "${f2b_fail}/runtime" \
-    "${f2b_fail}/backups" "${f2b_fail}/bin"
-printf 'blocker\n' >"${f2b_fail}/blocker"
-printf 'legacy-helper\n' >"${f2b_fail}/runtime/fail2ban-ufw-cidr.sh"
-chmod 0755 "${f2b_fail}/runtime/fail2ban-ufw-cidr.sh"
-printf 'MANAGED-JAIL\n' >"${f2b_fail}/jail.d/99-easy-all-sshd.local"
-printf '[Definition]\nactionban = %s ban <ip> %s\n' \
-    "${f2b_fail}/runtime/fail2ban-ufw-cidr.sh" "${f2b_fail}/state" \
-    >"${f2b_fail}/action.d/easy-all-ufw-cidr.conf"
-cp "${f2b_dir}/bin/sshd" "${f2b_fail}/bin/sshd"
-(
-    export EASY_ALL_FAIL2BAN_CONFIG="${f2b_fail}/jail.d/99-easy-all-sshd.local"
-    export EASY_ALL_FAIL2BAN_ACTION_CONFIG="${f2b_fail}/action.d/easy-all-ufw-cidr.conf"
-    export EASY_ALL_FAIL2BAN_CIDR_HELPER="${f2b_fail}/blocker/fail2ban-ufw-cidr.sh"
-    export EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${f2b_fail}/runtime/fail2ban-ufw-cidr.sh"
-    export EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${f2b_fail}/state"
-    export EASY_ALL_SSH_PORT_CONFIG="${f2b_fail}/ssh/00-easy-all-ports.conf"
-    export BACKUP_DIR="${f2b_fail}/backups"
-    export PATH="${f2b_fail}/bin:${PATH}"
-    restore_platform_security_state
-) && fail "迁移失败时必须中止卸载以保留旧 helper"
-[[ -f "${f2b_fail}/runtime/fail2ban-ufw-cidr.sh" ]] \
-    || fail "迁移失败后旧 helper 必须保留"
 
 # 11.4 移除 UFW 规则区块不得留下 .bak 垃圾文件
 block_file="${TMP_DIR}/before.rules"
-printf '%s\n' 'keep-1' '# easy_all-bunny-start' 'drop-me' '# easy_all-bunny-end' 'keep-2' \
+printf '%s\n' 'keep-1' '# easy_all-test-start' 'drop-me' '# easy_all-test-end' 'keep-2' \
     >"${block_file}"
 chmod 0600 "${block_file}"
-remove_ufw_managed_block "${block_file}" '# easy_all-bunny-start' '# easy_all-bunny-end' \
+remove_ufw_managed_block "${block_file}" '# easy_all-test-start' '# easy_all-test-end' \
     || fail "remove_ufw_managed_block 必须成功"
 assert_equal "受管规则区块被移除" $'keep-1\nkeep-2' "$(<"${block_file}")"
 [[ ! -e "${block_file}.bak" ]] || fail "不得留下 .bak 备份文件"
@@ -1087,10 +958,7 @@ done
 rollback_body=$(awk '/^rollback_fresh_install\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
 assert_not_contains "reality 回滚不关闭 UFW" "${rollback_body}" "ufw --force disable"
 
-# 11.6 Bunny 依赖安装必须等待 dpkg 锁；debian-init 模块 URL 必须跟随分支
-assert_contains "ws-bunny apt 等待 dpkg 锁" \
-    "$(awk '/^install_packages\(\)/,/^}/' "${ROOT_DIR}/profiles/ws-bunny.sh")" \
-    "-o DPkg::Lock::Timeout=300"
+# 11.6 debian-init 模块 URL 必须跟随分支
 assert_contains "debian-init 模块 URL 跟随 EASY_ALL_BRANCH" \
     "$(<"${ROOT_DIR}/scripts/debian-init.sh")" \
     'easy_all/${EASY_ALL_BRANCH}/lib/platform.sh'
@@ -1117,59 +985,10 @@ first_state=$( (
     EASY_ALL_MEMINFO_FILE="${meminfo}" report_host_init_state
 ) 2>&1 ) || fail "未初始化主机必须能输出状态"
 assert_contains "未初始化主机提示首次安装" "${first_state}" "首次安装"
-for profile in profiles/reality.sh profiles/xhttp-cloudflare-streamup.sh profiles/ws-bunny.sh profiles/combined.sh; do
+for profile in profiles/reality.sh profiles/xhttp-cloudflare-streamup.sh profiles/combined.sh; do
     body=$(awk '/^(install_all|run_reality_install_pipeline)\(\)/,/^}/' "${ROOT_DIR}/${profile}")
     assert_contains "${profile} 初始化阶段输出状态" "${body}" "report_host_init_state"
 done
 
-
-echo "=== 13. 旧状态版本卸载不再崩溃，并迁移旧版 Fail2ban helper ==="
-legacy_dir="${TMP_DIR}/legacy"
-install -d -m 0700 "${legacy_dir}/runtime" "${legacy_dir}/sbin" "${legacy_dir}/action.d"
-printf 'legacy-helper\n' >"${legacy_dir}/runtime/fail2ban-ufw-cidr.sh"
-chmod 0755 "${legacy_dir}/runtime/fail2ban-ufw-cidr.sh"
-printf '[Definition]\nactionban = %s ban <ip> %s\n' \
-    "${legacy_dir}/runtime/fail2ban-ufw-cidr.sh" "${legacy_dir}/state" \
-    >"${legacy_dir}/action.d/easy-all-ufw-cidr.conf"
-legacy_calls="${legacy_dir}/calls.log"
-: >"${legacy_calls}"
-# 独立脚本执行：真实调用时 legacy_local_uninstall 不在 || 条件里，set -e 会生效。
-cat >"${legacy_dir}/run-legacy-uninstall.sh" <<'LEGACY_UNINSTALL'
-set -Eeuo pipefail
-root_dir=$1
-legacy_dir=$2
-calls=$3
-# shellcheck source=/dev/null
-source "${root_dir}/easy_all"
-# 模拟真实场景：launcher 在加载 profile 前没有 log.sh 提供的日志函数。
-unset -f warn success info die
-unset EASY_ALL_LOG_LOADED
-id() { printf '0\n'; }
-rm() { printf 'rm %s\n' "$*" >>"${calls}"; }
-systemctl() { return 0; }
-fail2ban-client() { return 0; }
-crontab() { return 1; }
-export EASY_ALL_FAIL2BAN_CONFIG="${legacy_dir}/jail.d/99-easy-all-sshd.local"
-export EASY_ALL_FAIL2BAN_ACTION_CONFIG="${legacy_dir}/action.d/easy-all-ufw-cidr.conf"
-export EASY_ALL_FAIL2BAN_CIDR_HELPER="${legacy_dir}/sbin/fail2ban-ufw-cidr.sh"
-export EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${legacy_dir}/runtime/fail2ban-ufw-cidr.sh"
-export EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${legacy_dir}/state"
-legacy_local_uninstall
-LEGACY_UNINSTALL
-legacy_rc=0
-bash "${legacy_dir}/run-legacy-uninstall.sh" "${ROOT_DIR}" "${legacy_dir}" "${legacy_calls}" \
-    || legacy_rc=$?
-assert_equal "旧状态版本卸载退出码" "0" "${legacy_rc}"
-[[ -f "${legacy_dir}/sbin/fail2ban-ufw-cidr.sh" ]] || fail "旧 helper 必须迁移到系统路径"
-assert_contains "action 配置指向新 helper" \
-    "$(<"${legacy_dir}/action.d/easy-all-ufw-cidr.conf")" "${legacy_dir}/sbin/fail2ban-ufw-cidr.sh"
-assert_contains "旧状态版本卸载执行了本机清理" "$(<"${legacy_calls}")" "rm -rf /etc/easy_all"
-
-echo "=== 14. Bunny 回源池只接受 IPv4（IPv6 网段会让 iptables-restore 失败） ==="
-IPS_INPUT="${TMP_DIR}/bunny-edges.json"
-printf '%s\n' '["203.0.113.1/24","2001:db8::/32","198.51.100.7/32","not-a-cidr"]' >"${IPS_INPUT}"
-ips_output=$(python3 "${ROOT_DIR}/lib/bunny-api.py" ips --input "${IPS_INPUT}") \
-    || fail "Bunny 回源池解析应成功"
-assert_equal "只保留 IPv4 网段" $'198.51.100.7/32\n203.0.113.0/24' "${ips_output}"
 
 echo "ok - all audit fixes verified successfully"

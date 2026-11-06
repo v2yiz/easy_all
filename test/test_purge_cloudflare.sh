@@ -101,7 +101,7 @@ case "${url}" in
 *"/rulesets"*)
     printf '{"success":true,"result":[]}'
     ;;
-*"/workers/scripts"* | *"/workers/domains"* | *"/certificates"*)
+*"/certificates"*)
     printf '{"success":true,"result":[]}'
     ;;
 *)

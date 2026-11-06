@@ -348,7 +348,7 @@ rule-providers:
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs'
         path: ./ruleset/geoip-telegram.mrs
 
-# 直连 Mieru 节点由订阅/Worker 以 type: mieru 注入，模板本身不放置占位凭据。
+# 直连 Mieru 节点由订阅以 type: mieru 注入，模板本身不放置占位凭据。
 proxies:
 # EASY_ALL_PROXY_NODE
 
@@ -377,7 +377,6 @@ rules:
   - RULE-SET,captive-portal,DIRECT
   # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
   - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
-# EASY_ALL_WORKER_RULE
   # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口。
   # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
   - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT

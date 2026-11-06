@@ -83,7 +83,7 @@ refresh_saved_daily_reboot_schedule() {
 
 remove_daily_reboot_schedule() {
     local current filtered
-    # 没有该标记的 Profile（如 Bunny）不应走到这里：空标记会让过滤退化成“删掉所有行”。
+    # 没有该标记的 Profile 不应走到这里：空标记会让过滤退化成“删掉所有行”。
     [[ -n "${CRON_REBOOT_MARKER:-}" ]] || return 0
     current=$(read_root_crontab) || return 1
     # 先确认过滤成功，再提交给 crontab：管道中途失败时 crontab - 会收到空输入并清空整份 crontab。

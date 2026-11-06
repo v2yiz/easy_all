@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[2.5.2](CHANGELOG.md#252-更新说明2026-11-05)。
+当前源码版本：[3.0.0](CHANGELOG.md#300-更新说明2026-11-06)。
 
 ## 文档索引
 
@@ -22,9 +22,8 @@
 | 模式 | 适用场景 | 核心架构与入口 |
 | :--- | :--- | :--- |
 | **1. 直连 Reality** | VPS IP 纯净、直连网络良好 | VLESS TCP Reality Vision（VPS `443` 或动态端口轮换） |
-| **2. Cloudflare CDN** | VPS 直连受阻、IP 被墙或需要防封 | VLESS XHTTP `stream-up` + 6 个 Cloudflare 优选 IPv4；可选独立 Worker 兜底 |
-| **3. Bunny CDN** | 追求多地区边缘与自动调度 | VLESS WS/TLS（Pull Zone 自动调度域名 + Nginx HTTPS 回源） |
-| **4. 组合模式** | 一台机器同时拥有直连与 CDN 节点 | **直连 Reality（VPS `8443`） + Cloudflare XHTTP（443 回源）**，统一订阅自动测速优选 |
+| **2. Cloudflare CDN** | VPS 直连受阻、IP 被墙或需要防封 | VLESS XHTTP `stream-up` + 6 个 Cloudflare 优选 IPv4；本机 Nginx 订阅 |
+| **3. 组合模式** | 一台机器同时拥有直连与 CDN 节点 | **直连 Reality（VPS `8443`） + Cloudflare XHTTP（443 回源）**，统一订阅自动测速优选 |
 
 ---
 
@@ -64,9 +63,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 1. **选择安装模式**：
    - `1` 直连 - Reality（适合直连效果良好、VPS IP 未被封）
    - `2` Cloudflare CDN 精选 IP（纯 VLESS XHTTP stream-up，6 个优选 IPv4）
-   - `3` Bunny CDN（VLESS WS/TLS）
-   - `4` 组合：直连 Reality + Cloudflare（一次部署两个入口，共享订阅）
-2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值。
+   - `3` 组合：直连 Reality + Cloudflare（一次部署两个入口，共享订阅）
+2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；组合模式会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
 3. **自动安装与部署**：依赖安装、TCP 加速（默认 Skyline Speeder）、服务启动与验收全自动完成。
 
 ---
@@ -99,16 +97,15 @@ sudo easy_all subscription
 | `easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
 | `easy_all show` | 输出各节点详细参数、VLESS 链接及 Mihomo 代理配置块 |
 | `easy_all apply` | 刷新并重新应用本机配置与订阅（不重复修改云端 DNS 与证书） |
-| `easy_all apply-cloud` | 同步云端资源（更新 Cloudflare / Bunny 云端解析、规则与证书，或同步 Worker） |
+| `easy_all apply-cloud` | 同步云端资源（更新 Cloudflare 云端解析、规则与证书） |
 | `easy_all reality-target [域名:端口]` | 修改 Reality 伪装目标（自动带 SNI 验证 TLS 1.3 连通性并热更新） |
 | `easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 规则 |
 | `easy_all refresh-cdn-ips` | 重新调用 Globalping 测试并筛选当期最佳优选 IP |
-| `easy_all refresh-origin-ips` | （Bunny 模式）立即刷新 Bunny 官方回源 IPv4 防火墙白名单 |
-| `easy_all edit-sub` | 交互式管理用户 Token、订阅模板以及 Worker 聚合订阅设置 |
+| `easy_all edit-sub` | 交互式管理订阅配置（用户 Token + 聚合节点）与订阅模板 |
 | `easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `easy_all update-core` | 在线升级 Xray 核心至官方最新稳定版 |
 | `easy_all self-update` | 从 GitHub 更新 easy_all 脚本自身至最新主线版本 |
-| `easy_all uninstall` | 卸载本机服务与配置（可选 `--purge-cloud` 同步清理 Cloudflare / Bunny 远端资源）；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
+| `easy_all uninstall` | 卸载本机服务与配置（可选 `--purge-cloud` 同步清理 Cloudflare 远端资源）；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
 
 ---
 
@@ -127,7 +124,7 @@ sudo easy_all subscription
 
 ## Cloudflare CDN 优选 IP 原理与实现
 
-对于模式 2（Cloudflare CDN）与模式 4（组合模式），`easy_all` 采用**服务端中心化主动探测**机制：不耗费手机客户端电量与流量，由 VPS 定时（每 3 小时通过 systemd timer）调用 Globalping 分布式探针，直接从大陆三大运营商（中国电信 AS4134、中国联通 AS4837、中国移动 AS9808）的真实终端（eyeball-network）角度，经过两阶段过滤筛选出 6 个（三网各 2 个）最低延迟、低丢包且 TLS 真正通畅的优选 IP 注入订阅。
+对于模式 2（Cloudflare CDN）与模式 3（组合模式），`easy_all` 采用**服务端中心化主动探测**机制：不耗费手机客户端电量与流量，由 VPS 定时（每 3 小时通过 systemd timer）调用 Globalping 分布式探针，直接从大陆三大运营商（中国电信 AS4134、中国联通 AS4837、中国移动 AS9808）的真实终端（eyeball-network）角度，经过两阶段过滤筛选出 6 个（三网各 2 个）最低延迟、低丢包且 TLS 真正通畅的优选 IP 注入订阅。
 
 ```mermaid
 %%{init: {"flowchart": {"wrappingWidth": 700, "nodeSpacing": 30, "rankSpacing": 30}}}%%

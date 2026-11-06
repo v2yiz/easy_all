@@ -17,7 +17,6 @@ while [[ -L "${EASY_ALL_SOURCE}" ]]; do
 done
 readonly EASY_ALL_ROOT="$(cd -- "$(dirname -- "${EASY_ALL_SOURCE}")" >/dev/null 2>&1 && pwd)"
 readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}"
-readonly EASY_ALL_BUNNY_JOURNAL="${BUNNY_JOURNAL:-${BUNNY_RECOVERY_DIR:-/etc/easy_all-bunny}/ownership.json}"
 readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
 readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
@@ -25,11 +24,6 @@ readonly EASY_ALL_DEFAULT_BRANCH="main"
 readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
 readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
 readonly CURRENT_STATE_VERSION="0"
-# 旧版把 Fail2ban CIDR 助手脚本放在运行时目录；保留这份副本，避免 self-update
-# 到新路径前让仍在运行的 fail2ban action 引用到刚被删除的脚本。
-readonly -a EASY_ALL_PRESERVED_RUNTIME_FILES=(
-    "fail2ban-ufw-cidr.sh"
-)
 
 
 launcher_die() {
@@ -80,24 +74,22 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality、Cloudflare CDN、Bunny CDN 或组合模式
+  install          交互选择 Reality、Cloudflare CDN 或组合模式
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
-  apply            应用已安装配置；Bunny 模式同时幂等同步云资源；组合模式只重建本机与订阅
+  apply            应用已安装配置；组合模式只重建本机与订阅
   reality-target [域名:端口]
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
                    立即刷新直连 Reality 模式的动态端口 NAT 规则
-  apply-cloud      同步云端资源（Cloudflare/Bunny/组合；组合含 DNS 与证书）
-  edit-sub         交互修改订阅设置（域名、模式、用户 Token）
+  apply-cloud      同步云端资源（Cloudflare/组合；组合含 DNS 与证书）
+  edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
   refresh-cdn-ips  立即刷新当前 CDN 的 Globalping 精选 IP 与订阅
-  refresh-origin-ips  刷新 Bunny 官方回源 IPv4 防火墙列表
   purge-cloudflare 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用）
   update-core      更新当前模式的核心（Xray）
-  renew-cert       重新签发当前模式的 TLS 证书（Bunny 模式强制走 Let's Encrypt）
-  cert-renew       内部续期命令；Bunny 模式由 easy_all-cert-renew.timer 调用
+  renew-cert       重新签发当前模式的 TLS 证书
   status           显示运行状态
   cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
   uninstall        卸载当前模式；可追加 --purge-cloud 清理托管的远端资源
@@ -105,72 +97,6 @@ launcher_usage() {
 
 一台 VPS 只能安装一种模式。
 EOF
-}
-
-legacy_local_uninstall() {
-    local marker
-    # 这条路径在 profile 模块加载前执行：先保证日志函数可用，
-    # 否则旧版会在第一条 warn 处 command not found 直接退出，什么都清不掉。
-    if [[ -r "${EASY_ALL_ROOT}/lib/log.sh" ]]; then
-        # shellcheck source=lib/log.sh
-        source "${EASY_ALL_ROOT}/lib/log.sh"
-    fi
-    if ! declare -F warn >/dev/null 2>&1; then
-        warn() { printf '%s\n' "$*" >&2; }
-    fi
-    if ! declare -F success >/dev/null 2>&1; then
-        success() { printf '%s\n' "$*"; }
-    fi
-    for marker in "$@"; do
-        [[ "${marker}" != "--purge-cloud" ]] \
-            || launcher_die "旧状态版本无法安全识别云端资源；已停止卸载，请先在控制台核对 Cloudflare/Bunny 资源"
-    done
-    [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
-    # 先迁移旧版 Fail2ban helper：失败就中止，避免随后删掉唯一副本。
-    if [[ -r "${EASY_ALL_ROOT}/lib/platform.sh" ]]; then
-        # shellcheck source=lib/platform.sh
-        source "${EASY_ALL_ROOT}/lib/platform.sh"
-    fi
-    if declare -F migrate_legacy_fail2ban_cidr_helper >/dev/null 2>&1; then
-        migrate_legacy_fail2ban_cidr_helper \
-            || launcher_die "旧版 Fail2ban helper 迁移失败；未做任何清理，请修正后重试"
-    fi
-    warn "检测到旧版本状态文件；只清理 easy_all 本机文件，SSH 配置、UFW 规则与云端资源保持不变"
-    systemctl disable --now easy_all-xray.service \
-        easy_all-globalping-refresh.timer easy_all-bunny-ips.timer \
-        easy_all-cert-renew.timer >/dev/null 2>&1 || true
-    systemctl stop easy_all-globalping-refresh.service \
-        easy_all-bunny-ips.service easy_all-cert-renew.service \
-        easy_all-skyline-setup.service >/dev/null 2>&1 || true
-    rm -f /etc/systemd/system/easy_all*.service /etc/systemd/system/easy_all*.timer
-    if command -v nginx >/dev/null 2>&1; then
-        rm -f /etc/nginx/conf.d/easy_all.conf
-        nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
-    fi
-    if crontab -l >/dev/null 2>&1; then
-        crontab -l | grep -v 'easy_all-' | crontab - >/dev/null 2>&1 || true
-    fi
-    rm -rf /etc/easy_all /etc/easy_all-bunny /var/www/easy_all /usr/local/lib/easy_all
-    rm -f "${EASY_ALL_COMMAND_PATH}"
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    warn "本机文件已清理。Fail2ban 配置与 CIDR helper 已保留；以下内容需要你自行核对："
-    warn "SSH 端口 drop-in 与 UFW 放行、以及云端 CDN/DNS 资源"
-    success "旧版本 easy_all 本机清理完成，可以重新安装"
-}
-
-# --assume-mode 接受用户最容易输入的写法：菜单序号、中文名与常见缩写。
-launcher_mode_alias() {
-    case "${1:-}" in
-    1 | reality | Reality | 直连) printf 'reality' ;;
-    2 | cloudflare | Cloudflare | cloudflare-streamup | cf | CF | xhttp) printf 'cloudflare-streamup' ;;
-    3 | bunny | Bunny | bunny-ws) printf 'bunny-ws' ;;
-    4 | 5 | combined | Combined | 组合) printf 'combined' ;;
-    *) return 1 ;;
-    esac
-}
-
-launcher_mode_usage() {
-    printf '1|reality 2|cloudflare-streamup 3|bunny-ws 4|combined（也接受 5|combined/直连/组合/cf 等写法）'
 }
 
 # 一次读入 marker 并同时给出「模式/阶段/身份」：模式与身份必须来自同一份快照，
@@ -192,63 +118,40 @@ launcher_marker_snapshot() {
 # 上次安装被 SSH 断线打断后，没有状态文件也就没有 uninstall 可用；这条命令是唯一
 # 能从本机自救的入口。它只信安装期写入的 marker 来定位模式，不猜测、不动云端资源。
 cleanup_partial_install_command() {
-    local progress_file mode stage started_at answer module assume_mode=""
+    local progress_file mode stage started_at answer module
     local snapshot_before snapshot_after
     local bootstrap='bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)'
     while (($# > 0)); do
         case "$1" in
-        --assume-mode)
-            (($# >= 2)) || launcher_die "用法：easy_all cleanup-partial [--assume-mode <模式>]"
-            assume_mode=$2
-            shift 2
-            ;;
         -h | --help)
-            printf '用法：easy_all cleanup-partial [--assume-mode <模式>]\n'
-            printf '  可用写法：%s\n' "$(launcher_mode_usage)"
-            printf '  无参数：按安装进度标记自动判断模式；旧版本没有标记时用 --assume-mode 指定。\n'
+            printf '用法：easy_all cleanup-partial\n'
+            printf '  按安装进度标记判断上次中断的模式并清理本机残留。\n'
             return 0
             ;;
-        *) launcher_die "用法：easy_all cleanup-partial [--assume-mode <模式>]" ;;
+        *) launcher_die "用法：easy_all cleanup-partial" ;;
         esac
     done
-    if [[ -n "${assume_mode}" ]]; then
-        local normalized_mode
-        normalized_mode=$(launcher_mode_alias "${assume_mode}") \
-            || launcher_die "不支持的安装模式：${assume_mode}；可用写法：$(launcher_mode_usage)"
-        assume_mode=${normalized_mode}
-        profile_file "${assume_mode}" >/dev/null
-    fi
     [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
     [[ ! -f "${EASY_ALL_STATE_FILE}" ]] \
         || launcher_die "easy_all 已安装；如需卸载请执行 easy_all uninstall"
     progress_file="${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE:-/var/lib/easy_all/install-progress.env}"
     # 模式、阶段、身份必须来自同一次读取。
     snapshot_before=$(launcher_marker_snapshot "${progress_file}")
-    if [[ "${snapshot_before}" == "absent" ]]; then
-        # 旧版本没有进度标记：只有用户明确指定模式时才敢于清理，绝不猜测。
-        [[ -n "${assume_mode}" ]] || launcher_die \
-            "未检测到安装进度标记，无法判断残留属于哪个模式。先核对 /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all* 服务，再指定模式：${bootstrap} cleanup-partial --assume-mode <模式>；可用写法：$(launcher_mode_usage)"
-        mode=${assume_mode}
-        stage=""
-    elif [[ "${snapshot_before}" == "unreadable" ]]; then
-        launcher_die "无法读取安装进度标记 ${progress_file}；请检查权限后重试（或用 --assume-mode 指定模式）"
-    else
-        IFS='|' read -r _ mode stage started_at <<<"${snapshot_before}"
-        [[ -n "${mode}" ]] || launcher_die \
-            "安装进度标记缺少模式信息（${progress_file}）；可改用 --assume-mode 指定后清理"
-        if [[ -n "${assume_mode}" && "${assume_mode}" != "${mode}" ]]; then
-            launcher_die "进度标记显示上次是 ${mode} 模式，与 --assume-mode ${assume_mode} 不一致；请先核对后再决定"
-        fi
-    fi
+    case "${snapshot_before}" in
+    absent)
+        launcher_die "未检测到安装进度标记；本机没有待清理的 easy_all 安装残留"
+        ;;
+    unreadable)
+        launcher_die "无法读取安装进度标记 ${progress_file}；请检查权限后重试"
+        ;;
+    esac
+    IFS='|' read -r _ mode stage started_at <<<"${snapshot_before}"
+    [[ -n "${mode}" ]] || launcher_die "安装进度标记缺少模式信息（${progress_file}）；请核对标记内容或人工清理残留后重装"
     profile_file "${mode}" >/dev/null
-    if [[ -z "${stage}" ]]; then
-        printf '没有安装进度标记；按你指定的 %s 模式清理残留\n' "${mode}" >&2
-    else
-        printf '检测到未完成的 %s 安装（中断于 %s 阶段）\n' "${mode}" "${stage}" >&2
-    fi
+    printf '检测到未完成的 %s 安装（中断于 %s 阶段）\n' "${mode}" "${stage}" >&2
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || launcher_die "非交互清理必须显式设置 FORCE=1"
-        launcher_read_bilingual '清理本机残留（不改动 Cloudflare/Bunny 云端资源）？[y/N]:' answer
+        launcher_read_bilingual '清理本机残留（不改动 Cloudflare 云端资源）？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || launcher_die "已取消"
     fi
     module=$(profile_file "${mode}") || exit 1
@@ -280,14 +183,12 @@ choose_install_mode() {
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
     printf '  2. Cloudflare CDN 精选 IP（直连不佳、IP 被封或追求纯 XHTTP 时）\n' >&2
-    printf '  3. Bunny CDN（VLESS WS/TLS，一个自动调度域名节点）\n' >&2
-    printf '  4. 组合：直连 Reality + Cloudflare（一次部署两个入口）\n' >&2
+    printf '  3. 组合：直连 Reality + Cloudflare（一次部署两个入口）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudflare-streamup\n' ;;
-    3) printf 'bunny-ws\n' ;;
-    4 | 5) printf 'combined\n' ;;
+    3 | 4 | 5) printf 'combined\n' ;;
     *) launcher_die "无效选择：${choice}" ;;
     esac
 }
@@ -310,9 +211,9 @@ detect_installed_mode() {
         protocol=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
         state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
         [[ "${state_version}" == "${CURRENT_STATE_VERSION}" ]] \
-            || launcher_die "状态版本不匹配（当前：${state_version:-缺失}，期望：${CURRENT_STATE_VERSION}）；请先执行 sudo easy_all uninstall 清理旧版本本机文件，再重新安装"
+            || launcher_die "状态版本不匹配（当前：${state_version:-缺失}，期望：${CURRENT_STATE_VERSION}）；当前版本无法接管这份状态，请先删除 ${EASY_ALL_STATE_FILE} 并清理 /etc/easy_all 后重新安装"
         case "${protocol}" in
-        reality|cloudflare-streamup|bunny-ws|combined)
+        reality|cloudflare-streamup|combined)
             printf '%s\n' "${protocol}"
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
@@ -326,21 +227,11 @@ profile_file() {
     case "${mode}" in
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     cloudflare-streamup) candidate="${EASY_ALL_ROOT}/profiles/xhttp-cloudflare-streamup.sh" ;;
-    bunny-ws) candidate="${EASY_ALL_ROOT}/profiles/ws-bunny.sh" ;;
     combined) candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
     printf '%s\n' "${candidate}"
-}
-
-stage_preserved_runtime_files() {
-    local current_dir=$1 stage_dir=$2 relative_path
-    for relative_path in "${EASY_ALL_PRESERVED_RUNTIME_FILES[@]}"; do
-        [[ -f "${current_dir}/${relative_path}" ]] || continue
-        install -m 0755 "${current_dir}/${relative_path}" \
-            "${stage_dir}/${relative_path}"
-    done
 }
 
 unified_register_easy_all_command() {
@@ -367,7 +258,6 @@ unified_register_easy_all_command() {
         [[ "${relative_path}" != *.sh ]] \
             || syntax_files+=("${stage}/${relative_path}")
     done <<<"${paths}"
-    stage_preserved_runtime_files "${EASY_ALL_INSTALL_DIR}" "${stage}"
     bash -n "${syntax_files[@]}" \
         || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
 
@@ -440,17 +330,12 @@ dispatch_profile_command() {
         update_reality_target "$@"
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "bunny-ws" || "${mode}" == "combined" ]] \
+        [[ "${mode}" == "cloudflare-streamup" || "${mode}" == "combined" ]] \
             || launcher_die "apply-cloud 仅适用于 CDN 模式"
         (($# == 0)) || launcher_die "apply-cloud 不接受额外参数"
-        if [[ "${mode}" == "bunny-ws" ]]; then
-            apply_easy_all
-        else
-            apply_cloud_resources
-        fi
+        apply_cloud_resources
         ;;
     edit-sub)
-        [[ "${mode}" != "bunny-ws" ]] || launcher_die "Bunny 仅提供一个 owner 订阅；不支持多用户编辑"
         if [[ "${mode}" == "reality" ]]; then
             update_subscription 1
         else
@@ -472,21 +357,10 @@ dispatch_profile_command() {
     renew-cert)
         case "${mode}" in
         reality) renew_subscription_certificate ;;
-        bunny-ws) renew_bunny_certificate 1 ;;
         cloudflare-streamup) renew_certificate ;;
         combined) renew_certificate ;;
         *) launcher_die "当前模式不使用 TLS 证书，无需续期" ;;
         esac
-        ;;
-    cert-renew)
-        case "${mode}" in
-        bunny-ws) renew_bunny_certificate ;;
-        *) launcher_die "cert-renew 仅适用于 Bunny 模式" ;;
-        esac
-        ;;
-    refresh-origin-ips)
-        [[ "${mode}" == "bunny-ws" ]] || launcher_die "refresh-origin-ips 仅适用于 Bunny 模式"
-        refresh_bunny_origin_ips
         ;;
     rotate-dynamic-ports)
         case "${mode}" in
@@ -504,7 +378,7 @@ dispatch_profile_command() {
 }
 
 main() {
-    local command=${1:-install} mode="" module state_version=""
+    local command=${1:-install} mode="" module
     shift || true
 
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
@@ -526,13 +400,6 @@ main() {
         return
     fi
 
-    if [[ "${command}" == "uninstall" && -f "${EASY_ALL_STATE_FILE}" ]]; then
-        state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
-        if [[ "${state_version}" != "${CURRENT_STATE_VERSION}" ]]; then
-            legacy_local_uninstall "$@"
-            return
-        fi
-    fi
     if [[ "${command}" == "install" ]]; then
         (($# == 0)) || launcher_die "install 不接受参数，请在交互菜单中选择"
         [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
@@ -542,15 +409,7 @@ main() {
         fi
         mode=$(choose_install_mode)
     else
-        if [[ "${command}" == "uninstall" ]]; then
-            mode=$(detect_installed_mode)
-            if [[ -z "${mode}" && "$#" == 1 && "${1:-}" == "--purge-cloud" \
-                && -f "${EASY_ALL_BUNNY_JOURNAL}" ]]; then
-                mode="bunny-ws"
-            fi
-        else
-            mode=$(detect_installed_mode)
-        fi
+        mode=$(detect_installed_mode)
         [[ -n "${mode}" ]] || launcher_die "easy_all 尚未安装"
     fi
 

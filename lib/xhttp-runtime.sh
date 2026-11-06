@@ -15,6 +15,9 @@ readonly SUBSCRIPTION_DIR="${SUBSCRIPTION_DIR:-${WEB_ROOT}/subscriptions}"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
 readonly SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_DIR}/mihomo-ios.yaml"
+readonly SUBSCRIPTION_BASE64_ALL_FILE="${SUBSCRIPTION_DIR}/base64-all.txt"
+readonly SUBSCRIPTION_MIHOMO_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-all.yaml"
+readonly SUBSCRIPTION_MIHOMO_IOS_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-ios-all.yaml"
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly ENTRY_COMMAND_NAME="easy_all"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
@@ -274,49 +277,52 @@ validate_subscription_runtime() {
 xhttp_require_subscription_hooks() {
     local hook
     for hook in build_node_links build_mihomo_nodes \
-        build_mihomo_proxy_groups build_mihomo_proxy_names build_mihomo_worker_rules; do
+        build_mihomo_proxy_groups build_mihomo_proxy_names; do
         declare -F "${hook}" >/dev/null 2>&1 \
             || die "CDN Profile 缺少订阅渲染钩子：${hook}"
     done
 }
 
 write_subscriptions() {
-    local template node_file group_file name_file worker_rule_file base64_file mihomo_file user uuid user_dir marker stage_dir
-    if declare -F cloudflare_refresh_backup_nodes >/dev/null 2>&1; then
-        cloudflare_refresh_backup_nodes
-    fi
+    local template node_file group_file name_file
+    local mihomo_file suffix include variants marker stage_dir
+    variants=${SUBSCRIPTION_OPTIONAL_VARIANTS:-0}
     prepare_mihomo_template
     xhttp_require_subscription_hooks
     template=${MIHOMO_TEMPLATE_FILE}
     node_file="${RUNTIME_TMP}/mihomo-node.yaml"
     group_file="${RUNTIME_TMP}/mihomo-groups.yaml"
     name_file="${RUNTIME_TMP}/mihomo-names.yaml"
-    worker_rule_file="${RUNTIME_TMP}/mihomo-worker-rules.yaml"
-    base64_file="${RUNTIME_TMP}/subscription-base64.txt"
-    mihomo_file="${RUNTIME_TMP}/subscription-mihomo.yaml"
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
         && marker=$(mihomo_transport_marker)
-    build_mihomo_worker_rules >"${worker_rule_file}"
-
     install -d -m 0755 "${WEB_ROOT}"
     stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
         || die "创建订阅暂存目录失败"
     cleanup_files+=("${stage_dir}")
-    build_mihomo_nodes >"${node_file}"
-    build_mihomo_proxy_groups >"${group_file}"
-    build_mihomo_proxy_names >"${name_file}"
-    build_node_links | openssl base64 -A >"${base64_file}"
-    printf '\n' >>"${base64_file}"
-    render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
-        "${XHTTP_NODE_NAME}" "${group_file}" "${name_file}" "${worker_rule_file}"
-
-    grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
-    grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
-    install -m 0640 "${base64_file}" "${stage_dir}/base64.txt" || die "暂存 Base64 订阅失败"
-    install -m 0640 "${mihomo_file}" "${stage_dir}/mihomo.yaml" || die "暂存 Mihomo 订阅失败"
-    strip_mihomo_sniffer "${mihomo_file}" >"${stage_dir}/mihomo-ios.yaml" || die "暂存 iOS Mihomo 订阅失败"
-    chmod 0640 "${stage_dir}/mihomo-ios.yaml"
+    for suffix in "" "-all"; do
+        if [[ "${suffix}" == "-all" ]]; then
+            [[ "${variants}" == "1" ]] || continue
+            include=1
+        else
+            include=0
+        fi
+        EASY_ALL_INCLUDE_OPTIONAL=${include}
+        build_mihomo_nodes >"${node_file}"
+        build_mihomo_proxy_groups >"${group_file}"
+        build_mihomo_proxy_names >"${name_file}"
+        build_node_links | openssl base64 -A >"${stage_dir}/base64${suffix}.txt"
+        printf '\n' >>"${stage_dir}/base64${suffix}.txt"
+        mihomo_file="${stage_dir}/mihomo${suffix}.yaml"
+        render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
+            "${XHTTP_NODE_NAME}" "${group_file}" "${name_file}"
+        grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
+        grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
+        strip_mihomo_sniffer "${mihomo_file}" >"${stage_dir}/mihomo-ios${suffix}.yaml" \
+            || die "暂存 iOS Mihomo 订阅失败"
+    done
+    EASY_ALL_INCLUDE_OPTIONAL=0
+    chmod 0640 "${stage_dir}"/*.txt "${stage_dir}"/*.yaml
     publish_subscription_files "${stage_dir}"
     rm -rf -- "${stage_dir}"
 }
@@ -342,6 +348,9 @@ show_subscription() {
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
     printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
     printf '%s\n' '  如需强制格式：在链接后加 &flag=clash 或 &flag=base64'
+    if [[ "${SUBSCRIPTION_OPTIONAL_VARIANTS:-0}" == "1" ]]; then
+        printf '%s\n' '  追加 &node=all 可显示标记为 optional 的聚合节点'
+    fi
     printf '%s\n' '  iOS 客户端（UA 命中 iphone/ipad/ipod/ios，或链接加 &os=ios）下发的 YAML 不带嗅探段'
     printf '\n'
 }
@@ -405,9 +414,6 @@ snapshot_subscription_update() {
 }
 
 rollback_subscription_update() {
-    if declare -F cloudflare_rollback_backup_worker >/dev/null 2>&1; then
-        (cloudflare_rollback_backup_worker) || warn "新建兜底 Worker 回滚失败，请检查云端资源"
-    fi
     if declare -F rollback_provider_subscription_update >/dev/null 2>&1; then
         if ! (rollback_provider_subscription_update); then
             warn "恢复订阅更新前的云端 CDN/DNS 状态失败，请立即执行 easy_all apply-cloud 复核"

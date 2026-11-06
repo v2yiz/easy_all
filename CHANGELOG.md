@@ -1,3 +1,16 @@
+## 3.0.0 更新说明（2026-11-06）
+
+- **删除 Bunny 模式，模式 4 改为模式 3**：移除 `profiles/ws-bunny.sh`、`lib/bunny-api.py`、`lib/bunny-runtime.sh`、`lib/lego-install.sh`、Bunny 文档与测试；菜单、`--assume-mode`、命令路由、卸载清理与文档统一为「1 Reality / 2 Cloudflare / 3 组合」。数字只用于菜单与清理参数，状态文件与 Profile 标识不变。
+- **全仓库移除 Cloudflare Worker 订阅**：删除 `worker-src/`、`scripts/build-worker.mjs`、`lib/worker-config.sh`、`lib/worker-backup.sh` 及其测试；模式 2 的订阅改由本机 Nginx 在节点域名 `https://node.<zone>/subscribe` 下发（Cloudflare 代理 + token 鉴权 + UA 协商），不再需要额外订阅域名、Workers 编辑权限或 Worker 部署/退役/兜底逻辑；模式 1 只保留 `deploy` / `link` 两种订阅输出。
+- **组合模式统一订阅配置**：安装与 `easy_all edit-sub` 改为编辑同一份 JSON `{"allowedTokens":{...},"nodes":[...]}`；`nodes` 支持 `vless`（`reality/tcp` 或 `tls/xhttp`）与 `mieru`，支持 `optional: true`（仅在订阅 URL 追加 `&node=all` 时下发），聚合节点默认进入 `AUTO` 自动测速组。订阅产物按默认 / `node=all` 生成两份，并新增 `templates/aggregation.example.json` 示例。
+- **Cloudflare API Token 权限收敛**：模式 2 不再要求 `Account / Workers Scripts / Edit`；组合模式仍只需目标 Zone 的 DNS、证书、规则与 Zone Settings 权限。
+- **破坏性变更**：2.x 的 Worker 订阅链接不再可用，升级后请运行 `easy_all edit-sub` / `easy_all apply` 并重新导入本机订阅链接；旧 Worker 脚本与自定义域名需手工删除，或先用旧版本清理。
+- **修复 iOS 客户端拿不到标记为 `optional` 的聚合节点**：订阅格式协商的 Nginx map 只写了 `base64:0:1`，iOS（Shadowrocket 等 UA 命中 iOS，或链接带 `&os=ios`）加 `&node=all` 时组合键是 `base64:1:1`，会命中 `default` 被降级到不含 optional 节点的 `base64.txt`；现补齐该行，iOS 与非 iOS 的 Base64 请求都落到 `base64-all.txt`。
+- **修复 XHTTP 聚合节点的 HTTP `Host` 头被绑在连接地址上**：`nodes` 里的 `host` 允许填 CDN 优选 IP，原逻辑把 IP 同时写进 `Host` 头，请求到达 Cloudflare 边缘会被拒（403 Direct IP Access Denied）；现 `Host` 头改为跟随 `sni`，与本机生成的 Cloudflare 节点（`server` 用 IP、`Host` 用域名）保持一致。
+- **清理 Worker 下线后的遗留**：`profiles/reality.sh` 不再校验与传递只服务于 Worker 的 `CLOUDFLARE_ACCOUNT_ID`；`profiles/xhttp-cloudflare-streamup.sh` 删除与 `lib/xhttp-runtime.sh` 重复的 `show_subscription` 覆盖（该副本漏掉了 iOS 嗅探剔除提示，`easy_all subscription` 在模式 2 下少打印一行）。
+- **移除所有一次性迁移/清理代码**：旧机器已全部重装，删除 `legacy_local_uninstall`（旧状态版本卸载）、`cleanup-partial --assume-mode` 与无 marker 的旧版残留分支、旧版 Fail2ban helper 迁移与 self-update 保留副本、2.0.0 状态缺字段兜底、旧版 `deny 22/tcp` 规则回收；`cleanup-partial` 现在只按安装进度标记工作，缺标记直接拒绝。`STATE_VERSION` 校验保留为状态格式守卫。
+- **订阅配置输入与校验收敛**：`easy_all edit-sub` 粘贴的 JSON 内部含空行时不再提前截断输入（空行只在已凑成完整 JSON 时才作为结束信号）；`reality` 聚合节点的 `sid` 由「非空且不超过 16 字符」收紧为「2-16 位偶数长度十六进制」，与 Xray 的实际要求对齐。
+
 ## 2.5.2 更新说明（2026-11-05）
 
 - **TCP 加速只保留 Skyline Speeder 并原生支持 arm64**：删除 BBR/BBRv3/XanMod 路径与状态迁移逻辑，全模式只由 Skyline Speeder（fq + skyline_cc）提供拥塞控制；TCP 调优只写入缓冲区/队列等参数，不再写入 `tcp_congestion_control`，也不再生成 `/etc/modules-load.d` 配置（调优文件改为 `/etc/sysctl.d/99-easy_all-tcp.conf`）；全模式 Xray 安装依据系统架构自适应选择 amd64 与 arm64 官方二进制包，清理 Profile 写死的 amd64 常量。

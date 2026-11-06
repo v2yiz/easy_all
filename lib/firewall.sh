@@ -276,9 +276,6 @@ apply_managed_ufw_tcp_ports() {
         ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
             || die "添加受管 UFW 规则失败：TCP ${port}"
     done
-    if [[ -n "${ssh_ports}" ]]; then
-        remove_managed_ssh22_ufw_deny || die "撤销受管 SSH 22 阻断规则失败"
-    fi
     ufw --force enable >/dev/null || die "启用 UFW 失败"
     ufw reload >/dev/null || die "重载 UFW 失败"
     verify_ufw_tcp_ports "${desired_ports}"
@@ -336,53 +333,11 @@ ufw_ssh_port_is_allowed() {
     '
 }
 
-managed_ssh22_ufw_rule_numbers() {
-    local status
-    command -v ufw >/dev/null 2>&1 || return 0
-    status=$(LC_ALL=C ufw status numbered 2>/dev/null) || return 1
-    awk -v comment="${UFW_RULE_COMMENT}" '
-        {
-            marker=$0; sub(/^.*#[[:space:]]*/, "", marker)
-            if (marker != comment) next
-            number=$0
-            sub(/^[[:space:]]*\[[[:space:]]*/, "", number); sub(/\].*$/, "", number)
-            line=$0; sub(/^[[:space:]]*\[[^]]*\][[:space:]]*/, "", line)
-            if (number ~ /^[0-9]+$/ && line ~ /^22\/tcp([[:space:]]+\(v6\))?[[:space:]]+DENY[[:space:]]+IN[[:space:]]+Anywhere([[:space:]]|$)/) print number
-        }
-    ' <<<"${status}" | sort -rn
-}
-
-remove_managed_ssh22_ufw_deny() {
-    local numbers number remaining status added managed
-    numbers=$(managed_ssh22_ufw_rule_numbers) || return 1
-    # `status numbered` hides persisted rules while UFW is inactive. Query the
-    # saved commands, and delete by specification only after exact ownership is
-    # established; comments alone do not constrain UFW's rule matching.
-    status=$(LC_ALL=C ufw status numbered 2>/dev/null) || return 1
-    if [[ "${status}" == 'Status: inactive' ]]; then
-        added=$(LC_ALL=C ufw show added 2>/dev/null) || return 1
-        managed="ufw deny 22/tcp comment '${UFW_RULE_COMMENT}'"
-        if grep -Fx -- "${managed}" <<<"${added}" >/dev/null; then
-            ufw --force delete deny 22/tcp >/dev/null || return 1
-            added=$(LC_ALL=C ufw show added 2>/dev/null) || return 1
-            ! grep -Fx -- "${managed}" <<<"${added}" >/dev/null || return 1
-        fi
-        return 0
-    fi
-    [[ -n "${numbers}" ]] || return 0
-    while read -r number; do
-        ufw --force delete "${number}" >/dev/null || return 1
-    done <<<"${numbers}"
-    ufw reload >/dev/null || return 1
-    remaining=$(managed_ssh22_ufw_rule_numbers) || return 1
-    [[ -z "${remaining}" ]]
-}
-
 apply_ssh_ufw_policy() {
     local desired_ports ssh_ports
     desired_ports=$(normalize_ufw_tcp_ports "$1") || die "SSH UFW 端口列表无效"
     # Existing profiles pass business ports too; only the SSH subset needs the
-    # ordered, globally reachable ALLOW check. Bunny passes its detected set.
+    # ordered, globally reachable ALLOW check.
     ssh_ports=$(normalize_ufw_tcp_ports "${2:-${SSH_PORTS:-22}}") || die "SSH UFW 校验端口列表无效"
     verify_ssh_ufw_no_unmanaged_block "${ssh_ports}"
     apply_managed_ufw_tcp_ports "${desired_ports}" "${ssh_ports}"

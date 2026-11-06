@@ -19,6 +19,8 @@ source "${XHTTP_LIB_DIR}/cloudflare-ip-pool.sh"
 source "${XHTTP_LIB_DIR}/cf-dns.sh"
 # shellcheck source=lib/reality-target.sh
 source "${XHTTP_LIB_DIR}/reality-target.sh"
+# shellcheck source=lib/local-aggregation.sh
+source "${XHTTP_LIB_DIR}/local-aggregation.sh"
 
 readonly REALITY_PORT=8443
 # XHTTP 侧的本机回环端口必须在这里定义：write_xray_config / write_nginx_config 都直接引用它，
@@ -34,6 +36,7 @@ readonly CLOUDFLARE_UFW_COMMENT="easy_all-cf-origin"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_TOKEN_FILE="${STATE_DIR}/cloudflare.token"
 readonly COMBINED_RECORD_COMMENT="easy_all combined"
+readonly SUBSCRIPTION_OPTIONAL_VARIANTS=1
 
 PROTOCOL=combined
 BACKEND=xray
@@ -46,7 +49,7 @@ load_state() {
         STATE_VERSION PROTOCOL TCP_ACCELERATION
         VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID
         DIRECT_DOMAIN CF_NODE_DOMAIN
-        SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS VLESS_UUID
+        SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS SUBSCRIPTION_CONFIG VLESS_UUID
         DIRECT_NODE_NAME CF_NODE_PREFIX
         XHTTP_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
@@ -64,13 +67,10 @@ load_state() {
     [[ -n "${CLOUDFLARE_ZONE_ID:-}" ]] || die "状态缺少 Cloudflare Zone ID；请重新安装"
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
-    # 2.0.0 状态的组合模式没有这些字段，回退到当时的固定名称，避免 apply 时静默改名。
-    : "${DIRECT_NODE_NAME:=直连}" "${CF_NODE_PREFIX:=CF-优选}"
-    # 这里只告警不阻断：历史状态可能存着非法 Token，若在此 die，连 edit-sub 和 uninstall 都进不去。
+    # 这里只告警不阻断：历史状态可能存着非法配置，若在此 die，连 edit-sub 和 uninstall 都进不去。
     # 真正写配置前的拦截点在 combined_require_valid_owner_token。
-    combined_tokens_ready \
-        || warn "状态文件中的订阅 Token 不符合 8-128 位 URL 安全字符要求；请执行 sudo easy_all edit-sub 重新配置"
-    combined_sync_allowed_tokens
+    combined_sync_allowed_tokens \
+        || warn "状态文件中的订阅配置无效；请执行 sudo easy_all edit-sub 重新配置"
     SUBSCRIPTION_MODE=deploy
 }
 
@@ -81,13 +81,19 @@ collect_installed_state() {
 save_state() {
     install -d -m 0700 "${STATE_DIR}"
     local temp
+    combined_sync_config_tokens || true
+    if [[ -z "${SUBSCRIPTION_CONFIG:-}" && -n "${ALLOWED_TOKENS:-}" ]]; then
+        SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" \
+            --argjson n "${AGGREGATION_NODES:-[]}" '{allowedTokens:$t,nodes:$n}') \
+            || die "无法生成订阅配置"
+    fi
     temp=$(mktemp "${STATE_DIR}/state.env.XXXXXX") || die "创建状态暂存文件失败"
     {
         printf 'STATE_VERSION=%q\n' "${STATE_SCHEMA_VERSION}"
         for variable in \
             PROTOCOL TCP_ACCELERATION VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID \
             DIRECT_DOMAIN CF_NODE_DOMAIN \
-            SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS VLESS_UUID \
+            SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS SUBSCRIPTION_CONFIG VLESS_UUID \
             DIRECT_NODE_NAME CF_NODE_PREFIX \
             XHTTP_PATH REALITY_TARGET REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID \
             CLOUDFLARE_ORIGIN_CERT_ID CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON \
@@ -146,13 +152,15 @@ collect_install_inputs() {
 
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
-    if [[ -z "${ALLOWED_TOKENS:-}" && -z "${OWNER_TOKEN:-}" ]]; then
-        OWNER_TOKEN=$(generate_secret)
+    if [[ -z "${SUBSCRIPTION_CONFIG:-}" ]] \
+        && [[ -n "${ALLOWED_TOKENS:-}" || -n "${OWNER_TOKEN:-}" ]]; then
+        combined_sync_allowed_tokens \
+            || die "订阅 Token 无效：需 8-128 位 URL 安全字符（A-Z a-z 0-9 . _ ~ -）"
     fi
-    if [[ -z "${ALLOWED_TOKENS:-}" ]]; then
-        ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
-    fi
-    combined_sync_allowed_tokens
+    SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
+        || die "订阅配置无效：需包含 allowedTokens 与 nodes"
+    combined_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
+        || die "订阅配置无效：节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
     combined_validate_install_owner_token
 
     if [[ -z "${VPS_PUBLIC_IPV4:-}" ]]; then
@@ -357,7 +365,7 @@ combined_render_nginx_config() {
             listen_h2=""
         fi
     fi
-    write_subscription_nginx_maps
+    write_subscription_nginx_maps 1
     cat <<EOF
 server {
     listen 443 ssl ${listen_h2}backlog=4096 so_keepalive=15s:5s:3 default_server;
@@ -406,7 +414,7 @@ server {
     add_header Cache-Control "no-store" always;
 
 EOF
-    write_subscription_nginx_locations
+    write_subscription_nginx_locations "" static 1
     cat <<EOF
 }
 EOF
@@ -414,8 +422,8 @@ EOF
 
 # 任何会写 Nginx 配置/订阅文件的路径都先过这里；install 另有更早的校验点。
 combined_require_valid_owner_token() {
-    combined_tokens_ready && return 0
-    die "订阅 Token 无效（需 8-128 位 URL 安全字符，或 {\"user1\":\"token1\"} 字典）；请先执行 sudo easy_all edit-sub 重新配置"
+    combined_config_ready && return 0
+    die "订阅配置无效（需 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru）；请先执行 sudo easy_all edit-sub 重新配置"
 }
 
 write_nginx_config() {
@@ -540,7 +548,7 @@ combined_cf_candidates() {
 }
 
 build_node_links() {
-    local ip label
+    local ip label extra
     build_reality_link
     printf '\n'
     while IFS=$'\t' read -r ip label; do
@@ -548,35 +556,36 @@ build_node_links() {
         build_vless_xhttp_link "${ip}" "${CF_NODE_PREFIX}${label}"
         printf '\n'
     done < <(combined_cf_candidates)
+    extra=$(aggregation_node_links)
+    [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
 }
 
 build_mihomo_nodes() {
-    local ip label
+    local ip label extra
     build_mihomo_reality_node
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
         build_mihomo_xhttp_node "${ip}" "${CF_NODE_PREFIX}${label}"
     done < <(combined_cf_candidates)
+    extra=$(aggregation_mihomo_nodes)
+    [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
 }
 
 collect_node_names() {
-    local ip label names
+    local ip label names extra
     names=$(jq -cn --arg d "${DIRECT_NODE_NAME}" '[$d]')
     while IFS=$'\t' read -r ip label; do
         [[ -n "${ip}" ]] || continue
         names=$(jq -cn --argjson names "${names}" --arg value "${CF_NODE_PREFIX}${label}" \
             '$names + [$value]')
     done < <(combined_cf_candidates)
-    printf '%s' "${names}"
+    extra=$(aggregation_node_names)
+    jq -cn --argjson names "${names}" --argjson extra "${extra}" '$names + $extra'
 }
 
 build_mihomo_proxy_names() {
     printf '        - "AUTO"\n'
     collect_node_names | jq -r '.[] | "        - \(.|@json)"'
-}
-
-build_mihomo_worker_rules() {
-    :
 }
 
 build_mihomo_proxy_groups() {
@@ -591,7 +600,7 @@ EOF
 
 show_node() {
     collect_installed_state
-    local ip label
+    local ip label extra
     printf '\n直连节点:\n'
     build_reality_link
     printf '\n\nCloudflare 节点（优选 IPv4）:\n'
@@ -600,6 +609,13 @@ show_node() {
         build_vless_xhttp_link "${ip}" "${CF_NODE_PREFIX}${label}"
         printf '\n'
     done < <(combined_cf_candidates)
+    extra=$(aggregation_node_links)
+    printf '\n聚合节点（订阅内联）:\n'
+    if [[ -n "${extra}" ]]; then
+        printf '%s\n' "${extra}"
+    else
+        printf '无\n'
+    fi
 }
 
 show_status() {
@@ -827,39 +843,70 @@ combined_token_valid() {
     [[ "${token}" =~ ^[A-Za-z0-9._-][A-Za-z0-9._~-]{7,127}$ ]]
 }
 
-# Token 字典（{用户: token}）是否可用：能解析、能规范化、每个 token 都合法
-combined_tokens_ready() {
-    local normalized
-    if [[ -z "${ALLOWED_TOKENS:-}" ]]; then
-        combined_token_valid "${OWNER_TOKEN:-}" || return 1
-        ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}') || return 1
+# 本机节点名（用于拒绝聚合 JSON 中的重名）。
+combined_local_node_names() {
+    local index names
+    names=$(jq -cn --arg value "${DIRECT_NODE_NAME:-}" '[$value]')
+    for index in 1 2 3 4 5 6; do
+        names=$(jq -cn --argjson names "${names}" --arg value "${CF_NODE_PREFIX:-}${index}" \
+            '$names + [$value]')
+    done
+    printf '%s' "${names}"
+}
+
+# 订阅配置的唯一入口：allowedTokens 与 nodes 一起校验，并派生运行时变量。
+combined_apply_subscription_config() {
+    local normalized names
+    names=$(combined_local_node_names)
+    normalized=$(normalize_subscription_config "${1:-}" "${names}") || return 1
+    SUBSCRIPTION_CONFIG=${normalized}
+    ALLOWED_TOKENS=$(jq -c '.allowedTokens' <<<"${normalized}") || return 1
+    OWNER_TOKEN=$(jq -er '.allowedTokens | to_entries[0].value' <<<"${normalized}") || return 1
+    AGGREGATION_NODES=$(jq -c '.nodes' <<<"${normalized}") || return 1
+    export ALLOWED_TOKENS AGGREGATION_NODES
+}
+
+# 兼容旧状态与环境变量：把单独的 Token 字典折叠进统一配置。
+combined_sync_allowed_tokens() {
+    if [[ -n "${SUBSCRIPTION_CONFIG:-}" ]] \
+        && combined_apply_subscription_config "${SUBSCRIPTION_CONFIG}" 2>/dev/null; then
         return 0
     fi
-    normalized=$(normalize_allowed_tokens "${ALLOWED_TOKENS}" 2>/dev/null) || return 1
-    ALLOWED_TOKENS=${normalized}
-    OWNER_TOKEN=$(jq -er 'to_entries[0].value' <<<"${normalized}") || return 1
-    return 0
-}
-
-# 安装阶段在改动任何云端资源之前就拒绝非法 Token（环境变量传入同样受检）
-combined_validate_install_owner_token() {
-    combined_tokens_ready && return 0
-    die "订阅 Token 无效：需 8-128 位 URL 安全字符（A-Z a-z 0-9 . _ ~ -），或形如 {\"user1\":\"token1\"} 的 JSON 字典；请修正后重试（清空 OWNER_TOKEN 可自动生成）"
-}
-
-
-# Token 字典的唯一入口：已有字典则保留（多用户），否则由 OWNER_TOKEN 派生 {owner: OWNER_TOKEN}。
-# 首次安装路径不经过 load_state，必须显式同步，否则 write_subscription_token_map 会在 set -u 下崩掉（2.2.2 现场）。
-combined_sync_allowed_tokens() {
     if [[ -z "${ALLOWED_TOKENS:-}" ]]; then
-        [[ -n "${OWNER_TOKEN:-}" ]] || return 0
-        ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}') \
-            || die '生成订阅 Token 字典失败'
+        [[ -n "${OWNER_TOKEN:-}" ]] || return 1
+        ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}') || return 1
     fi
-    export ALLOWED_TOKENS
+    SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" \
+        --argjson n "${AGGREGATION_NODES:-[]}" '{allowedTokens:$t,nodes:$n}') || return 1
+    combined_apply_subscription_config "${SUBSCRIPTION_CONFIG}"
 }
 
-# 输入可以是单个 Token，或 {"用户":"token",...} 字典（多用户共享同一节点与订阅内容）
+# 兼容直接修改 ALLOWED_TOKENS 的旧入口：以当前 Token 字典为准更新配置。
+combined_sync_config_tokens() {
+    local configured
+    [[ -n "${SUBSCRIPTION_CONFIG:-}" && -n "${ALLOWED_TOKENS:-}" ]] || return 0
+    configured=$(jq -c '.allowedTokens // empty' <<<"${SUBSCRIPTION_CONFIG}" 2>/dev/null) || return 0
+    [[ "${configured}" == "${ALLOWED_TOKENS}" ]] && return 0
+    SUBSCRIPTION_CONFIG=$(jq -c --argjson t "${ALLOWED_TOKENS}" \
+        '.allowedTokens = $t' <<<"${SUBSCRIPTION_CONFIG}") || return 1
+}
+
+combined_config_ready() {
+    combined_sync_config_tokens || return 1
+    combined_apply_subscription_config "${SUBSCRIPTION_CONFIG:-}" >/dev/null 2>&1
+}
+
+# 安装阶段在改动任何云端资源之前就拒绝非法配置（环境变量传入同样受检）
+combined_validate_install_owner_token() {
+    if [[ -z "${SUBSCRIPTION_CONFIG:-}" ]] \
+        && [[ -n "${ALLOWED_TOKENS:-}" || -n "${OWNER_TOKEN:-}" ]]; then
+        combined_sync_allowed_tokens || true
+    fi
+    combined_config_ready && return 0
+    die "订阅配置无效：allowedTokens 需为 8-128 位 URL 安全字符的 {\"用户\":\"token\"} 字典；nodes 仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
+}
+
+# 仅修改 Token 字典（兼容入口），保持 nodes 不变。
 combined_apply_tokens() {
     local raw=${1:-} normalized token
     raw=${raw#"${raw%%[![:space:]]*}"}
@@ -874,24 +921,30 @@ combined_apply_tokens() {
     fi
     ALLOWED_TOKENS=${normalized}
     OWNER_TOKEN=$(jq -er 'to_entries[0].value' <<<"${normalized}") || return 1
+    if [[ -n "${SUBSCRIPTION_CONFIG:-}" ]]; then
+        SUBSCRIPTION_CONFIG=$(jq -c --argjson t "${ALLOWED_TOKENS}" \
+            '.allowedTokens = $t' <<<"${SUBSCRIPTION_CONFIG}") || return 1
+    else
+        SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" \
+            '{allowedTokens:$t,nodes:[]}') || return 1
+    fi
     return 0
 }
 
 update_subscription() {
-    local raw_tokens="" caller_tokens=${ALLOWED_TOKENS:-}
+    local raw_config="" caller_config=${SUBSCRIPTION_CONFIG:-}
     require_root
     acquire_runtime_write_lock
     collect_installed_state
     if [[ -t 0 ]]; then
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
-        raw_tokens=$(prompt_value \
-            "订阅 Token（单个 Token，或 JSON 字典 {\"用户\":\"token\",...}）" "${ALLOWED_TOKENS}")
+        raw_config=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}")
     else
-        raw_tokens=${caller_tokens:-${ALLOWED_TOKENS:-}}
+        raw_config=${caller_config:-${SUBSCRIPTION_CONFIG:-}}
     fi
-    combined_apply_tokens "${raw_tokens}" \
-        || die "订阅 Token 无效；请输入 8-128 位 URL 安全字符，或 JSON 字典形如 {\"user1\":\"$(generate_secret)\"}"
+    combined_apply_subscription_config "${raw_config}" \
+        || die "订阅配置无效：需包含 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
     snapshot_subscription_update
     write_nginx_config
     write_subscriptions

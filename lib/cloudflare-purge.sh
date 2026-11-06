@@ -6,7 +6,6 @@ umask 077
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly CF_API_BASE="https://api.cloudflare.com/client/v4"
 readonly RECORD_COMMENT_PREFIX="easy_all"
-readonly WORKER_NAME_PREFIX="easyall"
 readonly RULE_REF_PREFIX="easy_all_"
 readonly RULESET_NAME_PREFIX="easy_all"
 
@@ -27,12 +26,11 @@ usage() {
 
 环境变量：EASY_ALL_PURGE_MAX_PAGES  每个列表接口的分页上限（默认 100 页 × 100 条）
 
-识别规则：DNS 记录注释以 easy_all 开头；Worker 名称以 easyall 开头或绑定到待清理域名；
+识别规则：DNS 记录注释以 easy_all 开头；
 规则按 ref 以 easy_all_ 开头且表达式只涉及待清理域名；ruleset 名称以 easy_all 开头且清空后才删除；
 Origin CA 证书只在其全部 hostname 都属于 easy_all 记录或输入域名时删除。
---all 只按 easyall 名称清理 Worker，不会按域名反查用户自己的 Worker。
 Zone 内 easy_all DNS 记录已删除时，规则与证书需要传完整主机名才能识别。
-不删除 Zone 本身，也不删除 Bunny 模式创建的无注释 DNS 记录。
+不删除 Zone 本身。
 EOF
     exit "${status}"
 }
@@ -203,10 +201,9 @@ else
     [[ -s "${RUNTIME_TMP}/zones.tsv" ]] || die "没有找到包含这些域名的 active Zone"
 fi
 
-for file in dns rules rulesets workers wdomains certs allowed-names; do
+for file in dns rules rulesets certs allowed-names; do
     : >"${RUNTIME_TMP}/${file}.tsv"
 done
-: >"${RUNTIME_TMP}/worker-keep.tsv"
 
 zone_name_for() {
     awk -F'\t' -v id="$1" '$1 == id {print $2; exit}' "${RUNTIME_TMP}/zones.tsv"
@@ -252,51 +249,6 @@ fi
     done
 done <"${RUNTIME_TMP}/zones.tsv"
 
-# 3) Worker：名称以 easyall 开头；--domain 时也接受绑定到输入域名的 Worker。
-#    --all 不按域名反查，避免把用户自己的 Worker 一起选中。
-cut -f3 "${RUNTIME_TMP}/zones.tsv" | sort -u >"${RUNTIME_TMP}/accounts"
-while IFS= read -r account_id; do
-    [[ -n "${account_id}" ]] || continue
-    scripts=$(cf_list "/accounts/${account_id}/workers/scripts?") || {
-        warn "无法读取账户 ${account_id} 的 Worker 列表（Token 可能缺少 Workers 权限），跳过 Worker"
-        continue
-    }
-    domains=$(cf_list "/accounts/${account_id}/workers/domains?") || {
-        warn "无法读取账户 ${account_id} 的 Worker 自定义域名，跳过 Worker"
-        continue
-    }
-    while IFS= read -r worker_name; do
-        [[ -n "${worker_name}" ]] || continue
-        selected=0
-        [[ "${worker_name}" == "${WORKER_NAME_PREFIX}"* ]] && selected=1
-        if ((selected == 0)) && ((PURGE_ALL == 0)); then
-            while IFS= read -r hostname; do
-                [[ -n "${hostname}" ]] || continue
-                lower=$(tr '[:upper:]' '[:lower:]' <<<"${hostname}")
-                if domain_scope "${lower}"; then
-                    selected=1
-                    break
-                fi
-            done < <(jq -r --arg name "${worker_name}" \
-                '.[] | select(.service == $name) | .hostname' <<<"${domains}")
-        fi
-        ((selected == 1)) || continue
-        printf '%s\t%s\n' "${account_id}" "${worker_name}" >>"${RUNTIME_TMP}/workers.tsv"
-        while IFS=$'\t' read -r domain_id hostname; do
-            [[ -n "${domain_id}" ]] || continue
-            lower=$(tr '[:upper:]' '[:lower:]' <<<"${hostname}")
-            if ((PURGE_ALL == 1)) || domain_scope "${lower}"; then
-                printf '%s\t%s\t%s\n' "${account_id}" "${domain_id}" "${hostname}" \
-                    >>"${RUNTIME_TMP}/wdomains.tsv"
-            else
-                printf '%s\t%s\t%s\n' "${account_id}" "${worker_name}" "${hostname}" \
-                    >>"${RUNTIME_TMP}/worker-keep.tsv"
-            fi
-        done < <(jq -r --arg name "${worker_name}" \
-            '.[] | select(.service == $name) | [.id, .hostname] | @tsv' <<<"${domains}")
-    done < <(jq -r '.[].id' <<<"${scripts}")
-done <"${RUNTIME_TMP}/accounts"
-
 # 4) Origin CA：按 Zone 查询（满足 Zone-scoped Token），全部 hostname 在范围内才删
 : >"${RUNTIME_TMP}/cert-seen.tsv"
 cert_warned=0
@@ -338,14 +290,10 @@ print_plan() {
         "DNS 记录") printf '  %-11s %s %s\n' "${label}" "$(zone_name_for "${a}")" "${c}" ;;
         "规则") printf '  %-11s %s %s\n' "${label}" "$(zone_name_for "${a}")" "${d}" ;;
         "Ruleset") printf '  %-11s %s %s\n' "${label}" "$(zone_name_for "${a}")" "${c}" ;;
-        "Worker") printf '  %-11s %s\n' "${label}" "${b}" ;;
-        "Worker 域名") printf '  %-11s %s\n' "${label}" "${c}" ;;
         "Origin CA") printf '  %-11s %s\n' "${label}" "${b}" ;;
         esac
     done <"${RUNTIME_TMP}/${file}.tsv"
 }
-print_plan "Worker 域名" wdomains
-print_plan "Worker" workers
 print_plan "规则" rules
 print_plan "Ruleset" rulesets
 print_plan "Origin CA" certs
@@ -356,7 +304,7 @@ if ((total == 0)); then
     exit 0
 fi
 
-info "以上 ${total} 个 Cloudflare 对象将被删除（不删除 Zone，也不删除 Bunny 模式的无注释 DNS 记录）"
+info "以上 ${total} 个 Cloudflare 对象将被删除（不删除 Zone）"
 if ((ASSUME_YES == 0)); then
     [[ -t 0 ]] || die "非交互模式必须加 --yes 才能删除"
     read_prompt '确认删除？[y/N]: ' _answer
@@ -374,19 +322,6 @@ purge() {
     fi
 }
 
-while IFS=$'\t' read -r account_id domain_id hostname; do
-    [[ -n "${domain_id}" ]] || continue
-    purge "Worker 域名" "${hostname}" "/accounts/${account_id}/workers/domains/${domain_id}"
-done <"${RUNTIME_TMP}/wdomains.tsv"
-while IFS=$'\t' read -r account_id worker_name; do
-    [[ -n "${worker_name}" ]] || continue
-    if grep -q "^${account_id}"$'\t'"${worker_name}"$'\t' "${RUNTIME_TMP}/worker-keep.tsv"; then
-        warn "Worker ${worker_name} 仍绑定非本次范围的域名，保留"
-        failures=$((failures + 1))
-        continue
-    fi
-    purge "Worker" "${worker_name}" "/accounts/${account_id}/workers/scripts/${worker_name}"
-done <"${RUNTIME_TMP}/workers.tsv"
 while IFS=$'\t' read -r zone_id ruleset_id rule_id rule_ref; do
     [[ -n "${rule_id}" ]] || continue
     purge "规则" "${rule_ref}" "/zones/${zone_id}/rulesets/${ruleset_id}/rules/${rule_id}"

@@ -7,7 +7,6 @@ EASY_ALL_FAIL2BAN_CONFIG="${EASY_ALL_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-ea
 EASY_ALL_FAIL2BAN_ACTION_CONFIG="${EASY_ALL_FAIL2BAN_ACTION_CONFIG:-/etc/fail2ban/action.d/easy-all-ufw-cidr.conf}"
 # Fail2ban 是常驻安全基线：helper 放在独立系统路径，卸载 easy_all 时保留。
 EASY_ALL_FAIL2BAN_CIDR_HELPER="${EASY_ALL_FAIL2BAN_CIDR_HELPER:-/usr/local/sbin/fail2ban-ufw-cidr.sh}"
-EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER="${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER:-/usr/local/lib/easy_all/fail2ban-ufw-cidr.sh}"
 EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${EASY_ALL_FAIL2BAN_CIDR_STATE_DIR:-/var/lib/easy_all/fail2ban-ufw-cidr}"
 if [[ -z "${IPV6_SYSCTL_CONF:-}" ]]; then
     IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
@@ -256,28 +255,16 @@ restore_platform_security_state() {
             break
         done
     fi
-    # Revoke and verify our managed deny22 (legacy 65533-era rule) before the
-    # caller deletes managed allow rules. A failed UFW deletion must take the
-    # same guarded recovery path as an SSH failure.
-    if ((ssh_restored == 1)) && ! remove_managed_ssh22_ufw_deny; then
-        warn "撤销受管 UFW deny22 未通过验证"
-        ssh_restored=0
-    fi
     if ((ssh_restored == 0)); then
         warn "SSH 监听未收敛（仅 IPv4）：期望 [$(tr '\n' ' ' <<<"${expected_listeners}")]，实际 [$(ssh_actual_listeners 2>/dev/null | tr '\n' ' ')]"
-        warn "SSH 配置、实际监听或 deny22 撤销检查失败；保留当前 SSH 配置、防火墙、状态与备份，卸载/回滚未完成"
+        warn "SSH 配置或实际监听未收敛；保留当前 SSH 配置、防火墙、状态与备份，卸载/回滚未完成"
         restore_managed_ssh_port_config "${sshd_bin}" "${unit}" "${current_ssh_config}" "${current_ssh_had}" \
             || warn "尝试保留恢复前的 SSH 配置或重载失败，请立即通过 Console 检查"
         return 1
     fi
 
     # 卸载与安装失败回滚都不回收常驻安全基线：保留 Fail2ban jail/action/helper、
-    # 封禁规则与运行状态，只把旧版 helper 路径迁移到当前系统路径。
-    # 迁移失败必须中止：运行时目录随后会被删除，旧 helper 不能丢。
-    migrate_legacy_fail2ban_cidr_helper || {
-        warn "迁移旧版 Fail2ban CIDR 助手脚本失败；保留本机内容以便重试"
-        return 1
-    }
+    # 封禁规则与运行状态。
 }
 
 append_ssh_port() {
@@ -583,50 +570,6 @@ actionunban = ${EASY_ALL_FAIL2BAN_CIDR_HELPER} unban <ip> ${EASY_ALL_FAIL2BAN_CI
 EOF
 }
 
-# 旧安装的 action 配置可能仍指向运行时目录里的 helper；迁移到系统路径后卸载才不会
-# 把仍在生效的 SSH 封禁动作打断。
-migrate_legacy_fail2ban_cidr_helper() {
-    local legacy="${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}" candidate
-    [[ "${legacy}" != "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] || return 0
-    [[ -f "${legacy}" ]] || return 0
-    if [[ ! -f "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]]; then
-        install -d -m 0755 "$(dirname -- "${EASY_ALL_FAIL2BAN_CIDR_HELPER}")" \
-            && install -m 0755 "${legacy}" "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" \
-            || return 1
-    fi
-    [[ -f "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" ]] || return 0
-    grep -Fq -- "${legacy}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" || return 0
-    candidate=$(mktemp "$(dirname -- "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}")/.easy-all-fail2ban-action.XXXXXX") \
-        || return 1
-    if ! write_fail2ban_cidr_action_config "${candidate}" \
-        || ! install -m 0644 "${candidate}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"; then
-        rm -f -- "${candidate}"
-        return 1
-    fi
-    rm -f -- "${candidate}"
-    # 运行中的 Fail2ban 在内存里持有旧的 actionban 路径，必须重读配置后新路径才生效。
-    if systemctl cat fail2ban.service >/dev/null 2>&1 \
-        && systemctl is-active --quiet fail2ban.service; then
-        fail2ban-client -t >/dev/null 2>&1 \
-            && systemctl restart fail2ban.service >/dev/null 2>&1 \
-            && fail2ban-client status sshd >/dev/null 2>&1 \
-            || return 1
-    fi
-}
-
-# 新 helper 生效后清掉运行时目录里的旧副本，避免两份脚本各自漂移。
-remove_legacy_fail2ban_cidr_helper() {
-    local legacy="${EASY_ALL_LEGACY_FAIL2BAN_CIDR_HELPER}"
-    [[ "${legacy}" != "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] || return 0
-    [[ -f "${legacy}" ]] || return 0
-    [[ -x "${EASY_ALL_FAIL2BAN_CIDR_HELPER}" ]] || return 0
-    if [[ -f "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}" ]] \
-        && grep -Fq -- "${legacy}" "${EASY_ALL_FAIL2BAN_ACTION_CONFIG}"; then
-        return 0
-    fi
-    rm -f -- "${legacy}" 2>/dev/null || true
-}
-
 wait_for_ssh_fail2ban() {
     local attempt
     for attempt in {1..20}; do
@@ -710,8 +653,7 @@ EOF
         && fail2ban-client status sshd >/dev/null 2>&1; then
         rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
             "${jail_backup}" "${action_backup}" "${helper_backup}"
-        remove_legacy_fail2ban_cidr_helper
-        info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按单 IP 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
+            info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按单 IP 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
         return 0
     fi
 
@@ -742,7 +684,6 @@ EOF
     fi
     rm -f -- "${jail_candidate}" "${action_candidate}" "${helper_candidate}" \
         "${jail_backup}" "${action_backup}" "${helper_backup}"
-    remove_legacy_fail2ban_cidr_helper
     info "Fail2ban 已保护 SSH 端口 ${SSH_PORTS}：IPv4 按单 IP 封禁；3 分钟失败 6 次，首次封禁 3 小时并递增至 1 周"
 }
 

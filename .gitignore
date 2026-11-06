@@ -11,12 +11,8 @@ state.env
 *.crt
 *.csr
 *.token
-subscribe-worker.js
-worker.js
 /XFLASH
 
-/worker-src/config.local.json
-**/.worker-build-*/
 __pycache__/
 *.pyc
 .dsh/skills/budget-review.md

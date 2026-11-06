@@ -2,17 +2,15 @@
 
 本手册介绍使用 `easy_all` 部署各个模式前，需要在域名注册商、Cloudflare 和 Globalping 准备的资源与凭证。
 
-> Bunny 模式的前置准备、Pull Zone 绑定与运维详见独立的 [Bunny 前置准备手册](bunny-preparation-guide.md)。
-
 ---
 
 ## 0. 各模式资源准备一览表
 
 | 模式 | 必须准备的资源 | 核心凭据 / Token |
 | :--- | :--- | :--- |
-| **模式 1：直连 Reality** | - 纯节点（`link`）：仅需公网 IPv4 VPS，无其他要求<br>- 本机订阅（`deploy`）：需 1 个二级子域名（如 `sub.example.com`）<br>- Worker 聚合（`worker`）：需 2 个二级子域名（公开订阅域名 + 私有源域名） | - 纯节点：无<br>- 订阅模式：具备 DNS/证书权限的 Cloudflare API Token |
-| **模式 2：Cloudflare CDN** | - 已托管至 Cloudflare 的域名 Zone（Free 方案即可）<br>- 2 个二级子域名（节点域名如 `node.example.com` + 订阅域名如 `sub.example.com`）<br>- 控制台手动开启 **Network → gRPC** | - Cloudflare API Token（含 Workers 编辑权限）<br>- Globalping Access Token |
-| **组合模式** | - 已托管至 Cloudflare 的域名 Zone<br>- 3 个二级子域名（直连、CF 节点、订阅） | - Cloudflare API Token（仅限 DNS/证书编辑最小权限；将保存至 root 受控文件）<br>- Globalping Access Token |
+| **模式 1：直连 Reality** | - 纯节点（`link`）：仅需公网 IPv4 VPS，无其他要求<br>- 本机订阅（`deploy`）：需 1 个二级子域名（如 `sub.example.com`） | - 纯节点：无<br>- 订阅模式：具备 DNS/证书权限的 Cloudflare API Token |
+| **模式 2：Cloudflare CDN** | - 已托管至 Cloudflare 的域名 Zone（Free 方案即可）<br>- 1 个二级子域名（节点域名如 `node.example.com`，订阅由本机 Nginx 在同一域名下发）<br>- 控制台手动开启 **Network → gRPC** | - Cloudflare API Token（DNS/证书/规则权限）<br>- Globalping Access Token |
+| **模式 3：组合模式** | - 已托管至 Cloudflare 的域名 Zone<br>- 3 个二级子域名（直连、CF 节点、订阅） | - Cloudflare API Token（仅限 DNS/证书编辑最小权限；将保存至 root 受控文件）<br>- Globalping Access Token |
 
 ---
 
@@ -28,7 +26,7 @@
 4. 登录你的域名注册商控制面板，将域名的权威 DNS 服务器替换为 Cloudflare 给出的这两条。
 5. 等待 DNS 传播生效，直到 Cloudflare 控制台显示域名状态为 **Active**（已保护）。
 
-> **注意**：子域名（如 `node.example.com`、`sub.example.com`）由 `easy_all` 安装时自动通过 API 创建，**请勿提前手动添加 A 记录或 CNAME**。
+> **注意**：按各模式提示准备的子域名由 `easy_all` 安装时自动通过 API 创建，**请勿提前手动添加 A 记录或 CNAME**。
 
 ---
 
@@ -58,10 +56,8 @@ Cloudflare 模式与组合模式依赖 [Globalping](https://dash.globalping.io/)
 | `Zone / Config Rules / Edit` | 模式 2、组合模式 | 自动设置 SSL 为 Full (strict) |
 | `Zone / Transform Rules / Edit` | 模式 2 | 管理 XHTTP 回源防探测密钥规则 |
 | `Zone / Zone Settings / Edit` | 模式 2 | 自动开启 origin HTTP/2 |
-| `Account / Workers Scripts / Edit` | 模式 2、模式 1 (worker 聚合) | 自动部署与管理订阅 Worker |
 
 ### 3.2 作用范围（Zone Resources）
-- **Account Resources**：`Include → Specific account → 你的账号`
 - **Zone Resources**：`Include → Specific zone → 你的域名 (example.com)`
 
 创建后妥善保存 Token，在安装交互提示 `Cloudflare API Token` 时粘贴。
@@ -71,7 +67,7 @@ Cloudflare 模式与组合模式依赖 [Globalping](https://dash.globalping.io/)
 
 ---
 
-## 4. 组合模式（直连 Reality + Cloudflare）域名规划
+## 4. 模式 3：组合模式（直连 Reality + Cloudflare）域名规划
 
 组合模式将「直连 Reality」与「Cloudflare CDN 优选」部署在同一台 VPS 上，共需同一个 Cloudflare Zone 下的 3 个二级子域：
 

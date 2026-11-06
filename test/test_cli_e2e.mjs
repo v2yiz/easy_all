@@ -32,16 +32,11 @@ for (const arg of ['help', '--help', '-h']) {
     assert.equal(res.status, 0, `easy_all ${arg} should exit with 0`);
     assert.ok(res.stdout.includes('用法: easy_all [命令]'), 'Help should show usage');
     assert.ok(res.stdout.includes('Reality'), 'Help should list Reality mode');
-    assert.ok(res.stdout.includes('Bunny CDN'), 'Help should list Bunny CDN mode');
-    assert.ok(!res.stdout.includes('Gcore'), 'Help must not mention removed Gcore mode');
     assert.ok(res.stdout.includes('组合'), 'Help should list combined mode');
     assert.ok(res.stdout.includes('cleanup-partial'), 'Help should list cleanup-partial');
 }
 
-// 2. purge-gcore 已移除
-const purgeGone = run(easyAll, ['purge-gcore', '--help']);
-assert.notEqual(purgeGone.status, 0, 'purge-gcore must no longer exist');
-
+// 2. purge-cloudflare 帮助
 const purgeCfHelp = run(easyAll, ['purge-cloudflare', '--help']);
 assert.equal(purgeCfHelp.status, 0, purgeCfHelp.stderr);
 assert.ok(purgeCfHelp.stdout.includes('purge-cloudflare'), 'purge-cloudflare help should show usage');
@@ -66,44 +61,35 @@ assert.ok(
     `install with args rejected: ${installWithArgs.stderr}`,
 );
 
-// 2.6 cleanup-partial 参数校验（root 之前就校验，非 root 环境也能覆盖）
+// 2.6 cleanup-partial：只接受无参数，且缺进度标记时不会动任何路径
 const cleanupHelp = run(easyAll, ['cleanup-partial', '--help']);
 assert.equal(cleanupHelp.status, 0, cleanupHelp.stderr);
-assert.ok(
-    cleanupHelp.stdout.includes('--assume-mode'),
-    'cleanup-partial help should document --assume-mode',
-);
-// 必须隔离：root + FORCE=1 下若状态与 marker 都"不存在"，这条命令会执行真实清理。
+assert.ok(cleanupHelp.stdout.includes('cleanup-partial'), 'cleanup-partial help should show usage');
+
 const cleanupIsolation = {
     FORCE: '0',
     EASY_ALL_STATE_FILE_OVERRIDE: join(tmpdir(), `no-state-${Date.now()}.env`),
     EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE: join(tmpdir(), `no-progress-${Date.now()}.env`),
 };
-const cleanupNumericMode = run(easyAll, ['cleanup-partial', '--assume-mode', '5'], cleanupIsolation);
-assert.equal(cleanupNumericMode.status, 1, 'cleanup-partial must not succeed in the test environment');
+const cleanupWithArgs = run(easyAll, ['cleanup-partial', 'extra-arg'], cleanupIsolation);
+assert.equal(cleanupWithArgs.status, 1, 'cleanup-partial must reject extra arguments');
 assert.ok(
-    !cleanupNumericMode.stderr.includes('不支持的安装模式'),
-    'menu number 5 must be accepted as a mode alias',
+    cleanupWithArgs.stderr.includes('用法：easy_all cleanup-partial'),
+    cleanupWithArgs.stderr,
 );
+const cleanupNoMarker = run(easyAll, ['cleanup-partial'], cleanupIsolation);
+assert.equal(cleanupNoMarker.status, 1, 'cleanup-partial must not succeed without a marker');
 if (process.getuid && process.getuid() === 0) {
-    // root 下别名已被接受并走到非交互守卫；FORCE=0 + 管道 stdin 会在这里拒绝，
-    // 不会加载 profile、不会取写锁、不会清理任何路径。
     assert.ok(
-        cleanupNumericMode.stderr.includes('非交互清理必须显式设置 FORCE=1'),
-        'root run should stop at the non-interactive FORCE guard',
+        cleanupNoMarker.stderr.includes('未检测到安装进度标记'),
+        cleanupNoMarker.stderr,
     );
 } else {
     assert.ok(
-        cleanupNumericMode.stderr.includes('请使用 root 用户运行此脚本'),
-        'non-root run should stop at the root check',
+        cleanupNoMarker.stderr.includes('请使用 root 用户运行此脚本'),
+        cleanupNoMarker.stderr,
     );
 }
-const cleanupBadMode = run(easyAll, ['cleanup-partial', '--assume-mode', 'nope']);
-assert.equal(cleanupBadMode.status, 1, 'unknown mode must be rejected');
-assert.ok(
-    cleanupBadMode.stderr.includes('不支持的安装模式'),
-    'cleanup-partial should reject unknown --assume-mode',
-);
 
 // 3. 未安装状态调用命令（关键失败场景）
 const uninstalledRes = run(easyAll, ['status'], {
@@ -133,33 +119,26 @@ try {
     assert.equal(cfRes.status, 1);
     assert.ok(cfRes.stderr.includes('仅适用于 CDN 精选 IP 模式'));
 
-    // Bunny 模式：不支持 Reality 专属与直连专属命令
-    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="bunny-ws"\n');
-    const realityTargetRes = run(easyAll, ['reality-target'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
-    assert.equal(realityTargetRes.status, 1);
-    assert.ok(realityTargetRes.stderr.includes('仅适用于 Reality 与组合模式'));
-
-    const rotateRes = run(easyAll, ['rotate-dynamic-ports'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
-    assert.equal(rotateRes.status, 1);
-    assert.ok(rotateRes.stderr.includes('仅适用于 Reality 模式'));
-
-    // 组合模式：只提供三入口与订阅，不提供动态端口与 Bunny 专属命令
+    // 组合模式：只提供三入口与订阅，不提供 Reality 专属命令
     writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="combined"\n');
     for (const [command, message] of [
         ['rotate-dynamic-ports', '仅适用于 Reality 模式'],
-        ['refresh-origin-ips', '仅适用于 Bunny 模式'],
-        ['cert-renew', '仅适用于 Bunny 模式'],
     ]) {
         const res = run(easyAll, [command], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
         assert.equal(res.status, 1, `${command} must be rejected in combined mode`);
         assert.ok(res.stderr.includes(message), `${command}: ${res.stderr}`);
     }
+    // 已随模式移除的命令不再存在
+    for (const command of ['refresh-origin-ips', 'cert-renew']) {
+        const res = run(easyAll, [command], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
+        assert.equal(res.status, 1, `${command} must no longer exist`);
+    }
 
-    // 已移除的 gcore 状态：无法识别
-    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="gcore"\n');
-    const gcoreRotateRes = run(easyAll, ['rotate-dynamic-ports'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
-    assert.equal(gcoreRotateRes.status, 1);
-    assert.ok(gcoreRotateRes.stderr.includes('无法识别已安装协议'), gcoreRotateRes.stderr);
+    // 不认识的状态协议：明确拒绝并退出
+    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="unknown"\n');
+    const unknownRes = run(easyAll, ['rotate-dynamic-ports'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
+    assert.equal(unknownRes.status, 1);
+    assert.ok(unknownRes.stderr.includes('无法识别已安装协议'), unknownRes.stderr);
 } finally {
     try { unlinkSync(stateFile); } catch {}
 }

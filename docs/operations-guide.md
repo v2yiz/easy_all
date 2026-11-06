@@ -21,12 +21,12 @@ sudo easy_all apply
 - 重新渲染并应用本机 Xray 配置、Nginx 站点、本地订阅与 UFW 规则。
 - 不会重复向 Cloudflare 请求签发证书或修改 DNS。
 
-### 1.3 同步云端资源（Cloudflare / Bunny / 组合模式）
+### 1.3 同步云端资源（Cloudflare / 组合模式）
 如果更改了域名、需要同步云端解析、更新边缘规则或重新签发证书：
 ```bash
 sudo easy_all apply-cloud
 ```
-- 会重新校验并同步 Cloudflare 或 Bunny 的云端 DNS 记录、边缘规则及证书配置。
+- 会重新校验并同步 Cloudflare 的云端 DNS 记录、边缘规则及证书配置。
 
 ---
 
@@ -40,12 +40,11 @@ sudo easy_all apply-cloud
 | `sudo easy_all reality-target [域名:端口]` | （Reality / 组合模式）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
 | `sudo easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 重定向规则 |
 | `sudo easy_all refresh-cdn-ips` | （Cloudflare / 组合模式）重新调用 Globalping 探针优选最新 CDN IP |
-| `sudo easy_all refresh-origin-ips` | （Bunny 模式）立即刷新 Bunny 官方回源 IPv4 防火墙白名单 |
-| `sudo easy_all edit-sub` | 交互式管理订阅用户、订阅模板或 Worker 聚合 |
+| `sudo easy_all edit-sub` | 交互式编辑订阅配置（用户 Token + 聚合节点）与订阅模板 |
 | `sudo easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `sudo easy_all update-core` | 在线升级 Xray 核心至官方最新版本，并自动重载服务 |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的临时残留（不影响云端资源） |
-| `sudo easy_all uninstall` | 卸载本机服务与配置；加 `--purge-cloud` 会同步清理云端资源（Cloudflare 与 Bunny 均支持）。卸载只回收业务端口与回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置 |
+| `sudo easy_all uninstall` | 卸载本机服务与配置；加 `--purge-cloud` 会同步清理云端资源。卸载只回收业务端口与回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置 |
 
 ---
 
@@ -85,8 +84,9 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 sudo easy_all edit-sub
 ```
 
-- **添加/修改用户**：按提示输入完整用户字典 JSON（例如 `{"owner":"token1", "user2":"token2"}`）。省略的用户将被删除；完成后各用户的专属订阅链接可通过 `sudo easy_all subscription` 查看。
-- **自定义模板与聚合**：支持交互式切换或重载 Mihomo 订阅模板，或配置 Cloudflare Worker 订阅聚合。
+- **订阅配置**：按提示输入一份 JSON，同时包含 `allowedTokens`（用户 Token 字典）与 `nodes`（聚合节点数组）。省略的用户或节点会被删除；完成后各用户的专属订阅链接可通过 `sudo easy_all subscription` 查看。
+- **聚合节点**：`nodes` 支持 `vless`（`reality/tcp` 或 `tls/xhttp`）与 `mieru`；示例见 `templates/aggregation.example.json`。`optional: true` 的节点仅在订阅 URL 追加 `&node=all` 时下发。`tls/xhttp` 节点里 `host` 是客户端连接地址（可用 CDN 优选 IP），`sni` 同时作为 TLS SNI 与 HTTP `Host` 头，因此必须填代理域名的真实域名；`reality/tcp` 节点的 `sid` 需为 2-16 位偶数长度十六进制。
+- **自定义模板**：支持交互式切换或重载 Mihomo 订阅模板。
 
 ---
 
@@ -102,7 +102,7 @@ sudo easy_all uninstall
 ```bash
 sudo easy_all uninstall --purge-cloud
 ```
-自动调用 API 清理本次安装在云端创建的托管资源（Cloudflare 模式清理节点 DNS 解析、Origin CA 证书及专属规则；Bunny 模式清理 Pull Zone、DNS 解析、边缘规则与证书）。
+自动调用 API 清理本次安装在云端创建的托管资源（清理节点 DNS 解析、Origin CA 证书及专属规则）。
 
 ### 6.3 独立清理 Cloudflare 残留
 若 VPS 已销毁或状态丢失，可使用独立命令清理账户内 easy_all 标记的资源：
@@ -117,7 +117,7 @@ sudo easy_all purge-cloudflare --domain example.com
 | 现象 / 报错 | 常见根因与解决办法 |
 | :--- | :--- |
 | **SSH 断开后重连失败** | - 检查服务商后台云防火墙/安全组是否已放行 SSH 端口（默认 22）。<br>- 检查 UFW 状态及 Fail2ban 是否因多次认证失败暂时封禁了客户端 IP。 |
-| **重跑提示 TCP 80/443 被占用** | 上次安装中断残留了 Nginx 默认站点。执行 `sudo easy_all cleanup-partial` 清理残留后重试。 |
+| **重跑提示 TCP 80/443 被占用** | 有 easy_all 残留时按提示执行 `sudo easy_all cleanup-partial`；只报了「easy_all 仅支持专用 VPS」说明占用者是第三方进程（多为本机自用 Nginx），先确认归属再处理。 |
 | **安装中断提示「继续上次安装」** | 组合模式支持断点续装，回车选择 `Y` 即可复用已生成的证书和密钥快速继续安装；选 `n` 则清理重装。 |
 | **Cloudflare Zone 校验失败** | 域名在 Cloudflare 控制台必须处于 **Active**（已保护）状态，不能仅停留在待更名或待验证阶段。 |
 | **提示未开启 gRPC** | Cloudflare XHTTP 模式必须在 Cloudflare 控制台手动开启：进入域名 Zone → **Network** → 将 **gRPC** 切换为 **On**。 |
