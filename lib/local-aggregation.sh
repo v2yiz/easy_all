@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Subscription aggregation for the combined profile.
+# Subscription aggregation shared by the Reality and combined profiles.
 # One config object carries both credentials and extra nodes:
 #   {"allowedTokens": {"owner": "..."}, "nodes": [...]}
 # Nodes marked optional are served only when the client asks for node=all.
@@ -162,6 +162,22 @@ normalize_subscription_config() {
     ' <<<"$(jq -c '.nodes // []' <<<"${raw}")") || return 1
     jq -cn --argjson tokens "${tokens}" --argjson nodes "${nodes}" \
         '{allowedTokens: $tokens, nodes: $nodes}'
+}
+
+# 旧状态/旧环境只提供 Token 字典时，折叠成 nodes 为空的订阅配置。
+subscription_config_from_tokens() {
+    jq -cn --argjson tokens "${1:-}" \
+        '{allowedTokens:$tokens,nodes:[]}'
+}
+
+# 校验订阅配置并派生出运行期变量；调用方传入本机节点名，用于拒绝聚合节点重名。
+apply_local_aggregation_config() {
+    local normalized
+    normalized=$(normalize_subscription_config "${1:-}" "${2:-[]}") || return 1
+    SUBSCRIPTION_CONFIG=${normalized}
+    ALLOWED_TOKENS=$(jq -c '.allowedTokens' <<<"${normalized}") || return 1
+    AGGREGATION_NODES=$(jq -c '.nodes' <<<"${normalized}") || return 1
+    export ALLOWED_TOKENS AGGREGATION_NODES
 }
 
 # 生效的聚合节点（默认不下发 optional；node=all 时才包含）。

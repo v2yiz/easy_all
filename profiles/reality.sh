@@ -25,6 +25,10 @@ readonly SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.port-template"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.port-template"
 readonly SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_DIR}/mihomo-ios.port-template"
+readonly SUBSCRIPTION_BASE64_ALL_FILE="${SUBSCRIPTION_DIR}/base64-all.port-template"
+readonly SUBSCRIPTION_MIHOMO_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-all.port-template"
+readonly SUBSCRIPTION_MIHOMO_IOS_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-ios-all.port-template"
+readonly SUBSCRIPTION_OPTIONAL_VARIANTS=1
 readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
 readonly ENTRY_COMMAND_NAME="${EASY_ALL_ENTRY_COMMAND:-easy_all}"
 readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
@@ -74,6 +78,8 @@ EASY_ALL_RUNTIME_LIB_DIR="${SCRIPT_DIR}"
 source "${SCRIPT_DIR}/runtime-core.sh"
 # shellcheck source=lib/reality-target.sh
 source "${SCRIPT_DIR}/reality-target.sh"
+# shellcheck source=lib/local-aggregation.sh
+source "${SCRIPT_DIR}/local-aggregation.sh"
 
 install_packages() {
     local pkgs=(
@@ -240,7 +246,7 @@ load_state() {
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
         VPS_IP_FAMILY VPS_PUBLIC_IPV6
         GOOGLE_EGRESS_MODE GOOGLE_EGRESS_RESOLVED
-        SUB_PORT_MODE ALLOWED_TOKENS
+        SUB_PORT_MODE ALLOWED_TOKENS SUBSCRIPTION_CONFIG AGGREGATION_NODES
         SUBSCRIPTION_MODE SUB_DOWNLOAD_NAME SUBSCRIPTION_DOMAIN
         CLOUDFLARE_ZONE_ID CLOUDFLARE_ZONE_NAME
         CLOUDFLARE_ORIGIN_CERT_ID
@@ -293,10 +299,25 @@ load_state() {
             && -n "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" \
             && -n "${CLOUDFLARE_STRICT_RULESET_ID:-}" ]] \
             || die "Reality Cloudflare 订阅状态不完整；请重新安装"
+        # 旧状态只存 Token 字典：折叠成统一订阅配置（nodes 为空）。
+        # 折叠失败同样只告警：损坏的旧状态不能把 edit-sub / uninstall 一起锁死。
+        if [[ -z "${SUBSCRIPTION_CONFIG:-}" && -n "${ALLOWED_TOKENS:-}" ]]; then
+            if ! SUBSCRIPTION_CONFIG=$(subscription_config_from_tokens "${ALLOWED_TOKENS}"); then
+                SUBSCRIPTION_CONFIG=""
+                warn "状态文件中的订阅令牌无效；请执行 sudo easy_all edit-sub 重新配置"
+            fi
+        fi
+        # 历史状态可能存着非法配置，这里只告警不阻断：若在此 die，连 edit-sub 和
+        # uninstall（两者都先走 load_state）都进不去。真正写订阅前的拦截点是
+        # install_static_subscriptions 与 collect_deployed_subscription_inputs。
+        [[ -z "${SUBSCRIPTION_CONFIG:-}" ]] \
+            || reality_apply_subscription_config "${SUBSCRIPTION_CONFIG}" 2>/dev/null \
+            || warn "状态文件中的订阅配置无效；请执行 sudo easy_all edit-sub 重新配置"
+    else
+        SUBSCRIPTION_CONFIG=""
+        AGGREGATION_NODES="[]"
     fi
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
-    [[ -z "${ALLOWED_TOKENS:-}" ]] || ALLOWED_TOKENS=$(normalize_allowed_tokens "${ALLOWED_TOKENS}") \
-        || die "状态文件中的 ALLOWED_TOKENS 无效"
 }
 
 save_state() {
@@ -327,6 +348,7 @@ save_state() {
         printf 'GOOGLE_EGRESS_RESOLVED=%q\n' "${GOOGLE_EGRESS_RESOLVED}"
         printf 'SUB_PORT_MODE=%q\n' "${SUB_PORT_MODE:-$(protocol_default_port_mode)}"
         printf 'ALLOWED_TOKENS=%q\n' "${ALLOWED_TOKENS:-}"
+        printf 'SUBSCRIPTION_CONFIG=%q\n' "${SUBSCRIPTION_CONFIG:-}"
         printf 'MIHOMO_TEMPLATE_SNAPSHOT=%q\n' "${MIHOMO_TEMPLATE_SNAPSHOT:-0}"
         printf 'SUBSCRIPTION_MODE=%q\n' "${SUBSCRIPTION_MODE:-link}"
         printf 'SUB_DOWNLOAD_NAME=%q\n' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}"
@@ -855,6 +877,14 @@ build_mihomo_node() {
             "    smux:\n      enabled: false\n"'
 }
 
+# PROXY 分组顺序：本机节点 → 聚合节点（名字原样取自订阅配置），可选节点仅 node=all 下发。
+build_mihomo_proxy_names() {
+    local extra
+    extra=$(aggregation_node_names)
+    jq -nr --arg direct "${NODE_NAME}" --argjson extra "${extra}" \
+        '([$direct] + $extra)[] | "        - \(.|@json)"'
+}
+
 generate_subscription_port() {
     if [[ "${SUB_PORT_MODE}" == "443" ]]; then
         printf '%s\n' "${SERVICE_PORT}"
@@ -1168,22 +1198,40 @@ EOF
 }
 
 generate_subscription_files() {
-    local base64_template=$1 mihomo_template=$2 node_file port link placeholder end_token
+    local base64_template=$1 mihomo_template=$2 include_optional=${3:-0}
+    local node_file port link placeholder end_token suffix own_node
+    local base64_file mihomo_file aggregation_nodes aggregation_links names_file
     # Numeric files validate generation only; runtime publication contains two port templates.
-    local base64_file="${RUNTIME_TMP}/subscription-base64.validation.txt"
-    local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.validation.yaml"
+    suffix=""
+    [[ "${include_optional}" == "1" ]] && suffix="-all"
+    base64_file="${RUNTIME_TMP}/subscription-base64${suffix}.validation.txt"
+    mihomo_file="${RUNTIME_TMP}/subscription-mihomo${suffix}.validation.yaml"
     placeholder=__EASY_ALL_REALITY_PORT__
     end_token=EASY_ALL_REALITY_TEMPLATE_END_V1
-    ensure_allowed_tokens
     prepare_mihomo_template
+    EASY_ALL_INCLUDE_OPTIONAL=${include_optional}
+    aggregation_nodes=$(aggregation_mihomo_nodes) || return 1
+    aggregation_links=$(aggregation_node_links) || return 1
+    [[ "${aggregation_links}" != *"${placeholder}"* ]] \
+        || die "聚合节点链接包含 Reality 端口保留标记"
+    names_file="${RUNTIME_TMP}/subscription-names${suffix}.yaml"
+    build_mihomo_proxy_names >"${names_file}" || return 1
     port=$(generate_subscription_port)
-    node_file="${RUNTIME_TMP}/subscription-node.yaml"
-    build_mihomo_node "${port}" >"${node_file}" || return 1
+    own_node="${RUNTIME_TMP}/subscription-node${suffix}.yaml"
+    build_mihomo_node "${port}" >"${own_node}" || return 1
     link=$(build_node_link "${port}") || return 1
-    printf '%s' "${link}" | openssl base64 -A >"${base64_file}" || return 1
+    node_file="${RUNTIME_TMP}/subscription-node-full${suffix}.yaml"
+    {
+        cat "${own_node}"
+        [[ -z "${aggregation_nodes}" ]] || printf '%s\n' "${aggregation_nodes}"
+    } >"${node_file}"
+    {
+        printf '%s' "${link}"
+        [[ -z "${aggregation_links}" ]] || printf '\n%s' "${aggregation_links}"
+    } | openssl base64 -A >"${base64_file}" || return 1
     printf '\n' >>"${base64_file}"
     render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}" "${mihomo_file}" \
-        "${NODE_NAME}" || return 1
+        "${NODE_NAME}" "" "${names_file}" || return 1
     printf '%s' "$(<"${base64_file}")" | openssl base64 -d -A \
         | grep -Fq 'security=reality' || die "Base64 订阅内容无效"
     grep -Fq 'reality-opts:' "${mihomo_file}" || die "Mihomo 订阅缺少 Reality 节点"
@@ -1193,14 +1241,19 @@ generate_subscription_files() {
         || [[ "${link}" == *"${placeholder}"* ]]; then
         die "订阅模板包含保留标记"
     fi
+    # 只有本机节点带端口占位符；聚合节点端口固定，不能一起替换。
     awk -v port="${port}" -v placeholder="${placeholder}" '
         $0 == "    port: " port { $0="    port: " placeholder; count++ }
         { print }
         END { if (count != 1) exit 1 }
-    ' "${node_file}" >"${node_file}.port-template" \
+    ' "${own_node}" >"${own_node}.port-template" \
         || die "Reality 节点端口模板无效"
+    {
+        cat "${own_node}.port-template"
+        [[ -z "${aggregation_nodes}" ]] || printf '%s\n' "${aggregation_nodes}"
+    } >"${node_file}.port-template"
     render_mihomo_subscription "${MIHOMO_TEMPLATE_FILE}" "${node_file}.port-template" \
-        "${mihomo_template}" "${NODE_NAME}" || return 1
+        "${mihomo_template}" "${NODE_NAME}" "" "${names_file}" || return 1
     awk -v placeholder="${placeholder}" '
         { line=$0; while ((pos=index(line,placeholder)) > 0) {
             count++; line=substr(line,pos+length(placeholder))
@@ -1217,14 +1270,17 @@ generate_subscription_files() {
     [[ "${link}" == *":${placeholder}?"* \
         && "${link#*${placeholder}}" != *"${placeholder}"* ]] \
         || die "Reality 链接端口模板无效"
-    printf '%s' "${link}" | openssl base64 -A >"${base64_template}" || return 1
+    {
+        printf '%s' "${link}"
+        [[ -z "${aggregation_links}" ]] || printf '\n%s' "${aggregation_links}"
+    } | openssl base64 -A >"${base64_template}" || return 1
     printf '\n' >>"${base64_template}"
 }
 
 install_static_subscriptions() {
-    local base64_file="${RUNTIME_TMP}/subscription-base64.port-template"
-    local mihomo_file="${RUNTIME_TMP}/subscription-mihomo.port-template"
-    local stage_dir user uuid user_dir
+    local base64_file mihomo_file ios_file suffix include stage_dir
+    # 写订阅前的强校验：load_state 对历史非法配置只告警，不能把一份错订阅发布出去。
+    reality_require_valid_subscription_config
     install -d -m 0755 "${WEB_ROOT}" || return 1
     prepare_mihomo_template || return 1
     persist_mihomo_template_snapshot || return 1
@@ -1235,19 +1291,23 @@ install_static_subscriptions() {
         || die "创建订阅暂存目录失败"
     cleanup_files+=("${stage_dir}")
     install -d -o root -g www-data -m 0750 "${stage_dir}" || return 1
-    generate_subscription_files "${base64_file}" "${mihomo_file}" || return 1
-    install -o root -g www-data -m 0640 "${base64_file}" \
-        "${stage_dir}/base64.port-template" || return 1
-    install -o root -g www-data -m 0640 "${mihomo_file}" \
-        "${stage_dir}/mihomo.port-template" || return 1
-    strip_mihomo_sniffer "${mihomo_file}" >"${stage_dir}/mihomo-ios.port-template" || return 1
-    # reality-subscription.js 要求模板以终止标记结尾，否则每次 iOS 请求都返回 503；
-    # 剥离只能删嗅探段，不得改动末行。
-    [[ "$(tail -n 1 "${stage_dir}/mihomo-ios.port-template")" \
-        == "$(tail -n 1 "${stage_dir}/mihomo.port-template")" ]] \
-        || die "iOS 订阅模板丢失 Reality 终止标记"
-    chmod 0640 "${stage_dir}/mihomo-ios.port-template" || return 1
-    chown root:www-data "${stage_dir}/mihomo-ios.port-template" || return 1
+    for suffix in "" "-all"; do
+        include=0
+        [[ "${suffix}" == "-all" ]] && include=1
+        base64_file="${stage_dir}/base64${suffix}.port-template"
+        mihomo_file="${stage_dir}/mihomo${suffix}.port-template"
+        ios_file="${stage_dir}/mihomo-ios${suffix}.port-template"
+        generate_subscription_files "${base64_file}" "${mihomo_file}" "${include}" || return 1
+        strip_mihomo_sniffer "${mihomo_file}" >"${ios_file}" || return 1
+        # reality-subscription.js 要求模板以终止标记结尾，否则每次 iOS 请求都返回 503；
+        # 剥离只能删嗅探段，不得改动末行。
+        [[ "$(tail -n 1 "${ios_file}")" == "$(tail -n 1 "${mihomo_file}")" ]] \
+            || die "iOS 订阅模板丢失 Reality 终止标记"
+        chmod 0640 "${base64_file}" "${mihomo_file}" "${ios_file}" || return 1
+        chown root:www-data "${base64_file}" "${mihomo_file}" "${ios_file}" || return 1
+    done
+    # 后续展示与验收按默认（不含 optional）节点集工作。
+    EASY_ALL_INCLUDE_OPTIONAL=0
     publish_subscription_files "${stage_dir}" || return 1
     rm -rf -- "${stage_dir}"
 }
@@ -1271,7 +1331,7 @@ write_subscription_nginx_config() {
     write_subscription_web_root
     {
         printf 'js_import easy_all_reality_subscription from %s;\n' "${REALITY_SUBSCRIPTION_JS}"
-        write_subscription_nginx_maps
+        write_subscription_nginx_maps "${SUBSCRIPTION_OPTIONAL_VARIANTS}"
         cat <<EOF
 server {
     listen ${SUBSCRIPTION_HTTPS_PORT} ssl${listen_h2};${http2_directive}
@@ -1286,7 +1346,7 @@ server {
     }
 
 EOF
-        write_subscription_nginx_locations "" reality
+        write_subscription_nginx_locations "" reality "${SUBSCRIPTION_OPTIONAL_VARIANTS}"
         cat <<'EOF'
     location / { return 404; }
 }
@@ -1322,6 +1382,7 @@ reality_subscription_curl() {
 
 validate_subscription_runtime() {
     local token base64_response base64_decoded mihomo_response accounts uuid start finish port flag headers method_status
+    local first_link expected_links actual_links actual_nodes
     local origin_domain
     origin_domain=$(subscription_origin_domain)
     [[ -n "${origin_domain}" ]] || die "当前订阅模式缺少 Cloudflare 回源域名"
@@ -1352,10 +1413,15 @@ validate_subscription_runtime() {
     base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
         || die "Base64 订阅响应不是有效的 Base64"
     grep -Fq 'security=reality' <<<"${base64_decoded}" || die "Base64 订阅响应缺少 Reality 节点"
-    [[ "${base64_decoded}" == "vless://${uuid}@"* \
+    first_link=${base64_decoded%%$'\n'*}
+    [[ "${first_link}" == "vless://${uuid}@"* \
         && "${base64_decoded}" != *"__EASY_ALL_REALITY_PORT__"* ]] \
         || die "Base64 订阅响应节点无效"
-    port=${base64_decoded%%\?*}; port=${port##*:}
+    expected_links=$((1 + $(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_names | jq 'length')))
+    actual_links=$(grep -c '[^[:space:]]' <<<"${base64_decoded}" || true)
+    [[ "${actual_links}" == "${expected_links}" ]] \
+        || die "Base64 订阅响应节点数不符（期望 ${expected_links}，实际 ${actual_links}）"
+    port=${first_link%%\?*}; port=${port##*:}
     validate_subscription_response_port "${port}" "${start}" "${finish}" || return 1
     start=$(date +%s)
     mihomo_response=$(printf '%s' "${token}" | reality_subscription_curl -fsS --proto '=https' \
@@ -1370,6 +1436,9 @@ validate_subscription_runtime() {
     [[ "${mihomo_response}" != *"__EASY_ALL_REALITY_PORT__"* \
         && "${mihomo_response}" != *"EASY_ALL_REALITY_TEMPLATE_END_V1"* ]] \
         || die "Mihomo 订阅响应模板无效"
+    actual_nodes=$(grep -c '^  - name: ' <<<"${mihomo_response}" || true)
+    [[ "${actual_nodes}" == "${expected_links}" ]] \
+        || die "Mihomo 订阅响应节点数不符（期望 ${expected_links}，实际 ${actual_nodes}）"
     port=$(awk -v uuid="${uuid}" '
         /^    port: [0-9]+$/ { port=$2 }
         $0 == "    uuid: \"" uuid "\"" { print port; count++ }
@@ -1421,11 +1490,48 @@ reality_cloudflare_finalize_certificate_rotation() {
     CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=""
 }
 
+# 订阅配置的唯一入口：与直连+CDN兜底共用 lib/local-aggregation.sh 的校验与渲染，
+# 本机节点名参与重名校验（NODE_NAME 不能与聚合节点同名）。
+reality_apply_subscription_config() {
+    apply_local_aggregation_config "${1:-}" \
+        "$(jq -cn --arg value "${NODE_NAME:-}" '[$value]')"
+}
+
+# 写订阅前的强校验：load_state 只告警，真正的拦截点在这里。
+reality_require_valid_subscription_config() {
+    reality_apply_subscription_config "${SUBSCRIPTION_CONFIG:-}" >/dev/null 2>&1 && return 0
+    die "订阅配置无效（需 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru）；请先执行 sudo easy_all edit-sub 重新配置"
+}
+
 collect_deployed_subscription_inputs() {
-    local prompt_options=${1:-1} prompt_download_name=${2:-0}
+    local prompt_options=${1:-1} prompt_download_name=${2:-0} candidate="" has_stored=0
     collect_subscription_domain
     choose_subscription_download_name "${prompt_download_name}"
-    ensure_allowed_tokens "${prompt_options}"
+    if [[ -n "${SUBSCRIPTION_CONFIG:-}" ]]; then
+        candidate=${SUBSCRIPTION_CONFIG}
+    elif [[ -n "${ALLOWED_TOKENS:-}" ]]; then
+        # 旧状态只存 Token 字典：折叠成 nodes 为空的统一配置。
+        candidate=$(subscription_config_from_tokens "${ALLOWED_TOKENS}") || candidate=""
+    fi
+    [[ -z "${SUBSCRIPTION_CONFIG:-}${ALLOWED_TOKENS:-}" ]] || has_stored=1
+    # 存量配置不可用（损坏、或节点与本机重名）：交互式 edit-sub 不能拿它当默认值（回车只会再失败），
+    # 非交互则必须失败关闭：默默清空会把用户的聚合节点变成 nodes: [] 并落盘。
+    if [[ "${has_stored}" == "1" ]] \
+        && { [[ -z "${candidate}" ]] \
+            || ! reality_apply_subscription_config "${candidate}" 2>/dev/null; }; then
+        [[ "${prompt_options}" == "1" ]] \
+            || die "订阅配置无效；未修改任何配置，请执行 sudo easy_all edit-sub 重新配置"
+        warn "现有订阅配置无效，已改为重新生成默认值"
+        candidate=""
+    fi
+    if [[ "${prompt_options}" == "1" ]]; then
+        SUBSCRIPTION_CONFIG=$(choose_subscription_config "${candidate}") \
+            || die "订阅配置无效：需包含 allowedTokens 与 nodes"
+    else
+        SUBSCRIPTION_CONFIG=${candidate}
+    fi
+    reality_apply_subscription_config "${SUBSCRIPTION_CONFIG:-}" \
+        || die "订阅配置无效：需包含 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
     SUBSCRIPTION_MODE="deploy"
 }
 
@@ -1434,6 +1540,8 @@ collect_link_subscription_inputs() {
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
         "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")
     ALLOWED_TOKENS=""
+    SUBSCRIPTION_CONFIG=""
+    AGGREGATION_NODES="[]"
 }
 
 collect_subscription_inputs() {
@@ -1484,6 +1592,7 @@ renew_subscription_certificate() {
     acquire_runtime_write_lock
     collect_installed_state
     subscription_enabled || die "当前未启用自托管订阅"
+    reality_require_valid_subscription_config
     snapshot_subscription_update
     reality_cloudflare_prepare_subscription
     reality_cloudflare_issue_origin_certificate 1
@@ -1854,13 +1963,20 @@ rebuild_traffic_runtime() {
 }
 
 show_node() {
-    local port
+    local port extra
     collect_installed_state
     port=$(generate_subscription_port)
     printf '\n协议: %s\n节点链接:\n%s\n\n' \
         "${PROTOCOL}" "$(build_node_link "${port}")"
     printf 'Mihomo / Clash 节点:\n'
     build_mihomo_node "${port}"
+    extra=$(aggregation_node_links)
+    printf '\n聚合节点（订阅内联）:\n'
+    if [[ -n "${extra}" ]]; then
+        printf '%s\n' "${extra}"
+    else
+        printf '无\n'
+    fi
     printf '\n'
 }
 
@@ -1879,6 +1995,9 @@ show_subscription() {
                 "${user}" "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_HTTPS_PORT}" "${token}"
         done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"${ALLOWED_TOKENS}")
         printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
+        if jq -e 'any(.[]; .optional == true)' <<<"${AGGREGATION_NODES:-[]}" >/dev/null 2>&1; then
+            printf '%s\n' '  追加 &node=all 可显示标记为 optional 的聚合节点'
+        fi
         printf '\n'
         return 0
     fi

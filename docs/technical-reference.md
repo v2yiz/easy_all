@@ -13,6 +13,7 @@
 - **服务端端口**：Xray 监听 `0.0.0.0:443`。
 - **伪装目标**：默认 `swdist.apple.com:443`，安装和修改时通过 `xray tls ping` 自动完成带 SNI 的 TLS 1.3 握手验收。
 - **动态端口（可选）**：通过 UFW `before.rules` 在 `PREROUTING` 链将 `10000-62703` 范围端口通过单条范围规则 NAT 重定向到实际入站端口（默认 `443`），客户端按时间槽位动态轮换。
+- **订阅（可选）**：`deploy` 模式由本机 Nginx 经 Cloudflare 回源下发 Mihomo YAML / Base64，订阅配置与模式 2 共用同一份 `{"allowedTokens":{...},"nodes":[...]}`：`PROXY`（`select`）依次是本机 Reality 节点、聚合 JSON 的 `nodes`；标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。`link` 模式只输出本机节点信息。
 
 ### 1.2 模式 2：直连+CDN兜底（Reality + Cloudflare XHTTP）
 一台 VPS 独占承载直连与 CDN 两个入口：
@@ -149,7 +150,7 @@ easy_all
 │   ├── xhttp-runtime.sh         # XHTTP 运行时公共逻辑与证书挂载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
 │   ├── subscription-auth.sh     # 订阅凭据生成与校验
-│   ├── local-aggregation.sh     # 直连+CDN兜底本地聚合节点校验与渲染
+│   ├── local-aggregation.sh     # 本地聚合节点校验与渲染（两种模式共用）
 │   ├── scheduled-maintenance.sh # 定时重启与维护任务
 │   ├── tcp-tuning.sh            # Skyline Speeder 与 Zabbly 6.12+ LTS 内核管理
 │   ├── xray-core.sh             # Xray 官方二进制下载与校验

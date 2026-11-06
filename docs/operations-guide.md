@@ -79,7 +79,7 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 
 ## 5. 订阅与多用户管理
 
-执行交互式管理：
+执行交互式管理（直连 Reality 的部署订阅与直连+CDN兜底共用同一份订阅配置）：
 ```bash
 sudo easy_all edit-sub
 ```

@@ -866,14 +866,8 @@ combined_local_node_names() {
 
 # 订阅配置的唯一入口：allowedTokens 与 nodes 一起校验，并派生运行时变量。
 combined_apply_subscription_config() {
-    local normalized names
-    names=$(combined_local_node_names)
-    normalized=$(normalize_subscription_config "${1:-}" "${names}") || return 1
-    SUBSCRIPTION_CONFIG=${normalized}
-    ALLOWED_TOKENS=$(jq -c '.allowedTokens' <<<"${normalized}") || return 1
-    OWNER_TOKEN=$(jq -er '.allowedTokens | to_entries[0].value' <<<"${normalized}") || return 1
-    AGGREGATION_NODES=$(jq -c '.nodes' <<<"${normalized}") || return 1
-    export ALLOWED_TOKENS AGGREGATION_NODES
+    apply_local_aggregation_config "${1:-}" "$(combined_local_node_names)" || return 1
+    OWNER_TOKEN=$(jq -er '.allowedTokens | to_entries[0].value' <<<"${SUBSCRIPTION_CONFIG}") || return 1
 }
 
 # 兼容旧状态与环境变量：把单独的 Token 字典折叠进统一配置。

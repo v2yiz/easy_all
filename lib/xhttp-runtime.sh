@@ -326,7 +326,8 @@ show_subscription() {
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
     printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
     printf '%s\n' '  如需强制格式：在链接后加 &flag=clash 或 &flag=base64'
-    if [[ "${SUBSCRIPTION_OPTIONAL_VARIANTS:-0}" == "1" ]]; then
+    if [[ "${SUBSCRIPTION_OPTIONAL_VARIANTS:-0}" == "1" ]] \
+        && jq -e 'any(.[]; .optional == true)' <<<"${AGGREGATION_NODES:-[]}" >/dev/null 2>&1; then
         printf '%s\n' '  追加 &node=all 可显示标记为 optional 的聚合节点'
     fi
     printf '%s\n' '  iOS 客户端（UA 命中 iphone/ipad/ipod/ios，或链接加 &os=ios）下发的 YAML 不带嗅探段'

@@ -288,7 +288,7 @@ assert_xhttp_settings() {
 )
 
 # 10e) combined_apply_tokens 切换后 write_subscription_token_map 只含新值不含旧值
-# 注：normalize_allowed_tokens（lib/subscription-auth.sh:113）要求 token 长度 8-128，故用 token-A-123456 / token-B-123456
+# 注：normalize_allowed_tokens（lib/subscription-auth.sh:61）要求 token 长度 8-128，故用 token-A-123456 / token-B-123456
 ALLOWED_TOKENS='{"owner":"token-A-123456"}'
 OWNER_TOKEN="token-A-123456"
 combined_apply_tokens '{"owner":"token-B-123456"}' \
@@ -1667,6 +1667,29 @@ assert_not_contains "render: PROXY does not include individual CF nodes directly
 cdn_auto_block=$(awk '/^[[:space:]]*- name: CDN-AUTO/{p=1;next}/^[[:space:]]*- name:/{p=0}p' <<<"${mihomo_rendered}")
 assert_not_contains "render: CDN-AUTO group never contains direct node" \
     "${cdn_auto_block}" "${DIRECT_NODE_NAME}"
+
+# show_subscription 只在实际存在 optional 节点时提示 node=all（与 Reality 侧同一断言）。
+# 这里的 SUBSCRIPTION_OPTIONAL_VARIANTS=1 只声明“存在两份产物”，不代表真的有 optional 节点。
+base_hint_out=$(
+    collect_installed_state() { :; }
+    show_node() { :; }
+    ALLOWED_TOKENS='{"owner":"token-init-12345"}'
+    SUBSCRIPTION_MODE="deploy" SUB_DOWNLOAD_NAME="EASYALL" SUBSCRIPTION_DOMAIN="sub.example.com"
+    AGGREGATION_NODES='[{"type":"vless","name":"聚合节点","host":"r.example.com","port":8443,"security":"reality","network":"tcp","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef"}]'
+    show_subscription
+)
+assert_not_contains "hint: no node=all hint without optional nodes" \
+    "${base_hint_out}" "node=all"
+optional_hint_out=$(
+    collect_installed_state() { :; }
+    show_node() { :; }
+    ALLOWED_TOKENS='{"owner":"token-init-12345"}'
+    SUBSCRIPTION_MODE="deploy" SUB_DOWNLOAD_NAME="EASYALL" SUBSCRIPTION_DOMAIN="sub.example.com"
+    AGGREGATION_NODES='[{"type":"mieru","name":"备用Mieru","host":"m.example.com","portRange":"50000-50512","username":"agguser","password":"agg-password-12345","optional":true}]'
+    show_subscription
+)
+assert_contains "hint: node=all is advertised when an optional node exists" \
+    "${optional_hint_out}" "node=all"
 
 
 printf 'ok - combined render\n'

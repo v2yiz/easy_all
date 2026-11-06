@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[4.0.0](CHANGELOG.md#400-更新说明2026-11-06)。
+当前源码版本：[4.1.0](CHANGELOG.md#410-更新说明2026-11-06)。
 
 ## 文档索引
 
@@ -21,7 +21,7 @@
 
 | 模式 | 适用场景 | 核心架构与入口 |
 | :--- | :--- | :--- |
-| **1. 直连 Reality** | VPS IP 纯净、直连网络良好 | VLESS TCP Reality Vision（VPS `443` 或动态端口轮换） |
+| **1. 直连 Reality** | VPS IP 纯净、直连网络良好 | VLESS TCP Reality Vision（VPS `443` 或动态端口轮换）；可选 Nginx 订阅分发（本机节点 + 聚合节点） |
 | **2. 直连+CDN兜底** | 一台机器同时拥有直连与 CDN 节点 | **直连 Reality（VPS `8443`） + Cloudflare XHTTP（443 回源）**，统一订阅分发（直连/聚合 + CDN-AUTO 测速） |
 
 ---
@@ -62,7 +62,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 1. **选择安装模式**：
    - `1` 直连 - Reality（适合直连效果良好、VPS IP 未被封）
    - `2` 直连+CDN兜底：直连 Reality + Cloudflare（一次部署两个入口，共享订阅）
-2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；直连+CDN兜底会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
+2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；部署订阅的模式 1 与直连+CDN兜底都会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
 3. **自动安装与部署**：依赖安装、TCP 加速（默认 Skyline Speeder）、服务启动与验收全自动完成。
 
 ### 用户交互全景导图
@@ -89,8 +89,8 @@ flowchart TD
     M1_SubDeploy -- "选择 2 (仅节点)" --> InstallPhase
     M1_SubDeploy -- "直接回车 或 1" --> M1_SubDomain["1.4.1 订阅域名<br/>默认: 无 (必填，如 sub.example.com)"]
     M1_SubDomain --> M1_SubFile["1.4.2 Mihomo 下载文件名<br/>默认: EASY_ALL (直接回车)"]
-    M1_SubFile --> M1_Tokens["1.4.3 订阅用户 Token 字典<br/>默认: 自动生成单用户 JSON {'owner':'随机Secret'}"]
-    M1_Tokens --> M1_CFToken["1.4.4 Cloudflare API Token<br/>默认: 无 (必填，仅当前进程签发证书，不落盘)"]
+    M1_SubFile --> M1_SubJSON["1.4.3 订阅配置 JSON<br/>默认: {'allowedTokens':{'owner':'随机Secret'},'nodes':[]}<br/>(直接回车保留默认值；或粘贴含外部节点的 JSON)"]
+    M1_SubJSON --> M1_CFToken["1.4.4 Cloudflare API Token<br/>默认: 无 (必填，仅当前进程签发证书，不落盘)"]
     M1_CFToken --> InstallPhase
 
     %% ---------------- 模式 2: 直连+CDN兜底 ----------------
@@ -127,7 +127,7 @@ flowchart TD
 | | 1.4 订阅部署 | `请选择 [1]:` | **`1`**（部署订阅） | 直接回车部署带自适应分发的订阅；输入 `2` 为纯节点 |
 | | 1.4.1 订阅域名 | `Cloudflare 代理的订阅域名` | **无**（必填） | 输入 Cloudflare 代理的子域名（如 `sub.example.com`） |
 | | 1.4.2 下载名 | `Mihomo 下载文件名` | `EASY_ALL` | 直接回车使用推荐值；或自定义下载文件名 |
-| | 1.4.3 用户 Token | `订阅用户 Token 字典 JSON` | `{"owner":"<随机Secret>"}` | 直接回车自动生成专属 Token；亦可输入多用户 JSON |
+| | 1.4.3 订阅配置 | `订阅配置 JSON` | `{"allowedTokens":...,"nodes":[]}` | **直接回车保留默认值**（自动生成 owner Token，节点数组为空）；或粘贴自定义多用户与外部聚合节点 JSON |
 | | 1.4.4 CF Token | `Cloudflare API Token` | **无**（必填） | 隐藏输入，仅当前进程签发证书使用，不落盘 |
 | **2. 直连+CDN兜底** | 2.1 根 Zone | `Cloudflare 根 Zone` | **无**（必填） | 输入已在 Cloudflare 托管的主域名（如 `example.com`） |
 | | 2.2 直连域名 | `直连节点域名` | `node.<根Zone>` | 直接回车使用默认值（自动配置为灰云 DNS-only） |

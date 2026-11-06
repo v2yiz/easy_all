@@ -1,3 +1,17 @@
+## 4.1.0 更新说明（2026-11-06）
+
+- **直连 Reality 的订阅也支持聚合节点**：`deploy` 订阅不再只下发本机节点，改为与直连+CDN兜底共用同一份 `{"allowedTokens":{...},"nodes":[...]}` 配置；`nodes` 支持 `vless`（`reality/tcp` 或 `tls/xhttp`）与 `mieru`，`optional: true` 仅在订阅 URL 追加 `&node=all` 时下发。Mihomo 的 `PROXY` 分组顺序为本机 Reality 节点 → 聚合节点（名字原样使用）；`link` 模式仍只输出本机节点信息。
+- **直接复用模式 2 的聚合实现**：校验、节点链接/节点块渲染与配置输入继续由 `lib/local-aggregation.sh` 统一提供，只把「校验后派生运行期变量」抽成 `apply_local_aggregation_config`，两种模式各自传入本机节点名（Reality 用 `NODE_NAME`）做重名校验；旧状态/旧环境只有 Token 字典时的折叠也收敛为 `subscription_config_from_tokens`（直连模式的两处调用点）。Reality 专属部分留在 Profile：动态端口占位符只替换本机节点、iOS 嗅探段剔除，以及 `base64.port-template` / `mihomo.port-template` 文件命名与 `reality-subscription.js` 渲染。删除因 `edit-sub` 入口切换而失去调用方的 `ensure_allowed_tokens` / `apply_allowed_tokens_params`。
+- **订阅渲染器支持多链接**：`lib/reality-subscription.js` 的 Base64 分支从「单条 Reality 链接」放宽为「多行链接（`vless` / `mierus`），其中恰好一条带 `__EASY_ALL_REALITY_PORT__` 且必须是本机 Reality 节点」；数量、协议或占位符任一不符仍返回 `503`。YAML 分支继续只替换唯一一处端口占位符。
+- **状态与命令**：`state.env` 新增 `SUBSCRIPTION_CONFIG`，旧状态里的 `ALLOWED_TOKENS` 读取时自动折叠为 `nodes: []`（已安装机器无需迁移，升级后执行 `sudo easy_all apply` 或 `edit-sub` 即可启用聚合订阅；`self-update` 本身不改写 Nginx 与订阅文件）；直连模式的 `edit-sub` 在部署订阅时改为编辑统一 JSON；`subscription` / `show` 会列出聚合节点，并在存在聚合节点时提示 `&node=all`。
+- **回归测试**：新增 `test/test_reality_render.sh`，覆盖配置校验与重名拒绝、`PROXY` 顺序、默认/`node=all` 两份订阅产物、聚合节点端口不被替换、iOS 终止标记、Nginx `node=all` 接线、重发时清理残留、旧 `state.env`（只有 `ALLOWED_TOKENS`）折叠、损坏状态的可自救与失败关闭；其中走交互分支的用例一律显式 `</dev/null`，避免在开发者的终端里被 `[[ -t 0 ]]` 带进 `read` 提示而挂死（与 `test_combined_render.sh` 的 `update_subscription </dev/null` 同一约定）。`test/test_subscription_port.mjs` 增加多链接渲染与 `503` 拒绝用例；`test/test_combined_render.sh` 新增 `node=all` 提示断言，原有聚合断言继续覆盖共用代码。
+- **修复状态配置损坏时无法自救（自查发现的死锁）**：`load_state` 对 `SUBSCRIPTION_CONFIG` 校验失败从 `die` 改为 `warn`（与直连+CDN兜底一致）——否则 `edit-sub` 与 `uninstall` 都先经过 `load_state`，用户被锁在唯一修复入口之外；强校验改在 `install_static_subscriptions` 入口（`reality_require_valid_subscription_config`），写订阅前仍硬失败并提示 `edit-sub`；交互式 `edit-sub` 遇到非法存量配置时重生成默认值（不把它当默认值反复踩坑），非交互命令（如 `apply`）则直接失败关闭——不会静默把聚合节点清成 `nodes: []` 并落盘。
+- **补齐同类阻断点与副作用入口**：旧状态只有 `ALLOWED_TOKENS` 且该字典本身损坏时，折叠失败也只告警（不再 `die`），`uninstall` 照常可用、发布仍被强校验拦住；`renew-cert` 在动任何 Cloudflare 调用前先校验订阅配置，避免白签一张 Origin CA 证书再报无关错误。
+- **提示与折叠语义收敛**：`subscription show` 只在确实存在 `optional: true` 节点时才提示 `&node=all`（两种模式一致，`lib/xhttp-runtime.sh` 同步修正）；`subscription_config_from_tokens` 固定产出 `nodes: []`，不再隐式读取 `AGGREGATION_NODES`。
+- **文档**：README 模式 1 与交互向导、系统技术参考、客户端指南、运维指南同步聚合配置与 `PROXY` 分组说明。
+
+验证：`test_install_guard` / `test_purge_cloudflare` / `test_combined_render` / `test_reality_render` / `test_mihomo_template_lint` / `test_audit_fixes` / `test_cli_e2e` / `test_subscription_port` 全套通过；新增断言均做「破坏实现即变红」的反向验证（含：恢复 `load_state` 的 `die`、去掉写订阅前强校验、恢复旧的 `node=all` 提示判断、恢复隐式 `AGGREGATION_NODES` 折叠）；全仓 `bash -n` 与 `node --check` 通过。
+
 ## 4.0.0 更新说明（2026-11-06）
 
 - **移除纯 Cloudflare CDN 模式（原模式 2），只保留直连与直连+CDN兜底**：删除 `profiles/xhttp-cloudflare-streamup.sh` 及其在 `runtime.manifest`、`lib/profile-common.sh` 模式映射中的登记；安装菜单改为「1 直连 Reality / 2 直连+CDN兜底」，`profile_file`、`detect_installed_mode` 与命令路由同步收敛。不存在需要迁移的旧纯 CDN 部署，因此不保留兼容分支。
