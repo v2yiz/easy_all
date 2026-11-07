@@ -1,3 +1,10 @@
+## 4.3.1 更新说明（2026-11-08）
+
+- **全仓文档与实现完全对齐**：
+  - `README.md` 与 `docs/operations-guide.md` 常用运维命令速查表补全 `easy_all cleanup-partial`（清理安装中断残留）与 `easy_all purge-cloudflare`（远端 Cloudflare 资源独立清理）；
+  - `docs/operations-guide.md` 明确标注 `reality-target` 仅适用于直连 Reality 与直连+CDN 模式；
+  - `docs/client-guide.md` 补充针对不支持策略组的通用客户端之 Base64 订阅平铺节点顺序说明（直连 Reality（仅模式 3）→ 6 个 Cloudflare 优选 IP → 官方域名调度兜底 → 外部聚合节点）。
+
 ## 4.3.0 更新说明（2026-11-08）
 
 - **模式重新编号**：安装菜单改为「1 直连 Reality / 2 纯 CDN / 3 直连+CDN」。新增 `profiles/cdn.sh`（`PROTOCOL=cdn`）承载纯 CDN 链路：只部署 Cloudflare XHTTP 回源（Nginx `443` → 本机 Xray XHTTP `127.0.0.1:10086`）与订阅，没有 Reality 入站、没有 `8443` 放行、没有直连域名与 Reality 密钥；原「直连+CDN兜底」改为模式 3，内部标识仍为 `PROTOCOL=combined`，存量安装无需迁移。

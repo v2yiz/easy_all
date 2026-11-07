@@ -50,6 +50,7 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 - **纯 CDN（模式 2）**：没有直连节点。`PROXY` 分组按固定顺序包含「聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-FALLBACK` 兜底组」。
 - **直连+CDN（模式 3）**：`PROXY` 分组按固定顺序包含「本机直连节点（如 `🇺🇸直连`）→ 聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-FALLBACK` 兜底组」。
 - **CDN 分组**：`CDN-AUTO` 是内置的 `url-test` 测速组，只放 6 个 Cloudflare 优选 IP 节点（优选 IP 不平铺进 `PROXY`）；`CDN-FALLBACK` 是 `fallback` 兜底组，先选 `CDN-AUTO`，只有 6 个优选 IP 全部不可用时才切到连接 `cf.<zone>` 的「官方」节点——该节点不写死 IP，由 Cloudflare 官方 Anycast 调度决定边缘。日常直接选择直连节点（仅模式 3）或 `CDN-FALLBACK` 即可自动测速与兜底。
+- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表（直连 Reality 节点（仅模式 3）→ 6 个 Cloudflare 优选 IP 节点 → 官方域名调度兜底节点 → 外部聚合节点）。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 

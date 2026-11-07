@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[4.3.0](CHANGELOG.md#430-更新说明2026-11-08)。
+当前源码版本：[4.3.1](CHANGELOG.md#431-更新说明2026-11-08)。
 
 ## 文档索引
 
@@ -201,6 +201,8 @@ sudo easy_all subscription
 | `easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `easy_all update-core` | 在线升级 Xray 核心至官方最新稳定版 |
 | `easy_all self-update` | 从 GitHub 更新 easy_all 脚本自身至最新主线版本 |
+| `easy_all cleanup-partial` | 清理安装中断留下的临时残留（不影响云端资源） |
+| `easy_all purge-cloudflare` | 清理 easy_all 创建的 Cloudflare 远端资源（可在未安装或状态丢失时使用） |
 | `easy_all uninstall` | 卸载本机服务与配置（可选 `--purge-cloud` 同步清理 Cloudflare 远端资源）；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
 
 ---

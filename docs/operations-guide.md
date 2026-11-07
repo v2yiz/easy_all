@@ -47,6 +47,7 @@ sudo easy_all apply-cloud
 | `sudo easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `sudo easy_all update-core` | 在线升级 Xray 核心至官方最新版本，并自动重载服务 |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的临时残留（不影响云端资源） |
+| `sudo easy_all purge-cloudflare` | 清理 easy_all 创建的 Cloudflare 远端资源（可在未安装或状态丢失时使用） |
 | `sudo easy_all uninstall` | 卸载本机服务与配置；加 `--purge-cloud` 会同步清理云端资源。卸载只回收业务端口与回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置 |
 
 ---
@@ -64,7 +65,7 @@ sudo easy_all apply-cloud
 
 ## 4. 节点与伪装目标管理
 
-### 4.1 更换 Reality 伪装目标（SNI）
+### 4.1 更换 Reality 伪装目标（SNI）（适用于 Reality 与直连+CDN 模式）
 ```bash
 sudo easy_all reality-target swdist.apple.com:443
 ```
