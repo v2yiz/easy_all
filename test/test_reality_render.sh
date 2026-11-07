@@ -617,7 +617,8 @@ assert_equal "rollback: 首装未写过 Strict TLS 时不带 ruleset id" \
     'PURGE sub.example.com|zone-1||' "${cf_purge_log2_content}"
 
 # 订阅更新回滚（renew-cert / edit-sub 失败）必须吊销本进程新签的证书；若回滚恢复的域名不同，
-# 本次为新域名新建的 DNS 记录/Strict TLS 规则也不被任何状态引用，必须一并清理。
+# 本次为新域名写过的 DNS 记录/Strict TLS 规则也不被任何状态引用，必须一并清理（第 5 个参数
+# delete_dns 表示是否真的写过回源 A 记录）。
 cf_update_rollback() {
     local log=$1 created=${2:-} failed_domain=${3:-} restored_mode=${4:-deploy} restored_domain=${5:-}
     local strict_touched=${6:-1} dns_touched=${7:-0} purge_mode=${8:-ok}
@@ -644,7 +645,7 @@ cf_update_rollback() {
         configure_ufw() { :; }
         reality_cloudflare_purge_managed_resources() {
             [[ "${purge_mode}" != "fail" ]] || die "注入的回滚清理失败"
-            printf 'PURGE %s|%s|%s|%s\n' "$1" "$2" "$3" "${4:-}" >>"${log}"
+            printf 'PURGE %s|%s|%s|%s|%s\n' "$1" "$2" "$3" "${4:-}" "${5:-}" >>"${log}"
         }
         cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${log}"; }
         rollback_subscription_update
@@ -674,33 +675,40 @@ cf_update_rollback "${cf_log_c}" "" "sub.example.com" "deploy" "sub.example.com"
 [[ ! -f "${cf_log_c}" ]] \
     || fail_test "rollback: 同域名只 PATCH 过 DNS 时不得 purge"
 
-# link → deploy 中途失败：回滚后没有订阅域名，新域名的 DNS/规则必须一并清掉。
+# link → deploy 中途失败：回滚后没有订阅域名，新域名的 Strict TLS 规则必须清掉；本次没写过
+# 回源记录（delete_dns=0），所以跳过 DNS 段。
 cf_log_d="${TMP_DIR}/cf-update-rollback-d"
 cf_update_rollback "${cf_log_d}" "cert-new" "new.example.com" "link" ""
-assert_equal "rollback: link→deploy 失败时清理新域名的 DNS 与规则" \
-    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1|ruleset-old-zone|')" \
+assert_equal "rollback: link→deploy 失败时只按 ruleset 清理规则（未写过 DNS）" \
+    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1|ruleset-old-zone||0')" \
     "$(cf_update_log "${cf_log_d}")"
 
-# deploy 改域名后失败：恢复的是旧域名，新域名的 DNS/规则不被任何状态引用。
+# deploy 改域名后失败：恢复的是旧域名，本次为新域名写的资源不被任何状态引用。
 cf_log_e="${TMP_DIR}/cf-update-rollback-e"
 cf_update_rollback "${cf_log_e}" "cert-new" "new.example.com" "deploy" "old.example.com"
-assert_equal "rollback: 改域名失败时清理新域名的 DNS 与规则" \
-    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1|ruleset-old-zone|')" \
+assert_equal "rollback: 改域名失败时清理新域名的 Strict TLS 规则" \
+    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1|ruleset-old-zone||0')" \
     "$(cf_update_log "${cf_log_e}")"
 
-# 证书复用（未新签）但 DNS 被 PATCH 过，且域名发生变化：仍然要清掉新域名的资源。
+# 证书复用（未新签）但 DNS 被 PATCH 过，且域名发生变化：仍然要清掉新域名的资源（delete_dns=1）。
 cf_log_f="${TMP_DIR}/cf-update-rollback-f"
 cf_update_rollback "${cf_log_f}" "" "new.example.com" "deploy" "old.example.com" 1 1
 assert_equal "rollback: 只改过 DNS 时也要清理新域名资源" \
-    'PURGE new.example.com|zone-1|ruleset-old-zone|' "$(cf_update_log "${cf_log_f}")"
+    'PURGE new.example.com|zone-1|ruleset-old-zone||1' "$(cf_update_log "${cf_log_f}")"
 
-# 本次没跑 Strict TLS（例如证书签发就失败）：不得把（跨 Zone 时已过期的）ruleset id 交给
-# purge——那次 GET 会 404/403 中断，连新域名的 A 记录都删不掉。规则清理被跳过，DNS 照常清。
+# 本次没跑 Strict TLS（例如证书签发就失败）：不得把（跨 Zone 时已过期的）ruleset id 交给 purge。
+# 且本次只写过 Strict TLS、没写过回源记录时 delete_dns=0，DNS 段整个跳过。
 cf_log_g="${TMP_DIR}/cf-update-rollback-g"
-cf_update_rollback "${cf_log_g}" "cert-new" "new.example.com" "deploy" "old.example.com" 0
-assert_equal "rollback: 未写过 Strict TLS 时不带 ruleset id，DNS 仍被清理" \
-    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1||')" \
-    "$(cf_update_log "${cf_log_g}")"
+cf_update_rollback "${cf_log_g}" "" "new.example.com" "deploy" "old.example.com" 1 0
+assert_equal "rollback: 只写过 Strict TLS 时只按 ruleset 清规则、不发 DNS 请求" \
+    'PURGE new.example.com|zone-1|ruleset-old-zone||0' "$(cf_update_log "${cf_log_g}")"
+
+# 只新签了证书（本次没写 DNS、也没写 Strict TLS）而换了域名：不得 purge。新域名的回源记录在
+# 更新前就存在，ensure_proxied_a 因此 no-op；按「新签证书」触发 purge 会删掉这条既有记录。
+cf_log_g2="${TMP_DIR}/cf-update-rollback-g2"
+cf_update_rollback "${cf_log_g2}" "cert-new" "new.example.com" "deploy" "old.example.com" 0 0
+assert_equal "rollback: 只新签证书时只吊销证书、不跑 purge" \
+    'DELETE /certificates/cert-new' "$(cf_update_log "${cf_log_g2}")"
 
 # 云端清理失败只能 warn，不能中断回滚（否则恢复 UFW/状态的后续步骤全被跳过）。
 cf_log_h="${TMP_DIR}/cf-update-rollback-h"
@@ -710,6 +718,71 @@ assert_contains "rollback: 清理失败只告警并给出补救命令" \
     "$(<"${cf_log_h}.out")" "回滚未能清理本次为 new.example.com 新建的 Cloudflare 资源"
 assert_contains "rollback: 清理失败的告警指向 purge-cloudflare" \
     "$(<"${cf_log_h}.out")" "purge-cloudflare --domain"
+
+# 上面几个用例把 purge 桩掉了，只能证明参数；这里用真实的
+# reality_cloudflare_purge_managed_resources（只桩 API）跑一遍回滚，锁住「到底有没有发 DNS 请求」：
+# 新域名的回源记录在更新前就存在（comment 带 easy_all 标记），ensure_proxied_a 因此 no-op。
+cf_update_rollback_real() {
+    local log=$1 created=${2:-} dns_touched=${3:-0} strict_touched=${4:-0}
+    local strict_rule_ref
+    # ruleset 里预置本次新域名（固定为 new.example.com）的受管规则，让真实 purge 走到 DELETE 分支。
+    strict_rule_ref=$(reality_cloudflare_ref "reality-strict:new.example.com")
+    (
+        if [[ -n "${created}" ]]; then
+            CLOUDFLARE_CREATED_ORIGIN_CERT_ID=${created}
+        else
+            unset CLOUDFLARE_CREATED_ORIGIN_CERT_ID
+        fi
+        unset CLOUDFLARE_RESOURCES_TOUCHED CLOUDFLARE_STRICT_TLS_TOUCHED
+        [[ "${dns_touched}" != "1" ]] || CLOUDFLARE_RESOURCES_TOUCHED=1
+        [[ "${strict_touched}" != "1" ]] || CLOUDFLARE_STRICT_TLS_TOUCHED=1
+        CLOUDFLARE_ZONE_ID="zone-1"
+        CLOUDFLARE_STRICT_RULESET_ID="ruleset-old-zone"
+        SUBSCRIPTION_DOMAIN="new.example.com"
+        UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/cf-update-backup-real"
+        install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+        restore_state_file() { :; }
+        source_state_file() { SUBSCRIPTION_MODE=deploy; SUBSCRIPTION_DOMAIN="old.example.com"; }
+        restore_dynamic_port_rotation_schedule() { return 0; }
+        configure_ufw() { :; }
+        cloudflare_collect_api_token() { :; }
+        cloudflare_api_request() {
+            printf '%s %s\n' "$1" "$2" >>"${log}"
+            [[ "$1" == GET ]] || return 0
+            if [[ "$2" == "/zones/zone-1/rulesets/ruleset-old-zone" ]]; then
+                jq -cn --arg ref "${strict_rule_ref}" '{rules:[{id:"rule-1",ref:$ref}]}'
+            else
+                jq -cn '[{id:"record-existing",comment:"easy_all reality subscription origin"}]'
+            fi
+        }
+        rollback_subscription_update
+    ) >"${log}.out" 2>&1
+}
+
+# 只新签了证书：除吊销证书外不得发任何请求，否则会删掉更新前就存在的 A 记录。
+cf_real_a="${TMP_DIR}/cf-update-rollback-real-a"
+cf_update_rollback_real "${cf_real_a}" "cert-new" 0
+assert_equal "rollback: 只新签证书时真实 purge 不发 DNS 请求" \
+    'DELETE /certificates/cert-new' "$(cf_update_log "${cf_real_a}")"
+
+# 本次 PATCH 过 DNS：新域名的记录是本次写的，真实 purge 要能删掉它。
+cf_real_b="${TMP_DIR}/cf-update-rollback-real-b"
+cf_update_rollback_real "${cf_real_b}" "" 1
+assert_equal "rollback: 本次 PATCH 过 DNS 时真实 purge 删掉新域名的 A 记录" \
+    "$(printf '%s\n' \
+        'GET /zones/zone-1/dns_records?type=A&name=new.example.com&per_page=100' \
+        'DELETE /zones/zone-1/dns_records/record-existing')" \
+    "$(cf_update_log "${cf_real_b}")"
+
+# 本次只写过 Strict TLS：真实 purge 按 ruleset 里匹配 ref 的规则发 DELETE，DNS 段（含只读 GET）
+# 整个跳过。
+cf_real_c="${TMP_DIR}/cf-update-rollback-real-c"
+cf_update_rollback_real "${cf_real_c}" "" 0 1
+assert_equal "rollback: 真实 purge 在 delete_dns=0 时只发规则 DELETE、不发 DNS 请求" \
+    "$(printf '%s\n' \
+        'GET /zones/zone-1/rulesets/ruleset-old-zone' \
+        'DELETE /zones/zone-1/rulesets/ruleset-old-zone/rules/rule-1')" \
+    "$(cf_update_log "${cf_real_c}")"
 
 # 证书可复用判定必须与 OpenSSL 版本无关：macOS 的 LibreSSL 既没有 -ext 也没有 -checkhost，
 # 任何一处早退都会把有效证书判成不可复用并在开发机上反复重签。这里用真实证书验证 SAN 集合比对。

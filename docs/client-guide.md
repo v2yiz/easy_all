@@ -26,7 +26,7 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。
 
 自托管订阅在服务端核心为 Xray 26.9.8 及以上时，Reality 节点会带 `support-x25519mlkem768: true`，
-用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；直连+CDN兜底订阅
+用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；直连+CDN（模式 3）订阅
 （YAML 订阅）同样在满足该版本要求时带该字段。该字段需 mihomo 1.19.9 及以上内核才生效，更旧的 mihomo 内核会
 忽略它（不会报错）；若内核过旧且节点握手正常但无流量，请升级客户端，或改用 v2rayNG 等 Xray 系
 客户端（它们会自行发送该密钥交换）。聚合配置里指向 Xray 低于 26.9.8 的 Reality 节点需设置
@@ -47,7 +47,9 @@ Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。�
 
 日常使用“规则”模式即可。订阅会自动让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
 - **直连 Reality**：部署订阅时 `PROXY` 分组依次是本机 Reality 节点与聚合配置 `nodes` 里的节点（名字原样使用）。默认只下发不带 `optional` 的聚合节点，在订阅链接后追加 `&node=all` 可显示全部；选择“仅节点”时不下发订阅，只输出本机节点信息。
-- **直连+CDN兜底**：`PROXY` 分组按固定顺序包含「本机直连节点（如 `🇺🇸直连`）→ 聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-AUTO` 测速选优组」。`CDN-AUTO` 是内置的 `url-test` 测速组，只放 6 个 Cloudflare 优选 IP 节点（内部优选节点不平铺进 `PROXY`）；日常可直接选择直连节点、聚合节点，或选择 `CDN-AUTO` 交由客户端自动测速优选。
+- **纯 CDN（模式 2）**：没有直连节点。`PROXY` 分组按固定顺序包含「聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-FALLBACK` 兜底组」。
+- **直连+CDN（模式 3）**：`PROXY` 分组按固定顺序包含「本机直连节点（如 `🇺🇸直连`）→ 聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-FALLBACK` 兜底组」。
+- **CDN 分组**：`CDN-AUTO` 是内置的 `url-test` 测速组，只放 6 个 Cloudflare 优选 IP 节点（优选 IP 不平铺进 `PROXY`）；`CDN-FALLBACK` 是 `fallback` 兜底组，先选 `CDN-AUTO`，只有 6 个优选 IP 全部不可用时才切到连接 `cf.<zone>` 的「官方」节点——该节点不写死 IP，由 Cloudflare 官方 Anycast 调度决定边缘。日常直接选择直连节点（仅模式 3）或 `CDN-FALLBACK` 即可自动测速与兜底。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
@@ -224,5 +226,7 @@ https://1.1.1.1/dns-query
 | FlClash | 设置 → 网络 / DNS → 覆写 DNS |
 | Clash Meta for Android | 设置 → 覆写 → DNS 覆写 |
 
-直连+CDN兜底固定提供 6 个 Cloudflare 优选 IPv4 节点且没有域名兜底。订阅能够更新但节点无法连接时，先确认
-客户端确实支持 Mihomo XHTTP，再检查 Cloudflare Zone 的 gRPC 开关。
+两种 CDN 模式的订阅固定提供 6 个 Cloudflare 优选 IPv4 节点，另有 `CDN-FALLBACK` 里的域名节点
+（连接 `cf.<zone>`，走 Cloudflare 官方调度）作为兜底。订阅能够更新但节点无法连接时，先在客户端选择
+`CDN-FALLBACK` 或手动选中「…官方」节点，排除优选 IP 整体被阻断的可能；仍不通再确认客户端确实支持
+Mihomo XHTTP，并检查 Cloudflare Zone 的 gRPC 开关。

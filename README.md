@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[4.1.0](CHANGELOG.md#410-更新说明2026-11-06)。
+当前源码版本：[4.3.0](CHANGELOG.md#430-更新说明2026-11-08)。
 
 ## 文档索引
 
@@ -22,7 +22,8 @@
 | 模式 | 适用场景 | 核心架构与入口 |
 | :--- | :--- | :--- |
 | **1. 直连 Reality** | VPS IP 纯净、直连网络良好 | VLESS TCP Reality Vision（VPS `443` 或动态端口轮换）；可选 Nginx 订阅分发（本机节点 + 聚合节点） |
-| **2. 直连+CDN兜底** | 一台机器同时拥有直连与 CDN 节点 | **直连 Reality（VPS `8443`） + Cloudflare XHTTP（443 回源）**，统一订阅分发（直连/聚合 + CDN-AUTO 测速） |
+| **2. 纯 CDN** | 只要 CDN 入口（VPS 直连被封或不需要直连） | **Cloudflare XHTTP（443 回源）**，统一订阅分发（聚合 + CDN-AUTO 测速 + CDN 域名官方调度兜底） |
+| **3. 直连+CDN** | 一台机器同时拥有直连与 CDN 节点 | **直连 Reality（VPS `8443`） + Cloudflare XHTTP（443 回源）**，统一订阅分发（直连/聚合 + CDN-AUTO 测速 + CDN 域名官方调度兜底） |
 
 ---
 
@@ -46,7 +47,7 @@
   > [!TIP]
   > **极端边界说明**：物理内存 ≤ 1GB 的低配 arm64 VPS 上，Skyline Speeder 需从源码编译 Rust/BPF。程序已自动将并发限制为单任务（`CARGO_BUILD_JOBS=1`），但若磁盘可用空间不足 1.5GB 导致无法自动创建 Swap，编译期仍有触发 OOM 的潜在风险。建议在低配 arm64 环境中确保根分区剩余空间 ≥ 1.5GB 或提前配置好 Swap。
 - **网络与权限**：具备公网 IPv4，root 权限，未运行其他占用 80/443 的 Nginx/Xray；
-- **防火墙/安全组**：云厂商安全组放行 SSH 端口与 TCP `443`（直连+CDN兜底另需放行 TCP `8443`；直连动态端口模式另需放行 `10000-62703`）。
+- **防火墙/安全组**：云厂商安全组放行 SSH 端口与 TCP `443`（直连+CDN 模式另需放行 TCP `8443`；直连动态端口模式另需放行 `10000-62703`）。
 
 ---
 
@@ -61,8 +62,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 脚本将在终端显示交互式菜单：
 1. **选择安装模式**：
    - `1` 直连 - Reality（适合直连效果良好、VPS IP 未被封）
-   - `2` 直连+CDN兜底：直连 Reality + Cloudflare（一次部署两个入口，共享订阅）
-2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；部署订阅的模式 1 与直连+CDN兜底都会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
+   - `2` 纯 CDN：Cloudflare XHTTP（只要 CDN 入口，不需要直连）
+   - `3` 直连+CDN：直连 Reality + Cloudflare（一次部署两个入口，共享订阅）
+2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；部署订阅的模式 1 与两种 CDN 模式都会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
 3. **自动安装与部署**：依赖安装、TCP 加速（默认 Skyline Speeder）、服务启动与验收全自动完成。
 
 ### 用户交互全景导图
@@ -78,7 +80,7 @@ flowchart TD
     PromptResume -- "直接回车 (Y)" --> ResumeRun["复用上次配置与云端资源，直接进入安装"]
     PromptResume -- "输入 n" --> CleanRedo["清理残留并重新开始"] --> ChooseMode
 
-    ChooseMode["<b>【选择安装模式】</b><br/>1. 直连 - Reality<br/>2. 直连+CDN兜底: 直连 Reality + Cloudflare<br/>请选择 [1]:"]
+    ChooseMode["<b>【选择安装模式】</b><br/>1. 直连 - Reality<br/>2. 纯 CDN: Cloudflare XHTTP<br/>3. 直连+CDN: 直连 Reality + Cloudflare<br/>请选择 [1]:"]
 
     %% ---------------- 模式 1: Reality ----------------
     ChooseMode -- "直接回车 或 1" --> M1_NodeHost["1.1 Reality 客户端连接地址<br/>默认: 自动探测的公网 IPv4 (直接回车)"]
@@ -93,19 +95,30 @@ flowchart TD
     M1_SubJSON --> M1_CFToken["1.4.4 Cloudflare API Token<br/>默认: 无 (必填，仅当前进程签发证书，不落盘)"]
     M1_CFToken --> InstallPhase
 
-    %% ---------------- 模式 2: 直连+CDN兜底 ----------------
-    ChooseMode -- "输入 2" --> M2_Zone["2.1 Cloudflare 根 Zone<br/>默认: 无 (必填，如 example.com)"]
-    M2_Zone --> M2_DirectDom["2.2 直连节点域名<br/>默认: node.根Zone (直接回车)"]
-    M2_DirectDom --> M2_CFDom["2.3 Cloudflare 节点域名 (橙云)<br/>默认: cf.根Zone (直接回车)"]
-    M2_CFDom --> M2_SubDom["2.4 订阅域名 (橙云)<br/>默认: sub.根Zone (直接回车)"]
-    M2_SubDom --> M2_CFToken["2.5 Cloudflare API Token<br/>默认: 无 (必填，保存至 root 受控文件支持自动运维)"]
-    M2_CFToken --> M2_GPToken["2.6 Globalping Access Token<br/>默认: 无 (必填，用于探针自动筛选优选 IP)"]
-    M2_GPToken --> M2_Target["2.7 Reality 伪装目标 SNI<br/>默认: swdist.apple.com:443 (直接回车)"]
-    M2_Target --> M2_DirectName["2.8 直连节点名<br/>默认: 🇺🇸直连 (禁止使用保留组名 AUTO/CDN-AUTO/PROXY 等)"]
-    M2_DirectName --> M2_CFPrefix["2.9 Cloudflare 节点名前缀<br/>默认: 🇺🇸CF (系统自动追加 1~6 优选序号)"]
-    M2_CFPrefix --> M2_SubFile["2.10 Mihomo 下载文件名<br/>默认: EASY_ALL (直接回车)"]
-    M2_SubFile --> M2_SubJSON["2.11 订阅配置 JSON<br/>默认: {'allowedTokens':{'owner':'随机Secret'},'nodes':[]}<br/>(直接回车保留默认值；或粘贴含外部节点的 JSON)"]
-    M2_SubJSON --> InstallPhase
+    %% ---------------- 模式 2: 纯 CDN ----------------
+    ChooseMode -- "输入 2" --> C2_Zone["2.1 Cloudflare 根 Zone<br/>默认: 无 (必填，如 example.com)"]
+    C2_Zone --> C2_CFDom["2.2 Cloudflare 节点域名 (橙云)<br/>默认: cf.根Zone (直接回车)"]
+    C2_CFDom --> C2_SubDom["2.3 订阅域名 (橙云)<br/>默认: sub.根Zone (直接回车)"]
+    C2_SubDom --> C2_CFToken["2.4 Cloudflare API Token<br/>默认: 无 (必填，保存至 root 受控文件支持自动运维)"]
+    C2_CFToken --> C2_GPToken["2.5 Globalping Access Token<br/>默认: 无 (必填，用于探针自动筛选优选 IP)"]
+    C2_GPToken --> C2_CFPrefix["2.6 Cloudflare 节点名前缀<br/>默认: 🇺🇸CF (系统自动追加 1~6 与官方兜底)"]
+    C2_CFPrefix --> C2_SubFile["2.7 Mihomo 下载文件名<br/>默认: EASY_ALL (直接回车)"]
+    C2_SubFile --> C2_SubJSON["2.8 订阅配置 JSON<br/>默认: {'allowedTokens':{'owner':'随机Secret'},'nodes':[]}<br/>(直接回车保留默认值；或粘贴含外部节点的 JSON)"]
+    C2_SubJSON --> InstallPhase
+
+    %% ---------------- 模式 3: 直连+CDN ----------------
+    ChooseMode -- "输入 3" --> M3_Zone["3.1 Cloudflare 根 Zone<br/>默认: 无 (必填，如 example.com)"]
+    M3_Zone --> M3_DirectDom["3.2 直连节点域名<br/>默认: node.根Zone (直接回车)"]
+    M3_DirectDom --> M3_CFDom["3.3 Cloudflare 节点域名 (橙云)<br/>默认: cf.根Zone (直接回车)"]
+    M3_CFDom --> M3_SubDom["3.4 订阅域名 (橙云)<br/>默认: sub.根Zone (直接回车)"]
+    M3_SubDom --> M3_CFToken["3.5 Cloudflare API Token<br/>默认: 无 (必填，保存至 root 受控文件支持自动运维)"]
+    M3_CFToken --> M3_GPToken["3.6 Globalping Access Token<br/>默认: 无 (必填，用于探针自动筛选优选 IP)"]
+    M3_GPToken --> M3_Target["3.7 Reality 伪装目标 SNI<br/>默认: swdist.apple.com:443 (直接回车)"]
+    M3_Target --> M3_DirectName["3.8 直连节点名<br/>默认: 🇺🇸直连 (禁止使用保留组名 AUTO/CDN-AUTO/CDN-FALLBACK/PROXY 等)"]
+    M3_DirectName --> M3_CFPrefix["3.9 Cloudflare 节点名前缀<br/>默认: 🇺🇸CF (系统自动追加 1~6 与官方兜底)"]
+    M3_CFPrefix --> M3_SubFile["3.10 Mihomo 下载文件名<br/>默认: EASY_ALL (直接回车)"]
+    M3_SubFile --> M3_SubJSON["3.11 订阅配置 JSON<br/>默认: {'allowedTokens':{'owner':'随机Secret'},'nodes':[]}<br/>(直接回车保留默认值；或粘贴含外部节点的 JSON)"]
+    M3_SubJSON --> InstallPhase
 
     %% ---------------- 通用安装执行与收尾 ----------------
     InstallPhase["<b>【全自动安装与验证阶段】</b><br/>• 系统依赖、Swap 建立与 TCP 加速 (Skyline Speeder)<br/>• 证书申请、Xray/Nginx 渲染与 UFW 规则配置<br/>• 本机服务探活与订阅完整性验收"] --> RebootCheck{"是否需要重启加载新内核？"}
@@ -120,7 +133,7 @@ flowchart TD
 | 模式 | 交互步骤 | 提示说明 | 推荐默认值（直接回车） | 输入方式与规则 |
 | :--- | :--- | :--- | :--- | :--- |
 | **通用** | **断点续装** | `继续上次安装？[Y/n]:` | **`Y`**（继续） | 仅在有安装残留时提示；输入 `n` 清理并重新安装 |
-| **通用** | **模式选择** | `请选择 [1]:` | **`1`**（Reality） | 输入 `1` 选择直连 Reality，输入 `2` 选择直连+CDN兜底 |
+| **通用** | **模式选择** | `请选择 [1]:` | **`1`**（Reality） | 输入 `1` 直连 Reality，`2` 纯 CDN，`3` 直连+CDN |
 | **1. Reality** | 1.1 连接地址 | `Reality 客户端连接地址` | **自动检测的公网 IPv4** | 直接回车使用探测到的 IP；或填入入站 IPv4 / 灰云域名 |
 | | 1.2 伪装目标 | `Reality SNI / 伪装目标（域名:端口）` | `swdist.apple.com:443` | 直接回车使用 Apple CDN；或输入自定义 TLS 1.3 目标 |
 | | 1.3 端口模式 | `请选择 [2]:` | **`2`**（dynamic） | 直接回车使用动态端口（`10000-62703`）；输入 `1` 固定 443 |
@@ -129,17 +142,25 @@ flowchart TD
 | | 1.4.2 下载名 | `Mihomo 下载文件名` | `EASY_ALL` | 直接回车使用推荐值；或自定义下载文件名 |
 | | 1.4.3 订阅配置 | `订阅配置 JSON` | `{"allowedTokens":...,"nodes":[]}` | **直接回车保留默认值**（自动生成 owner Token，节点数组为空）；或粘贴自定义多用户与外部聚合节点 JSON |
 | | 1.4.4 CF Token | `Cloudflare API Token` | **无**（必填） | 隐藏输入，仅当前进程签发证书使用，不落盘 |
-| **2. 直连+CDN兜底** | 2.1 根 Zone | `Cloudflare 根 Zone` | **无**（必填） | 输入已在 Cloudflare 托管的主域名（如 `example.com`） |
-| | 2.2 直连域名 | `直连节点域名` | `node.<根Zone>` | 直接回车使用默认值（自动配置为灰云 DNS-only） |
-| | 2.3 CDN 节点域名 | `Cloudflare 节点域名（橙云）` | `cf.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 回源） |
-| | 2.4 订阅域名 | `订阅域名（橙云）` | `sub.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 分发） |
-| | 2.5 CF Token | `Cloudflare API Token` | **无**（必填） | 隐藏输入；需目标 Zone 的 DNS 与证书编辑权限（持久化保存） |
-| | 2.6 GP Token | `Globalping Access Token` | **无**（必填） | 隐藏输入；用于定期三网探针筛选 6 个优选 IP（持久化保存） |
-| | 2.7 伪装目标 | `Reality 伪装目标（域名:端口）` | `swdist.apple.com:443` | 直接回车使用 Apple CDN；或输入自定义 TLS 1.3 目标 |
-| | 2.8 直连节点名 | `直连节点名` | `🇺🇸直连` | 直接回车；**禁止使用保留组名**（`AUTO`、`CDN-AUTO`、`PROXY` 等） |
-| | 2.9 CF 前缀 | `Cloudflare 节点名前缀` | `🇺🇸CF` | 直接回车；自动追加 1~6（不可与直连节点名同名） |
-| | 2.10 下载名 | `Mihomo 下载文件名` | `EASY_ALL` | 直接回车使用推荐值；或自定义下载文件名 |
-| | 2.11 订阅配置 | `订阅配置 JSON` | `{"allowedTokens":...,"nodes":[]}` | **直接回车保留默认值**（自动生成 owner Token，节点数组为空）；或粘贴自定义多用户与外部聚合节点 JSON |
+| **2. 纯 CDN** | 2.1 根 Zone | `Cloudflare 根 Zone` | **无**（必填） | 输入已在 Cloudflare 托管的主域名（如 `example.com`） |
+| | 2.2 CDN 节点域名 | `Cloudflare 节点域名（橙云）` | `cf.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 回源） |
+| | 2.3 订阅域名 | `订阅域名（橙云）` | `sub.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 分发） |
+| | 2.4 CF Token | `Cloudflare API Token` | **无**（必填） | 隐藏输入；需目标 Zone 的 DNS 与证书编辑权限（持久化保存） |
+| | 2.5 GP Token | `Globalping Access Token` | **无**（必填） | 隐藏输入；用于定期三网探针筛选 6 个优选 IP（持久化保存） |
+| | 2.6 CF 前缀 | `Cloudflare 节点名前缀` | `🇺🇸CF` | 直接回车；自动追加 1~6 与官方调度兜底节点 |
+| | 2.7 下载名 | `Mihomo 下载文件名` | `EASY_ALL` | 直接回车使用推荐值；或自定义下载文件名 |
+| | 2.8 订阅配置 | `订阅配置 JSON` | `{"allowedTokens":...,"nodes":[]}` | **直接回车保留默认值**（自动生成 owner Token，节点数组为空）；或粘贴自定义多用户与外部聚合节点 JSON |
+| **3. 直连+CDN** | 3.1 根 Zone | `Cloudflare 根 Zone` | **无**（必填） | 输入已在 Cloudflare 托管的主域名（如 `example.com`） |
+| | 3.2 直连域名 | `直连节点域名` | `node.<根Zone>` | 直接回车使用默认值（自动配置为灰云 DNS-only） |
+| | 3.3 CDN 节点域名 | `Cloudflare 节点域名（橙云）` | `cf.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 回源） |
+| | 3.4 订阅域名 | `订阅域名（橙云）` | `sub.<根Zone>` | 直接回车使用默认值（自动配置为橙云 Proxied 分发） |
+| | 3.5 CF Token | `Cloudflare API Token` | **无**（必填） | 隐藏输入；需目标 Zone 的 DNS 与证书编辑权限（持久化保存） |
+| | 3.6 GP Token | `Globalping Access Token` | **无**（必填） | 隐藏输入；用于定期三网探针筛选 6 个优选 IP（持久化保存） |
+| | 3.7 伪装目标 | `Reality 伪装目标（域名:端口）` | `swdist.apple.com:443` | 直接回车使用 Apple CDN；或输入自定义 TLS 1.3 目标 |
+| | 3.8 直连节点名 | `直连节点名` | `🇺🇸直连` | 直接回车；**禁止使用保留组名**（`AUTO`、`CDN-AUTO`、`CDN-FALLBACK`、`PROXY` 等） |
+| | 3.9 CF 前缀 | `Cloudflare 节点名前缀` | `🇺🇸CF` | 直接回车；自动追加 1~6 与官方调度兜底节点（不可与直连节点名同名） |
+| | 3.10 下载名 | `Mihomo 下载文件名` | `EASY_ALL` | 直接回车使用推荐值；或自定义下载文件名 |
+| | 3.11 订阅配置 | `订阅配置 JSON` | `{"allowedTokens":...,"nodes":[]}` | **直接回车保留默认值**（自动生成 owner Token，节点数组为空）；或粘贴自定义多用户与外部聚合节点 JSON |
 | **通用** | **内核重启确认** | `是否立即重启服务器？[Y/n]:` | **`Y`**（立即重启） | 仅在升级内核时提示；直接回车立即执行 `sudo reboot` |
 
 ---
@@ -172,10 +193,10 @@ sudo easy_all subscription
 | `easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
 | `easy_all show` | 输出各节点详细参数、VLESS 链接及 Mihomo 代理配置块 |
 | `easy_all apply` | 刷新并重新应用本机配置与订阅（不重复修改云端 DNS 与证书） |
-| `easy_all apply-cloud` | （直连+CDN兜底）同步云端资源（更新 Cloudflare DNS 解析与 Origin CA 证书） |
-| `easy_all reality-target [域名:端口]` | （Reality / 直连+CDN兜底）修改 Reality 伪装目标（自动带 SNI 验证 TLS 1.3 连通性并热更新） |
+| `easy_all apply-cloud` | （纯 CDN / 直连+CDN）同步云端资源（更新 Cloudflare DNS 解析与 Origin CA 证书） |
+| `easy_all reality-target [域名:端口]` | （Reality / 直连+CDN）修改 Reality 伪装目标（自动带 SNI 验证 TLS 1.3 连通性并热更新） |
 | `easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 规则 |
-| `easy_all refresh-cdn-ips` | （直连+CDN兜底）重新调用 Globalping 测试并筛选当期最佳优选 IP |
+| `easy_all refresh-cdn-ips` | （纯 CDN / 直连+CDN）重新调用 Globalping 测试并筛选当期最佳优选 IP |
 | `easy_all edit-sub` | 交互式管理订阅配置（用户 Token + 聚合节点）与订阅模板 |
 | `easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `easy_all update-core` | 在线升级 Xray 核心至官方最新稳定版 |
@@ -190,7 +211,7 @@ sudo easy_all subscription
    - 所有模式均保留系统现有 SSH 监听端口（默认 22），UFW 默认放行该端口并阻断其余未放行入站流量。
    - 由 Fail2ban 实时监控保护实际 SSH 端口（采用专用 CIDR 防重脚本），防范自动化暴力破解。
 2. **回源白名单与防扫网**：
-   - 直连+CDN兜底的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。
+   - 纯 CDN 与直连+CDN 的源站 443 端口仅对 Cloudflare 官方公布的回源 IPv4 网段开放，外部探测无法触达。
    - Fail2ban 的 CIDR 封禁助手脚本安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`，与 easy_all 运行时目录解耦；卸载与安装失败回滚只回收业务端口，不会让常驻封禁动作失效。
 3. **恶意流量阻断**：
    - Xray 内部路由自动丢弃局域网私有地址、云厂商元数据网段（如 169.254.169.254）以及异常回环访问。
@@ -199,7 +220,9 @@ sudo easy_all subscription
 
 ## Cloudflare CDN 优选 IP 原理与实现
 
-直连+CDN兜底（模式 2）采用**服务端中心化主动探测**机制：不耗费手机客户端电量与流量，由 VPS 定时（每 3 小时通过 systemd timer）调用 Globalping 分布式探针，直接从大陆三大运营商（中国电信 AS4134、中国联通 AS4837、中国移动 AS9808）的真实终端（eyeball-network）角度，经过两阶段过滤筛选出 6 个（三网各 2 个）最低延迟、低丢包且 TLS 真正通畅的优选 IP 注入订阅。
+纯 CDN（模式 2）与直连+CDN（模式 3）采用**服务端中心化主动探测**机制：不耗费手机客户端电量与流量，由 VPS 定时（每 3 小时通过 systemd timer）调用 Globalping 分布式探针，直接从大陆三大运营商（中国电信 AS4134、中国联通 AS4837、中国移动 AS9808）的真实终端（eyeball-network）角度，经过两阶段过滤筛选出 6 个（三网各 2 个）最低延迟、低丢包且 TLS 真正通畅的优选 IP 注入订阅。
+
+订阅同时内置**CDN 域名官方调度兜底**：除 6 个优选 IP 之外还有一个连接 `cf.<zone>` 的节点，由 Cloudflare 官方 Anycast 调度决定边缘；Mihomo 把它放在 `CDN-FALLBACK`（`fallback`）组的最后一位，只有当 `CDN-AUTO` 测速组里 6 个优选 IP 全部不可用时才启用，因此在优选 IP 整体被阻断时仍可继续使用 CDN 入口。
 
 ```mermaid
 %%{init: {"flowchart": {"wrappingWidth": 700, "nodeSpacing": 30, "rankSpacing": 30}}}%%

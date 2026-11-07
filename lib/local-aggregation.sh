@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-# Subscription aggregation shared by the Reality and combined profiles.
+# Subscription aggregation shared by the Reality and Cloudflare profiles.
 # One config object carries both credentials and extra nodes:
 #   {"allowedTokens": {"owner": "..."}, "nodes": [...]}
 # Nodes marked optional are served only when the client asks for node=all.
 
-readonly LOCAL_AGGREGATION_RESERVED_NAMES='["AUTO","CDN-AUTO","PROXY","GLOBAL","DIRECT","REJECT","PASS"]'
+readonly LOCAL_AGGREGATION_RESERVED_NAMES='["AUTO","CDN-AUTO","CDN-FALLBACK","PROXY","GLOBAL","DIRECT","REJECT","PASS"]'
 
 # 校验并规范化整个订阅配置；节点名冲突由调用方通过 LOCAL_NODE_NAMES 传入。
 normalize_subscription_config() {

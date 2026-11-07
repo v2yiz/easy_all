@@ -21,7 +21,7 @@ sudo easy_all apply
 - 重新渲染并应用本机 Xray 配置、Nginx 站点、本地订阅与 UFW 规则。
 - 不会重复向 Cloudflare 请求签发证书或修改 DNS。
 
-### 1.3 同步云端资源（直连+CDN兜底）
+### 1.3 同步云端资源（纯 CDN / 直连+CDN）
 如果更改了域名、需要同步云端解析或重新签发证书：
 ```bash
 sudo easy_all apply-cloud
@@ -37,9 +37,12 @@ sudo easy_all apply-cloud
 | `sudo easy_all status` | 查看系统运行状况、TCP 加速激活状态、Xray/Nginx 服务及端口 |
 | `sudo easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
 | `sudo easy_all show` | 打印当前节点链接（VLESS URI）与 Mihomo YAML 配置片段 |
-| `sudo easy_all reality-target [域名:端口]` | （Reality / 直连+CDN兜底）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
+| `sudo easy_all apply` | 重新渲染并应用本机配置与订阅（不修改云端 DNS/证书） |
+| `sudo easy_all apply-cloud` | （纯 CDN / 直连+CDN）同步 Cloudflare DNS 与 Origin CA 证书 |
+| `sudo easy_all self-update` | 从 GitHub 更新 easy_all 脚本体（`--dev` 使用开发分支） |
+| `sudo easy_all reality-target [域名:端口]` | （Reality / 直连+CDN）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
 | `sudo easy_all rotate-dynamic-ports` | （Reality 模式）立即轮换并刷新动态端口 NAT 重定向规则 |
-| `sudo easy_all refresh-cdn-ips` | （直连+CDN兜底）重新调用 Globalping 探针优选最新 CDN IP |
+| `sudo easy_all refresh-cdn-ips` | （纯 CDN / 直连+CDN）重新调用 Globalping 探针优选最新 CDN IP |
 | `sudo easy_all edit-sub` | 交互式编辑订阅配置（用户 Token + 聚合节点）与订阅模板 |
 | `sudo easy_all renew-cert` | 检查并重新签发当前模式的 TLS 证书 |
 | `sudo easy_all update-core` | 在线升级 Xray 核心至官方最新版本，并自动重载服务 |
@@ -79,7 +82,7 @@ sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 
 ## 5. 订阅与多用户管理
 
-执行交互式管理（直连 Reality 的部署订阅与直连+CDN兜底共用同一份订阅配置）：
+执行交互式管理（直连 Reality 的部署订阅与两种 CDN 模式共用同一份订阅配置）：
 ```bash
 sudo easy_all edit-sub
 ```
@@ -96,7 +99,7 @@ sudo easy_all edit-sub
 ```bash
 sudo easy_all uninstall
 ```
-停止 Xray 与 Nginx，删除 easy_all 自有配置、证书与定时任务，回收 easy_all 注入的业务端口（443/8443）与回源白名单，保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置（`/usr/local/sbin/fail2ban-ufw-cidr.sh` 脚本保留），恢复安装前的 IPv6 配置，保留云端资源（若未加 `--purge-cloud`）。前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap、系统依赖与 Nginx `worker_processes 1;` 收敛均保留。
+停止 Xray 与 Nginx，删除 easy_all 自有配置、证书与定时任务，回收 easy_all 注入的业务端口（443；直连+CDN 另含 8443）与回源白名单，保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置（`/usr/local/sbin/fail2ban-ufw-cidr.sh` 脚本保留），恢复安装前的 IPv6 配置，保留云端资源（若未加 `--purge-cloud`）。前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap、系统依赖与 Nginx `worker_processes 1;` 收敛均保留。
 
 ### 6.2 完整卸载（含云端资源清理）
 ```bash
@@ -118,8 +121,8 @@ sudo easy_all purge-cloudflare --domain example.com
 | :--- | :--- |
 | **SSH 断开后重连失败** | - 检查服务商后台云防火墙/安全组是否已放行 SSH 端口（默认 22）。<br>- 检查 UFW 状态及 Fail2ban 是否因多次认证失败暂时封禁了客户端 IP。 |
 | **重跑提示 TCP 80/443 被占用** | 有 easy_all 残留时按提示执行 `sudo easy_all cleanup-partial`；只报了「easy_all 仅支持专用 VPS」说明占用者是第三方进程（多为本机自用 Nginx），先确认归属再处理。 |
-| **安装中断提示「继续上次安装」** | 直连+CDN兜底支持断点续装，回车选择 `Y` 即可复用已生成的证书和密钥快速继续安装；选 `n` 则清理重装。 |
+| **安装中断提示「继续上次安装」** | 纯 CDN 与直连+CDN 模式支持断点续装，回车选择 `Y` 即可复用已生成的证书和密钥快速继续安装；选 `n` 则清理重装。 |
 | **Cloudflare Zone 校验失败** | 域名在 Cloudflare 控制台必须处于 **Active**（已保护）状态，不能仅停留在待更名或待验证阶段。 |
-| **提示未开启 gRPC** | 直连+CDN兜底必须在 Cloudflare 控制台手动开启：进入域名 Zone → **Network** → 将 **gRPC** 切换为 **On**。 |
+| **提示未开启 gRPC** | 纯 CDN 与直连+CDN 模式必须在 Cloudflare 控制台手动开启：进入域名 Zone → **Network** → 将 **gRPC** 切换为 **On**。 |
 | **Globalping 额度不足报错** | 免费额度耗尽时，脚本会自动保留上一版已验证的优选 IP 缓存继续工作；等下小时额度恢复后执行 `sudo easy_all refresh-cdn-ips` 即可。 |
 | **订阅可下载但节点无法连接** | 1. 确认客户端内核版本是否过旧（Mihomo 建议 ≥ 1.19.9）；<br>2. 检查云服务商安全组是否放行了业务端口（443 / 8443）。 |

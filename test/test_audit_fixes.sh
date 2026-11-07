@@ -135,9 +135,9 @@ assert_contains "timer Description 3 hours" "${timer_content}" "Description=Refr
 assert_not_contains "globalping failure messages no longer say hourly" \
     "$(<"${ROOT_DIR}/lib/globalping-cdn.sh")" "每小时"
 
-echo "=== 4. 直连+CDN兜底 Cloudflare API Token 提示文案与权限要求 ==="
-combined_content=$(<"${ROOT_DIR}/profiles/combined.sh")
-assert_contains "combined token prompt" "${combined_content}" "Cloudflare API Token（仅限 DNS 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）"
+echo "=== 4. CDN 模式 Cloudflare API Token 提示文案与权限要求 ==="
+combined_content=$(<"${ROOT_DIR}/lib/cloudflare-mode.sh")
+assert_contains "cdn token prompt" "${combined_content}" "Cloudflare API Token（仅限 DNS 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）"
 
 echo "=== 5. 移除遗留死变量 PARAMS_SOURCE 与 INSTALL_PARAMS_DELETE ==="
 common_content=$(<"${ROOT_DIR}/lib/profile-common.sh")
@@ -413,7 +413,7 @@ fi
     assert_not_contains "no restore_tcp_runtime symbol" \
         "$(declare -f)" "restore_tcp_runtime"
     for script in lib/xhttp-runtime.sh profiles/reality.sh \
-        profiles/combined.sh; do
+        profiles/combined.sh profiles/cdn.sh lib/cloudflare-mode.sh; do
         assert_not_contains "${script} does not tear down TCP acceleration" \
             "$(<"${ROOT_DIR}/${script}")" "uninstall_tcp_acceleration"
     done
@@ -597,8 +597,9 @@ EOF_JSON
 )
 
 # 8.13 验证各 Profile 的 apply 入口均包含 configure_ipv4_only（P2）
-combined_script=$(<"${ROOT_DIR}/profiles/combined.sh")
-assert_contains "combined apply_easy_all has configure_ipv4_only" \
+# 两种 CDN 模式共用 lib/cloudflare-mode.sh 的 apply 入口。
+combined_script=$(<"${ROOT_DIR}/lib/cloudflare-mode.sh")
+assert_contains "cdn apply_easy_all has configure_ipv4_only" \
     "${combined_script}" $'configure_tcp_acceleration\n    configure_ipv4_only'
 
 reality_script=$(<"${ROOT_DIR}/profiles/reality.sh")
@@ -956,7 +957,7 @@ printf '%s\n' "ufw deny 2222/tcp" >"${FAKE_UFW_ADDED}"
 assert_not_contains "仓库内不得再有 ufw --force disable" \
     "$(grep -Rh -- 'ufw --force disable' "${ROOT_DIR}/lib" "${ROOT_DIR}/profiles" 2>/dev/null || true)" \
     "ufw --force disable"
-for profile in profiles/reality.sh profiles/combined.sh; do
+for profile in profiles/reality.sh lib/cloudflare-mode.sh; do
     uninstall_body=$(awk '/^uninstall_all\(\)/,/^}/' "${ROOT_DIR}/${profile}")
     assert_contains "${profile} 卸载回收业务端口" "${uninstall_body}" "restore_preinstall_firewall"
     assert_not_contains "${profile} 卸载不带旧的回滚参数" "${uninstall_body}" "restore_preinstall_firewall 1"
@@ -991,21 +992,27 @@ first_state=$( (
     EASY_ALL_MEMINFO_FILE="${meminfo}" report_host_init_state
 ) 2>&1 ) || fail "未初始化主机必须能输出状态"
 assert_contains "未初始化主机提示首次安装" "${first_state}" "首次安装"
-for profile in profiles/reality.sh profiles/combined.sh; do
+for profile in profiles/reality.sh lib/cloudflare-mode.sh; do
     body=$(awk '/^(install_all|run_reality_install_pipeline)\(\)/,/^}/' "${ROOT_DIR}/${profile}")
     assert_contains "${profile} 初始化阶段输出状态" "${body}" "report_host_init_state"
 done
 
 
-echo "=== 13. 已删模式的输入与回滚残留 ==="
+echo "=== 13. 模式菜单与回滚残留 ==="
 mode_body=$(awk '/^choose_install_mode\(\)/,/^}/' "${ROOT_DIR}/easy_all")
-assert_contains "菜单序号 2 映射到直连+CDN兜底" "${mode_body}" "2) printf 'combined\\n' ;;"
-assert_not_contains "不再提供已移除的纯 CDN 模式编号 3" "${mode_body}" "3)"
-assert_not_contains "菜单不再出现纯 CDN 模式" "${mode_body}" "cloudflare-streamup"
+assert_contains "菜单序号 1 映射到直连 Reality" "${mode_body}" "1) printf 'reality\\n' ;;"
+assert_contains "菜单序号 2 映射到纯 CDN" "${mode_body}" "2) printf 'cdn\\n' ;;"
+assert_contains "菜单序号 3 映射到直连+CDN" "${mode_body}" "3) printf 'combined\\n' ;;"
+assert_not_contains "菜单不再使用已移除的历史标识" "${mode_body}" "cloudflare-streamup"
+launcher_body=$(<"${ROOT_DIR}/easy_all")
+assert_contains "状态识别接受纯 CDN 协议" "${launcher_body}" "reality|cdn|combined"
+assert_contains "profile_file 注册纯 CDN" "${launcher_body}" "profiles/cdn.sh"
+assert_contains "manifest 登记纯 CDN profile" "$(<"${ROOT_DIR}/runtime.manifest")" "profiles/cdn.sh"
+assert_contains "manifest 登记 CDN 共享层" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudflare-mode.sh"
 assert_contains "无效序号提示模式不支持" "${mode_body}" "不支持的安装模式"
 
 rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/lib/xhttp-runtime.sh")
-assert_contains "直连+CDN兜底订阅更新回滚删除本次新建的 Origin CA 证书" "${rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
+assert_contains "直连+CDN订阅更新回滚删除本次新建的 Origin CA 证书" "${rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
 # 两种模式都要在回滚时吊销本次新签的证书（state.env 恢复后只剩旧证书 ID，不删即孤儿）。
 reality_update_rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
 for entry in rollback_body reality_update_rollback_body; do
@@ -1023,15 +1030,17 @@ assert_not_contains "Worker 时代的 cloudflare_client_candidates 已删除" \
 
 
 echo "=== 14. renew-cert 入口与事务顺序 ==="
-renew_body=$(awk '/^renew_certificate\(\)/,/^}/' "${ROOT_DIR}/profiles/combined.sh")
+renew_body=$(awk '/^renew_certificate\(\)/,/^}/' "${ROOT_DIR}/lib/cloudflare-mode.sh")
 for token in require_root acquire_runtime_write_lock collect_installed_state \
     snapshot_subscription_update commit_subscription_update; do
-    assert_contains "直连+CDN兜底 renew_certificate 含 ${token}" "${renew_body}" "${token}"
+    assert_contains "直连+CDN renew_certificate 含 ${token}" "${renew_body}" "${token}"
 done
-assert_before "直连+CDN兜底 renew-cert 先 reload 再 save_state" \
+assert_before "直连+CDN renew-cert 先 reload 再 save_state" \
     "${renew_body}" "systemctl reload nginx" "save_state"
-assert_before "直连+CDN兜底 renew-cert 先关闭回滚再吊销旧证书" \
+assert_before "直连+CDN renew-cert 先关闭回滚再吊销旧证书" \
     "${renew_body}" "UPDATE_SUB_ROLLBACK_ON_EXIT=0" "cloudflare_finalize_certificate_rotation"
+assert_before "renew-cert 先做本机 TLS/SNI 验收再吊销旧证书" \
+    "${renew_body}" "cdn_validate_cf_node_sni" "UPDATE_SUB_ROLLBACK_ON_EXIT=0"
 
 reality_renew_body=$(awk '/^renew_subscription_certificate\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
 for token in acquire_runtime_write_lock snapshot_subscription_update release_runtime_write_lock; do

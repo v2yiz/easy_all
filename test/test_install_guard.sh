@@ -308,6 +308,8 @@ rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
 # 13. 跨模式清理：profile 映射齐全，未知模式拒绝猜测
 assert_equal "reality maps to its profile" "reality.sh" "$(profile_script_for reality)"
+assert_equal "cdn maps to its profile" "cdn.sh" "$(profile_script_for cdn)"
+assert_equal "combined maps to its profile" "combined.sh" "$(profile_script_for combined)"
 assert_equal "unknown mode is rejected" "1" \
     "$(profile_script_for nope >/dev/null 2>&1 && echo 0 || echo 1)"
 output=$(capture run_recorded_profile_cleanup nope || true)
@@ -417,7 +419,7 @@ for case_spec in "install ok installed:0" "hold ok installed:0" "install ok unpa
 done
 rm -rf -- "${TMP_DIR}/dpkgbin"
 
-# 23c. 安装前的 nginx 默认站点必须按快照恢复（Reality / 直连+CDN兜底的卸载与回滚路径）
+# 23c. 安装前的 nginx 默认站点必须按快照恢复（Reality / 直连+CDN的卸载与回滚路径）
 (
     export BACKUP_DIR="${TMP_DIR}/site/state/backups"
     export EASY_ALL_GUARD_NGINX_DEFAULT_SITE="${TMP_DIR}/site/sites-enabled/default"

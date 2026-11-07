@@ -74,19 +74,19 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality 或直连+CDN兜底
+  install          交互选择 Reality、纯 CDN 或直连+CDN
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
-  apply            应用已安装配置；直连+CDN兜底只重建本机与订阅
+  apply            应用已安装配置；纯 CDN 与直连+CDN 只重建本机与订阅
   reality-target [域名:端口]
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
                    立即刷新直连 Reality 模式的动态端口 NAT 规则
-  apply-cloud      同步云端资源（直连+CDN兜底的 Cloudflare DNS 与证书）
+  apply-cloud      同步云端资源（纯 CDN / 直连+CDN 的 Cloudflare DNS 与证书）
   edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
-  refresh-cdn-ips  立即刷新直连+CDN兜底的 Globalping 精选 IP 与订阅
+  refresh-cdn-ips  立即刷新纯 CDN / 直连+CDN 的 Globalping 精选 IP 与订阅
   purge-cloudflare 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用）
   update-core      更新当前模式的核心（Xray）
   renew-cert       重新签发当前模式的 TLS 证书
@@ -182,11 +182,13 @@ choose_install_mode() {
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
-    printf '  2. 直连+CDN兜底：直连 Reality + Cloudflare（一次部署两个入口）\n' >&2
+    printf '  2. 纯 CDN - Cloudflare XHTTP（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
+    printf '  3. 直连+CDN：直连 Reality + Cloudflare（一次部署两个入口）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
-    2) printf 'combined\n' ;;
+    2) printf 'cdn\n' ;;
+    3) printf 'combined\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
@@ -211,7 +213,7 @@ detect_installed_mode() {
         [[ "${state_version}" == "${CURRENT_STATE_VERSION}" ]] \
             || launcher_die "状态版本不匹配（当前：${state_version:-缺失}，期望：${CURRENT_STATE_VERSION}）；当前版本无法接管这份状态，请先删除 ${EASY_ALL_STATE_FILE} 并清理 /etc/easy_all 后重新安装"
         case "${protocol}" in
-        reality|combined)
+        reality|cdn|combined)
             printf '%s\n' "${protocol}"
             ;;
         *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
@@ -224,6 +226,7 @@ profile_file() {
     local mode=$1 candidate
     case "${mode}" in
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
+    cdn) candidate="${EASY_ALL_ROOT}/profiles/cdn.sh" ;;
     combined) candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
@@ -326,12 +329,12 @@ dispatch_profile_command() {
     tcp-resume) resume_skyline_after_reboot "$@" ;;
     reality-target)
         [[ "${mode}" == "reality" || "${mode}" == "combined" ]] \
-            || launcher_die "reality-target 仅适用于 Reality 与直连+CDN兜底模式"
+            || launcher_die "reality-target 仅适用于 Reality 与直连+CDN模式"
         update_reality_target "$@"
         ;;
     apply-cloud)
-        [[ "${mode}" == "combined" ]] \
-            || launcher_die "apply-cloud 仅适用于直连+CDN兜底模式"
+        [[ "${mode}" == "cdn" || "${mode}" == "combined" ]] \
+            || launcher_die "apply-cloud 仅适用于纯 CDN 与直连+CDN模式"
         (($# == 0)) || launcher_die "apply-cloud 不接受额外参数"
         apply_cloud_resources
         ;;
@@ -346,14 +349,14 @@ dispatch_profile_command() {
         update_current_core "$@"
         ;;
     refresh-cdn-ips)
-        [[ "${mode}" == "combined" ]] \
-            || launcher_die "refresh-cdn-ips 仅适用于直连+CDN兜底模式"
-        refresh_combined_cdn_ips
+        [[ "${mode}" == "cdn" || "${mode}" == "combined" ]] \
+            || launcher_die "refresh-cdn-ips 仅适用于纯 CDN 与直连+CDN模式"
+        refresh_cdn_ips
         ;;
     renew-cert)
         case "${mode}" in
         reality) renew_subscription_certificate ;;
-        combined) renew_certificate ;;
+        cdn | combined) renew_certificate ;;
         *) launcher_die "当前模式不使用 TLS 证书，无需续期" ;;
         esac
         ;;

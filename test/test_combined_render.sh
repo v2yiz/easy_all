@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# 直连+CDN兜底（profiles/combined.sh）单元与回归测试。
+# 直连+CDN（profiles/combined.sh）单元与回归测试。
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/profiles/combined.sh"
+MODE_LIB="${ROOT_DIR}/lib/cloudflare-mode.sh"
 SUB_AUTH_LIB="${ROOT_DIR}/lib/subscription-auth.sh"
 
 # 沙箱环境可能禁止写用户默认 TMPDIR：无参 mktemp 一律落到本测试的 /tmp 目录。
@@ -187,7 +188,7 @@ assert_equal "profile: 回源证书路径指向 profile 常量" \
     "${CF_CA_ROOT_FILE}" "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
 assert_equal "profile: 回源 UFW 端口保持 443" "443" "${CLOUDFLARE_UFW_PORT}"
 
-# 初始化直连+CDN兜底 fixture
+# 初始化直连+CDN fixture
 CF_ZONE="example.com"
 CLOUDFLARE_ZONE_ID="zone-123456"
 VPS_PUBLIC_IPV4="198.51.100.10"
@@ -222,9 +223,9 @@ assert_equal "10a: cloudflare_origin_certificate_hosts order is [CF_NODE_DOMAIN,
 assert_contains "10a: cloudflare_origin_certificate_hosts includes CF_NODE_DOMAIN" \
     "${hosts_json}" "\"${CF_NODE_DOMAIN}\""
 
-# 10b & 10c) combined_render_nginx_config 输出中 XHTTP 块 server_name 含 CF_NODE_DOMAIN，
+# 10b & 10c) cdn_render_nginx_config 输出中 XHTTP 块 server_name 含 CF_NODE_DOMAIN，
 # 且包含 ssl_reject_handshake on、grpc_pass、订阅 server 块；Xray 配置 xhttpSettings.host 等于 CF_NODE_DOMAIN
-rendered_modern=$(combined_render_nginx_config $'\n    http2 on;' "")
+rendered_modern=$(cdn_render_nginx_config $'\n    http2 on;' "")
 assert_contains "10b: XHTTP block server_name has CF_NODE_DOMAIN" \
     "${rendered_modern}" "server_name ${CF_NODE_DOMAIN};"
 assert_contains "10c: rendered nginx config has ssl_reject_handshake on" \
@@ -241,15 +242,26 @@ assert_contains "10c: rendered nginx config has subscription server_name" \
 assert_contains "10c: rendered nginx config has /subscribe location" \
     "${rendered_modern}" "location = /subscribe {"
 
-write_xray_config
+cdn_write_xray_config
 assert_equal "10b-xray: Xray xhttpSettings.host equals CF_NODE_DOMAIN" \
     "${CF_NODE_DOMAIN}" \
     "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in") | .streamSettings.xhttpSettings.host' "${XRAY_CONFIG}")"
+# 抽取共享层后 Reality 入站仍必须存在：直连入口与 XHTTP 入站各一个。
+assert_equal "10b-xray: two inbounds (reality + xhttp)" "2" \
+    "$(jq '.inbounds | length' "${XRAY_CONFIG}")"
+assert_equal "10b-xray: reality inbound listens on 8443" "8443" \
+    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .port' "${XRAY_CONFIG}")"
+assert_equal "10b-xray: reality inbound uses the configured SNI" "${REALITY_TARGET%:*}" \
+    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .streamSettings.realitySettings.serverNames[0]' "${XRAY_CONFIG}")"
+assert_equal "10b-xray: reality clients keep Vision flow" "xtls-rprx-vision" \
+    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .settings.clients[0].flow' "${XRAY_CONFIG}")"
+assert_equal "10b-xray: reality inbound keeps the private key" "test-private-key" \
+    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .streamSettings.realitySettings.privateKey' "${XRAY_CONFIG}")"
 
 # 10b-1) XHTTP padding 默认使用范围，空值仍走默认，显式值保持字符串原样。
 assert_xhttp_settings() {
     local label=$1 expected_padding=$2 expected_secs=$3
-    write_xray_config
+    cdn_write_xray_config
     assert_equal "${label}: padding" "string=${expected_padding}" \
         "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in")
             | .streamSettings.xhttpSettings.xPaddingBytes | "\(type)=\(.)"' "${XRAY_CONFIG}")"
@@ -295,12 +307,12 @@ assert_xhttp_settings() {
     assert_not_contains "10d-false: modern http2 directive absent" "${conf_false}" "http2 on;"
 )
 
-# 10e) combined_apply_tokens 切换后 write_subscription_token_map 只含新值不含旧值
+# 10e) cdn_apply_tokens 切换后 write_subscription_token_map 只含新值不含旧值
 # 注：normalize_allowed_tokens（lib/subscription-auth.sh:61）要求 token 长度 8-128，故用 token-A-123456 / token-B-123456
 ALLOWED_TOKENS='{"owner":"token-A-123456"}'
 OWNER_TOKEN="token-A-123456"
-combined_apply_tokens '{"owner":"token-B-123456"}' \
-    || fail_test "10e: valid token should be accepted by combined_apply_tokens"
+cdn_apply_tokens '{"owner":"token-B-123456"}' \
+    || fail_test "10e: valid token should be accepted by cdn_apply_tokens"
 assert_equal "10e: OWNER_TOKEN updated to B" "token-B-123456" "${OWNER_TOKEN}"
 assert_equal "10e: ALLOWED_TOKENS updated to B" '{"owner":"token-B-123456"}' "${ALLOWED_TOKENS}"
 token_map_output=$(write_subscription_token_map)
@@ -319,7 +331,7 @@ expected_state_before=$(<"${STATE_FILE}")
 expected_sub_before=$(<"${SUBSCRIPTION_BASE64_FILE}")
 
 for invalid_json in '{"owner":""}' '{}' '{"owner":1}' '{"": "token-valid-1234"}' '"not-an-object"'; do
-    if combined_apply_tokens "${invalid_json}" 2>/dev/null; then
+    if cdn_apply_tokens "${invalid_json}" 2>/dev/null; then
         fail_test "10f: invalid token input ${invalid_json} must return non-zero"
     fi
     assert_equal "10f: ALLOWED_TOKENS unchanged after ${invalid_json}" \
@@ -341,7 +353,7 @@ assert_contains "10g: write_subscription_nginx_maps contains default __denied__;
 assert_not_contains "10g: write_subscription_nginx_maps has no empty key entry" \
     "${maps_output}" '"" 1;'
 
-# 附加验证 1: combined_validate_cf_node_sni 成功与失败分支（含故障注入 B：strict / lenient 模式）
+# 附加验证 1: cdn_validate_cf_node_sni 成功与失败分支（含故障注入 B：strict / lenient 模式）
 (
     cloudflare_ensure_origin_ca_root() { :; }
     curl() {
@@ -351,14 +363,14 @@ assert_not_contains "10g: write_subscription_nginx_maps has no empty key entry" 
             "$*" "https://${CF_NODE_DOMAIN}/easy_all-health"
         printf 'easy_all ok'
     }
-    combined_validate_cf_node_sni
+    cdn_validate_cf_node_sni
 )
 if (
     cloudflare_ensure_origin_ca_root() { :; }
     curl() { return 35; }
-    combined_validate_cf_node_sni
+    cdn_validate_cf_node_sni
 ) >/dev/null 2>&1; then
-    fail_test "sni-check: TLS handshake failure must fail combined_validate_cf_node_sni"
+    fail_test "sni-check: TLS handshake failure must fail cdn_validate_cf_node_sni"
 fi
 
 # 故障注入 B：构造"证书不覆盖节点域名 + 探测失败"场景（模拟 OpenSSL 3 真实行为：不匹配时仍 exit 0）
@@ -372,10 +384,10 @@ helper_not_match_rc=0
         fi
         command openssl "$@"
     }
-    combined_certificate_covers_node_domain
+    cdn_certificate_covers_node_domain
 ) || helper_not_match_rc=$?
 [[ "${helper_not_match_rc}" -ne 0 ]] \
-    || fail_test "checkhost-not-match: combined_certificate_covers_node_domain must return non-zero on 'does NOT match certificate' (exit 0)"
+    || fail_test "checkhost-not-match: cdn_certificate_covers_node_domain must return non-zero on 'does NOT match certificate' (exit 0)"
 
 lenient_rc=0
 lenient_out=$(
@@ -388,7 +400,7 @@ lenient_out=$(
         fi
         command openssl "$@"
     }
-    combined_validate_cf_node_sni lenient 2>&1
+    cdn_validate_cf_node_sni lenient 2>&1
 ) || lenient_rc=$?
 assert_equal "fault-B-lenient: returns 0 when cert does not cover CF_NODE_DOMAIN" "0" "${lenient_rc}"
 assert_contains "fault-B-lenient: warns with apply-cloud guidance" "${lenient_out}" "apply-cloud"
@@ -405,7 +417,7 @@ strict_out=$(
         fi
         command openssl "$@"
     }
-    combined_validate_cf_node_sni strict 2>&1
+    cdn_validate_cf_node_sni strict 2>&1
 ) || strict_rc=$?
 [[ "${strict_rc}" -ne 0 ]] || fail_test "fault-B-strict: strict mode must return non-zero on same uncovered scenario"
 assert_contains "fault-B-strict: error message includes apply-cloud" "${strict_out}" "apply-cloud"
@@ -420,9 +432,9 @@ helper_match_rc=0
         fi
         command openssl "$@"
     }
-    combined_certificate_covers_node_domain
+    cdn_certificate_covers_node_domain
 ) || helper_match_rc=$?
-assert_equal "checkhost-match: combined_certificate_covers_node_domain returns 0 on 'does match certificate'" \
+assert_equal "checkhost-match: cdn_certificate_covers_node_domain returns 0 on 'does match certificate'" \
     "0" "${helper_match_rc}"
 
 probe_ok_lenient_rc=0
@@ -436,7 +448,7 @@ probe_ok_lenient_rc=0
         fi
         command openssl "$@"
     }
-    combined_validate_cf_node_sni lenient
+    cdn_validate_cf_node_sni lenient
 ) || probe_ok_lenient_rc=$?
 assert_equal "checkhost-match-lenient: lenient returns 0 when covered and probe succeeds" \
     "0" "${probe_ok_lenient_rc}"
@@ -452,7 +464,7 @@ probe_ok_strict_rc=0
         fi
         command openssl "$@"
     }
-    combined_validate_cf_node_sni strict
+    cdn_validate_cf_node_sni strict
 ) || probe_ok_strict_rc=$?
 assert_equal "checkhost-match-strict: strict returns 0 when covered and probe succeeds" \
     "0" "${probe_ok_strict_rc}"
@@ -467,10 +479,10 @@ helper_libressl_rc=0
         fi
         command openssl "$@"
     }
-    combined_certificate_covers_node_domain
+    cdn_certificate_covers_node_domain
 ) || helper_libressl_rc=$?
 [[ "${helper_libressl_rc}" -ne 0 ]] \
-    || fail_test "checkhost-libressl: combined_certificate_covers_node_domain must return non-zero on unknown option -checkhost"
+    || fail_test "checkhost-libressl: cdn_certificate_covers_node_domain must return non-zero on unknown option -checkhost"
 
 # LibreSSL 没有 -checkhost：有真实证书时必须退回 SAN 集合判定，否则开发机上 status/apply 会误报“未覆盖”。
 helper_libressl_covered_rc=0
@@ -487,7 +499,7 @@ helper_libressl_covered_rc=0
         fi
         command openssl "$@"
     }
-    combined_certificate_covers_node_domain
+    cdn_certificate_covers_node_domain
 ) || helper_libressl_covered_rc=$?
 assert_equal "checkhost-fallback: LibreSSL 下按 SAN 集合判定为覆盖" "0" "${helper_libressl_covered_rc}"
 printf 'legacy-cert-without-node-san\n' >"${CERT_FILE}"
@@ -503,7 +515,7 @@ covered_lenient_out=$(
         fi
         command openssl "$@"
     }
-    combined_validate_cf_node_sni lenient 2>&1
+    cdn_validate_cf_node_sni lenient 2>&1
 ) || covered_lenient_rc=$?
 [[ "${covered_lenient_rc}" -ne 0 ]] \
     || fail_test "fault-B-covered: lenient mode must still die when cert covers CF_NODE_DOMAIN but probe fails"
@@ -514,7 +526,7 @@ apply_uncovered_rc=0
 apply_uncovered_out=$(
     configure_tcp_acceleration() { :; }
     xhttp_configure_ufw() { :; }
-    write_xray_config() { :; }
+    cdn_write_xray_config() { :; }
     install_xray_service() { :; }
     write_nginx_config() { :; }
     # 事务顺序用例：校验器契约由用例 27/33/34 直接覆盖（真实函数 + I/O stub）。
@@ -578,19 +590,19 @@ if (
     trap cleanup EXIT
     configure_tcp_acceleration() { :; }
     xhttp_configure_ufw() { :; }
-    combined_ensure_dns() { :; }
-    combined_issue_certificates() {
+    cdn_ensure_dns() { :; }
+    cdn_issue_certificates() {
         printf 'cert-new\n' >"${CERT_FILE}"
         printf 'key-new\n' >"${KEY_FILE}"
         CLOUDFLARE_ORIGIN_CERT_ID="cert-new-222"
         CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID="cert-old-111"
     }
-    write_xray_config() { :; }
+    cdn_write_xray_config() { :; }
     install_xray_service() { :; }
     write_nginx_config() { :; }
     # 事务顺序用例：校验器契约由用例 27/33/34 直接覆盖（真实函数 + I/O stub）。
     validate_protocol_runtime() { :; }
-    combined_validate_cf_node_sni() { die "注入云端验收失败"; }
+    cdn_validate_cf_node_sni() { die "注入云端验收失败"; }
     cloudflare_finalize_certificate_rotation() {
         finalize_called=1
         printf 'finalized\n' >"${TMP_DIR}/finalized-flag"
@@ -605,14 +617,15 @@ assert_equal "cloud-rollback: CERT_FILE restored" "cert-old" "$(<"${CERT_FILE}")
 assert_equal "cloud-rollback: KEY_FILE restored" "key-old" "$(<"${KEY_FILE}")"
 assert_equal "cloud-rollback: STATE_FILE restored" "${state_before_cloud}" "$(<"${STATE_FILE}")"
 
-# renew_certificate 顺序：issue -> nginx -t -> reload -> save_state -> finalize -> commit
+# renew_certificate 顺序：issue -> nginx -t -> reload -> TLS 校验 -> save_state -> finalize -> commit
 renew_seq=""
 (
     cloudflare_collect_api_token() { :; }
     cloudflare_lookup_parent_zone() { printf 'zone-123456'; }
-    combined_issue_certificates() { renew_seq+="issue:${1} "; }
+    cdn_issue_certificates() { renew_seq+="issue:${1} "; }
     nginx() { [[ "${1:-}" == "-t" ]] && renew_seq+="nginx-t "; }
     systemctl() { [[ "${1:-}" == "reload" ]] && renew_seq+="reload "; }
+    cdn_validate_cf_node_sni() { renew_seq+="verify "; }
     save_state() { renew_seq+="save "; }
     cloudflare_finalize_certificate_rotation() { renew_seq+="finalize "; }
     commit_subscription_update() {
@@ -623,8 +636,29 @@ renew_seq=""
     success() { renew_seq+="success"; }
     renew_certificate
     assert_equal "renew-order: renew_certificate follows issue -> verify -> save -> finalize -> commit" \
-        "issue:1 nginx-t reload save finalize commit success" "${renew_seq}"
+        "issue:1 nginx-t reload verify save finalize commit success" "${renew_seq}"
 )
+
+# 新证书本机 TLS/SNI 验收失败时不得吊销旧证书（吊销不可逆）。
+rm -f -- "${TMP_DIR}/renew-early-revoke"
+renew_verify_rc=0
+renew_verify_out=$(
+    cleanup_files=()
+    trap cleanup EXIT
+    cloudflare_collect_api_token() { :; }
+    cdn_issue_certificates() { CLOUDFLARE_ORIGIN_CERT_ID="cert-new-999"; }
+    nginx() { :; }
+    systemctl() { :; }
+    cdn_validate_cf_node_sni() { die "注入 TLS 探活失败"; }
+    cloudflare_finalize_certificate_rotation() { printf 'revoked\n' >"${TMP_DIR}/renew-early-revoke"; }
+    cloudflare_api_request() { :; }
+    renew_certificate 2>&1
+) || renew_verify_rc=$?
+[[ "${renew_verify_rc}" -ne 0 ]] \
+    || fail_test "renew-verify: TLS 探活失败必须让续期失败"
+assert_contains "renew-verify: 输出包含注入的探活失败" "${renew_verify_out}" "注入 TLS 探活失败"
+[[ ! -f "${TMP_DIR}/renew-early-revoke" ]] \
+    || fail_test "renew-verify: 探活失败时不得吊销旧证书"
 
 # 故障注入 A：吊销旧证书（cloudflare_finalize_certificate_rotation）后步骤失败时，不得回滚到已吊销的旧证书
 printf 'cert-old-revoked\n' >"${CERT_FILE}"
@@ -639,19 +673,19 @@ fault_a_cloud_out=$(
     trap cleanup EXIT
     configure_tcp_acceleration() { :; }
     xhttp_configure_ufw() { :; }
-    combined_ensure_dns() { :; }
-    combined_issue_certificates() {
+    cdn_ensure_dns() { :; }
+    cdn_issue_certificates() {
         printf 'cert-new-active\n' >"${CERT_FILE}"
         printf 'key-new-active\n' >"${KEY_FILE}"
         CLOUDFLARE_ORIGIN_CERT_ID="cert-new-222"
         CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID="cert-old-111"
     }
-    write_xray_config() { :; }
+    cdn_write_xray_config() { :; }
     install_xray_service() { :; }
     write_nginx_config() { :; }
     # 事务顺序用例：校验器契约由用例 27/33/34 直接覆盖（真实函数 + I/O stub）。
     validate_protocol_runtime() { :; }
-    combined_validate_cf_node_sni() { :; }
+    cdn_validate_cf_node_sni() { :; }
     persist_cloudflare_token() { :; }
     persist_globalping_token() { :; }
     refresh_globalping_cache() { :; }
@@ -691,12 +725,13 @@ fault_a_renew_out=$(
     trap cleanup EXIT
     cloudflare_collect_api_token() { :; }
     cloudflare_lookup_parent_zone() { printf 'zone-123456'; }
-    combined_issue_certificates() {
+    cdn_issue_certificates() {
         printf 'cert-renew-active\n' >"${CERT_FILE}"
         printf 'key-renew-active\n' >"${KEY_FILE}"
         CLOUDFLARE_ORIGIN_CERT_ID="cert-renew-333"
         CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID="cert-old-222"
     }
+    cdn_validate_cf_node_sni() { :; }
     cloudflare_finalize_certificate_rotation() {
         assert_equal "fault-A-renew: rollback flag already disabled before finalize" \
             "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
@@ -789,7 +824,7 @@ load_state
 token_map=$(
     unset ALLOWED_TOKENS SUBSCRIPTION_CONFIG
     OWNER_TOKEN="tok-first-install-123"
-    combined_sync_allowed_tokens
+    cdn_sync_allowed_tokens
     write_subscription_token_map
 )
 assert_contains "token-sync: fresh install derives ALLOWED_TOKENS from OWNER_TOKEN" \
@@ -881,16 +916,16 @@ assert_contains "nginx-conf: has mihomo_all location" "${nginx_text}" "location 
 # 15) 自定义订阅 Token 可选输入：合法值被采纳，非法值被拒绝（且不改动当前 Token）
 (
     kept=${OWNER_TOKEN}
-    combined_apply_tokens '{"owner":"custom-token-2026"}'
+    cdn_apply_tokens '{"owner":"custom-token-2026"}'
     [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
         || fail_test "token-input: valid custom token not applied"
-    if combined_apply_tokens '{"owner":"short"}' 2>/dev/null; then
+    if cdn_apply_tokens '{"owner":"short"}' 2>/dev/null; then
         fail_test "token-input: too-short token must be rejected"
     fi
     [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
         || fail_test "token-input: rejected input must not change current token"
     OWNER_TOKEN=${kept}
-    combined_sync_allowed_tokens
+    cdn_sync_allowed_tokens
 )
 
 # 16) 安装入口交互收集参数
@@ -898,18 +933,33 @@ install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
 assert_contains "domain-input: prompts for zone" "${install_inputs_body}" "Cloudflare 根 Zone"
 assert_contains "domain-input: prompts for direct domain" "${install_inputs_body}" "直连节点域名"
 assert_contains "node-name: direct node name rejects reserved group names" \
-    "${install_inputs_body}" "AUTO | PROXY | GLOBAL | CDN-AUTO | DIRECT | REJECT | PASS"
-for reserved_name in AUTO CDN-AUTO PROXY GLOBAL DIRECT REJECT PASS; do
+    "${install_inputs_body}" "AUTO | PROXY | GLOBAL | CDN-AUTO | CDN-FALLBACK | DIRECT | REJECT | PASS"
+for reserved_name in AUTO CDN-AUTO CDN-FALLBACK PROXY GLOBAL DIRECT REJECT PASS; do
     if (
         DIRECT_NODE_NAME="${reserved_name}"
-        case "${DIRECT_NODE_NAME}" in
-        AUTO | PROXY | GLOBAL | CDN-AUTO | DIRECT | REJECT | PASS) exit 1 ;;
-        esac
-        exit 0
+        cdn_validate_local_node_names
     ) >/dev/null 2>&1; then
         fail_test "node-name: reserved name ${reserved_name} must be rejected"
     fi
 done
+assert_contains "node-name: install rejects a direct node named after the official fallback node" \
+    "${install_inputs_body}" "cdn_cf_domain_node_name"
+# 存量状态可能沿用旧版本允许的直连节点名：渲染/应用前必须拒绝，避免重复节点或组名。
+for stale_direct_name in "CDN-FALLBACK" "${CF_NODE_PREFIX}官方" "${CF_NODE_PREFIX}1"; do
+    stale_out=$(
+        DIRECT_NODE_NAME="${stale_direct_name}"
+        cdn_require_valid_owner_token 2>&1
+    ) || true
+    assert_contains "node-name: stale state name ${stale_direct_name} is rejected before writing" \
+        "${stale_out}" "本机节点名与 CDN 兜底节点或保留组名冲突"
+    stale_render_out=$(
+        DIRECT_NODE_NAME="${stale_direct_name}"
+        build_mihomo_proxy_names 2>&1
+    ) || true
+    assert_contains "node-name: stale state name ${stale_direct_name} is rejected when rendering" \
+        "${stale_render_out}" "本机节点名与 CDN 兜底节点或保留组名冲突"
+done
+DIRECT_NODE_NAME="🇺🇸直连"
 assert_contains "subscription-input: install asks for the unified JSON" \
     "${install_inputs_body}" "choose_subscription_config"
 
@@ -918,7 +968,7 @@ bad_install=$(
     unset SUBSCRIPTION_CONFIG
     ALLOWED_TOKENS=""
     OWNER_TOKEN="short"
-    combined_validate_install_owner_token 2>&1
+    cdn_validate_install_owner_token 2>&1
 ) || true
 assert_contains "token-validate: short env token rejected before install" \
     "${bad_install}" "订阅配置无效"
@@ -926,46 +976,46 @@ assert_not_contains "token-validate: rejection mentions auto-generate fallback" 
     "${bad_install}" "unbound variable"
 # 安装入口必须真的调用该校验
 assert_contains "token-validate: install inputs call the validator" \
-    "${install_inputs_body}" "combined_validate_install_owner_token"
+    "${install_inputs_body}" "cdn_validate_install_owner_token"
 (
     unset SUBSCRIPTION_CONFIG
     ALLOWED_TOKENS=""
     OWNER_TOKEN="custom-token-2026"
-    combined_validate_install_owner_token \
+    cdn_validate_install_owner_token \
         || fail_test "token-validate: valid env token must pass"
 )
 bad_chars=$(
     unset SUBSCRIPTION_CONFIG
     ALLOWED_TOKENS=""
     OWNER_TOKEN='bad;token"x'
-    combined_validate_install_owner_token 2>&1
+    cdn_validate_install_owner_token 2>&1
 ) || true
 assert_contains "token-validate: unsafe characters rejected" "${bad_chars}" "订阅配置无效"
 
 # 18) edit-sub 入口同时接受纯字符串与单用户 JSON，多用户字典必须明确拒绝
 plain_out=$(
     OWNER_TOKEN="placeholder-0000"
-    combined_apply_tokens "my_plain_token_123"
+    cdn_apply_tokens "my_plain_token_123"
     jq -r '.owner' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "token-input: plain string accepted in edit-sub" \
     "my_plain_token_123" "${plain_out}"
 
 single_json_out=$(
-    combined_apply_tokens '{"alice":"alice-token-123"}' >/dev/null 2>&1
+    cdn_apply_tokens '{"alice":"alice-token-123"}' >/dev/null 2>&1
     jq -r 'to_entries | map(.key + "=" + .value) | join(",")' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "token-input: single-user JSON keeps its user name" \
     "alice=alice-token-123" "${single_json_out}"
 
 multi_out=$(
-    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
+    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
     jq -r 'length' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "token-input: multi-user JSON keeps every user" "2" "${multi_out}"
 
 multi_owner=$(
-    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
+    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
     printf '%s' "${OWNER_TOKEN}"
 )
 assert_equal "token-input: OWNER_TOKEN follows the first dictionary entry" \
@@ -1000,7 +1050,7 @@ recovered=$(
     ALLOWED_TOKENS=""
     save_state
     load_state >/dev/null 2>&1
-    combined_apply_tokens "restored-token-4821" >/dev/null 2>&1 \
+    cdn_apply_tokens "restored-token-4821" >/dev/null 2>&1 \
         || fail_test "token-recovery: valid replacement rejected"
     write_nginx_config >/dev/null 2>&1 || fail_test "token-recovery: write failed after replacement"
     save_state
@@ -1017,7 +1067,7 @@ assert_equal "token-recovery: invalid old state fixed through edit-sub path" \
     ALLOWED_TOKENS=""
     save_state
 )
-for entry in refresh_combined_cdn_ips renew_certificate; do
+for entry in refresh_cdn_ips renew_certificate; do
     entry_out=$(
         load_state >/dev/null 2>&1
         "${entry}" 2>&1
@@ -1034,7 +1084,7 @@ assert_contains "token-validate: update_reality_target rejects invalid state tok
 # 恢复合法状态，避免影响后续用例
 (
     OWNER_TOKEN="restored-token-4821"
-    combined_sync_allowed_tokens
+    cdn_sync_allowed_tokens
     save_state
 )
 
@@ -1098,7 +1148,7 @@ write_nginx_config   # 恢复默认渲染，供后续用例使用
 
 # 23) 多用户 Token 字典必须能持久化并在重新加载后保持
 multi_state=$(
-    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1 \
+    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1 \
         || fail_test "multi-token: dictionary rejected"
     save_state
     ALLOWED_TOKENS=""
@@ -1109,7 +1159,7 @@ multi_state=$(
 assert_equal "multi-token: dictionary survives save/load" \
     "user1=token-aaaa-111,user2=token-bbbb-222" "${multi_state}"
 multi_map=$(
-    combined_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
+    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
     write_nginx_config >/dev/null 2>&1 || fail_test "multi-token: nginx render failed"
     grep -c '^    "token-bbbb-222" 1;$' "${NGINX_CONFIG}"
 )
@@ -1117,10 +1167,10 @@ assert_equal "multi-token: every token is published in the nginx map" "1" "${mul
 
 # 24) JSON 内部空白必须保留：含空格的用户名要被拒绝，且原字典不被改写
 space_out=$(
-    combined_apply_tokens '{"keep1":"token-aaaa-111"}' >/dev/null 2>&1
+    cdn_apply_tokens '{"keep1":"token-aaaa-111"}' >/dev/null 2>&1
     before=${ALLOWED_TOKENS}
     # 安装已无交互入口；直接验证 Token 解析本身只裁键首尾空白，不压内部空格
-    if combined_apply_tokens '  {"user 1":"abcdefgh","user1":"ijklmnop"}  ' >/dev/null 2>&1; then
+    if cdn_apply_tokens '  {"user 1":"abcdefgh","user1":"ijklmnop"}  ' >/dev/null 2>&1; then
         printf 'accepted'
     else
         printf 'rejected:%s' "$([[ "${ALLOWED_TOKENS}" == "${before}" ]] && echo unchanged || echo changed)"
@@ -1130,7 +1180,7 @@ assert_equal "multi-token: user name with inner space is rejected" \
     "rejected:unchanged" "${space_out}"
 
 pretty_out=$(
-    combined_apply_tokens '{ "user1" : "alice-token-123" , "user2" : "token-bbbb-222" }' >/dev/null 2>&1 \
+    cdn_apply_tokens '{ "user1" : "alice-token-123" , "user2" : "token-bbbb-222" }' >/dev/null 2>&1 \
         || fail_test "multi-token: pretty-printed JSON rejected"
     jq -r 'length' <<<"${ALLOWED_TOKENS}"
 )
@@ -1138,7 +1188,7 @@ assert_equal "multi-token: pretty-printed JSON still accepted" "2" "${pretty_out
 
 # 26) token 首字符不能是 ~（nginx map 把 ~ 开头的键当正则），中间 ~ 仍允许
 tilde_out=$(
-    if combined_apply_tokens '~token-aaaa-111' >/dev/null 2>&1; then
+    if cdn_apply_tokens '~token-aaaa-111' >/dev/null 2>&1; then
         printf 'accepted'
     else
         printf 'rejected'
@@ -1148,7 +1198,7 @@ assert_equal "token: leading tilde is rejected" "rejected" "${tilde_out}"
 
 # JSON 字典分支走 lib/subscription-auth.sh 的 normalize_allowed_tokens，必须同样拒绝首 ~
 tilde_json=$(
-    if combined_apply_tokens '{"owner":"~token-aaaa-111"}' >/dev/null 2>&1; then
+    if cdn_apply_tokens '{"owner":"~token-aaaa-111"}' >/dev/null 2>&1; then
         printf 'accepted'
     else
         printf 'rejected'
@@ -1156,7 +1206,7 @@ tilde_json=$(
 )
 assert_equal "token: leading tilde is rejected in JSON dictionary" "rejected" "${tilde_json}"
 tilde_ok=$(
-    combined_apply_tokens 'tok~en-inner-9931' >/dev/null 2>&1 || fail_test "token: inner tilde must stay valid"
+    cdn_apply_tokens 'tok~en-inner-9931' >/dev/null 2>&1 || fail_test "token: inner tilde must stay valid"
     jq -r '.[]' <<<"${ALLOWED_TOKENS}"
 )
 assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok}"
@@ -1178,7 +1228,7 @@ assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok
         || fail_test "curl-args: local TLS probe must pass --noproxy '*'"
 ) || fail_test "curl-args: --noproxy assertion failed"
 
-# 28) 直连+CDN兜底的 UFW 配置必须同时建立 SSH 开机自启与 Fail2ban（与其他模式一致）
+# 28) 直连+CDN的 UFW 配置必须同时建立 SSH 开机自启与 Fail2ban（与其他模式一致）
 #     只做 UFW 放行而不配 jail，会让文档承诺的 SSH 狂暴破解防护静默缺失。
 UFW_WIRING_LOG="${TMP_DIR}/ufw-wiring.log"
 (
@@ -1203,34 +1253,34 @@ PURGE_CALLS="${TMP_DIR}/purge-calls.log"
     : >"${PURGE_CALLS}"
     cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${PURGE_CALLS}"; }
     CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-777"
-    purge_combined_origin_certificate
+    purge_cdn_origin_certificate
     assert_equal "29a: purge revokes Origin CA certificate" \
         "DELETE /certificates/cert-purge-777" "$(<"${PURGE_CALLS}")"
-) || fail_test "29a: purge_combined_origin_certificate failed"
+) || fail_test "29a: purge_cdn_origin_certificate failed"
 
 (
     : >"${PURGE_CALLS}"
     cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${PURGE_CALLS}"; }
     CLOUDFLARE_ORIGIN_CERT_ID=""
-    purge_combined_origin_certificate
+    purge_cdn_origin_certificate
     assert_equal "29b: no certificate DELETE without recorded ID" "" "$(<"${PURGE_CALLS}")"
 ) || fail_test "29b: purge without certificate id failed"
 
 (
     cloudflare_api_request() { die "注入 API 失败"; }
     CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-888"
-    purge_out=$(purge_combined_origin_certificate 2>&1) \
+    purge_out=$(purge_cdn_origin_certificate 2>&1) \
         || fail_test "29c: certificate revocation failure must not abort uninstall"
     assert_contains "29c: revocation failure warns with certificate id" \
         "${purge_out}" "cert-purge-888"
 ) || fail_test "29c: certificate revocation failure handling failed"
 
 # 29d) 真实调用点：uninstall --purge-cloud 分支必须调用证书吊销（防止主修复被静默回退）
-uninstall_body=$(awk '/^uninstall_all\(\) \{/,/^\}/' "${PROFILE}")
+uninstall_body=$(awk '/^uninstall_all\(\) \{/,/^\}/' "${MODE_LIB}")
 purge_branch=$(awk '/--purge-cloud/,/^    else$/' <<<"${uninstall_body}")
 assert_contains "29d: purge branch calls certificate revocation" \
-    "${purge_branch}" "purge_combined_origin_certificate"
-assert_contains "29d: purge branch keeps DNS cleanup" "${purge_branch}" "purge_combined_dns"
+    "${purge_branch}" "purge_cdn_origin_certificate"
+assert_contains "29d: purge branch keeps DNS cleanup" "${purge_branch}" "purge_cdn_dns"
 
 # 30) update-core 换核心后必须重写订阅（Reality 的 ML-KEM 开关依赖核心版本）
 declare -F refresh_runtime_subscription >/dev/null \
@@ -1433,7 +1483,7 @@ EOF
 
 # 33) services 阶段的 validate_protocol_runtime（lib/xhttp-runtime.sh）用各模式都必须提供的
 #     VLESS_CDN_DOMAIN 做本机探活，不再依赖 XHTTP_ORIGIN_DOMAIN 别名（2.5.0 后两次崩溃的同源隐患）。
-#     直连+CDN兜底下 VLESS_CDN_DOMAIN=CF_NODE_DOMAIN，探活仍须命中 CF_NODE_DOMAIN。
+#     直连+CDN下 VLESS_CDN_DOMAIN=CF_NODE_DOMAIN，探活仍须命中 CF_NODE_DOMAIN。
 assert_not_contains "runtime-probe: shared runtime no longer reads XHTTP_ORIGIN_DOMAIN" \
     "$(<"${ROOT_DIR}/lib/xhttp-runtime.sh")" "XHTTP_ORIGIN_DOMAIN"
 assert_not_contains "runtime-probe: combined no longer derives the alias" \
@@ -1500,19 +1550,19 @@ agg_config='{"allowedTokens":{"owner":"agg-owner-token-1","user2":"agg-user-toke
   {"type":"vless","security":"tls","network":"xhttp","name":"另一台XHTTP","host":"x.example.com","port":443,"uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/agg-path/","mode":"stream-up"},
   {"type":"mieru","name":"备用Mieru","host":"m.example.com","portRange":"50000-50512","username":"agguser","password":"agg-password-12345","transport":"TCP","multiplexing":"MULTIPLEXING_LOW","optional":true}
 ]}'
-combined_apply_subscription_config "${agg_config}" \
+cdn_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: valid config rejected"
 assert_equal "aggregation: token dictionary applied" "2" "$(jq 'length' <<<"${ALLOWED_TOKENS}")"
 assert_equal "aggregation: nodes parsed" "3" "$(jq 'length' <<<"${AGGREGATION_NODES}")"
 assert_equal "aggregation: owner follows first token" 'agg-owner-token-1' "${OWNER_TOKEN}"
 # 仓库内示例模板必须能直接通过校验
-combined_apply_subscription_config "$(jq -c . "${ROOT_DIR}/templates/aggregation.example.json")" \
+cdn_apply_subscription_config "$(jq -c . "${ROOT_DIR}/templates/aggregation.example.json")" \
     || fail_test "aggregation: bundled example template must validate"
-combined_apply_subscription_config "${agg_config}" \
+cdn_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: restore test config"
 
 # 聚合节点的 udp 开关必须贯穿到产物：udp:false 时不得再注入 xudp 封装参数
-combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"无UDP节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","udp":false}]}' \
+cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"无UDP节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","udp":false}]}' \
     || fail_test "aggregation: udp:false reality node rejected"
 udp_off_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
 assert_not_contains "aggregation: udp:false link drops packetEncoding" \
@@ -1521,33 +1571,33 @@ udp_off_mihomo=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_mihomo_nodes)
 assert_contains "aggregation: udp:false mihomo keeps udp: false" "${udp_off_mihomo}" "udp: false"
 assert_not_contains "aggregation: udp:false mihomo drops packet-encoding" \
     "${udp_off_mihomo}" "packet-encoding: xudp"
-combined_apply_subscription_config "${agg_config}" \
+cdn_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: restore test config"
 udp_on_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
 assert_contains "aggregation: default reality link keeps packetEncoding" \
     "${udp_on_links}" "packetEncoding=xudp"
 
 # 显式 false 的布尔字段不得被 jq 的 // 当成"缺失"而回退成 true
-combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"旧核心节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","supportX25519Mlkem768":false}]}' \
+cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"旧核心节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","supportX25519Mlkem768":false}]}' \
     || fail_test "aggregation: supportX25519Mlkem768:false rejected"
 assert_contains "aggregation: explicit false disables mlkem in the link" \
     "$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)" "mlkem=0"
-combined_apply_subscription_config "${agg_config}" \
+cdn_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: restore test config"
 
 # 校验报错必须点名白名单里的真实字段名，否则用户按提示改反而触发「包含不支持的字段」
 bad_method_out=$(
-    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏方法节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpUplinkHttpMethod":"PUT"}]}' 2>&1
+    cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏方法节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpUplinkHttpMethod":"PUT"}]}' 2>&1
 ) || true
 assert_contains "aggregation: bad uplink method names the real field" \
     "${bad_method_out}" "xhttpUplinkHttpMethod"
 bad_grpc_out=$(
-    combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏头节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpNoGrpcHeader":"yes"}]}' 2>&1
+    cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏头节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpNoGrpcHeader":"yes"}]}' 2>&1
 ) || true
 assert_contains "aggregation: bad noGRPCHeader names the real field" \
     "${bad_grpc_out}" "xhttpNoGrpcHeader"
 # 规范化结果必须可再次通过校验（状态回读 / edit-sub 默认值都会再次走一遍）
-combined_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
+cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
     || fail_test "aggregation: normalized config must be re-valid"
 
 for invalid in \
@@ -1558,7 +1608,7 @@ for invalid in \
     '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"AUTO","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}' \
     '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"CDN-AUTO","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}' \
     '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"},{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}'; do
-    if combined_apply_subscription_config "${invalid}" >/dev/null 2>&1; then
+    if cdn_apply_subscription_config "${invalid}" >/dev/null 2>&1; then
         fail_test "aggregation: invalid config accepted: ${invalid}"
     fi
 done
@@ -1566,7 +1616,7 @@ done
 assert_equal "aggregation: rejected config keeps previous nodes" "3" \
     "$(jq 'length' <<<"${AGGREGATION_NODES}")"
 
-combined_cf_candidates() { printf '198.51.100.1\t1\n'; }
+cdn_cf_candidates() { printf '198.51.100.1\t1\n'; }
 links_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_node_links)
 links_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_node_links)
 assert_contains "aggregation: default links include reality node" \
@@ -1578,6 +1628,10 @@ assert_not_contains "aggregation: default links hide optional mieru node" \
 assert_contains "aggregation: node=all links include optional mieru node" \
     "${links_all}" "m.example.com"
 assert_contains "aggregation: mieru link uses mierus scheme" "${links_all}" "mierus://"
+assert_contains "fallback: base64 links carry the CDN domain node" \
+    "${links_default}" "@${CF_NODE_DOMAIN}:443?"
+assert_contains "fallback: base64 links name the CDN domain node" \
+    "${links_default}" "$(uri_encode "${CF_NODE_PREFIX}官方")"
 
 mihomo_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_nodes)
 mihomo_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_nodes)
@@ -1588,10 +1642,14 @@ assert_contains "aggregation: mihomo default includes xhttp block" \
 assert_not_contains "aggregation: mihomo default hides optional mieru" \
     "${mihomo_default}" "type: mieru"
 assert_contains "aggregation: mihomo node=all includes mieru" "${mihomo_all}" "type: mieru"
+assert_contains "fallback: mihomo node block connects to the CDN domain" \
+    "${mihomo_default}" "server: \"${CF_NODE_DOMAIN}\""
+assert_contains "fallback: mihomo node block is named after the prefix" \
+    "${mihomo_default}" "name: \"${CF_NODE_PREFIX}官方\""
 
 # xhttp 聚合节点的 host 可以是 CDN 优选 IP（连接地址），HTTP Host 头必须跟 sni（回源域名）一致，
 # 否则请求到边缘会被当成直连 IP 访问拒掉（403 Direct IP Access Denied）。
-combined_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"优选IP节点","host":"198.51.100.7","uuid":"33333333-3333-4333-8333-333333333333","sni":"cf.example.com","path":"/agg-ip/","mode":"stream-up"}]}' \
+cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"优选IP节点","host":"198.51.100.7","uuid":"33333333-3333-4333-8333-333333333333","sni":"cf.example.com","path":"/agg-ip/","mode":"stream-up"}]}' \
     || fail_test "aggregation: xhttp node with preferred-IP host must validate"
 ip_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
 assert_contains "aggregation: xhttp link keeps the IP as server address" \
@@ -1605,7 +1663,7 @@ assert_contains "aggregation: mihomo xhttp server stays the IP" \
     "${ip_mihomo}" 'server: "198.51.100.7"'
 assert_contains "aggregation: mihomo xhttp host stays the sni" \
     "${ip_mihomo}" 'host: "cf.example.com"'
-combined_apply_subscription_config "${agg_config}" \
+cdn_apply_subscription_config "${agg_config}" \
     || fail_test "aggregation: restore test config"
 
 proxy_names_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_names)
@@ -1615,14 +1673,24 @@ assert_not_contains "aggregation: PROXY group hides optional nodes by default" \
     "${proxy_names_default}" "备用Mieru"
 assert_contains "aggregation: node=all PROXY group includes optional nodes" \
     "${proxy_names_all}" "备用Mieru"
-# PROXY 的固定顺序：本机直连 → 聚合节点（字典里的名字）→ CDN-AUTO
-assert_equal "aggregation: PROXY order is direct, aggregated, CDN-AUTO" \
-    "$(printf '%s\n' "${DIRECT_NODE_NAME}" "另一台Reality" "另一台XHTTP" "CDN-AUTO")" \
+# PROXY 的固定顺序：本机直连 → 聚合节点（字典里的名字）→ CDN-FALLBACK
+# （CDN-FALLBACK = CDN-AUTO 测速组优先，全部不可用时落到官方调度的 CDN 域名节点。）
+assert_equal "aggregation: PROXY order is direct, aggregated, CDN-FALLBACK" \
+    "$(printf '%s\n' "${DIRECT_NODE_NAME}" "另一台Reality" "另一台XHTTP" "CDN-FALLBACK")" \
     "$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_names | sed -n 's/^        - "\(.*\)"$/\1/p')"
 groups_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_groups)
 groups_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_proxy_groups)
 assert_contains "aggregation: CDN-AUTO group has group definition" \
     "${groups_default}" "name: CDN-AUTO"
+assert_contains "aggregation: CDN-FALLBACK group has group definition" \
+    "${groups_default}" "name: CDN-FALLBACK"
+assert_contains "aggregation: CDN-FALLBACK is a fallback group" \
+    "${groups_default}" "type: fallback"
+assert_contains "aggregation: CDN-FALLBACK official node is the CDN domain" \
+    "${groups_default}" "        - \"${CF_NODE_PREFIX}官方\""
+assert_not_contains "aggregation: CDN-AUTO never lists the official domain node" \
+    "$(awk '/name: CDN-AUTO/{p=1}/name: CDN-FALLBACK/{p=0}p' <<<"${groups_default}")" \
+    "${CF_NODE_PREFIX}官方"
 assert_not_contains "aggregation: CDN-AUTO group never includes direct node" \
     "${groups_default}" "${DIRECT_NODE_NAME}"
 assert_not_contains "aggregation: CDN-AUTO group never includes aggregated nodes" \
@@ -1630,13 +1698,13 @@ assert_not_contains "aggregation: CDN-AUTO group never includes aggregated nodes
 assert_not_contains "aggregation: node=all keeps optional nodes out of CDN-AUTO" \
     "${groups_all}" "备用Mieru"
 if (
-    combined_cf_candidates() { :; }
+    cdn_cf_candidates() { :; }
     build_mihomo_proxy_groups
 ) >/dev/null 2>&1; then
     fail_test "aggregation: CDN-AUTO must refuse to render without preferred IPs"
 fi
 if (
-    collect_cf_node_names() { printf ''; }
+    cdn_cf_ip_node_names() { printf ''; }
     build_mihomo_proxy_groups
 ) >/dev/null 2>&1; then
     fail_test "aggregation: CDN-AUTO must refuse to render with empty names"
@@ -1647,8 +1715,8 @@ fi
     pure_groups=$(build_mihomo_proxy_groups)
     assert_contains "pure: PROXY lists direct first" \
         "${pure_proxy_names}" "        - \"${DIRECT_NODE_NAME}\""
-    assert_contains "pure: PROXY lists CDN-AUTO" \
-        "${pure_proxy_names}" "        - \"CDN-AUTO\""
+    assert_contains "pure: PROXY lists CDN-FALLBACK" \
+        "${pure_proxy_names}" "        - \"CDN-FALLBACK\""
     assert_not_contains "pure: PROXY never contains individual CDN nodes" \
         "${pure_proxy_names}" "CF"
     assert_contains "pure: CDN-AUTO group name" \
@@ -1656,14 +1724,14 @@ fi
     assert_not_contains "pure: CDN-AUTO never contains direct node" \
         "${pure_groups}" "${DIRECT_NODE_NAME}"
     line_count=$(grep -c '^[[:space:]]*- ' <<<"${pure_proxy_names}")
-    assert_equal "pure: PROXY has exactly 2 entries (direct and CDN-AUTO)" "2" "${line_count}"
+    assert_equal "pure: PROXY has exactly 2 entries (direct and CDN-FALLBACK)" "2" "${line_count}"
     first_line=$(grep '^[[:space:]]*- ' <<<"${pure_proxy_names}" | sed -n '1p')
     second_line=$(grep '^[[:space:]]*- ' <<<"${pure_proxy_names}" | sed -n '2p')
     assert_contains "pure: first entry is direct node" "${first_line}" "${DIRECT_NODE_NAME}"
-    assert_contains "pure: second entry is CDN-AUTO" "${second_line}" "CDN-AUTO"
+    assert_contains "pure: second entry is CDN-FALLBACK" "${second_line}" "CDN-FALLBACK"
 ) || fail_test "pure combined mihomo groups validation failed"
 aggregation_roundtrip=$(
-    combined_apply_subscription_config "${agg_config}" >/dev/null 2>&1
+    cdn_apply_subscription_config "${agg_config}" >/dev/null 2>&1
     save_state
     load_state >/dev/null 2>&1
     jq -r 'length' <<<"${AGGREGATION_NODES}"
@@ -1689,6 +1757,7 @@ assert_contains "aggregation: mihomo-all carries optional node" \
     "$(<"${SUBSCRIPTION_DIR}/mihomo-all.yaml")" "备用Mieru"
 mihomo_rendered=$(<"${SUBSCRIPTION_DIR}/mihomo.yaml")
 assert_contains "render: mihomo has CDN-AUTO group" "${mihomo_rendered}" "name: CDN-AUTO"
+assert_contains "render: mihomo has CDN-FALLBACK group" "${mihomo_rendered}" "name: CDN-FALLBACK"
 proxy_block=$(awk '/^[[:space:]]*- name: PROXY/{p=1;next}/^[[:space:]]*- name:/{p=0}p' <<<"${mihomo_rendered}")
 assert_not_contains "render: PROXY does not include individual CF nodes directly" \
     "${proxy_block}" "CF"

@@ -1302,7 +1302,7 @@ reality_cloudflare_validate_public_subscription() {
     die "Cloudflare 订阅回源验收失败；请检查 Proxied DNS、Origin CA、Strict TLS 与 8443 回源"
 }
 
-# 订阅配置的唯一入口：与直连+CDN兜底共用 lib/local-aggregation.sh 的校验与渲染，
+# 订阅配置的唯一入口：与直连+CDN共用 lib/local-aggregation.sh 的校验与渲染，
 # 本机节点名参与重名校验（NODE_NAME 不能与聚合节点同名）。
 reality_apply_subscription_config() {
     apply_local_aggregation_config "${1:-}" \
@@ -1489,11 +1489,10 @@ snapshot_subscription_update() {
 
 rollback_subscription_update() {
     local candidate rollback_status=0
-    local failed_origin_domain failed_zone_id failed_ruleset_id cloud_touched=0
+    local failed_origin_domain failed_zone_id failed_ruleset_id cloud_touched=0 delete_dns=0
     # 本次更新新签发的 Origin CA 证书只存在于内存：state.env 回滚后只剩旧证书 ID，不在这里
     # 吊销就会在账户里留下无引用的长期证书（uninstall --purge-cloud 只删状态里的证书 ID）。
     if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
-        cloud_touched=1
         if (cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null); then
             # 已拔销的证书不能再留着 ID：同一进程再次进入回滚时会重复请求不存在的资源。
             CLOUDFLARE_CREATED_ORIGIN_CERT_ID=""
@@ -1501,7 +1500,14 @@ rollback_subscription_update() {
             warn "回滚时删除本次新建的 Cloudflare Origin CA 证书失败：${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}；可用 easy_all purge-cloudflare 清理"
         fi
     fi
-    [[ "${CLOUDFLARE_RESOURCES_TOUCHED:-0}" != "1" ]] || cloud_touched=1
+    # 只有本次确实写过云端（PATCH/POST 过回源 A 记录或写过 Strict TLS 规则）才需要回收残留。
+    # 新签证书不是依据：换域名时 ensure_proxied_a 常因记录已就绪而 no-op，按证书触发 purge 会把
+    # 更新前就存在、回滚后仍被引用的 A 记录一起删掉；证书已由上面的 DELETE 单独处理。
+    if [[ "${CLOUDFLARE_RESOURCES_TOUCHED:-0}" == "1" ]]; then
+        cloud_touched=1
+        delete_dns=1
+    fi
+    [[ "${CLOUDFLARE_STRICT_TLS_TOUCHED:-0}" != "1" ]] || cloud_touched=1
     # 记下失败时的回源域名与 Zone：回滚恢复的域名可能不同（link → deploy 或改域名），
     # 那时本次新建的 DNS/Strict TLS 不被任何状态引用，必须一并清理。
     failed_origin_domain=$(subscription_origin_domain)
@@ -1587,13 +1593,14 @@ rollback_subscription_update() {
         || { warn "恢复订阅更新前定时任务失败"; rollback_status=1; }
     configure_ufw || { warn "恢复订阅更新前 UFW 失败"; rollback_status=1; }
     # 新域名的 DNS 记录与 Strict TLS 规则不被恢复后的状态引用（同域名时它们仍是当前配置，不能删），
-    # 证书已在上面单独吊销，所以这里只传空 cert_id，避免重复删除。
+    # 证书已在上面单独吊销，所以这里只传空 cert_id，避免重复删除；本次没写过回源记录时
+    # delete_dns=0，只按 ruleset 清规则，避免误删更新前就存在的同名 A 记录。
     if [[ "${cloud_touched}" == "1" && -n "${failed_origin_domain}" && -n "${failed_zone_id}" \
         && ( "${SUBSCRIPTION_MODE}" == "link" \
             || "${failed_origin_domain}" != "$(subscription_origin_domain)" ) ]]; then
         if (reality_cloudflare_purge_managed_resources \
-            "${failed_origin_domain}" "${failed_zone_id}" "${failed_ruleset_id}" ""); then
-            info "回滚已回收 ${failed_origin_domain} 的 Cloudflare DNS 与 Strict TLS 资源（若存在）"
+            "${failed_origin_domain}" "${failed_zone_id}" "${failed_ruleset_id}" "" "${delete_dns}"); then
+            info "回滚已回收 ${failed_origin_domain} 本次写入的 Cloudflare DNS 与 Strict TLS 资源（若存在）"
         else
             warn "回滚未能清理本次为 ${failed_origin_domain} 新建的 Cloudflare 资源；可用 easy_all purge-cloudflare --domain ${failed_origin_domain} 清理"
             rollback_status=1
@@ -1896,7 +1903,7 @@ stop_protocol_services() {
 }
 
 reality_cloudflare_purge_managed_resources() {
-    local host=$1 zone_id=$2 ruleset_id=$3 cert_id=$4
+    local host=$1 zone_id=$2 ruleset_id=$3 cert_id=$4 delete_dns=${5:-1}
     local rules matches count rule_id records dns_id comment ref
     [[ -n "${host}" && -n "${zone_id}" ]] || return 0
     cloudflare_collect_api_token
@@ -1914,18 +1921,22 @@ reality_cloudflare_purge_managed_resources() {
                 "/zones/${zone_id}/rulesets/${ruleset_id}/rules/${rule_id}" >/dev/null
         fi
     fi
-    records=$(cloudflare_api_request GET \
-        "/zones/${zone_id}/dns_records?type=A&name=${host}&per_page=100")
-    count=$(jq length <<<"${records}")
-    ((count <= 1)) || die "Cloudflare 订阅域名 ${host} 有多个 A 记录，拒绝删除"
-    if ((count == 1)); then
-        dns_id=$(jq -r '.[0].id // empty' <<<"${records}")
-        comment=$(jq -r '.[0].comment // empty' <<<"${records}")
-        if [[ -n "${dns_id}" && "${comment}" == "easy_all reality subscription origin" ]]; then
-            cloudflare_api_request DELETE \
-                "/zones/${zone_id}/dns_records/${dns_id}" >/dev/null
-        else
-            info "Cloudflare DNS ${host} 不属于 easy_all，予以保留"
+    # delete_dns=0 表示本次没有写过回源记录：注释标记相同的记录可能是更新前就存在、回滚后
+    # 仍被引用的，不能按标记删除（调用方只清自己写过的 Strict TLS 规则）。
+    if [[ "${delete_dns}" == "1" ]]; then
+        records=$(cloudflare_api_request GET \
+            "/zones/${zone_id}/dns_records?type=A&name=${host}&per_page=100")
+        count=$(jq length <<<"${records}")
+        ((count <= 1)) || die "Cloudflare 订阅域名 ${host} 有多个 A 记录，拒绝删除"
+        if ((count == 1)); then
+            dns_id=$(jq -r '.[0].id // empty' <<<"${records}")
+            comment=$(jq -r '.[0].comment // empty' <<<"${records}")
+            if [[ -n "${dns_id}" && "${comment}" == "easy_all reality subscription origin" ]]; then
+                cloudflare_api_request DELETE \
+                    "/zones/${zone_id}/dns_records/${dns_id}" >/dev/null
+            else
+                info "Cloudflare DNS ${host} 不属于 easy_all，予以保留"
+            fi
         fi
     fi
     if [[ -n "${cert_id}" ]]; then

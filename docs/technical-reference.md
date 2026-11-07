@@ -13,9 +13,20 @@
 - **服务端端口**：Xray 监听 `0.0.0.0:443`。
 - **伪装目标**：默认 `swdist.apple.com:443`，安装和修改时通过 `xray tls ping` 自动完成带 SNI 的 TLS 1.3 握手验收。
 - **动态端口（可选）**：通过 UFW `before.rules` 在 `PREROUTING` 链将 `10000-62703` 范围端口通过单条范围规则 NAT 重定向到实际入站端口（默认 `443`），客户端按时间槽位动态轮换。
-- **订阅（可选）**：`deploy` 模式由本机 Nginx 经 Cloudflare 回源下发 Mihomo YAML / Base64，订阅配置与模式 2 共用同一份 `{"allowedTokens":{...},"nodes":[...]}`：`PROXY`（`select`）依次是本机 Reality 节点、聚合 JSON 的 `nodes`；标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。`link` 模式只输出本机节点信息。
+- **订阅（可选）**：`deploy` 模式由本机 Nginx 经 Cloudflare 回源下发 Mihomo YAML / Base64，订阅配置与两种 CDN 模式共用同一份 `{"allowedTokens":{...},"nodes":[...]}`：`PROXY`（`select`）依次是本机 Reality 节点、聚合 JSON 的 `nodes`；标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。`link` 模式只输出本机节点信息。
 
-### 1.2 模式 2：直连+CDN兜底（Reality + Cloudflare XHTTP）
+### 1.2 模式 2：纯 CDN（Cloudflare XHTTP）
+一台 VPS 只承载 CDN 入口，不监听直连 Reality：
+```text
+公网 443   Nginx
+  ├─ cf.<zone>            → 127.0.0.1:10086 Xray VLESS XHTTP stream-up（Cloudflare 官方回源）
+  └─ sub.<zone>           → 本地订阅分发（Mihomo YAML / Base64）
+```
+- **端口划分**：CDN 回源与订阅共用 `443`，没有 `8443` 直连入站。
+- **证书管理**：`cf` 与 `sub` 共用一张 15 年有效期的 Cloudflare Origin CA ECC 证书。
+- **单一订阅**：订阅下发「Cloudflare 优选 6 个」+「CDN 域名官方调度兜底 1 个」。Mihomo 侧固定分组：`PROXY`（`select`）依次是聚合 JSON 的 `nodes`、`CDN-FALLBACK`；`CDN-AUTO`（`url-test`）只放 Cloudflare 优选 1～6；`CDN-FALLBACK`（`fallback`）先选 `CDN-AUTO`，全部不可用时落到连接 `cf.<zone>` 的兜底节点，由 Cloudflare 官方 Anycast 调度决定边缘。标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。
+
+### 1.3 模式 3：直连+CDN（Reality + Cloudflare XHTTP）
 一台 VPS 独占承载直连与 CDN 两个入口：
 ```text
 公网 8443  Xray VLESS Reality（直连入口，伪装目标另配 SNI）
@@ -24,8 +35,8 @@
   └─ sub.<zone>           → 本地订阅分发（Mihomo YAML / Base64）
 ```
 - **端口划分**：直连入站固定在 `8443`，CDN 回源与订阅共用 `443`。
-- **证书管理**：`cf` 与 `sub` 共用一张 15 年有效期的 Cloudflare Origin CA ECC 证书。
-- **单一订阅**：订阅下发「直连 1 个」+「Cloudflare 优选 6 个」。Mihomo 侧固定两个分组：`PROXY`（`select`）依次是本机直连、聚合 JSON 的 `nodes`、`CDN-AUTO`；`CDN-AUTO`（`url-test`）只放 Cloudflare 优选 1～6，聚合节点不参与测速。标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。
+- **证书管理**：与纯 CDN 模式相同，`cf` 与 `sub` 共用一张 Cloudflare Origin CA ECC 证书。
+- **单一订阅**：订阅下发「直连 1 个」+「Cloudflare 优选 6 个」+「CDN 域名官方调度兜底 1 个」。`PROXY`（`select`）依次是本机直连、聚合 JSON 的 `nodes`、`CDN-FALLBACK`；`CDN-AUTO`（`url-test`）只放 Cloudflare 优选 1～6，聚合节点与兜底节点都不参与测速。标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。
 
 ---
 
@@ -47,11 +58,12 @@
 | --- | --- | --- | --- |
 | 初始化（debian-init） | SSH 实际监听端口 | — | ICMP 回显（UFW 默认）与全部出站；UFW 默认入站拒绝 |
 | 1 直连 Reality | TCP 443 | TCP 8443（仅订阅模式非 `link` 时，Cloudflare 订阅回源） | 动态端口模式在 `PREROUTING` 注入 `10000:62703` → 实际入站端口（默认 443）NAT |
-| 2 直连+CDN兜底 | TCP 8443（Reality 直连） | TCP 443（Cloudflare 官方 IPv4 回源段） | 两入口共用同一套 UFW/Fail2ban 基线 |
+| 2 纯 CDN | — | TCP 443（Cloudflare 官方 IPv4 回源段） | 无直连入口，业务端口仅 CDN 回源与订阅 |
+| 3 直连+CDN | TCP 8443（Reality 直连） | TCP 443（Cloudflare 官方 IPv4 回源段） | 两入口共用同一套 UFW/Fail2ban 基线 |
 
 ### 2.2 回源白名单与防扫描
 - 在涉及 Cloudflare 的模式中，本地 Nginx 与防火墙严格限制：
-  - UFW 仅向 Cloudflare 官方公布的 IPv4 网段开放各模式的回源端口（模式 1：TCP `8443`，模式 2：TCP `443`）；
+  - UFW 仅向 Cloudflare 官方公布的 IPv4 网段开放各模式的回源端口（模式 1：TCP `8443`，模式 2/3：TCP `443`）；
   - 外部扫描器直接探测源站 IP 对应端口会被防火墙静默丢弃（DROP）。
 
 ### 2.3 恶意出站与内部阻断
@@ -136,7 +148,8 @@ easy_all
 ├── runtime.manifest             # 运行时受管文件清单
 ├── profiles/
 │   ├── reality.sh               # 模式 1：直连 Reality 业务编排
-│   └── combined.sh              # 模式 2：直连+CDN兜底业务编排
+│   ├── cdn.sh                   # 模式 2：纯 CDN 业务编排
+│   └── combined.sh              # 模式 3：直连+CDN 业务编排
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
 │   ├── platform.sh              # 系统环境、Debian 探测与基础依赖
@@ -148,11 +161,12 @@ easy_all
 │   ├── cloudflare-ip-pool.sh    # Cloudflare 候选 IP 池与抽样验证
 │   ├── globalping-cdn.sh        # Globalping 探针调用与三网优选
 │   ├── cf-dns.sh                # Cloudflare API / DNS / Origin CA / 回源白名单
+│   ├── cloudflare-mode.sh       # 两种 CDN 模式共用的编排、订阅渲染与生命周期
 │   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
 │   ├── xhttp-runtime.sh         # XHTTP 运行时公共逻辑与证书挂载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
 │   ├── subscription-auth.sh     # 订阅凭据生成与校验
-│   ├── local-aggregation.sh     # 本地聚合节点校验与渲染（两种模式共用）
+│   ├── local-aggregation.sh     # 本地聚合节点校验与渲染（全模式共用）
 │   ├── scheduled-maintenance.sh # 定时重启与维护任务
 │   ├── tcp-tuning.sh            # Skyline Speeder 与 Zabbly 6.12+ LTS 内核管理
 │   ├── xray-core.sh             # Xray 官方二进制下载与校验

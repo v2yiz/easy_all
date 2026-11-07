@@ -32,7 +32,8 @@ for (const arg of ['help', '--help', '-h']) {
     assert.equal(res.status, 0, `easy_all ${arg} should exit with 0`);
     assert.ok(res.stdout.includes('用法: easy_all [命令]'), 'Help should show usage');
     assert.ok(res.stdout.includes('Reality'), 'Help should list Reality mode');
-    assert.ok(res.stdout.includes('直连+CDN兜底'), 'Help should list combined mode');
+    assert.ok(res.stdout.includes('纯 CDN'), 'Help should list the CDN-only mode');
+    assert.ok(res.stdout.includes('直连+CDN'), 'Help should list the combined mode');
     assert.ok(res.stdout.includes('cleanup-partial'), 'Help should list cleanup-partial');
 }
 
@@ -117,17 +118,26 @@ try {
     writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="reality"\n');
     const cfRes = run(easyAll, ['refresh-cdn-ips'], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
     assert.equal(cfRes.status, 1);
-    assert.ok(cfRes.stderr.includes('仅适用于直连+CDN兜底模式'), cfRes.stderr);
+    assert.ok(cfRes.stderr.includes('仅适用于纯 CDN 与直连+CDN模式'), cfRes.stderr);
 
-    // 直连+CDN兜底：只提供三入口与订阅，不提供 Reality 专属命令
-    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="combined"\n');
-    for (const [command, message] of [
-        ['rotate-dynamic-ports', '仅适用于 Reality 模式'],
-    ]) {
-        const res = run(easyAll, [command], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
-        assert.equal(res.status, 1, `${command} must be rejected in combined mode`);
-        assert.ok(res.stderr.includes(message), `${command}: ${res.stderr}`);
+    // 两种 CDN 模式：都提供 apply-cloud / refresh-cdn-ips / 订阅，不提供 Reality 专属命令
+    for (const mode of ['cdn', 'combined']) {
+        writeFileSync(stateFile, `STATE_VERSION="0"\nPROTOCOL="${mode}"\n`);
+        for (const [command, message] of [
+            ['rotate-dynamic-ports', '仅适用于 Reality 模式'],
+        ]) {
+            const res = run(easyAll, [command], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
+            assert.equal(res.status, 1, `${command} must be rejected in ${mode} mode`);
+            assert.ok(res.stderr.includes(message), `${command}: ${res.stderr}`);
+        }
     }
+    // 纯 CDN 模式没有 Reality 直连入口，reality-target 必须被拒绝
+    writeFileSync(stateFile, 'STATE_VERSION="0"\nPROTOCOL="cdn"\n');
+    const cdnRealityTarget = run(easyAll, ['reality-target', 'example.com:443'], {
+        EASY_ALL_STATE_FILE_OVERRIDE: stateFile,
+    });
+    assert.equal(cdnRealityTarget.status, 1, 'reality-target must be rejected in cdn mode');
+    assert.ok(cdnRealityTarget.stderr.includes('仅适用于 Reality 与直连+CDN模式'), cdnRealityTarget.stderr);
     // 已随模式移除的命令不再存在
     for (const command of ['refresh-origin-ips', 'cert-renew']) {
         const res = run(easyAll, [command], { EASY_ALL_STATE_FILE_OVERRIDE: stateFile });
