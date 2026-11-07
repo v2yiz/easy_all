@@ -1,3 +1,23 @@
+## 4.2.0 更新说明（2026-11-07）
+
+- **直连 Reality 的 Cloudflare 层并入 `lib/cf-dns.sh`**：删除 `profiles/reality.sh` 中与之并行的 API 客户端、Zone 查询、Origin CA 签发与复用判定、回源白名单与 UFW 规则等 230 余行重复实现，改为共用共享层；UFW 端口（模式 1 = `8443`、模式 2 = `443`）、UFW 注释、回源证书路径与回源域名改为由各 Profile 以常量提供，`lib/cf-dns.sh` 不再自赋默认值。删除共享层中已无调用方的 `cloudflare_ensure_proxied_a` / `cloudflare_require_single_record`。所有权标记（UFW 注释、DNS 注释、Strict TLS `ref` 前缀）与状态文件字段均未变，存量安装的规则/记录/证书继续可识别。
+- **Cloudflare 凭据与域名约束前置到输入阶段**：安装第 4 步与 `edit-sub` 的输入阶段就收集 API Token，并校验「回源域名属于当前 Token 可见的 active Zone，且必须是 Zone 下一级子域名」，不再等到第 8 步 `deploy_subscription_service` 才提示输入；根域名与多级子域也不会再装到一半才失败回滚。Zone 解析结果按域名在进程内缓存，部署阶段不再重复两次只读 `GET`。
+- **失败回滚按「本次是否写过云端 + 域名是否变化」精确回收**：首装只在本次确实 `PATCH`/`POST` 过回源 A 记录时才跑全量 purge（记录已就绪的 no-op 仍只吊销新证书），不会误删上一次部署留下的标记资源；`edit-sub` / `renew-cert` 的回滚先吊销本进程新签的 Origin CA 证书（成功后清空其 ID，失败保留并提示 `purge-cloudflare`），仅当回滚恢复出的是 `link` 模式或不同域名时才清理新域名的 DNS 与 Strict TLS 规则，且只有本次确实写过 Strict TLS 时才把 ruleset id 交给清理——跨 Zone 改域名或 Token 缺规则读权限时，那次 `GET` 的 404/403 会中断清理、把新域名 A 记录留在云端。清理失败只告警并给出 `easy_all purge-cloudflare --domain <域名>` 补救命令。
+- **修正 `edit-sub` 的回滚窗口**：`UPDATE_SUB_ROLLBACK_ON_EXIT=0` 提前到 `cloudflare_finalize_certificate_rotation` 之前（与模式 2、与 `renew-cert` 一致）。旧证书已被不可逆吊销后再回滚，会把已吊销的旧证书恢复回去，并（配合回滚里的证书吊销）把刚生效的新证书也删掉。
+- **证书复用判定不再依赖 OpenSSL 3 专有选项**：`cloudflare_origin_certificate_is_current` 去掉 `-checkhost` 逐域名循环（SAN 集合与期望集合的精确相等已严格强于逐域名覆盖），SAN 提取改为「`-ext subjectAltName` 优先、为空则解析 `-text` 的 X509v3 段」；`combined_certificate_covers_node_domain` 在 `-checkhost` 不可用时同样退回 SAN 集合判定。macOS 的 LibreSSL 3.3.6 两个选项都没有，原先会把有效证书判成不可复用（开发机反复重签）并误报「证书未覆盖节点域名」。
+- **修复 Google Play 下载卡住（三套 Mihomo 模板）**：`sniffer.sniff` 删除 `QUIC` 嗅探，只保留 `HTTP` 与 `TLS`。境外 UDP/443 由规则立即 `REJECT` 并要求应用回退 TCP，先嗅探 QUIC 会把这次拒绝拖到握手解析之后，Android 客户端表现为下载长期停在「等待中」。分流结果不变：国内 QUIC 仍由 `geoip-cn` 直连，服务端 `lib/network.sh` 的 UDP/443 `block` 路由仍在。
+- **测试**：`test_mihomo_template_lint.sh` 新增「sniffer 段不得嗅探 QUIC、必须保留 TLS」断言（剔注释、大小写无关）；`test_reality_render.sh` 新增输入阶段顺序与根域名/多级子域拒绝、Zone 缓存复用与换域名重解析、真实证书的可复用判定与无 `-ext` 兜底、首装/更新两条回滚的证书吊销与 ID 清空、新域名清理、清理失败隔离；`test_combined_render.sh` 新增 Profile 常量与 `-checkhost` 兜底断言；`test_audit_fixes.sh` 跟进函数改名并锁住「签发成功记录新证书 ID」与「`edit-sub` 在 finalize 前关闭回滚」。文档同步：客户端指南、系统技术参考的嗅探与端口说明。
+- **已安装机器升级**：模板仍走 `state.env` 里的快照，需要显式换一次模板才会重发订阅：
+
+```bash
+sudo easy_all self-update
+sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo.yaml easy_all apply
+# 部署订阅模式会再要一次 Cloudflare API Token（仍不落盘）；非交互执行时改用：
+# sudo CLOUDFLARE_API_TOKEN=... MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo.yaml easy_all apply
+```
+
+验证：`test_install_guard` / `test_purge_cloudflare` / `test_combined_render` / `test_reality_render` / `test_mihomo_template_lint` / `test_audit_fixes` / `test_subscription_port.mjs` 全绿，新增断言均做「破坏实现即变红」反向验证（退回 `-checkhost` + 只吃 `-ext`、去掉 Zone 缓存、不清空新证书 ID、去掉 combined 的 SAN 兜底、把 QUIC 嗅探塞回模板、删掉回滚清理块、条件忽略域名变化等）；全仓 `bash -n` 与 `node --check` 通过。`test_cli_e2e` 在开发机沙箱（macOS `TMPDIR` 不可写，`mktemp` 报 `Operation not permitted`，基线同样失败）无法运行，以 CI 结果为准。
+
 ## 4.1.0 更新说明（2026-11-06）
 
 - **直连 Reality 的订阅也支持聚合节点**：`deploy` 订阅不再只下发本机节点，改为与直连+CDN兜底共用同一份 `{"allowedTokens":{...},"nodes":[...]}` 配置；`nodes` 支持 `vless`（`reality/tcp` 或 `tls/xhttp`）与 `mieru`，`optional: true` 仅在订阅 URL 追加 `&node=all` 时下发。Mihomo 的 `PROXY` 分组顺序为本机 Reality 节点 → 聚合节点（名字原样使用）；`link` 模式仍只输出本机节点信息。

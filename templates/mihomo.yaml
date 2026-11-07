@@ -30,8 +30,8 @@ sniffer:
         override-destination: true
       TLS:
         ports: [443, 8443]
-      QUIC:
-        ports: [443, 8443]
+      # 刻意不嗅探 QUIC：UDP/443 稍后会由规则立即 REJECT 并要求应用回退 TCP，
+      # 先嗅探 QUIC 会让这次拒绝被握手解析拖住，Android 上表现为 Google Play 下载长期停在“等待中”。
 
 tun:
     enable: true

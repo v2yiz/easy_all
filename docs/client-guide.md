@@ -146,13 +146,16 @@ COMMON 关闭 `tcp-concurrent` 以降低并发握手开销，并将 UDP NAT 空�
 空闲映射过期后，后续通信可能需要重建映射，不代表活跃 UDP 会话每分钟被强制中断。
 保留 `store-fake-ip: true` 用于跨重启复用 Fake-IP 映射，不把持久化本身作为降低内存的手段。
 三套模板默认都开启嗅探（`sniffer`，含 `override-destination`）：应用自行使用 DoH 或直接连接真实 IP 时，
-内核可从 TLS/HTTP/QUIC 握手恢复域名，分流仍按域名生效；不开启时这类连接只能按 IP、端口及最终兜底规则处理，
-境外服务使用中国 IP 时可能直连。iOS 客户端（UA 命中 `iphone/ipad/ipod/ios`，或链接加 `&os=ios`）下发的 YAML
-会自动剔除该段。除 iOS 网络扩展严苛的常驻内存限制（防 Jetsam OOM 杀后台进程）外，剔除的核心工程依据还包括：
+内核可从 TLS/HTTP 握手恢复域名，分流仍按域名生效；不开启时这类连接只能按 IP、端口及最终兜底规则处理，
+境外服务使用中国 IP 时可能直连。**嗅探刻意不覆盖 QUIC**：境外 UDP/443 由后续规则立即 `REJECT` 并要求应用回退 TCP，
+先嗅探 QUIC 会把这次拒绝拖到握手解析之后，Android 上会表现为 Google Play 下载长期停在“等待中”
+（只影响绕过本机 DNS 的客户端的 UDP/443 分类，TCP 仍按域名分流；国内 QUIC 直连不变）。
+iOS 客户端（UA 命中 `iphone/ipad/ipod/ios`，或链接加 `&os=ios`）下发的 YAML
+会自动剔除嗅探段（`sniffer`）。除 iOS 网络扩展严苛的常驻内存限制（防 Jetsam OOM 杀后台进程）外，剔除的核心工程依据还包括：
 ① 避免对 `push.apple.com` 等长连接重写目标而导致 APNs 推送断连、延迟或触发风控；
 ② 避免 `override-destination` 触发二次 DNS 解析破坏系统本地 CDN 就近调度；
 ③ 避免微信、金融与私有协议在等待嗅探解析时触发 1 秒首包超时卡顿；
-④ 避免 QUIC/HTTP3 嗅探失败导致网页转圈，并兼容 iOS 17+ 原生 ECH（防真实目标被伪装域名覆盖）。
+④ 兼容 iOS 17+ 原生 ECH（防真实目标被伪装域名覆盖）。
 嗅探会额外占用连接级内存与解析开销：下面的 50MB 目标与 RSS 基线都是在**未开启嗅探**时测得的，
 桌面端开启后需按自己的设备复测。
 
@@ -188,7 +191,9 @@ Auth0、Stripe、Intercom 等服务仍整体代理，可按实际日志收窄 `p
 sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common.yaml easy_all edit-sub
 ```
 
-改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。自定义模板路径
+改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。部署订阅（`deploy`）模式下
+`apply` 会再要一次 Cloudflare API Token（仍不落盘，仅本次进程使用）；非交互执行时改用
+`sudo CLOUDFLARE_API_TOKEN=... MIHOMO_TEMPLATE_SOURCE=... easy_all apply`。自定义模板路径
 同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板已在 CI 用固定
 内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。`sniffer` 段必须写成块映射
 （`sniffer:` 独占一行），写成内联映射时安装会直接报错——iOS 下发需要按段剔除它。

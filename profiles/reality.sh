@@ -45,7 +45,7 @@ readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4.txt"
-readonly CLOUDFLARE_SUBSCRIPTION_UFW_COMMENT="easy_all-reality-cloudflare-subscription"
+readonly CLOUDFLARE_UFW_COMMENT="easy_all-reality-cloudflare-subscription"
 readonly UFW_BEFORE_RULES="/etc/ufw/before.rules"
 readonly UFW_BEFORE6_RULES="/etc/ufw/before6.rules"
 readonly UFW_DEFAULT_CONFIG="/etc/default/ufw"
@@ -56,6 +56,7 @@ readonly UFW_NAT6_START="# easy_all-nat6-start"
 readonly UFW_NAT6_END="# easy_all-nat6-end"
 readonly SERVICE_PORT="443"
 readonly SUBSCRIPTION_HTTPS_PORT="8443"
+readonly CLOUDFLARE_UFW_PORT="${SUBSCRIPTION_HTTPS_PORT}"
 readonly PORT_BASE="10000"
 readonly DYNAMIC_PORTS_PER_HOUR="6"
 readonly DYNAMIC_PORT_ROTATION_HOURS="1"
@@ -76,6 +77,8 @@ readonly SUBSCRIPTION_DEFAULT_MODE="link"
 # shellcheck source=lib/runtime-core.sh
 EASY_ALL_RUNTIME_LIB_DIR="${SCRIPT_DIR}"
 source "${SCRIPT_DIR}/runtime-core.sh"
+# shellcheck source=lib/cf-dns.sh
+source "${SCRIPT_DIR}/cf-dns.sh"
 # shellcheck source=lib/reality-target.sh
 source "${SCRIPT_DIR}/reality-target.sh"
 # shellcheck source=lib/local-aggregation.sh
@@ -652,73 +655,6 @@ write_dynamic_nat_rules() {
         "${PORT_BASE}" "${DYNAMIC_PORT_MAX}" "${SERVICE_PORT}"
 }
 
-reality_cloudflare_fetch_origin_ipv4_ranges() {
-    local response
-    response=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
-        "${CLOUDFLARE_API_BASE}/ips") || return 1
-    jq -er '
-        select(.success == true)
-        | .result.ipv4_cidrs
-        | select(type == "array" and length > 0)
-        | unique[]
-        | select(test("^([0-9]{1,3}\\.){3}[0-9]{1,3}/([89]|[12][0-9]|3[0-2])$"))
-    ' <<<"${response}" | sort -u
-}
-
-reality_cloudflare_subscription_ufw_rule_numbers() {
-    command -v ufw >/dev/null 2>&1 || return 0
-    LC_ALL=C ufw status numbered 2>/dev/null \
-        | sed -n "/${CLOUDFLARE_SUBSCRIPTION_UFW_COMMENT}/s/^[[:space:]]*\\[[[:space:]]*\\([0-9][0-9]*\\)\\].*/\\1/p" \
-        | sort -rn
-}
-
-reality_cloudflare_remove_subscription_firewall_rules() {
-    local number
-    while IFS= read -r number; do
-        [[ -n "${number}" ]] || continue
-        ufw --force delete "${number}" >/dev/null 2>&1 \
-            || warn "删除 Cloudflare 订阅 UFW 规则 ${number} 失败"
-    done < <(reality_cloudflare_subscription_ufw_rule_numbers)
-}
-
-reality_cloudflare_configure_subscription_firewall() {
-    local next current cidr
-    next="${RUNTIME_TMP}/reality-cloudflare-origin-ipv4.txt"
-    if ! reality_cloudflare_fetch_origin_ipv4_ranges >"${next}" || [[ ! -s "${next}" ]]; then
-        if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
-            warn "获取 Cloudflare 官方 IP 段失败，继续使用上一版订阅回源白名单"
-            install -m 0600 "${CLOUDFLARE_ORIGIN_IPS_FILE}" "${next}"
-        else
-            die "无法获取 Cloudflare 官方 IPv4 段，且没有可回退的订阅回源白名单"
-        fi
-    fi
-    current="${RUNTIME_TMP}/reality-cloudflare-origin-ipv4.current"
-    if [[ -s "${CLOUDFLARE_ORIGIN_IPS_FILE}" ]]; then
-        install -m 0600 "${CLOUDFLARE_ORIGIN_IPS_FILE}" "${current}"
-    else
-        : >"${current}"
-    fi
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
-        ufw allow proto tcp from "${cidr}" to any port "${SUBSCRIPTION_HTTPS_PORT}" \
-            comment "${CLOUDFLARE_SUBSCRIPTION_UFW_COMMENT}" >/dev/null \
-            || die "添加 Cloudflare 订阅回源规则失败：${cidr}"
-    done <"${next}"
-    ufw reload >/dev/null || die "重载 UFW 失败"
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
-        ufw_tcp_port_is_allowed "${SUBSCRIPTION_HTTPS_PORT}" "${cidr}" \
-            || die "UFW 未有效放行 Cloudflare 订阅回源：${cidr}"
-    done <"${next}"
-    while IFS= read -r cidr; do
-        [[ -n "${cidr}" ]] || continue
-        grep -Fxq "${cidr}" "${next}" && continue
-        ufw --force delete allow proto tcp from "${cidr}" to any port "${SUBSCRIPTION_HTTPS_PORT}" \
-            >/dev/null || warn "删除过期 Cloudflare 订阅回源规则失败：${cidr}"
-    done <"${current}"
-    install -m 0600 "${next}" "${CLOUDFLARE_ORIGIN_IPS_FILE}"
-}
-
 configure_ufw() {
     local desired_ports
     ensure_ssh_boot_service
@@ -738,9 +674,9 @@ configure_ufw() {
         ufw_tcp_port_has_unmanaged_anywhere_allow "${SUBSCRIPTION_HTTPS_PORT}" \
             && die "检测到非 easy_all 管理的 TCP ${SUBSCRIPTION_HTTPS_PORT} 全网放行规则；请先删除该规则，避免绕过 Cloudflare 回源白名单"
         apply_ssh_ufw_policy "${desired_ports}"
-        reality_cloudflare_configure_subscription_firewall
+        cloudflare_configure_origin_firewall
     else
-        reality_cloudflare_remove_subscription_firewall_rules
+        cloudflare_remove_origin_firewall_rules
     fi
     apply_ssh_ufw_policy "${desired_ports}"
     write_ufw_nat_rules
@@ -932,77 +868,16 @@ install_subscription_dependencies() {
     command -v nginx >/dev/null 2>&1 || die "Nginx 安装后不可用"
 }
 
-reality_cloudflare_collect_api_token() {
-    if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-        CLOUDFLARE_API_TOKEN=$(prompt_secret \
-            "Cloudflare API Token（仅当前进程使用，不落盘）") \
-            || die "非交互模式必须设置 CLOUDFLARE_API_TOKEN"
-    fi
-    [[ ${#CLOUDFLARE_API_TOKEN} -ge 20 && ${#CLOUDFLARE_API_TOKEN} -le 512 \
-        && "${CLOUDFLARE_API_TOKEN}" != *[[:space:]]* ]] \
-        || die "CLOUDFLARE_API_TOKEN 格式无效"
-}
-
-reality_cloudflare_clear_api_token() {
-    unset CLOUDFLARE_API_TOKEN
-    rm -f -- "${RUNTIME_TMP}/reality-cloudflare-api-headers"
-}
-
-reality_cloudflare_api_request() {
-    local method=$1 path=$2 payload=${3:-} response headers
-    local -a retry_args=(--retry 0)
-    [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "缺少 CLOUDFLARE_API_TOKEN"
-    headers="${RUNTIME_TMP}/reality-cloudflare-api-headers"
-    printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
-        "${CLOUDFLARE_API_TOKEN}" >"${headers}"
-    chmod 0600 "${headers}"
-    case "${method}" in
-    GET | HEAD | PUT) retry_args=(--retry 2) ;;
-    esac
-    if [[ -n "${payload}" ]]; then
-        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 \
-            -X "${method}" -H "@${headers}" --data "${payload}" \
-            "${CLOUDFLARE_API_BASE}${path}") \
-            || die "Cloudflare API 请求失败：${method} ${path}"
-    else
-        response=$(curl -sS "${retry_args[@]}" --connect-timeout 10 --max-time 45 \
-            -X "${method}" -H "@${headers}" "${CLOUDFLARE_API_BASE}${path}") \
-            || die "Cloudflare API 请求失败：${method} ${path}"
-    fi
-    jq -es 'length == 1 and (.[0] | type == "object" and .success == true)' \
-        <<<"${response}" >/dev/null \
-        || { jq -c '.errors // .' <<<"${response}" >&2 || true; die "Cloudflare API 返回错误：${method} ${path}"; }
-    jq -c '.result' <<<"${response}"
-}
-
-reality_cloudflare_find_parent_zone() {
-    local domain=$1 candidate zone
-    candidate=${domain}
-    while [[ "${candidate}" == *.* ]]; do
-        zone=$(reality_cloudflare_api_request GET \
-            "/zones?name=${candidate}&status=active&per_page=50" \
-            | jq -r --arg name "${candidate}" \
-                '[.[] | select((.name|ascii_downcase)==$name) | .id] | if length == 1 then .[0] else empty end')
-        if [[ -n "${zone}" ]]; then printf '%s' "${zone}"; return; fi
-        candidate=${candidate#*.}
-    done
-    die "Cloudflare active Zone 未覆盖订阅域名：${domain}"
-}
-
-reality_cloudflare_record_list() {
-    reality_cloudflare_api_request GET \
-        "/zones/$1/dns_records?type=$2&name=$3&per_page=100"
-}
-
+# Cloudflare API 客户端、Zone 查询、Origin CA 签发与回源白名单统一在 lib/cf-dns.sh；
+# 这里只保留 Reality 订阅特有的编排（回源 A 记录、Strict TLS 规则、卸载清理）。
 reality_cloudflare_ensure_proxied_a() {
     local records record="" id content proxied comment type payload count
     local origin_domain
     origin_domain=$(subscription_origin_domain)
     # Check every conflicting record type before returning or changing DNS.
     for type in A AAAA CNAME; do
-        records=$(reality_cloudflare_record_list \
-            "${CLOUDFLARE_ZONE_ID}" "${type}" "${origin_domain}") \
-            || die "读取 Cloudflare ${type} 记录失败"
+        records=$(cloudflare_record_list \
+            "${CLOUDFLARE_ZONE_ID}" "${type}" "${origin_domain}")
         count=$(jq -er 'if type == "array" then length else error("expected records array") end' \
             <<<"${records}") || die "Cloudflare ${type} 记录响应无效"
         ((count <= 1)) || die "Cloudflare 中发现多个同名 ${type} 记录，拒绝覆盖"
@@ -1026,102 +901,48 @@ reality_cloudflare_ensure_proxied_a() {
     payload=$(jq -cn --arg name "${origin_domain}" --arg content "${VPS_PUBLIC_IPV4}" \
         '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all reality subscription origin"}')
     if [[ -n "${record}" ]]; then
-        reality_cloudflare_api_request PATCH \
+        cloudflare_api_request PATCH \
             "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" "${payload}" >/dev/null
     else
-        reality_cloudflare_api_request POST \
+        cloudflare_api_request POST \
             "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" "${payload}" >/dev/null
     fi
+    # 只有真的写过云端才算 touched：记录已就绪的 no-op 分支不改变上次部署留下的资源。
+    CLOUDFLARE_RESOURCES_TOUCHED=1
 }
 
-reality_cloudflare_prepare_subscription() {
-    local zone prefix origin_domain
+# 解析并校验回源域名所属 Zone（Reality 要求 Zone 下一级子域名）：输入阶段与部署阶段共用，
+# 根域名/多级子域在输入阶段就失败，不会等到第 8 步才报错并触发半装回滚。
+reality_cloudflare_resolve_zone() {
+    local origin_domain zone prefix
     origin_domain=$(subscription_origin_domain)
     [[ -n "${origin_domain}" ]] || die "当前订阅模式缺少 Cloudflare 回源域名"
-    reality_cloudflare_collect_api_token
-    CLOUDFLARE_ZONE_ID=$(reality_cloudflare_find_parent_zone "${origin_domain}")
-    zone=$(reality_cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}")
+    # 共享的 Origin CA 签发逻辑从该域名推导证书 CN 与 SAN。
+    CLOUDFLARE_ORIGIN_DOMAIN=${origin_domain}
+    # 同一域名在输入阶段已解析过（随后部署阶段会再调一次）：直接复用结果，省掉两次只读 GET。
+    if [[ "${CLOUDFLARE_ZONE_RESOLVED_DOMAIN:-}" == "${origin_domain}" \
+        && -n "${CLOUDFLARE_ZONE_ID:-}" && -n "${CLOUDFLARE_ZONE_NAME:-}" ]]; then
+        return 0
+    fi
+    CLOUDFLARE_ZONE_ID=$(cloudflare_find_parent_zone "${origin_domain}")
+    zone=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}")
     CLOUDFLARE_ZONE_NAME=$(jq -r '.name // empty | ascii_downcase' <<<"${zone}")
     [[ -n "${CLOUDFLARE_ZONE_NAME}" \
         && "${origin_domain}" == *."${CLOUDFLARE_ZONE_NAME}" ]] \
-        || die "订阅回源域名不属于 Cloudflare Zone"
+        || die "订阅回源域名需为 Cloudflare Zone 下一级子域名：${origin_domain}"
     prefix=${origin_domain%.${CLOUDFLARE_ZONE_NAME}}
     [[ -n "${prefix}" && "${prefix}" != *.* ]] \
-        || die "Reality 的 Cloudflare 订阅仅支持 Zone 下一级子域名"
+        || die "Reality 的 Cloudflare 订阅仅支持 Zone 下一级子域名：${origin_domain}"
+    CLOUDFLARE_ZONE_RESOLVED_DOMAIN=${origin_domain}
+}
+
+reality_cloudflare_prepare_subscription() {
+    cloudflare_collect_api_token
+    reality_cloudflare_resolve_zone
     VPS_PUBLIC_IPV4=${VPS_PUBLIC_IPV4:-$(detect_public_ipv4)} \
         || die "无法探测当前 VPS 公网 IPv4"
     validate_ipv4 "${VPS_PUBLIC_IPV4}" || die "VPS_PUBLIC_IPV4 无效：${VPS_PUBLIC_IPV4}"
     reality_cloudflare_ensure_proxied_a
-}
-
-reality_cloudflare_ensure_origin_ca_root() {
-    if [[ -s "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" ]] \
-        && openssl x509 -in "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" -noout >/dev/null 2>&1; then
-        return 0
-    fi
-    install -d -m 0700 "${CERT_DIR}"
-    curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 \
-        "${CLOUDFLARE_ORIGIN_CA_ROOT_URL}" \
-        -o "${RUNTIME_TMP}/cloudflare-origin-ca-ecc.pem" \
-        || die "下载 Cloudflare Origin CA ECC 根证书失败"
-    openssl x509 -in "${RUNTIME_TMP}/cloudflare-origin-ca-ecc.pem" -noout >/dev/null 2>&1 \
-        || die "Cloudflare Origin CA ECC 根证书格式无效"
-    install -m 0644 "${RUNTIME_TMP}/cloudflare-origin-ca-ecc.pem" \
-        "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
-}
-
-reality_cloudflare_origin_certificate_is_current() {
-    [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" ]] || return 1
-    openssl x509 -in "${CERT_FILE}" -checkend 2592000 -noout >/dev/null 2>&1 \
-        && openssl x509 -in "${CERT_FILE}" -checkhost "$(subscription_origin_domain)" -noout >/dev/null 2>&1 \
-        && [[ "$(openssl x509 -in "${CERT_FILE}" -pubkey -noout 2>/dev/null \
-            | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)" \
-            == "$(openssl pkey -in "${KEY_FILE}" -pubout -outform DER 2>/dev/null \
-            | sha256sum | cut -d' ' -f1)" ]]
-}
-
-reality_cloudflare_origin_certificate_is_reusable() {
-    # A current certificate on disk is only reusable with the Cloudflare side
-    # metadata that save_state persists and load_state requires. Reusing one
-    # without it (e.g. deploy -> link -> deploy clears the ID) writes an
-    # incomplete state file that later hard-fails as "订阅状态不完整".
-    [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" && -n "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" ]] \
-        && reality_cloudflare_origin_certificate_is_current
-}
-
-reality_cloudflare_issue_origin_certificate() {
-    local force=${1:-0} key csr result cert expires old_id origin_domain
-    origin_domain=$(subscription_origin_domain)
-    [[ -n "${origin_domain}" ]] || die "当前订阅模式缺少 Cloudflare 回源域名"
-    reality_cloudflare_ensure_origin_ca_root
-    if [[ "${force}" != 1 ]] && reality_cloudflare_origin_certificate_is_reusable; then
-        return 0
-    fi
-    reality_cloudflare_collect_api_token
-    old_id=${CLOUDFLARE_ORIGIN_CERT_ID:-}
-    key="${RUNTIME_TMP}/reality-cloudflare-origin.key"
-    csr="${RUNTIME_TMP}/reality-cloudflare-origin.csr"
-    openssl ecparam -name prime256v1 -genkey -noout -out "${key}"
-    chmod 0600 "${key}"
-    openssl req -new -sha256 -key "${key}" -subj "/CN=${origin_domain}" \
-        -addext "subjectAltName=DNS:${origin_domain}" -out "${csr}"
-    result=$(reality_cloudflare_api_request POST '/certificates' \
-        "$(jq -cn --arg csr "$(<"${csr}")" --arg host "${origin_domain}" \
-            --argjson validity "${CLOUDFLARE_ORIGIN_VALIDITY_DAYS}" \
-            '{hostnames:[$host],requested_validity:$validity,request_type:"origin-ecc",csr:$csr}')")
-    cert=$(jq -r '.certificate // empty' <<<"${result}")
-    CLOUDFLARE_ORIGIN_CERT_ID=$(jq -r '.id // empty' <<<"${result}")
-    expires=$(jq -r '.expires_on // empty' <<<"${result}")
-    [[ -n "${cert}" && -n "${CLOUDFLARE_ORIGIN_CERT_ID}" && -n "${expires}" ]] \
-        || die "Cloudflare 未返回 Origin CA 证书、ID 或到期时间"
-    printf '%s\n' "${cert}" >"${RUNTIME_TMP}/reality-origin.pem"
-    openssl verify -CAfile "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" \
-        "${RUNTIME_TMP}/reality-origin.pem" >/dev/null \
-        || die "Cloudflare Origin CA 证书链验证失败"
-    install -m 0600 "${RUNTIME_TMP}/reality-origin.pem" "${CERT_FILE}"
-    install -m 0600 "${key}" "${KEY_FILE}"
-    CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=${expires}
-    CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=${old_id}
 }
 
 reality_cloudflare_ref() {
@@ -1130,7 +951,7 @@ reality_cloudflare_ref() {
 
 reality_cloudflare_configure_strict_tls() {
     local listed matches count ruleset rules ref rule_matches rule_count rule_id payload
-    listed=$(reality_cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets")
+    listed=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets")
     matches=$(jq -c '[.[] | select(.kind=="zone" and .phase=="http_config_settings")]' \
         <<<"${listed}")
     count=$(jq length <<<"${matches}")
@@ -1138,7 +959,7 @@ reality_cloudflare_configure_strict_tls() {
     if ((count == 1)); then
         ruleset=$(jq -r '.[0].id' <<<"${matches}")
     else
-        ruleset=$(reality_cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/rulesets" \
+        ruleset=$(cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/rulesets" \
             "$(jq -cn '{name:"easy_all reality subscription strict",kind:"zone",phase:"http_config_settings",rules:[]}')" \
             | jq -r '.id // empty')
     fi
@@ -1146,21 +967,23 @@ reality_cloudflare_configure_strict_tls() {
     ref=$(reality_cloudflare_ref "reality-strict:$(subscription_origin_domain)")
     payload=$(jq -cn --arg ref "${ref}" --arg host "$(subscription_origin_domain)" \
         '{ref:$ref,description:"easy_all reality subscription strict TLS",expression:("http.host eq \""+$host+"\""),action:"set_config",action_parameters:{ssl:"strict"}}')
-    rules=$(reality_cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
+    rules=$(cloudflare_api_request GET "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}")
     rule_matches=$(jq -c --arg ref "${ref}" '[.rules[]? | select(.ref==$ref)]' <<<"${rules}")
     rule_count=$(jq length <<<"${rule_matches}")
     ((rule_count <= 1)) || die "Cloudflare 中存在多个 Reality Strict TLS 规则，拒绝覆盖"
     if ((rule_count == 1)); then
         rule_id=$(jq -r '.[0].id' <<<"${rule_matches}")
-        reality_cloudflare_api_request PATCH \
+        cloudflare_api_request PATCH \
             "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules/${rule_id}" \
             "${payload}" >/dev/null
     else
-        reality_cloudflare_api_request POST \
+        cloudflare_api_request POST \
             "/zones/${CLOUDFLARE_ZONE_ID}/rulesets/${ruleset}/rules" \
             "${payload}" >/dev/null
     fi
     CLOUDFLARE_STRICT_RULESET_ID=${ruleset}
+    # 本次确实写过 Strict TLS 规则：回滚只能在这之后才用这个 ruleset id（见 rollback_subscription_update）。
+    CLOUDFLARE_STRICT_TLS_TOUCHED=1
 }
 
 write_subscription_web_root() {
@@ -1479,17 +1302,6 @@ reality_cloudflare_validate_public_subscription() {
     die "Cloudflare 订阅回源验收失败；请检查 Proxied DNS、Origin CA、Strict TLS 与 8443 回源"
 }
 
-reality_cloudflare_finalize_certificate_rotation() {
-    local old_id=${CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID:-}
-    [[ -n "${old_id}" && "${old_id}" != "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] \
-        || return 0
-    if ! (reality_cloudflare_api_request DELETE "/certificates/${old_id}" >/dev/null); then
-        warn "新证书已生效，但撤销旧 Cloudflare Origin CA 证书失败：${old_id}"
-        return 0
-    fi
-    CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID=""
-}
-
 # 订阅配置的唯一入口：与直连+CDN兜底共用 lib/local-aggregation.sh 的校验与渲染，
 # 本机节点名参与重名校验（NODE_NAME 不能与聚合节点同名）。
 reality_apply_subscription_config() {
@@ -1551,6 +1363,11 @@ collect_subscription_inputs() {
     deploy)
         collect_deployed_subscription_inputs \
             "${prompt_options}" "${prompt_download_name}"
+        # 部署订阅必然要用 Cloudflare Token：前置到这里连同 Zone 归属与「必须是一级子域名」
+        # 一起校验，安装/编辑在改动任何系统状态前就能发现凭证或域名错误，而不是装到第 8 步
+        # 才停下等输入，或在输入错误后触发半装回滚。
+        cloudflare_collect_api_token
+        reality_cloudflare_resolve_zone
         ;;
     link) collect_link_subscription_inputs ;;
     *) die "无法收集未知订阅输出方式：${SUBSCRIPTION_MODE:-空}" ;;
@@ -1561,7 +1378,7 @@ deploy_subscription_service() {
     install_subscription_dependencies || return 1
     install_reality_subscription_renderer || return 1
     reality_cloudflare_prepare_subscription
-    reality_cloudflare_issue_origin_certificate 0
+    cloudflare_issue_origin_certificate 0
     reality_cloudflare_configure_strict_tls
     write_subscription_bootstrap_nginx
     install_static_subscriptions || return 1
@@ -1595,7 +1412,7 @@ renew_subscription_certificate() {
     reality_require_valid_subscription_config
     snapshot_subscription_update
     reality_cloudflare_prepare_subscription
-    reality_cloudflare_issue_origin_certificate 1
+    cloudflare_issue_origin_certificate 1
     reality_cloudflare_configure_strict_tls
     nginx -t >/dev/null || die "Cloudflare 新源站证书安装后 Nginx 校验失败"
     systemctl reload nginx || systemctl restart nginx \
@@ -1605,8 +1422,8 @@ renew_subscription_certificate() {
     reality_cloudflare_validate_public_subscription
     # 吊销不可逆：先关闭回滚再吊销，避免失败路径把已吊销的旧证书恢复回来。
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    reality_cloudflare_finalize_certificate_rotation
-    reality_cloudflare_clear_api_token
+    cloudflare_finalize_certificate_rotation
+    cloudflare_clear_api_token
     release_runtime_write_lock
     success "Cloudflare Origin CA 订阅证书已轮换"
 }
@@ -1672,6 +1489,28 @@ snapshot_subscription_update() {
 
 rollback_subscription_update() {
     local candidate rollback_status=0
+    local failed_origin_domain failed_zone_id failed_ruleset_id cloud_touched=0
+    # 本次更新新签发的 Origin CA 证书只存在于内存：state.env 回滚后只剩旧证书 ID，不在这里
+    # 吊销就会在账户里留下无引用的长期证书（uninstall --purge-cloud 只删状态里的证书 ID）。
+    if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
+        cloud_touched=1
+        if (cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null); then
+            # 已拔销的证书不能再留着 ID：同一进程再次进入回滚时会重复请求不存在的资源。
+            CLOUDFLARE_CREATED_ORIGIN_CERT_ID=""
+        else
+            warn "回滚时删除本次新建的 Cloudflare Origin CA 证书失败：${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}；可用 easy_all purge-cloudflare 清理"
+        fi
+    fi
+    [[ "${CLOUDFLARE_RESOURCES_TOUCHED:-0}" != "1" ]] || cloud_touched=1
+    # 记下失败时的回源域名与 Zone：回滚恢复的域名可能不同（link → deploy 或改域名），
+    # 那时本次新建的 DNS/Strict TLS 不被任何状态引用，必须一并清理。
+    failed_origin_domain=$(subscription_origin_domain)
+    failed_zone_id=${CLOUDFLARE_ZONE_ID:-}
+    # ruleset id 是 Zone 作用域：本次没写 Strict TLS 时不能带（跨 Zone 改域名时它会指向旧 Zone，
+    # 回滚里的 GET 会 404/403 中断，反而把新域名的 DNS 记录留着），不带则只跳过规则清理。
+    failed_ruleset_id=""
+    [[ "${CLOUDFLARE_STRICT_TLS_TOUCHED:-0}" != "1" ]] \
+        || failed_ruleset_id=${CLOUDFLARE_STRICT_RULESET_ID:-}
     warn "本机配置更新失败，正在恢复服务端配置、订阅文件、端口模式和 UFW"
     restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/runtime-config.json" ]]; then
@@ -1747,6 +1586,19 @@ rollback_subscription_update() {
         "${UPDATE_SUB_BACKUP_DIR}/root.crontab" \
         || { warn "恢复订阅更新前定时任务失败"; rollback_status=1; }
     configure_ufw || { warn "恢复订阅更新前 UFW 失败"; rollback_status=1; }
+    # 新域名的 DNS 记录与 Strict TLS 规则不被恢复后的状态引用（同域名时它们仍是当前配置，不能删），
+    # 证书已在上面单独吊销，所以这里只传空 cert_id，避免重复删除。
+    if [[ "${cloud_touched}" == "1" && -n "${failed_origin_domain}" && -n "${failed_zone_id}" \
+        && ( "${SUBSCRIPTION_MODE}" == "link" \
+            || "${failed_origin_domain}" != "$(subscription_origin_domain)" ) ]]; then
+        if (reality_cloudflare_purge_managed_resources \
+            "${failed_origin_domain}" "${failed_zone_id}" "${failed_ruleset_id}" ""); then
+            info "回滚已回收 ${failed_origin_domain} 的 Cloudflare DNS 与 Strict TLS 资源（若存在）"
+        else
+            warn "回滚未能清理本次为 ${failed_origin_domain} 新建的 Cloudflare 资源；可用 easy_all purge-cloudflare --domain ${failed_origin_domain} 清理"
+            rollback_status=1
+        fi
+    fi
     return "${rollback_status}"
 }
 
@@ -1807,12 +1659,12 @@ update_subscription() {
         release_runtime_write_lock
         return 1
     fi
-    reality_cloudflare_finalize_certificate_rotation
+    # 新证书已落盘并通过公网验收：从这一刻起失败只做收尾，不回滚到云端资源已被吊销的旧状态
+    # （finalize 会吊销旧证书，不可逆）。
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
+    cloudflare_finalize_certificate_rotation
     save_state
     configure_dynamic_port_rotation
-    # The new deployment is live and persisted: cleanup failures below must not
-    # roll the machine back to a state whose cloud resources are already gone.
-    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     current_origin_domain=$(subscription_origin_domain)
     if [[ "${previous_subscription_mode}" != "link" \
         && ( "${SUBSCRIPTION_MODE}" == "link" \
@@ -1836,7 +1688,7 @@ update_subscription() {
         CLOUDFLARE_STRICT_RULESET_ID=""
         save_state
     fi
-    reality_cloudflare_clear_api_token
+    cloudflare_clear_api_token
     release_runtime_write_lock
     show_subscription
 }
@@ -2047,9 +1899,9 @@ reality_cloudflare_purge_managed_resources() {
     local host=$1 zone_id=$2 ruleset_id=$3 cert_id=$4
     local rules matches count rule_id records dns_id comment ref
     [[ -n "${host}" && -n "${zone_id}" ]] || return 0
-    reality_cloudflare_collect_api_token
+    cloudflare_collect_api_token
     if [[ -n "${ruleset_id}" ]]; then
-        rules=$(reality_cloudflare_api_request GET \
+        rules=$(cloudflare_api_request GET \
             "/zones/${zone_id}/rulesets/${ruleset_id}")
         ref=$(reality_cloudflare_ref "reality-strict:${host}")
         matches=$(jq -c --arg ref "${ref}" '[.rules[]? | select(.ref==$ref)]' <<<"${rules}")
@@ -2058,11 +1910,11 @@ reality_cloudflare_purge_managed_resources() {
         if ((count == 1)); then
             rule_id=$(jq -r '.[0].id // empty' <<<"${matches}")
             [[ -n "${rule_id}" ]] || die "Cloudflare Reality Strict TLS 规则缺少 ID"
-            reality_cloudflare_api_request DELETE \
+            cloudflare_api_request DELETE \
                 "/zones/${zone_id}/rulesets/${ruleset_id}/rules/${rule_id}" >/dev/null
         fi
     fi
-    records=$(reality_cloudflare_api_request GET \
+    records=$(cloudflare_api_request GET \
         "/zones/${zone_id}/dns_records?type=A&name=${host}&per_page=100")
     count=$(jq length <<<"${records}")
     ((count <= 1)) || die "Cloudflare 订阅域名 ${host} 有多个 A 记录，拒绝删除"
@@ -2070,14 +1922,14 @@ reality_cloudflare_purge_managed_resources() {
         dns_id=$(jq -r '.[0].id // empty' <<<"${records}")
         comment=$(jq -r '.[0].comment // empty' <<<"${records}")
         if [[ -n "${dns_id}" && "${comment}" == "easy_all reality subscription origin" ]]; then
-            reality_cloudflare_api_request DELETE \
+            cloudflare_api_request DELETE \
                 "/zones/${zone_id}/dns_records/${dns_id}" >/dev/null
         else
             info "Cloudflare DNS ${host} 不属于 easy_all，予以保留"
         fi
     fi
     if [[ -n "${cert_id}" ]]; then
-        reality_cloudflare_api_request DELETE "/certificates/${cert_id}" >/dev/null \
+        cloudflare_api_request DELETE "/certificates/${cert_id}" >/dev/null \
             || die "Cloudflare Origin CA 证书吊销失败；本机状态仍保留"
     fi
 }
@@ -2139,7 +1991,7 @@ uninstall_all() {
         warn "Cloudflare 资源（DNS/规则/Origin CA）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
     fi
     stop_protocol_services
-    reality_cloudflare_remove_subscription_firewall_rules
+    cloudflare_remove_origin_firewall_rules
     restore_platform_security_state || {
         warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
         return 1
@@ -2162,7 +2014,7 @@ uninstall_all() {
 rollback_fresh_install() {
     warn "首次安装失败，正在恢复本机服务、UFW 与 crontab 配置（保留前置初始化：SWAP、系统依赖与 TCP/Skyline 加速）"
     stop_protocol_services
-    reality_cloudflare_remove_subscription_firewall_rules
+    cloudflare_remove_origin_firewall_rules
     restore_platform_security_state || {
         warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
         return 1
@@ -2172,12 +2024,25 @@ rollback_fresh_install() {
     restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab
-    if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" \
-        && -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
+    # 只有本次安装确实动过云端资源（prepare 已链上回源 A 记录）才清理：Token 与 Zone 已前置到输入阶段，
+    # 若只看它们是否非空，会把上一次部署留下的标记资源当成本次残留删掉。
+    if [[ "${CLOUDFLARE_RESOURCES_TOUCHED:-0}" == "1" && -n "${CLOUDFLARE_API_TOKEN:-}" \
+        && -n "${CLOUDFLARE_ZONE_ID:-}" && -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
+        # ruleset id 是 Zone 作用域：与更新回滚一致，只在本次确实写过 Strict TLS 时才带上。
+        local ruleset_id=""
+        [[ "${CLOUDFLARE_STRICT_TLS_TOUCHED:-0}" != "1" ]] \
+            || ruleset_id=${CLOUDFLARE_STRICT_RULESET_ID:-}
         (reality_cloudflare_purge_managed_resources \
             "$(subscription_origin_domain)" "${CLOUDFLARE_ZONE_ID}" \
-            "${CLOUDFLARE_STRICT_RULESET_ID:-}" "${CLOUDFLARE_ORIGIN_CERT_ID:-}") \
+            "${ruleset_id}" "${CLOUDFLARE_ORIGIN_CERT_ID:-}") \
             || warn "首次安装创建的 Cloudflare 资源未能自动清理"
+    elif [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
+        # 回源记录已就绪时本次未动 DNS，但证书仍会是本进程新签的：只吊销它，不碰上一次部署留下的资源。
+        if (cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null); then
+            CLOUDFLARE_CREATED_ORIGIN_CERT_ID=""
+        else
+            warn "首次安装失败，回滚未能吊销本次新建的 Cloudflare Origin CA 证书：${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}；可用 easy_all purge-cloudflare 清理"
+        fi
     fi
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}"
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -2248,13 +2113,13 @@ run_reality_install_pipeline() {
     deploy_subscription_output
     install_progress_stage state
     info "[9/9] 保存状态并注册 easy_all 命令"
-    reality_cloudflare_finalize_certificate_rotation
+    cloudflare_finalize_certificate_rotation
     save_state
     register_easy_all_command
     configure_dynamic_port_rotation
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
-    reality_cloudflare_clear_api_token
+    cloudflare_clear_api_token
     # 从这里开始只剩展示类命令：失败不再算“安装失败”。
     INSTALL_FAILURE_ARMED=0
     show_subscription

@@ -101,6 +101,15 @@ policy_prefix_violations() {
     ' "$1"
 }
 
+# 提取 sniffer 顶层段（用于检查嗅探协议白名单）
+sniffer_block() {
+    awk '
+        /^sniffer:[[:space:]]*(#.*)?$/ { inside = 1; next }
+        inside && /^[^[:space:]#]/ { exit }
+        inside { print }
+    ' "$1"
+}
+
 for template in "${TEMPLATES[@]}"; do
     path="${ROOT_DIR}/templates/${template}"
     [[ -s "${path}" ]] || fail "missing template: ${template}"
@@ -148,6 +157,18 @@ for template in "${TEMPLATES[@]}"; do
     # 7. nameserver-policy 前缀规则：首段带前缀（或域名），逗号后的段沿用首段前缀
     bare=$(policy_prefix_violations "${path}")
     [[ -z "${bare}" ]] || fail "${template}: nameserver-policy prefix violation: ${bare//$'\n'/; }"
+
+    # 8. sniffer 只允许嗅探 HTTP/TLS。境外 UDP/443 由规则立即 REJECT 并要求应用回退 TCP；
+    #    先嗅探 QUIC 会把这次拒绝拖到握手解析之后（据 Android 实机反馈会让 Google Play 下载长期停在
+    #    “等待中”，本仓库没有客户端内核可复现）。先剔除注释行，避免注释里的半角 "QUIC:" 造成假失败。
+    sniffer=$(sniffer_block "${path}")
+    [[ -n "${sniffer}" ]] || fail "${template}: missing sniffer block"
+    sniffer_body=$(printf '%s\n' "${sniffer}" | grep -v '^[[:space:]]*#' || true)
+    if grep -qiE '^[[:space:]]*quic[[:space:]]*:' <<<"${sniffer_body}"; then
+        fail "${template}: QUIC sniffing must stay disabled (UDP/443 is rejected by rules)"
+    fi
+    grep -qiE '^[[:space:]]*tls[[:space:]]*:' <<<"${sniffer_body}" \
+        || fail "${template}: sniffer must keep TLS sniffing"
 
     printf 'ok - %s\n' "${template}"
 done

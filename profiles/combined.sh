@@ -32,7 +32,9 @@ readonly CLOUDFLARE_API_BASE="${CLOUDFLARE_API_BASE_OVERRIDE:-https://api.cloudf
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_URL="https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
 readonly CLOUDFLARE_ORIGIN_VALIDITY_DAYS=5475
 readonly CF_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
+readonly CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CF_CA_ROOT_FILE}"
 readonly CLOUDFLARE_UFW_COMMENT="easy_all-cf-origin"
+readonly CLOUDFLARE_UFW_PORT=443
 readonly CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4.txt"
 readonly CLOUDFLARE_TOKEN_FILE="${STATE_DIR}/cloudflare.token"
 readonly COMBINED_RECORD_COMMENT="easy_all combined"
@@ -238,7 +240,6 @@ combined_ensure_dns() {
 combined_issue_certificates() {
     local force=${1:-0}
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
-    CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CF_CA_ROOT_FILE}"
     cloudflare_issue_origin_certificate "${force}"
     # Origin CA 一签发就落盘 ID/到期时间：续装可直接复用这张证书，
     # 不会重复 POST /certificates，也不会留下无法吊销的旧证书。
@@ -451,6 +452,10 @@ combined_certificate_covers_node_domain() {
     local out=""
     [[ -s "${CERT_FILE}" ]] || return 1
     out=$(openssl x509 -in "${CERT_FILE}" -checkhost "${CF_NODE_DOMAIN}" -noout 2>/dev/null || true)
+    # macOS/LibreSSL 没有 -checkhost（报 unknown option）：退回按证书 SAN 集合判定，
+    # 否则开发机上 status/apply 会误报“证书未覆盖节点域名”。
+    [[ -n "${out}" ]] \
+        || { cloudflare_certificate_san_hosts "${CERT_FILE}" | grep -Fxq "${CF_NODE_DOMAIN}"; return; }
     [[ "${out}" == *"does match certificate"* && "${out}" != *"does NOT match"* ]]
 }
 

@@ -1005,7 +1005,17 @@ assert_not_contains "菜单不再出现纯 CDN 模式" "${mode_body}" "cloudflar
 assert_contains "无效序号提示模式不支持" "${mode_body}" "不支持的安装模式"
 
 rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/lib/xhttp-runtime.sh")
-assert_contains "订阅更新回滚删除本次新建的 Origin CA 证书" "${rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
+assert_contains "直连+CDN兜底订阅更新回滚删除本次新建的 Origin CA 证书" "${rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
+# 两种模式都要在回滚时吊销本次新签的证书（state.env 恢复后只剩旧证书 ID，不删即孤儿）。
+reality_update_rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
+for entry in rollback_body reality_update_rollback_body; do
+    assert_contains "${entry} 回滚时仍能识别本进程新签的证书 ID" "${!entry}" \
+        "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
+done
+# 签发成功不置位就会让两条回滚分支静默漏删。
+issue_body=$(awk '/^cloudflare_issue_origin_certificate\(\)/,/^}/' "${ROOT_DIR}/lib/cf-dns.sh")
+assert_contains "签发成功记录本次新建的 Origin CA 证书 ID" "${issue_body}" \
+    'CLOUDFLARE_CREATED_ORIGIN_CERT_ID=${CLOUDFLARE_ORIGIN_CERT_ID}'
 assert_not_contains "已删除的 Provider 回滚钩子不再被引用" "${rollback_body}" "rollback_provider_subscription_update"
 assert_not_contains "Bunny 时代的 disable_ufw_ipv6 已删除" "$(<"${ROOT_DIR}/lib/firewall.sh")" "disable_ufw_ipv6"
 assert_not_contains "Worker 时代的 cloudflare_client_candidates 已删除" \
@@ -1030,7 +1040,17 @@ done
 assert_before "Reality renew-cert 先 reload 再 save_state" \
     "${reality_renew_body}" "systemctl reload nginx" "save_state"
 assert_before "Reality renew-cert 先关闭回滚再吊销旧证书" \
-    "${reality_renew_body}" "UPDATE_SUB_ROLLBACK_ON_EXIT=0" "reality_cloudflare_finalize_certificate_rotation"
+    "${reality_renew_body}" "UPDATE_SUB_ROLLBACK_ON_EXIT=0" "cloudflare_finalize_certificate_rotation"
+
+# edit-sub 的收尾阶段（save_state / 动态端口定时器）失败不能回滚：finalize 已不可逆地吊销旧证书，
+# 回滚会恢复已吊销的旧证书，并连同刚生效的新证书一起删掉。
+reality_update_body=$(awk '/^update_subscription\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
+assert_contains "Reality edit-sub 在吊销旧证书前关闭回滚" \
+    "${reality_update_body%%cloudflare_finalize_certificate_rotation*}" \
+    "UPDATE_SUB_ROLLBACK_ON_EXIT=0"
+assert_not_contains "Reality edit-sub 吊销旧证书后不再回滚" \
+    "${reality_update_body#*cloudflare_finalize_certificate_rotation}" \
+    "UPDATE_SUB_ROLLBACK_ON_EXIT=0"
 
 self_update_body=$(awk '/^unified_self_update\(\)/,/^}/' "${ROOT_DIR}/easy_all")
 assert_before "self-update 先取写锁再注册命令" \

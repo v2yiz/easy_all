@@ -859,11 +859,9 @@ cleanup_partial_install_files() {
 }
 
 restore_install_snapshot() {
+    # 两种 Profile 都用 lib/cf-dns.sh 的同一入口回收 Cloudflare 回源放行（端口与注释由各自 Profile 常量决定）。
     if declare -F cloudflare_remove_origin_firewall_rules >/dev/null 2>&1; then
         cloudflare_remove_origin_firewall_rules || true
-    fi
-    if declare -F reality_cloudflare_remove_subscription_firewall_rules >/dev/null 2>&1; then
-        reality_cloudflare_remove_subscription_firewall_rules || true
     fi
     restore_platform_security_state || {
         warn "SSH 配置恢复失败；请通过服务商 Console 检查后再重试"

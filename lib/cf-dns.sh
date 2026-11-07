@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
-# Cloudflare DNS and Origin CA helpers shared by combined profiles.
+# Cloudflare API, DNS, Origin CA and origin-firewall helpers shared by both profiles.
+# Profile-specific contracts provided by the caller: CLOUDFLARE_UFW_COMMENT,
+# CLOUDFLARE_UFW_PORT, CLOUDFLARE_ORIGIN_CA_ROOT_FILE, CLOUDFLARE_ORIGIN_DOMAIN,
+# plus cloudflare_origin_certificate_hosts when the certificate needs several names.
 
 : "${CLOUDFLARE_API_BASE:=https://api.cloudflare.com/client/v4}"
 
@@ -92,7 +95,7 @@ cloudflare_configure_origin_firewall() {
 
     while IFS= read -r cidr; do
         [[ -n "${cidr}" ]] || continue
-        ufw allow proto tcp from "${cidr}" to any port 443 \
+        ufw allow proto tcp from "${cidr}" to any port "${CLOUDFLARE_UFW_PORT}" \
             comment "${CLOUDFLARE_UFW_COMMENT}" >/dev/null \
             || die "添加 Cloudflare 回源 UFW 规则失败：${cidr}"
     done <"${next}"
@@ -100,15 +103,15 @@ cloudflare_configure_origin_firewall() {
     ufw reload >/dev/null || die "重载 UFW 失败"
     while IFS= read -r cidr; do
         [[ -n "${cidr}" ]] || continue
-        ufw_tcp_port_is_allowed 443 "${cidr}" \
+        ufw_tcp_port_is_allowed "${CLOUDFLARE_UFW_PORT}" "${cidr}" \
             || die "UFW 未有效放行 Cloudflare 回源：${cidr}"
     done <"${next}"
 
     while IFS= read -r cidr; do
         [[ -n "${cidr}" ]] || continue
         grep -Fxq "${cidr}" "${next}" && continue
-        ufw --force delete allow proto tcp from "${cidr}" to any port 443 >/dev/null \
-            || warn "删除过期 Cloudflare 回源 UFW 规则失败：${cidr}"
+        ufw --force delete allow proto tcp from "${cidr}" to any port "${CLOUDFLARE_UFW_PORT}" \
+            >/dev/null || warn "删除过期 Cloudflare 回源规则失败：${cidr}"
     done <"${current}"
     install -d -m 0700 "$(dirname "${CLOUDFLARE_ORIGIN_IPS_FILE}")"
     install -m 0600 "${next}" "${CLOUDFLARE_ORIGIN_IPS_FILE}"
@@ -134,43 +137,7 @@ cloudflare_find_parent_zone() {
 
 cloudflare_record_list() { cloudflare_api_request GET "/zones/$1/dns_records?type=$2&name=$3&per_page=100"; }
 
-cloudflare_require_single_record() {
-    local records=$1 count
-    count=$(jq 'length' <<<"${records}")
-    ((count <= 1)) || die "Cloudflare 中发现多个同名同类型 DNS 记录，拒绝猜测或覆盖"
-}
-
-cloudflare_ensure_proxied_a() {
-    local zone=$1 host=$2 ip=$3 records record id content proxied comment type payload result
-    for type in A AAAA CNAME; do
-        records=$(cloudflare_record_list "${zone}" "${type}" "${host}")
-        cloudflare_require_single_record "${records}"
-        [[ "${type}" == A ]] || [[ $(jq 'length' <<<"${records}") == 0 ]] || die "${host} 已有 ${type} 记录；拒绝覆盖"
-        if [[ "${type}" == A && $(jq 'length' <<<"${records}") == 1 ]]; then
-            record=$(jq -c '.[0]' <<<"${records}"); id=$(jq -r '.id' <<<"${record}")
-            content=$(jq -r '.content' <<<"${record}"); proxied=$(jq -r '.proxied' <<<"${record}")
-            comment=$(jq -r '.comment // empty' <<<"${record}")
-            if [[ "${content}" == "${ip}" && "${proxied}" == true ]]; then
-                return 0
-            fi
-            [[ "${comment}" == "easy_all xhttp origin" ]] \
-                || die "${host} 的 A 记录与 easy_all 目标不一致或未代理；拒绝覆盖"
-            payload=$(jq -cn --arg name "${host}" --arg content "${ip}" \
-                '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')
-            cloudflare_api_request PATCH "/zones/${zone}/dns_records/${id}" \
-                "${payload}" >/dev/null
-            return 0
-        fi
-    done
-    result=$(cloudflare_api_request POST "/zones/${zone}/dns_records" \
-        "$(jq -cn --arg name "${host}" --arg content "${ip}" '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"easy_all xhttp origin"}')")
-    CLOUDFLARE_CREATED_DNS_RECORD_ID=$(jq -r '.id // empty' <<<"${result}")
-    [[ -n "${CLOUDFLARE_CREATED_DNS_RECORD_ID}" ]] \
-        || die "Cloudflare 未返回新建 DNS 记录 ID"
-}
-
 cloudflare_ensure_origin_ca_root() {
-    CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
     if [[ -s "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" ]] \
         && openssl x509 -in "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" -noout >/dev/null 2>&1; then
         return 0
@@ -186,19 +153,30 @@ cloudflare_ensure_origin_ca_root() {
         "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
 }
 
+# 证书 SAN 里的 DNS 名（去重）：优先 -ext（OpenSSL 3），LibreSSL/OpenSSL 1.x 与 -text 格式退回解析
+# X509v3 段。macOS 的 LibreSSL 既没 -ext 也没 -checkhost，所以两种模式都不得依赖它们。
+cloudflare_certificate_san_hosts() {
+    local cert=$1 san
+    san=$(openssl x509 -in "${cert}" -noout -ext subjectAltName 2>/dev/null \
+        | sed -n '2,$p' || true)
+    [[ -n "${san}" ]] \
+        || san=$(openssl x509 -in "${cert}" -noout -text 2>/dev/null \
+            | awk '/X509v3 Subject Alternative Name/ {found = 1; next}
+                   found && /^[[:space:]]*$/ {exit}
+                   found && /^[[:space:]]*DNS:/ {print; next}
+                   found {exit}' || true)
+    printf '%s\n' "${san}" | tr ',' '\n' \
+        | sed -n 's/^[[:space:]]*DNS://p' | sort -u || true
+}
+
 cloudflare_origin_certificate_is_current() {
-    local host expected_hosts actual_hosts
+    local expected_hosts actual_hosts
     [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" ]] || return 1
     openssl x509 -in "${CERT_FILE}" -checkend 2592000 -noout >/dev/null 2>&1 \
         || return 1
-    while IFS= read -r host; do
-        openssl x509 -in "${CERT_FILE}" -checkhost "${host}" -noout >/dev/null 2>&1 \
-            || return 1
-    done < <(jq -r '.[]' <<<"$(cloudflare_origin_certificate_hosts)")
+    # SAN 集合精确比对已经等于逐域名覆盖检查，不再依赖 -checkhost（LibreSSL 没有该选项）。
     expected_hosts=$(cloudflare_origin_certificate_hosts | jq -r '.[]' | sort -u)
-    actual_hosts=$(openssl x509 -in "${CERT_FILE}" -noout -ext subjectAltName 2>/dev/null \
-        | sed -n '2,$p' | tr ',' '\n' \
-        | sed -n 's/^[[:space:]]*DNS://p' | sort -u)
+    actual_hosts=$(cloudflare_certificate_san_hosts "${CERT_FILE}")
     [[ -n "${actual_hosts}" && "${actual_hosts}" == "${expected_hosts}" ]] \
         || return 1
     [[ "$(openssl x509 -in "${CERT_FILE}" -pubkey -noout 2>/dev/null \
@@ -208,7 +186,7 @@ cloudflare_origin_certificate_is_current() {
 }
 
 cloudflare_origin_certificate_hosts() {
-    jq -cn --arg cdn "${VLESS_CDN_DOMAIN}" '[$cdn]'
+    jq -cn --arg host "${CLOUDFLARE_ORIGIN_DOMAIN}" '[$host]'
 }
 
 cloudflare_origin_certificate_is_reusable() {

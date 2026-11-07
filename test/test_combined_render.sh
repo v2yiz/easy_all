@@ -171,6 +171,8 @@ require_root() { :; }
 # 在 source 之前清掉宿主环境里的同名变量：本测试要证明的是"端口由 profile 自己定义"，
 # 继承值会掩盖"combined 未定义回环端口"这类缺陷（2.2.1 曾因此在首次安装时崩溃）。
 unset XRAY_XHTTP_LOOPBACK_PORT
+# 同理：cf-dns 共享常量也必须由 profile 自己定义，不能被宿主预置值掩盖。
+unset CLOUDFLARE_UFW_PORT CLOUDFLARE_UFW_COMMENT CLOUDFLARE_ORIGIN_CA_ROOT_FILE
 # 候选池测试要求确定性且不依赖外网 DNS：显式关闭企业域名解析，只验证 /24 抽样分支。
 export CLOUDFLARE_ENTERPRISE_DOMAINS_OVERRIDE=""
 # shellcheck source=/dev/null
@@ -178,6 +180,12 @@ source "${PROFILE}"
 unset -f readonly
 require_root() { :; }
 trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
+
+# cf-dns.sh 的共享函数靠 Profile 常量区分模式：证书路径与回源端口必须由 Profile 在 source 阶段就定下，
+# 否则 apply / edit-sub / 定时优选会在 set -u 下直接崩溃（共享库不再自己赋默认值）。
+assert_equal "profile: 回源证书路径指向 profile 常量" \
+    "${CF_CA_ROOT_FILE}" "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
+assert_equal "profile: 回源 UFW 端口保持 443" "443" "${CLOUDFLARE_UFW_PORT}"
 
 # 初始化直连+CDN兜底 fixture
 CF_ZONE="example.com"
@@ -463,6 +471,26 @@ helper_libressl_rc=0
 ) || helper_libressl_rc=$?
 [[ "${helper_libressl_rc}" -ne 0 ]] \
     || fail_test "checkhost-libressl: combined_certificate_covers_node_domain must return non-zero on unknown option -checkhost"
+
+# LibreSSL 没有 -checkhost：有真实证书时必须退回 SAN 集合判定，否则开发机上 status/apply 会误报“未覆盖”。
+helper_libressl_covered_rc=0
+(
+    install -d -m 0700 "${CERT_DIR}"
+    command openssl ecparam -name prime256v1 -genkey -noout -out "${KEY_FILE}" 2>/dev/null
+    command openssl req -new -x509 -sha256 -key "${KEY_FILE}" -days 3650 \
+        -subj "/CN=${CF_NODE_DOMAIN}" -addext "subjectAltName=DNS:${CF_NODE_DOMAIN}" \
+        -out "${CERT_FILE}" 2>/dev/null
+    openssl() {
+        if [[ "$*" == *-checkhost* ]]; then
+            printf 'x509: unknown option -checkhost\n' >&2
+            return 1
+        fi
+        command openssl "$@"
+    }
+    combined_certificate_covers_node_domain
+) || helper_libressl_covered_rc=$?
+assert_equal "checkhost-fallback: LibreSSL 下按 SAN 集合判定为覆盖" "0" "${helper_libressl_covered_rc}"
+printf 'legacy-cert-without-node-san\n' >"${CERT_FILE}"
 
 covered_lenient_rc=0
 covered_lenient_out=$(

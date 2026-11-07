@@ -51,12 +51,14 @@
 
 ### 2.2 回源白名单与防扫描
 - 在涉及 Cloudflare 的模式中，本地 Nginx 与防火墙严格限制：
-  - UFW 仅向 Cloudflare 官方公布的 IPv4 网段开放 TCP `443`；
-  - 外部扫描器直接探测源站 IP 443 端口会被防火墙静默丢弃（DROP）。
+  - UFW 仅向 Cloudflare 官方公布的 IPv4 网段开放各模式的回源端口（模式 1：TCP `8443`，模式 2：TCP `443`）；
+  - 外部扫描器直接探测源站 IP 对应端口会被防火墙静默丢弃（DROP）。
 
 ### 2.3 恶意出站与内部阻断
 - Xray 服务端默认配置阻断私网地址（RFC 1918）、链路本地地址（169.254.0.0/16）、回环地址以及云厂商元数据接口。
-- 拒绝境外 UDP/443 请求，强制 QUIC 连接降级回退至 TCP。
+- 拒绝境外 UDP/443 请求，强制 QUIC 连接降级回退至 TCP（服务端 Udp/443 也有独立 block 路由）。
+  客户端 Mihomo 模板的嗅探（`sniffer`）同样不覆盖 QUIC：否则这次拒绝会被握手解析拖慢
+  （Android 上表现为 Google Play 下载长期停在“等待中”）。
 
 ---
 
@@ -145,7 +147,7 @@ easy_all
 │   ├── reality-subscription.js  # 本地自托管订阅生成器
 │   ├── cloudflare-ip-pool.sh    # Cloudflare 候选 IP 池与抽样验证
 │   ├── globalping-cdn.sh        # Globalping 探针调用与三网优选
-│   ├── cf-dns.sh                # Cloudflare API 封装（DNS 与 Origin CA 证书）
+│   ├── cf-dns.sh                # Cloudflare API / DNS / Origin CA / 回源白名单
 │   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
 │   ├── xhttp-runtime.sh         # XHTTP 运行时公共逻辑与证书挂载
 │   ├── firewall.sh              # UFW 规则配置与状态快照

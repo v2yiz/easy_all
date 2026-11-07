@@ -70,7 +70,6 @@ export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP_DIR}/runtime-write.lock"
 export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP_DIR}/policy-state"
 export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/progress/install-progress.env"
 export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
-export CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
 
 mkdir -p "${STATE_DIR}" "${BACKUP_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" \
     "${WEB_ROOT}" "${SUBSCRIPTION_DIR}" "${COMMAND_INSTALL_DIR}" \
@@ -111,9 +110,20 @@ nginx() { :; }
 systemctl() { :; }
 require_root() { :; }
 
+# reference 必须来自 profile 自己：先清掉宿主环境里的同名变量（含 cf-dns 共享常量），
+# 否则 profile 漏定义时会被继承值掩盖成假绿。
+unset CLOUDFLARE_UFW_PORT CLOUDFLARE_UFW_COMMENT CLOUDFLARE_ORIGIN_CA_ROOT_FILE
 # shellcheck source=/dev/null
 source "${PROFILE}"
 unset -f readonly
+
+# cf-dns.sh 的共享函数靠 Profile 常量区分模式：回源 UFW 注释决定存量安装的规则能否被识别与回收，
+# 端口必须跟订阅 HTTPS 端口一致，否则卸载/回滚漏删、回源白名单加到错误端口。
+assert_equal "profile: 回源 UFW 注释保持兼容" \
+    "easy_all-reality-cloudflare-subscription" "${CLOUDFLARE_UFW_COMMENT}"
+assert_equal "profile: 回源 UFW 端口为订阅端口" "8443" "${CLOUDFLARE_UFW_PORT}"
+assert_equal "profile: 回源证书路径指向 profile 常量" \
+    "${CERT_DIR}/cloudflare-origin-ca-ecc.pem" "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
 require_root() { :; }
 trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
 
@@ -324,7 +334,7 @@ assert_contains "broken state: publish points at edit-sub" "${broken_out}" "easy
 cf_marker="${TMP_DIR}/cloudflare-called"
 renew_out=$(
     unset SUBSCRIPTION_CONFIG AGGREGATION_NODES ALLOWED_TOKENS
-    reality_cloudflare_api_request() { printf 'called\n' >>"${cf_marker}"; }
+    cloudflare_api_request() { printf 'called\n' >>"${cf_marker}"; }
     renew_subscription_certificate 2>&1
 ) && fail_test "renew-cert: must fail closed on a broken subscription config"
 assert_contains "renew-cert: failure points at the subscription config" "${renew_out}" "订阅配置无效（需 allowedTokens"
@@ -439,6 +449,81 @@ collect_out=$(
 assert_equal "collect: token-only input folds into an empty-node config" \
     "$(printf '%s\n' '{"owner":"token-init-12345"}' '[]' 'deploy' '[]')" "${collect_out}"
 
+# 部署模式的 Cloudflare Token 必须在输入阶段（安装的第 4 步）就问完：拖到第 8 步才停下来
+# 等输入，或在输入错误后触发半装回滚，都是从现场回到代码的两类真实投诉。
+collect_cf_order=$(
+    local_order_file="${TMP_DIR}/cloudflare-order"
+    SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-init-12345"},"nodes":[]}'
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    SUB_DOWNLOAD_NAME="EASYALL"
+    SUBSCRIPTION_MODE="deploy"
+    PROMPT_SUBSCRIPTION_MODE=0
+    cloudflare_collect_api_token() { printf 'token ' >>"${local_order_file}"; CLOUDFLARE_API_TOKEN=dummy; }
+    cloudflare_find_parent_zone() { printf 'zone ' >>"${local_order_file}"; printf 'zone-1'; }
+    cloudflare_api_request() { printf '{"id":"zone-1","name":"example.com"}'; }
+    collect_subscription_inputs 0 0 >/dev/null 2>&1 || exit 1
+    printf '%s%s' "$(<"${local_order_file}")" "${CLOUDFLARE_ZONE_ID}"
+)
+assert_equal "collect: deploy 输入阶段先收 Cloudflare Token 再校验 Zone" \
+    'token zone zone-1' "${collect_cf_order}"
+
+# 根域名与多级子域必须在输入阶段就失败：否则第 5-7 步已改过系统，第 8 步才报错触发半装回滚。
+for invalid_sub_domain in "example.com" "a.b.example.com"; do
+    cf_invalid_out=$(
+        SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-init-12345"},"nodes":[]}'
+        SUBSCRIPTION_DOMAIN="${invalid_sub_domain}"
+        SUB_DOWNLOAD_NAME="EASYALL"
+        SUBSCRIPTION_MODE="deploy"
+        PROMPT_SUBSCRIPTION_MODE=0
+        cloudflare_collect_api_token() { CLOUDFLARE_API_TOKEN=dummy; }
+        cloudflare_find_parent_zone() { printf 'zone-1'; }
+        cloudflare_api_request() { printf '{"id":"zone-1","name":"example.com"}'; }
+        collect_subscription_inputs 0 0 2>&1
+    ) || true
+    assert_contains "collect: ${invalid_sub_domain} 在输入阶段被拒" \
+        "${cf_invalid_out}" "下一级子域名"
+done
+
+# 首次安装失败回滚会按 CLOUDFLARE_RESOURCES_TOUCHED 决定要不要清云端：回源记录已就绪的 no-op
+# 不算动过云端，否则会把上一次部署留下的（状态已删、云端保留）资源当本次残留删掉。
+cf_touched_noop=$(
+    unset CLOUDFLARE_RESOURCES_TOUCHED
+    VPS_PUBLIC_IPV4="198.51.100.10"
+    cloudflare_collect_api_token() { CLOUDFLARE_API_TOKEN=dummy; }
+    cloudflare_find_parent_zone() { printf 'zone-1'; }
+    cloudflare_api_request() {
+        if [[ "$1" == GET ]]; then printf '{"id":"zone-1","name":"example.com"}'; return 0; fi
+        printf 'WRITE %s\n' "$1" >>"${TMP_DIR}/cf-writes"
+        printf '{"id":"rec-1"}'
+    }
+    cloudflare_record_list() {
+        [[ "$2" == A ]] \
+            && jq -cn --arg ip "${VPS_PUBLIC_IPV4}" '[{id:"rec-1",content:$ip,proxied:true}]' \
+            || printf '[]'
+    }
+    reality_cloudflare_prepare_subscription >/dev/null
+    printf '%s' "${CLOUDFLARE_RESOURCES_TOUCHED:-0}"
+)
+assert_equal "rollback: 回源记录无需改动时不算动过云端" '0' "${cf_touched_noop}"
+
+cf_touched_create=$(
+    unset CLOUDFLARE_RESOURCES_TOUCHED
+    rm -f "${TMP_DIR}/cf-writes"
+    VPS_PUBLIC_IPV4="198.51.100.10"
+    cloudflare_collect_api_token() { CLOUDFLARE_API_TOKEN=dummy; }
+    cloudflare_find_parent_zone() { printf 'zone-1'; }
+    cloudflare_api_request() {
+        if [[ "$1" == GET ]]; then printf '{"id":"zone-1","name":"example.com"}'; return 0; fi
+        printf 'WRITE %s\n' "$1" >>"${TMP_DIR}/cf-writes"
+        printf '{"id":"rec-1"}'
+    }
+    cloudflare_record_list() { printf '[]'; }
+    reality_cloudflare_prepare_subscription >/dev/null
+    printf '%s/%s' "${CLOUDFLARE_RESOURCES_TOUCHED:-0}" \
+        "$(grep -c . "${TMP_DIR}/cf-writes" 2>/dev/null || printf 0)"
+)
+assert_equal "rollback: 新建回源记录才算动过云端" '1/1' "${cf_touched_create}"
+
 # link 模式不残留聚合配置
 COLLECT_STUB=$(
     SUBSCRIPTION_MODE="deploy"
@@ -446,5 +531,291 @@ COLLECT_STUB=$(
     printf '%s|%s|%s\n' "${SUBSCRIPTION_MODE}" "${ALLOWED_TOKENS}" "${SUBSCRIPTION_CONFIG}"
 )
 assert_equal "link: aggregation config cleared" "link||" "${COLLECT_STUB}"
+
+# 回源记录已就绪（本次未动 DNS）但本次新签了 Origin CA（状态已删、云端保留后的重装）：回滚只能
+# 吊销这张新证书，不得删除上一次部署留下的回源记录/Strict TLS 规则。本用例同时充当
+# 「未动云端时不得跑全量 purge」的回归。
+cf_rollback_log="${TMP_DIR}/cf-rollback-log"
+cf_rollback_out=$(
+    unset CLOUDFLARE_RESOURCES_TOUCHED
+    CLOUDFLARE_API_TOKEN=dummy
+    CLOUDFLARE_ZONE_ID="zone-1"
+    CLOUDFLARE_CREATED_ORIGIN_CERT_ID="cert-new"
+    stop_protocol_services() { :; }
+    cloudflare_remove_origin_firewall_rules() { :; }
+    restore_platform_security_state() { return 0; }
+    restore_preinstall_firewall() { :; }
+    restore_preinstall_ipv6() { :; }
+    restore_preinstall_nginx_default_site() { return 0; }
+    restore_preinstall_crontab() { :; }
+    install_progress_clear() { :; }
+    reality_cloudflare_purge_managed_resources() { printf 'PURGE\n' >>"${cf_rollback_log}"; }
+    cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${cf_rollback_log}"; }
+    rollback_fresh_install
+) >/dev/null 2>&1
+cf_rollback_log_content=""
+[[ ! -f "${cf_rollback_log}" ]] || cf_rollback_log_content=$(<"${cf_rollback_log}")
+assert_equal "rollback: 本次未动 DNS 时只吊销新签的 Origin CA" \
+    'DELETE /certificates/cert-new' "${cf_rollback_log_content}"
+
+# 反向：本次确实改过云端时走全量 purge，且不会再额外发一次证书 DELETE。
+cf_purge_log="${TMP_DIR}/cf-purge-log"
+cf_purge_out=$(
+    CLOUDFLARE_RESOURCES_TOUCHED=1
+    CLOUDFLARE_API_TOKEN=dummy
+    CLOUDFLARE_ZONE_ID="zone-1"
+    CLOUDFLARE_STRICT_RULESET_ID="ruleset-1"
+    CLOUDFLARE_STRICT_TLS_TOUCHED=1
+    CLOUDFLARE_ORIGIN_CERT_ID="cert-1"
+    CLOUDFLARE_CREATED_ORIGIN_CERT_ID="cert-1"
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    stop_protocol_services() { :; }
+    cloudflare_remove_origin_firewall_rules() { :; }
+    restore_platform_security_state() { return 0; }
+    restore_preinstall_firewall() { :; }
+    restore_preinstall_ipv6() { :; }
+    restore_preinstall_nginx_default_site() { return 0; }
+    restore_preinstall_crontab() { :; }
+    install_progress_clear() { :; }
+    reality_cloudflare_purge_managed_resources() { printf 'PURGE %s\n' "$*" >>"${cf_purge_log}"; }
+    cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${cf_purge_log}"; }
+    rollback_fresh_install
+) >/dev/null 2>&1
+cf_purge_log_content=""
+[[ ! -f "${cf_purge_log}" ]] || cf_purge_log_content=$(<"${cf_purge_log}")
+assert_equal "rollback: 本次改过云端时只跑全量 purge" \
+    'PURGE sub.example.com zone-1 ruleset-1 cert-1' "${cf_purge_log_content}"
+
+# 首装分支同样只能把「本次写过的」ruleset id 交给 purge：没写过 Strict TLS 时（例如证书签发就失败）
+# 带着一个旧/无效 id 去 GET 会 404/403 中断，反而把 A 记录留着。
+cf_purge_log2="${TMP_DIR}/cf-purge-log-no-strict"
+(
+    CLOUDFLARE_RESOURCES_TOUCHED=1
+    CLOUDFLARE_API_TOKEN=dummy
+    CLOUDFLARE_ZONE_ID="zone-1"
+    CLOUDFLARE_STRICT_RULESET_ID="ruleset-unknown"
+    unset CLOUDFLARE_STRICT_TLS_TOUCHED
+    CLOUDFLARE_ORIGIN_CERT_ID=""
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    stop_protocol_services() { :; }
+    cloudflare_remove_origin_firewall_rules() { :; }
+    restore_platform_security_state() { return 0; }
+    restore_preinstall_firewall() { :; }
+    restore_preinstall_ipv6() { :; }
+    restore_preinstall_nginx_default_site() { return 0; }
+    restore_preinstall_crontab() { :; }
+    install_progress_clear() { :; }
+    reality_cloudflare_purge_managed_resources() {
+        printf 'PURGE %s|%s|%s|%s\n' "$1" "$2" "$3" "${4:-}" >>"${cf_purge_log2}"
+    }
+    cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${cf_purge_log2}"; }
+    rollback_fresh_install
+) >/dev/null 2>&1
+cf_purge_log2_content=""
+[[ ! -f "${cf_purge_log2}" ]] || cf_purge_log2_content=$(<"${cf_purge_log2}")
+assert_equal "rollback: 首装未写过 Strict TLS 时不带 ruleset id" \
+    'PURGE sub.example.com|zone-1||' "${cf_purge_log2_content}"
+
+# 订阅更新回滚（renew-cert / edit-sub 失败）必须吊销本进程新签的证书；若回滚恢复的域名不同，
+# 本次为新域名新建的 DNS 记录/Strict TLS 规则也不被任何状态引用，必须一并清理。
+cf_update_rollback() {
+    local log=$1 created=${2:-} failed_domain=${3:-} restored_mode=${4:-deploy} restored_domain=${5:-}
+    local strict_touched=${6:-1} dns_touched=${7:-0} purge_mode=${8:-ok}
+    (
+        if [[ -n "${created}" ]]; then
+            CLOUDFLARE_CREATED_ORIGIN_CERT_ID=${created}
+        else
+            unset CLOUDFLARE_CREATED_ORIGIN_CERT_ID
+        fi
+        unset CLOUDFLARE_RESOURCES_TOUCHED CLOUDFLARE_STRICT_TLS_TOUCHED
+        [[ "${dns_touched}" != "1" ]] || CLOUDFLARE_RESOURCES_TOUCHED=1
+        [[ "${strict_touched}" != "1" ]] || CLOUDFLARE_STRICT_TLS_TOUCHED=1
+        CLOUDFLARE_ZONE_ID="zone-1"
+        CLOUDFLARE_STRICT_RULESET_ID="ruleset-old-zone"
+        SUBSCRIPTION_DOMAIN="${failed_domain}"
+        UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/cf-update-backup"
+        install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+        restore_state_file() { :; }
+        source_state_file() {
+            SUBSCRIPTION_MODE="${restored_mode}"
+            SUBSCRIPTION_DOMAIN="${restored_domain}"
+        }
+        restore_dynamic_port_rotation_schedule() { return 0; }
+        configure_ufw() { :; }
+        reality_cloudflare_purge_managed_resources() {
+            [[ "${purge_mode}" != "fail" ]] || die "注入的回滚清理失败"
+            printf 'PURGE %s|%s|%s|%s\n' "$1" "$2" "$3" "${4:-}" >>"${log}"
+        }
+        cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${log}"; }
+        rollback_subscription_update
+    ) >"${log}.out" 2>&1
+}
+
+cf_update_log() {
+    local path=$1
+    [[ ! -f "${path}" ]] || cat "${path}"
+}
+
+# 同域名：只吊销本次新签的证书，DNS/规则仍是当前配置，不能删。
+cf_log_a="${TMP_DIR}/cf-update-rollback-a"
+cf_update_rollback "${cf_log_a}" "cert-new" "sub.example.com" "deploy" "sub.example.com"
+assert_equal "rollback: 订阅更新失败时只吊销本进程新签的证书" \
+    'DELETE /certificates/cert-new' "$(cf_update_log "${cf_log_a}")"
+
+# 没有任何云端写入（例如部署前就失败）：不得发任何请求。
+cf_log_b="${TMP_DIR}/cf-update-rollback-b"
+cf_update_rollback "${cf_log_b}" "" "sub.example.com" "deploy" "sub.example.com" 0
+[[ ! -f "${cf_log_b}" ]] \
+    || fail_test "rollback: 未新签证书时订阅更新回滚不得发 Cloudflare 请求"
+
+# 只改过回源记录（VPS IP 变化后 PATCH），域名没变：同样不得 purge，否则会删掉回滚后仍要用的记录。
+cf_log_c="${TMP_DIR}/cf-update-rollback-c"
+cf_update_rollback "${cf_log_c}" "" "sub.example.com" "deploy" "sub.example.com" 0 1
+[[ ! -f "${cf_log_c}" ]] \
+    || fail_test "rollback: 同域名只 PATCH 过 DNS 时不得 purge"
+
+# link → deploy 中途失败：回滚后没有订阅域名，新域名的 DNS/规则必须一并清掉。
+cf_log_d="${TMP_DIR}/cf-update-rollback-d"
+cf_update_rollback "${cf_log_d}" "cert-new" "new.example.com" "link" ""
+assert_equal "rollback: link→deploy 失败时清理新域名的 DNS 与规则" \
+    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1|ruleset-old-zone|')" \
+    "$(cf_update_log "${cf_log_d}")"
+
+# deploy 改域名后失败：恢复的是旧域名，新域名的 DNS/规则不被任何状态引用。
+cf_log_e="${TMP_DIR}/cf-update-rollback-e"
+cf_update_rollback "${cf_log_e}" "cert-new" "new.example.com" "deploy" "old.example.com"
+assert_equal "rollback: 改域名失败时清理新域名的 DNS 与规则" \
+    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1|ruleset-old-zone|')" \
+    "$(cf_update_log "${cf_log_e}")"
+
+# 证书复用（未新签）但 DNS 被 PATCH 过，且域名发生变化：仍然要清掉新域名的资源。
+cf_log_f="${TMP_DIR}/cf-update-rollback-f"
+cf_update_rollback "${cf_log_f}" "" "new.example.com" "deploy" "old.example.com" 1 1
+assert_equal "rollback: 只改过 DNS 时也要清理新域名资源" \
+    'PURGE new.example.com|zone-1|ruleset-old-zone|' "$(cf_update_log "${cf_log_f}")"
+
+# 本次没跑 Strict TLS（例如证书签发就失败）：不得把（跨 Zone 时已过期的）ruleset id 交给
+# purge——那次 GET 会 404/403 中断，连新域名的 A 记录都删不掉。规则清理被跳过，DNS 照常清。
+cf_log_g="${TMP_DIR}/cf-update-rollback-g"
+cf_update_rollback "${cf_log_g}" "cert-new" "new.example.com" "deploy" "old.example.com" 0
+assert_equal "rollback: 未写过 Strict TLS 时不带 ruleset id，DNS 仍被清理" \
+    "$(printf '%s\n' 'DELETE /certificates/cert-new' 'PURGE new.example.com|zone-1||')" \
+    "$(cf_update_log "${cf_log_g}")"
+
+# 云端清理失败只能 warn，不能中断回滚（否则恢复 UFW/状态的后续步骤全被跳过）。
+cf_log_h="${TMP_DIR}/cf-update-rollback-h"
+cf_update_rollback "${cf_log_h}" "cert-new" "new.example.com" "deploy" "old.example.com" 1 0 fail \
+    || true
+assert_contains "rollback: 清理失败只告警并给出补救命令" \
+    "$(<"${cf_log_h}.out")" "回滚未能清理本次为 new.example.com 新建的 Cloudflare 资源"
+assert_contains "rollback: 清理失败的告警指向 purge-cloudflare" \
+    "$(<"${cf_log_h}.out")" "purge-cloudflare --domain"
+
+# 证书可复用判定必须与 OpenSSL 版本无关：macOS 的 LibreSSL 既没有 -ext 也没有 -checkhost，
+# 任何一处早退都会把有效证书判成不可复用并在开发机上反复重签。这里用真实证书验证 SAN 集合比对。
+cf_cert_rc=0
+(
+    install -d -m 0700 "${CERT_DIR}"
+    openssl ecparam -name prime256v1 -genkey -noout -out "${KEY_FILE}" 2>/dev/null
+    openssl req -new -x509 -sha256 -key "${KEY_FILE}" -days 3650 -subj "/CN=sub.example.com" \
+        -addext "subjectAltName=DNS:sub.example.com" -out "${CERT_FILE}" 2>/dev/null
+    CLOUDFLARE_ORIGIN_DOMAIN="sub.example.com"
+    cloudflare_origin_certificate_is_current
+) || cf_cert_rc=$?
+assert_equal "cert: 有效证书判为可复用（跨 OpenSSL 版本）" "0" "${cf_cert_rc}"
+
+cf_cert_other_rc=0
+(
+    install -d -m 0700 "${CERT_DIR}"
+    openssl ecparam -name prime256v1 -genkey -noout -out "${KEY_FILE}" 2>/dev/null
+    openssl req -new -x509 -sha256 -key "${KEY_FILE}" -days 3650 -subj "/CN=other.example.com" \
+        -addext "subjectAltName=DNS:other.example.com" -out "${CERT_FILE}" 2>/dev/null
+    CLOUDFLARE_ORIGIN_DOMAIN="sub.example.com"
+    cloudflare_origin_certificate_is_current
+) || cf_cert_other_rc=$?
+assert_equal "cert: 域名不匹配的证书判为不可复用" "1" "${cf_cert_other_rc}"
+
+# CI（OpenSSL 3）上 -ext 永远成功，awk 兜底分支走不到；用桩把 -ext 变成 unknown option，
+# 强制走 LibreSSL 路径，锁住 -text 解析逻辑（否则该分支只有 macOS 开发者才会碰到问题）。
+cf_cert_fallback_rc=0
+(
+    install -d -m 0700 "${CERT_DIR}"
+    openssl ecparam -name prime256v1 -genkey -noout -out "${KEY_FILE}" 2>/dev/null
+    openssl req -new -x509 -sha256 -key "${KEY_FILE}" -days 3650 -subj "/CN=sub.example.com" \
+        -addext "subjectAltName=DNS:sub.example.com" -out "${CERT_FILE}" 2>/dev/null
+    openssl() {
+        if [[ "$*" == *-ext* ]]; then
+            printf 'x509: unknown option -ext\n' >&2
+            return 1
+        fi
+        command openssl "$@"
+    }
+    CLOUDFLARE_ORIGIN_DOMAIN="sub.example.com"
+    cloudflare_origin_certificate_is_current
+) || cf_cert_fallback_rc=$?
+assert_equal "cert: 无 -ext 时退回解析 -text（LibreSSL 路径）" "0" "${cf_cert_fallback_rc}"
+
+# Zone 解析结果按域名缓存：输入阶段解析过后，部署阶段不再重复两次只读 GET；换域名则必须重解析。
+cf_zone_calls="${TMP_DIR}/cf-zone-calls"
+cf_zone_cache=$(
+    rm -f "${cf_zone_calls}"
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    cloudflare_find_parent_zone() { printf 'x' >>"${cf_zone_calls}"; printf 'zone-1'; }
+    cloudflare_api_request() { printf '{"id":"zone-1","name":"example.com"}'; }
+    reality_cloudflare_resolve_zone
+    reality_cloudflare_resolve_zone
+    printf '%s|%s|%s' "$(wc -c <"${cf_zone_calls}" | tr -d ' ')" \
+        "${CLOUDFLARE_ZONE_ID}" "${CLOUDFLARE_ZONE_NAME}"
+)
+assert_equal "resolve_zone: 同域名复用解析结果" "1|zone-1|example.com" "${cf_zone_cache}"
+
+cf_zone_switch=$(
+    rm -f "${cf_zone_calls}"
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    cloudflare_find_parent_zone() { printf 'x' >>"${cf_zone_calls}"; printf 'zone-1'; }
+    cloudflare_api_request() { printf '{"id":"zone-1","name":"example.com"}'; }
+    reality_cloudflare_resolve_zone
+    SUBSCRIPTION_DOMAIN="other.example.com"
+    reality_cloudflare_resolve_zone
+    wc -c <"${cf_zone_calls}" | tr -d ' '
+)
+assert_equal "resolve_zone: 换域名重新解析" "2" "${cf_zone_switch}"
+
+# 吊销成功必须清空新证书 ID；失败则保留（留给 purge-cloudflare / 人工跟进）。
+cf_cert_cleared=$(
+    CLOUDFLARE_CREATED_ORIGIN_CERT_ID="cert-new"
+    CLOUDFLARE_ZONE_ID="zone-1"
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/cf-update-backup"
+    install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+    restore_state_file() { :; }
+    source_state_file() { SUBSCRIPTION_MODE=deploy; SUBSCRIPTION_DOMAIN="sub.example.com"; }
+    restore_dynamic_port_rotation_schedule() { return 0; }
+    configure_ufw() { :; }
+    cloudflare_api_request() { :; }
+    rollback_subscription_update >/dev/null 2>&1
+    if [[ -z "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
+        printf 'cleared'
+    else
+        printf 'kept:%s' "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}"
+    fi
+)
+assert_equal "rollback: 吊销成功后清空新证书 ID" "cleared" "${cf_cert_cleared}"
+
+cf_cert_kept=$(
+    CLOUDFLARE_CREATED_ORIGIN_CERT_ID="cert-new"
+    CLOUDFLARE_ZONE_ID="zone-1"
+    SUBSCRIPTION_DOMAIN="sub.example.com"
+    UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/cf-update-backup"
+    install -d -m 0700 "${UPDATE_SUB_BACKUP_DIR}"
+    restore_state_file() { :; }
+    source_state_file() { SUBSCRIPTION_MODE=deploy; SUBSCRIPTION_DOMAIN="sub.example.com"; }
+    restore_dynamic_port_rotation_schedule() { return 0; }
+    configure_ufw() { :; }
+    cloudflare_api_request() { return 1; }
+    rollback_subscription_update >/dev/null 2>&1
+    printf '%s' "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}"
+)
+assert_equal "rollback: 吊销失败时保留新证书 ID" "cert-new" "${cf_cert_kept}"
 
 printf 'ok - reality subscription aggregation rendering\n'
