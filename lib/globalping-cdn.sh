@@ -79,14 +79,25 @@ globalping_token_value() {
 }
 
 globalping_api_request() {
-    local method=$1 path=$2 body=${3:-} token headers
+    local method=$1 path=$2 body=${3:-} token headers candidate
     token=$(globalping_token_value) || {
         warn "缺少 Globalping Token，无法刷新 $(globalping_cdn_provider_label) CDN 精选 IP"
         return 1
     }
+    # 并发轮询各有自己的子 shell：直接截断重写共享文件会让同时进行的 curl 读到空头（401）。
+    # 同目录临时文件 + mv 原子替换，读者只能看到旧的或新的完整文件。
     headers="${RUNTIME_TMP}/globalping-headers"
-    printf 'Authorization: Bearer %s\n' "${token}" >"${headers}"
-    chmod 0600 "${headers}"
+    candidate=$(mktemp "${RUNTIME_TMP}/globalping-headers.XXXXXX") || {
+        warn "无法创建 Globalping 请求头临时文件"
+        return 1
+    }
+    if ! printf 'Authorization: Bearer %s\n' "${token}" >"${candidate}" \
+        || ! chmod 0600 "${candidate}" \
+        || ! mv -f -- "${candidate}" "${headers}"; then
+        rm -f -- "${candidate}"
+        warn "无法写入 Globalping 请求头文件：${headers}"
+        return 1
+    fi
     if [[ "${method}" == "POST" ]]; then
         curl -fsS --connect-timeout 10 --max-time 25 \
             -X POST "${GLOBALPING_API_BASE}${path}" \

@@ -73,7 +73,7 @@
 创建后妥善保存 Token，在安装交互提示 `Cloudflare API Token` 时粘贴。
 
 > [!IMPORTANT]
-> **Cloudflare Token 最小权限与持久化说明**：纯 CDN 与直连+CDN 模式为了支持后续证书到期轮换与免交互运维，输入的 Token 会以 root 受控权限（`0600`）保存于 `/etc/easy_all/cloudflare.token`。请务必遵循最小权限原则，仅授予目标 Zone 的 `DNS / Edit` 与证书编辑权限，严禁使用全局 Global API Key 或授予未使用的额外权限。
+> **Cloudflare Token 最小权限与持久化说明**：纯 CDN 与直连+CDN 模式为了支持后续证书到期轮换与免交互运维，输入的 Token 会以 root 受控权限（`0600`）保存于 `/etc/easy_all/cloudflare.token`。请务必遵循最小权限原则，仅授予目标 Zone 的 `DNS / Edit` 与证书编辑权限，严禁使用全局 Global API Key 或授予未使用的额外权限；`easy_all purge-cloudflare` 清理工具已对无 Rulesets 权限的 Token 做了平滑容错，不会阻断云端 DNS 记录与 Origin CA 证书的清理。
 
 ---
 

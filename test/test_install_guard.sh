@@ -206,6 +206,9 @@ FAKE_CRONTAB
 chmod +x "${TMP_DIR}/bin/crontab"
 export FAKE_CRONTAB_FILE="${TMP_DIR}/root-crontab"
 export CRON_REBOOT_MARKER="# easy_all-managed-reboot"
+# 定时重启的 cron 行需要 flock 抢运行时写锁，并写入锁路径；CI/沙箱不一定有 util-linux flock。
+flock() { :; }
+export RUNTIME_WRITE_LOCK_FILE="${TMP_DIR}/runtime-write.lock"
 
 printf '0 3 * * * /usr/local/bin/user-backup\n0 4 * * * true # easy_all-managed-reboot\n' \
     >"${FAKE_CRONTAB_FILE}"

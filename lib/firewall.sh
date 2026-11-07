@@ -48,27 +48,73 @@ normalize_ufw_tcp_ports() {
     printf '%s\n' "${normalized}"
 }
 
-stale_managed_ufw_rule_numbers() {
-    local desired_ports=${1//,/ } status
+# 只解析 `ufw status numbered` 发现过期受管规则，输出的是逐字对称的删除规格（spec-delete），
+# 不是编号：Fail2ban 的 `ufw insert 1` 会在读编号与删除之间让编号漂移，按编号删可能误删在用规则。
+# IPv6 行跳过：不带 (v6) 的删除规格会同时删掉同规格的 IPv6 规则。
+stale_ufw_rule_delete_specs() {
+    local comment=$1 reserved=${2//,/ } status
     command -v ufw >/dev/null 2>&1 || return 0
     status=$(LC_ALL=C ufw status numbered 2>/dev/null) || return 1
-    awk -v comment="${UFW_RULE_COMMENT}" -v desired=" ${desired_ports} " '
-            index($0, comment) == 0 {next}
+    awk -v comment="${comment}" -v reserved=" ${reserved} " '
             {
-                line=$0
-                sub(/^[[:space:]]*\[[[:space:]]*/, "", line)
-                number=line
-                sub(/[[:space:]]*\].*$/, "", number)
-                sub(/^[^]]*\][[:space:]]*/, "", line)
-                endpoint=line
-                sub(/[[:space:]].*$/, "", endpoint)
-                port=endpoint
+                marker = index($0, " # ")
+                if (marker == 0) next
+                if (substr($0, marker + 3) != comment) next
+                line = substr($0, 1, marker - 1)
+                if (line !~ /^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]*/) next
+                if (index(line, "(v6)") != 0) next
+                sub(/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]*/, "", line)
+                split(line, fields, /[[:space:]]+/)
+                endpoint = fields[1]
+                if (fields[2] != "ALLOW" || fields[3] != "IN") next
+                # 区间端口与目标端点为 Anywhere 的行没有可重建的规则规格：留给人工处理。
+                if (endpoint !~ /^[0-9]+\/tcp$/) next
+                port = endpoint
                 sub(/\/tcp$/, "", port)
-                if (number !~ /^[0-9]+$/ || endpoint != port "/tcp") next
-                if (line !~ /^[0-9]+\/tcp([[:space:]]+\(v6\))?[[:space:]]+ALLOW[[:space:]]+IN([[:space:]]|$)/) next
-                if (index(desired, " " port " ") == 0) print number
+                if (index(reserved, " " port " ") != 0) next
+                if (fields[4] == "Anywhere" || fields[4] == "Any") {
+                    printf "allow %s comment %s\n", endpoint, comment
+                } else {
+                    printf "allow proto tcp from %s to any port %s comment %s\n", \
+                        fields[4], port, comment
+                }
             }
-        ' <<<"${status}" | sort -rn
+        ' <<<"${status}"
+}
+
+# 删除全部带指定注释的过期受管规则：每轮重新读取 status，靠规格本身定位，不依赖编号。
+# 预算 = 初始候选数 × 2 + 4 次删除尝试；候选为空即成功，删除后数量未下降或预算耗尽即失败。
+delete_stale_ufw_rules() {
+    local comment=$1 reserved=${2:-} specs spec previous=0 count budget attempts=0
+    specs=$(stale_ufw_rule_delete_specs "${comment}" "${reserved}") \
+        || { warn "读取过期 UFW 规则失败"; return 1; }
+    [[ -n "${specs}" ]] || return 0
+    previous=$(awk 'END {print NR}' <<<"${specs}")
+    budget=$((previous * 2 + 4))
+    while ((attempts < budget)); do
+        specs=$(stale_ufw_rule_delete_specs "${comment}" "${reserved}") \
+            || { warn "读取过期 UFW 规则失败"; return 1; }
+        [[ -n "${specs}" ]] || return 0
+        spec=$(awk 'NR == 1 {print; exit}' <<<"${specs}")
+        attempts=$((attempts + 1))
+        # `Could not delete non-existent rule` 可能是并发删除竞态：重试一次再判失败。
+        if ! ufw --force delete ${spec} >/dev/null 2>&1 \
+            && ! ufw --force delete ${spec} >/dev/null 2>&1; then
+            warn "删除过期 UFW 规则失败：${spec}"
+            return 1
+        fi
+        specs=$(stale_ufw_rule_delete_specs "${comment}" "${reserved}") \
+            || { warn "读取过期 UFW 规则失败"; return 1; }
+        count=0
+        [[ -z "${specs}" ]] || count=$(awk 'END {print NR}' <<<"${specs}")
+        if ((count >= previous)); then
+            warn "删除过期 UFW 规则后受管规则数未下降（${previous} -> ${count}）：${spec}"
+            return 1
+        fi
+        previous=${count}
+    done
+    warn "删除过期 UFW 规则超出尝试预算（${budget}）；仍有受管规则残留"
+    return 1
 }
 
 ufw_tcp_port_is_allowed() {
@@ -256,13 +302,13 @@ verify_ssh_ufw_no_unmanaged_block() {
 }
 
 apply_managed_ufw_tcp_ports() {
-    local desired_ports ssh_ports=${2:-} port rule_number stale
+    local desired_ports ssh_ports=${2:-} port
     desired_ports=$(normalize_ufw_tcp_ports "$1") \
         || die "受管 UFW TCP 端口列表无效：$1"
 
-    # Add and verify the full desired set first. UFW can report success while
-    # skipping a duplicate, so deleting numbered rules first may remove the
-    # only SSH allow rule and lock out the administrator.
+    # Add the full desired set first. UFW can report success while skipping a
+    # duplicate, so deleting rules before adding them may remove the only SSH
+    # allow rule and lock out the administrator.
     for port in ${desired_ports}; do
         if [[ -n "${ssh_ports}" && " ${ssh_ports} " == *" ${port} "* ]] \
             && ufw_tcp_port_has_unmanaged_anywhere_allow "${port}"; then
@@ -279,12 +325,8 @@ apply_managed_ufw_tcp_ports() {
         ufw_ssh_port_is_allowed "${port}" || die "UFW 未按规则顺序有效放行 SSH ${port}；保留旧规则"
     done
 
-    stale=$(stale_managed_ufw_rule_numbers "${desired_ports}") || die "读取过期 UFW 规则失败"
-    while read -r rule_number; do
-        [[ -n "${rule_number}" ]] || continue
-        ufw --force delete "${rule_number}" >/dev/null \
-            || die "删除过期 UFW 规则失败：${rule_number}"
-    done <<<"${stale}"
+    delete_stale_ufw_rules "${UFW_RULE_COMMENT}" "${ssh_ports} ${desired_ports}" \
+        || die "删除过期 UFW 规则失败，保留旧规则"
 
     ufw reload >/dev/null || die "重载 UFW 失败"
     verify_ufw_tcp_ports "${desired_ports}"
@@ -308,7 +350,9 @@ ufw_ssh_port_is_allowed() {
             count=split(endpoint, ranges, ",")
             for (i=1; i<=count; i++) {
                 if (ranges[i] == port) relevant=1
-                if (split(ranges[i], bounds, ":") == 2 && port >= bounds[1] && port <= bounds[2]) relevant=1
+                # 端点可能是区间（1000:2000）：+0 强制按数值而不是字符串比较。
+                if (split(ranges[i], bounds, ":") == 2 \
+                    && port + 0 >= bounds[1] + 0 && port + 0 <= bounds[2] + 0) relevant=1
             }
             if (!relevant) next
             action=2
@@ -366,7 +410,7 @@ remove_ufw_managed_block() {
 
 # 卸载只回收业务端口：保留 UFW 启用状态、默认策略与 SSH 放行，绝不执行 ufw disable。
 reclaim_ufw_business_rules() {
-    local ssh_ports status number port allowed_before=""
+    local ssh_ports status port allowed_before=""
     command -v ufw >/dev/null 2>&1 || return 0
     # 用命令替换读完整输出：`ufw status | grep -q` 在封禁条目很多时会因 SIGPIPE + pipefail 误判。
     status=$(LC_ALL=C ufw status 2>/dev/null) || return 0
@@ -381,13 +425,10 @@ reclaim_ufw_business_rules() {
     for port in ${ssh_ports}; do
         ufw_ssh_port_is_allowed "${port}" && allowed_before+=" ${port}"
     done
-    # 每次删除前重新读取编号：Fail2ban 的 `ufw insert 1` 会让所有编号后移。
-    for _ in {1..16}; do
-        read -r number < <(stale_managed_ufw_rule_numbers "${ssh_ports}" | head -n 1) || break
-        [[ -n "${number}" ]] || break
-        ufw --force delete "${number}" >/dev/null 2>&1 \
-            || { warn "删除业务 UFW 规则 ${number} 失败"; return 1; }
-    done
+    # 每轮重新读取 status 并按完整规则规格删除：Fail2ban 的 `ufw insert 1` 会让编号漂移，
+    # 按编号删可能误删刚插到首位的 SSH 放行。
+    delete_stale_ufw_rules "${UFW_RULE_COMMENT}" "${ssh_ports}" \
+        || { warn "回收过期业务 UFW 规则未完成"; return 1; }
     ufw reload >/dev/null 2>&1 || true
     for port in ${ssh_ports}; do
         ufw_ssh_port_is_allowed "${port}" && continue
@@ -396,7 +437,7 @@ reclaim_ufw_business_rules() {
             warn "UFW 未全局放行 SSH ${port}；保留现有规则，请人工核对 ufw status"
             continue
         fi
-        # 删除按编号执行，若 Fail2ban 插入封禁规则导致编号漂移，必须补回 SSH 放行。
+        # 删除过程中规则可能被并发改写，放行丢失时必须补回 SSH 放行。
         warn "UFW 未保留 SSH ${port} 放行，正在补回受管放行规则"
         ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null 2>&1 \
             && ufw reload >/dev/null 2>&1 || true

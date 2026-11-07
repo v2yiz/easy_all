@@ -1,3 +1,27 @@
+## 4.3.2 更新说明（2026-11-08）
+
+- **安装与自更新加固（`/tmp noexec` 兼容）**：
+  - `bootstrap.sh` 与 `easy_all` 的 `unified_self_update` 针对加固系统（`/tmp` 分区挂载 `noexec` 标志）的执行阻断问题，统一改由 `bash` 解释器显式执行临时脚本，彻底杜绝 `EACCES (Permission denied)`。
+- **Cloudflare 远端清理容错与防孤儿解析**：
+  - `lib/cloudflare-purge.sh` 读取 ruleset 遇 403（Token 仅授权 DNS 与证书权限）安全降级为单次告警并跳过规则清理，保证已收集的全部 DNS 记录与 Origin CA 证书正常删除；
+  - `lib/cloudflare-mode.sh:purge_cdn_dns` 修复错误抑制问题，在 API 查询失败或同名 A 记录多于 1 条时不猜测删除并显式标记失败，防止卸载误判已清理而误删本机状态导致孤儿解析；
+  - `cf-dns.sh` 与 `cloudflare-purge.sh` 补齐 Cloudflare API DELETE 返回 HTTP 200/204 空响应体的支持。
+- **协议配置安全性与校验强化**：
+  - `combined` 模式在生成 Xray 配置前追加 `REALITY_SHORT_ID` 偶数位十六进制（`^([0-9a-fA-F]{2}){1,8}$`）严格校验，与 Reality 独立模式对齐，拦截非法 Short ID 导致 Xray 启动崩溃与坏订阅下发；
+  - `lib/xhttp-runtime.sh:validate_reality_port_listening` 调整为未就绪时返回 1 融入 5 次重试探测循环，避免 Xray 异步绑定晚于 Nginx 就绪时提前 `die` 导致误报失败与回滚。
+- **防火墙规则删除升级为规格删除**：
+  - `lib/firewall.sh` 废弃基于 `ufw status numbered` 行号的逆序删除，全面升级为规则规格删除（`stale_ufw_rule_delete_specs` + `delete_stale_ufw_rules`），彻底根治 Fail2ban 并发插入规则导致的编号漂移与误删问题；
+  - 确认并对齐 UFW `delete` 带 `comment` 规格语法的合规性。
+- **系统初始化加固与边界防御**：
+  - `scripts/debian-init.sh` 写入 IPv6 sysctl 参数前动态检测 `/proc/sys/net/ipv6`，彻底解决在内核开启 `ipv6.disable=1` 时 `sysctl -p` 致命崩溃中断初始化的隐患；
+  - `debian-init.sh` 移除 root 初始用户的 `sudo` 前缀，适配精简系统镜像；加固后断言 `sshd -T` 并调用 `systemctl reload`；
+  - `lib/platform.sh:ensure_swap` 使用 `df -Pk` 防范长设备名折行，当磁盘剩余空间小于 1.5GB 时安全跳过；
+  - `lib/scheduled-maintenance.sh` 生成的 daily reboot 定时任务引入运行时写锁检测（`flock -n 8`），防止维护重启与运行时安装/更新并发冲突，转义 cron `%` 字符。
+- **订阅与模板健壮性提升**：
+  - `lib/mihomo-template.sh` 采用 `awk` 动态计算 `dns:` 段的一级子键缩进（自适应 2/4 空格），排除行尾注释与深层嵌套；
+  - `lib/reality-subscription.js` 与 `lib/subscription-auth.sh` 动态端口避让 SSH 端口逻辑与 `profiles/reality.sh` 对齐；Nginx 订阅 server 块追加 `location / { return 404; }` 兜底；
+  - `lib/globalping-cdn.sh` 请求头采用原子替换，防范并发子进程读取截断空文件导致 401。
+
 ## 4.3.1 更新说明（2026-11-08）
 
 - **全仓文档与实现完全对齐**：

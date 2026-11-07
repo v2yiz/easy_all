@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly REPOSITORY_URL="https://github.com/v2yiz/easy_all.git"
+readonly REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
 readonly DEFAULT_BRANCH="main"
 BRANCH="${EASY_ALL_BRANCH:-${DEFAULT_BRANCH}}"
 
@@ -33,8 +33,13 @@ fi
 
 if ! command -v git >/dev/null 2>&1; then
     command -v apt-get >/dev/null 2>&1 || die "仅支持使用 APT 安装 git"
-    "${SUDO[@]}" apt-get -o DPkg::Lock::Timeout=300 update
-    "${SUDO[@]}" apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends git ca-certificates
+    # 非交互环境必须显式声明。`env` 让空 SUDO 与 sudo 两条路径都执行同一个真实命令；
+    # `${SUDO[@]+...}` 避免空数组在 `set -u` 下展开报错（bash 3.2）。
+    apt_noninteractive() {
+        "${SUDO[@]+"${SUDO[@]}"}" env DEBIAN_FRONTEND=noninteractive apt-get "$@"
+    }
+    apt_noninteractive -o DPkg::Lock::Timeout=300 update
+    apt_noninteractive -o DPkg::Lock::Timeout=300 install -y --no-install-recommends git ca-certificates
 fi
 
 git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
@@ -43,10 +48,12 @@ git clone --depth 1 --branch "${BRANCH}" "${REPOSITORY_URL}" "${REPO_DIR}" \
 [[ -f "${REPO_DIR}/easy_all" && -f "${REPO_DIR}/runtime.manifest" ]] \
     || die "下载的 easy_all 项目不完整"
 chmod 0700 "${REPO_DIR}/easy_all"
-"${REPO_DIR}/easy_all" verify-release \
+# 用 bash 显式执行：仓库拉在 mktemp 目录（通常 /tmp），/tmp 被挂为 noexec 时直接执行
+# 会 EACCES。
+bash "${REPO_DIR}/easy_all" verify-release \
     || die "下载的 easy_all 项目不完整"
 if (($# == 0)); then
-    "${SUDO[@]}" "${REPO_DIR}/easy_all" install
+    "${SUDO[@]+"${SUDO[@]}"}" bash "${REPO_DIR}/easy_all" install
 else
-    "${SUDO[@]}" "${REPO_DIR}/easy_all" "$@"
+    "${SUDO[@]+"${SUDO[@]}"}" bash "${REPO_DIR}/easy_all" "$@"
 fi

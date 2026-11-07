@@ -200,6 +200,19 @@ xhttp_client_path() {
     printf '%s/' "${XHTTP_PATH%/}"
 }
 
+# 直连+CDN 在 443 之外还监听 Reality 端口；本函数只验 443 与 health，绑不上直连端口也会
+# 验收通过。仅当 Profile 声明了 cdn_reality_enabled 且为真时追加断言，纯 CDN 行为不变。
+# 端口尚未监听时返回 1 而不当场 die：Reality 入站可能比 443 与 health 晚几毫秒绑定，
+# 交给调用方的重试循环等下一轮，只有轮完仍未监听才终止。
+validate_reality_port_listening() {
+    declare -F cdn_reality_enabled >/dev/null 2>&1 || return 0
+    cdn_reality_enabled || return 0
+    local port=${REALITY_PORT:-}
+    [[ -n "${port}" ]] || die "直连 Reality 端口未定义（REALITY_PORT）"
+    ss -H -ltn "sport = :${port}" 2>/dev/null \
+        | awk 'NR {found=1} END {exit !found}'
+}
+
 validate_protocol_runtime() {
     local attempt response
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
@@ -216,30 +229,34 @@ validate_protocol_runtime() {
                 --resolve "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
                 "https://${VLESS_CDN_DOMAIN}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
-                return 0
+                validate_reality_port_listening && return 0
             fi
         fi
         sleep 2
     done
+    # 轮完仍未通过：先给出 Reality 端口的具体原因，再回落到通用信息（纯 CDN 不受影响）。
+    validate_reality_port_listening \
+        || die "Reality 端口 ${REALITY_PORT} 未监听，直连入口不可用"
     die "VLESS XHTTP 本机运行时验收失败"
 }
 
 validate_subscription_runtime() {
-    local token base64_response base64_decoded mihomo_response marker accounts
+    local token base64_response base64_decoded mihomo_response marker accounts domain
+    domain=$(subscription_link_domain)
     XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
     if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
         xhttp_validate_local_tls_curl_args
     fi
     validate_subscription_token_rejection \
-        "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
-        "https://${VLESS_CDN_DOMAIN}/subscribe" \
+        "${domain}:443:127.0.0.1" \
+        "https://${domain}/subscribe" \
         "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}"
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     base64_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
         --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-        --resolve "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
+        --resolve "${domain}:443:127.0.0.1" \
         --get --data-urlencode 'token@-' \
-        "https://${VLESS_CDN_DOMAIN}/subscribe") || die "通用订阅本机验收失败"
+        "https://${domain}/subscribe") || die "通用订阅本机验收失败"
     [[ -n "${base64_response}" ]] || die "通用订阅响应为空"
     base64_decoded=$(printf '%s' "${base64_response}" | openssl base64 -d -A 2>/dev/null) \
         || die "通用订阅响应不是有效的 Base64"
@@ -247,9 +264,9 @@ validate_subscription_runtime() {
         || die "通用订阅响应缺少节点：${SUBSCRIPTION_NODE_MARKER:-type=xhttp}"
     mihomo_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
         --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-        --resolve "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
+        --resolve "${domain}:443:127.0.0.1" \
         --get --data-urlencode 'token@-' --data-urlencode "flag=clash" \
-        "https://${VLESS_CDN_DOMAIN}/subscribe") || die "Mihomo 订阅本机验收失败"
+        "https://${domain}/subscribe") || die "Mihomo 订阅本机验收失败"
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
         && marker=$(mihomo_transport_marker)

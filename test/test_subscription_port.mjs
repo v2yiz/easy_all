@@ -50,6 +50,33 @@ for (const base of samples) {
     assert.throws(() => nodePort(base, 'invalid'), /Invalid mode/);
 }
 
+// SSH 端口避让：必须与 profiles/reality.sh 的 dynamic_port_for_current_window 一致——
+// 从当前槽位起顺序扫描 6 个槽位，跳过 SSH 端口；整槽都被占用时回退原槽位（保留的既有边界）。
+// 期望值按公式手算写死，不复用实现：
+//   Date.UTC(2026,0,1,0,0,0) → 北京时间 08:00 → 小时池基址 10048，槽位 0 → 10048..10053
+//   Date.UTC(2026,11,31,23,59,59) → 北京时间 2027-01-01 07:59:59 → 基址 10042，槽位 5
+const slotZero = Date.UTC(2026, 0, 1, 0, 0, 0);
+const slotFive = slotZero + 5000;
+const yearEndSlotFive = Date.UTC(2026, 11, 31, 23, 59, 59);
+assert.equal(nodePort(slotZero, 'dynamic', []), 10048, 'no SSH ports keeps the current slot');
+assert.equal(nodePort(slotZero, 'dynamic', [22]), 10048, 'out-of-pool SSH port does not shift the slot');
+assert.equal(nodePort(slotZero, 'dynamic', [10048]), 10049, 'the current slot moves on to the next slot');
+assert.equal(nodePort(slotZero, 'dynamic', [10048, 10049, 10050]), 10051,
+    'consecutive SSH ports are skipped in order');
+assert.equal(nodePort(slotFive, 'dynamic', [10053]), 10048, 'scan wraps to the start of the same hour pool');
+assert.equal(nodePort(yearEndSlotFive, 'dynamic', [10047]), 10042,
+    'the wrap stays inside the hour pool across the year boundary');
+assert.equal(nodePort(slotZero, 'dynamic', [10048, 10049, 10050, 10051, 10052, 10053]), 10048,
+    'a fully occupied pool falls back to the current slot (kept existing boundary)');
+assert.equal(nodePort(slotFive, 'dynamic', [10053, 10048, 10049, 10050, 10051, 10052]), 10053,
+    'a fully occupied pool falls back to the current slot, not to slot 0');
+assert.equal(nodePort(slotZero, '443', [443]), 443, 'fixed 443 mode ignores the SSH port list');
+for (const sshPorts of [[10048], [10048, 10049], [10053]]) {
+    const port = nodePort(slotZero, 'dynamic', sshPorts);
+    assert.ok(!sshPorts.includes(port), `chosen port must avoid SSH ports ${sshPorts.join(',')}`);
+    assert.ok(port >= 10048 && port <= 10053, 'chosen port must stay in the current hour pool');
+}
+
 console.log('ok - subscription port contract');
 
 // 订阅渲染器的用户可见契约：模板里的端口占位符只属于本机 Reality 节点，
@@ -59,7 +86,7 @@ const renderRoot = fs.mkdtempSync(path.join(
 ));
 process.on('exit', () => fs.rmSync(renderRoot, { recursive: true, force: true }));
 
-function render(kind, content) {
+function render(kind, content, sshPorts = '') {
     const file = path.join(renderRoot, `${kind}-${Math.random().toString(16).slice(2)}.txt`);
     fs.writeFileSync(file, content);
     const result = { code: 0, body: '' };
@@ -67,6 +94,7 @@ function render(kind, content) {
         method: 'GET',
         variables: {
             easy_all_reality_port_mode: 'dynamic',
+            easy_all_ssh_ports: sshPorts,
             request_filename: file,
         },
         headersOut: {},
@@ -102,6 +130,21 @@ for (const [label, body] of [
 }
 
 const MIHOMO_TEMPLATE = 'proxies:\n  - name: "MY_REALITY"\n    port: __EASY_ALL_REALITY_PORT__\n  - name: "另一台Reality"\n    port: 8443\nproxy-groups:\n# EASY_ALL_REALITY_TEMPLATE_END_V1\n';
+// nginx 注入变量（空格分隔的十进制端口列表）必须真的进入渲染：
+// 把注入值冻结在 slotZero，SSH 端口 10048 被占用时下发的必须是下一个槽位。
+assert.deepEqual(subscription.sshPortList('22 2222 8443'), [22, 2222, 8443], 'SSH list is parsed as decimal ports');
+assert.deepEqual(subscription.sshPortList(''), [], 'empty SSH list means no reserved port');
+assert.deepEqual(subscription.sshPortList('22 x 8443'), [22, 8443], 'non-numeric entries are ignored');
+const realNow = Date.now;
+Date.now = () => slotZero;
+try {
+    const wired = render('mihomo', MIHOMO_TEMPLATE, '10048');
+    assert.equal(wired.code, 200, 'wired SSH list must not break rendering');
+    assert.match(wired.body, /    port: 10049\n/, 'rendered port must avoid the injected SSH port');
+} finally {
+    Date.now = realNow;
+}
+
 const mihomo = render('mihomo', MIHOMO_TEMPLATE);
 assert.equal(mihomo.code, 200, 'aggregated mihomo template must render');
 assert.match(mihomo.body, /    port: \d+\n/, 'mihomo own node gets a real port');

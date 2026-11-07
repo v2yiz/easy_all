@@ -258,6 +258,20 @@ assert_equal "10b-xray: reality clients keep Vision flow" "xtls-rprx-vision" \
 assert_equal "10b-xray: reality inbound keeps the private key" "test-private-key" \
     "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .streamSettings.realitySettings.privateKey' "${XRAY_CONFIG}")"
 
+# 10b-2) 与 profiles/reality.sh 同一约束：状态里被改坏的 shortId（奇数位/非十六进制）必须在
+#        写配置前拒绝，而不是让 Xray 起不来并触发安装回滚。
+short_id_rc=0
+short_id_out=$(
+    {
+        REALITY_SHORT_ID="abc"
+        cdn_write_xray_config
+    } 2>&1
+) || short_id_rc=$?
+((short_id_rc != 0)) || fail_test "10b-2: 奇数位 REALITY_SHORT_ID 必须被拒绝"
+assert_contains "10b-2: 报错说明只允许偶数位十六进制" "${short_id_out}" "偶数位十六进制"
+assert_equal "10b-2: 拒绝时不得写坏已有 Xray 配置" "2" \
+    "$(jq '.inbounds | length' "${XRAY_CONFIG}")"
+
 # 10b-1) XHTTP padding 默认使用范围，空值仍走默认，显式值保持字符串原样。
 assert_xhttp_settings() {
     local label=$1 expected_padding=$2 expected_secs=$3
@@ -843,6 +857,15 @@ assert_not_contains "token-sync: missing token map must not surface unbound vari
 # 14) 订阅格式协商：渲染结果必须含 UA 判断与 flag 覆盖，且默认回落到 Base64
 write_nginx_config
 nginx_text=$(<"${NGINX_CONFIG}")
+# 订阅 server 块只声明 /subscribe 与内部 location；没有兜底时未知路径会落到默认静态根目录。
+combined_subscription_block=$(awk -v name="server_name ${SUBSCRIPTION_DOMAIN};" '
+    index($0, name) { inside = 1 }
+    inside { print; if ($0 == "}") exit }
+' <<<"${nginx_text}")
+assert_contains "nginx: 订阅 server 块有兜底 404" \
+    "${combined_subscription_block}" "location / { return 404; }"
+assert_equal "nginx: 订阅 server 块兜底 404 只出现一次" "1" \
+    "$(grep -cF 'location / { return 404; }' <<<"${combined_subscription_block}")"
 # 按 map 块逐条断言：只看"某行存在"会被同文件其它 map 的相同行掩盖
 map_block() {
     local head=$1
@@ -1269,10 +1292,12 @@ PURGE_CALLS="${TMP_DIR}/purge-calls.log"
 (
     cloudflare_api_request() { die "注入 API 失败"; }
     CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-888"
-    purge_out=$(purge_cdn_origin_certificate 2>&1) \
-        || fail_test "29c: certificate revocation failure must not abort uninstall"
+    # 失败必须告警并保留失败状态（供卸载汇总），但不得让整个卸载中断。
+    purge_rc=0
+    purge_out=$(purge_cdn_origin_certificate 2>&1) || purge_rc=$?
     assert_contains "29c: revocation failure warns with certificate id" \
         "${purge_out}" "cert-purge-888"
+    assert_equal "29c: revocation failure keeps a failure status" "1" "${purge_rc}"
 ) || fail_test "29c: certificate revocation failure handling failed"
 
 # 29d) 真实调用点：uninstall --purge-cloud 分支必须调用证书吊销（防止主修复被静默回退）
@@ -1510,6 +1535,86 @@ assert_contains "runtime-probe: probes CF_NODE_DOMAIN over loopback" \
     "${probe_calls}" "--resolve ${CF_NODE_DOMAIN}:443:127.0.0.1"
 assert_contains "runtime-probe: probes the health endpoint" \
     "${probe_calls}" "https://${CF_NODE_DOMAIN}/easy_all-health"
+
+# 33b) 443 + health 通过不等于直连入口可用：Reality 端口未监听时必须验收失败并指明端口。
+missing_port_rc=0
+missing_port_out=$(
+    (
+        load_state >/dev/null 2>&1
+        cloudflare_ensure_origin_ca_root() { :; }
+        systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
+        # 只监听 443：旧实现在 8443 绑不上时同样验收通过。
+        ss() {
+            [[ "$*" == *"sport = :443"* ]] || return 0
+            printf 'LISTEN 0 511 *:443 *:*\n'
+        }
+        curl() { printf 'easy_all ok'; }
+        sleep() { :; }
+        validate_protocol_runtime
+    ) 2>&1
+) || missing_port_rc=$?
+((missing_port_rc != 0)) || fail_test "Reality 端口未监听时 validate_protocol_runtime 必须失败"
+assert_contains "runtime-probe: 失败信息指明 Reality 端口" \
+    "${missing_port_out}" "${REALITY_PORT}"
+
+# 33c) 两个入口都在监听时验收通过；纯 CDN（CDN_REALITY_ENABLED=0）不得追加 Reality 端口断言。
+both_ports_rc=0
+dual_ports_ss() { printf 'LISTEN 0 511 *:443 *:*\nLISTEN 0 511 *:8443 *:*\n'; }
+(
+    load_state >/dev/null 2>&1
+    cloudflare_ensure_origin_ca_root() { :; }
+    systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
+    ss() { dual_ports_ss; }
+    curl() { printf 'easy_all ok'; }
+    sleep() { :; }
+    validate_protocol_runtime
+) || both_ports_rc=$?
+assert_equal "runtime-probe: 双入口都在监听时验收通过" '0' "${both_ports_rc}"
+cdn_only_rc=0
+cdn_only_out=$(
+    (
+        load_state >/dev/null 2>&1
+        CDN_REALITY_ENABLED=0
+        cloudflare_ensure_origin_ca_root() { :; }
+        systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
+        ss() {
+            [[ "$*" == *"sport = :443"* ]] || return 0
+            printf 'LISTEN 0 511 *:443 *:*\n'
+        }
+        curl() { printf 'easy_all ok'; }
+        sleep() { :; }
+        validate_protocol_runtime
+    ) 2>&1
+) || cdn_only_rc=$?
+assert_equal "runtime-probe: 纯 CDN 行为不变（不追加 Reality 端口断言）" '0' "${cdn_only_rc}"
+
+# 33d) Reality 端口比 443/health 晚一轮绑定：必须继续重试而不是首轮就终止，
+#      否则时序性误报会让整个安装回滚。
+retry_rc=0
+retry_counter="${TMP_DIR}/reality-port-probes"
+: >"${retry_counter}"
+(
+    load_state >/dev/null 2>&1
+    cloudflare_ensure_origin_ca_root() { :; }
+    systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
+    ss() {
+        if [[ "$*" == *"sport = :443"* ]]; then
+            printf 'LISTEN 0 511 *:443 *:*\n'
+            return 0
+        fi
+        local probes
+        probes=$(grep -c '' "${retry_counter}")
+        printf 'probe\n' >>"${retry_counter}"
+        ((probes >= 1)) && printf 'LISTEN 0 511 *:%s *:*\n' "${REALITY_PORT}"
+        return 0
+    }
+    curl() { printf 'easy_all ok'; }
+    sleep() { :; }
+    validate_protocol_runtime
+) || retry_rc=$?
+assert_equal "runtime-probe: Reality 端口晚一轮绑定仍验收通过" '0' "${retry_rc}"
+assert_equal "runtime-probe: 未监听时继续重试（共探测两轮）" '2' \
+    "$(grep -c '' "${retry_counter}")"
 
 # 34) 安装失败回滚必须能在 set -u 下跑完：2.5.0 删除了 CERT_RELOAD_HOOK 常量与 reload helper，
 #     清理函数却仍在展开该变量，回滚在删除残留文件前就 unbound 中断，本机残留与进度标记全部留下

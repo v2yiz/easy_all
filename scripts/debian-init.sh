@@ -119,16 +119,28 @@ expand_path() {
 }
 
 validate_port() {
-  local port="$1"
+  local port="$1" zeros value
   [[ "$port" =~ ^[0-9]+$ ]] || die "端口必须是数字: $port"
-  (( port >= 1 && port <= 65535 )) || die "端口范围必须是 1-65535: $port"
+  # 剥掉前导零后再按十进制比较：`080` 是 80，不是八进制报错（必须用 10#）。
+  zeros="${port%%[!0]*}"
+  value="${port#"${zeros}"}"
+  [[ -n "$value" && ${#value} -le 5 ]] || die "端口范围必须是 1-65535: $port"
+  (( 10#${value} <= 65535 )) || die "端口范围必须是 1-65535: $port"
+}
+
+# 端口在后续 ssh -p / sshd / UFW 实参里必须是规范十进制，否则 `080` 会被当成八进制。
+normalize_port() {
+  local port="$1"
+  validate_port "$port"
+  printf '%s' "$((10#${port}))"
 }
 
 normalize_port_list() {
   local raw="${1//,/ }"
   local port normalized=""
   for port in $raw; do
-    validate_port "$port"
+    # 子命令替换不继承 errexit：不显式传播校验失败会吞掉非法端口。
+    port="$(normalize_port "$port")" || return 1
     case " ${normalized} " in
       *" ${port} "*) ;;
       *) normalized="${normalized:+${normalized} }${port}" ;;
@@ -166,7 +178,10 @@ validate_collected_inputs() {
 
   validate_port "$CURRENT_PORT"
   validate_port "$FINAL_PORT"
-  EXTRA_TCP_PORTS="$(normalize_port_list "${EXTRA_TCP_PORTS:-}")"
+  CURRENT_PORT="$(normalize_port "$CURRENT_PORT")"
+  FINAL_PORT="$(normalize_port "$FINAL_PORT")"
+  EXTRA_TCP_PORTS="$(normalize_port_list "${EXTRA_TCP_PORTS:-}")" \
+    || die "额外 TCP 端口列表无效：${EXTRA_TCP_PORTS:-}"
 }
 
 validate_linux_user() {
@@ -440,8 +455,16 @@ run_remote_initialization() {
   local extra_tcp_ports="$7"
   local remote_dir remote_script remote_password_file remote_public_key_file
   local remote_platform_module remote_firewall_module
-  local local_script
-  local local_password_file
+  local local_script local_password_file remote_privilege
+  # 初始登录用户是 root 时不能加 sudo 前缀：sudo 要到远端 install_base_packages 才安装，
+  # 精简镜像直接 `sudo: command not found`（127）。非 root 保留原有 sudo 提权路径。
+  remote_privilege=""
+  if [[ "${target%%@*}" != "root" ]]; then
+    remote_privilege="sudo "
+    if [[ -n "${SERVER_PASSWORD:-}" ]] && command -v sshpass >/dev/null 2>&1; then
+      remote_privilege="sudo -S "
+    fi
+  fi
   local_script="$(mktemp)"
   local_password_file="$(mktemp)"
   LOCAL_TEMP_FILES+=("$local_script" "$local_password_file")
@@ -554,11 +577,21 @@ net.ipv4.tcp_keepalive_probes = 5
 
 # Outbound TCP/UDP source ports; leave common service and high SSH ports free
 net.ipv4.ip_local_port_range = 13000 60999
+SYSCTL
+
+  # GRUB 开了 ipv6.disable=1 的内核没有 /proc/sys/net/ipv6：写入这些键会让下面的 sysctl -p
+  # 直接失败，在 set -e 下终止远端初始化（半安装现场）。
+  if [ -d "${EASY_ALL_PROC_IPV6_DIR:-/proc/sys/net/ipv6}" ]; then
+    cat >>"$sysctl_config" <<'SYSCTL'
 
 # Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
+SYSCTL
+  fi
+
+  cat >>"$sysctl_config" <<'SYSCTL'
 
 # HTTP/2 & gRPC anti-bufferbloat: limit unsent bytes in write queue
 net.ipv4.tcp_notsent_lowat = 32768
@@ -661,6 +694,34 @@ collect_allowed_ports() {
   '
 }
 
+# 加固片段写盘不等于运行中的 sshd 已生效：先断言有效配置，再显式 reload。
+# reload 不断开现有会话；restart 会断开，因此 reload 失败必须终止而不是回退重启。
+apply_ssh_hardening_runtime() {
+  local effective unit reload_output expected
+
+  effective="$("$sshd_bin" -T)" || die "sshd 有效配置读取失败；加固配置无法确认生效"
+  for expected in \
+    "passwordauthentication no" \
+    "kbdinteractiveauthentication no" \
+    "pubkeyauthentication yes"; do
+    grep -qxF -- "$expected" <<<"$effective" \
+      || die "sshd 有效配置缺少 '$expected'；检查 /etc/ssh/sshd_config 与 ${config_dir}/ 下其他片段是否覆盖 ${config_file##*/}"
+  done
+
+  for unit in ssh.service sshd.service; do
+    systemctl cat "$unit" >/dev/null 2>&1 || continue
+    systemctl is-active --quiet "$unit" \
+      || die "SSH 服务未运行，无法重载加固配置：${unit}"
+    if ! reload_output=$(systemctl reload "$unit" 2>&1); then
+      printf '%s\n' "$reload_output" >&2
+      die "重载 SSH 服务失败，加固配置未应用到运行中的 sshd：${unit}"
+    fi
+    log "SSH 加固配置已重载到运行中的服务：${unit}"
+    return 0
+  done
+  die "未找到 ssh.service 或 sshd.service；无法重载 SSH 加固配置"
+}
+
 configure_ufw() {
   ports="$(collect_allowed_ports)"
   [ -n "$ports" ] || return 0
@@ -719,6 +780,7 @@ fi
 ensure_ssh_boot_service
 configure_ufw
 ensure_ssh_fail2ban
+apply_ssh_hardening_runtime
 
 "$sshd_bin" -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|permitrootlogin|logingracetime|maxauthtries|maxstartups|persourcemaxstartups|persourcenetblocksize|port|listenaddress) ' || true
 REMOTE
@@ -772,14 +834,14 @@ REMOTE
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo -S bash '$remote_script' '$current_port' '$final_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
+      "${remote_privilege}bash '$remote_script' '$current_port' '$final_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
   else
     ssh \
       -tt \
       -p "$current_port" \
       -o StrictHostKeyChecking=accept-new \
       "$target" \
-      "sudo bash '$remote_script' '$current_port' '$final_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
+      "${remote_privilege}bash '$remote_script' '$current_port' '$final_port' '$normal_user' '$remote_password_file' '$remote_public_key_file' '$extra_tcp_ports' '$remote_platform_module' '$remote_firewall_module'; rc=\$?; rm -rf '$remote_dir'; exit \$rc"
   fi
 }
 
@@ -842,10 +904,8 @@ collect_inputs() {
   fi
 
   CURRENT_PORT="$(prompt "服务器当前 SSH 端口" "22")"
-  validate_port "$CURRENT_PORT"
-
+  CURRENT_PORT="$(normalize_port "$CURRENT_PORT")"
   FINAL_PORT="$CURRENT_PORT"
-  validate_port "$FINAL_PORT"
   CHANGE_PORT="no"
   echo "SSH 端口将保持当前端口 ${CURRENT_PORT}。"
 
@@ -853,7 +913,8 @@ collect_inputs() {
   read_bilingual \
     'UFW 额外放行 TCP 端口（逗号或空格分隔，留空则仅放行 SSH）:' \
     extra_tcp_ports_raw || true
-  EXTRA_TCP_PORTS="$(normalize_port_list "${extra_tcp_ports_raw:-}")"
+  EXTRA_TCP_PORTS="$(normalize_port_list "${extra_tcp_ports_raw:-}")" \
+    || die "额外 TCP 端口列表无效：${extra_tcp_ports_raw:-}"
 }
 
 configure_remote_stage() {

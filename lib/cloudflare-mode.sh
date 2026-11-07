@@ -85,7 +85,7 @@ cloudflare_collect_api_token() {
         CLOUDFLARE_API_TOKEN=$(<"${CLOUDFLARE_TOKEN_FILE}")
     fi
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-        CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（仅限 DNS 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）') \
+        CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（需 Zone 的 DNS 编辑 + SSL/证书 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）') \
             || die '缺少 Cloudflare API Token'
     fi
     [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]{20,100}$ ]] \
@@ -187,6 +187,10 @@ cdn_write_xray_config() {
             | awk '/Password|PublicKey/ {print $NF; exit}')
         [[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] \
             || die "生成 Reality X25519 密钥失败"
+        # 与 profiles/reality.sh 同一约束：shortId 是字节串的十六进制写法，状态里的值可能被改坏，
+        # 奇数位/非十六进制会让 Xray 启动失败。
+        [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+            || die "Reality Short ID 无效：只允许偶数位十六进制（2–16 位，即 1–8 对）"
     fi
     reality_sni=${reality_target%%:*}
     jq -n \
@@ -343,7 +347,10 @@ server {
 
 EOF
     write_subscription_nginx_locations "" static 1
+    # 订阅 server 块只声明 /subscribe 与内部 location；没有兜底时未知路径会落到 nginx
+    # 默认静态根目录。主 server 块已有同样的兜底，这里补齐订阅域名一侧。
     cat <<EOF
+    location / { return 404; }
 }
 EOF
 }
@@ -779,7 +786,8 @@ install_all() {
     report_host_init_state
     ensure_swap
     install_failure_begin "${CDN_EXPECTED_PROTOCOL}"
-    prepare_fresh_install "${CDN_INSTALL_PORTS[@]}"
+    # 安装只把 80/443 当作对外端口；回环 XHTTP 端口同样会被本次安装占用，必须一并预检。
+    prepare_fresh_install "${CDN_INSTALL_PORTS[@]}" "${XRAY_XHTTP_LOOPBACK_PORT}"
     install_progress_begin "${CDN_EXPECTED_PROTOCOL}"
     # 快照必须早于任何系统修改（TCP 加速、内核、定时重启、crontab），否则回滚恢复的是
     # “已被本次安装改过”的状态。
@@ -989,25 +997,36 @@ renew_certificate() {
 }
 
 purge_cdn_dns() {
-    local host records count id comment
+    local host records count id comment failed=0
     while IFS= read -r host; do
         [[ -n "${host}" ]] || continue
-        records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" A "${host}")
+        # 子 shell 里 errexit 被外层的 `||` 抑制：查询失败不会中断函数，必须显式判失败，
+        # 否则空结果会被当成“没有要删的记录”，卸载流程会误报云端已清理。
+        records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" A "${host}") \
+            || { warn "查询 Cloudflare 记录失败，无法确认已清理：${host}"; failed=1; continue; }
         count=$(jq 'length' <<<"${records}")
-        ((count == 1)) || continue
+        if ((count == 0)); then continue; fi
+        # 多条同名 A 记录无法判断哪条属于 easy_all：不猜测删除，但必须报未完成。
+        if ((count != 1)); then
+            warn "Cloudflare 存在 ${count} 条同名 A 记录，未自动删除（无法判断归属）：${host}"
+            failed=1
+            continue
+        fi
         id=$(jq -r '.[0].id' <<<"${records}")
         comment=$(jq -r '.[0].comment // empty' <<<"${records}")
         [[ "${comment}" == "${CDN_RECORD_COMMENT}" ]] || continue
         (cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null) \
-            || warn "删除 Cloudflare 记录失败：${host}"
+            || { warn "删除 Cloudflare 记录失败：${host}"; failed=1; }
     done < <(cdn_dns_only_domains; cdn_proxied_domains)
+    return "${failed}"
 }
 
 purge_cdn_origin_certificate() {
     [[ -n "${CLOUDFLARE_ORIGIN_CERT_ID:-}" ]] || return 0
     # cloudflare_api_request 失败会直接退出所在进程，用子 shell 兜住以免中断卸载。
     (cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_ORIGIN_CERT_ID}" >/dev/null) \
-        || warn "吊销 Cloudflare Origin CA 证书失败：${CLOUDFLARE_ORIGIN_CERT_ID}；请到控制台手动删除"
+        || { warn "吊销 Cloudflare Origin CA 证书失败：${CLOUDFLARE_ORIGIN_CERT_ID}；请到控制台手动删除"
+             return 1; }
 }
 
 uninstall_all() {
@@ -1033,25 +1052,26 @@ uninstall_all() {
     acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${mode}" == "--purge-cloud" ]]; then
-        # cloudflare_api_request / Zone 查询失败会 die；放进子 shell，保证本机卸载、安全状态恢复
-        # 与 UFW 回收照常执行，不会把 VPS 锁在半卸载状态。
+        # Zone ID 已由 cdn_load_state 从状态文件强制要求，不再二次查询（查询失败曾连带跳过证书吊销）。
+        # 每个清理步骤单独放进子 shell：cloudflare_api_request 失败会退出所在进程，
+        # 记录删除失败不能让 Origin CA 证书变成云端孤儿证书（吊销不可逆，但孤儿证书生命周期很长）。
         if ! (
             cloudflare_collect_api_token
-            # 命令替换里的 die 只结束子替换进程；这里显式退出子 shell，避免拿空 Zone 继续删记录。
-            zone=$(cloudflare_lookup_parent_zone "${CF_ZONE}") || exit 1
-            CLOUDFLARE_ZONE_ID=${zone}
-            purge_cdn_dns
-            purge_cdn_origin_certificate
+            purge_failed=0
+            (purge_cdn_dns) || { warn "Cloudflare 记录清理未完成"; purge_failed=1; }
+            (purge_cdn_origin_certificate) || { warn "Cloudflare Origin CA 证书吊销未完成"; purge_failed=1; }
             cloudflare_clear_api_token
+            exit "${purge_failed}"
         ); then
-            warn "Cloudflare 资源清理未完成；本机卸载继续。可稍后执行：easy_all purge-cloudflare --domain ${CF_ZONE:-<域名>}"
+            warn "Cloudflare 资源清理未完成；本机卸载继续。可稍后执行：easy_all purge-cloudflare --domain ${CF_ZONE:-<域名>}（Token 失效时请在控制台手动清理）"
         fi
     else
         warn "远端资源（Cloudflare 记录）已保留；本机状态删除后无法再用 easy_all 清理"
     fi
     stop_services
     remove_globalping_refresh_timer
-    cloudflare_remove_origin_firewall_rules
+    # 回源规则删除失败只告警：卸载不能因此半途中断（原因已由回收函数打印）。
+    cloudflare_remove_origin_firewall_rules || true
     restore_platform_security_state || {
         warn "SSH 配置恢复失败；请通过服务商 Console 检查"
         return 1

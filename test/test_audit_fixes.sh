@@ -136,8 +136,15 @@ assert_not_contains "globalping failure messages no longer say hourly" \
     "$(<"${ROOT_DIR}/lib/globalping-cdn.sh")" "每小时"
 
 echo "=== 4. CDN 模式 Cloudflare API Token 提示文案与权限要求 ==="
-combined_content=$(<"${ROOT_DIR}/lib/cloudflare-mode.sh")
-assert_contains "cdn token prompt" "${combined_content}" "Cloudflare API Token（仅限 DNS 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）"
+# Stage 6 签发 Origin CA 需要 Zone 的 SSL/证书 编辑权限：只提示 DNS 会按提示建出必 403 的 Token。
+mode_content=$(<"${ROOT_DIR}/lib/cloudflare-mode.sh")
+assert_contains "cdn token prompt asks for DNS and SSL edits" "${mode_content}" \
+    "Cloudflare API Token（需 Zone 的 DNS 编辑 + SSL/证书 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）"
+for prompt_profile in "${ROOT_DIR}/profiles/cdn.sh" "${ROOT_DIR}/profiles/combined.sh"; do
+    assert_contains "token prompt in ${prompt_profile##*/} asks for DNS and SSL edits" \
+        "$(<"${prompt_profile}")" \
+        "Cloudflare API Token（需 Zone 的 DNS 编辑 + SSL/证书 编辑权限）"
+done
 
 echo "=== 5. 移除遗留死变量 PARAMS_SOURCE 与 INSTALL_PARAMS_DELETE ==="
 common_content=$(<"${ROOT_DIR}/lib/profile-common.sh")
@@ -263,8 +270,31 @@ allow)
     printf '%s\t%s\n' "${port%/tcp}" 'Anywhere' >>"${rules}"
     ;;
 --force)
-    if [[ "${2:-}" == "delete" && "${3:-}" =~ ^[0-9]+$ ]]; then
-        awk -v drop="${3}" 'NR != drop' "${rules}" >"${rules}.tmp"
+    # 既支持按编号删（历史夹具行为），也支持删除完整规则规格（spec-delete）。
+    if [[ "${2:-}" == "delete" ]]; then
+        if [[ "${3:-}" =~ ^[0-9]+$ ]]; then
+            awk -v drop="${3}" 'NR != drop' "${rules}" >"${rules}.tmp"
+            mv -f "${rules}.tmp" "${rules}"
+            exit 0
+        fi
+        shift 2
+        spec_port="" spec_source="Anywhere"
+        while (($#)); do
+            case "$1" in
+            comment) shift 2 ;;
+            from) spec_source=$2; shift 2 ;;
+            proto | to) shift 2 ;;
+            any) shift ;;
+            port) shift ;;
+            *) spec_port=${1%/tcp}; shift ;;
+            esac
+        done
+        [[ -n "${spec_port}" ]] || exit 0
+        awk -v port="${spec_port}" -v source="${spec_source}" '
+            BEGIN { FS = "\t"; deleted = 0 }
+            !deleted && $1 == port && $2 == source { deleted = 1; next }
+            { print }
+        ' "${rules}" >"${rules}.tmp"
         mv -f "${rules}.tmp" "${rules}"
     fi
     ;;
@@ -740,6 +770,7 @@ set -Eeuo pipefail
 ROOT=$1
 TMP=$2
 PORT=$3
+SHORT_ID=${4:-}
 readonly() {
     local arg name val
     for arg in "$@"; do
@@ -778,11 +809,17 @@ source "${ROOT}/profiles/reality.sh"
 VLESS_UUID=11111111-2222-4111-8111-111111111111
 REALITY_TARGET=swdist.apple.com:443
 REALITY_PRIVATE_KEY=""
-REALITY_SHORT_ID=""
+REALITY_SHORT_ID="${SHORT_ID}"
 detect_ssh_ports() { SSH_PORTS=22; }
-write_xray_config
-printf 'inbound=%s\n' "$(jq -r '.inbounds[0].port' "${XRAY_CONFIG}")"
-printf 'nat=%s\n' "$(write_dynamic_nat_rules | awk '{print $NF}')"
+# Short ID 校验失败时 write_xray_config 会 die：一律取回退出码与错误文本供断言。
+set +e
+xray_err=$(write_xray_config 2>&1)
+xray_rc=$?
+set -e
+printf 'rc=%s\n' "${xray_rc}"
+printf 'err=%s\n' "${xray_err}"
+printf 'inbound=%s\n' "$(jq -r '.inbounds[0].port' "${XRAY_CONFIG}" 2>/dev/null || true)"
+printf 'nat=%s\n' "$(write_dynamic_nat_rules 2>/dev/null | awk '{print $NF}' || true)"
 PROBE
 
 for reality_port in 443 8443; do
@@ -817,19 +854,111 @@ cat >"${ufw_dir}/ufw" <<'FAKE_UFW'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf '%s\n' "$*" >>"${FAKE_UFW_LOG}"
+status_file="${FAKE_UFW_STATUS:?}"
+# 真实 ufw 的编号来自规则顺序：渲染时重新编号，`insert 1` 会让所有既有规则编号后移。
+render_status() {
+    local index=0 body
+    printf '%s\n\n%s\n%s\n' 'Status: active' 'To                         Action      From' \
+        '--                         ------      ----'
+    while IFS= read -r body; do
+        [[ -n "${body}" ]] || continue
+        index=$((index + 1))
+        printf '[%2d] %s\n' "${index}" "${body}"
+    done < <(awk '/^\[/ { body=$0; sub(/^[^]]*\][[:space:]]*/, "", body); print body }' "${status_file}")
+}
+insert_first_row() {
+    local counter
+    [[ "${FAKE_UFW_INSERT_BEFORE_DELETE:-0}" == "1" ]] || return 0
+    counter=$(cat "${FAKE_UFW_INSERT_COUNTER}" 2>/dev/null || printf '0')
+    counter=$((counter + 1))
+    printf '%s' "${counter}" >"${FAKE_UFW_INSERT_COUNTER}"
+    # 模拟 Fail2ban 的 `ufw insert 1`：新封禁规则插到首位，其余规则编号全部后移。
+    { printf '[ 1] Anywhere                   DENY IN     198.51.100.%s                 # easy_all-fail2ban-cidr\n' "${counter}"
+      cat "${status_file}"
+    } >"${status_file}.new"
+    mv -f -- "${status_file}.new" "${status_file}"
+}
+delete_row() {
+    # 按完整规格定位：编号 / 端点 / 来源 / 注释。忽略来源或注释会让「把 CIDR 规则的来源
+    # 生成错」或「漏掉 comment」的实现仍然通过，测试就失去意义。
+    local mode=$1 endpoint_spec=$2 source_spec=${3:-Anywhere} comment_spec=${4:-} target
+    target=$(awk -v mode="${mode}" -v endpoint="${endpoint_spec}" \
+        -v source="${source_spec}" -v comment="${comment_spec}" '
+        /^\[/ {
+            rows++
+            if (found) next
+            body=$0; sub(/^[^]]*\][[:space:]]*/, "", body)
+            row_comment=""
+            if (index(body, " # ") != 0) {
+                row_comment = substr(body, index(body, " # ") + 3)
+                body = substr(body, 1, index(body, " # ") - 1)
+            }
+            split(body, fields, /[[:space:]]+/)
+            if (mode == "number" && rows + 0 == endpoint + 0) { print rows; found = 1 }
+            if (mode == "spec" && fields[1] == endpoint && fields[2] == "ALLOW" \
+                && fields[3] == "IN" && fields[4] == source && row_comment == comment) {
+                print rows; found = 1
+            }
+        }
+    ' "${status_file}")
+    if [[ -n "${target}" ]]; then
+        endpoint_spec=$(awk -v idx="${target}" '
+            /^\[/ {
+                n++
+                if (n == idx) {
+                    body=$0; sub(/^[^]]*\][[:space:]]*/, "", body)
+                    split(body, fields, /[[:space:]]+/)
+                    print fields[1]
+                    exit
+                }
+            }
+        ' "${status_file}")
+        printf 'delete-row %s\n' "${endpoint_spec}" >>"${FAKE_UFW_LOG}"
+        awk -v idx="${target}" 'BEGIN { n = 0 } /^\[/ { n++; if (n == idx) next } { print }' \
+            "${status_file}" >"${status_file}.new"
+        mv -f -- "${status_file}.new" "${status_file}"
+        return 0
+    fi
+    printf 'delete-row none\n' >>"${FAKE_UFW_LOG}"
+    printf 'Could not delete non-existent rule\n' >&2
+    return 1
+}
 case "${1:-}" in
-status) cat "${FAKE_UFW_STATUS}" ;;
+status) render_status ;;
 reload) exit 0 ;;
+allow)
+    printf '[ 1] %s/tcp                   ALLOW IN    Anywhere                   # easy_all-managed\n' \
+        "${2%/tcp}" >>"${status_file}"
+    ;;
 --force)
     [[ "${2:-}" == "delete" ]] || exit 0
-    awk -v n="${3:-}" '
-        /^\[/ {
-            line=$0; sub(/^\[[[:space:]]*/, "", line); num=line; sub(/\].*$/, "", num)
-            if (num == n) next
-        }
-        {print}
-    ' "${FAKE_UFW_STATUS}" >"${FAKE_UFW_STATUS}.new"
-    mv -f -- "${FAKE_UFW_STATUS}.new" "${FAKE_UFW_STATUS}"
+    insert_first_row
+    if [[ "${3:-}" =~ ^[0-9]+$ ]]; then
+        delete_row number "${3}" || exit 1
+    else
+        shift 2
+        # 只接受实现真实使用的两种完整规格：少一个词就失败，避免桩把残缺规格当成有效删除。
+        #   allow <port>/tcp comment <c>
+        #   allow proto tcp from <cidr> to any port <port> comment <c>
+        spec_endpoint="" spec_source="Anywhere" spec_comment=""
+        if [[ "${1:-}" == "allow" && "${2:-}" == "proto" ]]; then
+            [[ "${3:-}" == "tcp" && "${4:-}" == "from" && "${6:-}" == "to" \
+                && "${7:-}" == "any" && "${8:-}" == "port" && "${10:-}" == "comment" ]] \
+                || { printf 'invalid rule spec\n' >&2; exit 1; }
+            spec_source=${5:-}
+            spec_endpoint="${9%/tcp}/tcp"
+            spec_comment=${11:-}
+        elif [[ "${1:-}" == "allow" && "${3:-}" == "comment" ]]; then
+            spec_endpoint="${2%/tcp}/tcp"
+            spec_comment=${4:-}
+        else
+            printf 'invalid rule spec\n' >&2
+            exit 1
+        fi
+        [[ -n "${spec_endpoint}" && -n "${spec_source}" && -n "${spec_comment}" ]] \
+            || { printf 'invalid rule spec\n' >&2; exit 1; }
+        delete_row spec "${spec_endpoint}" "${spec_source}" "${spec_comment}" || exit 1
+    fi
     ;;
 *) exit 0 ;;
 esac
@@ -860,6 +989,47 @@ assert_not_contains "回收后删除业务端口 8443" "${ufw_status_after}" "84
 assert_contains "回收后保留 Fail2ban 封禁规则" "${ufw_status_after}" "easy_all-fail2ban-cidr"
 assert_contains "回收不碰初始化基线的额外端口" "${ufw_status_after}" "8080/tcp"
 assert_not_contains "回收过程绝不 disable UFW" "$(<"${FAKE_UFW_LOG}")" "disable"
+
+# 11.1b 桩自身必须按完整规格定位：残缺规格要失败，否则「来源/动作生成错」的实现仍会假通过。
+if PATH="${ufw_dir}:${PATH}" "${ufw_dir}/ufw" --force delete 443/tcp comment easy_all-managed \
+    >/dev/null 2>&1; then
+    fail "FAKE_UFW 必须拒绝缺失 allow 动作的删除规格"
+fi
+if PATH="${ufw_dir}:${PATH}" "${ufw_dir}/ufw" --force delete allow proto udp from 198.51.100.0/24 \
+    to any port 443 comment easy_all-cf-origin >/dev/null 2>&1; then
+    fail "FAKE_UFW 必须拒绝非 tcp 的删除规格"
+fi
+
+# 11.2a 删除期间插入首位规则（Fail2ban 的 `ufw insert 1`）不得误删 SSH 放行
+# SSH 放行排在业务端口之后：按编号删除只要漂移一位就会命中 SSH 放行。
+cat >"${FAKE_UFW_STATUS}" <<'FAKE_STATUS_DRIFT'
+Status: active
+
+To                         Action      From
+--                         ------      ----
+[ 1] Anywhere                   DENY IN     203.0.113.7                # easy_all-fail2ban-cidr
+[ 2] 443/tcp                    ALLOW IN    Anywhere                   # easy_all-managed
+[ 3] 2222/tcp                   ALLOW IN    Anywhere                   # easy_all-managed
+[ 4] 8443/tcp                   ALLOW IN    Anywhere                   # easy_all-managed
+[ 5] 8080/tcp                   ALLOW IN    Anywhere                   # debian-init-managed
+FAKE_STATUS_DRIFT
+: >"${FAKE_UFW_LOG}"
+rm -f -- "${TMP_DIR}/ufw-insert-counter"
+(
+    export PATH="${ufw_dir}:${PATH}"
+    export FAKE_UFW_INSERT_BEFORE_DELETE=1
+    export FAKE_UFW_INSERT_COUNTER="${TMP_DIR}/ufw-insert-counter"
+    reclaim_ufw_business_rules
+) || fail "删除期间插入首位规则时回收不应失败"
+drift_status=$(<"${FAKE_UFW_STATUS}")
+drift_log=$(<"${FAKE_UFW_LOG}")
+assert_contains "编号漂移后仍保留 SSH 2222 放行" "${drift_status}" "2222/tcp"
+assert_not_contains "编号漂移后回收不得删除 SSH 放行" "${drift_log}" "delete-row 2222/tcp"
+assert_not_contains "编号漂移后仍删除业务端口 443" "${drift_status}" "443/tcp"
+assert_not_contains "编号漂移后仍删除业务端口 8443" "${drift_status}" "8443/tcp"
+assert_equal "删除期间插入的 Fail2ban 封禁规则全部保留" "3" \
+    "$(grep -c 'easy_all-fail2ban-cidr' <<<"${drift_status}")"
+assert_contains "编号漂移后不碰初始化的额外端口" "${drift_status}" "8080/tcp"
 
 # 11.2b 仅按来源放行 SSH 时，回收不得擅自扩大为全网放行
 cat >"${FAKE_UFW_STATUS}" <<'FAKE_STATUS2'
@@ -969,6 +1139,46 @@ assert_not_contains "reality 回滚不关闭 UFW" "${rollback_body}" "ufw --forc
 assert_contains "debian-init 模块 URL 跟随 EASY_ALL_BRANCH" \
     "$(<"${ROOT_DIR}/scripts/debian-init.sh")" \
     'easy_all/${EASY_ALL_BRANCH}/lib/platform.sh'
+
+# 11.7 内核 ipv6.disable=1（没有 /proc/sys/net/ipv6）时不得把 net.ipv6.* 写进 sysctl 文件：
+#      sysctl -p 会失败，而远端初始化脚本带 set -e，直接终止在半安装状态。
+awk '/^configure_tcp_tuning\(\) \{/,/^\}/' "${ROOT_DIR}/scripts/debian-init.sh" \
+    >"${TMP_DIR}/tcp-tuning-fn.sh"
+[[ -s "${TMP_DIR}/tcp-tuning-fn.sh" ]] || fail "无法从 debian-init.sh 提取 configure_tcp_tuning"
+cat >"${TMP_DIR}/tcp-tuning-run.sh" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+log() { :; }
+source "$1"
+configure_tcp_tuning
+EOF
+mkdir -p "${TMP_DIR}/tcp-tuning-bin" "${TMP_DIR}/proc-ipv6-present"
+cat >"${TMP_DIR}/tcp-tuning-bin/sysctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${TCP_TUNING_LOG}"
+EOF
+chmod +x "${TMP_DIR}/tcp-tuning-bin/sysctl"
+run_tcp_tuning() {
+    local conf=$1 proc_dir=$2
+    TCP_TUNING_LOG="${TMP_DIR}/tcp-tuning.log" \
+        sysctl_config="${conf}" \
+        EASY_ALL_PROC_IPV6_DIR="${proc_dir}" \
+        PATH="${TMP_DIR}/tcp-tuning-bin:${PATH}" \
+        bash "${TMP_DIR}/tcp-tuning-run.sh" "${TMP_DIR}/tcp-tuning-fn.sh"
+}
+: >"${TMP_DIR}/tcp-tuning.log"
+run_tcp_tuning "${TMP_DIR}/sysctl-no-ipv6.conf" "${TMP_DIR}/proc-ipv6-absent" \
+    || fail "没有 /proc/sys/net/ipv6 时 configure_tcp_tuning 必须正常结束"
+assert_not_contains "没有 ipv6 proc 时不写 net.ipv6" \
+    "$(<"${TMP_DIR}/sysctl-no-ipv6.conf")" "net.ipv6"
+assert_contains "没有 ipv6 proc 时仍写 IPv4 调优" \
+    "$(<"${TMP_DIR}/sysctl-no-ipv6.conf")" "net.ipv4.tcp_mtu_probing = 1"
+assert_contains "没有 ipv6 proc 时仍应用 sysctl" \
+    "$(<"${TMP_DIR}/tcp-tuning.log")" "-p ${TMP_DIR}/sysctl-no-ipv6.conf"
+run_tcp_tuning "${TMP_DIR}/sysctl-with-ipv6.conf" "${TMP_DIR}/proc-ipv6-present" \
+    || fail "有 /proc/sys/net/ipv6 时 configure_tcp_tuning 必须正常结束"
+assert_contains "有 ipv6 proc 时仍关闭 IPv6" \
+    "$(<"${TMP_DIR}/sysctl-with-ipv6.conf")" "net.ipv6.conf.all.disable_ipv6 = 1"
 
 
 echo "=== 12. 已初始化主机重装时明确跳过日志（B1） ==="
@@ -1111,4 +1321,582 @@ else
 fi
 
 
+echo "=== 15. SSH 加固后必须重载运行中的 sshd；root 初始用户不得依赖尚未安装的 sudo ==="
+# 远端脚本在 root + 真实 systemd 环境里运行，这里只抽取单个函数用可执行桩验证行为。
+REMOTE_BODY="${TMP_DIR}/debian-init-remote.sh"
+awk -v start="<<'REMOTE'" '
+    index($0, start) { inside = 1; next }
+    inside && $0 == "REMOTE" { exit }
+    inside { print }
+' "${ROOT_DIR}/scripts/debian-init.sh" >"${REMOTE_BODY}"
+bash -n "${REMOTE_BODY}" || fail "远端初始化脚本必须是合法 bash"
+remote_body=$(<"${REMOTE_BODY}")
+assert_contains "SSH 加固配置在 UFW/Fail2ban 之后重载" "${remote_body}" \
+    $'ensure_ssh_fail2ban\napply_ssh_hardening_runtime'
+assert_not_contains "reload 失败不得回退 restart（会断开当前会话）" \
+    "${remote_body}" "systemctl restart"
+
+hardening_fn=$(awk '/^apply_ssh_hardening_runtime\(\) \{/,/^\}/' "${REMOTE_BODY}")
+[[ -n "${hardening_fn}" ]] || fail "远端脚本必须定义 apply_ssh_hardening_runtime"
+
+SSH_PROBE_BIN="${TMP_DIR}/ssh-probe-bin"
+install -d -m 0700 "${SSH_PROBE_BIN}"
+cat >"${SSH_PROBE_BIN}/sshd" <<'FAKE_SSHD'
+#!/usr/bin/env bash
+[[ "${1:-}" == "-T" ]] || exit 1
+cat "${FAKE_SSHD_T_OUTPUT:?}"
+FAKE_SSHD
+cat >"${SSH_PROBE_BIN}/systemctl" <<'FAKE_SYSTEMCTL'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
+case "${1:-}" in
+cat) [[ "${2:-}" == "ssh.service" ]] ;;
+is-active) [[ "${FAKE_SSH_UNIT_ACTIVE:-1}" == "1" ]] ;;
+reload)
+    if [[ "${FAKE_SYSTEMCTL_RELOAD_FAIL:-0}" == "1" ]]; then
+        printf 'Job for ssh.service failed: injected\n' >&2
+        exit 1
+    fi
+    ;;
+esac
+FAKE_SYSTEMCTL
+chmod +x "${SSH_PROBE_BIN}/sshd" "${SSH_PROBE_BIN}/systemctl"
+
+FAKE_SSHD_T_OUTPUT="${TMP_DIR}/sshd-T.conf"
+FAKE_SYSTEMCTL_LOG="${TMP_DIR}/systemctl.log"
+export FAKE_SSHD_T_OUTPUT FAKE_SYSTEMCTL_LOG SSH_HARDENING_FN="${hardening_fn}"
+run_ssh_hardening_probe() {
+    PATH="${SSH_PROBE_BIN}:${PATH}" bash -c '
+        set -Eeuo pipefail
+        log() { printf "%s\n" "$*"; }
+        die() { printf "错误: %s\n" "$*" >&2; exit 1; }
+        sshd_bin=sshd
+        config_dir=/etc/ssh/sshd_config.d
+        config_file="${config_dir}/00-debian-init-hardening.conf"
+        eval "${SSH_HARDENING_FN}"
+        apply_ssh_hardening_runtime
+    '
+}
+
+cat >"${FAKE_SSHD_T_OUTPUT}" <<'EOF'
+port 22
+passwordauthentication no
+kbdinteractiveauthentication no
+pubkeyauthentication yes
+EOF
+: >"${FAKE_SYSTEMCTL_LOG}"
+reload_out=$(run_ssh_hardening_probe 2>&1) || fail "有效加固配置下必须重载成功"
+assert_contains "重载成功留下可见日志" "${reload_out}" "已重载"
+assert_contains "对运行中的 ssh 单元执行 reload" "$(<"${FAKE_SYSTEMCTL_LOG}")" \
+    "systemctl reload ssh.service"
+
+# 其他配置片段覆盖片段值时（有效配置仍是密码登录）必须终止，而不是“文件已写就算成功”。
+cat >"${FAKE_SSHD_T_OUTPUT}" <<'EOF'
+port 22
+passwordauthentication yes
+kbdinteractiveauthentication no
+pubkeyauthentication yes
+EOF
+if overridden_out=$(run_ssh_hardening_probe 2>&1); then
+    fail "有效配置仍允许密码登录时必须终止"
+fi
+assert_contains "被覆盖时指出具体配置项" "${overridden_out}" "passwordauthentication"
+
+# reload 失败必须终止并保留 systemctl 原始输出（不得静默继续，也不得 restart）。
+cat >"${FAKE_SSHD_T_OUTPUT}" <<'EOF'
+port 22
+passwordauthentication no
+kbdinteractiveauthentication no
+pubkeyauthentication yes
+EOF
+: >"${FAKE_SYSTEMCTL_LOG}"
+if reload_failed_out=$(FAKE_SYSTEMCTL_RELOAD_FAIL=1 run_ssh_hardening_probe 2>&1); then
+    fail "reload 失败时必须终止"
+fi
+assert_contains "reload 失败保留 systemctl 输出" "${reload_failed_out}" "injected"
+assert_not_contains "reload 失败不得回退 restart" "$(<"${FAKE_SYSTEMCTL_LOG}")" "restart"
+
+# S2：root 初始用户直接执行远端脚本（sudo 要到远端第 2 步才安装）；非 root 保留 sudo 提权。
+INIT_UNDER_TEST="${TMP_DIR}/debian-init-under-test.sh"
+awk '$0 != "main \"$@\""' "${ROOT_DIR}/scripts/debian-init.sh" >"${INIT_UNDER_TEST}"
+bash -n "${INIT_UNDER_TEST}" || fail "去掉 main 后的 debian-init 必须语法正确"
+SSH_CALL_LOG="${TMP_DIR}/debian-init-ssh.log"
+export SSH_CALL_LOG INIT_UNDER_TEST
+run_debian_init_remote() {
+    bash -c '
+        set -Eeuo pipefail
+        ssh() {
+            printf "%s\n" "$*" >>"${SSH_CALL_LOG}"
+            case "$*" in
+            *easy_all_init.XXXXXXXX*) printf "/tmp/easy_all_init.PROBE\n" ;;
+            esac
+        }
+        scp() { return 0; }
+        mktemp() { command mktemp "${TMPDIR:-/tmp}/init-probe.XXXXXX"; }
+        SERVER_PASSWORD=""
+        PLATFORM_MODULE_FILE=/dev/null
+        FIREWALL_MODULE_FILE=/dev/null
+        # shellcheck source=/dev/null
+        source "${INIT_UNDER_TEST}"
+        run_remote_initialization "$1" 22 22 normaluser normalpass /dev/null "" /dev/null /dev/null
+    ' _ "$1"
+}
+: >"${SSH_CALL_LOG}"
+run_debian_init_remote "root@198.51.100.10" || fail "以 root 初始化时远端命令必须能生成"
+root_call_log=$(<"${SSH_CALL_LOG}")
+assert_contains "root 初始用户直接执行远端脚本" "${root_call_log}" \
+    "bash '/tmp/easy_all_init.PROBE/setup_debian_ssh_key_only.sh'"
+assert_not_contains "root 初始用户不得加 sudo 前缀（精简系统没有 sudo）" "${root_call_log}" "sudo"
+: >"${SSH_CALL_LOG}"
+run_debian_init_remote "debian@198.51.100.10" || fail "以普通用户初始化时远端命令必须能生成"
+assert_contains "非 root 初始用户保留 sudo 提权" "$(<"${SSH_CALL_LOG}")" \
+    "sudo bash '/tmp/easy_all_init.PROBE/setup_debian_ssh_key_only.sh'"
+
+echo "=== 16. Skyline 失败必须带阶段与退出码终止（不得降级 BBR、不得误报成功） ==="
+# 失败注入点：守护进程启动失败。其余步骤用桩跳过，只验证真实 configure_tcp_acceleration 的失败路径。
+(
+    require_supported_tcp_architecture() { :; }
+    check_skyline_requirements() { :; }
+    install_skyline_speeder() { :; }
+    stop_skyline_speeder() { :; }
+    configure_tcp_parameters() { :; }
+    skyline_prepare_log() { :; }
+    skyline_runtime_diagnostics() { printf 'diag-called\n' >&2; }
+    skyline_speeder_active() { return 1; }
+    running_kernel_supported() { return 0; }
+    dpkg() { return 0; }
+    getconf() { printf 'glibc 2.36\n'; }
+    skyline-speederd() { printf 'skyline-speederd 0.5.1\n'; }
+    systemctl() { return 1; }
+    sysctl() { return 0; }
+    SYSTEMD_SYSTEM_DIR="${TMP_DIR}/skyline_systemd"
+    install -d -m 0700 "${SYSTEMD_SYSTEM_DIR}" "${SKYLINE_SOURCE_DIR}"
+    printf '%s\n' "${SKYLINE_COMMIT}" >"${SKYLINE_SOURCE_DIR}/.easy-all-installed"
+    touch "${SYSTEMD_SYSTEM_DIR}/skyline-speederd.service" \
+        "${SYSTEMD_SYSTEM_DIR}/skyline-speeder-enable.service"
+    set +e
+    skyline_out=$(configure_tcp_acceleration 2>&1)
+    skyline_rc=$?
+    set -e
+    ((skyline_rc != 0)) || fail "守护进程启动失败时 configure_tcp_acceleration 必须返回非零"
+    assert_contains "失败信息包含阶段" "${skyline_out}" "启动 Skyline Speeder 守护进程失败"
+    assert_contains "失败信息包含命令退出码" "${skyline_out}" "退出码 1"
+    assert_contains "失败信息包含诊断日志路径" "${skyline_out}" "/var/log/easy_all"
+    assert_contains "失败前先取运行现场" "${skyline_out}" "diag-called"
+    assert_not_contains "不得降级为 BBR" "${skyline_out}" "BBR"
+    assert_not_contains "不得误报成功" "${skyline_out}" "Skyline Speeder 已启用"
+)
+
+echo "=== 17. Globalping 请求头必须原子替换（并发子 shell 不得读到空头文件） ==="
+# 读者拿到的是原子替换：已打开旧文件的读者看到完整旧内容，路径读者看到完整新内容。
+(
+    gp_runtime="${TMP_DIR}/globalping-atomic"
+    install -d -m 0700 "${gp_runtime}"
+    export RUNTIME_TMP="${gp_runtime}"
+    export GLOBALPING_TOKEN="fake-ktxzvbnq-9182736455"
+    headers_file="${gp_runtime}/globalping-headers"
+    printf 'Authorization: Bearer old-stale-token\n' >"${headers_file}"
+    exec 7<"${headers_file}"
+    curl() { printf '{}'; }
+    globalping_api_request GET /limits >/dev/null || fail "写入请求头文件后必须继续调用 curl"
+    seen_by_open_reader=$(cat <&7)
+    exec 7<&-
+    seen_by_path=$(<"${headers_file}")
+    assert_equal "已打开旧请求头的读者仍看到完整旧内容" \
+        "Authorization: Bearer old-stale-token" "${seen_by_open_reader}"
+    assert_equal "路径读者看到完整的新请求头" \
+        "Authorization: Bearer ${GLOBALPING_TOKEN}" "${seen_by_path}"
+    assert_equal "请求头文件保持 0600" "600" \
+        "$(stat -c '%a' "${headers_file}" 2>/dev/null || stat -f '%Lp' "${headers_file}")"
+    assert_equal "请求头目录里不残留临时文件" "0" \
+        "$(find "${gp_runtime}" -maxdepth 1 -name 'globalping-headers.*' | wc -l | tr -d ' ')"
+)
+
+echo "=== 18. 状态目录存在但读不到状态文件时必须提示 root，不得谎报「尚未安装」 ==="
+# 公开入口：EASY_ALL_STATE_FILE_OVERRIDE 支持把状态文件指到任意路径（测试与自愈都靠它）。
+run_launcher_status() {
+    EASY_ALL_STATE_FILE_OVERRIDE="$1" bash "${ROOT_DIR}/easy_all" status 2>&1
+}
+
+absent_dir="${TMP_DIR}/absent-state-dir"
+absent_rc=0
+absent_out=$(run_launcher_status "${absent_dir}/state.env") || absent_rc=$?
+assert_equal "未安装：状态目录不存在时退出码为 1" "1" "${absent_rc}"
+assert_contains "未安装：状态目录不存在时仍报「尚未安装」" "${absent_out}" "尚未安装"
+
+empty_dir="${TMP_DIR}/empty-state-dir"
+install -d -m 0700 "${empty_dir}"
+empty_rc=0
+empty_out=$(run_launcher_status "${empty_dir}/state.env") || empty_rc=$?
+assert_equal "未安装：目录可访问但没有状态文件时退出码为 1" "1" "${empty_rc}"
+assert_contains "未安装：目录可访问但没有状态文件时报「尚未安装」" "${empty_out}" "尚未安装"
+
+if [[ "$(id -u)" -eq 0 ]]; then
+    echo "skip - root 无法模拟无权限状态目录"
+else
+    denied_dir="${TMP_DIR}/denied-state-dir"
+    install -d -m 0700 "${denied_dir}"
+    printf 'STATE_VERSION="0"\nPROTOCOL="cdn"\n' >"${denied_dir}/state.env"
+    chmod 000 "${denied_dir}"
+    denied_rc=0
+    denied_out=$(run_launcher_status "${denied_dir}/state.env") || denied_rc=$?
+    assert_equal "无权读取：状态目录不可读时退出码为 1" "1" "${denied_rc}"
+    assert_contains "无权读取：给出 sudo easy_all <command> 指引" \
+        "${denied_out}" "sudo easy_all status"
+    assert_not_contains "无权读取：不得谎报「尚未安装」" "${denied_out}" "尚未安装"
+    chmod 700 "${denied_dir}"
+
+    denied_file_dir="${TMP_DIR}/denied-state-file"
+    install -d -m 0755 "${denied_file_dir}"
+    printf 'STATE_VERSION="0"\nPROTOCOL="cdn"\n' >"${denied_file_dir}/state.env"
+    chmod 000 "${denied_file_dir}/state.env"
+    denied_file_rc=0
+    denied_file_out=$(run_launcher_status "${denied_file_dir}/state.env") || denied_file_rc=$?
+    assert_equal "无权读取：状态文件不可读时退出码为 1" "1" "${denied_file_rc}"
+    assert_contains "无权读取：状态文件不可读时同样提示 sudo" \
+        "${denied_file_out}" "sudo easy_all status"
+    chmod 600 "${denied_file_dir}/state.env"
+fi
+
+echo "=== 19. Swap 空间判定：df 取不到数字或为 0 时必须跳过创建（df -Pk） ==="
+SWAP_FN=$(awk '/^ensure_swap\(\) \{/,/^\}/' "${ROOT_DIR}/lib/platform.sh")
+[[ -n "${SWAP_FN}" ]] || fail "lib/platform.sh 必须定义 ensure_swap"
+export SWAP_FN
+run_swap_probe() {
+    local mode=$1 root=$2
+    install -d -m 0700 "${root}"
+    SWAP_PROBE_LOG="${root}/probe.log"
+    export SWAP_PROBE_LOG
+    bash -c '
+        set -Eeuo pipefail
+        mode=$1
+        root=$2
+        warn() { printf "warn: %s\n" "$*" >&2; }
+        info() { printf "info: %s\n" "$*" >&2; }
+        success() { printf "success: %s\n" "$*" >&2; }
+        die() { printf "die: %s\n" "$*" >&2; exit 1; }
+        # S14 关键点：必须用 df -Pk（一个文件系统一行），且空/0 都不得放行 fallocate。
+        df() {
+            printf "df-args: %s\n" "$*" >>"${SWAP_PROBE_LOG}"
+            case "${mode}" in
+            empty) : ;;
+            zero) printf "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1000000 1000000 0 100%% /\n" ;;
+            ok) printf "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 10000000 1000000 3000000 25%% /\n" ;;
+            esac
+        }
+        fallocate() { printf "fallocate %s\n" "$*" >>"${SWAP_PROBE_LOG}"; printf "x" >"${root}/swapfile"; }
+        dd() { printf "dd\n" >>"${SWAP_PROBE_LOG}"; }
+        mkswap() { printf "mkswap\n" >>"${SWAP_PROBE_LOG}"; }
+        swapon() { printf "swapon\n" >>"${SWAP_PROBE_LOG}"; }
+        printf "SwapTotal:       0 kB\n" >"${root}/meminfo"
+        : >"${root}/fstab"
+        eval "${SWAP_FN}"
+        EASY_ALL_SWAP_FILE="${root}/swapfile" \
+            EASY_ALL_MEMINFO_FILE="${root}/meminfo" \
+            EASY_ALL_FSTAB_FILE="${root}/fstab" \
+            ensure_swap
+    ' _ "${mode}" "${root}"
+}
+
+empty_swap_out=$(run_swap_probe empty "${TMP_DIR}/swap-empty" 2>&1) \
+    || fail "df 无输出时 ensure_swap 不得失败"
+assert_contains "swap: df 取不到数字时提示无法确认" "${empty_swap_out}" "无法确认磁盘剩余空间"
+assert_not_contains "swap: 无法确认时不得创建 Swap 文件" "${empty_swap_out}" "正在创建 1GB 交换文件"
+[[ ! -e "${TMP_DIR}/swap-empty/swapfile" ]] || fail "swap: 无法确认时不得执行 fallocate"
+assert_contains "swap: 用 df -Pk 取可用空间" "$(<"${TMP_DIR}/swap-empty/probe.log")" "df-args: -Pk "
+
+zero_swap_out=$(run_swap_probe zero "${TMP_DIR}/swap-zero" 2>&1) \
+    || fail "df 可用空间为 0 时 ensure_swap 不得失败"
+assert_contains "swap: 可用空间为 0 时提示空间不足" "${zero_swap_out}" "磁盘已无可用空间"
+assert_not_contains "swap: 可用空间为 0 时不得创建 Swap 文件" "${zero_swap_out}" "正在创建 1GB 交换文件"
+[[ ! -e "${TMP_DIR}/swap-zero/swapfile" ]] || fail "swap: 可用空间为 0 时不得执行 fallocate"
+
+ok_swap_out=$(run_swap_probe ok "${TMP_DIR}/swap-ok" 2>&1) \
+    || fail "空间充足时 ensure_swap 必须创建 Swap"
+assert_contains "swap: 空间充足时继续创建" "${ok_swap_out}" "已成功配置并启用 1GB Swap"
+[[ -e "${TMP_DIR}/swap-ok/swapfile" ]] || fail "swap: 空间充足时必须执行 fallocate"
+
+echo "=== 20. SSH/UFW 实参中的端口必须是规范十进制（080 → 80） ==="
+port_probe=$(bash -c '
+    set -Eeuo pipefail
+    init_script=$1
+    tmp=$2
+    die() { printf "die: %s\n" "$*" >&2; exit 1; }
+    ssh() {
+        printf "%s\n" "$*" >>"${tmp}/port-ssh.log"
+        case "$*" in
+        *easy_all_init.XXXXXXXX*) printf "/tmp/easy_all_init.PROBE\n" ;;
+        esac
+    }
+    scp() { return 0; }
+    mktemp() { command mktemp "${tmp}/port-probe.XXXXXX"; }
+    SERVER_PASSWORD=""
+    PLATFORM_MODULE_FILE=/dev/null
+    FIREWALL_MODULE_FILE=/dev/null
+    # shellcheck source=/dev/null
+    source "${init_script}"
+    printf "norm-list=%s\n" "$(normalize_port_list "080,8080 00080")"
+    printf "norm-port=%s\n" "$(normalize_port 080)"
+    validate_port 080 && printf "validate-080=ok\n"
+    set +e
+    zero_out=$(validate_port 000 2>&1)
+    zero_rc=$?
+    big_out=$(validate_port 70000 2>&1)
+    big_rc=$?
+    set -e
+    printf "zero=%s|%s\n" "${zero_rc}" "${zero_out}"
+    printf "big=%s|%s\n" "${big_rc}" "${big_out}"
+    SERVER_HOST="198.51.100.10"
+    SERVER_USER=root
+    NORMAL_USER=normaluser
+    HOST_ALIAS=probe
+    CHANGE_PORT=no
+    CURRENT_PORT=0080
+    FINAL_PORT=080
+    EXTRA_TCP_PORTS="080 8080"
+    validate_collected_inputs
+    printf "normalized=%s|%s|%s\n" "${CURRENT_PORT}" "${FINAL_PORT}" "${EXTRA_TCP_PORTS}"
+    run_remote_initialization "root@198.51.100.10" "${CURRENT_PORT}" "${FINAL_PORT}" \
+        normaluser normalpass /dev/null "${EXTRA_TCP_PORTS}" /dev/null /dev/null >/dev/null
+    printf "ssh-log=%s\n" "$(<"${tmp}/port-ssh.log")"
+' _ "${INIT_UNDER_TEST}" "${TMP_DIR}") || fail "端口归一化探针执行失败"
+assert_contains "port: 额外端口列表归一化为十进制" "${port_probe}" "norm-list=80 8080"
+assert_contains "port: 单个端口归一化为十进制" "${port_probe}" "norm-port=80"
+assert_contains "port: 前导零端口通过校验" "${port_probe}" "validate-080=ok"
+assert_contains "port: 全零端口被判为范围错误" "${port_probe}" "1-65535"
+assert_contains "port: 超范围端口被拒绝" "${port_probe}" "big=1|"
+assert_contains "port: CURRENT_PORT/FINAL_PORT/额外端口都归一到十进制" \
+    "${port_probe}" "normalized=80|80|80 8080"
+assert_contains "port: ssh -p 使用规范端口" "${port_probe}" "-p 80 "
+assert_contains "port: 远端实参使用规范端口" "${port_probe}" "'80' '80' 'normaluser'"
+assert_contains "port: 远端 UFW 额外端口使用规范列表" "${port_probe}" "'80 8080'"
+
+echo "=== 21. IPv4-only 策略文件走 mktemp，成功/失败都不留临时文件 ==="
+IPV4ONLY_FN=$(awk '/^configure_ipv4_only\(\) \{/,/^\}/' "${ROOT_DIR}/lib/platform.sh")
+[[ -n "${IPV4ONLY_FN}" ]] || fail "lib/platform.sh 必须定义 configure_ipv4_only"
+export IPV4ONLY_FN
+run_ipv4_probe() {
+    local root=$1 mode=$2
+    install -d -m 0700 "${root}"
+    bash -c '
+        set -Eeuo pipefail
+        root=$1
+        mode=$2
+        die() { printf "die: %s\n" "$*" >&2; exit 1; }
+        install() {
+            printf "install %s\n" "$*" >>"${root}/probe.log"
+            if [[ "${mode}" == "install-fail" && "$*" == *"0644"* ]]; then
+                return 1
+            fi
+            command install "$@"
+        }
+        sysctl() { printf "sysctl %s\n" "$*" >>"${root}/probe.log"; return 0; }
+        RUNTIME_TMP="${root}/runtime"
+        IPV6_SYSCTL_CONF="${root}/sysctl/99-enable-ipv6.conf"
+        EASY_ALL_PROC_IPV6_DIR="${root}/proc-ipv6"
+        command install -d -m 0700 "${RUNTIME_TMP}" "${EASY_ALL_PROC_IPV6_DIR}" \
+            "$(dirname "${IPV6_SYSCTL_CONF}")"
+        eval "${IPV4ONLY_FN}"
+        configure_ipv4_only
+    ' _ "${root}" "${mode}"
+}
+
+ipv4_ok_root="${TMP_DIR}/ipv4-only-ok"
+ipv4_ok_out=$(run_ipv4_probe "${ipv4_ok_root}" ok 2>&1) || fail "configure_ipv4_only 正常路径失败: ${ipv4_ok_out}"
+assert_contains "ipv4-only: 目标文件按 0644 安装" "$(<"${ipv4_ok_root}/probe.log")" "install -m 0644 "
+assert_contains "ipv4-only: 策略内容写全" "$(<"${ipv4_ok_root}/sysctl/99-enable-ipv6.conf")" \
+    "net.ipv6.conf.all.disable_ipv6 = 1"
+assert_equal "ipv4-only: 成功后不残留临时文件" "0" \
+    "$(find "${ipv4_ok_root}/runtime" -maxdepth 1 -name 'enable-ipv6.*' | wc -l | tr -d ' ')"
+assert_contains "ipv4-only: 成功后应用 sysctl" "$(<"${ipv4_ok_root}/probe.log")" "sysctl -p "
+
+ipv4_fail_root="${TMP_DIR}/ipv4-only-fail"
+ipv4_fail_rc=0
+ipv4_fail_out=$(run_ipv4_probe "${ipv4_fail_root}" install-fail 2>&1) || ipv4_fail_rc=$?
+((ipv4_fail_rc != 0)) || fail "install 失败时 configure_ipv4_only 必须终止"
+assert_contains "ipv4-only: 失败保留诊断" "${ipv4_fail_out}" "写入 IPv4-only 策略文件失败"
+assert_equal "ipv4-only: 失败后不残留临时文件" "0" \
+    "$(find "${ipv4_fail_root}/runtime" -maxdepth 1 -name 'enable-ipv6.*' | wc -l | tr -d ' ')"
+
+echo "=== 22. bootstrap.sh 仓库地址可覆盖，apt 调用显式非交互（含 sudo 路径） ==="
+boot_dir="${TMP_DIR}/bootstrap"
+install -d -m 0700 "${boot_dir}/bin"
+for util in bash sh env cat rm chmod mkdir; do
+    util_path=$(command -v "${util}") || fail "探针缺少 ${util}"
+    ln -s "${util_path}" "${boot_dir}/bin/${util}"
+done
+# 固定以非 root 运行：id -u 永远返回 1000，才能稳定考察 sudo 路径。
+cat >"${boot_dir}/bin/id" <<'FAKE_ID'
+#!/usr/bin/env bash
+[[ "${1:-}" == "-u" ]] && { printf '%s\n' "${FAKE_BOOTSTRAP_UID:-1000}"; exit 0; }
+exit 0
+FAKE_ID
+printf '#!/usr/bin/env bash\nexit 0\n' >"${boot_dir}/bin/curl"
+# macOS 的 mktemp 忽略 TMPDIR 且系统临时目录在受限环境下不可写：探针把无模板的 `mktemp -d`
+# 固定到测试目录（仓库其他测试同样用「退回显式模板」）。
+cat >"${boot_dir}/bin/mktemp" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "-d" && \$# -eq 1 ]]; then
+    exec $(command -v mktemp) -d "${TMP_DIR}/bootstrap.XXXXXX"
+fi
+exec $(command -v mktemp) "\$@"
+EOF
+# sudo 要模拟真实行为：VAR=value 前缀作为环境变量后执行其余命令。
+printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "sudo %s\\n" "$*" >>"${FAKE_BOOTSTRAP_LOG}"' \
+    'while [[ "${1:-}" == *=* ]]; do export "$1"; shift; done' \
+    'exec "$@"' >"${boot_dir}/bin/sudo"
+# apt-get 只记录实参与其看到的 DEBIAN_FRONTEND，并在安装时同步提供 git。
+cat >"${boot_dir}/bin/apt-get" <<'FAKE_APT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'apt-get DEBIAN_FRONTEND=%s :: %s\n' "${DEBIAN_FRONTEND:-unset}" "$*" >>"${FAKE_BOOTSTRAP_LOG}"
+[[ "$*" == *" install "* ]] || exit 0
+cat >"${FAKE_BOOTSTRAP_BIN}/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'git %s\n' "$*" >>"${FAKE_BOOTSTRAP_LOG}"
+[[ "${1:-}" == "clone" ]] || exit 0
+dest=${!#}
+mkdir -p "${dest}"
+printf 'runtime-manifest\n' >"${dest}/runtime.manifest"
+cat >"${dest}/easy_all" <<'STUB'
+#!/usr/bin/env bash
+printf 'easy_all %s\n' "$*" >>"${FAKE_BOOTSTRAP_LOG}"
+STUB
+chmod +x "${dest}/easy_all"
+FAKE_GIT
+chmod +x "${FAKE_BOOTSTRAP_BIN}/git"
+FAKE_APT
+chmod +x "${boot_dir}/bin/id" "${boot_dir}/bin/curl" "${boot_dir}/bin/sudo" \
+    "${boot_dir}/bin/apt-get" "${boot_dir}/bin/mktemp"
+bootstrap_log="${boot_dir}/bootstrap.log"
+: >"${bootstrap_log}"
+EASY_ALL_REPOSITORY_URL_OVERRIDE="https://example.test/fork/easy_all.git" \
+    PATH="${boot_dir}/bin" FAKE_BOOTSTRAP_LOG="${bootstrap_log}" \
+    FAKE_BOOTSTRAP_BIN="${boot_dir}/bin" \
+    bash "${ROOT_DIR}/bootstrap.sh" install \
+    || fail "bootstrap.sh 在 git/apt-get 桩环境下应能跑通"
+bootstrap_calls=$(<"${bootstrap_log}")
+assert_contains "bootstrap: 克隆地址取 EASY_ALL_REPOSITORY_URL_OVERRIDE" \
+    "${bootstrap_calls}" "clone --depth 1 --branch main https://example.test/fork/easy_all.git"
+assert_contains "bootstrap: sudo 路径把 DEBIAN_FRONTEND 作为 apt-get 实参" \
+    "${bootstrap_calls}" "sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update"
+assert_contains "bootstrap: apt-get install 实际收到 noninteractive" \
+    "${bootstrap_calls}" \
+    "apt-get DEBIAN_FRONTEND=noninteractive :: -o DPkg::Lock::Timeout=300 install -y --no-install-recommends git ca-certificates"
+assert_contains "bootstrap: 默认仓库地址保持不变" "$(<"${ROOT_DIR}/bootstrap.sh")" \
+    'readonly REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"'
+
+# root 分支：SUDO 为空数组，apt 仍必须真的执行（`VAR=值` 不能落在命令位置被当命令跑）。
+# 第一次探针已由 apt 桩安装 git；root 分支要重新验证 apt，先移除。
+rm -f -- "${boot_dir}/bin/git"
+root_bootstrap_log="${boot_dir}/bootstrap-root.log"
+: >"${root_bootstrap_log}"
+FAKE_BOOTSTRAP_UID=0 EASY_ALL_REPOSITORY_URL_OVERRIDE="https://example.test/fork/easy_all.git" \
+    PATH="${boot_dir}/bin" FAKE_BOOTSTRAP_LOG="${root_bootstrap_log}" \
+    FAKE_BOOTSTRAP_BIN="${boot_dir}/bin" \
+    bash "${ROOT_DIR}/bootstrap.sh" install \
+    || fail "bootstrap.sh 在 root（无 sudo）分支下也必须跑通"
+root_bootstrap_calls=$(<"${root_bootstrap_log}")
+assert_contains "bootstrap(root): apt 实际执行并收到 noninteractive" \
+    "${root_bootstrap_calls}" \
+    "apt-get DEBIAN_FRONTEND=noninteractive :: -o DPkg::Lock::Timeout=300 update"
+assert_not_contains "bootstrap(root): 不加 sudo 前缀" "${root_bootstrap_calls}" "sudo "
+# 仓库克隆在 mktemp 目录（通常 /tmp）：/tmp 被挂 noexec 时直接执行脚本会 EACCES，
+# 必须显式经 bash 执行（chmod 0700 只解决权限位，解决不了 noexec 挂载）。
+assert_contains "bootstrap: 仓库脚本显式经 bash 执行" \
+    "$(<"${ROOT_DIR}/bootstrap.sh")" 'bash "${REPO_DIR}/easy_all"'
+assert_not_contains "bootstrap: 不再直接执行仓库脚本" \
+    "$(<"${ROOT_DIR}/bootstrap.sh")" '"${SUDO[@]+"${SUDO[@]}"}" "${REPO_DIR}/easy_all"'
+# 同一遗漏也在 easy_all self-update：克隆目录同样在 mktemp（/tmp）下。
+update_body=$(awk '/^unified_self_update\(\)/,/^}/' "${ROOT_DIR}/easy_all")
+[[ -n "${update_body}" ]] || fail "无法提取 unified_self_update"
+assert_contains "self-update: verify-release 经 bash 执行" \
+    "${update_body}" 'bash "${repo_dir}/easy_all" verify-release'
+assert_contains "self-update: register-command 经 bash 执行" \
+    "${update_body}" 'bash "${repo_dir}/easy_all" register-command'
+assert_not_contains "self-update: 不直接执行克隆目录里的脚本" \
+    "${update_body}" '^    "${repo_dir}/easy_all"'
+
+echo "=== 23. Reality Short ID 只接受偶数位十六进制（1–8 对） ==="
+short_id_probe() {
+    local label=$1 short_id=$2 output
+    output=$(bash "${REALITY_PORT_PROBE}" "${ROOT_DIR}" "${TMP_DIR}/short-id-${label}" 443 "${short_id}") \
+        || fail "short id probe failed for ${label}"
+    printf '%s\n' "${output}"
+}
+for valid_short_id in ab 0123456789abcdef; do
+    valid_out=$(short_id_probe "valid-${valid_short_id}" "${valid_short_id}")
+    assert_contains "short id: ${valid_short_id}（偶数位）通过" "${valid_out}" "rc=0"
+done
+for invalid_short_id in abc 0123456789abcdef00 zz11; do
+    invalid_out=$(short_id_probe "invalid-${invalid_short_id}" "${invalid_short_id}")
+    assert_not_contains "short id: ${invalid_short_id} 必须被拒绝" "${invalid_out}" "rc=0"
+    assert_contains "short id: ${invalid_short_id} 报错说明偶数位" "${invalid_out}" "偶数位"
+done
+
+echo "=== 24. 定时重启：reboot 前非阻塞抢运行时写锁，抢不到只留痕 ==="
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/lib/scheduled-maintenance.sh"
+cron_dir="${TMP_DIR}/reboot-cron"
+install -d -m 0700 "${cron_dir}/bin" "${cron_dir}/no-flock-bin"
+cat >"${cron_dir}/bin/crontab" <<'FAKE_CRONTAB'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+state=${FAKE_CRONTAB_FILE:?}
+case "${1:-}" in
+-l)
+    [[ -f "${state}" ]] || { printf 'no crontab for root\n' >&2; exit 1; }
+    cat "${state}"
+    ;;
+-r) rm -f -- "${state}" ;;
+*) cat >"${state}" ;;
+esac
+FAKE_CRONTAB
+chmod +x "${cron_dir}/bin/crontab"
+export FAKE_CRONTAB_FILE="${cron_dir}/root-crontab"
+export CRON_REBOOT_MARKER="# easy_all-managed-reboot"
+export RUNTIME_WRITE_LOCK_FILE="${cron_dir}/runtime-write.lock"
+# 沙箱/CI 不一定有 util-linux flock：生成期只做 `command -v flock` 门禁，用函数桩满足。
+flock() { :; }
+printf '0 3 * * * /usr/local/bin/user-backup\n' >"${FAKE_CRONTAB_FILE}"
+REBOOT_SCHEDULE_MODE=custom REBOOT_HOUR=5 \
+    PATH="${cron_dir}/bin:${PATH}" configure_daily_reboot \
+    || fail "configure_daily_reboot 应写入定时重启任务"
+cron_line=$(grep -F "${CRON_REBOOT_MARKER}" "${FAKE_CRONTAB_FILE}" || true)
+[[ -n "${cron_line}" ]] || fail "应写入一条受管定时重启行"
+assert_contains "cron: 保留管理员自己的定时任务" "$(<"${FAKE_CRONTAB_FILE}")" "user-backup"
+assert_contains "cron: 重启前非阻塞抢写锁" "${cron_line}" "flock -n 8"
+assert_contains "cron: 锁路径取自 RUNTIME_WRITE_LOCK_FILE" \
+    "${cron_line}" "exec 8>\"${RUNTIME_WRITE_LOCK_FILE}\""
+assert_before "cron: 先抢锁再 reboot" "${cron_line}" "flock -n 8" "/usr/sbin/reboot"
+# 锁必须在同一 shell 里持有到 reboot：子 shell 一退出就释放，等于没锁。
+assert_not_contains "cron: 抢锁不得放在子 shell 里（否则 reboot 时锁已释放）" \
+    "${cron_line}" "( exec 8>"
+assert_contains "cron: 抢不到锁时 logger 留痕（固定文案）" \
+    "${cron_line}" "logger -t easy_all 'easy_all 定时重启已跳过：运行时写锁不可用或正被占用'"
+assert_not_contains "cron: reboot 不再无条件执行" "${cron_line}" ") && /usr/sbin/reboot"
+
+# cron 把未转义的 % 当换行：预命令与新增的锁路径都必须被转义。
+scheduled_reboot_profile_pre_command() { printf '/bin/echo 100%%'; }
+RUNTIME_WRITE_LOCK_FILE="${cron_dir}/lock%probe" \
+    REBOOT_SCHEDULE_MODE=custom REBOOT_HOUR=6 \
+    PATH="${cron_dir}/bin:${PATH}" configure_daily_reboot \
+    || fail "configure_daily_reboot 应接受带 % 的预命令与锁路径"
+escaped_line=$(grep -F "${CRON_REBOOT_MARKER}" "${FAKE_CRONTAB_FILE}" || true)
+assert_contains "cron: 预命令中的 % 被转义" "${escaped_line}" '100\%'
+assert_not_contains "cron: 预命令不留裸 %" "${escaped_line}" '100%'
+assert_contains "cron: 锁路径中的 % 被转义" "${escaped_line}" 'lock\%probe'
+unset -f scheduled_reboot_profile_pre_command
+
+# 缺 flock 时必须在生成任务前报错，而不是写一条将来静默不工作的任务。
+crontab_before=$(<"${FAKE_CRONTAB_FILE}")
+flock_missing_out=$( ( unset -f flock
+    PATH="${cron_dir}/no-flock-bin" REBOOT_SCHEDULE_MODE=custom REBOOT_HOUR=7 \
+        configure_daily_reboot ) 2>&1 ) && fail "缺少 flock 时 configure_daily_reboot 必须报错"
+assert_contains "cron: 缺 flock 时明确报错" "${flock_missing_out}" "缺少 flock"
+assert_equal "cron: 缺 flock 时不改写 crontab" "${crontab_before}" "$(<"${FAKE_CRONTAB_FILE}")"
+
 echo "ok - all audit fixes verified successfully"
+

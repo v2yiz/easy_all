@@ -146,6 +146,13 @@ cf_api() {
         printf '%s\n' "${response:-<empty>}" >&2
         return 1
     fi
+    # 与 lib/cf-dns.sh 的 Cloudflare 客户端同宽：成功 DELETE 可以是 200/204 空体。
+    # GET 空体、失败状态空体与带错误 JSON 的 DELETE 仍然算失败。
+    if [[ "${method}" == "DELETE" && ( "${code}" == "200" || "${code}" == "204" ) \
+        && -z "${response//[[:space:]]/}" ]]; then
+        printf 'null\n'
+        return 0
+    fi
     if ! jq -e '.success == true' <<<"${response}" >/dev/null 2>&1; then
         jq -c '.errors? // []' <<<"${response}" >&2 || printf '%s\n' "${response}" >&2
         return 1
@@ -210,6 +217,7 @@ zone_name_for() {
 }
 
 # 1) DNS 记录：按 easy_all 注释识别，--domain 时按域名范围过滤
+ruleset_warned=0
 while IFS=$'\t' read -r zone_id zone_name account_id; do
     [[ -n "${zone_id}" ]] || continue
     records=$(cf_list "/zones/${zone_id}/dns_records?") || die "读取 DNS 记录失败：${zone_name}"
@@ -228,7 +236,13 @@ while IFS=$'\t' read -r zone_id zone_name account_id; do
 fi
 
 # 2) 规则：ref、表达式与域名范围都要匹配
-    rulesets=$(cf_list "/zones/${zone_id}/rulesets?") || die "读取 ruleset 失败：${zone_name}"
+    # 只授 DNS/证书权限的 Token 读 /rulesets 会 403：规则只是附带清理对象，不能因此中断整个清理，
+    # 否则第 1 阶段收集的 DNS 记录与第 4 阶段的证书都不会被删除（与证书读取同宽）。
+    rulesets=$(cf_list "/zones/${zone_id}/rulesets?") || {
+        ((ruleset_warned == 1)) || warn "无法读取 ruleset（Token 可能缺少规则权限），跳过规则清理：${zone_name}"
+        ruleset_warned=1
+        rulesets="[]"
+    }
     for ruleset_id in $(jq -r '.[].id' <<<"${rulesets}"); do
         detail=$(cf_api GET "/zones/${zone_id}/rulesets/${ruleset_id}") || continue
         rs_name=$(jq -r '.name // empty' <<<"${detail}")

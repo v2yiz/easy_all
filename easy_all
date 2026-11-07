@@ -207,7 +207,9 @@ state_value() {
 
 detect_installed_mode() {
     local protocol="" state_version=""
-    if [[ -f "${EASY_ALL_STATE_FILE}" ]]; then
+    # 不可读的状态文件（目录可搜索、文件 0600 root）同样交给 main 统一提示 root：直接往下
+    # 读会把「状态版本不匹配」这类误导信息抛给非 root 用户；root 下 `-r` 恒为真，行为不变。
+    if [[ -f "${EASY_ALL_STATE_FILE}" && -r "${EASY_ALL_STATE_FILE}" ]]; then
         protocol=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
         state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
         [[ "${state_version}" == "${CURRENT_STATE_VERSION}" ]] \
@@ -220,6 +222,24 @@ detect_installed_mode() {
         esac
         return
     fi
+}
+
+# 状态目录 /etc/easy_all 为 0700：非 root 时 `-f` 同样为假，直接报「尚未安装」会误导用户去重装。
+# 只在目录确实不存在（或确认可访问而无状态文件）时报未安装；其余情况交回 root/sudo。
+launcher_require_installed_mode() {
+    local mode=$1 command=$2 state_dir state_parent
+    [[ -z "${mode}" ]] || return 0
+    state_dir=$(dirname -- "${EASY_ALL_STATE_FILE}")
+    state_parent=$(dirname -- "${state_dir}")
+    if [[ -d "${state_dir}" ]]; then
+        # 目录可访问且确认没有状态文件：确实未安装。
+        [[ -r "${state_dir}" && -x "${state_dir}" && ! -e "${EASY_ALL_STATE_FILE}" ]] \
+            && launcher_die "easy_all 尚未安装"
+    elif [[ -x "${state_parent}" ]]; then
+        # 父目录可搜索时 `-d` 为假才能证明目录不存在。
+        launcher_die "easy_all 尚未安装"
+    fi
+    launcher_die "无法读取安装状态（${EASY_ALL_STATE_FILE}）：当前用户无权访问；若已安装请用 root 运行：sudo easy_all ${command}"
 }
 
 profile_file() {
@@ -306,12 +326,13 @@ unified_self_update() {
         || die "下载的 easy_all 入口语法校验失败"
 
     chmod 0700 "${repo_dir}/easy_all"
-    "${repo_dir}/easy_all" verify-release \
+    # 克隆落在 mktemp 目录（通常 /tmp）：/tmp 被挂 noexec 时直接执行会 EACCES，必须显式经 bash。
+    bash "${repo_dir}/easy_all" verify-release \
         || die "下载的 easy_all 项目未通过目标版本完整性校验"
     # 注册命令会整体替换运行时目录；与安装、定时任务共用同一把写锁，
     # 避免与正在运行的后台任务交错（它们随后打开的是新版本文件）。
     acquire_runtime_write_lock 30
-    "${repo_dir}/easy_all" register-command
+    bash "${repo_dir}/easy_all" register-command
     rm -rf -- "${temp_dir}"
     success "easy_all 项目代码已更新；未修改 Xray、Nginx、订阅或云端 CDN 资源"
 }
@@ -408,7 +429,7 @@ main() {
         mode=$(choose_install_mode)
     else
         mode=$(detect_installed_mode)
-        [[ -n "${mode}" ]] || launcher_die "easy_all 尚未安装"
+        launcher_require_installed_mode "${mode}" "${command}"
     fi
 
     module=$(profile_file "${mode}")

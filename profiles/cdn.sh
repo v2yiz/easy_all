@@ -74,7 +74,7 @@ collect_install_inputs() {
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
     CLOUDFLARE_ORIGIN_DOMAIN=${CF_NODE_DOMAIN}
 
-    CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（DNS 编辑权限）') \
+    CLOUDFLARE_API_TOKEN=$(prompt_secret 'Cloudflare API Token（需 Zone 的 DNS 编辑 + SSL/证书 编辑权限）') \
         || die '缺少 Cloudflare API Token'
     [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]{20,100}$ ]] || die "Cloudflare Token 格式无效"
     collect_globalping_token

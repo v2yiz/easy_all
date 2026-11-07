@@ -173,6 +173,14 @@ assert_equal "profile: 回源 UFW 端口固定 443" "443" "${CLOUDFLARE_UFW_PORT
 assert_equal "profile: 回源 UFW 注释与直连+CDN共用（卸载按注释回收）" \
     "easy_all-cf-origin" "${CLOUDFLARE_UFW_COMMENT}"
 assert_equal "profile: 安装只断言 80/443 空闲" "80 443" "${CDN_INSTALL_PORTS[*]}"
+# CDN_INSTALL_PORTS 常量保持不动，但安装预检必须额外包含回环 XHTTP 端口：
+# 从 install_all 里取出那一条实际调用语句，用桩函数接收实参。
+precheck_stmt=$(sed -n '/^install_all() {/,/^}/p' "${MODE_LIB}" \
+    | grep -F 'prepare_fresh_install "${CDN_INSTALL_PORTS[@]}"' || true)
+[[ -n "${precheck_stmt}" ]] || fail_test "install_all 必须调用 prepare_fresh_install"
+precheck_args=$(prepare_fresh_install() { printf '%s\n' "$*"; }; eval "${precheck_stmt}")
+assert_equal "profile: 安装预检还包含回环 XHTTP 端口（常量不变）" \
+    "80 443 ${XRAY_XHTTP_LOOPBACK_PORT}" "${precheck_args}"
 
 # 初始化纯 CDN fixture：没有直连域名/DIRECT/REALITY 变量。
 CF_ZONE="example.com"
@@ -351,6 +359,14 @@ rendered=$(cdn_render_nginx_config $'\n    http2 on;' "")
 assert_contains "nginx: 回源 server_name 是 CDN 域名" "${rendered}" "server_name ${CF_NODE_DOMAIN};"
 assert_contains "nginx: 订阅 server_name 是订阅域名" "${rendered}" "server_name ${SUBSCRIPTION_DOMAIN};"
 assert_not_contains "nginx: 纯 CDN 没有 8443 监听" "${rendered}" "listen 8443"
+# 订阅 server 块只声明 /subscribe 与内部 location；没有兜底时未知路径会落到默认静态根目录。
+subscription_block=$(awk -v name="server_name ${SUBSCRIPTION_DOMAIN};" '
+    index($0, name) { inside = 1 }
+    inside { print; if ($0 == "}") exit }
+' <<<"${rendered}")
+assert_contains "nginx: 订阅 server 块有兜底 404" "${subscription_block}" "location / { return 404; }"
+assert_equal "nginx: 订阅 server 块兜底 404 只出现一次" "1" \
+    "$(grep -cF 'location / { return 404; }' <<<"${subscription_block}")"
 
 # 6) 订阅分组：无直连节点，PROXY = 聚合节点 → CDN-FALLBACK；
 #    官方域名节点只作 CDN-AUTO 全灭后的兜底，不参与测速。
@@ -519,6 +535,32 @@ assert_equal "purge: 只删除 CDN 节点与订阅记录" \
     "$(printf 'DELETE /zones/zone-123456/dns_records/rec-cf-node.example.com\nDELETE /zones/zone-123456/dns_records/rec-sub.example.com')" \
     "$(<"${purge_log}")"
 
+# 9b) 记录查询失败不能当成“没有要删的记录”：purge_cdn_dns 必须返回非零，
+#     否则 uninstall --purge-cloud 会把云端残留当成已清理并删掉本机状态。
+purge_lookup_rc=0
+purge_lookup_out=$(
+    cloudflare_record_list() { return 1; }
+    cloudflare_api_request() { printf 'unexpected %s\n' "$1"; }
+    CLOUDFLARE_ZONE_ID="zone-123456"
+    purge_cdn_dns
+) 2>&1 || purge_lookup_rc=$?
+((purge_lookup_rc != 0)) || fail_test "purge: 查询失败必须让 purge_cdn_dns 返回非零"
+assert_contains "purge: 查询失败要说明无法确认" "${purge_lookup_out}" "查询 Cloudflare 记录失败"
+
+# 9c) 同名多条 A 记录无法判断归属：不自动删除，但必须报未完成。
+purge_multi_rc=0
+purge_multi_out=$(
+    cloudflare_record_list() {
+        printf '[{"id":"rec-a","comment":"easy_all cdn"},{"id":"rec-b","comment":"easy_all cdn"}]\n'
+    }
+    cloudflare_api_request() { printf 'deleted %s\n' "$2"; }
+    CLOUDFLARE_ZONE_ID="zone-123456"
+    purge_cdn_dns
+) 2>&1 || purge_multi_rc=$?
+((purge_multi_rc != 0)) || fail_test "purge: 多条同名记录必须报未完成"
+assert_contains "purge: 多条同名记录不得自动删除" "${purge_multi_out}" "未自动删除（无法判断归属）"
+assert_not_contains "purge: 多条同名记录不发 DELETE" "${purge_multi_out}" "deleted"
+
 # 10) status 文案区分纯 CDN，且不输出直连入口。
 status_out=$(
     show_tcp_acceleration_status() { :; }
@@ -531,8 +573,12 @@ assert_not_contains "status: 不输出直连入口" "${status_out}" "直连入�
 assert_contains "status: 输出 Cloudflare 域名" "${status_out}" "${CF_NODE_DOMAIN}"
 
 # 11) uninstall --purge-cloud：云端 API 失败只能告警，本机卸载与防火墙回收必须继续。
+# S9：Zone 用状态里的持久值（不再二次查询）；DNS 清理失败必须继续吊销 Origin CA 证书，
+# 否则云端会留下长效孤儿证书。
 uninstall_log="${TMP_DIR}/uninstall.log"
+uninstall_api_log="${TMP_DIR}/uninstall-api.log"
 : >"${uninstall_log}"
+: >"${uninstall_api_log}"
 uninstall_out=$(
     require_root() { :; }
     stop_maintenance_services() { :; }
@@ -547,16 +593,24 @@ uninstall_out=$(
     remove_daily_reboot_schedule() { :; }
     systemctl() { :; }
     cloudflare_collect_api_token() { :; }
-    cloudflare_lookup_parent_zone() { die "注入 Zone 查询失败"; }
-    # 测试不得触网：任何 API 调用都视为缺陷（Zone 查询失败后不应再访问云端）。
-    cloudflare_api_request() { printf 'api-call\n' >>"${TMP_DIR}/uninstall-api.log"; }
-    cloudflare_record_list() { printf '[]'; }
-    cloudflare_clear_api_token() { :; }
+    cloudflare_lookup_parent_zone() { printf 'zone-lookup\n' >>"${uninstall_api_log}"; }
+    cloudflare_record_list() { printf '[{"id":"rec-%s","comment":"%s"}]\n' "$3" "${CDN_RECORD_COMMENT}"; }
+    # DNS 记录删除注入失败：证书吊销仍必须发生。
+    cloudflare_api_request() {
+        printf '%s %s\n' "$1" "$2" >>"${uninstall_api_log}"
+        [[ "$2" == /certificates/* ]]
+    }
+    cloudflare_clear_api_token() { printf 'token-cleared\n' >>"${uninstall_api_log}"; }
+    # 状态文件里的持久值才是卸载时的依据（load_state 会覆盖这里的预设）。
     FORCE=1
     uninstall_all --purge-cloud 2>&1
 ) || fail_test "uninstall: 云端清理失败不得让卸载失败"
-[[ ! -s "${TMP_DIR}/uninstall-api.log" ]] \
-    || fail_test "uninstall: Zone 查询失败后不得继续访问 Cloudflare API"
+api_calls=$(<"${uninstall_api_log}")
+assert_not_contains "uninstall: 不再二次查询 Zone" "${api_calls}" "zone-lookup"
+assert_contains "uninstall: DNS 清理失败仍吊销 Origin CA 证书" \
+    "${api_calls}" "DELETE /certificates/cert-cdn-111"
+assert_contains "uninstall: 两项清理尝试后才清理 Token" \
+    "${api_calls}" "token-cleared"
 assert_contains "uninstall: 云端失败给出告警与补救命令" \
     "${uninstall_out}" "Cloudflare 资源清理未完成"
 assert_contains "uninstall: 云端失败后本机服务仍被停止" "$(<"${uninstall_log}")" "stopped"

@@ -10,7 +10,7 @@
 ```bash
 sudo easy_all self-update
 ```
-- `self-update` 仅从 GitHub 拉取并替换安装器自身的代码，不会擅自重启服务或修改现有配置。
+- `self-update` 仅从 GitHub 拉取并替换安装器自身的代码，不会擅自重启服务或修改现有配置；脚本显式经由系统 Bash 执行，兼容 `/tmp` 挂载有 `noexec` 安全标志的加固系统。
 - 默认跟随 `main` 分支；若需测试开发版可加 `--dev` 参数。
 
 ### 1.2 重新应用本地配置
@@ -106,13 +106,14 @@ sudo easy_all uninstall
 ```bash
 sudo easy_all uninstall --purge-cloud
 ```
-自动调用 API 清理本次安装在云端创建的托管资源（清理节点 DNS 解析与 Origin CA 证书）。
+自动调用 API 清理本次安装在云端创建的托管资源（清理节点 DNS 解析与 Origin CA 证书）。卸载具备严格的错误捕获与多记录防护：若 API 查询超时失败或存在多条同名冲突 A 记录，将保留本机状态并报错告警，绝不将查询失败误判为“已清理完成”，防止远端遗留孤儿解析。
 
 ### 6.3 独立清理 Cloudflare 残留
 若 VPS 已销毁或状态丢失，可使用独立命令清理账户内 easy_all 标记的资源：
 ```bash
 sudo easy_all purge-cloudflare --domain example.com
 ```
+支持平滑容错降级：若 API Token 仅被授予 DNS 与证书权限（缺少 Rulesets 规则集权限），命令会安全跳过规则清理并告警一次，已收集的全部 DNS 记录与 Origin CA 证书依然会正常完成批量删除。
 
 ---
 

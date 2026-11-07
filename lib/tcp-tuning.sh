@@ -20,6 +20,10 @@ readonly SKYLINE_SOURCE_SHA256="7ae2a724f802e35dced7e61f0f51aa2449944fff8955222e
 readonly SKYLINE_ARTIFACT_SHA256="7bf33c0a814ad6a7e40b11fe5819cd822db10fad1f882587c6da5023ac678858"
 readonly SKYLINE_MINIMUM_KERNEL_VERSION="6.12"
 readonly SKYLINE_SOURCE_DIR="${STATE_DIR}/skyline-speeder"
+# 诊断日志不能放 STATE_DIR：安装失败回滚会整目录删除，日志会随提示一起消失。
+readonly SKYLINE_LOG_DIR="/var/log/easy_all"
+readonly SKYLINE_INSTALL_LOG="${SKYLINE_LOG_DIR}/skyline-speeder-install.log"
+readonly SKYLINE_LOG_TAIL_LINES=20
 readonly SKYLINE_BTF_FILE="${SKYLINE_BTF_FILE_OVERRIDE:-/sys/kernel/btf/vmlinux}"
 readonly SKYLINE_CGROUP_FILE="${SKYLINE_CGROUP_FILE_OVERRIDE:-/sys/fs/cgroup/cgroup.controllers}"
 EASY_ALL_TCP_DIR="${EASY_ALL_TCP_DIR_OVERRIDE:-/usr/local/lib/easy_all-tcp}"
@@ -53,19 +57,22 @@ install_skyline_speeder() {
         && [[ "$(<"${SKYLINE_SOURCE_DIR}/.easy-all-commit")" == "${SKYLINE_COMMIT}" ]]; then
         return 0
     fi
+    local url="https://codeload.github.com/CYBERVERSE-Research/skyline-speeder/tar.gz/${SKYLINE_COMMIT}"
+    local rc=0
     curl -fL --proto '=https' --tlsv1.2 --retry 3 \
         --connect-timeout 10 --max-time 180 \
-        "https://codeload.github.com/CYBERVERSE-Research/skyline-speeder/tar.gz/${SKYLINE_COMMIT}" \
-        -o "${archive}" || die "下载 Skyline Speeder 安装器失败"
+        "${url}" -o "${archive}" || { rc=$?; skyline_fail "下载 Skyline Speeder 安装器失败：${url}" "${rc}"; }
     printf '%s  %s\n' "${SKYLINE_SOURCE_SHA256}" "${archive}" \
-        | sha256sum -c - >/dev/null || die "Skyline Speeder 源码 SHA256 校验失败"
+        | sha256sum -c - >/dev/null \
+        || { rc=$?; skyline_fail "Skyline Speeder 源码 SHA256 校验失败：${archive}（期望 ${SKYLINE_SOURCE_SHA256}）" "${rc}"; }
     install -d -m 0700 "${STATE_DIR}"
     stage=$(mktemp -d "${STATE_DIR}/skyline-speeder.stage.XXXXXX") \
         || die "创建 Skyline Speeder 暂存目录失败"
     cleanup_files+=("${stage}")
     tar -xzf "${archive}" -C "${stage}" --strip-components=1 \
         || die "解压 Skyline Speeder 安装器失败"
-    bash "${stage}/install.sh" --check || die "Skyline Speeder 安装前检查失败"
+    run_skyline_installer bash "${stage}/install.sh" --check \
+        || { rc=$?; skyline_fail "Skyline Speeder 安装前检查失败：${stage}/install.sh --check" "${rc}"; }
     printf '%s\n' "${SKYLINE_COMMIT}" >"${stage}/.easy-all-commit" \
         || die "保存 Skyline Speeder 源码版本失败"
     # Retain the previous uninstaller until the verified replacement is in place.
@@ -167,17 +174,84 @@ skyline_build_jobs() {
     fi
 }
 
+# 日志目录/文件由 root 独占（0700 / 0600）。写入不可用时只告警，安装输出回退到终端直出。
+skyline_prepare_log() {
+    install -d -m 0700 "${SKYLINE_LOG_DIR}" 2>/dev/null \
+        || { warn "无法创建 Skyline 日志目录 ${SKYLINE_LOG_DIR}；安装输出只显示在终端"; return 1; }
+    if ! touch "${SKYLINE_INSTALL_LOG}" || ! chmod 0600 "${SKYLINE_INSTALL_LOG}"; then
+        warn "无法写入 Skyline 安装日志 ${SKYLINE_INSTALL_LOG}；安装输出只显示在终端"
+        return 1
+    fi
+    SKYLINE_LOG_READY=1
+}
+
+# 编译可能持续数分钟：输出继续上屏，同时落日志。tee 的退出码不能代替安装器自身的退出码。
+run_skyline_installer() {
+    local rc=0
+    if [[ "${SKYLINE_LOG_READY:-0}" == "1" ]]; then
+        "$@" 2>&1 | tee -a "${SKYLINE_INSTALL_LOG}" || rc=${PIPESTATUS[0]}
+    else
+        "$@" || rc=$?
+    fi
+    return "${rc}"
+}
+
+# 失败必须终止并给出阶段、退出码与日志尾部；仍然不写 BBR、不 warn 后继续、不报成功。
+skyline_fail() {
+    local stage=$1 rc=$2
+    printf 'Skyline 安装日志：%s（末尾 %s 行）\n' \
+        "${SKYLINE_INSTALL_LOG}" "${SKYLINE_LOG_TAIL_LINES}" >&2
+    if [[ -r "${SKYLINE_INSTALL_LOG}" ]]; then
+        tail -n "${SKYLINE_LOG_TAIL_LINES}" "${SKYLINE_INSTALL_LOG}" >&2 || true
+    fi
+    die "${stage}（退出码 ${rc}）"
+}
+
+# 区分服务状态、拥塞控制、qdisc 与物理接口 FQ：只报“验收失败”无法定位是哪一环没生效。
+skyline_acceptance_summary() {
+    local cc qdisc summary=""
+    systemctl is-active --quiet skyline-speederd.service \
+        || summary+="skyline-speederd.service 未运行；"
+    systemctl is-active --quiet skyline-speeder-enable.service \
+        || summary+="skyline-speeder-enable.service 未运行；"
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || cc=unknown
+    [[ "${cc}" == "skyline_cc" ]] || summary+="tcp_congestion_control=${cc}；"
+    qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || qdisc=unknown
+    [[ "${qdisc}" == "fq" ]] || summary+="default_qdisc=${qdisc}；"
+    physical_fq_active || summary+="物理接口未使用 fq 队列规则；"
+    printf '%s' "${summary:-未找到具体差异}"
+}
+
+# 运行态验收失败先取现场：停服务会抹掉最有价值的 unit 状态与 journal。
+skyline_runtime_diagnostics() {
+    local unit cc qdisc
+    for unit in skyline-speederd.service skyline-speeder-enable.service; do
+        printf -- '--- %s ---\n' "${unit}" >&2
+        systemctl is-active "${unit}" >&2 2>&1 || true
+        systemctl show -p Result -p ExecMainStatus "${unit}" >&2 2>&1 || true
+        journalctl -u "${unit}" -b --no-pager -n "${SKYLINE_LOG_TAIL_LINES}" >&2 2>&1 || true
+    done
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || cc=unknown
+    qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || qdisc=unknown
+    printf 'tcp_congestion_control=%s default_qdisc=%s physical_fq_active=%s\n' \
+        "${cc}" "${qdisc}" "$(physical_fq_active && printf yes || printf no)" >&2
+}
+
 configure_tcp_acceleration() {
     require_supported_tcp_architecture
     local systemd_dir="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
     local glibc artifact="${RUNTIME_TMP}/skyline-speeder-${SKYLINE_VERSION}.tar.gz"
-    local installed_commit="" installed_version architecture
+    local installed_commit="" installed_version architecture version_stderr_note=""
+    local version_error_file="${RUNTIME_TMP}/skyline-speederd-version.err"
+    local rc=0
     architecture=$(dpkg --print-architecture)
     TCP_ACCELERATION="skyline"
     if skyline_speeder_active; then
         configure_tcp_parameters
-        systemctl restart skyline-speeder-enable.service >/dev/null 2>&1 \
-            || systemctl enable --now skyline-speeder-enable.service >/dev/null 2>&1 || true
+        # 输出不再丢弃：重启失败的原因要让用户看到（变身与否仍由随后的运行态验收决定）。
+        systemctl restart skyline-speeder-enable.service \
+            || systemctl enable --now skyline-speeder-enable.service \
+            || warn "重启 Skyline 启用任务失败；以随后的运行态验收为准"
         skyline_speeder_active \
             || die "Skyline Speeder 重新启用失败（当前拥塞控制 $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)）；重试：sudo easy_all apply"
         info "Skyline Speeder 已在运行（fq + skyline_cc），TCP 参数已刷新"
@@ -203,12 +277,14 @@ configure_tcp_acceleration() {
         return 0
     fi
     check_skyline_requirements
+    skyline_prepare_log || true
     install_skyline_speeder
     stop_skyline_speeder
     configure_tcp_parameters
     [[ ! -r "${SKYLINE_SOURCE_DIR}/.easy-all-installed" ]] \
         || installed_commit=$(<"${SKYLINE_SOURCE_DIR}/.easy-all-installed")
-    installed_version=$(skyline-speederd --version 2>/dev/null) || installed_version=""
+    installed_version=$(skyline-speederd --version 2>"${version_error_file}") \
+        || installed_version=""
     if [[ "${installed_commit}" != "${SKYLINE_COMMIT}" \
         || "${installed_version}" != "skyline-speederd ${SKYLINE_VERSION#v}" \
         || ! -f "${systemd_dir}/skyline-speederd.service" \
@@ -220,36 +296,48 @@ configure_tcp_acceleration() {
             check_skyline_build_memory
             local cargo_jobs
             cargo_jobs=$(skyline_build_jobs)
-            CARGO_BUILD_JOBS="${cargo_jobs}" \
+            run_skyline_installer env "CARGO_BUILD_JOBS=${cargo_jobs}" \
                 bash "${SKYLINE_SOURCE_DIR}/install.sh" --source --no-enable \
-                || die "Skyline Speeder 源码安装失败；TCP 调优配置已保留，可重试 sudo easy_all apply"
+                || { rc=$?; skyline_fail "Skyline Speeder 源码安装失败：${SKYLINE_SOURCE_DIR}/install.sh --source（TCP 调优配置已保留）" "${rc}"; }
         else
+            local artifact_url="https://github.com/CYBERVERSE-Research/skyline-speeder/releases/download/${SKYLINE_VERSION}/skyline-speeder-${SKYLINE_VERSION}-x86_64.tar.gz"
             curl -fL --proto '=https' --tlsv1.2 --retry 3 \
                 --connect-timeout 10 --max-time 180 \
-                "https://github.com/CYBERVERSE-Research/skyline-speeder/releases/download/${SKYLINE_VERSION}/skyline-speeder-${SKYLINE_VERSION}-x86_64.tar.gz" \
-                -o "${artifact}" || die "下载 Skyline Speeder 预编译包失败"
+                "${artifact_url}" -o "${artifact}" \
+                || { rc=$?; skyline_fail "下载 Skyline Speeder 预编译包失败：${artifact_url}" "${rc}"; }
             printf '%s  %s\n' "${SKYLINE_ARTIFACT_SHA256}" "${artifact}" >"${artifact}.sha256"
             sha256sum -c "${artifact}.sha256" >/dev/null \
-                || die "Skyline Speeder 预编译包 SHA256 校验失败"
-            SKYLINE_ARTIFACT_URL="${artifact}" \
+                || { rc=$?; skyline_fail "Skyline Speeder 预编译包 SHA256 校验失败：${artifact}（期望 ${SKYLINE_ARTIFACT_SHA256}）" "${rc}"; }
+            run_skyline_installer env "SKYLINE_ARTIFACT_URL=${artifact}" \
                 bash "${SKYLINE_SOURCE_DIR}/install.sh" --prebuilt --no-enable \
-                || die "Skyline Speeder 安装失败；TCP 调优配置已保留，可重试 sudo easy_all apply"
+                || { rc=$?; skyline_fail "Skyline Speeder 预编译包安装失败：${SKYLINE_SOURCE_DIR}/install.sh --prebuilt（TCP 调优配置已保留）" "${rc}"; }
         fi
-        installed_version=$(skyline-speederd --version 2>/dev/null) || installed_version=""
+        rc=0
+        installed_version=$(skyline-speederd --version 2>"${version_error_file}") || rc=$?
         if [[ "${installed_version}" != "skyline-speederd ${SKYLINE_VERSION#v}" ]]; then
+            version_stderr_note=""
+            [[ ! -s "${version_error_file}" ]] || version_stderr_note="，stderr：$(<"${version_error_file}")"
             stop_skyline_speeder
             sysctl -p "${TCP_SYSCTL_CONF}" >/dev/null || die "回退 TCP 调优配置失败"
-            die "Skyline Speeder 版本验收失败（期望 skyline-speederd ${SKYLINE_VERSION#v}，实际 ${installed_version:-未能读取}）；请核对安装日志及上游版本格式后执行 sudo easy_all apply 重试"
+            skyline_fail "Skyline Speeder 版本验收失败（期望 skyline-speederd ${SKYLINE_VERSION#v}，实际 ${installed_version:-未能读取}${version_stderr_note}）" "${rc}"
         fi
         printf '%s\n' "${SKYLINE_COMMIT}" >"${SKYLINE_SOURCE_DIR}/.easy-all-installed" \
             || die "保存 Skyline Speeder 安装版本失败"
     fi
-    systemctl enable --now skyline-speederd.service \
-        || die "启动 Skyline Speeder 守护进程失败"
-    if ! systemctl enable --now skyline-speeder-enable.service || ! skyline_speeder_active; then
+    rc=0
+    systemctl enable --now skyline-speederd.service || rc=$?
+    if ((rc != 0)); then
+        skyline_runtime_diagnostics
+        skyline_fail "启动 Skyline Speeder 守护进程失败：skyline-speederd.service" "${rc}"
+    fi
+    rc=0
+    systemctl enable --now skyline-speeder-enable.service || rc=$?
+    if ((rc != 0)) || ! skyline_speeder_active; then
+        # 停服务前先取现场：unit 状态与 journal 在 stop 之后就看不到了。
+        skyline_runtime_diagnostics
         stop_skyline_speeder
         sysctl -p "${TCP_SYSCTL_CONF}" >/dev/null || die "回退 TCP 调优配置失败"
-        die "Skyline Speeder 启用后验收失败，已停用；重试：sudo easy_all apply"
+        skyline_fail "Skyline Speeder 启用后验收失败（$(skyline_acceptance_summary)），已停用服务并保留回退配置" "${rc}"
     fi
     remove_skyline_boot_setup 0
     rm -f -- "${KERNEL_REBOOT_MARKER}"

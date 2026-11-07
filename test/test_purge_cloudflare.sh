@@ -40,15 +40,28 @@ EOF
 #   multi   ：第 1/2 页各 100 条 + 第 3 页 5 条（验证恰好整页后仍会探测结束页）
 #   loop    ：每页都返回同一份 100 条（验证“接口不分页”检测）
 #   endless ：每页 100 条且内容不同（验证页数上限）
+#   PURGE_TEST_RULESETS_DENY=1：/rulesets 返回 403（Token 只给了 DNS/证书权限）
 cat >"${TMP_DIR}/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 url=""
+method="GET"
 for a in "$@"; do
     case "$a" in
     http*) url=$a ;;
+    DELETE | POST | PUT) method=$a ;;
     esac
 done
 printf '%s\n' "${url}" >>"${PURGE_TEST_CALLS}"
+# 真实 Cloudflare 的成功 DELETE 可能返回 204 + 空体：必须按成功处理。
+if [[ "${method}" == "DELETE" && "${PURGE_TEST_EMPTY_DELETE:-0}" == "1" ]]; then
+    printf '\n204'
+    exit 0
+fi
+if [[ "${PURGE_TEST_RULESETS_DENY:-0}" == "1" && "${url}" == *"/rulesets"* ]]; then
+    printf '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}'
+    printf '\n403'
+    exit 0
+fi
 
 emit_records() {
     local prefix=$1 n=$2 comment=${3:-easy_all combined} i=1
@@ -193,5 +206,32 @@ run_purge "${CALLS}" "${OUT}" "${ERR}" \
     || fail "purge-cloudflare: 自定义状态文件路径应成功"
 assert_contains "purge-cloudflare: 识别自定义状态文件并告警" \
     "$(<"${OUT}")$(<"${ERR}")" "检测到本机已有 easy_all 安装"
+
+# 6) 成功 DELETE 返回 204 + 空响应体时必须算成功（曾把空体送 jq 判定失败，导致清理中断）
+CALLS="${TMP_DIR}/empty-delete-calls.log"
+OUT="${TMP_DIR}/empty-delete.out"
+ERR="${TMP_DIR}/empty-delete.err"
+run_purge "${CALLS}" "${OUT}" "${ERR}" \
+    env PURGE_TEST_EMPTY_DELETE=1 || \
+    fail "purge-cloudflare: 204 空体的成功 DELETE 不得判为失败：$(tail -n 3 "${ERR}")"
+total=$(sed -n 's/.*Cloudflare 清理完成：\([0-9][0-9]*\) 个对象.*/\1/p' "${OUT}" | tail -n 1)
+assert_equal "purge-cloudflare: 204 空体仍删除全部 easy_all DNS 记录" "101" "${total}"
+assert_contains "purge-cloudflare: 204 空体后仍输出清理完成" "$(<"${OUT}")" "Cloudflare 清理完成"
+
+
+# 7) 只授 DNS/证书权限的 Token 读 /rulesets 会 403：规则只是附带清理对象，
+#    不能因此跳过第 1 阶段已收集的 DNS 记录与第 4 阶段的证书清理。
+CALLS="${TMP_DIR}/rulesets-deny-calls.log"
+OUT="${TMP_DIR}/rulesets-deny.out"
+ERR="${TMP_DIR}/rulesets-deny.err"
+run_purge "${CALLS}" "${OUT}" "${ERR}" \
+    env PURGE_TEST_RULESETS_DENY=1 || \
+    fail "purge-cloudflare: ruleset 无权限时不得中断清理：$(tail -n 3 "${ERR}")"
+total=$(sed -n 's/.*Cloudflare 清理完成：\([0-9][0-9]*\) 个对象.*/\1/p' "${OUT}" | tail -n 1)
+assert_equal "purge-cloudflare: ruleset 403 仍删除全部 easy_all DNS 记录" "101" "${total}"
+assert_contains "purge-cloudflare: ruleset 403 时告警并继续" \
+    "$(<"${OUT}")$(<"${ERR}")" "无法读取 ruleset"
+assert_equal "purge-cloudflare: ruleset 403 只告警一次" "1" \
+    "$(grep -c '无法读取 ruleset' <<<"$(<"${OUT}")$(<"${ERR}")")"
 
 printf 'ok - purge-cloudflare\n'

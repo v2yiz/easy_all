@@ -86,8 +86,20 @@ ensure_swap() {
 
     local target_dir avail_kb
     target_dir=$(dirname "${swap_file}")
-    avail_kb=$(df -k "${target_dir}" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=0
-    if (( avail_kb > 0 && avail_kb < 1572864 )); then
+    # `df -k` 在长设备名下会换行错位；`-P` 保证一个文件系统一行。仍可能取不到数字
+    # （df 失败/权限不足），此时按「无法确认」处理：宁可跳过，也不在可能已满的盘上写 1GB。
+    # `df` 自身失败时在 pipefail 下会让赋值返回非零；不能因此中断安装，按“无法确认”处理。
+    avail_kb=$(df -Pk "${target_dir}" 2>/dev/null | awk 'NR == 2 {print $4}') || avail_kb=""
+    if [[ ! "${avail_kb}" =~ ^[0-9]{1,15}$ ]]; then
+        warn "无法确认磁盘剩余空间（${target_dir}）；跳过创建 Swap，请手动配置或释放空间"
+        return 0
+    fi
+    avail_kb=$((10#${avail_kb}))
+    if (( avail_kb == 0 )); then
+        warn "磁盘已无可用空间（${target_dir}）；跳过创建 Swap，请释放空间后手动配置"
+        return 0
+    fi
+    if (( avail_kb < 1572864 )); then
         warn "磁盘剩余空间不足 1.5GB（当前剩余 $((avail_kb / 1024))MB）；跳过创建 Swap，请注意内存占用"
         return 0
     fi
@@ -160,13 +172,20 @@ snapshot_ipv6_state() {
 
 configure_ipv4_only() {
     [[ -d "${EASY_ALL_PROC_IPV6_DIR:-/proc/sys/net/ipv6}" ]] || return 0
-    local tmp_dir="${RUNTIME_TMP:-/tmp}"
-    cat >"${tmp_dir}/enable-ipv6.conf" <<'EOF'
+    local tmp_dir="${RUNTIME_TMP:-/tmp}" tmp_file
+    # 固定文件名会被同机其他进程/用户预置（软链接或并发截断），用 mktemp 保证独占后再 install。
+    tmp_file=$(mktemp "${tmp_dir}/enable-ipv6.XXXXXX") \
+        || die "创建 IPv4-only 策略临时文件失败（${tmp_dir}）"
+    cat >"${tmp_file}" <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
-    install -m 0644 "${tmp_dir}/enable-ipv6.conf" "${IPV6_SYSCTL_CONF}"
+    if ! install -m 0644 "${tmp_file}" "${IPV6_SYSCTL_CONF}"; then
+        rm -f -- "${tmp_file}"
+        die "写入 IPv4-only 策略文件失败：${IPV6_SYSCTL_CONF}"
+    fi
+    rm -f -- "${tmp_file}"
     sysctl -p "${IPV6_SYSCTL_CONF}" >/dev/null \
         || die "应用全局 IPv4-only 策略失败"
 }

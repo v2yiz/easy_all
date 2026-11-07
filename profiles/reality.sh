@@ -676,7 +676,7 @@ configure_ufw() {
         apply_ssh_ufw_policy "${desired_ports}"
         cloudflare_configure_origin_firewall
     else
-        cloudflare_remove_origin_firewall_rules
+        cloudflare_remove_origin_firewall_rules || true
     fi
     apply_ssh_ufw_policy "${desired_ports}"
     write_ufw_nat_rules
@@ -703,8 +703,9 @@ write_xray_config() {
         | awk '/Password|PublicKey/ {print $NF; exit}')
     [[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] \
         || die "生成 Reality X25519 密钥失败"
-    [[ "${REALITY_SHORT_ID}" =~ ^[0-9a-fA-F]{2,16}$ ]] \
-        || die "Reality Short ID 无效"
+    # Reality 的 shortId 是字节串的十六进制写法，只接受 1–8 对（2–16 位偶数位十六进制）。
+    [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+        || die "Reality Short ID 无效：只允许偶数位十六进制（2–16 位，即 1–8 对）"
     clients=$(jq -cn --arg id "${VLESS_UUID}" \
         '[{id:$id,email:"easy_all.owner",flow:"xtls-rprx-vision"}]')
     jq -n \
@@ -1146,11 +1147,15 @@ install_reality_subscription_renderer() {
 
 write_subscription_nginx_config() {
     optimize_nginx_system_config
-    local http2_directive="" listen_h2=" http2" candidate
+    local http2_directive="" listen_h2=" http2" candidate ssh_ports
     if nginx_supports_http2_directive; then
         http2_directive=$'\n    http2 on;'
         listen_h2=""
     fi
+    # 订阅下发的动态端口必须避开 SSH 端口：渲染前取一次快照并归一化为十进制端口列表（写入 nginx 变量）。
+    detect_ssh_ports
+    ssh_ports=$(normalize_ufw_tcp_ports "${SSH_PORTS}") \
+        || die "无法确定 SSH 端口；拒绝生成 Reality 订阅配置"
     write_subscription_web_root
     {
         printf 'js_import easy_all_reality_subscription from %s;\n' "${REALITY_SUBSCRIPTION_JS}"
@@ -1169,7 +1174,7 @@ server {
     }
 
 EOF
-        write_subscription_nginx_locations "" reality "${SUBSCRIPTION_OPTIONAL_VARIANTS}"
+        write_subscription_nginx_locations "" reality "${SUBSCRIPTION_OPTIONAL_VARIANTS}" "${ssh_ports}"
         cat <<'EOF'
     location / { return 404; }
 }
@@ -2002,7 +2007,8 @@ uninstall_all() {
         warn "Cloudflare 资源（DNS/规则/Origin CA）已保留；本机状态即将删除，之后无法再用 easy_all 清理这些资源"
     fi
     stop_protocol_services
-    cloudflare_remove_origin_firewall_rules
+    # 回源规则删除失败只告警：卸载/回滚不能因此半途中断（失败原因已由回收函数打印）。
+    cloudflare_remove_origin_firewall_rules || true
     restore_platform_security_state || {
         warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
         return 1
@@ -2025,7 +2031,8 @@ uninstall_all() {
 rollback_fresh_install() {
     warn "首次安装失败，正在恢复本机服务、UFW 与 crontab 配置（保留前置初始化：SWAP、系统依赖与 TCP/Skyline 加速）"
     stop_protocol_services
-    cloudflare_remove_origin_firewall_rules
+    # 回源规则删除失败只告警：卸载/回滚不能因此半途中断（失败原因已由回收函数打印）。
+    cloudflare_remove_origin_firewall_rules || true
     restore_platform_security_state || {
         warn "SSH 恢复失败；保留防火墙放行、状态与备份，请修正后重试"
         return 1

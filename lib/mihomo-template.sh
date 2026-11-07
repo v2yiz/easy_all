@@ -14,6 +14,32 @@ mihomo_template_matches_bundled() {
     return 1
 }
 
+# dns 段是否把 ipv6 显式关闭。缩进宽度不限（2/4 空格等），但必须是 dns: 的直接子键：
+# 缩进更深的嵌套键、或别处出现的 ipv6: false 都不算。
+mihomo_dns_disables_ipv6() {
+    awk '
+        function indent_of(line) {
+            match(line, /^[[:space:]]*/)
+            return RLENGTH
+        }
+        /^dns:[[:space:]]*(#.*)?$/ { inside = 1; child_indent = -1; next }
+        !inside { next }
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*#/ { next }
+        {
+            current = indent_of($0)
+            if (current == 0) exit
+            if (child_indent < 0) child_indent = current
+            if (current != child_indent) next
+            body = $0
+            sub(/^[[:space:]]+/, "", body)
+            sub(/[[:space:]]+#.*$/, "", body)
+            if (body ~ /^ipv6:[[:space:]]*false[[:space:]]*$/) found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    ' "${1:?mihomo_dns_disables_ipv6 需要模板路径}"
+}
+
 validate_mihomo_template() {
     local source=$1 trusted_without_core=${2:-0} marker count bad_sniffer
     [[ -s "${source}" ]] || die "Mihomo 模板为空：${source}"
@@ -32,9 +58,9 @@ validate_mihomo_template() {
     [[ -z "${bad_sniffer}" ]] \
         || die "Mihomo 模板的 sniffer 段必须写成块映射（sniffer: 后不能接内联内容）：${source}"
     grep -Fxq 'ipv6: false' "${source}" \
-        && grep -Fq '    ipv6: false' "${source}" \
+        && mihomo_dns_disables_ipv6 "${source}" \
         && ! grep -Eq '^[[:space:]]+(inet6-address|fake-ip-range6):' "${source}" \
-        || die "Mihomo 模板必须保持 IPv4-only"
+        || die "Mihomo 模板必须保持 IPv4-only（顶层与 dns 段都要显式 ipv6: false，且不得出现 IPv6 地址字段）"
     # Bundled templates are checked with a pinned core in CI. Custom templates must
     # pass the same parser locally before either subscription publisher accepts them.
     local bundled_dir binary check_dir result=0

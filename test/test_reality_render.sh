@@ -125,6 +125,8 @@ assert_equal "profile: 回源 UFW 端口为订阅端口" "8443" "${CLOUDFLARE_UF
 assert_equal "profile: 回源证书路径指向 profile 常量" \
     "${CERT_DIR}/cloudflare-origin-ca-ecc.pem" "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
 require_root() { :; }
+# 渲染测试不启动真实 sshd/ss：固定 SSH 端口快照，才能断言注入 nginx 的变量值。
+detect_ssh_ports() { SSH_PORTS="22"; }
 trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
 
 NODE_NAME="MY_REALITY"
@@ -260,6 +262,17 @@ assert_contains "nginx: mihomo-ios-all alias points at the published file" "${ng
     "alias ${SUBSCRIPTION_MIHOMO_IOS_ALL_FILE};"
 assert_contains "nginx: subscribe route keeps token auth" "${nginx_config}" \
     '$easy_all_subscription_allowed = __denied__'
+# 订阅下发的动态端口必须避开 SSH 端口：SSH 端口快照要进入每个 Reality 订阅 location。
+assert_contains "nginx: 注入归一化后的 SSH 端口列表" "${nginx_config}" \
+    'set $easy_all_ssh_ports "22";'
+assert_equal "nginx: 每个 Reality 订阅 location 都注入 SSH 端口快照" \
+    "$(grep -c 'set \$easy_all_reality_port_mode' <<<"${nginx_config}")" \
+    "$(grep -c 'set \$easy_all_ssh_ports' <<<"${nginx_config}")"
+# 订阅 server 块的兜底 404 由 Reality 自己在共享渲染函数之后输出；共享函数（订阅域名 server
+# 块之外的调用方）不得再补一份，否则 nginx -t 会因重复 location 失败。
+reality_server_block=$(awk '/^server \{/ { inside = 1 } inside' <<<"${nginx_config}")
+assert_equal "nginx: Reality 订阅 server 块只有一个兜底 404" "1" \
+    "$(grep -cF 'location / { return 404; }' <<<"${reality_server_block}")"
 
 # 旧状态升级：只有 ALLOWED_TOKENS 时，load_state 自动折叠成 nodes 为空的订阅配置。
 cat >"${STATE_FILE}" <<'EOF'

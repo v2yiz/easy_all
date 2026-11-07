@@ -276,6 +276,7 @@ write_subscription_nginx_locations() {
     local origin_header_secret=${1:-}
     local renderer=${2:-static}
     local optional_variants=${3:-0}
+    local ssh_ports=${4:-}
     local error_log="" base64_content="" mihomo_content=""
     local suffix suffix_alias base64_alias mihomo_alias mihomo_ios_alias
     local origin_guard
@@ -291,10 +292,16 @@ write_subscription_nginx_locations() {
     if [[ "${renderer}" == "reality" ]]; then
         [[ "${SUB_PORT_MODE:-}" == "dynamic" || "${SUB_PORT_MODE:-}" == "443" ]] \
             || die "Reality 订阅端口模式无效"
+        # 动态端口必须避开 SSH 端口：NAT 对 SSH 端口 RETURN，下发到那里的端口会转到 sshd。
+        # njs 读该变量逐个槽位避让（见 lib/reality-subscription.js）。
+        [[ -n "${ssh_ports}" ]] \
+            || die "Reality 订阅缺少 SSH 端口列表；拒绘下发可能被 NAT 转到 sshd 的端口"
         error_log="        error_log /dev/null;"
         base64_content="        set \$easy_all_reality_port_mode ${SUB_PORT_MODE};
+        set \$easy_all_ssh_ports \"${ssh_ports}\";
         js_content easy_all_reality_subscription.base64;"
         mihomo_content="        set \$easy_all_reality_port_mode ${SUB_PORT_MODE};
+        set \$easy_all_ssh_ports \"${ssh_ports}\";
         js_content easy_all_reality_subscription.mihomo;"
     fi
     cat <<EOF

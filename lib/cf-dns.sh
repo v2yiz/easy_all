@@ -59,20 +59,11 @@ cloudflare_api_request() {
     jq -sc '.[0].result' <<<"${response}"
 }
 
-cloudflare_origin_ufw_rule_numbers() {
-    command -v ufw >/dev/null 2>&1 || return 0
-    LC_ALL=C ufw status numbered 2>/dev/null \
-        | sed -n "/${CLOUDFLARE_UFW_COMMENT}/s/^[[:space:]]*\\[[[:space:]]*\\([0-9][0-9]*\\)\\].*/\\1/p" \
-        | sort -rn
-}
-
 cloudflare_remove_origin_firewall_rules() {
-    local number
-    while IFS= read -r number; do
-        [[ -n "${number}" ]] || continue
-        ufw --force delete "${number}" >/dev/null 2>&1 \
-            || warn "删除 Cloudflare 回源 UFW 规则 ${number} 失败"
-    done < <(cloudflare_origin_ufw_rule_numbers)
+    # 按完整规则规格删除：status 编号只用于发现端口与来源 CIDR，不用于删除（Fail2ban 插入会让编号漂移）。
+    delete_stale_ufw_rules "${CLOUDFLARE_UFW_COMMENT}" \
+        || { warn "删除 Cloudflare 回源 UFW 规则未完成；请人工核对 ufw status"
+             return 1; }
 }
 
 cloudflare_configure_origin_firewall() {

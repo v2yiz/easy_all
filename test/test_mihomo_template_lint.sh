@@ -173,4 +173,73 @@ for template in "${TEMPLATES[@]}"; do
     printf 'ok - %s\n' "${template}"
 done
 
+# 9. IPv4-only 校验：dns 段的 ipv6: false 允许任意统一缩进（2 空格等），但必须是 dns 的
+#    直接子键；ipv6: true、缺该键、缩进更深的嵌套键与 IPv6 地址字段仍必须拒绝。
+lint_dir=$(mktemp -d "${TMP_ROOT_FALLBACK:-/tmp}/easy_all_mihomo_lint.XXXXXX")
+trap 'rm -rf -- "${lint_dir}"' EXIT
+
+reindent_dns_block() {
+    awk '
+        /^dns:[[:space:]]*$/ { inside = 1; print; next }
+        inside && /^[^[:space:]#]/ { inside = 0 }
+        inside { sub(/^  /, "") }
+        { print }
+    ' "$1" >"$2"
+}
+
+# 用直接入口校验，MIHOMO_TEMPLATE_TRUSTED=1 跳过内核心校验（本仓库模板已在 CI 里用 pin 的内核校验）。
+expect_ipv4_only_rejected() {
+    local label=$1 path=$2 output
+    if output=$(MIHOMO_TEMPLATE_TRUSTED=1 bash "${ROOT_DIR}/lib/mihomo-template.sh" \
+        "${path}" 2>&1); then
+        fail "${label}: 应被拒绝但校验通过"
+    fi
+    [[ "${output}" == *"IPv4-only"* ]] \
+        || fail "${label}: 报错应指明 IPv4-only，实际：${output}"
+}
+
+baseline="${ROOT_DIR}/templates/mihomo.yaml"
+two_space="${lint_dir}/mihomo-dns-2spaces.yaml"
+reindent_dns_block "${baseline}" "${two_space}"
+MIHOMO_TEMPLATE_TRUSTED=1 bash "${ROOT_DIR}/lib/mihomo-template.sh" "${two_space}" \
+    || fail "dns 段用 2 空格缩进的合法模板应通过 IPv4-only 校验"
+
+dns_ipv6_true="${lint_dir}/mihomo-dns-ipv6-true.yaml"
+awk '
+    /^dns:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[^[:space:]#]/ { inside = 0 }
+    inside && /^[[:space:]]+ipv6:[[:space:]]*false[[:space:]]*$/ { print "    ipv6: true"; next }
+    { print }
+' "${baseline}" >"${dns_ipv6_true}"
+expect_ipv4_only_rejected "dns 段 ipv6: true" "${dns_ipv6_true}"
+
+dns_ipv6_missing="${lint_dir}/mihomo-dns-ipv6-missing.yaml"
+awk '
+    /^dns:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[^[:space:]#]/ { inside = 0 }
+    inside && /^[[:space:]]+ipv6:[[:space:]]*false[[:space:]]*$/ { next }
+    { print }
+' "${baseline}" >"${dns_ipv6_missing}"
+expect_ipv4_only_rejected "dns 段缺少 ipv6: false" "${dns_ipv6_missing}"
+
+# 缩进更深（不是 dns 直接子键）的 ipv6: false 不得当成合法写法。
+dns_ipv6_nested="${lint_dir}/mihomo-dns-ipv6-nested.yaml"
+awk '
+    /^dns:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[^[:space:]#]/ { inside = 0 }
+    inside && /^[[:space:]]+ipv6:[[:space:]]*false[[:space:]]*$/ { print "        ipv6: false"; next }
+    { print }
+' "${baseline}" >"${dns_ipv6_nested}"
+expect_ipv4_only_rejected "dns 段嵌套层级的 ipv6: false" "${dns_ipv6_nested}"
+
+dns_inet6="${lint_dir}/mihomo-dns-inet6.yaml"
+awk '
+    /^dns:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[^[:space:]#]/ { inside = 0 }
+    inside && /^[[:space:]]+ipv6:[[:space:]]*false[[:space:]]*$/ { print; print "    inet6-address: '::1'"; next }
+    { print }
+' "${baseline}" >"${dns_inet6}"
+expect_ipv4_only_rejected "dns 段 IPv6 地址字段" "${dns_inet6}"
+
+printf 'ok - mihomo templates IPv4-only indentation\n'
 printf 'ok - mihomo templates\n'

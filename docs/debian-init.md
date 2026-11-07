@@ -25,13 +25,13 @@ EASY_ALL_BRANCH=dev bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/ea
 ## 执行内容
 
 - 升级 APT 软件包并安装基础工具和 Fail2ban。
-- 写入与 easy_all 一致的 TCP 调优参数（fq、缓冲区、keepalive 等），不设置拥塞控制算法、不安装或加载 BBR，也不依赖特定内核。
+- 写入与 easy_all 一致的 TCP 调优参数（fq、缓冲区、keepalive 等），不设置拥塞控制算法、不安装或加载 BBR，也不依赖特定内核；写入前自动检查 `/proc/sys/net/ipv6`，在内核开启 `ipv6.disable=1` 时跳过 IPv6 sysctl 参数写入，防止 `sysctl -p` 致命报错。
 - 保持 SSH 现有监听端口，UFW 放行该端口并由默认入站策略阻断其余端口，Fail2ban 实时监控保护。
   这套 UFW/Fail2ban 基线是常驻安全底座：后续 `easy_all uninstall` 只回收业务端口，不会关闭 UFW 或删除 Fail2ban 配置。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
-- 创建或更新普通用户、sudo 密码和 SSH 公钥。
+- 创建或更新普通用户、sudo 密码和 SSH 公钥；root 初始连接时不依赖预装 sudo，适配精简系统镜像。
 - 为普通用户安装 `uv` 和 Python 3.12。
-- 写入受管 `sshd_config.d` 配置，关闭 SSH 密码登录，并限制 root 只能使用密钥登录。
+- 写入受管 `sshd_config.d` 配置，关闭 SSH 密码登录，并限制 root 只能使用密钥登录；通过 `sshd -T` 语法验收后执行 `systemctl reload` 平滑生效。
 - 在本地 `~/.ssh/config` 写入 Host、连接重试和保活参数。
 
 ## 主要输入

@@ -20,7 +20,7 @@ read_root_crontab() {
 
 configure_daily_reboot() {
     local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job current filtered
-    local pre_command="" profile_pre_command=""
+    local pre_command="" profile_pre_command="" reboot_skip_message
     # 空标记会让 awk 过滤退化成“删掉所有行”，从而抹除管理员全部定时任务。
     [[ -n "${CRON_REBOOT_MARKER:-}" ]] \
         || die "CRON_REBOOT_MARKER 为空，已拒绝改写 root crontab"
@@ -50,6 +50,11 @@ configure_daily_reboot() {
         ;;
     *) die "定时重启选项无效：${mode}" ;;
     esac
+    # 定时重启要靠 flock -n 在 reboot 前抢运行时写锁；缺 flock 时生成的 cron 行
+    # 只会在每次触发时静默不工作，宁可现在就报错。
+    if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]] && ! command -v flock >/dev/null 2>&1; then
+        die "缺少 flock；无法生成可靠的定时重启任务（重启前需要非阻塞获取运行时写锁）"
+    fi
     current=$(read_root_crontab) || return 1
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
         if declare -F scheduled_reboot_profile_pre_command >/dev/null 2>&1; then
@@ -58,8 +63,16 @@ configure_daily_reboot() {
         if [[ -n "${profile_pre_command}" ]]; then
             pre_command="${profile_pre_command}"
         fi
-        pre_command=${pre_command//%/\\%}
-        job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command:-true} ) && /usr/sbin/reboot ${CRON_REBOOT_MARKER}"
+        # 抢不到写锁（安装/更新正在写运行时）时本轮不重启，只用 logger 留痕；
+        # FD 8 是 cron 行内独立打开的描述符，与 easy_all 进程持有的 FD 9 无关。
+        # 不能在子 shell 里抢锁：子 shell 退出即释放，reboot 时已无锁可守。
+        reboot_skip_message="easy_all 定时重启已跳过：运行时写锁不可用或正被占用"
+        job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command:-true} ) && "
+        job+="if exec 8>\"${RUNTIME_WRITE_LOCK_FILE}\" && flock -n 8; then /usr/sbin/reboot; "
+        job+="else logger -t easy_all '${reboot_skip_message}'; fi ${CRON_REBOOT_MARKER}"
+        # cron 把未转义的 % 当换行；转义必须覆盖最终命令里的所有可变片段
+        # （预命令与运行时锁路径），所以整行最后统一转义一次。
+        job=${job//%/\\%}
     fi
     # 与 remove_daily_reboot_schedule 一致：先确认过滤成功再提交，管道中途失败时
     # crontab - 会收到截断输入并覆写整份 crontab。

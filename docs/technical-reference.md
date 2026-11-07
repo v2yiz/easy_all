@@ -12,7 +12,8 @@
 - **协议栈**：VLESS TCP Reality Vision (`flow: xtls-rprx-vision`)
 - **服务端端口**：Xray 监听 `0.0.0.0:443`。
 - **伪装目标**：默认 `swdist.apple.com:443`，安装和修改时通过 `xray tls ping` 自动完成带 SNI 的 TLS 1.3 握手验收。
-- **动态端口（可选）**：通过 UFW `before.rules` 在 `PREROUTING` 链将 `10000-62703` 范围端口通过单条范围规则 NAT 重定向到实际入站端口（默认 `443`），客户端按时间槽位动态轮换。
+- **Short ID 格式约束**：`REALITY_SHORT_ID` 严格约束为 1–8 对（2–16 位）偶数位十六进制字符（`^([0-9a-fA-F]{2}){1,8}$`），写入 Xray 配置与下发前均经正则断言，防止奇数位破坏 Xray 配置解析。
+- **动态端口（可选）**：通过 UFW `before.rules` 在 `PREROUTING` 链将 `10000-62703` 范围端口通过单条范围规则 NAT 重定向到实际入站端口（默认 `443`），客户端按时间槽位动态轮换；算法自动探测并避让系统实际的 SSH 监听端口。
 - **订阅（可选）**：`deploy` 模式由本机 Nginx 经 Cloudflare 回源下发 Mihomo YAML / Base64，订阅配置与两种 CDN 模式共用同一份 `{"allowedTokens":{...},"nodes":[...]}`：`PROXY`（`select`）依次是本机 Reality 节点、聚合 JSON 的 `nodes`；标记 `optional` 的节点仅在 URL 追加 `&node=all` 时下发。`link` 模式只输出本机节点信息。
 
 ### 1.2 模式 2：纯 CDN（Cloudflare XHTTP）
@@ -48,9 +49,11 @@
   - UFW 设置默认入站拒绝，仅放行必要端口，未放行端口由默认策略阻断。
   - Fail2ban 自动配置 sshd jail 实时监控保护实际 SSH 端口。
 - **常驻安全基线归初始化**：`scripts/debian-init.sh` 负责激活 UFW（SSH 端口、ICMP 回显与出站放行）并配置 Fail2ban；easy_all 安装只在此基础上追加业务端口。
+- **规则规格删除防编号漂移**：业务端口与回源白名单的清理升级为规则规格删除（通过 `stale_ufw_rule_delete_specs` 生成规格并执行 `ufw delete`），替代易受并发插桩干扰的行号逆序删除，彻底规避了 Fail2ban 动态插入规则导致的编号漂移与误删。
 - **卸载与回滚只回收业务端口**：各模式 `uninstall` 与安装失败回滚一律只删除自己注入的 443/8443 放行、动态端口 NAT 重定向与 CDN 回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置，不再执行 `ufw disable`。
 - **Fail2ban 助手脚本解耦**：CIDR 封禁助手安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`（不再位于 `/usr/local/lib/easy_all`），卸载 easy_all 时保留，避免常驻 SSH 封禁动作因脚本缺失而失效。
 - **重装跳过已就绪的初始化**：卸载后重装时，依赖包、Swap、内核与 TCP 加速已就绪就跳过重复安装；IPv4-only、定时重启与 UFW/Fail2ban 仍会幂等校验。
+- **定时维护互斥与安全加固**：每日定时重启任务引入运行时写锁检测（`flock -n 8`），检测到后台有安装或更新进行时自动跳过重启并向 syslog 记录审计日志，防止并发维护造成半安装现场；crontab 任务命令统一对 `%` 进行了转义。
 
 ### 2.1.1 各模式开放端口
 
