@@ -64,7 +64,10 @@ release_runtime_write_lock() {
 # 否则退出时会删掉不属于 easy_all 的目录。
 RUNTIME_TMP_CREATED=0
 if [[ -z "${RUNTIME_TMP:-}" ]]; then
-    RUNTIME_TMP=$(mktemp -d)
+    # 显式模板：macOS 的 mktemp 在无模板时忽略 TMPDIR，直接落到系统临时目录，
+    # 受限环境（沙箱/CI）会 EPERM；GNU mktemp 行为不变。
+    RUNTIME_TMP=$(mktemp -d "${TMPDIR:-/tmp}/easy_all-runtime.XXXXXXXX") \
+        || die "无法创建运行时临时目录"
     RUNTIME_TMP_CREATED=1
 fi
 cleanup_files=()
@@ -81,6 +84,11 @@ cleanup() {
     # 安装中途失败：先说明失败位置与阶段，再由用户决定是否清理本机残留。
     if [[ "${status}" != "0" ]] && declare -F install_failure_report >/dev/null 2>&1; then
         install_failure_report || true
+    fi
+    # 云端保留资源的点名必须早于可能 die 的回滚动作：回滚里的状态恢复失败会 exit，
+    # 放在回滚之后就会漏报本次已签发的新证书。
+    if [[ "${status}" != "0" ]] && declare -F profile_report_retained_resources >/dev/null 2>&1; then
+        profile_report_retained_resources || true
     fi
     if [[ "${UPDATE_SUB_ROLLBACK_ON_EXIT:-0}" == "1" ]]; then
         UPDATE_SUB_ROLLBACK_ON_EXIT=0

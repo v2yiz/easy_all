@@ -26,13 +26,13 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。
 
 自托管订阅在服务端核心为 Xray 26.9.8 及以上时，Reality 节点会带 `support-x25519mlkem768: true`，
-用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；直连+CDN（模式 3）订阅
+用于满足该版本起 REALITY 服务端对 `X25519MLKEM768` key share 的要求；直连+CDN（模式 4/5）订阅
 （YAML 订阅）同样在满足该版本要求时带该字段。该字段需 mihomo 1.19.9 及以上内核才生效，更旧的 mihomo 内核会
 忽略它（不会报错）；若内核过旧且节点握手正常但无流量，请升级客户端，或改用 v2rayNG 等 Xray 系
 客户端（它们会自行发送该密钥交换）。聚合配置里指向 Xray 低于 26.9.8 的 Reality 节点需设置
 `supportX25519Mlkem768: false`。
 
-CloudFront（模式 2/3）订阅按 Mihomo 的配置格式和 XHTTP 能力生成。本机 CDN 节点只有**一个**，
+CloudFront（模式 2/4）订阅按 Mihomo 的配置格式和 XHTTP 能力生成。本机 CDN 节点只有**一个**，
 名称默认 `🇺🇸AWS`（安装时可改），连接参数固定为：
 
 - 节点地址（server）、TLS SNI 与 HTTP Host 都是同一个 CloudFront 节点域名（如 `cf.example.com`），不是 IP；
@@ -41,6 +41,10 @@ CloudFront（模式 2/3）订阅按 Mihomo 的配置格式和 XHTTP 能力生成
 
 注意区分两套证书：客户端只校验 CloudFront 的 viewer 证书（AWS ACM），源站用的是独立的
 Let's Encrypt 证书，源站头密钥 `X-Easy-All-Origin-Key` 只存在于服务器与分发之间，不会下发到订阅。
+
+Cloudflare 橙云链路（模式 3/5）的订阅结构相同，但只有一个本机 CDN 节点，名称默认 `🇺🇸CF`，
+节点地址、TLS SNI 与 HTTP Host 都是同一个橙云节点域名（如 `cf.example.com`）；客户端看到的是
+Cloudflare 边缘证书，Origin CA 只用于边缘到源站的回源校验，不会下发到订阅。
 
 “能导入”不代表所有节点都能连接。Shadowrocket 的更新记录虽然包含 XHTTP 和
 `stream-up` 修复，但未逐项确认上述字段的完整兼容性，因此目前不把 Shadowrocket 列为
@@ -51,10 +55,10 @@ Let's Encrypt 证书，源站头密钥 `X-Easy-All-Origin-Key` 只存在于服�
 
 日常使用“规则”模式即可。订阅会自动让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
 - **直连 Reality**：部署订阅时 `PROXY` 分组依次是本机 Reality 节点与聚合配置 `nodes` 里的节点（名字原样使用）。默认只下发不带 `optional` 的聚合节点，在订阅链接后追加 `&node=all` 可显示全部；选择“仅节点”时不下发订阅，只输出本机节点信息。
-- **纯 CDN（模式 2）**：没有直连节点。`PROXY` 分组按固定顺序包含「本机 CloudFront 节点（默认 `🇺🇸AWS`）→ 聚合节点（来自订阅配置 JSON 的 `nodes`，原顺序）」。
-- **直连+CDN（模式 3）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机 CloudFront 节点（默认 `🇺🇸AWS`）→ 聚合节点」。CDN 与直连之间**手动切换**：没有自动测速、没有自动兜底组。
-- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 2 是 CloudFront 节点 → 聚合节点；模式 3 是直连 Reality 节点 → CloudFront 节点 → 聚合节点。
-- **熔断期间的节点**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Nginx XHTTP 返回 `503`、Xray 清空该入站）。模式 3 此时手动切到直连节点即可继续使用；模式 2 只能等 UTC 次月或按运维指南收敛后再试。
+- **纯 CDN（模式 2 / 3）**：没有直连节点。`PROXY` 分组按固定顺序包含「本机 CDN 节点 → 聚合节点（来自订阅配置 JSON 的 `nodes`，原顺序）」。CDN 节点在模式 2 是 CloudFront 节点（默认 `🇺🇸AWS`），在模式 3 是 Cloudflare 橙云节点（默认 `🇺🇸CF`），都不经过另一朵云的链路。
+- **直连+CDN（模式 4 / 5）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机 CDN 节点（模式 4 默认 `🇺🇸AWS`、模式 5 默认 `🇺🇸CF`）→ 聚合节点」。CDN 与直连之间**手动切换**：没有自动测速、没有自动兜底组。
+- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 2/3 是 CDN 节点 → 聚合节点；模式 4/5 是直连 Reality 节点 → CDN 节点 → 聚合节点。
+- **熔断期间的节点（仅模式 2/4）**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Nginx XHTTP 返回 `503`、Xray 清空该入站）。模式 4 此时手动切到直连节点即可继续使用；模式 2 只能等 UTC 次月或按运维指南收敛后再试。模式 3/5 没有这个熔断。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
@@ -198,7 +202,7 @@ Auth0、Stripe、Intercom 等服务仍整体代理，可按实际日志收窄 `p
 sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common.yaml easy_all edit-sub
 ```
 
-改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。模式 2/3 的 `apply`
+改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。模式 2/4 的 `apply`
 **只重建本机与订阅**，不访问 Cloudflare/AWS，也不会因此回车要凭据；模式 1 的 `deploy` 订阅仍会再要一次
 Cloudflare API Token（仍不落盘，仅本次进程使用），非交互执行时改用
 `sudo CLOUDFLARE_API_TOKEN=... MIHOMO_TEMPLATE_SOURCE=... easy_all apply`。自定义模板路径
@@ -231,10 +235,10 @@ https://1.1.1.1/dns-query
 | FlClash | 设置 → 网络 / DNS → 覆写 DNS |
 | Clash Meta for Android | 设置 → 覆写 → DNS 覆写 |
 
-模式 2/3 的订阅只包含**一个**本机 CloudFront 节点（连接节点域名，由 AWS 全球 Anycast 调度决定边缘），
-没有优选 IP、测速组或自动兜底组。订阅能够更新但节点无法连接时，按顺序排查：
+模式 2/3/4/5 的订阅只包含**一个**本机 CDN 节点（模式 2/4 连接 CloudFront 节点域名，由 AWS 全球 Anycast 调度；
+模式 3/5 连接橙云节点域名，由 Cloudflare 边缘调度），没有优选 IP、测速组或自动兜底组。订阅能够更新但节点无法连接时，按顺序排查：
 
 1. 确认客户端支持 Mihomo XHTTP 与 `stream-up`（建议内核 ≥ 1.19.9）；
-2. 模式 3 先在 `PROXY` 里手动切到直连 Reality 节点，确认是不是 CDN 入口单独不通；
+2. 模式 4 先在 `PROXY` 里手动切到直连 Reality 节点，确认是不是 CDN 入口单独不通；
 3. 运行 `sudo easy_all status`：CDN 用量若已到 985 GB 或显示 `protection_offline`，节点会被阻断到 UTC 次月；
-4. 仍不通再检查云端：节点域名 CNAME 是否指向分发、分发与 ACM 是否就绪（必要时 `sudo easy_all apply-cloud`）。
+4. 仍不通再检查云端：模式 2/4 看节点域名 CNAME 是否指向分发、分发与 ACM 是否就绪；模式 3/5 看橙云 A 记录是否为 Proxied、SSL/TLS 是否 Full (strict)、gRPC 是否开启（必要时 `sudo easy_all apply-cloud`）。

@@ -58,7 +58,9 @@ bash -n "${PROFILE}" "${CORE}" "${GUARD}" "${ROOT_DIR}/easy_all" \
 launcher_body=$(<"${ROOT_DIR}/easy_all")
 menu_body=$(awk '/^choose_install_mode\(\)/,/^}/' "${ROOT_DIR}/easy_all")
 assert_contains "菜单 2 映射到 cloudfront" "${menu_body}" "2) printf 'cloudfront\\n' ;;"
-assert_contains "菜单 3 映射到 combined" "${menu_body}" "3) printf 'combined\\n' ;;"
+assert_contains "菜单 4 映射到 combined" "${menu_body}" "4) printf 'combined\\n' ;;"
+assert_contains "菜单 3 映射到 cloudflare" "${menu_body}" "3) printf 'cloudflare\\n' ;;"
+assert_contains "菜单 5 映射到 combined-cloudflare" "${menu_body}" "5) printf 'combined-cloudflare\\n' ;;"
 assert_not_contains "菜单不再提供模式 4" "${menu_body}" "4. CloudFront CDN"
 assert_not_contains "菜单不再映射 cdn" "${menu_body}" "printf 'cdn\\n'"
 assert_contains "detect 识别旧 cdn 以便拒绝" "${launcher_body}" "cdn|combined)"
@@ -66,7 +68,7 @@ assert_contains "detect 识别新协议" "${launcher_body}" "combined-cloudfront
 assert_contains "旧 cdn/combined 的拒绝文案引导卸载" "${launcher_body}" \
     '检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）'
 assert_contains "旧状态拒绝文案指向 uninstall 后重装" "${launcher_body}" \
-    '请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 选择模式 2 或 3'
+    '请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 重新选择安装模式'
 assert_contains "不完整 CloudFront 状态有专用文案" "${launcher_body}" \
     "CloudFront 状态不完整或来自未完成实现"
 assert_contains "dispatch 注册 cdn-traffic-sync" "${launcher_body}" \
@@ -75,7 +77,7 @@ assert_not_contains "refresh-cdn-ips 已从帮助与路由删除" "${launcher_bo
 assert_contains "apply-cloud 路由含 cloudfront" "${launcher_body}" \
     '"${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront"'
 assert_contains "renew-cert 路由含 cloudfront" "${launcher_body}" \
-    "cloudfront | combined-cloudfront) renew_certificate"
+    "cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate"
 
 manifest_body=$(<"${ROOT_DIR}/runtime.manifest")
 assert_contains "manifest 登记共享核心" "${manifest_body}" "lib/cloudfront-mode.sh"

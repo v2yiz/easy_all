@@ -25,4 +25,8 @@ lib/cloudfront-mode.sh
 lib/reality-target.sh
 lib/cloudflare-purge.sh
 profiles/cloudfront.sh
+lib/cloudflare-state.sh
+lib/cloudflare-mode.sh
+profiles/cloudflare.sh
+profiles/combined-cloudflare.sh
 lib/cdn-traffic-guard.sh

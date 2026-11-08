@@ -18,7 +18,7 @@ cloudflare_collect_api_token() {
 
 cloudflare_clear_api_token() {
     unset CLOUDFLARE_API_TOKEN
-    rm -f -- "${RUNTIME_TMP}/cloudflare-api-headers"
+    rm -f -- "${RUNTIME_TMP}/cloudflare-api-headers" "${RUNTIME_TMP}/cloudflare-api-payload"
 }
 
 cloudflare_api_request() {

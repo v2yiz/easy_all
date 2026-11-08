@@ -50,7 +50,7 @@ cdn_require_direct_state() {
     for variable in DIRECT_DOMAIN DIRECT_NODE_NAME REALITY_TARGET \
         REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID; do
         [[ -n "${!variable:-}" ]] \
-            || die "状态缺少模式 3 必需字段：${variable}；请先执行 sudo easy_all uninstall 后重新安装"
+            || die "状态缺少模式 4 必需字段：${variable}；请先执行 sudo easy_all uninstall 后重新安装"
     done
 }
 
@@ -231,6 +231,8 @@ update_reality_target() {
     xhttp_configure_ufw
     write_xray_config
     install_xray_service
+    # enable --now 对已运行 unit 是空操作：不改 target 不重启，新 SNI 不会生效。
+    systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 服务失败"
     write_nginx_config
     validate_protocol_runtime
     cdn_validate_direct_runtime

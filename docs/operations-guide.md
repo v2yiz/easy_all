@@ -2,7 +2,7 @@
 
 本文档介绍 `easy_all` 安装完成后的日常维护、配置应用、订阅管理、CDN 流量保护运维、卸载清理及常见故障排查。
 
-安装菜单只有三个模式：**1 直连 Reality**、**2 纯 CDN（CloudFront）**、**3 直连+CloudFront**。下文标注「模式 2/3」的命令只适用于 CloudFront 链路。
+安装菜单有五个模式：**1 直连 Reality**、**2 纯 CloudFront**、**3 纯 CloudFlare（单域名）**、**4 直连+CloudFront**、**5 直连+CloudFlare**。下文标注「模式 2/4」的命令只适用于 CloudFront 链路，标注「模式 3/5」的只适用于 Cloudflare 橙云链路。
 
 ---
 
@@ -21,21 +21,25 @@ sudo easy_all self-update
 ```bash
 sudo easy_all apply
 ```
-- 模式 2/3：**只在 VPS 本机重建**——重新渲染并应用 Xray 配置（含 StatsService 与阻断状态）、Nginx 站点、UFW 业务端口与六个订阅产物。**不访问 Cloudflare / AWS API，不签发 ACM 或源站证书，不改 DNS**。
+- 模式 2/4：**只在 VPS 本机重建**——重新渲染并应用 Xray 配置（含 StatsService 与阻断状态）、Nginx 站点、UFW 业务端口与六个订阅产物。**不访问 Cloudflare / AWS API，不签发 ACM 或源站证书，不改 DNS**。
+- 模式 3/5：同样**只在本机重建**（Xray、单域名 Nginx、回源白名单、订阅），不签发证书、不改 DNS。唯一的外部访问是读取公开的 Cloudflare 官方回源 IPv4 段与 Origin CA 根证书，不需要账号凭据。
 - 模式 1 例外：`deploy` 订阅仍要一次 Cloudflare API Token 以签发或复用 Cloudflare Origin CA 回源证书（Token 不落盘），同样不改 DNS。
 - 保护待落实（`blocked=true` 且 `enforced=false`）时先做[受限安全恢复](#63-各命令在保护停机时的准入)，恢复失败直接非零停止，不会带着开放配置启动 Xray。
 - 订阅配置损坏时普通 `apply` 会失败并提示 `sudo easy_all edit-sub`，不会静默把聚合节点清空。
 - 源站证书缺失或异常（`status` 显示「源站证书异常/缺失」）应执行 `sudo easy_all renew-cert`；ACM 证书或分发需要重建时用 `apply-cloud`。
 
-### 1.3 `apply-cloud`：同步云端资源（模式 2/3）
-改过域名、换了 AWS 凭据或需要重新收敛云端资源时：
+### 1.3 `apply-cloud`：同步云端资源（模式 2/3/4/5）
+改过域名、换了凭据或需要重新收敛云端资源时：
 ```bash
 sudo easy_all apply-cloud
 ```
-一次执行会按固定顺序完成：
+
+**模式 3/5（Cloudflare 橙云）**：读取 Token（优先复用 `/etc/easy_all/cloudflare.token`）→ 收敛橙云节点 `A` 记录（模式 5 另加灰云直连 `A`）→ 复用或签发 Origin CA 证书（只覆盖节点域名）→ 本机重建、严格本机验收 → 公网验收（health、订阅、无效 Token 拒绝）→ 落盘状态后吊销旧证书。失败时本机回滚、云端 DNS 与已签发证书保留并打印清单；修正后重跑即可收敛。
+
+**模式 2/4（CloudFront）**：一次执行会按固定顺序完成：
 
 1. 读取 Cloudflare API Token（优先复用 `/etc/easy_all/cloudflare.token`，否则隐藏输入后原子写入 `0600`）。
-2. 保守同步灰云 DNS 的源站（及模式 3 直连）`A` → VPS 公网 IPv4；同名第三方/多条冲突记录不会被抢占。
+2. 保守同步灰云 DNS 的源站（及模式 4 直连）`A` → VPS 公网 IPv4；同名第三方/多条冲突记录不会被抢占。
 3. 复用或续签**源站 Let's Encrypt 证书**（HTTP-01，只覆盖源站域名）。
 4. 复用或申请 **AWS ACM 证书**（固定 `us-east-1`，SAN 只含节点域名与订阅域名），自动写入 DNS validation `CNAME` 并等待 `ISSUED`。
 5. 创建或更新 **CloudFront 分发**（`Comment=easy_all-cloudfront-<节点域名>`），等待 `Status=Deployed`。
@@ -50,25 +54,25 @@ sudo easy_all apply-cloud
 
 | 命令 | 说明 |
 | :--- | :--- |
-| `sudo easy_all install` | 交互选择 Reality、纯 CDN（CloudFront）或直连+CDN 并安装 |
+| `sudo easy_all install` | 交互选择 1 直连 / 2 纯 CloudFront / 3 纯 CloudFlare / 4 直连+CloudFront / 5 直连+CloudFlare 并安装 |
 | `sudo easy_all show` | 打印当前节点链接（VLESS URI）与 Mihomo YAML 配置片段 |
 | `sudo easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
 | `sudo easy_all self-update` | 从 GitHub 更新 easy_all 脚本体（`--dev` 使用开发分支） |
-| `sudo easy_all apply` | 应用已安装配置；模式 2/3 只重建本机与订阅，不访问云 API |
-| `sudo easy_all reality-target [域名:端口]` | （Reality / 直连+CDN）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
+| `sudo easy_all apply` | 应用已安装配置；模式 2/3/4/5 只重建本机与订阅，不访问云管理 API |
+| `sudo easy_all reality-target [域名:端口]` | （模式 1/4/5）修改伪装目标 SNI，带 TLS 1.3 自动握手验证 |
 | `sudo easy_all rotate-dynamic-ports` | （仅 Reality 模式）立即轮换并刷新动态端口 NAT 重定向规则 |
-| `sudo easy_all apply-cloud` | （模式 2/3）同步云端资源：Cloudflare DNS、AWS ACM 与 CloudFront 分发、源站证书 |
+| `sudo easy_all apply-cloud` | （模式 2/3/4/5）同步云端资源：模式 2/4 是 DNS + ACM + CloudFront 分发 + 源站证书；模式 3/5 是橙云 A 记录与 Origin CA 证书 |
 | `sudo easy_all edit-sub` | 交互式编辑订阅配置（用户 Token + 聚合节点）与订阅模板 |
-| `sudo easy_all cdn-traffic-sync` | （模式 2/3）同步 CloudFront CDN 用量并落实流量阻断 |
+| `sudo easy_all cdn-traffic-sync` | （仅模式 2/4）同步 CloudFront CDN 用量并落实流量阻断；模式 3/5 会明确拒绝 |
 | `sudo easy_all purge-cloudflare` | 清理 easy_all 创建的 Cloudflare 远端资源（可在未安装或状态丢失时使用） |
 | `sudo easy_all update-core` | 在线升级 Xray 核心至官方最新版本，并自动重载服务 |
-| `sudo easy_all renew-cert` | 重新签发 / 部署当前模式的 TLS 证书 |
-| `sudo easy_all status` | 查看模式、域名、分发/ACM、源站证书、服务状态与 985 GB 流量保护额度 |
+| `sudo easy_all renew-cert` | 重新签发 / 部署当前模式的 TLS 证书（模式 3/5 轮换 Cloudflare Origin CA） |
+| `sudo easy_all status` | 查看模式、域名、分发/ACM（模式 2/4）或 Origin CA（模式 3/5）、服务状态与 985 GB 流量保护额度（仅模式 2/4） |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的本机残留（未安装状态使用；不改云端资源） |
 | `sudo easy_all uninstall` | 卸载当前模式；加 `--purge-cloud` 一并清理托管的远端资源 |
 | `sudo easy_all help` | 显示帮助 |
 
-> 模式 1 的 `apply` / `edit-sub` / `renew-cert` 会用到 Cloudflare API（订阅回源证书），模式 2/3 的这三条命令**都不访问 AWS / Cloudflare**；需要改云端时用 `apply-cloud`。
+> 模式 1 的 `apply` / `edit-sub` / `renew-cert` 会用到 Cloudflare API（订阅回源证书）；模式 2/4 的这三条命令**都不访问 AWS / Cloudflare**；模式 3/5 只有 `renew-cert` 访问 Cloudflare 证书 API。需要改云端时统一用 `apply-cloud`。
 
 ---
 
@@ -85,7 +89,7 @@ sudo easy_all apply-cloud
 
 ## 4. 节点与伪装目标管理
 
-### 4.1 更换 Reality 伪装目标（SNI，适用于模式 1 与模式 3）
+### 4.1 更换 Reality 伪装目标（SNI，适用于模式 1/4/5）
 ```bash
 sudo easy_all reality-target swdist.apple.com:443
 ```
@@ -96,22 +100,28 @@ sudo easy_all reality-target swdist.apple.com:443
 ```bash
 sudo easy_all rotate-dynamic-ports
 ```
-仅 Reality 模式的动态端口模式支持。模式 2/3 的 CDN 入口固定走 CloudFront 的 443，模式 3 的直连入口固定 `8443`，因此这两条模式下执行该命令会明确报错。
+仅 Reality 模式的动态端口模式支持。模式 2/4 的 CDN 入口固定走 CloudFront 的 443、模式 3/5 固定走橙云 443，模式 4/5 的直连入口固定 `8443`，因此这些模式下执行该命令会明确报错。
 
 ### 4.3 轮换 VLESS UUID（模式 1）
 ```bash
 sudo env VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)" easy_all apply
 ```
-执行后旧 UUID 立即失效，请在客户端更新订阅。模式 2/3 的 UUID 是落盘状态的一部分，没有单独轮换入口；重装会生成新的 UUID、路径与 Token，客户端必须重新导入。
+执行后旧 UUID 立即失效，请在客户端更新订阅。模式 2/3/4/5 的 UUID 是落盘状态的一部分，没有单独轮换入口；重装会生成新的 UUID、路径与 Token，客户端必须重新导入。
 
-### 4.4 CloudFront 单节点名称（模式 2/3）
-模式 2/3 的本机 CDN 节点只有一个，名称由安装时输入的「CloudFront 节点名」决定（默认 `🇺🇸AWS`，1–64 个字符，不得使用 `PROXY`、`GLOBAL`、`AUTO` 等保留名，也不得与直连节点或聚合节点重名）。它不会自动追加序号，也没有额外的测速/兜底节点。改名需要重新安装并重新导入订阅。
+### 4.4 CDN 单节点名称（模式 2/3/4/5）
+四种 CDN 模式的本机 CDN 节点都只有一个，名称由安装时输入的节点名决定（模式 2/4 默认 `🇺🇸AWS`，模式 3/5 默认 `🇺🇸CF`；1–64 个字符，不得使用 `PROXY`、`GLOBAL`、`AUTO` 等保留名，也不得与直连节点或聚合节点重名）。它不会自动追加序号，也没有额外的测速/兜底节点。改名需要重新安装并重新导入订阅。
+
+### 4.5 Cloudflare Origin CA 证书（模式 3/5）
+```bash
+sudo easy_all renew-cert
+```
+强制轮换 Origin CA 证书：先签发并部署新证书，通过本机严格 TLS/SNI 验收后才吊销旧证书；任一步失败都保留旧证书并恢复本机配置。证书是 15 年有效期的 Cloudflare 私有 CA 证书，只覆盖节点域名。
 
 ---
 
 ## 5. 订阅与多用户管理
 
-三个模式的 `deploy` 订阅共用同一份订阅配置：
+五种模式的 `deploy` 订阅共用同一份订阅配置：
 ```bash
 sudo easy_all edit-sub
 ```
@@ -133,14 +143,14 @@ sudo easy_all edit-sub
 
 ---
 
-## 6. CDN 流量保护（985 GB 熔断）运维
+## 6. CDN 流量保护（985 GB 熔断）运维（仅模式 2/4）
 
 ### 6.1 工作原理
-1. Xray 额外监听 `127.0.0.1:10085` 暴露 StatsService，**只统计 XHTTP 入站**（`vless-xhttp-in`）的上行/下行字节；模式 3 的 Reality 流量不计入。
+1. Xray 额外监听 `127.0.0.1:10085` 暴露 StatsService，**只统计 XHTTP 入站**（`vless-xhttp-in`）的上行/下行字节；模式 4 的 Reality 流量不计入。
 2. systemd 定时器 `easy_all-cdn-traffic-guard.timer`（`OnBootSec=15s`、`OnUnitActiveSec=15s`）每 15 秒执行一次 `easy_all cdn-traffic-sync`。
 3. 累计用量原子写入 `/etc/easy_all/cdn-traffic-usage.json`（`0600`），字段为 `period` / `runtime_id` / `used_bytes` / `last_uplink` / `last_downlink` / `blocked` / `enforced` / `protection_offline`。
 4. 阈值固定为 **985×10⁹ 字节（十进制 985 GB）**；月度按 **UTC 自然月** 划分，`period` 形如 `2026-11`。
-5. 触发阻断时是**双层阻断**：Nginx 的 XHTTP 位置直接返回 `503`，Xray 清空 XHTTP 入站客户端、加上 `block` 路由并重启以终止已建立的 CDN 长连接。模式 3 的 Reality 直连会短暂重连但继续可用；订阅链接仍可下载，节点不会被从订阅里删除。
+5. 触发阻断时是**双层阻断**：Nginx 的 XHTTP 位置直接返回 `503`，Xray 清空 XHTTP 入站客户端、加上 `block` 路由并重启以终止已建立的 CDN 长连接。模式 4 的 Reality 直连会短暂重连但继续可用；订阅链接仍可下载，节点不会被从订阅里删除。
 6. `blocked` 是期望的限额状态，`enforced` 是最后完成验收的应用状态；两者不一致即为「待落实」（pending），`protection_offline=true` 表示保护性停机意图已持久化（Xray 已停止或即将停止），它不表示允许解封。
 
 ### 6.2 `status` 解读
@@ -186,9 +196,9 @@ sudo easy_all status
 ```bash
 sudo easy_all uninstall
 ```
-停止并删除 Xray、Nginx 站点、easy_all 自有配置、证书（含 easy_all 专用的 Certbot lineage 与 deploy hook）、CDN 流量保护定时器和定时任务，回收业务端口放行（`80`、`443`，模式 3 另含 `8443`），保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置（`/usr/local/sbin/fail2ban-ufw-cidr.sh` 脚本保留），恢复安装前的 IPv6 配置。
+停止并删除 Xray、Nginx 站点、easy_all 自有配置、证书（含 easy_all 专用的 Certbot lineage 与 deploy hook）、CDN 流量保护定时器和定时任务，回收业务端口放行与 Cloudflare 回源白名单（`easy_all-cf-origin`），保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置（`/usr/local/sbin/fail2ban-ufw-cidr.sh` 脚本保留），恢复安装前的 IPv6 配置。模式 1/3/5 还会回收各自的回源放行注释。
 
-- **默认保留云端资源**：CloudFront 分发、ACM 证书与 DNS 记录都不动，并先打印可识别的资源清单（分发 ID/域名、ACM ARN、源站 A 记录、节点/订阅 CNAME、validation CNAME）。本机状态删除后无法再用 easy_all 清理这些资源，只能到控制台处置。
+- **默认保留云端资源**：CloudFront 分发、ACM 证书、DNS 记录与 Cloudflare Origin CA 证书都不动，并先打印可识别的资源清单（模式 2/4：分发 ID/域名、ACM ARN、源站 A 记录、节点/订阅 CNAME、validation CNAME；模式 3/5：橙云/灰云 A 记录与 Origin CA 证书 ID/到期时间）。本机状态删除后无法再用 easy_all 清理这些资源，只能到控制台处置。
 - 前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap、系统依赖与 Nginx `worker_processes 1;` 收敛均保留。
 - 保护停机（`protection_offline=true`、Xray 已停止）不阻挡卸载，也不要求统计文件可读。
 
@@ -196,7 +206,11 @@ sudo easy_all uninstall
 ```bash
 sudo easy_all uninstall --purge-cloud
 ```
-在 §7.1 的本机卸载之前，先尝试清理 easy_all 自己创建的云端资源：
+在 §7.1 的本机卸载之前，先尝试清理 easy_all 自己创建的云端资源。
+
+**模式 3/5（Cloudflare 橙云）**：只删除注释、类型与目标（VPS 公网 IPv4）三者都匹配的 `A` 记录，并按持久 ID 吊销 Origin CA 证书；DNS 查询/删除失败不阻止吊销证书，任一步失败只告警并打印残留。不猜测删除第三方记录或多条同名记录。
+
+**模式 2/4（CloudFront）**：
 
 1. **归属校验**：CloudFront 必须同时满足 `Comment=easy_all-cloudfront-<节点域名>`、aliases 与本状态一致、ID 与状态一致；ACM 必须带 `easy_all=managed` 标记且状态/region/SAN 匹配。查询失败或归属不匹配一律保留并告警。
 2. **分发**：先置 `Enabled=false`，等待部署完成，再用最新 ETag 删除。
@@ -212,13 +226,13 @@ sudo easy_all uninstall --purge-cloud
 ```bash
 sudo easy_all purge-cloudflare --domain example.com
 ```
-- 只处理 Cloudflare，**不会触碰 AWS**；正在运行的 CloudFront 链路若清掉节点/订阅 DNS 会中断，需要随后 `apply-cloud` 恢复。
+- 只处理 Cloudflare，**不会触碰 AWS**；正在运行的 CDN 链路若清掉节点/订阅 DNS 会中断，需要随后 `apply-cloud` 恢复。模式 3/5 的 `easy_all cloudflare`/`easy_all combined-cloudflare` 注释同样能被该工具识别。
 - 支持平滑容错降级：Token 缺少 Rulesets 权限时会安全跳过规则清理并告警一次，已收集的 DNS 记录与 Cloudflare Origin CA 证书仍会正常清理。
 
 ### 7.4 旧版本状态与不完整新状态只能卸载重装
 - 旧版 Cloudflare CDN 安装（`PROTOCOL=cdn` 或旧 `combined`，Cloudflare 代理回源链路）不被当前版本接管：任何应用、续签、更新核心、编辑订阅都会明确报错并提示 `sudo easy_all uninstall`，默认卸载保留云端资源。
-- `PROTOCOL=cloudfront` 或 `combined-cloudfront` 但缺少新强制字段（例如旧 WIP 未落盘的 `CDN_PROVIDER`）同样不能安全接管；这类状态只允许**仅本机**清理，云元数据缺归属证明时保留并告警。
-- 重装会产生新的 UUID、路径与 Token（模式 3 还有新的 Reality 密钥），客户端必须重新导入订阅。不要通过手改 `state.env` 的协议值来「升级」或「回退」。
+- `PROTOCOL=cloudfront`/`combined-cloudfront`/`cloudflare`/`combined-cloudflare` 但缺少强制字段（例如旧 WIP 未落盘的 `CDN_PROVIDER`，或 `CDN_PROVIDER` 与协议不匹配）同样不能安全接管；这类状态只允许**仅本机**清理，云元数据缺归属证明时保留并告警。
+- 重装会产生新的 UUID、路径与 Token（模式 4/5 还有新的 Reality 密钥），客户端必须重新导入订阅。不要通过手改 `state.env` 的协议值来「升级」或「回退」。
 
 ---
 
@@ -228,7 +242,7 @@ sudo easy_all purge-cloudflare --domain example.com
 | :--- | :--- |
 | **SSH 断开后重连失败** | - 检查服务商后台云防火墙/安全组是否已放行 SSH 端口（默认 22）。<br>- 检查 UFW 状态及 Fail2ban 是否因多次认证失败暂时封禁了客户端 IP。 |
 | **重跑提示 TCP 80/443 被占用** | 有 easy_all 残留时按提示执行 `sudo easy_all cleanup-partial`；只报了「easy_all 仅支持专用 VPS」说明占用者是第三方进程（多为本机自用 Nginx），先确认归属再处理。 |
-| **安装中断提示「继续上次安装」** | 模式 2/3 的续装要求同一 Profile 且安装标记里 `CHAIN=cloudfront`，回车选择 `Y` 可复用已生成的源站证书、分发 ID、ACM ARN 与 Reality 密钥；选 `n` 则清理重装。旧版标记不参与续装。 |
+| **安装中断提示「继续上次安装」** | 续装要求同一 Profile 且安装标记里的链路一致：模式 2/4 是 `CHAIN=cloudfront`，模式 3/5 是 `CHAIN=cloudflare`。回车选择 `Y` 可复用已生成的证书、分发 ID/ACM ARN（模式 2/4）或 Origin CA 身份（模式 3/5）与 Reality 密钥；选 `n` 则清理重装。旧版没有 `CHAIN` 的标记不参与续装。 |
 | **CloudFront 返回 502** | 回源失败：源站 443 不可达（安全组未放行、Nginx 未运行），或 CloudFront 无法校验源站证书（源站证书过期/未覆盖源站域名）。先用 `sudo easy_all status` 看证书与服务状态，再用 `sudo easy_all renew-cert`、`sudo easy_all apply-cloud` 修复。 |
 | **CloudFront 返回 503** | 多半是 CDN 用量达到 985 GB 触发的阻断，或 `protection_offline` 状态下的受限运行时。查看 `sudo easy_all status` 的 `blocked` / `enforced` / `protection_offline`；按 §6.4 顺序收敛，不要清空用量文件。 |
 | **CloudFront 返回 403 / 404（订阅或健康检查）** | 源站头缺失或错误：XHTTP 位置返回 403，`/easy_all-health` 与 `/subscribe` 返回 404。确认分发行为仍转发自定义头 `X-Easy-All-Origin-Key`，且没有人手工改过 Nginx 站点。 |
@@ -238,6 +252,6 @@ sudo easy_all purge-cloudflare --domain example.com
 | **`apply` / `apply-cloud` 报订阅配置损坏** | 状态里的 `SUBSCRIPTION_CONFIG` 无法解析。执行 `sudo easy_all edit-sub` 粘贴完整新配置；`uninstall` 与 `cleanup-partial` 仍可执行。 |
 | **`update-core` 被拒绝** | 提示「CDN 流量保护仍待落实」时先执行 `sudo easy_all cdn-traffic-sync`；订阅损坏先 `edit-sub`，证书故障先 `renew-cert`。核心更新后订阅若刷新失败，会保留告警并提示 `apply`。 |
 | **`renew-cert` 后仍提示证书问题** | 检查 `/etc/letsencrypt/live/easy_all_origin/` 是否已签发新 lineage；手动续签会抑制内置 deploy hook，由命令自身完成部署与验收。锁忙导致 hook 跳过时，重跑 `renew-cert` 会优先部署已有新 lineage，不重复申请。 |
-| **订阅可下载但节点无法连接** | 1. 确认客户端内核版本是否过旧（Mihomo 建议 ≥ 1.19.9）；<br>2. 检查云服务商安全组是否放行了业务端口（`80` / `443`，模式 3 另含 `8443`）；<br>3. 模式 3 需在 `PROXY` 组里**手动**在直连与 CDN 节点之间切换，没有自动测速或兜底组。 |
+| **订阅可下载但节点无法连接** | 1. 确认客户端内核版本是否过旧（Mihomo 建议 ≥ 1.19.9）；<br>2. 检查云服务商安全组是否放行了业务端口（`80` / `443`，模式 4 另含 `8443`）；<br>3. 模式 4 需在 `PROXY` 组里**手动**在直连与 CDN 节点之间切换，没有自动测速或兜底组。 |
 | **升级后仍看到旧节点名/旧分组** | 旧订阅缓存或自定义模板写死了已删除的组名。在客户端刷新订阅并重新选择 `PROXY` 下的实际节点；模板问题用 `sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo.yaml easy_all edit-sub` 换回内置模板。 |
 | **提示 CloudFront 状态不完整** | `PROTOCOL=cloudfront` / `combined-cloudfront` 缺强制字段（例如旧 WIP 状态）。当前版本只提供仅本机卸载：`sudo easy_all uninstall` 后重新安装，云端资源按需保留。 |

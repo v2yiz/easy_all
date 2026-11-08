@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 直连+CDN（模式 3）回归测试：薄 Profile 钩子、状态 roundtrip、双入口节点顺序、
+# 直连+CloudFront（模式 4）回归测试：薄 Profile 钩子、状态 roundtrip、双入口节点顺序、
 # 域名/订阅复用、两云失败、熔断双协议（Reality 仍可用）与受限安全恢复。
 set -Eeuo pipefail
 
@@ -55,28 +55,30 @@ bash -n "${PROFILE}" "${CORE}" "${GUARD}" "${XHTTP_LIB}" \
 # --- 1. CLI / manifest 接线 --------------------------------------------------
 launcher_body=$(<"${ROOT_DIR}/easy_all")
 menu_body=$(awk '/^choose_install_mode\(\)/,/^}/' "${ROOT_DIR}/easy_all")
-assert_contains "菜单 3 映射到 combined" "${menu_body}" "3) printf 'combined\\n' ;;"
+assert_contains "菜单 4 映射到 combined" "${menu_body}" "4) printf 'combined\\n' ;;"
 assert_contains "detect 识别新模式 3 协议" "${launcher_body}" "combined-cloudfront)"
-assert_contains "模式 3 键映射到 combined Profile" "${launcher_body}" \
-    'combined|combined-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/combined.sh"'
+assert_contains "模式 4 键映射到 combined Profile" "${launcher_body}" \
+    'combined|combined-cloudfront|incomplete-combined-cloudfront)'
+assert_contains "模式 4（含不完整状态）复用 combined Profile" "${launcher_body}" \
+    'candidate="${EASY_ALL_ROOT}/profiles/combined.sh"'
 assert_contains "旧 combined 状态被拒绝" "${launcher_body}" \
     '检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）'
 assert_contains "reality-target 路由覆盖新模式" "${launcher_body}" \
     '"${mode}" == "reality" || "${mode}" == "combined-cloudfront"'
-assert_contains "apply-cloud 路由覆盖新模式" "${launcher_body}" \
-    '"${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront"'
+assert_contains "apply-cloud 按模式分派" "${launcher_body}" \
+    "cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;"
 assert_contains "cdn-traffic-sync 路由覆盖新模式" "${launcher_body}" \
     '"${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront"'
 assert_contains "renew-cert 路由覆盖新模式" "${launcher_body}" \
-    "cloudfront | combined-cloudfront) renew_certificate"
+    "cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate"
 assert_not_contains "不再保留模式 3 未启用文案" "${launcher_body}" "下一阶段启用"
 
 manifest_body=$(<"${ROOT_DIR}/runtime.manifest")
-for legacy in lib/cloudflare-mode.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh; do
+for legacy in lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh; do
     assert_not_contains "manifest 不再登记 ${legacy}" "${manifest_body}" "${legacy}"
     [[ ! -e "${ROOT_DIR}/${legacy}" ]] || fail_test "旧链路文件必须删除：${legacy}"
 done
-assert_contains "manifest 登记模式 3 Profile" "${manifest_body}" "profiles/combined.sh"
+assert_contains "manifest 登记模式 4 Profile" "${manifest_body}" "profiles/combined.sh"
 assert_contains "manifest 登记共享核心" "${manifest_body}" "lib/cloudfront-mode.sh"
 
 # --- 2. 隔离运行环境 ---------------------------------------------------------
@@ -392,7 +394,9 @@ assert_equal "load_state 保持固定额度" "985" "${CDN_TRAFFIC_PROTECTION_GB}
 marker_chain=$(install_progress_field CHAIN)
 assert_equal "marker 记录 CloudFront 链路" "cloudfront" "${marker_chain}"
 resume_rule=$(awk '/^prepare_fresh_install\(\)/,/^}/' "${ROOT_DIR}/lib/profile-common.sh")
-assert_contains "续装按 CHAIN 收紧" "${resume_rule}" '== "cloudfront"'
+assert_contains "续装按 CHAIN 收紧" "${resume_rule}" 'install_marker_chain_matches "${current}"'
+marker_rule=$(awk '/^install_marker_chain_matches\(\)/,/^}/' "${ROOT_DIR}/lib/profile-common.sh")
+assert_contains "续装链路映射 CloudFront" "${marker_rule}" 'cloudfront | combined) expected=cloudfront'
 assert_not_contains "不再无条件放行旧 combined 续装" "${resume_rule}" \
     '|| [[ "${current}" == "combined" ]]'
 
@@ -1082,7 +1086,7 @@ state_file_before="${STATE_FILE}"
 ) >"${TMP_DIR}/legacy-uninstall.log" 2>&1 || fail_test "旧 combined 卸载通道必须可执行"
 assert_contains "旧 combined 卸载复用本机清理" "$(<"${TMP_DIR}/legacy-uninstall.log")" "LOCAL-CLEAN"
 assert_contains "旧 combined 卸载回收回源 UFW" "$(<"${TMP_DIR}/legacy-uninstall.log")" "UFW-ORIGIN"
-assert_contains "旧 combined 卸载提示重装" "$(<"${TMP_DIR}/legacy-uninstall.log")" "选择模式 2 或 3"
+assert_contains "旧 combined 卸载提示重装" "$(<"${TMP_DIR}/legacy-uninstall.log")" "重新选择安装模式"
 assert_contains "旧 combined 默认保留云端资源" "$(<"${TMP_DIR}/legacy-uninstall.log")" "已保留"
 assert_equal "旧状态卸载不改写当前状态文件" "${state_file_before}" "${STATE_FILE}"
 : >"${TMP_DIR}/cf-legacy-calls.log"

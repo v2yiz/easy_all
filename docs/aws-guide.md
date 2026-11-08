@@ -1,12 +1,12 @@
 # AWS CloudFront + Cloudflare 一次性准备指南
 
-本文档指导如何为 **模式 2（纯 CDN - CloudFront）** 与 **模式 3（直连+CloudFront）** 准备所需的 Cloudflare 与 AWS 凭据。模式 1（直连 Reality）不需要 AWS 账号。
+本文档指导如何为 **模式 2（纯 CloudFront）** 与 **模式 4（直连+CloudFront）** 准备所需的 Cloudflare 与 AWS 凭据。模式 1（直连 Reality）与模式 3/5（Cloudflare 橙云链路）不需要 AWS 账号，凭据准备见 [前置准备手册](preparation-guide.md)。
 
 ---
 
 ## 0. 成本模型与边界（先读这一节）
 
-- **Cloudflare 只作权威 DNS**：域名解析完全由 Cloudflare 免费计划提供，**不需要购买 AWS Route 53 托管区**，也没有任何橙云代理流量。模式 2/3 的所有业务记录都是灰云直出。
+- **Cloudflare 只作权威 DNS**：域名解析完全由 Cloudflare 免费计划提供，**不需要购买 AWS Route 53 托管区**，也没有任何橙云代理流量。模式 2/4 的所有业务记录都是灰云直出。
 - **CloudFront 按账号条款计费**：AWS 对 CloudFront 通常提供每月一定额度的出站流量与请求数免费额度（例如 1 TB / 1000 万次量级），但具体额度、适用区域和计费单价**以你账号当前的 AWS 条款与账单为准**，可能随账号类型和 AWS 政策变化。超出免费额度的部分由 AWS 直接向账号绑定的支付方式收费。
 - **本机 985 GB 近似计量保护**：VPS 上用 Xray 的 XHTTP 入站字节做本地计数，达到 985 GB（十进制 985×10⁹ 字节）就阻断 CDN 入口。这只是一个**本机近似计量保护**，不是 AWS 账单真源，不能承诺“零账单”，也不是任何形式的账单保底。
 
@@ -34,7 +34,7 @@
 
 1. 登录 Cloudflare 控制台 → 右上角头像 → **我的个人资料 (My Profile)** → **API 令牌 (API Tokens)**。
 2. 点击 **创建令牌 (Create Token)** → 选择 **编辑区域 DNS (Edit zone DNS)** 模板。
-3. 权限保持默认两项即可满足模式 2/3：
+3. 权限保持默认两项即可满足模式 2/4：
    - `区域 - 区域 - 读取`（Zone / Zone / Read）
    - `区域 - DNS - 编辑`（Zone / DNS / Edit）
 4. **区域资源 (Zone Resources)**：选择 `包括 - 具体区域 - 你的域名`（例如 `example.com`）。
@@ -166,7 +166,7 @@ AWS Secret Access Key        # 仅当前进程内存
 | 源站（默认 `origin.<zone>`） | `A` → VPS 公网 IPv4 | 灰云 |
 | CloudFront 节点（默认 `cf.<zone>`） | `CNAME` → CloudFront 分发域名 | 灰云 |
 | 订阅（默认与节点同名） | 与节点同名时复用其 CNAME；不同则额外一条 `CNAME` → 分发域名 | 灰云 |
-| 直连 Reality（仅模式 3，默认 `node.<zone>`） | `A` → VPS 公网 IPv4（可与源站同名复用） | 灰云 |
+| 直连 Reality（仅模式 4，默认 `node.<zone>`） | `A` → VPS 公网 IPv4（可与源站同名复用） | 灰云 |
 
 CNAME 指向的 CloudFront 分发域名只有在分发创建后才知道，所以不要提前手工建这些记录；如已有冲突记录，请先清理。
 
@@ -196,11 +196,13 @@ sudo easy_all install
 在交互菜单中选择：
 
 ```text
-2. 纯 CDN - AWS CloudFront XHTTP（直连不佳、IP 被封或只要 CDN 入口时）
-3. 直连+CDN：直连 Reality + CloudFront（一次部署两个入口）
+2. 纯 CloudFront - AWS CloudFront XHTTP（直连不佳、IP 被封或只要 CDN 入口时）
+4. 直连+CloudFront：直连 Reality + CloudFront（一次部署两个入口）
 ```
 
-按提示输入（模式 2 到「订阅配置 JSON」结束，模式 3 之后还有直连域名、Reality 目标与直连节点名）：
+> 本文档只覆盖 **模式 2 与模式 4**（CloudFront 链路）。菜单里的 **3 纯 CloudFlare** 与 **5 直连+CloudFlare** 属于 Cloudflare 橙云链路，不需要 AWS 账号，准备步骤见 [前置准备手册](preparation-guide.md)。
+
+按提示输入（模式 2 到「订阅配置 JSON」结束，模式 4 之后还有直连域名、Reality 目标与直连节点名）：
 
 ```text
 Cloudflare 根 Zone            # 如 example.com
@@ -221,8 +223,8 @@ Mihomo 下载文件名              # 默认 EASY_ALL
 
 ## 8. 安装后的流量保护
 
-- 计时来源：Xray 的 `vless-xhttp-in` 入站计数（模式 3 的 Reality 流量不计入）。
+- 计时来源：Xray 的 `vless-xhttp-in` 入站计数（模式 4 的 Reality 流量不计入）。
 - 阈值：**985 GB 十进制**（985×10⁹ 字节），固定不可调；每月按 **UTC 自然月** 重新计算。
-- 达到阈值后只阻断 CDN：Nginx 对应路径返回 `503`、Xray 清空 XHTTP 客户端并重启以终止既有连接；模式 3 的 Reality 直连仍可用（重连后手动切换），订阅仍可下载。
+- 达到阈值后只阻断 CDN：Nginx 对应路径返回 `503`、Xray 清空 XHTTP 客户端并重启以终止既有连接；模式 4 的 Reality 直连仍可用（重连后手动切换），订阅仍可下载。
 - 定时器 `easy_all-cdn-traffic-guard.timer` 每 15 秒执行 `easy_all cdn-traffic-sync`；`apply`、`apply-cloud`、`update-core` 都不会绕过已生效的阻断。
 - 如果 `sudo easy_all status` 显示流量保护异常（统计文件缺失/损坏、定时器 inactive），请先停用 CDN 入口再修复，不要删除 usage 文件来“清零”。

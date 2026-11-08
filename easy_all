@@ -27,10 +27,16 @@ readonly CURRENT_STATE_VERSION="0"
 
 # 状态结构必需字段的单一来源：launcher 在加载任何 Profile 之前就需要它做分类。
 readonly EASY_ALL_STATE_LIB="${EASY_ALL_ROOT}/lib/cloudfront-state.sh"
-[[ -f "${EASY_ALL_STATE_LIB}" ]] \
-    || { printf '\033[31m缺少 easy_all 运行时文件：%s\033[0m\n' "${EASY_ALL_STATE_LIB}" >&2; exit 1; }
+readonly EASY_ALL_CLOUDFLARE_STATE_LIB="${EASY_ALL_ROOT}/lib/cloudflare-state.sh"
+for state_lib in "${EASY_ALL_STATE_LIB}" "${EASY_ALL_CLOUDFLARE_STATE_LIB}"; do
+    [[ -f "${state_lib}" ]] \
+        || { printf '\033[31m缺少 easy_all 运行时文件：%s\033[0m\n' "${state_lib}" >&2; exit 1; }
+done
+unset state_lib
 # shellcheck source=lib/cloudfront-state.sh
 source "${EASY_ALL_STATE_LIB}"
+# shellcheck source=lib/cloudflare-state.sh
+source "${EASY_ALL_CLOUDFLARE_STATE_LIB}"
 
 
 launcher_die() {
@@ -81,19 +87,20 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择 Reality、纯 CDN（CloudFront）或直连+CDN
+  install          交互选择安装模式（1 直连 / 2 纯 CloudFront / 3 纯 CloudFlare /
+                   4 直连+CloudFront / 5 直连+CloudFlare）
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
-  apply            应用已安装配置；纯 CDN 与直连+CDN 只重建本机与订阅（不访问云 API）
+  apply            应用已安装配置；CDN 模式只重建本机与订阅（不访问云 API）
   reality-target [域名:端口]
                    修改 Reality SNI（伪装目标）并重新应用
   rotate-dynamic-ports
                    立即刷新直连 Reality 模式的动态端口 NAT 规则
-  apply-cloud      同步云端资源（Cloudflare DNS、AWS ACM 与 CloudFront 分发、源站证书）
+  apply-cloud      同步云端资源（Cloudflare DNS 与 Origin CA、AWS ACM 与 CloudFront 分发）
   edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
-  cdn-traffic-sync 同步 CloudFront CDN 用量并落实流量阻断
+  cdn-traffic-sync 同步 CloudFront CDN 用量并落实流量阻断（仅 CloudFront 模式）
   purge-cloudflare 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用）
   update-core      更新当前模式的核心（Xray）
   renew-cert       重新签发/部署当前模式的 TLS 证书
@@ -222,13 +229,17 @@ choose_install_mode() {
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
     printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
-    printf '  2. 纯 CDN - AWS CloudFront XHTTP（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
-    printf '  3. 直连+CDN：直连 Reality + CloudFront（一次部署两个入口）\n' >&2
+    printf '  2. 纯 CloudFront - AWS CloudFront XHTTP（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
+    printf '  3. 纯 CloudFlare - Cloudflare 橙云 XHTTP（单域名同时提供节点与订阅）\n' >&2
+    printf '  4. 直连+CloudFront：直连 Reality + CloudFront（一次部署两个入口）\n' >&2
+    printf '  5. 直连+CloudFlare：直连 Reality + Cloudflare 橙云 XHTTP\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'reality\n' ;;
     2) printf 'cloudfront\n' ;;
-    3) printf 'combined\n' ;;
+    3) printf 'cloudflare\n' ;;
+    4) printf 'combined\n' ;;
+    5) printf 'combined-cloudflare\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
@@ -258,10 +269,22 @@ launcher_cloudfront_state_complete() {
     [[ "$(state_value "${file}" CDN_TRAFFIC_PROTECTION_GB)" == "985" ]] || return 1
 }
 
+# Cloudflare 橙云链路的结构校验：字段来自 lib/cloudflare-state.sh，没有 AWS 与
+# 985GB 熔断字段（橙云链路不计量）。
+launcher_cloudflare_state_complete() {
+    local file=$1 protocol field value
+    protocol=$(state_value "${file}" PROTOCOL || true)
+    while IFS= read -r field; do
+        value=$(state_value "${file}" "${field}" || true)
+        [[ -n "${value}" ]] || return 1
+    done < <(cloudflare_state_required_fields "${protocol}")
+    [[ "$(state_value "${file}" CDN_PROVIDER)" == "cloudflare" ]] || return 1
+}
+
 # 输出既能识别又能门禁的模式分类：
-#   reality / cloudfront / combined-cloudfront（新链路）
+#   reality / cloudfront / combined-cloudfront / cloudflare / combined-cloudflare（新链路）
 #   cdn / combined（旧 Cloudflare 链路，仅卸载）
-#   incomplete-cloudfront / incomplete-combined-cloudfront（新协议但字段不齐，仅卸载）
+#   incomplete-*（新协议但字段不齐，仅卸载）
 detect_installed_mode() {
     local protocol="" state_version=""
     # 不可读的状态文件（目录可搜索、文件 0600 root）同样交给 main 统一提示 root：直接往下
@@ -287,6 +310,20 @@ detect_installed_mode() {
                 printf 'combined-cloudfront\n'
             else
                 printf 'incomplete-combined-cloudfront\n'
+            fi
+            ;;
+        cloudflare)
+            if launcher_cloudflare_state_complete "${EASY_ALL_STATE_FILE}"; then
+                printf 'cloudflare\n'
+            else
+                printf 'incomplete-cloudflare\n'
+            fi
+            ;;
+        combined-cloudflare)
+            if launcher_cloudflare_state_complete "${EASY_ALL_STATE_FILE}"; then
+                printf 'combined-cloudflare\n'
+            else
+                printf 'incomplete-combined-cloudflare\n'
             fi
             ;;
         cdn|combined)
@@ -322,9 +359,13 @@ profile_file() {
     reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
     # 旧 PROTOCOL=cdn 只保留卸载通道，复用新核心的本机清理实现。
     cdn) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
-    combined|combined-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
-    cloudfront|incomplete-cloudfront|incomplete-combined-cloudfront)
-        candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
+    combined|combined-cloudfront|incomplete-combined-cloudfront)
+        candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
+    cloudflare|incomplete-cloudflare)
+        candidate="${EASY_ALL_ROOT}/profiles/cloudflare.sh" ;;
+    combined-cloudflare|incomplete-combined-cloudflare)
+        candidate="${EASY_ALL_ROOT}/profiles/combined-cloudflare.sh" ;;
+    cloudfront|incomplete-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -464,13 +505,16 @@ dispatch_profile_command() {
         ;;
     tcp-resume) resume_skyline_after_reboot "$@" ;;
     reality-target)
-        [[ "${mode}" == "reality" || "${mode}" == "combined-cloudfront" ]] \
-            || launcher_die "reality-target 仅适用于 Reality 与直连+CDN模式"
+        [[ "${mode}" == "reality" || "${mode}" == "combined-cloudfront" \
+            || "${mode}" == "combined-cloudflare" ]] \
+            || launcher_die "reality-target 仅适用于 Reality 与直连+CDN 模式"
         update_reality_target "$@"
         ;;
     apply-cloud)
-        [[ "${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront" ]] \
-            || launcher_die "apply-cloud 仅适用于纯 CDN 与直连+CDN模式"
+        case "${mode}" in
+        cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;
+        *) launcher_die "apply-cloud 仅适用于 CDN 模式" ;;
+        esac
         apply_cloud_resources
         ;;
     edit-sub)
@@ -485,13 +529,13 @@ dispatch_profile_command() {
         ;;
     cdn-traffic-sync)
         [[ "${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront" ]] \
-            || launcher_die "cdn-traffic-sync 仅适用于纯 CDN 与直连+CDN（CloudFront）模式"
+            || launcher_die "cdn-traffic-sync 仅适用于 CloudFront 模式"
         cdn_traffic_protection_sync
         ;;
     renew-cert)
         case "${mode}" in
         reality) renew_subscription_certificate ;;
-        cloudfront | combined-cloudfront) renew_certificate ;;
+        cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate ;;
         *) launcher_die "当前模式不使用 TLS 证书，无需续期" ;;
         esac
         ;;
@@ -509,6 +553,9 @@ dispatch_profile_command() {
         cdn | combined) uninstall_legacy_cdn "$@" ;;
         incomplete-cloudfront | incomplete-combined-cloudfront)
             uninstall_incomplete_cloudfront "$@"
+            ;;
+        incomplete-cloudflare | incomplete-combined-cloudflare)
+            uninstall_incomplete_cloudflare "$@"
             ;;
         *) uninstall_all "$@" ;;
         esac
@@ -545,10 +592,13 @@ main() {
         mode=$(detect_installed_mode)
         case "${mode}" in
         cdn | combined)
-            launcher_die "检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）。当前版本不支持接管或迁移；请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 选择模式 2 或 3。默认卸载保留云端资源。"
+            launcher_die "检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）。当前版本不支持接管或迁移；请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 重新选择安装模式。默认卸载保留云端资源。"
             ;;
         incomplete-cloudfront | incomplete-combined-cloudfront)
             launcher_die "CloudFront 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
+            ;;
+        incomplete-cloudflare | incomplete-combined-cloudflare)
+            launcher_die "Cloudflare 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
             ;;
         esac
         if [[ -n "${mode}" ]]; then
@@ -561,11 +611,15 @@ main() {
         case "${mode}" in
         cdn | combined)
             [[ "${command}" == "uninstall" ]] \
-                || launcher_die "检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）。当前版本不支持接管或迁移；请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 选择模式 2 或 3。默认卸载保留云端资源。"
+                || launcher_die "检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）。当前版本不支持接管或迁移；请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 重新选择安装模式。默认卸载保留云端资源。"
             ;;
         incomplete-cloudfront | incomplete-combined-cloudfront)
             [[ "${command}" == "uninstall" ]] \
                 || launcher_die "CloudFront 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
+            ;;
+        incomplete-cloudflare | incomplete-combined-cloudflare)
+            [[ "${command}" == "uninstall" ]] \
+                || launcher_die "Cloudflare 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
             ;;
         esac
     fi

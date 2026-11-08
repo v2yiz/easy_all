@@ -1985,6 +1985,8 @@ apply_easy_all() {
     xhttp_configure_ufw
     write_xray_config
     install_xray_service
+    # enable --now 对已运行的 unit 是空操作：不重启的话新的 UUID/路径不会生效。
+    systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 服务失败"
     write_nginx_config
     validate_protocol_runtime
     cdn_validate_direct_runtime
@@ -2031,6 +2033,8 @@ apply_cloud_resources() {
     persist_install_identity || die "无法落盘安装身份；已保留云端资源"
     write_xray_config
     install_xray_service
+    # enable --now 对已运行的 unit 是空操作：不重启的话新的 UUID/路径不会生效。
+    systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 服务失败"
     write_nginx_config
     validate_protocol_runtime
     cdn_validate_direct_runtime
@@ -2485,7 +2489,7 @@ uninstall_legacy_cdn() {
     # 旧链路不写 state.env 的新字段，回源放行需在删状态目录前按旧注释回收。
     cdn_legacy_reclaim_origin_firewall_rules || true
     cdn_local_uninstall_common || return 1
-    success "旧 Cloudflare CDN 本机内容已卸载；请重新执行 sudo easy_all install 选择模式 2 或 3"
+    success "旧 Cloudflare CDN 本机内容已卸载；请重新执行 sudo easy_all install 重新选择安装模式"
 }
 
 # 新协议但强制字段缺失/来自未完成实现：只清本机，云端一律保留。

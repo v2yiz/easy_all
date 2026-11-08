@@ -1235,14 +1235,17 @@ echo "=== 13. 模式菜单与回滚残留 ==="
 mode_body=$(awk '/^choose_install_mode\(\)/,/^}/' "${ROOT_DIR}/easy_all")
 assert_contains "菜单序号 1 映射到直连 Reality" "${mode_body}" "1) printf 'reality\\n' ;;"
 assert_contains "菜单序号 2 映射到纯 CDN（CloudFront）" "${mode_body}" "2) printf 'cloudfront\\n' ;;"
-assert_contains "菜单序号 3 映射到直连+CDN" "${mode_body}" "3) printf 'combined\\n' ;;"
+assert_contains "菜单序号 3 映射到纯 CloudFlare" "${mode_body}" "3) printf 'cloudflare\\n' ;;"
+assert_contains "菜单序号 4 映射到直连+CloudFront" "${mode_body}" "4) printf 'combined\\n' ;;"
+assert_contains "菜单序号 5 映射到直连+CloudFlare" "${mode_body}" "5) printf 'combined-cloudflare\\n' ;;"
 assert_not_contains "菜单不再使用已移除的历史标识" "${mode_body}" "cloudflare-streamup"
 launcher_body=$(<"${ROOT_DIR}/easy_all")
 assert_contains "状态识别接受新 CloudFront 协议" "${launcher_body}" "combined-cloudfront"
 assert_contains "profile_file 注册 CloudFront" "${launcher_body}" "profiles/cloudfront.sh"
 assert_contains "manifest 登记 CloudFront profile" "$(<"${ROOT_DIR}/runtime.manifest")" "profiles/cloudfront.sh"
 assert_contains "manifest 登记 CloudFront 共享核心" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudfront-mode.sh"
-assert_not_contains "manifest 不再登记旧共享层" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudflare-mode.sh"
+assert_contains "manifest 登记 Cloudflare 橙云共享层" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudflare-mode.sh"
+assert_contains "manifest 登记 Cloudflare 状态字段库" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudflare-state.sh"
 assert_contains "无效序号提示模式不支持" "${mode_body}" "不支持的安装模式"
 
 rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/lib/xhttp-runtime.sh")

@@ -508,9 +508,9 @@ install_failure_report() {
 install_cleanup_perform() {
     case "$1" in
     # 已拍安装前快照：按快照回滚（同时移除本次新增文件）。
-    rollback) rollback_fresh_install || true ;;
+    rollback) rollback_fresh_install ;;
     # 快照未完成（或尚未拍）：只清理本次安装留下的本机残留。
-    partial) cleanup_partial_install || true ;;
+    partial) cleanup_partial_install ;;
     esac
 }
 
@@ -522,17 +522,25 @@ install_cleanup_after_failure() {
             '是否清理本次安装的本机残留（已拍快照时回滚到安装前状态）？[Y/n]' answer \
             || answer=""
         if [[ -z "${answer}" || "${answer}" =~ ^[Yy] ]]; then
-            install_cleanup_perform "${action}"
             # 失败路径一律写 stderr：退出时可能仍带着上层命令的输出重定向。
-            printf '%s\n' '已清理本次安装的本机残留；修正问题后可重新运行安装' >&2
+            if install_cleanup_perform "${action}"; then
+                printf '%s\n' '已清理本次安装的本机残留；修正问题后可重新运行安装' >&2
+            else
+                printf '%s\n' '本机残留未完全清理；已保留安装进度标记与安装前快照，修正后可重试 sudo easy_all cleanup-partial' >&2
+                residue_recovery_hint >&2 || true
+            fi
             return 0
         fi
         printf '%s\n' '已保留本次安装的本机改动（未清理）' >&2
         residue_recovery_hint >&2 || true
         return 0
     fi
-    install_cleanup_perform "${action}"
-    printf '%s\n' '非交互环境（没有终端）：已自动清理本次安装的本机残留' >&2
+    if install_cleanup_perform "${action}"; then
+        printf '%s\n' '非交互环境（没有终端）：已自动清理本次安装的本机残留' >&2
+    else
+        printf '%s\n' '非交互环境（没有终端）：本机残留未完全清理；已保留安装进度标记与安装前快照，修正后可重试 sudo easy_all cleanup-partial' >&2
+        residue_recovery_hint >&2 || true
+    fi
 }
 
 install_state_dir_path() {
@@ -636,6 +644,8 @@ profile_script_for() {
     reality) printf 'reality.sh' ;;
     cloudfront) printf 'cloudfront.sh' ;;
     combined) printf 'combined.sh' ;;
+    cloudflare) printf 'cloudflare.sh' ;;
+    combined-cloudflare) printf 'combined-cloudflare.sh' ;;
     *) return 1 ;;
     esac
 }
@@ -818,15 +828,15 @@ resume_partial_install() {
     [[ -f "${backup_dir}/pre-install-complete" ]] \
         || die "上次安装前的快照不完整，无法安全续装；请执行 sudo easy_all cleanup-partial 后重装"
     chain=$(install_progress_field CHAIN 2>/dev/null || true)
-    if [[ "${chain}" == "cloudfront" ]]; then
+    if [[ "${chain}" == "cloudfront" || "${chain}" == "cloudflare" ]]; then
         # CloudFront 链路的分发/证书与已下发订阅都只存在于磁盘身份里：身份缺失或不
         # 一致时续装会用新值覆盖已创建资源，必须拒绝而不是仅告警。
         install_identity_chain_matches "$(install_identity_file)" \
             "${CDN_PROFILE_KEY:-${EASY_ALL_SELECTED_MODE:-}}" \
             "${CDN_EXPECTED_PROTOCOL:-}" "${chain}" \
-            || die "上次 CloudFront 安装身份缺失或与链路不一致（profile/protocol/chain）；无法安全续装，请执行 sudo easy_all cleanup-partial 后重装"
+            || die "上次 ${chain} 安装身份缺失或与链路不一致（profile/protocol/chain）；无法安全续装，请执行 sudo easy_all cleanup-partial 后重装"
         load_install_identity \
-            || die "上次 CloudFront 安装身份无法读取；无法安全续装，请执行 sudo easy_all cleanup-partial 后重装"
+            || die "上次 ${chain} 安装身份无法读取；无法安全续装，请执行 sudo easy_all cleanup-partial 后重装"
     else
         # 参数预检可能已经重新生成了 UUID/路径/Token；用落盘身份覆盖回去，保证已写进配置和
         # 已下发订阅的节点参数不变。身份文件缺失（中断太早）时按新生成值继续。
@@ -838,6 +848,18 @@ resume_partial_install() {
     INSTALL_RESUME=1
     export INSTALL_RESUME
     success "续装：保留上次安装的本机配置/证书与云端资源，只重建服务（失败仍回滚到安装前状态）"
+}
+
+# 安装标记的链路身份：CloudFront 与 Cloudflare 橙云两条 CDN 链路各自只能续装
+# 同链路标记；没有 CHAIN 的旧标记（含旧橙云 combined）返回非零，只能清理后重装。
+install_marker_chain_matches() {
+    local current=$1 expected
+    case "${current}" in
+    cloudfront | combined) expected=cloudfront ;;
+    cloudflare | combined-cloudflare) expected=cloudflare ;;
+    *) return 1 ;;
+    esac
+    [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "${expected}" ]]
 }
 
 prepare_fresh_install() {
@@ -863,10 +885,9 @@ prepare_fresh_install() {
             run_recorded_profile_cleanup "${recorded}" \
                 || die "按 ${recorded} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial"
             success "残留已清理，继续安装"
-        elif [[ "${current}" == "cloudfront" || "${current}" == "combined" ]] \
-            && [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "cloudfront" ]]; then
-            # CloudFront 核心只接受带 CHAIN=cloudfront 的同一键标记续装；旧 WIP 与旧橙云
-            # 标记没有该字段，只能清理后重装。模式 2 与模式 3 共用同一链路常量。
+        elif install_marker_chain_matches "${current}"; then
+            # CDN 核心只接受与当前链路的 CHAIN 一致的同一键标记续装；旧 WIP 与旧橙云
+            # 标记没有该字段，只能清理后重装。
             if [[ -t 0 ]]; then
                 read_confirmation '继续上次安装（保留已完成的配置、证书与云端资源）？[Y/n]:' answer
                 if [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]]; then
