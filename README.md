@@ -46,6 +46,14 @@
 
 模式 3/5 不创建 CloudFront 分发、ACM 证书、Certbot lineage、StatsService 或 985GB 流量熔断定时器。
 
+> [!WARNING]
+> **Cloudflare 官方服务条款与封号风险警示**：
+> Cloudflare 官方服务条款（Section 2.8 等）明确禁止将 CDN 代理用于 VPN / 代理隧道等非 HTML 大流量穿透场景，且严禁使用所谓的“优选 IP”（扫描并强制定向至特定 Anycast IP）。违规使用存在被 Cloudflare 拦截、封禁域名解析乃至封停整个 Cloudflare 账号的潜在风险。本工具模式 3 与模式 5 仅配置单域名官方合规回源（不包含任何优选 IP 逻辑），请用户务必知悉官方政策，自行评估合规风险并自行决定是否使用 Cloudflare 橙云代理。
+
+---
+
+### 版本兼容与接管说明
+
 > [!IMPORTANT]
 > **旧版本状态不支持接管**：旧版 `PROTOCOL=cdn`（橙云 XHTTP）和旧版橙云 `combined` 安装无法在当前版本继续运行。请先执行 `sudo easy_all uninstall`（默认保留云端资源），再重新 `sudo easy_all install` 重新选择安装模式。重装会产生新的 UUID / 路径 / Token，客户端必须重新导入新订阅链接。
 
