@@ -1,4 +1,4 @@
-## 4.4.0 更新说明（未发布）
+## 4.4.0 更新说明（2026-11-08）
 
 - **模式编号与链路变更（破坏性）**：删除旧的模式 2（Cloudflare 橙云 XHTTP），CloudFront 模式改为**模式 2「纯 CDN（CloudFront）」**；模式 3 改为**「直连+CloudFront」**（内部标识 `PROTOCOL=combined-cloudfront`）。两种 CloudFront 模式共用同一条链路：Cloudflare 只作灰云权威 DNS → AWS ACM（固定 `us-east-1`）→ CloudFront 分发 → 源站 Let's Encrypt 证书 + `X-Easy-All-Origin-Key` 头校验 → Nginx → Xray XHTTP；模式 3 另有固定 `8443` 的 Reality 入站。状态版本号仍为 `0`，模式 2/3 的所有文案只称 CloudFront，Cloudflare 仅表示 DNS 服务。
 - **旧状态不支持接管（破坏性）**：旧版 `PROTOCOL=cdn` 与旧版橙云 `combined` 安装不能被当前版本接管或迁移，任何应用、续签、更新核心、编辑订阅都会明确拒绝并提示 `sudo easy_all uninstall`；卸载本身仍可执行，默认保留云端资源。卸载重装会产生新的 UUID / XHTTP 路径 / Token（模式 3 还有新的 Reality 密钥），**客户端必须重新导入新订阅链接**；旧订阅里的节点名与分组不再兼容，自定义模板若写死旧组名会在模板校验阶段报错并提示换回内置模板。

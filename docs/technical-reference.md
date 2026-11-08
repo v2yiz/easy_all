@@ -186,6 +186,7 @@ easy_all
 │   ├── reality-target.sh        # Reality 伪装目标校验与 ASN 探测
 │   ├── reality-subscription.js  # 模式 1 本地自托管订阅生成器（动态端口槽位）
 │   ├── cf-dns.sh                # Cloudflare API / DNS / Origin CA / 回源网段（模式 1 主用）
+│   ├── cloudfront-state.sh      # CloudFront 状态字段单一来源与结构校验规则
 │   ├── cloudfront-mode.sh       # 模式 2/3 唯一 CloudFront 业务核心
 │   ├── cdn-traffic-guard.sh     # CDN 入站计量、985 GB 阈值与 systemd timer
 │   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
