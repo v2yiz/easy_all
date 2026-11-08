@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# 直连+CDN（profiles/combined.sh）单元与回归测试。
+# 直连+CDN（模式 3）回归测试：薄 Profile 钩子、状态 roundtrip、双入口节点顺序、
+# 域名/订阅复用、两云失败、熔断双协议（Reality 仍可用）与受限安全恢复。
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 PROFILE="${ROOT_DIR}/profiles/combined.sh"
-MODE_LIB="${ROOT_DIR}/lib/cloudflare-mode.sh"
-SUB_AUTH_LIB="${ROOT_DIR}/lib/subscription-auth.sh"
+CORE="${ROOT_DIR}/lib/cloudfront-mode.sh"
+GUARD="${ROOT_DIR}/lib/cdn-traffic-guard.sh"
+XHTTP_LIB="${ROOT_DIR}/lib/xhttp-runtime.sh"
 
-# 沙箱环境可能禁止写用户默认 TMPDIR：无参 mktemp 一律落到本测试的 /tmp 目录。
-TMP_DIR=$(mktemp -d "${TMP_ROOT_FALLBACK:-/tmp}/easy_all_combined_test.XXXXXX")
+# 子进程探针（EASY_ALL_COMBINED_PROBE=1）复用父测试的隔离目录，只靠磁盘状态恢复。
+TMP_DIR=${EASY_ALL_TEST_TMP_DIR:-$(mktemp -d "${TMP_ROOT_FALLBACK:-/tmp}/easy_all_combined_test.XXXXXX")}
 mktemp() {
     if [[ $# -eq 0 ]]; then
         command mktemp "${TMP_DIR}/file.XXXXXX"
@@ -20,34 +22,64 @@ mktemp() {
 }
 trap 'command rm -rf -- "${TMP_DIR}"' EXIT
 
-# log.sh 在被 source 后定义了同名 fail（只打印、return 1），断言必须用本测试自己的致命 helper。
 fail_test() {
     printf 'not ok - %s\n' "$*" >&2
     exit 1
 }
-
 assert_equal() {
     local label=$1 expected=$2 actual=$3
     [[ "${expected}" == "${actual}" ]] \
         || fail_test "${label}: expected <${expected}> but got <${actual}>"
 }
-
 assert_contains() {
     local label=$1 text=$2 expected=$3
     [[ "${text}" == *"${expected}"* ]] \
         || fail_test "${label}: missing <${expected}> in <${text}>"
 }
-
 assert_not_contains() {
     local label=$1 text=$2 unexpected=$3
     [[ "${text}" != *"${unexpected}"* ]] \
         || fail_test "${label}: unexpected <${unexpected}> in <${text}>"
 }
+file_digest() {
+    openssl dgst -sha256 "$1" | sed 's/^.*= //'
+}
+mode_of() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
 
-# 1. 语法检查
-bash -n "${SUB_AUTH_LIB}" "${PROFILE}"
+bash -n "${PROFILE}" "${CORE}" "${GUARD}" "${XHTTP_LIB}" \
+    "${ROOT_DIR}/easy_all" "${ROOT_DIR}/lib/runtime-core.sh" \
+    "${ROOT_DIR}/lib/profile-common.sh" "${ROOT_DIR}/lib/scheduled-maintenance.sh"
 
-# 2. 导出隔离路径并包装 readonly / install / rm / flock / nginx / systemctl
+# --- 1. CLI / manifest 接线 --------------------------------------------------
+launcher_body=$(<"${ROOT_DIR}/easy_all")
+menu_body=$(awk '/^choose_install_mode\(\)/,/^}/' "${ROOT_DIR}/easy_all")
+assert_contains "菜单 3 映射到 combined" "${menu_body}" "3) printf 'combined\\n' ;;"
+assert_contains "detect 识别新模式 3 协议" "${launcher_body}" "combined-cloudfront)"
+assert_contains "模式 3 键映射到 combined Profile" "${launcher_body}" \
+    'combined|combined-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/combined.sh"'
+assert_contains "旧 combined 状态被拒绝" "${launcher_body}" \
+    '检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）'
+assert_contains "reality-target 路由覆盖新模式" "${launcher_body}" \
+    '"${mode}" == "reality" || "${mode}" == "combined-cloudfront"'
+assert_contains "apply-cloud 路由覆盖新模式" "${launcher_body}" \
+    '"${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront"'
+assert_contains "cdn-traffic-sync 路由覆盖新模式" "${launcher_body}" \
+    '"${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront"'
+assert_contains "renew-cert 路由覆盖新模式" "${launcher_body}" \
+    "cloudfront | combined-cloudfront) renew_certificate"
+assert_not_contains "不再保留模式 3 未启用文案" "${launcher_body}" "下一阶段启用"
+
+manifest_body=$(<"${ROOT_DIR}/runtime.manifest")
+for legacy in lib/cloudflare-mode.sh lib/globalping-cdn.sh lib/cloudflare-ip-pool.sh; do
+    assert_not_contains "manifest 不再登记 ${legacy}" "${manifest_body}" "${legacy}"
+    [[ ! -e "${ROOT_DIR}/${legacy}" ]] || fail_test "旧链路文件必须删除：${legacy}"
+done
+assert_contains "manifest 登记模式 3 Profile" "${manifest_body}" "profiles/combined.sh"
+assert_contains "manifest 登记共享核心" "${manifest_body}" "lib/cloudfront-mode.sh"
+
+# --- 2. 隔离运行环境 ---------------------------------------------------------
 export STATE_DIR="${TMP_DIR}/state"
 export BACKUP_DIR="${STATE_DIR}/backups"
 export STATE_FILE="${STATE_DIR}/state.env"
@@ -60,37 +92,92 @@ export SUBSCRIPTION_DIR="${WEB_ROOT}/subscriptions"
 export SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 export SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
 export SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_DIR}/mihomo-ios.yaml"
+export SUBSCRIPTION_BASE64_ALL_FILE="${SUBSCRIPTION_DIR}/base64-all.txt"
+export SUBSCRIPTION_MIHOMO_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-all.yaml"
+export SUBSCRIPTION_MIHOMO_IOS_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-ios-all.yaml"
 export COMMAND_INSTALL_DIR="${TMP_DIR}/lib"
-export COMMAND_PATH="${TMP_DIR}/bin/easy_all"
 export XRAY_DIR="${STATE_DIR}/xray"
-export XRAY_BIN="${XRAY_DIR}/xray"
+export XRAY_BIN="${TMP_DIR}/fake-xray"
 export XRAY_CONFIG="${XRAY_DIR}/config.json"
 export XRAY_SERVICE_FILE="${TMP_DIR}/systemd/easy_all-xray.service"
 export NGINX_CONFIG="${TMP_DIR}/nginx.conf"
 export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP_DIR}/runtime-write.lock"
 export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP_DIR}/policy-state"
 export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/progress/install-progress.env"
-export MIHOMO_TEMPLATE_FILE="${ROOT_DIR}/templates/mihomo.yaml"
-# 让 cleanup/幂等用例能替换 acme.sh 可执行文件，验证回滚不会真的卸载它
-export ACME_BIN="${TMP_DIR}/acme-sh"
-# configure_ipv4_only / optimize_nginx_system_config 会写 /etc 下的系统文件：非 root 的 CI runner
-# 上真实写入必失败（2026-11-05 main 构建块断于此），因此把它们的目标路径全部指到隔离目录。
-export IPV6_SYSCTL_CONF="${TMP_DIR}/sysctl/99-enable-ipv6.conf"
-export EASY_ALL_PROC_IPV6_DIR="${TMP_DIR}/proc-ipv6"
+export EASY_ALL_CERTBOT_HOOK_FILE_OVERRIDE="${TMP_DIR}/certbot/deploy-hook.sh"
+export EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${TMP_DIR}/letsencrypt/live/easy_all_origin"
 export EASY_ALL_NGINX_MAIN_CONF="${TMP_DIR}/nginx-main/nginx.conf"
-# 非 root 无法 sysctl -p，但被测的是 apply 的控制流，不是内核参数。
-sysctl() { :; }
-
+export FAKE_STATS_FILE="${TMP_DIR}/xray-stats.json"
+export FAKE_SYSTEMCTL_LOG="${TMP_DIR}/systemctl.log"
+export FAKE_INVOCATION_FILE="${TMP_DIR}/invocation-id"
+export FAKE_CURL_LOG="${TMP_DIR}/curl.log"
+FAKE_XRAY_RESTART_FAIL=0
 mkdir -p "${STATE_DIR}" "${BACKUP_DIR}" "${RUNTIME_TMP}" "${CERT_DIR}" \
     "${WEB_ROOT}" "${SUBSCRIPTION_DIR}" "${COMMAND_INSTALL_DIR}" \
-    "${TMP_DIR}/bin" "${XRAY_DIR}" "${TMP_DIR}/systemd" \
-    "$(dirname "${IPV6_SYSCTL_CONF}")" "${EASY_ALL_PROC_IPV6_DIR}" \
-    "$(dirname "${EASY_ALL_NGINX_MAIN_CONF}")"
+    "${XRAY_DIR}" "${TMP_DIR}/systemd" "$(dirname "${EASY_ALL_NGINX_MAIN_CONF}")" \
+    "${TMP_DIR}/certbot" "${TMP_DIR}/letsencrypt/live/easy_all_origin"
 printf 'worker_processes auto;\n' >"${EASY_ALL_NGINX_MAIN_CONF}"
-: >"${CERT_FILE}"
-: >"${KEY_FILE}"
+: >"${FAKE_SYSTEMCTL_LOG}"
 
-# 保留测试预导出的隔离路径，不让 xhttp-runtime.sh 的硬编码 /etc 覆盖
+cat >"${XRAY_BIN}" <<'FAKE_XRAY'
+#!/usr/bin/env bash
+case "${1:-}" in
+api) command cat "${FAKE_STATS_FILE:?}" ;;
+x25519)
+    if [[ "${2:-}" == "-i" ]]; then
+        printf 'Private key: %s\nPassword: test-public\n' "${3:-}"
+    else
+        printf 'PrivateKey: test-private\nPassword: test-public\n'
+    fi
+    ;;
+tls)
+    printf 'Pinging with SNI: %s\nHandshake succeeded\nTLS Version: TLS 1.3\n' "${3:-}"
+    ;;
+*) exit 0 ;;
+esac
+FAKE_XRAY
+chmod +x "${XRAY_BIN}"
+
+systemctl() {
+    printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG}"
+    case "${1:-}" in
+    show) command cat "${FAKE_INVOCATION_FILE}" 2>/dev/null || true ;;
+    is-active) [[ "${FAKE_INACTIVE:-}" != *"${!#}"* ]] ;;
+    restart) [[ "${FAKE_XRAY_RESTART_FAIL:-0}" != "1" ]] ;;
+    *) return 0 ;;
+    esac
+}
+nginx() { return 0; }
+flock() { :; }
+# macOS 沙箱没有 timeout：只吃掉超时参数，被测逻辑不变。
+timeout() { shift; "$@"; }
+require_root() { :; }
+sysctl() { :; }
+# 本机监听与 HTTP 验收：只模拟 443/8443 监听和源站路由状态码。
+ss() {
+    case "$*" in
+    *":443"*) printf 'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\n' ;;
+    *":8443"*) printf 'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*\n' ;;
+    esac
+}
+curl() {
+    printf '%s\n' "$*" >>"${FAKE_CURL_LOG}"
+    local last="${!#}"
+    if [[ " $* " == *" %{http_code} "* ]]; then
+        case "${last}" in
+        *"/easy_all-health") printf '200' ;;
+        *"/subscribe"*) printf '403' ;;
+        *) printf '503' ;;
+        esac
+        return 0
+    fi
+    case "${last}" in
+    *"/easy_all-health") printf 'easy_all ok' ;;
+    *"/subscribe"*) printf 'dmxlc3M6Ly90ZXN0' ;;
+    *) printf '' ;;
+    esac
+}
+
 readonly() {
     local arg name val
     for arg in "$@"; do
@@ -124,7 +211,6 @@ install() {
         target="${TMP_DIR}/web${target#/var/www/easy_all}"
         args[${#args[@]}-1]="${target}"
     fi
-    # 隔离护栏：除上面已重定向的受管路径外，任何对系统目录的写入都是测试隔离漏洞。
     case "${target}" in
     /etc/* | /usr/* | /var/* | /opt/* | /srv/*)
         fail_test "test isolation: refusing to install into ${target}"
@@ -137,7 +223,6 @@ install() {
     fi
     command install "${args[@]}"
 }
-
 rm() {
     local args=() arg
     for arg in "$@"; do
@@ -154,1746 +239,928 @@ rm() {
     command rm "${args[@]}"
 }
 
-cat >"${XRAY_BIN}" <<'EOF'
-#!/usr/bin/env bash
-if [[ "${1:-}" == "x25519" ]]; then
-    printf 'PrivateKey: test-private-key\nPublicKey: test-public-key\n'
-    exit 0
-fi
-exit 0
-EOF
-chmod +x "${XRAY_BIN}"
-
-flock() { :; }
-nginx() { :; }
-systemctl() { :; }
-require_root() { :; }
-
-# 在 source 之前清掉宿主环境里的同名变量：本测试要证明的是"端口由 profile 自己定义"，
-# 继承值会掩盖"combined 未定义回环端口"这类缺陷（2.2.1 曾因此在首次安装时崩溃）。
 unset XRAY_XHTTP_LOOPBACK_PORT
-# 同理：cf-dns 共享常量也必须由 profile 自己定义，不能被宿主预置值掩盖。
-unset CLOUDFLARE_UFW_PORT CLOUDFLARE_UFW_COMMENT CLOUDFLARE_ORIGIN_CA_ROOT_FILE
-# 候选池测试要求确定性且不依赖外网 DNS：显式关闭企业域名解析，只验证 /24 抽样分支。
-export CLOUDFLARE_ENTERPRISE_DOMAINS_OVERRIDE=""
 # shellcheck source=/dev/null
 source "${PROFILE}"
 unset -f readonly
-require_root() { :; }
 trap 'status=$?; cleanup; command rm -rf -- "${TMP_DIR}"; exit "${status}"' EXIT
 
-# cf-dns.sh 的共享函数靠 Profile 常量区分模式：证书路径与回源端口必须由 Profile 在 source 阶段就定下，
-# 否则 apply / edit-sub / 定时优选会在 set -u 下直接崩溃（共享库不再自己赋默认值）。
-assert_equal "profile: 回源证书路径指向 profile 常量" \
-    "${CF_CA_ROOT_FILE}" "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
-assert_equal "profile: 回源 UFW 端口保持 443" "443" "${CLOUDFLARE_UFW_PORT}"
+# 新进程探针：不继承任何内存变量，只用磁盘上的 state.env/identity 恢复安装身份。
+scenario_resume_fields() {
+    require_root() { :; }
+    resume_partial_install
+    printf 'FIELDS|%s|%s|%s|%s|%s|%s|%s\n' "${ORIGIN_HEADER_SECRET}" "${VLESS_UUID}" \
+        "${XHTTP_PATH}" "${REALITY_PRIVATE_KEY}" "${REALITY_PUBLIC_KEY}" \
+        "${AWS_ACM_CERTIFICATE_ARN:-}" "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}"
+}
 
-# 初始化直连+CDN fixture
-CF_ZONE="example.com"
-CLOUDFLARE_ZONE_ID="zone-123456"
-VPS_PUBLIC_IPV4="198.51.100.10"
-DIRECT_DOMAIN="direct.example.com"
-CF_NODE_DOMAIN="cf-node.example.com"
-SUBSCRIPTION_DOMAIN="sub.example.com"
-VLESS_CDN_DOMAIN="${CF_NODE_DOMAIN}"
-SUB_DOWNLOAD_NAME="EASYALL"
-OWNER_TOKEN="token-init-12345"
-ALLOWED_TOKENS=$(jq -cn --arg token "${OWNER_TOKEN}" '{owner:$token}')
-VLESS_UUID="11111111-2222-4111-8111-111111111111"
-DIRECT_NODE_NAME="🇺🇸直连"
-CF_NODE_PREFIX="🇺🇸CF"
-XHTTP_PATH="/xhttp-abcdef123456"
+scenario_resume_defaults() {
+    require_root() { :; }
+    resume_partial_install
+    # 续装后的输入提示必须以恢复值为默认值，不得先生成新值再覆盖。
+    prompt_value() { printf '%s' "${2:-}"; }
+    prompt_secret() { printf 'resume-zone-token-0123456789abcd'; }
+    collect_aws_credentials() {
+        AWS_ACCESS_KEY_ID=AKIAFAKEFAKEFAKEFAKE
+        AWS_SECRET_ACCESS_KEY=resume-secret-0123456789abcd
+    }
+    detect_public_ipv4() { printf '203.0.113.77'; }
+    choose_subscription_config() { printf '%s' "${SUBSCRIPTION_CONFIG}"; }
+    collect_install_inputs </dev/null
+    printf 'RESULT|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        "${CF_ZONE}" "${CF_ORIGIN_DOMAIN}" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" \
+        "${DIRECT_DOMAIN}" "${DIRECT_NODE_NAME}" "${REALITY_TARGET}" \
+        "${SUB_DOWNLOAD_NAME}" "${VPS_PUBLIC_IPV4}" \
+        "${SCHEDULED_REBOOT_ENABLED:-}" "${SCHEDULED_REBOOT_HOUR:-}"
+}
+
+scenario_resume_plain() {
+    require_root() { :; }
+    resume_partial_install
+    printf 'RESUMED\n'
+}
+
+if [[ -n "${EASY_ALL_COMBINED_SCENARIO:-}" ]]; then
+    trap - EXIT
+    case "${EASY_ALL_COMBINED_SCENARIO}" in
+    resume-fields) scenario_resume_fields ;;
+    resume-defaults) scenario_resume_defaults ;;
+    resume-plain) scenario_resume_plain ;;
+    *) fail_test "未知子进程场景：${EASY_ALL_COMBINED_SCENARIO}" ;;
+    esac
+    exit 0
+fi
+
+# 新进程探针：不继承任何内存变量，只用磁盘上的 state.env 与 usage 恢复受限运行时。
+if [[ "${EASY_ALL_COMBINED_PROBE:-0}" == "1" ]]; then
+    trap - EXIT
+    collect_installed_state
+    cdn_traffic_recover_restricted_runtime
+    exit $?
+fi
+
+# 网络辅助一律隔离：ASN/公网 IP 查询不触网。
+detect_public_ipv4() { printf '198.51.100.10'; }
+lookup_ip_asns() { printf '64500'; }
+
+# --- 3. Profile 契约 ---------------------------------------------------------
+assert_equal "模式 3 协议" "combined-cloudfront" "${PROTOCOL}"
+assert_equal "模式 3 Profile 键" "combined" "${CDN_PROFILE_KEY}"
+assert_equal "模式 3 CloudFront provider" "aws" "${CDN_PROVIDER}"
+assert_equal "Reality 固定 8443" "8443" "${REALITY_PORT}"
+assert_equal "安装预检含 80/443/8443" "80 443 8443" "${CDN_INSTALL_PORTS[*]}"
+assert_equal "UFW 业务端口含 8443" "8443" "$(cdn_direct_ufw_ports)"
+assert_contains "状态字段登记直连域名" "${CDN_STATE_VARIABLES[*]}" "DIRECT_DOMAIN"
+assert_contains "状态字段登记直连节点名" "${CDN_STATE_VARIABLES[*]}" "DIRECT_NODE_NAME"
+assert_contains "状态字段登记 Reality 目标" "${CDN_STATE_VARIABLES[*]}" "REALITY_TARGET"
+assert_contains "状态字段登记 Reality 私钥" "${CDN_STATE_VARIABLES[*]}" "REALITY_PRIVATE_KEY"
+assert_contains "状态字段登记 Reality shortId" "${CDN_STATE_VARIABLES[*]}" "REALITY_SHORT_ID"
+assert_contains "状态字段登记分发 ID" "${CDN_STATE_VARIABLES[*]}" "AWS_CLOUDFRONT_DISTRIBUTION_ID"
+assert_contains "状态字段登记模板快照" "${CDN_STATE_VARIABLES[*]}" "MIHOMO_TEMPLATE_SNAPSHOT"
+precheck_stmt=$(sed -n '/^install_all() {/,/^}/p' "${CORE}" \
+    | grep -F 'prepare_fresh_install "${CDN_INSTALL_PORTS[@]}"' || true)
+assert_contains "安装预检包含回环端口与统计 API" "${precheck_stmt}" \
+    '"${XRAY_XHTTP_LOOPBACK_PORT}" 10085'
+assert_contains "安装走 CloudFront 链路标记" \
+    "$(sed -n '/^install_all() {/,/^}/p' "${CORE}")" \
+    'install_progress_begin "${CDN_PROFILE_KEY}" cloudfront'
+
+# --- 4. 状态 roundtrip -------------------------------------------------------
+CF_ZONE=example.com
+CLOUDFLARE_ZONE_ID=zone-123
+VPS_PUBLIC_IPV4=198.51.100.10
+CF_ORIGIN_DOMAIN=origin.example.com
+CF_NODE_DOMAIN=cf.example.com
+SUBSCRIPTION_DOMAIN=sub.example.com
+DIRECT_DOMAIN=node.example.com
+DIRECT_NODE_NAME='🇺🇸直连'
+SUB_DOWNLOAD_NAME=EASYALL
+OWNER_TOKEN=cdnwq-rtbke-3182
+ALLOWED_TOKENS=$(jq -cn --arg t "${OWNER_TOKEN}" '{owner:$t}')
+AGG_NODE='{"type":"vless","name":"聚合节点","host":"r.example.com","port":8443,"security":"reality","network":"tcp","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef"}'
+SUBSCRIPTION_CONFIG=$(jq -cn --arg t "${OWNER_TOKEN}" --argjson n "[${AGG_NODE}]" \
+    '{allowedTokens:{owner:$t},nodes:$n}')
+VLESS_UUID=11111111-2222-4111-8111-111111111111
+CF_NODE_PREFIX='🇺🇸AWS'
+XHTTP_PATH=/xhttp-abcdef123456
+ORIGIN_HEADER_SECRET=test-origin-header-secret-1234
+AWS_CLOUDFRONT_DISTRIBUTION_ID=EDFDIST123
+AWS_CLOUDFRONT_DOMAIN=d111.cloudfront.net
+AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/test
+CDN_TRAFFIC_PROTECTION_GB=985
+MIHOMO_TEMPLATE_SNAPSHOT=1
+SCHEDULED_REBOOT_ENABLED=0
+SCHEDULED_REBOOT_HOUR=""
+TCP_ACCELERATION=skyline
 REALITY_TARGET="swdist.apple.com:443"
-REALITY_PRIVATE_KEY="test-private-key"
-REALITY_PUBLIC_KEY="test-public-key"
-REALITY_SHORT_ID="0123456789abcdef"
-CLOUDFLARE_ORIGIN_CERT_ID="cert-old-111"
-CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON="2041-11-03 00:00:00 +0000 UTC"
-SUBSCRIPTION_MODE="deploy"
-TCP_ACCELERATION="skyline"
+REALITY_PRIVATE_KEY=test-private-key
+REALITY_PUBLIC_KEY=test-public-key
+REALITY_SHORT_ID=0123456789abcdef
+AWS_ACCESS_KEY_ID=AKIAFAKEFAKEFAKEFAKE
+AWS_SECRET_ACCESS_KEY=fake-secret-access-key-000000000000
+install_progress_begin combined cloudfront
 save_state
-
-# 10a) cloudflare_origin_certificate_hosts 输出恰含 2 个名字且包含 CF_NODE_DOMAIN（节点名在前）
-hosts_json=$(cloudflare_origin_certificate_hosts)
-assert_equal "10a: cloudflare_origin_certificate_hosts count is 2" \
-    "2" "$(jq 'length' <<<"${hosts_json}")"
-assert_equal "10a: cloudflare_origin_certificate_hosts order is [CF_NODE_DOMAIN, SUBSCRIPTION_DOMAIN]" \
-    "$(jq -cn --arg n "${CF_NODE_DOMAIN}" --arg s "${SUBSCRIPTION_DOMAIN}" '[$n,$s]')" \
-    "$(jq -c '.' <<<"${hosts_json}")"
-assert_contains "10a: cloudflare_origin_certificate_hosts includes CF_NODE_DOMAIN" \
-    "${hosts_json}" "\"${CF_NODE_DOMAIN}\""
-
-# 10b & 10c) cdn_render_nginx_config 输出中 XHTTP 块 server_name 含 CF_NODE_DOMAIN，
-# 且包含 ssl_reject_handshake on、grpc_pass、订阅 server 块；Xray 配置 xhttpSettings.host 等于 CF_NODE_DOMAIN
-rendered_modern=$(cdn_render_nginx_config $'\n    http2 on;' "")
-assert_contains "10b: XHTTP block server_name has CF_NODE_DOMAIN" \
-    "${rendered_modern}" "server_name ${CF_NODE_DOMAIN};"
-assert_contains "10c: rendered nginx config has ssl_reject_handshake on" \
-    "${rendered_modern}" "ssl_reject_handshake on;"
-assert_contains "10c: rendered nginx config has grpc_pass with XRAY_XHTTP_LOOPBACK_PORT" \
-    "${rendered_modern}" "grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};"
-# 10c-1: 回环端口必须由 profile 自己定义（不能靠测试或环境提供）
-[[ "${XRAY_XHTTP_LOOPBACK_PORT}" =~ ^[0-9]+$ ]] \
-    || fail_test "10c-1: XRAY_XHTTP_LOOPBACK_PORT must be a numeric value defined by combined.sh"
-((10#${XRAY_XHTTP_LOOPBACK_PORT} >= 1024 && 10#${XRAY_XHTTP_LOOPBACK_PORT} <= 65535)) \
-    || fail_test "10c-1: XRAY_XHTTP_LOOPBACK_PORT out of range"
-assert_contains "10c: rendered nginx config has subscription server_name" \
-    "${rendered_modern}" "server_name ${SUBSCRIPTION_DOMAIN};"
-assert_contains "10c: rendered nginx config has /subscribe location" \
-    "${rendered_modern}" "location = /subscribe {"
-
-cdn_write_xray_config
-assert_equal "10b-xray: Xray xhttpSettings.host equals CF_NODE_DOMAIN" \
-    "${CF_NODE_DOMAIN}" \
-    "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in") | .streamSettings.xhttpSettings.host' "${XRAY_CONFIG}")"
-# 抽取共享层后 Reality 入站仍必须存在：直连入口与 XHTTP 入站各一个。
-assert_equal "10b-xray: two inbounds (reality + xhttp)" "2" \
-    "$(jq '.inbounds | length' "${XRAY_CONFIG}")"
-assert_equal "10b-xray: reality inbound listens on 8443" "8443" \
-    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .port' "${XRAY_CONFIG}")"
-assert_equal "10b-xray: reality inbound uses the configured SNI" "${REALITY_TARGET%:*}" \
-    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .streamSettings.realitySettings.serverNames[0]' "${XRAY_CONFIG}")"
-assert_equal "10b-xray: reality clients keep Vision flow" "xtls-rprx-vision" \
-    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .settings.clients[0].flow' "${XRAY_CONFIG}")"
-assert_equal "10b-xray: reality inbound keeps the private key" "test-private-key" \
-    "$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .streamSettings.realitySettings.privateKey' "${XRAY_CONFIG}")"
-
-# 10b-2) 与 profiles/reality.sh 同一约束：状态里被改坏的 shortId（奇数位/非十六进制）必须在
-#        写配置前拒绝，而不是让 Xray 起不来并触发安装回滚。
-short_id_rc=0
-short_id_out=$(
-    {
-        REALITY_SHORT_ID="abc"
-        cdn_write_xray_config
-    } 2>&1
-) || short_id_rc=$?
-((short_id_rc != 0)) || fail_test "10b-2: 奇数位 REALITY_SHORT_ID 必须被拒绝"
-assert_contains "10b-2: 报错说明只允许偶数位十六进制" "${short_id_out}" "偶数位十六进制"
-assert_equal "10b-2: 拒绝时不得写坏已有 Xray 配置" "2" \
-    "$(jq '.inbounds | length' "${XRAY_CONFIG}")"
-
-# 10b-1) XHTTP padding 默认使用范围，空值仍走默认，显式值保持字符串原样。
-assert_xhttp_settings() {
-    local label=$1 expected_padding=$2 expected_secs=$3
-    cdn_write_xray_config
-    assert_equal "${label}: padding" "string=${expected_padding}" \
-        "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in")
-            | .streamSettings.xhttpSettings.xPaddingBytes | "\(type)=\(.)"' "${XRAY_CONFIG}")"
-    assert_equal "${label}: stream-up seconds" "string=${expected_secs}" \
-        "$(jq -r '.inbounds[] | select(.tag=="vless-xhttp-in")
-            | .streamSettings.xhttpSettings.scStreamUpServerSecs | "\(type)=\(.)"' "${XRAY_CONFIG}")"
-}
-(
-    unset CLOUDFLARE_XHTTP_PADDING_BYTES CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS
-    assert_xhttp_settings "10b-xray-padding-default" "100-1000" "600"
-)
-(
-    CLOUDFLARE_XHTTP_PADDING_BYTES=""
-    unset CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS
-    assert_xhttp_settings "10b-xray-padding-empty" "100-1000" "600"
-)
-(
-    CLOUDFLARE_XHTTP_PADDING_BYTES="100"
-    CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS="900"
-    assert_xhttp_settings "10b-xray-padding-explicit-100" "100" "900"
-)
-(
-    CLOUDFLARE_XHTTP_PADDING_BYTES="200-300"
-    unset CLOUDFLARE_XHTTP_STREAM_UP_SERVER_SECS
-    assert_xhttp_settings "10b-xray-padding-explicit-range" "200-300" "600"
-)
-
-# 10d) HTTP/2 两种分支都能渲染（分别强制 nginx_supports_http2_directive 返回真/假）
-(
-    nginx_supports_http2_directive() { return 0; }
-    write_nginx_config
-    conf_true=$(<"${NGINX_CONFIG}")
-    assert_contains "10d-true: modern http2 directive present" "${conf_true}" "http2 on;"
-    assert_not_contains "10d-true: legacy listen http2 absent" "${conf_true}" "listen 443 ssl http2 "
-)
-(
-    nginx_supports_http2_directive() { return 1; }
-    write_nginx_config
-    conf_false=$(<"${NGINX_CONFIG}")
-    assert_contains "10d-false: legacy listen http2 present" "${conf_false}" \
-        "listen 443 ssl http2 backlog=4096 so_keepalive=15s:5s:3 default_server;"
-    assert_contains "10d-false: legacy listen http2 on XHTTP server" "${conf_false}" "listen 443 ssl http2 backlog=4096"
-    assert_not_contains "10d-false: modern http2 directive absent" "${conf_false}" "http2 on;"
-)
-
-# 10e) cdn_apply_tokens 切换后 write_subscription_token_map 只含新值不含旧值
-# 注：normalize_allowed_tokens（lib/subscription-auth.sh:61）要求 token 长度 8-128，故用 token-A-123456 / token-B-123456
-ALLOWED_TOKENS='{"owner":"token-A-123456"}'
-OWNER_TOKEN="token-A-123456"
-cdn_apply_tokens '{"owner":"token-B-123456"}' \
-    || fail_test "10e: valid token should be accepted by cdn_apply_tokens"
-assert_equal "10e: OWNER_TOKEN updated to B" "token-B-123456" "${OWNER_TOKEN}"
-assert_equal "10e: ALLOWED_TOKENS updated to B" '{"owner":"token-B-123456"}' "${ALLOWED_TOKENS}"
-token_map_output=$(write_subscription_token_map)
-assert_contains "10e: write_subscription_token_map contains token B" "${token_map_output}" '"token-B-123456" 1;'
-assert_not_contains "10e: write_subscription_token_map does not contain token A" "${token_map_output}" "token-A-123456"
-
-# 10f) 非法输入 {"owner":""}、{}、{"owner":1} 三种都返回非零，且 ALLOWED_TOKENS/OWNER_TOKEN/NGINX_CONFIG 内容不变
-write_nginx_config
-save_state
-mkdir -p "${SUBSCRIPTION_DIR}"
-printf 'sub-before\n' >"${SUBSCRIPTION_BASE64_FILE}"
-expected_allowed_before="${ALLOWED_TOKENS}"
-expected_owner_before="${OWNER_TOKEN}"
-expected_nginx_before=$(<"${NGINX_CONFIG}")
-expected_state_before=$(<"${STATE_FILE}")
-expected_sub_before=$(<"${SUBSCRIPTION_BASE64_FILE}")
-
-for invalid_json in '{"owner":""}' '{}' '{"owner":1}' '{"": "token-valid-1234"}' '"not-an-object"'; do
-    if cdn_apply_tokens "${invalid_json}" 2>/dev/null; then
-        fail_test "10f: invalid token input ${invalid_json} must return non-zero"
-    fi
-    assert_equal "10f: ALLOWED_TOKENS unchanged after ${invalid_json}" \
-        "${expected_allowed_before}" "${ALLOWED_TOKENS}"
-    assert_equal "10f: OWNER_TOKEN unchanged after ${invalid_json}" \
-        "${expected_owner_before}" "${OWNER_TOKEN}"
-    assert_equal "10f: NGINX_CONFIG unchanged after ${invalid_json}" \
-        "${expected_nginx_before}" "$(<"${NGINX_CONFIG}")"
-    assert_equal "10f: STATE_FILE unchanged after ${invalid_json}" \
-        "${expected_state_before}" "$(<"${STATE_FILE}")"
-    assert_equal "10f: SUBSCRIPTION_BASE64_FILE unchanged after ${invalid_json}" \
-        "${expected_sub_before}" "$(<"${SUBSCRIPTION_BASE64_FILE}")"
-done
-
-# 10g) 空 $arg_token 在 map 中落到 __denied__（default __denied__ 存在，且无 "" 1; 空键条目）
-maps_output=$(write_subscription_nginx_maps)
-assert_contains "10g: write_subscription_nginx_maps contains default __denied__;" \
-    "${maps_output}" "default __denied__;"
-assert_not_contains "10g: write_subscription_nginx_maps has no empty key entry" \
-    "${maps_output}" '"" 1;'
-
-# 附加验证 1: cdn_validate_cf_node_sni 成功与失败分支（含故障注入 B：strict / lenient 模式）
-(
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() {
-        assert_contains "sni-check: curl resolves CF_NODE_DOMAIN to 127.0.0.1" \
-            "$*" "--resolve ${CF_NODE_DOMAIN}:443:127.0.0.1"
-        assert_contains "sni-check: curl targets CF_NODE_DOMAIN" \
-            "$*" "https://${CF_NODE_DOMAIN}/easy_all-health"
-        printf 'easy_all ok'
-    }
-    cdn_validate_cf_node_sni
-)
-if (
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() { return 35; }
-    cdn_validate_cf_node_sni
-) >/dev/null 2>&1; then
-    fail_test "sni-check: TLS handshake failure must fail cdn_validate_cf_node_sni"
-fi
-
-# 故障注入 B：构造"证书不覆盖节点域名 + 探测失败"场景（模拟 OpenSSL 3 真实行为：不匹配时仍 exit 0）
-printf 'legacy-cert-without-node-san\n' >"${CERT_FILE}"
-helper_not_match_rc=0
-(
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does NOT match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    cdn_certificate_covers_node_domain
-) || helper_not_match_rc=$?
-[[ "${helper_not_match_rc}" -ne 0 ]] \
-    || fail_test "checkhost-not-match: cdn_certificate_covers_node_domain must return non-zero on 'does NOT match certificate' (exit 0)"
-
-lenient_rc=0
-lenient_out=$(
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() { return 60; }
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does NOT match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    cdn_validate_cf_node_sni lenient 2>&1
-) || lenient_rc=$?
-assert_equal "fault-B-lenient: returns 0 when cert does not cover CF_NODE_DOMAIN" "0" "${lenient_rc}"
-assert_contains "fault-B-lenient: warns with apply-cloud guidance" "${lenient_out}" "apply-cloud"
-assert_contains "fault-B-lenient: mentions uncovered CF_NODE_DOMAIN" "${lenient_out}" "未覆盖 ${CF_NODE_DOMAIN}"
-
-strict_rc=0
-strict_out=$(
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() { return 60; }
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does NOT match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    cdn_validate_cf_node_sni strict 2>&1
-) || strict_rc=$?
-[[ "${strict_rc}" -ne 0 ]] || fail_test "fault-B-strict: strict mode must return non-zero on same uncovered scenario"
-assert_contains "fault-B-strict: error message includes apply-cloud" "${strict_out}" "apply-cloud"
-
-# 桩输出 does match certificate + exit 0：helper 返回 0；探测成功时 lenient / strict 均返回 0
-helper_match_rc=0
-(
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    cdn_certificate_covers_node_domain
-) || helper_match_rc=$?
-assert_equal "checkhost-match: cdn_certificate_covers_node_domain returns 0 on 'does match certificate'" \
-    "0" "${helper_match_rc}"
-
-probe_ok_lenient_rc=0
-(
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() { printf 'easy_all ok'; }
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    cdn_validate_cf_node_sni lenient
-) || probe_ok_lenient_rc=$?
-assert_equal "checkhost-match-lenient: lenient returns 0 when covered and probe succeeds" \
-    "0" "${probe_ok_lenient_rc}"
-
-probe_ok_strict_rc=0
-(
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() { printf 'easy_all ok'; }
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    cdn_validate_cf_node_sni strict
-) || probe_ok_strict_rc=$?
-assert_equal "checkhost-match-strict: strict returns 0 when covered and probe succeeds" \
-    "0" "${probe_ok_strict_rc}"
-
-# 桩输出 unknown option -checkhost（LibreSSL）：helper 返回非零（保守判为未覆盖）
-helper_libressl_rc=0
-(
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'x509: unknown option -checkhost\n' >&2
-            return 1
-        fi
-        command openssl "$@"
-    }
-    cdn_certificate_covers_node_domain
-) || helper_libressl_rc=$?
-[[ "${helper_libressl_rc}" -ne 0 ]] \
-    || fail_test "checkhost-libressl: cdn_certificate_covers_node_domain must return non-zero on unknown option -checkhost"
-
-# LibreSSL 没有 -checkhost：有真实证书时必须退回 SAN 集合判定，否则开发机上 status/apply 会误报“未覆盖”。
-helper_libressl_covered_rc=0
-(
-    install -d -m 0700 "${CERT_DIR}"
-    command openssl ecparam -name prime256v1 -genkey -noout -out "${KEY_FILE}" 2>/dev/null
-    command openssl req -new -x509 -sha256 -key "${KEY_FILE}" -days 3650 \
-        -subj "/CN=${CF_NODE_DOMAIN}" -addext "subjectAltName=DNS:${CF_NODE_DOMAIN}" \
-        -out "${CERT_FILE}" 2>/dev/null
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'x509: unknown option -checkhost\n' >&2
-            return 1
-        fi
-        command openssl "$@"
-    }
-    cdn_certificate_covers_node_domain
-) || helper_libressl_covered_rc=$?
-assert_equal "checkhost-fallback: LibreSSL 下按 SAN 集合判定为覆盖" "0" "${helper_libressl_covered_rc}"
-printf 'legacy-cert-without-node-san\n' >"${CERT_FILE}"
-
-covered_lenient_rc=0
-covered_lenient_out=$(
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() { return 35; }
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    cdn_validate_cf_node_sni lenient 2>&1
-) || covered_lenient_rc=$?
-[[ "${covered_lenient_rc}" -ne 0 ]] \
-    || fail_test "fault-B-covered: lenient mode must still die when cert covers CF_NODE_DOMAIN but probe fails"
-assert_contains "fault-B-covered: error message mentions TLS/SNI failure" \
-    "${covered_lenient_out}" "本机 TLS/SNI 验收失败"
-
-apply_uncovered_rc=0
-apply_uncovered_out=$(
-    configure_tcp_acceleration() { :; }
-    xhttp_configure_ufw() { :; }
-    cdn_write_xray_config() { :; }
-    install_xray_service() { :; }
-    write_nginx_config() { :; }
-    # 事务顺序用例：校验器契约由用例 27/33/34 直接覆盖（真实函数 + I/O stub）。
-    validate_protocol_runtime() { :; }
-    cloudflare_ensure_origin_ca_root() { :; }
-    curl() { return 60; }
-    openssl() {
-        if [[ "$*" == *-checkhost* ]]; then
-            printf 'Hostname cfg-node.example.com does NOT match certificate\n'
-            return 0
-        fi
-        command openssl "$@"
-    }
-    globalping_cache_valid() { return 0; }
-    write_subscriptions() { :; }
-    validate_subscription_runtime() { :; }
-    register_easy_all_command() { :; }
-    install_globalping_refresh_timer() { :; }
-    apply_easy_all 2>&1
-) || apply_uncovered_rc=$?
-assert_equal "fault-B-apply: apply_easy_all succeeds on uncovered legacy cert" "0" "${apply_uncovered_rc}"
-assert_contains "fault-B-apply: apply_easy_all output warns to run apply-cloud" "${apply_uncovered_out}" "apply-cloud"
-
-# 附加验证 2: update_subscription 事务回滚一致性（写 Nginx 成功、write_subscriptions 失败时恢复全部文件）
-OWNER_TOKEN="token-before-tx"
-ALLOWED_TOKENS='{"owner":"token-before-tx"}'
-save_state
-write_nginx_config
-mkdir -p "${SUBSCRIPTION_DIR}"
-printf 'base64-before\n' >"${SUBSCRIPTION_BASE64_FILE}"
-printf 'mihomo-before\n' >"${SUBSCRIPTION_MIHOMO_FILE}"
-nginx_before_tx=$(<"${NGINX_CONFIG}")
-state_before_tx=$(<"${STATE_FILE}")
-
-if (
-    cleanup_files=()
-    trap cleanup EXIT
-    ALLOWED_TOKENS='{"owner":"token-after-tx"}'
-    write_subscriptions() { die "注入写订阅失败"; }
-    update_subscription </dev/null
-) >/dev/null 2>&1; then
-    fail_test "tx-rollback: update_subscription must fail when write_subscriptions fails"
-fi
-assert_equal "tx-rollback: NGINX_CONFIG restored after failed update_subscription" \
-    "${nginx_before_tx}" "$(<"${NGINX_CONFIG}")"
-assert_equal "tx-rollback: STATE_FILE restored after failed update_subscription" \
-    "${state_before_tx}" "$(<"${STATE_FILE}")"
-assert_equal "tx-rollback: subscription base64 restored after failed update_subscription" \
-    "base64-before" "$(<"${SUBSCRIPTION_BASE64_FILE}")"
-
-# 附加验证 3: apply_cloud_resources 与 renew_certificate 的提交顺序与失败回滚
-printf 'cert-old\n' >"${CERT_FILE}"
-printf 'key-old\n' >"${KEY_FILE}"
-CLOUDFLARE_ORIGIN_CERT_ID="cert-old-111"
-save_state
-state_before_cloud=$(<"${STATE_FILE}")
-finalize_called=0
-
-if (
-    cleanup_files=()
-    trap cleanup EXIT
-    configure_tcp_acceleration() { :; }
-    xhttp_configure_ufw() { :; }
-    cdn_ensure_dns() { :; }
-    cdn_issue_certificates() {
-        printf 'cert-new\n' >"${CERT_FILE}"
-        printf 'key-new\n' >"${KEY_FILE}"
-        CLOUDFLARE_ORIGIN_CERT_ID="cert-new-222"
-        CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID="cert-old-111"
-    }
-    cdn_write_xray_config() { :; }
-    install_xray_service() { :; }
-    write_nginx_config() { :; }
-    # 事务顺序用例：校验器契约由用例 27/33/34 直接覆盖（真实函数 + I/O stub）。
-    validate_protocol_runtime() { :; }
-    cdn_validate_cf_node_sni() { die "注入云端验收失败"; }
-    cloudflare_finalize_certificate_rotation() {
-        finalize_called=1
-        printf 'finalized\n' >"${TMP_DIR}/finalized-flag"
-    }
-    apply_cloud_resources
-) >/dev/null 2>&1; then
-    fail_test "cloud-rollback: apply_cloud_resources must fail when validation step fails"
-fi
-[[ ! -f "${TMP_DIR}/finalized-flag" ]] \
-    || fail_test "cloud-rollback: finalize must not be called before save_state"
-assert_equal "cloud-rollback: CERT_FILE restored" "cert-old" "$(<"${CERT_FILE}")"
-assert_equal "cloud-rollback: KEY_FILE restored" "key-old" "$(<"${KEY_FILE}")"
-assert_equal "cloud-rollback: STATE_FILE restored" "${state_before_cloud}" "$(<"${STATE_FILE}")"
-
-# renew_certificate 顺序：issue -> nginx -t -> reload -> TLS 校验 -> save_state -> finalize -> commit
-renew_seq=""
-(
-    cloudflare_collect_api_token() { :; }
-    cloudflare_lookup_parent_zone() { printf 'zone-123456'; }
-    cdn_issue_certificates() { renew_seq+="issue:${1} "; }
-    nginx() { [[ "${1:-}" == "-t" ]] && renew_seq+="nginx-t "; }
-    systemctl() { [[ "${1:-}" == "reload" ]] && renew_seq+="reload "; }
-    cdn_validate_cf_node_sni() { renew_seq+="verify "; }
-    save_state() { renew_seq+="save "; }
-    cloudflare_finalize_certificate_rotation() { renew_seq+="finalize "; }
-    commit_subscription_update() {
-        renew_seq+="commit "
-        release_runtime_write_lock
-        UPDATE_SUB_ROLLBACK_ON_EXIT=0
-    }
-    success() { renew_seq+="success"; }
-    renew_certificate
-    assert_equal "renew-order: renew_certificate follows issue -> verify -> save -> finalize -> commit" \
-        "issue:1 nginx-t reload verify save finalize commit success" "${renew_seq}"
-)
-
-# 新证书本机 TLS/SNI 验收失败时不得吊销旧证书（吊销不可逆）。
-rm -f -- "${TMP_DIR}/renew-early-revoke"
-renew_verify_rc=0
-renew_verify_out=$(
-    cleanup_files=()
-    trap cleanup EXIT
-    cloudflare_collect_api_token() { :; }
-    cdn_issue_certificates() { CLOUDFLARE_ORIGIN_CERT_ID="cert-new-999"; }
-    nginx() { :; }
-    systemctl() { :; }
-    cdn_validate_cf_node_sni() { die "注入 TLS 探活失败"; }
-    cloudflare_finalize_certificate_rotation() { printf 'revoked\n' >"${TMP_DIR}/renew-early-revoke"; }
-    cloudflare_api_request() { :; }
-    renew_certificate 2>&1
-) || renew_verify_rc=$?
-[[ "${renew_verify_rc}" -ne 0 ]] \
-    || fail_test "renew-verify: TLS 探活失败必须让续期失败"
-assert_contains "renew-verify: 输出包含注入的探活失败" "${renew_verify_out}" "注入 TLS 探活失败"
-[[ ! -f "${TMP_DIR}/renew-early-revoke" ]] \
-    || fail_test "renew-verify: 探活失败时不得吊销旧证书"
-
-# 故障注入 A：吊销旧证书（cloudflare_finalize_certificate_rotation）后步骤失败时，不得回滚到已吊销的旧证书
-printf 'cert-old-revoked\n' >"${CERT_FILE}"
-printf 'key-old-revoked\n' >"${KEY_FILE}"
-CLOUDFLARE_ORIGIN_CERT_ID="cert-old-111"
-save_state
-rm -f -- "${TMP_DIR}/cloud-revoked-flag" "${TMP_DIR}/renew-revoked-flag"
-
-fault_a_cloud_rc=0
-fault_a_cloud_out=$(
-    cleanup_files=()
-    trap cleanup EXIT
-    configure_tcp_acceleration() { :; }
-    xhttp_configure_ufw() { :; }
-    cdn_ensure_dns() { :; }
-    cdn_issue_certificates() {
-        printf 'cert-new-active\n' >"${CERT_FILE}"
-        printf 'key-new-active\n' >"${KEY_FILE}"
-        CLOUDFLARE_ORIGIN_CERT_ID="cert-new-222"
-        CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID="cert-old-111"
-    }
-    cdn_write_xray_config() { :; }
-    install_xray_service() { :; }
-    write_nginx_config() { :; }
-    # 事务顺序用例：校验器契约由用例 27/33/34 直接覆盖（真实函数 + I/O stub）。
-    validate_protocol_runtime() { :; }
-    cdn_validate_cf_node_sni() { :; }
-    persist_cloudflare_token() { :; }
-    persist_globalping_token() { :; }
-    refresh_globalping_cache() { :; }
-    write_subscriptions() { :; }
-    validate_subscription_runtime() { :; }
-    register_easy_all_command() { :; }
-    install_globalping_refresh_timer() { :; }
-    cloudflare_finalize_certificate_rotation() {
-        assert_equal "fault-A-cloud: rollback flag already disabled before finalize" \
-            "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
-        printf 'revoked\n' >"${TMP_DIR}/cloud-revoked-flag"
-    }
-    commit_subscription_update() {
-        die "注入云端吊销后步骤失败"
-    }
-    apply_cloud_resources 2>&1
-) || fault_a_cloud_rc=$?
-[[ "${fault_a_cloud_rc}" -ne 0 ]] \
-    || fail_test "fault-A-cloud: apply_cloud_resources must return non-zero when post-finalize step fails"
-assert_contains "fault-A-cloud: error output contains injected failure" \
-    "${fault_a_cloud_out}" "注入云端吊销后步骤失败"
-assert_equal "fault-A-cloud: finalize recorded revoked" \
-    "revoked" "$(<"${TMP_DIR}/cloud-revoked-flag")"
-assert_equal "fault-A-cloud: CERT_FILE not rolled back to revoked old cert" \
-    "cert-new-active" "$(<"${CERT_FILE}")"
-assert_equal "fault-A-cloud: KEY_FILE not rolled back to revoked old key" \
-    "key-new-active" "$(<"${KEY_FILE}")"
-
-printf 'cert-old-revoked-2\n' >"${CERT_FILE}"
-printf 'key-old-revoked-2\n' >"${KEY_FILE}"
-CLOUDFLARE_ORIGIN_CERT_ID="cert-old-222"
-save_state
-
-fault_a_renew_rc=0
-fault_a_renew_out=$(
-    cleanup_files=()
-    trap cleanup EXIT
-    cloudflare_collect_api_token() { :; }
-    cloudflare_lookup_parent_zone() { printf 'zone-123456'; }
-    cdn_issue_certificates() {
-        printf 'cert-renew-active\n' >"${CERT_FILE}"
-        printf 'key-renew-active\n' >"${KEY_FILE}"
-        CLOUDFLARE_ORIGIN_CERT_ID="cert-renew-333"
-        CLOUDFLARE_PREVIOUS_ORIGIN_CERT_ID="cert-old-222"
-    }
-    cdn_validate_cf_node_sni() { :; }
-    cloudflare_finalize_certificate_rotation() {
-        assert_equal "fault-A-renew: rollback flag already disabled before finalize" \
-            "0" "${UPDATE_SUB_ROLLBACK_ON_EXIT}"
-        printf 'revoked\n' >"${TMP_DIR}/renew-revoked-flag"
-    }
-    commit_subscription_update() {
-        die "注入续期吊销后步骤失败"
-    }
-    renew_certificate 2>&1
-) || fault_a_renew_rc=$?
-[[ "${fault_a_renew_rc}" -ne 0 ]] \
-    || fail_test "fault-A-renew: renew_certificate must return non-zero when post-finalize step fails"
-assert_contains "fault-A-renew: error output contains injected failure" \
-    "${fault_a_renew_out}" "注入续期吊销后步骤失败"
-assert_equal "fault-A-renew: finalize recorded revoked" \
-    "revoked" "$(<"${TMP_DIR}/renew-revoked-flag")"
-assert_equal "fault-A-renew: CERT_FILE not rolled back to revoked old cert" \
-    "cert-renew-active" "$(<"${CERT_FILE}")"
-assert_equal "fault-A-renew: KEY_FILE not rolled back to revoked old key" \
-    "key-renew-active" "$(<"${KEY_FILE}")"
-
-# 附加验证 4: show_status 证书覆盖检查、缺失/损坏兜底与 Nginx map 一致性检查
-show_tcp_acceleration_status() { :; }
-show_globalping_status() { :; }
-
-# (a) 证书缺失与损坏时退出码为 0 且输出"未知"
-rm -f -- "${CERT_FILE}"
-status_missing=$(show_status)
-assert_contains "status-missing: missing CERT_FILE prints 未知" \
-    "${status_missing}" "Cloudflare 回源证书到期: 未知"
-
-printf 'corrupted-cert-content\n' >"${CERT_FILE}"
-status_corrupt=$(show_status)
-assert_contains "status-corrupt: corrupted CERT_FILE prints 未知" \
-    "${status_corrupt}" "Cloudflare 回源证书到期: 未知"
-
-# (b) 证书有效但未覆盖 CF_NODE_DOMAIN（OpenSSL 3 输出 does NOT match certificate 且 exit 0）时退出码为 0 并提示未覆盖与 apply-cloud
-printf 'valid-mock-cert\n' >"${CERT_FILE}"
-(
-    openssl() {
-        case "$*" in
-        *-enddate*) printf 'notAfter=Nov  3 00:00:00 2041 GMT\n'; return 0 ;;
-        *-checkhost*) printf 'Hostname cfg-node.example.com does NOT match certificate\n'; return 0 ;;
-        *) command openssl "$@" ;;
-        esac
-    }
-    status_uncovered_rc=0
-    status_uncovered=$(show_status) || status_uncovered_rc=$?
-    assert_equal "status-uncovered: show_status exits 0 on uncovered cert" "0" "${status_uncovered_rc}"
-    assert_contains "status-uncovered: reports uncovered node domain" \
-        "${status_uncovered}" "未覆盖 ${CF_NODE_DOMAIN}"
-    assert_contains "status-uncovered: hints sudo easy_all apply-cloud" \
-        "${status_uncovered}" "sudo easy_all apply-cloud"
-)
-
-# (c) 证书已覆盖 CF_NODE_DOMAIN 且 Nginx 配置与状态一致
-(
-    openssl() {
-        case "$*" in
-        *-enddate*) printf 'notAfter=Nov  3 00:00:00 2041 GMT\n'; return 0 ;;
-        *-checkhost*) printf 'Hostname cfg-node.example.com does match certificate\n'; return 0 ;;
-        *) command openssl "$@" ;;
-        esac
-    }
-    status_covered=$(show_status)
-    assert_contains "status-covered: reports covered node domain" \
-        "${status_covered}" "已覆盖 ${CF_NODE_DOMAIN}"
-    assert_not_contains "status-covered: no inconsistency warning when in sync" \
-        "${status_covered}" "运行中配置与状态不一致"
-)
-
-# (d) 人为制造 Nginx map 与状态不一致（模拟 SIGKILL 残留），断言 status 提示执行 apply
-ALLOWED_TOKENS='{"owner":"stale-nginx-token-999"}'
-write_nginx_config
+persist_install_identity || fail_test "identity must be writable"
+state_content=$(<"${STATE_FILE}")
+assert_not_contains "state 不落盘 AWS access key" "${state_content}" "${AWS_ACCESS_KEY_ID}"
+assert_contains "state 持久化直连域名" "${state_content}" "DIRECT_DOMAIN=node.example.com"
+assert_equal "state 权限 0600" "600" "$(mode_of "${STATE_FILE}")"
+identity_body=$(<"${STATE_DIR}/install-identity.json")
+assert_equal "identity 记录 CHAIN" "cloudfront" "$(jq -r '.chain' <<<"${identity_body}")"
+assert_equal "identity 记录 profile" "combined" "$(jq -r '.profile' <<<"${identity_body}")"
+assert_equal "identity 记录 Reality 私钥用于续装" "test-private-key" \
+    "$(jq -r '.reality_private_key' <<<"${identity_body}")"
+unset DIRECT_DOMAIN DIRECT_NODE_NAME REALITY_TARGET REALITY_SHORT_ID CDN_PROVIDER PROTOCOL
 load_state
+assert_equal "load_state 回填直连域名" "node.example.com" "${DIRECT_DOMAIN}"
+assert_equal "load_state 回填直连节点名" "🇺🇸直连" "${DIRECT_NODE_NAME}"
+assert_equal "load_state 回填 Reality 目标" "swdist.apple.com:443" "${REALITY_TARGET}"
+assert_equal "load_state 回填 shortId" "0123456789abcdef" "${REALITY_SHORT_ID}"
+assert_equal "load_state 恢复协议" "combined-cloudfront" "${PROTOCOL}"
+assert_equal "load_state 派生 VLESS_CDN_DOMAIN" "${CF_NODE_DOMAIN}" "${VLESS_CDN_DOMAIN}"
+assert_equal "load_state 强制 deploy 订阅" "deploy" "${SUBSCRIPTION_MODE}"
+assert_equal "load_state 保持固定额度" "985" "${CDN_TRAFFIC_PROTECTION_GB}"
+
 (
-    openssl() {
+    AWS_ACCESS_KEY_ID=AKIACLEAR AWS_SECRET_ACCESS_KEY=clear-me-000000000
+    CLOUDFLARE_API_TOKEN=token-value
+    clear_profile_credentials
+    [[ -z "${AWS_ACCESS_KEY_ID:-}" && -z "${CLOUDFLARE_API_TOKEN:-}" ]]
+) || fail_test "clear_profile_credentials 必须清除内存凭据"
+
+# 续装标记必须带 CHAIN=cloudfront（旧 combined 标记只能清理后重装）。
+marker_chain=$(install_progress_field CHAIN)
+assert_equal "marker 记录 CloudFront 链路" "cloudfront" "${marker_chain}"
+resume_rule=$(awk '/^prepare_fresh_install\(\)/,/^}/' "${ROOT_DIR}/lib/profile-common.sh")
+assert_contains "续装按 CHAIN 收紧" "${resume_rule}" '== "cloudfront"'
+assert_not_contains "不再无条件放行旧 combined 续装" "${resume_rule}" \
+    '|| [[ "${current}" == "combined" ]]'
+
+# --- 5. 安装输入 -------------------------------------------------------------
+run_inputs() {
+    local -a answers=("$@")
+    printf '%s\n' "${answers[@]}" >"${TMP_DIR}/inputs.txt"
+    printf '0\n' >"${TMP_DIR}/inputs.cursor"
+    (
+        # 首装输入阶段的这些字段还没有值：清掉父进程的已安装状态，才走真实默认值路径。
+        unset CF_ZONE CF_ORIGIN_DOMAIN CF_NODE_DOMAIN SUBSCRIPTION_DOMAIN VPS_PUBLIC_IPV4
+        prompt_value() {
+            local cursor line
+            cursor=$(<"${TMP_DIR}/inputs.cursor")
+            cursor=$((cursor + 1))
+            printf '%s\n' "${cursor}" >"${TMP_DIR}/inputs.cursor"
+            line=$(sed -n "${cursor}p" "${TMP_DIR}/inputs.txt")
+            printf '%s' "${line:-$2}"
+        }
+        prompt_secret() { printf '%s' "aws-secret-value-0000000000000"; }
+        collect_aws_credentials() {
+            AWS_ACCESS_KEY_ID=AKIAFAKEFAKEFAKEFAKE
+            AWS_SECRET_ACCESS_KEY=fake-secret-value-000000000
+        }
+        detect_public_ipv4() { printf '198.51.100.10'; }
+        choose_subscription_config() {
+            printf '%s' '{"allowedTokens":{"owner":"cdnwq-rtbke-3182"},"nodes":[]}'
+        }
+        collect_install_inputs </dev/null || return 1
+        printf 'RESULT|%s|%s|%s|%s|%s\n' "${CF_ZONE}" "${CF_ORIGIN_DOMAIN}" \
+            "${DIRECT_DOMAIN}" "${DIRECT_NODE_NAME}" "${REALITY_TARGET}"
+    )
+}
+out=$(run_inputs example.com "" "" "" "" "" 2>&1) || true
+assert_contains "合法输入得到直连默认域名与节点名" "${out}" \
+    "RESULT|example.com|origin.example.com|node.example.com|🇺🇸直连|swdist.apple.com:443"
+out=$(run_inputs example.com "" "" "" "" "" "origin.example.com" 2>&1) || true
+assert_contains "直连域名允许复用源站域名" "${out}" \
+    "RESULT|example.com|origin.example.com|origin.example.com|"
+out=$(run_inputs example.com "" "cf.example.com" "" "" "" "cf.example.com" 2>&1) || true
+assert_contains "直连域名不得等于节点域名" "${out}" "直连域名不得等于节点或订阅域名"
+out=$(run_inputs example.com "" "" "node.example.com" "" "" "node.example.com" 2>&1) || true
+assert_contains "直连域名不得等于订阅域名" "${out}" "直连域名不得等于节点或订阅域名"
+out=$(run_inputs example.com "" "" "" "" "" "" "" "🇺🇸AWS" 2>&1) || true
+assert_contains "直连节点名不得与 CloudFront 节点重名" "${out}" \
+    "直连节点名无效、重复或与 CloudFront 节点重名"
+out=$(run_inputs example.com "" "" "" "" "" "" "" "PROXY" 2>&1) || true
+assert_contains "直连节点名不得使用保留组名" "${out}" "直连节点名不能使用保留组名"
+out=$(run_inputs example.com "" "" "" "" "" "" "bad-target" 2>&1) || true
+assert_contains "Reality 目标必须带端口" "${out}" "Reality 目标无效"
+
+# 聚合节点与本机直连节点重名必须拒绝
+(
+    LOCAL_NAMES=$(cdn_local_node_names)
+    [[ "$(jq -c '.' <<<"${LOCAL_NAMES}")" == '["🇺🇸直连","🇺🇸AWS"]' ]]
+) || fail_test "本机节点顺序必须是 [直连, CloudFront]"
+dup_config=$(jq -cn --arg t "${OWNER_TOKEN}" --argjson n "[${AGG_NODE}]" \
+    '{allowedTokens:{owner:$t},nodes:$n}' | jq -c '.nodes[0].name="🇺🇸直连"')
+cdn_apply_subscription_config "${dup_config}" >/dev/null 2>&1 \
+    && fail_test "聚合节点与直连节点重名必须拒绝"
+
+# --- 6. 直连运行时与密钥 -----------------------------------------------------
+printf '26.9.8\n' >"${XRAY_DIR}/version"
+unset REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID
+cdn_prepare_direct_runtime || fail_test "直连运行时准备必须成功"
+assert_equal "生成 Reality 私钥" "test-private" "${REALITY_PRIVATE_KEY}"
+assert_equal "派生 Reality 公钥" "test-public" "${REALITY_PUBLIC_KEY}"
+[[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+    || fail_test "默认 shortId 必须是偶数位十六进制"
+for bad_sid in abc 0123456789abcdeg; do
+    if ( REALITY_SHORT_ID="${bad_sid}"; cdn_prepare_direct_runtime ) >/dev/null 2>&1; then
+        fail_test "非法 shortId 必须被拒绝：${bad_sid}"
+    fi
+done
+# 密钥生成后立即落盘：中断续装必须复用同一 Reality 身份（不等最终 save_state）。
+identity_generated=$(<"${STATE_DIR}/install-identity.json")
+assert_equal "生成密钥后立即落盘 Reality 私钥" "${REALITY_PRIVATE_KEY}" \
+    "$(jq -r '.reality_private_key' <<<"${identity_generated}")"
+assert_equal "生成密钥后立即落盘 Reality 公钥" "${REALITY_PUBLIC_KEY}" \
+    "$(jq -r '.reality_public_key' <<<"${identity_generated}")"
+assert_equal "生成密钥后立即落盘 shortId" "${REALITY_SHORT_ID}" \
+    "$(jq -r '.reality_short_id' <<<"${identity_generated}")"
+assert_equal "identity 记录直连域名/节点名/target" \
+    "${DIRECT_DOMAIN}|${DIRECT_NODE_NAME}|${REALITY_TARGET}" \
+    "$(jq -r '[.direct_domain,.direct_node_name,.reality_target]|join("|")' <<<"${identity_generated}")"
+REALITY_SHORT_ID=0123456789abcdef
+persist_install_identity || fail_test "identity 必须可写"
+
+# --- 7. ACM / 分发：SAN 不含直连与源站域名 ----------------------------------
+dist_json="${TMP_DIR}/dist.json"
+build_distribution_config "${dist_json}" caller-1
+assert_equal "别名只含节点与订阅" '["cf.example.com","sub.example.com"]' \
+    "$(jq -c '.Aliases.Items | sort' "${dist_json}")"
+assert_not_contains "分发别名不含直连/源站域名" "$(jq -c '.Aliases.Items' "${dist_json}")" \
+    "node.example.com"
+assert_equal "回源域名是源站域名" "${CF_ORIGIN_DOMAIN}" \
+    "$(jq -r '.Origins.Items[0].DomainName' "${dist_json}")"
+assert_equal "回源 Host 由 Nginx 重写为节点域名（AWS 不转发 viewer Host）" "false" \
+    "$(jq -r '.Origins.Items[0].CustomHeaders.Items[0].HeaderName == "Host"' "${dist_json}")"
+assert_equal "订阅域名与节点域名相同时只有一个别名" "1" \
+    "$(SUBSCRIPTION_DOMAIN=${CF_NODE_DOMAIN}
+       build_distribution_config "${TMP_DIR}/dist-same.json" caller-2
+       jq '.Aliases.Quantity' "${TMP_DIR}/dist-same.json")"
+
+acm_args="${TMP_DIR}/acm-args.log"
+: >"${acm_args}"
+(
+    aws_cli() {
         case "$*" in
-        *-enddate*) printf 'notAfter=Nov  3 00:00:00 2041 GMT\n'; return 0 ;;
-        *-checkhost*) printf 'Hostname cfg-node.example.com does match certificate\n'; return 0 ;;
-        *) command openssl "$@" ;;
+        *request-certificate*)
+            printf '%s\n' "$*" >"${acm_args}"
+            printf 'arn:aws:acm:us-east-1:123456789012:certificate/new'
+            ;;
+        *get-caller-identity*)
+            printf '123456789012\n'
+            ;;
+        *describe-certificate*)
+            jq -cn --arg node "${CF_NODE_DOMAIN}" --arg sub "${SUBSCRIPTION_DOMAIN}" '
+                {Certificate:{Status:"ISSUED",
+                  CertificateArn:"arn:aws:acm:us-east-1:123456789012:certificate/new",
+                  DomainName:$node, SubjectAlternativeNames:[$node,$sub],
+                  DomainValidationOptions:[{ResourceRecord:{Name:"_x",Type:"CNAME",Value:"_y"}}]}}'
+            ;;
+        *) printf '{}' ;;
         esac
     }
-    status_drift=$(show_status)
-    assert_contains "status-drift: detects Nginx map vs state mismatch" \
-        "${status_drift}" "运行中配置与状态不一致，请执行 sudo easy_all apply"
+    AWS_ACM_CERTIFICATE_ARN=""
+    find_or_request_acm_certificate >/dev/null 2>&1 || true
 )
+assert_contains "ACM 申请使用节点域名" "$(<"${acm_args}")" "--domain-name ${CF_NODE_DOMAIN}"
+assert_contains "ACM SAN 只含订阅域名" "$(<"${acm_args}")" \
+    "--subject-alternative-names ${SUBSCRIPTION_DOMAIN}"
+assert_not_contains "ACM SAN 不含直连域名" "$(<"${acm_args}")" "node.example.com"
+# 收到 ARN 后立即落盘，失败后仍可追踪已创建的云端证书。
+assert_equal "收到 ACM ARN 后立即落盘" \
+    "arn:aws:acm:us-east-1:123456789012:certificate/new" \
+    "$(jq -r '.aws_acm_certificate_arn' "${STATE_DIR}/install-identity.json")"
 
-# 12) 首次安装路径（不经过 load_state）必须能从 OWNER_TOKEN 派生出 Token 字典
-token_map=$(
-    unset ALLOWED_TOKENS SUBSCRIPTION_CONFIG
-    OWNER_TOKEN="tok-first-install-123"
-    cdn_sync_allowed_tokens
-    write_subscription_token_map
-)
-assert_contains "token-sync: fresh install derives ALLOWED_TOKENS from OWNER_TOKEN" \
-    "${token_map}" '"tok-first-install-123" 1;'
-
-# 13) Token 字典缺失时必须给出可操作提示，而不是 set -u 的 unbound variable
-guard_out=$(
-    unset ALLOWED_TOKENS OWNER_TOKEN
-    write_subscription_token_map 2>&1
-) || true
-assert_contains "token-sync: missing token map fails with actionable message" \
-    "${guard_out}" "ALLOWED_TOKENS 未初始化"
-assert_not_contains "token-sync: missing token map must not surface unbound variable" \
-    "${guard_out}" "unbound variable"
-
-# 14) 订阅格式协商：渲染结果必须含 UA 判断与 flag 覆盖，且默认回落到 Base64
-write_nginx_config
-nginx_text=$(<"${NGINX_CONFIG}")
-# 订阅 server 块只声明 /subscribe 与内部 location；没有兜底时未知路径会落到默认静态根目录。
-combined_subscription_block=$(awk -v name="server_name ${SUBSCRIPTION_DOMAIN};" '
-    index($0, name) { inside = 1 }
-    inside { print; if ($0 == "}") exit }
-' <<<"${nginx_text}")
-assert_contains "nginx: 订阅 server 块有兜底 404" \
-    "${combined_subscription_block}" "location / { return 404; }"
-assert_equal "nginx: 订阅 server 块兜底 404 只出现一次" "1" \
-    "$(grep -cF 'location / { return 404; }' <<<"${combined_subscription_block}")"
-# 按 map 块逐条断言：只看"某行存在"会被同文件其它 map 的相同行掩盖
-map_block() {
-    local head=$1
-    awk -v head="${head}" '
-        $0 == head { inside = 1; next }
-        inside && /^}/ { exit }
-        inside && /^[[:space:]]*#/ { next }
-        inside { print }
-    ' <<<"${nginx_text}"
-}
-
-ua_block=$(map_block 'map $http_user_agent $easy_all_subscription_ua_format {')
-forced_block=$(map_block 'map $arg_flag $easy_all_subscription_forced_format {')
-merged_block=$(map_block 'map $easy_all_subscription_forced_format $easy_all_subscription_format {')
-param_ios_block=$(map_block 'map $arg_os $easy_all_subscription_param_ios {')
-ua_ios_block=$(map_block 'map $http_user_agent $easy_all_subscription_ua_ios {')
-is_ios_block=$(map_block 'map "$easy_all_subscription_param_ios:$easy_all_subscription_ua_ios" $easy_all_subscription_is_ios {')
-show_all_block=$(map_block 'map $arg_node $easy_all_subscription_show_all {')
-format_block=$(map_block 'map "$easy_all_subscription_format:$easy_all_subscription_is_ios:$easy_all_subscription_show_all" $easy_all_subscription_uri {')
-
-assert_block_line() {
-    local label=$1 block=$2 expected=$3
-    grep -Fxq -- "${expected}" <<<"${block}" \
-        || fail_test "${label}: missing effective line <${expected}> in <${block}>"
-}
-
-assert_contains "ua-negotiation: clash-family UA gets yaml" \
-    "${ua_block}" '~*(clash|mihomo|stash|flclash|verge|bettbox) "mihomo"'
-assert_block_line "ua-negotiation: unknown UA defaults to base64" \
-    "${ua_block}" '    default "base64";'
-assert_block_line "ua-negotiation: clash flag forces yaml" \
-    "${forced_block}" '    clash        "mihomo";'
-assert_block_line "ua-negotiation: base64 flag forces base64" \
-    "${forced_block}" '    base64       "base64";'
-assert_block_line "ua-negotiation: no flag adds no forced value" \
-    "${forced_block}" '    default      "";'
-assert_block_line "ua-negotiation: merged map defaults to UA result" \
-    "${merged_block}" '    default  $easy_all_subscription_ua_format;'
-assert_block_line "os-negotiation: param_ios default 0" \
-    "${param_ios_block}" '    default 0;'
-assert_contains "os-negotiation: param_ios matches ios" \
-    "${param_ios_block}" '~*^(ios|iphone|ipad)$ 1;'
-assert_block_line "os-negotiation: ua_ios default 0" \
-    "${ua_ios_block}" '    default 0;'
-assert_contains "os-negotiation: ua_ios matches ios keywords" \
-    "${ua_ios_block}" '~*(iphone|ipad|ipod|\bios\b) 1;'
-assert_block_line "os-negotiation: is_ios default 0" \
-    "${is_ios_block}" '    default 0;'
-assert_contains "os-negotiation: is_ios matches when either hits 1" \
-    "${is_ios_block}" '~*1     1;'
-assert_block_line "ua-negotiation: node=all defaults to 0" \
-    "${show_all_block}" '    default 0;'
-assert_block_line "ua-negotiation: node=all enables optional nodes" \
-    "${show_all_block}" '    all     1;'
-assert_block_line "ua-negotiation: format map default routes to base64 file" \
-    "${format_block}" '    default      /_easy_all_subscription/base64;'
-assert_block_line "ua-negotiation: mihomo format routes non-ios to standard yaml file" \
-    "${format_block}" '    "mihomo:0:0" /_easy_all_subscription/mihomo;'
-assert_block_line "ua-negotiation: mihomo format routes ios to ios yaml file" \
-    "${format_block}" '    "mihomo:1:0" /_easy_all_subscription/mihomo_ios;'
-assert_block_line "ua-negotiation: node=all routes base64 to the all file" \
-    "${format_block}" '    "base64:0:1" /_easy_all_subscription/base64_all;'
-# base64 没有 iOS 变体，iOS 客户端（Shadowrocket 或 &os=ios）同样要拿到 optional 节点
-assert_block_line "ua-negotiation: node=all routes base64 iOS to the all file" \
-    "${format_block}" '    "base64:1:1" /_easy_all_subscription/base64_all;'
-assert_contains "nginx-conf: has mihomo location" "${nginx_text}" "location = /_easy_all_subscription/mihomo {"
-assert_contains "nginx-conf: has mihomo_ios location" "${nginx_text}" "location = /_easy_all_subscription/mihomo_ios {"
-assert_contains "nginx-conf: has base64_all location" "${nginx_text}" "location = /_easy_all_subscription/base64_all {"
-assert_contains "nginx-conf: has mihomo_all location" "${nginx_text}" "location = /_easy_all_subscription/mihomo_all {"
-
-# 15) 自定义订阅 Token 可选输入：合法值被采纳，非法值被拒绝（且不改动当前 Token）
+# --- 8. DNS：源站/直连复用只建一条 A；订阅=节点只建一条 CNAME ----------------
+dns_log="${TMP_DIR}/dns.log"
 (
-    kept=${OWNER_TOKEN}
-    cdn_apply_tokens '{"owner":"custom-token-2026"}'
-    [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
-        || fail_test "token-input: valid custom token not applied"
-    if cdn_apply_tokens '{"owner":"short"}' 2>/dev/null; then
-        fail_test "token-input: too-short token must be rejected"
-    fi
-    [[ "${OWNER_TOKEN}" == "custom-token-2026" ]] \
-        || fail_test "token-input: rejected input must not change current token"
-    OWNER_TOKEN=${kept}
-    cdn_sync_allowed_tokens
-)
+    cloudflare_collect_api_token() { :; }
+    cdn_ensure_zone_id() { :; }
+    dns_ensure_record() { printf '%s %s %s\n' "$1" "$2" "$3" >>"${dns_log}"; }
+    cdn_prepare_origin_dns
+) || fail_test "源站/直连 DNS 配置必须成功"
+assert_equal "源站与直连各建一条 A 记录" "2" "$(wc -l <"${dns_log}" | tr -d ' ')"
+: >"${dns_log}"
+(
+    DIRECT_DOMAIN=${CF_ORIGIN_DOMAIN}
+    cloudflare_collect_api_token() { :; }
+    cdn_ensure_zone_id() { :; }
+    dns_ensure_record() { printf '%s %s %s\n' "$1" "$2" "$3" >>"${dns_log}"; }
+    cdn_prepare_origin_dns
+) || fail_test "直连复用源站域名时必须成功"
+assert_equal "DIRECT=ORIGIN 不重复建 A 记录" "1" "$(wc -l <"${dns_log}" | tr -d ' ')"
+: >"${dns_log}"
+(
+    cloudflare_collect_api_token() { :; }
+    cdn_ensure_zone_id() { :; }
+    dns_ensure_record() { printf '%s %s %s\n' "$1" "$2" "$3" >>"${dns_log}"; }
+    ensure_viewer_cnames
+) || fail_test "viewer CNAME 配置必须成功"
+assert_equal "节点与订阅域名不同时建两条 CNAME" "2" "$(wc -l <"${dns_log}" | tr -d ' ')"
+: >"${dns_log}"
+(
+    SUBSCRIPTION_DOMAIN=${CF_NODE_DOMAIN}
+    cloudflare_collect_api_token() { :; }
+    cdn_ensure_zone_id() { :; }
+    dns_ensure_record() { printf '%s %s %s\n' "$1" "$2" "$3" >>"${dns_log}"; }
+    ensure_viewer_cnames
+) || fail_test "订阅=节点时必须成功"
+assert_equal "订阅=节点只建一条 CNAME" "1" "$(wc -l <"${dns_log}" | tr -d ' ')"
 
-# 16) 安装入口交互收集参数
-install_inputs_body=$(awk '/^collect_install_inputs\(\)/,/^}/' "${PROFILE}")
-assert_contains "domain-input: prompts for zone" "${install_inputs_body}" "Cloudflare 根 Zone"
-assert_contains "domain-input: prompts for direct domain" "${install_inputs_body}" "直连节点域名"
-assert_contains "node-name: direct node name rejects reserved group names" \
-    "${install_inputs_body}" "AUTO | PROXY | GLOBAL | CDN-AUTO | CDN-FALLBACK | DIRECT | REJECT | PASS"
-for reserved_name in AUTO CDN-AUTO CDN-FALLBACK PROXY GLOBAL DIRECT REJECT PASS; do
-    if (
-        DIRECT_NODE_NAME="${reserved_name}"
-        cdn_validate_local_node_names
-    ) >/dev/null 2>&1; then
-        fail_test "node-name: reserved name ${reserved_name} must be rejected"
-    fi
+# --- 9. Xray 渲染：Reality + API + XHTTP -------------------------------------
+render_xray_config 0
+xray_conf=$(<"${XRAY_CONFIG}")
+assert_equal "模式 3 三个入站（Reality/API/XHTTP）" "3" "$(jq '.inbounds | length' <<<"${xray_conf}")"
+assert_equal "Reality 入站排第一" "vless-reality-in" "$(jq -r '.inbounds[0].tag' <<<"${xray_conf}")"
+assert_equal "Reality 监听 8443" "8443" "$(jq -r '.inbounds[0].port' <<<"${xray_conf}")"
+assert_equal "Reality 保留 Vision flow" "xtls-rprx-vision" \
+    "$(jq -r '.inbounds[0].settings.clients[0].flow' <<<"${xray_conf}")"
+assert_equal "Reality 使用状态中的私钥" "${REALITY_PRIVATE_KEY}" \
+    "$(jq -r '.inbounds[0].streamSettings.realitySettings.privateKey' <<<"${xray_conf}")"
+assert_equal "Reality SNI 来自 target" "swdist.apple.com" \
+    "$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' <<<"${xray_conf}")"
+assert_equal "Reality shortId 来自状态" "${REALITY_SHORT_ID}" \
+    "$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' <<<"${xray_conf}")"
+assert_equal "API 入站第二" "easy-all-api" "$(jq -r '.inbounds[1].tag' <<<"${xray_conf}")"
+assert_equal "API 端口 10085" "10085" "$(jq -r '.inbounds[1].port' <<<"${xray_conf}")"
+assert_equal "XHTTP 只监听回环" "127.0.0.1" "$(jq -r '.inbounds[2].listen' <<<"${xray_conf}")"
+assert_equal "XHTTP 回环端口 10086" "10086" "$(jq -r '.inbounds[2].port' <<<"${xray_conf}")"
+assert_equal "XHTTP 转发 Host 为节点域名" "${CF_NODE_DOMAIN}" \
+    "$(jq -r '.inbounds[2].streamSettings.xhttpSettings.host' <<<"${xray_conf}")"
+assert_equal "路由首条把 API 入站交给 API tag" "easy-all-api" \
+    "$(jq -r '.routing.rules[0].outboundTag' <<<"${xray_conf}")"
+assert_not_contains "UFW 口径不变：10085/10086 不放行" "$(cdn_direct_ufw_ports)" "1008"
+
+# 阻断：XHTTP 关闭但 Reality/API 保持可用
+render_xray_config 1
+xray_blocked=$(<"${XRAY_CONFIG}")
+assert_equal "阻断时 XHTTP clients 为空" "0" \
+    "$(jq '.inbounds[2].settings.clients | length' <<<"${xray_blocked}")"
+assert_equal "阻断时 Reality 仍有 client" "1" \
+    "$(jq '.inbounds[0].settings.clients | length' <<<"${xray_blocked}")"
+assert_equal "阻断时 Reality 监听保持不变" "8443" \
+    "$(jq -r '.inbounds[0].port' <<<"${xray_blocked}")"
+assert_equal "阻断时 API 保持可用" "easy-all-api" \
+    "$(jq -r '.routing.rules[0].inboundTag[0]' <<<"${xray_blocked}")"
+assert_equal "阻断时最优先 XHTTP block 路由" "block" \
+    "$(jq -r '.routing.rules[1].outboundTag' <<<"${xray_blocked}")"
+assert_equal "block 规则只针对 XHTTP 入站" "vless-xhttp-in" \
+    "$(jq -r '.routing.rules[1].inboundTag[0]' <<<"${xray_blocked}")"
+
+# --- 10. Nginx：源站 TLS + 阻断 503 ------------------------------------------
+cdn_render_nginx_config 0 1 >"${TMP_DIR}/nginx-final.conf"
+final_conf=$(<"${TMP_DIR}/nginx-final.conf")
+assert_contains "443 默认 server 拒绝未知 SNI" "${final_conf}" "ssl_reject_handshake on;"
+assert_contains "health 需要源站头" "${final_conf}" "x_easy_all_origin_key"
+assert_contains "回源 Host 固定为节点域名" "${final_conf}" \
+    "grpc_set_header Host ${CF_NODE_DOMAIN};"
+assert_contains "回源到本机 XHTTP 端口" "${final_conf}" \
+    "grpc_pass grpc://127.0.0.1:${XRAY_XHTTP_LOOPBACK_PORT};"
+assert_not_contains "不暴露裸 XHTTP 路径" "${final_conf}" "location ${XHTTP_PATH}/ {"
+cdn_render_nginx_config 1 0 >"${TMP_DIR}/nginx-blocked.conf"
+assert_contains "阻断时 XHTTP 返回 503" "$(<"${TMP_DIR}/nginx-blocked.conf")" "return 503;"
+assert_contains "阻断时订阅降级 503" "$(<"${TMP_DIR}/nginx-blocked.conf")" \
+    "location = /subscribe {"
+
+# 受限安全验收只做本机检查，不调用含远端 target 探测的直连钩子。
+restricted_body=$(awk '/^cdn_validate_restricted_runtime\(\)/,/^}/' "${CORE}" \
+    | grep -v '^[[:space:]]*#')
+assert_not_contains "受限验收不调用 cdn_validate_direct_runtime" "${restricted_body}" \
+    "cdn_validate_direct_runtime"
+assert_contains "受限验收复用统一本机验收（含 8443 监听）" "${restricted_body}" \
+    "validate_protocol_runtime"
+
+# --- 11. 订阅：节点顺序 Reality → CloudFront → 聚合 --------------------------
+initialize_cdn_traffic_usage
+cloudfront_write_subscriptions
+for file in base64.txt mihomo.yaml mihomo-ios.yaml base64-all.txt mihomo-all.yaml mihomo-ios-all.yaml; do
+    [[ -s "${SUBSCRIPTION_DIR}/${file}" ]] || fail_test "缺少订阅产物：${file}"
 done
-assert_contains "node-name: install rejects a direct node named after the official fallback node" \
-    "${install_inputs_body}" "cdn_cf_domain_node_name"
-# 存量状态可能沿用旧版本允许的直连节点名：渲染/应用前必须拒绝，避免重复节点或组名。
-for stale_direct_name in "CDN-FALLBACK" "${CF_NODE_PREFIX}官方" "${CF_NODE_PREFIX}1"; do
-    stale_out=$(
-        DIRECT_NODE_NAME="${stale_direct_name}"
-        cdn_require_valid_owner_token 2>&1
-    ) || true
-    assert_contains "node-name: stale state name ${stale_direct_name} is rejected before writing" \
-        "${stale_out}" "本机节点名与 CDN 兜底节点或保留组名冲突"
-    stale_render_out=$(
-        DIRECT_NODE_NAME="${stale_direct_name}"
-        build_mihomo_proxy_names 2>&1
-    ) || true
-    assert_contains "node-name: stale state name ${stale_direct_name} is rejected when rendering" \
-        "${stale_render_out}" "本机节点名与 CDN 兜底节点或保留组名冲突"
-done
-DIRECT_NODE_NAME="🇺🇸直连"
-assert_contains "subscription-input: install asks for the unified JSON" \
-    "${install_inputs_body}" "choose_subscription_config"
-
-# 17) 安装阶段 Token 校验：非法值必须在改动云端资源前就被拒绝
-bad_install=$(
-    unset SUBSCRIPTION_CONFIG
-    ALLOWED_TOKENS=""
-    OWNER_TOKEN="short"
-    cdn_validate_install_owner_token 2>&1
-) || true
-assert_contains "token-validate: short env token rejected before install" \
-    "${bad_install}" "订阅配置无效"
-assert_not_contains "token-validate: rejection mentions auto-generate fallback" \
-    "${bad_install}" "unbound variable"
-# 安装入口必须真的调用该校验
-assert_contains "token-validate: install inputs call the validator" \
-    "${install_inputs_body}" "cdn_validate_install_owner_token"
+decoded_links=$(openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64.txt")
+assert_equal "base64 含两个本机节点 + 聚合节点" "3" "$(grep -c '^vless://' <<<"${decoded_links}")"
+first_link=$(printf '%s\n' "${decoded_links}" | sed -n '1p')
+second_link=$(printf '%s\n' "${decoded_links}" | sed -n '2p')
+assert_contains "首个节点是直连 Reality" "${first_link}" "security=reality"
+assert_contains "直连节点使用 8443" "${first_link}" "@${DIRECT_DOMAIN}:8443?"
+assert_contains "占位符节点名已替换为直连名" "${first_link}" "#%F0%9F%87%BA%F0%9F%87%B8%E7%9B%B4%E8%BF%9E"
+assert_contains "第二个节点是 CloudFront" "${second_link}" "@${CF_NODE_DOMAIN}:443?"
+assert_not_contains "CloudFront 节点不带 Reality 参数" "${second_link}" "security=reality"
+mlkem_version=$(xray_installed_version)
+assert_equal "核心版本用于 ML-KEM 门控" "26.9.8" "${mlkem_version}"
+assert_not_contains "新核心不需要 mlkem=0 提示" "${first_link}" "mlkem=0"
+mihomo_body=$(<"${SUBSCRIPTION_DIR}/mihomo.yaml")
+assert_equal "mihomo 两个本机节点 + 聚合节点" "3" "$(grep -c '^  - name: ' <<<"${mihomo_body}")"
+assert_contains "mihomo 直连节点启用 ML-KEM" "${mihomo_body}" "support-x25519mlkem768: true"
+assert_equal "mihomo 首个节点是直连 Reality" '  - name: "🇺🇸直连"' \
+    "$(grep -m1 '^  - name: ' <<<"${mihomo_body}")"
+assert_equal "mihomo 第二个节点是 CloudFront" '  - name: "🇺🇸AWS"' \
+    "$(grep '^  - name: ' <<<"${mihomo_body}" | sed -n '2p')"
+proxy_section=$(awk '/^proxy-groups:/,/^rules:/' <<<"${mihomo_body}")
+assert_contains "PROXY 成员含直连节点" "${proxy_section}" '"🇺🇸直连"'
+assert_contains "PROXY 成员含 CloudFront 节点" "${proxy_section}" '"🇺🇸AWS"'
+assert_contains "模板快照持久化" "$(<"${STATE_DIR}/mihomo-template.yaml")" "# EASY_ALL_PROXY_NODE"
+assert_equal "模板快照权限 0600" "600" "$(mode_of "${STATE_DIR}/mihomo-template.yaml")"
+# 旧核心（< 26.9.8）必须回落到 mlkem=0 且不写 Mihomo 的 ML-KEM 开关
+printf '25.1.1\n' >"${XRAY_DIR}/version"
+old_link=$(build_reality_link)
+old_node=$(build_mihomo_reality_node)
+printf '26.9.8\n' >"${XRAY_DIR}/version"
+assert_contains "旧核心下发 mlkem=0" "${old_link}" "mlkem=0"
+assert_not_contains "旧核心不写 support-x25519mlkem768" "${old_node}" "support-x25519mlkem768"
+# 熔断阻断不删除订阅中的节点
 (
-    unset SUBSCRIPTION_CONFIG
-    ALLOWED_TOKENS=""
-    OWNER_TOKEN="custom-token-2026"
-    cdn_validate_install_owner_token \
-        || fail_test "token-validate: valid env token must pass"
-)
-bad_chars=$(
-    unset SUBSCRIPTION_CONFIG
-    ALLOWED_TOKENS=""
-    OWNER_TOKEN='bad;token"x'
-    cdn_validate_install_owner_token 2>&1
-) || true
-assert_contains "token-validate: unsafe characters rejected" "${bad_chars}" "订阅配置无效"
+    cdn_traffic_write_usage "$(jq -c '.blocked=true | .enforced=false' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+    cloudfront_write_subscriptions
+    openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64.txt"
+) | grep -Fq "@${CF_NODE_DOMAIN}:443?" \
+    || fail_test "熔断阻断节点仍必须保留在有效订阅中"
+cdn_traffic_write_usage "$(jq -c '.blocked=false | .enforced=false | .protection_offline=false' \
+    "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
 
-# 18) edit-sub 入口同时接受纯字符串与单用户 JSON，多用户字典必须明确拒绝
-plain_out=$(
-    OWNER_TOKEN="placeholder-0000"
-    cdn_apply_tokens "my_plain_token_123"
-    jq -r '.owner' <<<"${ALLOWED_TOKENS}"
-)
-assert_equal "token-input: plain string accepted in edit-sub" \
-    "my_plain_token_123" "${plain_out}"
-
-single_json_out=$(
-    cdn_apply_tokens '{"alice":"alice-token-123"}' >/dev/null 2>&1
-    jq -r 'to_entries | map(.key + "=" + .value) | join(",")' <<<"${ALLOWED_TOKENS}"
-)
-assert_equal "token-input: single-user JSON keeps its user name" \
-    "alice=alice-token-123" "${single_json_out}"
-
-multi_out=$(
-    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
-    jq -r 'length' <<<"${ALLOWED_TOKENS}"
-)
-assert_equal "token-input: multi-user JSON keeps every user" "2" "${multi_out}"
-
-multi_owner=$(
-    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
-    printf '%s' "${OWNER_TOKEN}"
-)
-assert_equal "token-input: OWNER_TOKEN follows the first dictionary entry" \
-    "token-aaaa-111" "${multi_owner}"
-
-# 19) 历史状态里的非法 Token：load_state 只告警（否则 edit-sub / uninstall 都进不去），写配置前才强校验
-bad_state=$(
-    unset SUBSCRIPTION_CONFIG
-    OWNER_TOKEN="short"
-    ALLOWED_TOKENS=""
-    save_state
-    load_state 2>&1
-    printf 'load_rc=%s' "$?"
-) || true
-assert_contains "token-validate: invalid state token warns on load" \
-    "${bad_state}" "状态文件中的订阅配置无效"
-assert_contains "token-validate: load_state still succeeds for recovery" \
-    "${bad_state}" "load_rc=0"
-blocked_write=$(
-    unset SUBSCRIPTION_CONFIG
-    OWNER_TOKEN="short"
-    ALLOWED_TOKENS=""
-    write_nginx_config 2>&1
-) || true
-assert_contains "token-validate: writing nginx config rejects invalid token" \
-    "${blocked_write}" "订阅配置无效"
-
-# 20) 恢复闭环：非法旧状态能通过 edit-sub 的路径换成合法 Token 并成功落盘
-recovered=$(
-    unset SUBSCRIPTION_CONFIG
-    OWNER_TOKEN="short"
-    ALLOWED_TOKENS=""
-    save_state
-    load_state >/dev/null 2>&1
-    cdn_apply_tokens "restored-token-4821" >/dev/null 2>&1 \
-        || fail_test "token-recovery: valid replacement rejected"
-    write_nginx_config >/dev/null 2>&1 || fail_test "token-recovery: write failed after replacement"
-    save_state
-    load_state >/dev/null 2>&1 || fail_test "token-recovery: reload after replacement failed"
-    printf '%s' "${OWNER_TOKEN}"
-)
-assert_equal "token-recovery: invalid old state fixed through edit-sub path" \
-    "restored-token-4821" "${recovered}"
-
-# 21) 直接写订阅或状态的入口（定时刷新 / 续签 / 改 Reality 目标）在非法旧 Token 下也必须早退
+# --- 10.1 HTTP/2 两个渲染分支与模式 3 的 8443 验收 ---------------------------
+# nginx 1.25.1 起 http2 是独立指令；更旧的版本只能写成 listen 参数。两个分支都必须
+# 渲染出合法配置，且不能把两种写法混在同一份配置里（会触发 duplicate listen options）。
 (
-    unset SUBSCRIPTION_CONFIG
-    OWNER_TOKEN="short"
-    ALLOWED_TOKENS=""
-    save_state
-)
-for entry in refresh_cdn_ips renew_certificate; do
-    entry_out=$(
-        load_state >/dev/null 2>&1
-        "${entry}" 2>&1
-    ) || true
-    assert_contains "token-validate: ${entry} rejects invalid state token" \
-        "${entry_out}" "订阅配置无效"
-done
-reality_out=$(
-    load_state >/dev/null 2>&1
-    update_reality_target "example.com:443" 2>&1
-) || true
-assert_contains "token-validate: update_reality_target rejects invalid state token" \
-    "${reality_out}" "订阅配置无效"
-# 恢复合法状态，避免影响后续用例
+    nginx() { printf 'nginx version: nginx/1.26.1\n' >&2; }
+    nginx_supports_http2_directive
+) || fail_test "1.26.1 必须走 http2 on 指令分支"
 (
-    OWNER_TOKEN="restored-token-4821"
-    cdn_sync_allowed_tokens
-    save_state
-)
+    nginx() { printf 'nginx version: nginx/1.24.0\n' >&2; }
+    nginx_supports_http2_directive && exit 1
+    exit 0
+) || fail_test "1.24.0 必须走 listen ... http2 分支"
+modern_conf=$(cdn_render_nginx_config 0 1 $'\n    http2 on;' "")
+assert_contains "现代分支使用 http2 on 指令" "${modern_conf}" "http2 on;"
+assert_not_contains "现代分支 listen 不得再带 http2 参数" "${modern_conf}" \
+    "listen 443 ssl http2"
+assert_equal "现代分支只有 443 的 server 带 http2 指令" "1" \
+    "$(grep -c 'http2 on;' <<<"${modern_conf}")"
+legacy_conf=$(cdn_render_nginx_config 0 1 "" "http2 ")
+assert_contains "旧分支把 h2 写在 listen 上（默认 server）" "${legacy_conf}" \
+    "listen 443 ssl http2 default_server;"
+assert_equal "旧分支把 h2 写在 listen 上（源站 server）" "1" \
+    "$(grep -cE '^    listen 443 ssl http2 *;$' <<<"${legacy_conf}")"
+assert_not_contains "旧分支不得混用 http2 on 指令" "${legacy_conf}" "http2 on;"
+assert_equal "两种分支的 443 server 块数量一致" \
+    "$(grep -c '^server {' <<<"${modern_conf}")" "$(grep -c '^server {' <<<"${legacy_conf}")"
 
-# 22) nginx 判定（src/http/ngx_http.c:1351）：同一 addr:port 上两条 listen 只要都带套接字参数
-#     （会置 lsopt.set=1 的 backlog/so_keepalive/reuseport/bind/ipv6only/deferred/fastopen/sndbuf/
-#      rcvbuf/setfib/multipath/accept_filter），即报 "duplicate listen options"，与参数值是否相同无关。
-#     因此套接字参数最多出现在一条 listen 上；所有 443 块都必须带 ssl。
-server_block_for() {   # $1 = server_name 里要精确匹配的域名
-    # 只读真实 server_name 指令：剔除整行注释，逐字段去分号后做字符串相等比较。
-    # 不能把域名拼进正则（`.` 会变成通配符），也不能对整块做正则匹配（注释里的域名会抢先命中）。
-    awk -v dom="$1" '
-        /^server \{/ { block=""; inblock=1; hit=0 }
-        inblock {
-            block = block $0 "\n"
-            line = $0
-            if (line ~ /^[[:space:]]*#/) next
-            if (line ~ /^[[:space:]]*server_name[[:space:]]/) {
-                n = split(line, f, /[[:space:]]+/)
-                for (i = 1; i <= n; i++) {
-                    g = f[i]; sub(/;$/, "", g)
-                    if (g == dom) hit = 1
-                }
-            }
-        }
-        /^\}/ { if (inblock && hit) { printf "%s", block; exit } inblock=0 }
-    ' "${NGINX_CONFIG}"
-}
-
-write_nginx_config
-socket_opt_count=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
-    | grep -Ec 'backlog=|so_keepalive|reuseport|ipv6only|deferred|fastopen|sndbuf|rcvbuf|setfib|multipath|accept_filter|\bbind\b' || true)
-[[ "${socket_opt_count}" == "1" ]] \
-    || fail_test "nginx-listen: socket options must appear on exactly one 443 listen (found ${socket_opt_count})"
-missing_ssl=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
-    | grep -Evc '\bssl\b' || true)
-[[ "${missing_ssl}" == "0" ]] \
-    || fail_test "nginx-listen: 每个 443 listen 都必须带 ssl（缺 ${missing_ssl} 处）"
-
-# 现代分支（>= 1.25.1）：Cloudflare 块必须留 h2（gRPC 依赖）
-(
-    nginx_supports_http2_directive() { return 0; }
-    write_nginx_config
-    cf_block=$(server_block_for "${CF_NODE_DOMAIN}")
-    [[ -n "${cf_block}" ]] || fail_test "nginx-listen: 未找到 Cloudflare 块"
-    assert_contains "nginx-listen: Cloudflare 块保留 http2 指令" \
-        "${cf_block}" $'\n    http2 on;'
-)
-
-# 旧版分支（< 1.25.1）：listen http2 是 socket 级，所有 443 块必须一致，不能出现无效隔离
-(
-    nginx_supports_http2_directive() { return 1; }
-    write_nginx_config
-    legacy_h2_count=$(grep -E '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" \
-        | grep -c 'http2 ' || true)
-    legacy_443_count=$(grep -Ec '^[[:space:]]*listen[[:space:]]+443' "${NGINX_CONFIG}" || true)
-    [[ "${legacy_h2_count}" == "${legacy_443_count}" ]] \
-        || fail_test "nginx-listen: 旧版分支的 listen http2 必须对所有 443 块一致（${legacy_h2_count}/${legacy_443_count}）"
-)
-
-write_nginx_config   # 恢复默认渲染，供后续用例使用
-
-# 23) 多用户 Token 字典必须能持久化并在重新加载后保持
-multi_state=$(
-    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1 \
-        || fail_test "multi-token: dictionary rejected"
-    save_state
-    ALLOWED_TOKENS=""
-    OWNER_TOKEN=""
-    load_state >/dev/null 2>&1 || fail_test "multi-token: reload failed"
-    jq -r 'to_entries | map(.key + "=" + .value) | join(",")' <<<"${ALLOWED_TOKENS}"
-)
-assert_equal "multi-token: dictionary survives save/load" \
-    "user1=token-aaaa-111,user2=token-bbbb-222" "${multi_state}"
-multi_map=$(
-    cdn_apply_tokens '{"user1":"token-aaaa-111","user2":"token-bbbb-222"}' >/dev/null 2>&1
-    write_nginx_config >/dev/null 2>&1 || fail_test "multi-token: nginx render failed"
-    grep -c '^    "token-bbbb-222" 1;$' "${NGINX_CONFIG}"
-)
-assert_equal "multi-token: every token is published in the nginx map" "1" "${multi_map}"
-
-# 24) JSON 内部空白必须保留：含空格的用户名要被拒绝，且原字典不被改写
-space_out=$(
-    cdn_apply_tokens '{"keep1":"token-aaaa-111"}' >/dev/null 2>&1
-    before=${ALLOWED_TOKENS}
-    # 安装已无交互入口；直接验证 Token 解析本身只裁键首尾空白，不压内部空格
-    if cdn_apply_tokens '  {"user 1":"abcdefgh","user1":"ijklmnop"}  ' >/dev/null 2>&1; then
-        printf 'accepted'
-    else
-        printf 'rejected:%s' "$([[ "${ALLOWED_TOKENS}" == "${before}" ]] && echo unchanged || echo changed)"
-    fi
-) || true
-assert_equal "multi-token: user name with inner space is rejected" \
-    "rejected:unchanged" "${space_out}"
-
-pretty_out=$(
-    cdn_apply_tokens '{ "user1" : "alice-token-123" , "user2" : "token-bbbb-222" }' >/dev/null 2>&1 \
-        || fail_test "multi-token: pretty-printed JSON rejected"
-    jq -r 'length' <<<"${ALLOWED_TOKENS}"
-)
-assert_equal "multi-token: pretty-printed JSON still accepted" "2" "${pretty_out}"
-
-# 26) token 首字符不能是 ~（nginx map 把 ~ 开头的键当正则），中间 ~ 仍允许
-tilde_out=$(
-    if cdn_apply_tokens '~token-aaaa-111' >/dev/null 2>&1; then
-        printf 'accepted'
-    else
-        printf 'rejected'
-    fi
-)
-assert_equal "token: leading tilde is rejected" "rejected" "${tilde_out}"
-
-# JSON 字典分支走 lib/subscription-auth.sh 的 normalize_allowed_tokens，必须同样拒绝首 ~
-tilde_json=$(
-    if cdn_apply_tokens '{"owner":"~token-aaaa-111"}' >/dev/null 2>&1; then
-        printf 'accepted'
-    else
-        printf 'rejected'
-    fi
-)
-assert_equal "token: leading tilde is rejected in JSON dictionary" "rejected" "${tilde_json}"
-tilde_ok=$(
-    cdn_apply_tokens 'tok~en-inner-9931' >/dev/null 2>&1 || fail_test "token: inner tilde must stay valid"
-    jq -r '.[]' <<<"${ALLOWED_TOKENS}"
-)
-assert_equal "token: inner tilde still accepted" "tok~en-inner-9931" "${tilde_ok}"
-
-# 27) 本机回环探活必须绕过 http_proxy：--resolve 只改解析，不改代理语义
-# 逐元素校验：必须存在相邻的 --noproxy 与 *，不能只靠展平后的子串匹配
-(
-    CF_CA_ROOT_FILE="/tmp/ca-root.pem"
-    cloudflare_ensure_origin_ca_root() { :; }
-    xhttp_validate_local_tls_curl_args
-    noproxy_found=0
-    for ((i = 0; i < ${#XHTTP_LOCAL_TLS_CURL_ARGS[@]}; i++)); do
-        if [[ "${XHTTP_LOCAL_TLS_CURL_ARGS[i]}" == "--noproxy" \
-            && "${XHTTP_LOCAL_TLS_CURL_ARGS[i + 1]:-}" == "*" ]]; then
-            noproxy_found=1
-        fi
-    done
-    [[ "${noproxy_found}" == "1" ]] \
-        || fail_test "curl-args: local TLS probe must pass --noproxy '*'"
-) || fail_test "curl-args: --noproxy assertion failed"
-
-# 28) 直连+CDN的 UFW 配置必须同时建立 SSH 开机自启与 Fail2ban（与其他模式一致）
-#     只做 UFW 放行而不配 jail，会让文档承诺的 SSH 狂暴破解防护静默缺失。
-UFW_WIRING_LOG="${TMP_DIR}/ufw-wiring.log"
-(
-    : >"${UFW_WIRING_LOG}"
-    snapshot_ufw_state() { :; }
-    detect_ssh_ports() { SSH_PORTS="2222"; }
-    verify_ssh_ufw_no_unmanaged_block() { :; }
-    configure_ufw_ip_family() { :; }
-    apply_ssh_ufw_policy() { :; }
-    cloudflare_configure_origin_firewall() { :; }
-    ufw() { [[ "${1:-}" == "status" ]] && printf '%s\n' 'Status: active'; return 0; }
-    ensure_ssh_boot_service() { printf '%s\n' 'ssh-boot' >>"${UFW_WIRING_LOG}"; }
-    ensure_ssh_fail2ban() { printf '%s\n' 'fail2ban' >>"${UFW_WIRING_LOG}"; }
-    xhttp_configure_ufw
-) || fail_test "28: xhttp_configure_ufw must succeed with a stubbed firewall"
-assert_equal "28: combined configures SSH boot safety and fail2ban" \
-    $'ssh-boot\nfail2ban' "$(<"${UFW_WIRING_LOG}")"
-
-# 29) 卸载 --purge-cloud 必须吊销 Origin CA 证书（文档承诺清理云端证书），失败不得中断卸载
-PURGE_CALLS="${TMP_DIR}/purge-calls.log"
-(
-    : >"${PURGE_CALLS}"
-    cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${PURGE_CALLS}"; }
-    CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-777"
-    purge_cdn_origin_certificate
-    assert_equal "29a: purge revokes Origin CA certificate" \
-        "DELETE /certificates/cert-purge-777" "$(<"${PURGE_CALLS}")"
-) || fail_test "29a: purge_cdn_origin_certificate failed"
-
-(
-    : >"${PURGE_CALLS}"
-    cloudflare_api_request() { printf '%s %s\n' "$1" "$2" >>"${PURGE_CALLS}"; }
-    CLOUDFLARE_ORIGIN_CERT_ID=""
-    purge_cdn_origin_certificate
-    assert_equal "29b: no certificate DELETE without recorded ID" "" "$(<"${PURGE_CALLS}")"
-) || fail_test "29b: purge without certificate id failed"
-
-(
-    cloudflare_api_request() { die "注入 API 失败"; }
-    CLOUDFLARE_ORIGIN_CERT_ID="cert-purge-888"
-    # 失败必须告警并保留失败状态（供卸载汇总），但不得让整个卸载中断。
-    purge_rc=0
-    purge_out=$(purge_cdn_origin_certificate 2>&1) || purge_rc=$?
-    assert_contains "29c: revocation failure warns with certificate id" \
-        "${purge_out}" "cert-purge-888"
-    assert_equal "29c: revocation failure keeps a failure status" "1" "${purge_rc}"
-) || fail_test "29c: certificate revocation failure handling failed"
-
-# 29d) 真实调用点：uninstall --purge-cloud 分支必须调用证书吊销（防止主修复被静默回退）
-uninstall_body=$(awk '/^uninstall_all\(\) \{/,/^\}/' "${MODE_LIB}")
-purge_branch=$(awk '/--purge-cloud/,/^    else$/' <<<"${uninstall_body}")
-assert_contains "29d: purge branch calls certificate revocation" \
-    "${purge_branch}" "purge_cdn_origin_certificate"
-assert_contains "29d: purge branch keeps DNS cleanup" "${purge_branch}" "purge_cdn_dns"
-
-# 30) update-core 换核心后必须重写订阅（Reality 的 ML-KEM 开关依赖核心版本）
-declare -F refresh_runtime_subscription >/dev/null \
-    || fail_test "30: combined must define the update-core subscription hook"
-(
-    write_subscriptions() { printf 'refreshed\n' >"${TMP_DIR}/core-refresh-flag"; }
-    refresh_runtime_subscription_after_core_update
-)
-assert_equal "30: update-core refreshes subscription via hook" \
-    "refreshed" "$(<"${TMP_DIR}/core-refresh-flag")"
-
-# 31) Cloudflare 优选 IP 候选池与物理延迟门槛回归测试
-(
-    tmp_ranges=$(mktemp)
-    cat <<EOF >"${tmp_ranges}"
-104.16.0.0/13
-104.24.0.0/14
-172.64.0.0/13
-240.0.0.0/20
-EOF
-    cands=$(cloudflare_generate_candidate_pool "${tmp_ranges}" 10)
-    count=$(echo "${cands}" | wc -l | tr -d ' ')
-    assert_equal "31a: candidate pool count equals requested sample limit" "10" "${count}"
-    # 加入一个非优先网段，否则 oth_blocks 恒为空，7:3 分层的后半段永远不会执行。
-    oth_count=$(printf '%s\n' "${cands}" | awk -F'\t' '$2 == "240.0.0.0/20"' | grep -c . || true)
-    (( oth_count >= 1 )) \
-        || fail_test "31a: candidate pool must also sample non-priority /24 blocks (got ${oth_count})"
-    pri_count=$(printf '%s\n' "${cands}" | awk -F'\t' '$2 != "240.0.0.0/20"' | grep -c . || true)
-    (( pri_count >= 1 )) \
-        || fail_test "31a: candidate pool must sample priority /24 blocks (got ${pri_count})"
-
-    tmp_measurements=$(mktemp)
-    cat <<EOF >"${tmp_measurements}"
-{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","address_family":"ipv4","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.18.1.1","stats":{"total":10,"rcv":10,"loss":0,"avg":210.0}}}]}}
-{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","address_family":"ipv4","measurement":{"results":[{"probe":{"country":"CN","asn":4134,"tags":["eyeball-network"],"city":"Guangzhou","network":"China Telecom"},"result":{"status":"finished","resolvedAddress":"104.18.1.2","stats":{"total":10,"rcv":10,"loss":0,"avg":250.0}}}]}}
-EOF
-    obs=$(cloudflare_acceptable_loss_observations "${tmp_measurements}")
-    # RTT 不再在观测阶段硬丢，改为打 rtt_ok 标记，由选择阶段决定是否回退。
-    obs_fast=$(printf '%s\n' "${obs}" | jq -r 'select(.avg_rtt_ms == 210) | .rtt_ok')
-    obs_slow=$(printf '%s\n' "${obs}" | jq -r 'select(.avg_rtt_ms == 250) | .rtt_ok')
-    assert_equal "31b: 210ms observation kept and flagged rtt_ok" "true" "${obs_fast}"
-    assert_equal "31b: 250ms observation kept but flagged not rtt_ok" "false" "${obs_slow}"
-
-    tmp_obs=$(mktemp)
-    cat <<EOF >"${tmp_obs}"
-{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":150.0,"tls_verified":true}
-{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":155.0,"tls_verified":true}
-{"ip":"104.18.1.3","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":140.0,"tls_verified":true}
-{"ip":"104.18.1.4","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":145.0,"tls_verified":true}
-{"ip":"104.18.1.5","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":45.0,"tls_verified":true}
-{"ip":"104.18.1.6","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":55.0,"tls_verified":true}
-{"ip":"104.18.1.7","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":160.0,"tls_verified":true}
-EOF
-    res=$(cloudflare_select_carrier_candidates "${tmp_obs}" 2 6 "" 220)
-    mobile_res=$(echo "${res}" | jq -r '.[] | select(.carrier=="mobile") | .ip')
-    assert_contains "31c: mobile picks lowest-RTT node 104.18.1.5" "${mobile_res}" "104.18.1.5"
-    assert_contains "31c: mobile picks second lowest-RTT node 104.18.1.6" "${mobile_res}" "104.18.1.6"
-    assert_not_contains "31c: mobile skips higher-RTT node 104.18.1.7" "${mobile_res}" "104.18.1.7"
-
-    # 31d 回退：某网没有 ≤220ms 候选时要按丢包率筛出的最低 RTT 选中，而不是让整轮凑不齐
-    tmp_slow_obs=$(mktemp)
-    cat <<EOF >"${tmp_slow_obs}"
-{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":150.0,"tls_verified":true}
-{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4134,"avg_rtt_ms":151.0,"tls_verified":true}
-{"ip":"104.18.1.3","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":140.0,"tls_verified":true}
-{"ip":"104.18.1.4","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":4837,"avg_rtt_ms":141.0,"tls_verified":true}
-{"ip":"104.18.1.5","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":300.0,"tls_verified":true}
-{"ip":"104.18.1.6","source_cidr":"104.16.0.0/13","address_family":"ipv4","carrier_asn":9808,"avg_rtt_ms":320.0,"tls_verified":true}
-EOF
-    slow_res=$(cloudflare_select_carrier_candidates "${tmp_slow_obs}" 2 6 "" 220)
-    slow_mobile=$(printf '%s\n' "${slow_res}" | jq -r '[.[] | select(.carrier=="mobile")] | length')
-    slow_total=$(printf '%s\n' "${slow_res}" | jq -r 'length')
-    assert_equal "31d: carrier with only >220ms candidates falls back instead of failing" "2" "${slow_mobile}"
-    assert_equal "31d: fallback still fills three carriers" "6" "${slow_total}"
-
-    # 31e 域名解析不可用时，回流名额必须仍把池子填满（否则池子会缩到 24 个）
-    tmp_wide=$(mktemp)
-    cat <<EOF >"${tmp_wide}"
-${CLOUDFLARE_PRIORITY_IPV4_CIDRS[0]}
-240.0.0.0/16
-EOF
-    wide_count=$(cloudflare_generate_candidate_pool "${tmp_wide}" 72 | wc -l | tr -d ' ')
-    assert_equal "31e: pool still fills to 72 without domain candidates" "72" "${wide_count}"
-
-    # 31f/31g 生产默认值必须被钉住：样本上限 72；企业域名列表不得重新混入个人域名
-    assert_equal "31f: default pool sample limit" "72" "${CLOUDFLARE_POOL_SAMPLE_LIMIT}"
-    if grep -Fq 'cf.877771.xyz' "${ROOT_DIR}/lib/cloudflare-ip-pool.sh"; then
-        fail_test "31g: personal domain cf.877771.xyz must not be in the enterprise list"
-    fi
-
-    # 31h Stage-1 取名必须优先保留 ≤max_rtt 的节点，不能被“丢包更低但很慢”的候选挤出验证名额
-    tmp_stage1=$(mktemp)
-    cat <<EOF >"${tmp_stage1}"
-{"ip":"104.18.1.1","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":5,"avg_rtt_ms":60.0,"rtt_ok":true}
-{"ip":"104.18.1.2","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":300.0,"rtt_ok":false}
-{"ip":"104.18.1.3","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":301.0,"rtt_ok":false}
-{"ip":"104.18.1.4","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":302.0,"rtt_ok":false}
-{"ip":"104.18.1.5","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":303.0,"rtt_ok":false}
-{"ip":"104.18.1.6","source_cidr":"104.16.0.0/13","carrier_asn":4134,"loss":0,"avg_rtt_ms":304.0,"rtt_ok":false}
-EOF
-    stage1=$(cloudflare_top_tcp_candidates "${tmp_stage1}" 5)
-    assert_contains "31h: stage-1 keeps the fast candidate ahead of slower low-loss ones" \
-        "${stage1}" "104.18.1.1"
-    assert_equal "31h: stage-1 keeps the per-carrier cap" "5" \
-        "$(printf '%s\n' "${stage1}" | wc -l | tr -d ' ')"
-
-    rm -f "${tmp_ranges}" "${tmp_measurements}" "${tmp_obs}" "${tmp_slow_obs}" "${tmp_wide}" "${tmp_stage1}"
-) || fail_test "31: cloudflare pool candidate generation and latency filtering regression"
-
-# 32) 双保险平台自适应：strip_mihomo_sniffer 剥离嗅探配置且保留其他段
-(
-    sniffer_test_src="${TMP_DIR}/sniffer-test-src.yaml"
-    cat >"${sniffer_test_src}" <<'EOF'
-profile:
-    store-selected: true
-
-sniffer:
-    enable: true
-    force-dns-mapping: true
-    sniff:
-      TLS:
-        ports: [443]
-
-tun:
-    enable: true
-EOF
-    sniffer_test_out="${TMP_DIR}/sniffer-test-out.yaml"
-    strip_mihomo_sniffer "${sniffer_test_src}" >"${sniffer_test_out}"
-    stripped_content=$(<"${sniffer_test_out}")
-    assert_not_contains "32a: strip_mihomo_sniffer removes sniffer" "${stripped_content}" "sniffer:"
-    assert_contains "32b: strip_mihomo_sniffer preserves profile" "${stripped_content}" "profile:"
-    assert_contains "32c: strip_mihomo_sniffer preserves tun" "${stripped_content}" "tun:"
-
-    # 行尾注释（自定义模板常见写法）也必须能按段剥离
-    sniffer_comment_src="${TMP_DIR}/sniffer-comment-src.yaml"
-    cat >"${sniffer_comment_src}" <<'EOF'
-profile:
-    store-selected: true
-sniffer:  # 嗅探
-    enable: true
-
-tun:
-    enable: true
-EOF
-    sniffer_comment_out=$(strip_mihomo_sniffer "${sniffer_comment_src}")
-    assert_not_contains "32d: strip_mihomo_sniffer removes commented sniffer header" \
-        "${sniffer_comment_out}" "sniffer:"
-    assert_contains "32e: strip_mihomo_sniffer keeps content after commented header" \
-        "${sniffer_comment_out}" "tun:"
-
-    # 内联映射无法按段剥离，必须在生成订阅时直接失败，而不是静默下发 iOS 不支持的键
-    sniffer_inline_src="${TMP_DIR}/sniffer-inline-src.yaml"
-    printf 'profile:\n    store-selected: true\nsniffer: {enable: true}\ntun:\n    enable: true\n' \
-        >"${sniffer_inline_src}"
-    if ( strip_mihomo_sniffer "${sniffer_inline_src}" >/dev/null 2>&1 ); then
-        fail_test "32f: inline sniffer mapping must be rejected"
-    fi
-
-    # 32g/32h 顶格注释不能跟着嗅探段一起被吞：下一个顶层段的说明与末尾标记都属于此类
-    sniffer_next_src="${TMP_DIR}/sniffer-next-src.yaml"
-    cat >"${sniffer_next_src}" <<'EOF'
-profile:
-    store-selected: true
-sniffer:
-    enable: true
-    sniff:
-      TLS:
-        ports: [443]
-# 规则配置
-tun:
-    enable: true
-EOF
-    sniffer_next_out=$(strip_mihomo_sniffer "${sniffer_next_src}")
-    assert_contains "32g: next top-level section comment is preserved" \
-        "${sniffer_next_out}" "# 规则配置"
-    assert_not_contains "32g: sniffer block itself is still removed" \
-        "${sniffer_next_out}" "sniffer:"
-
-    sniffer_tail_src="${TMP_DIR}/sniffer-tail-src.yaml"
-    cat >"${sniffer_tail_src}" <<'EOF'
-profile:
-    store-selected: true
-tun:
-    enable: true
-sniffer:
-    enable: true
-# EASY_ALL_REALITY_TEMPLATE_END_V1
-EOF
-    sniffer_tail_out=$(strip_mihomo_sniffer "${sniffer_tail_src}")
-    assert_contains "32h: trailing marker comment survives a sniffer block at EOF" \
-        "${sniffer_tail_out}" "# EASY_ALL_REALITY_TEMPLATE_END_V1"
-    assert_equal "32h: stripped template still ends with the Reality marker" \
-        "# EASY_ALL_REALITY_TEMPLATE_END_V1" "$(printf '%s\n' "${sniffer_tail_out}" | tail -n 1)"
-    assert_equal "32h: Reality marker appears exactly once" "1" \
-        "$(printf '%s\n' "${sniffer_tail_out}" | grep -Fc 'EASY_ALL_REALITY_TEMPLATE_END_V1' || true)"
-
-    rm -f "${sniffer_test_src}" "${sniffer_test_out}" "${sniffer_comment_src}" \
-        "${sniffer_inline_src}" "${sniffer_next_src}" "${sniffer_tail_src}"
-) || fail_test "32: strip_mihomo_sniffer regression"
-
-# 33) services 阶段的 validate_protocol_runtime（lib/xhttp-runtime.sh）用各模式都必须提供的
-#     VLESS_CDN_DOMAIN 做本机探活，不再依赖 XHTTP_ORIGIN_DOMAIN 别名（2.5.0 后两次崩溃的同源隐患）。
-#     直连+CDN下 VLESS_CDN_DOMAIN=CF_NODE_DOMAIN，探活仍须命中 CF_NODE_DOMAIN。
-assert_not_contains "runtime-probe: shared runtime no longer reads XHTTP_ORIGIN_DOMAIN" \
-    "$(<"${ROOT_DIR}/lib/xhttp-runtime.sh")" "XHTTP_ORIGIN_DOMAIN"
-assert_not_contains "runtime-probe: combined no longer derives the alias" \
-    "$(<"${PROFILE}")" "XHTTP_ORIGIN_DOMAIN"
-
-probe_log="${TMP_DIR}/runtime-probe.log"
-: >"${probe_log}"
-probe_rc=0
-(
-    load_state >/dev/null 2>&1
-    cloudflare_ensure_origin_ca_root() { :; }
-    systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
-    ss() { printf 'LISTEN 0 511 *:443 *:*\n'; }
-    curl() {
-        printf '%s\n' "$*" >>"${probe_log}"
-        printf 'easy_all ok'
-    }
-    validate_protocol_runtime
-) || probe_rc=$?
-assert_equal "runtime-probe: validate_protocol_runtime succeeds on the combined runtime" \
-    '0' "${probe_rc}"
-probe_calls=$(<"${probe_log}")
-assert_contains "runtime-probe: probes CF_NODE_DOMAIN over loopback" \
-    "${probe_calls}" "--resolve ${CF_NODE_DOMAIN}:443:127.0.0.1"
-assert_contains "runtime-probe: probes the health endpoint" \
-    "${probe_calls}" "https://${CF_NODE_DOMAIN}/easy_all-health"
-
-# 33b) 443 + health 通过不等于直连入口可用：Reality 端口未监听时必须验收失败并指明端口。
-missing_port_rc=0
-missing_port_out=$(
-    (
-        load_state >/dev/null 2>&1
-        cloudflare_ensure_origin_ca_root() { :; }
-        systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
-        # 只监听 443：旧实现在 8443 绑不上时同样验收通过。
-        ss() {
-            [[ "$*" == *"sport = :443"* ]] || return 0
-            printf 'LISTEN 0 511 *:443 *:*\n'
-        }
-        curl() { printf 'easy_all ok'; }
-        sleep() { :; }
-        validate_protocol_runtime
-    ) 2>&1
-) || missing_port_rc=$?
-((missing_port_rc != 0)) || fail_test "Reality 端口未监听时 validate_protocol_runtime 必须失败"
-assert_contains "runtime-probe: 失败信息指明 Reality 端口" \
-    "${missing_port_out}" "${REALITY_PORT}"
-
-# 33c) 两个入口都在监听时验收通过；纯 CDN（CDN_REALITY_ENABLED=0）不得追加 Reality 端口断言。
-both_ports_rc=0
-dual_ports_ss() { printf 'LISTEN 0 511 *:443 *:*\nLISTEN 0 511 *:8443 *:*\n'; }
-(
-    load_state >/dev/null 2>&1
-    cloudflare_ensure_origin_ca_root() { :; }
-    systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
-    ss() { dual_ports_ss; }
-    curl() { printf 'easy_all ok'; }
+# 模式 3：443 + health 通过也不等于直连入口可用，8443 未监听必须失败并指明端口。
+probe_ss_443_only() { case "$*" in *":443"*) printf 'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\n' ;; esac; }
+no_8443_out=$( (
     sleep() { :; }
+    ss() { probe_ss_443_only "$@"; }
     validate_protocol_runtime
-) || both_ports_rc=$?
-assert_equal "runtime-probe: 双入口都在监听时验收通过" '0' "${both_ports_rc}"
-cdn_only_rc=0
-cdn_only_out=$(
-    (
-        load_state >/dev/null 2>&1
-        CDN_REALITY_ENABLED=0
-        cloudflare_ensure_origin_ca_root() { :; }
-        systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
-        ss() {
-            [[ "$*" == *"sport = :443"* ]] || return 0
-            printf 'LISTEN 0 511 *:443 *:*\n'
-        }
-        curl() { printf 'easy_all ok'; }
-        sleep() { :; }
-        validate_protocol_runtime
-    ) 2>&1
-) || cdn_only_rc=$?
-assert_equal "runtime-probe: 纯 CDN 行为不变（不追加 Reality 端口断言）" '0' "${cdn_only_rc}"
-
-# 33d) Reality 端口比 443/health 晚一轮绑定：必须继续重试而不是首轮就终止，
-#      否则时序性误报会让整个安装回滚。
-retry_rc=0
-retry_counter="${TMP_DIR}/reality-port-probes"
-: >"${retry_counter}"
+) 2>&1 ) && fail_test "8443 未监听时模式 3 的运行时验收必须失败"
+assert_contains "8443 未监听时明确指出端口" "${no_8443_out}" "Reality 端口 8443 未监听"
+# Reality 端口比 443 晚一轮绑定：必须继续重试，不能首轮就终止。
+command rm -f -- "${TMP_DIR}/reality-listen-probes"
+reality_delayed_ss() {
+    case "$*" in
+    *":8443"*)
+        local count=0
+        [[ ! -f "${TMP_DIR}/reality-listen-probes" ]] \
+            || count=$(<"${TMP_DIR}/reality-listen-probes")
+        count=$((count + 1))
+        printf '%s\n' "${count}" >"${TMP_DIR}/reality-listen-probes"
+        ((count > 1)) && printf 'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*\n'
+        ;;
+    *":443"*) printf 'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\n' ;;
+    esac
+}
 (
-    load_state >/dev/null 2>&1
-    cloudflare_ensure_origin_ca_root() { :; }
-    systemctl() { [[ "${1:-}" == 'is-active' ]] && return 0; }
-    ss() {
-        if [[ "$*" == *"sport = :443"* ]]; then
-            printf 'LISTEN 0 511 *:443 *:*\n'
-            return 0
-        fi
-        local probes
-        probes=$(grep -c '' "${retry_counter}")
-        printf 'probe\n' >>"${retry_counter}"
-        ((probes >= 1)) && printf 'LISTEN 0 511 *:%s *:*\n' "${REALITY_PORT}"
+    sleep() { :; }
+    ss() { reality_delayed_ss "$@"; }
+    validate_protocol_runtime
+) || fail_test "8443 延迟绑定时必须重试后通过，而不是首轮误报失败"
+# 纯 CDN 模式不受 8443 影响：cdn_reality_enabled 为假时 8443 断言必须恒成立。
+(
+    ss() { probe_ss_443_only "$@"; }
+    cdn_reality_enabled() { return 1; }
+    validate_reality_port_listening
+) || fail_test "纯 CDN 模式不得要求 8443 监听"
+
+# --- 11.1 订阅就绪：模式 3 的本机节点数固定为 2（Reality 先、CloudFront 后）（F12）
+# validate_subscription_runtime 是本机 TLS 路由验收：这里只替换网络部分，
+# 六产物逐字节对比与节点身份校验走真实实现。
+subscription_ready_local() {
+    (
+        validate_subscription_runtime() { return 0; }
+        cdn_subscription_ready
+    )
+}
+subscription_ready_local || fail_test "模式 3 的正常六产物必须判为就绪"
+cdn_subscription_local_nodes_ready "${SUBSCRIPTION_DIR}" \
+    || fail_test "模式 3 的 Reality + CloudFront 两个本机节点必须通过身份验收"
+# 只剩一个本机节点（少了 Reality）不得判就绪
+ready_dir="${TMP_DIR}/ready-check"
+install -d -m 0700 "${ready_dir}"
+install -m 0640 "${SUBSCRIPTION_DIR}"/*.txt "${SUBSCRIPTION_DIR}"/*.yaml "${ready_dir}/"
+openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64.txt" \
+    | grep -v 'security=reality' | openssl base64 -A >"${ready_dir}/base64.txt"
+printf '\n' >>"${ready_dir}/base64.txt"
+cdn_subscription_local_nodes_ready "${ready_dir}" \
+    && fail_test "模式 3 缺少 Reality 节点时不得判就绪"
+# 节点顺序错位（CloudFront 在前）也不得判就绪
+{
+    openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64.txt" | sed -n '2p'
+    openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64.txt" | sed -n '1p'
+} | openssl base64 -A >"${ready_dir}/base64.txt"
+printf '\n' >>"${ready_dir}/base64.txt"
+cdn_subscription_local_nodes_ready "${ready_dir}" \
+    && fail_test "模式 3 节点顺序必须是 Reality 先于 CloudFront"
+# 缺失 ios 变体不得判就绪
+command rm -f -- "${SUBSCRIPTION_DIR}/mihomo-ios-all.yaml"
+if subscription_ready_local; then
+    fail_test "缺失 mihomo-ios-all.yaml 时不得判订阅就绪"
+fi
+command rm -f -- "${SUBSCRIPTION_DIR}/mihomo-all.yaml"
+cloudfront_write_subscriptions
+subscription_ready_local || fail_test "重发六产物后必须重新判为就绪"
+
+# --- 11.2 聚合节点：三类节点、optional、外部 XHTTP 的 host/SNI 分离 -------------
+# 三类聚合（vless reality/tcp、vless tls/xhttp、mieru）都必须能渲染；host 是连接地址，
+# 与 TLS 的 SNI/Host 头（sni）分离；optional 节点只进 node=all 的两份产物。
+agg_config_three=$(jq -cn --arg token "${OWNER_TOKEN}" '
+  {allowedTokens:{owner:$token},nodes:[
+    {type:"vless",security:"reality",network:"tcp",name:"聚合Reality",host:"r.example.com",
+     port:8443,uuid:"22222222-2222-4222-8222-222222222222",sni:"www.example.com",
+     pbk:"PUBKEY-abc_123",sid:"0123456789abcdef"},
+    {type:"vless",security:"tls",network:"xhttp",name:"聚合XHTTP",host:"x.example.com",
+     port:443,uuid:"33333333-3333-4333-8333-333333333333",sni:"cdn.example.net",
+     path:"/agg-path/",mode:"stream-up"},
+    {type:"mieru",name:"备用Mieru",host:"m.example.com",portRange:"50000-50512",
+     username:"agguser",password:"agg-password-12345",multiplexing:"MULTIPLEXING_LOW",
+     optional:true}
+  ]}')
+(
+    cdn_apply_subscription_config "${agg_config_three}" \
+        || fail_test "三类聚合节点配置必须被接受"
+    [[ "$(jq 'length' <<<"${AGGREGATION_NODES}")" == "3" ]] \
+        || fail_test "三类聚合节点都必须进入规范化配置"
+    cloudfront_write_subscriptions
+) || fail_test "含三类聚合节点的订阅必须发布成功"
+
+links_default=$(openssl base64 -d -A <"${SUBSCRIPTION_BASE64_FILE}")
+links_all=$(openssl base64 -d -A <"${SUBSCRIPTION_BASE64_ALL_FILE}")
+assert_equal "default 产物 = 2 本机 + 2 非 optional 聚合" "4" \
+    "$(printf '%s\n' "${links_default}" | grep -c '^vless://')"
+assert_equal "node=all 产物额外包含 optional 的 mieru" "5" \
+    "$(grep -c '^[^[:space:]][^[:space:]]*$' <<<"${links_all}")"
+assert_contains "default 包含聚合 Reality 节点" "${links_default}" "@r.example.com:8443?"
+assert_contains "default 包含聚合 XHTTP 节点" "${links_default}" "@x.example.com:443?"
+assert_not_contains "default 不下发 optional mieru" "${links_default}" "mierus://"
+assert_contains "node=all 下发 optional mieru" "${links_all}" "mierus://"
+agg_xhttp_link=$(grep -F '@x.example.com:443?' <<<"${links_default}")
+assert_contains "外部 XHTTP 的 sni 是独立域名" "${agg_xhttp_link}" "sni=cdn.example.net"
+assert_contains "外部 XHTTP 的 Host 头跟 sni 而不是 host" "${agg_xhttp_link}" \
+    "host=cdn.example.net"
+assert_not_contains "外部 XHTTP 不得把连接地址写进 Host 头" "${agg_xhttp_link}" \
+    "host=x.example.com"
+assert_contains "聚合 Reality 保留 Xray 侧 flow" "$(grep -F '@r.example.com:8443?' <<<"${links_default}")" \
+    "flow=xtls-rprx-vision"
+
+mihomo_default=$(<"${SUBSCRIPTION_MIHOMO_FILE}")
+mihomo_all=$(<"${SUBSCRIPTION_MIHOMO_ALL_FILE}")
+proxies_default=$(awk '/^proxies:/{inside=1} /^proxy-groups:/{inside=0} inside' <<<"${mihomo_default}")
+proxies_all=$(awk '/^proxies:/{inside=1} /^proxy-groups:/{inside=0} inside' <<<"${mihomo_all}")
+assert_contains "mihomo 聚合 XHTTP 连接地址是 host" "${proxies_default}" 'server: "x.example.com"'
+assert_contains "mihomo 聚合 XHTTP 的 SNI 是 sni" "${proxies_default}" 'servername: "cdn.example.net"'
+assert_contains "mihomo 聚合 XHTTP 的 Host 头跟 sni" "${proxies_default}" 'host: "cdn.example.net"'
+assert_equal "mihomo default 不下发 optional mieru" "0" \
+    "$(grep -cE '^    type: mieru$' <<<"${proxies_default}")"
+assert_equal "mihomo node=all 下发 optional mieru" "1" \
+    "$(grep -cE '^    type: mieru$' <<<"${proxies_all}")"
+assert_contains "mihomo node=all 的 mieru 连接 m.example.com" "${proxies_all}" \
+    'server: "m.example.com"' 
+assert_equal "default 与 node=all 的产物不同" "1" \
+    "$([[ "$(file_digest "${SUBSCRIPTION_MIHOMO_FILE}")" != "$(file_digest "${SUBSCRIPTION_MIHOMO_ALL_FILE}")" ]] && echo 1)"
+proxy_names_default=$(sed -n '/^proxy-groups:/,/^rules:/p' <<<"${mihomo_default}" \
+    | sed -n 's/^        - "\(.*\)"$/\1/p')
+assert_equal "PROXY 顺序 = 直连 → CloudFront → 非 optional 聚合" \
+    "$(printf '%s\n' "🇺🇸直连" "🇺🇸AWS" "聚合Reality" "聚合XHTTP")" "${proxy_names_default}"
+
+# 拒绝：与本机节点重名、保留组名、非法类型都不得改变上一份有效配置。
+(
+    cdn_apply_subscription_config "${agg_config_three}" \
+        || fail_test "有效聚合配置必须可重复应用"
+    cdn_apply_subscription_config "$(jq -c '.nodes[0].name = "🇺🇸直连"' <<<"${agg_config_three}")" \
+        >/dev/null 2>&1 && fail_test "聚合节点与直连节点重名必须拒绝"
+    cdn_apply_subscription_config "$(jq -c '.nodes[0].name = "PROXY"' <<<"${agg_config_three}")" \
+        >/dev/null 2>&1 && fail_test "聚合节点使用保留组名必须拒绝"
+    cdn_apply_subscription_config "$(jq -c '.nodes[0].type = "trojan"' <<<"${agg_config_three}")" \
+        >/dev/null 2>&1 && fail_test "不支持的聚合节点类型必须拒绝"
+    # 失败不得破坏同一进程里上一份有效配置。
+    [[ "$(jq 'length' <<<"${AGGREGATION_NODES}")" == "3" ]] \
+        || fail_test "被拒绝的聚合配置改变了上一份有效节点"
+) || fail_test "聚合节点拒绝用例失败"
+# 恢复基线：重新按父进程的原始配置发布，避免影响后续章节。
+( cloudfront_write_subscriptions ) || fail_test "恢复基线订阅必须成功"
+
+# --- 12. apply 纯本机 --------------------------------------------------------
+net_log="${TMP_DIR}/network.log"
+: >"${net_log}"
+(
+    configure_tcp_acceleration() { :; }
+    configure_ipv4_only() { :; }
+    xhttp_configure_ufw() { :; }
+    install_xray_service() { :; }
+    validate_subscription_runtime() { :; }
+    cdn_traffic_protection_checkpoint() { return 0; }
+    register_easy_all_command() { :; }
+    install_cdn_traffic_protection_timer() { :; }
+    require_root() { :; }
+    acquire_runtime_write_lock() { :; }
+    aws() { printf 'aws %s\n' "$*" >>"${net_log}"; return 1; }
+    aws_cli() { printf 'aws_cli %s\n' "$*" >>"${net_log}"; return 1; }
+    cloudflare_api_request() { printf 'cf %s\n' "$*" >>"${net_log}"; return 1; }
+    apply_easy_all
+) || fail_test "apply 必须成功重建双入口本机配置"
+[[ ! -s "${net_log}" ]] || fail_test "apply 不得访问 AWS/Cloudflare：$(<"${net_log}")"
+assert_equal "apply 后 Xray 配置含 Reality 与 XHTTP" "3" \
+    "$(jq '.inbounds | length' "${XRAY_CONFIG}")"
+assert_contains "apply 后 Nginx 为开放配置" "$(<"${NGINX_CONFIG}")" \
+    "grpc_pass grpc://127.0.0.1:10086;"
+
+# --- 13. 熔断：blocked 下 Reality 仍可用，受限恢复按顺序收敛 ------------------
+usage_file="${CDN_TRAFFIC_GUARD_USAGE_FILE}"
+reset_usage() {
+    command rm -f -- "${usage_file}"
+    initialize_cdn_traffic_usage
+}
+reset_usage
+cdn_traffic_write_usage "$(jq -c '.blocked=true | .enforced=false' "${usage_file}")"
+printf 'run-1' >"${FAKE_INVOCATION_FILE}"
+printf '%s' '{"stat":[{"name":"inbound>>>vless-xhttp-in>>>traffic>>>uplink","value":1},{"name":"inbound>>>vless-xhttp-in>>>traffic>>>downlink","value":1},{"name":"inbound>>>vless-reality-in>>>traffic>>>uplink","value":999}]}' \
+    >"${FAKE_STATS_FILE}"
+assert_equal "只统计 CDN 入站（Reality 大流量不计入）" "$(printf '1\t1')" \
+    "$(cdn_traffic_stats_totals "$(<"${FAKE_STATS_FILE}")")"
+
+: >"${FAKE_SYSTEMCTL_LOG}"
+recover_log="${TMP_DIR}/recover-order.log"
+: >"${recover_log}"
+(
+    write_nginx_config() { printf 'nginx-deny\n' >>"${recover_log}"; return 0; }
+    render_xray_config() { printf 'render-restricted\n' >>"${recover_log}"; [[ "$1" == "1" ]]; }
+    cdn_validate_restricted_runtime() { printf 'validate\n' >>"${recover_log}"; return 0; }
+    cdn_subscription_ready() { return 1; }
+    cdn_traffic_recover_restricted_runtime
+) || fail_test "受限安全恢复必须成功"
+assert_equal "受限恢复顺序：先 deny 再受限 Xray 再验收" \
+    "$(printf 'nginx-deny\nrender-restricted\nvalidate')" "$(<"${recover_log}")"
+assert_equal "受限恢复后 enforced=true/offline=false" "true,false" \
+    "$(jq -r '[.enforced, .protection_offline] | @csv' "${usage_file}")"
+assert_equal "受限恢复保留 blocked" "true" "$(jq -r '.blocked' "${usage_file}")"
+
+# 保护失败：停 Xray、持久 offline，Reality 一并停机（优先保护收费链路）
+reset_usage
+cdn_traffic_write_usage "$(jq -c '.blocked=true | .enforced=false' "${usage_file}")"
+: >"${FAKE_SYSTEMCTL_LOG}"
+FAKE_XRAY_RESTART_FAIL=1
+( rebuild_traffic_runtime ) >/dev/null 2>&1 \
+    && fail_test "阻断重建失败必须返回非零"
+FAKE_XRAY_RESTART_FAIL=0
+assert_equal "阻断失败持久 offline" "true,false" \
+    "$(jq -r '[.protection_offline, .enforced] | @csv' "${usage_file}")"
+assert_contains "阻断失败保留 Nginx 503" "$(<"${NGINX_CONFIG}")" "return 503;"
+assert_contains "阻断失败停止旧 CDN 会话" "$(<"${FAKE_SYSTEMCTL_LOG}")" \
+    "stop easy_all-xray.service"
+
+# 新 CLI 进程受限恢复：换一个 bash 进程只读磁盘状态，真实渲染受限 Xray（Reality 仍在 8443）
+# 并翻 enforced/offline；不复用本进程任何变量。
+: >"${FAKE_SYSTEMCTL_LOG}"
+cdn_traffic_write_usage "$(jq -c '.used_bytes = 123456789 | .runtime_id = "run-1"' "${usage_file}")"
+usage_before=$(jq -c '{period,runtime_id,used_bytes}' "${usage_file}")
+probe_log="${TMP_DIR}/recover-probe.log"
+EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_PROBE=1 bash "${BASH_SOURCE[0]}" \
+    >"${probe_log}" 2>&1 \
+    || fail_test "新进程必须从磁盘状态恢复受限运行时：$(<"${probe_log}")"
+assert_contains "新进程不得声称订阅可用" "$(<"${probe_log}")" \
+    "订阅未就绪/不可用；禁止解封"
+assert_equal "恢复后 enforced=true/offline=false" "true,false" \
+    "$(jq -r '[.enforced, .protection_offline] | @csv' "${usage_file}")"
+assert_equal "恢复保留 blocked 与计数" "true" "$(jq -r '.blocked' "${usage_file}")"
+assert_equal "恢复保留 period/runtime_id/used_bytes" "${usage_before}" \
+    "$(jq -c '{period,runtime_id,used_bytes}' "${usage_file}")"
+recovered_conf=$(<"${XRAY_CONFIG}")
+assert_equal "恢复的受限 Xray 保留 Reality 入站" "vless-reality-in" \
+    "$(jq -r '.inbounds[0].tag' <<<"${recovered_conf}")"
+assert_equal "恢复的 Reality 仍在 8443 监听" "8443" \
+    "$(jq -r '.inbounds[0].port' <<<"${recovered_conf}")"
+assert_equal "恢复的受限 Xray 关闭 CDN client" "0" \
+    "$(jq '.inbounds[2].settings.clients | length' <<<"${recovered_conf}")"
+assert_contains "恢复的 Nginx 仍阻断 XHTTP" "$(<"${NGINX_CONFIG}")" "return 503;"
+assert_contains "恢复过程重启受限 Xray" "$(<"${FAKE_SYSTEMCTL_LOG}")" \
+    "restart easy_all-xray.service"
+
+# timer 顺序：先受限恢复再采样
+reset_usage
+cdn_traffic_write_usage "$(jq -c '.blocked=true | .enforced=false | .protection_offline=true' "${usage_file}")"
+sync_log="${TMP_DIR}/sync-order.log"
+: >"${sync_log}"
+(
+    require_root() { :; }
+    collect_installed_state() { :; }
+    try_acquire_runtime_write_lock() { return 0; }
+    release_runtime_write_lock() { :; }
+    cdn_traffic_recover_restricted_runtime() {
+        printf 'recover\n' >>"${sync_log}"
+        cdn_traffic_mark_restricted_recovered
         return 0
     }
-    curl() { printf 'easy_all ok'; }
-    sleep() { :; }
-    validate_protocol_runtime
-) || retry_rc=$?
-assert_equal "runtime-probe: Reality 端口晚一轮绑定仍验收通过" '0' "${retry_rc}"
-assert_equal "runtime-probe: 未监听时继续重试（共探测两轮）" '2' \
-    "$(grep -c '' "${retry_counter}")"
+    cdn_traffic_subscription_ready() { return 0; }
+    cdn_traffic_update_usage() {
+        printf 'sample\n' >>"${sync_log}"
+        CDN_TRAFFIC_OLD_BLOCKED=true
+        CDN_TRAFFIC_BLOCKED=true
+        CDN_TRAFFIC_NEEDS_APPLY=0
+        CDN_TRAFFIC_TRANSITION=0
+        return 0
+    }
+    cdn_traffic_protection_sync
+) || fail_test "安全恢复成功且采样成功应返回 0"
+assert_equal "先受限恢复再采样" "$(printf 'recover\nsample')" "$(<"${sync_log}")"
 
-# 34) 安装失败回滚必须能在 set -u 下跑完：2.5.0 删除了 CERT_RELOAD_HOOK 常量与 reload helper，
-#     清理函数却仍在展开该变量，回滚在删除残留文件前就 unbound 中断，本机残留与进度标记全部留下
-#     （2026-11-06 现场）。
-rollback_root="${TMP_DIR}/rollback"
-mkdir -p "${rollback_root}/state" "${rollback_root}/web" "${rollback_root}/lib" \
-    "${rollback_root}/xray" "${rollback_root}/bin"
-printf 'x' >"${rollback_root}/xray.service"
-printf 'x' >"${rollback_root}/nginx.conf"
-printf 'x' >"${rollback_root}/bin/easy_all"
-printf 'x' >"${rollback_root}/state/state.env"
-rollback_rc=0
-rollback_out=$(
-    XRAY_SERVICE_FILE="${rollback_root}/xray.service"
-    NGINX_CONFIG="${rollback_root}/nginx.conf"
-    COMMAND_PATH="${rollback_root}/bin/easy_all"
-    STATE_DIR="${rollback_root}/state"
-    WEB_ROOT="${rollback_root}/web"
-    COMMAND_INSTALL_DIR="${rollback_root}/lib"
-    XRAY_DIR="${rollback_root}/xray"
-    cleanup_partial_install_local() { :; }
-    remove_daily_reboot_schedule() { :; }
-    install_progress_clear() { :; }
-    systemctl() { :; }
-    cleanup_partial_install 2>&1
-) || rollback_rc=$?
-assert_equal "rollback: cleanup_partial_install succeeds under set -u" '0' "${rollback_rc}"
-assert_not_contains "rollback: cleanup must not surface an unbound variable" \
-    "${rollback_out}" 'unbound variable'
-for leftover in xray.service nginx.conf bin/easy_all state web lib xray; do
-    [[ ! -e "${rollback_root}/${leftover}" ]] \
-        || fail_test "rollback: cleanup_partial_install must remove ${leftover}"
-done
+# update-core 在待落实阻断时拒绝；edit-sub 允许保持阻断修复
+update_core_body=$(awk '/^update_current_core\(\)/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "update-core 待落实阻断时先拒绝" "${update_core_body}" \
+    "cdn_traffic_needs_restricted_recovery"
+update_sub_body=$(awk '/^update_subscription\(\)/,/^}/' "${CORE}")
+assert_contains "edit-sub 保持阻断修复" "${update_sub_body}" "cdn_establish_denied_boundary"
+assert_contains "edit-sub 受限时不得重启旧 Xray" "${update_sub_body}" \
+    "UPDATE_SUB_ROLLBACK_NO_RESTART=1"
+assert_contains "共享回滚遵守不重启标记" \
+    "$(awk '/^rollback_subscription_update\(\)/,/^}/' "${XHTTP_LIB}")" \
+    "UPDATE_SUB_ROLLBACK_NO_RESTART"
 
-# 35) 统一订阅配置：allowedTokens + nodes（vless reality / vless xhttp / mieru）
-agg_config='{"allowedTokens":{"owner":"agg-owner-token-1","user2":"agg-user-token-2"},"nodes":[
-  {"type":"vless","security":"reality","network":"tcp","name":"另一台Reality","host":"r.example.com","port":8443,"uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","fp":"chrome"},
-  {"type":"vless","security":"tls","network":"xhttp","name":"另一台XHTTP","host":"x.example.com","port":443,"uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/agg-path/","mode":"stream-up"},
-  {"type":"mieru","name":"备用Mieru","host":"m.example.com","portRange":"50000-50512","username":"agguser","password":"agg-password-12345","transport":"TCP","multiplexing":"MULTIPLEXING_LOW","optional":true}
-]}'
-cdn_apply_subscription_config "${agg_config}" \
-    || fail_test "aggregation: valid config rejected"
-assert_equal "aggregation: token dictionary applied" "2" "$(jq 'length' <<<"${ALLOWED_TOKENS}")"
-assert_equal "aggregation: nodes parsed" "3" "$(jq 'length' <<<"${AGGREGATION_NODES}")"
-assert_equal "aggregation: owner follows first token" 'agg-owner-token-1' "${OWNER_TOKEN}"
-# 仓库内示例模板必须能直接通过校验
-cdn_apply_subscription_config "$(jq -c . "${ROOT_DIR}/templates/aggregation.example.json")" \
-    || fail_test "aggregation: bundled example template must validate"
-cdn_apply_subscription_config "${agg_config}" \
-    || fail_test "aggregation: restore test config"
+# --- 14. reality-target：先受限安全恢复再改 target ---------------------------
+admission_body=$(awk '/^update_reality_target\(\)/,/^}/' "${PROFILE}")
+assert_contains "reality-target 复用统一准入" "${admission_body}" "cdn_traffic_admission"
+assert_contains "reality-target 强校验订阅" "${admission_body}" "cdn_require_valid_subscription"
+assert_contains "reality-target 走核心本机事务" "${admission_body}" "cloudfront_write_subscriptions"
+[[ "$(grep -n 'cdn_traffic_admission' <<<"${admission_body}" | cut -d: -f1)" \
+    -lt "$(grep -n 'REALITY_TARGET=${target}' <<<"${admission_body}" | cut -d: -f1)" ]] \
+    || fail_test "受限恢复必须早于 target 变更"
+[[ "$(grep -n 'cdn_require_valid_subscription' <<<"${admission_body}" | cut -d: -f1)" \
+    -lt "$(grep -n 'snapshot_subscription_update' <<<"${admission_body}" | cut -d: -f1)" ]] \
+    || fail_test "强校验订阅必须早于快照/事务"
 
-# 聚合节点的 udp 开关必须贯穿到产物：udp:false 时不得再注入 xudp 封装参数
-cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"无UDP节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","udp":false}]}' \
-    || fail_test "aggregation: udp:false reality node rejected"
-udp_off_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
-assert_not_contains "aggregation: udp:false link drops packetEncoding" \
-    "${udp_off_links}" "packetEncoding=xudp"
-udp_off_mihomo=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_mihomo_nodes)
-assert_contains "aggregation: udp:false mihomo keeps udp: false" "${udp_off_mihomo}" "udp: false"
-assert_not_contains "aggregation: udp:false mihomo drops packet-encoding" \
-    "${udp_off_mihomo}" "packet-encoding: xudp"
-cdn_apply_subscription_config "${agg_config}" \
-    || fail_test "aggregation: restore test config"
-udp_on_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
-assert_contains "aggregation: default reality link keeps packetEncoding" \
-    "${udp_on_links}" "packetEncoding=xudp"
-
-# 显式 false 的布尔字段不得被 jq 的 // 当成"缺失"而回退成 true
-cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"旧核心节点","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef","supportX25519Mlkem768":false}]}' \
-    || fail_test "aggregation: supportX25519Mlkem768:false rejected"
-assert_contains "aggregation: explicit false disables mlkem in the link" \
-    "$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)" "mlkem=0"
-cdn_apply_subscription_config "${agg_config}" \
-    || fail_test "aggregation: restore test config"
-
-# 校验报错必须点名白名单里的真实字段名，否则用户按提示改反而触发「包含不支持的字段」
-bad_method_out=$(
-    cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏方法节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpUplinkHttpMethod":"PUT"}]}' 2>&1
-) || true
-assert_contains "aggregation: bad uplink method names the real field" \
-    "${bad_method_out}" "xhttpUplinkHttpMethod"
-bad_grpc_out=$(
-    cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"坏头节点","host":"x.example.com","uuid":"33333333-3333-4333-8333-333333333333","sni":"x.example.com","path":"/p/","xhttpNoGrpcHeader":"yes"}]}' 2>&1
-) || true
-assert_contains "aggregation: bad noGRPCHeader names the real field" \
-    "${bad_grpc_out}" "xhttpNoGrpcHeader"
-# 规范化结果必须可再次通过校验（状态回读 / edit-sub 默认值都会再次走一遍）
-cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
-    || fail_test "aggregation: normalized config must be re-valid"
-
-for invalid in \
-    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[],"fallbackCdnNodes":[]}' \
-    '{"allowedTokens":{"owner":"agg-owner-token-1"},"vpsSubUrl":"https://x"}' \
-    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"trojan","name":"t","host":"t.example.com","password":"abcdefgh"}]}' \
-    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"bad-sid","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"abc"}]}' \
-    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"AUTO","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}' \
-    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"CDN-AUTO","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}' \
-    '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"},{"type":"vless","security":"reality","network":"tcp","name":"dupe","host":"r.example.com","uuid":"22222222-2222-4222-8222-222222222222","sni":"s","pbk":"p","sid":"aabbccdd"}]}'; do
-    if cdn_apply_subscription_config "${invalid}" >/dev/null 2>&1; then
-        fail_test "aggregation: invalid config accepted: ${invalid}"
-    fi
-done
-# 失败不得破坏上一份有效配置
-assert_equal "aggregation: rejected config keeps previous nodes" "3" \
-    "$(jq 'length' <<<"${AGGREGATION_NODES}")"
-
-cdn_cf_candidates() { printf '198.51.100.1\t1\n'; }
-links_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_node_links)
-links_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_node_links)
-assert_contains "aggregation: default links include reality node" \
-    "${links_default}" "r.example.com"
-assert_contains "aggregation: default links include xhttp node" \
-    "${links_default}" "x.example.com"
-assert_not_contains "aggregation: default links hide optional mieru node" \
-    "${links_default}" "m.example.com"
-assert_contains "aggregation: node=all links include optional mieru node" \
-    "${links_all}" "m.example.com"
-assert_contains "aggregation: mieru link uses mierus scheme" "${links_all}" "mierus://"
-assert_contains "fallback: base64 links carry the CDN domain node" \
-    "${links_default}" "@${CF_NODE_DOMAIN}:443?"
-assert_contains "fallback: base64 links name the CDN domain node" \
-    "${links_default}" "$(uri_encode "${CF_NODE_PREFIX}官方")"
-
-mihomo_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_nodes)
-mihomo_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_nodes)
-assert_contains "aggregation: mihomo default includes reality block" \
-    "${mihomo_default}" "servername: \"www.example.com\""
-assert_contains "aggregation: mihomo default includes xhttp block" \
-    "${mihomo_default}" "path: \"/agg-path/\""
-assert_not_contains "aggregation: mihomo default hides optional mieru" \
-    "${mihomo_default}" "type: mieru"
-assert_contains "aggregation: mihomo node=all includes mieru" "${mihomo_all}" "type: mieru"
-assert_contains "fallback: mihomo node block connects to the CDN domain" \
-    "${mihomo_default}" "server: \"${CF_NODE_DOMAIN}\""
-assert_contains "fallback: mihomo node block is named after the prefix" \
-    "${mihomo_default}" "name: \"${CF_NODE_PREFIX}官方\""
-
-# xhttp 聚合节点的 host 可以是 CDN 优选 IP（连接地址），HTTP Host 头必须跟 sni（回源域名）一致，
-# 否则请求到边缘会被当成直连 IP 访问拒掉（403 Direct IP Access Denied）。
-cdn_apply_subscription_config '{"allowedTokens":{"owner":"agg-owner-token-1"},"nodes":[{"type":"vless","security":"tls","network":"xhttp","name":"优选IP节点","host":"198.51.100.7","uuid":"33333333-3333-4333-8333-333333333333","sni":"cf.example.com","path":"/agg-ip/","mode":"stream-up"}]}' \
-    || fail_test "aggregation: xhttp node with preferred-IP host must validate"
-ip_links=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_node_links)
-assert_contains "aggregation: xhttp link keeps the IP as server address" \
-    "${ip_links}" "@198.51.100.7:443?"
-assert_contains "aggregation: xhttp Host header follows sni" \
-    "${ip_links}" "host=cf.example.com"
-assert_not_contains "aggregation: xhttp Host header is never the IP" \
-    "${ip_links}" "host=198.51.100.7"
-ip_mihomo=$(EASY_ALL_INCLUDE_OPTIONAL=0 aggregation_mihomo_nodes)
-assert_contains "aggregation: mihomo xhttp server stays the IP" \
-    "${ip_mihomo}" 'server: "198.51.100.7"'
-assert_contains "aggregation: mihomo xhttp host stays the sni" \
-    "${ip_mihomo}" 'host: "cf.example.com"'
-cdn_apply_subscription_config "${agg_config}" \
-    || fail_test "aggregation: restore test config"
-
-proxy_names_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_names)
-proxy_names_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_proxy_names)
-assert_contains "aggregation: PROXY group gets non-optional nodes" "${proxy_names_default}" "另一台XHTTP"
-assert_not_contains "aggregation: PROXY group hides optional nodes by default" \
-    "${proxy_names_default}" "备用Mieru"
-assert_contains "aggregation: node=all PROXY group includes optional nodes" \
-    "${proxy_names_all}" "备用Mieru"
-# PROXY 的固定顺序：本机直连 → 聚合节点（字典里的名字）→ CDN-FALLBACK
-# （CDN-FALLBACK = CDN-AUTO 测速组优先，全部不可用时落到官方调度的 CDN 域名节点。）
-assert_equal "aggregation: PROXY order is direct, aggregated, CDN-FALLBACK" \
-    "$(printf '%s\n' "${DIRECT_NODE_NAME}" "另一台Reality" "另一台XHTTP" "CDN-FALLBACK")" \
-    "$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_names | sed -n 's/^        - "\(.*\)"$/\1/p')"
-groups_default=$(EASY_ALL_INCLUDE_OPTIONAL=0 build_mihomo_proxy_groups)
-groups_all=$(EASY_ALL_INCLUDE_OPTIONAL=1 build_mihomo_proxy_groups)
-assert_contains "aggregation: CDN-AUTO group has group definition" \
-    "${groups_default}" "name: CDN-AUTO"
-assert_contains "aggregation: CDN-FALLBACK group has group definition" \
-    "${groups_default}" "name: CDN-FALLBACK"
-assert_contains "aggregation: CDN-FALLBACK is a fallback group" \
-    "${groups_default}" "type: fallback"
-assert_contains "aggregation: CDN-FALLBACK official node is the CDN domain" \
-    "${groups_default}" "        - \"${CF_NODE_PREFIX}官方\""
-assert_not_contains "aggregation: CDN-AUTO never lists the official domain node" \
-    "$(awk '/name: CDN-AUTO/{p=1}/name: CDN-FALLBACK/{p=0}p' <<<"${groups_default}")" \
-    "${CF_NODE_PREFIX}官方"
-assert_not_contains "aggregation: CDN-AUTO group never includes direct node" \
-    "${groups_default}" "${DIRECT_NODE_NAME}"
-assert_not_contains "aggregation: CDN-AUTO group never includes aggregated nodes" \
-    "${groups_default}" "另一台XHTTP"
-assert_not_contains "aggregation: node=all keeps optional nodes out of CDN-AUTO" \
-    "${groups_all}" "备用Mieru"
-if (
-    cdn_cf_candidates() { :; }
-    build_mihomo_proxy_groups
-) >/dev/null 2>&1; then
-    fail_test "aggregation: CDN-AUTO must refuse to render without preferred IPs"
+# --- 15. 两云失败：CF 冲突记录与 AWS 失败都明确失败且不破坏本机 ----------------
+cloudflare_record_list() {
+    printf '[{"id":"rec-1","type":"A","content":"203.0.113.9","proxied":false,"comment":"someone-else"}]'
+}
+cloudflare_api_request() { printf 'cf %s\n' "$*" >>"${TMP_DIR}/cf-calls"; return 0; }
+: >"${TMP_DIR}/cf-calls"
+(dns_ensure_record "${CF_ORIGIN_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false) >/dev/null 2>&1 \
+    && fail_test "第三方同名记录必须拒绝覆盖"
+[[ ! -s "${TMP_DIR}/cf-calls" ]] || fail_test "拒绝覆盖时不得调用 Cloudflare 写 API"
+cloudflare_record_list() {
+    printf '[{"id":"rec-2","type":"A","content":"203.0.113.9","proxied":true,"comment":""}]'
+}
+if conflict_output=$(dns_ensure_record "${CF_NODE_DOMAIN}" CNAME "${AWS_CLOUDFRONT_DOMAIN}" false 2>&1); then
+    fail_test "旧 A 记录不得自动转换成 CNAME"
 fi
-if (
-    cdn_cf_ip_node_names() { printf ''; }
-    build_mihomo_proxy_groups
-) >/dev/null 2>&1; then
-    fail_test "aggregation: CDN-AUTO must refuse to render with empty names"
-fi
+assert_contains "旧 A → CNAME 冲突必须提示清理" "${conflict_output}" \
+    "已有其他类型的记录（A）；请先清理冲突记录后重装"
+# 同名 AAAA/TXT 与 A 可以共存，跨类型检查不能过严而拒绝合法安装。
+cloudflare_record_list() {
+    printf '[{"id":"rec-3","type":"AAAA","content":"2001:db8::1","proxied":false,"comment":""}]'
+}
+: >"${TMP_DIR}/cf-calls"
+(dns_ensure_record "${CF_ORIGIN_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false) >/dev/null 2>&1 \
+    || fail_test "同名 AAAA 不得阻止创建 A 记录"
+assert_contains "A 与 AAAA 同名时创建 A 记录" "$(<"${TMP_DIR}/cf-calls")" "POST /zones/"
+unset -f cloudflare_record_list cloudflare_api_request
+
+before_ids="$(printf '%s|%s' "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${AWS_ACM_CERTIFICATE_ARN}")"
 (
-    AGGREGATION_NODES='[]'
-    pure_proxy_names=$(build_mihomo_proxy_names)
-    pure_groups=$(build_mihomo_proxy_groups)
-    assert_contains "pure: PROXY lists direct first" \
-        "${pure_proxy_names}" "        - \"${DIRECT_NODE_NAME}\""
-    assert_contains "pure: PROXY lists CDN-FALLBACK" \
-        "${pure_proxy_names}" "        - \"CDN-FALLBACK\""
-    assert_not_contains "pure: PROXY never contains individual CDN nodes" \
-        "${pure_proxy_names}" "CF"
-    assert_contains "pure: CDN-AUTO group name" \
-        "${pure_groups}" "name: CDN-AUTO"
-    assert_not_contains "pure: CDN-AUTO never contains direct node" \
-        "${pure_groups}" "${DIRECT_NODE_NAME}"
-    line_count=$(grep -c '^[[:space:]]*- ' <<<"${pure_proxy_names}")
-    assert_equal "pure: PROXY has exactly 2 entries (direct and CDN-FALLBACK)" "2" "${line_count}"
-    first_line=$(grep '^[[:space:]]*- ' <<<"${pure_proxy_names}" | sed -n '1p')
-    second_line=$(grep '^[[:space:]]*- ' <<<"${pure_proxy_names}" | sed -n '2p')
-    assert_contains "pure: first entry is direct node" "${first_line}" "${DIRECT_NODE_NAME}"
-    assert_contains "pure: second entry is CDN-FALLBACK" "${second_line}" "CDN-FALLBACK"
-) || fail_test "pure combined mihomo groups validation failed"
-aggregation_roundtrip=$(
-    cdn_apply_subscription_config "${agg_config}" >/dev/null 2>&1
-    save_state
-    load_state >/dev/null 2>&1
-    jq -r 'length' <<<"${AGGREGATION_NODES}"
-)
-assert_equal "aggregation: config survives state roundtrip" "3" "${aggregation_roundtrip}"
+    aws_cli() { return 1; }
+    aws() { return 1; }
+    configure_cloudfront_distribution
+) >/dev/null 2>&1 && fail_test "AWS 读取失败必须非零"
+assert_equal "AWS 失败不改写已记录的分发/证书 ID" "${before_ids}" \
+    "$(printf '%s|%s' "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${AWS_ACM_CERTIFICATE_ARN}")"
+assert_contains "AWS 失败保留云端资源提示" \
+    "$( ( aws_cli() { return 1; }; configure_cloudfront_distribution ) 2>&1 || true)" \
+    "已保留现有云端资源"
 
-# 双份订阅产物：默认版与 node=all 版
+# apply-cloud 在任一云失败时不得落盘新状态
+state_bytes=$(<"${STATE_FILE}")
 (
-    export SUBSCRIPTION_OPTIONAL_VARIANTS=1
-    write_subscriptions
-) || fail_test "aggregation: write_subscriptions must produce both variants"
-for artifact in base64.txt base64-all.txt mihomo.yaml mihomo-all.yaml mihomo-ios.yaml mihomo-ios-all.yaml; do
-    [[ -s "${SUBSCRIPTION_DIR}/${artifact}" ]] \
-        || fail_test "aggregation: missing subscription artifact ${artifact}"
-done
-default_b64=$(openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64.txt" || true)
-all_b64=$(openssl base64 -d -A <"${SUBSCRIPTION_DIR}/base64-all.txt" || true)
-assert_not_contains "aggregation: default base64 hides optional node" \
-    "${default_b64}" "m.example.com"
-assert_contains "aggregation: node=all base64 includes optional node" \
-    "${all_b64}" "m.example.com"
-assert_contains "aggregation: mihomo-all carries optional node" \
-    "$(<"${SUBSCRIPTION_DIR}/mihomo-all.yaml")" "备用Mieru"
-mihomo_rendered=$(<"${SUBSCRIPTION_DIR}/mihomo.yaml")
-assert_contains "render: mihomo has CDN-AUTO group" "${mihomo_rendered}" "name: CDN-AUTO"
-assert_contains "render: mihomo has CDN-FALLBACK group" "${mihomo_rendered}" "name: CDN-FALLBACK"
-proxy_block=$(awk '/^[[:space:]]*- name: PROXY/{p=1;next}/^[[:space:]]*- name:/{p=0}p' <<<"${mihomo_rendered}")
-assert_not_contains "render: PROXY does not include individual CF nodes directly" \
-    "${proxy_block}" "CF"
-cdn_auto_block=$(awk '/^[[:space:]]*- name: CDN-AUTO/{p=1;next}/^[[:space:]]*- name:/{p=0}p' <<<"${mihomo_rendered}")
-assert_not_contains "render: CDN-AUTO group never contains direct node" \
-    "${cdn_auto_block}" "${DIRECT_NODE_NAME}"
+    configure_tcp_acceleration() { :; }
+    configure_ipv4_only() { :; }
+    xhttp_configure_ufw() { :; }
+    cdn_traffic_protection_checkpoint() { return 0; }
+    cloudflare_collect_api_token() { :; }
+    persist_cloudflare_token() { :; }
+    cdn_prepare_origin_dns() { return 1; }
+    require_root() { :; }
+    acquire_runtime_write_lock() { :; }
+    apply_cloud_resources
+) >/dev/null 2>&1 && fail_test "Cloudflare DNS 失败必须非零"
+assert_equal "云失败不改写本机状态" "${state_bytes}" "$(<"${STATE_FILE}")"
 
-# show_subscription 只在实际存在 optional 节点时提示 node=all（与 Reality 侧同一断言）。
-# 这里的 SUBSCRIPTION_OPTIONAL_VARIANTS=1 只声明“存在两份产物”，不代表真的有 optional 节点。
-base_hint_out=$(
-    collect_installed_state() { :; }
-    show_node() { :; }
-    ALLOWED_TOKENS='{"owner":"token-init-12345"}'
-    SUBSCRIPTION_MODE="deploy" SUB_DOWNLOAD_NAME="EASYALL" SUBSCRIPTION_DOMAIN="sub.example.com"
-    AGGREGATION_NODES='[{"type":"vless","name":"聚合节点","host":"r.example.com","port":8443,"security":"reality","network":"tcp","uuid":"22222222-2222-4222-8222-222222222222","sni":"www.example.com","pbk":"PUBKEY-abc_123","sid":"0123456789abcdef"}]'
-    show_subscription
-)
-assert_not_contains "hint: no node=all hint without optional nodes" \
-    "${base_hint_out}" "node=all"
-optional_hint_out=$(
-    collect_installed_state() { :; }
-    show_node() { :; }
-    ALLOWED_TOKENS='{"owner":"token-init-12345"}'
-    SUBSCRIPTION_MODE="deploy" SUB_DOWNLOAD_NAME="EASYALL" SUBSCRIPTION_DOMAIN="sub.example.com"
-    AGGREGATION_NODES='[{"type":"mieru","name":"备用Mieru","host":"m.example.com","portRange":"50000-50512","username":"agguser","password":"agg-password-12345","optional":true}]'
-    show_subscription
-)
-assert_contains "hint: node=all is advertised when an optional node exists" \
-    "${optional_hint_out}" "node=all"
+# --- 16. 卸载通道 ------------------------------------------------------------
+legacy_state="${TMP_DIR}/legacy-state.env"
+cat >"${legacy_state}" <<EOF
+STATE_VERSION="0"
+PROTOCOL="combined"
+CLOUDFLARE_ZONE_ID="zone-legacy"
+CF_NODE_DOMAIN="cf-legacy.example.com"
+SUBSCRIPTION_DOMAIN="sub-legacy.example.com"
+DIRECT_DOMAIN="node-legacy.example.com"
+CLOUDFLARE_ORIGIN_CERT_ID="cert-legacy"
+EOF
+state_file_before="${STATE_FILE}"
+(
+    STATE_FILE=${legacy_state}
+    FORCE=1
+    require_root() { :; }
+    cdn_legacy_state_value() { sed -n "s/^$1=\"\(.*\)\"$/\1/p" "${STATE_FILE}"; }
+    cdn_local_uninstall_common() { printf 'LOCAL-CLEAN\n'; }
+    cdn_legacy_reclaim_origin_firewall_rules() { printf 'UFW-ORIGIN\n'; }
+    uninstall_legacy_cdn
+) >"${TMP_DIR}/legacy-uninstall.log" 2>&1 || fail_test "旧 combined 卸载通道必须可执行"
+assert_contains "旧 combined 卸载复用本机清理" "$(<"${TMP_DIR}/legacy-uninstall.log")" "LOCAL-CLEAN"
+assert_contains "旧 combined 卸载回收回源 UFW" "$(<"${TMP_DIR}/legacy-uninstall.log")" "UFW-ORIGIN"
+assert_contains "旧 combined 卸载提示重装" "$(<"${TMP_DIR}/legacy-uninstall.log")" "选择模式 2 或 3"
+assert_contains "旧 combined 默认保留云端资源" "$(<"${TMP_DIR}/legacy-uninstall.log")" "已保留"
+assert_equal "旧状态卸载不改写当前状态文件" "${state_file_before}" "${STATE_FILE}"
+: >"${TMP_DIR}/cf-legacy-calls.log"
+(
+    STATE_FILE=${legacy_state}
+    FORCE=1
+    require_root() { :; }
+    cdn_legacy_state_value() { sed -n "s/^$1=\"\(.*\)\"$/\1/p" "${STATE_FILE}"; }
+    cloudflare_collect_api_token() { :; }
+    cloudflare_clear_api_token() { :; }
+    # 实现把 DELETE 的响应重定向到 /dev/null（避免打印云端响应），所以桩函数记到独立调用日志。
+    cloudflare_api_request() { printf '%s\n' "$*" >>"${TMP_DIR}/cf-legacy-calls.log"; }
+    cloudflare_record_list() {
+        case "$3" in
+        cf-legacy.example.com | sub-legacy.example.com | node-legacy.example.com)
+            printf '[{"id":"r-%s","content":"x","comment":"easy_all combined"}]' "$3" ;;
+        *) printf '[]' ;;
+        esac
+    }
+    cdn_local_uninstall_common() { :; }
+    cdn_legacy_reclaim_origin_firewall_rules() { :; }
+    uninstall_legacy_cdn --purge-cloud
+) >"${TMP_DIR}/legacy-purge.log" 2>&1 || fail_test "旧 combined --purge-cloud 必须可执行"
+legacy_cf_calls=$(<"${TMP_DIR}/cf-legacy-calls.log")
+assert_contains "旧按注释删除 DNS（含直连域名）" "${legacy_cf_calls}" \
+    "dns_records/r-node-legacy.example.com"
+assert_contains "旧按 ID 吊销 Origin CA" "${legacy_cf_calls}" \
+    "DELETE /certificates/cert-legacy"
 
+# --- 17. 断点续装身份：全新进程只读磁盘 --------------------------------
+# 模拟中断：备份快照与 CHAIN=cloudfront marker 就位后，新 bash 进程只靠
+# install-identity.json 续装。identity 必须恢复输入默认值与所有已提交字段。
+install -m 0600 /dev/null "${BACKUP_DIR}/pre-install-complete"
+install_progress_begin combined cloudfront
+identity_before=$(<"${STATE_DIR}/install-identity.json")
 
-printf 'ok - combined render\n'
+resume_fields=$(EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_SCENARIO=resume-fields \
+    bash "${BASH_SOURCE[0]}" 2>&1) || fail_test "新进程续装必须成功：${resume_fields}"
+assert_equal "续装恢复源站密钥/UUID/路径/Reality 密钥/ARN/分发 ID" \
+    "FIELDS|${ORIGIN_HEADER_SECRET}|${VLESS_UUID}|${XHTTP_PATH}|${REALITY_PRIVATE_KEY}|${REALITY_PUBLIC_KEY}|arn:aws:acm:us-east-1:123456789012:certificate/new|${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
+    "$(grep -F 'FIELDS|' <<<"${resume_fields}")"
 
+resume_defaults=$(EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_SCENARIO=resume-defaults \
+    bash "${BASH_SOURCE[0]}" 2>&1) || fail_test "续装输入默认值必须成功：${resume_defaults}"
+assert_contains "续装后的输入默认值来自恢复身份" "${resume_defaults}" \
+    "RESULT|${CF_ZONE}|${CF_ORIGIN_DOMAIN}|${CF_NODE_DOMAIN}|${SUBSCRIPTION_DOMAIN}|${DIRECT_DOMAIN}|${DIRECT_NODE_NAME}|${REALITY_TARGET}|${SUB_DOWNLOAD_NAME}|${VPS_PUBLIC_IPV4}|${SCHEDULED_REBOOT_ENABLED}|${SCHEDULED_REBOOT_HOUR}"
+# 续装不重新提示重启策略，直接复用身份里的选择。
+install_body=$(awk '/^install_all\(\)/,/^}/' "${CORE}")
+assert_contains "续装复用已保存的重启选择" "${install_body}" \
+    "refresh_saved_daily_reboot_schedule"
 
+# 中断在 core 之后、云端之前：ARN/分发 ID 为空也要恢复同一套本机身份
+jq -c '.aws_acm_certificate_arn="" | .aws_cloudfront_distribution_id="" | .aws_cloudfront_domain=""' \
+    <<<"${identity_before}" >"${STATE_DIR}/install-identity.json"
+chmod 0600 "${STATE_DIR}/install-identity.json"
+resume_core=$(EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_SCENARIO=resume-fields \
+    bash "${BASH_SOURCE[0]}" 2>&1) || fail_test "core 阶段中断后的续装必须成功：${resume_core}"
+assert_equal "core 中断后续装仍复用同一套本机身份" \
+    "FIELDS|${ORIGIN_HEADER_SECRET}|${VLESS_UUID}|${XHTTP_PATH}|${REALITY_PRIVATE_KEY}|${REALITY_PUBLIC_KEY}||" \
+    "$(grep -F 'FIELDS|' <<<"${resume_core}")"
+
+# identity 缺 chain / 协议不符：拒绝续装，而不是仅告警后继续
+jq -c 'del(.chain)' <<<"${identity_before}" >"${STATE_DIR}/install-identity.json"
+chmod 0600 "${STATE_DIR}/install-identity.json"
+reject_chain=$(EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_SCENARIO=resume-plain \
+    bash "${BASH_SOURCE[0]}" 2>&1) && fail_test "identity 缺 chain 必须拒绝续装"
+assert_contains "缺 chain 的 identity 明确拒绝续装" "${reject_chain}" "无法安全续装"
+
+jq -c '.protocol="cloudfront"' <<<"${identity_before}" >"${STATE_DIR}/install-identity.json"
+chmod 0600 "${STATE_DIR}/install-identity.json"
+reject_protocol=$(EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_SCENARIO=resume-plain \
+    bash "${BASH_SOURCE[0]}" 2>&1) && fail_test "identity 协议不符必须拒绝续装"
+assert_contains "协议不符的 identity 明确拒绝续装" "${reject_protocol}" "无法安全续装"
+
+# 恢复完整身份，避免影响后续用例
+printf '%s\n' "${identity_before}" >"${STATE_DIR}/install-identity.json"
+chmod 0600 "${STATE_DIR}/install-identity.json"
+EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_SCENARIO=resume-plain \
+    bash "${BASH_SOURCE[0]}" >/dev/null 2>&1 || fail_test "完整身份必须可以续装"
+
+printf 'ok - combined (direct Reality + CloudFront) profile\n'

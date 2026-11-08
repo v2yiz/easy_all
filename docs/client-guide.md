@@ -32,25 +32,29 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 客户端（它们会自行发送该密钥交换）。聚合配置里指向 Xray 低于 26.9.8 的 Reality 节点需设置
 `supportX25519Mlkem768: false`。
 
-Cloudflare 精选 IP 订阅按 Mihomo 的配置格式和 XHTTP 能力生成。客户端必须能分别保存：
+CloudFront（模式 2/3）订阅按 Mihomo 的配置格式和 XHTTP 能力生成。本机 CDN 节点只有**一个**，
+名称默认 `🇺🇸AWS`（安装时可改），连接参数固定为：
 
-- Cloudflare IPv4 节点地址；
-- TLS SNI；
-- HTTP Host；
-- VPS 节点的 XHTTP `stream-up` 参数。
+- 节点地址（server）、TLS SNI 与 HTTP Host 都是同一个 CloudFront 节点域名（如 `cf.example.com`），不是 IP；
+- 端口 `443`、TLS 校验开启、ALPN `h2`；
+- 传输为 XHTTP `stream-up`（包含 `noGRPCHeader`/`xmux` 等既有参数）。
+
+注意区分两套证书：客户端只校验 CloudFront 的 viewer 证书（AWS ACM），源站用的是独立的
+Let's Encrypt 证书，源站头密钥 `X-Easy-All-Origin-Key` 只存在于服务器与分发之间，不会下发到订阅。
 
 “能导入”不代表所有节点都能连接。Shadowrocket 的更新记录虽然包含 XHTTP 和
 `stream-up` 修复，但未逐项确认上述字段的完整兼容性，因此目前不把 Shadowrocket 列为
-本项目的已验证客户端。
+本项目的已验证客户端。旧版订阅里的 Cloudflare 优选 IP 节点已不再生成，升级或重装后请在客户端**重新导入**新链接
+（重装会产生新的 UUID、路径与 Token）。
 
 ## 客户端分流与节点分组
 
 日常使用“规则”模式即可。订阅会自动让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
 - **直连 Reality**：部署订阅时 `PROXY` 分组依次是本机 Reality 节点与聚合配置 `nodes` 里的节点（名字原样使用）。默认只下发不带 `optional` 的聚合节点，在订阅链接后追加 `&node=all` 可显示全部；选择“仅节点”时不下发订阅，只输出本机节点信息。
-- **纯 CDN（模式 2）**：没有直连节点。`PROXY` 分组按固定顺序包含「聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-FALLBACK` 兜底组」。
-- **直连+CDN（模式 3）**：`PROXY` 分组按固定顺序包含「本机直连节点（如 `🇺🇸直连`）→ 聚合节点（来自订阅配置 JSON 的 `nodes`）→ `CDN-FALLBACK` 兜底组」。
-- **CDN 分组**：`CDN-AUTO` 是内置的 `url-test` 测速组，只放 6 个 Cloudflare 优选 IP 节点（优选 IP 不平铺进 `PROXY`）；`CDN-FALLBACK` 是 `fallback` 兜底组，先选 `CDN-AUTO`，只有 6 个优选 IP 全部不可用时才切到连接 `cf.<zone>` 的「官方」节点——该节点不写死 IP，由 Cloudflare 官方 Anycast 调度决定边缘。日常直接选择直连节点（仅模式 3）或 `CDN-FALLBACK` 即可自动测速与兜底。
-- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表（直连 Reality 节点（仅模式 3）→ 6 个 Cloudflare 优选 IP 节点 → 官方域名调度兜底节点 → 外部聚合节点）。
+- **纯 CDN（模式 2）**：没有直连节点。`PROXY` 分组按固定顺序包含「本机 CloudFront 节点（默认 `🇺🇸AWS`）→ 聚合节点（来自订阅配置 JSON 的 `nodes`，原顺序）」。
+- **直连+CDN（模式 3）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机 CloudFront 节点（默认 `🇺🇸AWS`）→ 聚合节点」。CDN 与直连之间**手动切换**：没有自动测速、没有自动兜底组。
+- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 2 是 CloudFront 节点 → 聚合节点；模式 3 是直连 Reality 节点 → CloudFront 节点 → 聚合节点。
+- **熔断期间的节点**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Nginx XHTTP 返回 `503`、Xray 清空该入站）。模式 3 此时手动切到直连节点即可继续使用；模式 2 只能等 UTC 次月或按运维指南收敛后再试。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
@@ -114,7 +118,7 @@ FCM 域名返回真实 IP（COMMON 内联 12 个 mtalk 端点，经典模板使�
 （局域网仍直连），避免无域名的推送连接落入国内 IP 直连规则。FCM 的 443 回退和注册请求
 继续使用现有 Google 代理规则及代理 DNS。
 
-更新服务器订阅规则后，在客户端刷新订阅并重启代理内核。安装器部署的订阅按[运维指南](operations-guide.md#更新与应用)
+更新服务器订阅规则后，在客户端刷新订阅并重启代理内核。安装器部署的订阅按[运维指南](operations-guide.md)
 运行 `self-update` 和 `edit-sub` 即可重新渲染。
 
 Bettbox 还需检查以下设置（订阅无法替客户端修改这些开关）：
@@ -194,11 +198,11 @@ Auth0、Stripe、Intercom 等服务仍整体代理，可按实际日志收窄 `p
 sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common.yaml easy_all edit-sub
 ```
 
-改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。部署订阅（`deploy`）模式下
-`apply` 会再要一次 Cloudflare API Token（仍不落盘，仅本次进程使用）；非交互执行时改用
+改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。模式 2/3 的 `apply`
+**只重建本机与订阅**，不访问 Cloudflare/AWS，也不会因此回车要凭据；模式 1 的 `deploy` 订阅仍会再要一次
+Cloudflare API Token（仍不落盘，仅本次进程使用），非交互执行时改用
 `sudo CLOUDFLARE_API_TOKEN=... MIHOMO_TEMPLATE_SOURCE=... easy_all apply`。自定义模板路径
-同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板已在 CI 用固定
-内核校验，其他来源仍须在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`。`sniffer` 段必须写成块映射
+同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板的结构校验（MRS/DNS/IPv4/sniffer、`PROXY` 成员与 `GLOBAL` 引用、无额外分组等）由 `npm test` 覆盖，但仓库 CI 没有安装 Mihomo 内核，**真实内核 `-t` 未在 CI 执行**：`validate_mihomo_template` 在 bundled/trusted 模板且无内核时直接成功，不能当作内核验收。如仍需验证真实内核，请在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`（真实验证需另行准备内核与规则数据）。`sniffer` 段必须写成块映射
 （`sniffer:` 独占一行），写成内联映射时安装会直接报错——iOS 下发需要按段剔除它。
 `sniffer` 段可以放在任意顶层位置：剥离只删本段内容，顶格注释与 Reality 终止标记都会保留。
 选中的模板会保存在服务器上，后续 `apply`、`edit-sub` 与重启后的端口刷新沿用同一模板。
@@ -227,7 +231,10 @@ https://1.1.1.1/dns-query
 | FlClash | 设置 → 网络 / DNS → 覆写 DNS |
 | Clash Meta for Android | 设置 → 覆写 → DNS 覆写 |
 
-两种 CDN 模式的订阅固定提供 6 个 Cloudflare 优选 IPv4 节点，另有 `CDN-FALLBACK` 里的域名节点
-（连接 `cf.<zone>`，走 Cloudflare 官方调度）作为兜底。订阅能够更新但节点无法连接时，先在客户端选择
-`CDN-FALLBACK` 或手动选中「…官方」节点，排除优选 IP 整体被阻断的可能；仍不通再确认客户端确实支持
-Mihomo XHTTP，并检查 Cloudflare Zone 的 gRPC 开关。
+模式 2/3 的订阅只包含**一个**本机 CloudFront 节点（连接节点域名，由 AWS 全球 Anycast 调度决定边缘），
+没有优选 IP、测速组或自动兜底组。订阅能够更新但节点无法连接时，按顺序排查：
+
+1. 确认客户端支持 Mihomo XHTTP 与 `stream-up`（建议内核 ≥ 1.19.9）；
+2. 模式 3 先在 `PROXY` 里手动切到直连 Reality 节点，确认是不是 CDN 入口单独不通；
+3. 运行 `sudo easy_all status`：CDN 用量若已到 985 GB 或显示 `protection_offline`，节点会被阻断到 UTC 次月；
+4. 仍不通再检查云端：节点域名 CNAME 是否指向分发、分发与 ACM 是否就绪（必要时 `sudo easy_all apply-cloud`）。

@@ -1,11 +1,8 @@
 # Files installed as the easy_all runtime.
 profiles/reality.sh
-profiles/cdn.sh
 lib/log.sh
 lib/runtime-core.sh
 lib/xhttp-runtime.sh
-lib/globalping-cdn.sh
-lib/cloudflare-ip-pool.sh
 lib/platform.sh
 lib/profile-common.sh
 lib/network.sh
@@ -23,6 +20,9 @@ templates/mihomo-common.yaml
 templates/mihomo-classic.yaml
 profiles/combined.sh
 lib/cf-dns.sh
-lib/cloudflare-mode.sh
+lib/cloudfront-state.sh
+lib/cloudfront-mode.sh
 lib/reality-target.sh
 lib/cloudflare-purge.sh
+profiles/cloudfront.sh
+lib/cdn-traffic-guard.sh

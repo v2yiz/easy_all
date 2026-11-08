@@ -71,6 +71,7 @@ cleanup_files=()
 ((RUNTIME_TMP_CREATED == 0)) || cleanup_files=("${RUNTIME_TMP}")
 INSTALL_ROLLBACK_ON_EXIT=0
 UPDATE_SUB_ROLLBACK_ON_EXIT=0
+UPDATE_SUB_ROLLBACK_NO_RESTART=0
 UPDATE_SUB_BACKUP_DIR=""
 MIHOMO_TEMPLATE_FILE=""
 
@@ -108,6 +109,10 @@ cleanup() {
     while ((RUNTIME_WRITE_LOCK_DEPTH > 0)); do
         release_runtime_write_lock || break
     done
+    # 凭据只允许存在于内存：成功、失败、EXIT、INT/TERM 都走同一清理钩子。
+    if declare -F clear_profile_credentials >/dev/null 2>&1; then
+        clear_profile_credentials || true
+    fi
     for path in "${cleanup_files[@]:-}"; do
         [[ -n "${path}" ]] && rm -rf -- "${path}"
     done
@@ -119,8 +124,9 @@ trap cleanup EXIT
 # any running job to finish (including its own rollback) before deleting files.
 stop_maintenance_services() {
     command -v systemctl >/dev/null 2>&1 || return 0
-    systemctl stop easy_all-globalping-refresh.service \
-        2>/dev/null || true
+    # 先停 timer 再停 oneshot service：否则 timer 可能在删除过程中重新拉起任务。
+    systemctl stop easy_all-cdn-traffic-guard.timer 2>/dev/null || true
+    systemctl stop easy_all-cdn-traffic-guard.service 2>/dev/null || true
 }
 
 uri_encode() {
@@ -144,6 +150,14 @@ update_current_core() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    if declare -F cdn_traffic_needs_restricted_recovery >/dev/null 2>&1 \
+        && cdn_traffic_needs_restricted_recovery; then
+        die "CDN 流量保护仍待落实；请先执行 sudo easy_all cdn-traffic-sync（订阅损坏先 edit-sub，证书故障先 renew-cert）再更新核心"
+    fi
+    if declare -F cdn_traffic_protection_checkpoint >/dev/null 2>&1; then
+        cdn_traffic_protection_checkpoint \
+            || die "流量 checkpoint 产生待落实的 CDN 阻断状态；已中止核心更新，请先运行 sudo easy_all cdn-traffic-sync"
+    fi
     install -m 0755 "${XRAY_BIN}" "${backup_bin}"
     install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
     if [[ -f "${XRAY_DIR}/version" ]]; then

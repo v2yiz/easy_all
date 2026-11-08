@@ -351,7 +351,7 @@ install_progress_set() {
 }
 
 install_progress_begin() {
-    local profile=$1 file dir
+    local profile=$1 chain=${2:-} file dir
     file=$(install_progress_file)
     dir=$(dirname -- "${file}")
     if ! install -d -m 0700 "${dir}" 2>/dev/null; then
@@ -360,6 +360,7 @@ install_progress_begin() {
     fi
     {
         printf 'PROFILE=%s\n' "${profile}"
+        [[ -z "${chain}" ]] || printf 'CHAIN=%s\n' "${chain}"
         printf 'STAGE=start\n'
         printf 'STARTED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'UPDATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -633,7 +634,7 @@ assert_install_ports_free() {
 profile_script_for() {
     case "${1:-}" in
     reality) printf 'reality.sh' ;;
-    cdn) printf 'cdn.sh' ;;
+    cloudfront) printf 'cloudfront.sh' ;;
     combined) printf 'combined.sh' ;;
     *) return 1 ;;
     esac
@@ -679,32 +680,73 @@ install_identity_file() {
 }
 
 persist_install_identity() {
-    local file tmp
+    local file tmp chain
     file=$(install_identity_file)
     [[ -d "${file%/*}" ]] || return 0
     tmp=$(mktemp "${file}.XXXXXX") || return 1
+    chain=$(install_progress_field CHAIN 2>/dev/null || true)
     if jq -n \
+        --arg profile "${CDN_PROFILE_KEY:-${EASY_ALL_SELECTED_MODE:-}}" \
+        --arg protocol "${PROTOCOL:-}" \
+        --arg chain "${chain}" \
+        --arg vps_ipv4 "${VPS_PUBLIC_IPV4:-}" \
+        --arg cf_zone "${CF_ZONE:-}" \
+        --arg cf_origin "${CF_ORIGIN_DOMAIN:-}" \
+        --arg cf_node "${CF_NODE_DOMAIN:-}" \
+        --arg subscription_domain "${SUBSCRIPTION_DOMAIN:-}" \
+        --arg origin_secret "${ORIGIN_HEADER_SECRET:-}" \
         --arg uuid "${VLESS_UUID:-}" \
         --arg xhttp "${XHTTP_PATH:-}" \
         --arg websocket "${WEBSOCKET_PATH:-}" \
+        --arg node_prefix "${CF_NODE_PREFIX:-}" \
+        --arg sub_name "${SUB_DOWNLOAD_NAME:-}" \
+        --arg protection_gb "${CDN_TRAFFIC_PROTECTION_GB:-}" \
+        --arg dist_id "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}" \
+        --arg dist_domain "${AWS_CLOUDFRONT_DOMAIN:-}" \
+        --arg acm_arn "${AWS_ACM_CERTIFICATE_ARN:-}" \
         --arg owner "${OWNER_TOKEN:-}" \
         --arg tokens "${ALLOWED_TOKENS:-}" \
         --arg subscription_config "${SUBSCRIPTION_CONFIG:-}" \
+        --arg direct_domain "${DIRECT_DOMAIN:-}" \
+        --arg direct_name "${DIRECT_NODE_NAME:-}" \
+        --arg reality_target "${REALITY_TARGET:-}" \
         --arg reality_key "${REALITY_PRIVATE_KEY:-}" \
         --arg reality_public "${REALITY_PUBLIC_KEY:-}" \
         --arg reality_short "${REALITY_SHORT_ID:-}" \
+        --arg reboot_enabled "${SCHEDULED_REBOOT_ENABLED:-}" \
+        --arg reboot_hour "${SCHEDULED_REBOOT_HOUR:-}" \
         --arg cf_cert "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
         --arg cf_expires "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" \
         '{
+            profile: $profile,
+            protocol: $protocol,
+            chain: $chain,
+            vps_public_ipv4: $vps_ipv4,
+            cf_zone: $cf_zone,
+            cf_origin_domain: $cf_origin,
+            cf_node_domain: $cf_node,
+            subscription_domain: $subscription_domain,
+            origin_header_secret: $origin_secret,
             vless_uuid: $uuid,
             xhttp_path: $xhttp,
             websocket_path: $websocket,
+            cf_node_prefix: $node_prefix,
+            sub_download_name: $sub_name,
+            cdn_traffic_protection_gb: $protection_gb,
+            aws_cloudfront_distribution_id: $dist_id,
+            aws_cloudfront_domain: $dist_domain,
+            aws_acm_certificate_arn: $acm_arn,
             owner_token: $owner,
             allowed_tokens: $tokens,
             subscription_config: $subscription_config,
+            direct_domain: $direct_domain,
+            direct_node_name: $direct_name,
+            reality_target: $reality_target,
             reality_private_key: $reality_key,
             reality_public_key: $reality_public,
             reality_short_id: $reality_short,
+            scheduled_reboot_enabled: $reboot_enabled,
+            scheduled_reboot_hour: $reboot_hour,
             cloudflare_origin_cert_id: $cf_cert,
             cloudflare_origin_cert_expires_on: $cf_expires
         }' >"${tmp}"; then
@@ -726,10 +768,23 @@ load_install_identity() {
     [[ "$(jq -r 'type' "${file}" 2>/dev/null)" == "object" ]] || return 1
     for pair in \
         VLESS_UUID:vless_uuid XHTTP_PATH:xhttp_path WEBSOCKET_PATH:websocket_path \
+        VPS_PUBLIC_IPV4:vps_public_ipv4 CF_ZONE:cf_zone \
+        CF_ORIGIN_DOMAIN:cf_origin_domain CF_NODE_DOMAIN:cf_node_domain \
+        SUBSCRIPTION_DOMAIN:subscription_domain \
+        ORIGIN_HEADER_SECRET:origin_header_secret CF_NODE_PREFIX:cf_node_prefix \
+        SUB_DOWNLOAD_NAME:sub_download_name \
+        CDN_TRAFFIC_PROTECTION_GB:cdn_traffic_protection_gb \
+        AWS_CLOUDFRONT_DISTRIBUTION_ID:aws_cloudfront_distribution_id \
+        AWS_CLOUDFRONT_DOMAIN:aws_cloudfront_domain \
+        AWS_ACM_CERTIFICATE_ARN:aws_acm_certificate_arn \
         OWNER_TOKEN:owner_token ALLOWED_TOKENS:allowed_tokens \
         SUBSCRIPTION_CONFIG:subscription_config \
+        DIRECT_DOMAIN:direct_domain DIRECT_NODE_NAME:direct_node_name \
+        REALITY_TARGET:reality_target \
         REALITY_PRIVATE_KEY:reality_private_key REALITY_PUBLIC_KEY:reality_public_key \
         REALITY_SHORT_ID:reality_short_id \
+        SCHEDULED_REBOOT_ENABLED:scheduled_reboot_enabled \
+        SCHEDULED_REBOOT_HOUR:scheduled_reboot_hour \
         CLOUDFLARE_ORIGIN_CERT_ID:cloudflare_origin_cert_id \
         CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:cloudflare_origin_cert_expires_on; do
         name=${pair%%:*}
@@ -741,17 +796,43 @@ load_install_identity() {
     return 0
 }
 
+# 断点续装前置：identity 必须存在，且 profile/protocol/chain 与本次安装链路完全一致。
+# 缺字段、错误 JSON 或跨链路身份一律返回非零，由调用方拒绝续装。
+install_identity_chain_matches() {
+    local file=$1 expected_profile=$2 expected_protocol=$3 expected_chain=$4
+    [[ -s "${file}" ]] || return 1
+    jq -e --arg profile "${expected_profile}" --arg protocol "${expected_protocol}" \
+        --arg chain "${expected_chain}" '
+        type == "object" and
+        (.profile // "") == $profile and
+        (.protocol // "") == $protocol and
+        (.chain // "") == $chain
+    ' "${file}" >/dev/null 2>&1
+}
+
 # 续装：只停服务释放端口，不删配置/证书/状态，也不重新拍快照
 # （保留真正的安装前状态，后续再失败仍回滚到安装前，而不是回滚到半成品）。
 resume_partial_install() {
-    local backup_dir
+    local backup_dir chain
     backup_dir="$(install_state_dir_path)/backups"
     [[ -f "${backup_dir}/pre-install-complete" ]] \
         || die "上次安装前的快照不完整，无法安全续装；请执行 sudo easy_all cleanup-partial 后重装"
-    # 参数预检可能已经重新生成了 UUID/路径/Token；用落盘身份覆盖回去，保证已写进配置和
-    # 已下发订阅的节点参数不变。身份文件缺失（中断太早）时按新生成值继续。
-    load_install_identity \
-        || warn "没有可复用的安装身份（中断早于身份落盘），本次会使用新生成的值"
+    chain=$(install_progress_field CHAIN 2>/dev/null || true)
+    if [[ "${chain}" == "cloudfront" ]]; then
+        # CloudFront 链路的分发/证书与已下发订阅都只存在于磁盘身份里：身份缺失或不
+        # 一致时续装会用新值覆盖已创建资源，必须拒绝而不是仅告警。
+        install_identity_chain_matches "$(install_identity_file)" \
+            "${CDN_PROFILE_KEY:-${EASY_ALL_SELECTED_MODE:-}}" \
+            "${CDN_EXPECTED_PROTOCOL:-}" "${chain}" \
+            || die "上次 CloudFront 安装身份缺失或与链路不一致（profile/protocol/chain）；无法安全续装，请执行 sudo easy_all cleanup-partial 后重装"
+        load_install_identity \
+            || die "上次 CloudFront 安装身份无法读取；无法安全续装，请执行 sudo easy_all cleanup-partial 后重装"
+    else
+        # 参数预检可能已经重新生成了 UUID/路径/Token；用落盘身份覆盖回去，保证已写进配置和
+        # 已下发订阅的节点参数不变。身份文件缺失（中断太早）时按新生成值继续。
+        load_install_identity \
+            || warn "没有可复用的安装身份（中断早于身份落盘），本次会使用新生成的值"
+    fi
     systemctl stop "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
     systemctl stop nginx >/dev/null 2>&1 || true
     INSTALL_RESUME=1
@@ -782,9 +863,10 @@ prepare_fresh_install() {
             run_recorded_profile_cleanup "${recorded}" \
                 || die "按 ${recorded} 模式清理残留失败；请先执行 sudo easy_all cleanup-partial"
             success "残留已清理，继续安装"
-        elif [[ "${current}" == "cdn" || "${current}" == "combined" ]]; then
-            # 两种 Cloudflare 模式的所有步骤幂等（DNS 按注释复用、证书缓存复用），
-            # 可以保留上次已完成的本地配置/证书与云端资源，只停服务后从 packages 阶段重跑。
+        elif [[ "${current}" == "cloudfront" || "${current}" == "combined" ]] \
+            && [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "cloudfront" ]]; then
+            # CloudFront 核心只接受带 CHAIN=cloudfront 的同一键标记续装；旧 WIP 与旧橙云
+            # 标记没有该字段，只能清理后重装。模式 2 与模式 3 共用同一链路常量。
             if [[ -t 0 ]]; then
                 read_confirmation '继续上次安装（保留已完成的配置、证书与云端资源）？[Y/n]:' answer
                 if [[ -z "${answer}" || "${answer}" =~ ^[Yy]$ ]]; then
@@ -829,9 +911,6 @@ cleanup_partial_install_local() {
         systemctl disable --now "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
         systemctl disable --now nginx >/dev/null 2>&1 || true
     fi
-    if declare -F remove_globalping_refresh_timer >/dev/null 2>&1; then
-        remove_globalping_refresh_timer || true
-    fi
     if [[ -f "${backup_dir}/pre-install-complete" ]]; then
         if ! restore_install_snapshot; then
             warn "安装前快照未完全恢复；已停止残留服务，但未删除配置。请按上方提示核对后再重试"
@@ -860,8 +939,10 @@ cleanup_partial_install_files() {
 }
 
 restore_install_snapshot() {
-    # 两种 Profile 都用 lib/cf-dns.sh 的同一入口回收 Cloudflare 回源放行（端口与注释由各自 Profile 常量决定）。
-    if declare -F cloudflare_remove_origin_firewall_rules >/dev/null 2>&1; then
+    # 只有声明了 Cloudflare 回源注释的 Profile 才回收回源放行；新 CloudFront 核心虽然
+    # source cf-dns.sh，却没有旧回源常量，仅凭函数存在调用会在 set -u 下崩溃。
+    if [[ -n "${CLOUDFLARE_UFW_COMMENT:-}" ]] \
+        && declare -F cloudflare_remove_origin_firewall_rules >/dev/null 2>&1; then
         cloudflare_remove_origin_firewall_rules || true
     fi
     restore_platform_security_state || {

@@ -20,7 +20,7 @@ read_root_crontab() {
 
 configure_daily_reboot() {
     local mode=${REBOOT_SCHEDULE_MODE:-} hour=${REBOOT_HOUR:-} job current filtered
-    local pre_command="" profile_pre_command="" reboot_skip_message
+    local pre_command="" profile_pre_command="" reboot_skip_message locked_check locked_skip_message
     # 空标记会让 awk 过滤退化成“删掉所有行”，从而抹除管理员全部定时任务。
     [[ -n "${CRON_REBOOT_MARKER:-}" ]] \
         || die "CRON_REBOOT_MARKER 为空，已拒绝改写 root crontab"
@@ -63,12 +63,20 @@ configure_daily_reboot() {
         if [[ -n "${profile_pre_command}" ]]; then
             pre_command="${profile_pre_command}"
         fi
+        # 可选钩子：cron 最终取得写锁后只读复核保护状态，覆盖 pre-command 之后
+        # 再次进入停机/pending 的竞态。
+        locked_check=""
+        if declare -F scheduled_reboot_profile_locked_check_command >/dev/null 2>&1; then
+            locked_check=$(scheduled_reboot_profile_locked_check_command)
+        fi
         # 抢不到写锁（安装/更新正在写运行时）时本轮不重启，只用 logger 留痕；
         # FD 8 是 cron 行内独立打开的描述符，与 easy_all 进程持有的 FD 9 无关。
         # 不能在子 shell 里抢锁：子 shell 退出即释放，reboot 时已无锁可守。
         reboot_skip_message="easy_all 定时重启已跳过：运行时写锁不可用或正被占用"
+        locked_skip_message="easy_all 定时重启已跳过：CDN 流量保护处于停机/pending 或统计不可读"
         job="0 ${SCHEDULED_REBOOT_HOUR} * * * ( ${pre_command:-true} ) && "
-        job+="if exec 8>\"${RUNTIME_WRITE_LOCK_FILE}\" && flock -n 8; then /usr/sbin/reboot; "
+        job+="if exec 8>\"${RUNTIME_WRITE_LOCK_FILE}\" && flock -n 8; then "
+        job+="{ ${locked_check:-true}; } && /usr/sbin/reboot || logger -t easy_all '${locked_skip_message}'; "
         job+="else logger -t easy_all '${reboot_skip_message}'; fi ${CRON_REBOOT_MARKER}"
         # cron 把未转义的 % 当换行；转义必须覆盖最终命令里的所有可变片段
         # （预命令与运行时锁路径），所以整行最后统一转义一次。

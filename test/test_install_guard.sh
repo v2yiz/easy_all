@@ -155,6 +155,10 @@ assert_equal "clean host has no residue" "1" \
 # 6. 进度标记生命周期：写入、更新保留其他字段、清理删除目录
 install_progress_begin combined
 assert_equal "marker records profile" "combined" "$(install_progress_field PROFILE)"
+install_progress_begin cloudfront cloudfront
+assert_equal "marker records CloudFront chain" "cloudfront" "$(install_progress_field CHAIN)"
+assert_equal "marker records CloudFront profile" "cloudfront" "$(install_progress_field PROFILE)"
+install_progress_begin combined
 assert_equal "marker starts at start" "start" "$(install_progress_field STAGE)"
 install_progress_stage services
 assert_equal "marker stage advances" "services" "$(install_progress_field STAGE)"
@@ -311,7 +315,7 @@ rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
 # 13. 跨模式清理：profile 映射齐全，未知模式拒绝猜测
 assert_equal "reality maps to its profile" "reality.sh" "$(profile_script_for reality)"
-assert_equal "cdn maps to its profile" "cdn.sh" "$(profile_script_for cdn)"
+assert_equal "cloudfront maps to its profile" "cloudfront.sh" "$(profile_script_for cloudfront)"
 assert_equal "combined maps to its profile" "combined.sh" "$(profile_script_for combined)"
 assert_equal "unknown mode is rejected" "1" \
     "$(profile_script_for nope >/dev/null 2>&1 && echo 0 || echo 1)"
@@ -356,14 +360,15 @@ assert_not_contains "hint without marker does not promise cleanup-partial" \
 # 17. launcher 标记快照：模式与身份必须来自同一次读取
 mk_marker() {
     install -d -m 0700 "$(dirname "$1")"
-    printf 'PROFILE=%s\nSTAGE=packages\nSTARTED_AT=%s\n' "$2" "$3" >"$1"
+    printf 'PROFILE=%s\nCHAIN=cloudfront\nSTAGE=packages\nSTARTED_AT=%s\n' "$2" "$3" >"$1"
 }
 marker_file="${TMP_DIR}/identity/install-progress.env"
 absent=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
 assert_equal "identity is absent without marker" "absent" "${absent}"
 mk_marker "${marker_file}" combined "T1"
 present=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
-assert_equal "snapshot encodes mode, stage and start time" "present|combined|packages|T1" "${present}"
+assert_equal "snapshot encodes mode, chain, stage and start time" \
+    "present|combined|packages|T1|cloudfront" "${present}"
 mk_marker "${marker_file}" reality "T2"
 replaced=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
 [[ "${replaced}" != "${present}" ]] || fail "replaced marker must change identity"
@@ -563,5 +568,232 @@ confirm_out=$(printf 'n\n' | (
     printf '%s' "${answer}"
 ))
 assert_equal "confirmation: reads answer" "n" "${confirm_out}"
+
+# 27. 状态必需字段单一来源：launcher 分类与核心结构校验使用同一清单
+launcher_fields_combined=$(bash -c 'source "$1"; cloudfront_state_required_fields combined-cloudfront' \
+    _ "${ROOT_DIR}/easy_all")
+launcher_fields_plain=$(bash -c 'source "$1"; cloudfront_state_required_fields cloudfront' \
+    _ "${ROOT_DIR}/easy_all")
+for field in VPS_PUBLIC_IPV4 CF_NODE_PREFIX OWNER_TOKEN DIRECT_DOMAIN DIRECT_NODE_NAME \
+    REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID REALITY_TARGET; do
+    assert_contains "combined 模式必需字段包含 ${field}" "${launcher_fields_combined}" "${field}"
+done
+assert_not_contains "模式 2 必需字段不含直连字段" "${launcher_fields_plain}" "DIRECT_DOMAIN"
+assert_contains "两模式共同必需字段含 VPS_PUBLIC_IPV4" "${launcher_fields_plain}" "VPS_PUBLIC_IPV4"
+launcher_body=$(<"${ROOT_DIR}/easy_all")
+assert_contains "launcher 复用共享字段清单" "${launcher_body}" "cloudfront_state_required_fields"
+assert_not_contains "launcher 不再自带重复的必需字段列表" "${launcher_body}" \
+    "AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_CLOUDFRONT_DOMAIN"
+core_body=$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")
+assert_contains "核心结构校验复用共享字段清单" \
+    "$(awk '/^cdn_validate_state_structure\(\)/,/^}/' <<<"${core_body}")" \
+    'cloudfront_state_required_fields "${PROTOCOL}"'
+assert_not_contains "核心不再保留重复的必需字段函数" "${core_body}" "cdn_state_required_fields()"
+
+# launcher 分类：逐字段删除后必须判为不完整，完整状态仍判为完整
+write_state_fixture() { # $1=文件 $2=协议
+    local file=$1 protocol=$2 field
+    {
+        printf 'STATE_VERSION="0"\nPROTOCOL="%s"\nCDN_PROVIDER="aws"\n' "${protocol}"
+        for field in VPS_PUBLIC_IPV4 CF_ZONE CLOUDFLARE_ZONE_ID CF_ORIGIN_DOMAIN CF_NODE_DOMAIN \
+            SUBSCRIPTION_DOMAIN SUB_DOWNLOAD_NAME OWNER_TOKEN ALLOWED_TOKENS SUBSCRIPTION_CONFIG \
+            VLESS_UUID CF_NODE_PREFIX XHTTP_PATH ORIGIN_HEADER_SECRET \
+            AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_CLOUDFRONT_DOMAIN AWS_ACM_CERTIFICATE_ARN; do
+            printf '%s="值"\n' "${field}"
+        done
+        printf 'CDN_TRAFFIC_PROTECTION_GB="985"\n'
+        [[ "${protocol}" == "cloudfront" ]] || printf '%s\n' \
+            'DIRECT_DOMAIN="node.example.com"' 'DIRECT_NODE_NAME="n"' \
+            'REALITY_TARGET="t.example.com:443"' 'REALITY_PRIVATE_KEY="p"' \
+            'REALITY_PUBLIC_KEY="P"' 'REALITY_SHORT_ID="01"'
+    } >"${file}"
+}
+launcher_state_complete() {
+    bash -c 'source "$1"; launcher_cloudfront_state_complete "$2"' \
+        _ "${ROOT_DIR}/easy_all" "$1"
+}
+fixture_dir="${TMP_DIR}/field-fixtures"
+install -d -m 0700 "${fixture_dir}"
+for protocol in cloudfront combined-cloudfront; do
+    fixture="${fixture_dir}/${protocol}.env"
+    write_state_fixture "${fixture}" "${protocol}"
+    launcher_state_complete "${fixture}" || fail "完整 ${protocol} 状态必须判为完整"
+    fields=$(bash -c 'source "$1"; cloudfront_state_required_fields "$2"' \
+        _ "${ROOT_DIR}/easy_all" "${protocol}")
+    while IFS= read -r field; do
+        [[ -n "${field}" ]] || continue
+        partial="${fixture_dir}/${protocol}.${field}.env"
+        grep -v "^${field}=" "${fixture}" >"${partial}"
+        launcher_state_complete "${partial}" \
+            && fail "缺少 ${protocol}.${field} 不得判为完整状态"
+done <<<"${fields}"
+done
+for field in VPS_PUBLIC_IPV4 CF_NODE_PREFIX OWNER_TOKEN DIRECT_DOMAIN; do
+    assert_equal "示例字段 ${field} 已纳入字段清单" "1" \
+        "$(grep -Ec "^${field}$" <<<"${launcher_fields_combined}")"
+done
+
+# 28. 不完整状态的卸载路由：两种协议、默认与 --purge-cloud 都只走本机通道
+route_output=$(bash -c '
+    source "$1"
+    source "$(profile_file incomplete-cloudfront)"
+    register_easy_all_command() { :; }
+    uninstall_incomplete_cloudfront() { printf "LOCAL-ONLY\n"; }
+    uninstall_all() { printf "STRICT\n"; }
+    dispatch_profile_command incomplete-cloudfront uninstall
+    dispatch_profile_command incomplete-combined-cloudfront uninstall --purge-cloud
+    dispatch_profile_command cloudfront uninstall
+    dispatch_profile_command combined-cloudfront uninstall --purge-cloud
+' _ "${ROOT_DIR}/easy_all" 2>&1)
+assert_equal "不完整走本机通道、完整走严格路径" \
+    $'LOCAL-ONLY\nLOCAL-ONLY\nSTRICT\nSTRICT' "${route_output}"
+
+# 真实卸载函数：只要本机清理，不调用 AWS/CF、不调用严格 load_state，并退出成功
+incomplete_fixture="${fixture_dir}/incomplete-state.env"
+incomplete_uninstall_output=""
+incomplete_uninstall_status=0
+run_incomplete_uninstall() { # $1=协议 $2=命令参数
+    local protocol=$1 arg=${2:-}
+    {
+        printf 'STATE_VERSION="0"\nPROTOCOL="%s"\n' "${protocol}"
+    } >"${incomplete_fixture}"
+    INCOMPLETE_FIXTURE="${incomplete_fixture}" bash -c '
+        set -Eeuo pipefail
+        source "$1/profiles/cloudfront.sh"
+        cdn_legacy_state_value() { sed -n "s/^$1=\"\(.*\)\"$/\1/p" "${INCOMPLETE_FIXTURE}"; }
+        cdn_local_uninstall_common() { printf "LOCAL-ONLY\n"; }
+        aws_cli() { printf "AWS-CALLED\n"; return 1; }
+        cloudflare_api_request() { printf "CF-CALLED\n"; return 1; }
+        load_state() { printf "STRICT-LOAD\n"; return 1; }
+        require_root() { :; }
+        FORCE=1
+        uninstall_incomplete_cloudfront '"${arg}"'
+    ' _ "${ROOT_DIR}" 2>&1
+}
+for protocol in cloudfront combined-cloudfront; do
+    for arg in "" "--purge-cloud"; do
+        incomplete_uninstall_status=0
+        incomplete_uninstall_output=$(run_incomplete_uninstall "${protocol}" "${arg}") \
+            || incomplete_uninstall_status=$?
+        assert_equal "${protocol} ${arg:-default} 卸载退出 0" "0" "${incomplete_uninstall_status}"
+        assert_contains "${protocol} ${arg:-default} 仅本机清理" \
+            "${incomplete_uninstall_output}" "LOCAL-ONLY"
+        assert_not_contains "${protocol} ${arg:-default} 不调用 AWS" \
+            "${incomplete_uninstall_output}" "AWS-CALLED"
+        assert_not_contains "${protocol} ${arg:-default} 不调用 Cloudflare" \
+            "${incomplete_uninstall_output}" "CF-CALLED"
+        assert_not_contains "${protocol} ${arg:-default} 不走严格 load_state" \
+            "${incomplete_uninstall_output}" "STRICT-LOAD"
+        assert_contains "${protocol} ${arg:-default} 保留云端资源" \
+            "${incomplete_uninstall_output}" "云端资源已保留"
+    done
+done
+
+# 29. 回滚失败：保留安装进度标记与安装前快照，且 cleanup-partial 可重试
+rollback_fail_output=$(EASY_ALL_GUARD_STATE_DIR="${TMP_DIR}/rb-state" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/rb-progress/install-progress.env" \
+    bash -c '
+        set -Eeuo pipefail
+        source "$1/profiles/cloudfront.sh"
+        install -d -m 0700 "${EASY_ALL_GUARD_STATE_DIR}/backups"
+        : >"${EASY_ALL_GUARD_STATE_DIR}/backups/pre-install-complete"
+        install_progress_begin combined cloudfront
+        stop_maintenance_services() { :; }
+        stop_services() { :; }
+        restore_install_snapshot() { return 1; }
+        remove_daily_reboot_schedule() { :; }
+        cdn_print_cloud_inventory() { :; }
+        status=0
+        rollback_fresh_install || status=$?
+        printf "STATUS=%s\n" "${status}"
+        [[ -f "$(install_progress_file)" ]] && printf "MARKER=kept\n"
+        [[ -f "${EASY_ALL_GUARD_STATE_DIR}/backups/pre-install-complete" ]] \
+            && printf "SNAPSHOT=kept\n"
+    ' _ "${ROOT_DIR}" 2>&1) || true
+assert_contains "回滚失败必须非零" "${rollback_fail_output}" "STATUS=1"
+assert_contains "回滚失败保留安装进度标记" "${rollback_fail_output}" "MARKER=kept"
+assert_contains "回滚失败保留安装前快照" "${rollback_fail_output}" "SNAPSHOT=kept"
+assert_contains "回滚失败提示重试 cleanup-partial" "${rollback_fail_output}" \
+    "sudo easy_all cleanup-partial"
+assert_not_contains "回滚失败不得宣称已清理" "${rollback_fail_output}" "云端资源已保留；确认不再使用"
+
+rollback_retry_output=$(EASY_ALL_GUARD_STATE_DIR="${TMP_DIR}/rb-state2" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/rb-progress2/install-progress.env" \
+    bash -c '
+        set -Eeuo pipefail
+        source "$1/profiles/cloudfront.sh"
+        install_progress_begin combined cloudfront
+        stop_maintenance_services() { :; }
+        stop_services() { :; }
+        cleanup_partial_install_local() { :; }
+        cdn_cleanup_legacy_globalping_artifacts() { :; }
+        cdn_legacy_reclaim_origin_firewall_rules() { :; }
+        remove_cdn_traffic_protection_timer() { :; }
+        remove_certbot_deploy_hook() { :; }
+        cdn_remove_origin_lineage() { :; }
+        remove_daily_reboot_schedule() { :; }
+        cleanup_partial_install_files() { install_progress_clear; }
+        cdn_print_cloud_inventory() { :; }
+        rollback_fresh_install
+        [[ ! -f "$(install_progress_file)" ]] && printf "MARKER=cleared\n"
+    ' _ "${ROOT_DIR}" 2>&1) || true
+assert_contains "清理成功后才清标记" "${rollback_retry_output}" "MARKER=cleared"
+
+# 30. 旧 cdn/combined 标记：不加载旧 Profile，不加载旧 Profile，用核心专用本机清理回收旧链路残留
+legacy_classification=$(bash -c '
+    source "$1"
+    check() { launcher_marker_is_legacy_cloudflare "$1" "$2" && printf "%s|%s=legacy\n" "$1" "$2" || printf "%s|%s=new\n" "$1" "$2"; }
+    check cdn ""
+    check combined ""
+    check combined cloudfront
+    check cloudfront cloudfront
+' _ "${ROOT_DIR}/easy_all" 2>&1)
+assert_contains "旧 cdn 标记归为旧链路" "${legacy_classification}" "cdn|=legacy"
+assert_contains "旧 combined 标记（无 CHAIN）归为旧链路" "${legacy_classification}" \
+    "combined|=legacy"
+assert_contains "新 combined 标记不是旧链路" "${legacy_classification}" \
+    "combined|cloudfront=new"
+assert_contains "新 cloudfront 标记不是旧链路" "${legacy_classification}" \
+    "cloudfront|cloudfront=new"
+cleanup_command_body=$(awk '/^cleanup_partial_install_command\(\)/,/^}/' "${ROOT_DIR}/easy_all")
+assert_contains "cleanup-partial 按标记识别旧链路" "${cleanup_command_body}" \
+    "launcher_marker_is_legacy_cloudflare"
+assert_contains "旧链路改用核心本机清理" "${cleanup_command_body}" \
+    "launcher_source_legacy_cleanup_core"
+assert_not_contains "cleanup-partial 不再 source 已删的旧模块" \
+    "${cleanup_command_body}" "profiles/cdn.sh"
+[[ ! -e "${ROOT_DIR}/profiles/cdn.sh" ]] || fail "旧 profiles/cdn.sh 必须已删除"
+
+legacy_cleanup_output=$(bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    launcher_source_legacy_cleanup_core
+    cleanup_partial_install_local() { :; }
+    cdn_cleanup_legacy_globalping_artifacts() { printf "GLOBALPING\n"; }
+    cdn_legacy_reclaim_origin_firewall_rules() { printf "UFW-ORIGIN\n"; }
+    remove_cdn_traffic_protection_timer() { :; }
+    remove_certbot_deploy_hook() { printf "HOOK\n"; }
+    cdn_remove_origin_lineage() { printf "LINEAGE\n"; }
+    remove_daily_reboot_schedule() { :; }
+    cleanup_partial_install_files() { printf "FILES %s\n" "$#"; install_progress_clear; }
+    install_progress_begin cdn
+    cleanup_partial_install
+    [[ ! -f "$(install_progress_file)" ]] && printf "MARKER-CLEARED\n"
+' _ "${ROOT_DIR}/easy_all" 2>&1) || true
+for marker in GLOBALPING UFW-ORIGIN HOOK LINEAGE MARKER-CLEARED; do
+    assert_contains "旧链路本机清理覆盖 ${marker}" "${legacy_cleanup_output}" "${marker}"
+done
+assert_contains "本机清理包含固定本机文件清单" "${legacy_cleanup_output}" "FILES 7"
+core_cleanup_body=$(awk '/^cleanup_partial_install\(\)/,/^}/' "${ROOT_DIR}/lib/cloudfront-mode.sh")
+assert_contains "新链路清理回收旧回源 UFW 规则" "${core_cleanup_body}" \
+    "cdn_legacy_reclaim_origin_firewall_rules"
+assert_contains "新链路清理删除自有 certbot lineage" "${core_cleanup_body}" \
+    "cdn_remove_origin_lineage"
+assert_not_contains "本机清理不调用 AWS" "${core_cleanup_body}" "aws_cli"
+assert_not_contains "本机清理不调用 Cloudflare API" "${core_cleanup_body}" \
+    "cloudflare_api_request"
+lineage_body=$(awk '/^cdn_remove_origin_lineage\(\)/,/^}/' "${ROOT_DIR}/lib/cloudfront-mode.sh")
+assert_contains "lineage 删除只用固定自有名称" "${lineage_body}" "CERTBOT_LINEAGE_NAME"
+assert_not_contains "lineage 删除不碰其他站点目录" "${lineage_body}" "/etc/letsencrypt"
 
 printf 'ok - install guard\n'

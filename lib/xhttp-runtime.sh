@@ -40,7 +40,7 @@ readonly CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 readonly XRAY_RELEASES_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly STATE_SCHEMA_VERSION="0"
 readonly XHTTP_NGINX_STREAM_TIMEOUT="1h"
-readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-Cloudflare}"
+readonly XHTTP_CDN_NAME="${XHTTP_CDN_NAME_OVERRIDE:-CloudFront}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="${SUBSCRIPTION_DEPLOY_DESCRIPTION_OVERRIDE:-${XHTTP_CDN_NAME} + Nginx}"
 
 # shellcheck source=lib/runtime-core.sh
@@ -50,6 +50,29 @@ source "${SCRIPT_DIR}/runtime-core.sh"
 # an empty array under `set -u` raises "unbound variable".  Restricting these
 # local probes to HTTPS is also the intended behavior for every provider.
 XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
+# Explicit local probe context hook. Profiles that need another SNI/CA/header
+# (CloudFront probes its origin name with the origin header) override this;
+# the default keeps the domain shown to users.
+XHTTP_LOCAL_PROBE_DOMAIN=""
+XHTTP_LOCAL_PROBE_HEADER_FILE=""
+
+xhttp_local_probe_context() {
+    # Existing providers probe the CDN node domain; CloudFront overrides this
+    # with its origin SNI + origin header.
+    XHTTP_LOCAL_PROBE_DOMAIN=${VLESS_CDN_DOMAIN:-$(subscription_link_domain)}
+    XHTTP_LOCAL_PROBE_HEADER_FILE=""
+    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
+    # Providers that have not migrated to the explicit context hook keep their
+    # own CA/proxy arguments here.
+    if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
+        xhttp_validate_local_tls_curl_args
+    fi
+}
+
+xhttp_local_probe_curl_args() {
+    [[ -n "${XHTTP_LOCAL_PROBE_HEADER_FILE}" ]]         || return 0
+    printf '%s\n' --header "@${XHTTP_LOCAL_PROBE_HEADER_FILE}"
+}
 
 validate_xhttp_path() {
     [[ ${#1} -ge 9 && ${#1} -le 96 && "$1" =~ ^/[A-Za-z0-9._~-]+$ ]]
@@ -214,20 +237,21 @@ validate_reality_port_listening() {
 }
 
 validate_protocol_runtime() {
-    local attempt response
-    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
-    if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
-        xhttp_validate_local_tls_curl_args
-    fi
+    local attempt response domain
+    local -a probe_args=(-s)
+    xhttp_local_probe_context
+    domain=${XHTTP_LOCAL_PROBE_DOMAIN:-$(subscription_link_domain)}
+    [[ -z "${XHTTP_LOCAL_PROBE_HEADER_FILE}" ]] \
+        || probe_args+=(--header "@${XHTTP_LOCAL_PROBE_HEADER_FILE}")
     for attempt in 1 2 3 4 5; do
         if systemctl is-active --quiet "${XRAY_SERVICE}" \
             && systemctl is-active --quiet nginx \
             && ss -H -ltn "sport = :443" 2>/dev/null \
                 | awk 'NR {found=1} END {exit !found}'; then
             response=$(curl -fsS --connect-timeout 5 --max-time 20 \
-                "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
-                --resolve "${VLESS_CDN_DOMAIN}:443:127.0.0.1" \
-                "https://${VLESS_CDN_DOMAIN}/easy_all-health" || true)
+                "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" "${probe_args[@]}" \
+                --resolve "${domain}:443:127.0.0.1" \
+                "https://${domain}/easy_all-health" || true)
             if [[ "${response}" == "easy_all ok" ]]; then
                 validate_reality_port_listening && return 0
             fi
@@ -242,18 +266,18 @@ validate_protocol_runtime() {
 
 validate_subscription_runtime() {
     local token base64_response base64_decoded mihomo_response marker accounts domain
-    domain=$(subscription_link_domain)
-    XHTTP_LOCAL_TLS_CURL_ARGS=(--proto '=https')
-    if declare -F xhttp_validate_local_tls_curl_args >/dev/null 2>&1; then
-        xhttp_validate_local_tls_curl_args
-    fi
+    local -a probe_args=(-s)
+    xhttp_local_probe_context
+    domain=${XHTTP_LOCAL_PROBE_DOMAIN:-$(subscription_link_domain)}
+    [[ -z "${XHTTP_LOCAL_PROBE_HEADER_FILE}" ]] \
+        || probe_args+=(--header "@${XHTTP_LOCAL_PROBE_HEADER_FILE}")
     validate_subscription_token_rejection \
         "${domain}:443:127.0.0.1" \
         "https://${domain}/subscribe" \
-        "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}"
+        "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" "${probe_args[@]}"
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}")
     base64_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
-        --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
+        --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" "${probe_args[@]}" \
         --resolve "${domain}:443:127.0.0.1" \
         --get --data-urlencode 'token@-' \
         "https://${domain}/subscribe") || die "通用订阅本机验收失败"
@@ -263,7 +287,7 @@ validate_subscription_runtime() {
     grep -Fq "${SUBSCRIPTION_NODE_MARKER:-type=xhttp}" <<<"${base64_decoded}" \
         || die "通用订阅响应缺少节点：${SUBSCRIPTION_NODE_MARKER:-type=xhttp}"
     mihomo_response=$(printf '%s' "${token}" | curl -fsS --noproxy '*' \
-        --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" \
+        --connect-timeout 5 --max-time 20 "${XHTTP_LOCAL_TLS_CURL_ARGS[@]}" "${probe_args[@]}" \
         --resolve "${domain}:443:127.0.0.1" \
         --get --data-urlencode 'token@-' --data-urlencode "flag=clash" \
         "https://${domain}/subscribe") || die "Mihomo 订阅本机验收失败"
@@ -282,9 +306,10 @@ xhttp_require_subscription_hooks() {
     done
 }
 
-write_subscriptions() {
-    local template node_file group_file name_file
-    local mihomo_file suffix include variants marker stage_dir
+# 渲染六种订阅产物到 output_dir；发布由调用方负责，当前 state 的就绪验收复用同一渲染器。
+render_subscription_files() {
+    local output_dir=$1 template node_file group_file name_file
+    local mihomo_file suffix include variants marker
     variants=${SUBSCRIPTION_OPTIONAL_VARIANTS:-0}
     prepare_mihomo_template
     xhttp_require_subscription_hooks
@@ -295,10 +320,6 @@ write_subscriptions() {
     marker='network: xhttp'
     declare -F mihomo_transport_marker >/dev/null 2>&1 \
         && marker=$(mihomo_transport_marker)
-    install -d -m 0755 "${WEB_ROOT}"
-    stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
-        || die "创建订阅暂存目录失败"
-    cleanup_files+=("${stage_dir}")
     for suffix in "" "-all"; do
         if [[ "${suffix}" == "-all" ]]; then
             [[ "${variants}" == "1" ]] || continue
@@ -310,18 +331,27 @@ write_subscriptions() {
         build_mihomo_nodes >"${node_file}"
         build_mihomo_proxy_groups >"${group_file}"
         build_mihomo_proxy_names >"${name_file}"
-        build_node_links | openssl base64 -A >"${stage_dir}/base64${suffix}.txt"
-        printf '\n' >>"${stage_dir}/base64${suffix}.txt"
-        mihomo_file="${stage_dir}/mihomo${suffix}.yaml"
+        build_node_links | openssl base64 -A >"${output_dir}/base64${suffix}.txt"
+        printf '\n' >>"${output_dir}/base64${suffix}.txt"
+        mihomo_file="${output_dir}/mihomo${suffix}.yaml"
         render_mihomo_subscription "${template}" "${node_file}" "${mihomo_file}" \
             "${XHTTP_NODE_NAME}" "${group_file}" "${name_file}"
         grep -Fq "${marker}" "${mihomo_file}" || die "Mihomo 订阅缺少有效节点"
         grep -Fq "${VLESS_CDN_DOMAIN}" "${mihomo_file}" || die "Mihomo 订阅缺少 CDN 域名"
-        strip_mihomo_sniffer "${mihomo_file}" >"${stage_dir}/mihomo-ios${suffix}.yaml" \
+        strip_mihomo_sniffer "${mihomo_file}" >"${output_dir}/mihomo-ios${suffix}.yaml" \
             || die "暂存 iOS Mihomo 订阅失败"
     done
     EASY_ALL_INCLUDE_OPTIONAL=0
-    chmod 0640 "${stage_dir}"/*.txt "${stage_dir}"/*.yaml
+    chmod 0640 "${output_dir}"/*.txt "${output_dir}"/*.yaml
+}
+
+write_subscriptions() {
+    local stage_dir
+    install -d -m 0755 "${WEB_ROOT}"
+    stage_dir=$(mktemp -d "${WEB_ROOT}/.subscriptions.stage.XXXXXX") \
+        || die "创建订阅暂存目录失败"
+    cleanup_files+=("${stage_dir}")
+    render_subscription_files "${stage_dir}"
     publish_subscription_files "${stage_dir}"
     rm -rf -- "${stage_dir}"
 }
@@ -377,24 +407,33 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/subscriptions.missing"
     fi
+    # 调用方（CloudFront 核心）声明了模板快照时，它是本次事务的一部分：
+    # 快照必须和 state/六产物一起回滚，否则下一进程会发布失败事务的新模板。
+    if [[ -n "${XHTTP_TEMPLATE_SNAPSHOT_PATH:-}" ]]; then
+        if [[ -f "${XHTTP_TEMPLATE_SNAPSHOT_PATH}" ]]; then
+            install -m 0600 "${XHTTP_TEMPLATE_SNAPSHOT_PATH}" \
+                "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml"
+        else
+            install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml.missing"
+        fi
+    fi
     UPDATE_SUB_ROLLBACK_ON_EXIT=1
 }
 
 rollback_subscription_update() {
-    # 本次更新新签发的 Origin CA 证书只记录在被回滚的 state.env 里；不在这里删掉就会在
-    # 账户里留下无引用的长期证书（uninstall --purge-cloud 只删状态中的证书 ID）。
-    if [[ -n "${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-}" ]]; then
-        (cloudflare_api_request DELETE "/certificates/${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}" >/dev/null) \
-            || warn "回滚时删除本次新建的 Cloudflare Origin CA 证书失败：${CLOUDFLARE_CREATED_ORIGIN_CERT_ID}；可用 easy_all purge-cloudflare 清理"
-    fi
     warn "本机配置更新失败，正在恢复状态、Nginx 与订阅文件"
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/state.env" ]]; then
         restore_state_file "${UPDATE_SUB_BACKUP_DIR}/state.env" "${STATE_FILE}"
     fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" && -n "${XRAY_CONFIG:-}" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" "${XRAY_CONFIG}"
-        systemctl restart "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 \
-            || warn "恢复订阅更新前 Xray 配置失败"
+        # 保护性停机下的 edit-sub 只恢复订阅对象与 deny 版 Nginx，绝不启动旧 Xray。
+        if [[ "${UPDATE_SUB_ROLLBACK_NO_RESTART:-0}" == "1" ]]; then
+            warn "保持 Xray 停机：本次回滚不重启旧配置"
+        else
+            systemctl restart "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 \
+                || warn "恢复订阅更新前 Xray 配置失败"
+        fi
     fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/nginx.conf" "${NGINX_CONFIG}"
@@ -415,6 +454,16 @@ rollback_subscription_update() {
         publish_subscription_files "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
     else
         rm -rf -- "${SUBSCRIPTION_DIR}"
+    fi
+    if [[ -n "${XHTTP_TEMPLATE_SNAPSHOT_PATH:-}" ]]; then
+        if [[ -f "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml" ]]; then
+            install -d -m 0700 "${XHTTP_TEMPLATE_SNAPSHOT_PATH%/*}" \
+                && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml" \
+                    "${XHTTP_TEMPLATE_SNAPSHOT_PATH}" \
+                || warn "恢复 Mihomo 模板快照失败：${XHTTP_TEMPLATE_SNAPSHOT_PATH}"
+        elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml.missing" ]]; then
+            rm -f -- "${XHTTP_TEMPLATE_SNAPSHOT_PATH}"
+        fi
     fi
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 \
         || warn "恢复订阅更新前 Nginx 配置失败"

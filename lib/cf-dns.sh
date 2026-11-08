@@ -126,7 +126,12 @@ cloudflare_find_parent_zone() {
         || die "Cloudflare active Zone 未覆盖域名：${domain}"
 }
 
-cloudflare_record_list() { cloudflare_api_request GET "/zones/$1/dns_records?type=$2&name=$3&per_page=100"; }
+# 第二参数为空串表示不限类型：调用方要按名字识别跨类型冲突。
+cloudflare_record_list() {
+    local type_filter=""
+    [[ -z "${2:-}" ]] || type_filter="type=$2&"
+    cloudflare_api_request GET "/zones/$1/dns_records?${type_filter}name=$3&per_page=100"
+}
 
 cloudflare_ensure_origin_ca_root() {
     if [[ -s "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}" ]] \

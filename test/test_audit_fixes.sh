@@ -109,14 +109,12 @@ bash "${HELPER_BIN}" unban 1.2.3.4 "${TMP_DIR}/f2b_state"
 rule_count_unban=$(grep -c "DENY IN     1.2.3.4 " "${UFW_RULES_FILE}" || true)
 assert_equal "unban removes rule" "0" "${rule_count_unban}"
 
-echo "=== 3. Globalping 选优定时器修改为 3 小时 ==="
+echo "=== 3. CDN 流量保护定时器（替代已删除的 Globalping 选优定时器）==="
 mkdir -p "${TMP_DIR}/state" "${TMP_DIR}/runtime" "${TMP_DIR}/systemd"
 export STATE_DIR="${TMP_DIR}/state"
 export RUNTIME_TMP="${TMP_DIR}/runtime"
 export COMMAND_PATH="/usr/local/bin/easy_all"
-export GLOBALPING_REFRESH_SERVICE_FILE_OVERRIDE="${TMP_DIR}/systemd/easy_all-globalping-refresh.service"
-export GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE="${TMP_DIR}/systemd/easy_all-globalping-refresh.timer"
-export CDN_PROVIDER="cloudflare"
+export CDN_PROVIDER="aws"
 
 mkdir -p "${TMP_DIR}/bin"
 cat >"${TMP_DIR}/bin/systemctl" <<'EOF'
@@ -126,25 +124,43 @@ EOF
 chmod +x "${TMP_DIR}/bin/systemctl"
 PATH="${TMP_DIR}/bin:${PATH}"
 
-source "${ROOT_DIR}/lib/globalping-cdn.sh"
-install_globalping_refresh_timer
-timer_content=$(<"${GLOBALPING_REFRESH_TIMER_FILE_OVERRIDE}")
-assert_contains "timer OnActiveSec=3h" "${timer_content}" "OnActiveSec=3h"
-assert_contains "timer OnUnitActiveSec=3h" "${timer_content}" "OnUnitActiveSec=3h"
-assert_contains "timer Description 3 hours" "${timer_content}" "Description=Refresh easy_all CDN endpoints every three hours"
-assert_not_contains "globalping failure messages no longer say hourly" \
-    "$(<"${ROOT_DIR}/lib/globalping-cdn.sh")" "每小时"
+# 容器/沙箱都没有 /etc/systemd/system 写权限：这里校验计时器单元的真实配置来源，
+# 以及驱动它的是同一条 cdn-traffic-sync 命令（不是已删除的 Globalping 刷新命令）。
+guard_content=$(<"${ROOT_DIR}/lib/cdn-traffic-guard.sh")
+assert_contains "guard timer OnBootSec=15s" "${guard_content}" "OnBootSec=15s"
+assert_contains "guard timer OnUnitActiveSec=15s" "${guard_content}" "OnUnitActiveSec=15s"
+assert_contains "guard timer AccuracySec=1s" "${guard_content}" "AccuracySec=1s"
+assert_contains "guard ExecStart 复用命令路径" "${guard_content}" \
+    'ExecStart=${COMMAND_PATH} $(cdn_traffic_sync_command)'
+sync_command=$( (
+    source "${ROOT_DIR}/lib/cdn-traffic-guard.sh"
+    cdn_traffic_sync_command
+) )
+assert_equal "计时器驱动 cdn-traffic-sync" "cdn-traffic-sync" "${sync_command}"
+assert_not_contains "旧 Globalping 选优定时器已删除" "${guard_content}" "globalping"
+[[ ! -e "${ROOT_DIR}/lib/globalping-cdn.sh" ]] || fail "lib/globalping-cdn.sh 必须删除"
+# 旧 Globalping 单元/Token/cache 只能由卸载按固定文件名回收，不再有刷新命令或状态展示。
+cleanup_body=$(awk '/^cdn_cleanup_legacy_globalping_artifacts\(\)/,/^}/' \
+    "${ROOT_DIR}/lib/cloudfront-mode.sh")
+assert_contains "卸载清理停用旧 Globalping 定时器" "${cleanup_body}" \
+    "easy_all-globalping-refresh.timer"
+assert_contains "卸载清理停用旧 Globalping 服务" "${cleanup_body}" \
+    "easy_all-globalping-refresh.service"
+assert_contains "卸载清理删除旧 Globalping Token" "${cleanup_body}" "globalping.token"
+assert_contains "卸载流程调用旧 Globalping 清理" \
+    "$(awk '/^cdn_local_uninstall_common\(\)/,/^}/' "${ROOT_DIR}/lib/cloudfront-mode.sh")" \
+    "cdn_cleanup_legacy_globalping_artifacts"
+assert_not_contains "帮助不再暴露 Globalping 刷新命令" \
+    "${help_output:-}" "refresh-cdn-ips"
 
-echo "=== 4. CDN 模式 Cloudflare API Token 提示文案与权限要求 ==="
-# Stage 6 签发 Origin CA 需要 Zone 的 SSL/证书 编辑权限：只提示 DNS 会按提示建出必 403 的 Token。
-mode_content=$(<"${ROOT_DIR}/lib/cloudflare-mode.sh")
-assert_contains "cdn token prompt asks for DNS and SSL edits" "${mode_content}" \
-    "Cloudflare API Token（需 Zone 的 DNS 编辑 + SSL/证书 编辑权限；将保存到 root 受控文件以支持后续定时与免交互运维）"
-for prompt_profile in "${ROOT_DIR}/profiles/cdn.sh" "${ROOT_DIR}/profiles/combined.sh"; do
-    assert_contains "token prompt in ${prompt_profile##*/} asks for DNS and SSL edits" \
-        "$(<"${prompt_profile}")" \
-        "Cloudflare API Token（需 Zone 的 DNS 编辑 + SSL/证书 编辑权限）"
-done
+echo "=== 4. 新链路 Cloudflare Token 最小权限与 AWS 凭据仅内存 ==="
+core_content=$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")
+assert_contains "cloudfront token prompt asks for zone read + DNS edit" \
+    "${core_content}" "Zone 只读 + DNS 编辑权限"
+assert_contains "AWS 凭据只在当前进程使用" "${core_content}" "仅限当前进程使用，不落盘"
+assert_not_contains "不再要求 SSL/证书编辑权限" "${core_content}" "SSL/证书 编辑权限"
+assert_contains "thin cloudfront profile delegates inputs to the shared core" \
+    "$(<"${ROOT_DIR}/profiles/cloudfront.sh")" "collect_cloudfront_install_inputs"
 
 echo "=== 5. 移除遗留死变量 PARAMS_SOURCE 与 INSTALL_PARAMS_DELETE ==="
 common_content=$(<"${ROOT_DIR}/lib/profile-common.sh")
@@ -443,7 +459,8 @@ fi
     assert_not_contains "no restore_tcp_runtime symbol" \
         "$(declare -f)" "restore_tcp_runtime"
     for script in lib/xhttp-runtime.sh profiles/reality.sh \
-        profiles/combined.sh profiles/cdn.sh lib/cloudflare-mode.sh; do
+        profiles/combined.sh profiles/cloudfront.sh \
+        lib/cloudfront-mode.sh; do
         assert_not_contains "${script} does not tear down TCP acceleration" \
             "$(<"${ROOT_DIR}/${script}")" "uninstall_tcp_acceleration"
     done
@@ -627,8 +644,8 @@ EOF_JSON
 )
 
 # 8.13 验证各 Profile 的 apply 入口均包含 configure_ipv4_only（P2）
-# 两种 CDN 模式共用 lib/cloudflare-mode.sh 的 apply 入口。
-combined_script=$(<"${ROOT_DIR}/lib/cloudflare-mode.sh")
+# 两种 CDN 模式共用 lib/cloudfront-mode.sh 的 apply 入口。
+combined_script=$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")
 assert_contains "cdn apply_easy_all has configure_ipv4_only" \
     "${combined_script}" $'configure_tcp_acceleration\n    configure_ipv4_only'
 
@@ -1127,11 +1144,17 @@ printf '%s\n' "ufw deny 2222/tcp" >"${FAKE_UFW_ADDED}"
 assert_not_contains "仓库内不得再有 ufw --force disable" \
     "$(grep -Rh -- 'ufw --force disable' "${ROOT_DIR}/lib" "${ROOT_DIR}/profiles" 2>/dev/null || true)" \
     "ufw --force disable"
-for profile in profiles/reality.sh lib/cloudflare-mode.sh; do
-    uninstall_body=$(awk '/^uninstall_all\(\)/,/^}/' "${ROOT_DIR}/${profile}")
-    assert_contains "${profile} 卸载回收业务端口" "${uninstall_body}" "restore_preinstall_firewall"
-    assert_not_contains "${profile} 卸载不带旧的回滚参数" "${uninstall_body}" "restore_preinstall_firewall 1"
-done
+reality_uninstall_body=$(awk '/^uninstall_all\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
+assert_contains "profiles/reality.sh 卸载回收业务端口" \
+    "${reality_uninstall_body}" "restore_preinstall_firewall"
+assert_not_contains "profiles/reality.sh 卸载不带旧的回滚参数" \
+    "${reality_uninstall_body}" "restore_preinstall_firewall 1"
+cdn_local_uninstall_body=$(awk '/^cdn_local_uninstall_common\(\)/,/^}/' \
+    "${ROOT_DIR}/lib/cloudfront-mode.sh")
+assert_contains "CloudFront 卸载回收业务端口" \
+    "${cdn_local_uninstall_body}" "restore_preinstall_firewall"
+assert_not_contains "CloudFront 卸载不带旧的回滚参数" \
+    "${cdn_local_uninstall_body}" "restore_preinstall_firewall 1"
 rollback_body=$(awk '/^rollback_fresh_install\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
 assert_not_contains "reality 回滚不关闭 UFW" "${rollback_body}" "ufw --force disable"
 
@@ -1202,7 +1225,7 @@ first_state=$( (
     EASY_ALL_MEMINFO_FILE="${meminfo}" report_host_init_state
 ) 2>&1 ) || fail "未初始化主机必须能输出状态"
 assert_contains "未初始化主机提示首次安装" "${first_state}" "首次安装"
-for profile in profiles/reality.sh lib/cloudflare-mode.sh; do
+for profile in profiles/reality.sh lib/cloudfront-mode.sh; do
     body=$(awk '/^(install_all|run_reality_install_pipeline)\(\)/,/^}/' "${ROOT_DIR}/${profile}")
     assert_contains "${profile} 初始化阶段输出状态" "${body}" "report_host_init_state"
 done
@@ -1211,46 +1234,76 @@ done
 echo "=== 13. 模式菜单与回滚残留 ==="
 mode_body=$(awk '/^choose_install_mode\(\)/,/^}/' "${ROOT_DIR}/easy_all")
 assert_contains "菜单序号 1 映射到直连 Reality" "${mode_body}" "1) printf 'reality\\n' ;;"
-assert_contains "菜单序号 2 映射到纯 CDN" "${mode_body}" "2) printf 'cdn\\n' ;;"
+assert_contains "菜单序号 2 映射到纯 CDN（CloudFront）" "${mode_body}" "2) printf 'cloudfront\\n' ;;"
 assert_contains "菜单序号 3 映射到直连+CDN" "${mode_body}" "3) printf 'combined\\n' ;;"
 assert_not_contains "菜单不再使用已移除的历史标识" "${mode_body}" "cloudflare-streamup"
 launcher_body=$(<"${ROOT_DIR}/easy_all")
-assert_contains "状态识别接受纯 CDN 协议" "${launcher_body}" "reality|cdn|combined"
-assert_contains "profile_file 注册纯 CDN" "${launcher_body}" "profiles/cdn.sh"
-assert_contains "manifest 登记纯 CDN profile" "$(<"${ROOT_DIR}/runtime.manifest")" "profiles/cdn.sh"
-assert_contains "manifest 登记 CDN 共享层" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudflare-mode.sh"
+assert_contains "状态识别接受新 CloudFront 协议" "${launcher_body}" "combined-cloudfront"
+assert_contains "profile_file 注册 CloudFront" "${launcher_body}" "profiles/cloudfront.sh"
+assert_contains "manifest 登记 CloudFront profile" "$(<"${ROOT_DIR}/runtime.manifest")" "profiles/cloudfront.sh"
+assert_contains "manifest 登记 CloudFront 共享核心" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudfront-mode.sh"
+assert_not_contains "manifest 不再登记旧共享层" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudflare-mode.sh"
 assert_contains "无效序号提示模式不支持" "${mode_body}" "不支持的安装模式"
 
 rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/lib/xhttp-runtime.sh")
-assert_contains "直连+CDN订阅更新回滚删除本次新建的 Origin CA 证书" "${rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
-# 两种模式都要在回滚时吊销本次新签的证书（state.env 恢复后只剩旧证书 ID，不删即孤儿）。
+assert_not_contains "共享回滚不再处理 Cloudflare Origin CA（模式 1 自带实现）" \
+    "${rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
+# 模式 1 必须继续在回滚时吊销本次新签的证书（state.env 恢复后只剩旧证书 ID，不删即孤儿）。
 reality_update_rollback_body=$(awk '/^rollback_subscription_update\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
-for entry in rollback_body reality_update_rollback_body; do
-    assert_contains "${entry} 回滚时仍能识别本进程新签的证书 ID" "${!entry}" \
-        "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
-done
+assert_contains "Reality 回滚时仍能识别本进程新签的证书 ID" \
+    "${reality_update_rollback_body}" "CLOUDFLARE_CREATED_ORIGIN_CERT_ID"
 # 签发成功不置位就会让两条回滚分支静默漏删。
 issue_body=$(awk '/^cloudflare_issue_origin_certificate\(\)/,/^}/' "${ROOT_DIR}/lib/cf-dns.sh")
 assert_contains "签发成功记录本次新建的 Origin CA 证书 ID" "${issue_body}" \
     'CLOUDFLARE_CREATED_ORIGIN_CERT_ID=${CLOUDFLARE_ORIGIN_CERT_ID}'
 assert_not_contains "已删除的 Provider 回滚钩子不再被引用" "${rollback_body}" "rollback_provider_subscription_update"
 assert_not_contains "Bunny 时代的 disable_ufw_ipv6 已删除" "$(<"${ROOT_DIR}/lib/firewall.sh")" "disable_ufw_ipv6"
-assert_not_contains "Worker 时代的 cloudflare_client_candidates 已删除" \
-    "$(<"${ROOT_DIR}/lib/cloudflare-ip-pool.sh")" "cloudflare_client_candidates"
+assert_not_contains "manifest 不再登记已删除的优选实现" \
+    "$(<"${ROOT_DIR}/runtime.manifest")" "lib/cloudflare-ip-pool.sh"
+[[ ! -e "${ROOT_DIR}/lib/cloudflare-ip-pool.sh" ]] || fail "lib/cloudflare-ip-pool.sh 必须删除"
 
 
 echo "=== 14. renew-cert 入口与事务顺序 ==="
-renew_body=$(awk '/^renew_certificate\(\)/,/^}/' "${ROOT_DIR}/lib/cloudflare-mode.sh")
+renew_body=$(awk '/^renew_certificate\(\)/,/^}/' "${ROOT_DIR}/lib/cloudfront-mode.sh")
 for token in require_root acquire_runtime_write_lock collect_installed_state \
-    snapshot_subscription_update commit_subscription_update; do
-    assert_contains "直连+CDN renew_certificate 含 ${token}" "${renew_body}" "${token}"
+    cdn_verify_origin_certificate save_state release_runtime_write_lock; do
+    assert_contains "CloudFront renew_certificate 含 ${token}" "${renew_body}" "${token}"
 done
-assert_before "直连+CDN renew-cert 先 reload 再 save_state" \
+# 证书部署必须走事务函数（先验证候选、失败恢复现用证书与 Nginx 配置），
+# 而不是直接覆盖证书文件；否则 reload 失败就会留下半部署。
+assert_contains "CloudFront renew-cert 通过部署事务安装证书" "${renew_body}" \
+    "cdn_install_origin_lineage"
+assert_contains "CloudFront renew-cert 先校验现用证书" "${renew_body}" \
+    "cdn_verify_origin_certificate"
+assert_before "CloudFront renew-cert 先 reload 再 save_state" \
     "${renew_body}" "systemctl reload nginx" "save_state"
-assert_before "直连+CDN renew-cert 先关闭回滚再吊销旧证书" \
-    "${renew_body}" "UPDATE_SUB_ROLLBACK_ON_EXIT=0" "cloudflare_finalize_certificate_rotation"
-assert_before "renew-cert 先做本机 TLS/SNI 验收再吊销旧证书" \
-    "${renew_body}" "cdn_validate_cf_node_sni" "UPDATE_SUB_ROLLBACK_ON_EXIT=0"
+assert_before "CloudFront renew-cert 部署完成才 save_state" \
+    "${renew_body}" "cdn_install_origin_lineage" "save_state"
+assert_contains "CloudFront renew-cert 只续源站 LE 证书" "${renew_body}" \
+    "cdn_run_certbot 1"
+assert_contains "CloudFront renew-cert 部署事务自带失败回滚" \
+    "$(awk '/^cdn_install_origin_lineage\(\)/,/^}/' "${ROOT_DIR}/lib/cloudfront-mode.sh")" \
+    "恢复部署前的现用证书、私钥与 Nginx 配置"
+# apply / apply-cloud 成功前必须注册命令并（重新）安装并校验保护定时器。
+for entry in apply_easy_all apply_cloud_resources; do
+    entry_body=$(awk "/^${entry}\(\)/,/^}/" "${ROOT_DIR}/lib/cloudfront-mode.sh")
+    assert_contains "${entry} 成功前提交本机运行时" "${entry_body}" "cdn_commit_local_runtime"
+    assert_before "${entry} 先提交运行时再报告成功" \
+        "${entry_body}" "cdn_commit_local_runtime" "success "
+done
+commit_body=$(awk '/^cdn_commit_local_runtime\(\)/,/^}/' "${ROOT_DIR}/lib/cloudfront-mode.sh")
+assert_contains "提交运行时注册命令" "${commit_body}" "register_easy_all_command"
+assert_contains "提交运行时安装保护定时器" "${commit_body}" \
+    "install_cdn_traffic_protection_timer"
+assert_contains "安装定时器后断言 active" \
+    "$(awk '/^install_cdn_traffic_protection_timer\(\)/,/^}/' "${ROOT_DIR}/lib/cdn-traffic-guard.sh")" \
+    'systemctl is-active --quiet "${CDN_TRAFFIC_GUARD_TIMER}"'
+assert_not_contains "CloudFront renew-cert 不重新申请 ACM" "${renew_body}" "request-certificate"
+assert_not_contains "CloudFront renew-cert 不触 AWS" "${renew_body}" "aws_cli"
+# 待落实阻断时证书修复必须先保持 deny，再走统一受限恢复
+renew_restricted_body=${renew_body%%"cdn_traffic_recover_restricted_runtime"*}
+assert_contains "renew-cert 在受限恢复前先写 503 Nginx" \
+    "${renew_restricted_body}" "write_nginx_config 1"
 
 reality_renew_body=$(awk '/^renew_subscription_certificate\(\)/,/^}/' "${ROOT_DIR}/profiles/reality.sh")
 for token in acquire_runtime_write_lock snapshot_subscription_update release_runtime_write_lock; do
@@ -1487,32 +1540,7 @@ echo "=== 16. Skyline 失败必须带阶段与退出码终止（不得降级 BBR
     assert_not_contains "不得误报成功" "${skyline_out}" "Skyline Speeder 已启用"
 )
 
-echo "=== 17. Globalping 请求头必须原子替换（并发子 shell 不得读到空头文件） ==="
-# 读者拿到的是原子替换：已打开旧文件的读者看到完整旧内容，路径读者看到完整新内容。
-(
-    gp_runtime="${TMP_DIR}/globalping-atomic"
-    install -d -m 0700 "${gp_runtime}"
-    export RUNTIME_TMP="${gp_runtime}"
-    export GLOBALPING_TOKEN="fake-ktxzvbnq-9182736455"
-    headers_file="${gp_runtime}/globalping-headers"
-    printf 'Authorization: Bearer old-stale-token\n' >"${headers_file}"
-    exec 7<"${headers_file}"
-    curl() { printf '{}'; }
-    globalping_api_request GET /limits >/dev/null || fail "写入请求头文件后必须继续调用 curl"
-    seen_by_open_reader=$(cat <&7)
-    exec 7<&-
-    seen_by_path=$(<"${headers_file}")
-    assert_equal "已打开旧请求头的读者仍看到完整旧内容" \
-        "Authorization: Bearer old-stale-token" "${seen_by_open_reader}"
-    assert_equal "路径读者看到完整的新请求头" \
-        "Authorization: Bearer ${GLOBALPING_TOKEN}" "${seen_by_path}"
-    assert_equal "请求头文件保持 0600" "600" \
-        "$(stat -c '%a' "${headers_file}" 2>/dev/null || stat -f '%Lp' "${headers_file}")"
-    assert_equal "请求头目录里不残留临时文件" "0" \
-        "$(find "${gp_runtime}" -maxdepth 1 -name 'globalping-headers.*' | wc -l | tr -d ' ')"
-)
-
-echo "=== 18. 状态目录存在但读不到状态文件时必须提示 root，不得谎报「尚未安装」 ==="
+echo "=== 17. 状态目录存在但读不到状态文件时必须提示 root，不得谎报「尚未安装」 ==="
 # 公开入口：EASY_ALL_STATE_FILE_OVERRIDE 支持把状态文件指到任意路径（测试与自愈都靠它）。
 run_launcher_status() {
     EASY_ALL_STATE_FILE_OVERRIDE="$1" bash "${ROOT_DIR}/easy_all" status 2>&1
@@ -1558,7 +1586,7 @@ else
     chmod 600 "${denied_file_dir}/state.env"
 fi
 
-echo "=== 19. Swap 空间判定：df 取不到数字或为 0 时必须跳过创建（df -Pk） ==="
+echo "=== 18. Swap 空间判定：df 取不到数字或为 0 时必须跳过创建（df -Pk） ==="
 SWAP_FN=$(awk '/^ensure_swap\(\) \{/,/^\}/' "${ROOT_DIR}/lib/platform.sh")
 [[ -n "${SWAP_FN}" ]] || fail "lib/platform.sh 必须定义 ensure_swap"
 export SWAP_FN
@@ -1616,7 +1644,7 @@ ok_swap_out=$(run_swap_probe ok "${TMP_DIR}/swap-ok" 2>&1) \
 assert_contains "swap: 空间充足时继续创建" "${ok_swap_out}" "已成功配置并启用 1GB Swap"
 [[ -e "${TMP_DIR}/swap-ok/swapfile" ]] || fail "swap: 空间充足时必须执行 fallocate"
 
-echo "=== 20. SSH/UFW 实参中的端口必须是规范十进制（080 → 80） ==="
+echo "=== 19. SSH/UFW 实参中的端口必须是规范十进制（080 → 80） ==="
 port_probe=$(bash -c '
     set -Eeuo pipefail
     init_script=$1
@@ -1671,7 +1699,7 @@ assert_contains "port: ssh -p 使用规范端口" "${port_probe}" "-p 80 "
 assert_contains "port: 远端实参使用规范端口" "${port_probe}" "'80' '80' 'normaluser'"
 assert_contains "port: 远端 UFW 额外端口使用规范列表" "${port_probe}" "'80 8080'"
 
-echo "=== 21. IPv4-only 策略文件走 mktemp，成功/失败都不留临时文件 ==="
+echo "=== 20. IPv4-only 策略文件走 mktemp，成功/失败都不留临时文件 ==="
 IPV4ONLY_FN=$(awk '/^configure_ipv4_only\(\) \{/,/^\}/' "${ROOT_DIR}/lib/platform.sh")
 [[ -n "${IPV4ONLY_FN}" ]] || fail "lib/platform.sh 必须定义 configure_ipv4_only"
 export IPV4ONLY_FN
@@ -1718,7 +1746,7 @@ assert_contains "ipv4-only: 失败保留诊断" "${ipv4_fail_out}" "写入 IPv4-
 assert_equal "ipv4-only: 失败后不残留临时文件" "0" \
     "$(find "${ipv4_fail_root}/runtime" -maxdepth 1 -name 'enable-ipv6.*' | wc -l | tr -d ' ')"
 
-echo "=== 22. bootstrap.sh 仓库地址可覆盖，apt 调用显式非交互（含 sudo 路径） ==="
+echo "=== 21. bootstrap.sh 仓库地址可覆盖，apt 调用显式非交互（含 sudo 路径） ==="
 boot_dir="${TMP_DIR}/bootstrap"
 install -d -m 0700 "${boot_dir}/bin"
 for util in bash sh env cat rm chmod mkdir; do
@@ -1819,7 +1847,7 @@ assert_contains "self-update: register-command 经 bash 执行" \
 assert_not_contains "self-update: 不直接执行克隆目录里的脚本" \
     "${update_body}" '^    "${repo_dir}/easy_all"'
 
-echo "=== 23. Reality Short ID 只接受偶数位十六进制（1–8 对） ==="
+echo "=== 22. Reality Short ID 只接受偶数位十六进制（1–8 对） ==="
 short_id_probe() {
     local label=$1 short_id=$2 output
     output=$(bash "${REALITY_PORT_PROBE}" "${ROOT_DIR}" "${TMP_DIR}/short-id-${label}" 443 "${short_id}") \
@@ -1836,7 +1864,7 @@ for invalid_short_id in abc 0123456789abcdef00 zz11; do
     assert_contains "short id: ${invalid_short_id} 报错说明偶数位" "${invalid_out}" "偶数位"
 done
 
-echo "=== 24. 定时重启：reboot 前非阻塞抢运行时写锁，抢不到只留痕 ==="
+echo "=== 23. 定时重启：reboot 前非阻塞抢运行时写锁，抢不到只留痕 ==="
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/lib/scheduled-maintenance.sh"
 cron_dir="${TMP_DIR}/reboot-cron"

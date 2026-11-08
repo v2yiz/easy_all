@@ -61,8 +61,8 @@ validate_mihomo_template() {
         && mihomo_dns_disables_ipv6 "${source}" \
         && ! grep -Eq '^[[:space:]]+(inet6-address|fake-ip-range6):' "${source}" \
         || die "Mihomo 模板必须保持 IPv4-only（顶层与 dns 段都要显式 ipv6: false，且不得出现 IPv6 地址字段）"
-    # Bundled templates are checked with a pinned core in CI. Custom templates must
-    # pass the same parser locally before either subscription publisher accepts them.
+    # 仓库 CI 不安装 Mihomo 内核：bundled/trusted 模板在无内核时只做结构校验
+    # （npm test 覆盖），不能当作真实内核验收；自定义模板必须在本机通过内核解析。
     local bundled_dir binary check_dir result=0
     bundled_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/templates"
     binary=${MIHOMO_CHECK_BIN:-mihomo}
