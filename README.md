@@ -24,38 +24,28 @@
 | :--- | :--- | :--- |
 | **1. 直连 Reality** | VPS IP 纯净、直连网络良好 | VLESS TCP Reality Vision（VPS `443` 或动态端口轮换）；可选 Nginx 订阅分发（本机节点 + 聚合节点） |
 | **2. 纯 CloudFront** | 只要 CDN 入口（VPS 直连被封或不需要直连） | Cloudflare 权威 DNS（灰云）→ AWS ACM → CloudFront（`443`）→ 源站 Let's Encrypt + `X-Easy-All-Origin-Key` 头校验 → Nginx → Xray XHTTP；订阅分发含本机单 CDN 节点 + 聚合节点 |
-| **3. 纯 CloudFlare（单域名）** | 只要 CDN 入口，且希望回源只对 Cloudflare 开放 | Cloudflare 橙云代理（`443` 回源，安装器只对官方回源 IPv4 段放行，不新增公网通用放行）→ Cloudflare Origin CA 证书 → Nginx → Xray XHTTP；**一个域名同时提供节点与订阅** |
+| **3. 纯 CloudFlare（单域名）** | 只要 CDN 入口，且希望回源只对 Cloudflare 开放 | Cloudflare 橙云代理（`443` 仅对官方回源 IPv4 段放行）→ Cloudflare Origin CA 证书 → Nginx → Xray XHTTP；**一个域名同时提供节点与订阅** |
 | **4. 直连+CloudFront** | 一台机器同时拥有直连与 CloudFront 节点 | 模式 2 的 CloudFront 链路 + 直连 Reality（VPS `8443`）；订阅同时含直连与 CDN 两个本机节点 |
 | **5. 直连+CloudFlare** | 一台机器同时拥有直连与橙云节点 | 模式 3 的 Cloudflare 链路 + 直连 Reality（VPS `8443`）；订阅同时含直连与橙云两个本机节点 |
 
-模式 2/4 的链路固定为下面六段，没有第三方 CDN 优选、探针测速或自动兜底节点：
+### 模式 2/4（CloudFront）链路架构
 
-1. **Cloudflare 只做权威 DNS**：源站与直连域名是灰云 A 记录（指向 VPS 公网 IPv4），节点与订阅域名是灰云 CNAME（指向 CloudFront 分发域名），全程不开启橙云代理。
+1. **Cloudflare 权威 DNS**：源站与直连域名配置灰云 A 记录（指向 VPS IPv4），节点与订阅域名配置灰云 CNAME（指向 CloudFront 分发域名）。
 2. **AWS ACM（固定 `us-east-1`）**：为 CloudFront 签发 viewer 证书，SAN 覆盖节点域名与订阅域名。
-3. **CloudFront 分发**：`sni-only`、viewer/origin 均 `https-only`、TLS 1.2_2021、缓存关闭、7 种方法 + gRPC、转发全部 query/User-Agent/Content-Type；不启用 WAF、访问日志、Origin Shield 或 Route 53。
-4. **源站 Let's Encrypt 证书**：只覆盖源站域名，CloudFront 以 `https-only` 回源并按源站域名校验 SNI/Host。
-5. **`X-Easy-All-Origin-Key` 源站头**：CloudFront 注入，Nginx 校验；健康探针、XHTTP 与订阅入口都依赖它。
-6. **Nginx → Xray**：Nginx 把 XHTTP 精确路径转发到 `127.0.0.1:10086`，并把 gRPC Host 固定为节点域名；订阅走 Token 鉴权。
+3. **CloudFront 分发**：`sni-only`、`https-only`、TLS 1.2_2021、缓存关闭、启用 7 种方法与 gRPC，转发全部 query、User-Agent 与 Content-Type。
+4. **源站 Let's Encrypt 证书**：覆盖源站域名，CloudFront 以 `https-only` 回源并按源站域名校验 SNI/Host。
+5. **源站密钥校验**：CloudFront 注入 `X-Easy-All-Origin-Key`，由 Nginx 进行合法性校验。
+6. **Nginx → Xray**：Nginx 将 XHTTP 路径转发到 `127.0.0.1:10086`，并设置 gRPC Host 为节点域名；订阅走 Token 鉴权。
 
-模式 3/5 的橙云链路固定为下面四段，同样没有优选 IP、测速组或自动兜底节点：
+### 模式 3/5（Cloudflare）链路架构
 
-1. **Cloudflare 橙云代理**：节点域名是 `proxied=true` 的 `A` 记录（指向 VPS 公网 IPv4），由 Cloudflare 边缘终结 TLS 并回源；模式 5 的直连域名是灰云 `A` 记录。
-2. **Cloudflare Origin CA 证书**：ECDSA P-256、有效期 15 年，CN 与唯一 SAN 都是节点域名；Cloudflare 的 SSL/TLS 模式需为 Full (strict)，并开启 gRPC。
-3. **回源白名单**：`443` 只对 Cloudflare 官方回源 IPv4 段放行（`easy_all-cf-origin` 注释），**不添加公网通用 443/80 放行**；不使用 Certbot。
-4. **Nginx → Xray（单域名）**：一个业务 `server` 块同时承载 `/easy_all-health`、XHTTP 精确路径（转发到 `127.0.0.1:10086`）与 `/subscribe`；未知 SNI 由默认 server 拒绝握手，订阅走 Token 鉴权。
-
-模式 3/5 不创建 CloudFront 分发、ACM 证书、Certbot lineage、StatsService 或 985GB 流量熔断定时器。
+1. **Cloudflare 橙云代理**：节点域名配置 `proxied=true` 的 A 记录（指向 VPS IPv4），由 Cloudflare 边缘终结 TLS 并回源；模式 5 直连域名为灰云 A 记录。
+2. **Cloudflare Origin CA 证书**：ECDSA P-256、有效期 15 年，CN 与 SAN 为节点域名；Cloudflare SSL/TLS 模式为 Full (strict)，开启 gRPC。
+3. **回源白名单**：VPS `443` 端口仅放行 Cloudflare 官方回源 IPv4 段（`easy_all-cf-origin`）。
+4. **Nginx → Xray（单域名）**：单业务 `server` 块同时承载 `/easy_all-health`、XHTTP 转发（`127.0.0.1:10086`）与 `/subscribe` 订阅。
 
 > [!WARNING]
-> **Cloudflare 官方服务条款与封号风险警示**：
-> Cloudflare 官方服务条款（Section 2.8 等）明确禁止将 CDN 代理用于 VPN / 代理隧道等非 HTML 大流量穿透场景，且严禁使用所谓的“优选 IP”（扫描并强制定向至特定 Anycast IP）。违规使用存在被 Cloudflare 拦截、封禁域名解析乃至封停整个 Cloudflare 账号的潜在风险。本工具模式 3 与模式 5 仅配置单域名官方合规回源（不包含任何优选 IP 逻辑），请用户务必知悉官方政策，自行评估合规风险并自行决定是否使用 Cloudflare 橙云代理。
-
----
-
-### 版本兼容与接管说明
-
-> [!IMPORTANT]
-> **旧版本状态不支持接管**：旧版 `PROTOCOL=cdn`（橙云 XHTTP）和旧版橙云 `combined` 安装无法在当前版本继续运行。请先执行 `sudo easy_all uninstall`（默认保留云端资源），再重新 `sudo easy_all install` 重新选择安装模式。重装会产生新的 UUID / 路径 / Token，客户端必须重新导入新订阅链接。
+> Cloudflare 官方禁止利用反向代理传输 VPN/代理流量及使用优选 IP，存在封号封域风险，请自行评估使用。
 
 ---
 
@@ -332,13 +322,13 @@ sudo easy_all subscription
 
 ## CloudFront 链路与 985GB 本机近似计量保护
 
-模式 2/4 不再使用优选 IP 与探针测速。CDN 入口只有一个由 AWS 全球 Anycast 调度的 CloudFront 分发域名，订阅里本机节点也只有它一个（模式 4 另加一个直连 Reality 节点）。
+模式 2/4 采用 AWS 全球 Anycast 调度的 CloudFront 分发域名作为 CDN 入口，订阅包含该节点（模式 4 另加直连 Reality 节点）。
 
 ### 1. 分发配置要点
 由脚本通过 AWS CLI 生成，无需手工点击控制台：
 
 - **Viewer**：别名 = 节点域名（订阅域名不同则一并加入），ACM `us-east-1` 证书、`sni-only`、`TLSv1.2_2021`、`https-only`、HTTP/2。
-- **行为**：缓存策略 `CachingDisabled`，源站请求策略 `AllViewerExceptHostHeader`（转发 query、User-Agent、Content-Type 等），7 种 HTTP 方法 + gRPC，不启用 WAF、访问日志、Origin Shield、Route 53。
+- **行为**：缓存策略 `CachingDisabled`，源站请求策略 `AllViewerExceptHostHeader`（转发 query、User-Agent、Content-Type 等），7 种 HTTP 方法 + gRPC。
 - **源站**：`origin.<zone>`、`https-only`、源站 TLS 1.2、自定义头 `X-Easy-All-Origin-Key`，连接/读取时限沿用固定值。
 
 ### 2. 流量保护如何工作
@@ -367,12 +357,10 @@ sudo easy_all status
 
 ## Cloudflare 橙云链路（模式 3 / 5）
 
-模式 3/5 用 Cloudflare 橙云代理作为 CDN 入口，与模式 2/4 的 CloudFront 链路完全独立：
+模式 3/5 采用 Cloudflare 橙云代理作为 CDN 入口：
 
-- **单域名**：节点域名一条橙云 `A` 记录，同时提供 XHTTP 入站与 `/subscribe` 订阅；Origin CA 证书的 CN/SAN 只有这一个名字。模式 5 另有一个灰云直连域名（固定 `8443`）。
-- **证书**：Cloudflare Origin CA（ECDSA P-256、15 年、Cloudflare 私有 CA 签发），不在本机运行 Certbot，也不需要 `80` 端口。
-- **回源白名单**：安装器为 `443` 新增的放行只对 `https://api.cloudflare.com/client/v4/ips` 公布的官方回源 IPv4 段生效（UFW 注释 `easy_all-cf-origin`），不添加公网通用 `443`/`80` 放行；宿主已有的无注释放行与云安全组不在本工具管理范围，需自行核对。获取失败时回退上一版本机白名单并存告警。
-- **Cloudflare 侧设置**：SSL/TLS 必须为 **Full (strict)**、开启 **gRPC**，橙云节点域名需有可用的边缘证书；脚本不修改整个 Zone 的 SSL 设置。
-- **没有流量熔断**：StatsService、`cdn-traffic-sync` 与 985GB 额度只属于 CloudFront 模式（2/4）；`cdn-traffic-sync` 在模式 3/5 会直接拒绝。
-- **运维**：`apply` 只重建本机与订阅；`apply-cloud` 同步 DNS 与 Origin CA；`renew-cert` 轮换 Origin CA（先通过本机严格 TLS/SNI 验收，再吊销旧证书）；`uninstall --purge-cloud` 只删除注释与目标都匹配的 A 记录，并按持久 ID 吊销证书，任一步失败只告警保留。
-- **与 AWS 无关**：模式 3/5 不提示、不安装、不调用 AWS CLI，也不需要 ACM 或 CloudFront 分发。
+- **单域名**：节点域名配置一条橙云 `A` 记录，同时提供 XHTTP 入站与 `/subscribe` 订阅；Origin CA 证书 CN/SAN 为该域名。模式 5 另设一条灰云直连域名（固定 `8443`）。
+- **证书**：使用 Cloudflare Origin CA（ECDSA P-256、15 年有效期）。
+- **回源白名单**：VPS `443` 端口仅对 Cloudflare 官方公布的回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin`）。
+- **Cloudflare 侧设置**：SSL/TLS 设为 **Full (strict)** 并开启 **gRPC**；橙云节点域名保持边缘证书就绪。
+- **运维**：`apply` 重建本机与订阅；`apply-cloud` 同步 DNS 与 Origin CA；`renew-cert` 轮换 Origin CA 证书；`uninstall --purge-cloud` 级联清理云端解析与证书。
