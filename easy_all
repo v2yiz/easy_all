@@ -396,8 +396,11 @@ unified_register_easy_all_command() {
         [[ "${relative_path}" != *.sh ]] \
             || syntax_files+=("${stage}/${relative_path}")
     done <<<"${paths}"
-    bash -n "${syntax_files[@]}" \
-        || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败"; }
+    # bash 只解析第一个文件：多余的实参只是 $1..$N，不参与语法检查。逐项校验才能覆盖整个运行时。
+    for relative_path in "${syntax_files[@]}"; do
+        bash -n "${relative_path}" \
+            || { rm -rf -- "${stage}"; die "待注册脚本语法校验失败：${relative_path}"; }
+    done
 
     rm -rf -- "${backup}"
     [[ ! -d "${EASY_ALL_INSTALL_DIR}" ]] || mv "${EASY_ALL_INSTALL_DIR}" "${backup}"

@@ -236,6 +236,21 @@ persist_mihomo_template_snapshot() {
     MIHOMO_TEMPLATE_PREPARED=1
 }
 
+# 本机节点名既是订阅里的本机节点名，也是保留组名校验的输入：必须在任何系统初始化之前
+# 用纯 bash 判定（不依赖 jq/APT/网络），规则与 normalize_subscription_config 的 name_ok 一致。
+validate_reality_local_node_name() {
+    local name=${1:-} reserved
+    [[ "${name}" =~ ^[^[:cntrl:]]{1,64}$ ]] || return 1
+    for reserved in "${LOCAL_AGGREGATION_RESERVED_NAMES[@]}"; do
+        [[ "${name}" != "${reserved}" ]] || return 1
+    done
+}
+
+reality_local_node_name_error() {
+    printf '本机节点名无效：%s；需为 1-64 个非控制字符，且不能与 AUTO/PROXY 等保留组名冲突' \
+        "${1:-}"
+}
+
 load_state() {
     local variable env_name state_loaded=0 reload=0
     if [[ "${1:-}" == "--reload" ]]; then
@@ -289,6 +304,13 @@ load_state() {
     fi
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-link}") \
         || die "状态文件中的 SUBSCRIPTION_MODE 无效：${SUBSCRIPTION_MODE}"
+    # 历史状态可能存着非法本机名：只告警不阻断，否则连 edit-sub 和 uninstall（两者都先走
+    # load_state）都进不去。坏名不能靠重输聚合 nodes 修好，只能用 NODE_NAME 环境变量覆盖
+    # 后重跑 apply；link 模式不写订阅，但节点链接/展示仍用这个名字。
+    if [[ "${state_loaded}" == "1" ]] \
+        && ! validate_reality_local_node_name "${NODE_NAME:-}"; then
+        warn "状态文件中的$(reality_local_node_name_error "${NODE_NAME:-}")；请执行 sudo env NODE_NAME=有效名称 easy_all apply 修复"
+    fi
     if [[ -n "${SUBSCRIPTION_DOMAIN:-}" ]]; then
         SUBSCRIPTION_DOMAIN=$(normalize_domain "${SUBSCRIPTION_DOMAIN}")
         validate_domain "${SUBSCRIPTION_DOMAIN}" \
@@ -310,12 +332,14 @@ load_state() {
                 warn "状态文件中的订阅令牌无效；请执行 sudo easy_all edit-sub 重新配置"
             fi
         fi
-        # 历史状态可能存着非法配置，这里只告警不阻断：若在此 die，连 edit-sub 和
-        # uninstall（两者都先走 load_state）都进不去。真正写订阅前的拦截点是
+        # 历史状态可能存着非法订阅配置，这里只告警不阻断：真正写订阅前的拦截点是
         # install_static_subscriptions 与 collect_deployed_subscription_inputs。
-        [[ -z "${SUBSCRIPTION_CONFIG:-}" ]] \
-            || reality_apply_subscription_config "${SUBSCRIPTION_CONFIG}" 2>/dev/null \
-            || warn "状态文件中的订阅配置无效；请执行 sudo easy_all edit-sub 重新配置"
+        # 本机名非法时上面已经单独告警，不再拿“订阅配置无效 / edit-sub”误导用户。
+        if validate_reality_local_node_name "${NODE_NAME:-}" \
+            && [[ -n "${SUBSCRIPTION_CONFIG:-}" ]] \
+            && ! reality_apply_subscription_config "${SUBSCRIPTION_CONFIG}" 2>/dev/null; then
+            warn "状态文件中的订阅配置无效；请执行 sudo easy_all edit-sub 重新配置"
+        fi
     else
         SUBSCRIPTION_CONFIG=""
         AGGREGATION_NODES="[]"
@@ -477,6 +501,8 @@ collect_subscription_domain() {
 collect_reality_inputs() {
     validate_protocol "${PROTOCOL}" || die "PROTOCOL 无效：${PROTOCOL:-空}"
     NODE_NAME=${NODE_NAME:-$(protocol_default_node_name)}
+    validate_reality_local_node_name "${NODE_NAME}" \
+        || die "$(reality_local_node_name_error "${NODE_NAME}")；可用 sudo env NODE_NAME=有效名称 easy_all install 指定"
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效：${VLESS_UUID}"
     collect_reality_node_host
@@ -838,13 +864,20 @@ rotate_dynamic_ports() {
         release_runtime_write_lock
         return 0
     fi
+    # 订阅端口变化同时影响 NAT、六产物与 Nginx 的 SSH 端口快照：deploy 下先拍订阅事务快照
+    # （含 root crontab 读取门禁），任一步失败由 EXIT 持锁回滚；link 只刷新 NAT。
+    if subscription_enabled; then
+        snapshot_subscription_update
+    fi
     write_ufw_nat_rules
     ufw reload >/dev/null || die "刷新动态端口 NAT 规则失败"
     if subscription_enabled; then
         install_static_subscriptions
+        write_subscription_nginx_config
         # Persist the snapshot flag so later refreshes reuse the same template.
         save_state
     fi
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     release_runtime_write_lock
     success "动态端口 NAT 与订阅快照已刷新：开放 ${PORT_BASE}-${DYNAMIC_PORT_MAX} 转发至 ${SERVICE_PORT}（每小时 ${DYNAMIC_PORTS_PER_HOUR} 个端口）"
 }
@@ -1310,12 +1343,19 @@ reality_cloudflare_validate_public_subscription() {
 # 订阅配置的唯一入口：与直连+CDN共用 lib/local-aggregation.sh 的校验与渲染，
 # 本机节点名参与重名校验（NODE_NAME 不能与聚合节点同名）。
 reality_apply_subscription_config() {
+    if ! validate_reality_local_node_name "${NODE_NAME:-}"; then
+        printf '%s；请执行 sudo env NODE_NAME=有效名称 easy_all apply 修复\n' \
+            "$(reality_local_node_name_error "${NODE_NAME:-}")" >&2
+        return 1
+    fi
     apply_local_aggregation_config "${1:-}" \
         "$(jq -cn --arg value "${NODE_NAME:-}" '[$value]')"
 }
 
 # 写订阅前的强校验：load_state 只告警，真正的拦截点在这里。
 reality_require_valid_subscription_config() {
+    validate_reality_local_node_name "${NODE_NAME:-}" \
+        || die "$(reality_local_node_name_error "${NODE_NAME:-}")；请执行 sudo env NODE_NAME=有效名称 easy_all apply 修复"
     reality_apply_subscription_config "${SUBSCRIPTION_CONFIG:-}" >/dev/null 2>&1 && return 0
     die "订阅配置无效（需 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru）；请先执行 sudo easy_all edit-sub 重新配置"
 }
@@ -1465,6 +1505,15 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/certificate.missing"
     fi
+    # 模板快照在 install_static_subscriptions 开头就已持久化：必须和 state/六产物一起回滚，
+    # 否则下一进程会按失败事务的新模板发布。
+    if [[ -f "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" ]]; then
+        install -m 0600 "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}" \
+            "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml"
+    else
+        install -m 0600 /dev/null \
+            "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml.missing"
+    fi
     if [[ -f "${UFW_BEFORE_RULES}" ]]; then
         install -m 0600 "${UFW_BEFORE_RULES}" \
             "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules"
@@ -1486,9 +1535,13 @@ snapshot_subscription_update() {
         install -m 0600 /dev/null \
             "${UPDATE_SUB_BACKUP_DIR}/ufw-default.missing"
     fi
-    { crontab -l 2>/dev/null || true; } \
-        >"${UPDATE_SUB_BACKUP_DIR}/root.crontab"
-    chmod 0600 "${UPDATE_SUB_BACKUP_DIR}/root.crontab"
+    # root crontab 快照是回滚的依据：真实读取失败必须在 armed 与任何业务修改之前中止。
+    # 用空文件掩盖读取错误会把“没有 crontab”当成事实，回滚时就会删掉受管的动态端口行；
+    # “no crontab for root”由 read_root_crontab 按已有语义成功返回，仍然保存空备份。
+    read_root_crontab >"${UPDATE_SUB_BACKUP_DIR}/root.crontab" \
+        || die "备份 root crontab 失败：${UPDATE_SUB_BACKUP_DIR}/root.crontab"
+    chmod 0600 "${UPDATE_SUB_BACKUP_DIR}/root.crontab" \
+        || die "设置 root crontab 备份权限失败"
     UPDATE_SUB_ROLLBACK_ON_EXIT=1
 }
 
@@ -1576,6 +1629,22 @@ rollback_subscription_update() {
     else
         rollback_status=1
         warn "订阅资产或 Nginx 恢复失败，继续恢复端口模式、定时任务和 UFW"
+    fi
+    # 模板快照独立恢复：订阅恢复失败（包括发布持续失败）不能连带跳过它，否则恢复后的旧
+    # state（MIHOMO_TEMPLATE_SNAPSHOT=1）仍会指向失败事务留下的新模板。失败只告警并记入
+    # rollback_status，不阻断后续端口模式、定时任务与 UFW 恢复。
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml" ]]; then
+        if ! { install -d -m 0700 "${MIHOMO_TEMPLATE_SNAPSHOT_FILE%/*}" \
+            && install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml" \
+                "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"; }; then
+            warn "恢复 Mihomo 模板快照失败：${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"
+            rollback_status=1
+        fi
+    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/mihomo-template.yaml.missing" ]]; then
+        if ! rm -f -- "${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"; then
+            warn "删除本次新建的 Mihomo 模板快照失败：${MIHOMO_TEMPLATE_SNAPSHOT_FILE}"
+            rollback_status=1
+        fi
     fi
     [[ ! -f "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules" ]] \
         || install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/ufw-before.rules" \
@@ -1744,6 +1813,10 @@ update_reality_target() {
         release_runtime_write_lock
         return 0
     fi
+    # 新 target 在赋给运行时之前先拍快照：之后的运行时、state、订阅发布、第二次保存任一步失败
+    # 都由 EXIT 持锁恢复旧 state/Xray/六产物/模板，不会留下“Xray 已是新 SNI、state 还是旧值”
+    # 的中间态。同 target 无操作在上面已提前返回。
+    snapshot_subscription_update
     REALITY_TARGET=${requested}
     # Validate and restart before persisting: a failed handshake restores the old runtime
     # config inside refresh_protocol_runtime_config, so the state file must keep matching it.
@@ -1753,9 +1826,12 @@ update_reality_target() {
     # persists the Mihomo template snapshot written by the republication.
     save_state
     if subscription_enabled; then
+        # 只重新发布现有订阅：不引入 deploy 完整链的 DNS/证书/Strict TLS/公网验收副作用。
         install_static_subscriptions
         save_state
     fi
+    # 全部提交成功后才解除回滚、释放锁并报告成功。
+    UPDATE_SUB_ROLLBACK_ON_EXIT=0
     release_runtime_write_lock
     success "Reality 目标已更新：${current} → ${REALITY_TARGET}"
     show_node
@@ -2016,7 +2092,11 @@ uninstall_all() {
     restore_preinstall_firewall
     restore_preinstall_ipv6
     restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
-    remove_daily_reboot_schedule
+    if ! remove_daily_reboot_schedule; then
+        # errexit 下这里本来会静默中止：显式说明卸载未完成，并保留状态与命令供修正后重试。
+        warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
+        return 1
+    fi
     remove_dynamic_port_rotation
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}" "${REALITY_SUBSCRIPTION_JS}"
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -2094,8 +2174,14 @@ validate_protocol_runtime() {
 }
 
 run_reality_install_pipeline() {
-    local requested=${1:-} prompt_download_name=${2:-0}
+    local requested=${1:-} prompt_download_name=${2:-0} precheck_node_name
     require_root
+    # 本机节点名与保留组名/长度冲突时，必须在获取写锁、写安装 marker、建 Swap、APT、cron、
+    # IPv4 策略等任何系统修改之前拒绝。这里只用 Profile 已 source 的 bash 数据（不依赖
+    # jq/APT/网络）；尚未 choose_protocol，所以用即将生效的默认值。
+    precheck_node_name=${NODE_NAME:-${DEFAULT_REALITY_NODE_NAME}}
+    validate_reality_local_node_name "${precheck_node_name}" \
+        || die "$(reality_local_node_name_error "${precheck_node_name}")；可用 sudo env NODE_NAME=有效名称 easy_all install 指定"
     require_systemd
     acquire_runtime_write_lock
     [[ ! -f "${STATE_FILE}" ]] || die "easy_all 已安装；请使用 easy_all apply 刷新配置"

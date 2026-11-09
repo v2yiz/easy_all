@@ -559,6 +559,46 @@ install_nginx_config_path() {
     printf '%s' "${EASY_ALL_GUARD_NGINX_CONFIG:-${NGINX_CONFIG:-/etc/nginx/conf.d/easy_all.conf}}"
 }
 
+# 目录项字节数：用 find 枚举后按字节计数，不解析 ls 文本。文件名里的换行不会被命令替换
+# 吃掉（单个 LF 文件名也是 2 字节，不是“空”）；find 枚举失败返回非零，调用方必须拒绝豁免。
+install_dir_entries_bytes() {
+    local dir=$1 bytes
+    bytes=$(
+        set -o pipefail
+        find "${dir}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | wc -c
+    ) || return 1
+    printf '%s\n' "${bytes//[[:space:]]/}"
+}
+
+# 目录项行数：只用于“恰好 N 项”的判定。含换行的文件名只会多计行、不会少计，
+# 因此不会把多项误判成一项；枚举失败返回非零。
+install_dir_entry_count() {
+    local dir=$1 count
+    count=$(
+        set -o pipefail
+        find "${dir}" -mindepth 1 -maxdepth 1 -print 2>/dev/null | wc -l
+    ) || return 1
+    printf '%s\n' "${count//[[:space:]]/}"
+}
+
+# 旧 FQ helper 把开机队列快照固定在 STATE_DIR/backups/qdisc。卸载后只剩这条空链时
+# 它是正常产物而不是未完成安装；只接受「runtime-write.lock + backups/qdisc 全空」，
+# 隐藏项、symlink、pre-install 快照与任何 qdisc 文件/.apply 都不豁免。
+install_state_dir_only_empty_fq_chain() {
+    local state_dir=$1 entries expected=1
+    [[ -d "${state_dir}" && ! -L "${state_dir}" ]] || return 1
+    [[ -d "${state_dir}/backups" && ! -L "${state_dir}/backups" ]] || return 1
+    [[ -d "${state_dir}/backups/qdisc" && ! -L "${state_dir}/backups/qdisc" ]] || return 1
+    # 状态目录除运行时写锁外只能有 backups 一项；backups 只能有 qdisc；qdisc 必须完全为空。
+    [[ ! -e "${state_dir}/runtime-write.lock" ]] || expected=2
+    entries=$(install_dir_entry_count "${state_dir}") || return 1
+    [[ "${entries}" == "${expected}" ]] || return 1
+    entries=$(install_dir_entry_count "${state_dir}/backups") || return 1
+    [[ "${entries}" == "1" ]] || return 1
+    entries=$(install_dir_entries_bytes "${state_dir}/backups/qdisc") || return 1
+    [[ "${entries}" == "0" ]]
+}
+
 # 已安装（存在状态文件）时返回 1：残留判定只服务于「未安装」场景。
 install_residue_reason() {
     local state_dir state_file service_file nginx_config progress stage state_entries
@@ -578,7 +618,10 @@ install_residue_reason() {
     if [[ -d "${state_dir}" ]]; then
         state_entries=$(ls -A "${state_dir}" 2>/dev/null \
             | grep -vx 'runtime-write.lock' || true)
-        [[ -z "${state_entries}" ]] || reasons+=("未完成的状态目录 ${state_dir}")
+        if [[ -n "${state_entries}" ]] \
+            && ! install_state_dir_only_empty_fq_chain "${state_dir}"; then
+            reasons+=("未完成的状态目录 ${state_dir}")
+        fi
     fi
     if [[ -f "${service_file}" ]]; then
         reasons+=("残留服务单元 ${service_file}")

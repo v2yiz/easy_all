@@ -224,13 +224,20 @@ update_reality_target() {
     REALITY_TARGET=${target}
     validate_reality_target_runtime
     snapshot_subscription_update
-    cdn_traffic_protection_checkpoint \
-        || die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止更新 Reality 目标，请先运行 sudo easy_all cdn-traffic-sync"
+    if ! cdn_traffic_protection_checkpoint; then
+        UPDATE_SUB_ROLLBACK_NO_RESTART=1
+        die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止更新 Reality 目标，请先运行 sudo easy_all cdn-traffic-sync"
+    fi
     configure_tcp_acceleration
     configure_ipv4_only
     xhttp_configure_ufw
     write_xray_config
     install_xray_service
+    # 最后一次采样紧贴 restart：准备阶段旧进程仍在计数。
+    if ! cdn_traffic_protection_checkpoint; then
+        UPDATE_SUB_ROLLBACK_NO_RESTART=1
+        die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止更新 Reality 目标，请先运行 sudo easy_all cdn-traffic-sync"
+    fi
     # enable --now 对已运行 unit 是空操作：不改 target 不重启，新 SNI 不会生效。
     systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 服务失败"
     write_nginx_config

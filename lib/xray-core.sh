@@ -34,7 +34,7 @@ parse_xray_dgst_sha256() {
 
 download_xray() {
     local release_file archive_url dgst_url version temp_dir archive dgst expected actual
-    local asset=${XRAY_ARCHIVE:-} digest_asset
+    local asset=${XRAY_ARCHIVE:-} digest_asset version_stage
     if [[ -z "${asset}" ]]; then
         case "$(dpkg --print-architecture)" in
         amd64) asset=Xray-linux-64.zip ;;
@@ -43,7 +43,8 @@ download_xray() {
         esac
     fi
     digest_asset=${XRAY_DGST:-${asset}.dgst}
-    temp_dir=$(make_temp_dir)
+    temp_dir=$(make_temp_dir) \
+        || die "创建 Xray 下载临时目录失败"
     release_file="${temp_dir}/release.json"
     download_https_file "${XRAY_RELEASES_API}" "${release_file}" \
         " Xray 最新版本信息"
@@ -73,10 +74,32 @@ download_xray() {
         || die "Xray SHA256 校验文件格式无效：未找到 SHA2-256 摘要"
     [[ "${expected}" == "${actual}" ]] \
         || die "Xray SHA256 校验失败：期望 ${expected}，实际 ${actual}"
-    unzip -qo "${archive}" -d "${temp_dir}/xray"
-    install -d -m 0755 "${XRAY_DIR}"
-    install -m 0755 "${temp_dir}/xray/xray" "${XRAY_BIN}"
-    printf '%s\n' "${version}" >"${XRAY_DIR}/version"
+    # 函数可能处于 if/|| 上下文，内部 errexit 不可靠：每一步都显式检查。
+    unzip -qo "${archive}" -d "${temp_dir}/xray" \
+        || die "解压 Xray 安装包失败：${archive}"
+    install -d -m 0755 "${XRAY_DIR}" \
+        || die "创建 Xray 安装目录失败：${XRAY_DIR}"
+    install -m 0755 "${temp_dir}/xray/xray" "${XRAY_BIN}" \
+        || die "安装 Xray 二进制失败：${XRAY_BIN}"
+    # version 在目标目录内暂存后 rename：写失败不能截断已记录版本。暂存文件由本进程清理，
+    # 因为本函数在 update-core 的子 shell 中执行，登记的 cleanup_files 父进程看不到。
+    version_stage=$(mktemp "${XRAY_DIR}/.version.XXXXXX") \
+        || die "创建 Xray 版本暂存文件失败：${XRAY_DIR}"
+    if ! printf '%s\n' "${version}" >"${version_stage}"; then
+        rm -f -- "${version_stage}" \
+            || warn "无法清理 Xray 版本暂存文件：${version_stage}"
+        die "写入 Xray 版本暂存文件失败：${version_stage}"
+    fi
+    if ! chmod 0644 "${version_stage}"; then
+        rm -f -- "${version_stage}" \
+            || warn "无法清理 Xray 版本暂存文件：${version_stage}"
+        die "设置 Xray 版本文件权限失败：${version_stage}"
+    fi
+    if ! mv -f -- "${version_stage}" "${XRAY_DIR}/version"; then
+        rm -f -- "${version_stage}" \
+            || warn "无法清理 Xray 版本暂存文件：${version_stage}"
+        die "发布 Xray 版本文件失败：${XRAY_DIR}/version"
+    fi
 }
 
 install_xray_service() {

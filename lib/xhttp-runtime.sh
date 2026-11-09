@@ -427,9 +427,16 @@ rollback_subscription_update() {
     fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" && -n "${XRAY_CONFIG:-}" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/xray-config.json" "${XRAY_CONFIG}"
-        # 保护性停机下的 edit-sub 只恢复订阅对象与 deny 版 Nginx，绝不启动旧 Xray。
+        # 本分支只恢复文件、绝不重启 Xray：保护性停机下的 edit-sub 如此，apply/apply-cloud/
+        # reality-target 的最后 checkpoint 拒绝也如此。这里不声称服务是否在运行——后三条路径
+        # 进入时旧 Xray 仍在运行（只是不重启），写“已停机”会误导运维。
         if [[ "${UPDATE_SUB_ROLLBACK_NO_RESTART:-0}" == "1" ]]; then
-            warn "保持 Xray 停机：本次回滚不重启旧配置"
+            warn "本次回滚不重启 Xray（旧进程可能仍在运行）；若保护待落实，请执行 sudo easy_all cdn-traffic-sync（定时器也会在约 15 秒内收敛）"
+        elif declare -F cdn_traffic_protection_checkpoint >/dev/null 2>&1 \
+            && ! cdn_traffic_protection_checkpoint; then
+            # 恢复重启前也要采样：拒绝时文件仍已恢复，但不得重新放行旧的开放运行时。
+            # 该分支没有重启也没有停服务：旧进程可能仍在以开放配置运行，停机会切断模式 4/5 的直连。
+            warn "恢复前 CDN 流量采样未通过；未重启 Xray，旧进程可能仍在以开放配置运行；保护会在保护定时器下一轮（约 15 秒）收敛，也可立即执行 sudo easy_all cdn-traffic-sync"
         else
             systemctl restart "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 \
                 || warn "恢复订阅更新前 Xray 配置失败"

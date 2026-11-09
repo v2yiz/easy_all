@@ -1053,7 +1053,12 @@ cdn_local_uninstall_common() {
     restore_preinstall_firewall
     restore_preinstall_ipv6
     restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
-    remove_daily_reboot_schedule
+    if ! remove_daily_reboot_schedule; then
+        # 不能把“crontab 没改成”当成卸载完成：否则命令链接、业务目录和状态一起被删，
+        # 而标记任务仍会写入一个已不存在的环境。保留现场供修正后重试。
+        warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
+        return 1
+    fi
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}" "${STATE_DIR}"

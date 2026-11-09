@@ -48,9 +48,14 @@ mode_of() {
     stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
-bash -n "${PROFILE}" "${CORE}" "${GUARD}" "${XHTTP_LIB}" \
-    "${ROOT_DIR}/easy_all" "${ROOT_DIR}/lib/runtime-core.sh" \
+syntax_files=(
+    "${PROFILE}" "${CORE}" "${GUARD}" "${XHTTP_LIB}"
+    "${ROOT_DIR}/easy_all" "${ROOT_DIR}/lib/runtime-core.sh"
     "${ROOT_DIR}/lib/profile-common.sh" "${ROOT_DIR}/lib/scheduled-maintenance.sh"
+)
+for syntax_file in "${syntax_files[@]}"; do
+    bash -n "${syntax_file}" || fail_test "语法校验失败：${syntax_file}"
+done
 
 # --- 1. CLI / manifest 接线 --------------------------------------------------
 launcher_body=$(<"${ROOT_DIR}/easy_all")
@@ -282,12 +287,91 @@ scenario_resume_plain() {
     printf 'RESUMED\n'
 }
 
+# --- reality-target 临重启最后采样的外部夹具 ---------------------------------
+meter_set_stats() {
+    jq -cn --argjson up "${1}" --argjson down "${2}" '
+        {stat:[
+          {name:"inbound>>>vless-xhttp-in>>>traffic>>>uplink",value:$up},
+          {name:"inbound>>>vless-xhttp-in>>>traffic>>>downlink",value:$down}
+        ]}' >"${FAKE_STATS_FILE}"
+}
+
+meter_seed_baseline() {
+    local used=${1:-0}
+    printf 'run-1' >"${FAKE_INVOCATION_FILE}"
+    cdn_traffic_write_usage "$(jq -cn --arg period "$(cdn_traffic_current_period)" \
+        --argjson used "${used}" '
+        {period:$period,runtime_id:"run-1",used_bytes:$used,last_uplink:0,last_downlink:0,
+         blocked:false,enforced:false,protection_offline:false}')"
+    meter_set_stats 0 0
+}
+
+meter_systemctl() {
+    printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG}"
+    case "${1:-}" in
+    show) command cat "${FAKE_INVOCATION_FILE}" 2>/dev/null || true ;;
+    is-active) return 0 ;;
+    restart)
+        printf '%s' "${METER_RESTART_ID:-run-2}" >"${FAKE_INVOCATION_FILE}"
+        meter_set_stats 0 0
+        ;;
+    *) return 0 ;;
+    esac
+}
+
+target_meter_stubs() {
+    require_root() { :; }
+    systemctl() { meter_systemctl "$@"; }
+    validate_reality_target_runtime() { :; }
+    configure_ipv4_only() { :; }
+    xhttp_configure_ufw() { :; }
+    write_xray_config() { :; }
+    install_xray_service() { :; }
+    write_nginx_config() { :; }
+    validate_protocol_runtime() { :; }
+    cdn_validate_direct_runtime() { :; }
+    cloudfront_write_subscriptions() { :; }
+    validate_subscription_runtime() { :; }
+    save_state() { :; }
+    commit_subscription_update() { :; }
+}
+
+scenario_target_long_stage() {
+    trap 'status=$?; cleanup; exit "${status}"' EXIT
+    meter_seed_baseline 0
+    target_meter_stubs
+    configure_tcp_acceleration() { meter_set_stats 100 50; }
+    update_reality_target swdist.apple.com:8443
+    printf 'TARGET|%s|%s|%s\n' \
+        "$(jq -r '.used_bytes' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")" \
+        "$(jq -r '[.blocked, .enforced] | @tsv' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")" \
+        "${RUNTIME_WRITE_LOCK_DEPTH}"
+}
+
+scenario_target_long_stage_refusal() {
+    trap 'status=$?; cleanup; exit "${status}"' EXIT
+    meter_seed_baseline $((985 * 1000 * 1000 * 1000 - 100))
+    target_meter_stubs
+    configure_tcp_acceleration() { meter_set_stats 100 50; }
+    update_reality_target swdist.apple.com:8443
+    printf 'UNEXPECTED-SUCCESS\n'
+}
+
+scenario_meter_sample() {
+    collect_installed_state
+    cdn_traffic_update_usage || fail_test "新进程采样失败"
+    printf 'USED|%s\n' "$(jq -r '.used_bytes' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+}
+
 if [[ -n "${EASY_ALL_COMBINED_SCENARIO:-}" ]]; then
     trap - EXIT
     case "${EASY_ALL_COMBINED_SCENARIO}" in
     resume-fields) scenario_resume_fields ;;
     resume-defaults) scenario_resume_defaults ;;
     resume-plain) scenario_resume_plain ;;
+    target-long-stage) scenario_target_long_stage ;;
+    target-long-stage-refusal) scenario_target_long_stage_refusal ;;
+    meter-sample) scenario_meter_sample ;;
     *) fail_test "未知子进程场景：${EASY_ALL_COMBINED_SCENARIO}" ;;
     esac
     exit 0
@@ -1007,6 +1091,44 @@ assert_contains "reality-target 走核心本机事务" "${admission_body}" "clou
 [[ "$(grep -n 'cdn_require_valid_subscription' <<<"${admission_body}" | cut -d: -f1)" \
     -lt "$(grep -n 'snapshot_subscription_update' <<<"${admission_body}" | cut -d: -f1)" ]] \
     || fail_test "强校验订阅必须早于快照/事务"
+
+# --- 14b. reality-target 的最后采样：准备阶段增长不得漏计，拒绝时不得重启 ----
+combined_scenario() {
+    EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_COMBINED_SCENARIO="$1" \
+        bash "${BASH_SOURCE[0]}"
+}
+combined_restart_count() {
+    grep -c -F 'restart easy_all-xray.service' "${FAKE_SYSTEMCTL_LOG}" 2>/dev/null || true
+}
+
+: >"${FAKE_SYSTEMCTL_LOG}"
+target_meter_out=$(combined_scenario target-long-stage 2>&1) \
+    || fail_test "reality-target 长阶段计量用例必须成功：${target_meter_out}"
+assert_contains "reality-target 最后采样计入准备阶段流量" "${target_meter_out}" \
+    "TARGET|150|false	false|1"
+printf 'run-2' >"${FAKE_INVOCATION_FILE}"
+meter_set_stats 7 3
+target_used_out=$(combined_scenario meter-sample 2>&1) \
+    || fail_test "新进程累计采样必须成功：${target_used_out}"
+assert_contains "reality-target 后新进程累计包含旧进程最后计数" "${target_used_out}" \
+    "USED|160"
+
+: >"${FAKE_SYSTEMCTL_LOG}"
+target_refusal_rc=0
+target_refusal_out=$(combined_scenario target-long-stage-refusal 2>&1) \
+    || target_refusal_rc=$?
+((target_refusal_rc != 0)) || fail_test "reality-target 最后采样跨阈值时必须非零"
+assert_not_contains "reality-target 拒绝时不得报成功" "${target_refusal_out}" "目标已更新"
+assert_equal "reality-target 拒绝时不执行 restart" "0" "$(combined_restart_count)"
+assert_equal "reality-target 拒绝保留 pending" "true	false" \
+    "$(jq -r '[.blocked, .enforced] | @tsv' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+assert_contains "reality-target 拒绝时明确提示手动同步" "${target_refusal_out}" \
+    "cdn-traffic-sync"
+assert_contains "reality-target 拒绝时回滚不重启 Xray（不声称已停机）" \
+    "${target_refusal_out}" "本次回滚不重启 Xray（旧进程可能仍在运行）"
+# 恢复基线：重新发布当前状态的受限/开放配置并清空计量，不影响后续用例。
+cdn_traffic_write_usage "$(jq -c '.blocked=false | .enforced=false | .protection_offline=false |
+    .used_bytes=0 | .last_uplink=0 | .last_downlink=0' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
 
 # --- 15. 两云失败：CF 冲突记录与 AWS 失败都明确失败且不破坏本机 ----------------
 cloudflare_record_list() {

@@ -619,7 +619,20 @@ const shimLines = [
     'ufw() { printf "ufw %s\\n" "$*" >>"${FAKE_CALL_LOG:?}"; return 0; }',
     'sysctl() { return 0; }',
     'flock() { return 0; }',
-    'crontab() { printf "crontab %s\\n" "$*" >>"${FAKE_CALL_LOG:?}"; [[ "${1:-}" == "-l" ]] && printf "0 3 * * * /usr/local/bin/user-backup\\n"; return 0; }',
+    // root crontab 持久化到隔离文件：-l 读、- 写、-r 删；SANDBOX_CRONTAB_FAIL=1 注入写失败。
+    'crontab() { printf "crontab %s\\n" "$*" >>"${FAKE_CALL_LOG:?}"; case "${1:-}" in -l) if [[ -f "${SANDBOX_CRONTAB_FILE:?}" ]]; then command cat "${SANDBOX_CRONTAB_FILE}"; else printf "0 3 * * * /usr/local/bin/user-backup\\n"; fi; return 0 ;; -r) command rm -f "${SANDBOX_CRONTAB_FILE:?}"; return 0 ;; -) if [[ "${SANDBOX_CRONTAB_FAIL:-0}" == "1" ]]; then return 1; fi; command cat >"${SANDBOX_CRONTAB_FILE:?}" ;; *) return 1 ;; esac; }',
+    // 命令入口映射到沙箱：卸载删除命令链接时不能碰宿主 /usr/local。
+    'rm() {',
+    '    local args=() arg',
+    '    for arg in "$@"; do',
+    '        case "${arg}" in',
+    '        /usr/local/bin/easy_all) args+=("${SANDBOX_COMMAND_PATH:?}") ;;',
+    '        /usr/local/lib/easy_all*) args+=("${SANDBOX_LIB_DIR:?}${arg#/usr/local/lib/easy_all}") ;;',
+    '        *) args+=("${arg}") ;;',
+    '        esac',
+    '    done',
+    '    command rm "${args[@]}"',
+    '}',
     'ss() {',
     '    case "$*" in',
     '    *":22"*|*-ltnp*|-ltn*) printf \'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=42,fd=3))\\n\' ;;',
@@ -714,6 +727,9 @@ const sandboxEnv = (extra = {}) => ({
     EASY_ALL_POLICY_RC_OVERRIDE: join(sandboxRoot, 'policy-rc.d'),
     EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE: sandbox.progress,
     EASY_ALL_STATE_FILE_OVERRIDE: sandbox.stateFile,
+    SANDBOX_CRONTAB_FILE: join(sandboxRoot, 'crontab.txt'),
+    SANDBOX_COMMAND_PATH: join(sandbox.lib, 'easy_all'),
+    SANDBOX_LIB_DIR: sandbox.lib,
     FORCE: '1',
     ...extra,
 });
@@ -731,6 +747,8 @@ function writeCloudfrontSandbox({ subscriptionConfig }) {
     writeFileSync(join(sandbox.state, 'certs', 'fullchain.pem'), 'cert');
     writeFileSync(join(sandbox.state, 'certs', 'private.key'), 'key', { mode: 0o600 });
     writeFileSync(sandbox.stateFile, sandboxCloudfrontState(subscriptionConfig), { mode: 0o600 });
+    writeFileSync(join(sandbox.lib, 'easy_all'), '#!/usr/bin/env bash\nprintf "easy_all\\n"\n', { mode: 0o755 });
+    writeFileSync(join(sandboxRoot, 'crontab.txt'), '0 3 * * * /usr/local/bin/user-backup\n');
     writeFileSync(
         sandbox.xray,
         '#!/usr/bin/env bash\ncase "${1:-}" in\napi) printf \'{"stat":[{"name":"inbound>>>vless-xhttp-in>>>traffic>>>uplink","value":5},{"name":"inbound>>>vless-xhttp-in>>>traffic>>>downlink","value":5}]}\' ;;\nesac\nexit 0\n',
@@ -755,6 +773,43 @@ if (process.getuid && process.getuid() !== 0) {
     assert.ok(systemCalls.includes('disable --now easy_all-xray.service'), systemCalls);
     assert.ok(systemCalls.includes('disable --now nginx'), systemCalls);
     assert.ok(systemCalls.includes('ufw reload'), systemCalls);
+
+    // 6.3 模式 2/4 卸载：root crontab 写失败必须中断卸载并保留状态与命令，修正后重试成功。
+    const sandboxCronFixture = [
+        '0 3 * * * /usr/local/bin/user-backup',
+        '0 4 * * * true # easy_all-managed-reboot',
+        '',
+    ].join('\n');
+    writeCloudfrontSandbox({
+        subscriptionConfig: '{"allowedTokens":{"owner":"cdnwq-rtbke-3182"},"nodes":[]}',
+    });
+    writeFileSync(join(sandboxRoot, 'crontab.txt'), sandboxCronFixture);
+    writeFileSync(join(sandbox.web, 'keep.txt'), 'x');
+    const sandboxCronFailed = run(easyAll, ['uninstall'],
+        sandboxEnv({ SANDBOX_CRONTAB_FAIL: '1' }));
+    const sandboxCronFailedOut = `${sandboxCronFailed.stdout}${sandboxCronFailed.stderr}`;
+    assert.equal(sandboxCronFailed.status, 1,
+        `模式 2 卸载：crontab 写失败时必须非零：${sandboxCronFailedOut}`);
+    assert.ok(!sandboxCronFailedOut.includes('本机内容已卸载'),
+        `模式 2 卸载：失败时不得宣称已卸载：${sandboxCronFailedOut}`);
+    assert.ok(sandboxCronFailedOut.includes('卸载未完成'),
+        `模式 2 卸载：失败必须点名卸载未完成：${sandboxCronFailedOut}`);
+    assert.ok(sandboxCronFailedOut.includes('重试 uninstall'),
+        `模式 2 卸载：失败必须给出重试指引：${sandboxCronFailedOut}`);
+    assert.ok(existsSync(sandbox.stateFile), '模式 2 卸载：失败必须保留状态文件');
+    assert.ok(existsSync(join(sandbox.lib, 'easy_all')), '模式 2 卸载：失败必须保留命令入口');
+    assert.ok(existsSync(join(sandbox.web, 'keep.txt')), '模式 2 卸载：失败必须保留业务文件');
+    assert.equal(readFileSync(join(sandboxRoot, 'crontab.txt'), 'utf8'), sandboxCronFixture,
+        '模式 2 卸载：失败时不得改写 root crontab');
+    const sandboxCronRetried = run(easyAll, ['uninstall'], sandboxEnv());
+    assert.equal(sandboxCronRetried.status, 0,
+        `模式 2 卸载：修正 crontab 后重试必须成功：${sandboxCronRetried.stdout}${sandboxCronRetried.stderr}`);
+    assert.ok(!existsSync(sandbox.state), '模式 2 卸载：重试成功必须删状态目录');
+    assert.ok(!existsSync(join(sandbox.lib, 'easy_all')), '模式 2 卸载：重试成功必须删命令入口');
+    const sandboxCronAfter = readFileSync(join(sandboxRoot, 'crontab.txt'), 'utf8');
+    assert.ok(sandboxCronAfter.includes('user-backup'), '模式 2 卸载：重试成功必须保留用户 cron');
+    assert.ok(!sandboxCronAfter.includes('easy_all-managed-reboot'),
+        `模式 2 卸载：重试成功只删标记任务：${sandboxCronAfter}`);
 
     // 6.2 已卸载后再卸载：正常路径必须给出「尚未安装」，而不是参数错误。
     const secondUninstall = run(easyAll, ['uninstall'], sandboxEnv());
@@ -824,6 +879,7 @@ const cf = {
     nginx: join(cfRoot, 'nginx', 'easy_all.conf'),
     lock: join(cfRoot, 'runtime-write.lock'),
     xray: join(cfRoot, 'bin', 'xray'),
+    crontab: join(cfRoot, 'crontab.txt'),
     stateFile: join(cfRoot, 'state', 'state.env'),
 };
 
@@ -868,7 +924,8 @@ const cfShimLines = [
     '}',
     'sysctl() { return 0; }',
     'flock() { return 0; }',
-    'crontab() { [[ "${1:-}" == "-l" ]] && printf "0 3 * * * /usr/local/bin/user-backup\\n"; return 0; }',
+    // root crontab 持久化到隔离文件：-l 读、- 写、-r 删；CF_CRONTAB_FAIL=1 注入写失败。
+    'crontab() { case "${1:-}" in -l) command cat "${CF_CRONTAB_FILE:?}" 2>/dev/null; return 0 ;; -r) command rm -f "${CF_CRONTAB_FILE:?}"; return 0 ;; -) if [[ "${CF_CRONTAB_FAIL:-0}" == "1" ]]; then return 1; fi; command cat >"${CF_CRONTAB_FILE:?}" ;; *) return 1 ;; esac; }',
     'dig() { printf "203.0.113.9\\n"; }',
     'timeout() { shift; "$@"; }',
     'sysctl() {',
@@ -934,7 +991,9 @@ const cfShimLines = [
     '        esac',
     '    done',
     '    target="${args[${#args[@]}-1]}"',
-    '    case "${target}" in /etc/*|/usr/*|/var/*) printf "test isolation: refusing install %s\\n" "${target}" >&2; return 1 ;; esac',
+    '    if [[ -z "${CF_ROOT:-}" || "${target}" != "${CF_ROOT}"* ]]; then',
+    '        case "${target}" in /etc/*|/usr/*|/var/*) printf "test isolation: refusing install %s\\n" "${target}" >&2; return 1 ;; esac',
+    '    fi',
     '    if [[ " ${args[*]} " == *" -d "* ]]; then',
     '        for arg in "${args[@]}"; do',
     '            case "${arg}" in -*) continue ;; esac',
@@ -1078,8 +1137,10 @@ const cfState = (protocol, extra = []) => {
 const cfEnv = (extra = {}) => ({
     ...isolation,
     BASH_ENV: cfShim,
+    CF_ROOT: cfRoot,
     CF_CALL_LOG: cfCalls,
     CF_API_LOG: cfApiLog,
+    CF_CRONTAB_FILE: cf.crontab,
     CF_LIB_DIR: cf.lib,
     CF_CA_DIR: cfCa,
     CF_UFW_RULES: join(cfRoot, 'ufw', 'rules.txt'),
@@ -1140,6 +1201,7 @@ function writeCfSandbox(stateText, { oldCertDays = 3000 } = {}) {
         { mode: 0o700 });
     writeFileSync(cfCalls, '');
     writeFileSync(cfApiLog, '');
+    writeFileSync(cf.crontab, '0 3 * * * /usr/local/bin/user-backup\n');
     writeFileSync(join(cfRoot, 'nginx', 'nginx.conf'), 'worker_processes auto;\n');
     writeFileSync(cf.ufw, 'IPV6=yes\nDEFAULT_INPUT_POLICY="DROP"\n');
     writeFileSync(join(cfRoot, 'ufw', 'rules.txt'), '');
@@ -1411,6 +1473,114 @@ if (process.getuid && process.getuid() !== 0) {
     assert.ok(mvFailOut.includes('cf.example.com'), mvFailOut);
     assert.ok(!readFileSync(cfApiLog, 'utf8').includes('-X DELETE'),
         'failed rotation must not revoke any certificate');
+
+    // 8.13 模式 3/5 卸载：root crontab 写失败必须中断卸载并保留状态，修正后重试只删标记任务。
+    const managedRebootLine = '0 4 * * * true # easy_all-managed-reboot';
+    const cronFixture = ['0 3 * * * /usr/local/bin/user-backup', managedRebootLine, ''].join('\n');
+    const directFields = [
+        'DIRECT_DOMAIN="node.example.com"',
+        'DIRECT_NODE_NAME="direct-node"',
+        'REALITY_TARGET="swdist.apple.com:443"',
+        'REALITY_PRIVATE_KEY="test-private"',
+        'REALITY_PUBLIC_KEY="test-public"',
+        'REALITY_SHORT_ID="0123456789abcdef"',
+    ];
+    const cronUninstallCases = [
+        { label: '模式 3 完整状态', state: cfState('cloudflare') },
+        { label: '模式 5 完整状态', state: cfState('combined-cloudflare', directFields) },
+        {
+            label: '模式 3 不完整状态',
+            state: ['STATE_VERSION="0"', 'PROTOCOL="cloudflare"', 'CDN_PROVIDER="cloudflare"', ''].join('\n'),
+        },
+    ];
+    for (const { label, state } of cronUninstallCases) {
+        writeCfSandbox(state);
+        writeFileSync(cf.crontab, cronFixture);
+        writeFileSync(join(cf.web, 'keep.txt'), 'x');
+        const cronFailed = run(easyAll, ['uninstall'], cfEnv({ CF_CRONTAB_FAIL: '1' }));
+        const cronFailedOut = `${cronFailed.stdout}${cronFailed.stderr}`;
+        assert.equal(cronFailed.status, 1,
+            `${label}：crontab 写失败时卸载必须非零：${cronFailedOut}`);
+        assert.ok(!cronFailedOut.includes('本机内容已卸载'),
+            `${label}：失败时不得宣称已卸载：${cronFailedOut}`);
+        assert.ok(cronFailedOut.includes('卸载未完成'),
+            `${label}：失败必须点名卸载未完成：${cronFailedOut}`);
+        assert.ok(cronFailedOut.includes('重试 uninstall'),
+            `${label}：失败必须给出重试指引：${cronFailedOut}`);
+        assert.ok(existsSync(cf.stateFile), `${label}：失败必须保留状态文件`);
+        assert.ok(existsSync(join(cf.web, 'keep.txt')), `${label}：失败必须保留业务文件`);
+        assert.equal(readFileSync(cf.crontab, 'utf8'), cronFixture,
+            `${label}：失败时不得改写 root crontab`);
+        const cronRetried = run(easyAll, ['uninstall'], cfEnv());
+        assert.equal(cronRetried.status, 0,
+            `${label}：修正 crontab 后重试必须成功：${cronRetried.stdout}${cronRetried.stderr}`);
+        assert.ok(!existsSync(cf.state), `${label}：重试成功必须删状态目录`);
+        assert.ok(!existsSync(join(cf.web, 'keep.txt')), `${label}：重试成功必须删业务文件`);
+        const crontabAfter = readFileSync(cf.crontab, 'utf8');
+        assert.ok(crontabAfter.includes('user-backup'), `${label}：重试成功必须保留用户 cron`);
+        assert.ok(!crontabAfter.includes('easy_all-managed-reboot'),
+            `${label}：重试成功只删标记任务：${crontabAfter}`);
+    }
+
+    // 8.14 模式 1（Reality）卸载：root crontab 写失败必须显式提示并保留状态与命令。
+    const cfRealityState = () => [
+        'STATE_VERSION="0"',
+        'PROTOCOL="reality"',
+        'CDN_PROVIDER=""',
+        'TCP_ACCELERATION="skyline"',
+        'NODE_NAME="MY_REALITY"',
+        'NODE_HOST="198.51.100.10"',
+        'VLESS_UUID="11111111-2222-4111-8111-111111111111"',
+        'REALITY_TARGET="swdist.apple.com:443"',
+        'REALITY_PRIVATE_KEY="test-private"',
+        'REALITY_PUBLIC_KEY="test-public"',
+        'REALITY_SHORT_ID="0123456789abcdef"',
+        'VPS_IP_FAMILY="ipv4"',
+        'VPS_PUBLIC_IPV6=""',
+        'GOOGLE_EGRESS_MODE="ipv4"',
+        'GOOGLE_EGRESS_RESOLVED="ipv4"',
+        'SUB_PORT_MODE="443"',
+        'SUBSCRIPTION_MODE="link"',
+        'SUB_DOWNLOAD_NAME="EASYALL"',
+        'SCHEDULED_REBOOT_ENABLED="0"',
+        'SCHEDULED_REBOOT_HOUR=""',
+        '',
+    ].join('\n');
+    const realityUninstallEnv = (extra = {}) => cfEnv({
+        REALITY_SUBSCRIPTION_JS: join(cfRoot, 'nginx', 'reality-sub.js'),
+        UFW_BEFORE_RULES: join(cfRoot, 'ufw', 'before.rules'),
+        UFW_BEFORE6_RULES: join(cfRoot, 'ufw', 'before6.rules'),
+        ...extra,
+    });
+    writeCfSandbox(cfRealityState());
+    writeFileSync(join(cf.lib, 'easy_all'), '#!/usr/bin/env bash\nprintf "easy_all\\n"\n', { mode: 0o755 });
+    writeFileSync(join(cf.web, 'keep.txt'), 'x');
+    writeFileSync(cf.crontab, cronFixture);
+    const realityCronFailed = run(easyAll, ['uninstall'],
+        realityUninstallEnv({ CF_CRONTAB_FAIL: '1' }));
+    const realityCronFailedOut = `${realityCronFailed.stdout}${realityCronFailed.stderr}`;
+    assert.equal(realityCronFailed.status, 1,
+        `模式 1 卸载：crontab 写失败时必须非零：${realityCronFailedOut}`);
+    assert.ok(!realityCronFailedOut.includes('本机内容已卸载'),
+        `模式 1 卸载：失败时不得宣称已卸载：${realityCronFailedOut}`);
+    assert.ok(realityCronFailedOut.includes('卸载未完成'),
+        `模式 1 卸载：失败必须点名卸载未完成：${realityCronFailedOut}`);
+    assert.ok(realityCronFailedOut.includes('重试 uninstall'),
+        `模式 1 卸载：失败必须给出重试指引：${realityCronFailedOut}`);
+    assert.ok(existsSync(cf.stateFile), '模式 1 卸载：失败必须保留状态文件');
+    assert.ok(existsSync(join(cf.lib, 'easy_all')), '模式 1 卸载：失败必须保留命令入口');
+    assert.ok(existsSync(join(cf.web, 'keep.txt')), '模式 1 卸载：失败必须保留业务文件');
+    assert.equal(readFileSync(cf.crontab, 'utf8'), cronFixture,
+        '模式 1 卸载：失败时不得改写 root crontab');
+    const realityCronRetried = run(easyAll, ['uninstall'], realityUninstallEnv());
+    assert.equal(realityCronRetried.status, 0,
+        `模式 1 卸载：修正 crontab 后重试必须成功：${realityCronRetried.stdout}${realityCronRetried.stderr}`);
+    assert.ok(!existsSync(cf.state), '模式 1 卸载：重试成功必须删状态目录');
+    assert.ok(!existsSync(join(cf.lib, 'easy_all')), '模式 1 卸载：重试成功必须删命令入口');
+    const realityCronAfter = readFileSync(cf.crontab, 'utf8');
+    assert.ok(realityCronAfter.includes('user-backup'), '模式 1 卸载：重试成功必须保留用户 cron');
+    assert.ok(!realityCronAfter.includes('easy_all-managed-reboot'),
+        `模式 1 卸载：重试成功只删标记任务：${realityCronAfter}`);
 
 } else {
     console.log('skip - root 下跳过 Cloudflare CLI 生命周期用例（无法安全隔离 /etc 系统路径）');

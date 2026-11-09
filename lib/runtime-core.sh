@@ -155,6 +155,7 @@ update_current_core() {
     local backup_config="${RUNTIME_TMP}/xray-config-backup.json"
     local backup_version="${RUNTIME_TMP}/xray-version-backup"
     local version_missing="${RUNTIME_TMP}/xray-version.missing"
+    local restart_allowed=1
     require_root
     acquire_runtime_write_lock
     collect_installed_state
@@ -166,15 +167,26 @@ update_current_core() {
         cdn_traffic_protection_checkpoint \
             || die "流量 checkpoint 产生待落实的 CDN 阻断状态；已中止核心更新，请先运行 sudo easy_all cdn-traffic-sync"
     fi
-    install -m 0755 "${XRAY_BIN}" "${backup_bin}"
-    install -m 0600 "${XRAY_CONFIG}" "${backup_config}"
+    # 备份不完整就不能开始覆盖：回滚依据必须先完整存在。
+    install -m 0755 "${XRAY_BIN}" "${backup_bin}" \
+        || die "备份当前 Xray 二进制失败：${XRAY_BIN}；已中止核心更新"
+    install -m 0600 "${XRAY_CONFIG}" "${backup_config}" \
+        || die "备份当前 Xray 配置失败：${XRAY_CONFIG}；已中止核心更新"
     if [[ -f "${XRAY_DIR}/version" ]]; then
-        install -m 0644 "${XRAY_DIR}/version" "${backup_version}"
+        install -m 0644 "${XRAY_DIR}/version" "${backup_version}" \
+            || die "备份当前 Xray 版本失败：${XRAY_DIR}/version；已中止核心更新"
     else
-        install -m 0600 /dev/null "${version_missing}"
+        install -m 0600 /dev/null "${version_missing}" \
+            || die "记录 Xray 版本缺失标记失败：${version_missing}；已中止核心更新"
     fi
-    if (
-        download_xray || exit 1
+    # 下载在独立子 shell 里执行：它写出的文件失败只能靠退出码传回，不能依赖数组清理。
+    if ! ( download_xray ); then
+        restart_allowed=1
+    elif declare -F cdn_traffic_protection_checkpoint >/dev/null 2>&1 \
+        && ! cdn_traffic_protection_checkpoint; then
+        # 候选已经装好、但还没 restart：记录“不得重启”，交给唯一恢复段只恢复文件。
+        restart_allowed=0
+    elif (
         systemctl restart "${XRAY_SERVICE}" || exit 1
         validate_protocol_runtime || exit 1
     ); then
@@ -183,13 +195,27 @@ update_current_core() {
         success "Xray 已更新"
         return 0
     fi
-    warn "新核心验收失败，正在恢复旧二进制、版本与运行时配置"
-    install -m 0755 "${backup_bin}" "${XRAY_BIN}"
-    install -m 0600 "${backup_config}" "${XRAY_CONFIG}"
+    warn "Xray 更新失败，正在恢复旧二进制、版本与运行时配置"
+    install -m 0755 "${backup_bin}" "${XRAY_BIN}" \
+        || die "恢复旧 Xray 二进制失败：${XRAY_BIN}（本次核心更新未完成）"
+    install -m 0600 "${backup_config}" "${XRAY_CONFIG}" \
+        || die "恢复旧 Xray 配置失败：${XRAY_CONFIG}（本次核心更新未完成）"
     if [[ -f "${backup_version}" ]]; then
-        install -m 0644 "${backup_version}" "${XRAY_DIR}/version"
+        install -m 0644 "${backup_version}" "${XRAY_DIR}/version" \
+            || die "恢复旧 Xray 版本失败：${XRAY_DIR}/version（本次核心更新未完成）"
     elif [[ -f "${version_missing}" ]]; then
-        rm -f -- "${XRAY_DIR}/version"
+        rm -f -- "${XRAY_DIR}/version" \
+            || die "移除新 Xray 版本失败：${XRAY_DIR}/version（本次核心更新未完成）"
+    fi
+    if [[ "${restart_allowed}" != "1" ]]; then
+        die "Xray 更新失败，已恢复旧版本；CDN 流量待落实，未重启旧服务，请运行 sudo easy_all cdn-traffic-sync"
+    fi
+    # 恢复重启同样要过最后采样门禁；拒绝时只恢复文件，不重新放行旧运行时。
+    if declare -F cdn_traffic_protection_checkpoint >/dev/null 2>&1 \
+        && ! cdn_traffic_protection_checkpoint; then
+        # 这里没有停服务：旧 Xray 仍可能以开放配置运行，停机会连带切断模式 4/5 的 Reality 直连。
+        warn "恢复前 CDN 流量采样未通过；未重启 Xray，旧进程可能仍在以开放配置运行；保护会在保护定时器下一轮（约 15 秒）收敛，也可立即执行 sudo easy_all cdn-traffic-sync"
+        die "Xray 更新失败，已恢复旧版本；CDN 流量待落实，未重启旧服务"
     fi
     systemctl restart "${XRAY_SERVICE}" \
         || die "恢复旧 Xray 后无法重启 ${XRAY_SERVICE}"

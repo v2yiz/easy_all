@@ -152,6 +152,64 @@ rm -f -- "${EASY_ALL_GUARD_NGINX_CONFIG}"
 assert_equal "clean host has no residue" "1" \
     "$(install_residue_reason >/dev/null 2>&1 && echo 0 || echo 1)"
 
+# 5b. 旧 FQ helper 把开机快照放在了业务 STATE_DIR/backups/qdisc：卸载后只剩这条
+#     严格空链时不能把机器当成“未完成安装”（否则永远无法重新安装）。
+residue_present() {
+    install_residue_reason >/dev/null 2>&1 && printf '0' || printf '1'
+}
+fq_chain_case() { # $1=变体，准备一个含严格空链或变体的状态目录
+    reset_artifacts
+    install -d -m 0700 "${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc"
+    : >"${EASY_ALL_GUARD_STATE_DIR}/runtime-write.lock"
+    case "$1" in
+    qdisc-json) printf '[]\n' >"${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc/eth0.json" ;;
+    qdisc-apply) printf '[]\n' >"${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc/eth0.json.apply" ;;
+    qdisc-hidden) : >"${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc/.keep" ;;
+    qdisc-lf-name) : >"${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc/"$'\n' ;;
+    qdisc-lf-symlink)
+        : >"${TMP_DIR}/fq-lf-target"
+        ln -s "${TMP_DIR}/fq-lf-target" "${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc/"$'\n'
+        ;;
+    state-lf-extra) : >"${EASY_ALL_GUARD_STATE_DIR}/"$'\n' ;;
+    pre-install) : >"${EASY_ALL_GUARD_STATE_DIR}/backups/pre-install-complete" ;;
+    backups-extra-dir) install -d -m 0700 "${EASY_ALL_GUARD_STATE_DIR}/backups/certs" ;;
+    state-extra) : >"${EASY_ALL_GUARD_STATE_DIR}/install-identity.json" ;;
+    state-hidden) : >"${EASY_ALL_GUARD_STATE_DIR}/.hidden" ;;
+    qdisc-symlink)
+        install -d -m 0700 "${TMP_DIR}/fq-elsewhere/qdisc"
+        rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc"
+        ln -s "${TMP_DIR}/fq-elsewhere/qdisc" "${EASY_ALL_GUARD_STATE_DIR}/backups/qdisc"
+        ;;
+    backups-symlink)
+        install -d -m 0700 "${TMP_DIR}/fq-elsewhere-backups/qdisc"
+        rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}/backups"
+        ln -s "${TMP_DIR}/fq-elsewhere-backups" "${EASY_ALL_GUARD_STATE_DIR}/backups"
+        ;;
+    esac
+}
+fq_chain_case empty
+assert_equal "严格空链不算安装残留" "1" "$(residue_present)"
+for variant in qdisc-json qdisc-apply qdisc-hidden pre-install backups-extra-dir \
+    state-extra state-hidden qdisc-symlink backups-symlink qdisc-lf-name qdisc-lf-symlink \
+    state-lf-extra; do
+    fq_chain_case "${variant}"
+    assert_equal "空链豁免不覆盖 ${variant}" "0" "$(residue_present)"
+done
+# marker 与服务判定不受空链豁免影响
+fq_chain_case empty
+install_progress_begin combined
+output=$(capture install_residue_reason || true)
+assert_contains "空链下的进度标记仍算残留" "${output}" "安装进度标记"
+assert_not_contains "空链下的进度标记不再点名状态目录" "${output}" "未完成的状态目录"
+install_progress_clear
+fq_chain_case empty
+install -d -m 0755 "$(dirname -- "${EASY_ALL_GUARD_SERVICE_FILE}")"
+: >"${EASY_ALL_GUARD_SERVICE_FILE}"
+output=$(capture install_residue_reason || true)
+assert_contains "空链下的残留服务单元仍算残留" "${output}" "残留服务单元"
+reset_artifacts
+rm -rf -- "${TMP_DIR}/fq-elsewhere" "${TMP_DIR}/fq-elsewhere-backups"
+
 # 6. 进度标记生命周期：写入、更新保留其他字段、清理删除目录
 install_progress_begin combined
 assert_equal "marker records profile" "combined" "$(install_progress_field PROFILE)"

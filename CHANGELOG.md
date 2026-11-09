@@ -1,3 +1,35 @@
+## 4.5.1 更新说明（2026-11-09）
+
+- **安装与自更新自愈加固（中断恢复与路径规范·A07/A08）**：
+  - `bootstrap.sh` 修复 `self-update` 在目标目录与备份目录轮换（`mv` 操作）之间异常中断导致命令失效（`easy_all: command not found`）的窗口问题，引入启动自愈逻辑：在安装状态合法、目标目录缺失但旧版本备份目录存在时自动安全恢复运行环境与命令符号链接；
+  - 严格校验命令符号链接路径组件，防范相对路径穿越（`..`）与非规范路径；
+  - 注册命令时增加逐脚本独立语法校验，防止单个文件语法错误渗透进系统命令。
+- **核心更新与下载原子性强化（A01/A06/A10）**：
+  - `lib/runtime-core.sh` 与 `lib/xray-core.sh` 在下载解压 Xray 核心时使用独立 staging 目录，通过可执行性与完整性校验后再原子替换，消除残缺文件覆盖隐患；
+  - `scripts/debian-init.sh` 下载解压 AWS CLI 改用专属隔离 staging 目录，退出钩子严格清理，避免中断残留脏文件。
+- **FQ 调优快照隔离与安装守卫空链豁免（A04/A05）**：
+  - `lib/tcp-tuning.sh` 生成的 `easy_all-tcp` helper 将 qdisc 快照从业务配置目录 `/etc/easy_all` 迁出至独立运行时目录，消除对安装守卫状态检测的污染；
+  - `lib/profile-common.sh` 新增空 FQ 链路豁免规则（`install_state_dir_only_empty_fq_chain`）：存量机器若仅残留旧版 helper 遗留的 `backups/qdisc` 空目录结构，安装守卫予以安全放行，无需手动清理即可顺利安装。
+- **全模式卸载流程强校验与状态保护**：
+  - `lib/cloudfront-mode.sh`、`lib/cloudflare-mode.sh` 与 `profiles/reality.sh` 在卸载清理定时重启维护任务（`remove_daily_reboot_schedule`）时加入严格失败门禁：若 `crontab -l` 过滤或重写失败，保留当前状态并显式报错退出，坚决不静默报告成功。
+- **Reality 模式订阅事务与配置加固（A12/A13/A14/A15）**：
+  - `profiles/reality.sh` 对轮换动态端口（`rotate_dynamic_ports`）与更新伪装目标（`update_reality_target`）引入完整事务快照与失败回滚机制；
+  - 本地节点名生成与校验增加严格前置检查（`validate_reality_local_node_name`），防范空值或非法字符渗透进订阅配置；
+  - 动态端口避让范围与 Nginx 订阅重写事务严格对齐。
+- **Cloudflare 清理与规则匹配严密化（A02/A03）**：
+  - `lib/cloudflare-purge.sh` 将 `RULE_HOST_EXPRESSION_RE` 收敛为整行严格正则（`^\(http\.host eq "[^"]+"\)$`），杜绝因部分匹配误删其它规则；
+  - 空记录警告逻辑移出 Zone 循环外，避免在多 Zone 场景下产生误报与重复告警；补充规范化 Zone Root 匹配检测。
+- **运行时日志诚实性与安全表述对齐**：
+  - `lib/runtime-core.sh` 与 `lib/xhttp-runtime.sh` 修正 CDN 流量超限阻断时的拒绝文案，诚实说明 Xray 进程未重启（旧进程仍在运行），提示将在 15 秒内由守护定时器自动收敛，或可立即手动执行 `sudo easy_all cdn-traffic-sync`。
+- **系统初始化加固与网络连接鲁棒性（A09）**：
+  - `scripts/debian-init.sh` 写入 `~/.ssh/config` 时补充主机别名与连接参数的严格格式化转义；
+  - `lib/tcp-tuning.sh` 与 `scripts/debian-init.sh` 恢复 `net.ipv4.tcp_retries2 = 8`，提升弱网与高丢包环境下的重试收敛能力。
+- **测试套件与沙箱跨平台隔离修复**：
+  - 修复 `test/test_cli_e2e.mjs` 中 Cloudflare 模式沙箱在 macOS 环境下因临时目录路径前缀（`/var/folders/...`）被隔离检查拒绝的问题，支持沙箱根目录智能白名单；
+  - 新增 `test/test_audit_fixes.sh` 完整覆盖 A01–A17 全部深度审计修复项与回退自愈验证。
+
+验证：`npm test` 全套测试全绿（`test_install_guard`、`test_purge_cloudflare`、`test_combined_render`、`test_cloudfront_render`、`test_cloudflare_render`、`test_reality_render`、`test_mihomo_template_lint`、`test_audit_fixes`、`test_cli_e2e`、`test_subscription_port`），全仓 `bash -n` 语法检查通过。
+
 ## 4.5.0 更新说明（2026-11-09）
 
 - **模式重排为五个（破坏性·仅菜单编号）**：安装菜单改为 **1 直连 Reality**、**2 纯 CloudFront**、**3 纯 CloudFlare（单域名）**、**4 直连+CloudFront**、**5 直连+CloudFlare**。原模式 3（`PROTOCOL=combined-cloudfront`）只是编号后移为 4：`profiles/combined.sh`、状态协议、marker（`PROFILE=combined` + `CHAIN=cloudfront`）、UUID/路径/Token/证书与 CloudFront 身份都不变，已安装机器无需重装或重新导入订阅。

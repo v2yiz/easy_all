@@ -406,6 +406,18 @@ write_ssh_config() {
   local user="$3"
   local port="$4"
   local identity_file="$5"
+  local quoted_identity_file
+
+  # CR/LF 无法写成单行 SSH 配置，也不能留在管理区块里：必须在改写配置前拒绝。
+  case "${identity_file}" in
+    *$'\r'* | *$'\n'*)
+      die "私钥路径包含换行符（CR/LF），无法写入 SSH 配置；请改用单行路径"
+      ;;
+  esac
+  # OpenSSH 配置参数用双引号包裹，反斜杠与双引号必须按其规则转义（先反斜杠、后引号，
+  # 避免自己加的转义符再被转义）。shell 的 %q 产生的是 shell 语法，不是 SSH 配置语法。
+  quoted_identity_file=${identity_file//\\/\\\\}
+  quoted_identity_file="\"${quoted_identity_file//\"/\\\"}\""
 
   mkdir -p "$SSH_DIR"
   touch "$SSH_CONFIG"
@@ -430,7 +442,8 @@ write_ssh_config() {
     echo "  HostName $host"
     echo "  User $user"
     echo "  Port $port"
-    echo "  IdentityFile $identity_file"
+    # 路径含空格/引号/反斜杠：用 printf 输出参数，避免 echo 把 -n/-e 或反斜杠当选项与转义。
+    printf '  IdentityFile %s\n' "${quoted_identity_file}"
     echo "  IdentitiesOnly yes"
     echo "  ConnectTimeout 10"
     echo "  ConnectionAttempts 3"
@@ -595,6 +608,9 @@ SYSCTL
 
 # HTTP/2 & gRPC anti-bufferbloat: limit unsent bytes in write queue
 net.ipv4.tcp_notsent_lowat = 32768
+
+# Fast dead connection failure (Skyline recommended tuning)
+net.ipv4.tcp_retries2 = 8
 
 # High-concurrency socket recycling & queue optimization
 net.ipv4.tcp_tw_reuse = 1

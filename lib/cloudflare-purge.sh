@@ -8,6 +8,9 @@ readonly CF_API_BASE="https://api.cloudflare.com/client/v4"
 readonly RECORD_COMMENT_PREFIX="easy_all"
 readonly RULE_REF_PREFIX="easy_all_"
 readonly RULESET_NAME_PREFIX="easy_all"
+# --domain 下只接受本项目实际生成的单项表达式（允许外围/词间空白）；其它写法无法证明
+# 作用范围，一律保留。完整匹配整条 expression，不存在“取第一个主机就猜语义”的降级路径。
+readonly RULE_HOST_EXPRESSION_RE='^[[:space:]]*http\.host[[:space:]]+eq[[:space:]]+"([^"[:space:]]+)"[[:space:]]*$'
 
 # shellcheck source=lib/log.sh
 source "${SCRIPT_DIR}/log.sh"
@@ -27,7 +30,8 @@ usage() {
 环境变量：EASY_ALL_PURGE_MAX_PAGES  每个列表接口的分页上限（默认 100 页 × 100 条）
 
 识别规则：DNS 记录注释以 easy_all 开头；
-规则按 ref 以 easy_all_ 开头且表达式只涉及待清理域名；ruleset 名称以 easy_all 开头且清空后才删除；
+规则按 ref 以 easy_all_ 开头且表达式完整等于 http.host eq "待清理域名"（括号、or/and/not、集合等复杂表达式一律保留）；
+ruleset 名称以 easy_all 开头且清空后才删除；
 Origin CA 证书只在其全部 hostname 都属于 easy_all 记录或输入域名时删除。
 Zone 内 easy_all DNS 记录已删除时，规则与证书需要传完整主机名才能识别。
 不删除 Zone 本身。
@@ -109,12 +113,15 @@ domain_equal() {
     return 1
 }
 
-# Zone 根域名覆盖其下子域；证书匹配仍用精确域名（见 in_scope_host）
+# Zone 根域名才覆盖其下子域：只有输入精确等于当前 Zone name 时才做点分隔后缀匹配。
+# 完整主机名只精确匹配，避免 cf.example.com 的处理范围波及 x.cf.example.com。
 domain_scope() {
-    local value=$1 domain
+    local value=$1 zone domain
+    zone=$(tr '[:upper:]' '[:lower:]' <<<"${2:-}")
     ((DOMAIN_COUNT > 0)) || return 1
     for domain in "${DOMAINS[@]}"; do
-        [[ "${value}" == "${domain}" || "${value}" == *".${domain}" ]] && return 0
+        [[ "${value}" == "${domain}" ]] && return 0
+        [[ -n "${zone}" && "${domain}" == "${zone}" && "${value}" == *".${domain}" ]] && return 0
     done
     return 1
 }
@@ -225,15 +232,12 @@ while IFS=$'\t' read -r zone_id zone_name account_id; do
         [[ -n "${record_id}" ]] || continue
         [[ "${comment}" == "${RECORD_COMMENT_PREFIX}"* ]] || continue
         if ((PURGE_ALL == 0)); then
-            domain_scope "${name}" || continue
+            domain_scope "${name}" "${zone_name}" || continue
         fi
         printf '%s\t%s\t%s\n' "${zone_id}" "${record_id}" "${name}" >>"${RUNTIME_TMP}/dns.tsv"
         printf '%s\n' "${name}" >>"${RUNTIME_TMP}/allowed-names"
     done < <(jq -r '.[] | [.id, .name, (.comment // "")] | @tsv' <<<"${records}")
 
-    if ((PURGE_ALL == 0)) && [[ ! -s "${RUNTIME_TMP}/allowed-names" ]]; then
-    warn "没有匹配到 easy_all DNS 记录；规则与 Origin CA 需要传入完整主机名（如 cf.example.com,sub.example.com）才能识别"
-fi
 
 # 2) 规则：ref、表达式与域名范围都要匹配
     # 只授 DNS/证书权限的 Token 读 /rulesets 会 403：规则只是附带清理对象，不能因此中断整个清理，
@@ -250,8 +254,9 @@ fi
             [[ -n "${rule_id}" ]] || continue
             [[ "${rule_ref}" == "${RULE_REF_PREFIX}"* ]] || continue
             if ((PURGE_ALL == 0)); then
-                host=$(grep -oE 'http\.host eq "[^"]+"' <<<"${expression}" | head -n1 \
-                    | sed -E 's/.*"(.*)"/\1/' | tr '[:upper:]' '[:lower:]')
+                # 表达式必须完整匹配，且任何非空残留都让该规则保留。
+                [[ "${expression}" =~ ${RULE_HOST_EXPRESSION_RE} ]] || continue
+                host=$(tr '[:upper:]' '[:lower:]' <<<"${BASH_REMATCH[1]}")
                 in_scope_host "${host}" || continue
             fi
             printf '%s\t%s\t%s\t%s\n' "${zone_id}" "${ruleset_id}" "${rule_id}" "${rule_ref}" \
@@ -293,6 +298,12 @@ while IFS=$'\t' read -r zone_id zone_name account_id; do
         fi
     done < <(jq -c '.[]' <<<"${certs}")
 done <"${RUNTIME_TMP}/zones.tsv"
+
+# 全部 Zone 收集完成后统一判断：逐 Zone 判断会在前面的 Zone 恰好没有 easy_all DNS 记录时误报，
+# 多 Zone 时还会重复提示。--all 语义不变：不按域名范围过滤，也就没有这条提示。
+if ((PURGE_ALL == 0)) && [[ ! -s "${RUNTIME_TMP}/allowed-names" ]]; then
+    warn "没有匹配到 easy_all DNS 记录；规则与 Origin CA 需要传入完整主机名（如 cf.example.com,sub.example.com）才能识别"
+fi
 
 total=0
 print_plan() {

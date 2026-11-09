@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[4.5.0](CHANGELOG.md#450-更新说明2026-11-09)。
+当前源码版本：[4.5.1](CHANGELOG.md#451-更新说明2026-11-09)。
 
 ## 文档索引
 
@@ -61,7 +61,7 @@
       ServerAliveCountMax 6
       TCPKeepAlive yes
   ```
-- 万一中途连接断开，重新连接后再次运行安装命令即可：程序会自动检测安装断点并提示**继续上次安装**（保留已生成的证书与密钥配置）。
+- 万一中途连接断开，重新连接后再次运行安装命令即可。**续装只在模式 2/4（`CHAIN=cloudfront`）与模式 3/5（`CHAIN=cloudflare`）且安装标记链路匹配、身份与安装前快照完整时提供**，会复用已生成的证书、分发 ID/ACM ARN（模式 2/4）或 Origin CA 身份（模式 3/5）与 Reality 密钥。模式 1（直连 Reality）、旧版标记以及链路不匹配的残留都不参与续装，只能清理后重新安装；非交互场景遇到残留需先执行 `sudo easy_all cleanup-partial`。
 
 ### 2. 服务器与端口要求
 - **操作系统与架构**：全新 Debian 12/13 或 Ubuntu 22.04/24.04 LTS（代号 bookworm / trixie / jammy / noble，原生支持 amd64 与 arm64 架构）；
@@ -124,8 +124,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 flowchart TD
     Start(["执行安装: sudo easy_all install"]) --> CheckResume{"检测到未完成残留?"}
 
-    CheckResume -- 是 --> PromptResume["断点续装确认<br/>继续上次安装？[Y/n]<br/>(默认: Y 直接回车)"]
-    CheckResume -- 否 --> ChooseMode
+    CheckResume -- "模式 2/4 链路=cloudfront<br/>模式 3/5 链路=cloudflare<br/>(标记/身份/快照完整)" --> PromptResume["断点续装确认<br/>继续上次安装？[Y/n]<br/>(默认: Y 直接回车)"]
+    CheckResume -- "无残留" --> ChooseMode
+    CheckResume -- "模式 1 / 旧标记 / 链路不匹配" --> CleanResidue["清理残留后重新安装<br/>(非交互残留需先 cleanup-partial)"]
+    CleanResidue --> ChooseMode
 
     PromptResume -- "直接回车 (Y)" --> ResumeRun["复用上次配置与云端资源，直接进入安装"]
     PromptResume -- "输入 n" --> CleanRedo["清理残留并重新开始"] --> ChooseMode
@@ -206,7 +208,7 @@ flowchart TD
 
 | 模式 | 交互步骤 | 提示说明 | 推荐默认值（直接回车） | 输入方式与规则 |
 | :--- | :--- | :--- | :--- | :--- |
-| **通用** | **断点续装** | `继续上次安装？[Y/n]:` | **`Y`**（继续） | 仅在有安装残留时提示；输入 `n` 清理并重新安装 |
+| **2/3/4/5** | **断点续装** | `继续上次安装？[Y/n]:` | **`Y`**（继续） | 仅当模式 2/4（`CHAIN=cloudfront`）或模式 3/5（`CHAIN=cloudflare`）的安装标记链路匹配、身份与安装前快照完整时提示；模式 1 与旧/不匹配标记只清理重装，非交互残留须先 `sudo easy_all cleanup-partial` |
 | **通用** | **模式选择** | `请选择 [1]:` | **`1`**（Reality） | 输入 `1` 直连 Reality、`2` 纯 CloudFront、`3` 纯 CloudFlare、`4` 直连+CloudFront、`5` 直连+CloudFlare |
 | **通用** | **定时重启** | `请选择 [1]:` | **`1`**（每天凌晨 4 点） | 输入 `2` 自定义 `0-23` 小时；`3` 不配置定时重启 |
 | **1. Reality** | 1.1 连接地址 | `Reality 客户端连接地址` | **自动检测的公网 IPv4** | 直接回车使用探测到的 IP；或填入入站 IPv4 / 灰云域名 |

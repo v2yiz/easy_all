@@ -50,9 +50,14 @@ file_digest() {
     openssl dgst -sha256 "$1" | sed 's/^.*= //'
 }
 
-bash -n "${PROFILE}" "${CORE}" "${GUARD}" "${ROOT_DIR}/easy_all" \
-    "${ROOT_DIR}/lib/xhttp-runtime.sh" "${ROOT_DIR}/lib/runtime-core.sh" \
+syntax_files=(
+    "${PROFILE}" "${CORE}" "${GUARD}" "${ROOT_DIR}/easy_all"
+    "${ROOT_DIR}/lib/xhttp-runtime.sh" "${ROOT_DIR}/lib/runtime-core.sh"
     "${ROOT_DIR}/lib/profile-common.sh" "${ROOT_DIR}/lib/scheduled-maintenance.sh"
+)
+for syntax_file in "${syntax_files[@]}"; do
+    bash -n "${syntax_file}" || fail_test "语法校验失败：${syntax_file}"
+done
 
 # --- 1. CLI / manifest / package 接线 ---------------------------------------
 launcher_body=$(<"${ROOT_DIR}/easy_all")
@@ -521,6 +526,154 @@ probe_sync_after_edit_sub() {
     cdn_traffic_protection_sync
 }
 
+# --- 临重启最后采样的外部夹具 -----------------------------------------------
+# 用外部 InvocationID + 计数状态模拟“restart 清零计数”，checkpoint/update_usage 走真实实现。
+meter_set_stats() {
+    jq -cn --argjson up "${1}" --argjson down "${2}" '
+        {stat:[
+          {name:"inbound>>>vless-xhttp-in>>>traffic>>>uplink",value:$up},
+          {name:"inbound>>>vless-xhttp-in>>>traffic>>>downlink",value:$down}
+        ]}' >"${FAKE_STATS_FILE}"
+}
+
+meter_seed_baseline() {
+    local used=${1:-0}
+    printf 'run-1' >"${FAKE_INVOCATION_FILE}"
+    cdn_traffic_write_usage "$(jq -cn --arg period "$(cdn_traffic_current_period)" \
+        --argjson used "${used}" '
+        {period:$period,runtime_id:"run-1",used_bytes:$used,last_uplink:0,last_downlink:0,
+         blocked:false,enforced:false,protection_offline:false}')"
+    meter_set_stats 0 0
+}
+
+meter_systemctl() {
+    printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG}"
+    case "${1:-}" in
+    show) command cat "${FAKE_INVOCATION_FILE}" 2>/dev/null || true ;;
+    is-active) return 0 ;;
+    restart)
+        printf '%s' "${METER_RESTART_ID:-run-2}" >"${FAKE_INVOCATION_FILE}"
+        meter_set_stats 0 0
+        ;;
+    *) return 0 ;;
+    esac
+}
+
+meter_report() {
+    printf '%s|%s|%s|%s\n' "$1" \
+        "$(jq -r '.used_bytes' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")" \
+        "$(jq -r '[.blocked, .enforced] | @tsv' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")" \
+        "${RUNTIME_WRITE_LOCK_DEPTH}"
+}
+
+probe_meter_sample() {
+    collect_installed_state || fail_test "新进程无法读取已安装状态"
+    cdn_traffic_update_usage || fail_test "新进程采样失败"
+    printf 'USED|%s\n' "$(jq -r '.used_bytes' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+}
+
+# apply 的调优/配置阶段耗时期间旧进程继续计数：最后 checkpoint 必须计入，restart 后才清零。
+probe_apply_long_stage_metering() {
+    meter_seed_baseline 0
+    require_root() { :; }
+    systemctl() { meter_systemctl "$@"; }
+    configure_tcp_acceleration() { meter_set_stats 100 50; }
+    configure_ipv4_only() { :; }
+    xhttp_configure_ufw() { :; }
+    write_xray_config() { :; }
+    install_xray_service() { :; }
+    write_nginx_config() { :; }
+    validate_protocol_runtime() { :; }
+    cdn_validate_direct_runtime() { :; }
+    cloudfront_write_subscriptions() { :; }
+    validate_subscription_runtime() { :; }
+    save_state() { :; }
+    cdn_commit_local_runtime() { :; }
+    commit_subscription_update() { :; }
+    apply_easy_all
+    meter_report APPLY
+}
+
+probe_apply_long_stage_refusal() {
+    meter_seed_baseline $((985 * 1000 * 1000 * 1000 - 100))
+    require_root() { :; }
+    systemctl() { meter_systemctl "$@"; }
+    configure_tcp_acceleration() { meter_set_stats 100 50; }
+    configure_ipv4_only() { :; }
+    xhttp_configure_ufw() { :; }
+    write_xray_config() { :; }
+    install_xray_service() { :; }
+    write_nginx_config() { :; }
+    validate_protocol_runtime() { :; }
+    cdn_validate_direct_runtime() { :; }
+    cloudfront_write_subscriptions() { :; }
+    validate_subscription_runtime() { :; }
+    save_state() { :; }
+    cdn_commit_local_runtime() { :; }
+    commit_subscription_update() { :; }
+    apply_easy_all
+    printf 'UNEXPECTED-SUCCESS\n'
+}
+
+apply_cloud_meter_stubs() {
+    require_root() { :; }
+    systemctl() { meter_systemctl "$@"; }
+    cloudflare_collect_api_token() { CLOUDFLARE_API_TOKEN=stub-token-for-tests; }
+    collect_aws_credentials() {
+        AWS_ACCESS_KEY_ID=AKIAFAKEFAKEFAKEFAKE
+        AWS_SECRET_ACCESS_KEY=stub-secret
+    }
+    persist_cloudflare_token() { :; }
+    cdn_wait_for_origin_dns() { :; }
+    cdn_issue_origin_certificate() { :; }
+    find_or_request_acm_certificate() { :; }
+    configure_cloudfront_distribution() { :; }
+    ensure_viewer_cnames() { :; }
+    wait_for_cloudfront_distribution() { :; }
+    clear_aws_credentials() { :; }
+    persist_install_identity() { :; }
+    configure_tcp_acceleration() { :; }
+    configure_ipv4_only() { :; }
+    xhttp_configure_ufw() { :; }
+    write_xray_config() { :; }
+    install_xray_service() { :; }
+    write_nginx_config() { :; }
+    validate_protocol_runtime() { :; }
+    cdn_validate_direct_runtime() { :; }
+    cloudfront_write_subscriptions() { :; }
+    validate_subscription_runtime() { :; }
+    cdn_validate_public_runtime() { :; }
+    save_state() { :; }
+    cdn_commit_local_runtime() { :; }
+    commit_subscription_update() { :; }
+}
+
+probe_apply_cloud_long_stage_metering() {
+    meter_seed_baseline 0
+    apply_cloud_meter_stubs
+    cdn_prepare_origin_dns() { meter_set_stats 100 50; }
+    apply_cloud_resources
+    meter_report APPLY-CLOUD
+}
+
+# 云阶段产生流量后失败：尚未到正常临重启 checkpoint 就进入 EXIT 回滚，
+# 回滚 restart 前必须采样，否则 restart 清零后阶段增量永久丢失。
+probe_apply_cloud_cloud_failure() {
+    meter_seed_baseline 0
+    apply_cloud_meter_stubs
+    cdn_prepare_origin_dns() { meter_set_stats 100 50; return 1; }
+    apply_cloud_resources
+    printf 'UNEXPECTED-SUCCESS\n'
+}
+
+probe_apply_cloud_cloud_failure_over_threshold() {
+    meter_seed_baseline $((985 * 1000 * 1000 * 1000 - 100))
+    apply_cloud_meter_stubs
+    cdn_prepare_origin_dns() { meter_set_stats 100 50; return 1; }
+    apply_cloud_resources
+    printf 'UNEXPECTED-SUCCESS\n'
+}
+
 case "${EASY_ALL_TEST_SCENARIO:-}" in
 "") ;;
 fresh-install-render) probe_fresh_install_render ;;
@@ -537,6 +690,12 @@ edit-sub-repair) probe_edit_sub_repair ;;
 publish-subscriptions-from-state) probe_publish_subscriptions_from_state ;;
 subscription-ready-new-process) probe_subscription_ready_new_process ;;
 sync-after-edit-sub) probe_sync_after_edit_sub ;;
+meter-sample) probe_meter_sample ;;
+apply-long-stage-metering) probe_apply_long_stage_metering ;;
+apply-long-stage-refusal) probe_apply_long_stage_refusal ;;
+apply-cloud-long-stage-metering) probe_apply_cloud_long_stage_metering ;;
+apply-cloud-cloud-failure) probe_apply_cloud_cloud_failure ;;
+apply-cloud-cloud-failure-over-threshold) probe_apply_cloud_cloud_failure_over_threshold ;;
 *) fail_test "未知子进程场景：${EASY_ALL_TEST_SCENARIO}" ;;
 esac
 if [[ -n "${EASY_ALL_TEST_SCENARIO:-}" ]]; then
@@ -761,6 +920,7 @@ cdn_acm_certificate_reusable "${acm_ok}" || fail_test "ISSUED 且覆盖 alias �
 cdn_write_origin_bootstrap_nginx || fail_test "bootstrap nginx 渲染失败"
 bootstrap_conf=$(<"${NGINX_CONFIG}")
 assert_contains "bootstrap 只监听 80" "${bootstrap_conf}" "listen 80;"
+assert_not_contains "bootstrap 不监听 IPv6（IPv4-only 策略）" "${bootstrap_conf}" "[::]"
 assert_not_contains "bootstrap 不监听 443" "${bootstrap_conf}" "listen 443"
 assert_contains "bootstrap 提供 HTTP-01 路径" "${bootstrap_conf}" ".well-known/acme-challenge"
 assert_not_contains "bootstrap 不提供代理或订阅" "${bootstrap_conf}" "grpc_pass"
@@ -1108,6 +1268,8 @@ assert_equal "父命令部署后证书存在" "0" "$([[ -s "${CERT_FILE}" ]] && 
 cdn_render_nginx_config 0 1 >"${TMP_DIR}/nginx-final.conf"
 final_conf=$(<"${TMP_DIR}/nginx-final.conf")
 assert_contains "80 只为源站 HTTP-01" "${final_conf}" "server_name ${CF_ORIGIN_DOMAIN};"
+assert_contains "最终配置监听 IPv4 80" "${final_conf}" "listen 80;"
+assert_not_contains "最终配置不监听 IPv6（IPv4-only 策略）" "${final_conf}" "[::]"
 assert_contains "443 默认 server 拒绝未知 SNI" "${final_conf}" "ssl_reject_handshake on;"
 assert_contains "health 需要源站头" "${final_conf}" \
     'if ($http_x_easy_all_origin_key != "'"${ORIGIN_HEADER_SECRET}"'") { return 404; }'
@@ -1854,6 +2016,130 @@ assert_equal "订阅就绪后写回 blocked=false/enforced=false" "false,false" 
 assert_equal "解封后 Xray 恢复 CDN 客户端" "1" \
     "$(jq '.inbounds[1].settings.clients | length' "${XRAY_CONFIG}")"
 assert_not_contains "解封后 Nginx 不再返回 503" "$(<"${NGINX_CONFIG}")" "return 503;"
+
+# --- 11b. 临重启最后采样：长阶段增长必须计入，拒绝时不得恢复重启 ----------
+meter_run() {
+    EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_TEST_SCENARIO="$1" \
+        bash "${BASH_SOURCE[0]}"
+}
+meter_restart_count() {
+    grep -c -F 'restart easy_all-xray.service' "${FAKE_SYSTEMCTL_LOG}" 2>/dev/null || true
+}
+meter_new_process_used() {
+    EASY_ALL_TEST_TMP_DIR="${TMP_DIR}" EASY_ALL_TEST_SCENARIO=meter-sample \
+        bash "${BASH_SOURCE[0]}"
+}
+
+install -m 0600 "${TMP_DIR}/valid-state.env" "${STATE_FILE}"
+reset_protection_usage
+: >"${FAKE_SYSTEMCTL_LOG}"
+
+# apply 正常路径：调优阶段旧进程持续计数，restart 前最后采样必须计入。
+apply_meter_out=$(meter_run apply-long-stage-metering 2>&1) \
+    || fail_test "apply 长阶段计量用例必须成功：${apply_meter_out}"
+assert_contains "apply 最后采样计入长阶段流量" "${apply_meter_out}" \
+    "APPLY|150|false	false|1"
+printf 'run-2' >"${FAKE_INVOCATION_FILE}"
+meter_set_stats 7 3
+apply_used_out=$(meter_new_process_used 2>&1) \
+    || fail_test "新进程累计采样必须成功：${apply_used_out}"
+assert_contains "apply 后新进程累计包含旧进程最后计数且不重复" "${apply_used_out}" \
+    "USED|160"
+
+# apply 跨阈值：最后采样拒绝时必须非零、不重启、pending 保留。
+install -m 0600 "${TMP_DIR}/valid-state.env" "${STATE_FILE}"
+: >"${FAKE_SYSTEMCTL_LOG}"
+apply_refusal_rc=0
+apply_refusal_out=$(meter_run apply-long-stage-refusal 2>&1) || apply_refusal_rc=$?
+((apply_refusal_rc != 0)) \
+    || fail_test "apply 最后采样跨阈值时必须非零"
+assert_not_contains "apply 拒绝时不得报成功" "${apply_refusal_out}" "已应用"
+assert_equal "apply 拒绝时不执行该次 restart" "0" "$(meter_restart_count)"
+assert_equal "apply 拒绝保留 pending" "true	false" \
+    "$(jq -r '[.blocked, .enforced] | @tsv' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+[[ "$(jq -r '.used_bytes' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")" -ge 985000000000 ]] \
+    || fail_test "apply 拒绝时用量必须保留（计入长阶段流量）"
+assert_contains "apply 拒绝时明确提示手动同步" "${apply_refusal_out}" "cdn-traffic-sync"
+assert_contains "apply 拒绝时回滚不重启 Xray（不声称已停机）" "${apply_refusal_out}" \
+    "本次回滚不重启 Xray（旧进程可能仍在运行）"
+
+# apply-cloud 正常路径：云阶段旧进程持续计数，restart 前最后采样必须计入。
+install -m 0600 "${TMP_DIR}/valid-state.env" "${STATE_FILE}"
+reset_protection_usage
+: >"${FAKE_SYSTEMCTL_LOG}"
+cloud_meter_out=$(meter_run apply-cloud-long-stage-metering 2>&1) \
+    || fail_test "apply-cloud 长阶段计量用例必须成功：${cloud_meter_out}"
+assert_contains "apply-cloud 最后采样计入云阶段流量" "${cloud_meter_out}" \
+    "APPLY-CLOUD|150|false	false|1"
+printf 'run-2' >"${FAKE_INVOCATION_FILE}"
+meter_set_stats 5 5
+cloud_used_out=$(meter_new_process_used 2>&1) \
+    || fail_test "新进程累计采样必须成功：${cloud_used_out}"
+assert_contains "apply-cloud 后新进程累计包含云阶段计数" "${cloud_used_out}" "USED|160"
+
+# 云阶段失败（未到正常临重启 checkpoint）进入 EXIT 回滚：回滚 restart 前必须采样。
+install -m 0600 "${TMP_DIR}/valid-state.env" "${STATE_FILE}"
+reset_protection_usage
+: >"${FAKE_SYSTEMCTL_LOG}"
+cloud_fail_rc=0
+cloud_fail_out=$(meter_run apply-cloud-cloud-failure 2>&1) || cloud_fail_rc=$?
+((cloud_fail_rc != 0)) || fail_test "云阶段失败必须非零"
+assert_not_contains "云阶段失败不得报成功" "${cloud_fail_out}" "已同步"
+assert_equal "云阶段失败回滚前已记入增量" "150" \
+    "$(jq -r '.used_bytes' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+assert_equal "云阶段失败的回滚 restart 前已通过采样" "1" "$(meter_restart_count)"
+printf 'run-2' >"${FAKE_INVOCATION_FILE}"
+meter_set_stats 5 5
+cloud_fail_used=$(meter_new_process_used 2>&1) \
+    || fail_test "新进程累计采样必须成功：${cloud_fail_used}"
+assert_contains "云阶段失败后累计包含阶段增量且不重复" "${cloud_fail_used}" "USED|160"
+
+# 云阶段失败且跨阈值：回滚也不得重启旧开放运行时。
+install -m 0600 "${TMP_DIR}/valid-state.env" "${STATE_FILE}"
+: >"${FAKE_SYSTEMCTL_LOG}"
+cloud_over_rc=0
+cloud_over_out=$(meter_run apply-cloud-cloud-failure-over-threshold 2>&1) || cloud_over_rc=$?
+((cloud_over_rc != 0)) || fail_test "云阶段失败跨阈值必须非零"
+assert_not_contains "云阶段跨阈值不得报成功" "${cloud_over_out}" "已同步"
+assert_equal "云阶段跨阈值回滚不执行 restart" "0" "$(meter_restart_count)"
+assert_equal "云阶段跨阈值保留 pending" "true	false" \
+    "$(jq -r '[.blocked, .enforced] | @tsv' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+assert_contains "云阶段跨阈值明确提示手动同步" "${cloud_over_out}" "cdn-traffic-sync"
+
+# 恢复重启 gate：公共 runtime 未定义 checkpoint 时仍按原逻辑重启（不得缺函数失败）。
+command rm -rf -- "${TMP_DIR}/rollback-undefined"
+install -d -m 0700 "${TMP_DIR}/rollback-undefined"
+install -m 0600 "${STATE_FILE}" "${TMP_DIR}/rollback-undefined/state.env"
+install -m 0600 "${XRAY_CONFIG}" "${TMP_DIR}/rollback-undefined/xray-config.json"
+install -m 0600 "${NGINX_CONFIG}" "${TMP_DIR}/rollback-undefined/nginx.conf"
+[[ ! -f "${CERT_FILE}" ]] || install -m 0644 "${CERT_FILE}" "${TMP_DIR}/rollback-undefined/certificate.pem"
+[[ ! -f "${KEY_FILE}" ]] || install -m 0600 "${KEY_FILE}" "${TMP_DIR}/rollback-undefined/private.key"
+cp -a "${SUBSCRIPTION_DIR}" "${TMP_DIR}/rollback-undefined/subscriptions"
+: >"${TMP_DIR}/rollback-restart.log"
+(
+    UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/rollback-undefined"
+    publish_subscription_files() { :; }
+    systemctl() { printf '%s\n' "$*" >>"${TMP_DIR}/rollback-restart.log"; }
+    nginx() { :; }
+    unset -f cdn_traffic_protection_checkpoint
+    rollback_subscription_update
+) || fail_test "缺 checkpoint 时回滚必须成功"
+assert_contains "缺 checkpoint 时仍重启到旧配置" "$(<"${TMP_DIR}/rollback-restart.log")" \
+    "restart easy_all-xray.service"
+
+# Reality 下 guard 可见但 protection_enabled 为假：不得新增 CDN 门禁。
+: >"${TMP_DIR}/rollback-restart.log"
+(
+    PROTOCOL=reality
+    CDN_PROVIDER=aws
+    UPDATE_SUB_BACKUP_DIR="${TMP_DIR}/rollback-undefined"
+    publish_subscription_files() { :; }
+    systemctl() { printf '%s\n' "$*" >>"${TMP_DIR}/rollback-restart.log"; }
+    nginx() { :; }
+    rollback_subscription_update
+) || fail_test "Reality 下回滚必须成功"
+assert_contains "Reality 下回滚仍重启旧服务" "$(<"${TMP_DIR}/rollback-restart.log")" \
+    "restart easy_all-xray.service"
 
 # --- 12. 定时重启的只读复核钩子 --------------------------------------------
 locked_check=$(scheduled_reboot_profile_locked_check_command)
@@ -2686,5 +2972,151 @@ assert_contains "命令自身报告创建失败" "${create_error_out}" "创建 C
 assert_equal "服务端错误不改写已记录的分发 ID" "EDFDIST123" \
     "$(jq -r '.aws_cloudfront_distribution_id' "${STATE_DIR}/install-identity.json")"
 command rm -f -- "${AWS_STUB_DIR}/fail-cloudfront-create-distribution"
+
+# --- 14. AWS CLI staging：archive/installer/包内程序都在安装区域（A10） ----------
+(
+    # 前面小节把 aws 桩成函数：本小节要考察真实 install_aws_cli，必须让 PATH 决定 aws。
+    unset -f aws
+    a10_root="${TMP_DIR}/a10"
+    command rm -rf -- "${a10_root}"
+    command mkdir -p "${a10_root}"
+    export A10_LOG="${a10_root}/calls.log"
+    # 旧实现把 staging 放在 RUNTIME_TMP：这里既不可写也不可执行，任何回退都会失败。
+    export RUNTIME_TMP="${a10_root}/runtime-tmp"
+    command mkdir -p "${RUNTIME_TMP}"
+    command chmod 0500 "${RUNTIME_TMP}"
+    export A10_BREAK_VERSION=0
+
+    dpkg() { printf '%s\n' "${A10_DPKG_ARCH:-amd64}"; }
+    curl() {
+        local out="" url=""
+        while (($# > 0)); do
+            case "$1" in
+            -o)
+                out=$2
+                shift 2
+                ;;
+            -*)
+                shift
+                ;;
+            *)
+                url=$1
+                shift
+                ;;
+            esac
+        done
+        printf 'curl %s\n' "${url}" >>"${A10_LOG}"
+        printf 'fake-awscliv2-zip\n' >"${out}"
+    }
+    # 离线 ZIP fixture：unzip 桩把 installer 与第二个包内程序展开到 -d 目录。
+    unzip() {
+        local dest="" archive=""
+        while (($# > 0)); do
+            case "$1" in
+            -d)
+                dest=$2
+                shift 2
+                ;;
+            -*)
+                shift
+                ;;
+            *)
+                archive=$1
+                shift
+                ;;
+            esac
+        done
+        [[ -n "${dest}" && -f "${archive}" ]] || return 1
+        command mkdir -p "${dest}/aws/dist" || return 1
+        cat >"${dest}/aws/install" <<'A10_INSTALLER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'installer %s\n' "$*" >>"${A10_LOG}"
+bin_dir=""
+install_dir=""
+while (($# > 0)); do
+    case "$1" in
+    --bin-dir)
+        bin_dir=$2
+        shift 2
+        ;;
+    --install-dir)
+        install_dir=$2
+        shift 2
+        ;;
+    *) shift ;;
+    esac
+done
+self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+# 真实 installer 也会拉起包内程序：这里执行包里的第二个程序。
+"${self_dir}/dist/aws" --smoke || exit 1
+install -d -m 0755 "${install_dir}/v2" "${bin_dir}" || exit 1
+install -m 0755 "${self_dir}/dist/aws" "${install_dir}/v2/aws" || exit 1
+ln -sfn "${install_dir}/v2/aws" "${bin_dir}/aws" || exit 1
+A10_INSTALLER
+        cat >"${dest}/aws/dist/aws" <<'A10_PACKAGE_PROGRAM'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# 包内第二个程序：只有落在安装区域才能通过；/tmp 挂 noexec 时这里会失败。
+case "$(cd -- "$(dirname -- "$0")" && pwd)" in
+"${A10_INSTALL_PREFIX}"/*) ;;
+*)
+    printf '包内程序不在安装区域：%s\n' "$0" >&2
+    exit 9
+    ;;
+esac
+printf 'package-program %s\n' "$*" >>"${A10_LOG}"
+[[ "${A10_BREAK_VERSION:-0}" != "1" || "${1:-}" != "--version" ]]
+A10_PACKAGE_PROGRAM
+        command chmod 0755 "${dest}/aws/install" "${dest}/aws/dist/aws"
+    }
+    a10_install() { # $1=安装区域前缀 $2=dpkg --print-architecture 的输出
+        (
+            export A10_INSTALL_PREFIX="$1" A10_DPKG_ARCH="$2"
+            export EASY_ALL_AWS_CLI_PREFIX_OVERRIDE="$1"
+            export PATH="$1/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            hash -r
+            install_aws_cli
+        )
+    }
+
+    # 14.1 arm64：URL 取 aarch64 包，installer 与包内第二个程序都从安装区域执行。
+    : >"${A10_LOG}"
+    a10_arm_prefix="${a10_root}/prefix-arm64"
+    a10_arm_out=$(a10_install "${a10_arm_prefix}" arm64 2>&1) \
+        || fail_test "AWS CLI 安装必须成功：${a10_arm_out}"
+    a10_arm_log=$(<"${A10_LOG}")
+    assert_contains "arm64 下载 aarch64 包" "${a10_arm_log}" \
+        "curl https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip"
+    assert_contains "installer 从安装区域执行并保留正式参数" "${a10_arm_log}" \
+        "installer --bin-dir ${a10_arm_prefix}/bin --install-dir ${a10_arm_prefix}/aws-cli --update"
+    assert_contains "包内第二个程序在安装区域执行" "${a10_arm_log}" "package-program --smoke"
+    assert_contains "安装后用 aws --version 验证可执行" "${a10_arm_log}" "package-program --version"
+    [[ -x "${a10_arm_prefix}/bin/aws" ]] || fail_test "AWS CLI 入口必须可执行"
+    assert_equal "不残留私有 staging" "0" \
+        "$(command find "${a10_arm_prefix}" -maxdepth 1 -name 'easy_all-aws-cli.*' | command wc -l | tr -d ' ')"
+    assert_equal "RUNTIME_TMP（/tmp 侧）必须完全没用过" "0" \
+        "$(command ls -A "${RUNTIME_TMP}" | command wc -l | tr -d ' ')"
+
+    # 14.2 其他架构：URL 仍是官方 x86_64 包。
+    : >"${A10_LOG}"
+    a10_x86_prefix="${a10_root}/prefix-x86"
+    a10_x86_out=$(a10_install "${a10_x86_prefix}" amd64 2>&1) \
+        || fail_test "x86_64 上 AWS CLI 安装必须成功：${a10_x86_out}"
+    assert_contains "amd64 下载 x86_64 包" "$(<"${A10_LOG}")" \
+        "curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+
+    # 14.3 安装后入口不可执行：必须点名路径失败，不回退 /tmp。
+    : >"${A10_LOG}"
+    a10_bad_prefix="${a10_root}/prefix-broken"
+    export A10_BREAK_VERSION=1
+    a10_bad_rc=0
+    a10_bad_out=$(a10_install "${a10_bad_prefix}" amd64 2>&1) || a10_bad_rc=$?
+    export A10_BREAK_VERSION=0
+    ((a10_bad_rc != 0)) || fail_test "入口无法执行时安装必须失败"
+    assert_contains "失败点名不可执行的路径" "${a10_bad_out}" "${a10_bad_prefix}/bin/aws"
+    assert_equal "失败后不在 /tmp 侧重试" "0" \
+        "$(command ls -A "${RUNTIME_TMP}" | command wc -l | tr -d ' ')"
+)
 
 printf 'ok - cloudfront shared core\n'

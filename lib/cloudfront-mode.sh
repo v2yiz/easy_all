@@ -291,21 +291,35 @@ aws_cli() {
 
 install_aws_cli() {
     command -v aws >/dev/null 2>&1 && return 0
-    local arch temp_dir archive
+    local arch staging archive
+    local prefix="${EASY_ALL_AWS_CLI_PREFIX_OVERRIDE:-/usr/local}"
+    local bin_dir="${prefix}/bin" install_dir="${prefix}/aws-cli"
     case "$(dpkg --print-architecture 2>/dev/null || true)" in
     arm64) arch=aarch64 ;;
     *) arch=x86_64 ;;
     esac
     info "安装 AWS CLI v2"
-    temp_dir=$(make_temp_dir)
-    archive="${temp_dir}/awscliv2.zip"
+    # /tmp 普遍被挂为 noexec：只给 installer 加 bash 前缀解决不了包内第二个程序，
+    # 所以 archive 与整份解压结果都放在安装区域的私有 staging（创建后立即登记清理）。
+    install -d -m 0755 "${prefix}" \
+        || die "创建 AWS CLI 安装目录失败：${prefix}"
+    staging=$(mktemp -d "${prefix}/easy_all-aws-cli.XXXXXX") \
+        || die "创建 AWS CLI 临时安装目录失败：${prefix}"
+    declare -p cleanup_files >/dev/null 2>&1 && cleanup_files+=("${staging}")
+    archive="${staging}/awscliv2.zip"
     curl -fsSL --retry 3 "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o "${archive}" \
-        || die "下载 AWS CLI v2 失败"
-    unzip -q "${archive}" -d "${temp_dir}" || die "解压 AWS CLI v2 失败"
-    "${temp_dir}/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update \
-        || die "安装 AWS CLI v2 失败"
+        || die "下载 AWS CLI v2 失败：${archive}"
+    unzip -q "${archive}" -d "${staging}" || die "解压 AWS CLI v2 失败：${archive}"
+    bash "${staging}/aws/install" \
+        --bin-dir "${bin_dir}" --install-dir "${install_dir}" --update \
+        || die "安装 AWS CLI v2 失败：${staging}/aws/install"
     hash -r
-    command -v aws >/dev/null 2>&1 || die "AWS CLI 安装失败"
+    command -v aws >/dev/null 2>&1 \
+        || die "AWS CLI 安装后不在 PATH：${bin_dir}/aws（检查 ${prefix} 的挂载与执行权限）"
+    # 除了查找与哈希，必须真的跑一次：安装区域本身 noexec 时这里才能报出来。
+    aws --version >/dev/null 2>&1 \
+        || die "AWS CLI 无法执行：${bin_dir}/aws（检查 ${prefix} 的挂载与执行权限）"
+    rm -rf -- "${staging}"
 }
 
 install_certbot() {
@@ -672,7 +686,6 @@ cdn_write_origin_bootstrap_nginx() {
     cat >"${RUNTIME_TMP}/easy_all-bootstrap.conf" <<EOF
 server {
     listen 80;
-    listen [::]:80;
     server_name ${CF_ORIGIN_DOMAIN};
 
     location /.well-known/acme-challenge/ {
@@ -1321,7 +1334,6 @@ cdn_render_nginx_config() {
     cat <<EOF
 server {
     listen 80;
-    listen [::]:80;
     server_name ${CF_ORIGIN_DOMAIN};
 
     location /.well-known/acme-challenge/ {
@@ -1978,13 +1990,20 @@ apply_easy_all() {
     cdn_traffic_admission
     cdn_require_valid_subscription
     snapshot_subscription_update
-    cdn_traffic_protection_checkpoint \
-        || die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止应用，请先运行 sudo easy_all cdn-traffic-sync"
+    if ! cdn_traffic_protection_checkpoint; then
+        UPDATE_SUB_ROLLBACK_NO_RESTART=1
+        die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止应用，请先运行 sudo easy_all cdn-traffic-sync"
+    fi
     configure_tcp_acceleration
     configure_ipv4_only
     xhttp_configure_ufw
     write_xray_config
     install_xray_service
+    # 最后一次采样必须紧贴 restart：中间的调优/Ufw/配置写入期间旧进程仍在计数。
+    if ! cdn_traffic_protection_checkpoint; then
+        UPDATE_SUB_ROLLBACK_NO_RESTART=1
+        die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止应用，请先运行 sudo easy_all cdn-traffic-sync"
+    fi
     # enable --now 对已运行的 unit 是空操作：不重启的话新的 UUID/路径不会生效。
     systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 服务失败"
     write_nginx_config
@@ -2023,8 +2042,10 @@ apply_cloud_resources() {
     cdn_traffic_admission
     cdn_require_valid_subscription
     snapshot_subscription_update
-    cdn_traffic_protection_checkpoint \
-        || die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止云端同步，请先运行 sudo easy_all cdn-traffic-sync"
+    if ! cdn_traffic_protection_checkpoint; then
+        UPDATE_SUB_ROLLBACK_NO_RESTART=1
+        die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止云端同步，请先运行 sudo easy_all cdn-traffic-sync"
+    fi
     configure_tcp_acceleration
     configure_ipv4_only
     xhttp_configure_ufw
@@ -2033,6 +2054,11 @@ apply_cloud_resources() {
     persist_install_identity || die "无法落盘安装身份；已保留云端资源"
     write_xray_config
     install_xray_service
+    # 云端阶段耗时长：最后一次采样紧贴 restart，计入云等待期间旧进程的流量。
+    if ! cdn_traffic_protection_checkpoint; then
+        UPDATE_SUB_ROLLBACK_NO_RESTART=1
+        die "流量 checkpoint 产生待落实的 CDN 阻断状态；已停止云端同步，请先运行 sudo easy_all cdn-traffic-sync"
+    fi
     # enable --now 对已运行的 unit 是空操作：不重启的话新的 UUID/路径不会生效。
     systemctl restart "${XRAY_SERVICE}" || die "重启 Xray 服务失败"
     write_nginx_config
@@ -2337,7 +2363,12 @@ cdn_local_uninstall_common() {
     restore_preinstall_firewall
     restore_preinstall_ipv6
     restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
-    remove_daily_reboot_schedule
+    if ! remove_daily_reboot_schedule; then
+        # 不能把「root crontab 没改成功」当成卸载完成：否则命令链接、业务目录和状态一起被删，
+        # 而标记任务仍会写入一个已不存在的环境。保留现场供修正后重试。
+        warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
+        return 1
+    fi
     rm -f -- "${XRAY_SERVICE_FILE}" "${NGINX_CONFIG}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${WEB_ROOT}" "${COMMAND_INSTALL_DIR}" "${XRAY_DIR}"

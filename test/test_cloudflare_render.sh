@@ -50,7 +50,10 @@ assert_count() {
         || fail_test "${label}: expected ${expected} <${needle}> but got ${actual}"
 }
 
-bash -n "${MODE3_PROFILE}" "${MODE5_PROFILE}" "${CORE}" "${STATE_LIB}" "${ROOT_DIR}/easy_all"
+syntax_files=("${MODE3_PROFILE}" "${MODE5_PROFILE}" "${CORE}" "${STATE_LIB}" "${ROOT_DIR}/easy_all")
+for syntax_file in "${syntax_files[@]}"; do
+    bash -n "${syntax_file}" || fail_test "语法校验失败：${syntax_file}"
+done
 
 # --- 1. launcher / manifest / 状态字段单一来源 -------------------------------
 launcher_body=$(<"${ROOT_DIR}/easy_all")

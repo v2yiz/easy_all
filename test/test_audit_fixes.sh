@@ -752,6 +752,7 @@ tuning_conf_text=$(TCP_SYSCTL_CONF_OVERRIDE="${TUNING_CONF}" RUNTIME_TMP="${TMP_
         cat '${TUNING_CONF}'
     ")
 assert_contains "TCP tuning keeps fq qdisc" "${tuning_conf_text}" "net.core.default_qdisc = fq"
+assert_contains "TCP tuning sets tcp_retries2 = 8" "${tuning_conf_text}" "net.ipv4.tcp_retries2 = 8"
 assert_not_contains "TCP tuning no longer sets a congestion control" "${tuning_conf_text}" \
     "tcp_congestion_control"
 [[ ! -e "${TMP_DIR}/easy_all-bbr.conf" ]] || fail "不应再生成 modules-load 文件"
@@ -1929,5 +1930,888 @@ flock_missing_out=$( ( unset -f flock
 assert_contains "cron: 缺 flock 时明确报错" "${flock_missing_out}" "缺少 flock"
 assert_equal "cron: 缺 flock 时不改写 crontab" "${crontab_before}" "$(<"${FAKE_CRONTAB_FILE}")"
 
+echo "=== 24. update-core 安装/版本失败可见，恢复重启用同样采样（A06/A01） ==="
+UC_DIR="${TMP_DIR}/update-core"
+install -d -m 0700 "${UC_DIR}"
+UC_PROBE="${UC_DIR}/probe.sh"
+cat >"${UC_PROBE}" <<'UC_PROBE_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT=${PROBE_ROOT:?}
+TMP=${UC_TMP:?}
+UC_ACTION=${UC_ACTION:-update-core}
+UC_FAIL_STAGE=${UC_FAIL_STAGE:-}
+UC_GROW_DOWNLOAD=${UC_GROW_DOWNLOAD:-0}
+UC_BASELINE_USED=${UC_BASELINE_USED:-0}
+UC_VERSION_MODE=${UC_VERSION_MODE:-present}
+export EASY_ALL_RUNTIME_LIB_DIR="${ROOT}/lib"
+export STATE_DIR="${TMP}/state"
+export RUNTIME_TMP="${TMP}/runtime"
+export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${TMP}/runtime-write.lock"
+export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP}/policy-state"
+export XRAY_DIR="${STATE_DIR}/xray"
+export XRAY_BIN="${XRAY_DIR}/xray"
+export XRAY_CONFIG="${XRAY_DIR}/config.json"
+export XRAY_SERVICE=easy_all-xray.service
+export CDN_PROVIDER=aws PROTOCOL=cloudfront CDN_TRAFFIC_PROTECTION_GB=985
+export FAKE_STATS_FILE="${TMP}/stats.json"
+export FAKE_INVOCATION_FILE="${TMP}/invocation-id"
+mkdir -p "${XRAY_DIR}" "${RUNTIME_TMP}" "${TMP}/policy-state"
+# shellcheck source=/dev/null
+source "${ROOT}/lib/runtime-core.sh"
+# shellcheck source=/dev/null
+source "${ROOT}/lib/cdn-traffic-guard.sh"
+
+SYSTEMCTL_LOG="${TMP}/systemctl.log"
+: >"${SYSTEMCTL_LOG}"
+meter_grow() {
+    jq -cn --argjson up "$1" --argjson down "$2" '
+        {stat:[
+          {name:"inbound>>>vless-xhttp-in>>>traffic>>>uplink",value:$up},
+          {name:"inbound>>>vless-xhttp-in>>>traffic>>>downlink",value:$down}
+        ]}' >"${FAKE_STATS_FILE}"
+}
+meter_restart() {
+    local n=1
+    [[ ! -f "${TMP}/restart-count" ]] || n=$(( $(<"${TMP}/restart-count") + 1 ))
+    printf '%s' "${n}" >"${TMP}/restart-count"
+    printf 'run-%s' "${n}" >"${FAKE_INVOCATION_FILE}"
+    meter_grow 0 0
+}
+
+# 外部边界：root/锁、状态加载、systemctl、Xray 运行验收都可用桩；
+# download_xray / update_current_core / cdn_traffic_protection_checkpoint 走真实实现。
+require_root() { :; }
+collect_installed_state() { :; }
+flock() { :; }
+dpkg() { printf 'amd64\n'; }
+systemctl() {
+    printf '%s\n' "$*" >>"${SYSTEMCTL_LOG}"
+    case "${1:-}" in
+    show) command cat "${FAKE_INVOCATION_FILE}" 2>/dev/null || true ;;
+    is-active) return 0 ;;
+    restart)
+        if [[ "${UC_FAIL_STAGE}" == "restart" && ! -f "${TMP}/restart-injected" ]]; then
+            : >"${TMP}/restart-injected"
+            return 1
+        fi
+        meter_restart
+        ;;
+    *) return 0 ;;
+    esac
+}
+validate_protocol_runtime() {
+    if [[ "${UC_FAIL_STAGE}" == "validation" && ! -f "${TMP}/validation-injected" ]]; then
+        : >"${TMP}/validation-injected"
+        meter_grow 20 10
+        return 1
+    fi
+    return 0
+}
+
+PROBE_VERSION=v26.1.1
+PROBE_SHA=$(printf 'zip-bytes' | openssl dgst -sha256 | awk '{print $NF}')
+release_json="${TMP}/release.json"
+jq -n --arg v "${PROBE_VERSION}" '
+    {tag_name:$v,assets:[
+      {name:"Xray-linux-64.zip",
+       browser_download_url:("https://github.com/XTLS/Xray-core/releases/download/"+$v+"/Xray-linux-64.zip")},
+      {name:"Xray-linux-64.zip.dgst",
+       browser_download_url:("https://github.com/XTLS/Xray-core/releases/download/"+$v+"/Xray-linux-64.zip.dgst")}
+    ]}' >"${release_json}"
+download_https_file() {
+    local url=$1 destination=$2
+    case "${url}" in
+    */releases/latest) command cp "${release_json}" "${destination}" ;;
+    *.zip.dgst) printf 'SHA2-256: %s\n' "${PROBE_SHA}" >"${destination}" ;;
+    *.zip)
+        if [[ "${UC_GROW_DOWNLOAD}" == "1" ]]; then
+            UC_GROW_DOWNLOAD=0
+            meter_grow 100 50
+        fi
+        if [[ "${UC_FAIL_STAGE}" == "download" ]]; then
+            die "注入下载失败"
+        fi
+        printf 'zip-bytes' >"${destination}"
+        ;;
+    *) die "未预期的下载地址：${url}" ;;
+    esac
+}
+sha256sum() { printf '%s  %s\n' "${PROBE_SHA}" "${1:-}"; }
+unzip() {
+    [[ "${UC_FAIL_STAGE}" != "unzip" ]] || return 1
+    command mkdir -p "$4"
+    printf '#!/usr/bin/env bash\n# NEW-XRAY-BIN\ncommand cat "${FAKE_STATS_FILE}"\n' >"$4/xray"
+}
+install() {
+    if [[ "${UC_FAIL_STAGE}" == "binary" && "${!#}" == "${XRAY_BIN}" \
+        && ! -f "${TMP}/binary-injected" ]]; then
+        : >"${TMP}/binary-injected"
+        return 1
+    fi
+    command install "$@"
+}
+printf() {
+    if [[ "${UC_FAIL_STAGE}" == "version-write" && "${1:-}" == '%s\n' \
+        && "${2:-}" == "${PROBE_VERSION}" ]]; then
+        return 1
+    fi
+    builtin printf "$@"
+}
+chmod() {
+    if [[ "${UC_FAIL_STAGE}" == "version-chmod" && "${1:-}" == 0644 \
+        && "${2:-}" == */.version.* ]]; then
+        return 1
+    fi
+    command chmod "$@"
+}
+mv() {
+    if [[ "${UC_FAIL_STAGE}" == "version-rename" && "$1" == -f \
+        && " $* " == *"/.version."* && ! -f "${TMP}/rename-injected" ]]; then
+        : >"${TMP}/rename-injected"
+        return 1
+    fi
+    command mv "$@"
+}
+
+if [[ "${UC_ACTION}" == "sample" ]]; then
+    cdn_traffic_update_usage || die "采样失败"
+    printf 'USED|%s\n' "$(jq -r '.used_bytes' "${CDN_TRAFFIC_GUARD_USAGE_FILE}")"
+    exit 0
+fi
+
+cat >"${XRAY_BIN}" <<'XRAY'
+#!/usr/bin/env bash
+# OLD-XRAY-BIN
+command cat "${FAKE_STATS_FILE}"
+XRAY
+chmod +x "${XRAY_BIN}"
+printf '{"inbounds":[]}\n' >"${XRAY_CONFIG}"
+if [[ "${UC_VERSION_MODE}" == "present" ]]; then
+    printf 'v1.0.0\n' >"${XRAY_DIR}/version"
+fi
+printf 'run-0' >"${FAKE_INVOCATION_FILE}"
+meter_grow 0 0
+cdn_traffic_write_usage "$(jq -cn --arg period "$(cdn_traffic_current_period)" \
+    --argjson used "${UC_BASELINE_USED}" '
+    {period:$period,runtime_id:"run-0",used_bytes:$used,last_uplink:0,last_downlink:0,
+     blocked:false,enforced:false,protection_offline:false}')"
+update_current_core
+UC_PROBE_EOF
+chmod +x "${UC_PROBE}"
+
+uc_run() {
+    local name=$1 stage=$2 grow=$3 baseline=$4 version_mode=$5
+    local dir="${UC_DIR}/${name}" rc=0
+    command rm -rf "${dir}"
+    install -d -m 0700 "${dir}"
+    PROBE_ROOT="${ROOT_DIR}" UC_TMP="${dir}" UC_FAIL_STAGE="${stage}" \
+        UC_GROW_DOWNLOAD="${grow}" UC_BASELINE_USED="${baseline}" \
+        UC_VERSION_MODE="${version_mode}" \
+        bash "${UC_PROBE}" >"${dir}/output.log" 2>&1 || rc=$?
+    printf '%s' "${rc}" >"${dir}/rc"
+    printf '%s' "${dir}"
+}
+uc_rc() { cat "$1/rc"; }
+uc_out() { cat "$1/output.log"; }
+uc_used() { jq -r '.used_bytes' "$1/state/cdn-traffic-usage.json"; }
+uc_version_entries() {
+    find "$1/state/xray" -maxdepth 1 -name '.version.*' | wc -l | tr -d ' '
+}
+uc_assert_old_assets() {
+    local dir=$1 label=$2
+    grep -Fq 'OLD-XRAY-BIN' "${dir}/state/xray/xray" \
+        || fail "${label}: 旧二进制字节未恢复"
+    assert_equal "${label}: 旧配置恢复" '{"inbounds":[]}' "$(<"${dir}/state/xray/config.json")"
+}
+
+# 成功：二进制与 version 同时换成新版本。
+success_dir=$(uc_run success "" 0 0 present)
+assert_equal "update-core 成功退出码" "0" "$(uc_rc "${success_dir}")"
+assert_equal "成功安装新二进制" "1" \
+    "$(grep -c -F 'NEW-XRAY-BIN' "${success_dir}/state/xray/xray" || true)"
+assert_equal "成功发布新版本" "v26.1.1" "$(<"${success_dir}/state/xray/version")"
+assert_contains "成功信息只在全部提交后输出" "$(uc_out "${success_dir}")" "Xray 已更新"
+
+# 失败注入：解压/二进制安装/version 写入、chmod、rename/重启/运行验收。
+for failure in unzip binary version-write version-chmod version-rename restart validation; do
+    fail_dir=$(uc_run "${failure}" "${failure}" 0 0 present)
+    assert_equal "${failure}: update-core 必须非零" "1" "$(uc_rc "${fail_dir}")"
+    assert_not_contains "${failure}: 不得报更新成功" "$(uc_out "${fail_dir}")" "Xray 已更新"
+    assert_equal "${failure}: 不残留 version 暂存文件" "0" "$(uc_version_entries "${fail_dir}")"
+    assert_equal "${failure}: 旧版本文件保留" "v1.0.0" "$(<"${fail_dir}/state/xray/version")"
+    uc_assert_old_assets "${fail_dir}" "${failure}"
+    case "${failure}" in
+    unzip) assert_contains "失败点名解压阶段" "$(uc_out "${fail_dir}")" \
+        "解压 Xray 安装包失败" ;;
+    binary) assert_contains "失败点名二进制安装阶段" "$(uc_out "${fail_dir}")" \
+        "安装 Xray 二进制失败" ;;
+    version-write) assert_contains "失败点名版本写入阶段" "$(uc_out "${fail_dir}")" \
+        "写入 Xray 版本暂存文件失败" ;;
+    version-chmod) assert_contains "失败点名版本权限阶段" "$(uc_out "${fail_dir}")" \
+        "设置 Xray 版本文件权限失败" ;;
+    version-rename) assert_contains "失败点名版本发布阶段" "$(uc_out "${fail_dir}")" \
+        "发布 Xray 版本文件失败" ;;
+    restart | validation) assert_contains "失败点名恢复结果" "$(uc_out "${fail_dir}")" \
+        "恢复旧版本" ;;
+    esac
+done
+
+# 原 version 缺失：失败回滚后仍不得凭空产生 version。
+missing_dir=$(uc_run missing unzip 0 0 missing)
+assert_equal "原 version 缺失时失败回滚仍缺失" "0" \
+    "$([[ ! -e "${missing_dir}/state/xray/version" ]] && echo 0 || echo 1)"
+assert_equal "原 version 缺失时不残留暂存" "0" "$(uc_version_entries "${missing_dir}")"
+
+# 外部注入 RUNTIME_TMP：下载子 shell 的 version 暂存仍由创建进程清理。
+injected_dir=$(uc_run injected version-rename 0 0 present)
+assert_equal "外部注入 RUNTIME_TMP 时仍无暂存残留" "0" "$(uc_version_entries "${injected_dir}")"
+assert_contains "外部注入 RUNTIME_TMP 的用例仍走真实下载" \
+    "$(uc_out "${injected_dir}")" "正在从 GitHub 官方 Release 下载"
+
+# A01：下载阶段产生流量后失败，恢复 restart 前必须记账。
+dl_fail_dir=$(uc_run download-growth-fail download 1 0 present)
+assert_equal "下载失败必须非零" "1" "$(uc_rc "${dl_fail_dir}")"
+assert_equal "下载失败回滚前已记入阶段增量" "150" "$(uc_used "${dl_fail_dir}")"
+assert_equal "下载失败仍恢复旧资产" "v1.0.0" "$(<"${dl_fail_dir}/state/xray/version")"
+uc_assert_old_assets "${dl_fail_dir}" "下载失败"
+printf 'run-1' >"${dl_fail_dir}/invocation-id"
+meter_json='{"stat":[{"name":"inbound>>>vless-xhttp-in>>>traffic>>>uplink","value":7},{"name":"inbound>>>vless-xhttp-in>>>traffic>>>downlink","value":3}]}'
+printf '%s' "${meter_json}" >"${dl_fail_dir}/stats.json"
+dl_sample=$(UC_ACTION=sample PROBE_ROOT="${ROOT_DIR}" UC_TMP="${dl_fail_dir}" \
+    bash "${UC_PROBE}" 2>&1) || fail "下载失败后的新进程采样必须成功：${dl_sample}"
+assert_contains "下载失败后累计包含增量且不重复" "${dl_sample}" "USED|160"
+# 恢复 restart 已经把候选/旧服务重启过：restart 计数至少 1，此后 InvocationID 由桩清零。
+assert_equal "下载失败后已执行恢复 restart" "1" "$(<"${dl_fail_dir}/restart-count")"
+
+# A01：下载阶段增长跨阈值：恢复路径也不得重启旧开放运行时。
+dl_over_dir=$(uc_run download-growth-over download 1 $((985 * 1000 * 1000 * 1000 - 100)) present)
+assert_equal "下载跨阈值失败必须非零" "1" "$(uc_rc "${dl_over_dir}")"
+assert_equal "下载跨阈值恢复不 restart" "0" \
+    "$([[ -f "${dl_over_dir}/restart-count" ]] && cat "${dl_over_dir}/restart-count" || echo 0)"
+assert_equal "下载跨阈值保留 pending" "true	false" \
+    "$(jq -r '[.blocked, .enforced] | @tsv' "${dl_over_dir}/state/cdn-traffic-usage.json")"
+assert_contains "下载跨阈值提示手动同步" "$(uc_out "${dl_over_dir}")" "cdn-traffic-sync"
+assert_equal "下载跨阈值拒绝时仍恢复旧 version" "v1.0.0" \
+    "$(<"${dl_over_dir}/state/xray/version")"
+uc_assert_old_assets "${dl_over_dir}" "下载跨阈值"
+
+# A01：下载成功、临重启的最后 checkpoint 拒绝：只恢复文件，不重启旧服务，pending 保留。
+dl_ckpt_dir=$(uc_run download-checkpoint-reject "" 1 $((985 * 1000 * 1000 * 1000 - 100)) present)
+assert_equal "最后 checkpoint 拒绝时 update-core 必须非零" "1" "$(uc_rc "${dl_ckpt_dir}")"
+assert_not_contains "最后 checkpoint 拒绝不得报更新成功" "$(uc_out "${dl_ckpt_dir}")" "Xray 已更新"
+assert_equal "最后 checkpoint 拒绝时不得发生正常或恢复 restart" "0" \
+    "$([[ -f "${dl_ckpt_dir}/restart-count" ]] && cat "${dl_ckpt_dir}/restart-count" || echo 0)"
+assert_equal "最后 checkpoint 拒绝保留 pending" "true	false" \
+    "$(jq -r '[.blocked, .enforced] | @tsv' "${dl_ckpt_dir}/state/cdn-traffic-usage.json")"
+assert_contains "最后 checkpoint 拒绝提示手动同步" "$(uc_out "${dl_ckpt_dir}")" "cdn-traffic-sync"
+assert_contains "最后 checkpoint 拒绝说明未重启旧服务" "$(uc_out "${dl_ckpt_dir}")" "未重启旧服务"
+assert_equal "最后 checkpoint 拒绝时仍恢复旧 version" "v1.0.0" \
+    "$(<"${dl_ckpt_dir}/state/xray/version")"
+uc_assert_old_assets "${dl_ckpt_dir}" "最后 checkpoint 拒绝"
+assert_equal "最后 checkpoint 拒绝时不残留 version 暂存" "0" \
+    "$(uc_version_entries "${dl_ckpt_dir}")"
+
+# A01：候选 restart 后运行验收失败：恢复采样必须计入候选进程验收期间的流量。
+validation_dir=$(uc_run validation-growth validation 0 0 present)
+assert_equal "验收失败必须非零" "1" "$(uc_rc "${validation_dir}")"
+printf 'run-2' >"${validation_dir}/invocation-id"
+printf '%s' "${meter_json}" >"${validation_dir}/stats.json"
+validation_sample=$(UC_ACTION=sample PROBE_ROOT="${ROOT_DIR}" UC_TMP="${validation_dir}" \
+    bash "${UC_PROBE}" 2>&1) || fail "验收失败后的新进程采样必须成功：${validation_sample}"
+assert_contains "候选验收期间的流量在恢复前已记账" "${validation_sample}" "USED|40"
+
+echo "=== 25. 注册命令必须逐文件做语法校验（A08） ==="
+A08_ROOT="${TMP_DIR}/a08"
+install -d -m 0700 "${A08_ROOT}/runtime"
+cp -a "${ROOT_DIR}/lib" "${ROOT_DIR}/profiles" "${ROOT_DIR}/templates" "${A08_ROOT}/runtime/"
+cp "${ROOT_DIR}/easy_all" "${ROOT_DIR}/runtime.manifest" "${A08_ROOT}/runtime/"
+printf 'STATE_VERSION="0"\nPROTOCOL="reality"\n' >"${A08_ROOT}/state.env"
+A08_PROBE="${A08_ROOT}/probe.sh"
+cat >"${A08_PROBE}" <<'A08_PROBE_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+runtime=$1 install_root=$2 state_file=$3
+export EASY_ALL_STATE_FILE_OVERRIDE="${state_file}"
+export EASY_ALL_INSTALL_DIR="${install_root}/lib/easy_all"
+export EASY_ALL_COMMAND_PATH="${install_root}/bin/easy_all"
+# 只模拟 root 与安装目标路径（readonly 垫片保留预导出值），不改被测函数与门禁。
+id() {
+    if [[ "${1:-}" == "-u" ]]; then
+        printf '0\n'
+        return 0
+    fi
+    command id "$@"
+}
+readonly() {
+    local arg name val
+    for arg in "$@"; do
+        [[ "${arg}" == -* ]] && continue
+        if [[ "${arg}" == *=* ]]; then
+            name=${arg%%=*}
+            val=${arg#*=}
+            [[ -n "${!name+x}" ]] || printf -v "${name}" '%s' "${val}"
+        fi
+    done
+}
+# shellcheck source=/dev/null
+source "${runtime}/easy_all"
+main register-command
+A08_PROBE_EOF
+chmod +x "${A08_PROBE}"
+install -d -m 0700 "${A08_ROOT}/install/lib/easy_all" "${A08_ROOT}/install/bin"
+printf 'OLD-ENTRY\n' >"${A08_ROOT}/install/lib/easy_all/easy_all"
+ln -s "/usr/local/lib/easy_all/easy_all" "${A08_ROOT}/install/bin/easy_all"
+a08_old_hash=$(openssl dgst -sha256 "${A08_ROOT}/install/lib/easy_all/easy_all" | awk '{print $NF}')
+a08_old_link=$(readlink "${A08_ROOT}/install/bin/easy_all")
+cp "${A08_ROOT}/runtime/lib/cloudflare-purge.sh" "${A08_ROOT}/cloudflare-purge.sh.orig"
+printf '\nif then\n' >>"${A08_ROOT}/runtime/lib/cloudflare-purge.sh"
+a08_rc=0
+a08_out=$(bash "${A08_PROBE}" "${A08_ROOT}/runtime" "${A08_ROOT}/install" "${A08_ROOT}/state.env" 2>&1) \
+    || a08_rc=$?
+((a08_rc != 0)) || fail "非首项脚本语法错误时 register-command 必须拒绝"
+assert_contains "拒绝时点名具体文件" "${a08_out}" "lib/cloudflare-purge.sh"
+assert_equal "拒绝时旧入口字节不变" "${a08_old_hash}" \
+    "$(openssl dgst -sha256 "${A08_ROOT}/install/lib/easy_all/easy_all" | awk '{print $NF}')"
+assert_equal "拒绝时旧命令链接不变" "${a08_old_link}" "$(readlink "${A08_ROOT}/install/bin/easy_all")"
+mv "${A08_ROOT}/cloudflare-purge.sh.orig" "${A08_ROOT}/runtime/lib/cloudflare-purge.sh"
+a08_fixed_rc=0
+a08_fixed_out=$(bash "${A08_PROBE}" "${A08_ROOT}/runtime" "${A08_ROOT}/install" "${A08_ROOT}/state.env" 2>&1) \
+    || a08_fixed_rc=$?
+assert_equal "修正后 register-command 成功" "0" "${a08_fixed_rc}"
+assert_equal "修正后命令链接指向新运行时" "${A08_ROOT}/install/lib/easy_all/easy_all" \
+    "$(readlink "${A08_ROOT}/install/bin/easy_all")"
+assert_equal "修正后新入口字节与源一致" \
+    "$(openssl dgst -sha256 "${ROOT_DIR}/easy_all" | awk '{print $NF}')" \
+    "$(openssl dgst -sha256 "${A08_ROOT}/install/lib/easy_all/easy_all" | awk '{print $NF}')"
+
+# 四个测试头部的同类多文件 bash -n：非首项文件语法错误必须在进入后续逻辑前失败。
+HEADER_ROOT="${TMP_DIR}/header-tree"
+command rm -rf "${HEADER_ROOT}"
+install -d -m 0700 "${HEADER_ROOT}/test"
+cp -a "${ROOT_DIR}/lib" "${ROOT_DIR}/profiles" "${ROOT_DIR}/templates" "${HEADER_ROOT}/"
+cp "${ROOT_DIR}/easy_all" "${ROOT_DIR}/runtime.manifest" "${ROOT_DIR}/package.json" "${HEADER_ROOT}/"
+for header_test in test_cloudfront_render.sh test_combined_render.sh \
+    test_reality_render.sh test_cloudflare_render.sh; do
+    cp "${ROOT_DIR}/test/${header_test}" "${HEADER_ROOT}/test/"
+done
+header_case() {
+    local header_test=$1 broken=$2 rc=0 out
+    cp "${HEADER_ROOT}/${broken}" "${HEADER_ROOT}/${broken}.orig"
+    printf '\nif then\n' >>"${HEADER_ROOT}/${broken}"
+    out=$(bash "${HEADER_ROOT}/test/${header_test}" 2>&1) || rc=$?
+    mv "${HEADER_ROOT}/${broken}.orig" "${HEADER_ROOT}/${broken}"
+    ((rc != 0)) || fail "${header_test}: 非首项文件语法错误必须在头部失败"
+    assert_contains "${header_test}: 头部点名具体文件" "${out}" "${broken##*/}"
+    assert_contains "${header_test}: 头部语法失败可见" "${out}" "语法校验失败"
+}
+header_case test_cloudfront_render.sh lib/scheduled-maintenance.sh
+header_case test_combined_render.sh lib/scheduled-maintenance.sh
+header_case test_reality_render.sh profiles/reality.sh
+header_case test_cloudflare_render.sh easy_all
+
+echo "=== 26. 生成的 FQ helper 真执行：快照只落独立目录（A04） ==="
+# 8.8 只验证 helper 被生成（configure_physical_fq 是桩）。这里真执行生成的 helper：
+# 生成与执行都在独立进程里，用真实的 configure_physical_fq / restore_qdisc_snapshot，
+# 只有 tc/ip 这两个内核边界是桩。
+a04_root="${TMP_DIR}/a04"
+a04_tcp_dir="${a04_root}/tcp"
+a04_business="${a04_root}/business"
+a04_tc_log="${a04_root}/tc.log"
+a04_state_json="${a04_root}/qdisc-state.json"
+a04_fq_json="${a04_root}/qdisc-fq.json"
+a04_pfifo_json="${a04_root}/qdisc-pfifo.json"
+install -d -m 0700 "${a04_root}" "${a04_root}/systemd"
+: >"${a04_tc_log}"
+printf '%s\n' '[{"kind":"fq","handle":"0:","root":true,"parent":"root","options":{}}]' \
+    >"${a04_fq_json}"
+printf '%s\n' '[{"kind":"pfifo_fast","handle":"0:","root":true,"parent":"root","options":{"bands":3,"priomap":[1,2,2,2,1,2,0,0,1,1,1,1,1,1,1,1]}}]' \
+    >"${a04_pfifo_json}"
+export A04_TC_LOG="${a04_tc_log}"
+export A04_TC_STATE="${a04_state_json}"
+export A04_TC_FQ="${a04_fq_json}"
+export A04_TC_PFIFO="${a04_pfifo_json}"
+export A04_FAIL_REPLACE=0
+# 内核边界桩：qdisc 视图由状态文件驱动；replace 成功后视图随之切换。
+tc() {
+    printf 'tc %s\n' "$*" >>"${A04_TC_LOG}"
+    if [[ "${1:-}" == "-j" ]]; then
+        case "$*" in
+        *" qdisc show "*) command cat "${A04_TC_STATE}" ;;
+        *) printf '[]' ;;
+        esac
+        return 0
+    fi
+    if [[ "${1:-}" == "qdisc" && $# -ge 4 ]]; then
+        shift 4
+        [[ "${1:-}" == "root" ]] && shift
+        [[ "${1:-}" == "parent" || "${1:-}" == "handle" ]] && shift 2
+        case "${1:-}" in
+        fq)
+            if [[ "${A04_FAIL_REPLACE}" == "1" ]]; then
+                printf 'injected fq replace failure\n' >&2
+                return 1
+            fi
+            command cp "${A04_TC_FQ}" "${A04_TC_STATE}"
+            ;;
+        pfifo_fast) command cp "${A04_TC_PFIFO}" "${A04_TC_STATE}" ;;
+        esac
+    fi
+    return 0
+}
+ip() {
+    printf 'default via 192.0.2.1 dev eth0 proto static metric 100\n'
+}
+export -f tc ip
+
+# 生成：真实 apply_physical_fq_qdisc（含真实 configure_physical_fq），不用 8.8 的桩。
+command cp "${a04_fq_json}" "${a04_state_json}"
+bash -c '
+    set -Eeuo pipefail
+    export EASY_ALL_TCP_DIR_OVERRIDE="$2" SYSTEMD_SYSTEM_DIR="$3"
+    export BACKUP_DIR="$4"
+    systemctl() { return 0; }
+    source "$1/lib/log.sh"
+    source "$1/lib/tcp-tuning.sh"
+    apply_physical_fq_qdisc
+' _ "${ROOT_DIR}" "${a04_tcp_dir}" "${a04_root}/systemd" "${a04_root}/backups" \
+    || fail "apply_physical_fq_qdisc 必须能生成 FQ helper"
+a04_helper="${a04_tcp_dir}/apply-fq.sh"
+[[ -f "${a04_helper}" ]] || fail "FQ helper 必须写入独立目录"
+assert_not_contains "helper 不写业务 backups 路径" "$(<"${a04_helper}")" \
+    "${STATE_DIR}/backups"
+assert_not_contains "helper 的 BACKUP_DIR 固定到独立目录" "$(<"${a04_helper}")" \
+    "BACKUP_DIR=${STATE_DIR}/backups"
+assert_contains "helper 的快照目录是独立 backups" "$(<"${a04_helper}")" \
+    "BACKUP_DIR=${a04_tcp_dir}/backups"
+a04_run_helper() { # 环境里故意给业务 STATE_DIR/BACKUP_DIR：helper 必须无视
+    STATE_DIR="${a04_business}/state" BACKUP_DIR="${a04_business}/backups" \
+        bash "${a04_helper}"
+}
+
+# 26.1 fq 已生效：不替换队列，成功且不落任何快照。
+command cp "${a04_fq_json}" "${a04_state_json}"
+rm -rf "${a04_tcp_dir}/backups"
+a04_rc=0
+a04_run_helper >/dev/null 2>&1 || a04_rc=$?
+assert_equal "fq 已生效时 helper 成功" "0" "${a04_rc}"
+[[ ! -e "${a04_business}" ]] || fail "fq 已生效时 helper 不得重建业务状态目录"
+assert_equal "成功后不保留 .apply 快照" "0" \
+    "$(find "${a04_tcp_dir}/backups" -name '*.apply' 2>/dev/null | wc -l | tr -d ' ')"
+
+# 26.2 开机后需要替换队列：真实 replace 并成功。
+command cp "${a04_pfifo_json}" "${a04_state_json}"
+rm -rf "${a04_tcp_dir}/backups"
+: >"${a04_tc_log}"
+a04_rc=0
+a04_run_helper >/dev/null 2>&1 || a04_rc=$?
+assert_equal "需要替换队列时 helper 成功" "0" "${a04_rc}"
+assert_contains "helper 真的替换为 fq" "$(<"${a04_tc_log}")" "qdisc replace dev eth0 root fq"
+[[ ! -e "${a04_business}" ]] || fail "替换队列时 helper 不得重建业务状态目录"
+assert_equal "成功后独立目录不保留 .apply 快照" "0" \
+    "$(find "${a04_tcp_dir}/backups" -name '*.apply' 2>/dev/null | wc -l | tr -d ' ')"
+
+# 26.3 替换失败：快照留在独立目录作为证据，业务状态目录仍不出现。
+command cp "${a04_pfifo_json}" "${a04_state_json}"
+rm -rf "${a04_tcp_dir}/backups"
+a04_rc=0
+A04_FAIL_REPLACE=1 a04_run_helper >/dev/null 2>&1 || a04_rc=$?
+((a04_rc == 0)) && fail "队列替换失败时 helper 必须非零退出"
+assert_equal "失败快照落在独立目录" "1" \
+    "$([[ -f "${a04_tcp_dir}/backups/qdisc/eth0.json.apply" ]] && echo 1 || echo 0)"
+assert_equal "快照内容就是替换前的队列" "$(cat "${a04_pfifo_json}")" \
+    "$(cat "${a04_tcp_dir}/backups/qdisc/eth0.json.apply")"
+[[ ! -e "${a04_business}" ]] || fail "替换失败时 helper 不得重建业务状态目录"
+unset -f tc ip
+unset A04_TC_LOG A04_TC_STATE A04_TC_FQ A04_TC_PFIFO A04_FAIL_REPLACE
+
+echo "=== 27. bootstrap 自愈双 mv 中断：恢复命令链接并保留业务状态（A07） ==="
+# 真实运行时做离线 git 源：clone 后必须通过 verify-release，并由真正的 register-command
+# 注册命令（不是只打印日志的桩入口）。
+# 夹具根取物理路径：macOS 的 /tmp、/var 本身是符号链接，而自愈契约要求目标路径不含符号
+# 链接组件（真实机器上的 /usr/local 是真实目录）。用 pwd -P 还原成同样干净的路径。
+a07_root="$(cd "${TMP_DIR}" && pwd -P)/a07"
+a07_origin="${a07_root}/origin"
+install -d -m 0700 "${a07_root}/bin" "${a07_origin}"
+cp -a "${ROOT_DIR}/lib" "${ROOT_DIR}/profiles" "${ROOT_DIR}/templates" "${a07_origin}/"
+cp "${ROOT_DIR}/easy_all" "${ROOT_DIR}/runtime.manifest" "${a07_origin}/"
+git -C "${a07_origin}" init -q
+git -C "${a07_origin}" symbolic-ref HEAD refs/heads/main
+git -C "${a07_origin}" add -A
+git -C "${a07_origin}" -c user.email=test@example.invalid -c user.name=easy_all \
+    commit -qm "a07 fixture"
+
+# 外部边界桩：curl/id/flock/sudo 各司其职，git 与注册逻辑走真实实现。
+printf '#!/usr/bin/env bash\nexit 0\n' >"${a07_root}/bin/curl"
+cat >"${a07_root}/bin/flock" <<'FAKE_FLOCK'
+#!/usr/bin/env bash
+printf 'flock %s\n' "$*" >>"${A07_FLOCK_LOG:?}"
+[[ "${FAKE_FLOCK_BUSY:-0}" == "1" ]] && exit 1
+exit 0
+FAKE_FLOCK
+# sudo 同时模拟提权：执行体看到 uid 0，才能让 register-command 的 root 门禁通过。
+cat >"${a07_root}/bin/sudo" <<'FAKE_SUDO'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'sudo %s\n' "$*" >>"${A07_SUDO_LOG:?}"
+while [[ "${1:-}" == *=* ]]; do export "$1"; shift; done
+FAKE_BOOTSTRAP_UID=0
+export FAKE_BOOTSTRAP_UID
+exec "$@"
+FAKE_SUDO
+# macOS 的 mktemp 忽略 TMPDIR 且受限环境下系统临时目录不可写：无模板调用固定到测试目录。
+cat >"${a07_root}/bin/mktemp" <<FAKE_MKTEMP
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "-d" && \$# -eq 1 ]]; then
+    exec $(command -v mktemp) -d "${TMP_DIR}/a07-bootstrap.XXXXXX"
+fi
+exec $(command -v mktemp) "\$@"
+FAKE_MKTEMP
+chmod +x "${a07_root}/bin/curl" "${a07_root}/bin/flock" \
+    "${a07_root}/bin/sudo" "${a07_root}/bin/mktemp"
+# launcher 把安装目录写死为 /usr/local/...；BASH_ENV 里的 readonly 垫片让预置的
+# 沙箱路径不被覆盖（与注册命令的 A08 用例同一机制）。
+cat >"${a07_root}/shim.sh" <<'SHIM'
+# easy_all 会把系统 PATH 前置，PATH 桩拦不住 require_root；用函数桩接管 id。
+id() {
+    if [[ "${1:-}" == "-u" ]]; then
+        printf '%s\n' "${FAKE_BOOTSTRAP_UID:-1000}"
+        return 0
+    fi
+    command id "$@"
+}
+readonly() {
+    local arg name val
+    for arg in "$@"; do
+        [[ "${arg}" == -* ]] && continue
+        if [[ "${arg}" == *=* ]]; then
+            name=${arg%%=*}
+            val=${arg#*=}
+            [[ -n "${!name+x}" ]] || printf -v "${name}" '%s' "${val}"
+        fi
+    done
+}
+SHIM
+
+a07_case() { # $1=case 名；输出 case 目录
+    local case_dir="${a07_root}/$1"
+    install -d -m 0700 "${case_dir}/prefix/lib" "${case_dir}/prefix/bin" \
+        "${case_dir}/state" "${case_dir}/runtime"
+    printf 'STATE_VERSION="0"\nPROTOCOL="reality"\n' >"${case_dir}/state/state.env"
+    printf '%s\n' "${case_dir}"
+}
+a07_run() { # $1=case 目录，其余为 bootstrap 参数
+    local case_dir=$1
+    shift
+    (
+        export PATH="${a07_root}/bin:${PATH}"
+        export BASH_ENV="${a07_root}/shim.sh"
+        export EASY_ALL_REPOSITORY_URL_OVERRIDE="${A07_REPOSITORY:-${a07_origin}}"
+        export EASY_ALL_INSTALL_DIR_OVERRIDE="${case_dir}/prefix/lib/easy_all"
+        export EASY_ALL_COMMAND_PATH_OVERRIDE="${case_dir}/prefix/bin/easy_all"
+        export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${case_dir}/runtime-write.lock"
+        export EASY_ALL_INSTALL_DIR="${case_dir}/prefix/lib/easy_all"
+        export EASY_ALL_COMMAND_PATH="${case_dir}/prefix/bin/easy_all"
+        export COMMAND_INSTALL_DIR="${case_dir}/prefix/lib"
+        export EASY_ALL_STATE_FILE_OVERRIDE="${case_dir}/state/state.env"
+        export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env"
+        export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${case_dir}/policy-state"
+        export EASY_ALL_POLICY_RC_OVERRIDE="${case_dir}/policy-rc.d"
+        export RUNTIME_TMP="${case_dir}/runtime"
+        export A07_FLOCK_LOG="${case_dir}/flock.log"
+        export A07_SUDO_LOG="${case_dir}/sudo.log"
+        export FAKE_BOOTSTRAP_UID="${A07_UID:-1000}"
+        export FAKE_FLOCK_BUSY="${A07_FLOCK_BUSY:-0}"
+        bash "${ROOT_DIR}/bootstrap.sh" "$@"
+    )
+}
+a07_break_install() { # $1=case 目录：正式目录已 mv 走、命令链接悬空、备份留在父目录
+    local case_dir=$1
+    install -d -m 0700 "${case_dir}/prefix/lib/easy_all.previous.test-backup"
+    printf 'previous\n' >"${case_dir}/prefix/lib/easy_all.previous.test-backup/README"
+    ln -s "${case_dir}/prefix/lib/easy_all/easy_all" "${case_dir}/prefix/bin/easy_all"
+}
+
+# 27.1 非 root（sudo 数组）自愈：恢复真实运行时、保留备份与业务状态、然后执行原请求。
+a07_happy=$(a07_case happy)
+a07_break_install "${a07_happy}"
+a07_state_hash=$(openssl dgst -sha256 "${a07_happy}/state/state.env" | awk '{print $NF}')
+a07_rc=0
+a07_out=$(a07_run "${a07_happy}" help 2>&1) || a07_rc=$?
+assert_equal "自愈 bootstrap 必须成功" "0" "${a07_rc}"
+assert_equal "命令链接指向恢复后的运行时" "${a07_happy}/prefix/lib/easy_all/easy_all" \
+    "$(readlink "${a07_happy}/prefix/bin/easy_all")"
+assert_equal "恢复的入口与本次克隆字节一致" \
+    "$(openssl dgst -sha256 "${ROOT_DIR}/easy_all" | awk '{print $NF}')" \
+    "$(openssl dgst -sha256 "${a07_happy}/prefix/lib/easy_all/easy_all" | awk '{print $NF}')"
+[[ -x "${a07_happy}/prefix/bin/easy_all" ]] || fail "恢复后的命令必须可执行"
+assert_equal "历史 previous 备份不被回收" "1" \
+    "$([[ -f "${a07_happy}/prefix/lib/easy_all.previous.test-backup/README" ]] && echo 1 || echo 0)"
+assert_equal "业务状态字节不变" "${a07_state_hash}" \
+    "$(openssl dgst -sha256 "${a07_happy}/state/state.env" | awk '{print $NF}')"
+assert_contains "自愈经 sudo 数组：注册命令在特权路径执行" \
+    "$(<"${a07_happy}/sudo.log")" "register-command"
+assert_contains "自愈提示出现在原请求之前" "${a07_out}" "恢复"
+assert_before "先恢复命令再执行原请求" "${a07_out}" "已恢复" "用法: easy_all [命令]"
+assert_contains "原请求在自愈后运行" "${a07_out}" "用法: easy_all [命令]"
+a07_restored=$("${a07_happy}/prefix/bin/easy_all" help 2>&1) \
+    || fail "恢复后的命令必须可直接执行"
+assert_contains "恢复的命令可直接执行" "${a07_restored}" "用法: easy_all [命令]"
+
+# 27.2 root（无 sudo）分支同样自愈。
+a07_rootcase=$(a07_case rootcase)
+a07_break_install "${a07_rootcase}"
+a07_root_rc=0
+a07_root_out=$(A07_UID=0 a07_run "${a07_rootcase}" help 2>&1) || a07_root_rc=$?
+assert_equal "root 分支自愈必须成功" "0" "${a07_root_rc}"
+assert_equal "root 分支恢复命令链接" "${a07_rootcase}/prefix/lib/easy_all/easy_all" \
+    "$(readlink "${a07_rootcase}/prefix/bin/easy_all")"
+assert_contains "root 分支同样执行原请求" "${a07_root_out}" "用法: easy_all [命令]"
+assert_equal "root 分支不调用 sudo" "0" \
+    "$([[ -f "${a07_rootcase}/sudo.log" ]] && wc -l <"${a07_rootcase}/sudo.log" | tr -d ' ' || echo 0)"
+assert_contains "自愈取既有运行时写锁" "$(<"${a07_rootcase}/flock.log")" "30"
+
+# 27.3 缺 previous 备份：只提示人工处理，不自动接管。
+a07_noprev=$(a07_case noprev)
+ln -s "${a07_noprev}/prefix/lib/easy_all/easy_all" "${a07_noprev}/prefix/bin/easy_all"
+a07_noprev_rc=0
+a07_noprev_out=$(a07_run "${a07_noprev}" help 2>&1) || a07_noprev_rc=$?
+assert_equal "缺备份时 bootstrap 不失败" "0" "${a07_noprev_rc}"
+[[ ! -e "${a07_noprev}/prefix/lib/easy_all" ]] || fail "缺备份时不得创建正式目录"
+[[ -L "${a07_noprev}/prefix/bin/easy_all" && ! -e "${a07_noprev}/prefix/bin/easy_all" ]] \
+    || fail "缺备份时命令链接必须保持悬空"
+assert_contains "缺备份时提示人工处理" "${a07_noprev_out}" "未自动接管"
+
+# 27.4 第三方链接：命令指向别处，即使备份存在也不接管。
+a07_third=$(a07_case third)
+install -d -m 0700 "${a07_third}/other"
+printf '#!/usr/bin/env bash\nprintf "third-party\\n"\n' >"${a07_third}/other/easy_all"
+chmod 0755 "${a07_third}/other/easy_all"
+install -d -m 0700 "${a07_third}/prefix/lib/easy_all.previous.test-backup"
+ln -s "${a07_third}/other/easy_all" "${a07_third}/prefix/bin/easy_all"
+a07_third_rc=0
+a07_third_out=$(a07_run "${a07_third}" help 2>&1) || a07_third_rc=$?
+assert_equal "第三方链接时 bootstrap 不失败" "0" "${a07_third_rc}"
+assert_equal "第三方链接保持原样" "${a07_third}/other/easy_all" \
+    "$(readlink "${a07_third}/prefix/bin/easy_all")"
+[[ ! -e "${a07_third}/prefix/lib/easy_all" ]] || fail "第三方链接不得被自动接管"
+assert_contains "第三方链接提示人工处理" "${a07_third_out}" "未自动接管"
+
+# 27.5 正式目录仍在（健康安装）：走普通 bootstrap 请求，不提示异常。
+a07_healthy=$(a07_case healthy)
+install -d -m 0700 "${a07_healthy}/prefix/lib/easy_all"
+printf 'installed\n' >"${a07_healthy}/prefix/lib/easy_all/easy_all"
+ln -s "${a07_healthy}/prefix/lib/easy_all/easy_all" "${a07_healthy}/prefix/bin/easy_all"
+a07_healthy_rc=0
+a07_healthy_out=$(a07_run "${a07_healthy}" help 2>&1) || a07_healthy_rc=$?
+assert_equal "健康安装时 bootstrap 正常返回" "0" "${a07_healthy_rc}"
+assert_equal "健康安装时正式入口不被替换" "installed" \
+    "$(<"${a07_healthy}/prefix/lib/easy_all/easy_all")"
+assert_not_contains "健康安装不提示残缺状态" "${a07_healthy_out}" "未自动接管"
+assert_equal "健康安装不取运行时写锁" "0" \
+    "$([[ -f "${a07_healthy}/flock.log" ]] && wc -l <"${a07_healthy}/flock.log" | tr -d ' ' || echo 0)"
+
+# 27.6 verify-release 失败：不修复、不执行原请求。
+a07_bad_origin="${a07_root}/origin-broken"
+cp -a "${a07_origin}" "${a07_bad_origin}"
+rm -f "${a07_bad_origin}/lib/cloudfront-mode.sh"
+git -C "${a07_bad_origin}" add -A
+git -C "${a07_bad_origin}" -c user.email=test@example.invalid -c user.name=easy_all \
+    commit -qm "broken runtime"
+a07_verify=$(a07_case verifyfail)
+a07_break_install "${a07_verify}"
+a07_verify_rc=0
+a07_verify_out=$(A07_REPOSITORY="${a07_bad_origin}" a07_run "${a07_verify}" help 2>&1) \
+    || a07_verify_rc=$?
+((a07_verify_rc != 0)) || fail "下载的运行时完整性问题必须终止 bootstrap"
+[[ -f "${a07_verify}/prefix/lib/easy_all.previous.test-backup/README" ]] \
+    || fail "verify-release 失败必须保留 previous 备份"
+[[ ! -e "${a07_verify}/prefix/lib/easy_all" ]] || fail "verify-release 失败不得创建正式目录"
+assert_not_contains "verify-release 失败不执行原请求" "${a07_verify_out}" "用法: easy_all [命令]"
+
+# 27.7 运行时写锁被占用：报错、保留证据、不执行原请求。
+a07_busy=$(a07_case busy)
+a07_break_install "${a07_busy}"
+a07_busy_rc=0
+a07_busy_out=$(A07_FLOCK_BUSY=1 a07_run "${a07_busy}" help 2>&1) || a07_busy_rc=$?
+((a07_busy_rc != 0)) || fail "取不到运行时写锁时必须终止"
+assert_contains "锁忙点名原因" "${a07_busy_out}" "运行时任务正在运行"
+[[ -f "${a07_busy}/prefix/lib/easy_all.previous.test-backup/README" ]] \
+    || fail "锁忙时必须保留 previous 备份"
+assert_not_contains "锁忙时不执行原请求" "${a07_busy_out}" "用法: easy_all [命令]"
+
+# 27.8 注册失败（克隆里有语法错误）：保留备份与业务状态、不执行原请求。
+a07_syntax_origin="${a07_root}/origin-syntax"
+cp -a "${a07_origin}" "${a07_syntax_origin}"
+printf '\nif then\n' >>"${a07_syntax_origin}/lib/firewall.sh"
+git -C "${a07_syntax_origin}" add -A
+git -C "${a07_syntax_origin}" -c user.email=test@example.invalid -c user.name=easy_all \
+    commit -qm "syntax error"
+a07_regfail=$(a07_case regfail)
+a07_break_install "${a07_regfail}"
+a07_regfail_hash=$(openssl dgst -sha256 "${a07_regfail}/state/state.env" | awk '{print $NF}')
+a07_regfail_rc=0
+a07_regfail_out=$(A07_REPOSITORY="${a07_syntax_origin}" a07_run "${a07_regfail}" help 2>&1) \
+    || a07_regfail_rc=$?
+((a07_regfail_rc != 0)) || fail "注册失败必须终止 bootstrap"
+[[ -f "${a07_regfail}/prefix/lib/easy_all.previous.test-backup/README" ]] \
+    || fail "注册失败必须保留 previous 备份"
+[[ ! -e "${a07_regfail}/prefix/lib/easy_all" ]] || fail "注册失败不得留下正式目录"
+assert_equal "注册失败保留业务状态" "${a07_regfail_hash}" \
+    "$(openssl dgst -sha256 "${a07_regfail}/state/state.env" | awk '{print $NF}')"
+assert_not_contains "注册失败不执行原请求" "${a07_regfail_out}" "用法: easy_all [命令]"
+assert_not_contains "bootstrap 自愈不触碰业务状态目录" "$(<"${ROOT_DIR}/bootstrap.sh")" "/etc/easy_all"
+
+# 27.9 相对命令链接：../lib/easy_all/easy_all 拼接后是 prefix/bin/../lib/easy_all/easy_all，
+#      必须做纯 bash 路径规范化后再比较，否则会漏掉本该自愈的残缺机器。
+a07_break_install_relative() { # $1=case 目录 $2=相对 prefix/bin 的链接目标
+    local case_dir=$1 link_target=$2
+    install -d -m 0700 "${case_dir}/prefix/lib/easy_all.previous.test-backup"
+    printf 'previous\n' >"${case_dir}/prefix/lib/easy_all.previous.test-backup/README"
+    ln -s "${link_target}" "${case_dir}/prefix/bin/easy_all"
+}
+a07_rel_index=0
+for a07_rel in "../lib/easy_all/easy_all" "./../lib/easy_all/easy_all" \
+    "../lib/./easy_all//easy_all"; do
+    a07_rel_index=$((a07_rel_index + 1))
+    a07_relcase=$(a07_case "relative-${a07_rel_index}")
+    a07_break_install_relative "${a07_relcase}" "${a07_rel}"
+    a07_rel_rc=0
+    a07_rel_out=$(a07_run "${a07_relcase}" help 2>&1) || a07_rel_rc=$?
+    assert_equal "相对链接 ${a07_rel} 必须自愈" "0" "${a07_rel_rc}"
+    assert_equal "相对链接 ${a07_rel} 恢复后指向正式入口" \
+        "${a07_relcase}/prefix/lib/easy_all/easy_all" \
+        "$(readlink "${a07_relcase}/prefix/bin/easy_all")"
+    assert_contains "相对链接 ${a07_rel} 自愈后执行原请求" "${a07_rel_out}" "用法: easy_all [命令]"
+done
+
+# 27.10 相对但不相等的目标与第三方相对目标：仍不接管。
+for a07_relbad in "../lib/other/easy_all" "../other/easy_all"; do
+    a07_badcase=$(a07_case "relative-bad-$(printf '%s' "${a07_relbad}" | tr -c 'a-z' '-')")
+    a07_break_install_relative "${a07_badcase}" "${a07_relbad}"
+    a07_bad_rc=0
+    a07_bad_out=$(a07_run "${a07_badcase}" help 2>&1) || a07_bad_rc=$?
+    assert_equal "相对目标 ${a07_relbad} 不报错" "0" "${a07_bad_rc}"
+    assert_equal "相对目标 ${a07_relbad} 链接保持原样" "${a07_relbad}" \
+        "$(readlink "${a07_badcase}/prefix/bin/easy_all")"
+    [[ ! -e "${a07_badcase}/prefix/lib/easy_all" ]] \
+        || fail "相对目标 ${a07_relbad} 不得被自动接管"
+    assert_contains "相对目标 ${a07_relbad} 提示人工处理" "${a07_bad_out}" "未自动接管"
+done
+
+# 27.11 中间组件是符号链接：文本折叠 /prefix/bin/../other/../lib/easy_all/easy_all 等于我们的
+#       入口，但 prefix/other -> vendor/sub，内核解析落在第三方目录；这类链接从未指向本项目，
+#       必须拒绝自愈、保留链接与业务状态，只提示人工处理。
+a07_symlink_case=$(a07_case symlink-component)
+install -d -m 0700 "${a07_symlink_case}/vendor/sub" \
+    "${a07_symlink_case}/vendor/lib/easy_all"
+printf '#!/usr/bin/env bash\nprintf "third-party\\n"\n' \
+    >"${a07_symlink_case}/vendor/lib/easy_all/easy_all"
+chmod 0755 "${a07_symlink_case}/vendor/lib/easy_all/easy_all"
+ln -s "${a07_symlink_case}/vendor/sub" "${a07_symlink_case}/prefix/other"
+install -d -m 0700 "${a07_symlink_case}/prefix/lib/easy_all.previous.test-backup"
+printf 'previous\n' >"${a07_symlink_case}/prefix/lib/easy_all.previous.test-backup/README"
+ln -s "../other/../lib/easy_all/easy_all" "${a07_symlink_case}/prefix/bin/easy_all"
+a07_symlink_state_hash=$(openssl dgst -sha256 "${a07_symlink_case}/state/state.env" | awk '{print $NF}')
+a07_symlink_rc=0
+a07_symlink_out=$(a07_run "${a07_symlink_case}" help 2>&1) || a07_symlink_rc=$?
+assert_equal "中间 symlink 场景 bootstrap 不失败" "0" "${a07_symlink_rc}"
+assert_equal "中间 symlink 场景命令链接保持原样" "../other/../lib/easy_all/easy_all" \
+    "$(readlink "${a07_symlink_case}/prefix/bin/easy_all")"
+[[ ! -e "${a07_symlink_case}/prefix/lib/easy_all" ]] \
+    || fail "中间 symlink 场景不得被自动接管"
+assert_equal "中间 symlink 场景保留业务状态" "${a07_symlink_state_hash}" \
+    "$(openssl dgst -sha256 "${a07_symlink_case}/state/state.env" | awk '{print $NF}')"
+assert_equal "中间 symlink 场景不执行注册" "0" \
+    "$([[ -f "${a07_symlink_case}/sudo.log" ]] \
+        && grep -c 'register-command' "${a07_symlink_case}/sudo.log" || true)"
+assert_contains "中间 symlink 场景提示人工处理" "${a07_symlink_out}" "未自动接管"
+assert_contains "中间 symlink 场景仍执行原请求" "${a07_symlink_out}" "用法: easy_all [命令]"
+
+echo "=== 28. SSH 配置 IdentityFile 用 OpenSSH 引号（A09） ==="
+# 独立工具去掉 main 后 source（与第 15 节同一装载方式），再用真实 ssh -G -F 离线解析。
+a09_root="${TMP_DIR}/a09"
+install -d -m 0700 "${a09_root}/home/.ssh" "${a09_root}/tmp"
+a09_init="${a09_root}/debian-init-under-test.sh"
+awk '$0 != "main \"$@\""' "${ROOT_DIR}/scripts/debian-init.sh" >"${a09_init}"
+bash -n "${a09_init}" || fail "去掉 main 后的 debian-init 必须语法正确"
+a09_config="${a09_root}/home/.ssh/config"
+a09_write() { # $1=alias $2=identity_file
+    HOME="${a09_root}/home" TMPDIR="${a09_root}/tmp" bash -c '
+        set -Eeuo pipefail
+        # macOS 的 mktemp 在无模板时忽略 TMPDIR 且受限环境里系统临时目录不可写。
+        mktemp() {
+            if (($# == 0)); then
+                command mktemp "${TMPDIR}/ssh-config.XXXXXX"
+            else
+                command mktemp "$@"
+            fi
+        }
+        source "$1"
+        write_ssh_config "$2" 192.0.2.10 deploy 22 "$3"
+    ' _ "${a09_init}" "$1" "$2"
+}
+a09_identityfile() { # $1=alias：ssh -G 打印的 identityfile 值（不含关键字）
+    local parsed
+    ssh -G -F "${a09_config}" "$1" >/dev/null 2>"${a09_root}/ssh.err" \
+        || fail "ssh -G 解析 SSH 配置失败：$(<"${a09_root}/ssh.err")"
+    assert_not_contains "ssh -G 不得报配置错误（${1}）" "$(<"${a09_root}/ssh.err")" \
+        "bad configuration option"
+    parsed=$(ssh -G -F "${a09_config}" "$1" 2>/dev/null | grep -i '^identityfile ' | head -n 1)
+    printf '%s\n' "${parsed#identityfile }"
+}
+
+# 28.1 普通路径：不得因为加引号而变形。
+a09_plain="${a09_root}/home/.ssh/id_plain"
+printf 'PRIVATE\n' >"${a09_plain}"
+chmod 0600 "${a09_plain}"
+a09_write easy-all-test "${a09_plain}" || fail "普通私钥路径必须能写入 SSH 配置"
+assert_equal "普通路径解析后保持原样" "${a09_plain}" "$(a09_identityfile easy-all-test)"
+assert_equal "SSH 配置权限为 0600" "600" "$(stat -c '%a' "${a09_config}" 2>/dev/null || stat -f '%Lp' "${a09_config}")"
+
+# 28.2 含空格的私钥路径：必须作为单个参数交给 OpenSSH。
+a09_space="${a09_root}/home/.ssh/id keys/easy all test.pem"
+install -d -m 0700 "${a09_root}/home/.ssh/id keys"
+printf 'PRIVATE\n' >"${a09_space}"
+chmod 0600 "${a09_space}"
+a09_write easy-all-space "${a09_space}" || fail "含空格私钥路径必须能写入 SSH 配置"
+assert_equal "含空格路径解析为完整 IdentityFile" "${a09_space}" "$(a09_identityfile easy-all-space)"
+
+# 28.3 含双引号与反斜杠的私钥路径：按 OpenSSH 规则转义，而不是 shell 的 %q。
+a09_quote="${a09_root}/home/.we\"ird\\dir/key.pem"
+install -d -m 0700 "${a09_root}/home/.we\"ird\\dir"
+printf 'PRIVATE\n' >"${a09_quote}"
+chmod 0600 "${a09_quote}"
+a09_write easy-all-quote "${a09_quote}" || fail "含引号/反斜杠私钥路径必须能写入 SSH 配置"
+assert_equal "引号与反斜杠按 OpenSSH 规则还原" "${a09_quote}" "$(a09_identityfile easy-all-quote)"
+assert_not_contains "不使用 shell %q 当 SSH 配置转义" "$(grep 'IdentityFile' "${a09_config}")" '\\ '
+
+# 28.4 重复写同一别名：管理区块被替换，其他 Host 保留。
+printf 'Host keep-me\n  HostName keep.example.com\n' >>"${a09_config}"
+a09_write easy-all-quote "${a09_quote}" || fail "重复写入管理区块必须成功"
+assert_equal "管理区块只保留一份" "1" \
+    "$(grep -c '>>> managed by setup_debian_ssh_key_only: easy-all-quote' "${a09_config}")"
+assert_contains "其他 Host 必须保留" "$(<"${a09_config}")" "Host keep-me"
+assert_contains "其他 Host 的 HostName 必须保留" "$(<"${a09_config}")" "HostName keep.example.com"
+assert_equal "重复写入后权限仍为 0600" "600" \
+    "$(stat -c '%a' "${a09_config}" 2>/dev/null || stat -f '%Lp' "${a09_config}")"
+
+# 28.5 CR/LF 路径无法写成单行配置：必须在改写配置前拒绝。
+a09_before_hash=$(openssl dgst -sha256 "${a09_config}" | awk '{print $NF}')
+a09_lf="${a09_root}/home/.ssh/id
+newline.pem"
+a09_cr=$(printf '%s\r' "${a09_root}/home/.ssh/id_cr.pem")
+a09_lf_rc=0
+a09_lf_out=$(a09_write easy-all-test "${a09_lf}" 2>&1) || a09_lf_rc=$?
+((a09_lf_rc != 0)) || fail "含换行的私钥路径必须被拒绝"
+assert_contains "拒绝换行路径时点名原因" "${a09_lf_out}" "换行"
+a09_cr_rc=0
+a09_cr_out=$(a09_write easy-all-test "${a09_cr}" 2>&1) || a09_cr_rc=$?
+((a09_cr_rc != 0)) || fail "含回车符的私钥路径必须被拒绝"
+assert_contains "拒绝回车路径时点名原因" "${a09_cr_out}" "换行"
+assert_equal "拒绝后 SSH 配置字节不变" "${a09_before_hash}" \
+    "$(openssl dgst -sha256 "${a09_config}" | awk '{print $NF}')"
+
 echo "ok - all audit fixes verified successfully"
+
 

@@ -549,6 +549,9 @@ net.ipv4.tcp_slow_start_after_idle = 0
 # HTTP/2 & gRPC anti-bufferbloat: limit unsent bytes in write queue
 net.ipv4.tcp_notsent_lowat = 32768
 
+# Fast dead connection failure (Skyline recommended tuning)
+net.ipv4.tcp_retries2 = 8
+
 # High-concurrency socket recycling & queue optimization
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 15
@@ -742,7 +745,9 @@ apply_physical_fq_qdisc() {
         printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
         # 开机由 systemd 拉起：PATH 与备份目录都不能依赖当时的交互环境。
         printf '%s\n' 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
-        printf 'BACKUP_DIR=%q\n' "${BACKUP_DIR:-${STATE_DIR:-/etc/easy_all}/backups}"
+        # helper 是独立服务，快照必须留在自己的目录下：写业务 STATE_DIR/backups
+        # 会在卸载后重建 /etc/easy_all，并被安装守卫误判为未完成安装。
+        printf 'BACKUP_DIR=%q\n' "${helper_dir}/backups"
         printf 'die() { printf "%%s\\n" "$*" >&2; exit 1; }\n'
         declare -f default_route_iface physical_fq_active validate_qdisc_snapshot \
             normalize_mq_handle map_qdisc_parents qdisc_restore_args restore_qdisc_snapshot configure_physical_fq

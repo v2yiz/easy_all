@@ -5,11 +5,13 @@
 #   {"allowedTokens": {"owner": "..."}, "nodes": [...]}
 # Nodes marked optional are served only when the client asks for node=all.
 
-readonly LOCAL_AGGREGATION_RESERVED_NAMES='["AUTO","CDN-AUTO","CDN-FALLBACK","PROXY","GLOBAL","DIRECT","REJECT","PASS"]'
+# 保留组名的唯一来源：Profile source 时只声明数组（不调用 jq），安装前置预检可直接使用；
+# jq 校验用的 JSON 只在真正需要 jq 的订阅处理路径里惰性生成。
+readonly LOCAL_AGGREGATION_RESERVED_NAMES=(AUTO CDN-AUTO CDN-FALLBACK PROXY GLOBAL DIRECT REJECT PASS)
 
 # 校验并规范化整个订阅配置；节点名冲突由调用方通过 LOCAL_NODE_NAMES 传入。
 normalize_subscription_config() {
-    local raw=${1:-} local_names=${2:-[]} tokens nodes
+    local raw=${1:-} local_names=${2:-[]} tokens nodes reserved
     jq -e 'type == "object" and ((keys - ["allowedTokens","nodes"]) | length) == 0' \
         <<<"${raw}" >/dev/null 2>&1 \
         || {
@@ -22,7 +24,10 @@ normalize_subscription_config() {
         return 1
     }
     tokens=$(normalize_allowed_tokens "${tokens}") || return 1
-    nodes=$(jq -c --argjson reserved "${LOCAL_AGGREGATION_RESERVED_NAMES}" \
+    # 保留组名只从 bash 数组生成一次 JSON（仅此 jq 路径需要），不保留第二份手写名单。
+    reserved=$(jq -cn '$ARGS.positional' --args "${LOCAL_AGGREGATION_RESERVED_NAMES[@]}") \
+        || return 1
+    nodes=$(jq -c --argjson reserved "${reserved}" \
         --argjson local "${local_names}" '
         def fail($message): error($message);
         def nonempty: type == "string" and length > 0;

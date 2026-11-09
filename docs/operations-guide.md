@@ -23,7 +23,7 @@ sudo easy_all apply
 ```
 - 模式 2/4：**只在 VPS 本机重建**——重新渲染并应用 Xray 配置（含 StatsService 与阻断状态）、Nginx 站点、UFW 业务端口与六个订阅产物。**不访问 Cloudflare / AWS API，不签发 ACM 或源站证书，不改 DNS**。
 - 模式 3/5：同样**只在本机重建**（Xray、单域名 Nginx、回源白名单、订阅），不签发证书、不改 DNS。唯一的外部访问是读取公开的 Cloudflare 官方回源 IPv4 段与 Origin CA 根证书，不需要账号凭据。
-- 模式 1 例外：`deploy` 订阅仍要一次 Cloudflare API Token 以签发或复用 Cloudflare Origin CA 回源证书（Token 不落盘），同样不改 DNS。
+- 模式 1 例外：`deploy` 订阅下的 `apply` / `edit-sub` / `renew-cert` 会解析订阅回源域名所属 Zone，必要时**创建或更新 easy_all 管理的订阅回源 `A` 记录**、签发或复用 Cloudflare Origin CA 回源证书，并把 Strict TLS 收敛到该域名（Token 只在当前进程使用、不落盘）。记录已正确时这些步骤是 no-op；同名第三方记录或多条同名冲突记录会被拒绝覆盖并保留原状。`link` 模式不部署订阅，不访问 Cloudflare。
 - 保护待落实（`blocked=true` 且 `enforced=false`）时先做[受限安全恢复](#63-各命令在保护停机时的准入)，恢复失败直接非零停止，不会带着开放配置启动 Xray。
 - 订阅配置损坏时普通 `apply` 会失败并提示 `sudo easy_all edit-sub`，不会静默把聚合节点清空。
 - 源站证书缺失或异常（`status` 显示「源站证书异常/缺失」）应执行 `sudo easy_all renew-cert`；ACM 证书或分发需要重建时用 `apply-cloud`。
@@ -72,7 +72,7 @@ sudo easy_all apply-cloud
 | `sudo easy_all uninstall` | 卸载当前模式；加 `--purge-cloud` 一并清理托管的远端资源 |
 | `sudo easy_all help` | 显示帮助 |
 
-> 模式 1 的 `apply` / `edit-sub` / `renew-cert` 会用到 Cloudflare API（订阅回源证书）；模式 2/4 的这三条命令**都不访问 AWS / Cloudflare**；模式 3/5 只有 `renew-cert` 访问 Cloudflare 证书 API。需要改云端时统一用 `apply-cloud`。
+> 模式 1 的 `apply` / `edit-sub` / `renew-cert` 会用到 Cloudflare API：除了订阅回源证书，还可能写入 easy_all 管理的回源 `A` 记录与 Strict TLS 规则（已正确时 no-op，冲突记录拒绝覆盖）；`link` 模式不部署订阅、不访问 Cloudflare。模式 2/4 的这三条命令**都不访问 AWS / Cloudflare**；模式 3/5 只有 `renew-cert` 访问 Cloudflare 证书 API。需要改云端时统一用 `apply-cloud`。
 
 ---
 
@@ -200,6 +200,7 @@ sudo easy_all uninstall
 
 - **默认保留云端资源**：CloudFront 分发、ACM 证书、DNS 记录与 Cloudflare Origin CA 证书都不动，并先打印可识别的资源清单（模式 2/4：分发 ID/域名、ACM ARN、源站 A 记录、节点/订阅 CNAME、validation CNAME；模式 3/5：橙云/灰云 A 记录与 Origin CA 证书 ID/到期时间）。本机状态删除后无法再用 easy_all 清理这些资源，只能到控制台处置。
 - 前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap、系统依赖与 Nginx `worker_processes 1;` 收敛均保留。
+- **旧版 fq helper 迁移**：`self-update` 只替换代码，不会刷新已生成的 `/usr/local/lib/easy_all-tcp` helper（其 qdisc 快照不再写进 `/etc/easy_all`）。存量机器建议按 `sudo easy_all self-update` → `sudo easy_all apply` → `sudo easy_all uninstall` 操作；如果旧 helper 只留下「`backups/qdisc` 空目录」的严格空链，新版安装守卫会放行，不必手工删目录，新安装配置 TCP 加速时会重写 helper。
 - 保护停机（`protection_offline=true`、Xray 已停止）不阻挡卸载，也不要求统计文件可读。
 
 ### 7.2 完整卸载（含云端资源清理）
@@ -242,6 +243,7 @@ sudo easy_all purge-cloudflare --domain example.com
 | :--- | :--- |
 | **SSH 断开后重连失败** | - 检查服务商后台云防火墙/安全组是否已放行 SSH 端口（默认 22）。<br>- 检查 UFW 状态及 Fail2ban 是否因多次认证失败暂时封禁了客户端 IP。 |
 | **重跑提示 TCP 80/443 被占用** | 有 easy_all 残留时按提示执行 `sudo easy_all cleanup-partial`；只报了「easy_all 仅支持专用 VPS」说明占用者是第三方进程（多为本机自用 Nginx），先确认归属再处理。 |
+| **`easy_all: command not found` / 命令突然不可用** | `self-update` 在替换安装目录与命令链接之间被中断（两次相邻 `mv` 之间的窗口）。重跑 bootstrap 即可恢复运行时代码与命令链接，例如 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) help`；自愈要求安装状态合法可读、`/usr/local/lib/easy_all` 缺失而命令链接仍指向它、同父目录存在 `easy_all.previous.*`，任一条件不满足只提示人工处理并保留备份。它只恢复代码与链接，不改 `/etc/easy_all` 业务状态、云资源或防火墙；也不承诺崩溃期间命令始终可用。 |
 | **安装中断提示「继续上次安装」** | 续装要求同一 Profile 且安装标记里的链路一致：模式 2/4 是 `CHAIN=cloudfront`，模式 3/5 是 `CHAIN=cloudflare`。回车选择 `Y` 可复用已生成的证书、分发 ID/ACM ARN（模式 2/4）或 Origin CA 身份（模式 3/5）与 Reality 密钥；选 `n` 则清理重装。旧版没有 `CHAIN` 的标记不参与续装。 |
 | **CloudFront 返回 502** | 回源失败：源站 443 不可达（安全组未放行、Nginx 未运行），或 CloudFront 无法校验源站证书（源站证书过期/未覆盖源站域名）。先用 `sudo easy_all status` 看证书与服务状态，再用 `sudo easy_all renew-cert`、`sudo easy_all apply-cloud` 修复。 |
 | **CloudFront 返回 503** | 多半是 CDN 用量达到 985 GB 触发的阻断，或 `protection_offline` 状态下的受限运行时。查看 `sudo easy_all status` 的 `blocked` / `enforced` / `protection_offline`；按 §6.4 顺序收敛，不要清空用量文件。 |
