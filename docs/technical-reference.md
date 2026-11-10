@@ -102,7 +102,7 @@
 - **卸载与回滚只回收业务端口**：各模式 `uninstall` 与安装失败回滚一律只删除自己注入的 `443`/`8443` 放行与 Cloudflare 回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置，不再执行 `ufw disable`。
 - **Fail2ban 助手脚本解耦**：CIDR 封禁助手安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`（不再位于 `/usr/local/lib/easy_all`），卸载 easy_all 时保留，避免常驻 SSH 封禁动作因脚本缺失而失效。
 - **重装跳过已就绪的初始化**：卸载后重装时，依赖包、Swap、内核与 TCP 加速已就绪就跳过重复安装；IPv4-only、定时重启与 UFW/Fail2ban 仍会幂等校验。
-- **定时维护互斥与安全加固**：每日定时重启任务引入运行时写锁检测（`flock -n 8`），检测到后台有安装或更新进行时自动跳过重启并向 syslog 记录审计日志，防止并发维护造成半安装现场；模式 2/4 还会在取得最终写锁后只读复核流量保护状态（`protection_offline=false` 且 `blocked=enforced`），不满足则跳过重启。crontab 任务命令统一对 `%` 进行了转义。
+- **定时维护互斥与安全加固**：每日定时重启任务引入运行时写锁检测（`flock -n 8`），检测到后台有安装或更新进行时自动跳过重启并向 syslog 记录审计日志，防止并发维护造成半安装现场；模式 2/4 还会在取得最终写锁后只读复核流量保护状态（`protection_offline=false` 且 `blocked=enforced`），不满足则跳过重启。cron 行本身只调用 `easy_all internal-scheduled-reboot` 内部入口，预命令、抢锁与流量复核都在该入口内完成，行长度固定、不再随逻辑增长，也无需 `%` 转义。
 
 ### 2.2 各模式端口与监听
 

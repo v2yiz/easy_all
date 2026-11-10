@@ -177,7 +177,7 @@ sudo easy_all status
 | `update-core` | 先非零拒绝（不下载、不替换、不重启），提示先 `cdn-traffic-sync`（订阅损坏先 `edit-sub`，证书故障先 `renew-cert`） |
 | `status` / `show` / `subscription` | 只读，不清算、不启动服务 |
 | `uninstall` | 不需要统计文件可读，照常卸载 |
-| 定时重启 | 前置 `cdn-traffic-sync` 非零即不重启；cron 最终取锁后再只读复核 usage（结构合法、`protection_offline=false` 且 `blocked=enforced`），不满足则跳过重启并告警 |
+| 定时重启 | 任务入口为 `easy_all internal-scheduled-reboot`（原语义不变：前置 `cdn-traffic-sync` 非零即不重启；取锁后再只读复核 usage（结构合法、`protection_offline=false` 且 `blocked=enforced`），不满足则跳过重启并告警） |
 
 ### 6.4 故障后的收敛顺序
 1. 证书导致受限启动失败：`sudo easy_all renew-cert`。

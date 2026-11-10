@@ -543,8 +543,9 @@ main() {
             || launcher_die "easy_all 运行时文件不完整：${EASY_ALL_ROOT}"
         return
     fi
-    # 内部入口（不对外文档化）：服务启动前的计量准备与定时证书 hook 的部署。
-    if [[ "${command}" == "internal-traffic-prepare" || "${command}" == "internal-cert-deploy" ]]; then
+    # 内部入口（不对外文档化）：服务启动前的计量准备、定时证书 hook 与定时重启的部署。
+    if [[ "${command}" == "internal-traffic-prepare" || "${command}" == "internal-cert-deploy" \
+        || "${command}" == "internal-scheduled-reboot" ]]; then
         (($# == 0)) || launcher_die "${command} 不接受参数"
         [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
         mode=$(detect_installed_mode)
@@ -571,6 +572,7 @@ main() {
         case "${command}" in
         internal-traffic-prepare) internal_traffic_prepare ;;
         internal-cert-deploy) internal_cert_deploy ;;
+        internal-scheduled-reboot) internal_scheduled_reboot ;;
         esac
         return
     fi

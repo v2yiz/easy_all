@@ -336,6 +336,9 @@ export CRON_REBOOT_MARKER="# easy_all-managed-reboot"
 # 定时重启的 cron 行需要 flock 抢运行时写锁，并写入锁路径；CI/沙箱不一定有 util-linux flock。
 flock() { :; }
 export RUNTIME_WRITE_LOCK_FILE="${TMP_DIR}/runtime-write.lock"
+# 受管行只调用内部入口，命令路径取自 runtime-core 的 COMMAND_PATH（即安装后的
+# /usr/local/bin/easy_all）；本文件直接 source scheduled-maintenance 时不会带上它。
+COMMAND_PATH="/usr/local/bin/easy_all"
 
 printf '0 3 * * * /usr/local/bin/user-backup\n0 4 * * * true # easy_all-managed-reboot\n' \
     >"${FAKE_CRONTAB_FILE}"
@@ -383,6 +386,188 @@ filter_managed_reboot_cron() { return 1; }
     && fail "configure_daily_reboot must report filter failure"
 assert_equal "filter failure keeps crontab on configure_daily_reboot" "${before_configure}" \
     "$(cat "${FAKE_CRONTAB_FILE}")"
+
+# 定时重启的 cron 行只调用内部入口：vixie-cron/cronie 安装时单行命令超 1000 字节
+# 直接报 "command too long" 拒装（见 crontab MAX_COMMAND）。用真实 source 链
+# （runtime-core → cloudfront-mode）生成受管行并断言字节长度（cron 按字节计，
+# 不用 awk length/${#var}，它们在 UTF-8 locale 下按字符计会低估中文 logger 消息的占用），
+# 防止模式 2/4 的预命令与 jq 复核再被拼回行内。
+printf '0 3 * * * /usr/local/bin/user-backup\n' >"${FAKE_CRONTAB_FILE}"
+reboot_line=$(
+    (
+        export EASY_ALL_RUNTIME_LIB_DIR="${ROOT_DIR}/lib"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/cron-state"
+        source "${ROOT_DIR}/lib/runtime-core.sh"
+        source "${ROOT_DIR}/lib/cloudfront-mode.sh"
+        PATH="${TMP_DIR}/bin:${PATH}" REBOOT_SCHEDULE_MODE=custom REBOOT_HOUR=5 \
+            configure_daily_reboot
+        awk 'index($0, "easy_all-managed-reboot") != 0 { print; exit }' \
+            "${FAKE_CRONTAB_FILE}"
+    ) 2>/dev/null
+)
+[[ -n "${reboot_line}" ]] || fail "cloudfront reboot cron line missing"
+reboot_line_bytes=$(printf '%s' "${reboot_line}" | wc -c | tr -d ' ')
+[[ "${reboot_line_bytes}" =~ ^[0-9]+$ ]] \
+    || fail "reboot cron line byte count unreadable: ${reboot_line_bytes}"
+(( ${reboot_line_bytes} <= 1000 )) \
+    || fail "cloudfront reboot cron line too long (${reboot_line_bytes} > 1000): ${reboot_line}"
+assert_contains "cloudfront reboot line calls the internal entry" "${reboot_line}" \
+    "internal-scheduled-reboot"
+assert_contains "cloudfront reboot line keeps the managed marker" "${reboot_line}" \
+    "# easy_all-managed-reboot"
+# 锁定复核（以及模式 1/3 的“空复核”）已由内部入口承担，行内不再出现 jq 内容
+assert_not_contains "cloudfront reboot line no longer inlines the jq check" "${reboot_line}" \
+    "protection_offline"
+
+# 内部入口 internal_scheduled_reboot：旧 cron 行
+# `( pre ) && if exec 8>lock && flock -n 8; then { check; } && reboot || logger …; else logger …; fi`
+# 的顺序与条件必须逐条保持。走真实 source 链（runtime-core，即 cron 触发 easy_all 时那条），
+# 外部命令按仓库惯例用 override/stub：reboot 指向 TMP 假命令，flock 与 logger 用函数 stub，
+# 假 reboot 与 logger 各写一份日志供断言。
+cat >"${TMP_DIR}/bin/fake-reboot" <<'FAKE_REBOOT'
+#!/usr/bin/env bash
+printf 'reboot\n' >>"${FAKE_REBOOT_LOG:?}"
+FAKE_REBOOT
+chmod +x "${TMP_DIR}/bin/fake-reboot"
+
+# reboot 自身失败（磁盘只读、systemd 拒绝等）：仍要证明入口走到了 /usr/sbin/reboot 这一步。
+cat >"${TMP_DIR}/bin/fake-reboot-fail" <<'FAKE_REBOOT_FAIL'
+#!/usr/bin/env bash
+printf 'reboot\n' >>"${FAKE_REBOOT_LOG:?}"
+exit 7
+FAKE_REBOOT_FAIL
+chmod +x "${TMP_DIR}/bin/fake-reboot-fail"
+
+internal_reboot_run() {
+    local case_name=$1 flock_status=${2:-0}
+    local lock_path=${3:-${TMP_DIR}/internal-reboot.lock}
+    (
+        export EASY_ALL_RUNTIME_LIB_DIR="${ROOT_DIR}/lib"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/cron-state"
+        # 运行时写锁走 override：断言 TMP 锁文件真的被打开，而不是去碰 /var/lib/easy_all
+        export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${lock_path}"
+        export FAKE_HOOK_SCENARIO="${FAKE_HOOK_SCENARIO:-none}"
+        # 场景 e 需要一个非零退出的假 reboot，其余场景用成功的那个。
+        if [[ "${FAKE_HOOK_SCENARIO}" == "reboot-fail" ]]; then
+            export EASY_ALL_REBOOT_BIN_OVERRIDE="${TMP_DIR}/bin/fake-reboot-fail"
+        else
+            export EASY_ALL_REBOOT_BIN_OVERRIDE="${TMP_DIR}/bin/fake-reboot"
+        fi
+        export FAKE_REBOOT_LOG="${TMP_DIR}/${case_name}.reboot"
+        export FAKE_LOGGER_LOG="${TMP_DIR}/${case_name}.logger"
+        # shellcheck source=/dev/null
+        source "${ROOT_DIR}/lib/runtime-core.sh"
+        # 沙箱/CI 不一定有 util-linux 的 flock，按场景返回成功或失败。
+        flock() { return "${flock_status}"; }
+        logger() { printf '%s\n' "$*" >>"${FAKE_LOGGER_LOG}"; }
+        case "${FAKE_HOOK_SCENARIO}" in
+        none) ;;
+        # 无钩子，只是假 reboot 换成非零退出的那个（见用例 e）。
+        reboot-fail) ;;
+        # 预命令失败：旧行里 `( pre ) &&` 直接短路，整行退出码就是 pre 的退出码，
+        # 所以这里用显式非零状态 43，断言入口原样传播它。
+        # 用 sh 内建的 exit 43 而不是 /bin/false：macOS 没有 /bin/true。
+        pre-fail) scheduled_reboot_profile_pre_command() { printf 'exit 43'; } ;;
+        # 预命令成功，但取锁后的只读复核失败。
+        check-fail)
+            scheduled_reboot_profile_pre_command() { printf 'true'; }
+            scheduled_reboot_profile_locked_check_command() { printf 'exit 1'; }
+            ;;
+        esac
+        internal_scheduled_reboot
+    ) >/dev/null 2>"${TMP_DIR}/${case_name}.stderr"
+}
+
+# a. 无钩子（模式 1/3 没有预命令与复核钩子）+ 取锁成功 → 执行重启，不记 logger，锁走 override
+export FAKE_HOOK_SCENARIO=none
+internal_reboot_run no-hook 0 \
+    || fail "internal_scheduled_reboot should succeed when the write lock is free"
+[[ -f "${TMP_DIR}/internal-reboot.lock" ]] \
+    || fail "internal_scheduled_reboot ignored RUNTIME_WRITE_LOCK_FILE_OVERRIDE"
+assert_contains "internal_scheduled_reboot runs reboot on the free lock" \
+    "$(cat "${TMP_DIR}/no-hook.reboot")" "reboot"
+[[ ! -e "${TMP_DIR}/no-hook.logger" ]] \
+    || fail "internal_scheduled_reboot logged a skip although it rebooted"
+
+# b. 取锁失败 → 只记「运行时写锁不可用」并跳过重启
+internal_reboot_run lock-busy 1 \
+    || fail "internal_scheduled_reboot should not fail when the write lock is busy"
+[[ ! -e "${TMP_DIR}/lock-busy.reboot" ]] \
+    || fail "internal_scheduled_reboot must not reboot without the write lock"
+assert_contains "busy lock logs the write-lock skip message" \
+    "$(cat "${TMP_DIR}/lock-busy.logger")" \
+    "-t easy_all easy_all 定时重启已跳过：运行时写锁不可用或正被占用"
+assert_not_contains "busy lock does not log the traffic-guard message" \
+    "$(cat "${TMP_DIR}/lock-busy.logger")" "CDN 流量保护"
+
+# c. 预命令失败 → 静默跳过（旧行里 pre 失败短路，不记 logger），
+# 但退出码必须原样传播 pre 的状态（旧行 `( pre ) && …` 的失败码就是 pre 的码）。
+# 显式比较状态：不能写成 `|| fail`，那会把非零当成预期成功而吞掉。
+export FAKE_HOOK_SCENARIO=pre-fail
+pre_fail_status=0
+internal_reboot_run pre-fail 0 || pre_fail_status=$?
+assert_equal "failing pre command propagates the pre exit code" 43 "${pre_fail_status}"
+[[ ! -e "${TMP_DIR}/pre-fail.reboot" ]] \
+    || fail "failing pre command must not reboot"
+[[ ! -e "${TMP_DIR}/pre-fail.logger" ]] \
+    || fail "failing pre command must stay silent (no logger call)"
+
+# d. 预命令成功但取锁后的复核失败 → 只记「CDN 流量保护」并跳过重启
+export FAKE_HOOK_SCENARIO=check-fail
+internal_reboot_run check-fail 0 || fail "failing locked check must not fail the entry"
+[[ ! -e "${TMP_DIR}/check-fail.reboot" ]] \
+    || fail "failing locked check must not reboot"
+assert_contains "failing locked check logs the traffic-guard message" \
+    "$(cat "${TMP_DIR}/check-fail.logger")" \
+    "easy_all 定时重启已跳过：CDN 流量保护处于停机/pending 或统计不可读"
+assert_not_contains "failing locked check does not log the write-lock message" \
+    "$(cat "${TMP_DIR}/check-fail.logger")" "运行时写锁不可用"
+
+# e. reboot 本身失败 → 入口仍返回 0，且只记「CDN 流量保护」那一条消息。
+# 这是刻意保持的旧内联语义：`{ check; } && reboot || logger` 里 reboot 失败与复核
+# 失败共用同一条审计消息，链尾 logger 成功就把整行的退出码变成 0。
+export FAKE_HOOK_SCENARIO=reboot-fail
+reboot_fail_status=0
+internal_reboot_run reboot-fail 0 || reboot_fail_status=$?
+assert_equal "failing reboot keeps the entry exit code at 0 (old inline semantics)" \
+    0 "${reboot_fail_status}"
+[[ -f "${TMP_DIR}/reboot-fail.reboot" ]] \
+    || fail "failing reboot case never reached the reboot binary"
+assert_contains "failing reboot really invoked the reboot binary" \
+    "$(cat "${TMP_DIR}/reboot-fail.reboot")" "reboot"
+assert_contains "failing reboot logs the traffic-guard message" \
+    "$(cat "${TMP_DIR}/reboot-fail.logger")" \
+    "easy_all 定时重启已跳过：CDN 流量保护处于停机/pending 或统计不可读"
+assert_not_contains "failing reboot does not log the write-lock message" \
+    "$(cat "${TMP_DIR}/reboot-fail.logger")" "运行时写锁不可用"
+unset FAKE_HOOK_SCENARIO
+
+# f. 锁文件打不开（状态目录缺失/不可写）：与「抢不到锁」共用同一条 skip 审计消息，
+# 入口返回 0，且不重启。审计结论：旧 cron 行 `if exec 8>lock && flock -n 8; then …`
+# 在 dash（cron 的 /bin/sh）下打开失败会静默以非零退出、既不留痕也不重启；新入口
+# 改为 skip 日志 + exit 0，同样不重启，但排障时能在 syslog 里看到原因。
+# 附带断言 stderr 被静默：否则 cron 每触发一次就发一封 "No such file or directory" 邮件。
+export FAKE_HOOK_SCENARIO=none
+lock_open_fail_dir="${TMP_DIR}/no-such-dir"
+rm -rf -- "${lock_open_fail_dir}"
+lock_open_fail_status=0
+internal_reboot_run lock-open-fail 0 "${lock_open_fail_dir}/reboot.lock" \
+    || lock_open_fail_status=$?
+assert_equal "unopenable write lock keeps the entry exit code at 0 (old inline semantics)" \
+    0 "${lock_open_fail_status}"
+[[ ! -e "${lock_open_fail_dir}" ]] \
+    || fail "lock-open-fail case must not create the missing state directory"
+[[ ! -e "${TMP_DIR}/lock-open-fail.reboot" ]] \
+    || fail "unopenable write lock must not reboot"
+[[ -f "${TMP_DIR}/lock-open-fail.logger" ]] \
+    || fail "unopenable write lock must log the write-lock skip message (not stay silent)"
+assert_contains "unopenable write lock logs the write-lock skip message" \
+    "$(cat "${TMP_DIR}/lock-open-fail.logger")" \
+    "-t easy_all easy_all 定时重启已跳过：运行时写锁不可用或正被占用"
+assert_not_contains "unopenable write lock does not log the traffic-guard message" \
+    "$(cat "${TMP_DIR}/lock-open-fail.logger")" "CDN 流量保护"
+assert_not_contains "unopenable write lock stays quiet on stderr (no cron mail)" \
+    "$(cat "${TMP_DIR}/lock-open-fail.stderr" 2>/dev/null)" "No such file or directory"
 
 # 11. 只有完整快照才允许逐项恢复（部分快照不得推断“安装前不存在”）
 systemctl() { :; }

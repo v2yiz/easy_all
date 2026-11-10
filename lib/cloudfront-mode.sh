@@ -1129,7 +1129,11 @@ cdn_traffic_locked_check_jq() {
 }
 
 scheduled_reboot_profile_locked_check_command() {
-    printf 'jq -e %q %q >/dev/null' \
+    # 返回值由 internal_scheduled_reboot（即 cron 行里的 easy_all 内部入口）交给
+    # `sh -c` 执行，不再拼进 crontab，所以不需要 `%` 转义（cron 已看不到这段文本）。
+    # jq 表达式是固定字面量且不含单引号，单引号包裹即可；usage 路径用 %q 只是为
+    # `sh -c` 执行时的引号稳妥（路径是固定字面量，%q 输出与原文一致）。
+    printf "jq -e '%s' %q >/dev/null" \
         "$(cdn_traffic_locked_check_jq)" "${CDN_TRAFFIC_GUARD_USAGE_FILE}"
 }
 
