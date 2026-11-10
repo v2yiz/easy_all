@@ -4,8 +4,7 @@
 
 ## 文档索引
 
-- [前置准备手册](docs/preparation-guide.md)：域名购买、Cloudflare Zone 解析、API Token 获取教程
-- [AWS 准备指南](docs/aws-guide.md)：AWS 账号、ACM/CloudFront 最小权限 IAM 策略与访问密钥
+- [前置准备手册](docs/preparation-guide.md)：Cloudflare API Token 与 AWS 访问密钥准备教程
 - [客户端使用指南](docs/client-guide.md)：主流 Mihomo 客户端导入、配置与分流排障
 - [运维与排障指南](docs/operations-guide.md)：节点管理、用户管理、证书轮换及疑难解答
 - [系统技术参考](docs/technical-reference.md)：架构设计、流控机制与网络实现原理
@@ -124,7 +123,7 @@ schema 0 状态与旧安装标记**不会被接管**：请先用 4.x 的 `sudo e
   DNS-01 凭据以 `0600` 保存到 `/etc/easy_all/cloudflare.ini` 以便 Certbot 定时续期。
 - **证书与 strict**：模式 1 deploy 与模式 3 会在创建任何 DNS/证书/规则前只读校验 Zone SSL 模式，
   只接受 **Full (strict)**；full/flexible/off 需要人工修改后重试，工具不会自动改全区设置。
-- **AWS Access Key / Secret Access Key**：**只有模式 2/4** 需要一对专用 IAM 用户密钥，登录时隐藏输入，**只存在于当前进程内存，不写入 state、身份文件、日志或订阅**。模式 1/3 完全不提示、不安装、不调用 AWS。创建步骤见 [AWS 准备指南](docs/aws-guide.md)。
+- **AWS Access Key / Secret Access Key**：**只有模式 2/4** 需要一对专用 IAM 用户密钥，登录时隐藏输入，**只存在于当前进程内存，不写入 state、身份文件、日志或订阅**。模式 1/3 完全不提示、不安装、不调用 AWS。创建步骤见 [前置准备手册](docs/preparation-guide.md)。
 - **域名规划**（必须是同一个 active Cloudflare Zone 下的子域名，不支持根域名或通配符）：
 
   | 用途 | 模式 1 | 模式 2 | 模式 3 | 模式 4 | 记录要求 |
