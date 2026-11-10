@@ -538,7 +538,7 @@ run_tls_certificate_cases() {
         EASY_ALL_CERT_DIR_OVERRIDE="${first_dir}" \
             bash -c '
                 source "$1/profiles/anytls.sh"
-                CADDY_BIN="${TMP_DIR}/fake-caddy"
+                CADDY_BIN="${RUNTIME_TMP}/fake-caddy"
                 systemctl() { [[ "$1" == "is-active" ]]; }
                 printf "#!/usr/bin/env bash\nprintf \"%%s\\\\n\" \"\$*\"\n" >"${CADDY_BIN}"
                 chmod 0755 "${CADDY_BIN}"
@@ -559,6 +559,7 @@ run_tls_certificate_cases() {
         EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/deploy-certs-${handshake_fail}" \
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/deploy-subscriptions" \
             bash -c '
+                handshake_target=$4
                 source "$1/profiles/anytls.sh"
                 PROTOCOL=anytls
                 DIRECT_DOMAIN=node.example.com
@@ -571,7 +572,7 @@ run_tls_certificate_cases() {
                 certificate_check() { return 0; }
                 certificate_verify() { return 0; }
                 runtime_apply_runtime_services() { printf "APPLY %s\n" "$1"; }
-                runtime_served_certificate_matches_disk() { [[ "$4" == "0" ]]; }
+                runtime_served_certificate_matches_disk() { [[ "${handshake_target}" == "0" ]]; }
                 status=0
                 certificate_deploy "" 1 || status=$?
                 printf "STATUS=%s\n" "${status}"
