@@ -534,6 +534,7 @@ run_tls_certificate_cases() {
     # 强制重载：证书仅替换文件，Caddy 会跳过相同配置加载。
     reload_output=$(
         RUNTIME_TMP="${TMP_DIR}/reload-runtime" \
+        CADDY_ADMIN_SOCKET="${TMP_DIR}/reload-runtime/admin.sock" \
         EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/reload-state" \
         EASY_ALL_CERT_DIR_OVERRIDE="${first_dir}" \
             bash -c '
