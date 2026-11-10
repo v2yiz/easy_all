@@ -551,6 +551,11 @@ anytls_purge_cloud_resources() {
             warn "Cloudflare ${host} 的 A 记录不是本链路创建的；保留"
             continue
         fi
+        # 注释已在本工具安装时被改写：只有接管日志才能证明它原本属于第三方。
+        if dns_record_taken_over "${host}"; then
+            warn "Cloudflare ${host} 的 A 记录来自强制接管（原注释/指向见 $(dns_takeover_log_file)）；保留，如需删除请手工处理"
+            continue
+        fi
         (cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null) \
             || { warn "删除 Cloudflare 记录失败：${host}"; failed=1; }
     done

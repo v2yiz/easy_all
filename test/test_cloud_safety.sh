@@ -223,24 +223,27 @@ assert_contains "模式 1 link 仍配置直连 DNS" "${link_log}" "DNS node.exam
 assert_not_contains "模式 1 link 不创建订阅 DNS" "${link_log}" "DNS sub.example.com"
 
 # --- 3. 模式 3 的 DNS 归属常量：创建、复用与 purge 使用同一契约 -----------------
-run_dns_case() { # $1=create|reuse|purge|foreign
+run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
     local case_name=$1
     local log="${TMP_DIR}/dns-${case_name}.log"
     local runtime="${TMP_DIR}/dns-runtime-${case_name}"
     local state="${TMP_DIR}/dns-state-${case_name}"
+    local audit="${TMP_DIR}/dns-${case_name}-takeover.log"
     mkdir -p "${runtime}" "${state}"
+    rm -f "${audit}"
     (
         set -Eeuo pipefail
         export RUNTIME_TMP="${runtime}"
         export EASY_ALL_STATE_DIR_OVERRIDE="${state}"
         export EASY_ALL_CERT_DIR_OVERRIDE="${state}/certs"
         export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${state}/subscriptions"
+        export EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${audit}"
         source "${ROOT_DIR}/profiles/cloudflare.sh"
         CLOUDFLARE_ZONE_ID=zoneid
         VPS_PUBLIC_IPV4=203.0.113.10
         CF_NODE_DOMAIN=cf.example.com
         SUBSCRIPTION_MODE=deploy
-        existing_record='[{"id":"rec1","type":"A","name":"cf.example.com","content":"203.0.113.10","proxied":true,"comment":"easy_all cloudflare"}]'
+        existing_record='[{"id":"rec1","type":"A","name":"cf.example.com","content":"203.0.113.10","proxied":true,"comment":"easy_all cloudflare","ttl":300}]'
         cloudflare_api_request() {
             local method=$1 path=$2 payload=${3:-}
             printf '%s %s %s\n' "${method}" "${path}" "${payload}" >>"${log}"
@@ -257,11 +260,15 @@ run_dns_case() { # $1=create|reuse|purge|foreign
             *) printf 'null\n' ;;
             esac
         }
+        # 接管过的记录：安装时已把第三方注释改成本模式注释，只有接管日志能证明原归属。
+        if [[ "${case_name}" == "purge-takeover" ]]; then
+            printf '{"ts":"2025-01-01T00:00:00Z","host":"cf.example.com","old_comment":"foreign","old_content":"198.51.100.20","old_proxied":"false","old_ttl":"300"}\n' >"${audit}"
+        fi
         case "${case_name}" in
-        purge) cdn_purge_cloudflare_dns ;;
+        purge | purge-takeover) cdn_purge_cloudflare_dns ;;
         *) dns_ensure_record cf.example.com A "${VPS_PUBLIC_IPV4}" true ;;
         esac
-    ) >/dev/null 2>&1 || true
+    ) </dev/null >"${log}.out" 2>"${log}.err" || true
     cat "${log}"
 }
 
@@ -278,9 +285,132 @@ assert_contains "模式 3 purge 删除受管记录" "${purge_log}" \
     "DELETE /zones/zoneid/dns_records/rec1"
 assert_not_contains "模式 3 purge 不修改记录" "${purge_log}" "PATCH "
 
+purge_takeover_log=$(run_dns_case purge-takeover)
+assert_not_contains "强制接管的记录在 purge 时不得删除" "${purge_takeover_log}" "DELETE "
+assert_contains "强制接管的记录在 purge 时说明保留原因" \
+    "$(cat "${TMP_DIR}/dns-purge-takeover.log.out" 2>/dev/null || true)" "来自强制接管"
+
 foreign_log=$(run_dns_case foreign)
 assert_not_contains "第三方注释的记录不被接管" "${foreign_log}" "POST "
+assert_not_contains "第三方注释的记录不被改写" "${foreign_log}" "PATCH "
 assert_not_contains "第三方注释的记录不被删除" "${foreign_log}" "DELETE "
+
+run_dns_case_input() { # $1=y|n  $2=id|replaced|updated|ttl|spaced|empty|patchfail（重读时返回的变体）
+    local input_char=$1 reread_mode=$2
+    local log="${TMP_DIR}/dns-in-${input_char}-${reread_mode}.log"
+    local out="${TMP_DIR}/dns-in-${input_char}-${reread_mode}.out"
+    local runtime="${TMP_DIR}/dns-in-runtime-${input_char}-${reread_mode}"
+    local state="${TMP_DIR}/dns-in-state-${input_char}-${reread_mode}"
+    local audit="${TMP_DIR}/dns-in-audit-${input_char}-${reread_mode}.log"
+    local first_marker="${TMP_DIR}/dns-in-first-${input_char}-${reread_mode}.marker"
+    mkdir -p "${runtime}" "${state}"
+    rm -f "${first_marker}" "${audit}"
+    (
+        set -Eeuo pipefail
+        export RUNTIME_TMP="${runtime}"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${state}"
+        export EASY_ALL_CERT_DIR_OVERRIDE="${state}/certs"
+        export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${state}/subscriptions"
+        export EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${audit}"
+        source "${ROOT_DIR}/profiles/cloudflare.sh"
+        CLOUDFLARE_ZONE_ID=zoneid
+        VPS_PUBLIC_IPV4=203.0.113.10
+        CF_NODE_DOMAIN=cf.example.com
+        SUBSCRIPTION_MODE=deploy
+        # 函数注入：模拟交互终端与用户输入；不依赖 pty，也不引入环境变量旁路。
+        STUB_ANSWER="${input_char}"
+        dns_takeover_interactive() { return 0; }
+        read_confirmation() {
+            printf 'PROMPT:%s\n' "${1:-}"
+            printf -v "${2}" '%s' "${STUB_ANSWER}"
+        }
+        cloudflare_api_request() {
+            local method=$1 path=$2 payload=${3:-}
+            printf '%s %s %s\n' "${method}" "${path}" "${payload}" >>"${log}"
+            case "${method} ${path}" in
+            "GET "*dns_records*)
+                local comment=foreign stable=0
+                case "${reread_mode}" in
+                spaced) comment="my work vps" ;;
+                empty) comment="" ;;
+                esac
+                case "${reread_mode}" in
+                id | spaced | empty | patchfail) stable=1 ;;
+                esac
+                # 计数不能放在子 shell 变量里（每次 GET 自带命令替换子 shell）：用标记文件区分首次/重读。
+                if ((stable == 1)) || [[ ! -f "${first_marker}" ]]; then
+                    : >"${first_marker}"
+                    printf '[{"id":"rec1","type":"A","name":"cf.example.com","content":"203.0.113.10","proxied":true,"comment":"%s","ttl":300}]\n' "${comment}"
+                elif [[ "${reread_mode}" == "updated" ]]; then
+                    # 同 id、同 comment，但确认期间目标与代理被改。
+                    printf '[{"id":"rec1","type":"A","name":"cf.example.com","content":"198.51.100.20","proxied":false,"comment":"foreign","ttl":300}]\n'
+                elif [[ "${reread_mode}" == "ttl" ]]; then
+                    # 同 id、同指向，但确认期间 TTL 被改。
+                    printf '[{"id":"rec1","type":"A","name":"cf.example.com","content":"203.0.113.10","proxied":true,"comment":"foreign","ttl":60}]\n'
+                else
+                    printf '[{"id":"rec2","type":"A","name":"cf.example.com","content":"203.0.113.10","proxied":true,"comment":"foreign","ttl":300}]\n'
+                fi
+                ;;
+            "PATCH "*)
+                # 模拟 PATCH 已到达云端但响应丢失：进程在这里直接退出（真实调用会 die）。
+                [[ "${reread_mode}" != "patchfail" ]] || exit 9
+                printf 'null\n'
+                ;;
+            *) printf 'null\n' ;;
+            esac
+        }
+        dns_ensure_record cf.example.com A "${VPS_PUBLIC_IPV4}" true
+    ) </dev/null >"${out}" 2>&1 || true
+    printf 'CALLS=%s\n' "$(tr '\n' '|' <"${log}")"
+    printf 'OUT=%s\n' "$(tr '\n' '|' <"${out}")"
+    if [[ -s "${audit}" ]]; then
+        printf 'AUDIT_EXISTS=yes AUDIT=%s\n' "$(tr '\n' '|' <"${audit}")"
+    else
+        printf 'AUDIT_EXISTS=no\n'
+    fi
+}
+
+takeover_case=$(run_dns_case_input y id)
+assert_contains "确认接管时改写记录" "${takeover_case}" "PATCH /zones/zoneid/dns_records/rec1"
+assert_contains "接管写入完整记录载荷（含 ttl 与模式专属注释）" "${takeover_case}" \
+    'PATCH /zones/zoneid/dns_records/rec1 {"type":"A","name":"cf.example.com","content":"203.0.113.10","ttl":1,"proxied":true,"comment":"easy_all cloudflare"}'
+assert_contains "提示展示将被覆盖的现有指向" "${takeover_case}" "当前指向：203.0.113.10"
+assert_contains "接管改写前写入审计日志" "${takeover_case}" "AUDIT_EXISTS=yes"
+assert_contains "审计日志记录原注释与原指向" "${takeover_case}" \
+    '"old_comment":"foreign","old_content":"203.0.113.10","old_proxied":"true","old_ttl":"300"'
+
+reject_case=$(run_dns_case_input n id)
+assert_not_contains "拒绝接管时不改写记录" "${reject_case}" "PATCH "
+assert_contains "拒绝接管时不写审计日志" "${reject_case}" "AUDIT_EXISTS=no"
+
+race_case=$(run_dns_case_input y replaced)
+assert_not_contains "确认期间记录被替换时不得改写" "${race_case}" "PATCH "
+assert_contains "确认期间记录被替换时明确报错" "${race_case}" "确认期间被修改或被替换"
+assert_contains "确认期间记录被替换时不写审计日志" "${race_case}" "AUDIT_EXISTS=no"
+
+updated_case=$(run_dns_case_input y updated)
+assert_not_contains "确认期间同 id 记录被改内容时不得改写" "${updated_case}" "PATCH "
+assert_contains "确认期间同 id 记录被改内容时明确报错" "${updated_case}" "确认期间被修改或被替换"
+
+ttl_case=$(run_dns_case_input y ttl)
+assert_not_contains "确认期间 TTL 被改时不得改写" "${ttl_case}" "PATCH "
+assert_contains "确认期间 TTL 被改时明确报错" "${ttl_case}" "确认期间被修改或被替换"
+
+spaced_case=$(run_dns_case_input y spaced)
+assert_contains "含空格的注释在审计日志中整体转义" "${spaced_case}" \
+    '"old_comment":"my work vps","old_content":'
+
+empty_case=$(run_dns_case_input y empty)
+assert_contains "空注释在审计日志中落为空串" "${empty_case}" '"old_comment":"","old_content":'
+
+patchfail_case=$(run_dns_case_input y patchfail)
+assert_contains "PATCH 结果未知时审计日志已先落盘" "${patchfail_case}" "AUDIT_EXISTS=yes"
+assert_contains "PATCH 结果未知前已记录原注释" "${patchfail_case}" '"old_comment":"foreign"'
+
+# 非交互（没有终端）：直接拒绝并说明原因，不提示、不改写。
+noninteractive_err=$(cat "${TMP_DIR}/dns-foreign.log.err")
+assert_contains "非交互拒绝时说明原因" "${noninteractive_err}" "非交互"
+assert_not_contains "非交互时不提示接管" "${noninteractive_err}" "是否强制接管"
 
 # --- 3b. 模式 4：直连域名可与源站域名复用 -------------------------------------
 # 依据：docs/preparation-guide.md §域名清单：直连域名可与源站域名复用（填同一个名字时

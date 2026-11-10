@@ -389,12 +389,78 @@ anytls_prepare_runtime() {
         || die "无法落盘安装身份；在生成运行配置前停止"
 }
 
+# 交互确认是否可用：提示写 stderr、输入读 stdin，两者都必须是终端（非交互即 fail-closed 拒绝）。
+# 不要求 stdout 也是终端：`| tee` 仍能在终端看到提示并作答；stderr 被重定向时拒绝，避免终端无提示却盲等输入。
+# 自动化测试通过覆盖本函数模拟交互终端；生产不提供环境变量旁路。
+dns_takeover_interactive() {
+    [[ -t 0 && -t 2 ]]
+}
+
+# 来自云端记录的任意文本：去终端转义并压成单行（仅用于提示展示）。
+dns_record_field_text() {
+    strip_terminal_input "${1:-}" | tr '\t\r\n' '   '
+}
+
+# 接管是破坏性操作：改写前留一行审计记录（原注释/原指向/原代理/原 TTL）。
+# 日志放在 /var/log/easy_all：安装状态目录会被失败清理整体删除，而云端改动会保留。
+# 先落盘再改写：PATCH 已到云端但响应丢失时进程会退出，事后补写就再也拿不到原貌。
+dns_takeover_log_file() {
+    # override 只供测试隔离日志路径，生产不得设置：两侧取值不一致时读不到这份记录。
+    printf '%s' "${EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE:-/var/log/easy_all/dns-takeover.log}"
+}
+
+# 单行 JSON：字段值可能含空格/引号/换行，空注释保持为 ""，不会与字面值或相邻字段混淆。
+dns_takeover_record() {
+    local host=$1 comment=$2 content=$3 proxied=$4 ttl=$5 log
+    log=$(dns_takeover_log_file)
+    install -d -m 0700 "$(dirname -- "${log}")" 2>/dev/null || true
+    # 原貌落不了盘就不能改写云端记录：磁盘满/只读/EISDIR 下继续 PATCH 会直接破坏恢复承诺。
+    # 历史日志保持原样，修好本机日志问题后重跑会重新确认并保存原貌。
+    jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg host "${host}" \
+        --arg comment "${comment}" --arg content "${content}" --arg proxied "${proxied}" \
+        --arg ttl "${ttl}" \
+        '{ts:$ts,host:$host,old_comment:$comment,old_content:$content,old_proxied:$proxied,old_ttl:$ttl}' \
+        >>"${log}" 2>/dev/null \
+        || die "无法写入接管审计日志：${log}；已取消接管（云端记录未改写）"
+    chmod 0600 "${log}" 2>/dev/null || warn "无法设置接管审计日志权限：${log}"
+}
+
+# 清理时只看注释会把强制接管的第三方记录当成本工具资源删除：命中接管日志即保留。
+# 按 host 匹配、不含 zone_id：跨 Zone 同名命中只会多保留（该删没删），方向安全。
+dns_record_taken_over() {
+    local log rc=0
+    log=$(dns_takeover_log_file)
+    [[ -f "${log}" ]] || return 1
+    grep -Fq -- "\"host\":\"${1}\"" "${log}" || rc=$?
+    if ((rc == 0)); then return 0; fi
+    # rc=1 才是「未命中」；rc≥2 是日志不可读/IO 错误，无法证明未接管，按接管保守处理。
+    if ((rc == 1)); then return 1; fi
+    warn "无法读取接管审计日志：${log}；按接管处理，保留对应记录"
+    return 0
+}
+
+dns_confirm_takeover() {
+    local host=$1 comment=$2 current=$3 current_proxied=$4
+    local answer="" safe_current safe_proxied
+    safe_current=$(dns_record_field_text "${current}")
+    safe_proxied=$(dns_record_field_text "${current_proxied}")
+    dns_takeover_interactive \
+        || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment}）；拒绝接管（非交互：stdin/stderr 不是终端，未提示确认）"
+    read_confirmation "Cloudflare ${host} 的同名记录不是本工具创建的（当前指向：${safe_current:-空}，代理：${safe_proxied:-未知}，注释：${comment}）；是否强制接管？[y/N]:" answer \
+        || answer=""
+    [[ "${answer}" =~ ^[Yy]$ ]] \
+        || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment}）；拒绝接管"
+}
+
 # DNS 记录的唯一写入入口（四模式共用）：先按名字读取全部记录，再校验类型/代理状态/目标/归属。
-# 同名其他类型、非受管记录或多条同名记录一律阻止写入，不自动接管。
+# 同名其他类型或多条同名记录一律阻止写入；非受管记录在交互终端下需确认是否强制接管。
 dns_ensure_record() {
     local host=$1 type=$2 content=$3 proxied=$4
-    local records conflicts count id comment current current_proxied payload
+    local records conflicts count id comment current current_proxied current_ttl payload safe_comment
+    local reread takeover=0
     [[ -n "${CLOUDFLARE_ZONE_ID:-}" ]] || die "缺少 Cloudflare Zone ID；无法写入 DNS：${host}"
+    [[ -n "${CDN_RECORD_COMMENT:-}" ]] \
+        || die "缺少归属注释 CDN_RECORD_COMMENT；拒绝写入 DNS：${host}"
     records=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" '' "${host}") \
         || die "查询 Cloudflare 记录失败：${host}"
     conflicts=$(jq -r --arg type "${type}" \
@@ -404,7 +470,7 @@ dns_ensure_record() {
         || die "Cloudflare ${host} 已有其他类型的记录（${conflicts}）；请先清理冲突记录后重试"
     count=$(jq 'length' <<<"${records}")
     payload=$(jq -cn --arg name "${host}" --arg type "${type}" --arg content "${content}" \
-        --argjson proxied "${proxied}" --arg comment "${CDN_RECORD_COMMENT:-easy_all}" \
+        --argjson proxied "${proxied}" --arg comment "${CDN_RECORD_COMMENT}" \
         '{type:$type,name:$name,content:$content,ttl:1,proxied:$proxied,comment:$comment}')
     if ((count == 0)); then
         cloudflare_api_request POST "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" "${payload}" >/dev/null
@@ -416,13 +482,32 @@ dns_ensure_record() {
     comment=$(jq -r '.[0].comment // empty' <<<"${records}")
     current=$(jq -r '.[0].content // empty' <<<"${records}")
     current_proxied=$(jq -r '.[0] | if has("proxied") then (.proxied|tostring) else "" end' <<<"${records}")
-    if [[ "${comment}" == "${CDN_RECORD_COMMENT:-easy_all}" \
+    current_ttl=$(jq -r '.[0].ttl // empty' <<<"${records}")
+    if [[ "${comment}" == "${CDN_RECORD_COMMENT}" \
         && "${current}" == "${content}" && "${current_proxied}" == "${proxied}" ]]; then
         return 0
     fi
-    [[ "${comment}" == "${CDN_RECORD_COMMENT:-easy_all}" ]] \
-        || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment:-空}）；拒绝接管"
+    if [[ "${comment}" != "${CDN_RECORD_COMMENT}" ]]; then
+        safe_comment=$(dns_record_field_text "${comment}")
+        dns_confirm_takeover "${host}" "${safe_comment:-空}" "${current}" "${current_proxied}"
+        # 确认可能等几十秒：写入前重读并核对整条记录（id/type/content/proxied/comment/ttl）。
+        # 任一项变了就说明期间被别人改过，此时覆盖它等于拿走未经验证的新值。
+        reread=$(cloudflare_record_list "${CLOUDFLARE_ZONE_ID}" '' "${host}") \
+            || die "重新读取 Cloudflare 记录失败：${host}；已取消接管"
+        if [[ "$(jq -r 'length' <<<"${reread}")" != "1" ]] \
+            || [[ "$(jq -r '.[0].id // empty' <<<"${reread}")" != "${id}" ]] \
+            || [[ "$(jq -r '.[0].type // empty' <<<"${reread}")" != "${type}" ]] \
+            || [[ "$(jq -r '.[0].content // empty' <<<"${reread}")" != "${current}" ]] \
+            || [[ "$(jq -r '.[0] | if has("proxied") then (.proxied|tostring) else "" end' <<<"${reread}")" != "${current_proxied}" ]] \
+            || [[ "$(jq -r '.[0].comment // empty' <<<"${reread}")" != "${comment}" ]] \
+            || [[ "$(jq -r '.[0].ttl // empty' <<<"${reread}")" != "${current_ttl}" ]]; then
+            die "Cloudflare ${host} 的记录在确认期间被修改或被替换；已取消接管，请重新执行"
+        fi
+        dns_takeover_record "${host}" "${comment}" "${current}" "${current_proxied}" "${current_ttl}"
+        takeover=1
+    fi
     cloudflare_api_request PATCH "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" "${payload}" >/dev/null
+    ((takeover == 0)) || warn "已强制接管 Cloudflare 记录：${host}"
 }
 
 validate_node_name() {

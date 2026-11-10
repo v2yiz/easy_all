@@ -1684,6 +1684,11 @@ cdn_purge_cloudflare_dns() {
             warn "Cloudflare ${host} 的 ${type} 记录不是本链路创建的（注释：${comment:-空}）；保留"
             continue
         fi
+        # 注释已在本工具安装时被改写：只有接管日志才能证明它原本属于第三方。
+        if dns_record_taken_over "${host}"; then
+            warn "Cloudflare ${host} 的 ${type} 记录来自强制接管（原注释/指向见 $(dns_takeover_log_file)）；保留，如需删除请手工处理"
+            continue
+        fi
         if [[ "${current}" != "${expected}" ]]; then
             warn "Cloudflare ${host} 的 ${type} 记录目标已变化（${current:-空}）；保留"
             continue

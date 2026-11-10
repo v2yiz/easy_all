@@ -48,6 +48,7 @@ schema 0 状态与旧安装标记不会被接管，必须先用 4.x 的 `sudo ea
   `cleanup` 同时处理 INT/TERM，`update-core` 的多余参数在 launcher 层拒绝，并删除死代码 `source_state_file`。
 - **发版前深度审计修复（第三轮：恢复与容错）**：缺少 `STATE_VERSION` 的状态文件不再提示「用旧版本卸载」，改为按原安装版本（5.x 补 `1` / 4.x 补 `0` / 不明保留现场）给出可执行恢复步骤；清理期只在不可中断的回滚执行段屏蔽 INT/TERM，状态回滚失败时保留运行时恢复材料并先删除临时 API 凭据（AnyTLS 补齐 `clear_profile_credentials`，同时修复模式 1 安装尾部 `command not found` 退出）；Caddy 冷启动只发一次启动请求；证书签发对复用域名去重；`verify-cores.sh` 回收自建临时目录，`bootstrap.sh` 与 `register-command` 在 SIGTERM 下也执行清理。
 - **发版前深度审计修复（第四轮：命令门禁与退出路径）**：未知命令与本轮通用参数门禁覆盖的多余参数（如 `tcp-resume` / `apply`）改在读取安装状态、加载 Profile 与创建运行时临时目录之前拒绝（`install extra` 文案不变；`self-update` 的参数仍在自身流程内校验）；退出清理在交互确认之前先清除内存账号凭据与临时 API 请求头/载荷（含 `origin-header`），持久化的 Cloudflare/Certbot 凭据按原生命周期保留；状态加载先判 `STATE_VERSION` 行存在性再解析；Caddy 校验失败文案不再点名会被删除的候选文件。
+- **非受管 DNS 记录的接管加固**：同名记录不是本工具创建时，只在 stdin 与 stderr 都是终端时提示确认是否强制接管，非交互一律拒绝并说明原因（stdout 被 `tee` 接管仍可确认，stderr 被重定向则拒绝，避免提示进日志后盲等输入）；接管前重读并核对整条记录（`id`/`type`/`content`/`proxied`/`comment`/`ttl`）未被改写或替换，任何一项变化即取消；提示展示将被覆盖的现有指向/代理并做终端转义净化与单行归一；改写前把原注释/原指向/原代理/原 TTL 以单行 JSON 写入 `/var/log/easy_all/dns-takeover.log`（不随安装状态清理删除，空注释落为 `""`；PATCH 响应丢失时也不会丢原貌），写入失败即取消本次接管、不改写云端记录；`uninstall`、各模式云端清理与 `purge-cloudflare` 命中接管日志时保留其中的 DNS 记录并提示原配置位置，不再当成自有资源删除；归属注释缺失时直接拒绝写入，不再回退为历史注释 `easy_all`；自动化测试改用函数注入，不再依赖 pty，也不提供环境变量旁路。
 
 ## 4.5.1 更新说明（2026-11-09）
 

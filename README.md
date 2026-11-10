@@ -45,8 +45,7 @@
 | 3 | cf：橙云 A → VPS，同时承载节点与订阅 |
 | 4 | direct/origin：灰云 A → VPS；cf/sub：灰云 CNAME → 分发 |
 
-安装与 `apply-cloud` 会先读同名全部记录，校验类型/`proxied`/地址/归属；同名 AAAA、类型或代理状态冲突、
-非受管记录一律阻止写入，不自动接管。
+安装与 `apply-cloud` 会先读同名全部记录，校验类型/`proxied`/地址/归属；同名 AAAA、类型冲突一律阻止写入；非受管记录只在 stdin 与 stderr 都是终端时提示确认是否强制接管，其余情况一律阻止写入；接管前会再次核对整条记录（含 TTL）未被替换，改写前把原注释、原指向、原代理与原 TTL 写入 `/var/log/easy_all/dns-takeover.log`（不随安装状态清理删除，日志需保留，不要移动或删除）——日志写入失败则不改写记录。`uninstall` 与 `purge-cloudflare` 清理云端记录时都会保留接管而来的 DNS 记录并注明原配置位置，原配置按本机日志手工恢复或删除。
 
 ### 模式 2/4（CloudFront）链路
 

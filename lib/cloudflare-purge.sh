@@ -6,6 +6,9 @@ umask 077
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly CF_API_BASE="https://api.cloudflare.com/client/v4"
 readonly RECORD_COMMENT_PREFIX="easy_all"
+# 接管把第三方记录的注释改写成本工具前缀，所以删除前必须查这本日志，与 lib/runtime-core.sh
+# 读写同一个文件；override 只给测试把路径映射到临时目录，生产不得设置。
+readonly DNS_TAKEOVER_LOG="${EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE:-/var/log/easy_all/dns-takeover.log}"
 # 新栈 Origin Rule 的 ref 前缀是 easy_all-<hex16>；保留旧前缀以支持清理历史资源。
 readonly RULE_REF_PREFIX="easy_all"
 readonly LEGACY_RULE_REF_PREFIX="easy_all_"
@@ -31,7 +34,8 @@ usage() {
 
 环境变量：EASY_ALL_PURGE_MAX_PAGES  每个列表接口的分页上限（默认 100 页 × 100 条）
 
-识别规则：DNS 记录注释以 easy_all 开头；
+识别规则：DNS 记录注释以 easy_all 开头（命中本机接管日志 /var/log/easy_all/dns-takeover.log 的记录
+视为强制接管而来的第三方记录，一律保留，原配置按日志手工处理）；
 规则按 ref 以 easy_all_ 开头且表达式完整等于 http.host eq "待清理域名"（括号、or/and/not、集合等复杂表达式一律保留）；
 ruleset 名称以 easy_all 开头且清空后才删除；
 Origin CA 证书只在其全部 hostname 都属于 easy_all 记录或输入域名时删除。
@@ -136,6 +140,19 @@ in_scope_host() {
     local host=$1
     [[ -n "${host}" ]] || return 1
     domain_equal "${host}" || grep -Fxq "${host}" "${RUNTIME_TMP}/allowed-names" 2>/dev/null
+}
+
+# 接管把第三方记录的注释改写成本工具前缀：命中本机接管日志的记录必须保留，
+# 原配置见日志。本脚本不加载 runtime-core，所以只重复这两行最小判定。
+dns_record_taken_over() {
+    local rc=0
+    [[ -f "${DNS_TAKEOVER_LOG}" ]] || return 1
+    grep -Fq -- "\"host\":\"${1}\"" "${DNS_TAKEOVER_LOG}" || rc=$?
+    if ((rc == 0)); then return 0; fi
+    # rc=1 才是「未命中」；rc≥2 是日志不可读/IO 错误，无法证明未接管，按接管保守处理。
+    if ((rc == 1)); then return 1; fi
+    warn "无法读取接管审计日志：${DNS_TAKEOVER_LOG}；按接管处理，保留对应记录"
+    return 0
 }
 
 cf_api() {
@@ -246,8 +263,14 @@ while IFS=$'\t' read -r zone_id zone_name account_id; do
         if ((PURGE_ALL == 0)); then
             domain_scope "${name}" "${zone_name}" || continue
         fi
-        printf '%s\t%s\t%s\n' "${zone_id}" "${record_id}" "${name}" >>"${RUNTIME_TMP}/dns.tsv"
+        # 先把名字记为“本工具在用的主机”：接管记录不再进 DNS 删除计划，
+        # 但其上本工具创建的规则与 Origin CA 仍须能按名字识别出来。
         printf '%s\n' "${name}" >>"${RUNTIME_TMP}/allowed-names"
+        if dns_record_taken_over "${name}"; then
+            warn "Cloudflare ${name} 的 DNS 记录来自强制接管（原注释/指向见 ${DNS_TAKEOVER_LOG}）；保留，如需删除请手工处理"
+            continue
+        fi
+        printf '%s\t%s\t%s\n' "${zone_id}" "${record_id}" "${name}" >>"${RUNTIME_TMP}/dns.tsv"
     done < <(jq -r '.[] | [.id, .name, (.comment // "")] | @tsv' <<<"${records}")
 
 

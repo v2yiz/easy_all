@@ -163,6 +163,10 @@ EOF
 
 chmod +x "${TMP_DIR}/bin/id" "${TMP_DIR}/bin/curl"
 
+# 接管日志固定到 TMP_DIR 下的专用路径（默认不存在）：存量用例不受测试机真实
+# /var/log/easy_all/dns-takeover.log 或父进程导出的 override 影响；后置 env 参数仍可覆盖它。
+TAKEOVER_LOG="${TMP_DIR}/takeover.log"
+
 run_purge() {
     local calls=$1 out=$2 err=$3
     shift 3
@@ -172,6 +176,7 @@ run_purge() {
         TMPDIR="${TMP_DIR}" \
         PURGE_TEST_CALLS="${calls}" \
         PURGE_TEST_COUNTER="${TMP_DIR}/counter" \
+        EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${TAKEOVER_LOG}" \
         "$@" bash "${SCRIPT}" --all --yes >"${out}" 2>"${err}" </dev/null
 }
 
@@ -411,6 +416,7 @@ run_purge_domain() { # $1=calls $2=out $3=err $4=fixture $5=--domain 值
         TMPDIR="${TMP_DIR}" \
         PURGE_TEST_CALLS="$1" \
         PURGE_TEST_FIXTURE_DIR="$4" \
+        EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${TAKEOVER_LOG}" \
         bash "${SCRIPT}" --domain "$5" --yes >"$2" 2>"$3" </dev/null
 }
 
@@ -589,5 +595,65 @@ assert_contains "purge-cloudflare: 含换行的 Token 报格式无效" \
     "$(<"${ERR}")$(<"${OUT}")" "格式无效"
 assert_equal "purge-cloudflare: 格式无效的 Token 不发起 API 请求" "0" \
     "$(grep -c . "${CALLS}" || true)"
+
+# 10) 接管而来的 DNS 记录必须保留：--all 不得删除命中接管日志的记录。
+#     期望 100 来自既有 fixture：第 1 页 100 条 easy_all + 第 2 页 tail1(user) 与 user1，
+#     共 101 条 easy_all，其中 tail.tiandi.party 已被接管 → 保留 1 条，其余 100 条照删。
+write_takeover_log() { # $1=host，正文用 jq 生成单行 JSON（与被测代码写入的格式一致）
+    jq -cn --arg host "$1" \
+        '{ts:"2026-11-10T00:00:00Z",host:$host,old_comment:"",old_content:"203.0.113.9",old_proxied:"false",old_ttl:"300"}' \
+        >"${TAKEOVER_LOG}"
+}
+
+write_takeover_log tail.tiandi.party
+CALLS="${TMP_DIR}/takeover-all-calls.log"
+OUT="${TMP_DIR}/takeover-all.out"
+ERR="${TMP_DIR}/takeover-all.err"
+run_purge "${CALLS}" "${OUT}" "${ERR}" || \
+    fail "purge-cloudflare: 存在接管记录时 --all 应成功：$(tail -n 3 "${ERR}")"
+total=$(sed -n 's/.*Cloudflare 清理完成：\([0-9][0-9]*\) 个对象.*/\1/p' "${OUT}" | tail -n 1)
+assert_equal "purge-cloudflare: --all 保留接管而来的 DNS 后仍删除其余 100 条" "100" "${total}"
+assert_equal "purge-cloudflare: --all 不发送接管记录的 DNS DELETE" "0" \
+    "$(grep -c '/zones/z1/dns_records/tail1' "${CALLS}")"
+assert_equal "purge-cloudflare: --all 其余 easy_all DNS 记录各发一次 DELETE" "100" \
+    "$(grep -c '/zones/z1/dns_records/[a-z]' "${CALLS}")"
+assert_contains "purge-cloudflare: --all 说明该记录来自强制接管" \
+    "$(<"${OUT}")$(<"${ERR}")" "DNS 记录来自强制接管"
+assert_contains "purge-cloudflare: --all 给出接管日志路径" \
+    "$(<"${OUT}")$(<"${ERR}")" "${TAKEOVER_LOG}"
+rm -f "${TAKEOVER_LOG}"
+
+# 11) --domain 根域变体：接管日志只让 DNS 退出删除计划，同一主机的规则与 Origin CA
+#     仍按原口径删除（allowed-names 先于接管判定写入）。期望集合即 8.2 的 expected_zone
+#     去掉 dns-cf-example-com，只少这一条。
+write_takeover_log cf.example.com
+CALLS="${TMP_DIR}/takeover-domain-calls.log"
+OUT="${TMP_DIR}/takeover-domain.out"
+ERR="${TMP_DIR}/takeover-domain.err"
+run_purge_domain "${CALLS}" "${OUT}" "${ERR}" "${FIXTURE_ROOT}/hosts" example.com \
+    || fail "purge-cloudflare: 存在接管记录时 --domain 根域应成功：$(tail -n 3 "${ERR}")"
+expected_takeover=$(
+    cat <<'EOF'
+/certificates/cert-cf
+/certificates/cert-mixed
+/certificates/cert-zone
+/zones/z1/dns_records/dns-example-com
+/zones/z1/dns_records/dns-other-example-com
+/zones/z1/dns_records/dns-x-cf-example-com
+/zones/z1/rulesets/rs1/rules/r-desc
+/zones/z1/rulesets/rs1/rules/r-exact
+/zones/z1/rulesets/rs1/rules/r-other
+/zones/z1/rulesets/rs1/rules/r-root
+/zones/z1/rulesets/rs1/rules/r-upper
+/zones/z1/rulesets/rs1/rules/r-ws
+EOF
+)
+assert_equal "purge-cloudflare: --domain 根域的删除集合只少掉接管的 DNS 记录" \
+    "${expected_takeover}" "$(deleted_paths "${CALLS}")"
+assert_contains "purge-cloudflare: 接管主机的 Origin CA 仍被删除" \
+    "$(deleted_paths "${CALLS}")" "/certificates/cert-cf"
+assert_contains "purge-cloudflare: 接管主机的规则仍被删除" \
+    "$(deleted_paths "${CALLS}")" "/zones/z1/rulesets/rs1/rules/r-exact"
+rm -f "${TAKEOVER_LOG}"
 
 printf 'ok - purge-cloudflare\n'
