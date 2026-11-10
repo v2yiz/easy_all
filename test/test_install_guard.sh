@@ -767,10 +767,19 @@ incomplete_uninstall_output=""
 incomplete_uninstall_status=0
 run_incomplete_uninstall() { # $1=命令参数
     local arg=${1:-} status=0
-    mkdir -p "${TMP_DIR}/incomplete-state"
-    : >"${TMP_DIR}/incomplete-state/state.env"
-    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/incomplete-state" \
-    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/incomplete-subscriptions" \
+    local case_dir="${TMP_DIR}/incomplete-uninstall"
+    mkdir -p "${case_dir}/state" "${case_dir}/subscriptions/data" \
+        "${case_dir}/bin" "${case_dir}/singbox" "${case_dir}/caddy" \
+        "${case_dir}/units"
+    : >"${case_dir}/state/state.env"
+    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subscriptions/data" \
+    COMMAND_INSTALL_DIR="${case_dir}/bin" \
+    COMMAND_PATH="${case_dir}/bin/easy_all" \
+    SINGBOX_BIN="${case_dir}/singbox/sing-box" \
+    CADDY_BIN="${case_dir}/caddy/caddy" \
+    SINGBOX_SERVICE_FILE="${case_dir}/units/easy_all-singbox.service" \
+    CADDY_SERVICE_FILE="${case_dir}/units/easy_all-caddy.service" \
     bash -c '
         set -Eeuo pipefail
         source "$1/profiles/cloudfront.sh"
