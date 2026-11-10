@@ -850,6 +850,7 @@ rollback_retry_output=$(EASY_ALL_GUARD_STATE_DIR="${TMP_DIR}/rb-state2" \
         cdn_cleanup_legacy_globalping_artifacts() { :; }
         cdn_legacy_reclaim_origin_firewall_rules() { :; }
         remove_cdn_traffic_protection_timer() { :; }
+        cdn_traffic_counters_remove() { :; }
         remove_certbot_deploy_hook() { :; }
         cdn_remove_origin_lineage() { :; }
         remove_daily_reboot_schedule() { :; }
