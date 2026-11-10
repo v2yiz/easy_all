@@ -261,7 +261,7 @@ choose_subscription_config() {
         return 0
     }
     for attempt in 1 2 3 4 5; do
-        printf '订阅配置 JSON（allowedTokens + nodes；当前值如下，回车保留；粘贴完成后单独回车结束）:\n%s\n' "${default}" >&2
+        printf '订阅配置 JSON（allowedTokens=用户 Token，nodes=聚合节点；回车保留当前值，粘贴完成后单独回车结束）:\n%s\n' "${default}" >&2
         input=""
         while IFS= read -r -e -p '> ' line; do
             line=$(strip_terminal_input "${line}")
