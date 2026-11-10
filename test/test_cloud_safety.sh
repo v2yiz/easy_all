@@ -537,6 +537,7 @@ run_tls_certificate_cases() {
         EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/reload-state" \
         EASY_ALL_CERT_DIR_OVERRIDE="${first_dir}" \
             bash -c '
+                mkdir -p "${RUNTIME_TMP}"
                 source "$1/profiles/anytls.sh"
                 CADDY_BIN="${RUNTIME_TMP}/fake-caddy"
                 systemctl() { [[ "$1" == "is-active" ]]; }
