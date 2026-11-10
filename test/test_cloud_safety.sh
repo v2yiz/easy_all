@@ -566,7 +566,7 @@ run_tls_certificate_cases() {
                 PROTOCOL=anytls
                 DIRECT_DOMAIN=node.example.com
                 SUBSCRIPTION_MODE=link
-                install -d -m 0700 "${CERT_DIR}" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}"
+                install -d -m 0700 "${CERT_DIR}" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}" "${RUNTIME_TMP}"
                 install -m 0644 "$2/fullchain.pem" "${CERT_FILE}"
                 install -m 0600 "$2/private.key" "${KEY_FILE}"
                 install -m 0644 "$3/fullchain.pem" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}/fullchain.pem"
