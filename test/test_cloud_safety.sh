@@ -506,10 +506,11 @@ run_tls_certificate_cases() {
         EASY_ALL_CERT_DIR_OVERRIDE="${first_dir}" \
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/cert-subscriptions" \
             bash -c '
+                local_port=$2
                 source "$1/profiles/anytls.sh"
                 DIRECT_DOMAIN=node.example.com
                 # 只验证指纹比较逻辑本身：端点由测试直接给出。
-                runtime_served_certificate_endpoints() { printf "127.0.0.1 %s\n" "$2"; }
+                runtime_served_certificate_endpoints() { printf "127.0.0.1 %s\n" "${local_port}"; }
                 runtime_served_certificate_matches_disk || exit 5
                 exit 0
             ' _ "${ROOT_DIR}" "${TLS_PORT}" 2>&1
@@ -521,9 +522,10 @@ run_tls_certificate_cases() {
         EASY_ALL_CERT_DIR_OVERRIDE="${second_dir}" \
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/cert-subscriptions" \
             bash -c '
+                local_port=$2
                 source "$1/profiles/anytls.sh"
                 DIRECT_DOMAIN=node.example.com
-                runtime_served_certificate_endpoints() { printf "127.0.0.1 %s\n" "$2"; }
+                runtime_served_certificate_endpoints() { printf "127.0.0.1 %s\n" "${local_port}"; }
                 if runtime_served_certificate_matches_disk; then exit 6; fi
                 exit 0
             ' _ "${ROOT_DIR}" "${TLS_PORT}" 2>&1
