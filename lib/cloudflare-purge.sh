@@ -6,7 +6,9 @@ umask 077
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly CF_API_BASE="https://api.cloudflare.com/client/v4"
 readonly RECORD_COMMENT_PREFIX="easy_all"
-readonly RULE_REF_PREFIX="easy_all_"
+# 新栈 Origin Rule 的 ref 前缀是 easy_all-<hex16>；保留旧前缀以支持清理历史资源。
+readonly RULE_REF_PREFIX="easy_all"
+readonly LEGACY_RULE_REF_PREFIX="easy_all_"
 readonly RULESET_NAME_PREFIX="easy_all"
 # --domain 下只接受本项目实际生成的单项表达式（允许外围/词间空白）；其它写法无法证明
 # 作用范围，一律保留。完整匹配整条 expression，不存在“取第一个主机就猜语义”的降级路径。
@@ -95,7 +97,11 @@ if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
     read_prompt 'Cloudflare API Token（不落盘）: ' CLOUDFLARE_API_TOKEN 1
     printf '\n' >&2
 fi
-[[ ${#CLOUDFLARE_API_TOKEN} -ge 20 ]] || die "CLOUDFLARE_API_TOKEN 格式无效"
+# Token 会写进 curl 的 header 文件，换行会注入额外请求头：长度与字符集必须与
+# lib/cf-dns.sh 的 cloudflare_token_format_valid 同一口径。
+[[ ${#CLOUDFLARE_API_TOKEN} -ge 20 && ${#CLOUDFLARE_API_TOKEN} -le 512 \
+    && "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || die "CLOUDFLARE_API_TOKEN 格式无效"
 
 RUNTIME_TMP=$(mktemp -d "${TMPDIR:-/tmp}/easy_all-cf-purge.XXXXXX") \
     || die "无法创建临时目录"
@@ -203,9 +209,15 @@ else
         while [[ "${candidate}" == *.* ]]; do
             zone=$(cf_api GET "/zones?name=${candidate}&status=active&per_page=50") \
                 || die "查询 Cloudflare Zone 失败：${candidate}"
-            id=$(jq -r '.[0].id // empty' <<<"${zone}")
-            if [[ -n "${id}" ]]; then
-                jq -r '.[0] | [.id, .name, .account.id] | @tsv' <<<"${zone}" >>"${RUNTIME_TMP}/zones.tsv"
+            # 与 lib/cf-dns.sh 同口径：按 name 精确匹配（大小写不敏感）后要求唯一。
+            # 盲取首个在 Token 可见多个同名 active Zone 时会清到错的 Zone。
+            matches=$(jq -c --arg name "${candidate}" \
+                '[.[]? | select((.name | ascii_downcase) == ($name | ascii_downcase))]' <<<"${zone}")
+            match_count=$(jq 'length' <<<"${matches}")
+            ((match_count <= 1)) || die "Token 可见多个同名 active Zone：${candidate}；请改用只授权目标 Zone 的 Token，或先在控制台处理重复 Zone"
+            if ((match_count == 1)); then
+                jq -r '.[0] | [.id, .name, .account.id] | @tsv' <<<"${matches}" \
+                    >>"${RUNTIME_TMP}/zones.tsv"
                 break
             fi
             candidate=${candidate#*.}
@@ -252,7 +264,7 @@ while IFS=$'\t' read -r zone_id zone_name account_id; do
         rs_name=$(jq -r '.name // empty' <<<"${detail}")
         while IFS=$'\t' read -r rule_id rule_ref expression; do
             [[ -n "${rule_id}" ]] || continue
-            [[ "${rule_ref}" == "${RULE_REF_PREFIX}"* ]] || continue
+            [[ "${rule_ref}" == "${RULE_REF_PREFIX}-"* || "${rule_ref}" == "${LEGACY_RULE_REF_PREFIX}"* ]] || continue
             if ((PURGE_ALL == 0)); then
                 # 表达式必须完整匹配，且任何非空残留都让该规则保留。
                 [[ "${expression}" =~ ${RULE_HOST_EXPRESSION_RE} ]] || continue

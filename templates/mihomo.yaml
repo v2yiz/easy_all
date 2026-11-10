@@ -165,7 +165,7 @@ dns:
       'rule-set:apple-cn-fallback,geosite-apple-cn': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
       'rule-set:direct-services,geosite-cn,geosite-geolocation-cn': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
 
-# 直连 Mieru 节点由订阅以 type: mieru 注入，模板本身不放置占位凭据。
+# 代理节点（AnyTLS 直连 / VLESS CDN / 聚合节点）由订阅按模式注入，模板本身不放置占位凭据。
 proxies:
 # EASY_ALL_PROXY_NODE
 

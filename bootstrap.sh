@@ -29,6 +29,9 @@ cleanup() {
     rm -rf -- "${TEMP_DIR}"
 }
 trap cleanup EXIT
+# SIGINT 会执行 EXIT 钩子，但 SIGTERM 不会：两者都显式转成 EXIT 清理。
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ "$(id -u)" -eq 0 ]]; then
     SUDO=()
@@ -36,6 +39,35 @@ else
     command -v sudo >/dev/null 2>&1 || die "本机缺少 sudo；请使用 root 执行"
     SUDO=(sudo)
 fi
+
+# --- 覆盖代码前的 schema 门禁（design §5） ----------------------------------
+# schema 0 的 state/marker 只能由写它的旧版本卸载。bootstrap 与 register 会整体替换
+# /usr/local/lib/easy_all；覆盖后旧版本就不存在了，同大版本回退也无从执行。
+require_current_schema() {
+    local state_file=${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}
+    local marker_file=${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE:-/var/lib/easy_all/install-progress.env}
+    local version marker_schema
+    if [[ -f "${state_file}" ]]; then
+        version=$(sed -n 's/^STATE_VERSION=//p' "${state_file}" | tail -n 1 || true)
+        # 与 lib/state.sh 的 state_file_value 对齐：' 与 " 两种引号都要剥。
+        version=${version#\'}
+        version=${version%\'}
+        version=${version#\"}
+        version=${version%\"}
+        # 缺行说明文件被截断或改坏：旧版本 loader 同样要求版本行，必须按原安装
+        # 版本补回，而不是让用户拿旧版本直接卸载。行存在但值为空仍归旧 schema 提示。
+        if ! grep -Eq '^STATE_VERSION=' "${state_file}" 2>/dev/null; then
+            die "检测到状态文件缺少 STATE_VERSION（easy_all 各版本都会写这一行；缺失说明文件被截断或改坏）：${state_file}。请先确认本机原来的安装版本再处置：5.x 安装 → 备份后在该文件首行补回 STATE_VERSION=1，再执行 sudo easy_all uninstall；4.x 安装 → 补回 STATE_VERSION=0 后用 4.x 的 sudo easy_all uninstall（两代 loader 都要求版本行，不能直接卸载）；原版本不明时请保留现场核实，不要修改该文件。"
+        fi
+        [[ "${version}" == "1" ]] \
+            || die "检测到旧版（schema ${version:-缺失}）easy_all 状态；当前版本只支持 schema 1。请先用安装该状态的旧版本执行 sudo easy_all uninstall（必要时 --purge-cloud），再重新安装。"
+    fi
+    if [[ -f "${marker_file}" ]]; then
+        marker_schema=$(sed -n 's/^SCHEMA=//p' "${marker_file}" | tail -n 1 || true)
+        [[ "${marker_schema:-}" == "1" ]] \
+            || die "检测到旧版本的中断安装标记（SCHEMA=${marker_schema:-缺失}）；请用安装它的旧版本执行 cleanup-partial 或 uninstall 后再重装。"
+    fi
+}
 
 # --- 中断注册自愈 -----------------------------------------------------------
 # register-command 用两次相邻 mv 换代码（旧目录 -> .previous.*、stage -> 正式目录）。
@@ -182,6 +214,18 @@ repair_interrupted_install() {
         || die "无法恢复 easy_all 命令；已保留 ${INSTALL_DIR}.previous.* 与业务状态，未执行本次请求"
     printf '已恢复 easy_all 命令：%s\n' "${COMMAND_PATH}"
 }
+
+# /etc/easy_all 是 0700：非 root 读不到状态文件，必须在提权后的上下文里做门禁。
+if ((${#SUDO[@]} > 0)); then
+    # sudo 默认 env_reset 会清掉命令前的前缀变量：用 env 显式带入门禁路径，否则提权
+    # 子 shell 会回落到真实路径（隔离覆盖/测试夹具失效）。
+    "${SUDO[@]}" env \
+        EASY_ALL_STATE_FILE_OVERRIDE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}" \
+        EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE:-/var/lib/easy_all/install-progress.env}" \
+        bash -c "$(declare -f die require_current_schema); require_current_schema"
+else
+    require_current_schema
+fi
 
 if ! command -v git >/dev/null 2>&1; then
     command -v apt-get >/dev/null 2>&1 || die "仅支持使用 APT 安装 git"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
-# Subscription aggregation shared by the Reality and Cloudflare profiles.
+# Subscription aggregation shared by all four modes.
+# External nodes keep their own protocol fields (vless reality/xhttp, mieru); local
+# easy_all nodes are built by lib/singbox-runtime.sh.
 # One config object carries both credentials and extra nodes:
 #   {"allowedTokens": {"owner": "..."}, "nodes": [...]}
 # Nodes marked optional are served only when the client asks for node=all.

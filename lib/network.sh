@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 
-# Shared public network discovery and Xray egress policy.
+# Shared public network discovery and egress policy (sing-box).
 
-readonly XRAY_OUTBOUND_DOMAIN_STRATEGY="UseIPv4"
-readonly XRAY_INBOUND_TCP_KEEPALIVE_IDLE="300"
-readonly XRAY_INBOUND_TCP_KEEPALIVE_INTERVAL="30"
 
 validate_ipv6() {
     local ip=${1%%%*} segment rest groups=0
@@ -53,7 +50,7 @@ enforce_ipv4_only_policy() {
 
 ensure_vps_ip_family() {
     enforce_ipv4_only_policy
-    info "全局 IPv4-only：已禁用 VPS、Xray 与客户端 IPv6"
+    info "全局 IPv4-only：已禁用 VPS、sing-box 与客户端 IPv6"
 }
 
 validate_google_egress_mode() {
@@ -86,52 +83,4 @@ choose_google_egress_mode() {
 google_egress_status() {
     normalize_google_egress_policy
     printf 'IPv4（固定）'
-}
-
-xray_private_ranges_json() {
-    jq -cn '[
-      "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-      "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
-      "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
-      "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"
-    ]'
-}
-
-xray_direct_outbounds_json() {
-    normalize_google_egress_policy
-    jq -cn --arg strategy "${XRAY_OUTBOUND_DOMAIN_STRATEGY}" '[
-      {
-        protocol:"freedom",tag:"direct",sendThrough:"0.0.0.0",
-        targetStrategy:"ForceIPv4",settings:{domainStrategy:$strategy}
-      },
-      {protocol:"blackhole",tag:"block"}
-    ]'
-}
-
-xray_inbound_sockopt_json() {
-    jq -cn --argjson idle "${XRAY_INBOUND_TCP_KEEPALIVE_IDLE}" \
-        --argjson interval "${XRAY_INBOUND_TCP_KEEPALIVE_INTERVAL}" \
-        '{tcpKeepAliveIdle:$idle,tcpKeepAliveInterval:$interval}'
-}
-
-xray_direct_routing_json() {
-    local private_ranges
-    normalize_google_egress_policy
-    private_ranges=$(xray_private_ranges_json)
-    jq -cn --argjson private "${private_ranges}" '{
-      domainStrategy:"IPOnDemand",
-      rules: [
-        {type:"field",ip:$private,outboundTag:"block"},
-        {type:"field",network:"udp",port:"443",outboundTag:"block"},
-        {type:"field",network:"tcp,udp",outboundTag:"direct"}
-      ]
-    }'
-}
-
-xray_xhttp_outbounds_json() {
-    xray_direct_outbounds_json
-}
-
-xray_xhttp_routing_json() {
-    xray_direct_routing_json
 }

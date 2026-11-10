@@ -319,9 +319,11 @@ copy_public_key() {
 
   if command -v ssh-copy-id >/dev/null 2>&1; then
     if [[ -n "${SERVER_PASSWORD:-}" ]] && command -v sshpass >/dev/null 2>&1; then
-      SSHPASS="$SERVER_PASSWORD" sshpass -e ssh-copy-id -i "$public_key" -p "$port" "$target"
+      SSHPASS="$SERVER_PASSWORD" sshpass -e ssh-copy-id \
+        -o StrictHostKeyChecking=accept-new \
+        -i "$public_key" -p "$port" "$target"
     else
-      ssh-copy-id -i "$public_key" -p "$port" "$target"
+      ssh-copy-id -o StrictHostKeyChecking=accept-new -i "$public_key" -p "$port" "$target"
     fi
   else
     ssh_with_password_if_possible "$port" "$target" '
@@ -514,6 +516,12 @@ log() {
 die() {
   printf '%s\n' "错误: $*" >&2
   exit 1
+}
+
+# 被 source 的 lib/platform.sh 与 lib/firewall.sh 都会调用 warn：远端脚本必须自带实现，
+# 否则 set -e 下 warn: command not found 会中断整个远端初始化。
+warn() {
+  printf '%s\n' "警告: $*" >&2
 }
 
 info() {
@@ -807,6 +815,9 @@ REMOTE
     printf '%s\n' "错误: 无法在远端创建临时目录" >&2
     return 1
   fi
+  # 远端镜像可能把 MOTD/rc 输出混进命令 stdout：只取最后一行并裁掉 CR，再做严格校验。
+  remote_dir=${remote_dir##*$'\n'}
+  remote_dir=${remote_dir%$'\r'}
   if [[ ! "$remote_dir" =~ ^/tmp/easy_all_init\.[A-Za-z0-9]+$ ]]; then
     printf '%s\n' "错误: 远端返回的临时目录无效: $remote_dir" >&2
     return 1

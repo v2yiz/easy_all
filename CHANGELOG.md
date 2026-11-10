@@ -1,3 +1,54 @@
+## 5.0.0 更新说明（2026-11-10）
+
+**不兼容大版本**：本机运行时从 Xray/Nginx/Reality 切换为官方 sing-box 1.14.4 + Caddy 2.11.9。
+schema 0 状态与旧安装标记不会被接管，必须先用 4.x 的 `sudo easy_all uninstall`（需要时加
+`--purge-cloud`）卸载，再用 5.0 重新安装；本版本不提供自动迁移，也不保留旧栈兼容实现。
+
+- **四模式原子切换**：`1` AnyTLS 直连、`2` 纯 CloudFront、`3` 纯 CloudFlare、`4` AnyTLS + CloudFront。
+  `PROTOCOL` 为 `anytls` / `cloudfront` / `cloudflare` / `combined-cloudfront`，`BACKEND`、端口与
+  主机布局全部由协议派生。删除模式 5、本机 Reality、动态端口与 XHTTP。
+- **全 443**：本机节点（直连 443、CloudFront viewer 443、橙云回源 443）与全部订阅入口统一 443；
+  模式 1 的订阅站点与模式 4 的源站在 8443（非客户端端口）。CDN 传输本版只支持 WebSocket。
+- **状态与门禁**：`STATE_VERSION=1`，字段清单集中在 `lib/state.sh`；`install`/`apply`/`self-update`/
+  `register-command`/`bootstrap.sh` 在覆盖代码前拒绝 schema 0 state/marker。
+- **运行时**：sing-box 提供 AnyTLS 443 与回环 VLESS WebSocket 10086 入站；Caddy 提供精确路径反向代理、
+  精确 `/subscribe`+`/sub` 订阅路由、公共头先于终止响应、CEL 源站密钥守卫与固定六产物。
+- **证书**：Certbot Cloudflare DNS-01（不开放 80），双路径（父事务内签发 / 定时 hook 自取锁只部署）；
+  模式 3 保留 Cloudflare Origin CA。部署器校验 SAN、有效期、证钥匹配与完整信任链。
+- **985GB 近似保护**：不再依赖 StatsService，改为 `mangle` 表回环 10086 双向计数，独立 counter 锁
+  （`/run/easy_all/traffic-counter.lock`，目录与锁文件在打开前显式创建）、计数 epoch 与保护状态机；
+  sing-box 的 `ExecStartPre` 只取 counter，`runtime → counter` 是唯一嵌套顺序。
+- **Cloudflare 资源**：模式 1 deploy 使用单规则 Origin Rule（`http_request_origin`，回源 8443）；
+  模式 1 deploy 与模式 3 在创建任何资源前只读校验 Zone SSL = Full (strict)。
+- **命令**：新增内部入口 `internal-traffic-prepare`（服务启动前计量准备）与 `internal-cert-deploy`
+  （定时证书 hook）；删除 `reality-target`、`rotate-dynamic-ports`。`update-core` 改为重装/修复锁定的
+  sing-box + Caddy 版本。
+- **订阅收紧**：重复 `token` 由 Caddy 逗号拼接后不再匹配合法 Token，一律 403；重复 `flag`/`os`/`node`
+  回落默认行为（相对旧版 `$arg_*` 取首值）。
+- **验证**：新增 `test/test_state_gate.sh`、`test/test_modes_render.sh`、`scripts/verify-cores.sh`、
+  `test/test_core_e2e.mjs` 与 `npm run test:cores`；CI 下载并校验锁定版本核心后必跑真核心门禁。
+- **发版前深度审计修复**（阻断项）：运行时清单补登 `lib/anytls-mode.sh`（模式 1 安装后不再缺模块）；
+  追加 Origin Rule 改为回读 ruleset 按 `ref` 取 rule ID（此前把 ruleset ID 当 rule ID，导致
+  `uninstall --purge-cloud` 失败）；`register-command` 提到已安装门禁之前（首装中断后 `bootstrap.sh`
+  自愈可用）；
+  发布服务单元后补 `systemctl daemon-reload`（否则 systemd 沿用内存里的旧单元，新增 `ExecStartPre` 计量守卫
+  被跳过），`update-core` 替换二进制后重启 Caddy 进程（`reload` 只换配置、不换可执行文件），核心已缺失时按
+  “重装修复”处理；`test_cloud_safety.sh` 接入 `npm test`。
+- **发版前深度审计修复**（行为与观测）：模式 4 源站守卫公网探测改用 Caddy 站点端口 `8443`（发到 `443`
+  只是连到 sing-box，等于没验证）；模式 1 中断续装补齐 `CHAIN=anytls`，安装身份补存 Origin Rule
+  ruleset/rule ID；直连模式恢复 `net.ipv4.tcp_no_metrics_save = 1`；计量 epoch 缺失 `boot_id` 时显式失败，
+  不再每轮重置增量（此前会让 985GB 保护永不触发）。
+- **发版前深度审计修复（第二轮：并发/状态/凭据边界）**：端口预检改按空白分词逐端口检查，模式 4 的
+  `443 8443` 不再绕过占用检查；安装身份补存 `SUBSCRIPTION_MODE`（续装不再把 `link` 覆盖成 `deploy`），
+  schema 1 但协议不可识别（`PROTOCOL` 缺失或写坏）的状态仍可 `uninstall` 做仅本机清理；证书与私钥配对
+  改为比较公钥 PEM 且要求非空（空输入不再被误判为匹配），sing-box 服务只 `enable`、启动交给 `restart`
+  （不再毫秒内两次启动消耗 `StartLimitBurst`）；`purge-cloudflare` 的 Token 补字符集校验（防换行注入请求头），
+  `caddy validate` 失败时直接打印 validator 错误，远端初始化脚本补齐 `warn()`、`ssh-copy-id` 补
+  `StrictHostKeyChecking=accept-new`；卸载与回滚提示改为 bootstrap 入口（回滚会删掉 `easy_all` 命令本身），
+  `cleanup` 同时处理 INT/TERM，`update-core` 的多余参数在 launcher 层拒绝，并删除死代码 `source_state_file`。
+- **发版前深度审计修复（第三轮：恢复与容错）**：缺少 `STATE_VERSION` 的状态文件不再提示「用旧版本卸载」，改为按原安装版本（5.x 补 `1` / 4.x 补 `0` / 不明保留现场）给出可执行恢复步骤；清理期只在不可中断的回滚执行段屏蔽 INT/TERM，状态回滚失败时保留运行时恢复材料并先删除临时 API 凭据（AnyTLS 补齐 `clear_profile_credentials`，同时修复模式 1 安装尾部 `command not found` 退出）；Caddy 冷启动只发一次启动请求；证书签发对复用域名去重；`verify-cores.sh` 回收自建临时目录，`bootstrap.sh` 与 `register-command` 在 SIGTERM 下也执行清理。
+- **发版前深度审计修复（第四轮：命令门禁与退出路径）**：未知命令与本轮通用参数门禁覆盖的多余参数（如 `tcp-resume` / `apply`）改在读取安装状态、加载 Profile 与创建运行时临时目录之前拒绝（`install extra` 文案不变；`self-update` 的参数仍在自身流程内校验）；退出清理在交互确认之前先清除内存账号凭据与临时 API 请求头/载荷（含 `origin-header`），持久化的 Cloudflare/Certbot 凭据按原生命周期保留；状态加载先判 `STATE_VERSION` 行存在性再解析；Caddy 校验失败文案不再点名会被删除的候选文件。
+
 ## 4.5.1 更新说明（2026-11-09）
 
 - **安装与自更新自愈加固（中断恢复与路径规范·A07/A08）**：

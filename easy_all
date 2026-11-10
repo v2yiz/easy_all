@@ -23,20 +23,14 @@ readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://gi
 readonly EASY_ALL_DEFAULT_BRANCH="main"
 readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
 readonly EASY_ALL_RUNTIME_MANIFEST="runtime.manifest"
-readonly CURRENT_STATE_VERSION="0"
+readonly CURRENT_STATE_VERSION="1"
 
-# 状态结构必需字段的单一来源：launcher 在加载任何 Profile 之前就需要它做分类。
-readonly EASY_ALL_STATE_LIB="${EASY_ALL_ROOT}/lib/cloudfront-state.sh"
-readonly EASY_ALL_CLOUDFLARE_STATE_LIB="${EASY_ALL_ROOT}/lib/cloudflare-state.sh"
-for state_lib in "${EASY_ALL_STATE_LIB}" "${EASY_ALL_CLOUDFLARE_STATE_LIB}"; do
-    [[ -f "${state_lib}" ]] \
-        || { printf '\033[31m缺少 easy_all 运行时文件：%s\033[0m\n' "${state_lib}" >&2; exit 1; }
-done
-unset state_lib
-# shellcheck source=lib/cloudfront-state.sh
+# 状态 schema 与字段集的单一来源：launcher 在加载任何 Profile 之前就需要它做分类。
+readonly EASY_ALL_STATE_LIB="${EASY_ALL_ROOT}/lib/state.sh"
+[[ -f "${EASY_ALL_STATE_LIB}" ]] \
+    || { printf '\033[31m缺少 easy_all 运行时文件：%s\033[0m\n' "${EASY_ALL_STATE_LIB}" >&2; exit 1; }
+# shellcheck source=lib/state.sh
 source "${EASY_ALL_STATE_LIB}"
-# shellcheck source=lib/cloudflare-state.sh
-source "${EASY_ALL_CLOUDFLARE_STATE_LIB}"
 
 
 launcher_die() {
@@ -87,29 +81,25 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择安装模式（1 直连 / 2 纯 CloudFront / 3 纯 CloudFlare /
-                   4 直连+CloudFront / 5 直连+CloudFlare）
+  install          交互选择安装模式（1 AnyTLS 直连 / 2 纯 CloudFront /
+                   3 纯 CloudFlare / 4 AnyTLS + CloudFront）
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
-  apply            应用已安装配置；CDN 模式只重建本机与订阅（不访问云 API）
-  reality-target [域名:端口]
-                   修改 Reality SNI（伪装目标）并重新应用
-  rotate-dynamic-ports
-                   立即刷新直连 Reality 模式的动态端口 NAT 规则
-  apply-cloud      同步云端资源（Cloudflare DNS 与 Origin CA、AWS ACM 与 CloudFront 分发）
+  apply            应用已安装配置；只重建本机与订阅（不访问云管理 API）
+  apply-cloud      同步云端资源（Cloudflare DNS/Origin Rule/Origin CA、AWS ACM 与 CloudFront 分发）
   edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
-  cdn-traffic-sync 同步 CloudFront CDN 用量并落实流量阻断（仅 CloudFront 模式）
+  cdn-traffic-sync 同步 CloudFront 用量并落实流量阻断（仅 CloudFront 模式）
   purge-cloudflare 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用）
-  update-core      更新当前模式的核心（Xray）
+  update-core      重装/修复当前锁定版本的核心（sing-box + Caddy）
   renew-cert       重新签发/部署当前模式的 TLS 证书
   status           显示运行状态
   cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
   uninstall        卸载当前模式；可追加 --purge-cloud 清理托管的远端资源
   help             显示帮助
 
-一台 VPS 只能安装一种模式。
+一台 VPS 只能安装一种模式。本机节点与订阅入口统一使用 443。
 EOF
 }
 
@@ -117,7 +107,7 @@ EOF
 # 否则两次读取之间换了安装，就可能拿着旧模式的身份去比对新模式。
 # 输出：absent | present|PROFILE|STAGE|STARTED_AT
 launcher_marker_snapshot() {
-    local file=${1:-} content profile stage started chain
+    local file=${1:-} content profile stage started chain schema
     if [[ -z "${file}" || ! -f "${file}" ]]; then
         printf 'absent'
         return 0
@@ -127,36 +117,55 @@ launcher_marker_snapshot() {
     stage=$(printf '%s\n' "${content}" | sed -n 's/^STAGE=//p' | tail -n 1)
     started=$(printf '%s\n' "${content}" | sed -n 's/^STARTED_AT=//p' | tail -n 1)
     chain=$(printf '%s\n' "${content}" | sed -n 's/^CHAIN=//p' | tail -n 1)
-    printf 'present|%s|%s|%s|%s' "${profile}" "${stage}" "${started}" "${chain}"
+    schema=$(printf '%s\n' "${content}" | sed -n 's/^SCHEMA=//p' | tail -n 1)
+    printf 'present|%s|%s|%s|%s|%s' "${profile}" "${stage}" "${started}" "${chain}" "${schema}"
 }
 
 # 旧安装标记（PROFILE=cdn，以及没有 CHAIN=cloudfront 的旧 PROFILE=combined）来自已删除的
 # 旧 Cloudflare 橙云链路：它们的 Profile 不再存在（combined.sh 已改为模式 3），不能 source。
-launcher_marker_is_legacy_cloudflare() {
-    local profile=${1:-} chain=${2:-}
-    case "${profile}" in
-    cdn) return 0 ;;
-    combined) [[ "${chain}" != "cloudfront" ]] ;;
-    *) return 1 ;;
-    esac
+
+launcher_progress_file() {
+    printf '%s' "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE:-/var/lib/easy_all/install-progress.env}"
+}
+
+# 覆盖已安装代码之前的 schema 门禁（design §5）：schema 0 的 state/marker 只能由写它的
+# 旧版本卸载。自更新与 register 会整体替换 /usr/local/lib/easy_all，覆盖后旧版本就没了。
+launcher_require_current_schema() {
+    local file state_version marker_schema
+    file="${EASY_ALL_STATE_FILE}"
+    if [[ -f "${file}" && -r "${file}" ]]; then
+        state_version=$(state_file_schema "${file}" || true)
+        # 缺行说明文件损坏（旧版本 loader 也要求版本行）；与旧 schema 分开提示，
+        # 否则「用旧版本卸载」对损坏文件不可执行。判定逻辑不变：两者都拒绝。
+        # 行存在但值为空仍归「存在且 ≠1」，保持原有旧 schema 提示。
+        state_file_has_field "${file}" STATE_VERSION \
+            || launcher_die "$(state_damaged_state_message "${file}")"
+        state_schema_supported "${state_version}" \
+            || launcher_die "$(state_legacy_rejection_message "${state_version:-缺失}")"
+    fi
+    file=$(launcher_progress_file)
+    # 不可读（非 root 碰到 0700 的 /var/lib/easy_all）时交给下面的 root 检查，
+    # 不能把“读不到”当成“旧 schema”拒绝。
+    if [[ -f "${file}" && -r "${file}" ]]; then
+        marker_schema=$(sed -n 's/^SCHEMA=//p' "${file}" | tail -n 1 || true)
+        launcher_marker_schema_gate "${marker_schema:-}"
+    fi
+}
+
+# 安装进度标记的 schema 门禁：旧标记没有 SCHEMA= 字段，只能由写它的旧版本清理。
+launcher_marker_schema_gate() {
+    [[ "${1:-}" == "${CURRENT_STATE_VERSION}" ]] \
+        || launcher_die "安装进度标记来自旧版本（SCHEMA=${1:-缺失}）；请用安装它的旧 easy_all 执行 cleanup-partial 或 uninstall 后再重装"
 }
 
 # 只加载新核心（不加载任何 Profile）：旧标记的固定本机路径、旧 easy_all-cf-origin 回源
 # 放行、旧 Globalping 单元与自有 certbot lineage 都由核心的本机清理函数回收。
-launcher_source_legacy_cleanup_core() {
-    XHTTP_LIB_DIR="${EASY_ALL_ROOT}/lib"
-    export XHTTP_LIB_DIR
-    # shellcheck source=/dev/null
-    source "${XHTTP_LIB_DIR}/xhttp-runtime.sh" || return 1
-    # shellcheck source=/dev/null
-    source "${XHTTP_LIB_DIR}/cloudfront-mode.sh" || return 1
-}
 
 # 上次安装被 SSH 断线打断后，没有状态文件也就没有 uninstall 可用；这条命令是唯一
 # 能从本机自救的入口。它只信安装期写入的 marker 来定位模式，不猜测、不动云端资源。
 cleanup_partial_install_command() {
     local progress_file mode stage started_at chain answer module
-    local snapshot_before snapshot_after legacy=0
+    local snapshot_before snapshot_after marker_schema
     local bootstrap='bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh)'
     while (($# > 0)); do
         case "$1" in
@@ -182,29 +191,20 @@ cleanup_partial_install_command() {
         launcher_die "无法读取安装进度标记 ${progress_file}；请检查权限后重试"
         ;;
     esac
-    IFS='|' read -r _ mode stage started_at chain <<<"${snapshot_before}"
+    IFS='|' read -r _ mode stage started_at chain marker_schema <<<"${snapshot_before}"
     [[ -n "${mode}" ]] || launcher_die "安装进度标记缺少模式信息（${progress_file}）；请核对标记内容或人工清理残留后重装"
-    if launcher_marker_is_legacy_cloudflare "${mode}" "${chain}"; then
-        legacy=1
-        printf '检测到未完成的旧 Cloudflare 链路安装（PROFILE=%s，中断于 %s 阶段）；按固定本机路径清理\n' \
-            "${mode}" "${stage}" >&2
-    else
-        profile_file "${mode}" >/dev/null
-        printf '检测到未完成的 %s 安装（中断于 %s 阶段）\n' "${mode}" "${stage}" >&2
-    fi
+    launcher_marker_schema_gate "${marker_schema:-}"
+    profile_file "${mode}" >/dev/null
+    printf '检测到未完成的 %s 安装（中断于 %s 阶段）\n' "${mode}" "${stage}" >&2
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || launcher_die "非交互清理必须显式设置 FORCE=1"
         launcher_read_bilingual '清理本机残留（不改动 Cloudflare 云端资源）？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || launcher_die "已取消"
     fi
-    if ((legacy == 1)); then
-        launcher_source_legacy_cleanup_core || launcher_die "无法加载清理核心；请重新下载 easy_all 后重试"
-    else
-        module=$(profile_file "${mode}") || exit 1
-        export EASY_ALL_SELECTED_MODE="${mode}"
-        # shellcheck source=/dev/null
-        source "${module}"
-    fi
+    module=$(profile_file "${mode}") || exit 1
+    export EASY_ALL_SELECTED_MODE="${mode}"
+    # shellcheck source=/dev/null
+    source "${module}"
     register_easy_all_command() {
         unified_register_easy_all_command
     }
@@ -228,109 +228,65 @@ choose_install_mode() {
     local choice
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
-    printf '  1. 直连 - Reality（直连效果良好且 IP 未被封时）\n' >&2
-    printf '  2. 纯 CloudFront - AWS CloudFront XHTTP（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
-    printf '  3. 纯 CloudFlare - Cloudflare 橙云 XHTTP（单域名同时提供节点与订阅）\n' >&2
-    printf '  4. 直连+CloudFront：直连 Reality + CloudFront（一次部署两个入口）\n' >&2
-    printf '  5. 直连+CloudFlare：直连 Reality + Cloudflare 橙云 XHTTP\n' >&2
+    printf '  1. AnyTLS 直连（直连效果良好且 IP 未被封时；订阅可选）\n' >&2
+    printf '  2. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
+    printf '  3. 纯 CloudFlare（橙云单域名同时提供节点与订阅）\n' >&2
+    printf '  4. AnyTLS + CloudFront（一次部署直连与 CDN 两个入口）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
-    1) printf 'reality\n' ;;
+    1) printf 'anytls\n' ;;
     2) printf 'cloudfront\n' ;;
     3) printf 'cloudflare\n' ;;
-    4) printf 'combined\n' ;;
-    5) printf 'combined-cloudflare\n' ;;
+    4) printf 'combined-cloudfront\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
 
-state_value() {
-    local file=$1 key=$2 line value
-    [[ -f "${file}" ]] || return 1
-    line=$(grep -E "^${key}=" "${file}" | tail -n 1) || return 1
-    value=${line#*=}
-    value=${value#\'}
-    value=${value%\'}
-    value=${value#\"}
-    value=${value%\"}
-    printf '%s\n' "${value}"
-}
-
-# CloudFront 新协议必须字段齐全才允许任何应用操作；缺字段只保留卸载通道。
-# 字段清单来自 lib/cloudfront-state.sh（与核心结构校验同一来源，含模式 3 直连字段）。
-launcher_cloudfront_state_complete() {
-    local file=$1 protocol field value
-    protocol=$(state_value "${file}" PROTOCOL || true)
-    while IFS= read -r field; do
-        value=$(state_value "${file}" "${field}" || true)
-        [[ -n "${value}" ]] || return 1
-    done < <(cloudfront_state_required_fields "${protocol}")
-    [[ "$(state_value "${file}" CDN_PROVIDER)" == "aws" ]] || return 1
-    [[ "$(state_value "${file}" CDN_TRAFFIC_PROTECTION_GB)" == "985" ]] || return 1
-}
-
-# Cloudflare 橙云链路的结构校验：字段来自 lib/cloudflare-state.sh，没有 AWS 与
-# 985GB 熔断字段（橙云链路不计量）。
-launcher_cloudflare_state_complete() {
-    local file=$1 protocol field value
-    protocol=$(state_value "${file}" PROTOCOL || true)
-    while IFS= read -r field; do
-        value=$(state_value "${file}" "${field}" || true)
-        [[ -n "${value}" ]] || return 1
-    done < <(cloudflare_state_required_fields "${protocol}")
-    [[ "$(state_value "${file}" CDN_PROVIDER)" == "cloudflare" ]] || return 1
+# 状态必须字段齐全才允许任何应用操作；缺字段只保留卸载通道。
+# 字段清单、条件空值与“键仍须存在”的规则都来自 lib/state.sh（与核心结构校验同一来源）。
+launcher_state_complete() {
+    local file=$1
+    state_missing_fields "${file}" >/dev/null 2>&1
 }
 
 # 输出既能识别又能门禁的模式分类：
 #   reality / cloudfront / combined-cloudfront / cloudflare / combined-cloudflare（新链路）
 #   cdn / combined（旧 Cloudflare 链路，仅卸载）
 #   incomplete-*（新协议但字段不齐，仅卸载）
+# 输出既能识别又能门禁的模式：anytls / cloudfront / cloudflare / combined-cloudfront
+# （结构完整）或 incomplete-<protocol>（schema 1 但字段不齐，仅卸载）。
+# schema 1 但协议不可识别（缺失或写坏）输出 incomplete-unknown：不猜协议，只保留本机卸载通道。
+# 旧 schema 与已删除的协议（reality / cdn / combined / combined-cloudflare）一律拒绝：
+# 覆盖代码前不做自动迁移，必须先由写该状态的旧版本卸载。
 detect_installed_mode() {
     local protocol="" state_version=""
-    # 不可读的状态文件（目录可搜索、文件 0600 root）同样交给 main 统一提示 root：直接往下
-    # 读会把「状态版本不匹配」这类误导信息抛给非 root 用户；root 下 `-r` 恒为真，行为不变。
+    # 不可读的状态文件（目录可搜索、文件 0600 root）同样交给 main 统一提示 root。
     if [[ -f "${EASY_ALL_STATE_FILE}" && -r "${EASY_ALL_STATE_FILE}" ]]; then
-        protocol=$(state_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
-        state_version=$(state_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
-        [[ "${state_version}" == "${CURRENT_STATE_VERSION}" ]] \
-            || launcher_die "状态版本不匹配（当前：${state_version:-缺失}，期望：${CURRENT_STATE_VERSION}）；当前版本无法接管这份状态，请先执行 sudo easy_all uninstall（旧版本状态必要时先用旧 --purge-cloud 清理云端）"
+        protocol=$(state_file_value "${EASY_ALL_STATE_FILE}" PROTOCOL || true)
+        state_version=$(state_file_value "${EASY_ALL_STATE_FILE}" STATE_VERSION || true)
+        # 缺行是文件损坏，不是旧 schema：旧版本 loader 也不会接受这种文件。
+        # 行存在但值为空仍按旧 schema 拒绝，提示保持原样。
+        state_file_has_field "${EASY_ALL_STATE_FILE}" STATE_VERSION \
+            || launcher_die "$(state_damaged_state_message "${EASY_ALL_STATE_FILE}")"
+        state_schema_supported "${state_version}" \
+            || launcher_die "$(state_legacy_rejection_message "${state_version:-缺失}")"
         case "${protocol}" in
-        reality)
-            printf 'reality\n'
+        anytls | cloudfront | cloudflare | combined-cloudfront) ;;
+        reality | cdn | combined | combined-cloudflare)
+            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/cloudfront/cloudflare/combined-cloudfront。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（必要时 --purge-cloud），再重新安装。"
             ;;
-        cloudfront)
-            if launcher_cloudfront_state_complete "${EASY_ALL_STATE_FILE}"; then
-                printf 'cloudfront\n'
-            else
-                printf 'incomplete-cloudfront\n'
-            fi
+        *)
+            # 状态本身已损坏（如 PROTOCOL 丢失）：整个卸载通道不能跟着失效，
+            # 但也不允许把映射出来的协议当成“已安装协议”。
+            printf 'incomplete-unknown\n'
+            return
             ;;
-        combined-cloudfront)
-            if launcher_cloudfront_state_complete "${EASY_ALL_STATE_FILE}"; then
-                printf 'combined-cloudfront\n'
-            else
-                printf 'incomplete-combined-cloudfront\n'
-            fi
-            ;;
-        cloudflare)
-            if launcher_cloudflare_state_complete "${EASY_ALL_STATE_FILE}"; then
-                printf 'cloudflare\n'
-            else
-                printf 'incomplete-cloudflare\n'
-            fi
-            ;;
-        combined-cloudflare)
-            if launcher_cloudflare_state_complete "${EASY_ALL_STATE_FILE}"; then
-                printf 'combined-cloudflare\n'
-            else
-                printf 'incomplete-combined-cloudflare\n'
-            fi
-            ;;
-        cdn|combined)
-            printf '%s\n' "${protocol}"
-            ;;
-        *) launcher_die "无法识别已安装协议：${protocol:-缺失}" ;;
         esac
+        if launcher_state_complete "${EASY_ALL_STATE_FILE}"; then
+            printf '%s\n' "${protocol}"
+        else
+            printf 'incomplete-%s\n' "${protocol}"
+        fi
         return
     fi
 }
@@ -356,16 +312,11 @@ launcher_require_installed_mode() {
 profile_file() {
     local mode=$1 candidate
     case "${mode}" in
-    reality) candidate="${EASY_ALL_ROOT}/profiles/reality.sh" ;;
-    # 旧 PROTOCOL=cdn 只保留卸载通道，复用新核心的本机清理实现。
-    cdn) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
-    combined|combined-cloudfront|incomplete-combined-cloudfront)
+    anytls | incomplete-anytls) candidate="${EASY_ALL_ROOT}/profiles/anytls.sh" ;;
+    cloudfront | incomplete-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
+    cloudflare | incomplete-cloudflare) candidate="${EASY_ALL_ROOT}/profiles/cloudflare.sh" ;;
+    combined-cloudfront | incomplete-combined-cloudfront)
         candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
-    cloudflare|incomplete-cloudflare)
-        candidate="${EASY_ALL_ROOT}/profiles/cloudflare.sh" ;;
-    combined-cloudflare|incomplete-combined-cloudflare)
-        candidate="${EASY_ALL_ROOT}/profiles/combined-cloudflare.sh" ;;
-    cloudfront|incomplete-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -376,6 +327,8 @@ unified_register_easy_all_command() {
     local source_root=${EASY_ALL_ROOT} destination="${EASY_ALL_INSTALL_DIR}/easy_all"
     local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$" relative_path paths
     local -a syntax_files
+    # 覆盖已安装代码之前拒绝旧 schema：旧版本只能在覆盖前跑自己的卸载。
+    launcher_require_current_schema
     require_root
     runtime_tree_is_complete "${source_root}" \
         || die "easy_all 运行时文件不完整：${source_root}"
@@ -416,6 +369,8 @@ unified_register_easy_all_command() {
 
 unified_self_update() {
     local target_branch="${EASY_ALL_BRANCH}" temp_dir repo_dir
+    # 门禁必须先于 clone 与任何代码覆盖：旧 schema 只能在旧版本下卸载。
+    launcher_require_current_schema
     require_root
     command -v git >/dev/null 2>&1 || die "缺少 git；请先安装 git 与 ca-certificates"
     case "$#" in
@@ -455,16 +410,15 @@ unified_self_update() {
     acquire_runtime_write_lock 30
     bash "${repo_dir}/easy_all" register-command
     rm -rf -- "${temp_dir}"
-    success "easy_all 项目代码已更新；未修改 Xray、Nginx、订阅或云端 CDN 资源"
+    success "easy_all 项目代码已更新；未修改 sing-box、Caddy、订阅或云端 CDN 资源"
 }
 
 # 命令参数门禁：只有下列命令带参数，其余一律不接受；未知命令必须先点名，
 # 不能只打印 usage。两者都在任何副作用前非零退出。
 launcher_command_known() {
     case "$1" in
-    install | show | subscription | apply | tcp-resume | reality-target | apply-cloud | edit-sub \
-        | update-core | cdn-traffic-sync | renew-cert | rotate-dynamic-ports | status \
-        | self-update | register-command | uninstall)
+    install | show | subscription | apply | tcp-resume | apply-cloud | edit-sub \
+        | update-core | cdn-traffic-sync | renew-cert | status | self-update | uninstall)
         return 0
         ;;
     *) return 1 ;;
@@ -484,8 +438,12 @@ dispatch_validate_arguments() {
         fi
         launcher_die "uninstall 不支持参数：$*（仅接受可选的 --purge-cloud）"
         ;;
-    # 既有参数语义保持不变：reality-target [域名:端口]、update-core [参数]、self-update [--dev|--branch <分支>]。
-    reality-target | update-core | self-update) return 0 ;;
+    # 既有参数语义保持不变：self-update 接受 --dev|--branch <分支>；tcp-resume 不接受参数
+    # （与 resume_skyline_after_reboot 的签名一致），在 launcher 层就拒绝；update-core 同样不接受参数。
+    self-update) return 0 ;;
+    update-core)
+        (($# == 0)) || launcher_die "${command} 不接受额外参数"
+        ;;
     *)
         (($# == 0)) || launcher_die "${command} 不接受额外参数"
         ;;
@@ -503,62 +461,36 @@ dispatch_profile_command() {
     install) install_all ;;
     show) require_root; show_node ;;
     subscription) require_root; show_subscription ;;
-    apply)
-        apply_easy_all
-        ;;
+    apply) apply_easy_all ;;
     tcp-resume) resume_skyline_after_reboot "$@" ;;
-    reality-target)
-        [[ "${mode}" == "reality" || "${mode}" == "combined-cloudfront" \
-            || "${mode}" == "combined-cloudflare" ]] \
-            || launcher_die "reality-target 仅适用于 Reality 与直连+CDN 模式"
-        update_reality_target "$@"
-        ;;
     apply-cloud)
         case "${mode}" in
-        cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;
-        *) launcher_die "apply-cloud 仅适用于 CDN 模式" ;;
+        anytls | cloudfront | combined-cloudfront | cloudflare) ;;
+        *) launcher_die "apply-cloud 仅适用于 CDN 与带订阅站点的模式" ;;
         esac
         apply_cloud_resources
         ;;
-    edit-sub)
-        if [[ "${mode}" == "reality" ]]; then
-            update_subscription 1
-        else
-            update_subscription
-        fi
-        ;;
-    update-core)
-        update_current_core "$@"
-        ;;
+    edit-sub) update_subscription ;;
+    update-core) update_current_core "$@" ;;
     cdn-traffic-sync)
-        [[ "${mode}" == "cloudfront" || "${mode}" == "combined-cloudfront" ]] \
-            || launcher_die "cdn-traffic-sync 仅适用于 CloudFront 模式"
-        cdn_traffic_protection_sync
+        case "${mode}" in
+        cloudfront | combined-cloudfront) cdn_traffic_protection_sync ;;
+        *) launcher_die "cdn-traffic-sync 仅适用于 CloudFront 模式" ;;
+        esac
         ;;
     renew-cert)
         case "${mode}" in
-        reality) renew_subscription_certificate ;;
-        cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate ;;
-        *) launcher_die "当前模式不使用 TLS 证书，无需续期" ;;
-        esac
-        ;;
-    rotate-dynamic-ports)
-        case "${mode}" in
-        reality) rotate_dynamic_ports ;;
-        *) launcher_die "rotate-dynamic-ports 仅适用于 Reality 模式" ;;
+        anytls | cloudfront | combined-cloudfront | cloudflare) renew_certificate ;;
+        *) launcher_die "当前模式不使用本工具签发的 TLS 证书" ;;
         esac
         ;;
     status) show_status ;;
     self-update) unified_self_update "$@" ;;
-    register-command) register_easy_all_command ;;
     uninstall)
         case "${mode}" in
-        cdn | combined) uninstall_legacy_cdn "$@" ;;
-        incomplete-cloudfront | incomplete-combined-cloudfront)
-            uninstall_incomplete_cloudfront "$@"
-            ;;
-        incomplete-cloudflare | incomplete-combined-cloudflare)
-            uninstall_incomplete_cloudflare "$@"
+        incomplete-anytls | incomplete-cloudfront | incomplete-combined-cloudfront \
+            | incomplete-cloudflare | incomplete-unknown)
+            uninstall_incomplete
             ;;
         *) uninstall_all "$@" ;;
         esac
@@ -582,26 +514,85 @@ main() {
         cleanup_partial_install_command "$@"
         exit
     fi
+    # 内部入口：只覆盖运行时目录，不需要已安装状态。首装中断后 state.env 还不存在，
+    # bootstrap 的自愈完全依赖这个命令，因此它必须在已安装模式门禁之前处理。
+    if [[ "${command}" == "register-command" ]]; then
+        (($# == 0)) || launcher_die "register-command 不接受参数"
+        # 此时没有任何 Profile 可以加载：只取注册实际需要的日志与 root 门禁。
+        # shellcheck source=lib/log.sh
+        source "${EASY_ALL_ROOT}/lib/log.sh"
+        # shellcheck source=lib/platform.sh
+        source "${EASY_ALL_ROOT}/lib/platform.sh"
+        # 注册是整体替换运行时目录：异常退出也要删掉暂存目录（install 路径由运行时清理钩子负责）。
+        cleanup_files=()
+        cleanup() {
+            local status=$?
+            ((${#cleanup_files[@]} == 0)) || rm -rf -- "${cleanup_files[@]}"
+            return "${status}"
+        }
+        trap cleanup EXIT
+        # SIGINT 会走 EXIT 钩子，但 SIGTERM 不会：两者都显式转成 EXIT 清理。
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        unified_register_easy_all_command
+        exit
+    fi
     if [[ "${command}" == "verify-release" ]]; then
         (($# == 0)) || launcher_die "verify-release 不接受参数"
         runtime_tree_is_complete "${EASY_ALL_ROOT}" \
             || launcher_die "easy_all 运行时文件不完整：${EASY_ALL_ROOT}"
         return
     fi
+    # 内部入口（不对外文档化）：服务启动前的计量准备与定时证书 hook 的部署。
+    if [[ "${command}" == "internal-traffic-prepare" || "${command}" == "internal-cert-deploy" ]]; then
+        (($# == 0)) || launcher_die "${command} 不接受参数"
+        [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
+        mode=$(detect_installed_mode)
+        if [[ -z "${mode}" && "${command}" == "internal-traffic-prepare" ]]; then
+            # 首装：state.env 尚未落盘，但安装进度标记已写入；只按已校验的 schema 1 marker
+            # 加载对应 Profile，绝不猜测或接管旧标记。
+            local snapshot marker_stage marker_started marker_chain marker_schema
+            snapshot=$(launcher_marker_snapshot "$(launcher_progress_file)")
+            [[ "${snapshot}" == present\|* ]] \
+                || launcher_die "未找到已安装状态或安装进度标记；无法准备 CDN 计量"
+            IFS='|' read -r _ mode marker_stage marker_started marker_chain marker_schema <<<"${snapshot}"
+            launcher_marker_schema_gate "${marker_schema:-}"
+            [[ -n "${mode}" ]] || launcher_die "安装进度标记缺少模式信息；拒绝准备 CDN 计量"
+        else
+            launcher_require_installed_mode "${mode}" "${command}"
+        fi
+        module=$(profile_file "${mode}")
+        export EASY_ALL_SELECTED_MODE="${mode}"
+        # shellcheck source=/dev/null
+        source "${module}"
+        register_easy_all_command() {
+            unified_register_easy_all_command
+        }
+        case "${command}" in
+        internal-traffic-prepare) internal_traffic_prepare ;;
+        internal-cert-deploy) internal_cert_deploy ;;
+        esac
+        return
+    fi
 
+    # 未知命令与参数错误必须在读取安装状态、加载 Profile、创建运行时临时目录之前拒绝：
+    # 否则未安装时误报「尚未安装」，非 root 时还会引导用户提权运行非法命令。
+    launcher_command_known "${command}" \
+        || launcher_die "未知命令：${command}"
     if [[ "${command}" == "install" ]]; then
         (($# == 0)) || launcher_die "install 不接受参数，请在交互菜单中选择"
+    else
+        dispatch_validate_arguments "${command}" "$@"
+    fi
+
+    if [[ "${command}" == "install" ]]; then
+        # 覆盖任何文件/云资源之前先做 schema 门禁：旧 marker 与旧 state 只能由写它的旧版本处理。
+        launcher_require_current_schema
         [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
         mode=$(detect_installed_mode)
         case "${mode}" in
-        cdn | combined)
-            launcher_die "检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）。当前版本不支持接管或迁移；请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 重新选择安装模式。默认卸载保留云端资源。"
-            ;;
-        incomplete-cloudfront | incomplete-combined-cloudfront)
-            launcher_die "CloudFront 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
-            ;;
-        incomplete-cloudflare | incomplete-combined-cloudflare)
-            launcher_die "Cloudflare 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
+        incomplete-*)
+            launcher_die "检测到不完整的 easy_all 状态（${mode}）；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
             ;;
         esac
         if [[ -n "${mode}" ]]; then
@@ -612,22 +603,21 @@ main() {
         mode=$(detect_installed_mode)
         launcher_require_installed_mode "${mode}" "${command}"
         case "${mode}" in
-        cdn | combined)
+        incomplete-*)
             [[ "${command}" == "uninstall" ]] \
-                || launcher_die "检测到旧 Cloudflare CDN 安装（PROTOCOL=${mode}）。当前版本不支持接管或迁移；请先执行 sudo easy_all uninstall，再执行 sudo easy_all install 重新选择安装模式。默认卸载保留云端资源。"
-            ;;
-        incomplete-cloudfront | incomplete-combined-cloudfront)
-            [[ "${command}" == "uninstall" ]] \
-                || launcher_die "CloudFront 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
-            ;;
-        incomplete-cloudflare | incomplete-combined-cloudflare)
-            [[ "${command}" == "uninstall" ]] \
-                || launcher_die "Cloudflare 状态不完整或来自未完成实现；当前版本不能安全接管。请先执行 sudo easy_all uninstall 后重新安装。"
+                || launcher_die "检测到不完整的 easy_all 状态（${mode}）；只能先执行 sudo easy_all uninstall 清理本机后再重装。"
             ;;
         esac
     fi
 
-    module=$(profile_file "${mode}")
+    if [[ "${mode}" == "incomplete-unknown" ]]; then
+        # 协议不可识别的损坏状态：profile_file 按协议选模块，这里只能走协议中立的
+        # 本机清理。anytls 的 runtime-core 只含中立逻辑，uninstall_incomplete 不读
+        # PROTOCOL，也不会把猜测的协议写回状态。
+        module="${EASY_ALL_ROOT}/profiles/anytls.sh"
+    else
+        module=$(profile_file "${mode}")
+    fi
     export EASY_ALL_SELECTED_MODE="${mode}"
     # shellcheck source=/dev/null
     source "${module}"

@@ -1,6 +1,6 @@
 # AWS CloudFront + Cloudflare 一次性准备指南
 
-本文档指导如何为 **模式 2（纯 CloudFront）** 与 **模式 4（直连+CloudFront）** 准备所需的 Cloudflare 与 AWS 凭据。模式 1（直连 Reality）与模式 3/5（Cloudflare 橙云链路）不需要 AWS 账号，凭据准备见 [前置准备手册](preparation-guide.md)。
+本文档指导如何为 **模式 2（纯 CloudFront）** 与 **模式 4（AnyTLS + CloudFront）** 准备所需的 Cloudflare 与 AWS 凭据。模式 1（AnyTLS 直连）与模式 3（Cloudflare 橙云单域名）不需要 AWS 账号，凭据准备见 [前置准备手册](preparation-guide.md)。
 
 ---
 
@@ -8,7 +8,7 @@
 
 - **Cloudflare 只作权威 DNS**：域名解析完全由 Cloudflare 免费计划提供，**不需要购买 AWS Route 53 托管区**，也没有任何橙云代理流量。模式 2/4 的所有业务记录都是灰云直出。
 - **CloudFront 按账号条款计费**：AWS 对 CloudFront 通常提供每月一定额度的出站流量与请求数免费额度（例如 1 TB / 1000 万次量级），但具体额度、适用区域和计费单价**以你账号当前的 AWS 条款与账单为准**，可能随账号类型和 AWS 政策变化。超出免费额度的部分由 AWS 直接向账号绑定的支付方式收费。
-- **本机 985 GB 近似计量保护**：VPS 上用 Xray 的 XHTTP 入站字节做本地计数，达到 985 GB（十进制 985×10⁹ 字节）就阻断 CDN 入口。这只是一个**本机近似计量保护**，不是 AWS 账单真源，不能承诺“零账单”，也不是任何形式的账单保底。
+- **本机 985 GB 近似计量保护**：VPS 上用 `mangle` 表统计回环 `10086`（Caddy → sing-box 的 VLESS WebSocket 入站）的双向字节，达到 985 GB（十进制 985×10⁹ 字节）就阻断 CDN 入口。这只是一个**本机近似计量保护**，不是 AWS 账单真源，不能承诺“零账单”，也不是任何形式的账单保底。
 
 本机保护覆盖不到的费用包括但不限于：CloudFront 的 HTTP/HTTPS 请求费、订阅下载流量、TLS/HTTP 自身开销、同一账号其他分发或其他机器产生的用量、以及进程崩溃/关机期间缺失的最后一个采样窗口。免费额度还可能在同一 AWS 账号的多个使用方之间共享。
 
@@ -166,14 +166,26 @@ AWS Secret Access Key        # 仅当前进程内存
 | 源站（默认 `origin.<zone>`） | `A` → VPS 公网 IPv4 | 灰云 |
 | CloudFront 节点（默认 `cf.<zone>`） | `CNAME` → CloudFront 分发域名 | 灰云 |
 | 订阅（默认与节点同名） | 与节点同名时复用其 CNAME；不同则额外一条 `CNAME` → 分发域名 | 灰云 |
-| 直连 Reality（仅模式 4，默认 `node.<zone>`） | `A` → VPS 公网 IPv4（可与源站同名复用） | 灰云 |
+| 直连 AnyTLS（仅模式 4，默认 `node.<zone>`） | `A` → VPS 公网 IPv4（可与源站同名复用） | 灰云 |
 
 CNAME 指向的 CloudFront 分发域名只有在分发创建后才知道，所以不要提前手工建这些记录；如已有冲突记录，请先清理。
 
 ### 两套证书
 - **Viewer 证书（AWS ACM，固定 `us-east-1`）**：主域名为 CloudFront 节点域名，SAN 覆盖订阅域名（两者同名时不重复）。复用已有 ARN 时必须同时满足：状态 `ISSUED`、region 为 `us-east-1`、覆盖全部别名。
-- **源站证书（Let's Encrypt）**：只覆盖源站域名，由 Certbot 通过 **80 端口 HTTP-01** 验证；因此安全组必须放行 `80`（443 也需要）。证书签不下来时安装会失败，不会用自签证书假装成功。
+- **源站证书（Let's Encrypt）**：只覆盖源站域名，由 Certbot 通过 **Cloudflare DNS-01** 签发与续期（Cloudflare 凭据 `0600` 持久保存），**不需要放行 `80`**；源站只需 `443`（模式 2）或 `8443`（模式 4）。证书签不下来时安装会失败，不会用自签证书假装成功。
 - **ACM 的 DNS 验证记录默认保留**：即使执行 `uninstall --purge-cloud`，验证用 CNAME 也可能被同账号其他证书共享，脚本不会自动删除，需要你在控制台核实后手工清理。
+
+### 分发要点（脚本自动生成，无需手工点击）
+
+| 项 | 值 |
+| :--- | :--- |
+| Viewer 协议 / 端口 | HTTPS only，viewer 始终 `443`（`sni-only`、`TLSv1.2_2021`、HTTP/2） |
+| 源站协议 / 端口 | `https-only`；模式 2 源站 `443`、模式 4 源站 `8443`（由模式派生，不能另设），源站 TLS 1.2，SNI/Host = 源站域名 |
+| 缓存策略 | `CachingDisabled` |
+| 源站请求策略 | `AllViewerExceptHostHeader`（转发全部 query、UA、Content-Type 与 WebSocket 升级所需头） |
+| 方法 / gRPC | 7 种 HTTP 方法；`GrpcConfig` **关闭**（本版本只用 WebSocket） |
+| 源站头 | `X-Easy-All-Origin-Key`，仅由 CloudFront 注入 |
+| 未启用 | WAF、访问日志、Origin Shield、Route 53 |
 
 ### 手工清理顺序（如不使用 `--purge-cloud`）
 1. 在 CloudFront 控制台把目标分发设为 **Disabled**（或执行 `aws cloudfront update-distribution` 关闭 `Enabled`），等待状态变为 `Deployed`。
@@ -196,17 +208,17 @@ sudo easy_all install
 在交互菜单中选择：
 
 ```text
-2. 纯 CloudFront - AWS CloudFront XHTTP（直连不佳、IP 被封或只要 CDN 入口时）
-4. 直连+CloudFront：直连 Reality + CloudFront（一次部署两个入口）
+2. 纯 CloudFront：AWS CloudFront + VLESS WebSocket（只要 CDN 入口时）
+4. AnyTLS + CloudFront：直连 443 与 CloudFront 一次部署
 ```
 
-> 本文档只覆盖 **模式 2 与模式 4**（CloudFront 链路）。菜单里的 **3 纯 CloudFlare** 与 **5 直连+CloudFlare** 属于 Cloudflare 橙云链路，不需要 AWS 账号，准备步骤见 [前置准备手册](preparation-guide.md)。
+> 本文档只覆盖 **模式 2 与模式 4**（CloudFront 链路）。菜单里的 **3 纯 CloudFlare** 属于 Cloudflare 橙云链路，不需要 AWS 账号，准备步骤见 [前置准备手册](preparation-guide.md)。
 
-按提示输入（模式 2 到「订阅配置 JSON」结束，模式 4 之后还有直连域名、Reality 目标与直连节点名）：
+按提示输入（模式 2 到「订阅配置 JSON」结束，模式 4 之后还有直连域名、直连节点名与订阅配置）：
 
 ```text
 Cloudflare 根 Zone            # 如 example.com
-源站域名                       # 默认 origin.example.com（灰云 A → VPS）
+源站域名                       # 默认 origin.example.com（灰云 A → VPS，源站端口 443/8443）
 CloudFront 节点域名            # 默认 cf.example.com（灰云 CNAME → 分发）
 订阅域名                       # 默认与节点域名相同
 Cloudflare API Token
@@ -215,16 +227,20 @@ AWS Secret Access Key
 CloudFront 节点名              # 默认 🇺🇸AWS（完整单节点名）
 Mihomo 下载文件名              # 默认 EASY_ALL
 订阅配置 JSON                  # allowedTokens + nodes
+# 仅模式 4 额外询问：
+直连域名                       # 默认 node.example.com（灰云 A → VPS，AnyTLS 直连 443）
+直连节点名                     # 默认 🇺🇸直连
 ```
 
-脚本将自动完成：源站 `A` 记录、Let's Encrypt 源站证书、ACM 申请与 DNS 验证、CloudFront 分发创建/更新与 `Deployed` 等待、节点与订阅 `CNAME`、订阅产物生成与公网验收，最后确认流量保护定时器处于 active。
+脚本将自动完成：源站 `A` 记录、Let's Encrypt 源站证书（DNS-01）、ACM 申请与 DNS 验证、CloudFront 分发创建/更新与 `Deployed` 等待（源站 `HTTPSPort` 模式 2 为 `443`、模式 4 为 `8443`，`GrpcConfig` 关闭、保留 WebSocket 必要头）、节点与订阅 `CNAME`、订阅产物生成与公网验收，最后确认流量保护定时器处于 active。
 
 ---
 
 ## 8. 安装后的流量保护
 
-- 计时来源：Xray 的 `vless-xhttp-in` 入站计数（模式 4 的 Reality 流量不计入）。
+- 计量来源：`mangle` 表链首无 target 的纯计数规则，统计回环 `10086` 的双向字节（`INPUT` dport 计上行、`OUTPUT` sport 计下行）；模式 4 的 AnyTLS 直连流量与订阅下载不经过 `10086`，因此不计入。
 - 阈值：**985 GB 十进制**（985×10⁹ 字节），固定不可调；每月按 **UTC 自然月** 重新计算。
-- 达到阈值后只阻断 CDN：Nginx 对应路径返回 `503`、Xray 清空 XHTTP 客户端并重启以终止既有连接；模式 4 的 Reality 直连仍可用（重连后手动切换），订阅仍可下载。
+- 达到阈值后只阻断 CDN：Caddy 代理路径返回 `503`，sing-box 省略 CDN 入站并重启以终止既有连接；模式 4 的 AnyTLS 直连仍可用（短暂重连一次），订阅仍可下载。
+- 保护状态 `blocked` / `enforced` / `protection_offline` 持久保存在 usage 文件；计量规则、锁目录或 usage 异常时核心会拒绝启动（`ExecStartPre` 校验），不会因为保护异常就悄悄开放 CDN。
 - 定时器 `easy_all-cdn-traffic-guard.timer` 每 15 秒执行 `easy_all cdn-traffic-sync`；`apply`、`apply-cloud`、`update-core` 都不会绕过已生效的阻断。
 - 如果 `sudo easy_all status` 显示流量保护异常（统计文件缺失/损坏、定时器 inactive），请先停用 CDN 入口再修复，不要删除 usage 文件来“清零”。

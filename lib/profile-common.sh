@@ -6,19 +6,6 @@ make_temp_dir() {
     mktemp -d "${RUNTIME_TMP}/part.XXXXXX"
 }
 
-nginx_supports_http2_directive() {
-    command -v nginx >/dev/null 2>&1 || return 1
-    local ver major minor patch
-    ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
-    [[ -n "${ver}" ]] || return 1
-    IFS=. read -r major minor patch <<<"${ver}"
-    patch=${patch:-0}
-    if (( major > 1 || (major == 1 && minor > 25) || (major == 1 && minor == 25 && patch >= 1) )); then
-        return 0
-    fi
-    return 1
-}
-
 download_https_file() {
     local url=$1 destination=$2 description=${3:-文件}
     local -a wget_args=(
@@ -79,12 +66,16 @@ read_confirmation() {
 
 restore_state_file() {
     local backup=$1 target=$2 temp
-    temp=$(mktemp "$(dirname -- "${target}")/state.env.XXXXXX") \
-        || die "创建状态恢复暂存文件失败"
+    temp=$(mktemp "$(dirname -- "${target}")/state.env.XXXXXX") || {
+        fail "创建状态恢复暂存文件失败"
+        return 1
+    }
     cleanup_files+=("${temp}")
-    install -m 0600 "${backup}" "${temp}" \
-        && mv -f -- "${temp}" "${target}" \
-        || die "原子恢复状态文件失败：${target}"
+    if ! { install -m 0600 "${backup}" "${temp}" \
+        && mv -f -- "${temp}" "${target}"; }; then
+        fail "原子恢复状态文件失败：${target}"
+        return 1
+    fi
 }
 
 validate_domain() {
@@ -140,27 +131,8 @@ normalize_sub_download_name() {
     fi
 }
 
-# Debian 的 nginx 包一装好就会启动默认站点占住 :80/443。若不停掉，这次安装本身就会
-# 锁死刚检查过的端口，中断后重跑必然撞上「已被占用」，用户无从自救。
-# 只停止并取消开机自启，不删除 Debian 的默认站点文件：占用端口的是运行中的进程，
-# 而默认站点文件本身是卸载时需要还原的安装前状态。
-nginx_package_installed() {
-    local status
-    command -v dpkg-query >/dev/null 2>&1 || return 1
-    status=$(dpkg-query -W -f='${Status}' nginx 2>/dev/null || true)
-    # dpkg 的第一列可能是 install / hold / deinstall 等，只有状态列是 installed 才算装好；
-    # 只看完整串 "install ok installed" 会把 hold 的包误判成未安装。
-    case "${status}" in
-    *" ok installed"*) return 0 ;;
-    *) return 1 ;;
-    esac
-}
-
-quiet_freshly_installed_nginx() {
-    local nginx_active_before=${1:-unknown}
-    [[ "${nginx_active_before}" != "active" ]] || return 0
-    systemctl disable --now nginx >/dev/null 2>&1 || true
-}
+# 旧栈曾用 policy-rc.d 抑制 nginx 在 apt 窗口内自启；本版本仍用同一事务机制，
+# 以避免任何被 APT 拉起的服务占用已检查过的端口。
 
 # --- apt 窗口内的服务自启抑制 ---------------------------------------------------
 # Debian 的 nginx 包在 postinst 里就把默认站点拉起来，`apt-get install` 还没返回 80 已经被
@@ -286,41 +258,10 @@ restore_service_start_policy() {
     recover_pending_service_policy
 }
 
-# 安装 nginx 的专用入口：装完后立刻恢复策略并停掉刚被拉起的默认站点。
-install_nginx_without_start() {
-    local status=0
-    if ! suspend_service_start; then
-        # 没有抑制手段时 apt 期间默认站点仍会自启，等于没关窗口；宁可停下让用户先装包，
-        # 也不能假装保住契约。
-        die "$(printf '无法临时暂停服务自启（%s 不可写或存在未恢复的残留事务）。\n请先手工执行 sudo apt-get install -y nginx，再重新运行安装；安装器会在写最终配置前保持 nginx 停止。' "$(easy_all_policy_rc_file)")"
-    fi
-    apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "$@" \
-        || status=$?
-    restore_service_start_policy \
-        || warn "恢复 $(easy_all_policy_rc_file) 失败；事务已保留，请修正后重试（否则服务无法自启）"
-    ((status == 0)) || return "${status}"
-    optimize_nginx_system_config
-    systemctl disable --now nginx >/dev/null 2>&1 || true
-}
-
-optimize_nginx_system_config() {
-    local main_conf="${EASY_ALL_NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
-    [[ -f "${main_conf}" ]] || return 0
-    if grep -qE '^[[:space:]]*worker_processes[[:space:]]+auto;' "${main_conf}" 2>/dev/null; then
-        local tmp="${main_conf}.tmp.$$"
-        # easy_all 全局 umask 为 077；重定向必须写在子 shell 内，否则主配置会变成 0600。
-        if (umask 022; sed -E 's/^[[:space:]]*worker_processes[[:space:]]+auto;/worker_processes 1;/' \
-            "${main_conf}" >"${tmp}" 2>/dev/null); then
-            mv -f -- "${tmp}" "${main_conf}" 2>/dev/null || rm -f -- "${tmp}"
-        else
-            rm -f -- "${tmp}"
-        fi
-    fi
-}
 
 # --- 中断安装的自愈：进度标记、残留识别与端口守卫 ------------------------------
 #
-# 一次安装被 SSH 断线打断后，本机可能同时留下「已安装的 nginx 默认站点」「未完成的状态
+# 一次安装被 SSH 断线打断后，本机可能同时留下「已写好的服务单元」「未完成的状态
 # 目录」和「已写好的服务单元」。重跑时必须能区分这些自身残留与真正的第三方占用，否则
 # 用户会永久卡在「仅支持专用 VPS」而没有任何自救手段。下面这组函数是唯一的判定入口。
 
@@ -359,6 +300,7 @@ install_progress_begin() {
         return 0
     fi
     {
+        printf 'SCHEMA=%s\n' "${EASY_ALL_STATE_SCHEMA_VERSION}"
         printf 'PROFILE=%s\n' "${profile}"
         [[ -z "${chain}" ]] || printf 'CHAIN=%s\n' "${chain}"
         printf 'STAGE=start\n'
@@ -381,43 +323,6 @@ install_progress_clear() {
     rmdir -- "$(dirname -- "${file}")" 2>/dev/null || true
 }
 
-# 发行版自带的 nginx 默认站点占用 80/443，安装时会停掉并删除 sites-enabled/default。
-# 卸载/回滚需要恢复成安装前的样子（历史版本也使用同名的 pre-install-nginx-default 备份）。
-nginx_default_site_path() {
-    printf '%s' "${EASY_ALL_GUARD_NGINX_DEFAULT_SITE:-/etc/nginx/sites-enabled/default}"
-}
-
-snapshot_preinstall_nginx_default_site() {
-    local site backup
-    site=$(nginx_default_site_path)
-    backup="${BACKUP_DIR}/pre-install-nginx-default"
-    [[ ! -e "${backup}" && ! -e "${backup}.missing" ]] || return 0
-    install -d -m 0700 "${BACKUP_DIR}" || return 0
-    if [[ -f "${site}" ]]; then
-        install -m 0600 "${site}" "${backup}" || return 0
-    else
-        install -m 0600 /dev/null "${backup}.missing" || return 0
-    fi
-}
-
-restore_preinstall_nginx_default_site() {
-    local site backup
-    site=$(nginx_default_site_path)
-    backup="${BACKUP_DIR}/pre-install-nginx-default"
-    if [[ -f "${backup}" ]]; then
-        install -d -m 0755 "$(dirname -- "${site}")" \
-            && install -m 0644 "${backup}" "${site}" || return 1
-    elif [[ -f "${backup}.missing" ]]; then
-        rm -f -- "${site}" || return 1
-    else
-        return 0
-    fi
-    # 安装期间 nginx 已停止或已重载过；恢复静态站点后让它重新加载，失败不影响卸载结果。
-    if command -v nginx >/dev/null 2>&1; then
-        nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
-    fi
-    return 0
-}
 
 # --- 安装失败诊断与清理确认 ------------------------------------------------
 # 中途失败时要说清楚“哪个阶段、哪一行、什么命令”，并由用户决定是否清理。
@@ -506,6 +411,9 @@ install_failure_report() {
 }
 
 install_cleanup_perform() {
+    # 进入实际回滚执行段：不再接受 INT/TERM，避免第二次 Ctrl+C 中断恢复。
+    # 交互确认在 install_cleanup_after_failure 完成，在此之前保持可中断。
+    trap '' INT TERM
     case "$1" in
     # 已拍安装前快照：按快照回滚（同时移除本次新增文件）。
     rollback) rollback_fresh_install ;;
@@ -552,11 +460,11 @@ install_state_file_path() {
 }
 
 install_service_file_path() {
-    printf '%s' "${EASY_ALL_GUARD_SERVICE_FILE:-${XRAY_SERVICE_FILE:-/etc/systemd/system/easy_all-xray.service}}"
+    printf '%s' "${EASY_ALL_GUARD_SERVICE_FILE:-${SINGBOX_SERVICE_FILE:-/etc/systemd/system/easy_all-singbox.service}}"
 }
 
-install_nginx_config_path() {
-    printf '%s' "${EASY_ALL_GUARD_NGINX_CONFIG:-${NGINX_CONFIG:-/etc/nginx/conf.d/easy_all.conf}}"
+install_caddy_config_path() {
+    printf '%s' "${EASY_ALL_GUARD_CADDY_CONFIG:-${CADDY_CONFIG:-/etc/easy_all/caddy/Caddyfile}}"
 }
 
 # 目录项字节数：用 find 枚举后按字节计数，不解析 ls 文本。文件名里的换行不会被命令替换
@@ -601,11 +509,11 @@ install_state_dir_only_empty_fq_chain() {
 
 # 已安装（存在状态文件）时返回 1：残留判定只服务于「未安装」场景。
 install_residue_reason() {
-    local state_dir state_file service_file nginx_config progress stage state_entries
+    local state_dir state_file service_file caddy_config progress stage state_entries
     state_dir=$(install_state_dir_path)
     state_file=$(install_state_file_path)
     service_file=$(install_service_file_path)
-    nginx_config=$(install_nginx_config_path)
+    caddy_config=$(install_caddy_config_path)
     progress=$(install_progress_file)
     [[ ! -f "${state_file}" ]] || return 1
     local -a reasons=()
@@ -626,8 +534,8 @@ install_residue_reason() {
     if [[ -f "${service_file}" ]]; then
         reasons+=("残留服务单元 ${service_file}")
     fi
-    if [[ -f "${nginx_config}" ]]; then
-        reasons+=("残留 Nginx 配置 ${nginx_config}")
+    if [[ -f "${caddy_config}" ]]; then
+        reasons+=("残留 Caddy 配置 ${caddy_config}")
     fi
     ((${#reasons[@]})) || return 1
     printf '%s\n' "${reasons[@]}"
@@ -661,34 +569,41 @@ residue_recovery_hint() {
     else
         printf '%s\n' \
             '这些残留没有安装进度标记，无法自动判断模式，请人工核对后清理：' \
-            '  /etc/easy_all、/etc/nginx/conf.d/easy_all.conf 与 easy_all*.service/.timer'
+            '  /etc/easy_all、/etc/easy_all/caddy/Caddyfile 与 easy_all*.service/.timer'
     fi
 }
 
 assert_install_ports_free() {
-    local port owner reason_text
-    for port in "$@"; do
-        tcp_port_listening "${port}" || continue
-        if reason_text=$(install_residue_reason); then
+    local argument port owner reason_text
+    local -a ports=()
+    for argument in "$@"; do
+        # 调用方把整串端口作为一个参数传入（模式 4 的 "443 8443"）：整串交给
+        # ss 会拼出 sport = :443 8443 这种非法表达式，因此必须逐端口检查。
+        read -r -a ports <<<"${argument}"
+        ((${#ports[@]} > 0)) || continue
+        for port in "${ports[@]}"; do
+            [[ -n "${port}" ]] || continue
+            tcp_port_listening "${port}" || continue
+            if reason_text=$(install_residue_reason); then
+                owner=$(tcp_port_owner "${port}" || true)
+                die "$(printf 'TCP %s 被上次未完成的 easy_all 安装残留占用%s\n残留：%s\n%s' \
+                    "${port}" "${owner:+（${owner}）}" \
+                    "$(printf '%s' "${reason_text}" | paste -sd ';' -)" \
+                    "$(residue_recovery_hint)")"
+            fi
             owner=$(tcp_port_owner "${port}" || true)
-            die "$(printf 'TCP %s 被上次未完成的 easy_all 安装残留占用%s\n残留：%s\n%s' \
-                "${port}" "${owner:+（${owner}）}" \
-                "$(printf '%s' "${reason_text}" | paste -sd ';' -)" \
-                "$(residue_recovery_hint)")"
-        fi
-        owner=$(tcp_port_owner "${port}" || true)
-        die "TCP ${port} 已被占用${owner:+（${owner}）}；easy_all 仅支持专用 VPS"
+            die "TCP ${port} 已被占用${owner:+（${owner}）}；easy_all 仅支持专用 VPS"
+        done
     done
 }
 
 # 每个模式对应的 profile 文件：跨模式清理时按 marker 记录的旧模式恢复。
 profile_script_for() {
     case "${1:-}" in
-    reality) printf 'reality.sh' ;;
+    anytls) printf 'anytls.sh' ;;
     cloudfront) printf 'cloudfront.sh' ;;
-    combined) printf 'combined.sh' ;;
     cloudflare) printf 'cloudflare.sh' ;;
-    combined-cloudflare) printf 'combined-cloudflare.sh' ;;
+    combined-cloudfront) printf 'combined.sh' ;;
     *) return 1 ;;
     esac
 }
@@ -726,10 +641,23 @@ run_recorded_profile_cleanup() {
 
 # 安装前置：清理自身残留 + 断言端口空闲。调用方须保持「已安装则提前 die」的语义。
 
-# 本次安装生成的身份（UUID、路径、订阅 Token、Reality 密钥、Origin CA 元数据）。
+# 本次安装生成的身份（UUID、路径、订阅 Token、Origin CA 元数据）。
 # 落盘到状态目录，供中断续装复用；不含任何账号 Token 或私钥以外的凭据。
 install_identity_file() {
     printf '%s/install-identity.json' "$(install_state_dir_path)"
+}
+
+# 安装身份 JSON 的 schema 与必需字段门禁：身份文件是继续装与恢复的唯一依据，
+# 旧版本写下的同名文件不能按新结构解释（design §5）。
+install_identity_schema_ok() {
+    local file=$1
+    [[ -s "${file}" ]] || return 1
+    jq -e --argjson schema "${EASY_ALL_STATE_SCHEMA_VERSION}" '
+        type == "object"
+        and .schema == $schema
+        and ((.profile // "") | length > 0)
+        and ((.protocol // "") | length > 0)
+    ' "${file}" >/dev/null 2>&1
 }
 
 persist_install_identity() {
@@ -739,8 +667,10 @@ persist_install_identity() {
     tmp=$(mktemp "${file}.XXXXXX") || return 1
     chain=$(install_progress_field CHAIN 2>/dev/null || true)
     if jq -n \
+        --argjson schema "${EASY_ALL_STATE_SCHEMA_VERSION}" \
         --arg profile "${CDN_PROFILE_KEY:-${EASY_ALL_SELECTED_MODE:-}}" \
         --arg protocol "${PROTOCOL:-}" \
+        --arg subscription_mode "${SUBSCRIPTION_MODE:-}" \
         --arg chain "${chain}" \
         --arg vps_ipv4 "${VPS_PUBLIC_IPV4:-}" \
         --arg cf_zone "${CF_ZONE:-}" \
@@ -749,8 +679,8 @@ persist_install_identity() {
         --arg subscription_domain "${SUBSCRIPTION_DOMAIN:-}" \
         --arg origin_secret "${ORIGIN_HEADER_SECRET:-}" \
         --arg uuid "${VLESS_UUID:-}" \
-        --arg xhttp "${XHTTP_PATH:-}" \
-        --arg websocket "${WEBSOCKET_PATH:-}" \
+        --arg vless_path "${VLESS_PATH:-}" \
+        --arg anytls_password "${ANYTLS_PASSWORD:-}" \
         --arg node_prefix "${CF_NODE_PREFIX:-}" \
         --arg sub_name "${SUB_DOWNLOAD_NAME:-}" \
         --arg protection_gb "${CDN_TRAFFIC_PROTECTION_GB:-}" \
@@ -762,17 +692,17 @@ persist_install_identity() {
         --arg subscription_config "${SUBSCRIPTION_CONFIG:-}" \
         --arg direct_domain "${DIRECT_DOMAIN:-}" \
         --arg direct_name "${DIRECT_NODE_NAME:-}" \
-        --arg reality_target "${REALITY_TARGET:-}" \
-        --arg reality_key "${REALITY_PRIVATE_KEY:-}" \
-        --arg reality_public "${REALITY_PUBLIC_KEY:-}" \
-        --arg reality_short "${REALITY_SHORT_ID:-}" \
         --arg reboot_enabled "${SCHEDULED_REBOOT_ENABLED:-}" \
         --arg reboot_hour "${SCHEDULED_REBOOT_HOUR:-}" \
         --arg cf_cert "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
         --arg cf_expires "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" \
+        --arg cf_ruleset "${CLOUDFLARE_ORIGIN_RULESET_ID:-}" \
+        --arg cf_rule "${CLOUDFLARE_ORIGIN_RULE_ID:-}" \
         '{
+            schema: $schema,
             profile: $profile,
             protocol: $protocol,
+            subscription_mode: $subscription_mode,
             chain: $chain,
             vps_public_ipv4: $vps_ipv4,
             cf_zone: $cf_zone,
@@ -781,8 +711,8 @@ persist_install_identity() {
             subscription_domain: $subscription_domain,
             origin_header_secret: $origin_secret,
             vless_uuid: $uuid,
-            xhttp_path: $xhttp,
-            websocket_path: $websocket,
+            vless_path: $vless_path,
+            anytls_password: $anytls_password,
             cf_node_prefix: $node_prefix,
             sub_download_name: $sub_name,
             cdn_traffic_protection_gb: $protection_gb,
@@ -794,14 +724,12 @@ persist_install_identity() {
             subscription_config: $subscription_config,
             direct_domain: $direct_domain,
             direct_node_name: $direct_name,
-            reality_target: $reality_target,
-            reality_private_key: $reality_key,
-            reality_public_key: $reality_public,
-            reality_short_id: $reality_short,
             scheduled_reboot_enabled: $reboot_enabled,
             scheduled_reboot_hour: $reboot_hour,
             cloudflare_origin_cert_id: $cf_cert,
-            cloudflare_origin_cert_expires_on: $cf_expires
+            cloudflare_origin_cert_expires_on: $cf_expires,
+            cloudflare_origin_ruleset_id: $cf_ruleset,
+            cloudflare_origin_rule_id: $cf_rule
         }' >"${tmp}"; then
         chmod 0600 "${tmp}"
         if mv -f -- "${tmp}" "${file}"; then
@@ -813,17 +741,17 @@ persist_install_identity() {
 }
 
 # 续装时用上次写进配置的身份覆盖本次预检新生成的值，保证已下发的节点/订阅不失效。
-# 只接受普通 JSON 对象；文件不存在或损坏时返回 1，由调用方决定是否继续。
+# 只接受 schema 1 且带 profile/protocol 的 JSON 对象；文件不存在/损坏/旧 schema 返回 1。
 load_install_identity() {
     local file name key value
     file=$(install_identity_file)
-    [[ -s "${file}" ]] || return 1
-    [[ "$(jq -r 'type' "${file}" 2>/dev/null)" == "object" ]] || return 1
+    install_identity_schema_ok "${file}" || return 1
     for pair in \
-        VLESS_UUID:vless_uuid XHTTP_PATH:xhttp_path WEBSOCKET_PATH:websocket_path \
+        VLESS_UUID:vless_uuid VLESS_PATH:vless_path ANYTLS_PASSWORD:anytls_password \
         VPS_PUBLIC_IPV4:vps_public_ipv4 CF_ZONE:cf_zone \
         CF_ORIGIN_DOMAIN:cf_origin_domain CF_NODE_DOMAIN:cf_node_domain \
         SUBSCRIPTION_DOMAIN:subscription_domain \
+        SUBSCRIPTION_MODE:subscription_mode \
         ORIGIN_HEADER_SECRET:origin_header_secret CF_NODE_PREFIX:cf_node_prefix \
         SUB_DOWNLOAD_NAME:sub_download_name \
         CDN_TRAFFIC_PROTECTION_GB:cdn_traffic_protection_gb \
@@ -833,13 +761,12 @@ load_install_identity() {
         OWNER_TOKEN:owner_token ALLOWED_TOKENS:allowed_tokens \
         SUBSCRIPTION_CONFIG:subscription_config \
         DIRECT_DOMAIN:direct_domain DIRECT_NODE_NAME:direct_node_name \
-        REALITY_TARGET:reality_target \
-        REALITY_PRIVATE_KEY:reality_private_key REALITY_PUBLIC_KEY:reality_public_key \
-        REALITY_SHORT_ID:reality_short_id \
         SCHEDULED_REBOOT_ENABLED:scheduled_reboot_enabled \
         SCHEDULED_REBOOT_HOUR:scheduled_reboot_hour \
         CLOUDFLARE_ORIGIN_CERT_ID:cloudflare_origin_cert_id \
-        CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:cloudflare_origin_cert_expires_on; do
+        CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:cloudflare_origin_cert_expires_on \
+        CLOUDFLARE_ORIGIN_RULESET_ID:cloudflare_origin_ruleset_id \
+        CLOUDFLARE_ORIGIN_RULE_ID:cloudflare_origin_rule_id; do
         name=${pair%%:*}
         key=${pair#*:}
         value=$(jq -r --arg k "${key}" '.[$k] // empty' "${file}") || return 1
@@ -854,9 +781,11 @@ load_install_identity() {
 install_identity_chain_matches() {
     local file=$1 expected_profile=$2 expected_protocol=$3 expected_chain=$4
     [[ -s "${file}" ]] || return 1
-    jq -e --arg profile "${expected_profile}" --arg protocol "${expected_protocol}" \
+    jq -e --argjson schema "${EASY_ALL_STATE_SCHEMA_VERSION}" \
+        --arg profile "${expected_profile}" --arg protocol "${expected_protocol}" \
         --arg chain "${expected_chain}" '
         type == "object" and
+        .schema == $schema and
         (.profile // "") == $profile and
         (.protocol // "") == $protocol and
         (.chain // "") == $chain
@@ -886,20 +815,20 @@ resume_partial_install() {
         load_install_identity \
             || warn "没有可复用的安装身份（中断早于身份落盘），本次会使用新生成的值"
     fi
-    systemctl stop "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
-    systemctl stop nginx >/dev/null 2>&1 || true
+    systemctl stop "${SINGBOX_SERVICE:-easy_all-singbox.service}" >/dev/null 2>&1 || true
+    systemctl stop "${CADDY_SERVICE:-easy_all-caddy.service}" >/dev/null 2>&1 || true
     INSTALL_RESUME=1
     export INSTALL_RESUME
     success "续装：保留上次安装的本机配置/证书与云端资源，只重建服务（失败仍回滚到安装前状态）"
 }
 
-# 安装标记的链路身份：CloudFront 与 Cloudflare 橙云两条 CDN 链路各自只能续装
-# 同链路标记；没有 CHAIN 的旧标记（含旧橙云 combined）返回非零，只能清理后重装。
+# 安装标记的链路身份：链必须与当前模式一致；没有 CHAIN 的旧标记返回非零，只能清理后重装。
 install_marker_chain_matches() {
     local current=$1 expected
     case "${current}" in
-    cloudfront | combined) expected=cloudfront ;;
-    cloudflare | combined-cloudflare) expected=cloudflare ;;
+    anytls) expected=anytls ;;
+    cloudfront | combined-cloudfront) expected=cloudfront ;;
+    cloudflare) expected=cloudflare ;;
     *) return 1 ;;
     esac
     [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "${expected}" ]]
@@ -972,8 +901,8 @@ cleanup_partial_install_local() {
     elif declare -F stop_protocol_services >/dev/null 2>&1; then
         stop_protocol_services
     else
-        systemctl disable --now "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
-        systemctl disable --now nginx >/dev/null 2>&1 || true
+        systemctl disable --now "${SINGBOX_SERVICE:-easy_all-singbox.service}" >/dev/null 2>&1 || true
+        systemctl disable --now "${CADDY_SERVICE:-easy_all-caddy.service}" >/dev/null 2>&1 || true
     fi
     if [[ -f "${backup_dir}/pre-install-complete" ]]; then
         if ! restore_install_snapshot; then
@@ -1019,7 +948,6 @@ restore_install_snapshot() {
     if declare -F restore_preinstall_ipv6 >/dev/null 2>&1; then
         restore_preinstall_ipv6 || warn "恢复安装前 IPv6 配置失败"
     fi
-    restore_preinstall_nginx_default_site || warn "恢复安装前 Nginx 默认站点失败"
     # 前置初始化（SWAP、系统依赖、TCP 加速、Skyline Speeder）不作回滚
     restore_preinstall_crontab || true
     remove_daily_reboot_schedule || true

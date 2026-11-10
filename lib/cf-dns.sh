@@ -7,13 +7,52 @@
 
 : "${CLOUDFLARE_API_BASE:=https://api.cloudflare.com/client/v4}"
 
+# Cloudflare API Token 持久路径与事务（四模式共用，design §5/§6）：
+# Token 不写入 state，单独 0600 同目录原子保存；读取只服务于后续维护命令，
+# 失败与日志都不得回显 Token。
+: "${CLOUDFLARE_TOKEN_FILE:=${STATE_DIR:-/etc/easy_all}/cloudflare.token}"
+
+cloudflare_token_file() {
+    printf '%s\n' "${CLOUDFLARE_TOKEN_FILE}"
+}
+
+# 20–512 位 URL 安全字符；bash 3.2 不接受 >255 的区间量词，所以分开判长度。
+cloudflare_token_format_valid() {
+    # set -u 下 CLOUDFLARE_API_TOKEN 可能未定义，必须先给默认值再取长度。
+    local token=${CLOUDFLARE_API_TOKEN:-}
+    [[ ${#token} -ge 20 && ${#token} -le 512 && "${token}" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
+# 优先复用已持久化的 Token（下一进程/维护命令），否则交互输入。
+# 可选参数是本模式需要的最小权限文案：只能在真正需要时多加权限（design §9）。
 cloudflare_collect_api_token() {
-    if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-        CLOUDFLARE_API_TOKEN=$(prompt_secret "Cloudflare API Token（仅当前进程使用，不落盘）") \
-            || die "非交互模式必须设置 CLOUDFLARE_API_TOKEN"
+    local label=${1:-'Cloudflare API Token（Zone 只读 + DNS 编辑）'} file
+    file=$(cloudflare_token_file)
+    if [[ -z "${CLOUDFLARE_API_TOKEN:-}" && -s "${file}" ]]; then
+        CLOUDFLARE_API_TOKEN=$(<"${file}")
     fi
-    [[ ${#CLOUDFLARE_API_TOKEN} -ge 20 && ${#CLOUDFLARE_API_TOKEN} -le 512 \
-        && "${CLOUDFLARE_API_TOKEN}" != *[[:space:]]* ]] || die "CLOUDFLARE_API_TOKEN 格式无效"
+    if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+        CLOUDFLARE_API_TOKEN=$(prompt_secret "${label}") \
+            || die '缺少 Cloudflare API Token'
+    fi
+    cloudflare_token_format_valid || die "Cloudflare Token 格式无效"
+}
+
+# 0600 同目录原子写：失败不留下半截文件，也不把 Token 写进 state 或日志。
+persist_cloudflare_token() {
+    local file dir temp
+    cloudflare_token_format_valid || die "Cloudflare Token 格式无效；未落盘"
+    file=$(cloudflare_token_file)
+    dir=$(dirname -- "${file}")
+    install -d -m 0700 "${dir}" || die "创建 Cloudflare Token 目录失败：${dir}"
+    temp=$(mktemp "${file}.XXXXXX") || die "创建 Cloudflare Token 暂存文件失败"
+    declare -p cleanup_files >/dev/null 2>&1 && cleanup_files+=("${temp}")
+    if ! (umask 077; printf '%s\n' "${CLOUDFLARE_API_TOKEN}" >"${temp}") \
+        || ! chmod 0600 "${temp}" \
+        || ! mv -f -- "${temp}" "${file}"; then
+        rm -f -- "${temp}"
+        die "保存 Cloudflare Token 失败：${file}"
+    fi
 }
 
 cloudflare_clear_api_token() {
@@ -109,6 +148,25 @@ cloudflare_configure_origin_firewall() {
     ufw reload >/dev/null || die "重载 UFW 失败"
 }
 
+# Zone 级 SSL/TLS 模式严格校验（design §9）：只读、不修改全区设置。
+# 只有 value=strict 才继续；权限不足 403 与 full/flexible/off 都必须在此停止，
+# 且必须发生在任何 DNS/证书/Origin Rule 写入之前。
+cloudflare_ensure_zone_ssl_strict() {
+    local zone_id=${1:-${CLOUDFLARE_ZONE_ID:-}} response value
+    [[ -n "${zone_id}" ]] || die "缺少 Cloudflare Zone ID；无法校验 SSL 模式"
+    response=$(cloudflare_api_request GET "/zones/${zone_id}/settings/ssl") || return 1
+    value=$(jq -r '.value // empty' <<<"${response}") || value=""
+    case "${value}" in
+    strict) return 0 ;;
+    "")
+        die "Cloudflare Zone ${zone_id} 的 SSL 模式读取结果为空；请在控制台确认 SSL/TLS 为 Full (strict) 后重试"
+        ;;
+    *)
+        die "Cloudflare Zone ${zone_id} 的 SSL 模式是 ${value}，本工具只支持 Full (strict)：请人工把 SSL/TLS 改为 Full (strict) 后重试（本工具不会自动修改全区设置）"
+        ;;
+    esac
+}
+
 cloudflare_lookup_parent_zone() {
     local domain=$1 candidate zone
     candidate=${domain}
@@ -166,7 +224,7 @@ cloudflare_certificate_san_hosts() {
 }
 
 cloudflare_origin_certificate_is_current() {
-    local expected_hosts actual_hosts
+    local expected_hosts actual_hosts cert_pub key_pub
     [[ -s "${CERT_FILE}" && -s "${KEY_FILE}" ]] || return 1
     openssl x509 -in "${CERT_FILE}" -checkend 2592000 -noout >/dev/null 2>&1 \
         || return 1
@@ -175,10 +233,11 @@ cloudflare_origin_certificate_is_current() {
     actual_hosts=$(cloudflare_certificate_san_hosts "${CERT_FILE}")
     [[ -n "${actual_hosts}" && "${actual_hosts}" == "${expected_hosts}" ]] \
         || return 1
-    [[ "$(openssl x509 -in "${CERT_FILE}" -pubkey -noout 2>/dev/null \
-        | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)" \
-        == "$(openssl pkey -in "${KEY_FILE}" -pubout -outform DER 2>/dev/null \
-        | sha256sum | cut -d' ' -f1)" ]] || return 1
+    # 与 certificate_key_matches 同一口径：比公钥 PEM 且必须非空，避免两侧命令同时失败时
+    # 拿同一个空输入哈希误判“配对”。
+    cert_pub=$(openssl x509 -in "${CERT_FILE}" -pubkey -noout 2>/dev/null) || return 1
+    key_pub=$(openssl pkey -in "${KEY_FILE}" -pubout 2>/dev/null) || return 1
+    [[ -n "${cert_pub}" && "${cert_pub}" == "${key_pub}" ]] || return 1
 }
 
 cloudflare_origin_certificate_hosts() {

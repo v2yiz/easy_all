@@ -42,7 +42,7 @@ tun:
     dns-hijack:
       - any:53
       - tcp://any:53
-    # Windows TUN + Reality/BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
+    # Windows TUN + BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
     strict-route: false
     # 通用局域网 IPv4 地址绕过 TUN，保留内网直连能力。
     route-exclude-address:
@@ -348,7 +348,7 @@ rule-providers:
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs'
         path: ./ruleset/geoip-telegram.mrs
 
-# 直连 Mieru 节点由订阅以 type: mieru 注入，模板本身不放置占位凭据。
+# 代理节点（AnyTLS 直连 / VLESS CDN / 聚合节点）由订阅按模式注入，模板本身不放置占位凭据。
 proxies:
 # EASY_ALL_PROXY_NODE
 

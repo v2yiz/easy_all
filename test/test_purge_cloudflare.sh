@@ -399,6 +399,11 @@ write_fixture "${FIXTURE_ROOT}/setsyntax/ruleset-rs1.json" <<'EOF'
 ]}}
 EOF
 
+# 同名重复 Zone：Token 可见两个 active Zone 同名时不能盲取第一个（大小写不敏感匹配后必须唯一）。
+write_fixture "${FIXTURE_ROOT}/dupzone/zone-example.com.json" <<'EOF'
+{"success":true,"result":[{"id":"z-dup-a","name":"example.com","account":{"id":"a1"}},{"id":"z-dup-b","name":"EXAMPLE.COM","account":{"id":"a2"}}]}
+EOF
+
 run_purge_domain() { # $1=calls $2=out $3=err $4=fixture $5=--domain 值
     : >"$1"
     PATH="${TMP_DIR}/bin:${PATH}" \
@@ -552,5 +557,37 @@ PATH="${TMP_DIR}/bin:${PATH}" \
     bash "${SCRIPT}" --all --yes >"${OUT}" 2>"${ERR}" </dev/null \
     || fail "purge-cloudflare: --all 应成功：$(tail -n 3 "${ERR}")"
 assert_equal "purge-cloudflare: --all 不输出 --domain 专属提示" "0" "$(warn_count "${OUT}")"
+
+# 8.9 Token 可见多个同名 active Zone：必须显式报错退出，不得盲取第一个，也不得发出任何清理请求。
+CALLS="${TMP_DIR}/dup-calls.log"
+OUT="${TMP_DIR}/dup.out"
+ERR="${TMP_DIR}/dup.err"
+if run_purge_domain "${CALLS}" "${OUT}" "${ERR}" "${FIXTURE_ROOT}/dupzone" example.com; then
+    fail "purge-cloudflare: 同名重复 Zone 必须报错退出，而不是猜一个"
+fi
+assert_contains "purge-cloudflare: 同名重复 Zone 报错点名 Token 可见多个同名 active Zone" \
+    "$(<"${ERR}")$(<"${OUT}")" "Token 可见多个同名 active Zone"
+assert_equal "purge-cloudflare: 同名重复 Zone 不发起任何 DELETE/PUT/POST 清理请求" "0" \
+    "$(grep -cE '^(DELETE|PUT|POST) ' "${CALLS}" || true)"
+
+# 9) Token 会写进 curl 的 header 文件：换行可注入额外请求头，必须按字符集拒绝
+#（修复前只校验长度≥.20，含换行的 Token 会直接被当成合法值使用）。
+INVALID_TOKEN=$'AAAAAAAAAAAAAAAAAAAA\nX-Injected: 1'
+CALLS="${TMP_DIR}/invalid-token-calls.log"
+OUT="${TMP_DIR}/invalid-token.out"
+ERR="${TMP_DIR}/invalid-token.err"
+: >"${CALLS}"
+if PATH="${TMP_DIR}/bin:${PATH}" \
+    CLOUDFLARE_API_TOKEN="${INVALID_TOKEN}" \
+    TMPDIR="${TMP_DIR}" \
+    PURGE_TEST_CALLS="${CALLS}" \
+    PURGE_TEST_COUNTER="${TMP_DIR}/counter" \
+    bash "${SCRIPT}" --all --yes >"${OUT}" 2>"${ERR}" </dev/null; then
+    fail "purge-cloudflare: 含换行的 Token 必须被拒绝"
+fi
+assert_contains "purge-cloudflare: 含换行的 Token 报格式无效" \
+    "$(<"${ERR}")$(<"${OUT}")" "格式无效"
+assert_equal "purge-cloudflare: 格式无效的 Token 不发起 API 请求" "0" \
+    "$(grep -c . "${CALLS}" || true)"
 
 printf 'ok - purge-cloudflare\n'

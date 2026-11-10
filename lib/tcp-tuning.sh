@@ -558,17 +558,16 @@ net.ipv4.tcp_fin_timeout = 15
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
 
-# Defaults for applications that enable SO_KEEPALIVE. XHTTP application-layer
-# keepalive remains responsible for satisfying CDN HTTP/2 idle timeouts.
+# Defaults for applications that enable SO_KEEPALIVE; the transport-level keepalive
+# of the CDN WebSocket hop must still satisfy the CDN HTTP/2 idle timeouts.
 net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 5
 
-# Outbound TCP/UDP source ports. Avoid port conflicts with inbound listeners;
-# easy_all's 10000-62703 Reality ingress range uses PREROUTING NAT only.
+# Outbound TCP/UDP source ports stay below the registered ingress ports (443/8443).
 net.ipv4.ip_local_port_range = 13000 60999
 EOF
-    if [[ "${PROTOCOL:-}" == "reality" && -z "${CDN_PROVIDER:-}" ]]; then
+    if [[ "${PROTOCOL:-}" == "anytls" ]]; then
         cat >>"${RUNTIME_TMP}/tcp-tuning.conf" <<'EOF'
 
 # Direct-link routing changes should not reuse stale destination metrics.
