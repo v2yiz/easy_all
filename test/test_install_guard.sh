@@ -244,7 +244,7 @@ install_progress_clear
 [[ ! -d "$(dirname "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE}")" ]] \
     || fail "clearing the marker removes the empty directory"
 
-# 6b. 标记链路身份：四种模式各自接受同链路标记，其他链路一律拒绝
+# 6b. 标记链路身份：五种模式各自接受同链路标记，其他链路一律拒绝
 # （回归：模式 1 的 anytls 链被漏掉，中断后续装总被要求清理重装）。
 while read -r marker_profile marker_chain; do
     install_progress_begin "${marker_profile}" "${marker_chain}"
@@ -255,6 +255,7 @@ anytls anytls
 cloudfront cloudfront
 combined-cloudfront cloudfront
 cloudflare cloudflare
+combined-cloudflare cloudflare
 MARKER_CASES
 install_progress_begin combined-cloudfront cloudfront
 for wrong_profile in anytls cloudflare; do
@@ -627,6 +628,8 @@ assert_equal "cloudfront maps to its profile" "cloudfront.sh" "$(profile_script_
 assert_equal "cloudflare maps to its profile" "cloudflare.sh" "$(profile_script_for cloudflare)"
 assert_equal "combined-cloudfront maps to its profile" "combined.sh" \
     "$(profile_script_for combined-cloudfront)"
+assert_equal "combined-cloudflare maps to its profile" "combined-cloudflare.sh" \
+    "$(profile_script_for combined-cloudflare)"
 assert_equal "unknown mode is rejected" "1" \
     "$(profile_script_for nope >/dev/null 2>&1 && echo 0 || echo 1)"
 output=$(capture run_recorded_profile_cleanup nope || true)
@@ -890,7 +893,7 @@ launcher_state_complete() {
 }
 fixture_dir="${TMP_DIR}/field-fixtures"
 install -d -m 0700 "${fixture_dir}"
-for protocol in anytls cloudfront cloudflare combined-cloudfront; do
+for protocol in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     fixture="${fixture_dir}/${protocol}.env"
     write_state_fixture "${fixture}" "${protocol}"
     launcher_state_complete "${fixture}" || fail "完整 ${protocol} 状态必须判为完整"
@@ -1368,7 +1371,7 @@ assert_contains "register-command 显式处理 SIGINT" "${register_static}" "tra
 # 30. 旧 cdn/combined 标记：launcher 不加载已删除的 Profile，只保留新键路由
 legacy_route=$(bash -c '
     source "$1"
-    for mode in cdn combined combined-cloudflare reality; do
+    for mode in cdn combined reality; do
         # launcher_die 直接退出进程：每个模式必须在独立子 shell 里探测。
         if ( profile_file "${mode}" >/dev/null 2>&1 ); then
             printf "%s=loaded\n" "${mode}"
@@ -1377,11 +1380,14 @@ legacy_route=$(bash -c '
         fi
     done
     printf "combined-cloudfront=%s\n" "$(basename "$(profile_file combined-cloudfront)")"
+    printf "combined-cloudflare=%s\n" "$(basename "$(profile_file combined-cloudflare)")"
 ' _ "${ROOT_DIR}/easy_all" 2>&1)
-for legacy in cdn combined combined-cloudflare reality; do
+for legacy in cdn combined reality; do
     assert_contains "旧模式 ${legacy} 不加载 Profile" "${legacy_route}" "${legacy}=rejected"
 done
 assert_contains "模式 4 路由到 combined.sh" "${legacy_route}" "combined-cloudfront=combined.sh"
+assert_contains "模式 5 路由到 combined-cloudflare.sh" "${legacy_route}" \
+    "combined-cloudflare=combined-cloudflare.sh"
 [[ ! -e "${ROOT_DIR}/profiles/cdn.sh" ]] || fail "旧 profiles/cdn.sh 必须已删除"
 
 # 新链路清理删除自有 certbot lineage，且不调用云端 API

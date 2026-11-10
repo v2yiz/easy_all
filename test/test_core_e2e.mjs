@@ -1,5 +1,5 @@
 // 真核心端到端门禁（design §13）：缺核心即失败，不跳过。
-// 1) 四模式正式配置通过真实 `sing-box check` 与 `caddy validate`；
+// 1) 五模式正式配置通过真实 `sing-box check` 与 `caddy validate`；
 // 2) 阻断/订阅未就绪变体同样通过核心校验（配置层面覆盖 §7/§8 的两种极端形态）。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

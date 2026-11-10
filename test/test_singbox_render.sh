@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 阶段 1 基础库：sing-box 固定版本/摘要、四模式配置渲染、运行校验与安装。
+# 阶段 1 基础库：sing-box 固定版本/摘要、五模式配置渲染、运行校验与安装。
 # 用户视角：只通过公开接口与产物断言；外部边界（curl/tar 之外的下载、候选核心）用替身。
 set -Eeuo pipefail
 
@@ -94,7 +94,7 @@ if (singbox_arch riscv64) >/dev/null 2>&1; then
     fail "未知架构必须失败"
 fi
 
-# --- 四模式渲染 -------------------------------------------------------------
+# --- 五模式渲染 -------------------------------------------------------------
 render() { # $1=protocol $2=blocked -> stdout
     local out="${TMP_DIR}/render-${1}-${2}.json"
     rm -f -- "${out}"
@@ -135,6 +135,14 @@ combined_json=$(render combined-cloudfront 0)
 assert_equal "模式 4 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${combined_json}")"
 
+combined_cf_json=$(render combined-cloudflare 0)
+assert_equal "模式 5 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${combined_cf_json}")"
+assert_equal "模式 5 AnyTLS 监听 443" "443" \
+    "$(jq -r '.inbounds[] | select(.tag == "anytls-in") | .listen_port' <<<"${combined_cf_json}")"
+assert_equal "模式 5 回环 CDN 入站 10086" "127.0.0.1 10086" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${combined_cf_json}")"
+
 # blocked 只省略 CDN 入站；模式 4 保留 AnyTLS。
 for proto in cloudfront cloudflare; do
     blocked_json=$(render "${proto}" 1)
@@ -145,9 +153,11 @@ assert_equal "模式 1 blocked 仍保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render anytls 1)")"
 assert_equal "模式 4 blocked 只保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudfront 1)")"
+assert_equal "模式 5 blocked 只保留 AnyTLS" "anytls-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudflare 1)")"
 
 # 公共结构：log/dns/outbounds/route 按 design §7。
-for proto in anytls cloudfront cloudflare combined-cloudfront; do
+for proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     body=$(render "${proto}" 0)
     assert_equal "${proto}: log 级别 warning" "warning" "$(jq -r '.log.level' <<<"${body}")"
     assert_equal "${proto}: DNS 显式 IPv4-only" "ipv4_only" "$(jq -r '.dns.strategy' <<<"${body}")"

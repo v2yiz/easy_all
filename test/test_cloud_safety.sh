@@ -492,6 +492,79 @@ run_state_domain_case "direct.example.com" >/dev/null \
 run_state_domain_case "origin.example.com" >/dev/null \
     || fail "状态中直连域名等于源站域名时必须通过（文档允许与源站域名复用）"
 
+# --- 3c. 模式 5：直连 + 橙云节点/订阅（回源 8443）------------------------------
+write_combined_cf_state() { # $1=DIRECT_DOMAIN $2=CF_NODE_DOMAIN $3=SUBSCRIPTION_MODE $4=输出
+    cat >"$4" <<STATE
+STATE_VERSION=1
+PROTOCOL=combined-cloudflare
+TCP_ACCELERATION=off
+VPS_PUBLIC_IPV4=203.0.113.10
+CF_ZONE=example.com
+CLOUDFLARE_ZONE_ID=zoneid
+SUBSCRIPTION_MODE=$3
+SUB_DOWNLOAD_NAME=EASY_ALL
+OWNER_TOKEN=token-abcdefgh
+ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
+SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+MIHOMO_TEMPLATE_SNAPSHOT=1
+SCHEDULED_REBOOT_ENABLED=0
+SCHEDULED_REBOOT_HOUR=4
+DIRECT_DOMAIN=$1
+DIRECT_NODE_NAME=US-direct
+ANYTLS_PASSWORD=0123456789abcdefaaaabbbb
+CF_NODE_DOMAIN=$2
+CF_NODE_PREFIX=CF
+VLESS_UUID=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+VLESS_PATH=/vless-0123456789ab
+CLOUDFLARE_ORIGIN_RULESET_ID=rs1
+CLOUDFLARE_ORIGIN_RULE_ID=rule1
+STATE
+}
+
+run_combined_cf_state_case() { # $1=DIRECT_DOMAIN $2=CF_NODE_DOMAIN $3=SUBSCRIPTION_MODE
+    local state_dir
+    state_dir="${TMP_DIR}/combined-cf-state-${1//./_}-${2//./_}-${3}"
+    mkdir -p "${state_dir}"
+    write_combined_cf_state "$1" "$2" "$3" "${state_dir}/state.env"
+    RUNTIME_TMP="${state_dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${state_dir}" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${state_dir}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${state_dir}/subscriptions" \
+        bash -c 'source "$1/profiles/combined-cloudflare.sh"; load_state; \
+            printf "PUBLIC=%s CFONLY=%s SITE=%s\n" "$(runtime_public_tcp_ports)" \
+                "$(runtime_cloudflare_only_port)" "$(runtime_caddy_site_enabled && echo 1 || echo 0)"' \
+        _ "${ROOT_DIR}" 2>&1
+}
+
+combined_cf_state=$(run_combined_cf_state_case direct.example.com cf.example.com deploy) \
+    || fail "模式 5 完整状态必须能加载"
+assert_contains "模式 5 仅公网 443" "${combined_cf_state}" "PUBLIC=443"
+assert_contains "模式 5 回源 8443 只对 Cloudflare" "${combined_cf_state}" "CFONLY=8443"
+assert_contains "模式 5 始终部署 Caddy 站点" "${combined_cf_state}" "SITE=1"
+combined_cf_same_domain=$(run_combined_cf_state_case cf.example.com cf.example.com deploy) \
+    && fail "模式 5 节点域名等于直连域名时必须拒绝"
+assert_contains "模式 5 节点域名不得等于直连域名" "${combined_cf_same_domain}" \
+    "节点域名不得等于直连域名"
+run_combined_cf_state_case direct.example.com other.example.net deploy >/dev/null \
+    && fail "模式 5 节点域名不属于 Zone 时必须拒绝"
+run_combined_cf_state_case direct.example.com cf.example.com link >/dev/null \
+    && fail "模式 5 固定 deploy，link 状态必须拒绝"
+
+# 证书覆盖直连与橙云节点两个名字（模式 5 不使用 Origin CA，回源与直连共用 LE 证书）。
+combined_cf_cert_hosts=$(
+    RUNTIME_TMP="${TMP_DIR}/combined-cf-cert-runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/combined-cf-cert-state" \
+        bash -c '
+            source "$1/profiles/combined-cloudflare.sh"
+            PROTOCOL=combined-cloudflare
+            DIRECT_DOMAIN=direct.example.com
+            CF_NODE_DOMAIN=cf.example.com
+            certificate_required_hosts
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "模式 5 证书域名调用失败"
+assert_equal "模式 5 证书覆盖直连与节点域名" \
+    $'cf.example.com\ndirect.example.com' "${combined_cf_cert_hosts}"
+
 # --- 4. 证书：强制重载，并以本机真实 TLS 握手确认磁盘证书已生效 ----------------
 first_dir="${TMP_DIR}/certs-first"
 second_dir="${TMP_DIR}/certs-second"

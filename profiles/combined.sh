@@ -8,6 +8,11 @@ readonly CDN_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/nul
 EASY_ALL_RUNTIME_LIB_DIR="${CDN_PROFILE_ROOT}/../lib"
 export EASY_ALL_RUNTIME_LIB_DIR
 
+# 两个节点名的推荐默认值：必须在加载 singbox-runtime.sh 之前赋值，否则会被其
+# AnyTLS / VLESS-WS 兜底值覆盖，交互提示与文档默认名不一致。
+DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-🇺🇸直连}
+CF_NODE_PREFIX=${CF_NODE_PREFIX:-🇺🇸AWS}
+
 # shellcheck source=lib/runtime-core.sh
 source "${EASY_ALL_RUNTIME_LIB_DIR}/runtime-core.sh"
 # shellcheck source=lib/cloudfront-mode.sh
@@ -16,7 +21,6 @@ source "${EASY_ALL_RUNTIME_LIB_DIR}/cloudfront-mode.sh"
 PROTOCOL=combined-cloudfront
 BACKEND=sing-box
 CDN_PROVIDER=aws
-DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-}
 # 模式 4 的唯一键：模式选择、安装 marker、安装身份与 Profile 路由都用同一个值。
 readonly CDN_PROFILE_KEY=combined-cloudfront
 readonly CDN_EXPECTED_PROTOCOL=combined-cloudfront

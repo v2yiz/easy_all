@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 阶段 1 基础库：Caddy 固定版本/清单校验、四模式 Caddyfile 结构、订阅路由与服务单元。
+# 阶段 1 基础库：Caddy 固定版本/清单校验、五模式 Caddyfile 结构、订阅路由与服务单元。
 # 用户视角：断言生成产物与公开接口；外部边界（下载、caddy 二进制、systemctl）用替身。
 set -Eeuo pipefail
 
@@ -101,7 +101,7 @@ if (caddy_arch mips) >/dev/null 2>&1; then
     fail "未知架构必须失败"
 fi
 
-# --- 四模式站点 -------------------------------------------------------------
+# --- 五模式站点 -------------------------------------------------------------
 render_caddy() { # $1=protocol $2=blocked $3=subscription_ok -> stdout
     local out="${TMP_DIR}/Caddyfile-$1-$2-$3"
     rm -f -- "${out}"
@@ -114,13 +114,15 @@ anytls_body=$(render_caddy anytls 0 1)
 cloudfront_body=$(render_caddy cloudfront 0 1)
 cloudflare_body=$(render_caddy cloudflare 0 1)
 combined_body=$(render_caddy combined-cloudfront 0 1)
+combined_cf_body=$(render_caddy combined-cloudflare 0 1)
 
-for body_proto in anytls cloudfront cloudflare combined-cloudfront; do
+for body_proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     case "${body_proto}" in
     anytls) body=${anytls_body} ;;
     cloudfront) body=${cloudfront_body} ;;
     cloudflare) body=${cloudflare_body} ;;
-    *) body=${combined_body} ;;
+    combined-cloudfront) body=${combined_body} ;;
+    *) body=${combined_cf_body} ;;
     esac
     assert_contains "${body_proto}: 管理套接字" "${body}" "admin unix/${CADDY_ADMIN_SOCKET}"
     assert_contains "${body_proto}: 关闭自动 HTTPS" "${body}" "auto_https off"
@@ -151,6 +153,10 @@ assert_contains "模式 3 代理路径" "${cloudflare_body}" "handle ${VLESS_PAT
 assert_contains "模式 4 站点：源站 8443" "${combined_body}" "https://origin.example.com:8443 {"
 assert_contains "模式 4 有源站守卫" "${combined_body}" "abort @easy_all_bad_origin"
 assert_contains "模式 4 代理路径" "${combined_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 5 站点：节点域 8443" "${combined_cf_body}" "https://cf.example.com:8443 {"
+assert_not_contains "模式 5 无源站守卫" "${combined_cf_body}" "@easy_all_bad_origin"
+assert_contains "模式 5 代理路径" "${combined_cf_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 5 转发到回环" "${combined_cf_body}" "reverse_proxy 127.0.0.1:10086"
 
 # 守卫必须是外层 route 的首个指令，且早于代理路径与订阅入口。
 guard_line=$(grep -nF "@easy_all_bad_origin expression" "${TMP_DIR}/Caddyfile-cloudfront-0-1" \
@@ -355,9 +361,9 @@ assert_contains "候选校验失败文案" "$(<"${wrapper_stderr}")" \
     "候选 Caddy 配置校验失败（候选文件随本次运行结束删除）"
 assert_not_contains "候选校验失败不点名临时路径" "$(<"${wrapper_stderr}")" "Caddyfile.next"
 
-# 有真实 caddy 时用官方二进制复核四种模式的语法。
+# 有真实 caddy 时用官方二进制复核五种模式的语法。
 if command -v caddy >/dev/null 2>&1; then
-    for body_file in "${TMP_DIR}"/Caddyfile-{anytls,cloudfront,cloudflare,combined-cloudfront}-0-1; do
+    for body_file in "${TMP_DIR}"/Caddyfile-{anytls,cloudfront,cloudflare,combined-cloudfront,combined-cloudflare}-0-1; do
         caddy validate --adapter caddyfile --config "${body_file}" >/dev/null 2>&1 \
             || fail "真实 caddy validate 失败：${body_file}"
     done

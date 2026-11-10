@@ -198,7 +198,7 @@ collect_cloudfront_install_inputs() {
 
 # --- Cloudflare token and DNS -------------------------------------------------
 
-# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（四模式共用）。
+# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（五模式共用）。
 
 cloudflare_clear_api_token() {
     unset CLOUDFLARE_API_TOKEN 2>/dev/null || true

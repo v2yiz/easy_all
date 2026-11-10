@@ -296,7 +296,7 @@ subscription_link_domain() {
         caddy_require_host SUBSCRIPTION_DOMAIN
         ;;
     cloudfront | combined-cloudfront) caddy_require_host SUBSCRIPTION_DOMAIN ;;
-    cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudflare | combined-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -309,6 +309,7 @@ runtime_protocol_label() {
     cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
     cloudflare) printf 'VLESS WebSocket over Cloudflare 橙云' ;;
     combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
+    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over Cloudflare 橙云' ;;
     *) printf '%s\n' "${PROTOCOL:-未知}" ;;
     esac
 }
@@ -328,6 +329,7 @@ runtime_public_tcp_ports() {
     cloudfront) printf '443' ;;
     cloudflare) printf '' ;;
     combined-cloudfront) printf '443 8443' ;;
+    combined-cloudflare) printf '443' ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -337,6 +339,7 @@ runtime_cloudflare_only_port() {
     case "${PROTOCOL:-}" in
     cloudflare) printf '443' ;;
     anytls) subscription_enabled && printf '8443' ;;
+    combined-cloudflare) printf '8443' ;;
     esac
     return 0
 }
@@ -349,7 +352,7 @@ runtime_cdn_loopback_port() {
 runtime_caddy_site_enabled() {
     case "${PROTOCOL:-}" in
     anytls) subscription_enabled ;;
-    cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -363,7 +366,7 @@ runtime_singbox_exec_start_pre() {
     esac
 }
 
-# --- 状态契约与订阅配置（四模式共用） ---------------------------------------
+# --- 状态契约与订阅配置（五模式共用） ---------------------------------------
 
 # AnyTLS 直连身份（模式 1/4 共用）：域名、节点名与密码先落盘再创建任何资源。
 anytls_collect_direct_inputs() {
@@ -452,7 +455,7 @@ dns_confirm_takeover() {
         || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment}）；拒绝接管"
 }
 
-# DNS 记录的唯一写入入口（四模式共用）：先按名字读取全部记录，再校验类型/代理状态/目标/归属。
+# DNS 记录的唯一写入入口（五模式共用）：先按名字读取全部记录，再校验类型/代理状态/目标/归属。
 # 同名其他类型或多条同名记录一律阻止写入；非受管记录在交互终端下需确认是否强制接管。
 dns_ensure_record() {
     local host=$1 type=$2 content=$3 proxied=$4
@@ -648,6 +651,15 @@ cdn_validate_state_structure() {
                 || die "状态中的订阅域名无效：${SUBSCRIPTION_DOMAIN}"
         fi
     fi
+    if [[ "${protocol}" == "combined-cloudflare" ]]; then
+        validate_domain "${CF_NODE_DOMAIN}" || die "状态中的节点域名无效：${CF_NODE_DOMAIN}"
+        [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
+            || die "状态中的节点域名不属于 ${CF_ZONE}：${CF_NODE_DOMAIN}"
+        [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
+            || die "状态中的节点域名不得等于直连域名：${CF_NODE_DOMAIN}"
+        [[ "${SUBSCRIPTION_MODE}" == "deploy" ]] \
+            || die "状态中的订阅模式无效（模式 5 固定 deploy）：${SUBSCRIPTION_MODE}"
+    fi
     cdn_derive_runtime_fields || die "状态缺少可用于派生运行时的字段"
 }
 
@@ -810,6 +822,9 @@ certificate_required_hosts() {
             fi
         elif state_protocol_uses_cloudfront "${PROTOCOL}"; then
             printf '%s\n' "${CF_ORIGIN_DOMAIN}"
+        elif [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+            # 模式 5 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
+            printf '%s\n' "${CF_NODE_DOMAIN}"
         fi
     } | sort -u
     # subscription_enabled 为假时上面的分支没有输出，显式返回成功（调用方 set -e）。

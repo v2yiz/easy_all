@@ -35,17 +35,17 @@ function writeState(lines) {
   writeFileSync(stateFile, lines.join('\n') + '\n');
 }
 
-// 1. 帮助：四模式、全 443、删除的旧命令不再出现。
+// 1. 帮助：五模式、全 443、删除的旧命令不再出现。
 const help = run(['help']);
 assert.equal(help.status, 0, help.stderr);
 assert.match(help.stdout, /1 AnyTLS 直连/);
 assert.match(help.stdout, /2 纯 CloudFront/);
 assert.match(help.stdout, /3 纯 CloudFlare/);
 assert.match(help.stdout, /4 AnyTLS \+ CloudFront/);
+assert.match(help.stdout, /5 AnyTLS \+ CloudFlare/);
 assert.match(help.stdout, /443/);
 assert.doesNotMatch(help.stdout, /reality-target/);
 assert.doesNotMatch(help.stdout, /rotate-dynamic-ports/);
-assert.doesNotMatch(help.stdout, /模式 5|直连\+CloudFlare/);
 assert.doesNotMatch(help.stdout, /internal-traffic-prepare/, '内部入口不对外列在帮助里');
 assert.match(help.stdout, /cleanup-partial/);
 assert.match(help.stdout, /update-core/);
@@ -137,12 +137,12 @@ rmSync(markerFile, { force: true });
 rmSync(stateFile, { force: true });
 
 // 5. schema 1 + 已删除协议同样拒绝。
-writeState(['STATE_VERSION=1', 'PROTOCOL=combined-cloudflare']);
+writeState(['STATE_VERSION=1', 'PROTOCOL=cdn']);
 const removedProtocol = run(['status'], stateEnv);
 assert.notEqual(removedProtocol.status, 0);
 assert.match(removedProtocol.stderr, /已删除的旧协议/);
 
-// 6. 结构完整的四模式可被分类；字段不齐只给卸载通道。
+// 6. 结构完整的五模式可被分类；字段不齐只给卸载通道。
 writeState([
   'STATE_VERSION=1',
   'PROTOCOL=cloudfront',
@@ -219,6 +219,43 @@ const applyCloudReached = run(['apply-cloud'], anytlsEnv);
 assert.match(applyCloudReached.stderr, /请使用 root 用户运行此脚本/,
   'apply-cloud 在模式 1 应进入实现（root 门禁），而不是被路由拒绝');
 
+// 6bb. 模式 5：结构完整可分类；命令面与模式 1 同样可达，但不跑 CloudFront 计量。
+const combinedCfStateFile = join(tmp, 'state-combined-cloudflare.env');
+writeFileSync(combinedCfStateFile, [
+  'STATE_VERSION=1',
+  'PROTOCOL=combined-cloudflare',
+  'TCP_ACCELERATION=off',
+  'VPS_PUBLIC_IPV4=203.0.113.10',
+  'CF_ZONE=example.com',
+  'CLOUDFLARE_ZONE_ID=zoneid',
+  'SUBSCRIPTION_MODE=deploy',
+  'SUB_DOWNLOAD_NAME=EASY_ALL',
+  'OWNER_TOKEN=token-abcdefgh',
+  'ALLOWED_TOKENS={"owner":"token-abcdefgh"}',
+  'SUBSCRIPTION_CONFIG={"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}',
+  'MIHOMO_TEMPLATE_SNAPSHOT=1',
+  'SCHEDULED_REBOOT_ENABLED=0',
+  'SCHEDULED_REBOOT_HOUR=4',
+  'DIRECT_DOMAIN=node.example.com',
+  'DIRECT_NODE_NAME=direct',
+  'ANYTLS_PASSWORD=password-abcdefgh',
+  'CF_NODE_DOMAIN=cf.example.com',
+  'CF_NODE_PREFIX=CF',
+  'VLESS_UUID=11111111-2222-4333-8444-555555555555',
+  'VLESS_PATH=/vless-0123456789ab',
+  'CLOUDFLARE_ORIGIN_RULESET_ID=rs1',
+  'CLOUDFLARE_ORIGIN_RULE_ID=rule1',
+].join('\n') + '\n');
+const combinedCfEnv = { EASY_ALL_STATE_FILE_OVERRIDE: combinedCfStateFile };
+const combinedCfMode = sourceLauncher('detect_installed_mode', combinedCfEnv);
+assert.equal(combinedCfMode.stdout.trim(), 'combined-cloudflare', combinedCfMode.stderr);
+const combinedCfSync = run(['cdn-traffic-sync'], combinedCfEnv);
+assert.notEqual(combinedCfSync.status, 0);
+assert.match(combinedCfSync.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/);
+const combinedCfApplyCloud = run(['apply-cloud'], combinedCfEnv);
+assert.match(combinedCfApplyCloud.stderr, /请使用 root 用户运行此脚本/,
+  'apply-cloud 在模式 5 应进入实现（root 门禁），而不是被路由拒绝');
+
 // 6c. 已安装（schema 1）情况下，旧 marker 同样必须在代码覆盖前拒绝 register/self-update。
 const installedLegacyMarker = 'PROFILE=combined\nSTAGE=services\nSTARTED_AT=T2\n';
 writeFileSync(markerFile, installedLegacyMarker);
@@ -272,4 +309,4 @@ const currentMarker = sourceLauncher('launcher_marker_schema_gate 1', markerEnv)
 assert.equal(currentMarker.status, 0, currentMarker.stderr);
 assert.doesNotMatch(currentMarker.stderr, /旧版本/);
 
-process.stdout.write('ok - CLI 门禁与四模式入口测试通过\n');
+process.stdout.write('ok - CLI 门禁与五模式入口测试通过\n');

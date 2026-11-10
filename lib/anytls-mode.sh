@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 
 # Mode 1: AnyTLS 直连入口（TCP 443）+ 可选订阅站点（Caddy 8443，仅 Cloudflare 回源段）。
+# Mode 5: 同一直连入口 + 橙云节点域名（Caddy 8443 回源，同时提供 VLESS WebSocket 与订阅）。
 #
-# Profile 契约（由 profiles/anytls.sh 在本文件之前提供）：
+# Profile 契约（由 profiles/anytls.sh、profiles/combined-cloudflare.sh 在本文件之前提供）：
 #   CDN_PROFILE_KEY / CDN_EXPECTED_PROTOCOL / CDN_MODE_LABEL / CDN_ENTRY_SUMMARY /
-#   CDN_INSTALL_PORTS
+#   CDN_INSTALL_PORTS / CDN_RECORD_COMMENT
 # 与 CloudFront 模式相同的命令契约（install/apply/apply-cloud/edit-sub/renew-cert/
 # show/status/uninstall/cleanup-partial），但没有任何 AWS 资源与 985GB 熔断。
 #
-# 订阅是可选入口：SUBSCRIPTION_MODE=deploy 建立 SUBSCRIPTION_DOMAIN 橙云 A 记录 +
+# 模式 1 的订阅是可选入口：SUBSCRIPTION_MODE=deploy 建立 SUBSCRIPTION_DOMAIN 橙云 A 记录 +
 # 精确 http.host 的 Origin Rule（回源 8443）+ LE 证书；SUBSCRIPTION_MODE=link 只输出节点。
+# 模式 5 固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS WebSocket 的站点、订阅域名与
+# 证书名，直连与橙云两个节点都进入订阅。
 
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
 readonly CDN_PUBLIC_ACCEPT_ATTEMPTS="${CDN_PUBLIC_ACCEPT_ATTEMPTS_OVERRIDE:-6}"
@@ -20,6 +23,13 @@ readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
 cdn_derive_runtime_fields() {
     [[ -n "${DIRECT_DOMAIN:-}" ]] || return 1
     BACKEND=sing-box
+    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        # 橙云节点域名同时是 WebSocket Host、订阅域名与证书名；固定 deploy。
+        [[ -n "${CF_NODE_DOMAIN:-}" ]] || return 1
+        SUBSCRIPTION_MODE=deploy
+        SUBSCRIPTION_DOMAIN=${CF_NODE_DOMAIN}
+        return 0
+    fi
     SUBSCRIPTION_MODE=$(normalize_subscription_mode "${SUBSCRIPTION_MODE:-deploy}") || return 1
     if subscription_enabled; then
         [[ -n "${SUBSCRIPTION_DOMAIN:-}" ]] || return 1
@@ -49,20 +59,24 @@ collect_anytls_install_inputs() {
     CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' "${CF_ZONE:-}")")
     validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
     anytls_collect_direct_inputs
-    choose_subscription_mode
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
-        "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
-    if subscription_enabled; then
-        SUBSCRIPTION_DOMAIN=$(normalize_domain "$(prompt_value \
-            '订阅域名（橙云代理，回源 8443）' "${SUBSCRIPTION_DOMAIN:-sub.${CF_ZONE}}")")
-        validate_domain "${SUBSCRIPTION_DOMAIN}" || die "订阅域名无效：${SUBSCRIPTION_DOMAIN}"
-        [[ "${SUBSCRIPTION_DOMAIN}" == *".${CF_ZONE}" ]] \
-            || die "订阅域名必须属于 ${CF_ZONE}：${SUBSCRIPTION_DOMAIN}"
-        [[ "${SUBSCRIPTION_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
-            || die "订阅域名必须与直连域名不同（直连是灰云 A，订阅是橙云 A）"
+    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        collect_combined_cloudflare_cdn_inputs
+    else
+        choose_subscription_mode
+        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+            "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
+        if subscription_enabled; then
+            SUBSCRIPTION_DOMAIN=$(normalize_domain "$(prompt_value \
+                '订阅域名（橙云代理，回源 8443）' "${SUBSCRIPTION_DOMAIN:-sub.${CF_ZONE}}")")
+            validate_domain "${SUBSCRIPTION_DOMAIN}" || die "订阅域名无效：${SUBSCRIPTION_DOMAIN}"
+            [[ "${SUBSCRIPTION_DOMAIN}" == *".${CF_ZONE}" ]] \
+                || die "订阅域名必须属于 ${CF_ZONE}：${SUBSCRIPTION_DOMAIN}"
+            [[ "${SUBSCRIPTION_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
+                || die "订阅域名必须与直连域名不同（直连是灰云 A，订阅是橙云 A）"
+        fi
     fi
-    cdn_derive_runtime_fields || die "运行时字段派生失败：缺少直连域名或订阅域名"
-    # Token 收集/校验/持久化是四模式共用的（lib/cf-dns.sh）：下一进程可直接复用已存值。
+    cdn_derive_runtime_fields || die "运行时字段派生失败：缺少直连域名或 CDN 节点域名"
+    # Token 收集/校验/持久化是各模式共用的（lib/cf-dns.sh）：下一进程可直接复用已存值。
     cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑；deploy 还需 Zone Settings 只读 + Origin Rules 编辑）'
     ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
     SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
@@ -75,6 +89,28 @@ collect_anytls_install_inputs() {
     fi
 }
 
+# 模式 5：节点域名同时承载 WebSocket 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
+collect_combined_cloudflare_cdn_inputs() {
+    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value \
+        'CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
+    validate_domain "${CF_NODE_DOMAIN}" || die "节点域名无效：${CF_NODE_DOMAIN}"
+    [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
+        || die "节点域名必须属于 ${CF_ZONE}：${CF_NODE_DOMAIN}"
+    [[ "${CF_NODE_DOMAIN%.${CF_ZONE}}" != *.* ]] \
+        || die "节点域名必须是 ${CF_ZONE} 的一级子域名（如 cf.${CF_ZONE}）：${CF_NODE_DOMAIN}"
+    [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
+        || die "节点域名必须与直连域名不同（直连是灰云 A，节点与订阅是橙云 A）"
+    CF_NODE_PREFIX=$(prompt_value 'CDN 节点名（完整单节点名）' "${CF_NODE_PREFIX:-🇺🇸CF}")
+    validate_node_name "${CF_NODE_PREFIX}" || die "节点名无效（1-64 字符，不能含控制字符）"
+    cdn_node_name_reserved "${CF_NODE_PREFIX}" && die "节点名不能使用保留组名：${CF_NODE_PREFIX}"
+    VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
+    validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
+    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
+    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+        "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
+}
+
 # --- Cloudflare 资源 ----------------------------------------------------------
 
 anytls_ensure_zone_id() {
@@ -85,13 +121,17 @@ anytls_ensure_zone_id() {
     fi
 }
 
-# 直连域名始终是灰云 A；订阅域名（deploy）是橙云 A，回源走 Origin Rule。
+# 直连域名始终是灰云 A；订阅/节点域名（deploy）是橙云 A，回源走 Origin Rule。
 anytls_ensure_dns() {
     anytls_ensure_zone_id
     info "配置直连解析（灰云 A）：${DIRECT_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
     dns_ensure_record "${DIRECT_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false
     if subscription_enabled; then
-        info "配置订阅解析（橙云 A）：${SUBSCRIPTION_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
+        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+            info "配置节点/订阅解析（橙云 A）：${SUBSCRIPTION_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
+        else
+            info "配置订阅解析（橙云 A）：${SUBSCRIPTION_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
+        fi
         dns_ensure_record "${SUBSCRIPTION_DOMAIN}" A "${VPS_PUBLIC_IPV4}" true
     fi
 }
@@ -155,6 +195,10 @@ write_runtime_config() {
 build_node_links() {
     local extra
     build_anytls_link
+    if runtime_has_cdn_entry; then
+        printf '\n'
+        build_vless_ws_link
+    fi
     printf '\n'
     extra=$(aggregation_node_links)
     [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
@@ -164,6 +208,10 @@ build_node_links() {
 build_mihomo_nodes() {
     local extra
     build_mihomo_anytls_node
+    if runtime_has_cdn_entry; then
+        printf '\n'
+        build_mihomo_ws_node
+    fi
     printf '\n'
     extra=$(aggregation_mihomo_nodes)
     [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
@@ -282,16 +330,26 @@ anytls_public_curl() {
 
 # 订阅经橙云 → Origin Rule 8443 → Caddy：公网 200 是链路与 strict 的二次证据。
 anytls_public_subscription_ok() {
-    local token body decoded status
+    local token body decoded status marker
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
+    if runtime_has_cdn_entry \
+        && [[ "$(anytls_public_curl "https://${SUBSCRIPTION_DOMAIN}/easy_all-health")" != "easy_all ok" ]]; then
+        return 1
+    fi
     body=$(anytls_public_curl --get --data-urlencode "token=${token}" \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"anytls://"* ]] || return 1
+    while IFS= read -r marker; do
+        [[ -n "${marker}" ]] || continue
+        grep -Fq -- "${marker}" <<<"${decoded}" || return 1
+    done < <(runtime_base64_markers)
     body=$(anytls_public_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"type: anytls"* ]] || return 1
+    while IFS= read -r marker; do
+        [[ -n "${marker}" ]] || continue
+        grep -Fq -- "${marker}" <<<"${body}" || return 1
+    done < <(runtime_mihomo_markers)
     status=$(anytls_public_curl -o /dev/null -w '%{http_code}' \
         --get --data-urlencode 'token=invalid' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
@@ -339,7 +397,12 @@ show_status() {
     show_tcp_acceleration_status
     printf '直连域名: %s（AnyTLS，TCP 443 公网）\n' "${DIRECT_DOMAIN}"
     if subscription_enabled; then
-        printf '订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段）\n' "${SUBSCRIPTION_DOMAIN}"
+        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+            printf '节点/订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段，同时提供 WebSocket 节点与订阅）\n' \
+                "${SUBSCRIPTION_DOMAIN}"
+        else
+            printf '订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段）\n' "${SUBSCRIPTION_DOMAIN}"
+        fi
         printf 'Origin Rule: ruleset %s / rule %s\n' \
             "${CLOUDFLARE_ORIGIN_RULESET_ID:-未知}" "${CLOUDFLARE_ORIGIN_RULE_ID:-未知}"
     else
@@ -513,8 +576,13 @@ cdn_print_cloud_inventory() {
     printf '云端资源清单（默认保留，需要时手动处置）：\n' >&2
     printf '  直连 A 记录（灰云）: %s -> %s\n' "${DIRECT_DOMAIN:-未知}" "${VPS_PUBLIC_IPV4:-未知}" >&2
     if subscription_enabled; then
-        printf '  订阅 A 记录（橙云）: %s -> %s\n' "${SUBSCRIPTION_DOMAIN:-未知}" \
-            "${VPS_PUBLIC_IPV4:-未知}" >&2
+        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+            printf '  节点/订阅 A 记录（橙云）: %s -> %s\n' "${SUBSCRIPTION_DOMAIN:-未知}" \
+                "${VPS_PUBLIC_IPV4:-未知}" >&2
+        else
+            printf '  订阅 A 记录（橙云）: %s -> %s\n' "${SUBSCRIPTION_DOMAIN:-未知}" \
+                "${VPS_PUBLIC_IPV4:-未知}" >&2
+        fi
         printf '  Origin Rule: %s / %s\n' "${CLOUDFLARE_ORIGIN_RULESET_ID:-未知}" \
             "${CLOUDFLARE_ORIGIN_RULE_ID:-未知}" >&2
     fi
@@ -641,8 +709,18 @@ install_all() {
     report_host_init_state
     ensure_swap
     install_failure_begin "${CDN_PROFILE_KEY}"
-    prepare_fresh_install 443 8443
-    install_progress_begin "${CDN_PROFILE_KEY}" anytls
+    if runtime_has_cdn_entry; then
+        # 模式 5：443 直连、8443 橙云回源与回环 10086 都必须空闲。
+        prepare_fresh_install "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
+            "$(runtime_cdn_loopback_port)"
+    else
+        prepare_fresh_install 443 8443
+    fi
+    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        install_progress_begin "${CDN_PROFILE_KEY}" cloudflare
+    else
+        install_progress_begin "${CDN_PROFILE_KEY}" anytls
+    fi
     snapshot_fresh_install
 
     install_progress_stage packages
@@ -659,6 +737,8 @@ install_all() {
     configure_ipv4_only
     install_progress_stage inputs
     collect_anytls_install_inputs
+    # 身份在创建任何云端资源前落盘（persist_install_identity），中断后可续装；
+    # 后面的第二次落盘只补 Origin Rule 的 ruleset/rule ID。
     anytls_prepare_runtime
     install_progress_stage core
     download_singbox

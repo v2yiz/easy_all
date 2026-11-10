@@ -1,6 +1,6 @@
 # easy_all
 
-当前源码版本：[5.0.0](CHANGELOG.md#500-更新说明2026-11-10)。
+当前源码版本：[5.1.0](CHANGELOG.md#510-更新说明2026-11-10)。
 
 ## 文档索引
 
@@ -19,9 +19,9 @@
 
 ## 模式选择
 
-四模式共用同一套本机运行时：官方 sing-box 提供节点入站，官方 Caddy 提供订阅与 CDN 回源入口。
-**本机节点与全部订阅入口统一使用 443**（直连 443、CloudFront viewer 443、橙云回源 443）；
-模式 1 的订阅站点与模式 4 的源站在 `8443`，不是客户端端口。
+五模式共用同一套本机运行时：官方 sing-box 提供节点入站，官方 Caddy 提供订阅与 CDN 回源入口。
+**本机节点与全部订阅入口统一使用 443**（直连 443、CloudFront viewer 443、橙云边缘 443）；
+模式 1 的订阅站点、模式 4 的源站与模式 5 的橙云回源在 `8443`，不是客户端端口。
 
 | 模式 | 适用场景 | 客户端入口 | VPS 本机监听 | 证书 | UFW 业务端口 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -29,8 +29,9 @@
 | **2. 纯 CloudFront** | 只要 CDN 入口 | `cf:443`；`https://sub/subscribe`（默认同 cf） | sing-box `127.0.0.1:10086`；Caddy `0.0.0.0:443` | ACM（viewer）+ LE（源站，DNS-01） | 公网 443 |
 | **3. 纯 CloudFlare（单域名）** | 只要 CDN 入口且回源只对 Cloudflare 开放 | `cf:443`；`https://cf/subscribe` | sing-box `127.0.0.1:10086`；Caddy `0.0.0.0:443` | Cloudflare Origin CA | 443 仅 Cloudflare IPv4 |
 | **4. AnyTLS + CloudFront** | 同时要直连与 CDN | `direct:443`、`cf:443`；`https://sub/subscribe` | sing-box `0.0.0.0:443` + `127.0.0.1:10086`；Caddy `0.0.0.0:8443` | LE（direct/origin）+ ACM（viewer） | 公网 443、8443 |
+| **5. AnyTLS + CloudFlare** | 直连与橙云节点都要，回源只对 Cloudflare 开放 | `direct:443`、`cf:443`；`https://cf/subscribe` | sing-box `0.0.0.0:443` + `127.0.0.1:10086`；Caddy `0.0.0.0:8443` | LE（DNS-01，覆盖直连与橙云节点） | 公网 443；8443 仅 Cloudflare IPv4 |
 
-- 模式 1 的 `deploy/link`：`link` 只输出节点，不建订阅站点、不建 Origin Rule。
+- 模式 1 的 `deploy/link`：`link` 只输出节点，不建订阅站点、不建 Origin Rule；模式 5 固定 deploy（节点与订阅同域）。
 - 所有模式保留实际 SSH 端口；不新增公网 80、不提供 HTTP 重定向、不监听对外 UDP 443。
 - 本版唯一受支持的 CDN 传输是 **WebSocket**；`httpupgrade` 延后，不提供安装选项。
 - 用户订阅 JSON 中的外部聚合节点保留原 `host/port/portRange`，不强制改写为 443。
@@ -43,6 +44,7 @@
 | 2 | origin：灰云 A → VPS；cf/sub：灰云 CNAME → CloudFront 分发 |
 | 3 | cf：橙云 A → VPS，同时承载节点与订阅 |
 | 4 | direct/origin：灰云 A → VPS；cf/sub：灰云 CNAME → 分发 |
+| 5 | direct：灰云 A → VPS；cf：橙云 A → VPS，同时承载节点与订阅 |
 
 安装与 `apply-cloud` 会先读同名全部记录，校验类型/`proxied`/地址/归属；同名 AAAA、类型冲突一律阻止写入；非受管记录只在 stdin 与 stderr 都是终端时提示确认是否强制接管，其余情况一律阻止写入；接管前会再次核对整条记录（含 TTL）未被替换，改写前把原注释、原指向、原代理与原 TTL 写入 `/var/log/easy_all/dns-takeover.log`（不随安装状态清理删除，日志需保留，不要移动或删除）——日志写入失败则不改写记录。`uninstall` 与 `purge-cloudflare` 清理云端记录时都会保留接管而来的 DNS 记录并注明原配置位置，原配置按本机日志手工恢复或删除。
 
@@ -56,13 +58,17 @@
    不相等即 `abort`；密钥不进入客户端订阅。
 6. Caddy → sing-box：`/vless-...` 精确路径转发到 `127.0.0.1:10086`（VLESS WebSocket），订阅走 Token 鉴权。
 
-### 模式 3（Cloudflare 橙云）链路
+### 模式 3/5（Cloudflare 橙云）链路
 
 1. 节点域名橙云 A 记录，Cloudflare 边缘终结 TLS 并回源；**Zone SSL/TLS 必须为 Full (strict)**，
    安装只读校验（需要 Zone Settings Read），不是 strict 就在创建任何资源前停止。
-2. Cloudflare Origin CA（ECDSA P-256，15 年）作为回源证书。
-3. VPS 443 只放行 Cloudflare 官方回源 IPv4 段（`easy_all-cf-origin-443`）。
-4. 单域名 Caddy 站点同时提供 `/easy_all-health`、WebSocket 代理路径与 `/subscribe`。
+2. 回源证书：模式 3 使用 Cloudflare Origin CA（ECDSA P-256，15 年）；模式 5 与直连共用一张
+   Let's Encrypt 证书（DNS-01，SAN 覆盖直连域名与节点域名），因为直连 AnyTLS 443 必须出示公信证书。
+3. 回源端口：模式 3 直接回源 443；模式 5 用精确 `http.host` 的 Origin Rule 回源到 8443
+   （`http_request_origin`，需要 Origin Rules Edit）。
+4. VPS 回源端口只放行 Cloudflare 官方回源 IPv4 段（模式 3 `easy_all-cf-origin-443`、
+   模式 5 `easy_all-cf-origin-8443`）；模式 5 的直连 443 对公网开放。
+5. 单域名 Caddy 站点同时提供 `/easy_all-health`、WebSocket 代理路径与 `/subscribe`。
 
 > [!WARNING]
 > Cloudflare 官方禁止利用反向代理传输 VPN/代理流量及使用优选 IP，存在封号封域风险，请自行评估使用。
@@ -70,8 +76,8 @@
 ### 从 4.x 升级
 
 schema 0 状态与旧安装标记**不会被接管**：请先用 4.x 的 `sudo easy_all uninstall`（需要时加
-`--purge-cloud`）卸载，再用 5.0 重新安装。本版本不做自动迁移，也不保留旧栈（Xray/Nginx/Reality/
-动态端口/XHTTP/模式 5）兼容实现。
+`--purge-cloud`）卸载，再用 5.x 重新安装。本版本不做自动迁移，也不保留旧栈（Xray/Nginx/Reality/
+动态端口/XHTTP/4.x 的 Reality 版模式 5）兼容实现；5.1 的模式 5 是重新实现的 AnyTLS + CloudFlare。
 
 ---
 
@@ -87,7 +93,7 @@ schema 0 状态与旧安装标记**不会被接管**：请先用 4.x 的 `sudo e
       ServerAliveCountMax 6
       TCPKeepAlive yes
   ```
-- 万一中途连接断开，重新连接后再次运行安装命令即可。**续装只在 `SCHEMA=1` 的安装标记、链路身份与安装前快照都匹配时提供**，会复用已生成的证书、分发 ID/ACM ARN（模式 2/4）、Origin CA 身份（模式 3）。模式 1（AnyTLS）不参与续装，只能清理后重装；旧版本标记以及链路不匹配的残留同样不参与续装，只能清理后重新安装；非交互场景遇到残留需先执行 `sudo easy_all cleanup-partial`。
+- 万一中途连接断开，重新连接后再次运行安装命令即可。**续装只在 `SCHEMA=1` 的安装标记、链路身份与安装前快照都匹配时提供**，会复用已生成的证书、分发 ID/ACM ARN（模式 2/4）、Origin CA 身份（模式 3）与 Origin Rule ID（模式 5）。模式 1（AnyTLS）不参与续装，只能清理后重装；旧版本标记以及链路不匹配的残留同样不参与续装，只能清理后重新安装；非交互场景遇到残留需先执行 `sudo easy_all cleanup-partial`。
 
 ### 2. 服务器与端口要求
 - **操作系统与架构**：全新 Debian 12/13 或 Ubuntu 22.04/24.04 LTS（代号 bookworm / trixie / jammy / noble，原生支持 amd64 与 arm64 架构）；
@@ -102,6 +108,7 @@ schema 0 状态与旧安装标记**不会被接管**：请先用 4.x 的 `sudo e
   | 2 纯 CloudFront | `443`（源站，公网可达：CloudFront 回源没有固定 IP 段） |
   | 3 纯 CloudFlare（单域名） | `443`（橙云回源，仅 Cloudflare 官方回源 IPv4 段） |
   | 4 AnyTLS + CloudFront | `443`（直连）+ `8443`（源站，公网可达） |
+  | 5 AnyTLS + CloudFlare | `443`（直连）+ `8443`（橙云回源，仅 Cloudflare 官方回源 IPv4 段） |
 
   **本版本不开放 80**：所有公信证书都走 Cloudflare DNS-01，不需要 HTTP-01 校验，也没有 HTTP 重定向。
 
@@ -109,6 +116,8 @@ schema 0 状态与旧安装标记**不会被接管**：请先用 4.x 的 `sudo e
   > 模式 1 有两条不同用途的端口：`443` 是 AnyTLS **直连入口**（对客户端开放）；`8443` 是订阅域名经
   > Cloudflare 橙云代理时的**回源端口**（只对 Cloudflare 官方回源 IPv4 段开放）。
   > 模式 4 反向：`443` 是直连、`8443` 是 CloudFront 源站。
+  > 模式 5 与模式 1 同构：`443` 是 AnyTLS 直连，`8443` 是橙云节点/订阅的回源端口，
+  > 只对 Cloudflare 官方回源 IPv4 段开放。
 
 ### 3. 凭据与域名准备
 - **Cloudflare API Token**（按模式取最小权限）：
@@ -118,23 +127,24 @@ schema 0 状态与旧安装标记**不会被接管**：请先用 4.x 的 `sudo e
   | 1 deploy | Zone Read、DNS Edit、Zone Settings Read、Origin Rules Edit |
   | 2 / 4 | Zone Read、DNS Edit |
   | 3 | Zone Read、DNS Edit、Zone Settings Read、SSL and Certificates Edit |
+  | 5 | Zone Read、DNS Edit、Zone Settings Read、Origin Rules Edit |
 
   Token 以 `0600` 保存到 `/etc/easy_all/cloudflare.token` 供后续云端同步与卸载清理复用；
   DNS-01 凭据以 `0600` 保存到 `/etc/easy_all/cloudflare.ini` 以便 Certbot 定时续期。
-- **证书与 strict**：模式 1 deploy 与模式 3 会在创建任何 DNS/证书/规则前只读校验 Zone SSL 模式，
+- **证书与 strict**：模式 1 deploy、模式 3 与模式 5 会在创建任何 DNS/证书/规则前只读校验 Zone SSL 模式，
   只接受 **Full (strict)**；full/flexible/off 需要人工修改后重试，工具不会自动改全区设置。
-- **AWS Access Key / Secret Access Key**：**只有模式 2/4** 需要一对专用 IAM 用户密钥，登录时隐藏输入，**只存在于当前进程内存，不写入 state、身份文件、日志或订阅**。模式 1/3 完全不提示、不安装、不调用 AWS。创建步骤见 [前置准备手册](docs/preparation-guide.md)。
+- **AWS Access Key / Secret Access Key**：**只有模式 2/4** 需要一对专用 IAM 用户密钥，登录时隐藏输入，**只存在于当前进程内存，不写入 state、身份文件、日志或订阅**。模式 1/3/5 完全不提示、不安装、不调用 AWS。创建步骤见 [前置准备手册](docs/preparation-guide.md)。
 - **域名规划**（必须是同一个 active Cloudflare Zone 下的子域名，不支持根域名或通配符）：
 
-  | 用途 | 模式 1 | 模式 2 | 模式 3 | 模式 4 | 记录要求 |
-  | :--- | :--- | :--- | :--- | :--- | :--- |
-  | 直连 `node.<zone>` | 必填 | 无 | 无 | 必填 | 灰云 `A` → VPS 公网 IPv4 |
-  | 源站 `origin.<zone>` | 无 | 必填 | 无 | 必填 | 灰云 `A` → VPS；不得等于节点或订阅域名 |
-  | CDN 节点 `cf.<zone>` | 无 | 必填 | 必填 | 必填 | 模式 2/4 灰云 `CNAME` → 分发；模式 3 橙云 `A` → VPS |
-  | 订阅 `sub.<zone>` | deploy 必填 | 必填（默认同节点） | 无（同节点域名） | 必填（默认同节点） | 模式 1 deploy 与模式 3 的实际记录见上表 |
+  | 用途 | 模式 1 | 模式 2 | 模式 3 | 模式 4 | 模式 5 | 记录要求 |
+  | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+  | 直连 `node.<zone>` | 必填 | 无 | 无 | 必填 | 必填 | 灰云 `A` → VPS 公网 IPv4 |
+  | 源站 `origin.<zone>` | 无 | 必填 | 无 | 必填 | 无 | 灰云 `A` → VPS；不得等于节点或订阅域名 |
+  | CDN 节点 `cf.<zone>` | 无 | 必填 | 必填 | 必填 | 必填 | 模式 2/4 灰云 `CNAME` → 分发；模式 3/5 橙云 `A` → VPS |
+  | 订阅 `sub.<zone>` | deploy 必填 | 必填（默认同节点） | 无（同节点域名） | 必填（默认同节点） | 无（同节点域名） | 模式 1 deploy 与模式 3/5 的实际记录见上表 |
 
   因此模式 1 deploy 需要 2 个名字（link 只需直连）、模式 2 至少 2 个、模式 3 只需 1 个、
-  模式 4 默认 3 个（直连与源站复用域名时可减为 2 个）。
+  模式 4 默认 3 个（直连与源站复用域名时可减为 2 个）、模式 5 需要 2 个（直连与橙云节点）。
 
 ---
 
@@ -152,7 +162,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
    - `2` 纯 CloudFront：AWS CloudFront + VLESS WebSocket（只要 CDN 入口）
    - `3` 纯 CloudFlare：橙云单域名同时提供节点与订阅，回源只对 Cloudflare 开放
    - `4` AnyTLS + CloudFront：直连 443 与 CloudFront 一次部署，订阅含两个本机节点
-2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；四种模式都会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
+   - `5` AnyTLS + CloudFlare：直连 443 与橙云节点一次部署，橙云域名同时提供订阅，回源 8443
+2. **按提示输入配置**：直接回车可使用括号 `[ ]` 内的推荐默认值；五种模式都会要求一份 `{"allowedTokens":{...},"nodes":[...]}` 订阅配置（可先留空节点）。
 3. **自动安装与部署**：依赖安装、TCP 加速（默认 Skyline Speeder）、证书申请、云端分发/解析与订阅验收全自动完成；模式 2/4 最后会校验流量保护定时器已启用。
 
 ### 用户交互全景导图
@@ -161,18 +172,18 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 flowchart TD
     Start(["sudo easy_all install"]) --> Resume{"检测到匹配的续装标记？"}
     Resume -- "Y" --> ResumeYes["复用身份/证书/云端资源，只重建服务"]
-    Resume -- "N/无残留" --> ChooseMode["<b>【选择安装模式】</b><br/>1. AnyTLS 直连<br/>2. 纯 CloudFront<br/>3. 纯 CloudFlare (单域名)<br/>4. AnyTLS + CloudFront<br/>请选择 [1]:"]
+    Resume -- "N/无残留" --> ChooseMode["<b>【选择安装模式】</b><br/>1. AnyTLS 直连<br/>2. 纯 CloudFront<br/>3. 纯 CloudFlare (单域名)<br/>4. AnyTLS + CloudFront<br/>5. AnyTLS + CloudFlare<br/>请选择 [1]:"]
     ChooseMode --> Reboot["定时重启配置 [1]=每天4点 / 2=自定义 / 3=不配置"]
     Reboot --> Deps["系统依赖 + Swap + TCP 加速"]
     Deps --> Inputs["模式输入：Zone / 域名 / Token / 订阅配置"]
     Inputs --> Cores["下载并校验锁定核心：sing-box 1.14.4 + Caddy 2.11.9"]
-    Cores --> Strict["模式 1 deploy / 3：只读校验 Cloudflare SSL = Full (strict)"]
+    Cores --> Strict["模式 1 deploy / 3 / 5：只读校验 Cloudflare SSL = Full (strict)"]
     Strict --> DNS["DNS：灰云 A / 橙云 A / 灰云 CNAME"]
-    DNS --> Cert["证书：LE DNS-01（模式 1/2/4）或 Origin CA（模式 3）"]
-    Cert --> UFW["UFW：公网 443；8443/橙云 443 仅 Cloudflare 回源段"]
+    DNS --> Cert["证书：LE DNS-01（模式 1/2/4/5）或 Origin CA（模式 3）"]
+    Cert --> UFW["UFW：公网 443；8443 与橙云 443 仅 Cloudflare 回源段"]
     UFW --> Runtime["渲染 sing-box/Caddy 配置 → 启服务 → 本机验收"]
     Runtime --> Sub["发布六产物订阅 + Token 鉴权验收"]
-    Sub --> Cloud["模式 1：Origin Rule 8443；模式 2/4：ACM + 分发 + 公网验收；模式 3：公网验收"]
+    Sub --> Cloud["模式 1：Origin Rule 8443；模式 2/4：ACM + 分发 + 公网验收；模式 3/5：橙云公网验收"]
     Cloud --> Done(["安装完成：输出节点信息与订阅链接"])
 ```
 
@@ -181,11 +192,11 @@ flowchart TD
 | 模式 | 交互步骤 | 提示说明 | 推荐默认值（直接回车） | 输入方式与规则 |
 | :--- | :--- | :--- | :--- | :--- |
 | **通用** | 断点续装 | `继续上次安装？[Y/n]:` | `Y` | 仅当 `SCHEMA=1` 标记、链路身份与安装前快照都匹配时提示；旧版本标记与不匹配残留只能清理后重装 |
-| **通用** | 模式选择 | `请选择 [1]:` | `1`（AnyTLS 直连） | `1` 直连 / `2` 纯 CloudFront / `3` 纯 CloudFlare / `4` AnyTLS+CloudFront |
+| **通用** | 模式选择 | `请选择 [1]:` | `1`（AnyTLS 直连） | `1` 直连 / `2` 纯 CloudFront / `3` 纯 CloudFlare / `4` AnyTLS+CloudFront / `5` AnyTLS+CloudFlare |
 | **通用** | 定时重启 | `请选择 [1]:` | `1`（每天凌晨 4 点） | `2` 自定义 `0-23` 小时；`3` 不配置 |
 | **通用** | 订阅配置 | `订阅配置 JSON` | `{"allowedTokens":...,"nodes":[]}` | 直接回车保留默认值（自动生成 owner Token）；或粘贴多用户与外部聚合节点 JSON |
-| **1/4** | 直连域名 | `直连节点域名（灰云 A 记录指向本机）` | `node.<Zone>` | 必须是当前 Zone 下的子域名 |
-| **1/4** | 直连节点名 | `直连节点名` | `🇺🇸直连` | 1–64 字符，不能用保留组名（AUTO/PROXY/...） |
+| **1/4/5** | 直连域名 | `直连节点域名（灰云 A 记录指向本机）` | `node.<Zone>` | 必须是当前 Zone 下的子域名 |
+| **1/4/5** | 直连节点名 | `直连节点名` | `🇺🇸直连` | 1–64 字符，不能用保留组名（AUTO/PROXY/...） |
 | **1** | 订阅模式 | `请选择 [1]:` | `1`（部署订阅） | `2` 只输出节点（link）：不建 Caddy 站点、不建 Origin Rule |
 | **1 deploy** | 订阅域名 | `订阅域名（橙云代理，回源 8443）` | `sub.<Zone>` | 必须与直连域名不同 |
 | **2/4** | 根 Zone | `Cloudflare 根 Zone（如 example.com）` | 无（必填） | 已在 Cloudflare 托管的根域名 |
@@ -194,8 +205,10 @@ flowchart TD
 | **2/4** | 订阅域名 | `订阅域名（可与节点域名相同）` | 节点域名 | 可与节点域名复用同一记录 |
 | **2/4** | 节点名 | `CloudFront 节点名（完整单节点名）` | `🇺🇸AWS` | 订阅里的 CDN 节点名 |
 | **3** | 节点域名 | `CDN 节点域名（橙云代理，同时提供节点与订阅）` | `cf.<Zone>` | 一个域名同时承载节点与订阅 |
-| **2/3/4** | CDN 路径 | 自动生成 | `/vless-<随机>` | 不提示；精确匹配代理路径 |
-| **1/2/4** | Certbot | 自动 | — | Cloudflare API Token 由 DNS-01 使用；凭据 `0600` 保存 |
+| **5** | 节点域名 | `CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）` | `cf.<Zone>` | 一级子域名；不得等于直连域名 |
+| **5** | 节点名 | `CDN 节点名（完整单节点名）` | `🇺🇸CF` | 订阅里的橙云节点名 |
+| **2/3/4/5** | CDN 路径 | 自动生成 | `/vless-<随机>` | 不提示；精确匹配代理路径 |
+| **1/2/4/5** | Certbot | 自动 | — | Cloudflare API Token 由 DNS-01 使用；凭据 `0600` 保存 |
 | **2/4** | AWS 凭据 | `AWS Access Key ID / Secret` | 无（必填） | 隐藏输入，仅当前进程内存 |
 | **通用** | Cloudflare Token | `Cloudflare API Token` | 无（必填） | 隐藏输入；按模式要求最小权限（见上表） |
 | **通用** | 下载文件名 | `Mihomo 下载文件名（不含 .yaml）` | `EASY_ALL` | 只允许字母数字点下划线短横线 |
@@ -214,7 +227,7 @@ sudo easy_all subscription
 
 - 将 `easy_all subscription` 输出的订阅链接填入客户端（如 **Clash Verge Rev / Clash Mi / Bettbox / FlClash** 等）。
 - 订阅支持客户端自适应：同一条链接自动识别 UA 下发 Mihomo 规则集配置或通用 Base64；追加 `&flag=clash`、`&flag=base64`、`&os=ios`、`&node=all` 可强制格式、iOS 变体或附带聚合节点。
-- 模式 2/4 的 CDN 节点固定连接 CloudFront 节点域名，模式 3 固定连接橙云节点域名。模式 4 在 `PROXY` 组内提供 `AUTO`（url-test）与 `CDN-FALLBACK`（直连优先的 fallback），也可手动选择任一实际节点；订阅内没有优选 IP。
+- 模式 2/4 的 CDN 节点固定连接 CloudFront 节点域名，模式 3/5 固定连接橙云节点域名。模式 4 在 `PROXY` 组内提供 `AUTO`（url-test）与 `CDN-FALLBACK`（直连优先的 fallback），也可手动选择任一实际节点；模式 5 的 `PROXY` 组直接列出直连与橙云两个节点；订阅内没有优选 IP。
 - 更多客户端配置、规则分流与导入故障排查详见 [客户端使用指南](docs/client-guide.md)。
 
 ---
@@ -225,12 +238,12 @@ sudo easy_all subscription
 
 | 命令 | 用途说明 |
 | :--- | :--- |
-| `easy_all install` | 交互选择 1 AnyTLS 直连 / 2 纯 CloudFront / 3 纯 CloudFlare / 4 AnyTLS+CloudFront 并安装 |
+| `easy_all install` | 交互选择 1 AnyTLS 直连 / 2 纯 CloudFront / 3 纯 CloudFlare / 4 AnyTLS+CloudFront / 5 AnyTLS+CloudFlare 并安装 |
 | `easy_all status` | 查看系统负载、TCP 加速状态、sing-box/Caddy 运行状况、监听端口、证书与流量保护额度 |
 | `easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
 | `easy_all show` | 输出各节点详细参数、VLESS 链接及 Mihomo 代理配置块 |
 | `easy_all apply` | 应用已安装配置：只重建本机与订阅，不访问云管理 API（仍会读取公开的 Cloudflare 回源网段） |
-| `easy_all apply-cloud` | 同步云端资源：模式 1 是 direct/可选 sub DNS、证书与 Origin Rule；模式 2/4 是 DNS + ACM + CloudFront 分发 + 源站证书；模式 3 是橙云 A 记录与 Origin CA |
+| `easy_all apply-cloud` | 同步云端资源：模式 1 是 direct/可选 sub DNS、证书与 Origin Rule；模式 2/4 是 DNS + ACM + CloudFront 分发 + 源站证书；模式 3 是橙云 A 记录与 Origin CA；模式 5 是直连/橙云 A 记录、证书与 Origin Rule |
 | `easy_all cdn-traffic-sync` | （仅模式 2/4）采样 mangle 计量并落实流量阻断 |
 | `easy_all edit-sub` | 交互式管理订阅配置（用户 Token + 聚合节点）与订阅模板 |
 | `easy_all renew-cert` | 重新签发/部署当前模式的 TLS 证书 |
@@ -259,6 +272,8 @@ sudo easy_all subscription
      TLS/HTTP 资源耗尽或密钥泄露。
    - **模式 3 的 443 只对 Cloudflare 官方回源 IPv4 段放行**（`easy_all-cf-origin-443`），并要求
      Zone SSL/TLS 为 Full (strict)。这是公共回源网段，不是账户级鉴权。
+   - **模式 5 的 8443 只对 Cloudflare 官方回源 IPv4 段放行**（`easy_all-cf-origin-8443`），并要求
+     Zone SSL/TLS 为 Full (strict)；直连 443 对公网开放，与其他直连模式同样依赖公信证书与 AnyTLS 密码。
    - 订阅入口只精确匹配 `/subscribe` 与 `/sub`；`/subscribe/`、`/subscribed` 与其他路径返回 404。
      公共头（Vary/Cache-Control/Pragma/nosniff/noindex）先于任何终止响应；非 GET/HEAD 405、
      Token 缺失或错误 403、未就绪 503。
@@ -307,7 +322,7 @@ sudo easy_all status
 
 ---
 
-## Cloudflare 橙云链路（模式 3）
+## Cloudflare 橙云链路（模式 3/5）
 
 模式 3 采用 Cloudflare 橙云代理作为 CDN 入口：
 
@@ -316,3 +331,10 @@ sudo easy_all status
 - **回源白名单**：VPS `443` 端口仅对 Cloudflare 官方公布的回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin-443`）。
 - **Cloudflare 侧设置**：SSL/TLS 设为 **Full (strict)**（只接受 strict）；橙云节点域名保持边缘证书就绪。
 - **运维**：`apply` 重建本机与订阅；`apply-cloud` 同步 DNS 与 Origin CA；`renew-cert` 轮换 Origin CA 证书；`uninstall --purge-cloud` 级联清理云端解析与证书。
+
+模式 5 在模式 3 的基础上增加 AnyTLS 直连入口：
+
+- **两个本机节点**：AnyTLS 直连 `443`（灰云域名）与橙云 VLESS WebSocket；订阅只发布一个橙云域名，订阅内同时包含两个节点。
+- **回源端口**：橙云节点域名用精确 `http.host` 的 Origin Rule 回源到 `8443`（`easy_all-cf-origin-8443` 仅放行 Cloudflare 回源段）。
+- **证书**：与直连共用一张 Let's Encrypt 证书（DNS-01，SAN 为直连域名与节点域名）；不使用 Origin CA。
+- **运维**：`apply-cloud` 同步 DNS、证书与 Origin Rule；`renew-cert` 通过 Certbot 续期；`uninstall --purge-cloud` 级联清理两条 A 记录与 Origin Rule。

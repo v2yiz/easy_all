@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 四模式本机运行时渲染（design §2/§7/§8/§12）：配置文件与客户端节点都走 Phase 1 库，
+# 五模式本机运行时渲染（design §2/§7/§8/§12）：配置文件与客户端节点都走 Phase 1 库，
 # 端口、TLS、源站守卫与订阅产物由模式派生，不接受用户另设端口。
 set -Eeuo pipefail
 
@@ -10,6 +10,11 @@ trap 'rm -rf -- "${TMP_DIR}"' EXIT
 fail() {
     printf '\033[31mnot ok - %s\033[0m\n' "$*" >&2
     exit 1
+}
+assert_equal() {
+    local label=$1 expected=$2 actual=$3
+    [[ "${expected}" == "${actual}" ]] \
+        || fail "${label}: expected <${expected}> but got <${actual}>"
 }
 
 # 每个模式都在独立 bash 里渲染：Profile 常量是 readonly，不能在同一进程内切换。
@@ -61,6 +66,10 @@ render_mode() {
             SUBSCRIPTION_MODE=deploy
             CLOUDFLARE_ORIGIN_RULESET_ID=rs
             CLOUDFLARE_ORIGIN_RULE_ID=rule
+        elif [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+            SUBSCRIPTION_MODE=deploy
+            CLOUDFLARE_ORIGIN_RULESET_ID=rs
+            CLOUDFLARE_ORIGIN_RULE_ID=rule
         else
             SUBSCRIPTION_MODE=deploy
         fi
@@ -76,6 +85,7 @@ render_mode() {
         build_node_links >"${out_dir}/links.txt"
         build_mihomo_nodes >"${out_dir}/nodes.yaml"
         build_mihomo_proxy_groups >"${out_dir}/groups.yaml"
+        build_mihomo_proxy_names >"${out_dir}/names.yaml"
     ) || fail "${profile} 渲染失败"
 }
 
@@ -143,12 +153,60 @@ assert_contains "模式 4 有 AUTO 组" "${out}/groups.yaml" 'name: AUTO'
 assert_contains "模式 4 有 CDN-FALLBACK 组" "${out}/groups.yaml" 'name: CDN-FALLBACK'
 assert_contains "模式 4 fallback 探测 HTTPS 443" "${out}/groups.yaml" \
     'https://www.gstatic.com/generate_204'
+assert_equal "模式 4 PROXY 成员顺序" \
+    $'        - "🇺🇸直连"\n        - "🇺🇸CF"\n        - "AUTO"\n        - "CDN-FALLBACK"' \
+    "$(<"${out}/names.yaml")"
 assert_not_contains "模式 4 不使用 httpupgrade" "${out}/config.json" 'httpupgrade'
 
-for mode_out in anytls cloudfront cloudflare combined; do
+# 节点名推荐默认值：必须在交互提示里出现（加载运行时库前由 Profile 赋值），
+# 否则会被 singbox-runtime.sh 的 AnyTLS / VLESS-WS 兜底值覆盖。
+while IFS='|' read -r profile expected_direct expected_cdn; do
+    # 清除父进程可能导出的同名变量：这里断言的是「未提供名称时」的默认值。
+    defaults=$(env -u DIRECT_NODE_NAME -u CF_NODE_PREFIX bash -c '
+        source "$1/profiles/$2.sh"
+        printf "%s|%s\n" "${DIRECT_NODE_NAME}" "${CF_NODE_PREFIX}"
+    ' _ "${ROOT_DIR}" "${profile}" 2>&1) || fail "${profile} 默认节点名读取失败"
+    assert_equal "${profile} 默认节点名与文档一致" \
+        "${expected_direct}|${expected_cdn}" "${defaults}"
+    explicit=$(DIRECT_NODE_NAME=CustomDirect CF_NODE_PREFIX=CustomCDN bash -c '
+        source "$1/profiles/$2.sh"
+        printf "%s|%s\n" "${DIRECT_NODE_NAME}" "${CF_NODE_PREFIX}"
+    ' _ "${ROOT_DIR}" "${profile}" 2>&1) || fail "${profile} 显式节点名读取失败"
+    assert_equal "${profile} 显式节点名优先" "CustomDirect|CustomCDN" "${explicit}"
+done <<'NODE_DEFAULTS'
+anytls|🇺🇸直连|VLESS-WS
+cloudfront|AnyTLS|🇺🇸AWS
+cloudflare|AnyTLS|🇺🇸CF
+combined|🇺🇸直连|🇺🇸AWS
+combined-cloudflare|🇺🇸直连|🇺🇸CF
+NODE_DEFAULTS
+
+# --- 模式 5：AnyTLS 443 + 橙云节点/订阅 8443（Origin Rule）------------------
+
+out="${TMP_DIR}/combined-cloudflare"
+render_mode combined-cloudflare "${out}"
+assert_contains "模式 5 有 AnyTLS 入站" "${out}/config.json" '"type": "anytls"'
+assert_contains "模式 5 AnyTLS 监听 443" "${out}/config.json" '"listen_port": 443'
+assert_contains "模式 5 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
+assert_contains "模式 5 站点是节点域名 8443" "${out}/Caddyfile" 'https://cf.example.com:8443 {'
+assert_contains "模式 5 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
+assert_contains "模式 5 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_not_contains "模式 5 没有 Caddy 源站守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
+assert_contains "模式 5 节点含直连" "${out}/links.txt" 'anytls://'
+assert_contains "模式 5 节点含橙云 CDN" "${out}/links.txt" 'type=ws'
+assert_contains "模式 5 Mihomo 含 AnyTLS" "${out}/nodes.yaml" 'type: anytls'
+assert_contains "模式 5 Mihomo 含 ws" "${out}/nodes.yaml" 'network: ws'
+assert_not_contains "模式 5 无 Reality 参数" "${out}/links.txt" 'security=reality'
+assert_equal "模式 5 PROXY 成员顺序" \
+    $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
+assert_not_contains "模式 5 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
+assert_not_contains "模式 5 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
+[[ ! -s "${out}/groups.yaml" ]] || fail "模式 5 不应生成额外代理组"
+
+for mode_out in anytls cloudfront cloudflare combined combined-cloudflare; do
     out="${TMP_DIR}/${mode_out}"
     assert_not_contains "${mode_out} 不占用 10085" "${out}/config.json" '10085'
     assert_not_contains "${mode_out} 不使用 v2ray_api" "${out}/config.json" 'v2ray_api'
 done
 
-printf 'ok - 四模式渲染测试通过\n'
+printf 'ok - 五模式渲染测试通过\n'

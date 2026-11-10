@@ -82,7 +82,7 @@ launcher_usage() {
 用法: easy_all [命令]
 
   install          交互选择安装模式（1 AnyTLS 直连 / 2 纯 CloudFront /
-                   3 纯 CloudFlare / 4 AnyTLS + CloudFront）
+                   3 纯 CloudFlare / 4 AnyTLS + CloudFront / 5 AnyTLS + CloudFlare）
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -232,12 +232,14 @@ choose_install_mode() {
     printf '  2. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
     printf '  3. 纯 CloudFlare（橙云单域名同时提供节点与订阅）\n' >&2
     printf '  4. AnyTLS + CloudFront（一次部署直连与 CDN 两个入口）\n' >&2
+    printf '  5. AnyTLS + CloudFlare（直连与橙云节点，橙云域名同时提供订阅）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'anytls\n' ;;
     2) printf 'cloudfront\n' ;;
     3) printf 'cloudflare\n' ;;
     4) printf 'combined-cloudfront\n' ;;
+    5) printf 'combined-cloudflare\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
@@ -250,13 +252,13 @@ launcher_state_complete() {
 }
 
 # 输出既能识别又能门禁的模式分类：
-#   reality / cloudfront / combined-cloudfront / cloudflare / combined-cloudflare（新链路）
+#   anytls / cloudfront / cloudflare / combined-cloudfront / combined-cloudflare（新链路）
 #   cdn / combined（旧 Cloudflare 链路，仅卸载）
 #   incomplete-*（新协议但字段不齐，仅卸载）
-# 输出既能识别又能门禁的模式：anytls / cloudfront / cloudflare / combined-cloudfront
-# （结构完整）或 incomplete-<protocol>（schema 1 但字段不齐，仅卸载）。
+# 输出既能识别又能门禁的模式：anytls / cloudfront / cloudflare / combined-cloudfront /
+# combined-cloudflare（结构完整）或 incomplete-<protocol>（schema 1 但字段不齐，仅卸载）。
 # schema 1 但协议不可识别（缺失或写坏）输出 incomplete-unknown：不猜协议，只保留本机卸载通道。
-# 旧 schema 与已删除的协议（reality / cdn / combined / combined-cloudflare）一律拒绝：
+# 旧 schema 与已删除的协议（reality / cdn / combined）一律拒绝：
 # 覆盖代码前不做自动迁移，必须先由写该状态的旧版本卸载。
 detect_installed_mode() {
     local protocol="" state_version=""
@@ -271,9 +273,9 @@ detect_installed_mode() {
         state_schema_supported "${state_version}" \
             || launcher_die "$(state_legacy_rejection_message "${state_version:-缺失}")"
         case "${protocol}" in
-        anytls | cloudfront | cloudflare | combined-cloudfront) ;;
-        reality | cdn | combined | combined-cloudflare)
-            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/cloudfront/cloudflare/combined-cloudfront。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（必要时 --purge-cloud），再重新安装。"
+        anytls | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) ;;
+        reality | cdn | combined)
+            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/cloudfront/cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（必要时 --purge-cloud），再重新安装。"
             ;;
         *)
             # 状态本身已损坏（如 PROTOCOL 丢失）：整个卸载通道不能跟着失效，
@@ -317,6 +319,8 @@ profile_file() {
     cloudflare | incomplete-cloudflare) candidate="${EASY_ALL_ROOT}/profiles/cloudflare.sh" ;;
     combined-cloudfront | incomplete-combined-cloudfront)
         candidate="${EASY_ALL_ROOT}/profiles/combined.sh" ;;
+    combined-cloudflare | incomplete-combined-cloudflare)
+        candidate="${EASY_ALL_ROOT}/profiles/combined-cloudflare.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
     esac
     [[ -f "${candidate}" ]] || launcher_die "缺少 Profile 模块：${candidate}"
@@ -465,7 +469,7 @@ dispatch_profile_command() {
     tcp-resume) resume_skyline_after_reboot "$@" ;;
     apply-cloud)
         case "${mode}" in
-        anytls | cloudfront | combined-cloudfront | cloudflare) ;;
+        anytls | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;
         *) launcher_die "apply-cloud 仅适用于 CDN 与带订阅站点的模式" ;;
         esac
         apply_cloud_resources
@@ -480,7 +484,7 @@ dispatch_profile_command() {
         ;;
     renew-cert)
         case "${mode}" in
-        anytls | cloudfront | combined-cloudfront | cloudflare) renew_certificate ;;
+        anytls | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate ;;
         *) launcher_die "当前模式不使用本工具签发的 TLS 证书" ;;
         esac
         ;;
@@ -489,7 +493,7 @@ dispatch_profile_command() {
     uninstall)
         case "${mode}" in
         incomplete-anytls | incomplete-cloudfront | incomplete-combined-cloudfront \
-            | incomplete-cloudflare | incomplete-unknown)
+            | incomplete-cloudflare | incomplete-combined-cloudflare | incomplete-unknown)
             uninstall_incomplete
             ;;
         *) uninstall_all "$@" ;;

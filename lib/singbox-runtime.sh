@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 四模式 sing-box 本机配置与客户端节点（design §7、§12）。
+# 五模式 sing-box 本机配置与客户端节点（design §7、§12）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、ANYTLS_PASSWORD、VLESS_UUID、VLESS_PATH、
 # CF_NODE_DOMAIN、CF_NODE_PREFIX。证书路径与核心路径可用环境变量覆盖（测试隔离）。
@@ -17,21 +17,21 @@ source "${SINGBOX_RUNTIME_LIB_DIR}/singbox-core.sh"
 
 singbox_require_protocol() {
     case "${PROTOCOL:-}" in
-    anytls | cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    anytls | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
 
 singbox_protocol_has_anytls() {
     case "${PROTOCOL:-}" in
-    anytls | combined-cloudfront) return 0 ;;
+    anytls | combined-cloudfront | combined-cloudflare) return 0 ;;
     esac
     return 1
 }
 
 singbox_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     esac
     return 1
 }

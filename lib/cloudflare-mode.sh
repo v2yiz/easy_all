@@ -4,7 +4,7 @@
 # VLESS WebSocket node and the Token-protected subscription).
 #
 # Profile contract provided before this file is sourced:
-#   CDN_PROFILE_KEY          install marker / profile key (cloudflare / combined-cloudflare)
+#   CDN_PROFILE_KEY          install marker / profile key (cloudflare)
 #   CDN_EXPECTED_PROTOCOL    state PROTOCOL owned by the profile
 #   CDN_MODE_LABEL           user-facing mode name
 #   CDN_ENTRY_SUMMARY        entry summary used by the install success message
@@ -138,7 +138,7 @@ collect_cloudflare_install_inputs() {
 
 # --- Cloudflare token and DNS -------------------------------------------------
 
-# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（四模式共用）。
+# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（五模式共用）。
 
 cdn_record_belongs_to_easy_all() {
     [[ "${1:-}" == easy_all* ]]

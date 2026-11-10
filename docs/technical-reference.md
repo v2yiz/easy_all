@@ -6,7 +6,7 @@
 
 ## 1. 架构总览与网络拓扑
 
-`easy_all` 支持在 Debian 12/13 与 Ubuntu 22.04/24.04 LTS 环境下以单机独占形式部署以下四种模式。本机运行时统一为官方 sing-box（节点入站）与官方 Caddy（订阅与 CDN 回源站点），一台 VPS 只能选择一种模式：
+`easy_all` 支持在 Debian 12/13 与 Ubuntu 22.04/24.04 LTS 环境下以单机独占形式部署以下五种模式。本机运行时统一为官方 sing-box（节点入站）与官方 Caddy（订阅与 CDN 回源站点），一台 VPS 只能选择一种模式：
 
 | 菜单 | Profile | `PROTOCOL` | `CDN_PROVIDER` | 客户端入口 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -14,11 +14,12 @@
 | 2 | `cloudfront` | `cloudfront` | `aws` | 仅 CloudFront CDN `cf:443`（+ 订阅） |
 | 3 | `cloudflare` | `cloudflare` | `cloudflare` | 仅 Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅） |
 | 4 | `combined` | `combined-cloudfront` | `aws` | AnyTLS 直连 `direct:443` + CloudFront CDN `cf:443` |
+| 5 | `combined-cloudflare` | `combined-cloudflare` | `cloudflare` | AnyTLS 直连 `direct:443` + Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅） |
 
-模式 1 由 `lib/anytls-mode.sh` 承载，模式 2/4 共用 `lib/cloudfront-mode.sh`，模式 3 由 `lib/cloudflare-mode.sh` 承载；Profile 只声明模式常量、状态字段表与（模式 1/4 的）AnyTLS 直连钩子。
+模式 1/5 由 `lib/anytls-mode.sh` 承载，模式 2/4 共用 `lib/cloudfront-mode.sh`，模式 3 由 `lib/cloudflare-mode.sh` 承载；Profile 只声明模式常量、状态字段表与 AnyTLS 直连钩子。
 
 - **状态 schema 固定为 `1`**（`STATE_VERSION=1`）：`PROTOCOL` 同时是模式选择、安装进度 marker、安装身份与 Profile 路由的唯一键。schema `0`（4.x）不被接管也不自动迁移，必须先由旧版本 `uninstall`（需要时加 `--purge-cloud`）再用本版本重装。
-- **本机节点与全部订阅入口统一 443**：AnyTLS 入站 443、CloudFront viewer 443、橙云回源 443。模式 1 的订阅站点与模式 4 的源站监听 `8443`，那是 Cloudflare/CloudFront 的回源端口，不面向客户端。
+- **本机节点与全部订阅入口统一 443**：AnyTLS 入站 443、CloudFront viewer 443、橙云边缘 443。模式 1 的订阅站点、模式 4 的源站与模式 5 的橙云回源监听 `8443`，那是 Cloudflare/CloudFront 的回源端口，不面向客户端。
 - **唯一的 CDN 传输是 WebSocket**（sing-box `transport: {type: "ws"}`）；`httpupgrade` 不提供安装选项，也不在验收范围内。
 - 用户订阅 JSON 里的外部聚合节点保留原有 `host/port/portRange`，不强制改写为 443。
 
@@ -90,6 +91,25 @@
 - **分发端口**：CloudFront 源站 `HTTPSPort` 由模式派生为 `8443`（模式 2 是 `443`）；分发端口写错会在公网验收阶段失败。
 - **订阅**：本机节点恰为两个——AnyTLS 直连（默认名 `🇺🇸直连`）与 CloudFront CDN（默认名 `🇺🇸AWS`），另附 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；`PROXY` 仍是 `select`，可手动在直连与 CDN 之间切换。
 
+### 1.5 模式 5：AnyTLS + CloudFlare
+一台 VPS 同时承载直连与橙云两个入口，橙云域名同时提供节点与订阅：
+
+```text
+公网 443   sing-box AnyTLS（直连入口，TLS SNI=direct.<zone>）
+公网 8443（仅 Cloudflare 回源 IPv4 段）Caddy（与模式 3 相同的单域站点，证书为 Let's Encrypt）
+  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
+  ├─ = /subscribe、= /sub  → Token 鉴权的六产物订阅
+  ├─ = /easy_all-health    → 固定 easy_all ok
+  └─ 其他路径              → 404
+```
+
+- **端口划分**：直连入站固定 `443`（公网），橙云回源与订阅站点固定 `8443`（只放行 Cloudflare 回源段），回环 CDN 入站固定 `127.0.0.1:10086`。
+- **证书**：与模式 1/4 同一张 Let's Encrypt 证书（DNS-01），SAN 为直连域名与橙云节点域名；不使用 Origin CA——直连 AnyTLS 必须是公信证书，Caddy 回源复用同一份。
+- **Origin Rule**：橙云边缘到 VPS 的连接默认打 `443`，因此用一条 `http_request_origin` 单规则把 `http.host eq <节点域名>` 路由到 `origin.port 8443`；生命周期与模式 1 的订阅回源完全相同，ruleset/rule ID 落盘到 state。
+- **`Full (strict)` 门禁**：橙云回源前只读校验 Zone SSL 为 `strict`，与模式 3 同口径。
+- **订阅**：与模式 3 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有优选 IP、没有源站头、没有 985 GB 计量。
+- **运维**：`apply-cloud` 同步两条 A 记录、证书与 Origin Rule；`renew-cert` 走 Certbot（与模式 1 同路径）；`uninstall --purge-cloud` 级联清理两条 A 记录与 Origin Rule。
+
 ## 2. 防火墙、端口与安全边界
 
 ### 2.1 SSH 端口保持与保护
@@ -113,14 +133,15 @@
 | 2 纯 CloudFront | TCP `443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
 | 3 纯 CloudFlare（单域名） | — | TCP `443` | `127.0.0.1:10086`（VLESS WebSocket） |
 | 4 AnyTLS + CloudFront | TCP `443`、`8443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
+| 5 AnyTLS + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS WebSocket） |
 
 - **不开放 `80`**：所有公信证书都走 Cloudflare DNS-01，不需要在 `80` 上做域名校验，也没有 HTTP 重定向。
-- `10086` 永不对公网放行；端口预检覆盖各模式实际使用的端口（模式 1：`443`，deploy 另加 `8443`；模式 2：`443`、`10086`；模式 3：`443`、`10086`；模式 4：`443`、`8443`、`10086`）。
+- `10086` 永不对公网放行；端口预检覆盖各模式实际使用的端口（模式 1：`443`，deploy 另加 `8443`；模式 2：`443`、`10086`；模式 3：`443`、`10086`；模式 4：`443`、`8443`、`10086`；模式 5：`443`、`8443`、`10086`）。
 - 所有模式维持 IPv4-only、默认 incoming/routed deny、outgoing allow、SSH 预检与 Fail2ban。
 
 ### 2.3 源站暴露面（各链路差异）
 
-- **模式 1 `deploy` 与模式 3** 保留 Cloudflare 回源白名单：安装器只向 Cloudflare 官方 IPv4 网段新增回源端口放行（模式 1 是订阅回源 `8443`，模式 3 是橙云回源 `443`）。在宿主没有其他公网放行、云安全组也未额外放通的前提下，外部扫描器直连该端口会被静默丢弃；宿主已有的无注释放行不在本工具管理范围。
+- **模式 1 `deploy`、模式 3 与模式 5** 保留 Cloudflare 回源白名单：安装器只向 Cloudflare 官方 IPv4 网段新增回源端口放行（模式 1/5 是 `8443`，模式 3 是 `443`）。在宿主没有其他公网放行、云安全组也未额外放通的前提下，外部扫描器直连该端口会被静默丢弃；宿主已有的无注释放行不在本工具管理范围。
 - **模式 1 的直连 `443` 对公网开放**，直连域名灰云 `A` 记录会公开 VPS 公网 IPv4。
 - **模式 2/4 没有回源白名单**：CloudFront 回源没有可枚举的固定 IP 段，因此模式 2 的源站 `443`、模式 4 的源站 `8443` 对公网可达。实际防护依赖：
   - 公信 Let's Encrypt 源站证书（自签证书无法通过 CloudFront 的 HTTPS 回源验证）；
@@ -166,9 +187,10 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 | 2 纯 CloudFront | CloudFront 节点 → 聚合 `nodes`（原顺序） | 同左 |
 | 3 纯 CloudFlare | Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
 | 4 AnyTLS + CloudFront | 本机 AnyTLS 节点 → CloudFront 节点 → 聚合 `nodes`（原顺序） | 本机 AnyTLS 节点 → CloudFront 节点 → `AUTO` → `CDN-FALLBACK` → 聚合 `nodes`（原顺序） |
+| 5 AnyTLS + CloudFlare | 本机 AnyTLS 节点 → Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
 
-- `PROXY` 为 `select`，默认第一项分别是直连节点（模式 1/4）或 CDN 节点（模式 2/3）；即使聚合节点为空也始终有有效成员。
-- 模式 4 额外生成 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；模式 1/2/3 没有自动测速或兜底组。
+- `PROXY` 为 `select`，默认第一项分别是直连节点（模式 1/4/5）或 CDN 节点（模式 2/3）；即使聚合节点为空也始终有有效成员。
+- 模式 4 额外生成 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；模式 1/2/3/5 没有自动测速或兜底组。
 - `GLOBAL` 维持 `select`，唯一成员是 `PROXY`；切换到「全局」后所有接管流量使用 `PROXY` 的当前选择。
 - 模板只保留 `PROXY` / `GLOBAL` 两个占位区，额外分组由 `build_mihomo_proxy_groups` 输出，`AUTO`、`CDN-AUTO`、`CDN-FALLBACK` 等名字属于保留组名，不能用于聚合节点。
 - 聚合节点支持三类：`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；外部聚合节点的 `host/port/portRange` 原样保留，不受本机「全 443」约束，也不受「本机只有一个 CDN 节点」的限制。
@@ -224,10 +246,11 @@ easy_all
 │   ├── anytls.sh                # 模式 1：AnyTLS 直连 + 可选订阅站点
 │   ├── cloudfront.sh            # 模式 2：纯 CloudFront 薄 Profile（仅常量与空直连钩子）
 │   ├── combined.sh              # 模式 4：AnyTLS + CloudFront 薄 Profile
+│   ├── combined-cloudflare.sh   # 模式 5：AnyTLS + CloudFlare 薄 Profile
 │   └── cloudflare.sh            # 模式 3：纯 CloudFlare 薄 Profile（单域名，空直连钩子）
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
-│   ├── state.sh                 # 状态 schema、四模式字段集与 launcher 分类的单一来源
+│   ├── state.sh                 # 状态 schema、五模式字段集与 launcher 分类的单一来源
 │   ├── platform.sh              # 系统环境、Debian 探测与基础依赖
 │   ├── runtime-core.sh          # 跨模式通用运行时（证书事务、订阅发布、核心事务、停机清理）
 │   ├── profile-common.sh        # Profile 映射、安装身份与快照/续装/回滚
@@ -236,11 +259,11 @@ easy_all
 │   ├── cf-origin-rule.sh        # Origin Rule 单规则生命周期（ref/归属/追加/删除）
 │   ├── cloudfront-mode.sh       # 模式 2/4 唯一 CloudFront 业务核心
 │   ├── cloudflare-mode.sh       # 模式 3 唯一橙云业务核心（单域名 + Origin CA + 回源白名单）
-│   ├── anytls-mode.sh           # 模式 1 业务编排（AnyTLS 入站、可选订阅站点与 Origin Rule）
+│   ├── anytls-mode.sh           # 模式 1/5 业务编排（AnyTLS 入站、订阅站点与 Origin Rule）
 │   ├── cdn-traffic-guard.sh     # mangle 计量、985 GB 阈值、保护状态机与 systemd timer
 │   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
 │   ├── singbox-core.sh          # 锁定 sing-box 版本、官方归档与固定 SHA256
-│   ├── singbox-runtime.sh       # 四模式 sing-box JSON、客户端节点与运行验收
+│   ├── singbox-runtime.sh       # 五模式 sing-box JSON、客户端节点与运行验收
 │   ├── caddy-core.sh            # 锁定 Caddy 版本、官方归档与 SHA512 清单校验
 │   ├── caddy-runtime.sh         # Caddyfile、订阅路由、服务与重载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
@@ -271,7 +294,7 @@ easy_all
 ## 6. 证书、核心下载与运行时目录
 
 ### 6.1 证书双路径
-- **公信证书**使用 easy_all 专用 Certbot lineage `easy_all`（`/etc/letsencrypt/live/easy_all`），经发行版 Certbot + Cloudflare DNS 插件走 DNS-01：模式 1 覆盖 direct/已部署 sub，模式 2 覆盖 origin，模式 4 覆盖 direct/origin。凭据 `dns_cloudflare_api_token` 以 `0600` 保存在 `/etc/easy_all/cloudflare.ini` 供定时续期；不使用 Caddy DNS 插件，不开放 `80`。
+- **公信证书**使用 easy_all 专用 Certbot lineage `easy_all`（`/etc/letsencrypt/live/easy_all`），经发行版 Certbot + Cloudflare DNS 插件走 DNS-01：模式 1 覆盖 direct/已部署 sub，模式 2 覆盖 origin，模式 4 覆盖 direct/origin，模式 5 覆盖 direct/橙云节点域名。凭据 `dns_cloudflare_api_token` 以 `0600` 保存在 `/etc/easy_all/cloudflare.ini` 供定时续期；不使用 Caddy DNS 插件，不开放 `80`。
 - **两条部署路径**：
   1. 安装、`renew-cert`、`apply-cloud` 已持 runtime 写锁：只对本次 Certbot 子进程设置 `EASY_ALL_CERTBOT_SKIP_DEPLOY=1`，自有 hook 立即退出，由父进程在当前事务里部署。
   2. 定时 hook（`/etc/letsencrypt/renewal-hooks/deploy/easy_all.sh` → `easy_all internal-cert-deploy`）：自行取得 runtime 锁，确认 `RENEWED_LINEAGE` 属于本工具，只部署已签发证书，不再次签发；有界等待，失败非零并保留 lineage。

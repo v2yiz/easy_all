@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 四模式 Caddy 站点：代理路径、订阅路由、公共响应头与服务管理（design §6、§8）。
+# 五模式 Caddy 站点：代理路径、订阅路由、公共响应头与服务管理（design §6、§8）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、CF_NODE_DOMAIN、SUBSCRIPTION_DOMAIN、CF_ORIGIN_DOMAIN、VLESS_PATH、
 # ORIGIN_HEADER_SECRET、ALLOWED_TOKENS、SUB_DOWNLOAD_NAME、CERT_FILE、KEY_FILE。
@@ -15,14 +15,14 @@ source "${CADDY_RUNTIME_LIB_DIR}/caddy-core.sh"
 
 caddy_require_protocol() {
     case "${PROTOCOL:-}" in
-    anytls | cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    anytls | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
 
 caddy_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     esac
     return 1
 }
@@ -43,7 +43,7 @@ caddy_require_host() {
 }
 
 # 站点主机与端口由模式派生（design §2）：模式 1 订阅 8443、模式 3 节点域 443、
-# 模式 2 源站 443、模式 4 源站 8443；不接受用户另设端口。
+# 模式 2 源站 443、模式 4/5 源站 8443；不接受用户另设端口。
 caddy_site_host() {
     caddy_require_protocol
     case "${PROTOCOL}" in
@@ -53,13 +53,13 @@ caddy_site_host() {
         caddy_require_host SUBSCRIPTION_DOMAIN
         ;;
     cloudfront | combined-cloudfront) caddy_require_host CF_ORIGIN_DOMAIN ;;
-    cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudflare | combined-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     esac
 }
 
 caddy_site_port() {
     case "${PROTOCOL:-}" in
-    anytls | combined-cloudfront) printf '8443\n' ;;
+    anytls | combined-cloudfront | combined-cloudflare) printf '8443\n' ;;
     cloudfront | cloudflare) printf '443\n' ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac

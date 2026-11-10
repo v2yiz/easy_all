@@ -23,10 +23,10 @@ assert_not_contains() {
 source "${ROOT_DIR}/lib/state.sh"
 
 [[ "${EASY_ALL_STATE_SCHEMA_VERSION}" == "1" ]] || fail "schema 必须为 1"
-for protocol in anytls cloudfront cloudflare combined-cloudfront; do
+for protocol in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     state_protocol_valid "${protocol}" || fail "协议应受支持：${protocol}"
 done
-for legacy in reality cdn combined combined-cloudflare ""; do
+for legacy in reality cdn combined ""; do
     state_protocol_valid "${legacy}" && fail "旧/空协议不得通过：${legacy}"
 done
 
@@ -58,6 +58,16 @@ assert_absent "$(state_required_fields cloudflare deploy)" ORIGIN_HEADER_SECRET 
 fields=$(state_required_fields combined-cloudfront deploy)
 grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 4 需要直连域名"
 grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 4 需要 VLESS 路径"
+
+fields=$(state_required_fields combined-cloudflare deploy)
+grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 5 需要直连域名"
+grep -Fxq ANYTLS_PASSWORD <<<"${fields}" || fail "模式 5 需要 AnyTLS 密码"
+grep -Fxq CF_NODE_DOMAIN <<<"${fields}" || fail "模式 5 需要 CDN 节点域名"
+grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 5 需要 VLESS 路径"
+grep -Fxq CLOUDFLARE_ORIGIN_RULE_ID <<<"${fields}" || fail "模式 5 需要 Origin Rule"
+assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 5 的订阅域名由节点域名派生，不应落盘"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 5 不使用 Origin CA"
+assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 5 不要求源站头密钥"
 
 state_required_fields nope >/dev/null && fail "未知协议必须返回非零"
 

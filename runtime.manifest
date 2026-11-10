@@ -3,6 +3,7 @@ profiles/anytls.sh
 profiles/cloudfront.sh
 profiles/cloudflare.sh
 profiles/combined.sh
+profiles/combined-cloudflare.sh
 lib/log.sh
 lib/state.sh
 lib/runtime-core.sh

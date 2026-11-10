@@ -171,7 +171,7 @@ assert_not_contains "卸载流程不再包含旧 Globalping 兼容分支" \
 echo "=== 4. 新链路 Cloudflare Token 最小权限与 AWS 凭据仅内存 ==="
 core_content=$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")
 shared_dns_content=$(<"${ROOT_DIR}/lib/cf-dns.sh")
-# Token 收集与 0600 落盘是四模式共用的单一实现：模式 2/4 只沿用默认的 Zone 只读 + DNS 编辑。
+# Token 收集与 0600 落盘是五模式共用的单一实现：模式 2/4 只沿用默认的 Zone 只读 + DNS 编辑。
 assert_contains "shared token prompt defaults to zone read + DNS edit" \
     "${shared_dns_content}" 'Cloudflare API Token（Zone 只读 + DNS 编辑）'
 assert_contains "token persistence lives in the shared library" \
@@ -451,7 +451,7 @@ remote_dir=${remote_dir%$'\r'}
 assert_equal "MOTD 与 CR 混入 stdout 后仍取出远端目录" \
     "/tmp/easy_all_init.abc12345" "${remote_dir}"
 
-echo "=== 7. 系统依赖与四模式运行时入口 ==="
+echo "=== 7. 系统依赖与五模式运行时入口 ==="
 # 依赖清单只在共享运行时定义一次：sudo/vim 与 DNS-01 所需包都必须在这里。
 package_list_of() {
     awk '/local pkgs=\(/{flag=1; next} flag && /^[[:space:]]*\)/{exit} flag' "$1"

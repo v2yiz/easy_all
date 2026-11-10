@@ -7,7 +7,7 @@
 
 : "${CLOUDFLARE_API_BASE:=https://api.cloudflare.com/client/v4}"
 
-# Cloudflare API Token 持久路径与事务（四模式共用，design §5/§6）：
+# Cloudflare API Token 持久路径与事务（五模式共用，design §5/§6）：
 # Token 不写入 state，单独 0600 同目录原子保存；读取只服务于后续维护命令，
 # 失败与日志都不得回显 Token。
 : "${CLOUDFLARE_TOKEN_FILE:=${STATE_DIR:-/etc/easy_all}/cloudflare.token}"

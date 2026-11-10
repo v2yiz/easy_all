@@ -128,7 +128,7 @@ render_mode() {
     printf 'ok - %s 配置通过真实核心校验\n' "${profile}"
 }
 
-for profile in anytls cloudfront cloudflare combined; do
+for profile in anytls cloudfront cloudflare combined combined-cloudflare; do
     render_mode "${profile}" "${WORK_DIR}/${profile}"
 done
 

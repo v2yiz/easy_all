@@ -1,3 +1,27 @@
+## 5.1.0 更新说明（2026-11-10）
+
+新增模式 5「AnyTLS + CloudFlare」：直连 AnyTLS `443` 与橙云 VLESS WebSocket 一次部署，
+橙云节点域名同时承载订阅，回源 `8443` 且只对 Cloudflare 官方回源 IPv4 段开放。
+
+- **模式 5（`PROTOCOL=combined-cloudflare`）**：`1/2/3/4` 的行为、端口与状态语义不变；
+  新协议由 `lib/anytls-mode.sh` 承载、`profiles/combined-cloudflare.sh` 做薄 Profile，
+  与模式 1 共用 LE 证书、Origin Rule、订阅与卸载路径。
+- **拓扑与证书**：直连 `443` 公网、回源 `8443` 仅 Cloudflare；橙云节点域名用精确 `http.host` 的
+  Origin Rule 回源。回源与直连共用一张 Let's Encrypt 证书（DNS-01，SAN 覆盖两个域名），
+  不使用 Origin CA；安装/`apply-cloud` 仍只读校验 Zone SSL = `Full (strict)`。
+- **订阅**：节点顺序为「AnyTLS 直连 → 橙云节点 → 聚合节点」，没有 `AUTO`/`CDN-FALLBACK`
+  自动组，也没有 985 GB 计量（计量与 `cdn-traffic-sync` 仍只属于模式 2/4）。
+- **状态**：`combined-cloudflare` 的必需字段为公共字段 + 直连字段 + CDN 字段 +
+  `CLOUDFLARE_ORIGIN_RULESET_ID` / `CLOUDFLARE_ORIGIN_RULE_ID`；订阅域名由节点域名派生，不落盘。
+  旧的 4.x `combined-cloudflare`（schema 0）仍不被接管，必须先由旧版本卸载。
+- **节点名推荐默认值修正**：各 Profile 在加载 `singbox-runtime.sh` 之前给出文档默认名
+  （直连 `🇺🇸直连`、CloudFront `🇺🇸AWS`、橙云 `🇺🇸CF`），交互提示不再被运行库的
+  `AnyTLS` / `VLESS-WS` 兜底值覆盖；显式传入或已落盘/续装身份中的节点名仍优先。
+- **验证**：`test_state_gate.sh`、`test_modes_render.sh`、`test_singbox_render.sh`、
+  `test_caddy_render.sh`、`test_install_guard.sh`、`test_cloud_safety.sh` 与
+  `test_cli_e2e.mjs` 均已覆盖模式 5 的端口派生、证书域名、状态门禁与命令路由；
+  `scripts/verify-cores.sh` 的真核心门禁也纳入模式 5 正式配置。
+
 ## 5.0.0 更新说明（2026-11-10）
 
 **不兼容大版本**：本机运行时从 Xray/Nginx/Reality 切换为官方 sing-box 1.14.4 + Caddy 2.11.9。

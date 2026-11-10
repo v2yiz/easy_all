@@ -604,6 +604,7 @@ profile_script_for() {
     cloudfront) printf 'cloudfront.sh' ;;
     cloudflare) printf 'cloudflare.sh' ;;
     combined-cloudfront) printf 'combined.sh' ;;
+    combined-cloudflare) printf 'combined-cloudflare.sh' ;;
     *) return 1 ;;
     esac
 }
@@ -828,7 +829,7 @@ install_marker_chain_matches() {
     case "${current}" in
     anytls) expected=anytls ;;
     cloudfront | combined-cloudfront) expected=cloudfront ;;
-    cloudflare) expected=cloudflare ;;
+    cloudflare | combined-cloudflare) expected=cloudflare ;;
     *) return 1 ;;
     esac
     [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "${expected}" ]]

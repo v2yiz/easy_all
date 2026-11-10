@@ -8,6 +8,10 @@ readonly ANYTLS_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/
 EASY_ALL_RUNTIME_LIB_DIR="${ANYTLS_PROFILE_ROOT}/../lib"
 export EASY_ALL_RUNTIME_LIB_DIR
 
+# 直连节点名的推荐默认值：必须在加载 singbox-runtime.sh 之前赋值，否则会被其
+# AnyTLS / VLESS-WS 兜底值覆盖，交互提示与文档默认名不一致。
+DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-🇺🇸直连}
+
 # shellcheck source=lib/runtime-core.sh
 source "${EASY_ALL_RUNTIME_LIB_DIR}/runtime-core.sh"
 # shellcheck source=lib/anytls-mode.sh

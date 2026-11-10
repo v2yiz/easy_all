@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 单一来源：状态 schema、四模式字段集与持久变量清单。
+# 单一来源：状态 schema、五模式字段集与持久变量清单。
 #
 # launcher 在加载任何 Profile 之前就要分类状态并做 schema 门禁，因此本文件只放纯函数
 # 与常量清单：不得依赖运行时库、日志、Profile 常量或任何已加载的 state 值。
@@ -15,7 +15,7 @@ EASY_ALL_STATE_LIB_LOADED=1
 
 readonly EASY_ALL_STATE_SCHEMA_VERSION="1"
 
-# 四模式全部持久字段（design §5）。
+# 五模式全部持久字段（design §5）。
 EASY_ALL_STATE_COMMON_FIELDS=(
     PROTOCOL
     TCP_ACCELERATION
@@ -31,13 +31,13 @@ EASY_ALL_STATE_COMMON_FIELDS=(
     SCHEDULED_REBOOT_ENABLED
     SCHEDULED_REBOOT_HOUR
 )
-# 模式 1/4：AnyTLS 直连入口（443）。
+# 模式 1/4/5：AnyTLS 直连入口（443）。
 EASY_ALL_STATE_DIRECT_FIELDS=(
     DIRECT_DOMAIN
     DIRECT_NODE_NAME
     ANYTLS_PASSWORD
 )
-# 模式 2/3/4：CDN 入口（本机回环 10086 + Caddy 站点主机）。
+# 模式 2/3/4/5：CDN 入口（本机回环 10086 + Caddy 站点主机）。
 EASY_ALL_STATE_CDN_FIELDS=(
     CF_NODE_DOMAIN
     CF_NODE_PREFIX
@@ -65,24 +65,29 @@ EASY_ALL_STATE_ORIGIN_CA_FIELDS=(
     CLOUDFLARE_ORIGIN_CERT_ID
     CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
 )
+# 模式 5：节点域名橙云回源到 8443 的 Origin Rule（订阅域名由节点域名派生，不落盘）。
+EASY_ALL_STATE_CLOUDFLARE_ORIGIN_RULE_FIELDS=(
+    CLOUDFLARE_ORIGIN_RULESET_ID
+    CLOUDFLARE_ORIGIN_RULE_ID
+)
 
 state_protocol_valid() {
     case "${1:-}" in
-    anytls | cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    anytls | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_has_direct_entry() {
     case "${1:-}" in
-    anytls | combined-cloudfront) return 0 ;;
+    anytls | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_has_cdn_entry() {
     case "${1:-}" in
-    cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -103,7 +108,7 @@ state_protocol_has_subscription_site() {
     local protocol=${1:-} subscription_mode=${2:-deploy}
     case "${protocol}" in
     anytls) [[ "${subscription_mode}" != "link" ]] ;;
-    cloudfront | cloudflare | combined-cloudfront) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -132,6 +137,11 @@ state_required_fields() {
     fi
     if state_protocol_uses_origin_ca "${protocol}"; then
         for field in "${EASY_ALL_STATE_ORIGIN_CA_FIELDS[@]}"; do
+            printf '%s\n' "${field}"
+        done
+    fi
+    if [[ "${protocol}" == "combined-cloudflare" ]]; then
+        for field in "${EASY_ALL_STATE_CLOUDFLARE_ORIGIN_RULE_FIELDS[@]}"; do
             printf '%s\n' "${field}"
         done
     fi

@@ -25,10 +25,10 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 
 请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。
 
-本机节点只有两类：AnyTLS 直连（模式 1 / 4）与 VLESS WebSocket（模式 2 / 3 / 4）。两者端口都是 `443`，
+本机节点只有两类：AnyTLS 直连（模式 1 / 4 / 5）与 VLESS WebSocket（模式 2 / 3 / 4 / 5）。两者端口都是 `443`，
 都使用公信证书，`skip-cert-verify` 固定为 `false` —— 不要在客户端开启“跳过证书校验”。
 
-**AnyTLS 直连（模式 1 / 4）** 的 Mihomo 字段固定为：
+**AnyTLS 直连（模式 1 / 4 / 5）** 的 Mihomo 字段固定为：
 
 | 字段 | 值 |
 | --- | --- |
@@ -42,8 +42,8 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 分享链接形如
 `anytls://<URL 编码后的密码>@node.example.com:443/?sni=node.example.com&insecure=0#<URL 编码后的节点名>`。
 
-**VLESS WebSocket（模式 2 / 3 / 4）** 的本机 CDN 节点只有**一个**，名称默认 `🇺🇸AWS`（模式 2/4）
-或 `🇺🇸CF`（模式 3），安装时可改；连接参数固定为：
+**VLESS WebSocket（模式 2 / 3 / 4 / 5）** 的本机 CDN 节点只有**一个**，名称默认 `🇺🇸AWS`（模式 2/4）
+或 `🇺🇸CF`（模式 3/5），安装时可改；连接参数固定为：
 
 - 节点地址（`server`）、TLS `servername` 与 WebSocket `Host` 都是同一个 CDN 节点域名（如 `cf.example.com`），不是 IP；
 - 端口 `443`、TLS 开启、`network: ws`、`skip-cert-verify: false`、`client-fingerprint: chrome`、`packet-encoding: xudp`；
@@ -52,7 +52,7 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 分享链接形如
 `vless://<uuid>@cf.example.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-...&packetEncoding=xudp#<节点名>`。
 
-注意区分证书来源：客户端只校验 viewer / 直连证书（模式 1 是 Let's Encrypt 直连证书，模式 2/4 是 AWS ACM，
+注意区分证书来源：客户端只校验 viewer / 直连 / 橙云边缘证书（模式 1/5 的直连是 Let's Encrypt 证书，模式 2/4 是 AWS ACM，
 模式 3 是 Cloudflare 边缘证书）；源站侧的 Let's Encrypt 证书与 Cloudflare Origin CA 只在边缘到源站之间使用，
 源站头密钥 `X-Easy-All-Origin-Key` 同样只存在于服务器与分发之间，都不会下发到订阅。
 
@@ -63,12 +63,13 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 ## 客户端分流与节点分组
 
 日常使用“规则”模式即可。订阅会自动让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
-- **直连 AnyTLS（模式 1 / 4）**：部署订阅时 `PROXY` 分组依次是本机 AnyTLS 节点（默认 `🇺🇸直连`）与聚合配置 `nodes` 里的节点（名字原样使用）。默认只下发不带 `optional` 的聚合节点，在订阅链接后追加 `&node=all` 可显示全部；模式 1 选择“仅节点”（`link`）时不下发订阅，只输出本机节点信息。
+- **直连 AnyTLS（模式 1 / 4 / 5）**：部署订阅时 `PROXY` 分组依次是本机 AnyTLS 节点（默认 `🇺🇸直连`）与聚合配置 `nodes` 里的节点（名字原样使用）。默认只下发不带 `optional` 的聚合节点，在订阅链接后追加 `&node=all` 可显示全部；模式 1 选择“仅节点”（`link`）时不下发订阅，只输出本机节点信息。
 - **纯 CDN（模式 2 / 3）**：没有直连节点。`PROXY` 分组按固定顺序包含「本机 CDN 节点 → 聚合节点（来自订阅配置 JSON 的 `nodes`，原顺序）」。CDN 节点在模式 2 是 CloudFront 节点（默认 `🇺🇸AWS`），在模式 3 是 Cloudflare 橙云节点（默认 `🇺🇸CF`），都不经过另一朵云的链路。
-- **直连+CDN（模式 4）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机 CDN 节点（默认 `🇺🇸AWS`）→ `AUTO` → `CDN-FALLBACK` → 聚合节点」。`PROXY` 仍是手动选择；另有两个自动组：`AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN），探测地址固定 `https://www.gstatic.com/generate_204`（HTTPS 443）。
-- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 1 是直连节点 → 聚合节点；模式 2/3 是 CDN 节点 → 聚合节点；模式 4 是直连节点 → CDN 节点 → 聚合节点。
+- **直连+CDN（模式 4 / 5）**：模式 4 的 `PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机 CDN 节点（默认 `🇺🇸AWS`）→ `AUTO` → `CDN-FALLBACK` → 聚合节点」。`PROXY` 仍是手动选择；另有两个自动组：`AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN），探测地址固定 `https://www.gstatic.com/generate_204`（HTTPS 443）。
+- **直连+CDN（模式 5）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机橙云节点（默认 `🇺🇸CF`）→ 聚合节点」；没有 `AUTO` / `CDN-FALLBACK` 自动组，由你手动切换。
+- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 1 是直连节点 → 聚合节点；模式 2/3 是 CDN 节点 → 聚合节点；模式 4/5 是直连节点 → CDN 节点 → 聚合节点。
 - **外部聚合节点**：订阅 JSON 里指向外部服务器的节点保留原有 `host/port/portRange`，不会因为本机统一 443 而被改写；它们的传输格式由你填写的配置决定。
-- **熔断期间的节点（仅模式 2/4）**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Caddy 代理路径返回 `503`，sing-box 省略 CDN 入站）。模式 4 此时切到直连节点（或 `CDN-FALLBACK` 自动回落）即可继续使用，直连会短暂重连一次；模式 2 只能等 UTC 次月或按运维指南收敛后再试。模式 1/3 没有这个熔断。
+- **熔断期间的节点（仅模式 2/4，模式 5 没有熔断）**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Caddy 代理路径返回 `503`，sing-box 省略 CDN 入站）。模式 4 此时切到直连节点（或 `CDN-FALLBACK` 自动回落）即可继续使用，直连会短暂重连一次；模式 2 只能等 UTC 次月或按运维指南收敛后再试。模式 1/3/5 没有这个熔断。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
@@ -212,7 +213,7 @@ Auth0、Stripe、Intercom 等服务仍整体代理，可按实际日志收窄 `p
 sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo-common.yaml easy_all edit-sub
 ```
 
-改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。四种模式的 `apply`
+改用 `sudo MIHOMO_TEMPLATE_SOURCE=... easy_all apply` 即可让所有客户端生效。五种模式的 `apply`
 **只重建本机与订阅**，不访问云管理 API、不签发证书，也不需要 Cloudflare / AWS 凭据；要改云端请用
 `apply-cloud`（它会自己按模式询问凭据）。自定义模板路径
 同样通过 `MIHOMO_TEMPLATE_SOURCE` 传入（本地文件或 HTTPS URL）；仓库内置模板的结构校验（MRS/DNS/IPv4/sniffer、`PROXY` 成员与 `GLOBAL` 引用、无额外分组等）由 `npm test` 覆盖，但仓库 CI 没有安装 Mihomo 内核，**真实内核 `-t` 未在 CI 执行**：`validate_mihomo_template` 在 bundled/trusted 模板且无内核时直接成功，不能当作内核验收。如仍需验证真实内核，请在服务器上安装 `mihomo` 或设置 `MIHOMO_CHECK_BIN`（真实验证需另行准备内核与规则数据）。`sniffer` 段必须写成块映射
@@ -244,10 +245,10 @@ https://1.1.1.1/dns-query
 | FlClash | 设置 → 网络 / DNS → 覆写 DNS |
 | Clash Meta for Android | 设置 → 覆写 → DNS 覆写 |
 
-模式 2/3/4 的订阅只包含**一个**本机 CDN 节点（模式 2/4 连接 CloudFront 节点域名，由 AWS 全球 Anycast 调度；
-模式 3 连接橙云节点域名，由 Cloudflare 边缘调度），没有优选 IP、测速组或额外兜底节点（模式 4 的 `AUTO` / `CDN-FALLBACK` 只是本机直连与 CDN 之间的自动选择）。订阅能够更新但节点无法连接时，按顺序排查：
+模式 2/3/4/5 的订阅只包含**一个**本机 CDN 节点（模式 2/4 连接 CloudFront 节点域名，由 AWS 全球 Anycast 调度；
+模式 3/5 连接橙云节点域名，由 Cloudflare 边缘调度），没有优选 IP、测速组或额外兜底节点（模式 4 的 `AUTO` / `CDN-FALLBACK` 只是本机直连与 CDN 之间的自动选择）。订阅能够更新但节点无法连接时，按顺序排查：
 
 1. 确认客户端支持 AnyTLS / VLESS WebSocket（建议内核 ≥ 1.19.9），且没有开启“跳过证书校验”；
 2. 模式 4 先在 `PROXY` 里手动切到直连节点，确认是不是 CDN 入口单独不通；
 3. 运行 `sudo easy_all status`：CDN 用量若已到 985 GB 或显示 `protection_offline`，节点会被阻断到 UTC 次月；
-4. 仍不通再检查云端：模式 2/4 看节点域名 CNAME 是否指向分发、分发与 ACM 是否就绪（源站端口模式 2 为 `443`、模式 4 为 `8443`）；模式 3 看橙云 A 记录是否为 Proxied、SSL/TLS 是否 Full (strict)（必要时 `sudo easy_all apply-cloud`）。
+4. 仍不通再检查云端：模式 2/4 看节点域名 CNAME 是否指向分发、分发与 ACM 是否就绪（源站端口模式 2 为 `443`、模式 4 为 `8443`）；模式 3/5 看橙云 A 记录是否为 Proxied、SSL/TLS 是否 Full (strict)，模式 5 再看 Origin Rule 是否回源 `8443`（必要时 `sudo easy_all apply-cloud`）。
