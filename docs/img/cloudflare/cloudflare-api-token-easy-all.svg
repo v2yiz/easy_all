@@ -1,46 +1,54 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title desc">
-  <title id="title">easy_all 所需的 Cloudflare API Token 配置图例</title>
-  <desc id="desc">从 My Profile 的 API Tokens 创建 Custom Token，加入六项 Zone 权限，并将资源限制为一个特定账号与 Zone。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1320" viewBox="0 0 1600 1320" role="img" aria-labelledby="title desc">
+  <title id="title">easy_all 所需的 Cloudflare API Token 新版 Zone policy 配置示意</title>
+  <desc id="desc">新版 Cloudflare Token 创建流程：创建 User API Token，使用 Zone policy 将权限限制在一个特定 Zone，并按 easy_all 部署模式添加五项权限中的必需项。</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".13"/></filter>
     <style>
-      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:42px;font-weight:760}.step{font-size:29px;font-weight:730}.body{font-size:25px}.small{font-size:21px}.tiny{font-size:19px}.muted{fill:#687387}.orange{fill:#f48120}.green{fill:#087f5b}.blue{fill:#1769aa}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.white{fill:#fff}
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:40px;font-weight:760}.step{font-size:28px;font-weight:730}.body{font-size:23px}.small{font-size:20px}.tiny{font-size:18px}.muted{fill:#687387}.orange{fill:#c75400}.green{fill:#087f5b}.blue{fill:#1769aa}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.white{fill:#fff}
     </style>
   </defs>
-  <rect width="1600" height="1200" fill="#f5f7fb"/>
-  <text x="70" y="72" class="title">Cloudflare API Token：获取位置与 easy_all 最小权限</text>
-  <text x="70" y="112" class="body muted">这是 API Token，不是 Account ID、Zone ID，也不是 Origin CA Key。图中域名为示例，不要复制 Token 内容。</text>
+  <rect width="1600" height="1320" fill="#f5f7fb"/>
+  <text x="70" y="70" class="title">Cloudflare API Token：easy_all 新版权限配置</text>
+  <text x="70" y="108" class="body muted">控制台界面配置示意（非真实账户截图）；只授权目标 Zone，并按所选模式添加权限。</text>
 
-  <rect x="70" y="155" width="1460" height="145" rx="22" fill="#fff" filter="url(#shadow)"/>
-  <circle cx="115" cy="210" r="25" fill="#f48120"/><text x="107" y="220" class="step white">1</text>
-  <text x="165" y="205" class="step">进入创建页面</text>
-  <text x="165" y="250" class="body mono">dash.cloudflare.com  →  My Profile  →  API Tokens  →  Create Token  →  Custom Token</text>
-  <text x="165" y="280" class="small muted">选择 Custom Token；不要选 Global API Key，也无需 Account ID。</text>
+  <rect x="70" y="145" width="1460" height="125" rx="20" fill="#fff" filter="url(#shadow)"/>
+  <circle cx="115" cy="195" r="24" fill="#f48120"/><text x="107" y="205" class="step white">1</text>
+  <text x="165" y="190" class="step">创建 User API Token</text>
+  <text x="165" y="231" class="body">My Profile → API Tokens → Create Token → Start from scratch</text>
 
-  <rect x="70" y="335" width="1460" height="530" rx="22" fill="#fff" filter="url(#shadow)"/>
-  <circle cx="115" cy="390" r="25" fill="#f48120"/><text x="107" y="400" class="step white">2</text>
-  <text x="165" y="385" class="step">填写名称并添加 6 项 Permissions</text>
-  <text x="165" y="426" class="body">Token name：<tspan class="mono">easy_all-cloudflare</tspan></text>
-  <rect x="135" y="460" width="1330" height="375" rx="14" fill="#fafbfc" stroke="#d8dee8" stroke-width="2"/>
-  <text x="180" y="505" class="small muted">Permission group</text><text x="740" y="505" class="small muted">Permission</text><text x="1050" y="505" class="small muted">为什么需要</text>
-  <line x1="165" y1="522" x2="1435" y2="522" stroke="#d8dee8"/>
-  <g class="body">
-    <text x="180" y="565">Zone / Zone</text><text x="740" y="565" class="blue">Read</text><text x="1050" y="565" class="green">定位并验证 Zone</text>
-    <text x="180" y="610">Zone / DNS</text><text x="740" y="610" class="orange">Edit</text><text x="1050" y="610" class="green">维护 proxied A 记录</text>
-    <text x="180" y="655">Zone / Transform Rules</text><text x="740" y="655" class="orange">Edit</text><text x="1050" y="655" class="green">写入 Origin Key 请求头</text>
-    <text x="180" y="700">Zone / Config Rules</text><text x="740" y="700" class="orange">Edit</text><text x="1050" y="700" class="green">为节点主机启用 Full (strict)</text>
-    <text x="180" y="745">Zone / Zone Settings</text><text x="740" y="745" class="orange">Edit</text><text x="1050" y="745" class="green">启用 HTTP/2 to Origin 与 gRPC</text>
+  <rect x="70" y="300" width="1460" height="725" rx="20" fill="#fff" filter="url(#shadow)"/>
+  <circle cx="115" cy="350" r="24" fill="#f48120"/><text x="107" y="360" class="step white">2</text>
+  <text x="165" y="345" class="step">添加 Zone policy，并选定单个 Zone</text>
+
+  <rect x="135" y="375" width="1330" height="135" rx="14" fill="#fafbfc" stroke="#d8dee8" stroke-width="2"/>
+  <text x="170" y="412" class="small muted">Policy type</text>
+  <rect x="170" y="428" width="300" height="58" rx="9" fill="#fff" stroke="#aeb8c8" stroke-width="2"/>
+  <text x="190" y="465" class="body">Zone policy</text>
+  <text x="510" y="412" class="small muted">Zone Resources</text>
+  <rect x="510" y="428" width="900" height="58" rx="9" fill="#fff" stroke="#aeb8c8" stroke-width="2"/>
+  <text x="530" y="465" class="body mono">Include  →  Specific zone  →  example.com</text>
+
+  <text x="145" y="555" class="step">按模式从下表添加权限</text>
+  <rect x="135" y="575" width="1330" height="355" rx="12" fill="#fafbfc" stroke="#d8dee8" stroke-width="2"/>
+  <text x="165" y="615" class="small muted">控制台分类 → 权限项</text>
+  <text x="790" y="615" class="small muted">模式</text>
+  <text x="1120" y="615" class="small muted">用途</text>
+  <line x1="160" y1="632" x2="1440" y2="632" stroke="#d8dee8" stroke-width="2"/>
+  <g class="small">
+    <text x="165" y="674">DNS &amp; Zones → Zone / Zone / <tspan class="blue">Read</tspan></text><text x="790" y="674">1 / 2 / 3 / 4</text><text x="1120" y="674" class="green">读取目标 Zone</text>
+    <text x="165" y="726">DNS &amp; Zones → DNS / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="726">1 / 2 / 3 / 4</text><text x="1120" y="726" class="green">管理 DNS 记录</text>
+    <text x="165" y="778">DNS &amp; Zones → Zone Settings / Zone / <tspan class="blue">Read</tspan></text><text x="790" y="778">1 deploy / 3</text><text x="1120" y="778" class="green">读取 SSL/TLS 模式</text>
+    <text x="165" y="830">Rules &amp; Configuration → Origin Rules / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="830">1 deploy</text><text x="1120" y="830" class="green">配置订阅回源</text>
+    <text x="165" y="882">Cache &amp; Performance → SSL and Certificates / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="882">3</text><text x="1120" y="882" class="green">管理 Origin CA</text>
   </g>
-  <text x="180" y="790" class="body">Zone / SSL and Certificates</text><text x="740" y="790" class="body orange">Edit</text><text x="1050" y="790" class="body green">签发及轮换 Origin CA</text>
 
-  <rect x="70" y="880" width="1460" height="235" rx="22" fill="#fff" filter="url(#shadow)"/>
-  <circle cx="115" cy="935" r="25" fill="#f48120"/><text x="107" y="945" class="step white">3</text>
-  <text x="165" y="930" class="step">只授权目标账号与 Zone，创建并复制一次性 Token secret</text>
-  <text x="165" y="976" class="body">Account Resources：<tspan class="mono">Include  →  Specific account</tspan></text>
-  <text x="165" y="1016" class="body">Zone Resources：<tspan class="mono">Include  →  Specific zone  →  example.com</tspan></text>
-  <rect x="165" y="1040" width="680" height="50" rx="10" fill="#fff4e9" stroke="#f48120" stroke-width="2"/>
-  <text x="190" y="1074" class="small orange">不要选择 All accounts 或 All zones</text>
-  <text x="890" y="1048" class="small">Continue to summary → 核对 → Create Token</text>
-  <text x="890" y="1083" class="small muted">secret 仅显示一次：复制到密码管理器，然后粘贴到安装器隐藏输入。</text>
-  <text x="70" y="1165" class="tiny muted">模式 2 不再需要 Workers 权限；Zone Settings 用于开启 HTTP/2 到源站。</text>
+  <rect x="160" y="948" width="1280" height="54" rx="10" fill="#fff4e9" stroke="#f48120" stroke-width="2"/>
+  <text x="185" y="983" class="small orange">不要选 All zones 或 All zones from an account；模式 2 / 4 仅需 Zone Read 与 DNS Edit。</text>
+
+  <rect x="70" y="1055" width="1460" height="205" rx="20" fill="#fff" filter="url(#shadow)"/>
+  <circle cx="115" cy="1105" r="24" fill="#f48120"/><text x="107" y="1115" class="step white">3</text>
+  <text x="165" y="1100" class="step">核对并创建</text>
+  <text x="165" y="1144" class="body">Continue to summary → 确认目标 Zone 和权限 → Create Token</text>
+  <text x="165" y="1185" class="small muted">Token secret 只显示一次；创建后立即复制并妥善保管。</text>
+  <text x="70" y="1300" class="tiny muted">Cloudflare 官方创建指南标注更新于 2026-11-06。图中 example.com 为占位域名。</text>
 </svg>

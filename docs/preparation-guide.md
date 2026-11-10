@@ -95,26 +95,46 @@
 
 ## 5. 创建 Cloudflare API Token
 
-进入 Cloudflare 控制台：**My Profile → API Tokens → Create Token → Custom Token**。
+进入 Cloudflare 控制台 **My Profile → API Tokens**，在 **User API Tokens** 区域点击 **Create Token**。Cloudflare 另有独立的 **Account API Tokens**；只有在凭据不应绑定用户、且所用 API endpoint 支持 Account Token 时才选择它。本指南按 User API Token 配置。
 
-### 5.1 权限配置（按模式分列）
+### 5.1 新版控制台操作步骤
 
-| 权限项 | 模式 1 `link` | 模式 1 `deploy` | 模式 2 / 4 | 模式 3 | 作用 |
+截至 2026-11-10，创建页已改为模板与策略流程，旧版单独的 **Custom Token** 入口不再是起点：
+
+1. 在 **Create Token** 页填写 Token 名称。
+2. 选择 **Start from scratch → Start with a Zone policy**。不要选 Account 或 User policy；下表的权限都属于 Zone scope。
+3. 在策略中设置 **Rule action = Include**、**Resource type = Specific zone**，再选本次部署使用的域名 Zone。当前下拉还提供 **All zones** 和 **All zones from an account**；按最小权限原则不要选这两项。
+4. 在权限区展开分类，或使用 **Search for permission groups...** 搜索权限组；按下表勾选需要的 `Read` / `Edit`。当前界面把权限分在 **DNS & Zones**、**Rules & Configuration**、**Cache & Performance** 等分类中。
+5. 需要限制 Token 时，设置 **Token expiration** 或 **Client IP address filtering**。这两项是可选限制，不代替权限与 Zone scope。
+6. 点击 **Continue to summary**，核对 Zone 和权限后再创建。Token secret 只显示一次，创建后立即复制并妥善保管。
+
+![easy_all 的 Cloudflare Token 新版 Zone policy 配置示意图](img/cloudflare/cloudflare-api-token-easy-all.svg)
+
+上图是按各部署模式整理的本地配置示意。下面两张 Cloudflare 官方截图展示新版表单和权限摘要的位置；官方模板截图使用了 **All zones**，摘要图也显示了全 Zone 范围，仅供识别界面，请按上面的步骤改为 **Specific zone**，并按模式勾选权限。
+
+![Cloudflare 官方 API Token 权限配置表单示例](https://github.com/cloudflare/cloudflare-docs/raw/refs/heads/production/src/assets/images/fundamentals/api/template-customize.png)
+
+![Cloudflare 官方 API Token 权限摘要页示例](https://github.com/cloudflare/cloudflare-docs/raw/refs/heads/production/src/assets/images/fundamentals/api/token-summary.png)
+
+Cloudflare 官方[创建 API Token 指南](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)标注更新于 2026-11-06，完整权限名称见[官方权限列表](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)。
+
+### 5.2 权限配置（按模式分列）
+
+| 当前控制台分类 → 权限项 | 模式 1 `link` | 模式 1 `deploy` | 模式 2 / 4 | 模式 3 | 作用 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `Zone / Zone / Read` | 需要 | 需要 | 需要 | 需要 | 读取并确认目标 Zone 状态与 ID |
-| `Zone / DNS / Edit` | 需要 | 需要 | 需要 | 需要 | 自动管理直连/订阅/源站 `A` 记录、节点 `CNAME` 与 ACM 验证记录 |
-| `Zone / Zone Settings / Read` | 不需要 | 需要 | **不需要** | 需要 | 只读校验 Zone SSL/TLS 是否为 `Full (strict)`（只读，不修改全区设置） |
-| `Zone / Origin Rules / Edit` | 不需要 | 需要 | **不需要** | **不需要** | 为订阅域名维护精确 `http.host` 的 Origin Rule，回源 `8443` |
-| `Zone / SSL and Certificates / Edit` | 不需要 | 不需要 | **不需要** | 需要 | 申请、轮换与吊销 Cloudflare Origin CA 证书 |
+| **DNS & Zones** → `Zone / Zone / Read` | 需要 | 需要 | 需要 | 需要 | 读取并确认目标 Zone 状态与 ID |
+| **DNS & Zones** → `DNS / Zone / Edit` | 需要 | 需要 | 需要 | 需要 | 自动管理直连/订阅/源站 `A` 记录、节点 `CNAME` 与 ACM 验证记录 |
+| **DNS & Zones** → `Zone Settings / Zone / Read` | 不需要 | 需要 | **不需要** | 需要 | 只读校验 Zone SSL/TLS 是否为 `Full (strict)`（只读，不修改全区设置） |
+| **Rules & Configuration** → `Origin Rules / Zone / Edit` | 不需要 | 需要 | **不需要** | **不需要** | 为订阅域名维护精确 `http.host` 的 Origin Rule，回源 `8443` |
+| **Cache & Performance** → `SSL and Certificates / Zone / Edit` | 不需要 | 不需要 | **不需要** | 需要 | 申请、轮换与吊销 Cloudflare Origin CA 证书 |
 
 - 模式 1 `deploy` 与模式 3 的 `strict` 检查需要 `Zone Settings Read`；缺这项会在创建任何资源前以 403 停止并点名权限。
 - 模式 2/4 的 TLS 由 AWS ACM（viewer）与 Let's Encrypt（源站）负责，Cloudflare 只做 DNS，因此**不要**给这两个模式的 Token 授予证书、Zone Settings 或 Rulesets 权限。
 - 只有模式 1 `deploy` 需要 Origin Rules；模式 1 `link` 不建订阅站点、也不写 Origin Rule。
 
-### 5.2 作用范围（Zone Resources）
-- **Zone Resources**：`Include → Specific zone → 你的域名 (example.com)`
+### 5.3 创建后保存
 
-创建后妥善保存 Token，在安装交互提示 `Cloudflare API Token` 时粘贴。
+上表权限都应添加到同一个目标 Zone 的 Zone policy。创建后妥善保存 Token，在安装交互提示 `Cloudflare API Token` 时粘贴。
 
 > [!IMPORTANT]
 > **Cloudflare Token 最小权限与持久化说明**：模式 1/2/3/4 为了支持后续 DNS/证书/Origin Rule 变更与免交互运维，输入的 Token 会以 root 受控权限（`0600`）保存于 `/etc/easy_all/cloudflare.token`；DNS-01 用的凭据另外以 `0600` 保存到 `/etc/easy_all/cloudflare.ini` 供 Certbot 定时续期。请务必遵循最小权限原则，仅授予目标 Zone 与所选模式真正需要的权限，严禁使用全局 Global API Key 或授予未使用的额外权限；`easy_all purge-cloudflare` 清理工具已对无 Rulesets 权限的 Token 做了平滑容错，不会阻断云端 DNS 记录的清理。
