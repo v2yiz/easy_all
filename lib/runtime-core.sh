@@ -453,7 +453,7 @@ dns_confirm_takeover() {
         || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment}）；拒绝接管（非交互：stdin/stderr 不是终端，未提示确认）"
     read_confirmation "Cloudflare ${host} 的同名记录不是本工具创建的（当前指向：${safe_current:-空}，代理：${safe_proxied:-未知}，注释：${comment}）；是否强制接管？[y/N]:" answer \
         || answer=""
-    [[ "${answer}" =~ ^[Yy]$ ]] \
+    [[ "${answer}" =~ ^[Yy]([Ee][Ss])?$ ]] \
         || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment}）；拒绝接管"
 }
 

@@ -61,6 +61,8 @@ read_confirmation() {
     local label=$1 variable=$2 input
     printf '%s\n' "${label}" >&2
     read_prompt '> ' input
+    input="${input#"${input%%[![:space:]]*}"}"
+    input="${input%"${input##*[![:space:]]}"}"
     printf -v "${variable}" '%s' "${input}"
 }
 

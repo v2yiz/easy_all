@@ -321,8 +321,11 @@ run_dns_case_input() { # $1=y|n  $2=id|replaced|updated|ttl|spaced|empty|patchfa
         STUB_ANSWER="${input_char}"
         dns_takeover_interactive() { return 0; }
         read_confirmation() {
-            printf 'PROMPT:%s\n' "${1:-}"
-            printf -v "${2}" '%s' "${STUB_ANSWER}"
+            local label=$1 variable=$2 input="${STUB_ANSWER}"
+            input="${input#"${input%%[![:space:]]*}"}"
+            input="${input%"${input##*[![:space:]]}"}"
+            printf 'PROMPT:%s\n' "${label:-}"
+            printf -v "${variable}" '%s' "${input}"
         }
         cloudflare_api_request() {
             local method=$1 path=$2 payload=${3:-}
@@ -382,6 +385,12 @@ assert_contains "审计日志记录原注释与原指向" "${takeover_case}" \
 reject_case=$(run_dns_case_input n id)
 assert_not_contains "拒绝接管时不改写记录" "${reject_case}" "PATCH "
 assert_contains "拒绝接管时不写审计日志" "${reject_case}" "AUDIT_EXISTS=no"
+
+yes_case=$(run_dns_case_input yes id)
+assert_contains "输入 yes 同样确认接管" "${yes_case}" "PATCH /zones/zoneid/dns_records/rec1"
+
+space_y_case=$(run_dns_case_input " y" id)
+assert_contains "输入前导空格 y 同样确认接管" "${space_y_case}" "PATCH /zones/zoneid/dns_records/rec1"
 
 race_case=$(run_dns_case_input y replaced)
 assert_not_contains "确认期间记录被替换时不得改写" "${race_case}" "PATCH "
