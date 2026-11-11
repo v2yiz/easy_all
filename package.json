@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bash test/test_install_guard.sh && bash test/test_purge_cloudflare.sh && bash test/test_state_gate.sh && bash test/test_modes_render.sh && bash test/test_mihomo_template_lint.sh && bash test/test_audit_fixes.sh && bash test/test_singbox_render.sh && bash test/test_caddy_render.sh && bash test/test_singbox_subscription.sh && bash test/test_cf_origin_rule.sh && bash test/test_cloud_safety.sh && node test/test_cli_e2e.mjs",
+    "test": "bash test/test_install_guard.sh && bash test/test_cloud_purge.sh && bash test/test_state_gate.sh && bash test/test_modes_render.sh && bash test/test_mihomo_template_lint.sh && bash test/test_audit_fixes.sh && bash test/test_singbox_render.sh && bash test/test_caddy_render.sh && bash test/test_singbox_subscription.sh && bash test/test_cf_origin_rule.sh && bash test/test_cloud_safety.sh && node test/test_cli_e2e.mjs",
     "test:foundation": "bash test/test_singbox_render.sh && bash test/test_caddy_render.sh && bash test/test_cf_origin_rule.sh",
     "test:modes": "bash test/test_state_gate.sh && bash test/test_modes_render.sh",
     "test:guard": "bash test/test_install_guard.sh",
-    "test:purge": "bash test/test_purge_cloudflare.sh",
+    "test:purge": "bash test/test_cloud_purge.sh",
     "test:safety": "bash test/test_cloud_safety.sh",
     "test:cli": "node test/test_cli_e2e.mjs",
     "test:templates": "bash test/test_mihomo_template_lint.sh",

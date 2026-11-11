@@ -171,7 +171,7 @@ assert_not_contains "卸载流程不再包含旧 Globalping 兼容分支" \
 echo "=== 4. 新链路 Cloudflare Token 最小权限与 AWS 凭据仅内存 ==="
 core_content=$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")
 shared_dns_content=$(<"${ROOT_DIR}/lib/cf-dns.sh")
-# Token 收集与 0600 落盘是五模式共用的单一实现：模式 2/4 只沿用默认的 Zone 只读 + DNS 编辑。
+# Token 收集与 0600 落盘是五模式共用的单一实现：模式 4/5 只沿用默认的 Zone 只读 + DNS 编辑。
 assert_contains "shared token prompt defaults to zone read + DNS edit" \
     "${shared_dns_content}" 'Cloudflare API Token（Zone 只读 + DNS 编辑）'
 assert_contains "token persistence lives in the shared library" \
@@ -360,7 +360,7 @@ direct_tuning=$(tcp_tuning_case anytls)
 assert_contains "模式 1 写入 tcp_no_metrics_save" "${direct_tuning}" \
     "net.ipv4.tcp_no_metrics_save = 1"
 cdn_tuning=$(tcp_tuning_case combined-cloudfront aws)
-assert_not_contains "模式 4 不写 tcp_no_metrics_save" "${cdn_tuning}" "tcp_no_metrics_save"
+assert_not_contains "模式 5 不写 tcp_no_metrics_save" "${cdn_tuning}" "tcp_no_metrics_save"
 assert_contains "所有模式都保留 fq 与缓冲区调优" "${cdn_tuning}" "net.core.default_qdisc = fq"
 
 # 6.4 UFW SSH 端口策略：必须校验真实端口，而不是回落的 22（回归：非 22 端口时初始化中断）

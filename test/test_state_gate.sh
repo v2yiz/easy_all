@@ -47,27 +47,27 @@ assert_absent "$(state_required_fields anytls link)" CLOUDFLARE_ORIGIN_RULE_ID \
     "模式 1 link 不得要求 Origin Rule"
 
 fields=$(state_required_fields cloudfront deploy)
-grep -Fxq AWS_ACM_CERTIFICATE_ARN <<<"${fields}" || fail "模式 2 需要 ACM ARN"
-grep -Fxq CDN_TRAFFIC_PROTECTION_GB <<<"${fields}" || fail "模式 2 需要 985GB 字段"
-assert_absent "${fields}" DIRECT_DOMAIN "模式 2 不得要求直连域名"
-assert_absent "${fields}" REALITY_TARGET "模式 2 不得保留 Reality 字段"
+grep -Fxq AWS_ACM_CERTIFICATE_ARN <<<"${fields}" || fail "模式 4 需要 ACM ARN"
+grep -Fxq CDN_TRAFFIC_PROTECTION_GB <<<"${fields}" || fail "模式 4 需要 985GB 字段"
+assert_absent "${fields}" DIRECT_DOMAIN "模式 4 不得要求直连域名"
+assert_absent "${fields}" REALITY_TARGET "模式 4 不得保留 Reality 字段"
 grep -Fxq CLOUDFLARE_ORIGIN_CERT_ID <<<"$(state_required_fields cloudflare deploy)" \
-    || fail "模式 3 需要 Origin CA 字段"
+    || fail "模式 2 需要 Origin CA 字段"
 assert_absent "$(state_required_fields cloudflare deploy)" ORIGIN_HEADER_SECRET \
-    "模式 3 不得要求源站头密钥"
+    "模式 2 不得要求源站头密钥"
 fields=$(state_required_fields combined-cloudfront deploy)
-grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 4 需要直连域名"
-grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 4 需要 VLESS 路径"
+grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 5 需要直连域名"
+grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 5 需要 VLESS 路径"
 
 fields=$(state_required_fields combined-cloudflare deploy)
-grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 5 需要直连域名"
-grep -Fxq ANYTLS_PASSWORD <<<"${fields}" || fail "模式 5 需要 AnyTLS 密码"
-grep -Fxq CF_NODE_DOMAIN <<<"${fields}" || fail "模式 5 需要 CDN 节点域名"
-grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 5 需要 VLESS 路径"
-grep -Fxq CLOUDFLARE_ORIGIN_RULE_ID <<<"${fields}" || fail "模式 5 需要 Origin Rule"
-assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 5 的订阅域名由节点域名派生，不应落盘"
-assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 5 不使用 Origin CA"
-assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 5 不要求源站头密钥"
+grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 3 需要直连域名"
+grep -Fxq ANYTLS_PASSWORD <<<"${fields}" || fail "模式 3 需要 AnyTLS 密码"
+grep -Fxq CF_NODE_DOMAIN <<<"${fields}" || fail "模式 3 需要 CDN 节点域名"
+grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 3 需要 VLESS 路径"
+grep -Fxq CLOUDFLARE_ORIGIN_RULE_ID <<<"${fields}" || fail "模式 3 需要 Origin Rule"
+assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 3 的订阅域名由节点域名派生，不应落盘"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 3 不使用 Origin CA"
+assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 3 不要求源站头密钥"
 
 state_required_fields nope >/dev/null && fail "未知协议必须返回非零"
 
@@ -272,3 +272,23 @@ reality_state=$(
 assert_contains "已删除协议提示" "${reality_state}" "已删除的旧协议"
 
 printf 'ok - 状态 schema 门禁测试通过\n'
+
+# --- 安装菜单编号：1 AnyTLS / 2 纯 CloudFlare / 3 AnyTLS+CloudFlare / 4 纯 CloudFront / 5 AnyTLS+CloudFront
+# 编号只影响交互菜单与文档，落盘状态用 PROTOCOL 字符串；这里锁住菜单文案顺序与选择映射。
+install_menu_body=$(awk '/^choose_install_mode\(\) \{/,/^\}/' "${ROOT_DIR}/easy_all")
+[[ -n "${install_menu_body}" ]] || fail "easy_all 缺少 choose_install_mode"
+while IFS=$'\t' read -r menu_number menu_text menu_profile; do
+    assert_contains "菜单 ${menu_number} 文案" "${install_menu_body}" "${menu_number}. ${menu_text}"
+    assert_contains "菜单 ${menu_number} 映射" "${install_menu_body}" "${menu_number}) printf '${menu_profile}\\n'"
+done <<'MENU'
+1	AnyTLS 直连	anytls
+2	纯 CloudFlare	cloudflare
+3	AnyTLS + CloudFlare	combined-cloudflare
+4	纯 CloudFront	cloudfront
+5	AnyTLS + CloudFront	combined-cloudfront
+MENU
+[[ $(printf '%s\n' "${install_menu_body}" | grep -n "  2\. 纯 CloudFlare" | cut -d: -f1) \
+    -lt $(printf '%s\n' "${install_menu_body}" | grep -n "  4\. 纯 CloudFront" | cut -d: -f1) ]] \
+    || fail "菜单编号顺序错误：2 应为纯 CloudFlare、4 应为纯 CloudFront"
+
+printf 'ok - 安装菜单编号测试通过\n'

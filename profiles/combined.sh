@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mode 4: AnyTLS direct entry (TCP 443) plus the CloudFront CDN entry
+# Mode 5: AnyTLS direct entry (TCP 443) plus the CloudFront CDN entry
 # (Caddy origin 8443 → sing-box loopback VLESS WebSocket on 10086).
 # 直连节点域名同时是 CloudFront 源站域名，订阅域名复用 CloudFront 节点域名：安装只问两个名字。
 set -Eeuo pipefail
@@ -22,7 +22,7 @@ source "${EASY_ALL_RUNTIME_LIB_DIR}/cloudfront-mode.sh"
 PROTOCOL=combined-cloudfront
 BACKEND=sing-box
 CDN_PROVIDER=aws
-# 模式 4 的唯一键：模式选择、安装 marker、安装身份与 Profile 路由都用同一个值。
+# 模式 5 的唯一键：模式选择、安装 marker、安装身份与 Profile 路由都用同一个值。
 readonly CDN_PROFILE_KEY=combined-cloudfront
 readonly CDN_EXPECTED_PROTOCOL=combined-cloudfront
 readonly CDN_MODE_LABEL="直连+CDN（CloudFront）"

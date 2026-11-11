@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mode 3: Cloudflare orange-cloud single domain (one proxied A record serves both
+# Mode 2: Cloudflare orange-cloud single domain (one proxied A record serves both
 # the VLESS WebSocket node and the Token-protected subscription on 443).
 set -Eeuo pipefail
 umask 077
@@ -31,7 +31,7 @@ collect_install_inputs() {
     collect_cloudflare_install_inputs
 }
 
-# Mode 3 has no direct entry: every direct hook returns an empty result.
+# Mode 2 has no direct entry: every direct hook returns an empty result.
 cdn_direct_domains() { return 0; }
 cdn_prepare_direct_runtime() { return 0; }
 cdn_validate_direct_runtime() { return 0; }

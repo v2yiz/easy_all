@@ -35,15 +35,15 @@
   <text x="1120" y="615" class="small muted">用途</text>
   <line x1="160" y1="632" x2="1440" y2="632" stroke="#d8dee8" stroke-width="2"/>
   <g class="small">
-    <text x="165" y="674">DNS &amp; Zones → Zone / Zone / <tspan class="blue">Read</tspan></text><text x="790" y="674">1 / 2 / 3 / 4</text><text x="1120" y="674" class="green">读取目标 Zone</text>
-    <text x="165" y="726">DNS &amp; Zones → DNS / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="726">1 / 2 / 3 / 4</text><text x="1120" y="726" class="green">管理 DNS 记录</text>
-    <text x="165" y="778">DNS &amp; Zones → Zone Settings / Zone / <tspan class="blue">Read</tspan></text><text x="790" y="778">1 deploy / 3</text><text x="1120" y="778" class="green">读取 SSL/TLS 模式</text>
-    <text x="165" y="830">Rules &amp; Configuration → Origin Rules / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="830">1 deploy</text><text x="1120" y="830" class="green">配置订阅回源</text>
-    <text x="165" y="882">Cache &amp; Performance → SSL and Certificates / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="882">3</text><text x="1120" y="882" class="green">管理 Origin CA</text>
+    <text x="165" y="674">DNS &amp; Zones → Zone / Zone / <tspan class="blue">Read</tspan></text><text x="790" y="674">1 / 2 / 3 / 4 / 5</text><text x="1120" y="674" class="green">读取目标 Zone</text>
+    <text x="165" y="726">DNS &amp; Zones → DNS / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="726">1 / 2 / 3 / 4 / 5</text><text x="1120" y="726" class="green">管理 DNS 记录</text>
+    <text x="165" y="778">DNS &amp; Zones → Zone Settings / Zone / <tspan class="blue">Read</tspan></text><text x="790" y="778">1 deploy / 2 / 3</text><text x="1120" y="778" class="green">读取 SSL/TLS 模式</text>
+    <text x="165" y="830">Rules &amp; Configuration → Origin Rules / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="830">1 deploy / 3</text><text x="1120" y="830" class="green">配置订阅回源</text>
+    <text x="165" y="882">Cache &amp; Performance → SSL and Certificates / Zone / <tspan class="orange">Edit</tspan></text><text x="790" y="882">2</text><text x="1120" y="882" class="green">管理 Origin CA</text>
   </g>
 
   <rect x="160" y="948" width="1280" height="54" rx="10" fill="#fff4e9" stroke="#f48120" stroke-width="2"/>
-  <text x="185" y="983" class="small orange">不要选 All zones 或 All zones from an account；模式 2 / 4 仅需 Zone Read 与 DNS Edit。</text>
+  <text x="185" y="983" class="small orange">不要选 All zones 或 All zones from an account；模式 4 / 5 仅需 Zone Read 与 DNS Edit。</text>
 
   <rect x="70" y="1055" width="1460" height="205" rx="20" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="1105" r="24" fill="#f48120"/><text x="107" y="1115" class="step white">3</text>

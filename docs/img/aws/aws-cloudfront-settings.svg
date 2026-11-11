@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
-  <title id="title">CloudFront settings for VLESS WebSocket (mode 2/4)</title>
-  <desc id="desc">Viewer aliases and the us-east-1 ACM certificate cover both the CloudFront node domain and the subscription domain with sni-only TLS on viewer port 443. The default behavior disables caching, forwards all query strings, User-Agent, Content-Type and the WebSocket upgrade headers, allows seven HTTP methods over HTTP/2, keeps gRPC disabled, and the custom origin is https-only with the X-Easy-All-Origin-Key header on port 443 in mode 2 and 8443 in mode 4. No WAF, access logging, Origin Shield or Route 53 is used.</desc>
+  <title id="title">CloudFront settings for VLESS WebSocket (mode 4/5)</title>
+  <desc id="desc">Viewer aliases and the us-east-1 ACM certificate cover both the CloudFront node domain and the subscription domain with sni-only TLS on viewer port 443. The default behavior disables caching, forwards all query strings, User-Agent, Content-Type and the WebSocket upgrade headers, allows seven HTTP methods over HTTP/2, keeps gRPC disabled, and the custom origin is https-only with the X-Easy-All-Origin-Key header on port 443 in mode 4 and 8443 in mode 5. No WAF, access logging, Origin Shield or Route 53 is used.</desc>
   <defs><filter id="s"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-opacity=".11"/></filter><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#344563"/></marker><style>.ttl{font:700 31px system-ui,sans-serif;fill:#172b4d}.sub{font:16px system-ui,sans-serif;fill:#5e6c84}.h{font:700 20px system-ui,sans-serif;fill:#172b4d}.t{font:15px system-ui,sans-serif;fill:#344563}.mono{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#172b4d}.box{filter:url(#s);stroke-width:2}.arrow{stroke:#344563;stroke-width:3;fill:none;marker-end:url(#a)}</style></defs>
   <rect width="1200" height="760" fill="#f7f9fc"/>
   <text x="58" y="62" class="ttl">CloudFront · VLESS WebSocket 必要设置</text>
-  <text x="58" y="93" class="sub">脚本通过 AWS CLI 自动生成同等配置（模式 2 / 4 共用同一分发模板）</text>
+  <text x="58" y="93" class="sub">脚本通过 AWS CLI 自动生成同等配置（模式 4 / 5 共用同一分发模板）</text>
 
   <rect class="box" x="50" y="148" width="305" height="450" rx="18" fill="#fff" stroke="#4c9aff"/>
   <rect x="50" y="148" width="305" height="65" rx="18" fill="#deebff"/><text x="202" y="189" class="h" text-anchor="middle">Viewer / General</text>

@@ -102,7 +102,7 @@ configure_daily_reboot() {
     fi
     current=$(read_root_crontab) || return 1
     if [[ "${SCHEDULED_REBOOT_ENABLED}" == "1" ]]; then
-        # 整行只有一句对本工具内部入口的调用：抢占运行时写锁、模式 2/4 的流量复核
+        # 整行只有一句对本工具内部入口的调用：抢占运行时写锁、模式 4/5 的流量复核
         # 与跳过审计都在 internal_scheduled_reboot 里，行长度不再随逻辑增长
         # （crontab 单行 1000 字节上限，超了报 "command too long" 拒装）。
         job="0 ${SCHEDULED_REBOOT_HOUR} * * * ${COMMAND_PATH}"

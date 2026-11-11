@@ -324,7 +324,7 @@ runtime_has_cdn_entry() {
     state_protocol_has_cdn_entry "${PROTOCOL:-}"
 }
 
-# 公网 TCP 业务端口（design §2）。模式 3 的 443 与模式 1 的 8443 只对 Cloudflare 段开放。
+# 公网 TCP 业务端口（design §2）。模式 2 的 443 与模式 1 的 8443 只对 Cloudflare 段开放。
 runtime_public_tcp_ports() {
     case "${PROTOCOL:-}" in
     anytls) printf '443' ;;
@@ -370,7 +370,7 @@ runtime_singbox_exec_start_pre() {
 
 # --- 状态契约与订阅配置（五模式共用） ---------------------------------------
 
-# AnyTLS 直连身份（模式 1/4 共用）：域名、节点名与密码先落盘再创建任何资源。
+# AnyTLS 直连身份（模式 1/3/5 共用）：域名、节点名与密码先落盘再创建任何资源。
 anytls_collect_direct_inputs() {
     DIRECT_DOMAIN=$(normalize_domain "$(prompt_value \
         '直连节点域名（灰云 A 记录指向本机）' "${DIRECT_DOMAIN:-node.${CF_ZONE}}")")
@@ -660,7 +660,7 @@ cdn_validate_state_structure() {
         [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
             || die "状态中的节点域名不得等于直连域名：${CF_NODE_DOMAIN}"
         [[ "${SUBSCRIPTION_MODE}" == "deploy" ]] \
-            || die "状态中的订阅模式无效（模式 5 固定 deploy）：${SUBSCRIPTION_MODE}"
+            || die "状态中的订阅模式无效（模式 3 固定 deploy）：${SUBSCRIPTION_MODE}"
     fi
     cdn_derive_runtime_fields || die "状态缺少可用于派生运行时的字段"
 }
@@ -813,7 +813,7 @@ configure_runtime_ufw() {
 # --- 证书（design §6） -------------------------------------------------------
 
 certificate_required_hosts() {
-    # 同一域名复用（如模式 4 的直连域名等于源站域名）只保留一个 -d；域名顺序不影响签发与展示。
+    # 同一域名复用（如模式 5 的直连域名等于源站域名）只保留一个 -d；域名顺序不影响签发与展示。
     {
         if runtime_has_direct_entry; then
             printf '%s\n' "${DIRECT_DOMAIN}"
@@ -825,7 +825,7 @@ certificate_required_hosts() {
         elif state_protocol_uses_cloudfront "${PROTOCOL}"; then
             printf '%s\n' "${CF_ORIGIN_DOMAIN}"
         elif [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
-            # 模式 5 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
+            # 模式 3 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
             printf '%s\n' "${CF_NODE_DOMAIN}"
         fi
     } | sort -u
@@ -996,7 +996,7 @@ runtime_served_certificate_endpoints() {
 }
 
 # 服务实际送出的证书必须与磁盘一致：证书轮换只换文件、配置内容不变，
-# Caddy/sing-box 可能仍持有旧证书；模式 3 的 Origin CA 吊销与 LE 续期都不得靠猜测。
+# Caddy/sing-box 可能仍持有旧证书；模式 2 的 Origin CA 吊销与 LE 续期都不得靠猜测。
 runtime_served_certificate_matches_disk() {
     local host port expected actual attempt matched
     expected=$(runtime_certificate_fingerprint_on_disk) || return 1
@@ -1170,7 +1170,7 @@ runtime_reload_caddy() {
 
 # --- 本机验收 -----------------------------------------------------------------
 
-# 本机探活参数：模式可提供自有 CA（模式 3 的 Origin CA）与源站守卫头。
+# 本机探活参数：模式可提供自有 CA（模式 2 的 Origin CA）与源站守卫头。
 # 严格 TLS 校验始终保持，禁止 -k。
 runtime_local_probe_context() {
     RUNTIME_PROBE_HOST=$(caddy_site_host 2>/dev/null || true)
@@ -1216,7 +1216,7 @@ runtime_config_has_cdn_inbound() {
     jq -e 'any(.inbounds[]?; .tag == "vless-cdn-in")' "${config}" >/dev/null 2>&1
 }
 
-# 必需监听端口按候选配置派生：受限（blocked）时不要求 10086，模式 4 仍要求 443。
+# 必需监听端口按候选配置派生：受限（blocked）时不要求 10086，模式 5 仍要求 443。
 runtime_singbox_required_ports() {
     local ports=""
     runtime_has_direct_entry && ports="443"

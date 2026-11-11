@@ -26,10 +26,10 @@ Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完�
 请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。桌面图形客户端请选上述前缀的安装包，
 发布页的 `sing-box-*` 包是命令行内核。
 
-本机节点只有两类：AnyTLS 直连（模式 1 / 4 / 5）与 VLESS WebSocket（模式 2 / 3 / 4 / 5）。两者端口都是 `443`，
+本机节点只有两类：AnyTLS 直连（模式 1/3/5）与 VLESS WebSocket（模式 2/3/4/5）。两者端口都是 `443`，
 都使用公信证书，`skip-cert-verify` 固定为 `false` —— 不要在客户端开启“跳过证书校验”。
 
-**AnyTLS 直连（模式 1 / 4 / 5）** 的 Mihomo 字段固定为：
+**AnyTLS 直连（模式 1/3/5）** 的 Mihomo 字段固定为：
 
 | 字段 | 值 |
 | --- | --- |
@@ -43,8 +43,8 @@ Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完�
 分享链接形如
 `anytls://<URL 编码后的密码>@node.example.com:443/?sni=node.example.com&insecure=0#<URL 编码后的节点名>`。
 
-**VLESS WebSocket（模式 2 / 3 / 4 / 5）** 的本机 CDN 节点只有**一个**，名称默认 `🇺🇸AWS`（模式 2/4）
-或 `🇺🇸CF`（模式 3/5），安装时可改；连接参数固定为：
+**VLESS WebSocket（模式 2/3/4/5）** 的本机 CDN 节点只有**一个**，名称默认 `🇺🇸AWS`（模式 4/5）
+或 `🇺🇸CF`（模式 2/3），安装时可改；连接参数固定为：
 
 - 节点地址（`server`）是连接地址，安装时若确认了 CDN 优选地址则是优选域名（如 `m3q8a1w7zr.cloudfront.182682.xyz`），否则是 CDN 节点域名（如 `cf.example.com`）；TLS `servername` 与 WebSocket `Host` 始终是 CDN 节点域名。地址都是域名，不是 IP；
 - 端口 `443`、TLS 开启、`network: ws`、`skip-cert-verify: false`、`client-fingerprint: chrome`、`packet-encoding: xudp`；
@@ -54,8 +54,8 @@ Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完�
 `vless://<uuid>@cf.example.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-...&packetEncoding=xudp#<节点名>`。
 启用 CDN 优选地址时只有 `@` 后换成优选域名（如 `m3q8a1w7zr.cloudfront.182682.xyz`），`sni` 与 `host` 仍是节点域名。
 
-注意区分证书来源：客户端只校验 viewer / 直连 / 橙云边缘证书（模式 1/5 的直连是 Let's Encrypt 证书，模式 2/4 是 AWS ACM，
-模式 3 是 Cloudflare 边缘证书）；源站侧的 Let's Encrypt 证书与 Cloudflare Origin CA 只在边缘到源站之间使用，
+注意区分证书来源：客户端只校验 viewer / 直连 / 橙云边缘证书（模式 1/3 的直连是 Let's Encrypt 证书，模式 4/5 是 AWS ACM，
+模式 2 是 Cloudflare 边缘证书）；源站侧的 Let's Encrypt 证书与 Cloudflare Origin CA 只在边缘到源站之间使用，
 源站头密钥 `X-Easy-All-Origin-Key` 同样只存在于服务器与分发之间，都不会下发到订阅。
 
 “能导入”不代表所有节点都能连接。客户端需要支持 AnyTLS 与 VLESS WebSocket（Mihomo 建议 ≥ 1.19.9）；
@@ -70,14 +70,14 @@ Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完�
 ## 客户端分流与节点分组
 
 日常使用“规则”模式即可。订阅会自动让中国大陆流量直连，境外网站和 AI 服务经 `PROXY`。
-- **直连 AnyTLS（模式 1 / 4 / 5）**：部署订阅时 `PROXY` 分组依次是本机 AnyTLS 节点（默认 `🇺🇸直连`）与聚合配置 `nodes` 里的节点（名字原样使用）。默认只下发不带 `optional` 的聚合节点，在订阅链接后追加 `&node=all` 可显示全部；模式 1 选择“仅节点”（`link`）时不下发订阅，只输出本机节点信息。
-- **纯 CDN（模式 2 / 3）**：没有直连节点。`PROXY` 分组按固定顺序包含「本机 CDN 节点 → 聚合节点（来自订阅配置 JSON 的 `nodes`，原顺序）」。CDN 节点在模式 2 是 CloudFront 节点（默认 `🇺🇸AWS`），在模式 3 是 Cloudflare 橙云节点（默认 `🇺🇸CF`），都不经过另一朵云的链路。
-- **直连+CDN（模式 4 / 5）**：模式 4 的 `PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机 CDN 节点（默认 `🇺🇸AWS`）→ `AUTO` → `CDN-FALLBACK` → 聚合节点」。`PROXY` 仍是手动选择；另有两个自动组：`AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN），探测地址固定 `https://www.gstatic.com/generate_204`（HTTPS 443）。
-- **直连+CDN（模式 5）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机橙云节点（默认 `🇺🇸CF`）→ 聚合节点」；没有 `AUTO` / `CDN-FALLBACK` 自动组，由你手动切换。
-- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 1 是直连节点 → 聚合节点；模式 2/3 是 CDN 节点 → 聚合节点；模式 4/5 是直连节点 → CDN 节点 → 聚合节点。
+- **直连 AnyTLS（模式 1/3/5）**：部署订阅时 `PROXY` 分组依次是本机 AnyTLS 节点（默认 `🇺🇸直连`）与聚合配置 `nodes` 里的节点（名字原样使用）。默认只下发不带 `optional` 的聚合节点，在订阅链接后追加 `&node=all` 可显示全部；模式 1 选择“仅节点”（`link`）时不下发订阅，只输出本机节点信息。
+- **纯 CDN（模式 2/4）**：没有直连节点。`PROXY` 分组按固定顺序包含「本机 CDN 节点 → 聚合节点（来自订阅配置 JSON 的 `nodes`，原顺序）」。CDN 节点在模式 4 是 CloudFront 节点（默认 `🇺🇸AWS`），在模式 2 是 Cloudflare 橙云节点（默认 `🇺🇸CF`），都不经过另一朵云的链路。
+- **直连+CDN（模式 5）**：模式 5 的 `PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机 CDN 节点（默认 `🇺🇸AWS`）→ `AUTO` → `CDN-FALLBACK` → 聚合节点」。`PROXY` 仍是手动选择；另有两个自动组：`AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN），探测地址固定 `https://www.gstatic.com/generate_204`（HTTPS 443）。
+- **直连+CDN（模式 3）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机橙云节点（默认 `🇺🇸CF`）→ 聚合节点」；没有 `AUTO` / `CDN-FALLBACK` 自动组，由你手动切换。
+- **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 1 是直连节点 → 聚合节点；模式 2/4 是 CDN 节点 → 聚合节点；模式 3/5 是直连节点 → CDN 节点 → 聚合节点。
 - **外部聚合节点**：订阅 JSON 里指向外部服务器的节点保留原有 `host/port/portRange`，不会因为本机统一 443 而被改写；它们的传输格式由你填写的配置决定。
-- **sing-box JSON 的分组差异**：`PROXY` 成员顺序与下发的 Mihomo 一致，但 JSON 没有 `CDN-FALLBACK`（官方 selector/urltest 无法保证“直连可用时始终优先”），模式 4 只有 `AUTO`（`urltest`，只含本机直连与 CDN，默认选择直连节点）。CDN 熔断时 JSON 里的 CDN 节点仍在，需要手动切到直连，`AUTO` 要等下一个探测周期（300 秒）才会换。
-- **熔断期间的节点（仅模式 2/4，模式 5 没有熔断）**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Caddy 代理路径返回 `503`，sing-box 省略 CDN 入站）。模式 4 此时切到直连节点（或 `CDN-FALLBACK` 自动回落）即可继续使用，直连会短暂重连一次；模式 2 只能等 UTC 次月或按运维指南收敛后再试。模式 1/3/5 没有这个熔断。
+- **sing-box JSON 的分组差异**：`PROXY` 成员顺序与下发的 Mihomo 一致，但 JSON 没有 `CDN-FALLBACK`（官方 selector/urltest 无法保证“直连可用时始终优先”），模式 5 只有 `AUTO`（`urltest`，只含本机直连与 CDN，默认选择直连节点）。CDN 熔断时 JSON 里的 CDN 节点仍在，需要手动切到直连，`AUTO` 要等下一个探测周期（300 秒）才会换。
+- **熔断期间的节点（仅模式 4/5，模式 3 没有熔断）**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Caddy 代理路径返回 `503`，sing-box 省略 CDN 入站）。模式 5 此时切到直连节点（或 `CDN-FALLBACK` 自动回落）即可继续使用，直连会短暂重连一次；模式 4 只能等 UTC 次月或按运维指南收敛后再试。模式 1/2/3 没有这个熔断。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
 
@@ -95,10 +95,11 @@ YouTube 与其他代理流量统一使用当前选择。
 第三方客户端即使使用 sing-box 内核，也要确认它能从 URL 加载完整配置；如果只支持节点列表，请按它支持的格式导入。
 
 - **配置内容**：混合代理 `127.0.0.1:1080`、TUN（`172.19.0.1/30`、MTU 1500、`auto_route` 开启）、本机节点与受支持的聚合节点、`PROXY` 手动选择器、Fake-IP DNS（`198.18.0.0/16`）与分流规则。控制接口（Clash API）只在 `127.0.0.1:9090` 监听，不暴露到局域网。
-- **手动切换**：用客户端原生界面或 Clash API 在 `PROXY` 中选节点；规则模式按订阅内规则分流，`clash_mode=direct/global` 可整体直连或全局代理。
+- **手动切换**：用客户端原生界面或 Clash API 在 `PROXY` 中选节点；规则模式按订阅内规则分流，`clash_mode=direct/global` 可整体直连或全局代理，DNS 同向切换：直连模式用国内 DoH 解析（不依赖代理节点，也不再返回 Fake-IP），全局模式改用经代理的海外 DoH，局域网与认证门户域名在任何模式下都由本地解析。
 - **节点排除**：官方 sing-box 1.14.4 不支持 `xhttp` 传输与 `mieru` 协议，也会拒绝 1.14.4 uTLS 枚举之外的 `fp`（例如 `chromium`）。这两类聚合节点只从 JSON 中排除，`apply` / `edit-sub` 会打印被排除的节点名、原因与数量；Mihomo / Base64 订阅仍包含它们。Reality 节点的 `support-x25519mlkem768` 不影响能否导入（sing-box 的 Reality 客户端固定使用经典 X25519，不提供 MLKEM 混合密钥交换），但这类节点在本版本没有做过实际握手验证。本机节点始终可用，因此排除后 JSON 仍然有效。
 - **首次启动需要能下载规则集**：订阅引用 MetaCubeX 的 sing-box SRS 规则集（`update_interval` 1 天，启用缓存）。没有任何缓存且首次下载失败时，客户端会报配置启动失败；等网络恢复后重新导入或重启即可。已有有效缓存时，离线重启与“更新失败保留旧缓存”都正常。
 - **直连解析用本地 DNS**：订阅里的 `DIRECT` 出口固定走客户端本地解析，局域网/内部域名（`nas.lan` 等）与 Mihomo 订阅一致地由系统 DNS 解析；节点域名用独立的引导解析器，不经过代理 DNS。
+- **按真实 IP 连接仍能按域名分流**：订阅开启 DNS 反向映射，应用先经 sing-box 解析过域名、随后直接连接 IP 时，路由仍能命中微信、Steam 下载与国内直连等域名集合（Mihomo 订阅的 `force-dns-mapping` 对应行为）。它依赖解析真的经过 sing-box：系统 DNS 被代持并缓存的平台（如 macOS）可能拿不到映射，此时按 IP 规则分流。
 - **TUN 行为按平台**：Linux 上以命令行运行 TUN 需要相应权限，能通过 `sing-box check` 不代表系统已允许接管网络；移动端请在 VPN 模式实测。首版只下发一份公共 JSON，不按 iOS/Android 拆分，也不剥离嗅探段（JSON 只用 `sniff` 规则嗅探 TCP 的 HTTP/TLS，不嗅探 QUIC）。
 - **导入出错时先分清类型**：格式选错（加 `&flag=singbox`）、核心不支持某些字段、规则集首次下载失败、节点连接失败是不同问题；`flag` 只解决格式选择。
 
@@ -270,10 +271,10 @@ https://1.1.1.1/dns-query
 | FlClash | 设置 → 网络 / DNS → 覆写 DNS |
 | Clash Meta for Android | 设置 → 覆写 → DNS 覆写 |
 
-模式 2/3/4/5 的订阅只包含**一个**本机 CDN 节点（模式 2/4 经 CloudFront 分发调度，模式 3/5 经 Cloudflare 边缘调度），
-连接地址可能是安装时确认的 CDN 优选域名（见上文），TLS SNI 与 WebSocket `Host` 仍是节点域名；没有聚合优选 IP 列表、测速组或额外兜底节点（模式 4 的 `AUTO` / `CDN-FALLBACK` 只是本机直连与 CDN 之间的自动选择）。订阅能够更新但节点无法连接时，先按上文用 `sudo easy_all edit-sub` 删除 `cdnEdgeAddress` 并刷新订阅排除优选域名问题，再按顺序排查：
+模式 2/3/4/5 的订阅只包含**一个**本机 CDN 节点（模式 4/5 经 CloudFront 分发调度，模式 2/3 经 Cloudflare 边缘调度），
+连接地址可能是安装时确认的 CDN 优选域名（见上文），TLS SNI 与 WebSocket `Host` 仍是节点域名；没有聚合优选 IP 列表、测速组或额外兜底节点（模式 5 的 `AUTO` / `CDN-FALLBACK` 只是本机直连与 CDN 之间的自动选择）。订阅能够更新但节点无法连接时，先按上文用 `sudo easy_all edit-sub` 删除 `cdnEdgeAddress` 并刷新订阅排除优选域名问题，再按顺序排查：
 
 1. 确认客户端支持 AnyTLS / VLESS WebSocket（建议内核 ≥ 1.19.9），且没有开启“跳过证书校验”；
-2. 模式 4 先在 `PROXY` 里手动切到直连节点，确认是不是 CDN 入口单独不通；
+2. 模式 5 先在 `PROXY` 里手动切到直连节点，确认是不是 CDN 入口单独不通；
 3. 运行 `sudo easy_all status`：CDN 用量若已到 985 GB 或显示 `protection_offline`，节点会被阻断到 UTC 次月；
-4. 仍不通再检查云端：模式 2/4 看节点域名 CNAME 是否指向分发、分发与 ACM 是否就绪（源站端口模式 2 为 `443`、模式 4 为 `8443`）；模式 3/5 看橙云 A 记录是否为 Proxied、SSL/TLS 是否 Full (strict)，模式 5 再看 Origin Rule 是否回源 `8443`（必要时 `sudo easy_all apply-cloud`）。
+4. 仍不通再检查云端：模式 4/5 看节点域名 CNAME 是否指向分发、分发与 ACM 是否就绪（源站端口模式 4 为 `443`、模式 5 为 `8443`）；模式 2/3 看橙云 A 记录是否为 Proxied、SSL/TLS 是否 Full (strict)，模式 3 再看 Origin Rule 是否回源 `8443`（必要时 `sudo easy_all apply-cloud`）。

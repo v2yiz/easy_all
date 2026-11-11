@@ -27,7 +27,7 @@ lib/cdn-traffic-guard.sh
 lib/anytls-mode.sh
 lib/cloudfront-mode.sh
 lib/cloudflare-mode.sh
-lib/cloudflare-purge.sh
+lib/cloud-purge.sh
 templates/mihomo.yaml
 templates/singbox.json
 templates/aggregation.example.json

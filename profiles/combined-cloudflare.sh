@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mode 5: AnyTLS direct entry (TCP 443) plus the Cloudflare orange-cloud entry:
+# Mode 3: AnyTLS direct entry (TCP 443) plus the Cloudflare orange-cloud entry:
 # one proxied node domain serves the VLESS WebSocket node and the subscription via
 # Caddy origin 8443 (Origin Rule), with sing-box loopback VLESS WebSocket on 10086.
 set -Eeuo pipefail
@@ -28,7 +28,7 @@ readonly CDN_MODE_LABEL="直连+CDN（CloudFlare）"
 readonly CDN_ENTRY_SUMMARY="AnyTLS direct 443 + Cloudflare 橙云 VLESS WebSocket"
 CDN_INSTALL_PORTS=(443 8443)
 SUBSCRIPTION_OPTIONAL_VARIANTS=1
-# 橙云 A 记录与订阅/节点域名同一归属注释；purge-cloudflare 按 easy_all 前缀识别。
+# 橙云 A 记录与订阅/节点域名同一归属注释；purge-cloud 按 easy_all 前缀识别。
 readonly CDN_RECORD_COMMENT="easy_all combined-cloudflare"
 
 collect_install_inputs() {

@@ -1,11 +1,67 @@
 ## 未发布
 
+sing-box 订阅的 DNS 与内联域名匹配修正（`templates/singbox.json`）：
+
+- **直连/全局模式同向切 DNS**：新增两条 `clash_mode` DNS 规则，排在私有域名、单标签主机与认证门户之后、代理集合之前。
+  `direct` 模式其余查询改用国内 DoH，不再经代理节点解析、也不再返回 Fake-IP（此前 TUN 的 53 端口已被接管，直连模式下
+  `dns-proxy → PROXY` 仍生效，节点不可用时解析失败）；`global` 模式改用境外 DoH，不再对国内域名用直连 DoH。
+  局域网与认证门户解析在任何模式下不变。
+- **开启 DNS 反向映射**：`dns.reverse_mapping=true`，应用先解析再以真实 IP 建连时仍能命中域名规则（微信、Steam 下载、
+  国内直连集合的 UDP/443 与 TCP），对应 Mihomo 模板的 `force-dns-mapping` / `parse-pure-ip`。依赖应用把域名交给
+  sing-box 解析：系统 DNS 被代持缓存的平台（如 macOS）可能失效，共享 IP 上仍按已解析域名归类。
+- **内联后缀去掉前导点**：`wechat.com`、`steamcontent.com` 等裸域名此前不命中各自的内联集合（锁定核心对带点后缀只匹配子域），
+  与 Mihomo 的 `+.` 写法不一致；改为无点后缀后按「裸域 + 各级子域」匹配（`notwechat.com` 这类相似域名仍不命中），
+  同时删掉因此被覆盖的重复精确条目（`private-fallback` 的 `localhost` 与 Fake-IP 例外里的 4 个）。
+- **测试**：`test_singbox_subscription.sh` 新增 DNS 模式规则顺序与服务器映射、`reverse_mapping`、内联后缀无前导点与裸域覆盖断言；
+  存在真实核心时再用 `sing-box rule-set match` 断言裸域/子域/相似域名的匹配结果。四条断言均做过「破坏实现即变红」反向验证。
+- **文档**：客户端指南、系统技术参考同步模式切换的 DNS 行为、反向映射的前提与限制、内联后缀的裸域语义。
+
+云端清理命令改名为 `purge-cloud` 并支持 CloudFront/ACM：
+
+- **命令改名**：`purge-cloudflare` → `purge-cloud`（`easy_all` 帮助、文档、回滚提示与测试同步）。参数不变：
+  `--domain`、`--all`、`--yes`。
+- **新增 CloudFront/ACM 清理**：仅当设置 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（可选
+  `AWS_SESSION_TOKEN`）且本机有 aws CLI 时执行，否则提示跳过、Cloudflare 侧照常清理。分发按
+  `Comment` 前缀 `easy_all-cloudfront-` + **全部别名**落在 `--domain` 范围内识别，先禁用、等 `Deployed`
+  再删除；ACM 证书按 `us-east-1` + `easy_all=managed` 标记 + `InUseBy` 为空 + 域名全部在范围内识别。
+  `--all` 不按域名过滤。一次确认覆盖两种云，失败对象汇总后非零退出。
+- **安全边界**：用户自建分发、无标记证书、别名越界的受管分发一律保留；删除 CloudFront 分发不可逆
+  （会中断当前 CDN 链路），文档已注明需要重新安装或重建。
+- **测试**：`test/test_purge_cloudflare.sh` 更名为 `test/test_cloud_purge.sh`，新增 fake aws CLI 场景：
+  `--domain` 只删范围内受管分发与证书、`--all` 删除全部受管对象、用户分发/无标记证书/InUseBy 证书保留、
+  无凭据时不调用 aws 且提示跳过。
+- **文件**：`lib/cloudflare-purge.sh` → `lib/cloud-purge.sh`（`runtime.manifest`、launcher、模块树同步）。
+
+`purge-cloud` 的 CloudFront/ACM 侧修复（`lib/cloud-purge.sh`）：
+
+- **删除前复核补齐空别名判断（安全修复）**：`aws_distribution_still_owned` 现在与计划阶段同口径，要求分发的 `Aliases`
+  集合非空、且每个别名都落在本次范围内。此前「计划后被清空别名、仍保留受管 `Comment`」的分发能通过复核，被禁用并永久删除。
+  禁用前与最终删除前两处复核同时生效：不符即点名分发、保留不删，最后汇总为非零退出。
+- **`EASY_ALL_PURGE_MAX_PAGES` 从实际不生效变为真实生效（可观察行为变化）**：CloudFront/ACM 列表收集改为脚本显式分页——
+  每页都带 `--no-paginate` 关闭 aws CLI 的自动分页，并用 `--cli-input-json` 携带服务端分页参数（`MaxItems=100` 与
+  `Marker`/`NextToken`），逐页只保留清理所需字段（分发 `Id`/`Comment`/`Aliases`，证书 `CertificateArn`）经临时文件累计。
+  此前每次列表调用都被 CLI 在内部翻完所有页、外层只看到一页，页数上限与真实扫描量无关。现在每个列表接口最多
+  `max_pages` 个整页 + 一个结束探测页，超出即在任何删除（含 Cloudflare 侧）之前整体取消。
+  选项名、默认值与帮助文本不变；单页数据、重复 token 等防护语义不变。
+- **测试**：`test/test_cloud_purge.sh` 的假 aws 增加双行为分页（带 `--no-paginate` 按页回放；不带时合并全部页并丢弃
+  截断标记，复刻 botocore 聚合）与别名漂移（计划后禁用前、禁用后删除前两种时序），新增 5 组用例覆盖空别名复核、
+  页数预算中止、多页一次性处理与列表调用形状。
+
+安装模式重新编号（只改用户可见编号，不改落盘状态）：
+
+- **新编号**：`1` AnyTLS 直连（不变）、`2` 纯 CloudFlare（原 3）、`3` AnyTLS + CloudFlare（原 5）、
+  `4` 纯 CloudFront（原 2）、`5` AnyTLS + CloudFront（原 4）。安装菜单、帮助文本、README 与四份文档同步。
+- **无迁移**：`PROTOCOL` 字符串（`anytls` / `cloudfront` / `cloudflare` / `combined-cloudfront` /
+  `combined-cloudflare`）、state 字段、安装身份 schema 与 `STATE_VERSION` 均不变，已装机器升级后继续工作，
+  不需要重装；只有交互菜单的选项号与文档中的「模式 N」编号变了。
+- **CHANGELOG 历史条目保留原编号**：下方已发布段落里的编号是当时版本的事实，不随本次重编号改写。
+
 CDN 优选连接地址（`cdnEdgeAddress`，模式 2–5）：
 
 - **功能**：订阅配置 JSON 顶层新增可选字段 `cdnEdgeAddress`（只存完整主机名），只替换本机 CDN 节点的**连接地址**
   （VLESS 链接的 `@host`、Mihomo `server`、sing-box `server`）；TLS SNI、WebSocket `Host`、证书校验、订阅 URL、
   云端 DNS、回源与 AnyTLS 直连全部不变。字段缺失或为 `null` 等同关闭，删除字段即回退到节点域名。
-- **两种后缀**：模式 2/4 生成 `*.cloudfront.182682.xyz`，模式 3/5 生成 `*.cloudflare.182682.xyz`；模式 1 不做优选，
+- **两种后缀**：模式 4/5 生成 `*.cloudfront.182682.xyz`，模式 2/3 生成 `*.cloudflare.182682.xyz`；模式 1 不做优选，
   也不出现该提示（粘贴合法值会被接受并持久化，但永不渲染）。
 - **安装交互与续装**：首装提示 `CDN 优选前缀 [<10 位随机前缀>]（回车采用）：`，非法输入留在提示重填；
   优选连接地址是必选项（不提供关闭选项），前缀与安装身份一同落盘，断点续装回车采用原前缀（不重抽）、
@@ -37,22 +93,22 @@ CDN 优选连接地址（`cdnEdgeAddress`，模式 2–5）：
   开机任务失败时加速不生效、已应用的 TCP 调优保留，按 `journalctl -u easy_all-skyline-setup.service -b` 排障后
   执行 `sudo easy_all apply` 重试；安装阶段失败则中止安装并回滚本机配置。
 
-模式 2/4 域名输入收敛为每条链路两个名字：
+模式 4/5 域名输入收敛为每条链路两个名字：
 
-- **模式 4 不再询问源站域名**：源站域名固定复用直连节点域名（`CF_ORIGIN_DOMAIN = DIRECT_DOMAIN`）。
+- **模式 5 不再询问源站域名**：源站域名固定复用直连节点域名（`CF_ORIGIN_DOMAIN = DIRECT_DOMAIN`）。
   直连 `443` 与 CloudFront 回源 `8443` 端口隔离、共用一条灰云 `A`，LE 证书与 ACM SAN 去重后都只有一项。
-- **模式 2/4 不再询问订阅域名**：订阅域名固定复用 CloudFront 节点域名（`SUBSCRIPTION_DOMAIN = CF_NODE_DOMAIN`），
+- **模式 4/5 不再询问订阅域名**：订阅域名固定复用 CloudFront 节点域名（`SUBSCRIPTION_DOMAIN = CF_NODE_DOMAIN`），
   订阅走 `https://<节点域名>/subscribe`，只写一条 CNAME、一条分发别名。
-- **模式 2 仍询问源站域名**；模式 1/3/5 的输入、端口、证书与订阅行为完全不变。
+- **模式 4 仍询问源站域名**；模式 1/2/3 的输入、端口、证书与订阅行为完全不变。
 - **旧装无影响**：派生值不落盘成新字段，`cdn_validate_install_domains` 不新增「源站必须等于直连」「订阅必须等于节点」的强校验，
   已装的三域名状态仍可正常 `load_state` / `apply`，不写迁移、不要求重装；跨版本中断续装沿用安装身份里的原域名，不改写已建分发/证书/DNS。
-- **文档**：`README.md`、`docs/technical-reference.md`、`docs/operations-guide.md` 与 `docs/preparation-guide.md` 同步模式 2/4 的域名规划、DNS/CNAME 与证书范围，并精简前置准备流程。
+- **文档**：`README.md`、`docs/technical-reference.md`、`docs/operations-guide.md` 与 `docs/preparation-guide.md` 同步模式 4/5 的域名规划、DNS/CNAME 与证书范围，并精简前置准备流程。
 
 新增 sing-box 完整 JSON 订阅（八份订阅产物）：
 
 - **产物**：在六份 Mihomo/Base64 之外新增 `singbox.json` / `singbox-all.json`，与其余产物同批渲染、同批原子发布，权限 `0600`。
 - **格式协商**：显式 flag（如 `flag=singbox`）→ 已确认的 SFA / SFI / SFM / SFT / SFW / SFL UA → Clash UA → Base64；JSON 目标文件缺失返回 `503` 且不降级，裸文件访问仍 `404`，原有 YAML / Base64 行为不变。
-- **配置内容**：`templates/singbox.json` 提供 TUN 与混合入口、`PROXY` 选择器（模式 4 另有 `AUTO`，JSON 不生成 `CDN-FALLBACK`）、Fake-IP DNS 与分流规则集；节点由结构化数据生成，不反向解析 URI/YAML。
+- **配置内容**：`templates/singbox.json` 提供 TUN 与混合入口、`PROXY` 选择器（模式 5 另有 `AUTO`，JSON 不生成 `CDN-FALLBACK`）、Fake-IP DNS 与分流规则集；节点由结构化数据生成，不反向解析 URI/YAML。
 - **排除与提示**：`xhttp`、`mieru` 与 `fp` 不在锁定核心 uTLS 枚举内的聚合节点只从 JSON 排除，`apply` / `edit-sub` 打印节点名、原因与数量，Mihomo / Base64 不受影响。
 - **流控边界不变**：CDN 就绪判定与计量仍只使用六份 Mihomo/Base64 产物；JSON 缺失或损坏不会放开或封锁 CDN，也不清零用量。
 - **升级提示**：`self-update` 后需执行一次 `apply` 才会生成 JSON；在此之前 sing-box 客户端会按旧规则回落到 Base64 订阅。
@@ -64,6 +120,12 @@ CDN 优选连接地址（`cdnEdgeAddress`，模式 2–5）：
 - **云端失败仍继续本机卸载，但退出码非零**：云端 API、凭据或 CloudFront 等待失败时逐项告警并保留残留清单，本机卸载照常完成；命令以 `1` 退出，避免自动化把未清理的云端资源当作成功。
 - **安全例外**：状态不完整时仍只清本机，并提示云端资源需人工核对；ACM validation CNAME 因可能被其他证书复用而保留，在资源清单与卸载收尾点名；因归属保护、接管保护或多条同名记录而跳过的条目不删除。
 - **UFW 策略未变**：卸载仍只回收业务端口放行，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置。
+
+CloudFront 分发配置的临时文件清理（`lib/cloudfront-mode.sh`）：
+
+- **源站头密钥不留在临时目录（安全修复）**：卸载路径生成的禁用态分发配置（`cloudfront-disable.json`）在 `update-distribution` 之后立即删除，失败分支同样清理；`clear_profile_credentials` 登记全部分发配置与 AWS 原样副本（`cloudfront-distribution.json` / `cloudfront-owned-config.json` / `cloudfront-purge-config.json` / `cloudfront-purge-owned.json`）——此前状态回滚失败保留 `RUNTIME_TMP` 时，这些含明文源站头密钥的文件会留在磁盘。命令输出、参数与云端行为不变。
+- **测试**：`test_install_guard.sh` 的确认阶段凭据预检增加上述临时文件（移除钩子登记即变红）；`test_caddy_render.sh` / `test_modes_render.sh` 补模式 5 的 `reverse_proxy 127.0.0.1:10086` 断言；`test_singbox_subscription.sh` 的 `rule-set match` 先判退出码，核心报错不再被当成「匹配成功」。
+- **文档**：客户端指南的模式 5 分组小标题改回「模式 5」，运维指南的端口排查改为「全模式 `443`」。
 
 ## 5.1.0 更新说明（2026-11-10）
 

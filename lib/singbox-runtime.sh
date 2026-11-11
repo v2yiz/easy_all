@@ -73,7 +73,7 @@ singbox_anytls_inbound_json() {
         }'
 }
 
-# blocked=1 时省略 CDN 入站：模式 4 保留 AnyTLS，重启核心即终止旧 CDN 长连接。
+# blocked=1 时省略 CDN 入站：模式 5 保留 AnyTLS，重启核心即终止旧 CDN 长连接。
 singbox_vless_inbound_json() {
     local blocked=$1
     singbox_protocol_has_cdn || { printf 'null'; return 0; }

@@ -1,16 +1,16 @@
 # 前置准备手册
 
-本手册介绍部署 `easy_all` 所需准备的云端凭据：**Cloudflare API Token**（全模式）与 **AWS 访问密钥**（仅模式 2 / 4）。
+本手册介绍部署 `easy_all` 所需准备的云端凭据：**Cloudflare API Token**（全模式）与 **AWS 访问密钥**（仅模式 4/5）。
 
 ## 凭据需求一览
 
 | 部署模式 | Cloudflare API Token 权限要求 | AWS 访问密钥（IAM） |
 | :--- | :--- | :---: |
 | **模式 1 AnyTLS 直连** | `link`: Zone Read + DNS Edit<br>`deploy`: Zone Read + DNS Edit + Zone Settings Read + Origin Rules Edit | 不需要 |
-| **模式 2 纯 CloudFront** | Zone Read + DNS Edit | **需要** |
-| **模式 3 纯 CloudFlare** | Zone Read + DNS Edit + Zone Settings Read + SSL and Certificates Edit | 不需要 |
-| **模式 4 AnyTLS + CloudFront** | Zone Read + DNS Edit | **需要** |
-| **模式 5 AnyTLS + CloudFlare** | Zone Read + DNS Edit + Zone Settings Read + Origin Rules Edit | 不需要 |
+| **模式 2 纯 CloudFlare** | Zone Read + DNS Edit + Zone Settings Read + SSL and Certificates Edit | 不需要 |
+| **模式 3 AnyTLS + CloudFlare** | Zone Read + DNS Edit + Zone Settings Read + Origin Rules Edit | 不需要 |
+| **模式 4 纯 CloudFront** | Zone Read + DNS Edit | **需要** |
+| **模式 5 AnyTLS + CloudFront** | Zone Read + DNS Edit | **需要** |
 
 ---
 
@@ -26,12 +26,12 @@
 | :--- | :--- | :--- |
 | `Zone / Zone / Read` | 全模式 (1-5) | 读取目标 Zone 状态与 ID |
 | `DNS / Zone / Edit` | 全模式 (1-5) | 自动管理 A、CNAME 及 ACM/Certbot DNS 验证记录 |
-| `Zone Settings / Zone / Read` | 模式 1 deploy / 模式 3 / 模式 5 | 校验 Zone SSL/TLS 是否为 `Full (strict)` |
-| `Origin Rules / Zone / Edit` | 模式 1 deploy / 模式 5 | 维护订阅/节点回源 8443 端口的 Origin Rule |
-| `SSL and Certificates / Zone / Edit` | 模式 3 | 签发与管理 Cloudflare Origin CA 证书 |
+| `Zone Settings / Zone / Read` | 模式 1 deploy / 模式 2 / 模式 3 | 校验 Zone SSL/TLS 是否为 `Full (strict)` |
+| `Origin Rules / Zone / Edit` | 模式 1 deploy / 模式 3 | 维护订阅/节点回源 8443 端口的 Origin Rule |
+| `SSL and Certificates / Zone / Edit` | 模式 2 | 签发与管理 Cloudflare Origin CA 证书 |
 
 > [!NOTE]
-> - 模式 2 / 4 边缘证书由 AWS ACM 托管，Cloudflare 仅作权威 DNS，**只需 Zone Read 与 DNS Edit**。
+> - 模式 4/5 边缘证书由 AWS ACM 托管，Cloudflare 仅作权威 DNS，**只需 Zone Read 与 DNS Edit**。
 > - Token 在安装时输入，以 `0600` 权限安全保存于 VPS 本机 `/etc/easy_all/cloudflare.token`。
 
 ### 1.2 创建步骤
@@ -46,9 +46,9 @@
 
 ---
 
-## 2. AWS 凭证准备（仅模式 2 / 4）
+## 2. AWS 凭证准备（仅模式 4/5）
 
-模式 2 与模式 4 使用 AWS CloudFront 分发与 AWS Certificate Manager (ACM) viewer 证书。模式 1、3、5 无需 AWS 凭据。
+模式 4 与模式 5 使用 AWS CloudFront 分发与 AWS Certificate Manager (ACM) viewer 证书。模式 1、2、3 无需 AWS 凭据。
 
 ### 2.1 账号与区域要求
 

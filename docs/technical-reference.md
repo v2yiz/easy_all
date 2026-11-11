@@ -11,15 +11,15 @@
 | 菜单 | Profile | `PROTOCOL` | `CDN_PROVIDER` | 客户端入口 |
 | :--- | :--- | :--- | :--- | :--- |
 | 1 | `anytls` | `anytls` | 无 | AnyTLS 直连 `direct:443`（+ 可选订阅站点 `8443`） |
-| 2 | `cloudfront` | `cloudfront` | `aws` | 仅 CloudFront CDN `cf:443`（+ 订阅） |
-| 3 | `cloudflare` | `cloudflare` | `cloudflare` | 仅 Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅） |
-| 4 | `combined` | `combined-cloudfront` | `aws` | AnyTLS 直连 `direct:443` + CloudFront CDN `cf:443` |
-| 5 | `combined-cloudflare` | `combined-cloudflare` | `cloudflare` | AnyTLS 直连 `direct:443` + Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅） |
+| 2 | `cloudflare` | `cloudflare` | `cloudflare` | 仅 Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅） |
+| 3 | `combined-cloudflare` | `combined-cloudflare` | `cloudflare` | AnyTLS 直连 `direct:443` + Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅） |
+| 4 | `cloudfront` | `cloudfront` | `aws` | 仅 CloudFront CDN `cf:443`（+ 订阅） |
+| 5 | `combined` | `combined-cloudfront` | `aws` | AnyTLS 直连 `direct:443` + CloudFront CDN `cf:443` |
 
-模式 1/5 由 `lib/anytls-mode.sh` 承载，模式 2/4 共用 `lib/cloudfront-mode.sh`，模式 3 由 `lib/cloudflare-mode.sh` 承载；Profile 只声明模式常量、状态字段表与 AnyTLS 直连钩子。
+模式 1/3 由 `lib/anytls-mode.sh` 承载，模式 4/5 共用 `lib/cloudfront-mode.sh`，模式 2 由 `lib/cloudflare-mode.sh` 承载；Profile 只声明模式常量、状态字段表与 AnyTLS 直连钩子。
 
 - **状态 schema 固定为 `1`**（`STATE_VERSION=1`）：`PROTOCOL` 同时是模式选择、安装进度 marker、安装身份与 Profile 路由的唯一键。schema `0`（4.x）不被接管也不自动迁移，必须先由旧版本 `uninstall`（需要时加 `--purge-cloud`）再用本版本重装。
-- **本机节点与全部订阅入口统一 443**：AnyTLS 入站 443、CloudFront viewer 443、橙云边缘 443。模式 1 的订阅站点、模式 4 的源站与模式 5 的橙云回源监听 `8443`，那是 Cloudflare/CloudFront 的回源端口，不面向客户端。
+- **本机节点与全部订阅入口统一 443**：AnyTLS 入站 443、CloudFront viewer 443、橙云边缘 443。模式 1 的订阅站点、模式 5 的源站与模式 3 的橙云回源监听 `8443`，那是 Cloudflare/CloudFront 的回源端口，不面向客户端。
 - **唯一的 CDN 传输是 WebSocket**（sing-box `transport: {type: "ws"}`）；`httpupgrade` 不提供安装选项，也不在验收范围内。
 - 用户订阅 JSON 里的外部聚合节点保留原有 `host/port/portRange`，不强制改写为 443。
 
@@ -31,7 +31,49 @@
 - **Origin Rule 生命周期**：只用单规则端点——不存在该 phase 的 ruleset 时，创建请求直接携带本工具的单条规则；已有 ruleset 时用 `POST /zones/{zone_id}/rulesets/{ruleset_id}/rules` 追加，更新/删除使用带 `rule_id` 的单规则端点。`ref` 由规范化域名确定性派生，ruleset/rule ID 落盘到 state；禁止「GET 合并旧快照后整体 PUT」。
 - 模式 1 没有 CloudFront 源站头，也没有 985 GB 计量保护。
 
-### 1.2 模式 2：纯 CloudFront
+### 1.2 模式 2：Cloudflare 橙云（单域名）
+
+模式 2 只承载橙云入口，一个域名同时提供节点与订阅：
+
+```text
+客户端 ── TLS(SNI=cf.<zone>) ──► Cloudflare 边缘（通用边缘证书，橙云代理）
+                                       │ https-only 回源（Full strict），SNI/Host=cf.<zone>
+                                       ▼
+公网 443（仅 Cloudflare 官方回源 IPv4 段）Caddy（Origin CA 证书）
+  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
+  ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
+  ├─ = /easy_all-health    → 固定 easy_all ok
+  └─ 其他路径              → 404
+```
+
+- **DNS**：节点域名一条 `proxied=true` 的 `A` 记录（→ VPS 公网 IPv4），订阅域名由节点域名派生，不需要第二个名字。
+- **证书**：只用 Cloudflare Origin CA（ECDSA P-256、5475 天、CN 与唯一 SAN 都是节点域名），本机不运行 Certbot、不开放 `80`；复用前除有效期/SAN/公私钥外还必须通过 `openssl verify` 链验证。
+- **`Full (strict)` 门禁**：安装与 `apply-cloud` 在创建任何 DNS/证书资源前只读读取 Zone SSL 设置，只接受 `strict`；`full`/`flexible`/`off` 与 403 权限不足都在创建资源前停止，工具不会自动修改全区设置。
+- **回源白名单**：VPS `443` 只对 Cloudflare 官方回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin-443`）。这是公共回源网段，不是账户级鉴权。
+- **无源站头、无熔断**：橙云链路没有 `X-Easy-All-Origin-Key`，也没有 mangle 计量与 985 GB 额度（这些只属于模式 4/5）。
+- **订阅**：本机节点只有一个橙云 CDN 节点（默认名 `🇺🇸CF`，安装时可改），没有聚合优选 IP 列表或测速组；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（`*.cloudflare.182682.xyz`），TLS SNI 与 WebSocket `Host` 仍是节点域名。
+- **`apply` 的外部访问**：只读取公开的 Cloudflare 回源 IPv4 段与 Origin CA 根证书，不需要账号凭据、不修改云端。
+
+### 1.3 模式 3：AnyTLS + CloudFlare
+一台 VPS 同时承载直连与橙云两个入口，橙云域名同时提供节点与订阅：
+
+```text
+公网 443   sing-box AnyTLS（直连入口，TLS SNI=direct.<zone>）
+公网 8443（仅 Cloudflare 回源 IPv4 段）Caddy（与模式 2 相同的单域站点，证书为 Let's Encrypt）
+  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
+  ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
+  ├─ = /easy_all-health    → 固定 easy_all ok
+  └─ 其他路径              → 404
+```
+
+- **端口划分**：直连入站固定 `443`（公网），橙云回源与订阅站点固定 `8443`（只放行 Cloudflare 回源段），回环 CDN 入站固定 `127.0.0.1:10086`。
+- **证书**：与模式 1/5 同一张 Let's Encrypt 证书（DNS-01），SAN 为直连域名与橙云节点域名；不使用 Origin CA——直连 AnyTLS 必须是公信证书，Caddy 回源复用同一份。
+- **Origin Rule**：橙云边缘到 VPS 的连接默认打 `443`，因此用一条 `http_request_origin` 单规则把 `http.host eq <节点域名>` 路由到 `origin.port 8443`；生命周期与模式 1 的订阅回源完全相同，ruleset/rule ID 落盘到 state。
+- **`Full (strict)` 门禁**：橙云回源前只读校验 Zone SSL 为 `strict`，与模式 2 同口径。
+- **订阅**：与模式 2 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有聚合优选 IP 列表、没有源站头、没有 985 GB 计量。橙云节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
+- **运维**：`apply-cloud` 同步两条 A 记录、证书与 Origin Rule；`renew-cert` 走 Certbot（与模式 1 同路径）；`uninstall` 级联清理两条 A 记录与 Origin Rule。
+
+### 1.4 模式 4：纯 CloudFront
 一台 VPS 只承载 CloudFront 入口，不监听直连节点：
 
 ```text
@@ -52,35 +94,12 @@
 - **订阅**：本机节点只有一个 CDN 节点（默认名 `🇺🇸AWS`，安装时可改），没有聚合优选 IP 列表、测速组或自动兜底节点；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（如 `m3q8a1w7zr.cloudfront.182682.xyz`），TLS SNI 与 WebSocket `Host` 仍是节点域名。
 - **暴露面**：源站 `443` 对公网可达（CloudFront 回源没有可枚举的固定 IP 段），源站安全依赖源站头、精确路径与业务鉴权。
 
-### 1.3 模式 3：Cloudflare 橙云（单域名）
-
-模式 3 只承载橙云入口，一个域名同时提供节点与订阅：
-
-```text
-客户端 ── TLS(SNI=cf.<zone>) ──► Cloudflare 边缘（通用边缘证书，橙云代理）
-                                       │ https-only 回源（Full strict），SNI/Host=cf.<zone>
-                                       ▼
-公网 443（仅 Cloudflare 官方回源 IPv4 段）Caddy（Origin CA 证书）
-  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
-  ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
-  ├─ = /easy_all-health    → 固定 easy_all ok
-  └─ 其他路径              → 404
-```
-
-- **DNS**：节点域名一条 `proxied=true` 的 `A` 记录（→ VPS 公网 IPv4），订阅域名由节点域名派生，不需要第二个名字。
-- **证书**：只用 Cloudflare Origin CA（ECDSA P-256、5475 天、CN 与唯一 SAN 都是节点域名），本机不运行 Certbot、不开放 `80`；复用前除有效期/SAN/公私钥外还必须通过 `openssl verify` 链验证。
-- **`Full (strict)` 门禁**：安装与 `apply-cloud` 在创建任何 DNS/证书资源前只读读取 Zone SSL 设置，只接受 `strict`；`full`/`flexible`/`off` 与 403 权限不足都在创建资源前停止，工具不会自动修改全区设置。
-- **回源白名单**：VPS `443` 只对 Cloudflare 官方回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin-443`）。这是公共回源网段，不是账户级鉴权。
-- **无源站头、无熔断**：橙云链路没有 `X-Easy-All-Origin-Key`，也没有 mangle 计量与 985 GB 额度（这些只属于模式 2/4）。
-- **订阅**：本机节点只有一个橙云 CDN 节点（默认名 `🇺🇸CF`，安装时可改），没有聚合优选 IP 列表或测速组；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（`*.cloudflare.182682.xyz`），TLS SNI 与 WebSocket `Host` 仍是节点域名。
-- **`apply` 的外部访问**：只读取公开的 Cloudflare 回源 IPv4 段与 Origin CA 根证书，不需要账号凭据、不修改云端。
-
-### 1.4 模式 4：AnyTLS + CloudFront
+### 1.5 模式 5：AnyTLS + CloudFront
 一台 VPS 独占承载直连与 CDN 两个入口：
 
 ```text
 公网 443   sing-box AnyTLS（直连入口，TLS SNI=direct.<zone>）
-公网 8443  Caddy（与模式 2 相同的源站与订阅站点，CloudFront 回源端口 8443）
+公网 8443  Caddy（与模式 4 相同的源站与订阅站点，CloudFront 回源端口 8443）
   ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
   ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
   ├─ = /easy_all-health    → 固定 easy_all ok
@@ -89,27 +108,8 @@
 
 - **端口划分**：直连入站固定在 `443`，CloudFront 源站与订阅站点固定在 `8443`，回环 CDN 入站固定在 `127.0.0.1:10086`；三者都由模式派生，不接受用户另设参数。
 - **证书**：源站域名固定复用直连域名（一条灰云 `A`），Let's Encrypt 只需覆盖直连域名（DNS-01）；viewer 侧仍由 ACM 管理；订阅域名固定复用节点域名。AnyTLS 与 Caddy 共用同一份部署证书。旧装若已配置独立源站域名，仍保留原灰云 `A` 与 SAN。
-- **分发端口**：CloudFront 源站 `HTTPSPort` 由模式派生为 `8443`（模式 2 是 `443`）；分发端口写错会在公网验收阶段失败。
+- **分发端口**：CloudFront 源站 `HTTPSPort` 由模式派生为 `8443`（模式 4 是 `443`）；分发端口写错会在公网验收阶段失败。
 - **订阅**：本机节点恰为两个——AnyTLS 直连（默认名 `🇺🇸直连`）与 CloudFront CDN（默认名 `🇺🇸AWS`），另附 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；`PROXY` 仍是 `select`，可手动在直连与 CDN 之间切换。CDN 节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
-
-### 1.5 模式 5：AnyTLS + CloudFlare
-一台 VPS 同时承载直连与橙云两个入口，橙云域名同时提供节点与订阅：
-
-```text
-公网 443   sing-box AnyTLS（直连入口，TLS SNI=direct.<zone>）
-公网 8443（仅 Cloudflare 回源 IPv4 段）Caddy（与模式 3 相同的单域站点，证书为 Let's Encrypt）
-  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
-  ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
-  ├─ = /easy_all-health    → 固定 easy_all ok
-  └─ 其他路径              → 404
-```
-
-- **端口划分**：直连入站固定 `443`（公网），橙云回源与订阅站点固定 `8443`（只放行 Cloudflare 回源段），回环 CDN 入站固定 `127.0.0.1:10086`。
-- **证书**：与模式 1/4 同一张 Let's Encrypt 证书（DNS-01），SAN 为直连域名与橙云节点域名；不使用 Origin CA——直连 AnyTLS 必须是公信证书，Caddy 回源复用同一份。
-- **Origin Rule**：橙云边缘到 VPS 的连接默认打 `443`，因此用一条 `http_request_origin` 单规则把 `http.host eq <节点域名>` 路由到 `origin.port 8443`；生命周期与模式 1 的订阅回源完全相同，ruleset/rule ID 落盘到 state。
-- **`Full (strict)` 门禁**：橙云回源前只读校验 Zone SSL 为 `strict`，与模式 3 同口径。
-- **订阅**：与模式 3 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有聚合优选 IP 列表、没有源站头、没有 985 GB 计量。橙云节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
-- **运维**：`apply-cloud` 同步两条 A 记录、证书与 Origin Rule；`renew-cert` 走 Certbot（与模式 1 同路径）；`uninstall` 级联清理两条 A 记录与 Origin Rule。
 
 ## 2. 防火墙、端口与安全边界
 
@@ -123,7 +123,7 @@
 - **卸载与回滚只回收业务端口**：各模式 `uninstall` 与安装失败回滚一律只删除自己注入的 `443`/`8443` 放行与 Cloudflare 回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置，不再执行 `ufw disable`。
 - **Fail2ban 助手脚本解耦**：CIDR 封禁助手安装到 `/usr/local/sbin/fail2ban-ufw-cidr.sh`（不再位于 `/usr/local/lib/easy_all`），卸载 easy_all 时保留，避免常驻 SSH 封禁动作因脚本缺失而失效。
 - **重装跳过已就绪的初始化**：卸载后重装时，依赖包、Swap、内核与 TCP 加速已就绪就跳过重复安装；IPv4-only、定时重启与 UFW/Fail2ban 仍会幂等校验。
-- **定时维护互斥与安全加固**：每日定时重启任务引入运行时写锁检测（`flock -n 8`），检测到后台有安装或更新进行时自动跳过重启并向 syslog 记录审计日志，防止并发维护造成半安装现场；模式 2/4 还会在取得最终写锁后只读复核流量保护状态（`protection_offline=false` 且 `blocked=enforced`），不满足则跳过重启。cron 行本身只调用 `easy_all internal-scheduled-reboot` 内部入口，预命令、抢锁与流量复核都在该入口内完成，行长度固定、不再随逻辑增长，也无需 `%` 转义。
+- **定时维护互斥与安全加固**：每日定时重启任务引入运行时写锁检测（`flock -n 8`），检测到后台有安装或更新进行时自动跳过重启并向 syslog 记录审计日志，防止并发维护造成半安装现场；模式 4/5 还会在取得最终写锁后只读复核流量保护状态（`protection_offline=false` 且 `blocked=enforced`），不满足则跳过重启。cron 行本身只调用 `easy_all internal-scheduled-reboot` 内部入口，预命令、抢锁与流量复核都在该入口内完成，行长度固定、不再随逻辑增长，也无需 `%` 转义。
 
 ### 2.2 各模式端口与监听
 
@@ -131,26 +131,26 @@
 | :--- | :--- | :--- | :--- |
 | 初始化（debian-init） | SSH 实际监听端口 | — | — |
 | 1 AnyTLS 直连 | TCP `443` | `deploy` 时 TCP `8443`（订阅回源） | — |
-| 2 纯 CloudFront | TCP `443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
-| 3 纯 CloudFlare（单域名） | — | TCP `443` | `127.0.0.1:10086`（VLESS WebSocket） |
-| 4 AnyTLS + CloudFront | TCP `443`、`8443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
-| 5 AnyTLS + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS WebSocket） |
+| 2 纯 CloudFlare（单域名） | — | TCP `443` | `127.0.0.1:10086`（VLESS WebSocket） |
+| 3 AnyTLS + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS WebSocket） |
+| 4 纯 CloudFront | TCP `443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
+| 5 AnyTLS + CloudFront | TCP `443`、`8443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
 
 - **不开放 `80`**：所有公信证书都走 Cloudflare DNS-01，不需要在 `80` 上做域名校验，也没有 HTTP 重定向。
-- `10086` 永不对公网放行；端口预检覆盖各模式实际使用的端口（模式 1：`443`，deploy 另加 `8443`；模式 2：`443`、`10086`；模式 3：`443`、`10086`；模式 4：`443`、`8443`、`10086`；模式 5：`443`、`8443`、`10086`）。
+- `10086` 永不对公网放行；端口预检覆盖各模式实际使用的端口（模式 1：`443`，deploy 另加 `8443`；模式 4：`443`、`10086`；模式 2：`443`、`10086`；模式 5：`443`、`8443`、`10086`；模式 3：`443`、`8443`、`10086`）。
 - 所有模式维持 IPv4-only、默认 incoming/routed deny、outgoing allow、SSH 预检与 Fail2ban。
 
 ### 2.3 源站暴露面（各链路差异）
 
-- **模式 1 `deploy`、模式 3 与模式 5** 保留 Cloudflare 回源白名单：安装器只向 Cloudflare 官方 IPv4 网段新增回源端口放行（模式 1/5 是 `8443`，模式 3 是 `443`）。在宿主没有其他公网放行、云安全组也未额外放通的前提下，外部扫描器直连该端口会被静默丢弃；宿主已有的无注释放行不在本工具管理范围。
+- **模式 1 `deploy`、模式 2 与模式 3** 保留 Cloudflare 回源白名单：安装器只向 Cloudflare 官方 IPv4 网段新增回源端口放行（模式 1/3 是 `8443`，模式 2 是 `443`）。在宿主没有其他公网放行、云安全组也未额外放通的前提下，外部扫描器直连该端口会被静默丢弃；宿主已有的无注释放行不在本工具管理范围。
 - **模式 1 的直连 `443` 对公网开放**，直连域名灰云 `A` 记录会公开 VPS 公网 IPv4。
-- **模式 2/4 没有回源白名单**：CloudFront 回源没有可枚举的固定 IP 段，因此模式 2 的源站 `443`、模式 4 的源站 `8443` 对公网可达。实际防护依赖：
+- **模式 4/5 没有回源白名单**：CloudFront 回源没有可枚举的固定 IP 段，因此模式 4 的源站 `443`、模式 5 的源站 `8443` 对公网可达。实际防护依赖：
   - 公信 Let's Encrypt 源站证书（自签证书无法通过 CloudFront 的 HTTPS 回源验证）；
   - `X-Easy-All-Origin-Key` 源站头：它是 Caddy 外层 `route` 的首个指令，用 CEL 精确比较请求头与状态中的密钥，不相等即 `abort`；
   - 随机 VLESS 路径的精确匹配（`handle <VLESS_PATH>`）与 `VLESS UUID`；
   - 订阅只精确匹配 `/subscribe` 与 `/sub`，其余路径 `404`，并由 Token 鉴权。
 - 这些措施**不能**防御网络层 DDoS、TLS/HTTP 资源耗尽或密钥泄露。源站头密钥只存在于 `0600` 的 state、`0600` 的 Caddy 配置与 AWS 请求暂存文件中，不下发客户端、不进订阅、不写访问日志。
-- 公网验收会分别对**源站端口**（模式 2 `443`、模式 4 `8443`）发缺头与错头请求，只接受连接被拒或 `403/404`。探测必须打到 Caddy 站点端口：打到 `443` 时模式 4 连接的是 sing-box，结果会变成“连不上即通过”的假阳性。
+- 公网验收会分别对**源站端口**（模式 4 `443`、模式 5 `8443`）发缺头与错头请求，只接受连接被拒或 `403/404`。探测必须打到 Caddy 站点端口：打到 `443` 时模式 5 连接的是 sing-box，结果会变成“连不上即通过”的假阳性。
 
 ### 2.4 恶意出站与内部阻断
 - sing-box 配置使用显式 IPv4 DNS 服务器与 `ipv4_only` 策略，路由先拒绝私网地址，再拒绝与 `lib/network.sh` 一致的私网/特殊地址清单（回环、云厂商元数据、CGNAT、多播与保留段）。
@@ -164,7 +164,7 @@
 
 - **订阅配置 JSON**：`SUBSCRIPTION_CONFIG` 的顶层只有三个键——`allowedTokens`（用户 Token 字典，必需）、`nodes`（外部聚合节点数组，必需）与可选的 `cdnEdgeAddress`（CDN 优选连接地址，只存完整主机名）。`cdnEdgeAddress` 只影响模式 2–5 的本机 CDN 节点：模式 1 接受并持久化该字段，但没有 CDN 入站与 CDN 节点，因此永不渲染。字段缺失或为 `null` 等同于不启用，删除字段即回退到节点域名（安装期必定写入且不提供关闭选项，删除只用于排障）。形状校验只发生在一处（`lib/local-aggregation.sh` 的 `normalize_subscription_config`，install / `edit-sub` / `apply` 全经它），拒绝 `*`、URL、端口、路径、空白、IP 字面量与单标签主机名，通过后按小写规范化存储；校验失败时 `update_subscription` 在写快照之前就退出，已发布的八份产物与状态不变。该字段随 `SUBSCRIPTION_CONFIG` 原样写入安装身份的 `subscription_config`，续装据此沿用原优选地址，不会重新随机（身份里没有该字段时按新规则生成）。
 - **连接地址与 SNI/Host 分离**：本机 CDN 节点的连接地址（VLESS URI 的 `@host`、Mihomo `server`、sing-box `server`）取运行期变量 `CF_EDGE_ADDRESS`（由 `cdnEdgeAddress` 在 `apply_local_aggregation_config` 中派生，为空即用 `CF_NODE_DOMAIN`）；TLS SNI（`sni=`、`servername`、`tls.server_name`）、证书校验与 WebSocket `Host` 始终是节点域名，订阅 URL 域名、云端 DNS、回源与 AnyTLS 直连都不受影响。
-- **Caddy 路由顺序**：外层 `route` 固定为「CloudFront 密钥守卫 → 精确代理路径 → 精确订阅入口 → health → 404」；模式 1/3 没有源站密钥守卫，依赖回源白名单、`Full (strict)` 与业务鉴权。
+- **Caddy 路由顺序**：外层 `route` 固定为「CloudFront 密钥守卫 → 精确代理路径 → 精确订阅入口 → health → 404」；模式 1/2 没有源站密钥守卫，依赖回源白名单、`Full (strict)` 与业务鉴权。
 - **订阅入口是精确路径**：matcher 精确列出 `/subscribe` 与 `/sub`，两者进入同一处理器并保留 query；`/subscribe/`、`/subscribed`、裸文件与其他路径一律 `404`，不重定向、不做前缀匹配。
 - **订阅处理器内部顺序**：公共响应头（`Vary: User-Agent`、`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Content-Type-Options: nosniff`、`X-Robots-Tag: noindex, nofollow, noarchive`）先于任何终止响应；随后非 `GET`/`HEAD` 返回 `405`，Token 缺失/错误返回 `403`，订阅未就绪返回 `503`；全部响应都带上述公共头。
 - **Token 比较**：`ALLOWED_TOKENS` 的值构成 CEL 的精确字符串集合，大小写敏感、不使用正则，客户端文本不拼进表达式源码；`file_server` 只出现在鉴权后的订阅处理器里，且只 rewrite 到八个固定文件。
@@ -184,18 +184,18 @@
 
 ### 3.1 节点与分组顺序
 
-Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成员只在模式 4 额外插入两个自动组：
+Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成员只在模式 5 额外插入两个自动组：
 
 | 模式 | Base64 / `proxies` 顺序 | `PROXY` 成员 |
 | :--- | :--- | :--- |
 | 1 AnyTLS 直连 | 本机 AnyTLS 节点 → 聚合 `nodes`（原顺序） | 同左 |
-| 2 纯 CloudFront | CloudFront 节点 → 聚合 `nodes`（原顺序） | 同左 |
-| 3 纯 CloudFlare | Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
-| 4 AnyTLS + CloudFront | 本机 AnyTLS 节点 → CloudFront 节点 → 聚合 `nodes`（原顺序） | 本机 AnyTLS 节点 → CloudFront 节点 → `AUTO` → `CDN-FALLBACK` → 聚合 `nodes`（原顺序） |
-| 5 AnyTLS + CloudFlare | 本机 AnyTLS 节点 → Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
+| 2 纯 CloudFlare | Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
+| 3 AnyTLS + CloudFlare | 本机 AnyTLS 节点 → Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
+| 4 纯 CloudFront | CloudFront 节点 → 聚合 `nodes`（原顺序） | 同左 |
+| 5 AnyTLS + CloudFront | 本机 AnyTLS 节点 → CloudFront 节点 → 聚合 `nodes`（原顺序） | 本机 AnyTLS 节点 → CloudFront 节点 → `AUTO` → `CDN-FALLBACK` → 聚合 `nodes`（原顺序） |
 
-- `PROXY` 为 `select`，默认第一项分别是直连节点（模式 1/4/5）或 CDN 节点（模式 2/3）；即使聚合节点为空也始终有有效成员。
-- 模式 4 额外生成 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；模式 1/2/3/5 没有自动测速或兜底组。
+- `PROXY` 为 `select`，默认第一项分别是直连节点（模式 1/3/5）或 CDN 节点（模式 2/4）；即使聚合节点为空也始终有有效成员。
+- 模式 5 额外生成 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；模式 1/2/3/4 没有自动测速或兜底组。
 - `GLOBAL` 维持 `select`，唯一成员是 `PROXY`；切换到「全局」后所有接管流量使用 `PROXY` 的当前选择。
 - 模板只保留 `PROXY` / `GLOBAL` 两个占位区，额外分组由 `build_mihomo_proxy_groups` 输出，`AUTO`、`CDN-AUTO`、`CDN-FALLBACK` 等名字属于保留组名，不能用于聚合节点。
 - 聚合节点支持三类：`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；外部聚合节点的 `host/port/portRange` 原样保留，不受本机「全 443」约束，也不受「本机只有一个 CDN 节点」的限制。
@@ -204,10 +204,11 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 
 - **合成方式**：`templates/singbox.json` 提供固定段（`log`、`dns`、`inbounds`、`route`、`rule_set`、`http_clients`、`experimental`），`lib/singbox-subscription.sh` 用 `jq` 注入 `outbounds` 与 `PROXY` 选择器。节点来自 `lib/local-aggregation.sh` 的结构化数据与本机身份字段，不反向解析 URI/YAML，也不做字符串替换拼接凭据。
 - **入口**：混合代理 `127.0.0.1:1080` 与 TUN（`172.19.0.1/30`、MTU 1500、`auto_route`、`dns_mode=hijack`）；TUN 由客户端平台管理接口名，不硬编码内核路由排除项。
-- **DNS**：`fakeip`（`198.18.0.0/16`）+ 独立 IPv4 引导解析器（UDP，默认直连出口）+ 国内解析（DoH，默认直连出口）+ 境外解析（DoH，`detour=PROXY`）；私有域名（`private-fallback` 内联集合 + `geosite-private`，覆盖路由器管理域名与反查区域）、单标签主机与认证门户走本地解析；NTP/STUN/推送/音乐等 Fake-IP 例外单独内联；全局 `ipv4_only`。解析路径分两类：TUN 劫持后的应用查询按 `dns.rules` 选服务器（**代理集合优先于国内集合**，与默认 Mihomo 模板的 `nameserver-policy` 同序，避免 `services.googleapis.cn`/`google.cn` 这类交集域名被国内解析抢先）；出站自身的域名解析不经过 `dns.rules`，因此 `DIRECT` 出口固定带 `domain_resolver=dns-local`（本地解析，局域网域名可解析），节点出口用 `route.default_domain_resolver=dns-bootstrap` 引导（不与待解析的代理节点互相依赖）。注意 sing-box 1.14 拒绝把 DNS/HTTP 客户端的 `detour` 指向**空 direct 出口**（启动期 FATAL），所以“直连”一律用不带 `detour` 的默认出口表达，只有境外 DoH 显式写 `detour=PROXY`。
-- **分流顺序**与默认 Mihomo 模板逐条对应：DNS 接管 → 私网与零地址 → 单标签/认证门户/本地管理域名 → FCM `5228-5230` → 代理服务与 Google 的 UDP/443 拒绝与域名代理 → 微信/Steam/Apple 中国/国内服务 → 国内域名集合 → Telegram → CN IP 兜底 → 其余 UDP/443 拒绝 → `PROXY`。`clash_mode=direct/global` 规则优先于业务规则。
-- **规则集**：小型内联集合（`private-fallback`、`captive-portal`、`fakeip-exceptions`、`proxy-services`、`wechat-services`、`steam-download`、`apple-cn-fallback`、`direct-services`、`telegram-fallback`）与 MetaCubeX 的 sing-box 分支 SRS（`geosite-*`、`geoip-*`，`update_interval=1d`）并存；下载走显式 `http_clients`（默认直连出口，不依赖待解析的代理节点）。冷启动时任一必需远程规则集下载失败会让客户端配置启动失败，少量内联规则只缩短影响面，不构成离线首次启动保证。
-- **策略组差异**：`PROXY` 为 `select`，成员顺序与本机节点/聚合节点一致。模式 4 追加 `AUTO`（`urltest`，仅本机直连与 CDN），默认选择直连节点；官方 selector/urltest 无法保证与 Mihomo `CDN-FALLBACK` 语义等价，因此 JSON 不生成该组，Mihomo 订阅仍保留它。模式 1/2/3/5 只有 `PROXY` 与 `DIRECT`。
+- **DNS**：`fakeip`（`198.18.0.0/16`）+ 独立 IPv4 引导解析器（UDP，默认直连出口）+ 国内解析（DoH，默认直连出口）+ 境外解析（DoH，`detour=PROXY`）；私有域名（`private-fallback` 内联集合 + `geosite-private`，覆盖路由器管理域名与反查区域）、单标签主机与认证门户走本地解析；NTP/STUN/推送/音乐等 Fake-IP 例外单独内联；全局 `ipv4_only`；`reverse_mapping` 开启。解析路径分两类：TUN 劫持后的应用查询按 `dns.rules` 选服务器（**代理集合优先于国内集合**，与默认 Mihomo 模板的 `nameserver-policy` 同序，避免 `services.googleapis.cn`/`google.cn` 这类交集域名被国内解析抢先）；出站自身的域名解析不经过 `dns.rules`，因此 `DIRECT` 出口固定带 `domain_resolver=dns-local`（本地解析，局域网域名可解析），节点出口用 `route.default_domain_resolver=dns-bootstrap` 引导（不与待解析的代理节点互相依赖）。注意 sing-box 1.14 拒绝把 DNS/HTTP 客户端的 `detour` 指向**空 direct 出口**（启动期 FATAL），所以“直连”一律用不带 `detour` 的默认出口表达，只有境外 DoH 显式写 `detour=PROXY`。`clash_mode` 同样出现在 DNS 规则里，位置在私有/单标签/认证门户之后、代理集合之前：`direct` 模式其余查询改用国内 DoH（不再依赖代理节点，也不再返回 Fake-IP），`global` 模式其余查询改用境外 DoH；局域网与认证门户的解析在任何模式下不变。
+- **反向映射**：`dns.reverse_mapping` 把已应答的 IP 反查到域名，使「应用直接连接真实 IP（未命中 `geoip-cn`、没有 Fake-IP 映射）」的连接仍能命中域名规则（微信、Steam 下载、国内直连集合的 UDP/443 与 TCP），对应 Mihomo 模板的 `force-dns-mapping` / `parse-pure-ip`。它依赖应用先把域名交给 sing-box 解析，系统 DNS 被代持并缓存的平台（如 macOS）可能拿不到映射，此时按原 IP 规则分流；共享 IP 上的多个域名仍按已解析的那个域名归类。
+- **分流顺序**与默认 Mihomo 模板逐条对应：DNS 接管 → 私网与零地址 → 单标签/认证门户/本地管理域名 → FCM `5228-5230` → 代理服务与 Google 的 UDP/443 拒绝与域名代理 → 微信/Steam/Apple 中国/国内服务 → 国内域名集合 → Telegram → CN IP 兜底 → 其余 UDP/443 拒绝 → `PROXY`。`clash_mode=direct/global` 在路由与 DNS 两处都优先于业务规则。
+- **规则集**：小型内联集合（`private-fallback`、`captive-portal`、`fakeip-exceptions`、`proxy-services`、`wechat-services`、`steam-download`、`apple-cn-fallback`、`direct-services`、`telegram-fallback`）与 MetaCubeX 的 sing-box 分支 SRS（`geosite-*`、`geoip-*`，`update_interval=1d`）并存；下载走显式 `http_clients`（默认直连出口，不依赖待解析的代理节点）。冷启动时任一必需远程规则集下载失败会让客户端配置启动失败，少量内联规则只缩短影响面，不构成离线首次启动保证。内联集合的 `domain_suffix` 不写前导点：锁定核心对无点后缀按「裸域 + 各级子域」匹配（等价 Mihomo 的 `+.` 写法），带点后缀只匹配子域，因此 `wechat.com`、`steamcontent.com` 这类裸域与子域都会被同一个条目覆盖。
+- **策略组差异**：`PROXY` 为 `select`，成员顺序与本机节点/聚合节点一致。模式 5 追加 `AUTO`（`urltest`，仅本机直连与 CDN），默认选择直连节点；官方 selector/urltest 无法保证与 Mihomo `CDN-FALLBACK` 语义等价，因此 JSON 不生成该组，Mihomo 订阅仍保留它。模式 1/2/3/4 只有 `PROXY` 与 `DIRECT`。
 - **节点映射**：本机 AnyTLS（`password` + TLS + uTLS `chrome`）与 VLESS WebSocket（`transport.type=ws`、`headers.Host`、`packet_encoding=xudp`）；聚合 Reality 节点映射为 `flow=xtls-rprx-vision` + `tls.reality`（`public_key`、`short_id`），`udp=false` 时用 `network: "tcp"` 限制承载。1.14.4 的 Reality 客户端会从 ClientHello 里过滤 `X25519MLKEM768`（`common/tls/reality_client.go`），因此聚合节点的 `supportX25519Mlkem768` 在 sing-box 侧没有对应开关：`false` 与核心行为一致，`true` 的 PQ 扩展不会出现，两者都仍用经典 X25519 连接，所以都保留。源站密钥永不进入 JSON。
 - **排除规则**：官方 1.14.4 没有 xhttp 传输与 mieru 协议，`fp` 不在 1.14.4 utls 枚举内的 Reality 节点会让核心拒绝整份配置，因此这两类节点只从 JSON 排除，`apply` 会输出节点名、原因与数量；Mihomo / Base64 输出不变。Reality 的 `supportX25519Mlkem768` 不参与排除（见上一条：核心固定过滤 MLKEM），但该行为的握手实测仍未进行。所有模式都至少有一个本机节点，因此排除后 JSON 仍有效；本机节点生成失败则整个候选发布失败。
 - **候选校验**：发布前检查 JSON 可解析、outbound tag 唯一、selector/urltest 成员与路由/DNS 引用存在、默认出口存在、无源站密钥；存在锁定核心时再跑 `sing-box check`。`check` 不覆盖运行期初始化，因此 `scripts/verify-live.sh` 还会把客户端 JSON 去掉 TUN 入口后用真实核心启动一次（DNS detour 指向空 direct 出口这类问题只在启动阶段暴露）。校验失败即中止发布，已发布的旧订阅保持不变。
@@ -220,7 +221,7 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 ### 4.1 统计链路
 - 不依赖受测 sing-box 未编译的 `v2ray_api`，而是在 `mangle` 表用链首无 target 的纯计数规则统计回环 `10086` 的双向字节：`INPUT` 匹配 `lo` + `127.0.0.1` + TCP `10086` 计上行（Caddy → sing-box），`OUTPUT` 匹配同条件计下行（sing-box → Caddy），每方向每包只计一次。
 - 用 mangle 而非 filter，是为了避免 UFW 早期 `ACCEPT lo` 让规则不可达；受管 UFW reload 后仍会复核规则，自定义规则也可能改写 mangle。
-- 模式 4 的 AnyTLS 直连与全部订阅下载都不经过 `10086`，因此不计入 CDN 用量。
+- 模式 5 的 AnyTLS 直连与全部订阅下载都不经过 `10086`，因此不计入 CDN 用量。
 - 计数读取失败、规则缺失或修复失败一律按保护失败路径处理，**不清零、不放行**；阈值固定 `985 × 10⁹` 字节，state 里的 `CDN_TRAFFIC_PROTECTION_GB` 必须恰为 `985`，不能用环境变量绕过。
 
 ### 4.2 用量文件、锁与月度
@@ -234,12 +235,12 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 达到阈值后 `blocked=true`，阻断顺序固定：
 
 1. **Caddy 层**：精确代理路径直接 `respond 503`，health 与订阅保持可用。
-2. **sing-box 层**：省略 CDN 入站并重启核心，终止已建立的 CDN 长连接；模式 4 保留 AnyTLS 入站，因此直连只经历一次短暂重连。
+2. **sing-box 层**：省略 CDN 入站并重启核心，终止已建立的 CDN 长连接；模式 5 保留 AnyTLS 入站，因此直连只经历一次短暂重连。
 3. 只有确认旧连接断开、新连接被拒绝后，才写 `enforced=true`。
 
 状态语义：`blocked` 是期望的限额状态，`enforced` 是最后完成验收的应用状态，两者不一致即「待落实」；`protection_offline=true` 表示保护性停机意图已持久化（核心已停止或即将停止），它不表示允许解封，也无法通过环境变量或临时令牌绕过。无法安全收敛时保持 `protection_offline` 并说明直连同样受影响。
 
-所有入口共用同一个只读判定与同一个受限恢复函数：先应用 `503` 与受限 Caddy，再启动受限核心（省略 CDN 入站、模式 4 保留 AnyTLS），必需验收（Caddy `503`、受限配置与旧连接终止、严格源站 TLS/health、模式 4 的 `443` 监听等）全部通过后才原子写 `enforced=true`、`protection_offline=false`。必需验收失败会把 `protection_offline` 先落盘再停止核心，下一轮从同一入口重试；解封失败则恢复受限配置并保留 pending，绝不恢复开放配置后报成功。
+所有入口共用同一个只读判定与同一个受限恢复函数：先应用 `503` 与受限 Caddy，再启动受限核心（省略 CDN 入站、模式 5 保留 AnyTLS），必需验收（Caddy `503`、受限配置与旧连接终止、严格源站 TLS/health、模式 5 的 `443` 监听等）全部通过后才原子写 `enforced=true`、`protection_offline=false`。必需验收失败会把 `protection_offline` 先落盘再停止核心，下一轮从同一入口重试；解封失败则恢复受限配置并保留 pending，绝不恢复开放配置后报成功。
 
 ### 4.4 启动顺序与临界区预算
 - 锁边界只有一把 counter 锁与一把 runtime 写锁，唯一允许的嵌套顺序是 **runtime → counter**；持有 counter 时禁止执行 `systemctl start/restart`、Caddy reload、下载、证书或网络动作。
@@ -262,10 +263,10 @@ easy_all
 ├── runtime.manifest             # 运行时受管文件清单
 ├── profiles/
 │   ├── anytls.sh                # 模式 1：AnyTLS 直连 + 可选订阅站点
-│   ├── cloudfront.sh            # 模式 2：纯 CloudFront 薄 Profile（仅常量与空直连钩子）
-│   ├── combined.sh              # 模式 4：AnyTLS + CloudFront 薄 Profile
-│   ├── combined-cloudflare.sh   # 模式 5：AnyTLS + CloudFlare 薄 Profile
-│   └── cloudflare.sh            # 模式 3：纯 CloudFlare 薄 Profile（单域名，空直连钩子）
+│   ├── cloudfront.sh            # 模式 4：纯 CloudFront 薄 Profile（仅常量与空直连钩子）
+│   ├── combined.sh              # 模式 5：AnyTLS + CloudFront 薄 Profile
+│   ├── combined-cloudflare.sh   # 模式 3：AnyTLS + CloudFlare 薄 Profile
+│   └── cloudflare.sh            # 模式 2：纯 CloudFlare 薄 Profile（单域名，空直连钩子）
 ├── lib/
 │   ├── log.sh                   # 日志与双语输出
 │   ├── state.sh                 # 状态 schema、五模式字段集与 launcher 分类的单一来源
@@ -275,11 +276,11 @@ easy_all
 │   ├── network.sh               # 网络与 IPv4/域名基础校验
 │   ├── cf-dns.sh                # Cloudflare API / DNS / Origin CA / 回源网段与持久 Token
 │   ├── cf-origin-rule.sh        # Origin Rule 单规则生命周期（ref/归属/追加/删除）
-│   ├── cloudfront-mode.sh       # 模式 2/4 唯一 CloudFront 业务核心
-│   ├── cloudflare-mode.sh       # 模式 3 唯一橙云业务核心（单域名 + Origin CA + 回源白名单）
-│   ├── anytls-mode.sh           # 模式 1/5 业务编排（AnyTLS 入站、订阅站点与 Origin Rule）
+│   ├── cloudfront-mode.sh       # 模式 4/5 唯一 CloudFront 业务核心
+│   ├── cloudflare-mode.sh       # 模式 2 唯一橙云业务核心（单域名 + Origin CA + 回源白名单）
+│   ├── anytls-mode.sh           # 模式 1/3 业务编排（AnyTLS 入站、订阅站点与 Origin Rule）
 │   ├── cdn-traffic-guard.sh     # mangle 计量、985 GB 阈值、保护状态机与 systemd timer
-│   ├── cloudflare-purge.sh      # Cloudflare 远端托管资源识别与清理
+│   ├── cloud-purge.sh           # Cloudflare 与 CloudFront/ACM 远端托管资源识别与清理
 │   ├── singbox-core.sh          # 锁定 sing-box 版本、官方归档与固定 SHA256
 │   ├── singbox-runtime.sh       # 五模式 sing-box JSON、客户端节点与运行验收
 │   ├── caddy-core.sh            # 锁定 Caddy 版本、官方归档与 SHA512 清单校验
@@ -301,7 +302,7 @@ easy_all
 ```
 
 ### 5.1 模式库的模块边界
-- **Profile 只声明、不复制**：`CDN_PROFILE_KEY`、`CDN_EXPECTED_PROTOCOL`、`CDN_MODE_LABEL`、`CDN_ENTRY_SUMMARY`、`CDN_INSTALL_PORTS`，以及同名直连钩子（模式 2/3 返回空值）。
+- **Profile 只声明、不复制**：`CDN_PROFILE_KEY`、`CDN_EXPECTED_PROTOCOL`、`CDN_MODE_LABEL`、`CDN_ENTRY_SUMMARY`、`CDN_INSTALL_PORTS`，以及同名直连钩子（模式 2/4 返回空值）。
 - **模式库持有本模式契约**：AWS 常量（`us-east-1`、缓存/源站请求策略 ID、回源时限、头名、分发 Comment）、Cloudflare 常量（来源白名单注释、Origin CA、Origin Rule phase）、状态白名单与校验、本机 UFW、订阅渲染、运维事务、熔断重建、安装与卸载。
 - **共享运行时保持中立**：`runtime-core.sh` 提供证书事务（DNS-01 签发、hook、部署与验收）、订阅发布与验收（完整发布八份产物，流控门禁只用六份 Mihomo/Base64）、核心事务与停机清理；它不持有任何云 Provider 语义。
 - **渲染与路由分离**：`singbox-runtime.sh` 只产出 sing-box JSON 与客户端节点；`caddy-runtime.sh` 只产出 Caddyfile（站点主机与端口由模式派生）并负责 reload。两者都用「候选文件 → 校验 → `0600` 同目录原子 rename」发布。
@@ -312,12 +313,12 @@ easy_all
 ## 6. 证书、核心下载与运行时目录
 
 ### 6.1 证书双路径
-- **公信证书**使用 easy_all 专用 Certbot lineage `easy_all`（`/etc/letsencrypt/live/easy_all`），经发行版 Certbot + Cloudflare DNS 插件走 DNS-01：模式 1 覆盖 direct/已部署 sub，模式 2 覆盖 origin，模式 4 覆盖 direct/origin，模式 5 覆盖 direct/橙云节点域名。凭据 `dns_cloudflare_api_token` 以 `0600` 保存在 `/etc/easy_all/cloudflare.ini` 供定时续期；不使用 Caddy DNS 插件，不开放 `80`。
+- **公信证书**使用 easy_all 专用 Certbot lineage `easy_all`（`/etc/letsencrypt/live/easy_all`），经发行版 Certbot + Cloudflare DNS 插件走 DNS-01：模式 1 覆盖 direct/已部署 sub，模式 4 覆盖 origin，模式 5 覆盖 direct/origin，模式 3 覆盖 direct/橙云节点域名。凭据 `dns_cloudflare_api_token` 以 `0600` 保存在 `/etc/easy_all/cloudflare.ini` 供定时续期；不使用 Caddy DNS 插件，不开放 `80`。
 - **两条部署路径**：
   1. 安装、`renew-cert`、`apply-cloud` 已持 runtime 写锁：只对本次 Certbot 子进程设置 `EASY_ALL_CERTBOT_SKIP_DEPLOY=1`，自有 hook 立即退出，由父进程在当前事务里部署。
   2. 定时 hook（`/etc/letsencrypt/renewal-hooks/deploy/easy_all.sh` → `easy_all internal-cert-deploy`）：自行取得 runtime 锁，确认 `RENEWED_LINEAGE` 属于本工具，只部署已签发证书，不再次签发；有界等待，失败非零并保留 lineage。
 - **部署验收**：检查 SAN、有效期、公私钥匹配与完整信任链后才替换 `/etc/easy_all/certs/fullchain.pem` 与 `private.key`；随后重启 sing-box 并**强制** Caddy reload（`--force`，因为证书是同路径替换、配置内容不变），再用本机 TLS 握手比对磁盘指纹。任一步失败恢复旧部署副本并保留新 lineage。
-- **模式 3** 使用 Cloudflare Origin CA（ECDSA P-256、5475 天），`renew-cert` 先签发部署、本机 TLS 验收通过才吊销旧证书；`renew-cert` 从不操作 ACM 自动续期。
+- **模式 2** 使用 Cloudflare Origin CA（ECDSA P-256、5475 天），`renew-cert` 先签发部署、本机 TLS 验收通过才吊销旧证书；`renew-cert` 从不操作 ACM 自动续期。
 
 ### 6.2 核心下载与 `update-core`
 - 固定 sing-box `1.14.4`（代码内审查过的 SHA256 常量，无官方 checksums 清单可用）与 Caddy `2.11.9`（读取官方 `caddy_2.11.9_checksums.txt` 中精确文件名的 SHA512 条目）。

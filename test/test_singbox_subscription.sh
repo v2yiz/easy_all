@@ -150,12 +150,12 @@ render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
     )
 }
 
-# --- 模式 4：八产物与策略组 ---------------------------------------------------
+# --- 模式 5：八产物与策略组 ---------------------------------------------------
 out="${TMP_DIR}/combined"
 render_log="${TMP_DIR}/combined.log"
 render_mode combined "${out}" >"${render_log}" 2>&1 || {
     cat "${render_log}" >&2
-    fail "模式 4 订阅渲染失败"
+    fail "模式 5 订阅渲染失败"
 }
 default_json="${out}/subs/singbox.json"
 all_json="${out}/subs/singbox-all.json"
@@ -230,6 +230,8 @@ assert_equal "境外 DoH detour 指向 PROXY" '"PROXY"' \
 assert_equal "规则集 HTTP 客户端不带空 direct detour" '[{"tag":"ruleset-direct"}]' \
     "$(jq -c '.http_clients' "${default_json}")"
 assert_equal "dns 策略 ipv4_only" '"ipv4_only"' "$(jq -c '.dns.strategy' "${default_json}")"
+# 反向映射让只带真实 IP 的连接仍能按域名分流，对应 Mihomo 模板的 force-dns-mapping / parse-pure-ip。
+assert_equal "DNS 反向映射开启" 'true' "$(jq -c '.dns.reverse_mapping' "${default_json}")"
 assert_equal "TUN 与 mixed 入口" '["mixed-in","tun-in"]' \
     "$(jq -c '[.inbounds[].tag]' "${default_json}")"
 # DIRECT 直连必须用本地解析：route.default_domain_resolver 是节点引导解析器，
@@ -238,12 +240,15 @@ assert_equal "DIRECT 出口使用本地解析" '"dns-local"' \
     "$(jq -c '.outbounds[] | select(.tag == "DIRECT") | .domain_resolver' "${default_json}")"
 assert_equal "节点出口沿用引导解析器" '"dns-bootstrap"' \
     "$(jq -c '.route.default_domain_resolver' "${default_json}")"
-# DNS 规则顺序（对齐 Mihomo nameserver-policy）：私有/本地 → 代理集合 → Fake-IP 例外 → 国内集合 → Fake-IP。
+# DNS 规则顺序（对齐 Mihomo nameserver-policy）：私有/本地 → 模式覆盖 → 代理集合 → Fake-IP 例外 → 国内集合 → Fake-IP。
 # 代理集合必须早于国内集合与 Fake-IP 例外：services.googleapis.cn 命中 .cn，mtalk.google.com 命中 Fake-IP 例外，
 # 两者都属于代理集合、必须用代理 DNS 解析（禁 Fake-IP 不等于改用国内 DNS）。
+# 直连/全局的 DNS 覆盖排在私有与认证门户之后：局域网解析在任何模式下都不变。
 assert_equal "DNS 规则 tag 顺序" \
-    'private-fallback ^[^.]+$ captive-portal proxy-services fakeip-exceptions wechat-services steam-download apple-cn-fallback direct-services A' \
-    "$(jq -r '[.dns.rules[] | (if .rule_set then .rule_set[0] elif .domain_regex then .domain_regex[0] else .query_type[0] end)] | join(" ")' "${default_json}")"
+    'private-fallback ^[^.]+$ captive-portal clash_mode=direct clash_mode=global proxy-services fakeip-exceptions wechat-services steam-download apple-cn-fallback direct-services A' \
+    "$(jq -r '[.dns.rules[] | (if .clash_mode then "clash_mode=\(.clash_mode)" elif .rule_set then .rule_set[0] elif .domain_regex then .domain_regex[0] else .query_type[0] end)] | join(" ")' "${default_json}")"
+assert_equal "模式覆盖的 DNS 服务器" '[["direct","dns-cn"],["global","dns-proxy"]]' \
+    "$(jq -c '[.dns.rules[] | select(.clash_mode != null) | [.clash_mode, .server]]' "${default_json}")"
 assert_contains "geosite-private 进入直连规则" \
     '["private-fallback","geosite-private"]' \
     "$(jq -c '[.route.rules[] | select(.rule_set != null and .outbound == "DIRECT") | .rule_set][0]' "${default_json}")"
@@ -253,10 +258,38 @@ assert_equal "Fake-IP 网段不与 TUN 地址重叠" '"198.18.0.0/16"' \
     "$(jq -c '.dns.servers[] | select(.type == "fakeip") | .inet4_range' "${default_json}")"
 assert_equal "规则集下载走显式 HTTP 客户端" '"ruleset-direct"' \
     "$(jq -c '.route.default_http_client' "${default_json}")"
+# 内联后缀不写前导点：锁定核心按「裸域 + 各级子域」匹配（等价 Mihomo `+.`），带点只匹配子域。
+assert_equal "内联后缀不写前导点" '0' \
+    "$(jq -r '[.route.rule_set[] | select(.type == "inline") | .rules[] | .domain_suffix[]? | select(startswith("."))] | length' "${default_json}")"
+assert_equal "wechat-services 覆盖裸域 wechat.com" 'true' \
+    "$(jq -r 'any(.route.rule_set[] | select(.tag == "wechat-services") | .rules[].domain_suffix[]; . == "wechat.com")' "${default_json}")"
+assert_equal "steam-download 覆盖裸域 steamcontent.com" 'true' \
+    "$(jq -r 'any(.route.rule_set[] | select(.tag == "steam-download") | .rules[].domain_suffix[]; . == "steamcontent.com")' "${default_json}")"
+# 裸域、子域与相似域名的匹配结果取自锁定核心本身，不由模板形状推断。
+if [[ -x "${SINGBOX_BIN:-}" ]]; then
+    jq '{version: 3, rules: [.route.rule_set[]
+            | select(.tag == "wechat-services" or .tag == "steam-download") | .rules[]]}' \
+        "${default_json}" >"${TMP_DIR}/inline-rule-set.json"
+    while IFS='|' read -r probe expected; do
+        matched=no
+        # 匹配与不匹配都退出 0（仅在 stdout 打印命中规则），非零退出说明核心报错。
+        probe_out=$("${SINGBOX_BIN}" rule-set match "${TMP_DIR}/inline-rule-set.json" "${probe}" 2>&1) \
+            || fail "锁定核心匹配 ${probe} 执行失败：${probe_out}"
+        [[ -z "${probe_out}" ]] || matched=yes
+        assert_equal "锁定核心匹配 ${probe}" "${expected}" "${matched}"
+    done <<'PROBES'
+wechat.com|yes
+mp.weixin.qq.com|yes
+notwechat.com|no
+steamcontent.com|yes
+cdn.steamcontent.com|yes
+notsteamcontent.com|no
+PROBES
+fi
 
-# --- 模式 1/2/3/5：没有 AUTO 组，PROXY 默认选首个本机节点 ----------------------
-# 模式 2/3 没有直连入口，成员里不得出现直连节点；模式 1/5 的首成员是直连节点。
-# 只有模式 4 生成 AUTO（已在上面的主用例断言成员与探测参数）。
+# --- 模式 1/2/3/4：没有 AUTO 组，PROXY 默认选首个本机节点 ----------------------
+# 模式 2/4 没有直连入口，成员里不得出现直连节点；模式 1/3 的首成员是直连节点。
+# 只有模式 5 生成 AUTO（已在上面的主用例断言成员与探测参数）。
 while IFS='|' read -r profile expected_default has_direct; do
     mode_out="${TMP_DIR}/${profile}"
     render_mode "${profile}" "${mode_out}" >"${mode_out}.log" 2>&1 || {
@@ -391,7 +424,7 @@ assert_equal "无字段时 CF_EDGE_ADDRESS 为空" "" "$(derive_edge_address "${
 edge_out="${TMP_DIR}/combined-edge"
 render_mode combined "${edge_out}" "k2v8nq4zt6.cloudfront.182682.xyz" >"${edge_out}.log" 2>&1 || {
     cat "${edge_out}.log" >&2
-    fail "带 cdnEdgeAddress 的模式 4 订阅渲染失败"
+    fail "带 cdnEdgeAddress 的模式 5 订阅渲染失败"
 }
 for edge_artifact in singbox.json singbox-all.json; do
     assert_equal "优选地址替换 ${edge_artifact} 本机 CDN 节点" \
@@ -409,6 +442,8 @@ done
 
 # --- 非法 cdnEdgeAddress 不替换已发布订阅（验收条件 4：行为断言）-----------------
 cp -R "${out}/subs" "${TMP_DIR}/published-before"
+# 目标目录预置已发布产物：非法配置必须在写入前拒绝，目录内容不得变化。
+cp -R "${out}/subs" "${TMP_DIR}/reject-subs"
 edge_apply_err=$(
     RUNTIME_TMP="${TMP_DIR}/reject-runtime" \
     EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/reject-state" \
@@ -422,7 +457,7 @@ edge_apply_err=$(
         '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"a.com:443"}' 2>&1
 ) && fail "非法 cdnEdgeAddress 必须被 cdn_apply_subscription_config 拒绝"
 assert_contains "拒绝时 stderr 含 cdnEdgeAddress" "${edge_apply_err}" "cdnEdgeAddress"
-diff -r "${TMP_DIR}/published-before" "${out}/subs" >/dev/null \
+diff -r "${TMP_DIR}/published-before" "${TMP_DIR}/reject-subs" >/dev/null \
     || fail "非法配置不得改动已发布订阅产物"
 
 printf 'ok - sing-box 订阅测试通过（%s）\n' \

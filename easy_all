@@ -81,8 +81,8 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择安装模式（1 AnyTLS 直连 / 2 纯 CloudFront /
-                   3 纯 CloudFlare / 4 AnyTLS + CloudFront / 5 AnyTLS + CloudFlare）
+  install          交互选择安装模式（1 AnyTLS 直连 / 2 纯 CloudFlare /
+                   3 AnyTLS + CloudFlare / 4 纯 CloudFront / 5 AnyTLS + CloudFront）
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -91,7 +91,7 @@ launcher_usage() {
   apply-cloud      同步云端资源（Cloudflare DNS/Origin Rule/Origin CA、AWS ACM 与 CloudFront 分发）
   edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
   cdn-traffic-sync 同步 CloudFront 用量并落实流量阻断（仅 CloudFront 模式）
-  purge-cloudflare 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用）
+  purge-cloud 清理 easy_all 创建的 Cloudflare 与 CloudFront/ACM 资源（可在未安装状态使用）
   update-core      重装/修复当前锁定版本的核心（sing-box + Caddy）
   renew-cert       重新签发/部署当前模式的 TLS 证书
   status           显示运行状态
@@ -122,7 +122,7 @@ launcher_marker_snapshot() {
 }
 
 # 旧安装标记（PROFILE=cdn，以及没有 CHAIN=cloudfront 的旧 PROFILE=combined）来自已删除的
-# 旧 Cloudflare 橙云链路：它们的 Profile 不再存在（combined.sh 已改为模式 3），不能 source。
+# 旧 Cloudflare 橙云链路：它们的 Profile 不再存在（combined.sh 现在是 AnyTLS + CloudFront 的 Profile），不能 source。
 
 launcher_progress_file() {
     printf '%s' "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE:-/var/lib/easy_all/install-progress.env}"
@@ -221,7 +221,7 @@ cleanup_partial_install_command() {
     fi
     cleanup_partial_install
     # 清理会删掉 easy_all 命令本身，下一步只能用 bootstrap 入口。
-    success "本机残留已清理完成；如安装期已创建云端资源，需要时用 ${bootstrap} purge-cloudflare 清理"
+    success "本机残留已清理完成；如安装期已创建云端资源，需要时用 ${bootstrap} purge-cloud 清理"
 }
 
 choose_install_mode() {
@@ -229,17 +229,17 @@ choose_install_mode() {
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
     printf '  1. AnyTLS 直连（直连效果良好且 IP 未被封时；订阅可选）\n' >&2
-    printf '  2. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
-    printf '  3. 纯 CloudFlare（橙云单域名同时提供节点与订阅）\n' >&2
-    printf '  4. AnyTLS + CloudFront（一次部署直连与 CDN 两个入口）\n' >&2
-    printf '  5. AnyTLS + CloudFlare（直连与橙云节点，橙云域名同时提供订阅）\n' >&2
+    printf '  2. 纯 CloudFlare（橙云单域名同时提供节点与订阅）\n' >&2
+    printf '  3. AnyTLS + CloudFlare（直连与橙云节点，橙云域名同时提供订阅）\n' >&2
+    printf '  4. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
+    printf '  5. AnyTLS + CloudFront（一次部署直连与 CDN 两个入口）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'anytls\n' ;;
-    2) printf 'cloudfront\n' ;;
-    3) printf 'cloudflare\n' ;;
-    4) printf 'combined-cloudfront\n' ;;
-    5) printf 'combined-cloudflare\n' ;;
+    2) printf 'cloudflare\n' ;;
+    3) printf 'combined-cloudflare\n' ;;
+    4) printf 'cloudfront\n' ;;
+    5) printf 'combined-cloudfront\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
@@ -419,6 +419,13 @@ unified_self_update() {
 
 # 命令参数门禁：只有下列命令带参数，其余一律不接受；未知命令必须先点名，
 # 不能只打印 usage。两者都在任何副作用前非零退出。
+launcher_unknown_command() {
+    # 改名提示：旧名不再派发，但必须指向新名，而不是只报「未知命令」。
+    [[ "$1" != "purge-cloudflare" ]] \
+        || launcher_die "命令已改名：purge-cloudflare → purge-cloud（用法：sudo easy_all purge-cloud [--domain <域名>] [--all] [--yes]）"
+    launcher_die "未知命令：$1"
+}
+
 launcher_command_known() {
     case "$1" in
     install | show | subscription | apply | tcp-resume | apply-cloud | edit-sub \
@@ -453,7 +460,7 @@ dispatch_profile_command() {
     local mode=$1 command=$2
     shift 2
     if ! launcher_command_known "${command}"; then
-        launcher_die "未知命令：${command}"
+        launcher_unknown_command "${command}"
     fi
     dispatch_validate_arguments "${command}" "$@"
     case "${command}" in
@@ -505,8 +512,8 @@ main() {
         launcher_usage
         return
     fi
-    if [[ "${command}" == "purge-cloudflare" ]]; then
-        bash "${EASY_ALL_ROOT}/lib/cloudflare-purge.sh" "$@"
+    if [[ "${command}" == "purge-cloud" ]]; then
+        bash "${EASY_ALL_ROOT}/lib/cloud-purge.sh" "$@"
         exit
     fi
     if [[ "${command}" == "cleanup-partial" ]]; then
@@ -579,7 +586,7 @@ main() {
     # 未知命令与参数错误必须在读取安装状态、加载 Profile、创建运行时临时目录之前拒绝：
     # 否则未安装时误报「尚未安装」，非 root 时还会引导用户提权运行非法命令。
     launcher_command_known "${command}" \
-        || launcher_die "未知命令：${command}"
+        || launcher_unknown_command "${command}"
     if [[ "${command}" == "install" ]]; then
         (($# == 0)) || launcher_die "install 不接受参数，请在交互菜单中选择"
     else

@@ -42,8 +42,8 @@ caddy_require_host() {
     printf '%s\n' "${value}"
 }
 
-# 站点主机与端口由模式派生（design §2）：模式 1 订阅 8443、模式 3 节点域 443、
-# 模式 2 源站 443、模式 4/5 源站 8443；不接受用户另设端口。
+# 站点主机与端口由模式派生（design §2）：模式 1 订阅 8443、模式 2 节点域 443、
+# 模式 4 源站 443、模式 3/5 源站 8443；不接受用户另设端口。
 caddy_site_host() {
     caddy_require_protocol
     case "${PROTOCOL}" in

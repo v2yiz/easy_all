@@ -65,7 +65,7 @@ read_confirmation() {
 }
 
 # --- CDN 优选连接地址（cdnEdgeAddress）的安装交互 -------------------------------
-# 模式 2/4 拼 CloudFront 泛域名后缀，模式 3/5 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
+# 模式 4/5 拼 CloudFront 泛域名后缀，模式 2/3 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
 CDN_EDGE_CLOUDFRONT_SUFFIX="cloudfront.182682.xyz"
 CDN_EDGE_CLOUDFLARE_SUFFIX="cloudflare.182682.xyz"
 # 安装时生成的优选地址形态：10 位前缀 + 当前模式的泛域名后缀（首位字母，后九位字母或数字）。
@@ -673,7 +673,7 @@ assert_install_ports_free() {
     local argument port owner reason_text
     local -a ports=()
     for argument in "$@"; do
-        # 调用方把整串端口作为一个参数传入（模式 4 的 "443 8443"）：整串交给
+        # 调用方把整串端口作为一个参数传入（模式 5 的 "443 8443"）：整串交给
         # ss 会拼出 sport = :443 8443 这种非法表达式，因此必须逐端口检查。
         read -r -a ports <<<"${argument}"
         ((${#ports[@]} > 0)) || continue

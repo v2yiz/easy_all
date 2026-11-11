@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot cleanup of easy_all-created Cloudflare resources. Works without local state.
+# One-shot cleanup of easy_all-created Cloudflare and CloudFront/ACM resources. Works without local state.
 set -Eeuo pipefail
 umask 077
 
@@ -24,9 +24,9 @@ usage() {
     local status=${1:-2} fd=2
     ((status == 0)) && fd=1
     cat >&"${fd}" <<'EOF'
-用法: easy_all purge-cloudflare [--domain <域名>[,<域名>...]] [--all] [--yes]
+用法: easy_all purge-cloud [--domain <域名>[,<域名>...]] [--all] [--yes]
 
-  --domain <域名>  清理这些域名所在 Zone 内由 easy_all 创建的资源
+  --domain <域名>  清理这些域名下的 easy_all 资源（Cloudflare 与 CloudFront/ACM）
                    传 Zone 根域名（如 example.com）会覆盖其下全部相关记录；
                    传完整主机名（如 cf.example.com）只清理该域名及其直接关联对象
   --all            清理 Token 可见的所有 Zone 中的 easy_all 资源
@@ -36,11 +36,19 @@ usage() {
 
 识别规则：DNS 记录注释以 easy_all 开头（命中本机接管日志 /var/log/easy_all/dns-takeover.log 的记录
 视为强制接管而来的第三方记录，一律保留，原配置按日志手工处理）；
-规则按 ref 以 easy_all_ 开头且表达式完整等于 http.host eq "待清理域名"（括号、or/and/not、集合等复杂表达式一律保留）；
+规则按 ref 以 easy_all- 开头（历史资源兼容 easy_all_ 前缀）且表达式完整等于 http.host eq "待清理域名"（括号、or/and/not、集合等复杂表达式一律保留）；
 ruleset 名称以 easy_all 开头且清空后才删除；
 Origin CA 证书只在其全部 hostname 都属于 easy_all 记录或输入域名时删除。
 Zone 内 easy_all DNS 记录已删除时，规则与证书需要传完整主机名才能识别。
 不删除 Zone 本身。
+
+CloudFront/ACM：仅在同时提供 AWS 凭据（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY，
+可选 AWS_SESSION_TOKEN）且已安装 aws CLI 时执行，否则跳过并提示。只删除
+Comment 以 easy_all-cloudfront- 开头且别名全部落在本次域名范围内的分发（先禁用、等 Deployed、再删），
+以及打有 easy_all=managed 标记、InUseBy 为空且域名全部在范围内的 us-east-1 ACM 证书。
+与本次删除的分发关联的 ACM 证书（计划时仍被引用）本次不再评估；需要一并清理时，
+请在分发删除成功后再次运行本命令。任一 ACM 证书无法读取或解析时，无法确认归属，
+将整体取消清理（不删除任何对象）。
 EOF
     exit "${status}"
 }
@@ -190,15 +198,22 @@ cf_api() {
     jq -c '.result' <<<"${response}"
 }
 
-cf_list() {
-    local path=$1 separator='?' page=1 batch all='[]' count prev_batch=""
+# 每个列表接口的分页上限（usage 承诺）：非法值在任何扫描之前就拒绝。
+purge_max_pages() {
     local max_pages=${EASY_ALL_PURGE_MAX_PAGES:-100}
     [[ "${max_pages}" =~ ^[1-9][0-9]*$ ]] \
         || die "EASY_ALL_PURGE_MAX_PAGES 必须是正整数：${max_pages}"
+    printf '%s' "${max_pages}"
+}
+
+cf_list() {
+    local path=$1 separator='?' page=1 batch all='[]' count prev_batch=""
+    local max_pages
+    max_pages=$(purge_max_pages)
     [[ "${path}" != *\?* ]] || separator='&'
     while :; do
         batch=$(cf_api GET "${path}${separator}per_page=100&page=${page}") || return 1
-        # jq 必须显式 -n：不传输入时它会读 stdin，在交互终端上会永久阻塞（现场：purge-cloudflare 挂起）。
+        # jq 必须显式 -n：不传输入时它会读 stdin，在交互终端上会永久阻塞（现场：purge-cloud 挂起）。
         all=$(jq -nc --argjson all "${all}" --argjson batch "${batch}" '$all + $batch')
         count=$(jq 'length' <<<"${batch}")
         ((count == 100)) || break
@@ -340,7 +355,240 @@ if ((PURGE_ALL == 0)) && [[ ! -s "${RUNTIME_TMP}/allowed-names" ]]; then
     warn "没有匹配到 easy_all DNS 记录；规则与 Origin CA 需要传入完整主机名（如 cf.example.com,sub.example.com）才能识别"
 fi
 
+# --- CloudFront / ACM（AWS） ---------------------------------------------------
+# 本脚本不加载 Profile：AWS 侧同样只按归属标记识别；凭据或 aws CLI 缺失时整段跳过。
+aws_cli_ready() {
+    command -v aws >/dev/null 2>&1 \
+        && [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]
+}
+aws_cli() { aws --no-cli-pager --cli-read-timeout 120 --cli-connect-timeout 60 "$@"; }
+
+# 输入恰好等于已解析的 Zone 名时才覆盖点分隔子域，与 Cloudflare 侧 domain_scope 同口径。
+aws_domain_is_zone_root() {
+    awk -F'\t' -v name="$1" \
+        'tolower($2) == tolower(name) { found = 1; exit } END { exit !found }' \
+        "${RUNTIME_TMP}/zones.tsv"
+}
+
+# --domain 的语义与 Cloudflare 侧一致：等于输入，或输入是 Zone 根域名时的点分隔子域。
+# AWS 返回的名字先小写归一，与 Cloudflare 侧（解析时已小写）同口径。
+aws_name_in_scope() {
+    local name domain
+    ((PURGE_ALL == 1)) && return 0
+    ((DOMAIN_COUNT > 0)) || return 1
+    name=$(tr '[:upper:]' '[:lower:]' <<<"$1")
+    for domain in "${DOMAINS[@]}"; do
+        [[ "${name}" == "${domain}" ]] && return 0
+        [[ "${name}" == *".${domain}" ]] && aws_domain_is_zone_root "${domain}" && return 0
+    done
+    return 1
+}
+
+aws_collect_distributions() {
+    local marker="" next page input pages=0 max_pages acc_file
+    max_pages=$(purge_max_pages)
+    acc_file="${RUNTIME_TMP}/cloudfront-pages.jsonl"
+    : >"${acc_file}"
+    while :; do
+        pages=$((pages + 1))
+        # --no-paginate 关掉 AWS CLI 的自动分页，否则 CLI 在内部取完全部页并丢掉
+        # IsTruncated/NextMarker，外层永远只看到一页，页数上限形同虚设。
+        # 页大小与 token 都走服务端入参（CloudFront 的 MaxItems 是字符串）。
+        if [[ -n "${marker}" ]]; then
+            input=$(jq -cn --arg marker "${marker}" '{MaxItems:"100", Marker:$marker}') || return 1
+        else
+            input=$(jq -cn '{MaxItems:"100"}') || return 1
+        fi
+        page=$(aws_cli cloudfront list-distributions --no-paginate \
+            --cli-input-json "${input}" --output json) || return 1
+        # 逐页只投影清理要用的字段：整页对象的 Origins.CustomHeaders.HeaderValue 是源站密钥。
+        jq -c '[(.DistributionList.Items // [])[]
+            | {Id, Comment: (.Comment // ""), Aliases: (.Aliases.Items // [])}]' \
+            <<<"${page}" >>"${acc_file}" || return 1
+        truncated=$(jq -r '.DistributionList.IsTruncated // false' <<<"${page}") || return 1
+        [[ "${truncated}" == "true" ]] || break
+        next=$(jq -r '.DistributionList.NextMarker // empty' <<<"${page}")
+        [[ -n "${next}" && "${next}" != "${marker}" ]] \
+            || die "CloudFront 分页标记异常；已取消清理"
+        ((pages <= max_pages)) \
+            || die "扫描超过 ${max_pages} 页仍未结束（cloudfront list-distributions）；如账户确实有更多数据，可用 EASY_ALL_PURGE_MAX_PAGES 调大上限"
+        marker=${next}
+    done
+    # 每行是一页的投影数组；-s 把逐行文档 slurp 成数组，add 把它们连接成扁平对象数组。
+    jq -s -c 'add // []' "${acc_file}"
+}
+
+# 分发归属：Comment 必须带 easy_all-cloudfront- 前缀，且全部别名都落在本次范围内。
+aws_plan_distributions() {
+    local items id comment aliases alias ok
+    local -a alias_list
+    items=$(aws_collect_distributions) \
+        || { warn "列举 CloudFront 分发失败；已取消清理"; return 1; }
+    while IFS=$'\t' read -r id comment aliases; do
+        [[ -n "${id}" ]] || continue
+        ok=1
+        [[ -n "${aliases}" ]] || ok=0
+        IFS=',' read -r -a alias_list <<<"${aliases}"
+        for alias in "${alias_list[@]}"; do
+            [[ -n "${alias}" ]] || continue
+            aws_name_in_scope "${alias}" || ok=0
+        done
+        ((ok == 1)) || continue
+        printf '%s\t%s\t%s\n' "${id}" "${comment}" "${aliases}" >>"${RUNTIME_TMP}/cloudfront.tsv"
+    done < <(jq -r '
+        .[]
+        | select((.Comment // "") | startswith("easy_all-cloudfront-"))
+        | [.Id, (.Comment // ""), (.Aliases | join(","))]
+        | @tsv
+    ' <<<"${items}")
+}
+
+aws_collect_certificates() {
+    local next="" page input pages=0 seen="|" max_pages acc_file
+    max_pages=$(purge_max_pages)
+    acc_file="${RUNTIME_TMP}/acm-pages.jsonl"
+    : >"${acc_file}"
+    while :; do
+        pages=$((pages + 1))
+        # 同 CloudFront：关闭 CLI 自动分页，页大小与 token 走服务端入参（ACM 的 MaxItems 是整数）。
+        if [[ -n "${next}" ]]; then
+            input=$(jq -cn --arg token "${next}" '{MaxItems:100, NextToken:$token}') || return 1
+        else
+            input=$(jq -cn '{MaxItems:100}') || return 1
+        fi
+        page=$(aws_cli acm list-certificates --region us-east-1 --no-paginate \
+            --cli-input-json "${input}" --output json) || return 1
+        jq -c '[(.CertificateSummaryList // [])[] | {CertificateArn}]' \
+            <<<"${page}" >>"${acc_file}" || return 1
+        next=$(jq -r '.NextToken // empty' <<<"${page}") || return 1
+        [[ -n "${next}" ]] || break
+        # 响应异常时反复返回同一 token 会让计划阶段在 root 会话里无限循环。
+        [[ "${seen}" != *"|${next}|"* ]] \
+            || die "ACM 列举接口重复返回同一分页标记（${next}）；已取消清理以免无限循环"
+        seen+="${next}|"
+        ((pages <= max_pages)) \
+            || die "扫描超过 ${max_pages} 页仍未结束（acm list-certificates）；如账户确实有更多数据，可用 EASY_ALL_PURGE_MAX_PAGES 调大上限"
+    done
+    jq -s -c 'add // []' "${acc_file}"
+}
+
+# ACM 归属：us-east-1、easy_all=managed 标记、InUseBy 为空，且域名全部落在本次范围内。
+# 读取/解析失败无法证明资格：点名 ARN 并 return 1（aws_plan_failed → 整体取消），
+# 与「完整枚举失败则删除前取消」同口径；成功读取但不符合归属的证书静默保留。
+aws_plan_certificates() {
+    local items arn detail tags names name ok
+    local -a name_list
+    items=$(aws_collect_certificates) \
+        || { warn "列举 ACM 证书失败；已取消清理"; return 1; }
+    while IFS= read -r arn; do
+        [[ -n "${arn}" ]] || continue
+        if ! detail=$(aws_cli acm describe-certificate --region us-east-1 \
+            --certificate-arn "${arn}" --output json 2>/dev/null) \
+            || ! jq -e '.Certificate' <<<"${detail}" >/dev/null 2>&1; then
+            warn "无法读取/解析 ACM 证书（describe-certificate：${arn}），无法确认归属；已取消清理"
+            return 1
+        fi
+        if ! tags=$(aws_cli acm list-tags-for-certificate --region us-east-1 \
+            --certificate-arn "${arn}" --output json 2>/dev/null) \
+            || ! jq -e '.Tags' <<<"${tags}" >/dev/null 2>&1; then
+            warn "无法读取/解析 ACM 证书（list-tags-for-certificate：${arn}），无法确认归属；已取消清理"
+            return 1
+        fi
+        jq -e '(.Certificate.InUseBy // []) | length == 0' <<<"${detail}" >/dev/null 2>&1 \
+            || continue
+        jq -e '(.Tags // []) | any(.Key == "easy_all" and .Value == "managed")' \
+            <<<"${tags}" >/dev/null 2>&1 || continue
+        if ! names=$(jq -r '[.Certificate.DomainName] + (.Certificate.SubjectAlternativeNames // [])
+            | map(select(. != null)) | unique | .[]' <<<"${detail}"); then
+            warn "无法解析 ACM 证书（域名列表：${arn}），无法确认归属；已取消清理"
+            return 1
+        fi
+        ok=1
+        IFS=$'\n' read -r -d '' -a name_list <<<"${names}" || true
+        ((${#name_list[@]} > 0)) || ok=0
+        for name in "${name_list[@]}"; do
+            aws_name_in_scope "${name}" || ok=0
+        done
+        ((ok == 1)) || continue
+        printf '%s\t%s\n' "${arn}" "$(tr '\n' ',' <<<"${names}" | sed 's/,$//')" \
+            >>"${RUNTIME_TMP}/acm.tsv"
+    done < <(jq -r '.[] | .CertificateArn // empty' <<<"${items}")
+}
+
+# 证书删除前复核：managed 标签、InUseBy 为空、全部域名在范围内。任一读取失败或不符返回 1。
+aws_certificate_still_owned() {
+    local arn=$1 detail tags names name ok=1
+    local -a name_list
+    detail=$(aws_cli acm describe-certificate --region us-east-1 \
+        --certificate-arn "${arn}" --output json) || return 1
+    tags=$(aws_cli acm list-tags-for-certificate --region us-east-1 \
+        --certificate-arn "${arn}" --output json) || return 1
+    jq -e '(.Certificate.InUseBy // []) | length == 0' <<<"${detail}" >/dev/null 2>&1 \
+        || return 1
+    jq -e '(.Tags // []) | any(.Key == "easy_all" and .Value == "managed")' \
+        <<<"${tags}" >/dev/null 2>&1 || return 1
+    names=$(jq -r '[.Certificate.DomainName] + (.Certificate.SubjectAlternativeNames // [])
+        | map(select(. != null)) | unique | .[]' <<<"${detail}") || return 1
+    IFS=$'\n' read -r -d '' -a name_list <<<"${names}" || true
+    ((${#name_list[@]} > 0)) || return 1
+    for name in "${name_list[@]}"; do
+        aws_name_in_scope "${name}" || ok=0
+    done
+    ((ok == 1))
+}
+
+# 破坏性请求前复核：Comment 前缀 + 非空别名且全部在范围内。任一读取失败或不符返回 1。
+aws_distribution_still_owned() {
+    local fetched=$1 comment aliases alias ok=1
+    local -a alias_list
+    comment=$(jq -r '.DistributionConfig.Comment // empty' <<<"${fetched}") || return 1
+    [[ "${comment}" == "easy_all-cloudfront-"* ]] || return 1
+    aliases=$(jq -r '(.DistributionConfig.Aliases.Items // []) | join(",")' <<<"${fetched}") || return 1
+    # 与计划阶段同口径：空别名集合证明不了分发仍属于本次清理范围，不能只靠循环零次执行就放行。
+    [[ -n "${aliases}" ]] || return 1
+    IFS=',' read -r -a alias_list <<<"${aliases}"
+    for alias in "${alias_list[@]}"; do
+        [[ -n "${alias}" ]] || continue
+        aws_name_in_scope "${alias}" || ok=0
+    done
+    ((ok == 1)) || return 1
+}
+
+aws_disable_and_delete_distribution() {
+    local id=$1 fetched etag config status attempt
+    local attempts=${EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS:-60}
+    local seconds=${EASY_ALL_PURGE_AWS_WAIT_SECONDS:-10}
+    # 配置读取用 get-distribution-config（真实响应的配置在根对象 .DistributionConfig）；
+    # Status 只存在于 get-distribution 的 .Distribution 下，轮询继续用它。
+    fetched=$(aws_cli cloudfront get-distribution-config --id "${id}" --output json) || return 1
+    aws_distribution_still_owned "${fetched}" \
+        || { warn "CloudFront 分发 ${id} 的归属/范围已变化，保留不删"; return 1; }
+    etag=$(jq -r '.ETag // empty' <<<"${fetched}")
+    [[ -n "${etag}" ]] || return 1
+    config="${RUNTIME_TMP}/cloudfront-disable-${id}.json"
+    # 配置里含源站头密钥（X-Easy-All-Origin-Key）：落 0600 临时文件走 file://，不进 argv/ps。
+    jq -c '.DistributionConfig | .Enabled=false' <<<"${fetched}" >"${config}" || return 1
+    aws_cli cloudfront update-distribution --id "${id}" --if-match "${etag}" \
+        --distribution-config "file://${config}" --output json >/dev/null || return 1
+    status=""
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        status=$(aws_cli cloudfront get-distribution --id "${id}" \
+            --query 'Distribution.Status' --output text 2>/dev/null || true)
+        [[ "${status}" == "Deployed" ]] && break
+        sleep "${seconds}"
+    done
+    [[ "${status}" == "Deployed" ]] || return 1
+    # 禁用生效后重新读取，取最新 ETag 再删；删除前同样复核归属/范围。
+    fetched=$(aws_cli cloudfront get-distribution-config --id "${id}" --output json) || return 1
+    aws_distribution_still_owned "${fetched}" \
+        || { warn "CloudFront 分发 ${id} 的归属/范围已变化，保留不删"; return 1; }
+    etag=$(jq -r '.ETag // empty' <<<"${fetched}")
+    [[ -n "${etag}" ]] || return 1
+    aws_cli cloudfront delete-distribution --id "${id}" --if-match "${etag}" >/dev/null
+}
+
 total=0
+aws_total=0
 print_plan() {
     local label=$1 file=$2
     while IFS=$'\t' read -r a b c d; do
@@ -359,12 +607,46 @@ print_plan "Ruleset" rulesets
 print_plan "Origin CA" certs
 print_plan "DNS 记录" dns
 
-if ((total == 0)); then
-    info "没有匹配到 easy_all 创建的 Cloudflare 资源"
+# AWS 侧计划同样在确认前收集：一次确认覆盖两种云。凭据/CLI 缺失时只提示跳过。
+aws_requested=0
+aws_plan_failed=0
+: >"${RUNTIME_TMP}/cloudfront.tsv"
+: >"${RUNTIME_TMP}/acm.tsv"
+if aws_cli_ready; then
+    aws_requested=1
+    if ! { aws_plan_distributions && aws_plan_certificates; }; then
+        aws_plan_failed=1
+    else
+        while IFS=$'\t' read -r aws_id _aws_comment aws_aliases; do
+            [[ -n "${aws_id}" ]] || continue
+            aws_total=$((aws_total + 1))
+            printf '  %-11s %s %s\n' "CloudFront" "${aws_id}" "${aws_aliases}"
+        done <"${RUNTIME_TMP}/cloudfront.tsv"
+        while IFS=$'\t' read -r aws_arn aws_names; do
+            [[ -n "${aws_arn}" ]] || continue
+            aws_total=$((aws_total + 1))
+            printf '  %-11s %s %s\n' "ACM" "${aws_arn}" "${aws_names}"
+        done <"${RUNTIME_TMP}/acm.tsv"
+    fi
+else
+    info "未提供 AWS 凭据或缺 aws CLI：跳过 CloudFront/ACM 清理（Cloudflare 侧照常执行）"
+fi
+
+# 枚举失败时不能假装“没有资源”：在删除任何对象之前整体停止，避免只清一半。
+if ((aws_plan_failed == 1)); then
+    die "列举 CloudFront/ACM 资源失败；已取消清理（未删除任何对象），请修复 AWS 权限后重试"
+fi
+
+if ((total == 0 && aws_total == 0)); then
+    info "没有匹配到 easy_all 创建的 Cloudflare、CloudFront 或 ACM 资源"
     exit 0
 fi
 
-info "以上 ${total} 个 Cloudflare 对象将被删除（不删除 Zone）"
+if ((aws_total > 0)); then
+    info "以上 ${total} 个 Cloudflare 对象与 ${aws_total} 个 CloudFront/ACM 对象将被删除（不删除 Zone）"
+else
+    info "以上 ${total} 个 Cloudflare 对象将被删除（不删除 Zone）"
+fi
 if ((ASSUME_YES == 0)); then
     [[ -t 0 ]] || die "非交互模式必须加 --yes 才能删除"
     read_prompt '确认删除？[y/N]: ' _answer
@@ -382,6 +664,7 @@ purge() {
     fi
 }
 
+if ((total > 0)); then
 while IFS=$'\t' read -r zone_id ruleset_id rule_id rule_ref; do
     [[ -n "${rule_id}" ]] || continue
     purge "规则" "${rule_ref}" "/zones/${zone_id}/rulesets/${ruleset_id}/rules/${rule_id}"
@@ -401,6 +684,42 @@ while IFS=$'\t' read -r zone_id record_id name; do
     [[ -n "${record_id}" ]] || continue
     purge "DNS 记录" "${name}" "/zones/${zone_id}/dns_records/${record_id}"
 done <"${RUNTIME_TMP}/dns.tsv"
+((failures == 0)) || warn "Cloudflare 侧有 ${failures} 个对象删除失败"
+success "Cloudflare 清理完成：$((total - failures)) 个对象"
+fi
+
+if ((aws_total > 0)); then
+    aws_failures=0
+    while IFS=$'\t' read -r aws_id _aws_comment aws_aliases; do
+        [[ -n "${aws_id}" ]] || continue
+        if aws_disable_and_delete_distribution "${aws_id}"; then
+            success "已删除 CloudFront 分发：${aws_id}（${aws_aliases}）"
+        else
+            warn "删除 CloudFront 分发失败：${aws_id}"
+            aws_failures=$((aws_failures + 1))
+        fi
+    done <"${RUNTIME_TMP}/cloudfront.tsv"
+    while IFS=$'\t' read -r aws_arn aws_names; do
+        [[ -n "${aws_arn}" ]] || continue
+        if aws_certificate_still_owned "${aws_arn}"; then
+            if (aws_cli acm delete-certificate --region us-east-1 \
+                --certificate-arn "${aws_arn}" >/dev/null); then
+                success "已删除 ACM 证书：${aws_arn}（${aws_names}）"
+            else
+                warn "删除 ACM 证书失败：${aws_arn}"
+                aws_failures=$((aws_failures + 1))
+            fi
+        else
+            warn "ACM 证书 ${aws_arn} 的归属/状态已变化，保留不删"
+            aws_failures=$((aws_failures + 1))
+        fi
+    done <"${RUNTIME_TMP}/acm.tsv"
+    if ((aws_failures == 0)); then
+        success "CloudFront/ACM 清理完成：${aws_total} 个对象"
+    else
+        warn "CloudFront/ACM 侧有 ${aws_failures} 个对象删除失败"
+    fi
+    failures=$((failures + aws_failures))
+fi
 
 ((failures == 0)) || die "有 ${failures} 个对象删除失败；可修复后重试同一命令"
-success "Cloudflare 清理完成：${total} 个对象"

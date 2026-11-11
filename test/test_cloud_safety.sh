@@ -151,24 +151,24 @@ STRICT
 
 for ssl in strict full flexible off 403; do
     log=$(run_strict_case "${ssl}" cloudflare)
-    assert_contains "模式 3 ${ssl}：先只读查询 Zone ID" "${log}" \
+    assert_contains "模式 2 ${ssl}：先只读查询 Zone ID" "${log}" \
         "GET /zones?name=example.com&status=active&per_page=50"
     zone_line=$(grep -n 'GET /zones?name=' <<<"${log}" | head -n 1 | cut -d: -f1)
     ssl_line=$(grep -n 'settings/ssl' <<<"${log}" | head -n 1 | cut -d: -f1)
     [[ -n "${zone_line}" && -n "${ssl_line}" ]] \
-        || fail "模式 3 ${ssl}：必须同时查询 Zone ID 与 SSL 设置"
-    ((zone_line < ssl_line)) || fail "模式 3 ${ssl}：Zone ID 查询必须早于 SSL 设置查询"
+        || fail "模式 2 ${ssl}：必须同时查询 Zone ID 与 SSL 设置"
+    ((zone_line < ssl_line)) || fail "模式 2 ${ssl}：Zone ID 查询必须早于 SSL 设置查询"
     if [[ "${ssl}" == "strict" ]]; then
-        assert_contains "模式 3 strict：继续创建 DNS" "${log}" "DNS cf.example.com"
-        assert_contains "模式 3 strict：执行到证书签发" "${log}" "CERT"
-        assert_contains "模式 3 strict：成功结束" "${log}" "STATUS=0"
+        assert_contains "模式 2 strict：继续创建 DNS" "${log}" "DNS cf.example.com"
+        assert_contains "模式 2 strict：执行到证书签发" "${log}" "CERT"
+        assert_contains "模式 2 strict：成功结束" "${log}" "STATUS=0"
     else
-        assert_not_contains "模式 3 ${ssl}：不创建 DNS" "${log}" "DNS "
-        assert_not_contains "模式 3 ${ssl}：不签发证书" "${log}" "CERT"
-        assert_not_contains "模式 3 ${ssl}：非零退出" "${log}" "STATUS=0"
+        assert_not_contains "模式 2 ${ssl}：不创建 DNS" "${log}" "DNS "
+        assert_not_contains "模式 2 ${ssl}：不签发证书" "${log}" "CERT"
+        assert_not_contains "模式 2 ${ssl}：非零退出" "${log}" "STATUS=0"
     fi
-    assert_not_contains "模式 3 ${ssl}：没有写请求" "${log}" "POST "
-    assert_not_contains "模式 3 ${ssl}：没有删除请求" "${log}" "DELETE "
+    assert_not_contains "模式 2 ${ssl}：没有写请求" "${log}" "POST "
+    assert_not_contains "模式 2 ${ssl}：没有删除请求" "${log}" "DELETE "
 done
 
 for ssl in strict full; do
@@ -222,7 +222,7 @@ assert_not_contains "模式 1 link 不查询 Zone SSL 设置" "${link_log}" "set
 assert_contains "模式 1 link 仍配置直连 DNS" "${link_log}" "DNS node.example.com"
 assert_not_contains "模式 1 link 不创建订阅 DNS" "${link_log}" "DNS sub.example.com"
 
-# --- 3. 模式 3 的 DNS 归属常量：创建、复用与 purge 使用同一契约 -----------------
+# --- 3. 模式 2 的 DNS 归属常量：创建、复用与 purge 使用同一契约 -----------------
 run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
     local case_name=$1
     local log="${TMP_DIR}/dns-${case_name}.log"
@@ -273,17 +273,17 @@ run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
 }
 
 create_log=$(run_dns_case create)
-assert_contains "模式 3 创建记录使用模式专属注释" "${create_log}" "easy_all cloudflare"
-assert_contains "模式 3 创建记录是 POST" "${create_log}" "POST /zones/zoneid/dns_records"
+assert_contains "模式 2 创建记录使用模式专属注释" "${create_log}" "easy_all cloudflare"
+assert_contains "模式 2 创建记录是 POST" "${create_log}" "POST /zones/zoneid/dns_records"
 
 reuse_log=$(run_dns_case reuse)
-assert_not_contains "模式 3 复用受管记录不写入" "${reuse_log}" "POST "
-assert_not_contains "模式 3 复用受管记录不改写" "${reuse_log}" "PATCH "
+assert_not_contains "模式 2 复用受管记录不写入" "${reuse_log}" "POST "
+assert_not_contains "模式 2 复用受管记录不改写" "${reuse_log}" "PATCH "
 
 purge_log=$(run_dns_case purge)
-assert_contains "模式 3 purge 删除受管记录" "${purge_log}" \
+assert_contains "模式 2 purge 删除受管记录" "${purge_log}" \
     "DELETE /zones/zoneid/dns_records/rec1"
-assert_not_contains "模式 3 purge 不修改记录" "${purge_log}" "PATCH "
+assert_not_contains "模式 2 purge 不修改记录" "${purge_log}" "PATCH "
 
 purge_takeover_log=$(run_dns_case purge-takeover)
 assert_not_contains "强制接管的记录在 purge 时不得删除" "${purge_takeover_log}" "DELETE "
@@ -412,7 +412,7 @@ noninteractive_err=$(cat "${TMP_DIR}/dns-foreign.log.err")
 assert_contains "非交互拒绝时说明原因" "${noninteractive_err}" "非交互"
 assert_not_contains "非交互时不提示接管" "${noninteractive_err}" "是否强制接管"
 
-# --- 3b. 模式 4：直连域名可与源站域名复用 -------------------------------------
+# --- 3b. 模式 5：直连域名可与源站域名复用 -------------------------------------
 # 依据：docs/preparation-guide.md §域名清单：直连域名可与源站域名复用（填同一个名字时
 # 两个入口共用一个灰云 A 记录，端口不同、证书互不影响，部署只需 2 个名字）。
 # 因此本段是两个方向的正向契约：等于源站域名必须放行，等于节点/订阅域名必须拒绝。
@@ -492,8 +492,8 @@ run_state_domain_case "direct.example.com" >/dev/null \
 run_state_domain_case "origin.example.com" >/dev/null \
     || fail "状态中直连域名等于源站域名时必须通过（文档允许与源站域名复用）"
 
-# --- 3b-2. 模式 2/4 安装输入提示面：域名输入收敛为每条链路两个名字 -----------------
-# 模式 4 不再询问源站域名（固定复用直连域名）、模式 2/4 不再询问订阅域名（固定复用节点域名）。
+# --- 3b-2. 模式 4/5 安装输入提示面：域名输入收敛为每条链路两个名字 -----------------
+# 模式 5 不再询问源站域名（固定复用直连域名）、模式 4/5 不再询问订阅域名（固定复用节点域名）。
 # 输入由共享核心派生，这里直接观察用户可见的提示文案与派生结果。
 run_inputs_case() { # $1=profile（combined|cloudfront） $2=resume（可选：模拟跨版本续装并预设旧身份域名）
     local prompts="${TMP_DIR}/inputs-prompts-$1${2:+-$2}.log"
@@ -527,34 +527,34 @@ run_inputs_case() { # $1=profile（combined|cloudfront） $2=resume（可选：�
         ' _ "${ROOT_DIR}" "$1" "${2:-}" 2>&1
 }
 
-combined_inputs=$(run_inputs_case combined) || fail "模式 4 安装输入收集失败：${combined_inputs}"
+combined_inputs=$(run_inputs_case combined) || fail "模式 5 安装输入收集失败：${combined_inputs}"
 combined_prompts=$(cat "${TMP_DIR}/inputs-prompts-combined.log")
-assert_contains "模式 4 仍询问直连节点域名" "${combined_prompts}" "直连节点域名"
-assert_contains "模式 4 仍询问 CloudFront 节点域名" "${combined_prompts}" "CloudFront 节点域名"
-assert_not_contains "模式 4 不再询问源站域名" "${combined_prompts}" "源站域名"
-assert_not_contains "模式 4 不再询问订阅域名" "${combined_prompts}" "订阅域名"
-assert_equal "模式 4 域名提示恰为两条" "2" "$(printf '%s\n' "${combined_prompts}" | grep -c '域名')"
-assert_contains "模式 4 源站域名复用直连域名" "${combined_inputs}" "ORIGIN=node.example.com"
-assert_contains "模式 4 直连域名用默认值" "${combined_inputs}" "DIRECT=node.example.com"
-assert_contains "模式 4 节点域名用默认值" "${combined_inputs}" "NODE=cf.example.com"
-assert_contains "模式 4 订阅域名复用节点域名" "${combined_inputs}" "SUB=cf.example.com"
-assert_contains "模式 4 CDN 域名派生为节点域名" "${combined_inputs}" "VLESS_CDN=cf.example.com"
-assert_contains "模式 4 证书只需一个域名" "${combined_inputs}" "HOSTS=1"
+assert_contains "模式 5 仍询问直连节点域名" "${combined_prompts}" "直连节点域名"
+assert_contains "模式 5 仍询问 CloudFront 节点域名" "${combined_prompts}" "CloudFront 节点域名"
+assert_not_contains "模式 5 不再询问源站域名" "${combined_prompts}" "源站域名"
+assert_not_contains "模式 5 不再询问订阅域名" "${combined_prompts}" "订阅域名"
+assert_equal "模式 5 域名提示恰为两条" "2" "$(printf '%s\n' "${combined_prompts}" | grep -c '域名')"
+assert_contains "模式 5 源站域名复用直连域名" "${combined_inputs}" "ORIGIN=node.example.com"
+assert_contains "模式 5 直连域名用默认值" "${combined_inputs}" "DIRECT=node.example.com"
+assert_contains "模式 5 节点域名用默认值" "${combined_inputs}" "NODE=cf.example.com"
+assert_contains "模式 5 订阅域名复用节点域名" "${combined_inputs}" "SUB=cf.example.com"
+assert_contains "模式 5 CDN 域名派生为节点域名" "${combined_inputs}" "VLESS_CDN=cf.example.com"
+assert_contains "模式 5 证书只需一个域名" "${combined_inputs}" "HOSTS=1"
 
-cloudfront_inputs=$(run_inputs_case cloudfront) || fail "模式 2 安装输入收集失败：${cloudfront_inputs}"
+cloudfront_inputs=$(run_inputs_case cloudfront) || fail "模式 4 安装输入收集失败：${cloudfront_inputs}"
 cloudfront_prompts=$(cat "${TMP_DIR}/inputs-prompts-cloudfront.log")
-assert_contains "模式 2 仍询问源站域名" "${cloudfront_prompts}" "源站域名"
-assert_contains "模式 2 仍询问 CloudFront 节点域名" "${cloudfront_prompts}" "CloudFront 节点域名"
-assert_not_contains "模式 2 不再询问订阅域名" "${cloudfront_prompts}" "订阅域名"
-assert_equal "模式 2 域名提示恰为两条" "2" "$(printf '%s\n' "${cloudfront_prompts}" | grep -c '域名')"
-assert_contains "模式 2 源站域名用默认值" "${cloudfront_inputs}" "ORIGIN=origin.example.com"
-assert_contains "模式 2 节点域名用默认值" "${cloudfront_inputs}" "NODE=cf.example.com"
-assert_contains "模式 2 订阅域名复用节点域名" "${cloudfront_inputs}" "SUB=cf.example.com"
-assert_equal "模式 2 没有直连域名" "DIRECT=" \
+assert_contains "模式 4 仍询问源站域名" "${cloudfront_prompts}" "源站域名"
+assert_contains "模式 4 仍询问 CloudFront 节点域名" "${cloudfront_prompts}" "CloudFront 节点域名"
+assert_not_contains "模式 4 不再询问订阅域名" "${cloudfront_prompts}" "订阅域名"
+assert_equal "模式 4 域名提示恰为两条" "2" "$(printf '%s\n' "${cloudfront_prompts}" | grep -c '域名')"
+assert_contains "模式 4 源站域名用默认值" "${cloudfront_inputs}" "ORIGIN=origin.example.com"
+assert_contains "模式 4 节点域名用默认值" "${cloudfront_inputs}" "NODE=cf.example.com"
+assert_contains "模式 4 订阅域名复用节点域名" "${cloudfront_inputs}" "SUB=cf.example.com"
+assert_equal "模式 4 没有直连域名" "DIRECT=" \
     "$(printf '%s\n' "${cloudfront_inputs}" | grep '^DIRECT=')"
 
 # 跨版本续装：旧版身份里源站/订阅域名可能是独立填写的，续装不得改写已建资源用的域名。
-resume_inputs=$(run_inputs_case combined resume) || fail "模式 4 续装输入收集失败：${resume_inputs}"
+resume_inputs=$(run_inputs_case combined resume) || fail "模式 5 续装输入收集失败：${resume_inputs}"
 resume_prompts=$(cat "${TMP_DIR}/inputs-prompts-combined-resume.log")
 assert_contains "续装仍询问直连节点域名" "${resume_prompts}" "直连节点域名"
 assert_contains "续装仍询问 CloudFront 节点域名" "${resume_prompts}" "CloudFront 节点域名"
@@ -564,15 +564,15 @@ assert_equal "续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_pro
 assert_contains "续装沿用旧身份的源站域名" "${resume_inputs}" "ORIGIN=origin.example.com"
 assert_contains "续装沿用旧身份的订阅域名" "${resume_inputs}" "SUB=sub.example.com"
 
-# 模式 2 续装同理：源站域名照旧提问，订阅域名沿用旧身份里的独立值。
-resume_cf_inputs=$(run_inputs_case cloudfront resume) || fail "模式 2 续装输入收集失败：${resume_cf_inputs}"
+# 模式 4 续装同理：源站域名照旧提问，订阅域名沿用旧身份里的独立值。
+resume_cf_inputs=$(run_inputs_case cloudfront resume) || fail "模式 4 续装输入收集失败：${resume_cf_inputs}"
 resume_cf_prompts=$(cat "${TMP_DIR}/inputs-prompts-cloudfront-resume.log")
-assert_contains "模式 2 续装仍询问源站域名" "${resume_cf_prompts}" "源站域名"
-assert_not_contains "模式 2 续装不再询问订阅域名" "${resume_cf_prompts}" "订阅域名"
-assert_equal "模式 2 续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_cf_prompts}" | grep -c '域名')"
-assert_contains "模式 2 续装沿用旧身份的订阅域名" "${resume_cf_inputs}" "SUB=sub.example.com"
+assert_contains "模式 4 续装仍询问源站域名" "${resume_cf_prompts}" "源站域名"
+assert_not_contains "模式 4 续装不再询问订阅域名" "${resume_cf_prompts}" "订阅域名"
+assert_equal "模式 4 续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_cf_prompts}" | grep -c '域名')"
+assert_contains "模式 4 续装沿用旧身份的订阅域名" "${resume_cf_inputs}" "SUB=sub.example.com"
 
-# --- 3c. 模式 5：直连 + 橙云节点/订阅（回源 8443）------------------------------
+# --- 3c. 模式 3：直连 + 橙云节点/订阅（回源 8443）------------------------------
 write_combined_cf_state() { # $1=DIRECT_DOMAIN $2=CF_NODE_DOMAIN $3=SUBSCRIPTION_MODE $4=输出
     cat >"$4" <<STATE
 STATE_VERSION=1
@@ -617,20 +617,20 @@ run_combined_cf_state_case() { # $1=DIRECT_DOMAIN $2=CF_NODE_DOMAIN $3=SUBSCRIPT
 }
 
 combined_cf_state=$(run_combined_cf_state_case direct.example.com cf.example.com deploy) \
-    || fail "模式 5 完整状态必须能加载"
-assert_contains "模式 5 仅公网 443" "${combined_cf_state}" "PUBLIC=443"
-assert_contains "模式 5 回源 8443 只对 Cloudflare" "${combined_cf_state}" "CFONLY=8443"
-assert_contains "模式 5 始终部署 Caddy 站点" "${combined_cf_state}" "SITE=1"
+    || fail "模式 3 完整状态必须能加载"
+assert_contains "模式 3 仅公网 443" "${combined_cf_state}" "PUBLIC=443"
+assert_contains "模式 3 回源 8443 只对 Cloudflare" "${combined_cf_state}" "CFONLY=8443"
+assert_contains "模式 3 始终部署 Caddy 站点" "${combined_cf_state}" "SITE=1"
 combined_cf_same_domain=$(run_combined_cf_state_case cf.example.com cf.example.com deploy) \
-    && fail "模式 5 节点域名等于直连域名时必须拒绝"
-assert_contains "模式 5 节点域名不得等于直连域名" "${combined_cf_same_domain}" \
+    && fail "模式 3 节点域名等于直连域名时必须拒绝"
+assert_contains "模式 3 节点域名不得等于直连域名" "${combined_cf_same_domain}" \
     "节点域名不得等于直连域名"
 run_combined_cf_state_case direct.example.com other.example.net deploy >/dev/null \
-    && fail "模式 5 节点域名不属于 Zone 时必须拒绝"
+    && fail "模式 3 节点域名不属于 Zone 时必须拒绝"
 run_combined_cf_state_case direct.example.com cf.example.com link >/dev/null \
-    && fail "模式 5 固定 deploy，link 状态必须拒绝"
+    && fail "模式 3 固定 deploy，link 状态必须拒绝"
 
-# 证书覆盖直连与橙云节点两个名字（模式 5 不使用 Origin CA，回源与直连共用 LE 证书）。
+# 证书覆盖直连与橙云节点两个名字（模式 3 不使用 Origin CA，回源与直连共用 LE 证书）。
 combined_cf_cert_hosts=$(
     RUNTIME_TMP="${TMP_DIR}/combined-cf-cert-runtime" \
     EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/combined-cf-cert-state" \
@@ -641,8 +641,8 @@ combined_cf_cert_hosts=$(
             CF_NODE_DOMAIN=cf.example.com
             certificate_required_hosts
         ' _ "${ROOT_DIR}" 2>&1
-) || fail "模式 5 证书域名调用失败"
-assert_equal "模式 5 证书覆盖直连与节点域名" \
+) || fail "模式 3 证书域名调用失败"
+assert_equal "模式 3 证书覆盖直连与节点域名" \
     $'cf.example.com\ndirect.example.com' "${combined_cf_cert_hosts}"
 
 # --- 4. 证书：强制重载，并以本机真实 TLS 握手确认磁盘证书已生效 ----------------
@@ -1002,10 +1002,10 @@ certificate_hosts_case() { # $1=DIRECT_DOMAIN $2=CF_ORIGIN_DOMAIN
 }
 reused_hosts=$(certificate_hosts_case origin.example.com origin.example.com) \
     || fail "证书域名复用场景调用失败"
-assert_equal "模式 4 复用同一域名时只输出一行" "origin.example.com" "${reused_hosts}"
+assert_equal "模式 5 复用同一域名时只输出一行" "origin.example.com" "${reused_hosts}"
 distinct_hosts=$(certificate_hosts_case direct.example.com origin.example.com) \
     || fail "证书域名不同场景调用失败"
-assert_equal "模式 4 不同域名仍输出两行" \
+assert_equal "模式 5 不同域名仍输出两行" \
     $'direct.example.com\norigin.example.com' "${distinct_hosts}"
 anytls_link_hosts=$(
     RUNTIME_TMP="${TMP_DIR}/cert-hosts-runtime" \
@@ -1024,7 +1024,7 @@ anytls_link_hosts=$(
 assert_contains "模式 1 link 仍输出直连域名" "${anytls_link_hosts}" "node.example.com"
 assert_contains "模式 1 link 无订阅时返回值仍为 0" "${anytls_link_hosts}" "STATUS=0"
 
-# --- 6. 源站守卫公网探测：必须打 Caddy 站点端口（模式 4 是 8443，不是 sing-box 的 443） ---
+# --- 6. 源站守卫公网探测：必须打 Caddy 站点端口（模式 5 是 8443，不是 sing-box 的 443） ---
 # curl 是外部边界，用替身记录被请求的 URL；连接被丢弃的情况统一返回 000。
 origin_guard_case() { # $1=profile 名
     local profile=$1
@@ -1054,10 +1054,10 @@ FAKE_CURL
     printf '%s' "${url_log}"
 }
 mode4_urls=$(<"$(origin_guard_case combined)")
-assert_contains "模式 4 探测 Caddy 8443" "${mode4_urls}" "https://origin.example.com:8443/vless-0123456789ab"
-assert_not_contains "模式 4 不把探测发到 443" "${mode4_urls}" "https://origin.example.com/vless"
+assert_contains "模式 5 探测 Caddy 8443" "${mode4_urls}" "https://origin.example.com:8443/vless-0123456789ab"
+assert_not_contains "模式 5 不把探测发到 443" "${mode4_urls}" "https://origin.example.com/vless"
 mode2_urls=$(<"$(origin_guard_case cloudfront)")
-assert_contains "模式 2 探测 Caddy 443" "${mode2_urls}" "https://origin.example.com:443/vless-0123456789ab"
+assert_contains "模式 4 探测 Caddy 443" "${mode2_urls}" "https://origin.example.com:443/vless-0123456789ab"
 
 # --- 7. update-core：核心缺失时按“重装修复”处理，并在替换二进制后重启 Caddy ---
 # 该入口要求 root，且下载核心、systemd 与 iptables 计量都是本机外部能力：这里只替身这些

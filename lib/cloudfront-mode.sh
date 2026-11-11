@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared AWS CloudFront core for mode 2 (CloudFront only) and mode 4
+# Shared AWS CloudFront core for mode 4 (CloudFront only) and mode 5
 # (AnyTLS + CloudFront).
 #
 # Profile contract provided before this file is sourced:
@@ -11,9 +11,9 @@
 #   CDN_INSTALL_PORTS        TCP ports that must be free before a fresh install
 # plus the hooks (empty results instead of guessing):
 #   collect_install_inputs      collect this profile's inputs (calls the shared input collector)
-#   cdn_direct_domains          direct A-record domains (empty for mode 2)
-#   cdn_prepare_direct_runtime  persist the AnyTLS identity (no-op for mode 2)
-#   cdn_validate_direct_runtime local acceptance of the direct entry (no-op for mode 2)
+#   cdn_direct_domains          direct A-record domains (empty for mode 4)
+#   cdn_prepare_direct_runtime  persist the AnyTLS identity (no-op for mode 4)
+#   cdn_validate_direct_runtime local acceptance of the direct entry (no-op for mode 4)
 #
 # AWS identity/ACM/distribution ownership, DNS, the 985GB protection state machine
 # and the CloudFront lifecycle commands live here. sing-box/Caddy rendering, the
@@ -93,9 +93,15 @@ clear_aws_credentials() {
 clear_profile_credentials() {
     clear_aws_credentials
     unset CLOUDFLARE_API_TOKEN 2>/dev/null || true
+    # 分发配置及其 AWS 原样副本都含源站头密钥：状态回滚失败保留 RUNTIME_TMP 时同样不能留。
     rm -f -- "${RUNTIME_TMP}/cloudflare-api-headers" \
         "${RUNTIME_TMP}/cloudflare-api-payload" \
-        "${RUNTIME_TMP}/origin-header" 2>/dev/null || true
+        "${RUNTIME_TMP}/origin-header" \
+        "${RUNTIME_TMP}/cloudfront-distribution.json" \
+        "${RUNTIME_TMP}/cloudfront-owned-config.json" \
+        "${RUNTIME_TMP}/cloudfront-disable.json" \
+        "${RUNTIME_TMP}/cloudfront-purge-config.json" \
+        "${RUNTIME_TMP}/cloudfront-purge-owned.json" 2>/dev/null || true
 }
 
 aws_cli() {
@@ -154,8 +160,8 @@ cdn_validate_install_domains() {
     done < <(cdn_direct_domains | sort -u)
 }
 
-# 域名输入按模式收敛：模式 4 的源站域名固定复用直连域名（443 直连与 8443 回源端口隔离、
-# 共用一份 LE 证书与一条灰云 A），模式 2/4 的订阅域名固定复用节点域名（同一条分发别名与
+# 域名输入按模式收敛：模式 5 的源站域名固定复用直连域名（443 直连与 8443 回源端口隔离、
+# 共用一份 LE 证书与一条灰云 A），模式 4/5 的订阅域名固定复用节点域名（同一条分发别名与
 # CNAME，订阅走 https://<节点域名>/subscribe）。同名复用不再提问，每条链路最多两个名字。
 # 续装例外：沿用安装身份里已落盘的域名（旧版身份可能带独立源站/订阅域名）。
 collect_cloudfront_domain_inputs() {
@@ -302,7 +308,7 @@ cdn_certificate_covers_origin() {
     certificate_covers_host "${1:-${CERT_FILE}}" "${CF_ORIGIN_DOMAIN}"
 }
 
-# 覆盖模式所需全部域名（模式 4 为 direct + origin）且仍在续期窗口内即复用。
+# 覆盖模式所需全部域名（模式 5 为 direct + origin）且仍在续期窗口内即复用。
 cdn_issue_origin_certificate() {
     local force=${1:-0}
     install -d -m 0700 "${CERT_DIR}"
@@ -503,7 +509,7 @@ cloudfront_marker() {
 
 build_distribution_config() {
     local destination=$1 caller=$2 origin_https_port
-    # 回源端口由模式派生（design §2 F）：模式 2 的 Caddy 在 443，模式 4 在 8443。
+    # 回源端口由模式派生（design §2 F）：模式 4 的 Caddy 在 443，模式 5 在 8443。
     origin_https_port=$(caddy_site_port) || exit 1
     jq -n \
         --arg caller "${caller}" --arg alias "${CF_NODE_DOMAIN}" \
@@ -750,7 +756,7 @@ cdn_public_health_ok() {
 # 头，因此无法用节点域名探测“缺头/错头”）。无头与错头都必须被拒。
 cdn_public_origin_header_guard_ok() {
     local status origin_url
-    # 源站端口由模式派生：直接把请求发到 Caddy 的站点端口，模式 4 的 443 是 sing-box，
+    # 源站端口由模式派生：直接把请求发到 Caddy 的站点端口，模式 5 的 443 是 sing-box，
     # 发到 443 只会被丢弃，把“连不上”误判成“守卫已拒绝”。
     origin_url="https://${CF_ORIGIN_DOMAIN}:$(caddy_site_port)${VLESS_PATH}"
     # Caddy 守卫对缺头/错头执行 abort：连接被关闭，curl 拿不到状态码。两者都算拒绝，
@@ -909,7 +915,7 @@ build_mihomo_proxy_names() {
         ($names + $groups + $extra)[] | "        - \(.|@json)"'
 }
 
-# 模式 4 的自动组：AUTO url-test 与 CDN-FALLBACK（直连 → CDN），探测改用 HTTPS 443。
+# 模式 5 的自动组：AUTO url-test 与 CDN-FALLBACK（直连 → CDN），探测改用 HTTPS 443。
 build_mihomo_proxy_groups() {
     if [[ "${PROTOCOL}" != "combined-cloudfront" ]]; then
         return 0
@@ -990,7 +996,7 @@ refresh_runtime_subscription() {
 
 # --- Local acceptance ---------------------------------------------------------
 
-# 本机节点必须来自当前身份且固定在列表头部：模式 2 只有 CloudFront，模式 3 只有 Cloudflare 橙云节点；
+# 本机节点必须来自当前身份且固定在列表头部：模式 4 只有 CloudFront，模式 2 只有 Cloudflare 橙云节点；
 # 聚合节点可以跟在后面，但不得冒充本机节点。
 
 # 六产物就绪：当前 state/模板重新渲染的结果必须与已发布文件逐字节一致，
@@ -1563,7 +1569,7 @@ rollback_fresh_install() {
         return 1
     fi
     cdn_print_cloud_inventory
-    warn "本次已创建的云端资源按设计保留；easy_all 命令已随回滚移除，确认不再使用后可执行 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --domain <域名> 清理 Cloudflare 资源；CloudFront 分发与 ACM 证书请在 AWS 控制台删除"
+    warn "本次已创建的云端资源按设计保留；easy_all 命令已随回滚移除，确认不再使用后可执行 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloud --domain <域名> 清理 Cloudflare 与 CloudFront/ACM 资源"
     install_progress_clear
 }
 
@@ -1680,7 +1686,7 @@ cdn_purge_cloudflare_dns() {
     else
         warn "缺少 CloudFront 分发域名；跳过节点/订阅 CNAME 清理"
     fi
-    # 模式 3 直连 A 与源站 A 可能复用同一域名，同一 type+host 只处理一次。
+    # 模式 5 直连 A 与源站 A 可能复用同一域名，同一 type+host 只处理一次。
     while IFS= read -r domain; do
         [[ -n "${domain}" ]] || continue
         pairs+=("A|${domain}|${VPS_PUBLIC_IPV4}")
@@ -1747,13 +1753,21 @@ cdn_purge_aws_resources() {
             rm -f -- "${fetched}" "${owned}"
             return 1
         fi
-        config=$(jq -c '.DistributionConfig | .Enabled=false' "${fetched}")
-        if ! aws_cli cloudfront update-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
-            --if-match "${etag}" --distribution-config "${config}" --output json >/dev/null 2>&1; then
-            warn "禁用 CloudFront 分发失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
-            rm -f -- "${fetched}" "${owned}"
+        config="${RUNTIME_TMP}/cloudfront-disable.json"
+        # 配置里含源站头密钥（X-Easy-All-Origin-Key）：落 0600 临时文件走 file://，不进 argv/ps。
+        if ! jq -c '.DistributionConfig | .Enabled=false' "${fetched}" >"${config}"; then
+            warn "生成禁用态分发配置失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+            rm -f -- "${fetched}" "${owned}" "${config}"
             return 1
         fi
+        if ! aws_cli cloudfront update-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
+            --if-match "${etag}" --distribution-config "file://${config}" --output json >/dev/null 2>&1; then
+            warn "禁用 CloudFront 分发失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+            rm -f -- "${fetched}" "${owned}" "${config}"
+            return 1
+        fi
+        # 分发配置含源站头密钥：update 之后立刻删除，不等到退出清理。
+        rm -f -- "${config}"
         if ! wait_for_cloudfront_distribution "${AWS_CLOUDFRONT_DISTRIBUTION_ID}"; then
             warn "等待 CloudFront 分发禁用生效超时；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
             rm -f -- "${fetched}" "${owned}"

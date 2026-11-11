@@ -116,47 +116,48 @@ assert_contains "模式 1 Mihomo 节点" "${out}/nodes.yaml" 'type: anytls'
 assert_contains "AnyTLS 节点端口 443" "${out}/nodes.yaml" 'port: 443'
 assert_contains "AnyTLS 关闭证书跳过" "${out}/nodes.yaml" 'skip-cert-verify: false'
 
-# --- 模式 2：CloudFront，源站 443 + 回环 10086 --------------------------------
+# --- 模式 4：CloudFront，源站 443 + 回环 10086 --------------------------------
 out="${TMP_DIR}/cloudfront"
 render_mode cloudfront "${out}"
-assert_contains "模式 2 有回环 CDN 入站" "${out}/config.json" '"listen": "127.0.0.1"'
-assert_contains "模式 2 CDN 入站端口 10086" "${out}/config.json" '"listen_port": 10086'
-assert_contains "模式 2 传输是 ws" "${out}/config.json" '"type": "ws"'
-assert_not_contains "模式 2 没有 AnyTLS 入站" "${out}/config.json" 'anytls-in'
-assert_contains "模式 2 源站站点监听 443" "${out}/Caddyfile" 'https://origin.example.com:443 {'
-assert_contains "模式 2 精确代理路径" "${out}/Caddyfile" 'handle /vless-0123456789ab {'
-assert_contains "模式 2 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
-assert_contains "模式 2 源站守卫在最前" "${out}/Caddyfile" 'abort @easy_all_bad_origin'
-assert_contains "模式 2 节点是 VLESS ws" "${out}/links.txt" 'type=ws'
-assert_not_contains "模式 2 节点不泄露源站密钥" "${out}/links.txt" '0123456789abcdef0123456789abcdef'
-assert_not_contains "模式 2 无 Reality 参数" "${out}/links.txt" 'security=reality'
-assert_contains "模式 2 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 4 有回环 CDN 入站" "${out}/config.json" '"listen": "127.0.0.1"'
+assert_contains "模式 4 CDN 入站端口 10086" "${out}/config.json" '"listen_port": 10086'
+assert_contains "模式 4 传输是 ws" "${out}/config.json" '"type": "ws"'
+assert_not_contains "模式 4 没有 AnyTLS 入站" "${out}/config.json" 'anytls-in'
+assert_contains "模式 4 源站站点监听 443" "${out}/Caddyfile" 'https://origin.example.com:443 {'
+assert_contains "模式 4 精确代理路径" "${out}/Caddyfile" 'handle /vless-0123456789ab {'
+assert_contains "模式 4 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_contains "模式 4 源站守卫在最前" "${out}/Caddyfile" 'abort @easy_all_bad_origin'
+assert_contains "模式 4 节点是 VLESS ws" "${out}/links.txt" 'type=ws'
+assert_not_contains "模式 4 节点不泄露源站密钥" "${out}/links.txt" '0123456789abcdef0123456789abcdef'
+assert_not_contains "模式 4 无 Reality 参数" "${out}/links.txt" 'security=reality'
+assert_contains "模式 4 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
 
-# --- 模式 3：橙云单域名 443 + Origin CA ---------------------------------------
+# --- 模式 2：橙云单域名 443 + Origin CA ---------------------------------------
 out="${TMP_DIR}/cloudflare"
 render_mode cloudflare "${out}"
-assert_contains "模式 3 站点是节点域名 443" "${out}/Caddyfile" 'https://cf.example.com:443 {'
-assert_contains "模式 3 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
-assert_not_contains "模式 3 没有 CloudFront 守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
-assert_contains "模式 3 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
-assert_contains "模式 3 订阅域名由节点域名派生" "${out}/links.txt" 'type=ws'
+assert_contains "模式 2 站点是节点域名 443" "${out}/Caddyfile" 'https://cf.example.com:443 {'
+assert_contains "模式 2 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
+assert_not_contains "模式 2 没有 CloudFront 守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
+assert_contains "模式 2 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_contains "模式 2 订阅域名由节点域名派生" "${out}/links.txt" 'type=ws'
 
-# --- 模式 4：AnyTLS 443 + 源站 8443 + 自动组 ---------------------------------
+# --- 模式 5：AnyTLS 443 + 源站 8443 + 自动组 ---------------------------------
 out="${TMP_DIR}/combined"
 render_mode combined "${out}"
-assert_contains "模式 4 同时有 AnyTLS 与 VLESS" "${out}/config.json" '"type": "anytls"'
-assert_contains "模式 4 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
-assert_contains "模式 4 源站站点监听 8443" "${out}/Caddyfile" 'https://origin.example.com:8443 {'
-assert_contains "模式 4 节点含直连" "${out}/links.txt" 'anytls://'
-assert_contains "模式 4 节点含 CDN" "${out}/links.txt" 'type=ws'
-assert_contains "模式 4 有 AUTO 组" "${out}/groups.yaml" 'name: AUTO'
-assert_contains "模式 4 有 CDN-FALLBACK 组" "${out}/groups.yaml" 'name: CDN-FALLBACK'
-assert_contains "模式 4 fallback 探测 HTTPS 443" "${out}/groups.yaml" \
+assert_contains "模式 5 同时有 AnyTLS 与 VLESS" "${out}/config.json" '"type": "anytls"'
+assert_contains "模式 5 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
+assert_contains "模式 5 源站站点监听 8443" "${out}/Caddyfile" 'https://origin.example.com:8443 {'
+assert_contains "模式 5 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_contains "模式 5 节点含直连" "${out}/links.txt" 'anytls://'
+assert_contains "模式 5 节点含 CDN" "${out}/links.txt" 'type=ws'
+assert_contains "模式 5 有 AUTO 组" "${out}/groups.yaml" 'name: AUTO'
+assert_contains "模式 5 有 CDN-FALLBACK 组" "${out}/groups.yaml" 'name: CDN-FALLBACK'
+assert_contains "模式 5 fallback 探测 HTTPS 443" "${out}/groups.yaml" \
     'https://www.gstatic.com/generate_204'
-assert_equal "模式 4 PROXY 成员顺序" \
+assert_equal "模式 5 PROXY 成员顺序" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"\n        - "AUTO"\n        - "CDN-FALLBACK"' \
     "$(<"${out}/names.yaml")"
-assert_not_contains "模式 4 不使用 httpupgrade" "${out}/config.json" 'httpupgrade'
+assert_not_contains "模式 5 不使用 httpupgrade" "${out}/config.json" 'httpupgrade'
 
 # 节点名推荐默认值：必须在交互提示里出现（加载运行时库前由 Profile 赋值），
 # 否则会被 singbox-runtime.sh 的 AnyTLS / VLESS-WS 兜底值覆盖。
@@ -181,27 +182,27 @@ combined|🇺🇸直连|🇺🇸AWS
 combined-cloudflare|🇺🇸直连|🇺🇸CF
 NODE_DEFAULTS
 
-# --- 模式 5：AnyTLS 443 + 橙云节点/订阅 8443（Origin Rule）------------------
+# --- 模式 3：AnyTLS 443 + 橙云节点/订阅 8443（Origin Rule）------------------
 
 out="${TMP_DIR}/combined-cloudflare"
 render_mode combined-cloudflare "${out}"
-assert_contains "模式 5 有 AnyTLS 入站" "${out}/config.json" '"type": "anytls"'
-assert_contains "模式 5 AnyTLS 监听 443" "${out}/config.json" '"listen_port": 443'
-assert_contains "模式 5 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
-assert_contains "模式 5 站点是节点域名 8443" "${out}/Caddyfile" 'https://cf.example.com:8443 {'
-assert_contains "模式 5 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
-assert_contains "模式 5 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
-assert_not_contains "模式 5 没有 Caddy 源站守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
-assert_contains "模式 5 节点含直连" "${out}/links.txt" 'anytls://'
-assert_contains "模式 5 节点含橙云 CDN" "${out}/links.txt" 'type=ws'
-assert_contains "模式 5 Mihomo 含 AnyTLS" "${out}/nodes.yaml" 'type: anytls'
-assert_contains "模式 5 Mihomo 含 ws" "${out}/nodes.yaml" 'network: ws'
-assert_not_contains "模式 5 无 Reality 参数" "${out}/links.txt" 'security=reality'
-assert_equal "模式 5 PROXY 成员顺序" \
+assert_contains "模式 3 有 AnyTLS 入站" "${out}/config.json" '"type": "anytls"'
+assert_contains "模式 3 AnyTLS 监听 443" "${out}/config.json" '"listen_port": 443'
+assert_contains "模式 3 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
+assert_contains "模式 3 站点是节点域名 8443" "${out}/Caddyfile" 'https://cf.example.com:8443 {'
+assert_contains "模式 3 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
+assert_contains "模式 3 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_not_contains "模式 3 没有 Caddy 源站守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
+assert_contains "模式 3 节点含直连" "${out}/links.txt" 'anytls://'
+assert_contains "模式 3 节点含橙云 CDN" "${out}/links.txt" 'type=ws'
+assert_contains "模式 3 Mihomo 含 AnyTLS" "${out}/nodes.yaml" 'type: anytls'
+assert_contains "模式 3 Mihomo 含 ws" "${out}/nodes.yaml" 'network: ws'
+assert_not_contains "模式 3 无 Reality 参数" "${out}/links.txt" 'security=reality'
+assert_equal "模式 3 PROXY 成员顺序" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
-assert_not_contains "模式 5 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
-assert_not_contains "模式 5 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
-[[ ! -s "${out}/groups.yaml" ]] || fail "模式 5 不应生成额外代理组"
+assert_not_contains "模式 3 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
+assert_not_contains "模式 3 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
+[[ ! -s "${out}/groups.yaml" ]] || fail "模式 3 不应生成额外代理组"
 
 for mode_out in anytls cloudfront cloudflare combined combined-cloudflare; do
     out="${TMP_DIR}/${mode_out}"

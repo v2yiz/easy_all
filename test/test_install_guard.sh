@@ -96,7 +96,7 @@ idle
 reset_artifacts
 assert_equal "idle port passes" "0" "$(assert_install_ports_free 80 443 >/dev/null 2>&1 && echo 0 || echo 1)"
 
-# 1b. 调用方会把多端口字符串作为一个参数传入（模式 4 的 "443 8443"）：
+# 1b. 调用方会把多端口字符串作为一个参数传入（模式 5 的 "443 8443"）：
 #     整串交给 ss 会拼出非法表达式并被 2>/dev/null 吞掉，端口占用检查会静默失效。
 busy 8443
 FAKE_SS_OWNER=nginx
@@ -409,7 +409,7 @@ assert_equal "filter failure keeps crontab on configure_daily_reboot" "${before_
 # 直接报 "command too long" 拒装（见 crontab MAX_COMMAND）。用真实 source 链
 # （runtime-core → cloudfront-mode）生成受管行并断言字节长度（cron 按字节计，
 # 不用 awk length/${#var}，它们在 UTF-8 locale 下按字符计会低估中文 logger 消息的占用），
-# 防止模式 2/4 的预命令与 jq 复核再被拼回行内。
+# 防止模式 4/5 的预命令与 jq 复核再被拼回行内。
 printf '0 3 * * * /usr/local/bin/user-backup\n' >"${FAKE_CRONTAB_FILE}"
 reboot_line=$(
     (
@@ -433,7 +433,7 @@ assert_contains "cloudfront reboot line calls the internal entry" "${reboot_line
     "internal-scheduled-reboot"
 assert_contains "cloudfront reboot line keeps the managed marker" "${reboot_line}" \
     "# easy_all-managed-reboot"
-# 锁定复核（以及模式 1/3 的“空复核”）已由内部入口承担，行内不再出现 jq 内容
+# 锁定复核（以及模式 1/2 的“空复核”）已由内部入口承担，行内不再出现 jq 内容
 assert_not_contains "cloudfront reboot line no longer inlines the jq check" "${reboot_line}" \
     "protection_offline"
 
@@ -496,7 +496,7 @@ internal_reboot_run() {
     ) >/dev/null 2>"${TMP_DIR}/${case_name}.stderr"
 }
 
-# a. 无钩子（模式 1/3 没有预命令与复核钩子）+ 取锁成功 → 执行重启，不记 logger，锁走 override
+# a. 无钩子（模式 1/2 没有预命令与复核钩子）+ 取锁成功 → 执行重启，不记 logger，锁走 override
 export FAKE_HOOK_SCENARIO=none
 internal_reboot_run no-hook 0 \
     || fail "internal_scheduled_reboot should succeed when the write lock is free"
@@ -869,7 +869,7 @@ for field in VPS_PUBLIC_IPV4 CF_NODE_PREFIX OWNER_TOKEN DIRECT_DOMAIN DIRECT_NOD
     ANYTLS_PASSWORD; do
     assert_contains "combined 模式必需字段包含 ${field}" "${launcher_fields_combined}" "${field}"
 done
-assert_not_contains "模式 2 必需字段不含直连字段" "${launcher_fields_plain}" "DIRECT_DOMAIN"
+assert_not_contains "模式 4 必需字段不含直连字段" "${launcher_fields_plain}" "DIRECT_DOMAIN"
 assert_contains "两模式共同必需字段含 VPS_PUBLIC_IPV4" "${launcher_fields_plain}" "VPS_PUBLIC_IPV4"
 assert_not_contains "字段清单不再保留 Reality 字段" "${launcher_fields_combined}" "REALITY_"
 launcher_body=$(<"${ROOT_DIR}/easy_all")
@@ -1210,6 +1210,8 @@ install_cleanup_after_failure() {
     [[ ! -e "${RUNTIME_TMP}/cloudflare-api-headers" ]] || precheck=fail
     [[ ! -e "${RUNTIME_TMP}/cloudflare-api-payload" ]] || precheck=fail
     [[ ! -e "${RUNTIME_TMP}/origin-header" ]] || precheck=fail
+    [[ ! -e "${RUNTIME_TMP}/cloudfront-distribution.json" ]] || precheck=fail
+    [[ ! -e "${RUNTIME_TMP}/cloudfront-disable.json" ]] || precheck=fail
     [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]] || precheck=fail
     [[ -z "${AWS_ACCESS_KEY_ID:-}" ]] || precheck=fail
     [[ -z "${AWS_SECRET_ACCESS_KEY:-}" ]] || precheck=fail
@@ -1221,6 +1223,8 @@ mkdir -p "${RUNTIME_TMP}"
 printf 'Authorization: Bearer sentinel-token\n' >"${RUNTIME_TMP}/cloudflare-api-headers"
 printf 'payload\n' >"${RUNTIME_TMP}/cloudflare-api-payload"
 printf 'origin-header\n' >"${RUNTIME_TMP}/origin-header"
+printf '{"DistributionConfig":{}}\n' >"${RUNTIME_TMP}/cloudfront-distribution.json"
+printf '{"DistributionConfig":{}}\n' >"${RUNTIME_TMP}/cloudfront-disable.json"
 CLOUDFLARE_API_TOKEN=not-a-real-token
 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
 AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
@@ -1409,8 +1413,8 @@ legacy_route=$(bash -c '
 for legacy in cdn combined reality; do
     assert_contains "旧模式 ${legacy} 不加载 Profile" "${legacy_route}" "${legacy}=rejected"
 done
-assert_contains "模式 4 路由到 combined.sh" "${legacy_route}" "combined-cloudfront=combined.sh"
-assert_contains "模式 5 路由到 combined-cloudflare.sh" "${legacy_route}" \
+assert_contains "模式 5 路由到 combined.sh" "${legacy_route}" "combined-cloudfront=combined.sh"
+assert_contains "模式 3 路由到 combined-cloudflare.sh" "${legacy_route}" \
     "combined-cloudflare=combined-cloudflare.sh"
 [[ ! -e "${ROOT_DIR}/profiles/cdn.sh" ]] || fail "旧 profiles/cdn.sh 必须已删除"
 
@@ -1654,7 +1658,7 @@ run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_
     local label=$1 profile=$2 protocol=$3 comment=$4 cloud_fail=$5 aws_fail=$6
     local case_dir="${TMP_DIR}/uninstall-entry/${label}"
     local output status=0 proxied_host="cf.example.com"
-    # 橙云 A 记录（模式 3/5 的节点域名）proxied=true；模式 1 的订阅域名也是橙云。
+    # 橙云 A 记录（模式 2/3 的节点域名）proxied=true；模式 1 的订阅域名也是橙云。
     [[ "${protocol}" == "anytls" ]] && proxied_host="sub.example.com"
     rm -rf -- "${case_dir}"
     mkdir -p "${case_dir}/state" "${case_dir}/websub/subscriptions" \
@@ -1786,51 +1790,51 @@ assert_refusals_within "模式 1" "${entry_anytls_dir}/refusals.log" \
 entry_combined_cf_dir="${TMP_DIR}/uninstall-entry/combined-cloudflare"
 entry_combined_cf_output=$(run_uninstall_entry combined-cloudflare combined-cloudflare \
     combined-cloudflare "easy_all combined-cloudflare" 0 0)
-assert_equal "模式 5 无参数卸载退出 0" "0" \
+assert_equal "模式 3 无参数卸载退出 0" "0" \
     "$(uninstall_entry_value "${entry_combined_cf_output}" UNINSTALL-STATUS)"
-assert_contains "模式 5 默认删除直连 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
+assert_contains "模式 3 默认删除直连 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
-assert_contains "模式 5 默认删除节点/订阅 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
+assert_contains "模式 3 默认删除节点/订阅 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-A"
-assert_contains "模式 5 默认删除 Origin Rule" "$(<"${entry_combined_cf_dir}/curl.log")" \
+assert_contains "模式 3 默认删除 Origin Rule" "$(<"${entry_combined_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/rulesets/rs1/rules/rule1"
-assert_contains "模式 5 清单点名节点/订阅 A 记录" "${entry_combined_cf_output}" \
+assert_contains "模式 3 清单点名节点/订阅 A 记录" "${entry_combined_cf_output}" \
     "节点/订阅 A 记录（橙云）: cf.example.com -> 203.0.113.10"
-assert_uninstall_entry_cleanup "模式 5" "${entry_combined_cf_dir}"
-assert_contains "模式 5 拒绝删除宿主命令路径" \
+assert_uninstall_entry_cleanup "模式 3" "${entry_combined_cf_dir}"
+assert_contains "模式 3 拒绝删除宿主命令路径" \
     "$(<"${entry_combined_cf_dir}/refusals.log")" "/usr/local/bin/easy_all"
-assert_refusals_within "模式 5" "${entry_combined_cf_dir}/refusals.log" \
+assert_refusals_within "模式 3" "${entry_combined_cf_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
 
 entry_cloudflare_dir="${TMP_DIR}/uninstall-entry/cloudflare"
 entry_cloudflare_output=$(run_uninstall_entry cloudflare cloudflare cloudflare "easy_all cloudflare" 0 0)
-assert_equal "模式 3 无参数卸载退出 0" "0" \
+assert_equal "模式 2 无参数卸载退出 0" "0" \
     "$(uninstall_entry_value "${entry_cloudflare_output}" UNINSTALL-STATUS)"
-assert_contains "模式 3 默认删除橙云 A 记录" "$(<"${entry_cloudflare_dir}/curl.log")" \
+assert_contains "模式 2 默认删除橙云 A 记录" "$(<"${entry_cloudflare_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-A"
-assert_contains "模式 3 默认吊销 Origin CA" "$(<"${entry_cloudflare_dir}/curl.log")" \
+assert_contains "模式 2 默认吊销 Origin CA" "$(<"${entry_cloudflare_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/certificates/cert1"
-assert_uninstall_entry_cleanup "模式 3" "${entry_cloudflare_dir}"
-assert_contains "模式 3 拒绝删除宿主命令路径" "$(<"${entry_cloudflare_dir}/refusals.log")" \
+assert_uninstall_entry_cleanup "模式 2" "${entry_cloudflare_dir}"
+assert_contains "模式 2 拒绝删除宿主命令路径" "$(<"${entry_cloudflare_dir}/refusals.log")" \
     "/usr/local/bin/easy_all"
-assert_contains "模式 3 拒绝删除宿主安装目录" "$(<"${entry_cloudflare_dir}/refusals.log")" \
+assert_contains "模式 2 拒绝删除宿主安装目录" "$(<"${entry_cloudflare_dir}/refusals.log")" \
     "/usr/local/lib/easy_all"
-assert_refusals_within "模式 3" "${entry_cloudflare_dir}/refusals.log" \
+assert_refusals_within "模式 2" "${entry_cloudflare_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
 
 entry_mode2_dir="${TMP_DIR}/uninstall-entry/cloudfront"
 entry_mode2_output=$(run_uninstall_entry cloudfront cloudfront cloudfront "easy_all cloudfront" 0 0)
-assert_equal "模式 2 无参数卸载退出 0" "0" \
+assert_equal "模式 4 无参数卸载退出 0" "0" \
     "$(uninstall_entry_value "${entry_mode2_output}" UNINSTALL-STATUS)"
-assert_contains "模式 2 默认删除 CloudFront 分发" "$(<"${entry_mode2_dir}/aws.log")" \
+assert_contains "模式 4 默认删除 CloudFront 分发" "$(<"${entry_mode2_dir}/aws.log")" \
     "delete-distribution"
-assert_contains "模式 2 删除前完成部署等待" "$(<"${entry_mode2_dir}/aws.log")" \
+assert_contains "模式 4 删除前完成部署等待" "$(<"${entry_mode2_dir}/aws.log")" \
     "cloudfront get-distribution --id EDFDVBD6EXAMPLE"
-assert_contains "模式 2 默认删除源站 A 记录" "$(<"${entry_mode2_dir}/curl.log")" \
+assert_contains "模式 4 默认删除源站 A 记录" "$(<"${entry_mode2_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-origin.example.com-A"
-assert_not_contains "模式 2 不出现直连 A 记录" "${entry_mode2_output}" "直连 A 记录:"
-assert_uninstall_entry_cleanup "模式 2" "${entry_mode2_dir}"
-assert_refusals_within "模式 2" "${entry_mode2_dir}/refusals.log" \
+assert_not_contains "模式 4 不出现直连 A 记录" "${entry_mode2_output}" "直连 A 记录:"
+assert_uninstall_entry_cleanup "模式 4" "${entry_mode2_dir}"
+assert_refusals_within "模式 4" "${entry_mode2_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.timer" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.service"
@@ -1838,29 +1842,29 @@ assert_refusals_within "模式 2" "${entry_mode2_dir}/refusals.log" \
 entry_cf_dir="${TMP_DIR}/uninstall-entry/combined-cloudfront"
 entry_cf_output=$(run_uninstall_entry combined-cloudfront combined combined-cloudfront \
     "easy_all cloudfront" 0 0)
-assert_equal "模式 4 无参数卸载退出 0" "0" \
+assert_equal "模式 5 无参数卸载退出 0" "0" \
     "$(uninstall_entry_value "${entry_cf_output}" UNINSTALL-STATUS)"
-assert_contains "模式 4 默认删除 CloudFront 分发" "$(<"${entry_cf_dir}/aws.log")" \
+assert_contains "模式 5 默认删除 CloudFront 分发" "$(<"${entry_cf_dir}/aws.log")" \
     "delete-distribution"
-assert_contains "模式 4 默认删除 ACM 证书" "$(<"${entry_cf_dir}/aws.log")" "acm delete-certificate"
-assert_contains "模式 4 默认删除源站 A 记录" "$(<"${entry_cf_dir}/curl.log")" \
+assert_contains "模式 5 默认删除 ACM 证书" "$(<"${entry_cf_dir}/aws.log")" "acm delete-certificate"
+assert_contains "模式 5 默认删除源站 A 记录" "$(<"${entry_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-origin.example.com-A"
-assert_contains "模式 4 默认删除节点 CNAME" "$(<"${entry_cf_dir}/curl.log")" \
+assert_contains "模式 5 默认删除节点 CNAME" "$(<"${entry_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-CNAME"
-assert_contains "模式 4 默认删除直连 A 记录" "$(<"${entry_cf_dir}/curl.log")" \
+assert_contains "模式 5 默认删除直连 A 记录" "$(<"${entry_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
-assert_contains "模式 4 清单列出独立直连 A 记录" "${entry_cf_output}" \
+assert_contains "模式 5 清单列出独立直连 A 记录" "${entry_cf_output}" \
     "直连 A 记录: direct.example.com -> 203.0.113.10"
-assert_contains "模式 4 收尾披露 ACM validation CNAME" "${entry_cf_output}" \
+assert_contains "模式 5 收尾披露 ACM validation CNAME" "${entry_cf_output}" \
     "若有 ACM validation CNAME 残留，需核实无其他证书使用后人工删除"
-assert_uninstall_entry_cleanup "模式 4" "${entry_cf_dir}"
-assert_contains "模式 4 拒绝删除宿主命令路径" "$(<"${entry_cf_dir}/refusals.log")" \
+assert_uninstall_entry_cleanup "模式 5" "${entry_cf_dir}"
+assert_contains "模式 5 拒绝删除宿主命令路径" "$(<"${entry_cf_dir}/refusals.log")" \
     "/usr/local/bin/easy_all"
-assert_contains "模式 4 拒绝删除宿主安装目录" "$(<"${entry_cf_dir}/refusals.log")" \
+assert_contains "模式 5 拒绝删除宿主安装目录" "$(<"${entry_cf_dir}/refusals.log")" \
     "/usr/local/lib/easy_all"
-assert_contains "模式 4 拒绝删除宿主计量单元" "$(<"${entry_cf_dir}/refusals.log")" \
+assert_contains "模式 5 拒绝删除宿主计量单元" "$(<"${entry_cf_dir}/refusals.log")" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.timer"
-assert_refusals_within "模式 4" "${entry_cf_dir}/refusals.log" \
+assert_refusals_within "模式 5" "${entry_cf_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.timer" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.service"

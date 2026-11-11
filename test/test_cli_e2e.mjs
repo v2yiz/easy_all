@@ -39,10 +39,10 @@ function writeState(lines) {
 const help = run(['help']);
 assert.equal(help.status, 0, help.stderr);
 assert.match(help.stdout, /1 AnyTLS 直连/);
-assert.match(help.stdout, /2 纯 CloudFront/);
-assert.match(help.stdout, /3 纯 CloudFlare/);
-assert.match(help.stdout, /4 AnyTLS \+ CloudFront/);
-assert.match(help.stdout, /5 AnyTLS \+ CloudFlare/);
+assert.match(help.stdout, /2 纯 CloudFlare/);
+assert.match(help.stdout, /3 AnyTLS \+ CloudFlare/);
+assert.match(help.stdout, /4 纯 CloudFront/);
+assert.match(help.stdout, /5 AnyTLS \+ CloudFront/);
 assert.match(help.stdout, /443/);
 assert.doesNotMatch(help.stdout, /reality-target/);
 assert.doesNotMatch(help.stdout, /rotate-dynamic-ports/);
@@ -60,6 +60,12 @@ assert.notEqual(unknown.status, 0);
 assert.match(unknown.stderr, /未知命令/);
 assert.doesNotMatch(unknown.stderr, /尚未安装/);
 assert.doesNotMatch(unknown.stderr, /运行时临时目录/);
+// 旧命令名必须指向新名，而不是只报「未知命令」。
+const renamedPurge = run(['purge-cloudflare'], { ...stateEnv, TMPDIR: join(tmp, 'no-such-dir') });
+assert.notEqual(renamedPurge.status, 0);
+assert.match(renamedPurge.stderr, /命令已改名/);
+assert.match(renamedPurge.stderr, /purge-cloudflare → purge-cloud/);
+assert.doesNotMatch(renamedPurge.stderr, /未知命令/);
 for (const args of [['tcp-resume', 'extra'], ['apply', 'extra']]) {
   const res = run(args, stateEnv);
   assert.notEqual(res.status, 0, `${args[0]} 必须拒绝额外参数`);
@@ -236,7 +242,7 @@ const applyCloudReached = run(['apply-cloud'], anytlsEnv);
 assert.match(applyCloudReached.stderr, /请使用 root 用户运行此脚本/,
   'apply-cloud 在模式 1 应进入实现（root 门禁），而不是被路由拒绝');
 
-// 6bb. 模式 5：结构完整可分类；命令面与模式 1 同样可达，但不跑 CloudFront 计量。
+// 6bb. 模式 3：结构完整可分类；命令面与模式 1 同样可达，但不跑 CloudFront 计量。
 const combinedCfStateFile = join(tmp, 'state-combined-cloudflare.env');
 writeFileSync(combinedCfStateFile, [
   'STATE_VERSION=1',
@@ -271,7 +277,7 @@ assert.notEqual(combinedCfSync.status, 0);
 assert.match(combinedCfSync.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/);
 const combinedCfApplyCloud = run(['apply-cloud'], combinedCfEnv);
 assert.match(combinedCfApplyCloud.stderr, /请使用 root 用户运行此脚本/,
-  'apply-cloud 在模式 5 应进入实现（root 门禁），而不是被路由拒绝');
+  'apply-cloud 在模式 3 应进入实现（root 门禁），而不是被路由拒绝');
 
 // 6c. 已安装（schema 1）情况下，旧 marker 同样必须在代码覆盖前拒绝 register/self-update。
 const installedLegacyMarker = 'PROFILE=combined\nSTAGE=services\nSTARTED_AT=T2\n';

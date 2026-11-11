@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Mode 1: AnyTLS 直连入口（TCP 443）+ 可选订阅站点（Caddy 8443，仅 Cloudflare 回源段）。
-# Mode 5: 同一直连入口 + 橙云节点域名（Caddy 8443 回源，同时提供 VLESS WebSocket 与订阅）。
+# Mode 3: 同一直连入口 + 橙云节点域名（Caddy 8443 回源，同时提供 VLESS WebSocket 与订阅）。
 #
 # Profile 契约（由 profiles/anytls.sh、profiles/combined-cloudflare.sh 在本文件之前提供）：
 #   CDN_PROFILE_KEY / CDN_EXPECTED_PROTOCOL / CDN_MODE_LABEL / CDN_ENTRY_SUMMARY /
@@ -11,7 +11,7 @@
 #
 # 模式 1 的订阅是可选入口：SUBSCRIPTION_MODE=deploy 建立 SUBSCRIPTION_DOMAIN 橙云 A 记录 +
 # 精确 http.host 的 Origin Rule（回源 8443）+ LE 证书；SUBSCRIPTION_MODE=link 只输出节点。
-# 模式 5 固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS WebSocket 的站点、订阅域名与
+# 模式 3 固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS WebSocket 的站点、订阅域名与
 # 证书名，直连与橙云两个节点都进入订阅。
 
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
@@ -81,7 +81,8 @@ collect_anytls_install_inputs() {
     ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
     SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes"
-    # 模式 1 没有 CDN 入站：只有模式 5 收集 CDN 优选地址。
+    # 本文件承载的模式 1 没有 CDN 入站：只有模式 3（直连 + 橙云）在这里收集 CDN 优选地址，
+    # 模式 2/4/5 由各自的 Profile 收集。
     if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
         collect_cdn_edge_address
     fi
@@ -93,7 +94,7 @@ collect_anytls_install_inputs() {
     fi
 }
 
-# 模式 5：节点域名同时承载 WebSocket 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
+# 模式 3：节点域名同时承载 WebSocket 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
 collect_combined_cloudflare_cdn_inputs() {
     CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value \
         'CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
@@ -702,7 +703,7 @@ rollback_fresh_install() {
         return 1
     fi
     cdn_print_cloud_inventory
-    warn "本次已创建的 Cloudflare 记录/规则按设计保留；easy_all 命令已随回滚移除，确认不再使用后可执行 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --domain <域名>，或直接在 Cloudflare 控制台清理"
+    warn "本次已创建的 Cloudflare 记录/规则按设计保留；easy_all 命令已随回滚移除，确认不再使用后可执行 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloud --domain <域名>，或直接在 Cloudflare 控制台清理"
     install_progress_clear
 }
 
@@ -717,7 +718,7 @@ install_all() {
     ensure_swap
     install_failure_begin "${CDN_PROFILE_KEY}"
     if runtime_has_cdn_entry; then
-        # 模式 5：443 直连、8443 橙云回源与回环 10086 都必须空闲。
+        # 模式 3：443 直连、8443 橙云回源与回环 10086 都必须空闲。
         prepare_fresh_install "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
             "$(runtime_cdn_loopback_port)"
     else

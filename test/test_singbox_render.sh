@@ -117,7 +117,7 @@ assert_equal "AnyTLS 入站不启用 CDN 传输" "null" \
     "$(jq -c '.inbounds[0].transport' <<<"${anytls_json}")"
 
 cloudfront_json=$(render cloudfront 0)
-assert_equal "模式 2 只有 VLESS 入站" "vless-cdn-in" \
+assert_equal "模式 4 只有 VLESS 入站" "vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${cloudfront_json}")"
 assert_equal "VLESS 入站监听回环 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${cloudfront_json}")"
@@ -129,21 +129,21 @@ assert_equal "回环 CDN 入站不启用 TLS" "null" \
     "$(jq -c '.inbounds[0].tls' <<<"${cloudfront_json}")"
 
 cloudflare_json=$(render cloudflare 0)
-assert_equal "模式 3 与模式 2 的本机入站一致" "${cloudfront_json}" "${cloudflare_json}"
+assert_equal "模式 2 与模式 4 的本机入站一致" "${cloudfront_json}" "${cloudflare_json}"
 
 combined_json=$(render combined-cloudfront 0)
-assert_equal "模式 4 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
+assert_equal "模式 5 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${combined_json}")"
 
 combined_cf_json=$(render combined-cloudflare 0)
-assert_equal "模式 5 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
+assert_equal "模式 3 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${combined_cf_json}")"
-assert_equal "模式 5 AnyTLS 监听 443" "443" \
+assert_equal "模式 3 AnyTLS 监听 443" "443" \
     "$(jq -r '.inbounds[] | select(.tag == "anytls-in") | .listen_port' <<<"${combined_cf_json}")"
-assert_equal "模式 5 回环 CDN 入站 10086" "127.0.0.1 10086" \
+assert_equal "模式 3 回环 CDN 入站 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${combined_cf_json}")"
 
-# blocked 只省略 CDN 入站；模式 4 保留 AnyTLS。
+# blocked 只省略 CDN 入站；模式 5 保留 AnyTLS。
 for proto in cloudfront cloudflare; do
     blocked_json=$(render "${proto}" 1)
     assert_equal "${proto} blocked 省略 CDN 入站" "[]" \
@@ -151,9 +151,9 @@ for proto in cloudfront cloudflare; do
 done
 assert_equal "模式 1 blocked 仍保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render anytls 1)")"
-assert_equal "模式 4 blocked 只保留 AnyTLS" "anytls-in" \
-    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudfront 1)")"
 assert_equal "模式 5 blocked 只保留 AnyTLS" "anytls-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudfront 1)")"
+assert_equal "模式 3 blocked 只保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudflare 1)")"
 
 # 公共结构：log/dns/outbounds/route 按 design §7。

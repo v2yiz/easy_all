@@ -140,23 +140,24 @@ done
 assert_contains "模式 1 站点：订阅域名 8443" "${anytls_body}" "https://sub.example.com:8443 {"
 assert_not_contains "模式 1 无源站守卫" "${anytls_body}" "@easy_all_bad_origin"
 assert_not_contains "模式 1 无 CDN 代理路径" "${anytls_body}" "reverse_proxy"
-assert_contains "模式 2 站点：源站 443" "${cloudfront_body}" "https://origin.example.com:443 {"
-assert_contains "模式 2 有源站守卫" "${cloudfront_body}" \
+assert_contains "模式 4 站点：源站 443" "${cloudfront_body}" "https://origin.example.com:443 {"
+assert_contains "模式 4 有源站守卫" "${cloudfront_body}" \
     "@easy_all_bad_origin expression {http.request.header.X-Easy-All-Origin-Key} != '${ORIGIN_HEADER_SECRET}'"
-assert_contains "模式 2 守卫终止连接" "${cloudfront_body}" "abort @easy_all_bad_origin"
-assert_contains "模式 2 精确代理路径" "${cloudfront_body}" "handle ${VLESS_PATH} {"
-assert_not_contains "模式 2 代理路径不是前缀匹配" "${cloudfront_body}" "handle ${VLESS_PATH}*"
-assert_contains "模式 2 转发到回环" "${cloudfront_body}" "reverse_proxy 127.0.0.1:10086"
-assert_contains "模式 3 站点：节点域 443" "${cloudflare_body}" "https://cf.example.com:443 {"
-assert_not_contains "模式 3 无源站守卫" "${cloudflare_body}" "@easy_all_bad_origin"
-assert_contains "模式 3 代理路径" "${cloudflare_body}" "handle ${VLESS_PATH} {"
-assert_contains "模式 4 站点：源站 8443" "${combined_body}" "https://origin.example.com:8443 {"
-assert_contains "模式 4 有源站守卫" "${combined_body}" "abort @easy_all_bad_origin"
-assert_contains "模式 4 代理路径" "${combined_body}" "handle ${VLESS_PATH} {"
-assert_contains "模式 5 站点：节点域 8443" "${combined_cf_body}" "https://cf.example.com:8443 {"
-assert_not_contains "模式 5 无源站守卫" "${combined_cf_body}" "@easy_all_bad_origin"
-assert_contains "模式 5 代理路径" "${combined_cf_body}" "handle ${VLESS_PATH} {"
-assert_contains "模式 5 转发到回环" "${combined_cf_body}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 4 守卫终止连接" "${cloudfront_body}" "abort @easy_all_bad_origin"
+assert_contains "模式 4 精确代理路径" "${cloudfront_body}" "handle ${VLESS_PATH} {"
+assert_not_contains "模式 4 代理路径不是前缀匹配" "${cloudfront_body}" "handle ${VLESS_PATH}*"
+assert_contains "模式 4 转发到回环" "${cloudfront_body}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 2 站点：节点域 443" "${cloudflare_body}" "https://cf.example.com:443 {"
+assert_not_contains "模式 2 无源站守卫" "${cloudflare_body}" "@easy_all_bad_origin"
+assert_contains "模式 2 代理路径" "${cloudflare_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 5 站点：源站 8443" "${combined_body}" "https://origin.example.com:8443 {"
+assert_contains "模式 5 有源站守卫" "${combined_body}" "abort @easy_all_bad_origin"
+assert_contains "模式 5 代理路径" "${combined_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 5 转发到回环" "${combined_body}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 3 站点：节点域 8443" "${combined_cf_body}" "https://cf.example.com:8443 {"
+assert_not_contains "模式 3 无源站守卫" "${combined_cf_body}" "@easy_all_bad_origin"
+assert_contains "模式 3 代理路径" "${combined_cf_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 3 转发到回环" "${combined_cf_body}" "reverse_proxy 127.0.0.1:10086"
 
 # 守卫必须是外层 route 的首个指令，且早于代理路径与订阅入口。
 guard_line=$(grep -nF "@easy_all_bad_origin expression" "${TMP_DIR}/Caddyfile-cloudfront-0-1" \
@@ -272,7 +273,7 @@ if (PROTOCOL=anytls; SUBSCRIPTION_MODE=link; render_caddy_config "${TMP_DIR}/x" 
     fail "模式 1 link 不得生成 Caddy 站点"
 fi
 if (PROTOCOL=cloudfront; CF_ORIGIN_DOMAIN=""; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
-    fail "模式 2 缺少源站域名必须失败"
+    fail "模式 4 缺少源站域名必须失败"
 fi
 if (PROTOCOL=cloudfront; ORIGIN_HEADER_SECRET=""; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
     fail "缺少源站头密钥必须失败"

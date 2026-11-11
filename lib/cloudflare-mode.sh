@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Cloudflare orange-cloud core for mode 3 (single proxied domain serving both the
+# Cloudflare orange-cloud core for mode 2 (single proxied domain serving both the
 # VLESS WebSocket node and the Token-protected subscription).
 #
 # Profile contract provided before this file is sourced:
@@ -13,8 +13,8 @@
 #   CDN_RECORD_COMMENT       Cloudflare DNS ownership comment of this profile
 # plus the hooks (empty results instead of guessing):
 #   collect_install_inputs      collect this profile's inputs (calls the shared input collector)
-#   cdn_prepare_direct_runtime  no-op: mode 3 has no direct entry
-#   cdn_validate_direct_runtime no-op: mode 3 has no direct entry
+#   cdn_prepare_direct_runtime  no-op: mode 2 has no direct entry
+#   cdn_validate_direct_runtime no-op: mode 2 has no direct entry
 #
 # Cloudflare API/DNS/Origin CA/origin-firewall helpers come from lib/cf-dns.sh.
 # 这一层只承载橙云单域名链路（一个域名同时提供 WebSocket 节点与订阅），没有优选 IP、
@@ -23,7 +23,7 @@
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
 readonly CDN_PUBLIC_ACCEPT_ATTEMPTS="${CDN_PUBLIC_ACCEPT_ATTEMPTS_OVERRIDE:-6}"
 readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
-# 模式 3 的 DNS 归属注释：创建与删除必须使用同一常量（design §9）。
+# 模式 2 的 DNS 归属注释：创建与删除必须使用同一常量（design §9）。
 readonly CDN_RECORD_COMMENT="easy_all cloudflare"
 CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4-443.txt"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
@@ -51,7 +51,7 @@ CDN_SUBSCRIPTION_CORRUPT=0
 # 否则下一次卸载只知道旧 ID，长期有效的孤儿证书无人知晓。
 # --- Profile adapters ---------------------------------------------------------
 
-# 运行时派生字段（不落盘）：模式 3 的订阅域名就是橙云节点域名。
+# 运行时派生字段（不落盘）：模式 2 的订阅域名就是橙云节点域名。
 # 本机探活必须信任 Cloudflare Origin CA 根：回源证书由它签发。
 runtime_probe_ca_file() {
     printf '%s\n' "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
@@ -69,7 +69,7 @@ profile_report_retained_resources() {
     local created=${CLOUDFLARE_CREATED_ORIGIN_CERT_ID:-} node=${CF_NODE_DOMAIN:-未知}
     [[ -n "${created}" ]] || return 0
     warn "本次已签发并保留 Cloudflare Origin CA 证书（ID ${created}，域名 ${node}）；云端按设计不回滚，本机正在恢复旧配置"
-    warn "如需清理，只在 Cloudflare 控制台按该证书 ID 单独删除；不要用 purge-cloudflare 按域名清理，那会连当前实例仍在使用的 DNS 与旧证书一起删除"
+    warn "如需清理，只在 Cloudflare 控制台按该证书 ID 单独删除；不要用 purge-cloud 按域名清理，那会连当前实例仍在使用的 DNS 与旧证书一起删除"
 }
 
 # 凭据只允许存在于内存：runtime-core 的 EXIT 钩子按该函数名回收 API 请求头。
@@ -196,7 +196,7 @@ cdn_issue_certificate() {
 
 # --- 运行配置与订阅渲染 -------------------------------------------------------
 
-# 模式 3 没有 985GB 熔断：Caddy 代理路径始终可用，订阅始终可用。
+# 模式 2 没有 985GB 熔断：Caddy 代理路径始终可用，订阅始终可用。
 write_runtime_config() {
     runtime_write_config 0 1
 }
@@ -228,7 +228,7 @@ build_mihomo_proxy_names() {
         '($names + $extra)[] | "        - \(.|@json)"'
 }
 
-# 模式 3 没有额外 CDN 分组；模板占位必须成功输出空内容。
+# 模式 2 没有额外 CDN 分组；模板占位必须成功输出空内容。
 build_mihomo_proxy_groups() {
     printf ''
     return 0
@@ -608,7 +608,7 @@ rollback_fresh_install() {
         return 1
     fi
     cdn_print_cloud_inventory
-    warn "本次已创建的 Cloudflare DNS/Origin CA 按设计保留；easy_all 命令已随回滚移除，确认不再使用后可执行 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloudflare --domain <域名>，或直接在 Cloudflare 控制台清理"
+    warn "本次已创建的 Cloudflare DNS/Origin CA 按设计保留；easy_all 命令已随回滚移除，确认不再使用后可执行 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloud --domain <域名>，或直接在 Cloudflare 控制台清理"
 }
 
 install_all() {

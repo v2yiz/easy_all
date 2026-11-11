@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mode 2: CloudFront-only CDN entry (grey-cloud DNS → ACM/CloudFront → Caddy origin
+# Mode 4: CloudFront-only CDN entry (grey-cloud DNS → ACM/CloudFront → Caddy origin
 # on 443 → sing-box loopback VLESS WebSocket on 10086).
 # 订阅域名固定复用 CloudFront 节点域名：安装只问源站域名与节点域名两个名字。
 set -Eeuo pipefail
@@ -32,7 +32,7 @@ collect_install_inputs() {
     collect_cloudfront_install_inputs
 }
 
-# Mode 2 has no direct entry: every direct hook returns an empty result.
+# Mode 4 has no direct entry: every direct hook returns an empty result.
 cdn_direct_domains() { return 0; }
 cdn_prepare_direct_runtime() { return 0; }
 cdn_validate_direct_runtime() { return 0; }
