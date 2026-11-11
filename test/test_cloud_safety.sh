@@ -1450,10 +1450,26 @@ status_of() { sed -n 's/^STATUS=//p' <<<"$1"; }
 edge_cfg_prefix='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}'
 edge_branch1=$(edge_case "${edge_cfg_prefix}" 1 collect_cdn_edge_address "" "" "")
 assert_contains "分支 1 提示默认前缀" "$(stream_of "${edge_branch1}" STDERR)" \
-    "CDN 优选前缀 [k7m2qp4x9d]（回车采用；输入 off 关闭）："
+    "CDN 优选前缀 [k7m2qp4x9d]（回车采用）："
 assert_equal "分支 1 回车后配置不变" "${edge_cfg_prefix}" "$(config_of "${edge_branch1}")"
 assert_not_contains "提示文案不用 prompt_value 的默认值后缀" \
     "${edge_branch1}" "直接回车使用默认值"
+
+# 分支 1 的两个边角：大写生成值（规范化后仍按前缀形态处理）与历史后缀跨模式（回车按当前模式重写）。
+edge_cfg_upper_prefix='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"K7M2QP4X9D.Cloudfront.182682.XYZ"}'
+edge_branch1_upper=$(edge_case "${edge_cfg_upper_prefix}" 0 collect_cdn_edge_address "" "" "")
+assert_contains "大写生成值仍按前缀形态提示" "$(stream_of "${edge_branch1_upper}" STDERR)" \
+    "CDN 优选前缀 [k7m2qp4x9d]（回车采用）："
+assert_equal "大写生成值回车后规范化为小写" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \
+    "$(config_of "${edge_branch1_upper}")"
+
+edge_branch1_cross=$(edge_case "${edge_cfg_prefix}" 0 collect_cdn_edge_address "" "cloudfront" "")
+assert_contains "跨模式续装仍提示原前缀" "$(stream_of "${edge_branch1_cross}" STDERR)" \
+    "CDN 优选前缀 [k7m2qp4x9d]（回车采用）："
+assert_equal "跨模式回车按当前模式重写后缀" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"}' \
+    "$(config_of "${edge_branch1_cross}")"
 
 # 分支 2：自定义合法优选域名 → 不提示、原样保留，并在 stdout 告知改法（验收条件 2）。
 edge_cfg_custom='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"edge.mycdn.example"}'
@@ -1464,11 +1480,15 @@ assert_contains "分支 2 stdout 打印当前优选地址" "$(stream_of "${edge_
     "edge.mycdn.example"
 assert_contains "分支 2 指向 edit-sub" "$(stream_of "${edge_branch2}" STDOUT)" "edit-sub"
 
-# 分支 3：续装且无字段 → 提示默认 off，回车后仍无字段。
+# 分支 3：续装且无字段 → 不再允许关闭，默认新随机前缀，回车后按模式写入。
 edge_branch3=$(edge_case "${edge_cfg_none}" 1 collect_cdn_edge_address "" "" "")
-assert_contains "分支 3 续装默认 off" "$(stream_of "${edge_branch3}" STDERR)" \
-    "CDN 优选前缀 [off]（回车采用；输入 off 关闭）："
-assert_equal "分支 3 回车后仍无字段" "${edge_cfg_none}" "$(config_of "${edge_branch3}")"
+edge_branch3_default=$(sed -n 's/.*CDN 优选前缀 \[\([^]]*\)\].*/\1/p' \
+    <<<"$(stream_of "${edge_branch3}" STDERR)")
+[[ "${edge_branch3_default}" =~ ^[a-z][a-z0-9]{9}$ ]] \
+    || fail "分支 3 必须给出 10 位随机前缀（不允许 off），实际 <${edge_branch3_default}>"
+assert_equal "分支 3 续装回车后写入优选地址" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"'"${edge_branch3_default}"'.cloudflare.182682.xyz"}' \
+    "$(config_of "${edge_branch3}")"
 
 # 分支 4：全新首装且无字段 → 默认是新的 10 位前缀，回车后拼上当前模式后缀。
 edge_branch4=$(edge_case "${edge_cfg_none}" 0 collect_cdn_edge_address "" "" "")
@@ -1496,8 +1516,6 @@ done <<'EDGE_BAD_CONFIGS'
 EDGE_BAD_CONFIGS
 
 # 9d. 交互原语：写入判定零副作用、提示循环文案与重填（§11 第 11 项）。
-edge_store_off=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_store_answer off "" "")
-assert_equal "off 删除字段" "${edge_cfg_none}" "$(config_of "${edge_store_off}")"
 edge_store_prefix=$(edge_case "${edge_cfg_none}" 0 cdn_edge_store_answer k7m2qp4x9d "" "")
 assert_equal "合法前缀按模式拼完整地址" \
     '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \
@@ -1517,21 +1535,27 @@ ab
 abcdefghijk
 k7m2qp4x9d 
  off
+off
 off 
+OFF
 EDGE_BAD_ANSWERS
 
 edge_loop=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "ab" "k2v8nq4zt6")
 assert_equal "重填前只打印同一提示两次" "2" \
-    "$(stream_of "${edge_loop}" STDERR | grep -c 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用；输入 off 关闭）：')"
+    "$(stream_of "${edge_loop}" STDERR | grep -c 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用）：')"
 assert_equal "非法输入后的说明行落 stdout（仓库 warn 惯例）" "1" \
     "$(stream_of "${edge_loop}" STDOUT | grep -c .)"
 assert_equal "stderr 只有提示行" "0" \
-    "$(stream_of "${edge_loop}" STDERR | grep -vc 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用；输入 off 关闭）：')"
+    "$(stream_of "${edge_loop}" STDERR | grep -vc 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用）：')"
 assert_equal "重填后写入第二次输入" \
     '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudflare.182682.xyz"}' \
     "$(config_of "${edge_loop}")"
-edge_loop_off=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "off")
-assert_equal "off 序列删除字段" "${edge_cfg_none}" "$(config_of "${edge_loop_off}")"
+edge_loop_off=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "off" "k2v8nq4zt6")
+assert_equal "off 不再关闭而是重填" "2" \
+    "$(stream_of "${edge_loop_off}" STDERR | grep -c 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用）：')"
+assert_equal "off 后的重新输入被写入" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudflare.182682.xyz"}' \
+    "$(config_of "${edge_loop_off}")"
 edge_loop_enter=$(edge_case "${edge_cfg_none}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "")
 assert_equal "空输入采用默认值" \
     '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \

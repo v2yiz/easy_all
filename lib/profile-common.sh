@@ -82,9 +82,11 @@ cdn_edge_mode_suffix() {
 }
 
 # 纯展示用的随机前缀：openssl 取 10 个字节，首位映射到 a-z、其余映射到 0-9a-z。
+# 模偏差（256 不能被 26/36 整除）只影响字面分布，不承担安全强度，不为此引额外依赖。
+# openssl 不可用时直接 die：返回空默认值会让提示循环永远无法退出。
 generate_cdn_edge_prefix() {
     local hex byte index out=""
-    hex=$(openssl rand -hex 10) || return 1
+    hex=$(openssl rand -hex 10) || die "生成 CDN 优选前缀失败：缺少可用的 openssl"
     for index in 0 1 2 3 4 5 6 7 8 9; do
         byte=$((16#${hex:$((index * 2)):2}))
         if ((index == 0)); then
@@ -96,7 +98,7 @@ generate_cdn_edge_prefix() {
     printf '%s' "${out}"
 }
 
-# 提示默认值：生成的前缀形态给原前缀；字段缺失时续装给 off、全新安装给新随机前缀。
+# 提示默认值：已有安装生成的前缀形态沿用原前缀，其余一律生成新随机前缀。
 # 自定义优选域名与非法配置不会走到这里（由 collect_cdn_edge_address 先分流）。
 cdn_edge_default_prefix() {
     local edge
@@ -106,18 +108,14 @@ cdn_edge_default_prefix() {
         printf '%s' "${BASH_REMATCH[1]}"
         return 0
     fi
-    [[ "${INSTALL_RESUME:-0}" == "1" ]] || { generate_cdn_edge_prefix; return 0; }
-    printf 'off'
+    generate_cdn_edge_prefix
 }
 
-# 写入判定（不读 stdin）：off 关闭；10 位前缀拼当前模式后缀；其余输入返回非零且零副作用。
+# 写入判定（不读 stdin）：10 位前缀拼当前模式后缀；其余输入返回非零且零副作用。
 # jq 自身失败是配置已被改坏，不能退化成“输入非法”而陷入无限重填，直接 die。
 cdn_edge_store_answer() {
     local answer=${1:-} updated
-    if [[ "${answer}" == "off" ]]; then
-        updated=$(jq -c 'del(.cdnEdgeAddress)' <<<"${SUBSCRIPTION_CONFIG}") \
-            || die "更新订阅配置失败"
-    elif [[ "${answer}" =~ ^[a-z][a-z0-9]{9}$ ]]; then
+    if [[ "${answer}" =~ ^[a-z][a-z0-9]{9}$ ]]; then
         updated=$(jq -c --arg a "${answer}.$(cdn_edge_mode_suffix)" '.cdnEdgeAddress=$a' \
             <<<"${SUBSCRIPTION_CONFIG}") || die "更新订阅配置失败"
     else
@@ -126,13 +124,13 @@ cdn_edge_store_answer() {
     SUBSCRIPTION_CONFIG=${updated}
 }
 
-# 循环读入：提示文案固定含默认值与 off 说明；非法输入用 warn（stdout）说明后重印同一提示。
+# 循环读入：提示文案固定含默认值；非法输入用 warn（stdout）说明后重印同一提示。
 cdn_edge_prompt_loop() {
     local default=${1:-} answer
     while :; do
-        read_bilingual "CDN 优选前缀 [${default}]（回车采用；输入 off 关闭）：" answer
+        read_bilingual "CDN 优选前缀 [${default}]（回车采用）：" answer
         cdn_edge_store_answer "${answer:-${default}}" && return 0
-        warn "CDN 优选前缀无效：只能输入 10 位前缀（首位字母，其后字母或数字）或输入 off 关闭"
+        warn "CDN 优选前缀无效：只能输入 10 位前缀（首位字母，其后字母或数字）"
     done
 }
 
@@ -145,7 +143,7 @@ cdn_edge_interactive() {
 # 安装收集器（模式 2-5）：把用户确认的优选地址写进 SUBSCRIPTION_CONFIG，
 # 随后由调用方的 cdn_apply_subscription_config 强校验并派生 CF_EDGE_ADDRESS。
 collect_cdn_edge_address() {
-    local normalized edge
+    local normalized edge default
     cdn_edge_interactive || return 0
     # 一次无副作用试运行：整份 JSON 不可解析、非对象 JSON、字段非法都落到这里。
     # 不提示也不改配置，交由随后的 cdn_apply_subscription_config 按既有路径拒绝。
@@ -157,7 +155,9 @@ collect_cdn_edge_address() {
         info "当前 CDN 优选地址 ${edge}；改地址或关闭请在安装后执行 sudo easy_all edit-sub"
         return 0
     fi
-    cdn_edge_prompt_loop "$(cdn_edge_default_prefix)"
+    # 命令替换里的 die 只结束子 shell：这里显式判空，避免空默认值进入提示循环。
+    default=$(cdn_edge_default_prefix) || die "生成 CDN 优选前缀失败：缺少可用的 openssl"
+    cdn_edge_prompt_loop "${default}"
 }
 
 restore_state_file() {

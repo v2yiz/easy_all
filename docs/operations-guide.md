@@ -136,11 +136,11 @@ sudo easy_all edit-sub
 ```
 
 - **订阅配置**：按提示输入一份 JSON，同时包含 `allowedTokens`（用户 Token 字典）与 `nodes`（聚合节点数组）。省略的用户或节点会被删除；完成后各用户的专属订阅链接可通过 `sudo easy_all subscription` 查看。
-- **CDN 优选连接地址**（模式 2–5）：订阅配置顶层可选的 `cdnEdgeAddress` 只替换本机 CDN 节点的**连接地址**，TLS SNI 与 WebSocket `Host` 仍是节点域名。只接受完整主机名（至少一个点，拒绝 `*`、URL、端口、路径与 IP 字面量），存储时统一小写；`null` 或删除字段即回退到节点域名。首次安装已自动写入 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"` 这样的值，要换地址或关闭时只改这一行：
+- **CDN 优选连接地址**（模式 2–5）：订阅配置顶层可选的 `cdnEdgeAddress` 只替换本机 CDN 节点的**连接地址**，TLS SNI 与 WebSocket `Host` 仍是节点域名。只接受完整主机名（至少一个点，拒绝 `*`、URL、端口、路径与 IP 字面量），存储时统一小写；首次安装必定写入 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"` 这样的值（安装期不提供关闭选项），要换地址时改这一行：
   ```json
   {"allowedTokens": {"owner": "..."}, "nodes": [], "cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"}
   ```
-  保存后订阅产物会当场重发，客户端刷新即可，无需 `apply-cloud`。
+  保存后订阅产物会当场重发，客户端刷新即可，无需 `apply-cloud`。排障时仍可删除该字段临时回到节点域名（`null` 或缺少字段等同不启用），优选域名恢复后再写回。
 - **订阅入口**：Caddy 只精确匹配 `/subscribe` 与 `/sub`，两者进入同一处理器；`/subscribe/`、`/subscribed` 与其他路径返回 `404`。重复 `token` 参数会被 Caddy 逗号拼接，无法匹配合法 Token，一律 `403`。
 - **聚合节点**：`nodes` 支持三种类型——`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；示例见 `templates/aggregation.example.json`。`optional: true` 的节点仅在订阅 URL 追加 `&node=all` 时下发。外部聚合节点的 `host/port/portRange` 原样保留，不会被改写成 443；`tls/xhttp` 节点的 `host` 是客户端连接地址，`sni` 同时作为 TLS SNI 与 HTTP `Host` 头；`reality/tcp` 节点的 `sid` 需为 2–16 位偶数长度十六进制。
 - **自定义模板**：支持交互式切换或重载 Mihomo 订阅模板（也可用 `MIHOMO_TEMPLATE_SOURCE` 传入本地文件或 HTTPS URL）。选中的模板会以 `0600` 快照保存在 `/etc/easy_all/mihomo-template.yaml`，后续 `apply`、`edit-sub` 与重装后的发布沿用同一份快照；快照缺失会告警并回退内置默认模板。

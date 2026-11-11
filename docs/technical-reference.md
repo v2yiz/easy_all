@@ -162,7 +162,7 @@
 
 ## 3. 订阅分发与渲染
 
-- **订阅配置 JSON**：`SUBSCRIPTION_CONFIG` 的顶层只有三个键——`allowedTokens`（用户 Token 字典，必需）、`nodes`（外部聚合节点数组，必需）与可选的 `cdnEdgeAddress`（CDN 优选连接地址，只存完整主机名）。`cdnEdgeAddress` 只影响模式 2–5 的本机 CDN 节点：模式 1 接受并持久化该字段，但没有 CDN 入站与 CDN 节点，因此永不渲染。字段缺失或为 `null` 等同于不启用，删除字段即回退到节点域名。形状校验只发生在一处（`lib/local-aggregation.sh` 的 `normalize_subscription_config`，install / `edit-sub` / `apply` 全经它），拒绝 `*`、URL、端口、路径、空白、IP 字面量与单标签主机名，通过后按小写规范化存储；校验失败时 `update_subscription` 在写快照之前就退出，已发布的八份产物与状态不变。该字段随 `SUBSCRIPTION_CONFIG` 原样写入安装身份的 `subscription_config`，续装据此沿用原优选地址，不会重新随机。
+- **订阅配置 JSON**：`SUBSCRIPTION_CONFIG` 的顶层只有三个键——`allowedTokens`（用户 Token 字典，必需）、`nodes`（外部聚合节点数组，必需）与可选的 `cdnEdgeAddress`（CDN 优选连接地址，只存完整主机名）。`cdnEdgeAddress` 只影响模式 2–5 的本机 CDN 节点：模式 1 接受并持久化该字段，但没有 CDN 入站与 CDN 节点，因此永不渲染。字段缺失或为 `null` 等同于不启用，删除字段即回退到节点域名（安装期必定写入且不提供关闭选项，删除只用于排障）。形状校验只发生在一处（`lib/local-aggregation.sh` 的 `normalize_subscription_config`，install / `edit-sub` / `apply` 全经它），拒绝 `*`、URL、端口、路径、空白、IP 字面量与单标签主机名，通过后按小写规范化存储；校验失败时 `update_subscription` 在写快照之前就退出，已发布的八份产物与状态不变。该字段随 `SUBSCRIPTION_CONFIG` 原样写入安装身份的 `subscription_config`，续装据此沿用原优选地址，不会重新随机（身份里没有该字段时按新规则生成）。
 - **连接地址与 SNI/Host 分离**：本机 CDN 节点的连接地址（VLESS URI 的 `@host`、Mihomo `server`、sing-box `server`）取运行期变量 `CF_EDGE_ADDRESS`（由 `cdnEdgeAddress` 在 `apply_local_aggregation_config` 中派生，为空即用 `CF_NODE_DOMAIN`）；TLS SNI（`sni=`、`servername`、`tls.server_name`）、证书校验与 WebSocket `Host` 始终是节点域名，订阅 URL 域名、云端 DNS、回源与 AnyTLS 直连都不受影响。
 - **Caddy 路由顺序**：外层 `route` 固定为「CloudFront 密钥守卫 → 精确代理路径 → 精确订阅入口 → health → 404」；模式 1/3 没有源站密钥守卫，依赖回源白名单、`Full (strict)` 与业务鉴权。
 - **订阅入口是精确路径**：matcher 精确列出 `/subscribe` 与 `/sub`，两者进入同一处理器并保留 query；`/subscribe/`、`/subscribed`、裸文件与其他路径一律 `404`，不重定向、不做前缀匹配。
