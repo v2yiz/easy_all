@@ -33,7 +33,7 @@
 > - **端口规范**：客户端统一连接 `443`，全模式不开放 `80` 端口。回源端口在模式 1 deploy、3 与 5 只对 Cloudflare 官方回源 IP 放行（模式 1/5 是 `8443`，模式 3 是 `443`）；模式 4 的 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 精确校验。
 > - **协议与证书**：CDN 节点传输统一为 **VLESS WebSocket**。证书按链路：模式 1/4/5 的节点与模式 2 的源站使用 Let's Encrypt（Cloudflare DNS-01 自动签发），模式 2 的客户端证书由 AWS ACM 签发，模式 3 回源使用 Cloudflare Origin CA（客户端看到的是 Cloudflare 边缘证书）。
 > - **Cloudflare SSL**：模式 1 deploy、模式 3 与模式 5 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
-> - **4.x 升级注意**：不支持旧版直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
+> - **4.x 升级注意**：不支持旧版直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装（最好是先重装一下系统）。
 
 > [!WARNING]
 > Cloudflare 官方规则限制通过 CDN 代理代理/VPN 流量，模式 3 与模式 5 存在潜在封禁风险，请自行评估使用。
@@ -65,7 +65,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 
 根据终端交互菜单提示完成配置：
 1. **选择模式**：输入 `1`–`5` 选择部署模式。
-2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 2/4 会提示输入 AWS 密钥）。模式 2–5 还会提示 `CDN 优选前缀 [<10 位随机前缀>]`：直接回车采用该前缀（按模式拼成 `*.cloudfront.182682.xyz` 或 `*.cloudflare.182682.xyz`），输入 `off` 则不启用优选连接地址；断点续装时默认沿用上次选择（没有则 `off`）。
+2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 2/4 会提示输入 AWS 密钥）。模式 2–5 还会提示 `CDN 优选前缀 [<10 位随机前缀>]`：直接回车采用该前缀（按模式拼成 `*.cloudfront.182682.xyz` 或 `*.cloudflare.182682.xyz`），也可改写前缀；优选连接地址是必选项，不能关闭；断点续装时默认沿用上次选择，没有则重新生成。
 3. **全自动部署**：自动配置 Swap、TCP 加速、申请证书、下发云端分发与解析，并完成服务可用性验收。
 
 ---
