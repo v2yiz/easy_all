@@ -63,6 +63,8 @@ source "${RUNTIME_LIB_DIR}/singbox-core.sh"
 source "${RUNTIME_LIB_DIR}/caddy-core.sh"
 # shellcheck source=lib/singbox-runtime.sh
 source "${RUNTIME_LIB_DIR}/singbox-runtime.sh"
+# shellcheck source=lib/singbox-subscription.sh
+source "${RUNTIME_LIB_DIR}/singbox-subscription.sh"
 # shellcheck source=lib/caddy-runtime.sh
 source "${RUNTIME_LIB_DIR}/caddy-runtime.sh"
 # shellcheck source=lib/cf-dns.sh
@@ -1190,9 +1192,11 @@ runtime_local_probe_context() {
     fi
 }
 
+# 额外参数（-D/-A/--head）由调用方追加，保持它们落在 URL 之前。
 runtime_local_curl() {
     local path=$1
-    curl "${RUNTIME_PROBE_ARGS[@]}" \
+    shift
+    curl "${RUNTIME_PROBE_ARGS[@]}" "$@" \
         --resolve "${RUNTIME_PROBE_HOST}:${RUNTIME_PROBE_PORT}:127.0.0.1" \
         "https://${RUNTIME_PROBE_HOST}:${RUNTIME_PROBE_PORT}${path}"
 }
@@ -1304,6 +1308,68 @@ validate_subscription_runtime() {
     [[ "${status}" == "404" ]] || die "未知订阅路径必须返回 404（HTTP ${status}）"
 }
 
+# sing-box 完整 JSON 订阅的本机验收：flag 与已确认客户端 UA 都必须拿到 JSON，
+# 且显式 YAML flag 仍然优先。CDN 流量保护的既有六产物门禁不受它影响。
+validate_singbox_subscription_runtime() {
+    local token headers_file body ua_body all_body status disposition expected
+    runtime_caddy_site_enabled || return 0
+    runtime_local_probe_context
+    token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}") || die "订阅 Token 字典为空"
+    headers_file="${RUNTIME_TMP}/singbox-subscription.headers"
+    body=$(runtime_local_curl "/subscribe?flag=singbox&token=${token}" -D "${headers_file}") \
+        || die "sing-box 订阅本机验收失败"
+    jq -e . >/dev/null 2>&1 <<<"${body}" || die "sing-box 订阅响应不是有效 JSON"
+    grep -Eqi '^content-type: application/json' "${headers_file}" \
+        || die "sing-box 订阅 Content-Type 无效"
+    disposition=$(grep -i '^content-disposition:' "${headers_file}" | tr -d '\r' || true)
+    [[ "${disposition}" == *"filename=${SUB_DOWNLOAD_NAME}.json"* ]] \
+        || die "sing-box 订阅下载文件名无效：${disposition:-空}"
+    expected=$(cdn_local_node_names)
+    jq -e --argjson expected "${expected}" '
+        [.outbounds[].tag] as $tags
+        | all($expected[]; . as $tag | $tags | index($tag) != null)
+    ' >/dev/null <<<"${body}" || die "sing-box 订阅缺少本机节点：${expected}"
+    jq -e '
+        (.route.final | type) == "string" and (.route.rules | length) > 0
+        and (.route.rule_set | length) > 0
+        and (.dns.servers | length) > 0 and (.dns.rules | length) > 0
+    ' >/dev/null <<<"${body}" || die "sing-box 订阅缺少 DNS 或分流规则"
+    # 已核实的 SFA 请求形式必须在没有 flag 时自动拿到同一份 JSON。
+    ua_body=$(runtime_local_curl "/subscribe?token=${token}" \
+        -A 'SFA (sing-box 1.14.4; language zh_CN)') \
+        || die "sing-box UA 自动识别验收失败"
+    [[ "${ua_body}" == "${body}" ]] \
+        || die "已确认的 sing-box 客户端 UA 未获得完整 JSON 订阅"
+    # 显式 flag 覆盖 UA：SFA UA 携带 flag=clash 必须仍是 YAML。
+    ua_body=$(runtime_local_curl "/subscribe?flag=clash&token=${token}" \
+        -A 'SFA (sing-box 1.14.4; language zh_CN)') || die "订阅 flag 覆盖验收失败"
+    grep -Fq -- 'proxies:' <<<"${ua_body}" \
+        || die "显式 flag=clash 未覆盖 sing-box 客户端 UA"
+    if subscription_optional_variants; then
+        expected=$(singbox_supported_optional_tags)
+        all_body=$(runtime_local_curl "/subscribe?flag=singbox&node=all&token=${token}") \
+            || die "sing-box node=all 订阅验收失败"
+        jq -e --argjson expected "${expected}" '
+            [.outbounds[].tag] as $tags
+            | all($expected[]; . as $tag | $tags | index($tag) != null)
+        ' >/dev/null <<<"${all_body}" \
+            || die "node=all 未包含受支持的 optional 聚合节点：${expected}"
+        jq -e --argjson expected "${expected}" '
+            [.outbounds[].tag] as $tags
+            | all($expected[]; . as $tag | $tags | index($tag) == null)
+        ' >/dev/null <<<"${body}" || die "默认 sing-box 订阅不应包含 optional 聚合节点"
+        # expected 为空时上面两条 all() 恒真，改为断言两份产物一致：没有可选节点时渲染结果必然相同。
+        if [[ "${expected}" == "[]" ]]; then
+            [[ "${all_body}" == "${body}" ]] \
+                || die "无可选聚合节点时 node=all 订阅必须与默认订阅一致"
+        fi
+    fi
+    runtime_local_curl "/subscribe?flag=singbox&token=${token}" --head \
+        | grep -Eq '^HTTP/[0-9.]+ 200' || die "sing-box 订阅 HEAD 请求未返回 200"
+    status=$(runtime_local_status /singbox.json || true)
+    [[ "${status}" == "404" ]] || die "裸文件访问 sing-box 订阅必须返回 404（HTTP ${status}）"
+}
+
 # --- 订阅渲染与发布 -----------------------------------------------------------
 
 runtime_require_subscription_hooks() {
@@ -1319,8 +1385,8 @@ subscription_optional_variants() {
     [[ "${SUBSCRIPTION_OPTIONAL_VARIANTS:-0}" == "1" ]]
 }
 
-# 渲染六种订阅产物到 output_dir；发布由调用方负责，就绪验收复用同一渲染器。
-render_subscription_files() {
+# 渲染六种 Mihomo/Base64 产物；发布与就绪验收复用同一渲染器，不生成 sing-box JSON。
+render_mihomo_base64_files() {
     local output_dir=$1 template node_file group_file name_file
     local mihomo_file suffix include variants marker
     variants=0
@@ -1358,6 +1424,14 @@ render_subscription_files() {
     chmod 0600 "${output_dir}"/*.txt "${output_dir}"/*.yaml
 }
 
+# 渲染八份订阅产物：六份 Mihomo/Base64 加 sing-box 完整 JSON；
+# JSON 候选校验失败即中止发布，已发布的旧订阅保持不变。
+render_subscription_files() {
+    local output_dir=$1
+    render_mihomo_base64_files "${output_dir}"
+    render_singbox_subscription_files "${output_dir}"
+}
+
 write_subscriptions() {
     local stage_dir
     install -d -m 0700 "$(dirname -- "${SUBSCRIPTION_DIR}")"
@@ -1384,8 +1458,11 @@ show_subscription() {
         printf '订阅 (%s): https://%s/subscribe?token=%s\n' \
             "${user}" "${subscription_domain}" "${token}"
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
-    printf '%s\n' '  同一链接按客户端自动下发：Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
-    printf '%s\n' '  如需强制格式：在链接后加 &flag=clash 或 &flag=base64'
+    printf '%s\n' '  同一链接按客户端自动下发：sing-box（SFA）→ 完整 JSON；Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
+    printf '%s\n' '  如需强制格式：在链接后加 &flag=singbox、&flag=clash 或 &flag=base64'
+    if [[ ! -s "${SUBSCRIPTION_DIR}/singbox.json" || ! -s "${SUBSCRIPTION_DIR}/singbox-all.json" ]]; then
+        printf '%s\n' '  sing-box JSON 订阅不完整：请执行 sudo easy_all apply 后再导入'
+    fi
     if subscription_optional_variants \
         && jq -e 'any(.[]; .optional == true)' <<<"${AGGREGATION_NODES:-[]}" >/dev/null 2>&1; then
         printf '%s\n' '  追加 &node=all 可显示标记为 optional 的聚合节点'
@@ -1555,17 +1632,16 @@ restore_preinstall_firewall() {
 # 状态不完整（schema 1 但字段不齐）：只清本机，云端资源一律保留并点名。
 # 该路径不 source state，也不猜协议——渲染/服务名都由固定路径决定。
 uninstall_incomplete() {
-    local mode=${1:-} answer
+    local answer
     require_root
-    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
-        || die "uninstall 不支持参数：${mode}"
+    (($# == 0)) || die "uninstall 不支持参数：$*"
     [[ -f "${STATE_FILE}" ]] || die "easy_all 尚未安装"
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "非交互卸载必须显式设置 FORCE=1"
-        read_bilingual '状态不完整；仅清理本机内容并保留云端资源？[y/N]:' answer
+        read_bilingual '状态不完整，云端资源无法自动清理，需人工核对；仍删除 easy_all 本机内容？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
-    printf '状态不完整；仅清理本机，云端资源保留（分发/ACM/DNS/Origin CA 需人工核对）。\n' >&2
+    printf '状态不完整；仅清理本机内容。云端资源无法自动清理，需人工核对分发、ACM、DNS、Origin Rule 与 Origin CA\n' >&2
     stop_maintenance_services || true
     acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
     # 损坏/字段不齐的状态可能是 CloudFront 模式：该路径只 source 了中立运行时，
@@ -1598,7 +1674,7 @@ uninstall_incomplete() {
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
-    success "本机内容已清理；云端资源已保留"
+    success "本机内容已清理；云端资源无法自动清理，需人工核对"
 }
 
 stop_services() {

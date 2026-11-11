@@ -93,11 +93,25 @@ caddy_subscription_token_list() {
     ' <<<"${ALLOWED_TOKENS}" || die "订阅 Token 字典无法生成 Caddy 鉴权列表"
 }
 
-# UA 回落与 iOS 判定沿用基线的实际正则，只把 nginx 的 ~* 换成小写化后再匹配。
-caddy_subscription_yaml_expression() {
+# 格式判定顺序由处理器里的 handle 顺序表达：显式 flag → 已确认的 sing-box UA → Clash UA → Base64。
+# 每个表达式只看自己这一类输入，避免把“UA 兼 flag”的错误组合写进单一宽泛正则。
+caddy_subscription_yaml_flag_expression() {
     printf '%s' "{query.flag}.lowerAscii() in ['clash','mihomo','meta','stash','yaml']"
-    printf '%s' " || (!({query.flag}.lowerAscii() in ['base64','uri','v2ray','shadowrocket'])"
-    printf '%s' " && {http.request.header.User-Agent}.lowerAscii().matches('.*(clash|mihomo|stash|flclash|verge|bettbox).*'))"
+}
+
+caddy_subscription_base64_flag_expression() {
+    printf '%s' "{query.flag}.lowerAscii() in ['base64','uri','v2ray','shadowrocket']"
+}
+
+# flag=singbox 手动兜底；SFA（sing-box Android）的远程完整配置请求形式用 UA 前缀确认，
+# 不对任意位置出现 sing-box 的 UA 做通配匹配。
+caddy_subscription_singbox_expression() {
+    printf '%s' "{query.flag}.lowerAscii() in ['singbox','sing-box']"
+    printf '%s' " || {http.request.header.User-Agent}.lowerAscii().startsWith('sfa (sing-box ')"
+}
+
+caddy_subscription_yaml_ua_expression() {
+    printf '%s' "{http.request.header.User-Agent}.lowerAscii().matches('.*(clash|mihomo|stash|flclash|verge|bettbox).*')"
 }
 
 caddy_subscription_ios_expression() {
@@ -115,9 +129,50 @@ caddy_render_global_options() {
     printf '}\n\n'
 }
 
+# YAML 分支（含 iOS 变体与 node=all）；显式 flag 与 Clash UA 两个入口共用同一段。
+caddy_render_mihomo_handlers() {
+    printf '\t\t\t\thandle %s {\n' "$1"
+    printf '\t\t\t\theader Content-Disposition "attachment; filename=%s"\n' \
+        "${SUB_DOWNLOAD_NAME}"
+    printf '\t\t\t\thandle @easy_all_sub_ios {\n'
+    printf '\t\t\t\t\thandle @easy_all_sub_all {\n'
+    printf '\t\t\t\t\t\trewrite * /mihomo-ios-all.yaml\n'
+    printf '\t\t\t\t\t}\n'
+    printf '\t\t\t\t\thandle {\n'
+    printf '\t\t\t\t\t\trewrite * /mihomo-ios.yaml\n'
+    printf '\t\t\t\t\t}\n'
+    printf '\t\t\t\t}\n'
+    printf '\t\t\t\thandle @easy_all_sub_all {\n'
+    printf '\t\t\t\t\trewrite * /mihomo-all.yaml\n'
+    printf '\t\t\t\t}\n'
+    printf '\t\t\t\thandle {\n'
+    printf '\t\t\t\t\trewrite * /mihomo.yaml\n'
+    printf '\t\t\t\t}\n'
+    printf '\t\t\t\t}\n'
+}
+
+# JSON 分支：产物缺失时返回 503，不降级成其他格式，也不暴露 file_server。
+caddy_render_singbox_handler() {
+    printf '\t\t\t\thandle @easy_all_sub_singbox {\n'
+    printf '\t\t\t\t\theader Content-Type "application/json; charset=utf-8"\n'
+    printf '\t\t\t\t\theader Content-Disposition "attachment; filename=%s.json"\n' \
+        "${SUB_DOWNLOAD_NAME}"
+    printf '\t\t\t\t\thandle @easy_all_sub_all {\n'
+    printf '\t\t\t\t\t\t@easy_all_sub_json_all_missing not file /singbox-all.json\n'
+    printf '\t\t\t\t\t\trespond @easy_all_sub_json_all_missing 503\n'
+    printf '\t\t\t\t\t\trewrite * /singbox-all.json\n'
+    printf '\t\t\t\t\t}\n'
+    printf '\t\t\t\t\thandle {\n'
+    printf '\t\t\t\t\t\t@easy_all_sub_json_missing not file /singbox.json\n'
+    printf '\t\t\t\t\t\trespond @easy_all_sub_json_missing 503\n'
+    printf '\t\t\t\t\t\trewrite * /singbox.json\n'
+    printf '\t\t\t\t\t}\n'
+    printf '\t\t\t\t}\n'
+}
+
 # 订阅处理器不区分阻断状态：CDN 超限时订阅必须保持可用（design §10）。
 caddy_render_subscription_handler() {
-    local subscription_ok=$1 tokens yaml_expression ios_expression
+    local subscription_ok=$1 tokens ios_expression
     tokens=$(caddy_subscription_token_list) || exit 1
     printf '\t\t@easy_all_sub path /subscribe /sub\n\n'
     printf '\t\thandle @easy_all_sub {\n'
@@ -139,31 +194,31 @@ caddy_render_subscription_handler() {
         printf '\t\t}\n\n'
         return 0
     fi
-    yaml_expression=$(caddy_subscription_yaml_expression)
     ios_expression=$(caddy_subscription_ios_expression)
     # 重复参数由 Caddy 逗号拼接：拼出来的值不在精确列表里，因此重复 Token 403、
     # 重复 flag/os/node 都不命中显式分支（与 nginx $arg_* 取首值的行为有意不同）。
-    printf '\t\t\t\t@easy_all_sub_yaml expression %s\n' "${yaml_expression}"
+    printf '\t\t\t\t@easy_all_sub_yaml_flag expression %s\n' \
+        "$(caddy_subscription_yaml_flag_expression)"
+    printf '\t\t\t\t@easy_all_sub_base64_flag expression %s\n' \
+        "$(caddy_subscription_base64_flag_expression)"
+    printf '\t\t\t\t@easy_all_sub_singbox expression %s\n' \
+        "$(caddy_subscription_singbox_expression)"
+    printf '\t\t\t\t@easy_all_sub_yaml_ua expression %s\n' \
+        "$(caddy_subscription_yaml_ua_expression)"
     printf '\t\t\t\t@easy_all_sub_ios expression %s\n' "${ios_expression}"
     printf '\t\t\t\t@easy_all_sub_all expression {query.node}.lowerAscii() == \x27all\x27\n'
-    printf '\t\t\t\theader @easy_all_sub_yaml Content-Disposition "attachment; filename=%s"\n' \
-        "${SUB_DOWNLOAD_NAME}"
-    printf '\t\t\t\thandle @easy_all_sub_yaml {\n'
-    printf '\t\t\t\t\thandle @easy_all_sub_ios {\n'
-    printf '\t\t\t\t\t\thandle @easy_all_sub_all {\n'
-    printf '\t\t\t\t\t\t\trewrite * /mihomo-ios-all.yaml\n'
-    printf '\t\t\t\t\t\t}\n'
-    printf '\t\t\t\t\t\thandle {\n'
-    printf '\t\t\t\t\t\t\trewrite * /mihomo-ios.yaml\n'
-    printf '\t\t\t\t\t\t}\n'
-    printf '\t\t\t\t\t}\n'
+    # 显式 flag 永远优先于 UA；JSON 分支必须早于所有 YAML 分支。
+    caddy_render_mihomo_handlers @easy_all_sub_yaml_flag
+    printf '\t\t\t\thandle @easy_all_sub_base64_flag {\n'
     printf '\t\t\t\t\thandle @easy_all_sub_all {\n'
-    printf '\t\t\t\t\t\trewrite * /mihomo-all.yaml\n'
+    printf '\t\t\t\t\t\trewrite * /base64-all.txt\n'
     printf '\t\t\t\t\t}\n'
     printf '\t\t\t\t\thandle {\n'
-    printf '\t\t\t\t\t\trewrite * /mihomo.yaml\n'
+    printf '\t\t\t\t\t\trewrite * /base64.txt\n'
     printf '\t\t\t\t\t}\n'
     printf '\t\t\t\t}\n'
+    caddy_render_singbox_handler
+    caddy_render_mihomo_handlers @easy_all_sub_yaml_ua
     printf '\t\t\t\thandle @easy_all_sub_all {\n'
     printf '\t\t\t\t\trewrite * /base64-all.txt\n'
     printf '\t\t\t\t}\n'

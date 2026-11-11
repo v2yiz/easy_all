@@ -3,14 +3,14 @@
 easy_all 全模式支持 Debian 12/13 及 Ubuntu 22.04/24.04 LTS（bookworm / trixie / jammy / noble，支持 amd64 与 arm64 架构）；所有模式均保留现有 SSH 监听。
 
 
-easy_all 生成标准 Mihomo（Clash Meta）订阅。安装完成后运行：
+easy_all 生成标准 Mihomo（Clash Meta）、sing-box 完整 JSON 与通用 Base64 订阅。安装完成后运行：
 
 ```bash
 sudo easy_all subscription
 ```
 
 复制安装输出中的订阅地址，在客户端的“从 URL 导入”位置添加并启用；同一个地址会按客户端自动下发
-Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
+sing-box JSON、Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 订阅地址和 UUID 都是访问凭据，不要公开。
 
 ## 客户端选择
@@ -69,6 +69,7 @@ Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
 - **直连+CDN（模式 5）**：`PROXY` 分组按固定顺序包含「本机直连节点（默认 `🇺🇸直连`）→ 本机橙云节点（默认 `🇺🇸CF`）→ 聚合节点」；没有 `AUTO` / `CDN-FALLBACK` 自动组，由你手动切换。
 - **Base64 订阅**：针对不支持策略组的通用客户端，自动下发平铺节点列表，顺序与 `PROXY` 成员一致：模式 1 是直连节点 → 聚合节点；模式 2/3 是 CDN 节点 → 聚合节点；模式 4/5 是直连节点 → CDN 节点 → 聚合节点。
 - **外部聚合节点**：订阅 JSON 里指向外部服务器的节点保留原有 `host/port/portRange`，不会因为本机统一 443 而被改写；它们的传输格式由你填写的配置决定。
+- **sing-box JSON 的分组差异**：`PROXY` 成员顺序与下发的 Mihomo 一致，但 JSON 没有 `CDN-FALLBACK`（官方 selector/urltest 无法保证“直连可用时始终优先”），模式 4 只有 `AUTO`（`urltest`，只含本机直连与 CDN，默认选择直连节点）。CDN 熔断时 JSON 里的 CDN 节点仍在，需要手动切到直连，`AUTO` 要等下一个探测周期（300 秒）才会换。
 - **熔断期间的节点（仅模式 2/4，模式 5 没有熔断）**：CDN 用量达到阈值后节点**不会**从订阅里删除，订阅仍可正常下载，只是 CDN 连接被阻断（Caddy 代理路径返回 `503`，sing-box 省略 CDN 入站）。模式 4 此时切到直连节点（或 `CDN-FALLBACK` 自动回落）即可继续使用，直连会短暂重连一次；模式 2 只能等 UTC 次月或按运维指南收敛后再试。模式 1/3/5 没有这个熔断。
 YouTube 与其他代理流量统一使用当前选择。
 规则模式下，代理流量的 UDP/443 始终优先拒绝以回退 TCP，手动选择出口不会绕过这一策略。
@@ -76,6 +77,22 @@ YouTube 与其他代理流量统一使用当前选择。
 订阅显式定义 `GLOBAL → PROXY`。切换到“全局”模式后，Mihomo 忽略域名和 GeoIP 分流规则，
 所有被接管的流量使用 `PROXY` 当前选择，无需再操作 `GLOBAL`。TUN 排除的局域网 IPv4 地址
 仍保持本地直连。
+
+## sing-box 客户端（完整 JSON 订阅）
+
+已核实的自动识别客户端是官方 **sing-box Android 客户端（SFA）**：它随远程配置请求发送
+`SFA (sing-box <版本>; language <语言>)`，订阅服务器据此直接下发完整 JSON。其他 sing-box 内核客户端
+（SFI / SFM / SFT / SFW、Hiddify、Karing、NekoBox 等）目前没有核实过远程完整配置请求形式，
+不会被自动识别——需要时在订阅链接后加 `&flag=singbox` 强制 JSON；客户端不支持远程完整配置时只能导入
+YAML 或 Base64。
+
+- **配置内容**：混合代理 `127.0.0.1:1080`、TUN（`172.19.0.1/30`、MTU 1500、`auto_route` 开启）、本机节点与受支持的聚合节点、`PROXY` 手动选择器、Fake-IP DNS（`198.18.0.0/16`）与分流规则。控制接口（Clash API）只在 `127.0.0.1:9090` 监听，不暴露到局域网。
+- **手动切换**：用客户端原生界面或 Clash API 在 `PROXY` 中选节点；规则模式按订阅内规则分流，`clash_mode=direct/global` 可整体直连或全局代理。
+- **节点排除**：官方 sing-box 1.14.4 不支持 `xhttp` 传输与 `mieru` 协议，也会拒绝 1.14.4 uTLS 枚举之外的 `fp`（例如 `chromium`）。这两类聚合节点只从 JSON 中排除，`apply` / `edit-sub` 会打印被排除的节点名、原因与数量；Mihomo / Base64 订阅仍包含它们。Reality 节点的 `support-x25519mlkem768` 不影响能否导入（sing-box 的 Reality 客户端固定使用经典 X25519，不提供 MLKEM 混合密钥交换），但这类节点在本版本没有做过实际握手验证。本机节点始终可用，因此排除后 JSON 仍然有效。
+- **首次启动需要能下载规则集**：订阅引用 MetaCubeX 的 sing-box SRS 规则集（`update_interval` 1 天，启用缓存）。没有任何缓存且首次下载失败时，客户端会报配置启动失败；等网络恢复后重新导入或重启即可。已有有效缓存时，离线重启与“更新失败保留旧缓存”都正常。
+- **直连解析用本地 DNS**：订阅里的 `DIRECT` 出口固定走客户端本地解析，局域网/内部域名（`nas.lan` 等）与 Mihomo 订阅一致地由系统 DNS 解析；节点域名用独立的引导解析器，不经过代理 DNS。
+- **TUN 行为按平台**：Linux 上以命令行运行 TUN 需要相应权限，能通过 `sing-box check` 不代表系统已允许接管网络；移动端请在 VPN 模式实测。首版只下发一份公共 JSON，不按 iOS/Android 拆分，也不剥离嗅探段（JSON 只用 `sniff` 规则嗅探 TCP 的 HTTP/TLS，不嗅探 QUIC）。
+- **导入出错时先分清类型**：格式选错（加 `&flag=singbox`）、核心不支持某些字段、规则集首次下载失败、节点连接失败是不同问题；`flag` 只解决格式选择。
 
 ## 局域网 DNS 与直连覆盖
 

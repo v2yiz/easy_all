@@ -1,0 +1,837 @@
+{
+  "log": {
+    "level": "warning",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "fakeip",
+        "tag": "dns-fakeip",
+        "inet4_range": "198.18.0.0/16"
+      },
+      {
+        "type": "local",
+        "tag": "dns-local"
+      },
+      {
+        "type": "udp",
+        "tag": "dns-bootstrap",
+        "server": "223.5.5.5"
+      },
+      {
+        "type": "https",
+        "tag": "dns-cn",
+        "server": "223.5.5.5"
+      },
+      {
+        "type": "https",
+        "tag": "dns-proxy",
+        "server": "1.1.1.1",
+        "detour": "PROXY"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": [
+          "private-fallback",
+          "geosite-private"
+        ],
+        "action": "route",
+        "server": "dns-local"
+      },
+      {
+        "domain_regex": [
+          "^[^.]+$"
+        ],
+        "action": "route",
+        "server": "dns-local"
+      },
+      {
+        "rule_set": [
+          "captive-portal"
+        ],
+        "action": "route",
+        "server": "dns-local"
+      },
+      {
+        "rule_set": [
+          "proxy-services",
+          "geosite-google"
+        ],
+        "action": "route",
+        "server": "dns-proxy"
+      },
+      {
+        "rule_set": [
+          "fakeip-exceptions"
+        ],
+        "action": "route",
+        "server": "dns-cn"
+      },
+      {
+        "rule_set": [
+          "wechat-services"
+        ],
+        "action": "route",
+        "server": "dns-cn"
+      },
+      {
+        "rule_set": [
+          "steam-download"
+        ],
+        "action": "route",
+        "server": "dns-cn"
+      },
+      {
+        "rule_set": [
+          "apple-cn-fallback",
+          "geosite-apple-cn"
+        ],
+        "action": "route",
+        "server": "dns-cn"
+      },
+      {
+        "rule_set": [
+          "direct-services",
+          "geosite-cn",
+          "geosite-geolocation-cn"
+        ],
+        "action": "route",
+        "server": "dns-cn"
+      },
+      {
+        "query_type": [
+          "A",
+          "AAAA"
+        ],
+        "action": "route",
+        "server": "dns-fakeip"
+      }
+    ],
+    "final": "dns-proxy",
+    "strategy": "ipv4_only"
+  },
+  "http_clients": [
+    {
+      "tag": "ruleset-direct"
+    }
+  ],
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 1080
+    },
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": [
+        "172.19.0.1/30"
+      ],
+      "mtu": 1500,
+      "stack": "system",
+      "dns_mode": "hijack",
+      "auto_route": true,
+      "strict_route": false
+    }
+  ],
+  "outbounds": [],
+  "route": {
+    "rules": [
+      {
+        "inbound": [
+          "tun-in"
+        ],
+        "network": [
+          "tcp",
+          "udp"
+        ],
+        "port": [
+          53
+        ],
+        "action": "hijack-dns"
+      },
+      {
+        "inbound": [
+          "tun-in"
+        ],
+        "network": [
+          "tcp"
+        ],
+        "action": "sniff",
+        "sniffer": [
+          "http",
+          "tls"
+        ],
+        "timeout": "300ms"
+      },
+      {
+        "clash_mode": "direct",
+        "outbound": "DIRECT"
+      },
+      {
+        "clash_mode": "global",
+        "outbound": "PROXY"
+      },
+      {
+        "rule_set": [
+          "private-fallback",
+          "geosite-private"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "ip_cidr": [
+          "0.0.0.0/8"
+        ],
+        "action": "reject"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "DIRECT"
+      },
+      {
+        "domain_regex": [
+          "^[^.]+$"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "rule_set": [
+          "captive-portal"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "domain": [
+          "clash.razord.top",
+          "yacd.haishan.me"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "network": [
+          "tcp"
+        ],
+        "port": [
+          5228,
+          5229,
+          5230
+        ],
+        "outbound": "PROXY"
+      },
+      {
+        "network": [
+          "udp"
+        ],
+        "port": [
+          443
+        ],
+        "rule_set": [
+          "proxy-services"
+        ],
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "proxy-services"
+        ],
+        "outbound": "PROXY"
+      },
+      {
+        "network": [
+          "udp"
+        ],
+        "port": [
+          443
+        ],
+        "rule_set": [
+          "geosite-google"
+        ],
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "geosite-google"
+        ],
+        "outbound": "PROXY"
+      },
+      {
+        "rule_set": [
+          "wechat-services"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "rule_set": [
+          "steam-download"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "rule_set": [
+          "apple-cn-fallback"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "rule_set": [
+          "geosite-apple-cn"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "rule_set": [
+          "direct-services"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "rule_set": [
+          "geosite-cn"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "rule_set": [
+          "geosite-geolocation-cn"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "network": [
+          "udp"
+        ],
+        "port": [
+          443
+        ],
+        "rule_set": [
+          "telegram-fallback"
+        ],
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "telegram-fallback"
+        ],
+        "outbound": "PROXY"
+      },
+      {
+        "network": [
+          "udp"
+        ],
+        "port": [
+          443
+        ],
+        "rule_set": [
+          "geoip-telegram"
+        ],
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "geoip-telegram"
+        ],
+        "outbound": "PROXY"
+      },
+      {
+        "rule_set": [
+          "geoip-cn"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
+        "network": [
+          "udp"
+        ],
+        "port": [
+          443
+        ],
+        "action": "reject"
+      }
+    ],
+    "rule_set": [
+      {
+        "type": "inline",
+        "tag": "private-fallback",
+        "rules": [
+          {
+            "domain": [
+              "localhost"
+            ],
+            "domain_suffix": [
+              ".localhost",
+              ".lan",
+              ".local",
+              ".internal",
+              ".localdomain",
+              ".home.arpa"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "captive-portal",
+        "rules": [
+          {
+            "domain": [
+              "connectivitycheck.gstatic.com",
+              "connectivitycheck.gstatic.cn",
+              "connectivitycheck.android.com",
+              "clients3.google.com",
+              "captive.apple.com",
+              "detectportal.firefox.com",
+              "nmcheck.gnome.org",
+              "networkcheck.kde.org",
+              "www.msftconnecttest.com",
+              "ipv6.msftconnecttest.com",
+              "www.msftncsi.com",
+              "dns.msftncsi.com",
+              "wifi.vivo.com.cn",
+              "connect.rom.miui.com",
+              "connectivitycheck.platform.hicloud.com",
+              "connectivitycheck.platform.hihonorcloud.com",
+              "connectivitycheck.oppomobile.com",
+              "conn1.oppomobile.com",
+              "connectivitycheck.heytap.com"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "fakeip-exceptions",
+        "rules": [
+          {
+            "domain": [
+              "time.windows.com",
+              "time.nist.gov",
+              "time.apple.com",
+              "time.asia.apple.com",
+              "time1.cloud.tencent.com",
+              "time.ustc.edu.cn",
+              "pool.ntp.org",
+              "ntp.ubuntu.com",
+              "ntp.aliyun.com",
+              "music.163.com",
+              "musicapi.taihe.com",
+              "music.taihe.com",
+              "songsearch.kugou.com",
+              "trackercdn.kugou.com",
+              "api-jooxtt.sanook.com",
+              "api.joox.com",
+              "joox.com",
+              "y.qq.com",
+              "streamoc.music.tc.qq.com",
+              "mobileoc.music.tc.qq.com",
+              "isure.stream.qqmusic.qq.com",
+              "dl.stream.qqmusic.qq.com",
+              "aqqmusic.tc.qq.com",
+              "amobile.music.tc.qq.com",
+              "music.migu.cn",
+              "localhost.ptlogin2.qq.com",
+              "speedtest.cros.wr.pvp.net",
+              "mtalk.google.com",
+              "mtalk4.google.com",
+              "mtalk-staging.google.com",
+              "mtalk-dev.google.com",
+              "alt1-mtalk.google.com",
+              "alt2-mtalk.google.com",
+              "alt3-mtalk.google.com",
+              "alt4-mtalk.google.com",
+              "alt5-mtalk.google.com",
+              "alt6-mtalk.google.com",
+              "alt7-mtalk.google.com",
+              "alt8-mtalk.google.com"
+            ],
+            "domain_suffix": [
+              ".ntp.org.cn",
+              ".openwrt.pool.ntp.org",
+              ".time.edu.cn",
+              ".music.163.com",
+              ".126.net",
+              ".kuwo.cn",
+              ".y.qq.com",
+              ".xiami.com",
+              ".music.migu.cn",
+              ".msftconnecttest.com",
+              ".msftncsi.com",
+              ".srv.nintendo.net",
+              ".stun.playstation.net",
+              ".ipv6.microsoft.com",
+              ".xboxlive.com",
+              ".mtalk.google.com"
+            ],
+            "domain_regex": [
+              "^stun\\.",
+              "^xbox\\..*\\.microsoft\\.com$"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "proxy-services",
+        "rules": [
+          {
+            "domain": [
+              "browser-intake-datadoghq.com",
+              "chat.openai.com.cdn.cloudflare.net",
+              "openai-api.arkoselabs.com",
+              "openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net",
+              "openaicomproductionae4b.blob.core.windows.net",
+              "production-openaicom-storage.azureedge.net",
+              "static.cloudflareinsights.com",
+              "api.msn.com",
+              "assets.msn.com",
+              "copilot.microsoft.com",
+              "gateway.bingviz.microsoft.net",
+              "gateway.bingviz.microsoftapp.net",
+              "in.appcenter.ms",
+              "location.microsoft.com",
+              "odc.officeapps.live.com",
+              "r.bing.com",
+              "self.events.data.microsoft.com",
+              "services.bingapis.com",
+              "sydney.bing.com",
+              "www.bing.com",
+              "ai.google.dev",
+              "alkalimakersuite-pa.clients6.google.com",
+              "makersuite.google.com",
+              "cdn.usefathom.com"
+            ],
+            "domain_suffix": [
+              ".gstatic.com",
+              ".ipleak.net",
+              ".browserscan.net",
+              ".surfsharkdns.com",
+              ".edns.ip-api.com",
+              ".dnsleaktest.com",
+              ".dnsleak.com",
+              ".expressvpn.com",
+              ".nordvpn.com",
+              ".surfshark.com",
+              ".perfect-privacy.com",
+              ".browserleaks.com",
+              ".browserleaks.org",
+              ".browserleaks.net",
+              ".vpnunlimited.com",
+              ".whoer.net",
+              ".whrq.net",
+              ".asmr.one",
+              ".ai.com",
+              ".algolia.net",
+              ".api.statsig.com",
+              ".auth0.com",
+              ".chatgpt.com",
+              ".chatgpt.livekit.cloud",
+              ".client-api.arkoselabs.com",
+              ".events.statsigapi.net",
+              ".featuregates.org",
+              ".host.livekit.cloud",
+              ".identrust.com",
+              ".intercom.io",
+              ".intercomcdn.com",
+              ".launchdarkly.com",
+              ".oaistatic.com",
+              ".oaiusercontent.com",
+              ".observeit.net",
+              ".openai.com",
+              ".openaiapi-site.azureedge.net",
+              ".openaicom.imgix.net",
+              ".segment.io",
+              ".sentry.io",
+              ".stripe.com",
+              ".turn.livekit.cloud",
+              ".sora.com",
+              ".api.microsoftapp.net",
+              ".bing-shopping.microsoft-falcon.io",
+              ".challenges.cloudflare.com",
+              ".edgeservices.bing.com",
+              ".githubcopilot.com",
+              ".gvt2.com",
+              ".bard.google.com",
+              ".deepmind.com",
+              ".deepmind.google",
+              ".gemini.google.com",
+              ".generativeai.google",
+              ".proactivebackend-pa.googleapis.com",
+              ".apis.google.com",
+              ".anthropic.com",
+              ".claude.ai",
+              ".grazie.ai",
+              ".grazie.aws.intellij.net",
+              ".jetbrains.ai",
+              ".meta.com",
+              ".services.googleapis.cn",
+              ".xn--ngstr-lra8j.com",
+              ".google.com",
+              ".google.cn",
+              ".googleapis.com",
+              ".googleapis.cn",
+              ".googleusercontent.com",
+              ".gstatic.cn",
+              ".googlevideo.com",
+              ".youtube.com",
+              ".youtu.be",
+              ".ytimg.com",
+              ".ggpht.com",
+              ".gvt1.com",
+              ".gvt3.com",
+              ".google.dev",
+              ".google.ai",
+              ".googleblog.com",
+              ".googleadservices.com",
+              ".googlesyndication.com",
+              ".github.com",
+              ".github.io",
+              ".githubusercontent.com",
+              ".githubassets.com",
+              ".githubstatus.com",
+              ".gitlab.com",
+              ".steamcommunity.com",
+              ".aka.ms",
+              ".1drv.ms",
+              ".onedrive.com",
+              ".telegram.org",
+              ".telegram.me",
+              ".t.me",
+              ".telegra.ph",
+              ".tdesktop.com",
+              ".telesco.pe",
+              ".wikipedia.org",
+              ".wikimedia.org",
+              ".twitter.com",
+              ".x.com",
+              ".t.co",
+              ".twimg.com",
+              ".facebook.com",
+              ".fbcdn.net",
+              ".instagram.com",
+              ".cdninstagram.com",
+              ".whatsapp.com",
+              ".whatsapp.net",
+              ".signal.org",
+              ".discord.com",
+              ".discord.gg",
+              ".discordapp.com",
+              ".discordapp.net"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "wechat-services",
+        "rules": [
+          {
+            "domain_suffix": [
+              ".qpic.cn",
+              ".qlogo.cn",
+              ".wxqcloud.qq.com.cn",
+              ".servicewechat.com",
+              ".weixin.qq.com",
+              ".wxs.qq.com",
+              ".res.wx.qq.com",
+              ".wechat.com"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "steam-download",
+        "rules": [
+          {
+            "domain_suffix": [
+              ".steamcontent.com",
+              ".cm.steampowered.com",
+              ".steamserver.net"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "apple-cn-fallback",
+        "rules": [
+          {
+            "domain": [
+              "www.apple.com",
+              "apps.apple.com",
+              "itunes.apple.com",
+              "music.apple.com",
+              "mesu.apple.com",
+              "swcdn.apple.com",
+              "swdist.apple.com",
+              "swscan.apple.com",
+              "updates.cdn-apple.com",
+              "updates-http.cdn-apple.com",
+              "is1-ssl.mzstatic.com",
+              "is2-ssl.mzstatic.com"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "direct-services",
+        "rules": [
+          {
+            "domain_suffix": [
+              ".cn",
+              ".qq.com",
+              ".weixin.com",
+              ".gtimg.com",
+              ".tencent.com",
+              ".tencent-cloud.net",
+              ".myqcloud.com",
+              ".qcloud.com",
+              ".tencentcs.com",
+              ".amap.com",
+              ".gaode.com",
+              ".autonav.com",
+              ".alibaba.com",
+              ".alicdn.com",
+              ".aliyun.com",
+              ".aliyuncs.com",
+              ".alipay.com",
+              ".alipayobjects.com",
+              ".taobao.com",
+              ".tmall.com",
+              ".jd.com",
+              ".360buyimg.com",
+              ".baidu.com",
+              ".bdstatic.com",
+              ".bdimg.com",
+              ".bilibili.com",
+              ".bilivideo.com",
+              ".hdslb.com",
+              ".163.com",
+              ".126.com",
+              ".netease.com",
+              ".127.net",
+              ".bytedance.com",
+              ".byteimg.com",
+              ".bytecdn.cn",
+              ".ibytedtos.com",
+              ".pstatp.com",
+              ".douyin.com",
+              ".doubaopay.com",
+              ".doubao.com",
+              ".toutiao.com",
+              ".vivo.com",
+              ".oppo.com",
+              ".heytap.com",
+              ".xiaomi.com",
+              ".mi.com",
+              ".mi-img.com",
+              ".huawei.com",
+              ".hicloud.com",
+              ".meituan.com",
+              ".dianping.com",
+              ".zhihu.com",
+              ".zhimg.com",
+              ".weibo.com",
+              ".sina.com.cn",
+              ".xiaohongshu.com",
+              ".xhscdn.com",
+              ".kimi.com",
+              ".moonshot.cn",
+              ".minimaxi.com",
+              ".cmpassport.com",
+              ".httpdns.pro",
+              ".ctobsnssdk.com",
+              ".ugdtimg.com",
+              ".id6.me"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "telegram-fallback",
+        "rules": [
+          {
+            "ip_cidr": [
+              "91.105.192.0/23",
+              "91.108.4.0/22",
+              "91.108.8.0/21",
+              "91.108.16.0/21",
+              "91.108.56.0/22",
+              "95.161.64.0/20",
+              "149.154.160.0/20",
+              "185.76.151.0/24"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-private",
+        "format": "binary",
+        "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/private.srs",
+        "update_interval": "1d"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-apple-cn",
+        "format": "binary",
+        "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/apple-cn.srs",
+        "update_interval": "1d"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-cn",
+        "format": "binary",
+        "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs",
+        "update_interval": "1d"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-geolocation-cn",
+        "format": "binary",
+        "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-cn.srs",
+        "update_interval": "1d"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-google",
+        "format": "binary",
+        "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/google.srs",
+        "update_interval": "1d"
+      },
+      {
+        "type": "remote",
+        "tag": "geoip-cn",
+        "format": "binary",
+        "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs",
+        "update_interval": "1d"
+      },
+      {
+        "type": "remote",
+        "tag": "geoip-telegram",
+        "format": "binary",
+        "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/telegram.srs",
+        "update_interval": "1d"
+      }
+    ],
+    "final": "PROXY",
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns-bootstrap",
+    "default_http_client": "ruleset-direct"
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "store_fakeip": true
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "default_mode": "rule"
+    }
+  }
+}

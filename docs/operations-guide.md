@@ -21,12 +21,15 @@ sudo easy_all self-update
 ```bash
 sudo easy_all apply
 ```
-- 五种模式都**只在本机重建**：重新渲染并应用 sing-box 配置（含 CDN 阻断状态）、Caddyfile（站点主机与端口由模式派生）、UFW 业务端口与六个订阅产物，并重建服务。
+- 五种模式都**只在本机重建**：重新渲染并应用 sing-box 配置（含 CDN 阻断状态）、Caddyfile（站点主机与端口由模式派生）、UFW 业务端口与八个订阅产物（六份 Mihomo/Base64 + `singbox.json` / `singbox-all.json`），并重建服务。
 - **不访问云管理 API，不签发或续签证书，不改 DNS**。唯一的外部访问是读取公开的 Cloudflare 官方回源 IPv4 段与 Origin CA 根证书（模式 1/3 需要），不需要账号凭据。
 - 模式 1 的 `link` 不部署订阅站点，`apply` 只重建 AnyTLS 入站与节点输出，提示 `Caddy: 未部署（link）`。
 - 保护待落实（`blocked=true` 且 `enforced=false`）时先做[受限安全恢复](#63-各命令在保护停机时的准入)，恢复失败直接非零停止，不会带着开放配置启动 sing-box。
 - 订阅配置损坏时普通 `apply` 会失败并提示 `sudo easy_all edit-sub`，不会静默把聚合节点清空。
 - 证书缺失或异常（`status` 显示「证书异常/缺失」）应执行 `sudo easy_all renew-cert`；ACM 证书或 CloudFront 分发需要重建时用 `apply-cloud`。
+- 订阅发布验收同时覆盖六份旧产物与 sing-box JSON：JSON 候选结构或 `sing-box check` 失败会让整次发布失败并保留旧订阅，不会留下半份 JSON。首装、`apply`、`apply-cloud`、`edit-sub` 在写入后都会做一次本机 HTTP 验收（`flag=singbox`、SFA UA 自动识别、显式 flag 覆盖、`node=all`、HEAD 与裸文件 `404`）。
+- **升级后要执行一次 `apply` 才会出现 JSON**：`self-update` 只替换代码，不重建 Caddyfile 与订阅。执行 `apply` 之前，线上仍是旧 Caddyfile（没有 JSON 分支），`flag=singbox` 与 SFA UA 会按旧规则回落到 Base64 订阅（`200`，客户端会导入一份平铺列表）；只有 Caddy 配置已更新（`apply` 已写入）而 JSON 产物缺失时才返回 `503`。两种情况都不影响原有的 YAML 客户端；`sudo easy_all subscription` 在缺少 JSON 产物时会提示先执行 `apply`。
+- **JSON 故障不影响 CDN 流量保护**：定时计量与 `cdn-traffic-sync` 只使用原来的六产物门禁，JSON 缺失或损坏不会放开或封锁 CDN，也不会清零用量；修复方式是运行 `sudo easy_all apply`。
 
 ### 1.3 `apply-cloud`：同步云端资源
 改过域名、换了凭据或需要重新收敛云端资源时：
@@ -71,7 +74,7 @@ sudo easy_all apply-cloud
 | `sudo easy_all renew-cert` | 重新签发 / 部署当前模式的 TLS 证书（模式 3 轮换 Cloudflare Origin CA；其他证书模式走 Certbot） |
 | `sudo easy_all status` | 查看模式、域名、分发/ACM（模式 2/4）、Origin CA（模式 3）或 Origin Rule（模式 5）、服务与监听、证书、CDN 计量规则与 985 GB 保护状态（仅模式 2/4） |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的本机残留（未安装状态使用；不改云端资源） |
-| `sudo easy_all uninstall` | 卸载当前模式；加 `--purge-cloud` 一并清理托管的远端资源 |
+| `sudo easy_all uninstall` | 卸载当前模式的本机内容，并清理本工具创建的云端资源 |
 | `sudo easy_all help` | 显示帮助 |
 
 > `apply`、`edit-sub` 都不调用云管理 API，需要改云端时用 `apply-cloud`。`renew-cert` 在模式 1/2/4/5 走 Cloudflare DNS-01，在模式 3 轮换 Origin CA，都不操作 ACM 自动续期。
@@ -101,7 +104,7 @@ sudo easy_all apply-cloud
 
 - 手工重启核心：`sudo systemctl restart easy_all-singbox`（模式 2/4 会先跑计量准备）。Caddy 请用 `sudo easy_all apply` 重建，不要直接 `systemctl restart`，否则会跳过配置校验与订阅验收。
 - 日志：`sudo journalctl -u easy_all-singbox -u easy_all-caddy -u easy_all-cdn-traffic-guard`。
-- `/etc/easy_all`（state、证书、Caddyfile、sing-box 配置、订阅、模板快照）与 `/var/www/easy_all/subscriptions`（六产物）都是受管文件，手工编辑会在下一次 `apply` 被覆盖；请用命令修改。
+- `/etc/easy_all`（state、证书、Caddyfile、sing-box 配置、订阅、模板快照）与 `/var/www/easy_all/subscriptions`（八份产物：六份 Mihomo/Base64 + `singbox.json` / `singbox-all.json`）都是受管文件，手工编辑会在下一次 `apply` 被覆盖；请用命令修改。
 
 ### 4.2 节点域名与节点名（需要重装）
 五种模式的本机域名与节点名都是落盘状态的一部分，没有「只改名」的入口：改直连域名、源站域名、CDN 节点域名、订阅域名或节点名都需要 `sudo easy_all uninstall` 后重新安装，并在客户端重新导入订阅。
@@ -134,13 +137,13 @@ sudo easy_all edit-sub
 - **订阅入口**：Caddy 只精确匹配 `/subscribe` 与 `/sub`，两者进入同一处理器；`/subscribe/`、`/subscribed` 与其他路径返回 `404`。重复 `token` 参数会被 Caddy 逗号拼接，无法匹配合法 Token，一律 `403`。
 - **聚合节点**：`nodes` 支持三种类型——`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；示例见 `templates/aggregation.example.json`。`optional: true` 的节点仅在订阅 URL 追加 `&node=all` 时下发。外部聚合节点的 `host/port/portRange` 原样保留，不会被改写成 443；`tls/xhttp` 节点的 `host` 是客户端连接地址，`sni` 同时作为 TLS SNI 与 HTTP `Host` 头；`reality/tcp` 节点的 `sid` 需为 2–16 位偶数长度十六进制。
 - **自定义模板**：支持交互式切换或重载 Mihomo 订阅模板（也可用 `MIHOMO_TEMPLATE_SOURCE` 传入本地文件或 HTTPS URL）。选中的模板会以 `0600` 快照保存在 `/etc/easy_all/mihomo-template.yaml`，后续 `apply`、`edit-sub` 与重装后的发布沿用同一份快照；快照缺失会告警并回退内置默认模板。
-- **失败回滚**：订阅配置校验、发布或验收任一步失败都会恢复旧的订阅状态、模板与六个产物文件。
+- **失败回滚**：订阅配置校验、发布或验收任一步失败都会恢复旧的订阅状态、模板与全部订阅产物（快照按整目录复制）。
 
 ### 5.1 保护停机时的 `edit-sub`
 当 CDN 用量达到阈值且阻断尚未落实（`blocked=true`、`enforced=false`）时，`edit-sub` 仍可执行，但走**保持阻断**的修复分支：
 
 1. 先把 Caddy 代理路径收敛为 `503` 并停掉当前核心（旧 CDN 长连接随之终止）；这一步失败即停止，不进入订阅修复。
-2. 在安全边界确立后接收新的完整订阅配置，只更新订阅相关状态、模板与六个产物。
+2. 在安全边界确立后接收新的完整订阅配置，只更新订阅相关状态、模板与全部订阅产物。
 3. 随后以**受限配置**（省略 CDN 入站；模式 4 保留 AnyTLS `443`）重建运行时并验收订阅就绪；不采样、不改写用量文件、不解封。
 4. 成功返回 0 只表示「订阅修复完成，保护仍 pending」，输出 `blocked` / `enforced` / `protection_offline` 原值，并提示执行 `sudo easy_all cdn-traffic-sync`。
 
@@ -199,26 +202,28 @@ sudo easy_all status
 
 ## 7. 卸载与清理
 
-### 7.1 仅卸载本机（默认保留云端）
+### 7.1 卸载本机与云端资源
 ```bash
 sudo easy_all uninstall
 ```
-停止并删除 sing-box、Caddy 服务与 easy_all 自有配置、证书（含 easy_all 专用的 Certbot lineage 与 deploy hook）、CDN 流量保护定时器与计量规则、定时任务，回收业务端口放行与 Cloudflare 回源白名单，保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置（`/usr/local/sbin/fail2ban-ufw-cidr.sh` 脚本保留），恢复安装前的 IPv6 配置。模式 1 `deploy`/模式 3 还会回收各自的回源放行注释（`easy_all-cf-origin-8443` / `easy_all-cf-origin-443`）；模式 1 `deploy` 的 Origin Rule 只在 `--purge-cloud` 时清理。
+`uninstall` 不接受参数：它固定先尝试清理本工具创建的云端资源，再清理本机内容。旧脚本里的 `uninstall --purge-cloud` 已删除，请直接执行 `sudo easy_all uninstall`。
 
-- **默认保留云端资源**：CloudFront 分发、ACM 证书、DNS 记录、Cloudflare Origin Rule 与 Origin CA 证书都不动，并先打印可识别的资源清单（模式 1：直连/订阅 A 记录、Origin Rule ID；模式 2/4：分发 ID/域名、ACM ARN、源站 A 记录、节点/订阅 CNAME、validation CNAME；模式 3：橙云 A 记录与 Origin CA 证书 ID/到期时间）。本机状态删除后无法再用 easy_all 清理这些资源，只能到控制台处置。
+停止并删除 sing-box、Caddy 服务与 easy_all 自有配置、证书（含 easy_all 专用的 Certbot lineage 与 deploy hook）、CDN 流量保护定时器与计量规则、定时任务，回收业务端口放行与 Cloudflare 回源白名单，保留 UFW 启用状态、默认拒绝策略、SSH 放行与 Fail2ban 配置（`/usr/local/sbin/fail2ban-ufw-cidr.sh` 脚本保留），恢复安装前的 IPv6 配置。模式 1 `deploy`/模式 3 还会回收各自的回源放行注释（`easy_all-cf-origin-8443` / `easy_all-cf-origin-443`）；模式 1 `deploy` 与模式 5 的 Origin Rule 默认随卸载清理。
+
+- **默认清理云端资源**：先打印一次资源清单（模式 1：直连/订阅 A 记录、Origin Rule ID；模式 2/4：分发 ID/域名、ACM ARN、源站 A 记录、节点/订阅 CNAME、validation CNAME（模式 4 另含直连 A 记录）；模式 3：橙云 A 记录与 Origin CA 证书 ID/到期时间），再按 §7.2 的顺序尝试删除；因归属保护而未删除的条目会逐条点名。
+- **云端清理失败会告警且命令以非零退出，本机卸载照常完成**：本机状态删除后无法再按本次安装状态重试清理，请保存输出中的清单并人工处置残留。
 - 前置初始化不回收：Zabbly 内核与 APT 仓库、Skyline Speeder 及其 fq 服务、`/etc/sysctl.d/99-easy_all-tcp.conf`、1GB Swap 与系统依赖均保留。
 - **旧版 fq helper 迁移**：`self-update` 只替换代码，不会刷新已生成的 `/usr/local/lib/easy_all-tcp` helper（其 qdisc 快照不再写进 `/etc/easy_all`）。存量机器建议按 `sudo easy_all self-update` → `sudo easy_all apply` → `sudo easy_all uninstall` 操作；如果旧 helper 只留下「`backups/qdisc` 空目录」的严格空链，新版安装守卫会放行，不必手工删目录。
 - 保护停机（`protection_offline=true`、核心已停止）不阻挡卸载，也不要求统计文件可读。
 
-### 7.2 完整卸载（含云端资源清理）
-```bash
-sudo easy_all uninstall --purge-cloud
-```
+### 7.2 云端清理顺序与安全例外
 在 §7.1 的本机卸载之前，先尝试清理 easy_all 自己创建的云端资源。
 
 **模式 1（AnyTLS）**：只删除注释、类型与目标（VPS 公网 IPv4）都匹配的直连/订阅 `A` 记录，并按持久 ID 删除本工具的 Origin Rule（不删除共享 ruleset 中他人的规则）；失败只告警并打印残留。
 
 **模式 3（Cloudflare 橙云）**：只删除注释、类型与目标（VPS 公网 IPv4）三者都匹配的 `A` 记录，并按持久 ID 吊销 Origin CA 证书；DNS 查询/删除失败不阻止吊销证书，任一步失败只告警并打印残留。不猜测删除第三方记录或多条同名记录。
+
+**模式 5（AnyTLS + Cloudflare）**：先删除直连灰云 `A` 记录与橙云节点域名 `A` 记录（注释、类型与目标三者同时匹配才删），再按持久 ID 删除本工具的 Origin Rule；不删除共享 ruleset 中他人的规则，失败只告警并打印残留。
 
 **模式 2/4（CloudFront）**：
 
@@ -228,7 +233,7 @@ sudo easy_all uninstall --purge-cloud
 4. **DNS**：只删注释、类型和目标都精确匹配的 A/CNAME 记录；复用第三方或无标记记录不删。
 5. **ACM validation CNAME 默认保留**，输出会明确提示可由控制台核实后手工删除（同一验证记录可能被其他证书复用）。
 
-- **云清理失败不阻挡本机卸载**：任一步失败只告警并打印残留 ID，本机卸载照常继续；命令不会声称「云端已全部清理完成」。
+- **云清理失败不阻挡本机卸载**：任一步失败只告警并打印残留 ID，本机卸载照常继续；命令以非零退出（沿用 `1`），交互与 `FORCE=1` 语义一致，便于自动化发现残留，也不会声称「云端已全部清理完成」。
 - 缺少 AWS 凭据时会要求交互输入；仍无凭据则云端清理记为失败，本机照常卸载。
 
 ### 7.3 独立清理 Cloudflare 残留

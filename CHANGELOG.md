@@ -1,3 +1,22 @@
+## 未发布
+
+新增 sing-box 完整 JSON 订阅（八份订阅产物）：
+
+- **产物**：在六份 Mihomo/Base64 之外新增 `singbox.json` / `singbox-all.json`，与其余产物同批渲染、同批原子发布，权限 `0600`。
+- **格式协商**：显式 flag（`flag=singbox`）→ 已确认的 SFA UA → Clash UA → Base64；JSON 目标文件缺失返回 `503` 且不降级，裸文件访问仍 `404`，原有 YAML / Base64 行为不变。
+- **配置内容**：`templates/singbox.json` 提供 TUN 与混合入口、`PROXY` 选择器（模式 4 另有 `AUTO`，JSON 不生成 `CDN-FALLBACK`）、Fake-IP DNS 与分流规则集；节点由结构化数据生成，不反向解析 URI/YAML。
+- **排除与提示**：`xhttp`、`mieru` 与 `fp` 不在锁定核心 uTLS 枚举内的聚合节点只从 JSON 排除，`apply` / `edit-sub` 打印节点名、原因与数量，Mihomo / Base64 不受影响。
+- **流控边界不变**：CDN 就绪判定与计量仍只使用六份 Mihomo/Base64 产物；JSON 缺失或损坏不会放开或封锁 CDN，也不清零用量。
+- **升级提示**：`self-update` 后需执行一次 `apply` 才会生成 JSON；在此之前 sing-box 客户端会按旧规则回落到 Base64 订阅。
+
+`uninstall` 语义变更：
+
+- **`uninstall` 默认清理云端资源**：`sudo easy_all uninstall` 先尝试删除本工具创建的 Cloudflare DNS/Origin Rule/Origin CA 与 CloudFront 分发/ACM/业务 DNS，再清理本机内容。
+- **不兼容：删除 `--purge-cloud`**：`uninstall` 只接受零参数，任何额外参数（含旧脚本里的 `--purge-cloud`）都会在执行任何云端或本机副作用前非零退出，并提示直接执行 `easy_all uninstall`。
+- **云端失败仍继续本机卸载，但退出码非零**：云端 API、凭据或 CloudFront 等待失败时逐项告警并保留残留清单，本机卸载照常完成；命令以 `1` 退出，避免自动化把未清理的云端资源当作成功。
+- **安全例外**：状态不完整时仍只清本机，并提示云端资源需人工核对；ACM validation CNAME 因可能被其他证书复用而保留，在资源清单与卸载收尾点名；因归属保护、接管保护或多条同名记录而跳过的条目不删除。
+- **UFW 策略未变**：卸载仍只回收业务端口放行，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置。
+
 ## 5.1.0 更新说明（2026-11-10）
 
 新增模式 5「AnyTLS + CloudFlare」：直连 AnyTLS `443` 与橙云 VLESS WebSocket 一次部署，

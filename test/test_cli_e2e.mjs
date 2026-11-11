@@ -49,6 +49,9 @@ assert.doesNotMatch(help.stdout, /rotate-dynamic-ports/);
 assert.doesNotMatch(help.stdout, /internal-traffic-prepare/, '内部入口不对外列在帮助里');
 assert.match(help.stdout, /cleanup-partial/);
 assert.match(help.stdout, /update-core/);
+// uninstall 默认清理本机与云端：帮助必须说明云端清理，且不再列出已删除的参数。
+assert.match(help.stdout, /清理本工具创建的云端资源/);
+assert.doesNotMatch(help.stdout, /--purge-cloud/, '旧参数已删除，不得再出现在帮助里');
 
 // 2. 未知命令与参数门禁：必须在读取安装状态、加载 Profile、创建运行时临时目录之前拒绝。
 // TMPDIR 指向不存在的目录：若仍尝试 mktemp，会得到“无法创建运行时临时目录”而不是目标文案。
@@ -67,6 +70,20 @@ for (const args of [['tcp-resume', 'extra'], ['apply', 'extra']]) {
 const installArgs = run(['install', 'extra'], stateEnv);
 assert.notEqual(installArgs.status, 0);
 assert.match(installArgs.stderr, /install 不接受参数/);
+
+// 2a. uninstall 只接受零参数：旧参数（--purge-cloud）、--keep-cloud、普通参数、空参数与
+// 多参数都必须在读取安装状态之前非零退出，并提示直接执行 easy_all uninstall。
+const noRuntimeTmp = join(tmp, 'no-such-dir');
+for (const args of [['--purge-cloud'], ['--keep-cloud'], ['extra'], [''], ['a', 'b']]) {
+  const res = run(['uninstall', ...args], { ...stateEnv, TMPDIR: noRuntimeTmp });
+  const label = `uninstall ${args.map((arg) => JSON.stringify(arg)).join(' ')}`;
+  assert.notEqual(res.status, 0, `${label} 必须被拒绝`);
+  assert.match(res.stderr, /uninstall 不支持参数/, `${label} 的参数门禁`);
+  assert.match(res.stderr, /uninstall 已默认清理本机与云端资源/,
+    `${label} 必须提示默认清理云端`);
+  assert.doesNotMatch(res.stderr, /尚未安装/, `${label} 不得先读安装状态`);
+  assert.doesNotMatch(res.stderr, /运行时临时目录/, `${label} 不得创建运行时临时目录`);
+}
 
 // 2b. 防回归：schema 0 状态存在时，未知命令与通用参数门禁仍必须早于状态读取，
 // 不能先报「旧版（schema 0）」。用例结束后删除状态，恢复本段原有的未安装态。

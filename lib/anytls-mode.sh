@@ -280,9 +280,10 @@ anytls_write_subscriptions() {
     anytls_persist_subscription_template
 }
 
+# 六产物就绪判定：只渲染 Mihomo/Base64，不生成 sing-box JSON（JSON 故障不进流控门禁）。
 anytls_render_subscription_files() {
     anytls_prepare_subscription_template
-    render_subscription_files "$1"
+    render_mihomo_base64_files "$1"
 }
 
 refresh_runtime_subscription() {
@@ -291,6 +292,7 @@ refresh_runtime_subscription() {
         return 0
     }
     anytls_write_subscriptions
+    validate_singbox_subscription_runtime
     save_state
 }
 
@@ -449,6 +451,7 @@ apply_easy_all() {
     if subscription_enabled; then
         anytls_write_subscriptions
         validate_subscription_runtime
+        validate_singbox_subscription_runtime
     fi
     save_state
     cdn_commit_local_runtime
@@ -487,6 +490,7 @@ apply_cloud_resources() {
     if subscription_enabled; then
         anytls_write_subscriptions
         validate_subscription_runtime
+        validate_singbox_subscription_runtime
         anytls_validate_public_runtime
     fi
     save_state
@@ -517,6 +521,7 @@ update_subscription() {
         write_runtime_config
         runtime_reload_caddy
         validate_subscription_runtime
+        validate_singbox_subscription_runtime
     fi
     save_state
     commit_subscription_update
@@ -573,7 +578,7 @@ cdn_local_uninstall_common() {
 }
 
 cdn_print_cloud_inventory() {
-    printf '云端资源清单（默认保留，需要时手动处置）：\n' >&2
+    printf '云端资源清单：\n' >&2
     printf '  直连 A 记录（灰云）: %s -> %s\n' "${DIRECT_DOMAIN:-未知}" "${VPS_PUBLIC_IPV4:-未知}" >&2
     if subscription_enabled; then
         if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
@@ -635,18 +640,17 @@ anytls_purge_cloud_resources() {
 }
 
 uninstall_all() {
-    local mode=${1:-} answer
+    local answer cloud_failed=0
     require_root
-    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
-        || die "uninstall 不支持参数：${mode}"
+    (($# == 0)) || die "uninstall 不支持参数：$*"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all 尚未安装"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "非交互卸载必须显式设置 FORCE=1"
-        if [[ "${mode}" == "--purge-cloud" ]]; then
-            read_bilingual '删除本机内容以及 easy_all 创建的 Cloudflare DNS 与 Origin Rule？[y/N]:' answer
+        if subscription_enabled; then
+            read_bilingual '删除 easy_all 本机服务、状态和证书，以及 easy_all 创建的 Cloudflare DNS 与 Origin Rule？[y/N]:' answer
         else
-            read_bilingual '删除 easy_all 本机服务、状态和证书（保留云端资源）？[y/N]:' answer
+            read_bilingual '删除 easy_all 本机服务、状态和证书，以及 easy_all 创建的直连 A 记录？[y/N]:' answer
         fi
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
@@ -654,17 +658,16 @@ uninstall_all() {
     acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     cdn_print_cloud_inventory
-    if [[ "${mode}" == "--purge-cloud" ]]; then
-        if (anytls_purge_cloud_resources); then
-            :
-        else
-            warn "云端资源清理未完成；本机卸载继续，请按上方清单手动处置"
-        fi
+    printf '正在按上方清单尝试清理本工具创建的云端资源；因归属保护而未删除的条目会在下方点名。\n' >&2
+    if (anytls_purge_cloud_resources); then
+        :
     else
-        warn "Cloudflare DNS 与 Origin Rule 已保留；本机状态删除后无法再用 easy_all 清理"
+        warn "云端资源清理未完成；本机卸载继续。请保存上方资源清单并手动处置；本机状态删除后无法再按本次安装状态重试清理"
+        cloud_failed=1
     fi
     cdn_local_uninstall_common || return 1
-    success "easy_all 本机内容已卸载"
+    success "easy_all 本机内容已卸载；云端清理结果见上方输出"
+    ((cloud_failed == 0)) || return 1
 }
 
 cleanup_partial_install() {
@@ -768,6 +771,7 @@ install_all() {
         write_runtime_config
         runtime_reload_caddy
         validate_subscription_runtime
+        validate_singbox_subscription_runtime
         anytls_validate_public_runtime
     fi
     install_progress_stage state

@@ -283,14 +283,15 @@ cloudflare_write_subscriptions() {
     cloudflare_persist_subscription_template
 }
 
-# 与发布路径完全一致的渲染，供订阅就绪判定使用。
+# 与发布路径完全一致的渲染，供六产物就绪判定使用（不含 sing-box JSON）。
 cloudflare_render_subscription_files() {
     cloudflare_prepare_subscription_template
-    render_subscription_files "$1"
+    render_mihomo_base64_files "$1"
 }
 
 refresh_runtime_subscription() {
     cloudflare_write_subscriptions
+    validate_singbox_subscription_runtime
     save_state
 }
 
@@ -431,6 +432,7 @@ apply_easy_all() {
     validate_protocol_runtime
     cloudflare_write_subscriptions
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     save_state
     register_easy_all_command
     commit_subscription_update
@@ -463,6 +465,7 @@ apply_cloud_resources() {
     validate_protocol_runtime
     cloudflare_write_subscriptions
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     # 本机子流程完成后才能证明公网链路；失败时云端资源保留，可重试 apply-cloud。
     cdn_validate_public_runtime
     runtime_served_certificate_matches_disk \
@@ -499,6 +502,7 @@ update_subscription() {
     write_runtime_config
     runtime_reload_caddy
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     save_state
     commit_subscription_update
     show_subscription
@@ -551,36 +555,30 @@ cdn_local_uninstall_common() {
 }
 
 uninstall_all() {
-    local mode=${1:-} answer
+    local answer cloud_failed=0
     require_root
-    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
-        || die "uninstall 不支持参数：${mode}"
+    (($# == 0)) || die "uninstall 不支持参数：$*"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all 尚未安装"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "非交互卸载必须显式设置 FORCE=1"
-        if [[ "${mode}" == "--purge-cloud" ]]; then
-            read_bilingual '删除本机内容以及 easy_all 创建的 Cloudflare DNS 与 Origin CA？[y/N]:' answer
-        else
-            read_bilingual '删除 easy_all 本机服务、状态和证书（保留云端资源）？[y/N]:' answer
-        fi
+        read_bilingual '删除 easy_all 本机服务、状态和证书，以及 easy_all 创建的 Cloudflare DNS 与 Origin CA？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_maintenance_services || true
     acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     cdn_print_cloud_inventory
-    if [[ "${mode}" == "--purge-cloud" ]]; then
-        if (cdn_purge_cloud_resources); then
-            :
-        else
-            warn "云端资源清理未完成；本机卸载继续，请按上方清单手动处置"
-        fi
+    printf '正在按上方清单尝试清理本工具创建的云端资源；因归属保护而未删除的条目会在下方点名。\n' >&2
+    if (cdn_purge_cloud_resources); then
+        :
     else
-        warn "Cloudflare DNS 与 Origin CA 已保留；本机状态删除后无法再用 easy_all 清理"
+        warn "云端资源清理未完成；本机卸载继续。请保存上方资源清单并手动处置；本机状态删除后无法再按本次安装状态重试清理"
+        cloud_failed=1
     fi
     cdn_local_uninstall_common || return 1
-    success "easy_all 本机内容已卸载"
+    success "easy_all 本机内容已卸载；云端清理结果见上方输出"
+    ((cloud_failed == 0)) || return 1
 }
 
 cleanup_partial_install() {
@@ -663,6 +661,7 @@ install_all() {
     install_progress_stage subscription
     cloudflare_write_subscriptions
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     cdn_validate_public_runtime
     install_progress_stage state
     save_state
@@ -680,7 +679,7 @@ install_all() {
 
 cdn_print_cloud_inventory() {
     local domain
-    printf '云端资源清单（默认保留，需要时手动处置）：\n' >&2
+    printf '云端资源清单：\n' >&2
     printf '  节点 A 记录（橙云）: %s -> %s\n' "${CF_NODE_DOMAIN:-未知}" "${VPS_PUBLIC_IPV4:-未知}" >&2
     while IFS= read -r domain; do
         [[ -n "${domain}" ]] || continue

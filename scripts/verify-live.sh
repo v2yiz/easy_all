@@ -12,7 +12,7 @@ CADDY=${CADDY_BIN:-/etc/easy_all/caddy/caddy}
 [[ -x "${SB}" ]] || { printf '缺少 sing-box：%s\n' "${SB}" >&2; exit 1; }
 [[ -x "${CADDY}" ]] || { printf '缺少 Caddy：%s\n' "${CADDY}" >&2; exit 1; }
 
-for port in 443 8443 10086 18080 18081; do
+for port in 443 8443 10086 18080 18081 18082 19090; do
     if command -v ss >/dev/null 2>&1 && ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .; then
         printf 'verify-live: 端口 %s 已被占用；请先停止占用进程\n' "${port}" >&2
         exit 1
@@ -21,11 +21,11 @@ done
 T=$(mktemp -d "${TMPDIR:-/tmp}/easy-all-live.XXXXXX")
 cleanup_fixtures() {
     local pid
-    for pid in ${SBPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-}; do
+    for pid in ${SBPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-} ${CPID3:-}; do
         [[ -n "${pid}" ]] && kill "${pid}" >/dev/null 2>&1 || true
     done
     sleep 0.3
-    for pid in ${SBPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-}; do
+    for pid in ${SBPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-} ${CPID3:-}; do
         [[ -n "${pid}" ]] && kill -9 "${pid}" >/dev/null 2>&1 || true
     done
     rm -rf -- "${T}"
@@ -96,6 +96,34 @@ code() { curl -sk --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}' "$@
 BASE=(-H "${HEADER}" --resolve origin.example.com:8443:127.0.0.1)
 TOKEN=$(jq -r '.[]' <<<"${ALLOWED_TOKENS}")
 
+# sing-box JSON 用正式渲染器生成：格式协商要与真实产物一起验收。
+render_singbox_subscription_files "${T}/subs"
+
+# 客户端 JSON 必须能被真实核心启动：只去掉需要 root 的 TUN 入口，规则与 DNS 段保持不变。
+# `sing-box check` 不覆盖运行期初始化（例如 DNS detour 指向空 direct 出口会直接 FATAL）。
+# clash_api 换成测试专用端口 19090，避免宿主已占用模板默认的 9090 时被误判为启动失败。
+jq 'del(.inbounds[] | select(.type == "tun"))
+    | .inbounds[0].listen_port = 18082
+    | .outbounds = [{type: "selector", tag: "PROXY", outbounds: ["DIRECT"], default: "DIRECT"},
+                    {type: "direct", tag: "DIRECT"}]
+    | .experimental.cache_file.path = "'"${T}"'/client-cache.db"
+    | .experimental.clash_api.external_controller = "127.0.0.1:19090"
+    | .log.level = "info"' "${T}/subs/singbox.json" >"${T}/client-full.json"
+"${SB}" run -c "${T}/client-full.json" >"${T}/client-full.log" 2>&1 & CPID3=$!
+client_full_ok=0
+for _ in $(seq 1 40); do
+    if ! kill -0 "${CPID3}" 2>/dev/null; then
+        break
+    fi
+    if grep -q "mixed-in" "${T}/client-full.log"; then
+        client_full_ok=1
+        break
+    fi
+    sleep 0.5
+done
+[[ "${client_full_ok}" == "1" ]] \
+    || { tail -5 "${T}/client-full.log" >&2; fail "sing-box 订阅配置未通过真实核心启动校验"; }
+
 [[ "$(code "${BASE[@]}" https://origin.example.com:8443/easy_all-health)" == 200 ]] || fail health
 [[ "$(curl -sk --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' \
     --resolve origin.example.com:8443:127.0.0.1 https://origin.example.com:8443/easy_all-health || true)" == 000 ]] \
@@ -106,6 +134,42 @@ TOKEN=$(jq -r '.[]' <<<"${ALLOWED_TOKENS}")
 [[ "$(code "${BASE[@]}" -X POST "https://origin.example.com:8443/subscribe?token=${TOKEN}")" == 405 ]] || fail method
 [[ "$(code "${BASE[@]}" "https://origin.example.com:8443/subscribe/extra?token=${TOKEN}")" == 404 ]] || fail path_suffix
 [[ "$(code "${BASE[@]}" "https://origin.example.com:8443/mihomo.yaml")" == 404 ]] || fail bare_file
+[[ "$(code "${BASE[@]}" "https://origin.example.com:8443/singbox.json")" == 404 ]] || fail bare_json_file
+
+# 格式协商：显式 flag > 已确认 sing-box UA > Clash UA > Base64。
+sub_url="https://origin.example.com:8443/subscribe?token=${TOKEN}"
+body() { curl -sk --noproxy '*' --max-time 10 "${BASE[@]}" "$@"; }
+json_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]}" \
+    "${sub_url}&flag=singbox" | tr -d '\r')
+grep -qi '^content-type: application/json' <<<"${json_headers}" || fail json_content_type
+grep -qi 'filename=EASY_ALL.json' <<<"${json_headers}" || fail json_filename
+grep -qi 'vary: user-agent' <<<"${json_headers}" || fail json_vary
+json_body=$(body "${sub_url}&flag=singbox")
+jq -e '.outbounds | map(.tag) | index("PROXY") != null' <<<"${json_body}" >/dev/null \
+    || fail json_proxy_selector
+jq -e '.outbounds | map(select(.type == "anytls" or .type == "vless")) | length > 0' \
+    <<<"${json_body}" >/dev/null || fail json_nodes
+[[ "$(body -A 'SFA (sing-box 1.14.4; language zh_CN)' "${sub_url}")" == "${json_body}" ]] \
+    || fail sfa_ua_autodetect
+[[ "$(body -A 'SFA (sing-box 1.14.4; language zh_CN)' "${sub_url}&flag=clash")" == "mihomo.yaml" ]] \
+    || fail sfa_ua_flag_clash_override
+[[ "$(body -A 'SFA (sing-box 1.14.4; language zh_CN)' "${sub_url}&flag=base64")" == "base64.txt" ]] \
+    || fail sfa_ua_flag_base64_override
+[[ "$(body -A 'ClashX/1.20.0' "${sub_url}&flag=singbox")" == "${json_body}" ]] \
+    || fail clash_ua_flag_singbox_override
+[[ "$(body -A 'ClashX/1.20.0' "${sub_url}")" == "mihomo.yaml" ]] || fail clash_ua_yaml
+[[ "$(body "${sub_url}")" == "base64.txt" ]] || fail default_base64
+[[ "$(body -A 'NekoBox/1.3.3 sing-box/1.9.0' "${sub_url}")" == "base64.txt" ]] \
+    || fail unconfirmed_ua_base64
+[[ "$(body "${sub_url}&flag=singbox&node=all")" == "$(cat "${T}/subs/singbox-all.json")" ]] \
+    || fail json_node_all
+[[ "$(code "${BASE[@]}" -I "${sub_url}&flag=singbox")" == 200 ]] || fail json_head
+# JSON 产物缺失只影响 JSON 请求，且返回 503 而不是其他格式。
+mv "${T}/subs/singbox.json" "${T}/subs/singbox.json.off"
+[[ "$(code "${BASE[@]}" "${sub_url}&flag=singbox")" == 503 ]] || fail json_missing_503
+[[ "$(code "${BASE[@]}" "${sub_url}")" == 200 ]] || fail json_missing_base64_unaffected
+mv "${T}/subs/singbox.json.off" "${T}/subs/singbox.json"
+[[ "$(code "${BASE[@]}" "${sub_url}&flag=singbox")" == 200 ]] || fail json_restore
 curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]}" \
     "https://origin.example.com:8443/subscribe?token=bad" | tr -d '\r' \
     | grep -qi 'cache-control: no-store' || fail denied_headers

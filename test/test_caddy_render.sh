@@ -188,25 +188,56 @@ assert_before "公共头先于方法校验" "$(line_of "${ready_file}" 'header V
 assert_before "方法校验先于 Token 校验" "$(line_of "${ready_file}" "respond @easy_all_sub_bad_method 405")" \
     "$(line_of "${ready_file}" "respond @easy_all_sub_denied 403")"
 assert_before "Token 校验先于协商" "$(line_of "${ready_file}" "respond @easy_all_sub_denied 403")" \
-    "$(line_of "${ready_file}" "handle @easy_all_sub_yaml {")"
+    "$(line_of "${ready_file}" "handle @easy_all_sub_yaml_flag {")"
 assert_count "订阅处理器只有一处 file_server" "${ready_body}" "file_server" 1
 assert_before "file_server 在订阅处理器内" "$(line_of "${ready_file}" "handle @easy_all_sub {")" \
     "$(line_of "${ready_file}" "file_server")"
 
-# 六产物：YAML 三分支 + Base64 两分支，顺序为 yaml → ios → all。
-for artifact in /mihomo.yaml /mihomo-ios.yaml /mihomo-all.yaml /mihomo-ios-all.yaml /base64.txt /base64-all.txt; do
-    assert_count "产物 ${artifact}" "${ready_body}" "rewrite * ${artifact}" 1
-done
-assert_before "YAML 先于 iOS 分支" "$(line_of "${ready_file}" "handle @easy_all_sub_yaml {")" \
+# 八产物：YAML 两个入口（flag 与 Clash UA）、Base64 两个入口、sing-box JSON 一个入口。
+while IFS='|' read -r artifact expected; do
+    assert_count "产物 ${artifact}" "${ready_body}" "rewrite * ${artifact}" "${expected}"
+done <<'ARTIFACTS'
+/mihomo.yaml|2
+/mihomo-ios.yaml|2
+/mihomo-all.yaml|2
+/mihomo-ios-all.yaml|2
+/base64.txt|2
+/base64-all.txt|2
+/singbox.json|1
+/singbox-all.json|1
+ARTIFACTS
+assert_before "YAML 先于 iOS 分支" "$(line_of "${ready_file}" "handle @easy_all_sub_yaml_flag {")" \
     "$(line_of "${ready_file}" "handle @easy_all_sub_ios {")"
 assert_before "iOS 先于 all 分支" "$(line_of "${ready_file}" "handle @easy_all_sub_ios {")" \
     "$(line_of "${ready_file}" "handle @easy_all_sub_all {")"
-assert_count "只有 YAML 分支带 Content-Disposition" "${ready_body}" "Content-Disposition" 1
-assert_contains "下载文件名来自 SUB_DOWNLOAD_NAME" "${ready_body}" \
-    'header @easy_all_sub_yaml Content-Disposition "attachment; filename=EASY_ALL"'
+assert_count "Content-Disposition 只出现在 YAML 与 JSON 分支" "${ready_body}" "Content-Disposition" 3
+assert_contains "YAML 下载文件名来自 SUB_DOWNLOAD_NAME" "${ready_body}" \
+    'header Content-Disposition "attachment; filename=EASY_ALL"'
+assert_contains "JSON 下载文件名追加 .json" "${ready_body}" \
+    'header Content-Disposition "attachment; filename=EASY_ALL.json"'
+assert_contains "JSON 响应类型" "${ready_body}" \
+    'header Content-Type "application/json; charset=utf-8"'
 assert_before "Content-Disposition 早于 YAML 分支" \
     "$(line_of "${ready_file}" "Content-Disposition")" \
     "$(line_of "${ready_file}" "rewrite * /mihomo.yaml")"
+
+# JSON 分支：flag 优先于 UA，缺失产物返回 503，且不降级到其他格式。
+assert_contains "flag 强制 JSON 列表" "${ready_body}" "{query.flag}.lowerAscii() in ['singbox','sing-box']"
+assert_contains "已确认 SFA UA 自动识别" "${ready_body}" \
+    ".startsWith('sfa (sing-box ')"
+assert_not_contains "不对任意 sing-box UA 通配" "${ready_body}" "matches('.*sing-box.*')"
+assert_contains "JSON 缺失返回 503" "${ready_body}" "respond @easy_all_sub_json_missing 503"
+assert_contains "JSON all 缺失返回 503" "${ready_body}" "respond @easy_all_sub_json_all_missing 503"
+assert_contains "JSON 缺失判定用 file 匹配器" "${ready_body}" "not file /singbox.json"
+assert_before "YAML flag 先于 Base64 flag" \
+    "$(line_of "${ready_file}" "handle @easy_all_sub_yaml_flag {")" \
+    "$(line_of "${ready_file}" "handle @easy_all_sub_base64_flag {")"
+assert_before "Base64 flag 先于 JSON 分支" \
+    "$(line_of "${ready_file}" "handle @easy_all_sub_base64_flag {")" \
+    "$(line_of "${ready_file}" "handle @easy_all_sub_singbox {")"
+assert_before "JSON 分支先于 Clash UA 分支" \
+    "$(line_of "${ready_file}" "handle @easy_all_sub_singbox {")" \
+    "$(line_of "${ready_file}" "handle @easy_all_sub_yaml_ua {")"
 
 # 协商矩阵：flag 显式覆盖 UA，UA 回落，os/node 大小写不敏感，重复参数不命中显式分支。
 assert_contains "flag 强制 YAML 列表" "${ready_body}" \

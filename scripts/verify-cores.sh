@@ -120,6 +120,9 @@ render_mode() {
         chmod 0600 "${KEY_FILE}"
         render_singbox_config "${SINGBOX_CONFIG}" 0
         validate_singbox_config "${SINGBOX_CONFIG}" || exit 1
+        # 客户端订阅同样是正式产物：真实核心必须接受渲染出的完整 JSON。
+        install -d -m 0700 "${out}/subscriptions"
+        render_singbox_subscription_files "${out}/subscriptions" || exit 1
         if runtime_caddy_site_enabled; then
             render_caddy_config "${CADDY_CONFIG}" 0 1
             validate_caddy_config "${CADDY_CONFIG}" || exit 1

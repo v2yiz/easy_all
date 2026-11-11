@@ -182,7 +182,7 @@ flowchart TD
     DNS --> Cert["证书：LE DNS-01（模式 1/2/4/5）或 Origin CA（模式 3）"]
     Cert --> UFW["UFW：公网 443；8443 与橙云 443 仅 Cloudflare 回源段"]
     UFW --> Runtime["渲染 sing-box/Caddy 配置 → 启服务 → 本机验收"]
-    Runtime --> Sub["发布六产物订阅 + Token 鉴权验收"]
+    Runtime --> Sub["发布八份订阅产物 + Token 鉴权验收"]
     Sub --> Cloud["模式 1：Origin Rule 8443；模式 2/4：ACM + 分发 + 公网验收；模式 3/5：橙云公网验收"]
     Cloud --> Done(["安装完成：输出节点信息与订阅链接"])
 ```
@@ -226,8 +226,9 @@ sudo easy_all subscription
 ```
 
 - 将 `easy_all subscription` 输出的订阅链接填入客户端（如 **Clash Verge Rev / Clash Mi / Bettbox / FlClash** 等）。
-- 订阅支持客户端自适应：同一条链接自动识别 UA 下发 Mihomo 规则集配置或通用 Base64；追加 `&flag=clash`、`&flag=base64`、`&os=ios`、`&node=all` 可强制格式、iOS 变体或附带聚合节点。
-- 模式 2/4 的 CDN 节点固定连接 CloudFront 节点域名，模式 3/5 固定连接橙云节点域名。模式 4 在 `PROXY` 组内提供 `AUTO`（url-test）与 `CDN-FALLBACK`（直连优先的 fallback），也可手动选择任一实际节点；模式 5 的 `PROXY` 组直接列出直连与橙云两个节点；订阅内没有优选 IP。
+- 订阅支持客户端自适应：同一条链接自动识别 UA 下发 sing-box 完整 JSON、Mihomo 规则集配置或通用 Base64；追加 `&flag=singbox`、`&flag=clash`、`&flag=base64`、`&os=ios`、`&node=all` 可强制格式、iOS 变体或附带聚合节点。
+- sing-box JSON 面向支持远程完整配置的客户端（已核实 sing-box Android 客户端 SFA）：内含 TUN/混合入口、节点、`PROXY` 选择器、DNS 与分流规则；识别不准时用 `&flag=singbox` 强制。官方 sing-box 不支持 xhttp 与 mieru，这类聚合节点只会从 JSON 中排除并在 `apply` 输出提示，Mihomo / Base64 订阅不受影响。
+- 模式 2/4 的 CDN 节点固定连接 CloudFront 节点域名，模式 3/5 固定连接橙云节点域名。Mihomo 订阅里模式 4 在 `PROXY` 组内提供 `AUTO`（url-test）与 `CDN-FALLBACK`（直连优先的 fallback），sing-box JSON 只有 `AUTO`（官方 selector/urltest 无法等价表达 fallback）；模式 5 的 `PROXY` 组直接列出直连与橙云两个节点；订阅内没有优选 IP。
 - 更多客户端配置、规则分流与导入故障排查详见 [客户端使用指南](docs/client-guide.md)。
 
 ---
@@ -251,7 +252,7 @@ sudo easy_all subscription
 | `easy_all self-update [--dev\|--branch <分支>]` | 从 GitHub 更新 easy_all 脚本自身；默认 `main`，`--dev` 使用 `dev` 分支 |
 | `easy_all cleanup-partial` | 清理上次中断安装留下的本机残留（不改云端资源） |
 | `easy_all purge-cloudflare` | 清理 easy_all 创建的 Cloudflare 资源（可在未安装状态使用） |
-| `easy_all uninstall` | 卸载当前模式；可追加 `--purge-cloud` 清理托管的远端资源；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
+| `easy_all uninstall` | 卸载当前模式的本机内容并清理本工具创建的云端资源；云端清理失败会告警且命令以非零退出，本机卸载照常完成；ACM validation CNAME 等共享资源需人工核对；只回收业务端口，保留 UFW 启用状态与 Fail2ban 配置 |
 | `easy_all help` | 显示帮助 |
 
 > `apply`、`edit-sub` 都不调用云管理 API；需要改云端时用 `apply-cloud`（`renew-cert` 在模式 3 会调用 Cloudflare 证书 API 轮换 Origin CA）。
@@ -330,11 +331,11 @@ sudo easy_all status
 - **证书**：使用 Cloudflare Origin CA（ECDSA P-256、15 年有效期）。
 - **回源白名单**：VPS `443` 端口仅对 Cloudflare 官方公布的回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin-443`）。
 - **Cloudflare 侧设置**：SSL/TLS 设为 **Full (strict)**（只接受 strict）；橙云节点域名保持边缘证书就绪。
-- **运维**：`apply` 重建本机与订阅；`apply-cloud` 同步 DNS 与 Origin CA；`renew-cert` 轮换 Origin CA 证书；`uninstall --purge-cloud` 级联清理云端解析与证书。
+- **运维**：`apply` 重建本机与订阅；`apply-cloud` 同步 DNS 与 Origin CA；`renew-cert` 轮换 Origin CA 证书；`uninstall` 级联清理本机内容、云端解析与证书。
 
 模式 5 在模式 3 的基础上增加 AnyTLS 直连入口：
 
 - **两个本机节点**：AnyTLS 直连 `443`（灰云域名）与橙云 VLESS WebSocket；订阅只发布一个橙云域名，订阅内同时包含两个节点。
 - **回源端口**：橙云节点域名用精确 `http.host` 的 Origin Rule 回源到 `8443`（`easy_all-cf-origin-8443` 仅放行 Cloudflare 回源段）。
 - **证书**：与直连共用一张 Let's Encrypt 证书（DNS-01，SAN 为直连域名与节点域名）；不使用 Origin CA。
-- **运维**：`apply-cloud` 同步 DNS、证书与 Origin Rule；`renew-cert` 通过 Certbot 续期；`uninstall --purge-cloud` 级联清理两条 A 记录与 Origin Rule。
+- **运维**：`apply-cloud` 同步 DNS、证书与 Origin Rule；`renew-cert` 通过 Certbot 续期；`uninstall` 级联清理本机内容、两条受管 A 记录与 Origin Rule。

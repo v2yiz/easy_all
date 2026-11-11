@@ -96,7 +96,7 @@ launcher_usage() {
   renew-cert       重新签发/部署当前模式的 TLS 证书
   status           显示运行状态
   cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
-  uninstall        卸载当前模式；可追加 --purge-cloud 清理托管的远端资源
+  uninstall        卸载当前模式的本机内容并清理本工具创建的云端资源
   help             显示帮助
 
 一台 VPS 只能安装一种模式。本机节点与订阅入口统一使用 443。
@@ -275,7 +275,7 @@ detect_installed_mode() {
         case "${protocol}" in
         anytls | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) ;;
         reality | cdn | combined)
-            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/cloudfront/cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（必要时 --purge-cloud），再重新安装。"
+            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/cloudfront/cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
             ;;
         *)
             # 状态本身已损坏（如 PROTOCOL 丢失）：整个卸载通道不能跟着失效，
@@ -434,13 +434,8 @@ dispatch_validate_arguments() {
     shift
     case "${command}" in
     uninstall)
-        if (($# == 0)); then
-            return 0
-        fi
-        if (($# == 1)) && [[ "$1" == "--purge-cloud" ]]; then
-            return 0
-        fi
-        launcher_die "uninstall 不支持参数：$*（仅接受可选的 --purge-cloud）"
+        (($# == 0)) \
+            || launcher_die "uninstall 不支持参数：$*（uninstall 已默认清理本机与云端资源，请直接执行 easy_all uninstall）"
         ;;
     # 既有参数语义保持不变：self-update 接受 --dev|--branch <分支>；tcp-resume 不接受参数
     # （与 resume_skyline_after_reboot 的签名一致），在 launcher 层就拒绝；update-core 同样不接受参数。

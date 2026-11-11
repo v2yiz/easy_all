@@ -19,6 +19,7 @@ lib/tcp-tuning.sh
 lib/singbox-core.sh
 lib/caddy-core.sh
 lib/singbox-runtime.sh
+lib/singbox-subscription.sh
 lib/caddy-runtime.sh
 lib/cf-origin-rule.sh
 lib/cf-dns.sh
@@ -28,6 +29,7 @@ lib/cloudfront-mode.sh
 lib/cloudflare-mode.sh
 lib/cloudflare-purge.sh
 templates/mihomo.yaml
+templates/singbox.json
 templates/aggregation.example.json
 templates/mihomo-common.yaml
 templates/mihomo-classic.yaml

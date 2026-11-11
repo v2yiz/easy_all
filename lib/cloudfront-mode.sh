@@ -956,14 +956,15 @@ cloudfront_write_subscriptions() {
 }
 
 # 把当前 state 渲染到指定目录：模板解析与发布路径完全一致（显式源 > 快照 > 内置默认），
-# 供订阅就绪验收与真实发布比对使用。
+# 供六产物就绪验收使用；sing-box JSON 不进入这个门禁（见 design §8.2）。
 cloudfront_render_subscription_files() {
     cloudfront_prepare_subscription_template
-    render_subscription_files "$1"
+    render_mihomo_base64_files "$1"
 }
 
 refresh_runtime_subscription() {
     cloudfront_write_subscriptions
+    validate_singbox_subscription_runtime
     save_state
 }
 
@@ -1278,6 +1279,7 @@ apply_easy_all() {
     cdn_validate_direct_runtime
     cloudfront_write_subscriptions
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     save_state
     cdn_commit_local_runtime
     commit_subscription_update
@@ -1330,6 +1332,7 @@ apply_cloud_resources() {
     cdn_validate_direct_runtime
     cloudfront_write_subscriptions
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     # 本机 apply 子流程完成后才能证明公网链路；失败时云端资源保留，可重试 apply-cloud。
     cdn_validate_public_runtime
     save_state
@@ -1393,6 +1396,7 @@ update_subscription() {
         runtime_apply_runtime_services
     fi
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     save_state
     if [[ "${restricted}" == "1" ]]; then
         commit_subscription_update
@@ -1486,41 +1490,32 @@ cdn_local_uninstall_common() {
 }
 
 uninstall_all() {
-    local mode=${1:-} answer
+    local answer cloud_failed=0
     require_root
-    [[ -z "${mode}" || "${mode}" == "--purge-cloud" ]] \
-        || die "uninstall 不支持参数：${mode}"
+    (($# == 0)) || die "uninstall 不支持参数：$*"
     [[ -f "${STATE_FILE}" || -d "${STATE_DIR}" ]] || die "easy_all 尚未安装"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "非交互卸载必须显式设置 FORCE=1"
-        if [[ "${mode}" == "--purge-cloud" ]]; then
-            read_bilingual '删除本机内容以及 easy_all 创建的云端资源？[y/N]:' answer
-        else
-            read_bilingual '删除 easy_all 本机服务、状态和证书（保留云端资源）？[y/N]:' answer
-        fi
+        read_bilingual '删除 easy_all 本机服务、状态和证书，以及本工具创建的 CloudFront 分发、ACM 证书与业务 DNS（ACM validation CNAME 保留）？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_maintenance_services || true
     acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
     [[ ! -f "${STATE_FILE}" ]] || load_state
     cdn_print_cloud_inventory
-    if [[ "${mode}" == "--purge-cloud" ]]; then
-        # 云端清理在可捕获的子 shell 中执行：缺凭据/任何 die 只告警，不终止本机卸载。
-        if (cdn_purge_aws_resources); then
-            :
-        else
-            warn "云端资源清理未完成；本机卸载继续，请按上方清单手动处置"
-        fi
+    printf '正在按上方清单尝试清理本工具创建的云端资源；因归属保护而未删除的条目会在下方点名。\n' >&2
+    # 云端清理在可捕获的子 shell 中执行：缺凭据/任何 die 只告警，不终止本机卸载。
+    if (cdn_purge_aws_resources); then
+        :
     else
-        warn "云端资源已保留；本机状态删除后无法再用 easy_all 清理"
+        warn "云端资源清理未完成；本机卸载继续。请保存上方资源清单并手动处置；本机状态删除后无法再按本次安装状态重试清理"
+        cloud_failed=1
     fi
     cdn_local_uninstall_common || return 1
-    if [[ "${mode}" == "--purge-cloud" ]]; then
-        success "easy_all 本机内容已卸载；云端清理结果见上方输出"
-    else
-        success "easy_all 本机内容已卸载；云端资源已保留"
-    fi
+    success "easy_all 本机内容已卸载；云端清理结果见上方输出"
+    warn "若有 ACM validation CNAME 残留，需核实无其他证书使用后人工删除"
+    ((cloud_failed == 0)) || return 1
 }
 
 cleanup_partial_install() {
@@ -1620,6 +1615,7 @@ install_all() {
     runtime_write_config 0 1
     runtime_reload_caddy
     validate_subscription_runtime
+    validate_singbox_subscription_runtime
     cdn_validate_public_runtime
     install_progress_stage state
     save_state
@@ -1635,14 +1631,20 @@ install_all() {
 }
 
 cdn_print_cloud_inventory() {
-    printf '云端资源清单（默认保留，需要时手动处置）：\n' >&2
+    local domain
+    printf '云端资源清单：\n' >&2
     printf '  CloudFront 分发: %s（%s）\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" \
         "${AWS_CLOUDFRONT_DOMAIN:-未知}" >&2
     printf '  ACM 证书 ARN: %s\n' "${AWS_ACM_CERTIFICATE_ARN:-未知}" >&2
     printf '  源站 A 记录: %s -> %s\n' "${CF_ORIGIN_DOMAIN:-未知}" "${VPS_PUBLIC_IPV4:-未知}" >&2
+    while IFS= read -r domain; do
+        [[ -n "${domain}" ]] || continue
+        [[ "${domain}" != "${CF_ORIGIN_DOMAIN:-}" ]] || continue
+        printf '  直连 A 记录: %s -> %s\n' "${domain}" "${VPS_PUBLIC_IPV4:-未知}" >&2
+    done < <(cdn_direct_domains)
     printf '  节点/订阅 CNAME: %s,%s -> %s\n' "${CF_NODE_DOMAIN:-未知}" \
         "${SUBSCRIPTION_DOMAIN:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}" >&2
-    printf '  ACM validation CNAME 默认保留（可由控制台核实后手工删除）\n' >&2
+    printf '  ACM validation CNAME 默认保留（同一验证记录可能被其他证书复用，需核实后手工删除）\n' >&2
 }
 
 cdn_purge_cloudflare_dns() {
@@ -1778,8 +1780,5 @@ cdn_purge_aws_resources() {
 # 旧链路按当时的归属注释删 DNS：只删同名单条且注释完全一致的 A 记录。
 
 # 旧链路用 easy_all-cf-origin 注释放行 Cloudflare 回源段；新核心不声明该常量。
-
-# 旧 PROTOCOL=cdn / combined 状态：AWS/CloudFront 新核心不接管，只提供卸载。
-# 默认仅清本机；显式 --purge-cloud 保持旧语义：按归属注释删 DNS、按 ID 吊销 Origin CA。
 
 # 新协议但强制字段缺失/来自未完成实现：只清本机，云端一律保留。

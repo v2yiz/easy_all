@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
   <title id="title">Least privilege IAM policy for easy_all</title>
-  <desc id="desc">The deployer can manage CloudFront distributions and us-east-1 ACM certificates for the CloudFront chain, including explicit deletion only during uninstall --purge-cloud. It cannot manage Route 53, WAF, CloudFront logging, IAM or Cloudflare resources.</desc>
+  <desc id="desc">The deployer can manage CloudFront distributions and us-east-1 ACM certificates for the CloudFront chain, including explicit deletion only during the default uninstall cleanup. It cannot manage Route 53, WAF, CloudFront logging, IAM or Cloudflare resources.</desc>
   <defs><filter id="s"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-opacity=".12"/></filter><style>.ttl{font:700 31px system-ui,sans-serif;fill:#172b4d}.sub{font:16px system-ui,sans-serif;fill:#5e6c84}.h{font:700 20px system-ui,sans-serif;fill:#172b4d}.t{font:15px system-ui,sans-serif;fill:#344563}.mono{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#172b4d}.box{filter:url(#s);stroke-width:2}</style></defs>
   <rect width="1200" height="680" fill="#f7f9fc"/>
   <text x="58" y="62" class="ttl">EasyAllCloudFrontPolicy · 最小权限拆分</text>
-  <text x="58" y="93" class="sub">创建/读取/更新，加显式删除（仅 uninstall --purge-cloud 生效）</text>
+  <text x="58" y="93" class="sub">创建/读取/更新，加显式删除（uninstall 默认清理时生效）</text>
 
   <rect class="box" x="55" y="155" width="290" height="310" rx="18" fill="#fff" stroke="#ff9900"/>
   <rect x="55" y="155" width="290" height="62" rx="18" fill="#fff0d5"/><text x="200" y="194" class="h" text-anchor="middle">CloudFront 分发</text>

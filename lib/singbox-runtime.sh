@@ -230,3 +230,30 @@ build_mihomo_ws_node() {
         "    client-fingerprint: chrome\n    packet-encoding: xudp\n" +
         "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n"'
 }
+
+# --- sing-box 客户端订阅节点 -------------------------------------------------
+
+build_singbox_anytls_outbound() {
+    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 sing-box AnyTLS 节点"
+    [[ -n "${ANYTLS_PASSWORD:-}" ]] || die "缺少 ANYTLS_PASSWORD，无法生成 sing-box AnyTLS 节点"
+    jq -cn --arg tag "${DIRECT_NODE_NAME}" --arg server "${DIRECT_DOMAIN}" \
+        --arg password "${ANYTLS_PASSWORD}" '
+        {type: "anytls", tag: $tag, server: $server, server_port: 443,
+         password: $password,
+         tls: {enabled: true, server_name: $server,
+               utls: {enabled: true, fingerprint: "chrome"}}}'
+}
+
+# 本机 CDN 节点：连接域名、SNI 与 WebSocket Host 一致，源站头永不进入客户端。
+build_singbox_ws_outbound() {
+    [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 sing-box VLESS 节点"
+    [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 sing-box VLESS 节点"
+    [[ -n "${VLESS_PATH:-}" ]] || die "缺少 VLESS_PATH，无法生成 sing-box VLESS 节点"
+    jq -cn --arg tag "${CF_NODE_PREFIX}" --arg server "${CF_NODE_DOMAIN}" \
+        --arg uuid "${VLESS_UUID}" --arg path "${VLESS_PATH}" '
+        {type: "vless", tag: $tag, server: $server, server_port: 443, uuid: $uuid,
+         tls: {enabled: true, server_name: $server,
+               utls: {enabled: true, fingerprint: "chrome"}},
+         transport: {type: "ws", path: $path, headers: {Host: $server}},
+         packet_encoding: "xudp"}'
+}

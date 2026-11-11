@@ -943,9 +943,9 @@ route_output=$(bash -c '
     uninstall_incomplete() { printf "LOCAL-ONLY\n"; }
     uninstall_all() { printf "STRICT\n"; }
     dispatch_profile_command incomplete-cloudfront uninstall
-    dispatch_profile_command incomplete-combined-cloudfront uninstall --purge-cloud
+    dispatch_profile_command incomplete-combined-cloudfront uninstall
     dispatch_profile_command cloudfront uninstall
-    dispatch_profile_command combined-cloudfront uninstall --purge-cloud
+    dispatch_profile_command combined-cloudfront uninstall
 ' _ "${ROOT_DIR}/easy_all" 2>&1)
 assert_equal "不完整走本机通道、完整走严格路径" \
     $'LOCAL-ONLY\nLOCAL-ONLY\nSTRICT\nSTRICT' "${route_output}"
@@ -953,8 +953,8 @@ assert_equal "不完整走本机通道、完整走严格路径" \
 # 真实卸载函数：只要本机清理，不调用 AWS/CF、不调用严格 load_state，并退出成功
 incomplete_uninstall_output=""
 incomplete_uninstall_status=0
-run_incomplete_uninstall() { # $1=命令参数
-    local arg=${1:-} status=0
+run_incomplete_uninstall() { # 零参数入口
+    local status=0
     local case_dir="${TMP_DIR}/incomplete-uninstall"
     mkdir -p "${case_dir}/state" "${case_dir}/subscriptions/data" \
         "${case_dir}/bin" "${case_dir}/singbox" "${case_dir}/caddy" \
@@ -989,23 +989,30 @@ run_incomplete_uninstall() { # $1=命令参数
         cloudflare_api_request() { printf "CF-CALLED\n"; return 1; }
         load_state() { printf "STRICT-LOAD\n"; return 1; }
         FORCE=1
-        uninstall_incomplete '"${arg}"'
+        arg_status=0
+        arg_message=$(uninstall_incomplete --purge-cloud 2>&1) || arg_status=$?
+        printf "ARG-STATUS=%s ARG-MESSAGE=%s\n" "${arg_status}" "${arg_message}"
+        uninstall_incomplete
     ' _ "${ROOT_DIR}" 2>&1 || status=$?
     printf '%s\n' "${status}"
 }
-for arg in "" "--purge-cloud"; do
-    incomplete_uninstall_output=$(run_incomplete_uninstall "${arg}")
-    incomplete_uninstall_status=${incomplete_uninstall_output##*$'\n'}
-    assert_equal "incomplete uninstall ${arg:-default} 退出 0" "0" "${incomplete_uninstall_status}"
-    assert_contains "incomplete uninstall ${arg:-default} 保留云端资源" \
-        "${incomplete_uninstall_output}" "云端资源已保留"
-    assert_not_contains "incomplete uninstall ${arg:-default} 不调用 AWS" \
-        "${incomplete_uninstall_output}" "AWS-CALLED"
-    assert_not_contains "incomplete uninstall ${arg:-default} 不调用 Cloudflare" \
-        "${incomplete_uninstall_output}" "CF-CALLED"
-    assert_not_contains "incomplete uninstall ${arg:-default} 不走严格 load_state" \
-        "${incomplete_uninstall_output}" "STRICT-LOAD"
-done
+incomplete_uninstall_output=$(run_incomplete_uninstall)
+incomplete_uninstall_status=${incomplete_uninstall_output##*$'\n'}
+assert_equal "incomplete uninstall 退出 0" "0" "${incomplete_uninstall_status}"
+assert_contains "incomplete uninstall 保留云端资源" \
+    "${incomplete_uninstall_output}" "云端资源无法自动清理，需人工核对"
+assert_contains "incomplete uninstall 拒绝旧参数" \
+    "${incomplete_uninstall_output}" "ARG-STATUS=1"
+assert_contains "incomplete uninstall 旧参数提示新用法" \
+    "${incomplete_uninstall_output}" "uninstall 不支持参数"
+assert_not_contains "incomplete uninstall 不调用 AWS" \
+    "${incomplete_uninstall_output}" "AWS-CALLED"
+assert_not_contains "incomplete uninstall 不调用 Cloudflare" \
+    "${incomplete_uninstall_output}" "CF-CALLED"
+assert_not_contains "incomplete uninstall 不走严格 load_state" \
+    "${incomplete_uninstall_output}" "STRICT-LOAD"
+assert_not_contains "incomplete uninstall 不再声称云端资源已保留" \
+    "${incomplete_uninstall_output}" "云端资源已保留"
 
 # 29. 回滚失败：保留安装进度标记与安装前快照，且 cleanup-partial 可重试
 rollback_fail_output=$(EASY_ALL_GUARD_STATE_DIR="${TMP_DIR}/rb-state" \
@@ -1399,6 +1406,478 @@ assert_not_contains "本机清理不调用 Cloudflare API" "${core_cleanup_body}
     "cloudflare_api_request"
 lineage_body=$(awk '/^certificate_remove_lineage\(\)/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
 assert_contains "lineage 删除只用固定自有名称" "${lineage_body}" "CERTBOT_LINEAGE_NAME"
+
+# 31. uninstall_all 入口级用例：无参数默认清理云端与本机（design §8）。
+# 宿主边界（systemctl/ufw/iptables/crontab/sshd/curl/aws/flock/install）用 PATH 替身记录；
+# 删除边界用 rm 替身：只真删 ${case_dir} 内的路径，其余路径写 refusals 日志后跳过。
+# COMMAND_PATH/COMMAND_INSTALL_DIR/UFW_DEFAULT_CONFIG/CDN_TRAFFIC_GUARD_*.{service,timer}
+# 是生产库里的固定字面量，测试不改写它们，只按白名单断言没有触达别的宿主路径。
+ENTRY_BIN="${TMP_DIR}/uninstall-entry/bin"
+ENTRY_REAL_RM=$(command -v rm)
+ENTRY_REAL_INSTALL=$(command -v install)
+mkdir -p "${ENTRY_BIN}"
+
+cat >"${ENTRY_BIN}/rm" <<'STUB'
+#!/usr/bin/env bash
+flags=()
+paths=()
+for arg in "$@"; do
+    case "$arg" in
+    --) ;;
+    -*) flags+=("$arg") ;;
+    *)
+        case "$arg" in
+        "${ENTRY_TMP_ROOT}" | "${ENTRY_TMP_ROOT}"/*) paths+=("$arg") ;;
+        *) printf '%s\n' "$arg" >>"${ENTRY_RM_LOG}" ;;
+        esac
+        ;;
+    esac
+done
+((${#paths[@]})) || exit 0
+exec "${ENTRY_REAL_RM}" "${flags[@]}" "${paths[@]}"
+STUB
+
+cat >"${ENTRY_BIN}/iptables" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "iptables $*" >>"${ENTRY_CMD_LOG}"
+[[ "${ENTRY_IPTABLES_FAIL:-0}" == "1" ]] && exit 1
+exit 0
+STUB
+
+cat >"${ENTRY_BIN}/install" <<'STUB'
+#!/usr/bin/env bash
+args=()
+while (($#)); do
+    case "$1" in
+    -o | --owner | -g | --group) shift 2 ;;
+    *) args+=("$1"); shift ;;
+    esac
+done
+exec "${ENTRY_REAL_INSTALL}" "${args[@]}"
+STUB
+
+for entry_stub in systemctl ufw crontab sshd; do
+    cat >"${ENTRY_BIN}/${entry_stub}" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "${entry_stub} \$*" >>"\${ENTRY_CMD_LOG}"
+exit 0
+STUB
+done
+
+cat >"${ENTRY_BIN}/flock" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "flock $*" >>"${ENTRY_CMD_LOG}"
+exit 0
+STUB
+
+cat >"${ENTRY_BIN}/curl" <<'STUB'
+#!/usr/bin/env bash
+method=GET
+url=""
+while (($#)); do
+    case "$1" in
+    -X) method=$2; shift 2 ;;
+    -H | --data-binary | -w | --retry | --connect-timeout | --max-time) shift 2 ;;
+    -sS | -s | -S | -fsSL) shift ;;
+    *) url=$1; shift ;;
+    esac
+done
+printf '%s %s\n' "${method}" "${url}" >>"${ENTRY_CURL_LOG}"
+if [[ "${ENTRY_CLOUD_FAIL:-0}" == "1" ]]; then
+    printf 'cloud api unavailable\n500'
+    exit 0
+fi
+case "${method}" in
+GET)
+    case "${url}" in
+    *"/dns_records?"*)
+        type=""
+        host=""
+        query=${url#*\?}
+        old_ifs=${IFS}
+        IFS='&'
+        for part in ${query}; do
+            case "${part}" in
+            type=*) type=${part#type=} ;;
+            name=*) host=${part#name=} ;;
+            esac
+        done
+        IFS=${old_ifs}
+        content=${ENTRY_A_CONTENT}
+        proxied=false
+        if [[ "${type}" != "A" ]]; then
+            content=${ENTRY_CNAME_CONTENT}
+        fi
+        if [[ "${host}" == "${ENTRY_PROXIED_HOST}" ]]; then
+            proxied=true
+        fi
+        printf '{"success":true,"result":[{"id":"rec-%s-%s","name":"%s","type":"%s","content":"%s","comment":"%s","proxied":%s}]}\n200' \
+            "${host}" "${type}" "${host}" "${type}" "${content}" "${ENTRY_RECORD_COMMENT}" "${proxied}"
+        ;;
+    *"/rulesets/"*)
+        digest=$(printf '%s' "${ENTRY_SUB_HOST}" | openssl dgst -sha256 | awk '{print $NF}' | tr 'A-F' 'a-f')
+        expression="http.host eq \\\"${ENTRY_SUB_HOST}\\\""
+        printf '{"success":true,"result":{"rules":[{"id":"%s","ref":"easy_all-%s","action":"route","expression":"%s"}]}}\n200' \
+            "${ENTRY_RULE_ID}" "${digest:0:16}" "${expression}"
+        ;;
+    *) printf '{"success":true,"result":null}\n200' ;;
+    esac
+    ;;
+*)
+    printf '{"success":true,"result":null}\n200'
+    ;;
+esac
+STUB
+
+cat >"${ENTRY_BIN}/aws" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${ENTRY_AWS_LOG}"
+[[ "${ENTRY_AWS_FAIL:-0}" == "1" ]] && exit 254
+joined=" $* "
+case "${joined}" in
+*" cloudfront get-distribution-config "*) printf '%s\n' "${ENTRY_DIST_CONFIG_JSON}" ;;
+*" cloudfront get-distribution "*) printf 'Deployed\n' ;;
+*" cloudfront update-distribution "*) printf '{}\n' ;;
+*" cloudfront delete-distribution "*) printf '{}\n' ;;
+*" acm describe-certificate "*) printf '%s\n' "${ENTRY_ACM_DESCRIPTION_JSON}" ;;
+*" acm list-tags-for-certificate "*) printf '%s\n' "${ENTRY_ACM_TAGS_JSON}" ;;
+*" acm delete-certificate "*) printf '{}\n' ;;
+*) printf '{}\n' ;;
+esac
+exit 0
+STUB
+chmod 0755 "${ENTRY_BIN}/rm" "${ENTRY_BIN}/iptables" "${ENTRY_BIN}/install" \
+    "${ENTRY_BIN}/systemctl" "${ENTRY_BIN}/ufw" "${ENTRY_BIN}/crontab" \
+    "${ENTRY_BIN}/sshd" "${ENTRY_BIN}/flock" "${ENTRY_BIN}/curl" "${ENTRY_BIN}/aws"
+
+write_uninstall_entry_state() { # $1=状态文件 $2=协议
+    local file=$1 protocol=$2
+    {
+        printf '%s\n' \
+            'STATE_VERSION=1' \
+            'TCP_ACCELERATION=off' \
+            'VPS_PUBLIC_IPV4=203.0.113.10' \
+            'CF_ZONE=example.com' \
+            'CLOUDFLARE_ZONE_ID=zone123' \
+            'SUBSCRIPTION_MODE=deploy' \
+            'SUB_DOWNLOAD_NAME=EASY_ALL' \
+            'OWNER_TOKEN=ownertoken-zmtpjzfs' \
+            'ALLOWED_TOKENS={"owner":"token-abcdefgh"}' \
+            'SUBSCRIPTION_CONFIG={"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}' \
+            'MIHOMO_TEMPLATE_SNAPSHOT=1' \
+            'SCHEDULED_REBOOT_ENABLED=0' \
+            'SCHEDULED_REBOOT_HOUR=4'
+        case "${protocol}" in
+        anytls)
+            printf '%s\n' \
+                'DIRECT_DOMAIN=direct.example.com' \
+                'DIRECT_NODE_NAME=direct' \
+                'ANYTLS_PASSWORD=password-abcdefgh' \
+                'SUBSCRIPTION_DOMAIN=sub.example.com' \
+                'CLOUDFLARE_ORIGIN_RULESET_ID=rs1' \
+                'CLOUDFLARE_ORIGIN_RULE_ID=rule1'
+            ;;
+        cloudflare)
+            printf '%s\n' \
+                'CF_NODE_DOMAIN=cf.example.com' \
+                'CF_NODE_PREFIX=CF' \
+                'VLESS_UUID=11111111-2222-4333-8444-555555555555' \
+                'VLESS_PATH=/vless-0123456789ab' \
+                'CLOUDFLARE_ORIGIN_CERT_ID=cert1' \
+                'CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=2030-01-01'
+            ;;
+        cloudfront)
+            printf '%s\n' \
+                'CF_NODE_DOMAIN=cf.example.com' \
+                'CF_NODE_PREFIX=CF' \
+                'VLESS_UUID=11111111-2222-4333-8444-555555555555' \
+                'VLESS_PATH=/vless-0123456789ab' \
+                'SUBSCRIPTION_DOMAIN=sub.example.com' \
+                'CF_ORIGIN_DOMAIN=origin.example.com' \
+                'ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef' \
+                'AWS_CLOUDFRONT_DISTRIBUTION_ID=EDFDVBD6EXAMPLE' \
+                'AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net' \
+                'AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/x' \
+                'CDN_TRAFFIC_PROTECTION_GB=985'
+            ;;
+        combined-cloudflare)
+            printf '%s\n' \
+                'DIRECT_DOMAIN=direct.example.com' \
+                'DIRECT_NODE_NAME=direct' \
+                'ANYTLS_PASSWORD=password-abcdefgh' \
+                'CF_NODE_DOMAIN=cf.example.com' \
+                'CF_NODE_PREFIX=CF' \
+                'VLESS_UUID=11111111-2222-4333-8444-555555555555' \
+                'VLESS_PATH=/vless-0123456789ab' \
+                'CLOUDFLARE_ORIGIN_RULESET_ID=rs1' \
+                'CLOUDFLARE_ORIGIN_RULE_ID=rule1'
+            ;;
+        combined-cloudfront)
+            printf '%s\n' \
+                'DIRECT_DOMAIN=direct.example.com' \
+                'DIRECT_NODE_NAME=direct' \
+                'ANYTLS_PASSWORD=password-abcdefgh' \
+                'CF_NODE_DOMAIN=cf.example.com' \
+                'CF_NODE_PREFIX=CF' \
+                'VLESS_UUID=11111111-2222-4333-8444-555555555555' \
+                'VLESS_PATH=/vless-0123456789ab' \
+                'SUBSCRIPTION_DOMAIN=sub.example.com' \
+                'CF_ORIGIN_DOMAIN=origin.example.com' \
+                'ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef' \
+                'AWS_CLOUDFRONT_DISTRIBUTION_ID=EDFDVBD6EXAMPLE' \
+                'AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net' \
+                'AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/x' \
+                'CDN_TRAFFIC_PROTECTION_GB=985'
+            ;;
+        esac
+    } >"${file}"
+}
+
+run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_fail $6=aws_fail
+    local label=$1 profile=$2 protocol=$3 comment=$4 cloud_fail=$5 aws_fail=$6
+    local case_dir="${TMP_DIR}/uninstall-entry/${label}"
+    local output status=0 proxied_host="cf.example.com"
+    # 橙云 A 记录（模式 3/5 的节点域名）proxied=true；模式 1 的订阅域名也是橙云。
+    [[ "${protocol}" == "anytls" ]] && proxied_host="sub.example.com"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}/state" "${case_dir}/websub/subscriptions" \
+        "${case_dir}/singbox" "${case_dir}/caddy" "${case_dir}/units" \
+        "${case_dir}/runtime" "${case_dir}/counter"
+    write_uninstall_entry_state "${case_dir}/state/state.env" "${protocol}"
+    printf 'abcdefghijklmnopqrstuvwxyz012345\n' >"${case_dir}/state/cloudflare.token"
+    : >"${case_dir}/websub/subscriptions/base64.txt"
+    : >"${case_dir}/singbox/sing-box"
+    : >"${case_dir}/caddy/caddy"
+    : >"${case_dir}/units/easy_all-singbox.service"
+    : >"${case_dir}/units/easy_all-caddy.service"
+    : >"${case_dir}/refusals.log"
+    : >"${case_dir}/curl.log"
+    : >"${case_dir}/aws.log"
+    : >"${case_dir}/commands.log"
+    output=$(
+        PATH="${ENTRY_BIN}:${PATH}" \
+        ENTRY_TMP_ROOT="${case_dir}" \
+        ENTRY_REAL_RM="${ENTRY_REAL_RM}" \
+        ENTRY_REAL_INSTALL="${ENTRY_REAL_INSTALL}" \
+        ENTRY_RM_LOG="${case_dir}/refusals.log" \
+        ENTRY_CURL_LOG="${case_dir}/curl.log" \
+        ENTRY_AWS_LOG="${case_dir}/aws.log" \
+        ENTRY_CMD_LOG="${case_dir}/commands.log" \
+        ENTRY_CLOUD_FAIL="${cloud_fail}" \
+        ENTRY_AWS_FAIL="${aws_fail}" \
+        ENTRY_IPTABLES_FAIL="${ENTRY_IPTABLES_FAIL:-0}" \
+        ENTRY_A_CONTENT="203.0.113.10" \
+        ENTRY_CNAME_CONTENT="d111111abcdef8.cloudfront.net" \
+        ENTRY_PROXIED_HOST="${proxied_host}" \
+        ENTRY_RECORD_COMMENT="${comment}" \
+        ENTRY_SUB_HOST="sub.example.com" \
+        ENTRY_RULE_ID="rule1" \
+        ENTRY_DIST_CONFIG_JSON='{"ETag":"ETAG1","DistributionConfig":{"Comment":"easy_all-cloudfront-cf.example.com","Aliases":{"Items":["cf.example.com","sub.example.com"]},"Origins":{"Items":[{"DomainName":"origin.example.com"}]},"Enabled":true}}' \
+        ENTRY_ACM_DESCRIPTION_JSON='{"Certificate":{"DomainName":"cf.example.com","SubjectAlternativeNames":["sub.example.com"],"InUseBy":[]}}' \
+        ENTRY_ACM_TAGS_JSON='{"Tags":[{"Key":"easy_all","Value":"managed"},{"Key":"easy_all-node","Value":"cf.example.com"}]}' \
+        AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
+        AWS_SECRET_ACCESS_KEY=test-secret-key-0123456789 \
+        RUNTIME_TMP="${case_dir}/runtime" \
+        RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${case_dir}/runtime-write.lock" \
+        CDN_TRAFFIC_COUNTER_DIR_OVERRIDE="${case_dir}/counter" \
+        EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
+        EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/websub/subscriptions" \
+        EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/state/certs" \
+        EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${case_dir}/policy-state" \
+        SINGBOX_BIN="${case_dir}/singbox/sing-box" \
+        CADDY_BIN="${case_dir}/caddy/caddy" \
+        SINGBOX_SERVICE_FILE="${case_dir}/units/easy_all-singbox.service" \
+        CADDY_SERVICE_FILE="${case_dir}/units/easy_all-caddy.service" \
+            bash -c '
+                set -Eeuo pipefail
+                source "$1/profiles/$2.sh"
+                require_root() { :; }
+                # 宿主边界：SSH/UFW/crontab/certbot/平台安全状态一律无副作用。
+                restore_preinstall_firewall() { :; }
+                restore_preinstall_ipv6() { :; }
+                restore_platform_security_state() { :; }
+                remove_daily_reboot_schedule() { :; }
+                remove_certbot_deploy_hook() { :; }
+                certificate_remove_lineage() { :; }
+                FORCE=1
+                gate_status=0
+                gate_message=$(uninstall_all --purge-cloud 2>&1) || gate_status=$?
+                printf "GATE-STATUS=%s\n" "${gate_status}"
+                printf "GATE-MESSAGE=%s\n" "${gate_message}"
+                status=0
+                uninstall_all || status=$?
+                printf "UNINSTALL-STATUS=%s\n" "${status}"
+            ' _ "${ROOT_DIR}" "${profile}" 2>&1
+    ) || status=$?
+    printf '%s\n' "${output}"
+    return "${status}"
+}
+
+uninstall_entry_value() { # $1=输出 $2=字段
+    printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -n 1
+}
+
+assert_uninstall_entry_cleanup() { # $1=label $2=case_dir
+    local label=$1 case_dir=$2 path
+    for path in state websub singbox caddy; do
+        [[ ! -e "${case_dir}/${path}" ]] || fail "${label}: 本机路径未被删除：${path}"
+    done
+    [[ ! -e "${case_dir}/units/easy_all-singbox.service" ]] \
+        || fail "${label}: sing-box 单元文件未删除"
+    [[ ! -e "${case_dir}/units/easy_all-caddy.service" ]] \
+        || fail "${label}: Caddy 单元文件未删除"
+}
+
+assert_refusals_within() { # $1=label $2=日志 $3..=白名单
+    local label=$1 log=$2 path candidate allowed
+    shift 2
+    while IFS= read -r path; do
+        [[ -n "${path}" ]] || continue
+        allowed=0
+        for candidate in "$@"; do
+            [[ "${path}" == "${candidate}" ]] && allowed=1
+        done
+        ((allowed == 1)) || fail "${label}: 触及白名单外的宿主路径：${path}"
+    done <"${log}"
+}
+
+entry_anytls_dir="${TMP_DIR}/uninstall-entry/anytls"
+entry_anytls_output=$(run_uninstall_entry anytls anytls anytls "easy_all anytls" 0 0)
+assert_equal "模式 1 无参数卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_anytls_output}" UNINSTALL-STATUS)"
+assert_equal "模式 1 无参数入口拒绝 --purge-cloud" "1" \
+    "$(uninstall_entry_value "${entry_anytls_output}" GATE-STATUS)"
+assert_contains "模式 1 参数门禁拒绝旧参数" "${entry_anytls_output}" \
+    "uninstall 不支持参数"
+assert_contains "模式 1 默认删除直连 A 记录" "$(<"${entry_anytls_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
+assert_contains "模式 1 默认删除订阅 A 记录" "$(<"${entry_anytls_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-sub.example.com-A"
+assert_contains "模式 1 默认删除 Origin Rule" "$(<"${entry_anytls_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/rulesets/rs1/rules/rule1"
+assert_contains "模式 1 资源清单使用中性标题" "${entry_anytls_output}" "云端资源清单："
+assert_contains "模式 1 收尾说明云端结果见上方输出" "${entry_anytls_output}" \
+    "easy_all 本机内容已卸载；云端清理结果见上方输出"
+assert_uninstall_entry_cleanup "模式 1" "${entry_anytls_dir}"
+assert_contains "模式 1 拒绝删除宿主命令路径" "$(<"${entry_anytls_dir}/refusals.log")" \
+    "/usr/local/bin/easy_all"
+assert_contains "模式 1 拒绝删除宿主安装目录" "$(<"${entry_anytls_dir}/refusals.log")" \
+    "/usr/local/lib/easy_all"
+assert_refusals_within "模式 1" "${entry_anytls_dir}/refusals.log" \
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
+
+entry_combined_cf_dir="${TMP_DIR}/uninstall-entry/combined-cloudflare"
+entry_combined_cf_output=$(run_uninstall_entry combined-cloudflare combined-cloudflare \
+    combined-cloudflare "easy_all combined-cloudflare" 0 0)
+assert_equal "模式 5 无参数卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_combined_cf_output}" UNINSTALL-STATUS)"
+assert_contains "模式 5 默认删除直连 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
+assert_contains "模式 5 默认删除节点/订阅 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-A"
+assert_contains "模式 5 默认删除 Origin Rule" "$(<"${entry_combined_cf_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/rulesets/rs1/rules/rule1"
+assert_contains "模式 5 清单点名节点/订阅 A 记录" "${entry_combined_cf_output}" \
+    "节点/订阅 A 记录（橙云）: cf.example.com -> 203.0.113.10"
+assert_uninstall_entry_cleanup "模式 5" "${entry_combined_cf_dir}"
+assert_contains "模式 5 拒绝删除宿主命令路径" \
+    "$(<"${entry_combined_cf_dir}/refusals.log")" "/usr/local/bin/easy_all"
+assert_refusals_within "模式 5" "${entry_combined_cf_dir}/refusals.log" \
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
+
+entry_cloudflare_dir="${TMP_DIR}/uninstall-entry/cloudflare"
+entry_cloudflare_output=$(run_uninstall_entry cloudflare cloudflare cloudflare "easy_all cloudflare" 0 0)
+assert_equal "模式 3 无参数卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_cloudflare_output}" UNINSTALL-STATUS)"
+assert_contains "模式 3 默认删除橙云 A 记录" "$(<"${entry_cloudflare_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-A"
+assert_contains "模式 3 默认吊销 Origin CA" "$(<"${entry_cloudflare_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/certificates/cert1"
+assert_uninstall_entry_cleanup "模式 3" "${entry_cloudflare_dir}"
+assert_contains "模式 3 拒绝删除宿主命令路径" "$(<"${entry_cloudflare_dir}/refusals.log")" \
+    "/usr/local/bin/easy_all"
+assert_contains "模式 3 拒绝删除宿主安装目录" "$(<"${entry_cloudflare_dir}/refusals.log")" \
+    "/usr/local/lib/easy_all"
+assert_refusals_within "模式 3" "${entry_cloudflare_dir}/refusals.log" \
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
+
+entry_mode2_dir="${TMP_DIR}/uninstall-entry/cloudfront"
+entry_mode2_output=$(run_uninstall_entry cloudfront cloudfront cloudfront "easy_all cloudfront" 0 0)
+assert_equal "模式 2 无参数卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_mode2_output}" UNINSTALL-STATUS)"
+assert_contains "模式 2 默认删除 CloudFront 分发" "$(<"${entry_mode2_dir}/aws.log")" \
+    "delete-distribution"
+assert_contains "模式 2 删除前完成部署等待" "$(<"${entry_mode2_dir}/aws.log")" \
+    "cloudfront get-distribution --id EDFDVBD6EXAMPLE"
+assert_contains "模式 2 默认删除源站 A 记录" "$(<"${entry_mode2_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-origin.example.com-A"
+assert_not_contains "模式 2 不出现直连 A 记录" "${entry_mode2_output}" "直连 A 记录:"
+assert_uninstall_entry_cleanup "模式 2" "${entry_mode2_dir}"
+assert_refusals_within "模式 2" "${entry_mode2_dir}/refusals.log" \
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
+    "/etc/systemd/system/easy_all-cdn-traffic-guard.timer" \
+    "/etc/systemd/system/easy_all-cdn-traffic-guard.service"
+
+entry_cf_dir="${TMP_DIR}/uninstall-entry/combined-cloudfront"
+entry_cf_output=$(run_uninstall_entry combined-cloudfront combined combined-cloudfront \
+    "easy_all cloudfront" 0 0)
+assert_equal "模式 4 无参数卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_cf_output}" UNINSTALL-STATUS)"
+assert_contains "模式 4 默认删除 CloudFront 分发" "$(<"${entry_cf_dir}/aws.log")" \
+    "delete-distribution"
+assert_contains "模式 4 默认删除 ACM 证书" "$(<"${entry_cf_dir}/aws.log")" "acm delete-certificate"
+assert_contains "模式 4 默认删除源站 A 记录" "$(<"${entry_cf_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-origin.example.com-A"
+assert_contains "模式 4 默认删除节点 CNAME" "$(<"${entry_cf_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-CNAME"
+assert_contains "模式 4 默认删除直连 A 记录" "$(<"${entry_cf_dir}/curl.log")" \
+    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
+assert_contains "模式 4 清单列出独立直连 A 记录" "${entry_cf_output}" \
+    "直连 A 记录: direct.example.com -> 203.0.113.10"
+assert_contains "模式 4 收尾披露 ACM validation CNAME" "${entry_cf_output}" \
+    "若有 ACM validation CNAME 残留，需核实无其他证书使用后人工删除"
+assert_uninstall_entry_cleanup "模式 4" "${entry_cf_dir}"
+assert_contains "模式 4 拒绝删除宿主命令路径" "$(<"${entry_cf_dir}/refusals.log")" \
+    "/usr/local/bin/easy_all"
+assert_contains "模式 4 拒绝删除宿主安装目录" "$(<"${entry_cf_dir}/refusals.log")" \
+    "/usr/local/lib/easy_all"
+assert_contains "模式 4 拒绝删除宿主计量单元" "$(<"${entry_cf_dir}/refusals.log")" \
+    "/etc/systemd/system/easy_all-cdn-traffic-guard.timer"
+assert_refusals_within "模式 4" "${entry_cf_dir}/refusals.log" \
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
+    "/etc/systemd/system/easy_all-cdn-traffic-guard.timer" \
+    "/etc/systemd/system/easy_all-cdn-traffic-guard.service"
+
+entry_fail_dir="${TMP_DIR}/uninstall-entry/cloud-fail"
+entry_fail_output=$(run_uninstall_entry cloud-fail anytls anytls "easy_all anytls" 1 0)
+assert_equal "云端失败时本机卸载照常完成但退出非零" "1" \
+    "$(uninstall_entry_value "${entry_fail_output}" UNINSTALL-STATUS)"
+assert_contains "云端失败时输出总体告警" "${entry_fail_output}" \
+    "云端资源清理未完成；本机卸载继续"
+assert_contains "云端失败时仍报告本机卸载完成" "${entry_fail_output}" \
+    "easy_all 本机内容已卸载；云端清理结果见上方输出"
+assert_uninstall_entry_cleanup "云端失败" "${entry_fail_dir}"
+# 失败场景也按白名单上限核对：允许未执行到的删除不出现在日志，但不允许白名单外的宿主路径。
+assert_refusals_within "云端失败" "${entry_fail_dir}/refusals.log" \
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
+
+entry_both_dir="${TMP_DIR}/uninstall-entry/both-fail"
+entry_both_output=$(ENTRY_IPTABLES_FAIL=1 run_uninstall_entry both-fail combined combined-cloudfront \
+    "easy_all cloudfront" 1 1)
+assert_equal "云端与本机同时失败时退出非零" "1" \
+    "$(uninstall_entry_value "${entry_both_output}" UNINSTALL-STATUS)"
+assert_contains "云端与本机同时失败时仍报告云端告警" "${entry_both_output}" \
+    "云端资源清理未完成；本机卸载继续"
+assert_contains "本机清理失败时保留现场" "${entry_both_output}" \
+    "已保留本机状态与命令"
+[[ -f "${entry_both_dir}/state/state.env" ]] \
+    || fail "本机清理失败时不得删除状态文件"
+[[ -d "${entry_both_dir}/websub/subscriptions" ]] \
+    || fail "本机清理失败时不得删除订阅目录"
+assert_refusals_within "云端与本机同时失败" "${entry_both_dir}/refusals.log" \
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
+    "/etc/systemd/system/easy_all-cdn-traffic-guard.timer" \
+    "/etc/systemd/system/easy_all-cdn-traffic-guard.service"
 
 # 运行时清单完整性：漏登的文件不会随 install/self-update 安装，已安装机器上直接缺模块。
 missing_from_manifest=""

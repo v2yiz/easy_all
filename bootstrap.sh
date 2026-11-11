@@ -60,7 +60,7 @@ require_current_schema() {
             die "检测到状态文件缺少 STATE_VERSION（easy_all 各版本都会写这一行；缺失说明文件被截断或改坏）：${state_file}。请先确认本机原来的安装版本再处置：5.x 安装 → 备份后在该文件首行补回 STATE_VERSION=1，再执行 sudo easy_all uninstall；4.x 安装 → 补回 STATE_VERSION=0 后用 4.x 的 sudo easy_all uninstall（两代 loader 都要求版本行，不能直接卸载）；原版本不明时请保留现场核实，不要修改该文件。"
         fi
         [[ "${version}" == "1" ]] \
-            || die "检测到旧版（schema ${version:-缺失}）easy_all 状态；当前版本只支持 schema 1。请先用安装该状态的旧版本执行 sudo easy_all uninstall（必要时 --purge-cloud），再重新安装。"
+            || die "检测到旧版（schema ${version:-缺失}）easy_all 状态；当前版本只支持 schema 1。请先用安装该状态的旧版本执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
     fi
     if [[ -f "${marker_file}" ]]; then
         marker_schema=$(sed -n 's/^SCHEMA=//p' "${marker_file}" | tail -n 1 || true)
