@@ -67,7 +67,7 @@
 ```
 
 - **端口划分**：直连入站固定 `443`（公网），橙云回源与订阅站点固定 `8443`（只放行 Cloudflare 回源段），回环 CDN 入站固定 `127.0.0.1:10086`。
-- **证书**：与模式 1/5 同一张 Let's Encrypt 证书（DNS-01），SAN 为直连域名与橙云节点域名；不使用 Origin CA——直连 AnyTLS 必须是公信证书，Caddy 回源复用同一份。
+- **证书**：与模式 1/5 一样使用 Let's Encrypt 证书（DNS-01），直连与 Caddy 回源共用同一张证书（SAN 为直连域名与橙云节点域名）；不使用 Origin CA——直连 AnyTLS 必须是公信证书，Caddy 回源复用同一份。
 - **Origin Rule**：橙云边缘到 VPS 的连接默认打 `443`，因此用一条 `http_request_origin` 单规则把 `http.host eq <节点域名>` 路由到 `origin.port 8443`；生命周期与模式 1 的订阅回源完全相同，ruleset/rule ID 落盘到 state。
 - **`Full (strict)` 门禁**：橙云回源前只读校验 Zone SSL 为 `strict`，与模式 2 同口径。
 - **订阅**：与模式 2 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有聚合优选 IP 列表、没有源站头、没有 985 GB 计量。橙云节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。

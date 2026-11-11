@@ -252,6 +252,7 @@ sudo easy_all purge-cloud --domain example.com
 ```
 - **Cloudflare**：按注释/ref 识别 DNS 记录、Origin Rule、ruleset 与 Origin CA 证书；模式 1/3 的 Origin Rule 与模式 2/3 的 `A` 记录都带有本工具注释，能被该工具识别。
 - **CloudFront/ACM**：只有同时设置 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（可选 `AWS_SESSION_TOKEN`）且本机有 aws CLI 时才执行，否则提示跳过、Cloudflare 侧照常清理。识别口径与安装一致：分发必须 `Comment` 以 `easy_all-cloudfront-` 开头且**全部别名**都落在本次 `--domain` 范围内（先禁用、等 `Deployed`、再删）；ACM 证书必须在 `us-east-1`、带 `easy_all=managed` 标记、`InUseBy` 为空且域名全部在范围内。`--all` 不按域名过滤。与本次删除的分发关联的 ACM 证书（计划时仍被引用）本次不会重新评估；需要一并清理时，请在分发删除成功后再次运行本命令（AWS 侧引用状态可能延迟更新，稍后重试）。
+- **分页上限**：环境变量 `EASY_ALL_PURGE_MAX_PAGES` 控制每个列表接口的扫描上限（默认 100 页 × 100 条），扫描超出时会在发起任何删除前整体中止。
 - 正在运行的 CDN 链路若清掉节点/订阅 DNS 或分发会中断，需要随后 `apply-cloud` 恢复（CloudFront 分发删除后需重新安装或重建）。
 - Token 需为 20–512 位 URL 安全字符（A-Z a-z 0-9 _ -）：Token 会写进 curl 的请求头文件，长度或字符集不符（含换行）一律拒绝，与 `lib/cf-dns.sh` 同一口径。
 - Token 可见多个同名 active Zone 时，`--domain` 的 Zone 查询会显式报错并停止，不会猜一个：改用只授权目标 Zone 的 Token，或先在控制台处理重复 Zone。

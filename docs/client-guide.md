@@ -54,8 +54,8 @@ Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完�
 `vless://<uuid>@cf.example.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-...&packetEncoding=xudp#<节点名>`。
 启用 CDN 优选地址时只有 `@` 后换成优选域名（如 `m3q8a1w7zr.cloudfront.182682.xyz`），`sni` 与 `host` 仍是节点域名。
 
-注意区分证书来源：客户端只校验 viewer / 直连 / 橙云边缘证书（模式 1/3 的直连是 Let's Encrypt 证书，模式 4/5 是 AWS ACM，
-模式 2 是 Cloudflare 边缘证书）；源站侧的 Let's Encrypt 证书与 Cloudflare Origin CA 只在边缘到源站之间使用，
+注意区分证书来源：客户端只校验 viewer / 直连 / 橙云边缘证书（模式 1/3/5 的直连是 Let's Encrypt 证书，模式 4/5 的 CDN 节点是 AWS ACM 证书，
+模式 2/3 的 CDN 节点是 Cloudflare 边缘证书）；源站侧的 Let's Encrypt 证书与 Cloudflare Origin CA 只在边缘到源站之间使用，
 源站头密钥 `X-Easy-All-Origin-Key` 同样只存在于服务器与分发之间，都不会下发到订阅。
 
 “能导入”不代表所有节点都能连接。客户端需要支持 AnyTLS 与 VLESS WebSocket（Mihomo 建议 ≥ 1.19.9）；
