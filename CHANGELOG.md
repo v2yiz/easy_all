@@ -1,5 +1,23 @@
 ## 未发布
 
+平台支持范围与 Zabbly 内核仓库对齐：
+
+- **新增 Ubuntu 26.04 LTS（resolute）**：`lib/platform.sh` 代号白名单由 `bookworm/trixie/jammy/noble`
+  扩为 `bookworm/trixie/jammy/noble/resolute`，README 与 docs 同步支持范围表述。
+- **不放行 focal（20.04）与 Ubuntu interim**：Zabbly 官方支持列表只含最近两个 Ubuntu LTS 与两个 Debian
+  版本，stable 仓库无 focal 套件；代号仍为白名单制，interim（如 24.10 oracular）继续被拦截。
+- **代号是唯一来源表**：`lib/platform.sh` 用 `platform_codename_table` 一处维护「代号 → 发行版族 + `VERSION_ID`」，
+  `platform_is_supported_codename`（`lib/tcp-tuning.sh` 选 Zabbly 仓库时用）与 `check_platform` 都从它派生，
+  发行版与代号不再各写一份清单；代号与发行版不同族（如 Debian 配 jammy）继续被拦截。
+- **`VERSION_ID` 必须存在且精确匹配**：白名单代号缺少 `VERSION_ID` 或与表中的版本号不一致时拒绝安装
+  （错误信息分别为「系统版本信息缺失」与「系统版本信息不一致」），防止被改过或非官方的 `/etc/os-release`
+  误导平台判断；原先 bookworm 单独的 `< 12` 判定并入这一条。
+- **未实机验证**：Skyline Speeder 固定在 v0.5.1，上游验证过 6.12.101 / 6.18.42 / 7.1.6。Ubuntu 26.04 上若出厂
+  内核已 ≥ 6.12 会直接在其上安装加速，否则先重启进入 Zabbly 内核（resolute 套件当前为 7.1–7.3）再装；两条路径
+  都未在真机验证，首台 26.04 机器请在安装后用 `sudo easy_all status` 确认 `Skyline Speeder: active`。
+  开机任务失败时加速不生效、已应用的 TCP 调优保留，按 `journalctl -u easy_all-skyline-setup.service -b` 排障后
+  执行 `sudo easy_all apply` 重试；安装阶段失败则中止安装并回滚本机配置。
+
 模式 2/4 域名输入收敛为每条链路两个名字：
 
 - **模式 4 不再询问源站域名**：源站域名固定复用直连节点域名（`CF_ORIGIN_DOMAIN = DIRECT_DOMAIN`）。

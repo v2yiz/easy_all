@@ -383,7 +383,7 @@ platform_codename() {
     source "${os_release}"
     codename=${VERSION_CODENAME:-}
     if ! platform_is_supported_codename "${codename}"; then
-        die "当前发行版代号 ${codename:-未知} 暂无经过验证的 Zabbly 内核仓库（仅支持 Debian bookworm/trixie 与 Ubuntu jammy/noble）"
+        die "当前发行版代号 ${codename:-未知} 暂无经过验证的 Zabbly 内核仓库（仅支持 Debian bookworm/trixie 与 Ubuntu jammy/noble/resolute）"
     fi
     printf '%s\n' "${codename}"
 }

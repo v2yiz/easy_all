@@ -12,11 +12,21 @@ if [[ -z "${IPV6_SYSCTL_CONF:-}" ]]; then
     IPV6_SYSCTL_CONF="/etc/sysctl.d/99-enable-ipv6.conf"
 fi
 
-platform_is_supported_codename() {
+# 平台支持范围的唯一来源：codename → 发行版族 + /etc/os-release 的 VERSION_ID。
+# check_platform 与 lib/tcp-tuning.sh 的 Zabbly 仓库选择都从这里派生，新增代号只改这张表。
+platform_codename_table() {
     case "${1:-}" in
-    bookworm|trixie|jammy|noble) return 0 ;;
+    bookworm) printf 'debian 12\n' ;;
+    trixie) printf 'debian 13\n' ;;
+    jammy) printf 'ubuntu 22.04\n' ;;
+    noble) printf 'ubuntu 24.04\n' ;;
+    resolute) printf 'ubuntu 26.04\n' ;;
     *) return 1 ;;
     esac
+}
+
+platform_is_supported_codename() {
+    platform_codename_table "${1:-}" >/dev/null
 }
 
 check_platform() {
@@ -25,34 +35,28 @@ check_platform() {
     # shellcheck source=/dev/null
     source "${os_release}"
     local id="${ID:-}" version_id="${VERSION_ID:-}" codename="${VERSION_CODENAME:-}"
-    case "${id}" in
-    debian)
-        case "${codename}" in
-        bookworm)
-            if [[ "${version_id}" =~ ^[0-9]+$ ]] && ((version_id < 12)); then
-                die "仅支持 Debian 12 及以上版本（当前：${version_id}）"
-            fi
-            ;;
-        trixie) ;;
-        *)
+    local family="" expected_version="" entry=""
+    entry=$(platform_codename_table "${codename}") || entry=""
+    read -r family expected_version <<<"${entry}"
+    # 代号必须与发行版成族：Debian 只有 bookworm/trixie，Ubuntu 只有三个 LTS，其余一律拦截。
+    if [[ "${family}" != "${id}" ]]; then
+        case "${id}" in
+        debian)
             die "不支持当前 Debian 版本/代号 ${codename:-${version_id:-未知}}（仅支持 Debian 12 bookworm 与 13 trixie）"
             ;;
-        esac
-        ;;
-    ubuntu)
-        case "${codename}" in
-        jammy|noble) ;;
+        ubuntu)
+            die "不支持当前 Ubuntu 版本/代号 ${codename:-${version_id:-未知}}（仅支持 Ubuntu 22.04 jammy、24.04 noble 与 26.04 resolute）"
+            ;;
         *)
-            die "不支持当前 Ubuntu 版本/代号 ${codename:-${version_id:-未知}}（仅支持 Ubuntu 22.04 jammy 与 24.04 noble）"
+            die "仅支持 Debian 12+ 或 Ubuntu 22.04+（当前发行版：${id:-未知}）"
             ;;
         esac
-        ;;
-    *)
-        die "仅支持 Debian 12+ 或 Ubuntu 22.04+（当前发行版：${id:-未知}）"
-        ;;
-    esac
-    platform_is_supported_codename "${codename}" \
-        || die "不支持当前发行版代号 ${codename:-未知}（仅支持 Debian 12/13 与 Ubuntu 22.04/24.04 LTS）"
+    fi
+    # 代号必须由 VERSION_ID 印证：缺失或不一致说明 /etc/os-release 被改过或不是官方镜像。
+    [[ -n "${version_id}" ]] \
+        || die "系统版本信息缺失：${id} 的 /etc/os-release 没有 VERSION_ID，无法与代号 ${codename} 互相印证"
+    [[ "${version_id}" == "${expected_version}" ]] \
+        || die "系统版本信息不一致：${id} VERSION_ID=${version_id} 与代号 ${codename} 不匹配"
 
     local architecture
     architecture=$(dpkg --print-architecture) || die "无法识别系统架构"

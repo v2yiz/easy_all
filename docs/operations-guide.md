@@ -86,6 +86,7 @@ sudo easy_all apply-cloud
 
 - amd64 与 arm64 平台安装时前置配置并启用 [Skyline Speeder](https://github.com/CYBERVERSE-Research/skyline-speeder)；不再提供 BBR/XanMod 方案。
 - **内核要求**：Skyline 要求 Linux 6.12+。若系统内核较低，安装器会自动升级 Zabbly 6.12+ LTS 内核。
+- **低配机器**：Skyline 在 arm64 或 glibc < 2.38 时走源码编译 Rust/BPF（并发已限制为单任务 `CARGO_BUILD_JOBS=1`）；内存 + Swap < 1.5GB 时编译有 OOM 风险，若根分区不足 1.5GB 而无法自动创建 1GB Swap，请提前释放空间或配好 Swap。
 - **状态确认**：
   - 安装后若提示重启，执行 `sudo reboot`；
   - 重启后运行 `sudo easy_all status`，显示 `Skyline Speeder: active` 即表示已成功加速。
@@ -235,6 +236,8 @@ sudo easy_all uninstall
 
 - **云清理失败不阻挡本机卸载**：任一步失败只告警并打印残留 ID，本机卸载照常继续；命令以非零退出（沿用 `1`），交互与 `FORCE=1` 语义一致，便于自动化发现残留，也不会声称「云端已全部清理完成」。
 - 缺少 AWS 凭据时会要求交互输入；仍无凭据则云端清理记为失败，本机照常卸载。
+
+**强制接管与本机审计日志**：安装或 `apply-cloud` 遇到同名非受管记录时，只在 stdin/stderr 都是终端时提示确认强制接管；改写前先把原注释、原指向、原代理与原 TTL 以单行 JSON 写入 `/var/log/easy_all/dns-takeover.log`（先落盘、后改写：日志写不进去就取消改写，云端记录保持原样）。该日志不在本机卸载范围内，不要移动或删除：`uninstall` 与 `purge-cloudflare` 按记录名命中该日志的 DNS 记录一律保留并在输出点名，日志不可读时也按「已接管」保守保留。恢复原配置请按日志中的 `old_comment` / `old_content` / `old_proxied` / `old_ttl` 手工处理。
 
 ### 7.3 独立清理 Cloudflare 残留
 若 VPS 已销毁或状态丢失，可使用独立命令清理账户内 easy_all 标记的 Cloudflare 资源：

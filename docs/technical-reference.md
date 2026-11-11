@@ -6,7 +6,7 @@
 
 ## 1. 架构总览与网络拓扑
 
-`easy_all` 支持在 Debian 12/13 与 Ubuntu 22.04/24.04 LTS 环境下以单机独占形式部署以下五种模式。本机运行时统一为官方 sing-box（节点入站）与官方 Caddy（订阅与 CDN 回源站点），一台 VPS 只能选择一种模式：
+`easy_all` 支持在 Debian 12/13 与 Ubuntu 22.04/24.04/26.04 LTS 环境下以单机独占形式部署以下五种模式。本机运行时统一为官方 sing-box（节点入站）与官方 Caddy（订阅与 CDN 回源站点），一台 VPS 只能选择一种模式：
 
 | 菜单 | Profile | `PROTOCOL` | `CDN_PROVIDER` | 客户端入口 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -293,7 +293,7 @@ easy_all
 │   ├── mihomo-classic.yaml      # 经典 MRS 规则集模板
 │   └── aggregation.example.json # 聚合节点（三类）配置示例
 └── scripts/                     # 辅助构建与系统初始化脚本
-    ├── debian-init.sh           # 独立系统初始化加固工具（Debian 12/13、Ubuntu 22.04/24.04）
+    ├── debian-init.sh           # 独立系统初始化加固工具（Debian 12/13、Ubuntu 22.04/24.04/26.04）
     └── verify-cores.sh          # 真核心校验入口（`npm run test:cores`）
 ```
 

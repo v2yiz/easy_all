@@ -1,6 +1,6 @@
 # 客户端使用指南
 
-easy_all 全模式支持 Debian 12/13 及 Ubuntu 22.04/24.04 LTS（bookworm / trixie / jammy / noble，支持 amd64 与 arm64 架构）；所有模式均保留现有 SSH 监听。
+easy_all 全模式支持 Debian 12/13 及 Ubuntu 22.04/24.04/26.04 LTS（bookworm / trixie / jammy / noble / resolute，支持 amd64 与 arm64 架构）；所有模式均保留现有 SSH 监听。
 
 
 easy_all 生成标准 Mihomo（Clash Meta）、sing-box 完整 JSON 与通用 Base64 订阅。安装完成后运行：

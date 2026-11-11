@@ -188,18 +188,25 @@ common_content=$(<"${ROOT_DIR}/lib/profile-common.sh")
 assert_not_contains "PARAMS_SOURCE removed" "${common_content}" "PARAMS_SOURCE"
 assert_not_contains "INSTALL_PARAMS_DELETE removed" "${common_content}" "INSTALL_PARAMS_DELETE"
 
-echo "=== 6. 验证 Debian 12+ / Ubuntu 22.04+ 及 amd64 / arm64 平台支持 ==="
+echo "=== 6. 验证 Debian 12/13 与 Ubuntu 22.04/24.04/26.04 LTS 及 amd64 / arm64 平台支持 ==="
 TEST_OS_RELEASE="${TMP_DIR}/os-release"
 TEST_BIN_DIR="${TMP_DIR}/platform_bin"
 mkdir -p "${TEST_BIN_DIR}"
 
 run_check_platform_test() {
-    local id=$1 version_id=$2 codename=$3 arch=$4
-    cat >"${TEST_OS_RELEASE}" <<EOF
+    local id=$1 version_id=$2 codename=$3 arch=$4 omit_version=${5:-}
+    if [[ "${omit_version}" == "noversion" ]]; then
+        cat >"${TEST_OS_RELEASE}" <<EOF
+ID=${id}
+VERSION_CODENAME=${codename}
+EOF
+    else
+        cat >"${TEST_OS_RELEASE}" <<EOF
 ID=${id}
 VERSION_ID="${version_id}"
 VERSION_CODENAME=${codename}
 EOF
+    fi
     cat >"${TEST_BIN_DIR}/dpkg" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "--print-architecture" ]]; then
@@ -253,6 +260,9 @@ assert_equal "Ubuntu 22.04 amd64 must pass" "" "${res_u22_amd64}"
 res_u24_arm64=$(run_check_platform_test "ubuntu" "24.04" "noble" "arm64" || true)
 assert_equal "Ubuntu 24.04 arm64 must pass" "" "${res_u24_arm64}"
 
+res_u2604_amd64=$(run_check_platform_test "ubuntu" "26.04" "resolute" "amd64" || true)
+assert_equal "Ubuntu 26.04 amd64 must pass" "" "${res_u2604_amd64}"
+
 # 6.2 验证非法系统或架构被拦截
 res_u20=$(run_check_platform_test "ubuntu" "20.04" "focal" "amd64" || true)
 assert_contains "Ubuntu 20.04 rejected" "${res_u20}" "不支持当前 Ubuntu 版本/代号"
@@ -265,6 +275,36 @@ assert_contains "Debian 11 rejected" "${res_deb11}" "不支持当前 Debian 版�
 
 res_debsid=$(run_check_platform_test "debian" "14" "forky" "amd64" || true)
 assert_contains "Debian testing/sid rejected" "${res_debsid}" "不支持当前 Debian 版本/代号"
+
+res_debsid_noversion=$(run_check_platform_test "debian" "" "sid" "amd64" "noversion" || true)
+assert_contains "Debian sid (no VERSION_ID) rejected" "${res_debsid_noversion}" "不支持当前 Debian 版本/代号"
+
+res_focal_noversion=$(run_check_platform_test "ubuntu" "" "focal" "amd64" "noversion" || true)
+assert_contains "Ubuntu focal (no VERSION_ID) rejected" "${res_focal_noversion}" "不支持当前 Ubuntu 版本/代号"
+
+res_deb_mismatch=$(run_check_platform_test "debian" "12" "trixie" "amd64" || true)
+assert_contains "Debian version/codename mismatch rejected" "${res_deb_mismatch}" "系统版本信息不一致"
+
+res_ubuntu_mismatch=$(run_check_platform_test "ubuntu" "22.04" "noble" "amd64" || true)
+assert_contains "Ubuntu version/codename mismatch rejected" "${res_ubuntu_mismatch}" "系统版本信息不一致"
+
+res_resolute_mismatch=$(run_check_platform_test "ubuntu" "24.04" "resolute" "amd64" || true)
+assert_contains "Ubuntu 26.04 codename with 24.04 VERSION_ID rejected" "${res_resolute_mismatch}" "系统版本信息不一致"
+
+res_bookworm_deb11=$(run_check_platform_test "debian" "11" "bookworm" "amd64" || true)
+assert_contains "Debian 11 with bookworm codename rejected" "${res_bookworm_deb11}" "系统版本信息不一致"
+
+res_bookworm_noversion=$(run_check_platform_test "debian" "" "bookworm" "amd64" "noversion" || true)
+assert_contains "Debian bookworm (no VERSION_ID) rejected" "${res_bookworm_noversion}" "系统版本信息缺失"
+
+res_noble_noversion=$(run_check_platform_test "ubuntu" "" "noble" "amd64" "noversion" || true)
+assert_contains "Ubuntu noble (no VERSION_ID) rejected" "${res_noble_noversion}" "系统版本信息缺失"
+
+res_cross_family_debian=$(run_check_platform_test "debian" "22.04" "jammy" "amd64" || true)
+assert_contains "Ubuntu codename under Debian rejected" "${res_cross_family_debian}" "不支持当前 Debian 版本/代号"
+
+res_cross_family_ubuntu=$(run_check_platform_test "ubuntu" "12" "bookworm" "amd64" || true)
+assert_contains "Debian codename under Ubuntu rejected" "${res_cross_family_ubuntu}" "不支持当前 Ubuntu 版本/代号"
 
 res_centos=$(run_check_platform_test "centos" "9" "stream" "amd64" || true)
 assert_contains "CentOS rejected" "${res_centos}" "仅支持 Debian 12+ 或 Ubuntu 22.04+"

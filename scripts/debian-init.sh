@@ -891,7 +891,7 @@ verify_final_host_login() {
 
 print_intro() {
   echo "服务器初始化与 SSH 密钥登录配置脚本"
-  echo "适用：Debian 12/13、Ubuntu 22.04/24.04 LTS（amd64/arm64，systemd，非容器）"
+  echo "适用：Debian 12/13、Ubuntu 22.04/24.04/26.04 LTS（amd64/arm64，systemd，非容器）"
   echo
   echo "将执行以下操作："
   echo "  1. 使用初始 SSH 用户连接服务器，默认 root。"

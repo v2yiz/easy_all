@@ -3,9 +3,9 @@
 `scripts/debian-init.sh` 是独立的个人服务器初始化工具，不是 easy_all 的安装前置步骤，也不会
 安装、更新或卸载代理节点。
 
-它应在本地管理机交互运行，用于初始化全新的 Debian 12/13 或 Ubuntu 22.04/24.04 LTS、
+它应在本地管理机交互运行，用于初始化全新的 Debian 12/13 或 Ubuntu 22.04/24.04/26.04 LTS、
 amd64/arm64、systemd、非容器服务器（平台校验与 easy_all 共用 `lib/platform.sh` 的 `check_platform`，
-在任何系统改动之前执行）：
+在任何系统改动之前执行；发行版代号必须与 `/etc/os-release` 的 `VERSION_ID` 一致，缺失或不一致直接拒绝）：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/scripts/debian-init.sh)
