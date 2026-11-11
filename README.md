@@ -43,7 +43,15 @@
 ## 开始前准备
 
 1. **服务器环境**：全新 Debian 12/13 或 Ubuntu 22.04/24.04/26.04 LTS（具备公网 IPv4 与 root 权限，`443`、回环 `10086` 及所选模式回源端口未被占用）。
-2. **防中断建议**：安装包含内核与网络优化（约 5~15 分钟），建议在 `tmux` 或 `screen` 会话中执行；内存 ≤ 1GB 的机器请确保根分区剩余 ≥ 1.5GB 以自动创建 Swap，避免编译 Skyline 时 OOM。
+2. **SSH 保活与防中断**：安装包含系统更新、内核与网络优化（约 5~15 分钟），SSH 空闲超时会导致安装中断。建议在 `tmux` 或 `screen` 会话中执行，并配置本地 SSH 客户端保活（追加到本机 `~/.ssh/config`，对所有 VPS 生效；**务必放在文件最下面**，否则其通用匹配会影响其他主机的特定配置）：
+   ```sshconfig
+   # 追加到本机 ~/.ssh/config 最底部（务必放最下面）
+   Host *
+       ServerAliveInterval 30
+       ServerAliveCountMax 6
+       TCPKeepAlive yes
+   ```
+   临时连接命令：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 <用户>@<IP> -p <端口>`。内存 ≤ 1GB 的机器请确保根分区剩余 ≥ 1.5GB 以自动创建 Swap，避免编译期 OOM。
 3. **安全组与防火墙**：
    - 放行 SSH 端口；
    - 模式 1/3/4/5 放行公网 TCP `443`（模式 5 另需放行 TCP `8443`）；
