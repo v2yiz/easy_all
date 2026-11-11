@@ -64,6 +64,102 @@ read_confirmation() {
     printf -v "${variable}" '%s' "${input}"
 }
 
+# --- CDN 优选连接地址（cdnEdgeAddress）的安装交互 -------------------------------
+# 模式 2/4 拼 CloudFront 泛域名后缀，模式 3/5 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
+CDN_EDGE_CLOUDFRONT_SUFFIX="cloudfront.182682.xyz"
+CDN_EDGE_CLOUDFLARE_SUFFIX="cloudflare.182682.xyz"
+# 安装时生成的优选地址形态：10 位前缀 + 当前模式的泛域名后缀（首位字母，后九位字母或数字）。
+CDN_EDGE_PREFIX_PATTERN='^([a-z][a-z0-9]{9})\.(cloudfront|cloudflare)\.182682\.xyz$'
+CDN_EDGE_LETTERS="abcdefghijklmnopqrstuvwxyz"
+CDN_EDGE_ALNUM="0123456789abcdefghijklmnopqrstuvwxyz"
+
+cdn_edge_mode_suffix() {
+    case "${PROTOCOL:-}" in
+    cloudfront | combined-cloudfront) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
+    cloudflare | combined-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
+    *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
+    esac
+}
+
+# 纯展示用的随机前缀：openssl 取 10 个字节，首位映射到 a-z、其余映射到 0-9a-z。
+generate_cdn_edge_prefix() {
+    local hex byte index out=""
+    hex=$(openssl rand -hex 10) || return 1
+    for index in 0 1 2 3 4 5 6 7 8 9; do
+        byte=$((16#${hex:$((index * 2)):2}))
+        if ((index == 0)); then
+            out+=${CDN_EDGE_LETTERS:$((byte % 26)):1}
+        else
+            out+=${CDN_EDGE_ALNUM:$((byte % 36)):1}
+        fi
+    done
+    printf '%s' "${out}"
+}
+
+# 提示默认值：生成的前缀形态给原前缀；字段缺失时续装给 off、全新安装给新随机前缀。
+# 自定义优选域名与非法配置不会走到这里（由 collect_cdn_edge_address 先分流）。
+cdn_edge_default_prefix() {
+    local edge
+    edge=$(jq -r '.cdnEdgeAddress // ""' <<<"${SUBSCRIPTION_CONFIG:-}" 2>/dev/null) || return 1
+    edge=$(printf '%s' "${edge}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${edge}" =~ ${CDN_EDGE_PREFIX_PATTERN} ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    [[ "${INSTALL_RESUME:-0}" == "1" ]] || { generate_cdn_edge_prefix; return 0; }
+    printf 'off'
+}
+
+# 写入判定（不读 stdin）：off 关闭；10 位前缀拼当前模式后缀；其余输入返回非零且零副作用。
+# jq 自身失败是配置已被改坏，不能退化成“输入非法”而陷入无限重填，直接 die。
+cdn_edge_store_answer() {
+    local answer=${1:-} updated
+    if [[ "${answer}" == "off" ]]; then
+        updated=$(jq -c 'del(.cdnEdgeAddress)' <<<"${SUBSCRIPTION_CONFIG}") \
+            || die "更新订阅配置失败"
+    elif [[ "${answer}" =~ ^[a-z][a-z0-9]{9}$ ]]; then
+        updated=$(jq -c --arg a "${answer}.$(cdn_edge_mode_suffix)" '.cdnEdgeAddress=$a' \
+            <<<"${SUBSCRIPTION_CONFIG}") || die "更新订阅配置失败"
+    else
+        return 1
+    fi
+    SUBSCRIPTION_CONFIG=${updated}
+}
+
+# 循环读入：提示文案固定含默认值与 off 说明；非法输入用 warn（stdout）说明后重印同一提示。
+cdn_edge_prompt_loop() {
+    local default=${1:-} answer
+    while :; do
+        read_bilingual "CDN 优选前缀 [${default}]（回车采用；输入 off 关闭）：" answer
+        cdn_edge_store_answer "${answer:-${default}}" && return 0
+        warn "CDN 优选前缀无效：只能输入 10 位前缀（首位字母，其后字母或数字）或输入 off 关闭"
+    done
+}
+
+# 交互终端判定：生产只认 stdin 终端；自动化测试通过覆盖本函数模拟交互终端。
+# 生产不提供环境变量旁路（同 dns_takeover_interactive 惯例）。
+cdn_edge_interactive() {
+    [[ -t 0 ]]
+}
+
+# 安装收集器（模式 2-5）：把用户确认的优选地址写进 SUBSCRIPTION_CONFIG，
+# 随后由调用方的 cdn_apply_subscription_config 强校验并派生 CF_EDGE_ADDRESS。
+collect_cdn_edge_address() {
+    local normalized edge
+    cdn_edge_interactive || return 0
+    # 一次无副作用试运行：整份 JSON 不可解析、非对象 JSON、字段非法都落到这里。
+    # 不提示也不改配置，交由随后的 cdn_apply_subscription_config 按既有路径拒绝。
+    normalized=$(normalize_subscription_config "${SUBSCRIPTION_CONFIG:-}" \
+        "$(cdn_local_node_names)" 2>/dev/null) || return 0
+    edge=$(jq -r '.cdnEdgeAddress // ""' <<<"${normalized}") || return 1
+    # 自定义优选域名（非安装生成的前缀形态）绝不提示、不被随机值覆盖。
+    if [[ -n "${edge}" && ! "${edge}" =~ ${CDN_EDGE_PREFIX_PATTERN} ]]; then
+        info "当前 CDN 优选地址 ${edge}；改地址或关闭请在安装后执行 sudo easy_all edit-sub"
+        return 0
+    fi
+    cdn_edge_prompt_loop "$(cdn_edge_default_prefix)"
+}
+
 restore_state_file() {
     local backup=$1 target=$2 temp
     temp=$(mktemp "$(dirname -- "${target}")/state.env.XXXXXX") || {

@@ -70,9 +70,29 @@ AGGREGATION_NODES_FIXTURE=$(jq -cn --arg uuid "${REALITY_UUID}" --arg pbk "${REA
      udp: true, optional: false}
 ]')
 
+# 订阅配置校验/派生：Profile 常量是 readonly，每次在独立 bash 里加载。
+normalize_config() { # $1=订阅配置 JSON -> stdout 规范化结果（stderr 原样透出）
+    bash -c '
+        set -Eeuo pipefail
+        source "$1/profiles/combined.sh"
+        normalize_subscription_config "$2" "[]"
+    ' _ "${ROOT_DIR}" "$1"
+}
+derive_edge_address() { # $1=订阅配置 JSON -> stdout CF_EDGE_ADDRESS
+    bash -c '
+        set -Eeuo pipefail
+        source "$1/profiles/combined.sh"
+        apply_local_aggregation_config "$2" "[]" || exit 1
+        printf "%s" "${CF_EDGE_ADDRESS}"
+    ' _ "${ROOT_DIR}" "$1"
+}
+reject_config() { # $1=订阅配置 JSON -> stdout 为错误输出；非法时返回非零
+    normalize_config "$1" 2>&1
+}
+
 # 每个模式都在独立 bash 里渲染：Profile 常量是 readonly，不能在同一进程内切换。
-render_mode() {
-    local profile=$1 out=$2
+render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
+    local profile=$1 out=$2 edge=${3:-}
     mkdir -p "${out}/runtime" "${out}/subs"
     (
         export RUNTIME_TMP="${out}/runtime"
@@ -122,8 +142,9 @@ render_mode() {
         local names
         names=$(cdn_local_node_names)
         SUBSCRIPTION_CONFIG=$(jq -cn --argjson tokens "${ALLOWED_TOKENS}" \
-            --argjson nodes "${AGGREGATION_NODES_FIXTURE}" \
-            '{allowedTokens: $tokens, nodes: $nodes}')
+            --argjson nodes "${AGGREGATION_NODES_FIXTURE}" --arg edge "${edge}" \
+            '{allowedTokens: $tokens, nodes: $nodes}
+             + (if $edge != "" then {cdnEdgeAddress: $edge} else {} end)')
         apply_local_aggregation_config "${SUBSCRIPTION_CONFIG}" "${names}" || exit 1
         render_subscription_files "${out}/subs"
     )
@@ -324,6 +345,85 @@ if (
     fail "缺少 AnyTLS 密码时渲染必须失败"
 fi
 [[ ! -e "${out_missing}/subs/singbox.json" ]] || fail "渲染失败不得留下 sing-box 订阅"
+
+# --- cdnEdgeAddress：订阅配置顶层可选字段（design §3.1/§4.3、§11 第 4-7 项）------
+cfg_base='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+assert_equal "无字段输出逐字节不变" "${cfg_base}" "$(normalize_config "${cfg_base}")"
+assert_equal "合法优选地址保留并小写化" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudfront.182682.xyz"}' \
+    "$(normalize_config '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"K2V8NQ4ZT6.CloudFront.182682.XYZ"}')"
+assert_equal "null 字段等价于缺失" "${cfg_base}" \
+    "$(normalize_config '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":null}')"
+
+# 每类非法值都必须被拒绝，且具体原因（cdnEdgeAddress）必须能从 stderr 看到。
+while IFS= read -r edge_bad; do
+    edge_err=$(reject_config "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[],\"cdnEdgeAddress\":${edge_bad}}") \
+        && fail "非法 cdnEdgeAddress 必须被拒绝：${edge_bad}"
+    assert_contains "拒绝 ${edge_bad} 时报错含 cdnEdgeAddress" "${edge_err}" "cdnEdgeAddress"
+done <<'EDGE_BAD'
+"*"
+"https://a.com"
+"a.com:443"
+"a.com/x"
+""
+"203.0.113.1"
+"localhost"
+"a..b"
+EDGE_BAD
+edge_label63=$(printf 'a%.0s' {1..63})
+edge_label62=$(printf 'b%.0s' {1..62})
+edge_too_long="${edge_label63}.${edge_label63}.${edge_label63}.${edge_label62}"
+assert_equal "超长用例恰为 254 字符" "254" "${#edge_too_long}"
+edge_err=$(reject_config "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[],\"cdnEdgeAddress\":\"${edge_too_long}\"}") \
+    && fail "超过 253 字符的 cdnEdgeAddress 必须被拒绝"
+assert_contains "超长值报错含 cdnEdgeAddress" "${edge_err}" "cdnEdgeAddress"
+
+edge_err=$(reject_config '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"foo":1}') \
+    && fail "多余顶层键必须被拒绝"
+assert_contains "多余顶层键报错点明 cdnEdgeAddress 是合法键" "${edge_err}" "cdnEdgeAddress"
+assert_not_contains "顶层键白名单文案不再写两个键" "${edge_err}" "两个键"
+
+assert_equal "派生 CF_EDGE_ADDRESS 为小写值" "k2v8nq4zt6.cloudfront.182682.xyz" \
+    "$(derive_edge_address '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"K2V8NQ4ZT6.CloudFront.182682.XYZ"}')"
+assert_equal "无字段时 CF_EDGE_ADDRESS 为空" "" "$(derive_edge_address "${cfg_base}")"
+
+# 端到端：三种产物的连接地址换成优选域名，SNI / Host 仍是节点域名。
+edge_out="${TMP_DIR}/combined-edge"
+render_mode combined "${edge_out}" "k2v8nq4zt6.cloudfront.182682.xyz" >"${edge_out}.log" 2>&1 || {
+    cat "${edge_out}.log" >&2
+    fail "带 cdnEdgeAddress 的模式 4 订阅渲染失败"
+}
+for edge_artifact in singbox.json singbox-all.json; do
+    assert_equal "优选地址替换 ${edge_artifact} 本机 CDN 节点" \
+        "k2v8nq4zt6.cloudfront.182682.xyz cf.example.com cf.example.com" \
+        "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
+            "\(.server) \(.tls.server_name) \(.transport.headers.Host)"' \
+            "${edge_out}/subs/${edge_artifact}")"
+done
+for edge_artifact in mihomo.yaml mihomo-all.yaml; do
+    assert_contains "优选地址替换 ${edge_artifact} 连接地址" \
+        "$(<"${edge_out}/subs/${edge_artifact}")" 'server: "k2v8nq4zt6.cloudfront.182682.xyz"'
+    assert_contains "优选地址不改 ${edge_artifact} servername" \
+        "$(<"${edge_out}/subs/${edge_artifact}")" 'servername: "cf.example.com"'
+done
+
+# --- 非法 cdnEdgeAddress 不替换已发布订阅（验收条件 4：行为断言）-----------------
+cp -R "${out}/subs" "${TMP_DIR}/published-before"
+edge_apply_err=$(
+    RUNTIME_TMP="${TMP_DIR}/reject-runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/reject-state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/reject-certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/reject-subs" \
+        bash -c '
+            set -Eeuo pipefail
+            source "$1/profiles/combined.sh"
+            cdn_apply_subscription_config "$2"
+        ' _ "${ROOT_DIR}" \
+        '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"a.com:443"}' 2>&1
+) && fail "非法 cdnEdgeAddress 必须被 cdn_apply_subscription_config 拒绝"
+assert_contains "拒绝时 stderr 含 cdnEdgeAddress" "${edge_apply_err}" "cdnEdgeAddress"
+diff -r "${TMP_DIR}/published-before" "${out}/subs" >/dev/null \
+    || fail "非法配置不得改动已发布订阅产物"
 
 printf 'ok - sing-box 订阅测试通过（%s）\n' \
     "$([[ -x "${SINGBOX_BIN:-}" ]] && printf '含真实核心校验' || printf '仅结构校验')"

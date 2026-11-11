@@ -81,6 +81,10 @@ collect_anytls_install_inputs() {
     ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
     SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes"
+    # 模式 1 没有 CDN 入站：只有模式 5 收集 CDN 优选地址。
+    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        collect_cdn_edge_address
+    fi
     cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
         || die "订阅配置无效：节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
     cdn_validate_install_owner_token

@@ -65,7 +65,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 
 根据终端交互菜单提示完成配置：
 1. **选择模式**：输入 `1`–`5` 选择部署模式。
-2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 2/4 会提示输入 AWS 密钥）。
+2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 2/4 会提示输入 AWS 密钥）。模式 2–5 还会提示 `CDN 优选前缀 [<10 位随机前缀>]`：直接回车采用该前缀（按模式拼成 `*.cloudfront.182682.xyz` 或 `*.cloudflare.182682.xyz`），输入 `off` 则不启用优选连接地址；断点续装时默认沿用上次选择（没有则 `off`）。
 3. **全自动部署**：自动配置 Swap、TCP 加速、申请证书、下发云端分发与解析，并完成服务可用性验收。
 
 ---
@@ -102,7 +102,7 @@ sudo easy_all subscription
 | `sudo easy_all show` | 打印各节点详细参数、VLESS 链接与客户端配置片段 |
 | `sudo easy_all apply` | **纯本机重建**：刷新服务配置与订阅产物（不请求云端 API） |
 | `sudo easy_all apply-cloud` | **同步云端资源**：重新收敛 DNS、证书、CloudFront 分发或 Origin Rule |
-| `sudo easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点 |
+| `sudo easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点（也可改或删除 `cdnEdgeAddress` 优选连接地址） |
 | `sudo easy_all renew-cert` | 重新签发或轮换当前模式的 TLS 证书 |
 | `sudo easy_all cdn-traffic-sync` | （仅模式 2/4）手动采样 CDN 流量并同步熔断状态 |
 | `sudo easy_all update-core` | 重装或修复锁定版本的 sing-box 与 Caddy 核心 |

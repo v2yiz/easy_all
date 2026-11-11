@@ -68,7 +68,7 @@ sudo easy_all apply-cloud
 | `sudo easy_all self-update` | 从 GitHub 更新 easy_all 脚本体（`--dev` 使用开发分支） |
 | `sudo easy_all apply` | 应用已安装配置；只重建本机与订阅，不访问云管理 API |
 | `sudo easy_all apply-cloud` | 同步云端资源：模式 1 是直连/订阅 DNS、证书与 Origin Rule；模式 2/4 是 DNS + ACM + CloudFront 分发 + 源站证书；模式 3 是橙云 A 记录与 Origin CA 证书；模式 5 是直连/橙云 A 记录、证书与 Origin Rule |
-| `sudo easy_all edit-sub` | 交互式编辑订阅配置（用户 Token + 聚合节点）与订阅模板 |
+| `sudo easy_all edit-sub` | 交互式编辑订阅配置（用户 Token、聚合节点与可选 CDN 优选地址 `cdnEdgeAddress`）与订阅模板 |
 | `sudo easy_all cdn-traffic-sync` | （仅模式 2/4）采样 mangle 计量并落实流量阻断；其他模式会明确拒绝 |
 | `sudo easy_all purge-cloudflare` | 清理 easy_all 创建的 Cloudflare 远端资源（可在未安装或状态丢失时使用） |
 | `sudo easy_all update-core` | 重装/修复当前锁定版本的核心（sing-box 1.14.4 + Caddy 2.11.9），不追最新 |
@@ -109,7 +109,7 @@ sudo easy_all apply-cloud
 - `/etc/easy_all`（state、证书、Caddyfile、sing-box 配置、订阅、模板快照）与 `/var/www/easy_all/subscriptions`（八份产物：六份 Mihomo/Base64 + `singbox.json` / `singbox-all.json`）都是受管文件，手工编辑会在下一次 `apply` 被覆盖；请用命令修改。
 
 ### 4.2 节点域名与节点名（需要重装）
-五种模式的本机域名与节点名都是落盘状态的一部分，没有「只改名」的入口：改直连域名、CDN 节点域名或节点名都需要 `sudo easy_all uninstall` 后重新安装，并在客户端重新导入订阅。新装模式 4 的源站域名由直连域名派生、新装模式 2/4 的订阅域名由节点域名派生，因此这两项没有单独的改名入口。
+五种模式的本机域名与节点名都是落盘状态的一部分，没有「只改名」的入口：改直连域名、CDN 节点域名或节点名都需要 `sudo easy_all uninstall` 后重新安装，并在客户端重新导入订阅。新装模式 4 的源站域名由直连域名派生、新装模式 2/4 的订阅域名由节点域名派生，因此这两项没有单独的改名入口。CDN 优选连接地址是例外：它只影响客户端连接地址，用 §5 的 `sudo easy_all edit-sub` 改或删即可，不需要重装。
 
 ### 4.3 凭据轮换
 - 本版本**没有**独立的密码 / UUID / 路径轮换命令：AnyTLS 密码、VLESS UUID、VLESS 路径都在安装时生成并落盘，重装会生成全新的一组，客户端必须重新导入订阅。
@@ -136,6 +136,11 @@ sudo easy_all edit-sub
 ```
 
 - **订阅配置**：按提示输入一份 JSON，同时包含 `allowedTokens`（用户 Token 字典）与 `nodes`（聚合节点数组）。省略的用户或节点会被删除；完成后各用户的专属订阅链接可通过 `sudo easy_all subscription` 查看。
+- **CDN 优选连接地址**（模式 2–5）：订阅配置顶层可选的 `cdnEdgeAddress` 只替换本机 CDN 节点的**连接地址**，TLS SNI 与 WebSocket `Host` 仍是节点域名。只接受完整主机名（至少一个点，拒绝 `*`、URL、端口、路径与 IP 字面量），存储时统一小写；`null` 或删除字段即回退到节点域名。首次安装已自动写入 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"` 这样的值，要换地址或关闭时只改这一行：
+  ```json
+  {"allowedTokens": {"owner": "..."}, "nodes": [], "cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"}
+  ```
+  保存后订阅产物会当场重发，客户端刷新即可，无需 `apply-cloud`。
 - **订阅入口**：Caddy 只精确匹配 `/subscribe` 与 `/sub`，两者进入同一处理器；`/subscribe/`、`/subscribed` 与其他路径返回 `404`。重复 `token` 参数会被 Caddy 逗号拼接，无法匹配合法 Token，一律 `403`。
 - **聚合节点**：`nodes` 支持三种类型——`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；示例见 `templates/aggregation.example.json`。`optional: true` 的节点仅在订阅 URL 追加 `&node=all` 时下发。外部聚合节点的 `host/port/portRange` 原样保留，不会被改写成 443；`tls/xhttp` 节点的 `host` 是客户端连接地址，`sni` 同时作为 TLS SNI 与 HTTP `Host` 头；`reality/tcp` 节点的 `sid` 需为 2–16 位偶数长度十六进制。
 - **自定义模板**：支持交互式切换或重载 Mihomo 订阅模板（也可用 `MIHOMO_TEMPLATE_SOURCE` 传入本地文件或 HTTPS URL）。选中的模板会以 `0600` 快照保存在 `/etc/easy_all/mihomo-template.yaml`，后续 `apply`、`edit-sub` 与重装后的发布沿用同一份快照；快照缺失会告警并回退内置默认模板。
@@ -277,6 +282,7 @@ sudo easy_all purge-cloudflare --domain example.com
 | **`renew-cert` 后仍提示证书问题** | 检查 `/etc/letsencrypt/live/easy_all/` 是否已签发新 lineage（模式 3 则是 Cloudflare Origin CA API 是否成功）；手动续签会抑制内置 deploy hook，由命令自身完成部署、强制 Caddy reload 与本机 TLS 指纹验收。锁忙导致 hook 跳过时，重跑 `renew-cert` 会优先部署已有新 lineage，不重复申请。 |
 | **服务器重启后 sing-box 起不来** | 模式 2/4 的 `ExecStartPre` 要求计量目录/锁/规则与 usage 均可读；`journalctl -u easy_all-singbox` 会指出是哪一项。修复后 `sudo easy_all cdn-traffic-sync` 或 `sudo easy_all apply` 恢复；不要把 `Restart=` 或 `StartLimit` 调大来掩盖持续故障。 |
 | **订阅可下载但节点无法连接** | 1. 确认客户端内核版本是否过旧（Mihomo 建议 ≥ 1.19.9）；<br>2. 检查云服务商安全组是否放行了业务端口（模式 1/2/3/5：`443`，模式 1 `deploy`、模式 4 与模式 5 另含 `8443`）；<br>3. 模式 4 可在 `PROXY` 组里手动切换直连与 CDN 节点，或选择 `AUTO` / `CDN-FALLBACK` 自动组；模式 5 在 `PROXY` 组里直接切换直连与橙云节点。 |
+| **设了 CDN 优选地址后连不上** | 优选域名（`*.cloudfront.182682.xyz` / `*.cloudflare.182682.xyz`）由第三方公布，解析或连通性失效时客户端连不上但订阅仍可拉取。执行 `sudo easy_all edit-sub` 删除订阅配置里的 `cdnEdgeAddress` 字段（或改成可用的具体优选域名）并保存，订阅当场重发，客户端刷新即恢复节点域名，无需 `apply-cloud`；服务端无感知。 |
 | **升级后仍看到旧节点名/旧分组** | 旧订阅缓存或自定义模板写死了已删除的组名。在客户端刷新订阅并重新选择 `PROXY` 下的实际节点；模板问题用 `sudo MIHOMO_TEMPLATE_SOURCE=/usr/local/lib/easy_all/templates/mihomo.yaml easy_all edit-sub` 换回内置模板。 |
 | **提示状态 schema 不受支持** | 当前目录是 4.x（schema 0）安装。按 §7.4 先用旧版本 `sudo easy_all uninstall`（需要时 `--purge-cloud`），再用 5.x 安装。 |
 | **所有命令报状态文件缺少 `STATE_VERSION`** | 状态文件被截断或改坏（所有 5.x 都会写这一行）。先确认本机原来的安装版本：5.x 安装 → 备份后在该文件首行补回 `STATE_VERSION=1`，再执行 `sudo easy_all uninstall`；4.x 安装 → 补回 `STATE_VERSION=0` 后用 4.x 的 `sudo easy_all uninstall`；原版本不明则保留现场，不要修改该文件。 |

@@ -3,7 +3,9 @@
 # 五模式 sing-box 本机配置与客户端节点（design §7、§12）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、ANYTLS_PASSWORD、VLESS_UUID、VLESS_PATH、
-# CF_NODE_DOMAIN、CF_NODE_PREFIX。证书路径与核心路径可用环境变量覆盖（测试隔离）。
+# CF_NODE_DOMAIN、CF_NODE_PREFIX。CF_EDGE_ADDRESS 可选：非空时只替换本机 CDN 节点的
+# 连接地址，SNI 与 WebSocket Host 仍是 CF_NODE_DOMAIN（订阅配置里的 cdnEdgeAddress）。
+# 证书路径与核心路径可用环境变量覆盖（测试隔离）。
 
 SINGBOX_RUNTIME_LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 # shellcheck source=lib/singbox-core.sh
@@ -212,23 +214,26 @@ build_vless_ws_link() {
     [[ -n "${VLESS_PATH:-}" ]] || die "缺少 VLESS_PATH，无法生成 VLESS 节点链接"
     local encoded_host
     encoded_host=$(singbox_uri_encode "${CF_NODE_DOMAIN}")
+    # 连接地址可用 cdnEdgeAddress 换成优选域名；sni/host 仍是分发域名（证书与分发按它选）。
     printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&host=%s&path=%s&packetEncoding=xudp#%s' \
-        "${VLESS_UUID}" "${CF_NODE_DOMAIN}" "${encoded_host}" "${encoded_host}" \
+        "${VLESS_UUID}" "${CF_EDGE_ADDRESS:-${CF_NODE_DOMAIN}}" "${encoded_host}" "${encoded_host}" \
         "$(singbox_uri_encode "${VLESS_PATH}")" \
         "$(singbox_uri_encode "${CF_NODE_PREFIX}")"
 }
 
+# server 是连接地址（可为优选域名），servername 与 ws Host 必须是节点域名。
 build_mihomo_ws_node() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 VLESS 节点"
     [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 VLESS 节点"
     [[ -n "${VLESS_PATH:-}" ]] || die "缺少 VLESS_PATH，无法生成 VLESS 节点"
-    jq -nr --arg name "${CF_NODE_PREFIX}" --arg server "${CF_NODE_DOMAIN}" \
+    jq -nr --arg name "${CF_NODE_PREFIX}" --arg server "${CF_EDGE_ADDRESS:-${CF_NODE_DOMAIN}}" \
+        --arg host "${CF_NODE_DOMAIN}" \
         --arg uuid "${VLESS_UUID}" --arg path "${VLESS_PATH}" '
         "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
         "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
-        "    skip-cert-verify: false\n    servername: \($server|@json)\n" +
+        "    skip-cert-verify: false\n    servername: \($host|@json)\n" +
         "    client-fingerprint: chrome\n    packet-encoding: xudp\n" +
-        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($server|@json)\n"'
+        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
 }
 
 # --- sing-box 客户端订阅节点 -------------------------------------------------
@@ -244,16 +249,17 @@ build_singbox_anytls_outbound() {
                utls: {enabled: true, fingerprint: "chrome"}}}'
 }
 
-# 本机 CDN 节点：连接域名、SNI 与 WebSocket Host 一致，源站头永不进入客户端。
+# 本机 CDN 节点：连接地址可用 cdnEdgeAddress 换成优选域名；SNI 与 WebSocket Host
+# 仍是节点域名，源站头永不进入客户端。
 build_singbox_ws_outbound() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 sing-box VLESS 节点"
     [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 sing-box VLESS 节点"
     [[ -n "${VLESS_PATH:-}" ]] || die "缺少 VLESS_PATH，无法生成 sing-box VLESS 节点"
-    jq -cn --arg tag "${CF_NODE_PREFIX}" --arg server "${CF_NODE_DOMAIN}" \
-        --arg uuid "${VLESS_UUID}" --arg path "${VLESS_PATH}" '
+    jq -cn --arg tag "${CF_NODE_PREFIX}" --arg server "${CF_EDGE_ADDRESS:-${CF_NODE_DOMAIN}}" \
+        --arg host "${CF_NODE_DOMAIN}" --arg uuid "${VLESS_UUID}" --arg path "${VLESS_PATH}" '
         {type: "vless", tag: $tag, server: $server, server_port: 443, uuid: $uuid,
-         tls: {enabled: true, server_name: $server,
+         tls: {enabled: true, server_name: $host,
                utls: {enabled: true, fingerprint: "chrome"}},
-         transport: {type: "ws", path: $path, headers: {Host: $server}},
+         transport: {type: "ws", path: $path, headers: {Host: $host}},
          packet_encoding: "xudp"}'
 }

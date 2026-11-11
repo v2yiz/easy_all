@@ -1,5 +1,24 @@
 ## 未发布
 
+CDN 优选连接地址（`cdnEdgeAddress`，模式 2–5）：
+
+- **功能**：订阅配置 JSON 顶层新增可选字段 `cdnEdgeAddress`（只存完整主机名），只替换本机 CDN 节点的**连接地址**
+  （VLESS 链接的 `@host`、Mihomo `server`、sing-box `server`）；TLS SNI、WebSocket `Host`、证书校验、订阅 URL、
+  云端 DNS、回源与 AnyTLS 直连全部不变。字段缺失或为 `null` 等同关闭，删除字段即回退到节点域名。
+- **两种后缀**：模式 2/4 生成 `*.cloudfront.182682.xyz`，模式 3/5 生成 `*.cloudflare.182682.xyz`；模式 1 不做优选，
+  也不出现该提示（粘贴合法值会被接受并持久化，但永不渲染）。
+- **安装交互与续装**：首装提示 `CDN 优选前缀 [<10 位随机前缀>]（回车采用；输入 off 关闭）：`，非法输入留在提示重填，
+  `off` 关闭；前缀与安装身份一同落盘，断点续装回车采用原前缀（不重抽）、身份里没有该字段时默认 `off`，
+  自定义优选域名续装不提示、原样保留。
+  非交互调用（stdin 非终端）不新增任何提示、不改配置。
+- **`edit-sub` 字段与校验**：校验只在 `normalize_subscription_config` 一处，拒绝 `*`、URL、端口、路径、空白、IP 字面量
+  与 `localhost` 类单标签，存储时统一小写；非法值在写快照之前就被拒绝，已发布的八份订阅产物与状态逐字节不变。
+- **三客户端同步**：VLESS / Mihomo / sing-box 三种产物的连接地址同时切换，`servername`、`ws-opts.headers.Host`
+  与 `tls.server_name` 仍为节点域名。
+- **已有部署不受影响**：无该字段的旧状态经 `apply` / `apply-cloud` / `renew-cert` / 重启后产物逐字节不变，
+  `STATE_VERSION`、state 字段表与安装身份 schema 均未变。
+- **未做真实连通性验证**：优选泛域名由第三方公布并解析，本机不探测其可用性；失效时用 `edit-sub` 删除字段刷新即可。
+
 平台支持范围与 Zabbly 内核仓库对齐：
 
 - **新增 Ubuntu 26.04 LTS（resolute）**：`lib/platform.sh` 代号白名单由 `bookworm/trixie/jammy/noble`

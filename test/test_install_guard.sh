@@ -299,6 +299,23 @@ assert_equal "续装恢复订阅模式" "link" "${SUBSCRIPTION_MODE}"
 rm -f -- "$(install_identity_file)"
 unset PROTOCOL CDN_PROFILE_KEY SUBSCRIPTION_MODE
 
+# 6e. CDN 优选地址随订阅配置进安装身份：续装读到原地址才能沿用同一优选域名不重抽。
+install -d -m 0700 "$(install_state_dir_path)"
+PROTOCOL=combined-cloudflare
+CDN_PROFILE_KEY=combined-cloudflare
+SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudfront.182682.xyz"}'
+persist_install_identity || fail "安装身份写入失败"
+assert_equal "安装身份保存 CDN 优选地址" \
+    '"k2v8nq4zt6.cloudfront.182682.xyz"' \
+    "$(jq -c '.subscription_config | fromjson | .cdnEdgeAddress' "$(install_identity_file)")"
+SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+load_install_identity || fail "安装身份读取失败；无法安全续装"
+assert_equal "续装恢复 CDN 优选地址" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudfront.182682.xyz"}' \
+    "${SUBSCRIPTION_CONFIG}"
+rm -f -- "$(install_identity_file)"
+unset PROTOCOL CDN_PROFILE_KEY SUBSCRIPTION_CONFIG
+
 # 7. 未知端口归属（无 users 信息）时仍能给出可执行结论
 busy 443
 FAKE_SS_OWNER="@none"

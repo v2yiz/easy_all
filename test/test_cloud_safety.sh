@@ -1311,6 +1311,250 @@ for signal_name in INT TERM; do
         "${signal_output}" "STATUS=143"
 done
 
+# --- 9. CDN 优选连接地址（cdnEdgeAddress）：安装交互与订阅事务顺序 ---------------
+# design §2 条 1/2/4/6、§11 第 8-12 项。
+
+# 9a. 四个 CDN 模式的安装入口都调用收集器并拼出该模式的后缀；模式 1 不调用。
+run_edge_collector_case() { # $1=profile -> stdout: 收集器被调用时记录的 "<模式后缀>"
+    local out="${TMP_DIR}/edge-inputs-$1"
+    mkdir -p "${out}/state/certs" "${out}/runtime" "${out}/subs"
+    RUNTIME_TMP="${out}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${out}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${out}/state/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out}/subs" \
+    EDGE_CALLS="${out}/calls.log" \
+        bash -c '
+            source "$1/profiles/$2.sh"
+            prompt_value() { printf "%s" "${2:-}"; }
+            prompt_secret() { printf "%s" "0123456789abcdef0123456789abcdef"; }
+            cloudflare_collect_api_token() { :; }
+            collect_cdn_edge_address() { printf "%s\n" "$(cdn_edge_mode_suffix)" >>"${EDGE_CALLS}"; }
+            CF_ZONE=example.com
+            VPS_PUBLIC_IPV4=203.0.113.10
+            SUBSCRIPTION_MODE=deploy
+            VLESS_UUID=11111111-2222-4333-8444-555555555555
+            collect_install_inputs
+        ' _ "${ROOT_DIR}" "$1" >"${out}/log" 2>&1 || {
+        cat "${out}/log" >&2
+        return 1
+    }
+    cat "${out}/calls.log" 2>/dev/null || true
+}
+while read -r edge_profile edge_suffix; do
+    edge_calls=$(run_edge_collector_case "${edge_profile}") \
+        || fail "${edge_profile} 安装输入收集失败"
+    assert_equal "${edge_profile} 安装调用 CDN 优选收集器" "${edge_suffix}" "${edge_calls}"
+done <<'EDGE_PROFILES'
+cloudfront cloudfront.182682.xyz
+combined cloudfront.182682.xyz
+cloudflare cloudflare.182682.xyz
+combined-cloudflare cloudflare.182682.xyz
+EDGE_PROFILES
+edge_anytls_calls=$(run_edge_collector_case anytls) || fail "模式 1 安装输入收集失败"
+assert_equal "模式 1 不调用 CDN 优选收集器" "" "${edge_anytls_calls}"
+
+# 9b. 真实非终端 stdin：收集器整体 no-op（不提示也不改配置；验收条件 6）。
+edge_cfg_none='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+edge_cfg_upper='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"E6G7GS3V1G.Cloudflare.182682.XYZ"}'
+for edge_noop_cfg in "${edge_cfg_upper}" "${edge_cfg_none}"; do
+    edge_noop=$(
+        RUNTIME_TMP="${TMP_DIR}/edge-noop/runtime" \
+        EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/edge-noop/state" \
+        EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/edge-noop/certs" \
+            bash -c '
+                source "$1/profiles/combined-cloudflare.sh"
+                CF_ZONE=example.com
+                DIRECT_DOMAIN=direct.example.com
+                DIRECT_NODE_NAME="US-direct"
+                CF_NODE_DOMAIN=cf.example.com
+                CF_NODE_PREFIX=CF
+                VLESS_UUID=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+                VLESS_PATH=/vless-0123456789ab
+                cdn_derive_runtime_fields
+                SUBSCRIPTION_CONFIG=$2
+                read_bilingual() { printf "PROMPT\n"; }
+                collect_cdn_edge_address
+                [[ "${SUBSCRIPTION_CONFIG}" == "$2" ]] && printf "UNCHANGED\n"
+            ' _ "${ROOT_DIR}" "${edge_noop_cfg}" 2>&1
+    )
+    assert_contains "非终端下收集器不改订阅配置（${edge_noop_cfg}）" "${edge_noop}" "UNCHANGED"
+    assert_not_contains "非终端下收集器不提示（${edge_noop_cfg}）" "${edge_noop}" "PROMPT"
+done
+
+# 9c. 交互收集器：stub tty 判定与读入原语（与既有 prompt_value stub 同手法）。
+# 输出分块：STATUS= / CONFIG= / STDOUT: / STDERR:，供 stream_of 与 config_of 分开断言。
+edge_case() { # $1=订阅配置 $2=INSTALL_RESUME $3=被测函数 $4=函数参数 $5=PROTOCOL 覆盖；其后为依次读入的答案
+    local dir config=$1 resume=$2 fn=$3 fn_arg=$4 protocol=$5 status_line config_line
+    shift 5
+    dir=$(mktemp -d "${TMP_DIR}/edge-case.XXXXXX")
+    mkdir -p "${dir}/state/certs" "${dir}/runtime"
+    : >"${dir}/answers"
+    while (($# > 0)); do
+        printf '%s\n' "$1" >>"${dir}/answers"
+        shift
+    done
+    RUNTIME_TMP="${dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${dir}/state/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${dir}/subs" \
+    EDGE_ANSWERS="${dir}/answers" EDGE_STDOUT="${dir}/stdout" EDGE_STDERR="${dir}/stderr" \
+    EDGE_CONFIG="${config}" EDGE_RESUME="${resume}" EDGE_FN="${fn}" \
+    EDGE_FN_ARG="${fn_arg}" EDGE_PROTOCOL="${protocol}" \
+        bash -c '
+            source "$1/profiles/combined-cloudflare.sh"
+            CF_ZONE=example.com
+            DIRECT_DOMAIN=direct.example.com
+            DIRECT_NODE_NAME="US-direct"
+            CF_NODE_DOMAIN=cf.example.com
+            CF_NODE_PREFIX=CF
+            VLESS_UUID=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+            VLESS_PATH=/vless-0123456789ab
+            cdn_derive_runtime_fields
+            [[ -z "${EDGE_PROTOCOL}" ]] || PROTOCOL=${EDGE_PROTOCOL}
+            SUBSCRIPTION_CONFIG=${EDGE_CONFIG}
+            INSTALL_RESUME=${EDGE_RESUME}
+            # 测试通过覆盖 tty 判定模拟交互终端（同 dns_takeover_interactive 惯例）。
+            cdn_edge_interactive() { return 0; }
+            read_bilingual() {
+                printf "%s\n" "$1" >&2
+                local next=""
+                if [[ -s "${EDGE_ANSWERS}" ]]; then
+                    next=$(head -n 1 "${EDGE_ANSWERS}")
+                    tail -n +2 "${EDGE_ANSWERS}" >"${EDGE_ANSWERS}.next"
+                    mv -f "${EDGE_ANSWERS}.next" "${EDGE_ANSWERS}"
+                fi
+                printf -v "$2" "%s" "${next}"
+            }
+            "${EDGE_FN}" "${EDGE_FN_ARG}" >"${EDGE_STDOUT}" 2>"${EDGE_STDERR}" \
+                || printf "STATUS=%s\n" "$?"
+            printf "CONFIG=%s\n" "${SUBSCRIPTION_CONFIG}"
+        ' _ "${ROOT_DIR}" >"${dir}/log" 2>&1 || true
+    status_line=$(sed -n 's/^STATUS=//p' "${dir}/log" 2>/dev/null)
+    config_line=$(sed -n 's/^CONFIG=//p' "${dir}/log" 2>/dev/null)
+    printf 'STATUS=%s\nCONFIG=%s\nSTDOUT:\n%s\nSTDERR:\n%s\n' \
+        "${status_line:-0}" "${config_line}" \
+        "$(cat "${dir}/stdout" 2>/dev/null)" "$(cat "${dir}/stderr" 2>/dev/null)"
+}
+stream_of() { # $1=edge_case 块 $2=STDOUT|STDERR
+    printf '%s\n' "$1" | awk -v want="$2" '
+        /^STDOUT:$/ { section = "STDOUT"; next }
+        /^STDERR:$/ { section = "STDERR"; next }
+        /^STATUS=/ || /^CONFIG=/ { section = ""; next }
+        section == want { print }
+    '
+}
+config_of() { sed -n 's/^CONFIG=//p' <<<"$1"; }
+status_of() { sed -n 's/^STATUS=//p' <<<"$1"; }
+
+# 分支 1：字段是生成的 10 位前缀形态 → 提示默认前缀，回车后值不变（验收条件 2）。
+edge_cfg_prefix='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}'
+edge_branch1=$(edge_case "${edge_cfg_prefix}" 1 collect_cdn_edge_address "" "" "")
+assert_contains "分支 1 提示默认前缀" "$(stream_of "${edge_branch1}" STDERR)" \
+    "CDN 优选前缀 [k7m2qp4x9d]（回车采用；输入 off 关闭）："
+assert_equal "分支 1 回车后配置不变" "${edge_cfg_prefix}" "$(config_of "${edge_branch1}")"
+assert_not_contains "提示文案不用 prompt_value 的默认值后缀" \
+    "${edge_branch1}" "直接回车使用默认值"
+
+# 分支 2：自定义合法优选域名 → 不提示、原样保留，并在 stdout 告知改法（验收条件 2）。
+edge_cfg_custom='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"edge.mycdn.example"}'
+edge_branch2=$(edge_case "${edge_cfg_custom}" 0 collect_cdn_edge_address "" "" "")
+assert_equal "分支 2 不提示" "" "$(stream_of "${edge_branch2}" STDERR)"
+assert_equal "分支 2 原样保留自定义优选域名" "${edge_cfg_custom}" "$(config_of "${edge_branch2}")"
+assert_contains "分支 2 stdout 打印当前优选地址" "$(stream_of "${edge_branch2}" STDOUT)" \
+    "edge.mycdn.example"
+assert_contains "分支 2 指向 edit-sub" "$(stream_of "${edge_branch2}" STDOUT)" "edit-sub"
+
+# 分支 3：续装且无字段 → 提示默认 off，回车后仍无字段。
+edge_branch3=$(edge_case "${edge_cfg_none}" 1 collect_cdn_edge_address "" "" "")
+assert_contains "分支 3 续装默认 off" "$(stream_of "${edge_branch3}" STDERR)" \
+    "CDN 优选前缀 [off]（回车采用；输入 off 关闭）："
+assert_equal "分支 3 回车后仍无字段" "${edge_cfg_none}" "$(config_of "${edge_branch3}")"
+
+# 分支 4：全新首装且无字段 → 默认是新的 10 位前缀，回车后拼上当前模式后缀。
+edge_branch4=$(edge_case "${edge_cfg_none}" 0 collect_cdn_edge_address "" "" "")
+edge_branch4_default=$(sed -n 's/.*CDN 优选前缀 \[\([^]]*\)\].*/\1/p' \
+    <<<"$(stream_of "${edge_branch4}" STDERR)")
+[[ "${edge_branch4_default}" =~ ^[a-z][a-z0-9]{9}$ ]] \
+    || fail "分支 4 默认值必须是 10 位随机前缀，实际 <${edge_branch4_default}>"
+assert_equal "分支 4 回车后按模式拼完整地址" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"'"${edge_branch4_default}"'.cloudflare.182682.xyz"}' \
+    "$(config_of "${edge_branch4}")"
+
+# 试运行失败家族：不可解析 / 非对象 JSON / 无关非法节点 / 非法优选值 → 零副作用。
+while IFS= read -r edge_bad_config; do
+    edge_failed=$(edge_case "${edge_bad_config}" 0 collect_cdn_edge_address "" "" "")
+    assert_equal "试运行失败不提示：${edge_bad_config}" "" "$(stream_of "${edge_failed}" STDERR)"
+    assert_equal "试运行失败无 info 行：${edge_bad_config}" "" "$(stream_of "${edge_failed}" STDOUT)"
+    assert_equal "试运行失败不改配置：${edge_bad_config}" "${edge_bad_config}" \
+        "$(config_of "${edge_failed}")"
+    assert_equal "试运行失败仍返回 0：${edge_bad_config}" "0" "$(status_of "${edge_failed}")"
+done <<'EDGE_BAD_CONFIGS'
+[1]
+{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[{"type":"vless"}]}
+{bad
+{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"a b"}
+EDGE_BAD_CONFIGS
+
+# 9d. 交互原语：写入判定零副作用、提示循环文案与重填（§11 第 11 项）。
+edge_store_off=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_store_answer off "" "")
+assert_equal "off 删除字段" "${edge_cfg_none}" "$(config_of "${edge_store_off}")"
+edge_store_prefix=$(edge_case "${edge_cfg_none}" 0 cdn_edge_store_answer k7m2qp4x9d "" "")
+assert_equal "合法前缀按模式拼完整地址" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \
+    "$(config_of "${edge_store_prefix}")"
+edge_store_cf=$(edge_case "${edge_cfg_none}" 0 cdn_edge_store_answer k7m2qp4x9d cloudfront "")
+assert_equal "CloudFront 模式拼 cloudfront 后缀" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"}' \
+    "$(config_of "${edge_store_cf}")"
+while IFS= read -r edge_bad_answer; do
+    edge_store_bad=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_store_answer "${edge_bad_answer}" "" "")
+    assert_equal "非法答案零副作用：<${edge_bad_answer}>" "${edge_cfg_prefix}" \
+        "$(config_of "${edge_store_bad}")"
+    assert_equal "非法答案返回非零：<${edge_bad_answer}>" "1" "$(status_of "${edge_store_bad}")"
+done <<'EDGE_BAD_ANSWERS'
+K7M2QP4X9D
+ab
+abcdefghijk
+k7m2qp4x9d 
+ off
+off 
+EDGE_BAD_ANSWERS
+
+edge_loop=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "ab" "k2v8nq4zt6")
+assert_equal "重填前只打印同一提示两次" "2" \
+    "$(stream_of "${edge_loop}" STDERR | grep -c 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用；输入 off 关闭）：')"
+assert_equal "非法输入后的说明行落 stdout（仓库 warn 惯例）" "1" \
+    "$(stream_of "${edge_loop}" STDOUT | grep -c .)"
+assert_equal "stderr 只有提示行" "0" \
+    "$(stream_of "${edge_loop}" STDERR | grep -vc 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用；输入 off 关闭）：')"
+assert_equal "重填后写入第二次输入" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudflare.182682.xyz"}' \
+    "$(config_of "${edge_loop}")"
+edge_loop_off=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "off")
+assert_equal "off 序列删除字段" "${edge_cfg_none}" "$(config_of "${edge_loop_off}")"
+edge_loop_enter=$(edge_case "${edge_cfg_none}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "")
+assert_equal "空输入采用默认值" \
+    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \
+    "$(config_of "${edge_loop_enter}")"
+
+# 9e. 结构断言：每个「定义 update_subscription 且渲染订阅」的模式库，
+# 都必须在快照与写运行配置之前校验订阅配置（验收条件 4 结构证据）。
+edge_mode_libs=""
+for edge_mode_file in "${ROOT_DIR}"/lib/*-mode.sh; do
+    grep -q '^update_subscription() {' "${edge_mode_file}" || continue
+    grep -q 'write_subscriptions' "${edge_mode_file}" || continue
+    edge_mode_libs="${edge_mode_libs}${edge_mode_libs:+ }$(basename "${edge_mode_file}")"
+    edge_mode_body=$(awk '/^update_subscription\(\) \{/,/^\}/' "${edge_mode_file}")
+    printf '%s\n' "${edge_mode_body}" | awk '
+        /cdn_apply_subscription_config/ { apply = NR }
+        /snapshot_subscription_update/ { snapshot = NR }
+        /write_runtime_config/ { write = NR }
+        END { exit !(apply && snapshot && write && apply < snapshot && apply < write) }
+    ' || fail "${edge_mode_file} 的 update_subscription 必须在快照与写运行配置前校验订阅配置"
+done
+assert_equal "订阅事务模式库清单" "anytls-mode.sh cloudflare-mode.sh cloudfront-mode.sh" \
+    "${edge_mode_libs}"
+
 run_tls_certificate_cases
 
 printf 'ok - 凭据、strict 顺序、DNS 归属、证书生效与服务编排测试通过\n'

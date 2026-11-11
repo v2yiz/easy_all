@@ -46,12 +46,13 @@ Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完�
 **VLESS WebSocket（模式 2 / 3 / 4 / 5）** 的本机 CDN 节点只有**一个**，名称默认 `🇺🇸AWS`（模式 2/4）
 或 `🇺🇸CF`（模式 3/5），安装时可改；连接参数固定为：
 
-- 节点地址（`server`）、TLS `servername` 与 WebSocket `Host` 都是同一个 CDN 节点域名（如 `cf.example.com`），不是 IP；
+- 节点地址（`server`）是连接地址，安装时若确认了 CDN 优选地址则是优选域名（如 `m3q8a1w7zr.cloudfront.182682.xyz`），否则是 CDN 节点域名（如 `cf.example.com`）；TLS `servername` 与 WebSocket `Host` 始终是 CDN 节点域名。地址都是域名，不是 IP；
 - 端口 `443`、TLS 开启、`network: ws`、`skip-cert-verify: false`、`client-fingerprint: chrome`、`packet-encoding: xudp`；
 - `ws-opts.path` 是安装时生成并精确匹配的随机路径，`ws-opts.headers.Host` 与 `servername` 相同。
 
 分享链接形如
 `vless://<uuid>@cf.example.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-...&packetEncoding=xudp#<节点名>`。
+启用 CDN 优选地址时只有 `@` 后换成优选域名（如 `m3q8a1w7zr.cloudfront.182682.xyz`），`sni` 与 `host` 仍是节点域名。
 
 注意区分证书来源：客户端只校验 viewer / 直连 / 橙云边缘证书（模式 1/5 的直连是 Let's Encrypt 证书，模式 2/4 是 AWS ACM，
 模式 3 是 Cloudflare 边缘证书）；源站侧的 Let's Encrypt 证书与 Cloudflare Origin CA 只在边缘到源站之间使用，
@@ -60,6 +61,11 @@ Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完�
 “能导入”不代表所有节点都能连接。客户端需要支持 AnyTLS 与 VLESS WebSocket（Mihomo 建议 ≥ 1.19.9）；
 本版本不提供 `httpupgrade` 传输选项。旧版订阅里的 Cloudflare 优选 IP 节点已不再生成，升级或重装后请在客户端
 **重新导入**新链接（重装会产生新的 AnyTLS 密码、UUID、路径与 Token）。
+
+模式 2–5 的安装会生成一个 10 位随机前缀并拼成 CDN 优选连接地址（`*.cloudfront.182682.xyz` /
+`*.cloudflare.182682.xyz`），它**只替换连接地址**（节点 `server` / Address）：SNI、WebSocket `Host`、
+证书校验与订阅 URL 都不变。优选域名解析失效导致连不上时，用 `sudo easy_all edit-sub` 删除订阅配置里的
+`cdnEdgeAddress` 并保存，客户端刷新订阅即回到直接连接 CDN 节点域名。
 
 ## 客户端分流与节点分组
 
@@ -264,8 +270,8 @@ https://1.1.1.1/dns-query
 | FlClash | 设置 → 网络 / DNS → 覆写 DNS |
 | Clash Meta for Android | 设置 → 覆写 → DNS 覆写 |
 
-模式 2/3/4/5 的订阅只包含**一个**本机 CDN 节点（模式 2/4 连接 CloudFront 节点域名，由 AWS 全球 Anycast 调度；
-模式 3/5 连接橙云节点域名，由 Cloudflare 边缘调度），没有优选 IP、测速组或额外兜底节点（模式 4 的 `AUTO` / `CDN-FALLBACK` 只是本机直连与 CDN 之间的自动选择）。订阅能够更新但节点无法连接时，按顺序排查：
+模式 2/3/4/5 的订阅只包含**一个**本机 CDN 节点（模式 2/4 经 CloudFront 分发调度，模式 3/5 经 Cloudflare 边缘调度），
+连接地址可能是安装时确认的 CDN 优选域名（见上文），TLS SNI 与 WebSocket `Host` 仍是节点域名；没有聚合优选 IP 列表、测速组或额外兜底节点（模式 4 的 `AUTO` / `CDN-FALLBACK` 只是本机直连与 CDN 之间的自动选择）。订阅能够更新但节点无法连接时，先按上文用 `sudo easy_all edit-sub` 删除 `cdnEdgeAddress` 并刷新订阅排除优选域名问题，再按顺序排查：
 
 1. 确认客户端支持 AnyTLS / VLESS WebSocket（建议内核 ≥ 1.19.9），且没有开启“跳过证书校验”；
 2. 模式 4 先在 `PROXY` 里手动切到直连节点，确认是不是 CDN 入口单独不通；

@@ -49,7 +49,7 @@
 - **证书**：两套独立证书——viewer 侧 AWS ACM（固定 `us-east-1`，SAN 为节点域名；订阅同域，去重后只有一项）；源站侧 Let's Encrypt（只覆盖源站域名，经 Cloudflare DNS-01 签发与续期，不开放 `80`）。旧装若已配置独立订阅域名，仍保留原 CNAME 与两项 SAN。
 - **分发策略**：缓存策略 `CachingDisabled`（`4135ea2d-6df8-44a3-9df3-4b5a84be39ad`）、源站请求策略 `AllViewerExceptHostHeader`（`b689b0a8-53d0-40ab-baf2-68738e2966ac`，转发全部 query / User-Agent / Content-Type 与 WebSocket 升级所需头）、7 种方法、HTTP/2、`TLSv1.2_2021`、`sni-only`、viewer/origin 均 `https-only`、源站 TLS 1.2；`GrpcConfig` 关闭，不启用 WAF、访问日志、Origin Shield 或 Route 53。
 - **Host 处理**：分发不转发 viewer Host，因此 AWS 回源 SNI/Host 就是源站域名（匹配 Let's Encrypt SAN）；Caddy 不再改写 Host，直接把 WebSocket 请求转给 `127.0.0.1:10086`。
-- **订阅**：本机节点只有一个 CDN 节点（默认名 `🇺🇸AWS`，安装时可改），没有优选 IP、测速组或自动兜底节点。
+- **订阅**：本机节点只有一个 CDN 节点（默认名 `🇺🇸AWS`，安装时可改），没有聚合优选 IP 列表、测速组或自动兜底节点；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（如 `m3q8a1w7zr.cloudfront.182682.xyz`），TLS SNI 与 WebSocket `Host` 仍是节点域名。
 - **暴露面**：源站 `443` 对公网可达（CloudFront 回源没有可枚举的固定 IP 段），源站安全依赖源站头、精确路径与业务鉴权。
 
 ### 1.3 模式 3：Cloudflare 橙云（单域名）
@@ -72,6 +72,7 @@
 - **`Full (strict)` 门禁**：安装与 `apply-cloud` 在创建任何 DNS/证书资源前只读读取 Zone SSL 设置，只接受 `strict`；`full`/`flexible`/`off` 与 403 权限不足都在创建资源前停止，工具不会自动修改全区设置。
 - **回源白名单**：VPS `443` 只对 Cloudflare 官方回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin-443`）。这是公共回源网段，不是账户级鉴权。
 - **无源站头、无熔断**：橙云链路没有 `X-Easy-All-Origin-Key`，也没有 mangle 计量与 985 GB 额度（这些只属于模式 2/4）。
+- **订阅**：本机节点只有一个橙云 CDN 节点（默认名 `🇺🇸CF`，安装时可改），没有聚合优选 IP 列表或测速组；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（`*.cloudflare.182682.xyz`），TLS SNI 与 WebSocket `Host` 仍是节点域名。
 - **`apply` 的外部访问**：只读取公开的 Cloudflare 回源 IPv4 段与 Origin CA 根证书，不需要账号凭据、不修改云端。
 
 ### 1.4 模式 4：AnyTLS + CloudFront
@@ -89,7 +90,7 @@
 - **端口划分**：直连入站固定在 `443`，CloudFront 源站与订阅站点固定在 `8443`，回环 CDN 入站固定在 `127.0.0.1:10086`；三者都由模式派生，不接受用户另设参数。
 - **证书**：源站域名固定复用直连域名（一条灰云 `A`），Let's Encrypt 只需覆盖直连域名（DNS-01）；viewer 侧仍由 ACM 管理；订阅域名固定复用节点域名。AnyTLS 与 Caddy 共用同一份部署证书。旧装若已配置独立源站域名，仍保留原灰云 `A` 与 SAN。
 - **分发端口**：CloudFront 源站 `HTTPSPort` 由模式派生为 `8443`（模式 2 是 `443`）；分发端口写错会在公网验收阶段失败。
-- **订阅**：本机节点恰为两个——AnyTLS 直连（默认名 `🇺🇸直连`）与 CloudFront CDN（默认名 `🇺🇸AWS`），另附 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；`PROXY` 仍是 `select`，可手动在直连与 CDN 之间切换。
+- **订阅**：本机节点恰为两个——AnyTLS 直连（默认名 `🇺🇸直连`）与 CloudFront CDN（默认名 `🇺🇸AWS`），另附 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；`PROXY` 仍是 `select`，可手动在直连与 CDN 之间切换。CDN 节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
 
 ### 1.5 模式 5：AnyTLS + CloudFlare
 一台 VPS 同时承载直连与橙云两个入口，橙云域名同时提供节点与订阅：
@@ -107,7 +108,7 @@
 - **证书**：与模式 1/4 同一张 Let's Encrypt 证书（DNS-01），SAN 为直连域名与橙云节点域名；不使用 Origin CA——直连 AnyTLS 必须是公信证书，Caddy 回源复用同一份。
 - **Origin Rule**：橙云边缘到 VPS 的连接默认打 `443`，因此用一条 `http_request_origin` 单规则把 `http.host eq <节点域名>` 路由到 `origin.port 8443`；生命周期与模式 1 的订阅回源完全相同，ruleset/rule ID 落盘到 state。
 - **`Full (strict)` 门禁**：橙云回源前只读校验 Zone SSL 为 `strict`，与模式 3 同口径。
-- **订阅**：与模式 3 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有优选 IP、没有源站头、没有 985 GB 计量。
+- **订阅**：与模式 3 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有聚合优选 IP 列表、没有源站头、没有 985 GB 计量。橙云节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
 - **运维**：`apply-cloud` 同步两条 A 记录、证书与 Origin Rule；`renew-cert` 走 Certbot（与模式 1 同路径）；`uninstall` 级联清理两条 A 记录与 Origin Rule。
 
 ## 2. 防火墙、端口与安全边界
@@ -161,6 +162,8 @@
 
 ## 3. 订阅分发与渲染
 
+- **订阅配置 JSON**：`SUBSCRIPTION_CONFIG` 的顶层只有三个键——`allowedTokens`（用户 Token 字典，必需）、`nodes`（外部聚合节点数组，必需）与可选的 `cdnEdgeAddress`（CDN 优选连接地址，只存完整主机名）。`cdnEdgeAddress` 只影响模式 2–5 的本机 CDN 节点：模式 1 接受并持久化该字段，但没有 CDN 入站与 CDN 节点，因此永不渲染。字段缺失或为 `null` 等同于不启用，删除字段即回退到节点域名。形状校验只发生在一处（`lib/local-aggregation.sh` 的 `normalize_subscription_config`，install / `edit-sub` / `apply` 全经它），拒绝 `*`、URL、端口、路径、空白、IP 字面量与单标签主机名，通过后按小写规范化存储；校验失败时 `update_subscription` 在写快照之前就退出，已发布的八份产物与状态不变。该字段随 `SUBSCRIPTION_CONFIG` 原样写入安装身份的 `subscription_config`，续装据此沿用原优选地址，不会重新随机。
+- **连接地址与 SNI/Host 分离**：本机 CDN 节点的连接地址（VLESS URI 的 `@host`、Mihomo `server`、sing-box `server`）取运行期变量 `CF_EDGE_ADDRESS`（由 `cdnEdgeAddress` 在 `apply_local_aggregation_config` 中派生，为空即用 `CF_NODE_DOMAIN`）；TLS SNI（`sni=`、`servername`、`tls.server_name`）、证书校验与 WebSocket `Host` 始终是节点域名，订阅 URL 域名、云端 DNS、回源与 AnyTLS 直连都不受影响。
 - **Caddy 路由顺序**：外层 `route` 固定为「CloudFront 密钥守卫 → 精确代理路径 → 精确订阅入口 → health → 404」；模式 1/3 没有源站密钥守卫，依赖回源白名单、`Full (strict)` 与业务鉴权。
 - **订阅入口是精确路径**：matcher 精确列出 `/subscribe` 与 `/sub`，两者进入同一处理器并保留 query；`/subscribe/`、`/subscribed`、裸文件与其他路径一律 `404`，不重定向、不做前缀匹配。
 - **订阅处理器内部顺序**：公共响应头（`Vary: User-Agent`、`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Content-Type-Options: nosniff`、`X-Robots-Tag: noindex, nofollow, noarchive`）先于任何终止响应；随后非 `GET`/`HEAD` 返回 `405`，Token 缺失/错误返回 `403`，订阅未就绪返回 `503`；全部响应都带上述公共头。

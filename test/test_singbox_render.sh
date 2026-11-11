@@ -246,6 +246,28 @@ if (PROTOCOL=anytls; DIRECT_DOMAIN=""; build_anytls_link) >/dev/null 2>&1; then
     fail "缺少 DIRECT_DOMAIN 必须失败"
 fi
 
+# --- CDN 优选连接地址：只换连接地址，SNI 与 Host 仍是节点域名 -----------------
+# 期望值来自 design §2 条 3 / §4.5：连接地址是 CF_EDGE_ADDRESS，SNI、servername、
+# WebSocket Host 保持 CF_NODE_DOMAIN（证书校验、回源 Host 均按节点域名）。
+assert_equal "优选地址只替换 VLESS 链接的连接地址" \
+    "vless://${VLESS_UUID}@edge.example-cdn.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
+    "$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_vless_ws_link)"
+edge_node=$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_mihomo_ws_node)
+assert_contains "优选地址替换 Mihomo server" "${edge_node}" 'server: "edge.example-cdn.com"'
+assert_contains "优选地址不改 Mihomo servername" "${edge_node}" 'servername: "cf.example.com"'
+assert_contains "优选地址不改 Mihomo ws Host" "${edge_node}" 'Host: "cf.example.com"'
+assert_equal "优选地址只替换 sing-box server" \
+    "edge.example-cdn.com cf.example.com cf.example.com" \
+    "$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_singbox_ws_outbound \
+        | jq -r '"\(.server) \(.tls.server_name) \(.transport.headers.Host)"')"
+# 空值与未设置都必须回落到节点域名：无字段的既有部署产物逐字节不变（验收条件 5）。
+assert_equal "空优选地址不改变 VLESS 链接" "$(build_vless_ws_link)" \
+    "$(CF_EDGE_ADDRESS="" build_vless_ws_link)"
+assert_equal "空优选地址不改变 Mihomo 节点" "$(build_mihomo_ws_node)" \
+    "$(CF_EDGE_ADDRESS="" build_mihomo_ws_node)"
+assert_equal "空优选地址不改变 sing-box 节点" "$(build_singbox_ws_outbound)" \
+    "$(CF_EDGE_ADDRESS="" build_singbox_ws_outbound)"
+
 # --- 写入与校验 -------------------------------------------------------------
 PROTOCOL=combined-cloudfront
 write_singbox_config 0

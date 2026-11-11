@@ -4,7 +4,8 @@
 # External nodes keep their own protocol fields (vless reality/xhttp, mieru); local
 # easy_all nodes are built by lib/singbox-runtime.sh.
 # One config object carries both credentials and extra nodes:
-#   {"allowedTokens": {"owner": "..."}, "nodes": [...]}
+#   {"allowedTokens": {"owner": "..."}, "nodes": [...], "cdnEdgeAddress": "..."}
+# cdnEdgeAddress is optional and only affects the local CDN node's connection address.
 # Nodes marked optional are served only when the client asks for node=all.
 
 # 保留组名的唯一来源：Profile source 时只声明数组（不调用 jq），安装前置预检可直接使用；
@@ -13,13 +14,31 @@ readonly LOCAL_AGGREGATION_RESERVED_NAMES=(AUTO CDN-AUTO CDN-FALLBACK PROXY GLOB
 
 # 校验并规范化整个订阅配置；节点名冲突由调用方通过 LOCAL_NODE_NAMES 传入。
 normalize_subscription_config() {
-    local raw=${1:-} local_names=${2:-[]} tokens nodes reserved
-    jq -e 'type == "object" and ((keys - ["allowedTokens","nodes"]) | length) == 0' \
+    local raw=${1:-} local_names=${2:-[]} tokens nodes reserved edge
+    jq -e 'type == "object" and ((keys - ["allowedTokens","nodes","cdnEdgeAddress"]) | length) == 0' \
         <<<"${raw}" >/dev/null 2>&1 \
         || {
-            printf '订阅配置只能包含 allowedTokens 与 nodes 两个键\n' >&2
+            printf '订阅配置只能包含 allowedTokens、nodes 与可选的 cdnEdgeAddress 键\n' >&2
             return 1
         }
+    # 优选连接地址的形状校验单独一次调用：不加 2>&1，jq 的 error() 文案必须直达 stderr。
+    # 只接受完整主机名（SNI / Host 仍用节点域名，所以这里不支持 *、URL、端口与路径）
+    # 与 IP 字面量：连接地址必须是可被客户端解析的主机名。
+    jq -e '
+        def edge_ok:
+            type == "string" and length >= 1 and length <= 253
+            and test("^[A-Za-z0-9.-]+$")
+            and (test("^[0-9.]+$") | not)
+            and (contains("..") | not)
+            and (startswith(".") | not) and (endswith(".") | not)
+            and ([split(".")[] |
+                select(test("^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$") | not)] | length) == 0
+            and (split(".") | length) >= 2;
+        if has("cdnEdgeAddress") and .cdnEdgeAddress != null then
+            if (.cdnEdgeAddress | edge_ok) then true
+            else error("cdnEdgeAddress 必须是完整主机名（FQDN；不支持 *、URL、端口或路径）") end
+        else true end
+    ' <<<"${raw}" >/dev/null || return 1
     tokens=$(jq -c '.allowedTokens // empty' <<<"${raw}") || return 1
     [[ -n "${tokens}" ]] || {
         printf '订阅配置缺少 allowedTokens\n' >&2
@@ -167,8 +186,11 @@ normalize_subscription_config() {
           else . end
         | $nodes
     ' <<<"$(jq -c '.nodes // []' <<<"${raw}")") || return 1
-    jq -cn --argjson tokens "${tokens}" --argjson nodes "${nodes}" \
-        '{allowedTokens: $tokens, nodes: $nodes}'
+    # 字段缺失或 null 时不输出该键：无字段的旧状态保持逐字节相同的规范化结果。
+    edge=$(jq -r '.cdnEdgeAddress // "" | ascii_downcase' <<<"${raw}") || return 1
+    jq -cn --argjson tokens "${tokens}" --argjson nodes "${nodes}" --arg edge "${edge}" \
+        '{allowedTokens: $tokens, nodes: $nodes}
+         + (if $edge != "" then {cdnEdgeAddress: $edge} else {} end)'
 }
 
 # 旧状态/旧环境只提供 Token 字典时，折叠成 nodes 为空的订阅配置。
@@ -184,7 +206,9 @@ apply_local_aggregation_config() {
     SUBSCRIPTION_CONFIG=${normalized}
     ALLOWED_TOKENS=$(jq -c '.allowedTokens' <<<"${normalized}") || return 1
     AGGREGATION_NODES=$(jq -c '.nodes' <<<"${normalized}") || return 1
-    export ALLOWED_TOKENS AGGREGATION_NODES
+    # 连接地址的运行期派生值：空串等于不启用优选地址（回退节点域名）。
+    CF_EDGE_ADDRESS=$(jq -r '.cdnEdgeAddress // ""' <<<"${normalized}") || return 1
+    export ALLOWED_TOKENS AGGREGATION_NODES CF_EDGE_ADDRESS
 }
 
 # 生效的聚合节点（默认不下发 optional；node=all 时才包含）。
