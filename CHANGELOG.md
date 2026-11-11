@@ -32,7 +32,7 @@
 新增 sing-box 完整 JSON 订阅（八份订阅产物）：
 
 - **产物**：在六份 Mihomo/Base64 之外新增 `singbox.json` / `singbox-all.json`，与其余产物同批渲染、同批原子发布，权限 `0600`。
-- **格式协商**：显式 flag（`flag=singbox`）→ 已确认的 SFA UA → Clash UA → Base64；JSON 目标文件缺失返回 `503` 且不降级，裸文件访问仍 `404`，原有 YAML / Base64 行为不变。
+- **格式协商**：显式 flag（如 `flag=singbox`）→ 已确认的 SFA / SFI / SFM / SFT / SFW / SFL UA → Clash UA → Base64；JSON 目标文件缺失返回 `503` 且不降级，裸文件访问仍 `404`，原有 YAML / Base64 行为不变。
 - **配置内容**：`templates/singbox.json` 提供 TUN 与混合入口、`PROXY` 选择器（模式 4 另有 `AUTO`，JSON 不生成 `CDN-FALLBACK`）、Fake-IP DNS 与分流规则集；节点由结构化数据生成，不反向解析 URI/YAML。
 - **排除与提示**：`xhttp`、`mieru` 与 `fp` 不在锁定核心 uTLS 枚举内的聚合节点只从 JSON 排除，`apply` / `edit-sub` 打印节点名、原因与数量，Mihomo / Base64 不受影响。
 - **流控边界不变**：CDN 就绪判定与计量仍只使用六份 Mihomo/Base64 产物；JSON 缺失或损坏不会放开或封锁 CDN，也不清零用量。

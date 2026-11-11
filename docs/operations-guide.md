@@ -27,8 +27,9 @@ sudo easy_all apply
 - 保护待落实（`blocked=true` 且 `enforced=false`）时先做[受限安全恢复](#63-各命令在保护停机时的准入)，恢复失败直接非零停止，不会带着开放配置启动 sing-box。
 - 订阅配置损坏时普通 `apply` 会失败并提示 `sudo easy_all edit-sub`，不会静默把聚合节点清空。
 - 证书缺失或异常（`status` 显示「证书异常/缺失」）应执行 `sudo easy_all renew-cert`；ACM 证书或 CloudFront 分发需要重建时用 `apply-cloud`。
-- 订阅发布验收同时覆盖六份旧产物与 sing-box JSON：JSON 候选结构或 `sing-box check` 失败会让整次发布失败并保留旧订阅，不会留下半份 JSON。首装、`apply`、`apply-cloud`、`edit-sub` 在写入后都会做一次本机 HTTP 验收（`flag=singbox`、SFA UA 自动识别、显式 flag 覆盖、`node=all`、HEAD 与裸文件 `404`）。
-- **升级后要执行一次 `apply` 才会出现 JSON**：`self-update` 只替换代码，不重建 Caddyfile 与订阅。执行 `apply` 之前，线上仍是旧 Caddyfile（没有 JSON 分支），`flag=singbox` 与 SFA UA 会按旧规则回落到 Base64 订阅（`200`，客户端会导入一份平铺列表）；只有 Caddy 配置已更新（`apply` 已写入）而 JSON 产物缺失时才返回 `503`。两种情况都不影响原有的 YAML 客户端；`sudo easy_all subscription` 在缺少 JSON 产物时会提示先执行 `apply`。
+- 订阅发布验收同时覆盖六份旧产物与 sing-box JSON：JSON 候选结构或 `sing-box check` 失败会让整次发布失败并保留旧订阅，不会留下半份 JSON。首装、`apply`、`apply-cloud`、`edit-sub` 在写入后都会做一次本机 HTTP 验收（`flag=singbox`、SFA/SFI/SFM/SFT/SFW/SFL UA 自动识别、显式 flag 覆盖、`node=all`、HEAD 与裸文件 `404`）。
+- **升级后要执行一次 `apply` 才会出现 JSON**：`self-update` 只替换代码，不重建 Caddyfile 与订阅。执行 `apply` 之前，线上仍是旧 Caddyfile（没有 JSON 分支），`flag=singbox` 与 sing-box 客户端 UA 会按旧规则回落到 Base64 订阅（`200`，客户端会导入一份平铺列表）；只有 Caddy 配置已更新（`apply` 已写入）而 JSON 产物缺失时才返回 `503`。两种情况都不影响原有的 YAML 客户端；`sudo easy_all subscription` 在缺少 JSON 产物时会提示先执行 `apply`。
+- 已能下发 JSON 的旧部署也需要执行 `apply` 才会启用 SFI / SFM / SFT / SFW / SFL 的 UA 自动识别。
 - **JSON 故障不影响 CDN 流量保护**：定时计量与 `cdn-traffic-sync` 只使用原来的六产物门禁，JSON 缺失或损坏不会放开或封锁 CDN，也不会清零用量；修复方式是运行 `sudo easy_all apply`。
 
 ### 1.3 `apply-cloud`：同步云端资源

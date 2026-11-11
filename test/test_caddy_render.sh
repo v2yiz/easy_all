@@ -223,8 +223,11 @@ assert_before "Content-Disposition 早于 YAML 分支" \
 
 # JSON 分支：flag 优先于 UA，缺失产物返回 503，且不降级到其他格式。
 assert_contains "flag 强制 JSON 列表" "${ready_body}" "{query.flag}.lowerAscii() in ['singbox','sing-box']"
-assert_contains "已确认 SFA UA 自动识别" "${ready_body}" \
-    ".startsWith('sfa (sing-box ')"
+# 六个已确认官方客户端前缀逐个验收，SFT（tvOS）只能手动创建远程配置，最依赖远程 JSON。
+for client in sfa sfi sfm sft sfw sfl; do
+    assert_contains "已确认 ${client} UA 自动识别" "${ready_body}" \
+        ".startsWith('${client} (sing-box ')"
+done
 assert_not_contains "不对任意 sing-box UA 通配" "${ready_body}" "matches('.*sing-box.*')"
 assert_contains "JSON 缺失返回 503" "${ready_body}" "respond @easy_all_sub_json_missing 503"
 assert_contains "JSON all 缺失返回 503" "${ready_body}" "respond @easy_all_sub_json_all_missing 503"

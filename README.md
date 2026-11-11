@@ -85,7 +85,7 @@ sudo easy_all status
 sudo easy_all subscription
 ```
 
-- **客户端支持**：支持导入 **Mihomo (Clash Verge Rev / Clash Nyanpasu / FlClash)**、**sing-box (SFA / SFM)** 等主流客户端。
+- **客户端支持**：支持导入 **Mihomo (Clash Verge Rev / Clash Nyanpasu / FlClash)**、**sing-box (SFA / SFI / SFM / SFT / SFW / SFL)** 等主流客户端。
 - **自动适配**：订阅接口按 User-Agent 自动分发 sing-box 完整 JSON、Mihomo 配置或通用 Base64。支持通过 `&flag=singbox|clash|base64` 强制格式，或追加 `&node=all` 携带外部聚合节点。
 - 更多客户端配置、规则分流与导入故障排查详见 [客户端使用指南](docs/client-guide.md)。
 

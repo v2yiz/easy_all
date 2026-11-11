@@ -9,21 +9,22 @@ easy_all 生成标准 Mihomo（Clash Meta）、sing-box 完整 JSON 与通用 Ba
 sudo easy_all subscription
 ```
 
-复制安装输出中的订阅地址，在客户端的“从 URL 导入”位置添加并启用；同一个地址会按客户端自动下发
-sing-box JSON、Mihomo YAML 或 Base64，无需挑选链接或手工加 `flag=clash`。
+复制命令输出中的订阅地址，在客户端从 URL 导入并启用。服务端按客户端的请求选择 sing-box JSON、
+Mihomo YAML 或 Base64；使用 sing-box 客户端时，请按下文选择[完整 JSON 的导入方式](#sing-box-客户端完整-json-订阅)。
 订阅地址和 UUID 都是访问凭据，不要公开。
 
 ## 客户端选择
 
-| 平台 | 推荐客户端 |
-| --- | --- |
-| Windows | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases) |
-| macOS | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases) |
-| Android | [Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Clash Meta for Android](https://github.com/MetaCubeX/ClashMetaForAndroid/releases) |
-| iOS / iPadOS | [Clash Mi](https://clashmi.app/download) |
-| Linux | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Mihomo Core](https://github.com/MetaCubeX/mihomo/releases) |
+| 平台 | Mihomo（YAML） | sing-box（完整 JSON） |
+| --- | --- | --- |
+| Windows | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases) | [sing-box for Desktop（SFW）](https://sing-box.sagernet.org/clients/desktop/)，Windows 10+，安装包为 `SFW-*.exe` |
+| macOS | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases) | [sing-box for Apple platforms（SFM）](https://sing-box.sagernet.org/clients/apple/#download-macos-standalone-version)，macOS 13+，安装包为 `SFM-*.pkg` |
+| Android | [Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Clash Meta for Android](https://github.com/MetaCubeX/ClashMetaForAndroid/releases) | [sing-box for Android（SFA）](https://sing-box.sagernet.org/clients/android/)，手动安装时选 `SFA-*.apk` |
+| iOS / iPadOS | [Clash Mi](https://clashmi.app/download) | [sing-box MT（SFI）](https://apps.apple.com/us/app/sing-box-mt/id6785326793)，iOS / iPadOS 15+，需使用中国大陆以外地区的 Apple 账户；Apple TV 用同一应用的 SFT（tvOS 17+） |
+| Linux | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Clash Mi](https://clashmi.app/download)、[Bettbox](https://github.com/appshubcc/Bettbox/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Mihomo Core](https://github.com/MetaCubeX/mihomo/releases) | [sing-box for Desktop（SFL）](https://sing-box.sagernet.org/clients/desktop/)，按发行版选择 `SFL-*` 软件包 |
 
-请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。
+请从官方发布页或应用商店下载与操作系统、CPU 架构匹配的版本。桌面图形客户端请选上述前缀的安装包，
+发布页的 `sing-box-*` 包是命令行内核。
 
 本机节点只有两类：AnyTLS 直连（模式 1 / 4 / 5）与 VLESS WebSocket（模式 2 / 3 / 4 / 5）。两者端口都是 `443`，
 都使用公信证书，`skip-cert-verify` 固定为 `false` —— 不要在客户端开启“跳过证书校验”。
@@ -80,11 +81,12 @@ YouTube 与其他代理流量统一使用当前选择。
 
 ## sing-box 客户端（完整 JSON 订阅）
 
-已核实的自动识别客户端是官方 **sing-box Android 客户端（SFA）**：它随远程配置请求发送
-`SFA (sing-box <版本>; language <语言>)`，订阅服务器据此直接下发完整 JSON。其他 sing-box 内核客户端
-（SFI / SFM / SFT / SFW、Hiddify、Karing、NekoBox 等）目前没有核实过远程完整配置请求形式，
-不会被自动识别——需要时在订阅链接后加 `&flag=singbox` 强制 JSON；客户端不支持远程完整配置时只能导入
-YAML 或 Base64。
+上表的官方 sing-box 客户端（SFA / SFI / SFM / SFT / SFW / SFL）均支持[远程配置（Remote Profile）](https://sing-box.sagernet.org/clients/general/#remote)。
+在客户端新建远程配置，直接粘贴 `sudo easy_all subscription` 输出的链接，保存后选中该配置并启动。
+服务端按 User-Agent 自动返回完整 JSON，也可在链接末尾追加 `&flag=singbox` 强制指定格式。
+
+如果服务端是从旧版本升级的，更新代码后需执行 `sudo easy_all apply`，使 JSON 订阅和新的自动识别规则生效。
+第三方客户端即使使用 sing-box 内核，也要确认它能从 URL 加载完整配置；如果只支持节点列表，请按它支持的格式导入。
 
 - **配置内容**：混合代理 `127.0.0.1:1080`、TUN（`172.19.0.1/30`、MTU 1500、`auto_route` 开启）、本机节点与受支持的聚合节点、`PROXY` 手动选择器、Fake-IP DNS（`198.18.0.0/16`）与分流规则。控制接口（Clash API）只在 `127.0.0.1:9090` 监听，不暴露到局域网。
 - **手动切换**：用客户端原生界面或 Clash API 在 `PROXY` 中选节点；规则模式按订阅内规则分流，`clash_mode=direct/global` 可整体直连或全局代理。

@@ -1311,7 +1311,7 @@ validate_subscription_runtime() {
 # sing-box 完整 JSON 订阅的本机验收：flag 与已确认客户端 UA 都必须拿到 JSON，
 # 且显式 YAML flag 仍然优先。CDN 流量保护的既有六产物门禁不受它影响。
 validate_singbox_subscription_runtime() {
-    local token headers_file body ua_body all_body status disposition expected
+    local token headers_file body ua_body all_body status disposition expected client
     runtime_caddy_site_enabled || return 0
     runtime_local_probe_context
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}") || die "订阅 Token 字典为空"
@@ -1334,12 +1334,14 @@ validate_singbox_subscription_runtime() {
         and (.route.rule_set | length) > 0
         and (.dns.servers | length) > 0 and (.dns.rules | length) > 0
     ' >/dev/null <<<"${body}" || die "sing-box 订阅缺少 DNS 或分流规则"
-    # 已核实的 SFA 请求形式必须在没有 flag 时自动拿到同一份 JSON。
-    ua_body=$(runtime_local_curl "/subscribe?token=${token}" \
-        -A 'SFA (sing-box 1.14.4; language zh_CN)') \
-        || die "sing-box UA 自动识别验收失败"
-    [[ "${ua_body}" == "${body}" ]] \
-        || die "已确认的 sing-box 客户端 UA 未获得完整 JSON 订阅"
+    # 已核实的 SFA/SFI/SFM/SFT/SFW/SFL 请求形式必须在没有 flag 时逐家自动拿到同一份 JSON。
+    for client in SFA SFI SFM SFT SFW SFL; do
+        ua_body=$(runtime_local_curl "/subscribe?token=${token}" \
+            -A "${client} (sing-box 1.14.4; language zh_CN)") \
+            || die "sing-box ${client} UA 自动识别验收失败"
+        [[ "${ua_body}" == "${body}" ]] \
+            || die "${client} 的 sing-box 客户端 UA 未获得完整 JSON 订阅"
+    done
     # 显式 flag 覆盖 UA：SFA UA 携带 flag=clash 必须仍是 YAML。
     ua_body=$(runtime_local_curl "/subscribe?flag=clash&token=${token}" \
         -A 'SFA (sing-box 1.14.4; language zh_CN)') || die "订阅 flag 覆盖验收失败"
@@ -1458,7 +1460,7 @@ show_subscription() {
         printf '订阅 (%s): https://%s/subscribe?token=%s\n' \
             "${user}" "${subscription_domain}" "${token}"
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
-    printf '%s\n' '  同一链接按客户端自动下发：sing-box（SFA）→ 完整 JSON；Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
+    printf '%s\n' '  同一链接按客户端自动下发：sing-box（SFA/SFI/SFM/SFT/SFW/SFL）→ 完整 JSON；Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
     printf '%s\n' '  如需强制格式：在链接后加 &flag=singbox、&flag=clash 或 &flag=base64'
     if [[ ! -s "${SUBSCRIPTION_DIR}/singbox.json" || ! -s "${SUBSCRIPTION_DIR}/singbox-all.json" ]]; then
         printf '%s\n' '  sing-box JSON 订阅不完整：请执行 sudo easy_all apply 后再导入'

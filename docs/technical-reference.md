@@ -170,7 +170,7 @@
 - **八种产物**：`base64.txt`、`mihomo.yaml`、`mihomo-ios.yaml`、`singbox.json`（默认过滤 `optional` 节点）与 `base64-all.txt`、`mihomo-all.yaml`、`mihomo-ios-all.yaml`、`singbox-all.json`（`&node=all` 时附带 `optional` 节点）。iOS 变体只从 YAML 剥离以 `sniffer:` 开头的整段，其余规则不变。两份 JSON 在没有 optional 支持节点时内容相同，文件仍总是生成。
 - **客户端自适应**（判定顺序固定为「显式 flag → 已确认的 sing-box UA → Clash UA → Base64」，只选一种格式）：
   - 根据 HTTP 请求头中的 `User-Agent` 自动识别客户端；
-  - 已核实的 sing-box Android 客户端（SFA，UA 形如 `SFA (sing-box 1.14.4; language zh_CN)`，按小写归一化后前缀匹配）返回完整 JSON 配置；不对任意位置出现 `sing-box` 的 UA 做通配匹配；
+  - 官方 sing-box 客户端 SFA / SFI / SFM / SFT / SFW / SFL 的远程配置请求返回完整 JSON。按小写归一化后匹配 UA 前缀（例如 `sfi (sing-box `）；仅含 `sing-box` 字样的其他 UA 不命中；
   - Clash / Mihomo 客户端自动返回格式合法的 YAML 订阅（采用最新 MRS 规则集）；
   - 通用客户端返回经过 Base64 编码的节点 URI 列表；
   - `flag=singbox|sing-box` 强制 JSON，`flag=clash|mihomo|meta|stash|yaml` 强制 YAML，`flag=base64|uri|v2ray|shadowrocket` 强制 Base64；显式 flag 覆盖 UA。`os=ios` 强制 iOS 变体，`node=all` 附带可选聚合节点；大小写不敏感。

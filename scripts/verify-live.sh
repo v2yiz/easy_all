@@ -149,12 +149,12 @@ jq -e '.outbounds | map(.tag) | index("PROXY") != null' <<<"${json_body}" >/dev/
     || fail json_proxy_selector
 jq -e '.outbounds | map(select(.type == "anytls" or .type == "vless")) | length > 0' \
     <<<"${json_body}" >/dev/null || fail json_nodes
-[[ "$(body -A 'SFA (sing-box 1.14.4; language zh_CN)' "${sub_url}")" == "${json_body}" ]] \
-    || fail sfa_ua_autodetect
-[[ "$(body -A 'SFA (sing-box 1.14.4; language zh_CN)' "${sub_url}&flag=clash")" == "mihomo.yaml" ]] \
-    || fail sfa_ua_flag_clash_override
-[[ "$(body -A 'SFA (sing-box 1.14.4; language zh_CN)' "${sub_url}&flag=base64")" == "base64.txt" ]] \
-    || fail sfa_ua_flag_base64_override
+for client in SFA SFI SFM SFT SFW SFL; do
+    ua="${client} (sing-box 1.14.4; language zh_CN)"
+    [[ "$(body -A "${ua}" "${sub_url}")" == "${json_body}" ]] || fail "${client}_ua_autodetect"
+    [[ "$(body -A "${ua}" "${sub_url}&flag=clash")" == "mihomo.yaml" ]] || fail "${client}_ua_flag_clash_override"
+    [[ "$(body -A "${ua}" "${sub_url}&flag=base64")" == "base64.txt" ]] || fail "${client}_ua_flag_base64_override"
+done
 [[ "$(body -A 'ClashX/1.20.0' "${sub_url}&flag=singbox")" == "${json_body}" ]] \
     || fail clash_ua_flag_singbox_override
 [[ "$(body -A 'ClashX/1.20.0' "${sub_url}")" == "mihomo.yaml" ]] || fail clash_ua_yaml

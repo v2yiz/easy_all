@@ -103,11 +103,17 @@ caddy_subscription_base64_flag_expression() {
     printf '%s' "{query.flag}.lowerAscii() in ['base64','uri','v2ray','shadowrocket']"
 }
 
-# flag=singbox 手动兜底；SFA（sing-box Android）的远程完整配置请求形式用 UA 前缀确认，
-# 不对任意位置出现 sing-box 的 UA 做通配匹配。
+# sing-box 官方客户端远程配置 UA 形态为 "<前缀> (sing-box <核心版本>; language <语言)"。
+# 前缀溯源：SFA 见 sing-box-for-android 的 app/src/main/java/io/nekohasekai/sfa/utils/HTTPClient.kt；
+# SFI/SFM/SFT（SFT 为 Apple TV 端）见 sing-box-for-apple 的 Library/Network/HTTPClient.swift
+# 与 Library/Shared/Variant.swift；SFW/SFL 见 sing-box-for-desktop 的 src/main/userAgent.ts。
+# 只按这六个前缀识别、不对任意 sing-box UA 通配；flag=singbox 可手动指定。
 caddy_subscription_singbox_expression() {
+    local client
     printf '%s' "{query.flag}.lowerAscii() in ['singbox','sing-box']"
-    printf '%s' " || {http.request.header.User-Agent}.lowerAscii().startsWith('sfa (sing-box ')"
+    for client in sfa sfi sfm sft sfw sfl; do
+        printf '%s' " || {http.request.header.User-Agent}.lowerAscii().startsWith('${client} (sing-box ')"
+    done
 }
 
 caddy_subscription_yaml_ua_expression() {
