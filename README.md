@@ -30,28 +30,28 @@
 | **5. AnyTLS + CloudFront** | 同时需要直连与 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
 
 > **核心约定**：
-> - **端口规范**：客户端统一连接 `443`，全模式不开放 `80` 端口。回源端口在模式 1 deploy、2 与 3 只对 Cloudflare 官方回源 IP 放行（模式 1/3 是 `8443`，模式 2 是 `443`）；模式 5 的 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 精确校验。
-> - **协议与证书**：CDN 节点传输统一为 **VLESS WebSocket**。证书按链路：模式 1/3/5 的直连节点与模式 4/5 的源站使用 Let's Encrypt（Cloudflare DNS-01 自动签发），模式 4/5 的 CloudFront 客户端证书由 AWS ACM 签发，模式 2 回源使用 Cloudflare Origin CA（客户端看到的是 Cloudflare 边缘证书）。
-> - **Cloudflare SSL**：模式 1 deploy、模式 2 与模式 3 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
-> - **4.x 升级注意**：不支持旧版直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装（最好是先重装一下系统）。
+> - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1 deploy、2 与 3 仅对 Cloudflare 官方回源 IP 放行（模式 1/3 为 `8443`，模式 2 为 `443`）；模式 5 源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
+> - **协议与证书**：CDN 节点均为 **VLESS WebSocket**。模式 1/3/5 直连与模式 4/5 源站使用 Let's Encrypt（DNS-01 自动签发），模式 4/5 的 CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
+> - **Cloudflare SSL**：模式 1 deploy、2、3 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
+> - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
 
 > [!WARNING]
-> Cloudflare 官方规则限制通过 CDN 代理代理/VPN 流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。
+> Cloudflare 官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。
 
 ---
 
 ## 开始前准备
 
-1. **服务器环境**：全新 Debian 12/13 或 Ubuntu 22.04/24.04/26.04 LTS（具备公网 IPv4 与 root 权限，`443`、回环 `10086` 及本模式回源端口未被占用）。
-2. **防中断建议**：安装包含系统更新、内核安装与网络优化（耗时约 5~15 分钟），强烈建议在 `tmux` 或 `screen` 会话中执行；需源码编译 Skyline（arm64 或 glibc < 2.38）且内存 ≤ 1GB 时，请确保根分区剩余 ≥ 1.5GB 以自动创建 Swap，避免编译期 OOM。
+1. **服务器环境**：全新 Debian 12/13 或 Ubuntu 22.04/24.04/26.04 LTS（具备公网 IPv4 与 root 权限，`443`、回环 `10086` 及所选模式回源端口未被占用）。
+2. **防中断建议**：安装包含内核与网络优化（约 5~15 分钟），建议在 `tmux` 或 `screen` 会话中执行；内存 ≤ 1GB 的机器请确保根分区剩余 ≥ 1.5GB 以自动创建 Swap，避免编译 Skyline 时 OOM。
 3. **安全组与防火墙**：
    - 放行 SSH 端口；
-   - 模式 1/3/4/5 放行公网 TCP `443`（模式 5 另需放行 TCP `8443`）；模式 2 的 `443` 只对 Cloudflare 官方回源 IPv4 段放行；
-   - 模式 1 deploy、模式 2 与模式 3 的回源端口由脚本在 UFW 上仅放行 Cloudflare 官方回源 IPv4 段，云安全组需你按同一网段自行放行。
+   - 模式 1/3/4/5 放行公网 TCP `443`（模式 5 另需放行 TCP `8443`）；
+   - 模式 2 的 `443` 以及模式 1 deploy / 3 的 `8443` 仅对 Cloudflare 官方回源 IPv4 段放行（UFW 自动配置，云安全组需同步放行）。
 4. **云端凭据准备**：
-   - **Cloudflare API Token**（全模式）：`Zone Read` + `DNS Edit`；模式 1 deploy / 2 / 3 另需 `Zone Settings Read`（校验 `Full (strict)`），模式 1 deploy / 3 另需 `Origin Rules Edit`（维护 8443 回源规则），模式 2 另需 `SSL and Certificates Edit`（管理 Origin CA 证书）。
+   - **Cloudflare API Token**（全模式）：`Zone Read` + `DNS Edit`；模式 1 deploy / 2 / 3 另需 `Zone Settings Read`（校验 `Full (strict)`），模式 1 deploy / 3 另需 `Origin Rules Edit`，模式 2 另需 `SSL and Certificates Edit`。
    - **AWS IAM 密钥**（仅模式 4/5）：仅需 CloudFront 与 ACM（`us-east-1`）权限，仅在内存暂存不落盘。
-   - 权限明细与域名规划请参考 [前置准备手册](docs/preparation-guide.md)。
+   - 权限明细与域名规划详见 [前置准备手册](docs/preparation-guide.md)。
 
 ---
 
@@ -63,10 +63,10 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) install
 ```
 
-根据终端交互菜单提示完成配置：
+根据终端交互引导完成配置：
 1. **选择模式**：输入 `1`–`5` 选择部署模式。
-2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 4/5 会提示输入 AWS 密钥）。模式 2–5 还会提示 `CDN 优选前缀 [<10 位随机前缀>]`：直接回车采用该前缀（按模式拼成 `*.cloudfront.182682.xyz` 或 `*.cloudflare.182682.xyz`），也可改写前缀；断点续装时默认沿用上次选择，没有则重新生成。
-3. **全自动部署**：自动配置 Swap、TCP 加速、申请证书、下发云端分发与解析，并完成服务可用性验收。
+2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 4/5 会提示输入 AWS 密钥）。模式 2–5 还会提示 `CDN 优选前缀`（直接回车采用随机 10 位前缀，拼装成优选域名）。
+3. **全自动部署**：自动配置 Swap、TCP 加速、申请证书、下发云端分发与解析，并完成可用性验收。
 
 ---
 
