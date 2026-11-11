@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Mode 2: CloudFront-only CDN entry (grey-cloud DNS → ACM/CloudFront → Caddy origin
 # on 443 → sing-box loopback VLESS WebSocket on 10086).
+# 订阅域名固定复用 CloudFront 节点域名：安装只问源站域名与节点域名两个名字。
 set -Eeuo pipefail
 umask 077
 

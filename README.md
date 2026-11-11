@@ -26,9 +26,9 @@
 | 模式 | 适用场景 | 客户端入口 | VPS 本机监听 | 证书 | UFW 业务端口 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1. AnyTLS 直连** | VPS IP 纯净、直连良好 | `direct:443`；可选 `https://sub/subscribe` | sing-box `0.0.0.0:443`；Caddy `0.0.0.0:8443`（仅 deploy） | Let's Encrypt（DNS-01） | 公网 443；8443 仅 Cloudflare IPv4 |
-| **2. 纯 CloudFront** | 只要 CDN 入口 | `cf:443`；`https://sub/subscribe`（默认同 cf） | sing-box `127.0.0.1:10086`；Caddy `0.0.0.0:443` | ACM（viewer）+ LE（源站，DNS-01） | 公网 443 |
+| **2. 纯 CloudFront** | 只要 CDN 入口 | `cf:443`；`https://cf/subscribe`（同节点） | sing-box `127.0.0.1:10086`；Caddy `0.0.0.0:443` | ACM（viewer）+ LE（源站，DNS-01） | 公网 443 |
 | **3. 纯 CloudFlare（单域名）** | 只要 CDN 入口且回源只对 Cloudflare 开放 | `cf:443`；`https://cf/subscribe` | sing-box `127.0.0.1:10086`；Caddy `0.0.0.0:443` | Cloudflare Origin CA | 443 仅 Cloudflare IPv4 |
-| **4. AnyTLS + CloudFront** | 同时要直连与 CDN | `direct:443`、`cf:443`；`https://sub/subscribe` | sing-box `0.0.0.0:443` + `127.0.0.1:10086`；Caddy `0.0.0.0:8443` | LE（direct/origin）+ ACM（viewer） | 公网 443、8443 |
+| **4. AnyTLS + CloudFront** | 同时要直连与 CDN | `direct:443`、`cf:443`；`https://cf/subscribe`（同节点） | sing-box `0.0.0.0:443` + `127.0.0.1:10086`；Caddy `0.0.0.0:8443` | LE（direct，同时作源站）+ ACM（viewer） | 公网 443、8443 |
 | **5. AnyTLS + CloudFlare** | 直连与橙云节点都要，回源只对 Cloudflare 开放 | `direct:443`、`cf:443`；`https://cf/subscribe` | sing-box `0.0.0.0:443` + `127.0.0.1:10086`；Caddy `0.0.0.0:8443` | LE（DNS-01，覆盖直连与橙云节点） | 公网 443；8443 仅 Cloudflare IPv4 |
 
 - 模式 1 的 `deploy/link`：`link` 只输出节点，不建订阅站点、不建 Origin Rule；模式 5 固定 deploy（节点与订阅同域）。
@@ -41,17 +41,17 @@
 | 模式 | 记录 |
 | :--- | :--- |
 | 1 | direct：灰云 A → VPS；deploy 的 sub：橙云 A → VPS |
-| 2 | origin：灰云 A → VPS；cf/sub：灰云 CNAME → CloudFront 分发 |
+| 2 | origin：灰云 A → VPS；cf：灰云 CNAME → 分发（同时承载订阅） |
 | 3 | cf：橙云 A → VPS，同时承载节点与订阅 |
-| 4 | direct/origin：灰云 A → VPS；cf/sub：灰云 CNAME → 分发 |
+| 4 | direct：灰云 A → VPS（同时作源站）；cf：灰云 CNAME → 分发（同时承载订阅） |
 | 5 | direct：灰云 A → VPS；cf：橙云 A → VPS，同时承载节点与订阅 |
 
 安装与 `apply-cloud` 会先读同名全部记录，校验类型/`proxied`/地址/归属；同名 AAAA、类型冲突一律阻止写入；非受管记录只在 stdin 与 stderr 都是终端时提示确认是否强制接管，其余情况一律阻止写入；接管前会再次核对整条记录（含 TTL）未被替换，改写前把原注释、原指向、原代理与原 TTL 写入 `/var/log/easy_all/dns-takeover.log`（不随安装状态清理删除，日志需保留，不要移动或删除）——日志写入失败则不改写记录。`uninstall` 与 `purge-cloudflare` 清理云端记录时都会保留接管而来的 DNS 记录并注明原配置位置，原配置按本机日志手工恢复或删除。
 
 ### 模式 2/4（CloudFront）链路
 
-1. Cloudflare 权威 DNS：origin/direct 灰云 A，cf/sub 灰云 CNAME → 分发。
-2. AWS ACM（固定 `us-east-1`）：viewer 证书，SAN 覆盖节点与订阅域名。
+1. Cloudflare 权威 DNS：origin（模式 2）/direct（模式 4）灰云 A，`cf` 一条灰云 CNAME → 分发（同时承载节点与订阅）。
+2. AWS ACM（固定 `us-east-1`）：viewer 证书，SAN 覆盖节点域名（订阅同域，去重后只有一项）。本版本新装订阅域名固定复用节点域名；旧装若已配置独立订阅域名，仍保留原 CNAME 与 ACM SAN。
 3. CloudFront：viewer HTTPS 443，源站 HTTPS/TLS1.2，转发 query 与 WebSocket 必需头，不启用 gRPC。
 4. 源站 Let's Encrypt 证书（Cloudflare DNS-01，不开放 80）：模式 2 源站 443、模式 4 源站 8443。
 5. 源站密钥 `X-Easy-All-Origin-Key`：仅由 CloudFront 注入，Caddy 在 route 首位用 CEL 精确比较，
@@ -139,12 +139,12 @@ schema 0 状态与旧安装标记**不会被接管**：请先用 4.x 的 `sudo e
   | 用途 | 模式 1 | 模式 2 | 模式 3 | 模式 4 | 模式 5 | 记录要求 |
   | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
   | 直连 `node.<zone>` | 必填 | 无 | 无 | 必填 | 必填 | 灰云 `A` → VPS 公网 IPv4 |
-  | 源站 `origin.<zone>` | 无 | 必填 | 无 | 必填 | 无 | 灰云 `A` → VPS；不得等于节点或订阅域名 |
+  | 源站 `origin.<zone>` | 无 | 必填 | 无 | 无（同直连域名） | 无 | 灰云 `A` → VPS；不得等于节点或订阅域名 |
   | CDN 节点 `cf.<zone>` | 无 | 必填 | 必填 | 必填 | 必填 | 模式 2/4 灰云 `CNAME` → 分发；模式 3/5 橙云 `A` → VPS |
-  | 订阅 `sub.<zone>` | deploy 必填 | 必填（默认同节点） | 无（同节点域名） | 必填（默认同节点） | 无（同节点域名） | 模式 1 deploy 与模式 3/5 的实际记录见上表 |
+  | 订阅 `sub.<zone>` | deploy 必填 | 无（同节点域名） | 无（同节点域名） | 无（同节点域名） | 无（同节点域名） | 模式 1 deploy 与模式 3/5 的实际记录见上表 |
 
-  因此模式 1 deploy 需要 2 个名字（link 只需直连）、模式 2 至少 2 个、模式 3 只需 1 个、
-  模式 4 默认 3 个（直连与源站复用域名时可减为 2 个）、模式 5 需要 2 个（直连与橙云节点）。
+  因此模式 1 deploy 需要 2 个名字（link 只需直连）、模式 2 2 个、模式 3 只需 1 个、
+  模式 4 2 个（直连域名同时作源站、订阅复用节点域名）、模式 5 需要 2 个（直连与橙云节点）。
 
 ---
 
@@ -200,9 +200,10 @@ flowchart TD
 | **1** | 订阅模式 | `请选择 [1]:` | `1`（部署订阅） | `2` 只输出节点（link）：不建 Caddy 站点、不建 Origin Rule |
 | **1 deploy** | 订阅域名 | `订阅域名（橙云代理，回源 8443）` | `sub.<Zone>` | 必须与直连域名不同 |
 | **2/4** | 根 Zone | `Cloudflare 根 Zone（如 example.com）` | 无（必填） | 已在 Cloudflare 托管的根域名 |
-| **2/4** | 源站域名 | `源站域名（解析至 VPS，灰云直连）` | `origin.<Zone>` | 自动创建灰云 `A`；不得等于节点/订阅域名 |
+| **2** | 源站域名 | `源站域名（解析至 VPS，灰云直连）` | `origin.<Zone>` | 自动创建灰云 `A`；不得等于节点/订阅域名 |
+| **4** | 源站域名 | 自动 | 同直连域名 | 不提示：8443 回源与 443 直连共用一条灰云 `A` |
 | **2/4** | 节点域名 | `CloudFront 节点域名（CNAME 指向分发，灰云）` | `cf.<Zone>` | 自动创建灰云 `CNAME` |
-| **2/4** | 订阅域名 | `订阅域名（可与节点域名相同）` | 节点域名 | 可与节点域名复用同一记录 |
+| **2/4** | 订阅域名 | 自动 | 同节点域名 | 不提示：分发别名与 CNAME 复用节点域名 |
 | **2/4** | 节点名 | `CloudFront 节点名（完整单节点名）` | `🇺🇸AWS` | 订阅里的 CDN 节点名 |
 | **3** | 节点域名 | `CDN 节点域名（橙云代理，同时提供节点与订阅）` | `cf.<Zone>` | 一个域名同时承载节点与订阅 |
 | **5** | 节点域名 | `CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）` | `cf.<Zone>` | 一级子域名；不得等于直连域名 |

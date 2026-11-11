@@ -154,14 +154,31 @@ cdn_validate_install_domains() {
     done < <(cdn_direct_domains | sort -u)
 }
 
+# 域名输入按模式收敛：模式 4 的源站域名固定复用直连域名（443 直连与 8443 回源端口隔离、
+# 共用一份 LE 证书与一条灰云 A），模式 2/4 的订阅域名固定复用节点域名（同一条分发别名与
+# CNAME，订阅走 https://<节点域名>/subscribe）。同名复用不再提问，每条链路最多两个名字。
+# 续装例外：沿用安装身份里已落盘的域名（旧版身份可能带独立源站/订阅域名）。
+collect_cloudfront_domain_inputs() {
+    if runtime_has_direct_entry; then
+        anytls_collect_direct_inputs
+        # 续装沿用身份里的源站域名：旧版身份可能带独立源站域名，改写会与已建分发/证书/DNS 冲突。
+        [[ "${INSTALL_RESUME:-0}" == "1" && -n "${CF_ORIGIN_DOMAIN:-}" ]] \
+            || CF_ORIGIN_DOMAIN=${DIRECT_DOMAIN}
+    else
+        CF_ORIGIN_DOMAIN=$(normalize_domain "$(prompt_value '源站域名（解析至 VPS，灰云直连）' "${CF_ORIGIN_DOMAIN:-origin.${CF_ZONE}}")")
+    fi
+    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CloudFront 节点域名（CNAME 指向分发，灰云）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
+    # 同理：续装沿用旧身份里的独立订阅域名，其余情况固定复用节点域名。
+    [[ "${INSTALL_RESUME:-0}" == "1" && -n "${SUBSCRIPTION_DOMAIN:-}" ]] \
+        || SUBSCRIPTION_DOMAIN=${CF_NODE_DOMAIN}
+}
+
 collect_cloudfront_install_inputs() {
     # 续装时续用从 install-identity.json 恢复的值做提示默认值，不得先生成新值再覆盖。
     CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' "${CF_ZONE:-}")")
     validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
 
-    CF_ORIGIN_DOMAIN=$(normalize_domain "$(prompt_value '源站域名（解析至 VPS，灰云直连）' "${CF_ORIGIN_DOMAIN:-origin.${CF_ZONE}}")")
-    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CloudFront 节点域名（CNAME 指向分发，灰云）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
-    SUBSCRIPTION_DOMAIN=$(normalize_domain "$(prompt_value '订阅域名（可与节点域名相同）' "${SUBSCRIPTION_DOMAIN:-${CF_NODE_DOMAIN}}")")
+    collect_cloudfront_domain_inputs
     cdn_validate_install_domains
     # 首装不经过 load_state：订阅渲染前必须在输入校验处派生运行时字段。
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少 CloudFront 节点域名"
@@ -787,7 +804,7 @@ cdn_public_token_rejection_ok() {
 
 # 公网验收：DNS 与分发传播有有限重试；任一必需项持续失败则非零，调用方不得报成功。
 cdn_validate_public_runtime() {
-    local attempt
+    local attempt expected
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
         if cdn_public_health_ok \
             && cdn_public_subscription_ok \
@@ -797,7 +814,9 @@ cdn_validate_public_runtime() {
         fi
         ((attempt == CDN_PUBLIC_ACCEPT_ATTEMPTS)) || sleep "${CDN_PUBLIC_ACCEPT_SECONDS}"
     done
-    die "CloudFront 公网验收失败（已重试 ${CDN_PUBLIC_ACCEPT_ATTEMPTS} 次）：请确认 ${CF_NODE_DOMAIN} 与 ${SUBSCRIPTION_DOMAIN} 的 CNAME 已指向 ${AWS_CLOUDFRONT_DOMAIN:-CloudFront 分发域名}、分发已 Deployed、源站证书有效；修复后执行 sudo easy_all apply-cloud"
+    expected=${CF_NODE_DOMAIN}
+    [[ "${SUBSCRIPTION_DOMAIN}" == "${CF_NODE_DOMAIN}" ]] || expected+=" 与 ${SUBSCRIPTION_DOMAIN}"
+    die "CloudFront 公网验收失败（已重试 ${CDN_PUBLIC_ACCEPT_ATTEMPTS} 次）：请确认 ${expected} 的 CNAME 已指向 ${AWS_CLOUDFRONT_DOMAIN:-CloudFront 分发域名}、分发已 Deployed、源站证书有效；修复后执行 sudo easy_all apply-cloud"
 }
 
 # --- Nginx --------------------------------------------------------------------
@@ -1631,7 +1650,7 @@ install_all() {
 }
 
 cdn_print_cloud_inventory() {
-    local domain
+    local domain dns_names
     printf '云端资源清单：\n' >&2
     printf '  CloudFront 分发: %s（%s）\n' "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-未知}" \
         "${AWS_CLOUDFRONT_DOMAIN:-未知}" >&2
@@ -1642,8 +1661,9 @@ cdn_print_cloud_inventory() {
         [[ "${domain}" != "${CF_ORIGIN_DOMAIN:-}" ]] || continue
         printf '  直连 A 记录: %s -> %s\n' "${domain}" "${VPS_PUBLIC_IPV4:-未知}" >&2
     done < <(cdn_direct_domains)
-    printf '  节点/订阅 CNAME: %s,%s -> %s\n' "${CF_NODE_DOMAIN:-未知}" \
-        "${SUBSCRIPTION_DOMAIN:-未知}" "${AWS_CLOUDFRONT_DOMAIN:-未知}" >&2
+    dns_names=${CF_NODE_DOMAIN:-未知}
+    [[ "${SUBSCRIPTION_DOMAIN:-}" == "${CF_NODE_DOMAIN:-}" ]] || dns_names+=",${SUBSCRIPTION_DOMAIN:-未知}"
+    printf '  节点/订阅 CNAME: %s -> %s\n' "${dns_names}" "${AWS_CLOUDFRONT_DOMAIN:-未知}" >&2
     printf '  ACM validation CNAME 默认保留（同一验证记录可能被其他证书复用，需核实后手工删除）\n' >&2
 }
 

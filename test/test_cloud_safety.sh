@@ -492,6 +492,86 @@ run_state_domain_case "direct.example.com" >/dev/null \
 run_state_domain_case "origin.example.com" >/dev/null \
     || fail "状态中直连域名等于源站域名时必须通过（文档允许与源站域名复用）"
 
+# --- 3b-2. 模式 2/4 安装输入提示面：域名输入收敛为每条链路两个名字 -----------------
+# 模式 4 不再询问源站域名（固定复用直连域名）、模式 2/4 不再询问订阅域名（固定复用节点域名）。
+# 输入由共享核心派生，这里直接观察用户可见的提示文案与派生结果。
+run_inputs_case() { # $1=profile（combined|cloudfront） $2=resume（可选：模拟跨版本续装并预设旧身份域名）
+    local prompts="${TMP_DIR}/inputs-prompts-$1${2:+-$2}.log"
+    : >"${prompts}"
+    RUNTIME_TMP="${TMP_DIR}/inputs-runtime-$1${2:+-$2}" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/inputs-state-$1${2:+-$2}" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/inputs-state-$1${2:+-$2}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/inputs-subscriptions-$1${2:+-$2}" \
+    INPUTS_PROMPTS="${prompts}" \
+        bash -c '
+            source "$1/profiles/$2.sh"
+            # 交互面：记录提示文案，返回值一律取默认值（Zone 预置，故默认非空）。
+            prompt_value() { printf "%s\n" "$1" >>"${INPUTS_PROMPTS}"; printf "%s" "${2:-}"; }
+            prompt_secret() { printf "%s" "0123456789abcdef0123456789abcdef"; }
+            cloudflare_collect_api_token() { :; }
+            CF_ZONE=example.com
+            VPS_PUBLIC_IPV4=203.0.113.10
+            VLESS_UUID=11111111-2222-4333-8444-555555555555
+            if [[ -n "${3:-}" ]]; then
+                # 模拟旧版中断安装的续装身份：当年源站/订阅域名是独立填写的。
+                INSTALL_RESUME=1
+                DIRECT_DOMAIN=node.example.com
+                CF_ORIGIN_DOMAIN=origin.example.com
+                SUBSCRIPTION_DOMAIN=sub.example.com
+            fi
+            collect_install_inputs
+            printf "ORIGIN=%s\nNODE=%s\nSUB=%s\nDIRECT=%s\nVLESS_CDN=%s\nHOSTS=%s\n" \
+                "${CF_ORIGIN_DOMAIN}" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" \
+                "${DIRECT_DOMAIN:-}" "${VLESS_CDN_DOMAIN:-}" \
+                "$(printf "%s\n" "$(certificate_required_hosts)" | wc -l | tr -d " ")"
+        ' _ "${ROOT_DIR}" "$1" "${2:-}" 2>&1
+}
+
+combined_inputs=$(run_inputs_case combined) || fail "模式 4 安装输入收集失败：${combined_inputs}"
+combined_prompts=$(cat "${TMP_DIR}/inputs-prompts-combined.log")
+assert_contains "模式 4 仍询问直连节点域名" "${combined_prompts}" "直连节点域名"
+assert_contains "模式 4 仍询问 CloudFront 节点域名" "${combined_prompts}" "CloudFront 节点域名"
+assert_not_contains "模式 4 不再询问源站域名" "${combined_prompts}" "源站域名"
+assert_not_contains "模式 4 不再询问订阅域名" "${combined_prompts}" "订阅域名"
+assert_equal "模式 4 域名提示恰为两条" "2" "$(printf '%s\n' "${combined_prompts}" | grep -c '域名')"
+assert_contains "模式 4 源站域名复用直连域名" "${combined_inputs}" "ORIGIN=node.example.com"
+assert_contains "模式 4 直连域名用默认值" "${combined_inputs}" "DIRECT=node.example.com"
+assert_contains "模式 4 节点域名用默认值" "${combined_inputs}" "NODE=cf.example.com"
+assert_contains "模式 4 订阅域名复用节点域名" "${combined_inputs}" "SUB=cf.example.com"
+assert_contains "模式 4 CDN 域名派生为节点域名" "${combined_inputs}" "VLESS_CDN=cf.example.com"
+assert_contains "模式 4 证书只需一个域名" "${combined_inputs}" "HOSTS=1"
+
+cloudfront_inputs=$(run_inputs_case cloudfront) || fail "模式 2 安装输入收集失败：${cloudfront_inputs}"
+cloudfront_prompts=$(cat "${TMP_DIR}/inputs-prompts-cloudfront.log")
+assert_contains "模式 2 仍询问源站域名" "${cloudfront_prompts}" "源站域名"
+assert_contains "模式 2 仍询问 CloudFront 节点域名" "${cloudfront_prompts}" "CloudFront 节点域名"
+assert_not_contains "模式 2 不再询问订阅域名" "${cloudfront_prompts}" "订阅域名"
+assert_equal "模式 2 域名提示恰为两条" "2" "$(printf '%s\n' "${cloudfront_prompts}" | grep -c '域名')"
+assert_contains "模式 2 源站域名用默认值" "${cloudfront_inputs}" "ORIGIN=origin.example.com"
+assert_contains "模式 2 节点域名用默认值" "${cloudfront_inputs}" "NODE=cf.example.com"
+assert_contains "模式 2 订阅域名复用节点域名" "${cloudfront_inputs}" "SUB=cf.example.com"
+assert_equal "模式 2 没有直连域名" "DIRECT=" \
+    "$(printf '%s\n' "${cloudfront_inputs}" | grep '^DIRECT=')"
+
+# 跨版本续装：旧版身份里源站/订阅域名可能是独立填写的，续装不得改写已建资源用的域名。
+resume_inputs=$(run_inputs_case combined resume) || fail "模式 4 续装输入收集失败：${resume_inputs}"
+resume_prompts=$(cat "${TMP_DIR}/inputs-prompts-combined-resume.log")
+assert_contains "续装仍询问直连节点域名" "${resume_prompts}" "直连节点域名"
+assert_contains "续装仍询问 CloudFront 节点域名" "${resume_prompts}" "CloudFront 节点域名"
+assert_not_contains "续装不再询问源站域名" "${resume_prompts}" "源站域名"
+assert_not_contains "续装不再询问订阅域名" "${resume_prompts}" "订阅域名"
+assert_equal "续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_prompts}" | grep -c '域名')"
+assert_contains "续装沿用旧身份的源站域名" "${resume_inputs}" "ORIGIN=origin.example.com"
+assert_contains "续装沿用旧身份的订阅域名" "${resume_inputs}" "SUB=sub.example.com"
+
+# 模式 2 续装同理：源站域名照旧提问，订阅域名沿用旧身份里的独立值。
+resume_cf_inputs=$(run_inputs_case cloudfront resume) || fail "模式 2 续装输入收集失败：${resume_cf_inputs}"
+resume_cf_prompts=$(cat "${TMP_DIR}/inputs-prompts-cloudfront-resume.log")
+assert_contains "模式 2 续装仍询问源站域名" "${resume_cf_prompts}" "源站域名"
+assert_not_contains "模式 2 续装不再询问订阅域名" "${resume_cf_prompts}" "订阅域名"
+assert_equal "模式 2 续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_cf_prompts}" | grep -c '域名')"
+assert_contains "模式 2 续装沿用旧身份的订阅域名" "${resume_cf_inputs}" "SUB=sub.example.com"
+
 # --- 3c. 模式 5：直连 + 橙云节点/订阅（回源 8443）------------------------------
 write_combined_cf_state() { # $1=DIRECT_DOMAIN $2=CF_NODE_DOMAIN $3=SUBSCRIPTION_MODE $4=输出
     cat >"$4" <<STATE

@@ -48,9 +48,9 @@ sudo easy_all apply-cloud
 1. 读取 Cloudflare API Token（优先复用 `/etc/easy_all/cloudflare.token`，否则隐藏输入后原子写入 `0600`），以及 AWS 凭据（仅当前进程内存）。
 2. 保守同步灰云 DNS 的源站（及模式 4 直连）`A` → VPS 公网 IPv4；同名第三方/多条冲突记录不会被抢占。
 3. 复用或续签**源站 Let's Encrypt 证书**（Cloudflare DNS-01，不开放 `80`）。
-4. 复用或申请 **AWS ACM 证书**（固定 `us-east-1`，SAN 只含节点域名与订阅域名），自动写入 DNS validation `CNAME` 并等待 `ISSUED`。
+4. 复用或申请 **AWS ACM 证书**（固定 `us-east-1`，SAN 覆盖节点域名；订阅同域，去重后只有一项；旧装保留原两项 SAN），自动写入 DNS validation `CNAME` 并等待 `ISSUED`。
 5. 创建或更新 **CloudFront 分发**（`Comment=easy_all-cloudfront-<节点域名>`，源站 `HTTPSPort` 模式 2 为 `443`、模式 4 为 `8443`），等待 `Status=Deployed`。
-6. 收敛节点与订阅 `CNAME` → 分发域名，然后执行 §1.2 的本机重建、严格本机验收与公网验收。
+6. 收敛节点（同时承载订阅；旧装含独立订阅域名）`CNAME` → 分发域名，然后执行 §1.2 的本机重建、严格本机验收与公网验收。
 
 - 失败时：**本机配置回滚，云端资源保留**并输出分发 ID 与 ACM ARN；修正后再次 `apply-cloud` 收敛，必要时到控制台处置。不会因为一次 API 查询失败就再创建一个重复分发，也不会用自签证书顶替失败的 Let's Encrypt。
 - 云端与本机不是跨云事务：部分云端变更成功、本机失败是允许的结果，重跑同一条命令即可收敛。
@@ -107,7 +107,7 @@ sudo easy_all apply-cloud
 - `/etc/easy_all`（state、证书、Caddyfile、sing-box 配置、订阅、模板快照）与 `/var/www/easy_all/subscriptions`（八份产物：六份 Mihomo/Base64 + `singbox.json` / `singbox-all.json`）都是受管文件，手工编辑会在下一次 `apply` 被覆盖；请用命令修改。
 
 ### 4.2 节点域名与节点名（需要重装）
-五种模式的本机域名与节点名都是落盘状态的一部分，没有「只改名」的入口：改直连域名、源站域名、CDN 节点域名、订阅域名或节点名都需要 `sudo easy_all uninstall` 后重新安装，并在客户端重新导入订阅。
+五种模式的本机域名与节点名都是落盘状态的一部分，没有「只改名」的入口：改直连域名、CDN 节点域名或节点名都需要 `sudo easy_all uninstall` 后重新安装，并在客户端重新导入订阅。新装模式 4 的源站域名由直连域名派生、新装模式 2/4 的订阅域名由节点域名派生，因此这两项没有单独的改名入口。
 
 ### 4.3 凭据轮换
 - 本版本**没有**独立的密码 / UUID / 路径轮换命令：AnyTLS 密码、VLESS UUID、VLESS 路径都在安装时生成并落盘，重装会生成全新的一组，客户端必须重新导入订阅。
@@ -122,7 +122,7 @@ sudo easy_all renew-cert
 ```
 强制轮换 Origin CA 证书：先签发并部署新证书，通过本机严格 TLS/SNI 验收并用真实握手核对磁盘证书指纹后，才吊销旧证书；任一步失败都保留旧证书并恢复本机配置。证书是 15 年有效期的 Cloudflare 私有 CA 证书，只覆盖节点域名。
 
-模式 1/2/4/5 不使用 Origin CA：`renew-cert` 走 Cloudflare DNS-01 重新签发 Let's Encrypt 证书（模式 5 的 SAN 同时覆盖直连域名与橙云节点域名），同样先通过本机 TLS 指纹验收再替换。
+模式 1/2/4/5 不使用 Origin CA：`renew-cert` 走 Cloudflare DNS-01 重新签发 Let's Encrypt 证书（模式 4 新装只覆盖直连域名（源站同域；旧装另含源站域名）；模式 5 的 SAN 同时覆盖直连域名与橙云节点域名），同样先通过本机 TLS 指纹验收再替换。
 
 ---
 
@@ -266,7 +266,7 @@ sudo easy_all purge-cloudflare --domain example.com
 | **CloudFront 返回 503** | 多半是 CDN 用量达到 985 GB 触发的阻断，或 `protection_offline` 状态下的受限运行时。查看 `sudo easy_all status` 的 `blocked` / `enforced` / `protection_offline`；按 §6.4 顺序收敛，不要清空用量文件。 |
 | **CloudFront 返回 403 / 404（订阅或健康检查）** | `403` 是订阅 Token 缺失/错误或重复 `token` 参数；`404` 是路径不精确（只有 `/subscribe`、`/sub` 与 `/easy_all-health`）或源站头缺失。确认分发行为仍转发自定义头 `X-Easy-All-Origin-Key`，且没有人手工改过 Caddy 站点。 |
 | **TLS 正常但节点没有流量** | 代理路径或源站头链路被打断：VLESS 路径必须精确匹配 `handle <VLESS_PATH>`，分发行为必须保留源站头、且不要改成转发 viewer Host。恢复配置执行 `sudo easy_all apply`。 |
-| **客户端提示证书错误** | 分清两套证书：**viewer 侧**用 AWS ACM（`us-east-1`，SAN 覆盖节点与订阅域名），**源站侧**用 Let's Encrypt（模式 1 覆盖直连/订阅，模式 2 覆盖源站，模式 4 覆盖直连/源站，模式 5 覆盖直连与橙云节点）。客户端只校验 ACM / 橙云边缘 / 直连证书；源站证书错误表现为 CloudFront 502 或橙云 5xx 而不是客户端报错。不要在客户端加 `allowInsecure`/跳验证。 |
+| **客户端提示证书错误** | 分清两套证书：**viewer 侧**用 AWS ACM（`us-east-1`，SAN 覆盖节点与订阅域名），**源站侧**用 Let's Encrypt（模式 1 覆盖直连/订阅，模式 2 覆盖源站，模式 4 覆盖直连（新装源站同域；旧装另含源站域名），模式 5 覆盖直连与橙云节点）。客户端只校验 ACM / 橙云边缘 / 直连证书；源站证书错误表现为 CloudFront 502 或橙云 5xx 而不是客户端报错。不要在客户端加 `allowInsecure`/跳验证。 |
 | **订阅下载失败或返回 403** | Token 失效（`edit-sub` 删掉了该用户）、URL 里重复了 `token` 参数，或订阅域名 CNAME/橙云记录未收敛。用 `sudo easy_all subscription` 取最新链接；必要时 `sudo easy_all apply-cloud` 收敛 DNS。禁止用 `-k` 或跳过验证绕过证书问题。 |
 | **`apply` / `apply-cloud` 报订阅配置损坏** | 状态里的 `SUBSCRIPTION_CONFIG` 无法解析。执行 `sudo easy_all edit-sub` 粘贴完整新配置；`uninstall` 与 `cleanup-partial` 仍可执行。 |
 | **`update-core` 被拒绝** | 提示「CDN 流量保护仍待落实」时先执行 `sudo easy_all cdn-traffic-sync`；订阅损坏先 `edit-sub`，证书故障先 `renew-cert`。核心更新后订阅若刷新失败，会保留告警并提示 `apply`。 |

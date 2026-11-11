@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Mode 4: AnyTLS direct entry (TCP 443) plus the CloudFront CDN entry
 # (Caddy origin 8443 → sing-box loopback VLESS WebSocket on 10086).
+# 直连节点域名同时是 CloudFront 源站域名，订阅域名复用 CloudFront 节点域名：安装只问两个名字。
 set -Eeuo pipefail
 umask 077
 
@@ -30,12 +31,7 @@ CDN_INSTALL_PORTS=(443 8443)
 SUBSCRIPTION_OPTIONAL_VARIANTS=1
 
 collect_install_inputs() {
-    # 公共输入会校验本机节点名，此时直连节点名还不存在：先给出默认值，稍后以它为提示默认值。
-    DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-🇺🇸直连}
     collect_cloudfront_install_inputs
-    anytls_collect_direct_inputs
-    cdn_validate_install_domains
-    cdn_validate_install_owner_token
 }
 
 cdn_direct_domains() {

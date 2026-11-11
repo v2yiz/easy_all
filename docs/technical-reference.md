@@ -45,8 +45,8 @@
   └─ 其他路径              → 404
 ```
 
-- **DNS**：Cloudflare 只作权威 DNS，全部记录灰云（DNS only）——源站 `A → VPS`，节点与订阅 `CNAME → 分发域名`。
-- **证书**：两套独立证书——viewer 侧 AWS ACM（固定 `us-east-1`，SAN 为节点域名与订阅域名的去重集合）；源站侧 Let's Encrypt（只覆盖源站域名，经 Cloudflare DNS-01 签发与续期，不开放 `80`）。
+- **DNS**：Cloudflare 只作权威 DNS，全部记录灰云（DNS only）——源站 `A → VPS`，节点 `CNAME → 分发域名`。订阅域名固定复用节点域名，因此只有一条 CNAME。
+- **证书**：两套独立证书——viewer 侧 AWS ACM（固定 `us-east-1`，SAN 为节点域名；订阅同域，去重后只有一项）；源站侧 Let's Encrypt（只覆盖源站域名，经 Cloudflare DNS-01 签发与续期，不开放 `80`）。旧装若已配置独立订阅域名，仍保留原 CNAME 与两项 SAN。
 - **分发策略**：缓存策略 `CachingDisabled`（`4135ea2d-6df8-44a3-9df3-4b5a84be39ad`）、源站请求策略 `AllViewerExceptHostHeader`（`b689b0a8-53d0-40ab-baf2-68738e2966ac`，转发全部 query / User-Agent / Content-Type 与 WebSocket 升级所需头）、7 种方法、HTTP/2、`TLSv1.2_2021`、`sni-only`、viewer/origin 均 `https-only`、源站 TLS 1.2；`GrpcConfig` 关闭，不启用 WAF、访问日志、Origin Shield 或 Route 53。
 - **Host 处理**：分发不转发 viewer Host，因此 AWS 回源 SNI/Host 就是源站域名（匹配 Let's Encrypt SAN）；Caddy 不再改写 Host，直接把 WebSocket 请求转给 `127.0.0.1:10086`。
 - **订阅**：本机节点只有一个 CDN 节点（默认名 `🇺🇸AWS`，安装时可改），没有优选 IP、测速组或自动兜底节点。
@@ -87,7 +87,7 @@
 ```
 
 - **端口划分**：直连入站固定在 `443`，CloudFront 源站与订阅站点固定在 `8443`，回环 CDN 入站固定在 `127.0.0.1:10086`；三者都由模式派生，不接受用户另设参数。
-- **证书**：Let's Encrypt 覆盖直连域名与源站域名（DNS-01），viewer 侧仍由 ACM 管理。AnyTLS 与 Caddy 共用同一份部署证书，因此直连域名可以与源站域名复用同一条灰云 `A` 记录。
+- **证书**：源站域名固定复用直连域名（一条灰云 `A`），Let's Encrypt 只需覆盖直连域名（DNS-01）；viewer 侧仍由 ACM 管理；订阅域名固定复用节点域名。AnyTLS 与 Caddy 共用同一份部署证书。旧装若已配置独立源站域名，仍保留原灰云 `A` 与 SAN。
 - **分发端口**：CloudFront 源站 `HTTPSPort` 由模式派生为 `8443`（模式 2 是 `443`）；分发端口写错会在公网验收阶段失败。
 - **订阅**：本机节点恰为两个——AnyTLS 直连（默认名 `🇺🇸直连`）与 CloudFront CDN（默认名 `🇺🇸AWS`），另附 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；`PROXY` 仍是 `select`，可手动在直连与 CDN 之间切换。
 

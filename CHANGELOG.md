@@ -1,5 +1,16 @@
 ## 未发布
 
+模式 2/4 域名输入收敛为每条链路两个名字：
+
+- **模式 4 不再询问源站域名**：源站域名固定复用直连节点域名（`CF_ORIGIN_DOMAIN = DIRECT_DOMAIN`）。
+  直连 `443` 与 CloudFront 回源 `8443` 端口隔离、共用一条灰云 `A`，LE 证书与 ACM SAN 去重后都只有一项。
+- **模式 2/4 不再询问订阅域名**：订阅域名固定复用 CloudFront 节点域名（`SUBSCRIPTION_DOMAIN = CF_NODE_DOMAIN`），
+  订阅走 `https://<节点域名>/subscribe`，只写一条 CNAME、一条分发别名。
+- **模式 2 仍询问源站域名**；模式 1/3/5 的输入、端口、证书与订阅行为完全不变。
+- **旧装无影响**：派生值不落盘成新字段，`cdn_validate_install_domains` 不新增「源站必须等于直连」「订阅必须等于节点」的强校验，
+  已装的三域名状态仍可正常 `load_state` / `apply`，不写迁移、不要求重装；跨版本中断续装沿用安装身份里的原域名，不改写已建分发/证书/DNS。
+- **文档**：`README.md`、`docs/technical-reference.md`、`docs/operations-guide.md` 与 `docs/preparation-guide.md` 同步模式 2/4 的域名规划、DNS/CNAME 与证书范围，并精简前置准备流程。
+
 新增 sing-box 完整 JSON 订阅（八份订阅产物）：
 
 - **产物**：在六份 Mihomo/Base64 之外新增 `singbox.json` / `singbox-all.json`，与其余产物同批渲染、同批原子发布，权限 `0600`。
