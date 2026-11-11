@@ -43,15 +43,7 @@
 ## 开始前准备
 
 1. **服务器环境**：全新 Debian 12/13 或 Ubuntu 22.04/24.04/26.04 LTS（具备公网 IPv4 与 root 权限，`443`、回环 `10086` 及所选模式回源端口未被占用）。
-2. **SSH 保活与防中断**：安装包含系统更新、内核与网络优化（约 5~15 分钟），SSH 空闲超时会导致安装中断。建议在 `tmux` 或 `screen` 会话中执行，并在本地客户端配置保活（macOS/Linux 为 `~/.ssh/config`，Windows 为 `C:\Users\<用户名>\.ssh\config`；**务必放在文件最下面**，避免通用匹配覆盖其他主机的特定配置）：
-   ```sshconfig
-   # 追加到 ~/.ssh/config（Windows 为 C:\Users\<用户名>\.ssh\config）最底部（务必放最下面）
-   Host *
-       ServerAliveInterval 30
-       ServerAliveCountMax 10
-       TCPKeepAlive yes
-   ```
-   临时连接命令（PowerShell / 终端通用）：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 <用户>@<IP> -p <端口>`。内存 ≤ 1GB 的机器请确保根分区剩余 ≥ 1.5GB 以自动创建 Swap，避免编译期 OOM。
+2. **内存与 Swap**：安装包含内核与网络优化，内存 ≤ 1GB 的机器请确保根分区剩余 ≥ 1.5GB 以便自动创建 Swap，避免编译 Skyline 时 OOM。
 3. **安全组与防火墙**：
    - 放行 SSH 端口；
    - 模式 1/3/4/5 放行公网 TCP `443`（模式 5 另需放行 TCP `8443`）；
@@ -60,6 +52,23 @@
    - **Cloudflare API Token**（全模式）：`Zone Read` + `DNS Edit`；模式 1 deploy / 2 / 3 另需 `Zone Settings Read`（校验 `Full (strict)`），模式 1 deploy / 3 另需 `Origin Rules Edit`，模式 2 另需 `SSL and Certificates Edit`。
    - **AWS IAM 密钥**（仅模式 4/5）：仅需 CloudFront 与 ACM（`us-east-1`）权限，仅在内存暂存不落盘。
    - 权限明细与域名规划详见 [前置准备手册](docs/preparation-guide.md)。
+
+---
+
+## 开始前：SSH 连接保活（建议配置）
+
+安装过程包含系统更新、内核与网络优化（约 5~15 分钟），SSH 偶发空闲超时会导致安装半途中断。强烈建议在本地客户端配置保活（macOS/Linux 为 `~/.ssh/config`，Windows 为 `C:\Users\<用户名>\.ssh\config`；**务必追加在文件最底部**，避免通用匹配覆盖其他主机的特定配置）：
+
+```sshconfig
+# 追加到 ~/.ssh/config（Windows 为 C:\Users\<用户名>\.ssh\config）最底部（务必放最下面）
+Host *
+    ServerAliveInterval 30
+    ServerAliveCountMax 10
+    TCPKeepAlive yes
+```
+
+- **临时连接命令**（PowerShell / 终端通用）：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 <用户>@<IP> -p <端口>`。
+- **会话防中断**：强烈建议在 VPS 上的 `tmux` 或 `screen` 会话中执行安装；万一因切网中断，重新连接后再次运行安装命令即可无缝续装。
 
 ---
 

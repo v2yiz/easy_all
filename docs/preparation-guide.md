@@ -14,36 +14,19 @@
 
 ---
 
-## 开始前：SSH 连接保活（建议配置）
-
-安装过程包含系统更新、内核与网络优化（约 5~15 分钟），SSH 偶发空闲超时会导致安装中断。建议在本地客户端配置保活（macOS/Linux 为 `~/.ssh/config`，Windows 为 `C:\Users\<你的用户名>\.ssh\config`；**务必追加在文件最底部**，因 SSH 配置按从上到下首个匹配项生效，放顶部会影响其他主机的特定配置）：
-
-```sshconfig
-# 追加到本机 ~/.ssh/config（Windows 为 C:\Users\<用户名>\.ssh\config）最底部（务必放最下面）
-Host *
-    ServerAliveInterval 30
-    ServerAliveCountMax 10
-    TCPKeepAlive yes
-```
-
-- **Windows 快速打开/创建方式**（PowerShell 中运行）：
-  ```powershell
-  notepad $HOME\.ssh\config
-  ```
-- **临时连接参数**（全平台通用）：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 <用户>@<IP> -p <端口>`。
-- **会话防中断**：建议在 VPS 上的 `tmux` 或 `screen` 会话中执行；若因切网等原因中断，重新登录后再次执行安装命令即可自动检测断点并提示续装。
-
----
-
 ## 1. 域名注册与 Cloudflare 托管
 
-### 1.1 域名注册
+### 1.1 域名注册（Spaceship）
 
-部署代理服务需要一个由你控制的顶级域名（根域名，例如 `example.com`）。域名注册商可以自行选择：
+部署代理服务需要一个由你控制的顶级域名（根域名，例如 `example.xyz`），推荐使用 [Spaceship](https://www.spaceship.com/) 注册：
 
-- 可在常见域名注册商（如 [Spaceship](https://www.spaceship.com/)、[Namesilo](https://www.namesilo.com/)、[Porkbun](https://porkbun.com/)、[Namecheap](https://www.namecheap.com/) 等）购买长期可用的域名（如 `.xyz`、`.com`、`.net`、`.top` 等）。
-- **实用比价技巧**：部分注册商（如 Spaceship）针对 `.xyz` 等后缀在“首年 + 续费多至 10 年”时总体均价非常划算（平均每年低至数元人民币）。在结算页面可同时核对首年价与多年续费总价。
-- 注册完成后，保存好注册商账号、到期日与恢复邮箱。
+> [!TIP]
+> **核心技巧：6 位数字及以上 `.xyz`（注册首年 + 续费 9 年）**
+> - **特别强调：必须是 6 位数字及以上纯数字**（例如 `123456.xyz`、`891234.xyz`、`987654321.xyz` 等）。这是 `.xyz` 注册局的专属特惠规则，**字母、英文单词或 5 位及以下数字不享受该优惠**（续费会恢复常规原价每年约 $10+）。
+> - **购买策略：注册首年，续费 9 年**。在 Spaceship 搜索未被注册的 6 位及以上纯数字 `.xyz`，加入购物车后，**选择注册 1 年并直接续费 9 年（一次性购满 10 年）**。
+> - 这样平均每年成本仅需几元人民币，10 年总价仅约几十元，是性价比最高的域名方案。下单前在结算页面核对首年价与续费总额即可。
+
+注册完成后，保存好 Spaceship 账号、到期日与恢复邮箱。
 
 ![Spaceship 注册账号示例](img/spaceship/spaceship-signup.svg)
 
