@@ -11,8 +11,8 @@ export EASY_ALL_RUNTIME_LIB_DIR
 
 # 两个节点名的推荐默认值：必须在加载 singbox-runtime.sh 之前赋值，否则会被其
 # AnyTLS / VLESS-WS 兜底值覆盖，交互提示与文档默认名不一致。
-DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-🇺🇸直连}
-CF_NODE_PREFIX=${CF_NODE_PREFIX:-🇺🇸AWS}
+DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-主节点}
+CF_NODE_PREFIX=${CF_NODE_PREFIX:-CDN备用}
 
 # shellcheck source=lib/runtime-core.sh
 source "${EASY_ALL_RUNTIME_LIB_DIR}/runtime-core.sh"

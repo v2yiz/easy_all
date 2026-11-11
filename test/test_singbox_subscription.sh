@@ -170,18 +170,15 @@ jq -e . "${default_json}" >/dev/null || fail "singbox.json 不是有效 JSON"
 
 tags() { jq -c '[.outbounds[].tag]' "$1"; }
 assert_equal "outbounds 顺序" \
-    '["PROXY","AUTO","DIRECT","🇺🇸直连","🇺🇸CF","R-可用","R-仅TCP","R-无MLKEM"]' "$(tags "${all_json}")"
+    '["PROXY","DIRECT","🇺🇸直连","🇺🇸CF","R-可用","R-仅TCP","R-无MLKEM"]' "$(tags "${all_json}")"
 assert_equal "默认订阅不含 optional 聚合节点" \
-    '["PROXY","AUTO","DIRECT","🇺🇸直连","🇺🇸CF","R-仅TCP","R-无MLKEM"]' "$(tags "${default_json}")"
-assert_equal "PROXY 成员顺序（直连、CDN、AUTO、聚合）" \
-    '["🇺🇸直连","🇺🇸CF","AUTO","R-可用","R-仅TCP","R-无MLKEM"]' \
+    '["PROXY","DIRECT","🇺🇸直连","🇺🇸CF","R-仅TCP","R-无MLKEM"]' "$(tags "${default_json}")"
+assert_equal "PROXY 成员顺序（直连、CDN、聚合）" \
+    '["🇺🇸直连","🇺🇸CF","R-可用","R-仅TCP","R-无MLKEM"]' \
     "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .outbounds' "${all_json}")"
 assert_equal "PROXY 默认选择直连节点" '"🇺🇸直连"' \
     "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .default' "${all_json}")"
-assert_equal "AUTO 只包含本机直连与 CDN" '["🇺🇸直连","🇺🇸CF"]' \
-    "$(jq -c '.outbounds[] | select(.tag == "AUTO") | .outbounds' "${all_json}")"
-assert_equal "AUTO 探测地址与间隔" "https://www.gstatic.com/generate_204 300s 50" \
-    "$(jq -r '.outbounds[] | select(.tag == "AUTO") | "\(.url) \(.interval) \(.tolerance)"' "${all_json}")"
+assert_not_contains "不生成 AUTO 组" "$(tags "${all_json}")" "AUTO"
 assert_not_contains "不生成虚假 CDN-FALLBACK" "$(tags "${all_json}")" "CDN-FALLBACK"
 assert_equal "route 默认出口" '"PROXY"' "$(jq -c '.route.final' "${default_json}")"
 
@@ -287,9 +284,8 @@ notsteamcontent.com|no
 PROBES
 fi
 
-# --- 模式 1/2/3/4：没有 AUTO 组，PROXY 默认选首个本机节点 ----------------------
-# 模式 2/4 没有直连入口，成员里不得出现直连节点；模式 1/3 的首成员是直连节点。
-# 只有模式 5 生成 AUTO（已在上面的主用例断言成员与探测参数）。
+# --- 模式 1/2/3/4/5：没有 AUTO 组，PROXY 默认选首个本机节点 ------------------
+# 模式 2/4 没有直连入口，成员里不得出现直连节点；模式 1/3/5 的首成员是直连节点。
 while IFS='|' read -r profile expected_default has_direct; do
     mode_out="${TMP_DIR}/${profile}"
     render_mode "${profile}" "${mode_out}" >"${mode_out}.log" 2>&1 || {
@@ -315,6 +311,7 @@ done <<'PROFILES'
 anytls|🇺🇸直连|yes
 cloudfront|🇺🇸CF|no
 cloudflare|🇺🇸CF|no
+combined|🇺🇸直连|yes
 combined-cloudflare|🇺🇸直连|yes
 PROFILES
 

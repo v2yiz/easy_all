@@ -904,29 +904,18 @@ build_mihomo_nodes() {
 }
 
 build_mihomo_proxy_names() {
-    local extra groups='[]'
+    local extra
     aggregation_node_names >/dev/null 2>&1 || true
     extra=$(aggregation_node_names) || extra='[]'
-    if [[ "${PROTOCOL}" == "combined-cloudfront" ]]; then
-        groups=$(jq -cn '["AUTO","CDN-FALLBACK"]')
-    fi
     jq -nr --argjson names "$(cdn_local_node_names)" --argjson extra "${extra}" \
-        --argjson groups "${groups}" '
-        ($names + $groups + $extra)[] | "        - \(.|@json)"'
+        '($names + $extra)[] | "        - \(.|@json)"'
 }
 
-# 模式 5 的自动组：AUTO url-test 与 CDN-FALLBACK（直连 → CDN），探测改用 HTTPS 443。
+# 模式 5 不生成额外 CDN 分组（与模式 3 一致，PROXY 手动选择）；
+# 模板占位必须成功输出空内容。
 build_mihomo_proxy_groups() {
-    if [[ "${PROTOCOL}" != "combined-cloudfront" ]]; then
-        return 0
-    fi
-    jq -nr --arg direct "${DIRECT_NODE_NAME}" --arg cdn "${CF_NODE_PREFIX}" '
-        "    - name: AUTO\n      type: url-test\n      url: https://www.gstatic.com/generate_204\n" +
-        "      interval: 300\n      tolerance: 50\n      proxies:\n" +
-        "        - \($direct|@json)\n        - \($cdn|@json)\n" +
-        "    - name: CDN-FALLBACK\n      type: fallback\n" +
-        "      url: https://www.gstatic.com/generate_204\n      interval: 300\n" +
-        "      proxies:\n        - \($direct|@json)\n        - \($cdn|@json)\n"'
+    printf ''
+    return 0
 }
 
 cloudfront_template_snapshot_file() {

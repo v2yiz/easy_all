@@ -79,25 +79,18 @@ singbox_client_local_outbounds_json() {
 
 # 本机节点 → 受支持的聚合节点；策略组成员只从最终 outbound 生成，避免悬空引用。
 singbox_client_outbounds_json() {
-    local local_outbounds supported members auto=''
+    local local_outbounds supported members
     local_outbounds=$(singbox_client_local_outbounds_json)
     supported=$(aggregation_included_nodes | singbox_aggregation_partition_json \
         | jq -c '.supported' | singbox_aggregation_outbounds_json)
     members=$(jq -c '[.[].tag]' <<<"${local_outbounds}")
-    if [[ "${PROTOCOL:-}" == "combined-cloudfront" ]]; then
-        auto=$(jq -cn --argjson members "${members}" '
-            {type: "urltest", tag: "AUTO", outbounds: $members,
-             url: "https://www.gstatic.com/generate_204", interval: "300s", tolerance: 50}')
-        members=$(jq -c '. + ["AUTO"]' <<<"${members}")
-    fi
     members=$(jq -cn --argjson members "${members}" \
         --argjson extra "$(jq -c '[.[].tag]' <<<"${supported}")" '$members + $extra')
     # DIRECT 直连的域名解析必须走本地解析：route.default_domain_resolver 是节点引导解析器，
     # 而 sing-box 的传输级解析不经过 dns.rules，用引导解析器查局域网域名只会得到 NXDOMAIN。
     jq -cn --argjson members "${members}" --argjson local "${local_outbounds}" \
-        --argjson supported "${supported}" --argjson auto "${auto:-null}" '
+        --argjson supported "${supported}" '
         [{type: "selector", tag: "PROXY", outbounds: $members, default: $members[0]}]
-        + (if $auto == null then [] else [$auto] end)
         + [{type: "direct", tag: "DIRECT", domain_resolver: "dns-local"}]
         + $local + $supported'
 }

@@ -11,8 +11,8 @@ export EASY_ALL_RUNTIME_LIB_DIR
 
 # 两个节点名必须在加载运行时库之前给出推荐默认值：singbox-runtime.sh 会在 source 时
 # 用 AnyTLS / VLESS-WS 兜底，提前赋值才能让交互提示与文档默认名一致。
-DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-🇺🇸直连}
-CF_NODE_PREFIX=${CF_NODE_PREFIX:-🇺🇸CF}
+DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-主节点}
+CF_NODE_PREFIX=${CF_NODE_PREFIX:-CDN备用}
 
 # shellcheck source=lib/runtime-core.sh
 source "${EASY_ALL_RUNTIME_LIB_DIR}/runtime-core.sh"

@@ -141,7 +141,7 @@ assert_not_contains "模式 2 没有 CloudFront 守卫" "${out}/Caddyfile" 'X-Ea
 assert_contains "模式 2 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_contains "模式 2 订阅域名由节点域名派生" "${out}/links.txt" 'type=ws'
 
-# --- 模式 5：AnyTLS 443 + 源站 8443 + 自动组 ---------------------------------
+# --- 模式 5：AnyTLS 443 + 源站 8443（无自动组，PROXY 手动选择）--------------
 out="${TMP_DIR}/combined"
 render_mode combined "${out}"
 assert_contains "模式 5 同时有 AnyTLS 与 VLESS" "${out}/config.json" '"type": "anytls"'
@@ -150,13 +150,13 @@ assert_contains "模式 5 源站站点监听 8443" "${out}/Caddyfile" 'https://o
 assert_contains "模式 5 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_contains "模式 5 节点含直连" "${out}/links.txt" 'anytls://'
 assert_contains "模式 5 节点含 CDN" "${out}/links.txt" 'type=ws'
-assert_contains "模式 5 有 AUTO 组" "${out}/groups.yaml" 'name: AUTO'
-assert_contains "模式 5 有 CDN-FALLBACK 组" "${out}/groups.yaml" 'name: CDN-FALLBACK'
-assert_contains "模式 5 fallback 探测 HTTPS 443" "${out}/groups.yaml" \
-    'https://www.gstatic.com/generate_204'
+assert_not_contains "模式 5 无 AUTO 组" "${out}/groups.yaml" 'AUTO'
+assert_not_contains "模式 5 无 CDN-FALLBACK 组" "${out}/groups.yaml" 'CDN-FALLBACK'
+[[ ! -s "${out}/groups.yaml" ]] || fail "模式 5 不应生成额外代理组"
 assert_equal "模式 5 PROXY 成员顺序" \
-    $'        - "🇺🇸直连"\n        - "🇺🇸CF"\n        - "AUTO"\n        - "CDN-FALLBACK"' \
-    "$(<"${out}/names.yaml")"
+    $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
+assert_not_contains "模式 5 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
+assert_not_contains "模式 5 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
 assert_not_contains "模式 5 不使用 httpupgrade" "${out}/config.json" 'httpupgrade'
 
 # 节点名推荐默认值：必须在交互提示里出现（加载运行时库前由 Profile 赋值），
@@ -178,8 +178,8 @@ done <<'NODE_DEFAULTS'
 anytls|🇺🇸直连|VLESS-WS
 cloudfront|AnyTLS|🇺🇸AWS
 cloudflare|AnyTLS|🇺🇸CF
-combined|🇺🇸直连|🇺🇸AWS
-combined-cloudflare|🇺🇸直连|🇺🇸CF
+combined|主节点|CDN备用
+combined-cloudflare|主节点|CDN备用
 NODE_DEFAULTS
 
 # --- 模式 3：AnyTLS 443 + 橙云节点/订阅 8443（Origin Rule）------------------

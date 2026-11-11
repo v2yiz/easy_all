@@ -28,7 +28,7 @@ sudo easy_all subscription
 
 本机节点统一使用 `443` 端口与公信 TLS 证书：
 - **AnyTLS 直连（模式 1/3/5）**：`type: anytls`，`server/sni` 为直连域名，`port: 443`，`client-fingerprint: chrome`，`udp: true`。分享链接形如：`anytls://<密码>@<直连域名>:443/?sni=<直连域名>&insecure=0#<节点名>`。
-- **VLESS WebSocket（模式 2/3/4/5）**：本机仅生成**一个** CDN 节点（模式 4/5 默认 `🇺🇸AWS`，模式 2/3 默认 `🇺🇸CF`）。`port: 443`，`tls: true`，`network: ws`，`packet-encoding: xudp`，`ws-opts.path` 为部署时生成的随机路径。若启用了 CDN 优选地址，连接地址替换为优选域名（如 `*.cloudfront.182682.xyz` / `*.cloudflare.182682.xyz`），而 SNI 与 WebSocket `Host` 保持原节点域名。分享链接形如：`vless://<uuid>@<连接地址>:443?encryption=none&security=tls&type=ws&sni=<节点域名>&fp=chrome&host=<节点域名>&path=<路径>&packetEncoding=xudp#<节点名>`。
+- **VLESS WebSocket（模式 2/3/4/5）**：本机仅生成**一个** CDN 节点（模式 3/5 默认 `CDN备用`，模式 2 默认 `🇺🇸CF`，模式 4 默认 `🇺🇸AWS`）。`port: 443`，`tls: true`，`network: ws`，`packet-encoding: xudp`，`ws-opts.path` 为部署时生成的随机路径。若启用了 CDN 优选地址，连接地址替换为优选域名（如 `*.cloudfront.182682.xyz` / `*.cloudflare.182682.xyz`），而 SNI 与 WebSocket `Host` 保持原节点域名。分享链接形如：`vless://<uuid>@<连接地址>:443?encryption=none&security=tls&type=ws&sni=<节点域名>&fp=chrome&host=<节点域名>&path=<路径>&packetEncoding=xudp#<节点名>`。
 
 > **证书校验分工**：客户端校验 viewer / 直连 / 橙云边缘证书（模式 1/3/5 直连为 Let's Encrypt，模式 4/5 CDN 为 AWS ACM，模式 2/3 CDN 为 Cloudflare 边缘证书）；源站 Let's Encrypt 与 Origin CA 仅在边缘到源站之间通信。
 > **优选地址恢复**：若优选域名解析失效，执行 `sudo easy_all edit-sub` 删除 `cdnEdgeAddress` 字段并保存，客户端刷新订阅即可直接回退到直连 CDN 节点域名。
@@ -38,13 +38,13 @@ sudo easy_all subscription
 ## 3. 客户端分流与策略组
 
 日常使用**规则（Rule）模式**即可：大陆流量直连，境外流量走 `PROXY`。
-- **直连 AnyTLS（模式 1/3/5）**：`PROXY` 分组按顺序包含本机直连节点（默认 `🇺🇸直连`）与外部聚合节点（`nodes`）。模式 1 若选择 `link` 仅输出节点，不部署订阅。
+- **直连 AnyTLS（模式 1/3/5）**：`PROXY` 分组按顺序包含本机直连节点（模式 3/5 默认 `主节点`，模式 1 默认 `🇺🇸直连`）与外部聚合节点（`nodes`）。模式 1 若选择 `link` 仅输出节点，不部署订阅。
 - **纯 CDN（模式 2/4）**：无直连节点。`PROXY` 分组包含本机 CDN 节点（`🇺🇸AWS` 或 `🇺🇸CF`）与聚合节点。
-- **直连+CDN（模式 5）**：`PROXY` 分组包含「直连节点 → CDN 节点 → `AUTO` → `CDN-FALLBACK` → 聚合节点」。另有两个自动组：`AUTO`（`url-test` 自动测速）与 `CDN-FALLBACK`（`fallback`，直连失效自动回落 CDN）。
+- **直连+CDN（模式 5）**：`PROXY` 分组包含「直连节点 → CDN 节点 → 聚合节点」，无自动测速组与兜底组，与模式 3 一致，由用户手动切换。
 - **直连+CDN（模式 3）**：`PROXY` 分组包含「直连节点 → 橙云节点 → 聚合节点」，无自动测速组，由用户手动切换。
 - **Base64 订阅**：平铺节点列表，顺序与各模式 `PROXY` 成员一致。
-- **sing-box JSON 差异**：JSON 产物不生成 `CDN-FALLBACK`（sing-box 无完全等价语义），模式 5 仅包含 `AUTO` 组；CDN 熔断时需手动切到直连节点或等待下一个测速探测周期（300s）。
-- **985 GB 熔断表现（仅模式 4/5）**：达到阈值时 CDN 返回 `503`，模式 5 切到直连节点即可继续使用（经历一次短暂重连）；模式 4 需等待次月或按运维指南处理。模式 1/2/3 无此熔断。
+- **sing-box JSON 的分组结构与 Mihomo 一致**：`PROXY` 成员顺序与 Mihomo 相同（直连节点 → CDN 节点 → 聚合节点），默认选中首个本机节点；不生成自动组（sing-box 无 `CDN-FALLBACK` 等价语义）。
+- **985 GB 熔断表现（仅模式 4/5）**：达到阈值时 CDN 返回 `503`，模式 5 需手动切到直连节点继续使用（经历一次短暂重连）；模式 4 需等待次月或按运维指南处理。模式 1/2/3 无此熔断。
 
 > 规则模式下，代理流量的 UDP/443（QUIC）默认优先拒绝并回退 TCP；全局（Global）模式下所有接管流量均强制走 `PROXY` 当前所选节点。
 

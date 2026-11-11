@@ -109,7 +109,7 @@
 - **端口划分**：直连入站固定在 `443`，CloudFront 源站与订阅站点固定在 `8443`，回环 CDN 入站固定在 `127.0.0.1:10086`；三者都由模式派生，不接受用户另设参数。
 - **证书**：源站域名固定复用直连域名（一条灰云 `A`），Let's Encrypt 只需覆盖直连域名（DNS-01）；viewer 侧仍由 ACM 管理；订阅域名固定复用节点域名。AnyTLS 与 Caddy 共用同一份部署证书。旧装若已配置独立源站域名，仍保留原灰云 `A` 与 SAN。
 - **分发端口**：CloudFront 源站 `HTTPSPort` 由模式派生为 `8443`（模式 4 是 `443`）；分发端口写错会在公网验收阶段失败。
-- **订阅**：本机节点恰为两个——AnyTLS 直连（默认名 `🇺🇸直连`）与 CloudFront CDN（默认名 `🇺🇸AWS`），另附 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，顺序为直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；`PROXY` 仍是 `select`，可手动在直连与 CDN 之间切换。CDN 节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
+- **订阅**：本机节点恰为两个——AnyTLS 直连（默认名 `主节点`）与 CloudFront CDN（默认名 `CDN备用`），另附聚合节点；`PROXY` 仍是 `select`，成员顺序为直连 → CDN → 聚合节点，由用户手动切换，不生成自动测速或兜底组。CDN 节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
 
 ## 2. 防火墙、端口与安全边界
 
@@ -184,7 +184,7 @@
 
 ### 3.1 节点与分组顺序
 
-Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成员只在模式 5 额外插入两个自动组：
+Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成员只在本机节点之后追加聚合节点：
 
 | 模式 | Base64 / `proxies` 顺序 | `PROXY` 成员 |
 | :--- | :--- | :--- |
@@ -192,10 +192,10 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 | 2 纯 CloudFlare | Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
 | 3 AnyTLS + CloudFlare | 本机 AnyTLS 节点 → Cloudflare 橙云节点 → 聚合 `nodes`（原顺序） | 同左 |
 | 4 纯 CloudFront | CloudFront 节点 → 聚合 `nodes`（原顺序） | 同左 |
-| 5 AnyTLS + CloudFront | 本机 AnyTLS 节点 → CloudFront 节点 → 聚合 `nodes`（原顺序） | 本机 AnyTLS 节点 → CloudFront 节点 → `AUTO` → `CDN-FALLBACK` → 聚合 `nodes`（原顺序） |
+| 5 AnyTLS + CloudFront | 本机 AnyTLS 节点 → CloudFront 节点 → 聚合 `nodes`（原顺序） | 同左 |
 
 - `PROXY` 为 `select`，默认第一项分别是直连节点（模式 1/3/5）或 CDN 节点（模式 2/4）；即使聚合节点为空也始终有有效成员。
-- 模式 5 额外生成 `AUTO`（`url-test`）与 `CDN-FALLBACK`（`fallback`，直连 → CDN）两个自动组，探测地址固定 `https://www.gstatic.com/generate_204`；模式 1/2/3/4 没有自动测速或兜底组。
+- 模式 5 与模式 3 结构一致：`PROXY` 由用户手动在直连节点与 CDN 节点之间切换，没有自动测速或兜底组。
 - `GLOBAL` 维持 `select`，唯一成员是 `PROXY`；切换到「全局」后所有接管流量使用 `PROXY` 的当前选择。
 - 模板只保留 `PROXY` / `GLOBAL` 两个占位区，额外分组由 `build_mihomo_proxy_groups` 输出，`AUTO`、`CDN-AUTO`、`CDN-FALLBACK` 等名字属于保留组名，不能用于聚合节点。
 - 聚合节点支持三类：`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；外部聚合节点的 `host/port/portRange` 原样保留，不受本机「全 443」约束，也不受「本机只有一个 CDN 节点」的限制。
@@ -208,10 +208,10 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 - **反向映射**：`dns.reverse_mapping` 把已应答的 IP 反查到域名，使「应用直接连接真实 IP（未命中 `geoip-cn`、没有 Fake-IP 映射）」的连接仍能命中域名规则（微信、Steam 下载、国内直连集合的 UDP/443 与 TCP），对应 Mihomo 模板的 `force-dns-mapping` / `parse-pure-ip`。它依赖应用先把域名交给 sing-box 解析，系统 DNS 被代持并缓存的平台（如 macOS）可能拿不到映射，此时按原 IP 规则分流；共享 IP 上的多个域名仍按已解析的那个域名归类。
 - **分流顺序**与默认 Mihomo 模板逐条对应：DNS 接管 → 私网与零地址 → 单标签/认证门户/本地管理域名 → FCM `5228-5230` → 代理服务与 Google 的 UDP/443 拒绝与域名代理 → 微信/Steam/Apple 中国/国内服务 → 国内域名集合 → Telegram → CN IP 兜底 → 其余 UDP/443 拒绝 → `PROXY`。`clash_mode=direct/global` 在路由与 DNS 两处都优先于业务规则。
 - **规则集**：小型内联集合（`private-fallback`、`captive-portal`、`fakeip-exceptions`、`proxy-services`、`wechat-services`、`steam-download`、`apple-cn-fallback`、`direct-services`、`telegram-fallback`）与 MetaCubeX 的 sing-box 分支 SRS（`geosite-*`、`geoip-*`，`update_interval=1d`）并存；下载走显式 `http_clients`（默认直连出口，不依赖待解析的代理节点）。冷启动时任一必需远程规则集下载失败会让客户端配置启动失败，少量内联规则只缩短影响面，不构成离线首次启动保证。内联集合的 `domain_suffix` 不写前导点：锁定核心对无点后缀按「裸域 + 各级子域」匹配（等价 Mihomo 的 `+.` 写法），带点后缀只匹配子域，因此 `wechat.com`、`steamcontent.com` 这类裸域与子域都会被同一个条目覆盖。
-- **策略组差异**：`PROXY` 为 `select`，成员顺序与本机节点/聚合节点一致。模式 5 追加 `AUTO`（`urltest`，仅本机直连与 CDN），默认选择直连节点；官方 selector/urltest 无法保证与 Mihomo `CDN-FALLBACK` 语义等价，因此 JSON 不生成该组，Mihomo 订阅仍保留它。模式 1/2/3/4 只有 `PROXY` 与 `DIRECT`。
+- **策略组差异**：`PROXY` 为 `select`，成员顺序与本机节点/聚合节点一致，默认选中首个本机节点；五模式都只有 `PROXY` 与 `DIRECT`，不生成自动测速或兜底组。
 - **节点映射**：本机 AnyTLS（`password` + TLS + uTLS `chrome`）与 VLESS WebSocket（`transport.type=ws`、`headers.Host`、`packet_encoding=xudp`）；聚合 Reality 节点映射为 `flow=xtls-rprx-vision` + `tls.reality`（`public_key`、`short_id`），`udp=false` 时用 `network: "tcp"` 限制承载。1.14.4 的 Reality 客户端会从 ClientHello 里过滤 `X25519MLKEM768`（`common/tls/reality_client.go`），因此聚合节点的 `supportX25519Mlkem768` 在 sing-box 侧没有对应开关：`false` 与核心行为一致，`true` 的 PQ 扩展不会出现，两者都仍用经典 X25519 连接，所以都保留。源站密钥永不进入 JSON。
 - **排除规则**：官方 1.14.4 没有 xhttp 传输与 mieru 协议，`fp` 不在 1.14.4 utls 枚举内的 Reality 节点会让核心拒绝整份配置，因此这两类节点只从 JSON 排除，`apply` 会输出节点名、原因与数量；Mihomo / Base64 输出不变。Reality 的 `supportX25519Mlkem768` 不参与排除（见上一条：核心固定过滤 MLKEM），但该行为的握手实测仍未进行。所有模式都至少有一个本机节点，因此排除后 JSON 仍有效；本机节点生成失败则整个候选发布失败。
-- **候选校验**：发布前检查 JSON 可解析、outbound tag 唯一、selector/urltest 成员与路由/DNS 引用存在、默认出口存在、无源站密钥；存在锁定核心时再跑 `sing-box check`。`check` 不覆盖运行期初始化，因此 `scripts/verify-live.sh` 还会把客户端 JSON 去掉 TUN 入口后用真实核心启动一次（DNS detour 指向空 direct 出口这类问题只在启动阶段暴露）。校验失败即中止发布，已发布的旧订阅保持不变。
+- **候选校验**：发布前检查 JSON 可解析、outbound tag 唯一、策略组成员与路由/DNS 引用存在、默认出口存在、无源站密钥；存在锁定核心时再跑 `sing-box check`。`check` 不覆盖运行期初始化，因此 `scripts/verify-live.sh` 还会把客户端 JSON 去掉 TUN 入口后用真实核心启动一次（DNS detour 指向空 direct 出口这类问题只在启动阶段暴露）。校验失败即中止发布，已发布的旧订阅保持不变。
 - **发布与流控边界**：JSON 与六份旧产物在同一暂存目录生成并沿用逐文件原子替换（单文件原子，不是整代快照）。`render_mihomo_base64_files` 保留六产物渲染，仅供 CDN 就绪判定与流控门禁复用；JSON 缺失或损坏不会改变 `blocked`/`pending` 状态，也不清零用量。
 
 ---

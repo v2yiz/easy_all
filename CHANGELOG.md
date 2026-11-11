@@ -1,4 +1,23 @@
-## 未发布
+## 5.2.0 更新说明（2026-11-11）
+
+模式 5 订阅改为与模式 3 结构一致的手动选择：
+
+- **去掉自动组**：模式 5（`PROTOCOL=combined-cloudfront`）的 Mihomo 与 sing-box 订阅不再生成 `AUTO`（`url-test` / `urltest`）
+  与 `CDN-FALLBACK`（`fallback`）；`PROXY` 只有两个本机节点与聚合节点（直连 → CDN → 聚合），由用户在客户端手动选择。
+  Mihomo 的额外分组占位渲染为空，`PROXY` 成员只有本机两个节点与聚合节点。
+- **默认节点名改为「主节点」「CDN备用」**：模式 3/5 的交互默认值为直连 `主节点`、CDN `CDN备用`（模式 1/2/4 默认名不变）；
+  已落盘或续装身份中的节点名仍然优先，存量安装不会因此重命名节点。
+- **升级后需执行一次 `sudo easy_all apply`**：升级到 5.2.0 后才会生成无 `AUTO`/`CDN-FALLBACK` 的新订阅，此前已发布的产物保持不变。
+  客户端若保存过指向 `AUTO` 的选择，组消失后会回落到 `PROXY` 首成员（直连节点），需手动再选一次。
+  处于 985 GB 熔断/受限状态时，未执行 `apply` 前已发布产物与新代码渲染结果不一致，`/subscribe` 会返回 `503`；执行 `apply` 或 `edit-sub` 后恢复。
+  受限/熔断状态下执行 `renew-cert` 会因订阅未就绪而中止，同样先执行 `apply` 或 `edit-sub`。
+- **985 GB 熔断**：模式 5 达到阈值后 CDN 返回 `503`，不再有自动回落，需手动切到直连节点继续使用。
+- **测试**：`test_modes_render.sh` 与 `test_singbox_subscription.sh` 改为断言模式 5 无 `AUTO`/`CDN-FALLBACK`、
+  `names.yaml` 仅两个本机节点，模式 5 纳入无 `AUTO` 走查表；默认名表同步为 `combined|主节点|CDN备用`、
+  `combined-cloudflare|主节点|CDN备用`，其余模式行不变。
+- **文档**：客户端指南与技术参考按新结构改写模式 3/5 的默认名、`PROXY` 成员与熔断切换措辞。
+
+以下为原「未发布」累计项，随 5.2.0 一同发布。
 
 sing-box 订阅的 DNS 与内联域名匹配修正（`templates/singbox.json`）：
 
