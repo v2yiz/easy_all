@@ -16,17 +16,21 @@
 
 ## 开始前：SSH 连接保活（建议配置）
 
-安装过程包含系统更新、内核与网络优化（约 5~15 分钟），SSH 偶发空闲超时会导致安装中断。建议在本地客户端配置保活（写入本机 `~/.ssh/config`，对所有 VPS 生效；**务必追加在文件最底部**，因 SSH 配置按从上到下首个匹配项生效，放顶部会影响其他主机的特定配置）：
+安装过程包含系统更新、内核与网络优化（约 5~15 分钟），SSH 偶发空闲超时会导致安装中断。建议在本地客户端配置保活（macOS/Linux 为 `~/.ssh/config`，Windows 为 `C:\Users\<你的用户名>\.ssh\config`；**务必追加在文件最底部**，因 SSH 配置按从上到下首个匹配项生效，放顶部会影响其他主机的特定配置）：
 
 ```sshconfig
-# 追加到本机 ~/.ssh/config 最底部（务必放最下面）
+# 追加到本机 ~/.ssh/config（Windows 为 C:\Users\<用户名>\.ssh\config）最底部（务必放最下面）
 Host *
     ServerAliveInterval 30
-    ServerAliveCountMax 6
+    ServerAliveCountMax 10
     TCPKeepAlive yes
 ```
 
-- **临时连接参数**：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 <用户>@<IP> -p <端口>`。
+- **Windows 快速打开/创建方式**（PowerShell 中运行）：
+  ```powershell
+  notepad $HOME\.ssh\config
+  ```
+- **临时连接参数**（全平台通用）：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 <用户>@<IP> -p <端口>`。
 - **会话防中断**：建议在 VPS 上的 `tmux` 或 `screen` 会话中执行；若因切网等原因中断，重新登录后再次执行安装命令即可自动检测断点并提示续装。
 
 ---
