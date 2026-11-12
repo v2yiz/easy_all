@@ -166,6 +166,11 @@ for proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflar
     assert_equal "${proto}: 默认域名解析器指向已声明服务器" "true" \
         "$(jq -r '.route.default_domain_resolver as $tag
             | any(.dns.servers[]; .tag == $tag)' <<<"${body}")"
+    # 引导解析只有单源：fallback 条目从不被 default_domain_resolver 选中，留着就是死配置。
+    assert_equal "${proto}: dns.servers 恰为单条 primary" "easy_all-ipv4-primary" \
+        "$(jq -r '[.dns.servers[].tag] | join(",")' <<<"${body}")"
+    assert_equal "${proto}: 不含死条目 easy_all-ipv4-fallback" "0" \
+        "$(jq -r '[.dns.servers[].tag | select(test("fallback"))] | length' <<<"${body}")"
     assert_equal "${proto}: 固定 IPv4 direct 出站" "direct" \
         "$(jq -r '.outbounds[0].tag' <<<"${body}")"
     assert_equal "${proto}: 默认出站 direct" "direct" "$(jq -r '.route.final' <<<"${body}")"

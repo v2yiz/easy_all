@@ -132,9 +132,28 @@ sudo easy_all edit-sub
 ### 6.2 状态排查
 运行 `sudo easy_all status` 查看保护状态：
 - 若显示 `blocked=true`：说明当月配额耗尽，CDN 已熔断至次月；
-- 若显示 `统计文件缺失或损坏`：请勿手工创建或篡改文件，运行 `sudo easy_all cdn-traffic-sync` 或 `sudo easy_all apply` 尝试恢复。
+- 若显示 `统计文件缺失或损坏`（`/etc/easy_all/cdn-traffic-usage.json`）：保护会立即 fail-closed 停机，且**不会自动清零、也不会自动重建**——`cdn-traffic-sync` 与 `apply` 只会告警并保持停机，反复运行不会有任何进展。恢复必须按受控步骤人工重建统计文件：
+    1. `sudo systemctl stop easy_all-cdn-traffic-guard.timer`（先停 15 秒一次的巡检，避免反复停机）；
+    2. 备份现有文件：`sudo cp /etc/easy_all/cdn-traffic-usage.json /root/cdn-traffic-usage.broken`（文件不存在时跳过）；
+    3. 按下面的 8 键 schema 写入合法 JSON，其中 `used_bytes` 必须取**不低于真实累计**的保守值（写小了会让 985 GB 熔断滞后）：
+    ```json
+    {
+      "period": "2026-11",
+      "runtime_id": "mangle-easy_all-cdn-<当前开机 boot_id>",
+      "used_bytes": 0,
+      "last_uplink": 0,
+      "last_downlink": 0,
+      "blocked": false,
+      "enforced": false,
+      "protection_offline": false
+    }
+    ```
+    字段含义：`period` 是 UTC 自然月（`YYYY-MM`）；`runtime_id` 是当前开机 epoch（`mangle-easy_all-cdn-` 加 `cat /proc/sys/kernel/random/boot_id` 的输出，换 epoch 即按新开机重采样基线）；`used_bytes` 是本月已用字节；`last_uplink` / `last_downlink` 是上一次采样的 mangle 计数基线（填 0 会当作基线重置）；`blocked` / `enforced` / `protection_offline` 分别是「应熔断」「熔断已落实」「保护性停机」的布尔状态；
+    4. `sudo systemctl start easy_all-cdn-traffic-guard.timer`，再运行 `sudo easy_all cdn-traffic-sync` 复核输出；
+    5. 无法确定可信累计值（文件已被清空、也没有任何历史读数）时，改为卸载重装（`sudo easy_all uninstall` 后重新安装），由安装流程重建统计文件。
 - 若 CDN 仍可访问但状态显示 `enforced=true`（重建后落盘失败、进程中途被杀等）：下一轮 timer 会按反向漂移强制收敛为阻断并告警，无需手工清空状态文件。
-- 若日志出现 `计量计数在同一次开机内回退` 或 `mangle 计量规则数异常`：说明规则被外部命令 `flush` 或重复插入，保护会保持现有阻断状态，排查后运行 `sudo easy_all cdn-traffic-sync` 收敛；订阅未就绪时会安装返回 `503` 的降级站点并禁止解封，先执行 `sudo easy_all edit-sub`。
+- 若日志出现 `mangle 计量规则数异常`：说明计量规则被重复插入，保护会保持现有阻断状态。`sudo easy_all cdn-traffic-sync` 会幂等修复（缺几条补几条、多几条删多余的），这是该入口的自愈路径；订阅未就绪时会安装返回 `503` 的降级站点并禁止解封，先执行 `sudo easy_all edit-sub`。
+- 若日志出现 `计量计数在同一次开机内回退`：说明 mangle 计数被外部 `flush` 或重置，`cdn-traffic-sync` **不会**修复——它按计量异常拒绝回写低读数并保持停机（静默写 0 会漏计整月流量）。恢复方式是重启主机让计费 epoch（`runtime_id`）更新，下一轮采样按新基线重算，`used_bytes` 里的本月累计不受影响；同一 epoch 内再次被外部重置会重新停机，需同时排查是谁在 `flush` mangle 表。
 
 ---
 
@@ -165,6 +184,8 @@ sudo easy_all purge-cloud --domain example.com
 | :--- | :--- |
 | **SSH 断开后无法重连** | 检查云厂商安全组是否放通 SSH 端口；检查是否因密码多次输错被 Fail2ban 临时封禁。 |
 | **安装提示端口占用** | 运行 `sudo easy_all cleanup-partial` 清理历史残留；若为第三方应用占用需先释放端口。 |
+| **安装提示回源端口已被全局放行** | 机器上已有 `ufw allow 443/tcp` 或 `ufw allow 8443/tcp`（来源 `Anywhere` / `Any` / `0.0.0.0/0`）时，安装会在写入防火墙与云资源**之前**中止。运行 `sudo ufw status numbered` 找到该规则并 `sudo ufw delete <编号>` 移除后重试；否则回源端口对全网开放，Cloudflare-only 边界失效。 |
+| **提示状态文件无法确定 schema 字段集 / 不是纯赋值** | `state.env` 被改写或损坏（`PROTOCOL` 缺失/无效，或含命令替换、反引号、`;`、`\|` 等非纯赋值内容）。先备份该文件，按提示行号人工核对或删除该行；若 `PROTOCOL` 已不可恢复，`detect_installed_mode` 会将其归为 `incomplete-*`，此时用 `sudo easy_all uninstall` 走**仅本机清理**通道，云端资源（分发 / ACM / DNS / Origin Rule / Origin CA）需人工核对。 |
 | **命令报错 command not found** | 运行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) help` 自动修复命令软链接。 |
 | **CloudFront 返回 502** | 回源失败。检查云安全组是否放行回源端口（模式 4 为 443，模式 5 为 8443）；检查源站证书是否有效（`sudo easy_all renew-cert`）。 |
 | **CloudFront 返回 503** | 触发了 985 GB 流量熔断保护。运行 `sudo easy_all status` 确认配额，模式 5 可手动切到直连节点继续使用。 |

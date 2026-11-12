@@ -42,7 +42,7 @@ singbox_uri_encode() {
     jq -rn --arg value "$1" '$value|@uri'
 }
 
-# 与 lib/network.sh 的 xray_private_ranges_json 的 IPv4 部分逐项一致：阶段 2 统一清单前，
+# 服务端 sing-box 出站私网与保留网段拦截清单单一来源：
 # sing-box 路由必须拒绝同一组私网/特殊地址（含回环、链路本地元数据、CGNAT、多播与保留段）。
 singbox_private_ranges_json() {
     jq -cn '[
@@ -108,6 +108,8 @@ render_singbox_config() {
     # （NXDOMAIN、超时、NOERROR 无地址）时以错误终止连接，不会回落到 final: direct。
     # 已对上游 1.12.0 与 master 核验 route/route.go（RuleActionResolve 的错误为 fatal）与
     # dns/router.go（Lookup 把「无地址」改写为 error）；锁定核心升级时需复核这两处。
+    # 引导解析只有单源 1.1.1.1：不配 fallback 条目（配了也不会被使用，属死配置），
+    # 1.1.1.1 不可达时按 fail 显式失败，不做静默降级。
     jq -n \
         --argjson inbounds "$(singbox_inbounds_json "${blocked}")" \
         --argjson private "$(singbox_private_ranges_json)" '
@@ -115,8 +117,7 @@ render_singbox_config() {
           log: {level: "warning", timestamp: true},
           dns: {
             servers: [
-              {type: "udp", tag: "easy_all-ipv4-primary", server: "1.1.1.1"},
-              {type: "udp", tag: "easy_all-ipv4-fallback", server: "8.8.8.8"}
+              {type: "udp", tag: "easy_all-ipv4-primary", server: "1.1.1.1"}
             ],
             strategy: "ipv4_only"
           },

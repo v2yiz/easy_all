@@ -477,9 +477,10 @@ fail2ban_cidr_network_for_ip() {
     local address=$1 first second third fourth octet
     if [[ "${address}" == *:* ]]; then
         [[ "${address}" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
-        NETWORK="${address}"
-        STATE_KEY="v6-${address//:/-}"
-        return 0
+        # 产品仅支持 IPv4（README 与 lib/firewall.sh 的 set_ufw_ipv6 no 一致）：对 IPv6 调 ufw
+        # 必然失败并把 fail2ban action 拖成报错，这里只留审计日志并按「无需处理」成功退出。
+        logger -t easy_all "fail2ban 收到 IPv6 封禁请求（${address}）：本产品仅支持 IPv4，已跳过 UFW 操作" 2>/dev/null || true
+        exit 0
     fi
 
     IFS=. read -r first second third fourth <<<"${address}"
@@ -583,7 +584,9 @@ fail2ban_cidr_main() {
     unban)
         ((count > 0)) || return 0
         if ((count == 1)); then
-            "${UFW_BIN}" --force delete deny from "${NETWORK}" to any >/dev/null
+            # 规则可能已被外部删除（手工 ufw delete / 被其他工具重建）：删除失败不能挡住计数文件清理，
+            # 否则同一网段再也解不开（计数 >0 但规则已不在）。
+            "${UFW_BIN}" --force delete deny from "${NETWORK}" to any >/dev/null 2>&1 || true
             rm -f -- "${COUNT_FILE}"
         else
             temporary=$(mktemp "${COUNT_FILE}.XXXXXX")
@@ -730,7 +733,7 @@ ensure_ssh_boot_service() {
     sshd_bin=$(command -v sshd 2>/dev/null || true)
     [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
     [[ -n "${sshd_bin}" ]] || die "未找到 sshd；无法保证重启后 SSH 可用"
-    "${sshd_bin}" -t || die "sshd 配置校验失败；拒绝配置定时重启"
+    "${sshd_bin}" -t || die "sshd 配置校验失败；无法保证重启后 SSH 可用，已中止"
 
     for unit in ssh.service sshd.service; do
         systemctl cat "${unit}" >/dev/null 2>&1 || continue
@@ -751,5 +754,5 @@ ensure_ssh_boot_service() {
         info "SSH 已设置开机启动并处于运行状态：${unit}"
         return 0
     done
-    die "未找到 ssh.service 或 sshd.service；拒绝配置定时重启"
+    die "未找到 ssh.service 或 sshd.service；无法保证重启后 SSH 可用，已中止"
 }

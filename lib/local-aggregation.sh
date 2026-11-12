@@ -208,7 +208,8 @@ apply_local_aggregation_config() {
     AGGREGATION_NODES=$(jq -c '.nodes' <<<"${normalized}") || return 1
     # 连接地址的运行期派生值：空串等于不启用优选地址（回退节点域名）。
     CF_EDGE_ADDRESS=$(jq -r '.cdnEdgeAddress // ""' <<<"${normalized}") || return 1
-    export ALLOWED_TOKENS AGGREGATION_NODES CF_EDGE_ADDRESS
+    # 这三个变量只在本进程内被展开/heredoc 消费（state.env 负责跨进程持久化），
+    # 同进程全局即可；不要 export 扩大暴露面。
 }
 
 # 生效的聚合节点（默认不下发 optional；node=all 时才包含）。

@@ -33,8 +33,6 @@ cleanup_fixtures() {
 mkdir -p "${T}/certs" "${T}/subs" "${T}/runtime" /run/easy_all-caddy
 chmod 0700 /run/easy_all-caddy
 
-export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${T}/policy-state"
-export EASY_ALL_POLICY_RC_OVERRIDE="${T}/policy-rc.d"
 export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${T}/progress.env"
 export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${T}/runtime-write.lock"
 export XDG_DATA_HOME="${T}/xdg"
@@ -188,10 +186,13 @@ sleep 2
 kill -0 "${CPID1}" 2>/dev/null || { tail -5 "${T}/client-anytls.log" >&2; fail "AnyTLS 客户端进程未存活"; }
 kill -0 "${CPID2}" 2>/dev/null || { tail -5 "${T}/client-ws.log" >&2; fail "WebSocket 客户端进程未存活"; }
 proxy_status() {
+    # 探测端点只验「请求真的穿过了代理并由目标站应答」：必须无未认证限流（api.github.com 对匿名
+    # 请求会 403/429，CI 共享出口很容易被限流误判成代理不通），且响应体极小。
+    # Cloudflare 的 /cdn-cgi/trace 是纯文本诊断端点，正常恒为 200。
     env -u NO_PROXY -u no_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
         -u http_proxy -u https_proxy -u all_proxy \
         curl -sS --max-time 10 -x "http://127.0.0.1:$1" -o /dev/null -w '%{http_code}' \
-        https://api.github.com/zen 2>/dev/null
+        https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null
 }
 for port in 18080 18081; do
     status=""

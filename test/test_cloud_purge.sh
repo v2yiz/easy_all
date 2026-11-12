@@ -3,6 +3,9 @@
 # 现场故障：cf_list 的 jq 聚合没有 -n，jq 去读 stdin，在交互终端上永久挂起（啥也没清理）。
 set -Eeuo pipefail
 
+# A31 阶段一：断言计数器，防止整个文件静默空跑（fixture 出错时最容易全绿）。
+TESTS_ASSERTED=0
+
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 SCRIPT="${ROOT_DIR}/lib/cloud-purge.sh"
 TOKEN="fake-token-0123456789abcdef"
@@ -23,12 +26,14 @@ fail() {
 }
 
 assert_equal() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 expected=$2 actual=$3
     [[ "${expected}" == "${actual}" ]] \
         || fail "${label}: expected <${expected}> but got <${actual}>"
 }
 
 assert_contains() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 expected=$3
     [[ "${text}" == *"${expected}"* ]] \
         || fail "${label}: missing <${expected}>"
@@ -59,6 +64,17 @@ for a in "$@"; do
     esac
 done
 printf '%s %s\n' "${method}" "${url}" >>"${PURGE_TEST_CALLS}"
+# B3：前 N 次请求回放 429（限流），之后放行；计数落在文件里跨进程累计。
+if [[ -n "${PURGE_TEST_429_TIMES:-}" ]]; then
+    n=$(cat "${PURGE_TEST_429_STATE:-/tmp/easy_all_429_state}" 2>/dev/null || printf 0)
+    n=$((n + 1))
+    printf '%s' "${n}" >"${PURGE_TEST_429_STATE:-/tmp/easy_all_429_state}"
+    if ((n <= PURGE_TEST_429_TIMES)); then
+        printf '{"success":false,"errors":[{"code":10000,"message":"rate limited"}]}'
+        printf '\n429'
+        exit 0
+    fi
+fi
 # 真实 Cloudflare 的成功 DELETE 可能返回 204 + 空体：必须按成功处理。
 if [[ "${method}" == "DELETE" && "${PURGE_TEST_EMPTY_DELETE:-0}" == "1" ]]; then
     printf '\n204'
@@ -763,7 +779,6 @@ assert_contains "purge-cloud: 宿主凭据被剥离后提示跳过 AWS" "$(<"${O
 assert_equal "purge-cloud: 宿主凭据不得触达 aws 哨兵" "0" \
     "$(grep -c . "${TMP_DIR}/aws-sentinel.log" || true)"
 
-printf 'ok - purge-cloud\n'
 
 # 11) CloudFront / ACM：只有携带 AWS 凭据（且 PATH 里有 aws）时才清理；
 #     分发按 Comment 前缀 + 别名范围识别，证书按 easy_all=managed 标记 + InUseBy + 域名范围识别。
@@ -1165,7 +1180,14 @@ case "${service} ${op}" in
         printf '{"Tags":[]}\n'
     fi
     ;;
-"acm delete-certificate") printf '{}\n' ;;
+"acm delete-certificate")
+    # 删除权限/IAM 抖动：证书删除被拒必须计失败（不能当成「合法保留」）。
+    if [[ "${PURGE_TEST_AWS_DENY_DELETE_C1:-0}" == "1" && "${arn}" == *certificate/C1 ]]; then
+        printf 'An error occurred (AccessDenied) when calling the DeleteCertificate operation\n' >&2
+        exit 254
+    fi
+    printf '{}\n'
+    ;;
 *) printf '{}\n' ;;
 esac
 EOF
@@ -1268,37 +1290,76 @@ AWS_CALLS="${TMP_DIR}/aws-calls.log"
 assert_equal "purge-cloud: InUseBy 收敛后回收证书" "1" \
     "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
 
-# 回收阶段读不到证书状态时必须告警并计失败，不能当成「不归属」静默略过。
+# 回收阶段读不到证书状态：必须告警并计入「合法保留」（A11 口径：归属不可读＝保留不删），
+# 但不能静默略过，也不得删除。
 export PURGE_TEST_CERT_INUSE_PURGED=1
 export PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM=2
 CALLS="${TMP_DIR}/aws-inuse-deny-calls.log"
 OUT="${TMP_DIR}/aws-inuse-deny.out"
 ERR="${TMP_DIR}/aws-inuse-deny.err"
-if run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com; then
-    fail "purge-cloud: 回收阶段证书不可读时必须以非零退出"
-fi
+run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com \
+    || fail "purge-cloud: 回收阶段证书不可读属于合法保留，应退出 0：$(tail -n 3 "${ERR}")"
 unset PURGE_TEST_CERT_INUSE_PURGED PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM
+AWS_CALLS="${TMP_DIR}/aws-calls.log"
 assert_contains "purge-cloud: 回收阶段证书不可读要告警" "$(<"${OUT}")" \
     "无法读取 ACM 证书状态，保留不删"
-assert_contains "purge-cloud: 回收阶段证书不可读计入失败" "$(<"${ERR}")" "有 1 个对象删除失败"
+assert_contains "purge-cloud: 回收阶段证书不可读计入合法保留" "$(<"${OUT}")" "1 个合法保留"
+assert_equal "purge-cloud: 回收阶段不可读的证书不删除" "0" \
+    "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
 
-# InUseBy 已收敛、但随后归属复核读不到状态：必须告警并计失败，不能当成「不归属」静默保留。
+# InUseBy 已收敛、但随后归属复核读不到状态：同样属于「归属不可读＝保留不删」，
+# 必须告警并计入合法保留，且不得删除。
 export PURGE_TEST_CERT_INUSE_PURGED=1
 export PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM=3
 CALLS="${TMP_DIR}/aws-settle-deny-calls.log"
 OUT="${TMP_DIR}/aws-settle-deny.out"
 ERR="${TMP_DIR}/aws-settle-deny.err"
-if run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com; then
-    fail "purge-cloud: 归属复核不可读时必须以非零退出"
-fi
+run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com \
+    || fail "purge-cloud: 归属复核不可读属于合法保留，应退出 0：$(tail -n 3 "${ERR}")"
 unset PURGE_TEST_CERT_INUSE_PURGED PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM
 AWS_CALLS="${TMP_DIR}/aws-calls.log"
 assert_contains "purge-cloud: 归属复核不可读要告警" "$(<"${OUT}")" "无法读取 ACM 证书状态，保留不删"
+assert_contains "purge-cloud: 归属复核不可读计入合法保留" "$(<"${OUT}")" "1 个合法保留"
 assert_equal "purge-cloud: 归属复核不可读的证书不删除" "0" \
     "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
 
+# A11(a)：等待期内仍被已删除分发引用（InUseBy 迟迟不收敛）是合法的等待性保留：
+# 退出 0、保留数可见、证书不删；不得再把正确保留报成删除失败。
+export PURGE_TEST_CERT_INUSE_PURGED=1
+export PURGE_TEST_CERT_INUSE_LAG=999
+CALLS="${TMP_DIR}/aws-kept-inuse-calls.log"
+OUT="${TMP_DIR}/aws-kept-inuse.out"
+ERR="${TMP_DIR}/aws-kept-inuse.err"
+run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com \
+    || fail "purge-cloud: 等待期内仍被引用的证书属合法保留，应退出 0：$(tail -n 3 "${ERR}")"
+unset PURGE_TEST_CERT_INUSE_PURGED PURGE_TEST_CERT_INUSE_LAG
+AWS_CALLS="${TMP_DIR}/aws-calls.log"
+assert_contains "purge-cloud: 等待性保留要告警" "$(<"${OUT}")" \
+    "等待期内仍被已删除的分发引用"
+assert_contains "purge-cloud: 等待性保留计入合法保留" "$(<"${OUT}")" "1 个合法保留"
+assert_equal "purge-cloud: 等待性保留不报删除失败" "0" \
+    "$(grep -c '个对象删除失败' "${OUT}" || true)"
+assert_equal "purge-cloud: 等待性保留的证书不删除" "0" \
+    "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
+
+# A11(b)：真正的删除失败（delete-certificate 被拒）仍然计失败，并沿用原 die 文案非零退出。
+export PURGE_TEST_AWS_DENY_DELETE_C1=1
+CALLS="${TMP_DIR}/aws-cert-delete-fail-calls.log"
+OUT="${TMP_DIR}/aws-cert-delete-fail.out"
+ERR="${TMP_DIR}/aws-cert-delete-fail.err"
+if run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com; then
+    fail "purge-cloud: 删除 ACM 证书失败时必须以非零退出"
+fi
+unset PURGE_TEST_AWS_DENY_DELETE_C1
+assert_contains "purge-cloud: 证书删除失败仍按原文案报失败" "$(<"${ERR}")" \
+    "有 1 个对象删除失败；可修复后重试同一命令"
+assert_contains "purge-cloud: 证书删除失败计入失败数" "$(<"${OUT}")" \
+    "CloudFront/ACM 侧有 1 个对象删除失败"
+
 # 分发删除失败时，它的关联证书不能被当成「等已删除分发收敛」：分发仍存活，InUseBy 永不收敛，
 # 只会白等满额重试再额外报一次失败。必须立刻按「仍被存活资源占用」跳过。
+# 同时这是 A11(c) 的口径锚定：分发侧「删除失败/归属已变化、保留不删」**有意**仍计 aws_failures
+# 并触发 die（分发是清理主对象与高影响资源），与证书侧「合法保留」刻意不一致，不得顺手统一。
 export PURGE_TEST_CERT_INUSE_PURGED=1
 export PURGE_TEST_AWS_DENY_DELETE_D1=1
 CALLS="${TMP_DIR}/aws-delete-fail-calls.log"
@@ -1373,26 +1434,27 @@ assert_equal "purge-cloud: 完整主机名下的子域证书保留" "0" \
 assert_equal "purge-cloud: DH1 的 update 回传原 CallerReference 且 Enabled=false" "true" \
     "$(jq -r '.CallerReference == "caller-DH1" and .Enabled == false' "${TMP_DIR}/aws-state/last-config-DH1")"
 
-# F4：计划之后对象归属/状态漂移时，破坏性调用前的复核必须保留对象、点名并非零退出。
+# F4：计划之后对象归属/状态漂移时，破坏性调用前的复核必须保留对象、点名。
+# A11 口径：证书侧漂移属于「合法保留（aws_kept）」——告警仍保留、对象不删，但不再把保留报成删除失败；
+# 分发侧漂移（下面 dist-comment）仍计 aws_failures 并非零退出。
 CALLS="${TMP_DIR}/aws-drift-tag-calls.log"
 OUT="${TMP_DIR}/aws-drift-tag.out"
 ERR="${TMP_DIR}/aws-drift-tag.err"
-if PURGE_TEST_AWS_DRIFT=cert-tag run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --all; then
-    fail "purge-cloud: 证书标签漂移后必须非零退出"
-fi
+PURGE_TEST_AWS_DRIFT=cert-tag run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --all \
+    || fail "purge-cloud: 证书标签漂移属于合法保留，应退出 0：$(tail -n 3 "${ERR}")"
 assert_equal "purge-cloud: 标签漂移的证书不删除" "0" \
     "$(grep -c 'delete-certificate.*certificate/C1' "${AWS_CALLS}" || true)"
 assert_contains "purge-cloud: 标签漂移时点名 ARN" \
     "$(<"${OUT}")$(<"${ERR}")" "arn:aws:acm:us-east-1:1:certificate/C1"
 assert_contains "purge-cloud: 标签漂移时说明对象保留" \
     "$(<"${OUT}")$(<"${ERR}")" "保留不删"
+assert_contains "purge-cloud: 标签漂移计入合法保留" "$(<"${OUT}")" "1 个合法保留"
 
 CALLS="${TMP_DIR}/aws-drift-inuse-calls.log"
 OUT="${TMP_DIR}/aws-drift-inuse.out"
 ERR="${TMP_DIR}/aws-drift-inuse.err"
-if PURGE_TEST_AWS_DRIFT=cert-inuse run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --all; then
-    fail "purge-cloud: 证书 InUseBy 漂移后必须非零退出"
-fi
+PURGE_TEST_AWS_DRIFT=cert-inuse run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --all \
+    || fail "purge-cloud: 证书 InUseBy 漂移属于合法保留，应退出 0：$(tail -n 3 "${ERR}")"
 assert_equal "purge-cloud: InUseBy 漂移的证书不删除" "0" \
     "$(grep -c 'delete-certificate.*certificate/C1' "${AWS_CALLS}" || true)"
 assert_contains "purge-cloud: InUseBy 漂移时说明对象保留" \
@@ -1401,6 +1463,7 @@ assert_contains "purge-cloud: InUseBy 漂移时说明对象保留" \
 CALLS="${TMP_DIR}/aws-drift-comment-calls.log"
 OUT="${TMP_DIR}/aws-drift-comment.out"
 ERR="${TMP_DIR}/aws-drift-comment.err"
+# 分发侧漂移是 A11(c) 的口径锚定：分发归属漂移意味着状态与云端失步，仍然非零退出。
 if PURGE_TEST_AWS_DRIFT=dist-comment run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --all; then
     fail "purge-cloud: 分发 Comment 漂移后必须非零退出"
 fi
@@ -1571,3 +1634,57 @@ assert_equal "purge-cloud: CloudFront 结束探测页带 Marker=P3" "1" \
     "$(grep -c 'cloudfront list-distributions --no-paginate --cli-input-json {"MaxItems":"100","Marker":"P3"}' "${AWS_CALLS}")"
 assert_equal "purge-cloud: ACM 第二页带 NextToken=T2" "1" \
     "$(grep -c 'acm list-certificates --region us-east-1 --no-paginate --cli-input-json {"MaxItems":100,"NextToken":"T2"}' "${AWS_CALLS}")"
+
+# 12) 参数与域名范围门禁：非法页数上限、域名零匹配都必须在任何删除之前拒绝。
+CALLS="${TMP_DIR}/max-pages-zero-calls.log"
+OUT="${TMP_DIR}/max-pages-zero.out"
+ERR="${TMP_DIR}/max-pages-zero.err"
+if run_purge "${CALLS}" "${OUT}" "${ERR}" env EASY_ALL_PURGE_MAX_PAGES=0; then
+    fail "purge-cloud: EASY_ALL_PURGE_MAX_PAGES=0 必须被拒绝"
+fi
+assert_contains "purge-cloud: 非法页数上限提示必须是正整数" "$(<"${ERR}")" "必须是正整数"
+assert_equal "purge-cloud: 非法页数上限不发起 DELETE" "0" \
+    "$(grep -c '^DELETE ' "${CALLS}" || true)"
+
+CALLS="${TMP_DIR}/domain-nozone-calls.log"
+OUT="${TMP_DIR}/domain-nozone.out"
+ERR="${TMP_DIR}/domain-nozone.err"
+if run_purge_domain "${CALLS}" "${OUT}" "${ERR}" "${FIXTURE_ROOT}/hosts" notinzone.example; then
+    fail "purge-cloud: 域名匹配不到 Zone 时必须非零退出"
+fi
+assert_contains "purge-cloud: 域名零匹配时点名原因" "$(<"${ERR}")" \
+    "没有找到包含这些域名的 active Zone"
+assert_equal "purge-cloud: 域名零匹配时不发起 DELETE" "0" \
+    "$(grep -c '^DELETE ' "${CALLS}" || true)"
+
+# 13) B3：429 有界固定退避（5s/10s；测试用 EASY_ALL_CF_RETRY_SLEEP_OVERRIDE 注入为 0）。
+CALLS="${TMP_DIR}/rate-limit-calls.log"
+OUT="${TMP_DIR}/rate-limit.out"
+ERR="${TMP_DIR}/rate-limit.err"
+rm -f "${TMP_DIR}/429.state"
+run_purge "${CALLS}" "${OUT}" "${ERR}" env \
+    PURGE_TEST_429_TIMES=2 PURGE_TEST_429_STATE="${TMP_DIR}/429.state" \
+    EASY_ALL_CF_RETRY_SLEEP_OVERRIDE=0 \
+    || fail "purge-cloud: 429→429→200 必须在两次退避后成功：$(tail -n 3 "${ERR}")"
+assert_equal "purge-cloud: 429 两次退避后第 3 次成功" "3" \
+    "$(grep -c 'zones?status=active' "${CALLS}")"
+assert_contains "purge-cloud: 429 退避后仍完成清理" "$(<"${OUT}")" "Cloudflare 清理完成"
+
+# 持续 429：1 次原始 + 2 次退避后放弃，非零退出且请求数有界。
+CALLS="${TMP_DIR}/rate-limit-fail-calls.log"
+OUT="${TMP_DIR}/rate-limit-fail.out"
+ERR="${TMP_DIR}/rate-limit-fail.err"
+rm -f "${TMP_DIR}/429b.state"
+if run_purge "${CALLS}" "${OUT}" "${ERR}" env \
+    PURGE_TEST_429_TIMES=99 PURGE_TEST_429_STATE="${TMP_DIR}/429b.state" \
+    EASY_ALL_CF_RETRY_SLEEP_OVERRIDE=0; then
+    fail "purge-cloud: 持续 429 必须以非零退出"
+fi
+assert_equal "purge-cloud: 持续 429 只重试 2 次（请求数有界）" "3" \
+    "$(grep -c 'zones?status=active' "${CALLS}")"
+
+printf 'ok - purge-cloud\n'
+
+# A31 阶段一：本文件必须真的跑过断言（不校验条数，只拦「一个都没跑」）。
+(( TESTS_ASSERTED > 0 )) || fail "无断言执行：本文件一个断言都没跑，fixture/前置条件出错时会静默全绿"
+printf 'ok - asserted %s\n' "${TESTS_ASSERTED}"

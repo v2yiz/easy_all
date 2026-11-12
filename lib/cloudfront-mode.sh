@@ -31,7 +31,8 @@ readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="120"
 readonly CLOUDFRONT_DEPLOY_WAIT_ATTEMPTS="60"
 readonly CLOUDFRONT_DEPLOY_WAIT_SECONDS="10"
 # 删除分发后 ACM 的 InUseBy 需要时间收敛：有界重试 describe，耗尽后按既有归属口径保留。
-readonly ACM_IN_USE_WAIT_ATTEMPTS="5"
+# 口径对齐 cloud-purge.sh 的 60×10s：5×10s 在真实 CloudFront 传播期不够，会把「还没收敛」当终态。
+readonly ACM_IN_USE_WAIT_ATTEMPTS="60"
 readonly ACM_IN_USE_WAIT_SECONDS="10"
 readonly CDN_PUBLIC_ACCEPT_ATTEMPTS="${CDN_PUBLIC_ACCEPT_ATTEMPTS_OVERRIDE:-6}"
 readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
@@ -209,7 +210,11 @@ collect_cloudfront_install_inputs() {
     VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
     validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
 
-    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || (
+        # 没有 /proc 时也必须产出 RFC 4122 v4 UUID（validate_uuid 要求版本 4、变体 8/9/a/b）。
+        u=$(openssl rand -hex 16 2>/dev/null) || exit 1
+        printf '%s-%s-4%s-8%s-%s\n' "${u:0:8}" "${u:8:4}" "${u:13:3}" "${u:17:3}" "${u:20:12}"
+    ))}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "源站头密钥格式无效"
@@ -357,6 +362,17 @@ cdn_acm_certificate_reusable() {
     certificate_covers_required_domains "${description}"
 }
 
+# 等待态放行：PENDING_VALIDATION 的证书尚未签完，可交下游写验证记录后轮询；
+# 仍需 region 前缀与 SAN 覆盖本链路（与 cdn_acm_certificate_reusable 同判据、只换状态）。
+cdn_acm_certificate_pending_reusable() {
+    local description=${1:-}
+    [[ -n "${description}" ]] || return 1
+    [[ "$(jq -r '.Certificate.Status // empty' <<<"${description}" 2>/dev/null)" == "PENDING_VALIDATION" ]] || return 1
+    [[ "$(jq -r '.Certificate.CertificateArn // empty' <<<"${description}" 2>/dev/null)" \
+        == "arn:aws:acm:${AWS_CONTROL_REGION}:"* ]] || return 1
+    certificate_covers_required_domains "${description}"
+}
+
 cdn_acm_terminal_status() {
     case "$1" in
     FAILED | VALIDATION_TIMED_OUT | REVOKED | EXPIRED) return 0 ;;
@@ -466,8 +482,14 @@ find_existing_acm_certificate() {
     ((matches == 1)) || return 1
     description=$(cdn_describe_acm_certificate "${candidate}") \
         || die "读取 ACM 证书失败（${candidate}）；未创建新证书"
-    cdn_acm_certificate_reusable "${description}" \
-        || die "ACM 证书 ${candidate} 带本节点管理标记但不可复用（状态/SAN/region 不符）；请人工核对后重试"
+    if ! cdn_acm_certificate_reusable "${description}"; then
+        # PENDING_VALIDATION 是等待态而非终态：交下游「写验证记录 → 轮询签发」流程；
+        # 终态（FAILED/TIMED_OUT/REVOKED/EXPIRED）仍由这里终止，不放宽归属判定。
+        cdn_abort_on_terminal_acm_certificate "${candidate}" "${description}"
+        # 该函数只接受 description 一个参数（status/region/SAN 都从 JSON 里读）。
+        cdn_acm_certificate_pending_reusable "${description}" \
+            || die "ACM 证书 ${candidate} 带本节点管理标记但不可复用（状态/SAN/region 不符）；请人工核对后重试"
+    fi
     printf '%s\n' "${candidate}"
 }
 
@@ -521,8 +543,14 @@ find_or_request_acm_certificate() {
     for attempt in {1..20}; do
         description=$(aws_cli acm describe-certificate --region "${AWS_CONTROL_REGION}" \
             --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" --output json 2>/dev/null || true)
-        if [[ -n "${description}" ]] \
-            && [[ "$(jq '[.Certificate.DomainValidationOptions[]?|select(.ResourceRecord)]|length' <<<"${description}")" -ge 1 ]]; then
+        # 必须等到「每一个域名都有 ResourceRecord」：按 -ge 1 提前 break 会让第二个域名的
+        # 验证记录永远不被写入（多域名 SAN 会卡到超时）。total=0（选项整体缺失）继续等。
+        records=$(jq '[.Certificate.DomainValidationOptions[]?|select(.ResourceRecord)]|length' \
+            <<<"${description}" 2>/dev/null || printf '0')
+        total=$(jq '.Certificate.DomainValidationOptions|length' \
+            <<<"${description}" 2>/dev/null || printf '0')
+        if [[ -n "${description}" && "${total}" =~ ^[0-9]+$ && "${records}" =~ ^[0-9]+$ ]] \
+            && ((total >= 1 && records == total)); then
             break
         fi
         sleep 2
@@ -637,9 +665,25 @@ cloudfront_distribution_owned_by_easy_all() {
 # 任何 update/disable/delete 前的统一归属校验：读取 get-distribution-config，通过时把
 # 完整响应（含 ETag）写入 $2；失败不写文件并返回 1，调用方不得再写云端。
 cloudfront_read_owned_distribution() {
-    local id=$1 output=$2 description
-    description=$(aws_cli cloudfront get-distribution-config --id "${id}" --output json 2>/dev/null) \
-        || { warn "读取 CloudFront 分发失败（ID：${id}）"; return 1; }
+    local id=$1 output=$2 description read_output read_err rc=0
+    local read_err_text=""
+    read_err="${RUNTIME_TMP}/cloudfront-read.err"
+    # stderr 单独落文件：成功时真实 CLI 也可能往 stderr 打告警（配置文件/凭据链/弃用提示），
+    # 并与 stdout 会污染 JSON → jq 取不到 ETag → 「缺少分发 ETag」→ 跳过清理留孤儿。
+    read_output=$(aws_cli cloudfront get-distribution-config --id "${id}" --output json 2>"${read_err}") || rc=$?
+    if ((rc != 0)); then
+        read_err_text=$(cat "${read_err}" 2>/dev/null || true)
+        rm -f -- "${read_err}"
+        # 只认结构化错误码：aws_cli 只转发 `aws --no-cli-pager`，拿不到 HTTP 状态码，
+        # 因此不做 404 文本识别（设计 v4 已删除该前提）。返回 2 = 分发确实已不存在。
+        [[ "${read_err_text}" == *"(NoSuchDistribution)"* ]] && return 2
+        warn "读取 CloudFront 分发失败（ID：${id}）"
+        # 真实原因（权限/网络/错误码）在 stderr 首行，带给排障。
+        [[ -z "${read_err_text%%$'\n'*}" ]] || warn "  ${read_err_text%%$'\n'*}"
+        return 1
+    fi
+    rm -f -- "${read_err}"
+    description=${read_output}
     cloudfront_distribution_owned_by_easy_all "${description}" \
         || { warn "CloudFront 分发归属校验失败（marker/alias/源站不匹配；ID：${id}）"; return 1; }
     printf '%s\n' "${description}" >"${output}"
@@ -1311,7 +1355,7 @@ show_status() {
         if cdn_traffic_counters_ready 2>/dev/null; then
             printf 'ok（链 %s，锁 %s）\n' "${CDN_TRAFFIC_COUNTER_CHAIN}" "${CDN_TRAFFIC_COUNTER_LOCK}"
         else
-            printf '缺失或损坏（请执行 sudo easy_all cdn-traffic-sync）\n'
+            printf '缺失或损坏（mangle 计量规则；请执行 sudo easy_all cdn-traffic-sync 重建）\n'
         fi
         printf 'CDN 流量保护定时器: '
         systemctl is-active --quiet "${CDN_TRAFFIC_GUARD_TIMER}" 2>/dev/null \
@@ -1798,6 +1842,7 @@ cdn_purge_cloudflare_dns() {
 
 cdn_purge_aws_resources() {
     local config etag acm tags failed=0
+    local distribution_present=1 distribution_read_status=0
     local fetched="${RUNTIME_TMP}/cloudfront-purge-config.json"
     local owned="${RUNTIME_TMP}/cloudfront-purge-owned.json"
     [[ -n "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}" || -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]] || return 0
@@ -1806,53 +1851,73 @@ cdn_purge_aws_resources() {
         || { warn "缺少 AWS 凭据，无法清理云端资源；本机卸载继续"; return 1; }
     if [[ -n "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}" ]]; then
         # 严格门控：分发禁用+删除确认成功后才处理 ACM 与节点/订阅 DNS。
-        cloudfront_read_owned_distribution "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${fetched}" || {
+        # 分发已不存在（NoSuchDistribution）不算失败：它本来就是要删的对象，
+        # 只是被别人先删了，继续清理 ACM 与 DNS 才是用户要的结果。
+        distribution_present=1
+        distribution_read_status=0
+        cloudfront_read_owned_distribution "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${fetched}" \
+            || distribution_read_status=$?
+        if ((distribution_read_status == 2)); then
+            info "云端分发已不存在；视为已删除，继续 ACM 与 DNS 清理"
+            distribution_present=0
+        elif ((distribution_read_status != 0)); then
             warn "分发未通过归属校验；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
             rm -f -- "${fetched}" "${owned}"
             return 1
-        }
-        etag=$(jq -r '.ETag // empty' "${fetched}")
-        if [[ -z "${etag}" ]]; then
-            warn "缺少分发 ETag；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
-            rm -f -- "${fetched}" "${owned}"
-            return 1
         fi
-        config="${RUNTIME_TMP}/cloudfront-disable.json"
-        # 配置里含源站头密钥（X-Easy-All-Origin-Key）：落 0600 临时文件走 file://，不进 argv/ps。
-        if ! jq -c '.DistributionConfig | .Enabled=false' "${fetched}" >"${config}"; then
-            warn "生成禁用态分发配置失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
-            rm -f -- "${fetched}" "${owned}" "${config}"
-            return 1
+        if ((distribution_present)); then
+            etag=$(jq -r '.ETag // empty' "${fetched}")
+            if [[ -z "${etag}" ]]; then
+                warn "缺少分发 ETag；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+                rm -f -- "${fetched}" "${owned}"
+                return 1
+            fi
+            config="${RUNTIME_TMP}/cloudfront-disable.json"
+            # 配置里含源站头密钥（X-Easy-All-Origin-Key）：落 0600 临时文件走 file://，不进 argv/ps。
+            if ! jq -c '.DistributionConfig | .Enabled=false' "${fetched}" >"${config}"; then
+                warn "生成禁用态分发配置失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+                rm -f -- "${fetched}" "${owned}" "${config}"
+                return 1
+            fi
+            if ! aws_cli cloudfront update-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
+                --if-match "${etag}" --distribution-config "file://${config}" --output json >/dev/null 2>&1; then
+                warn "禁用 CloudFront 分发失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+                rm -f -- "${fetched}" "${owned}" "${config}"
+                return 1
+            fi
+            # 分发配置含源站头密钥：update 之后立刻删除，不等到退出清理。
+            rm -f -- "${config}"
+            if ! wait_for_cloudfront_distribution_disabled "${AWS_CLOUDFRONT_DISTRIBUTION_ID}"; then
+                warn "等待 CloudFront 分发禁用生效超时；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+                rm -f -- "${fetched}" "${owned}"
+                return 1
+            fi
+            # 删除前重新校验归属并取最新 ETag。禁用等待最长 600s，期间分发可能已被外部删除，
+            # 这里对 NoSuchDistribution 与入口处同口径处理，否则这个窗口里会留下孤儿 ACS/DNS。
+            distribution_read_status=0
+            cloudfront_read_owned_distribution "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${owned}" \
+                || distribution_read_status=$?
+            if ((distribution_read_status == 2)); then
+                info "云端分发在禁用等待期内已被删除；跳过删除，继续 ACM 与 DNS 清理"
+                distribution_present=0
+            elif ((distribution_read_status != 0)); then
+                warn "分发删除前归属校验失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+                rm -f -- "${fetched}" "${owned}"
+                return 1
+            fi
         fi
-        if ! aws_cli cloudfront update-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
-            --if-match "${etag}" --distribution-config "file://${config}" --output json >/dev/null 2>&1; then
-            warn "禁用 CloudFront 分发失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
-            rm -f -- "${fetched}" "${owned}" "${config}"
-            return 1
-        fi
-        # 分发配置含源站头密钥：update 之后立刻删除，不等到退出清理。
-        rm -f -- "${config}"
-        if ! wait_for_cloudfront_distribution_disabled "${AWS_CLOUDFRONT_DISTRIBUTION_ID}"; then
-            warn "等待 CloudFront 分发禁用生效超时；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
-            rm -f -- "${fetched}" "${owned}"
-            return 1
-        fi
-        # 删除前重新校验归属并取最新 ETag。
-        cloudfront_read_owned_distribution "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${owned}" || {
-            warn "分发删除前归属校验失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
-            rm -f -- "${fetched}" "${owned}"
-            return 1
-        }
-        etag=$(jq -r '.ETag // empty' "${owned}")
-        if [[ -z "${etag}" ]] \
-            || ! aws_cli cloudfront delete-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
-                --if-match "${etag}" >/dev/null 2>&1; then
-            warn "删除 CloudFront 分发失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
-            rm -f -- "${fetched}" "${owned}"
-            return 1
+        if ((distribution_present)); then
+            etag=$(jq -r '.ETag // empty' "${owned}")
+            if [[ -z "${etag}" ]] \
+                || ! aws_cli cloudfront delete-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
+                    --if-match "${etag}" >/dev/null 2>&1; then
+                warn "删除 CloudFront 分发失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
+                rm -f -- "${fetched}" "${owned}"
+                return 1
+            fi
+            success "CloudFront 分发已删除：${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
         fi
         rm -f -- "${fetched}" "${owned}"
-        success "CloudFront 分发已删除：${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
     fi
     if [[ -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]]; then
         acm=$(describe_settled_acm_certificate "${AWS_ACM_CERTIFICATE_ARN}")

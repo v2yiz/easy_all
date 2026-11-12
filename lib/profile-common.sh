@@ -227,134 +227,6 @@ normalize_sub_download_name() {
     fi
 }
 
-# 旧栈曾用 policy-rc.d 抑制 nginx 在 apt 窗口内自启；本版本仍用同一事务机制，
-# 以避免任何被 APT 拉起的服务占用已检查过的端口。
-
-# --- apt 窗口内的服务自启抑制 ---------------------------------------------------
-# Debian 的 nginx 包在 postinst 里就把默认站点拉起来，`apt-get install` 还没返回 80 已经被
-# 占住，而这正是 SSH 最容易断线的时段。用 Debian 官方 policy-rc.d(exit 101) 只抑制这一段。
-EASY_ALL_SUSPEND_SERVICE_START=0
-
-easy_all_policy_rc_file() {
-    printf '%s' "${EASY_ALL_POLICY_RC_OVERRIDE:-/usr/sbin/policy-rc.d}"
-}
-
-# 事务状态放在稳定路径（不是 RUNTIME_TMP）：进程被 SIGKILL 时，下一次入口还能据此
-# 恢复原策略，否则遗留的 exit 101 会永久阻止所有服务启动。
-easy_all_policy_state_dir() {
-    printf '%s' "${EASY_ALL_POLICY_STATE_DIR_OVERRIDE:-/var/lib/easy_all}"
-}
-
-easy_all_policy_pending_file() {
-    printf '%s/policy-rc.pending' "$(easy_all_policy_state_dir)"
-}
-
-easy_all_policy_backup_file() {
-    printf '%s/policy-rc.backup' "$(easy_all_policy_state_dir)"
-}
-
-# 幂等恢复。两条安全约束：
-#   1) 事务内容必须完整合法（HAD_PREVIOUS 只能是 0/1），损坏时保留事务与备份，绝不把
-#      “读不出来”当成“原来没有 policy”，否则会删掉安装前的系统策略。
-#   2) 只允许事务持有者本人、或持写锁且确认原持有者已退出的进程去恢复；未持锁的进程
-#      EXIT 时若拿不到锁就跳过，避免把另一个仍在进行的 apt 的抑制撤掉。
-# kill -0 对 EPERM 也会失败（非 root 查 root 进程），需要区分“不存在”与“无权发信号”。
-process_alive() {
-    local pid=${1:-} err=""
-    [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-    [[ ! -d "/proc/${pid}" ]] || return 0
-    kill -0 "${pid}" 2>/dev/null && return 0
-    err=$(kill -0 "${pid}" 2>&1) || true
-    [[ "${err}" == *ermitted* ]]
-}
-
-recover_pending_service_policy() {
-    local pending backup target had_previous owner acquired=0
-    pending=$(easy_all_policy_pending_file)
-    backup=$(easy_all_policy_backup_file)
-    target=$(easy_all_policy_rc_file)
-    [[ -f "${pending}" ]] || { EASY_ALL_SUSPEND_SERVICE_START=0; return 0; }
-
-    had_previous=$(sed -n 's/^HAD_PREVIOUS=//p' "${pending}" | tail -n 1)
-    owner=$(sed -n 's/^OWNER_PID=//p' "${pending}" | tail -n 1)
-
-    # 先校验内容：损坏的事务无论归属如何都不能被解释成“原来没有 policy”。
-    case "${had_previous}" in
-    0 | 1) ;;
-    *)
-        warn "事务 ${pending} 内容不完整（HAD_PREVIOUS=${had_previous:-空}）；已保留事务与备份，未改动 ${target}"
-        return 1
-        ;;
-    esac
-
-    if [[ "${owner}" != "$$" ]]; then
-        if ((${RUNTIME_WRITE_LOCK_DEPTH:-0} == 0)); then
-            declare -F try_acquire_runtime_write_lock >/dev/null 2>&1 || return 0
-            try_acquire_runtime_write_lock 0 || return 0
-            acquired=1
-        fi
-        if process_alive "${owner}"; then
-            ((acquired == 0)) || release_runtime_write_lock
-            return 0
-        fi
-    fi
-
-    case "${had_previous}" in
-    0)
-        rm -f -- "${target}" || { ((acquired == 0)) || release_runtime_write_lock; return 1; }
-        ;;
-    1)
-        [[ -s "${backup}" ]] || {
-            warn "事务 ${pending} 显示安装前存在 policy，但备份缺失或为空：${backup}；已保留事务，请人工核对 ${target}"
-            ((acquired == 0)) || release_runtime_write_lock
-            return 1
-        }
-        cp -p -- "${backup}" "${target}" || { ((acquired == 0)) || release_runtime_write_lock; return 1; }
-        ;;
-    esac
-
-    rm -f -- "${pending}" "${backup}" || { ((acquired == 0)) || release_runtime_write_lock; return 1; }
-    EASY_ALL_SUSPEND_SERVICE_START=0
-    ((acquired == 0)) || release_runtime_write_lock
-    return 0
-}
-
-suspend_service_start() {
-    local target dir had_previous=0
-    target=$(easy_all_policy_rc_file)
-    dir=$(easy_all_policy_state_dir)
-    # 先自愈上一次遗留事务，再开始新事务。
-    recover_pending_service_policy || return 1
-    if [[ -f "$(easy_all_policy_pending_file)" ]]; then
-        warn "存在未能恢复的 policy 事务（可能是 PID 复用），拒绝覆盖原备份：$(easy_all_policy_pending_file)"
-        return 1
-    fi
-    install -d -m 0700 "${dir}" || return 1
-    if [[ -e "${target}" ]]; then
-        cp -p -- "${target}" "$(easy_all_policy_backup_file)" || return 1
-        had_previous=1
-    else
-        rm -f -- "$(easy_all_policy_backup_file)" || return 1
-    fi
-    # 同目录 rename 发布：避免留下“文件已存在但内容未完”的半截事务。
-    printf 'HAD_PREVIOUS=%s\nOWNER_PID=%s\n' "${had_previous}" "$$" \
-        >"$(easy_all_policy_pending_file).tmp" \
-        && mv -f -- "$(easy_all_policy_pending_file).tmp" \
-            "$(easy_all_policy_pending_file)" \
-        || { rm -f -- "$(easy_all_policy_pending_file).tmp"; return 1; }
-    EASY_ALL_SUSPEND_SERVICE_START=1
-    printf '#!/bin/sh\n# temporary: written by easy_all for one apt run\nexit 101\n' \
-        >"${target}" || { recover_pending_service_policy || true; return 1; }
-    chmod 0755 "${target}" || { recover_pending_service_policy || true; return 1; }
-    return 0
-}
-
-restore_service_start_policy() {
-    # 只有真正恢复成功才清掉事务记录与标志，失败保留给下一次入口重试。
-    recover_pending_service_policy
-}
-
-
 # --- 中断安装的自愈：进度标记、残留识别与端口守卫 ------------------------------
 #
 # 一次安装被 SSH 断线打断后，本机可能同时留下「已写好的服务单元」「未完成的状态
@@ -637,11 +509,16 @@ install_residue_reason() {
     printf '%s\n' "${reasons[@]}"
 }
 
+# 返回码语义（A18）：0=有监听；1=确定无监听；2=无法检查（ss 不可用或执行失败）。
+# 调用方必须显式区分 2：把「查不了」当成「没监听」是静默 fail-open，当成「被占用」又会
+# 无理由拒绝安装——用户拍板维持 fail-open 但必须可见（warn），所以 2 单独成码。
 tcp_port_listening() {
-    local port=$1 ss_cmd=${EASY_ALL_SS_CMD_OVERRIDE:-ss}
-    command -v "${ss_cmd}" >/dev/null 2>&1 || return 1
-    "${ss_cmd}" -H -ltn "sport = :${port}" 2>/dev/null \
-        | awk 'NR {found=1} END {exit !found}'
+    local port=$1 ss_cmd=${EASY_ALL_SS_CMD_OVERRIDE:-ss} output rc=0
+    command -v "${ss_cmd}" >/dev/null 2>&1 || return 2
+    output=$("${ss_cmd}" -H -ltn "sport = :${port}" 2>/dev/null) || rc=$?
+    ((rc == 0)) || return 2
+    [[ -n "${output}" ]] || return 1
+    return 0
 }
 
 tcp_port_owner() {
@@ -670,7 +547,7 @@ residue_recovery_hint() {
 }
 
 assert_install_ports_free() {
-    local argument port owner reason_text
+    local argument port owner reason_text listening_status=0
     local -a ports=()
     for argument in "$@"; do
         # 调用方把整串端口作为一个参数传入（模式 5 的 "443 8443"）：整串交给
@@ -679,7 +556,14 @@ assert_install_ports_free() {
         ((${#ports[@]} > 0)) || continue
         for port in "${ports[@]}"; do
             [[ -n "${port}" ]] || continue
-            tcp_port_listening "${port}" || continue
+            listening_status=0
+            tcp_port_listening "${port}" || listening_status=$?
+            if ((listening_status == 2)); then
+                # fail-open + 可见化（design A18 / 用户决策）：查不了不阻断安装，但必须留痕。
+                warn "无法检查端口 ${port}（ss 不可用）；按未占用继续"
+                continue
+            fi
+            ((listening_status == 0)) || continue
             if reason_text=$(install_residue_reason); then
                 owner=$(tcp_port_owner "${port}" || true)
                 die "$(printf 'TCP %s 被上次未完成的 easy_all 安装残留占用%s\n残留：%s\n%s' \

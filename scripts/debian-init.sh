@@ -755,6 +755,7 @@ apply_ssh_hardening_runtime() {
   for expected in \
     "passwordauthentication no" \
     "kbdinteractiveauthentication no" \
+    "addressfamily inet" \
     "pubkeyauthentication yes"; do
     grep -qxF -- "$expected" <<<"$effective" \
       || die "sshd 有效配置缺少 '$expected'；检查 /etc/ssh/sshd_config 与 ${config_dir}/ 下其他片段是否覆盖 ${config_file##*/}"
@@ -826,7 +827,9 @@ fi
   echo "MaxStartups 20:30:100"
   echo "PerSourceMaxStartups 3"
   echo "PerSourceNetBlockSize 32:64"
+  echo "AddressFamily inet"
 } > "$config_file"
+log "已关闭 IPv6 SSH（产品仅支持 IPv4）：AddressFamily inet"
 
 "$sshd_bin" -t
 ensure_ssh_boot_service

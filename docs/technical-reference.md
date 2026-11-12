@@ -163,6 +163,17 @@
 
 ---
 
+### 2.5 状态文件只读加载的完整性校验
+
+`state.env` 由 `save_state` 用 `printf '%q'` 原子写入，读取时 `load_state` 必须 `source` 它——因此**文件内容本身**必须先证明无副作用。`lib/state.sh` 的 `state_validate_pure_assignments` 在 `source` 之前逐行卡两道：
+
+- **纯赋值形态**：只接受 `KEY=`（裸空）、`KEY=''`、`KEY=""`、`$'…'`（ANSI-C 引串）与裸串 + 反斜杠转义五种形态。凡含未转义的 `$(…)`、反引号、`;`、`|`、`&`、`<`、`>`、圆括号或非空双引号的行一律拒绝；行尾孤立反斜杠拒绝（否则 `\`+换行 会把下一行拼进来）；换行以外的控制字符形态（如带 `\r` 的 CRLF 行）同样拒绝。
+- **键名白名单**：允许出现的键 = `STATE_VERSION` + 该文件 `PROTOCOL`/`SUBSCRIPTION_MODE` 对应的 `state_required_fields` 字段集。白名单与写入方同源派生（不写死字段名），白名单**无法派生时直接拒绝**（fail-closed），不退化为只校验形态。
+
+门失败时 `load_state` 直接拒绝加载并点名文件与行号，不执行任何一行内容。协议缺失或写坏的状态不再走本通道：`detect_installed_mode` 会将其归为 `incomplete-unknown`，由 `uninstall_incomplete` 做仅本机清理（该路径不加载 `state.env`，云端资源需人工核对）。
+
+---
+
 ## 3. 订阅分发与渲染
 
 - **订阅配置 JSON**：`SUBSCRIPTION_CONFIG` 的顶层只有三个键——`allowedTokens`（用户 Token 字典，必需）、`nodes`（外部聚合节点数组，必需）与可选的 `cdnEdgeAddress`（CDN 优选连接地址，只存完整主机名）。`cdnEdgeAddress` 只影响模式 2–5 的本机 CDN 节点：模式 1 接受并持久化该字段，但没有 CDN 入站与 CDN 节点，因此永不渲染。字段缺失或为 `null` 等同于不启用，删除字段即回退到节点域名（安装期必定写入且不提供关闭选项，删除只用于排障）。形状校验只发生在一处（`lib/local-aggregation.sh` 的 `normalize_subscription_config`，install / `edit-sub` / `apply` 全经它），拒绝 `*`、URL、端口、路径、空白、IP 字面量与单标签主机名，通过后按小写规范化存储；校验失败时 `update_subscription` 在写快照之前就退出，已发布的八份产物与状态不变。该字段随 `SUBSCRIPTION_CONFIG` 原样写入安装身份的 `subscription_config`，续装据此沿用原优选地址，不会重新随机（身份里没有该字段时按新规则生成）。
@@ -200,7 +211,7 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 - `PROXY` 为 `select`，默认第一项分别是直连节点（模式 1/3/5）或 CDN 节点（模式 2/4）；即使聚合节点为空也始终有有效成员。
 - 模式 5 与模式 3 结构一致：`PROXY` 由用户手动在直连节点与 CDN 节点之间切换，没有自动测速或兜底组。
 - `GLOBAL` 维持 `select`，唯一成员是 `PROXY`；切换到「全局」后所有接管流量使用 `PROXY` 的当前选择。
-- 模板只保留 `PROXY` / `GLOBAL` 两个占位区，额外分组由 `build_mihomo_proxy_groups` 输出，`AUTO`、`CDN-AUTO`、`CDN-FALLBACK` 等名字属于保留组名，不能用于聚合节点。
+- 模板只保留 `PROXY` / `GLOBAL` 两个占位区；`build_mihomo_proxy_groups` 由各模式库提供，当前三种模式均输出空内容（不注入额外分组），`AUTO`、`CDN-AUTO`、`CDN-FALLBACK` 等名字属于保留组名，不能用于聚合节点。
 - 聚合节点支持三类：`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；外部聚合节点的 `host/port/portRange` 原样保留，不受本机「全 443」约束，也不受「本机只有一个 CDN 节点」的限制。
 
 ### 3.2 sing-box 完整 JSON 订阅
@@ -283,7 +294,7 @@ easy_all
 │   ├── platform.sh              # 系统环境、Debian 探测与基础依赖
 │   ├── runtime-core.sh          # 跨模式通用运行时（证书事务、订阅发布、核心事务、停机清理）
 │   ├── profile-common.sh        # Profile 映射、安装身份与快照/续装/回滚
-│   ├── network.sh               # 网络与 IPv4/域名基础校验
+│   ├── network.sh               # IPv6 校验、公网 IPv4 探测与 Google 出站策略
 │   ├── cf-dns.sh                # Cloudflare API / DNS / Origin CA / 回源网段与持久 Token
 │   ├── cf-origin-rule.sh        # Origin Rule 单规则生命周期（ref/归属/追加/删除）
 │   ├── cloudfront-mode.sh       # 模式 4/5 唯一 CloudFront 业务核心
@@ -333,7 +344,7 @@ easy_all
   2. 定时 hook（`/etc/letsencrypt/renewal-hooks/deploy/easy_all.sh` → `easy_all internal-cert-deploy`）：自行取得 runtime 锁，确认 `RENEWED_LINEAGE` 属于本工具，只部署已签发证书，不再次签发；有界等待，失败非零并保留 lineage。
 - **部署验收**：检查 SAN、有效期、公私钥匹配与完整信任链后才替换 `/etc/easy_all/certs/fullchain.pem` 与 `private.key`；随后重启 sing-box 并**强制** Caddy reload（`--force`，因为证书是同路径替换、配置内容不变），再用本机 TLS 握手比对磁盘指纹。任一步失败恢复旧部署副本并保留新 lineage。
 - **模式 2** 使用 Cloudflare Origin CA（ECDSA P-256、5475 天），`renew-cert` 先签发部署、本机 TLS 验收通过才吊销旧证书；`renew-cert` 从不操作 ACM 自动续期。
-- **模式 4/5 的 ACM viewer 证书**由 AWS 自动续期，本工具只负责申请、复用与删除：只复用 `ISSUED` 且 SAN 覆盖节点域名的证书；处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时立即失败并点名 ARN（`RequestCertificate` 的幂等 Token 只会取回同一张证书，只能到控制台删除后重试）；删除分发后 `InUseBy` 需要时间收敛，按 5×10 秒有界退避重试后再按归属口径保留。
+- **模式 4/5 的 ACM viewer 证书**由 AWS 自动续期，本工具只负责申请、复用与删除：只复用 `ISSUED` 且 SAN 覆盖节点域名的证书；处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时立即失败并点名 ARN（`RequestCertificate` 的幂等 Token 只会取回同一张证书，只能到控制台删除后重试）；删除分发后 `InUseBy` 需要时间收敛，按 60×10 秒有界退避重试后再按归属口径保留（卸载路径的 `ACM_IN_USE_WAIT_ATTEMPTS` / `ACM_IN_USE_WAIT_SECONDS`）。
 
 ### 6.2 核心下载与 `update-core`
 - 固定 sing-box `1.14.4`（代码内审查过的 SHA256 常量，无官方 checksums 清单可用）与 Caddy `2.11.9`（读取官方 `caddy_2.11.9_checksums.txt` 中精确文件名的 SHA512 条目）。

@@ -55,11 +55,17 @@ internal_scheduled_reboot() {
         return 0
     fi
     # 可选钩子：cron 最终取得写锁后只读复核保护状态，覆盖 pre-command 之后
-    # 再次进入停机/pending 的竞态。旧行里 reboot 本身失败也会落到同一条 logger
-    # 消息，这里保持同样语义，不另加区分。
-    { [[ -z "${locked_check}" ]] || sh -c "${locked_check}"; } \
-        && "${reboot_bin}" \
-        || logger -t easy_all "${locked_skip_message}"
+    # 再次进入停机/pending 的竞态。钩子拒绝与 reboot 执行失败必须分开记：
+    # 合成一条 logger 会把「重启失败」误报成「保护状态不允许重启」，掩盖真实故障。
+    if [[ -n "${locked_check}" ]] && ! sh -c "${locked_check}"; then
+        logger -t easy_all "${locked_skip_message}"
+        return 0
+    fi
+    if ! "${reboot_bin}"; then
+        # 退出码保持旧行语义（logger 成功即 0）：cron 侧靠 logger 留痕，不因重启失败改判入口失败。
+        logger -t easy_all "easy_all 定时重启执行失败：${reboot_bin}" || true
+        return 0
+    fi
 }
 
 configure_daily_reboot() {

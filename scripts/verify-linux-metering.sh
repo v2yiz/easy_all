@@ -14,8 +14,6 @@ if iptables -t mangle -S 2>/dev/null | grep -Fq -- "easy-all-test-$$"; then
 fi
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/easy-all-metering.XXXXXX")
-export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${T}/policy-state"
-export EASY_ALL_POLICY_RC_OVERRIDE="${T}/policy-rc.d"
 export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${T}/progress.env"
 export RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${T}/runtime-write.lock"
 export XDG_DATA_HOME="${T}/xdg"

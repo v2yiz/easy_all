@@ -122,7 +122,11 @@ collect_cloudflare_install_inputs() {
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
         "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
 
-    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || (
+        # 没有 /proc 时也必须产出 RFC 4122 v4 UUID（validate_uuid 要求版本 4、变体 8/9/a/b）。
+        u=$(openssl rand -hex 16 2>/dev/null) || exit 1
+        printf '%s-%s-4%s-8%s-%s\n' "${u:0:8}" "${u:8:4}" "${u:13:3}" "${u:17:3}" "${u:20:12}"
+    ))}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
 
     # 先问优选前缀，再问订阅配置（顺序：优选前缀 → 订阅配置）。
@@ -200,7 +204,12 @@ cdn_issue_certificate() {
 
 # 模式 2 没有 985GB 熔断：Caddy 代理路径始终可用，订阅始终可用。
 write_runtime_config() {
-    runtime_write_config 0 1
+    # 订阅产物是否可用：配置损坏时不得把 503 降级站点判成就绪（对齐 anytls-mode 的写法）。
+    local subscription_ok=0
+    if [[ "${CDN_SUBSCRIPTION_CORRUPT:-0}" == "0" ]] && cdn_config_ready; then
+        subscription_ok=1
+    fi
+    runtime_write_config 0 "${subscription_ok}"
 }
 
 # 订阅渲染用 Phase 1 builder：节点与订阅同域，无需源站密钥。
@@ -758,11 +767,15 @@ cdn_purge_origin_certificate() {
 
 cdn_purge_cloud_resources() {
     local purge_failed=0
-    [[ -n "${CLOUDFLARE_ZONE_ID:-}" ]] || { warn "状态缺少 Zone ID，跳过云端清理"; return 1; }
     cloudflare_collect_api_token
-    # DNS 失败不阻止吊销证书：证书生命周期很长，孤儿证书比孤儿记录更难清理。
-    (cdn_purge_cloudflare_dns) || { warn "Cloudflare 记录清理未完成"; purge_failed=1; }
+    # 顺序即语义：Origin CA 是 account 级资源（DELETE /certificates/{id}），不依赖 Zone ID，
+    # 因此必须排在 Zone 依赖块**之前**无条件执行——cdn_ensure_zone_id 的失败路径只有 die
+    # （exit 1），放在它之后等于「Zone 补查失败就永远吊销不了证书」，正是孤儿证书的来源。
     (cdn_purge_origin_certificate) || { warn "Cloudflare Origin CA 证书吊销未完成"; purge_failed=1; }
+    # 状态里缺 Zone ID 时先补查（同 anytls 的 purge）：不能因为状态不完整连 DNS 记录一起放弃。
+    # 补查失败会 die（在调用方子 shell 内），DNS 记录随之保留——这是刻意的保守行为。
+    cdn_ensure_zone_id
+    (cdn_purge_cloudflare_dns) || { warn "Cloudflare 记录清理未完成"; purge_failed=1; }
     clear_profile_credentials
     return "${purge_failed}"
 }

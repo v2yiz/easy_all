@@ -68,7 +68,11 @@ collect_anytls_install_inputs() {
         collect_combined_cloudflare_cdn_node_name
         VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
         validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
-        VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+        VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || (
+        # 没有 /proc 时也必须产出 RFC 4122 v4 UUID（validate_uuid 要求版本 4、变体 8/9/a/b）。
+        u=$(openssl rand -hex 16 2>/dev/null) || exit 1
+        printf '%s-%s-4%s-8%s-%s\n' "${u:0:8}" "${u:8:4}" "${u:13:3}" "${u:17:3}" "${u:20:12}"
+    ))}
         validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
             "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")

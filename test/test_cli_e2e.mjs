@@ -130,6 +130,9 @@ if (process.getuid() !== 0) {
   const registerArgs = run(['register-command', 'extra'], registerEnv);
   assert.notEqual(registerArgs.status, 0);
   assert.match(registerArgs.stderr, /register-command 不接受参数/);
+} else {
+  // 与 test_cloud_safety.sh / test_install_guard.sh 同口径：skip 必须可见（stdout）。
+  process.stdout.write('skip - register-command 自愈门禁：以 root 运行，跳过真实写入 /usr/local 的断言\n');
 }
 
 // 4. schema 0 必须拒绝并要求旧版本卸载（不迁移、不接管）。
@@ -176,8 +179,8 @@ writeState([
   'CLOUDFLARE_ZONE_ID=zoneid',
   'SUB_DOWNLOAD_NAME=EASY_ALL',
   'OWNER_TOKEN=token-abcdefgh',
-  'ALLOWED_TOKENS={"owner":"token-abcdefgh"}',
-  'SUBSCRIPTION_CONFIG={"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}',
+  'ALLOWED_TOKENS=\\{\\"owner\\":\\"token-abcdefgh\\"\\}',
+  'SUBSCRIPTION_CONFIG=\\{\\"allowedTokens\\":\\{\\"owner\\":\\"token-abcdefgh\\"\\}\\,\\"nodes\\":\\[\\]\\}',
   'MIHOMO_TEMPLATE_SNAPSHOT=1',
   'SCHEDULED_REBOOT_ENABLED=0',
   'SCHEDULED_REBOOT_HOUR=4',
@@ -220,8 +223,8 @@ writeFileSync(anytlsStateFile, [
   'SUBSCRIPTION_MODE=deploy',
   'SUB_DOWNLOAD_NAME=EASY_ALL',
   'OWNER_TOKEN=token-abcdefgh',
-  'ALLOWED_TOKENS={"owner":"token-abcdefgh"}',
-  'SUBSCRIPTION_CONFIG={"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}',
+  'ALLOWED_TOKENS=\\{\\"owner\\":\\"token-abcdefgh\\"\\}',
+  'SUBSCRIPTION_CONFIG=\\{\\"allowedTokens\\":\\{\\"owner\\":\\"token-abcdefgh\\"\\}\\,\\"nodes\\":\\[\\]\\}',
   'MIHOMO_TEMPLATE_SNAPSHOT=1',
   'SCHEDULED_REBOOT_ENABLED=0',
   'SCHEDULED_REBOOT_HOUR=4',
@@ -254,8 +257,8 @@ writeFileSync(combinedCfStateFile, [
   'SUBSCRIPTION_MODE=deploy',
   'SUB_DOWNLOAD_NAME=EASY_ALL',
   'OWNER_TOKEN=token-abcdefgh',
-  'ALLOWED_TOKENS={"owner":"token-abcdefgh"}',
-  'SUBSCRIPTION_CONFIG={"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}',
+  'ALLOWED_TOKENS=\\{\\"owner\\":\\"token-abcdefgh\\"\\}',
+  'SUBSCRIPTION_CONFIG=\\{\\"allowedTokens\\":\\{\\"owner\\":\\"token-abcdefgh\\"\\}\\,\\"nodes\\":\\[\\]\\}',
   'MIHOMO_TEMPLATE_SNAPSHOT=1',
   'SCHEDULED_REBOOT_ENABLED=0',
   'SCHEDULED_REBOOT_HOUR=4',
@@ -321,6 +324,8 @@ if (process.getuid() !== 0) {
     '协议不可识别也必须能进入卸载通道');
   assert.match(unknownUninstall.stderr, /请使用 root 用户运行此脚本/,
     '必须真的走到 uninstall_incomplete 的 root 门禁，而不是被分类拦下');
+} else {
+  process.stdout.write('skip - uninstall 的 root 门禁：以 root 运行，跳过真实删除本机目录的断言\n');
 }
 
 // 7. 中断安装标记：只有 schema 1 才能被 cleanup-partial 接管。

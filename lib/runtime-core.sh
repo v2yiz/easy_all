@@ -183,10 +183,6 @@ cleanup() {
         # 安装流程在拍快照之前就失败了：仍可只清理本机残留。
         install_cleanup_after_failure partial || true
     fi
-    if declare -F recover_pending_service_policy >/dev/null 2>&1; then
-        recover_pending_service_policy \
-            || warn "恢复 policy-rc.d 事务失败：事务已保留，下次运行安装/清理会自动重试"
-    fi
     while ((RUNTIME_WRITE_LOCK_DEPTH > 0)); do
         release_runtime_write_lock || break
     done
@@ -686,6 +682,9 @@ load_state() {
     while IFS= read -r variable; do
         unset "${variable}" 2>/dev/null || true
     done < <(state_required_fields "${protocol:-}" "${subscription_mode:-deploy}" 2>/dev/null || true)
+    # 纯赋值语法门：source 之前的最后一道闸，文件里任何命令替换/展开都不得执行（fail-closed）。
+    state_validate_pure_assignments "${STATE_FILE}" \
+        || die "状态文件含非纯赋值内容，已拒绝加载（可能是被篡改或写坏的 shell 代码）：${STATE_FILE}"
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
     state_schema_supported "${STATE_VERSION:-}" \
@@ -806,6 +805,11 @@ configure_runtime_ufw() {
     apply_ssh_ufw_policy "${desired_ports}" "${SSH_PORTS}"
     cf_port=$(runtime_cloudflare_only_port)
     if [[ -n "${cf_port}" ]]; then
+        # 预存的全网放行会让 CF-only 边界形同虚设（CF 段规则不改「已全网开放」的事实）：
+        # 这是确证的不安全配置，直接阻断安装而不是告警继续。命中后须人工移除再重试。
+        if ufw_tcp_port_has_unmanaged_anywhere_allow "${cf_port}"; then
+            die "检测到第三方规则已全局放行 TCP ${cf_port}；这会使回源端口绕过 Cloudflare-only 边界。请先 ufw status 查明并移除该规则后重试"
+        fi
         # 无有效白名单或缓存即停止（design §2 I），不扩大为公网放行。
         CLOUDFLARE_UFW_PORT=${cf_port}
         CLOUDFLARE_UFW_COMMENT="easy_all-cf-origin-${cf_port}"

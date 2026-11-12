@@ -138,7 +138,7 @@ caddy_render_global_options() {
 # YAML 分支（含 iOS 变体与 node=all）；显式 flag 与 Clash UA 两个入口共用同一段。
 caddy_render_mihomo_handlers() {
     printf '\t\t\t\thandle %s {\n' "$1"
-    printf '\t\t\t\theader Content-Disposition "attachment; filename=%s"\n' \
+    printf '\t\t\t\theader Content-Disposition "attachment; filename=%s.yaml"\n' \
         "${SUB_DOWNLOAD_NAME}"
     printf '\t\t\t\thandle @easy_all_sub_ios {\n'
     printf '\t\t\t\t\thandle @easy_all_sub_all {\n'

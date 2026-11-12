@@ -191,6 +191,8 @@ repair_interrupted_install_locked() {
     # 这里显式注入已解析的目标，否则自愈会把代码重新注册到宿主机 /usr/local。
     env EASY_ALL_INSTALL_DIR_OVERRIDE="${INSTALL_DIR}" \
         EASY_ALL_COMMAND_PATH_OVERRIDE="${COMMAND_PATH}" \
+        EASY_ALL_STATE_FILE_OVERRIDE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}" \
+        EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE:-/var/lib/easy_all/install-progress.env}" \
         bash "${repo_dir}/easy_all" register-command \
         || die "重新注册 easy_all 命令失败；已保留 ${INSTALL_DIR}.previous.* 与业务状态，请检查后重试"
     target=$(readlink -- "${COMMAND_PATH}" 2>/dev/null) || target=""

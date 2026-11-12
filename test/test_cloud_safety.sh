@@ -3,6 +3,17 @@
 # 外部边界（Cloudflare API、systemctl、服务动作）用可编程替身；TLS 握手用真实 openssl。
 set -Eeuo pipefail
 
+# A31 阶段一：断言计数器，防止整个文件静默空跑（fixture 出错时最容易全绿）。
+TESTS_ASSERTED=0
+
+# A17/A32：skip 必须同时可见（stdout）并计入文件尾「未验证项」汇总——只写 stderr 的 skip
+# 在 CI 日志里会消失，读者会以为覆盖完整。
+SKIPPED_ITEMS=()
+skip_case() { # $1=用例名 $2=原因
+    SKIPPED_ITEMS+=("$1：$2")
+    printf 'skip - %s：%s\n' "$1" "$2"
+}
+
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 TMP_DIR=$(mktemp -d 2>/dev/null || true)
 if [[ -z "${TMP_DIR}" ]]; then
@@ -19,21 +30,25 @@ fail() {
     exit 1
 }
 assert_equal() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 expected=$2 actual=$3
     [[ "${expected}" == "${actual}" ]] \
         || fail "${label}: expected <${expected}> but got <${actual}>"
 }
 assert_contains() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 expected=$3
     [[ "${text}" == *"${expected}"* ]] \
         || fail "${label}: missing <${expected}> in <${text}>"
 }
 assert_not_contains() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 unexpected=$3
     [[ "${text}" != *"${unexpected}"* ]] \
         || fail "${label}: unexpected <${unexpected}> in <${text}>"
 }
 assert_file_mode() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 expected=$2 file=$3 actual
     actual=$(ls -ld -- "${file}" | awk '{print $1}' | sed 's/[^drwx-]//g')
     [[ "${actual}" == "${expected}" ]] \
@@ -224,7 +239,7 @@ assert_not_contains "模式 1 link 不创建订阅 DNS" "${link_log}" "DNS sub.e
 
 # --- 3. 模式 2 的 DNS 归属常量：创建、复用与 purge 使用同一契约 -----------------
 run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
-    local case_name=$1
+    local case_name=$1 case_status=0
     local log="${TMP_DIR}/dns-${case_name}.log"
     local runtime="${TMP_DIR}/dns-runtime-${case_name}"
     local state="${TMP_DIR}/dns-state-${case_name}"
@@ -268,32 +283,473 @@ run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
         purge | purge-takeover) cdn_purge_cloudflare_dns ;;
         *) dns_ensure_record cf.example.com A "${VPS_PUBLIC_IPV4}" true ;;
         esac
-    ) </dev/null >"${log}.out" 2>"${log}.err" || true
+    ) </dev/null >"${log}.out" 2>"${log}.err" || case_status=$?
+    # 用例在 $( ) 里跑（要捕获 API 日志），变量带不出来：调用方按返回值取退出码。
+    RUN_DNS_CASE_STATUS=${case_status}
     cat "${log}"
+    return "${case_status}"
 }
 
-create_log=$(run_dns_case create)
+# 用例退出码：$( ) 里的赋值传不回来，所以用「调用失败时赋值」的形态留在调用方。
+RUN_DNS_CASE_STATUS=0
+create_log=$(run_dns_case create) || RUN_DNS_CASE_STATUS=$?
+assert_equal "模式 2 创建用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
 assert_contains "模式 2 创建记录使用模式专属注释" "${create_log}" "easy_all cloudflare"
 assert_contains "模式 2 创建记录是 POST" "${create_log}" "POST /zones/zoneid/dns_records"
 
-reuse_log=$(run_dns_case reuse)
+RUN_DNS_CASE_STATUS=0
+reuse_log=$(run_dns_case reuse) || RUN_DNS_CASE_STATUS=$?
+assert_equal "模式 2 复用用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
 assert_not_contains "模式 2 复用受管记录不写入" "${reuse_log}" "POST "
 assert_not_contains "模式 2 复用受管记录不改写" "${reuse_log}" "PATCH "
+# 正向锚点：复用路径必须先读到现有记录；否则「没有 POST/PATCH」会被「什么都没做」伪通过。
+assert_contains "模式 2 复用路径确实读取了记录" "${reuse_log}" "GET /zones/zoneid/dns_records"
+[[ ! -s "${TMP_DIR}/dns-reuse.log.err" ]] \
+    || fail "模式 2 复用路径不得向 stderr 输出：$(<"${TMP_DIR}/dns-reuse.log.err")"
 
-purge_log=$(run_dns_case purge)
+RUN_DNS_CASE_STATUS=0
+purge_log=$(run_dns_case purge) || RUN_DNS_CASE_STATUS=$?
+assert_equal "模式 2 purge 用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
 assert_contains "模式 2 purge 删除受管记录" "${purge_log}" \
     "DELETE /zones/zoneid/dns_records/rec1"
 assert_not_contains "模式 2 purge 不修改记录" "${purge_log}" "PATCH "
 
-purge_takeover_log=$(run_dns_case purge-takeover)
+purge_takeover_log=$(run_dns_case purge-takeover) || true
 assert_not_contains "强制接管的记录在 purge 时不得删除" "${purge_takeover_log}" "DELETE "
 assert_contains "强制接管的记录在 purge 时说明保留原因" \
     "$(cat "${TMP_DIR}/dns-purge-takeover.log.out" 2>/dev/null || true)" "来自强制接管"
 
-foreign_log=$(run_dns_case foreign)
+foreign_log=$(run_dns_case foreign) || true
 assert_not_contains "第三方注释的记录不被接管" "${foreign_log}" "POST "
 assert_not_contains "第三方注释的记录不被改写" "${foreign_log}" "PATCH "
 assert_not_contains "第三方注释的记录不被删除" "${foreign_log}" "DELETE "
+
+# --- 3.5 A2：cloudfront 卸载的 NoSuchDistribution 语义（入口 / 禁用等待后 / 归属不符 / 正常）---
+# 假 aws 按官方响应形状回放（ETag + DistributionConfig、禁用后 Enabled=false、Deployed），
+# 形态借用 test_cloud_purge.sh 的「功能版假 aws」，但只保留卸载路径实际用到的子命令。
+aws_case_bin="${TMP_DIR}/aws-bin"
+mkdir -p "${aws_case_bin}"
+cat >"${aws_case_bin}/aws" <<'FAKE_AWS'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${AWS_CALLS}"
+args=("$@")
+service="" op="" id="" arn=""
+for i in "${!args[@]}"; do
+    case "${args[$i]}" in
+    cloudfront | acm) service=${args[$i]}; op=${args[$((i + 1))]:-}; break ;;
+    esac
+done
+for i in "${!args[@]}"; do
+    case "${args[$i]}" in
+    --id) id=${args[$((i + 1))]:-} ;;
+    --certificate-arn) arn=${args[$((i + 1))]:-} ;;
+    esac
+done
+n=$(cat "${AWS_STATE}/count-${service}-${op}" 2>/dev/null || printf '0')
+n=$((n + 1))
+printf '%s' "${n}" >"${AWS_STATE}/count-${service}-${op}"
+
+no_such_distribution() {
+    printf 'An error occurred (NoSuchDistribution) when calling the GetDistributionConfig operation: The specified distribution does not exist.\n' >&2
+    exit 254
+}
+distribution_config() { # $1=Enabled
+    printf '{"ETag":"ETAG1-D1","DistributionConfig":{"Comment":"%s","Enabled":%s,"Aliases":{"Quantity":2,"Items":["%s","%s"]},"Origins":{"Quantity":1,"Items":[{"Id":"o1","DomainName":"%s"}]}}}\n' \
+        "${AWS_COMMENT}" "$1" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" "${CF_ORIGIN_DOMAIN}"
+}
+case "${service} ${op}" in
+"cloudfront get-distribution-config")
+    case "${AWS_MODE:-normal}" in
+    entry-gone) no_such_distribution ;;
+    gone-after-disable)
+        # 入口那次成功；删除前复校那一次（第 2 次）已不存在。
+        ((n == 1)) || no_such_distribution
+        distribution_config true
+        ;;
+    read-error)
+        printf 'An error occurred (AccessDenied) when calling the GetDistributionConfig operation: not authorized\n' >&2
+        exit 254
+        ;;
+    stderr-noise)
+        # 成功但 stderr 带告警（真实 CLI 的配置/凭据提示就是这样）：stdout 的 JSON 不得被污染。
+        printf 'Warning: config file /root/.aws/config contains an invalid profile section\n' >&2
+        distribution_config true
+        ;;
+    foreign) # 分发存在但 Comment 不是本链路的 marker → 归属校验失败
+        printf '{"ETag":"ETAG1-D1","DistributionConfig":{"Comment":"hand-managed","Enabled":true,"Aliases":{"Quantity":2,"Items":["%s","%s"]},"Origins":{"Quantity":1,"Items":[{"Id":"o1","DomainName":"%s"}]}}}\n' \
+            "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" "${CF_ORIGIN_DOMAIN}"
+        ;;
+    *) distribution_config true ;;
+    esac
+    ;;
+"cloudfront update-distribution")
+    printf '{}\n'
+    ;;
+"cloudfront get-distribution")
+    # 真实服务要等禁用传播完成；这里直接回放已 Deployed + Enabled=false。
+    printf '{"Distribution":{"Status":"Deployed","DistributionConfig":{"Enabled":false}}}\n'
+    ;;
+"cloudfront delete-distribution")
+    printf '{}\n'
+    ;;
+"acm describe-certificate")
+    printf '{"Certificate":{"DomainName":"%s","Status":"ISSUED","CertificateArn":"%s","SubjectAlternativeNames":["%s"],"InUseBy":[],"DomainValidationOptions":[]}}\n' \
+        "${CF_NODE_DOMAIN}" "${arn}" "${SUBSCRIPTION_DOMAIN}"
+    ;;
+"acm list-tags-for-certificate")
+    printf '{"Tags":[{"Key":"easy_all","Value":"managed"},{"Key":"easy_all-node","Value":"%s"}]}\n' "${CF_NODE_DOMAIN}"
+    ;;
+"acm delete-certificate")
+    printf '{}\n'
+    ;;
+*)
+    printf 'fake aws: unexpected call: %s\n' "$*" >&2
+    exit 254
+    ;;
+esac
+FAKE_AWS
+chmod +x "${aws_case_bin}/aws"
+
+run_aws_uninstall_case() { # $1=模式名；输出 aws 调用日志与退出码行
+    local mode=$1
+    local root="${TMP_DIR}/aws-case-${mode}"
+    rm -rf "${root}"
+    mkdir -p "${root}/runtime" "${root}/state" "${root}/aws"
+    : >"${root}/aws.calls"
+    : >"${root}/dns.calls"
+    (
+        set -Eeuo pipefail
+        export PATH="${aws_case_bin}:${PATH}"
+        export AWS_CALLS="${root}/aws.calls"
+        export AWS_STATE="${root}/aws"
+        export AWS_MODE="${mode}"
+        export RUNTIME_TMP="${root}/runtime"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${root}/state"
+        export EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${root}/takeover.log"
+        source "${ROOT_DIR}/profiles/cloudfront.sh"
+        # 假 aws 是独立进程：这些上下文必须 export，否则子进程 set -u 直接报错。
+        export CF_NODE_DOMAIN=cf.example.com
+        export SUBSCRIPTION_DOMAIN=sub.cf.example.com
+        export CF_ORIGIN_DOMAIN=origin.example.com
+        export AWS_COMMENT="easy_all-cloudfront-cf.example.com"
+        CLOUDFLARE_ZONE_ID=zoneid
+        CLOUDFLARE_API_TOKEN="fake-token-abcdefghijklmnop"
+        VPS_PUBLIC_IPV4=203.0.113.10
+        AWS_CLOUDFRONT_DISTRIBUTION_ID=D1
+        AWS_ACM_CERTIFICATE_ARN="arn:aws:acm:${AWS_CONTROL_REGION}:123456789012:certificate/C1"
+        AWS_ACCESS_KEY_ID=AKIAFAKEEXAMPLE0
+        AWS_SECRET_ACCESS_KEY=fake-secret-key-value
+        # DNS 侧只验「删除被调用」，记录形状用最简受管记录。
+        cloudflare_record_list() {
+            printf '[{"id":"rec1","type":"A","name":"%s","content":"%s","proxied":false,"comment":"easy_all cloudfront","ttl":300}]\n' \
+                "$3" "${VPS_PUBLIC_IPV4}"
+        }
+        cloudflare_api_request() {
+            local method=$1 path=$2
+            printf '%s %s\n' "${method}" "${path}" >>"${root}/dns.calls"
+            printf 'null\n'
+        }
+        status=0
+        cdn_purge_aws_resources || status=$?
+        printf 'PURGE_STATUS=%s\n' "${status}"
+    ) </dev/null >"${root}/out" 2>"${root}/err" || true
+    printf 'STATUS_LINE=%s\n' "$(grep -o 'PURGE_STATUS=[0-9]*' "${root}/out" | tail -n 1)"
+}
+
+# (a) 入口处分发已不存在：仍清理 ACM 与 DNS，退出 0。
+run_aws_uninstall_case entry-gone >/dev/null
+entry_gone_calls=$(<"${TMP_DIR}/aws-case-entry-gone/aws.calls")
+entry_gone_dns=$(<"${TMP_DIR}/aws-case-entry-gone/dns.calls")
+assert_contains "A2(a) 入口分发已不存在仍删除 ACM 证书" "${entry_gone_calls}" "acm delete-certificate"
+assert_contains "A2(a) 入口分发已不存在仍删除 Cloudflare DNS" "${entry_gone_dns}" "DELETE /zones/zoneid/dns_records/rec1"
+assert_contains "A2(a) 说明分发已不存在" "$(<"${TMP_DIR}/aws-case-entry-gone/out")" "云端分发已不存在"
+assert_not_contains "A2(a) 不再尝试禁用分发" "${entry_gone_calls}" "cloudfront update-distribution"
+
+# (b) 禁用等待期内分发被删：删除前复校命中 NoSuchDistribution，仍清理 ACM 与 DNS。
+run_aws_uninstall_case gone-after-disable >/dev/null
+after_calls=$(<"${TMP_DIR}/aws-case-gone-after-disable/aws.calls")
+after_dns=$(<"${TMP_DIR}/aws-case-gone-after-disable/dns.calls")
+assert_contains "A2(b) 等待期内被删仍删除 ACM 证书" "${after_calls}" "acm delete-certificate"
+assert_contains "A2(b) 等待期内被删仍删除 Cloudflare DNS" "${after_dns}" "DELETE /zones/zoneid/dns_records/rec1"
+assert_contains "A2(b) 说明等待期内已被删除" "$(<"${TMP_DIR}/aws-case-gone-after-disable/out")" "禁用等待期内已被删除"
+assert_not_contains "A2(b) 不再调用 delete-distribution" "${after_calls}" "cloudfront delete-distribution"
+
+# (c) 归属不符：分发存在但 Comment 不匹配 → 跳过 ACM 与 DNS，且有告警。
+run_aws_uninstall_case foreign >/dev/null
+foreign_calls=$(<"${TMP_DIR}/aws-case-foreign/aws.calls")
+foreign_dns=$(<"${TMP_DIR}/aws-case-foreign/dns.calls")
+assert_contains "A2(c) 归属不符要告警" \
+    "$(<"${TMP_DIR}/aws-case-foreign/out")$(<"${TMP_DIR}/aws-case-foreign/err")" "分发未通过归属校验"
+assert_equal "A2(c) 归属不符不调用 ACM 删除" "0" \
+    "$(grep -c 'acm delete-certificate' "${TMP_DIR}/aws-case-foreign/aws.calls" || true)"
+assert_equal "A2(c) 归属不符不发起 DNS DELETE" "0" "$(grep -c '^DELETE ' "${TMP_DIR}/aws-case-foreign/dns.calls" || true)"
+assert_equal "A2(c) 归属不符不删除分发" "0" \
+    "$(grep -c 'cloudfront delete-distribution' "${TMP_DIR}/aws-case-foreign/aws.calls" || true)"
+
+# (e) 成功但 stderr 有噪音：stdout 独占 description，ETag 必须照常解析（否则跳过清理留孤儿）。
+run_aws_uninstall_case stderr-noise >/dev/null
+noise_calls=$(<"${TMP_DIR}/aws-case-stderr-noise/aws.calls")
+noise_dns=$(<"${TMP_DIR}/aws-case-stderr-noise/dns.calls")
+noise_out=$(<"${TMP_DIR}/aws-case-stderr-noise/out")
+assert_not_contains "A2(e) stderr 噪音不得导致「缺少分发 ETag」" "${noise_out}" "缺少分发 ETag"
+assert_contains "A2(e) stderr 噪音下仍禁用分发" "${noise_calls}" "cloudfront update-distribution"
+assert_contains "A2(e) stderr 噪音下仍删除分发" "${noise_calls}" "cloudfront delete-distribution"
+assert_contains "A2(e) stderr 噪音下仍清理 ACM" "${noise_calls}" "acm delete-certificate"
+assert_contains "A2(e) stderr 噪音下仍清理 DNS" "${noise_dns}" "DELETE /zones/zoneid/dns_records/rec1"
+
+# (f) 读取失败：告警必须带出真实原因（stderr 首行），而不是只有固定文案。
+run_aws_uninstall_case read-error >/dev/null
+assert_contains "A2(f) 读取失败要点名 ID" \
+    "$(<"${TMP_DIR}/aws-case-read-error/out")$(<"${TMP_DIR}/aws-case-read-error/err")" \
+    "读取 CloudFront 分发失败（ID：D1）"
+assert_contains "A2(f) 读取失败要带出 stderr 首行原因" \
+    "$(<"${TMP_DIR}/aws-case-read-error/out")$(<"${TMP_DIR}/aws-case-read-error/err")" \
+    "AccessDenied"
+
+# (d) 正常路径：禁用 → 等 Deployed → 删除 → 再清理 ACM 与 DNS。
+run_aws_uninstall_case normal >/dev/null
+normal_calls=$(<"${TMP_DIR}/aws-case-normal/aws.calls")
+normal_dns=$(<"${TMP_DIR}/aws-case-normal/dns.calls")
+assert_contains "A2(d) 先禁用分发" "${normal_calls}" "cloudfront update-distribution"
+assert_contains "A2(d) 等待禁用传播" "${normal_calls}" "cloudfront get-distribution"
+assert_contains "A2(d) 删除分发" "${normal_calls}" "cloudfront delete-distribution"
+assert_contains "A2(d) 删除后清理 ACM" "${normal_calls}" "acm delete-certificate"
+assert_contains "A2(d) 删除后清理 Cloudflare DNS" "${normal_dns}" "DELETE /zones/zoneid/dns_records/rec1"
+assert_contains "A2(d) 报告分发已删除" "$(<"${TMP_DIR}/aws-case-normal/out")" "CloudFront 分发已删除"
+
+# --- 3.35 A8：marker 发现路径上的 PENDING_VALIDATION 必须放行（不得 die）-------------
+# find_existing_acm_certificate 是「无状态复用」路径：证书带本节点管理标记但还在等待签发，
+# 必须交下游「写验证记录 → 轮询签发」，而不是 die 掉（否则重装死锁永远解不开）。
+acm_bin="${TMP_DIR}/acm-bin"
+mkdir -p "${acm_bin}"
+cat >"${acm_bin}/aws" <<'FAKE_AWS'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${ACM_CALLS}"
+case " $* " in
+*" acm list-certificates "*)
+    printf '{"CertificateSummaryList":[{"CertificateArn":"%s"}]}\n' "${ACM_ARN}"
+    ;;
+*" acm list-tags-for-certificate "*)
+    printf '{"Tags":[{"Key":"easy_all","Value":"managed"},{"Key":"easy_all-node","Value":"%s"}]}\n' \
+        "${CF_NODE_DOMAIN}"
+    ;;
+*" acm describe-certificate "*)
+    printf '{"Certificate":{"DomainName":"%s","Status":"%s","CertificateArn":"%s","SubjectAlternativeNames":["%s"],"InUseBy":[]}}\n' \
+        "${CF_NODE_DOMAIN}" "${ACM_STATUS}" "${ACM_ARN}" "${SUBSCRIPTION_DOMAIN}"
+    ;;
+*) printf '{}\n' ;;
+esac
+FAKE_AWS
+chmod +x "${acm_bin}/aws"
+
+run_acm_discovery_case() { # $1=Status；输出发现结果与状态行
+    local status=$1
+    local root="${TMP_DIR}/acm-${status}"
+    rm -rf "${root}"
+    mkdir -p "${root}/runtime"
+    (
+        set -Eeuo pipefail
+        export PATH="${acm_bin}:${PATH}"
+        export RUNTIME_TMP="${root}/runtime"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${root}/state"
+        export ACM_CALLS="${root}/aws.calls"
+        export ACM_ARN="arn:aws:acm:${AWS_CONTROL_REGION:-us-east-1}:123456789012:certificate/C1"
+        export ACM_STATUS="${status}"
+        export CF_NODE_DOMAIN=cf.example.com
+        export SUBSCRIPTION_DOMAIN=sub.cf.example.com
+        source "${ROOT_DIR}/profiles/cloudfront.sh"
+        # 强制走 marker 发现路径（不设 AWS_ACM_CERTIFICATE_ARN）。
+        unset AWS_ACM_CERTIFICATE_ARN
+        status_rc=0
+        found=$(find_existing_acm_certificate) || status_rc=$?
+        printf 'DISCOVERY_RC=%s\nFOUND=%s\n' "${status_rc}" "${found}"
+    ) </dev/null >"${root}/out" 2>"${root}/err" || true
+    cat "${root}/out"
+}
+
+# 等待态：必须放行（输出 ARN、退出 0），不得 die。
+acm_pending_out=$(run_acm_discovery_case PENDING_VALIDATION)
+acm_pending_rc=$(sed -n 's/^DISCOVERY_RC=//p' <<<"${acm_pending_out}")
+assert_equal "A8: marker 发现路径的 PENDING_VALIDATION 放行（退出 0）" "0" "${acm_pending_rc}"
+assert_contains "A8: 放行后输出候选 ARN" "${acm_pending_out}" \
+    "arn:aws:acm:${AWS_CONTROL_REGION:-us-east-1}:123456789012:certificate/C1"
+assert_not_contains "A8: 放行时不得 die" \
+    "$(<"${TMP_DIR}/acm-PENDING_VALIDATION/err")" "不可复用"
+
+# 终态：仍然要 die（不放宽归属与终态判定）。
+run_acm_discovery_case FAILED >/dev/null
+assert_contains "A8: 终态仍然 die" "$(<"${TMP_DIR}/acm-FAILED/err")" "已进入终态"
+
+# --- 3.36 A9：多域名验证记录必须全部写入（旧条件 -ge 1 只会写第一条）---------------
+# 判别力来自**响应内容**：入口那次 describe 与轮询第 1 轮都只带 1 条 ResourceRecord，第 2 轮才带 2 条。
+# 旧条件 `records -ge 1` 在轮询第 1 轮就 break → 只写第一个域名；新条件要求 `records == total`
+# → 必须等到第 2 轮，两个域名的验证记录才都写进 Cloudflare。
+acm_dv_bin="${TMP_DIR}/acm-dv-bin"
+mkdir -p "${acm_dv_bin}"
+cat >"${acm_dv_bin}/aws" <<'FAKE_AWS_DV'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${ACM_DV_CALLS}"
+case " $* " in
+*" acm request-certificate "*)
+    printf '%s\n' "${ACM_DV_ARN}"
+    ;;
+*" acm describe-certificate "*"--query Certificate.Status"*)
+    # 签发轮询：直接回 ISSUED，避免 60 次 × 5s 的空等。
+    printf 'ISSUED\n'
+    ;;
+*" acm describe-certificate "*)
+    n=$(cat "${ACM_DV_STATE}/json-calls" 2>/dev/null || printf 0)
+    n=$((n + 1))
+    printf '%s' "${n}" >"${ACM_DV_STATE}/json-calls"
+    if [[ "${ACM_DV_MODE}" == "empty" ]]; then
+        printf '{"Certificate":{"DomainName":"%s","Status":"PENDING_VALIDATION","CertificateArn":"%s","SubjectAlternativeNames":["%s"],"InUseBy":[],"DomainValidationOptions":[]}}\n' \
+            "${CF_NODE_DOMAIN}" "${ACM_DV_ARN}" "${SUBSCRIPTION_DOMAIN}"
+    elif ((n >= 3)); then
+        # 轮询第 2 轮起：2 条 ResourceRecord（records == total，循环可以 break）。
+        printf '{"Certificate":{"DomainName":"%s","Status":"PENDING_VALIDATION","CertificateArn":"%s","SubjectAlternativeNames":["%s"],"InUseBy":[],"DomainValidationOptions":[
+{"DomainName":"%s","ResourceRecord":{"Name":"_x1.%s.","Type":"CNAME","Value":"_v1.acm-validations.aws."}},
+{"DomainName":"%s","ResourceRecord":{"Name":"_x2.%s.","Type":"CNAME","Value":"_v2.acm-validations.aws."}}]}}\n' \
+            "${CF_NODE_DOMAIN}" "${ACM_DV_ARN}" "${SUBSCRIPTION_DOMAIN}" \
+            "${CF_NODE_DOMAIN}" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}" "${SUBSCRIPTION_DOMAIN}"
+    else
+        # n=1 是入口那次 describe（只用于 status/SAN），n=2 是轮询第 1 轮：两次都只有 1/2 带记录。
+        printf '{"Certificate":{"DomainName":"%s","Status":"PENDING_VALIDATION","CertificateArn":"%s","SubjectAlternativeNames":["%s"],"InUseBy":[],"DomainValidationOptions":[
+{"DomainName":"%s","ResourceRecord":{"Name":"_x1.%s.","Type":"CNAME","Value":"_v1.acm-validations.aws."}},
+{"DomainName":"%s"}]}}\n' \
+            "${CF_NODE_DOMAIN}" "${ACM_DV_ARN}" "${SUBSCRIPTION_DOMAIN}" \
+            "${CF_NODE_DOMAIN}" "${CF_NODE_DOMAIN}" "${SUBSCRIPTION_DOMAIN}"
+    fi
+    ;;
+*) printf '{}\n' ;;
+esac
+FAKE_AWS_DV
+chmod +x "${acm_dv_bin}/aws"
+
+run_acm_dv_case() { # $1=staged|empty
+    local mode=$1
+    local root="${TMP_DIR}/acm-dv-${mode}"
+    rm -rf "${root}"
+    mkdir -p "${root}/runtime" "${root}/state"
+    (
+        set -Eeuo pipefail
+        export PATH="${acm_dv_bin}:${PATH}"
+        export RUNTIME_TMP="${root}/runtime"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${root}/state"
+        export ACM_DV_CALLS="${root}/aws.calls"
+        export ACM_DV_STATE="${root}/aws-state"
+        export ACM_DV_MODE="${mode}"
+        export ACM_DV_ARN="arn:aws:acm:${AWS_CONTROL_REGION:-us-east-1}:123456789012:certificate/C9"
+        export CF_NODE_DOMAIN=cf.example.com
+        export SUBSCRIPTION_DOMAIN=sub.cf.example.com
+        mkdir -p "${ACM_DV_STATE}"
+        source "${ROOT_DIR}/profiles/cloudfront.sh"
+        # 预置 ARN 跳过“申请新证书”之前的发现分支；幂等 request 由假 aws 回放。
+        AWS_ACM_CERTIFICATE_ARN=${ACM_DV_ARN}
+        # 外部动作全部桩掉并记录真实调用：落盘、DNS 写入、退避等待。
+        persist_install_identity() { :; }
+        dns_ensure_record() { printf '%s %s\n' "$1" "$2" >>"${root}/dns.calls"; }
+        sleep() { :; }
+        rc=0
+        find_or_request_acm_certificate || rc=$?
+        printf 'ACCEPT_RC=%s\n' "${rc}"
+    ) </dev/null >"${root}/out" 2>"${root}/err" || true
+}
+
+# 1/2 → 2/2：两个域名的验证记录都必须写入（旧条件只会写 1 条）。
+run_acm_dv_case staged
+acm_dv_dns=$(<"${TMP_DIR}/acm-dv-staged/dns.calls")
+assert_equal "A9: 两个域名的验证记录都被写入（调用 2 次）" "2" \
+    "$(grep -c . "${TMP_DIR}/acm-dv-staged/dns.calls" || true)"
+assert_contains "A9: 写入节点域名的验证记录" "${acm_dv_dns}" "_x1.cf.example.com"
+assert_contains "A9: 写入订阅域名的验证记录" "${acm_dv_dns}" "_x2.sub.cf.example.com"
+assert_contains "A9: 整条流程走通" "$(<"${TMP_DIR}/acm-dv-staged/out")" "ACCEPT_RC=0"
+
+# DomainValidationOptions 整体为空：继续等（不 break），最终不写任何记录也不 die。
+run_acm_dv_case empty
+acm_dv_empty_dns=$(cat "${TMP_DIR}/acm-dv-empty/dns.calls" 2>/dev/null | grep -c . || true)
+assert_equal "A9: DV 为空时不写任何验证记录" "0" "${acm_dv_empty_dns}"
+assert_contains "A9: DV 为空时流程仍走通（未 break 也未 die）" \
+    "$(<"${TMP_DIR}/acm-dv-empty/out")" "ACCEPT_RC=0"
+
+# --- 3.4 purge 的云端清理入口：状态缺 Zone ID 不得提前放弃，Origin CA 吊销必须无条件独立执行 ----
+# 状态里没有 CLOUDFLARE_ZONE_ID 时必须先补查（cdn_ensure_zone_id）；查不到也只能跳过 DNS 记录，
+# 不能连 account 级的 Origin CA 证书（DELETE /certificates/{id}）一起放弃。
+run_purge_cloud_resources_case() { # $1=yes|no：状态里是否已带 Zone ID
+    local zone_mode=$1 case_status=0
+    local log="${TMP_DIR}/purge-resources-${zone_mode}.log"
+    local runtime="${TMP_DIR}/purge-resources-runtime-${zone_mode}"
+    local state="${TMP_DIR}/purge-resources-state-${zone_mode}"
+    mkdir -p "${runtime}" "${state}"
+    (
+        set -Eeuo pipefail
+        export RUNTIME_TMP="${runtime}"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${state}"
+        export EASY_ALL_CERT_DIR_OVERRIDE="${state}/certs"
+        export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${state}/subscriptions"
+        export EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${TMP_DIR}/purge-resources-${zone_mode}-takeover.log"
+        source "${ROOT_DIR}/profiles/cloudflare.sh"
+        if [[ "${zone_mode}" == "yes" ]]; then
+            CLOUDFLARE_ZONE_ID=zoneid
+        fi
+        CLOUDFLARE_API_TOKEN="${TOKEN}"
+        CLOUDFLARE_ORIGIN_CERT_ID=cert1
+        VPS_PUBLIC_IPV4=203.0.113.10
+        CF_ZONE=cf.example.com
+        CF_NODE_DOMAIN=cf.example.com
+        SUBSCRIPTION_MODE=deploy
+        cloudflare_api_request() {
+            local method=$1 path=$2
+            printf '%s %s\n' "${method}" "${path}" >>"${log}"
+            case "${method} ${path}" in
+            "GET /zones?name="*)
+                # zone-missing：补查拿不到 active Zone，cdn_ensure_zone_id 会 die。
+                if [[ "${zone_mode}" == "zone-missing" ]]; then
+                    printf '[]\n'
+                else
+                    printf '[{"name":"cf.example.com","id":"zoneid"}]\n'
+                fi ;;
+            "GET "*dns_records*)
+                printf '[{"id":"rec1","type":"A","name":"cf.example.com","content":"203.0.113.10","proxied":true,"comment":"easy_all cloudflare","ttl":300}]\n' ;;
+            *) printf 'null\n' ;;
+            esac
+        }
+        cdn_purge_cloud_resources
+    ) </dev/null >"${log}.out" 2>"${log}.err" || case_status=$?
+    cat "${log}" 2>/dev/null || true
+    return "${case_status}"
+}
+
+if ! purge_with_zone_log=$(run_purge_cloud_resources_case yes); then
+    fail "purge 云端清理应成功退出：$(<"${TMP_DIR}/purge-resources-yes.log.err")"
+fi
+assert_contains "purge 云端清理删除受管 DNS 记录" "${purge_with_zone_log}" \
+    "DELETE /zones/zoneid/dns_records/rec1"
+assert_contains "purge 云端清理吊销 Origin CA" "${purge_with_zone_log}" "DELETE /certificates/cert1"
+
+# Zone 补查失败（cdn_ensure_zone_id die）：DNS 记录随之保留，但 account 级的 Origin CA
+# 吊销必须已经在 Zone 依赖块之前执行过（重排后的执行顺序）。
+run_purge_cloud_resources_case zone-missing >/dev/null || true
+zone_die_log=$(<"${TMP_DIR}/purge-resources-zone-missing.log")
+zone_die_err=$(<"${TMP_DIR}/purge-resources-zone-missing.log.err")
+assert_contains "P2-2: Zone 补查失败时 Origin CA 吊销仍被调用" "${zone_die_log}" \
+    "DELETE /certificates/cert1"
+assert_equal "P2-2: Zone 补查失败时不发起 DNS 记录删除" "0" \
+    "$(grep -c 'dns_records' "${TMP_DIR}/purge-resources-zone-missing.log" || true)"
+assert_contains "P2-2: 补查失败如实报错（无 active Zone）" "${zone_die_err}" "active Zone"
+
+if ! purge_no_zone_log=$(run_purge_cloud_resources_case no); then
+    fail "状态缺 Zone ID 时补查后应成功退出：$(<"${TMP_DIR}/purge-resources-no.log.err")"
+fi
+assert_contains "状态缺 Zone ID 时先补查 Zone" "${purge_no_zone_log}" \
+    "GET /zones?name=cf.example.com"
+assert_contains "状态缺 Zone ID 时不提前放弃 DNS 清理" "${purge_no_zone_log}" \
+    "DELETE /zones/zoneid/dns_records/rec1"
+assert_contains "状态缺 Zone ID 时 Origin CA 吊销仍被调用" "${purge_no_zone_log}" \
+    "DELETE /certificates/cert1"
+
 
 run_dns_case_input() { # $1=y|n  $2=id|replaced|updated|ttl|spaced|empty|patchfail（重读时返回的变体）
     local input_char=$1 reread_mode=$2
@@ -462,8 +918,8 @@ CLOUDFLARE_ZONE_ID=zoneid
 SUBSCRIPTION_MODE=deploy
 SUB_DOWNLOAD_NAME=EASY_ALL
 OWNER_TOKEN=token-abcdefgh
-ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
-SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+ALLOWED_TOKENS=\{\"owner\":\"token-abcdefgh\"\}
+SUBSCRIPTION_CONFIG=\{\"allowedTokens\":\{\"owner\":\"token-abcdefgh\"\}\,\"nodes\":\[\]\}
 MIHOMO_TEMPLATE_SNAPSHOT=1
 SCHEDULED_REBOOT_ENABLED=0
 SCHEDULED_REBOOT_HOUR=4
@@ -705,8 +1161,8 @@ CLOUDFLARE_ZONE_ID=zoneid
 SUBSCRIPTION_MODE=$3
 SUB_DOWNLOAD_NAME=EASY_ALL
 OWNER_TOKEN=token-abcdefgh
-ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
-SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+ALLOWED_TOKENS=\{\"owner\":\"token-abcdefgh\"\}
+SUBSCRIPTION_CONFIG=\{\"allowedTokens\":\{\"owner\":\"token-abcdefgh\"\}\,\"nodes\":\[\]\}
 MIHOMO_TEMPLATE_SNAPSHOT=1
 SCHEDULED_REBOOT_ENABLED=0
 SCHEDULED_REBOOT_HOUR=4
@@ -858,6 +1314,51 @@ tls_probe() { # $1=端口；0 表示可以
     ) 2>/dev/null
 }
 
+# 证书部署事务用例：强制重载 + 握手校验，失败必须恢复旧副本。
+# 全程 stub runtime_served_certificate_matches_disk，不依赖真实 TLS 握手——因此**不受**
+# LibreSSL 的门限制，无条件执行（这是「证书部署失败必须恢复旧证书」在开发机上的唯一覆盖）。
+run_certificate_deploy_cases() {
+# 证书部署事务：强制重载 + 握手校验；校验失败恢复旧副本。
+certificate_deploy_case() { # $1=1 表示握手校验失败
+    local handshake_fail=$1
+    EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${TMP_DIR}/lineage" \
+    RUNTIME_TMP="${TMP_DIR}/deploy-runtime-${handshake_fail}" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/deploy-state-${handshake_fail}" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/deploy-certs-${handshake_fail}" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/deploy-subscriptions" \
+        bash -c '
+            handshake_target=$4
+            source "$1/profiles/anytls.sh"
+            PROTOCOL=anytls
+            DIRECT_DOMAIN=node.example.com
+            SUBSCRIPTION_MODE=link
+            install -d -m 0700 "${CERT_DIR}" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}" "${RUNTIME_TMP}"
+            install -m 0644 "$2/fullchain.pem" "${CERT_FILE}"
+            install -m 0600 "$2/private.key" "${KEY_FILE}"
+            install -m 0644 "$3/fullchain.pem" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}/fullchain.pem"
+            install -m 0600 "$3/private.key" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}/privkey.pem"
+            certificate_check() { return 0; }
+            certificate_verify() { return 0; }
+            runtime_apply_runtime_services() { printf "APPLY %s\n" "$1"; }
+            runtime_served_certificate_matches_disk() { [[ "${handshake_target}" == "0" ]]; }
+            status=0
+            certificate_deploy "" 1 || status=$?
+            printf "STATUS=%s\n" "${status}"
+            printf "SERVED=%s\n" "$(cat "${CERT_FILE}")"
+        ' _ "${ROOT_DIR}" "${first_dir}" "${second_dir}" "${handshake_fail}" 2>&1
+}
+deploy_ok=$(certificate_deploy_case 0) || fail "证书部署成功路径失败：${deploy_ok}"
+assert_contains "部署成功时强制重载" "${deploy_ok}" "APPLY 1"
+assert_contains "部署成功时状态为 0" "${deploy_ok}" "STATUS=0"
+assert_contains "部署成功后磁盘是新证书" "${deploy_ok}" "$(<"${second_dir}/fullchain.pem")"
+
+deploy_fail=$(certificate_deploy_case 1) || true
+assert_contains "握手校验失败时部署失败" "${deploy_fail}" "STATUS=1"
+assert_contains "握手校验失败后恢复旧证书" "${deploy_fail}" "$(<"${first_dir}/fullchain.pem")"
+force_applies=$(grep -c 'APPLY 1' <<<"${deploy_fail}" || true)
+assert_equal "旧证书恢复也走强制重载" "2" "${force_applies}"
+}
+
 run_tls_certificate_cases() {
     TLS_PORT=""
     start_tls_server() { # $1=证书目录；成功后设置 TLS_PORT 与 TLS_SERVER_PID
@@ -880,13 +1381,13 @@ run_tls_certificate_cases() {
     }
     # 起不了 TLS 服务是宿主环境问题，不是产品缺陷：跳过而不是把套件判成回归。
     if ! start_tls_server "${first_dir}"; then
-        printf 'skip - 无法在空闲端口启动测试用 TLS 服务；跳过 TLS 握手与证书部署断言\n' >&2
+        skip_case "真实 TLS 握手与证书部署" "无法在空闲端口启动测试用 TLS 服务"
         return 0
     fi
     # LibreSSL（macOS 自带）的 s_client 在 stdin EOF 后不会退出，握手用例在这些宿主上
     # 无法完成：有界探测一次，不可用就明确跳过，避免把整个套件卡死。
     if ! tls_probe "${TLS_PORT}"; then
-        printf 'skip - 本机 openssl 在握手后不返回（LibreSSL）；跳过 TLS 握手与证书部署断言\n' >&2
+        skip_case "真实 TLS 握手与证书部署" "本机 openssl 在握手后不返回（LibreSSL）"
         return 0
     fi
 
@@ -956,45 +1457,6 @@ run_tls_certificate_cases() {
     assert_contains "普通重载不带 --force" "${reload_output}" \
         "reload --address unix/${TMP_DIR}/reload-runtime/admin.sock"
 
-    # 证书部署事务：强制重载 + 握手校验；校验失败恢复旧副本。
-    deploy_case() { # $1=1 表示握手校验失败
-        local handshake_fail=$1
-        EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${TMP_DIR}/lineage" \
-        RUNTIME_TMP="${TMP_DIR}/deploy-runtime-${handshake_fail}" \
-        EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/deploy-state-${handshake_fail}" \
-        EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/deploy-certs-${handshake_fail}" \
-        EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/deploy-subscriptions" \
-            bash -c '
-                handshake_target=$4
-                source "$1/profiles/anytls.sh"
-                PROTOCOL=anytls
-                DIRECT_DOMAIN=node.example.com
-                SUBSCRIPTION_MODE=link
-                install -d -m 0700 "${CERT_DIR}" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}" "${RUNTIME_TMP}"
-                install -m 0644 "$2/fullchain.pem" "${CERT_FILE}"
-                install -m 0600 "$2/private.key" "${KEY_FILE}"
-                install -m 0644 "$3/fullchain.pem" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}/fullchain.pem"
-                install -m 0600 "$3/private.key" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}/privkey.pem"
-                certificate_check() { return 0; }
-                certificate_verify() { return 0; }
-                runtime_apply_runtime_services() { printf "APPLY %s\n" "$1"; }
-                runtime_served_certificate_matches_disk() { [[ "${handshake_target}" == "0" ]]; }
-                status=0
-                certificate_deploy "" 1 || status=$?
-                printf "STATUS=%s\n" "${status}"
-                printf "SERVED=%s\n" "$(cat "${CERT_FILE}")"
-            ' _ "${ROOT_DIR}" "${first_dir}" "${second_dir}" "${handshake_fail}" 2>&1
-    }
-    deploy_ok=$(deploy_case 0) || fail "证书部署成功路径失败：${deploy_ok}"
-    assert_contains "部署成功时强制重载" "${deploy_ok}" "APPLY 1"
-    assert_contains "部署成功时状态为 0" "${deploy_ok}" "STATUS=0"
-    assert_contains "部署成功后磁盘是新证书" "${deploy_ok}" "$(<"${second_dir}/fullchain.pem")"
-
-    deploy_fail=$(deploy_case 1) || true
-    assert_contains "握手校验失败时部署失败" "${deploy_fail}" "STATUS=1"
-    assert_contains "握手校验失败后恢复旧证书" "${deploy_fail}" "$(<"${first_dir}/fullchain.pem")"
-    force_applies=$(grep -c 'APPLY 1' <<<"${deploy_fail}" || true)
-    assert_equal "旧证书恢复也走强制重载" "2" "${force_applies}"
 }
 
 # --- 5. 服务编排：单元重新加载与核心替换后的重启 ---------------------------
@@ -1203,8 +1665,8 @@ CLOUDFLARE_ZONE_ID=zoneid
 SUBSCRIPTION_MODE=deploy
 SUB_DOWNLOAD_NAME=EASY_ALL
 OWNER_TOKEN=token-abcdefgh
-ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
-SUBSCRIPTION_CONFIG='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+ALLOWED_TOKENS=\{\"owner\":\"token-abcdefgh\"\}
+SUBSCRIPTION_CONFIG=\{\"allowedTokens\":\{\"owner\":\"token-abcdefgh\"\}\,\"nodes\":\[\]\}
 MIHOMO_TEMPLATE_SNAPSHOT=1
 SCHEDULED_REBOOT_ENABLED=0
 SCHEDULED_REBOOT_HOUR=4
@@ -1698,6 +2160,18 @@ reboot_prompt_body=$(sed -n '/^prompt_kernel_reboot() {/,/^}/p' "${ROOT_DIR}/lib
 assert_contains "内核重启提示走共享读取原语" "${reboot_prompt_body}" "read_prompt '"
 assert_not_contains "内核重启提示不再用裸 read" "${reboot_prompt_body}" "read -r choice"
 
+# 部署事务用例不依赖真实 TLS：无条件先跑，TLS 门只影响真实握手那一段。
+run_certificate_deploy_cases
 run_tls_certificate_cases
 
 printf 'ok - 凭据、strict 顺序、DNS 归属、证书生效与服务编排测试通过\n'
+
+# A17/A32：文件尾汇总本轮未验证的用例。
+if ((${#SKIPPED_ITEMS[@]} > 0)); then
+    printf '未验证项（%s 条）：\n' "${#SKIPPED_ITEMS[@]}"
+    printf '  - %s\n' "${SKIPPED_ITEMS[@]}"
+fi
+
+# A31 阶段一：本文件必须真的跑过断言（不校验条数，只拦「一个都没跑」）。
+(( TESTS_ASSERTED > 0 )) || fail "无断言执行：本文件一个断言都没跑，fixture/前置条件出错时会静默全绿"
+printf 'ok - asserted %s\n' "${TESTS_ASSERTED}"

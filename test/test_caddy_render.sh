@@ -212,8 +212,8 @@ assert_before "YAML 先于 iOS 分支" "$(line_of "${ready_file}" "handle @easy_
 assert_before "iOS 先于 all 分支" "$(line_of "${ready_file}" "handle @easy_all_sub_ios {")" \
     "$(line_of "${ready_file}" "handle @easy_all_sub_all {")"
 assert_count "Content-Disposition 只出现在 YAML 与 JSON 分支" "${ready_body}" "Content-Disposition" 3
-assert_contains "YAML 下载文件名来自 SUB_DOWNLOAD_NAME" "${ready_body}" \
-    'header Content-Disposition "attachment; filename=EASY_ALL"'
+assert_contains "YAML 下载文件名来自 SUB_DOWNLOAD_NAME 并追加 .yaml" "${ready_body}" \
+    'header Content-Disposition "attachment; filename=EASY_ALL.yaml"'
 assert_contains "JSON 下载文件名追加 .json" "${ready_body}" \
     'header Content-Disposition "attachment; filename=EASY_ALL.json"'
 assert_contains "JSON 响应类型" "${ready_body}" \

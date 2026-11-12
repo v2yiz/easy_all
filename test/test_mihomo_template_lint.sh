@@ -101,6 +101,117 @@ policy_prefix_violations() {
     ' "$1"
 }
 
+# --- TUN 地址与 Fake-IP 池、telegram-fallback 内联集合的不变量 ------------------
+
+# 点分十进制 IPv4 → 32 位整数；非法输入返回非零。
+ipv4_to_int() { # $1=a.b.c.d
+    local ip=$1 value=0 octet
+    local -a octets=()
+    IFS=. read -r -a octets <<<"${ip}"
+    ((${#octets[@]} == 4)) || return 1
+    for octet in "${octets[@]}"; do
+        [[ "${octet}" =~ ^[0-9]{1,3}$ ]] || return 1
+        ((10#${octet} <= 255)) || return 1
+        value=$((value * 256 + 10#${octet}))
+    done
+    printf '%s' "${value}"
+}
+
+# tun.inet4-address 列表项（去掉行首 "- "、引号与行尾空白）
+tun_inet4_addresses() { # $1=模板
+    awk '
+        /^[[:space:]]*inet4-address:[[:space:]]*$/ { inside = 1; next }
+        inside && /^[[:space:]]*-[[:space:]]*/ {
+            line = $0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+            gsub(/["\x27]/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            print line
+            next
+        }
+        inside { exit }
+    ' "$1"
+}
+
+# dns.fake-ip-range 的 CIDR（去掉引号与行尾空白）
+fake_ip_range_of() { # $1=模板
+    awk '
+        /^[[:space:]]*fake-ip-range:[[:space:]]*/ {
+            line = $0
+            sub(/^[[:space:]]*fake-ip-range:[[:space:]]*/, "", line)
+            gsub(/["\x27]/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            print line
+            exit
+        }
+    ' "$1"
+}
+
+# 输出落在自身 fake-ip 池内的 TUN 地址；无重叠时输出为空。Mihomo 把 fake-ip 池当作自己的
+# 地址空间：TUN 地址落在池内会被 DNS 假 IP 覆盖，整机分流随即失效（198.18.0.0/16 是默认池）。
+tun_addresses_in_fake_ip_pool() { # $1=模板
+    local path=$1 range base prefix base_value address address_value
+    local size pool_start pool_end
+    range=$(fake_ip_range_of "${path}")
+    [[ -n "${range}" ]] || { printf 'missing fake-ip-range\n'; return 0; }
+    base=${range%%/*}
+    prefix=${range#*/}
+    if ! base_value=$(ipv4_to_int "${base}"); then
+        printf 'invalid fake-ip-range: %s\n' "${range}"
+        return 0
+    fi
+    if [[ ! "${prefix}" =~ ^[0-9]+$ ]] || ((10#${prefix} > 32)); then
+        printf 'invalid fake-ip-range: %s\n' "${range}"
+        return 0
+    fi
+    size=$((1 << (32 - 10#${prefix})))
+    pool_start=$((base_value / size * size))
+    pool_end=$((pool_start + size - 1))
+    while IFS= read -r address; do
+        [[ -n "${address}" ]] || continue
+        if ! address_value=$(ipv4_to_int "${address%%/*}"); then
+            printf 'invalid inet4-address: %s\n' "${address}"
+            continue
+        fi
+        if ((address_value >= pool_start && address_value <= pool_end)); then
+            printf 'inet4-address %s in fake-ip-range %s\n' "${address}" "${range}"
+        fi
+    done < <(tun_inet4_addresses "${path}")
+}
+
+# rule-providers 里 telegram-fallback 的 payload 列表项
+telegram_fallback_payloads() { # $1=模板
+    awk '
+        /^[[:space:]]*telegram-fallback:[[:space:]]*$/ { inside = 1; next }
+        inside && /^[[:space:]]*payload:[[:space:]]*$/ { payload = 1; next }
+        payload && /^[[:space:]]*-[[:space:]]*/ {
+            line = $0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+            gsub(/["\x27]/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            print line
+            next
+        }
+        payload { exit }
+    ' "$1"
+}
+
+# 输出不是合法 IPv4 / IPv4 CIDR 的 payload 项；全部合法时输出为空。
+invalid_telegram_payloads() { # $1=模板
+    local entry prefix
+    while IFS= read -r entry; do
+        [[ -n "${entry}" ]] || continue
+        if [[ "${entry}" == */* ]]; then
+            prefix=${entry#*/}
+            [[ "${prefix}" =~ ^([0-9]|[12][0-9]|3[0-2])$ ]] \
+                && ipv4_to_int "${entry%%/*}" >/dev/null \
+                || printf '%s\n' "${entry}"
+        else
+            ipv4_to_int "${entry}" >/dev/null || printf '%s\n' "${entry}"
+        fi
+    done < <(telegram_fallback_payloads "$1")
+}
+
 # 提取 sniffer 顶层段（用于检查嗅探协议白名单）
 sniffer_block() {
     awk '
@@ -181,6 +292,17 @@ for template in "${TEMPLATES[@]}"; do
     printf '%s\n' "${default_ns}" | grep -q '223\.5\.5\.5' \
         || fail "${template}: default-nameserver 应包含国内引导源 223.5.5.5"
 
+    # 10. TUN 的 inet4-address 不得落在本模板的 fake-ip 池内。
+    overlaps=$(tun_addresses_in_fake_ip_pool "${path}")
+    [[ -z "${overlaps}" ]] \
+        || fail "${template}: ${overlaps//$'\n'/; }"
+
+    # 11. telegram-fallback 是 ipcidr 内联集合：payload 每项必须是合法 IP/CIDR，
+    #     写错（域名、占位符、坏八位组）在客户端会让整段规则集失效。
+    bad_payloads=$(invalid_telegram_payloads "${path}")
+    [[ -z "${bad_payloads}" ]] \
+        || fail "${template}: invalid telegram-fallback payload: ${bad_payloads//$'\n'/ }"
+
     printf 'ok - %s\n' "${template}"
 done
 
@@ -251,6 +373,28 @@ awk '
     { print }
 ' "${baseline}" >"${dns_inet6}"
 expect_ipv4_only_rejected "dns 段 IPv6 地址字段" "${dns_inet6}"
+
+# 10/11 的判定必须真能报警（否则断言会静默空转）：各用一份故意破坏的副本反证一次。
+overlap_probe="${lint_dir}/mihomo-tun-in-fake-ip.yaml"
+probe_fake_ip=$(fake_ip_range_of "${baseline}")
+probe_fake_ip=${probe_fake_ip%%/*}
+awk -v replacement="      - ${probe_fake_ip}/30" '
+    /^[[:space:]]*inet4-address:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[[:space:]]*-[[:space:]]*/ { print replacement; inside = 0; next }
+    { print }
+' "${baseline}" >"${overlap_probe}"
+[[ -n "$(tun_addresses_in_fake_ip_pool "${overlap_probe}")" ]] \
+    || fail "TUN 地址落在 fake-ip 池内的判定必须能报警（反证失败）"
+
+payload_probe="${lint_dir}/mihomo-telegram-payload.yaml"
+awk -v replacement='          - 300.1.1.1/24' '
+    /^[[:space:]]*telegram-fallback:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[[:space:]]*payload:[[:space:]]*$/ { print; payload = 1; next }
+    payload && /^[[:space:]]*-[[:space:]]*/ { print replacement; payload = 0; next }
+    { print }
+' "${baseline}" >"${payload_probe}"
+[[ -n "$(invalid_telegram_payloads "${payload_probe}")" ]] \
+    || fail "非法的 telegram-fallback payload 判定必须能报警（反证失败）"
 
 printf 'ok - mihomo templates IPv4-only indentation\n'
 printf 'ok - mihomo templates\n'

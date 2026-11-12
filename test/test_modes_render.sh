@@ -216,4 +216,74 @@ for mode_out in anytls cloudfront cloudflare combined combined-cloudflare; do
     assert_not_contains "${mode_out} 不使用 v2ray_api" "${out}/config.json" 'v2ray_api'
 done
 
+# --- A7：订阅就绪判定必须进 Caddyfile（模式 2 的 write_runtime_config）----------
+# 观测点选生成的 Caddyfile（对外契约），不依赖内部变量 subscription_ok：
+#   subscription_ok != 1 → 订阅 handler 直接输出裸 `respond 503` 并提前返回；
+#   == 1 → 输出显式 flag/UA 分支与 `rewrite * /mihomo.yaml` 等产物路径。
+# 裸 503 只出现在这一处（JSON 分支的 503 带 matcher：`respond @easy_all_sub_json_missing 503`）。
+a7_bare_503() { # $1=Caddyfile
+    grep -cE '^[[:space:]]+respond 503$' "$1" || true
+}
+a7_mode2_render() { # $1=CDN_SUBSCRIPTION_CORRUPT $2=cdn_config_ready(yes|no) $3=out_dir
+    local corrupt=$1 ready=$2 out_dir=$3
+    mkdir -p "${out_dir}/runtime"
+    (
+        set -Eeuo pipefail
+        export RUNTIME_TMP="${out_dir}/runtime"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${out_dir}/state"
+        export EASY_ALL_CERT_DIR_OVERRIDE="${out_dir}/certs"
+        export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out_dir}/subscriptions"
+        export SINGBOX_CONFIG="${out_dir}/config.json"
+        export CADDY_CONFIG="${out_dir}/Caddyfile"
+        # shellcheck source=/dev/null
+        source "${ROOT_DIR}/profiles/cloudflare.sh"
+        CF_ZONE=example.com
+        VPS_PUBLIC_IPV4=203.0.113.10
+        SUB_DOWNLOAD_NAME=EASY_ALL
+        ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
+        SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" '{allowedTokens:$t,nodes:[]}')
+        CLOUDFLARE_ZONE_ID=zoneid
+        CF_NODE_DOMAIN=cf.example.com
+        CF_NODE_PREFIX=CF
+        VLESS_UUID=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+        VLESS_PATH=/vless-0123456789ab
+        SUBSCRIPTION_MODE=deploy
+        CDN_SUBSCRIPTION_CORRUPT="${corrupt}"
+        # A7 的判定依赖 cdn_config_ready（订阅产物是否已写盘）：测试内打桩，不改生产代码。
+        cdn_config_ready() { [[ "${ready}" == "yes" ]]; }
+        cdn_derive_runtime_fields || exit 1
+        mkdir -p "${CERT_DIR}"
+        : >"${CERT_DIR}/fullchain.pem"
+        : >"${CERT_DIR}/private.key"
+        write_runtime_config
+    ) || fail "模式 2 渲染失败（corrupt=${corrupt} ready=${ready}）"
+}
+
+# 变体 1：配置损坏 → 503 降级，且不再暴露任何订阅产物路径。
+a7_corrupt="${TMP_DIR}/a7-corrupt"
+a7_mode2_render 1 no "${a7_corrupt}"
+assert_equal "A7: 订阅损坏时 Caddyfile 出现裸 503" "1" "$(a7_bare_503 "${a7_corrupt}/Caddyfile")"
+assert_equal "A7: 订阅损坏时不暴露 mihomo.yaml 产物" "0" \
+    "$(grep -c 'rewrite \* /mihomo.yaml' "${a7_corrupt}/Caddyfile" || true)"
+
+# 变体 2：正常（未损坏 + 产物就绪）→ 无裸 503，产物路径齐全。
+a7_ready="${TMP_DIR}/a7-ready"
+a7_mode2_render 0 yes "${a7_ready}"
+assert_equal "A7: 订阅就绪时不得出现裸 503" "0" "$(a7_bare_503 "${a7_ready}/Caddyfile")"
+# flag 与 UA 两个入口各一条 rewrite，与既有「产物 /mihomo.yaml|2」断言一致。
+assert_equal "A7: 订阅就绪时暴露 mihomo.yaml 产物" "2" \
+    "$(grep -c 'rewrite \* /mihomo.yaml' "${a7_ready}/Caddyfile" || true)"
+
+# 变体 3：安装早期调用点（产物尚未写盘 → cdn_config_ready 为假）只会产生**瞬时** 503，
+# 同一次 apply 的后续调用会重算回 1；最终 Caddyfile 必须不含裸 503（否则装完仍 503）。
+a7_early="${TMP_DIR}/a7-early"
+a7_mode2_render 0 no "${a7_early}"
+assert_equal "A7: 安装早期中间态确实是 503（承认该瞬态存在）" "1" \
+    "$(a7_bare_503 "${a7_early}/Caddyfile")"
+a7_mode2_render 0 yes "${a7_early}"
+assert_equal "A7: 后续调用覆盖后最终 Caddyfile 不含裸 503" "0" \
+    "$(a7_bare_503 "${a7_early}/Caddyfile")"
+assert_equal "A7: 后续调用覆盖后产物路径恢复" "2" \
+    "$(grep -c 'rewrite \* /mihomo.yaml' "${a7_early}/Caddyfile" || true)"
+
 printf 'ok - 五模式渲染测试通过\n'

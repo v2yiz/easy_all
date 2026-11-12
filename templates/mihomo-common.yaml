@@ -41,7 +41,7 @@ tun:
     auto-route: true
     auto-detect-interface: true
     inet4-address:
-      - 198.18.0.1/30
+      - 198.19.0.1/30
     dns-hijack:
       - any:53
       - tcp://any:53

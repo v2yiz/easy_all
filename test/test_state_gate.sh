@@ -291,4 +291,149 @@ MENU
     -lt $(printf '%s\n' "${install_menu_body}" | grep -n "  4\. 纯 CloudFront" | cut -d: -f1) ]] \
     || fail "菜单编号顺序错误：2 应为纯 CloudFlare、4 应为纯 CloudFront"
 
+# --- A6/A23：state.env 纯赋值语法门（load_state 会 source 该文件）-----------------
+# 判据＝printf %q 的五形态：① KEY= ② KEY='' ③ KEY="" ⑤ KEY=$'…' ⑥ 裸串+反斜杠转义。
+source "${ROOT_DIR}/lib/log.sh"
+gate_dir="${TMP_DIR}/gate"
+mkdir -p "${gate_dir}"
+gate_status() { # $1=文件 → 0（通过）/1（拒绝）
+    local status=0
+    state_validate_pure_assignments "$1" >/dev/null 2>&1 || status=1
+    printf '%s' "${status}"
+}
+expect_gate() { # $1=标签 $2=期望(0/1) $3=文件内容
+    local label=$1 expected=$2 content=$3 file="${gate_dir}/case.env" actual
+    # 白名单要求能从 PROTOCOL 派生字段集：统一补合法头，payload 只验形态。
+    printf 'STATE_VERSION=1\nPROTOCOL=anytls\n%s' "${content}" >"${file}"
+    actual=$(gate_status "${file}")
+    [[ "${actual}" == "${expected}" ]] || fail "语法门 ${label}：期望 ${expected}，实际 ${actual}"
+}
+
+# 合法形态：全部来自 printf %q 的真实产出（+ 设计允许的两个空值形态）。
+expect_gate "① 裸空" 0 "TCP_ACCELERATION=
+"
+expect_gate "② %q 空值" 0 "$(printf 'TCP_ACCELERATION=%q\n' '')"
+expect_gate "③ 空双引号" 0 'TCP_ACCELERATION=""'$'\n'
+expect_gate "两个空值字段共存" 0 "$(printf 'TCP_ACCELERATION=%q\nCF_ZONE=""\n' '')"
+expect_gate "⑤ 制表符（ANSI-C）" 0 "$(printf 'TCP_ACCELERATION=%q\n' $'a\tb')"
+expect_gate "⑥ 含空格" 0 "$(printf 'TCP_ACCELERATION=%q\n' 'a b')"
+expect_gate "⑥ 含单引号" 0 "$(printf 'TCP_ACCELERATION=%q\n' "a'b")"
+expect_gate "⑥ 含反斜杠" 0 "$(printf 'TCP_ACCELERATION=%q\n' 'a\b')"
+expect_gate "⑥ JSON 对象" 0 "$(printf 'TCP_ACCELERATION=%q\n' '{"k":"v"}')"
+
+# 对抗形态：全部必须拒绝（形态④ KEY='abc' 已由设计删除，无生产者）。
+expect_gate "④ KEY='abc' 必须拒绝" 1 "TCP_ACCELERATION='abc'"$'\n'
+expect_gate "④ 多段拼接注入必须拒绝" 1 "TCP_ACCELERATION='a'\$(touch ${TMP_DIR}/pwned-concat)'cd'"$'\n'
+expect_gate "命令替换必须拒绝" 1 "TCP_ACCELERATION=\$(touch ${TMP_DIR}/pwned-subst)"$'\n'
+expect_gate "反引号必须拒绝" 1 'TCP_ACCELERATION=`touch '"${TMP_DIR}"'/pwned-tick`'$'\n'
+expect_gate "分号必须拒绝" 1 'TCP_ACCELERATION=a;b'$'\n'
+expect_gate "管道必须拒绝" 1 'TCP_ACCELERATION=a|b'$'\n'
+expect_gate "非空双引号含 \$ 必须拒绝" 1 'TCP_ACCELERATION="a$b"'$'\n'
+expect_gate "行尾孤立反斜杠必须拒绝（否则拼接下一行）" 1 'TCP_ACCELERATION=a\'$'\n'
+expect_gate "空白值必须拒绝" 1 'TCP_ACCELERATION= a'$'\n'
+
+# 拒绝不等于执行：上面所有 payload 都没有被 source，标记文件不得出现。
+for marker in pwned-concat pwned-subst pwned-tick; do
+    [[ ! -e "${TMP_DIR}/${marker}" ]] || fail "语法门泄漏执行：${marker} 被创建"
+done
+
+# 门必须在 load_state 的 source 之前调用：顺序反了等于门没生效。
+load_state_body=$(awk '/^load_state\(\) \{/,/^\}/' "${ROOT_DIR}/lib/runtime-core.sh")
+gate_line=$(printf '%s\n' "${load_state_body}" | grep -n 'state_validate_pure_assignments' | cut -d: -f1)
+source_line=$(printf '%s\n' "${load_state_body}" | grep -n 'source "${STATE_FILE}"' | cut -d: -f1)
+[[ -n "${gate_line}" && -n "${source_line}" ]] || fail "load_state 缺少语法门或 source STATE_FILE"
+(( gate_line < source_line )) || fail "语法门必须早于 source STATE_FILE"
+
+# --- A23：%q 读回只还原 \' 与 \\，不得擅自解码 C 控制字符转义 --------------------
+a23_state="${gate_dir}/a23-state.env"
+printf 'QUOTE=%q\nBACKSLASH=%q\nTAB=%q\n' "a'b" 'a\b' $'a\tb' >"${a23_state}"
+a23_quote=$(state_file_value "${a23_state}" QUOTE)
+a23_backslash=$(state_file_value "${a23_state}" BACKSLASH)
+a23_tab=$(state_file_value "${a23_state}" TAB)
+[[ "${a23_quote}" == "a'b" ]] || fail "A23: 单引号形态应读回 a'b，实际 <${a23_quote}>"
+[[ "${a23_backslash}" == 'a\b' ]] || fail "A23: 反斜杠形态应读回 a\b，实际 <${a23_backslash}>"
+[[ "${a23_tab}" == 'a\tb' ]] \
+    || fail "A23: 控制字符转义应保持字面 a\tb（不得解码成真实 TAB），实际 <${a23_tab}>"
+
+# --- 增量 1：键名白名单（阻止 PATH= / IFS= 这类键被 source 进加载方 shell）------------
+build_state_env() { # $1=protocol $2=目标文件；用生产同一套 state_render 生成完整状态
+    local protocol=$1 file=$2 field
+    local -a fields=()
+    while IFS= read -r field; do
+        fields+=("${field}")
+    done < <(state_required_fields "${protocol}" deploy)
+    STATE_VERSION=${EASY_ALL_STATE_SCHEMA_VERSION}
+    PROTOCOL=${protocol}
+    SUBSCRIPTION_MODE=deploy
+    for field in "${fields[@]}"; do
+        # PROTOCOL / SUBSCRIPTION_MODE 已按参数设好，不能被通用填充值覆盖（否则协议变无效）。
+        case "${field}" in
+        PROTOCOL | SUBSCRIPTION_MODE) continue ;;
+        esac
+        printf -v "${field}" 'value-%s' "${field}"
+    done
+    state_render "${file}" "${fields[@]}"
+}
+
+# 在子 shell 里模拟 load_state 的关键顺序：门 → （通过才）source，并回显 PATH 是否被改。
+gate_run_case() { # $1=state.env 路径；输出 GATE_RC 与 PATH_AFTER
+    (
+        source "${ROOT_DIR}/lib/log.sh"
+        source "${ROOT_DIR}/lib/state.sh"
+        rc=0
+        state_validate_pure_assignments "$1" 2>/dev/null || rc=$?
+        if ((rc == 0)); then
+            # shellcheck source=/dev/null
+            source "$1"
+        fi
+        printf 'GATE_RC=%s\nPATH_AFTER=%s\n' "${rc}" "${PATH}"
+    ) 2>/dev/null
+}
+
+# 1) 合法完整状态：必须通过。
+legal_state="${gate_dir}/whitelist-legal.env"
+build_state_env anytls "${legal_state}"
+legal_out=$(gate_run_case "${legal_state}")
+[[ "$(sed -n 's/^GATE_RC=//p' <<<"${legal_out}")" == "0" ]] \
+    || fail "白名单不得误杀合法状态：${legal_out}"
+
+# 2) 追加 PATH=/tmp/evil：必须拒绝，且 PATH 未被改变（证明 source 根本没执行）。
+evil_state="${gate_dir}/whitelist-evil.env"
+cp "${legal_state}" "${evil_state}"
+printf 'PATH=/tmp/evil-path\n' >>"${evil_state}"
+evil_out=$(gate_run_case "${evil_state}")
+[[ "$(sed -n 's/^GATE_RC=//p' <<<"${evil_out}")" != "0" ]] \
+    || fail "含 PATH= 的状态必须被白名单拒绝：${evil_out}"
+[[ "$(sed -n 's/^PATH_AFTER=//p' <<<"${evil_out}")" != "/tmp/evil-path" ]] \
+    || fail "PATH 被注入的状态不得被 source：${evil_out}"
+
+# 3) IFS 同理（影响加载方分词行为，是最容易漏的一类）。
+ifs_state="${gate_dir}/whitelist-ifs.env"
+cp "${legal_state}" "${ifs_state}"
+printf 'IFS=,\n' >>"${ifs_state}"
+ifs_out=$(gate_run_case "${ifs_state}")
+[[ "$(sed -n 's/^GATE_RC=//p' <<<"${ifs_out}")" != "0" ]] \
+    || fail "含 IFS= 的状态必须被白名单拒绝：${ifs_out}"
+
+# 4) PROTOCOL 无效：白名单算不出来 → 门**硬拒**（不再退化放行），报错点名文件与原因。
+bad_proto_state="${gate_dir}/whitelist-badproto.env"
+build_state_env anytls "${bad_proto_state}"
+sed -i '' 's/^PROTOCOL=.*/PROTOCOL=reality/' "${bad_proto_state}" 2>/dev/null \
+    || sed -i 's/^PROTOCOL=.*/PROTOCOL=reality/' "${bad_proto_state}"
+bad_out=$(gate_run_case "${bad_proto_state}")
+[[ "$(sed -n 's/^GATE_RC=//p' <<<"${bad_out}")" != "0" ]] \
+    || fail "协议无效时门必须硬拒（不得退化放行）：${bad_out}"
+bad_msg=$(state_validate_pure_assignments "${bad_proto_state}" 2>&1 || true)
+assert_contains "协议无效时硬拒并说明原因" "${bad_msg}" "无法确定 schema 字段集"
+assert_contains "硬拒消息点名状态文件" "${bad_msg}" "${bad_proto_state}"
+
+# 5) 白名单不得误杀存量：五个协议的完整状态都要通过。
+for whitelist_proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+    whitelist_state="${gate_dir}/whitelist-${whitelist_proto}.env"
+    build_state_env "${whitelist_proto}" "${whitelist_state}"
+    whitelist_out=$(gate_run_case "${whitelist_state}")
+    [[ "$(sed -n 's/^GATE_RC=//p' <<<"${whitelist_out}")" == "0" ]] \
+        || fail "白名单误杀合法状态（${whitelist_proto}）：${whitelist_out}"
+done
+
 printf 'ok - 安装菜单编号测试通过\n'

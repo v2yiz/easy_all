@@ -149,10 +149,17 @@ ufw_tcp_port_has_unmanaged_anywhere_allow() {
         added=$(LC_ALL=C ufw show added 2>/dev/null) \
             || die "读取 UFW 已保存规则失败"
         while IFS= read -r line; do
-            [[ "${line}" =~ ^ufw[[:space:]]+allow[[:space:]]+([0-9]+)(/tcp)?([[:space:]].*)?$ ]] \
-                || continue
-            [[ "${BASH_REMATCH[1]}" == "${port}" ]] || continue
-            extra=${BASH_REMATCH[3]:-}
+            # 显式 from 源（`ufw allow from 0.0.0.0/0 to any port N`）与 Anywhere 等价，
+            # 漏检即绕过 CF-only 边界；这里与 active 分支同口径一并识别。
+            if [[ "${line}" =~ ^ufw[[:space:]]+allow[[:space:]]+from[[:space:]]+0\.0\.0\.0/0[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+([0-9]+)([[:space:]].*)?$ ]]; then
+                [[ "${BASH_REMATCH[1]}" == "${port}" ]] || continue
+                extra=${BASH_REMATCH[2]:-}
+            elif [[ "${line}" =~ ^ufw[[:space:]]+allow[[:space:]]+([0-9]+)(/tcp)?([[:space:]].*)?$ ]]; then
+                [[ "${BASH_REMATCH[1]}" == "${port}" ]] || continue
+                extra=${BASH_REMATCH[3]:-}
+            else
+                continue
+            fi
             comment=""
             if [[ -n "${extra}" ]]; then
                 [[ "${extra}" =~ ^[[:space:]]+comment[[:space:]]+\'([^\']*)\'[[:space:]]*$ ]] \
@@ -171,7 +178,9 @@ ufw_tcp_port_has_unmanaged_anywhere_allow() {
         read -r endpoint action direction source extra <<<"${line%%' # '*}"
         [[ "${action}" == "ALLOW" ]] || continue
         ufw_endpoint_matches_tcp_port "${endpoint}" "${port}" || continue
-        [[ "${direction}" == "IN" && "${source}" == "Anywhere" && -z "${extra}" ]] || continue
+        # Anywhere / Any / 显式 0.0.0.0/0 三者语义等价（与 :366 的双匹配惯例一致）。
+        [[ "${direction}" == "IN" && -z "${extra}" ]] || continue
+        [[ "${source}" == "Anywhere" || "${source}" == "Any" || "${source}" == "0.0.0.0/0" ]] || continue
         comment=""
         [[ "${line}" != *' # '* ]] || comment=${line#*' # '}
         [[ "${comment}" == "${UFW_RULE_COMMENT}" ]] || return 0
@@ -367,7 +376,8 @@ ufw_ssh_port_is_allowed() {
                 next
             }
             # An interface-only allow cannot establish global SSH reachability.
-            if (action == 2 && fields[action] == "ALLOW" && fields[action+2] == "Anywhere") {allowed=1; decided=1}
+            if (action == 2 && fields[action] == "ALLOW" \
+                && (fields[action+2] == "Anywhere" || fields[action+2] == "Any")) {allowed=1; decided=1}
         }
         END {exit !allowed}
     '

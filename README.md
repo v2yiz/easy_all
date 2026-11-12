@@ -1,6 +1,6 @@
 # easy_all
 
-当前版本：[5.2.1](CHANGELOG.md#521-更新说明2026-11-12)
+当前版本：[5.2.2](CHANGELOG.md#522-更新说明2026-11-12)
 
 `easy_all` 是专为全新 **Debian 12/13 及 Ubuntu 22.04/24.04/26.04 LTS**（amd64 / arm64）设计的单节点代理一键安装工具。通过控制台交互引导，一键打通 sing-box、Caddy 订阅分发、UFW 防火墙、Fail2ban 及 Skyline Speeder TCP 加速（基于 Zabbly 6.12+ LTS 内核）。
 
@@ -38,7 +38,8 @@
 > [!WARNING]
 > **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。**
 >
-> **模式 4 与模式 5 使用 CloudFront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
+> **模式 4 与模式 5 使用 Cloudfront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
+> Cloudflare注册简单，Cloudfront更稳定，晚高峰效果好。
 
 ---
 
@@ -50,6 +51,7 @@
    - 放行 SSH 端口；
    - 模式 1/3/4/5 放行公网 TCP `443`（模式 5 另需放行 TCP `8443`）；
    - 模式 2 的 `443` 以及模式 1 deploy / 3 的 `8443` 仅对 Cloudflare 官方回源 IPv4 段放行（UFW 自动配置，云安全组需同步放行）。
+   - **回源端口不得预先全局放行**：机器上若已有 `ufw allow 443/tcp` 或 `ufw allow 8443/tcp`（来源 `Anywhere`、`Any` 或 `0.0.0.0/0`），安装会在写入防火墙规则与云资源**之前**中止，并提示先 `ufw status` 查明后移除；否则回源端口仍对全网开放，绕过 Cloudflare-only 边界。
 4. **云端凭据准备**：
    - **Cloudflare API Token**（全模式）：`Zone Read` + `DNS Edit`；模式 1 deploy / 2 / 3 另需 `Zone Settings Read`（校验 `Full (strict)`），模式 1 deploy / 3 另需 `Origin Rules Edit`，模式 2 另需 `SSL and Certificates Edit`。
    - **AWS IAM 密钥**（仅模式 4/5）：仅需 CloudFront 与 ACM（`us-east-1`）权限，仅在内存暂存不落盘。

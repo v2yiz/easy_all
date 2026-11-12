@@ -154,16 +154,163 @@ state_required_fields() {
 }
 
 # state.env 只是 = 分隔的 shell 赋值；这里只取值，不 source，避免旧/外部文件执行代码。
+# 解码边界：只有 load_state 的 `source` 路径保证完整解码（bash 自己解 ANSI-C 与反斜杠）。
+# 本函数只还原 \' 与 \\ 两种转义；`\"`、`\{` 这类裸转义**原样返回**。新增的消费方若直接
+# 读含转义的字段（例如 JSON 形态的 ALLOWED_TOKENS），必须自行处理，不能假定已解码。
 state_file_value() {
     local file=$1 key=$2 line value
     [[ -f "${file}" ]] || return 1
     line=$(grep -E "^${key}=" "${file}" | tail -n 1) || return 1
     value=${line#*=}
-    value=${value#\'}
-    value=${value%\'}
-    value=${value#\"}
-    value=${value%\"}
+    case "${value}" in
+    \$\'*\')
+        # printf %q 的控制字符形态（$'a\tb'）：先剔壳，再还原 \' 与 \\。
+        value=${value:2:${#value}-3}
+        ;;
+    *)
+        value=${value#\'}
+        value=${value%\'}
+        value=${value#\"}
+        value=${value%\"}
+        ;;
+    esac
+    value=$(state_restore_backslash_escapes "${value}")
     printf '%s\n' "${value}"
+}
+
+# 还原 printf %q 的转义，**只映射** \' → ' 与 \\ → \（设计 A23 的判据范围）。
+# 其余「反斜杠 + 字符」保持原样：ANSI-C 的控制字符转义（$'a\tb'）不解码成真实 TAB——
+# 生产字段（域名/token/JSON）不含控制字符，擅自解码只会把 $'a\tb' 读成 "atb" 这种坏值。
+state_restore_backslash_escapes() {
+    local value=$1 index=0 char next out=""
+    local length=${#value}
+    while (( index < length )); do
+        char=${value:index:1}
+        if [[ "${char}" == "\\" ]] && (( index + 1 < length )); then
+            next=${value:index+1:1}
+            if [[ "${next}" == "'" || "${next}" == "\\" ]]; then
+                out+="${next}"
+                index=$((index + 2))
+                continue
+            fi
+        fi
+        out+="${char}"
+        index=$((index + 1))
+    done
+    printf '%s' "${out}"
+}
+
+# --- 纯赋值语法门（design §A6）-------------------------------------------------
+# load_state 会 source 状态文件，所以文件内容本身必须无副作用。判据按 printf %q 的
+# 五种产出形态收敛，不多不少：
+#   ① KEY=           裸空
+#   ② KEY=''         %q 的空值形态
+#   ③ KEY=""         空双引号（纯赋值、无展开）
+#   ⑤ KEY=$'…'       ANSI-C 引串（bash 自解码，无命令替换）
+#   ⑥ KEY=a\ b       裸串：每字符安全，或「反斜杠 + 任意字符」
+# 非空双引号整体拒绝（内部 $ / 反引号在 source 下会执行，不做内容级分析）；
+# 形态 KEY='a'（%q 无其生产者）也拒绝。
+# 本文件只放纯函数：门自身只返回状态码，die 由调用方（load_state）负责。
+state_line_is_pure_assignment() { # $1=一行（已去行尾换行）
+    local line=$1 key value
+    [[ "${line}" == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    case "${value}" in
+    "" | "''" | '""') return 0 ;; # ①②③
+    esac
+    state_value_is_ansi_c_quoted "${value}" && return 0 # ⑤
+    state_value_is_bare_escaped "${value}" # ⑥
+}
+
+# ⑤ $'…'：内部只允许「非引号非反斜杠字符」或「反斜杠 + 字符」；行尾孤立 \ 拒绝。
+state_value_is_ansi_c_quoted() {
+    local value=$1 inner index=0 char
+    [[ "${value}" == \$\'*\' ]] || return 1
+    (( ${#value} >= 3 )) || return 1
+    inner=${value:2:${#value}-3}
+    local length=${#inner}
+    while (( index < length )); do
+        char=${inner:index:1}
+        if [[ "${char}" == "\\" ]]; then
+            (( index + 1 < length )) || return 1
+            index=$((index + 2))
+            continue
+        fi
+        [[ "${char}" != "'" ]] || return 1
+        index=$((index + 1))
+    done
+    return 0
+}
+
+# ⑥ 裸串：每字符不得为空白 / 引号 / $ / 反引号 / & ; | < > ( )；反斜杠 + 任意字符作为一个整体。
+# 行尾孤立反斜杠必须拒绝：反斜杠 + 换行会把下一行拼进来执行。
+state_value_is_bare_escaped() {
+    local value=$1 index=0 char
+    local length=${#value}
+    while (( index < length )); do
+        char=${value:index:1}
+        if [[ "${char}" == "\\" ]]; then
+            (( index + 1 < length )) || return 1
+            index=$((index + 2))
+            continue
+        fi
+        [[ "${char}" =~ [[:space:]] ]] && return 1
+        case "${char}" in
+        "'" | '"' | '$' | '`' | '&' | ';' | '|' | '<' | '>' | '(' | ')') return 1 ;;
+        esac
+        index=$((index + 1))
+    done
+    return 0
+}
+
+# 允许出现在 state.env 的键：STATE_VERSION + 该文件 PROTOCOL/SUBSCRIPTION_MODE 对应的必需字段。
+# 从 state_required_fields 派生（不写死字段名，新增字段自动跟随）。
+# 派生失败（PROTOCOL 缺失/无效）时本函数**只负责返回非零**，拒的决定在调用方；
+# 而调用方必须据此**硬拒（fail-closed）**，不得退化为「只做形态校验」——退化的安全依赖
+# 几条未成文不变量（协议 die 先于任何外部命令、形态判据继续拒 $/反引号…），任一失效就会
+# 让 source 执行任意键赋值（root 进程用被改写的 PATH 跑外部命令）。
+state_allowed_keys() { # $1=state.env 路径
+    local file=$1 protocol subscription_mode fields
+    protocol=$(state_file_value "${file}" PROTOCOL || true)
+    subscription_mode=$(state_file_value "${file}" SUBSCRIPTION_MODE || true)
+    fields=$(state_required_fields "${protocol:-}" "${subscription_mode:-deploy}" 2>/dev/null || true)
+    [[ -n "${fields}" ]] || return 1
+    printf 'STATE_VERSION\n%s\n' "${fields}"
+}
+
+# 逐行门禁：空行允许（state_render 不产出空行，但尾行的换行属正常形态）；
+# 任何一行不是纯赋值就整体拒绝，并向 stderr 点名行号。
+state_validate_pure_assignments() { # $1=state.env 路径
+    local file=$1 line number=0 key allowed_keys=""
+    [[ -f "${file}" ]] || return 1
+    # 键名白名单：阻止 PATH= / IFS= 这类影响加载方 shell 行为的键被 source 进去。
+    # 白名单算不出来（PROTOCOL 缺失/无效）时**硬拒**：此时无法确定 schema 字段集，放行就等于
+    # 让 source 执行任意键赋值；「退化放行」曾经依赖三条未成文不变量（CDN_EXPECTED_PROTOCOL
+    # readonly 且先于 load_state、协议 die 先于任何外部命令、形态判据继续拒 $/反引号），
+    # 任一被破坏都会变成 root 进程用被改写的 PATH 跑外部命令，且没有测试会红。
+    allowed_keys=$(state_allowed_keys "${file}" 2>/dev/null || true)
+    if [[ -z "${allowed_keys}" ]]; then
+        printf 'state.env 无法确定 schema 字段集（PROTOCOL 缺失或无效，无法派生键名白名单）：%s\n' \
+            "${file}" >&2
+        return 1
+    fi
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        number=$((number + 1))
+        [[ -n "${line}" ]] || continue
+        if ! state_line_is_pure_assignment "${line}"; then
+            printf 'state.env 第 %s 行不是纯赋值：%s\n' "${number}" "${file}" >&2
+            return 1
+        fi
+        key=${line%%=*}
+        if ! grep -Fxq -- "${key}" <<<"${allowed_keys}"; then
+            printf 'state.env 第 %s 行的键 %s 不属于当前 schema 的字段集：%s\n' \
+                "${number}" "${key}" "${file}" >&2
+            return 1
+        fi
+    done <"${file}"
+    return 0
 }
 
 state_file_schema() {

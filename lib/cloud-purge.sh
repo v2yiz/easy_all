@@ -184,6 +184,26 @@ cf_api() {
     fi
     code=${response##*$'\n'}
     response=${response%$'\n'*}
+    # 429 有界固定退避（共 2 次、合计 15s）：不解析响应体/响应头——cf_api 没有 -D 拿不到
+    # Retry-After，Cloudflare 的 429 响应体也不带 retry_after。仍 429 则放弃。
+    if [[ "${code}" == "429" ]]; then
+        local backoff
+        for backoff in 5 10; do
+            # 退避秒数可被测试注入（仓库既有 *_OVERRIDE 惯例）：默认值不变，仍是 5s/10s。
+            sleep "${EASY_ALL_CF_RETRY_SLEEP_OVERRIDE:-${backoff}}"
+            if [[ -n "${body}" ]]; then
+                response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+                    -H "@${headers}" --data-binary "@${RUNTIME_TMP}/cf-body" -w $'\n%{http_code}' \
+                    "${CF_API_BASE}${path}") || return 1
+            else
+                response=$(curl -sS --retry 2 --connect-timeout 10 --max-time 45 -X "${method}" \
+                    -H "@${headers}" -w $'\n%{http_code}' "${CF_API_BASE}${path}") || return 1
+            fi
+            code=${response##*$'\n'}
+            response=${response%$'\n'*}
+            [[ "${code}" == "429" ]] || break
+        done
+    fi
     if [[ ! "${code}" =~ ^2[0-9][0-9]$ ]]; then
         printf '%s\n' "${response:-<empty>}" >&2
         return 1
@@ -733,6 +753,7 @@ fi
 
 if ((aws_total > 0)); then
     aws_failures=0
+    aws_kept=0
     deleted_distribution_ids=()
     while IFS=$'\t' read -r aws_id _aws_comment aws_aliases; do
         [[ -n "${aws_id}" ]] || continue
@@ -786,7 +807,7 @@ if ((aws_total > 0)); then
                 aws_total=$((aws_total + 1))
             elif ((ACM_OWNERSHIP_UNREADABLE == 1)); then
                 warn "无法读取 ACM 证书状态，保留不删：${aws_arn}"
-                aws_failures=$((aws_failures + 1))
+                aws_kept=$((aws_kept + 1))
             fi
             continue
         fi
@@ -795,7 +816,7 @@ if ((aws_total > 0)); then
         else
             warn "ACM 证书在等待期内仍被已删除的分发引用，保留不删：${aws_arn}"
         fi
-        aws_failures=$((aws_failures + 1))
+        aws_kept=$((aws_kept + 1))
     done <"${RUNTIME_TMP}/acm-inuse.txt"
     while IFS=$'\t' read -r aws_arn aws_names; do
         [[ -n "${aws_arn}" ]] || continue
@@ -809,13 +830,14 @@ if ((aws_total > 0)); then
             fi
         else
             warn "ACM 证书 ${aws_arn} 的归属/状态已变化，保留不删"
-            aws_failures=$((aws_failures + 1))
+            aws_kept=$((aws_kept + 1))
         fi
     done <"${RUNTIME_TMP}/acm-planned.tsv"
+    # 汇总始终同时输出两个计数：失败数为 0 时也不能把「合法保留」隐藏起来。
     if ((aws_failures == 0)); then
-        success "CloudFront/ACM 清理完成：${aws_total} 个对象"
+        success "CloudFront/ACM 清理完成：${aws_total} 个对象，${aws_kept} 个合法保留"
     else
-        warn "CloudFront/ACM 侧有 ${aws_failures} 个对象删除失败"
+        warn "CloudFront/ACM 侧有 ${aws_failures} 个对象删除失败，${aws_kept} 个合法保留"
     fi
     failures=$((failures + aws_failures))
 fi

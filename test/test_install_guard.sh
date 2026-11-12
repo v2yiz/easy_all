@@ -2,6 +2,17 @@
 # 中断安装自愈的单元测试：端口守卫分类、残留识别与安装进度标记。
 set -Eeuo pipefail
 
+# A31 阶段一：断言计数器，防止整个文件静默空跑（fixture 出错时最容易全绿）。
+TESTS_ASSERTED=0
+
+# A32：skip 必须同时可见（stdout）并计入文件尾「未验证项」汇总——只写 stderr 的 skip
+# 在 CI 日志里会被吞掉，读者会以为覆盖完整。
+SKIPPED_ITEMS=()
+skip_case() { # $1=用例名 $2=原因
+    SKIPPED_ITEMS+=("$1：$2")
+    printf 'skip - %s：%s\n' "$1" "$2"
+}
+
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 # macOS 的 mktemp 忽略 TMPDIR，受限环境里用户临时目录可能不可写；退回显式模板。
 TMP_DIR=$(mktemp -d 2>/dev/null || true)
@@ -16,16 +27,19 @@ fail() {
 }
 
 assert_contains() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 expected=$3
     [[ "${text}" == *"${expected}"* ]] || fail "${label}: missing <${expected}> in <${text}>"
 }
 
 assert_not_contains() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 unexpected=$3
     [[ "${text}" != *"${unexpected}"* ]] || fail "${label}: unexpected <${unexpected}> in <${text}>"
 }
 
 assert_equal() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 expected=$2 actual=$3
     [[ "${expected}" == "${actual}" ]] || fail "${label}: expected <${expected}> but got <${actual}>"
 }
@@ -39,7 +53,6 @@ export EASY_ALL_GUARD_STATE_FILE="${TMP_DIR}/state/state.env"
 export EASY_ALL_GUARD_SERVICE_FILE="${TMP_DIR}/systemd/easy_all-singbox.service"
 export EASY_ALL_GUARD_CADDY_CONFIG="${TMP_DIR}/caddy/Caddyfile"
 export EASY_ALL_SS_CMD_OVERRIDE="${TMP_DIR}/fake-ss"
-export EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${TMP_DIR}/policy-state"
 export FAKE_SS_BUSY_PORTS="${TMP_DIR}/fake-ss-busy"
 export FAKE_SS_OWNER=nginx
 
@@ -553,7 +566,10 @@ assert_equal "failing reboot keeps the entry exit code at 0 (old inline semantic
     || fail "failing reboot case never reached the reboot binary"
 assert_contains "failing reboot really invoked the reboot binary" \
     "$(cat "${TMP_DIR}/reboot-fail.reboot")" "reboot"
-assert_contains "failing reboot logs the traffic-guard message" \
+# A25：reboot 执行失败与「保护状态不允许重启」必须是两条不同消息，不能合并成一条。
+assert_contains "failing reboot logs its own failure message" \
+    "$(cat "${TMP_DIR}/reboot-fail.logger")" "easy_all 定时重启执行失败："
+assert_not_contains "failing reboot does not log the traffic-guard skip message" \
     "$(cat "${TMP_DIR}/reboot-fail.logger")" \
     "easy_all 定时重启已跳过：CDN 流量保护处于停机/pending 或统计不可读"
 assert_not_contains "failing reboot does not log the write-lock message" \
@@ -604,40 +620,6 @@ assert_contains "partial snapshot is reported" "${output}" "未找到完整安�
 output=$(capture cleanup_partial_install_local || true)
 assert_contains "complete snapshot restores" "${output}" "RESTORED"
 rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
-
-# 12. apt 窗口抑制器（事务化）：写入/恢复/自愈/失败保留
-export EASY_ALL_POLICY_RC_OVERRIDE="${TMP_DIR}/policy-rc.d"
-suspend_service_start || fail "suspend should succeed"
-[[ -f "${EASY_ALL_POLICY_RC_OVERRIDE}" ]] || fail "policy-rc.d should be created"
-assert_contains "policy file blocks start" "$(cat "${EASY_ALL_POLICY_RC_OVERRIDE}")" "exit 101"
-[[ -f "$(easy_all_policy_pending_file)" ]] || fail "pending transaction should exist"
-restore_service_start_policy || fail "restore should succeed"
-[[ ! -e "${EASY_ALL_POLICY_RC_OVERRIDE}" ]] || fail "policy file should be removed"
-[[ ! -f "$(easy_all_policy_pending_file)" ]] || fail "pending transaction should be cleared"
-
-printf '#!/bin/sh\nexit 0\n' >"${EASY_ALL_POLICY_RC_OVERRIDE}"
-suspend_service_start || fail "suspend over existing policy should succeed"
-restore_service_start_policy || fail "restore over existing policy should succeed"
-assert_equal "existing policy is restored" "#!/bin/sh
-exit 0" "$(cat "${EASY_ALL_POLICY_RC_OVERRIDE}")"
-
-# 模拟 SIGKILL 遗留：不调用 restore，下一次入口必须自愈
-suspend_service_start || fail "second suspend should succeed"
-recover_pending_service_policy || fail "pending transaction should self-heal"
-assert_equal "leftover transaction restores original" "#!/bin/sh
-exit 0" "$(cat "${EASY_ALL_POLICY_RC_OVERRIDE}")"
-[[ ! -f "$(easy_all_policy_pending_file)" ]] || fail "self-heal clears pending"
-
-# 恢复失败必须保留事务，供下次重试
-suspend_service_start || fail "third suspend should succeed"
-printf '#!/bin/sh\nexit 0\n' >"$(easy_all_policy_backup_file)"  # 占位后删除
-rm -f -- "$(easy_all_policy_backup_file)"
-sed -i '' 's/^HAD_PREVIOUS=0$/HAD_PREVIOUS=1/' "$(easy_all_policy_pending_file)" 2>/dev/null \
-    || sed -i 's/^HAD_PREVIOUS=0$/HAD_PREVIOUS=1/' "$(easy_all_policy_pending_file)"
-recover_pending_service_policy && fail "missing backup must fail"
-[[ -f "$(easy_all_policy_pending_file)" ]] || fail "failed restore keeps pending for retry"
-# 清理现场，避免影响后续用例
-rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
 # 13. 跨模式清理：profile 映射齐全，未知模式拒绝猜测
 assert_equal "anytls maps to its profile" "anytls.sh" "$(profile_script_for anytls)"
@@ -721,49 +703,6 @@ install_progress_clear
 # 19. 跨模式清理必须用独立进程
 body=$(awk '/^run_recorded_profile_cleanup\(\) \{/,/^\}/' "${ROOT_DIR}/lib/profile-common.sh")
 [[ "${body}" == *"bash -c"* ]] || fail "cross-mode cleanup must run in a separate process"
-
-# 20. policy 事务内容损坏时必须保留事务与原策略，不得把“读不出来”当成“原来没有”
-export EASY_ALL_POLICY_RC_OVERRIDE="${TMP_DIR}/policy-rc.d"
-rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
-install -d -m 0700 "$(easy_all_policy_state_dir)"
-printf 'ORIGINAL-POLICY\n' >"${EASY_ALL_POLICY_RC_OVERRIDE}"
-: >"$(easy_all_policy_pending_file)"                     # 空 pending
-recover_pending_service_policy && fail "empty pending must fail"
-[[ -f "$(easy_all_policy_pending_file)" ]] || fail "empty pending must be kept"
-assert_equal "empty pending keeps original policy" "ORIGINAL-POLICY" \
-    "$(cat "${EASY_ALL_POLICY_RC_OVERRIDE}")"
-
-printf 'HAD_PREVIOUS=1\nOWNER_PID=1\n' >"$(easy_all_policy_pending_file)"   # 持有者仍活着
-RUNTIME_WRITE_LOCK_DEPTH=1
-recover_pending_service_policy || fail "foreign live owner must not fail"
-RUNTIME_WRITE_LOCK_DEPTH=0
-[[ -f "$(easy_all_policy_pending_file)" ]] || fail "live owner transaction must be kept"
-assert_equal "live owner keeps policy untouched" "ORIGINAL-POLICY" \
-    "$(cat "${EASY_ALL_POLICY_RC_OVERRIDE}")"
-rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
-
-# 24. PID 复用导致遗留事务未能恢复时，suspend_service_start 绝不能覆盖原备份或重开事务
-export EASY_ALL_POLICY_RC_OVERRIDE="${TMP_DIR}/policy-rc.d"
-rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
-install -d -m 0700 "$(easy_all_policy_state_dir)"
-printf 'ORIGINAL-POLICY\n' >"$(easy_all_policy_backup_file)"
-printf '#!/bin/sh\nexit 101\n' >"${EASY_ALL_POLICY_RC_OVERRIDE}"
-printf 'HAD_PREVIOUS=1\nOWNER_PID=1\n' >"$(easy_all_policy_pending_file)"
-RUNTIME_WRITE_LOCK_DEPTH=1
-suspend_status=0
-suspend_output=$(capture suspend_service_start) || suspend_status=$?
-RUNTIME_WRITE_LOCK_DEPTH=0
-((suspend_status != 0)) || fail "suspend with unrecovered pending transaction must fail"
-assert_contains "unrecovered pending warns about backup protection" "${suspend_output}" \
-    "拒绝覆盖原备份"
-assert_equal "backup keeps original policy" "ORIGINAL-POLICY" \
-    "$(cat "$(easy_all_policy_backup_file)")"
-assert_equal "target policy file stays untouched" "#!/bin/sh
-exit 101" "$(cat "${EASY_ALL_POLICY_RC_OVERRIDE}")"
-[[ -f "$(easy_all_policy_pending_file)" ]] || fail "pending file must still exist"
-assert_equal "pending owner is not overwritten" $'HAD_PREVIOUS=1\nOWNER_PID=1' \
-    "$(cat "$(easy_all_policy_pending_file)")"
-rm -rf -- "$(easy_all_policy_state_dir)" "${EASY_ALL_POLICY_RC_OVERRIDE}"
 
 # 25. 无 progress marker 的残留：不再猜测模式，直接要求人工核对
 reset_artifacts
@@ -1519,7 +1458,7 @@ PY
     [[ -z "$(find "${bootstrap_dir}/tmp-root" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
         || fail "bootstrap 收到 SIGTERM 必须回收临时目录"
 else
-    printf 'skip - 缺少 python3，无法验证 bootstrap SIGTERM 回收\n' >&2
+    skip_case "bootstrap SIGTERM 回收" "缺少 python3"
 fi
 register_static=$(sed -n \
     '/if \[\[ "\${command}" == "register-command" \]\]/,/unified_register_easy_all_command/p' \
@@ -1769,8 +1708,11 @@ chmod 0755 "${ENTRY_BIN}/rm" "${ENTRY_BIN}/iptables" "${ENTRY_BIN}/install" \
 write_uninstall_entry_state() { # $1=状态文件 $2=协议
     local file=$1 protocol=$2
     {
+        # PROTOCOL 是 save_state 必写的公共字段：缺了它这份状态不是产品能产出的形态，
+        # 也过不了 load_state 的键名白名单（白名单要从 PROTOCOL 派生字段集）。
         printf '%s\n' \
-            'STATE_VERSION=1' \
+            "STATE_VERSION=1" \
+            "PROTOCOL=${protocol}" \
             'TCP_ACCELERATION=off' \
             'VPS_PUBLIC_IPV4=203.0.113.10' \
             'CF_ZONE=example.com' \
@@ -1778,8 +1720,8 @@ write_uninstall_entry_state() { # $1=状态文件 $2=协议
             'SUBSCRIPTION_MODE=deploy' \
             'SUB_DOWNLOAD_NAME=EASY_ALL' \
             'OWNER_TOKEN=ownertoken-zmtpjzfs' \
-            'ALLOWED_TOKENS={"owner":"token-abcdefgh"}' \
-            'SUBSCRIPTION_CONFIG={"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}' \
+            'ALLOWED_TOKENS=\{\"owner\":\"token-abcdefgh\"\}' \
+            'SUBSCRIPTION_CONFIG=\{\"allowedTokens\":\{\"owner\":\"token-abcdefgh\"\}\,\"nodes\":\[\]\}' \
             'MIHOMO_TEMPLATE_SNAPSHOT=1' \
             'SCHEDULED_REBOOT_ENABLED=0' \
             'SCHEDULED_REBOOT_HOUR=4'
@@ -1902,7 +1844,6 @@ run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_
         EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/websub/subscriptions" \
         EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/state/certs" \
-        EASY_ALL_POLICY_STATE_DIR_OVERRIDE="${case_dir}/policy-state" \
         SINGBOX_BIN="${case_dir}/singbox/sing-box" \
         CADDY_BIN="${case_dir}/caddy/caddy" \
         SINGBOX_SERVICE_FILE="${case_dir}/units/easy_all-singbox.service" \
@@ -1938,7 +1879,8 @@ uninstall_entry_value() { # $1=输出 $2=字段
     printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -n 1
 }
 
-assert_uninstall_entry_cleanup() { # $1=label $2=case_dir
+assert_uninstall_entry_cleanup() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1)) # $1=label $2=case_dir
     local label=$1 case_dir=$2 path
     for path in state websub singbox caddy; do
         [[ ! -e "${case_dir}/${path}" ]] || fail "${label}: 本机路径未被删除：${path}"
@@ -1949,7 +1891,8 @@ assert_uninstall_entry_cleanup() { # $1=label $2=case_dir
         || fail "${label}: Caddy 单元文件未删除"
 }
 
-assert_refusals_within() { # $1=label $2=日志 $3..=白名单
+assert_refusals_within() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1)) # $1=label $2=日志 $3..=白名单
     local label=$1 log=$2 path candidate allowed
     shift 2
     while IFS= read -r path; do
@@ -2268,4 +2211,139 @@ assert_equal "runtime.manifest 覆盖全部运行时文件" "" "${missing_from_m
 assert_contains "manifest 包含 AnyTLS 模式库" "$(<"${ROOT_DIR}/runtime.manifest")" \
     "lib/anytls-mode.sh"
 
+# --- A5：产品仅支持 IPv4（fail2ban 只留日志；sshd 关掉 IPv6） ---------------------
+# 1) helper 的 IPv6 分支：不得对 ufw 发起任何调用，且必须成功退出（否则 fail2ban action 报错）。
+a5_dir="${TMP_DIR}/a5-ipv6"
+rm -rf "${a5_dir}"
+mkdir -p "${a5_dir}"
+cat >"${a5_dir}/ufw" <<'FAKE_UFW'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${A5_UFW_LOG}"
+exit 0
+FAKE_UFW
+chmod +x "${a5_dir}/ufw"
+: >"${a5_dir}/ufw.log"
+A5_UFW_LOG="${a5_dir}/ufw.log" EASY_ALL_FAIL2BAN_UFW_BIN="${a5_dir}/ufw" \
+    UFW_RULES_FILE="${a5_dir}/rules.txt" \
+    bash -c 'source "$1/lib/log.sh"; source "$1/lib/platform.sh"
+        write_fail2ban_cidr_ufw_helper "$2/helper.sh"' _ "${ROOT_DIR}" "${a5_dir}" \
+    || fail "A5: 生成 fail2ban helper 失败"
+a5_status=0
+A5_UFW_LOG="${a5_dir}/ufw.log" EASY_ALL_FAIL2BAN_UFW_BIN="${a5_dir}/ufw" \
+    UFW_RULES_FILE="${a5_dir}/rules.txt" \
+    bash "${a5_dir}/helper.sh" ban "2001:db8::1" "${a5_dir}/state" || a5_status=$?
+assert_equal "A5: IPv6 封禁请求必须成功退出" "0" "${a5_status}"
+assert_equal "A5: IPv6 封禁不得调用 ufw" "0" "$(grep -c . "${a5_dir}/ufw.log" || true)"
+[[ ! -e "${a5_dir}/state" ]] || [[ -z "$(find "${a5_dir}/state" -name '*.count' -print -quit)" ]] \
+    || fail "A5: IPv6 封禁不得落下计数文件"
+
+# 2) debian-init 的加固项（静态断言：整脚本需要 root + Debian，跑不了）。
+debian_init_content=$(<"${ROOT_DIR}/scripts/debian-init.sh")
+assert_contains "A5: 加固写入块包含 AddressFamily inet" "${debian_init_content}" \
+    'echo "AddressFamily inet"'
+assert_contains "A5: sshd -T 断言列表包含 addressfamily inet（小写键名）" \
+    "${debian_init_content}" '"addressfamily inet"'
+assert_contains "A5: 加固仍在输出「已关闭 IPv6 SSH」" "${debian_init_content}" \
+    "已关闭 IPv6 SSH（产品仅支持 IPv4）"
+# 只允许 reload：restart 会掐断在线的 SSH 会话。
+assert_contains "A5: 加固生效走 reload" "${debian_init_content}" 'systemctl reload'
+if grep -Eq 'systemctl[[:space:]]+restart[[:space:]]+"\$unit"' <<<"${debian_init_content}"; then
+    fail "A5: 加固生效不得改成 restart"
+fi
+
 printf 'ok - install guard\n'
+
+# --- A18：ss 查不了时 fail-open 但必须可见（tcp_port_listening 返回 2） --------------
+a18_dir="${TMP_DIR}/a18"
+rm -rf "${a18_dir}"
+mkdir -p "${a18_dir}"
+printf '#!/usr/bin/env bash\nexit 4\n' >"${a18_dir}/ss-fail"
+printf '#!/usr/bin/env bash\nexit 0\n' >"${a18_dir}/ss-empty"
+chmod +x "${a18_dir}/ss-fail" "${a18_dir}/ss-empty"
+
+# 1) ss 执行失败（exit 4）：不得 die，但必须 warn。
+a18_output=$(EASY_ALL_SS_CMD_OVERRIDE="${a18_dir}/ss-fail" \
+    bash -c 'source "$1/lib/log.sh"; source "$1/lib/profile-common.sh"
+        set +e
+        assert_install_ports_free 8443
+        printf "FREE_STATUS=%s\n" "$?"' _ "${ROOT_DIR}" 2>&1) || true
+assert_contains "A18: ss 执行失败必须告警可见" "${a18_output}" "无法检查端口 8443（ss 不可用）"
+assert_contains "A18: ss 执行失败不阻断安装" "${a18_output}" "FREE_STATUS=0"
+
+# 2) ss 命令不存在：同一分支（command -v 失败 → 返回 2）。
+a18_missing=$(EASY_ALL_SS_CMD_OVERRIDE="${a18_dir}/no-such-ss" \
+    bash -c 'source "$1/lib/log.sh"; source "$1/lib/profile-common.sh"
+        set +e
+        assert_install_ports_free 8443
+        printf "FREE_STATUS=%s\n" "$?"' _ "${ROOT_DIR}" 2>&1) || true
+assert_contains "A18: ss 不存在同样要告警" "${a18_missing}" "无法检查端口 8443（ss 不可用）"
+assert_contains "A18: ss 不存在同样不阻断" "${a18_missing}" "FREE_STATUS=0"
+
+# 3) 返回码语义：2=无法检查、1=确定无监听（0=有监听由既有 BUSY_PORTS 用例覆盖）。
+rc_unavailable=$(EASY_ALL_SS_CMD_OVERRIDE="${a18_dir}/ss-fail" bash -c \
+    'source "$1/lib/profile-common.sh"; set +e; tcp_port_listening 1; printf "%s" "$?"' _ "${ROOT_DIR}")
+assert_equal "A18: ss 失败返回 2" "2" "${rc_unavailable}"
+rc_idle=$(EASY_ALL_SS_CMD_OVERRIDE="${a18_dir}/ss-empty" bash -c \
+    'source "$1/lib/profile-common.sh"; set +e; tcp_port_listening 1; printf "%s" "$?"' _ "${ROOT_DIR}")
+assert_equal "A18: 无监听返回 1" "1" "${rc_idle}"
+
+# --- B2：回源端口的「预存全局放行」预检（Anywhere / Any / 0.0.0.0/0 + inactive from-形态）---
+b2_dir="${TMP_DIR}/b2-ufw"
+rm -rf "${b2_dir}"
+mkdir -p "${b2_dir}"
+cat >"${b2_dir}/ufw" <<'FAKE_UFW'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+status)
+    printf 'Status: %s\n\n' "${B2_STATE:-active}"
+    if [[ "${B2_STATE:-active}" == "active" ]]; then
+        printf 'To                         Action      From\n'
+        printf -- '--                         ------      ----\n'
+        [[ ! -f "${B2_RULES}" ]] || cat "${B2_RULES}"
+    fi
+    ;;
+show)
+    [[ -f "${B2_ADDED}" ]] && cat "${B2_ADDED}"
+    ;;
+esac
+exit 0
+FAKE_UFW
+chmod +x "${b2_dir}/ufw"
+
+b2_probe() { # $1=case 名（读同名文件作为 ufw 输出）$2=active|inactive $3=本工具的规则注释
+    PATH="${b2_dir}:${PATH}" B2_RULES="${b2_dir}/$1.rules" B2_ADDED="${b2_dir}/$1.added" \
+        B2_STATE="${2:-active}" UFW_RULE_COMMENT="${3:-easy_all-cf-origin-8443}" \
+        bash -c 'source "$1/lib/firewall.sh"; set +e
+            ufw_tcp_port_has_unmanaged_anywhere_allow 8443; printf "%s" "$?"' _ "${ROOT_DIR}"
+}
+# 三种等价来源形态都必须命中（返回 0）。
+printf '[ 1] 8443/tcp                   ALLOW IN    Anywhere\n' >"${b2_dir}/anywhere.rules"
+assert_equal "B2: Anywhere 来源的全局放行命中" "0" "$(b2_probe anywhere)"
+printf '[ 1] 8443/tcp                   ALLOW IN    0.0.0.0/0\n' >"${b2_dir}/cidr.rules"
+assert_equal "B2: 0.0.0.0/0 来源的全局放行命中" "0" "$(b2_probe cidr)"
+printf '[ 1] 8443/tcp                   ALLOW IN    Any\n' >"${b2_dir}/any.rules"
+assert_equal "B2: Any 来源的全局放行命中" "0" "$(b2_probe any)"
+# 无预存（只有 easy_all 自己的注释规则/无关端口）不得命中。
+printf '[ 1] 22/tcp                     ALLOW IN    Anywhere\n' >"${b2_dir}/none.rules"
+assert_equal "B2: 无预存不得命中" "1" "$(b2_probe none)"
+printf '[ 1] 8443/tcp                   ALLOW IN    Anywhere    # easy_all-cf-origin-8443\n' \
+    >"${b2_dir}/managed.rules"
+assert_equal "B2: easy_all 自己的 CF 段规则不算第三方放行" "1" "$(b2_probe managed)"
+# UFW inactive：`ufw show added` 的 from-形态（第 2 轮补的解析）也必须命中。
+printf 'ufw allow from 0.0.0.0/0 to any port 8443\n' >"${b2_dir}/inactive.added"
+: >"${b2_dir}/inactive.rules"
+assert_equal "B2: inactive 分支的 from-形态命中" "0" "$(b2_probe inactive inactive)"
+# die 文案必须带自助步骤（ufw status）。
+assert_contains "B2: 阻断文案给出 ufw status 自助步骤" "$(<"${ROOT_DIR}/lib/runtime-core.sh")" \
+    "请先 ufw status 查明并移除该规则后重试"
+
+# A32：文件尾汇总本轮未验证的用例，避免「skip 静默消失」。
+if ((${#SKIPPED_ITEMS[@]} > 0)); then
+    printf '未验证项（%s 条）：\n' "${#SKIPPED_ITEMS[@]}"
+    printf '  - %s\n' "${SKIPPED_ITEMS[@]}"
+fi
+
+# A31 阶段一：本文件必须真的跑过断言（不校验条数，只拦「一个都没跑」）。
+(( TESTS_ASSERTED > 0 )) || fail "无断言执行：本文件一个断言都没跑，fixture/前置条件出错时会静默全绿"
+printf 'ok - asserted %s\n' "${TESTS_ASSERTED}"

@@ -1,3 +1,49 @@
+## 5.2.2 更新说明（2026-11-12）
+
+本版以缺陷修复与安全加固为主：修正卸载路径的云端资源泄漏、收紧状态文件的只读加载、补齐防火墙与 Fail2ban 的边界处置，并修正客户端模板与订阅产物中与文档承诺不一致的几处。模式、端口、凭据与订阅配置格式均无变化。
+
+### 安全
+
+- **状态文件只读加载加门**（`lib/state.sh`、`lib/runtime-core.sh`）：`load_state` 在 `source` 之前先做纯赋值语法校验（只接受 `KEY=`、`KEY=''`、`KEY=""`、`$'…'` 与裸串 + 反斜杠转义五种形态，拒绝 `$(…)`、反引号、`;`、`|` 与非空双引号），并做键名白名单（`STATE_VERSION` + 该模式字段集，从 `state_required_fields` 同源派生，不写死字段名）；白名单无法派生时直接拒绝，不再退化放行。此前状态文件被改写可让 root 进程执行任意命令。
+- **订阅令牌不再 export**（`lib/local-aggregation.sh`）：`ALLOWED_TOKENS`、`AGGREGATION_NODES`、`CF_EDGE_ADDRESS` 改为同进程全局变量，不再进入子进程环境。
+- **回源端口预检**（`lib/runtime-core.sh`、`lib/firewall.sh`）：配置 Cloudflare 回源端口前先检查该端口是否已被第三方规则全局放行（来源 `Anywhere` / `Any` / `0.0.0.0/0`；UFW 处于 inactive 时检查 `ufw show added` 的 `allow from 0.0.0.0/0 to any port N` 形态），命中即在写入 UFW 规则与云资源之前中止，并提示先 `ufw status` 查明后移除。这是一条**新增的安装中止条件**。
+- **IPv6 处置与产品口径对齐**：Fail2ban 的 UFW helper 收到 IPv6 封禁请求时改为记 `logger` 并跳过（UFW 已禁用 IPv6，原实现必然报错且封禁无效）；`scripts/debian-init.sh` 的 sshd 加固配置追加 `AddressFamily inet`，关闭 IPv6 SSH 监听。
+
+### 修复
+
+- **CloudFront 卸载不再留下孤儿资源**（`lib/cloudfront-mode.sh`）：分发已在云端被删除（`(NoSuchDistribution)`）时视为已移除，继续清理 ACM 证书与 Cloudflare DNS 记录；删除分发时读取配置的 stderr 单独落盘，不再与 JSON 并流；`InUseBy` 收敛等待由 5×10 秒放宽到 60×10 秒，与 `purge-cloud` 的 `EASY_ALL_PURGE_AWS_WAIT_*` 口径一致。
+- **ACM 证书可续用**（`lib/cloudfront-mode.sh`）：处于 `PENDING_VALIDATION` 的既有证书不再被判为「不可复用」，可继续走验证记录写入与签发轮询（此前会让重装永久卡死，只能到控制台删证书）；多域名证书等全部验证记录就绪后再写入，避免次域名漏配。
+- **模式 2 订阅降级对齐**（`lib/cloudflare-mode.sh`）：订阅配置损坏时按模式 1/3 同口径返回 503 降级，不再硬编码「订阅始终可用」。
+- **模式 2 卸载补齐**（`lib/cloudflare-mode.sh`）：状态缺少 Zone ID 时先反查补全，不再直接放弃；Origin CA 吊销改为**不依赖 Zone ID 无条件先执行**（account 级 `DELETE /certificates/{id}`），Zone 补查失败时也不会漏吊销。
+- **`purge-cloud` 计数与限流**（`lib/cloud-purge.sh`）：仍被外部分发引用的证书属**合法保留**，不再计入失败并触发非零退出，汇总同时输出保留数；Cloudflare API 返回 429 时增加有界退避（5s、10s，最多两次）。
+- **Mihomo 客户端模板 TUN 地址**（`templates/mihomo*.yaml`）：`inet4-address` 回到 `198.19.0.1/30`，与此前 CHANGELOG、两份文档及 sing-box 模板一致，不再落在 Fake-IP `198.18.0.0/16` 池内。模板 lint 新增「TUN 地址不得落在 `fake-ip-range` 内」与「`telegram-fallback` payload 必须是合法 IP/CIDR」两条不变量。
+- **服务端 sing-box 渲染**（`lib/singbox-runtime.sh`）：删除未被任何规则引用的 `easy_all-ipv4-fallback` 解析器，`default_domain_resolver` 的单源语义如实表达，不再制造「有自动回退」的错觉。
+- **Mihomo 订阅下载**（`lib/caddy-runtime.sh`）：`Content-Disposition` 补回 `.yaml` 扩展名（下载文件名此前不带后缀）。
+- **端口检查可见化**（`lib/profile-common.sh`）：`ss` 不可用或执行失败时不再静默当作「端口空闲」，改为告警后继续（保持 fail-open，但不再无声）。
+- **Fail2ban 解封**（`lib/platform.sh`）：UFW 规则已被外部删除时不再因 `set -e` 中断，计数文件正常清理。
+- **`VLESS_UUID` 回退**（三个模式库）：`/proc` 不可读时产出合法的 RFC 4122 v4 UUID，而不是必然无法通过校验的随机串。
+- **交互输入**（`lib/log.sh`）：非静默提示遇到 EOF 时给出明确错误，不再静默中止。
+- **定时重启**（`lib/scheduled-maintenance.sh`）：`locked_check` 失败与 `reboot` 执行失败分开记录，不再把重启失败报成「CDN 流量保护处于停机」。
+- **`bootstrap.sh` 自愈提权**：补上状态文件与安装进度文件的 override 转发，隔离环境下不再穿透宿主真实状态。
+
+### 移除
+
+- 删除 `lib/profile-common.sh` 中从未被调用的 APT 窗口服务自启抑制机制（policy-rc.d 事务、暂停/恢复函数与约 128 行实现）及其 `cleanup` 钩子与对应测试。5.x 的 apt 依赖不监听 `443`/`8443`/`10086`，该机制无作用对象；保留一个永不触发的「安全钩子」会误导后续维护者。
+
+### 测试
+
+- 四个主测试文件新增断言计数器（防整文件静默空跑），TLS 与缺依赖的跳过项改为写 stdout 并汇总为「未验证项」。
+- `test_cloud_safety.sh` 把不依赖真实 TLS 的证书部署事务用例移出 TLS 门，使其在 LibreSSL 主机上不再被整段跳过。
+- 新增用例覆盖：CloudFront 卸载的四种分发状态、状态语法门对抗输入（含 `PATH` 注入与拼接注入）、回源端口预检的三种来源形态、429 退避、Mihomo 模板 TUN 与 Fake-IP 不重叠、多域名验证记录分阶段写入。
+- 修掉两处无判别力断言：`回退` 两字子串匹配、`help` 输出捕获上的 `|| true` 吞掉退出码。
+
+### 文档
+
+- 运维指南：统计文件损坏不再声称可用 `cdn-traffic-sync` / `apply` 自愈，改为给出受控重建步骤与 8 键 schema；区分「计量规则数异常（可幂等修复）」与「同 epoch 计数回退（不自愈，需重启换 epoch）」。
+- 技术参考：补状态文件语法门与键名白名单；修正 `build_mihomo_proxy_groups`、`lib/network.sh` 与 `xray_private_ranges_json` 的陈旧描述；`InUseBy` 等待口径同步为 60×10 秒。
+- 客户端指南：明确 Clash API 刻意不设 `secret` 的取舍与影响面。
+- 初始化工具：补 `AddressFamily inet` 与 Fail2ban IPv6 处置。
+
 ## 5.2.1 更新说明（2026-11-12）
 
 本版含 sing-box 订阅规则修正（含安全收口）与安装交互顺序调整。

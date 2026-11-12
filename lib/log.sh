@@ -63,7 +63,8 @@ read_prompt() {
         IFS= read -r -s -t 300 -p "${prompt}" raw \
             || die "没有读到输入（300 秒超时或输入已关闭）"
     else
-        IFS= read -r -e -p "${prompt}" raw
+        IFS= read -r -e -p "${prompt}" raw \
+            || die "没有读到输入（输入已关闭或遇到 EOF）"
     fi
     printf -v "${variable}" '%s' "$(strip_terminal_input "${raw}")"
 }

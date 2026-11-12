@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# A31 阶段一：断言计数器，防止整个文件静默空跑（fixture 出错时最容易全绿）。
+TESTS_ASSERTED=0
+
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 TMP_DIR=$(mktemp -d "${TMP_ROOT_FALLBACK:-/tmp}/easy_all_audit_fixes.XXXXXX")
 trap 'rm -rf -- "${TMP_DIR}"' EXIT
@@ -11,18 +14,21 @@ fail() {
 }
 
 assert_equal() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 expected=$2 actual=$3
     [[ "${expected}" == "${actual}" ]] \
         || fail "${label}: expected <${expected}> but got <${actual}>"
 }
 
 assert_contains() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 expected=$3
     [[ "${text}" == *"${expected}"* ]] \
         || fail "${label}: missing <${expected}>"
 }
 
 assert_not_contains() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 unexpected=$3
     [[ "${text}" != *"${unexpected}"* ]] \
         || fail "${label}: unexpectedly contained <${unexpected}>"
@@ -30,6 +36,7 @@ assert_not_contains() {
 
 # 断言 first 出现在 second 之前（两者都必须存在）
 assert_before() {
+    TESTS_ASSERTED=$((TESTS_ASSERTED + 1))
     local label=$1 text=$2 first=$3 second=$4 prefix
     [[ "${text}" == *"${first}"* ]] || fail "${label}: missing <${first}>"
     [[ "${text}" == *"${second}"* ]] || fail "${label}: missing <${second}>"
@@ -42,7 +49,9 @@ echo "=== 1. 完全删除所有配额相关内容 ==="
 [[ ! -f "${ROOT_DIR}/lib/quota.sh" ]] || fail "lib/quota.sh 仍然存在"
 assert_not_contains "manifest" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/quota.sh"
 
-help_output=$(bash "${ROOT_DIR}/easy_all" help 2>&1 || true)
+help_output=$(bash "${ROOT_DIR}/easy_all" help 2>&1)
+# 正向锚点：先证明 help 真的打印了 banner，否则下面三条「不含 quota-*」会被「什么都没输出」伪通过。
+assert_contains "help banner" "${help_output}" "用法: easy_all [命令]"
 assert_not_contains "help quota-status" "${help_output}" "quota-status"
 assert_not_contains "help quota-set" "${help_output}" "quota-set"
 assert_not_contains "help quota-reset" "${help_output}" "quota-reset"
@@ -72,6 +81,8 @@ case "${cmd}" in
         if [[ "${2:-}" == "delete" ]]; then
             network="$5"
             clean_ip="${network%/32}"
+            # 真实 ufw 删除不存在的规则会返回非零：这里如实回放，否则 unban 的失败路径无法覆盖。
+            grep -q "DENY IN     ${clean_ip} " "${UFW_RULES_FILE}" || exit 1
             grep -v "DENY IN     ${clean_ip} " "${UFW_RULES_FILE}" > "${UFW_RULES_FILE}.tmp" || true
             mv -f "${UFW_RULES_FILE}.tmp" "${UFW_RULES_FILE}"
         fi
@@ -108,6 +119,23 @@ assert_equal "ban 1.2.3.4 with 1.2.3.40 present creates distinct rule" "1" "${ru
 bash "${HELPER_BIN}" unban 1.2.3.4 "${TMP_DIR}/f2b_state"
 rule_count_unban=$(grep -c "DENY IN     1.2.3.4 " "${UFW_RULES_FILE}" || true)
 assert_equal "unban removes rule" "0" "${rule_count_unban}"
+
+# 测试 5: 规则已被外部删除（云端与本机失步）时，unban 必须仍然成功并删掉计数文件。
+# 修复前 `ufw --force delete` 的非零退出在 set -e 下会直接中断：计数文件留在原地，
+# 同一网段之后既删不掉也封不住（计数一直 >0 但规则已不在）。
+orphan_state="${TMP_DIR}/f2b_state_orphan"
+rm -rf "${orphan_state}"
+: >"${UFW_RULES_FILE}"
+bash "${HELPER_BIN}" ban 198.51.100.77 "${orphan_state}"
+[[ -n "$(find "${orphan_state}" -maxdepth 1 -name '*.count' -print -quit)" ]] \
+    || fail "孤儿规则用例：ban 之后必须留下计数文件"
+# 模拟规则被外部删除（手工 ufw delete / 被其他工具重建）。
+: >"${UFW_RULES_FILE}"
+orphan_status=0
+bash "${HELPER_BIN}" unban 198.51.100.77 "${orphan_state}" || orphan_status=$?
+assert_equal "孤儿规则用例：规则已不存在时 unban 退出 0" "0" "${orphan_status}"
+[[ -z "$(find "${orphan_state}" -maxdepth 1 -name '*.count' -print -quit)" ]] \
+    || fail "孤儿规则用例：unban 之后计数文件必须删除"
 
 echo "=== 3. CDN 流量保护定时器（替代已删除的 Globalping 选优定时器）==="
 mkdir -p "${TMP_DIR}/state" "${TMP_DIR}/runtime" "${TMP_DIR}/systemd"
@@ -192,6 +220,9 @@ echo "=== 6. 验证 Debian 12/13 与 Ubuntu 22.04/24.04/26.04 LTS 及 amd64 / ar
 TEST_OS_RELEASE="${TMP_DIR}/os-release"
 TEST_BIN_DIR="${TMP_DIR}/platform_bin"
 mkdir -p "${TEST_BIN_DIR}"
+
+# 平台用例用 python3 校验 os-release 解析结果：缺 python3 要显式失败，不能静默跳过。
+command -v python3 >/dev/null 2>&1 || fail "平台用例需要宿主 python3"
 
 run_check_platform_test() {
     local id=$1 version_id=$2 codename=$3 arch=$4 omit_version=${5:-}
@@ -664,7 +695,9 @@ regress_round1=$(guard_case_run "${regress_dir}" 1) || true
 assert_contains "regress: 计数正常递增的轮次通过" "${regress_round1}" "SYNC-STATUS=0"
 regress_round2=$(guard_case_run "${regress_dir}" 1) || true
 assert_contains "regress: 同 epoch 计数回退必须非零退出" "${regress_round2}" "SYNC-STATUS=1"
-assert_contains "regress: 回退按计量异常提示" "${regress_round2}" "回退"
+# 收紧到真实告警特征串：单字「回退」在别处也可能出现，钉不住计量异常这条。
+assert_contains "regress: 回退按计量异常提示" "${regress_round2}" \
+    "mangle 计量计数在同一次开机内回退"
 assert_contains "regress: 回退进入保护性停机" "${regress_round2}" "CDN 计量已失效"
 assert_equal "regress: 不得把虚低读数写进 usage" $'6000\t7000\ttrue' \
     "$(jq -r '[.last_uplink, .last_downlink, .protection_offline] | @tsv' \
@@ -912,3 +945,7 @@ assert_equal "audit: 复用失败不写 fstab" "0" \
     "$(awk 'END {print NR + 0}' "${swap_dir}/fstab-fail")"
 
 echo "ok - all audit fixes verified successfully"
+
+# A31 阶段一：本文件必须真的跑过断言（不校验条数，只拦「一个都没跑」）。
+(( TESTS_ASSERTED > 0 )) || fail "无断言执行：本文件一个断言都没跑，fixture/前置条件出错时会静默全绿"
+printf 'ok - asserted %s\n' "${TESTS_ASSERTED}"
