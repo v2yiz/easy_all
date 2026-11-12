@@ -114,6 +114,9 @@ singbox_supported_optional_tags() {
 
 singbox_client_config_structure_ok() {
     jq -e '
+        # 域名型 DNS 服务器（如 doh.pub、doh.pub:443）必须显式给 domain_resolver。
+        # 先剥掉可选的 :port 再判 IP，避免带端口的域名被冒号当成 IP 而漏检。
+        def dns_server_is_ip: sub(":[0-9]+$"; "") | test("^[0-9.]+$|:");
         . as $config
         | ($config.outbounds | map(.tag)) as $tags
         | ($config.dns.servers | map(.tag)) as $servers
@@ -145,6 +148,20 @@ singbox_client_config_structure_ok() {
                 .server as $tag | $servers | index($tag) != null)
         and all($config.dns.servers[] | select(.detour != null);
                 .detour as $tag | $tags | index($tag) != null)
+        # 1.14 起 DNS 传输自己就是 dialer：域名型 server 必须显式给 domain_resolver，
+        # 否则核心在创建 DNS 服务器时直接报错，整份配置不可用。
+        and all($config.dns.servers[]
+                | select(.server != null and (.server | dns_server_is_ip | not));
+                .domain_resolver as $resolver
+                | if ($resolver | type) == "string" then ($servers | index($resolver) != null)
+                  elif ($resolver | type) == "object" then ($servers | index($resolver.server) != null)
+                  else false end)
+        # 反向：每个带 tag 的 evaluate 都必须被某条 respond 消费，否则该标签是死配置（查询白做）。
+        and all($config.dns.rules[] | select(.action == "evaluate" and .tag != null) | .tag;
+                . as $tag | any($config.dns.rules[];
+                                  .action == "respond" and .match_response == $tag))
+        and all($config.dns.rules[] | select(.action == "respond") | .match_response;
+                . as $tag | any($config.dns.rules[]; .action == "evaluate" and .tag == $tag))
     ' "$1" >/dev/null 2>&1
 }
 

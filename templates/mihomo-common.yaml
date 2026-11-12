@@ -151,20 +151,23 @@ dns:
       - 'alt6-mtalk.google.com'
       - 'alt7-mtalk.google.com'
       - 'alt8-mtalk.google.com'
+    # 纯 IP 引导解析器：Mihomo 用它解析 DNS 服务器自身的域名（如 doh.pub），不走自身 DNS 链、也不进 TUN 的 dns-hijack。
+    # 显式写出可避免回落到内置列表（114.114.114.114、223.5.5.5、8.8.8.8、1.0.0.1）里的境外源。
+    default-nameserver: [223.5.5.5, 119.29.29.29]
     # 节点引导独立直连，避免海外 DoH 与代理节点解析互相依赖。
-    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+    proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
     nameserver: ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
     nameserver-policy:
       'rule-set:private-fallback,geosite-private': system
       'rule-set:captive-portal': system
-      'testingcf.jsdelivr.net': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+      'testingcf.jsdelivr.net': ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
       # 代理域名优先于国内集合（例如 services.googleapis.cn）。
       'rule-set:proxy-services,geosite-google': ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
       # 微信资源与 Steam 下载优先于完整版的通用境外域名集合。
-      'rule-set:wechat-services,steam-download': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
-      'rule-set:apple-cn-fallback,geosite-apple-cn': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+      'rule-set:wechat-services,steam-download': ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
+      'rule-set:apple-cn-fallback,geosite-apple-cn': ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
       'rule-set:geosite-foreign': ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
-      'rule-set:direct-services,geosite-cn,geosite-geolocation-cn': ['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']
+      'rule-set:direct-services,geosite-cn,geosite-geolocation-cn': ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
 
 # 代理节点（AnyTLS 直连 / VLESS CDN / 聚合节点）由订阅按模式注入，模板本身不放置占位凭据。
 proxies:

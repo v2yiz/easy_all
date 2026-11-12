@@ -1,4 +1,28 @@
-## 未发布
+## 5.2.1 更新说明（2026-11-12）
+
+本版含 sing-box 订阅规则修正（含安全收口）与安装交互顺序调整。
+
+sing-box 订阅规则优化（`templates/singbox.json`，对齐 Mihomo 模板与成熟方案；Mihomo 模板只同步 DNSPod DoH 地址、
+补一个纯 IP 引导解析器，其余不变）：
+
+- **私网/CGNAT**：TUN 新增 `route_exclude_address`（`10/8`、`172.16/12`、`192.168/16`、`169.254/16`、`100.64/10`），
+  并补一条 `100.64.0.0/10` + `169.254.0.0/16` 直连规则。此前 `ip_is_private` 既不含 CGNAT 也不含链路本地，Tailscale/ZeroTier
+  与云元数据（`169.254.169.254`）等地址会落到 `final: PROXY`。
+  私网段被排除后指向内网 DNS 的查询也不再被 `hijack-dns` 接管（与 Mihomo 同行为）。
+  TUN 地址同时从 `172.19.0.1/30` 移到 `198.19.0.1/30`（RFC 2544 基准段）：原地址落在 `172.16/12` 排除段内，
+  属于“自己排除自己”，按排除表裁路由的平台会让 TUN 自身地址不可达；新地址不与被排除私网段、Fake-IP `198.18.0.0/16` 重叠。
+- **DNS 双源**：国内 AliDNS + DNSPod、境外 1.1.1.1 + 8.8.8.8（新增 `dns-cn-2`、`dns-proxy-2`）。
+  国内第二源改用 DNSPod 官方 DoH 域名 `doh.pub`（不再用 DNSPod 2024-09 起停止公开提供的 IP 形式 DoH 地址，Mihomo 模板同步），
+  域名型 server 必须带 `domain_resolver=dns-bootstrap`，`lib/singbox-subscription.sh` 的结构校验与订阅测试均已覆盖这两个约束。
+  每组用两条并行 `evaluate` + 两条 `race` 成功应答 + 两条任意应答兜底；单源故障不影响解析，两源 NXDOMAIN 原样返回。
+  规则游标停在前面的竞速规则上，不带 `race` 的兜底 `respond` 即使已匹配也要等竞速组决议完（两源都没给 NOERROR）才生效，
+  所以快源先返回 NXDOMAIN/SERVFAIL 不会截杀稍后到达的
+  NOERROR（`race` 语义见 sing-box 1.14 DNS 规则文档）；只有两源都没给 NOERROR 时才落到兜底。
+  国内集合（Fake-IP 例外、微信、Steam、Apple 中国、国内服务、`geosite-cn`、`geosite-geolocation-cn`）并为一组，语义不变。
+- **UDP/443 拒绝**：代理服务、Google、Telegram 的四条拒绝规则合并为一条，位置先于代理规则；末尾兜底拒绝不变。
+- **Clash API**：`access_control_allow_origin` 只放行 `clash.razord.top` 与 `yacd.haishan.me` 的 **https** 来源（不再默认 `*`，也不放行 `http://`：两个面板域名在规则里直连，明文 HTTP 面板在局域网里可被中间人注入脚本，注入的脚本又能借 CORS 调本机 API）；同时开启 `access_control_allow_private_network`，两个面板才能从公网页面调本机 API（不开启时浏览器的私网访问预检会拦下）。面板请用 https 地址打开。
+- **测试**：`test/test_singbox_subscription.sh` 更新 DNS 规则顺序断言，新增双源应答完整性、双源分组各自指向两个源、竞速应答先于兜底应答、域名型 DoH 的 `domain_resolver`（含带端口形式，以及 IP 型 DoH 不得误杀）、未被 `respond` 消费的 `evaluate` tag、TUN 排除、CGNAT 与链路本地、QUIC 合并与 Clash API 来源/私网许可/无 `secret` 断言；UDP/443 位置断言改为在规则缺失时也失败（原写法的 `// -1` 会假阳性）。`test/test_mihomo_template_lint.sh` 新增「`dns` 段必须声明纯 IP 的 `default-nameserver`」校验。
+- **Mihomo 引导解析器**：三个模板的 `dns` 段显式声明 `default-nameserver: [223.5.5.5, 119.29.29.29]`。Mihomo 本来就用它（而非系统解析）解析 DoH 服务器自身的域名，写出来既避免依赖上游未文档化的内置默认值，也避免回落到内置列表里的境外源（`8.8.8.8`/`1.0.0.1`）；与 sing-box 的 `dns-bootstrap` 同义。
 
 安装交互顺序调整（域名 → 节点名 → 优选前缀 → 订阅配置）：
 

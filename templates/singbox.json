@@ -26,8 +26,20 @@
       },
       {
         "type": "https",
+        "tag": "dns-cn-2",
+        "server": "doh.pub",
+        "domain_resolver": "dns-bootstrap"
+      },
+      {
+        "type": "https",
         "tag": "dns-proxy",
         "server": "1.1.1.1",
+        "detour": "PROXY"
+      },
+      {
+        "type": "https",
+        "tag": "dns-proxy-2",
+        "server": "8.8.8.8",
         "detour": "PROXY"
       }
     ],
@@ -56,59 +68,155 @@
       },
       {
         "clash_mode": "direct",
-        "action": "route",
-        "server": "dns-cn"
+        "action": "evaluate",
+        "server": "dns-cn",
+        "tag": "direct-a"
+      },
+      {
+        "clash_mode": "direct",
+        "action": "evaluate",
+        "server": "dns-cn-2",
+        "tag": "direct-b"
+      },
+      {
+        "match_response": "direct-a",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "direct-b",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "direct-a",
+        "action": "respond"
+      },
+      {
+        "match_response": "direct-b",
+        "action": "respond"
       },
       {
         "clash_mode": "global",
-        "action": "route",
-        "server": "dns-proxy"
+        "action": "evaluate",
+        "server": "dns-proxy",
+        "tag": "global-a"
+      },
+      {
+        "clash_mode": "global",
+        "action": "evaluate",
+        "server": "dns-proxy-2",
+        "tag": "global-b"
+      },
+      {
+        "match_response": "global-a",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "global-b",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "global-a",
+        "action": "respond"
+      },
+      {
+        "match_response": "global-b",
+        "action": "respond"
       },
       {
         "rule_set": [
           "proxy-services",
           "geosite-google"
         ],
-        "action": "route",
-        "server": "dns-proxy"
+        "action": "evaluate",
+        "server": "dns-proxy",
+        "tag": "proxy-a"
       },
       {
         "rule_set": [
-          "fakeip-exceptions"
+          "proxy-services",
+          "geosite-google"
         ],
-        "action": "route",
-        "server": "dns-cn"
+        "action": "evaluate",
+        "server": "dns-proxy-2",
+        "tag": "proxy-b"
+      },
+      {
+        "match_response": "proxy-a",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "proxy-b",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "proxy-a",
+        "action": "respond"
+      },
+      {
+        "match_response": "proxy-b",
+        "action": "respond"
       },
       {
         "rule_set": [
-          "wechat-services"
-        ],
-        "action": "route",
-        "server": "dns-cn"
-      },
-      {
-        "rule_set": [
-          "steam-download"
-        ],
-        "action": "route",
-        "server": "dns-cn"
-      },
-      {
-        "rule_set": [
+          "fakeip-exceptions",
+          "wechat-services",
+          "steam-download",
           "apple-cn-fallback",
-          "geosite-apple-cn"
-        ],
-        "action": "route",
-        "server": "dns-cn"
-      },
-      {
-        "rule_set": [
+          "geosite-apple-cn",
           "direct-services",
           "geosite-cn",
           "geosite-geolocation-cn"
         ],
-        "action": "route",
-        "server": "dns-cn"
+        "action": "evaluate",
+        "server": "dns-cn",
+        "tag": "cn-a"
+      },
+      {
+        "rule_set": [
+          "fakeip-exceptions",
+          "wechat-services",
+          "steam-download",
+          "apple-cn-fallback",
+          "geosite-apple-cn",
+          "direct-services",
+          "geosite-cn",
+          "geosite-geolocation-cn"
+        ],
+        "action": "evaluate",
+        "server": "dns-cn-2",
+        "tag": "cn-b"
+      },
+      {
+        "match_response": "cn-a",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "cn-b",
+        "response_rcode": "NOERROR",
+        "action": "respond",
+        "race": true
+      },
+      {
+        "match_response": "cn-a",
+        "action": "respond"
+      },
+      {
+        "match_response": "cn-b",
+        "action": "respond"
       },
       {
         "query_type": [
@@ -139,13 +247,20 @@
       "type": "tun",
       "tag": "tun-in",
       "address": [
-        "172.19.0.1/30"
+        "198.19.0.1/30"
       ],
       "mtu": 1500,
       "stack": "system",
       "dns_mode": "hijack",
       "auto_route": true,
-      "strict_route": false
+      "strict_route": false,
+      "route_exclude_address": [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "100.64.0.0/10"
+      ]
     }
   ],
   "outbounds": [],
@@ -204,6 +319,13 @@
         "outbound": "DIRECT"
       },
       {
+        "ip_cidr": [
+          "100.64.0.0/10",
+          "169.254.0.0/16"
+        ],
+        "outbound": "DIRECT"
+      },
+      {
         "domain_regex": [
           "^[^.]+$"
         ],
@@ -241,7 +363,10 @@
           443
         ],
         "rule_set": [
-          "proxy-services"
+          "proxy-services",
+          "geosite-google",
+          "telegram-fallback",
+          "geoip-telegram"
         ],
         "action": "reject"
       },
@@ -250,18 +375,6 @@
           "proxy-services"
         ],
         "outbound": "PROXY"
-      },
-      {
-        "network": [
-          "udp"
-        ],
-        "port": [
-          443
-        ],
-        "rule_set": [
-          "geosite-google"
-        ],
-        "action": "reject"
       },
       {
         "rule_set": [
@@ -312,34 +425,10 @@
         "outbound": "DIRECT"
       },
       {
-        "network": [
-          "udp"
-        ],
-        "port": [
-          443
-        ],
-        "rule_set": [
-          "telegram-fallback"
-        ],
-        "action": "reject"
-      },
-      {
         "rule_set": [
           "telegram-fallback"
         ],
         "outbound": "PROXY"
-      },
-      {
-        "network": [
-          "udp"
-        ],
-        "port": [
-          443
-        ],
-        "rule_set": [
-          "geoip-telegram"
-        ],
-        "action": "reject"
       },
       {
         "rule_set": [
@@ -835,7 +924,12 @@
     },
     "clash_api": {
       "external_controller": "127.0.0.1:9090",
-      "default_mode": "rule"
+      "default_mode": "rule",
+      "access_control_allow_origin": [
+        "https://clash.razord.top",
+        "https://yacd.haishan.me"
+      ],
+      "access_control_allow_private_network": true
     }
   }
 }

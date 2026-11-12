@@ -52,13 +52,14 @@ sudo easy_all subscription
 
 ## 4. sing-box 客户端使用指南（完整 JSON）
 
-官方 sing-box 客户端（SFA / SFI / SFM / SFT / SFW / SFL）均支持**远程配置（Remote Profile）**：
+官方 sing-box 客户端（SFA / SFI / SFM / SFT / SFW / SFL）均支持**远程配置（Remote Profile）**。
+JSON 订阅使用 `domain_resolver`、`evaluate`/`respond` 等 1.14 才有的语法，**客户端内核需 sing-box ≥ 1.14.0**（1.11–1.13 会直接报错、配置无法启动）：
 1. 打开客户端新建远程配置，粘贴 `sudo easy_all subscription` 输出的链接并保存（服务端自动分发完整 JSON，亦可在链接末尾加 `&flag=singbox`）。
 2. 选中配置并启动即可。旧版本升级后需在服务端执行一次 `sudo easy_all apply` 激活 JSON 分发。
 
 **特性与行为**：
-- **入口与接口**：内置混合代理 `127.0.0.1:1080` 与 TUN（`172.19.0.1/30`，自动路由）；Clash API 仅在本地 `127.0.0.1:9090` 监听。
-- **DNS 与模式切换**：直连模式（`clash_mode=direct`）自动切至国内 DoH 并绕过 Fake-IP（节点故障时直连不中断）；全局模式（`clash_mode=global`）切至境外代理 DoH 防泄露；局域网与认证门户域名始终由本地 DNS 解析。
+- **入口与接口**：内置混合代理 `127.0.0.1:1080` 与 TUN（`198.19.0.1/30`，自动路由）；TUN 不接管私网、CGNAT（`100.64.0.0/10`，Tailscale 等）与链路本地（`169.254.0.0/16`）网段；Clash API 仅在本地 `127.0.0.1:9090` 监听，且只允许 `clash.razord.top` / `yacd.haishan.me` 面板的 **https** 地址跨域访问（同时放开私网访问许可，这两个面板从公网页面才能调到本机 API，其余网页的跨域预检仍不通过；用 `http://` 打开面板会被预检拦下，请改用 `https://`）。
+- **DNS 与模式切换**：直连模式（`clash_mode=direct`）自动切至国内 DoH 并绕过 Fake-IP（节点故障时直连不中断）；全局模式（`clash_mode=global`）切至境外代理 DoH 防泄露；局域网与认证门户域名始终由本地 DNS 解析。国内（AliDNS + DNSPod）与境外（1.1.1.1 + 8.8.8.8）DoH 各有两个源并行查询，任一源故障不影响解析。
 - **DNS 反向映射**：开启 `reverse_mapping: true`，先解析域名再以真实 IP 建连的应用（如微信、Steam 下载）仍能准确命中对应域名直连规则。
 - **节点排除**：官方 sing-box 1.14 不支持 `xhttp` 与 `mieru`，亦不支持非标准 `fp`（如 `chromium`）；此类聚合节点会自动从 JSON 排除并在生成时打印提示，Mihomo / Base64 不受影响。
 - **规则集更新**：内置 MetaCubeX SRS 规则集（每日更新并缓存）。首次启动需能下载规则集，离线重启自动复用可用缓存。

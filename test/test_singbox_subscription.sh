@@ -220,10 +220,16 @@ assert_equal "route.rule_set 数量" "16" \
     "$(jq -r '.route.rule_set | length' "${default_json}")"
 assert_equal "dns final" '"dns-proxy"' "$(jq -c '.dns.final' "${default_json}")"
 # sing-box 1.14 拒绝把 DNS 的 detour 指向空 direct 出口（启动即 FATAL）：直连只能用默认出口表达。
-assert_equal "只有境外 DoH 带 detour" '["dns-proxy"]' \
+assert_equal "只有境外 DoH 带 detour" '["dns-proxy","dns-proxy-2"]' \
     "$(jq -c '[.dns.servers[] | select(.detour != null) | .tag]' "${default_json}")"
-assert_equal "境外 DoH detour 指向 PROXY" '"PROXY"' \
-    "$(jq -c '.dns.servers[] | select(.tag == "dns-proxy") | .detour' "${default_json}")"
+assert_equal "境外 DoH detour 指向 PROXY" '["PROXY","PROXY"]' \
+    "$(jq -c '[.dns.servers[] | select(.tag == "dns-proxy" or .tag == "dns-proxy-2") | .detour]' "${default_json}")"
+# 对齐 Mihomo 的双源 nameserver：国内 AliDNS（IP 直连）+ DNSPod（域名），境外 1.1.1.1 + 8.8.8.8。
+assert_equal "国内/境外 DoH 各有两个源" '["223.5.5.5","doh.pub","1.1.1.1","8.8.8.8"]' \
+    "$(jq -c '[.dns.servers[] | select(.type == "https") | .server]' "${default_json}")"
+# 先剥掉可选的 :port 再判 IP：带端口的 DoH 域名（如 doh.pub:443）不是 IP，同样必须带引导解析器。
+assert_equal "域名型 DoH 带引导解析器" '[["doh.pub","dns-bootstrap"]]' \
+    "$(jq -c '[.dns.servers[] | select(.server != null and (.server | sub(":[0-9]+$"; "") | test("^[0-9.]+$|:") | not)) | [.server, .domain_resolver]]' "${default_json}")"
 assert_equal "规则集 HTTP 客户端不带空 direct detour" '[{"tag":"ruleset-direct"}]' \
     "$(jq -c '.http_clients' "${default_json}")"
 assert_equal "dns 策略 ipv4_only" '"ipv4_only"' "$(jq -c '.dns.strategy' "${default_json}")"
@@ -237,20 +243,87 @@ assert_equal "DIRECT 出口使用本地解析" '"dns-local"' \
     "$(jq -c '.outbounds[] | select(.tag == "DIRECT") | .domain_resolver' "${default_json}")"
 assert_equal "节点出口沿用引导解析器" '"dns-bootstrap"' \
     "$(jq -c '.route.default_domain_resolver' "${default_json}")"
-# DNS 规则顺序（对齐 Mihomo nameserver-policy）：私有/本地 → 模式覆盖 → 代理集合 → Fake-IP 例外 → 国内集合 → Fake-IP。
+# DNS 规则顺序（对齐 Mihomo nameserver-policy）：私有/本地 → 模式覆盖 → 代理集合 → 国内集合（含 Fake-IP 例外）→ Fake-IP。
+# 每个分组是两路并行查询（evaluate）加竞速应答（race respond）：任一源先返回成功即采用，
+# 两源 NXDOMAIN 原样返回，两源都失败才落到后面的规则。
 # 代理集合必须早于国内集合与 Fake-IP 例外：services.googleapis.cn 命中 .cn，mtalk.google.com 命中 Fake-IP 例外，
 # 两者都属于代理集合、必须用代理 DNS 解析（禁 Fake-IP 不等于改用国内 DNS）。
 # 直连/全局的 DNS 覆盖排在私有与认证门户之后：局域网解析在任何模式下都不变。
 assert_equal "DNS 规则 tag 顺序" \
-    'private-fallback ^[^.]+$ captive-portal clash_mode=direct clash_mode=global proxy-services fakeip-exceptions wechat-services steam-download apple-cn-fallback direct-services A' \
-    "$(jq -r '[.dns.rules[] | (if .clash_mode then "clash_mode=\(.clash_mode)" elif .rule_set then .rule_set[0] elif .domain_regex then .domain_regex[0] else .query_type[0] end)] | join(" ")' "${default_json}")"
-assert_equal "模式覆盖的 DNS 服务器" '[["direct","dns-cn"],["global","dns-proxy"]]' \
+    'private-fallback ^[^.]+$ captive-portal clash_mode=direct clash_mode=global proxy-services fakeip-exceptions A' \
+    "$(jq -r '[.dns.rules[] | select(.action != "respond" and ((.tag // "-a") | endswith("-a"))) | (if .clash_mode then "clash_mode=\(.clash_mode)" elif .rule_set then .rule_set[0] elif .domain_regex then .domain_regex[0] else .query_type[0] end)] | join(" ")' "${default_json}")"
+assert_equal "模式覆盖的 DNS 服务器" \
+    '[["direct","dns-cn"],["direct","dns-cn-2"],["global","dns-proxy"],["global","dns-proxy-2"]]' \
     "$(jq -c '[.dns.rules[] | select(.clash_mode != null) | [.clash_mode, .server]]' "${default_json}")"
+assert_equal "国内集合合并为一组并含全部国内/例外集合" \
+    '["fakeip-exceptions","wechat-services","steam-download","apple-cn-fallback","geosite-apple-cn","direct-services","geosite-cn","geosite-geolocation-cn"]' \
+    "$(jq -c '[.dns.rules[] | select(.tag == "cn-a") | .rule_set] | .[0]' "${default_json}")"
+# 每个 evaluate 标签都有「竞速成功应答 + 任意应答兜底」两条 respond，且 respond 不引用未定义的标签。
+assert_equal "DNS 双源分组的应答规则完整" 'true' \
+    "$(jq -r '. as $c | [$c.dns.rules[] | select(.action == "evaluate") | .tag] as $tags
+        | all($tags[]; . as $t
+            | ([$c.dns.rules[] | select(.action == "respond" and .match_response == $t
+                and .race == true and .response_rcode == "NOERROR")] | length) == 1
+            and ([$c.dns.rules[] | select(.action == "respond" and .match_response == $t
+                and .race == null and .response_rcode == null)] | length) == 1)
+        and all($c.dns.rules[] | select(.action == "respond") | .match_response;
+                . as $t | $tags | index($t) != null)' "${default_json}")"
+# 双源不能退化成同源：每组两条 evaluate 分别指向两个不同的服务器。
+assert_equal "双源分组各自指向两个源" \
+    '[["direct-a","dns-cn"],["direct-b","dns-cn-2"],["global-a","dns-proxy"],["global-b","dns-proxy-2"],["proxy-a","dns-proxy"],["proxy-b","dns-proxy-2"],["cn-a","dns-cn"],["cn-b","dns-cn-2"]]' \
+    "$(jq -c '[.dns.rules[] | select(.action == "evaluate") | [.tag, .server]]' "${default_json}")"
+# 竞速应答必须排在兜底应答之前，否则兜底会先吃掉任意 rcode，「先到 NOERROR 者胜」失效。
+assert_equal "每组竞速应答先于兜底应答" 'true' \
+    "$(jq -r '
+        [.dns.rules | to_entries[]] as $r
+        | all($r[] | select(.value.action == "evaluate" and .value.tag != null) | .value.tag;
+              . as $tag
+              | ([$r[] | select(.value.match_response == $tag and .value.race == true) | .key] | first) as $race
+              | ([$r[] | select(.value.match_response == $tag and .value.race == null) | .key] | first) as $fallback
+              | $race != null and $fallback != null and $race < $fallback)
+    ' "${default_json}")"
 assert_contains "geosite-private 进入直连规则" \
     '["private-fallback","geosite-private"]' \
     "$(jq -c '[.route.rules[] | select(.rule_set != null and .outbound == "DIRECT") | .rule_set][0]' "${default_json}")"
-assert_equal "TUN 地址、MTU、栈与自动路由" "172.19.0.1/30 1500 system true hijack" \
+assert_equal "TUN 地址、MTU、栈与自动路由" "198.19.0.1/30 1500 system true hijack" \
     "$(jq -r '.inbounds[] | select(.tag == "tun-in") | "\(.address[0]) \(.mtu) \(.stack) \(.auto_route) \(.dns_mode)"' "${default_json}")"
+# 对齐 Mihomo：私网、CGNAT（Tailscale/ZeroTier）与链路本地不进 TUN，漏进来的也直连。
+# ip_is_private 不含 100.64/10 与 169.254/16，所以两者靠 ip_cidr 规则补上。
+assert_equal "TUN 不接管私网、CGNAT 与链路本地" \
+    '["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","169.254.0.0/16","100.64.0.0/10"]' \
+    "$(jq -c '.inbounds[] | select(.tag == "tun-in") | .route_exclude_address' "${default_json}")"
+assert_equal "CGNAT 与链路本地直连规则排在 ip_is_private 之后" \
+    '["ip_is_private","100.64.0.0/10","169.254.0.0/16"]' \
+    "$(jq -c '[.route.rules[] | if .ip_is_private == true then "ip_is_private" elif (.ip_cidr // [] | index("100.64.0.0/10")) != null then .ip_cidr[] else empty end]' "${default_json}")"
+assert_equal "CGNAT 与链路本地规则出口" '["DIRECT"]' \
+    "$(jq -c '[.route.rules[] | select(.ip_cidr != null and (.ip_cidr | index("100.64.0.0/10")) != null) | .outbound]' "${default_json}")"
+# 对齐官方客户端示例：只嗅探 TUN 的 TCP 的 HTTP/TLS，不嗅探 QUIC（UDP/443 要立即拒绝回退 TCP，Mihomo 同样刻意不嗅探）。
+# 不包含 mixed 入站：本地 127.0.0.1:1080 的域名已由 SOCKS5/HTTP CONNECT 给出，再嗅探只会给非 Web 协议白加 300ms。
+# 端口不设上限：核心只内置跳过邮件端口（25/465/587/143/993/110/995），其余服务端先发协议仍要等满 300ms。
+assert_equal "嗅探只作用于 TUN 且不限端口" \
+    '{"inbound":["tun-in"],"network":["tcp"],"action":"sniff","sniffer":["http","tls"],"timeout":"300ms"}' \
+    "$(jq -c '.route.rules[] | select(.action == "sniff")' "${default_json}")"
+# 代理集合与 Telegram 的 UDP/443 只由一条规则拒绝，且先于任何代理/直连规则；其余 UDP/443 仍由末尾兜底拒绝。
+assert_equal "UDP/443 拒绝合并为一条并先于代理规则" \
+    '[["proxy-services","geosite-google","telegram-fallback","geoip-telegram"],"proxy-services"]' \
+    "$(jq -c '[(.route.rules[] | select(.action == "reject" and .rule_set != null) | .rule_set), (.route.rules | map(select(.outbound == "PROXY" and .rule_set != null)) | .[0].rule_set[0])]' "${default_json}")"
+assert_equal "UDP/443 拒绝规则位置先于代理规则" 'true' \
+    "$(jq -r '(.route.rules | map(.action == "reject" and .rule_set != null) | index(true)) as $reject
+        | (.route.rules | map(.outbound == "PROXY" and .rule_set != null) | index(true)) as $proxy
+        | $reject != null and $proxy != null and $reject < $proxy' "${default_json}")"
+assert_equal "末尾仍有 UDP/443 兜底拒绝" '{"network":["udp"],"port":[443],"action":"reject"}' \
+    "$(jq -c '.route.rules[-1]' "${default_json}")"
+# Clash API 只放行内置直连的两个面板域名（仅 https：明文 http 面板在局域网里可被中间人注入脚本，
+# 而这两个面板域名走直连，注入的脚本又能借 CORS 调本机 API）。
+assert_equal "Clash API 限定来源" \
+    '["https://clash.razord.top","https://yacd.haishan.me"]' \
+    "$(jq -c '.experimental.clash_api.access_control_allow_origin' "${default_json}")"
+# 仅靠来源白名单不够：面板要能从公网页面调到本机 API，就必须开启私网访问许可，这一条是安全契约的一部分。
+assert_equal "Clash API 开启私网访问许可" 'true' \
+    "$(jq -c '.experimental.clash_api.access_control_allow_private_network' "${default_json}")"
+assert_equal "Clash API 仅本地监听且不设 secret" \
+    '127.0.0.1:9090 null' \
+    "$(jq -r '.experimental.clash_api | "\(.external_controller) \(.secret)"' "${default_json}")"
 assert_equal "Fake-IP 网段不与 TUN 地址重叠" '"198.18.0.0/16"' \
     "$(jq -c '.dns.servers[] | select(.type == "fakeip") | .inet4_range' "${default_json}")"
 assert_equal "规则集下载走显式 HTTP 客户端" '"ruleset-direct"' \
@@ -351,6 +424,25 @@ validate_with_lib "${TMP_DIR}/bad-default-resolver.json" && fail "默认域名�
 jq '.route.default_http_client = "missing-client"' "${default_json}" \
     >"${TMP_DIR}/bad-default-client.json"
 validate_with_lib "${TMP_DIR}/bad-default-client.json" && fail "默认 HTTP 客户端缺失必须校验失败"
+# 域名型（含带端口形式）DoH 缺 domain_resolver 必须校验失败：带端口的域名不能被冒号误判为 IP。
+jq '.dns.servers += [{"type":"https","tag":"doh-domain","server":"doh.pub"}]' \
+    "${default_json}" >"${TMP_DIR}/bad-domain-resolver.json"
+validate_with_lib "${TMP_DIR}/bad-domain-resolver.json" && fail "域名型 DoH 缺引导解析器必须校验失败"
+jq '.dns.servers += [{"type":"https","tag":"doh-domain-port","server":"doh.pub:443"}]' \
+    "${default_json}" >"${TMP_DIR}/bad-domain-port.json"
+validate_with_lib "${TMP_DIR}/bad-domain-port.json" && fail "带端口的域名型 DoH 缺引导解析器必须校验失败"
+# 反向：IPv4 / IPv6 字面量（含显式端口）不需要引导解析器，不得被误杀。
+jq '.dns.servers += [{"type":"https","tag":"doh-v4","server":"119.29.29.29","server_port":443}, {"type":"https","tag":"doh-v6","server":"2606:4700:4700::1111","server_port":443}]' \
+    "${default_json}" >"${TMP_DIR}/ip-doh-servers.json"
+validate_with_lib "${TMP_DIR}/ip-doh-servers.json" || fail "IP 型 DoH 不应要求引导解析器"
+# 未被任何 respond 消费的 evaluate tag 是死配置（查询白做），结构校验要拦住。
+jq '.dns.rules += [{"action":"evaluate","server":"dns-cn","tag":"orphan-evaluate"}]' \
+    "${default_json}" >"${TMP_DIR}/orphan-evaluate.json"
+validate_with_lib "${TMP_DIR}/orphan-evaluate.json" && fail "孤立 evaluate tag 必须校验失败"
+# respond 引用未定义的 evaluate tag 同样是校验失败（现有断言的反向）。
+jq '.dns.rules += [{"action":"respond","match_response":"no-such-tag"}]' \
+    "${default_json}" >"${TMP_DIR}/dangling-match.json"
+validate_with_lib "${TMP_DIR}/dangling-match.json" && fail "respond 引用未定义 evaluate tag 必须校验失败"
 
 # 本机节点生成失败时整份候选发布失败，不留下 JSON。
 out_missing="${TMP_DIR}/no-password"

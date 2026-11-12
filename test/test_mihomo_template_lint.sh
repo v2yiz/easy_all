@@ -170,6 +170,17 @@ for template in "${TEMPLATES[@]}"; do
     grep -qiE '^[[:space:]]*tls[[:space:]]*:' <<<"${sniffer_body}" \
         || fail "${template}: sniffer must keep TLS sniffing"
 
+    # 9. dns 段必须显式声明纯 IP 的 default-nameserver：Mihomo 用它解析 DoH 服务器自已的域名（doh.pub），
+    #    不能靠系统解析（TUN dns-hijack 下会绕回自身），也不能回落到内置列表里的境外源。
+    default_ns=$(sed -n 's/^[[:space:]]*default-nameserver:[[:space:]]*//p' "${path}")
+    [[ -n "${default_ns}" ]] \
+        || fail "${template}: dns 段缺少 default-nameserver（DoH 域名需要纯 IP 引导解析）"
+    if printf '%s\n' "${default_ns}" | grep -qE '[a-zA-Z]'; then
+        fail "${template}: default-nameserver 必须是纯 IP，不能写域名"
+    fi
+    printf '%s\n' "${default_ns}" | grep -q '223\.5\.5\.5' \
+        || fail "${template}: default-nameserver 应包含国内引导源 223.5.5.5"
+
     printf 'ok - %s\n' "${template}"
 done
 
