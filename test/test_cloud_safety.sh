@@ -634,9 +634,9 @@ assert_contains "前缀写入不含 cdnEdgeAddress 的配置" \
 assert_contains "前缀覆盖安装生成的旧前缀" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[],"cdnEdgeAddress":"aa11bb22cc.cloudflare.182682.xyz"}' k7m2qp4x9d combined-cloudflare)" \
     '"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"'
-assert_contains "自定义优选域名不被前缀覆盖" \
+assert_contains "无条件覆盖粘贴 JSON 里的优选地址" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[],"cdnEdgeAddress":"edge.example.com"}' k7m2qp4x9d cloudfront)" \
-    '"cdnEdgeAddress":"edge.example.com"'
+    '"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"'
 
 # 3b-5. 结构断言：安装收集器里「问前缀 → 问订阅配置 → 写前缀 → 强校验」的顺序不得错位。
 install_edge_order_check() { # $1=模式库 $2=安装收集函数
@@ -664,7 +664,7 @@ bad_apply=$(bash -c '
     apply_cdn_edge_prefix
     printf "SHOULD-NOT-REACH\n"
 ' _ "${ROOT_DIR}" 2>&1) || true
-assert_contains "订阅配置不可解析时报错而不是静默退出" "${bad_apply}" "读取订阅配置失败"
+assert_contains "订阅配置不可解析时报错而不是静默退出" "${bad_apply}" "更新订阅配置失败"
 assert_not_contains "订阅配置不可解析时不继续执行" "${bad_apply}" "SHOULD-NOT-REACH"
 
 # 模式 1 只有一个节点名：域名与节点名仍是连续两条。
@@ -1592,15 +1592,6 @@ assert_equal "跨模式回车按当前模式重写后缀" \
     '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"}' \
     "$(config_of "${edge_branch1_cross}")"
 
-# 分支 2：自定义合法优选域名 → 不提示、原样保留，并在 stdout 告知改法（验收条件 2）。
-edge_cfg_custom='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"edge.mycdn.example"}'
-edge_branch2=$(edge_case "${edge_cfg_custom}" 0 collect_cdn_edge_address "" "" "")
-assert_equal "分支 2 不提示" "" "$(stream_of "${edge_branch2}" STDERR)"
-assert_equal "分支 2 原样保留自定义优选域名" "${edge_cfg_custom}" "$(config_of "${edge_branch2}")"
-assert_contains "分支 2 stdout 打印当前优选地址" "$(stream_of "${edge_branch2}" STDOUT)" \
-    "edge.mycdn.example"
-assert_contains "分支 2 指向 edit-sub" "$(stream_of "${edge_branch2}" STDOUT)" "edit-sub"
-
 # 分支 3：续装且无字段 → 不再允许关闭，默认新随机前缀，回车后按模式写入。
 edge_branch3=$(edge_case "${edge_cfg_none}" 1 collect_cdn_edge_address "" "" "")
 edge_branch3_default=$(sed -n 's/.*CDN 优选前缀 \[\([^]]*\)\].*/\1/p' \
@@ -1620,21 +1611,6 @@ edge_branch4_default=$(sed -n 's/.*CDN 优选前缀 \[\([^]]*\)\].*/\1/p' \
 assert_equal "分支 4 回车后按模式拼完整地址" \
     '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"'"${edge_branch4_default}"'.cloudflare.182682.xyz"}' \
     "$(config_of "${edge_branch4}")"
-
-# 试运行失败家族：不可解析 / 非对象 JSON / 无关非法节点 / 非法优选值 → 零副作用。
-while IFS= read -r edge_bad_config; do
-    edge_failed=$(edge_case "${edge_bad_config}" 0 collect_cdn_edge_address "" "" "")
-    assert_equal "试运行失败不提示：${edge_bad_config}" "" "$(stream_of "${edge_failed}" STDERR)"
-    assert_equal "试运行失败无 info 行：${edge_bad_config}" "" "$(stream_of "${edge_failed}" STDOUT)"
-    assert_equal "试运行失败不改配置：${edge_bad_config}" "${edge_bad_config}" \
-        "$(config_of "${edge_failed}")"
-    assert_equal "试运行失败仍返回 0：${edge_bad_config}" "0" "$(status_of "${edge_failed}")"
-done <<'EDGE_BAD_CONFIGS'
-[1]
-{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[{"type":"vless"}]}
-{bad
-{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"a b"}
-EDGE_BAD_CONFIGS
 
 # 9d. 交互原语：写入判定零副作用、提示循环文案与重填（§11 第 11 项）。
 edge_store_prefix=$(edge_case "${edge_cfg_none}" 0 cdn_edge_store_answer k7m2qp4x9d "" "")

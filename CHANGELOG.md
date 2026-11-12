@@ -6,9 +6,13 @@
   Zone → 直连域名 → CDN 节点域名 → 直连节点名 → CDN 节点名 → Mihomo 下载文件名 →（模式 4/5 的 Token 与 AWS 凭据）→ CDN 优选前缀 → 订阅配置 JSON。
   此前直连节点名夹在两个域名之间，CDN 节点名在凭据之后，两个节点名分散在两端。
 - **优选前缀排到订阅配置之前**：`collect_cdn_edge_address` 只负责问前缀并记入 `CDN_EDGE_PREFIX`，
-  订阅配置收集完成后由新增的 `apply_cdn_edge_prefix` 写进 `cdnEdgeAddress`（模式 2–5 同规）；
-  订阅配置已存在时（续装、`edit-sub`）仍即时写入，行为不变。首次收集时配置为空，改用新生成的随机前缀，
-  不再因空配置静默跳过提示；粘贴的 JSON 自带自定义优选域名时前缀不覆盖。
+  订阅配置收集完成后由新增的 `apply_cdn_edge_prefix` 无条件写进 `cdnEdgeAddress`（模式 2–5 同规）；
+  续装时身份里的配置已存在，提示环节仍就地写入（`edit-sub` 不走这条链，它自己写配置）。
+  续装沿用身份里的原前缀，首装生成新前缀。
+- **删掉“自定义优选域名不提示/不被覆盖”的分流**：安装这一屏粘贴的 JSON 只有 `allowedTokens` 与 `nodes`，
+  该分支在安装路径已不可达（自定义域名只经 `edit-sub` 出现，走的是 `choose_subscription_config`）；
+  连同 `collect_cdn_edge_address` 里为非法配置准备的“静默跳过提示”试运行一并删除，配置损坏时改为
+  在写回阶段报「更新订阅配置失败」。
 - **实现**：直连输入的域名与节点名拆成 `anytls_collect_direct_domain` / `anytls_collect_direct_node_name`
   （模式 1 仍连续调用，观感不变）；模式 3 的 `collect_combined_cloudflare_cdn_inputs` 拆成域名与节点名两步；
   模式 5 在 `collect_cloudfront_install_inputs` 内按新顺序提示。
