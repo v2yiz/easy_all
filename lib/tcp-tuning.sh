@@ -795,8 +795,8 @@ prompt_kernel_reboot() {
         return 0
     fi
     if [[ -t 0 ]]; then
-        printf '是否现在立即重启服务器以载入新内核？[y/N]: '
-        read -r choice || choice="n"
+        # 走共享读取原语（readline）：裸 read 在 raw 会话里等不到 \n 会挂住。
+        read_prompt '是否现在立即重启服务器以载入新内核？[y/N]: ' choice || choice="n"
         case "${choice}" in
             [yY]|[yY][eE][sS])
                 info "正在重启服务器..."

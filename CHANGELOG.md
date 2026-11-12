@@ -1,5 +1,20 @@
 ## 未发布
 
+交互输入修复（raw 会话下安装提示挂住）：
+
+- **静默输入不再只等 `\n`**：`lib/log.sh` 的 `read_prompt` 静默分支改为逐字符读到 `\r` 或 `\n` 为止。
+  此前用 `read -r -s`，会话 pty 被留在 raw 模式（浏览器 Web 控制台、Guacamole 一类跳板机）时回车只送 `\r`，
+  模式 4/5 的 Cloudflare Token 与 AWS 凭据提示会永久挂住、且因关闭回显看着像死机；
+  回显仍由 `-s` 关闭、终端设置不被修改，退格/`^U`/`^W` 由读取原语自己处理（`-n` 会关掉行规程编辑）。
+- **括号粘贴标记从读入值里剔除**：`strip_terminal_input`（以及 `easy_all` 的 launcher 副本与 `scripts/debian-init.sh` 的副本）
+  的 CSI 正则补上 `~` 终止符——`ESC[200~…ESC[201~` 不带字母，此前会被当成输入内容（Token 直接判「格式无效」）；
+  控制字符清理同时删掉残留的 `\r`。
+- **内核重启提示走共享读取原语**：`lib/tcp-tuning.sh` 的 `prompt_kernel_reboot` 不再用裸 `read -r choice`，
+  raw 会话下安装最后一步也不会挂住（EOF 仍按「跳过自动重启」处理）。
+- **`scripts/debian-init.sh`** 的静默输入与转义清理同步同一行为（包括 `^C` 返回非零、`^U`/`^W`/退格）。
+- **测试**：`test/test_cloud_safety.sh` 新增 `read_prompt` 的 `\r`/`\n` 结束、括号粘贴标记、退格、`^U`/`^W`、`^C` 返回码，
+  以及「重启提示必须走共享原语」的结构断言；已做「换回旧实现即变红」反向验证。
+
 审计修复（安全边界、云端清理与运行时锁）：
 
 - **服务端路由先解析目标域名**：`route.rules` 首条新增 `action: resolve`。此前只按 IP 目标匹配 `ip_is_private`/`ip_cidr`，

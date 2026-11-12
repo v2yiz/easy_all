@@ -42,8 +42,9 @@ launcher_die() {
 
 strip_launcher_input() {
     local esc=$'\033'
-    printf '%s' "$1" | sed -e "s/${esc}\[[0-9;?]*[A-Za-z]//g" -e "s/${esc}O[A-Za-z]//g" \
-        | tr -d '\000-\010\013\014\016-\037\177'
+    # 终止符包含 '~'：括号粘贴标记 ESC[200~ / ESC[201~ 不带字母。
+    printf '%s' "$1" | sed -e "s/${esc}\[[0-9;?]*[~A-Za-z]//g" -e "s/${esc}O[A-Za-z]//g" \
+        | tr -d '\000-\010\013-\037\177'
 }
 
 launcher_read_bilingual() {

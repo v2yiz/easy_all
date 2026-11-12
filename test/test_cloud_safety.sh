@@ -1588,6 +1588,37 @@ done
 assert_equal "订阅事务模式库清单" "anytls-mode.sh cloudflare-mode.sh cloudfront-mode.sh" \
     "${edge_mode_libs}"
 
+# 9f. 交互读取原语：raw 会话（浏览器控制台、跳板机）的回车只有 \r，等 \n 的 read -s 会永久挂住；
+# 括号粘贴标记也必须从读入值里剔除（否则 Token 会被判“格式无效”）。无终端时用管道驱动同一个函数。
+prompt_read_case() { # $1=输入（printf %b 解释转义） $2=silent(0|1) -> 读到的值
+    printf '%b' "$1" \
+        | bash -c 'source "$1/lib/log.sh"; read_prompt "> " got "$2"; printf "%s" "${got}"' \
+            _ "${ROOT_DIR}" "$2" 2>/dev/null
+}
+prompt_token="tok-abcdefgh1234567890"
+assert_equal "静默读取以 \\r 结束（raw 会话回车）" "${prompt_token}" \
+    "$(prompt_read_case "${prompt_token}\r" 1)"
+assert_equal "静默读取以 \\n 结束（canonical 会话回车）" "${prompt_token}" \
+    "$(prompt_read_case "${prompt_token}\n" 1)"
+assert_equal "静默读取剥离括号粘贴标记" "${prompt_token}" \
+    "$(prompt_read_case "\033[200~${prompt_token}\033[201~\r" 1)"
+assert_equal "静默读取处理退格" "${prompt_token}" \
+    "$(prompt_read_case "${prompt_token}X\177\r" 1)"
+assert_equal "静默读取按 ^U 清行（不残留前缀）" "${prompt_token}" \
+    "$(prompt_read_case "${prompt_token}X\025${prompt_token}\r" 1)"
+assert_equal "静默读取按 ^W 删词（不残留前缀）" "${prompt_token}" \
+    "$(prompt_read_case "${prompt_token}X\027${prompt_token}\r" 1)"
+assert_equal "普通读取剔除括号粘贴标记" "5" \
+    "$(prompt_read_case '\033[200~5\033[201~\n' 0)"
+# raw 会话的 Ctrl+C 只是字节：必须返回非零，不得把半截值当输入交回。
+assert_equal "静默读取对 Ctrl+C 返回 130" "130" \
+    "$(printf '\003' | bash -c 'source "$1/lib/log.sh"; read_prompt "> " got 1; printf "%s" "$?"' \
+        _ "${ROOT_DIR}" 2>/dev/null)"
+# 内核重启提示曾用裸 read：raw 会话下会在安装最后一步挂住。
+reboot_prompt_body=$(sed -n '/^prompt_kernel_reboot() {/,/^}/p' "${ROOT_DIR}/lib/tcp-tuning.sh")
+assert_contains "内核重启提示走共享读取原语" "${reboot_prompt_body}" "read_prompt '"
+assert_not_contains "内核重启提示不再用裸 read" "${reboot_prompt_body}" "read -r choice"
+
 run_tls_certificate_cases
 
 printf 'ok - 凭据、strict 顺序、DNS 归属、证书生效与服务编排测试通过\n'

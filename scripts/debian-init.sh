@@ -52,18 +52,32 @@ print_step() {
 
 strip_terminal_input() {
   local esc=$'\033'
-  printf '%s' "$1" | sed -e "s/${esc}\[[0-9;?]*[A-Za-z]//g" -e "s/${esc}O[A-Za-z]//g" \
-    | tr -d '\000-\010\013\014\016-\037\177'
+  # 终止符包含 '~'：括号粘贴标记 ESC[200~ / ESC[201~ 不带字母。
+  printf '%s' "$1" | sed -e "s/${esc}\[[0-9;?]*[~A-Za-z]//g" -e "s/${esc}O[A-Za-z]//g" \
+    | tr -d '\000-\010\013-\037\177'
 }
 
 read_bilingual() {
   local label="$1"
   local variable="$2"
   local silent="${3:-0}"
-  local input
+  local input char
   printf '%s\n' "$label" >&2
   if [[ "$silent" == "1" ]]; then
-    IFS= read -r -s -p '> ' input
+    # 同 easy_all：raw 会话（浏览器控制台、跳板机）里回车只送 \r，等 \n 的 read 会挂住。
+    # -n 使 bash 以非 canonical 模式读，编辑键（退格/^U/^W）改由这里处理。
+    printf '> ' >&2
+    input=""
+    while IFS= read -r -s -n 1 char; do
+      case "$char" in
+      $'\r' | $'\n') break ;;
+      $'\x03') return 130 ;;
+      $'\x7f' | $'\b') input=${input%?} ;;
+      $'\x15') input="" ;;
+      $'\x17') while [[ -n "$input" && "${input: -1}" != ' ' ]]; do input=${input%?}; done ;;
+      *) input+=${char} ;;
+      esac
+    done
     echo >&2
   else
     IFS= read -r -e -p '> ' input
