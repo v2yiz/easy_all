@@ -1548,23 +1548,25 @@ edge_case() { # $1=订阅配置 $2=INSTALL_RESUME $3=被测函数 $4=函数参�
             }
             "${EDGE_FN}" "${EDGE_FN_ARG}" >"${EDGE_STDOUT}" 2>"${EDGE_STDERR}" \
                 || printf "STATUS=%s\n" "$?"
-            printf "CONFIG=%s\n" "${SUBSCRIPTION_CONFIG}"
+            printf "CONFIG=%s\nPREFIX=%s\n" "${SUBSCRIPTION_CONFIG}" "${CDN_EDGE_PREFIX:-}"
         ' _ "${ROOT_DIR}" >"${dir}/log" 2>&1 || true
     status_line=$(sed -n 's/^STATUS=//p' "${dir}/log" 2>/dev/null)
     config_line=$(sed -n 's/^CONFIG=//p' "${dir}/log" 2>/dev/null)
-    printf 'STATUS=%s\nCONFIG=%s\nSTDOUT:\n%s\nSTDERR:\n%s\n' \
-        "${status_line:-0}" "${config_line}" \
+    prefix_line=$(sed -n 's/^PREFIX=//p' "${dir}/log" 2>/dev/null)
+    printf 'STATUS=%s\nCONFIG=%s\nPREFIX=%s\nSTDOUT:\n%s\nSTDERR:\n%s\n' \
+        "${status_line:-0}" "${config_line}" "${prefix_line}" \
         "$(cat "${dir}/stdout" 2>/dev/null)" "$(cat "${dir}/stderr" 2>/dev/null)"
 }
 stream_of() { # $1=edge_case 块 $2=STDOUT|STDERR
     printf '%s\n' "$1" | awk -v want="$2" '
         /^STDOUT:$/ { section = "STDOUT"; next }
         /^STDERR:$/ { section = "STDERR"; next }
-        /^STATUS=/ || /^CONFIG=/ { section = ""; next }
+        /^STATUS=/ || /^CONFIG=/ || /^PREFIX=/ { section = ""; next }
         section == want { print }
     '
 }
 config_of() { sed -n 's/^CONFIG=//p' <<<"$1"; }
+prefix_of() { sed -n 's/^PREFIX=//p' <<<"$1"; }
 status_of() { sed -n 's/^STATUS=//p' <<<"$1"; }
 
 # 分支 1：字段是生成的 10 位前缀形态 → 提示默认前缀，回车后值不变（验收条件 2）。
@@ -1573,6 +1575,7 @@ edge_branch1=$(edge_case "${edge_cfg_prefix}" 1 collect_cdn_edge_address "" "" "
 assert_contains "分支 1 提示默认前缀" "$(stream_of "${edge_branch1}" STDERR)" \
     "CDN 优选前缀 [k7m2qp4x9d]（回车采用）："
 assert_equal "分支 1 回车后配置不变" "${edge_cfg_prefix}" "$(config_of "${edge_branch1}")"
+assert_equal "分支 1 记下沿用前缀" "k7m2qp4x9d" "$(prefix_of "${edge_branch1}")"
 assert_not_contains "提示文案不用 prompt_value 的默认值后缀" \
     "${edge_branch1}" "直接回车使用默认值"
 
@@ -1581,16 +1584,13 @@ edge_cfg_upper_prefix='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"c
 edge_branch1_upper=$(edge_case "${edge_cfg_upper_prefix}" 0 collect_cdn_edge_address "" "" "")
 assert_contains "大写生成值仍按前缀形态提示" "$(stream_of "${edge_branch1_upper}" STDERR)" \
     "CDN 优选前缀 [k7m2qp4x9d]（回车采用）："
-assert_equal "大写生成值回车后规范化为小写" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \
-    "$(config_of "${edge_branch1_upper}")"
+assert_equal "大写生成值回车后前缀规范化为小写" "k7m2qp4x9d" "$(prefix_of "${edge_branch1_upper}")"
+assert_equal "大写生成值不改动配置" "${edge_cfg_upper_prefix}" "$(config_of "${edge_branch1_upper}")"
 
 edge_branch1_cross=$(edge_case "${edge_cfg_prefix}" 0 collect_cdn_edge_address "" "cloudfront" "")
 assert_contains "跨模式续装仍提示原前缀" "$(stream_of "${edge_branch1_cross}" STDERR)" \
     "CDN 优选前缀 [k7m2qp4x9d]（回车采用）："
-assert_equal "跨模式回车按当前模式重写后缀" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"}' \
-    "$(config_of "${edge_branch1_cross}")"
+assert_equal "跨模式续装沿用原前缀" "k7m2qp4x9d" "$(prefix_of "${edge_branch1_cross}")"
 
 # 分支 3：续装且无字段 → 不再允许关闭，默认新随机前缀，回车后按模式写入。
 edge_branch3=$(edge_case "${edge_cfg_none}" 1 collect_cdn_edge_address "" "" "")
@@ -1598,9 +1598,7 @@ edge_branch3_default=$(sed -n 's/.*CDN 优选前缀 \[\([^]]*\)\].*/\1/p' \
     <<<"$(stream_of "${edge_branch3}" STDERR)")
 [[ "${edge_branch3_default}" =~ ^[a-z][a-z0-9]{9}$ ]] \
     || fail "分支 3 必须给出 10 位随机前缀（不允许 off），实际 <${edge_branch3_default}>"
-assert_equal "分支 3 续装回车后写入优选地址" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"'"${edge_branch3_default}"'.cloudflare.182682.xyz"}' \
-    "$(config_of "${edge_branch3}")"
+assert_equal "分支 3 记下新前缀" "${edge_branch3_default}" "$(prefix_of "${edge_branch3}")"
 
 # 分支 4：全新首装且无字段 → 默认是新的 10 位前缀，回车后拼上当前模式后缀。
 edge_branch4=$(edge_case "${edge_cfg_none}" 0 collect_cdn_edge_address "" "" "")
@@ -1608,19 +1606,14 @@ edge_branch4_default=$(sed -n 's/.*CDN 优选前缀 \[\([^]]*\)\].*/\1/p' \
     <<<"$(stream_of "${edge_branch4}" STDERR)")
 [[ "${edge_branch4_default}" =~ ^[a-z][a-z0-9]{9}$ ]] \
     || fail "分支 4 默认值必须是 10 位随机前缀，实际 <${edge_branch4_default}>"
-assert_equal "分支 4 回车后按模式拼完整地址" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"'"${edge_branch4_default}"'.cloudflare.182682.xyz"}' \
-    "$(config_of "${edge_branch4}")"
+assert_equal "分支 4 记下新前缀" "${edge_branch4_default}" "$(prefix_of "${edge_branch4}")"
 
 # 9d. 交互原语：写入判定零副作用、提示循环文案与重填（§11 第 11 项）。
 edge_store_prefix=$(edge_case "${edge_cfg_none}" 0 cdn_edge_store_answer k7m2qp4x9d "" "")
-assert_equal "合法前缀按模式拼完整地址" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \
-    "$(config_of "${edge_store_prefix}")"
+assert_equal "合法前缀被记住" "k7m2qp4x9d" "$(prefix_of "${edge_store_prefix}")"
+assert_equal "写入判定不改配置" "${edge_cfg_none}" "$(config_of "${edge_store_prefix}")"
 edge_store_cf=$(edge_case "${edge_cfg_none}" 0 cdn_edge_store_answer k7m2qp4x9d cloudfront "")
-assert_equal "CloudFront 模式拼 cloudfront 后缀" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"}' \
-    "$(config_of "${edge_store_cf}")"
+assert_equal "写入判定与模式无关，只记前缀" "k7m2qp4x9d" "$(prefix_of "${edge_store_cf}")"
 while IFS= read -r edge_bad_answer; do
     edge_store_bad=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_store_answer "${edge_bad_answer}" "" "")
     assert_equal "非法答案零副作用：<${edge_bad_answer}>" "${edge_cfg_prefix}" \
@@ -1644,19 +1637,13 @@ assert_equal "非法输入后的说明行落 stdout（仓库 warn 惯例）" "1"
     "$(stream_of "${edge_loop}" STDOUT | grep -c .)"
 assert_equal "stderr 只有提示行" "0" \
     "$(stream_of "${edge_loop}" STDERR | grep -vc 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用）：')"
-assert_equal "重填后写入第二次输入" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudflare.182682.xyz"}' \
-    "$(config_of "${edge_loop}")"
+assert_equal "重填后记住第二次输入" "k2v8nq4zt6" "$(prefix_of "${edge_loop}")"
 edge_loop_off=$(edge_case "${edge_cfg_prefix}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "off" "k2v8nq4zt6")
 assert_equal "off 不再关闭而是重填" "2" \
     "$(stream_of "${edge_loop_off}" STDERR | grep -c 'CDN 优选前缀 \[k7m2qp4x9d\]（回车采用）：')"
-assert_equal "off 后的重新输入被写入" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k2v8nq4zt6.cloudflare.182682.xyz"}' \
-    "$(config_of "${edge_loop_off}")"
+assert_equal "off 后的重新输入被记住" "k2v8nq4zt6" "$(prefix_of "${edge_loop_off}")"
 edge_loop_enter=$(edge_case "${edge_cfg_none}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "")
-assert_equal "空输入采用默认值" \
-    '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"}' \
-    "$(config_of "${edge_loop_enter}")"
+assert_equal "空输入采用默认值" "k7m2qp4x9d" "$(prefix_of "${edge_loop_enter}")"
 
 # 9e. 结构断言：每个「定义 update_subscription 且渲染订阅」的模式库，
 # 都必须在快照与写运行配置之前校验订阅配置（验收条件 4 结构证据）。

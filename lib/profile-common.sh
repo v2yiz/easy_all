@@ -116,15 +116,12 @@ cdn_edge_default_prefix() {
 
 # 写入判定（不读 stdin）：10 位前缀拼当前模式后缀；其余输入返回非零且零副作用。
 # jq 自身失败是配置已被改坏，不能退化成“输入非法”而陷入无限重填，直接 die。
-# 记住用户确认的前缀；安装续装时身份里的配置已存在，就地写入（edit-sub 不走这里，它自己写配置）。
+# 写入判定（不读 stdin）：只校验并记住前缀，写入统一由订阅配置收集后的
+# apply_cdn_edge_prefix 完成（edit-sub 也不走这里，它自己写配置）。
 cdn_edge_store_answer() {
-    local answer=${1:-} updated
+    local answer=${1:-}
     [[ "${answer}" =~ ^[a-z][a-z0-9]{9}$ ]] || return 1
     CDN_EDGE_PREFIX=${answer}
-    [[ -n "${SUBSCRIPTION_CONFIG:-}" ]] || return 0
-    updated=$(jq -c --arg a "${answer}.$(cdn_edge_mode_suffix)" '.cdnEdgeAddress=$a' \
-        <<<"${SUBSCRIPTION_CONFIG}") || die "更新订阅配置失败"
-    SUBSCRIPTION_CONFIG=${updated}
 }
 
 # 安装顺序是「先优选前缀、后订阅配置」：前缀收完先暂存，配置落定后无条件写入。

@@ -6,8 +6,8 @@
   Zone → 直连域名 → CDN 节点域名 → 直连节点名 → CDN 节点名 → Mihomo 下载文件名 →（模式 4/5 的 Token 与 AWS 凭据）→ CDN 优选前缀 → 订阅配置 JSON。
   此前直连节点名夹在两个域名之间，CDN 节点名在凭据之后，两个节点名分散在两端。
 - **优选前缀排到订阅配置之前**：`collect_cdn_edge_address` 只负责问前缀并记入 `CDN_EDGE_PREFIX`，
-  订阅配置收集完成后由新增的 `apply_cdn_edge_prefix` 无条件写进 `cdnEdgeAddress`（模式 2–5 同规）；
-  续装时身份里的配置已存在，提示环节仍就地写入（`edit-sub` 不走这条链，它自己写配置）。
+  提示环节只校验并记住前缀（`cdn_edge_store_answer` 不再就地改配置），订阅配置收集完成后由新增的
+  `apply_cdn_edge_prefix` 无条件写进 `cdnEdgeAddress`（模式 2–5 同规；`edit-sub` 不走这条链，它自己写配置）。
   续装沿用身份里的原前缀，首装生成新前缀。
 - **删掉“自定义优选域名不提示/不被覆盖”的分流**：安装这一屏粘贴的 JSON 只有 `allowedTokens` 与 `nodes`，
   该分支在安装路径已不可达（自定义域名只经 `edit-sub` 出现，走的是 `choose_subscription_config`）；
