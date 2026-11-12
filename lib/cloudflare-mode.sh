@@ -125,9 +125,11 @@ collect_cloudflare_install_inputs() {
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
 
+    # 先问优选前缀，再问订阅配置（顺序：优选前缀 → 订阅配置）。
+    collect_cdn_edge_address
     SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes"
-    collect_cdn_edge_address
+    apply_cdn_edge_prefix
     cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
         || die "订阅配置无效：节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
     cdn_validate_install_owner_token

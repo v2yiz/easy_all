@@ -117,15 +117,27 @@ cdn_edge_default_prefix() {
 
 # 写入判定（不读 stdin）：10 位前缀拼当前模式后缀；其余输入返回非零且零副作用。
 # jq 自身失败是配置已被改坏，不能退化成“输入非法”而陷入无限重填，直接 die。
+# 记住用户确认的前缀；订阅配置已存在时（续装、edit-sub）就地写入，安装首次收集则等配置收完再写。
 cdn_edge_store_answer() {
     local answer=${1:-} updated
-    if [[ "${answer}" =~ ^[a-z][a-z0-9]{9}$ ]]; then
-        updated=$(jq -c --arg a "${answer}.$(cdn_edge_mode_suffix)" '.cdnEdgeAddress=$a' \
-            <<<"${SUBSCRIPTION_CONFIG}") || die "更新订阅配置失败"
-    else
-        return 1
-    fi
+    [[ "${answer}" =~ ^[a-z][a-z0-9]{9}$ ]] || return 1
+    CDN_EDGE_PREFIX=${answer}
+    [[ -n "${SUBSCRIPTION_CONFIG:-}" ]] || return 0
+    updated=$(jq -c --arg a "${answer}.$(cdn_edge_mode_suffix)" '.cdnEdgeAddress=$a' \
+        <<<"${SUBSCRIPTION_CONFIG}") || die "更新订阅配置失败"
     SUBSCRIPTION_CONFIG=${updated}
+}
+
+# 安装顺序是「先优选前缀、后订阅配置」：前缀收完先暂存，配置落定后再写入。
+# 粘贴的 JSON 自带自定义优选域名时不覆盖（与提示阶段的分流同口径）。
+apply_cdn_edge_prefix() {
+    local edge
+    [[ -n "${CDN_EDGE_PREFIX:-}" ]] || return 0
+    edge=$(jq -r '.cdnEdgeAddress // ""' <<<"${SUBSCRIPTION_CONFIG}" 2>/dev/null) \
+        || die "读取订阅配置失败"
+    [[ -z "${edge}" || "${edge}" =~ ${CDN_EDGE_PREFIX_PATTERN} ]] || return 0
+    SUBSCRIPTION_CONFIG=$(jq -c --arg a "${CDN_EDGE_PREFIX}.$(cdn_edge_mode_suffix)" \
+        '.cdnEdgeAddress=$a' <<<"${SUBSCRIPTION_CONFIG}") || die "更新订阅配置失败"
 }
 
 # 循环读入：提示文案固定含默认值；非法输入用 warn（stdout）说明后重印同一提示。
@@ -144,23 +156,27 @@ cdn_edge_interactive() {
     [[ -t 0 ]]
 }
 
-# 安装收集器（模式 2-5）：把用户确认的优选地址写进 SUBSCRIPTION_CONFIG，
-# 随后由调用方的 cdn_apply_subscription_config 强校验并派生 CF_EDGE_ADDRESS。
+# 安装收集器（模式 2-5）：先问优选前缀（安装顺序上它排在订阅配置之前），
+# 随后由 apply_cdn_edge_prefix 写进配置，再由调用方的 cdn_apply_subscription_config 强校验。
 collect_cdn_edge_address() {
     local normalized edge default
     cdn_edge_interactive || return 0
-    # 一次无副作用试运行：整份 JSON 不可解析、非对象 JSON、字段非法都落到这里。
-    # 不提示也不改配置，交由随后的 cdn_apply_subscription_config 按既有路径拒绝。
-    normalized=$(normalize_subscription_config "${SUBSCRIPTION_CONFIG:-}" \
-        "$(cdn_local_node_names)" 2>/dev/null) || return 0
-    edge=$(jq -r '.cdnEdgeAddress // ""' <<<"${normalized}") || return 1
-    # 自定义优选域名（非安装生成的前缀形态）绝不提示、不被随机值覆盖。
-    if [[ -n "${edge}" && ! "${edge}" =~ ${CDN_EDGE_PREFIX_PATTERN} ]]; then
-        info "当前 CDN 优选地址 ${edge}；改地址或关闭请在安装后执行 sudo easy_all edit-sub"
-        return 0
+    if [[ -n "${SUBSCRIPTION_CONFIG:-}" ]]; then
+        # 一次无副作用试运行：整份 JSON 不可解析、非对象 JSON、字段非法都落到这里。
+        # 不提示也不改配置，交由随后的 cdn_apply_subscription_config 按既有路径拒绝。
+        normalized=$(normalize_subscription_config "${SUBSCRIPTION_CONFIG:-}" \
+            "$(cdn_local_node_names)" 2>/dev/null) || return 0
+        edge=$(jq -r '.cdnEdgeAddress // ""' <<<"${normalized}") || return 1
+        # 自定义优选域名（非安装生成的前缀形态）绝不提示、不被随机值覆盖。
+        if [[ -n "${edge}" && ! "${edge}" =~ ${CDN_EDGE_PREFIX_PATTERN} ]]; then
+            info "当前 CDN 优选地址 ${edge}；改地址或关闭请在安装后执行 sudo easy_all edit-sub"
+            return 0
+        fi
     fi
+    # 安装首次收集时订阅配置还没问，没有历史地址可沿用：直接生成新前缀。
     # 命令替换里的 die 只结束子 shell：这里显式判空，避免空默认值进入提示循环。
-    default=$(cdn_edge_default_prefix) || die "生成 CDN 优选前缀失败：缺少可用的 openssl"
+    default=$(cdn_edge_default_prefix 2>/dev/null || generate_cdn_edge_prefix) \
+        || die "生成 CDN 优选前缀失败：缺少可用的 openssl"
     cdn_edge_prompt_loop "${default}"
 }
 

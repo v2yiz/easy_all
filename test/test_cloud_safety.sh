@@ -602,9 +602,9 @@ assert_equal "模式 5 第 8 条是 AWS Access Key ID" "AWS Access Key ID（仅�
     "$(printf '%s\n' "${combined_order}" | sed -n 8p)"
 assert_equal "模式 5 第 9 条是 AWS Secret Access Key" "AWS Secret Access Key（仅限当前进程使用，不落盘）" \
     "$(printf '%s\n' "${combined_order}" | sed -n 9p)"
-assert_equal "模式 5 第 10 条是订阅配置" "订阅配置" \
+assert_equal "模式 5 第 10 条是优选前缀（在订阅配置之前）" "CDN 优选前缀" \
     "$(printf '%s\n' "${combined_order}" | sed -n 10p)"
-assert_equal "模式 5 优选前缀在最后" "CDN 优选前缀" \
+assert_equal "模式 5 第 11 条是订阅配置" "订阅配置" \
     "$(printf '%s\n' "${combined_order}" | sed -n 11p)"
 assert_equal "模式 5 提示总数固定" "11" "$(printf '%s\n' "${combined_order}" | grep -c .)"
 combined_cf_order=$(run_prompt_order combined-cloudflare)
@@ -616,6 +616,57 @@ assert_equal "模式 3 域名先问完，第 3 条才是 CDN 节点域名" \
 assert_equal "模式 3 两个节点名相邻（直连后紧接 CDN）" \
     "CDN 节点名（完整单节点名）" \
     "$(printf '%s\n' "${combined_cf_order}" | sed -n 5p)"
+# 3b-4. 优选前缀与订阅配置的新顺序：前缀先问并暂存，配置落定后再写进 cdnEdgeAddress。
+apply_prefix_case() { # $1=初始订阅配置 $2=暂存前缀 $3=PROTOCOL -> 最终订阅配置
+    bash -c '
+        source "$1/lib/log.sh"
+        source "$1/lib/profile-common.sh"
+        PROTOCOL=$4
+        SUBSCRIPTION_CONFIG=$2
+        CDN_EDGE_PREFIX=$3
+        apply_cdn_edge_prefix
+        printf "%s" "${SUBSCRIPTION_CONFIG}"
+    ' _ "${ROOT_DIR}" "$1" "$2" "$3" 2>/dev/null
+}
+assert_contains "前缀写入不含 cdnEdgeAddress 的配置" \
+    "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d combined-cloudfront)" \
+    '"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"'
+assert_contains "前缀覆盖安装生成的旧前缀" \
+    "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[],"cdnEdgeAddress":"aa11bb22cc.cloudflare.182682.xyz"}' k7m2qp4x9d combined-cloudflare)" \
+    '"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"'
+assert_contains "自定义优选域名不被前缀覆盖" \
+    "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[],"cdnEdgeAddress":"edge.example.com"}' k7m2qp4x9d cloudfront)" \
+    '"cdnEdgeAddress":"edge.example.com"'
+
+# 3b-5. 结构断言：安装收集器里「问前缀 → 问订阅配置 → 写前缀 → 强校验」的顺序不得错位。
+install_edge_order_check() { # $1=模式库 $2=安装收集函数
+    local body
+    body=$(awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' \
+        "${ROOT_DIR}/lib/$1")
+    printf '%s\n' "${body}" | awk '
+        /collect_cdn_edge_address/ { if (!c) c = NR }
+        /choose_subscription_config/ { if (!s) s = NR }
+        /apply_cdn_edge_prefix/ { if (!a) a = NR }
+        /cdn_apply_subscription_config/ { if (!v) v = NR }
+        END { exit !(c && s && a && v && c < s && s < a && a < v) }
+    ' || fail "$1 的 $2 必须按「问前缀 → 问订阅配置 → 写前缀 → 强校验」排列"
+}
+install_edge_order_check cloudflare-mode.sh collect_cloudflare_install_inputs
+install_edge_order_check cloudfront-mode.sh collect_cloudfront_install_inputs
+install_edge_order_check anytls-mode.sh collect_anytls_install_inputs
+# 订阅配置不可解析时要报错，而不是被 errexit 静默带走。
+bad_apply=$(bash -c '
+    source "$1/lib/log.sh"
+    source "$1/lib/profile-common.sh"
+    PROTOCOL=cloudfront
+    SUBSCRIPTION_CONFIG=not-json
+    CDN_EDGE_PREFIX=k7m2qp4x9d
+    apply_cdn_edge_prefix
+    printf "SHOULD-NOT-REACH\n"
+' _ "${ROOT_DIR}" 2>&1) || true
+assert_contains "订阅配置不可解析时报错而不是静默退出" "${bad_apply}" "读取订阅配置失败"
+assert_not_contains "订阅配置不可解析时不继续执行" "${bad_apply}" "SHOULD-NOT-REACH"
+
 # 模式 1 只有一个节点名：域名与节点名仍是连续两条。
 anytls_order=$(run_prompt_order anytls)
 assert_equal "模式 1 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \

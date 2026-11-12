@@ -93,12 +93,14 @@ collect_anytls_install_inputs() {
     # Token 收集/校验/持久化是各模式共用的（lib/cf-dns.sh）：下一进程可直接复用已存值。
     cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑；deploy 还需 Zone Settings 只读 + Origin Rules 编辑）'
     ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
-    SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
-        || die "订阅配置无效：需包含 allowedTokens 与 nodes"
-    # 本文件承载的模式 1 没有 CDN 入站：只有模式 3（直连 + 橙云）在这里收集 CDN 优选地址，
-    # 模式 2/4/5 由各自的 Profile 收集。
+    # 模式 3（直连 + 橙云）先问优选前缀，再问订阅配置；模式 1 没有 CDN 入站。
     if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
         collect_cdn_edge_address
+    fi
+    SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
+        || die "订阅配置无效：需包含 allowedTokens 与 nodes"
+    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        apply_cdn_edge_prefix
     fi
     cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
         || die "订阅配置无效：节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
