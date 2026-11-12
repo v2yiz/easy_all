@@ -17,8 +17,10 @@ while [[ -L "${EASY_ALL_SOURCE}" ]]; do
 done
 readonly EASY_ALL_ROOT="$(cd -- "$(dirname -- "${EASY_ALL_SOURCE}")" >/dev/null 2>&1 && pwd)"
 readonly EASY_ALL_STATE_FILE="${EASY_ALL_STATE_FILE_OVERRIDE:-/etc/easy_all/state.env}"
-readonly EASY_ALL_INSTALL_DIR="/usr/local/lib/easy_all"
-readonly EASY_ALL_COMMAND_PATH="/usr/local/bin/easy_all"
+# 与 bootstrap.sh 同契约：_OVERRIDE 只给测试/隔离通道把正式路径映射到临时目录，
+# 被忽略时 register-command 会改写宿主机 /usr/local，自愈断言也会对不上目标。
+readonly EASY_ALL_INSTALL_DIR="${EASY_ALL_INSTALL_DIR_OVERRIDE:-/usr/local/lib/easy_all}"
+readonly EASY_ALL_COMMAND_PATH="${EASY_ALL_COMMAND_PATH_OVERRIDE:-/usr/local/bin/easy_all}"
 readonly EASY_ALL_REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
 readonly EASY_ALL_DEFAULT_BRANCH="main"
 readonly EASY_ALL_BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${EASY_ALL_DEFAULT_BRANCH}}}"
@@ -327,6 +329,21 @@ profile_file() {
     printf '%s\n' "${candidate}"
 }
 
+# 注册在首个 mv 前被 SIGKILL 会留下 ${EASY_ALL_INSTALL_DIR}.stage.*：中断自愈只看正式目录
+# 与 .previous.*，不会回收它。register-command 不能额外取锁（bootstrap 已持有同一把 flock，
+# 子进程再取会死锁），因此只回收 mtime 早于 5 分钟（>300 秒）的暂存目录，不删另一个并发
+# 注册正在填装的那一个；只删目录本身（不跟随符号链接），不碰 .previous.* 或其他路径。
+reclaim_stale_register_stages() {
+    local stale
+    for stale in "${EASY_ALL_INSTALL_DIR}".stage.*; do
+        [[ -d "${stale}" && ! -L "${stale}" ]] || continue
+        # find -mmin 按整分钟取整，边界处最多差一分钟：宁晚勿早。
+        [[ -n "$(find "${stale}" -maxdepth 0 -mmin +5 2>/dev/null)" ]] || continue
+        rm -rf -- "${stale}"
+        info "已回收上次注册中断遗留的暂存目录：${stale}"
+    done
+}
+
 unified_register_easy_all_command() {
     local source_root=${EASY_ALL_ROOT} destination="${EASY_ALL_INSTALL_DIR}/easy_all"
     local stage backup="${EASY_ALL_INSTALL_DIR}.previous.$$" relative_path paths
@@ -334,6 +351,7 @@ unified_register_easy_all_command() {
     # 覆盖已安装代码之前拒绝旧 schema：旧版本只能在覆盖前跑自己的卸载。
     launcher_require_current_schema
     require_root
+    reclaim_stale_register_stages
     runtime_tree_is_complete "${source_root}" \
         || die "easy_all 运行时文件不完整：${source_root}"
     paths=$(runtime_manifest_paths "${source_root}") \

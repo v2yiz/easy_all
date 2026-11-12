@@ -138,7 +138,7 @@ sudo easy_all subscription
 - **源站访问鉴权**：
   - 模式 1/2/3 回源端口在 UFW 层面仅放行 Cloudflare 官方回源网段；
   - 模式 4/5 源站注入 `X-Easy-All-Origin-Key` 密钥并由 Caddy 精确校验，防探测与未授权直连。
-- **CloudFront 流量熔断保护（模式 4/5）**：本机内置 985 GB 近似流量计量监控，达到阈值自动熔断 CDN 访问（直连不受影响），降低 AWS 超额账单风险（详见[运维指南](docs/operations-guide.md#6-cdn-流量保护985-gb-熔断运维仅模式-45)）。
+- **CloudFront 流量熔断保护（模式 4/5）**：本机内置 985 GB 近似流量计量监控，达到阈值自动熔断 CDN 访问（直连不受影响），降低 AWS 超额账单风险（详见[运维指南](docs/operations-guide.md#6-cdn-流量保护985-gb-熔断仅模式-45)）。
 - **内网与恶意流量阻断**：sing-box 默认拦截回环、私有网段及元数据请求，防止节点被用于 SSRF 滥用。
 
 完整架构设计与实现细节请参阅 [系统技术参考](docs/technical-reference.md)。

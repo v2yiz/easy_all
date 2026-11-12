@@ -59,7 +59,7 @@
 
 ### 1.4 本项目对域名的规划与要求
 
-- **全模式使用二级子域名**：所有模式都使用同一个 Zone 下的一级/二级子域名（如 `node.example.com`、`cf.example.com`），根域名（apex）本身只用于托管 Zone，不作为客户端节点名。
+- **全模式使用同一 Zone 下的一级子域名**：所有模式都使用同一个 Zone 下的一级子域名（如 `node.example.com`、`cf.example.com`），根域名（apex）本身只用于托管 Zone，不作为客户端节点名；多级子域名（如 `a.b.example.com`）不在 Cloudflare 默认边缘证书覆盖范围内：模式 1/2/3 的**订阅域名与 CDN 节点域名**在安装交互中直接拒绝；直连域名走 Certbot 签发，可用多级子域名；模式 4/5 的节点域名由 ACM 申请，需自行确认证书能否覆盖。
 - **切勿提前在控制台手动添加子域名 DNS 记录**：安装器会在运行期间通过 API 自动检查、创建和绑定对应的 A 记录或 CNAME。
 - **旧记录冲突清理**：若域名此前使用过并留有同名 A、AAAA 或 CNAME 记录，建议在安装前先在 Cloudflare 控制台手动清理冲突记录。
 
@@ -101,9 +101,11 @@
 
 模式 4 与模式 5 使用 AWS CloudFront 分发与 AWS Certificate Manager (ACM) viewer 证书。模式 1、2、3 无需 AWS 凭据。
 
-### 3.1 账号与区域要求
+### 3.1 注册与登录 AWS 账号
 
-- **全球商业区账号**：使用 AWS 全球标准账号（不支持中国区）。
+1. **注册使用根用户邮箱**：如果没有 AWS 全球商业区的独立账号，打开 [AWS 独立账号注册入口（Sign up for AWS Advanced）](https://signin.aws.amazon.com/signup?request_type=register)，填写 **Root user email address（根用户邮箱）** 和 **AWS account name（AWS 账号名称）**。已有账号可跳过注册。此流程无需创建 AWS 项目，不适用于 AWS 中国区账号。
+2. **首次登录选 Root user，不要选 IAM user**：打开 [AWS 管理控制台](https://console.aws.amazon.com/)，用注册时的根用户邮箱登录。如果页面默认显示 IAM 用户登录，点击 **Sign in using root user email** 切换。
+
 - **证书固定区域**：CloudFront 的 viewer 证书必须位于 **`us-east-1`（弗吉尼亚北部）**，脚本固定在此区域调用 ACM 申请与校验。
 - **内存安全使用**：AWS 密钥在安装时输入，**仅暂存于当前进程内存，不落盘**（不写入 state、日志或订阅）；亦可通过环境变量 `AWS_ACCESS_KEY_ID` 与 `AWS_SECRET_ACCESS_KEY` 预先传入。
 - **费用保护**：本机内置 985 GB 近似流量计量保护，达到阈值自动阻断 CDN 入口，降低超额扣费风险。
@@ -112,7 +114,7 @@
 
 #### 第一步：创建最小权限策略
 
-1. 登录 AWS 控制台，进入 **IAM** → **Policies（策略）** → **Create policy**。
+1. 按 §3.1 登录 AWS 控制台后，进入 **IAM** → **Policies（策略）** → **Create policy**。
 2. 切换到 **JSON** 标签页，粘贴以下策略并命名为 `EasyAllCloudFrontPolicy`：
 
 ```json
@@ -160,14 +162,26 @@
 }
 ```
 
-#### 第二步：创建用户并生成 Access Key
+#### 第二步：创建用户并附加策略
 
 1. 在 IAM 中进入 **Users（用户）** → **Create user**，用户名填写 `easy_all-cloudfront-deployer`（**切勿勾选**提供控制台访问权限）。
-2. 在权限选项中选择 **Attach policies directly**，勾选刚刚创建的 `EasyAllCloudFrontPolicy` 并完成创建。
-3. 进入该用户详情页，切换到 **Security credentials** 标签页。
-4. 在 **Access keys** 区域点击 **Create access key**，场景选择 **CLI**，完成创建并妥善保存：
-   - **Access Key ID**
-   - **Secret Access Key**（仅显示一次）
+2. 选择 **Attach policies directly（直接附加策略）**，搜索并勾选 `EasyAllCloudFrontPolicy`，点击 **下一步**，在审核页面确认并创建用户。
+
+   ![AWS IAM 添加权限：选择直接附加策略，勾选 EasyAllCloudFrontPolicy，再点击下一步](img/aws/aws-iam-attach-policy.svg)
+
+#### 第三步：创建并保存访问密钥
+
+1. 在 **IAM → Users（用户）** 打开 `easy_all-cloudfront-deployer`，进入 **Security credentials（安全凭证）** → **Access keys（访问密钥）** → **Create access key（创建访问密钥）**。
+2. 如果 `easy_all` 运行在非 AWS 的 VPS 上，在 **使用案例** 中选 **在 AWS 之外运行的应用程序**，然后点击 **下一步**。
+
+   ![AWS IAM 创建访问密钥：选择在 AWS 之外运行的应用程序，再点击下一步](img/aws/aws-iam-create-access-key.svg)
+
+3. **设置描述标签**可跳过，也可填 `easy_all-cloudfront` 方便识别，然后点击 **创建访问密钥**。
+4. 在 **检索访问密钥** 页面妥善保存同一对密钥，部署时分别填入安装器的 AWS 密钥提示：
+   - **Access Key ID** → `AWS_ACCESS_KEY_ID`
+   - **Secret Access Key** → `AWS_SECRET_ACCESS_KEY`（仅在创建时可获取，离开页面前保存）
+
+**安装时只使用上述专用 IAM 用户的密钥，不要创建或使用根用户的 Access Key。**
 
 > [!TIP]
 > **新 AWS 账号开通提示**：若账号注册于 2021 年末之后，首次创建 CloudFront 分发时若报 `Your account must be verified`，前往 [AWS Support](https://console.aws.amazon.com/support/home) 提交工单（类别 `Account and billing` → `Account verification`）申请开通 CloudFront 生产访问。工单通常需要 24 小时以上才有人处理；批准后重新运行安装将自动幂等复用已创建的证书与 DNS。

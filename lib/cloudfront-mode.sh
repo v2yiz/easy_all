@@ -30,6 +30,9 @@ readonly CLOUDFRONT_ORIGIN_READ_TIMEOUT="120"
 readonly CLOUDFRONT_ORIGIN_KEEPALIVE_TIMEOUT="120"
 readonly CLOUDFRONT_DEPLOY_WAIT_ATTEMPTS="60"
 readonly CLOUDFRONT_DEPLOY_WAIT_SECONDS="10"
+# 删除分发后 ACM 的 InUseBy 需要时间收敛：有界重试 describe，耗尽后按既有归属口径保留。
+readonly ACM_IN_USE_WAIT_ATTEMPTS="5"
+readonly ACM_IN_USE_WAIT_SECONDS="10"
 readonly CDN_PUBLIC_ACCEPT_ATTEMPTS="${CDN_PUBLIC_ACCEPT_ATTEMPTS_OVERRIDE:-6}"
 readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
 readonly CDN_RECORD_COMMENT="easy_all cloudfront"
@@ -347,10 +350,50 @@ cdn_acm_certificate_reusable() {
     certificate_covers_required_domains "${description}"
 }
 
+cdn_acm_terminal_status() {
+    case "$1" in
+    FAILED | VALIDATION_TIMED_OUT | REVOKED | EXPIRED) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+# RequestCertificate 的 IdempotencyToken 只由节点 marker 派生：存量证书进入终态后，重申请会
+# 由 token 幂等取回同一张证书，只会在 validation CNAME 上空转到超时。终态证书无法自愈，
+# 只能先人工删除，因此在这里立即失败并点名 ARN 与处理方式；归属无法确认（如 list-tags
+# 查询失败）时同样要失败——继续走幂等重申请只会空转到超时，且文案不得声称是本工具证书。
+cdn_abort_on_terminal_acm_certificate() {
+    local arn=$1 description=$2 status tags
+    status=$(jq -r '.Certificate.Status // empty' <<<"${description}" 2>/dev/null || true)
+    cdn_acm_terminal_status "${status}" || return 0
+    tags=$(aws_cli acm list-tags-for-certificate --region "${AWS_CONTROL_REGION}" \
+        --certificate-arn "${arn}" --output json 2>/dev/null || true)
+    if acm_certificate_owned_by_easy_all "${description}" "${tags}"; then
+        die "$(printf '现有 ACM 证书 %s 已进入终态 %s（带本节点管理标记），重申请会由幂等 Token 取回同一张证书而无法自愈。\n请到 AWS 控制台（%s）删除该证书后重试。' \
+            "${arn}" "${status}" "${AWS_CONTROL_REGION}")"
+    fi
+    die "$(printf '现有 ACM 证书 %s 已进入终态 %s，无法自动确认归属；请到 AWS 控制台核对该证书后删除或重试。' \
+        "${arn}" "${status}")"
+}
+
 cdn_describe_acm_certificate() {
     local arn=$1 description
     description=$(aws_cli acm describe-certificate --region "${AWS_CONTROL_REGION}" \
         --certificate-arn "${arn}" --output json 2>/dev/null) || return 1
+    printf '%s\n' "${description}"
+}
+
+# 删除 CloudFront 分发后 ACM 的 InUseBy 需要时间收敛：InUseBy 为空即成功，否则有界退避重试。
+# 耗尽后返回最后一次读数，由调用方的归属校验按既有口径保留并失败（不放宽归属判定）。
+describe_settled_acm_certificate() {
+    local arn=$1 attempt description
+    for attempt in $(seq 1 "${ACM_IN_USE_WAIT_ATTEMPTS}"); do
+        description=$(cdn_describe_acm_certificate "${arn}" || true)
+        [[ -n "${description}" ]] || break
+        [[ "$(jq '.Certificate.InUseBy // [] | length' <<<"${description}" 2>/dev/null || echo 1)" != "0" ]] \
+            || break
+        ((attempt < ACM_IN_USE_WAIT_ATTEMPTS)) || break
+        sleep "${ACM_IN_USE_WAIT_SECONDS}"
+    done
     printf '%s\n' "${description}"
 }
 
@@ -432,6 +475,8 @@ find_or_request_acm_certificate() {
         if cdn_acm_certificate_reusable "${description}"; then
             arn=${AWS_ACM_CERTIFICATE_ARN}
         else
+            cdn_abort_on_terminal_acm_certificate \
+                "${AWS_ACM_CERTIFICATE_ARN}" "${description}"
             warn "现有 ACM 证书不可复用（状态/region/SAN 不满足）；将申请新证书"
         fi
     else
@@ -647,15 +692,33 @@ cloudfront_find_existing_distribution() {
     jq -c '{Id:(.Id // ""), DomainName:(.DomainName // "")}' <<<"${collected[0]}"
 }
 
-wait_for_cloudfront_distribution() {
-    local id=$1 attempt status
+# 分发传播期 get-distribution 可能仍返回上一次的 Deployed：只按 Status 判定会拿过期的
+# 配置去 update/delete-distribution 而被服务端拒绝。预期状态必须同时匹配 Status 与 Enabled。
+wait_for_cloudfront_distribution_state() {
+    local id=$1 expected_enabled=$2 attempt description status enabled
     for attempt in $(seq 1 "${CLOUDFRONT_DEPLOY_WAIT_ATTEMPTS}"); do
-        status=$(aws_cli cloudfront get-distribution --id "${id}" \
-            --query 'Distribution.Status' --output text 2>/dev/null || true)
-        [[ "${status}" == "Deployed" ]] && return 0
+        description=$(aws_cli cloudfront get-distribution --id "${id}" \
+            --output json 2>/dev/null || true)
+        status=$(jq -r '.Distribution.Status // empty' <<<"${description}" 2>/dev/null || true)
+        # Enabled 是布尔值：`// empty` 会把 false 当空值吞掉，必须显式 tostring 后再比较。
+        enabled=$(jq -r '.Distribution.DistributionConfig.Enabled | tostring' \
+            <<<"${description}" 2>/dev/null || true)
+        if [[ "${status}" == "Deployed" && "${enabled}" == "${expected_enabled}" ]]; then
+            return 0
+        fi
         sleep "${CLOUDFRONT_DEPLOY_WAIT_SECONDS}"
     done
     return 1
+}
+
+wait_for_cloudfront_distribution() {
+    wait_for_cloudfront_distribution_state "$1" true
+}
+
+# 卸载禁用后必须看到 Enabled=false 的 Deployed 配置；否则 delete-distribution 会被拒。
+# 幂等场景（已禁用）首次返回即为 false，条件立即满足。
+wait_for_cloudfront_distribution_disabled() {
+    wait_for_cloudfront_distribution_state "$1" false
 }
 
 configure_cloudfront_distribution() {
@@ -1376,23 +1439,28 @@ cdn_establish_denied_boundary() {
 
 update_subscription() {
     (($# == 0)) || die "edit-sub 不接受额外参数"
-    local raw_config="" caller_config=${SUBSCRIPTION_CONFIG:-} restricted=0
+    local raw_config="" caller_config=${SUBSCRIPTION_CONFIG:-} restricted=0 chosen_name=""
     require_root
-    acquire_runtime_write_lock
+    # 交互输入先于写锁收集：edit-sub 停在提示上时，共享同一把排他锁的流量守卫会整段时间
+    # 取不到锁而跳过监控与熔断。输入完成后再取锁并重新 load_state，按最新状态继续。
     collect_installed_state
+    if [[ -t 0 ]]; then
+        chosen_name=$(normalize_sub_download_name \
+            "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
+        raw_config=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}")
+    else
+        raw_config=${caller_config:-${SUBSCRIPTION_CONFIG:-}}
+    fi
+    # 提示已在锁外完成：这里给短暂等待，避免刚填完输入就撞上守卫的持锁窗口而整段丢弃。
+    acquire_runtime_write_lock 30
+    collect_installed_state
+    [[ -z "${chosen_name}" ]] || SUB_DOWNLOAD_NAME=${chosen_name}
     cdn_require_traffic_usage
     if cdn_traffic_needs_restricted_recovery; then
         restricted=1
         warn "检测到 CDN 保护待落实；仅在保持 Caddy 503 与停止的核心前提下修复订阅"
         cdn_establish_denied_boundary \
             || die "无法确立 Caddy 503 的安全边界；已停止订阅修复"
-    fi
-    if [[ -t 0 ]]; then
-        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
-            "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
-        raw_config=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}")
-    else
-        raw_config=${caller_config:-${SUBSCRIPTION_CONFIG:-}}
     fi
     cdn_apply_subscription_config "${raw_config}" \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
@@ -1757,7 +1825,7 @@ cdn_purge_aws_resources() {
         fi
         # 分发配置含源站头密钥：update 之后立刻删除，不等到退出清理。
         rm -f -- "${config}"
-        if ! wait_for_cloudfront_distribution "${AWS_CLOUDFRONT_DISTRIBUTION_ID}"; then
+        if ! wait_for_cloudfront_distribution_disabled "${AWS_CLOUDFRONT_DISTRIBUTION_ID}"; then
             warn "等待 CloudFront 分发禁用生效超时；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
             rm -f -- "${fetched}" "${owned}"
             return 1
@@ -1780,8 +1848,7 @@ cdn_purge_aws_resources() {
         success "CloudFront 分发已删除：${AWS_CLOUDFRONT_DISTRIBUTION_ID}"
     fi
     if [[ -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]]; then
-        acm=$(aws_cli acm describe-certificate --region "${AWS_CONTROL_REGION}" \
-            --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" --output json 2>/dev/null || true)
+        acm=$(describe_settled_acm_certificate "${AWS_ACM_CERTIFICATE_ARN}")
         tags=$(aws_cli acm list-tags-for-certificate --region "${AWS_CONTROL_REGION}" \
             --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" --output json 2>/dev/null || true)
         if [[ -z "${acm}" ]]; then

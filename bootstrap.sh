@@ -5,7 +5,9 @@ umask 077
 
 readonly REPOSITORY_URL="${EASY_ALL_REPOSITORY_URL_OVERRIDE:-https://github.com/v2yiz/easy_all.git}"
 readonly DEFAULT_BRANCH="main"
-BRANCH="${EASY_ALL_BRANCH:-${DEFAULT_BRANCH}}"
+# 与 easy_all 同优先级：_OVERRIDE 覆盖 EASY_ALL_BRANCH；两个变量都会转发给最终入口，
+# 克隆的分支与入口后续使用的分支因此保持一致。
+BRANCH="${EASY_ALL_BRANCH_OVERRIDE:-${EASY_ALL_BRANCH:-${DEFAULT_BRANCH}}}"
 # 命令注册目标与运行时写锁与 easy_all 一致；_OVERRIDE 只给测试把正式路径映射到临时目录。
 # 不用 readonly 与同名环境变量共存：bootstrap 必须按自己的 override/默认值行事，
 # 不能因为外层环境中已有同名变量而指向别处。
@@ -168,8 +170,8 @@ interrupted_install_warning() {
     [[ ! -e "${INSTALL_DIR}" && ! -L "${INSTALL_DIR}" ]] || return 0
     [[ -L "${COMMAND_PATH}" ]] || return 0
     interrupted_install_needs_repair && return 0
-    printf '警告: %s 缺失但 %s 仍存在；自愈条件不满足，未自动接管。请人工核实 %s.previous.* 后重试\n' \
-        "${INSTALL_DIR}" "${COMMAND_PATH}" "${INSTALL_DIR}" >&2
+    printf '警告: %s 缺失但 %s 仍存在；自愈条件不满足，未自动接管。请人工核实 %s.previous.* 后重试（%s.stage.* 残留会在下一次注册时自动回收，无需手工处理）\n' \
+        "${INSTALL_DIR}" "${COMMAND_PATH}" "${INSTALL_DIR}" "${INSTALL_DIR}" >&2
 }
 
 # 取锁、复核与重新注册必须在同一个特权 shell 内：锁是 FD，随该 shell 退出才释放，
@@ -185,7 +187,11 @@ repair_interrupted_install_locked() {
     # 等锁期间可能已经有人修好或重新安装：取锁后必须复核，不能照着旧判断覆盖。
     interrupted_install_needs_repair \
         || die "easy_all 安装目录状态在等待运行时锁期间已变化；未自动接管，请人工核实 ${INSTALL_DIR}.previous.* 后重试"
-    bash "${repo_dir}/easy_all" register-command \
+    # 子进程只认 EASY_ALL_*_OVERRIDE，不认 shell 变量：sudo 的 env_reset 会清掉前缀变量，
+    # 这里显式注入已解析的目标，否则自愈会把代码重新注册到宿主机 /usr/local。
+    env EASY_ALL_INSTALL_DIR_OVERRIDE="${INSTALL_DIR}" \
+        EASY_ALL_COMMAND_PATH_OVERRIDE="${COMMAND_PATH}" \
+        bash "${repo_dir}/easy_all" register-command \
         || die "重新注册 easy_all 命令失败；已保留 ${INSTALL_DIR}.previous.* 与业务状态，请检查后重试"
     target=$(readlink -- "${COMMAND_PATH}" 2>/dev/null) || target=""
     [[ "${target}" == "${INSTALL_DIR}/easy_all" && -x "${INSTALL_DIR}/easy_all" ]] \
@@ -251,8 +257,18 @@ bash "${REPO_DIR}/easy_all" verify-release \
 # 只有在 clone 与完整性校验都成功之后、用户原请求之前才自愈：残缺机器上的原请求
 # 会因命令链接悬空而无法执行。
 repair_interrupted_install "${REPO_DIR}"
+# sudo 默认 env_reset 会清掉命令前的前缀变量：隔离/测试通道的 OVERRIDE 必须显式转发给
+# 最终入口，否则非 root + sudo 下它们失效。只转发已设置的变量，未设置的不注入。
+forward_env=()
+for override_name in EASY_ALL_STATE_FILE_OVERRIDE EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE \
+    EASY_ALL_INSTALL_DIR_OVERRIDE EASY_ALL_COMMAND_PATH_OVERRIDE \
+    EASY_ALL_STATE_DIR_OVERRIDE EASY_ALL_CERT_DIR_OVERRIDE EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE \
+    RUNTIME_WRITE_LOCK_FILE_OVERRIDE EASY_ALL_REPOSITORY_URL_OVERRIDE EASY_ALL_BRANCH_OVERRIDE \
+    EASY_ALL_BRANCH; do
+    [[ -z "${!override_name:-}" ]] || forward_env+=("${override_name}=${!override_name}")
+done
 if (($# == 0)); then
-    "${SUDO[@]+"${SUDO[@]}"}" bash "${REPO_DIR}/easy_all" install
+    "${SUDO[@]+"${SUDO[@]}"}" env "${forward_env[@]+"${forward_env[@]}"}" bash "${REPO_DIR}/easy_all" install
 else
-    "${SUDO[@]+"${SUDO[@]}"}" bash "${REPO_DIR}/easy_all" "$@"
+    "${SUDO[@]+"${SUDO[@]}"}" env "${forward_env[@]+"${forward_env[@]}"}" bash "${REPO_DIR}/easy_all" "$@"
 fi

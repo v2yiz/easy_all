@@ -30,7 +30,7 @@ EASY_ALL_BRANCH=dev bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/ea
   这套 UFW/Fail2ban 基线是常驻安全底座：后续 `easy_all uninstall` 只回收业务端口，不会关闭 UFW 或删除 Fail2ban 配置。
 - 设置 `Asia/Shanghai` 时区并启用时间同步。
 - 创建或更新普通用户、sudo 密码和 SSH 公钥；root 初始连接时不依赖预装 sudo，适配精简系统镜像。
-- 为普通用户安装 `uv` 和 Python 3.12。
+- 为普通用户安装 `uv`（锁定 `0.13.7`：只从 `https://astral.sh/uv/0.13.7/install.sh` 下载，传输与重定向都限制在 HTTPS，安装后校验版本）和 Python 3.12。
 - 写入受管 `sshd_config.d` 配置，关闭 SSH 密码登录，并限制 root 只能使用密钥登录；通过 `sshd -T` 语法验收后执行 `systemctl reload` 平滑生效。
 - 在本地 `~/.ssh/config` 写入 Host、连接重试和保活参数。
 

@@ -71,6 +71,9 @@ collect_anytls_install_inputs() {
             validate_domain "${SUBSCRIPTION_DOMAIN}" || die "订阅域名无效：${SUBSCRIPTION_DOMAIN}"
             [[ "${SUBSCRIPTION_DOMAIN}" == *".${CF_ZONE}" ]] \
                 || die "订阅域名必须属于 ${CF_ZONE}：${SUBSCRIPTION_DOMAIN}"
+            # 默认边缘证书只覆盖 Zone 的一级子域名；多级名字会装到最后才失败。
+            [[ "${SUBSCRIPTION_DOMAIN%.${CF_ZONE}}" != *.* ]] \
+                || die "订阅域名必须是 ${CF_ZONE} 的一级子域名（如 sub.${CF_ZONE}）：${SUBSCRIPTION_DOMAIN}"
             [[ "${SUBSCRIPTION_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
                 || die "订阅域名必须与直连域名不同（直连是灰云 A，订阅是橙云 A）"
         fi
@@ -506,17 +509,22 @@ apply_cloud_resources() {
 
 update_subscription() {
     (($# == 0)) || die "edit-sub 不接受额外参数"
-    local raw_config="" caller_config=${SUBSCRIPTION_CONFIG:-}
+    local raw_config="" caller_config=${SUBSCRIPTION_CONFIG:-} chosen_name=""
     require_root
-    acquire_runtime_write_lock
+    # 交互输入先于写锁收集：edit-sub 停在提示上时，共享同一把排他锁的运行时任务会整段时间
+    # 取不到锁。输入完成后再取锁并重新 load_state，按最新状态继续。
     collect_installed_state
     if [[ -t 0 ]]; then
-        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+        chosen_name=$(normalize_sub_download_name \
             "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
         raw_config=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}")
     else
         raw_config=${caller_config:-${SUBSCRIPTION_CONFIG:-}}
     fi
+    # 提示已在锁外完成：这里给短暂等待，避免刚填完输入就撞上守卫的持锁窗口而整段丢弃。
+    acquire_runtime_write_lock 30
+    collect_installed_state
+    [[ -z "${chosen_name}" ]] || SUB_DOWNLOAD_NAME=${chosen_name}
     cdn_apply_subscription_config "${raw_config}" \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
     CDN_SUBSCRIPTION_CORRUPT=0
@@ -707,6 +715,31 @@ rollback_fresh_install() {
     install_progress_clear
 }
 
+# 首轮端口预检：模式 3 的直连/橙云回源/回环端口与模式 1 的 443 直连入口必然使用；
+# 模式 1 的订阅站点 8443 只在 deploy 时使用，订阅模式到输入阶段才确定（见下方补检）。
+cdn_prepare_install_ports() {
+    if runtime_has_cdn_entry; then
+        # 模式 3：443 直连、8443 橙云回源与回环 10086 都必须空闲。
+        prepare_fresh_install "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
+            "$(runtime_cdn_loopback_port)"
+    else
+        prepare_fresh_install 443
+        # 续装已从落盘身份恢复订阅模式：deploy 的 8443 仍需预检，不能因首轮只传
+        # 443 而放宽（link 身份不启 Caddy，也不占用 8443）。
+        if [[ "${INSTALL_RESUME:-0}" == "1" ]]; then
+            anytls_assert_subscription_port_free
+        fi
+    fi
+}
+
+# 模式 1 的 Caddy 8443 只在 deploy 订阅时启用：订阅模式确定后补检，仍早于任何云端
+# 资源创建；模式 3 的 8443 已由首轮预检覆盖，这里不重复。
+anytls_assert_subscription_port_free() {
+    [[ "${PROTOCOL}" != "combined-cloudflare" ]] || return 0
+    subscription_enabled || return 0
+    assert_install_ports_free "$(runtime_cloudflare_only_port)"
+}
+
 install_all() {
     [[ -t 0 ]] || die "安装必须在交互终端中执行"
     require_root
@@ -717,13 +750,7 @@ install_all() {
     report_host_init_state
     ensure_swap
     install_failure_begin "${CDN_PROFILE_KEY}"
-    if runtime_has_cdn_entry; then
-        # 模式 3：443 直连、8443 橙云回源与回环 10086 都必须空闲。
-        prepare_fresh_install "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
-            "$(runtime_cdn_loopback_port)"
-    else
-        prepare_fresh_install 443 8443
-    fi
+    cdn_prepare_install_ports
     if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
         install_progress_begin "${CDN_PROFILE_KEY}" cloudflare
     else
@@ -745,6 +772,8 @@ install_all() {
     configure_ipv4_only
     install_progress_stage inputs
     collect_anytls_install_inputs
+    # 订阅模式到输入阶段才确定：deploy 才占用 8443，此刻补检仍在任何云端资源创建之前。
+    anytls_assert_subscription_port_free
     # 身份在创建任何云端资源前落盘（persist_install_identity），中断后可续装；
     # 后面的第二次落盘只补 Origin Rule 的 ruleset/rule ID。
     anytls_prepare_runtime

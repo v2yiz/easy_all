@@ -115,6 +115,8 @@ assert_contains "模式 1 节点是 AnyTLS 443" "${out}/links.txt" 'anytls://'
 assert_contains "模式 1 Mihomo 节点" "${out}/nodes.yaml" 'type: anytls'
 assert_contains "AnyTLS 节点端口 443" "${out}/nodes.yaml" 'port: 443'
 assert_contains "AnyTLS 关闭证书跳过" "${out}/nodes.yaml" 'skip-cert-verify: false'
+[[ ! -s "${out}/groups.yaml" ]] || fail "模式 1 不应生成额外代理组"
+assert_equal "模式 1 PROXY 成员只有直连节点" $'        - "🇺🇸直连"' "$(<"${out}/names.yaml")"
 
 # --- 模式 4：CloudFront，源站 443 + 回环 10086 --------------------------------
 out="${TMP_DIR}/cloudfront"
@@ -131,6 +133,8 @@ assert_contains "模式 4 节点是 VLESS ws" "${out}/links.txt" 'type=ws'
 assert_not_contains "模式 4 节点不泄露源站密钥" "${out}/links.txt" '0123456789abcdef0123456789abcdef'
 assert_not_contains "模式 4 无 Reality 参数" "${out}/links.txt" 'security=reality'
 assert_contains "模式 4 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+[[ ! -s "${out}/groups.yaml" ]] || fail "模式 4 不应生成额外代理组"
+assert_equal "模式 4 PROXY 成员只有 CDN 节点" $'        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
 # --- 模式 2：橙云单域名 443 + Origin CA ---------------------------------------
 out="${TMP_DIR}/cloudflare"
@@ -139,7 +143,9 @@ assert_contains "模式 2 站点是节点域名 443" "${out}/Caddyfile" 'https:/
 assert_contains "模式 2 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
 assert_not_contains "模式 2 没有 CloudFront 守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
 assert_contains "模式 2 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
-assert_contains "模式 2 订阅域名由节点域名派生" "${out}/links.txt" 'type=ws'
+assert_contains "模式 2 订阅域名由节点域名派生" "${out}/links.txt" 'host=cf.example.com&'
+[[ ! -s "${out}/groups.yaml" ]] || fail "模式 2 不应生成额外代理组"
+assert_equal "模式 2 PROXY 成员只有 CDN 节点" $'        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
 # --- 模式 5：AnyTLS 443 + 源站 8443（无自动组，PROXY 手动选择）--------------
 out="${TMP_DIR}/combined"

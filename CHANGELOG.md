@@ -1,3 +1,60 @@
+## 未发布
+
+审计修复（安全边界、云端清理与运行时锁）：
+
+- **服务端路由先解析目标域名**：`route.rules` 首条新增 `action: resolve`。此前只按 IP 目标匹配 `ip_is_private`/`ip_cidr`，
+  以域名（如 `localhost`、`*.nip.io`）为目标的请求会越过私网与云元数据阻断落进 `final: direct`，与 README 的 SSRF 承诺不符。
+  已发布的 `singbox.json` 需执行一次 `sudo easy_all apply` 才会重新生成。
+  解析失败（NXDOMAIN、超时、无地址）时 `resolve` 会以错误终止连接，不会回落到 `final: direct`；
+  锁定的核心升级时需重新核验上游这一行为（`lib/singbox-runtime.sh` 里留了锚点注释）。
+- **CDN 流量守卫补上三处 fail-closed 判定**：反向漂移（文件里 `enforced=true` 但 live 配置仍开放 CDN 入站，例如重建成
+  功后落盘失败/进程中断）强制收敛为阻断，不再因「`blocked==enforced` 即无需重建」永久 fail-open；订阅未就绪且目标
+  为保持阻断时安装返回 `503` 的降级运行时，live 仍开放 CDN 入站则强制重建、已受限则不重复重建（幂等）；同一次开机内
+  计数回退（规则被外部 flush）按计量异常告警并保留保护状态，不再静默写 0 增量漏计整月流量。
+- **计量规则安装不再把查询失败当成 0 条**：`iptables -S` 失败（xtables 锁/预算耗尽）直接判失败，此前按「0 条」继续
+  插入会双倍计量；插入后新增条数复检，异常即拒绝继续安装。
+- **`purge-cloud` 删分发前等到禁用真正生效**：轮询必须同时看到 `Status=Deployed` 与 `Enabled=false`，传播期读到的旧
+  `Deployed` 不再算完成，避免 `delete-distribution` 被服务端以未禁用拒绝而反复失败。
+- **`purge-cloud` 回收孤儿 ACM 证书**：计划阶段因 `InUseBy` 非空被排除的证书会在确认提示里单独给出数量，分发删除后逐个
+  复核（`InUseBy` 仍指向本次已删分发时按有界重试等待收敛，上限用 `EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS`/`_SECONDS`）；
+  已无占用且归属、域名仍在范围内的会被删除（汇总计数包含追加回收项），仍被其他分发占用的照旧保留；复核时读不到证书
+  状态或等待期后仍被已删分发引用会告警并计入失败，不再当作“不归属”静默跳过。
+  占用记录本身也改为**归属确认之后**才落盘：无 `easy_all=managed` 标记或域名越界的在用证书不再计入复核数量，
+  也不会在回收阶段被多发一轮 API 复核。收敛等待只匹配**实际删除成功**的分发（此前按计划表全量匹配）：
+  某个分发删除失败时，它的关联证书不再白等满额重试（默认 60×10 秒）后才报一次额外失败，而是直接按“仍被存活资源占用”保留。
+- **CloudFront 侧的禁用与证书口径同步收紧**：等待分发稳定必须同时看到 `Status=Deployed` 与预期 `Enabled`（传播期读到的
+  旧 `Deployed` 不再算完成），否则 `update`/`delete-distribution` 会被服务端拒绝；删除分发后 ACM 的 `InUseBy` 需要时间
+  收敛，改为有界退避重试（5×10 秒）再按既有归属口径保留；ACM 证书处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/
+  `EXPIRED` 等终态时立即失败并点名 ARN 与处理方式——`RequestCertificate` 的幂等 Token 只会取回同一张证书，继续
+  重申请必然空转到超时。
+- **`edit-sub` 的交互提示不再占用运行时写锁**：三个模式（AnyTLS / Cloudflare / CloudFront）的订阅文件名与配置输入提示都改到
+  取锁之前；输入完成后先取锁（最多等 30 秒，避免刚填完就撞上守卫持锁窗口而丢弃输入），再重新读取状态并回填下载名。
+  此前停在提示上时，流量守卫（同一把排他锁）整段时间取不到锁，监控与 985 GB 熔断会一直跳过。
+- **订阅域名必须是一级子域名**：模式 1/2/3 的订阅域名在安装交互阶段就拒绝 `a.b.<zone>` 形式（Cloudflare 默认边缘
+  证书不覆盖多级子域），不再装到最后才失败；模式 1 的 `8443` 预检改为「订阅模式确定后补检」，`link` 安装不再要求
+  该端口空闲，`deploy` 补检仍在任何云端资源创建之前。
+- **路径覆盖契约补全**：`easy_all` 与卸载路径（安装目录、命令入口）都采纳 `EASY_ALL_INSTALL_DIR_OVERRIDE`/
+  `EASY_ALL_COMMAND_PATH_OVERRIDE`，`bootstrap.sh` 的克隆分支采纳 `EASY_ALL_BRANCH_OVERRIDE`，中断自愈的
+  `register-command` 子进程显式转发这两个路径变量（`sudo` 的 `env_reset` 会清掉前缀变量）。非 root 用户通过 `sudo`
+  提权执行时，`bootstrap.sh` 也把 `EASY_ALL_BRANCH` 一并转发给最终入口：此前只有 `_OVERRIDE` 会转发，克隆到开发分支
+  后入口会回落到 `main`（例如 `EASY_ALL_BRANCH=dev bash bootstrap.sh self-update`）。
+- **中断自愈与凭据卫生**：自愈重新注册时显式注入 `EASY_ALL_INSTALL_DIR_OVERRIDE`/`EASY_ALL_COMMAND_PATH_OVERRIDE`
+  （`sudo` 的 `env_reset` 会清掉前缀变量，否则代码会被重新注册到宿主机 `/usr/local`）；`register-command` 回收 5 分钟前
+  遗留的 `<安装目录>.stage.*`（另取锁会与 bootstrap 已持有的 flock 死锁，因此只按 mtime 与目录类型判定）；清理事务保留
+  运行时目录前删除含源站头密钥的 `origin-header` 临时文件。
+- **`npm run test:cores` 不再写宿主机系统目录**：`EASY_ALL_DOWNLOAD_CORES=1` 且未显式指定时，核心默认下载到脚本自建的
+  临时目录（非 root 不再 EPERM，root 也不再污染 `/etc/easy_all`）。注意下载目录随该脚本退出即删，随后的
+  `test/test_core_e2e.mjs` 需要显式给出的 `SINGBOX_BIN`/`CADDY_BIN`（缺核心时它现在直接失败，不再静默退回 jq 结构校验）。
+- **复用已有 Swap 文件前先验魔数**：`/swapfile` 已存在时不再盲目 `chmod` + `mkswap`（此前会把普通文件格式化成 Swap 并写进
+  fstab）。复用前按 `SWAPSPACE2` 魔数确认，偏移取 `PAGE_SIZE - 10`（4K/16K/64K 页内核都命中），取不到页大小时退回 4K；
+  不是 Swap 就什么都不改。磁盘余量检查同时收窄到新建分支：磁盘已满但同名 Swap 文件完好的机器仍能 `swapon` 复用；
+  失败文案也按分支区分（新建时「已删除新建的 Swap 文件」、复用时「保留已有文件」），不再让人误以为用户的旧文件被清理。
+- **`debian-init.sh` 的 uv 安装锁定版本与传输**：改为下载 `https://astral.sh/uv/0.13.7/install.sh`，`curl` 限制
+  `--proto '=https' --proto-redir '=https'`，安装脚本落在 `0600` 临时文件由目标用户执行，安装后断言 `uv --version` 的
+  前缀与锁定版本一致。剩余信任边界是 astral.sh 站点与其 TLS 证书（官方没有可离线校验的清单）。
+- **Mihomo 模板准备去除死标志**：`prepare_mihomo_template` 删除永不复位的 `MIHOMO_TEMPLATE_PREPARED` 提前返回分支，
+  已准备模板同样走完整校验，不再有“本进程已准备过”这条不可达捷径。
+
 ## 5.2.0 更新说明（2026-11-11）
 
 模式 5 订阅改为与模式 3 结构一致的手动选择：
@@ -1179,7 +1236,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移；订阅 URL 不变。
 
 源码版本标识为 `1.6.12`。已有部署执行 `sudo easy_all self-update` 即可；本次不改变订阅内容与状态版本，无需重新执行 `apply` 或 `update-sub`。
-详见[运维指南](docs/operations-guide.md#更新与应用)。
+详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.11 更新说明（2026-10-27）
 
@@ -1190,7 +1247,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 
 源码版本标识为 `1.6.11`。已有部署执行 `sudo easy_all self-update`；需要更新核心时执行
 `sudo easy_all update-core`，升级到 26.9.8+ 后订阅会自动换成携带 `support-x25519mlkem768` 的版本。
-详见[运维指南](docs/operations-guide.md#更新与应用)。
+详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.10 更新说明（2026-10-27）
 
@@ -1203,7 +1260,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 源码版本标识为 `1.6.10`。已有部署执行 `sudo easy_all self-update`；Reality 自托管订阅再执行
 `sudo easy_all apply` 重新生成订阅（是否带该字段取决于本机核心版本，低于 26.9.8 时不写入，
 旧服务端不需要它；升级核心后请再执行一次 `apply`）；Cloudflare 聚合订阅再执行
-`sudo easy_all update-sub` 重建 Worker。详见[运维指南](docs/operations-guide.md#更新与应用)。
+`sudo easy_all update-sub` 重建 Worker。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.9 更新说明（2026-10-27）
 
@@ -1214,7 +1271,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 使用聚合配置下发节点的部署，修改 SNI 后仍需同步聚合配置里的 `sni` 并重建 Worker。
 - 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移；订阅 URL 不变，但切换后客户端必须刷新订阅或重新导入节点。
 
-源码版本标识为 `1.6.9`。本次为新增命令，存量部署无需重新执行 `apply`；需要更换伪装目标时执行 `sudo easy_all reality-target <域名:端口>`。详见[运维指南](docs/operations-guide.md#修改-reality-sni)。
+源码版本标识为 `1.6.9`。本次为新增命令，存量部署无需重新执行 `apply`；需要更换伪装目标时执行 `sudo easy_all reality-target <域名:端口>`。详见[运维指南](docs/operations-guide.md#42-节点域名与凭据变更)。
 
 ## 1.6.8 更新说明（2026-10-22）
 
@@ -1224,7 +1281,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 补充对应 systemd 状态感知与维护锁跳过的单元测试。
 - 兼容性：状态版本 Reality v7、Cloudflare v9 保持不变，无需迁移。
 
-源码版本标识为 `1.6.8`。升级执行 `sudo easy_all self-update` 并执行 `sudo easy_all apply`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.8`。升级执行 `sudo easy_all self-update` 并执行 `sudo easy_all apply`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.7 更新说明（2026-10-22）
 
@@ -1234,7 +1291,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 说明：这类域名涉及运营商取号；如不使用一键登录而想减少后台取号，可自行改为 REJECT，但会破坏相关 App 的一键登录。
 - 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
 
-源码版本标识为 `1.6.7`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.7`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.6 更新说明（2026-10-22）
 
@@ -1244,7 +1301,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 说明：这是广告素材域名，本项目不做广告拦截；如需屏蔽请另加 REJECT 规则。
 - 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
 
-源码版本标识为 `1.6.6`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.6`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.5 更新说明（2026-10-22）
 
@@ -1254,7 +1311,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 说明：`ctobsnssdk.com` 属于广告/统计 SDK；本项目不做广告拦截，按国内域名直连；如需拦截应另加 REJECT 规则。`httpdns.pro` 是共享 HTTPDNS 域名，整域直连。
 - 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
 
-源码版本标识为 `1.6.5`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.5`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.4 更新说明（2026-10-22）
 
@@ -1264,7 +1321,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 新增 `connectivitycheck.gstatic.com`、`getmobileredirecthost`、`wpad` 的真实内核断言；更新 classic 内联集合计数与 8 KiB 预算；文档同步。
 - 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
 
-源码版本标识为 `1.6.4`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.4`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.3 更新说明（2026-10-22）
 
@@ -1274,7 +1331,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 新增 `www.hxkba.com`、`cm-10-134.getui.com` 路由断言，覆盖默认/完整/经典模板的缓存与冷启动；文档同步为“默认加载国内与 SDK 域名库”。
 - 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。
 
-源码版本标识为 `1.6.3`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.3`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.2 更新说明（2026-10-22）
 
@@ -1284,7 +1341,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 新增 `www.hxkba.com` 的 `geosite-cn` 路由断言，并补充默认模板缓存/冷启动、完整版与经典模板的回归覆盖；文档同步为“默认加载国内域名库，仍不加载境外域名库”。
 - 兼容性：仅模板、文档与测试变化，Reality v7、Cloudflare v9 无需迁移；Worker 内嵌模板变化，Cloudflare 聚合订阅需重新构建。新增规则集意味着默认模板首次启动会下载约 535 KB 的 `geosite-cn.mrs`。
 
-源码版本标识为 `1.6.2`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.2`。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 1.6.1 更新说明（2026-10-22）
 
@@ -1296,7 +1353,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 测试脚本改为只面向 Debian 12/13：移除 `stat -f` 回退与 macOS Bash 3.2 的动态 fd 兼容，统一使用 GNU `stat -c` 与 Bash 4.1+ 的 `exec {fd}<`；本地 `.pi/` 配置目录不再进入版本控制。
 - 兼容性：仅修改订阅模板规则、文档与测试，不改变协议、状态或数据结构；Reality 状态保持 v7、Cloudflare v9，无需迁移。默认/完整模板的规则集数量与内存预算不变（5/7 个 MRS），Worker 内嵌模板随本次变化，Cloudflare 聚合订阅需重新构建。
 
-源码版本标识为 `1.6.1`（Git 标签 `1.6.1`）。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+源码版本标识为 `1.6.1`（Git 标签 `1.6.1`）。升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 2026-10-14
 
@@ -1307,7 +1364,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 开机等锁超时日志给出专用恢复命令，版本验收失败显示期望及实际输出；文档说明交互应用遇锁占用时重试，以及手工安装的更新版可能被固定版本覆盖。
 - 补充版本升级、替换失败恢复、运行时锁等待、BBR 回退、开机任务生命周期和 README/CHANGELOG 版本一致性回归测试。状态版本保持 Reality v7、Cloudflare v9；本次不修改 Worker 运行源码，无需仅为此重建 Worker。
 
-源码版本标识为 `2026-10-14`。已有部署执行 `sudo easy_all self-update` 后，可用 `sudo easy_all tcp skyline` 选择 Skyline；已选择 Skyline 的部署执行 `sudo easy_all apply` 更新到项目固定版本，无需先卸载。详见[运维指南](docs/operations-guide.md#tcp-加速选择)。
+源码版本标识为 `2026-10-14`。已有部署执行 `sudo easy_all self-update` 后，可用 `sudo easy_all tcp skyline` 选择 Skyline；已选择 Skyline 的部署执行 `sudo easy_all apply` 更新到项目固定版本，无需先卸载。详见[运维指南](docs/operations-guide.md#3-tcp-加速skyline-speeder)。
 
 ## 2026-10-13-v1
 
@@ -1315,7 +1372,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 保持订阅 IPv4 策略、上游失败提示及鉴权返回行为；补充生成 Worker 的 HTTP 403/429 状态码保留检查。
 - 源码发布版本为 Git 标签 `2026-10-13-v1`；Worker 构建版本继续独立递增，现有 Worker 需重新构建并部署才能消除这些诊断。状态版本保持 Reality v7、Cloudflare v9，无需迁移。
 
-升级执行 `sudo easy_all self-update`；Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`，聚合配置选择“保留”。独立手工部署的 Worker 在其构建环境重新构建并部署。详见[运维指南](docs/operations-guide.md#更新与应用)。
+升级执行 `sudo easy_all self-update`；Cloudflare 聚合订阅再执行 `sudo easy_all update-sub`，聚合配置选择“保留”。独立手工部署的 Worker 在其构建环境重新构建并部署。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 2026-10-13
 
@@ -1323,7 +1380,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 完整测试入口增加 Bash 4.1+ 与 GNU coreutils（`stat`、`date`）前置检查；环境不满足时立即给出原因和 Linux/容器运行建议，macOS 可单独运行 `npm run test:worker`。补充 Reality 两种配置在新旧 Nginx 上的回归检查，以及 GNU 工具缺失时的提示检查。
 - 源码发布版本为 Git 标签 `2026-10-13`；Worker 构建版本继续独立递增，本次无需重新部署 Worker。状态版本保持 Reality v7、Cloudflare v9，无需迁移。
 
-升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，生成适配当前 Nginx 版本的配置。详见[运维指南](docs/operations-guide.md#更新与应用)。
+升级执行 `sudo easy_all self-update`；Reality 自托管订阅再执行 `sudo easy_all apply`，生成适配当前 Nginx 版本的配置。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 2026-10-12
 
@@ -1331,7 +1388,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 同步 `test/test_cdn_runtime.sh` 的原子回滚桩：该桩此前固定要求 `mv` 首参数为 `-fT`，与上面的实现调整不一致导致 GitHub Actions 的测试中断；现断言与实现一致的首参数 `-f`，目标路径、`0600` 权限、同目录暂存与旧状态仍可读等校验不变。仅测试内容变化，不影响安装器运行时行为。
 - 源码发布版本为 Git 标签 `2026-10-12`；Worker 的 `X-Easy-All-Version` 是独立构建版本，继续按北京时间自动递增。本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker。状态版本保持 Reality v7、Cloudflare v9，无需迁移。
 
-升级执行 `sudo easy_all self-update`；本次不涉及配置生成，无需再执行 `sudo easy_all apply`。详见[运维指南](docs/operations-guide.md#更新与应用)。
+升级执行 `sudo easy_all self-update`；本次不涉及配置生成，无需再执行 `sudo easy_all apply`。详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 2026-10-11
 
@@ -1345,7 +1402,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 补充隐藏输入、空/多文档 API 响应、DNS 冲突、订阅 Worker 清理重试与重新接管、状态与缓存发布边界、保留名冲突的回归检查。
 - 源码发布版本为 Git 标签 `2026-10-11`；Worker 的 `X-Easy-All-Version` 是独立构建版本，继续按北京时间自动递增。本次未修改 Worker 运行源码，无需仅为这些修复重新部署 Worker；构建期保留名检查在下次构建时生效。状态版本保持 Reality v7、Cloudflare v9，旧状态缺少待清理字段时按空列表加载。
 
-升级执行 `sudo easy_all self-update`，再执行 `sudo easy_all apply`；详见[运维指南](docs/operations-guide.md#更新与应用)。
+升级执行 `sudo easy_all self-update`，再执行 `sudo easy_all apply`；详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 2026-10-10-v1
 
@@ -1354,7 +1411,7 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 补充渲染失败、发布中断、持续可读、配额模式切换和防火墙更新顺序的回归检查。
 - 源码发布版本为 Git 标签 `2026-10-10-v1`；Worker 的 `X-Easy-All-Version` 继续在每次构建时按北京时间自动递增，本次服务端修复无需重建 Worker。
 
-升级执行 `sudo easy_all self-update`，再执行 `sudo easy_all apply`；详见[运维指南](docs/operations-guide.md#更新与应用)。
+升级执行 `sudo easy_all self-update`，再执行 `sudo easy_all apply`；详见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。
 
 ## 2026-10-10
 
@@ -1363,4 +1420,4 @@ Cloudflare 模式的现有状态和订阅；全新安装时在交互菜单选择
 - 三套模板将 `0.0.0.0/8` 拒绝规则移到 LAN 规则前，并补充 Apple 分流、缓存迁移和零地址回归测试。
 - 聚合 Worker 的 `X-Easy-All-Version` 由构建脚本自动生成，格式为 `YYYY-MM-DD-vN`；日期按北京时间生成，同日递增。本次源码版本以 Git 提交标识，部署时生成的 Worker 版本号会在 `update-sub` 重建后显示。
 
-Cloudflare 聚合订阅服务器更新步骤见[运维指南](docs/operations-guide.md#更新与应用)。
+Cloudflare 聚合订阅服务器更新步骤见[运维指南](docs/operations-guide.md#1-软件更新与配置应用)。

@@ -26,9 +26,12 @@ readonly SUBSCRIPTION_MIHOMO_IOS_FILE="${SUBSCRIPTION_DIR}/mihomo-ios.yaml"
 readonly SUBSCRIPTION_BASE64_ALL_FILE="${SUBSCRIPTION_DIR}/base64-all.txt"
 readonly SUBSCRIPTION_MIHOMO_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-all.yaml"
 readonly SUBSCRIPTION_MIHOMO_IOS_ALL_FILE="${SUBSCRIPTION_DIR}/mihomo-ios-all.yaml"
-readonly COMMAND_INSTALL_DIR="/usr/local/lib/easy_all"
+# 卸载时会删的运行时目录；与 easy_all 的 EASY_ALL_INSTALL_DIR 同契约，测试隔离通道可通过
+# _OVERRIDE 指向临时目录，不能被固定为正式路径。
+readonly COMMAND_INSTALL_DIR="${EASY_ALL_INSTALL_DIR_OVERRIDE:-/usr/local/lib/easy_all}"
 readonly ENTRY_COMMAND_NAME="easy_all"
-readonly COMMAND_PATH="/usr/local/bin/${ENTRY_COMMAND_NAME}"
+# 同上：卸载时删除的命令入口也要可覆盖，否则隔离演练会删掉宿主机的 /usr/local/bin/easy_all。
+readonly COMMAND_PATH="${EASY_ALL_COMMAND_PATH_OVERRIDE:-/usr/local/bin/${ENTRY_COMMAND_NAME}}"
 readonly UFW_RULE_COMMENT="easy_all-managed"
 readonly UFW_DEFAULT_CONFIG="/etc/default/ufw"
 readonly DEFAULT_SUB_DOWNLOAD_NAME="EASY_ALL"
@@ -196,6 +199,8 @@ cleanup() {
         # 状态回滚失败时保留整个运行时目录：备份目录（part.*）与临时凭据都在其中，
         # 但凭据已先由 clear_profile_credentials 删除。
         if [[ "${PRESERVE_RUNTIME_TMP:-0}" == "1" && "${path}" == "${RUNTIME_TMP}" ]]; then
+            # 探活用的源站请求头含 ORIGIN_HEADER_SECRET 明文，不属于恢复材料：保留前删除。
+            rm -f -- "${path}/origin-header"
             continue
         fi
         rm -rf -- "${path}"

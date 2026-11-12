@@ -3,7 +3,7 @@
 // 2) 阻断/订阅未就绪变体同样通过核心校验（配置层面覆盖 §7/§8 的两种极端形态）。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, accessSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,20 @@ if (verify.status !== 0) {
   assert.fail('verify-cores 未通过：缺少锁定版本的核心或配置被拒绝');
 }
 process.stdout.write(verify.stdout);
+
+// 变体步骤会重新 source profile，核心路径回落到环境变量/默认路径。verify-cores 自己下载的
+// 临时副本已随其退出删除：此处缺失必须响亮失败，不能静默降级为 jq 结构校验。
+for (const [label, bin] of [['sing-box', singbox], ['Caddy', caddy]]) {
+  let ok = existsSync(bin);
+  if (ok) {
+    try {
+      accessSync(bin, constants.X_OK);
+    } catch {
+      ok = false;
+    }
+  }
+  assert.ok(ok, `缺少可执行的 ${label}（${bin}）：真核心门禁不接受结构校验兜底；请显式设置 SINGBOX_BIN/CADDY_BIN`);
+}
 
 // 变体：阻断态（省略 CDN 入站 / 代理路径 503）与订阅未就绪（/subscribe 503）。
 const tmp = mkdtempSync(join(tmpdir(), 'easy-all-core-e2e-'));

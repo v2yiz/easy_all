@@ -102,6 +102,7 @@ sudo easy_all renew-cert
 ```
 - **模式 2**：强制轮换 Cloudflare Origin CA 证书。先签发并部署新证书，通过本机严格 TLS 验收后才吊销旧证书。
 - **模式 1/3/4/5**：通过 Cloudflare DNS-01 重新签发 Let's Encrypt 证书，通过本机证书指纹验收后平滑替换。
+- **模式 4/5 的 ACM viewer 证书**不归 `renew-cert` 管，由 AWS 自动续期；但证书处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时，安装与 `apply-cloud` 会直接失败并点名 ARN：重申请会被幂等 Token 取回同一张证书，需先到 AWS 控制台（`us-east-1`）删除后重试。
 
 ---
 
@@ -132,6 +133,8 @@ sudo easy_all edit-sub
 运行 `sudo easy_all status` 查看保护状态：
 - 若显示 `blocked=true`：说明当月配额耗尽，CDN 已熔断至次月；
 - 若显示 `统计文件缺失或损坏`：请勿手工创建或篡改文件，运行 `sudo easy_all cdn-traffic-sync` 或 `sudo easy_all apply` 尝试恢复。
+- 若 CDN 仍可访问但状态显示 `enforced=true`（重建后落盘失败、进程中途被杀等）：下一轮 timer 会按反向漂移强制收敛为阻断并告警，无需手工清空状态文件。
+- 若日志出现 `计量计数在同一次开机内回退` 或 `mangle 计量规则数异常`：说明规则被外部命令 `flush` 或重复插入，保护会保持现有阻断状态，排查后运行 `sudo easy_all cdn-traffic-sync` 收敛；订阅未就绪时会安装返回 `503` 的降级站点并禁止解封，先执行 `sudo easy_all edit-sub`。
 
 ---
 
@@ -150,8 +153,9 @@ sudo easy_all uninstall
 sudo easy_all purge-cloud --domain example.com
 ```
 - **Cloudflare**：根据注释与前缀自动清理 easy_all 相关的 DNS 记录、Origin Rule 及 Origin CA 证书。
-- **CloudFront / ACM**：提供 AWS 凭据且已安装 aws CLI 时自动联动清理：安全禁用并删除对应 Comment 且别名严格匹配的分发，并删除对应未在用的 ACM 证书。
+- **CloudFront / ACM**：提供 AWS 凭据且已安装 aws CLI 时自动联动清理：安全禁用并删除对应 Comment 且别名严格匹配的分发，并删除对应未在用的 ACM 证书。计划阶段仍被分发占用的证书不会被放弃：分发删除后会逐个复核，确认已无 `InUseBy`、归属与域名均在范围内才删除；仍被其他分发占用的照旧保留。
 - **分页上限**：环境变量 `EASY_ALL_PURGE_MAX_PAGES` 控制列表扫描上限（默认 100 页 × 100 条），超限安全中止。
+- **收敛等待**：`EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS`（默认 60）与 `EASY_ALL_PURGE_AWS_WAIT_SECONDS`（默认 10）控制分发禁用传播与证书 `InUseBy` 收敛的轮询次数与间隔；删除失败的分发不计入等待对象，仍被存活资源占用的证书会直接保留。
 
 ---
 

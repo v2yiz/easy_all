@@ -483,17 +483,22 @@ apply_cloud_resources() {
 
 update_subscription() {
     (($# == 0)) || die "edit-sub 不接受额外参数"
-    local raw_config="" caller_config=${SUBSCRIPTION_CONFIG:-}
+    local raw_config="" caller_config=${SUBSCRIPTION_CONFIG:-} chosen_name=""
     require_root
-    acquire_runtime_write_lock
+    # 交互输入先于写锁收集：edit-sub 停在提示上时，共享同一把排他锁的运行时任务会整段时间
+    # 取不到锁。输入完成后再取锁并重新 load_state，按最新状态继续。
     collect_installed_state
     if [[ -t 0 ]]; then
-        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+        chosen_name=$(normalize_sub_download_name \
             "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
         raw_config=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}")
     else
         raw_config=${caller_config:-${SUBSCRIPTION_CONFIG:-}}
     fi
+    # 提示已在锁外完成：这里给短暂等待，避免刚填完输入就撞上守卫的持锁窗口而整段丢弃。
+    acquire_runtime_write_lock 30
+    collect_installed_state
+    [[ -z "${chosen_name}" ]] || SUB_DOWNLOAD_NAME=${chosen_name}
     cdn_apply_subscription_config "${raw_config}" \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
     # 新配置已强校验：旧订阅的损坏标记必须清零，否则后续写配置仍判订阅不可用。

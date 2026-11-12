@@ -804,6 +804,134 @@ assert_contains "unknown owner keeps the dedicated-vps verdict" "${output}" "仅
 reset_artifacts
 idle
 
+# 26b. 模式 1 订阅域名必须是 Zone 的一级子域名：默认橙云边缘证书只覆盖一级子域，
+# 多级名字会装到最后（公网 TLS 验收）才失败且无法修复，因此必须在输入处拒绝。
+run_anytls_inputs_case() { # $1=SUBSCRIPTION_DOMAIN
+    local case_dir="${TMP_DIR}/anytls-inputs-$(printf '%s' "$1" | tr '.' '_')"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}/state"
+    EASY_ALL_INPUTS_SUB_DOMAIN="$1" \
+    RUNTIME_TMP="${case_dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/state/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/state/subscriptions" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
+        bash -c '
+            source "$1/profiles/anytls.sh"
+            CF_ZONE=example.com
+            SUBSCRIPTION_MODE=deploy
+            SUBSCRIPTION_DOMAIN=${EASY_ALL_INPUTS_SUB_DOMAIN}
+            # 交互面：一律接受默认值（直连域名/节点名/下载名都取默认）。
+            prompt_value() { printf "%s" "${2:-}"; }
+            cloudflare_collect_api_token() { :; }
+            choose_subscription_config() {
+                printf "%s" "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[]}"
+            }
+            cdn_apply_subscription_config() { :; }
+            cdn_validate_install_owner_token() { :; }
+            detect_public_ipv4() { printf "203.0.113.10"; }
+            collect_anytls_install_inputs
+        ' _ "${ROOT_DIR}" 2>&1
+}
+multi_level_output=$(run_anytls_inputs_case "deep.sub.example.com") \
+    && fail "模式 1 多级订阅域名必须拒绝"
+assert_contains "模式 1 多级订阅域名点明一级子域要求" "${multi_level_output}" \
+    "订阅域名必须是 example.com 的一级子域名"
+assert_contains "模式 1 多级订阅域名给出正确示例" "${multi_level_output}" "如 sub.example.com"
+one_level_output=$(run_anytls_inputs_case "sub.example.com") \
+    || fail "模式 1 一级订阅域名必须通过：${one_level_output}"
+
+# 26c. 模式 1 端口预检拆两段：link 不启 Caddy、不放 8443，首轮只查 443；deploy 的
+# 8443 在订阅模式确定后才补检（仍在任何云端资源创建之前）。
+run_anytls_preflight_case() { # $1=SUBSCRIPTION_MODE
+    SUBSCRIPTION_MODE="$1" bash -c '
+        source "$1/profiles/anytls.sh"
+        cdn_prepare_install_ports
+        printf "PREFLIGHT-OK\n"
+        anytls_assert_subscription_port_free
+        printf "SUBSCRIPTION-PORT-OK\n"
+    ' _ "${ROOT_DIR}" 2>&1
+}
+reset_artifacts
+idle
+busy 8443
+link_preflight_status=0
+link_preflight_output=$(run_anytls_preflight_case link) || link_preflight_status=$?
+assert_equal "模式 1 link 安装不再因宿主占用 8443 失败" "0" "${link_preflight_status}"
+assert_contains "link 首轮预检通过" "${link_preflight_output}" "PREFLIGHT-OK"
+assert_contains "link 不做订阅端口补检" "${link_preflight_output}" "SUBSCRIPTION-PORT-OK"
+deploy_preflight_status=0
+deploy_preflight_output=$(run_anytls_preflight_case deploy) || deploy_preflight_status=$?
+assert_equal "模式 1 deploy 安装仍因 8443 被占失败" "1" "${deploy_preflight_status}"
+assert_contains "deploy 首轮预检只查 443 因此通过" "${deploy_preflight_output}" "PREFLIGHT-OK"
+assert_contains "deploy 订阅端口补检点名 8443" "${deploy_preflight_output}" "TCP 8443 已被占用"
+assert_not_contains "deploy 补检失败后不再输出成功标记" "${deploy_preflight_output}" \
+    "SUBSCRIPTION-PORT-OK"
+reset_artifacts
+idle
+
+# 26d. 模式 1 安装入口必须真正调用端口预检与进度初始化。
+# 写成 `cdn_prepare_install_ports()`（带括号）在 bash 里是「嵌套函数定义」：不调用，
+# 还会把真函数重定义成紧随其后的 if 块，而顶层单测（26c 直接调函数）仍会绿。
+run_anytls_install_all_case() {
+    local case_dir="${TMP_DIR}/anytls-install-all"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}"
+    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subscriptions" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
+    RUNTIME_TMP="${case_dir}/runtime" \
+        bash -c '
+            set -Eeuo pipefail
+            # shellcheck source=/dev/null
+            source "$1/profiles/anytls.sh"
+            # 宿主与云端一律替身：本用例只校验 install_all 的调用与控制流。
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            require_systemd() { :; }
+            check_platform() { :; }
+            report_host_init_state() { :; }
+            ensure_swap() { :; }
+            install_failure_begin() { printf "FAILURE-BEGIN: %s\n" "$1"; }
+            install_progress_begin() { printf "PROGRESS-BEGIN: %s %s\n" "$1" "$2"; }
+            install_progress_stage() { :; }
+            prepare_fresh_install() { printf "PREPARE-PORTS: %s\n" "$*"; }
+            snapshot_fresh_install() { :; }
+            install_packages() { :; }
+            install_certbot_deploy_hook() { :; }
+            choose_tcp_acceleration() { :; }
+            configure_tcp_acceleration() { :; }
+            configure_daily_reboot() { :; }
+            configure_ipv4_only() { :; }
+            # 安装在这里结束（输入阶段之后就是云端资源，不在本用例范围），并就地记录
+            # cdn_prepare_install_ports 是否被 install_all 重定义成含 install_progress_begin 的假函数。
+            collect_anytls_install_inputs() {
+                printf "INPUTS-STAGE\n"
+                declare -f cdn_prepare_install_ports | grep -q "install_progress_begin" \
+                    && printf "CDN-PREPARE-OVERWRITTEN: yes\n" \
+                    || printf "CDN-PREPARE-OVERWRITTEN: no\n"
+                exit 0
+            }
+            # 测试没有 tty：只把 install_all 首行的交互终端门禁换成 no-op，其余函数体原样执行。
+            install_all_definition=$(declare -f install_all | grep -v "^    \[\[ -t 0 \]\]")
+            eval "${install_all_definition}"
+            install_all
+        ' _ "${ROOT_DIR}" 2>&1
+}
+assert_contains "模式 1 安装保留交互终端门禁" "$(<"${ROOT_DIR}/lib/anytls-mode.sh")" \
+    '[[ -t 0 ]] || die "安装必须在交互终端中执行"'
+install_all_output=$(run_anytls_install_all_case)
+assert_contains "模式 1 安装真正执行首轮端口预检" "${install_all_output}" "PREPARE-PORTS: 443"
+assert_contains "模式 1 安装真正写安装进度标记" "${install_all_output}" \
+    "PROGRESS-BEGIN: anytls anytls"
+assert_contains "模式 1 安装进入输入阶段（用例确实驱动了 install_all 函数体）" \
+    "${install_all_output}" "INPUTS-STAGE"
+assert_contains "cdn_prepare_install_ports 保持原定义未被 install_all 覆盖" \
+    "${install_all_output}" "CDN-PREPARE-OVERWRITTEN: no"
+assert_not_contains "install_all 不得把端口预检调用写成嵌套函数定义" \
+    "${install_all_output}" "CDN-PREPARE-OVERWRITTEN: yes"
+
 # 17) 安装失败诊断：在独立脚本里复现生产路径（set -e + ERR/EXIT 陷阱）
 # 不放在 $( ) 里直接 set -e：bash 默认在命令替换中清除 errexit，ERR 陷阱语义会随版本漂移。
 run_failure_scenario() { # $1=EXIT 陷阱体
@@ -1142,12 +1270,14 @@ preserve_output=$(
                 "$(cat "${CERT_FILE}")" "${PRESERVE_RUNTIME_TMP:-unset}"
             printf "headers\n" >"${RUNTIME_TMP}/cloudflare-api-headers"
             printf "payload\n" >"${RUNTIME_TMP}/cloudflare-api-payload"
+            printf "X-Easy-All-Origin-Key: test-origin-key\n" >"${RUNTIME_TMP}/origin-header"
             cleanup
             printf "RUNTIME-TMP-EXISTS=%s\n" \
                 "$([[ -d "${RUNTIME_TMP}" ]] && echo yes || echo no)"
-            printf "HEADERS-EXISTS=%s PAYLOAD-EXISTS=%s\n" \
+            printf "HEADERS-EXISTS=%s PAYLOAD-EXISTS=%s ORIGIN-EXISTS=%s\n" \
                 "$([[ -e "${RUNTIME_TMP}/cloudflare-api-headers" ]] && echo yes || echo no)" \
-                "$([[ -e "${RUNTIME_TMP}/cloudflare-api-payload" ]] && echo yes || echo no)"
+                "$([[ -e "${RUNTIME_TMP}/cloudflare-api-payload" ]] && echo yes || echo no)" \
+                "$([[ -e "${RUNTIME_TMP}/origin-header" ]] && echo yes || echo no)"
         ' _ "${ROOT_DIR}" "${preserve_dir}/runtime-path" 2>&1
 ) || true
 assert_contains "回滚中的状态恢复失败不得中止其余恢复" "${preserve_output}" \
@@ -1159,13 +1289,15 @@ assert_contains "状态恢复失败后打印备份路径" "${preserve_output}" \
 assert_contains "清理后 RUNTIME_TMP 仍存在" "${preserve_output}" "RUNTIME-TMP-EXISTS=yes"
 assert_contains "保留前删除 API 请求头" "${preserve_output}" "HEADERS-EXISTS=no"
 assert_contains "保留前删除 API 请求体" "${preserve_output}" "PAYLOAD-EXISTS=no"
+assert_contains "保留前删除含源站密钥的探活头" "${preserve_output}" "ORIGIN-EXISTS=no"
 preserve_runtime=$(<"${preserve_dir}/runtime-path")
 [[ -d "${preserve_runtime}" ]] || fail "状态恢复失败后 RUNTIME_TMP 必须保留"
 [[ -n "$(find "${preserve_runtime}" -maxdepth 1 -name 'part.*' -print -quit)" ]] \
     || fail "保留的 RUNTIME_TMP 必须包含 part.* 回滚备份"
 [[ -z "$(find "${preserve_runtime}" -maxdepth 2 \
-    \( -name 'cloudflare-api-headers' -o -name 'cloudflare-api-payload' \) -print -quit)" ]] \
-    || fail "保留的 RUNTIME_TMP 不得残留 API 凭据文件"
+    \( -name 'cloudflare-api-headers' -o -name 'cloudflare-api-payload' \
+    -o -name 'origin-header' \) -print -quit)" ]] \
+    || fail "保留的 RUNTIME_TMP 不得残留 API 凭据与源站头密钥文件"
 
 # 29c. AnyTLS 凭据钩子：模式 1 安装尾部不再 command not found，保留目录不残留 Bearer Token
 anytls_hook_body=$(bash -c 'source "$1/profiles/anytls.sh"; declare -F clear_profile_credentials' \
@@ -1396,6 +1528,38 @@ assert_contains "register-command 保留 EXIT 清理" "${register_static}" "trap
 assert_contains "register-command 显式处理 SIGTERM" "${register_static}" "trap 'exit 143' TERM"
 assert_contains "register-command 显式处理 SIGINT" "${register_static}" "trap 'exit 130' INT"
 
+# 29g. register 暂存目录的回收只针对「陈旧」目录：register-command 不能额外取锁
+# （bootstrap 已持有同一把 flock，子进程再取会死锁），所以必须用 mtime 阈值区分
+# “上次中断遗留”与“另一个并发注册正在填装”，不能一刀切删除。
+# easy_all 的 EASY_ALL_INSTALL_DIR 是只读固定路径，这里抽出函数原文、改环境变量驱动。
+reclaim_impl="${TMP_DIR}/register-reclaim.sh"
+{
+    printf 'info() { printf "INFO: %%s\\n" "$*"; }\n'
+    sed -n '/^reclaim_stale_register_stages() {$/,/^}$/p' "${ROOT_DIR}/easy_all"
+    printf 'reclaim_stale_register_stages\n'
+} >"${reclaim_impl}"
+grep -q '^reclaim_stale_register_stages() {' "${reclaim_impl}" \
+    || fail "无法提取 reclaim_stale_register_stages 实现（函数签名可能已改动）"
+reclaim_case="${TMP_DIR}/register-reclaim"
+rm -rf -- "${reclaim_case}"
+mkdir -p "${reclaim_case}/lib/easy_all.stage.old/deep" \
+    "${reclaim_case}/lib/easy_all.stage.fresh" \
+    "${reclaim_case}/lib/easy_all.previous.4242"
+# 陈旧：mtime 退到很远的过去；新鲜：保持当前时间（另一个并发注册的暂存目录）。
+touch -t 202001010000 "${reclaim_case}/lib/easy_all.stage.old" \
+    "${reclaim_case}/lib/easy_all.stage.old/deep"
+reclaim_output=$(EASY_ALL_INSTALL_DIR="${reclaim_case}/lib/easy_all" \
+    bash "${reclaim_impl}" 2>&1)
+[[ ! -d "${reclaim_case}/lib/easy_all.stage.old" ]] \
+    || fail "陈旧 stage 目录（中断遗留）必须被回收"
+[[ -d "${reclaim_case}/lib/easy_all.stage.fresh" ]] \
+    || fail "新鲜 stage 目录（并发注册正在填装）不得被回收"
+[[ -d "${reclaim_case}/lib/easy_all.previous.4242" ]] \
+    || fail "reclaim 不得触碰 .previous.* 目录"
+assert_contains "回收陈旧 stage 目录会留一条日志" "${reclaim_output}" \
+    "已回收上次注册中断遗留的暂存目录"
+rm -rf -- "${reclaim_case}"
+
 # 30. 旧 cdn/combined 标记：launcher 不加载已删除的 Profile，只保留新键路由
 legacy_route=$(bash -c '
     source "$1"
@@ -1554,13 +1718,44 @@ cat >"${ENTRY_BIN}/aws" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${ENTRY_AWS_LOG}"
 [[ "${ENTRY_AWS_FAIL:-0}" == "1" ]] && exit 254
+# 传播竞态：同一查询需要先返回旧值再返回新值，按行弹出的序列文件模拟。
+next_response() { # $1=序列文件 $2=默认响应
+    local file=$1 default=$2 line
+    if [[ -n "${file}" && -s "${file}" ]]; then
+        line=$(head -n 1 "${file}")
+        tail -n +2 "${file}" >"${file}.next"
+        mv "${file}.next" "${file}"
+        printf '%s\n' "${line}"
+    else
+        printf '%s\n' "${default}"
+    fi
+}
 joined=" $* "
 case "${joined}" in
 *" cloudfront get-distribution-config "*) printf '%s\n' "${ENTRY_DIST_CONFIG_JSON}" ;;
-*" cloudfront get-distribution "*) printf 'Deployed\n' ;;
+*" cloudfront get-distribution "*)
+    response=$(next_response "${ENTRY_DIST_SEQUENCE_FILE:-}" "${ENTRY_DIST_STATUS_JSON}")
+    # 回放真实服务约束：delete-distribution 要求分发已禁用（最后一次观察 Enabled=false）。
+    # Enabled 是布尔值，`// empty` 会把 false 当空值吞掉，必须显式 tostring。
+    jq -r '.Distribution.DistributionConfig.Enabled | tostring' <<<"${response}" \
+        >>"${ENTRY_AWS_LOG}.dist-enabled" 2>/dev/null || true
+    # 真实 CLI 按 --query/--output 渲染响应：旧实现只问 Status（text），新实现取整份 JSON。
+    if [[ "${joined}" == *" --query "* ]]; then
+        printf 'Deployed\n'
+    else
+        printf '%s\n' "${response}"
+    fi
+    ;;
 *" cloudfront update-distribution "*) printf '{}\n' ;;
-*" cloudfront delete-distribution "*) printf '{}\n' ;;
-*" acm describe-certificate "*) printf '%s\n' "${ENTRY_ACM_DESCRIPTION_JSON}" ;;
+*" cloudfront delete-distribution "*)
+    last_enabled=$(tail -n 1 "${ENTRY_AWS_LOG}.dist-enabled" 2>/dev/null || true)
+    if [[ "${last_enabled}" != "false" ]]; then
+        printf 'DistributionNotDisabled\n' >&2
+        exit 254
+    fi
+    printf '{}\n'
+    ;;
+*" acm describe-certificate "*) next_response "${ENTRY_ACM_SEQUENCE_FILE:-}" "${ENTRY_ACM_DESCRIPTION_JSON}" ;;
 *" acm list-tags-for-certificate "*) printf '%s\n' "${ENTRY_ACM_TAGS_JSON}" ;;
 *" acm delete-certificate "*) printf '{}\n' ;;
 *) printf '{}\n' ;;
@@ -1694,6 +1889,9 @@ run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_
         ENTRY_SUB_HOST="sub.example.com" \
         ENTRY_RULE_ID="rule1" \
         ENTRY_DIST_CONFIG_JSON='{"ETag":"ETAG1","DistributionConfig":{"Comment":"easy_all-cloudfront-cf.example.com","Aliases":{"Items":["cf.example.com","sub.example.com"]},"Origins":{"Items":[{"DomainName":"origin.example.com"}]},"Enabled":true}}' \
+        ENTRY_DIST_STATUS_JSON='{"Distribution":{"Status":"Deployed","DistributionConfig":{"Enabled":false}}}' \
+        ENTRY_DIST_SEQUENCE_FILE="${ENTRY_DIST_SEQUENCE_FILE:-}" \
+        ENTRY_ACM_SEQUENCE_FILE="${ENTRY_ACM_SEQUENCE_FILE:-}" \
         ENTRY_ACM_DESCRIPTION_JSON='{"Certificate":{"DomainName":"cf.example.com","SubjectAlternativeNames":["sub.example.com"],"InUseBy":[]}}' \
         ENTRY_ACM_TAGS_JSON='{"Tags":[{"Key":"easy_all","Value":"managed"},{"Key":"easy_all-node","Value":"cf.example.com"}]}' \
         AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
@@ -1720,6 +1918,8 @@ run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_
                 remove_daily_reboot_schedule() { :; }
                 remove_certbot_deploy_hook() { :; }
                 certificate_remove_lineage() { :; }
+                # 生产轮询节奏由固定常量决定；这里只压缩 sleep，不改变判定条件。
+                sleep() { :; }
                 FORCE=1
                 gate_status=0
                 gate_message=$(uninstall_all --purge-cloud 2>&1) || gate_status=$?
@@ -1899,6 +2099,163 @@ assert_refusals_within "云端与本机同时失败" "${entry_both_dir}/refusals
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.timer" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.service"
+
+# 32. 卸载传播竞态 a：禁用后的等待必须同时看到 Status=Deployed 与 Enabled=false。
+# 传播期 get-distribution 仍返回旧配置（Deployed + Enabled=true）时，只按 Status 判定
+# 会拿过期 ETag 去 delete-distribution 被服务端拒；序列先旧后新，删除必须成功。
+ENTRY_DIST_SEQUENCE_FILE="${TMP_DIR}/dist-propagation-sequence.json"
+printf '%s\n' \
+    '{"Distribution":{"Status":"Deployed","DistributionConfig":{"Enabled":true}}}' \
+    '{"Distribution":{"Status":"Deployed","DistributionConfig":{"Enabled":false}}}' \
+    >"${ENTRY_DIST_SEQUENCE_FILE}"
+entry_propagation_dir="${TMP_DIR}/uninstall-entry/propagation"
+entry_propagation_output=$(run_uninstall_entry propagation cloudfront cloudfront \
+    "easy_all cloudfront" 0 0)
+unset ENTRY_DIST_SEQUENCE_FILE
+assert_equal "旧 Deployed 后再见到禁用配置，卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_propagation_output}" UNINSTALL-STATUS)"
+assert_contains "传播收敛后删除分发成功" "$(<"${entry_propagation_dir}/aws.log")" \
+    "cloudfront delete-distribution"
+assert_equal "传播期共查两次分发状态" "2" \
+    "$(grep -c 'cloudfront get-distribution --id' "${entry_propagation_dir}/aws.log" || true)"
+
+# 32b. 幂等重跑：分发已禁用（Enabled=false）时，等待首次返回即满足，不误报失败。
+ENTRY_DIST_SEQUENCE_FILE="${TMP_DIR}/dist-already-disabled.json"
+printf '%s\n' \
+    '{"Distribution":{"Status":"Deployed","DistributionConfig":{"Enabled":false}}}' \
+    >"${ENTRY_DIST_SEQUENCE_FILE}"
+entry_disabled_dir="${TMP_DIR}/uninstall-entry/already-disabled"
+entry_disabled_output=$(run_uninstall_entry already-disabled cloudfront cloudfront \
+    "easy_all cloudfront" 0 0)
+unset ENTRY_DIST_SEQUENCE_FILE
+assert_equal "已禁用的分发卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_disabled_output}" UNINSTALL-STATUS)"
+assert_equal "已禁用的分发只查一次状态" "1" \
+    "$(grep -c 'cloudfront get-distribution --id' "${entry_disabled_dir}/aws.log" || true)"
+
+# 33. 卸载传播竞态 b：删分发后 ACM 的 InUseBy 尚未收敛时，不能立即判为不归属。
+# 首查带 InUseBy、第二次为空 → 有界重试后删除证书，退出码 0。
+ENTRY_ACM_SEQUENCE_FILE="${TMP_DIR}/acm-settled-sequence.json"
+printf '%s\n' \
+    '{"Certificate":{"DomainName":"cf.example.com","SubjectAlternativeNames":["sub.example.com"],"InUseBy":["EDFDVBD6EXAMPLE"]}}' \
+    '{"Certificate":{"DomainName":"cf.example.com","SubjectAlternativeNames":["sub.example.com"],"InUseBy":[]}}' \
+    >"${ENTRY_ACM_SEQUENCE_FILE}"
+entry_acm_settle_dir="${TMP_DIR}/uninstall-entry/acm-settle"
+entry_acm_settle_output=$(run_uninstall_entry acm-settle combined combined-cloudfront \
+    "easy_all cloudfront" 0 0)
+unset ENTRY_ACM_SEQUENCE_FILE
+assert_equal "ACM InUseBy 收敛后卸载退出 0" "0" \
+    "$(uninstall_entry_value "${entry_acm_settle_output}" UNINSTALL-STATUS)"
+assert_contains "InUseBy 收敛后删除 ACM 证书" "$(<"${entry_acm_settle_dir}/aws.log")" \
+    "acm delete-certificate"
+assert_equal "InUseBy 未收敛时重试 describe" "2" \
+    "$(grep -c 'acm describe-certificate' "${entry_acm_settle_dir}/aws.log" || true)"
+
+# 34. ACM 终态证书的重申请无法自愈（幂等 Token 只取回同一张证书）：必须快速失败、
+# 点名 ARN 与删除指引，而不是在 validation CNAME 上空转到超时。
+ACM_BIN="${TMP_DIR}/acm/bin"
+mkdir -p "${ACM_BIN}"
+cat >"${ACM_BIN}/aws" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${ACM_AWS_LOG}"
+joined=" $* "
+case "${joined}" in
+*" acm describe-certificate "*) printf '%s\n' "${ACM_DESCRIBE_JSON}" ;;
+*" acm list-tags-for-certificate "*)
+    [[ "${ACM_TAGS_FAIL:-0}" != "1" ]] || exit 1
+    printf '%s\n' "${ACM_TAGS_JSON}"
+    ;;
+*" acm request-certificate "*) printf '%s\n' "${ACM_REQUEST_ARN}" ;;
+*) printf '{}\n' ;;
+esac
+exit 0
+STUB
+chmod 0755 "${ACM_BIN}/aws"
+
+run_acm_terminal_case() { # $1=存量证书状态 $2=tags JSON $3=list-tags 查询失败
+    local status_name=$1 tags_json=${2:-'{"Tags":[{"Key":"easy_all","Value":"managed"},{"Key":"easy_all-node","Value":"cf.example.com"}]}'}
+    local tags_fail=${3:-0} case_dir="${TMP_DIR}/acm/${1}" describe_json status=0 output
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}/state"
+    describe_json=$(jq -cn --arg status "${status_name}" '{
+        Certificate:{
+            CertificateArn:"arn:aws:acm:us-east-1:123456789012:certificate/x",
+            DomainName:"cf.example.com",
+            Status:$status,
+            SubjectAlternativeNames:["sub.example.com"],
+            InUseBy:[],
+            DomainValidationOptions:[{ResourceRecord:{
+                Name:"_x.cf.example.com.",Type:"CNAME",Value:"_y.acm-validations.aws."}}]
+        }}')
+    output=$(PATH="${ACM_BIN}:${PATH}" \
+        ACM_AWS_LOG="${case_dir}/aws.log" \
+        ACM_DESCRIBE_JSON="${describe_json}" \
+        ACM_TAGS_JSON="${tags_json}" \
+        ACM_TAGS_FAIL="${tags_fail}" \
+        ACM_REQUEST_ARN="arn:aws:acm:us-east-1:123456789012:certificate/x" \
+        RUNTIME_TMP="${case_dir}/runtime" \
+        EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
+        EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/state/certs" \
+        EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/state/subscriptions" \
+        EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
+        AWS_ACM_CERTIFICATE_ARN="arn:aws:acm:us-east-1:123456789012:certificate/x" \
+        bash -c '
+            source "$1/profiles/cloudfront.sh"
+            CF_ZONE=example.com
+            CF_NODE_DOMAIN=cf.example.com
+            SUBSCRIPTION_DOMAIN=sub.example.com
+            CF_ORIGIN_DOMAIN=origin.example.com
+            # 生产等待节奏由固定常量决定；这里只压缩 sleep，不改变判定条件。
+            sleep() { :; }
+            dns_ensure_record() { printf "DNS %s\n" "$1"; }
+            find_or_request_acm_certificate
+        ' _ "${ROOT_DIR}" 2>&1) || status=$?
+    printf 'STATUS=%s\n' "${status}"
+    printf '%s\n' "${output}"
+}
+
+acm_terminal_output=$(run_acm_terminal_case VALIDATION_TIMED_OUT)
+assert_equal "终态 ACM 证书立即失败" "1" \
+    "$(printf '%s\n' "${acm_terminal_output}" | sed -n 's/^STATUS=//p')"
+assert_contains "终态 ACM 证书点名 ARN" "${acm_terminal_output}" \
+    "arn:aws:acm:us-east-1:123456789012:certificate/x"
+assert_contains "终态 ACM 证书指向 AWS 控制台删除后重试" "${acm_terminal_output}" \
+    "AWS 控制台"
+assert_not_contains "终态 ACM 证书不再建议 purge-cloud" "${acm_terminal_output}" \
+    "purge-cloud"
+assert_not_contains "终态 ACM 证书不再把 validation CNAME 当作排查点" \
+    "${acm_terminal_output}" "检查 Cloudflare validation CNAME"
+assert_not_contains "终态 ACM 证书不再重新申请" \
+    "$(<"${TMP_DIR}/acm/VALIDATION_TIMED_OUT/aws.log")" "request-certificate"
+
+acm_pending_output=$(run_acm_terminal_case PENDING_VALIDATION)
+assert_equal "非终态 ACM 证书仍走到签发等待超时" "1" \
+    "$(printf '%s\n' "${acm_pending_output}" | sed -n 's/^STATUS=//p')"
+assert_contains "非终态 ACM 证书仍重新申请" \
+    "$(<"${TMP_DIR}/acm/PENDING_VALIDATION/aws.log")" "request-certificate"
+assert_contains "非终态 ACM 证书超时仍提示检查 validation CNAME" \
+    "${acm_pending_output}" "检查 Cloudflare validation CNAME"
+assert_not_contains "非终态 ACM 证书不误报终态" "${acm_pending_output}" "已进入终态"
+
+# 34b. 终态证书但归属无法确认（如 list-tags 查询失败）：同样必须立即失败——幂等 Token
+# 重申请只会空转到超时；但文案不得声称是本工具创建的证书。
+acm_unconfirmed_output=$(run_acm_terminal_case FAILED '{"Tags":[]}' 1)
+assert_equal "无法确认归属的终态 ACM 证书仍立即失败" "1" \
+    "$(printf '%s\n' "${acm_unconfirmed_output}" | sed -n 's/^STATUS=//p')"
+assert_contains "无法确认归属时点名 ARN" "${acm_unconfirmed_output}" \
+    "arn:aws:acm:us-east-1:123456789012:certificate/x"
+assert_contains "无法确认归属时明说无法确认" "${acm_unconfirmed_output}" \
+    "无法自动确认归属"
+assert_contains "无法确认归属时指向 AWS 控制台核对" "${acm_unconfirmed_output}" \
+    "请到 AWS 控制台核对该证书"
+assert_not_contains "无法确认归属时不声称是本工具证书" "${acm_unconfirmed_output}" \
+    "带本节点管理标记"
+assert_not_contains "无法确认归属时仍不建 purge-cloud" "${acm_unconfirmed_output}" \
+    "purge-cloud"
+assert_not_contains "无法确认归属时不把 validation CNAME 当作排查点" \
+    "${acm_unconfirmed_output}" "检查 Cloudflare validation CNAME"
+assert_not_contains "无法确认归属时不再重新申请" \
+    "$(<"${TMP_DIR}/acm/FAILED/aws.log")" "request-certificate"
 
 # 运行时清单完整性：漏登的文件不会随 install/self-update 安装，已安装机器上直接缺模块。
 missing_from_manifest=""

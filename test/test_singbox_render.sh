@@ -169,14 +169,19 @@ for proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflar
     assert_equal "${proto}: 固定 IPv4 direct 出站" "direct" \
         "$(jq -r '.outbounds[0].tag' <<<"${body}")"
     assert_equal "${proto}: 默认出站 direct" "direct" "$(jq -r '.route.final' <<<"${body}")"
-    assert_equal "${proto}: 首条规则拒绝私网" '{"ip_is_private":true,"action":"reject"}' \
+    assert_equal "${proto}: 首条规则先解析目标域名" '{"action":"resolve"}' \
         "$(jq -c '.route.rules[0]' <<<"${body}")"
+    # 域名目标不解析就匹配不上 ip_is_private/ip_cidr：私网与元数据拦截会整体失效。
+    assert_equal "${proto}: resolve 排在私网拒绝之前" "true" \
+        "$(jq -r '(.route.rules | map(.action // "") | index("resolve")) < (.route.rules | map(.ip_is_private // false) | index(true))' <<<"${body}")"
+    assert_equal "${proto}: 第二条规则拒绝私网" '{"ip_is_private":true,"action":"reject"}' \
+        "$(jq -c '.route.rules[1]' <<<"${body}")"
     # 与 lib/network.sh 的 IPv4 私网/特殊地址清单逐项一致（design §7）。
     assert_equal "${proto}: 拒绝私网/特殊 CIDR" \
         '["0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.0.0.0/24","192.168.0.0/16","198.18.0.0/15","224.0.0.0/4","240.0.0.0/4"]' \
-        "$(jq -c '.route.rules[1].ip_cidr' <<<"${body}")"
+        "$(jq -c '.route.rules[2].ip_cidr' <<<"${body}")"
     assert_equal "${proto}: 拒绝 UDP/443" '{"network":"udp","port":443,"action":"reject"}' \
-        "$(jq -c '.route.rules[2]' <<<"${body}")"
+        "$(jq -c '.route.rules[3]' <<<"${body}")"
     assert_not_contains "${proto}: 不启用 v2ray_api" "${body}" "v2ray_api"
     assert_not_contains "${proto}: 不配置 experimental" "${body}" "experimental"
 done

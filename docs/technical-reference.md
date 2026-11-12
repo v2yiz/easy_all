@@ -153,7 +153,10 @@
 - 公网验收会分别对**源站端口**（模式 4 `443`、模式 5 `8443`）发缺头与错头请求，只接受连接被拒或 `403/404`。探测必须打到 Caddy 站点端口：打到 `443` 时模式 5 连接的是 sing-box，结果会变成“连不上即通过”的假阳性。
 
 ### 2.4 恶意出站与内部阻断
-- sing-box 配置使用显式 IPv4 DNS 服务器与 `ipv4_only` 策略，路由先拒绝私网地址，再拒绝与 `lib/network.sh` 一致的私网/特殊地址清单（回环、云厂商元数据、CGNAT、多播与保留段）。
+- sing-box 配置使用显式 IPv4 DNS 服务器与 `ipv4_only` 策略，路由首条规则 `action: resolve` 先把目标域名解析成 IP，再拒绝私网地址及
+  与 `lib/network.sh` 一致的私网/特殊地址清单（回环、云厂商元数据、CGNAT、多播与保留段）；不解析时域名目标匹配不上 IP 规则，私网与元数据拦截会整体失效。
+  解析失败（含 NXDOMAIN、超时与空结果）时 `resolve` 会以错误终止该连接，不会继续向下匹配到 `final: direct`；
+  以域名形式访问 `localhost`、单标签主机名或云厂商内部域名因此是连接被拒，而不是回落到直连。
 - 保留 UDP/443 拒绝，强制 QUIC 连接降级回退至 TCP。
   客户端 Mihomo 模板的嗅探（`sniffer`）同样不覆盖 QUIC：否则这次拒绝会被握手解析拖慢
   （Android 上表现为 Google Play 下载长期停在“等待中”）。
@@ -240,6 +243,13 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 
 状态语义：`blocked` 是期望的限额状态，`enforced` 是最后完成验收的应用状态，两者不一致即「待落实」；`protection_offline=true` 表示保护性停机意图已持久化（核心已停止或即将停止），它不表示允许解封，也无法通过环境变量或临时令牌绕过。无法安全收敛时保持 `protection_offline` 并说明直连同样受影响。
 
+**fail-closed 自愈与幂等**：
+
+- **反向漂移**：`usage` 声称 `enforced=true` 但 live 配置仍开放 CDN 入站（重建后落盘失败、进程中断）时强制收敛为阻断，不因「`blocked==enforced` 即无需重建」而永久 fail-open。
+- **正向漂移**：`usage` 为 `blocked=false/enforced=false` 但 live 配置已无 CDN 入站（回滚后状态未落盘）时强制补状态。
+- **订阅未就绪**：目标为保持阻断时安装返回 `503` 的降级 Caddy 配置，live 仍开放 CDN 入站则强制重建，配置已受限则不重复重建（幂等）；解封一律拒绝并提示 `edit-sub`。
+- **计量异常**：同一次开机内计数回退（规则被外部 flush）与 `iptables -S` 查询失败都按计量异常处理（告警 + 保留现有保护状态）：前者静默写 0 增量会漏计整月流量，后者被当成「0 条」会导致重复插入与双倍计量；插入后还会复检条数。
+
 所有入口共用同一个只读判定与同一个受限恢复函数：先应用 `503` 与受限 Caddy，再启动受限核心（省略 CDN 入站、模式 5 保留 AnyTLS），必需验收（Caddy `503`、受限配置与旧连接终止、严格源站 TLS/health、模式 5 的 `443` 监听等）全部通过后才原子写 `enforced=true`、`protection_offline=false`。必需验收失败会把 `protection_offline` 先落盘再停止核心，下一轮从同一入口重试；解封失败则恢复受限配置并保留 pending，绝不恢复开放配置后报成功。
 
 ### 4.4 启动顺序与临界区预算
@@ -283,6 +293,7 @@ easy_all
 │   ├── cloud-purge.sh           # Cloudflare 与 CloudFront/ACM 远端托管资源识别与清理
 │   ├── singbox-core.sh          # 锁定 sing-box 版本、官方归档与固定 SHA256
 │   ├── singbox-runtime.sh       # 五模式 sing-box JSON、客户端节点与运行验收
+│   ├── singbox-subscription.sh  # sing-box 完整 JSON 客户端订阅（模板 + 结构化节点合成）
 │   ├── caddy-core.sh            # 锁定 Caddy 版本、官方归档与 SHA512 清单校验
 │   ├── caddy-runtime.sh         # Caddyfile、订阅路由、服务与重载
 │   ├── firewall.sh              # UFW 规则配置与状态快照
@@ -295,9 +306,12 @@ easy_all
 │   ├── mihomo.yaml              # 默认 COMMON 精简规则模板
 │   ├── mihomo-common.yaml       # 完整 COMMON 规则模板
 │   ├── mihomo-classic.yaml      # 经典 MRS 规则集模板
+│   ├── singbox.json             # sing-box 客户端订阅 JSON 模板（fakeip 与分流骨架）
 │   └── aggregation.example.json # 聚合节点（三类）配置示例
 └── scripts/                     # 辅助构建与系统初始化脚本
     ├── debian-init.sh           # 独立系统初始化加固工具（Debian 12/13、Ubuntu 22.04/24.04/26.04）
+    ├── verify-live.sh           # 真核心 HTTP/代理链路门禁（`npm run test:live`）
+    ├── verify-linux-metering.sh # Linux 内核 mangle 计量门禁（`npm run test:metering`）
     └── verify-cores.sh          # 真核心校验入口（`npm run test:cores`）
 ```
 
@@ -319,6 +333,7 @@ easy_all
   2. 定时 hook（`/etc/letsencrypt/renewal-hooks/deploy/easy_all.sh` → `easy_all internal-cert-deploy`）：自行取得 runtime 锁，确认 `RENEWED_LINEAGE` 属于本工具，只部署已签发证书，不再次签发；有界等待，失败非零并保留 lineage。
 - **部署验收**：检查 SAN、有效期、公私钥匹配与完整信任链后才替换 `/etc/easy_all/certs/fullchain.pem` 与 `private.key`；随后重启 sing-box 并**强制** Caddy reload（`--force`，因为证书是同路径替换、配置内容不变），再用本机 TLS 握手比对磁盘指纹。任一步失败恢复旧部署副本并保留新 lineage。
 - **模式 2** 使用 Cloudflare Origin CA（ECDSA P-256、5475 天），`renew-cert` 先签发部署、本机 TLS 验收通过才吊销旧证书；`renew-cert` 从不操作 ACM 自动续期。
+- **模式 4/5 的 ACM viewer 证书**由 AWS 自动续期，本工具只负责申请、复用与删除：只复用 `ISSUED` 且 SAN 覆盖节点域名的证书；处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时立即失败并点名 ARN（`RequestCertificate` 的幂等 Token 只会取回同一张证书，只能到控制台删除后重试）；删除分发后 `InUseBy` 需要时间收敛，按 5×10 秒有界退避重试后再按归属口径保留。
 
 ### 6.2 核心下载与 `update-core`
 - 固定 sing-box `1.14.4`（代码内审查过的 SHA256 常量，无官方 checksums 清单可用）与 Caddy `2.11.9`（读取官方 `caddy_2.11.9_checksums.txt` 中精确文件名的 SHA512 条目）。

@@ -23,8 +23,15 @@ die() {
     exit 1
 }
 
-SINGBOX_BIN=${SINGBOX_BIN:-/etc/easy_all/sing-box/sing-box}
-CADDY_BIN=${CADDY_BIN:-/etc/easy_all/caddy/caddy}
+# 下载通道的默认落地路径必须在脚本自建临时目录：固定写 /etc/easy_all 会在非 root 下 EPERM，
+# 在 root（容器/CI）下污染宿主机系统目录。显式传入 SINGBOX_BIN/CADDY_BIN 时仍按调用方指定。
+if [[ "${EASY_ALL_DOWNLOAD_CORES:-0}" == "1" ]]; then
+    SINGBOX_BIN=${SINGBOX_BIN:-${WORK_DIR}/cores/sing-box}
+    CADDY_BIN=${CADDY_BIN:-${WORK_DIR}/cores/caddy}
+else
+    SINGBOX_BIN=${SINGBOX_BIN:-/etc/easy_all/sing-box/sing-box}
+    CADDY_BIN=${CADDY_BIN:-/etc/easy_all/caddy/caddy}
+fi
 export SINGBOX_BIN CADDY_BIN
 
 # CI 无系统安装的核心：EASY_ALL_DOWNLOAD_CORES=1 时按 design §6 下载并校验锁定版本，

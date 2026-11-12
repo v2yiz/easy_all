@@ -681,8 +681,33 @@ install_uv_for_normal_user() {
     exit 1
   fi
 
-  log "[remote 6/7] 为普通用户 ${normal_user} 安装 uv 与 Python 3.12"
-  su - "$normal_user" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  local uv_version=0.13.7 uv_installer uv_version_output
+  log "[remote 6/7] 为普通用户 ${normal_user} 安装 uv ${uv_version} 与 Python 3.12"
+  # 供应链：只接受 astral.sh 的版本化安装脚本，并把 curl 的协议与重定向都限制在 HTTPS。
+  # 剩余信任边界是 astral.sh 站点本身与其 TLS 证书：官方没有可离线验证的固定校验和清单，
+  # 因此这里不比对摘要，靠版本化 URL + 仅 HTTPS 传输 + 安装后版本断言收敛风险。
+  uv_installer=$(mktemp "${TMPDIR:-/tmp}/uv-install.XXXXXX") \
+    || die "无法创建 uv 安装脚本临时文件"
+  # mktemp 默认 0600；显式再设一次，不依赖实现细节。文件归普通用户，由该用户执行。
+  chmod 0600 "$uv_installer"
+  chown "$normal_user" "$uv_installer"
+  if ! su - "$normal_user" -c \
+    "curl --proto '=https' --proto-redir '=https' -fLsS 'https://astral.sh/uv/${uv_version}/install.sh' -o '$uv_installer'"; then
+    rm -f -- "$uv_installer"
+    die "下载 uv ${uv_version} 安装脚本失败"
+  fi
+  if [ ! -s "$uv_installer" ]; then
+    rm -f -- "$uv_installer"
+    die "下载的 uv ${uv_version} 安装脚本为空"
+  fi
+  if ! su - "$normal_user" -c "sh '$uv_installer'"; then
+    rm -f -- "$uv_installer"
+    die "安装 uv ${uv_version} 失败"
+  fi
+  rm -f -- "$uv_installer"
+  uv_version_output=$(su - "$normal_user" -c '"${HOME}/.local/bin/uv" --version' 2>/dev/null || true)
+  [[ "${uv_version_output}" == "uv ${uv_version}"* ]] \
+    || die "uv 版本校验失败：期望以 uv ${uv_version} 开头，实际为 ${uv_version_output:-无输出}"
   su - "$normal_user" -c '"${HOME}/.local/bin/uv" python install 3.12'
 }
 

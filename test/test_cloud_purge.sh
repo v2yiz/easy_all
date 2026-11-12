@@ -854,6 +854,9 @@ cert_domains() { # $1=ARN，输出 DomainName 与各 SAN 换行
     *certificate/C3*) printf 'cf.example.com\n' ;;
     *certificate/C4*) printf 'cf.example.com\n' ;;
     *certificate/C5*) printf 'cf.example.com\n' ;;
+    *certificate/C6*) printf 'cf.example.com\n' ;;
+    *certificate/C7*) printf 'cf.example.com\n' ;;
+    *certificate/C8*) printf 'x.example.com\n' ;;
     *certificate/CH1*) printf 'cf.example.com\n' ;;
     *certificate/CH2*) printf 'x.cf.example.com\n' ;;
     *) printf '' ;;
@@ -863,6 +866,32 @@ cert_domains() { # $1=ARN，输出 DomainName 与各 SAN 换行
 cert_inuse() { # $1=ARN，输出 InUseBy 数组 JSON
     case "$1" in
     *certificate/C4*) printf '["arn:aws:cloudfront::1:distribution/OTHER"]' ;;
+    # C7：无 easy_all 标记但被其他业务分发占用的证书。归属检查必须先于占用记录，否则它会被
+    # 写进复核清单，虚报确认数量并对无关证书多发一轮 API。
+    *certificate/C7*) printf '["arn:aws:cloudfront::1:distribution/OTHER"]' ;;
+    # C8：带管理标记但在用、域名越界（x.example.com）。归属三重要求同时成立，范围外的在用证书
+    # 同样不得进复核清单。
+    *certificate/C8*) printf '["arn:aws:cloudfront::1:distribution/OTHER"]' ;;
+    # C6 模拟「计划阶段被本次要删的分发占用」：分发删除后才变成可删，用于覆盖孤儿证书回收。
+    # PURGE_TEST_CERT_INUSE_LAG=N：删除分发后前 N 次读取仍报 ItUseBy，模拟真实收敛滞后。
+    *certificate/C6*)
+        if [[ "${PURGE_TEST_CERT_INUSE_PURGED:-0}" != "1" ]]; then
+            printf '[]'
+        elif [[ ! -f "${state_dir}/deleted-D1" ]]; then
+            printf '["arn:aws:cloudfront::1:distribution/D1"]'
+        elif [[ "${PURGE_TEST_CERT_INUSE_LAG:-0}" != "0" ]]; then
+            lag="${state_dir}/c6-lag"
+            n=$(cat "${lag}" 2>/dev/null || printf 0)
+            if ((n < PURGE_TEST_CERT_INUSE_LAG)); then
+                printf '%s' "$((n + 1))" >"${lag}"
+                printf '["arn:aws:cloudfront::1:distribution/D1"]'
+            else
+                printf '[]'
+            fi
+        else
+            printf '[]'
+        fi
+        ;;
     *) printf '[]' ;;
     esac
 }
@@ -927,7 +956,13 @@ acm_page() { # $1=token；输出该页 CertificateSummaryList 数组
         ;;
     *)
         case "$1" in
-        "") printf '%s' '[{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C1"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C2"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C3"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C4"}]' ;;
+        "")
+            if [[ "${PURGE_TEST_CERT_INUSE_PURGED:-0}" == "1" ]]; then
+                printf '%s' '[{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C1"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C2"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C3"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C4"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C6"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C7"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C8"}]'
+            else
+                printf '%s' '[{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C1"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C2"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C3"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C4"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C7"},{"CertificateArn":"arn:aws:acm:us-east-1:1:certificate/C8"}]'
+            fi
+            ;;
         *) printf '%s' '[]' ;;
         esac
         ;;
@@ -1005,12 +1040,24 @@ case "${service} ${op}" in
     printf '{"ETag":"%s","DistributionConfig":%s}\n' "$(dist_etag "${id}")" "${cfg}"
     ;;
 "cloudfront get-distribution")
+    # 禁用变更的服务端传播：update 后至少一次读取仍会看到旧配置（Enabled=true、Deployed），
+    # 传播完成前 delete-distribution 会以 DistributionNotDisabled 被拒——与真实 AWS 一致。
+    enabled=$(dist_enabled_json "${id}")
+    propagating="${state_dir}/propagating-${id}"
+    if [[ -f "${propagating}" ]]; then
+        if [[ "$(cat "${propagating}")" -gt 1 ]]; then
+            enabled=true
+            printf '%s' "$(( $(cat "${propagating}") - 1 ))" >"${propagating}"
+        else
+            rm -f -- "${propagating}"
+        fi
+    fi
     if ((query == 1)); then
         printf 'Deployed\n'
     else
         printf '{"ETag":"%s","Distribution":{"Status":"Deployed","DistributionConfig":%s}}\n' \
             "$(dist_etag "${id}")" \
-            "$(dist_config "${id}" | jq -c --argjson enabled "$(dist_enabled_json "${id}")" '.Enabled = $enabled')"
+            "$(dist_config "${id}" | jq -c --argjson enabled "${enabled}" '.Enabled = $enabled')"
     fi
     ;;
 "cloudfront update-distribution")
@@ -1033,10 +1080,20 @@ case "${service} ${op}" in
     [[ "${ifmatch}" == "$(dist_etag "${id}")" ]] || fail_service "update-distribution 的 --if-match 不是最新 ETag：${ifmatch}"
     bump_etag "${id}"
     : >"${state_dir}/disabled-${id}"
+    # 禁用请求提交后进入传播期：首轮 get-distribution 仍返回旧的 Enabled=true。
+    printf '2' >"${state_dir}/propagating-${id}"
     printf '{}\n'
     ;;
 "cloudfront delete-distribution")
+    [[ ! -f "${state_dir}/propagating-${id}" ]] \
+        || fail_service "delete-distribution 在禁用传播完成前被调用（${id}）"
     dist_disabled "${id}" || fail_service "delete-distribution 必须先禁用分发（${id}）"
+    # 删除权限/IAM 抖动：删除失败的分发仍存活，关联证书不能被当成「等收敛」。
+    if [[ "${PURGE_TEST_AWS_DENY_DELETE_D1:-0}" == "1" && "${id}" == "D1" ]]; then
+        printf 'An error occurred (AccessDenied) when calling the DeleteDistribution operation\n' >&2
+        exit 254
+    fi
+    : >"${state_dir}/deleted-${id}"
     [[ "${ifmatch}" == "$(dist_etag "${id}")" ]] \
         || fail_service "delete-distribution 的 --if-match 不是最新 ETag：${ifmatch}"
     printf '{}\n'
@@ -1075,6 +1132,12 @@ case "${service} ${op}" in
         exit 254
     fi
     n=$(count_call "describe-${arn//[^A-Za-z0-9]/_}")
+    if [[ "${PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM:-0}" != "0" && "${arn}" == *certificate/C6* \
+        && "${n}" -ge "${PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM}" ]]; then
+        # 节流/IAM 抖动：回收阶段的复核读不到状态，必须告警并计失败，不能当成「不归属」静默略过。
+        printf 'An error occurred (Throttling) when calling DescribeCertificate\n' >&2
+        exit 254
+    fi
     inuse=$(cert_inuse "${arn}")
     if [[ "${PURGE_TEST_AWS_DRIFT:-}" == "cert-inuse" && "${arn}" == *certificate/C1* && "${n}" -ge 2 ]]; then
         inuse='["arn:aws:cloudfront::1:distribution/OTHER"]'
@@ -1091,7 +1154,7 @@ case "${service} ${op}" in
     n=$(count_call "tags-${arn//[^A-Za-z0-9]/_}")
     managed=1
     case "${arn}" in
-    *certificate/C3*) managed=0 ;;
+    *certificate/C3* | *certificate/C7*) managed=0 ;;
     esac
     if [[ "${PURGE_TEST_AWS_DRIFT:-}" == "cert-tag" && "${arn}" == *certificate/C1* && "${n}" -ge 2 ]]; then
         managed=0
@@ -1126,7 +1189,7 @@ run_purge_aws() { # $1=calls $2=out $3=err；其余参数原样传给命令
         PURGE_TEST_AWS_STATE_DIR="${TMP_DIR}/aws-state" \
         PURGE_TEST_FIXTURE_DIR="${PURGE_TEST_AWS_FIXTURE_DIR:-${FIXTURE_ROOT}/warn-empty}" \
         EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${TAKEOVER_LOG}" \
-        EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS=1 \
+        EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS=3 \
         EASY_ALL_PURGE_AWS_WAIT_SECONDS=0 \
         "${AWS_ENV_UNSET[@]}" \
         AWS_ACCESS_KEY_ID=AKIAFAKEEXAMPLE \
@@ -1158,6 +1221,8 @@ assert_equal "purge-cloud: update 的 If-Match 是本次读取的 ETag" "1" \
     "$(grep -c 'update-distribution --id D1 --if-match ETAG1-D1' "${AWS_CALLS}")"
 assert_equal "purge-cloud: delete 用 update 之后轮换的新 ETag" "1" \
     "$(grep -c 'delete-distribution --id D1 --if-match ETAG2-D1' "${AWS_CALLS}")"
+assert_equal "purge-cloud: 禁用传播期内继续轮询（首轮旧 Deployed 不算完成）" "2" \
+    "$(grep -c 'cloudfront get-distribution --id D1' "${AWS_CALLS}")"
 assert_equal "purge-cloud: 用户自己的分发不删除" "0" \
     "$(grep -c 'delete-distribution --id D2' "${AWS_CALLS}")"
 assert_equal "purge-cloud: 别名越界的 easy_all 分发不删除" "0" \
@@ -1168,7 +1233,88 @@ assert_equal "purge-cloud: 无管理标记的证书不删除" "0" \
     "$(grep -c 'acm delete-certificate.*certificate/C3' "${AWS_CALLS}")"
 assert_equal "purge-cloud: InUseBy 非空的证书不删除" "0" \
     "$(grep -c 'delete-certificate.*C4' "${AWS_CALLS}")"
+assert_equal "purge-cloud: 无管理标记的在用证书不删除" "0" \
+    "$(grep -c 'delete-certificate.*C7' "${AWS_CALLS}")"
+
 assert_contains "purge-cloud: 输出 CloudFront/ACM 清理完成" "$(<"${OUT}")" "CloudFront/ACM 清理完成：2 个对象"
+
+# 计划阶段被「本次要删的分发」占用的证书，分发删除后必须回收；仍被其他分发占用的照旧保留。
+export PURGE_TEST_CERT_INUSE_PURGED=1
+CALLS="${TMP_DIR}/aws-inuse-calls.log"
+OUT="${TMP_DIR}/aws-inuse.out"
+ERR="${TMP_DIR}/aws-inuse.err"
+run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com \
+    || fail "purge-cloud: 占用证书回收应成功：$(tail -n 3 "${ERR}")"
+unset PURGE_TEST_CERT_INUSE_PURGED
+AWS_CALLS="${TMP_DIR}/aws-calls.log"
+assert_equal "purge-cloud: 分发删除后回收此前被占用的 ACM 证书" "1" \
+    "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
+assert_equal "purge-cloud: 分发删除后仍被其他分发占用的证书保留" "0" \
+    "$(grep -c 'delete-certificate.*C4' "${AWS_CALLS}")"
+assert_contains "purge-cloud: 确认前告知复核范围" "$(<"${OUT}")" \
+    "另有 2 张被分发占用的 ACM 证书将在分发删除后复核"
+# 数量仍是 2（C4 + C6）：C7（无 easy_all 标记）与 C8（域名越界）都不得进复核清单。
+
+# InUseBy 在分发删除后需要时间收敛：仍在引用本次已删分发时必须重试，不能当成「保留」静默放过。
+export PURGE_TEST_CERT_INUSE_PURGED=1
+export PURGE_TEST_CERT_INUSE_LAG=2
+CALLS="${TMP_DIR}/aws-inuse-lag-calls.log"
+OUT="${TMP_DIR}/aws-inuse-lag.out"
+ERR="${TMP_DIR}/aws-inuse-lag.err"
+run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com \
+    || fail "purge-cloud: InUseBy 收敛重试应成功：$(tail -n 3 "${ERR}")"
+unset PURGE_TEST_CERT_INUSE_PURGED PURGE_TEST_CERT_INUSE_LAG
+AWS_CALLS="${TMP_DIR}/aws-calls.log"
+assert_equal "purge-cloud: InUseBy 收敛后回收证书" "1" \
+    "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
+
+# 回收阶段读不到证书状态时必须告警并计失败，不能当成「不归属」静默略过。
+export PURGE_TEST_CERT_INUSE_PURGED=1
+export PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM=2
+CALLS="${TMP_DIR}/aws-inuse-deny-calls.log"
+OUT="${TMP_DIR}/aws-inuse-deny.out"
+ERR="${TMP_DIR}/aws-inuse-deny.err"
+if run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com; then
+    fail "purge-cloud: 回收阶段证书不可读时必须以非零退出"
+fi
+unset PURGE_TEST_CERT_INUSE_PURGED PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM
+assert_contains "purge-cloud: 回收阶段证书不可读要告警" "$(<"${OUT}")" \
+    "无法读取 ACM 证书状态，保留不删"
+assert_contains "purge-cloud: 回收阶段证书不可读计入失败" "$(<"${ERR}")" "有 1 个对象删除失败"
+
+# InUseBy 已收敛、但随后归属复核读不到状态：必须告警并计失败，不能当成「不归属」静默保留。
+export PURGE_TEST_CERT_INUSE_PURGED=1
+export PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM=3
+CALLS="${TMP_DIR}/aws-settle-deny-calls.log"
+OUT="${TMP_DIR}/aws-settle-deny.out"
+ERR="${TMP_DIR}/aws-settle-deny.err"
+if run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com; then
+    fail "purge-cloud: 归属复核不可读时必须以非零退出"
+fi
+unset PURGE_TEST_CERT_INUSE_PURGED PURGE_TEST_AWS_DESCRIBE_C6_DENY_FROM
+AWS_CALLS="${TMP_DIR}/aws-calls.log"
+assert_contains "purge-cloud: 归属复核不可读要告警" "$(<"${OUT}")" "无法读取 ACM 证书状态，保留不删"
+assert_equal "purge-cloud: 归属复核不可读的证书不删除" "0" \
+    "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
+
+# 分发删除失败时，它的关联证书不能被当成「等已删除分发收敛」：分发仍存活，InUseBy 永不收敛，
+# 只会白等满额重试再额外报一次失败。必须立刻按「仍被存活资源占用」跳过。
+export PURGE_TEST_CERT_INUSE_PURGED=1
+export PURGE_TEST_AWS_DENY_DELETE_D1=1
+CALLS="${TMP_DIR}/aws-delete-fail-calls.log"
+OUT="${TMP_DIR}/aws-delete-fail.out"
+ERR="${TMP_DIR}/aws-delete-fail.err"
+if run_purge_aws "${CALLS}" "${OUT}" "${ERR}" --domain cf.example.com; then
+    fail "purge-cloud: 分发删除失败时必须以非零退出"
+fi
+unset PURGE_TEST_CERT_INUSE_PURGED PURGE_TEST_AWS_DENY_DELETE_D1
+AWS_CALLS="${TMP_DIR}/aws-calls.log"
+assert_equal "purge-cloud: 删除失败的分发不算已删分发，不进入收敛重试" "0" \
+    "$(grep -c '等待期内仍被已删除的分发引用' "${OUT}" || true)"
+assert_equal "purge-cloud: 只剩分发本身计一次失败" "1" \
+    "$(grep -c 'CloudFront/ACM 侧有 1 个对象删除失败' "${OUT}")"
+assert_equal "purge-cloud: 关联证书保留不删" "0" \
+    "$(grep -c 'delete-certificate.*certificate/C6' "${AWS_CALLS}")"
 
 CALLS="${TMP_DIR}/aws-all-calls.log"
 OUT="${TMP_DIR}/aws-all.out"

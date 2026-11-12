@@ -89,28 +89,29 @@ ensure_swap() {
     fi
 
     local target_dir avail_kb
-    target_dir=$(dirname "${swap_file}")
-    # `df -k` 在长设备名下会换行错位；`-P` 保证一个文件系统一行。仍可能取不到数字
-    # （df 失败/权限不足），此时按「无法确认」处理：宁可跳过，也不在可能已满的盘上写 1GB。
-    # `df` 自身失败时在 pipefail 下会让赋值返回非零；不能因此中断安装，按“无法确认”处理。
-    avail_kb=$(df -Pk "${target_dir}" 2>/dev/null | awk 'NR == 2 {print $4}') || avail_kb=""
-    if [[ ! "${avail_kb}" =~ ^[0-9]{1,15}$ ]]; then
-        warn "无法确认磁盘剩余空间（${target_dir}）；跳过创建 Swap，请手动配置或释放空间"
-        return 0
-    fi
-    avail_kb=$((10#${avail_kb}))
-    if (( avail_kb == 0 )); then
-        warn "磁盘已无可用空间（${target_dir}）；跳过创建 Swap，请释放空间后手动配置"
-        return 0
-    fi
-    if (( avail_kb < 1572864 )); then
-        warn "磁盘剩余空间不足 1.5GB（当前剩余 $((avail_kb / 1024))MB）；跳过创建 Swap，请注意内存占用"
-        return 0
-    fi
-
-    info "检测到系统未配置 Swap，正在创建 1GB 交换文件..."
     local created_new=0
     if [[ ! -f "${swap_file}" ]]; then
+        # 空间检查只对新建生效：同名 Swap 文件已存在且魔数校验通过时直接复用，磁盘已满但
+        # 交换文件完好的机器仍能拿到 Swap，不会因为没有 1.5GB 余量而跳过。
+        target_dir=$(dirname "${swap_file}")
+        # `df -k` 在长设备名下会换行错位；`-P` 保证一个文件系统一行。仍可能取不到数字
+        # （df 失败/权限不足），此时按「无法确认」处理：宁可跳过，也不在可能已满的盘上写 1GB。
+        # `df` 自身失败时在 pipefail 下会让赋值返回非零；不能因此中断安装，按“无法确认”处理。
+        avail_kb=$(df -Pk "${target_dir}" 2>/dev/null | awk 'NR == 2 {print $4}') || avail_kb=""
+        if [[ ! "${avail_kb}" =~ ^[0-9]{1,15}$ ]]; then
+            warn "无法确认磁盘剩余空间（${target_dir}）；跳过创建 Swap，请手动配置或释放空间"
+            return 0
+        fi
+        avail_kb=$((10#${avail_kb}))
+        if (( avail_kb == 0 )); then
+            warn "磁盘已无可用空间（${target_dir}）；跳过创建 Swap，请释放空间后手动配置"
+            return 0
+        fi
+        if (( avail_kb < 1572864 )); then
+            warn "磁盘剩余空间不足 1.5GB（当前剩余 $((avail_kb / 1024))MB）；跳过创建 Swap，请注意内存占用"
+            return 0
+        fi
+        info "检测到系统未配置 Swap，正在创建 1GB 交换文件..."
         created_new=1
         if ! fallocate -l 1G "${swap_file}" 2>/dev/null; then
             dd if=/dev/zero of="${swap_file}" bs=1M count=1024 status=none \
@@ -123,13 +124,27 @@ ensure_swap() {
             return 0
         }
     else
+        # 同名文件不一定就是 Swap：复用前按 SWAPSPACE2 魔数确认。魔数固定在 PAGE_SIZE-10
+        # 偏移（内核按页写 swap header），64K 页内核用 4086 会误判，因此按 getconf PAGE_SIZE
+        # 计算；取不到时退回 4K 页。不是 Swap 就什么都不改（不 mkswap、不写 fstab、不 swapon）。
+        local swap_page_size swap_magic_offset
+        swap_page_size=$(getconf PAGE_SIZE 2>/dev/null || true)
+        [[ "${swap_page_size}" =~ ^[0-9]{1,10}$ ]] || swap_page_size=4096
+        swap_magic_offset=$((swap_page_size - 10))
+        if [[ "$(dd if="${swap_file}" bs=1 skip="${swap_magic_offset}" count=10 2>/dev/null)" != "SWAPSPACE2" ]]; then
+            warn "已存在非 Swap 的同名文件（${swap_file}）；跳过 Swap 配置"
+            return 0
+        fi
         chmod 0600 "${swap_file}"
-        mkswap "${swap_file}" >/dev/null 2>&1 || true
+        info "复用已有的 Swap 文件（${swap_file}）"
     fi
     if ! swapon "${swap_file}" 2>/dev/null; then
-        warn "启用 Swap 文件失败（可能是容器环境或只读文件系统）；清理并跳过"
         if (( created_new == 1 )); then
+            warn "启用 Swap 文件失败（可能是容器环境或只读文件系统）；已删除新建的 Swap 文件并跳过"
             rm -f -- "${swap_file}"
+        else
+            # 复用路径不能删用户原有文件（可能是别处配置的 Swap），只跳过后续写入。
+            warn "启用 Swap 文件失败（可能是容器环境或只读文件系统）；保留已有文件并跳过"
         fi
         return 0
     fi

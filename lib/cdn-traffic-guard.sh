@@ -241,10 +241,12 @@ cdn_traffic_chain_exists() {
     cdn_traffic_iptables -S "${CDN_TRAFFIC_COUNTER_CHAIN}" >/dev/null 2>&1
 }
 
-# 幂等：先 -C 检查，缺失才插入；只清理明确自有的重复跳转规则。
+# 输出匹配条数；iptables -S 查询失败（xtables 锁/预算耗尽）必须与「确实 0 条」区分，
+# 不能把失败当成 0 条去插入规则（重复插入会双倍计量）。
 cdn_traffic_rule_count() {
-    local chain=$1 expected=$2 count
-    count=$(cdn_traffic_iptables -S "${chain}" 2>/dev/null | grep -Fxc -- "${expected}" || true)
+    local chain=$1 expected=$2 snapshot count
+    snapshot=$(cdn_traffic_iptables -S "${chain}") || return 1
+    count=$(grep -Fxc -- "${expected}" <<<"${snapshot}" || true)
     printf '%s\n' "${count:-0}"
 }
 
@@ -252,7 +254,7 @@ cdn_traffic_rule_count() {
 cdn_traffic_ensure_unique_rule() {
     local chain=$1 expected=$2 insert=$3 count
     shift 3
-    count=$(cdn_traffic_rule_count "${chain}" "${expected}")
+    count=$(cdn_traffic_rule_count "${chain}" "${expected}") || return 1
     if ((count == 0)); then
         if [[ "${insert}" == "append" ]]; then
             cdn_traffic_iptables -A "$@" || return 1
@@ -261,6 +263,12 @@ cdn_traffic_ensure_unique_rule() {
             # -I 的规则编号必须紧跟链名：-I INPUT 1 ...（-I 1 INPUT 是非法语法）。
             shift
             cdn_traffic_iptables -I "${chain}" 1 "$@" || return 1
+        fi
+        # 插入后复检：后端序列化差异或并发导致重复插入时立即报错，不留下双倍计量。
+        count=$(cdn_traffic_rule_count "${chain}" "${expected}") || return 1
+        if ((count != 1)); then
+            warn "mangle 计量规则数异常（${chain}：${expected} 共 ${count} 条）；拒绝继续安装"
+            return 1
         fi
     fi
     while ((count > 1)); do
@@ -406,6 +414,14 @@ cdn_traffic_probe_counters() {
     [[ "${up}" =~ ^[0-9]+$ && "${down}" =~ ^[0-9]+$ ]]
 }
 
+# live 运行配置是否仍开放 CDN 入站：既是状态漂移的判定依据，也是「目标阻断是否需要
+# 重建」的幂等依据（配置已受限就不应每轮重复重建）。
+cdn_traffic_runtime_exposes_cdn() {
+    local config=${1:-${SINGBOX_CONFIG}}
+    [[ -s "${config}" ]] || return 1
+    jq -e '[.inbounds[]? | select(.tag == "vless-cdn-in")] | length > 0' "${config}" >/dev/null 2>&1
+}
+
 # --- 定时器 -------------------------------------------------------------------
 
 install_cdn_traffic_protection_timer() {
@@ -480,8 +496,14 @@ cdn_traffic_update_usage() {
         delta_up=0
         delta_down=0
     else
-        ((current_up >= old_up)) && delta_up=$((current_up - old_up)) || delta_up=0
-        ((current_down >= old_down)) && delta_down=$((current_down - old_down)) || delta_down=0
+        # 同一次开机内计数只能单调增：回退说明规则被外部重置（如 iptables -t mangle -F）。
+        # 静默写 0 增量会漏计整月流量并让 985GB 保护滞后，必须按计量异常拒绝放行。
+        if ((current_up < old_up)) || ((current_down < old_down)); then
+            warn "mangle 计量计数在同一次开机内回退（上行 ${old_up}→${current_up}，下行 ${old_down}→${current_down}）；判为计量异常并保留现有保护状态"
+            return 1
+        fi
+        delta_up=$((current_up - old_up))
+        delta_down=$((current_down - old_down))
     fi
 
     if [[ "$(jq -r '.period' <<<"${usage}")" == "${period}" ]]; then
@@ -579,6 +601,7 @@ cdn_traffic_fail_closed() {
 # timer 与服务启动前入口都走这里：先 counter（只采样/写 pending），释放后才取 runtime。
 cdn_traffic_protection_sync() {
     local subscription_ready=1 usage
+    CDN_TRAFFIC_FORCE_BLOCKED=0
     require_root
     # timer 可能在管理事务持 runtime 时运行：先用只读状态文件恢复 PROTOCOL/额度，
     # 否则 cdn_traffic_protection_enabled 会因变量为空而短路采样。
@@ -608,12 +631,23 @@ cdn_traffic_protection_sync() {
     fi
     # 状态漂移自愈：usage 声称开放但实际配置已无 CDN 入站（例如回滚 fallback 后
     # 保护状态未能落盘）时强制收敛，避免 false/false 永久跳过重建。
-    if [[ "${CDN_TRAFFIC_NEEDS_APPLY:-0}" != "1" ]] && [[ -s "${SINGBOX_CONFIG}" ]] \
+    if [[ "${CDN_TRAFFIC_NEEDS_APPLY:-0}" != "1" ]] \
         && jq -e '.blocked == false and .enforced == false' <<<"${usage}" >/dev/null 2>&1 \
-        && ! jq -e '[.inbounds[]? | select(.tag == "vless-cdn-in")] | length > 0' "${SINGBOX_CONFIG}" >/dev/null 2>&1; then
+        && ! cdn_traffic_runtime_exposes_cdn; then
         warn "检测到实际配置受限但 usage 为开放：强制收敛保护状态"
         CDN_TRAFFIC_DRIFT_REPAIR=1
         CDN_TRAFFIC_BLOCKED=false
+        CDN_TRAFFIC_NEEDS_APPLY=1
+    fi
+    # 反向漂移（fail-closed）：usage 声称已落实阻断（enforced=true）但 live 配置仍开放
+    # CDN 入站，例如 rebuild 后 mark_enforced 落盘失败或进程中断。此时采样会把
+    # NEEDS_APPLY 算成 0（blocked==enforced），保护会永久 fail-open（同月再越阈值也不阻断）。
+    if [[ "${CDN_TRAFFIC_NEEDS_APPLY:-0}" != "1" ]] \
+        && jq -e '.enforced == true' <<<"${usage}" >/dev/null 2>&1 \
+        && cdn_traffic_runtime_exposes_cdn; then
+        warn "检测到 usage 声称已落实阻断但实际配置仍开放 CDN 入站：强制收敛为阻断"
+        CDN_TRAFFIC_FORCE_BLOCKED=1
+        CDN_TRAFFIC_BLOCKED=true
         CDN_TRAFFIC_NEEDS_APPLY=1
     fi
     cdn_traffic_counter_release
@@ -652,6 +686,12 @@ cdn_traffic_protection_sync() {
         CDN_TRAFFIC_BLOCKED=true
         cdn_traffic_deny_subscription_runtime \
             || warn "无法安装订阅 503 的降级配置；旧订阅产物可能仍可下载"
+        # 目标为保持阻断但运行时仍开放时，重建决策不能被重建前的二次采样抹掉
+        # （enforced=true 会把 NEEDS_APPLY 算成 0）；配置已受限则不动，避免每轮重复重建。
+        if cdn_traffic_runtime_exposes_cdn; then
+            CDN_TRAFFIC_FORCE_BLOCKED=1
+            CDN_TRAFFIC_NEEDS_APPLY=1
+        fi
     fi
 
     if [[ "${CDN_TRAFFIC_NEEDS_APPLY}" == "1" ]]; then
@@ -671,6 +711,12 @@ cdn_traffic_protection_sync() {
             return 1
         fi
         if [[ "${CDN_TRAFFIC_DRIFT_REPAIR:-0}" == "1" ]]; then
+            CDN_TRAFFIC_NEEDS_APPLY=1
+        fi
+        # 二次采样会把「目标阻断且已 enforced」算成无需重建；只要 live 配置仍开放 CDN
+        # 入站就必须继续重建到受限配置，配置已受限则接受采样结果（幂等，不重复重建）。
+        if [[ "${CDN_TRAFFIC_FORCE_BLOCKED:-0}" == "1" ]] && cdn_traffic_runtime_exposes_cdn; then
+            CDN_TRAFFIC_BLOCKED=true
             CDN_TRAFFIC_NEEDS_APPLY=1
         fi
         if [[ "${CDN_TRAFFIC_NEEDS_APPLY:-0}" != "1" ]]; then

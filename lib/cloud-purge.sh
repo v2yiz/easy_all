@@ -32,7 +32,9 @@ usage() {
   --all            清理 Token 可见的所有 Zone 中的 easy_all 资源
   --yes            跳过确认（非交互模式必须显式给出）
 
-环境变量：EASY_ALL_PURGE_MAX_PAGES  每个列表接口的分页上限（默认 100 页 × 100 条）
+环境变量：EASY_ALL_PURGE_MAX_PAGES            每个列表接口的分页上限（默认 100 页 × 100 条）
+          EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS  单个分发禁用/证书收敛的轮询次数（默认 60）
+          EASY_ALL_PURGE_AWS_WAIT_SECONDS   轮询间隔秒数（默认 10）
 
 识别规则：DNS 记录注释以 easy_all 开头（命中本机接管日志 /var/log/easy_all/dns-takeover.log 的记录
 视为强制接管而来的第三方记录，一律保留，原配置按日志手工处理）；
@@ -45,10 +47,12 @@ Zone 内 easy_all DNS 记录已删除时，规则与证书需要传完整主机�
 CloudFront/ACM：仅在同时提供 AWS 凭据（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY，
 可选 AWS_SESSION_TOKEN）且已安装 aws CLI 时执行，否则跳过并提示。只删除
 Comment 以 easy_all-cloudfront- 开头且别名全部落在本次域名范围内的分发（先禁用、等 Deployed、再删），
-以及打有 easy_all=managed 标记、InUseBy 为空且域名全部在范围内的 us-east-1 ACM 证书。
-与本次删除的分发关联的 ACM 证书（计划时仍被引用）本次不再评估；需要一并清理时，
-请在分发删除成功后再次运行本命令。任一 ACM 证书无法读取或解析时，无法确认归属，
-将整体取消清理（不删除任何对象）。
+以及打有 easy_all=managed 标记且域名全部在范围内的 us-east-1 ACM 证书。
+计划阶段仍被分发引用的证书会在确认提示里单独计数：分发删除后逐个复核，已无 InUseBy 的会被删除，
+仍被其他分发占用的保留；InUseBy 仍指向本次已删除分发时按有界重试等待收敛
+（EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS 默认 60 次 × EASY_ALL_PURGE_AWS_WAIT_SECONDS 默认 10 秒），
+等待期后仍被引用或读取失败会告警并计入失败。任一 ACM 证书在计划阶段无法读取或解析时，
+无法确认归属，将整体取消清理（不删除任何对象）。
 EOF
     exit "${status}"
 }
@@ -472,7 +476,8 @@ aws_collect_certificates() {
     jq -s -c 'add // []' "${acc_file}"
 }
 
-# ACM 归属：us-east-1、easy_all=managed 标记、InUseBy 为空，且域名全部落在本次范围内。
+# ACM 归属：us-east-1、easy_all=managed 标记，且域名全部落在本次范围内。归属确认后，
+# InUseBy 为空者直接进删除计划，非空者记入复核清单（分发删除后再判定能不能回收）。
 # 读取/解析失败无法证明资格：点名 ARN 并 return 1（aws_plan_failed → 整体取消），
 # 与「完整枚举失败则删除前取消」同口径；成功读取但不符合归属的证书静默保留。
 aws_plan_certificates() {
@@ -494,8 +499,6 @@ aws_plan_certificates() {
             warn "无法读取/解析 ACM 证书（list-tags-for-certificate：${arn}），无法确认归属；已取消清理"
             return 1
         fi
-        jq -e '(.Certificate.InUseBy // []) | length == 0' <<<"${detail}" >/dev/null 2>&1 \
-            || continue
         jq -e '(.Tags // []) | any(.Key == "easy_all" and .Value == "managed")' \
             <<<"${tags}" >/dev/null 2>&1 || continue
         if ! names=$(jq -r '[.Certificate.DomainName] + (.Certificate.SubjectAlternativeNames // [])
@@ -510,19 +513,48 @@ aws_plan_certificates() {
             aws_name_in_scope "${name}" || ok=0
         done
         ((ok == 1)) || continue
+        # 归属（管理标记）与域名范围确认之后才记录占用：账号里其他业务证书无论是否在用都不进
+        # 复核清单，确认提示的数量与随后的复核调用只覆盖真正可能被删的证书。
+        if ! jq -e '(.Certificate.InUseBy // []) | length == 0' <<<"${detail}" >/dev/null 2>&1; then
+            # 此刻被分发占用、不可删；但分发删除后可能变成可删。先记下 ARN，删除分发后再判定，
+            # 否则这类证书会永久滞留为孤儿资产。
+            printf '%s\n' "${arn}" >>"${RUNTIME_TMP}/acm-inuse.txt"
+            continue
+        fi
         printf '%s\t%s\n' "${arn}" "$(tr '\n' ',' <<<"${names}" | sed 's/,$//')" \
             >>"${RUNTIME_TMP}/acm.tsv"
     done < <(jq -r '.[] | .CertificateArn // empty' <<<"${items}")
 }
 
 # 证书删除前复核：managed 标签、InUseBy 为空、全部域名在范围内。任一读取失败或不符返回 1。
+# 读取失败（节流/IAM）与「不归属」在调用方有不同后果：置 ACM_OWNERSHIP_UNREADABLE=1 供区分。
+# ACM 的 InUseBy 在 delete-distribution 返回后才收敛，单次读取会把「还没收敛」当成「仍被占用」。
+# 输出 0 = 只剩本次已删除的分发在引用（尚未收敛，值得重试）；1 = 已无占用或仍被其他资源占用；
+# 2 = 读不到状态。与 lib/cloudfront-mode.sh 的收敛重试同一口径，但只对本次删掉的分发重试。
+aws_acm_in_use_only_deleted() {
+    local arn=$1 detail ids id
+    detail=$(aws_cli acm describe-certificate --region us-east-1 \
+        --certificate-arn "${arn}" --output json) || return 2
+    ids=$(jq -r '(.Certificate.InUseBy // [])[]' <<<"${detail}") || return 2
+    [[ -n "${ids}" ]] || return 1
+    while IFS= read -r id; do
+        id=${id##*/}
+        # 整行精确匹配（分发 ID 不含换行/通配符）；一次性比对集合，避免 cut|grep 在 pipefail 下被 SIGPIPE 误判。
+        [[ $'\n'"${DELETED_DISTRIBUTION_IDS}"$'\n' == *$'\n'"${id}"$'\n'* ]] || return 1
+    done <<<"${ids}"
+    return 0
+}
+
 aws_certificate_still_owned() {
     local arn=$1 detail tags names name ok=1
     local -a name_list
+    ACM_OWNERSHIP_UNREADABLE=0
     detail=$(aws_cli acm describe-certificate --region us-east-1 \
-        --certificate-arn "${arn}" --output json) || return 1
+        --certificate-arn "${arn}" --output json) \
+        || { ACM_OWNERSHIP_UNREADABLE=1; return 1; }
     tags=$(aws_cli acm list-tags-for-certificate --region us-east-1 \
-        --certificate-arn "${arn}" --output json) || return 1
+        --certificate-arn "${arn}" --output json) \
+        || { ACM_OWNERSHIP_UNREADABLE=1; return 1; }
     jq -e '(.Certificate.InUseBy // []) | length == 0' <<<"${detail}" >/dev/null 2>&1 \
         || return 1
     jq -e '(.Tags // []) | any(.Key == "easy_all" and .Value == "managed")' \
@@ -555,7 +587,7 @@ aws_distribution_still_owned() {
 }
 
 aws_disable_and_delete_distribution() {
-    local id=$1 fetched etag config status attempt
+    local id=$1 fetched etag config status attempt description enabled
     local attempts=${EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS:-60}
     local seconds=${EASY_ALL_PURGE_AWS_WAIT_SECONDS:-10}
     # 配置读取用 get-distribution-config（真实响应的配置在根对象 .DistributionConfig）；
@@ -571,13 +603,19 @@ aws_disable_and_delete_distribution() {
     aws_cli cloudfront update-distribution --id "${id}" --if-match "${etag}" \
         --distribution-config "file://${config}" --output json >/dev/null || return 1
     status=""
+    enabled=""
+    # 传播期 get-distribution 仍可能报告上一次的 Deployed：只按 Status 判定会拿着未生效的
+    # 禁用去 delete-distribution 而被服务端拒绝（DistributionNotDisabled）。必须同时看到
+    # Enabled=false 才算完成，与 lib/cloudfront-mode.sh 的等待口径一致。
     for ((attempt = 1; attempt <= attempts; attempt++)); do
-        status=$(aws_cli cloudfront get-distribution --id "${id}" \
-            --query 'Distribution.Status' --output text 2>/dev/null || true)
-        [[ "${status}" == "Deployed" ]] && break
+        description=$(aws_cli cloudfront get-distribution --id "${id}" --output json 2>/dev/null || true)
+        status=$(jq -r '.Distribution.Status // empty' <<<"${description}" 2>/dev/null || true)
+        enabled=$(jq -r '.Distribution.DistributionConfig.Enabled | tostring' \
+            <<<"${description}" 2>/dev/null || true)
+        [[ "${status}" == "Deployed" && "${enabled}" == "false" ]] && break
         sleep "${seconds}"
     done
-    [[ "${status}" == "Deployed" ]] || return 1
+    [[ "${status}" == "Deployed" && "${enabled}" == "false" ]] || return 1
     # 禁用生效后重新读取，取最新 ETag 再删；删除前同样复核归属/范围。
     fetched=$(aws_cli cloudfront get-distribution-config --id "${id}" --output json) || return 1
     aws_distribution_still_owned "${fetched}" \
@@ -612,6 +650,7 @@ aws_requested=0
 aws_plan_failed=0
 : >"${RUNTIME_TMP}/cloudfront.tsv"
 : >"${RUNTIME_TMP}/acm.tsv"
+: >"${RUNTIME_TMP}/acm-inuse.txt"
 if aws_cli_ready; then
     aws_requested=1
     if ! { aws_plan_distributions && aws_plan_certificates; }; then
@@ -627,6 +666,10 @@ if aws_cli_ready; then
             aws_total=$((aws_total + 1))
             printf '  %-11s %s %s\n' "ACM" "${aws_arn}" "${aws_names}"
         done <"${RUNTIME_TMP}/acm.tsv"
+        # 确认范围必须覆盖实际破坏范围：这些证书在分发删除后才可能可删，数量要提前告知。
+        if [[ -s "${RUNTIME_TMP}/acm-inuse.txt" ]]; then
+            info "另有 $(awk 'END {print NR}' "${RUNTIME_TMP}/acm-inuse.txt") 张被分发占用的 ACM 证书将在分发删除后复核：不再被占用的会被一并删除，仍被占用的保留"
+        fi
     fi
 else
     info "未提供 AWS 凭据或缺 aws CLI：跳过 CloudFront/ACM 清理（Cloudflare 侧照常执行）"
@@ -690,21 +733,76 @@ fi
 
 if ((aws_total > 0)); then
     aws_failures=0
+    deleted_distribution_ids=()
     while IFS=$'\t' read -r aws_id _aws_comment aws_aliases; do
         [[ -n "${aws_id}" ]] || continue
         if aws_disable_and_delete_distribution "${aws_id}"; then
             success "已删除 CloudFront 分发：${aws_id}（${aws_aliases}）"
+            deleted_distribution_ids+=("${aws_id}")
         else
             warn "删除 CloudFront 分发失败：${aws_id}"
             aws_failures=$((aws_failures + 1))
         fi
     done <"${RUNTIME_TMP}/cloudfront.tsv"
+    # 计划阶段因 InUseBy 非空被排除的证书，分发删除后才可能可删：逐个复核归属/范围后追加到
+    # 待删列表（仍被其他分发占用的照旧保留），否则这些证书会永久滞留为孤儿资产。
+    cp -- "${RUNTIME_TMP}/acm.tsv" "${RUNTIME_TMP}/acm-planned.tsv" \
+        || die "保存 ACM 清理计划失败"
+    attempts=${EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS:-60}
+    ((attempts > 0)) || attempts=1
+    seconds=${EASY_ALL_PURGE_AWS_WAIT_SECONDS:-10}
+    settled=0
+    unreadable=0
+    rc=0
+    # 只把实际删除成功的分发算作收敛等待对象：删除失败的分发仍然存活，它的 InUseBy 不会收敛，
+    # 按计划表全量匹配会让关联证书白等满额重试（默认 60×10 秒）后才报失败。
+    DELETED_DISTRIBUTION_IDS=$(printf '%s\n' "${deleted_distribution_ids[@]+"${deleted_distribution_ids[@]}"}")
+    while IFS= read -r aws_arn; do
+        [[ -n "${aws_arn}" ]] || continue
+        settled=0
+        unreadable=0
+        for ((attempt = 1; attempt <= attempts; attempt++)); do
+            rc=0
+            aws_acm_in_use_only_deleted "${aws_arn}" || rc=$?
+            case "${rc}" in
+            0)
+                # InUseBy 仍指向本次删掉的分发：等传播收敛后重试，不把「还没收敛」当结果。
+                sleep "${seconds}"
+                ;;
+            2)
+                unreadable=1
+                break
+                ;;
+            *)
+                settled=1
+                break
+                ;;
+            esac
+        done
+        if ((settled == 1)); then
+            if aws_certificate_still_owned "${aws_arn}"; then
+                printf '  %-11s %s\n' "ACM+1" "${aws_arn}"
+                printf '%s\t\n' "${aws_arn}" >>"${RUNTIME_TMP}/acm-planned.tsv"
+                aws_total=$((aws_total + 1))
+            elif ((ACM_OWNERSHIP_UNREADABLE == 1)); then
+                warn "无法读取 ACM 证书状态，保留不删：${aws_arn}"
+                aws_failures=$((aws_failures + 1))
+            fi
+            continue
+        fi
+        if ((unreadable == 1)); then
+            warn "无法读取 ACM 证书状态，保留不删：${aws_arn}"
+        else
+            warn "ACM 证书在等待期内仍被已删除的分发引用，保留不删：${aws_arn}"
+        fi
+        aws_failures=$((aws_failures + 1))
+    done <"${RUNTIME_TMP}/acm-inuse.txt"
     while IFS=$'\t' read -r aws_arn aws_names; do
         [[ -n "${aws_arn}" ]] || continue
         if aws_certificate_still_owned "${aws_arn}"; then
             if (aws_cli acm delete-certificate --region us-east-1 \
                 --certificate-arn "${aws_arn}" >/dev/null); then
-                success "已删除 ACM 证书：${aws_arn}（${aws_names}）"
+                success "已删除 ACM 证书：${aws_arn}${aws_names:+（${aws_names}）}"
             else
                 warn "删除 ACM 证书失败：${aws_arn}"
                 aws_failures=$((aws_failures + 1))
@@ -713,7 +811,7 @@ if ((aws_total > 0)); then
             warn "ACM 证书 ${aws_arn} 的归属/状态已变化，保留不删"
             aws_failures=$((aws_failures + 1))
         fi
-    done <"${RUNTIME_TMP}/acm.tsv"
+    done <"${RUNTIME_TMP}/acm-planned.tsv"
     if ((aws_failures == 0)); then
         success "CloudFront/ACM 清理完成：${aws_total} 个对象"
     else

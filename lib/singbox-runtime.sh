@@ -104,6 +104,10 @@ render_singbox_config() {
     [[ "${blocked}" == "0" || "${blocked}" == "1" ]] \
         || die "sing-box blocked 状态无效：${blocked}"
     singbox_require_protocol
+    # 首条 resolve 是 SSRF 阻断的前提，也是「解析失败不等于放行」的依据：sing-box 在解析出错
+    # （NXDOMAIN、超时、NOERROR 无地址）时以错误终止连接，不会回落到 final: direct。
+    # 已对上游 1.12.0 与 master 核验 route/route.go（RuleActionResolve 的错误为 fatal）与
+    # dns/router.go（Lookup 把「无地址」改写为 error）；锁定核心升级时需复核这两处。
     jq -n \
         --argjson inbounds "$(singbox_inbounds_json "${blocked}")" \
         --argjson private "$(singbox_private_ranges_json)" '
@@ -121,6 +125,7 @@ render_singbox_config() {
           route: {
             default_domain_resolver: "easy_all-ipv4-primary",
             rules: [
+              {action: "resolve"},
               {ip_is_private: true, action: "reject"},
               {ip_cidr: $private, action: "reject"},
               {network: "udp", port: 443, action: "reject"}

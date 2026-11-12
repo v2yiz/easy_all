@@ -22,8 +22,8 @@ normalize_subscription_config() {
             return 1
         }
     # 优选连接地址的形状校验单独一次调用：不加 2>&1，jq 的 error() 文案必须直达 stderr。
-    # 只接受完整主机名（SNI / Host 仍用节点域名，所以这里不支持 *、URL、端口与路径）
-    # 与 IP 字面量：连接地址必须是可被客户端解析的主机名。
+    # 只接受可解析的 FQDN 主机名（SNI / Host 仍用节点域名，所以这里不支持 *、URL、端口、
+    # 路径）：IP 字面量与单标签主机名一律拒绝。
     jq -e '
         def edge_ok:
             type == "string" and length >= 1 and length <= 253

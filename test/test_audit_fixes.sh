@@ -526,4 +526,389 @@ assert_contains "launcher 拒绝旧 schema" "${launcher_content}" "state_legacy_
 assert_not_contains "launcher 不再有旧 Cloudflare 迁移分支" \
     "${launcher_content}" "launcher_marker_is_legacy_cloudflare"
 
+echo "=== 10. CDN 熔断状态机：目标阻断不得被二次采样抹掉（fail-closed） ==="
+GUARD_ROOT="${TMP_DIR}/guard"
+mkdir -p "${GUARD_ROOT}"
+# 只加载 guard 库本身，其余运行时边界（锁/运行时重建/订阅就绪/epoch/计数）全部用替身：
+# 断言的是 sync 的决策与落盘结果，不是 iptables 或 systemd 的真实行为。
+cat >"${GUARD_ROOT}/sync-case.sh" <<'GUARD_CASE'
+set -Eeuo pipefail
+source "${EASY_ALL_TEST_ROOT}/lib/log.sh"
+source "${EASY_ALL_TEST_ROOT}/lib/cdn-traffic-guard.sh"
+cleanup_files=()
+PROTOCOL=cloudfront
+CDN_TRAFFIC_PROTECTION_GB=985
+state_protocol_uses_cloudfront() {
+    case "${1:-}" in
+    cloudfront | combined-cloudfront) return 0 ;;
+    esac
+    return 1
+}
+require_root() { :; }
+collect_installed_state() { :; }
+cdn_traffic_counter_acquire() { :; }
+cdn_traffic_counter_release() { :; }
+cdn_traffic_counters_install() { return 0; }
+try_acquire_runtime_write_lock() { return 0; }
+release_runtime_write_lock() { :; }
+cdn_traffic_recover_restricted_runtime() { printf 'recover-restricted\n' >>"${CASE_LOG}"; }
+cdn_deny_subscription_runtime() { printf 'deny-subscription\n' >>"${CASE_LOG}"; }
+cdn_subscription_ready() { [[ "${CASE_SUBSCRIPTION_READY:-0}" == "1" ]]; }
+# 计数读数按 CASE_SAMPLES 逐行消费：一轮最多两次采样（首采样 + 重建前二次采样）。
+cdn_traffic_read_counters() {
+    local first
+    first=$(head -n 1 "${CASE_SAMPLES}")
+    [[ -n "${first}" ]] || return 1
+    tail -n +2 "${CASE_SAMPLES}" >"${CASE_SAMPLES}.tmp"
+    mv -f "${CASE_SAMPLES}.tmp" "${CASE_SAMPLES}"
+    printf '%s\n' "${first}"
+}
+rebuild_traffic_runtime() {
+    printf 'rebuild %s\n' "$1" >>"${CASE_LOG}"
+    if [[ "$1" == "true" ]]; then
+        jq '.inbounds |= map(select(.tag != "vless-cdn-in"))' "${SINGBOX_CONFIG}" \
+            >"${SINGBOX_CONFIG}.new"
+    else
+        jq '.inbounds += [{"type": "vless", "tag": "vless-cdn-in", "listen": "127.0.0.1"}]' \
+            "${SINGBOX_CONFIG}" >"${SINGBOX_CONFIG}.new"
+    fi
+    mv -f "${SINGBOX_CONFIG}.new" "${SINGBOX_CONFIG}"
+}
+status=0
+cdn_traffic_protection_sync || status=$?
+printf 'SYNC-STATUS=%s\n' "${status}"
+printf 'CONFIG-CDN-INBOUNDS=%s\n' \
+    "$(jq '[.inbounds[]? | select(.tag == "vless-cdn-in")] | length' "${SINGBOX_CONFIG}")"
+printf 'USAGE=%s\n' "$(<"${STATE_DIR}/cdn-traffic-usage.json")"
+GUARD_CASE
+
+# $1=用例名 $2=usage.blocked $3=usage.enforced $4=usage.used_bytes $5=live 配置(open/restricted)
+guard_case_prepare() {
+    local case_dir="${GUARD_ROOT}/$1"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}/state"
+    printf 'boot-fixture-9001\n' >"${case_dir}/boot-id"
+    if [[ "$5" == "open" ]]; then
+        printf '%s\n' '{"inbounds":[{"type":"vless","tag":"vless-cdn-in","listen":"127.0.0.1"},{"type":"vless","tag":"node-in","listen":"0.0.0.0"}]}' \
+            >"${case_dir}/singbox.json"
+    else
+        printf '%s\n' '{"inbounds":[{"type":"vless","tag":"node-in","listen":"0.0.0.0"}]}' \
+            >"${case_dir}/singbox.json"
+    fi
+    jq -cn --arg period "$(date -u +%Y-%m)" \
+        --arg runtime 'mangle-easy_all-cdn-boot-fixture-9001' \
+        --argjson used "$4" --argjson up 1000 --argjson down 2000 \
+        --argjson blocked "$2" --argjson enforced "$3" '
+        {period:$period,runtime_id:$runtime,used_bytes:$used,last_uplink:$up,
+         last_downlink:$down,blocked:$blocked,enforced:$enforced,protection_offline:false}' \
+        >"${case_dir}/state/cdn-traffic-usage.json"
+    : >"${case_dir}/log"
+    printf '%s\n' "${case_dir}"
+}
+
+guard_case_run() { # $1=用例目录 $2=订阅是否就绪(1/0)
+    CASE_SAMPLES="$1/samples" \
+    CASE_LOG="$1/log" \
+    CASE_SUBSCRIPTION_READY="$2" \
+    STATE_DIR="$1/state" \
+    STATE_FILE="$1/state.env" \
+    SINGBOX_CONFIG="$1/singbox.json" \
+    EASY_ALL_BOOT_ID_FILE_OVERRIDE="$1/boot-id" \
+    EASY_ALL_TEST_ROOT="${ROOT_DIR}" \
+        bash "${GUARD_ROOT}/sync-case.sh" 2>&1
+}
+
+# 10.1 解封 pending（blocked=false/enforced=true）+ 订阅长期未就绪：目标保持阻断时
+# 二次采样会把 NEEDS_APPLY 抹成 0，必须仍重建到受限运行时。
+keep_dir=$(guard_case_prepare keep false true 0 open)
+printf '2000\t4000\n2600\t5200\n' >"${keep_dir}/samples"
+keep_round1=$(guard_case_run "${keep_dir}" 0) || true
+assert_contains "keep: 订阅未就绪时重建到受限运行时" "$(<"${keep_dir}/log")" "rebuild true"
+assert_contains "keep: live 配置收敛为受限" "${keep_round1}" "CONFIG-CDN-INBOUNDS=0"
+assert_contains "keep: 不得解封，退出非零" "${keep_round1}" "SYNC-STATUS=1"
+assert_contains "keep: usage 落盘为已落实阻断" "${keep_round1}" '"blocked":true,"enforced":true'
+
+# 10.2 幂等：配置已受限后不再每轮重复重建，也不得因二次采样改判为解封
+printf '3200\t6400\n3800\t7600\n' >"${keep_dir}/samples"
+keep_round2=$(guard_case_run "${keep_dir}" 0) || true
+assert_not_contains "keep: 配置已受限时不得解封" "$(<"${keep_dir}/log")" "rebuild false"
+assert_equal "keep: 配置已受限时不再重复重建" "1" \
+    "$(grep -c 'rebuild true' "${keep_dir}/log" || true)"
+assert_equal "keep: 第二轮仍拒绝提供旧订阅产物" "2" \
+    "$(grep -c 'deny-subscription' "${keep_dir}/log" || true)"
+assert_contains "keep: 第二轮配置保持受限" "${keep_round2}" "CONFIG-CDN-INBOUNDS=0"
+
+# 10.3 反向漂移：usage 声称已落实阻断（enforced=true）但 live 配置仍开放 CDN 入站
+# （上一轮 rebuild 后落盘失败/进程中断），同月已达阈值时会被算成无需重建，必须 fail-closed。
+drift_dir=$(guard_case_prepare drift true true 985000000000 open)
+printf '2000\t4000\n2600\t5200\n' >"${drift_dir}/samples"
+drift_round=$(guard_case_run "${drift_dir}" 1) || true
+assert_contains "drift: 声称已阻断但配置开放时强制重建" "$(<"${drift_dir}/log")" "rebuild true"
+assert_contains "drift: 收敛为受限运行时" "${drift_round}" "CONFIG-CDN-INBOUNDS=0"
+assert_contains "drift: 收敛后退出 0" "${drift_round}" "SYNC-STATUS=0"
+
+# 10.4 正常解封重试不得被反向漂移误判：订阅就绪 + 解封 pending + 运行时已开放时
+# 采样本身已要求重建开放配置，这里必须继续解封，不能被反向漂移强行改回阻断。
+resume_dir=$(guard_case_prepare resume false true 0 open)
+printf '2000\t4000\n2600\t5200\n' >"${resume_dir}/samples"
+resume_round=$(guard_case_run "${resume_dir}" 1) || true
+assert_not_contains "resume: 不得把解封 pending 误判为漂移" "$(<"${resume_dir}/log")" "rebuild true"
+assert_contains "resume: 继续按采样结果解封" "$(<"${resume_dir}/log")" "rebuild false"
+assert_contains "resume: 解封落盘为已落实" "${resume_round}" '"blocked":false,"enforced":false'
+assert_contains "resume: 解封后退出 0" "${resume_round}" "SYNC-STATUS=0"
+
+echo "=== 11. 同 epoch 计数回退按计量异常 fail-closed ==="
+regress_dir=$(guard_case_prepare regress false false 0 open)
+printf '6000\t7000\n100\t200\n' >"${regress_dir}/samples"
+regress_round1=$(guard_case_run "${regress_dir}" 1) || true
+assert_contains "regress: 计数正常递增的轮次通过" "${regress_round1}" "SYNC-STATUS=0"
+regress_round2=$(guard_case_run "${regress_dir}" 1) || true
+assert_contains "regress: 同 epoch 计数回退必须非零退出" "${regress_round2}" "SYNC-STATUS=1"
+assert_contains "regress: 回退按计量异常提示" "${regress_round2}" "回退"
+assert_contains "regress: 回退进入保护性停机" "${regress_round2}" "CDN 计量已失效"
+assert_equal "regress: 不得把虚低读数写进 usage" $'6000\t7000\ttrue' \
+    "$(jq -r '[.last_uplink, .last_downlink, .protection_offline] | @tsv' \
+        "${regress_dir}/state/cdn-traffic-usage.json")"
+
+echo "=== 12. mangle 规则查询失败与重复插入必须报错 ==="
+RULE_BIN="${GUARD_ROOT}/rule-bin"
+RULE_STATE="${GUARD_ROOT}/rule-state"
+mkdir -p "${RULE_BIN}"
+cat >"${RULE_BIN}/iptables" <<'FAKE_IPTABLES'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${FAKE_IPTABLES_LOG}"
+while (($#)); do
+    case "$1" in
+    -w | --wait | -t | --table) shift 2 ;;
+    *) break ;;
+    esac
+done
+op=${1:-}
+shift || true
+rules_dir="${FAKE_IPTABLES_STATE}/rules"
+mkdir -p "${rules_dir}"
+if [[ "${op}" == "-S" ]]; then
+    calls=0
+    [[ -f "${FAKE_IPTABLES_STATE}/s-calls" ]] && calls=$(<"${FAKE_IPTABLES_STATE}/s-calls")
+    calls=$((calls + 1))
+    printf '%s\n' "${calls}" >"${FAKE_IPTABLES_STATE}/s-calls"
+    if [[ -n "${FAKE_IPTABLES_FAIL_S_AT:-}" && "${calls}" == "${FAKE_IPTABLES_FAIL_S_AT}" ]]; then
+        printf 'iptables: Resource temporarily unavailable.\n' >&2
+        exit 4
+    fi
+    chain=${1:-}
+    if [[ ! -f "${rules_dir}/${chain}" ]]; then
+        case "${chain}" in
+        INPUT | OUTPUT) : >"${rules_dir}/${chain}" ;;
+        *)
+            printf 'iptables: No chain/target/match by that name.\n' >&2
+            exit 1
+            ;;
+        esac
+    fi
+    cat "${rules_dir}/${chain}"
+    exit 0
+fi
+case "${op}" in
+-N) : >"${rules_dir}/$1" ;;
+-A)
+    chain=$1
+    shift
+    for ((copy = 0; copy < ${FAKE_IPTABLES_APPEND_TIMES:-1}; copy++)); do
+        printf -- '-A %s %s\n' "${chain}" "$*" >>"${rules_dir}/${chain}"
+    done
+    ;;
+-I)
+    chain=$1
+    shift 2
+    printf -- '-A %s %s\n' "${chain}" "$*" >"${rules_dir}/${chain}.new"
+    [[ ! -f "${rules_dir}/${chain}" ]] || cat "${rules_dir}/${chain}" >>"${rules_dir}/${chain}.new"
+    mv -f "${rules_dir}/${chain}.new" "${rules_dir}/${chain}"
+    ;;
+-C)
+    chain=$1
+    shift
+    grep -Fqx -- "-A ${chain} $*" "${rules_dir}/${chain}" 2>/dev/null \
+        || { printf 'iptables: Bad rule (does a matching rule exist in that chain?).\n' >&2; exit 1; }
+    ;;
+*) ;;
+esac
+exit 0
+FAKE_IPTABLES
+chmod +x "${RULE_BIN}/iptables"
+cat >"${GUARD_ROOT}/rule-case.sh" <<'RULE_CASE'
+set -Eeuo pipefail
+source "${EASY_ALL_TEST_ROOT}/lib/log.sh"
+source "${EASY_ALL_TEST_ROOT}/lib/cdn-traffic-guard.sh"
+runtime_cdn_loopback_port() { printf '10086\n'; }
+cdn_traffic_counter_acquire() { :; }
+cdn_traffic_counter_release() { :; }
+status=0
+cdn_traffic_counters_install || status=$?
+printf 'INSTALL-STATUS=%s\n' "${status}"
+RULE_CASE
+rule_case_setup() { # $1=用例名 $2=是否预置既有规则
+    rm -rf -- "${RULE_STATE}/$1"
+    mkdir -p "${RULE_STATE}/$1/rules"
+    if [[ "$2" == "seeded" ]]; then
+        printf -- '-A easy_all-cdn -p tcp -m tcp --dport 10086\n' >"${RULE_STATE}/$1/rules/easy_all-cdn"
+        printf -- '-A easy_all-cdn -p tcp -m tcp --sport 10086\n' >>"${RULE_STATE}/$1/rules/easy_all-cdn"
+        printf -- '-A INPUT -i lo -p tcp -m tcp --dport 10086 -j easy_all-cdn\n' >"${RULE_STATE}/$1/rules/INPUT"
+        printf -- '-A OUTPUT -o lo -p tcp -m tcp --sport 10086 -j easy_all-cdn\n' >"${RULE_STATE}/$1/rules/OUTPUT"
+    fi
+    : >"${RULE_STATE}/$1/iptables.log"
+}
+rule_case_run() { # $1=用例名，其余 env 由调用方注入
+    PATH="${RULE_BIN}:${PATH}" \
+    FAKE_IPTABLES_STATE="${RULE_STATE}/$1" \
+    FAKE_IPTABLES_LOG="${RULE_STATE}/$1/iptables.log" \
+    EASY_ALL_TEST_ROOT="${ROOT_DIR}" \
+        bash "${GUARD_ROOT}/rule-case.sh" 2>&1
+}
+dport_rule_count() { # $1=用例名
+    grep -Fxc -- '-A easy_all-cdn -p tcp -m tcp --dport 10086' \
+        "${RULE_STATE}/$1/rules/easy_all-cdn" 2>/dev/null || true
+}
+
+# 12.1 既有规则 + 查询失败：不得按 0 条重复插入，install 必须失败
+rule_case_setup query-fail seeded
+query_fail_out=$(FAKE_IPTABLES_FAIL_S_AT=2 rule_case_run query-fail) || true
+assert_contains "rule: 查询失败时 install 必须失败" "${query_fail_out}" "INSTALL-STATUS=1"
+assert_equal "rule: 查询失败时不得重复插入" "1" "$(dport_rule_count query-fail)"
+
+# 12.2 正常安装：四条规则各一条，再装一次仍幂等
+rule_case_setup fresh fresh
+fresh_out=$(rule_case_run fresh) || true
+assert_contains "rule: 首次安装成功" "${fresh_out}" "INSTALL-STATUS=0"
+assert_equal "rule: 计费链上行规则唯一" "1" "$(dport_rule_count fresh)"
+fresh_again=$(rule_case_run fresh) || true
+assert_contains "rule: 重复安装仍成功" "${fresh_again}" "INSTALL-STATUS=0"
+assert_equal "rule: 重复安装不新增规则" "1" "$(dport_rule_count fresh)"
+
+# 12.3 插入后复检：后端重复插入时必须报错，避免双倍计量
+rule_case_setup duplicate fresh
+duplicate_out=$(FAKE_IPTABLES_APPEND_TIMES=2 rule_case_run duplicate) || true
+assert_contains "rule: 复检发现重复必须失败" "${duplicate_out}" "INSTALL-STATUS=1"
+
+# 12.4 调用方仍按错误路径收敛：规则安装失败时 prepare_counters 拒绝启动
+mkdir -p "${RULE_STATE}/prep/rules"
+: >"${RULE_STATE}/prep/iptables.log"
+prep_fail_out=$(PATH="${RULE_BIN}:${PATH}" \
+    FAKE_IPTABLES_STATE="${RULE_STATE}/prep" FAKE_IPTABLES_LOG="${RULE_STATE}/prep/iptables.log" \
+    FAKE_IPTABLES_FAIL_S_AT=2 \
+    bash -c '
+        set -Eeuo pipefail
+        source "$1/lib/log.sh"
+        source "$1/lib/cdn-traffic-guard.sh"
+        runtime_cdn_loopback_port() { printf "10086\n"; }
+        cdn_traffic_counter_dir_ensure() { return 0; }
+        cdn_traffic_counter_acquire() { :; }
+        cdn_traffic_counter_release() { :; }
+        state_protocol_uses_cloudfront() { return 0; }
+        PROTOCOL=cloudfront
+        CDN_TRAFFIC_PROTECTION_GB=985
+        status=0
+        cdn_traffic_prepare_counters || status=$?
+        printf "PREPARE-STATUS=%s\n" "${status}"
+    ' _ "${ROOT_DIR}" 2>&1) || true
+assert_contains "rule: 规则安装失败时 prepare_counters 拒绝启动" "${prep_fail_out}" \
+    "PREPARE-STATUS=1"
+assert_contains "rule: prepare_counters 报出规则安装失败" "${prep_fail_out}" \
+    "无法建立 mangle 计量规则"
+
+
+# 13. easy_all 与 bootstrap 的路径契约：测试隔离 override 必须被入口与卸载路径采纳，
+# 否则 register-command 会改写宿主机 /usr/local，自愈断言也对不上目标。
+assert_equal "audit: easy_all 采纳安装目录 override" "1" \
+    "$(grep -Fc 'readonly EASY_ALL_INSTALL_DIR="${EASY_ALL_INSTALL_DIR_OVERRIDE:-/usr/local/lib/easy_all}"' "${ROOT_DIR}/easy_all" || true)"
+assert_equal "audit: easy_all 采纳命令路径 override" "1" \
+    "$(grep -Fc 'readonly EASY_ALL_COMMAND_PATH="${EASY_ALL_COMMAND_PATH_OVERRIDE:-/usr/local/bin/easy_all}"' "${ROOT_DIR}/easy_all" || true)"
+assert_equal "audit: 卸载删除的运行时目录同样可覆盖" "1" \
+    "$(grep -Fc 'readonly COMMAND_INSTALL_DIR="${EASY_ALL_INSTALL_DIR_OVERRIDE:-/usr/local/lib/easy_all}"' "${ROOT_DIR}/lib/runtime-core.sh" || true)"
+assert_equal "audit: 卸载删除的命令入口同样可覆盖" "1" \
+    "$(grep -Fc 'readonly COMMAND_PATH="${EASY_ALL_COMMAND_PATH_OVERRIDE:-/usr/local/bin/${ENTRY_COMMAND_NAME}}"' "${ROOT_DIR}/lib/runtime-core.sh" || true)"
+# bootstrap 自愈在 sudo env_reset 下只认环境变量：必须显式把 override 注入 register-command。
+assert_contains "audit: 自愈注册显式转发路径 override" "$(<"${ROOT_DIR}/bootstrap.sh")" \
+    'env EASY_ALL_INSTALL_DIR_OVERRIDE="${INSTALL_DIR}"' 
+# sudo 的 env_reset 同样会清掉 EASY_ALL_BRANCH：bootstrap 克隆的分支必须一路传到最终入口，
+# 否则 non-root 下 `EASY_ALL_BRANCH=dev bash bootstrap.sh ...` 克隆 dev 后在入口回落到 main。
+forward_block=$(sed -n '/^forward_env=()/,/^done/p' "${ROOT_DIR}/bootstrap.sh")
+# 用 token 边界匹配：`EASY_ALL_BRANCH_OVERRIDE` 不能命中，也不把「必须是列表最后一项」锁进断言。
+[[ "${forward_block}" =~ (^|[[:space:]])EASY_ALL_BRANCH([[:space:]]|\;|$) ]] \
+    || fail "audit: bootstrap 未转发 EASY_ALL_BRANCH"
+
+# 14. edit-sub 的交互输入必须早于写锁：否则流量守卫（同一把排他锁）在用户停留于提示
+# 期间取不到锁，监控与 985 GB 熔断整段时间失效。
+for mode_file in anytls-mode cloudfront-mode cloudflare-mode; do
+    body=$(sed -n '/^update_subscription() {/,/^}/p' "${ROOT_DIR}/lib/${mode_file}.sh")
+    [[ -n "${body}" ]] || fail "audit: ${mode_file} 未找到 update_subscription"
+    assert_before "audit: ${mode_file} 交互输入早于写锁" "${body}" \
+        "choose_subscription_config" "acquire_runtime_write_lock"
+    assert_contains "audit: ${mode_file} 取锁后重新读取状态" "${body}" \
+        '[[ -z "${chosen_name}" ]] || SUB_DOWNLOAD_NAME=${chosen_name}'
+    # 提示块只能有一份：重复的提示会丢弃用户第一次输入，并把等待重新挪回锁内。
+    assert_equal "audit: ${mode_file} 提示块只有一份" "1" \
+        "$(grep -c 'choose_subscription_config' <<<"${body}")"
+    after_lock=$(sed '1,/acquire_runtime_write_lock/d' <<<"${body}")
+    assert_not_contains "audit: ${mode_file} 取锁后不再提示" "${after_lock}" "prompt_value"
+done
+
+# 15. 核心下载通道默认不写宿主机 /etc/easy_all（非 root 会 EPERM，root 会污染系统目录）。
+assert_equal "audit: verify-cores 下载默认落脚本临时目录" "1" \
+    "$(grep -Fc 'SINGBOX_BIN=${SINGBOX_BIN:-${WORK_DIR}/cores/sing-box}' "${ROOT_DIR}/scripts/verify-cores.sh" || true)"
+
+# 16. 复用已有 Swap 文件不受磁盘余量限制：磁盘已满但同名 Swap 文件完好时应直接 swapon，
+# 不能因为凑不出 1.5GB 余量而跳过（新建路径仍保留余量检查，避免在快满的盘上写 1GB）。
+swap_dir="${TMP_DIR}/swap"
+mkdir -p "${swap_dir}/fs"
+swap_file="${swap_dir}/fs/swapfile"
+: >"${swap_file}"
+# 内核把 swap header 写在 PAGE_SIZE-10 偏移：4K 页即 4086。
+swap_page_size=$(getconf PAGE_SIZE 2>/dev/null || printf '4096')
+[[ "${swap_page_size}" =~ ^[0-9]{1,10}$ ]] || swap_page_size=4096
+head -c 8192 /dev/zero >"${swap_file}"
+printf 'SWAPSPACE2' | dd of="${swap_file}" bs=1 seek=$((swap_page_size - 10)) conv=notrunc status=none
+printf 'SwapTotal:             0 kB\n' >"${swap_dir}/meminfo"
+: >"${swap_dir}/fstab"
+run_ensure_swap() { # $1=swap 文件 $2=fstab 文件 $3=swapon 返回值（默认 0）
+    EASY_ALL_SWAP_FILE="$1" \
+    EASY_ALL_MEMINFO_FILE="${swap_dir}/meminfo" \
+    EASY_ALL_FSTAB_FILE="$2" \
+    SWAPON_STATUS="${3:-0}" \
+        bash -c '
+        set -Eeuo pipefail
+        source "$1/lib/platform.sh"
+        warn() { printf "WARN %s\n" "$*"; }
+        info() { printf "INFO %s\n" "$*"; }
+        success() { printf "SUCCESS %s\n" "$*"; }
+        # 磁盘几乎写满：只有复用分支能活下来。
+        df() { printf "Filesystem 1024-blocks Used Available Capacity Mounted on\nfake 1000000 999000 1000 100%% /\n"; }
+        swapon() { return "${SWAPON_STATUS}"; }
+        ensure_swap
+    ' _ "${ROOT_DIR}" 2>&1
+}
+swap_out=$(run_ensure_swap "${swap_file}" "${swap_dir}/fstab") \
+    || fail "audit: 复用已存在的 Swap 文件不应失败：${swap_out}"
+assert_contains "audit: 磁盘已满仍复用已有 Swap 文件" "${swap_out}" "已成功配置并启用 1GB Swap"
+assert_not_contains "audit: 复用分支不做 1.5GB 余量检查" "${swap_out}" "磁盘剩余空间不足"
+assert_equal "audit: 复用 Swap 后写入 fstab" "1" \
+    "$(grep -Fc "${swap_file} none swap sw 0 0" "${swap_dir}/fstab" || true)"
+new_swap_file="${swap_dir}/fs/newfile"
+: >"${swap_dir}/fstab-new"
+swap_out=$(run_ensure_swap "${new_swap_file}" "${swap_dir}/fstab-new") \
+    || fail "audit: 余量不足时跳过创建不应失败：${swap_out}"
+assert_contains "audit: 新建 Swap 文件仍受 1.5GB 余量限制" "${swap_out}" "磁盘剩余空间不足 1.5GB"
+assert_equal "audit: 余量不足时不创建 Swap 文件" "0" \
+    "$([[ -e "${new_swap_file}" ]] && printf '1' || printf '0')"
+# 复用路径 swapon 失败时不能删用户原有文件、也不能把失败路径写进 fstab。
+: >"${swap_dir}/fstab-fail"
+swap_out=$(run_ensure_swap "${swap_file}" "${swap_dir}/fstab-fail" 1) \
+    || fail "audit: 复用 Swap 失败时应跳过而不是中断：${swap_out}"
+assert_contains "audit: 复用失败时告知保留已有文件" "${swap_out}" "保留已有文件并跳过"
+assert_equal "audit: 复用失败不删用户已有文件" "1" \
+    "$([[ -f "${swap_file}" ]] && printf '1' || printf '0')"
+assert_equal "audit: 复用失败不写 fstab" "0" \
+    "$(awk 'END {print NR + 0}' "${swap_dir}/fstab-fail")"
+
 echo "ok - all audit fixes verified successfully"
