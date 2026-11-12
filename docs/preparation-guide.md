@@ -106,7 +106,6 @@
 1. **注册使用根用户邮箱**：如果没有 AWS 全球商业区的独立账号，打开 [AWS 独立账号注册入口（Sign up for AWS Advanced）](https://signin.aws.amazon.com/signup?request_type=register)，填写 **Root user email address（根用户邮箱）** 和 **AWS account name（AWS 账号名称）**。已有账号可跳过注册。此流程无需创建 AWS 项目，不适用于 AWS 中国区账号。
 2. **首次登录选 Root user，不要选 IAM user**：打开 [AWS 管理控制台](https://console.aws.amazon.com/)，用注册时的根用户邮箱登录。如果页面默认显示 IAM 用户登录，点击 **Sign in using root user email** 切换。
 
-- **证书固定区域**：CloudFront 的 viewer 证书必须位于 **`us-east-1`（弗吉尼亚北部）**，脚本固定在此区域调用 ACM 申请与校验。
 - **内存安全使用**：AWS 密钥在安装时输入，**仅暂存于当前进程内存，不落盘**（不写入 state、日志或订阅）；亦可通过环境变量 `AWS_ACCESS_KEY_ID` 与 `AWS_SECRET_ACCESS_KEY` 预先传入。
 - **费用保护**：本机内置 985 GB 近似流量计量保护，达到阈值自动阻断 CDN 入口，降低超额扣费风险。
 
@@ -180,8 +179,3 @@
 4. 在 **检索访问密钥** 页面妥善保存同一对密钥，部署时分别填入安装器的 AWS 密钥提示：
    - **Access Key ID** → `AWS_ACCESS_KEY_ID`
    - **Secret Access Key** → `AWS_SECRET_ACCESS_KEY`（仅在创建时可获取，离开页面前保存）
-
-**安装时只使用上述专用 IAM 用户的密钥，不要创建或使用根用户的 Access Key。**
-
-> [!TIP]
-> **新 AWS 账号开通提示**：若账号注册于 2021 年末之后，首次创建 CloudFront 分发时若报 `Your account must be verified`，前往 [AWS Support](https://console.aws.amazon.com/support/home) 提交工单（类别 `Account and billing` → `Account verification`）申请开通 CloudFront 生产访问。工单通常需要 24 小时以上才有人处理；批准后重新运行安装将自动幂等复用已创建的证书与 DNS。
