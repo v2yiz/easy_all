@@ -253,8 +253,12 @@ a7_mode2_render() { # $1=CDN_SUBSCRIPTION_CORRUPT $2=cdn_config_ready(yes|no) $3
         cdn_config_ready() { [[ "${ready}" == "yes" ]]; }
         cdn_derive_runtime_fields || exit 1
         mkdir -p "${CERT_DIR}"
-        : >"${CERT_DIR}/fullchain.pem"
-        : >"${CERT_DIR}/private.key"
+        # write_runtime_config 会走 write_caddy_config 的候选校验：CI 里 CADDY_BIN 指向真实 caddy，
+        # 空的 PEM 会让 `caddy validate` 报 "failed to find any PEM data in certificate input"（
+        # 本机无 caddy 时该步被跳过，所以本地不会暴露）。这里生成一对可解析且配对的真证书。
+        openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=${CF_NODE_DOMAIN}" \
+            -keyout "${CERT_DIR}/private.key" -out "${CERT_DIR}/fullchain.pem" >/dev/null 2>&1 \
+            || fail "无法生成 A7 测试证书（需要 openssl）"
         write_runtime_config
     ) || fail "模式 2 渲染失败（corrupt=${corrupt} ready=${ready}）"
 }
