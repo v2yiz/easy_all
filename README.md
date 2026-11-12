@@ -39,7 +39,8 @@
 > **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。**
 >
 > **模式 4 与模式 5 使用 Cloudfront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
-> Cloudflare注册简单，Cloudfront更稳定，晚高峰效果好。
+>
+> **Cloudflare注册简单，Cloudfront更稳定，晚高峰效果好。**
 
 ---
 
