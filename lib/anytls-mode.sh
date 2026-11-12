@@ -58,9 +58,20 @@ cdn_config_ready() {
 collect_anytls_install_inputs() {
     CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' "${CF_ZONE:-}")")
     validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
-    anytls_collect_direct_inputs
+    # 先把所有域名问完（模式 3 多一个 CDN 节点域名），再把两个节点名排在一起。
+    anytls_collect_direct_domain
     if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
-        collect_combined_cloudflare_cdn_inputs
+        collect_combined_cloudflare_cdn_domain
+    fi
+    anytls_collect_direct_node_name
+    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        collect_combined_cloudflare_cdn_node_name
+        VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
+        validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
+        VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
+        validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
+        SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
+            "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
     else
         choose_subscription_mode
         SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
@@ -98,7 +109,8 @@ collect_anytls_install_inputs() {
 }
 
 # 模式 3：节点域名同时承载 WebSocket 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
-collect_combined_cloudflare_cdn_inputs() {
+# 域名与节点名分两步：域名先问（紧跟直连域名），节点名与直连节点名排在一起。
+collect_combined_cloudflare_cdn_domain() {
     CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value \
         'CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
     validate_domain "${CF_NODE_DOMAIN}" || die "节点域名无效：${CF_NODE_DOMAIN}"
@@ -108,15 +120,14 @@ collect_combined_cloudflare_cdn_inputs() {
         || die "节点域名必须是 ${CF_ZONE} 的一级子域名（如 cf.${CF_ZONE}）：${CF_NODE_DOMAIN}"
     [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
         || die "节点域名必须与直连域名不同（直连是灰云 A，节点与订阅是橙云 A）"
+}
+
+collect_combined_cloudflare_cdn_node_name() {
     CF_NODE_PREFIX=$(prompt_value 'CDN 节点名（完整单节点名）' "${CF_NODE_PREFIX:-🇺🇸CF}")
     validate_node_name "${CF_NODE_PREFIX}" || die "节点名无效（1-64 字符，不能含控制字符）"
+    # 最后一个判定正常时返回 1（未占用保留组名）：显式 return，避免调用方 errexit 中断。
     cdn_node_name_reserved "${CF_NODE_PREFIX}" && die "节点名不能使用保留组名：${CF_NODE_PREFIX}"
-    VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
-    validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
-    VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
-    validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
-    SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
-        "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
+    return 0
 }
 
 # --- Cloudflare 资源 ----------------------------------------------------------

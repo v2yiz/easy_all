@@ -376,12 +376,16 @@ runtime_singbox_exec_start_pre() {
 # --- 状态契约与订阅配置（五模式共用） ---------------------------------------
 
 # AnyTLS 直连身份（模式 1/3/5 共用）：域名、节点名与密码先落盘再创建任何资源。
-anytls_collect_direct_inputs() {
+# 域名与节点名分两步提示：模式 3/5 要先把所有域名问完，再把两个节点名排在一起。
+anytls_collect_direct_domain() {
     DIRECT_DOMAIN=$(normalize_domain "$(prompt_value \
         '直连节点域名（灰云 A 记录指向本机）' "${DIRECT_DOMAIN:-node.${CF_ZONE}}")")
     validate_domain "${DIRECT_DOMAIN}" || die "直连域名无效：${DIRECT_DOMAIN}"
     [[ "${DIRECT_DOMAIN}" == *".${CF_ZONE}" ]] \
         || die "直连域名必须属于 ${CF_ZONE}：${DIRECT_DOMAIN}"
+}
+
+anytls_collect_direct_node_name() {
     DIRECT_NODE_NAME=$(prompt_value '直连节点名' "${DIRECT_NODE_NAME:-🇺🇸直连}")
     validate_node_name "${DIRECT_NODE_NAME}" \
         || die "直连节点名无效（1-64 字符，不能含控制字符）"

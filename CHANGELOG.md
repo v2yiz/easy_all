@@ -1,5 +1,17 @@
 ## 未发布
 
+安装交互顺序调整（模式 3/5 的两个节点名排在一起）：
+
+- **域名先问完，再问两个节点名**：模式 3 与模式 5 的提问顺序统一为
+  Zone → 直连域名 → CDN 节点域名 → 直连节点名 → CDN 节点名 → Mihomo 下载文件名 →（模式 4/5 的 Token 与 AWS 凭据）→ 订阅配置 → CDN 优选前缀。
+  此前直连节点名夹在两个域名之间，CDN 节点名在凭据之后，两个节点名分散在两端。
+- **实现**：直连输入的域名与节点名拆成 `anytls_collect_direct_domain` / `anytls_collect_direct_node_name`
+  （模式 1 仍连续调用，观感不变）；模式 3 的 `collect_combined_cloudflare_cdn_inputs` 拆成域名与节点名两步；
+  模式 5 在 `collect_cloudfront_install_inputs` 内按新顺序提示。
+- **无行为变化**：字段、默认值、校验与落盘内容都不变，只改提示先后；模式 4 因与模式 5 共用同一收集器，
+  `Mihomo 下载文件名` 提示随之前移到凭据之前（值不变）。
+- **测试**：`test/test_cloud_safety.sh` 新增模式 1/3/5 的提示顺序断言（域名两条在前、两个节点名相邻）。
+
 交互输入修复（模式 4/5 安装卡在 Cloudflare Token / AWS 凭据提示）：
 
 - **凭据提示改成“直接读进目标变量”**：`lib/cf-dns.sh` 与 `lib/cloudfront-mode.sh` 不再用

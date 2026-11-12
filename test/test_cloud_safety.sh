@@ -562,6 +562,67 @@ assert_contains "模式 4 订阅域名复用节点域名" "${cloudfront_inputs}"
 assert_equal "模式 4 没有直连域名" "DIRECT=" \
     "$(printf '%s\n' "${cloudfront_inputs}" | grep '^DIRECT=')"
 
+# 3b-3. 安装输入顺序：先把域名问完，再把两个节点名排在一起（模式 3/5 同规）。
+run_prompt_order() { # $1=profile -> 逐行输出 prompt_value 的提示文案
+    local prompts="${TMP_DIR}/order-$1.log"
+    : >"${prompts}"
+    RUNTIME_TMP="${TMP_DIR}/order-runtime-$1" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/order-state-$1" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/order-state-$1/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/order-subs-$1" \
+    PROMPTS="${prompts}" \
+        bash -c '
+            source "$1/profiles/$2.sh"
+            prompt_value() { printf "%s\n" "$1" >>"${PROMPTS}"; printf "%s" "${2:-}"; }
+            prompt_secret_into() { printf "%s\n" "$2" >>"${PROMPTS}"; printf -v "$1" "%s" "0123456789abcdef0123456789abcdef"; }
+            choose_subscription_config() {
+                printf "%s\n" "订阅配置" >>"${PROMPTS}"
+                printf "%s" "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[]}"
+            }
+            collect_cdn_edge_address() { printf "%s\n" "CDN 优选前缀" >>"${PROMPTS}"; }
+            CF_ZONE=example.com
+            VPS_PUBLIC_IPV4=203.0.113.10
+            VLESS_UUID=11111111-2222-4333-8444-555555555555
+            collect_install_inputs >/dev/null
+        ' _ "${ROOT_DIR}" "$1" 2>/dev/null || true
+    cat "${prompts}"
+}
+combined_order=$(run_prompt_order combined)
+assert_equal "模式 5 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 2p)"
+assert_equal "模式 5 域名先问完，第 3 条才是节点名" "CloudFront 节点域名（CNAME 指向分发，灰云）" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 3p)"
+assert_equal "模式 5 两个节点名相邻（直连后紧接 CDN）" \
+    "CloudFront 节点名（完整单节点名）" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 5p)"
+# 模式 5 的凭据与订阅段：Token → AWS Key ID → AWS Secret → 订阅配置 → 优选前缀。
+assert_equal "模式 5 第 7 条是 Cloudflare Token" "Cloudflare API Token（Zone 只读 + DNS 编辑）" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 7p)"
+assert_equal "模式 5 第 8 条是 AWS Access Key ID" "AWS Access Key ID（仅限当前进程使用，不落盘）" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 8p)"
+assert_equal "模式 5 第 9 条是 AWS Secret Access Key" "AWS Secret Access Key（仅限当前进程使用，不落盘）" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 9p)"
+assert_equal "模式 5 第 10 条是订阅配置" "订阅配置" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 10p)"
+assert_equal "模式 5 优选前缀在最后" "CDN 优选前缀" \
+    "$(printf '%s\n' "${combined_order}" | sed -n 11p)"
+assert_equal "模式 5 提示总数固定" "11" "$(printf '%s\n' "${combined_order}" | grep -c .)"
+combined_cf_order=$(run_prompt_order combined-cloudflare)
+assert_equal "模式 3 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
+    "$(printf '%s\n' "${combined_cf_order}" | sed -n 2p)"
+assert_equal "模式 3 域名先问完，第 3 条才是 CDN 节点域名" \
+    "CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）" \
+    "$(printf '%s\n' "${combined_cf_order}" | sed -n 3p)"
+assert_equal "模式 3 两个节点名相邻（直连后紧接 CDN）" \
+    "CDN 节点名（完整单节点名）" \
+    "$(printf '%s\n' "${combined_cf_order}" | sed -n 5p)"
+# 模式 1 只有一个节点名：域名与节点名仍是连续两条。
+anytls_order=$(run_prompt_order anytls)
+assert_equal "模式 1 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
+    "$(printf '%s\n' "${anytls_order}" | sed -n 2p)"
+assert_equal "模式 1 第 3 条是直连节点名" "直连节点名" \
+    "$(printf '%s\n' "${anytls_order}" | sed -n 3p)"
+
 # 跨版本续装：旧版身份里源站/订阅域名可能是独立填写的，续装不得改写已建资源用的域名。
 resume_inputs=$(run_inputs_case combined resume) || fail "模式 5 续装输入收集失败：${resume_inputs}"
 resume_prompts=$(cat "${TMP_DIR}/inputs-prompts-combined-resume.log")

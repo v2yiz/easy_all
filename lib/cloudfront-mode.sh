@@ -166,10 +166,11 @@ cdn_validate_install_domains() {
 # 域名输入按模式收敛：模式 5 的源站域名固定复用直连域名（443 直连与 8443 回源端口隔离、
 # 共用一份 LE 证书与一条灰云 A），模式 4/5 的订阅域名固定复用节点域名（同一条分发别名与
 # CNAME，订阅走 https://<节点域名>/subscribe）。同名复用不再提问，每条链路最多两个名字。
+# 节点名不在这里提示：模式 5 要把直连与 CDN 两个节点名排在一起（见 collect_cloudfront_install_inputs）。
 # 续装例外：沿用安装身份里已落盘的域名（旧版身份可能带独立源站/订阅域名）。
 collect_cloudfront_domain_inputs() {
     if runtime_has_direct_entry; then
-        anytls_collect_direct_inputs
+        anytls_collect_direct_domain
         # 续装沿用身份里的源站域名：旧版身份可能带独立源站域名，改写会与已建分发/证书/DNS 冲突。
         [[ "${INSTALL_RESUME:-0}" == "1" && -n "${CF_ORIGIN_DOMAIN:-}" ]] \
             || CF_ORIGIN_DOMAIN=${DIRECT_DOMAIN}
@@ -192,17 +193,21 @@ collect_cloudfront_install_inputs() {
     # 首装不经过 load_state：订阅渲染前必须在输入校验处派生运行时字段。
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少 CloudFront 节点域名"
 
-    cloudflare_collect_api_token
-    collect_aws_credentials
-
-    VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
-    validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
-
+    # 域名问完之后两个节点名排在一起：先直连、再 CDN。
+    if runtime_has_direct_entry; then
+        anytls_collect_direct_node_name
+    fi
     CF_NODE_PREFIX=$(prompt_value 'CloudFront 节点名（完整单节点名）' "${CF_NODE_PREFIX:-🇺🇸AWS}")
     validate_node_name "${CF_NODE_PREFIX}" || die "节点名无效（1-64 字符，不能含控制字符）"
     cdn_node_name_reserved "${CF_NODE_PREFIX}" && die "节点名不能使用保留组名：${CF_NODE_PREFIX}"
     SUB_DOWNLOAD_NAME=$(normalize_sub_download_name \
         "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
+
+    cloudflare_collect_api_token
+    collect_aws_credentials
+
+    VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
+    validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
 
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || generate_secret)}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
