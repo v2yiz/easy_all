@@ -52,26 +52,16 @@ strip_terminal_input() {
 }
 
 read_prompt() {
-    # 内部累加器叫 raw：避开调用方常见的 value 变量（同名时 -v 会改到内部局部变量）。
-    local prompt=$1 variable=$2 silent=${3:-0} raw="" char
+    # 内部变量叫 raw：避开调用方常见的 value 变量（同名时 -v 会改到内部局部变量）。
+    local prompt=$1 variable=$2 silent=${3:-0} raw=""
     if [[ "${silent}" == "1" ]]; then
-        # 静默输入不走 readline：会话 pty 被留在 raw 模式（浏览器控制台、跳板机）时
-        # 回车只送来 \r，等 \n 的 read 会永久挂住。这里逐字符读到 \r 或 \n 为止，
-        # 不修改终端设置（回显由 -s 关闭），canonical 与 raw 两种模式都能结束。
-        printf '%s' "${prompt}" >&2
-        while IFS= read -r -s -n 1 char; do
-            case "${char}" in
-            $'\r' | $'\n') break ;;
-            # raw 模式下 Ctrl+C 只是普通字节，不会变成信号。
-            $'\x03') return 130 ;;
-            # -n 让 bash 以非 canonical 模式读，行规程不再处理编辑键：自己实现
-            # 退格、^U（清行）、^W（删词），否则残留前缀会静默混进凭据。
-            $'\x7f' | $'\b') raw=${raw%?} ;;
-            $'\x15') raw="" ;;
-            $'\x17') while [[ -n "${raw}" && "${raw: -1}" != ' ' ]]; do raw=${raw%?}; done ;;
-            *) raw+=${char} ;;
-            esac
-        done
+        # 静默输入一次性读整行：回显由 -s 关闭，行编辑与 ^C 交给行规程。
+        # 不用逐字符 read -n（每字节改一次终端设置，粘贴的长内容会在中途丢字节后挂死），
+        # 也不在 $() 子 shell 里读（已实测子 shell 的终端读会不等输入就返回空），
+        # 因此调用方必须用下面那句直接读进目标变量。
+        # -t 是挂死兜底：宁可超时报错，也不无限停在提示上。
+        IFS= read -r -s -t 300 -p "${prompt}" raw \
+            || die "没有读到输入（300 秒超时或输入已关闭）"
     else
         IFS= read -r -e -p "${prompt}" raw
     fi

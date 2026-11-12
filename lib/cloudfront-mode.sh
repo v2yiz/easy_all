@@ -72,13 +72,13 @@ cdn_derive_runtime_fields() {
 
 collect_aws_credentials() {
     if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
-        AWS_ACCESS_KEY_ID=$(prompt_secret 'AWS Access Key ID（仅限当前进程使用，不落盘）') \
+        prompt_secret_into AWS_ACCESS_KEY_ID 'AWS Access Key ID（仅限当前进程使用，不落盘）' \
             || die '缺少 AWS Access Key ID'
     fi
     [[ "${AWS_ACCESS_KEY_ID}" =~ ^[A-Za-z0-9]{16,128}$ ]] \
         || die "AWS Access Key ID 格式无效"
     if [[ -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
-        AWS_SECRET_ACCESS_KEY=$(prompt_secret 'AWS Secret Access Key（仅限当前进程使用，不落盘）') \
+        prompt_secret_into AWS_SECRET_ACCESS_KEY 'AWS Secret Access Key（仅限当前进程使用，不落盘）' \
             || die '缺少 AWS Secret Access Key'
     fi
     [[ ${#AWS_SECRET_ACCESS_KEY} -ge 20 && ${#AWS_SECRET_ACCESS_KEY} -le 128 ]] \

@@ -32,7 +32,7 @@ cloudflare_collect_api_token() {
         CLOUDFLARE_API_TOKEN=$(<"${file}")
     fi
     if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-        CLOUDFLARE_API_TOKEN=$(prompt_secret "${label}") \
+        prompt_secret_into CLOUDFLARE_API_TOKEN "${label}" \
             || die '缺少 Cloudflare API Token'
     fi
     cloudflare_token_format_valid || die "Cloudflare Token 格式无效"

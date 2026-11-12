@@ -1,19 +1,22 @@
 ## 未发布
 
-交互输入修复（raw 会话下安装提示挂住）：
+交互输入修复（模式 4/5 安装卡在 Cloudflare Token / AWS 凭据提示）：
 
-- **静默输入不再只等 `\n`**：`lib/log.sh` 的 `read_prompt` 静默分支改为逐字符读到 `\r` 或 `\n` 为止。
-  此前用 `read -r -s`，会话 pty 被留在 raw 模式（浏览器 Web 控制台、Guacamole 一类跳板机）时回车只送 `\r`，
-  模式 4/5 的 Cloudflare Token 与 AWS 凭据提示会永久挂住、且因关闭回显看着像死机；
-  回显仍由 `-s` 关闭、终端设置不被修改，退格/`^U`/`^W` 由读取原语自己处理（`-n` 会关掉行规程编辑）。
-- **括号粘贴标记从读入值里剔除**：`strip_terminal_input`（以及 `easy_all` 的 launcher 副本与 `scripts/debian-init.sh` 的副本）
+- **凭据提示改成“直接读进目标变量”**：`lib/cf-dns.sh` 与 `lib/cloudfront-mode.sh` 不再用
+  `令牌=$(prompt_secret '…')` 这种命令替换读入，改为 `prompt_secret_into CLOUDFLARE_API_TOKEN '…'`
+  （新增于 `lib/profile-common.sh`）。实测子 shell 里的终端读会不等输入就返回空，粘贴后即卡在原提示上。
+  `scripts/debian-init.sh` 同步改为 `read_secret_into` / `prompt_required_secret_into` / `prompt_confirmed_secret_into`。
+- **静默读回到一次性整行读，并加挂死兜底**：`lib/log.sh` 的 `read_prompt` 静默分支用
+  `read -r -s -t 300 -p`（回显仍关闭、行编辑与 `^C` 交给行规程），超时或输入关闭即报
+  「没有读到输入」，不再无限停在提示上。此前一版尝试过 `read -n 1` 逐字符读，实测每次读都要改终端设置，
+  会把粘贴进来的整段字节冲掉（读到的是稀疏字符）后二次挂住，已废弃。
+- **括号粘贴标记从读入值里剔除**：`strip_terminal_input`（以及 `easy_all` launcher 与 `scripts/debian-init.sh` 的副本）
   的 CSI 正则补上 `~` 终止符——`ESC[200~…ESC[201~` 不带字母，此前会被当成输入内容（Token 直接判「格式无效」）；
   控制字符清理同时删掉残留的 `\r`。
 - **内核重启提示走共享读取原语**：`lib/tcp-tuning.sh` 的 `prompt_kernel_reboot` 不再用裸 `read -r choice`，
-  raw 会话下安装最后一步也不会挂住（EOF 仍按「跳过自动重启」处理）。
-- **`scripts/debian-init.sh`** 的静默输入与转义清理同步同一行为（包括 `^C` 返回非零、`^U`/`^W`/退格）。
-- **测试**：`test/test_cloud_safety.sh` 新增 `read_prompt` 的 `\r`/`\n` 结束、括号粘贴标记、退格、`^U`/`^W`、`^C` 返回码，
-  以及「重启提示必须走共享原语」的结构断言；已做「换回旧实现即变红」反向验证。
+  EOF 仍按「跳过自动重启」处理。
+- **测试**：`test/test_cloud_safety.sh` 新增括号粘贴标记、尾部 `\r`、整行读断言，以及
+  「凭据必须读进目标变量、不得包进 `$( )`」「静默读不得再逐字符读」「重启提示走共享原语」的结构断言。
 
 审计修复（安全边界、云端清理与运行时锁）：
 

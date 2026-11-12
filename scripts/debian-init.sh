@@ -61,23 +61,11 @@ read_bilingual() {
   local label="$1"
   local variable="$2"
   local silent="${3:-0}"
-  local input char
+  local input
   printf '%s\n' "$label" >&2
   if [[ "$silent" == "1" ]]; then
-    # 同 easy_all：raw 会话（浏览器控制台、跳板机）里回车只送 \r，等 \n 的 read 会挂住。
-    # -n 使 bash 以非 canonical 模式读，编辑键（退格/^U/^W）改由这里处理。
-    printf '> ' >&2
-    input=""
-    while IFS= read -r -s -n 1 char; do
-      case "$char" in
-      $'\r' | $'\n') break ;;
-      $'\x03') return 130 ;;
-      $'\x7f' | $'\b') input=${input%?} ;;
-      $'\x15') input="" ;;
-      $'\x17') while [[ -n "$input" && "${input: -1}" != ' ' ]]; do input=${input%?}; done ;;
-      *) input+=${char} ;;
-      esac
-    done
+    # 一次性读整行：回显由 -s 关闭，行编辑与 ^C 交给行规程；-t 是挂死兜底。
+    IFS= read -r -s -t 300 -p '> ' input || die "没有读到输入（300 秒超时或输入已关闭）"
     echo >&2
   else
     IFS= read -r -e -p '> ' input
@@ -99,28 +87,29 @@ prompt() {
   fi
 }
 
-prompt_secret() {
-  local label="$1"
-  local value
-  read_bilingual "${label}:" value 1
-  printf '%s' "$value"
+# 静默读进目标变量：在调用方当前 shell 里直接读，不包进 $( )：
+# 子 shell 里的终端读会不等输入就返回空（easy_all 的 Token/AWS 提示同理）。
+read_secret_into() {
+  local variable="$1"
+  local label="$2"
+  read_bilingual "${label}:" "$variable" 1
 }
 
-prompt_required_secret() {
-  local label="$1"
-  local value
-  value="$(prompt_secret "$label")"
-  [[ -n "$value" ]] || die "${label} 不能为空"
-  printf '%s' "$value"
+prompt_required_secret_into() {
+  local variable="$1"
+  local label="$2"
+  read_secret_into "$variable" "$label"
+  [[ -n "${!variable}" ]] || die "${label} 不能为空"
 }
 
-prompt_confirmed_secret() {
-  local label="$1"
-  local value confirm
-  value="$(prompt_required_secret "$label")"
-  confirm="$(prompt_required_secret "再次输入${label}")"
-  [[ "$value" == "$confirm" ]] || die "两次输入的${label}不一致"
-  printf '%s' "$value"
+prompt_confirmed_secret_into() {
+  local variable="$1"
+  local label="$2"
+  local confirm
+  read_secret_into "$variable" "$label"
+  [[ -n "${!variable}" ]] || die "${label} 不能为空"
+  read_secret_into confirm "再次输入${label}"
+  [[ "${!variable}" == "$confirm" ]] || die "两次输入的${label}不一致"
 }
 
 expand_path() {
@@ -955,11 +944,11 @@ collect_inputs() {
   SERVER_USER="$(prompt "初始 SSH 登录用户" "root")"
   validate_server_user "$SERVER_USER"
 
-  SERVER_PASSWORD="$(prompt_secret "初始 SSH 登录用户当前密码，回车则使用交互式输入")"
+  read_secret_into SERVER_PASSWORD "初始 SSH 登录用户当前密码，回车则使用交互式输入"
 
   NORMAL_USER="$(prompt "最终 SSH 登录的普通用户名" "")"
   validate_linux_user "$NORMAL_USER"
-  NORMAL_USER_PASSWORD="$(prompt_confirmed_secret "普通用户 ${NORMAL_USER} 的 sudo 密码")"
+  prompt_confirmed_secret_into NORMAL_USER_PASSWORD "普通用户 ${NORMAL_USER} 的 sudo 密码"
 
   local default_alias
   default_alias="$(sanitize_alias "${NORMAL_USER}-${SERVER_HOST}")"

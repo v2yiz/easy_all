@@ -49,11 +49,13 @@ prompt_value() {
     fi
 }
 
-prompt_secret() {
-    local label=$1 value
+# 静默读进目标变量：必须在调用方当前 shell 里直接调用，不得包进 $( )：
+# 实测子 shell 里的终端读会不等输入就返回空（安装模式 4/5 的 Token/AWS 提示就卡在这里）。
+# 无终端时返回非零，由调用方给出提示。
+prompt_secret_into() {
+    local variable=$1 label=$2
     [[ -t 0 ]] || return 1
-    read_bilingual "${label}，粘贴后按回车键；输入过程不会显示任何字符:" value 1
-    printf '%s' "${value}"
+    read_bilingual "${label}，粘贴后按回车键；输入过程不会显示任何字符:" "${variable}" 1
 }
 
 # 只用于“是否清理 / 是否继续”这类确认，不会读进参数值。

@@ -516,7 +516,7 @@ run_inputs_case() { # $1=profile（combined|cloudfront） $2=resume（可选：�
             source "$1/profiles/$2.sh"
             # 交互面：记录提示文案，返回值一律取默认值（Zone 预置，故默认非空）。
             prompt_value() { printf "%s\n" "$1" >>"${INPUTS_PROMPTS}"; printf "%s" "${2:-}"; }
-            prompt_secret() { printf "%s" "0123456789abcdef0123456789abcdef"; }
+            prompt_secret_into() { printf -v "$1" "%s" "0123456789abcdef0123456789abcdef"; }
             cloudflare_collect_api_token() { :; }
             CF_ZONE=example.com
             VPS_PUBLIC_IPV4=203.0.113.10
@@ -1335,7 +1335,7 @@ run_edge_collector_case() { # $1=profile -> stdout: 收集器被调用时记录�
         bash -c '
             source "$1/profiles/$2.sh"
             prompt_value() { printf "%s" "${2:-}"; }
-            prompt_secret() { printf "%s" "0123456789abcdef0123456789abcdef"; }
+            prompt_secret_into() { printf -v "$1" "%s" "0123456789abcdef0123456789abcdef"; }
             cloudflare_collect_api_token() { :; }
             collect_cdn_edge_address() { printf "%s\n" "$(cdn_edge_mode_suffix)" >>"${EDGE_CALLS}"; }
             CF_ZONE=example.com
@@ -1588,32 +1588,36 @@ done
 assert_equal "订阅事务模式库清单" "anytls-mode.sh cloudflare-mode.sh cloudfront-mode.sh" \
     "${edge_mode_libs}"
 
-# 9f. 交互读取原语：raw 会话（浏览器控制台、跳板机）的回车只有 \r，等 \n 的 read -s 会永久挂住；
-# 括号粘贴标记也必须从读入值里剔除（否则 Token 会被判“格式无效”）。无终端时用管道驱动同一个函数。
+# 9f. 交互读取原语：括号粘贴标记与控制字符不得混进读到的值；
+# 静默读必须是“一次性整行读”（逐字符 read -n 会丢字节挂死，实测见 CHANGELOG）。
 prompt_read_case() { # $1=输入（printf %b 解释转义） $2=silent(0|1) -> 读到的值
     printf '%b' "$1" \
         | bash -c 'source "$1/lib/log.sh"; read_prompt "> " got "$2"; printf "%s" "${got}"' \
             _ "${ROOT_DIR}" "$2" 2>/dev/null
 }
 prompt_token="tok-abcdefgh1234567890"
-assert_equal "静默读取以 \\r 结束（raw 会话回车）" "${prompt_token}" \
-    "$(prompt_read_case "${prompt_token}\r" 1)"
-assert_equal "静默读取以 \\n 结束（canonical 会话回车）" "${prompt_token}" \
+assert_equal "静默读取读到整行" "${prompt_token}" \
     "$(prompt_read_case "${prompt_token}\n" 1)"
 assert_equal "静默读取剥离括号粘贴标记" "${prompt_token}" \
-    "$(prompt_read_case "\033[200~${prompt_token}\033[201~\r" 1)"
-assert_equal "静默读取处理退格" "${prompt_token}" \
-    "$(prompt_read_case "${prompt_token}X\177\r" 1)"
-assert_equal "静默读取按 ^U 清行（不残留前缀）" "${prompt_token}" \
-    "$(prompt_read_case "${prompt_token}X\025${prompt_token}\r" 1)"
-assert_equal "静默读取按 ^W 删词（不残留前缀）" "${prompt_token}" \
-    "$(prompt_read_case "${prompt_token}X\027${prompt_token}\r" 1)"
+    "$(prompt_read_case "\033[200~${prompt_token}\033[201~\n" 1)"
+assert_equal "静默读取剔除行尾 \\r" "${prompt_token}" \
+    "$(prompt_read_case "${prompt_token}\r\n" 1)"
 assert_equal "普通读取剔除括号粘贴标记" "5" \
     "$(prompt_read_case '\033[200~5\033[201~\n' 0)"
-# raw 会话的 Ctrl+C 只是字节：必须返回非零，不得把半截值当输入交回。
-assert_equal "静默读取对 Ctrl+C 返回 130" "130" \
-    "$(printf '\003' | bash -c 'source "$1/lib/log.sh"; read_prompt "> " got 1; printf "%s" "$?"' \
-        _ "${ROOT_DIR}" 2>/dev/null)"
+# 静默读必须一次性读：源文件里不得再出现逐字符读。
+assert_not_contains "静默读取不再逐字符读" "$(<"${ROOT_DIR}/lib/log.sh")" "read -r -s -n 1"
+# 凭据提示必须直接读进目标变量，不得包进 $( )（子 shell 的终端读会不等输入就返回空）。
+assert_not_contains "Token 提示不用命令替换读入" "$(<"${ROOT_DIR}/lib/cf-dns.sh")" "prompt_secret "
+assert_contains "Token 提示读进目标变量" "$(<"${ROOT_DIR}/lib/cf-dns.sh")" \
+    "prompt_secret_into CLOUDFLARE_API_TOKEN"
+assert_contains "AWS 凭据读进目标变量" "$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")" \
+    "prompt_secret_into AWS_ACCESS_KEY_ID"
+assert_not_contains "AWS 凭据不用命令替换读入" "$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")" "prompt_secret '"
+# 命令替换形态本身也要守住：$(prompt_secret_into …) 这种回归在上面的断言下会漏网。
+assert_not_contains "Token 提示不包进命令替换" "$(<"${ROOT_DIR}/lib/cf-dns.sh")" '$(prompt_secret'
+assert_not_contains "AWS 凭据不包进命令替换" "$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")" '$(prompt_secret'
+assert_not_contains "debian-init 密码不包进命令替换" "$(<"${ROOT_DIR}/scripts/debian-init.sh")" '$(prompt_secret'
+assert_not_contains "debian-init 密码不用命令替换读入" "$(<"${ROOT_DIR}/scripts/debian-init.sh")" '$(read_secret_into' 
 # 内核重启提示曾用裸 read：raw 会话下会在安装最后一步挂住。
 reboot_prompt_body=$(sed -n '/^prompt_kernel_reboot() {/,/^}/p' "${ROOT_DIR}/lib/tcp-tuning.sh")
 assert_contains "内核重启提示走共享读取原语" "${reboot_prompt_body}" "read_prompt '"
