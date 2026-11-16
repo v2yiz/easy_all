@@ -122,7 +122,7 @@ sudo easy_all edit-sub
 
 ### 6.1 工作机制
 1. **精准计量**：在 iptables `mangle` 表中基于回环 `127.0.0.1:10086` 进行无干扰计数：仅将下行出站流量（sing-box → Caddy）计入 `used_bytes` 以匹配 CloudFront 仅计出站口径（上行仅用于计数回退异常检测）；模式 5 的 AnyTLS 直连与订阅流量不经过该端口，不计入 CDN 配额。
-2. **定时监控**：守护进程每 15 秒同步一次用量，原子写入 `/etc/easy_all/cdn-traffic-usage.json`（配额按 UTC 自然月累计），并同步更新 `/etc/easy_all/caddy/subscription-userinfo` 供订阅响应头 `Subscription-Userinfo`（按客户端 `1024^3` 显示口径等比例换算为 `total=1057635696640`，使客户端精确显示 `985 GB` 与下月 1 日 UTC 重置时间）实时下发。
+2. **定时监控**：守护进程每 15 秒同步一次用量，原子写入 `/etc/easy_all/cdn-traffic-usage.json`（配额按 UTC 自然月累计），并同步更新 `/etc/easy_all/caddy/subscription-userinfo` 供订阅响应头 `Subscription-Userinfo`（按客户端 `1024^3` 显示口径等比例换算已用字节，`total=1057635696640` 对应 `985 GiB`，使客户端精确显示 `985 GB` 与下月 1 日 UTC 重置时间）实时下发。
 3. **分层阻断**：当月用量达到 **985 GB（985×10⁹ 字节）** 时，自动触发双层阻断：
    - Caddy 代理路径立即拦截并返回 `503`；
    - sing-box 自动省略 CDN 入站配置并重载，终止存量长连接。

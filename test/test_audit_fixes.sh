@@ -750,6 +750,42 @@ assert_equal "userinfo: 字节长度精确匹配（无多余换行）" \
     "${#userinfo_out}" \
     "$(wc -c < "${userinfo_file}" | tr -d '[:space:]')"
 
+# 10.6b 满额 985 GB（远高于 ~8.59 GB 乘法溢出临界点）：download 必须精确等于 total 且无 int64 溢出
+userinfo_full_dir=$(guard_case_prepare userinfo-full true true 985000000000 restricted)
+mkdir -p "${userinfo_full_dir}/caddy"
+printf '1000\t2000\n' >"${userinfo_full_dir}/samples"
+userinfo_full_out=$(
+    CASE_SAMPLES="${userinfo_full_dir}/samples" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${userinfo_full_dir}/state" \
+    STATE_FILE="${userinfo_full_dir}/state.env" \
+    SINGBOX_CONFIG="${userinfo_full_dir}/singbox.json" \
+    CADDY_CONFIG="${userinfo_full_dir}/caddy/Caddyfile" \
+    EASY_ALL_BOOT_ID_FILE_OVERRIDE="${userinfo_full_dir}/boot-id" \
+    EASY_ALL_TEST_ROOT="${ROOT_DIR}" \
+    bash -Eeuo pipefail -c '
+        source "${EASY_ALL_TEST_ROOT}/lib/log.sh"
+        source "${EASY_ALL_TEST_ROOT}/lib/state.sh"
+        source "${EASY_ALL_TEST_ROOT}/lib/runtime-core.sh"
+        source "${EASY_ALL_TEST_ROOT}/lib/cloudfront-mode.sh"
+        PROTOCOL=cloudfront
+        CDN_TRAFFIC_PROTECTION_GB=985
+        require_root() { :; }
+        collect_installed_state() { :; }
+        cdn_traffic_counter_acquire() { :; }
+        cdn_traffic_counter_release() { :; }
+        cdn_traffic_counters_install() { return 0; }
+        try_acquire_runtime_write_lock() { return 0; }
+        release_runtime_write_lock() { :; }
+        cdn_subscription_ready() { return 0; }
+        cdn_traffic_read_counters() { head -n 1 "${CASE_SAMPLES}"; }
+        cdn_traffic_protection_sync
+        cat "$(dirname "${CADDY_CONFIG}")/subscription-userinfo"
+    '
+)
+assert_equal "userinfo: 满额 985 GB 不溢出且 download == total" \
+    "upload=0; download=1057635696640; total=1057635696640; expire=${expected_expire}" \
+    "${userinfo_full_out}"
+
 # 10.7 runtime_tls_peer_fingerprint 无 timeout 回退路径不得因 watchdog 持有管道而固定阻塞 10s
 fp_start=$(date +%s)
 EASY_ALL_TEST_ROOT="${ROOT_DIR}" bash -Eeuo pipefail -c '

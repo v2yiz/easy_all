@@ -996,10 +996,10 @@ cdn_traffic_sync_subscription_userinfo() {
     used=$(jq -r '.used_bytes' <<<"${usage}")
     period=$(jq -r '.period' <<<"${usage}")
     expire=$(cdn_traffic_next_month_timestamp "${period}") || return 1
-    display_used=$((used * 1073741824 / 1000000000))
+    display_used=$((used / 1000000000 * 1073741824 + (used % 1000000000) * 1073741824 / 1000000000))
     display_total=$((CDN_TRAFFIC_PROTECTION_GB * 1073741824))
     payload="upload=0; download=${display_used}; total=${display_total}; expire=${expire}"
-    [[ "${payload}" =~ ^upload=0\;\ download=[0-9]+\;\ total=1057635696640\;\ expire=[0-9]+$ ]] \
+    [[ "${payload}" =~ ^upload=0\;\ download=[0-9]+\;\ total=${display_total}\;\ expire=[0-9]+$ ]] \
         || return 1
     target=$(caddy_subscription_userinfo_file)
     if [[ -f "${target}" ]] && cmp -s <(printf '%s' "${payload}") "${target}"; then
@@ -1024,7 +1024,7 @@ write_runtime_config() {
     if [[ "${CDN_SUBSCRIPTION_DENIED:-0}" != "1" ]] && cdn_subscription_available; then
         subscription_ok=1
     fi
-    cdn_traffic_sync_subscription_userinfo || true
+    cdn_traffic_sync_subscription_userinfo || warn "无法更新订阅流量提示文件"
     runtime_write_config "${blocked}" "${subscription_ok}"
 }
 
