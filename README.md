@@ -21,6 +21,8 @@
 
 五种模式共用同一套本机运行时（sing-box 节点入站 + Caddy 订阅与回源分发）。**客户端节点与订阅入口统一使用 443 端口**。
 
+$\textcolor{red}{\textbf{推荐模式 4 或者模式 5}}$
+
 | 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 域名数量 |
 | :--- | :--- | :--- | :--- | :--- | :---: |
 | **1. AnyTLS 直连** | VPS IP 纯净、直连质量优良 | `direct:443` | `sub:443` (deploy) 或无 (link) | Cloudflare Token | 1–2 |
@@ -38,9 +40,9 @@
 > [!WARNING]
 > **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。**
 >
-> **模式 4 与模式 5 使用 Cloudfront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
+> **模式 4 与模式 5 使用 CloudFront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
 >
-> **Cloudflare注册简单，Cloudfront更稳定，晚高峰效果好。**
+> **Cloudflare注册简单，CloudFront更稳定，晚高峰效果好。**
 
 ---
 
