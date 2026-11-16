@@ -176,6 +176,10 @@ caddy_render_singbox_handler() {
     printf '\t\t\t\t}\n'
 }
 
+caddy_subscription_userinfo_file() {
+    printf '%s/subscription-userinfo\n' "$(dirname "${CADDY_CONFIG}")"
+}
+
 # 订阅处理器不区分阻断状态：CDN 超限时订阅必须保持可用（design §10）。
 caddy_render_subscription_handler() {
     local subscription_ok=$1 tokens ios_expression
@@ -194,6 +198,9 @@ caddy_render_subscription_handler() {
     printf '\t\t\t\trespond @easy_all_sub_bad_method 405\n'
     printf '\t\t\t\t@easy_all_sub_denied expression !({query.token} in %s)\n' "${tokens}"
     printf '\t\t\t\trespond @easy_all_sub_denied 403\n'
+    if caddy_protocol_needs_origin_guard; then
+        printf '\t\t\t\theader Subscription-Userinfo "{file.%s}"\n' "$(caddy_subscription_userinfo_file)"
+    fi
     if [[ "${subscription_ok}" != "1" ]]; then
         printf '\t\t\t\trespond 503\n'
         printf '\t\t\t}\n'

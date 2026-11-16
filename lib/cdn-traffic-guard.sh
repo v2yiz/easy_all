@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-# CloudFront 985GB 近似保护：mangle 双向计数 + 保护状态机（design §10）。
+# CloudFront 985GB 近似保护：mangle 出站计数 + 保护状态机（design §10）。
 #
 # 计量不再依赖核心 StatsService（受测版本未编译 v2ray_api），而是在 mangle 表用
 # 链首无 target 的纯计数规则统计回环 10086 的双向字节：
-#   INPUT  dport 10086 → 上行（Caddy → sing-box）
-#   OUTPUT sport 10086 → 下行（sing-box → Caddy）
+#   INPUT  dport 10086 → 上行（Caddy → sing-box，用于计数回退异常检测）
+#   OUTPUT sport 10086 → 下行（sing-box → Caddy，匹配 CloudFront 仅计出站口径）
 # 计数异常、锁/目录不可用、超时或规则修复失败一律拒绝放行，绝不清零或解封。
 #
 # 锁边界：计量有独立的 counter 锁（/run/easy_all/traffic-counter.lock）。唯一允许的
@@ -475,7 +475,7 @@ remove_cdn_traffic_protection_timer() {
 # 必须在持 counter 锁时调用：采样 → 计算增量 → 写 usage 与 pending 目标。
 cdn_traffic_update_usage() {
     local period stats usage runtime_id previous_runtime_id
-    local current_up current_down old_up old_down delta_up delta_down used blocked old_blocked
+    local current_up current_down old_up old_down delta_down used blocked old_blocked
     local enforced offline threshold
     usage=$(cdn_traffic_require_usage) || return 1
     period=$(cdn_traffic_current_period)
@@ -493,7 +493,6 @@ cdn_traffic_update_usage() {
 
     if [[ "${runtime_id}" != "${previous_runtime_id}" ]]; then
         # 换 epoch（重启、规则重建）：只重采样基线，不把新读数当成完整历史。
-        delta_up=0
         delta_down=0
     else
         # 同一次开机内计数只能单调增：回退说明规则被外部重置（如 iptables -t mangle -F）。
@@ -502,16 +501,15 @@ cdn_traffic_update_usage() {
             warn "mangle 计量计数在同一次开机内回退（上行 ${old_up}→${current_up}，下行 ${old_down}→${current_down}）；判为计量异常并保留现有保护状态"
             return 1
         fi
-        delta_up=$((current_up - old_up))
         delta_down=$((current_down - old_down))
     fi
 
     if [[ "$(jq -r '.period' <<<"${usage}")" == "${period}" ]]; then
         used=$(jq -r '.used_bytes' <<<"${usage}")
-        used=$((used + delta_up + delta_down))
+        used=$((used + delta_down))
     else
         # 跨 00:00 UTC 的整个区间计入新月：最多多算一个采样间隔，不留未计量缺口。
-        used=$((delta_up + delta_down))
+        used=${delta_down}
     fi
     threshold=$((CDN_TRAFFIC_PROTECTION_GB * 1000 * 1000 * 1000))
     old_blocked=$(jq -r '.blocked' <<<"${usage}")
@@ -651,6 +649,9 @@ cdn_traffic_protection_sync() {
         CDN_TRAFFIC_NEEDS_APPLY=1
     fi
     cdn_traffic_counter_release
+    if declare -F cdn_traffic_sync_subscription_userinfo >/dev/null 2>&1; then
+        cdn_traffic_sync_subscription_userinfo || warn "无法更新订阅流量提示文件"
+    fi
 
     # counter 已释放：现在才允许尝试 runtime。
     if ! try_acquire_runtime_write_lock; then

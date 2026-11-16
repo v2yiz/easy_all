@@ -976,11 +976,28 @@ certbot_issue_certificate() {
 
 # --- 证书实际生效的运行时证据 ---------------------------------------------------
 
-# 本机 TLS 握手里对端送达的证书 SHA256 指纹（小写）。握手失败返回非零。
+# 本机 TLS 握手里对端送达的证书 SHA256 指纹（小写）。握手失败或超时返回非零。
 runtime_tls_peer_fingerprint() {
     local host=$1 port=$2 output
-    output=$(openssl s_client -connect "127.0.0.1:${port}" -servername "${host}" \
-        </dev/null 2>/dev/null) || return 1
+    if command -v timeout >/dev/null 2>&1; then
+        output=$(timeout 10 openssl s_client -connect "127.0.0.1:${port}" -servername "${host}" \
+            </dev/null 2>/dev/null) || return 1
+    else
+        output=$(
+            (
+                local pid watchdog rc=0
+                openssl s_client -connect "127.0.0.1:${port}" -servername "${host}" \
+                    </dev/null 2>/dev/null &
+                pid=$!
+                ( sleep 10; kill -TERM "${pid}" 2>/dev/null || true ) </dev/null >/dev/null 2>&1 &
+                watchdog=$!
+                wait "${pid}" 2>/dev/null || rc=$?
+                kill -TERM "${watchdog}" 2>/dev/null || true
+                wait "${watchdog}" 2>/dev/null || true
+                exit "${rc}"
+            )
+        ) || return 1
+    fi
     output=$(printf '%s\n' "${output}" \
         | openssl x509 -noout -fingerprint -sha256 2>/dev/null) || return 1
     output=${output#*=}

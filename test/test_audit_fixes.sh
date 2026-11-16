@@ -688,6 +688,82 @@ assert_contains "resume: 继续按采样结果解封" "$(<"${resume_dir}/log")" 
 assert_contains "resume: 解封落盘为已落实" "${resume_round}" '"blocked":false,"enforced":false'
 assert_contains "resume: 解封后退出 0" "${resume_round}" "SYNC-STATUS=0"
 
+# 10.5 仅计出站口径：上行增量很大（100000）而下行增量较小（500）时，used_bytes 只增加下行增量 500
+outbound_dir=$(guard_case_prepare outbound false false 1000 open)
+printf '101000\t2500\n' >"${outbound_dir}/samples"
+outbound_round=$(guard_case_run "${outbound_dir}" 1) || true
+assert_contains "outbound: 退出 0" "${outbound_round}" "SYNC-STATUS=0"
+assert_equal "outbound: used_bytes 仅累加下行增量" $'101000\t2500\t1500' \
+    "$(jq -r '[.last_uplink, .last_downlink, .used_bytes] | @tsv' \
+        "${outbound_dir}/state/cdn-traffic-usage.json")"
+
+# 10.6 通过 cdn_traffic_protection_sync 同步订阅流量文件（含无结尾换行与跨月时间戳格式）
+userinfo_dir=$(guard_case_prepare userinfo false false 123456000 open)
+mkdir -p "${userinfo_dir}/caddy"
+printf '1000\t2789\n' >"${userinfo_dir}/samples"
+userinfo_out=$(
+    CASE_SAMPLES="${userinfo_dir}/samples" \
+    CASE_LOG="${userinfo_dir}/log" \
+    CASE_SUBSCRIPTION_READY="1" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${userinfo_dir}/state" \
+    STATE_FILE="${userinfo_dir}/state.env" \
+    SINGBOX_CONFIG="${userinfo_dir}/singbox.json" \
+    CADDY_CONFIG="${userinfo_dir}/caddy/Caddyfile" \
+    EASY_ALL_BOOT_ID_FILE_OVERRIDE="${userinfo_dir}/boot-id" \
+    EASY_ALL_TEST_ROOT="${ROOT_DIR}" \
+    bash -Eeuo pipefail -c '
+        source "${EASY_ALL_TEST_ROOT}/lib/log.sh"
+        source "${EASY_ALL_TEST_ROOT}/lib/state.sh"
+        source "${EASY_ALL_TEST_ROOT}/lib/runtime-core.sh"
+        source "${EASY_ALL_TEST_ROOT}/lib/cloudfront-mode.sh"
+        PROTOCOL=cloudfront
+        CDN_TRAFFIC_PROTECTION_GB=985
+        require_root() { :; }
+        collect_installed_state() { :; }
+        cdn_traffic_counter_acquire() { :; }
+        cdn_traffic_counter_release() { :; }
+        cdn_traffic_counters_install() { return 0; }
+        try_acquire_runtime_write_lock() { return 0; }
+        release_runtime_write_lock() { :; }
+        cdn_subscription_ready() { return 0; }
+        cdn_traffic_read_counters() { head -n 1 "${CASE_SAMPLES}"; }
+        cdn_traffic_protection_sync
+        cat "$(dirname "${CADDY_CONFIG}")/subscription-userinfo"
+    '
+)
+expected_period=$(date -u +%Y-%m)
+expected_year=$((10#${expected_period:0:4}))
+expected_month=$((10#${expected_period:5:2}))
+if ((expected_month == 12)); then
+    expected_next=$(printf '%04d-01-01T00:00:00Z' "$((expected_year + 1))")
+else
+    expected_next=$(printf '%04d-%02d-01T00:00:00Z' "${expected_year}" "$((expected_month + 1))")
+fi
+expected_expire=$(jq -nr --arg d "${expected_next}" '$d | fromdate')
+assert_equal "userinfo: sync 自动写入标准 Subscription-Userinfo" \
+    "upload=0; download=123456789; total=985000000000; expire=${expected_expire}" \
+    "${userinfo_out}"
+userinfo_file="${userinfo_dir}/caddy/subscription-userinfo"
+assert_equal "userinfo: 文件不得包含结尾换行" "0" \
+    "$(wc -l < "${userinfo_file}" | tr -d '[:space:]')"
+assert_equal "userinfo: 字节长度精确匹配（无多余换行）" \
+    "${#userinfo_out}" \
+    "$(wc -c < "${userinfo_file}" | tr -d '[:space:]')"
+
+# 10.7 runtime_tls_peer_fingerprint 无 timeout 回退路径不得因 watchdog 持有管道而固定阻塞 10s
+fp_start=$(date +%s)
+EASY_ALL_TEST_ROOT="${ROOT_DIR}" bash -Eeuo pipefail -c '
+    source "${EASY_ALL_TEST_ROOT}/lib/log.sh"
+    source "${EASY_ALL_TEST_ROOT}/lib/state.sh"
+    source "${EASY_ALL_TEST_ROOT}/lib/runtime-core.sh"
+    # 屏蔽 GNU timeout，强制走 bash watchdog 回退分支连接未监听端口（应立刻失败返回，不阻塞 10s）
+    command() { [[ "${1:-}" == "-v" && "${2:-}" == "timeout" ]] && return 1; builtin command "$@"; }
+    if command -v timeout >/dev/null 2>&1; then exit 1; fi
+    runtime_tls_peer_fingerprint 127.0.0.1 1 >/dev/null 2>&1 || true
+'
+fp_elapsed=$(( $(date +%s) - fp_start ))
+((fp_elapsed < 8)) || fail "runtime_tls_peer_fingerprint 回退分支不应固定阻塞 10s（实际耗时 ${fp_elapsed}s）"
+
 echo "=== 11. 同 epoch 计数回退按计量异常 fail-closed ==="
 regress_dir=$(guard_case_prepare regress false false 0 open)
 printf '6000\t7000\n100\t200\n' >"${regress_dir}/samples"

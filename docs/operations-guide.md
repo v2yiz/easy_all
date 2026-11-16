@@ -121,8 +121,8 @@ sudo easy_all edit-sub
 ## 6. CDN 流量保护（985 GB 熔断，仅模式 4/5）
 
 ### 6.1 工作机制
-1. **精准计量**：在 iptables `mangle` 表中基于回环 `127.0.0.1:10086` 上下行数据包进行无干扰计数；模式 5 的 AnyTLS 直连与订阅流量不经过该端口，不计入 CDN 配额。
-2. **定时监控**：守护进程每 15 秒同步一次用量，原子写入 `/etc/easy_all/cdn-traffic-usage.json`（配额按 UTC 自然月累计）。
+1. **精准计量**：在 iptables `mangle` 表中基于回环 `127.0.0.1:10086` 进行无干扰计数：仅将下行出站流量（sing-box → Caddy）计入 `used_bytes` 以匹配 CloudFront 仅计出站口径（上行仅用于计数回退异常检测）；模式 5 的 AnyTLS 直连与订阅流量不经过该端口，不计入 CDN 配额。
+2. **定时监控**：守护进程每 15 秒同步一次用量，原子写入 `/etc/easy_all/cdn-traffic-usage.json`（配额按 UTC 自然月累计），并同步更新 `/etc/easy_all/caddy/subscription-userinfo` 供订阅响应头 `Subscription-Userinfo`（`upload=0; download=<used_bytes>; total=985000000000; expire=<下月1日UTC时间戳>`）实时下发。
 3. **分层阻断**：当月用量达到 **985 GB（985×10⁹ 字节）** 时，自动触发双层阻断：
    - Caddy 代理路径立即拦截并返回 `503`；
    - sing-box 自动省略 CDN 入站配置并重载，终止存量长连接。
@@ -148,7 +148,7 @@ sudo easy_all edit-sub
       "protection_offline": false
     }
     ```
-    字段含义：`period` 是 UTC 自然月（`YYYY-MM`）；`runtime_id` 是当前开机 epoch（`mangle-easy_all-cdn-` 加 `cat /proc/sys/kernel/random/boot_id` 的输出，换 epoch 即按新开机重采样基线）；`used_bytes` 是本月已用字节；`last_uplink` / `last_downlink` 是上一次采样的 mangle 计数基线（填 0 会当作基线重置）；`blocked` / `enforced` / `protection_offline` 分别是「应熔断」「熔断已落实」「保护性停机」的布尔状态；
+    字段含义：`period` 是 UTC 自然月（`YYYY-MM`）；`runtime_id` 是当前开机 epoch（`mangle-easy_all-cdn-` 加 `cat /proc/sys/kernel/random/boot_id` 的输出，换 epoch 即按新开机重采样基线）；`used_bytes` 是本月已用出站字节（仅统计下行，升级当月若含切换前的历史双向累计会保守偏高）；`last_uplink` / `last_downlink` 是上一次采样的 mangle 计数基线（填 0 会当作基线重置）；`blocked` / `enforced` / `protection_offline` 分别是「应熔断」「熔断已落实」「保护性停机」的布尔状态；
     4. `sudo systemctl start easy_all-cdn-traffic-guard.timer`，再运行 `sudo easy_all cdn-traffic-sync` 复核输出；
     5. 无法确定可信累计值（文件已被清空、也没有任何历史读数）时，改为卸载重装（`sudo easy_all uninstall` 后重新安装），由安装流程重建统计文件。
 - 若 CDN 仍可访问但状态显示 `enforced=true`（重建后落盘失败、进程中途被杀等）：下一轮 timer 会按反向漂移强制收敛为阻断并告警，无需手工清空状态文件。

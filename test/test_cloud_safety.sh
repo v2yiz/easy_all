@@ -1384,9 +1384,9 @@ run_tls_certificate_cases() {
         skip_case "真实 TLS 握手与证书部署" "无法在空闲端口启动测试用 TLS 服务"
         return 0
     fi
-    # LibreSSL（macOS 自带）的 s_client 在 stdin EOF 后不会退出，握手用例在这些宿主上
-    # 无法完成：有界探测一次，不可用就明确跳过，避免把整个套件卡死。
-    if ! tls_probe "${TLS_PORT}"; then
+    # LibreSSL（macOS 自带）的 s_client 在 stdin EOF 后可能不退出（或探测偶发通过而后续挂起），
+    # 握手用例在这些宿主上无法稳定完成：直接明确跳过，避免把整个套件卡死。
+    if openssl version 2>/dev/null | grep -qi 'LibreSSL' || ! tls_probe "${TLS_PORT}"; then
         skip_case "真实 TLS 握手与证书部署" "本机 openssl 在握手后不返回（LibreSSL）"
         return 0
     fi

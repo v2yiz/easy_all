@@ -142,6 +142,12 @@ json_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]
 grep -qi '^content-type: application/json' <<<"${json_headers}" || fail json_content_type
 grep -qi 'filename=EASY_ALL.json' <<<"${json_headers}" || fail json_filename
 grep -qi 'vary: user-agent' <<<"${json_headers}" || fail json_vary
+grep -qi '^subscription-userinfo:[[:space:]]*$' <<<"${json_headers}" || fail userinfo_missing_empty
+printf 'upload=0; download=123456789; total=985000000000; expire=1798761600' >"${T}/subscription-userinfo"
+userinfo_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]}" "${sub_url}" | tr -d '\r')
+grep -qiFx 'subscription-userinfo: upload=0; download=123456789; total=985000000000; expire=1798761600' \
+    <<<"${userinfo_headers}" || fail userinfo_present
+rm -f -- "${T}/subscription-userinfo"
 json_body=$(body "${sub_url}&flag=singbox")
 jq -e '.outbounds | map(.tag) | index("PROXY") != null' <<<"${json_body}" >/dev/null \
     || fail json_proxy_selector

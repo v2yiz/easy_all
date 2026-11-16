@@ -268,6 +268,25 @@ assert_contains "阻断时代理路径 503" "${blocked_body}" "respond 503"
 assert_not_contains "阻断时不转发回环" "${blocked_body}" "reverse_proxy"
 assert_contains "阻断不影响订阅" "${blocked_body}" "respond @easy_all_sub_denied 403"
 
+# CloudFront 模式（4/5）下发 Subscription-Userinfo，位于 403 之后、未就绪 503 之前；其他模式不下发
+cf_ready_body=$(render_caddy cloudfront 0 1)
+assert_contains "模式 4 下发 Subscription-Userinfo" "${cf_ready_body}" \
+    "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
+assert_contains "模式 5 下发 Subscription-Userinfo" "${ready_body}" \
+    "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
+assert_contains "未就绪时仍带 Subscription-Userinfo" "${unready_body}" \
+    "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
+denied_line=$(grep -n 'respond @easy_all_sub_denied 403' <<<"${unready_body}" | head -n 1 | cut -d: -f1)
+userinfo_line=$(grep -n 'header Subscription-Userinfo ' <<<"${unready_body}" | head -n 1 | cut -d: -f1)
+sub_503_line=$(grep -n 'respond 503' <<<"${unready_body}" | tail -n 1 | cut -d: -f1)
+((userinfo_line > denied_line && userinfo_line < sub_503_line)) \
+    || fail "Subscription-Userinfo 必须位于 403 之后且在未就绪 503 之前"
+for non_cf_mode in anytls cloudflare combined-cloudflare; do
+    non_cf_body=$(render_caddy "${non_cf_mode}" 0 1)
+    assert_not_contains "${non_cf_mode} 不下发 Subscription-Userinfo" "${non_cf_body}" \
+        "Subscription-Userinfo"
+done
+
 # --- 输入校验 ---------------------------------------------------------------
 if (PROTOCOL=anytls; SUBSCRIPTION_MODE=link; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
     fail "模式 1 link 不得生成 Caddy 站点"

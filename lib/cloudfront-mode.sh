@@ -970,6 +970,47 @@ runtime_blocked_state() {
     printf '%s\n' "${blocked}"
 }
 
+cdn_traffic_next_month_timestamp() {
+    local period=$1 year month next_year next_month
+    [[ "${period}" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] || return 1
+    year=$((10#${period:0:4}))
+    month=$((10#${period:5:2}))
+    if ((month == 12)); then
+        next_year=$((year + 1))
+        next_month=1
+    else
+        next_year=${year}
+        next_month=$((month + 1))
+    fi
+    jq -nr --arg date "$(printf '%04d-%02d-01T00:00:00Z' "${next_year}" "${next_month}")" \
+        '$date | fromdate'
+}
+
+# 生成供 Caddy `{file.*}` 运行时占位符读取的 Subscription-Userinfo 值（无结尾换行）。
+cdn_traffic_sync_subscription_userinfo() {
+    local usage used period expire threshold payload target target_dir temp
+    cdn_traffic_protection_enabled || return 0
+    usage=$(cdn_traffic_read_usage) || return 1
+    used=$(jq -r '.used_bytes' <<<"${usage}")
+    period=$(jq -r '.period' <<<"${usage}")
+    expire=$(cdn_traffic_next_month_timestamp "${period}") || return 1
+    threshold=$((CDN_TRAFFIC_PROTECTION_GB * 1000 * 1000 * 1000))
+    payload="upload=0; download=${used}; total=${threshold}; expire=${expire}"
+    [[ "${payload}" =~ ^upload=0\;\ download=[0-9]+\;\ total=985000000000\;\ expire=[0-9]+$ ]] \
+        || return 1
+    target=$(caddy_subscription_userinfo_file)
+    if [[ -f "${target}" ]] && cmp -s <(printf '%s' "${payload}") "${target}"; then
+        return 0
+    fi
+    target_dir=$(dirname "${target}")
+    install -d -m 0700 "${target_dir}" || return 1
+    temp=$(mktemp "${target_dir}/.subscription-userinfo.XXXXXX") || return 1
+    if ! printf '%s' "${payload}" >"${temp}" || ! chmod 0600 "${temp}" || ! mv -f -- "${temp}" "${target}"; then
+        rm -f -- "${temp}"
+        return 1
+    fi
+}
+
 # blocked=1 时 sing-box 省略 CDN 入站、Caddy 代理路径 503；订阅始终可用。
 write_runtime_config() {
     local blocked=${1:-} subscription_ok
@@ -980,6 +1021,7 @@ write_runtime_config() {
     if [[ "${CDN_SUBSCRIPTION_DENIED:-0}" != "1" ]] && cdn_subscription_available; then
         subscription_ok=1
     fi
+    cdn_traffic_sync_subscription_userinfo || true
     runtime_write_config "${blocked}" "${subscription_ok}"
 }
 
