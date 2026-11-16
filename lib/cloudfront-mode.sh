@@ -987,16 +987,19 @@ cdn_traffic_next_month_timestamp() {
 }
 
 # 生成供 Caddy `{file.*}` 运行时占位符读取的 Subscription-Userinfo 值（无结尾换行）。
+# 代理客户端普遍按二进制 GiB（1024^3）换算显示：将十进制字节按 1024^3 / 1000^3 等比例映射，
+# 使客户端精确显示 985 GB 上限及与 `easy_all status` 一致的十进制已用 GB，进度比例不变。
 cdn_traffic_sync_subscription_userinfo() {
-    local usage used period expire threshold payload target target_dir temp
+    local usage used period expire display_used display_total payload target target_dir temp
     cdn_traffic_protection_enabled || return 0
     usage=$(cdn_traffic_read_usage) || return 1
     used=$(jq -r '.used_bytes' <<<"${usage}")
     period=$(jq -r '.period' <<<"${usage}")
     expire=$(cdn_traffic_next_month_timestamp "${period}") || return 1
-    threshold=$((CDN_TRAFFIC_PROTECTION_GB * 1000 * 1000 * 1000))
-    payload="upload=0; download=${used}; total=${threshold}; expire=${expire}"
-    [[ "${payload}" =~ ^upload=0\;\ download=[0-9]+\;\ total=985000000000\;\ expire=[0-9]+$ ]] \
+    display_used=$((used * 1073741824 / 1000000000))
+    display_total=$((CDN_TRAFFIC_PROTECTION_GB * 1073741824))
+    payload="upload=0; download=${display_used}; total=${display_total}; expire=${expire}"
+    [[ "${payload}" =~ ^upload=0\;\ download=[0-9]+\;\ total=1057635696640\;\ expire=[0-9]+$ ]] \
         || return 1
     target=$(caddy_subscription_userinfo_file)
     if [[ -f "${target}" ]] && cmp -s <(printf '%s' "${payload}") "${target}"; then

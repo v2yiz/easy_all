@@ -243,7 +243,7 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 - 合法的旧七字段文件只在读取时把缺失的 `protection_offline` 解释为 `false`，下一次原子更新补齐；其他缺字段、类型错误或违反「`protection_offline=true` 必须同时满足 `blocked=true`、`enforced=false`」都判为损坏。损坏时拒绝操作并告警，不会创建替代文件或清零。
 - 计量有独立的 counter 锁 `/run/easy_all/traffic-counter.lock`：规则检查/插入/唯一性清理、epoch 与基线、所有 usage 读写都必须在锁内完成，`iptables` 使用有界 `-w`。
 - `period` 按 **UTC 自然月**；`used_bytes` 只在月切换时重置，核心重启、规则重建或回补都不会清零（升级当月若存在切换口径前累计的历史 `used_bytes`，可能包含此前上行字节，属保守偏高，不回溯扣减）。`runtime_id` 是包含 `boot_id` 的计数 epoch：同 epoch 增量取 `max(0, current - previous)`，换 epoch 只重采样基线并保留累计，同时告警连续性丢失。`/proc/sys/kernel/random/boot_id` 不可读时采样直接失败并保留现有保护状态（不再用时间戳兑底）：每轮换 epoch 会让增量恒为 0，保护等于不存在。受支持的 Debian/Ubuntu 宿主默认提供该文件。
-- `/etc/easy_all/caddy/subscription-userinfo`（`0600`，同目录临时文件 + 原子 rename，无结尾换行，内容未变时跳过重写）：由 `cdn-traffic-sync` 与 `write_runtime_config` 同步写入 `upload=0; download=<used_bytes>; total=985000000000; expire=<下月1日UTC时间戳>`，供 Caddy `{file.*}` 运行时占位符在订阅响应中实时下发 `Subscription-Userinfo`。
+- `/etc/easy_all/caddy/subscription-userinfo`（`0600`，同目录临时文件 + 原子 rename，无结尾换行，内容未变时跳过重写）：由 `cdn-traffic-sync` 与 `write_runtime_config` 同步写入 `upload=0; download=<换算后字节>; total=1057635696640; expire=<下月1日UTC时间戳>`（按 `1024^3/1000^3` 等比例映射，使按 GiB 显示的客户端精确展示 `985 GB` 与十进制已用量），供 Caddy `{file.*}` 运行时占位符在订阅响应中实时下发 `Subscription-Userinfo`。
 - 用量与保护标记不参加本机配置事务回滚，旧快照不会覆盖新 usage。
 
 ### 4.3 双层阻断与恢复

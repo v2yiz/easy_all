@@ -741,7 +741,7 @@ else
 fi
 expected_expire=$(jq -nr --arg d "${expected_next}" '$d | fromdate')
 assert_equal "userinfo: sync 自动写入标准 Subscription-Userinfo" \
-    "upload=0; download=123456789; total=985000000000; expire=${expected_expire}" \
+    "upload=0; download=132560717; total=1057635696640; expire=${expected_expire}" \
     "${userinfo_out}"
 userinfo_file="${userinfo_dir}/caddy/subscription-userinfo"
 assert_equal "userinfo: 文件不得包含结尾换行" "0" \
