@@ -26,7 +26,7 @@ $\textcolor{red}{\textbf{线路一般就直接模式 4；}}$<br>
 $\textcolor{red}{\textbf{没有可用信用卡才选模式 2 或模式 3。}}$<br>
 $\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推荐。}}$
 
-| 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 域名数量 |
+| 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 子域名数量 |
 | :--- | :--- | :--- | :--- | :--- | :---: |
 | **1. AnyTLS 直连** | VPS IP 纯净、直连质量优良 | `direct:443` | `sub:443` (deploy) 或无 (link) | Cloudflare Token | 1–2 |
 | **2. 纯 CloudFlare** | 只要 CDN 入口且回源仅限 CF | `cf:443` (橙云 CDN) | `cf:443` | Cloudflare Token | 1 |
@@ -35,6 +35,7 @@ $\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推�
 | **5. AnyTLS + CloudFront** | 同时需要直连与 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
 
 > **核心约定**：
+> - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
 > - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1 deploy、2 与 3 仅对 Cloudflare 官方回源 IP 放行（模式 1/3 为 `8443`，模式 2 为 `443`）；模式 5 源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
 > - **协议与证书**：CDN 节点均为 **VLESS WebSocket**。模式 1/3/5 直连与模式 4/5 源站使用 Let's Encrypt（DNS-01 自动签发），模式 4/5 的 CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
 > - **Cloudflare SSL**：模式 1 deploy、2、3 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
