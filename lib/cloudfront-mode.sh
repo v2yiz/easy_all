@@ -258,15 +258,8 @@ cdn_ensure_zone_id() {
 }
 
 cdn_wait_for_origin_dns() {
-    local attempt answers
-    for attempt in {1..30}; do
-        answers=$(dig +short A "${CF_ORIGIN_DOMAIN}" 2>/dev/null || true)
-        if [[ -n "${answers}" ]] && grep -Fxq "${VPS_PUBLIC_IPV4}" <<<"${answers}"; then
-            return 0
-        fi
-        sleep 2
-    done
-    die "源站 A 记录尚未生效：${CF_ORIGIN_DOMAIN} -> ${VPS_PUBLIC_IPV4}；请检查灰云 DNS 后重试"
+    wait_for_dns_a_record "${CF_ORIGIN_DOMAIN}" "${VPS_PUBLIC_IPV4}" \
+        || die "源站 A 记录尚未生效：${CF_ORIGIN_DOMAIN} -> ${VPS_PUBLIC_IPV4}；请检查灰云 DNS 后重试"
 }
 
 cdn_prepare_origin_dns() {
@@ -926,6 +919,7 @@ cdn_public_token_rejection_ok() {
 # 公网验收：DNS 与分发传播有有限重试；任一必需项持续失败则非零，调用方不得报成功。
 cdn_validate_public_runtime() {
     local attempt expected
+    flush_local_dns_cache
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
         if cdn_public_health_ok \
             && cdn_public_subscription_ok \

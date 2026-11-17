@@ -2164,6 +2164,94 @@ assert_not_contains "内核重启提示不再用裸 read" "${reboot_prompt_body}
 run_certificate_deploy_cases
 run_tls_certificate_cases
 
+# --- 8. 五模式 DNS 等待：清本机缓存 + 6 分钟轮询 + 拒绝 dig 超时文本误判 ---------
+dns_wait_log="${TMP_DIR}/dns-wait.log"
+dns_wait_bin="${TMP_DIR}/dns-wait-bin"
+mkdir -p "${dns_wait_bin}"
+cat >"${dns_wait_bin}/resolvectl" <<EOF
+#!/usr/bin/env bash
+printf 'FLUSH %s\n' "\$*" >>$(printf '%q' "${dns_wait_log}")
+EOF
+chmod +x "${dns_wait_bin}/resolvectl"
+
+# 8.1 默认轮询窗口为 180 * 2s = 360s（6 分钟）
+dns_defaults=$(bash -c 'source "$1/lib/runtime-core.sh"; printf "%s:%s\n" "${DNS_WAIT_ATTEMPTS}" "${DNS_WAIT_SECONDS}"' _ "${ROOT_DIR}")
+assert_contains "默认 DNS 轮询窗口为 6 分钟（180x2s）" "${dns_defaults}" "180:2"
+
+# 8.2 模式 4/5：先清缓存再 dig，第 2 次返回目标 IP 时通过
+: >"${dns_wait_log}"
+dns_wait_count_file="${TMP_DIR}/dns-wait-count"
+printf '0\n' >"${dns_wait_count_file}"
+dns_cf_ok=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=3 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        DNS_WAIT_TEST_LOG="${dns_wait_log}" DNS_WAIT_TEST_COUNT="${dns_wait_count_file}" \
+        bash -c '
+            source "$1/profiles/combined.sh"
+            CF_ORIGIN_DOMAIN=stat.example.com
+            VPS_PUBLIC_IPV4=203.0.113.10
+            dig() {
+                local c
+                c=$(<"${DNS_WAIT_TEST_COUNT}")
+                c=$((c + 1))
+                printf "%s\n" "${c}" >"${DNS_WAIT_TEST_COUNT}"
+                printf "DIG#%s %s\n" "${c}" "$*" >>"${DNS_WAIT_TEST_LOG}"
+                if ((c == 1)); then
+                    printf ";; connection timed out; no servers could be reached\n"
+                else
+                    printf "203.0.113.10\n"
+                fi
+            }
+            cdn_wait_for_origin_dns
+            printf "OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "模式 4/5 DNS 重试应成功：${dns_cf_ok}"
+assert_contains "模式 4/5 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
+assert_contains "模式 4/5 第 2 次命中目标 IP 后成功" "${dns_cf_ok}" "OK"
+flush_line=$(grep -n '^FLUSH ' "${dns_wait_log}" | head -n 1 | cut -d: -f1)
+dig_line=$(grep -n '^DIG#' "${dns_wait_log}" | head -n 1 | cut -d: -f1)
+((flush_line < dig_line)) || fail "清缓存必须早于第一次 dig"
+
+# 8.3 模式 2：dig 返回超时错误文本时不得误判为成功；返回合法 IPv4 才通过
+: >"${dns_wait_log}"
+dns_cf2_fail=0
+dns_cf2_out=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=2 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        DNS_WAIT_TEST_LOG="${dns_wait_log}" \
+        bash -c '
+            source "$1/profiles/cloudflare.sh"
+            CF_NODE_DOMAIN=cf.example.com
+            dig() {
+                printf "DIG %s\n" "$*" >>"${DNS_WAIT_TEST_LOG}"
+                printf ";; connection timed out; no servers could be reached\n"
+            }
+            cdn_wait_for_node_dns
+        ' _ "${ROOT_DIR}" 2>&1
+) || dns_cf2_fail=$?
+((dns_cf2_fail != 0)) || fail "模式 2 dig 超时文本不能被当成解析成功"
+assert_contains "模式 2 失败提示清晰" "${dns_cf2_out}" "Cloudflare 节点域名尚未解析"
+assert_contains "模式 2 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
+
+# 8.4 模式 1/3：公网订阅验收前先清缓存并等待订阅域名解析
+: >"${dns_wait_log}"
+dns_anytls_fail=0
+dns_anytls_out=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=2 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        DNS_WAIT_TEST_LOG="${dns_wait_log}" \
+        bash -c '
+            source "$1/profiles/combined-cloudflare.sh"
+            SUBSCRIPTION_MODE=deploy
+            SUBSCRIPTION_DOMAIN=sub.example.com
+            dig() {
+                printf "DIG %s\n" "$*" >>"${DNS_WAIT_TEST_LOG}"
+                return 0
+            }
+            anytls_validate_public_runtime
+        ' _ "${ROOT_DIR}" 2>&1
+) || dns_anytls_fail=$?
+((dns_anytls_fail != 0)) || fail "模式 1/3 订阅域名未解析时应阻断"
+assert_contains "模式 1/3 失败提示清晰" "${dns_anytls_out}" "订阅域名尚未解析"
+assert_contains "模式 1/3 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
+
 printf 'ok - 凭据、strict 顺序、DNS 归属、证书生效与服务编排测试通过\n'
 
 # A17/A32：文件尾汇总本轮未验证的用例。

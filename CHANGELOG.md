@@ -1,3 +1,15 @@
+## 5.3.0 更新说明（2026-11-17）
+
+### 增强与修复
+
+- **五模式 DNS 检查健壮性增强**（`lib/runtime-core.sh`、`lib/cloudfront-mode.sh`、`lib/cloudflare-mode.sh`、`lib/anytls-mode.sh`）：
+  - 新增 `flush_local_dns_cache` 与 `wait_for_dns_a_record`，在等待 DNS 解析前自动清理本机 `resolvectl` / `systemd-resolve`、`nscd`、`dnsmasq` 缓存，避免新建记录前的负缓存或旧记录影响后续校验。
+  - 将 DNS 解析轮询窗口由 60 秒（30×2s）延长至 **6 分钟（180×2s）**，覆盖常见递归 DNS 负缓存 TTL。
+  - 模式 2（`cloudflare`）与模式 1/3（`anytls` / `combined-cloudflare`）补齐 `validate_ipv4` 校验与订阅公网验收前 DNS 等待，防止 `dig` 超时错误文本被误判为解析成功；模式 4/5（`cloudfront` / `combined-cloudfront`）在公网验收前同步清理本机 DNS 缓存。
+- **CloudFront 流量计量与订阅头**：CloudFront 改用仅出站计量并按客户端 `1024^3` 显示口径下发 `Subscription-Userinfo` 响应头，修正 `int64` 溢出问题。
+
+---
+
 ## 5.2.2 更新说明（2026-11-12）
 
 本版以缺陷修复与安全加固为主：修正卸载路径的云端资源泄漏、收紧状态文件的只读加载、补齐防火墙与 Fail2ban 的边界处置，并修正客户端模板与订阅产物中与文档承诺不一致的几处。模式、端口、凭据与订阅配置格式均无变化。

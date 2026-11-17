@@ -316,13 +316,8 @@ cdn_public_curl() {
 }
 
 cdn_wait_for_node_dns() {
-    local attempt answers
-    for attempt in {1..30}; do
-        answers=$(dig +short A "${CF_NODE_DOMAIN}" 2>/dev/null || true)
-        [[ -n "${answers}" ]] && return 0
-        sleep 2
-    done
-    die "Cloudflare 节点域名尚未解析：${CF_NODE_DOMAIN}；请检查橙云 A 记录后重试"
+    wait_for_dns_a_record "${CF_NODE_DOMAIN}" \
+        || die "Cloudflare 节点域名尚未解析：${CF_NODE_DOMAIN}；请检查橙云 A 记录后重试"
 }
 
 cdn_public_health_ok() {

@@ -386,6 +386,8 @@ anytls_public_subscription_ok() {
 anytls_validate_public_runtime() {
     local attempt
     subscription_enabled || return 0
+    wait_for_dns_a_record "${SUBSCRIPTION_DOMAIN}" \
+        || die "订阅域名尚未解析：${SUBSCRIPTION_DOMAIN}；请检查橙云 A 记录后重试"
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
         anytls_public_subscription_ok && return 0
         ((attempt == CDN_PUBLIC_ACCEPT_ATTEMPTS)) || sleep "${CDN_PUBLIC_ACCEPT_SECONDS}"

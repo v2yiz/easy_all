@@ -520,6 +520,48 @@ dns_ensure_record() {
     ((takeover == 0)) || warn "已强制接管 Cloudflare 记录：${host}"
 }
 
+readonly DNS_WAIT_ATTEMPTS="${DNS_WAIT_ATTEMPTS_OVERRIDE:-180}"
+readonly DNS_WAIT_SECONDS="${DNS_WAIT_SECONDS_OVERRIDE:-2}"
+
+# 清理本机可能存在的递归 DNS 缓存（systemd-resolved / nscd / dnsmasq），避免新建记录前
+# 留下的 NXDOMAIN 负缓存或旧记录拖垮后续 dig / curl 校验。
+flush_local_dns_cache() {
+    if command -v resolvectl >/dev/null 2>&1; then
+        resolvectl flush-caches >/dev/null 2>&1 || true
+    elif command -v systemd-resolve >/dev/null 2>&1; then
+        systemd-resolve --flush-caches >/dev/null 2>&1 || true
+    fi
+    if command -v nscd >/dev/null 2>&1; then
+        nscd -i hosts >/dev/null 2>&1 || true
+    fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dnsmasq 2>/dev/null; then
+        systemctl reload dnsmasq >/dev/null 2>&1 || true
+    fi
+}
+
+# 等待域名 A 记录生效：先清本机缓存，再以 2 秒间隔轮询至多 6 分钟（180 次）。
+# 传入 expected_ipv4 时要求精确匹配该 IP（灰云直连）；省略时要求至少返回一条合法 IPv4
+# （橙云代理），防止 dig 超时输出 ";; connection timed out..." 被误判为成功。
+wait_for_dns_a_record() {
+    local domain=$1 expected_ipv4=${2:-}
+    local attempt answers line
+    flush_local_dns_cache
+    for ((attempt = 1; attempt <= DNS_WAIT_ATTEMPTS; attempt++)); do
+        answers=$(dig +short A "${domain}" 2>/dev/null || true)
+        if [[ -n "${answers}" ]]; then
+            if [[ -n "${expected_ipv4}" ]]; then
+                grep -Fxq "${expected_ipv4}" <<<"${answers}" && return 0
+            else
+                while IFS= read -r line; do
+                    validate_ipv4 "${line}" && return 0
+                done <<<"${answers}"
+            fi
+        fi
+        ((attempt == DNS_WAIT_ATTEMPTS)) || sleep "${DNS_WAIT_SECONDS}"
+    done
+    return 1
+}
+
 validate_node_name() {
     [[ -n "$1" && ${#1} -le 64 && "$1" != *[[:cntrl:]]* ]]
 }
